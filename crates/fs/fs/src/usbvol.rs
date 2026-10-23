@@ -19,8 +19,8 @@
 //!   and a write that returned is then on it, not in a cache waiting for the
 //!   `fs-wb` task (which serves `/fat` alone, so this volume hands out no flush
 //!   tickets either: an `fsync` syncs inline);
-//! - a sector cache of its own, of the boot disk's size (one cache type for
-//!   every volume: Kconfig `FS_BLOCK_CACHE_KB`);
+//! - a sector cache of its own size, Kconfig `USB_VOLUME_CACHE_KB` (the
+//!   same cache code as the boot disk's `FS_BLOCK_CACHE_KB` one);
 //! - no discard and no native FUA (the class driver has neither);
 //! - its own identity ([`crate::vfs::FS_TYPE_FAT32_REMOVABLE`],
 //!   [`crate::vfs::STAMP_FS_FAT32_REMOVABLE`]): the page cache, the write-back
@@ -162,12 +162,13 @@ pub static USB: fat32::Vol = fat32::Vol::new(
         stamp: crate::vfs::STAMP_FS_FAT32_REMOVABLE,
     },
     &USB_FS,
-    &USB_CACHE,
+    fat32::VolCache::Removable(&USB_CACHE),
 );
 /// [`USB`] as a VFS backend.
 pub static USB_FS: fat32::Fat32Fs = fat32::Fat32Fs::of(&USB);
-/// [`USB`]'s sector cache. All-zero until the first mount configures it.
-static USB_CACHE: SpinLock<fat32::SectorCache> = SpinLock::new(fat32::SectorCache::unconfigured());
+/// [`USB`]'s sector cache, Kconfig `USB_VOLUME_CACHE_KB`. All-zero until the
+/// first mount configures it.
+static USB_CACHE: SpinLock<fat32::RemovableCache> = SpinLock::new(fat32::RemovableCache::unconfigured());
 
 /// Why [`mount`] did not mount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

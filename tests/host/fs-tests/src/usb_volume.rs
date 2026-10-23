@@ -131,7 +131,8 @@ fn no_stick() {
 ///
 /// **Canary.** Point `usbvol::USB_FS` at the boot volume
 /// (`Fat32Fs::of(&fat32::BOOT)`): the stick's file lands on the boot disk
-/// and the bytes assertions go red.
+/// and the bytes assertions go red. **Canary.** Size `RemovableCache` from
+/// `FS_BLOCK_CACHE_KB`: the cache-lines assertion goes red.
 #[test]
 fn a_stick_mounts_beside_fat_as_a_volume_of_its_own() {
     let _g = serial();
@@ -149,6 +150,9 @@ fn a_stick_mounts_beside_fat_as_a_volume_of_its_own() {
         "the boot volume and the stick are one backend to the VFS"
     );
     assert_eq!(usbvol::USB_FS.fs_type(), vfs::FS_TYPE_FAT32_REMOVABLE);
+    // Each volume's cache has its own Kconfig size (512-byte lines).
+    assert_eq!(fat32::fat32_cache_lines_on(&usbvol::USB), azos_limits::USB_VOLUME_CACHE_KB * 2);
+    assert_eq!(fat32::fat32_cache_lines_on(&fat32::BOOT), azos_limits::FS_BLOCK_CACHE_KB * 2);
 
     write_file(b"/fat/SAME.TXT", b"boot volume");
     let boot_with_file = fs_test_drivers::disk_image();

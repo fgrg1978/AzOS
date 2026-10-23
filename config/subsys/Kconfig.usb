@@ -34,6 +34,20 @@ config USB_HID_REPEAT_PERIOD_MS
       usb task runs every USB_POLL_MS, so a period below it repeats once per
       turn. Only with USB_HID.
 
+config USB_VOLUME_CACHE_KB
+    int "USB stick volume: sector cache (KiB, 0 or a power of two from 4)"
+    range 0 4096
+    default 64
+    help
+      crates/fs/fs/src/usbvol.rs: the sector cache of the stick's FAT32
+      volume (USB_STORAGE_VOLUME), its own and not /fat's (FS_BLOCK_CACHE_KB),
+      run by the same cache code. In .bss whether or not a stick is plugged.
+      64 KiB is 128 lines of 512 bytes: a stick's FAT window, its root and
+      working directories, the BPB and the journal sector stay cached while
+      files are copied to or from it, and a copy streams its data through
+      anyway; a larger cache buys little on a write-through volume. 0 keeps
+      the eight lines the driver needs.
+
 config USB_MSC_TIMEOUT_MS
     int "USB mass storage: milliseconds a command may take"
     range 1000 120000
@@ -211,14 +225,14 @@ config USB_STORAGE_VOLUME
       is read (MBR or GPT, else the bare medium) and the first FAT32 volume on
       it is mounted at /usb: a second, separate volume (a second instance of
       the FAT32 driver's state over the same code, with its own sector cache
-      of FS_BLOCK_CACHE_KB), never in /fat's place. Write-through: a write that
+      of USB_VOLUME_CACHE_KB), never in /fat's place. Write-through: a write that
       returned is on the stick. Ring 3 reaches it beneath a Cap<Dir> tree the
       topology grants on /usb (the package installer reads a package from it,
       the shell writes the crash log to it). Pulling the stick out retires the
       mount: open files on it fail their reads and writes, the next stick
       mounts afresh. An orderly power-off or reboot writes it back, marks it
       clean and sends SYNCHRONIZE CACHE. Cost: the stick's volume state and
-      sector cache (FS_BLOCK_CACHE_KB) in .bss.
+      sector cache (USB_VOLUME_CACHE_KB) in .bss.
       n: a stick is a disk with no filesystem user.
 
 config USB_CDC

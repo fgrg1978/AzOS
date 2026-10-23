@@ -92,7 +92,7 @@ pub static BOOT: Vol = Vol::new(
     &BootDev,
     Knobs { writeback: dev::WRITEBACK, ticketed: dev::TICKETED, fs_type: dev::FS_TYPE, stamp: dev::STAMP_FS },
     &FAT32_FS,
-    &BOOT_CACHE,
+    VolCache::Boot(&BOOT_CACHE),
 );
 
 // ── FAT32 on-disk structures ──────────────────────────────────────────────────
@@ -632,8 +632,9 @@ pub struct Vol {
     knobs: Knobs,
     /// The volume as a VFS backend (its page cache and unmount name it).
     fs: &'static Fat32Fs,
-    /// The sector cache (a static of [`SectorCache`] per volume).
-    sector_cache: &'static SpinLock<SectorCache>,
+    /// The sector cache: its own static per volume, of the volume's size
+    /// ([`VolCache`]).
+    sector_cache: VolCache,
     fat32: SpinLock<Fat32Vol>,
     /// FAT-sector claims: how concurrent FAT mutators stay correct with NO
     /// mutex held across device I/O (owner rule F1, wave 15 FM).
@@ -769,7 +770,7 @@ pub struct Vol {
 
 impl Vol {
     /// A volume over `dev`, served as `fs`, caching its sectors in `cache`.
-    pub const fn new(dev: &'static dyn VolDev, knobs: Knobs, fs: &'static Fat32Fs, cache: &'static SpinLock<SectorCache>) -> Vol {
+    pub const fn new(dev: &'static dyn VolDev, knobs: Knobs, fs: &'static Fat32Fs, cache: VolCache) -> Vol {
         Vol {
             dev,
             knobs,
@@ -1400,9 +1401,159 @@ const SECTOR_CACHE_BYTES: usize = if azos_limits::FS_BLOCK_CACHE_KB == 0 {
 };
 const SECTOR_CACHE_LINES: usize = SECTOR_CACHE_BYTES / SECTOR_SIZE;
 
-/// A volume's sector cache: one size for every volume (one type, one copy of
-/// the code that runs it).
+/// The boot volume's sector cache (Kconfig `FS_BLOCK_CACHE_KB`).
 pub type SectorCache = crate::bcache::BlockCache<SECTOR_CACHE_BYTES, SECTOR_CACHE_LINES>;
+
+/// Kconfig `USB_VOLUME_CACHE_KB`: a removable volume's cache (0 keeps eight
+/// lines, as for the boot volume).
+const REMOVABLE_CACHE_BYTES: usize = if azos_limits::USB_VOLUME_CACHE_KB == 0 {
+    8 * SECTOR_SIZE
+} else {
+    azos_limits::USB_VOLUME_CACHE_KB * 1024
+};
+
+/// A removable volume's sector cache (Kconfig `USB_VOLUME_CACHE_KB`): the
+/// same cache code over storage of its own size.
+pub type RemovableCache = crate::bcache::BlockCache<REMOVABLE_CACHE_BYTES, { REMOVABLE_CACHE_BYTES / SECTOR_SIZE }>;
+
+pub use vol_cache::VolCache;
+
+/// A volume's sector cache, whichever of the two sizes it has: the lock and
+/// the operations, which run the one copy of `bcache`'s code over the
+/// storage (`CacheMut`, `CacheRef`).
+mod vol_cache {
+    use super::{RemovableCache, SectorCache};
+    use crate::bcache::{BlockIo, CacheMut, CacheRef, CacheStats, ConfigError, Dirty, IoError, Mode, Run};
+    use azos_sync::{SpinLock, SpinLockGuard};
+
+    /// Where a volume's sector cache is.
+    #[derive(Clone, Copy)]
+    pub enum VolCache {
+        /// `FS_BLOCK_CACHE_KB` of storage (the boot disk).
+        Boot(&'static SpinLock<SectorCache>),
+        /// `USB_VOLUME_CACHE_KB` of storage (a removable volume).
+        Removable(&'static SpinLock<RemovableCache>),
+    }
+
+    /// A volume's sector cache, locked.
+    pub enum CacheGuard<'a> {
+        Boot(SpinLockGuard<'a, SectorCache>),
+        Removable(SpinLockGuard<'a, RemovableCache>),
+    }
+
+    impl VolCache {
+        #[inline]
+        pub fn lock(&self) -> CacheGuard<'static> {
+            match *self {
+                VolCache::Boot(l) => CacheGuard::Boot(l.lock()),
+                VolCache::Removable(l) => CacheGuard::Removable(l.lock()),
+            }
+        }
+        #[inline]
+        pub fn try_lock(&self) -> Option<CacheGuard<'static>> {
+            match *self {
+                VolCache::Boot(l) => l.try_lock().map(CacheGuard::Boot),
+                VolCache::Removable(l) => l.try_lock().map(CacheGuard::Removable),
+            }
+        }
+    }
+
+    impl CacheGuard<'_> {
+        #[inline]
+        pub fn view(&mut self) -> CacheMut<'_> {
+            match self {
+                CacheGuard::Boot(g) => g.view(),
+                CacheGuard::Removable(g) => g.view(),
+            }
+        }
+        #[inline]
+        pub fn get(&self) -> CacheRef<'_> {
+            match self {
+                CacheGuard::Boot(g) => g.get(),
+                CacheGuard::Removable(g) => g.get(),
+            }
+        }
+
+    #[inline]
+    pub fn block_size(&self) -> usize { self.get().block_size() }
+    #[inline]
+    pub fn line_count(&self) -> usize { self.get().line_count() }
+    #[inline]
+    pub fn ways(&self) -> usize { self.get().ways() }
+    #[inline]
+    pub fn mode(&self) -> Mode { self.get().mode() }
+    #[inline]
+    pub fn stats(&self) -> CacheStats { self.get().stats() }
+    #[inline]
+    pub fn epoch(&self) -> u64 { self.get().epoch() }
+    #[inline]
+    pub fn top_epoch(&self) -> u64 { self.get().top_epoch() }
+    #[inline]
+    pub fn dirty_count(&self) -> usize { self.get().dirty_count() }
+    #[cfg(test)]
+    #[inline]
+    pub fn dirty_scan(&self) -> usize { self.get().dirty_scan() }
+    #[inline]
+    pub fn oldest_dirty_epoch(&self) -> Option<u64> { self.get().oldest_dirty_epoch() }
+    #[inline]
+    pub fn dirty_epochs(&self) -> usize { self.get().dirty_epochs() }
+    #[inline]
+    pub fn lba_of(&self, block: u64) -> Option<u64> { self.get().lba_of(block) }
+    #[inline]
+    pub fn peek(&self, block: u64, dst: &mut [u8]) -> bool { self.get().peek(block, dst) }
+    #[inline]
+    pub fn any_dirty_in(&self, first: u64, count: u64) -> bool { self.get().any_dirty_in(first, count) }
+    #[inline]
+    pub fn lookup_miss_token(&self) -> u64 { self.get().lookup_miss_token() }
+    #[inline]
+    pub fn configure(&mut self, block: usize, mode: Mode, base_lba: u64) -> Result<(), ConfigError> { self.view().configure(block, mode, base_lba) }
+    #[inline]
+    pub fn reset_stats(&mut self) { self.view().reset_stats() }
+    #[inline]
+    pub fn lookup(&mut self, block: u64, dst: &mut [u8]) -> bool { self.view().lookup(block, dst) }
+    #[inline]
+    pub fn lookup_bytes(&mut self, block: u64, offset: usize, dst: &mut [u8]) -> bool { self.view().lookup_bytes(block, offset, dst) }
+    #[inline]
+    pub fn install(&mut self, block: u64, src: &[u8], token: u64) -> bool { self.view().install(block, src, token) }
+    #[inline]
+    pub fn update_if_present(&mut self, block: u64, src: &[u8]) { self.view().update_if_present(block, src) }
+    #[inline]
+    pub fn invalidate(&mut self, block: u64) -> bool { self.view().invalidate(block) }
+    #[inline]
+    pub fn invalidate_range(&mut self, first: u64, count: u64) -> usize { self.view().invalidate_range(first, count) }
+    #[inline]
+    pub fn invalidate_all(&mut self) -> usize { self.view().invalidate_all() }
+    #[cfg(test)]
+    #[inline]
+    pub fn force_generation(&mut self, g: u32) { self.view().force_generation(g) }
+    #[inline]
+    pub fn read<D: BlockIo>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError<D::FlushErr>> { self.view().read(dev, block, dst) }
+    #[inline]
+    pub fn write<D: BlockIo>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError<D::FlushErr>> { self.view().write(dev, block, src) }
+    #[inline]
+    pub fn write_dirty(&mut self, block: u64, src: &[u8]) -> Dirty { self.view().write_dirty(block, src) }
+    #[inline]
+    pub fn write_dirty_ahead(&mut self, block: u64, src: &[u8]) -> Dirty { self.view().write_dirty_ahead(block, src) }
+    #[inline]
+    pub fn checkout_run(&mut self, upto: u64, max_blocks: usize, buf: &mut [u8]) -> Option<Run> { self.view().checkout_run(upto, max_blocks, buf) }
+    #[inline]
+    pub fn checkout_begin(&mut self, upto: u64, max_blocks: usize, buf_len: usize) -> Option<Run> { self.view().checkout_begin(upto, max_blocks, buf_len) }
+    #[inline]
+    pub fn checkout_next(&mut self, run: &mut Run, buf: &mut [u8]) -> bool { self.view().checkout_next(run, buf) }
+    #[inline]
+    pub fn checkin(&mut self, run: &Run, ok: bool) { self.view().checkin(run, ok) }
+    #[inline]
+    pub fn note_ordering_flush(&mut self) { self.view().note_ordering_flush() }
+    #[inline]
+    pub fn barrier(&mut self) -> u64 { self.view().barrier() }
+    #[inline]
+    pub fn write_back_all<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().write_back_all(dev) }
+    #[inline]
+    pub fn sync<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().sync(dev) }
+    #[inline]
+    pub fn note_flushed(&mut self) { self.view().note_flushed() }
+    }
+}
 
 /// All-zero until the first mount configures it (`fat32_cache_reset`), so
 /// the storage is `.bss`, not image bytes.
@@ -2117,6 +2268,12 @@ fn read_sector_with(v: &'static Vol, sector: u32, buf: &mut [u8; SECTOR_SIZE], r
 #[inline]
 pub fn fat32_cache_stats() -> (u32, u32) {
     fat32_cache_stats_on(&BOOT)
+}
+
+/// Lines of volume `v`'s sector cache as configured (diagnostics: its
+/// Kconfig size, `FS_BLOCK_CACHE_KB` or `USB_VOLUME_CACHE_KB`, in blocks).
+pub fn fat32_cache_lines_on(v: &'static Vol) -> usize {
+    v.sector_cache.lock().line_count()
 }
 
 /// Statistics for diagnostics (`fs cache` shell command, etc.).

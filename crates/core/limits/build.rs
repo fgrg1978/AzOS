@@ -902,13 +902,15 @@ fn run_validations(cfg: &ConfigMap) {
     // would leave lines past the last whole power-of-two set count unused, so
     // it is refused rather than silently rounded down.
     // -----------------------------------------------------------------------
-    if let Some(kb) = get_u64(cfg, "FS_BLOCK_CACHE_KB") {
-        if kb != 0 && (kb < 4 || !kb.is_power_of_two()) {
-            panic!(
-                "validation FAIL: FS_BLOCK_CACHE_KB ({kb}) must be 0 or a power of two \
-                 from 4 (crates/fs/fs/src/bcache.rs: 8-way sets, a power-of-two set count). \
-                 Fix: set FS_BLOCK_CACHE_KB to 0, 4, 8, 16, ... in .config."
-            );
+    for key in ["FS_BLOCK_CACHE_KB", "USB_VOLUME_CACHE_KB"] {
+        if let Some(kb) = get_u64(cfg, key) {
+            if kb != 0 && (kb < 4 || !kb.is_power_of_two()) {
+                panic!(
+                    "validation FAIL: {key} ({kb}) must be 0 or a power of two \
+                     from 4 (crates/fs/fs/src/bcache.rs: 8-way sets, a power-of-two set count). \
+                     Fix: set {key} to 0, 4, 8, 16, ... in .config."
+                );
+            }
         }
     }
 }
