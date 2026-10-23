@@ -178,7 +178,7 @@ fn a_high_speed_device_comes_up_at_high_speed() {
 }
 
 #[test]
-fn unplug_removes_the_device_and_a_replug_is_enumerated_again() {
+fn a_dwc2_unplug_drops_the_device_and_a_replug_enumerates_it_again() {
     let mut rig = Rig2::new();
     let w = rig.add_driver(Match::every_device());
     let kb = keyboard();
