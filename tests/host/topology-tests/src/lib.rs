@@ -1327,6 +1327,8 @@ mod start_flag_tests {
             want.extend_from_slice(sshd);
             want.extend_from_slice(logind);
             want.extend_from_slice(klog);
+            if azos_topology::builder::INPUTD_ROW { want.push("INPUTD.ELF"); }
+            if azos_topology::builder::COMPOSITOR_ROW { want.push("COMPSRV.ELF"); }
             // The component manager is pushed last of the rows that start:
             // its launch grants name every one of them.
             want.extend_from_slice(compmgr);
