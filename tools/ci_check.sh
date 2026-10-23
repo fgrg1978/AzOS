@@ -2954,7 +2954,13 @@ trap_size_row() { # trap_size_row <label> <elf> <symbol-suffix>=<bytes>...
 # of the growth (208 B / 384 B) was not bisected (the repo is one commit); the
 # entry holds the seccomp verdict, the guards and the exec/signal tail inline.
 # `dispatch` is still out of line and the frame is 0x90 B.
-ci_row "aarch64: trap path size" trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1360 aarch64_native_svc=1172
+# Re-pinned at the gate switch (kconfig-f3f4: the gate's kernel is the generic
+# cell, generic-sbc-aarch64-dev+qemu+linux+gui) 1360 -> 1032 and 1172 -> 984.
+# Measured on the gate's own kernel (base features of that qemu-aarch64.config,
+# no --features). The robot cell's kernel (qemu-aarch64-robot.config) measures
+# 1384 and 1204, inside the old pins: the difference is what `use-robot`
+# compiles into the path (not bisected). This row watches the gate's kernel.
+ci_row "aarch64: trap path size" trap_size_row "aarch64: trap path size" "$A64_KERNEL" aarch64_trap_entry=1032 aarch64_native_svc=984
 
 aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected entry EL> <smp> [cpu] [extra marker] [gic version, 3]
     local label="$1" mach="$2" el="$3" smp="${4:-2}" cpu="${5:-max,pauth=on}" extra="${6:-}" gic="${7:-3}"
@@ -10975,7 +10981,11 @@ else
     # seccomp verdict, the guards and the exec/signal tail. Measured on the
     # gate's own kernel (base features of qemu.config); the rest of the growth
     # was not bisected (the repo is one commit). The row was red at the base.
-    ci_row "riscv64: trap path size" trap_size_row "riscv64: trap path size" "$KERNEL" riscv64_trap_handler=274 riscv64_native_syscall=1116
+    # Re-pinned at the gate switch, as the aarch64 row: 274 -> 50 and 1116 ->
+    # 932 on the gate's own kernel (`qemu`, base features of the generic cell's
+    # qemu.config); the robot cell's `qemu,use-robot` kernel measures 274 and
+    # 1154, so the difference is what `use-robot` compiles into the path.
+    ci_row "riscv64: trap path size" trap_size_row "riscv64: trap path size" "$KERNEL" riscv64_trap_handler=50 riscv64_native_syscall=932
     par_row qemu_run "boot + SMP scheduling" "Completed 2000 iterations" 60 -smp 4
     # kernel_main's last line, printed just before the boot hart enters the
     # scheduler: everything above it ran, watchdog::hw_init() included. A timer
