@@ -45,6 +45,5 @@ azos_config   = { workspace = true }
 azos_limits   = { workspace = true }
 azos_decision = { workspace = true }
 azos_crypto   = { workspace = true }
-azos_fs       = { workspace = true }
 azos_net      = { workspace = true }
 azos_topology = { workspace = true }

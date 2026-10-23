@@ -40,6 +40,8 @@ pub mod boot_latch;
 pub mod effect_gate;
 #[cfg(feature = "effect-gate")]
 mod envelope;
+#[cfg(feature = "effect-gate")]
+pub use envelope::delete_gate;
 pub mod estop;
 pub mod gate;
 pub mod hooks;

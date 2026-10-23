@@ -24,7 +24,6 @@ dependencies = [
  "azos_decision",
  "azos_drv_gpio",
  "azos_drv_sys",
- "azos_fs",
  "azos_ipc",
  "azos_limits",
  "azos_net",

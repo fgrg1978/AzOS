@@ -12,7 +12,9 @@
 //! * the **probe** the gate asks for a Domain's row: the task's scheduler
 //!   class from the topology row it was seeded from (`natfork::row_of`, a
 //!   thread through its process), the class's `delete` or `egress` ceiling;
-//! * `azos_fs`'s delete gate, which passes the op and the volume of a change;
+//! * `azos_fs`'s delete gate, which passes the op and the volume of a change
+//!   ([`delete_gate`]; the kernel hands it to `azos_fs::set_delete_gate`,
+//!   since `fs` is scaffolding and a core crate may not depend on it);
 //! * `azos_net`'s egress gate, which passes the socket owner and the
 //!   destination;
 //! * the **ask gate** of `azos_common::envelope`, which passes a configuration
@@ -59,8 +61,9 @@ fn level(tid: u32, kind: u8) -> u8 {
     topo.effect_ceiling(task.class_name.as_bytes(), effect) as u8
 }
 
-/// `azos_fs`'s delete gate: the change runs in the caller's context.
-fn delete_gate(op: DeleteOp, volume: u64) -> bool {
+/// `azos_fs`'s delete gate: the change runs in the caller's context. The
+/// kernel installs it (`boot::seams`), after [`install`] has armed the probe.
+pub fn delete_gate(op: DeleteOp, volume: u64) -> bool {
     let e = Effect {
         kind: KIND_STORAGE_DELETE,
         class: Class::Reversible,
@@ -113,10 +116,10 @@ fn ask_gate(ask: Ask) -> bool {
     effect_gate::record(&e).is_ok()
 }
 
-/// Install the probe and the gates (boot, once, from `gate::install`).
+/// Install the probe and the egress and ask gates (boot, once, from
+/// `gate::install`); the delete gate is the kernel's to install.
 pub(crate) fn install() {
     effect_gate::set_envelope_probe(level);
-    azos_fs::set_delete_gate(delete_gate);
     azos_net::socket::set_egress_gate(egress_gate);
     azos_common::envelope::set_ask_gate(ask_gate);
 }

@@ -218,8 +218,11 @@ usb rtc usb-hid scsi pkg
 # host-built proc-macros and the build-time Kconfig reader. They can neither
 # violate nor satisfy the core/scaffold rule, but each must be named here so
 # a new crate cannot appear unclassified.
+# `ethercat` is the EtherCAT master's wire codec: its user is the ring-3
+# fieldbus master (`ecatd`), so it links into a userspace ELF, never the kernel.
 OFF_IMAGE_CRATES="
 libsys libsys-macros stdrt idl-macros azos-config wcet-macro
+ethercat
 "
 
 # ── Known violations ────────────────────────────────────────────────────────
