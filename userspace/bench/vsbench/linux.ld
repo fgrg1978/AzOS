@@ -47,6 +47,15 @@ SECTIONS
         *(.rodata .rodata.*)
     }
 
+    /* The ABI note libsys embeds (an AzOS record; Linux ignores it), with the
+     * read-only data, past the page boundary. Left an orphan, lld put it
+     * right after .text, in .text's last page, as a read-only PT_LOAD that
+     * Linux mapped over that page: the first call into its tail (memset)
+     * faulted at the PC (SIGSEGV, SEGV_ACCERR) and /init died at start. */
+    .note.azos.abi : {
+        KEEP(*(.note.azos.abi))
+    }
+
     /* First writable byte starts its own page — see the header. */
     . = ALIGN(4096);
 
