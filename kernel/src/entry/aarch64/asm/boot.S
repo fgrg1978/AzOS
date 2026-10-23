@@ -8,9 +8,11 @@
 // `.img`, and boots THAT. Either loader (QEMU's `-kernel`, or U-Boot
 // `booti`) recognises the header's magic and places this binary
 // `_text_offset` above the base of its DRAM: 0x4008_0000 on QEMU `virt`
-// (linker-aarch64.ld's ORIGIN, the link address), 0x8_0000 on a Raspberry
-// Pi 3, whose RAM starts at 0. The image runs wherever it lands (KASLR's
-// relocation walk moves it from the link address; see "Where RAM is").
+// (linker-aarch64.ld's ORIGIN, the link address). The Raspberry Pi firmware
+// reads no header and puts kernel8.img at its `kernel_address` (0x8_0000 on
+// a Pi 3 under QEMU, 0x20_0000 by default on a Pi 5), with RAM at 0. The
+// image runs wherever it lands (KASLR's relocation walk moves it from the
+// link address; see "Where RAM is").
 //
 // Boot-time register state (measured under QEMU, not assumed):
 //   x0        = FDT pointer when loaded as an Image (the case this file
@@ -82,20 +84,22 @@ _entry_after_header:
     // correct regardless of what that trampoline does or later changes to.
     mov     x19, x0
 
-    // ── Where RAM is: the image's physical address minus its header's
-    //    text_offset ───────────────────────────────────────────────────
+    // ── Where RAM is: the gigabyte the image was loaded into ───────────
     //
-    // The boot protocol places the image `text_offset` (header word 0x08)
-    // above the 2 MiB-aligned base of DRAM, so the base comes from the PC
-    // and the header alone, before any device tree is read: 0x4000_0000 on
-    // QEMU `virt`, 0 on a Raspberry Pi 3 (the firmware's kernel8.img at
-    // 0x80000). The header word is a link-time constant (`_text_offset` is an
-    // absolute symbol), never relocated. x23 (callee-saved) carries it to
-    // the early MMU, KASLR and TTBR1 calls below; x22 is the image's PA.
+    // The bootstrap identity map covers one gigabyte of DRAM (`mmu::
+    // BOOT_WINDOW`), so its base is the image's physical address rounded
+    // down to that size, from the PC alone, before any device tree is read:
+    // 0x4000_0000 on QEMU `virt` (the image at 0x4008_0000), 0 on a
+    // Raspberry Pi. The header's `text_offset` is not used: only QEMU and
+    // U-Boot honour it, while the Pi firmware loads kernel8.img at its own
+    // `kernel_address` (0x80000 on a Pi 3 under QEMU, 0x200000 by default on
+    // a Pi 4 or 5, which minus our 0x80000 is no gigabyte at all). x23
+    // (callee-saved) carries it to the early MMU, KASLR and TTBR1 calls
+    // below; x22 is the image's PA.
     adrp    x22, _start
     add     x22, x22, :lo12:_start
-    ldr     x9, [x22, #8]
-    sub     x23, x22, x9
+    lsr     x23, x22, #{boot_window_shift}
+    lsl     x23, x23, #{boot_window_shift}
 
     // ── The boot CPU: whichever PE the loader started (K1 M5) ──────────
     //
@@ -555,8 +559,8 @@ _aarch64_secondary_entry:
     // DRAM base, the primary's own derivation (see `_start`).
     adrp    x0, _start
     add     x0, x0, :lo12:_start
-    ldr     x9, [x0, #8]
-    sub     x0, x0, x9
+    lsr     x0, x0, #{boot_window_shift}
+    lsl     x0, x0, #{boot_window_shift}
     bl      aarch64_early_mmu_init
     bl      aarch64_secondary_ttbr1_attach
     cbz     x0, _secondary_park           // no TTBR1 to attach: never run on the boot alias (K1 L9)

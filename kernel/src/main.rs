@@ -295,6 +295,9 @@ global_asm!(
     // boot.S picks its base and applies its relocations before the jump to the
     // upper half (`aarch64_early_kaslr`).
     kaslr = const azos_arch::mmu::kaslr::ENABLED as u8,
+    // The bootstrap map's DRAM gigabyte: boot.S rounds the image's address
+    // down to it ("Where RAM is").
+    boot_window_shift = const azos_arch::mmu::BOOT_WINDOW.trailing_zeros(),
 );
 
 // TrapFrame layout + vector-number constants (B2-01 pattern): read off the
