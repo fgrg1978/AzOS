@@ -278,12 +278,20 @@ unsafe fn copy_bytes(dst: *mut u8, src: *const u8, n: usize) {
             2 => wr(dst as *mut u16, rd(src as *const u16)),
             4 => wr(dst as *mut u32, rd(src as *const u32)),
             8 => wr(dst as *mut u64, rd(src as *const u64)),
-            _ if n >= 64 && (dst as usize | src as usize) & 7 == 0 => copy_words(dst, src, n),
-            _ if n >= 64 => copy_shifted(dst, src, n),
+            // x86_64's `memcpy` is a string move (`rep movs`), which neither
+            // loop below beats: measured on vsbench `uaccess-read-4k`, the
+            // word loop cost x86_64 6,300 instructions a call more.
+            _ if n >= 64 && !STRING_MOVE && (dst as usize | src as usize) & 7 == 0 => copy_words(dst, src, n),
+            _ if n >= 64 && !STRING_MOVE => copy_shifted(dst, src, n),
             _ => core::ptr::copy_nonoverlapping(src, dst, n),
         }
     }
 }
+
+/// The ISA's `memcpy` moves a run as one string instruction (x86_64's
+/// `compiler_builtins` uses `rep movs`); elsewhere it is the generic Rust loop
+/// that [`copy_words`] and [`copy_shifted`] beat.
+const STRING_MOVE: bool = cfg!(target_arch = "x86_64");
 
 /// [`copy_bytes`]' run: eight 8-byte words per iteration, the tail by
 /// `copy_nonoverlapping`. Volatile so the compiler cannot turn the loop back
