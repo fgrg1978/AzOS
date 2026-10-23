@@ -74,7 +74,7 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
-REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off"]
+REASONS = ["none", "malformed", "no-room", "band-cap", "busy", "levels", "class-off", "envelope"]
 # Fields of a rule's three numbers (`RuleInfo::fields`); "boot|run-time" pairs
 # are split on `|`: the run-time form (a reason in the third number's high
 # half) takes the second name.
