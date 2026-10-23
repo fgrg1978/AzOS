@@ -255,7 +255,7 @@ and turns a `.config` into cargo arguments:
 | Invocation | Output |
 |---|---|
 | `python3 tools/kconfig_to_cargo.py [.config]` | `--target <triple>` and `--features a,b,...` for the kernel build |
-| `--base` | only the `base` features: those that shape the image whatever board or test feature a recipe names by hand |
+| `--select TOKENS --out PATH [.config]` | a build selection applied to a copy of the configuration at `PATH` (the build then reads `KCONFIG_CONFIG=PATH`), and that copy's cargo arguments; see below |
 | `--rustflags` / `--user-rustflags` | the ISA baseline codegen flags of the kernel / of the ring-3 images; add `--toml` for the inside of a TOML array |
 | `--target-features` | the feature lists `crates/core/limits/build.rs` checks the kernel build against |
 | `--sdk-env` | the environment variables of the std port layer, one per line |
@@ -264,6 +264,19 @@ The target comes from the `ARCH_*` choice: `riscv64imac-unknown-none-elf`,
 `aarch64-unknown-none-softfloat` (the kernel is soft-float; ring-3 images are hard-float)
 and `x86_64-unknown-none`. A `.config` whose driver placement puts a safety-read driver in
 ring 3 is refused.
+
+**A build selection.** What a gate row or a make target builds beyond its configuration
+(a smoke, a canary, a driver its cell leaves off) is a selection, never a hand-written
+`--features`: `CONFIG_<SYM>=<value>` tokens are Kconfig lines, a feature a symbol owns
+is that symbol set to `y`, and a test hook (a feature named as a smoke, canary, probe,
+... that no symbol owns) is added to the features. The copy is expanded by olddefconfig,
+so a dependency that is not met is an error, not a kernel built against a configuration
+that says otherwise. Any other name is refused. `make build-pci`, `make x86_64
+X86_64_SELECT=...`, `make check CHECK_SELECT=...` and the gate (`tools/ci_cargo.py
+--select`) work this way; `tools/feature_source_lint.py` fails on a kernel build that
+names `--features` itself, and `tools/compile_time_hooks.tsv` lists the test hooks that
+are still compile-time and why (the rest are runtime `canary=` names,
+`kernel/src/canary_rt.rs`).
 
 Kconfig gives a build its defaults. A device may override a few of them at run time from
 the signed key-value file the boot reads (`CONFIG.INI`, `crates/core/config`); a symbol's
@@ -294,9 +307,9 @@ Source: `tools/kconfig_to_cargo.py`, `tools/kconfig_lint.py`, `crates/core/limit
    symbol needs a real consumer (`tools/kconfig_lint.py` refuses a symbol nothing reads,
    a symbol defined twice, and a symbol whose defaults all give one value).
 3. **If it selects code**, give the symbol a cargo feature: add `# cargo-feature: my-feature`
-   as the first line of its block (`# cargo-feature: my-feature base` also puts it in the
-   output of `--base`), and declare `my-feature` in `kernel/Cargo.toml`. One symbol owns
-   one feature, and the tag must sit inside a `config` block.
+   as the first line of its block, and declare `my-feature` in `kernel/Cargo.toml`. One
+   symbol owns one feature, and the tag must sit inside a `config` block. A kernel
+   feature that no symbol owns must be a test hook by name (`tools/kconfig_lint.py`).
 4. **If it is a program under `userspace/`,** do not write Kconfig by hand: add
    `[package.metadata.azos]` to the crate's `Cargo.toml` (`images`, `topology`, `default`,
    `start`); `tools/gen_userspace_kconfig.py` generates the options.
