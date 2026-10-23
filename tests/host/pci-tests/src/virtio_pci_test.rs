@@ -368,6 +368,9 @@ fn begin_stops_at_features_ok_and_set_driver_ok_finishes() {
     assert_ne!(dev.mmio_read_status() & STATUS_DRIVER_OK, 0);
     dev.reset();
     assert_eq!(dev.mmio_read_status(), 0);
+    // What the driver's reset path polls for the end of the reset
+    // (dev-timeout-reset's `reset_pci`).
+    assert_eq!(dev.status(), 0);
 }
 
 #[test]

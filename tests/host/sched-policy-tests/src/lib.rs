@@ -906,7 +906,10 @@ mod rt_exemption {
             let next = &MAIN[at..(at + 400).min(MAIN.len())];
             assert!(next.contains("rt::exempt_from_band_cap("), "{name} is not exempted right after creation");
         }
-        assert_eq!(calls(BOOT_SCHED), 1, "sys-wdt");
+        // sys-wdt, and the kill switch (gpio-edge-irq: the e-stop's GPIO edge
+        // task, `actuation::kill_switch`).
+        assert_eq!(calls(BOOT_SCHED), 2, "sys-wdt, kill-switch");
+        assert!(BOOT_SCHED.contains("\"kill-switch\""), "the kill-switch task is created in boot/sched.rs");
         for (path, src) in [
             ("syscall/src/topo_sched.rs", include_str!("../../../../crates/core/syscall/src/topo_sched.rs")),
             ("syscall/src/spawn.rs", include_str!("../../../../crates/core/syscall/src/spawn.rs")),

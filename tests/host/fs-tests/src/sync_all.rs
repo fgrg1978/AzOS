@@ -104,7 +104,7 @@ fn a_closed_file_survives_a_power_cut_after_sync_all() {
     let synced = disk_durable_image();
     swap_medium(lost);
     assert_eq!(fat32::fat32_mount(), Ok(()));
-    assert!(fat32::Fat32Fs.key_for(b"DURABLE.TXT").and_then(|k| fat32::Fat32Fs.stat(&k)).is_none(),
+    assert!(fat32::FAT32_FS.key_for(b"DURABLE.TXT").and_then(|k| fat32::FAT32_FS.stat(&k)).is_none(),
         "without the sync the cut must lose the file, or this row proves nothing");
     swap_medium(synced);
     assert_eq!(fat32::fat32_mount(), Ok(()));

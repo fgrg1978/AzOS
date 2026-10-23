@@ -125,7 +125,7 @@ fn the_console_reads_what_was_typed() {
         [0x00, 0, 0x52, 0, 0, 0, 0, 0],   // up arrow
     ] {
         for (ty, code, value) in run(&mut d, &l, &r) {
-            routes.push(route(&mut km, ty, code, value));
+            routes.push(route(&mut km, ty, code, value, true));
         }
     }
     assert_eq!(

@@ -81,7 +81,7 @@ fn edge_path(history: &[(Us, bool)]) -> Vec<Us> {
     // Active-low: the pad reads 0 when pressed.
     let mut sw = Switch::new(true, WINDOW_US);
     let mut presses = Vec::new();
-    let mut sample = |sw: &mut Switch, t: Us, block: &Rc<RefCell<Block>>, presses: &mut Vec<Us>| {
+    let sample = |sw: &mut Switch, t: Us, block: &Rc<RefCell<Block>>, presses: &mut Vec<Us>| {
         let level = block.borrow().level as i32;
         if sw.sample(t, level) == Step::Press {
             presses.push(t);
