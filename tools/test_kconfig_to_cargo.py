@@ -1367,6 +1367,32 @@ def _golden_lines() -> list[str]:
     return out
 
 
+# The tagged features that are self-tests or broken-on-purpose kernels.
+SELF_TEST_FEATURES = ("ktest", "chaos", "revoke-chain-canary", "wake-preempt-canary")
+
+
+def _self_tests_in(lines: list[str]) -> list[str]:
+    sys.path.insert(0, str(TOOLS_DIR))
+    import kconfig_to_cargo as k2c
+    out = []
+    for line in lines:
+        feats = line.split("--features ", 1)[1].split()[0].split(",") if "--features " in line else []
+        out += [f"{line.split(':', 1)[0]}: {f}" for f in feats
+                if f in SELF_TEST_FEATURES or k2c.TEST_HOOK_RE.search(f.rsplit("/", 1)[-1])]
+    return out
+
+
+def test_no_defconfig_builds_a_self_test() -> None:
+    """A default image boots no self-test: no defconfig turns on ktest, chaos, a
+    canary symbol, or any test hook (a hook has no Kconfig symbol, so only a
+    build selection can add one). Canary: the same check on a line that
+    carries one must find it."""
+    canary = ["x: --target t --features qemu,ktest", "y: --target t --features qemu,azos_pci/msix-enable-canary"]
+    assert len(_self_tests_in(canary)) == 2, _self_tests_in(canary)
+    bad = _self_tests_in(GOLDEN.read_text(encoding="utf-8").splitlines())
+    assert not bad, "defconfigs that build a self-test: " + ", ".join(bad)
+
+
 def test_defconfig_features_match_the_golden_file() -> None:
     """What each defconfig builds, in one reviewed file: a Kconfig change that
     moves a defconfig's cargo features shows up as a diff of
@@ -1421,6 +1447,7 @@ def _run_all_tests() -> int:
         test_kaslr_links_position_independent,
         test_select_applies_a_selection_through_kconfig,
         test_defconfig_features_match_the_golden_file,
+        test_no_defconfig_builds_a_self_test,
     ]
 
     passed = 0

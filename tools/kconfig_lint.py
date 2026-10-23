@@ -195,6 +195,28 @@ def gen_userspace(root):
                    cwd=root, check=True)
 
 
+# The compile-time test hooks the kernel still has (F6 moves them to the
+# runtime `canary=` names): `feature<TAB>class<TAB>why`, class `hot` (a site
+# on a path where a runtime check costs: the why names the path and the cost)
+# or `pending` (not moved yet).
+HOOKS_FILE = os.path.join("tools", "compile_time_hooks.tsv")
+HOOK_CLASSES = ("hot", "pending")
+
+
+def read_hooks(path):
+    """feature -> (class, why) from HOOKS_FILE; None when there is no such file."""
+    if not os.path.exists(path):
+        return None
+    out = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            out[parts[0]] = (parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
+    return out
+
+
 def lint(root=k2c.REPO_ROOT, cargo_toml=k2c.KERNEL_CARGO_TOML, generate=True, kconfig=True):
     errors, report = [], []
     if generate:
@@ -244,6 +266,31 @@ def lint(root=k2c.REPO_ROOT, cargo_toml=k2c.KERNEL_CARGO_TOML, generate=True, kc
     for f in untagged:
         errors.append(f"source: kernel feature `{f}` is neither a Kconfig symbol's (no "
                       f"`# cargo-feature: {f}` tag) nor a test hook by name: a build could only name it by hand")
+
+    # --- the compile-time test hooks, one reviewed list (F6) ---
+    hooks = sorted(f for f in feats if f != "default" and f not in by_feat and k2c.TEST_HOOK_RE.search(f))
+    listed = read_hooks(os.path.join(root, HOOKS_FILE))
+    if listed is not None:
+        for f in hooks:
+            if f not in listed:
+                errors.append(f"hooks: compile-time test hook `{f}` is not in {HOOKS_FILE}: a new canary or "
+                              f"smoke is a runtime name (canary=, kernel/src/canary_rt.rs) unless its site is "
+                              f"on a hot path; list it as `hot` with the path and what a check there costs")
+        for f in sorted(set(listed) - set(hooks)):
+            errors.append(f"hooks: {HOOKS_FILE} lists `{f}`, which is not a compile-time test hook of "
+                          f"{os.path.relpath(cargo_toml, root)} (delete the line)")
+        for f, (cls, _) in sorted(listed.items()):
+            if cls not in HOOK_CLASSES:
+                errors.append(f"hooks: {HOOKS_FILE}: `{f}` has class `{cls}`, not one of {', '.join(HOOK_CLASSES)}")
+        n = {c: sum(1 for v in listed.values() if v[0] == c) for c in HOOK_CLASSES}
+        report.append(f"{len(hooks)} compile-time test hooks: {n['hot']} hot, {n['pending']} pending "
+                      f"(F6: the pending ones become runtime canary= names; target about 40 in all)")
+    # A test hook that turns on a Kconfig symbol's feature bypasses the symbol.
+    for f in hooks:
+        owned = [e for e in feats[f] if e in by_feat]
+        if owned:
+            report.append(f"test hook `{f}` turns on Kconfig-owned feature(s) {', '.join(owned)}: "
+                          f"the selection should name the symbol")
     return errors, report
 
 
@@ -260,10 +307,13 @@ def self_test():
             'config HIDDEN\n\tbool\n')
         ct = os.path.join(d, "Cargo.toml")
         open(ct, "w").write('[features]\ndefault = ["fa"]\nfa = []\npolicy-x = []\nx-canary = []\n'
-                            '[dependencies]\n')
+                            'y-smoke = []\n[dependencies]\n')
+        os.makedirs(os.path.join(d, "tools"))
+        open(os.path.join(d, HOOKS_FILE), "w").write("x-canary\tpending\t\ngone-canary\thot\tx\n")
         errors, _ = lint(d, ct, generate=False, kconfig=False)
         want = ["owned by 2 symbols", "not a feature", "outside a config block",
-                "selects the visible symbol A", "is not empty", "feature `policy-x` is neither"]
+                "selects the visible symbol A", "is not empty", "feature `policy-x` is neither",
+                "hook `y-smoke` is not in", "lists `gone-canary`"]
         miss = [w for w in want if not any(w in e for e in errors)]
         if miss or any("HIDDEN" in e or "x-canary" in e for e in errors):
             print("kconfig_lint self-test FAILED:", miss, errors)
