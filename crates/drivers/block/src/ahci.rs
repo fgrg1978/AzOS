@@ -1597,9 +1597,9 @@ impl<R: Regs> Ahci<R> {
         }
         fence(Ordering::Acquire);
         st.log = None;
-        // SAFETY: the internal buffer, which the HBA has finished with.
-        let byte = |i: usize| unsafe { core::ptr::read_volatile((self.cl_va + IB_OFF + i) as *const u8) };
-        let (b0, status, error) = (byte(0), byte(2), byte(3));
+        // The log's first dword: byte 0 (NQ, tag), 2 (status), 3 (error).
+        let d0 = get32(self.cl_va + IB_OFF);
+        let (b0, status, error) = (d0 as u8, (d0 >> 16) as u8, (d0 >> 24) as u8);
         let tag = (b0 & NCQ_LOG_TAG) as usize;
         let named = b0 & NCQ_LOG_NQ == 0 && log.held >> tag & 1 != 0;
         let culprit = if named { 1u32 << tag } else { log.held };
