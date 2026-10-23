@@ -2982,19 +2982,45 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
         dma_ranges: Option<&'a [u8]>,
         /// The node has the `dma-coherent` property.
         dma_coherent: bool,
+        /// `device_type = "pci"` (or `"pciex"`): its children's addresses
+        /// are PCI addresses, matched by space ([`ranges_to_cpu`]).
+        pci_bus: bool,
         /// Offset of the node's `FDT_BEGIN_NODE` in the structure block.
         at: u32,
     }
     let blank = Node {
         name: &[], compatible: None, reg: None, reg2: None, irq: 0, enabled: true, cells: (2, 1), ranges: None,
-        dma_ranges: None, dma_coherent: false, at: 0,
+        dma_ranges: None, dma_coherent: false, pci_bus: false, at: 0,
     };
+    /// An address of `cells` cells at `off` of `v`: a 3-cell one is its
+    /// first cell (the PCI `phys.hi`, or a flags cell) and a 64-bit address;
+    /// a 1- or 2-cell one is the address alone.
+    fn addr_at(v: &[u8], off: usize, cells: u32) -> Option<(Option<u32>, u64)> {
+        if cells == 3 {
+            let hi = cells_at(v, off, 1)? as u32;
+            Some((Some(hi), cells_at(v, off + 4, 2)?))
+        } else {
+            Some((None, cells_at(v, off, cells)?))
+        }
+    }
     /// Translate the bus-local window `addr..addr + size` of a node whose
     /// ancestors are `path[1..]` (`path[1]` the root, the last the node's
     /// parent) into the CPU's address space, through the `ranges` of every
     /// ancestor below the root. `None` when an ancestor has no `ranges` or
     /// none of its entries covers the whole window.
+    ///
+    /// A bus with 3 address cells is crossed the way Linux crosses it
+    /// (`drivers/of/address.c`): below a `device_type = "pci"` node an
+    /// entry is taken only for the same space (memory or I/O, `phys.hi`
+    /// bits 25:24, prefetch and 64-bit aside), below any other 3-cell bus
+    /// only for the same first cell (the RP1's: `<1 0 0>`, "BAR 1"). That is
+    /// how the Raspberry Pi 5's RP1 peripherals, a bus behind a PCIe
+    /// function behind the PCIe bridge, reach a CPU address. The address
+    /// it gives holds while the function's BAR sits at the PCI address the
+    /// tree states.
     fn ranges_to_cpu(path: &[Node<'_>], mut addr: u64, size: u64) -> Option<u64> {
+        // The first cell of `addr` while it is an address of a 3-cell bus.
+        let mut hi: Option<u32> = None;
         // Parent first, up to the child of the root (the root's children
         // are already in the CPU's space).
         for k in (2..path.len()).rev() {
@@ -3004,26 +3030,34 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
             if ranges.is_empty() {
                 continue;
             }
-            if !(1..=2).contains(&ca) || !(1..=2).contains(&pa) || !(1..=2).contains(&sc) {
+            if !(1..=3).contains(&ca) || !(1..=3).contains(&pa) || !(1..=2).contains(&sc) || (ca == 3) != hi.is_some() {
                 return None;
             }
+            // PCI space code: 0 configuration, 1 I/O, 2 and 3 memory.
+            let space = |h: u32| match (h >> 24) & 0x3 { 0 => 0, 1 => 1, _ => 2 };
             let entry = (ca + pa + sc) as usize * 4;
             let mut hit = None;
             for e in ranges.chunks_exact(entry) {
-                let child = cells_at(e, 0, ca)?;
-                let parent = cells_at(e, ca as usize * 4, pa)?;
+                let (child_hi, child) = addr_at(e, 0, ca)?;
+                let (parent_hi, parent) = addr_at(e, ca as usize * 4, pa)?;
                 let len = cells_at(e, (ca + pa) as usize * 4, sc)?;
+                let same_space = match (hi, child_hi) {
+                    (Some(a), Some(b)) if path[k].pci_bus => space(a) == space(b),
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                };
                 let covered = addr
                     .checked_sub(child)
                     .filter(|off| off.checked_add(size).is_some_and(|end| end <= len));
-                if let Some(off) = covered {
-                    hit = parent.checked_add(off);
+                if let (true, Some(off)) = (same_space, covered) {
+                    hit = parent.checked_add(off).map(|a| (parent_hi, a));
                     break;
                 }
             }
-            addr = hit?;
+            (hi, addr) = hit?;
         }
-        Some(addr)
+        // The CPU's space has no first cell.
+        hi.is_none().then_some(addr)
     }
 
     let mut stack = [blank; DEPTH];
@@ -3129,6 +3163,8 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                         stack[depth].dma_ranges = Some(val);
                     } else if is(b"dma-coherent") {
                         stack[depth].dma_coherent = true;
+                    } else if is(b"device_type") {
+                        stack[depth].pci_bus = val.starts_with(b"pci\0") || val.starts_with(b"pciex\0");
                     } else if is(b"interrupts") {
                         let w = |i: usize| val.get(i * 4..i * 4 + 4)
                             .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));

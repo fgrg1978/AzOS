@@ -2310,6 +2310,65 @@ mod device_nodes {
         assert_eq!(seen[0].base, 0x1_0010_0040);
     }
 
+    /// The Raspberry Pi 5's RP1 as the tree describes it
+    /// (arch/arm64/boot/dts/broadcom/bcm2712-rpi-5-b.dts, rp1-common.dtsi):
+    /// the PCIe bridge `pcie@1000120000` (`device_type = "pci"`, 3 cells, PCI
+    /// memory 0 at CPU 0x1f_0000_0000), its root port `pci@0,0` (`ranges;`),
+    /// the RP1 function `dev@0,0` (3 cells: `<1 0 0>`, "BAR 1", is PCI
+    /// memory 0), and the RP1's own bus `pci-ep-bus@1` (2 cells: 0x40000000
+    /// is `<1 0 0>`). `space` and `bar` are the bridge's range's `phys.hi`
+    /// and the function's range's first child cell.
+    fn rp1(space: u32, bar: u32) -> Vec<Seen> {
+        let mut b = B::new();
+        b.begin("").prop("#address-cells", &be32(2)).prop("#size-cells", &be32(2));
+        b.begin("axi").prop("#address-cells", &be32(2)).prop("#size-cells", &be32(2))
+            // bcm2712.dtsi's first and last windows (the last holds 0x1f_...).
+            .prop("ranges", &[be64(0), be64(0), be64(0x10_0000_0000),
+                              be64(0x1c_0000_0000), be64(0x1c_0000_0000), be64(0x4_0000_0000)].concat());
+        b.begin("pcie@1000120000").prop("compatible", &cstr("brcm,bcm2712-pcie"))
+            .prop("device_type", &cstr("pci"))
+            .prop("#address-cells", &be32(3)).prop("#size-cells", &be32(2))
+            .prop("ranges", &[be32(space), be64(0), be64(0x1f_0000_0000), be64(0xffff_fffc)].concat());
+        b.begin("pci@0,0").prop("device_type", &cstr("pci"))
+            .prop("#address-cells", &be32(3)).prop("#size-cells", &be32(2)).prop("ranges", &[]);
+        b.begin("dev@0,0").prop("compatible", &cstr("pci1de4,1"))
+            .prop("#address-cells", &be32(3)).prop("#size-cells", &be32(2))
+            .prop("ranges", &[be32(bar), be64(0), be32(0x8201_0000), be64(0), be64(0x40_0000)].concat());
+        b.begin("pci-ep-bus@1").prop("compatible", &cstr("simple-bus"))
+            .prop("#address-cells", &be32(2)).prop("#size-cells", &be32(2))
+            .prop("ranges", &[be64(0x4000_0000), be32(1), be64(0), be64(0x40_0000)].concat());
+        b.begin("i2c@40074000").prop("compatible", &cstr("snps,designware-i2c"))
+            .prop("reg", &[be64(0x4007_4000), be64(0x1000)].concat()).end();
+        b.end().end().end().end().end().end();
+        walk(&b.blob()).1
+    }
+
+    /// The RP1's DesignWare I2C reaches its CPU address through the three
+    /// `ranges` above it, two of them in 3-cell spaces: rp1 0x40074000 is
+    /// "BAR 1" + 0x74000, PCI memory 0x74000, CPU 0x1f_0007_4000 (where the
+    /// RP1's peripherals sit with the firmware's PCIe setup). Canary: the
+    /// walk before this front refused any 3-cell `ranges`, and the node was
+    /// not reported at all.
+    #[test]
+    fn the_rp1_i2c_is_translated_through_the_pcie_function_and_bridge() {
+        let seen = rp1(0x0200_0000, 1);
+        let i2c = seen.iter().find(|s| s.name == "i2c@40074000").expect("the RP1 I2C is a device");
+        assert_eq!((i2c.base, i2c.size), (0x1f_0007_4000, 0x1000));
+        assert_eq!(i2c.compat, ["snps,designware-i2c"]);
+        assert!(seen.iter().all(|s| s.name != "dev@0,0" && s.name != "pci@0,0"), "a 3-cell reg is no window");
+    }
+
+    /// Below the PCI bridge only the same space matches: a range for I/O
+    /// space does not carry a memory address (and 64-bit or prefetchable
+    /// memory is still memory). Below the function's own 3-cell bus only the
+    /// same first cell does: "BAR 2" is not BAR 1.
+    #[test]
+    fn a_three_cell_range_matches_only_its_own_space() {
+        assert!(rp1(0x0100_0000, 1).is_empty(), "an I/O range translated a memory address");
+        assert_eq!(rp1(0x4300_0000, 1)[0].base, 0x1f_0007_4000, "64-bit prefetchable memory is memory");
+        assert!(rp1(0x0200_0000, 2).is_empty(), "BAR 2's range translated a BAR 1 address");
+    }
+
     #[test]
     fn a_node_below_a_disabled_parent_is_not_reported() {
         let (n, seen) = behind(Some(vec![]), Some("disabled"));
