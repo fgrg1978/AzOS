@@ -1322,7 +1322,7 @@ blk_stall_row() { # blk_stall_row <label> <riscv64|aarch64> <kernel image> <pass
     done
     if [ "$want" = canary ]; then
         if [ "$verdict" = canary-red ]; then
-            ok; echo "      without the stall credit the stopped guest latched its disk dead (canary)"; rm -f "$log" "$disk"
+            ok; echo "      without the stall credit the stopped guest timed its disk out (canary)"; rm -f "$log" "$disk"
         else
             bad; echo "      the canary kernel survived $tries boots with $BLK_STALL_STOPS stops each: the stops do not catch a command in flight"
             echo "      log kept: $log"
@@ -1340,8 +1340,10 @@ blk_stall_row() { # blk_stall_row <label> <riscv64|aarch64> <kernel image> <pass
 # on a command in flight; the driver must reset the device
 # (`[VIRTIO-BLK] device reset and programmed again`, the `[BLK] virtio-blk
 # timed out ... back in service` record line), not latch it, and the disk
-# must serve the rest of the boot (the persisted seed rewritten and flushed,
-# after the reset). `twice`: the guest is stopped until the disk latches;
+# must serve the boot after it (a read the boot makes from the volume, after
+# the reset line: the FAT32 mount, the signed config, the persisted seed; a
+# reset that came after all of them proves nothing and the boot is tried
+# again). `twice`: the guest is stopped until the disk latches;
 # exactly one reset must come before the latch (`[BLK] virtio-blk timed out
 # again ... latched dead`, `block I/O disabled`). Each is the other's canary:
 # DEVICE_TIMEOUT_RESETS=0 (latch at the first timeout) fails `once`, a reset
@@ -1352,9 +1354,10 @@ blk_reset_row() { # blk_reset_row <label> <riscv64|aarch64> <kernel image> <once
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
     local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
-    local log="$CI_LOG_DIR/${tag}.log" disk="$CI_LOG_DIR/${tag}.img" dsrc
-    if [ "$isa" = riscv64 ]; then dsrc=$AZOS_OUT/build/disk.img; else dsrc=$AZOS_OUT/build/disk-aarch64.img; fi
+    local log="$CI_LOG_DIR/${tag}.log" disk="$CI_LOG_DIR/${tag}.img" dsrc stop
+    if [ "$isa" = riscv64 ]; then dsrc=$AZOS_OUT/build/disk.img; stop='Stack canary: '; else dsrc=$AZOS_OUT/build/disk-aarch64.img; stop='persisted seed: (rewritten|REWRITE FAILED)'; fi
     local reset_re='\[VIRTIO-BLK\] device reset and programmed again' latch_re='block I/O disabled'
+    local served_re='\[FS\] FAT32 mounted|CONFIG\.SIG v2 verified|persisted seed: rewritten and flushed'
     rm -f "$dsrc"; make_disk "$dsrc"
     par_ready
     local try=0 resets=0 latched=no
@@ -1369,7 +1372,8 @@ blk_reset_row() { # blk_reset_row <label> <riscv64|aarch64> <kernel image> <once
             grep -aqE "$latch_re" "$log" 2>/dev/null && latched=yes || latched=no
             [ "$latched" = yes ] && break
             if [ "$mode" = once ] && [ "$resets" -ge 1 ]; then
-                grep -aqF "persisted seed: rewritten and flushed" "$log" 2>/dev/null && break
+                # The boot's end: what it read after the reset is in the log.
+                grep -aqE "$stop" "$log" 2>/dev/null && sed -n "/$reset_re/,\$p" "$log" | grep -aqE "$stop" && break
             elif [ "$stops" -lt "$BLK_STALL_STOPS" ] && grep -aqF "[VIRTIO-BLK] Found block device" "$log" 2>/dev/null; then
                 kill -STOP "$pid" 2>/dev/null; sleep 1.2; kill -CONT "$pid" 2>/dev/null
                 stops=$((stops + 1)); sleep 0.5
@@ -1390,6 +1394,10 @@ blk_reset_row() { # blk_reset_row <label> <riscv64|aarch64> <kernel image> <once
         # them did): another boot.
         [ "$resets" -eq 0 ] && [ "$latched" = no ] && continue
         [ "$mode" = twice ] && [ "$resets" -eq 1 ] && [ "$latched" = no ] && continue
+        # `once`: a reset after the boot's last read of the volume shows
+        # nothing about the disk after it.
+        [ "$mode" = once ] && [ "$resets" -eq 1 ] && [ "$latched" = no ] \
+            && ! sed -n "/$reset_re/,\$p" "$log" | grep -aqE "$served_re" && continue
         break
     done
     local lines; lines="$(grep -aE "VIRTIO-BLK\]|\[BLK\]" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /')"
@@ -1403,7 +1411,7 @@ blk_reset_row() { # blk_reset_row <label> <riscv64|aarch64> <kernel image> <once
             echo "$lines"; echo "      log kept: $log"; return
         fi
         if ! grep -aqE "\[BLK\] virtio-blk timed out after [0-9]+ ms: device reset, back in service" "$log" \
-            || ! sed -n "/$reset_re/,\$p" "$log" | grep -aqF "persisted seed: rewritten and flushed"; then
+            || ! sed -n "/$reset_re/,\$p" "$log" | grep -aqE "$served_re"; then
             bad; echo "      the reset left no record, or the disk did not serve the boot after it:"
             echo "$lines"; echo "      log kept: $log"; return
         fi

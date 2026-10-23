@@ -25,7 +25,7 @@ crates/core/chaos	0	0	0	0	1	0
 crates/core/common	5	0	0	0	0	35
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	16	2	1	0	0	24
-crates/core/decision	2	0	2	0	0	58
+crates/core/decision	2	0	2	0	0	59
 crates/core/devif	2	1	0	0	0	21
 crates/core/efi	3	3	0	0	0	-
 crates/core/energy	0	0	0	0	1	0
@@ -57,7 +57,7 @@ crates/drivers/actuator	5	0	0	0	0	37
 crates/drivers/api	0	0	0	0	1	0
 crates/drivers/baro	0	0	0	0	1	0
 crates/drivers/base	0	0	0	0	1	0
-crates/drivers/block	92	6	1	0	0	91
+crates/drivers/block	95	6	1	0	0	92
 crates/drivers/bus	11	1	1	0	0	65
 crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
@@ -78,7 +78,7 @@ crates/drivers/input	3	1	0	0	0	32
 crates/drivers/input/wire	3	2	2	0	0	80
 crates/drivers/iommu	2	0	0	0	0	5
 crates/drivers/irqchip	0	0	0	0	1	0
-crates/drivers/net	34	4	5	0	0	64
+crates/drivers/net	34	4	6	0	0	65
 crates/drivers/npu	10	2	0	0	0	99
 crates/drivers/nvme	0	0	0	0	1	0
 crates/drivers/pci	0	0	0	0	1	0
@@ -92,7 +92,7 @@ crates/drivers/thermal	0	0	0	0	1	0
 crates/drivers/tpm	0	0	0	0	1	0
 crates/drivers/usb	10	1	1	0	0	26
 crates/drivers/usb-hid	0	0	0	0	1	0
-crates/drivers/virtio	138	40	8	0	0	89
+crates/drivers/virtio	145	42	8	0	0	90
 crates/fs/fs	46	8	4	0	0	58
 crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	518
+@unsafe-share	519
