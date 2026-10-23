@@ -194,9 +194,18 @@ profile) provides:
   is available (RFC 6528), with a counter-based fallback otherwise;
 - a send queue that holds every unacknowledged byte once, several segments in
   flight, retransmission with RFC 6298 timers;
-- congestion control (RFC 5681) with NewReno recovery (RFC 6582);
+- congestion control (RFC 5681) with NewReno recovery (RFC 6582), from an
+  initial window of ten segments (RFC 6928; one after a lost SYN or SYN-ACK);
 - MSS negotiation, window scaling (RFC 7323) when both SYNs carry the option,
   SACK (RFC 2018) with a scoreboard so retransmissions skip held blocks;
+- Timestamps (RFC 7323, Kconfig `TCP_TIMESTAMPS`): every ACK of new data is an
+  RTT sample and PAWS refuses old duplicates; the option's 12 octets come out
+  of each segment's payload;
+- ECN (RFC 3168, Kconfig `TCP_ECN`): asked for on our SYNs and agreed to on
+  the peer's; new data leaves ECT(0), a CE mark is echoed until CWR, and an
+  echo halves the window once per window of data;
+- SYN cookies (RFC 4987, Kconfig `TCP_SYNCOOKIES`) once a listener's half-open
+  connections fill their cap or the table is full;
 - sequence-number validation, keep-alive probes, simultaneous open;
 - a connection address that is IPv4 or IPv6 (`tcp::IpAddr`); the state machine
   does not look at the family.
@@ -212,7 +221,11 @@ DHCP (`dhcp.rs`) is a client with a bounded wait per phase and a bounded option
 walk. On a lease it sets the interface address, the DNS server (option 6) and
 the NTP server (option 42); the request carries a parameter request list for
 those options and the mask and router, since a server sends option 42 only when
-asked. SNTP (`ntp.rs`) sends a unicast request and hands the four timestamps of
+asked. The lease is kept (RFC 2131 §4.4.5) by the `net-clients` task
+(`dhcp::dhcp_maintain`): at T1 (option 58, or half the lease) a REQUEST is
+unicast to the lease's server, at T2 (option 59, or 7/8) broadcast to any, and
+at the lease's end, or on a NAK, the address is dropped and the client starts
+over with a DISCOVER. SNTP (`ntp.rs`) sends a unicast request and hands the four timestamps of
 each exchange to the clock discipline through `ntp::set_exchange_sink`; the
 `net-clients` task starts the exchanges (see [SNTP](time.md#sntp)).
 
