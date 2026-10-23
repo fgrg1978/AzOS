@@ -479,7 +479,7 @@ config INSPECT_PUBLIC_PAGES
     help
       The public region's size, in pages (at most the 64 of a MemObj). Each
       node takes 64 bytes and about as many again of value words; the
-      published tree is about 150 nodes plus 7 per CPU (a directory and three
+      published tree is about 150 nodes plus 9 per CPU (a directory and five
       counters, and 3 more in the `metrics/` subtree, which is about 155
       nodes, 28 of them the bounded sleeps' `sync/`, plus one node a slot of
       the wake ring, WAKE_RING_ENTRIES, and 22 more of the wake counters),

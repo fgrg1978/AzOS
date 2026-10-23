@@ -461,6 +461,26 @@ pub fn fits(load: HartLoad, density: u32, band: bool, band_limit_ppm: u32) -> Re
     Ok(())
 }
 
+/// The largest density [`fits`] still accepts on `load` (a band task's when
+/// `band`): the room under 100 % and, for a band task, under
+/// `band_limit_ppm`.
+#[inline]
+pub fn headroom(load: HartLoad, band: bool, band_limit_ppm: u32) -> u32 {
+    let mut room = PPM.saturating_sub(load.total_ppm as u64);
+    if band {
+        room = room.min((band_limit_ppm as u64).saturating_sub(load.band_ppm as u64));
+    }
+    room as u32
+}
+
+/// `ppm` of a window of `window_us`, in microseconds, rounded down: a budget
+/// that long over that window has a density ([`density_ppm`]) of at most
+/// `ppm`. Saturated to `u32::MAX`.
+#[inline]
+pub fn ppm_of_us(ppm: u32, window_us: u64) -> u64 {
+    ((ppm as u128 * window_us as u128) / PPM as u128).min(u32::MAX as u128) as u64
+}
+
 /// What a reservation asked for, as its refusal's record names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ask {
@@ -481,25 +501,20 @@ pub struct Ask {
 ///    deadline window (`deadline_us`, the period when 0), in its low 32 bits
 ///    (saturated), and the reason ([`Refusal::code`]) in bits 32..39.
 ///
-/// "Could still give" is the same test [`fits`] applies: the hart's room under
-/// 100 % and, for a band task, under `band_limit_ppm`, the larger of the harts
-/// in `mask` (none: 0), turned into microseconds of the window. Rounded down,
-/// so a refusal for density always shows `runtime_us > available`.
+/// "Could still give" is the same test [`fits`] applies ([`headroom`]), the
+/// larger of the harts in `mask` (none: 0), turned into microseconds of the
+/// window ([`ppm_of_us`]). Rounded down, so a refusal for density always
+/// shows `runtime_us > available`.
 pub fn refusal_numbers(why: Refusal, ask: Ask, loads: &[HartLoad], mask: u32, band_limit_ppm: u32) -> [u64; 3] {
-    let mut best_ppm = 0u64;
+    let mut best_ppm = 0u32;
     for (h, l) in loads.iter().enumerate().take(32) {
         if mask & (1u32 << h) == 0 {
             continue;
         }
-        let mut room = PPM.saturating_sub(l.total_ppm as u64);
-        if ask.band {
-            room = room.min((band_limit_ppm as u64).saturating_sub(l.band_ppm as u64));
-        }
-        best_ppm = best_ppm.max(room);
+        best_ppm = best_ppm.max(headroom(*l, ask.band, band_limit_ppm));
     }
     let window = if ask.deadline_us == 0 { ask.period_us } else { ask.deadline_us.min(ask.period_us) };
-    let available = ((best_ppm as u128 * window as u128) / PPM as u128).min(u32::MAX as u128) as u64;
-    [ask.runtime_us, ask.period_us, available | (why.code() as u64) << 32]
+    [ask.runtime_us, ask.period_us, ppm_of_us(best_ppm, window) | (why.code() as u64) << 32]
 }
 
 /// First hart in `mask` (bit n = hart n, among `loads`) that fits. Returns the

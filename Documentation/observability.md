@@ -253,7 +253,8 @@ every task slot), pinned off the real-time CPUs.
 ```text
 inspect/{format_version, refresh_ms, refreshes}
 sched/{tasks_ready, tasks_blocked, tasks_running,
-       cpu/cpuN/{runq_len, moved_in, moved_out}, blocked_on/{...}, rt/{...}, balance/{...}}
+       cpu/cpuN/{runq_len, moved_in, moved_out, rt_load_ppm, rt_band_ppm}, blocked_on/{...},
+       rt/{...}, balance/{...}}
 memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
         quota_refusals, domains}
 decisions/{recorded, deny_dropped}

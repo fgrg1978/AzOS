@@ -1298,6 +1298,18 @@ pub fn stats() -> (u32, u32, u32, u32, u32, u32) {
     )
 }
 
+/// What hart `cpu` has admitted now (the ledger [`reserve`] tests and
+/// [`release`] gives back), empty past the harts this boot has. A snapshot:
+/// a reservation admitted or released after the call changes it. Takes the
+/// admission lock, so not from the tick (the energy governor reads
+/// `ADMITTED_PPM` there).
+pub fn hart_load(cpu: usize) -> HartLoad {
+    if cpu >= ncpu() {
+        return HartLoad::default();
+    }
+    ADMIT.lock_irqsave()[cpu]
+}
+
 /// `(overruns, throttled, absolute deadline)` of task `idx`'s reservation.
 pub fn task_reservation(idx: usize) -> Option<(u32, bool, u64)> {
     for cpu in 0..ncpu() {

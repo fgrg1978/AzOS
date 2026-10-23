@@ -38,7 +38,8 @@
 //! ```text
 //! inspect/{format_version, refresh_ms, refreshes}
 //! sched/{tasks_ready, tasks_blocked, tasks_running,
-//!        cpu/cpuN/{runq_len, moved_in, moved_out}, blocked_on/{...}, rt/{...},
+//!        cpu/cpuN/{runq_len, moved_in, moved_out, rt_load_ppm, rt_band_ppm},
+//!        blocked_on/{...}, rt/{...},
 //!        balance/{...}}
 //! memory/{page_size, pages_total, pages_free, pages_used, peak_user_pages,
 //!         quota_refusals, domains}
@@ -76,6 +77,10 @@
 //! number is the length of the CPU's run queue, under that name. `moved_in` and
 //! `moved_out` are the fair tasks the load balancer (SCHED_BALANCE) moved onto
 //! and off the CPU; `balance/` has the totals and the level they crossed.
+//! `rt_load_ppm` and `rt_band_ppm` are the deadline reservations admitted on
+//! the CPU and the band's part of them (`rt::hart_load`, what the next
+//! admission is tested against), the kernel's own included: the IRQ thread's
+//! on the boot CPU with IRQ_THREADED.
 
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
@@ -103,6 +108,8 @@ struct Ids {
     rt: [NodeId; RT_STATS.len()],
     balance: [NodeId; BALANCE_STATS.len()],
     moved: [(NodeId, NodeId); azos_sched::MAX_CPUS],
+    /// Per CPU: the admitted deadline density and its band part.
+    rt_load: [(NodeId, NodeId); azos_sched::MAX_CPUS],
     pages_total: NodeId,
     pages_free: NodeId,
     pages_used: NodeId,
@@ -370,10 +377,12 @@ fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error>
     let cpu_dir = b.dir(sched, "cpu")?;
     let mut runq = [NodeId::ROOT; azos_sched::MAX_CPUS];
     let mut moved = [(NodeId::ROOT, NodeId::ROOT); azos_sched::MAX_CPUS];
+    let mut rt_load = [(NodeId::ROOT, NodeId::ROOT); azos_sched::MAX_CPUS];
     for (i, slot) in runq.iter_mut().enumerate().take(cpus) {
         let c = b.dir(cpu_dir, &Num::name("cpu", i as u64))?;
         *slot = b.u64(c, "runq_len", 0)?;
         moved[i] = (b.u64(c, "moved_in", 0)?, b.u64(c, "moved_out", 0)?);
+        rt_load[i] = (b.u64(c, "rt_load_ppm", 0)?, b.u64(c, "rt_band_ppm", 0)?);
     }
     let by = b.dir(sched, "blocked_on")?;
     let mut blocked_on = [NodeId::ROOT; BLOCKED_ON.len()];
@@ -448,8 +457,8 @@ fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error>
     }
 
     Ok(Ids {
-        refreshes, ready, blocked, running, runq, blocked_on, rt, balance, moved, pages_total, pages_free, pages_used,
-        peak_user_pages, quota_refusals, domains, recorded, deny_dropped,
+        refreshes, ready, blocked, running, runq, blocked_on, rt, balance, moved, rt_load, pages_total, pages_free,
+        pages_used, peak_user_pages, quota_refusals, domains, recorded, deny_dropped,
     })
 }
 
@@ -490,6 +499,11 @@ impl State {
             let (moved_in, moved_out) = azos_sched::scheduler::fairq::balance_cpu_moves(cpu);
             put(*i, moved_in as u64);
             put(*o, moved_out as u64);
+        }
+        for (cpu, (t, b)) in ids.rt_load.iter().enumerate().take(self.cpus) {
+            let l = azos_sched::rt::hart_load(cpu);
+            put(*t, l.total_ppm as u64);
+            put(*b, l.band_ppm as u64);
         }
         let total = azos_mm::pmm::total_pages();
         let free = azos_mm::pmm::free_pages();
