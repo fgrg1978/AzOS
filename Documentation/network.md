@@ -40,10 +40,19 @@ runs one receive pass:
 3. The pass is one transmit batch (`net_tx_batch_begin` / `net_tx_batch_end`):
    replies and re-posted receive buffers are announced to the NIC once, at the
    end. Delayed TCP acknowledgements held during the pass are flushed at the
-   end of it.
+   end of it (Kconfig `TCP_DELACK_PASS_FLUSH`, default on).
 
 `net_poll` returns `true` when the budget ran out, which tells the caller to
 run another pass soon.
+
+The `net-poll` task (`kernel/src/tasks/net_poll.rs`) runs the passes and
+sleeps until the nearest TCP deadline. A NIC whose receive interrupt reaches
+it (virtio-pci with MSI, the e1000e with MSI, and with Kconfig `NET_RX_IRQ`,
+default on, the virtio-mmio line and the VisionFive 2 MAC) wakes it on
+traffic, and with no deadline it sleeps at most `NET_IRQ_IDLE_CEILING_MS`;
+any other NIC is polled every `NET_POLL_PERIOD_US`. The NIC drivers themselves (virtio-net, e1000e, igc,
+the Cadence and DesignWare MACs, USB CDC-ECM/NCM) and their DMA are described
+in [drivers.md](drivers.md).
 
 Only one pass runs at a time (`rx_owner::PassOwner`). A caller that finds a
 pass in progress leaves a request and returns; the owner runs one more pass
@@ -73,6 +82,9 @@ Every NIC the driver layer reports ready becomes an interface (`Iface`).
   address, DHCP, DNS, SNTP, IGMP and the IPv6 stack.
 - The registry holds `MAX_IFS` entries (Kconfig `NET_MAX_INTERFACES`). Further
   NICs are left unused and the stack says so on the console.
+- A NIC that appears after boot (a USB network function) gets an interface
+  through `net_nic_added`; a function plugged in again keeps its interface
+  number, and frames sent while it is gone fail.
 
 A destination leaves by the best route, chosen by longest prefix, then lowest
 metric, then route kind, then lowest interface number (`ip::route`, returning
@@ -119,8 +131,9 @@ not left to the NIC), or any address while the host is unconfigured (so a
 DHCP client can hear its server).
 
 ARP keeps one cache per interface, so an answer on one link says nothing
-about another and a flood on one cannot evict another link's gateway. Entries
-are evicted oldest-inserted first. A packet waiting for ARP resolution is held
+about another and a flood on one cannot evict another link's gateway. When a
+cache is full, a trusted insert evicts the oldest unsolicited entry first,
+then the oldest entry. A packet waiting for ARP resolution is held
 in a small bounded queue (`ip::ARP_TXQ_SIZE`) until the answer arrives or the
 entry expires.
 
@@ -144,10 +157,11 @@ When Kconfig `NET_IP_FORWARD` is on, a unicast packet addressed to an address
 no interface holds is routed instead of dropped. Forwarded packets skip the
 ingress and egress filter hooks and meet the forward hook, in this order:
 
-1. Checks: multicast is dropped silently; a source or destination that is not
-   a unicast address, a directed broadcast of an interface, and a packet for
-   one of this host's own addresses are refused; TTL must be above 1 (else
-   ICMP "time exceeded").
+1. Checks: multicast is dropped silently; with the masquerade on, a packet
+   arriving on the uplink that answers no mapping is refused; a source or
+   destination that is not a unicast address, a directed broadcast of an
+   interface, and a packet for one of this host's own addresses are refused;
+   TTL must be above 1 (else ICMP "time exceeded").
 2. An answer to a masqueraded flow is translated back.
 3. The route lookup (else ICMP "network unreachable"). A packet that would
    leave by the interface it arrived on is refused: no hairpin, no redirect.
@@ -170,18 +184,23 @@ Source: `crates/net/net/src/ipv6.rs`, `crates/net/net/src/socket.rs`.
 | Router solicitation (sent once at init) and router advertisement (SLAAC prefix, default router) | Yes; one global `/64` address, EUI-64 interface id |
 | ICMPv6 echo | Yes |
 | UDP over IPv6 | `ipv6::udpv6_send` and the kernel's own ICMPv6; no UDP socket type over IPv6 |
-| TCP over IPv6 | Yes: `AF_INET6` stream sockets listen, accept and connect over IPv6 only |
+| TCP over IPv6 | Yes: `AF_INET6` stream sockets listen, accept and connect over IPv6 only. From ring 3 such a socket can be bound (port only), listen and accept; the connect op reads a 16-byte IPv4 address and refuses it |
 | Duplicate address detection, neighbour cache, DHCPv6 | No |
 
 The IPv6 stack is one global address on the primary interface. A frame
-arriving on another interface is not handed to it. The packet filter's ingress
-and egress hooks and the built-in firewall cover IPv6 as they cover IPv4 (see
-below); the NAT and the forward hook are IPv4 only, as the stack does not
-route IPv6.
+arriving on another interface is not handed to it. With no neighbour cache, a
+unicast datagram to an on-link host leaves as an Ethernet broadcast; one for
+an off-link host goes to the router the last advertisement named. Neighbour
+discovery messages (ICMPv6 133 to 137) are accepted only with hop limit 255.
 
-The ring-3 standard-library port reads a 16-byte IPv4 socket address, so
-`std::net` is IPv4 only (`sdk/std/sys/net/connection/azos.rs` documents what
-it serves and what answers `Unsupported`).
+The packet filter's ingress and egress hooks and the built-in firewall cover
+IPv6 as they cover IPv4 (see below); the NAT and the forward hook are IPv4
+only, as the stack does not route IPv6.
+
+The socket ops read a 16-byte IPv4 socket address, so the ring-3
+standard-library port's `std::net` is IPv4 only
+(`sdk/std/sys/net/connection/azos.rs` documents what it serves and what
+answers `Unsupported`).
 
 ## TCP and UDP
 
@@ -190,11 +209,15 @@ Source: `crates/net/net/src/tcp.rs`, `crates/net/net/src/udp.rs`.
 The TCP implementation (`TCP_MAX_CONNS` connections, Kconfig-sized per
 profile) provides:
 
-- initial sequence numbers from a secret seeded from the entropy pool when one
-  is available (RFC 6528), with a counter-based fallback otherwise;
+- initial sequence numbers (RFC 6528): HMAC-SHA256 of the 4-tuple under a
+  256-bit secret, plus the clock. The secret is drawn from the entropy pool
+  once a seeded source is installed; until then it is a built-in constant
+  with the boot timer value XORed into its first four bytes, which an
+  observer of the binary can narrow down;
 - a send queue that holds every unacknowledged byte once, several segments in
   flight, retransmission with RFC 6298 timers;
-- congestion control (RFC 5681) with NewReno recovery (RFC 6582), from an
+- congestion control (RFC 5681) with NewReno recovery (RFC 6582), or
+  SACK-based loss recovery (RFC 6675) when the peer negotiated SACK, from an
   initial window of ten segments (RFC 6928; one after a lost SYN or SYN-ACK);
 - MSS negotiation, window scaling (RFC 7323) when both SYNs carry the option,
   SACK (RFC 2018) with a scoreboard so retransmissions skip held blocks;
@@ -204,18 +227,27 @@ profile) provides:
 - ECN (RFC 3168, Kconfig `TCP_ECN`): asked for on our SYNs and agreed to on
   the peer's; new data leaves ECT(0), a CE mark is echoed until CWR, and an
   echo halves the window once per window of data;
-- SYN cookies (RFC 4987, Kconfig `TCP_SYNCOOKIES`) once a listener's half-open
-  connections fill their cap or the table is full;
-- sequence-number validation, keep-alive probes, simultaneous open;
+- path MTU discovery from ICMP "fragmentation needed" (RFC 1191, validated per
+  RFC 5927, reports below 576 ignored) and a black-hole fallback that halves
+  the MSS after three timeouts of a full segment;
+- delayed acknowledgements (`TCP_DELACK_MS`, `TCP_DELACK_SEGS`);
+- sequence-number validation, a reset accepted only at exactly `RCV.NXT`
+  (RFC 5961 section 3.2; no challenge ACK), keep-alive probes, simultaneous
+  open;
+- a cap of `TCP_MAX_CONNS / 2` half-open connections per listener; beyond it,
+  or with the table full, a SYN is answered with a cookie (RFC 4987, Kconfig
+  `TCP_SYNCOOKIES`), and without cookies it takes the slot of the oldest
+  half-open one;
 - a connection address that is IPv4 or IPv6 (`tcp::IpAddr`); the state machine
   does not look at the family.
 
 Sequence arithmetic is in `crates/net/net/src/seq.rs` so a host test suite can
 reach it.
 
-UDP has a fixed table of `UDP_MAX_SOCKETS` bound ports, each with a receive
-ring of `UDP_RX_SLOTS` datagrams (Kconfig), each slot sized for a full-MTU
-datagram. This table is separate from the socket table (`MAX_SOCKETS`).
+UDP has a fixed table of `UDP_MAX_SOCKETS` (8, a constant in `udp.rs`) bound
+ports, each with a receive ring of `UDP_RX_SLOTS` datagrams (Kconfig), each
+slot sized for a full-MTU datagram. This table is separate from the socket
+table (`MAX_SOCKETS`).
 
 DHCP (`dhcp.rs`) is a client with a bounded wait per phase and a bounded option
 walk. On a lease it sets the interface address, the DNS server (option 6) and
@@ -252,15 +284,27 @@ Operations on the handle (`SYS_INVOKE` with the handle and an op from
 | `NODE_SENDTO` | `WRITE` | Send to an explicit address (unconnected UDP); address 0 means the connected peer |
 | `NODE_RECV` | `READ` | Receive without blocking (0: nothing yet); a TCP stream that ended answers `-EEOF` |
 | `NODE_RECVFROM` | `READ` | Receive and report the sender's address |
-| `NODE_MCAST_JOIN`, `NODE_MCAST_LEAVE` | `WRITE` | IPv4 group membership on a UDP socket |
+| `NODE_MCAST_JOIN` | `WRITE` | Join an IPv4 group on a UDP socket |
+| `NODE_MCAST_LEAVE` | a live handle | Leave a group; containment does not keep a group joined |
+| `NODE_LISTEN` | `WRITE` | Listen on the TCP port `NODE_BIND` gave the socket; -1 for no port, a port taken or no connection slot |
+| `NODE_ACCEPT` | `READ` | Take one established connection without blocking (`-EAGAIN`: none waiting) as a new `ty::SOCKET` handle with `READ \| WRITE \| DUP \| TRANSFER`, owned by the caller; `-EMFILE` (connection closed) when the capability table is full |
 
 Choosing where a socket talks to counts as a write. While degraded-mode
-containment is armed, the write operations answer `-EAGAIN`.
+containment is armed, the operations that need `WRITE`, and `NODE_ACCEPT`,
+answer `-EAGAIN`.
 
-Every refusal of a typed call except a containment refusal is recorded as a
-capability denial (`Rule::CapDenial`), and the errno distinguishes a stale handle
-(`ECAPSTALE`), a handle of the wrong kind (`ECAPKIND`) and missing rights
-(`ECAPPERMS`).
+A capability refusal of a typed call (anything but containment) is recorded
+as a capability denial (`Rule::CapDenial`), and the errno distinguishes a
+stale handle (`ECAPSTALE`), a handle of the wrong kind (`ECAPKIND`) and missing
+rights (`ECAPPERMS`). An owner-stamp refusal (below) answers a bare -1 and is
+not recorded on the typed call path; the io_ring path records it.
+
+A `connect`, and an unconnected `sendto` each time its destination changes,
+asks the effect gate (`KIND_NET_EGRESS`, the Domain's `egress` envelope row;
+see [effects.md](effects.md#storage-and-network-envelopes)) before a socket
+talks to a destination off the node; a refusal answers `-EACCES`. Loopback,
+the node's own addresses and kernel-owned sockets are not asked about, and
+with no gate installed every destination is admitted.
 
 Two checks apply, and both are load-bearing:
 
@@ -269,24 +313,28 @@ Two checks apply, and both are load-bearing:
 2. The socket table is flat and the descriptor is an index into it, so each
    socket also carries an **owner stamp**: the task id taken when the socket
    was created or accepted. `socket_access_ok` compares it with the caller
-   before every operation. A `Cap<Socket>` that was transferred to another
-   task still names the sender's socket index, so the receiver's handle
-   resolves but the owner check refuses it.
+   before every operation except `NODE_MCAST_JOIN` and `NODE_MCAST_LEAVE`,
+   which check only the capability. A `Cap<Socket>` that was transferred to
+   another task still names the sender's socket index, so the receiver's
+   handle resolves but the owner check refuses it (a multicast join or leave
+   on it acts on the sender's socket).
 
 Sockets created from kernel context carry `SOCK_OWNER_KERNEL`, which no task
 id equals, so ring 3 cannot reach them. A task may hold at most
 `MAX_SOCKETS_PER_TASK` sockets (half of `MAX_SOCKETS`); the quota is counted
 under the same lock that allocates the slot.
 
-The ring-3 operation set covers outbound TCP and UDP (bound, connected or
-unconnected, with multicast). It contains no listen or accept: the kernel-side
-`socket_listen` and `socket_accept` exist in `azos_net` for kernel tasks (for
-example the OTA listener), and `std::net::TcpListener` answers `Unsupported`.
-An io_ring submission can also send on a socket capability: the capability is
-resolved in the ring owner's table with `WRITE`, the owner stamp is checked,
-and the bytes are queued without waiting.
+The ring-3 operation set covers TCP (connect, and listen and accept, which
+`SSHD.ELF` uses) and UDP (bound, connected or unconnected, with multicast).
+Kernel tasks (for example the OTA listener) use `socket_listen` and
+`socket_accept` in `azos_net` directly. The std port does not use the listen
+and accept ops: `std::net::TcpListener` answers `Unsupported`.
+An io_ring submission can also send or receive on a socket capability: the
+capability is resolved in the ring owner's table with `WRITE` (send) or `READ`
+(receive), the owner stamp is checked, and the bytes are queued or taken
+without waiting.
 
-The raw descriptor-style calls (`sys_socket`, `sys_bind`, ...) still exist in
+The raw descriptor-style calls (`sys_socket`, `sys_bind`, ...) are in
 `handlers.rs` behind the same owner check; the typed ones wrap them.
 
 ## Packet filter hooks
@@ -302,6 +350,10 @@ funnel of `ipv6.rs`, the Neighbour Discovery messages it sends included):
 | `Hook::Ingress` | A datagram for this host, after the header checks and destination filter, before any transport sees it |
 | `Hook::Egress` | A datagram this host built, before it is looped back, queued for ARP or put on the wire |
 | `Hook::Forward` | A datagram this host routes for someone else (`NET_IP_FORWARD`); the NAT is its connection tracker |
+
+The egress hook sees what leaves through `ip::send`. Frames the stack builds
+whole and hands to the NIC directly do not pass it: the DHCP client's
+DISCOVER and REQUEST, ARP, packet-socket frames and every IPv6 datagram.
 
 ```text
 pub trait PacketFilter: Sync {
@@ -373,26 +425,30 @@ IPv4 packet and ICMPv6 for an IPv6 one. A `forward` row with an IPv6 prefix
 never matches: the stack does not route IPv6.
 
 Rows are tried in file order and the first match decides. A packet no row
-matches gets the default policy: inbound drop when Kconfig
-`FIREWALL_INBOUND_DROP` is on (its default is on under `USE_GATEWAY`),
-otherwise accept; outbound is always accepted by default. The inbound default
-never drops the Neighbour Discovery messages, ICMPv6 types 133 to 137 (router
-and neighbour solicitation and advertisement, redirect) with hop limit 255:
-they are to IPv6 what ARP is to IPv4, and SLAAC needs them. A row still
-decides about them first. The topology parser rejects a row that an earlier
-one makes unreachable.
+matches gets the default policy: at the ingress and forward hooks, drop when
+Kconfig `FIREWALL_INBOUND_DROP` is on (its default is on under `USE_GATEWAY`),
+otherwise accept; at the egress hook, accept. The inbound default never drops
+the Neighbour Discovery messages, ICMPv6 types 133 to 137 (router and
+neighbour solicitation and advertisement, redirect) with hop limit 255: they
+are to IPv6 what ARP is to IPv4, and SLAAC needs them. A row still decides
+about them first. The topology parser rejects a row whose match (`dir`,
+`proto`, ports, `addr`) is identical to an earlier row's; a row shadowed by a
+broader earlier one is accepted and never matches.
 
 The firewall is stateful for TCP and UDP. A flow that one side opened with an
 accepted packet is tracked by its 5-tuple (whole addresses and the family, so
 an IPv4 and an IPv6 flow never share an entry), and once the peer has answered,
 packets of the flow pass in both directions whatever the rules say. The flow
 table has `CT_SLOTS` entries (Kconfig `FIREWALL_CONNTRACK_MAX`, rounded to
-sets of four ways), is hashed with a boot-time key so the set index is not in
-an attacker's hands, and never grows. A new flow evicts an expired entry, then
-the oldest one nobody has answered or that is closing, so a flood of SYNs
-cannot push out an established flow. A FIN or RST starts a flow's end but the
-entry stays briefly so the closing exchange still passes. Idle timeouts are
-`FIREWALL_UDP_TIMEOUT_S` and `FIREWALL_TCP_TIMEOUT_S`.
+sets of four ways), is hashed with a boot-time key (entropy-pool bytes, or the
+clock when no seeded source exists) so the set index is not in an attacker's
+hands, and never grows. A new flow evicts an expired entry, then the oldest
+one nobody has answered or that is closing, so a flood of SYNs cannot push out
+an established flow; a flow whose set holds only live answered flows is
+dropped rather than started untracked. A FIN or RST starts a flow's end but
+the entry stays 20 s so the closing exchange still passes. Idle timeouts are
+`FIREWALL_UDP_TIMEOUT_S`, 20 s for a TCP flow nobody has answered, and
+`FIREWALL_TCP_TIMEOUT_S` for an established one.
 
 A `Reject` from the firewall is the ICMP answer described above; the filter
 sends no TCP reset.
@@ -521,9 +577,10 @@ Source: `crates/net/net/src/dns.rs`, `sdk/std/sys/net/connection/azos.rs`.
 The resolver is a kernel-side function set in `azos_net::dns`:
 `resolve_with_yield` (A record) and `resolve_aaaa_with_yield` (AAAA record), which
 take the wait function the caller sleeps with. There is one outstanding query
-at a time (a second caller waits its turn, for at most the query timeout), a
-cache of `DNS_CACHE_SIZE` entries (one entry per name and record type), and the
-server address comes from DHCP (`set_dns_server`).
+at a time (a second caller waits its turn, for at most the query timeout,
+`NET_DNS_TIMEOUT_MS`), a cache of `DNS_CACHE_SIZE` entries (one entry per name
+and record type, kept five minutes whatever the record's TTL), and the server
+address comes from DHCP (`set_dns_server`).
 
 A response is accepted only if it answers the query in flight. The code checks
 that:
@@ -551,6 +608,7 @@ Ring 3 reaches the resolver through the kernel-hosted `Net` interface
 bytes and a family (A or AAAA) and answers one address. It needs `READ` and
 waits for the answer, so it is not a real-time call. `TOOLBOX.ELF`'s `host` is
 its caller, and the kernel's NTP client resolves the time server's name through
-the same function. `std::net` name lookup (`lookup_host`) still answers
+the same function. The same interface's `ntp_status` (toolbox `ntp`) reports
+the SNTP client's state. `std::net` name lookup (`lookup_host`) answers
 `Unsupported`: the std port does not call the interface, which is why the TLS and
 QUIC configurations carry socket addresses rather than names.
