@@ -27,7 +27,7 @@ set -euo pipefail
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../../lib/out_dir.py")}"; export AZOS_OUT
 here="$(cd "$(dirname "$0")" && pwd)"
-root="$(cd "$here/../.." && pwd)"
+root="$(cd "$(dirname "$0")/../../.." && pwd)"
 src="${LX_LINUX_SRC:-$root/third_party/linux}"
 podman="${PODMAN:-podman}"
 tag="azos-lx-kbuild:$(shasum -a 256 "$here/Containerfile" | cut -c1-12)"

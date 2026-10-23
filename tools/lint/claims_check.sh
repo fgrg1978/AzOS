@@ -228,7 +228,7 @@ FILTER_AWK='
 # scan <regex> -> file:line: text, one per line, sorted by path
 scan() {
     "$GREP" -rn -I -i -E "(^|[^[:alnum:]_])($1)" "${grep_args[@]}" . 2>/dev/null \
-        | "$GREP" -v '^\./tools/claims_check\.sh:' \
+        | "$GREP" -v '^\./tools/lint/claims_check\.sh:' \
         | awk -F: "$FILTER_AWK" \
         | sort -t: -k1,1 -k2,2n
 }

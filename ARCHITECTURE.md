@@ -304,7 +304,7 @@ expanded into cargo features (`tools/build/kconfig_to_cargo.py`) and constants
 signature check at boot) covers what is decided per device.
 
 - Source: `Kconfig`, `config/`, `crates/core/{azos-config,limits,config}`,
-  `tools/kconfig_*.py`, `kernel/src/boot/config_auth.rs`.
+  `tools/build/kconfig_*.py`, `kernel/src/boot/config_auth.rs`.
 - Doc: [config.md](Documentation/config.md).
 
 ### Building

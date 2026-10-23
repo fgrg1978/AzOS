@@ -23,7 +23,7 @@ set -euo pipefail
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../../lib/out_dir.py")}"; export AZOS_OUT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$AZOS_OUT/target}"
-here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/../.." && pwd)"; cd "$root"
+here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$(dirname "$0")/../../.." && pwd)"; cd "$root"
 out="$AZOS_OUT/build/lx/compare"; mkdir -p "$out"
 export TOPOLOGY_PUBKEY_PATH="${TOPOLOGY_PUBKEY_PATH:-$root/tools/keys/test_pub.bin}"
 bash "$here/run.sh" check || exit $?

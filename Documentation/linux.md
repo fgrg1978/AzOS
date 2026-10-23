@@ -78,7 +78,7 @@ Bounds that Kconfig sets: `LINUX_ROBUST_LIST_LIMIT` (robust futex list entries w
 
 Unmodified Linux kernel modules run in ring-3 server processes, one process per driver class, through a compatibility layer, over a pinned Linux tree. A server holds no actuator capability, and no safety decision reads its output. The kernel never links a Linux object.
 
-Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`, `userspace/services/lxsrv`, `config/axes/Kconfig.personality`, `tools/lx_*`.
+Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`, `userspace/services/lxsrv`, `config/axes/Kconfig.personality`, `tools/build/lx_*`, `tools/lint/lx_license_lint.py`.
 
 ### Pieces
 
