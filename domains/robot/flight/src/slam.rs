@@ -218,11 +218,11 @@ pub fn slam_update_scan(ranges: &[u16], angles_cdeg: &[i32]) {
         let hit_cx = if hit_valid { (hit_x + half) / SLAM_CELL_MM } else { cx1 };
         let hit_cy = if hit_valid { (hit_y + half) / SLAM_CELL_MM } else { cy1 };
 
-        let grid_ptr: *mut [[i8; SLAM_GRID]; SLAM_GRID] = &mut s.grid;
+        let grid = &mut s.grid;
         bresenham(cx0, cy0, cx1, cy1, |cx, cy| {
             if cx == hit_cx && cy == hit_cy { return; } // skip hit cell
             if cx < 0 || cy < 0 || cx >= SLAM_GRID as i32 || cy >= SLAM_GRID as i32 { return; }
-            unsafe { update_cell(&mut *grid_ptr, cx as usize, cy as usize, SLAM_L_FREE); }
+            update_cell(grid, cx as usize, cy as usize, SLAM_L_FREE);
         });
 
         // Mark hit cell as occupied.
