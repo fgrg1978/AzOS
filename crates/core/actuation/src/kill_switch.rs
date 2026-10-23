@@ -124,14 +124,19 @@ pub fn kill_switch_task(_: usize) {
     TID.store(azos_sync::waitqueue::caller_tid(), Ordering::Release);
     let recheck = TIMER_FREQ * azos_limits::KILL_SWITCH_RECHECK_MS as u64 / 1000;
     let mut armed: Option<Armed> = None;
+    // The configured pin the last arm was asked for, armed or refused: a
+    // refused pin (no controller bound, which the bind already said once) is
+    // not retried, and not reported again, until the config names another.
+    let mut asked: Option<u32> = None;
     let mut edges_seen = gpio::gpio_edge_stamp().1;
     loop {
         let pin = azos_config::CFG_ESTOP_GPIO_PIN.load(Ordering::Relaxed);
-        if armed.as_ref().map(|a| a.pin) != Some(pin) {
+        if asked != Some(pin) {
             if let Some(old) = armed.take() {
                 gpio::gpio_edge_disarm(old.pin);
             }
             armed = arm(pin);
+            asked = Some(pin);
         }
         let mut deadline = now().saturating_add(recheck);
         if let Some(a) = armed.as_mut() {
