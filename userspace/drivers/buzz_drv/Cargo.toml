@@ -10,6 +10,8 @@ description = "Ring-3 host of crates/drivers/buzzer (the piezo buzzer). Serves t
 azos_libsys = { path = "../../../crates/core/libsys" }
 azos_devif = { path = "../../../crates/core/devif" }
 azos_buzzer = { path = "../../../crates/drivers/buzzer" }
+# The PC speaker as the channel (x86_64, ports its row grants).
+azos_pcspk = { path = "../../../crates/drivers/pcspk" }
 
 [profile.release]
 opt-level = "s"

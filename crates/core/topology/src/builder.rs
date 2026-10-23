@@ -214,6 +214,13 @@ const AUTORUN_CAPS_MAX: usize = 40;
 /// The buzzer's PWM channel: free of both motors (channels 0 and 1) and of
 /// `autorun`'s `pwm.4`.
 const RESOURCE_PWM_BUZZER: &[u8] = b"pwm.5";
+/// The PC speaker's ports, the buzzer's channel on a PC (`azos_pcspk`):
+/// PIT channel 2 and the mode register (0x42, 0x43), and port 0x61, its gate.
+/// `ioport.<first>.<count>`, READ|WRITE. Granted where the build's port
+/// space holds them (Kconfig `X86_IOPORT_BITMAP_PORTS`, 0 off x86_64), so the
+/// rows of the ISAs without ports carry no grant they could not mint.
+const RESOURCE_SPEAKER_PORTS: [&[u8]; 2] = [b"ioport.66.2", b"ioport.97.1"];
+const SPEAKER_PORTS_GRANTED: bool = azos_limits::X86_IOPORT_BITMAP_PORTS > 0x61;
 /// The INA219 at bus 1, address 0x40. READ|WRITE: configuring it is a write
 /// to its calibration and config registers. No safety decision reads it
 /// (the battery check reads the ADS1115), which is what puts it in ring 3.
@@ -1436,6 +1443,17 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             ],
         )
         .expect("default_minimal_topology: BUZZDRV.ELF push failed");
+        if SPEAKER_PORTS_GRANTED {
+            let ports = RESOURCE_SPEAKER_PORTS.map(|t| CapSpec {
+                kind: CapKind::Device,
+                perms: CapPerms::RW,
+                target: MaybeStr::from_bytes(t), transfer: false, ops: 0,
+            });
+            assert!(
+                topo.extend_task_caps(&MaybeStr::from_bytes(TASK_BUZZDRV_IMAGE), &ports),
+                "default_minimal_topology: BUZZDRV.ELF speaker ports"
+            );
+        }
         topo.set_last_task_mem_pages(RING3_DRIVER_MEM_PAGES);
         topo.set_last_task_place(PlaceSpec {
             host: BUZZER_START_HOST,

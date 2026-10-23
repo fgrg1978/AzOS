@@ -811,6 +811,13 @@ name = "azos_pci"
 version = "0.1.0"
 
 [[package]]
+name = "azos_pcspk"
+version = "0.1.0"
+dependencies = [
+ "azos_buzzer",
+]
+
+[[package]]
 name = "azos_percpu"
 version = "0.1.0"
 dependencies = [

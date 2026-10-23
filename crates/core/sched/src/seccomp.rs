@@ -695,7 +695,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // The ring-3 buzzer driver: the v2 accept and reply of the `Buzzer`
     // interface it serves on its endpoint, the register-form calls on its one
     // `pwm` endpoint, and a second thread for the timed steps of a sound
-    // (created once, parked on a futex word the main thread bumps).
+    // (created once, parked on a futex word the main thread bumps). On a PC
+    // the channel is the speaker: each thread opens its I/O ports.
     ImageProfile {
         image: "BUZZDRV.ELF",
         syscalls: sys_nrs![

@@ -73,6 +73,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_pcspk"
+version = "0.1.0"
+dependencies = [
+ "azos_buzzer",
+]
+
+[[package]]
 name = "azos_rings"
 version = "0.1.0"
 
@@ -83,6 +90,7 @@ dependencies = [
  "azos_buzzer",
  "azos_devif",
  "azos_libsys",
+ "azos_pcspk",
 ]
 
 [[package]]

@@ -464,6 +464,7 @@ members = [
     "crates/drivers/api",
     "crates/drivers/ina219",
     "crates/drivers/buzzer",
+    "crates/drivers/pcspk",
     # RFC 1350 TFTP client: the package installer's development package source
     # (userspace/services/pkgd) and the host suites build it by path.
     "crates/net/tftp",

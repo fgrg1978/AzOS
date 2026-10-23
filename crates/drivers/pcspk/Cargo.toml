@@ -1,0 +1,14 @@
+[package]
+name = "azos_pcspk"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The PC speaker (8254 PIT channel 2 gated by port 0x61) as the buzzer's PWM channel: pure over two port accessors. Hosted in ring 3 by userspace/drivers/buzz_drv on x86_64, through I/O ports its topology row grants."
+
+[lib]
+name = "azos_pcspk"
+
+[dependencies]
+# Path, not `workspace = true`: userspace/drivers/buzz_drv builds standalone.
+azos_buzzer = { path = "../buzzer" }

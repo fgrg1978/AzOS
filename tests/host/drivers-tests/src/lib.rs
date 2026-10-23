@@ -134,6 +134,10 @@ mod discipline;
 #[cfg(test)]
 mod rtc;
 
+// The PC speaker (`crates/drivers/pcspk`) against a model of PIT channel 2.
+#[cfg(test)]
+mod pcspk_tests;
+
 #[cfg(test)]
 mod pid {
     use super::motor_pid::*;
