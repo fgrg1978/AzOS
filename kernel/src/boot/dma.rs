@@ -24,7 +24,8 @@
 //!   points the unit at the domain's page table, and from then on a DMA to a
 //!   page nobody mapped is refused and logged by the fault task;
 //! - a driver that hands its device physical addresses (NVMe, AHCI) leaves
-//!   the function in pass-through, said per function;
+//!   the function in pass-through, said per function (the NVMe driver reads
+//!   only its domain's coherence, to sync its pages);
 //! - a function no kernel driver binds is blocked: ring 3 has no DMA path
 //!   yet, so nothing it drives can need one.
 //!
