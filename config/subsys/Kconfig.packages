@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.packages — Signed application packages
+#
+# crates/core/pkg is the format, the verification and the admission; the
+# installer service that runs them is userspace/services/pkgd (USERSPACE_PKGD,
+# generated into config/Kconfig.userspace). The device policy that says which
+# author keys are admitted is not here: it is the `[signer.NAME]` sections of
+# the signed topology (TOPOLOGY_MAX_SIGNERS in config/subsys/Kconfig.topology).
+
+config PKG_MAX_KB
+    int "Largest package the installer accepts (KiB)"
+    range 16 65536
+    default 4096 if HWCLASS_SERVER
+    default 256 if HWCLASS_EMBEDDED
+    default 1024
+    help
+      The installer (PKGD.ELF) reads a package whole into one buffer before it
+      verifies a byte of it: the signature covers the metadata, the images are
+      checked against the hashes that metadata carries, and the rows are
+      parsed only after both. A package larger than this is refused unread.
+      The ceiling is also the installer's biggest static buffer.
+
+      Cost: PKG_MAX_KB of RAM in PKGD.ELF (.bss), either ISA, and the same as
+      the ceiling of PKG.ELF's frame budget (the tool holds the file it is told
+      to install whole, and a fetched update bundle (`pkg fetch-update`)
+      arrives in the same buffer). The kernel's boot-time apply reads one
+      staged package at a time into the heap, at most this, and frees it.
+
+config PKG_META_MAX_KB
+    int "Largest manifest or warrant section of a package (KiB)"
+    range 1 64
+    default 16
+    help
+      A package carries two small texts besides its images: the metadata
+      (name, hardware classes, ABI and interface levels, one hash per image)
+      and the rows (the `[task.NAME]` sections that become part of the
+      topology). Each is at most this. A larger one is refused before the
+      signature is checked.
+
+      Cost: none by itself.
+
+config PKG_MAX_IMAGES
+    int "Programs one package may carry"
+    range 1 64
+    default 8
+    help
+      Every image of a package is a program with exactly one row, so this is
+      also the most rows one package adds to the topology. The metadata parser
+      keeps a table of this many images on its stack.
+
+      Cost: 56 B of stack per entry while a package is read, either ISA.
+
+config PKG_MAX_STAGED
+    int "Packages staged at once"
+    range 1 256
+    default 4 if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
+    default 16
+    help
+      The installer stages a package as one file on the package volume (the
+      native volume mounted at /pkg) and judges a new
+      one against the topology AND the packages already staged (their rows are
+      merged first), so it keeps the rows text of each staged package in an
+      arena of this many slots of PKG_META_MAX_KB. A package staged beyond
+      this is refused (`no room`); remove one first.
+
+      Cost: PKG_MAX_STAGED x PKG_META_MAX_KB of RAM in PKGD.ELF (.bss), either
+      ISA. The kernel keeps the rows text of each package it applies for the
+      life of the boot (the topology borrows it): at most the same product of
+      heap.
+
+config PKG_SNAPSHOTS_KEPT
+    int "Restore points of the package volume kept"
+    range 1 16
+    default 3
+    help
+      Before the kernel writes a new package's programs at boot it snapshots
+      the package volume; a boot that is confirmed good keeps the snapshot as a
+      restore point. The installer (PKGD.ELF) keeps this many of the newest and
+      asks the kernel to delete the older ones at the next boot, so the volume
+      does not fill with blocks that only an old snapshot names. The snapshot
+      of a boot that is still on probation is never deleted. The kernel stops
+      applying new packages while the volume holds 32 snapshots (the table's
+      size), so an installer that does not prune is noticed.
+
+      Cost: the blocks the snapshots retain (what the volume changed since
+      each), either ISA; nothing in RAM.
+
+config PKG_MAX_API
+    int "Interface levels one package may require"
+    range 1 32
+    default 8
+    help
+      A package states the lowest level it needs of each IDL interface it
+      calls (`[api]`). The device refuses it when an interface is missing or
+      older. More entries than this are refused by the metadata parser.
+
+      Cost: 24 B of stack per entry while a package is read, either ISA.
+
+config PKG_FETCH_TFTP
+    bool "Installer may fetch a package from a TFTP server (development builds)"
+    depends on BUILD_TYPE_DEV && USERSPACE_PKGD
+    default y
+    help
+      `pkg fetch` gets a package, and `pkg fetch-update` a whole-system update
+      bundle, from the source the rows in /fat/PKG/SOURCE.CFG describe: a
+      pinned HTTPS server. With this on, the
+      same file may instead name a TFTP server on the development host
+      (`tftp=10.0.2.2`, `file=NAME.PKG`: QEMU's `-netdev user,tftp=DIR`
+      gateway, or tools/tftp_serve.py), so a package built on the host goes to
+      the device without a disk cycle or a TLS server.
+
+      TFTP carries no authentication and the installer asks for none: it only
+      delivers bytes, and the package is installed because its own signature
+      verifies against the signers of the device's signed topology. A package
+      fetched this way has no more authority than one on the disk, and a forged
+      one is refused and journalled like any other.
+
+      Development builds only (BUILD_TYPE): a release or certifiable .config
+      cannot set it, and PKGD.ELF refuses to compile with it on otherwise.
+      Off, a `tftp=` row is a source that is not one and is refused.
+
+      Cost: about 2 KiB of code in PKGD.ELF and no RAM beyond the UDP socket
+      the image's seccomp profile already grants; the same on every ISA.

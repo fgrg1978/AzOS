@@ -281,7 +281,7 @@ $(QEMU_DEV_KCONFIG): $(KCONFIG_CONFIG) FORCE
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
 
 .PHONY: x86_64 qemu-x86_64
-$(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(wildcard Kconfig config/Kconfig*)
+$(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(KCONFIG_FILES)
 	@mkdir -p $(dir $@)
 	cp $(X86_64_DEFCONFIG) $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
@@ -363,7 +363,7 @@ rpi5: rpi5-key $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
 # ── AzOS-micro: the MCU kernel (strategic plan, phase 8) ─────────────────────
 #
 # A separate kernel (micro/, its own workspace): riscv32imac, M-mode, PMP
-# region domains. It is built from the same Kconfig (config/Kconfig.micro,
+# region domains. It is built from the same Kconfig (config/kernel/Kconfig.micro,
 # config/defconfigs/micro.config), reads a signed topology in the main
 # kernel's format, and shares the pure crates of the main kernel. Nothing
 # here touches the main kernel's build or its .config.
@@ -394,9 +394,9 @@ MICRO_SRC      := $(wildcard micro/src/*.rs micro/src/tasks/*.rs) micro/Cargo.to
 
 .PHONY: micro-config micro-topology micro-check micro micro-test micro-qemu
 micro-config: $(MICRO_CONFIG)
-# Every Kconfig file: a symbol added to any of them (Kconfig.limits) must reach
+# Every Kconfig file: a symbol added to any of them (config/limits/Kconfig.limits) must reach
 # micro.config, or azos_limits refuses the stale file in micro-tests.
-$(MICRO_CONFIG): config/defconfigs/micro.config Kconfig $(wildcard config/Kconfig.*)
+$(MICRO_CONFIG): config/defconfigs/micro.config $(KCONFIG_FILES)
 	@mkdir -p $(@D)
 	cp config/defconfigs/micro.config $@
 	KCONFIG_CONFIG="$@" $(PYTHON) -m olddefconfig

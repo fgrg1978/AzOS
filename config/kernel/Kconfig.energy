@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.energy — Energy accounting and thermal management
+
+config INFSRV_ENERGY_QUOTA_UJ
+    int "Inference service: energy quota of a context per window (uJ)"
+    range 0 2000000000
+    default 0
+    help
+      userspace/services/infsrv, ENERGY_QUOTA_UJ: the energy one context may
+      spend per window on inference, microjoules. A variant is admitted only
+      when its signed energy fits what is left of the window (Rule
+      accel-admission, refused with a receipt otherwise), and a run that
+      overran its signed worst case is charged for the overrun when it
+      finishes, so the next call sees less. 0: no quota.
+
+config INFSRV_ENERGY_WINDOW_MS
+    int "Inference service: energy quota window (ms)"
+    range 1 3600000
+    default 1000
+    help
+      userspace/services/infsrv, ENERGY_WINDOW_MS: the quota above is spent
+      afresh every window of this length, counted from a context's first
+      call after the last window ended. Unused with INFSRV_ENERGY_QUOTA_UJ 0.
+
+# ---------------------------------------------------------------------------
+# Energy-aware scheduling (stages E0-E4)
+# ---------------------------------------------------------------------------
+config ENERGY
+    # cargo-feature: energy
+    bool "Energy-aware scheduling: utilisation tracking and the energy model"
+    default n
+    help
+      Energy-aware scheduling. Emits the kernel cargo feature `energy`
+      (tools/kconfig_to_cargo.py).
+
+      The seams themselves (Placement, Governor, IdleGovernor in
+      crates/core/energy) are in every build with today's behaviour only:
+      Legacy wake-up placement, no frequency request (the boot clock), `wfi`
+      in both idle tasks. With this option off they fold to the code they
+      replaced: the kernel's .text is unchanged (invariant I4).
+
+      y = also track per-task and per-CPU utilisation (ENERGY_UTIL, updated at
+        every dispatch, switch-out, wake-up and tick), and read the energy
+        model at boot: the signed topology's `[energy.domain.*]` sections,
+        else the DTB's operating-points-v2 / idle-states, else (x86_64
+        hybrid parts) one capacity class per core type the CPUs report
+        through CPUID (Intel P/E, AMD Zen 5/5c), else (Raspberry Pi with
+        THERMAL: the mailbox is the board object) one domain from the
+        firmware's ARM clock range with placeholder, unmeasured power, else
+        none. The
+        model is validated and reported (`[ENERGY]` lines); an invalid one is
+        refused and the machine runs with none. The E3 frequency governor
+        (Schedutil, DeadlineFloor) and the E4 idle governor run only when the
+        topology carries a model and mode `balanced` or `endurance`; they
+        count their decisions and apply none (no clock driver; every idle
+        state is entered as `wfi`). User space can change the governor, the
+        OPP range of each domain, the headroom, the rate limit and an
+        idle-depth limit at run time (the `power` endpoint;
+        `POWER.ELF serve` applies a profile); the kernel refuses a value
+        below the real-time deadline floor or the WCET reference OPP and
+        records the refusal. Cost, measured
+        under QEMU -icount by the gate's energy row (one run per ISA and
+        tracker, 2026-10-03): switch hook 73-76 instructions per call on
+        riscv64 and 128-271 on aarch64; tick hook 61-71 and 187-382.
+      n (default) = none of the above is compiled.
+
+      The energy MODE (performance / balanced / endurance) is not a Kconfig
+      symbol: the signed topology chooses it (`[energy] mode`, invariant
+      I5), and every built-in profile topology says `performance`.
+
+# ---------------------------------------------------------------------------
+# Thermal framework (zones, trips, cooling by OPP capping)
+# ---------------------------------------------------------------------------
+config THERMAL
+    # cargo-feature: thermal
+    bool "Thermal framework: zones, trips and cooling by OPP capping"
+    depends on ENERGY
+    depends on SOC_FRAMEWORKS || !BOARD_VF2
+    default y if ENERGY && !HWCLASS_EMBEDDED && (PRESET_ROBOT || PRESET_IOT_HMI || PRESET_GATEWAY || PRESET_DESKTOP || PRESET_SERVER)
+    help
+      Emits the kernel cargo feature `thermal` (tools/kconfig_to_cargo.py).
+      crates/core/energy (thermal, opp) decides, crates/drivers/thermal
+      reads the sensors and moves the clocks: the DTB's `thermal-zones`
+      become zones with trips; a hot trip caps the performance domain by OPP
+      steps, never below the real-time deadline floor or the WCET safety
+      floor; what the clock cannot do (a floor holds it up, the clock will
+      not move, the sensor is lost) raises the degrade level, and a critical
+      trip requests an orderly shutdown. A lost sensor caps its domains at
+      the deepest state of the zone's cooling maps.
+
+      Board support: Raspberry Pi (temperature and ARM clock through the
+      VideoCore mailbox, `brcm,bcm2835-mbox`), StarFive JH7110 (sfctemp,
+      with the CPU clock of the SoC frameworks, hence the dependency on
+      SOC_FRAMEWORKS there) and SpacemiT K1 (the five-channel TSEN sensor,
+      started at probe and refused when its window does not hold the start
+      sequence; with SOC_K1, each cluster's clock and its supply move
+      together: the P1 PMIC buck over the I2C master, the voltage of each
+      OPP from the device tree's `opp-microvolt`, the rail before the clock
+      going up and the clock before the rail going down, a buck two clusters
+      share held at the higher one's need). A K1 voltage step is several I2C
+      transfers (hundreds of microseconds at 400 kHz), more than a spin lock
+      may be held, so the K1's tick holds no lock across it: the runtime is
+      taken out of the thermal state for the tick, the SoC frameworks' lock is
+      taken for each clock operation alone, and the transfers sleep between
+      controller steps. It needs an energy model with the K1's OPP
+      frequencies (the Linux trees carry no opp-microwatt: a signed topology
+      or a tree that gives it). x86_64 has the package sensor (Intel
+      coretemp MSRs, AMD Zen over SMN), probed from CPUID before any register
+      is read and refused under a hypervisor (QEMU has none); its zone has no
+      device tree, so its trips are THERMAL_X86_PASSIVE_C, THERMAL_X86_HOT_C
+      and THERMAL_X86_CRITICAL_C. Its clock is the CPU's own level request,
+      Intel HWP or AMD CPPC (crates/drivers/thermal/src/x86.rs), behind the
+      CPUID bit that says the CPU has it (there is no fixup for a rdmsr that
+      faults): the energy model's OPP is laid on the CPU's own range of
+      levels, and a CPU that takes no request, or whose firmware keeps the
+      control, refuses every cap, so heat there raises the degrade level and
+      requests the shutdown at the critical trip instead of capping a clock.
+      RAPL's package energy (Intel since Sandy Bridge, AMD Zen) is sampled
+      each tick and shown in the introspection tree's `thermal/`. The level
+      request is made for an
+      OPP of the energy model, so it reaches a CPU only when the model has a
+      domain with two OPPs (the topology's [energy.domain.*]); the sensor,
+      the degrade level, the critical shutdown and the energy counter work
+      either way.
+
+      Wired: at boot the kernel builds the board's runtime from the DTB's
+      thermal zones over the energy model (kernel/src/boot/thermal.rs) and
+      creates a `thermal` task on a CPU outside RCU_NOCBS_CPUS and the
+      topology's isolcpus. It wakes at the zones' polling delay (the passive
+      one while a trip is active), asks the energy governor seam what each
+      domain wants (the OPP the governor recorded; none while the governor is
+      Fixed) and the real-time density admitted on the domain's most loaded
+      hart, ticks the runtime, and leaves every trip, floor-bound domain,
+      level change, lost sensor and shutdown request as a console line and a
+      `thermal` decision record (`why list`). The introspection tree's
+      `thermal/` shows the state. The task is the one place the governor's decision reaches a
+      clock. A board with no sensor and clock pair (QEMU, an x86_64 machine
+      whose probe finds no sensor) builds no zone and creates no task:
+      nothing reads a sensor and no clock is touched (invariant I4). Not wired yet: the level reaches no consumer (the power
+      service has no channel for a level the kernel raised); `thermal/` and
+      the console are where it shows. Not for a small board
+      (HWCLASS_EMBEDDED), which keeps its own native handling.
+      n = not linked.
+
+config THERMAL_TASK_PRIORITY
+    int "Thermal task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20
+    help
+      Read only with THERMAL. kernel/src/boot/thermal.rs, `thermal`: the task that reads the zones and
+      caps the clocks. Never real-time, and pinned to a CPU outside
+      RCU_NOCBS_CPUS and the topology's isolcpus, so a real-time task never
+      waits for it and it never touches a timer a real-time task owns. A
+      smaller number runs it sooner under CPU load; it should run before the
+      reclaim task (MM_RECLAIM_PRIORITY, 24 by default): a machine that is too
+      hot has no use for freed pages.
+
+      Cost: one stack, and per wake-up one sensor read (a register read on the
+      JH7110, a mailbox round trip on a Pi) per zone that is due.
+
+config THERMAL_X86_PASSIVE_C
+    int "x86_64 package: passive trip (degrees Celsius)"
+    range 40 119
+    default 75
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64. kernel/src/boot/thermal.rs builds the
+      machine's one zone, the package, from the sensor the CPUID probe found
+      (Intel coretemp, AMD Zen over SMN): an x86_64 machine has no device tree
+      and the signed topology declares no thermal zones, so its trips are
+      this and the two below. At the `passive` trip every performance domain
+      of the energy model that has two OPPs is capped one OPP per read, down
+      to its deepest and never below the real-time deadline floor or the WCET
+      safety floor; the cap is lifted a step per read once the package is
+      under it. Must be below THERMAL_X86_HOT_C (the kernel refuses to build
+      the zone otherwise).
+
+config THERMAL_X86_HOT_C
+    int "x86_64 package: hot trip (degrees Celsius)"
+    range 50 120
+    default 85
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64, as THERMAL_X86_PASSIVE_C. A `hot`
+      trip raises the degrade level to 2, slow. Must be below
+      THERMAL_X86_CRITICAL_C (the kernel refuses to build the zone otherwise).
+      Intel reports against TjMax (usually 100), AMD as Tctl (Zen 1 parts are
+      offset from the die by up to 27 C, which the sensor subtracts).
+
+config THERMAL_X86_CRITICAL_C
+    int "x86_64 package: critical trip (degrees Celsius)"
+    range 60 130
+    default 100
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64, as THERMAL_X86_HOT_C. A `critical`
+      trip sets the degrade level to 3, contained, and requests an orderly
+      shutdown. Keep it under the part's own THERMTRIP, which cuts power
+      without one.
+
+config THERMAL_X86_POLL_MS
+    int "x86_64 package: polling delay (ms)"
+    range 100 60000
+    default 1000
+    depends on THERMAL && ARCH_X86_64
+    help
+      Read only with THERMAL on x86_64: the thermal task reads the package
+      sensor this often (an MSR read on Intel; on AMD two config-space port
+      accesses under the port lock, which every PCI config access shares).
+
+choice
+    prompt "Utilisation tracker (with ENERGY)"
+    default ENERGY_UTIL_WINDOW
+    help
+      How ENERGY ages the utilisation signals. Both are integer and do O(1)
+      work per update whatever the gap since the last one. Surfaces as the
+      bool consts azos_limits::ENERGY_UTIL_WINDOW / ENERGY_UTIL_PELT.
+      No effect without ENERGY.
+
+    config ENERGY_UTIL_WINDOW
+        bool "Window (WALT-like): max(last window, mean of the last four)"
+        help
+          Busy time per ENERGY_UTIL_WINDOW_US window; the signal is the
+          larger of the last closed window and the mean of the last four.
+          A step to fully busy shows after one window; a task that stops
+          reads zero four windows later.
+
+    config ENERGY_UTIL_PELT
+        bool "PELT-like geometric decay, half-life 32 periods"
+        help
+          avg = avg*y + input*(1-y) per ENERGY_PELT_PERIOD_US period, with
+          y^32 = 1/2, in Q32 fixed point.
+
+endchoice
+
+config ENERGY_UTIL_WINDOW_US
+    int "Utilisation window (us, window tracker)"
+    range 1000 100000
+    default 10000
+    help
+      Length of one window of the window tracker. No effect without ENERGY
+      or with ENERGY_UTIL_PELT.
+
+config ENERGY_PELT_PERIOD_US
+    int "Utilisation period (us, PELT-like tracker)"
+    range 256 10000
+    default 1024
+    help
+      Length of one decay step of the PELT-like tracker; the half-life is 32
+      of them (32.8 ms at the default). No effect without ENERGY or with
+      ENERGY_UTIL_WINDOW.
+
+config ENERGY_BATTERY_RESERVE_PCT
+    int "Battery reserve (percent of charge)"
+    range 1 50
+    default 10
+    help
+      The charge at and below which the kernel holds every performance
+      domain at its lowest legal OPP, whatever the power service's policy
+      asks (the deadline and safety floors still win): what is left is for the
+      safe stop (landing, parking the actuators). Neither the signed topology
+      nor the power service can lower it. Only a machine whose topology
+      declares `[degrade.NAME]` rows has a battery for it to apply to. No
+      effect without ENERGY. A product sets it per image (its defconfig).
+
+      The default is a placeholder, not a derived number: 10 is where the
+      INA219 driver's failsafe already lands (`FAILSAFE_LAND_PCT`); no
+      discharge model of a pack and no measured safe stop supports it. A
+      product that needs another has to measure the energy of its safe stop.
+
+config ENERGY_BATTERY_REPORT_TIMEOUT_MS
+    int "Battery report timeout (ms)"
+    range 3000 3600000
+    default 10000
+    help
+      The oldest the power service's last accepted battery report may be. A
+      service that died or stalled leaves its last charge in force, and the
+      kernel cannot tell a full pack from an empty one by it: past this age the
+      kernel holds the battery reserve (lowest legal OPP, floors still win)
+      until the next accepted report. Counted from boot, so a service that
+      never starts is held the same way. The service reports every 2 s
+      (SERVE_PERIOD_MS in userspace/services/power) and the kernel may fire
+      its sleep late, so the least is 3 s. Only a machine whose topology
+      declares `[degrade.NAME]` rows has a report to age. No effect without
+      ENERGY.

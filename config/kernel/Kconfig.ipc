@@ -1,0 +1,211 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.ipc — IPC, the syscall entry and capabilities
+
+config IPC_FASTPATH
+    bool "IPC fast path: a call or reply to a parked peer skips the dispatch"
+    default y
+    help
+      Chain E stage (a), crates/core/syscall/src/fastpath.rs. A fast call
+      (SYS_IPC_FAST_CALL_EP) or reply-and-accept (SYS_IPC_FAST_REPLY_ACCEPT)
+      whose peer is parked in the matching wait is finished from the trap
+      entry, after the syscall filter, without the syscall table: the call
+      writes its record as already ACCEPTED and leaves its handle in the
+      server's per-task-slot deposit, the reply writes the answer into the
+      record, and either switches straight to the peer it claimed. The
+      peer's resume finds the deposit (or the answer) and skips the accept,
+      the collect retry loop and the endpoint queue. Any precondition that
+      does not hold (a capability moved, a donation needed, calls already
+      queued, the peer not parked, preemption disabled, a kill pending)
+      leaves the call to the ordinary path, unchanged. With WAIT_GRAPH the
+      fast call records the caller's wait-graph edge as the ordinary call
+      does, and only when it stays lazy (no boost, no chain, no cycle check:
+      no graph lock); a call the graph must act on, and a reply to one, take
+      the ordinary path.
+      Runtime canary `canary=ipc-force-slow` turns it off for one boot.
+      Cost: 16 B of RAM per task slot (MAX_TASKS: the deposit word and two
+      per-task hit counters), 1,024 B at edge's 64 tasks. Instructions,
+      one CPU, vsbench ipc-roundtrip (one call and its reply): riscv64
+      2,390 -> 1,933, aarch64 2,128 -> 1,659, x86_64 2,236 -> 1,843
+      (the ordinary path, canary ipc-force-slow: 2,427 / 2,148 / 2,232).
+      With the class dispatch as well (and resume
+      points): 2,416 -> 1,852, 2,223 -> 1,592, 2,274 -> 1,782.
+
+config IPC_FASTPATH_RESUME
+    bool "IPC fast path: finish a parked peer's syscall and start it at its exit"
+    depends on IPC_FASTPATH
+    default y
+    help
+      Chain E commit 9, crates/core/syscall/src/fastpath.rs ("Resume
+      points"). A task that blocks in the fast path's hand-off leaves a
+      resume point: its trap frame and its ISA's resume stub. The fast call
+      or reply that claims it next finishes its syscall for it under the
+      endpoint lock, as seL4's fast path does: the request or the answer goes
+      straight into its registers (no deposit, no REPLIED record to collect;
+      a call with a donation still goes through the record), and its saved
+      context is pointed at the stub, which leaves through the syscall exit
+      without returning through the hand-off, the fast path, the dispatch and
+      the trap handler, whether the claim switches to it or queues it on
+      another hart. Any other wake (an ordinary call or reply, a drain, a
+      kill, the scheduler) resumes it where it blocked, as before; so does a
+      claim while syscall tracing is on, Linux signal work is pending or the
+      task has an exec hand-off. Compiled out with `switch-census` and
+      `ipc-census`. Runtime canaries `canary=ipc-resume-off` (no resume point
+      is left) and `canary=ipc-resume-stale` (a task resumed where it blocked
+      is left holding one). Cost: 16 B of RAM per task slot (MAX_TASKS),
+      1,024 B at 64 tasks. Instructions, vsbench ipc-roundtrip, one CPU:
+      riscv64 1,778 -> 1,657, aarch64 1,544 -> 1,449, x86_64 1,693 -> 1,637;
+      riscv64 with `ipc-resume-off` 1,807, with this option off 1,783.
+      Client and server pinned to two harts (riscv64, -smp 2): 8,158 with the
+      option off -> 7,994.
+
+config IPC_RESOLVE_CACHE
+    bool "IPC: per-task cache of the last endpoint a fast call resolved"
+    default y
+    help
+      Chain E commit 5, crates/core/ipc/src/endpoint.rs (resolve_cache).
+      SYS_IPC_FAST_CALL_EP (the fast path and the ordinary arm) and
+      SYS_IPC_CALL_V2 resolve their endpoint capability through a per-task
+      slot entry: the capability handle, the capability slot word and the
+      endpoint's identity word a full resolution accepted. A call hits when
+      both words are unchanged (so a revoke, a re-grant, a rights change, an
+      endpoint destroyed, reused or served by another task all miss on their
+      own) and containment is off; any miss is the full
+      resolution, with its denial recording. Cleared at task exit and exec.
+      Cost: 32 B of RAM per task slot (MAX_TASKS), 2,048 B at 64 tasks.
+
+config IPC_LABELS
+    bool "IPC: provenance labels, and the effect gate's meet over them"
+    default y if !HWCLASS_EMBEDDED
+    default n
+    help
+      Innovation B4, crates/core/ipc/src/endpoint.rs (label). Every task has
+      a principal (the kind its SCHED.TOML class declares: system, service,
+      user, agent) and a scope (the label of the data it works on); a message
+      carries its sender's scope with the sender's principal ORed in, on the
+      v2 descriptor and on the register fast path alike. A server works in
+      the scope of the request it accepted, a caller absorbs the label of
+      every answer, and the effect gate holds a reversible effect to the
+      meet (the most restrictive) of the envelopes of the kinds in the label
+      of the task that issues it. A one-shot DECLASSIFY warrant, minted by a
+      task whose principal is user, takes bits off one message.
+      Off: no task has a principal or a scope, a descriptor whose label word
+      is not 0 is refused (-EINVAL), no DECLASSIFY warrant can be minted,
+      the gate holds an effect to nothing but its own record and deadline,
+      and the hooks on the send, accept, reply and fast paths compile to
+      nothing. Not on a small board (HWCLASS_EMBEDDED): its topology has one
+      class per device and no agent, so there is no principal to tell apart.
+      Cost: 8 B of RAM per task slot (MAX_TASKS: principal and scope), 4 B
+      per call record (the label beside the words), 4 B per principal kind,
+      and a few loads and one OR on the send, accept and reply of an IPC.
+
+config SYSCALL_LEAN_ENTRY
+    bool "Native syscalls save only what the native ABI preserves"
+    default y
+    help
+      Chain E commit 8. The native syscall ABI (crates/core/abi/src/
+      syscall_nr.rs, "Register contract"): on return from a native syscall
+      ring 3 may rely only on the callee-saved registers, sp/gp/tp (and
+      their per-ISA equivalents), the link register and the call's output
+      registers; every other register is clobbered. With this on, a native
+      task's syscall takes a trap-entry path that does not store the
+      clobbered registers and returns them zeroed: riscv64 t0-t6, a7;
+      aarch64 x10-x17; x86_64 rcx and r11, which `sysret` loads with the
+      return RIP and RFLAGS. A Linux-personality task keeps the full save and restore
+      (riscv64/aarch64 tag its trap frame at its first entry to user mode;
+      the x86_64 Linux ABI clobbers rcx/r11 too), and so does every trap
+      that is not a syscall. Off: every syscall saves and restores the whole
+      register file, as before. The contract, and the clobbers every ring-3
+      stub declares, are the same either way. Instructions, one CPU, vsbench
+      (before -> after, the stubs' clobbers included): syscall-floor riscv64
+      180 -> 168, aarch64 152 -> 146, x86_64 139 -> 127; ipc-roundtrip
+      1,794 -> 1,778, 1,549 -> 1,544, 1,717 -> 1,693.
+
+config IPC_PORT_NOTICES
+    bool "Endpoint no-senders and source-gone notices on event ports"
+    default y
+    help
+      Counts, per endpoint, the send capabilities that exist anywhere (a
+      Cap<Endpoint> with WRITE and without READ), kept exact through every
+      grant, move, revoke, fork copy and the table wipe at a task's exit. A
+      server that binds its endpoint to a port (PORT_BIND, source
+      4) gets PORT_EVENT_NO_SENDERS (code ENOSENDERS) when the count falls
+      to zero. A channel, io_ring, endpoint or IRQ bound to a port that is
+      destroyed, or whose owner dies, reports one PORT_EVENT_SOURCE_GONE
+      (code EREVOKED or EPEERDIED) instead of leaving its waiter waiting.
+
+      n: nothing is counted or reported; PORT_BIND refuses
+      source 4 (an endpoint) with -EINVAL, and a gone source stays bound
+      and silent, as before.
+
+      Cost: 8 B of RAM per endpoint (IPC_ENDPOINTS) and 2 B per task slot
+      (MAX_TASKS); on a capability grant, revoke or move a compare of the
+      slot's kind (an atomic add when it is a send capability); a task
+      exit whose table holds a send capability walks its used slots once.
+      The fast call itself is untouched (a call that moves no capability
+      runs no capability operation).
+
+config CAP_SLOT_EXT
+    bool "Capability slots are 128 bits: badge and rights width"
+    default y
+    help
+      Each capability slot gets a second 64-bit word beside the one every
+      check reads (crates/core/ipc/src/cap.rs, CapExt): the badge a server
+      sees on a v2 call through an endpoint capability (ext_of), and a
+      reserved field (eight more rights bits). The parent link and the
+      expiry live in the slot's warrant (WARRANT_DEPTH_MAX). Two words make
+      the slot the 128 bits of a CHERI capability (owner Q9). The v1 fast
+      call never reads the second word.
+
+      n: slots stay one word, every capability reads as unbadged, and
+      minting a badged endpoint capability (CapTable::mint_badged) is
+      refused, so a v2 server cannot tell its clients apart by badge. The
+      kernel-hosted device interfaces name their resource by badge (a pin,
+      an I2C address, a PWM channel, a wheel), so without this a topology
+      row for a device other than resource 0 is not granted.
+
+      Cost: 8 B of RAM per slot per task slot, as much again as
+      MAX_CAPS_PER_TASK costs: embedded (32 x 32) 8 KiB, edge (256 x 64)
+      128 KiB, fleet (512 x 4096) 16 MiB; the same on every ISA. A grant
+      pays one more store and a fence; a v2 call one more load and a fence.
+      Turn it off on a board whose RAM cannot carry it and whose servers do
+      not need badges.
+
+config NAMES_LEND_TTL_MS
+    int "Lifetime of a capability the name server lends (ms, 0 = the server's own)"
+    range 0 86400000
+    default 0 if HWCLASS_EMBEDDED
+    default 600000 if HWCLASS_SERVER
+    default 3600000
+    help
+      The name server (NAMESD.ELF) stamps every endpoint it lends with
+      `now + this`: the transfer descriptor's `expiry_ns`, which the kernel
+      turns into the deadline of the borrower's copy in the warrant tree (the
+      earlier of it and the server's own, so a lease never outlives its
+      parent). When it passes, a call through the copy fails as stale and the
+      borrower asks the name server again (azos_names::Renewing). 0 lends
+      with no deadline of its own: the copy lives as long as the server's
+      capability, which a static wiring (EMBEDDED) has no use to shorten.
+
+      A shorter lease bounds how long a revoked or re-routed service stays
+      reachable through an old copy; each renewal is one more name-server
+      call per lease, so a very short one costs a lookup every few calls.
+      Cost: no RAM; one clock read per lookup. The same on every ISA: it is a
+      wall-clock lifetime, not a cycle count.
+
+config CAP_WEAK
+    bool "Weak (transitively read-only) capabilities for shadow rows"
+    default y
+    help
+      A topology task row with `shadow = true` (CAPS.TOML format 7) is
+      admitted in observe-only mode: its capability table is marked weak
+      (crates/core/ipc/src/cap_store.rs, mark_weak), so every capability it
+      holds, however it came by it, resolves with its rights masked to READ,
+      and everything derived from one stays weak (Warrant::WEAK, which no
+      derive can clear). Each use the mask refuses is recorded as a
+      shadow-refusal decision (DECISION_RECORDS_DEV), the evidence for
+      granting the authority by editing the signed row. The mask itself is
+      one flag test in the slot word every resolve already loads.
+
+      n: no weak warrant is ever published and a shadow row is seeded with
+      no capabilities at all (it cannot run strong).

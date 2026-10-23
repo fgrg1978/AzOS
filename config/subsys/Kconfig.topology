@@ -1,0 +1,759 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.topology — The signed topology: source, binding, sizing
+
+# ---------------------------------------------------------------------------
+# Signed capability topology (wave 15 TOPOSIGN)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Capability topology source"
+    default TOPOLOGY_SOURCE_SIGNED_REQUIRED if !BOARD_QEMU
+    default TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+    help
+      Where the boot takes the capability topology from: the rows every
+      ring-3 task's capabilities, scheduler class, priority and memory
+      budget come from. The signed form is /fat/CAPS.TOM + /fat/CAPS.SIG
+      (a bare Ed25519 signature under the embedded topology key, the key
+      CONFIG.SIG uses) and /fat/SCHED.TOM, which CAPS.TOM binds by its
+      SHA-256 (`sched_sha256`), together with this device's id and a
+      counter (TOPOLOGY_BIND_DEVICE, TOPOLOGY_COUNTER_FLOOR). The built-in
+      form is crates/core/topology/src/builder.rs, compiled into the image.
+      `make topo-volume TOPO_IMAGE=<img>` writes the built-in topology of a
+      given .config and feature set onto an image, bound to that image's
+      device (tests/host/topology-tests topo_emit).
+
+      CAPS.SIG is verified before any byte is parsed, and SCHED.TOM's hash
+      before SCHED.TOM is parsed; the parsed topology then passes the same
+      admission as the built-in one (admission_check, deadline_admission on
+      the real CPU count, the RT_BAND_CAP_PCT band, memory) BEFORE it is
+      published, so a refused file never becomes the topology.
+
+      Defaults (owner decision, 2026-10-05): "signed required" on every
+      product board (BOARD_VF2, BOARD_K1, BOARD_GENERIC: the vf2, k1,
+      embedded and fleet profiles), because under signed-or-built-in
+      deleting the files from the (USB-exposed) volume boots the built-in
+      topology, which may grant more than the deployment's signed one.
+      Every product make target builds the volume that carries them,
+      signed with the board key: `make vf2` -> $AZOS_OUT/build/disk-board.img,
+      `make k1` -> $AZOS_OUT/build/disk-board-k1.img, `make build-fleet` ->
+      $AZOS_OUT/build/disk-board-fleet.img; without TOPOLOGY_PRIVKEY_PATH they
+      refuse. "Signed if present" on BOARD_QEMU (development and the gate),
+      where one disk is booted by kernels with different built-in
+      topologies.
+
+      Cost, instructions at the topology install (QEMU virt, -icount
+      shift=0, -smp 1, the gate's 19-row topology, 2026-10-05),
+      riscv64 / aarch64:
+        built-in only (BUILTIN)                        17,800 / 16,376
+        no files on the volume (fallback + record)    126,400 / 116,141
+        signed set installed (one signature)        1,797,300 / 1,271,881
+      The one Ed25519 verification is about 1.35 M of it on riscv64
+      (measured with the verification skipped: 443,400); reads, the
+      SCHED.TOM hash, the binding, the floor sector, the parse and the
+      admission of the candidate are the rest. A first boot of a new
+      counter adds the floor write. RAM: the two buffers (see
+      TOPOLOGY_CAPS_MAX_KB), under every choice. The cost is printed on the
+      "[TOPO] Topology installed: ... in N ticks" line of every boot.
+
+    config TOPOLOGY_SOURCE_BUILTIN
+        bool "Built-in only (never read the volume)"
+        help
+          The topology compiled into the image, as before wave 15. The
+          files are not opened: no boot cost, no RAM for the buffers
+          (they are still reserved), and no record.
+
+    config TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+        bool "Signed if present and valid, else built-in"
+        help
+          The signed topology when all four files are on the volume and
+          it verifies, parses and is admitted. With none of the four
+          files, the built-in topology, a "[TOPO] WARNING" line and a
+          SAFETY_TOPO_SOURCE flight-recorder record (action 1, fallback
+          missing). A set that is present but refused (partial, too
+          large, bad signature, does not parse, not admitted) is a
+          security event: see TOPOLOGY_INVALID.
+
+    config TOPOLOGY_SOURCE_SIGNED_REQUIRED
+        bool "Signed required (halt without it)"
+        help
+          The signed topology or no boot. Missing or refused files write
+          a durable SAFETY_TOPO_SOURCE record (action 3 missing, 4
+          invalid) and halt the boot hart before any ring-3 task or
+          kernel task the topology admits is created. Choose it only
+          when every volume this image boots from carries the signed
+          files.
+
+endchoice
+
+choice
+    prompt "A signed topology that is present but invalid"
+    depends on TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN
+    default TOPOLOGY_INVALID_FALLBACK
+    help
+      Under "signed if present and valid": what a set that IS on the
+      volume but is refused does. Either way the boot prints a "[TOPO]
+      REFUSED" line with the reason and writes a durable
+      SAFETY_TOPO_SOURCE record whose detail says which file and step.
+
+      Default fallback: whoever can tamper with the files can also delete
+      them, and deletion already boots the built-in topology under this
+      source policy, so halting on a tampered file would add a denial of
+      service without closing anything. Halt is for a deployment that
+      wants a corrupted or tampered volume to stop the machine where it
+      can be inspected (with deletion still falling back; for "never
+      boot without the signed topology" choose "signed required").
+
+    config TOPOLOGY_INVALID_FALLBACK
+        bool "Fall back to the built-in topology"
+        help
+          Install the built-in topology after the REFUSED line and the
+          record (action 2, fallback invalid).
+
+    config TOPOLOGY_INVALID_HALT
+        bool "Halt"
+        help
+          Record (action 4, halt invalid) and halt the boot hart.
+
+endchoice
+
+config TOPOLOGY_BIND_DEVICE
+    bool "The signed topology must name this device"
+    depends on !TOPOLOGY_SOURCE_BUILTIN
+    default y
+    help
+      CAPS.TOM (format 4) must carry `device = "<32 hex>"` equal to this
+      device's id: the device record in reserved tail sector 2
+      (tools/device_provision.py), the id CONFIG.SIG v2 is bound to. A file
+      signed for another device is refused (SAFETY_TOPO_SOURCE detail step
+      8), a file with no `device` key too (step 10), and so is any file on a
+      device with no record (step 11). With n, `device` is optional, and
+      still checked when present.
+
+      Default y for every profile: `make` writes the image's own id into the
+      files it signs (QEMU images and board volumes alike). Cost: a 16-byte
+      compare and one sector read at boot (the record is already read for
+      CONFIG.INI; it is read again here), either ISA.
+
+config TOPOLOGY_COUNTER_FLOOR
+    bool "Refuse a signed topology older than the last one accepted"
+    depends on !TOPOLOGY_SOURCE_BUILTIN
+    default y
+    help
+      CAPS.TOM (format 4) must carry `counter = N` (N >= 1), and N must be at
+      least the floor this device keeps in reserved tail sector
+      TOPOLOGY_FLOOR_SECTOR. Accepting a file with a higher counter raises
+      the floor (one sector write and a flush, once per new counter). An
+      older, validly signed CAPS.TOM put back on the volume is refused as a
+      replay (SAFETY_TOPO_SOURCE detail step 9, low bits the counter). The
+      CONFIG.SIG v2 semantics: the floor only moves up, and a missing or
+      invalid floor record reads as 0.
+
+      What it does not stop: whoever can rewrite the reserved tail (a card
+      reader, not the USB export) can reset the floor.
+
+      Default y for every profile. Cost: one sector read per boot, either
+      ISA.
+
+config TOPOLOGY_FLOOR_SECTOR
+    int "Reserved tail sector of the topology counter floor"
+    range 3 7
+    default 3
+    help
+      Index in the reserved tail past the FAT32 volume
+      (kernel/src/reserved_tail.rs, 8 sectors) of the "KTPF" floor record
+      (crates/core/topology/src/device_record.rs). 0 is the link key, 1 the
+      entropy seed, 2 the device record; 3..7 are free. Change it only to
+      move it off a sector another feature of your build claims, and give
+      tools/device_provision.py --topo-sector the same value.
+
+config BOOT_INI_MAX_KB
+    int "Largest CONFIG.INI the boot reads (KiB)"
+    range 1 64
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      The buffer /fat/CONFIG.INI is read into before its CONFIG.SIG is
+      checked (kernel/src/boot/config_auth.rs). A larger file is refused
+      unread with its own reason, "CONFIG.INI larger than
+      BOOT_INI_MAX_KB" (AuthorityLoss::TooLarge, record code 10): it is
+      never verified over its first bytes, which would fail as a bad
+      signature and read as tampering. On a provisioned device it latches
+      the e-stop as any other loss of config authority does.
+      tools/gen_config_sig.py refuses to sign a file over the same limit.
+
+      Cost: this many KiB of .bss. The store holds at most 32 entries of a
+      24-byte key and a 48-byte value (crates/core/config), about 2.4 KB
+      of text without comments.
+
+config TOPOLOGY_CAPS_MAX_KB
+    int "Largest CAPS.TOM the boot reads (KiB)"
+    range 1 4096
+    default 8   if HWCLASS_EMBEDDED
+    default 16  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 256 if HWCLASS_SERVER
+    help
+      The buffer CAPS.TOM is read into (kernel/src/boot/topology.rs). It
+      stays allocated for the life of the kernel: every task name, class
+      name and grant target of the installed topology borrows from it. A
+      larger file is refused unread (SignedRefusal::TooLarge).
+
+      Cost: this many KiB of .bss on riscv64 and aarch64 alike, whether or
+      not the volume carries the file (also under TOPOLOGY_SOURCE_BUILTIN).
+      Size it from your file: the QEMU gate's topology (19 rows, 53
+      grants, its test rows included) is 4.6 KB; a row is about 100 bytes
+      plus 50 per grant. Fleet's 256 KiB leaves room for about 2,000 rows.
+
+config TOPOLOGY_SCHED_MAX_KB
+    int "Largest SCHED.TOM the boot reads (KiB)"
+    range 1 1024
+    default 2  if HWCLASS_EMBEDDED
+    default 4  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16 if HWCLASS_SERVER
+    help
+      The buffer SCHED.TOM is read into; kept for the kernel's life (the
+      class names borrow from it). A larger file is refused unread.
+
+      Cost: this many KiB of .bss, either ISA. The QEMU gate's SCHED.TOM
+      (5 classes) is under 1 KB; a class is about 190 bytes.
+
+config TOPOLOGY_NEVERALLOW
+    bool "Refuse a topology that breaks a neverallow rule"
+    default y
+    help
+      The rules of crates/core/topology/src/neverallow.rs state grants no
+      topology may make, whatever its file says: no ring-3 row holds an
+      actuator unless the table lists the row as one, no desktop image
+      grants a motor, no row both asks the name server for names and serves
+      an endpoint or a driver. A topology that breaks one is refused by
+      `admission_check` (the signed candidate falls back or halts as
+      TOPOLOGY_SOURCE says; the built-in topology halts) and a decision
+      record (`neverallow`, `why list`) names the rule and the row.
+      `make check-neverallow` runs the same rules over every preset's
+      topology, with this option ignored.
+
+      With n the rules are not applied at boot or by `admission_check`.
+      Cost: one pass over the rows' grants at install, either ISA, and a
+      few hundred bytes of rule table.
+
+config TOPOLOGY_DRIVETRAIN
+    bool "The built-in topology may declare the drivetrain"
+    depends on !USE_DESKTOP
+    default y
+    help
+      With the `profile-actuation` fixture (the QEMU board's), the
+      built-in topology grants `motor.0` and `motor.1` to the row that
+      drives the robot. A desktop image never does: the neverallow rule
+      `desktop-grants-no-motor` refuses a topology that grants a motor
+      there, so this option is hidden (and n) under USE_DESKTOP rather
+      than leaving the combination to be refused at boot.
+
+      Cost: none; two grants of the autorun row, either ISA.
+
+config TOPOLOGY_MAX_CLASSES
+    int "Scheduler classes a topology may declare"
+    range 6 255
+    default 8
+    help
+      Size of the class table of the topology
+      (crates/core/topology/src/types.rs, MAX_CLASSES). A SCHED.TOM with
+      more classes is refused by the parser. The class count is kept in a
+      u8, hence the range.
+
+      Cost: 32 B of RAM per class (the topology slot, .data) and 132 B of
+      stack per class in deadline admission (a u32 per class for each of
+      its 32 admission CPUs, plus the budget), either ISA. The built-in
+      topology declares 6 (the five built-in classes and `session`), hence
+      the lower bound.
+
+config TOPOLOGY_MAX_PIPELINES
+    int "[pipeline.NAME] sections a topology may declare"
+    range 1 255
+    default 8
+    help
+      Size of the pipeline table (MAX_PIPELINES): each declared pipeline
+      adds its dma_kb to the boot DMA pool (DMA_POOL_FLOOR_KB). More are
+      refused. Kept in a u8.
+
+      Cost: 24 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_DEVICE_ROWS
+    int "[device.NAME] rows a topology may declare"
+    range 1 255
+    default 16 if HWCLASS_EMBEDDED
+    default 32
+    help
+      Size of the device row table (MAX_DEVICE_ROWS, CAPS.TOML format 6):
+      each `[device.NAME]` row selects hardware the bus detects (`match =
+      "pci:1af4:1041"`, `"dt:ns16550a"`, `"virtio:2"`, `"pciclass:010802:
+      ffffff"`) and says what to do with it: admit it, admit it with another
+      native driver (`driver = "..."`), or refuse it (`admit = false`). With
+      HWBUS_AUTOBIND_TOPOLOGY a device no row admits is detected and not
+      bound. More rows are refused. Kept in a u8.
+
+      Cost: 96 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_IMPORTS
+    int "Names one task row may import from the name server"
+    range 1 64
+    default 8
+    help
+      The `imports = [...]` list of a [task.NAME] row (CAPS.TOML format 5):
+      the endpoint names the name server (NAMESD.ELF) may hand that row. A
+      row with more is refused by the parser. The list is the row's whole
+      claim on the name space: a name it does not list is not answered.
+
+      Cost: none by itself; the pool is TOPOLOGY_IMPORTS_TOTAL.
+
+config TOPOLOGY_IMPORTS_TOTAL
+    int "Imports declared across all rows of a topology"
+    range 1 4096
+    default 32
+    help
+      Size of the imports pool (types.rs, IMPORTS_TOTAL): every name any row
+      imports takes one entry. More are refused. The built-in topology
+      declares 1 (the shell imports the terminal).
+
+      Cost: 16 B of RAM per entry (a name slice, .data), either ISA.
+
+config TOPOLOGY_MAX_SIGNERS
+    int "Package signers one topology may admit"
+    range 1 64
+    default 4
+    help
+      The `[signer.NAME]` sections of a format-6 CAPS.TOM: the device policy
+      of signed application packages (crates/core/pkg). A package installs
+      only when its author's key is one of these; a topology with more is
+      refused by the parser. The policy is signed with the rest of the
+      topology, so the device owner's key is the only root of trust and a
+      package cannot add a signer for itself.
+
+      Cost: 80 B of RAM per entry (.bss in the installer, .data in the
+      kernel), either ISA.
+
+config TOPOLOGY_SIGNER_WARRANTS_TOTAL
+    int "Warrant ceilings declared across all signers"
+    range 1 1024
+    default 32
+    help
+      Size of the pool behind the signers' `warrants = ["kind:prefix", ...]`
+      lists (types.rs, SIGNER_WARRANTS_TOTAL): the ceiling of what each
+      signer's packages may ask for. A package row holding a grant no entry
+      of its signer covers is refused. More entries than the pool holds are
+      refused by the parser.
+
+      Cost: 16 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_PEERS
+    int "[peer.NAME] sections (classes of remote nodes) a topology may declare"
+    range 1 16
+    default 4
+    help
+      Size of the peer table (types.rs, MAX_PEERS), CAPS.TOML format 6: a
+      class is a set of node ids an `export` of the RPC server's row may name
+      (`export = ["decisions@fleet"]`). More are refused.
+
+      Cost: 50 B plus 36 B per TOPOLOGY_PEER_NODES of RAM per class (the
+      nodes, their pinned Noise keys and the measurement), either ISA.
+
+config TOPOLOGY_PEER_NODES
+    int "Nodes one peer class may list"
+    range 1 16
+    default 4
+    help
+      The `nodes = [...]` list of a [peer.NAME] section. A node belongs to one
+      class only. More are refused. Cost: 36 B per node per class (the node
+      id and its pinned Noise key), either ISA.
+
+config TOPOLOGY_EXPORTS_TOTAL
+    int "Export entries across the RPC server's row"
+    range 1 256
+    default 16
+    help
+      Size of the exports pool (types.rs, EXPORTS_TOTAL): every NAME@CLASS of
+      the `export` key takes one entry. More are refused. Nothing leaves a
+      node except through one of these entries.
+
+      Cost: 48 B of RAM per entry (three name slices), either ISA.
+
+config TOPOLOGY_MAX_POLICIES
+    int "[policy.NAME] rows (limits on a Domain and its subtree) a topology may declare"
+    range 1 64
+    default 4 if HWCLASS_EMBEDDED
+    default 8
+    help
+      Size of the policy table (types.rs, MAX_POLICIES), CAPS.TOML format 7:
+      each `[policy.NAME]` row limits what a task row's Domain (and, with
+      `scope = "subtree"`, every Domain created beneath it) may create:
+      endpoints, ports, MemObjs above a size. The parent's limit holds for
+      every descendant, whatever the descendant is granted. More rows are
+      refused.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_LIVEPATCHES
+    int "[livepatch.NAME] rows (signed kernel patches the device admits) a topology may declare"
+    range 1 32
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the livepatch table (types.rs, MAX_LIVEPATCHES), CAPS.TOML
+      format 7: each `[livepatch.NAME]` row admits ONE patch blob, named by the
+      SHA-256 of its bytes, for one ISA, bound to a kernel build-id and a
+      security epoch. A blob no row names is refused, so the signed topology
+      is the allowlist of what may be written into the kernel's text; a
+      certifiable profile admits none. More rows are refused.
+
+      Cost: 96 B of RAM per entry, either ISA.
+
+config TOPOLOGY_LEAP_ENTRIES
+    int "Leap-second entries the [clock] row of a topology may declare"
+    range 1 64
+    default 8 if HWCLASS_EMBEDDED
+    default 32
+    help
+      Size of the TAI-UTC table (types.rs, LEAP_ENTRIES), CAPS.TOML format 7:
+      `leaps = ["<UTC unix seconds>:<TAI-UTC after>", ...]` in the `[clock]`
+      row. TAI is UTC plus this offset, and the signed table is the device's
+      only source of it until a time source (NTP/PTP) announces a newer one.
+      The table in force since 1972 has 28 entries. More are refused.
+
+      Cost: 16 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_SWAPS
+    int "[swap.NAME] rows (swap areas on a partition) a topology may declare"
+    range 1 4
+    default 1
+    help
+      Size of the swap table (types.rs, MAX_SWAPS), CAPS.TOML format 7: each
+      `[swap.NAME]` row names the partition (1 to 16, the block layer's
+      partition table) that holds a swap area. A partition is used by one row
+      of the swap and volume tables together. More rows are refused.
+
+      Cost: 24 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_VOLUMES
+    int "[volume.NAME] rows (native volumes to mount) a topology may declare"
+    range 1 16
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the volume table (types.rs, MAX_VOLUMES), CAPS.TOML format 7:
+      each `[volume.NAME]` row names the partition that holds an azvol native
+      volume, where to mount it, whether it is read-only, whether its blocks
+      are encrypted at rest and, for a read-only system image, the verity root
+      hash it must match. A partition is used by one row of the swap and
+      volume tables together. More rows are refused.
+
+      Cost: 88 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_LOGINS
+    int "[login.NAME] rows (SSH logins) a topology may declare"
+    range 1 4
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the login table (types.rs, MAX_LOGINS), CAPS.TOML format 7:
+      each `[login.NAME]` row is one account of the SSH server (SSHD): NAME
+      is the user name `ssh` is given, and `ssh_key` lists the ssh-ed25519
+      public keys (TOPOLOGY_LOGIN_KEYS at most) that log in as it. The rows
+      are in the signed topology, so adding a key is a new signed topology
+      and not a file on the volume. The kernel shows the rows to the SSH
+      server and the login server in their view region (`inspect.logins`:
+      a user name and a 32-byte key per node, MAX_LOGINS * LOGIN_KEYS of
+      them, sized at boot). More rows are refused.
+
+      Cost: 80 B of RAM per entry and key, either ISA.
+
+config TOPOLOGY_LOGIN_KEYS
+    int "ssh_key entries one [login.NAME] row may list"
+    range 1 4
+    default 2
+    help
+      Public keys one login may have (types.rs, LOGIN_KEYS): a person with a
+      laptop and a phone has two. More are refused.
+
+config TOPOLOGY_MAX_GUESTS
+    int "[guest.NAME] rows (virtual machines the device may run) a topology may declare"
+    range 1 16
+    default 1 if HWCLASS_EMBEDDED
+    default 2
+    help
+      Size of the guest table (types.rs, MAX_GUESTS), CAPS.TOML format 7: each
+      `[guest.NAME]` row declares one guest: its virtual CPUs, its memory, the
+      device backends it is given and the envelope its effects are held to. A
+      guest holds no capability of its own; the ring-3 backends that serve its
+      devices do. More rows are refused.
+
+      Cost: 40 B plus 16 B per TOPOLOGY_GUEST_DEVICES of RAM per entry, either
+      ISA.
+
+config TOPOLOGY_GUEST_DEVICES
+    int "Device backends one guest row may list"
+    range 1 16
+    default 8
+    help
+      The `devices = [...]` list of a [guest.NAME] row: the backends
+      (`virtio-blk`, `virtio-net`, `virtio-console`, ...) the guest is given.
+      A row with more is refused.
+
+      Cost: 16 B per device per guest, either ISA.
+
+config TOPOLOGY_MAX_ROUTES
+    int "[route.NAME] rows (static routes) a topology may declare"
+    range 1 64
+    default 8 if HWCLASS_EMBEDDED
+    default 16
+    help
+      Size of the route table (types.rs, MAX_ROUTES), CAPS.TOML format 7: each
+      `[route.NAME]` row is one static route, a destination prefix (IPv4 or
+      IPv6) reached on an interface, directly or through a gateway, at a
+      metric. A default route learned from DHCP is not a row. More rows are
+      refused.
+
+      Cost: 88 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_FIREWALL_ROWS
+    int "[firewall.NAME] rows (packet filter rules) a topology may declare"
+    range 1 128
+    default 16 if HWCLASS_EMBEDDED
+    default 32
+    help
+      Size of the firewall table (types.rs, MAX_FIREWALL_ROWS), CAPS.TOML
+      format 7: each `[firewall.NAME]` row is one rule of the packet filter,
+      a direction, a protocol, a port or port range, a remote address prefix
+      and an action. Rules are tried in file order and the first match wins.
+      More rows are refused.
+
+      Cost: 72 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_TSN
+    int "[tsn.NAME] rows (TSN admissions) a topology may declare"
+    range 1 16
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the TSN table (types.rs, MAX_TSN), CAPS.TOML format 8: each
+      `[tsn.NAME]` row admits real-time traffic on one network device with a
+      Qbv gate window and a link budget.
+      More rows are refused.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_FIELDBUS
+    int "[fieldbus.NAME] rows (fieldbus masters) a topology may declare"
+    range 1 16
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the fieldbus table (types.rs, MAX_FIELDBUS), CAPS.TOML format 8:
+      each `[fieldbus.NAME]` row runs one EtherCAT, CANopen or Modbus master on a
+      device.
+      More rows are refused.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_AUDIO
+    int "[audio.NAME] rows (audio streams) a topology may declare"
+    range 1 16
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the audio table (types.rs, MAX_AUDIO), CAPS.TOML format 8: each
+      `[audio.NAME]` row is one stream on one codec or controller.
+      More rows are refused.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_DISPLAYS
+    int "[display.NAME] rows (panels) a topology may declare"
+    range 1 16
+    default 1 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the display table (types.rs, MAX_DISPLAYS), CAPS.TOML format 8:
+      each `[display.NAME]` row is one panel the compositor drives.
+      More rows are refused.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_USERS
+    int "[user.NAME] rows (human users) a topology may declare"
+    range 1 16
+    default 1 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the user table (types.rs, MAX_USERS), CAPS.TOML format 8: each
+      `[user.NAME]` row is one user, with a root directory warrant and a
+      keystore.
+      More rows are refused.
+
+      Cost: 48 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_KEYS
+    int "[key.NAME] rows (named keys) a topology may declare"
+    range 1 64
+    default 8 if HWCLASS_EMBEDDED
+    default 16
+    help
+      Size of the key table (types.rs, MAX_KEYS), CAPS.TOML format 8: each
+      `[key.NAME]` row names a key by purpose and source. A row never holds
+      key material.
+      More rows are refused.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_BOOT_STAGES
+    int "[boot_chain.NAME] rows (boot stages) a topology may declare"
+    range 1 16
+    default 8
+    help
+      Size of the boot-chain table (types.rs, MAX_BOOT_STAGES), CAPS.TOML
+      format 8: each `[boot_chain.NAME]` row is one stage of the boot chain and
+      the digest it must measure to.
+      More rows are refused.
+
+      Cost: 56 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_ISLANDS
+    int "[island.NAME] rows (low-power islands) a topology may declare"
+    range 1 8
+    default 1 if HWCLASS_EMBEDDED
+    default 2
+    help
+      Size of the island table (types.rs, MAX_ISLANDS), CAPS.TOML format 8:
+      each `[island.NAME]` row is a co-processor that runs signed firmware over
+      a mailbox queue.
+      More rows are refused.
+
+      Cost: 56 B of RAM per entry plus the wake list (TOPOLOGY_ISLAND_WAKE), either ISA.
+
+config TOPOLOGY_ISLAND_WAKE
+    int "Wake events one [island.NAME] row may list"
+    range 1 16
+    default 4 if HWCLASS_EMBEDDED
+    default 8
+    help
+      Size of an island row's wake list (types.rs, ISLAND_WAKE), CAPS.TOML
+      format 8: the events that wake the main kernel. More events are refused.
+      More rows are refused.
+
+      Cost: 16 B of RAM per event per island row, either ISA.
+
+config TOPOLOGY_MAX_ACTIVITIES
+    int "[activity.NAME] rows (deferred work) a topology may declare"
+    range 1 64
+    default 8 if HWCLASS_EMBEDDED
+    default 16
+    help
+      Size of the activity table (types.rs, MAX_ACTIVITIES), CAPS.TOML format
+      8: each `[activity.NAME]` row names a task that runs when the machine
+      can spare it.
+      More rows are refused.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_NUMA
+    int "[numa.NAME] rows (memory nodes) a topology may declare"
+    range 1 64
+    default 2 if HWCLASS_EMBEDDED
+    default 8
+    help
+      Size of the NUMA table (types.rs, MAX_NUMA), CAPS.TOML format 8: each
+      `[numa.NAME]` row is one memory node and the CPUs attached to it.
+      More rows are refused.
+
+      Cost: 32 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_ENVELOPES
+    int "[envelope.NAME] rows (effect ceilings) a topology may declare"
+    range 15 64
+    default 16
+    help
+      Size of the effect-envelope table (types.rs, MAX_ENVELOPES), CAPS.TOML
+      format 8: each `[envelope.NAME]` row bounds one kind of effect (config
+      write, OTA apply, egress, delete, real-time reservation) for one class.
+      More rows are refused. The built-in development topology states five
+      `full` rows (delete, egress, config, ota, rt_time) for each of the three
+      classes its tasks run in, 15 rows, so the table is not smaller than that
+      on any profile.
+
+      Cost: 40 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_NICS
+    int "[nic.NAME] rows (network interfaces) a topology may declare"
+    range 1 16
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      Size of the NIC table (types.rs, MAX_NICS), CAPS.TOML format 8: each
+      `[nic.NAME]` row configures one network device (MTU, address).
+      More rows are refused.
+
+      Cost: 48 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_MODELS
+    int "[model.NAME] rows (model bundles) a topology may declare"
+    range 1 32
+    default 2 if HWCLASS_EMBEDDED
+    default 8
+    help
+      Size of the model table (types.rs, MAX_MODELS), CAPS.TOML format 8: each
+      `[model.NAME]` row names a model bundle by hash and variant.
+      More rows are refused.
+
+      Cost: 64 B of RAM per entry, either ISA.
+
+config TOPOLOGY_MAX_USB_RULES
+    int "[usb.NAME] rows (USB authorization rules) a topology may declare"
+    range 1 64
+    default 8 if HWCLASS_EMBEDDED
+    default 16
+    help
+      Size of the USB rule table (types.rs, MAX_USB_RULES), CAPS.TOML format
+      8: each `[usb.NAME]` row allows or denies the USB devices it selects.
+      Rules are tried in file order and the first match wins.
+      More rows are refused.
+
+      Cost: 32 B of RAM per entry, either ISA.
+
+config TOPOLOGY_GUEST_PASSTHROUGH
+    int "Devices one [guest.NAME] row may pass through"
+    range 1 16
+    default 4 if HWCLASS_EMBEDDED
+    default 8
+    help
+      Size of a guest row's passthrough list (types.rs, GUEST_PASSTHROUGH),
+      CAPS.TOML format 8: the physical devices handed to the guest itself.
+      More devices are refused.
+      More rows are refused.
+
+      Cost: 16 B of RAM per device per guest row, either ISA.
+
+config TOPOLOGY_NAME_MAX
+    int "Longest task, class or pipeline name in a topology (bytes)"
+    range 8 255
+    default 32
+    help
+      MAX_TASK_NAME_LEN: the longest section name ([task.NAME],
+      [class.NAME], [pipeline.NAME]), class reference and enum word the
+      parser accepts; longer is refused (NameTooLong). Names borrow from
+      the file buffer, so this costs no RAM; it bounds the parser's scans.
+
+config TOPOLOGY_TARGET_MAX
+    int "Longest grant target in a topology (bytes)"
+    range 16 255
+    default 64
+    help
+      MAX_TARGET_LEN: the longest `target = "..."` of a grant (a channel
+      path, an image name, "disk.part.1"); longer is refused. No RAM cost
+      (targets borrow from the file buffer).
+
+config TOPOLOGY_INLINE_FIELDS_MAX
+    int "Fields in one grant's inline table"
+    range 5 32
+    default 8
+    help
+      MAX_INLINE_FIELDS: how many `key = value` pairs one `{ ... }` grant
+      may hold (kind, target, perm, transfer, ops are the five in use). More
+      are refused. Cost: 32 B of parser stack per field, either ISA.

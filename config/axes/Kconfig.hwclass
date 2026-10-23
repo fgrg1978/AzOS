@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/axes/Kconfig.hwclass — The HWCLASS axis: the hardware class, the tier the limits key on
+
+# ---------------------------------------------------------------------------
+# HWCLASS
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Hardware class (HWCLASS)"
+    default HWCLASS_EMBEDDED if PRESET_FIRMWARE || PRESET_WEARABLE
+    default HWCLASS_DESKTOP if PRESET_DESKTOP
+    default HWCLASS_SERVER if PRESET_SERVER
+    default HWCLASS_SBC
+    help
+      The class of machine the image runs on. It picks the resource-limit
+      tier (config/limits/Kconfig.limits): embedded the smallest tables,
+      sbc and desktop the Edge tables, server the Fleet tables. Each limit
+      can still be set by hand under "Resource Limits".
+
+    config HWCLASS_EMBEDDED
+        bool "Embedded (small boards, 16-64 MiB of RAM)"
+        help
+          Small boards running one device's workload, linked into the 14 MiB
+          above the firmware (kernel/linker-embedded.ld). The smallest tables.
+
+    config HWCLASS_SBC
+        bool "Single-board computer (VF2, K1, Raspberry Pi 5, RK3588)"
+        help
+          1-8 GiB of RAM: the Edge tables, sized for about 200 userspace
+          apps, 100 sensor streams and one upstream link.
+
+    config HWCLASS_DESKTOP
+        bool "Desktop / workstation"
+        help
+          The Edge tables until the desktop tier has its own.
+
+    config HWCLASS_SERVER
+        bool "Server / gateway machine"
+        help
+          Many devices aggregated: the Fleet tables (a 135 MiB static image
+          and a 256 MiB kernel heap).
+
+endchoice

@@ -2,47 +2,17 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # AZOS Kconfig — root menu
 #
-# Sources all sub-menus in logical order.
+# config/Kconfig declares the menus and sources every topic file under
+# config/{axes,arch,kernel,subsys,domains,limits}/, one topic per file.
 # Run `make menuconfig` to edit interactively.
 # Run `make defconfig-edge` to load the edge preset.
 #
 # GENERATED OUTPUT: .config (gitignored)
-# SOURCE OF TRUTH:  these Kconfig.* fragments
+# SOURCE OF TRUTH:  the Kconfig topic files under config/
 #
 # Convention: every option is prefixed CONFIG_ in the generated .config file.
 # Do NOT write CONFIG_ here — kconfiglib adds it automatically.
 
 mainmenu "AZOS Kernel Configuration"
 
-# The preset and the profile axes come first: PRESET is the one choice a
-# defconfig needs, and it sets the defaults of the axes that follow.
-source "config/Kconfig.preset"
-
-# The application domain (the USE axis, derived from the preset, never asked) comes
-# next: it decides which domain menus are
-# shown (config/Kconfig.robot sources config/Kconfig.brain and is visible only
-# for USE_ROBOT).
-source "config/Kconfig.use"
-source "config/Kconfig.robot"
-source "config/Kconfig.arch"
-source "config/Kconfig.hv"
-source "config/Kconfig.platform"
-source "config/Kconfig.limits"
-source "config/Kconfig.storage"
-source "config/Kconfig.timing"
-source "config/Kconfig.network"
-source "config/Kconfig.security"
-source "config/Kconfig.packages"
-source "config/Kconfig.mitigations"
-source "config/Kconfig.drivers"
-source "config/Kconfig.linux"
-source "config/Kconfig.relibc"
-source "config/Kconfig.audio"
-# The programs under userspace/ (board volume contents, the console program).
-# Generated at every parse by the line below, never committed: a program
-# directory added or deleted shows up at the next configuration.
-$(shell,python3 tools/gen_userspace_kconfig.py)
-source "config/Kconfig.userspace"
-source "config/Kconfig.ota"
-source "config/Kconfig.development"
-source "config/Kconfig.micro"
+source "config/Kconfig"

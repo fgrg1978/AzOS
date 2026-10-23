@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.secure-boot — Secure boot and link provisioning enforcement
+#
+# Maps to cargo features `secure-boot-enforced` and
+# `link-provisioning-enforced`.
+
+# ---------------------------------------------------------------------------
+# Secure boot
+# ---------------------------------------------------------------------------
+
+config SECURE_BOOT_ENFORCED
+    # cargo-feature: secure-boot-enforced
+    bool "Enforce Ed25519 signature verification at boot" if !BUILD_TYPE_CERTIFIABLE
+    default y if !BUILD_TYPE_DEV
+    default n
+    help
+      Default: y on every build except BUILD_TYPE_DEV (release-safe;
+      the QEMU board is a development build, the boards are release
+      builds). A development build keeps the TEST key and unsigned boot.
+      When enabled, the bootloader verifies the kernel image signature
+      using the Ed25519 public key embedded at build time (crates/core/ota, was SECURE_BOOT_KEY_FP -- removed 2026-09-26, V2.6, never consumed)
+      before jumping to _start.  If the signature is absent or invalid,
+      boot halts unconditionally.
+      Disable only for development.  MUST be y for any production
+      deployment — enforced by cargo feature `secure-boot-enforced`.
+      A BUILD_TYPE_CERTIFIABLE build has it on and cannot turn it off.
+
+config LINK_PROVISIONING_ENFORCED
+    # cargo-feature: link-provisioning-enforced
+    bool "Brain link provisioning: no boot without a link key, no UART bridge"
+    default n
+    depends on USE_ROBOT
+    help
+      Robot domain only (wave 11): the brain link exists only there.
+      The brain's TCP link is always a Noise session (ChaCha20-Poly1305,
+      keys from a per-connection handshake): there is no plaintext mode and
+      no MAC-only mode in any build, and a key in CONFIG.INI cannot change
+      that.  This option hardens what surrounds it:
+        * boot halts when the link key (the reserved sector past the
+          filesystem, which no file write can reach) is missing or invalid, instead
+          of going on with the link down;
+        * the handshake is refused while the entropy pool is unseeded, so
+          no session is ever keyed from timing alone;
+        * the UART bridge, which carries brain-protocol frames (including
+          motion commands) outside any session, is down in both directions.
+      A keyless encrypted-only robot can never talk, so the failure
+      surfaces at provisioning, not in the field.
+      Enforced by cargo feature `link-provisioning-enforced`, compile-time
+      only, no runtime override, mirroring SECURE_BOOT_ENFORCED.
+      Note the trade-off: a unit that loses its key will not boot.

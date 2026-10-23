@@ -113,7 +113,7 @@ LX_DEP_RE = re.compile(r'path\s*=\s*"[^"]*(?:^|/)lx/glue(?:/|")')
 T5_ALLOWED = {
     ".gitmodules",
     "tools/lx_license_lint.py",
-    "config/Kconfig.linux",
+    "config/axes/Kconfig.personality",
     "tools/lx_kbuild/run.sh",
     "tools/lx_device_table.py",
     "lx/DEVICE_SOURCES",

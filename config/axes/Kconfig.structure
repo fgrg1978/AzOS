@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/axes/Kconfig.structure — The STRUCTURE axis: where the drivers run
+
+# ---------------------------------------------------------------------------
+# STRUCTURE
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Structure (STRUCTURE)"
+    default STRUCTURE_HYBRID
+    help
+      Where the drivers run.
+
+    config STRUCTURE_HYBRID
+        bool "Hybrid (each driver in the kernel or ring 3, as its own choice says)"
+        help
+          Every driver starts where its own placement choice
+          (DRV_<NAME>_PLACEMENT) says.
+
+    config STRUCTURE_RING3_DRIVERS
+        bool "Drivers as ring-3 servers"
+        imply DRV_RING3_DEFAULT
+        help
+          Drivers run as ring-3 server processes. Implies DRV_RING3_DEFAULT
+          (under "Drivers"), which starts every per-driver placement choice
+          at `ring3`; each can be changed by hand. Drivers a safety decision
+          reads have no placement choice and stay in the kernel (the closed
+          list is in config/subsys/Kconfig.drivers). The ring-3 drivers are started
+          from their topology rows (by the component manager) on BOARD_QEMU
+          only.
+
+endchoice

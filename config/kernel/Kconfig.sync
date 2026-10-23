@@ -1,0 +1,308 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.sync — Locks, futexes, RCU and lock-wait instructions
+
+# ---------------------------------------------------------------------------
+# Spin-wait (crates/core/arch-api spin.rs, every ISA)
+# ---------------------------------------------------------------------------
+
+config SPIN_WAIT_RELAX_SPINS
+    int "Spin-wait: relax polls before the wait hint"
+    range 0 65536
+    default 0 if ARCH_AARCH64
+    default 8 if ARCH_RISCV64 && HWCLASS_EMBEDDED
+    default 16 if ARCH_RISCV64
+    default 64 if ARCH_X86_64
+    default 16
+    help
+      `SpinWait::wait_while` re-reads the word this many times with
+      `cpu_relax` (pause / yield / PAUSE) between reads before it takes
+      the ISA's wait hint (Zawrs wrs.nto, LDAXR+WFE, UMWAIT) when the
+      hint is in use; without a hint it is the poll count per round and
+      changes nothing. 0 goes straight to the hint (Linux arm64's
+      `__cmpwait`; aarch64's default, where WFE wakes on the store with
+      no polling). Higher: a lower wake latency for short holds, more
+      bus reads and power while waiting. Costs no RAM; about 4
+      instructions per poll.
+
+choice
+    prompt "SpinLock implementation"
+    default SPINLOCK_IMPL_MCS if !HWCLASS_EMBEDDED && NR_CPUS >= 4
+    default SPINLOCK_IMPL_MCS if HWCLASS_EMBEDDED && NR_CPUS >= 2
+    default SPINLOCK_IMPL_TTAS
+    help
+      What `SpinLock<T>` (crates/core/sync) is under the same API; no call
+      site changes. Both use one 32-bit word, no sub-word atomic.
+
+      mcs: Linux's qspinlock (crates/core/sync/src/qspinlock.rs). Waiters
+      queue in arrival order, each spinning on its own CPU's node, so a
+      waiter's wait is bounded by the holds of the CPUs ahead of it (at
+      most NR_CPUS - 1) and no CPU is starved. Uncontended acquire: one
+      fetch-or and a branch (amoor.w.aq on riscv64, LSE LDSETA or LL/SC on
+      aarch64; LOCK CMPXCHG on x86_64), as many instructions as ttas;
+      release: a byte store. RAM: NR_CPUS * 64 bytes of queue nodes; about
+      1 KiB of out-of-line text.
+
+      ttas: test-and-test-and-set (an exchange, then wait reading the word).
+      Cheapest under no contention, but a CPU that releases and retakes the
+      lock can keep it while others spin: no bound on a waiter's wait.
+
+      Defaults: mcs on edge and fleet with NR_CPUS >= 4; on embedded with
+      NR_CPUS >= 2 (the real-time profile, where a bounded wait is the
+      contract and the nodes cost 256 bytes at 4 CPUs); ttas otherwise (one
+      CPU never queues, and with 2-3 CPUs edge/fleet favour code size).
+
+    config SPINLOCK_IMPL_TTAS
+        bool "ttas: test-and-test-and-set"
+    config SPINLOCK_IMPL_MCS
+        bool "mcs: queued (qspinlock), FIFO"
+endchoice
+
+config SPINLOCK_MCS_NODES
+    int "Queued SpinLock: nesting levels per CPU"
+    range 1 4
+    default 4
+    help
+      Queue nodes per CPU (SPINLOCK_IMPL = mcs), one per level of nested
+      contended acquisition on one CPU: task, deferred work, interrupt,
+      NMI-like. A CPU deeper than this waits on a trylock loop instead of
+      queueing (no FIFO for that acquisition). 16 bytes per node per CPU;
+      4 fill one cache line. Lower only to save RAM on a kernel that never
+      takes a SpinLock from interrupt context while one is contended.
+
+config SPINLOCK_MCS_PENDING
+    bool "Queued SpinLock: pending bit"
+    default y
+    help
+      With SPINLOCK_IMPL = mcs, the first waiter behind a holder spins on
+      the lock word itself (one fetch-or) instead of taking a queue node:
+      cheaper hand-off with one contender, as in Linux. Off: every waiter
+      queues (one node write and a tail CAS more per contended acquire).
+
+config RCU_QSBR
+    bool "Read-copy-update, quiescent-state based (QSBR)"
+    default n if NR_CPUS = 1
+    default y
+    help
+      Lock-free readers for kernel tables read far more often than they
+      change (crates/core/sync/src/qsbr.rs): a reader takes no lock, and a
+      writer frees what it replaced only after every CPU has passed a
+      quiescent state (a context switch, a return to user mode, idle).
+      The capability-table reads (`cap_store::get`, SYS_CAP_INFO) run
+      this way. Owner decision Q2: QSBR only (no sleepable readers), and
+      callbacks never run on the RT CPUs (RCU_NOCBS_CPUS).
+      Costs: 64 bytes per CPU (NR_CPUS), one kernel task (the callback
+      task) and, on a kernel entry from user mode or from idle, one atomic
+      add and a fence; on a return to user mode, one atomic add with
+      interrupts masked around it (about 10 instructions per syscall); at
+      a context switch, one store.
+      Off: not compiled. The capability reads take the table's SpinLock as
+      before, and no entry, switch or idle path carries an instruction.
+      Default off with one CPU, where a lock is never contended and the
+      per-syscall instructions buy nothing.
+
+config RCU_NOCBS_CPUS
+    hex "RCU: CPUs that never run RCU callbacks (the RT CPUs, a mask)"
+    default 0x0
+    help
+      Bit n set: CPU n never runs an RCU callback; the callback task is
+      pinned to the lowest CPU whose bit is clear (CPU 0, with a boot
+      warning, if every possible CPU's bit is set). Set the real-time
+      cluster's CPUs here so a batch of frees never lands in their
+      latency. A CPU in user mode is quiescent with or without a tick
+      (rule F5), so an RT CPU running one user task never holds a grace
+      period. Default none: no board here designates RT CPUs yet. No
+      cost: a constant read at boot.
+
+config RCU_STALL_TIMEOUT_MS
+    int "RCU: a grace period older than this is a stall (ms)"
+    range 10 600000
+    default 500 if HWCLASS_EMBEDDED
+    default 4000 if BUILD_TYPE_DEV
+    default 2000
+    help
+      A grace period that has not ended this long after it started is
+      reported once: the stall counter (`qsbr::stalls`, printed by the
+      callback task, failing the running ktest) names the first CPU that
+      has not passed a quiescent state. A CPU stuck in kernel code with
+      preemption off, or a hook that stopped reporting (the ktest canary
+      `rcu-idle-qs-skip`), shows here. Higher in a development build
+      (BUILD_TYPE_DEV: the QEMU defconfigs, whose timer is host wall time
+      under TCG; the build type, not the board, keys it). No cost: a
+      compare in the waiter's poll.
+
+config RCU_CALLBACK_PRIORITY
+    int "RCU: callback task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20
+    help
+      The task that waits for grace periods and runs RCU callbacks (the
+      frees) on the lowest CPU outside RCU_NOCBS_CPUS. Never RT: a free is
+      never urgent, and it sleeps between checks. Lower numbers run
+      first; the default sits with the io_ring worker. No cost.
+
+config RCU_GP_POLL_MS
+    int "RCU: grace-period poll interval of a waiter (ms)"
+    range 1 1000
+    default 1 if HWCLASS_EMBEDDED
+    default 2
+    help
+      A waiter (`synchronize_rcu`, the callback task) sleeps this long
+      between checks of the CPUs' counters while a grace period is open,
+      and not at all otherwise. Shorter frees sooner at one timer wake per
+      interval while a grace period is open; longer delays frees. One
+      check reads one word per online CPU.
+
+config A64_WFET_TICKS
+    int "aarch64: WFET deadline (generic counter ticks)"
+    range 100 100000000
+    default 2500
+    help
+      The deadline each WFET step is given (A64_WFXT): the longest one
+      wait step sleeps when no store to the lock word and no event
+      arrives, after which the word is re-read. 2500 ticks is about 40
+      us at QEMU's 62.5 MHz counter and 100 us at 24 MHz. Lower: more
+      re-reads of a word nobody writes. Unused without FEAT_WFxT.
+      Visible on every ISA so the constant always exists.
+
+config A64_TLBIRANGE_MIN_PAGES
+    int "aarch64: smallest shootdown that uses a TLB range invalidation (pages)"
+    range 2 4096
+    default 4
+    help
+      A shootdown of at least this many pages issues TLBI RVAE1IS /
+      RVAAE1IS (A64_TLBIRANGE): at most five operations for any length,
+      against one per page. Shorter runs stay per-page, where the
+      range form saves nothing. Unused without FEAT_TLBIRANGE. Visible
+      on every ISA so the constant always exists.
+
+config X86_UMWAIT_TSC_TICKS
+    int "x86_64: UMWAIT deadline (TSC ticks)"
+    range 1000 100000000
+    default 100000
+    help
+      The TSC deadline each UMWAIT step is given (X86_WAITPKG): the
+      longest one wait step sleeps when no store to the line and no
+      interrupt arrives, after which the word is re-read. 100000 is
+      Linux's IA32_UMWAIT_CONTROL default cap (about 30-50 us). Lower:
+      more re-reads of a word nobody writes; higher: bounded only by the
+      MSR cap. Unused without WAITPKG. Visible on every ISA so the
+      constant always exists.
+
+config X86_UMWAIT_C02
+    bool "x86_64: UMWAIT may enter C0.2 (deeper, slower wake)"
+    default y if HWCLASS_EMBEDDED
+    default n
+    help
+      n: C0.1 (ECX[0]=1), the faster wake a lock waiter wants. y: C0.2,
+      lower power and a slower wake (the sibling thread gains more), for
+      a power-bound board. Unused without WAITPKG.
+
+config FUTEX_SHARED
+    bool "Linux shared futexes on shm words keyed by (region, offset)"
+    default y
+    help
+      A Linux futex without FUTEX_PRIVATE_FLAG on a word of a shm region
+      the caller maps is filed in the futex table under the region's
+      object id and the word's offset (crates/core/sched/src/futex_table.rs),
+      the key the native notify calls use, so two processes that map the
+      region at different addresses meet on it. n: every Linux futex is
+      process-private (two processes sharing a word do not meet); the
+      native notify calls are unchanged.
+      Cost: no RAM; one shm mapping lookup (a scan of the shm table under
+      its lock) on each Linux futex call without FUTEX_PRIVATE_FLAG.
+
+config FUTEX_REQUEUE
+    bool "FUTEX_REQUEUE and FUTEX_CMP_REQUEUE"
+    default y
+    help
+      The Linux futex ops that wake some waiters of one word and move the
+      rest to another without waking them (a condition variable's
+      broadcast moves its waiters onto the mutex: one runs, not the herd).
+      n: both answer -ENOSYS, and a C library falls back to waking all.
+      Cost: no RAM; ~300 B of kernel text.
+
+# ---------------------------------------------------------------------------
+# Wait graph and its clients (wave 15 IF: N7 PI core, N8 kernel mutex,
+# N10 PI futex). Interfaces in crates/core/sync.
+# ---------------------------------------------------------------------------
+
+config WAIT_GRAPH
+    bool "Wait graph: one priority-inheritance core for mutex, PI futex and IPC"
+    default y
+    help
+      crates/core/sync/src/waitgraph.rs (N7): every object a task blocks
+      on while another task owns it (kernel mutex, PI futex, IPC call,
+      driver proxy) records its waiters by urgency, and a bounded
+      chain walk boosts the owner to its most urgent waiter (a deadline
+      donor passes its absolute deadline). A cycle is refused with EDEADLK.
+      y on every profile (the protocol is priority inheritance). n is for a
+      profile that uses a priority ceiling or a static schedule: every
+      client keeps its counted-donation path (proxy, fast IPC), the
+      kernel Mutex still sleeps and excludes but boosts nobody, and the PI
+      futex answers ENOSYS.
+      Stage 1 serialises the graph under one lock (interrupts off for the
+      length of one walk); per-object locks come later, same API.
+      Cost: 24 B per blockable object and a per-task PI record (32 B x
+      MAX_TASKS: effective attribute, waiter link, owned set, boost
+      floor); nothing on an uncontended acquire; one walk of at most
+      PI_MAX_DEPTH steps per contended block or release. n: zero bytes.
+
+config KMUTEX_ADAPTIVE_SPIN
+    int "Kernel mutex: spin-hint iterations while the owner runs, before sleeping"
+    range 0 100000
+    default 0 if NR_CPUS = 1
+    default 40 if ARCH_X86_64
+    default 200
+    help
+      A contended Mutex spins at most this many spin-hint iterations
+      (pause / yield / Zihintpause) while its owner is executing on
+      another CPU, then blocks on the wait graph. 0 never spins (the only
+      sensible value on one CPU). x86_64's PAUSE costs about 140 cycles on
+      current cores, so fewer iterations cover the same time as the
+      cheaper riscv64 and aarch64 hints. Raise it when sections are short
+      and context switches dominate; lower it under RT load (a spinning
+      task holds its CPU). Cost: no RAM; at most this many iterations of
+      CPU time per contended acquire.
+
+config KMUTEX_STEAL_RULE
+    bool "Kernel mutex: after a release only a more urgent task may overtake the top waiter"
+    depends on WAIT_GRAPH
+    default y
+    help
+      After a contended Mutex unlock, the word stays marked (no owner,
+      WAITERS) while a waiter is queued in the wait graph, so a newcomer
+      cannot take it with the one-CAS fast path. A task takes it only if
+      it is the top waiter, or strictly more urgent than the top waiter
+      (wait-graph PiAttr: Stop > DL by earlier deadline > RT by priority
+      > fair > idle), as Linux rt_mutex lock stealing. n: any newcomer may
+      take the lock ahead of the woken waiters (Linux's non-RT mutex),
+      which favours throughput over the waiters' latency. Cost: no RAM;
+      one graph-lock round trip and one top-waiter read per contended
+      acquire after a release; nothing on the uncontended paths.
+
+config FUTEX_PI
+    bool "PI futexes: FUTEX_LOCK_PI/UNLOCK_PI/TRYLOCK_PI and requeue-PI"
+    depends on WAIT_GRAPH
+    default y
+    help
+      crates/core/sync/src/pi_futex.rs (N10): Linux's PI futex word
+      protocol (TID | FUTEX_WAITERS | FUTEX_OWNER_DIED) on the wait graph,
+      owner-died through the robust list, and CMP_REQUEUE_PI /
+      WAIT_REQUEUE_PI. n answers ENOSYS as today. Cost: one pi_state
+      (about 48 B) per contended PI word, from a pool of MAX_TASKS.
+
+config FUTEX_PI_EXIT_RETRY_US
+    int "PI futex: back-off (us) before a locker retries a word whose owner is exiting"
+    range 1 100000
+    default 200 if HWCLASS_EMBEDDED
+    default 100
+    help
+      crates/core/sched/src/futex.rs (N10c, owner decision 10-10, Linux
+      handle_exit_race): a FUTEX_LOCK_PI/TRYLOCK_PI that finds the word's
+      owner mid-exit never makes it the owner; it drops the futex table
+      lock, sleeps this long so the exit hands the word over, and tries
+      again (deadline and signals honoured). Only that rare window pays
+      it. Lower trades CPU of a high-priority locker spinning on the exit
+      for latency; raise it on slow cores where an exit takes longer.
+      Read only with FUTEX_PI y. Cost: no RAM; one timer sleep per retry.

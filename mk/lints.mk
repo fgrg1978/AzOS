@@ -5,7 +5,7 @@
 
 # ── make ARCH=<isa> check ───────────────────────────────────────────────────
 # Type-check the kernel for one ISA without linking. For the x86_64 port
-# skeleton (config/Kconfig.arch ARCH_X86_64) it is the only build there is;
+# skeleton (config/arch/Kconfig.isa ARCH_X86_64) it is the only build there is;
 # its errors and compile_error!s are the porting checklist. The target triple
 # and the baseline codegen flags (`--rustflags`: x86_64's X86_64_LEVEL) come
 # from the expanded defconfig through tools/kconfig_to_cargo.py, and
@@ -56,7 +56,7 @@ check0:
 check1:
 	@env -u CARGO_TARGET_DIR bash tools/gate_tier.sh n1
 
-# Every preset (config/Kconfig.preset) expands on every ISA and the cargo
+# Every preset (config/axes/Kconfig.preset) expands on every ISA and the cargo
 # bridge accepts it (tools/check_presets.py). No kernel is built.
 check-presets:
 	@$(PYTHON) tools/check_presets.py

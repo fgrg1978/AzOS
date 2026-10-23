@@ -1,0 +1,676 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.trace — Logging, tracing, profiling and inspection
+#
+# Developer-facing options; should generally be off
+# in production defconfigs.
+
+config DOMAIN_ENTRY_COUNTERS
+    bool "Count kernel entries per Domain by foundational case"
+    default y
+    help
+      The one prologue of the trap layer (kernel/src/trap/syscall.rs) counts
+      every syscall in its Domain, in the counter of the call's foundational
+      case (1 authority, 2 block or wake; azos_abi::syscall_nr::syscall_case;
+      a device or cross-space op of invoke counts as authority), and in a
+      third counter the calls of a Linux task, which have no case. The
+      kernel-fault report prints them: what the task did with the kernel
+      before it died. Off: no counter is kept and the report prints zeros.
+
+      Cost: one relaxed atomic add on a counter shared by the threads of the
+      Domain, on every syscall.
+
+# ---------------------------------------------------------------------------
+# Kernel console log level
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Kernel console log level"
+    default LOG_LEVEL_WARN
+    help
+      Which kernel log lines are compiled in, Linux numbering (err 3,
+      warning 4, info 6, debug 7). A line above the level is not compiled
+      at all: no format string, no formatting code, no call
+      (crates/drivers/sys/src/uart.rs, `kerr!`/`kwarn!`/`kinfo!`/
+      `kdebug!`; a plain `kprintln!` is info).
+
+      Every deployment profile defaults to warn: errors, security
+      refusals and safety warnings only. The QEMU development configs
+      (config/defconfigs/qemu.config, qemu-aarch64.config), which the
+      gate builds, select debug so every gate row reads its lines.
+
+      Not affected by the level: the console output of the shell and of
+      ring-3 programs, the panic report, and the durable records (flight
+      recorder, /fat/CRASH.LOG, pstore).
+
+    config LOG_LEVEL_ERR
+        bool "err: errors only"
+
+    config LOG_LEVEL_WARN
+        bool "warn: errors, security refusals, safety warnings"
+
+    config LOG_LEVEL_INFO
+        bool "info: also boot progress and status lines"
+
+    config LOG_LEVEL_DEBUG
+        bool "debug: every kernel line"
+
+endchoice
+
+config LOG_LEVEL
+    int
+    default 3 if LOG_LEVEL_ERR
+    default 4 if LOG_LEVEL_WARN
+    default 6 if LOG_LEVEL_INFO
+    default 7 if LOG_LEVEL_DEBUG
+
+# ---------------------------------------------------------------------------
+# Masked-window tracer
+# ---------------------------------------------------------------------------
+
+config LAT_TRACE
+    # cargo-feature: lat-trace
+    bool "Interrupts-masked / preemption-disabled window tracer"
+    default n
+    help
+      Records, per hart, the longest window with interrupts masked and
+      the longest with preemption disabled, each with the call site that
+      opened it and the one that closed it, plus the longest window per
+      opening site. Read out in the introspection tree's `latency/`. The
+      analogue of Linux's
+      irqsoff/preemptoff tracers, for measuring a worst-case latency
+      budget.
+
+      Off (default): the hooks, the tables and the `latency/` nodes are not
+      compiled at all. Maps to the kernel cargo feature `lat-trace`
+      (tools/kconfig_to_cargo.py). On: every interrupt mask/unmask through
+      the arch-api `Interrupts` trait, every preemption-counter 0<->1
+      transition and every trap entry/exit reads the counter once.
+
+# ---------------------------------------------------------------------------
+# Real-time tasks never do block I/O (wave 15, owner rule)
+# ---------------------------------------------------------------------------
+
+config RT_BLOCK_IO_CHECK
+    bool "Panic when a real-time task enters the block layer"
+    depends on BUILD_TYPE_DEV
+    default y if LOG_LEVEL_DEBUG
+    default n
+    help
+      Owner rule: a real-time task (base priority below the scheduler's
+      RT threshold, 12) never does block I/O. Its flight-recorder records
+      go through the logger's ring and the non-RT log flusher task writes
+      them (LOG_FLUSHER_PRIORITY). With this on, every entry into
+      crates/drivers/block (read, write, flush) asks the scheduler whether
+      the calling task is real-time and panics naming the task if it is,
+      so a new path from an RT task to the disk fails the first boot that
+      takes it.
+
+      Off (default in every deployment profile, which build at log level
+      warn): the check is not compiled; the block layer is the device
+      call. On (default in the QEMU development configs, which select
+      LOG_LEVEL_DEBUG): one indirect call and a priority load per block
+      request, the same on riscv64, aarch64 and x86_64, and no RAM.
+      Development builds only (BUILD_TYPE).
+
+config CONSOLE_RT_APPEND_ONLY
+    bool "Real-time callers of the kernel log only append to the console"
+    default y
+    help
+      Owner rule: a real-time task only enqueues. A kernel log line
+      (kprintln!/kwarn!/klog) from a task whose own priority is in the RT
+      band is copied into the UART TX ring (drained by the UART's TX
+      interrupt) or, when the ring is full or the console has no TX
+      interrupt yet (early boot, before it is enabled), into the console's
+      deferred buffer, which a non-RT context drains (the next task-context
+      kernel line, the TX interrupt, the idle loop). It never takes the
+      console over to drain other contexts' lines and never waits for room
+      on the wire. When the buffer is full whole lines are dropped and
+      counted ("[CONSOLE] dropped ..."), never a wait.
+
+      On (default, every profile and ISA): one indirect call and a priority
+      load per kernel line. Off: an RT caller that finds deferred output
+      drains it in its own time, as before wave 15 (up to DRAIN_BUDGET bytes
+      of wire time, ~0.7 s at 115200 baud). Only for measuring that cost.
+
+config RT_CONSOLE_WIRE_CHECK
+    bool "Panic when a real-time task waits for the console wire"
+    depends on CONSOLE_RT_APPEND_ONLY
+    default y if LOG_LEVEL_DEBUG
+    default n
+    help
+      Dev check for CONSOLE_RT_APPEND_ONLY, like RT_BLOCK_IO_CHECK: the one
+      console call that waits for room on the wire, reached by a task whose
+      own priority is in the RT band, panics naming the task. With the
+      append-only path no RT kernel line reaches it; the gate canary
+      `canary=rt-console-own` (CANARY_RUNTIME) sends one there.
+
+      On (default in the QEMU development configs, LOG_LEVEL_DEBUG): one
+      indirect call on that path only, nothing on the append path, no RAM.
+      Off (every deployment profile): not compiled.
+
+# ---------------------------------------------------------------------------
+# Kernel event tracer (wave 15)
+# ---------------------------------------------------------------------------
+
+config KTRACE
+    bool "Kernel event tracer, read live from ring 3"
+    default y if LOG_LEVEL_DEBUG
+    default n
+    help
+      Per-CPU lock-free rings of 32-byte event records (scheduler,
+      interrupts, syscalls, IPC, page faults, process life cycle, and
+      the LAT_TRACE maxima) in one shared-memory region that a ring-3
+      reader holding Cap<Trace> maps and drains while the kernel runs
+      (userspace/services/tracectl). The kernel is the only producer of
+      each ring, the reader the only consumer; a record touches one
+      cache line, takes no lock and divides nothing.
+
+      Off (default in every deployment profile, which build at log
+      level warn): no tracepoint, no ring, no region is compiled; every
+      tracepoint folds to zero instructions, and the tracer's ops
+      answers -ENOSYS. On (default in the QEMU development configs,
+      which select LOG_LEVEL_DEBUG): each compiled-in tracepoint costs
+      its runtime-mask test while its class is masked off, and the
+      record path while it records (see KTRACE_BOOT_MASK). The
+      per-tracepoint and per-event instruction counts are measured in
+      ARCHITECTURE.md ("Tracing").
+
+config KTRACE_RING_ENTRIES
+    int "Trace records per CPU ring (power of two)"
+    range 64 8192
+    default 256 if HWCLASS_EMBEDDED
+    default 1024
+    help
+      Records each CPU's ring holds before the policy applies (a full
+      ring drops the newest record, or overwrites the oldest: see the
+      policy choice). Read only with KTRACE. Must be a power of two (the
+      slot is index & (entries - 1); the build refuses anything else).
+
+      RAM: entries x 32 B x online CPUs, plus 64 B of header and 128 B
+      per ring, in one kernel-owned shared-memory region, allocated at
+      boot. The region is capped at MAX_SHM_PAGES (64 pages, 256 KiB):
+      when the online CPUs times this value does not fit, the boot
+      halves the entries until it does and prints a warning. 1024 on 4
+      CPUs is 129 KiB. The same on both ISAs: the record size and the
+      region cap do not depend on the ISA. Embedded boards default to
+      256 (32 KiB on 4 CPUs).
+
+      Raise it when a reader that wakes rarely reports drops; lower it
+      to save RAM. The number of instructions per event does not change.
+
+config KTRACE_BOOT_MASK
+    hex "Trace classes recording from boot (runtime mask)"
+    range 0x0 0xff
+    default 0x0
+    help
+      The runtime class mask the tracer starts with; tracectl changes it
+      with the tracer's `LOG_TRACE_SET_MASK` op. Bit n is class n:
+      0 sched, 1 irq, 2 syscall, 3 ipc, 4 fault, 5 proc, 6 lat, 7 prof. Bits of
+      classes not compiled in are ignored. Read only with KTRACE.
+
+      0 (default): nothing records until a reader asks, so a tracer
+      that is compiled in but idle costs only the mask test per
+      tracepoint (a load, an and and a branch). Set 0xff with
+      KTRACE_POLICY_OVERWRITE for a flight recorder: the panic path
+      dumps each CPU's last records.
+
+choice
+    prompt "Trace ring policy when a ring is full"
+    default KTRACE_POLICY_DROP
+    help
+      What a full ring does with the next record. Read only with KTRACE.
+
+    config KTRACE_POLICY_DROP
+        bool "Drop the newest record and count it"
+        help
+          Default. The record is refused and the ring's drop counter
+          (in the shared region) counts it; the reader sees every
+          record it was given exactly once and never a torn one. The
+          producer never writes a slot the reader has not released.
+
+    config KTRACE_POLICY_OVERWRITE
+        bool "Overwrite the oldest record (flight recorder)"
+        help
+          The newest records always land. Each record is first marked
+          in progress, then written, then published (one more store and
+          a store-store fence per record); the reader re-checks every
+          record after copying it and counts the ones overwritten under
+          it as lost. With no reader attached a full ring stays full,
+          so every record also re-reads the reader's tail and stores the
+          ring's overwrite count (a load and a store more). Use with
+          KTRACE_BOOT_MASK for a black box whose last events survive to
+          the panic dump.
+
+endchoice
+
+choice
+    prompt "Trace timestamp source"
+    default KTRACE_TS_TIMEBASE
+    help
+      The counter each record's timestamp reads. Read only with KTRACE.
+
+    config KTRACE_TS_TIMEBASE
+        bool "The monotonic timebase (the clock vDSO's)"
+        help
+          Default. rdtime on riscv64, CNTVCT_EL0 on aarch64: the counter
+          the vDSO clock reads, the same on every CPU, at the rate the
+          region header publishes (10 MHz on QEMU riscv64 virt, the
+          live CNTFRQ_EL0 on aarch64), so records from different CPUs
+          merge into one timeline. One instruction per record.
+
+    config KTRACE_TS_CYCLES
+        bool "The CPU cycle counter"
+        help
+          rdcycle on riscv64, PMCCNTR_EL0 on aarch64 (A64_PMU starts it
+          on every CPU; with A64_PMU=n or no PMUv3 it reads 0):
+          finer, but per CPU (not comparable across CPUs), its rate is
+          not published (the header says 0) and it stops in WFI on
+          some cores. For measuring short sections on one CPU. Booted on
+          QEMU, both ISAs (rdcycle is readable from S-mode under OpenSBI;
+          A64_PMU enables PMCCNTR_EL0 on each CPU); on a board, check the
+          firmware leaves the counter readable (mcounteren.CY) first.
+
+endchoice
+
+config KTRACE_STATIC_KEYS
+    bool "Tracepoints as patched branches (static keys)"
+    depends on KTRACE
+    default y if ARCH_RISCV64
+    default y if ARCH_AARCH64
+    default n if ARCH_X86_64
+    help
+      Each tracepoint is one instruction in the kernel text, a branch to
+      the class's mask test while the class may record and a nop while it
+      is masked off: a masked tracepoint costs one nop instead of the mask
+      load, and, and branch (4 instructions). Like Linux's static keys.
+      Changing the class mask (the tracer's ops, Cap<Trace>) rewrites
+      every site of the changed classes: rare and slow by design.
+
+      The text stays read-execute. A site is rewritten only through
+      azos_mm::text_poke, which maps the page's frame at a temporary,
+      never-executable alias, writes the word, unmaps the alias with a
+      shootdown on every CPU and synchronises every CPU's instruction
+      fetch (riscv64: fence.i and an SBI remote fence.i; aarch64: IC
+      IALLUIS, DSB, ISB). Each site is a single naturally aligned 32-bit
+      instruction swapped for another (nop and jal/b), which aarch64
+      allows concurrently (CMODX) and riscv64 Linux relies on.
+
+      Every site is linked as the branch, so a kernel that cannot patch
+      (this off, or no free alias address at boot) keeps the
+      4-instruction mask test and stays correct. Costs 24 bytes of table
+      per site. Off: the mask test at every tracepoint.
+
+config KTRACE_KEY_BATCH
+    int "Static-key sites rewritten per lock hold"
+    range 1 64
+    default 8
+    help
+      A class-mask change (and the boot's first one) rewrites its sites
+      this many at a time: each batch holds the static-key lock with
+      interrupts off, re-reads the mask, writes the batch through
+      azos_mm::text_poke and pays one TLB shootdown and one instruction-
+      fetch synchronisation of every CPU. About 4,300 instructions a site
+      on riscv64 (measured under -icount), so the default holds the lock
+      ~35,000 instructions, well under LOCK_MAX_HOLD_US (100 us); one
+      hold for every site (26 at boot) was 113,000. Costs 16 bytes of
+      stack per site in the batch. Raise it for fewer shootdowns on a
+      mask change (rare), lower it if the hold bound fires on a slower
+      core or with more tracepoints. Read only with KTRACE_STATIC_KEYS.
+
+config KTRACE_CLASS_SCHED
+    bool "Trace class: scheduler (switch, wakeup)"
+    depends on KTRACE
+    default y
+    help
+      Two tracepoints: every context switch (do_schedule) and every
+      wakeup of a sleeping task. Off: neither is compiled.
+
+config KTRACE_CLASS_IRQ
+    bool "Trace class: interrupts (entry, exit)"
+    depends on KTRACE
+    default y
+    help
+      An entry and an exit record around every external and timer
+      interrupt the kernel dispatches, both ISAs. Off: not compiled.
+
+config KTRACE_CLASS_SYSCALL
+    bool "Trace class: system calls (entry, exit, seccomp denial)"
+    depends on KTRACE
+    default y
+    help
+      Entry and exit of every syscall, both ISAs, and every seccomp
+      denial. The heaviest class by event rate: off, the syscall path
+      carries no tracepoint at all (the vsbench syscall-floor lane is
+      the measure). Replaces SYSCALL_TRACE.
+
+config KTRACE_CLASS_IPC
+    bool "Trace class: fast IPC (call, reply)"
+    depends on KTRACE
+    default y
+    help
+      A record for every fast-IPC call and reply. Off: not compiled.
+
+config KTRACE_CLASS_FAULT
+    bool "Trace class: page faults"
+    depends on KTRACE
+    default y
+    help
+      A record for every page fault the trap handlers see, both ISAs,
+      with the address and the cause. Off: not compiled.
+
+config KTRACE_CLASS_PROC
+    bool "Trace class: process life cycle (spawn, exit, signal)"
+    depends on KTRACE
+    default y
+    help
+      A record when a task is created, when one exits (with its code)
+      and when a signal is delivered to a Linux task. Off: not compiled.
+
+config KTRACE_CLASS_LAT
+    bool "Trace class: masked-window maxima (LAT_TRACE)"
+    depends on KTRACE && LAT_TRACE
+    default y
+    help
+      A record each time LAT_TRACE measures a new longest
+      interrupts-masked or preemption-disabled window on a CPU, with
+      its length and the two call sites. Costs nothing outside those
+      new maxima. Needs LAT_TRACE.
+
+config PROFILER
+    bool "Sampling profiler: timer-driven PC and stack samples"
+    depends on KTRACE
+    default n
+    help
+      Adds the trace class `prof` (bit 7 of the runtime mask). While the
+      class is switched on, every PROFILER_TICK_DIV-th scheduler tick on
+      each CPU records one sample into that CPU's trace ring: the
+      interrupted PC, its task id, whether it ran in user or kernel mode,
+      and the return addresses of its frame-pointer chain (kernel or user),
+      at most PROFILER_DEPTH frames. The walk checks every link (alignment,
+      the stack's bounds, a chain that only climbs, a return address that
+      points into code, a user stack read that does not fault) and stops at
+      the first that fails, recording why. `tracectl profile` reads the
+      rings, aggregates the stacks, symbolizes them from the kernel and
+      user ELFs and writes folded stacks (flame graphs) and a Perfetto
+      trace. The same walker prints a backtrace on a kernel panic.
+
+      The build keeps a frame pointer in every function of the kernel and
+      of the user images (-C force-frame-pointers=yes), which costs a
+      register and a store/load pair per call: a profiling build, not a
+      deployment one. Off (default): no class, no hook in the tick, no
+      backtrace in the panic path, and the code is unchanged. Needs KTRACE.
+
+      The sampling rate is the scheduler tick (SCHED_HZ) divided by
+      PROFILER_TICK_DIV: a dedicated high-rate profiling timer is a
+      follow-up. The rate is exact only to the tick: code that runs with
+      interrupts masked is sampled at the instruction that unmasks them.
+
+config PROFILER_DEPTH
+    int "Profiler: frames per sample (the PC included)"
+    range 2 32
+    default 16
+    help
+      Read only with PROFILER. A sample takes 1 + (frames - 1) / 2 records
+      of the trace ring (32 B each), rounded up: 16 frames are 9 records,
+      288 B. Deeper stacks
+      cost ring space and walk time in the tick; the walk stops at this
+      depth and records that it did.
+
+config PROFILER_TICK_DIV
+    int "Profiler: sample every Nth scheduler tick"
+    range 1 1000
+    default 1
+    help
+      Read only with PROFILER. 1 samples at SCHED_HZ on every CPU. Raise it to keep the cost of a
+      long profile down, or to make the sample ring last longer between
+      the reader's polls.
+
+config INSPECT
+    # cargo-feature: inspect base
+    bool "Introspection tree: kernel state as read-only memory (no /proc, no system call)"
+    default y
+    help
+      The kernel publishes what it knows about itself (the scheduler's
+      run queues, memory, the decision counters, the devices, the drivers)
+      as a tree of typed nodes in a MemObj it alone writes
+      (crates/core/inspect). It is the kernel's only read-out: there is no
+      /proc and no /sys. A task that holds the
+      MemObj maps it read-only and walks the tree with loads: a read costs
+      no system call, no copy and no lock, and a value is consistent under a
+      per-node seqlock. The subtrees that name other tasks are in a second
+      MemObj, handed out only against an admin warrant (no root): the public
+      region carries no byte of them. A reader refuses a region of another
+      layout version.
+
+      A task is granted a region by its topology row, as a kernel sensor
+      stream is: `MemObj inspect.public` (READ), and `MemObj inspect.admin`
+      (READ) which the kernel grants only to a task that already holds the
+      full task view (`Cap<Task>` READ on "tasks"), the admin warrant. The
+      default tool image holds them; `inspect` prints the tree.
+
+      The signed topology's wiring a service needs (the name server's imports
+      and endpoints, the RPC server's peers and exports, the MCP bridge's
+      endpoints, the component manager's plan, the logins, the clock row) is
+      in one more region per service, `MemObj inspect.<view>`, granted only to
+      the rows that declare it and sized to what it holds. Without INSPECT
+      those services have no view: the component manager starts nothing, the
+      name server lends nothing, nobody can log in.
+
+      What a reader acts on (the task list, a view's endpoints, the
+      decision records) is written where it changes; the kernel's refresh
+      task samples the counters every INSPECT_REFRESH_MS. Cost: two MemObj
+      slots (MAX_MEMOBJS) and one per
+      view a row declares, the pages of INSPECT_PUBLIC_PAGES and
+      INSPECT_ADMIN_PAGES and of the views (one to 16 each) from the page
+      allocator for good, and the refresh task's few microseconds per period.
+      Maps to the kernel cargo feature `inspect`.
+
+config INSPECT_PUBLIC_PAGES
+    int "Introspection tree: pages of the public region"
+    depends on INSPECT
+    range 1 64
+    default 28 if USB_HOST
+    default 24
+    help
+      The public region's size, in pages (at most the 64 of a MemObj). Each
+      node takes 64 bytes and about as many again of value words; the
+      published tree is about 150 nodes plus 7 per CPU (a directory and three
+      counters, and 3 more in the `metrics/` subtree, which is about 155
+      nodes, 28 of them the bounded sleeps' `sync/`, plus one node a slot of
+      the wake ring, WAKE_RING_ENTRIES, and 22 more of the wake counters),
+      plus `system/`, `fs/`, `drivers/` (5 nodes a registry slot, 32 slots),
+      `devices/` (8 nodes a device of the hardware bus) and, with their
+      Kconfig, `soc/`, `thermal/`, `latency/` and `chaos/`; it fits 24 pages
+      of 4 KiB up to 16 CPUs and 40 devices. The boot line `[INSPECT] tree
+      published` says how many nodes and words it took. A tree that does not
+      fit loses its last nodes (the `metrics/` ones first) and the boot says
+      so. With USB_HOST the `usb/` subtree adds 7 nodes per USB_MAX_DEVICES
+      slot (about 32 nodes fit a page), which the default of 15 pages covers
+      for 16 slots; raise it with USB_MAX_DEVICES.
+
+config INSPECT_ADMIN_PAGES
+    int "Introspection tree: pages of the admin region (0 = none)"
+    range 0 64
+    default 0 if !INSPECT
+    default 16
+    help
+      The admin region's size, in pages. It holds the task rows (the TID,
+      name, state, priority and parent of each task, 64 rows or MAX_TASKS),
+      the wake log with its task IDs (WAKE_RING_ENTRIES) and the newest 24
+      decision records (DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE: a
+      record's subject may be a task), built once at boot; one task row is 6
+      nodes, one logged wake 1 and one record 1 (of 14 value words), and a
+      page of 4 KiB holds 32 nodes, so 16 pages hold the 64 rows, a ring of
+      32 wakes and the records (tests/host/inspect-tests checks it); a tree
+      that does not fit loses its last nodes (the boot says so). 0
+      publishes no admin region at all, and then `why woke` shows no task IDs.
+
+      Defined with INSPECT off too (as 0): the topology builder's const
+      grant list reads it, and a build without the tree (the embedded class,
+      the micro kernel) still compiles that list.
+
+config INSPECT_REFRESH_MS
+    int "Introspection tree: refresh period (ms)"
+    depends on INSPECT
+    range 10 60000
+    default 250
+    help
+      How often the kernel's `inspect` task rewrites the counters (the
+      public region's values, the wake log, a listed task's state and
+      priority). A counter is at most this old; what is written on change
+      (the task list's tasks, the views' endpoints, the decision records)
+      does not wait for it.
+
+config WAKE_RING_ENTRIES
+    int "Wake attribution: wakes the last-wake ring holds (power of two, 0 = off)"
+    range 0 64
+    default 0 if !INSPECT
+    default 32
+    help
+      Every wake of a blocked task is logged with its source: a timer, an
+      interrupt line (the line, and the CPU the event was routed to), an IPC
+      call or reply, a futex, a notify word, a ring doorbell, a port event, a
+      wait queue, another wake of a timed sleeper, or the reaper
+      (crates/core/sched/src/scheduler/wake/attrib.rs). The last
+      WAKE_RING_ENTRIES wakes are one ring of 32-byte slots in .bss, published
+      by the introspection tree as `metrics/wake/r<N>` with the Domain of the
+      task woken, the CPU it was queued on, the CPU that woke it and the time;
+      `why woke [N]` prints them. The task IDs (the task woken and its waker)
+      are only in the admin region (`wake/r<N>`, INSPECT_ADMIN_PAGES): the
+      public region is one for every reader and carries no task ID. Each wake
+      also counts in the Domain of the task it woke (`metrics/wake/dN`: wakes
+      and wakes per second).
+
+      Cost, on the wake path: one atomic add on the woken Domain's counter
+      and one test on every wake, the IPC hand-off's included; a logged wake
+      (WAKE_RING_SAMPLE_LOG2) adds a ticket (an atomic add on the ring's head,
+      shared by the CPUs), the slot's claim (an atomic swap on its tag), the
+      clock read and four stores. A power of two: the slot is ticket & (entries - 1), and the
+      build refuses anything else. 0 compiles all of it out; it is 0 without
+      INSPECT, which is the only reader. A bigger ring keeps older wakes for
+      `why woke`; the tree publishes every slot (a node of 7 numbers each in
+      the public region, 9 in the admin one).
+
+config WAKE_RING_SAMPLE_LOG2
+    int "Wake attribution: log one wake in 2^N of those tasks make (0 = all)"
+    range 0 10
+    default 4
+    help
+      Read only with WAKE_RING_ENTRIES. Every wake is counted in the Domain of
+      the task it woke, exactly. The last-wake ring takes every wake the machine
+      makes itself (a timer, an interrupt line, an interrupt handler of the
+      kernel, the reaper), and, of the wakes tasks make (IPC calls and replies,
+      futexes, notify words, ring doorbells, port events, wait queues), one in
+      2^N of those each Domain was woken by, the first among them: with the
+      default of 4, one in 16.
+
+      Why: an IPC round trip makes two wakes, a ring of 32 slots would hold the
+      last 16 microseconds of a busy system and nothing of the rare wakes
+      `why woke` is for, and a logged wake costs a ticket (an atomic add on the
+      ring's head, shared by the CPUs), a clock read and four stores where an
+      unlogged one costs the Domain's counter and one test. 0 logs them all,
+      for a system that can pay that on the hand-off.
+
+config KLOG
+    bool "Structured kernel log: every log line as a record in a ring ring 3 reads"
+    default n if HWCLASS_EMBEDDED
+    default y
+    help
+      Every kernel log line (`kerr!` .. `kdebug!`, `kprintln!`) is also a
+      record `{ts, level, module, msg}` in one ring of KLOG_ENTRIES slots
+      that the kernel owns and a ring-3 task maps read-only
+      (crates/drivers/sys/src/klog.rs). The UART mirror is unchanged: the
+      same bytes go out the same way. A producer claims a slot with one
+      atomic add, never waits and never takes a lock, and a full ring
+      overwrites its oldest record, so a slow sink loses old lines and never
+      delays a new one. The sink is `logd` (userspace/services/logd), which
+      appends the records to files under its own directory grant (LOGD_*),
+      and the toolbox's `log` reads them; neither reads the console.
+
+      A task is granted the ring by its topology row, `MemObj klog.ring`
+      (READ|MAP): it can neither write the ring nor hand it on.
+
+      Off: no ring, no record, no region; the console path is the one it
+      was, and `logd` is not started. The level filter is LOG_LEVEL's, at
+      compile time: a line compiled out is in neither the console nor the
+      ring.
+
+      Cost: 128 + 320 x KLOG_ENTRIES bytes of kernel-owned pages from the
+      page allocator for good, 128 + 320 x KLOG_EARLY_ENTRIES bytes of .bss,
+      and per line one 320-byte store (the line is formatted once, before
+      the console lock, as it already was).
+
+config KLOG_ENTRIES
+    int "Structured kernel log: records the ring holds (power of two)"
+    range 64 512
+    default 256
+    help
+      Read only with KLOG. Records the ring holds before it overwrites its
+      oldest. One memory object holds at most 64 pages (MAX_SHM_PAGES),
+      about 800 records, so 512 is the largest value allowed. A power of
+      two: the slot is index & (entries - 1), and the build refuses anything
+      else. 80 KiB at the default of 256 (one record is 320 bytes: header,
+      24 bytes of module path, 256 of message).
+
+      Raise it when `logd` reports lost records (a line it never saw because
+      the ring lapped it between two polls: a burst of more than this many
+      lines in LOGD_POLL_MS); lower it to save RAM.
+
+config KLOG_EARLY_ENTRIES
+    int "Structured kernel log: records kept before the ring exists (power of two)"
+    range 8 512
+    default 128 if LOG_LEVEL_INFO || LOG_LEVEL_DEBUG
+    default 64
+    help
+      Read only with KLOG. The first lines are printed before the page
+      allocator can make the ring's memory object, so a ring of this many records in .bss takes them
+      until `kernel_main` hands over (boot/klog_region.rs), copying its
+      records into the real ring with their own timestamps. A line older
+      than this many is not in the log (the console had it); the number lost
+      is printed by the boot (`[KLOG] ring ...`).
+      A power of two.
+
+      Cost: 128 + 320 x this many bytes of .bss, on every ISA, for good.
+
+config LOGD_MAX_LEVEL
+    int "logd: highest level kept in the files (3 err, 4 warn, 6 info, 7 debug)"
+    range 3 7
+    default 4 if HWCLASS_SERVER
+    default 7
+    help
+      Read only with KLOG. `logd` writes the records whose level is at or below this (Linux
+      numbering); the others are read and dropped. The ring and the console
+      are not affected. LOG_LEVEL still decides which lines exist at all.
+
+config LOGD_FILE_KB
+    int "logd: size at which the log file rotates (KiB)"
+    range 4 4096
+    default 64
+    help
+      Read only with KLOG. `logd` appends to one file until it holds this much, then starts the
+      next of the LOGD_FILES_KEEP files, truncating what was in it. A batch is
+      never split across two files.
+
+config LOGD_FILES_KEEP
+    int "logd: log files kept (retention)"
+    range 1 16
+    default 4
+    help
+      Read only with KLOG. The files form a ring of KLOGn.TXT in the root of the tree `logd` is
+      granted (n a hex digit): the oldest is rewritten when the newest is
+      full, so the log can never take more than LOGD_FILES_KEEP x
+      LOGD_FILE_KB of the volume however long the kernel talks. The records
+      themselves carry their sequence number and time, so the files read back
+      in order (`log`).
+
+config LOGD_POLL_MS
+    int "logd: how often it drains the ring and writes the files (ms)"
+    range 50 60000
+    default 1000
+    help
+      Read only with KLOG. The ring is polled: a producer rings no doorbell, so a printing kernel
+      never pays a wake. Each period `logd` writes what arrived as one
+      append and one `fsync`, never one per line. A burst of more than
+      KLOG_ENTRIES lines inside a period loses its oldest lines (counted
+      and written as a `lost` record).

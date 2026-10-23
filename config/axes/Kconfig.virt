@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/axes/Kconfig.virt — The VIRT axis and the hypervisor core (crates/core/hv)
+#
+# The role is the VIRT axis (the choice below): none, hosted, split or
+# static. The CPU's extension is probed per ISA, each with its n / probe /
+# require policy: RV_H (RISC-V H), X86_SVM and X86_VMX (config/arch/Kconfig.isa-*);
+# on aarch64 the boot trampoline keeps EL2 (VIRT is not none) when it was
+# entered there and the role degrades to `none` (with the reason in the boot
+# line) when it was not; with VIRT none it drops to EL1 as before.
+# A guest's RAM is MemObj frames that VMMD.ELF creates and charges to its own
+# Domain (the kernel pins them and holds a reference until `destroy`), so the
+# mem_pages of the VMMD.ELF row must budget its own frames plus the guests'
+# RAM (4 KiB pages: mem_mib * 256 each; `vmmd_pages` in the topology builder)
+# and the boot refuses the guests when the row is short. The built-in
+# topology declares no guest, so its row carries only VMMD.ELF's own frames;
+# the signed CAPS.TOML that declares a guest writes the row. A MemObj holds
+# MAX_MEMOBJ_PAGES (64) pages and the guests may take half of MAX_MEMOBJS
+# (config/limits/Kconfig.limits), so the rows' mem_mib add up to at most
+# MAX_MEMOBJS / 2 * 256 KiB on a 4 KiB granule (2 MiB at the default 16
+# objects) and the boot refuses rows above it. The qemu-*-hv defconfigs set
+# MAX_MEMOBJS to its maximum, 256: 32 MiB of guest RAM at a 4 KiB granule
+# (at 876 B of static RAM per slot, 219 KiB for the table). A guest that
+# needs more than the table can describe needs a memory object that holds
+# more pages, which is not built yet.
+#
+# Nothing below is asked unless VIRT is not none; the integers are always
+# present so the limits crate and the host tests see the same constants.
+
+# ---------------------------------------------------------------------------
+# VIRT
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Virtualization role (VIRT)"
+    default VIRT_SPLIT if SECURITY_CONFIDENTIAL
+    default VIRT_STATIC if PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
+    default VIRT_HOSTED if (PRESET_DESKTOP || PRESET_SERVER) && ARCH_X86_64
+    default VIRT_SPLIT if (PRESET_DESKTOP || PRESET_SERVER) && ARCH_AARCH64
+    default VIRT_NONE
+    help
+      The hypervisor role of the image. Anything but `none` builds the
+      hypervisor core (config/axes/Kconfig.virt, crates/core/hv): the topology's
+      `[guest.NAME]` rows are admitted at boot and each becomes a VM with a
+      `vm.<n>` endpoint. The CPU's extension is probed per ISA (RV_H,
+      X86_SVM, X86_VMX; EL2 on aarch64) and a CPU without it runs the role as
+      `none`, with the reason in the boot line, unless HV_REQUIRE says the
+      image is useless without it. What the role may not be combined with is
+      a `depends on`. Booting a guest image is a later step.
+
+    config VIRT_NONE
+        bool "None"
+        help
+          The kernel runs on the hardware and hosts no guest.
+
+    config VIRT_HOSTED
+        bool "Hosted (guests run beside the kernel)"
+        depends on !BOARD_VF2
+        help
+          The kernel hosts guests with the CPU's virtualization extension
+          and keeps its own drivers.
+
+    config VIRT_SPLIT
+        bool "Split (a resident monitor under the kernel)"
+        depends on !BOARD_VF2
+        help
+          A small resident monitor owns the virtualization extension and the
+          kernel runs as its first guest (the aarch64 EL2 stub shape).
+
+    config VIRT_STATIC
+        bool "Static partitioning (pinned guests, fixed at build time)"
+        depends on !BOARD_VF2
+        help
+          Guests are pinned to harts and memory fixed in the signed
+          topology; no guest is created at run time.
+
+endchoice
+
+menu "Hypervisor"
+
+config HV
+    # cargo-feature: hv
+    bool
+    default y if !VIRT_NONE
+    default n
+    help
+      The hypervisor core is built in (crates/core/hv): Vm and Vcpu, the
+      `vm` and `vcpu` kernel-hosted interfaces, the topology's guest rows
+      admitted at boot. Derived from VIRT, never asked.
+
+config HV_REQUIRE
+    bool "Refuse to boot when the CPU cannot host the guests"
+    depends on HV
+    default y if VIRT_STATIC
+    default n
+    help
+      The role says guests run, and the CPU (or firmware, or the way the
+      machine was entered) gives no usable virtualization extension. n: the
+      boot prints why and goes on without guests. y: the boot halts. A
+      static partition is the case where a kernel that boots without its
+      guests is a kernel that does not do its job.
+
+config HV_MAX_VCPUS
+    int "vCPUs over all guests"
+    range 1 64
+    default 4 if HWCLASS_EMBEDDED
+    default 8
+    help
+      The size of the vCPU pool (crates/core/hv, `vm::MAX_VCPUS`): the sum of
+      `cpus` over the topology's `[guest.NAME]` rows may not exceed it. A
+      vCPU is a record (its harts and pending interrupt lines) and, while it
+      runs, a kernel thread. The built-in row of VMMD.ELF is granted an
+      endpoint for each of the first 16 (the most one monitor serves).
+
+      Cost: 32 B of RAM per vCPU on riscv64 and x86_64; on aarch64 also
+      about 3 KiB of static RAM per vCPU (the world-switch block and the
+      virtual interrupt controller's queue, crates/core/arch-aarch64
+      `ext/hv/vcpu.rs`).
+
+config HV_EXAMPLE_GUEST
+    bool "Declare an example guest in the built-in topology"
+    depends on HV
+    default n
+    help
+      The built-in topology carries one `[guest.azos]` row: one vCPU,
+      HV_EXAMPLE_GUEST_MEM_MIB of RAM, the virtio-console, virtio-blk and
+      virtio-net backends and the `cautious` envelope, and the VMMD.ELF row
+      budgets the guest's frames (`vmmd_pages`). It is the host half of
+      `make azos-guest` (AzOS inside AzOS, tools/run_guest.sh): the guest
+      image and its disk are files of the volume (`/fat/VM/GUEST.BIN`,
+      `/fat/VM/DISK.IMG`). Only the qemu-hv-guest and qemu-aarch64-hv-guest
+      defconfigs set it; the other hypervisor defconfigs declare no guest.
+      Without the files the guest is declared and never started. A product
+      declares its guests in the signed CAPS.TOML (format 7), not here.
+
+      Cost: 40 B plus 16 B per TOPOLOGY_GUEST_DEVICES of RAM, and the guest's
+      RAM from the free frames when the guest starts.
+
+config HV_EXAMPLE_GUEST_MEM_MIB
+    int "RAM of the example guest (MiB)"
+    range 1 32
+    default 24
+    help
+      The example guest's `mem_mib`. An AzOS kernel (qemu-*guest defconfigs)
+      boots in 24 MiB. At most 32: a guest's RAM is MemObjs of
+      MAX_MEMOBJ_PAGES pages and the guests may take half of MAX_MEMOBJS (the
+      qemu-*-hv defconfigs set 256, see above).
+
+      What VMMD.ELF can make today is less: it maps every MemObj of the RAM
+      into its own address space and a task holds at most 16 mappings
+      (`USER_WINDOW_RANGES`, crates/core/sched/src/user_window.rs), and one
+      task owns at most MAX_MEMOBJS / 2 MemObjs. 24 MiB is 96 objects: the
+      monitor says "guest RAM is partial" and serves no device until one of
+      those limits grows. That is why the gate has no row that boots the
+      guest: the success path (a `[vm0] ` banner on the host console) is out of
+      reach until VMMD.ELF can map the whole RAM of a guest kernel (the 4 MiB,
+      16 objects, that fits today is below a kernel's heap plus its image). x86_64 has no guest entry either (mk/images.mk).
+
+      Cost: none until the guest starts; then this much RAM.
+
+endmenu # Hypervisor

@@ -171,7 +171,7 @@ MLSRV_DEPS := $(wildcard $(MLSRV_DIR)/src/*.rs) $(MLSRV_DIR)/Cargo.toml $(MLSRV_
               crates/core/topology/Cargo.toml crates/core/topology/build.rs crates/core/limits/Cargo.toml \
               crates/core/devif/Cargo.toml crates/core/idl/Cargo.toml crates/core/decision/Cargo.toml \
               crates/core/rings/Cargo.toml crates/core/crypto/Cargo.toml \
-              crates/core/limits/build.rs Kconfig $(shell find config -maxdepth 1 -name 'Kconfig.*' -not -name '* [0-9]*') $(wildcard .config) $(wildcard tools/keys/test_pub.bin)
+              crates/core/limits/build.rs $(KCONFIG_FILES) $(wildcard .config) $(wildcard tools/keys/test_pub.bin)
 $(MLSRV_ELF): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP)
 	@mkdir -p $(OUT_BUILD)
 	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MLSRV_DIR)" && $(MLSRV_QEMU_BUILD) $(RV_UFLAGS) $(MLSRV_KEY_FEATURES)
@@ -188,7 +188,7 @@ $(MLSRV_ELF): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP)
 PKGD_DEPS := $(wildcard $(PKGD_DIR)/src/*.rs) $(PKGD_DIR)/Cargo.toml $(PKGD_DIR)/Cargo.lock $(PACKAGES_LIB_SRC) $(TLS_LIB_SRC) $(LIBSYS_SRC) $(SDK_SRC) third_party/VENDOR_PIN \
               $(shell find crates/core/topology/src crates/core/limits/src crates/core/decision/src crates/core/devif/src crates/core/idl/src crates/net/tftp/src userspace/lib/names/src userspace/lib/decisions/src userspace/lib/term/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') \
               crates/core/topology/Cargo.toml crates/core/topology/build.rs crates/core/limits/Cargo.toml \
-              crates/core/limits/build.rs Kconfig $(shell find config -maxdepth 1 -name 'Kconfig.*' -not -name '* [0-9]*') $(wildcard .config) $(wildcard tools/keys/test_pub.bin)
+              crates/core/limits/build.rs $(KCONFIG_FILES) $(wildcard .config) $(wildcard tools/keys/test_pub.bin)
 PKGD_CARGO = --vendored -- build --release --manifest-path $(PKGD_DIR)/Cargo.toml
 $(PKGD_ELF): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(RV_USER_KCONFIG)
 	@mkdir -p $(OUT_BUILD)
@@ -681,7 +681,7 @@ lxthreads: $(LXTHR_ELF_RISCV64) $(LXTHR_ELF_AARCH64)
 # `tools/third_party_fetch.sh relibc`; make never downloads) with the patch and
 # the `azos` platform module of userspace/lib/relibc-azos, then the C programs
 # of userspace/tests/relibc (every .c there) against it with `zig cc`, into
-# build/relibc/<isa>/. Kconfig RELIBC (config/Kconfig.relibc) decides it per ISA:
+# build/relibc/<isa>/. Kconfig RELIBC (config/axes/Kconfig.libc) decides it per ISA:
 # each ISA is built only when ITS configuration (RELIBC_KCONFIG_<isa>, the one
 # its userspace is built from) sets CONFIG_RELIBC=y. The codegen baseline of each
 # ISA is the one its userspace images use (Kconfig, tools/kconfig_to_cargo.py

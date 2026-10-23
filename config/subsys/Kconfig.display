@@ -1,0 +1,220 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.display — Display, framebuffer, input server and compositor
+
+config DRV_DISPLAY_HDMI
+    # cargo-feature: hdmi
+    bool "HDMI framebuffer (VF2 DC8200 + HDMI TX)"
+    default n
+    depends on BOARD_VF2
+    help
+      Kernel feature `hdmi` (crates/drivers/display). Fixed resolution
+      (HDMI_WIDTH/HDMI_HEIGHT, "Platform / Board"), no EDID, solid-colour
+      output only. Never validated on hardware: QEMU has no model of this
+      peripheral, and the PHY calibration is placeholder data, so expect
+      no signal on a real monitor. The gate builds it ("hdmi" row); no
+      row boots it.
+
+config DRV_DISPLAY_RAMFB
+    # cargo-feature: ramfb
+    bool "QEMU ramfb framebuffer"
+    default n
+    depends on BOARD_QEMU && ARCH_RISCV64
+    imply FB_GENERIC
+    help
+      Kernel feature `ramfb` (crates/drivers/display/src/ramfb.rs): a
+      framebuffer source for FB_GENERIC. Allocates the pixel buffer,
+      configures QEMU's ramfb device through fw_cfg and hands the geometry
+      to the generic framebuffer. Needs `-device ramfb` on the QEMU command
+      line (and a display backend to see it). Not the VF2 display driver.
+      riscv64 only: the fw_cfg address it uses is defined for the riscv64
+      QEMU virt map alone (an aarch64 build does not compile).
+
+config FB_GENERIC
+    # cargo-feature: fb-generic
+    bool "Generic framebuffer (virtio-gpu, ramfb, Limine, device-tree simple-framebuffer)"
+    default n
+    help
+      Kernel feature `fb-generic` (crates/drivers/fb, kernel/src/boot/
+      fb.rs): one framebuffer object (geometry, stride, pixel format) fed
+      by whichever source the machine has: a virtio-gpu device (QEMU
+      `-device virtio-gpu-device` on riscv64/aarch64 virt and x86_64
+      microvm, `-device virtio-gpu-pci` with DRV_PCI; the mode and refresh
+      rate come from its EDID; the pixels are RAM the driver allocates and
+      every drawn rectangle is committed to the display through the flip
+      hook), QEMU ramfb (DRV_DISPLAY_RAMFB), the framebuffer the Limine
+      loader set up (x86_64), or a device-tree `simple-framebuffer` node
+      (riscv64, aarch64). The others are mapped
+      write-combining (MemType::WC: x86 PAT index 1, aarch64 Normal
+      non-cacheable, riscv64 Svpbmt NC when RV_SVPBMT finds the extension,
+      else the plain PTE) and the boot prints one [FB] line. n: no
+      framebuffer code is compiled.
+
+config FB_CONSOLE
+    # cargo-feature: fb-console
+    bool "Framebuffer text console (mirrors the UART console)"
+    default n
+    depends on FB_GENERIC
+    help
+      Kernel feature `fb-console` (crates/drivers/fb/src/console.rs): an
+      8x16 text console that mirrors every byte the UART console writes,
+      with scrolling and a dirty-rect flush. The grid is
+      FB_CONSOLE_COLS_MAX x FB_CONSOLE_ROWS_MAX bytes of kernel memory. A
+      line that finds the grid busy is not drawn (the UART still has it).
+      No keyboard focus and no cursor of its own. The grid also publishes
+      what is on the screen, FB_CONSOLE_SCROLLBACK lines of scrollback and the
+      mouse reporting modes programs set into a region the ring-3 terminal
+      server maps (MemObj console.screen), and draws the overlay that server
+      asks for: a pointer cell and a selection in inverse video, and the view
+      scrolled back.
+
+config FB_PANIC_SCREEN
+    # cargo-feature: fb-panic-screen
+    bool "Framebuffer panic screen"
+    default n
+    depends on FB_GENERIC
+    help
+      Kernel feature `fb-panic-screen` (crates/drivers/fb/src/panic.rs):
+      the panic report (banner, [PANIC] policy and reason, location,
+      message, hart and task) drawn straight onto the write-combining
+      mapping, lock-free, so a panic inside the console or with the heap
+      gone still reaches the screen. The text is the same the UART gets.
+
+config INPUTD
+    bool "Input server (INPUTD.ELF): the focus is a warrant, the Secure Attention Key is a trusted path"
+    depends on DRV_VIRTIO_INPUT || DRV_PS2
+    depends on CAP_SLOT_EXT
+    default n
+    help
+      The built-in topology carries a row for INPUTD.ELF and the kernel starts
+      it at boot (userspace/services/inputd, the Input interface of
+      crates/core/devif/src/input.rs). The input drivers (virtio-input, PS/2,
+      USB HID) then also write a stream of every key, button and axis event
+      into a second ring of the event region (crates/drivers/input/src/
+      events.rs), keys that make console bytes included. The server reads the
+      stream and delivers it only to the task that holds the focus: a task
+      asks for it with `take_focus` and is lent a capability on the server's
+      endpoint (the warrant) and a ring of its own events. Moving the focus
+      revokes the old warrant and closes the old ring. Ctrl+Alt+Delete is
+      never delivered: the server takes the focus from whoever has it and
+      counts the chord on a page that tasks map read-only, for a compositor
+      to read.
+
+      The console keeps its own keys: typed bytes still go to the terminal
+      server, which still drains the first ring (arrows, F-keys, the mouse on
+      the framebuffer console), so a build with no graphical client sees no
+      change on the shell. The toolbox applet `input watch` is a client.
+      Needs CAP_SLOT_EXT: a warrant is a capability with a badge only the
+      server names. Cost when set: one task of 64 pages (INPUTD_MEM_PAGES in
+      the topology builder), a memory object per focus grant and one for the
+      trusted page, and one more ring push per event in the drivers'
+      interrupt arms. n keeps the stream out of the drivers.
+
+config INPUTD_POLL_ACTIVE_MS
+    int "Input server: milliseconds between two reads of the stream while a task holds the focus"
+    range 1 100
+    default 8
+    help
+      Only with INPUTD. userspace/services/inputd/src/main.rs. The drivers announce nothing to a
+      task that polls (the wake protocol of the first ring belongs to the
+      terminal server), so the server looks at the stream on a timer: this
+      often while a task holds the focus. It is the latency an event adds to
+      a keystroke or a pointer move on its way to the holder, and the stream
+      (128 slots) must not fill in this time: a mouse at 1 kHz fills it in
+      about 128 ms, so the default has a wide margin. A full stream drops the
+      newest event and counts it.
+
+config INPUTD_POLL_IDLE_MS
+    int "Input server: milliseconds between two reads of the stream while nobody holds the focus"
+    range 5 1000
+    default 50
+    help
+      Only with INPUTD. userspace/services/inputd/src/main.rs. With nobody holding the focus the
+      server still reads the stream, to see the Secure Attention Key and to
+      keep it from filling, but the latency matters less: this is how long a
+      chord waits to be noticed. Longer is fewer wake-ups on an idle machine;
+      keep it below the time a mouse takes to fill the stream (about 128 ms
+      at 1 kHz) to avoid losing events and, with them, the state of the held
+      keys.
+
+config COMPOSITOR
+    bool "Compositor (COMPSRV.ELF): the sole holder of the Display interface, the trusted path's banner"
+    depends on INPUTD && FB_GENERIC
+    default n
+    help
+      The built-in topology carries a row for COMPSRV.ELF and the kernel
+      starts it at boot (userspace/services/compositor, the Compositor
+      interface of userspace/lib/compositor). It claims the display
+      connector (crates/core/devif/src/display.rs: the kernel's text
+      console stops drawing), keeps one full-screen surface made of
+      physically contiguous bands, and composes its clients' windows into it
+      with userspace/lib/compose, presenting only the damage the clients
+      post. A client makes a memory object, draws in it and attaches it with
+      `attach`; tearing is tolerated (a present copies while the client may
+      still be drawing). No other row holds the Display interface.
+
+      It is also the trusted surface of the Secure Attention Key
+      (Ctrl+Alt+Delete, INPUTD): its row alone holds a call right on
+      endpoint.input whose badge the kernel stamps (EXEC beside WRITE,
+      azos_devif::input::TRUSTED_BADGE). After the chord the input server
+      refuses every other caller the focus (DENIED, recorded) until this
+      server takes it, which it does after it has drawn the trusted-path
+      banner, COMPOSITOR_BANNER_MS later; the banner and the "why was this
+      refused" panel (the newest refusals the decision server holds) are
+      drawn by this server alone. Without this option the chord only revokes
+      and any holder of the call right takes the focus straight back.
+
+      Needs a framebuffer (FB_GENERIC: virtio-gpu, ramfb, Limine, device
+      tree) and the input server. A build with no display behind the
+      connector still runs the server: it acknowledges the chord without a
+      banner, so the focus stays obtainable. Memory objects (MAX_MEMOBJS):
+      one per 64 pages of the screen (a 640x480 XRGB8888 screen is 5, a
+      1280x800 one 16, and a task may own half of the table) plus one per
+      attached window of at most 64 pages. Cost when set: one task whose
+      frame ceiling is COMPOSITOR_SURFACE_PAGES plus the 192 the server
+      itself needs (crates/core/topology/src/builder.rs, COMPOSITOR_MEM_PAGES).
+
+config COMPOSITOR_BANNER_MS
+    int "Compositor: milliseconds the trusted-path banner holds the focus gate after the Secure Attention Key"
+    range 100 10000
+    default 1500
+    help
+      Only with COMPOSITOR. userspace/services/compositor. After Ctrl+Alt+Delete the input server
+      refuses the focus to every caller but the compositor. The compositor
+      draws the banner at once and takes the focus (opening the gate for the
+      plain callers) this long afterwards. It is the time the user has to
+      see that the chord was seen by the system and not by the application
+      that was in front, before any application can ask for the keyboard
+      again. Too short and the banner may go unseen; too long and the
+      keyboard is out of reach of every application for that long after each
+      chord.
+
+config COMPOSITOR_FRAME_MS
+    int "Compositor: milliseconds between two looks at the clients' damage and the trusted page"
+    range 4 100
+    default 16
+    help
+      Only with COMPOSITOR. userspace/services/compositor. A client's damage is posted into a
+      table, not presented in the call; the compositor thread composes and
+      presents what accumulated, and reads the Secure Attention Key's count on
+      the trusted-path page, every this many milliseconds. It is the latency
+      a damage rectangle adds before it is on the screen, and the time the
+      banner can lag the chord. Lower is more wake-ups on an idle screen.
+
+config COMPOSITOR_SURFACE_PAGES
+    int "Compositor: 4 KiB pages of the screen's surface the server's row may hold"
+    range 64 2048
+    default 320
+    help
+      Only with COMPOSITOR. userspace/services/compositor. The full-screen
+      surface is cut into physically contiguous bands of at most 64 pages,
+      each a memory object the compositor creates, so their frames are
+      charged to its Domain like any other memory it holds
+      (crates/core/topology/src/memory.rs: a row's ceiling covers the shared
+      memory it created). Its row's ceiling is this plus what the server
+      itself needs. A 640x480 XRGB8888 screen takes 5 bands of 64 pages
+      (320, the default: QEMU's ramfb); 1280x800 takes 16 (1024). A screen
+      whose bands need more is not claimed: the server says so and runs
+      headless. Cost: the ceiling is counted by the boot's memory admission
+      (the ring-3 rows' ceilings against the free pages); the frames are
+      taken only for the screen there is.

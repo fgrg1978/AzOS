@@ -1,0 +1,1061 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/arch/Kconfig.isa-x86_64 — x86_64: baseline level and extensions (n / probe / require)
+
+# ---------------------------------------------------------------------------
+# x86_64 (port skeleton)
+# ---------------------------------------------------------------------------
+# The same three tiers riscv64 uses (crates/core/arch-riscv64/src/cache.rs):
+#   1. the compile-time BASELINE (X86_64_LEVEL), the only thing codegen may
+#      assume, checked at boot: a CPU below it is refused with a message;
+#   2. optional extensions, each a runtime CPUID probe before use with a
+#      fallback (crates/core/arch-x86_64/src/features.rs), emitted only
+#      inside gated asm unless set to `require`;
+#   3. each extension a three-way choice X86_* (n / probe / require, the
+#      model above); per-board defaults say what a board has. `require`
+#      adds the extension's target feature (tools/kconfig_to_cargo.py): the
+#      integer ones to the kernel and the user images, the SIMD ones to the
+#      user images only (the kernel is soft-float). A level that contains
+#      an extension offers only `require` for it, and an extension whose
+#      prerequisite is `n` (AVX without XSAVE, AVX2 without AVX, ...) offers
+#      only `n`: a contradiction cannot be configured, and a hand-edited
+#      .config that has one is refused by crates/core/limits/build.rs.
+
+if ARCH_X86_64
+
+choice
+    prompt "x86_64 baseline micro-architecture level"
+    default X86_64_LEVEL_V2
+    help
+      The psABI level codegen assumes for the whole kernel and the user
+      images (`-C target-cpu=x86-64[-vN]`, tools/kconfig_to_cargo.py). Anything
+      above it is an optional extension (X86_* below). The boot CPU
+      checks the level's CPUID bits before anything else and refuses to
+      boot below it. Higher levels let the compiler use wider instructions
+      everywhere (smaller, faster code) and drop every CPU older than the
+      level.
+
+    config X86_64_LEVEL_V1
+        bool "x86-64 (v1: SSE2)"
+        help
+          Every x86_64 CPU. No popcnt/SSE4.2 in compiled code.
+    config X86_64_LEVEL_V2
+        bool "x86-64-v2 (SSE4.2, POPCNT, CMPXCHG16B)"
+        help
+          Nehalem (2008) and later, every QEMU `-cpu` model newer than
+          qemu64 with `+sse4.2,+popcnt`. The default.
+    config X86_64_LEVEL_V3
+        bool "x86-64-v3 (AVX, AVX2, BMI1/2, F16C, FMA, LZCNT, MOVBE, XSAVE)"
+        help
+          Haswell (2013) and later. AVX2 becomes baseline; kernel FP/SIMD
+          use still needs the FPU-section discipline (FP_XSAVE_EAGER). The
+          soft-float kernel gains only the integer part (+bmi1, +bmi2,
+          +lzcnt, +movbe, +xsave); the user images get all of it.
+    config X86_64_LEVEL_V4
+        bool "x86-64-v4 (+ AVX-512 F, BW, CD, DQ, VL)"
+        help
+          Skylake-SP / Ice Lake / Zen 4 and later. The kernel's codegen is
+          the same as v3 (AVX-512 is SIMD, which the soft-float kernel never
+          emits); the user images get AVX-512 everywhere, and every task's
+          XSAVE area grows by the 2 KiB ZMM/opmask state. Excludes every
+          client Intel CPU from Alder Lake on (AVX-512 fused off).
+endchoice
+
+choice
+    prompt "SSE4.2 (with SSE3, SSSE3, SSE4.1)"
+    default X86_SSE4_2_REQUIRE if !X86_64_LEVEL_V1
+    default X86_SSE4_2_PROBE
+    help
+      CPUID.1:ECX[20] (and [0], [9], [19]). SIMD: the soft-float kernel
+      never emits it; require adds +sse4.2 to the user images' codegen.
+      probe: exported to ring 3 as HWCAP_X86_SSE4_2 in the vDSO hwcap word (azos_libsys::vdso_hwcap) (no kernel
+      path uses it). Cost: none. Part of x86-64-v2: at that level and above only `require` is
+      offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_SSE4_2_NEVER
+        bool "n: never use it"
+        depends on X86_64_LEVEL_V1
+    config X86_SSE4_2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on X86_64_LEVEL_V1
+    config X86_SSE4_2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "POPCNT"
+    default X86_POPCNT_REQUIRE if !X86_64_LEVEL_V1
+    default X86_POPCNT_PROBE
+    help
+      CPUID.1:ECX[23]. require adds +popcnt to the kernel and user codegen
+      (count_ones() becomes one instruction instead of a ~12-instruction bit
+      trick). probe: exported to ring 3 as HWCAP_X86_POPCNT in the vDSO hwcap word (azos_libsys::vdso_hwcap).
+      Cost: none. Part of x86-64-v2: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_POPCNT_NEVER
+        bool "n: never use it"
+        depends on X86_64_LEVEL_V1
+    config X86_POPCNT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on X86_64_LEVEL_V1
+    config X86_POPCNT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "XSAVE (XSAVE/XRSTOR, XCR0)"
+    default X86_XSAVE_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_XSAVE_PROBE
+    help
+      CPUID.1:ECX[26]: the extended FP state save (fpu.rs, FP_XSAVE_EAGER)
+      and the XCR0 register every AVX state needs. Fallback: FXSAVE (512 B,
+      x87/SSE only), which also means no AVX anywhere. require adds +xsave.
+      Cost: the XSAVE area per task (576 B + each enabled component). Part
+      of x86-64-v3: at that level and above only `require` is offered (the
+      level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_XSAVE_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_XSAVE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_XSAVE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AVX (256-bit SIMD, YMM state)"
+    default X86_AVX_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_AVX_PROBE
+    help
+      CPUID.1:ECX[28] and the XCR0 YMM component (CPUID.(0xD,0)). User
+      images only (require adds +avx to their codegen); the kernel reaches
+      it only inside an FPU section. Cost: +256 B of YMM state per task in
+      the XSAVE area. Needs X86_XSAVE. Part of x86-64-v3: at that level and
+      above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_AVX_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2) && !X86_XSAVE_NEVER
+    config X86_AVX_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
+endchoice
+
+choice
+    prompt "AVX2 (256-bit integer SIMD)"
+    default X86_AVX2_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_AVX2_PROBE
+    help
+      CPUID.(7,0):EBX[5] plus the AVX state. Used ONLY inside the Vector
+      impl's dot product, behind the probe and the FPU section. Fallback:
+      SSE2 (baseline). require adds +avx2 to the user images. Exported to
+      ring 3 as HWCAP_X86_AVX2 in the vDSO hwcap word (azos_libsys::vdso_hwcap), set only with the YMM
+      state enabled in XCR0. Cost: the YMM
+      half of the FP save area (shared with X86_AVX). Needs X86_AVX. Part of
+      x86-64-v3: at that level and above only `require` is offered (the
+      level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX2_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_AVX2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2) && !X86_AVX_NEVER
+    config X86_AVX2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX_NEVER
+endchoice
+
+choice
+    prompt "BMI1 (ANDN, BEXTR, BLSI, BLSR, TZCNT)"
+    default X86_BMI1_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_BMI1_PROBE
+    help
+      CPUID.(7,0):EBX[3]. Integer: require adds +bmi1 to the kernel and the
+      user images (shorter bit-field and lowest-set-bit code). probe:
+      exported to ring 3 as HWCAP_X86_BMI1 in the vDSO hwcap word (azos_libsys::vdso_hwcap). Cost: none. Part of x86-64-v3: at that level and above
+      only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_BMI1_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI1_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI1_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "BMI2 (BZHI, PDEP, PEXT, SHLX/SHRX, MULX)"
+    default X86_BMI2_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_BMI2_PROBE
+    help
+      CPUID.(7,0):EBX[8]. Integer: require adds +bmi2 to the kernel and the
+      user images (flag-free shifts; no CL-register pressure). probe:
+      exported to ring 3 as HWCAP_X86_BMI2 in the vDSO hwcap word (azos_libsys::vdso_hwcap). PDEP/PEXT are microcoded (~250 cycles) on AMD before
+      Zen 3. Cost: none. Part of x86-64-v3: at that level and above only
+      `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_BMI2_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_BMI2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "FMA3 (fused multiply-add)"
+    default X86_FMA_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_FMA_PROBE
+    help
+      CPUID.1:ECX[12] plus the AVX state. User images only (require adds
+      +fma). Exported to ring 3 as HWCAP_X86_FMA in the vDSO hwcap word (azos_libsys::vdso_hwcap), set
+      only with the YMM state enabled in XCR0. Cost: none beyond X86_AVX's
+      state. Needs X86_AVX. Part of
+      x86-64-v3: at that level and above only `require` is offered (the
+      level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_FMA_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_FMA_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2) && !X86_AVX_NEVER
+    config X86_FMA_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX_NEVER
+endchoice
+
+choice
+    prompt "MOVBE (byte-swapping load/store)"
+    default X86_MOVBE_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
+    default X86_MOVBE_PROBE
+    help
+      CPUID.1:ECX[22]. Integer: require adds +movbe to the kernel and the
+      user images (big-endian network fields load in one instruction).
+      probe: exported to ring 3 as HWCAP_X86_MOVBE in the vDSO hwcap word (azos_libsys::vdso_hwcap). Cost:
+      none. Part of x86-64-v3: at that level and
+      above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_MOVBE_NEVER
+        bool "n: never use it"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_MOVBE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on (X86_64_LEVEL_V1 || X86_64_LEVEL_V2)
+    config X86_MOVBE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AVX-512 Foundation"
+    default X86_AVX512F_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512F_PROBE
+    help
+      CPUID.(7,0):EBX[16] and the XCR0 opmask/ZMM components (bits 5..7).
+      User images only (require adds +avx512f). Cost: +2 KiB of ZMM/opmask
+      state per task in the XSAVE area, and frequency drops on some Intel
+      parts while 512-bit code runs. Needs X86_AVX2. Part of x86-64-v4: at
+      that level and above only `require` is offered (the level compiles it
+      in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512F_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512F_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX2_NEVER
+    config X86_AVX512F_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX2_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Byte and Word"
+    default X86_AVX512BW_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512BW_PROBE
+    help
+      CPUID.(7,0):EBX[30]. User images only (require adds +avx512bw). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512BW_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512BW_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512BW_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Conflict Detection"
+    default X86_AVX512CD_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512CD_PROBE
+    help
+      CPUID.(7,0):EBX[28]. User images only (require adds +avx512cd). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512CD_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512CD_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512CD_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Doubleword and Quadword"
+    default X86_AVX512DQ_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512DQ_PROBE
+    help
+      CPUID.(7,0):EBX[17]. User images only (require adds +avx512dq). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512DQ_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512DQ_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512DQ_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AVX-512 Vector Length (128/256-bit forms)"
+    default X86_AVX512VL_REQUIRE if X86_64_LEVEL_V4
+    default X86_AVX512VL_PROBE
+    help
+      CPUID.(7,0):EBX[31]. User images only (require adds +avx512vl). Cost:
+      none beyond X86_AVX512F. Needs X86_AVX512F. Part of x86-64-v4: at that
+      level and above only `require` is offered (the level compiles it in).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AVX512VL_NEVER
+        bool "n: never use it"
+        depends on !X86_64_LEVEL_V4
+    config X86_AVX512VL_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_64_LEVEL_V4 && !X86_AVX512F_NEVER
+    config X86_AVX512VL_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_AVX512F_NEVER
+endchoice
+
+choice
+    prompt "AES-NI"
+    default X86_AES_PROBE
+    help
+      CPUID.1:ECX[25]. User images only (require adds +aes): link encryption
+      and TLS in ring 3 run AES in ~1 cycle/byte instead of ~15. probe:
+      exported to ring 3 as HWCAP_X86_AES in the vDSO hwcap word (azos_libsys::vdso_hwcap) (the kernel's
+      crypto is portable). Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_AES_NEVER
+        bool "n: never use it"
+    config X86_AES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_AES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "PCLMULQDQ (carry-less multiply)"
+    default X86_PCLMULQDQ_PROBE
+    help
+      CPUID.1:ECX[1]. User images only (require adds +pclmulqdq): GCM's
+      GHASH and CRC folding. probe: exported to ring 3 as
+      HWCAP_X86_PCLMULQDQ in the vDSO hwcap word (azos_libsys::vdso_hwcap). Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_PCLMULQDQ_NEVER
+        bool "n: never use it"
+    config X86_PCLMULQDQ_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_PCLMULQDQ_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SHA-NI (SHA-1/SHA-256 instructions)"
+    default X86_SHA_NI_PROBE
+    help
+      CPUID.(7,0):EBX[29]: sha256rnds2 and friends. The kernel's own
+      secure-boot hash does not use it yet; exported to ring 3 as
+      HWCAP_X86_SHA_NI in the vDSO hwcap word (azos_libsys::vdso_hwcap). require adds +sha to the user
+      images.
+      Fallback: the portable SHA-256 (crates/core/crypto). Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_SHA_NI_NEVER
+        bool "n: never use it"
+    config X86_SHA_NI_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SHA_NI_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "RDRAND (DRBG output)"
+    default X86_RDRAND_PROBE
+    help
+      CPUID.1:ECX[30]. A seed source for the boot entropy pool when RDSEED
+      is not in use (DRBG output; ENTROPY_CPU_SOURCE says whether it is
+      credited). Exported to ring 3 as HWCAP_X86_RDRAND in the vDSO hwcap word (azos_libsys::vdso_hwcap).
+      require adds +rdrand. Fallback: the pool's other sources.
+      Cost: one 48-byte draw at boot; each RDRAND is ~100-500 cycles.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_RDRAND_NEVER
+        bool "n: never use it"
+    config X86_RDRAND_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_RDRAND_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "RDSEED (conditioned entropy)"
+    default X86_RDSEED_PROBE
+    help
+      CPUID.(7,0):EBX[18]. The preferred seed source for the boot entropy
+      pool (conditioned entropy, not DRBG output; ENTROPY_CPU_SOURCE says
+      whether it is credited). Exported to ring 3 as HWCAP_X86_RDSEED in
+      the vDSO hwcap word (azos_libsys::vdso_hwcap). require adds +rdseed. Fallback: RDRAND as
+      X86_RDRAND says, then the pool's other sources. Cost: one 48-byte
+      draw at boot. n: the fallback always. probe: the CPUID probe picks.
+      require: the boot refuses a CPU without it.
+
+    config X86_RDSEED_NEVER
+        bool "n: never use it"
+    config X86_RDSEED_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_RDSEED_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "ADX (ADCX/ADOX)"
+    default X86_ADX_PROBE
+    help
+      CPUID.(7,0):EBX[19]. Integer: require adds +adx to the kernel and user
+      codegen (two carry chains for multi-precision arithmetic: Ed25519,
+      RSA). probe: exported to ring 3 as HWCAP_X86_ADX in the vDSO hwcap word (azos_libsys::vdso_hwcap).
+      Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_ADX_NEVER
+        bool "n: never use it"
+    config X86_ADX_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_ADX_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "FSGSBASE (rd/wrgsbase)"
+    default X86_FSGSBASE_PROBE
+    help
+      CPUID.(7,0):EBX[0]: detected and reported only; NOT used. CR4.FSGSBASE
+      is never set, so ring 3's rd/wrfsbase and rd/wrgsbase #UD and
+      HWCAP_X86_FSGSBASE reads 0. Wiring it needs the context switch to
+      save and restore every user task's FS base and its GS base (waiting
+      in IA32_KERNEL_GS_BASE) -- today only a Linux task's FS base is
+      switched, by MSR, and no GS base is -- which is more than the enable.
+      The kernel's own per-CPU base stays on rdmsr/wrmsr IA32_GS_BASE. Not
+      a codegen feature (rustc has no stable +fsgsbase): require only
+      refuses a CPU without it.
+      n: no difference. probe: no difference (the boot line only). require:
+      the boot refuses a CPU without it.
+
+    config X86_FSGSBASE_NEVER
+        bool "n: never use it"
+    config X86_FSGSBASE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_FSGSBASE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "PCID (tagged TLB)"
+    default X86_PCID_PROBE
+    help
+      CR4.PCIDE after CPUID.1:ECX[17]. Keeps TLB entries across address-
+      space switches (the ASID of Mmu::switch_pt). Fallback: a full flush on
+      every CR3 write. Cost: none; saves the TLB refill after each switch.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_PCID_NEVER
+        bool "n: never use it"
+    config X86_PCID_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_PCID_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "INVPCID (targeted TLB invalidation)"
+    default X86_INVPCID_PROBE
+    help
+      CPUID.(7,0):EBX[10]: flush one PCID or every non-global entry with one
+      instruction. Fallback: CR4.PGE toggle / CR3 reload. Used only with
+      PCID on. With TLB_ASID_SCOPED a shootdown's own CPU names the space's
+      PCID (type 0 / 1) instead of marking itself stale. Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_INVPCID_NEVER
+        bool "n: never use it"
+    config X86_INVPCID_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_INVPCID_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "INVLPGB (broadcast TLB invalidation)"
+    default X86_INVLPGB_PROBE
+    help
+      CPUID.0x80000008:EBX[3] (AMD Zen 3 and later): INVLPGB invalidates a
+      range of pages on every CPU, the issuing one included, and TLBSYNC
+      waits for it. The TLB shootdown (`ArchPlatform::tlb_shootdown`,
+      `flush_tlb_page_all`) then sends no IPI, takes no request lock and
+      marks no CPU stale under TLB_RETAIN. Fallback: the shootdown IPI.
+      n: the IPI always. probe: the CPUID probe picks. require: the boot
+      refuses a CPU without it. A hypervisor that hides the bit (QEMU TCG)
+      runs the IPI path.
+
+    config X86_INVLPGB_NEVER
+        bool "n: never use it"
+    config X86_INVLPGB_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_INVLPGB_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SMEP (supervisor-mode execution prevention)"
+    default X86_SMEP_PROBE
+    help
+      CR4.SMEP after CPUID.(7,0):EBX[7]. Cost: none at runtime. Off: the
+      kernel may execute user pages (an exploit primitive).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_SMEP_NEVER
+        bool "n: never use it"
+    config X86_SMEP_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SMEP_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SMAP (supervisor-mode access prevention)"
+    default X86_SMAP_PROBE
+    help
+      CR4.SMAP after CPUID.(7,0):EBX[20]; the user-access window
+      (ArchPlatform::user_access) is stac/clac. Cost: two instructions per
+      user copy. Fallback: no window (every kernel access to user memory
+      allowed), as without the bit.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_SMAP_NEVER
+        bool "n: never use it"
+    config X86_SMAP_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SMAP_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "UMIP (user-mode instruction prevention)"
+    default X86_UMIP_PROBE
+    help
+      CR4.UMIP after CPUID.(7,0):ECX[2]: SGDT/SIDT/SLDT/SMSW/STR fault in
+      ring 3, so user code cannot read kernel table addresses. Cost: none.
+      Fallback: the instructions stay legal (a KASLR leak).
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_UMIP_NEVER
+        bool "n: never use it"
+    config X86_UMIP_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_UMIP_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "PKU (protection keys for user pages)"
+    default X86_PKU_PROBE
+    help
+      CPUID.(7,0):ECX[3]: detected and reported only; NOT used. A hook for
+      the 16 user page keys in PKRU (XSAVE component 9): no kernel code sets
+      CR4.PKE, writes a pkey into a PTE or switches PKRU, there is no
+      pkey_mprotect, and HWCAP_X86_PKU reads 0. The plan reserves a pkey slot in the page
+      table entry for it. Needs X86_XSAVE.
+      n: no difference. probe: no difference (the boot line only). require:
+      the boot refuses a CPU without it.
+
+    config X86_PKU_NEVER
+        bool "n: never use it"
+    config X86_PKU_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVE_NEVER
+    config X86_PKU_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
+endchoice
+
+choice
+    prompt "LA57 (5-level paging)"
+    default X86_LA57_NEVER
+    help
+      CR4.LA57 after CPUID.(EAX=7,ECX=0):ECX[16]: 57-bit virtual
+      addresses (64 PiB of user space instead of 128 TiB) through a PML5
+      above the PML4. boot.S decides it before paging is on (CR4.LA57
+      cannot change in long mode), and crates/core/arch-x86_64/src/mmu.rs
+      reads the depth back from CR4. Cost: one more level on every TLB
+      miss (one more memory access per walk, 4 KiB more per address
+      space). Only for a machine whose RAM or VA needs exceed 64/128 TiB.
+      n: 4-level always (the depth is then a compile-time 4). probe: 5
+      levels when the CPU has it. require: the boot refuses a CPU without
+      it.
+
+    config X86_LA57_NEVER
+        bool "n: never use it"
+    config X86_LA57_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_LA57_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "CET indirect-branch tracking"
+    default X86_CET_IBT_PROBE
+    help
+      CPUID.(7,0):EDX[20]: indirect jumps and calls must land on ENDBR64.
+      Any policy but n builds the kernel and the user images with
+      `-Z cf-protection=branch`, and the boot sets CR4.CET and
+      IA32_S_CET.ENDBR_EN on every CPU that has it
+      (crates/core/arch-x86_64/src/cpu/cfi.rs): ring 0 is enforced, ring 3
+      is not (IA32_U_CET is per process). Exported to ring 3 as
+      HWCAP_X86_CET_IBT in the vDSO hwcap word (azos_libsys::vdso_hwcap), set
+      once the kernel sets CR4.CET. Cost when used: an ENDBR64 per function
+      entry (4 B); the CET state is an XSAVES supervisor component. Needs
+      X86_XSAVES.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_CET_IBT_NEVER
+        bool "n: never use it"
+    config X86_CET_IBT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVES_NEVER
+    config X86_CET_IBT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVES_NEVER
+endchoice
+
+choice
+    prompt "CET shadow stack"
+    default X86_CET_SHSTK_PROBE
+    help
+      CPUID.(7,0):ECX[7]: a hardware return-address stack (the x86 twin of
+      aarch64 PAuth return signing). Not enabled yet. Exported to ring 3 as
+      HWCAP_X86_CET_SHSTK in the vDSO hwcap word (azos_libsys::vdso_hwcap), set only once the kernel
+      sets CR4.CET (it does not yet, so the bit reads 0). Cost when
+      used: one shadow-stack page set per task and the CET XSAVES state.
+      Needs X86_XSAVES.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_CET_SHSTK_NEVER
+        bool "n: never use it"
+    config X86_CET_SHSTK_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVES_NEVER
+    config X86_CET_SHSTK_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVES_NEVER
+endchoice
+
+choice
+    prompt "XSAVEOPT (modified-only FP save)"
+    default X86_XSAVEOPT_PROBE
+    help
+      CPUID.(0xD,1):EAX[0]: XSAVE that skips components unchanged since the
+      last XRSTOR. Faster FP save on every switch. Fallback: XSAVE, then
+      FXSAVE. require adds +xsaveopt. Needs X86_XSAVE.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_XSAVEOPT_NEVER
+        bool "n: never use it"
+    config X86_XSAVEOPT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVE_NEVER
+    config X86_XSAVEOPT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
+endchoice
+
+choice
+    prompt "XSAVES (compact, supervisor-state FP save)"
+    default X86_XSAVES_PROBE
+    help
+      CPUID.(0xD,1):EAX[3]: compacted XSAVE area with the init/modified
+      optimisations and supervisor components (CET, PT). Smaller save area
+      per task. Fallback: XSAVEOPT / XSAVE. require adds +xsaves. Needs
+      X86_XSAVE.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_XSAVES_NEVER
+        bool "n: never use it"
+    config X86_XSAVES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !X86_XSAVE_NEVER
+    config X86_XSAVES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !X86_XSAVE_NEVER
+endchoice
+
+choice
+    prompt "x2APIC (MSR-mapped LAPIC)"
+    default X86_X2APIC_PROBE
+    help
+      CPUID.1:ECX[21]: LAPIC registers as MSRs, IPIs as one wrmsr to the
+      ICR. Fallback: xAPIC MMIO at the IA32_APIC_BASE address. Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_X2APIC_NEVER
+        bool "n: never use it"
+    config X86_X2APIC_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_X2APIC_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "LAPIC TSC-deadline timer"
+    default X86_TSC_DEADLINE_PROBE
+    help
+      CPUID.1:ECX[24]: Interrupts::set_timer_deadline writes
+      IA32_TSC_DEADLINE in TSC ticks. Fallback: the LAPIC one-shot count
+      calibrated against the TSC. Cost: none.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_TSC_DEADLINE_NEVER
+        bool "n: never use it"
+    config X86_TSC_DEADLINE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_TSC_DEADLINE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Invariant TSC"
+    default X86_INVARIANT_TSC_PROBE
+    help
+      CPUID.0x80000007:EDX[8]: the TSC runs at a constant rate in every
+      C/P-state, so a rate that CPUID leaf 15H or the hypervisor leaf
+      states is the clock's. Without it (or under n) those stated rates are
+      not taken: the TSC is measured against the HPET (X86_HPET), else the
+      PIT, and CPUID 16H's nominal rate is the last resort. The [TIMER] boot
+      line says which. Exported to ring 3 as HWCAP_X86_INVARIANT_TSC in
+      the vDSO hwcap word (azos_libsys::vdso_hwcap) (a TSC delta is time).
+      n: the measured path always. probe: the CPUID probe picks. require:
+      the boot refuses a CPU without it.
+
+    config X86_INVARIANT_TSC_NEVER
+        bool "n: never use it"
+    config X86_INVARIANT_TSC_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_INVARIANT_TSC_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+choice
+    prompt "1 GiB pages (PDPE1GB)"
+    default X86_GBPAGES_PROBE
+    help
+      Level-2 (PDPT) leaves after CPUID.80000001H:EDX[26]: one TLB entry
+      per GiB for the kernel's direct map and the big fixed regions that
+      ask for them. Cost: none at runtime. Fallback: Mmu::pte_make_leaf
+      refuses a level-2 leaf and the caller maps 2 MiB leaves.
+      n: the fallback always. probe: the CPUID probe picks. require: the
+      boot refuses a CPU without it.
+
+    config X86_GBPAGES_NEVER
+        bool "n: never use it"
+    config X86_GBPAGES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_GBPAGES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "WAITPKG (UMONITOR/UMWAIT/TPAUSE)"
+    default X86_WAITPKG_PROBE
+    help
+      The spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      spin.rs): after SPIN_WAIT_RELAX_SPINS PAUSE polls the waiter arms
+      UMONITOR on the lock word and sleeps in UMWAIT (C0.1 or C0.2,
+      X86_UMWAIT_C02) until a store to the line, an interrupt, or the
+      X86_UMWAIT_TSC_TICKS deadline. UMWAIT executes at any CPL (the U is
+      "also user"; CR4.TSD only restricts CPL > 0), so ring 0 may use it;
+      IA32_UMWAIT_CONTROL may cap the wait further. CPUID.(7,0):ECX[5].
+      Fallback: the PAUSE loop. probe: one load of a boot-set flag and a
+      branch per wait step (QEMU TCG does not implement WAITPKG, so the
+      QEMU board always takes the fallback). n: PAUSE, no branch.
+      require: inlined, no branch; a CPU without it is refused.
+
+    config X86_WAITPKG_NEVER
+        bool "n: never use it"
+    config X86_WAITPKG_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_WAITPKG_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+config X86_KERNEL_GLOBAL_PAGES
+    bool "Global (G) kernel leaves"
+    default y
+    help
+      Every kernel leaf carries G, so its TLB entry survives a CR3 write
+      (CR4.PGE). Sound because the kernel lives in the upper half (the
+      image at KERNEL_VA_OFFSET, PML4 slot 511; RAM in the direct map at
+      DIRECT_MAP_BASE, slot 273 on) and every user root points at the
+      kernel's own PDPTs there: a kernel leaf is the same word in every
+      address space. The device windows in the low
+      half are KERNEL_RW leaves too (G); a task's table borrows or copies
+      them unchanged, and an unmap drops a G entry (invlpg, or the global
+      flush). Cost of n: every address-space switch also drops the
+      kernel's TLB entries, and the kernel re-walks its own text, data and
+      stacks after each switch (dozens of misses per switch). Say n to
+      measure that cost, or to rule G out while chasing a stale mapping.
+
+# ── x86_64 trap entry and FP state ─────────────────────────────────────────
+# kernel/src/entry/x86_64/ (cpu_init.rs, fp.rs, asm/trap_entry.S).
+
+config X86_IST_STACK_SIZE_KB
+    int "IST stack for #DF, NMI and #MC, each (KiB)"
+    range 2 8
+    default 4
+    help
+      The three exceptions that may arrive on a stack the kernel cannot
+      trust (#DF after a fault while pushing, NMI and #MC because they
+      ignore IF and can land inside syscall_entry before it leaves the user
+      RSP) each get a known-good stack through the TSS IST slots.  They are
+      carved from the TOP of each CPU's interrupt stack
+      (INTERRUPT_STACK_SIZE_KB), so this costs no RAM of its own: it leaves
+      INTERRUPT_STACK_SIZE_KB - 3 x this for device interrupt handlers, and
+      the build refuses less than 4 KiB left.  4 KiB is Linux's
+      EXCEPTION_STKSZ on every configuration without KASAN, and the same on
+      every profile here: the handlers print and stop (#DF, #MC) or count
+      (NMI), whatever the board.  Raise it only if a handler grows.
+
+config X86_XSAVE_AREA_BYTES
+    int "Per-task FP/SIMD save area (bytes, a multiple of 64)"
+    range 576 8192
+    default 2752 if HWCLASS_SERVER
+    default 1024
+    help
+      The XSAVE image each task slot keeps for its ring-3 FP/SIMD state, and
+      the copy a forked child inherits (Task::fork_regs).  The boot enables
+      the largest XCR0 set that fits: AVX-512 needs about 2.7 KiB, AVX 832
+      bytes, x87+SSE 576.  A CPU whose set does not fit is limited to the
+      next smaller one, so user code there sees no AVX-512 (or no AVX).
+      Cost: 2 x this x MAX_TASKS of .bss (edge, 64 tasks: 128 KiB at the
+      1 KiB default; fleet, 4096 tasks at 2752: 22 MiB); time: one
+      XSAVEOPT/XRSTOR pair per context switch that changes the ring-3 owner,
+      proportional to the components in use, not to this size.  fleet
+      defaults to AVX-512 (server parts have it); edge and embedded to AVX.
+
+choice
+    prompt "Split-lock detection (IA32_CORE_CAPABILITIES, MSR_TEST_CTRL)"
+    default X86_SPLIT_LOCK_PROBE
+    help
+      MSR_TEST_CTRL bit 29: a locked atomic that crosses a cache line raises
+      #AC instead of taking a bus lock that stalls every other core for
+      microseconds (jitter a real-time task on another core cannot bound).
+      Present when CPUID.(7,0):EDX[30] enumerates IA32_CORE_CAPABILITIES and
+      its bit 5 is set (Intel Tremont / Ice Lake and later); every MSR access
+      is behind that probe, so a CPU or an emulator without it (QEMU TCG) is
+      never touched. A split lock in ring 3 kills the task with a decision
+      record (`split-lock`, in the flight recorder); in the kernel see
+      X86_SPLIT_LOCK_KERNEL_PANIC. The MSR is per core: every CPU writes it.
+      Cost: none until a split lock happens.
+      n: never enabled, the bus lock is taken. probe: the CPUID/MSR probe
+      picks. require: the boot refuses a CPU without it.
+
+    config X86_SPLIT_LOCK_NEVER
+        bool "n: never use it"
+    config X86_SPLIT_LOCK_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SPLIT_LOCK_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Performance counters (Intel architectural PMU, AMD core counters)"
+    default X86_PMU_PROBE
+    help
+      The source of `Pmu` on x86_64, read with `rdpmc` (ring 0 may always).
+      Intel: CPUID leaf 0xA version 2 or later gives fixed counter 0
+      (INST_RETIRED.ANY, `Pmu::instructions`) and 1 (CPU_CLK_UNHALTED,
+      `Pmu::cycles`), programmed through IA32_FIXED_CTR_CTRL and
+      IA32_PERF_GLOBAL_CTRL, and general counter 0 for `Pmu::event`
+      (IA32_PERFEVTSEL0). AMD: PerfCtrExtCore (CPUID 0x80000001 ECX[23], six
+      counters at MSR 0xC0010200; PerfMonV2 CPUID 0x80000022 gives their
+      number and PerfCntrGlobalCtl) or, on bare metal only, the four legacy
+      counters; counter 0 counts event 0x76 (cycles not halted), 1 event
+      0xC0 (retired instructions), 2 serves `Pmu::event`. A counter that
+      does not move after it is enabled (a hypervisor that ignores the MSR
+      write) is not used. Every PMU MSR is behind the CPUID probe: a CPU or
+      an emulator without it (QEMU TCG) is never touched.
+      Fallback: `Pmu::cycles` is the time-stamp counter (the rate is
+      measured at boot) and `Pmu::instructions` is 0. n: the same.
+      require: a CPU without the cycle and instruction counters is refused.
+
+    config X86_PMU_NEVER
+        bool "n: never use it"
+    config X86_PMU_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_PMU_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AMD SVM hypervisor primitives (EFER.SVME, VMRUN, NPT)"
+    default X86_SVM_PROBE
+    help
+      The hypervisor's AMD half (arch-x86_64 ext/hv): EFER.SVME per CPU, the
+      VMCB, nested page tables, VMRUN and the #VMEXIT decode. Present when
+      CPUID.0x80000001:ECX[2] says so and VM_CR.SVMDIS is clear (firmware
+      can lock SVM off: then the CPU reports no hypervisor, with a record,
+      and the boot goes on). QEMU TCG implements SVM (`-cpu max,+svm`).
+      Cost: none until a guest exists; the probe is one CPUID leaf and one
+      MSR read.
+      n: never touched. probe: the CPUID/MSR probe picks. require: the boot
+      refuses a CPU without usable SVM.
+
+    config X86_SVM_NEVER
+        bool "n: never use it"
+    config X86_SVM_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_SVM_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Intel VMX hypervisor (VMX, EPT, VMLAUNCH)"
+    default X86_VMX_PROBE
+    help
+      The hypervisor's Intel half (arch-x86_64 ext/hv: vmx, ept, vmx_hw): the
+      same guest entry as the AMD half over a VMCS and extended page tables.
+      VMX is present when CPUID.1:ECX[5] says so, IA32_FEATURE_CONTROL allows
+      VMXON outside SMX (firmware can lock it off: then the CPU reports no
+      hypervisor, with a record, and the boot goes on) and the capability
+      MSRs allow a 4-level write-back EPT walk, INVEPT and unrestricted guest
+      (the AzOS guest starts with paging off and its other CPUs in real
+      mode). SVM stays primary: an AMD CPU never picks VMX. QEMU's TCG does
+      not implement VMX, so the instruction layer is not exercised by the
+      host tests; the encoders and the translation are host-tested against
+      the SDM's numbers.
+      Cost: the probe is one CPUID leaf and a few MSR reads; a CPU enters
+      VMX operation (CR4.VMXE, VMXON) only when it first runs a guest.
+      n: never touched. probe: the CPUID/MSR probe picks. require: the boot
+      refuses a CPU without usable VMX.
+
+    config X86_VMX_NEVER
+        bool "n: never use it"
+    config X86_VMX_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config X86_VMX_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+config X86_SPLIT_LOCK_KERNEL_PANIC
+    bool "x86_64: a split lock in the kernel panics (development) instead of warning"
+    default y if KTEST
+    default n
+    help
+      With X86_SPLIT_LOCK in use, a split-locked atomic raising #AC in ring 0
+      is a kernel bug. y: panic with the instruction pointer (development
+      and test kernels, where the bug should stop the run). n: warn once per
+      rate-limit window and clear MSR_TEST_CTRL bit 29 on that CPU so the
+      access retries (a #AC is a fault: returning re-executes it), after
+      which that CPU takes bus locks again. Unused without X86_SPLIT_LOCK.
+
+config X86_SYSRET
+    bool "Return from system calls with sysretq"
+    default y
+    help
+      y: a system call returns through sysretq when the frame still holds
+      what syscall saved (RIP = RCX, RFLAGS = R11), RIP is canonical and
+      RFLAGS has neither TF nor RF; anything else takes iretq.  That is
+      Linux's rule: a non-canonical RIP makes sysretq fault in ring 0 on
+      Intel with the user RSP already loaded (CVE-2012-0217).
+      n: always iretq, which is microcoded and slower than sysretq on every
+      system call (not measured here yet); the simplest return path, for
+      bring-up or bisecting.
+
+endif # ARCH_X86_64

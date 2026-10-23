@@ -226,7 +226,7 @@ fn each_bug_is_a_never_probe_require_choice_defaulting_to_probe() {
     for (bug, _) in BUGS {
         for m in ["NEVER", "PROBE", "REQUIRE"] {
             let sym = format!("A64_MIT_{bug}_{m}");
-            assert!(read("config/Kconfig.mitigations").contains(&format!("config {sym}\n")), "{sym} is declared");
+            assert!(read("config/axes/Kconfig.security").contains(&format!("config {sym}\n")), "{sym} is declared");
         }
         assert!(cfg.contains(&format!("CONFIG_A64_MIT_{bug}_PROBE=y")), "{bug}: probe is the default");
         assert_eq!(policy(&cfg, bug), ExtPolicy::Probe);

@@ -524,7 +524,7 @@ fn fmt_us(n: u32) -> String {
 /// **Canary.** Raise `AUDIO_MAX_PERIODS` to `range 2 128`: red.
 #[test]
 fn the_kconfig_ranges_stop_at_the_interface_bounds() {
-    let k = read("config/Kconfig.audio");
+    let k = read("config/subsys/Kconfig.audio");
     let range = |sym: &str| -> (u64, u64) {
         let block = k.split(&format!("config {sym}\n")).nth(1).unwrap_or_else(|| panic!("{sym} missing"));
         let line = block.lines().find(|l| l.trim_start().starts_with("range ")).unwrap_or_else(|| panic!("{sym} has no range"));

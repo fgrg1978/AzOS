@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/Kconfig — the menu tree: every Kconfig topic file, in menu order
+#
+# One topic per file under config/axes (the profile axes), config/arch (ISA,
+# platform), config/kernel (core kernel), config/subsys (subsystems and
+# drivers), config/domains (application domains, shown only for their USE)
+# and config/limits (the resource cap table). The menus are declared here;
+# a topic file holds only its symbols (and its own sub-menus).
+
+# The preset and the profile axes come first: PRESET is the one choice a
+# defconfig needs, and it sets the defaults of the axes that follow.
+menu "Preset and profile axes"
+source "config/axes/Kconfig.preset"
+source "config/axes/Kconfig.hwclass"
+source "config/axes/Kconfig.structure"
+source "config/axes/Kconfig.rt"
+source "config/axes/Kconfig.security"
+source "config/axes/Kconfig.virt"
+source "config/axes/Kconfig.build"
+endmenu # Preset and profile axes
+
+# The application domain (the USE axis, derived from the preset, never asked)
+# comes next: it decides which domain menus are shown (the Robot menu, with
+# the brain link inside it, is visible only for USE_ROBOT).
+source "config/axes/Kconfig.use"
+
+menu "Robot"
+    visible if USE_ROBOT
+source "config/domains/Kconfig.robot"
+menu "Brain Server Link"
+source "config/domains/Kconfig.brain"
+endmenu # Brain Server Link
+
+endmenu # Robot
+
+menu "Architecture"
+source "config/arch/Kconfig.isa"
+source "config/arch/Kconfig.isa-riscv64"
+source "config/arch/Kconfig.isa-aarch64"
+source "config/arch/Kconfig.isa-x86_64"
+endmenu # Architecture
+
+source "config/arch/Kconfig.platform"
+
+menu "Resource Limits"
+source "config/limits/Kconfig.limits"
+endmenu # Resource Limits
+
+menu "Scheduler"
+source "config/kernel/Kconfig.sched"
+endmenu # Scheduler
+
+menu "IPC and capabilities"
+source "config/kernel/Kconfig.ipc"
+endmenu # IPC and capabilities
+
+menu "Synchronization"
+source "config/kernel/Kconfig.sync"
+endmenu # Synchronization
+
+menu "Memory management"
+source "config/kernel/Kconfig.mm"
+endmenu # Memory management
+
+menu "Kernel tasks"
+source "config/kernel/Kconfig.tasks"
+endmenu # Kernel tasks
+
+menu "Energy and thermal"
+source "config/kernel/Kconfig.energy"
+endmenu # Energy and thermal
+
+menu "Panic and crash dump"
+source "config/kernel/Kconfig.panic"
+endmenu # Panic and crash dump
+
+menu "Hardening"
+source "config/kernel/Kconfig.hardening"
+endmenu # Hardening
+
+menu "Live update"
+source "config/kernel/Kconfig.livepatch"
+endmenu # Live update
+
+menu "Storage"
+source "config/subsys/Kconfig.storage"
+endmenu # Storage
+
+menu "File systems"
+source "config/subsys/Kconfig.fs"
+endmenu # File systems
+
+menu "Network"
+source "config/subsys/Kconfig.net"
+endmenu # Network
+
+menu "RPC"
+source "config/subsys/Kconfig.rpc"
+endmenu # RPC
+
+menu "Network services"
+source "config/subsys/Kconfig.netsvc"
+endmenu # Network services
+
+menu "Signed topology"
+source "config/subsys/Kconfig.topology"
+endmenu # Signed topology
+
+menu "Secure boot"
+source "config/subsys/Kconfig.secure-boot"
+endmenu # Secure boot
+
+menu "Entropy and TPM"
+source "config/subsys/Kconfig.entropy"
+endmenu # Entropy and TPM
+
+menu "Keystore"
+source "config/subsys/Kconfig.keystore"
+endmenu # Keystore
+
+menu "Application packages"
+source "config/subsys/Kconfig.packages"
+endmenu # Application packages
+
+menu "Drivers"
+source "config/subsys/Kconfig.drivers"
+endmenu # Drivers
+
+menu "USB"
+source "config/subsys/Kconfig.usb"
+endmenu # USB
+
+menu "Display and input"
+source "config/subsys/Kconfig.display"
+endmenu # Display and input
+
+menu "Console and login"
+source "config/subsys/Kconfig.console"
+endmenu # Console and login
+
+menu "Linux compatibility"
+source "config/axes/Kconfig.personality"
+endmenu # Linux compatibility
+
+menu "C library (relibc)"
+source "config/axes/Kconfig.libc"
+endmenu # C library (relibc)
+
+menu "Audio"
+source "config/subsys/Kconfig.audio"
+endmenu # Audio
+
+# The programs under userspace/ (board volume contents, the console program).
+# Generated at every parse by the line below, never committed: a program
+# directory added or deleted shows up at the next configuration.
+$(shell,python3 tools/gen_userspace_kconfig.py)
+source "config/Kconfig.userspace"
+menu "OTA Firmware Updates"
+source "config/subsys/Kconfig.ota"
+endmenu # OTA Firmware Updates
+
+menu "Logging, tracing and inspection"
+source "config/kernel/Kconfig.trace"
+endmenu # Logging, tracing and inspection
+
+menu "Lock dependency checker"
+source "config/kernel/Kconfig.lockdep"
+endmenu # Lock dependency checker
+
+menu "Decision records"
+source "config/kernel/Kconfig.decisions"
+endmenu # Decision records
+
+menu "AzOS-micro (MCU kernel)"
+source "config/kernel/Kconfig.micro"
+endmenu # AzOS-micro (MCU kernel)

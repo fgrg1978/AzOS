@@ -3,7 +3,7 @@
 //! A landing pad at every global assembly entry, aarch64 and x86_64.
 //!
 //! riscv64 is not scanned: it has no CFI symbol and its assembly carries no
-//! landing pad (config/Kconfig.security says why).
+//! landing pad (config/subsys/Kconfig.topology says why).
 
 use crate::scan::{check, scan, without_pad_after, Isa, Missing};
 use std::collections::BTreeSet;

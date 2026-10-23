@@ -1,0 +1,350 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.netsvc — Network services: NTP, Zenoh, PTP, MCP bridge, SSH
+
+config NTP_CLIENT
+    bool "SNTP client task: keep the wall clock steered from a time server"
+    default y
+    help
+      Starts the kernel's `net-clients` task (kernel/src/tasks/net_clients.rs),
+      which asks a time server for the time and hands each answer to the clock
+      discipline (azos_syscall::clock, source NTP): the first one sets a clock
+      nobody set, later ones are slewed in or, past the discipline's
+      thresholds, stepped or refused. The server is the address a DHCP lease
+      names in option 42, or else the one NTP_SERVER names. Off: nothing asks
+      for the time and the wall clock is the RTC's, or a PTP daemon's.
+
+      Cost when set: one task (a 16 KiB stack) that sleeps between exchanges,
+      and one UDP request of 48 bytes every NTP_INTERVAL_S. The same on
+      riscv64, aarch64 and x86_64.
+
+config NTP_SERVER
+    string "Time server: a name or a dotted-quad IPv4 address (empty: only a lease names one)"
+    default "time.cloudflare.com"
+    help
+      A name is resolved through the stack's resolver (the DHCP-given DNS
+      server, else 8.8.8.8) before each exchange (the resolver keeps an answer
+      five minutes), so a pool or an anycast name that moves is followed. A
+      dotted quad is used as it is. A server named by a DHCP lease (option 42)
+      replaces this one for as long as the lease says. Empty: no request is
+      sent until a lease names a server. At most 48 characters (the Net
+      interface's name limit).
+
+      The default is a public anycast service, so a build that boots on a
+      network with a route out starts talking to it; set the empty string for
+      an isolated deployment, or the address of your own server.
+
+config NTP_INTERVAL_S
+    int "Seconds between time exchanges once synchronised"
+    range 64 86400
+    default 1024
+    help
+      The poll period of the NTP client task. RFC 4330 §10 asks a client not
+      to poll faster than every 15 s, and a public server not faster than 64;
+      the clock discipline estimates the counter's frequency error from
+      samples this far apart, so a longer period gives it a longer baseline and
+      a slower correction of a drifting oscillator. A failed exchange is retried
+      after 16 s, doubling up to this period.
+
+      Cost: none in RAM; one 48-byte request per period.
+
+# ---------------------------------------------------------------------------
+# Zenoh gateway (userspace/services/zenohd, userspace/lib/zenoh)
+# ---------------------------------------------------------------------------
+config ZENOH_GW
+    bool "Zenoh gateway (ZENOHD.ELF): the decision records as topics, the Decisions ops as queryables"
+    default n
+    help
+      The built-in topology carries a row for ZENOHD.ELF and the kernel starts
+      it at boot. The gateway is a client of one Zenoh router (ZENOH_ROUTER_ADDR)
+      over TCP. It holds one lendable endpoint capability, the call right with
+      DUP on `endpoint.decisions`, and reads nothing else: no file, no procfs
+      view. Its configuration is this Kconfig menu. With ZENOH_DECISIONS_KEY set
+      it declares a queryable on that key expression; a query whose key names an
+      op of the Decisions interface (`azos/dec/get` is `Decisions::get`)
+      becomes one IDL call through a warrant the gateway asks the kernel for
+      (call right only, badged with the gateway's id of the query, lapsing with
+      the query). The kernel admits or refuses the call, and the answer carries
+      the decision record that is the receipt. The kernel's decision records
+      are published as topics under ZENOH_DECISION_TOPIC.
+
+      The gateway holds exactly the authority its row lists and lends none: it
+      is not the warrant transport between nodes (RPCSRV.ELF is). It also
+      authenticates nobody: the link is plain TCP and any peer the router lets
+      query a key may ask for the op behind it. The badge a call carries is the
+      gateway's own counter of queries, not the requester: the ZenohID a query
+      names is written by the querier and is never taken as an identity. What
+      bounds that is the row (only the endpoints it holds), the kernel's
+      admission of every call, ZENOH_QUERY_RATE and ZENOH_QUERY_TIMEOUT_MS; who
+      may query is the router's access control and the network the router sits
+      on. Cost when set: one task of 160 pages (ZENOHD_MEM_PAGES in the
+      topology builder) and one TCP connection, either ISA.
+
+config ZENOH_DECISIONS_KEY
+    string "Key expression the Decisions ops are served under as queryables (empty: none)"
+    default ""
+    help
+      The key expression the gateway declares a queryable on, normally a prefix
+      pattern such as `azos/dec/**`. A query names one op by the last chunk of
+      its key (`azos/dec/get`); a key with a wildcard names no op and is not
+      served. Empty declares no queryable: only the decision topics flow.
+      The ops return decision records, which tell the network which
+      capabilities were refused to whom: set it only on a router you trust
+      with that. A string that is not a key expression (an empty chunk) is refused
+      at start.
+
+config ZENOH_ROUTER_ADDR
+    string "IPv4 address of the Zenoh router (dotted quad)"
+    default "10.0.2.2"
+    help
+      The router the gateway dials. The default is the host as QEMU's user
+      network sees it. A lost link is redialled with a wait that doubles up to
+      five seconds.
+
+config ZENOH_ROUTER_PORT
+    int "TCP port of the Zenoh router"
+    range 1 65535
+    default 7447
+    help
+      The port zenohd (the router) listens on by default.
+
+config ZENOH_LEASE_MS
+    int "Silence from the router after which the session is dropped (ms)"
+    range 1000 3600000
+    default 10000
+    help
+      The lease the gateway states in OPEN: the router keeps the session alive
+      with KEEP_ALIVE messages at a quarter of it, and the gateway closes and
+      redials after this much silence. The router's own lease sets how often
+      the gateway sends KEEP_ALIVE.
+
+config ZENOH_QUERY_TIMEOUT_MS
+    int "Longest life of the warrant a query gets (ms)"
+    range 1 60000
+    default 2000
+    help
+      A query's warrant lapses after its own timeout or this, whichever is
+      shorter, and so does the authority it carries: a call the kernel has not
+      admitted by then is refused. An op that declares a deadline
+      (#[deadline_ns]) is called with that deadline when it is shorter.
+
+config ZENOH_QUERY_RATE
+    int "Queries served per second, at most"
+    range 1 100000
+    default 100
+    help
+      Every query is a warrant minted and an IDL call, and writes decision
+      records. The ones over the rate are answered `BUSY` (an ERR reply) without
+      reaching the kernel, so a remote peer cannot turn the router into a flood
+      of derives.
+
+config ZENOH_DECISION_TOPIC
+    string "Key prefix the kernel's decision records are published under (empty: none)"
+    default "azos/decisions"
+    help
+      Each decision record the Decisions object holds is published as it
+      appears under `<prefix>/<rule>/<verdict>` (for example
+      `azos/decisions/cap-denial/deny`), the payload the record's fixed-size
+      binary form (the one the introspection tree's admin records use). At
+      most 8 every 100 ms;
+      records overwritten before they were read are counted in the console
+      line the gateway prints when its link is lost. Empty publishes nothing.
+      The records tell the network which capabilities were refused to whom:
+      leave it empty on a router you do not trust with that.
+
+# ---------------------------------------------------------------------------
+# PTP daemon (userspace/services/ptpd)
+# ---------------------------------------------------------------------------
+config PTPD
+    bool "PTP daemon (PTPD.ELF): IEEE 1588 slave over UDP steering the wall clock"
+    default n
+    help
+      The built-in topology carries a row for PTPD.ELF and the kernel starts it
+      at boot. The daemon follows the best PTP master it hears (best master
+      clock algorithm), measures the wall clock against it with software
+      timestamps and offers each measurement to the kernel's Clock interface
+      (source PTP), whose discipline slews, steps or filters. Its row holds
+      WRITE on the `clock` endpoint (the right to move time) and nothing else
+      beyond its two UDP sockets (ports 319 and 320).
+
+      The PTP domain is the `ptp_domain` of the topology's `[clock]` row
+      (the `inspect.clock` view); a node whose row declares none takes no
+      part. The master's
+      time is on the TAI timescale, so a master that does not state a valid UTC
+      offset gives no sample. Software timestamps are taken in ring 3 after the
+      datagram is dequeued: the accuracy is the poll period of the daemon (1 ms)
+      plus the receive path, not the sub-microsecond of hardware timestamps.
+      Cost when set: one task of 32 pages (PTPD_MEM_PAGES in the topology
+      builder) and two sockets. 802.1AS over raw Ethernet is not offered: it
+      needs a packet socket, which the kernel keeps to itself.
+
+config PTPD_DOMAIN
+    int "PTP domain of the built-in topology's [clock] row"
+    range 0 127
+    default 0
+    help
+      The `ptp_domain` the built-in topology declares for the node, which the
+      daemon serves. A signed topology states its own `[clock]` row; this is the
+      value only when the built-in one is in force. 0 is the default domain of
+      IEEE 1588.
+
+# ---------------------------------------------------------------------------
+# MCP bridge (userspace/services/mcpd, userspace/lib/mcp)
+# ---------------------------------------------------------------------------
+config MCP_BRIDGE
+    bool "MCP bridge (MCPD.ELF): the endpoints a row can call as Model Context Protocol tools"
+    default n
+    help
+      The built-in topology carries a row for MCPD.ELF and the kernel starts
+      it at boot. The bridge dials MCP_PEER_ADDR:MCP_PORT over the native TCP
+      stack and serves the MCP server role over that one stream (one JSON-RPC
+      message per line): the bridge dials out, so a relay or the agent's host
+      listens and the bridge connects. For every
+      endpoint its row holds the call and lend rights on and whose interface
+      the bridge's catalog knows, each op that declares how it is delivered
+      (#[idempotent], #[at_most_once], #[once_only]) is the tool
+      `<interface>.<op>`; the IDL op table is the schema.
+
+      Every tools/call needs a warrant: an in-tree macaroon (the RPC
+      transport's token) in params._meta["azos/warrant"], issued to the MCP
+      client as a principal (a Domain id), that expires and carries an OP_MASK
+      naming the op. The call is one warrant the bridge asks the kernel for
+      (call right only, badged with the principal, one use, lapsing with the
+      client's warrant) and one IDL call through it; the answer carries the
+      decision record that is the receipt. An op that cannot be undone
+      (#[once_only]) is only proposed by its tool: a human confirms it with a
+      one-shot warrant bound to the proposal, and the agent commits it, once,
+      under the op's declared deadline.
+
+      The bridge is the only issuer of warrants: they are signed with keys
+      derived from the image's own DICE key (the board seed measured with this
+      image, never leaving the bridge). At boot it prints an operator's warrant
+      on the console; with it the operator issues the agents' warrants and the
+      humans' one-shot confirmations through the bridge itself
+      (MCP_ENROL_TTL_MS, MCP_GRANT_MAX_MS). A rebuilt image has another key, so
+      every warrant of the old one stops verifying. The link is plain TCP and
+      authenticates nobody: what a peer may do is what its warrant says, the row
+      grants and the kernel admits; the warrants travel in the clear on that
+      stream, so keep it on a network you trust (or behind a relay that
+      encrypts). Cost when set: one task of 160 pages (MCPD_MEM_PAGES in the
+      topology builder), one TCP connection, either ISA.
+
+config MCP_PEER_ADDR
+    string "IPv4 address the bridge connects to (dotted quad)"
+    default "10.0.2.2"
+    help
+      The relay or the agent host that listens for the bridge. The default is
+      the host as QEMU's user network sees it. A lost link is redialled with a
+      wait that doubles up to five seconds.
+
+config MCP_PORT
+    int "TCP port the bridge connects to"
+    range 1 65535
+    default 7448
+    help
+      The port the relay listens on.
+
+config MCP_CALL_RATE
+    int "Tool calls served per second, at most"
+    range 1 100000
+    default 20
+    help
+      Every call is a warrant checked, and an admitted one a warrant minted and
+      an IDL call that writes decision records. The ones over the rate are
+      answered `busy` without reaching the kernel (and before the warrant is
+      read), so a peer cannot turn the bridge into a flood of derives.
+
+config MCP_WARRANT_MAX_MS
+    int "Longest life of the warrant a call gets from the kernel (ms)"
+    range 1 600000
+    default 5000
+    help
+      The kernel warrant of a call lapses with the client's warrant or this,
+      whichever is first, and so does the authority it carries: a call the
+      kernel has not admitted by then is refused. An op that declares a
+      deadline (#[deadline_ns]) is called with that deadline when it is shorter.
+
+config MCP_PROPOSAL_TTL_MS
+    int "How long a proposed irreversible op waits for its confirmation (ms)"
+    range 1000 86400000
+    default 120000
+    help
+      A proposal lapses after this, or with the agent's warrant, whichever is
+      first; a lapsed one can be neither confirmed nor committed. Up to 8
+      proposals wait at once.
+
+config MCP_GRANT_MAX_MS
+    int "Longest life of a warrant the bridge issues (ms)"
+    range 1000 604800000
+    default 3600000
+    help
+      A warrant issued through azos.grant_agent or azos.grant_confirm lapses
+      after the time asked for or this, whichever is shorter, and never after
+      the operator's own warrant.
+
+config MCP_ENROL_TTL_MS
+    int "Life of the operator's warrant printed at boot (ms)"
+    range 1000 604800000
+    default 900000
+    help
+      The warrant the bridge prints on the console when it starts: the console
+      is the operator. After this the bridge must be restarted to print another.
+
+# ---------------------------------------------------------------------------
+# SSH server (userspace/services/sshd)
+# ---------------------------------------------------------------------------
+config SSHD
+    bool "SSH server (SSHD.ELF): remote commands over SSH-2, public-key login only"
+    default n if MICRO || BUILD_TYPE_CERTIFIABLE || HWCLASS_EMBEDDED
+    default y
+    help
+      The built-in topology carries a row for SSHD.ELF and the kernel starts it
+      at boot, on every preset but the MCU kernel (MICRO: no TCP stack), a
+      certifiable build (BUILD_TYPE_CERTIFIABLE: no remote door in a certified
+      image) and the embedded profile (its row, 192 pages, does not fit the
+      memory admission of a 16 MiB board beside the rest of the built-in
+      topology; all three default to n): a node can be reached with `ssh`. It
+      listens on SSHD_PORT on the native TCP stack (the ring-3 listening
+      socket: NODE_LISTEN and NODE_ACCEPT on a Cap<Socket>) and speaks SSH-2
+      with nothing downloaded: key exchange curve25519-sha256, host key
+      ssh-ed25519, cipher chacha20-poly1305@openssh.com, all from the in-tree
+      crypto crate. Strict key exchange is offered and enforced.
+
+      There are no passwords and no keyboard-interactive login. A login is a
+      signature by an ssh-ed25519 key that the signed topology lists in a
+      `[login.NAME]` row (the kernel shows the rows to the server in its
+      `inspect.logins` view). With no row nobody can log in; the port is open
+      all the
+      same. The host key is a key of the kernel's keystore (the `keys`
+      interface, Documentation/security.md "Keystore"): named, bound to this
+      image and derived from the board seed, so the same image on the same board
+      has the same host key at every boot and nothing is stored on the volume or
+      in any image. The server never holds the secret: it asks the kernel for the
+      public key and has the kernel sign each key exchange. The row holds only
+      the right to open that key, read its public part and sign (READ and WRITE
+      on `keys`, limited to the generate, public and sign ops) and no `linkkey`
+      at all, so a compromised server can neither read the host key, nor the
+      board seed it derives from, nor import or wrap a key. A board with no seed
+      (no key sector) has a host key of one boot only. Its fingerprint is printed
+      on the console at every start.
+
+      A session is one channel: `ssh host command` runs one image of the
+      volume (an applet of TOOLBOX.ELF, or another image the row of SSHD.ELF
+      may start) with the channel as its stdin and stdout; `ssh host` gives a prompt that runs one command per
+      line, with the line editing, history, ^C and ^D of the terminal server.
+      Pipelines, redirections and variables stay with SH.ELF on the console.
+      Port forwarding, subsystems, agent and X11 forwarding are refused. Every
+      refused key exchange, login or session, and every login, is a line on the
+      console and in /fat/SSHAUTH.LOG. One connection is served at a time.
+
+      Cost: one task (SSHD_MEM_PAGES in the topology builder), two small files
+      at the root of the volume and two sockets while a client is connected.
+
+config SSHD_PORT
+    int "TCP port the SSH server listens on"
+    range 1 65535
+    default 22
+    depends on SSHD
+    help
+      22 is the port `ssh` dials by default. Another port (a node behind NAT
+      that forwards 22 elsewhere) is chosen here; the client names it with -p.

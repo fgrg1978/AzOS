@@ -1,0 +1,123 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.tasks — Kernel tasks: placement, priorities, supervised restarts
+
+config MM_RECLAIM_PRIORITY
+    int "Reclaim task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 24
+    help
+      Read only with MM_RECLAIM_COMPRESS. kernel/src/tasks/reclaim.rs,
+      `reclaim`: the task that runs the reclaim stages in order when the free
+      frames fall below the system low watermark (MM_RECLAIM_HIGH_PCT in use)
+      or a Domain with a frame limit crosses its own: the page cache's dirty
+      pages are written back and the clean ones dropped, down to
+      MM_RECLAIM_LOW_PCT in use; then each Domain over its high watermark has
+      its anonymous pages compressed into the pool; and, when a storm ended
+      because the pool was full and MM_SWAP_BACKEND is on, a full pool segment
+      is written to swap.
+      Never real-time (it drops frames under mappings and waits for the disk)
+      and pinned to a CPU outside RCU_NOCBS_CPUS and the topology's isolcpus.
+      Behind fs-wb (20) so write-back of the volume's cache goes first.
+
+      Cost: none beyond the task (one stack). A smaller number reclaims sooner
+      under CPU load.
+
+# ---------------------------------------------------------------------------
+# Ring-3 driver supervisor
+# ---------------------------------------------------------------------------
+
+config SUP_RESTART_BURST
+    int "Supervised driver: restarts allowed within the interval"
+    range 1 16
+    default 3
+    help
+      The cold-restart supervisor (kernel/src/drv_supervisor.rs) restarts a
+      supervised ring-3 driver that died of a failure (killed by a fault,
+      a seccomp kill or a kernel stop request, or exited with a code other
+      than 0) at most this many times within SUP_RESTART_INTERVAL_S.  The
+      failure after that stays down until the machine restarts.  A driver
+      that exits 0 is never restarted.  systemd's StartLimitBurst, with
+      Restart=on-failure.
+
+config SUP_RESTART_INTERVAL_S
+    int "Supervised driver: restart-limit interval (seconds)"
+    range 1 86400
+    default 300
+    help
+      The window SUP_RESTART_BURST counts restarts in: a restart older than
+      this no longer counts against the budget, so a driver that fails
+      rarely is restarted every time and one in a crash loop is given up
+      on.  systemd's StartLimitIntervalSec.  The default leaves the gate's
+      four-kill supervisor row (worst case ~80 s under host load) inside
+      one window.
+
+# ---------------------------------------------------------------------------
+# Driver placement (Phase 4 elasticity)
+# ---------------------------------------------------------------------------
+
+config PLACEMENT_PROMOTE_MISSES
+    int "Placement: calls over the budget that ask for a move into the kernel"
+    range 1 16
+    default 4
+    help
+      A driver whose topology row says stateless = true and declares a
+      call_budget_us is moved from ring 3 into the kernel when this many of
+      its last 16 calls (measured from the caller, request to reply) took
+      longer than the budget, provided the kernel host's measured cost fits
+      the budget (azos_topology::placement).  A refused move is recorded as a
+      placement decision with the cost the budget would have had to cover.
+      One slow call (a cold cache, a preempted server) is not a deadline
+      miss; 4 of 16 is.
+
+config PLACEMENT_HOLDOFF_S
+    int "Placement: hold-off after a fault in the kernel host (seconds)"
+    range 1 86400
+    default 300
+    help
+      After the kernel host of a driver faulted (and the driver restarted in
+      ring 3), a move back into the kernel is refused for this long and
+      recorded (cause: recent fault).  Without it a driver that faults in the
+      kernel and is slow in ring 3 would trade places for ever.
+
+config IORING_WORKER_PRIORITY
+    int "io_ring worker task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20
+    help
+      The `ioring-wk` task's priority. It must stay outside the RT band
+      (the scheduler's RT threshold is 12): it is the task that may wait on
+      the disk on an RT task's behalf. Same default as FS_WRITEBACK_PRIORITY.
+
+      Cost: none. A smaller number completes handed-off entries sooner
+      under CPU load.
+
+config FS_WRITEBACK_PRIORITY
+    int "FAT32 write-back task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20
+    help
+      kernel/src/boot/sched.rs, `fs-wb`: the task that writes the FAT32
+      cache's dirty lines back by age and watermark. Never real-time (owner
+      rule: an RT task never does block I/O); below the log flusher (12) so
+      durable records go first.
+
+      Cost: none beyond the task. A smaller number writes back sooner under
+      CPU load.
+
+config LOG_FLUSHER_PRIORITY
+    int "Log flusher task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 12
+    help
+      kernel/src/boot/sched.rs, `log-flush`: the kernel task that writes
+      the flight recorder's ring to disk and runs the block I/O that
+      real-time tasks hand it (owner rule: an RT task never does block
+      I/O). Woken by every flush request; an RT task's `*_durable` record
+      is on disk once this task has run one flush after the request, so
+      its priority is that bound. 12 is the most urgent priority outside
+      the RT band (time-sliced, so it cannot starve the band's peers).
+
+      Cost: one kernel task (its stack, KERNEL_STACK_SIZE_KB) on every
+      ISA. Lower it (a larger number) only if logging must yield to
+      every other normal task.

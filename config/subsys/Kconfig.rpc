@@ -1,0 +1,223 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.rpc — The RPC link between nodes
+
+# ---------------------------------------------------------------------------
+# Transparent RPC (userspace/services/rpcsrv, userspace/lib/rpc)
+# ---------------------------------------------------------------------------
+config RPC_NODE_ID
+    int "This node's id on the RPC links"
+    range 1 2147483647
+    default 1
+    help
+      The id the RPC server (RPCSRV.ELF) states in the Hello that opens a
+      session, and the id the peer's `[peer.NAME]` section must list for this
+      node. Non-zero; the node with the LOWER id dials, so two nodes of one
+      pair must differ. The id is proven, not believed: the session is a Noise
+      IK handshake and the peer must hold the static key the topology pins for
+      its id (RPC_PEER_NOISE_PK here, `noise_pk` of a signed topology).
+
+      No RAM cost. Read by rpcsrv from azos_limits::RPC_NODE_ID.
+
+config RPC_PEER_NODE
+    int "Node id of the peer node (0 = none: the RPC server is not started)"
+    range 0 2147483647
+    default 0
+    help
+      The built-in topology declares `[peer.fleet]` with this node, exports
+      `decisions` to it (`export = ["decisions@fleet"]` on the RPCSRV.ELF row)
+      and starts RPCSRV.ELF at boot. 0 declares no peer and starts nothing: the
+      row exists, exports nothing, and the proxy endpoint of the peer's
+      services has no one to call. A signed topology states its own classes and
+      exports and ignores this. The node must be pinned to a key
+      (RPC_PEER_NOISE_PK): without one the server refuses to run.
+
+      The two nodes of a pair: ids `RPC_NODE_ID` here and `RPC_PEER_NODE`
+      there, swapped on the other. Cost when set: one task of ~170 KiB of
+      static buffers (RPCSRV_MEM_PAGES), either ISA.
+
+config RPC_PEER_NOISE_PK
+    string "Static Noise (X25519) public key of the peer node (64 hex digits)"
+    default ""
+    help
+      The built-in topology pins this key to the `fleet` node RPC_PEER_NODE
+      (`noise_pk` of its `[peer.fleet]` row). Every RPC session is a Noise IK
+      handshake and the peer is accepted only if it holds the private half of
+      this key, so a datagram that states a node id proves nothing and gets no
+      session. Empty: no key is pinned, so the peer has no session and RPCSRV.ELF
+      prints why and exits at start. A signed topology pins its own keys and
+      ignores this.
+
+      The node's own key is derived from the board's link key (the kernel's
+      `linkkey` endpoint, provisioned like the brain-link PSK):
+      `azos_rpc::chan::derive_static_key`. The public half of the other node
+      is what this is set to.
+      No effect when RPC_PEER_NODE is 0. No RAM cost.
+
+config RPC_PEER_ADDR
+    string "IPv4 address of the peer's RPC server (dotted quad)"
+    default "10.0.2.2"
+    help
+      Where the datagrams to the peer go (UDP, port RPC_UDP_PORT), and the only
+      source address the server accepts datagrams from. The default
+      is the host as QEMU's user network sees it. The link is one datagram per
+      frame of at most 1200 bytes, so it runs the same over virtio-net, a
+      loopback and the in-memory pair of the host tests.
+
+config RPC_UDP_PORT
+    int "UDP port of the RPC link"
+    range 1 65535
+    default 7700
+    help
+      The port the RPC server binds, and the port it sends to on the peer.
+
+config RPC_QUIC
+    bool "Carry the RPC link over QUIC (through the rpcquic relay)"
+    depends on !HWCLASS_EMBEDDED
+    default n
+    help
+      Off: RPCSRV.ELF sends each sealed frame as one UDP datagram straight to
+      RPC_PEER_ADDR:RPC_UDP_PORT. On: it sends the same datagrams, on this
+      host, to the `rpcquic` relay (RPCQUIC.ELF: userspace/services/rpcquic
+      over userspace/lib/quic, a std ring-3 program whose row grants it the
+      entropy pool and whose seccomp profile the network, nothing else), which
+      carries each frame to the peer's relay on a QUIC stream of its own and
+      hands the peer's frames back. QUIC adds loss recovery, congestion and
+      flow control, and a handshake that proves the peer receives at the
+      address it claims. The QUIC stack and its TLS are the largest parser of
+      network input in the system: the relay is the only program that holds
+      them, and RPCSRV.ELF stays no_std.
+
+      The authentication does not change: every session is still the Noise IK
+      handshake with the keys the topology pins, inside the QUIC connection
+      (QUIC's own TLS runs on raw public keys and authenticates nobody;
+      azos_quic::identity has the reasons), so the relay can drop or repeat
+      frames and cannot read or forge one.
+
+      On, the topology carries the RPCQUIC.ELF row (started at boot, restarted
+      on failure) and the server binds RPC_UDP_PORT and talks to
+      RPC_QUIC_RELAY_PORT on the stack's own address only. The relay takes
+      everything it needs from this configuration, at build time
+      (azos_limits): the lower of RPC_NODE_ID and RPC_PEER_NODE dials
+      RPC_PEER_ADDR:RPC_QUIC_PORT, the other listens there for RPC_PEER_ADDR.
+      When the QUIC connection is lost the relay cannot tell the server: the
+      engine's probes break the session (RPC_PING_MS, RPC_MISS_LIMIT).
+
+      Needs RPC_PEER_NODE (the build refuses 0) and a large board: the relay is
+      an image of about 1 MiB with a budget of 1024 pages (4 MiB); the boot
+      loader stages it in frames of exactly its size, within that budget.
+      With the option off the relay's image is a
+      small stub that exits. The same on every ISA.
+
+config RPC_QUIC_RELAY_PORT
+    int "Local UDP port of the rpcquic relay"
+    range 1 65535
+    default 7701
+    help
+      The port the relay binds, on this host's own address (the stack has no
+      127.0.0.0/8: a datagram sent to its own address is delivered to the socket
+      bound at the port), and the only address the RPC server sends frames to
+      and accepts them from when RPC_QUIC is on. Different from RPC_UDP_PORT and
+      RPC_QUIC_PORT: the stack gives a port to one socket. No effect when
+      RPC_QUIC is off. No RAM cost.
+
+config RPC_QUIC_PORT
+    int "UDP port of the QUIC connection between the relays"
+    range 1 65535
+    default 7702
+    help
+      The port the relay's QUIC endpoint binds, and the port the dialing relay
+      connects to on RPC_PEER_ADDR (the two nodes of a pair share it, as they
+      share RPC_UDP_PORT). No effect when RPC_QUIC is off. No RAM cost.
+
+config RPC_WARRANT_TTL_MS
+    int "Lifetime of a warrant minted for a peer (ms)"
+    range 1000 86400000
+    default 15000 if HWCLASS_EMBEDDED
+    default 60000
+    help
+      The node that exports an endpoint calls the real service through a
+      capability derived for the peer's session: attenuated to the call
+      right, badged with the session, expiring after this long and renewed
+      while it is used (when a quarter of its life is left). The pages of a
+      MemObj that crossed are re-minted as a new object whose lent copy lapses
+      after the same time.
+
+      A shorter TTL bounds how long a revoked session's authority could
+      outlive the revocation if the Bye is lost; each renewal is one derive
+      call. No RAM cost; the same on every ISA (wall-clock).
+
+config RPC_DEDUPE_WINDOW
+    int "Calls per session the far node remembers the answer of"
+    range 1 16
+    default 4 if HWCLASS_EMBEDDED
+    default 8
+    help
+      An `#[at_most_once]` or `#[once_only]` call that arrives twice (a
+      resend after a lost answer, a datagram the link repeated) is answered
+      from the window and not run again. A call number the window no longer
+      holds is answered `NoConnection`: the outcome is unknown, and running it
+      a second time is the one thing the attribute forbids. Answers larger
+      than 512 bytes are not kept.
+
+      Cost: 512 B plus bookkeeping per entry per session, reserved for 16
+      entries and 4 sessions whatever this says (azos_rpc::DEDUPE_CAP).
+
+config RPC_RETRIES
+    int "Resends of a call before it is given up (idempotent, at-most-once)"
+    range 0 16
+    default 3
+    help
+      A call whose answer is late is sent again after RPC_RTO_MS, this many
+      times, with the same call number; then the caller is told NoConnection
+      and the session counts a miss. A `#[once_only]` call is never resent.
+
+config RPC_RTO_MS
+    int "Wait for an answer before a resend (ms)"
+    range 10 10000
+    default 200
+    help
+      The retransmission timeout, and the tick of the RPC server's housekeeping
+      (Hello resends, probes, sweeping lapsed warrants).
+
+config RPC_PING_MS
+    int "Silence after which a session is probed (ms)"
+    range 100 3600000
+    default 1000
+    help
+      A session that has heard nothing from the peer for this long gets a
+      Ping; an unanswered one counts a miss.
+
+config RPC_MISS_LIMIT
+    int "Unanswered probes or calls in a row that break a session"
+    range 1 255
+    default 3
+    help
+      After this many misses in a row the session is broken: every warrant and
+      every re-minted object over it is revoked, the callers waiting on it are
+      told NoConnection, and the peer is sent a Bye so it revokes its side.
+      Any frame from the peer resets the count.
+
+config RPC_REVOKE_BOUND_MS
+    int "Bound on a revocation reaching a peer (ms)"
+    range RPC_RTO_MS 60000
+    default 1000
+    help
+      When the endpoint behind an export is closed or revoked, the server
+      sends every peer that holds authority over it a sealed notice and the
+      peer answers once it has revoked what it holds (the interface is no
+      longer offered to its callers, the objects re-minted from this node's
+      replies are revoked). The notice is resent every RPC_RTO_MS. A peer that
+      has not answered within this long has its session broken, which revokes
+      everything minted over it on both nodes: the revocation is bounded by
+      this value on every link, and a link that cannot carry the answer does
+      not keep the authority alive. Both nodes record `Rule::RemoteRevoke`.
+
+      Never below RPC_RTO_MS (the range): the peer gets at least one
+      retransmission timeout to answer the first send. A bound under two
+      timeouts leaves no room for a resend, so a single lost frame breaks the
+      session; keep it at several timeouts on a lossy link.
+
+      Granularity is the server's housekeeping tick (half of RPC_RTO_MS), so
+      the session breaks up to that much after the bound. No RAM cost; the
+      same on every ISA (wall-clock).

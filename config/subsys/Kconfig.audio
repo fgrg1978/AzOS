@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.audio — The audio server's policy
+#
+# The interface (crates/core/devif/src/sound.rs, `Sound`) fixes what a stream
+# may name: its bounds are constants of that file. The options here are what a
+# build lets the audio server (AUDIOD.ELF, userspace/services/audiod) accept
+# inside them, so every range
+# stops at the interface's bound (tests/host/devif-tests/tests/sound.rs keeps
+# the two equal). The devices themselves are `[audio.NAME]` rows of the signed
+# topology (TOPOLOGY_MAX_AUDIO in config/subsys/Kconfig.topology); which hardware
+# serves a row is the driver tables' business, not this menu's.
+
+config AUDIOD
+    bool "Audio server (AUDIOD.ELF): mixes the clients' streams into the one device stream"
+    depends on DRV_VIRTIO_SND
+    default y if !HWCLASS_EMBEDDED && !USE_ROBOT && !USE_INDUSTRIAL
+    default n
+    help
+      The built-in topology carries a row for AUDIOD.ELF and the kernel starts
+      it at boot. The server serves the `Sound` interface on `endpoint.audio`
+      (userspace/services/audiod): a client opens a stream, hands it periods of
+      memory it made, and the server mixes the streams (a saturating sum, a
+      per-stream gain, the device's rate and format, one stream's underrun its
+      own) into the one playback stream it holds on the kernel's `sound.0`.
+      Capture is not mixed: the client's own objects are handed to the kernel's
+      microphone gate, which needs the `mic` effect of the CLIENT's class (the
+      server's own is never used for a client) and records every attempt that reaches it, naming the
+      client (AUDIO_CAPTURE). `toolbox beep` goes through the server when its row
+      holds `endpoint.audio` and straight to `sound.0` otherwise; with the
+      server, the toolbox row holds no `sound.0` (the device has one holder).
+
+      The row is a best-effort service (its main thread accepts the calls);
+      the mixer thread asks for a deadline reservation of its own at start
+      (SYS_SCHEDCTL with the `time` warrant the row grants:
+      AUDIOD_PUMP_RUNTIME_US every AUDIOD_PUMP_PERIOD_US at band level
+      AUDIOD_PUMP_LEVEL), so the mixing that keeps the device fed is the
+      only real-time work, and it is budgeted. When admission refuses it the
+      server says so on the console and refuses every playback stream
+      (UNSUPPORTED) rather than mix without a budget. A robot or industrial
+      image has no speaker to share and is n; a small board is n (native
+      drivers only: it has no virtio-sound).
+
+      Cost when set: one task of AUDIOD_MEM_PAGES pages (the topology
+      builder), two threads (16 KiB stack for the pump), 48 KiB of static
+      state, and 3 + 3 memory objects open at a time per stream.
+
+config AUDIOD_PUMP_RUNTIME_US
+    int "Audio server: the mixer's reservation, run time per period (us)"
+    range 100 10000
+    default 1000
+    help
+      The budget of the mixer thread's deadline reservation in each period
+      (AUDIOD_PUMP_PERIOD_US). A mix pass of the device's periods is a few
+      hundred microseconds at the slowest board's clock; the rest is the
+      control calls the mixer makes. A hard reservation: past the budget
+      the mixer is throttled until its next period, so it can never take
+      more of a CPU than RUNTIME / PERIOD.
+
+      Cost: that share of one CPU, admitted at the server's start; none
+      while no stream plays (the mixer sleeps).
+
+config AUDIOD_PUMP_PERIOD_US
+    int "Audio server: the mixer's reservation, period (us)"
+    range 1000 100000
+    default 10000
+    help
+      The period (and deadline) of the mixer thread's reservation. The mixer
+      passes every 5 ms while a stream plays, so a period of 10 ms covers two
+      passes. Must be at least AUDIOD_PUMP_RUNTIME_US (the kernel refuses a
+      budget longer than its period, and the server then plays nothing).
+
+      Cost: none by itself.
+
+config AUDIOD_PUMP_LEVEL
+    int "Audio server: the mixer's real-time band level"
+    range 0 11
+    default 11
+    help
+      The band priority level the mixer's reservation runs at (a deadline
+      reservation is a band task: below the ring-3 floor of 12). 11, the
+      lowest band level, puts the mixer under every kernel safety loop; the
+      band cap (RT_BAND_CAP_PCT) and admission's level check still apply.
+
+      Cost: none by itself.
+
+config AUDIO_CAPTURE
+    bool "Audio server: capture streams (the microphone)"
+    default y if !HWCLASS_EMBEDDED
+    default n
+    help
+      y: the audio server opens `DIR_CAPTURE` streams. The kernel's gate
+      admits each one on the `mic` effect of the REQUESTER's scheduler class
+      (an `[envelope.NAME]` row with `kind = "mic"`): the client that made the
+      call the server is serving, which the server names to the kernel by the
+      call's warrant (`Sound::open`'s `on_behalf`). The server's own class is
+      never consulted and the `audio-capture` decision record names the
+      client, so holding `endpoint.audio` is not holding the microphone: only
+      a client whose class has the effect listens, and one without it is
+      refused with a durable record naming it. A task that calls `sound.0`
+      itself is its own requester.
+      n: the capture path is not compiled; a capture `open` answers
+      UNSUPPORTED and no envelope row can enable it. An image that must never
+      listen is built with n, which no topology can undo.
+
+      Small boards name it: a HWCLASS_EMBEDDED build is n unless the config
+      says y.
+
+      Cost: no static RAM. The code of the capture path, not measured.
+
+config AUDIO_MAX_STREAMS
+    int "Audio server: streams open at once"
+    range 1 32
+    default 2 if HWCLASS_EMBEDDED
+    default 8
+    help
+      Streams (open `Sound` capabilities, playback and capture together) the
+      audio server holds. The next `open` answers BUSY. Each stream is one
+      slot of the server's static table; a device that mixes several
+      clients' streams into one hardware stream uses one slot per client.
+
+      Cost: one table slot per stream (AUDIOD's stream record, 160 bytes),
+      not measured on a board.
+
+config AUDIO_MAX_PERIODS
+    int "Audio server: most periods in one stream's arena"
+    range 2 64
+    default 8 if HWCLASS_EMBEDDED
+    default 32
+    help
+      The most periods a client may name in `Params::periods`; more is
+      BAD_ARGUMENT. The interface's own bound is 64 (`PERIODS_MAX`, one bit a
+      period in `Posted`). Latency is `periods * period_frames / rate`: a
+      stream that wants a small delay uses few short periods, and the bound
+      keeps one client from holding the server's queues for seconds.
+
+      Cost: none by itself; each period is client memory (the arena), and the
+      two queues of a stream are `SpscSlots<4>` of the next power of two above
+      the periods (one slot is the drain end marker; 256 B header + 32 B a slot, in the client's memory
+      objects).
+
+config AUDIO_ARENA_KB_MAX
+    int "Audio server: largest arena of one stream (KiB)"
+    range 4 16384
+    default 64 if HWCLASS_EMBEDDED
+    default 4096
+    help
+      The most memory a client may hand the server as one stream's arena
+      (`periods * period_frames * channels * sample bytes`); a bigger geometry
+      is BAD_ARGUMENT. The interface's own bound is 16 MiB
+      (`ARENA_BYTES_MAX`). The arena is the client's memory, mapped by the
+      server for the stream's life, so the bound caps what a client can pin
+      in the server's address space, not what the kernel allocates.
+
+      Cost: no static RAM.

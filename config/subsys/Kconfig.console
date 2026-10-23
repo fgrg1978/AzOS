@@ -1,0 +1,224 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.console — Console, user shell and login
+
+# ---------------------------------------------------------------------------
+# User shell (wave 11)
+# ---------------------------------------------------------------------------
+
+config USER_SHELL
+    bool
+    default y if !CONSOLE_PROGRAM_NONE
+    help
+      Derived from CONSOLE_PROGRAM (Userspace programs): y when a ring-3
+      program is started on the console at boot (by default the native
+      shell, userspace/services/sh, /fat/SH.ELF, supervised like the ring-3
+      drivers: its topology row says start = true). The in-kernel shell
+      becomes a recovery console: it runs only in safe mode, when the volume
+      has no console image, when the console program does not take the
+      console within SH_START_TIMEOUT_S, or after the supervisor gave up on
+      it.
+
+      n (CONSOLE_PROGRAM_NONE): the kernel shell owns the console, as before
+      wave 11.
+
+config SH_START_TIMEOUT_S
+    int "User shell: seconds to take the console before the recovery console does"
+    range 1 300
+    default 10
+    help
+      After boot, and after each death of the user shell, the kernel
+      console waits this long for SH.ELF to claim console input. If it
+      has not, the recovery console (the in-kernel shell) takes it.
+
+config CONSOLE_LOGIN
+    bool "Console login: the native shell starts only after a secure-attention login"
+    depends on !MICRO
+    default n
+    help
+      The console is entered through LOGIND.ELF (userspace/services/logind)
+      and the terminal server's secure-attention chord (Ctrl+Alt+Del on a
+      keyboard, LOGIN_SAK_SERIAL_BYTE on a serial line). The chord belongs
+      to the terminal server, which owns console input: it
+      stops serving the shell and asks for the user name and the passphrase
+      itself, so no program can draw the prompt or read what is typed. The
+      credential (a 32-byte hash of the typed line) is checked by the
+      kernel's `login` op of `keys` against the user's `[login.NAME]` row of
+      the signed topology: the row lists the public part of the key the
+      credential derives on this board (the board's secret is in it, so the
+      row alone does not let anyone guess a passphrase offline; no password,
+      no hash of one, is stored). The session is a shell in a Domain subtree
+      owned by the user (`owner_root`, never 0): its keystore scope.
+
+      Needs the native shell session as the console program (Userspace
+      programs: SH.ELF served by TERMD.ELF); with another console program the
+      row is there and nothing asks for a login. (Not a `depends on`: the
+      console choice depends on the images this one pulls in.)
+
+      y: when the topology has at least one `[login.NAME]` row the kernel does
+      not start SH.ELF at boot; LOGIND.ELF starts it after a login. Every
+      attempt is a `login` decision record, durable whatever the verdict. With NO
+      `[login.NAME]` row nobody is enrolled: the shell starts as it does
+      with this off (the component manager starts it) and LOGIND.ELF records
+      that the console session is the system's. The terminal server gets its
+      call right on the login service only for a console behind a login: there a
+      service that does not answer keeps the console locked; without it a
+      service that is down cannot take the console.
+
+      n: the shell starts at boot and nothing asks for a credential.
+
+      The rows of `[login.NAME]` are also the SSH server's accounts: a
+      credential key listed there logs in on the console, an ssh key logs in
+      over SSH, and the row may list both.
+
+config LOGIN_SAK_SERIAL_BYTE
+    int "Console login: the byte that is the secure-attention key on a serial console"
+    range 0 31
+    default 29
+    help
+      A serial line has no chord. This control byte (29, ^], by default) typed
+      on the console is the secure-attention key there: the terminal server
+      reads console input, so a program can print what it likes but cannot
+      make the terminal type this byte (a terminal's own replies are escape
+      sequences). 0: no serial secure-attention key (a keyboard chord only).
+      Read by the terminal server; it matters only with CONSOLE_LOGIN.
+
+config RECOVERY_CONSOLE
+    bool "Recovery console: a kernel console task for when ring 3 cannot start"
+    depends on !CONSOLE_LOCKDOWN
+    default y
+    help
+      crates/core/recovery, kernel/src/tasks/system.rs. The one shell is the
+      ring-3 user shell (USER_SHELL); this is the small kernel console that
+      takes the UART when that shell cannot (safe mode, no console image on
+      the volume, the supervisor gave up, SH_START_TIMEOUT_S passed) or when
+      the build has no console program at all (CONSOLE_PROGRAM_NONE). Its
+      commands are recovery and diagnosis only: help, mem, uptime, drvls,
+      security, estop, ls, cat, crash, ota, config, ifconfig, dhcp, swap, reboot,
+      shutdown, and the two bench tools wcet and bench.
+
+      y (default, development builds especially): the kernel creates the
+      "recovery" task at boot; it parks until no user shell has the console.
+      n (allowed in a release image): the task is not created, boot prints
+      "[CONSOLE] no recovery console" and nothing reads the UART once the
+      user shell is gone. A board whose ring 3 fails then has no console to
+      repair it from, so a release keeps y unless the board is reachable
+      another way. CONSOLE_LOCKDOWN forces n and says so itself.
+
+      The crate stays linked either way: it also holds the family bodies the
+      ring-3 typed calls run and the ota-recv task entry.
+
+config FB_CONSOLE_COLS_MAX
+    int "Framebuffer console: text columns the grid can hold"
+    range 40 512
+    default 128
+    help
+      crates/drivers/fb/src/console.rs. The grid is this many columns by
+      FB_CONSOLE_ROWS_MAX rows of one byte each; a screen with more cells
+      than that uses the top-left part. 128 columns is 1024 pixels of 8x16
+      cells.
+
+config FB_CONSOLE_ROWS_MAX
+    int "Framebuffer console: text rows the grid can hold"
+    range 20 256
+    default 64
+    help
+      See FB_CONSOLE_COLS_MAX. 64 rows is 1024 pixels of 8x16 cells.
+
+config KERNEL_CMDLINE_INIT
+    bool "Honour init=/fat/NAME.ELF on the kernel command line (secure boot off)"
+    default y
+    help
+      The kernel command line (the device tree's /chosen/bootargs; QEMU
+      -append) may name the console program for one boot:
+      `init=/fat/NAME.ELF`, an 8.3 image directly under /fat whose topology
+      row exists and says `start = true` (the component manager starts only
+      those, and spawn refuses an image without a row; the row's seccomp
+      profile, capabilities and supervision apply). It replaces
+      CONSOLE_PROGRAM for that boot. Never with secure boot on
+      (SECURE_BOOT_ENFORCED): the word is ignored and the boot log says so,
+      since the console program is part of what the signed configuration
+      decides. Costs one device-tree walk at boot.
+
+      n: init= is ignored on every build (the log says so).
+
+# ---------------------------------------------------------------------------
+# Console login (the `login` op of the `keys` interface; userspace/services/logind)
+# ---------------------------------------------------------------------------
+#
+# CONSOLE_LOGIN itself is in config/subsys/Kconfig.console (it decides whether the native shell
+# starts at boot). These bound the kernel's side of the credential check.
+
+config LOGIN_MAX_FAILURES
+    int "Console login: wrong credentials in a row before the account is locked"
+    range 1 32
+    default 5
+    help
+      The `login` op of `keys` counts the consecutive refusals of each
+      `[login.NAME]` row (and, in one more counter, of every name the topology
+      does not list). At this many the account is locked for LOGIN_LOCKOUT_S
+      seconds: the op answers DENIED at once, without looking at the
+      credential, and writes a `login` decision record (reason 2). A good
+      credential before the limit clears the count. The counters are kept in
+      RAM, so a reboot clears them.
+
+config LOGIN_LOCKOUT_S
+    int "Console login: seconds an account stays locked"
+    range 1 3600
+    default 30
+    help
+      How long a locked account refuses every credential. The refusal at the
+      lock is the last one counted; the next attempt after the lock lapses
+      starts the count again.
+
+config LOGIN_GRANT_TTL_S
+    int "Console login: seconds a verified credential may start its session"
+    range 1 600
+    default 20
+    help
+      A credential that verifies arms a one-shot grant on the caller's Domain
+      (the login service); its next SPAWN_F_USER spawn starts the session and
+      spends it. A grant not spent in this many seconds lapses, so a login
+      service that stalls cannot sit on an admitted credential.
+
+# ---------------------------------------------------------------------------
+# Console
+# ---------------------------------------------------------------------------
+
+config CONSOLE_TX_RING_BYTES
+    int "Console UART transmit ring (bytes)"
+    range 1024 65536
+    default 4096
+    help
+      Bytes of console output queued for the UART transmit interrupt
+      (crates/drivers/sys/src/uart.rs, TX_RING_BYTES). A ring-3
+      writer that outruns the wire waits for room; a kernel line that
+      does not fit is deferred. 4096 is about 0.36 s of wire at 115200
+      baud. Must stay well above the 256-byte line reserve of
+      console_defer.rs, or every kernel line is deferred.
+
+      Cost: 1 B of RAM per byte (TX, .bss), the same on riscv64 and aarch64:
+      4,136 B at the default.
+
+config CONSOLE_DEFER_BYTES
+    int "Console deferred-line buffer (bytes)"
+    range 1024 65536
+    default 8192
+    help
+      Kernel console lines written while another context owns the UART
+      wait here (crates/drivers/sys/src/uart.rs, DEFER_BYTES). A full
+      buffer drops lines and prints "[CONSOLE] dropped", which fails every
+      gate row. 8192 is 1.9x the largest high-water mark measured
+      (4257 B, aarch64 -smp 2 splice stress, 2026-09-28).
+
+      Cost: 1 B of RAM per byte (DEFER, .bss), the same on riscv64 and aarch64:
+      8,240 B at the default.
+
+config CONSOLE_TX_IRQ_BUDGET
+    int "Console: most bytes one TX interrupt moves to the UART"
+    range 16 4096
+    default 256
+    help
+      crates/drivers/sys/src/uart.rs, TX_IRQ_BUDGET. On a real UART
+      the 16-byte FIFO fills first, so this never binds; under QEMU,
+      which transmits instantly, it is the bound.

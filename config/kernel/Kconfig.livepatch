@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.livepatch — Live update (kernel live patches)
+
+# ---------------------------------------------------------------------------
+# Signed kernel livepatch (Level 2 live update; kernel/src/boot/livepatch.rs)
+# ---------------------------------------------------------------------------
+
+config LIVEPATCH
+    bool "Signed kernel livepatch of non-sleeping functions"
+    depends on RCU_QSBR && LIVEPATCH_POOL_KIB != 0 && LIVEPATCH_ENTRY_NOPS != 0
+    default n
+    help
+      Admits a signed patch blob (a replacement body per function) named by
+      a `[livepatch.NAME]` row of the signed topology, and redirects the
+      entry of each function it replaces: one `B` on aarch64, one `JAL` on
+      riscv64 (within 1 MiB of the pool), the `int3` sequence on x86_64.
+      The bodies go into `.text.patch_pool` through the one text writer
+      (crates/core/mm/src/text_poke.rs), so the kernel text stays RX and
+      `verify_no_exec_outside_image` is unchanged. A blob is applied only
+      when: its RSIG signature (the update key) verifies, a row names its
+      SHA-256, it is built for this ISA and this kernel's build-id
+      (`[PATCH] build=` on the boot line, tools/check_livepatch_layout.py),
+      its `sec_epoch` is not below the OTA floor, and every function is in
+      the image's allowlist (non-sleeping, `#[inline(never)]` entry points
+      with an entry slot in `.azos_patch`). One bounded QSBR grace follows
+      the redirect (LIVEPATCH_GRACE_MS); no CPU is ever stopped. Nothing
+      persists across a reboot: the signed rows are re-applied at boot.
+
+      n (default, and what a BUILD_TYPE_CERTIFIABLE build gets unless it
+      asks otherwise): the code is not compiled in, the build-id is not
+      computed, and a topology that declares `livepatch` rows has each one
+      refused at boot with a decision record. y needs the pool
+      (LIVEPATCH_POOL_KIB) and the entry slots (LIVEPATCH_ENTRY_NOPS: 1
+      on aarch64, 3 on riscv64 where functions are 2-aligned, and on x86_64
+      one 5-byte nop) in config/kernel/Kconfig.livepatch.
+
+      Cost with y: one SHA-256 pass over the whole kernel text (about 2 MiB)
+      at boot to get the build-id, its time to be measured in the testing
+      week; and the patch table (LIVEPATCH_MAX_PATCHES), 8 B plus
+      8 + 8 * LIVEPATCH_MAX_FUNCS B per entry. Without it: 8 B.
+
+config LIVEPATCH_GRACE_MS
+    int "Livepatch: the bounded grace period after a redirect (ms)"
+    range 1 10000
+    default 200
+    help
+      How long an apply waits for every other CPU to pass a
+      quiescent state (qsbr::synchronize_rcu_for) before it records the old
+      body as possibly still running. The redirect is already in force and
+      a miss does not undo it. Set it above the longest time a CPU runs kernel
+      code without a context switch, an interrupt return or idle (an RT CPU
+      in user mode is quiescent at once). Unused without LIVEPATCH.
+
+config LIVEPATCH_MAX_PATCHES
+    int "Livepatch: patches applied at once"
+    range 1 32
+    default 4
+    help
+      Size of the patch table, which holds the entries each patch has
+      claimed (before its first write, and while it is in force). A patch
+      that does not fit is refused. Never useful above the topology's
+      `[livepatch.NAME]` rows (TOPOLOGY_MAX_LIVEPATCHES).
+
+      Cost: 8 + 8 * LIVEPATCH_MAX_FUNCS B of RAM per entry (72 B with the
+      default of 8 functions), either ISA; none without LIVEPATCH.
+
+config LIVEPATCH_MAX_FUNCS
+    int "Livepatch: functions one patch may replace"
+    range 1 64
+    default 8
+    help
+      Bound on the function table of one blob; a blob that names more is
+      refused as malformed. Unused without LIVEPATCH.
+
+config LIVEPATCH_MAX_BLOB_KIB
+    int "Livepatch: largest patch blob (KiB)"
+    range 1 1024
+    default 64
+    help
+      The boot re-apply reads a blob from `/fat/PATCH/` into a buffer of
+      this size, taken from the kernel heap for the read and given back
+      after it; a larger file is refused. The sum of the bodies of the
+      applied patches is bounded by LIVEPATCH_POOL_KIB instead. Unused
+      without LIVEPATCH.
+
+# ---------------------------------------------------------------------------
+# Live-update build hooks (owner plan, Level 2 livepatch)
+# ---------------------------------------------------------------------------
+
+config LIVEPATCH_POOL_KIB
+    int "Live-update patch pool (KiB of RX space in the kernel image)"
+    range 0 4096
+    default 0
+    help
+      Size of `.text.patch_pool`, the executable output section every kernel
+      linker script places inside the image's text range (before `_text_end`,
+      so the W^X and no-exec-outside-the-image checks cover it) between
+      `__patch_pool_start` and `__patch_pool_end`: the room a replacement
+      function body is loaded into later. 0 (default) = absent: the section is
+      empty and costs no byte. Zero-filled, so a stray jump into it traps.
+      Reaches the linker as `--defsym=__patch_pool_bytes` through
+      tools/kconfig_to_cargo.py --rustflags; the `[PATCH]` boot line reports
+      the size the linker actually laid out. Cost: this many KiB of image.
+
+config LIVEPATCH_ENTRY_NOPS
+    int "Live-update entry NOPs per function (patchable-function-entry)"
+    range 0 16
+    default 0
+    help
+      N > 0 builds the kernel with `-Z patchable-function-entry=N,0`: N NOP
+      instructions at the entry of every function, which a live patch
+      overwrites with a jump to the replacement in `.text.patch_pool`. 0
+      (default) = no NOPs and no code change. The compiler lists each
+      function's entry in `__patchable_function_entries`, which the linker
+      scripts gather into `.azos_patch` (one 8-byte entry address per site;
+      the `[PATCH]` boot line counts them). Cost: N instructions per
+      function call (N * 2 or 4 bytes of text per function). The
+      nightly-only flag is why this is a build setting.
+
+config LIVEPATCH_FP
+    bool "Live-update frame pointers (-C force-frame-pointers=yes)"
+    default n
+    help
+      Keeps a frame pointer in every function, so a patcher can walk a stack
+      and see whether a function it is replacing is still on it. Off
+      (default): the code is unchanged. Cost: one register and a prologue
+      and epilogue store/load pair per non-leaf function.

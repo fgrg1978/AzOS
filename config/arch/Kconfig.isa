@@ -1,0 +1,240 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/arch/Kconfig.isa — ISA selection, FP state format, page size
+#
+# Controls architecture-specific defaults downstream.
+# Board choices (config/arch/Kconfig.platform) must be consistent with the ISA selected.
+
+# ---------------------------------------------------------------------------
+# ISA choice
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Instruction Set Architecture"
+    default ARCH_RISCV64
+    help
+      Select the target ISA for this kernel build.  All downstream defaults
+      (stack sizes, FP context, page sizes, WCET bounds) adjust automatically.
+      Changing this choice requires a full `cargo clean` before rebuilding.
+
+    config ARCH_RISCV64
+        bool "RISC-V 64-bit (rv64imac / rv64gc)"
+        help
+          RISC-V 64-bit — the primary AZOS target.  Supports all five
+          build profiles (edge/vf2, edge/k1, QEMU virt).
+          ISA base: rv64imac minimum; optional extensions via Kconfig.
+
+    config ARCH_AARCH64
+        bool "Aarch64 (ARMv8.0-A and later)"
+        help
+          64-bit ARM — secondary target, demonstrated on cortex-a72 QEMU.
+          Phase 2 multi-arch support.  Kernel builds but E2E robot loop
+          is deferred to Phase 3 hardware bring-up.
+
+    config ARCH_X86_64
+        bool "x86_64 (port skeleton: type-checks only)"
+        help
+          The x86_64 port skeleton: every arch-api trait implemented with
+          todo!() bodies (crates/core/arch-x86_64), the entry/asm/linker
+          stubs under kernel/src/entry/x86_64/, and this Kconfig block. It
+          type-checks (`make ARCH=x86_64 check`); it does not link or boot.
+          Its purpose is to show, as code, what a new ISA must provide.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# Hardware support model (every ISA the same way)
+# ---------------------------------------------------------------------------
+# 1. A BASELINE level per ISA (RISCV64_LEVEL, AARCH64_LEVEL, X86_64_LEVEL):
+#    the only thing codegen assumes for the whole kernel and its user
+#    images (tools/kconfig_to_cargo.py --rustflags / --user-rustflags), and
+#    checked at boot: a CPU below it is refused with a message.
+# 2. Every OPTIONAL extension is a three-way choice:
+#      n        never used, even when the CPU has it (its path is compiled
+#               out or never selected, and the vDSO hwcap hides it);
+#      probe    compiled in, used only when the boot probe finds it, with
+#               a fallback otherwise;
+#      require  part of the baseline: codegen may assume it where the ISA
+#               allows, and the boot refuses a CPU without it.
+#    The boot prints one `[ISA]` line: the baseline and each extension's
+#    state (n / probed-present / probed-absent / required).
+# 3. Per-board defaults (`default ... if BOARD_*`) say what each board has.
+# The policy values reach Rust as azos_arch_api::isa (crates/core/arch-api).
+# The vDSO hwcap word (azos_libsys::vdso_hwcap) is one word per ISA: each
+# numbers its own HWCAP_<ISA>_* bits from 0 (crates/core/abi/src/vdso.rs),
+# and the reserved hwcap2 word takes the overflow.
+
+# ---------------------------------------------------------------------------
+# Performance counters (cross-ISA; the per-ISA probe is RV_PMU / A64_PMU /
+# X86_PMU below)
+# ---------------------------------------------------------------------------
+
+config PMU_USER
+    bool "Let ring 3 read the cycle and instruction counters"
+    default y if BUILD_TYPE_DEV && SECURITY_GENERAL
+    default n
+    help
+      The kernel reads its own counters through `Pmu` (WCET figures, lock
+      hold times). This option also opens the cycle and retired-instruction
+      counters to ring 3, so a ring-3 benchmark (vsbench) can report cycles
+      next to nanoseconds without a system call per sample:
+      riscv64 `scounteren.CY/IR`, aarch64 `PMUSERENR_EL0` (CR, ER: read only, EN stays clear so a task
+      cannot stop, reset or retarget the kernel's counters),
+      x86_64 `CR4.PCE` (`rdpmc`). The vDSO hwcap bits PMU_CYCLES and
+      PMU_INSTR are set only for a counter the probe found AND this option
+      opened; a program checks them and never traps.
+      Cost: a high-resolution timer in every task's hands, which is a
+      side-channel primitive (cache timing, speculation gadgets); the
+      counters also count kernel execution, so a task sees the cycles its
+      own system calls and interrupts cost. Read only on every ISA: no task
+      can write a counter or retarget an event. On by
+      default only in development builds of the general security posture;
+      n: the counters stay kernel-only (riscv64 keeps `scounteren.TM`, the
+      clock). On x86_64 CR4.PCE opens EVERY counter to `rdpmc`, including
+      the one `Pmu::event` programs.
+
+# ---------------------------------------------------------------------------
+# Floating-point context
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Floating-point context save format"
+    default FP_HARDFLOAT_D if ARCH_RISCV64
+    default FP_NEON        if ARCH_AARCH64
+    default FP_XSAVE_EAGER if ARCH_X86_64
+    help
+      Selects the FP register save format used in each task's TCB.
+      Larger contexts cost more RAM per task; smaller contexts limit
+      which FP instructions user code can use.
+
+    config FP_SOFTFLOAT
+        bool "No FP save area (soft-float)"
+        help
+          Minimal TCB; valid only if NO userspace code uses FP.
+          Use for deeply embedded targets where FP is emulated in
+          software and context save is unnecessary.
+
+    config FP_HARDFLOAT_F
+        bool "RISC-V F extension (32 × f32 = 128 B)"
+        depends on ARCH_RISCV64
+        help
+          Saves only the 32 single-precision FP registers.  Sufficient
+          if userspace never uses double-precision or vector ops.
+
+    config FP_HARDFLOAT_D
+        bool "RISC-V D extension (32 × f64 = 256 B, default rv64)"
+        depends on ARCH_RISCV64
+        help
+          Saves all 32 double-precision FP registers.  The standard
+          choice for rv64gc targets.  Required for drone attitude math.
+
+    config FP_RVV
+        bool "RISC-V V extension (32 × vlen-bit + control regs)"
+        depends on ARCH_RISCV64 && HAS_RVV
+        help
+          Full RVV save area.  Context size depends on VLEN (K1: 256 bits
+          = 1 KiB; QEMU default 128 bits = 512 B).  Use only when
+          userspace RVV programs need preemptive multitasking.
+
+    config FP_NEON
+        bool "Aarch64 NEON (32 × 128-bit q-regs = 512 B)"
+        depends on ARCH_AARCH64
+        help
+          Standard Aarch64 FP/SIMD save area.  Required for any user-mode
+          code using NEON intrinsics or Rust's SIMD types.
+
+    # FP_SVE's "&& HAS_SVE" dependency dropped 2026-09-25 along with HAS_SVE
+    # itself (Q4.1). FP_SVE has zero Rust consumers of its own (grepped
+    # alongside HAS_SVE) so this is an adjacent, not-yet-audited dead
+    # option in its own right — left selectable on ARCH_AARCH64 alone
+    # rather than deleted outright, since deleting it was not part of this
+    # decision's scope. Worth a follow-up audit pass.
+    config FP_SVE
+        bool "Aarch64 SVE (variable-length, up to 2048-bit per reg)"
+        depends on ARCH_AARCH64
+        help
+          Saves the full SVE register file.  Context size is
+          VLEN-dependent and determined at runtime.  Adds allocation
+          overhead to task creation.
+
+    config FP_XSAVE_EAGER
+        bool "x86_64 XSAVE area, EAGER switch (512 B legacy + XSAVE header + enabled components)"
+        depends on ARCH_X86_64
+        help
+          x86_64 never switches FP lazily: no CR0.TS, no #NM trap on first
+          use (that is the LazyFP leak, CVE-2018-3665, and Linux removed
+          it).  A context switch that leaves ring-3 state live saves it
+          (XSAVEOPT, X86_XSAVEOPT); the incoming task's is restored (XRSTOR)
+          on its way back to ring 3, before any user instruction, as Linux
+          does since 5.2.  A switch to a kernel task and back costs one
+          save and one restore.  aarch64's lazy path
+          (kernel/src/entry/aarch64/fp_lazy.rs, CPACR_EL1 trap on first use)
+          is a per-ISA choice, not a shared one.  The area size is
+          X86_XSAVE_AREA_BYTES.
+
+endchoice
+
+# ---------------------------------------------------------------------------
+# MMU page size
+# ---------------------------------------------------------------------------
+# riscv64: the base page is 4 KiB and is not a choice — Sv39 has no other
+# base page. Larger translations on riscv64 are explicit level-1 (2 MiB)
+# leaves for named regions, not a different base page (LOCKED_HUGE_LEAVES
+# below).
+#
+# aarch64: VMSAv8-64 has three translation granules and the whole system
+# (kernel and every user image) uses the one chosen here. It reaches the
+# build twice and the kernel refuses to compile if the two disagree: as the
+# cargo feature `page-16k` / `page-64k` (tools/kconfig_to_cargo.py emits it)
+# that sets azos_arch_api::PAGE_SIZE, and as azos_limits::PAGE_SHIFT
+# from this file. User images must be linked for the same granule
+# (`make AARCH64_PAGE_SIZE=16384 ...`, see the Makefile).
+
+choice
+    prompt "Page size (aarch64 translation granule)"
+    depends on ARCH_AARCH64
+    default AARCH64_PAGE_4K
+    help
+      The base page of every mapping, kernel and user. A larger page holds
+      more per TLB entry and needs fewer page-table levels' worth of tables
+      for a dense region; it also rounds every per-task allocation (stack,
+      ELF segment, page table, vDSO page) up to the larger size, so a small
+      task costs more memory. Frame budgets (`mem_pages` in the topology)
+      count pages of this size.
+
+    config AARCH64_PAGE_4K
+        bool "4 KiB (39-bit VA, 3 levels)"
+        help
+          TG0/TG1 = 4 KiB, T0SZ = T1SZ = 25. The default, and the only page
+          size riscv64 has.
+
+    config AARCH64_PAGE_16K
+        # cargo-feature: page-16k
+        bool "16 KiB (39-bit VA, 3 levels)"
+        help
+          TG0/TG1 = 16 KiB with the same 39-bit input range as the 4 KiB
+          build, so every virtual address (user layout, vDSO, the kernel's
+          upper half at 0xFFFF_FF80_0000_0000) is unchanged; the root table
+          has 8 live entries. Level-1 blocks are 32 MiB. The CPU must
+          implement the granule (ID_AA64MMFR0_EL1.TGran16): the kernel stops
+          at boot with a message if it does not. QEMU `-cpu max` does.
+
+    config AARCH64_PAGE_64K
+        # cargo-feature: page-64k
+        bool "64 KiB (48-bit VA, 3 levels)"
+        help
+          TG0/TG1 = 64 KiB. Three levels need a 48-bit input range at this
+          granule (39 bits would walk two), so the kernel's upper half moves
+          to 0xFFFF_0000_0000_0000. Level-1 blocks are 512 MiB. The CPU must
+          implement the granule (ID_AA64MMFR0_EL1.TGran64).
+
+endchoice
+
+config PAGE_SHIFT
+    int
+    default 16 if AARCH64_PAGE_64K
+    default 14 if AARCH64_PAGE_16K
+    default 12
+    help
+      log2 of the base page size, derived from the choice above (12 on
+      riscv64). Exported as azos_limits::PAGE_SHIFT.

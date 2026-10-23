@@ -373,7 +373,7 @@ fn vf2_window_bound() -> usize {
 
 /// `default N if BOARD_VF2` of `MAX_MMIO_REGIONS` in the Kconfig.
 fn vf2_window_default() -> usize {
-    let k = repo_file("config/Kconfig.limits");
+    let k = repo_file("config/limits/Kconfig.limits");
     let block = k.split("config MAX_MMIO_REGIONS").nth(1).expect("the symbol");
     let block = block.split("\nconfig ").next().unwrap();
     block

@@ -1,0 +1,719 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.net — Ethernet and the TCP/IP stack
+#
+# All network constants with defaults matching the
+# current codebase values from crates/net/net/src/*.
+
+# ---------------------------------------------------------------------------
+# Ethernet / IP
+# ---------------------------------------------------------------------------
+config TCP_BUF_SIZE
+    int "TCP per-connection receive and send ring (bytes)"
+    range 8192 1048576
+    default 16384  if HWCLASS_SERVER
+    default 16384  if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 131072
+    help
+      Size of each of the two static rings of one TCP connection, the
+      receive ring and the send ring (crates/net/net/src/tcp.rs rx_buf and
+      tx_buf).  Must be a power of two, and at least 8192 so that the
+      send ring holds a few full-size segments of headroom for loss
+      recovery; crates/core/limits/build.rs rejects anything else.
+
+      Read from .config: tcp.rs TCP_BUF_SIZE = azos_limits::TCP_BUF_SIZE.
+      Derived from it in tcp.rs: the send ring (TCP_SND_BUF_SIZE), the
+      window of a SYN and of an unscaled connection
+      (min(TCP_BUF_SIZE - 1, 65535)), the window-scale shift a SYN offers
+      (the smallest that covers TCP_BUF_SIZE - 1: 1 at 131072, 0 at 65536
+      or less), the initial ssthresh and the cwnd cap.
+
+      Per profile: 131072 (128 KiB) for edge and embedded, 16384 (16 KiB)
+      for fleet.  One connection is size_of::<TcpConn>() =
+      2 × TCP_BUF_SIZE + 6,136 B, and the table of TCP_MAX_CONNS of them
+      is static (.bss): 8 × 268,280 B for edge, 4 × 268,280 B for
+      embedded, 1024 × 38,904 B = 38.0 MiB for fleet (262 MiB at 131072).
+      Larger rings improve throughput
+      on high-latency links (BDP = RTT × bandwidth).
+
+      Embedded's memory is not budgeted: there is no embedded linker
+      script and no gate build row, and the measured image is 5.6 MiB
+      against the < 1 MiB SRAM HWCLASS_EMBEDDED states.  131072 stays on
+      embedded until that budget (target board and RAM, linker script,
+      gate build row), which is queued, exists.
+
+      At fleet's 16384 the shift this end offers is 0, so a two-node run
+      of a fleet build prints wscale=<peer>/0.
+
+      Cost: 2 x TCP_MAX_CONNS B of RAM per byte of ring (16 B per byte at
+      edge's 8 connections: 2 MiB of the 2.05 MiB TCP table is rings), the
+      same on riscv64 and aarch64 (measured: +2,097,152 B for 131072 -> 262144
+      at 8 connections).  See TCP_MAX_CONNS for the per-connection and total
+      figures.  Ceiling: a power of two in 8192..1,048,576 (build.rs refuses
+      anything else).
+
+# ---------------------------------------------------------------------------
+# TCP acknowledgements (RFC 1122 4.2.3.2, RFC 5681 4.2) and receive-path waits
+# ---------------------------------------------------------------------------
+config TCP_DELACK_MS
+    int "TCP delayed-ACK bound (ms); 0 = acknowledge every segment at once"
+    range 0 500
+    default 40
+    help
+      Longest an in-order data segment's acknowledgement may be held
+      (crates/net/net/src/tcp.rs, TCP_DELACK_TICKS). An ACK held this
+      long is sent from tcp_tick; one the receive path sends earlier
+      (TCP_DELACK_SEGS, TCP_DELACK_PASS_FLUSH, out-of-order data, a
+      closing window) or one that rides on our own data leaves sooner.
+      40 ms is Linux's minimum delayed-ACK timeout (TCP_DELACK_MIN);
+      RFC 1122 caps it at 500 ms and RFC 5681 at "less than 500 ms".
+
+      0 restores the pre-wave-15 behaviour, one pure ACK per in-order
+      segment, and is the canary for the coalescing.
+
+      Cost: 16 B per connection (deadline + counters, .bss); a pure ACK
+      saved is a frame build, a TX lock and a doorbell (~1,000-2,000
+      instructions on both ISAs). The same on riscv64, aarch64 and x86_64:
+      the bound is a protocol figure, not an ISA one. Lower it when a peer
+      runs Nagle with small writes and no TCP_NODELAY and
+      TCP_DELACK_PASS_FLUSH is n (each small write then waits this long
+      for its ACK).
+
+config TCP_DELACK_SEGS
+    int "Full-sized segments received before an immediate ACK"
+    range 1 16
+    default 2
+    help
+      RFC 1122 4.2.3.2 / RFC 5681 4.2: an ACK SHOULD be generated for at
+      least every second full-sized segment. Once this many SMSS of
+      in-order data are unacknowledged the receive path sends the ACK
+      at once (tcp.rs, process_inbound_payload). 2 is the RFC and Linux
+      figure; 1 acknowledges every full-sized segment (the sender's
+      slow start grows fastest, twice the ACK frames). Higher values
+      cut ACK frames further but slow a sender's congestion window
+      growth (RFC 3465 byte counting is capped at 2 SMSS per ACK).
+
+      Cost: none in RAM; one compare per in-order segment.
+
+config TCP_EPHEMERAL_PORT_MIN
+    int "Lowest local port a TCP connect may pick"
+    range 1024 65535
+    default 49152
+    help
+      A connect that names no local port (NODE_CONNECT, the brain link,
+      the camera link) takes a free one from
+      TCP_EPHEMERAL_PORT_MIN..TCP_EPHEMERAL_PORT_MAX (tcp.rs,
+      TcpLayer::ephemeral_port). A port is free while no connection
+      that is not Closed holds it, TIME-WAIT included, and a cursor
+      seeded from boot entropy walks the range so two consecutive
+      connects never reuse a 4-tuple. 49152..65535 is the IANA dynamic
+      range (RFC 6335); Linux defaults to 32768..60999.
+
+      Cost: no RAM; one connection-table scan per port tried, at
+      connect only. Lower it to widen the range for a fleet node that
+      dials many peers; keep it above every port a service listens on.
+      Same default on every ISA and profile.
+
+config TCP_EPHEMERAL_PORT_MAX
+    int "Highest local port a TCP connect may pick"
+    range 1024 65535
+    default 65535
+    help
+      Upper end of the ephemeral range (see TCP_EPHEMERAL_PORT_MIN);
+      must not be below it (crates/net/net/src/tcp.rs asserts this at
+      compile time). Cost: none.
+
+config TCP_DELACK_PASS_FLUSH
+    bool "Flush held ACKs at the end of each network poll pass"
+    default y
+    help
+      y: every ACK held during one net_poll pass (one RX drain) leaves
+      when the pass ends, one per connection, so ACK latency is at most
+      one pass and a burst of N segments costs about N / 2 pure ACKs.
+      n: held ACKs wait for our own data to carry them, for
+      TCP_DELACK_SEGS, or for TCP_DELACK_MS (the Linux behaviour; a
+      request/response peer then gets the ACK on our reply).
+
+      Cost: one connection-table scan per pass while any ACK is held
+      (skipped by a flag otherwise). Same default on every ISA and
+      profile until a board measurement says otherwise.
+
+config TCP_WINDOW_UPDATE_SHIFT
+    int "Window update sent at once when the edge moves by ring >> N"
+    range 0 8
+    default 3 if TCP_BUF_SIZE < 32768
+    default 2
+    help
+      crates/net/net/src/tcp.rs, TCP_WINDOW_UPDATE_BYTES = TCP_BUF_SIZE >> N.
+      A recv() that opens the receive window by at least this much sends
+      the window update as a pure ACK at once; a smaller opening is held
+      like a delayed ACK (TCP_DELACK_MS) and rides on the next data ACK
+      or the end of the next poll pass. Linux's half-window rule
+      (tcp_cleanup_rbuf) also applies.
+
+      Larger N: more, earlier updates; a sender limited by our ring
+      (BDP > TCP_BUF_SIZE) keeps more of it in flight. Smaller N: fewer
+      pure ACKs. Measured on the host stack-to-stack harness (20 ms RTT,
+      ring-limited, tests/host/net-tests tcp_throughput), B/RTT against
+      acknowledging every segment (TCP_DELACK_MS=0): 128 KiB ring, N=2:
+      98.8%; 64 KiB: 97.7%; 32 KiB: 95.4% (N=3 the same); 16 KiB (fleet):
+      N=2 72.9% (a 4 KiB step is under three segments of an eleven-segment
+      window, and the held update stalls the sender), N=3 100% for 0.90
+      pure ACKs per data segment against 1.36. Hence 3 below a 32 KiB ring.
+
+      Cost: none in RAM; one compare per recv() that returns data. The
+      same on riscv64, aarch64 and x86_64.
+
+config NET_WAIT_SLOTS
+    int "Tasks that can wait on one kind of network event at once"
+    range 1 64
+    default 2 if HWCLASS_EMBEDDED
+    default 16 if HWCLASS_SERVER
+    default 8
+    help
+      crates/net/net/src/wait.rs, NET_WAIT_SLOTS: a task waiting for a TCP
+      handshake, an incoming connection, the send window (one queue) or an
+      ARP reply (another) registers its TID here and is woken by the
+      receive path when the event lands, instead of sleeping 1 ms and
+      looking again. A waiter beyond this many falls back to that poll;
+      nothing is lost, only latency and wakes.
+
+      Cost: 4 B per slot per queue (.bss, 2 queues + 1 DNS slot: 68 B at
+      8), the same on riscv64, aarch64 and x86_64. A notify with no waiter
+      is one atomic load; with waiters, one scan of the slots and a
+      scheduler wake per waiter (~300-500 instructions each).
+
+config NET_DNS_TIMEOUT_MS
+    int "How long one DNS query waits for its answer (ms)"
+    range 100 30000
+    default 2000
+    help
+      crates/net/net/src/dns.rs, resolve_with_yield: the bound on one
+      query (was a literal 2 s). The resolver is woken by the answer
+      (NET_WAIT_SLOTS), so this is only what an unanswered query costs
+      its caller.
+
+      Cost: none in RAM. The same on every ISA; raise it on slow uplinks.
+
+config TCP_RECV_MAX_PER_CALL
+    int "Most bytes one TCP recv() copies out"
+    range 512 65536
+    default 1024 if HWCLASS_EMBEDDED
+    default 4096
+    help
+      crates/net/net/src/tcp.rs, TCP_RECV_MAX_PER_CALL: the copy out of
+      the receive ring runs with the TCP lock held, so this bounds that
+      hold (a short read is ordinary TCP; callers loop).
+
+      Cost: none in RAM; up to this many byte copies under the TCP lock
+      per call (~1 instruction per byte on riscv64, aarch64 and x86_64).
+      Raise it for bulk receivers on a core with no other network user.
+
+config NET_RX_DRAIN_PER_POLL
+    int "Frames drained from the NIC per net_poll pass"
+    range 1 1024
+    default 16 if HWCLASS_EMBEDDED
+    default 64
+    help
+      crates/net/net/src/lib.rs, net_poll: the most frames one pass takes
+      off the receive ring before it ends (and flushes held ACKs, see
+      TCP_DELACK_PASS_FLUSH). 64 is one line-rate burst; a smaller bound
+      shortens the pass on a small core at the price of more passes.
+
+      Cost: none in RAM; bounds the pass at about this many frames' worth
+      of protocol work (~2,000-5,000 instructions each on riscv64,
+      aarch64 and x86_64).
+
+# ---------------------------------------------------------------------------
+# Interfaces, routes and packet sockets (NET-IFS)
+# ---------------------------------------------------------------------------
+
+config NET_MAX_INTERFACES
+    int "Network interfaces the stack can hold"
+    range 1 8
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      crates/net/net/src/ip.rs, MAX_IFS: the interface registry (ifindex 1
+      is the primary one; named eth0, eth1, ... in registration order), and
+      with it the number of ARP caches and outstanding-request tables
+      (crates/net/net/src/arp.rs). An interface is one NIC the driver
+      layer reports ready; NICs beyond this are left unused.
+
+      Cost: 40 B per interface (the registry, .bss) plus one ARP cache and
+      one outstanding-request table each (ARP_CACHE_SIZE, ARP_PENDING_SIZE):
+      576 B per interface at their defaults, the same on riscv64, aarch64
+      and x86_64. The static routes (TOPOLOGY_MAX_ROUTES) take 20 B each in
+      the routing table. A route lookup scans them all.
+
+config NET_PACKET_SOCKETS
+    int "Raw layer-2 (AF_PACKET) sockets open at once"
+    range 0 8
+    default 1 if HWCLASS_EMBEDDED
+    default 2
+    help
+      crates/net/net/src/socket.rs, PACKET_SOCKETS: how many AF_PACKET
+      sockets can exist at once, kernel-owned only for now (a gPTP or LLDP
+      service). Each owns a receive ring of NET_PACKET_RX_SLOTS frames;
+      0 refuses the socket type (the receive pass then costs one relaxed
+      load per frame for it).
+
+      Cost: 6 B + NET_PACKET_RX_SLOTS x 1,518 B of RAM per socket (.bss),
+      the same on riscv64, aarch64 and x86_64: 12,156 B at the defaults.
+
+config NET_PACKET_RX_SLOTS
+    int "Frames queued per AF_PACKET socket"
+    range 1 64
+    default 2 if HWCLASS_EMBEDDED
+    default 4
+    help
+      crates/net/net/src/socket.rs, PACKET_RX_SLOTS: the receive ring of each
+      packet socket. A frame that arrives with the ring full is counted and
+      dropped (the oldest stays): a reader that falls behind loses the
+      newest traffic, as a UDP socket does.
+
+      Cost: 1,518 B of RAM per slot per socket (.bss), see
+      NET_PACKET_SOCKETS.
+
+# ---------------------------------------------------------------------------
+# ARP, DNS and UDP tables (wave 11: were literals in crates/net/net)
+# ---------------------------------------------------------------------------
+
+config ARP_CACHE_SIZE
+    int "ARP cache entries"
+    range 4 256
+    default 64 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 16
+    help
+      crates/net/net/src/arp.rs, ARP_CACHE_SIZE. USE_GATEWAY on the
+      Edge profile starts it at 64.
+
+      Cost: 24 B of RAM per entry per interface (ARP_TABLES, .bss: one cache
+      for each of NET_MAX_INTERFACES), the same on riscv64 and aarch64: 400 B
+      per interface at the default 16.
+
+config ARP_PENDING_SIZE
+    int "Outstanding ARP requests remembered"
+    range 2 64
+    default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 8
+    help
+      crates/net/net/src/arp.rs, ARP_PENDING_SIZE: requests whose reply
+      is still eligible to be accepted. USE_GATEWAY on the Edge
+      profile starts it at 16.
+
+      Cost: 16 B of RAM per entry per interface (ARP_PENDING, .bss: one table
+      for each of NET_MAX_INTERFACES), the same on riscv64 and aarch64: 136 B
+      per interface at the default 8.
+
+config DNS_CACHE_SIZE
+    int "DNS cache entries"
+    range 1 64
+    default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4
+    help
+      crates/net/net/src/dns.rs, DNS_CACHE_SIZE. USE_GATEWAY on the
+      Edge profile starts it at 16.
+
+      Cost: 80 B of RAM per entry (DNS_CACHE, .bss), the same on riscv64 and
+      aarch64: 328 B at the default 4.
+
+config UDP_RX_SLOTS
+    int "Datagrams queued per UDP socket"
+    range 2 64
+    default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 4
+    help
+      crates/net/net/src/udp.rs, UDP_RX_SLOTS: the receive ring of each
+      UDP socket. USE_GATEWAY on the Edge profile starts it at 16.
+      Must be a power of two (the ring index is a mask);
+      crates/core/limits/build.rs refuses any other value.
+
+      Cost: 11,904 B of RAM per slot (the UDP table, .bss), the same on riscv64
+      and aarch64: 8 UDP sockets (UDP_MAX_SOCKETS, a literal) x one 1,488-byte
+      datagram slot each.  47,912 B for the whole UDP table at the default 4
+      slots; 64 slots (the range limit) would be 761,856 B of slots.  It does not
+      depend on MAX_SOCKETS.
+
+# ---------------------------------------------------------------------------
+# Firewall (crates/net/net/src/filter.rs, installed by kernel/src/boot/net.rs)
+# ---------------------------------------------------------------------------
+
+config FIREWALL_INBOUND_DROP
+    bool "Firewall: drop inbound packets no rule accepts"
+    default y if USE_GATEWAY
+    default n
+    help
+      The default policy of the packet filter for packets addressed to this
+      node (and for packets it would route, the forward hook): what happens
+      to a packet no `[firewall.NAME]` row of CAPS.TOML matches. Off: it is
+      accepted. On: it is dropped unless it belongs to a TCP or UDP flow this
+      node opened, or one an accepted rule opened, and the peer has answered.
+      Outbound packets are accepted by default either way; a row can still
+      refuse them. ICMP is stateless: a gateway that wants echo replies or
+      "unreachable" errors back declares a row for them, and so for the DHCP
+      reply (udp port 68) and the IGMP queries (proto any, the router).
+
+      On by default under USE_GATEWAY. With this off and no row that refuses
+      anything the filter is not installed at all and the stack pays one
+      branch per packet.
+
+      Cost: none in RAM or code size of its own; the tables below.
+
+config FIREWALL_CONNTRACK_MAX
+    int "Firewall: tracked TCP/UDP flows"
+    range 16 8192
+    default 64 if HWCLASS_EMBEDDED
+    default 1024 if USE_GATEWAY
+    default 256
+    help
+      Size of the flow table the firewall keeps so that the answer to a
+      packet this node sent (or to one a rule let in) passes whatever the
+      rules say (crates/net/net/src/filter.rs, CT_SLOTS). The table is 4-way
+      set-associative, keyed by the 5-tuple with a boot-random seed: the
+      value is rounded down to a multiple of 4, and a flow whose set is full
+      of live entries is refused, never the table grown. Within a set a
+      new flow evicts, in this order, an expired entry, then the oldest one
+      that has not been answered (or is closing), so a flood of new flows
+      cannot push out an established one. The table is kept only when a rule or
+      the inbound policy can refuse something a reply must still pass.
+
+      Cost: 24 B of RAM per entry (the filter's table, .bss), the same on
+      riscv64, aarch64 and x86_64: 6,144 B at the default 256.
+
+config FIREWALL_UDP_TIMEOUT_S
+    int "Firewall: idle timeout of a tracked UDP flow (s)"
+    range 1 3600
+    default 60
+    help
+      A UDP flow with no packet in either direction for this long is
+      forgotten: its answers are judged by the rules again. Every packet in
+      either direction renews it.
+
+      Cost: none.
+
+config FIREWALL_TCP_TIMEOUT_S
+    int "Firewall: idle timeout of an established TCP flow (s)"
+    range 30 86400
+    default 600 if HWCLASS_EMBEDDED
+    default 3600
+    help
+      An established TCP flow with no packet in either direction for this
+      long is forgotten. Set it above the keepalive interval of the
+      applications on the node, or a quiet connection stops passing inbound
+      once its entry is gone. A flow that was never answered, or that has
+      carried a FIN or an RST, is held for 20 s regardless (filter.rs,
+      HALF_OPEN_S).
+
+      Cost: none.
+
+# ---------------------------------------------------------------------------
+# Forwarding and NAT (crates/net/net/src/ip.rs `forward`, nat.rs)
+# ---------------------------------------------------------------------------
+
+config NET_IP_FORWARD
+    bool "Forward IPv4 packets between interfaces"
+    default y if USE_GATEWAY
+    default n
+    help
+      On: a unicast packet that arrives on one interface for an address no
+      interface of this node holds is routed (the route table of ip.rs) and
+      sent out of the interface the route names: TTL decremented, header
+      checksum rewritten, the packet filter asked at its forward hook. A
+      packet with TTL 1 draws ICMP "time exceeded", one the egress link
+      cannot carry ICMP "fragmentation needed" (the stack does not fragment),
+      one nothing routes ICMP "network unreachable". A packet that would
+      leave by the interface it arrived on is refused (no hairpin, no
+      redirect). Broadcasts and multicast are never forwarded. Off: such a
+      packet is dropped, as on a host.
+
+      On by default under USE_GATEWAY, off elsewhere. Needs at least two
+      interfaces (NET_MAX_INTERFACES) to do anything.
+
+      Cost: none in RAM; about 1.5 KB of stack on the receive path, only
+      while a packet is being forwarded.
+
+config NET_NAT
+    bool "NAPT: masquerade forwarded traffic behind the uplink"
+    depends on NET_IP_FORWARD
+    default y if USE_GATEWAY
+    default n
+    help
+      The uplink is the interface of the best default route (a `[route.NAME]`
+      row for 0.0.0.0/0 or a lease gateway). A packet forwarded from another
+      interface out of the uplink leaves with the uplink's address as source
+      and a port from NAT_PORT_MIN..NAT_PORT_MAX in place of the sender's;
+      the answer that arrives on the uplink for that port from the same
+      remote is translated back and forwarded to the sender. ICMP errors
+      about a translated flow are translated back too. Only a TCP SYN, a UDP
+      datagram or an ICMP echo request opens a mapping; nothing arriving from
+      outside opens one (there is no port forwarding), and a LAN host cannot
+      reach the uplink address through the gateway (hairpin refused).
+      Protocols other than TCP, UDP and ICMP echo are refused.
+
+      A mapping is per 5-tuple, so two flows of one LAN host never share a
+      translated port; one more than the table or its set can hold is refused,
+      never the table grown. Every refusal reaches the packet filter's
+      record (Rule::PacketRefused).
+
+      On by default under USE_GATEWAY. Packets are not fragmented or
+      reassembled, so a fragment is dropped before it gets here.
+
+      Cost: the table below, plus about 1.5 KB of stack while a packet is
+      translated.
+
+config NAT_TABLE_MAX
+    int "NAT: tracked mappings"
+    range 16 8192
+    default 1024 if NET_NAT
+    default 16
+    help
+      Size of the mapping table (crates/net/net/src/nat.rs, NAT_SLOTS). 4-way
+      set-associative, keyed by the 5-tuple with a boot-random seed: the value
+      is rounded down to a multiple of 4. The translated port of a mapping is
+      chosen so that both directions of it live in the same set, which makes
+      each lookup one set (4 entries) in either direction. A flow whose set
+      is full of live answered mappings is refused. Within a set a new flow
+      evicts, in this order, an expired mapping, then the oldest one nobody
+      has answered (or that is closing). The table is static whatever
+      NET_NAT is; with NAT off it stays at the minimum.
+
+      Needs NAT_PORT_MIN..NAT_PORT_MAX to hold at least 4 ports per set
+      (nat.rs asserts it at compile time).
+
+      Cost: 24 B of RAM per entry (.bss), the same on riscv64, aarch64 and
+      x86_64: 384 B at the minimum (NAT off), 24,576 B at 1024 (NAT on).
+
+config NAT_PORT_MIN
+    int "NAT: lowest translated port"
+    range 1024 65535
+    default 32768
+    help
+      Translated ports (and ICMP echo identifiers) come from
+      NAT_PORT_MIN..NAT_PORT_MAX. The range must not overlap the TCP
+      ephemeral range (TCP_EPHEMERAL_PORT_MIN..MAX): a reply to a connection
+      of this node must never be taken for a translated one (nat.rs asserts
+      it at compile time). 32768..49151 sits just below the default TCP range.
+
+      Cost: none.
+
+config NAT_PORT_MAX
+    int "NAT: highest translated port"
+    range 1024 65535
+    default 49151
+    help
+      Upper end of the translated range (see NAT_PORT_MIN). Cost: none.
+
+config NAT_UDP_TIMEOUT_S
+    int "NAT: idle timeout of a UDP mapping (s)"
+    range 1 3600
+    default 30
+    help
+      A UDP mapping with no packet in either direction for this long is
+      forgotten. Every packet in either direction renews it. DNS and NTP
+      finish in a second; raise it for long-lived UDP such as a VPN keepalive
+      (RFC 4787 asks for at least 2 minutes there).
+
+      Cost: none.
+
+config NAT_TCP_TIMEOUT_S
+    int "NAT: idle timeout of an established TCP mapping (s)"
+    range 60 86400
+    default 600 if HWCLASS_EMBEDDED
+    default 7440
+    help
+      An answered TCP mapping with no packet in either direction for this
+      long is forgotten (RFC 5382 REQ-5: no less than 2 h 4 min by default).
+      Set it above the keepalive interval of the applications behind the
+      gateway, or a quiet connection loses its mapping.
+
+      Cost: none.
+
+config NAT_TCP_TRANSIENT_S
+    int "NAT: timeout of an unanswered or closing TCP mapping (s)"
+    range 5 300
+    default 30
+    help
+      A TCP mapping nobody has answered, or that has carried a FIN or an RST,
+      is held this long without a packet, so the closing exchange still
+      passes and a half-open flood frees its entries quickly.
+
+      Cost: none.
+
+config NAT_ICMP_TIMEOUT_S
+    int "NAT: idle timeout of an ICMP echo mapping (s)"
+    range 1 3600
+    default 30
+    help
+      An ICMP echo identifier stays mapped this long without a packet.
+
+      Cost: none.
+
+# ---------------------------------------------------------------------------
+# NIC queues (wave 15 IO-QUEUES N1/N2/N3: were VIRTIO_QUEUE_SIZE = 16 and
+# literals in crates/drivers/virtio/src/virtio/net.rs, crates/net/net/src/lib.rs
+# and kernel/src/tasks/net_poll.rs)
+# ---------------------------------------------------------------------------
+
+config NET_VIRTIO_RXQ_SIZE
+    int "virtio-net RX ring entries (= posted RX buffers)"
+    range 2 256
+    default 16  if HWCLASS_EMBEDDED
+    default 256 if HWCLASS_SERVER
+    default 64
+    help
+      crates/drivers/virtio/src/virtio/net.rs NUM_RX_BUFS: the RX virtqueue
+      size requested from the device (it may grant fewer), and the number
+      of receive buffers posted on it, one descriptor each.  A power of two
+      (split-ring index arithmetic) and at most 256 (one 4 KiB page of
+      descriptors); crates/core/limits/build.rs refuses anything else.
+
+      What it buys: frames the NIC holds while nothing drains it.  In poll
+      mode a 13 ms wake gap was measured (kernel/src/tasks/net_poll.rs):
+      64 buffers carry ~4,900 frames/s across it, 16 carry ~1,200 (the old
+      8 carried ~615).  Raise it for a receive-heavy node.
+
+      Cost: 1,526 B of RAM per entry (.bss, the same on every ISA) plus the
+      page-backed ring: 97,664 B of buffers at edge's 64, 24,416 B at
+      embedded's 16, 390,656 B at fleet's 256 (was 12,208 B: 8 buffers).
+      Instructions per frame do not depend on it.
+
+config NET_VIRTIO_TXQ_SIZE
+    int "virtio-net TX ring entries (2 per frame in flight)"
+    range 4 256
+    default 16  if HWCLASS_EMBEDDED
+    default 256 if HWCLASS_SERVER
+    default 64
+    help
+      crates/drivers/virtio/src/virtio/net.rs NUM_TX_BUFS: the TX virtqueue
+      size requested from the device.  Each frame takes two descriptors
+      (virtio-net header, then the frame), so half of it is frames in
+      flight; a send that finds the ring full is refused (QueueFull) and
+      counted.  A power of two, at most 256 (build.rs checks both).
+
+      Cost: 1,514 B of RAM per entry (.bss: one staging buffer per
+      descriptor index): 96,896 B at edge's 64, 24,224 B at embedded's 16
+      (the old size), 387,584 B at fleet's 256.  Lower it on a node that
+      only sends control traffic; raise it with NET_TX_BATCH_MAX for bulk
+      TCP senders.
+
+config NET_TX_BATCH_MAX
+    int "virtio-net TX frames published per doorbell inside a batch"
+    range 1 128
+    default 4  if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
+    default 16
+    help
+      Inside a TX batch (one net_poll pass, one TCP send_all_* burst
+      between waits) frames are published on the TX ring without ringing
+      the doorbell; it rings once when the batch ends, or after this many
+      frames, whichever comes first.  A send outside any batch rings at
+      once, as before, so no frame waits for a flush point that is not
+      coming.  Either way the doorbell is skipped while the device reports
+      it is already draining the ring (used.flags NO_NOTIFY, virtio 1.x
+      2.7.10; the legacy transport defines it too).
+
+      1 = one doorbell per frame (the behaviour before wave 15).  At most
+      NET_VIRTIO_TXQ_SIZE / 2, the frames the ring holds (build.rs checks
+      it), or a batch could fill the ring before announcing it.
+
+      Cost: nothing in RAM.  A doorbell is an MMIO store that exits to the
+      device model (QEMU) or crosses the bus (hardware); a larger batch
+      trades that per-frame cost for up to this many frames of added
+      latency inside one burst.
+
+config NET_RX_BATCH_MAX
+    int "virtio-net RX frames popped per lock and handed up by reference"
+    range 1 128
+    default 4  if HWCLASS_EMBEDDED
+    default 64 if HWCLASS_SERVER
+    default 16
+    help
+      crates/drivers/virtio/src/virtio/net.rs, recv_batch: one lock pops up
+      to this many received frames, the lock is dropped while the stack
+      handles them in place (no copy out of the RX buffer), and one more
+      lock re-posts the buffers. 1 = a lock pair per frame.
+
+      At most NET_VIRTIO_RXQ_SIZE / 2 (build.rs checks it): the popped
+      buffers are off the ring until the batch has been handled, and the
+      device needs the other half to keep receiving meanwhile.
+
+      Cost: 4 B of stack per entry in recv_batch; buffers out of the ring
+      for one batch's protocol work. Same on every ISA.
+
+config NET_VIRTIO_EVENT_IDX
+    bool "virtio-net: negotiate VIRTIO_F_EVENT_IDX on modern transports"
+    default y
+    help
+      crates/drivers/virtio/src/virtio/net.rs: offer VIRTIO_F_EVENT_IDX
+      (virtio 1.x 2.7.7) on virtio-mmio version 2 and virtio-pci. The
+      driver then asks for its next interrupt by ring index (used_event)
+      and rings the doorbell only when avail.idx passes the device's
+      avail_event, instead of the NO_INTERRUPT / NO_NOTIFY flags. The
+      legacy virtio-mmio transport keeps the flags either way.
+
+      Cost: no RAM; two 16-bit reads/writes of the ring per doorbell or
+      interrupt decision, where the flags took one. Same on every ISA and
+      profile; turn it off to compare doorbell and interrupt counts
+      (`ifconfig` queues line) or for a device whose EVENT_IDX is broken.
+
+config NET_RX_IRQ
+    bool "NIC RX interrupt instead of timer polling"
+    default y
+    help
+      On the virtio-mmio NIC (QEMU virt on riscv64 and aarch64, microvm on
+      x86_64) take the transport's interrupt line (PLIC/APLIC source, GIC
+      SPI, IOAPIC GSI) and wake the net poll task only on traffic.  The
+      VisionFive 2's Synopsys MAC (gmac0, PLIC source 7) does the same:
+      its handler acknowledges the DMA channel and opens the RX gate.
+      A link change is noticed by the next pass, so with this on and no
+      traffic and no TCP deadline it can take up to NET_IRQ_IDLE_CEILING_MS.
+      For the virtio NIC the handler acknowledges the device and opens the RX gate; the pass
+      switches RX interrupts off while it drains (avail.flags
+      NO_INTERRUPT) and back on once the ring is empty, then looks at the
+      ring once more so a frame landing in between is not missed.  TX
+      completions interrupt only while the TX ring is full.  The
+      virtio-pci NIC with an MSI route was already interrupt-driven.
+
+      n = the poll task wakes every NET_POLL_PERIOD_US whatever the
+      traffic.  Either way TCP timers run at their own deadlines.  Cost of y: an interrupt per RX burst instead of a timer
+      wake per period; a missed interrupt is bounded by
+      NET_IRQ_IDLE_CEILING_MS.
+
+config NET_TX_BATCH_SELFCHECK
+    bool "Boot self-check of virtio-net TX doorbell batching"
+    default y if CANARY_RUNTIME
+    help
+      kernel/src/boot/net.rs: right after the NIC comes up, open a TX batch,
+      queue three broadcast frames of the local experimental EtherType
+      0x88B5 (dropped by any receiver), and check that no doorbell decision
+      was taken inside the batch and exactly one at its end.  Prints
+      `[NET] TX batch self-check: ... PASS` (or FAIL), which the gate rows
+      `network: TX doorbell batching (rv|arm)` read; the runtime canary
+      `canary=net-kick-per-frame` turns it to FAIL.
+
+      Cost: three 60-byte frames on the wire at boot and a few hundred
+      instructions, once.  On by default where runtime canaries are
+      (development images); n in product images.
+
+config NET_POLL_PERIOD_US
+    int "net poll task period while the NIC is polled (us)"
+    range 100 1000000
+    default 1000
+    help
+      kernel/src/tasks/net_poll.rs (was TIMER_FREQ / 1000): how often the
+      net poll task drains the NIC and runs the TCP timers when there is no
+      RX interrupt.  Cost: one task wake per period; RX latency up to one
+      period.
+
+config NET_IRQ_IDLE_CEILING_MS
+    int "net poll task longest sleep with an RX interrupt (ms)"
+    range 10 3600000
+    default 60000
+    help
+      kernel/src/tasks/net_poll.rs (was TIMER_FREQ * 60): with an RX
+      interrupt (or no NIC) and no TCP deadline pending, the longest the
+      poll task sleeps; TCP deadlines (delayed ACK, RTO, persist,
+      keep-alive) wake it on time on the kernel timer.  It bounds a lost
+      RX interrupt: a frame whose interrupt never arrives is still drained
+      within this long.  Cost: one wake per period.

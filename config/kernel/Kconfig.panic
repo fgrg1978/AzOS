@@ -1,0 +1,208 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.panic — Panic policy and crash dump
+
+# ---------------------------------------------------------------------------
+# Panic policy (RT7)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Panic policy"
+    default PANIC_POLICY_CONTAIN if ROBOT_DRONE
+    default PANIC_POLICY_RESET
+    help
+      Which kernel panics stop the machine. The panic action above applies
+      to every panic that takes the reset path.
+
+      Ground robots reset (halt or reboot) on any kernel panic. A flying
+      robot with armed ESCs must not: a motor stop in flight is the failure.
+      The Robot drone profile (ROBOT_DRONE) therefore defaults to Contain.
+
+    config PANIC_POLICY_RESET
+        bool "Reset (every panic: safe state, then halt or reboot)"
+        help
+          Every kernel panic stops all actuators (lock-free), sets the global
+          panic flag (every other hart halts at its next tick and stops
+          feeding the watchdog), writes the crash record (RAM pstore and
+          /fat/CRASH.LOG) and takes the panic action. The behaviour before
+          RT7.
+
+    config PANIC_POLICY_CONTAIN
+        bool "Contain (park the culprit task; the control loop keeps running)"
+        help
+          "Warn, don't kill." A panic in a non-safety kernel task is
+          contained when its context passes the predicate in
+          crates/core/common/src/panic_policy.rs: not in an interrupt
+          handler, no SpinLock held by the hart, interrupts were enabled, no
+          Mutex held by the task, not a second panic, no hart already on
+          the reset path, and the task is neither idle, nor ring 3 in a
+          system call, nor a safety task (rt-motor, flight-ctrl). The task is
+          parked (it exits with status 134 and its resources are released by
+          the ordinary exit path); the global panic flag is NOT set, the
+          actuators are NOT stopped, the other harts keep running and the
+          crash counter (boot-loop detection) is not raised. The record still
+          goes to the RAM pstore and /fat/CRASH.LOG, marked CONTAINED. The
+          flight controller then flies its own Land and, after
+          PANIC_CONTAIN_LAND_MS, Disarm; it never resets.
+
+          Every panic that fails the predicate takes the reset path, as
+          under Reset, and prints the reason. A fault on the control loop
+          itself is one of those: the reset path stops feeding the watchdog
+          and the external ESC/FC failsafe is the backstop.
+
+          Cost (QEMU defconfigs, release, measured 2026-10-03): kernel
+          .text +1742 B on riscv64 and +2128 B on aarch64 over Reset (the
+          contain path and flight-ctrl's Land/Disarm sequence). Reset
+          itself grew +1326 B / +2176 B over the tree before RT7 (the
+          predicate captured on every panic, the safety-task registry,
+          the Mutex held count). Every Mutex acquisition and release
+          does one more atomic add on a 64-entry per-TID table (+6
+          instructions each in riscv64 try_acquire and in the guard's release).
+
+endchoice
+
+config PANIC_CONTAIN_LAND_MS
+    int "Contained panic: Land duration before Disarm (ms)"
+    range 100 600000
+    default 5000
+    help
+      After a contained kernel panic the flight controller (if armed) flies
+      Land for this long, then disarms. There is no touchdown detection in
+      the flight controller, so the descent is time-bounded: set it to the
+      worst-case time to descend from the vehicle's operating altitude at
+      the Land throttle. Read only when PANIC_POLICY_CONTAIN is set.
+
+config PANIC_QUIESCE
+    bool "Panic: stop the other CPUs and own the console before the report"
+    default y
+    help
+      On the reset path the panicking CPU, right after the actuator stop and
+      before the first byte of its report: claims the console (any other
+      CPU's UART write then waits until the report is out), rings every
+      other online CPU with the scheduler's IPI (its handler parks the CPU,
+      as the next timer tick would) and waits up to PANIC_STOP_WAIT_US for
+      them to park. The report then says "[PANIC] other CPUs parked: n/m".
+      A second CPU panicking meanwhile parks instead of printing.
+
+      Without it the other CPUs keep running until their next tick (or a
+      tickless sleep's end) and their console output splices the report
+      byte by byte: a garbled last message from the board, and gate rows
+      that read it fail.
+
+      Cost: one load and a branch in the IPI handler on every ISA (the
+      cross-CPU wake path), one relaxed load per UART write call, and on a
+      panic at most PANIC_STOP_WAIT_US. Same default on every ISA, profile
+      and mode: a crash report is worth more than either. Turn it off only
+      to reproduce the old behaviour.
+
+config PANIC_STOP_WAIT_US
+    int "Panic: how long to wait for the other CPUs to park (us)"
+    range 0 1000000
+    default 100000 if BUILD_TYPE_DEV
+    default 10000
+    help
+      The longest the panicking CPU waits for the other online CPUs to take
+      its stop IPI and park (PANIC_QUIESCE) before it prints anyway. A CPU
+      takes the IPI as soon as it unmasks interrupts, so the wait is the
+      longest interrupts-masked window on any CPU; on a board 10 ms is far
+      above every measured one (microseconds) and invisible next to the
+      report itself. Under QEMU each CPU is a host thread that a loaded host
+      can deschedule for tens of milliseconds (measured 2026-10-10: one boot
+      in twenty of panic-splice-smoke on aarch64 missed 10 ms), so 100 ms in
+      a development build (BUILD_TYPE_DEV: the QEMU defconfigs; the build
+      type, not the board, keys it).
+      Every panic pays the whole wait when a CPU counted online never runs
+      (NUM_ONLINE_CPUS is a prefix bound) or keeps interrupts masked on
+      purpose. Linux waits up to 1 s (smp_send_stop); raise it on a board
+      whose masked windows are long. Read only when PANIC_QUIESCE is set.
+
+# ---------------------------------------------------------------------------
+# Crash dump of a ring-3 task (owner decision 16-10: Log + file)
+# ---------------------------------------------------------------------------
+
+config CRASHDUMP
+    # cargo-feature: crashdump base
+    bool "Crash dump: a minidump of every ring-3 task a fault kills"
+    default n if HWCLASS_EMBEDDED
+    default y
+    help
+      A ring-3 task that a fault kills (page fault it cannot resolve, illegal
+      instruction, misaligned or bus error) leaves a minidump: the registers
+      of the trap, a window of its stack from the stack pointer, its maps
+      (the runs of mapped pages and their permissions: the executable run
+      that holds the pc gives the load address of the image), the last
+      decision records of the kernel, and the SHA-256 of its image, the key
+      of the symbol file of that exact build. It goes to the Log and a file:
+
+      * the Log: a record of the task and the status on the flight
+        recorder's ring (it survives a reset), written on the fault path
+        with no I/O and no allocation;
+      * a file, CRASHn.DMP in the root of the first write tree (`Cap<Dir>`)
+        the task's Domain holds, staged in the crash ring in the kernel on
+        the fault path (CRASHDUMP_RING dumps, the oldest overwritten) and
+        written by the log flusher task, never by the faulting task (an RT
+        task never does block I/O) and never by a global path. The files are
+        a ring of CRASHDUMP_FILES slots, so a crash loop cannot fill the
+        volume. A Domain whose row holds no write tree leaves the flight
+        recorder's record only: its dump is not encoded, since nothing
+        reads a dump that is not a file.
+
+      `why crash <tid>` prints a dump (userspace/services/why), reading the
+      files beneath the read-only root directory its row holds. A kernel
+      panic is not a dump: it keeps /fat/CRASH.LOG.
+
+      Cost: CRASHDUMP_RING x (a few KiB) of .bss, one page-table walk and
+      one fixed-size copy per killed task. Nothing on any other path.
+
+config CRASHDUMP_STACK_BYTES
+    int "Crash dump: stack window (bytes, from the stack pointer up)"
+    depends on CRASHDUMP
+    range 64 4096
+    default 512 if HWCLASS_EMBEDDED
+    default 1024
+    help
+      The stack bytes a dump keeps, from the stack pointer toward the stack
+      top, stopping at the first page that is not mapped. Enough for the
+      innermost frames and their saved return addresses.
+
+config CRASHDUMP_MAPS
+    int "Crash dump: map runs kept"
+    depends on CRASHDUMP
+    range 4 48
+    default 24
+    help
+      Runs of mapped pages (same permissions, adjacent) a dump lists, lowest
+      address first. A task with more has the count of all of them in the
+      dump and the lowest ones listed.
+
+config CRASHDUMP_DECISIONS
+    int "Crash dump: decision records kept"
+    depends on CRASHDUMP
+    range 0 32
+    default 16
+    help
+      The last decision records (crates/core/decision) about the dying task
+      a dump carries: why the kernel refused or denied what that thread or
+      its process asked for before the fault. Only records whose subject is
+      a TID naming one of them: the dump is written into the task's own
+      tree. Empty unless DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE
+      is on. 0 leaves them out.
+
+config CRASHDUMP_RING
+    int "Crash dump: crash ring depth (dumps kept in RAM)"
+    depends on CRASHDUMP
+    range 1 8
+    default 2
+    help
+      Dumps the kernel stages until the log flusher has written them to their
+      file. A fault while the ring is full overwrites the oldest dump that
+      was already written, else the oldest one; the drop is counted.
+
+config CRASHDUMP_FILES
+    int "Crash dump: file slots per Domain directory"
+    depends on CRASHDUMP
+    range 1 16
+    default 4
+    help
+      Dump files CRASH0.DMP .. CRASHn.DMP a Domain's tree holds.
+      The oldest is rewritten; `why crash` reads them all.

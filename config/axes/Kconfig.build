@@ -1,0 +1,341 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/axes/Kconfig.build — The BUILD_TYPE axis and the test machinery (ktest, canaries, chaos, census, boot bench)
+
+# ---------------------------------------------------------------------------
+# Build type (owner decision, wave 15)
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Build type"
+    default BUILD_TYPE_RELEASE
+    help
+      What the image is for. The test-only machinery below depends on it,
+      so a release image cannot carry it whatever else the .config says.
+      The defconfig names it (the board does not decide it): release is the
+      default, and every development defconfig says BUILD_TYPE_DEV.
+
+      Development (the qemu*, edge, robot-edge, experimental and micro
+      defconfigs, every QEMU kernel the Makefile builds from
+      $AZOS_OUT/build/qemu-dev.config, and `make vf2 BUILD_TYPE=DEV`): secure boot
+      and mandatory OTA signatures start off (unsigned boot); gate canaries armed from
+      the command line (CANARY_RUNTIME), fault injection (CHAOS), the
+      in-kernel tests (KTEST) and the real-time block-I/O check
+      (RT_BLOCK_IO_CHECK) may be enabled, and the image may embed the TEST
+      signing key (tools/keys/test_pub.bin, the `dev-key` feature every
+      QEMU kernel uses).
+
+      Release (the default; the embedded, fleet, robot-embedded,
+      robot-fleet, vf2, k1 and rpi5 defconfigs): those four
+      options are forced off (a `ktest` or `chaos` cargo feature on a
+      release .config does not compile), the build refuses the TEST key
+      (the `dev-key` fallback in crates/core/topology/build.rs; every
+      `make` board target through tools/check_board_keys.py), and the
+      image needs the fleet key in TOPOLOGY_PUBKEY_PATH. Secure boot
+      (SECURE_BOOT_ENFORCED) and signed OTA (OTA_SIG_MANDATORY) start on
+      here and can still be turned off by hand; Certifiable forces them.
+
+      Certifiable (never a default; not on the QEMU board, whose kernels
+      embed the TEST key through the `qemu` board feature's `dev-key`, the
+      one board fact left here until that policy leaves the board feature):
+      a release build that also has secure boot and
+      mandatory OTA signatures on and cannot turn them off
+      (SECURE_BOOT_ENFORCED, OTA_SIG_MANDATORY). The signing kept apart
+      from the build host (`make release`) is a later step.
+
+      No cost: it selects what may be compiled.
+
+    config BUILD_TYPE_DEV
+        bool "Development: test machinery and the TEST key allowed"
+
+    config BUILD_TYPE_RELEASE
+        bool "Release: test machinery forced off, TEST key refused"
+
+    config BUILD_TYPE_CERTIFIABLE
+        bool "Certifiable: release, with secure boot and signed OTA forced on"
+        depends on !BOARD_QEMU
+
+endchoice
+
+config SWITCH_CENSUS
+    # cargo-feature: switch-census
+    bool "Census of the yield-and-switch path, phase by phase"
+    default n
+    help
+      Measurement only (crates/core/sched/src/swcensus.rs). Times each
+      phase of a yield that switches (trap and user mode, syscall
+      dispatch, the pick, the re-queue, the context-saving gate, the
+      accounting, context_switch, the return) and counts switches into
+      each task slot; DOMAIN_TASKINFO prints the per-switch averages since
+      its previous call as `[SW-CENSUS]` lines at log level debug when at
+      least SWITCH_CENSUS_DUMP_MIN switches happened in between. The clock
+      is rdcycle (riscv64) or cntvct_el0 (aarch64): under QEMU -icount
+      both count guest instructions. Meaningful at one hart (one set of
+      globals for all harts).
+
+      Off (default): not compiled, zero instructions. On: about ten
+      instructions per phase boundary (eight per switch) and 800 bytes of
+      counters.
+      Maps to the kernel cargo feature `switch-census`
+      (tools/kconfig_to_cargo.py).
+
+config SWITCH_CENSUS_DUMP_MIN
+    int "Fewest switches that make a census dump worth printing"
+    range 1 1000000000
+    default 1000
+    help
+      SWITCH_CENSUS prints at a DOMAIN_TASKINFO only when at least this many
+      switches happened since the previous one, so the windows of a
+      benchmark print and the bookkeeping calls between them do not.
+      No cost while SWITCH_CENSUS is off; read once per DOMAIN_TASKINFO when
+      on. Raise it when a workload calls DOMAIN_TASKINFO often.
+
+config FILE_CENSUS_EVERY
+    int "Backend operations per file-census line"
+    range 1 1000000000
+    default 20
+    help
+      The `file-census` vsbench diagnostic (crates/fs/fs/src/census.rs,
+      kernel cargo feature `file-census`, off in every build that ships)
+      sums where a backend file's open, read, close and write go and
+      prints one per-operation average line every this many backend
+      opens, and another every this many backend writes. 20: the `disk`
+      lanes' 40 iterations fill two lines each, so one at least is all
+      lane. Same on every ISA and profile: it sets a print period, not a
+      resource.
+      No cost while `file-census` is off; on, one modulo per backend open
+      and write and one console line per period. Raise it to average a
+      long lane over more operations; lower it to see a short one.
+
+# ---------------------------------------------------------------------------
+# In-kernel test registry (wave 15)
+# ---------------------------------------------------------------------------
+
+config KTEST
+    # cargo-feature: ktest
+    bool "In-kernel tests (ktest): run every registered test at boot, then power off"
+    depends on BUILD_TYPE_DEV
+    default n
+    help
+      Compiles every `ktest!` and `ktest_late!` test (crates/core/ktest) and
+      the runner (kernel/src/ktest.rs), and prints TAP on the console
+      (`1..N`, `ok i - name`, `not ok i - name # reason`, one plan for both
+      phases), then a summary line, then powers the machine off.
+      Early phase (`ktest!`): after boot init, before the secondary harts
+      wake and before any task runs, on the boot hart, in name order.
+      Late phase (`ktest_late!`): in the `ktest-late` kernel task once the
+      scheduler runs on every hart, in name order; these tests create probe
+      tasks and block. A panicking test is reported `not ok` by the panic
+      handler and ends the run (the kernel does not unwind).
+
+      Off (default in every mode, development included): no test, no entry
+      in `azos_ktest`, no runner; zero bytes and zero instructions. It is
+      not on in the QEMU development configs because the runner ends the
+      boot: it is a test kernel, built for the gate's `ktest` rows. On: the
+      tests' code and 32 bytes of `.rodata` per test, one more kernel task
+      when a late test exists, and the boot stops after the run. Maps to
+      the kernel cargo feature `ktest` (tools/kconfig_to_cargo.py).
+      Development builds only (BUILD_TYPE): the `ktest` feature on a release
+      .config does not compile.
+
+config KTEST_SEMIHOSTING_EXIT
+    bool "ktest runner leaves QEMU through semihosting SYS_EXIT (aarch64)"
+    depends on ARCH_AARCH64 && BUILD_TYPE_DEV
+    default y
+    help
+      aarch64 only. QEMU's `virt` machine has no power-off that carries a
+      status (PSCI SYSTEM_OFF exits 0 after a failed run as after a clean
+      one), so with this on the ktest runner (cargo features `ktest` and
+      `qemu`) ends the run with semihosting SYS_EXIT: QEMU exits 1 after a
+      failed run, 0 after a clean one, and the gate's ktest rows read that
+      status next to the TAP summary (riscv64 has the sifive_test finisher,
+      x86_64 isa-debug-exit).
+      QEMU must run with `-semihosting-config enable=on,target=native`
+      (the gate's `ktest_row` passes it): without it the call is an
+      undefined instruction and the run ends in a trap instead of a
+      power-off. Off: PSCI SYSTEM_OFF, status 0 either way, and only the TAP
+      lines carry the verdict. Cost: one `hlt` at the end of a ktest run;
+      nothing in a kernel built without `ktest`.
+
+config X86_QEMU_DEBUG_EXIT
+    bool "Power-off and reset leave QEMU through isa-debug-exit (x86_64)"
+    depends on ARCH_X86_64 && BOARD_QEMU
+    default y
+    help
+      x86_64 QEMU only. With this on, `Boot::shutdown` writes 0 and
+      `Boot::reboot` 2 to QEMU's isa-debug-exit port (0xF4) before the
+      machine's own sequence, so QEMU (`-device isa-debug-exit,iobase=0xf4,
+      iosize=0x04`, as every gate row passes) exits with status 1 or 5: a
+      status the gate can tell from a hang or a reset. The write is made
+      only when CPUID says a hypervisor runs the kernel; without the
+      device it goes nowhere and ACPI S5 or the reset ladder follows.
+
+      Off: the FADT's sequences alone (ACPI S5; RESET_REG, 0xCF9, the
+      8042, a triple fault), as on a PC; QEMU then exits 0 on S5 or on a
+      reset under `-no-reboot`. Only a BOARD_QEMU build offers it, so a
+      board build never writes port 0xF4 here. Cost: one CPUID and one
+      port write on the power-off and reset paths.
+
+config KTEST_LATE_PRIORITY
+    int "Priority of the late ktest runner task"
+    range 1 30
+    default 30
+    help
+      The `ktest-late` task (KTEST on, a `ktest_late!` test linked) runs the
+      late tests at this priority, pinned to CPU 0; lower is more urgent,
+      16 is the default task priority and 31 the idle task's. It spends its
+      time asleep while the probe tasks it starts run at their own
+      priorities, so it sits below every task in the system by default and
+      does not steal a hart from the scenario a test watches. Raise its
+      urgency only if a test itself must run ahead of boot tasks.
+      Read only when KTEST is on; no cost otherwise.
+
+config KTEST_LATE_TIMEOUT_MS
+    int "Longest a late ktest waits for its probe task (ms)"
+    range 100 600000
+    default 60000
+    help
+      A late test that starts a probe task waits for it, sleeping 10 ms at a
+      time, at most this long, then reports `not ok` (the probe did not
+      finish). The longest probe today needs
+      a few seconds under QEMU; the default leaves room for a loaded host.
+      Raise it for slow emulation (-icount, TCG on a busy host); lower it to
+      fail a hung run sooner. Read only when KTEST is on; no cost otherwise.
+
+config CANARY_RUNTIME
+    bool "Runtime gate canaries: canary=<name>[,<name>] on the kernel command line"
+    default y if LOG_LEVEL_DEBUG
+    default n
+    depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
+    help
+      Lets a gate canary be armed for one boot from the kernel command
+      line (the device tree's /chosen/bootargs; QEMU -append), so a canary
+      row boots the same kernel as its base row instead of building one
+      with a canary cargo feature. Each `canary!("name")` site in the
+      kernel (kernel/src/canary_rt.rs lists the names) breaks its own
+      property only when its name is armed; an unknown name in the source
+      is a compile error, an unknown name on the command line is ignored
+      with a warning.
+
+      Never on a hot path: a site costs one load and one bit test each
+      time it runs, so the syscall, IPC, context-switch and fault paths
+      keep cargo-feature canaries (compiled out, zero instructions).
+
+      On by default in the QEMU development configs (the ones at
+      LOG_LEVEL_DEBUG, which the gate builds). Impossible in a release
+      build (BUILD_TYPE), and with SECURE_BOOT_ENFORCED (the kernel also
+      refuses it under the `secure-boot-enforced` cargo feature): a
+      command line must not weaken a signed image. Off: the parser, the
+      names and every site compile out (`canary!` is a constant false).
+      On: one device-tree walk at boot (KERNEL_CMDLINE_MAX bytes on the
+      boot stack) and ceil(CANARY_RUNTIME_MAX / 64) * 8 bytes of .bss.
+
+config CAP_REVOKE_CHAIN_CANARY
+    # cargo-feature: revoke-chain-canary
+    bool "Canary: skip the revoked-ancestor check on a capability's use"
+    default n
+    depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
+    help
+      A capability derived from one that was revoked is refused on its next
+      use, before the subtree sweep frees it (crates/core/ipc/src/cap.rs,
+      revocation_in_flight). This canary skips that check, so the derived
+      capability keeps working until the sweep runs: the host row in
+      tests/host/cap-tests must go red with it. Never in a real build; a
+      development kernel that turns it on has a revocation window.
+
+config SCHED_WAKE_PREEMPT_CANARY
+    # cargo-feature: wake-preempt-canary
+    bool "Canary: a wake-up does not ask the waking CPU to reschedule for a better class"
+    default n
+    depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
+    help
+      A task woken onto the waking CPU while that CPU runs a worse dispatch
+      class (or a numerically worse RT level, or a later DL deadline) sets
+      that CPU's need_resched, so the next preemption point takes the switch
+      (crates/core/sched/src/scheduler/wake/preempt.rs). This canary never
+      asks, so the wake waits for the next tick: the host row
+      `a_preempting_wake_on_the_same_cpu_sets_need_resched` in
+      tests/host/sched-wake-tests and the ktest
+      `sched_wake_preempts_a_worse_class_on_the_same_cpu` must go red with
+      it. Never in a real build; a development kernel that turns it on has
+      a wake-up latency of up to one tick for cross-class wakes.
+
+config CHAOS
+    # cargo-feature: chaos
+    bool "Fault injection (chaos=<point>:<rate> on the kernel command line)"
+    default y if KTEST
+    default n
+    depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
+    help
+      Compiles the fault-injection registry (crates/core/chaos) and its
+      six named injection points: frame-alloc (the page allocator answers
+      out of memory), heap-alloc (the kernel heap answers null; test scope
+      only, the kernel's heap allocations are infallible), ipc-send (a
+      pipe write is refused), timer-wake (the timer sweep wakes
+      sleepers CHAOS_TIMER_DELAY_US late), spurious-irq (the tick rings an
+      IPI with no cause at another CPU) and disk-io (a block read or write
+      answers an I/O error). A point is armed from the kernel command line,
+      `chaos=<point>:<rate>[,...]` (one failure in <rate> calls, applied
+      once boot init is done) with `chaos_seed=<n>`, or from a ktest; the
+      `chaos_*` ktests check that each fault is refused cleanly and leaks
+      nothing. The introspection tree's `chaos/` holds each point's rate and
+      counts.
+
+      On by default only in a KTEST kernel. Impossible in a release build
+      (BUILD_TYPE; the `chaos` feature on a release .config does not
+      compile) and with SECURE_BOOT_ENFORCED: a command line must not be
+      able to fail a signed image's allocations. Off: every site compiles
+      to the code it was before (`fire` is a constant false). On: one load
+      and a branch per site call while its point is disarmed, about 300
+      bytes of .bss. Maps to the kernel cargo feature `chaos`.
+
+config CHAOS_SEED
+    int "Fault injection: default seed"
+    range 1 2147483647
+    default 1
+    help
+      The seed of every injection point's generator when the command line
+      gives no `chaos_seed=`. The same seed, arming and call order fail the
+      same calls, so a failure found under one seed replays under it.
+      No cost.
+
+config CHAOS_TIMER_DELAY_US
+    int "Fault injection: how late an injected timer-wake fault wakes (us)"
+    range 100 1000000
+    default 2000
+    help
+      When the timer-wake point fires, the sweep runs as if the clock were
+      this far behind, so a sleeper due within the window is woken on a
+      later sweep instead (late, never lost). Larger values stress
+      deadline-sensitive code harder; with a tickless idle the next sweep
+      can come as soon as the next timer interrupt. No cost while CHAOS is
+      off; one subtraction per fired sweep when on.
+
+config BOOT_BENCH_ITERS
+    int "Boot [BENCH-RES] sweep: iterations per microbenchmark"
+    range 1 100000
+    default 100
+    help
+      A `qemu` build that keeps info lines (LOG_LEVEL >= INFO) runs the
+      robot bench sweep (`azos_bench::run_all`, 49 `[BENCH-RES]` lines)
+      once, shortly after boot, in the `bench-boot` task. Each
+      microbenchmark runs this many iterations (best of a few runs). At
+      100 the sweep is up to ~2 G instructions on riscv64 (about 17 s of
+      virtual time at `-icount shift=3`); time scales linearly. Raise it for steadier
+      numbers, lower it to shorten boot scenarios. No cost in a build
+      without the `qemu` feature or below LOG_LEVEL INFO.
+
+config BOOT_BENCH_PRIORITY
+    int "Boot [BENCH-RES] sweep: task priority"
+    range 1 30
+    default 28
+    help
+      Priority of the one-shot `bench-boot` task (lower is more urgent;
+      16 is the default task priority, 31 the idle task's). The sweep
+      never blocks, so whatever it outranks on its CPU waits for all of
+      it: run from the behavior task (priority 14) it stopped the control
+      loop and starved every less urgent task on hart 2 for the whole
+      sweep. The default sits below every boot task, so the sweep takes
+      only time no other task wants (its numbers can include preemption).
+      Raise its urgency only to measure on an otherwise loaded system.
+      No cost in a build without the `qemu` feature.

@@ -1,0 +1,543 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/arch/Kconfig.isa-riscv64 — riscv64: baseline level and extensions (n / probe / require)
+
+# ---------------------------------------------------------------------------
+# RISC-V specific options
+# ---------------------------------------------------------------------------
+
+if ARCH_RISCV64
+
+choice
+    prompt "riscv64 baseline ISA"
+    default RISCV64_LEVEL_RV64GCV if BOARD_K1
+    default RISCV64_LEVEL_RV64GC if BOARD_VF2
+    default RISCV64_LEVEL_RV64IMAC
+    help
+      What the kernel and its user images assume of every hart. The
+      kernel is soft-float (riscv64imac-unknown-none-elf, lazy FP), so the
+      level changes codegen only through the bit-manipulation extensions
+      set to `require` below; F, D and V are reached through
+      `.option arch` inside their own save/restore and SIMD code. The boot
+      checks cpu@0's device-tree `riscv,isa` against the level and refuses
+      a hart below it. Raise it when every board the image targets has
+      the extensions: nothing is gained in speed, but a wrong board is
+      refused with a message instead of faulting later.
+
+    config RISCV64_LEVEL_RV64IMAC
+        bool "rv64imac (QEMU virt, any RV64 with atomics and C)"
+        help
+          Integer, multiply, atomics (Zaamo + Zalrsc) and compressed. The
+          default; what every build assumed before this choice existed.
+    config RISCV64_LEVEL_RV64GC
+        bool "rv64gc (+ F, D, Zicsr, Zifencei: JH7110 / VisionFive 2)"
+        help
+          Adds the F and D floating-point registers the FP context
+          (FP_HARDFLOAT_*) saves. The SiFive U74 of the VF2.
+    config RISCV64_LEVEL_RV64GCV
+        bool "rv64gcv (+ V 1.0: SpacemiT K1 / X60)"
+        help
+          Adds the vector extension: RV_V defaults to `require`. RVA22-class
+          parts such as the X60 also mandate Zba/Zbb/Zbs (set below).
+endchoice
+
+choice
+    prompt "Zicboz (cbo.zero page zeroing)"
+    default RV_ZICBOZ_PROBE
+    help
+      `cbo.zero` zeroes a whole cache block per instruction in the page
+      allocator's zero-fill (crates/core/arch-riscv64/src/cache.rs): about a
+      third of the cycles of a store loop per 4 KiB page under QEMU. probe:
+      used when cpu@0's device tree declares it AND a trap-safe execution
+      probe confirms it zeroes; plain stores otherwise. n: always plain stores.
+      require: refuse to boot without it. Costs nothing when absent.
+
+    config RV_ZICBOZ_NEVER
+        bool "n: never use it"
+    config RV_ZICBOZ_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZICBOZ_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zicbom (cbo.clean / cbo.flush cache maintenance for DMA)"
+    default RV_ZICBOM_PROBE
+    help
+      `cbo.clean` writes a cache block back and `cbo.flush` writes it back
+      and drops it: what a driver does around a transfer to a device that is
+      not cache-coherent with the CPU (DMA_NONCOHERENT; crates/drivers/dma
+      src/cache.rs, crates/core/arch-riscv64/src/cache.rs). probe: used when
+      cpu@0's device tree declares it AND a trap-safe execution probe confirms
+      it (the firmware must have set menvcfg.CBCFE). n: never used, so a
+      DMA_NONCOHERENT kernel refuses to boot unless the device tree names a
+      SiFive cache controller (`Flush64`, the VisionFive 2's way). require:
+      refuse to boot without it. Costs nothing when the devices are coherent.
+
+    config RV_ZICBOM_NEVER
+        bool "n: never use it"
+    config RV_ZICBOM_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZICBOM_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Sstc (S-mode stimecmp timer)"
+    default RV_SSTC_PROBE
+    help
+      The timer is programmed by writing `stimecmp` (one CSR write) instead of
+      an SBI `set_timer` call into firmware (an M-mode round trip, hundreds of
+      cycles) on every tick and deadline (crates/core/arch-riscv64/src/irq/clint.rs).
+      probe: used when cpu@0 declares Sstc and S-mode can read the CSR; SBI
+      otherwise. n: always SBI. require: refuse to boot without it.
+
+    config RV_SSTC_NEVER
+        bool "n: never use it"
+    config RV_SSTC_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SSTC_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Svpbmt (page-based memory types)"
+    default RV_SVPBMT_PROBE
+    help
+      PTE bits that mark a page non-cacheable or I/O without PMAs. No kernel
+      path uses it yet: n and probe differ only in the [ISA] boot line; require
+      refuses a hart whose device tree does not declare it.
+
+    config RV_SVPBMT_NEVER
+        bool "n: never use it"
+    config RV_SVPBMT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SVPBMT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Svnapot (64 KiB NAPOT leaves)"
+    default RV_SVNAPOT_PROBE
+    help
+      A 4 KiB leaf with the N bit (PTE bit 63) and PPN[3:0] = 0b1000 is one
+      64 KiB translation: sixteen identical words, one TLB entry. The user
+      mapper of a memory object (`vmm::map_contig_range`, from `shm_map_user`)
+      writes one for every 64 KiB-aligned run of 16 consecutive frames whose
+      virtual address is aligned alike, and breaks it back into sixteen
+      4 KiB leaves before any per-page change (unmap, mprotect). Svnapot has
+      no enable bit in `menvcfg`; cpu@0's `riscv,isa` token is the whole probe.
+      n: only 4 KiB leaves. require: refuses a hart whose device tree does
+      not declare it.
+
+    config RV_SVNAPOT_NEVER
+        bool "n: never use it"
+    config RV_SVNAPOT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SVNAPOT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Svadu (hardware update of the Accessed and Dirty bits)"
+    default RV_SVADU_PROBE
+    help
+      With Svadu a hart sets a leaf's A bit itself; without it (Svade) a
+      leaf with A clear faults on its next access. Page aging
+      (`Mmu::harvest_accessed`) clears A to learn which pages were touched:
+      with Svadu that costs nothing, without it every aged page that is
+      touched again costs one page fault that sets A in software
+      (`Mmu::resolve_accessed_fault`). Correctness does not depend on it.
+      The firmware turns it on (menvcfg.ADUE is M-mode only, S-mode cannot
+      read it back), so cpu@0's `riscv,isa` token is the whole probe, as for
+      Svpbmt. n: always treat A as software. require: refuses a hart whose
+      device tree does not declare it.
+
+    config RV_SVADU_NEVER
+        bool "n: never use it"
+    config RV_SVADU_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SVADU_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Svinval (fine-grained TLB invalidation)"
+    default RV_SVINVAL_PROBE
+    help
+      sinval.vma bracketed by sfence.w.inval and sfence.inval.ir: a run of
+      pages is invalidated without each sfence.vma ordering against every
+      memory access, one ordering fence at each end. The local part of a
+      multi-page TLB shootdown uses it. The remote part stays SBI RFENCE:
+      RISC-V has no hardware TLB broadcast, so the remote harts are reached
+      by the firmware's IPIs (one call for the whole hart mask), and
+      whether they run sinval is the firmware's choice. The probe executes
+      sfence.w.inval once under a private trap vector (the device tree's
+      claim is not trusted). n: sfence.vma per page. require: a hart whose
+      probe traps is refused.
+
+    config RV_SVINVAL_NEVER
+        bool "n: never use it"
+    config RV_SVINVAL_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SVINVAL_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zba (address-generation bit-manipulation)"
+    default RV_ZBA_REQUIRE if BOARD_K1
+    default RV_ZBA_PROBE
+    help
+      sh1add/sh2add/sh3add and the .uw forms: shorter array indexing. No
+      runtime-selected path uses it, so probe only reports it. require: the
+      whole kernel and its user images are compiled with +zba (smaller, faster
+      address arithmetic everywhere) and a hart without it is refused. The K1
+      (RVA22) has it; the VF2's U74 build keeps it off.
+
+    config RV_ZBA_NEVER
+        bool "n: never use it"
+    config RV_ZBA_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZBA_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zbb (basic bit-manipulation)"
+    default RV_ZBB_REQUIRE if BOARD_K1
+    default RV_ZBB_PROBE
+    help
+      Rotates, clz/ctz/cpop, rev8, andn/orn. probe: the kernel's SHA-256 (module
+      and image digests) takes its rotate path when cpu@0 declares Zbb, and the
+      vDSO hwcap advertises it to ring 3. n: the generic SHA-256 and no hwcap
+      bit. require: compiled in everywhere with +zbb (bitmaps, hashing, byte
+      swaps) and a hart without it is refused.
+
+    config RV_ZBB_NEVER
+        bool "n: never use it"
+    config RV_ZBB_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZBB_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zbs (single-bit instructions)"
+    default RV_ZBS_REQUIRE if BOARD_K1
+    default RV_ZBS_PROBE
+    help
+      bset/bclr/binv/bext: one instruction per bit operation (ready bitmaps,
+      PTE flags). No runtime-selected path, so probe only reports it.
+      require: compiled in everywhere with +zbs; a hart without it is refused.
+
+    config RV_ZBS_NEVER
+        bool "n: never use it"
+    config RV_ZBS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZBS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "V 1.0 (vector)"
+    default RV_V_REQUIRE if RISCV64_LEVEL_RV64GCV
+    default RV_V_NEVER
+    help
+      The vector unit for the camera feature extraction
+      (crates/drivers/camera) and the vector state saved on every context
+      switch (`rvv` cargo feature, HAS_RVV). Cost when compiled in: the
+      vector-state save/restore calls on every switch and up to 32 x VLEN/8
+      bytes of state per task. probe: compiled in; the vector state and the
+      vector kernels are used only when cpu@0 declares V, the scalar ones
+      otherwise. n (the default without V hardware): compiled out, scalar
+      kernels -- unless a cargo feature composes `rvv` anyway (`make
+      build-rvv`/`qemu-rvv`'s hand-passed `--features rvv`, the `k1`
+      feature's edge): such a build is treated as probe, and the [ISA] line
+      says so. require: a hart without V is refused.
+
+    config RV_V_NEVER
+        bool "n: never use it"
+    config RV_V_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_V_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AIA (APLIC + IMSIC interrupt controller)"
+    default RV_AIA_PROBE
+    help
+      Message-signalled interrupts through the IMSIC and the APLIC instead of
+      the PLIC (crates/drivers/irqchip). probe: used when the device tree has
+      an S-domain APLIC; the PLIC otherwise. n: the PLIC always, even on a
+      machine with AIA (a machine with AIA and no PLIC then has no external
+      interrupts). require: refuse to boot without an S-domain APLIC.
+
+    config RV_AIA_NEVER
+        bool "n: never use it"
+    config RV_AIA_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_AIA_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zihintpause (pause: the spin-loop hint)"
+    default RV_ZIHINTPAUSE_NEVER if BOARD_VF2
+    default RV_ZIHINTPAUSE_REQUIRE if BOARD_K1
+    default RV_ZIHINTPAUSE_PROBE
+    help
+      `SpinWait::cpu_relax` (crates/core/arch-api spin.rs), once per poll of
+      every spin-wait: `pause` lets a hart that only waits give up issue
+      slots and power. A HINT encoding (`fence w,0`), so a hart without it
+      runs it as a fence with no successor. n: no instruction at all (the
+      VF2's U74 does not list Zihintpause). probe: a 4-byte site, a nop
+      until the boot rewrites it to `pause` when cpu@0's device tree
+      declares zihintpause (boot-once patch, no runtime test). require:
+      `pause` inlined; a hart whose device tree does not declare it is
+      refused (the K1's X60 lists it).
+
+    config RV_ZIHINTPAUSE_NEVER
+        bool "n: never use it"
+    config RV_ZIHINTPAUSE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZIHINTPAUSE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zawrs (wait-on-reservation-set: wrs.nto)"
+    default RV_ZAWRS_NEVER if BOARD_VF2 || BOARD_K1
+    default RV_ZAWRS_PROBE
+    help
+      The spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      spin.rs, every kernel spinner): after SPIN_WAIT_RELAX_SPINS polls the
+      waiter takes a reservation on the lock word (`lr.w`/`lr.d`) and
+      stalls in `wrs.nto` until another hart's store breaks it or an
+      interrupt is pending (even a masked one), instead of re-reading the
+      word in a `cpu_relax` loop. Fallback: that loop (`pause` as
+      RV_ZIHINTPAUSE says).
+      probe: used when cpu@0's device tree declares zawrs and an execution
+      probe confirms it; a 4-byte site, a nop until the boot rewrites it to
+      `wrs.nto` (boot-once patch, no runtime test). n: the pause loop (the VF2/K1 default: the U74 and the X60 do not list Zawrs in
+      their upstream Linux device trees, jh7110.dtsi and k1.dtsi). require:
+      the instruction is inlined, no branch; a hart without it is refused.
+
+    config RV_ZAWRS_NEVER
+        bool "n: never use it"
+    config RV_ZAWRS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZAWRS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zacas (atomic compare-and-swap: amocas.w/.d)"
+    default RV_ZACAS_NEVER if BOARD_VF2 || BOARD_K1
+    default RV_ZACAS_PROBE
+    help
+      The CAS of `SpinWait::cas32/cas64` (crates/core/arch-api spin.rs:
+      the CAS of every spinner that needs one; the SpinLock's test-and-set
+      is `amoswap`, base A, on every hart) as one `amocas`
+      instead of an `lr`/`sc` loop (five instructions and a retry branch).
+      No global codegen flag: the kernel's other atomics keep LR/SC.
+      probe: used when cpu@0's device tree declares zacas and an execution
+      probe confirms it. Each CAS site is linked as a branch to an
+      out-of-line LR/SC loop (correct on every hart) and rewritten once at
+      boot, before the secondaries start, to the `amocas` itself: after
+      boot a probe CAS costs what a `require` one does (Linux's
+      ALTERNATIVE; the text write keeps W^X). n: LR/SC (the VF2/K1
+      default: the U74 and the X60 do not list Zacas in their upstream
+      Linux device trees, jh7110.dtsi and k1.dtsi). require: `amocas` inlined,
+      no branch; a hart without it is refused.
+
+    config RV_ZACAS_NEVER
+        bool "n: never use it"
+    config RV_ZACAS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZACAS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Zkr (seed CSR: the entropy source)"
+    default RV_ZKR_PROBE
+    help
+      The `seed` CSR (0x015) as a seed source for the boot entropy pool
+      (ENTROPY_CPU_SOURCE says whether it is credited): 16 bits per read,
+      only when its status is ES16; BIST/WAIT are retried within
+      ENTROPY_CPU_RETRIES, DEAD gives the source up. S-mode reaches the CSR
+      only when M-mode firmware set mseccfg.SSEED, so a device tree that
+      lists zkr is not enough. Fallback: the pool's other sources.
+      probe: used when cpu@0's device tree declares zkr and a trap-safe
+      read under a private stvec confirms S-mode may access it. n: never
+      read. require: a hart whose device tree lacks zkr, or whose firmware
+      leaves SSEED clear, is refused. Changes no codegen.
+
+    config RV_ZKR_NEVER
+        bool "n: never use it"
+    config RV_ZKR_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_ZKR_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "H (hypervisor extension)"
+    default RV_H_PROBE if !VIRT_NONE
+    default RV_H_NEVER
+    help
+      The G-stage page tables, the VS-mode entry and the `hvip` injection a
+      hosted-guest monitor is built from (crates/core/arch-riscv64/src/ext/hv).
+      Nothing in a kernel that hosts no guest touches an H CSR, so the default
+      follows the VIRT axis: n for VIRT_NONE, probe otherwise.
+      probe: used when cpu@0's device tree declares `h` in riscv,isa AND a
+      trap-safe read-and-write-back of `hstatus` under a private stvec
+      confirms S-mode (HS) reaches the hypervisor CSRs; misa is M-mode only
+      and is never read. n: the CSRs are never touched, even on a hart that
+      has H. require: a hart without H is refused (a monitor that cannot run
+      without it). Changes no codegen.
+
+    config RV_H_NEVER
+        bool "n: never use it"
+    config RV_H_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_H_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Ssqosid (srmcfg: resource-partition tag per context)"
+    default RV_SSQOSID_PROBE
+    help
+      The `srmcfg` CSR (0x181) tags every memory request the hart issues with
+      a resource control id (RCID, bits 11:0: which cache-capacity and
+      memory-bandwidth share the request is charged to, enforced by a CBQRI
+      controller) and a monitoring id (MCID, bits 27:16: which counter group
+      counts it). The scheduler writes it on a context switch from the
+      incoming task's Domain `partition_id`, the `partition_id` of its
+      topology task row (crates/core/sched/src/qos.rs, called from
+      `asid::prepare_switch`), and only when the value differs from what the
+      hart already holds: a kernel with no partitioned row writes it once per
+      hart. RCID and MCID both carry the partition id. The same seam
+      (`Cpu::set_qos_tag`) is aarch64 MPAM PARTID and x86_64 RDT CLOS later.
+      probe: used when cpu@0's device tree declares `ssqosid` AND a trap-safe
+      read-and-write-back of `srmcfg` under a private stvec confirms S-mode
+      reaches it (Smstateen or the firmware may withhold it); the implemented
+      RCID and MCID widths are read back then, and a partition id wider than
+      either is refused (the task runs in partition 0, said once on the
+      console) instead of aliasing another partition. n: the CSR is never
+      touched, whatever the hart has. require: a hart without it is refused.
+      Costs nothing when absent: one load and a branch per switch.
+
+    config RV_SSQOSID_NEVER
+        bool "n: never use it"
+    config RV_SSQOSID_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SSQOSID_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Performance counters (SBI PMU, Zicntr cycle and instret)"
+    default RV_PMU_PROBE
+    help
+      The source of `Pmu` on riscv64 (`wcet::read_cycles`, lock hold times,
+      the vsbench cycle lanes): the `cycle` and `instret` CSRs (Zicntr,
+      read in S-mode while `mcounteren` allows, which OpenSBI sets), and
+      one programmable `hpmcounterN` for `Pmu::event`, allocated through the
+      SBI PMU extension (EID "PMU": the probe is the Base extension's
+      `probe_extension`, then `num_counters` and `counter_get_info` find a
+      hardware counter outside cycle/time/instret). QEMU virt has cycle and
+      instret only: the boot line says `events=0`.
+      probe: the counters the boot finds; a firmware without the PMU
+      extension keeps cycle and instret. n: no counter is read; `Pmu` answers
+      0 (WCET figures in raw timer ticks). require: a firmware without a
+      programmable hardware counter is refused.
+
+    config RV_PMU_NEVER
+        bool "n: never use it"
+    config RV_PMU_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_PMU_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+config HAS_RVV
+    # cargo-feature: rvv
+    bool
+    default y if RV_V_PROBE || RV_V_REQUIRE
+    help
+      Derived from RV_V (n: off; probe or require: on). Compiles the
+      vector code in (`rvv` cargo feature, FP_RVV).
+
+config LOCKED_HUGE_LEAVES
+    bool "Explicit 2 MiB leaves for big fixed regions of locked rows"
+    default n
+    help
+      A ring-3 topology row with `mem = "locked"` may declare
+      `mem_huge_mib = N` (N even, 2..512): N MiB of RAM reserved at boot,
+      2 MiB-aligned and physically contiguous, and mapped into the task at
+      exec with level-1 (2 MiB) Sv39 leaves instead of 512 page leaves each.
+      One TLB entry then covers 2 MiB of a model, tensor arena or pipeline
+      buffer (the U74's L1 DTLB has 40 entries; its L2 TLB holds 4 KiB
+      entries only).
+
+      The region is fixed for the task's life: never forked (a locked row
+      cannot fork), never demand-paged, never COW, never returned to the
+      allocator; munmap of any part of it is refused, and it is data only
+      (read-write, not executable). It sits at the bottom of the task's
+      shm/MMIO window (crates/core/sched/src/process.rs,
+      LOCKED_ARENA_VA) and is zeroed at every exec. Memory admission
+      counts it as locked pages (N x 256 topology pages). Only exec
+      (autorun, the Linux `execve`) installs it; spawning such a row is refused.
+
+      With this off, a topology that declares `mem_huge_mib` is refused at
+      boot rather than run without the region. QEMU shows the mapping
+      (page-table walk); it cannot show the TLB effect, which needs the
+      board's DTLB counters.
+
+config RV_KERNEL_GLOBAL
+    bool "Global (G) bit on the kernel half's leaves"
+    default y if !HWCLASS_EMBEDDED
+    default y if HWCLASS_EMBEDDED && TLB_RETAIN
+    default n
+    help
+      Sets the Sv39 G bit on every kernel leaf in a kernel-only VPN[2]
+      slot: the slots at or above the one holding RAM_BASE, which no
+      user address space reaches (USER_STACK_TOP <= RAM_BASE, asserted in
+      crates/core/sched/src/process.rs). Each such slot is one L1 table
+      owned by the kernel root and linked, never copied, into every user
+      root (crates/core/mm/src/vmm.rs copy_kernel_entries_to_user), so
+      every root maps it identically: what makes a G entry sound. A G
+      entry matches under any ASID, so with TLB_RETAIN one TLB entry
+      serves every address space instead of one per ASID.
+
+      Never G: the merge slots below RAM_BASE (VPN[2]=0 everywhere, plus
+      VPN[2]=1 on QEMU virt), where the kernel's MMIO entries sit in the
+      user root's own L1; and every slot on a board with RAM_BASE 0 (K1).
+
+      Cost: no RAM; one OR when a kernel leaf is encoded, none on a user
+      path. Kernel mapping changes already fence with rs2=zero (all
+      ASIDs, G included). Turn it off to rule G out when chasing a stale
+      kernel translation. Without TLB_RETAIN every switch flushes the TLB,
+      G entries included, and the bit buys nothing.
+
+endif # ARCH_RISCV64
+
+# ---------------------------------------------------------------------------
+# PMP / memory protection
+# ---------------------------------------------------------------------------
+
+config PMP_REGIONS_RESERVED
+    int "PMP regions reserved for M-mode kernel use"
+    range 0 12
+    default 4
+    help
+      Number of RISC-V PMP entries the kernel allocates for its own
+      regions (ROM, MMIO, kernel text/data).  The remaining
+      (16 - PMP_REGIONS_RESERVED) entries are available for user-process
+      isolation.  Must leave headroom; current hardware cap is 16.
+      Current codebase: 6 total in use, but 4 is the design budget
+      (crates/core/arch-riscv64/src/ext/pmp.rs N_PMP_REGIONS = 6 current impl).

@@ -1,0 +1,434 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/arch/Kconfig.isa-aarch64 — aarch64: baseline level and extensions (n / probe / require)
+
+if ARCH_AARCH64
+
+choice
+    prompt "aarch64 baseline architecture level"
+    default AARCH64_LEVEL_8_2 if BOARD_RPI5
+    default AARCH64_LEVEL_8_0
+    help
+      The Armv8.x level the kernel and its user images assume. Codegen
+      gets that level's mandatory features (tools/kconfig_to_cargo.py:
+      the kernel, soft-float, only those that need no FP/SIMD registers,
+      e.g. +lse,+rcpc; the user images the whole list). The boot reads
+      the ID registers before anything else and refuses a CPU below the
+      level, naming the missing feature. A higher level makes atomics
+      single instructions (8.1 LSE: a contended lock costs one LDADD
+      instead of an LL/SC loop) and drops older cores.
+
+    config AARCH64_LEVEL_8_0
+        bool "Armv8.0 (Cortex-A53/A72, QEMU virt; the default)"
+    config AARCH64_LEVEL_8_1
+        bool "Armv8.1 (+ LSE atomics, CRC32, RDM, PAN, VHE)"
+    config AARCH64_LEVEL_8_2
+        bool "Armv8.2 (+ PAN2, DC CVAP, UAO: Cortex-A55/A76, Raspberry Pi 5)"
+    config AARCH64_LEVEL_8_3
+        bool "Armv8.3 (+ PAuth, RCpc, JSCVT, FCMA)"
+    config AARCH64_LEVEL_8_4
+        bool "Armv8.4 (+ DIT, FlagM, RCpc2, DotProd)"
+    config AARCH64_LEVEL_8_5
+        bool "Armv8.5 (+ BTI, SB, FlagM2, FRINTTS)"
+endchoice
+
+choice
+    prompt "LSE atomics (FEAT_LSE)"
+    default A64_LSE_REQUIRE if !AARCH64_LEVEL_8_0
+    default A64_LSE_PROBE
+    help
+      LDADD/CAS/SWP: a single-instruction atomic instead of an LL/SC loop.
+      The compiler can only emit them globally (no outlined atomics in this
+      kernel), so require compiles the kernel and user images with +lse;
+      Armv8.1 and above include it (a level >= 8.1 with LSE not `require`
+      is a build error). probe: the vDSO hwcap advertises it, and each use
+      of `SpinWait::cas32/64` and `swap32/64` (crates/core/arch-api
+      spin.rs: every SpinLock acquire and every later spinner) is linked as
+      a branch to an out-of-line LDAXR/STXR loop and rewritten once at
+      boot, before the secondaries start, to the CAS*/SWP* when
+      ID_AA64ISAR0_EL1.Atomic says so: after boot it costs what `require`
+      does. n: LL/SC.
+
+    config A64_LSE_NEVER
+        bool "n: never use it"
+    config A64_LSE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_LSE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Privileged Access Never (FEAT_PAN)"
+    default A64_PAN_REQUIRE if !AARCH64_LEVEL_8_0
+    default A64_PAN_PROBE
+    help
+      PSTATE.PAN makes EL1 fault on any load or store to an EL0-accessible
+      page outside an explicit user-access window, the aarch64 counterpart
+      of riscv64's sstatus.SUM starting clear. `MSR PAN, #imm` is UNDEFINED
+      on an Armv8.0 core (Cortex-A53/A72), so the instruction must never
+      run where the ID register says the feature is absent.
+
+      require: every user-access window is an unconditional `MSR PAN`
+      (2 instructions, no branch); the boot refuses a CPU without it.
+      Armv8.1 includes it (a level >= 8.1 with PAN not `require` is a
+      build error). probe: boot.S sets PAN only when ID_AA64MMFR1_EL1.PAN
+      is non-zero; each window's two sites are linked as a branch to a
+      byte load and test of the boot's answer, and the boot rewrites every
+      site once, before the secondaries start, to the `MSR PAN` itself or
+      to a `nop` (kernel/src/entry/aarch64/pan_patch.rs, through the
+      static-key text patcher; the `[PAN] boot patch` line counts them).
+      After boot a window costs what `require` (FEAT_PAN) or `n` (none)
+      costs; 24 bytes of .rodata per site. On a core without it the kernel
+      runs with no PAN protection and the [ISA] line says
+      `pan=probed-absent`. n: PAN is never set and SCTLR_EL1.SPAN stays 1:
+      no cost, no protection.
+
+    config A64_PAN_NEVER
+        bool "n: never use it"
+    config A64_PAN_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_PAN_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "CRC32 instructions (FEAT_CRC32)"
+    default A64_CRC32_REQUIRE if !AARCH64_LEVEL_8_0
+    default A64_CRC32_PROBE
+    help
+      CRC32B/H/W/X and CRC32C*. probe: advertised in the vDSO hwcap (ring-3
+      and lxbase.ko CRC paths key on it). n: hidden. require: compiled in with
+      +crc. Mandatory from Armv8.1.
+
+    config A64_CRC32_NEVER
+        bool "n: never use it"
+    config A64_CRC32_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_CRC32_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Pointer authentication (FEAT_PAuth)"
+    default A64_PAUTH_REQUIRE if AARCH64_LEVEL_8_3 || AARCH64_LEVEL_8_4 || AARCH64_LEVEL_8_5
+    default A64_PAUTH_NEVER if BOARD_RPI5
+    default A64_PAUTH_PROBE
+    help
+      Signed return addresses. Any policy but n builds the kernel and the
+      user images with `-Z branch-protection=pac-ret` (`paciasp`/`autiasp`
+      are no-ops on a core without it); boot.S turns SCTLR_EL1.EnIA on per
+      CPU, with one key made at boot (crates/core/arch-aarch64/src/cpu/cfi.rs),
+      before the first signed frame. Exported to ring 3 as HWCAP_A64_PAUTH in
+      the vDSO hwcap word (azos_libsys::vdso_hwcap), set while EnIA is on.
+      With A64_PAUTH_PROC_KEYS (the default) every process has keys of its
+      own and the kernel's key is back in the register whenever the hart is
+      in EL1, so ring 3 cannot sign a value under the kernel's key or under
+      another process's. With it off, key A is shared by the kernel and
+      every process and ring 3 can run `pacia` with any modifier: pac-ret is
+      then corruption detection inside one image, not a privilege boundary.
+      Without FEAT_RNG the boot key comes from the generic counter alone and
+      is guessable to an attacker who knows the boot time. What it buys: a
+      corrupted return address inside one image (kernel or process) fails
+      `autiasp` instead of being used, and the hwcap bit tells ring 3 that
+      its own pac-ret code is live.
+      require refuses a CPU without it. Armv8.3 includes it. The
+      Raspberry Pi 5's Cortex-A76 does not have it (default n there).
+
+    config A64_PAUTH_NEVER
+        bool "n: never use it"
+    config A64_PAUTH_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_PAUTH_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+config A64_PAUTH_PROC_KEYS
+    bool "Per-process pointer-authentication keys (APIA, APIB, APDA, APDB, APGA)"
+    depends on ARCH_AARCH64 && !A64_PAUTH_NEVER
+    default y
+    help
+      Every process gets five keys drawn from the kernel DRBG when its image
+      is loaded (`spawn`, `exec`); a `fork` child and a thread copy their
+      creator's (the copied stack holds frames signed with them). The
+      kernel's own key (APIA) is installed in the register whenever the hart
+      runs in EL1: the trap entry from EL0 writes it before the first signed
+      frame, and the return to EL0 writes the process's. The other four keys
+      are not used by the kernel and are written when a process is switched
+      in (crates/core/arch-aarch64/src/cpu/cfi.rs, "Per-process keys").
+      EnIB, EnDA and EnDB are set together with EnIA, so ring-3 code built
+      with the B key or data-pointer signing has a live key; `pacga` needs
+      no enable bit. Off: one key for the kernel and every process (EnIA
+      only), nothing swapped at the EL0 boundary.
+      Cost per syscall round trip (static, not measured): entry is a flag
+      test, a 2-word load, 2 `msr` and an `isb`; exit is a flag test, a
+      2-word load and 2 `msr`; about 20 instructions against the 146 of the
+      syscall floor. A switch to a user task adds 8 `msr`. RAM: 88 B per task
+      slot (MAX_TASKS). Without FEAT_PAuth, or with A64_PAUTH n, nothing
+      runs (the registers do not exist) and the option is hidden.
+
+choice
+    prompt "Branch target identification (FEAT_BTI)"
+    default A64_BTI_REQUIRE if AARCH64_LEVEL_8_5
+    default A64_BTI_NEVER if BOARD_RPI5
+    default A64_BTI_PROBE
+    help
+      Indirect branches land only on BTI pads. Any policy but n builds the
+      kernel and the user images with `-Z branch-protection=bti` and the
+      hand-written entry points carry their pads; nothing is enforced yet,
+      that takes the GP bit on the page-table leaves of the text (see
+      config/kernel/Kconfig.hardening, "Hardware control-flow integrity"). Exported
+      to ring 3 as HWCAP_A64_BTI in the vDSO hwcap word (azos_libsys::vdso_hwcap), set
+      only once ring 3's text is mapped as guarded pages (GP; it is not
+      yet, so the bit reads 0). require refuses a CPU without it. Armv8.5
+      includes it; the Cortex-A76 does not.
+
+    config A64_BTI_NEVER
+        bool "n: never use it"
+    config A64_BTI_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_BTI_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Memory tagging (FEAT_MTE)"
+    default A64_MTE_NEVER if BOARD_RPI5
+    default A64_MTE_PROBE
+    help
+      4-bit tags per 16-byte granule, checked on every access. Optional at
+      every level. No tagging allocator yet. Exported to ring 3 as
+      HWCAP_A64_MTE (and HWCAP_A64_MTE_SYNC with tag checking) in
+      the vDSO hwcap word (azos_libsys::vdso_hwcap), set only once the kernel grants EL0 tag access
+      (SCTLR_EL1.ATA0 and a Normal-Tagged MAIR attribute; it does not yet,
+      so the bits read 0). require refuses a CPU without it. QEMU needs `-M virt,mte=on`.
+
+    config A64_MTE_NEVER
+        bool "n: never use it"
+    config A64_MTE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_MTE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Scalable vectors (FEAT_SVE)"
+    default A64_SVE_NEVER if BOARD_RPI5
+    default A64_SVE_PROBE
+    help
+      Variable-length vectors. No kernel SVE path and no SVE state save
+      (FP_SVE is not wired), so ring 3 must not use it: exported as
+      HWCAP_A64_SVE in the vDSO hwcap word (azos_libsys::vdso_hwcap), set only once EL0 runs with
+      CPACR_EL1.ZEN untrapped (it does not yet, so the bit reads 0).
+      require refuses a CPU without it.
+
+    config A64_SVE_NEVER
+        bool "n: never use it"
+    config A64_SVE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_SVE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "AES instructions (FEAT_AES)"
+    default A64_AES_PROBE
+    help
+      AESE/AESD/AESMC. probe: advertised in the vDSO hwcap; n hides it. They
+      need the SIMD registers, so the soft-float kernel never compiles them
+      globally; require adds +aes to the user images only and refuses a CPU
+      without it.
+
+    config A64_AES_NEVER
+        bool "n: never use it"
+    config A64_AES_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_AES_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "64-bit polynomial multiply (FEAT_PMULL)"
+    default A64_PMULL_PROBE
+    help
+      PMULL/PMULL2 on 64-bit lanes (GHASH, CRC folding). probe: vDSO hwcap;
+      n hides it; require refuses a CPU without it.
+
+    config A64_PMULL_NEVER
+        bool "n: never use it"
+    config A64_PMULL_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_PMULL_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "SHA-256 instructions (FEAT_SHA256)"
+    default A64_SHA2_PROBE
+    help
+      SHA256H/H2/SU0/SU1. probe: the kernel's SHA-256 (module verify, image
+      digests) runs on them after its self-test, about 10x the generic
+      blocks, and the vDSO hwcap advertises them. n: the generic SHA-256 and
+      no hwcap bit. require: also +sha2 for the user images; a CPU without it
+      is refused.
+
+    config A64_SHA2_NEVER
+        bool "n: never use it"
+    config A64_SHA2_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_SHA2_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Random number instructions (FEAT_RNG)"
+    default A64_RNG_PROBE
+    help
+      RNDRRS (reseeded: each read comes from a freshly reseeded DRBG) as a
+      seed source for the boot entropy pool (ENTROPY_CPU_SOURCE says
+      whether it is credited); ID_AA64ISAR0_EL1.RNDR [63:60]. A read with
+      NZCV.Z=1 returned no data and is retried within ENTROPY_CPU_RETRIES.
+      Fallback: the pool's other sources. Armv8.5 optional; the Cortex-A76
+      of the Raspberry Pi 5 does not have it. Changes no codegen.
+      n: never read. probe: the ID register picks. require: a CPU without
+      it is refused.
+
+    config A64_RNG_NEVER
+        bool "n: never use it"
+    config A64_RNG_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_RNG_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "EL0 kernel-half access disable (FEAT_E0PD)"
+    default A64_E0PD_PROBE
+    help
+      TCR_EL1.E0PD1: an EL0 access to the TTBR1 (kernel) half faults at once,
+      without a table walk, so its timing no longer tells user code which
+      kernel addresses are mapped. A Meltdown-class and KASLR-probe
+      mitigation that costs no KPTI table switch and no codegen;
+      ID_AA64MMFR2_EL1.E0PD [63:60]. Armv8.5 optional; the Cortex-A53, A72
+      and A76 (Raspberry Pi 5) do not have it. The bit is set on every PE
+      (the boot CPU before the secondaries start, which copy its TCR) and
+      the [MM] line prints the readback.
+      n: never set. probe: the ID register picks. require: a CPU without it
+      is refused.
+
+    config A64_E0PD_NEVER
+        bool "n: never use it"
+    config A64_E0PD_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_E0PD_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Wait-for-event with timeout (FEAT_WFxT)"
+    default A64_WFXT_PROBE
+    help
+      WFET/WFIT: WFE/WFI that also end at a counter deadline. The
+      spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      spin.rs) sleeps in WFET until a store to the lock word, an event,
+      or A64_WFET_TICKS generic-counter ticks, after which the word is
+      re-read: a wait step is bounded even when nobody stores to the
+      word (the aarch64 counterpart of x86_64's UMWAIT deadline). The
+      idle path is not changed: its timer is already armed to the same
+      deadline. ID_AA64ISAR2_EL1.WFxT [3:0]; Armv8.7 optional. Fallback:
+      the unbounded WFE. probe: one load of a boot-set flag and a branch
+      per wait step. n: WFE. require: inlined; a CPU without it is
+      refused (WFET is UNDEFINED there).
+
+    config A64_WFXT_NEVER
+        bool "n: never use it"
+    config A64_WFXT_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_WFXT_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "TLB range invalidation (FEAT_TLBIRANGE)"
+    default A64_TLBIRANGE_PROBE
+    help
+      TLBI RVAE1IS / RVAAE1IS: one broadcast invalidation for a run of
+      pages (a base, a scale and a count) instead of one TLBI per page.
+      The shootdown (`ArchPlatform::tlb_shootdown`) uses it for ranges of
+      A64_TLBIRANGE_MIN_PAGES pages or more; shorter ranges stay per-page.
+      ID_AA64ISAR0_EL1.TLB [59:56] = 2; Armv8.4 optional. probe: one load
+      of a boot-set flag per shootdown. n: per-page TLBI. require:
+      inlined; a CPU without it is refused.
+
+    config A64_TLBIRANGE_NEVER
+        bool "n: never use it"
+    config A64_TLBIRANGE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_TLBIRANGE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Hardware Access flag update (FEAT_HAFDBS)"
+    default A64_HAFDBS_PROBE
+    help
+      TCR_EL1.HA: the PE sets a descriptor's AF itself instead of taking an
+      Access Flag fault on the first access through one that has it clear.
+      Page aging (`Mmu::harvest_accessed`) clears AF to learn which pages
+      were touched: with HA that costs nothing, without it every aged page
+      touched again costs one fault that sets AF in software
+      (`Mmu::resolve_accessed_fault`). Correctness does not depend on it.
+      ID_AA64MMFR1_EL1.HAFDBS [3:0] >= 1 (Armv8.1; Cortex-A53 and A72 lack
+      it, A76 has it). Hardware dirty state (TCR_EL1.HD) is not enabled: it
+      acts on descriptors with DBM set, which none is. n: AF is software.
+      require: a CPU without it is refused.
+
+    config A64_HAFDBS_NEVER
+        bool "n: never use it"
+    config A64_HAFDBS_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_HAFDBS_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Performance Monitors (PMUv3: cycle counter, instructions, one event)"
+    default A64_PMU_PROBE
+    help
+      The source of `Pmu` on aarch64: `PMCCNTR_EL0`, the core's own cycle
+      counter (`wcet::read_cycles`, WCET and jitter figures, vsbench, the
+      `ifconfig` receive cost, lock hold times and the tracer's cycle
+      timestamps KTRACE_TS_CYCLES); event counter 0 counting INST_RETIRED
+      (`Pmu::instructions`) and event counter 1 for `Pmu::event`, each as
+      many as PMCR_EL0.N says (a core with N = 0 has the cycle counter
+      alone). The event counters are 32 bits wide, 64 with PMCR_EL0.LP
+      (PMUVer 6, Armv8.5). Each CPU enables its own at bring-up.
+      ID_AA64DFR0_EL1.PMUVer [11:8]: 1..=14 is PMUv3 (15 is an
+      IMPLEMENTATION DEFINED PMU and does not count). Fallback:
+      `Pmu` reads 0 (WCET figures in raw timer ticks). n: the
+      same. require: a CPU without it is refused.
+
+    config A64_PMU_NEVER
+        bool "n: never use it"
+    config A64_PMU_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config A64_PMU_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+config A64_CONTIG_HINT
+    bool "Contiguous hint: 64 KiB runs of 16 pages (4 KiB granule)"
+    default y
+    help
+      Descriptor bit 52 on sixteen adjacent, identically attributed level-3
+      pages (128 at a 16 KiB granule, 32 at 64 KiB: 2 MiB there) lets the
+      TLB cache them as one entry. The user mapper of a memory object
+      (`vmm::map_contig_range`, from `shm_map_user`) writes the hint on
+      every run whose virtual and physical addresses are aligned to the
+      run's size, and breaks the run before any per-page change (unmap,
+      mprotect): through break-before-make where an aarch64 CPU needs it
+      (`Mmu::block_change_needs_bbm`, the rule the superpage promotion
+      follows), in place where every CPU has FEAT_BBM level 2. The hint is
+      architectural (no ID register field); the TLB may ignore it. n: only
+      granule-sized pages.
+
+endif # ARCH_AARCH64

@@ -1,0 +1,364 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/axes/Kconfig.personality — Linux compatibility
+#
+# The menu of the Linux driver layer: unmodified Linux modules run in
+# ring-3 servers (lxsrv-<class>), built from a pinned Linux tree
+# (third_party/linux/) against a compatibility layer (lx/). None of that code
+# exists beyond stage L0/L0b: the pinned submodule, the lx/ base skeleton,
+# the module loader (DOMAIN_MODULE_VERIFY / DOMAIN_MODULE_MAP_X) and the empty
+# server (LX_SERVER_SKELETON). So that no symbol here is silently inert,
+# enabling any other fails the build: crates/core/limits/build.rs
+# (`NOT_IMPLEMENTED`) refuses a .config that sets one, naming the stage that
+# would implement it, and refuses LINUX_DRIVERS without LX_SERVER_SKELETON.
+# When a stage lands, its symbols leave that list in the same change that
+# wires them. Stages (L0, L1, ...) are the steps of the Linux driver layer, in
+# dependency order.
+#
+# Every symbol is default n: the default image contains no Linux-derived
+# object. A small board (HWCLASS_EMBEDDED, HWCLASS_EMBEDDED) runs only the
+# native drivers its board topology names: nothing in this file can be on
+# there (`make check-presets` asserts it for every preset on every ISA).
+
+config LINUX_DRIVERS
+    bool "Linux driver support (ring-3 servers)"
+    default n
+    depends on !HWCLASS_EMBEDDED
+    help
+      Implemented up to stage L0b: the module loader and the
+      empty server. On its own it fails the build; it builds only with
+      LX_SERVER_SKELETON (below), and every module option still fails.
+
+      Runs validated, unmodified Linux modules in ring-3 server processes,
+      one process per driver class, through a compatibility layer (lx/)
+      over a pinned Linux tree (third_party/linux/). A server holds no
+      actuator capability, and no safety decision reads its output.
+
+      Licence: an image that contains a Linux module is distributed as
+      GPL-2.0-only as a whole (Linux is GPL-2.0-only; the project is
+      "Apache-2.0 OR GPL-2.0-only", and the combination takes the GPL
+      branch). Shipping it requires offering the corresponding source.
+
+      Needs an MMU and more memory than the Embedded profile has.
+
+if LINUX_DRIVERS
+
+config LX_SERVER_SKELETON
+    # cargo-feature: lx-server
+    bool "Server skeleton only (development)"
+    default n
+    help
+      Builds the module loader's two syscalls (DOMAIN_MODULE_VERIFY,
+      DOMAIN_MODULE_MAP_X, with the module digest table built into the
+      kernel) and starts the empty Linux driver server LXSRV.ELF from its
+      topology row (no capability). The server loads only the test
+      module LXTEST.KO, compiled from this project's own C, and idles. No
+      Linux object is built or linked: the image stays
+      "Apache-2.0 OR GPL-2.0-only". Kernel feature `lx-server`.
+
+menu "Filesystems (lxsrv-fs)"
+
+config LX_FS_EXT2
+    bool "ext2"
+    help
+      Not implemented: stage L1 (read-only, the pilot; needs
+      owner sign-off), stage L2 (read-write). Enabling it fails the build.
+      ext2 does no DMA: its server is isolated on every board.
+      Licence: GPL-2.0-only image (see LINUX_DRIVERS).
+
+config LX_FS_EXT4_RO
+    bool "ext4 read-only (no journal replay)"
+    help
+      Not implemented: stage L3 (ext4 + inert jbd2, mounted
+      `noload`; a volume that needs recovery is refused). Enabling it
+      fails the build. No DMA. Licence: GPL-2.0-only image.
+
+      STATUS: PARTIAL. The option is not deliverable yet (it fails the
+      build); only the first step exists.
+
+      What exists: `make lx-kbuild` builds the unmodified fs/ext4,
+      fs/jbd2, fs/mbcache.c and lib/crc/crc16.c of the pinned tree for
+      both ISAs (<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko, fetched by
+      tools/lx_fetch_linux.sh), and the module loader admits, lays out
+      and relocates all of them (tests/host/lx-loader-tests).
+      What is missing: the 400 or so Linux symbols they import and
+      nothing provides yet (lx/FS_EXT4_UNRESOLVED; the VFS, page cache,
+      buffer heads, bio, wait queues and per-CPU data),
+      the ring-3 filesystem server that would load them, and the
+      filesystem protocol it would speak. On aarch64 the unpatched
+      per-CPU base and `current` reads are MRS TPIDR_EL1 and SP_EL0,
+      which are UNDEFINED at EL0: the slice must answer that before
+      the ISA can run them.
+
+config LX_FS_EXT4_RW
+    bool "ext4 read-write with journal (jbd2)"
+    help
+      Not implemented: stage L4 (journalled writes, barrier
+      mapping to BlockDevice::flush). Enabling it fails the build. No DMA.
+      Licence: GPL-2.0-only image.
+
+endmenu
+
+comment "Block devices: Linux filesystems use the native BlockDevice; no Linux block driver is planned"
+
+menu "USB (lxsrv-usb)"
+
+config LX_USB_XHCI
+    bool "xHCI host controller over PCI (xhci-pci, usbcore, hub)"
+    help
+      Not implemented: stage L6 (QEMU qemu-xhci), after the
+      native prerequisites of stage L5 (ring-3 DMA capability, PCI-BAR
+      capability, ring-3 MSI, IOMMU wiring). Enabling it fails the build.
+      Does DMA: see LX_ACCEPT_UNCONFINED_DMA. Licence: GPL-2.0-only image.
+
+config LX_USB_DWC3
+    bool "Board USB controller (xhci-plat over dwc3)"
+    help
+      Not implemented: stage L8 (VF2/K1 board bring-up of the
+      dwc3 clocks, resets and PHY). Enabling it fails the build. Does
+      DMA, and VF2/K1 have no IOMMU: needs LX_ACCEPT_UNCONFINED_DMA.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_HID
+    bool "HID keyboard / mouse (usbhid)"
+    help
+      Not implemented: stage L6. Enabling it fails the build.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_STORAGE
+    bool "Mass storage (usb-storage)"
+    help
+      Not implemented: stage L7 (host-template side only; the
+      SCSI mid layer is not compiled). Enabling it fails the build.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_CDC
+    bool "CDC serial (cdc-acm)"
+    help
+      Not implemented: stage L7. Enabling it fails the build.
+      Licence: GPL-2.0-only image.
+
+config LX_USB_UVC
+    bool "UVC camera (uvcvideo)"
+    help
+      Not implemented: stage L9+ (needs its own design work;
+      V4L2 and videobuf2 are the heaviest class). Enabling it fails the
+      build. Licence: GPL-2.0-only image.
+
+endmenu
+
+menu "Later classes (each needs its own design work)"
+
+config LX_SND_ASOC
+    bool "Audio (ALSA core + ASoC codecs)"
+    help
+      Not implemented: stage L9+. Enabling it fails the build.
+      Does DMA. Licence: GPL-2.0-only image.
+
+config LX_DRM_PANEL
+    bool "Display panels (DRM/KMS panel drivers)"
+    help
+      Not implemented: stage L9+ (panel drivers only, not GPU
+      stacks). Enabling it fails the build. Does DMA. Licence:
+      GPL-2.0-only image.
+
+config LX_IIO
+    bool "IIO sensors"
+    help
+      Not implemented: stage L9+ (one driver per sensor, usually
+      I2C/SPI, no DMA). No safety decision may read an IIO server's
+      output. Enabling it fails the build. Licence:
+      GPL-2.0-only image.
+
+config LX_WIFI
+    bool "Wi-Fi (mac80211 / cfg80211)"
+    help
+      Not implemented: stage L9+, last, only with a product
+      case. Enabling it fails the build. Does DMA. Licence: GPL-2.0-only
+      image.
+
+config LX_BLUETOOTH
+    bool "Bluetooth"
+    help
+      Not implemented: stage L9+. Enabling it fails the build.
+      Does DMA. Licence: GPL-2.0-only image.
+
+endmenu
+
+config LX_ACCEPT_UNCONFINED_DMA
+    bool "Allow DMA-capable Linux servers on a board without an IOMMU"
+    default n
+    depends on LX_USB_XHCI || LX_USB_DWC3 || LX_SND_ASOC || LX_DRM_PANEL || LX_WIFI || LX_BLUETOOTH
+    help
+      Not implemented: stages L5/L8. Enabling it fails the build.
+
+      Where a Linux server drives a bus master and the board has no
+      IOMMU (VF2 and K1 have none), the device can write any physical
+      address, including kernel memory, and the ring-3 boundary does not
+      contain it. A DMA class on such a board is meant to
+      build only with this option set, so the acceptance is a recorded
+      build-time act, never inherited silently; the server prints
+      "[LX] DMA UNCONFINED" at start.
+
+endif # LINUX_DRIVERS
+
+config LX_MODULE_TOKENS
+    int "Module verification tokens live at once"
+    range 1 64
+    default 4
+    help
+      Slots in the table of one-shot tokens DOMAIN_MODULE_VERIFY grants and
+      DOMAIN_MODULE_MAP_X consumes (crates/core/syscall/src/module_ops.rs,
+      built only with LX_SERVER_SKELETON). Each token is bound to the
+      verifying task and is dropped when that task exits. A grant with
+      every slot taken evicts one, and its owner must verify again.
+
+      Cost: 24 B of .bss per slot on riscv64 and aarch64 (96 B at the
+      default), and a scan of the table per verify, map and task exit
+      (a few instructions per slot; nothing when LX_SERVER_SKELETON is off).
+      Raise it only when more Linux driver servers than this start at once.
+      Outside the LINUX_DRIVERS block so the constant always exists.
+
+config USERSPACE_GPL
+    bool "Allow third-party GPL userspace programs (e.g. BusyBox)"
+    default n
+    help
+      The switch without which no third-party GPL program is built or put
+      in an image. The kernel and the base image never contain one; with
+      this on, a program below may be built from a pinned upstream release
+      (fetched by URL and SHA-256, never committed) and copied onto a
+      volume that is then distributed under that program's licence, with
+      the source offer `make busybox-source-offer` writes (GPL-2.0
+      section 3). Off by default.
+
+config BUSYBOX
+    bool "BusyBox (static, run through the Linux personality)"
+    default n
+    depends on USERSPACE_GPL && LINUX_ABI
+    help
+      `make busybox` builds the pinned BusyBox release (Makefile:
+      BUSYBOX_VERSION, BUSYBOX_SHA256) from a tarball already on disk
+      (BUSYBOX_TARBALL, outside the repository; make never downloads),
+      checks its SHA-256, and builds a static binary with `zig cc`
+      (BUSYBOX_ZIG or LX_ZIG; zig carries musl and the Linux uapi headers
+      for both ISAs). It runs as BUSYBOX.ELF under its own topology row
+      with abi = "linux". The make target refuses, naming what is missing,
+      without zig or the tarball, or on a digest mismatch.
+      GPL-2.0-only: see USERSPACE_GPL for the source offer.
+
+config LINUX_ABI
+    bool "Linux syscall personality (static Linux binaries)"
+    default n
+    help
+      Off by default in every profile (owner, 2026-10-04: running Linux
+      programs is parked; Linux DRIVERS are LINUX_DRIVERS and do not need
+      this). The QEMU test defconfigs turn it on so the gate keeps testing it.
+
+      Run a static Linux binary (riscv64 or aarch64, asm-generic syscall
+      table) unmodified: the kernel translates each Linux call onto the
+      native one (crates/core/syscall/src/linux.rs). Only an image whose
+      signed topology row says abi = "linux" is translated; a row says it
+      or the image is native, so no native image ever reaches this table.
+      A Linux row holds no hardware capability (the topology refuses one),
+      its seccomp profile lists the native calls its translations reach,
+      and every capability check of the native call stands.
+
+      Off, the table is compiled out and a Linux row is refused at spawn.
+      Answered today: file, pipe, directory, memory, time, identity and
+      tty calls; clone in the fork and vfork shapes (the child is
+      seeded from its row and shares the parent's open descriptions),
+      wait4, and execve (into another Linux row only with a launch
+      grant); threads (clone with CLONE_THREAD, futex, set_tid_address,
+      set_robust_list, exit and exit_group: a process's threads share its
+      memory, capabilities and descriptors); signals inside the compartment (kill,
+      tgkill, sigaction, sigprocmask, sigreturn, SIGCHLD, SIGPIPE, console
+      ^C), mprotect (read/write exactly; adding PROT_EXEC is refused), and
+      console input for the shell's foreground job. Not yet: posix_spawn's
+      CLONE_VM | CLONE_VFORK child with a stack, requeue and
+      priority-inheritance futexes.
+
+config LINUX_RUNTIME
+    # cargo-feature: linux-runtime base
+    bool "Host the Linux personality in a ring-3 runtime (trap reflect)"
+    default n
+    depends on LINUX_ABI && !HWCLASS_EMBEDDED && !AARCH64_PAGE_16K && !AARCH64_PAGE_64K
+    help
+      A Linux task is hosted by `userspace/lib/linux_rt`, mapped into its
+      own address space at spawn (built into the kernel image, so covered
+      by its signature), instead of being translated by the in-kernel
+      table. The kernel bounces each Linux system call to the runtime
+      (SYS_FOREIGN_ENTRY, SYS_FOREIGN_RESUME; crates/core/abi/src/foreign.rs),
+      which answers what it owns itself (identity, descriptors, working
+      directory, signal state) and maps the rest onto native calls. The
+      runtime's native calls meet the row's seccomp profile and the task's
+      capability tables as any native call does.
+
+      Not on a small board (HWCLASS_EMBEDDED): such a board keeps every
+      Linux layer off (see the head of this file).
+
+      Costs one trap and one resume per Linux call (two kernel crossings
+      where the in-kernel table pays one), the runtime's pages (about
+      100 KiB, counted against the row's memory budget) in every Linux
+      process, and its image in the kernel (about 100 KiB of flash).
+      Answers fewer calls than the in-kernel table while the native ABI
+      lacks seek, mprotect, signal delivery, threads and exec (identity,
+      descriptors, memory, time, tty and fork/wait4 are answered). The
+      same on every ISA that has the personality (riscv64, aarch64 with
+      the 4 KiB granule, x86_64: the runtime is linked for 4 KiB pages).
+
+      On x86_64 the runtime answers Linux's x86-64 ABI, which is not the
+      asm-generic one riscv64 and aarch64 share: `azos_linux_abi::x86_64`
+      holds its call numbers, argument registers (`rdi rsi rdx r10 r8 r9`)
+      and the layouts that differ (`struct stat`, `uname`, `sigaction`), and
+      translates a call to the one the runtime answers. It is built on
+      rustc's soft-float `x86_64-unknown-none` target (no SSE: the
+      program's vector registers are live while it runs) and linked at the
+      same window as on the other ISAs. Only the hosted personality speaks
+      x86-64: the in-kernel table (LINUX_ABI without this option) is the
+      asm-generic one and does not understand an x86-64 program's call
+      numbers. Not answered there, besides what no ISA answers yet:
+      `arch_prctl`, because the thread pointer (FS base) is hardware state
+      the runtime may not touch and ring 3 cannot write it, so a libc that
+      sets up TLS at start (musl's `__init_tls`) cannot run yet; a program
+      that needs none (`userspace/tests/lxhello/lxhello_x86_64.c`) can.
+
+config LINUX_ROBUST_LIST_LIMIT
+    int "Linux personality: robust futex list entries walked at a thread's exit"
+    range 1 65536
+    default 256 if HWCLASS_EMBEDDED
+    default 2048
+    help
+      A Linux thread registers a list of the robust mutexes it holds
+      (set_robust_list); when it ends, the kernel walks the list and marks
+      each lock word it still owns FUTEX_OWNER_DIED, waking one waiter, so
+      the next locker gets EOWNERDEAD instead of sleeping forever. The list
+      is in the thread's own memory and untrusted: the walk visits at most
+      this many entries (plus the in-flight one), so a cyclic list cannot
+      hold the exit. Linux's ROBUST_LIST_LIMIT is 2048.
+
+      Costs no RAM. Each entry visited costs two user-page translations and
+      a compare-and-swap at the thread's exit (a few hundred instructions);
+      the bound caps a hostile list's exit at limit times that. The same on
+      every ISA. Lower it on an embedded profile where an exit must stay
+      short; raise it only for a program that really holds more robust
+      locks at once. Unused without LINUX_ABI.
+
+config LINUX_IO_MAX
+    int "Linux personality: bytes one read/write/readv/writev moves at most"
+    range 256 4096
+    default 4096
+    help
+      crates/core/syscall/src/linux.rs, IO_MAX. A call asking for more
+      returns a short count, which every Linux program handles (a regular
+      file's write may be short; libc's stdio loops). readv/writev gather
+      or scatter through ONE bounce buffer of this size on the syscall
+      stack and make ONE transfer, so a writev of at most this many bytes
+      is atomic with respect to the description's other writers: one
+      console line, one pipe write (all or nothing up to PIPE_BUF = 4096),
+      one file write under the description's position lock. At most 4096,
+      the native clamp and the pipe's PIPE_BUF.
+
+      Costs this many bytes of kernel stack during the call, no static
+      RAM; the gather is one memcpy per segment instead of one syscall
+      path per segment. Lower it only on a task stack too small for 4 KiB
+      of bounce; the same on every ISA. Unused without LINUX_ABI.

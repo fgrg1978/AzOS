@@ -40,7 +40,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(ROOT, "tools", "ci_check.sh")
-KCONFIG_LIMITS = os.path.join(ROOT, "config", "Kconfig.limits")
+KCONFIG_LIMITS = os.path.join(ROOT, "config", "limits", "config/limits/Kconfig.limits")
 # Bytes of the kernel's command-line buffer (Kconfig KERNEL_CMDLINE_MAX) the
 # canary list must leave free for other boot arguments. The kernel cuts a
 # longer line silently: a name cut in half is not armed, its tests pass, and

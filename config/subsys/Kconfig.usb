@@ -1,0 +1,287 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.usb — USB host stack and class drivers
+
+config USB_POLL_MS
+    int "USB service period (ms): how often the usb task drains the controller"
+    range 1 1000
+    default 10
+    help
+      kernel/src/boot/usb.rs: the `usb` task calls the USB core's service
+      (events, port changes, enumeration, pipe submissions and completions)
+      this often while the controller is polled (no MSI-X route yet). A
+      device is noticed within one period of a plug; a transfer a class
+      driver queued starts within one period. Only with USB_XHCI.
+
+config USB_HID_REPEAT_DELAY_MS
+    int "USB keyboard: milliseconds a key is held before it repeats"
+    range 50 2000
+    default 500
+    help
+      crates/drivers/usb-hid/src/decode.rs. A USB keyboard sends a report when
+      a key changes and repeats nothing: the driver repeats the key most
+      recently pressed (never a modifier) once it has been down this long.
+      The repeat is driven by the usb task, so it is at most USB_POLL_MS late.
+      Only with USB_HID.
+
+config USB_HID_REPEAT_PERIOD_MS
+    int "USB keyboard: milliseconds between repeats of a held key"
+    range 10 1000
+    default 33
+    help
+      crates/drivers/usb-hid/src/decode.rs. After the first repeat a held key
+      repeats this often (33 ms is about 30 per second, the PC default). The
+      usb task runs every USB_POLL_MS, so a period below it repeats once per
+      turn. Only with USB_HID.
+
+config USB_MSC_TIMEOUT_MS
+    int "USB mass storage: milliseconds a command may take"
+    range 1000 120000
+    default 10000
+    help
+      crates/drivers/usb/src/class/msc.rs: a command (a CBW, its data stage and
+      its status) that has not finished after this long fails the disk: every
+      command it holds ends in an I/O error and no new one is started until
+      the stick is unplugged (Reset Recovery is not implemented). It is also
+      how long a unit may take to become ready (spinning up, or reporting a
+      medium change) before it is given up on at plug time. Only with USB_HOST.
+
+config USB_HOST
+    # cargo-feature: usb-host
+    bool "USB host stack (core, hubs, class-driver interface)"
+    default y if !HWCLASS_EMBEDDED
+    default n
+    depends on !HWCLASS_EMBEDDED
+    help
+      Kernel feature `usb-host` (crates/drivers/usb, kernel/src/boot/usb.rs).
+      The native USB host core: device enumeration (reset, address,
+      descriptors, configuration), hubs (USB 2 and USB 3, port power,
+      transaction translators), control/bulk/interrupt pipes as pairs of
+      Queue rings over driver-owned DMA buffers, hot-plug and unplug as
+      events, and the class-driver interface (an IDL interface on an
+      endpoint, so a class driver is placed in the kernel or in ring 3
+      and holds only the interface it claimed). The class drivers
+      themselves (HID, mass storage, CDC) are not part of this option.
+      A `lsusb`-style listing is published in the introspection tree
+      (`usb/devN`) when INSPECT is on. The USB host and core are native:
+      no Linux driver is involved. Not on a small board (HWCLASS_EMBEDDED).
+      n: none of it is compiled.
+
+config USB_XHCI
+    # cargo-feature: usb-xhci
+    bool "xHCI host controller (USB 3.x/2.0/1.1, PCI class 0C0330 and device tree)"
+    default y if !HWCLASS_EMBEDDED
+    default n
+    depends on USB_HOST
+    help
+      Kernel feature `usb-xhci`. The xHCI driver of the USB host core:
+      capability, operational and runtime registers, the command ring, the
+      event ring of interrupter 0, transfer rings, scratchpad buffers, the
+      device context base array and port status change handling, with
+      64-bit DMA (HCCPARAMS1.AC64) through the DMA domain of the device. The
+      controller is found by the hardware bus: a PCI function of class
+      0C:03:30, a device-tree node `generic-xhci`, or `snps,dwc3` with
+      `dr_mode = "host"` (any other mode is a gadget port and is refused).
+      Events are drained by the `usb` kernel task (polled); an MSI-X route
+      is a test-week item. QEMU: `-device qemu-xhci`.
+      n: no controller is driven and the USB core has nothing to run on.
+
+config USB_HID
+    # cargo-feature: usb-hid
+    bool "USB HID class driver (keyboards and mice)"
+    default n if USE_ROBOT || USE_INDUSTRIAL
+    default y
+    depends on USB_XHCI
+    help
+      Kernel feature `usb-hid` (crates/drivers/usb-hid, wired by
+      kernel/src/boot/usb_hid.rs). A class driver of the USB host for the
+      interfaces of class 3: it reads the interface's HID report
+      descriptor, parses it (usages to evdev codes: the keyboard page, the
+      button page, the X, Y and wheel axes of a mouse or a tablet, AC Pan),
+      and decodes the interrupt endpoint's reports into the events the PS/2
+      and virtio-input drivers emit. A key with a byte becomes a byte of
+      the console's input ring, so the shell works on a PC with no UART and
+      no PS/2; the modifier keys, keys with no byte and every mouse event
+      go to the event ring the terminal server drains. A device whose
+      descriptor cannot be read is asked for the boot protocol of a
+      keyboard or a mouse (HID appendix B). A USB keyboard repeats nothing
+      in hardware: the driver repeats the last key held (USB_HID_REPEAT_*).
+      Not driven: LEDs (Caps Lock stays a software state), consumer-page
+      keys, gamepads and touch digitizers (their collections are ignored),
+      isochronous or output reports. The device is authorized before a
+      driver binds to it (USB_HID_ADMIT, USB_BIND_MAX_TIER,
+      USB_HID_REFUSE_COMPOSITE) and the decision is a record of the rule
+      `usb-authorize`. Native: no Linux driver is involved. Default y except
+      for the Robot and Industrial presets, which are not machines with a
+      keyboard. n: HID interfaces are left unbound.
+
+config USB_HID_ADMIT
+    bool "USB HID: devices may bind without a signed row"
+    default n if HWBUS_AUTOBIND_TOPOLOGY
+    default y
+    depends on USB_HID
+    help
+      crates/drivers/usb-hid/src/authorize.rs. y: a USB keyboard or mouse
+      binds the HID driver (subject to USB_BIND_MAX_TIER and
+      USB_HID_REFUSE_COMPOSITE). n: every HID device is refused with the
+      reason "no row admits the class" (decision rule `usb-authorize`,
+      reason 1), so a flash stick that presents itself as a keyboard types
+      nothing. The hardware bus's `[device.*]` rows cannot name a USB device
+      yet (their selectors are PCI ids, device-tree names and virtio ids),
+      so the default follows the bus: y with HWBUS_AUTOBIND_AUTO, n with
+      HWBUS_AUTOBIND_TOPOLOGY (a build that binds only what its topology
+      declares has no USB keyboard unless this is set).
+
+config USB_HID_REFUSE_COMPOSITE
+    bool "USB HID: refuse a keyboard that is also storage or a serial/network port"
+    default y
+    depends on USB_HID
+    help
+      crates/drivers/usb-hid/src/authorize.rs. y: a HID interface of a
+      device that also has a mass-storage, communications (CDC) or wireless
+      controller interface is refused (decision rule `usb-authorize`,
+      reason 3, "the class set differs from the row"): the shape of a
+      device built to type commands at a host and also carry the payload.
+      n: such a device binds. A keyboard with vendor-specific interfaces (a
+      gaming keyboard's lighting) is not affected.
+
+config USB_STORAGE
+    # cargo-feature: usb-storage
+    bool "USB mass storage (bulk-only sticks and disks) as a block device"
+    default y if USB_XHCI
+    default n
+    depends on USB_XHCI
+    help
+      Kernel feature `usb-storage` (crates/drivers/usb/src/class/msc.rs, the
+      adapter crates/drivers/block/src/usb_msc.rs, kernel/src/boot/usb.rs).
+      The mass-storage class driver of the USB host: an interface of class 8,
+      subclass 6, protocol 0x50 (Bulk-Only Transport) becomes a block device
+      behind the request layer: INQUIRY, TEST UNIT READY, READ CAPACITY(10),
+      READ(10), WRITE(10) and SYNCHRONIZE CACHE(10), one command at a time
+      (the transport has no tags), 512-byte blocks, media up to 2 TiB. A
+      stick of USB Attached SCSI (protocol 0x62) is detected and declined.
+      It has a request queue of its own and never replaces the boot block
+      device. One disk at a time; a command that outlives USB_MSC_TIMEOUT_MS,
+      or a transport error, fails the disk until it is unplugged (Reset
+      Recovery is not implemented). At boot the kernel prints the disk and
+      reads its sector 0. QEMU: `-device qemu-xhci -drive
+      if=none,id=u,file=disk.img -device usb-storage,drive=u`.
+      n: the class driver is not registered and a stick is only listed.
+
+config USB_CDC
+    # cargo-feature: usb-cdc
+    bool "USB CDC devices: network adapters (ECM, NCM) as NICs, serial devices (ACM) as Uart ports"
+    default y if USB_XHCI
+    default n
+    depends on USB_XHCI
+    help
+      Kernel feature `usb-cdc` (crates/drivers/usb/src/class/cdc.rs, the
+      adapter crates/drivers/net/src/usb_cdc.rs, kernel/src/boot/usb.rs and
+      kernel/src/boot/usb/serial.rs).
+      The communications class driver of the USB host. A network function:
+      an Ethernet adapter, a phone or a board in USB-tethering or
+      gadget-Ethernet mode (CDC-ECM, and CDC-NCM with NTB-16 blocks) becomes
+      a NIC of the network device table (net_device::register_usb) when its
+      function is ready and stops being one when it is unplugged. The
+      network stack gets an interface for it (the primary one when it is the
+      only NIC; DHCP runs for it when CONFIG.INI asks for it). One network
+      function at a time, polled by the `usb` task (the stack's poller is
+      woken when frames arrived); no link-status notifications, multicast
+      filter lists, offloads or jumbo frames.
+      A serial function (CDC-ACM: a board or a microcontroller in gadget-serial
+      mode, a modem, a USB-UART bridge in ACM mode) becomes the `Uart` port
+      uart.2 when it is ready and stops being one when it is unplugged: a task
+      whose topology row grants the endpoint "uart.2" attaches its queues like
+      on the companion-radio bridge's uart.1 (crates/core/syscall/src/devices.rs,
+      the port table); with no device plugged in the port answers NO_RESOURCE.
+      One serial function at a time. USB_CDC_CONSOLE puts the console on it.
+      USB_CDC_BUFS and USB_CDC_NTB_KB size the buffers.
+      QEMU: `-device qemu-xhci -device usb-net,netdev=n` for the network
+      function. QEMU has no CDC-ACM device (`-device usb-serial` is an FTDI
+      adapter, which no class driver here claims): the serial function is
+      exercised by tests/host/usb-cdc-tests over the xHCI mock, and for real on a
+      board or a PC with a CDC-ACM gadget (Linux g_serial, a Raspberry Pi Pico
+      or ESP32-S3 USB-CDC).
+      n: the class driver is not registered; an adapter or a serial device is
+      only listed.
+
+config USB_CDC_CONSOLE
+    # cargo-feature: usb-cdc-console
+    bool "USB serial console: the console on the first CDC-ACM device that comes up"
+    default n
+    depends on USB_CDC
+    help
+      Kernel feature `usb-cdc-console` (kernel/src/boot/usb/console.rs). When a
+      CDC-ACM function comes up as uart.2 the kernel holds the port itself:
+      everything the console writes (kernel lines, a task's output to the
+      console, the shell's echo) is also sent to the device, with each newline as
+      CR LF, and what the device sends is the console's input, as if typed on a
+      keyboard. A PC or a board with no UART (or none within reach) has a
+      console over USB: plug a CDC-ACM device (a board in gadget-serial mode, a
+      USB-UART bridge) and open its serial port from the other machine. The
+      UART, the framebuffer console and a USB keyboard keep working beside it.
+      When the device is unplugged the console goes back to the others; plug
+      one in again and it returns. While the kernel holds the port a task that
+      holds the uart.2 endpoint gets BUSY from attach and REFUSED from detach.
+      Output is queued without waiting (a console write never stalls on the
+      device): USB_CDC_CONSOLE_BYTES bytes, the newest dropped and counted in
+      the port's tx_lost when it is full. The dev-pump task polls the line
+      every DEVIF_PUMP_POLL_US while the console is on it.
+      Security: a device that presents itself as a CDC-ACM function can type at
+      the console, as a USB keyboard can (USB_HID); and the console's output,
+      which can carry anything the system prints, goes to whatever answers as
+      that function. Off by default; turn it on for a machine whose USB ports
+      are not reachable by strangers, or whose console shell is not logged in.
+      Needs a device that answers CDC-ACM (see USB_CDC for how it is tested).
+      n: the serial function is a plain uart.2 port.
+
+config USB_CDC_CONSOLE_BAUD
+    int "USB serial console: line rate asked of the device (baud)"
+    range 300 4000000
+    default 115200
+    help
+      kernel/src/boot/usb.rs: the rate SET_LINE_CODING asks of the CDC-ACM
+      function the console runs on (8 data bits, no parity, one stop bit). A
+      gadget (a board's USB device port) has no real line and ignores it; a
+      USB-UART bridge in ACM mode runs its UART at this rate, which must be
+      the rate of the device on its far side. A device without line coding
+      is used as it is. Only with USB_CDC_CONSOLE.
+
+config USB_UVC
+    # cargo-feature: usb-uvc
+    bool "USB video class (UVC webcams) as the perception camera"
+    default y if USB_XHCI && USE_ROBOT
+    default n
+    depends on USB_XHCI && USE_ROBOT
+    help
+      Kernel feature `usb-uvc` (crates/drivers/usb/src/class/uvc.rs, the
+      frame ring of kernel/src/tasks/cam_capture.rs, kernel/src/boot/usb.rs).
+      The video class driver of the USB host: a UVC 1.0, 1.1 or 1.5 camera
+      on a Raspberry Pi or a PC becomes the producer of the camera frame
+      ring the brain link's sender reads, in place of the CSI capture task's
+      test pattern (which stops while a camera is plugged in). The driver
+      reads the camera's descriptors, picks Motion-JPEG (else YUY2) at the
+      frame size and rate closest to the CSI path's (160x120, the capture
+      period of CAMERA_TX_CAPTURE_PERIOD_MS; a larger Motion-JPEG frame only
+      if the camera bounds it under what one camera packet carries, a JPEG
+      over that is dropped and counted as too big), negotiates it with
+      PROBE/COMMIT, and streams only while the ring has a reader: it
+      selects the smallest isochronous alternate setting that carries the
+      negotiated payload (or uses the bulk endpoint of a bulk camera) and
+      gives the bandwidth back when nobody has read for half a second. A
+      frame is committed only if it is whole: a payload the camera flagged,
+      an interval the bus lost, or a stream that started mid-frame drop that
+      frame, never deliver half of it. Raw YUY2 frames are converted to the
+      JPEG the link carries (luma only) when the sender reads them.
+      One camera at a time, one stream, no still images, no H.264, no
+      camera controls (brightness, exposure, zoom: the video control
+      interface is left alone), no audio. A high-speed isochronous camera
+      needs a transfer outstanding per 125 us, so USB_PIPE_DEPTH defaults to
+      32 with this driver and the `usb` task naps 1 ms while a stream runs;
+      what a given board sustains is a test-week measurement (the driver
+      counts the intervals the bus lost). Native: no Linux driver is
+      involved (LX_USB_UVC is the not-implemented Linux alternative). The
+      QEMU xHCI has no camera model, so the stream is exercised on a board
+      or a PC only; tests/host/usb-uvc-tests covers the driver against a
+      register-level xHCI mock.
+      n: a camera is only listed and the CSI capture task stays the source.

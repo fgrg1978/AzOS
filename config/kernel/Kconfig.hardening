@@ -1,0 +1,321 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.hardening — Hardening: user allocator, slab, KASLR
+
+# ---------------------------------------------------------------------------
+# Ring-3 allocator (userspace/lib/ualloc)
+# ---------------------------------------------------------------------------
+#
+# The knobs of the hardened allocator native ring-3 programs link
+# (`azos_ualloc`, Scudo's shape: size-class blocks, randomized chunk
+# placement, checksummed chunk headers, a quarantine of freed chunks, guard
+# pages). They are plain integers and bools read through `azos_limits`, not
+# cargo features: the allocator is a userspace library, not a kernel feature.
+# Defaults follow the SECURITY posture: every posture but `general` starts
+# with the quarantine, the free-chunk poison and the randomized placement on.
+
+config USER_ALLOC_QUARANTINE_KB
+    int "Ring-3 allocator: quarantine of freed small chunks, KiB (0 = off)"
+    range 0 4096
+    default 64 if !SECURITY_GENERAL
+    default 0
+    help
+      Total slot bytes the allocator holds back after a free before a chunk
+      can be handed out again. A chunk in quarantine keeps its header in the
+      "quarantined" state, so a second free of it is a detected double free,
+      and (USER_ALLOC_POISON_FREED) a write through a stale pointer is
+      detected when the chunk leaves quarantine. Chunks leave in random
+      order when USER_ALLOC_RANDOMIZE is on, oldest first otherwise. 0
+      turns the quarantine off: a freed chunk is reusable at once, and a
+      double free is detected only until its chunk is allocated again.
+      Cost: the bytes are resident while held (Scudo's default is 256 KiB
+      per thread cache, this is per process). Large allocations are never
+      quarantined: they are unmapped on free and their address range is
+      never reused (the kernel's mmap only moves the break up and brk does
+      not shrink it; a kernel that lowered the break would void this), so a
+      stale pointer into one faults.
+
+config USER_ALLOC_QUARANTINE_SLOTS
+    int "Ring-3 allocator: quarantine entries"
+    range 8 4096
+    default 128
+    help
+      How many freed chunks the quarantine can hold (the table is static,
+      8 bytes each). A free that finds the table full evicts one chunk
+      first, whatever the byte budget says.
+
+config USER_ALLOC_BLOCK_KB
+    int "Ring-3 allocator: size-class block, KiB"
+    range 8 1024
+    default 16
+    help
+      How much anonymous memory a size class takes from the kernel each
+      time it runs out of chunks. The kernel charges a mapping against the
+      program's frame budget whole, when it is made, so a small block keeps
+      a program with a tight `mem_pages` row inside it; a big one makes
+      fewer mmap calls. Rounded up to the page size.
+
+config USER_ALLOC_MAX_MAPS
+    int "Ring-3 allocator: live mappings (blocks + large allocations)"
+    range 16 4096
+    default 256
+    help
+      Capacity of the table the allocator checks every freed pointer
+      against (16 bytes each). A block or large allocation that does not
+      fit fails the allocation (null), it is never untracked.
+
+config USER_ALLOC_RANDOMIZE
+    bool "Ring-3 allocator: randomize chunk placement"
+    default y if !SECURITY_GENERAL
+    default n
+    help
+      Which free chunk an allocation takes, the order a fresh block is
+      handed out in, the position of a large allocation inside its pages
+      and the quarantine eviction order come from the kernel entropy pool
+      (SYS_ENTROPY_READ_TYPED, so the program's row needs the `entropy`
+      capability). Without it the allocator is deterministic: LIFO reuse,
+      fresh chunks in address order, large allocations ending exactly at
+      their guard page (the tightest overflow detection). A program
+      without the capability, or on a boot whose pool is unseeded, runs
+      deterministic and prints one line saying so, unless
+      USER_ALLOC_SEED_REQUIRED.
+
+config USER_ALLOC_SEED_REQUIRED
+    bool "Ring-3 allocator: fault when no kernel entropy is available"
+    default y if SECURITY_SEPARATION_STATIC || SECURITY_CONFIDENTIAL
+    default n
+    help
+      The header checksum is keyed and the placement randomized from one
+      read of the entropy pool at the first allocation. With this on, a
+      program that cannot get it (no `entropy` capability, unseeded pool)
+      takes a recorded fault there instead of running with a key and a
+      placement an attacker can predict.
+
+config USER_ALLOC_POISON_FREED
+    bool "Ring-3 allocator: poison freed chunks and check the poison"
+    default y if !SECURITY_GENERAL
+    default n
+    help
+      A freed chunk's first 512 bytes are filled with a fixed byte and
+      checked when it leaves quarantine (or, without quarantine, when it is
+      handed out again): a write through a stale pointer is a recorded
+      fault, not silent corruption. Cost: a fill and a compare of up to 512
+      bytes per free.
+
+config USER_ALLOC_GUARD_PAGES
+    bool "Ring-3 allocator: guard pages around blocks and large allocations"
+    default y
+    help
+      Every block and every large allocation is mapped between two
+      PROT_NONE reservations (mmap with prot 0: the range is reserved, no
+      page is mapped, a touch kills the task). Costs address space and two
+      extra mmap calls per mapping, no frames. Off: blocks and large
+      allocations are mapped back to back.
+
+# MITIGATION_SPECTRE_V1_INDEX, INFER_MODEL_SIG_REQUIRED and CONSOLE_LOCKDOWN moved
+# to the Mitigations menu (config/axes/Kconfig.security), wave 11.
+
+# ---------------------------------------------------------------------------
+# Hardware control-flow integrity (plan item I4)
+# ---------------------------------------------------------------------------
+#
+# One model on every ISA: forward edges (an indirect call or jump may only
+# land on a landing pad) and backward edges (a return address is signed or
+# kept on a shadow stack). The per-ISA never/probe/require choices already
+# exist next to the other ISA extensions (config/arch/Kconfig.isa-aarch64):
+#
+#   aarch64  A64_BTI (landing pads)        A64_PAUTH (signed returns)
+#   x86_64   X86_CET_IBT (ENDBR64)         X86_CET_SHSTK (shadow stack)
+#   riscv64  none yet (Zicfilp, below)
+#
+# Any policy but `n` makes the kernel AND the user images compile with the
+# pads (tools/kconfig_to_cargo.py, cfi_rustflags: the pads are architectural
+# no-ops on a CPU without the extension); the boot then uses the extension
+# when the CPU has it (probe) or refuses the CPU (require). Kconfig is the
+# only source: there is no second switch. The aarch64 signed returns are a
+# ring-3/kernel boundary only with A64_PAUTH_PROC_KEYS (per-process keys, the
+# kernel's key restored on every entry from EL0; A64_PAUTH help).
+#
+# Not done, and why (the reasons are what a later change starts from):
+#   * x86_64 kernel shadow stack (X86_CET_SHSTK): the policy and the CPUID
+#     row exist, the kernel does not turn it on. It needs a shadow-stack page
+#     set per kernel task and per IST stack, IA32_PL0_SSP switched in
+#     `context_switch`, and the retpoline thunk (a `ret` that does not match
+#     its `call`) off, i.e. X86_MIT_SPECTRE_V2 not `probe` on a CPU that
+#     lacks eIBRS/AutoIBRS. Ring 3 shadow stacks come with the per-process
+#     CET state (XSAVES supervisor component).
+#   * aarch64 GCS (FEAT_GCS, Armv9.4): reserved. The return-address stack is
+#     the aarch64 twin of the shadow stack; GCSCR_EL1/GCSPR_EL1 would be
+#     programmed in crates/core/arch-aarch64/src/cpu/cfi.rs. No compiler mode
+#     is needed beyond `-Z branch-protection=gcs`, which the pinned
+#     compiler does not take.
+#   * riscv64 Zicfilp (`lpad` at every function entry): no symbol until the
+#     boot can use it. The compiler half exists (`-Z cf-protection=branch`
+#     plus the LLVM feature `experimental-zicfilp`), but the pinned compiler
+#     (rustc 1.95 nightly of 2026-02-21, LLVM 22.1) lists the feature as
+#     unknown and unstable and warns once per crate, which tools/ci_check.sh
+#     fails on; and nothing in the tree could enforce or refuse it: a hart
+#     declares `zicfilp` in the device tree, but the S-mode enable belongs to
+#     M-mode (menvcfg.LPE; SBI FWFT feature LANDING_PAD), so it needs the
+#     device-tree probe, an arch-api policy constant, a riscv64 `[ISA]` row,
+#     the FWFT call, `lpad` in the riscv64 entry assembly and a host row. A
+#     choice whose `require` could not refuse would only mislead. Zicfiss
+#     (shadow stack) needs a shadow-stack CSR switched in `context_switch`
+#     and `sspush`/`sspopchk`, illegal on a hart without Zimop.
+#   * kCFI (`-Z sanitizer=kcfi`, the software forward-edge check for CPUs
+#     without BTI/IBT/Zicfilp): the pinned compiler takes it for aarch64
+#     and x86_64 and refuses riscv64 ("kcfi sanitizer is not supported for
+#     this target"). Not wired: every indirect call into hand-written asm
+#     would need the type hash the compiler puts before a function, and the
+#     trap needs its own decoder. Without a user it stays a note.
+
+# ---------------------------------------------------------------------------
+# Allocator hardening (audit findings D and E, allocator side)
+# ---------------------------------------------------------------------------
+
+config SLAB_HARDENED
+    bool "Harden the slab and buddy free lists (obfuscated links, safe unlink)"
+    default y
+    help
+      Slab: the link a freed object keeps in its first word is stored as
+      next ^ secret ^ byteswap(address of the word) (Linux SLAB_FREELIST_
+      HARDENED), with one secret per slab page. Every pop checks that the
+      decoded link is null or the start of an object inside the same slab;
+      every free checks that the pointer is an object of the slab and is not
+      the one freed last. The list of slabs with room is unlinked only if
+      prev->next == self and next->prev == self. Buddy: a block leaves its
+      free list only if both neighbours link back to it and its descriptor
+      still names the order of the list. Each failure panics with the
+      addresses involved (the panic record is the crash-log entry).
+      Release builds included: nothing here is a debug_assert.
+
+      On in every build, certifiable ones too: the checks and the secret
+      never change which object or block an allocation returns, so they
+      cost no determinism. Cost: one xor per link, one range test and one
+      remainder per slab pop and free, two loads per buddy unlink.
+      Secret source: the entropy pool, drawn with interrupts on when a slab
+      page is created and the pool is seeded; before that, or when the page
+      is created with interrupts masked, the timer tick mixed with the
+      page address. A weak secret still defeats a blind overwrite of a link
+      but not an attacker who knows the boot timing; the pool-seeded ones
+      are not guessable.
+
+config ALLOC_RANDOM
+    bool "Randomize allocation order (slab carve order, buddy list order)"
+    depends on KHEAP_SLAB
+    default n if BUILD_TYPE_CERTIFIABLE || SECURITY_SEPARATION_STATIC
+    default y
+    help
+      Slab (Linux SLAB_FREELIST_RANDOM): the objects of a new slab page are
+      first handed out in a random order (a random start and a random step
+      coprime with the object count, drawn per page) instead of ascending
+      addresses, so the neighbour of an object cannot be predicted from the
+      allocation sequence. Buddy: once the entropy pool has been drawn
+      (the slab layer feeds the page allocator a word with every slab page
+      it creates), each free list is rotated by a random number of blocks
+      once, and every block pushed after that goes to the head or the tail
+      of its list on a random bit. Blocks pushed before the first draw
+      (early boot) keep the plain order.
+
+      Default n when BUILD_TYPE_CERTIFIABLE or SECURITY_SEPARATION_STATIC
+      (the industrial and automotive presets): there the same inputs must
+      give the same addresses and the same latency on every boot, and
+      randomized placement is the one thing here that breaks it. y
+      everywhere else. Depends on KHEAP_SLAB because the seed for the page
+      allocator rides on slab page creation.
+      Cost: a few instructions per slab page created and per buddy push;
+      the order of free lists after reclaim differs from boot to boot.
+
+# ---------------------------------------------------------------------------
+# Kernel address-space layout randomization (virtual KASLR)
+# ---------------------------------------------------------------------------
+
+# Where the slide exists: every ISA, except an image that has no MMU to map it
+# at another address (riscv64 on a small board, HWCLASS_EMBEDDED, runs in the
+# firmware's identity map) and the x86_64 Limine image, which the loader
+# places itself (X86_BOOT_LIMINE; its ELF is not position-independent and the
+# loader's own KASLR is off for it). A choice hidden by `depends on` reads as
+# `probe`, so the Rust side asks this symbol first (azos_arch_api::kaslr).
+config KASLR_AVAILABLE
+    def_bool ARCH_AARCH64 || (ARCH_RISCV64 && !HWCLASS_EMBEDDED) || (ARCH_X86_64 && !X86_BOOT_LIMINE)
+
+choice
+    prompt "Kernel address-space layout randomization (KASLR)"
+    depends on KASLR_AVAILABLE
+    default KASLR_REQUIRE if BUILD_TYPE_CERTIFIABLE || SECURITY_HARDENED
+    default KASLR_PROBE
+    help
+      Where the kernel image sits in virtual memory. Any policy but n
+      links the kernel position-independent (a `-pie` link, kernel/build.rs,
+      with the code PC-relative, tools/kconfig_to_cargo.py kaslr_rustflags;
+      a boot that finds no relocation table refuses to slide): the boot
+      picks a random base for the image inside the ISA's image window
+      (crates/core/arch-*/src/mmu/kaslr.rs), maps the image there and applies
+      the image's relative relocations (`R_*_RELATIVE`) with the distance from
+      the link address, before any Rust that needs a pointer runs. A leaked
+      kernel pointer then no longer says where the rest of the image is, and a
+      fixed-address gadget or a fixed-address data target is gone.
+
+      What moves and what does not: only the image. The map of RAM keeps its
+      address (`phys_to_virt` stays one add or one OR: aarch64's linear map,
+      x86_64's direct map, riscv64's identity) and the image window does not
+      overlap it, so a slid image is a second mapping of its own frames; the
+      RAM map's alias of the image is made read-only and not executable at boot
+      (kernel/src/boot/early.rs). The direct map's base is not randomized: it
+      would turn every `phys_to_virt` into a load of a runtime base.
+
+      | ISA     | window                                   | step   | bits (30 MiB image) | seed                       |
+      | aarch64 | the upper half of the TTBR1 range        | 2 MiB* | ~16                 | RNDRRS, device tree        |
+      | riscv64 | the Sv39 upper half, 256 GiB             | 2 MiB  | ~16                 | Zkr `seed` CSR, device tree|
+      | x86_64  | the first GiB of the top 2 GiB           | 2 MiB  | ~9 (8 whole)        | RDSEED, RDRAND             |
+
+      (*) 2 MiB at a 4 KiB granule; 16 KiB pages slide in 32 MiB steps, 64 KiB
+      pages in 512 MiB steps (tests/host/kaslr-tests assert the counts).
+      x86_64 is held to the top 2 GiB by `-mcmodel=kernel`, and its AP start
+      tables map one GiB of image; Linux has the same 9 bits there. The
+      physical place of the image does not move (PVH loads it at 1 MiB).
+
+      The seed is the CPU's source (RNDRRS with A64_RNG, the `seed` CSR with
+      RV_ZKR, RDSEED then RDRAND with X86_RDSEED / X86_RDRAND, each unless its
+      own choice is n), mixed with the device tree's `/chosen/kaslr-seed` and
+      `/chosen/rng-seed` when the loader supplies them (x86_64's PVH start-info
+      carries no tree). The boot erases those properties after reading them, as
+      Linux does. The seed is what `probe` looks for and `require` insists on.
+
+      n: the link address is the run address, the image is not
+      position-independent and the boot code is not built. probe: slide when
+      a seed exists, else run at the link address (the boot says so on the
+      console). require: refuse to boot without a seed or a slot, before the
+      console exists (the PL011 on aarch64, SBI's console on riscv64, COM1 on
+      x86_64).
+
+      Cost: the relocation table is part of the image (24 bytes per
+      pointer-bearing word: tens of KiB), the boot applies it once (a few
+      hundred thousand cycles), and position-independent code loads statics
+      through PC-relative addressing as before while function and vtable
+      tables become relocated data. Not a cost at run time otherwise, except
+      that `virt_to_phys` of an address in the image window takes the image's
+      recorded base instead of the one constant (an add and a compare more).
+
+      The default is require for BUILD_TYPE_CERTIFIABLE and for
+      SECURITY_HARDENED (an image that runs third-party code, or is certified,
+      must not run at a fixed layout by accident), probe everywhere else,
+      BUILD_TYPE_DEV included: a development image slides like a release one,
+      so a layout bug shows up where it is written, not on the first release
+      build. A debugger or a trace that needs fixed addresses sets n by hand
+      (the gate's `plain` KASLR rows do, tools/kaslr_image.sh). The slide
+      itself is printed only on a BUILD_TYPE_DEV image; other builds print that
+      the image is slid and by how many bits.
+
+      Not available (the choice is hidden, KASLR_AVAILABLE): riscv64 on a
+      small board (HWCLASS_EMBEDDED), whose image runs in the firmware's
+      identity map without an MMU of its own, and the x86_64 Limine image,
+      which the loader places.
+
+    config KASLR_NEVER
+        bool "n: link address = run address"
+    config KASLR_PROBE
+        bool "probe: slide when the boot finds a seed, else run at the link address"
+    config KASLR_REQUIRE
+        bool "require: refuse to boot without a seed"
+endchoice

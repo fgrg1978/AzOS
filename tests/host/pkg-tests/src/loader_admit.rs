@@ -103,7 +103,7 @@ fn the_loader_has_no_static_buffer_and_no_fixed_size() {
     assert!(!LOADER.contains("static mut AUTORUN_BUF"));
     assert!(!LOADER.contains("AUTORUN_ELF_MAX"));
     assert!(!LOADER.contains("LOADER_BUSY"), "nothing is shared, so nothing is locked");
-    let kconfig = include_str!("../../../../config/Kconfig.limits");
+    let kconfig = include_str!("../../../../config/limits/Kconfig.limits");
     assert!(!kconfig.contains("AUTORUN_ELF_MAX_KB"));
 }
 

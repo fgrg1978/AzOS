@@ -99,7 +99,7 @@ fn x86_64_ibt_drives_cf_protection_in_the_kernel_and_the_user_images() {
 
 #[test]
 fn x86_64_without_xsaves_has_no_ibt_and_no_pads() {
-    // CET IBT depends on XSAVES (config/Kconfig.arch): XSAVE `n` takes both to `n`.
+    // CET IBT depends on XSAVES (config/arch/Kconfig.isa-x86_64): XSAVE `n` takes both to `n`.
     let (k, _) = both(&expand("x86-noxsave.config", &[X86, "CONFIG_X86_64_LEVEL_V1=y", "CONFIG_X86_XSAVE_NEVER=y"]));
     assert!(!k.contains("cf-protection"), "{k}");
 }
@@ -121,7 +121,7 @@ fn x86_64_retpoline_and_branch_protection_compose() {
 #[test]
 fn riscv64_has_no_cfi_codegen_and_no_choice() {
     // No Zicfilp symbol until the boot can probe and refuse it
-    // (config/Kconfig.security, "Not done"): no pads in the kernel or the user images.
+    // (config/kernel/Kconfig.hardening, "Not done"): no pads in the kernel or the user images.
     let (k, u) = both(&expand("rv.config", &[RV]));
     assert!(!k.contains("cf-protection") && !k.contains("zicfilp"), "kernel: {k}");
     assert!(!u.contains("cf-protection") && !u.contains("zicfilp"), "user: {u}");

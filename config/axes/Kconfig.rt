@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/axes/Kconfig.rt — The RT axis: the real-time class
+
+# ---------------------------------------------------------------------------
+# RT
+# ---------------------------------------------------------------------------
+
+choice
+    prompt "Real-time class (RT)"
+    default RT_HARD if PRESET_ROBOT || PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
+    default RT_SOFT if PRESET_IOT_HMI || PRESET_GATEWAY || PRESET_DESKTOP || \
+                       PRESET_FIRMWARE || PRESET_WEARABLE
+    default RT_NONE
+    help
+      What the image promises about time. The real-time band
+      (SCHED_CLASS_RT) is in every image, because the shared actuation
+      authority runs in it; this axis says whether the image's own tasks
+      depend on it.
+
+    config RT_NONE
+        bool "None"
+        help
+          No task of the image has a deadline.
+
+    config RT_SOFT
+        bool "Soft"
+        depends on SCHED_CLASS_RT
+        help
+          Deadlines whose misses degrade a service (audio, display,
+          haptics, sensor reads).
+
+    config RT_HARD
+        bool "Hard"
+        depends on SCHED_CLASS_RT
+        depends on MM_PRECOMMIT_RT || !MM_DEMAND_PAGING
+        help
+          Deadlines whose misses are faults (a motor loop, a control loop).
+          A hard task must never take a demand fault: mmap commits at map
+          time for it (MM_PRECOMMIT_RT), or for everyone (no demand paging).
+
+    config RT_MIXED
+        bool "Mixed (a hard cluster beside a general cluster)"
+        depends on SCHED_CLASS_RT
+        depends on MM_PRECOMMIT_RT || !MM_DEMAND_PAGING
+        help
+          Hard deadlines on a few harts kept apart, and a general-purpose
+          workload on the others.
+
+endchoice

@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/axes/Kconfig.preset — PRESET, the one choice a defconfig needs
+#
+# Seven axes describe what an image is:
+#   HWCLASS    the hardware class            (config/axes/Kconfig.hwclass)
+#   USE        what the image is for         (config/axes/Kconfig.use, USE_*; derived 1:1 from the
+#                                             preset, not a choice)
+#   STRUCTURE  where the drivers run         (config/axes/Kconfig.structure)
+#   RT         the real-time class           (config/axes/Kconfig.rt)
+#   SECURITY   the security posture          (config/axes/Kconfig.security)
+#   BUILD_TYPE dev / release / certifiable   (config/axes/Kconfig.build)
+#   VIRT       the hypervisor role           (config/axes/Kconfig.virt)
+# and one choice, PRESET, sets all of them at once. A defconfig is one PRESET
+# line plus its board lines (ISA, board, RAM, the HWCLASS the board is).
+#
+# A preset works only through `default ... if PRESET_*` on the axes and
+# through the axes' own `default`/`imply` lines on the options they own; it
+# never `select`s. Every axis can be changed by hand after the preset, and a
+# value set by hand wins. A hard incompatibility is a `depends on`.
+#
+# USE is what was called the application domain: it has no menu of its own and is
+# set by the PRESET alone (a defconfig names the preset, never a USE_* symbol).
+# Its symbols are USE_* (the cargo feature `use-robot`, the generated
+# constants and the robot menus are named after it). "Domain" now names only the isolation object.
+
+choice
+    prompt "Preset"
+    default PRESET_GENERIC
+    help
+      One choice that sets every axis below (and, through them, the options
+      the axes own) to the values the preset needs. Choose the closest
+      preset first, then change an axis or an option by hand where the
+      product differs: a value set by hand wins over the preset's. The
+      board lines of a defconfig (ISA, board, RAM size, HWCLASS) are not
+      the preset's: a robot on a 64 MiB board is PRESET_ROBOT with
+      HWCLASS_EMBEDDED.
+
+      The presets do not set BUILD_TYPE: a QEMU image is a development
+      build and a board image a release build whatever the preset is.
+      `make check-presets` expands every preset on every ISA.
+
+    config PRESET_GENERIC
+        bool "General: Generic (QEMU, development, evaluation)"
+        help
+          A general-purpose kernel: USE generic, RT none, hybrid structure,
+          general security. The old edge/embedded/fleet defconfigs.
+
+    config PRESET_ROBOT
+        bool "Embedded control: Robot (mobile robots, drones, robotic arms)"
+        depends on CAP_SLOT_EXT
+        help
+          USE robot (the robot crates and tasks are linked), RT hard. The
+          durable refusal receipt (DECISION_REFUSALS_DURABLE) is on in
+          every preset. Write-ahead receipts for ring-3 motor ops
+          (EFFECT_WRITE_AHEAD) are on in this preset, because USE is robot;
+          no other preset links the robot crates.
+          Needs CAP_SLOT_EXT: the behavior loop reaches the ring-3 inference
+          service through a badged endpoint capability, which a one-word
+          capability slot cannot hold, so without it every cycle would end
+          unavailable and the loop would stay at STOP for good.
+
+    config PRESET_INDUSTRIAL
+        bool "Embedded control: Industrial (PLC, CNC, motion control)"
+        help
+          USE industrial, RT hard, SECURITY separation-static, VIRT static,
+          memory committed at map time (no demand paging).
+
+    config PRESET_AUTOMOTIVE
+        bool "Embedded control: Automotive (ECU, ADAS, telematics)"
+        help
+          As industrial, USE automotive.
+
+    config PRESET_FIRMWARE
+        bool "Embedded control: Firmware (BMC, storage or power controllers)"
+        help
+          USE firmware on HWCLASS embedded, RT soft, hardened.
+
+    config PRESET_IOT_HMI
+        bool "Connected devices: IoT / HMI (smart panels, kiosks, appliances)"
+        help
+          USE iot-hmi (display, touch, battery), RT soft, hardened.
+
+    config PRESET_WEARABLE
+        bool "Connected devices: Wearable (smartwatch, fitness band)"
+        help
+          USE wearable on HWCLASS embedded, RT soft, hardened.
+
+    config PRESET_GATEWAY
+        bool "Connected devices: Gateway (edge router, protocol bridge)"
+        help
+          USE gateway (the larger network tables), RT soft, hardened.
+
+    config PRESET_DESKTOP
+        bool "Computers: Desktop (workstation, laptop, mini-PC)"
+        help
+          USE desktop on HWCLASS desktop, RT soft, hardened, demand paging;
+          VIRT hosted on x86_64 and split on aarch64.
+
+    config PRESET_SERVER
+        bool "Computers: Server (rack server, cloud node, NAS)"
+        help
+          USE server on HWCLASS server (the Fleet cap tables), RT none,
+          hardened; VIRT hosted on x86_64 and split on aarch64.
+
+endchoice

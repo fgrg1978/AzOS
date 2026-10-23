@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/kernel/Kconfig.decisions — Decision records (why a request was refused or granted)
+
+config DECISION_RECORDS_DEV
+    # cargo-feature: decisions base
+    bool "Explainable decision records: the ring, every rule"
+    default y if KTEST || !HWCLASS_EMBEDDED
+    default n
+    help
+      Boot deadline admission, the real-time band cap, boot memory
+      admission, the placement of a woken task on a CPU other than its last
+      one, and typed capability denials each write one record naming the
+      rule, the verdict, the subject, the numbers the rule compared and the
+      alternative it rejected (crates/core/decision). The introspection
+      tree's admin region holds the newest 24 (`decisions/records/<n>`);
+      `why list` prints them.
+
+      On by default in every preset except on a small board
+      (HWCLASS_EMBEDDED, whose defconfig names it to have it), and in every
+      KTEST kernel (owner, 2026-10-22: the receipts ship on), on the
+      condition that the gate row `bench: receipts cost <= 1%`
+      (tools/vsbench_cost.sh: the ipc and shell vsbench lanes, this symbol
+      off against on, -icount at one hart) holds. Off: every record site
+      compiles out. On: a migrating wake pays about 40 instructions and six
+      stores (the last is the clock stamp), the admission and denial paths
+      the same per record, and the ring costs DECISION_RECORDS_ENTRIES x 48
+      bytes of .bss. Maps to the kernel cargo feature `decisions`, a `base`
+      tag: emitted unless the symbol is n, so the gate's kernels carry what
+      the presets ship.
+
+      This is the development view. The durable receipt of a refusal is
+      DECISION_REFUSALS_DURABLE, which does not need this symbol (this one
+      was called DECISION_RECORDS before the split).
+
+config DECISION_REFUSALS_DURABLE
+    # cargo-feature: decisions-durable base
+    bool "Explainable decision records: durable receipt of every refusal"
+    default y
+    help
+      Every refusal that goes through crates/core/decision (boot deadline
+      and memory admission, the real-time band cap, and the run-time
+      SCHED_DEADLINE reservation `rt::reserve` refusing a task) also writes
+      one record to the flight recorder, which survives a reset: the rule,
+      the subject and the numbers it compared (for a reservation: the
+      budget and period asked and the budget the best hart could still
+      give). A refusal leaves a receipt whether or not DECISION_RECORDS_DEV
+      is on. So does every verdict of the console login (CONSOLE_LOGIN): a
+      session admitted is an audit record like an attempt refused.
+
+      The record is queued, not flushed, in a real-time caller: the log
+      flusher writes it, as it does every other real-time caller's record
+      (an RT task never does block I/O). A refusal raised before the flight
+      recorder is armed (boot admission) reaches the console and, when
+      DECISION_RECORDS_DEV is on, the ring, and nothing else. Refusals are
+      never rate-limited. Capability denials (the `Deny` verdict) are also
+      recorded, under DECISION_DENY_DURABLE_PER_SEC, because a ring-3 loop
+      can raise one per syscall.
+
+      Cost: nothing on the wake path (the record is conditional on a
+      refusal or a denial), and one 20-byte flight-recorder record per
+      refusal or admitted denial. Maps to the kernel cargo feature
+      `decisions-durable`.
+
+config DECISION_DENY_DURABLE_PER_SEC
+    int "Explainable decision records: durable capability denials per second, per task"
+    range 0 1000
+    default 4
+    help
+      A capability denial (verdict `deny`, rule `cap-denial`) also writes a
+      flight-recorder record, through a token bucket per subject task: this
+      many records per second refill the bucket, DECISION_DENY_DURABLE_BURST
+      is its depth. The bucket table is small and fixed; a task past it
+      shares one bucket with the other overflow tasks, so the total stays
+      bounded however many tasks deny.
+
+      A denial the bucket drops is counted. The count rides in the third
+      number (`dropped`) of the next denial record that is written, durable
+      and ring, and the total is the introspection tree's
+      `decisions/deny_dropped`. 0 turns the durable denial record off
+      (nothing is counted); refusals are not affected.
+
+config DECISION_DENY_DURABLE_BURST
+    int "Explainable decision records: durable capability denials, burst"
+    range 1 64
+    default 8
+    help
+      Depth of the per-task bucket of DECISION_DENY_DURABLE_PER_SEC: how many
+      denials a task may leave a durable record for back to back, from a
+      full bucket.
+
+config DECISION_RECORDS_ENTRIES
+    int "Explainable decision records: ring depth"
+    range 8 4096
+    default 16 if HWCLASS_EMBEDDED
+    default 256 if HWCLASS_SERVER
+    default 64
+    help
+      Records kept; the oldest is overwritten. 48 bytes each. Raise it when
+      migrating wakes evict the boot admission records you want to read;
+      read only when DECISION_RECORDS_DEV is on.
+
+config DECISION_JOURNAL_ENTRIES
+    int "Explainable decision records: durable journal depth"
+    range 8 4096
+    default 16 if HWCLASS_EMBEDDED
+    default 128 if HWCLASS_SERVER
+    default 32
+    help
+      Decisions kept whole in RAM after they went down the durable path (a
+      refusal, a rate-limited capability denial): the rule, verdict, subject,
+      numbers, clock and every provenance field (crates/core/decision,
+      `journal`). The flight recorder keeps a 20-byte receipt on the medium;
+      this is what `why <id>` (the recovery console, the Decisions
+      interface) and the decision query read it back from, with the ring off.
+      The oldest is overwritten. 112 bytes each of .bss, only with
+      DECISION_REFUSALS_DURABLE. A capability-denial storm (bounded by
+      DECISION_DENY_DURABLE_PER_SEC per task) can push an old refusal out
+      of a small journal; the receipt on the medium is not affected.

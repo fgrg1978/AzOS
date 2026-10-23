@@ -247,6 +247,10 @@ BEHAVIOR_ELF  := $(OUT_BUILD)/behavior.elf
 CONFIG_ELF    := $(OUT_BUILD)/config.elf
 OTA_ELF       := $(OUT_BUILD)/ota.elf
 FAM_ELFS      := $(FLIGHT_ELF) $(BEHAVIOR_ELF) $(CONFIG_ELF) $(OTA_ELF)
+# Every Kconfig file (the root, config/Kconfig, the topic files under
+# config/*/ and the generated config/Kconfig.userspace): an expanded config
+# depends on all of them. iCloud's "NAME 2" duplicates are not sources.
+KCONFIG_FILES := Kconfig $(shell find config -name 'Kconfig*' -not -name '* [0-9]*' | sort)
 # The hardened ring-3 allocator (userspace/lib/ualloc, Kconfig USER_ALLOC_*):
 # its knobs reach the program through azos_limits, so the configuration is an
 # input of the programs that link it (KCONFIG_CONFIG is defined further down).
@@ -328,7 +332,7 @@ IPCTEST_ELF   := $(OUT_BUILD)/ipctest.elf
 TARGET_AARCH64 := aarch64-unknown-azos
 comma := ,
 # ── aarch64 translation granule of the user images ──────────────────────────
-# config/Kconfig.arch AARCH64_PAGE_* picks the kernel's granule; a user image
+# config/arch/Kconfig.isa AARCH64_PAGE_* picks the kernel's granule; a user image
 # must be linked for the same page (`-z max-page-size`: lld starts each segment
 # on a page of its own at that size; the target spec's 4096 is the default
 # granule's) and libsys must agree
@@ -340,7 +344,7 @@ comma := ,
 #   make AARCH64_PAGE_SIZE=16384 aarch64                            -> build/kernel-aarch64-16k.img
 AARCH64_PAGE_SIZE ?= 4096
 # ── aarch64 baseline of the user images ─────────────────────────────────────
-# The Kconfig level and `require`d extensions (config/Kconfig.arch
+# The Kconfig level and `require`d extensions (config/arch/Kconfig.isa-aarch64
 # AARCH64_LEVEL, A64_*) as user codegen flags, from the expanded config the
 # kernel is built from (tools/kconfig_to_cargo.py --user-rustflags). Armv8.0
 # with nothing required (QEMU's default) emits nothing, so the default images
@@ -466,7 +470,7 @@ LIBSYS_SRC := $(LIBSYS_DIR)/Cargo.toml $(LIBSYS_DIR)/src/lib.rs \
 # every userspace crate, build-std's included.
 USPACE_METADATA_TAG := $(shell python3 -c 'import hashlib; print(hashlib.sha256(open("userspace/rustc_stable_metadata.py", "rb").read()).hexdigest()[:12])')
 # The riscv64 user images' codegen beyond the target triple: the Kconfig
-# extensions set to `require` (config/Kconfig.arch RV_ZBA/ZBB/ZBS; nothing on
+# extensions set to `require` (config/arch/Kconfig.isa-riscv64 RV_ZBA/ZBB/ZBS; nothing on
 # QEMU's default, so the default images and digests do not move). A board's
 # images: `make RV_USER_KCONFIG=build/k1.config userspace`.
 RV_USER_KCONFIG ?= $(OUT_BUILD)/qemu-dev.config
@@ -552,7 +556,7 @@ K1_LINKER   := kernel/linker-k1.ld
 # probe with a scalar fallback (`crates/core/arch-riscv64/src/cache.rs` for Zicboz). This
 # is for extensions the board is known to have at build time.
 #
-# The flags come from the Kconfig (config/Kconfig.arch: the K1's RV_ZBA/ZBB/ZBS
+# The flags come from the Kconfig (config/arch/Kconfig.isa-riscv64: the K1's RV_ZBA/ZBB/ZBS
 # default to `require`) through tools/kconfig_to_cargo.py --rustflags, the one
 # emitter every kernel rule uses; crates/core/limits/build.rs refuses a kernel
 # build whose target features disagree with its Kconfig.
