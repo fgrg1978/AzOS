@@ -68,8 +68,7 @@ pub use azos_abi::drv_kind::{
 pub const DRIVER_REQUEST_QUEUE_DEPTH: usize = 8;
 
 // ───────────────────────────────────────────────────────────────────────────
-// Payload + reply buffer sizes (inline in request, small — larger transfers
-// should use the F15 zero-copy pipeline).
+// Payload + reply buffer sizes (inline in request, small).
 // ───────────────────────────────────────────────────────────────────────────
 
 pub const DRIVER_REQUEST_PAYLOAD_BYTES: usize = 64;

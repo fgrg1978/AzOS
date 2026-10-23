@@ -9,8 +9,6 @@
 //! - `gguf`      — minimal GGUF v1–v3 parser, no_std / no alloc (Phase C)
 //! - `quant`     — F32 / Q8_0 / Q4_0 dequantisation (Phase C)
 //! - `ggml_nano` — linear-layer engine + `gguf_mlp_infer` (Phase C)
-//! - `conv`, `int8`, `pipeline` — convolutional operators, INT8 inference and
-//!   the zero-copy pipeline (Phases F08, F15)
 //! - `bundle`    — the signed `.MBL` model bundle the inference service reads
 //!
 //! The behavior loop's 4→8→3 obstacle-avoidance MLP is a GGUF file
@@ -29,20 +27,13 @@
 pub mod gguf;
 pub mod quant;
 pub mod ggml_nano;
-// ── Phase F08: Convolutional operators ──────────────────────────────────────
-pub mod conv;
-// ── Phase F08.8: INT8 quantized inference ──────────────────────────────────
-pub mod int8;
-// ── Phase F15: Zero-copy inference pipeline ─────────────────────────────────
-pub mod pipeline;
 // ── Signed model bundle (.MBL): per-backend variants and a signed cost table ─
 pub mod bundle;
 
 /// Human-readable class names for the 3 output neurons of the behavior MLP.
 pub const CLASS_NAMES: [&str; 3] = ["go_forward", "turn_right", "stop"];
 
-/// Dot product: the sequential loop, left to right. Shared by `conv` and
-/// `ggml_nano`.
+/// Dot product: the sequential loop, left to right. `ggml_nano`'s default.
 #[inline(always)]
 pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
