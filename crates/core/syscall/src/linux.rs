@@ -1542,12 +1542,12 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                     abs_deadline_ticks(ns, op & FUTEX_CLOCK_REALTIME != 0)
                 })
             };
-            let (key, kva) = match futex_word(uaddr, private) {
+            let (key, shm) = match futex_word(uaddr, private) {
                 Ok(w) => w,
                 Err(e) => return e,
             };
             reach(k::SYS_FUTEX_WAIT);
-            azos_sched::futex::wait_key(key, val as u32, deadline, &|| futex_read(uaddr, kva))
+            azos_sched::futex::wait_key(key, val as u32, deadline, &|| futex_read(uaddr, shm))
         }
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
             let (key, _) = match futex_word(uaddr, private) {
@@ -1563,7 +1563,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             if nr_wake < 0 || nr_requeue < 0 {
                 return neg(le::EINVAL);
             }
-            let (from, kva) = match futex_word(uaddr, private) {
+            let (from, shm) = match futex_word(uaddr, private) {
                 Ok(w) => w,
                 Err(e) => return e,
             };
@@ -1574,7 +1574,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             // A requeue is a wake that moves the rest: the wake's authority.
             reach(k::SYS_FUTEX_WAKE);
             let cmp = (cmd == FUTEX_CMP_REQUEUE).then_some(val3 as u32);
-            match azos_sched::futex::requeue(from, to, nr_wake as u32, nr_requeue as u32, cmp, &|| futex_read(uaddr, kva)) {
+            match azos_sched::futex::requeue(from, to, nr_wake as u32, nr_requeue as u32, cmp, &|| futex_read(uaddr, shm)) {
                 // Linux answers woken + requeued for both ops.
                 Ok((woken, moved)) => (woken + moved) as i64,
                 Err(e) => e,
@@ -1586,7 +1586,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             if uaddr2 & 3 != 0 || uaddr == uaddr2 {
                 return neg(le::EINVAL);
             }
-            let (from, kva) = match futex_word(uaddr, private) {
+            let (from, shm) = match futex_word(uaddr, private) {
                 Ok(w) => w,
                 Err(e) => return e,
             };
@@ -1594,7 +1594,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                 Ok(w) => w,
                 Err(e) => return e,
             };
-            let read = || futex_read(uaddr, kva);
+            let read = || futex_read(uaddr, shm);
             if cmd == FUTEX_WAIT_REQUEUE_PI {
                 // Absolute, on the clock the flag names (as FUTEX_LOCK_PI2's).
                 let deadline = if timeout == 0 {
@@ -1645,7 +1645,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             // pi_state, as N9 keys plain shared futexes.
             if !private && azos_sched::futex_table::SHARED {
                 let tid = azos_sched::current_proc_tid();
-                if let Some((region, off, _)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
+                if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
                     let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
                     return azos_sched::futex::pi_call_key(key, &ShmPiWord { tid, uaddr }, pcmd);
                 }
@@ -1656,21 +1656,21 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
     }
 }
 
-/// The futex-table key of the word at `uaddr`, and the kernel address of a
-/// shared word (0 for a private one, read through `copy_from_user`).
-fn futex_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, usize), i64> {
+/// The futex-table key of the word at `uaddr`, and whether it is a word of a
+/// shm region (read through the region, [`futex_read`]; a private one through
+/// `copy_from_user`).
+fn futex_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, bool), i64> {
     if uaddr & 3 != 0 {
         return Err(neg(le::EINVAL));
     }
     if !private && azos_sched::futex_table::SHARED {
         // The mapping is the process's, whichever thread asks (as notify).
         let tid = azos_sched::current_proc_tid();
-        if let Some((region, off, phys)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
-            let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
-            return Ok((key, azos_mm::addr::phys_to_virt(phys)));
+        if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
+            return Ok((azos_sched::futex::Key::Shared { obj: region, offset: off as u32 }, true));
         }
     }
-    azos_sched::futex::private_key(uaddr).map(|key| (key, 0)).ok_or(neg(le::EFAULT))
+    azos_sched::futex::private_key(uaddr).map(|key| (key, false)).ok_or(neg(le::EFAULT))
 }
 
 /// The key and word of the PI word at `uaddr` (requeue-PI's `uaddr2`),
@@ -1679,7 +1679,7 @@ fn futex_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, usiz
 fn pi_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, LxPiWord), i64> {
     if !private && azos_sched::futex_table::SHARED {
         let tid = azos_sched::current_proc_tid();
-        if let Some((region, off, _)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
+        if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
             let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
             return Ok((key, LxPiWord::Shm(ShmPiWord { tid, uaddr })));
         }
@@ -1717,46 +1717,45 @@ impl azos_sched::futex::PiWord for LxPiWord {
 
 /// A PI word of a shm region, resolved through the caller's process mapping
 /// on every access (N10b): a relock after the sleep never trusts a page
-/// taken before it, and an unmapped region answers `EFAULT`. Shm pages are
-/// never copy-on-write, so the CAS never needs a fault.
+/// taken before it, and an unmapped region answers `EFAULT`. Each access runs
+/// with the region table held (`memobj_with_mapped_word`), so the frame
+/// cannot change owner under it; the swap also needs the mapping writable
+/// now, a writable object and a page no clone shares, else `EFAULT`. No
+/// fault-in: only the owner's `SYS_MO_MAP` protect changes a shm mapping's
+/// access (no kernel path write-protects one for a while), and a writable
+/// mapping has no clone-shared page (the map and the protect break them).
 struct ShmPiWord {
     tid: u32,
     uaddr: u64,
 }
 
-impl ShmPiWord {
-    fn word(&self) -> Result<&'static core::sync::atomic::AtomicU32, azos_sync::pi_futex::UserFault> {
-        let Some((_, _, phys)) = azos_ipc::memobj::memobj_resolve_mapped(self.tid, self.uaddr as usize) else {
-            return Err(azos_sync::pi_futex::UserFault);
-        };
-        // SAFETY: a 4-aligned word (checked by the caller) of a page of a
-        // region the caller's process maps now; the kernel's direct map of
-        // a RAM frame is valid for an atomic 32-bit access.
-        Ok(unsafe { &*(azos_mm::addr::phys_to_virt(phys) as *const core::sync::atomic::AtomicU32) })
-    }
-}
-
 impl azos_sched::futex::PiWord for ShmPiWord {
     fn read(&self) -> Result<u32, azos_sync::pi_futex::UserFault> {
-        Ok(self.word()?.load(core::sync::atomic::Ordering::Acquire))
+        use core::sync::atomic::Ordering::Acquire;
+        azos_ipc::memobj::memobj_with_mapped_word(self.tid, self.uaddr as usize, false, |w| w.load(Acquire))
+            .ok_or(azos_sync::pi_futex::UserFault)
     }
     fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, azos_sync::pi_futex::UserFault> {
         use core::sync::atomic::Ordering::{AcqRel, Acquire};
-        Ok(match self.word()?.compare_exchange(expected, new, AcqRel, Acquire) {
-            Ok(v) | Err(v) => v,
+        azos_ipc::memobj::memobj_with_mapped_word(self.tid, self.uaddr as usize, true, |w| {
+            match w.compare_exchange(expected, new, AcqRel, Acquire) {
+                Ok(v) | Err(v) => v,
+            }
         })
+        .ok_or(azos_sync::pi_futex::UserFault)
     }
 }
 
-/// Read the futex word: through its region's page for a shared word (the
-/// caller's mapping holds the region for the call), else from user memory.
-fn futex_read(uaddr: u64, kva: usize) -> Option<u32> {
-    if kva == 0 {
+/// Read the futex word: through its region, with the region table held across
+/// the load (`memobj_with_mapped_word`), for a shm word; else from user memory.
+fn futex_read(uaddr: u64, shm: bool) -> Option<u32> {
+    if !shm {
         return crate::threads::read_u32(uaddr);
     }
-    // SAFETY: `kva` is a 4-byte-aligned word of a region the caller maps
-    // (`futex_word`), which holds the page for the call.
-    Some(unsafe { &*(kva as *const core::sync::atomic::AtomicU32) }.load(core::sync::atomic::Ordering::Acquire))
+    let tid = azos_sched::current_proc_tid();
+    azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, false, |w| {
+        w.load(core::sync::atomic::Ordering::Acquire)
+    })
 }
 
 /// `wait4(pid, wstatus, options, rusage)`: pid > 0 or -1; `WNOHANG` (1);

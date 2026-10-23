@@ -41,6 +41,7 @@ memobj-sweep-every-domain-canary = []
 memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
+memobj-word-unlocked-canary = []
 delete-revokes-canary = []
 move-lifts-depth-canary = []
 

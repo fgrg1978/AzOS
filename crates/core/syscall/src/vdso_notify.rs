@@ -137,11 +137,11 @@ pub fn notify_wake_kernel(region: u32, offset: u32, n: u32) -> u32 {
     azos_sched::futex::wake_key(key, n).max(0) as u32
 }
 
-/// The futex key of the aligned word at `uaddr`, and the kernel's view of
-/// the word when it lives in a shm region the caller's process maps. The key
-/// of such a word is (region, offset), never an address, so two tasks that
-/// map the region at different addresses meet on it; any other word is
-/// keyed by the process (what its threads share).
+/// The futex key of the aligned word at `uaddr`, and whether the word lives
+/// in a shm region the caller's process maps. The key of such a word is
+/// (region, offset), never an address, so two tasks that map the region at
+/// different addresses meet on it; any other word is keyed by the process
+/// (what its threads share).
 ///
 /// The region is found from the process's RECORDED MAPPING of it
 /// (`memobj_resolve_mapped`), not from a `Cap<Shm>` handle: a mapping is
@@ -150,30 +150,31 @@ pub fn notify_wake_kernel(region: u32, offset: u32, n: u32) -> u32 {
 /// (`cap_store::move_cap`), so a creator that gives its region to a peer
 /// keeps the mapping and loses the handle. Asked on every call, so a
 /// released mapping stops resolving at once.
-fn futex_word(uaddr: u64) -> Result<(azos_sched::futex::Key, Option<usize>), i64> {
+fn futex_word(uaddr: u64) -> Result<(azos_sched::futex::Key, bool), i64> {
     if uaddr & 3 != 0 {
         return Err(Errno::EINVAL.to_syscall_ret());
     }
     // The mapping is the process's, whichever thread asks.
     let tid = azos_sched::current_proc_tid();
-    if let Some((region, off, phys)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
-        let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
-        return Ok((key, Some(azos_mm::addr::phys_to_virt(phys))));
+    if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
+        return Ok((azos_sched::futex::Key::Shared { obj: region, offset: off as u32 }, true));
     }
     azos_sched::futex::private_key(uaddr)
-        .map(|key| (key, None))
+        .map(|key| (key, false))
         .ok_or(Errno::EFAULT.to_syscall_ret())
 }
 
-/// The word at `uaddr` as a user read, or through the kernel's view of its
-/// shm page (`kva`, from [`futex_word`]).
-fn futex_read(uaddr: u64, kva: Option<usize>) -> Option<u32> {
-    match kva {
-        // SAFETY: `kva` is a byte of a region the caller maps (hence holds a
-        // reference on), 4-byte aligned per `futex_word`.
-        Some(kva) => Some(unsafe { &*(kva as *const core::sync::atomic::AtomicU32) }.load(Ordering::Acquire)),
-        None => azos_sched::UserPtr::<u32>::new(uaddr).read().ok(),
+/// The word at `uaddr` as a user read, or, for a shm word ([`futex_word`]),
+/// through the kernel's map of its frame with the region table held across
+/// the load (`memobj_with_mapped_word`): the frame cannot go back to the PMM
+/// under the load, whatever another thread unmaps meanwhile. A word whose
+/// mapping went since the key was taken reads as unreadable.
+fn futex_read(uaddr: u64, shm: bool) -> Option<u32> {
+    if shm {
+        let tid = azos_sched::current_proc_tid();
+        return azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, false, |w| w.load(Ordering::Acquire));
     }
+    azos_sched::UserPtr::<u32>::new(uaddr).read().ok()
 }
 
 /// `SYS_FUTEX_WAIT`: `a0 = uaddr`, `a1 = expected`, `a2 = timeout_ns`
@@ -182,7 +183,7 @@ fn futex_read(uaddr: u64, kva: Option<usize>) -> Option<u32> {
 /// stop, or the scheduler refused to block (preemption disabled);
 /// `-EINVAL` misaligned; `-EFAULT` unreadable.
 pub fn sys_futex_wait(uaddr: u64, expected: u64, timeout_ns: u64) -> i64 {
-    let (key, kva) = match futex_word(uaddr) {
+    let (key, shm) = match futex_word(uaddr) {
         Ok(w) => w,
         Err(e) => return e,
     };
@@ -192,18 +193,18 @@ pub fn sys_futex_wait(uaddr: u64, expected: u64, timeout_ns: u64) -> i64 {
             azos_drv_sys::timebase::TIMER_FREQ,
         ))
     });
-    azos_sched::futex::wait_key(key, expected as u32, deadline, &|| futex_read(uaddr, kva))
+    azos_sched::futex::wait_key(key, expected as u32, deadline, &|| futex_read(uaddr, shm))
 }
 
 /// `SYS_FUTEX_WAKE`: `a0 = uaddr`, `a1 = n`. Wakes up to `n` waiters on the
 /// word and returns how many; `-EINVAL`/`-EFAULT` as [`sys_futex_wait`] (a
 /// word nobody can read is no futex).
 pub fn sys_futex_wake(uaddr: u64, n: u64) -> i64 {
-    let (key, kva) = match futex_word(uaddr) {
+    let (key, shm) = match futex_word(uaddr) {
         Ok(w) => w,
         Err(e) => return e,
     };
-    if kva.is_none() && futex_read(uaddr, None).is_none() {
+    if !shm && futex_read(uaddr, false).is_none() {
         return Errno::EFAULT.to_syscall_ret();
     }
     azos_sched::futex::wake_key(key, n.min(u32::MAX as u64) as u32)

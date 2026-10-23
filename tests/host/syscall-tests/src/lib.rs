@@ -350,6 +350,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod futex_shm_race {
+        use super::*;
+        include!("futex_shm_race.rs");
+    }
+
+    #[cfg(test)]
     mod demand_paging {
         use super::*;
         include!("demand_paging.rs");

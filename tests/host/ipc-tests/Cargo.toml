@@ -83,6 +83,8 @@ memobj-sweep-every-domain-canary = []
 memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
+# Front futex-shm-word (its test is in syscall-tests' futex_shm_race.rs).
+memobj-word-unlocked-canary = []
 delete-revokes-canary = []
 move-lifts-depth-canary = []
 

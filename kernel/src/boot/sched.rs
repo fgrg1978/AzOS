@@ -464,7 +464,7 @@ fn pi_futex_tid_of(t: u32) -> Option<u32> {
 /// word at `va` of process `proc_id`, if a shm region it maps holds it.
 /// Takes `MEMOBJS` only; never called under the futex table lock.
 fn robust_shm_word_of(proc_id: u32, va: u64) -> Option<(u32, u32)> {
-    let (region, off, _) = azos_ipc::memobj::memobj_resolve_mapped(proc_id, usize::try_from(va).ok()?)?;
+    let (region, off) = azos_ipc::memobj::memobj_resolve_mapped(proc_id, usize::try_from(va).ok()?)?;
     Some((region, u32::try_from(off).ok()?))
 }
 

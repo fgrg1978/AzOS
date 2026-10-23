@@ -1128,39 +1128,144 @@ fn take_mapping_root_locked(region: &mut MemObj, tid: u32) -> Option<(usize, usi
 }
 
 /// The region `tid` has MAPPED at user address `va`: `(packed reference,
-/// byte offset into the region, physical address of that byte)`, or `None`
-/// when no mapping `tid` has recorded covers `va`.
+/// byte offset into the region)`, or `None` when no mapping `tid` has recorded
+/// covers `va` (or covers it with a page of a Paged object that is not in the
+/// cache, or of an [`ATTR_NO_KERNEL_MAP`] object: no word the kernel may read).
 ///
-/// For `crate::notify` (wave 6), whose key is (region, offset) and never an
-/// address. A mapping is recorded only by `SYS_MO_MAP`, which demands
-/// `READ` and `MAP` on a `Cap<Shm>`, so resolving through it asks the same authority
-/// question — without needing the handle, which the creator loses when it
-/// moves the capability to a peer (`cap_store::move_cap`). Answered under the
-/// table lock on every call, so a released mapping stops resolving at once.
-pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize, usize)> {
-    let page = azos_arch::PAGE_SIZE;
-    let regions = MEMOBJS.lock_irqsave();
-    for (i, region) in regions.iter().enumerate() {
-        // The word is read and written by the kernel through the direct map.
-        if !region.active || region.attrs & ATTR_NO_KERNEL_MAP != 0 { continue; }
-        for h in region.holders.iter() {
-            if h.refs == 0 || h.tid != tid || h.map_va == 0 { continue; }
-            let span = h.map_pages.min(region.page_count) * page;
-            if va >= h.map_va && va - h.map_va < span {
-                let off = va - h.map_va;
-                // `va` is the caller's (notify wait/wake a0): the page index
-                // is masked after the check (Spectre v1, `azos_limits::nospec`).
-                let pg = azos_limits::nospec::array_index_nospec(off / page, span / page);
-                // A Paged page that is not in the cache names no word.
-                if region.phys_pages[pg] == 0 {
-                    continue;
-                }
-                let phys = region.phys_pages[pg] + off % page;
-                return Some((LAYOUT.pack(i as u32, region.generation), off, phys));
+/// For `crate::notify` (wave 6) and the futex calls, whose key is (region,
+/// offset) and never an address. A mapping is recorded only by `SYS_MO_MAP`,
+/// which demands `READ` and `MAP` on a `Cap<Shm>`, so resolving through it asks
+/// the same authority question — without needing the handle, which the creator
+/// loses when it moves the capability to a peer (`cap_store::move_cap`).
+/// Answered under the table lock on every call, so a released mapping stops
+/// resolving at once.
+///
+/// No address of the word comes out (front futex-shm-word): the lock is
+/// dropped on return, and an unmap or a revoke on another hart may then give
+/// the frame back to the PMM. The futex paths used to load (and the PI ones to
+/// swap) the word through the frame this returned, after that point. The word
+/// is reached with [`memobj_with_mapped_word`], under the lock.
+pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize)> {
+    let mut regions = MEMOBJS.lock_irqsave();
+    let w = resolve_mapped_locked(&mut regions, tid, va)?;
+    Some((LAYOUT.pack(w.idx as u32, regions[w.idx].generation), w.off))
+}
+
+/// Run `f` on the aligned 32-bit word `tid` maps at user address `va`, **with
+/// the region table locked across `f`**: `None` when `va` is misaligned or
+/// [`memobj_resolve_mapped`] names no word there, and, for `write`, when the
+/// mapping is not writable now, the object is read-only, or the page shares
+/// its frame with a clone (a write through the kernel's map would show in the
+/// clone and skip the copy-on-write the user's own store takes).
+///
+/// The futex paths' access to a shm word: the native wait's look at it and
+/// the Linux PI calls' read and compare-and-swap. A region's frames go back to
+/// the PMM only under this lock (`drop_refs_locked`, the purge), so the frame
+/// `f` sees cannot change owner before `f` returns, whatever another hart
+/// unmaps, releases or revokes meanwhile. `f` must be short and must not take
+/// this lock (one atomic access). Its order is the futex table's, then this
+/// one (`azos_sched::futex::register_shm_word_of`).
+pub fn memobj_with_mapped_word<R>(tid: u32, va: usize, write: bool, f: impl FnOnce(&AtomicU32) -> R) -> Option<R> {
+    if va % 4 != 0 {
+        return None;
+    }
+    let mut regions = MEMOBJS.lock_irqsave();
+    let w = resolve_mapped_locked(&mut regions, tid, va)?;
+    let region = &regions[w.idx];
+    if write
+        && (!region.holders[w.holder].map_write
+            || region.perms != MemPerms::ReadWrite
+            || region.cow_shared & (1u64 << w.page) != 0)
+    {
+        return None;
+    }
+    // SAFETY: a 4-aligned word of a frame of a live region, which cannot be
+    // freed while the guard is held (see the doc); the direct map of a RAM
+    // frame is valid for an atomic 32-bit access.
+    let word = unsafe { &*(azos_mm::addr::phys_to_virt(w.phys) as *const AtomicU32) };
+    // Canary `memobj-word-unlocked-canary`: the word is used with the table
+    // unlocked, as the futex paths did with the frame they had resolved.
+    let held = if cfg!(feature = "memobj-word-unlocked-canary") {
+        drop(regions);
+        None
+    } else {
+        Some(regions)
+    };
+    #[cfg(not(target_os = "none"))]
+    {
+        let h = *WORD_HOOK.lock();
+        if let Some(h) = h {
+            h(w.phys);
+        }
+    }
+    let out = f(word);
+    drop(held);
+    Some(out)
+}
+
+/// Host suites only: called with the frame address between the lookup of a
+/// word in [`memobj_with_mapped_word`] and `f` (`futex_shm_race.rs` parks a
+/// futex there).
+#[cfg(not(target_os = "none"))]
+static WORD_HOOK: SpinLock<Option<fn(usize)>> = SpinLock::new(None);
+
+/// Host suites only: install or remove [`WORD_HOOK`].
+#[cfg(not(target_os = "none"))]
+pub fn shim_set_word_hook(hook: Option<fn(usize)>) {
+    *WORD_HOOK.lock() = hook;
+}
+
+/// A word [`resolve_mapped_locked`] found: region index, holder index, byte
+/// offset into the region, page index (masked) and the word's physical
+/// address. Valid only while the table lock that found it is held.
+struct MappedWord {
+    idx: usize,
+    holder: usize,
+    off: usize,
+    page: usize,
+    phys: usize,
+}
+
+/// [`memobj_resolve_mapped`] under the lock: a scan of every holder of every
+/// region.
+fn resolve_mapped_locked(t: &mut MemObjTable, tid: u32, va: usize) -> Option<MappedWord> {
+    for (i, region) in t.regions.iter().enumerate() {
+        for h in 0..MAX_MEMOBJ_HOLDERS {
+            if let Ok(Some(w)) = mapped_word_locked(region, i, h, tid, va) {
+                return Some(w);
             }
         }
     }
     None
+}
+
+/// The word at `va` through holder `h` of region `region` (index `i`):
+/// `Err` when that holder no longer records a live mapping of `tid` that
+/// covers `va` (the caller scans), `Ok(None)` when it does but names no word
+/// (past a shrunk object's last page, or a Paged page out of the cache).
+fn mapped_word_locked(region: &MemObj, i: usize, h: usize, tid: u32, va: usize) -> Result<Option<MappedWord>, ()> {
+    let page = azos_arch::PAGE_SIZE;
+    let hd = &region.holders[h];
+    // The word is read and written by the kernel through the direct map.
+    if !region.active || region.attrs & ATTR_NO_KERNEL_MAP != 0 || hd.refs == 0 || hd.tid != tid || hd.map_va == 0 {
+        return Err(());
+    }
+    let span = hd.map_pages.min(region.page_count) * page;
+    if va < hd.map_va || va - hd.map_va >= hd.map_pages * page {
+        return Err(());
+    }
+    let off = va - hd.map_va;
+    if off >= span {
+        return Ok(None);
+    }
+    // `va` is the caller's (a futex or notify a0): the page index is masked
+    // after the check (Spectre v1, `azos_limits::nospec`).
+    let pg = azos_limits::nospec::array_index_nospec(off / page, span / page);
+    // A Paged page that is not in the cache names no word.
+    if region.phys_pages[pg] == 0 {
+        return Ok(None);
+    }
+    Ok(Some(MappedWord { idx: i, holder: h, off, page: pg, phys: region.phys_pages[pg] + off % page }))
 }
 
 /// The physical address of page `page_idx` of the region a packed reference
@@ -3626,9 +3731,10 @@ mod tests {
 
     /// **The notify word is the word the mapping shows (wave 11 fix).** For
     /// every 4-aligned offset of a multi-page region, at the start, middle and
-    /// end of each page: a word written through the frame `memobj_resolve_mapped`
-    /// names for the mapped address is the word `memobj_with_word_ref` reads at
-    /// that region offset, and the first offset past the region is `None`.
+    /// end of each page: a word written through the mapped address
+    /// (`memobj_with_mapped_word`, the futex paths' access) is the word
+    /// `memobj_with_word_ref` reads at the region offset `memobj_resolve_mapped`
+    /// names, and the first offset past the region is `None`.
     /// Both split the offset with the build's granule.
     ///
     /// At the default 4 KiB host page the old fixed 4096 agreed by accident;
@@ -3650,20 +3756,21 @@ mod tests {
         for p in 0..PAGES {
             for off in [p * page, p * page + page / 2 + 4, p * page + page - 4] {
                 tag += 1;
-                let (rr, roff, phys) = memobj_resolve_mapped(A, VA + off).expect("mapped");
-                assert_eq!((rr, roff), (r, off));
-                let w = azos_mm::addr::phys_to_virt(phys);
-                unsafe { (*(w as *const AtomicU32)).store(tag, Ordering::Release) };
+                assert_eq!(memobj_resolve_mapped(A, VA + off), Some((r, off)));
+                assert_eq!(memobj_with_mapped_word(A, VA + off, true, |w| w.store(tag, Ordering::Release)), Some(()));
                 let v = memobj_with_word_ref(r, off, |word| word.load(Ordering::Acquire));
                 assert_eq!(v, Ok(Some(tag)), "offset {off:#x}: the notify word is not the mapped word");
             }
         }
         assert_eq!(memobj_with_word_ref(r, PAGES * page, |w| w.load(Ordering::Acquire)), Ok(None));
         assert_eq!(memobj_resolve_mapped(A, VA + PAGES * page), None);
+        assert_eq!(memobj_with_mapped_word(A, VA + PAGES * page, false, |w| w.load(Ordering::Acquire)), None);
     }
 
     /// The source half of the fix above: the two functions that split a
-    /// region offset into (frame, offset in frame) both take the granule from
+    /// region offset into (frame, offset in frame), `memobj_with_word_ref` and
+    /// `mapped_word_locked` (the mapped-address half of `memobj_resolve_mapped`
+    /// and `memobj_with_mapped_word`), both take the granule from
     /// `azos_arch::PAGE_SIZE`, and neither carries a page size of its
     /// own. Red on the old `memobj_with_word_ref` (`const PAGE: usize = 4096`).
     ///
@@ -3677,11 +3784,11 @@ mod tests {
     fn no_fixed_page_size_in_the_offset_split() {
         const SRC: &str = include_str!("memobj.rs");
         let body = |name: &str| {
-            let start = SRC.find(&format!("pub fn {name}")).unwrap_or_else(|| panic!("{name} not found"));
+            let start = SRC.find(&format!("fn {name}")).unwrap_or_else(|| panic!("{name} not found"));
             let end = start + SRC[start..].find("\n}\n").expect("end of fn");
             &SRC[start..end]
         };
-        for name in ["memobj_with_word_ref", "memobj_resolve_mapped"] {
+        for name in ["memobj_with_word_ref", "mapped_word_locked"] {
             let b = body(name);
             assert!(b.contains("azos_arch::PAGE_SIZE"), "{name} does not take the build's granule");
             for fixed in ["4096", "0x1000", "16384", "65536"] {
@@ -3692,6 +3799,44 @@ mod tests {
             let load = b.find("phys_pages[").expect("phys_pages load");
             assert!(mask < load, "{name} masks after its phys_pages load");
         }
+    }
+
+    /// **A shm word is written only where the user could store.** The Linux PI
+    /// calls swap their word through the kernel's map of the frame
+    /// (`memobj_with_mapped_word(.., true, ..)`), which no PTE stops: so the
+    /// mapping must be writable now, the object writable, and the page not
+    /// shared with a clone. Before front futex-shm-word nothing was checked:
+    /// `FUTEX_LOCK_PI` on a word of a read-only mapping (a server's published
+    /// page) stored the caller's TID into it. Reads are allowed on all three.
+    #[test]
+    fn a_mapped_word_is_written_only_through_a_writable_mapping() {
+        let _g = setup();
+        const VA: usize = 0x4000_0000;
+        let store = |va: usize| memobj_with_mapped_word(A, va, true, |w| w.store(7, Ordering::Release));
+        let load = |va: usize| memobj_with_mapped_word(A, va, false, |w| w.load(Ordering::Acquire));
+
+        let rw = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RO), Ok(true));
+        assert_eq!(store(VA), None, "a read-only mapping is written");
+        assert_eq!(load(VA), Some(0));
+        assert_eq!(memobj_take_mapping_ref(A, rw), Ok(Some((VA, 1))));
+        assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(store(VA), Some(()));
+        assert_eq!(load(VA), Some(7));
+        assert_eq!(store(VA + 2), None, "a misaligned word");
+        assert_eq!(memobj_take_mapping_ref(A, rw), Ok(Some((VA, 1))));
+
+        let ro = memobj_create_ref(A, 1, MemPerms::ReadOnly).expect("create");
+        assert_eq!(memobj_note_mapping_ref(A, ro, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(store(VA), None, "a read-only object is written");
+        assert_eq!(load(VA), Some(0));
+        assert_eq!(memobj_take_mapping_ref(A, ro), Ok(Some((VA, 1))));
+
+        let _clone = memobj_clone(A, rw, A, MemPerms::ReadWrite).expect("clone");
+        assert_ne!(memobj_describe_ref(rw).expect("live").cow_shared, 0, "the clone shares the frame");
+        assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        assert_eq!(store(VA), None, "a page a clone shares is written");
+        assert_eq!(load(VA), Some(7));
     }
 
     /// (1) A region freed and recreated at the same index is another object:
@@ -5114,7 +5259,12 @@ mod tests {
 
         let p1 = memobj_paged_frame_ref(r, 1, false).expect("fill");
         assert_eq!(memobj_page_phys_ref(r, 1), Ok(Some(p1)), "the object's page is the frame the mapper got");
-        assert_eq!(memobj_resolve_mapped(A, VA + page + 16), Some((r, page + 16, p1 + 16)), "the mapping resolves to the same frame");
+        assert_eq!(memobj_resolve_mapped(A, VA + page + 16), Some((r, page + 16)));
+        assert_eq!(
+            memobj_with_mapped_word(A, VA + page + 16, false, |w| w as *const AtomicU32 as usize),
+            Some(azos_mm::addr::phys_to_virt(p1 + 16)),
+            "the mapping resolves to the same frame"
+        );
         assert!(cached(r, 1).iter().enumerate().all(|(p, &b)| b == fbyte(base + page + p)));
         assert_eq!(memobj_paged_write_ref(r, page, &[0x77]), Ok((1, 1)));
         assert_eq!(cached(r, 1)[0], 0x77, "a kernel write shows through the mapped frame");
