@@ -112,7 +112,7 @@ pub struct Endpoint {
     /// Whether the slot holds a live endpoint.
     pub active: bool,
     /// The port source the serving task bound this endpoint's notices to
-    /// (`PORT_BIND`, source 4; wave 15 N5b), `PortLink::NONE` for
+    /// (`PORT_BIND`, source 3; wave 15 N5b), `PortLink::NONE` for
     /// none.
     pub link: crate::port_link::PortLink,
     /// Live update: `0` for none; [`SWAP_OPEN`] while the supervisor has
@@ -353,7 +353,7 @@ pub fn flush_notices() {
 }
 
 /// Store `link` as the port source endpoint `r` reports its notices to
-/// (`PORT_BIND`, source 4), for its serving task `tid` only
+/// (`PORT_BIND`, source 3), for its serving task `tid` only
 /// (`NotOwner` otherwise). The rules of `channel::channel_set_link`: stored
 /// when there is no link, the link names the same port, or it equals
 /// `replace`; `Busy(current)` otherwise. `Stored { ready }` is whether the

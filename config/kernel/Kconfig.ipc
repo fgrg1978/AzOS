@@ -129,13 +129,13 @@ config IPC_PORT_NOTICES
       Cap<Endpoint> with WRITE and without READ), kept exact through every
       grant, move, revoke, fork copy and the table wipe at a task's exit. A
       server that binds its endpoint to a port (PORT_BIND, source
-      4) gets PORT_EVENT_NO_SENDERS (code ENOSENDERS) when the count falls
+      3) gets PORT_EVENT_NO_SENDERS (code ENOSENDERS) when the count falls
       to zero. A channel, io_ring, endpoint or IRQ bound to a port that is
       destroyed, or whose owner dies, reports one PORT_EVENT_SOURCE_GONE
       (code EREVOKED or EPEERDIED) instead of leaving its waiter waiting.
 
       n: nothing is counted or reported; PORT_BIND refuses
-      source 4 (an endpoint) with -EINVAL, and a gone source stays bound
+      source 3 (an endpoint) with -EINVAL, and a gone source stays bound
       and silent, as before.
 
       Cost: 8 B of RAM per endpoint (IPC_ENDPOINTS) and 2 B per task slot
