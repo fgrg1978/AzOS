@@ -14818,6 +14818,39 @@ PY
     par "x86_64: PCI AHCI canary (no driver)" x86_ahci_row "x86_64: PCI AHCI canary (no driver)" FAIL
     par "x86_64: PCI AHCI canary (NCQ off)" x86_ahci_row "x86_64: PCI AHCI canary (NCQ off)" NONCQ
     par "x86_64: PCI AHCI disk without TRIM" x86_ahci_row "x86_64: PCI AHCI disk without TRIM" NOTRIM
+    # Ring-3 port I/O (Kconfig X86_IOPORT_*, `ty::IOPORT`, DEVICE_IOPORT_ENABLE):
+    # BUZZDRV.ELF opens PIT channel 2 (0x42-0x43) and the speaker gate (0x61)
+    # through its topology grants and checks, silently, that channel 2 counts
+    # before it drives the PC speaker (`drivers/pcspk`); a speaker that does
+    # not tick falls back to the pwm endpoint. q35 (its PIT and speaker), the
+    # system volume on an `ich9-ahci` as in the AHCI rows above. The negative
+    # half (a port outside the grant kills the task) is abitest's.
+    x86_pcspk_row() {
+        local label="x86_64: buzzer drives the PC speaker (q35)" why=""
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
+        local def=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config
+        rm -f "$kimg" "$kimg.features"
+        make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-pcspk.config" \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-pcspk" X86_64_IMG="$kimg" >/dev/null 2>&1 \
+            && builtin printf '\n' >"$kimg.features" \
+            || { bad; echo "      make x86_64 ($def) did not build"; return; }
+        fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
+            || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; return; }
+        par_ready
+        X86_MACHINE=q35 x86_qemu "$kimg" "$log" 90 'buzzdrv\] (PC speaker|FAILED)|KERNEL PANIC' -smp 1 \
+            -drive "file=$dimg,if=none,format=raw,id=sata0" -device ich9-ahci,id=ahci -device ide-hd,drive=sata0,bus=ahci.0 \
+            || { rm -f "$kimg" "$kimg.features" "$dimg"; return; }
+        rm -f "$kimg" "$kimg.features" "$dimg"
+        if ! grep -aqF '[buzzdrv] PC speaker: PIT channel 2 ticks, ports 0x42-0x43 and 0x61 open in ring 3' "$log"; then
+            why="$(grep -a 'buzzdrv\]\|KERNEL PANIC' "$log" | sed -n 1p)"
+            bad; echo "      ${why:-no [buzzdrv] line}"; echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log"
+    }
+    par "x86_64: buzzer drives the PC speaker (q35)" x86_pcspk_row
     # IOMMU on (x86_64): the rv/arm `iommu:` rows on q35 with the unit QEMU models
     # first on the bus: AMD-Vi (`amd-iommu,dma-remap=on`, found through the ACPI
     # IVRS; every device-table entry blocks until its function is placed). No
