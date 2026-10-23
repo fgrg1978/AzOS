@@ -194,6 +194,45 @@ pub(crate) fn soc_host() -> Option<SocHost> {
     }
 }
 
+/// The Raspberry Pi 5's RP1 south bridge (`azos_pci::rp1`), bound by its id:
+/// its BARs assigned and mapped, the chip read back through BAR 1, and the CPU
+/// address of each block the kernel names printed for the drivers to come.
+/// `Err` (and its line) when BAR 1 is not a memory window or the word at its
+/// start is not the RP1's chip id.
+#[cfg(feature = "pci-soc-host")]
+pub(crate) fn attach_rp1<C: azos_pci::ConfigSpace>(
+    cfg: &mut C,
+    f: &azos_pci::FunctionInfo,
+    window: &mut azos_pci::BarWindow,
+) -> Result<(), ()> {
+    use azos_pci::rp1;
+    let bars = azos_drv_virtio::virtio::pci::msix_selftest::map_bars(cfg, f, window).map_err(|e| {
+        azos_drv_sys::kwarn!("[RP1] {}: BARs not mapped: {:?}", f.bdf, e);
+    })?;
+    let base = bars[rp1::PERIPHERAL_BAR];
+    let len = f.bars[..f.bar_count].iter().flatten()
+        .find(|b| b.index as usize == rp1::PERIPHERAL_BAR).map_or(0, |b| b.size as usize);
+    if base == 0 || len < 4 {
+        azos_drv_sys::kwarn!("[RP1] {}: BAR {} is not a memory window", f.bdf, rp1::PERIPHERAL_BAR);
+        return Err(());
+    }
+    // SAFETY: BAR 1 was just assigned and mapped as device memory
+    // (`map_bars`), and the word is inside it.
+    let id = unsafe { core::ptr::read_volatile((base + rp1::SYSINFO_CHIP_ID) as *const u32) };
+    if id != rp1::CHIP_ID {
+        azos_drv_sys::kwarn!("[RP1] {}: chip id {:#x}, not the RP1's {:#x}: not used", f.bdf, id, rp1::CHIP_ID);
+        return Err(());
+    }
+    crate::kprintln!("[RP1] {}: chip id {:#x}, peripherals at {:#x} (+{:#x})", f.bdf, id, base, len);
+    for b in &rp1::BLOCKS {
+        match rp1::block_at(base, len, b) {
+            Some(at) => crate::kprintln!("[RP1]   {} at {:#x} (+{:#x}), no driver yet", b.name, at, b.size),
+            None => azos_drv_sys::kwarn!("[RP1]   {} past the end of BAR {}", b.name, rp1::PERIPHERAL_BAR),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "pci-soc-host")]
 mod soc {
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -391,27 +430,61 @@ mod soc {
         Ok(d)
     }
 
-    /// Find the SoC host bridge on the hardware bus and bring it up.
-    pub(super) fn soc_host() -> Option<SocHost> {
-        let found = azos_drv_bus::hwbus::with(|bus| {
-            bus.iter().find_map(|(_, s)| {
-                let c = s.dev.compatible().find_map(Controller::from_compatible)?;
-                Some((c, s.dev.dt_node?))
-            })
-        });
-        let Some((controller, node)) = found else { return None };
-        let name = controller.name();
+    /// The most SoC bridges of one tree tried ([`soc_host`]): the BCM2712 has
+    /// three (its external connector, the RP1's and an unused one).
+    const MAX_BRIDGES: usize = 4;
 
+    /// Find the SoC host bridge on the hardware bus and bring it up. One bridge
+    /// is brought up: the first whose link comes up, trying first the
+    /// controllers whose node describes what sits behind them (a child node:
+    /// the Raspberry Pi 5's `pcie2`, which leads to the RP1, in Linux's tree and
+    /// in the firmware's), then the others in tree order (an empty connector
+    /// is a link-down line and the next one is tried).
+    pub(super) fn soc_host() -> Option<SocHost> {
+        let mut found = [None; MAX_BRIDGES];
+        let mut n = 0;
+        azos_drv_bus::hwbus::with(|bus| {
+            for (_, s) in bus.iter() {
+                let Some(c) = s.dev.compatible().find_map(Controller::from_compatible) else { continue };
+                let Some(node) = s.dev.dt_node else { continue };
+                if n < MAX_BRIDGES {
+                    found[n] = Some((c, node));
+                    n += 1;
+                }
+            }
+        });
+        if n == 0 {
+            return None;
+        }
+        let mut described = [false; MAX_BRIDGES];
+        for (d, f) in described.iter_mut().zip(found[..n].iter().flatten()) {
+            *d = socfw::with(|fdt, _soc, _bus, _fx| fdt.children(NodeId(f.1)).next().is_some()) == Some(true);
+        }
+        let (order, k) = dt::bring_up_order(&described, n);
+        for &i in &order[..k] {
+            if let Some((controller, node)) = found[i] {
+                if let Some(h) = try_bridge(controller, node) {
+                    return Some(h);
+                }
+            }
+        }
+        Some(down())
+    }
+
+    /// Bring up the bridge at `node`; `None` (and its line) when it did not
+    /// come up, its resources released again.
+    fn try_bridge(controller: Controller, node: u32) -> Option<SocHost> {
+        let name = controller.name();
         let read = socfw::with(|fdt, _soc, _bus, _fx| read_dt(fdt, controller, node));
         let d = match read {
             Some(Ok(d)) => d,
             Some(Err(why)) => {
                 azos_drv_sys::kwarn!("[PCI] {}: {}: no enumeration", name, why);
-                return Some(down());
+                return None;
             }
             None => {
                 azos_drv_sys::kwarn!("[PCI] {}: the SoC frameworks have no device tree: no enumeration", name);
-                return Some(down());
+                return None;
             }
         };
 
@@ -422,7 +495,7 @@ mod soc {
                 name, a.domains, a.clocks, a.resets, a.pins, a.unmodelled),
             Err(e) => {
                 azos_drv_sys::kwarn!("[PCI] {}: resources refused: {:?}: no enumeration", name, e);
-                return Some(down());
+                return None;
             }
         }
 
@@ -430,7 +503,8 @@ mod soc {
             Ok(h) => Some(h),
             Err(why) => {
                 azos_drv_sys::kwarn!("[PCI] {}: {}: no enumeration", name, why);
-                Some(down())
+                let _ = socfw::unbind(d.node);
+                None
             }
         }
     }

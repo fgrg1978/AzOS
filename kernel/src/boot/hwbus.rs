@@ -526,7 +526,7 @@ impl Drivers for KernelDrivers<'_> {
             #[cfg(feature = "virtio-snd")]
             "virtio-snd" => azos_drv_virtio::virtio::snd::init_at(base).map_err(|_| ProbeError::Failed),
             #[cfg(feature = "pci")]
-            "nvme" | "ahci" | "virtio-net-pci" | "virtio-gpu-pci" | "virtio-snd-pci" | "e1000e" | "igc" => match self.pci.as_mut() {
+            "nvme" | "ahci" | "virtio-net-pci" | "virtio-gpu-pci" | "virtio-snd-pci" | "e1000e" | "igc" | "rp1" => match self.pci.as_mut() {
                 Some(p) => p.probe(driver, dev),
                 None => Err(ProbeError::Failed),
             },

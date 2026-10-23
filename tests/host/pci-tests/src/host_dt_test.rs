@@ -150,3 +150,22 @@ fn the_dma_mask_covers_the_highest_inbound_address() {
     // The highest end wins, whatever the order.
     assert_eq!(dma_mask(&[w(0x10_0000_0000, 0x10_0000_0000), w(0, 1 << 32)]), 0x1f_ffff_ffff);
 }
+
+/// A Raspberry Pi 5 tree lists `pcie1` (the external connector, often empty)
+/// before `pcie2` (the RP1, a child node in both Linux's tree and the
+/// firmware's): `pcie2` is tried first, the others after it in tree order.
+/// Canary: tree order alone tries the empty connector first, and on a board
+/// with something in it the RP1 is never enumerated.
+#[test]
+fn the_bridge_that_describes_its_device_is_tried_first() {
+    use azos_pci::host::dt::bring_up_order;
+    let (order, k) = bring_up_order(&[false, true, false, false], 2);
+    assert_eq!(&order[..k], &[1, 0]);
+    let (order, k) = bring_up_order(&[false, true, false, true], 4);
+    assert_eq!(&order[..k], &[1, 3, 0, 2]);
+    // Nothing described: tree order; more than fits: the first N.
+    let (order, k) = bring_up_order(&[false, false], 2);
+    assert_eq!(&order[..k], &[0, 1]);
+    let (_, k) = bring_up_order(&[true; 2], 9);
+    assert_eq!(k, 2);
+}

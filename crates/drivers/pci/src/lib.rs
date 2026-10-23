@@ -22,6 +22,7 @@ use core::fmt;
 
 pub mod bridge;
 pub mod host;
+pub mod rp1;
 pub mod window;
 
 pub use bridge::{place_behind_bridges, BridgePlan, BridgeWindows, MAX_BRIDGES};

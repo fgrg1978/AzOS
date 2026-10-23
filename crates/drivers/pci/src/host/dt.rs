@@ -41,6 +41,26 @@ impl Controller {
     }
 }
 
+/// The order the boot tries a tree's SoC bridges in, as indices into the
+/// first `n` of `described` (`described[i]`: bridge `i`'s node has a child,
+/// so what sits behind it is described, as the Raspberry Pi 5's `pcie2`
+/// describes the RP1): the described ones first, then the others, each group
+/// in tree order. The first one whose link comes up is the one enumerated.
+pub fn bring_up_order<const N: usize>(described: &[bool; N], n: usize) -> ([usize; N], usize) {
+    let n = n.min(N);
+    let mut order = [0; N];
+    let mut k = 0;
+    for pass in [true, false] {
+        for (i, &d) in described[..n].iter().enumerate() {
+            if d == pass {
+                order[k] = i;
+                k += 1;
+            }
+        }
+    }
+    (order, k)
+}
+
 /// STG syscon block of a PLDA controller, from DT `linux,pci-domain`.
 pub fn plda_stg_base(domain: u32) -> Option<u32> {
     match domain {

@@ -23,3 +23,6 @@ pci-host         dt:pci-host-ecam-generic   boot
 # kernel's, so ring 3 is never handed their windows.
 pci-host         dt:starfive,jh7110-pcie    boot   if=PCI_SOC_HOST
 pci-host         dt:brcm,bcm2712-pcie       boot   if=PCI_SOC_HOST
+# The Raspberry Pi 5's RP1 south bridge (azos_pci::rp1): the kernel maps its
+# peripheral window and names the blocks; none of them has a driver yet.
+rp1              pci:1de4:0001              boot   if=PCI_SOC_HOST

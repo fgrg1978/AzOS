@@ -15,6 +15,7 @@ mod bridge_test;
 mod window_test;
 mod soc_host;
 mod host_dt_test;
+mod rp1_test;
 
 use azos_pci::*;
 

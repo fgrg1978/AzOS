@@ -1174,6 +1174,10 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                         azos_drv_virtio::virtio::snd::init_pci(self.cfg, f, self.window, &mut route)
                             .map_err(|_| ProbeError::Failed)
                     }
+                    // The Raspberry Pi 5's south bridge: its window mapped and
+                    // its blocks named, no driver behind them yet.
+                    #[cfg(feature = "pci-soc-host")]
+                    "rp1" => boot::pci::attach_rp1(self.cfg, f, self.window).map_err(|()| ProbeError::Failed),
                     // The development display: polled, so no MSI route is needed.
                     #[cfg(feature = "fb-generic")]
                     "virtio-gpu-pci" => azos_drv_virtio::virtio::gpu::init_pci(self.cfg, f, self.window)
