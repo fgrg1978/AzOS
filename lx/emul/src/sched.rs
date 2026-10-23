@@ -261,7 +261,6 @@ impl<C, const N: usize> RunQueue<C, N> {
         s.granted = false;
         s.should_stop = false;
         s.overflowed = false;
-        s.current = 0;
         Some(i)
     }
 
