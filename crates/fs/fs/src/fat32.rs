@@ -1734,7 +1734,7 @@ pub fn fat32_wb_pass_here_on(v: &'static Vol) -> bool {
 /// its priority to the holder, when another task holds it).
 #[cfg(feature = "ktest")]
 pub fn fat32_ktest_with_wb_claim(f: impl FnOnce()) {
-    let c = wb_claim();
+    let c = wb_claim(&BOOT);
     f();
     drop(c);
 }
