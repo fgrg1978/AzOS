@@ -344,6 +344,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod uaccess_typed {
+        use super::*;
+        include!("uaccess_typed.rs");
+    }
+
+    #[cfg(test)]
     mod demand_paging {
         use super::*;
         include!("demand_paging.rs");

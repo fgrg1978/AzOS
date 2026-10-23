@@ -114,7 +114,25 @@ pub struct DriverRequest {
     pub input:      [u8; DRIVER_REQUEST_PAYLOAD_BYTES],
 }
 
+/// [`DriverRequest`]'s size: its `repr(C)` image, the tail padding included.
+pub const DRIVER_REQUEST_BYTES: usize = core::mem::size_of::<DriverRequest>();
+
 impl DriverRequest {
+    /// The `repr(C)` image the userspace mirrors read, built field by field:
+    /// the padding bytes are zero, never whatever the kernel stack held
+    /// (front uaccess-pin: a typed copy to user memory takes bytes, and a
+    /// struct copied whole carried its padding out).
+    pub fn to_bytes(&self) -> [u8; DRIVER_REQUEST_BYTES] {
+        let mut b = [0u8; DRIVER_REQUEST_BYTES];
+        b[0..8].copy_from_slice(&self.token.to_ne_bytes());
+        b[8..12].copy_from_slice(&self.client_tid.to_ne_bytes());
+        b[12..16].copy_from_slice(&self.op.to_ne_bytes());
+        b[16..18].copy_from_slice(&self.in_len.to_ne_bytes());
+        b[18..20].copy_from_slice(&self.out_cap.to_ne_bytes());
+        b[20..20 + DRIVER_REQUEST_PAYLOAD_BYTES].copy_from_slice(&self.input);
+        b
+    }
+
     pub const fn zeroed() -> Self {
         Self {
             token: 0, client_tid: 0, op: 0,
@@ -138,7 +156,29 @@ pub struct DriverReply {
     pub output:     [u8; DRIVER_REPLY_PAYLOAD_BYTES],
 }
 
+/// [`DriverReply`]'s size: its `repr(C)` image (no padding byte).
+pub const DRIVER_REPLY_BYTES: usize = core::mem::size_of::<DriverReply>();
+const _: () = assert!(DRIVER_REPLY_BYTES == 8 + 4 + 2 + 2 + DRIVER_REPLY_PAYLOAD_BYTES);
+const _: () = assert!(DRIVER_REQUEST_BYTES == 8 + 4 + 4 + 2 + 2 + DRIVER_REQUEST_PAYLOAD_BYTES + 4);
+// The offsets `to_bytes` and `from_bytes` write and read.
+const _: () = assert!(core::mem::offset_of!(DriverRequest, out_cap) == 18 && core::mem::offset_of!(DriverRequest, input) == 20);
+const _: () = assert!(core::mem::offset_of!(DriverReply, _pad) == 14 && core::mem::offset_of!(DriverReply, output) == 16);
+
 impl DriverReply {
+    /// The reply a driver wrote, from its `repr(C)` image ([`DriverRequest::to_bytes`]'s
+    /// reverse).
+    pub fn from_bytes(b: &[u8; DRIVER_REPLY_BYTES]) -> Self {
+        let mut output = [0u8; DRIVER_REPLY_PAYLOAD_BYTES];
+        output.copy_from_slice(&b[16..16 + DRIVER_REPLY_PAYLOAD_BYTES]);
+        Self {
+            token: u64::from_ne_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]),
+            status: i32::from_ne_bytes([b[8], b[9], b[10], b[11]]),
+            out_len: u16::from_ne_bytes([b[12], b[13]]),
+            _pad: u16::from_ne_bytes([b[14], b[15]]),
+            output,
+        }
+    }
+
     pub const fn zeroed() -> Self {
         Self {
             token: 0, status: 0, out_len: 0, _pad: 0,

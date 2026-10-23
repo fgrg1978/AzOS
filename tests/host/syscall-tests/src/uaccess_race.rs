@@ -44,6 +44,15 @@ const UNMAP_GRACE: Duration = Duration::from_millis(300);
 /// resolved, 2 told to go on.
 static STAGE: AtomicU32 = AtomicU32::new(0);
 
+/// An empty user root: a frame of the arena, zeroed, with no region left
+/// over from an earlier test whose root had the same address (`pager`).
+fn fresh_root() -> usize {
+    let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
+    unsafe { core::ptr::write_bytes(pt as *mut u8, 0, PAGE_SIZE) };
+    azos_mm::pager::forget(pt);
+    pt
+}
+
 /// The hook: park the copy between resolving its frame and touching it.
 fn park(_pa: usize) {
     STAGE.store(1, SeqCst);
@@ -88,7 +97,7 @@ struct Outcome {
 /// `fill_reissued` runs on the frame if the allocator handed it out again in
 /// that window, before the copy is let go.
 fn race(copy: fn(usize) -> bool, change: fn(usize) -> u32, fill_reissued: fn(*mut u8)) -> Outcome {
-    let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
+    let pt = fresh_root();
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
     let frame = azos_mm::pmm::alloc_page().expect("arena").as_usize();

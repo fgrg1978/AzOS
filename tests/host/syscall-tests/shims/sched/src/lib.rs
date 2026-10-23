@@ -381,6 +381,12 @@ pub fn shim_reset_user_windows() {
     USER_WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
+/// The real typed pointers (front uaccess-pin) over the copies below, as the
+/// kernel's `azos_sched` exports them.
+#[path = "../../../../../../crates/core/sched/src/uptr.rs"]
+pub mod uptr;
+pub use uptr::{Efault, Pod, UserCStr, UserPtr, UserSlice};
+
 /// The front transcribed from `crates/core/sched/src/process.rs`; the loop is
 /// the real `azos_mm::uaccess::copy_in`. See the module doc.
 pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool {
@@ -1026,6 +1032,15 @@ pub fn shim_take_blocks() -> Vec<WaitReason> {
 }
 
 pub mod process {
+    /// No test in this crate reaches a futex compare-and-swap; the typed
+    /// `UserPtr<u32>::cas` (the real `uptr.rs`, pulled below) names it.
+    pub fn user_cas_u32(_addr: usize, _old: u32, _new: u32) -> Result<(), Option<u32>> {
+        todo!("host shim: user_cas_u32")
+    }
+    /// As [`user_cas_u32`].
+    pub fn user_cas_u32_nofault(_addr: usize, _old: u32, _new: u32) -> Result<(), Option<u32>> {
+        todo!("host shim: user_cas_u32_nofault")
+    }
     /// `todo!()` unless a test programmed a return with
     /// [`shim_program_fork`]; programmed, it records `(sepc, user_sp, regs
     /// address)` and returns that value.

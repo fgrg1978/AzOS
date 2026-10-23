@@ -1510,8 +1510,7 @@ unsafe fn clear_tid_word(idx: usize, proc_id: u32) {
     if addr == 0 || addr & 3 != 0 {
         return;
     }
-    let zero = 0u32.to_ne_bytes();
-    if crate::process::copy_to_user(addr as usize, zero.as_ptr(), zero.len()) {
+    if crate::UserPtr::<u32>::new(addr).write(&0).is_ok() {
         let _ = crate::futex::wake_in(proc_id, addr, 1);
     }
 }
@@ -1533,15 +1532,13 @@ fn robust_list_exit(idx: usize, tid: u32, proc_id: u32) {
     struct Mem(u32, usize);
     impl azos_linux_abi::robust::RobustMem for Mem {
         fn read_u64(&mut self, addr: u64) -> Option<u64> {
-            let mut b = [0u8; 8];
-            crate::process::copy_from_user(b.as_mut_ptr(), addr as usize, 8).then(|| u64::from_ne_bytes(b))
+            crate::UserPtr::<u64>::new(addr).read().ok()
         }
         fn read_u32(&mut self, addr: u64) -> Option<u32> {
-            let mut b = [0u8; 4];
-            crate::process::copy_from_user(b.as_mut_ptr(), addr as usize, 4).then(|| u32::from_ne_bytes(b))
+            crate::UserPtr::<u32>::new(addr).read().ok()
         }
         fn cas_u32(&mut self, addr: u64, old: u32, new: u32) -> Result<(), Option<u32>> {
-            crate::process::user_cas_u32(addr as usize, old, new)
+            crate::UserPtr::<u32>::new(addr).cas(old, new)
         }
         // A shm word wakes its region's key (owner decision 10-10).
         fn wake_one(&mut self, addr: u64) {

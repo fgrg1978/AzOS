@@ -25,7 +25,7 @@ use azos_abi::ushell::{
     layout_startup, count_cstrs, SpawnReq, StartupFd, CONSOLE_WAIT_FOREVER, FD_CONSOLE, FD_HANDLE,
     KILL_FORCE, KILL_REQUEST, KILL_SIGNO_MAX, KILL_SUBTREE, MOVE_CONSOLE,
     SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENV_MAX, SPAWN_F_CONSOLE_IN, SPAWN_F_DIE_WITH_PARENT, SPAWN_MAX_MOVES,
-    SPAWN_REQ_SIZE, SPAWN_F_USER, STARTUP_FDS,
+    SPAWN_F_USER, STARTUP_FDS,
 };
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
 use azos_sched::WaitReason;
@@ -71,7 +71,7 @@ fn user_writable(ptr: u64, len: usize) -> bool {
     let mut done = 0;
     while done < len {
         let n = (len - done).min(zero.len());
-        if !azos_sched::copy_to_user(ptr as usize + done, zero.as_ptr(), n) {
+        if azos_sched::UserSlice::<u8>::new(ptr + done as u64, n).write_from(&zero[..n]).is_err() {
             return false;
         }
         done += n;
@@ -123,7 +123,7 @@ pub fn sys_console_wait(buf: u64, len: u64, timeout_ns: u64, a3: u64) -> i64 {
             let mut k = [0u8; CONSOLE_CHUNK];
             let n = uart::rx_read(&mut k[..want]);
             if n > 0 {
-                break if azos_sched::copy_to_user(buf as usize, k.as_ptr(), n) {
+                break if azos_sched::UserSlice::<u8>::new(buf, n).write_from(&k[..n]).is_ok() {
                     n as i64
                 } else {
                     err(Errno::EFAULT)
@@ -227,7 +227,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
         return err(Errno::EFAULT);
     }
     let mut path_buf = [0u8; 256];
-    if azos_sched::copy_cstr_from_user(&mut path_buf, path_ptr as usize).is_none() {
+    if azos_sched::UserCStr::new(path_ptr).read_into(&mut path_buf).is_err() {
         return err(Errno::EFAULT);
     }
     let path_len = path_buf.iter().position(|&b| b == 0).unwrap_or(0);
@@ -238,13 +238,11 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
     // The request block and everything it points at, copied in first.
     let mut req = SpawnReq { version: azos_abi::ushell::SPAWN_REQ_VERSION, ..SpawnReq::default() };
     if req_ptr != 0 {
-        let mut raw = [0u8; SPAWN_REQ_SIZE];
-        if !azos_sched::copy_from_user(raw.as_mut_ptr(), req_ptr as usize, SPAWN_REQ_SIZE) {
-            return err(Errno::EFAULT);
-        }
-        // SAFETY: `SpawnReq` is `repr(C)`, every bit pattern of its integer
-        // fields is a value, and its size is asserted to be `SPAWN_REQ_SIZE`.
-        req = unsafe { core::ptr::read_unaligned(raw.as_ptr() as *const SpawnReq) };
+        // `SpawnReq` is `Pod` (`azos_sched::uptr`): integers, no padding.
+        req = match azos_sched::UserPtr::<SpawnReq>::new(req_ptr).read() {
+            Ok(r) => r,
+            Err(_) => return err(Errno::EFAULT),
+        };
     }
     if req.check_shape().is_err() {
         return err(Errno::EINVAL);
@@ -252,8 +250,8 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
     let mut argv = [0u8; SPAWN_ARGV_MAX];
     let mut env = [0u8; SPAWN_ENV_MAX];
     let (al, el) = (req.argv_bytes as usize, req.env_bytes as usize);
-    if (al > 0 && !azos_sched::copy_from_user(argv.as_mut_ptr(), req.argv_ptr as usize, al))
-        || (el > 0 && !azos_sched::copy_from_user(env.as_mut_ptr(), req.env_ptr as usize, el))
+    if (al > 0 && azos_sched::UserSlice::<u8>::new(req.argv_ptr, al).read_into(&mut argv[..al]).is_err())
+        || (el > 0 && azos_sched::UserSlice::<u8>::new(req.env_ptr, el).read_into(&mut env[..el]).is_err())
     {
         return err(Errno::EFAULT);
     }
@@ -263,7 +261,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
     let mut cwd = [0u8; SPAWN_CWD_MAX + 2];
     let mut cl = 0;
     if req.cwd_ptr != 0 {
-        if azos_sched::copy_cstr_from_user(&mut cwd, req.cwd_ptr as usize).is_none() {
+        if azos_sched::UserCStr::new(req.cwd_ptr).read_into(&mut cwd).is_err() {
             return err(Errno::EFAULT);
         }
         cl = cwd.iter().position(|&b| b == 0).unwrap_or(cwd.len());

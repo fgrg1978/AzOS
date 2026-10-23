@@ -55,6 +55,9 @@ pub mod pac;
 pub mod foreign;
 pub mod spawn_policy;
 pub mod user_window;
+/// Typed pointers into the current task's memory (front uaccess-pin).
+pub mod uptr;
+pub use uptr::{Efault, Pod, UserCStr, UserPtr, UserSlice};
 
 pub use scheduler::{
     init, start, schedule, task_create, task_create_affinity, try_task_create_affinity, free_task_slots,

@@ -8,9 +8,10 @@
 
 /// Read the aligned 32-bit user word at `addr`.
 pub(crate) fn read_u32(addr: u64) -> Option<u32> {
-    let mut b = [0u8; 4];
-    (addr != 0 && azos_sched::copy_from_user(b.as_mut_ptr(), addr as usize, 4))
-        .then(|| u32::from_ne_bytes(b))
+    if addr == 0 {
+        return None;
+    }
+    azos_sched::UserPtr::<u32>::new(addr).read().ok()
 }
 
 /// `SYS_THREAD_CREATE(entry, stack, arg, ctid, tls)`.

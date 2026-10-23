@@ -16,7 +16,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-use azos_abi::foreign::{frame_base, ForeignFrame, FLAGS_USER_MASK, FOREIGN_FRAME_SIZE, REG_RESULT, REG_SP};
+use azos_abi::foreign::{frame_base, ForeignFrame, FLAGS_USER_MASK, REG_RESULT, REG_SP};
 use azos_arch::PAGE_SIZE;
 use azos_arch_api::PagePerms;
 use azos_mm::{pmm, vmm};
@@ -191,14 +191,7 @@ pub fn read_frame(ptr: u64) -> Option<ForeignFrame> {
     if ptr == 0 || ptr & 7 != 0 {
         return None;
     }
-    let mut f = ForeignFrame::ZERO;
-    // SAFETY: `f` is plain integers, filled byte for byte from user memory.
-    let ok = crate::process::copy_from_user(
-        &mut f as *mut ForeignFrame as *mut u8,
-        ptr as usize,
-        FOREIGN_FRAME_SIZE,
-    );
-    ok.then_some(f)
+    crate::UserPtr::<ForeignFrame>::new(ptr).read().ok()
 }
 
 /// Reflect the current thread's trap: push `frame` below `frame.gpr[REG_SP]`
@@ -212,15 +205,7 @@ pub fn reflect(frame: &ForeignFrame) -> Option<(u64, u64)> {
         return None;
     }
     let base = frame_base(frame.gpr[REG_SP])?;
-    // SAFETY: plain integers viewed as bytes.
-    let ok = crate::process::copy_to_user(
-        base as usize,
-        frame as *const ForeignFrame as *const u8,
-        FOREIGN_FRAME_SIZE,
-    );
-    if !ok {
-        return None;
-    }
+    crate::UserPtr::<ForeignFrame>::new(base).write(frame).ok()?;
     crate::scheduler::set_current_foreign_mode(false);
     Some((entry, base))
 }

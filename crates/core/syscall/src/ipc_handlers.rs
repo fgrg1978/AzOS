@@ -139,7 +139,7 @@ fn copy_port_event_out(out_ptr: u64, event: &azos_ipc::port::PortEvent) -> i64 {
     buf[c..c + 2].copy_from_slice(&event.code.to_le_bytes());
     buf[12..16].copy_from_slice(&event.source_id.to_le_bytes());
     if azos_sched::current_user_pt() != 0 {
-        if !azos_sched::copy_to_user(out_ptr as usize, buf.as_ptr(), PORT_EVENT_OUT_BYTES) {
+        if azos_sched::UserPtr::<[u8; PORT_EVENT_OUT_BYTES]>::new(out_ptr).write(&buf).is_err() {
             return Errno::EFAULT.to_syscall_ret();
         }
     } else {
@@ -658,11 +658,7 @@ pub fn sys_shm_acquire_typed(cap_raw: u64, out_ptr: u64) -> i64 {
                 MemPerms::ReadWrite => 1,
             };
             if azos_sched::current_user_pt() != 0 {
-                if !azos_sched::copy_to_user(
-                    out_ptr as usize,
-                    buf.as_ptr(),
-                    SHM_ACQUIRE_OUT_BYTES,
-                ) {
+                if azos_sched::UserPtr::<[u8; SHM_ACQUIRE_OUT_BYTES]>::new(out_ptr).write(&buf).is_err() {
                     return Errno::EFAULT.to_syscall_ret();
                 }
             } else {
@@ -1085,7 +1081,7 @@ pub fn sys_ioring_create_typed(out_ptr: u64) -> i64 {
         return ioring_create_rollback(tid, cap, r, Errno::ENOMEM.to_syscall_ret());
     }
     let buf = (va as u64).to_le_bytes();
-    if !azos_sched::copy_to_user(out_ptr as usize, buf.as_ptr(), IORING_PHYS_OUT_BYTES) {
+    if azos_sched::UserSlice::<u8>::new(out_ptr, IORING_PHYS_OUT_BYTES).write_from(&buf[..IORING_PHYS_OUT_BYTES]).is_err() {
         return ioring_create_rollback(tid, cap, r, Errno::EFAULT.to_syscall_ret());
     }
     cap.raw().as_raw() as i64

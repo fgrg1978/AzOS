@@ -279,15 +279,10 @@ impl PiWord for UserWord {
         crate::process::fault_in_user_writable(self.0 as usize)
     }
     fn read(&self) -> Result<u32, UserFault> {
-        let mut b = [0u8; 4];
-        if crate::process::copy_from_user(b.as_mut_ptr(), self.0 as usize, 4) {
-            Ok(u32::from_ne_bytes(b))
-        } else {
-            Err(UserFault)
-        }
+        crate::UserPtr::<u32>::new(self.0).read().map_err(|_| UserFault)
     }
     fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, UserFault> {
-        match crate::process::user_cas_u32_nofault(self.0 as usize, expected, new) {
+        match crate::UserPtr::<u32>::new(self.0).cas_resident(expected, new) {
             Ok(()) => Ok(expected),
             Err(Some(seen)) => Ok(seen),
             Err(None) => Err(UserFault),

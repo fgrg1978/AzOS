@@ -172,10 +172,7 @@ fn futex_read(uaddr: u64, kva: Option<usize>) -> Option<u32> {
         // SAFETY: `kva` is a byte of a region the caller maps (hence holds a
         // reference on), 4-byte aligned per `futex_word`.
         Some(kva) => Some(unsafe { &*(kva as *const core::sync::atomic::AtomicU32) }.load(Ordering::Acquire)),
-        None => {
-            let mut b = [0u8; 4];
-            azos_sched::copy_from_user(b.as_mut_ptr(), uaddr as usize, 4).then(|| u32::from_ne_bytes(b))
-        }
+        None => azos_sched::UserPtr::<u32>::new(uaddr).read().ok(),
     }
 }
 

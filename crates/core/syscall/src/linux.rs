@@ -313,11 +313,11 @@ fn neg(e: i64) -> i64 {
 }
 
 fn put_user(ptr: u64, bytes: &[u8]) -> bool {
-    ptr != 0 && azos_sched::copy_to_user(ptr as usize, bytes.as_ptr(), bytes.len())
+    ptr != 0 && azos_sched::UserSlice::<u8>::new(ptr, bytes.len()).write_from(bytes).is_ok()
 }
 
 fn get_user(ptr: u64, bytes: &mut [u8]) -> bool {
-    ptr != 0 && azos_sched::copy_from_user(bytes.as_mut_ptr(), ptr as usize, bytes.len())
+    ptr != 0 && azos_sched::UserSlice::<u8>::new(ptr, bytes.len()).read_into(bytes).is_ok()
 }
 
 fn get_u64(ptr: u64) -> Option<u64> {
@@ -330,13 +330,12 @@ fn user_path(ptr: u64, buf: &mut [u8; PATH_MAX]) -> Result<usize, i64> {
     if ptr == 0 {
         return Err(neg(le::EFAULT));
     }
-    if azos_sched::copy_cstr_from_user(&mut buf[..], ptr as usize).is_none() {
-        return Err(neg(le::EFAULT));
-    }
-    match buf.iter().position(|&b| b == 0) {
-        Some(0) => Err(neg(le::ENOENT)),
-        Some(n) => Ok(n),
-        None => Err(neg(le::ENAMETOOLONG)),
+    // A fault, or no NUL within `PATH_MAX`, is `EFAULT` (as it was: the
+    // string copy refuses both).
+    match azos_sched::UserCStr::new(ptr).read_into(&mut buf[..]) {
+        Ok(0) => Err(neg(le::ENOENT)),
+        Ok(n) => Ok(n),
+        Err(_) => Err(neg(le::EFAULT)),
     }
 }
 
@@ -2198,11 +2197,11 @@ fn sys_kill(pid: i64, s: u64) -> i64 {
 static FRAME_BUF: SpinLock<[u64; sig::FRAME_WORDS_MAX]> = SpinLock::new([0; sig::FRAME_WORDS_MAX]);
 
 fn put_user_words(ptr: u64, w: &[u64]) -> bool {
-    ptr != 0 && azos_sched::copy_to_user(ptr as usize, w.as_ptr() as *const u8, w.len() * 8)
+    ptr != 0 && azos_sched::UserSlice::<u64>::new(ptr, w.len()).write_from(w).is_ok()
 }
 
 fn get_user_words(ptr: u64, w: &mut [u64]) -> bool {
-    ptr != 0 && azos_sched::copy_from_user(w.as_mut_ptr() as *mut u8, ptr as usize, w.len() * 8)
+    ptr != 0 && azos_sched::UserSlice::<u64>::new(ptr, w.len()).read_into(w).is_ok()
 }
 
 /// End the current task's PROCESS as signal `s`'s default action does: the
@@ -2634,10 +2633,10 @@ fn user_strv(ptr: u64, out: &mut [u8]) -> Result<(usize, usize), i64> {
             return Err(-7); // E2BIG
         }
         let mut tmp = [0u8; 256];
-        if azos_sched::copy_cstr_from_user(&mut tmp, sp as usize).is_none() {
-            return Err(neg(le::EFAULT));
-        }
-        let l = tmp.iter().position(|&b| b == 0).ok_or(-7i64)?;
+        let l = match azos_sched::UserCStr::new(sp).read_into(&mut tmp) {
+            Ok(l) => l,
+            Err(_) => return Err(neg(le::EFAULT)),
+        };
         if used + l + 1 > out.len() {
             return Err(-7);
         }

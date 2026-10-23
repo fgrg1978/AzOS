@@ -78,7 +78,7 @@ pub fn sys_module_verify(buf: u64, len: u64, name_ptr: u64, name_len: u64) -> i6
     }
     let mut name = [0u8; NAME_MAX];
     let name_len = name_len as usize;
-    if !azos_sched::process::copy_from_user(name.as_mut_ptr(), name_ptr as usize, name_len) {
+    if azos_sched::UserSlice::<u8>::new(name_ptr, name_len).read_into(&mut name[..name_len]).is_err() {
         return err(Errno::EFAULT);
     }
     let name = &name[..name_len];
@@ -90,7 +90,7 @@ pub fn sys_module_verify(buf: u64, len: u64, name_ptr: u64, name_len: u64) -> i6
     let mut done = 0u64;
     while done < len {
         let n = (len - done).min(chunk.len() as u64) as usize;
-        if !azos_sched::process::copy_from_user(chunk.as_mut_ptr(), (buf + done) as usize, n) {
+        if azos_sched::UserSlice::<u8>::new(buf + done, n).read_into(&mut chunk[..n]).is_err() {
             return err(Errno::EFAULT);
         }
         h.update(&chunk[..n]);

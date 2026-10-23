@@ -14,12 +14,21 @@ use super::harness::serial;
 use azos_arch::mmu::PAGE_SIZE;
 use azos_arch_api::PagePerms;
 
+/// An empty user root: a frame of the arena, zeroed, with no region left
+/// over from an earlier test whose root had the same address (`pager`).
+fn fresh_root() -> usize {
+    let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
+    unsafe { core::ptr::write_bytes(pt as *mut u8, 0, PAGE_SIZE) };
+    azos_mm::pager::forget(pt);
+    pt
+}
+
 /// Two consecutive user pages, so a copy can cross the boundary.
 const VA: usize = 0x50_0000;
 
 /// A page table with two fresh frames at [`VA`]; the frames' host addresses.
 fn two_pages() -> (usize, [usize; 2]) {
-    let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
+    let pt = fresh_root();
     let mut f = [0usize; 2];
     for (i, fr) in f.iter_mut().enumerate() {
         *fr = azos_mm::pmm::alloc_page().expect("arena").as_usize();
@@ -93,7 +102,7 @@ fn a_string_is_found_at_every_offset_and_across_the_page() {
 #[test]
 fn a_string_running_into_an_unmapped_page_is_refused() {
     let _g = serial();
-    let pt = azos_mm::pmm::alloc_page().expect("arena").as_usize();
+    let pt = fresh_root();
     let fr = azos_mm::pmm::alloc_page().expect("arena").as_usize();
     azos_mm::vmm::map(pt, VA, fr, PagePerms::USER_RW).expect("map");
     unsafe { core::ptr::write_bytes(fr as *mut u8, b'y', PAGE_SIZE) };

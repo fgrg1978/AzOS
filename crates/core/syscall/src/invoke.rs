@@ -80,8 +80,6 @@ pub(crate) const fn class_op(t: CapType, class: u8) -> u16 {
     op(t.kind(), class, 0)
 }
 
-const DESC_BYTES: usize = core::mem::size_of::<MsgDesc>();
-
 /// `SYS_INVOKE`: `a0` handle, `a1` op word, `a2..a5` words or a descriptor.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sys_invoke(
@@ -107,9 +105,10 @@ pub(crate) fn sys_invoke(
         if a3 != 0 || a4 != 0 || a5 != 0 {
             return Errno::EINVAL.to_syscall_ret();
         }
-        if !azos_sched::copy_from_user(&mut desc as *mut MsgDesc as *mut u8, a2 as usize, DESC_BYTES) {
-            return Errno::EFAULT.to_syscall_ret();
-        }
+        desc = match azos_sched::UserPtr::<MsgDesc>::new(a2).read() {
+            Ok(d) => d,
+            Err(_) => return Errno::EFAULT.to_syscall_ret(),
+        };
         // The descriptor carries words only: an op takes no capabilities in
         // it (a transfer is an IPC call).
         // With Kconfig IPC_LABELS off nothing enforces a label, so one is
@@ -132,7 +131,7 @@ pub(crate) fn sys_invoke(
             desc.version = MSG_VERSION;
             desc.n_words = c.nrep as u8;
             desc.words[..c.nrep].copy_from_slice(&c.rep[..c.nrep]);
-            if !azos_sched::copy_to_user(a2 as usize, &desc as *const MsgDesc as *const u8, DESC_BYTES) {
+            if azos_sched::UserPtr::<MsgDesc>::new(a2).write(&desc).is_err() {
                 return Errno::EFAULT.to_syscall_ret();
             }
         }

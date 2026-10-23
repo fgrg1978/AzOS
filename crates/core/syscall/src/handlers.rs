@@ -1029,8 +1029,7 @@ pub fn sys_waitpid(child_tid: u64, status_ptr: u64) -> i64 {
     if status_ptr == 0 {
         return reaped as i64;
     }
-    let bytes = code.to_le_bytes();
-    if !azos_sched::copy_to_user(status_ptr as usize, bytes.as_ptr(), 4) {
+    if azos_sched::UserPtr::<i32>::new(status_ptr).write(&code.to_le()).is_err() {
         return Errno::EFAULT.to_syscall_ret();
     }
     reaped as i64
@@ -1080,8 +1079,7 @@ pub fn sys_wait_status(status_ptr: u64) -> i64 {
     if status_ptr == 0 {
         return child_tid as i64;
     }
-    let bytes = code.to_le_bytes();
-    if !azos_sched::copy_to_user(status_ptr as usize, bytes.as_ptr(), 4) {
+    if azos_sched::UserPtr::<i32>::new(status_ptr).write(&code.to_le()).is_err() {
         return Errno::EFAULT.to_syscall_ret();
     }
     child_tid as i64
@@ -1793,12 +1791,9 @@ pub(crate) fn bounce_from_user<const N: usize>(
     len: usize,
 ) -> Option<&[u8]> {
     let len = len.min(N);
-    let p = b.as_mut_ptr() as *mut u8;
-    if !azos_sched::copy_from_user(p, user as usize, len) {
-        return None;
-    }
-    // SAFETY: `copy_from_user` returned true, so it wrote all `len` bytes.
-    Some(unsafe { core::slice::from_raw_parts(p, len) })
+    // SAFETY: `MaybeUninit<[u8; N]>` and `[MaybeUninit<u8>; N]` have one layout.
+    let b = unsafe { &mut *(b as *mut core::mem::MaybeUninit<[u8; N]> as *mut [core::mem::MaybeUninit<u8>; N]) };
+    azos_sched::UserSlice::<u8>::new(user, len).read_uninit(&mut b[..len]).ok().map(|s| &*s)
 }
 
 pub fn sys_read(fd: u64, buf: u64, count: u64) -> i64 {
@@ -1821,7 +1816,8 @@ pub fn sys_read(fd: u64, buf: u64, count: u64) -> i64 {
         let tmp = bounce_zeroed(&mut tmp, chunk);
         let n = ops.read(fd as i32, tmp);
         if n > 0 {
-            if !azos_sched::copy_to_user(buf as usize, tmp.as_ptr(), (n as usize).min(chunk)) {
+            let m = (n as usize).min(chunk);
+            if azos_sched::UserSlice::<u8>::new(buf, m).write_from(&tmp[..m]).is_err() {
                 return -1;
             }
         }
@@ -1935,8 +1931,7 @@ const SYS_PATH_MAX: usize = 512;
 /// drive the FS code via raw `cstr_to_bytes`.
 fn copy_path_from_user<'a>(dst: &'a mut [u8], path_ptr: u64) -> Option<&'a [u8]> {
     if azos_sched::current_user_pt() != 0 {
-        azos_sched::copy_cstr_from_user(dst, path_ptr as usize)?;
-        let len = dst.iter().position(|&b| b == 0).unwrap_or(dst.len());
+        let len = azos_sched::UserCStr::new(path_ptr).read_into(dst).ok()?;
         Some(&dst[..len])
     } else {
         Some(unsafe { cstr_to_bytes(path_ptr as *const u8) })
@@ -2043,12 +2038,9 @@ pub fn sys_readdir(
     // disagreed with each other about what a path is.
     let mut path_buf = [0u8; 256];
     let path: &[u8] = if azos_sched::current_user_pt() != 0 {
-        match azos_sched::copy_cstr_from_user(&mut path_buf, path_ptr as usize) {
-            Some(_) => {
-                let len = path_buf.iter().position(|&b| b == 0).unwrap_or(path_buf.len());
-                &path_buf[..len]
-            }
-            None => return -1,
+        match azos_sched::UserCStr::new(path_ptr).read_into(&mut path_buf) {
+            Ok(len) => &path_buf[..len],
+            Err(_) => return -1,
         }
     } else {
         unsafe { cstr_to_bytes(path_ptr as *const u8) }
@@ -2061,21 +2053,19 @@ pub fn sys_readdir(
             if azos_sched::current_user_pt() != 0 {
                 let mut tmp = [0u8; 64];
                 tmp[..copy_len].copy_from_slice(&name[..copy_len]);
-                if !azos_sched::copy_to_user(name_out as usize, tmp.as_ptr(), 64) {
+                if azos_sched::UserPtr::<[u8; 64]>::new(name_out).write(&tmp).is_err() {
                     return -1;
                 }
                 // Checked like `name_out` above: returning 0 with these
                 // fields unwritten would be a silent partial success the
                 // caller cannot detect.
                 if size_out != 0 {
-                    let sb = (size as u32).to_le_bytes();
-                    if !azos_sched::copy_to_user(size_out as usize, sb.as_ptr(), 4) {
+                    if azos_sched::UserPtr::<u32>::new(size_out).write(&(size as u32).to_le()).is_err() {
                         return -1;
                     }
                 }
                 if is_dir_out != 0 {
-                    let db = (is_dir as u32).to_le_bytes();
-                    if !azos_sched::copy_to_user(is_dir_out as usize, db.as_ptr(), 4) {
+                    if azos_sched::UserPtr::<u32>::new(is_dir_out).write(&(is_dir as u32).to_le()).is_err() {
                         return -1;
                     }
                 }
@@ -2117,7 +2107,7 @@ pub fn sys_stat(path_ptr: u64, stat_ptr: u64) -> i64 {
     let st = match ops.stat(path) { Ok(st) => st, Err(e) => return e };
     let bytes = st.to_bytes();
     if azos_sched::current_user_pt() != 0 {
-        if !azos_sched::copy_to_user(stat_ptr as usize, bytes.as_ptr(), STAT_BYTES) {
+        if azos_sched::UserSlice::<u8>::new(stat_ptr, STAT_BYTES).write_from(&bytes[..STAT_BYTES]).is_err() {
             return Errno::EFAULT.to_syscall_ret();
         }
     } else {
@@ -2212,7 +2202,7 @@ pub fn sys_statfs(path_ptr: u64, buf_ptr: u64, buf_len: u64) -> i64 {
     let st = match ops.statfs(path) { Ok(st) => st, Err(e) => return e };
     let bytes = st.to_bytes();
     if azos_sched::current_user_pt() != 0 {
-        if !azos_sched::copy_to_user(buf_ptr as usize, bytes.as_ptr(), STATFS_BYTES) {
+        if azos_sched::UserSlice::<u8>::new(buf_ptr, STATFS_BYTES).write_from(&bytes[..STATFS_BYTES]).is_err() {
             return Errno::EFAULT.to_syscall_ret();
         }
     } else {
@@ -2262,7 +2252,7 @@ pub fn sys_taskinfo(out_ptr: u64, out_len: u64) -> i64 {
     // The user path goes through the checked copy, the kernel path writes
     // directly.
     if azos_sched::current_user_pt() != 0 {
-        if !azos_sched::copy_to_user(out_ptr as usize, blob.as_ptr(), TASKINFO_BYTES) {
+        if azos_sched::UserPtr::<[u8; TASKINFO_BYTES]>::new(out_ptr).write(&blob).is_err() {
             return Errno::EFAULT.to_syscall_ret();
         }
     } else {
@@ -2522,9 +2512,7 @@ fn read_sockaddr(ptr: u64) -> Option<SockAddr> {
     // For user-space callers, copy via page tables; kernel callers use raw ptr.
     let mut raw = [0u8; 16];
     if azos_sched::current_user_pt() != 0 {
-        if !azos_sched::copy_from_user(raw.as_mut_ptr(), ptr as usize, 16) {
-            return None;
-        }
+        raw = azos_sched::UserPtr::<[u8; 16]>::new(ptr).read().ok()?;
     } else {
         let src = unsafe { core::slice::from_raw_parts(ptr as *const u8, 16) };
         raw.copy_from_slice(src);
@@ -2616,7 +2604,7 @@ pub fn sys_sendto_syscall(fd: u64, buf_ptr: u64, len: u64, addr_ptr: u64) -> i64
     let addr = match read_sockaddr(addr_ptr) { Some(a) => a, None => return -1 };
     let count = (len as usize).min(1460);
     let mut tmp = [0u8; 1460];
-    if !azos_sched::copy_from_user(tmp.as_mut_ptr(), buf_ptr as usize, count) {
+    if azos_sched::UserSlice::<u8>::new(buf_ptr, count).read_into(&mut tmp[..count]).is_err() {
         return -1;
     }
     azos_net::socket::socket_sendto(fd as i32, &tmp[..count], &addr) as i64
@@ -2662,7 +2650,7 @@ fn recvfrom_bounced(fd: u64, buf_ptr: u64, count: usize, addr_ptr: u64) -> i64 {
             return end_of_stream();
         }
         if n <= 0 { return n as i64; }
-        if !azos_sched::copy_to_user(buf_ptr as usize, tmp.as_ptr(), n as usize) {
+        if azos_sched::UserSlice::<u8>::new(buf_ptr, n as usize).write_from(&tmp[..n as usize]).is_err() {
             return -1;
         }
         // The address is written AFTER the data: if copying the sender out
@@ -2672,7 +2660,7 @@ fn recvfrom_bounced(fd: u64, buf_ptr: u64, count: usize, addr_ptr: u64) -> i64 {
         raw[0..2].copy_from_slice(&src.family.to_le_bytes());
         raw[2..4].copy_from_slice(&src.port.to_be_bytes());
         raw[4..8].copy_from_slice(&src.addr);
-        if !azos_sched::copy_to_user(addr_ptr as usize, raw.as_ptr(), 16) {
+        if azos_sched::UserPtr::<[u8; 16]>::new(addr_ptr).write(&raw).is_err() {
             return -1;
         }
         n as i64
@@ -2701,7 +2689,7 @@ pub fn sys_send_syscall(fd: u64, buf_ptr: u64, len: u64, _flags: u64) -> i64 {
     // connect's because this call sits on the actuation path.
     if azos_sched::current_user_pt() != 0 {
         let mut tmp = [0u8; 1460];
-        if !azos_sched::copy_from_user(tmp.as_mut_ptr(), buf_ptr as usize, count) {
+        if azos_sched::UserSlice::<u8>::new(buf_ptr, count).read_into(&mut tmp[..count]).is_err() {
             return -1;
         }
         azos_net::socket::socket_send_with_yield(
@@ -2767,7 +2755,7 @@ fn recv_bounced(fd: u64, buf_ptr: u64, count: usize) -> i64 {
     }
     if n > 0 {
         if azos_sched::current_user_pt() != 0 {
-            if !azos_sched::copy_to_user(buf_ptr as usize, tmp.as_ptr(), n as usize) {
+            if azos_sched::UserSlice::<u8>::new(buf_ptr, n as usize).write_from(&tmp[..n as usize]).is_err() {
                 return -1;
             }
         } else {
@@ -4035,24 +4023,11 @@ fn driver_request_buf_writable(user_buf_ptr: u64) -> bool {
 /// Read the caller's `DriverReply`, or `None` when the copy fails.
 fn driver_read_reply(user_reply_ptr: u64) -> Option<azos_driver_server::DriverReply> {
     // Same boundary rule as fetch: read the reply via copy_from_user.
-    let mut reply = azos_driver_server::DriverReply::zeroed();
-    let n = core::mem::size_of::<azos_driver_server::DriverReply>();
     if azos_sched::current_user_pt() != 0 {
-        if !azos_sched::copy_from_user(
-            &mut reply as *mut azos_driver_server::DriverReply as *mut u8,
-            user_reply_ptr as usize,
-            n,
-        ) {
-            return None;
-        }
-    } else {
-        reply = unsafe {
-            core::ptr::read_volatile(
-                user_reply_ptr as *const azos_driver_server::DriverReply,
-            )
-        };
+        let b = azos_sched::UserPtr::<[u8; azos_driver_server::DRIVER_REPLY_BYTES]>::new(user_reply_ptr).read().ok()?;
+        return Some(azos_driver_server::DriverReply::from_bytes(&b));
     }
-    Some(reply)
+    Some(unsafe { core::ptr::read_volatile(user_reply_ptr as *const azos_driver_server::DriverReply) })
 }
 
 /// Fetch the next pending DriverRequest. a0=kind, a1=user_buf_ptr.
@@ -4204,15 +4179,11 @@ fn driver_pop_request_into(kind: u64, user_buf_ptr: u64) -> i64 {
 fn driver_copy_request_out(req: azos_driver_server::DriverRequest, user_buf_ptr: u64) -> i64 {
     // The userspace driver's buffer must be written via copy_to_user:
     // a raw write_volatile to the user VA faults (no SUM bit, no
-    // pointer validation). DriverRequest is #[repr(C)] so its byte
-    // image is identical to the userspace mirror.
-    let n = core::mem::size_of::<azos_driver_server::DriverRequest>();
+    // pointer validation). `to_bytes` is the `repr(C)` image the userspace
+    // mirror reads, its padding zero (a copy of the struct whole carried the
+    // padding bytes of this stack out).
     let ok = if azos_sched::current_user_pt() != 0 {
-        azos_sched::copy_to_user(
-            user_buf_ptr as usize,
-            &req as *const azos_driver_server::DriverRequest as *const u8,
-            n,
-        )
+        azos_sched::UserPtr::<[u8; azos_driver_server::DRIVER_REQUEST_BYTES]>::new(user_buf_ptr).write(&req.to_bytes()).is_ok()
     } else {
         unsafe {
             core::ptr::write_volatile(

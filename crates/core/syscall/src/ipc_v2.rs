@@ -53,18 +53,15 @@ pub fn canary_as_v1() {
     CANARY_AS_V1.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Bytes of a descriptor in user memory: the whole struct, always.
-const DESC_BYTES: usize = core::mem::size_of::<MsgDesc>();
 
 /// The descriptor at `ptr`.
 fn read_desc(ptr: u64) -> Option<MsgDesc> {
-    let mut d = MsgDesc::default();
-    azos_sched::copy_from_user(&mut d as *mut MsgDesc as *mut u8, ptr as usize, DESC_BYTES).then_some(d)
+    azos_sched::UserPtr::<MsgDesc>::new(ptr).read().ok()
 }
 
 /// Write `d` at `ptr`.
 fn write_desc(ptr: u64, d: &MsgDesc) -> bool {
-    azos_sched::copy_to_user(ptr as usize, d as *const MsgDesc as *const u8, DESC_BYTES)
+    azos_sched::UserPtr::<MsgDesc>::new(ptr).write(d).is_ok()
 }
 
 const NO_XFER: CapXfer = CapXfer::new(CapHandle(0), false);
