@@ -80,6 +80,10 @@ pub(crate) const NAMES: &[&str] = &[
     // `Power::sync` or by the orderly power-off (gate rows `sh: power-off
     // keeps a written file` and its canary).
     "power-off-sync-skip",
+    // boot/seams.rs `clean_unmount`: the orderly power-off leaves the boot
+    // volume mounted, so it is not marked clean and the next boot checks it
+    // (gate row `boot count: orderly reboot`).
+    "power-off-unmount-skip",
     // tasks/cam_capture.rs `camera_with_frame`: each consumer of the camera
     // frame ring captures and encodes a frame of its own again, as before
     // B2 (ktest `camera_one_encode_per_frame`).

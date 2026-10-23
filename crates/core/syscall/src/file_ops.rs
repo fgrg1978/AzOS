@@ -202,6 +202,14 @@ pub trait FileOps: Sync {
     /// The default, with no filesystem behind the seam: nothing to sync.
     fn sync_all(&self) -> SyncAllOut { SyncAllOut::default() }
 
+    /// Unmount the boot volume as the last step of its writes, after
+    /// [`Self::sync_all`]: the clean mark goes out last, so the next mount
+    /// does not check a volume an orderly power-off or reboot left settled.
+    /// The orderly path only (`handlers::orderly_storage_down`), never the
+    /// `Power` interface's `sync`: the volume stays unusable afterwards.
+    /// `true` when the unmount completed. The default: no volume to unmount.
+    fn clean_unmount(&self) -> bool { false }
+
     /// `DOMAIN_STATFS`: capacity and free space of the filesystem `path` is on.
     fn statfs(&self, _path: &[u8]) -> Result<StatFsOut, i64> { Err(-1) }
 

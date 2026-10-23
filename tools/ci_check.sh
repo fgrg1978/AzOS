@@ -9279,12 +9279,13 @@ kbuild "qemu"
 # buffer behind the ring-3 UART owner.
 # Canary (by hand, reverted): the hook not installed -> boot 2 reads "1
 # unconfirmed", the readback finds boot_count=1.
-orderly_reboot_row() {
-    local label="boot count: orderly reboot"
+orderly_reboot_row() { # orderly_reboot_row [canary]
+    local label="boot count: orderly reboot" want="${1:-}" app=""
+    [ "$want" = canary ] && { label="$label, unmount canary"; app="canary=power-off-unmount-skip"; }
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
-    local log1="$CI_LOG_DIR/orderly-boot1.log" log2="$CI_LOG_DIR/orderly-boot2.log"
-    local disk="$CI_LOG_DIR/disk-orderly.img"
+    local log1="$CI_LOG_DIR/orderly-boot1${want:+-$want}.log" log2="$CI_LOG_DIR/orderly-boot2${want:+-$want}.log"
+    local disk="$CI_LOG_DIR/disk-orderly${want:+-$want}.img"
     rm -f "$log1" "$log2" "$disk"
     if ! kbuild "qemu,orderly-reboot-smoke"; then
         bad; echo "      the orderly-reboot-smoke kernel did not build"; return
@@ -9294,7 +9295,7 @@ orderly_reboot_row() {
     cp $AZOS_OUT/build/disk.img "$disk"
     par_ready
     "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -no-reboot \
-        -smp 2 -global virtio-mmio.force-legacy=false \
+        -smp 2 -global virtio-mmio.force-legacy=false ${app:+-append "$app"} \
         -drive file="$disk",if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0 </dev/null >"$log1" 2>&1 &
     local pid=$! i=0
@@ -9335,9 +9336,25 @@ orderly_reboot_row() {
         grep -a "BOOTCNT\]\|RECOVERY\]\|OTA\] Boot" "$log2" | tr -d '\r' | sed 's/^/        /'
         echo "      logs kept: $log1 $log2"; return
     fi
+    # The boot volume marked clean on the way down: the next mount runs no
+    # check (fs-check-mount: a check that misread a settled volume would serve
+    # it read-only). The canary leaves it mounted: boot 2 must check it.
+    local checked=no
+    grep -aqF "[FAT32] check: unclean=" "$log2" && checked=yes
+    if [ "$want" = canary ]; then
+        if [ "$checked" != yes ]; then
+            bad; echo "      canary: the volume left mounted was not checked at the next mount"
+            echo "      logs kept: $log1 $log2"; return
+        fi
+    elif [ "$checked" = yes ] || ! grep -aqF "[ORDERLY] boot volume: unmounted, marked clean" "$log1"; then
+        bad; echo "      the orderly reboot did not leave the volume clean (boot 2 checked it: $checked):"
+        grep -a "ORDERLY\] boot volume\|FAT32\] check" "$log1" "$log2" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $log1 $log2"; return
+    fi
     ok; rm -f "$log1" "$log2" "$disk"
 }
 par "boot count: orderly reboot" orderly_reboot_row
+par "boot count: orderly reboot, unmount canary" orderly_reboot_row canary
 kbuild "qemu"
 
 # ── power-off: the kernel's own sync keeps a written file (owner decision

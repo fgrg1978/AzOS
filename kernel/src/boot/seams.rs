@@ -921,6 +921,14 @@ pub(crate) fn install_ring3_seams() {
                 let r = azos_fs::vfs_sync_all(&|| now() >= deadline, &pause);
                 azos_syscall::file_ops::SyncAllOut { volumes: r.volumes, failed: r.failed, timed_out: r.timed_out }
             }
+            fn clean_unmount(&self) -> bool {
+                // Canary (QEMU row `boot count: orderly reboot`): the boot
+                // volume left mounted, so the next boot checks it.
+                if canary!("power-off-unmount-skip") {
+                    return false;
+                }
+                azos_fs::fat32_unmount(azos_fs::Volume::assume_mounted()).is_ok()
+            }
             fn statfs(&self, path: &[u8]) -> Result<azos_syscall::file_ops::StatFsOut, i64> {
                 let st = azos_fs::vfs_statfs(path).map_err(fs_errno)?;
                 Ok(azos_syscall::file_ops::StatFsOut {

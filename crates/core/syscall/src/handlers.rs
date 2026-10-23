@@ -2322,6 +2322,12 @@ fn orderly_storage_down() {
     let fs = crate::file_ops::file_ops().map(|o| o.sync_all()).unwrap_or_default();
     azos_drv_sys::kprintln!("[ORDERLY] filesystems: {} volume(s) synced, {} failed, {} timed out ({} ms)",
         fs.volumes, fs.failed, fs.timed_out, ms(t0));
+    // The boot volume's clean mark, the mount's last write: without it every
+    // boot after an orderly power-off would check /fat again, and a check that
+    // misreads a settled volume would serve it read-only (FS_CHECK_FAILED).
+    let clean = crate::file_ops::file_ops().is_some_and(|o| o.clean_unmount());
+    azos_drv_sys::kprintln!("[ORDERLY] boot volume: {}",
+        if clean { "unmounted, marked clean" } else { "not unmounted (the next mount checks it)" });
     azos_drv_block::blkdev::shutdown();
     if let Some(f) = ORDERLY_DEVICES_HOOK.get() { f(); }
 }
