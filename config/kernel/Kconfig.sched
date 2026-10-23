@@ -44,6 +44,7 @@ config SCHED_HZ_FLOOR
 
 config SCHED_TIMER_HEAP_PER_CPU
     bool "One timer-sleeper heap per CPU (sched-timer-heap)"
+    depends on SCHED_TIMER_HEAP
     default y
     help
       With the `sched-timer-heap` cargo feature, each CPU keeps its own
