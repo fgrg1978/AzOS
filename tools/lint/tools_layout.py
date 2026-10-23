@@ -127,6 +127,14 @@ NO_CALLER = {
     "repro_check.sh": "reproducible-build check by hand (plan: wire it into the gate)",
     "sbom.sh": "CycloneDX SBOM by hand",
     "lx_kbuild/zbc_crc_constants.py": "prints the CRC fold constants lxbase.c carries, by hand",
+    "text_equiv.py": "compares two kernels' .text by hand; the gate's comments name it",
+    "bench_e2e.sh": "end-to-end benchmark over the console by hand",
+    "lat_linux/": "the Linux half of the tail-latency smoke, run by hand",
+    "vsbench_x86_64.sh": "vsbench on x86_64 by hand (the riscv64 and aarch64 scripts are the gate's)",
+    "qemu.sh": "QEMU launcher by hand; the hv defconfigs' comments name it",
+    "arch_coupling.py": "ISA-coupling inventory by hand (the arch-contract migration list)",
+    "limits_cost.py": "RAM cost of a sizing option by hand; Kconfig.limits' help names it",
+    "size_report.sh": "static memory of kernel ELFs by hand; defconfig comments name it",
 }
 
 # Files that are data or a self-contained unit's own parts: called through the
@@ -304,8 +312,11 @@ FORBIDDEN_PY = [
     (re.compile(r"os\.path\.join\(os\.path\.dirname\(__file__\)"), "use the canonical __file__ form"),
 ]
 
-CALLER_FILES = re.compile(r"(^Makefile$|^mk/.*\.mk$|^Kconfig$|^config/Kconfig\.|\.rs$|\.sh$|\.py$|"
-                          r"Cargo\.toml$|^\.gitmodules$)")
+# Where a caller can be: what make, a build script, a host test or a tool runs.
+# A kernel crate's own source cannot run a host tool (its messages and
+# comments name some), and Kconfig only runs one through $(shell,...).
+CALLER_FILES = re.compile(r"(^Makefile$|^mk/.*\.mk$|^Kconfig$|^config/Kconfig\.|(^|/)build\.rs$|^tests/.*\.rs$|"
+                          r"\.sh$|\.py$|Cargo\.toml$)")
 
 
 def code_strings_py(text):
@@ -337,6 +348,8 @@ def code_text(path, text):
         return code_strings_py(text)
     if path.endswith(".rs"):
         return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("//"))
+    if path == "Kconfig" or path.startswith("config/Kconfig."):
+        return "\n".join(l for l in text.splitlines() if "$(shell" in l)
     return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 
 
@@ -345,7 +358,7 @@ def callers(root=ROOT):
     ents = entries()
     texts = {}
     for p in tracked(root):
-        if p.startswith(SKIP_TEXT) or not CALLER_FILES.search(p):
+        if p == SELF or p.startswith(SKIP_TEXT) or not CALLER_FILES.search(p):
             continue
         t = read_text(os.path.join(root, p))
         if t is not None:
@@ -400,7 +413,8 @@ def check(root=ROOT):
             mods.setdefault(os.path.basename(p)[:-3], []).append(p)
             for rx2, why in FORBIDDEN_PY:
                 for i, line in enumerate(text.splitlines(), 1):
-                    if rx2.search(line) and p != SELF:
+                    # a self-test's fixture text is a string line, not the tool's code
+                    if rx2.search(line) and p != SELF and line.lstrip()[:1] not in "'\"":
                         errs.append("%s:%d: %s" % (p, i, why))
             for m in PY_ANCHOR.finditer(text):
                 t = os.path.normpath(os.path.join(base, m.group(1)))
