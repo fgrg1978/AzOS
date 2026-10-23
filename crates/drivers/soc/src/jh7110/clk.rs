@@ -14,8 +14,8 @@
 //!
 //! A clock is one of: a gate, a divider, a gate with a divider, or a mux;
 //! the table says which and where its input comes from. The table below
-//! holds the clocks the boot path of the VisionFive 2 touches (CPU and bus
-//! roots, the AXI/AHB/APB chain, the UARTs).
+//! holds the clocks the VisionFive 2's kernel drivers use (CPU and bus
+//! roots, the AXI/AHB/APB chain, the UARTs, the I2C controllers' APB clocks).
 //!
 //! What the register tables confirm (field presence and widths, the mux
 //! inputs, the largest divider the TRM allows): every `Kind` and `max` below,
@@ -24,7 +24,14 @@
 //! bus_root -> axi_cfg0 (/3) -> stg_axiahb (/2) -> AHB 0/1 and the APB
 //! divider (/4, 51.2 MHz)). The PLLs are not in this block: `pll0_out`..
 //! `pll2_out` are inputs, provided by the PLL controller node the `clocks`
-//! property names.
+//! property names (`starfive,jh7110-pll`, [`super::pll`]).
+//!
+//! The parents of `apb_bus` and of the I2C APB gates are the ones U-Boot's
+//! JH7110 clock driver (`drivers/clk/starfive/clk-jh7110.c`, v2025.07)
+//! registers: `apb_bus` divides `stg_axiahb`, `i2c2_apb` and `i2c5_apb` gate
+//! `apb0`. U-Boot registers no other I2C APB clock; the other five gating
+//! `apb0` too is the mainline Linux driver's table (`clk-starfive-jh7110-sys.c`),
+//! not checked against a copy of it here.
 
 use crate::clk::{ClockOps, Parent};
 use crate::{Bus, Error, Result};
@@ -89,12 +96,21 @@ pub const SYS_CLOCKS: &[Desc] = &[
     // T2-59, T2-60: gates.
     clk!(9, "ahb0", Kind::Gate, [Parent::Local(8)]),
     clk!(10, "ahb1", Kind::Gate, [Parent::Local(8)]),
-    // T2-61: divider, max 8. [verify] Figure 2-4 hangs the APB divider off
-    // the stg_axiahb net; whether it sits behind the ahb1 gate is not
-    // visible in the figure, the model keeps it behind ahb1.
-    clk!(11, "apb_bus_func", Kind::Div { max: 8 }, [Parent::Local(10)]),
+    // T2-61: divider, max 8. Under stg_axiahb itself, not behind the ahb1
+    // gate (Figure 2-4 does not show which; U-Boot's driver, module doc).
+    clk!(11, "apb_bus_func", Kind::Div { max: 8 }, [Parent::Local(8)]),
     // T2-62: gate.
     clk!(12, "apb0", Kind::Gate, [Parent::Local(11)]),
+    // I2C 0..6 APB gates (the controllers' `ref` clock), under apb0 (module
+    // doc). [verify] T2-188..T2-194 by the table's numbering (table = id +
+    // 50, as every line above), not read in the TRM.
+    clk!(138, "i2c0_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(139, "i2c1_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(140, "i2c2_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(141, "i2c3_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(142, "i2c4_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(143, "i2c5_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(144, "i2c6_apb", Kind::Gate, [Parent::Local(12)]),
     // T2-195..T2-200: UART 0..2 APB and core gates. UART 3..5 cores
     // (T2-202, T2-204, T2-206) are gates with a divider and are not in the
     // table: nothing on the boot path uses them.

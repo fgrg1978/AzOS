@@ -170,9 +170,9 @@ const PD: u8 = effect::KIND_POWER_DOMAIN;
 const PIN: u8 = effect::KIND_PINCTRL;
 
 /// The gates a UART's two clocks open, root first: the core gate, then the
-/// APB chain (ahb1, apb0, the UART's own).
-const UP_CLOCKS: [(u8, Op, u32); 4] =
-    [(CLOCK, Op::Enable, 146), (CLOCK, Op::Enable, 10), (CLOCK, Op::Enable, 12), (CLOCK, Op::Enable, 145)];
+/// APB chain (apb0, the UART's own; apb_bus divides stg_axiahb, no gate
+/// between).
+const UP_CLOCKS: [(u8, Op, u32); 3] = [(CLOCK, Op::Enable, 146), (CLOCK, Op::Enable, 12), (CLOCK, Op::Enable, 145)];
 
 #[test]
 fn bind_gives_the_domain_the_clocks_and_the_resets_in_that_order() {
@@ -238,7 +238,6 @@ fn a_refused_reset_unwinds_the_clocks_and_the_domain() {
         (RESET, Op::Assert, 74),
         (CLOCK, Op::Disable, 145),
         (CLOCK, Op::Disable, 12),
-        (CLOCK, Op::Disable, 10),
         (CLOCK, Op::Disable, 146),
         (PD, Op::PowerOff, 2),
     ]);
@@ -277,7 +276,7 @@ fn a_refused_pin_state_unwinds_everything_before_it() {
     let node = by_path(&fdt, FULL).unwrap();
     assert_eq!(rig.bind(&fdt, node), Err(Error::Refused(77)));
     let ops = rig.ops();
-    let tail = &ops[ops.len() - 7..];
+    let tail = &ops[ops.len() - 6..];
     assert_eq!(
         tail,
         [
@@ -285,7 +284,6 @@ fn a_refused_pin_state_unwinds_everything_before_it() {
             (RESET, Op::Assert, 74),
             (CLOCK, Op::Disable, 145),
             (CLOCK, Op::Disable, 12),
-            (CLOCK, Op::Disable, 10),
             (CLOCK, Op::Disable, 146),
             (PD, Op::PowerOff, 2),
         ],
@@ -312,7 +310,6 @@ fn unbind_reverses_bind() {
             (RESET, Op::Assert, 74),
             (CLOCK, Op::Disable, 145),
             (CLOCK, Op::Disable, 12),
-            (CLOCK, Op::Disable, 10),
             (CLOCK, Op::Disable, 146),
             (PD, Op::PowerOff, 2),
         ]

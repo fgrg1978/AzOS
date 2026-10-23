@@ -63,16 +63,14 @@ fn enabling_the_uart_apb_clock_writes_the_gates_root_first() {
     bus.regs.insert(reg(11), 2);
     let apb = tree.get(&fdt, uart(&fdt), Sel::Name("apb_pclk")).unwrap();
     tree.enable(&mut bus, &mut fx, apb).unwrap();
-    // 145 <- apb0 (12) <- apb_bus_func (11, divider) <- ahb1 (10) <- bus_root
-    // (5, mux: its select field is read once) <- osc. Only 10, 12 and 145
-    // have gates.
+    // 145 <- apb0 (12) <- apb_bus_func (11, divider) <- stg_axiahb (8) <-
+    // axi_cfg0 (7) <- bus_root (5, mux: its select field is read once) <-
+    // osc. Only 12 and 145 have gates: ahb1 (10) is a sibling, not on the
+    // path.
     assert_eq!(
         log.all(),
         [
             Ev::R(reg(5)),
-            eff(Op::Enable, Class::Reversible, 10, 1),
-            Ev::R(reg(10)),
-            Ev::W(reg(10), 0x8000_0000),
             eff(Op::Enable, Class::Reversible, 12, 1),
             Ev::R(reg(12)),
             Ev::W(reg(12), 0x8000_0003),
@@ -82,9 +80,10 @@ fn enabling_the_uart_apb_clock_writes_the_gates_root_first() {
         ]
     );
     // Every clock in the chain is held once, down to the oscillator.
-    for id in [145, 12, 11, 10, 5] {
+    for id in [145, 12, 11, 8, 7, 5] {
         assert_eq!(tree.refs(Clk { prov: SYS, id }), 1, "clock {id}");
     }
+    assert_eq!(tree.refs(Clk { prov: SYS, id: 10 }), 0);
     assert_eq!(tree.refs(Clk { prov: 0, id: 0 }), 1);
     assert!(tree.is_enabled(&mut bus, apb).unwrap());
 }
@@ -209,10 +208,11 @@ fn set_rate_writes_the_closest_divider_and_keeps_the_other_bits() {
 #[test]
 fn a_clock_the_table_does_not_have_is_a_bad_spec_and_writes_nothing() {
     rig!(blob, fdt, log, bus, fx, tree);
-    // Ids 3 and 4 are inside the table's range but not in it; 141..=144 are
-    // not the UARTs (UART0 APB is 0x244 / 4 = 145, T2-195).
+    // Ids 3 and 4 are inside the table's range but not in it; 137 (SPI6
+    // APB) sits between the table's lines (the I2C APB gates start at 138,
+    // UART0 APB is 0x244 / 4 = 145, T2-195).
     assert_eq!(tree.enable(&mut bus, &mut fx, Clk { prov: SYS, id: 3 }), Err(Error::BadSpec));
-    assert_eq!(tree.enable(&mut bus, &mut fx, Clk { prov: SYS, id: 141 }), Err(Error::BadSpec));
+    assert_eq!(tree.enable(&mut bus, &mut fx, Clk { prov: SYS, id: 137 }), Err(Error::BadSpec));
     assert_eq!(tree.enable(&mut bus, &mut fx, Clk { prov: SYS, id: 4000 }), Err(Error::BadSpec));
     assert!(log.writes().is_empty());
     assert!(log.effects().is_empty());
@@ -224,11 +224,8 @@ fn a_refused_gate_leaves_the_register_alone() {
     let mut fx = Sink::new(&log).refusing(|e| e.op == Op::Enable && e.id == 145);
     let apb = Clk { prov: SYS, id: 145 };
     assert_eq!(tree.enable(&mut bus, &mut fx, apb), Err(Error::Refused(77)));
-    // 10 and 12 were opened and are closed again; 145 never was written.
-    assert_eq!(
-        log.writes(),
-        [(reg(10), 0x8000_0000), (reg(12), 0x8000_0000), (reg(12), 0), (reg(10), 0)]
-    );
+    // 12 was opened and is closed again; 145 never was written.
+    assert_eq!(log.writes(), [(reg(12), 0x8000_0000), (reg(12), 0)]);
     assert_eq!(tree.refs(apb), 0);
     assert_eq!(tree.refs(Clk { prov: 0, id: 0 }), 0);
 }
