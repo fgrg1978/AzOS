@@ -619,6 +619,10 @@ mod conformance_igmp;
 mod parse_fuzz;
 #[cfg(test)]
 mod conformance_dhcp;
+/// Keeping the DHCP lease (RFC 2131 §4.4.5): renew at T1, rebind at T2, give
+/// it up on a NAK or at its end, against a server the poll hook plays.
+#[cfg(test)]
+mod dhcp_lease;
 #[cfg(test)]
 mod conformance_dns;
 #[cfg(test)]

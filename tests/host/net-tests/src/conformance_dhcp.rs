@@ -21,12 +21,12 @@
 use crate::NET_SERIAL as SERIAL;
 use crate::{dhcp, dns, netcfg, raw, tcp};
 
-const OUR_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
-const SERVER_ID: [u8; 4] = [10, 0, 0, 1];
-const OFFERED: [u8; 4] = [10, 0, 0, 42];
+pub(crate) const OUR_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
+pub(crate) const SERVER_ID: [u8; 4] = [10, 0, 0, 1];
+pub(crate) const OFFERED: [u8; 4] = [10, 0, 0, 42];
 
 /// Ethernet (14) + IPv4 without options (20) + UDP (8).
-const BOOTP_AT: usize = 42;
+pub(crate) const BOOTP_AT: usize = 42;
 /// RFC 1542 §2.1: "the minimal BOOTP header of 300 octets".
 const BOOTP_LEN: usize = 300;
 
@@ -44,7 +44,7 @@ fn rfc1071(bytes: &[u8]) -> u16 {
     !(acc as u16)
 }
 
-fn begin() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn begin() -> std::sync::MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     raw::reset();
     netcfg::reset();
@@ -56,7 +56,7 @@ fn begin() -> std::sync::MutexGuard<'static, ()> {
     g
 }
 
-fn last_frame() -> Vec<u8> {
+pub(crate) fn last_frame() -> Vec<u8> {
     raw::all().last().cloned().expect("a DHCP frame must have been transmitted")
 }
 
@@ -208,7 +208,7 @@ fn a_selecting_request_is_byte_exact_and_reuses_the_discover_xid() {
 /// off 236  cookie  63 82 53 63
 /// off 240  options, then 00 padding to 300 if shorter
 /// ```
-fn server_reply(xid: [u8; 4], options: &[u8]) -> Vec<u8> {
+pub(crate) fn server_reply(xid: [u8; 4], options: &[u8]) -> Vec<u8> {
     let mut d = Vec::with_capacity(BOOTP_LEN);
     d.extend_from_slice(&[0x02, 0x01, 0x06, 0x00]);
     d.extend_from_slice(&xid);
@@ -253,7 +253,7 @@ const OFFER_OPTIONS: [u8; 38] = [
 /// Offset one past option 54 in `OFFER_OPTIONS`: 240 + 3 + 6.
 const OFFER_SERVER_ID_END: usize = 249;
 
-fn offer(xid: [u8; 4]) -> Vec<u8> {
+pub(crate) fn offer(xid: [u8; 4]) -> Vec<u8> {
     server_reply(xid, &OFFER_OPTIONS)
 }
 

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The `net-clients` task: the stack's own clients of the network. Today one,
-//! the SNTP client that steers the wall clock (Kconfig `NTP_CLIENT`).
+//! The `net-clients` task: the stack's own clients of the network. Two: the
+//! SNTP client that steers the wall clock (Kconfig `NTP_CLIENT`), and the
+//! keeper of the DHCP lease (`dhcp=1` in CONFIG.INI), which renews it at T1,
+//! rebinds it at T2 and starts again when it ends (`dhcp::dhcp_maintain`).
 //!
 //! Not in the real-time band and not the poller: `net_poll_task` keeps the
 //! receive path and the TCP timers moving; this task sleeps between
@@ -15,8 +17,11 @@
 //! before every exchange: its cache keeps an answer five minutes). The
 //! SNTP exchange (`ntp::ntp_sync_with_yield`) hands its four timestamps to the
 //! clock discipline, which decides whether to slew, step or filter. After a
-//! success the task sleeps `NTP_INTERVAL_S`; after a failure 16 s, doubling up
-//! to that period.
+//! success the next one is `NTP_INTERVAL_S` away; after a failure 16 s,
+//! doubling up to that period. Between them the task sleeps until the nearer
+//! of that and the lease's next deadline (`dhcp::lease_deadline`), and never
+//! longer than `dhcp::RETRY_MIN_S` while a lease is configured: a lease taken
+//! elsewhere (the brain link's `dhcp_start`) is picked up within it.
 
 use crate::*;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
@@ -32,7 +37,11 @@ const _: () = assert!(azos_limits::NTP_SERVER.len() <= azos_devif::net::NAME_MAX
 
 /// Sleep `s` seconds (a wake that comes early does not shorten it).
 fn sleep_s(s: u64) {
-    let until = now() + TIMER_FREQ * s;
+    sleep_until(now() + TIMER_FREQ * s);
+}
+
+/// Sleep until tick `until`.
+fn sleep_until(until: u64) {
     while now() < until {
         azos_sched::task_block(azos_sched::WaitReason::Timer(until));
     }
@@ -91,21 +100,39 @@ fn refresh_server() {
 /// for one ([`wait_for_network`]).
 pub(crate) fn net_clients_task(_: usize) {
     let interval = azos_limits::NTP_INTERVAL_S as u64;
+    let lease = azos_config::CFG_NET_DHCP.load(Ordering::Relaxed) != 0;
     wait_for_network();
-    kprintln!("[NET-CLIENTS] SNTP client: server {}, every {} s",
-              if azos_limits::NTP_SERVER.is_empty() { "from the lease" } else { azos_limits::NTP_SERVER },
-              interval);
+    if azos_limits::NTP_CLIENT {
+        kprintln!("[NET-CLIENTS] SNTP client: server {}, every {} s",
+                  if azos_limits::NTP_SERVER.is_empty() { "from the lease" } else { azos_limits::NTP_SERVER },
+                  interval);
+    }
+    if lease {
+        kprintln!("[NET-CLIENTS] DHCP lease kept: renewed at T1, rebound at T2");
+    }
     let mut failed_wait = azos_net::ntp::RETRY_FIRST_S;
+    let mut ntp_due = now();
     loop {
-        refresh_server();
-        let wait = if azos_net::ntp::ntp_sync_with_yield(azos_syscall::net_host::nap) != 0 {
-            failed_wait = azos_net::ntp::RETRY_FIRST_S;
-            interval
-        } else {
-            let w = failed_wait.min(interval);
-            failed_wait = azos_net::ntp::retry_after_s(failed_wait, interval);
-            w
-        };
-        sleep_s(wait);
+        if azos_limits::NTP_CLIENT && now() >= ntp_due {
+            refresh_server();
+            let wait = if azos_net::ntp::ntp_sync_with_yield(azos_syscall::net_host::nap) != 0 {
+                failed_wait = azos_net::ntp::RETRY_FIRST_S;
+                interval
+            } else {
+                let w = failed_wait.min(interval);
+                failed_wait = azos_net::ntp::retry_after_s(failed_wait, interval);
+                w
+            };
+            ntp_due = now() + TIMER_FREQ * wait;
+        }
+        if lease {
+            azos_net::dhcp::dhcp_maintain(azos_syscall::net_host::nap);
+        }
+        let mut until = if azos_limits::NTP_CLIENT { ntp_due } else { u64::MAX };
+        if lease {
+            let poll = now() + TIMER_FREQ * azos_net::dhcp::RETRY_MIN_S;
+            until = until.min(azos_net::dhcp::lease_deadline().unwrap_or(poll).min(poll));
+        }
+        sleep_until(until);
     }
 }

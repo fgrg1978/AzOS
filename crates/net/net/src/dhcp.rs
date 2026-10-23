@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! DHCP client — auto-configuration via DHCP DISCOVER/OFFER/REQUEST/ACK.
+//! DHCP client — auto-configuration via DHCP DISCOVER/OFFER/REQUEST/ACK, and
+//! the lease kept (RFC 2131 §4.4.5): renewed with its server at T1, rebound
+//! with any server at T2, and given up at its end.
 //!
 //! Uses the UDP module for transport (port 68 client, port 67 server).
-//! Simplified: fixed 300-byte message buffer, no lease renewal.
+//! Simplified: fixed 300-byte message buffer.
 
 use crate::udp;
+use azos_sync::SpinLock;
 
 // DHCP ports
 const DHCP_CLIENT_PORT: u16 = 68;
@@ -16,6 +19,7 @@ const DHCP_DISCOVER: u8 = 1;
 const DHCP_OFFER:    u8 = 2;
 const DHCP_REQUEST:  u8 = 3;
 const DHCP_ACK:      u8 = 5;
+const DHCP_NAK:      u8 = 6;
 
 // DHCP option codes
 const OPT_SUBNET_MASK:  u8 = 1;
@@ -23,10 +27,21 @@ const OPT_ROUTER:       u8 = 3;
 const OPT_DNS:          u8 = 6;
 const OPT_NTP:          u8 = 42;
 const OPT_REQUESTED_IP: u8 = 50;
+const OPT_LEASE_TIME:   u8 = 51;
 const OPT_MSG_TYPE:     u8 = 53;
 const OPT_PARAM_REQ:    u8 = 55;
 const OPT_SERVER_ID:    u8 = 54;
+const OPT_RENEWAL_T1:   u8 = 58;
+const OPT_REBINDING_T2: u8 = 59;
 const OPT_END:          u8 = 255;
+
+/// A lease time of all ones is infinite (RFC 2132 §9.2): nothing to renew.
+const LEASE_INFINITE: u32 = 0xFFFF_FFFF;
+
+/// RFC 2131 §4.4.5: a REQUEST that went unanswered in RENEWING is sent again
+/// after half the time left to T2, in REBINDING after half the time left on
+/// the lease, but not sooner than this.
+pub const RETRY_MIN_S: u64 = 60;
 
 // Magic cookie (DHCP over BOOTP)
 const MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
@@ -215,6 +230,10 @@ pub enum DhcpState {
     Discovering = 1,
     Requesting  = 2,
     Bound       = 3,
+    /// Past T1: asking the lease's server to extend it.
+    Renewing    = 4,
+    /// Past T2: asking any server.
+    Rebinding   = 5,
 }
 
 static DHCP_STATE: AtomicU8 = AtomicU8::new(DhcpState::Idle as u8);
@@ -226,6 +245,8 @@ fn get_dhcp_state() -> DhcpState {
         1 => DhcpState::Discovering,
         2 => DhcpState::Requesting,
         3 => DhcpState::Bound,
+        4 => DhcpState::Renewing,
+        5 => DhcpState::Rebinding,
         _ => DhcpState::Idle,
     }
 }
@@ -248,6 +269,10 @@ struct DhcpInfo {
     dns:        [u8; 4],
     /// Option 42: the first NTP server the lease names (0.0.0.0: none).
     ntp:        [u8; 4],
+    /// Options 51, 58 and 59 (RFC 2132 §9.2, §9.11, §9.12), seconds.
+    lease_s:    Option<u32>,
+    t1_s:       Option<u32>,
+    t2_s:       Option<u32>,
     msg_type:   u8,
 }
 
@@ -262,6 +287,9 @@ impl DhcpInfo {
             gateway:    [0; 4],
             dns:        [0; 4],
             ntp:        [0; 4],
+            lease_s:    None,
+            t1_s:       None,
+            t2_s:       None,
             msg_type:   0,
         }
     }
@@ -272,7 +300,11 @@ impl DhcpInfo {
 /// `xid` is the transaction ID of the exchange in flight — DISCOVER creates
 /// it, REQUEST must reuse the *same* value (RFC 2131 §3.1) so the server
 /// correlates the two.
-fn build_base_msg(buf: &mut [u8; DHCP_MSG_SIZE], mac: &[u8; 6], xid: u32) {
+///
+/// `ciaddr`: the address of a lease being renewed or rebound (RFC 2131 Table
+/// 5). With one the BROADCAST flag is clear: a client with an address takes a
+/// unicast reply (§4.1).
+fn build_base_msg(buf: &mut [u8; DHCP_MSG_SIZE], mac: &[u8; 6], xid: u32, ciaddr: Option<[u8; 4]>) {
     // Zero the entire buffer
     let mut i = 0;
     while i < DHCP_MSG_SIZE { buf[i] = 0; i += 1; }
@@ -284,9 +316,12 @@ fn build_base_msg(buf: &mut [u8; DHCP_MSG_SIZE], mac: &[u8; 6], xid: u32) {
     buf[OFF_XID..OFF_XID + 4].copy_from_slice(&xid.to_be_bytes());
     buf[OFF_SECS]  = 0;
     buf[OFF_SECS + 1] = 0;
-    // FLAGS: broadcast bit set (0x8000)
-    buf[OFF_FLAGS]     = 0x80;
+    // FLAGS: broadcast bit set (0x8000) while we have no address
+    buf[OFF_FLAGS]     = if ciaddr.is_some() { 0x00 } else { 0x80 };
     buf[OFF_FLAGS + 1] = 0x00;
+    if let Some(a) = ciaddr {
+        buf[OFF_CIADDR..OFF_CIADDR + 4].copy_from_slice(&a);
+    }
     // CHADDR: our MAC in first 6 bytes (rest zero)
     buf[OFF_CHADDR..OFF_CHADDR + 6].copy_from_slice(mac);
     // Magic cookie
@@ -312,7 +347,7 @@ pub fn dhcp_discover() {
     let xid = new_xid();
     clear_server_id();
     let mut msg = [0u8; DHCP_MSG_SIZE];
-    build_base_msg(&mut msg, &mac, xid);
+    build_base_msg(&mut msg, &mac, xid, None);
 
     // Options
     let mut o = OFF_OPTS;
@@ -323,13 +358,19 @@ pub fn dhcp_discover() {
     msg[o] = OPT_END;
 
     // Send broadcast: src 0.0.0.0:68 → dst 255.255.255.255:67
-    let src_ip  = [0u8; 4];
-    let dst_ip  = [255u8; 4];
-    let dst_mac = [0xFFu8; 6];
+    send_broadcast(&mac, &[0; 4], &msg);
+    set_dhcp_state(DhcpState::Discovering);
+    azos_drv_sys::kprintln!("[DHCP] DISCOVER sent");
+}
 
-    // Build and send raw (bypass ARP — broadcast)
+/// Broadcast `msg` from `src_ip`:68 to 255.255.255.255:67, as a raw frame:
+/// a client with no address has no route and no ARP to go through. `src_ip`
+/// is 0.0.0.0 before a lease, the lease's address when rebinding.
+fn send_broadcast(mac: &[u8; 6], src_ip: &[u8; 4], msg: &[u8; DHCP_MSG_SIZE]) {
     use super::ethernet;
     use super::ip;
+    let dst_ip  = [255u8; 4];
+    let dst_mac = [0xFFu8; 6];
     let udp_len = UDP_HDR_SIZE + DHCP_MSG_SIZE;
     let ip_total = ip::IP_HDR_MIN + udp_len;
     let frame_len = ethernet::EthHdr::SIZE + ip_total;
@@ -339,7 +380,7 @@ pub fn dhcp_discover() {
 
     // IP header
     let mut ip_hdr = [0u8; ip::IP_HDR_MIN];
-    ip::build_header(&mut ip_hdr, ip::IP_PROTO_UDP, &src_ip, &dst_ip, udp_len as u16);
+    ip::build_header(&mut ip_hdr, ip::IP_PROTO_UDP, src_ip, &dst_ip, udp_len as u16);
 
     // UDP header
     let mut udp_buf = [0u8; UDP_HDR_SIZE];
@@ -352,14 +393,12 @@ pub fn dhcp_discover() {
     let mut ip_payload = [0u8; ip::ETH_MTU];
     ip_payload[..ip::IP_HDR_MIN].copy_from_slice(&ip_hdr);
     ip_payload[ip::IP_HDR_MIN..ip::IP_HDR_MIN + UDP_HDR_SIZE].copy_from_slice(&udp_buf);
-    ip_payload[ip::IP_HDR_MIN + UDP_HDR_SIZE..ip::IP_HDR_MIN + UDP_HDR_SIZE + DHCP_MSG_SIZE].copy_from_slice(&msg);
+    ip_payload[ip::IP_HDR_MIN + UDP_HDR_SIZE..ip::IP_HDR_MIN + UDP_HDR_SIZE + DHCP_MSG_SIZE].copy_from_slice(msg);
 
-    ethernet::build(&mut frame[..frame_len], &dst_mac, &mac,
+    ethernet::build(&mut frame[..frame_len], &dst_mac, mac,
                     ethernet::ETH_TYPE_IP, &ip_payload[..ip_total]);
 
     let _ = super::net_raw_send(&frame[..frame_len]);
-    set_dhcp_state(DhcpState::Discovering);
-    azos_drv_sys::kprintln!("[DHCP] DISCOVER sent");
 }
 
 /// Parse a DHCP response (OFFER or ACK) from raw UDP payload.
@@ -403,7 +442,7 @@ fn parse_response(data: &[u8]) -> Option<DhcpInfo> {
     // is not required: RFC 1542 §2.1 has the receiver trust the UDP length, so
     // a datagram that ends right after a whole option is whole. An option that
     // is cut by that length ends the walk (below).
-    let mut taken = 0u8;
+    let mut taken = 0u16;
     while o < data.len() {
         let opt = data[o];
         if opt == OPT_END { break; }
@@ -427,12 +466,15 @@ fn parse_response(data: &[u8]) -> Option<DhcpInfo> {
         if o + 2 + len > data.len() { break; }
         let val = &data[o + 2..o + 2 + len];
         let bit = match opt {
-            OPT_MSG_TYPE    => 1u8 << 0,
-            OPT_SUBNET_MASK => 1 << 1,
-            OPT_ROUTER      => 1 << 2,
-            OPT_DNS         => 1 << 3,
-            OPT_SERVER_ID   => 1 << 4,
-            OPT_NTP         => 1 << 5,
+            OPT_MSG_TYPE     => 1u16 << 0,
+            OPT_SUBNET_MASK  => 1 << 1,
+            OPT_ROUTER       => 1 << 2,
+            OPT_DNS          => 1 << 3,
+            OPT_SERVER_ID    => 1 << 4,
+            OPT_NTP          => 1 << 5,
+            OPT_LEASE_TIME   => 1 << 6,
+            OPT_RENEWAL_T1   => 1 << 7,
+            OPT_REBINDING_T2 => 1 << 8,
             _ => 0,
         };
         if taken & bit != 0 { return None; }
@@ -463,6 +505,16 @@ fn parse_response(data: &[u8]) -> Option<DhcpInfo> {
                 info.server_id.copy_from_slice(val);
                 info.has_server_id = true;
                 info.server_ip.copy_from_slice(val);
+            }
+            // Options 51, 58, 59: a 32-bit count of seconds each.
+            OPT_LEASE_TIME | OPT_RENEWAL_T1 | OPT_REBINDING_T2 => {
+                if len != 4 { return None; }
+                let v = Some(u32::from_be_bytes([val[0], val[1], val[2], val[3]]));
+                match opt {
+                    OPT_LEASE_TIME => info.lease_s = v,
+                    OPT_RENEWAL_T1 => info.t1_s = v,
+                    _              => info.t2_s = v,
+                }
             }
             _ => {}
         }
@@ -538,7 +590,7 @@ pub fn dhcp_request(offered_ip: [u8; 4], server_ip: [u8; 4]) {
         None    => return, // no exchange in flight
     };
     let mut msg = [0u8; DHCP_MSG_SIZE];
-    build_base_msg(&mut msg, &mac, xid);
+    build_base_msg(&mut msg, &mac, xid, None);
 
     // Options
     let mut o = OFF_OPTS;
@@ -555,37 +607,7 @@ pub fn dhcp_request(offered_ip: [u8; 4], server_ip: [u8; 4]) {
     msg[o] = OPT_END;
 
     // Send broadcast (still using 0.0.0.0 as src until ACK)
-    let src_ip  = [0u8; 4];
-    let dst_ip  = [255u8; 4];
-    let dst_mac = [0xFFu8; 6];
-
-    use super::ethernet;
-    use super::ip;
-    let udp_len = UDP_HDR_SIZE + DHCP_MSG_SIZE;
-    let ip_total = ip::IP_HDR_MIN + udp_len;
-    let frame_len = ethernet::EthHdr::SIZE + ip_total;
-
-    let mut frame = [0u8; ethernet::ETH_FRAME_MAX];
-    if frame_len > frame.len() { return; }
-
-    let mut ip_hdr = [0u8; ip::IP_HDR_MIN];
-    ip::build_header(&mut ip_hdr, ip::IP_PROTO_UDP, &src_ip, &dst_ip, udp_len as u16);
-
-    let mut udp_buf = [0u8; UDP_HDR_SIZE];
-    udp_buf[0..2].copy_from_slice(&DHCP_CLIENT_PORT.to_be_bytes());
-    udp_buf[2..4].copy_from_slice(&DHCP_SERVER_PORT.to_be_bytes());
-    udp_buf[4..6].copy_from_slice(&(udp_len as u16).to_be_bytes());
-    udp_buf[6..8].copy_from_slice(&[0, 0]);
-
-    let mut ip_payload = [0u8; ip::ETH_MTU];
-    ip_payload[..ip::IP_HDR_MIN].copy_from_slice(&ip_hdr);
-    ip_payload[ip::IP_HDR_MIN..ip::IP_HDR_MIN + UDP_HDR_SIZE].copy_from_slice(&udp_buf);
-    ip_payload[ip::IP_HDR_MIN + UDP_HDR_SIZE..ip::IP_HDR_MIN + UDP_HDR_SIZE + DHCP_MSG_SIZE].copy_from_slice(&msg);
-
-    ethernet::build(&mut frame[..frame_len], &dst_mac, &mac,
-                    ethernet::ETH_TYPE_IP, &ip_payload[..ip_total]);
-
-    let _ = super::net_raw_send(&frame[..frame_len]);
+    send_broadcast(&mac, &[0; 4], &msg);
     set_dhcp_state(DhcpState::Requesting);
     azos_drv_sys::kprintln!("[DHCP] REQUEST sent");
 }
@@ -602,8 +624,11 @@ pub fn dhcp_handle_ack(data: &[u8]) -> bool {
     // Without this a rogue server that lost the OFFER race can still race an
     // ACK in and dictate our IP, gateway and DNS after the fact.  Option 54
     // is mandatory in an ACK (RFC 2131 §4.3.1); a missing one is a reject.
+    // In REBINDING any server may answer (RFC 2131 §4.4.5), and the lease
+    // is then that server's.
     let bound = match accepted_server_id() {
         Some(id) => id,
+        None if get_dhcp_state() == DhcpState::Rebinding && info.has_server_id => info.server_id,
         None => {
             azos_drv_sys::kwarn!("[DHCP] ACK rejected: no accepted OFFER to match");
             return false;
@@ -637,6 +662,8 @@ pub fn dhcp_handle_ack(data: &[u8]) -> bool {
             info.ntp[0], info.ntp[1], info.ntp[2], info.ntp[3],
         );
     }
+    let lease = Lease::from_ack(&info, azos_drv_sys::timebase::now());
+    *LEASE.lock() = Some(lease);
     set_dhcp_state(DhcpState::Bound);
     azos_drv_sys::kprintln!(
         "[DHCP] ACK: bound to {}.{}.{}.{}  mask {}.{}.{}.{}  gw {}.{}.{}.{}",
@@ -644,7 +671,166 @@ pub fn dhcp_handle_ack(data: &[u8]) -> bool {
         info.subnet[0], info.subnet[1], info.subnet[2], info.subnet[3],
         info.gateway[0], info.gateway[1], info.gateway[2], info.gateway[3],
     );
+    match lease.secs {
+        Some((l, t1, t2)) =>
+            azos_drv_sys::kprintln!("[DHCP] lease {} s: renew at {} s, rebind at {} s", l, t1, t2),
+        None => azos_drv_sys::kprintln!("[DHCP] lease without end: never renewed"),
+    }
     true
+}
+
+/// Whether `data` is a DHCPNAK for the exchange in flight from the server it
+/// was sent to (in REBINDING, from any server).
+fn dhcp_handle_nak(data: &[u8]) -> bool {
+    let Some(info) = parse_response(data) else { return false };
+    if info.msg_type != DHCP_NAK || !info.has_server_id { return false; }
+    match accepted_server_id() {
+        Some(id) => id == info.server_id,
+        None => get_dhcp_state() == DhcpState::Rebinding,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The lease (RFC 2131 §4.4.5)
+// ---------------------------------------------------------------------------
+
+/// The lease the last ACK gave, and when what follows it falls due, in ticks.
+#[derive(Clone, Copy)]
+struct Lease {
+    ip:     [u8; 4],
+    mask:   [u8; 4],
+    server: [u8; 4],
+    /// (lease, T1, T2) in seconds as taken; `None` for an infinite lease.
+    secs:   Option<(u32, u32, u32)>,
+    t2:     u64,
+    end:    u64,
+    /// When `dhcp_maintain` next has work: T1, a retransmission, T2, the end.
+    next:   u64,
+}
+
+impl Lease {
+    /// T1 and T2 as the server set them (options 58, 59), or RFC 2131
+    /// §4.4.5's 0.5 and 0.875 of the lease when it did not or when they are
+    /// not in order (T1 <= T2 <= lease). A lease time of all ones, or none, is
+    /// a lease that does not end.
+    fn from_ack(info: &DhcpInfo, now: u64) -> Lease {
+        let f = azos_drv_sys::timebase::TIMER_FREQ;
+        let at = |s: u32| now.saturating_add((s as u64).saturating_mul(f));
+        let secs = match info.lease_s {
+            None | Some(LEASE_INFINITE) => None,
+            Some(l) => {
+                let (d1, d2) = (l / 2, (l as u64 * 7 / 8) as u32);
+                Some(match (info.t1_s, info.t2_s) {
+                    (Some(t1), Some(t2)) if t1 <= t2 && t2 <= l => (l, t1, t2),
+                    (Some(t1), None) if t1 <= d2 => (l, t1, d2),
+                    (None, Some(t2)) if d1 <= t2 && t2 <= l => (l, d1, t2),
+                    _ => (l, d1, d2),
+                })
+            }
+        };
+        let (next, t2, end) = match secs {
+            Some((l, t1, t2)) => (at(t1), at(t2), at(l)),
+            None => (u64::MAX, u64::MAX, u64::MAX),
+        };
+        Lease { ip: info.offered_ip, mask: info.subnet, server: info.server_id, secs, t2, end, next }
+    }
+}
+
+static LEASE: SpinLock<Option<Lease>> = SpinLock::new(None);
+
+/// When [`dhcp_maintain`] next has work (tick): T1 of the lease held, a
+/// retransmission, T2, its end. `None` with no lease, or one that does not
+/// end.
+pub fn lease_deadline() -> Option<u64> {
+    LEASE.lock().map(|l| l.next).filter(|&n| n != u64::MAX)
+}
+
+/// What an exchange for a lease heard.
+enum Reply { Ack, Nak, Nothing }
+
+/// One RENEWING or REBINDING exchange (RFC 2131 Table 5): a REQUEST with
+/// `ciaddr` the lease's address and neither option 50 nor 54, unicast to the
+/// lease's server or, `rebinding`, broadcast from the lease's address; then
+/// up to [`DHCP_PHASE_TIMEOUT_TICKS`] for its answer.
+fn lease_exchange(l: &Lease, rebinding: bool, yield_fn: fn()) -> Reply {
+    let sock = udp::bind(DHCP_CLIENT_PORT);
+    if sock < 0 { return Reply::Nothing; }
+    let mac = crate::net_get_mac();
+    let xid = new_xid();
+    if rebinding { clear_server_id(); } else { set_server_id(&l.server); }
+    let mut msg = [0u8; DHCP_MSG_SIZE];
+    build_base_msg(&mut msg, &mac, xid, Some(l.ip));
+    let mut o = OFF_OPTS;
+    msg[o] = OPT_MSG_TYPE; msg[o + 1] = 1; msg[o + 2] = DHCP_REQUEST; o += 3;
+    o += put_param_request_list(&mut msg[o..]);
+    msg[o] = OPT_END;
+    if rebinding {
+        send_broadcast(&mac, &l.ip, &msg);
+    } else {
+        let _ = udp::sendto(sock, &l.server, DHCP_SERVER_PORT, &msg);
+    }
+    azos_drv_sys::kprintln!("[DHCP] {} REQUEST sent", if rebinding { "REBINDING" } else { "RENEWING" });
+
+    let mut buf = [0u8; super::ip::ETH_MTU];
+    let (mut src_ip, mut src_port) = ([0u8; 4], 0u16);
+    let mut reply = Reply::Nothing;
+    let deadline = azos_drv_sys::timebase::now() + DHCP_PHASE_TIMEOUT_TICKS;
+    while azos_drv_sys::timebase::now() < deadline {
+        yield_fn();
+        crate::net_poll();
+        let n = udp::recvfrom(sock, &mut buf, &mut src_ip, &mut src_port);
+        if n <= 0 { continue; }
+        let d = &buf[..n as usize];
+        if dhcp_handle_ack(d) { reply = Reply::Ack; break; }
+        if dhcp_handle_nak(d) { reply = Reply::Nak; break; }
+    }
+    udp::close(sock);
+    end_transaction();
+    reply
+}
+
+/// Give the lease up: the address stops being used (RFC 2131 §4.4.5: "MUST
+/// immediately stop any other network processing"), and a new one is asked
+/// for from the start.
+fn lease_lost(l: &Lease, why: &str, yield_fn: fn()) {
+    *LEASE.lock() = None;
+    set_dhcp_state(DhcpState::Idle);
+    azos_drv_sys::kwarn!("[DHCP] lease of {}.{}.{}.{} {}: address dropped, discovering again",
+                         l.ip[0], l.ip[1], l.ip[2], l.ip[3], why);
+    crate::net_set_ip([0; 4], l.mask, [0; 4]);
+    let _ = dhcp_start(yield_fn);
+}
+
+/// Keep the lease (RFC 2131 §4.4.5), for the task that calls it at
+/// [`lease_deadline`]: at T1 ask the lease's server to extend it, at T2 any
+/// server, at its end give it up and start again. A REQUEST nobody answers
+/// goes again after half the time left to T2 (to the end, when rebinding),
+/// [`RETRY_MIN_S`] at least. `yield_fn` is called while an exchange waits,
+/// as for `dhcp_start`. Nothing to do before the deadline, or with no lease.
+pub fn dhcp_maintain(yield_fn: fn()) {
+    let now = azos_drv_sys::timebase::now();
+    let Some(l) = *LEASE.lock() else { return };
+    if now < l.next { return; }
+    if now >= l.end {
+        lease_lost(&l, "expired", yield_fn);
+        return;
+    }
+    let rebinding = now >= l.t2;
+    set_dhcp_state(if rebinding { DhcpState::Rebinding } else { DhcpState::Renewing });
+    match lease_exchange(&l, rebinding, yield_fn) {
+        // `dhcp_handle_ack` took the new lease and is Bound again.
+        Reply::Ack => {}
+        Reply::Nak => lease_lost(&l, "refused (NAK)", yield_fn),
+        Reply::Nothing => {
+            let now = azos_drv_sys::timebase::now();
+            let limit = if rebinding { l.end } else { l.t2 };
+            let wait = (limit.saturating_sub(now) / 2)
+                .max(RETRY_MIN_S * azos_drv_sys::timebase::TIMER_FREQ);
+            if let Some(cur) = LEASE.lock().as_mut() {
+                cur.next = now.saturating_add(wait).min(limit);
+            }
+        }
+    }
 }
 
 /// Run the full DHCP handshake: DISCOVER → OFFER → REQUEST → ACK.

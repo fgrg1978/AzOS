@@ -38,15 +38,16 @@ pub(crate) fn install_net_config() {
         ip[0], ip[1], ip[2], ip[3], gw[0], gw[1], gw[2], gw[3]);
 }
 
-/// Start the `net-clients` task (Kconfig `NTP_CLIENT`): the SNTP client that
-/// steers the wall clock. After the net-poll task is created, whose receive
-/// path its exchanges wait on.
+/// Start the `net-clients` task: the SNTP client that steers the wall clock
+/// (Kconfig `NTP_CLIENT`) and the keeper of the DHCP lease (`dhcp=1` in
+/// CONFIG.INI). After the net-poll task is created, whose receive path its
+/// exchanges wait on.
 ///
 /// Shared between both `kernel_main`s: nothing in it is per ISA. Best-effort
 /// priority, no hart pin: it sleeps for minutes and for an exchange waits on
 /// the receive path like any caller.
 pub(crate) fn start_net_clients() {
-    if !azos_limits::NTP_CLIENT {
+    if !azos_limits::NTP_CLIENT && azos_config::CFG_NET_DHCP.load(Ordering::Relaxed) == 0 {
         return;
     }
     azos_sched::task_create("net-clients", net_clients_task, 0, azos_sched::DEFAULT_PRIORITY);
