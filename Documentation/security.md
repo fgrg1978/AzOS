@@ -416,7 +416,7 @@ are implemented in the crate; the two asymmetric ones call the vetted
 | `aes` | AES-128 (FIPS 197), ECB block and CTR mode |
 | `chachapoly` | ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439); constant-time by construction; `open` verifies the tag before decrypting and leaves the buffer untouched on mismatch |
 | `hkdf` | HMAC-SHA256 with arbitrary key, HKDF-SHA256 (RFC 5869) |
-| `x25519` | X25519 (RFC 7748) via `curve25519-dalek`, with a checked variant that rejects low-order points; a hand-written ladder exists only under the `legacy-x25519` feature |
+| `x25519` | X25519 (RFC 7748) via `curve25519-dalek`, with a checked variant that rejects low-order points |
 | `ed25519` | Ed25519 verification (RFC 8032) via `ed25519-dalek` |
 | `sig` | The signature algorithms by id and their key and signature sizes, the configured one (`SigAlg::CONFIGURED`), and the signed containers: `RSIG` (image signatures, with the 54-byte manifest message) and `DSIG` (detached signatures) |
 | `noise` | Noise Protocol Framework handshakes `Noise_IK_25519_ChaChaPoly_SHA256` and `Noise_XX_25519_ChaChaPoly_SHA256`; no RNG inside (the caller supplies the ephemeral key); every DH result goes through the checked X25519; an error poisons the handshake state |
