@@ -168,7 +168,7 @@ pub struct Cbs {
     /// Booked against the hart's band cap too.
     pub band: bool,
     /// The priority level (ready-queue bucket) admission booked it at: the
-    /// cross-level check ([`levels_fit`]) reads it.
+    /// cross-level check ([`levels_check`]) reads it.
     pub level: u32,
 }
 
@@ -370,9 +370,9 @@ pub enum Refusal {
     Busy,
     /// The hart has room for the density, but its reservations sit at
     /// different priority levels and a level could miss a deadline
-    /// ([`levels_fit`]). Admission treats a level as the unit EDF orders
-    /// within; dispatch now orders reservations by deadline across levels,
-    /// so this test is conservative.
+    /// ([`levels_check`]). Only while the dispatch runs a level above first
+    /// whatever its deadlines ([`LevelOrder::Fixed`], the `sched-dl-in-level`
+    /// canary); under EDF across levels, the default, never.
     Levels,
     /// The deadline class is compiled out (`SCHED_CLASS_DL=n`).
     ClassOff,
@@ -511,7 +511,7 @@ pub fn first_fit(loads: &[HartLoad], mask: u32, density: u32, band: bool, band_l
 }
 
 /// [`first_fit`] with one more test per hart, `levels_ok(hart)` (the
-/// cross-level check, [`levels_fit`]): a hart whose density fits but whose
+/// cross-level check, [`levels_check`]): a hart whose density fits but whose
 /// levels do not is skipped, and refuses with [`Refusal::Levels`].
 pub fn first_fit_by(loads: &[HartLoad], mask: u32, density: u32, band: bool, band_limit_ppm: u32,
     levels_ok: impl Fn(usize) -> bool) -> Result<usize, Refusal>
@@ -534,10 +534,11 @@ pub fn first_fit_by(loads: &[HartLoad], mask: u32, density: u32, band: bool, ban
     Err(why)
 }
 
-/// The cross-level check ([`levels_fit`]) and what it reads ([`Booked`]):
-/// one copy in `azos_abi::rt_levels`, which the topology's boot admission
+/// The cross-level check ([`levels_check`]), what it reads ([`Booked`]) and
+/// the dispatch order that decides whether it binds ([`LevelOrder`]): one
+/// copy in `azos_abi::rt_levels`, which the topology's boot admission
 /// applies too, so a set admitted at boot is admitted here.
-pub use azos_abi::rt_levels::{levels_fit, Booked};
+pub use azos_abi::rt_levels::{levels_check, Booked, LevelOrder};
 
 /// Proxy execution (the wait graph's stage 2, seL4 MCS passive servers):
 /// the task that runs a reservation whose holder is blocked in a call.

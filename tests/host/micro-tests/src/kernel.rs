@@ -668,7 +668,7 @@ fn a_profile_the_cbs_cannot_take_is_refused() {
     let t: &'static mut Topology<'static> = Box::leak(Box::new(Topology::empty()));
     parse_sched(sched.as_bytes(), t).unwrap();
     let r = parse_caps(with_header(Box::leak(caps.to_string().into_boxed_str())).as_bytes(), t);
-    assert!(r.is_err() || t.deadline_admission(1).is_err(), "the topology refuses runtime > period");
+    assert!(r.is_err() || t.deadline_admission(1, azos_topology::deadline::LevelOrder::Edf).is_err(), "the topology refuses runtime > period");
 }
 
 // ── a capability moves with a call ──────────────────────────────────────

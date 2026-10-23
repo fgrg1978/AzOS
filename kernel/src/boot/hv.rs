@@ -45,7 +45,7 @@ fn online_mask(num_cpus: usize) -> u64 {
 
 /// The harts the topology's deadline reservations were placed on.
 fn rt_mask(topo: &azos_topology::Topology<'static>, num_cpus: usize) -> u64 {
-    match topo.deadline_admission(num_cpus) {
+    match topo.deadline_admission(num_cpus, azos_sched::classes::level_order()) {
         Ok(r) => r.placement[..(r.placed as usize).min(r.placement.len())]
             .iter()
             .fold(0u64, |m, &(_, cpu)| m | 1u64.checked_shl(cpu as u32).unwrap_or(0)),

@@ -98,7 +98,7 @@ A task holds a reservation `(runtime, period, deadline)` admitted by `rt::reserv
 | shape | `q` and `t` non-zero, `q <= d <= t` (`rt_core::density_ppm`) |
 | density | the hart's summed density `ceil(q * 1e6 / min(d, t))` plus the new one stays `<= 1e6` ppm (`rt_core::fits`) |
 | band cap | a band task's reservations on one hart sum to at most `RT_BAND_CAP_PCT` of it |
-| levels | reservations at different priority levels pass `levels_fit` (`azos_abi::rt_levels`), shared with the boot check |
+| levels | only under fixed priority between levels (the `sched-dl-in-level` canary): reservations at different levels pass `levels_check` (`azos_abi::rt_levels`), shared with the boot check. The default dispatch is EDF across levels, where the density sum is the whole test |
 | set | the hart's set has a free slot; the task holds no reservation yet |
 
 A refusal is `rt_core::Refusal`; `Refusal::errno` gives the syscall result.

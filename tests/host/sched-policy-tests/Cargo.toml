@@ -35,6 +35,12 @@ rt-envelope-canary = []
 # Canary of `rt_core.rs`: proxy execution never finds a proxy;
 # `a_passive_server_runs_on_the_reservation_of_the_call_it_serves` must go red.
 rt-proxy-canary = []
+# Canaries of `azos_abi::rt_levels::levels_check`: the cross-level rule binds
+# under EDF across levels too (`rt_exactness`
+# `a_set_only_the_level_rule_refused_is_admitted_under_edf_and_keeps_its_deadlines`
+# must go red), or never binds (`..._is_still_refused_under_fixed_priority`).
+rt-levels-always-canary = ["azos_abi/rt-levels-always-canary"]
+rt-levels-never-canary = ["azos_abi/rt-levels-never-canary"]
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources

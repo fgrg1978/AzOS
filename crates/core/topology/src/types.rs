@@ -4364,11 +4364,14 @@ impl<'a> Topology<'a> {
                 .map_err(AdmissionError::Neverallow)?;
         }
         // Real-time tasks must be schedulable. The CPU count is not known this
-        // early, so this checks against every CPU a mask can name; the kernel
-        // repeats it with the real hart count once that is known
-        // ([`deadline_admission`](Self::deadline_admission)).
+        // early, so this checks against every CPU a mask can name, and the
+        // dispatch order is the scheduler's, so this checks under the one
+        // the cross-level rule does not bind in (EDF across levels, the
+        // default): the more lenient side of both. The kernel repeats it with
+        // the real hart count and the order it dispatches in once both are
+        // known ([`deadline_admission`](Self::deadline_admission)).
         // (It runs `isolation_admission` first: the isolated rows' rules.)
-        self.deadline_admission(crate::deadline::MAX_ADMISSION_CPUS)?;
+        self.deadline_admission(crate::deadline::MAX_ADMISSION_CPUS, crate::deadline::LevelOrder::Edf)?;
         // A policy binds the Domain of a row that exists: a typo in a signed
         // file would otherwise limit nothing and read as if it limited
         // something.
@@ -4479,7 +4482,15 @@ impl<'a> Topology<'a> {
     /// row (one instance, a `cpu_mask` of one isolated CPU, which a row with
     /// none is refused for) are
     /// [`isolation_admission`](Self::isolation_admission)'s, run first.
-    pub fn deadline_admission(&self, ncpus: usize) -> Result<crate::deadline::Report, AdmissionError> {
+    ///
+    /// `order` is how the scheduler dispatches reservations at different
+    /// levels (`azos_sched::classes::level_order`): the cross-level rule binds
+    /// only under fixed priority between them.
+    pub fn deadline_admission(
+        &self,
+        ncpus: usize,
+        order: crate::deadline::LevelOrder,
+    ) -> Result<crate::deadline::Report, AdmissionError> {
         use crate::deadline::{admit, DeadlineRefusal, Item, SchedProfile, MAX_PROFILED, PPM};
         let iso = self.sched_config.isolcpus;
         let all = if ncpus >= 32 { u32::MAX } else { (1u32 << ncpus) - 1 };
@@ -4516,7 +4527,7 @@ impl<'a> Topology<'a> {
             items[n] = Item { task: ti as u16, class: ci as u8, level: self.row_level(ti), profile };
             n += 1;
         }
-        admit(&items[..n], ncpus, &budget).map_err(AdmissionError::Deadline)
+        admit(&items[..n], ncpus, &budget, order).map_err(AdmissionError::Deadline)
     }
 }
 

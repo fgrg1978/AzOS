@@ -11,6 +11,7 @@
 //! byte in a row each front will read, and expects the loader to refuse it:
 //! the rows are inside the signature, as the old ones were.
 
+use azos_topology::deadline::LevelOrder;
 use azos_topology::emit::{emit_caps, emit_sched, first_difference, EMIT_FORMAT};
 use azos_topology::signed::{load_signed, DeviceContext, SignedFile, SignedFiles, SignedRefusal};
 use azos_topology::{
@@ -372,8 +373,8 @@ fn an_isolated_row_with_no_cpu_mask_is_refused_naming_its_row() {
     // the boot admission with the board's CPU count.
     let (t, r) = parse_with(ISO_SCHED, leak(format!("format = 7\n{}", iso_row("rt1", ""))));
     assert_eq!(r, Ok(()), "the parser takes the row; admission refuses it");
-    assert_eq!(t.deadline_admission(4).err(), refused(0).err());
-    assert_eq!(t.deadline_admission(2).err(), refused(0).err(), "whatever the CPU count");
+    assert_eq!(t.deadline_admission(4, LevelOrder::Edf).err(), refused(0).err());
+    assert_eq!(t.deadline_admission(2, LevelOrder::Edf).err(), refused(0).err(), "whatever the CPU count");
     // A row that is wrong in another way keeps its own refusal: no profile.
     assert_eq!(iso_admit("[task.be]\nisolated = true\ncaps = []\n"), Err(AdmissionError::BadRow(RowKind::Task)));
     // With a mask the row is admitted and placed on that CPU, however the
@@ -382,7 +383,7 @@ fn an_isolated_row_with_no_cpu_mask_is_refused_naming_its_row() {
     let (t, r) = parse_with(ISO_SCHED, leak(format!("format = 7\n{rows}")));
     assert_eq!(r, Ok(()));
     assert_eq!(t.admission_check(), Ok(()));
-    let rep = t.deadline_admission(4).unwrap();
+    let rep = t.deadline_admission(4, LevelOrder::Edf).unwrap();
     assert_eq!((rep.cpu_of(0), rep.cpu_of(1)), (Some(3), Some(2)));
     // Round trip: the mask is emitted and read back.
     assert_eq!(round_trip(&t), None);
@@ -398,21 +399,21 @@ fn a_row_that_is_not_isolated_is_never_placed_on_an_isolated_cpu() {
     let (t, r) = parse_with(&sched, leak(format!("format = 7\n{plain}")));
     assert_eq!(r, Ok(()));
     assert_eq!(t.admission_check(), Ok(()));
-    assert_eq!(t.deadline_admission(4).unwrap().cpu_of(0), Some(2));
+    assert_eq!(t.deadline_admission(4, LevelOrder::Edf).unwrap().cpu_of(0), Some(2));
     // Two CPUs, both isolated: nothing is left for it (the sched row itself
     // is refused first).
-    assert_eq!(t.deadline_admission(2).err(), Some(AdmissionError::BadRow(RowKind::Sched)));
+    assert_eq!(t.deadline_admission(2, LevelOrder::Edf).err(), Some(AdmissionError::BadRow(RowKind::Sched)));
 }
 
 #[test]
 fn isolcpus_must_leave_a_cpu_for_everything_else() {
     let (mut t, _) = parse_with(ISO_SCHED, "format = 7\n");
-    assert!(t.deadline_admission(4).is_ok(), "2 of 4 CPUs isolated");
+    assert!(t.deadline_admission(4, LevelOrder::Edf).is_ok(), "2 of 4 CPUs isolated");
     // Every CPU of a 4-CPU machine is isolated.
     let sched = ISO_SCHED.replace("isolcpus = 12", "isolcpus = 15");
     let (u, _) = parse_with(&sched, "format = 7\n");
-    assert_eq!(u.deadline_admission(4).err(), Some(AdmissionError::BadRow(RowKind::Sched)));
-    assert!(u.deadline_admission(8).is_ok(), "but not a machine with 8");
+    assert_eq!(u.deadline_admission(4, LevelOrder::Edf).err(), Some(AdmissionError::BadRow(RowKind::Sched)));
+    assert!(u.deadline_admission(8, LevelOrder::Edf).is_ok(), "but not a machine with 8");
     // And a mask that names all 32 is refused at topology admission, before
     // the CPU count is known.
     let sched = ISO_SCHED.replace("isolcpus = 12", "isolcpus = 4294967295");

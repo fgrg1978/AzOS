@@ -15,6 +15,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use azos_topology::{parse_caps, parse_sched, verify_signature, Topology, SIDECAR_MAX, TRUSTED_PUBKEY};
+use azos_topology::deadline::LevelOrder;
 
 fuzz_target!(|data: &[u8]| {
     let mut parts = data.splitn(3, |&b| b == 0);
@@ -33,7 +34,9 @@ fuzz_target!(|data: &[u8]| {
     if s.is_ok() && c.is_ok() {
         let _ = topo.admission_check();
         for ncpus in [1usize, 4] {
-            let _ = topo.deadline_admission(ncpus);
+            for order in [LevelOrder::Edf, LevelOrder::Fixed] {
+                let _ = topo.deadline_admission(ncpus, order);
+            }
         }
     }
     // Whatever was parsed, the accessors must stay in bounds.

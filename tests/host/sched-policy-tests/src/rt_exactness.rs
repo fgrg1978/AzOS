@@ -16,6 +16,11 @@
 //! (implicit deadlines). Admitting by dbf would promise a neighbour a deadline
 //! that one such task breaks: `dbf_admits_a_set_a_suspending_server_breaks`.
 //!
+//! The same simulation, with servers at different priority levels, shows why
+//! the cross-level rule (`levels_check`) binds only under fixed priority
+//! between levels: under EDF across levels (the default dispatch) a set only
+//! that rule refused keeps every deadline; under fixed priority it does not.
+//!
 //! Registered in `lib.rs` by `#[cfg(test)] mod rt_exactness;`.
 
 use crate::rt_core::*;
@@ -30,24 +35,34 @@ enum Arrival {
     UntilDeadline,
 }
 
-/// One server `(q, d, t)` in ticks.
+/// One server `(q, d, t)` in ticks, its task at priority `level`.
 #[derive(Clone, Copy)]
 struct Srv {
     q: u64,
     d: u64,
     t: u64,
     how: Arrival,
+    level: u32,
 }
 
+/// A server at level 0.
 const fn srv(q: u64, d: u64, t: u64, how: Arrival) -> Srv {
-    Srv { q, d, t, how }
+    Srv { q, d, t, how, level: 0 }
+}
+
+/// [`misses_in`] under EDF across levels, the default dispatch.
+fn misses(set: &[Srv], horizon: u64) -> Vec<u32> {
+    misses_in(LevelOrder::Edf, set, horizon)
 }
 
 /// Deadline misses of each `Periodic` server over `horizon` ticks, one hart,
-/// EDF by server deadline with hard CBS (`rt::pick`'s order with every
-/// reservation at one rank, the default dispatch). An `UntilDeadline`
-/// server's count is always 0: it has no deadline of its own to keep.
-fn misses(set: &[Srv], horizon: u64) -> Vec<u32> {
+/// hard CBS, in `rt::pick`'s order: by `dl_rank` of the server's level, then
+/// its server deadline. Under `LevelOrder::Edf` every reservation is at one
+/// rank (EDF by deadline alone); under `Fixed` a level above runs first. An
+/// `UntilDeadline` server's count is always 0: it has no deadline of its own
+/// to keep.
+fn misses_in(order: LevelOrder, set: &[Srv], horizon: u64) -> Vec<u32> {
+    let classes = order == LevelOrder::Edf;
     struct S {
         c: Cbs,
         how: Arrival,
@@ -63,6 +78,7 @@ fn misses(set: &[Srv], horizon: u64) -> Vec<u32> {
         .iter()
         .map(|v| S { c: Cbs::new(v.q, v.t, v.d, true, 0, 0), how: v.how, left: 0, due: 0, wake: 0, misses: 0 })
         .collect();
+    let rank: Vec<u32> = set.iter().map(|v| dl_rank(classes, v.level)).collect();
     for now in 0..horizon {
         for j in s.iter_mut() {
             let arrives = match j.how {
@@ -86,7 +102,7 @@ fn misses(set: &[Srv], horizon: u64) -> Vec<u32> {
                 continue;
             }
             pick = match pick {
-                Some(p) if !edf_before(0, s[k].c.deadline, 0, s[p].c.deadline) => Some(p),
+                Some(p) if !edf_before(rank[k], s[k].c.deadline, rank[p], s[p].c.deadline) => Some(p),
                 _ => Some(k),
             };
         }
@@ -118,6 +134,24 @@ fn density_admits(set: &[Srv]) -> bool {
         load.total_ppm += dens;
     }
     true
+}
+
+/// One hart's admission as `rt::reserve` applies it, server by server in
+/// `set` order: the density (`first_fit_by`) and the cross-level rule in
+/// `order` (`rt::levels_ok`, which passes `classes::level_order`).
+fn admits(order: LevelOrder, set: &[Srv]) -> Result<(), Refusal> {
+    let mut load = [HartLoad::default()];
+    let mut booked: Vec<Booked> = Vec::new();
+    for v in set {
+        let dens = density_ppm(v.q, v.t, v.d)?;
+        let cand = Booked { level: v.level, q: v.q, d: v.d, density_ppm: dens };
+        let mut with = booked.clone();
+        with.push(cand);
+        first_fit_by(&load, 1, dens, false, PPM as u32, |_| levels_check(order, &with).is_ok())?;
+        load[0].total_ppm += dens;
+        booked.push(cand);
+    }
+    Ok(())
 }
 
 /// The processor-demand test for sporadic `(q, d, t)` tasks on one hart:
@@ -217,4 +251,35 @@ fn density_admission_holds_for_every_wake_pattern_and_dbf_does_not() {
     }
     assert!(admitted > 100, "too few density-admitted sets drawn ({admitted})");
     assert!(dbf_broken > 0, "no dbf-admitted set was broken by a suspending server");
+}
+
+/// The wave-15 `mixed` pair in ticks: H (5 per 20) at level 4, L (1 per 20,
+/// deadline 2) at level 6, 75 % of density.
+fn mixed(h: Arrival, l: Arrival) -> [Srv; 2] {
+    [Srv { level: 4, ..srv(5, 20, 20, h) }, Srv { level: 6, ..srv(1, 2, 20, l) }]
+}
+
+/// Under EDF across levels the cross-level rule does not bind, so the pair it
+/// alone refused is admitted, and it keeps every deadline whichever of the
+/// two runs its budget and sleeps until its server deadline. Canary
+/// `rt-levels-always-canary` (the rule binds under EDF too): refused.
+#[test]
+fn a_set_only_the_level_rule_refused_is_admitted_under_edf_and_keeps_its_deadlines() {
+    assert!(density_admits(&mixed(P, P)), "the density sum refuses it: not a set only the level rule refused");
+    assert_eq!(admits(LevelOrder::Fixed, &mixed(P, P)), Err(Refusal::Levels), "the level rule does not refuse it");
+    for (h, l) in [(P, P), (W, P), (P, W)] {
+        let set = mixed(h, l);
+        assert_eq!(admits(LevelOrder::Edf, &set), Ok(()), "EDF across levels refused a set it runs");
+        assert_eq!(misses_in(LevelOrder::Edf, &set, 2_000), vec![0, 0], "an admitted set missed");
+    }
+}
+
+/// Under fixed priority between levels H's 5 ticks run before L's 2-tick
+/// deadline, and L misses every job: there the rule must still refuse it.
+/// Canary `rt-levels-never-canary` (the rule never binds): admitted.
+#[test]
+fn a_set_only_the_level_rule_refused_is_still_refused_under_fixed_priority() {
+    let set = mixed(P, P);
+    assert_eq!(misses_in(LevelOrder::Fixed, &set, 2_000), vec![0, 100], "fixed priority did not cost L its deadlines");
+    assert_eq!(admits(LevelOrder::Fixed, &set), Err(Refusal::Levels), "fixed priority admitted a set that misses");
 }

@@ -18,3 +18,8 @@ core = { version = "1.0.0", optional = true, package = "rustc-std-workspace-core
 [features]
 default = []
 rustc-dep-of-std = ["core"]
+# Canaries of `rt_levels::levels_check`, never in a build (host suites
+# `sched-policy-tests` and `topology-tests` enable them): the cross-level
+# rule binds under EDF across levels too, or never binds.
+rt-levels-always-canary = []
+rt-levels-never-canary = []

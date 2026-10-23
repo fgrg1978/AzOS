@@ -33,6 +33,12 @@
 //!   the exact EDF bound. A demand-bound admission would promise deadlines one
 //!   self-suspending row can break (`tests/host/sched-policy-tests`,
 //!   `rt_exactness`).
+//! * Levels. The scheduler orders a hart's reservations by absolute deadline
+//!   across priority levels (EDF across levels, the default), so their levels
+//!   do not enter the test. Only under fixed priority between levels (the
+//!   `sched-dl-in-level` canary) does a CPU also have to pass the cross-level
+//!   rule (`azos_abi::rt_levels::levels_check`); the caller passes the order
+//!   the scheduler dispatches in.
 //! * Placement is first-fit by decreasing density, tasks with equal density taken
 //!   in declaration order, so the verdict is deterministic. Bin packing is NP-hard
 //!   in general, so a set that only a cleverer packing would fit can be refused
@@ -43,6 +49,10 @@
 //! `panic = "abort"` makes a panic at boot a board that never starts.
 
 use crate::types::MAX_CLASSES;
+
+/// The order the scheduler dispatches reservations of different levels in,
+/// which decides whether the cross-level rule binds ([`admit`]'s `order`).
+pub use azos_abi::rt_levels::LevelOrder;
 
 /// One CPU is this many parts per million (the scheduler's scale, shared
 /// through `azos_abi::rt_levels`).
@@ -153,8 +163,9 @@ pub enum DeadlineRefusal {
     },
     /// Room on a CPU for the task's density, but the reservations placed
     /// there sit at different priority levels and a level could miss a
-    /// deadline (`azos_abi::rt_levels::levels_fit`, the rule run-time
-    /// `reserve` applies too: wave 15). Reported for the last CPU tried.
+    /// deadline (`azos_abi::rt_levels::levels_check`, the rule run-time
+    /// `reserve` applies too: wave 15). Only under fixed priority between
+    /// levels ([`LevelOrder::Fixed`]). Reported for the last CPU tried.
     Levels {
         /// Index of the task in the topology.
         task: u16,
@@ -348,13 +359,16 @@ fn validate(p: &SchedProfile, ncpus: usize) -> Result<u32, ProfileFault> {
 /// Decide whether every item can be placed on some CPU.
 ///
 /// `class_budget_ppm[c]` is the most of any one CPU that class `c` may take, in
-/// parts per million (a class's `cpu_budget_max_pct` × 10,000).
+/// parts per million (a class's `cpu_budget_max_pct` × 10,000). `order` is how
+/// the scheduler dispatches reservations at different levels: the
+/// cross-level rule binds only under [`LevelOrder::Fixed`], as at run time.
 ///
 /// Returns the per-CPU load on success. On refusal, names the task.
 pub fn admit(
     items: &[Item],
     ncpus: usize,
     class_budget_ppm: &[u32; MAX_CLASSES],
+    order: LevelOrder,
 ) -> Result<Report, DeadlineRefusal> {
     if items.len() > MAX_PROFILED {
         return Err(DeadlineRefusal::TooManyProfiles);
@@ -411,7 +425,7 @@ pub fn admit(
             if class_load[cpu][class].saturating_add(d) > class_budget_ppm[class] {
                 continue;
             }
-            if let Err(l) = levels_on(items, &density, &item_cpu, cpu, pick) {
+            if let Err(l) = levels_on(items, &density, &item_cpu, cpu, pick, order) {
                 levels = Some((cpu as u8, l));
                 continue;
             }
@@ -440,19 +454,18 @@ pub fn admit(
 }
 
 /// The cross-level check (`azos_abi::rt_levels::levels_check`) for `cpu`'s
-/// placed items (`item_cpu[i] == cpu`) plus item `cand`. `Err` names the
-/// level that fails. O(n²) with n <= MAX_PROFILED, like the placement.
+/// placed items (`item_cpu[i] == cpu`) plus item `cand`, under `order`. `Err`
+/// names the level that fails. O(n²) with n <= MAX_PROFILED, like the
+/// placement.
 fn levels_on(
     items: &[Item],
     density: &[u32; MAX_PROFILED],
     item_cpu: &[u8; MAX_PROFILED],
     cpu: usize,
     cand: usize,
+    order: LevelOrder,
 ) -> Result<(), u32> {
     use azos_abi::rt_levels::{levels_check, Booked};
-    if cfg!(feature = "deadline-levels-canary") {
-        return Ok(());
-    }
     let booked = |i: usize| {
         let p = &items[i].profile;
         let d = if p.deadline_us == 0 { p.period_us } else { p.deadline_us };
@@ -466,5 +479,5 @@ fn levels_on(
             n += 1;
         }
     }
-    levels_check(&b[..n])
+    levels_check(order, &b[..n])
 }

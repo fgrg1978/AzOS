@@ -20793,9 +20793,10 @@ PYEOF
     #           two that must keep their deadlines; it must be throttled.
     #   admit — run-time admission refuses a band over-subscription with
     #           EBUSY and a `[SCHED-RT] admission REFUSED` line, a hart
-    #           over-subscription likewise, and (wave 15) a non-band
-    #           reservation whose 10 ms deadline sits behind the band's 6 ms
-    #           (`levels`, rt_core::levels_fit).
+    #           over-subscription likewise, and admits a non-band
+    #           reservation whose 10 ms deadline sits beside the band's 6 ms
+    #           (80 % in all): the dispatch is EDF across levels, so the
+    #           cross-level rule (rt_core::levels_check) does not bind.
     #   ring3 — the row lookup SYS_SPAWN_EX/autorun apply keeps a profiled
     #           band row's priority with its reservation and raises a band
     #           row without one to the ring-3 floor (12).
@@ -20901,7 +20902,8 @@ PYEOF
     # 2 ms deadline that computes 400 us and sleeps 20 us must not take more
     # than its density: its 40 % neighbour keeps every deadline), `mixed`
     # (two reservations at different levels, 75 % in all, the lower one's
-    # 2 ms deadline behind the upper one's 5 ms: refused with `levels`).
+    # 2 ms deadline beside the upper one's 5 ms: admitted, since the dispatch
+    # is EDF across levels, and neither misses).
     # `-smp 2`: `u70-hart1`/`u93-hart1`, the sets on hart 1 alone: under
     # -icount both harts share one virtual clock, so two loaded harts each
     # see half of it and only one hart is loaded at a time. The riscv64
@@ -20915,11 +20917,14 @@ PYEOF
     # and 280/375 misses (riscv64, 2026-10-09); on, 0/375 at shift 0 and 1.
     # Canaries: `rt-util-cbs-canary` (no budget charging) fails `overrun`;
     # `rt-util-wake-canary` (the CBS wake rule tests q/t, the bandwidth,
-    # instead of q/d, the density) fails `suspend`; `rt-util-admit-canary`
-    # (no admission) fails `mixed`. Compile-error bucket: a kernel that does
-    # not build is its own FAIL.
-    sched_rt_util_row() { # <label> <isa: rv|arm> <smp: 1|2> <features> <expect: PASS|phase>
+    # instead of q/d, the density) fails `suspend`; the levels canary boots
+    # the PASS row's kernel with `canary=sched-dl-in-level` (fixed priority
+    # between levels: admission reads the same switch and refuses `mixed`'s
+    # low reservation with `levels`) and fails `mixed`. Compile-error bucket:
+    # a kernel that does not build is its own FAIL.
+    sched_rt_util_row() { # <label> <isa: rv|arm> <smp: 1|2> <features> <expect: PASS|phase> [<cmdline>]
         local label="$1" isa="$2" smp="$3" feats="$4" expect="$5"
+        local -a app=(); [ -n "${6:-}" ] && app=(-append "$6")
         if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -20930,7 +20935,7 @@ PYEOF
             kimg="$CI_LOG_DIR/${slug}-kernel.elf"; cp "$KERNEL" "$kimg"
             par_ready
             "$QEMU" -machine virt -nographic -bios default -smp "$smp" -icount shift=0,sleep=off \
-                -kernel "$kimg" >"$log" 2>&1 &
+                -kernel "$kimg" ${app[@]+"${app[@]}"} >"$log" 2>&1 &
         else
             if ! a64_kbuild "$feats"; then
                 bad; echo "      the aarch64 kernel (--features $feats) did not build"; return
@@ -20938,7 +20943,7 @@ PYEOF
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" \
-                -icount shift=0,sleep=off -nographic -kernel "$kimg" >"$log" 2>&1 &
+                -icount shift=0,sleep=off -nographic -kernel "$kimg" ${app[@]+"${app[@]}"} >"$log" 2>&1 &
         fi
         # 900 x 0.5 s: about 35 s of host time when it passes (the phases
         # leave idle time for -icount to skip); a canary's overrunner leaves
@@ -20989,12 +20994,12 @@ PYEOF
     par_row sched_rt_util_row "sched-rt-util: riscv64 near the bound" rv 1 "qemu,sched-rt-util" PASS
     par_row sched_rt_util_row "sched-rt-util: riscv64 CBS canary" rv 1 "qemu,rt-util-cbs-canary" overrun
     par_row sched_rt_util_row "sched-rt-util: riscv64 wake rule canary" rv 1 "qemu,rt-util-wake-canary" suspend
-    par_row sched_rt_util_row "sched-rt-util: riscv64 levels canary" rv 1 "qemu,rt-util-admit-canary" mixed
+    par_row sched_rt_util_row "sched-rt-util: riscv64 levels canary" rv 1 "qemu,sched-rt-util" mixed "canary=sched-dl-in-level"
     par_row sched_rt_util_row "sched-rt-util: aarch64 near the bound" arm 1 "qemu,sched-rt-util" PASS
     par_row sched_rt_util_row "sched-rt-util: aarch64 hart 1" arm 2 "qemu,sched-rt-util" PASS
     par_row sched_rt_util_row "sched-rt-util: aarch64 CBS canary" arm 1 "qemu,rt-util-cbs-canary" overrun
     par_row sched_rt_util_row "sched-rt-util: aarch64 wake rule canary" arm 1 "qemu,rt-util-wake-canary" suspend
-    par_row sched_rt_util_row "sched-rt-util: aarch64 levels canary" arm 1 "qemu,rt-util-admit-canary" mixed
+    par_row sched_rt_util_row "sched-rt-util: aarch64 levels canary" arm 1 "qemu,sched-rt-util" mixed "canary=sched-dl-in-level"
     par_row sched_rt_util_row "sched-rt-util: riscv64 hart 1" rv 2 "qemu,sched-rt-util" PASS
 
     # ── Priority inversion through fast IPC (wave 11 PIFAST) ──

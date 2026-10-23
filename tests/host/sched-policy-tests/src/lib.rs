@@ -656,30 +656,42 @@ mod rt_core_tests {
         Booked { level, q, d, density_ppm: density_ppm(q, t, d).unwrap() }
     }
 
-    /// The wave-15 `mixed` pair: 75 % of density, but H's 5 ms at level 4 run
-    /// before L's 2 ms deadline at level 6. Refused; at one level it fits.
+    /// The cross-level rule under fixed priority between levels.
+    fn fixed(b: &[Booked]) -> bool {
+        levels_check(LevelOrder::Fixed, b).is_ok()
+    }
+
+    /// The wave-15 `mixed` pair: 75 % of density, but under fixed priority
+    /// H's 5 ms at level 4 run before L's 2 ms deadline at level 6. Refused
+    /// there, naming level 6; at one level it fits. Under EDF across levels
+    /// (the default dispatch) the rule does not bind: admitted. Canaries
+    /// `rt-levels-always-canary` (EDF refused) and `rt-levels-never-canary`
+    /// (fixed priority admitted).
     #[test]
-    fn a_short_deadline_below_a_long_budget_is_refused() {
-        assert!(!levels_fit(&[bk(4, 5_000, 20_000, 20_000), bk(6, 1_000, 20_000, 2_000)]));
-        assert!(levels_fit(&[bk(4, 5_000, 20_000, 20_000), bk(4, 1_000, 20_000, 2_000)]));
+    fn a_short_deadline_below_a_long_budget_is_refused_only_under_fixed_priority() {
+        let mixed = [bk(4, 5_000, 20_000, 20_000), bk(6, 1_000, 20_000, 2_000)];
+        assert_eq!(levels_check(LevelOrder::Fixed, &mixed), Err(6));
+        assert_eq!(levels_check(LevelOrder::Edf, &mixed), Ok(()));
+        assert!(fixed(&[bk(4, 5_000, 20_000, 20_000), bk(4, 1_000, 20_000, 2_000)]));
         // Upside down (the short deadline above) it fits too.
-        assert!(levels_fit(&[bk(4, 1_000, 20_000, 2_000), bk(6, 5_000, 20_000, 20_000)]));
+        assert!(fixed(&[bk(4, 1_000, 20_000, 2_000), bk(6, 5_000, 20_000, 20_000)]));
     }
 
     /// One level: exactly the density sum.
     #[test]
     fn one_level_is_the_density_sum() {
-        assert!(levels_fit(&[bk(4, 5_000, 10_000, 10_000), bk(4, 5_000, 10_000, 10_000)]));
-        assert!(!levels_fit(&[bk(4, 5_000, 10_000, 10_000), bk(4, 5_001, 10_000, 10_000)]));
+        assert!(fixed(&[bk(4, 5_000, 10_000, 10_000), bk(4, 5_000, 10_000, 10_000)]));
+        assert!(!fixed(&[bk(4, 5_000, 10_000, 10_000), bk(4, 5_001, 10_000, 10_000)]));
     }
 
     /// The carried budget is real: a 6/10 ms server can run [d-6, d] and,
     /// replenished at d, [d, d+6]; a 3/10 ms reservation below it released at
-    /// d-4 then gets nothing by d+6. Refused, while a 10/100 ms one fits.
+    /// d-4 then gets nothing by d+6 when the level above runs first. Refused
+    /// under fixed priority, while a 10/100 ms one fits.
     #[test]
     fn a_carried_budget_counts_against_the_level_below() {
-        assert!(!levels_fit(&[bk(4, 6_000, 10_000, 10_000), bk(20, 3_000, 10_000, 10_000)]));
-        assert!(levels_fit(&[bk(4, 6_000, 10_000, 10_000), bk(20, 10_000, 100_000, 100_000)]));
+        assert!(!fixed(&[bk(4, 6_000, 10_000, 10_000), bk(20, 3_000, 10_000, 10_000)]));
+        assert!(fixed(&[bk(4, 6_000, 10_000, 10_000), bk(20, 10_000, 100_000, 100_000)]));
     }
 
     /// `first_fit_by`: a hart whose density fits but whose levels do not is

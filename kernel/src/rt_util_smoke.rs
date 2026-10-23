@@ -37,11 +37,16 @@
 //! * `mixed` — two reservations on hart 0 at DIFFERENT levels (75 % in
 //!   all): H at level [`EDF_PRIO`] (5 ms per 20 ms) and L at level
 //!   [`EDF_PRIO`] + 2 (1 ms per 20 ms, deadline 2 ms), released together.
-//!   EDF orders reservations inside one level only; across levels the fixed
-//!   priority decides, so H's 5 ms runs first and L, when the density sum
-//!   alone admitted it, missed every job. PASS: L is refused with `levels`
-//!   (`rt_core::levels_fit`) and H keeps every deadline. Canary
-//!   `rt-util-admit-canary` (no admission): L is admitted and misses.
+//!   The dispatch orders reservations by absolute deadline across levels
+//!   (`rt_core::dl_rank`), so L's 2 ms deadline runs before H's 20 ms one,
+//!   and admission needs only the density sum: the cross-level rule
+//!   (`rt_core::levels_check`) binds only under fixed priority between
+//!   levels. PASS: L is admitted and neither misses a deadline. Canary
+//!   `canary=sched-dl-in-level` on the command line (fixed priority between
+//!   levels, the order before wave 15's classes): H's 5 ms would run first,
+//!   so admission, reading the same switch, refuses L with `levels`. When
+//!   that rule did not bind there (wave 15, the density sum alone), L missed
+//!   every job.
 //!
 //! On a boot with a second hart, instead:
 //!
@@ -64,7 +69,6 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
 use azos_sched::rt::{self, Reservation};
-use azos_sched::rt_core::Refusal;
 use azos_sched::{task_block_outcome, BlockOutcome, WaitReason};
 
 const CTL_PRIO: u32 = 2;
@@ -373,7 +377,7 @@ fn phase_mixed() {
     let admitted_l = lr.is_ok();
     let (jobs, misses) = collect("mixed", 2, |s| s == 0 || admitted_l, end);
     STOP.store(true, Ordering::Release);
-    let pass = h && lr == Err(Refusal::Levels) && misses == 0 && jobs as u64 >= PHASE_MS * 1_000 / 20_000;
+    let pass = h && admitted_l && misses == 0 && jobs as u64 >= 2 * PHASE_MS * 1_000 / 20_000;
     kprintln!("[RTUTIL] mixed {} {} density_pct=75 high={:?} low={:?} counted_jobs={} counted_misses={} low_misses={}",
         if pass { "PASS" } else { "FAIL" }, isa(), if h { "ok" } else { "refused" },
         lr.map(|_| "ok").map_err(|e| e.name()), jobs, misses, STATS[1].misses.load(Ordering::Relaxed));

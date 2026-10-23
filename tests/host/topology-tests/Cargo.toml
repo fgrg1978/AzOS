@@ -78,7 +78,10 @@ lx-server = ["azos_topology/lx-server"]
 emit-target-riscv64 = ["azos_topology/emit-target-riscv64"]
 emit-target-aarch64 = ["azos_topology/emit-target-aarch64"]
 emit-target-x86_64 = ["azos_topology/emit-target-x86_64"]
-deadline-levels-canary = ["azos_topology/deadline-levels-canary"]
+# The cross-level rule's canaries (`crates/core/abi/Cargo.toml`): it binds
+# under EDF across levels too, or never binds.
+rt-levels-always-canary = ["azos_abi/rt-levels-always-canary"]
+rt-levels-never-canary = ["azos_abi/rt-levels-never-canary"]
 # The neverallow canaries (`crates/core/topology/Cargo.toml`): the built-in
 # topology declares a row rule 0 forbids; the rules find nothing.
 neverallow-row-canary = ["azos_topology/neverallow-row-canary"]

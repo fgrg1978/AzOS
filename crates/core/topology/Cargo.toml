@@ -201,8 +201,6 @@ deadline-hart-canary = []
 # `DEVICE_IRQ_BIND` needs under `IRQ_THREADED`. Boots with fewer than four CPUs
 # refuse it, so only the gate rows that run captest on four CPUs build it.
 captest-row = []
-# Boot admission skips the cross-level check (`deadline::levels_on`).
-deadline-levels-canary = []
 # Wave 11 SCHED-RT rows (`sched-rt-smoke` in kernel/Cargo.toml): two profiled
 # `safety_critical` rows, `rt-edf-a` and `rt-edf-b`, pinned to CPU 0, whose kernel tasks
 # take their EDF + CBS reservations from these rows. Never in a real build.

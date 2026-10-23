@@ -25,8 +25,9 @@
 //! * **cbs** — X (hard CBS, 1 ms per 10 ms) never stops running once it
 //!   starts; A2 (1.5/10 ms, deadline 3 ms) and C (2/20 ms, deadline 10 ms),
 //!   all three at level [`EDF_PRIO`], must keep their deadlines. (C sat two
-//!   levels lower until wave 15; the cross-level admission check refuses it
-//!   there: X and A2 may carry 2.5 ms of budget into C's 10 ms.)
+//!   levels lower until wave 15, when the dispatch still ran a level above
+//!   first and the cross-level admission check refused it there: X and A2
+//!   may carry 2.5 ms of budget into C's 10 ms.)
 //!   PASS: no miss, and X was throttled (its overrun counter grew). Canary
 //!   `rt-cbs-canary` (no charging): X's deadline never moves, it keeps the
 //!   level, A2 and C miss.
@@ -34,10 +35,11 @@
 //!   (6/10 ms) fits; a second of 40 % does not fit the band cap (95 %) and is
 //!   REFUSED with `EBUSY` and a `[SCHED-RT] admission REFUSED` line; a
 //!   non-band one (level 20) of 10 % with a 100 ms deadline fits; one of 35 %
-//!   does not fit the hart; one of 10 % with a 10 ms deadline fits the
-//!   density but not the levels (`levels`: the band's 6 ms run first,
-//!   `rt_core::levels_fit`). Canary `rt-admit-canary` (no admission): the
-//!   over-subscriptions are accepted.
+//!   does not fit the hart; one of 10 % with a 10 ms deadline fits too
+//!   (80 % in all): the dispatch orders reservations by deadline across
+//!   levels, so the band's 6 ms at level [`EDF_PRIO`] do not run first and
+//!   the cross-level rule (`rt_core::levels_check`) does not bind. Canary
+//!   `rt-admit-canary` (no admission): the over-subscriptions are accepted.
 //! * **exempt** — during the `band` check the best-effort task also watches
 //!   rt-motor's heartbeat while the band is throttled. The safety loops are
 //!   exempt from the cap (owner decision), so rt-motor (1 ms period) must keep
@@ -400,7 +402,7 @@ fn ctl_task(_: usize) {
     let (_, _, admitted, refused, arm_calls, arm_writes) = rt::stats();
     verdict("admit",
         r1.is_ok() && r2 == Err(Refusal::BandCap) && r3.is_ok() && r4 == Err(Refusal::NoRoom)
-            && r5 == Err(Refusal::Levels),
+            && r5.is_ok(),
         format_args!("band60={:?} band40={:?} errno={} nonband10of100ms={:?} nonband35of100ms={:?} \
             nonband10of10ms={:?} admitted={} refused={}",
             r1.map(|_| "ok"), r2.map(|_| "ok"), r2.err().map_or(0, |e| -e.errno()),

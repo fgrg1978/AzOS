@@ -3275,7 +3275,9 @@ mod mmio_cap_tests {
 /// The canary of the deadline-admission design is `two_60_percent_tasks_pinned_to_one_cpu_are_refused`.
 #[cfg(test)]
 mod deadline_admission_tests {
-    use azos_topology::deadline::{admit, DeadlineRefusal, Item, ProfileFault, SchedProfile, MAX_ADMISSION_CPUS, PPM};
+    use azos_topology::deadline::{
+        admit, DeadlineRefusal, Item, LevelOrder, ProfileFault, SchedProfile, MAX_ADMISSION_CPUS, PPM,
+    };
     use azos_topology::{parse_caps, parse_sched, AdmissionError, ParseError, Topology, MAX_CLASSES};
 
     /// `rt` may take a whole CPU, `rt_half` half of one, `best` is not checked.
@@ -3352,7 +3354,7 @@ priority_range      = [0, 11]
             task("a", "rt", "period_us = 10000\nruntime_us = 2000\ndeadline_us = 3000\ncpu_mask = 1")
                 + &task("b", "rt", "period_us = 10000\nruntime_us = 2000\ndeadline_us = 3000\ncpu_mask = 1"),
         )).unwrap();
-        match t.deadline_admission(1) {
+        match t.deadline_admission(1, LevelOrder::Edf) {
             Err(AdmissionError::Deadline(e @ DeadlineRefusal::NoCpuFits { task: 1 })) => {
                 assert_eq!((e.task(), e.record_row()), (Some(1), 2));
             }
@@ -3370,10 +3372,10 @@ priority_range      = [0, 11]
             task("a", "rt", "period_us = 10000\nruntime_us = 6000\ncpu_mask = 3")
                 + &task("b", "rt", "period_us = 10000\nruntime_us = 6000\ncpu_mask = 3"),
         )).unwrap();
-        let r = t.deadline_admission(2).expect("60% + 60% on two CPUs is feasible");
+        let r = t.deadline_admission(2, LevelOrder::Edf).expect("60% + 60% on two CPUs is feasible");
         assert_eq!(&r.cpu_load_ppm[..2], &[600_000, 600_000], "one per CPU");
         // And refused if the board really has one.
-        assert!(matches!(t.deadline_admission(1), Err(AdmissionError::Deadline(DeadlineRefusal::NoCpuFits { .. }))));
+        assert!(matches!(t.deadline_admission(1, LevelOrder::Edf), Err(AdmissionError::Deadline(DeadlineRefusal::NoCpuFits { .. }))));
     }
 
     // ── the bound itself ───────────────────────────────────────────────────
@@ -3404,10 +3406,10 @@ priority_range      = [0, 11]
     #[test]
     fn a_density_is_rounded_up_never_down() {
         let two = task("a", "rt", "period_us = 3\nruntime_us = 1\ncpu_mask = 1") + &task("b", "rt", "period_us = 3\nruntime_us = 1\ncpu_mask = 1");
-        let r = topo(leak(two.clone())).unwrap().deadline_admission(1).unwrap();
+        let r = topo(leak(two.clone())).unwrap().deadline_admission(1, LevelOrder::Edf).unwrap();
         assert_eq!(r.cpu_load_ppm[0], 666_668);
         let three = two + &task("c", "rt", "period_us = 3\nruntime_us = 1\ncpu_mask = 1");
-        assert!(topo(leak(three)).unwrap().deadline_admission(1).is_err(), "rounded up, three thirds exceed one CPU");
+        assert!(topo(leak(three)).unwrap().deadline_admission(1, LevelOrder::Edf).is_err(), "rounded up, three thirds exceed one CPU");
     }
 
     // ── classes ────────────────────────────────────────────────────────────
@@ -3430,7 +3432,7 @@ priority_range      = [0, 11]
                 + &task("be", "best_effort", "period_us = 10\nruntime_us = 9\ncpu_mask = 1"),
         )).unwrap();
         assert!(t.admission_check().is_ok());
-        assert_eq!(t.deadline_admission(1).unwrap().placed, 1, "only the checked class was placed");
+        assert_eq!(t.deadline_admission(1, LevelOrder::Edf).unwrap().placed, 1, "only the checked class was placed");
     }
 
     // ── malformed profiles are named, not silently dropped ─────────────────
@@ -3439,7 +3441,7 @@ priority_range      = [0, 11]
     fn a_malformed_profile_is_refused_and_says_why() {
         let bad = |profile: &'static str, ncpus: usize| {
             let t = topo(leak(task("a", "rt", profile))).unwrap();
-            t.deadline_admission(ncpus)
+            t.deadline_admission(ncpus, LevelOrder::Edf)
         };
         let fault = |r: Result<_, AdmissionError>| match r {
             Err(AdmissionError::Deadline(DeadlineRefusal::Invalid { fault, .. })) => fault,
@@ -3481,7 +3483,7 @@ priority_range      = [0, 11]
                 items.push(Item { task: i as u16, class: 0, level: 0, profile: SchedProfile { period_us: period, runtime_us: runtime, deadline_us: 0, cpu_mask: 1 << cpu } });
             }
             let want = (0..ncpus).all(|c| sum[c] <= PPM as u64);
-            assert_eq!(admit(&items, ncpus, &budget).is_ok(), want, "round {round}: sums {:?}", &sum[..ncpus]);
+            assert_eq!(admit(&items, ncpus, &budget, LevelOrder::Edf).is_ok(), want, "round {round}: sums {:?}", &sum[..ncpus]);
         }
     }
 
@@ -3533,7 +3535,7 @@ priority_range      = [0, 11]
                 + &task("b", "rt", "period_us = 10000\nruntime_us = 6000\ncpu_mask = 3")
                 + &task("c", "best_effort", "period_us = 10000\nruntime_us = 1000"),
         )).unwrap();
-        let r = t.deadline_admission(2).unwrap();
+        let r = t.deadline_admission(2, LevelOrder::Edf).unwrap();
         assert_eq!(r.cpu_of(0), Some(0));
         assert_eq!(r.cpu_of(1), Some(1));
         assert_eq!(r.cpu_of(2), None, "a class without admission_control is not placed");
@@ -3548,7 +3550,7 @@ priority_range      = [0, 11]
             task("a", "rt", "period_us = 10000\nruntime_us = 6000\ncpu_mask = 1")
                 + &task("b", "rt", "period_us = 10000\nruntime_us = 4000\ncpu_mask = 1"),
         )).unwrap();
-        let r = t.deadline_admission(1).expect("60 % + 40 % fit one CPU");
+        let r = t.deadline_admission(1, LevelOrder::Edf).expect("60 % + 40 % fit one CPU");
         let density = |task: u16| profile_density(&t.tasks()[task as usize].profile).unwrap();
         assert_eq!(r.band_check(|_| true, density, 950_000), Err(DeadlineRefusal::BandCap { task: 1 }));
         assert_eq!(r.band_check(|task| task == 0, density, 950_000), Ok(()), "only `a` in the band");
@@ -3560,33 +3562,42 @@ priority_range      = [0, 11]
         format!("[task.{name}]\nclass = \"rt_wide\"\npriority = {priority}\nmem = \"locked\"\nmem_pages = 1\n{profile}\ncaps = []\n\n")
     }
 
-    /// Wave 15: boot admission applies the cross-level rule run-time
-    /// `reserve` applies (`azos_abi::rt_levels::levels_fit`). 25 % + 5 % of
-    /// one CPU fits by density, but the level-6 row's 2 ms deadline sits
-    /// behind 5 ms of the level-4 row: refused at boot, naming the row, its
-    /// level and the level that fails, instead of passing boot and being
-    /// refused at `reserve()`. Same set as `sched-policy-tests` `rt_core`.
+    /// The wave-15 `mixed` pair: 25 % + 5 % of one CPU by density (75 % in
+    /// all), the level-6 row's 2 ms deadline beside 5 ms of the level-4 row.
+    /// Under EDF across levels (the default dispatch) the density sum is the
+    /// whole test: admitted, at parse time and at boot. Under fixed priority
+    /// between levels (`sched-dl-in-level`) the level-4 row runs first and boot
+    /// admission applies the cross-level rule run-time `reserve` applies
+    /// (`azos_abi::rt_levels::levels_check`): refused, naming the row, its
+    /// level and the level that fails. Same set as `sched-policy-tests`
+    /// `rt_exactness`. Canaries: `rt-levels-always-canary` refuses it under
+    /// EDF, `rt-levels-never-canary` admits it under fixed priority.
     #[test]
-    fn a_mixed_level_set_that_fits_by_density_is_refused_at_boot() {
+    fn a_mixed_level_set_is_refused_at_boot_only_under_fixed_priority() {
         let t = topo(leak(
             task_at("hi", 4, "period_us = 20000\nruntime_us = 5000\ncpu_mask = 1")
                 + &task_at("lo", 6, "period_us = 20000\nruntime_us = 1000\ndeadline_us = 2000\ncpu_mask = 1"),
         )).unwrap();
         assert_eq!(t.row_level(0), 4);
         assert_eq!(t.row_level(1), 6);
-        match t.admission_check() {
+        assert_eq!(t.admission_check(), Ok(()), "the parse-time check refused a set EDF across levels runs");
+        let r = t.deadline_admission(1, LevelOrder::Edf).expect("EDF across levels: 75 % of one CPU fits");
+        assert_eq!((r.placed, r.cpu_load_ppm[0]), (2, 750_000));
+        match t.deadline_admission(1, LevelOrder::Fixed) {
             Err(AdmissionError::Deadline(DeadlineRefusal::Levels { task, cpu, level, failing_level })) =>
                 assert_eq!((task, cpu, level, failing_level), (0, 0, 4, 6),
                     "`lo` (denser) is placed first; `hi` above it breaks level 6"),
-            other => panic!("a mixed-level set that misses deadlines was admitted at boot: {other:?}"),
+            other => panic!("fixed priority between levels admitted a set that misses deadlines: {other:?}"),
         }
         // A second CPU it may use takes it: the rule skips a CPU, like `first_fit_by`.
         let t = topo(leak(
             task_at("hi", 4, "period_us = 20000\nruntime_us = 5000\ncpu_mask = 3")
                 + &task_at("lo", 6, "period_us = 20000\nruntime_us = 1000\ndeadline_us = 2000\ncpu_mask = 3"),
         )).unwrap();
-        let r = t.deadline_admission(2).expect("one per CPU");
+        let r = t.deadline_admission(2, LevelOrder::Fixed).expect("one per CPU");
         assert_eq!((r.cpu_of(1), r.cpu_of(0)), (Some(0), Some(1)));
+        let r = t.deadline_admission(2, LevelOrder::Edf).expect("both on the first CPU");
+        assert_eq!((r.cpu_of(1), r.cpu_of(0)), (Some(0), Some(0)));
     }
 
     /// The same two reservations at one level reduce to the density sum: admitted.
@@ -3597,7 +3608,7 @@ priority_range      = [0, 11]
                 + &task_at("lo", 4, "period_us = 20000\nruntime_us = 1000\ndeadline_us = 2000\ncpu_mask = 1"),
         )).unwrap();
         assert!(t.admission_check().is_ok());
-        let r = t.deadline_admission(1).expect("one level, 75 % of one CPU");
+        let r = t.deadline_admission(1, LevelOrder::Edf).expect("one level, 75 % of one CPU");
         assert_eq!(r.placed, 2);
         assert_eq!(r.cpu_load_ppm[0], 750_000);
     }

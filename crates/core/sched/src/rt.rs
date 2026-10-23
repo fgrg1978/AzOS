@@ -985,13 +985,15 @@ pub struct Reservation {
     pub band: bool,
     /// The priority the task runs at once admitted (set after `reserve` on
     /// the spawn and autorun paths, so it is declared here): the
-    /// cross-level check ([`rt_core::levels_fit`]) books it.
+    /// cross-level check ([`rt_core::levels_check`]) books it.
     pub level: u32,
 }
 
-/// The cross-level check for `cpu` with `cand` added (`rt_core::levels_fit`).
-/// Under `ADMIT`; reads only what admission wrote before publishing a slot
-/// (`q`, `d`, `density_ppm`, `level`), never the owner's budget/deadline.
+/// The cross-level check for `cpu` with `cand` added (`rt_core::levels_check`),
+/// in the order the dispatch runs reservations in (`classes::level_order`):
+/// it binds only under fixed priority between levels. Under `ADMIT`; reads
+/// only what admission wrote before publishing a slot (`q`, `d`,
+/// `density_ppm`, `level`), never the owner's budget/deadline.
 fn levels_ok(cpu: usize, cand: rt_core::Booked) -> bool {
     if !ADMIT_ON {
         return true;
@@ -1008,7 +1010,7 @@ fn levels_ok(cpu: usize, cand: rt_core::Booked) -> bool {
         b[n] = rt_core::Booked { level: r.level, q: r.q, d: r.d, density_ppm: r.density_ppm };
         n += 1;
     }
-    rt_core::levels_fit(&b[..n])
+    rt_core::levels_check(super::classes::level_order(), &b[..n]).is_ok()
 }
 
 /// `r` as the cross-level check books it.

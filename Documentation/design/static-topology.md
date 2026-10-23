@@ -822,8 +822,11 @@ are considered. The model is partitioned earliest-deadline-first:
   declaration order, so the verdict is deterministic.
 - The rows of one class on one CPU may not exceed that class's
   `cpu_budget_max_pct`.
-- Reservations placed on one CPU at different priority levels must also pass
-  the cross-level rule shared with run-time `reserve`.
+- Only when the scheduler runs reservations by fixed priority between levels
+  (the `sched-dl-in-level` canary), reservations placed on one CPU at
+  different priority levels must also pass the cross-level rule shared with
+  run-time `reserve`. The default dispatch is EDF across levels, where the
+  density sum is the whole test.
 - A profile is malformed if the period or the runtime is zero, the deadline
   exceeds the period, the runtime exceeds the deadline, or the mask names no
   CPU.

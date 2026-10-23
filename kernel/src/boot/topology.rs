@@ -476,7 +476,10 @@ fn admit(
     // 1. Deadlines and the band.
     use azos_decision::{record, Rule, Verdict};
     let rows = topo.tasks().len() as u64;
-    let r = match topo.deadline_admission(num_cpus) {
+    // The cross-level rule binds only in the order the scheduler dispatches
+    // reservations in (`classes::level_order`; the `sched-dl-in-level`
+    // canary is armed before this runs), as at run-time `reserve`.
+    let r = match topo.deadline_admission(num_cpus, azos_sched::classes::level_order()) {
         Ok(r) => r,
         Err(e) => {
             // The third number names the first row refused (`record_row`).

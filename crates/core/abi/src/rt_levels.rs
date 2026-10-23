@@ -7,12 +7,30 @@
 //! because this is the lowest crate both depend on; one copy means a set the
 //! board admits at boot is a set `reserve` admits at run time.
 //!
+//! The rule binds only under fixed priority between levels
+//! ([`LevelOrder::Fixed`]). Every caller passes the order the dispatch runs
+//! in (`azos_sched::classes::level_order`), so admission and dispatch read
+//! one switch and cannot disagree.
+//!
 //! Pure, allocation-free, unit-agnostic (`q` and `d` in any one time unit).
+
+/// How one hart's dispatch orders reservations at different priority levels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LevelOrder {
+    /// EDF across levels: every reservation competes at one rank, by its
+    /// absolute deadline (`azos_sched::rt_core::dl_rank`). The default. The
+    /// density sum is the whole test, and [`levels_check`] admits every set.
+    Edf,
+    /// Fixed priority between levels, EDF inside one: a level above runs
+    /// first whatever its deadlines (the `sched-dl-in-level` canary).
+    /// [`levels_check`] applies.
+    Fixed,
+}
 
 /// One CPU is this many parts per million.
 pub const PPM: u64 = 1_000_000;
 
-/// One reservation of a hart, as [`levels_fit`] reads it: its level, budget
+/// One reservation of a hart, as [`levels_check`] reads it: its level, budget
 /// and relative deadline (any one time unit), and density.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Booked {
@@ -27,14 +45,20 @@ pub struct Booked {
 }
 
 /// Can every reservation of one hart keep its deadlines when they sit at
-/// different priority levels? The dispatch orders reservations by deadline
+/// different priority levels and the dispatch runs them in `order`? `Err`
+/// names the level whose deadlines it cannot guarantee (the first one found,
+/// in `booked` order) for a refusal line.
+///
+/// Under [`LevelOrder::Edf`] always `Ok`: EDF over all of a hart's
+/// reservations meets every deadline the density sum admits, whatever their
+/// levels, so a test by level would only refuse sets that fit.
+///
+/// Under [`LevelOrder::Fixed`] the dispatch orders reservations by deadline
 /// inside a level only; a level above runs first whatever its deadlines, so
 /// the density sum is not enough: two reservations at 75 % in all, the lower
 /// one with a 2 ms deadline behind 5 ms of the upper one, miss every job
-/// (wave 15, `sched-rt-util` `mixed`).
-///
-/// The test, for each level `l` present, with `dmin` its shortest relative
-/// deadline:
+/// (wave 15, `sched-rt-util` `mixed`). The test, for each level `l` present,
+/// with `dmin` its shortest relative deadline:
 ///
 /// `sum(density, levels <= l) + sum(q, levels < l) / dmin <= 1`
 ///
@@ -58,13 +82,10 @@ pub struct Booked {
 /// own loops, a band task without a profile), priority donation that moves a
 /// reservation's task to another level while it holds a lock, and
 /// non-preemptible kernel sections.
-pub fn levels_fit(booked: &[Booked]) -> bool {
-    levels_check(booked).is_ok()
-}
-
-/// [`levels_fit`], naming the level whose deadlines it cannot guarantee (the
-/// first one found, in `booked` order) for a refusal line.
-pub fn levels_check(booked: &[Booked]) -> Result<(), u32> {
+pub fn levels_check(order: LevelOrder, booked: &[Booked]) -> Result<(), u32> {
+    if !binds(order) {
+        return Ok(());
+    }
     for b in booked {
         let l = b.level;
         let mut dmin = u64::MAX;
@@ -89,4 +110,17 @@ pub fn levels_check(booked: &[Booked]) -> Result<(), u32> {
         }
     }
     Ok(())
+}
+
+/// Does the rule bind under `order`? Canaries, never in a build:
+/// `rt-levels-always-canary` binds it under EDF too (the rule before the
+/// order decided it), `rt-levels-never-canary` never binds it.
+const fn binds(order: LevelOrder) -> bool {
+    if cfg!(feature = "rt-levels-always-canary") {
+        true
+    } else if cfg!(feature = "rt-levels-never-canary") {
+        false
+    } else {
+        matches!(order, LevelOrder::Fixed)
+    }
 }

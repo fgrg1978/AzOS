@@ -58,6 +58,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use azos_arch::Interrupts;
 use azos_sync::waitgraph::{self, PiAttr, SchedPi, TaskId, WaitObj};
 
+use crate::rt_core::LevelOrder;
 use crate::sc::{classify, Class, ClassTable, SchedClassOps, SchedContext, NO_CPU};
 use crate::task::{TaskState, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
@@ -95,12 +96,24 @@ pub const DEFAULT_CLASS: Option<Class> = if azos_limits::SCHED_DEFAULT_RT && RT_
 /// (ktest `sched_dl_above_rt`).
 static CANARY_DL_IN_LEVEL: AtomicBool = AtomicBool::new(false);
 
-/// The rank switch the RT pick and tick read (`rt_core::dl_rank`): a
-/// reservation outranks every band level, unless the canary puts it back
-/// inside its level.
+/// How the RT pick and tick order reservations at different levels: EDF
+/// across levels, unless the canary puts a reservation back inside its level
+/// (fixed priority between levels). The one switch for the dispatch
+/// ([`dl_above_band`]) and for every admission of a reservation, which
+/// applies the cross-level rule (`rt_core::levels_check`) only under
+/// `Fixed`: run-time `rt::reserve`, and boot's `deadline_admission` through
+/// its callers. Admission and dispatch cannot disagree.
+#[inline(always)]
+pub fn level_order() -> LevelOrder {
+    if CANARY_DL_IN_LEVEL.load(Ordering::Relaxed) { LevelOrder::Fixed } else { LevelOrder::Edf }
+}
+
+/// The rank switch the RT pick and tick read (`rt_core::dl_rank`), from
+/// [`level_order`]: a reservation outranks every band level, unless the
+/// canary puts it back inside its level.
 #[inline(always)]
 pub fn dl_above_band() -> bool {
-    !CANARY_DL_IN_LEVEL.load(Ordering::Relaxed)
+    level_order() == LevelOrder::Edf
 }
 
 /// Arm runtime canary `sched-dl-in-level` (boot only).

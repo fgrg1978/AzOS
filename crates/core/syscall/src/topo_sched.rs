@@ -135,7 +135,9 @@ pub fn row_reservation(name: &[u8]) -> Option<azos_sched::rt::Reservation> {
     }
     let online = azos_sched::smp::NUM_ONLINE_CPUS
         .load(core::sync::atomic::Ordering::Acquire).max(1);
-    let cpu_mask = match topo.deadline_admission(online).ok()?.cpu_of(ti as u16) {
+    // The placement boot admission made: same hart count, same dispatch order.
+    let order = azos_sched::classes::level_order();
+    let cpu_mask = match topo.deadline_admission(online, order).ok()?.cpu_of(ti as u16) {
         Some(cpu) => 1u32 << cpu,
         None => return None,
     };
