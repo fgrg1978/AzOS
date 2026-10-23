@@ -97,7 +97,7 @@ impl Scene {
         LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
         DEVICE_SAFE.store(false, Ordering::SeqCst);
         DRIVER_ASKED.store(0, Ordering::SeqCst);
-        safe_state::register(KIND_MOTOR, mock_safe, mock_comp);
+        safe_state::register(KIND_MOTOR, mock_safe, mock_comp, |_| true);
         azos_drv_sys::clint::set_test_time(T0);
         // Nothing held or watched from an earlier test.
         safe_state::clear_holds_for_test();

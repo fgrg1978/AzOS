@@ -32,7 +32,7 @@ pub mod motor_real;
 pub use motor_real::with_motor_table_held_for_test;
 
 pub use motor_real::{
-    motor_halted, motor_init, motor_set, motor_set_reporting, motor_state, motor_stop, motor_stop_panic, motor_safe_state, motor_stop_reporting,
+    motor_halted, motor_init, motor_set, motor_set_reporting, motor_state, motor_stop, motor_stop_panic, motor_safe_state, motor_release, motor_stop_reporting,
     MotorDir, MAX_MOTORS, MOTOR_REFUSED_HALTED,
 };
 

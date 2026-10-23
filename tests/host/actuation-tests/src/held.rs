@@ -23,7 +23,11 @@
 //!   the held device it names with the e-stop release warrant, and a body of
 //!   any other length is not that frame: `the_operators_frame_releases_the_device_it_names`;
 //! * a device that is not held has nothing to release, and a held one does
-//!   not release its neighbour: `only_the_held_device_can_be_released`.
+//!   not release its neighbour: `only_the_held_device_can_be_released`;
+//! * an accepted release lifts the device layer's hold too (the kind's release
+//!   driver: the motor's pins and channel), a refused one does not, and a
+//!   hold that comes back while the device layer's is lifted is driven again:
+//!   `a_release_lifts_the_device_layers_hold_and_a_returning_hold_is_driven_again`.
 //!
 //! **Canaries** (mutations of `safe_state.rs`, run by hand, each red): dropping
 //! the minimum-hold comparison in `release` fails the second and fifth tests;
@@ -50,8 +54,32 @@ fn min_hold_ms() -> u64 {
     azos_limits::B2_HOLD_MIN_MS as u64
 }
 
-fn mock_drive(_subject: u16, _op: u8) -> bool {
+/// Every safe-state drive the kernel asked for, `(subject, op)`.
+static DRIVES: std::sync::Mutex<Vec<(u16, u8)>> = std::sync::Mutex::new(Vec::new());
+/// Every device-layer release the kernel asked for.
+static RELEASES: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+/// Set: the next release driver call first lets wheel 1 miss a deadline again.
+static MISS_DURING_RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn mock_drive(subject: u16, op: u8) -> bool {
+    DRIVES.lock().unwrap_or_else(|e| e.into_inner()).push((subject, op));
     true
+}
+
+fn mock_release(subject: u16) -> bool {
+    if MISS_DURING_RELEASE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        stall_wheel_1();
+    }
+    RELEASES.lock().unwrap_or_else(|e| e.into_inner()).push(subject);
+    true
+}
+
+fn drives() -> Vec<(u16, u8)> {
+    DRIVES.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn releases() -> Vec<u16> {
+    RELEASES.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn at(t: u64) {
@@ -78,7 +106,10 @@ struct Scene {
 
 impl Scene {
     fn new() -> Scene {
-        safe_state::register(KIND_MOTOR, mock_drive, mock_drive);
+        safe_state::register(KIND_MOTOR, mock_drive, mock_drive, mock_release);
+        DRIVES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        RELEASES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        MISS_DURING_RELEASE.store(false, std::sync::atomic::Ordering::SeqCst);
         at(T0);
         safe_state::clear_holds_for_test();
         estop::test_reset_operator_authority();
@@ -341,4 +372,40 @@ fn the_operators_frame_releases_the_device_it_names() {
     assert_eq!(recs.len(), 1);
     assert_eq!((recs[0].verdict, recs[0].subject), (Verdict::Admit as u8, DEVICE_ID));
     assert_eq!(recs[0].n, [STATE_SAFE, STATE_COMMANDED, min_hold_ms() << 8 | CAUSE_RELEASED]);
+}
+
+/// **The release reaches the device layer.** The kernel's drive also holds the
+/// device in its driver (the motor: its pins and channel, `azos_robot::
+/// motor_release`), so a release the warrant accepts calls the kind's release
+/// driver for that device, once; refusals (too early, no warrant) do not. A
+/// miss that holds the device again while its driver hold is being lifted is
+/// driven again with its op afterwards, so the device layer holds it as the
+/// gate does.
+///
+/// **Canary.** Drop the `release_device` call in `release`: no release
+/// reaches the driver. Drop the re-drive after it: the second part sees one
+/// drive, not two.
+#[test]
+fn a_release_lifts_the_device_layers_hold_and_a_returning_hold_is_driven_again() {
+    let _g = fresh();
+    let s = Scene::new();
+    let since = stall_wheel_1();
+    at(since + MS);
+    assert!(safe_state::release(KIND_MOTOR, 1, 3, &sign(&s.key, 3)).is_err());
+    at(since + (min_hold_ms() + 1) * MS);
+    assert!(safe_state::release(KIND_MOTOR, 1, 3, &[0u8; RELEASE_SIG_BYTES]).is_err());
+    assert!(releases().is_empty(), "a refused release reached the driver");
+    assert_eq!(safe_state::release(KIND_MOTOR, 1, 3, &sign(&s.key, 3)), Ok(()));
+    assert_eq!(releases(), vec![1], "the accepted release did not reach the driver");
+
+    // Held again, and this time the wheel misses once more while its driver
+    // hold is lifted.
+    DRIVES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let since = stall_wheel_1();
+    at(since + (min_hold_ms() + 1) * MS);
+    MISS_DURING_RELEASE.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(safe_state::release(KIND_MOTOR, 1, 4, &sign(&s.key, 4)), Ok(()));
+    assert!(safe_state::held(KIND_MOTOR, 1), "the new miss's hold was lost");
+    assert_eq!(drives(), vec![(1, OP_COAST), (1, OP_COAST), (1, OP_COAST)],
+        "the hold that came back during the release was not driven again");
 }

@@ -134,6 +134,13 @@ pub mod gpio {
     pub fn gpio_write_panic(pin: u32, val: u32) -> i32 {
         gpio_write(pin, val)
     }
+
+    /// The real backends hold a pin the panic write stopped
+    /// (`azos_drv_gpio::hold`); this stand-in keeps no hold, so there is
+    /// nothing to lift and nothing is held. `syscall-tests` runs the motor
+    /// layer against the real hold.
+    pub fn gpio_release(_pin: u32) -> i32 { 0 }
+    pub fn gpio_held(_pin: u32) -> Option<u32> { None }
 }
 
 /// `azos_drv_actuator::pwm`, in memory. Only what `payload::payload_init` and
@@ -188,6 +195,10 @@ pub mod pwm {
     pub fn pwm_set_duty_pct_panic(ch: u32, pct: u32) -> i32 {
         pwm_set_duty_pct(ch, pct)
     }
+
+    /// No hold here either (see `gpio::gpio_release`).
+    pub fn pwm_release(_ch: u32) -> i32 { 0 }
+    pub fn pwm_held(_ch: u32) -> Option<u32> { None }
 }
 
 /// Mirrors `azos_drv_sys::timebase` — the ISA-neutral name the tree's

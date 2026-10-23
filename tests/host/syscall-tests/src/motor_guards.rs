@@ -153,6 +153,9 @@ impl Drop for Scene {
         azos_ipc::cap::degraded_set(false);
         set_gpio_probe(None);
         set_pwm_probe(None);
+        for id in 0..WHEELS.len() as u32 {
+            azos_robot::motor_release(id);
+        }
         azos_drv_actuator::motor_pid::motor_pid_enable(self.pid_enabled);
         azos_ipc::cap_store::reset(self.tid);
         ipc_task_pool::shim_kill(self.tid);
@@ -176,6 +179,8 @@ fn scene() -> Scene {
     set_pwm_probe(Some(pwm_probe));
     for (id, (ch, a, b)) in WHEELS.iter().enumerate() {
         assert_eq!(azos_robot::motor_init(id as u32, *ch, *a, *b), 0);
+        // A test that panicked kept a wheel held.
+        azos_robot::motor_release(id as u32);
     }
     clear_probes();
     DENIALS.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -725,11 +730,13 @@ fn the_kernels_drive_to_a_safe_state_is_a_coast_and_refuses_what_it_cannot_do() 
 /// **The kernel's safe-state drive keeps the motor table honest.** A wheel
 /// commanded forward reads back coast at duty 0 after the drive, also when the
 /// drive found the table owned by a command (the update waits for the next
-/// holder, and a command arriving then starts from the coast), and a wheel
-/// that was never initialised is refused, writing nothing.
+/// holder), and a wheel that was never initialised is refused, writing
+/// nothing. The drive holds the wheel: the next command is refused and the
+/// table keeps the coast, until the release; then the command is the wheel's.
 ///
 /// **Canary.** Drop the table update in `motor_safe_state`: the first read
-/// still says forward 50.
+/// still says forward 50. Drop the `overtaken` check in
+/// `motor_set_reporting`: the command after the drive reads back backward 30.
 #[test]
 fn the_kernels_drive_to_a_safe_state_leaves_the_motor_table_saying_coast() {
     use crate::motor_host::{drive_safe, OP_COAST};
@@ -747,7 +754,13 @@ fn the_kernels_drive_to_a_safe_state_leaves_the_motor_table_saying_coast() {
     assert_eq!(gpio_calls(), pins(1, 0, 0));
     assert_eq!(pwm_calls(), duty(1, 0));
     assert_eq!(azos_robot::motor_state(1), Some((MotorDir::Coast, 0)));
-    // ... and the settled table is the base of the next command.
+    // ... and a command after it does not move the held wheel.
+    clear_probes();
+    assert_eq!(azos_robot::motor_set_reporting(1, MotorDir::Backward, 30), (-1, Some(0)));
+    assert_eq!(azos_robot::motor_state(1), Some((MotorDir::Coast, 0)));
+    assert!(pwm_calls().is_empty(), "a held channel took a duty: {:?}", pwm_calls());
+    // Released: the settled table is the base of the next command.
+    assert!(crate::motor_host::release_safe(1));
     assert_eq!(azos_robot::motor_set_reporting(1, MotorDir::Backward, 30).0, 0);
     assert_eq!(azos_robot::motor_state(1), Some((MotorDir::Backward, 30)));
 
@@ -755,6 +768,87 @@ fn the_kernels_drive_to_a_safe_state_leaves_the_motor_table_saying_coast() {
     clear_probes();
     assert!(!azos_robot::motor_safe_state(3));
     assert!(gpio_calls().is_empty() && pwm_calls().is_empty());
+    assert!(!azos_robot::motor_release(3) && !crate::motor_host::release_safe(2));
+}
+
+/// The last level the log shows written to `pin`, and the last duty to `ch`.
+fn last_pin(pin: u32) -> Option<u32> {
+    gpio_calls().iter().rev().find(|(op, p, _)| *op == GpioOp::Write && *p == pin).map(|c| c.2)
+}
+fn last_duty(ch: u32) -> Option<u32> {
+    pwm_calls().iter().rev().find(|(op, c, _)| *op == PwmOp::SetDutyPct && *c == ch).map(|c| c.2)
+}
+
+/// Set by the racing probes below once they have run their interleaving.
+static RACED: AtomicBool = AtomicBool::new(false);
+
+/// Records like [`gpio_probe`]; the first write of pin A of wheel 0 high runs
+/// the kernel's safe-state drive of the wheel from inside it: the command has
+/// read the table and is on its way to the pins when the drive lands (N345).
+fn gpio_probe_drive_lands(op: GpioOp, pin: u32, arg: u32) -> i32 {
+    gpio_probe(op, pin, arg);
+    if op == GpioOp::Write && pin == WHEELS[0].1 && arg == 1 && !RACED.swap(true, SeqCst) {
+        assert!(crate::motor_host::drive_safe(0, crate::motor_host::OP_COAST));
+    }
+    0
+}
+
+/// **A command the kernel's drive overtook does not re-drive the wheel.** The
+/// drive lands after the command read the table and before its pin and duty
+/// writes: the pins end low, the duty at 0, the table says coast and the
+/// command reports that nothing was applied.
+///
+/// **Canary.** Drop the hold in the GPIO/PWM stand-in's `_panic` writes (or
+/// the `overtaken` check in `motor_set_reporting`): the command answers 0 and
+/// the table, or the duty, says forward 50.
+#[test]
+fn a_command_overtaken_by_the_kernels_drive_leaves_the_wheel_coasting() {
+    let _g = serial();
+    let _s = scene();
+    RACED.store(false, SeqCst);
+    set_gpio_probe(Some(gpio_probe_drive_lands));
+    let (rc, applied) = azos_robot::motor_set_reporting(0, MotorDir::Forward, 50);
+    assert!(RACED.load(SeqCst), "the interleaving did not run");
+    assert_eq!((rc, applied), (-1, Some(0)), "the overtaken command reported it applied");
+    assert_eq!(azos_robot::motor_state(0), Some((MotorDir::Coast, 0)));
+    let (ch, a, b) = WHEELS[0];
+    assert_eq!((last_pin(a), last_pin(b), last_duty(ch)), (Some(0), Some(0), Some(0)),
+        "the command wrote over the drive: {:?} {:?}", gpio_calls(), pwm_calls());
+}
+
+/// Records like [`gpio_probe`]; the first write of pin A of wheel 0 high
+/// latches the e-stop and runs its stop of the wheel (what
+/// `latch_and_stop` does) from inside it: the command has passed its halt
+/// check and computed its duty.
+fn gpio_probe_estop_lands(op: GpioOp, pin: u32, arg: u32) -> i32 {
+    gpio_probe(op, pin, arg);
+    if op == GpioOp::Write && pin == WHEELS[0].1 && arg == 1 && !RACED.swap(true, SeqCst) {
+        ESTOP.store(true, SeqCst);
+        azos_robot::motor_stop(0);
+    }
+    0
+}
+
+/// **A motion command the e-stop overtook does not outlast its stop.** The
+/// latch and the e-stop's coast land between the command's halt check and its
+/// writes: the command's duty landed after the coast, so it writes the coast
+/// again and answers the halt refusal.
+///
+/// **Canary.** Drop the re-check of the halt query after the writes in
+/// `motor_set_reporting`: the last duty is 50.
+#[test]
+fn a_motion_command_overtaken_by_the_estop_writes_the_coast_last() {
+    let _g = serial();
+    let _s = scene();
+    RACED.store(false, SeqCst);
+    set_gpio_probe(Some(gpio_probe_estop_lands));
+    let (rc, applied) = azos_robot::motor_set_reporting(0, MotorDir::Forward, 50);
+    assert!(RACED.load(SeqCst), "the interleaving did not run");
+    assert_eq!((rc, applied), (azos_robot::MOTOR_REFUSED_HALTED, Some(0)));
+    assert_eq!(azos_robot::motor_state(0), Some((MotorDir::Coast, 0)));
+    let (ch, a, b) = WHEELS[0];
+    assert_eq!((last_pin(a), last_pin(b), last_duty(ch)), (Some(0), Some(0), Some(0)),
+        "the command outlasted the e-stop: {:?} {:?}", gpio_calls(), pwm_calls());
 }
 
 /// **A refusal reaches no wheel.** A gate that refuses a motion op: the three

@@ -107,11 +107,22 @@ extern crate self as azos_drv_sys;
 #[path = "../../../../../../crates/drivers/actuator/src/motor_pid.rs"]
 pub mod motor_pid;
 
+/// The kernel's stop's hold on a pin and on a channel -- the REAL files, so
+/// the motor layer meets the refusals and write-backs of the drivers.
+#[path = "../../../../../../crates/drivers/gpio/src/hold.rs"]
+pub mod hold;
+#[path = "../../../../../../crates/drivers/actuator/src/pwm_hold.rs"]
+pub mod pwm_hold;
+
 pub mod gpio {
+    use crate::hold::PinHold;
     use std::sync::Mutex;
 
     /// The driver's pin table size, as the real crate has it.
     pub const GPIO_MAX_PINS: usize = 64;
+
+    /// The pins the kernel's stop holds, as in the real backends.
+    static HOLD: PinHold = PinHold::new();
 
     #[derive(Clone, Copy, PartialEq)]
     pub enum GpioDir {
@@ -169,22 +180,52 @@ pub mod gpio {
     pub fn gpio_read(pin: u32) -> i32 {
         enter(GpioOp::Read, pin, 0)
     }
+    /// The real backends' hold rule around the probe: a write that would
+    /// change a held pin is refused before it, and one a stop overtook during
+    /// it is followed by the held level (the probe sees both writes).
     pub fn gpio_write(pin: u32, val: u32) -> i32 {
-        enter(GpioOp::Write, pin, val)
+        if (pin as usize) < GPIO_MAX_PINS && HOLD.refuses(pin, val) {
+            return -1;
+        }
+        let rc = enter(GpioOp::Write, pin, val);
+        if (pin as usize) >= GPIO_MAX_PINS {
+            return rc;
+        }
+        if HOLD.after_write(pin, val, |p, h| { enter(GpioOp::Write, p, h); }) { rc } else { -1 }
     }
     pub fn gpio_set_direction(pin: u32, dir: GpioDir) -> i32 {
         enter(GpioOp::SetDirection, pin, dir as u32)
     }
     /// `motor_stop_panic` (real, `shims/robot`) calls it, and so does the
     /// kernel's safe-state drive of a wheel (`motor_host::drive_safe`): the
-    /// probe sees the write, as it sees the locked variant's.
+    /// probe sees the write, as it sees the locked variant's, and the pin is
+    /// held as the real backends hold it.
     pub fn gpio_write_panic(pin: u32, val: u32) -> i32 {
+        if (pin as usize) < GPIO_MAX_PINS {
+            HOLD.hold(pin, val);
+        }
         enter(GpioOp::Write, pin, val)
+    }
+    pub fn gpio_release(pin: u32) -> i32 {
+        if (pin as usize) >= GPIO_MAX_PINS { return -1; }
+        HOLD.release(pin);
+        0
+    }
+    pub fn gpio_held(pin: u32) -> Option<u32> {
+        if (pin as usize) >= GPIO_MAX_PINS { return None; }
+        HOLD.held(pin)
     }
 }
 
 pub mod pwm {
+    use crate::pwm_hold::ChanHold;
     use std::sync::Mutex;
+
+    /// The channel count, as the real crate has it.
+    pub const PWM_MAX_CHANNELS: usize = 8;
+
+    /// The channels the kernel's stop holds, as in the real backends.
+    static HOLD: ChanHold = ChanHold::new();
 
     /// Which PWM entry point a probe was called from. Only the entry points
     /// the real `domains/robot/robot/src/motor.rs` calls take a probe.
@@ -236,13 +277,34 @@ pub mod pwm {
     pub fn pwm_set_duty_pct(ch: u32, pct: u32) -> i32 {
         enter(PwmOp::SetDutyPct, ch, pct)
     }
+    /// The real backends' hold rule around the probe, as `gpio_write`: a
+    /// refused duty reports the held one, without reaching the probe.
     pub fn pwm_set_duty_pct_reporting(ch: u32, pct: u32) -> Option<u32> {
+        if HOLD.refuses(ch, pct) {
+            return HOLD.held(ch);
+        }
         let r = enter(PwmOp::SetDutyPct, ch, pct);
+        if let Some(h) = HOLD.held_after(ch) {
+            if h != pct.min(100) {
+                enter(PwmOp::SetDutyPct, ch, h);
+                return Some(h);
+            }
+        }
         if r >= 0 { Some(r as u32) } else { None }
     }
     /// See `gpio_write_panic`.
     pub fn pwm_set_duty_pct_panic(ch: u32, pct: u32) -> i32 {
+        if (ch as usize) < PWM_MAX_CHANNELS {
+            HOLD.hold(ch, pct);
+        }
         enter(PwmOp::SetDutyPct, ch, pct)
+    }
+    pub fn pwm_release(ch: u32) -> i32 {
+        HOLD.release(ch);
+        0
+    }
+    pub fn pwm_held(ch: u32) -> Option<u32> {
+        HOLD.held(ch)
     }
 }
 

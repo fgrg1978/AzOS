@@ -54,7 +54,7 @@ use crate::no_robot::{robot as azos_robot};
 use azos_abi::cap::CapPerms;
 use azos_devif::motor::{DIR_BACKWARD, DIR_BRAKE, DIR_COAST, DIR_FORWARD, WHEELS};
 use azos_devif::{key, outcome, Out};
-use azos_robot::{motor_halted, motor_safe_state, motor_set_reporting, motor_stop_reporting, MotorDir, MOTOR_REFUSED_HALTED};
+use azos_robot::{motor_halted, motor_release, motor_safe_state, motor_set_reporting, motor_stop_reporting, MotorDir, MOTOR_REFUSED_HALTED};
 
 
 use crate::khost::Caller;
@@ -147,6 +147,14 @@ pub fn drive_safe(wheel: u16, op: u8) -> bool {
         return false;
     }
     motor_safe_state(wheel as u32)
+}
+
+/// Lift the hold [`drive_safe`] put on `wheel`'s pins and channel: the
+/// kernel's release of the device, after the operator's signed warrant
+/// (`azos_actuation::safe_state::release`). `false` for a wheel that is not
+/// initialised.
+pub fn release_safe(wheel: u16) -> bool {
+    (wheel as u32) < WHEELS && motor_release(wheel as u32)
 }
 
 /// The contract of per-wheel op `op` (an `OP_*` of `azos_devif::motor::MotorIdl`)

@@ -80,6 +80,11 @@ pub fn stop_hooks_registered() -> usize {
 /// image with no actuator domain latches and stops nothing else.
 pub fn latch_and_stop() {
     crate::estop::estop_activate();
+    // Pairs with the fence of a motion command that read no latch before its
+    // writes (`azos_robot::motor_set_reporting`): either it sees the latch
+    // after them and writes the coast again, or the stops below land after
+    // its writes.
+    core::sync::atomic::fence(Ordering::SeqCst);
     STOP_HOOKS.run();
 }
 
@@ -338,11 +343,15 @@ pub fn install() {
         // B2: how the kernel drives a wheel to its safe state when the op
         // missed its deadline, and runs the inverse of a failed command (a
         // stop too). The motor layer's lock-free safe-state entry, not the
-        // wheel's locks.
+        // wheel's locks; it holds the wheel's pins and channel until the
+        // release, the third driver. As the inverse it adds no hold of its
+        // own: the motor layer fails a command only for a wheel it does not
+        // have, after a panic, or on a wheel that drive already holds.
         crate::safe_state::register(
             crate::effect_gate::KIND_MOTOR,
             azos_syscall::motor_host::drive_safe,
             azos_syscall::motor_host::drive_safe,
+            azos_syscall::motor_host::release_safe,
         );
         kprintln!("[SAFETY] ring-3 motor effects recorded write-ahead (effect gate)");
         kprintln!("[SAFETY] motor effects watched against their deadline (safe-state sweep in sys-wdt)");

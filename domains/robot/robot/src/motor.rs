@@ -413,25 +413,47 @@ pub fn motor_set_reporting(id: u32, dir: MotorDir, speed_pct: u32) -> (i32, Opti
     }
     let speed = if halted { 0 } else { gate_speed(id, speed_pct.min(100)) };
 
-    match dir {
-        MotorDir::Forward  => {
-            azos_drv_gpio::gpio::gpio_write(dir_a, 1);
-            azos_drv_gpio::gpio::gpio_write(dir_b, 0);
-        }
-        MotorDir::Backward => {
+    let (level_a, level_b) = pin_levels(dir);
+    azos_drv_gpio::gpio::gpio_write(dir_a, level_a);
+    azos_drv_gpio::gpio::gpio_write(dir_b, level_b);
+    let applied = azos_drv_actuator::pwm::pwm_set_duty_pct_reporting(pwm_ch, speed);
+
+    // The kernel's stop (`motor_safe_state`, `motor_stop_panic`) does not
+    // wait for this command: it may have landed after the table was read
+    // above, while the command was on its way to the pins. It HOLDS the pins
+    // and the channel at the coast (`azos_drv_gpio::hold`,
+    // `azos_drv_actuator::pwm_hold`), so the writes above that would have
+    // undone it were refused or written back; what is left is to say so. The
+    // table records what the wheel does, the coast, and nothing is applied.
+    if overtaken(dir_a, level_a, dir_b, level_b, pwm_ch, speed) {
+        let mut motors = MOTORS.lock();
+        let m = &mut motors[id as usize];
+        settle(m, id);
+        m.direction = MotorDir::Coast;
+        m.speed_pct = 0;
+        return (-1, applied);
+    }
+
+    // The e-stop's own stop (`azos_actuation::gate::latch_and_stop`: the
+    // latch, a fence, then a coast of each wheel through this function) may
+    // also have run while a motion command was between its halt check and its
+    // writes, which then landed after the coast. The fence pairs with the
+    // latch's: either the latch is seen here, or the e-stop's coast comes after
+    // these writes. Seen: the coast is written again, last.
+    if !halted && matches!(dir, MotorDir::Forward | MotorDir::Backward) {
+        core::sync::atomic::fence(Ordering::SeqCst);
+        if motor_halted() {
             azos_drv_gpio::gpio::gpio_write(dir_a, 0);
-            azos_drv_gpio::gpio::gpio_write(dir_b, 1);
-        }
-        MotorDir::Brake => {
-            azos_drv_gpio::gpio::gpio_write(dir_a, 1);
-            azos_drv_gpio::gpio::gpio_write(dir_b, 1);
-        }
-        MotorDir::Coast => {
-            azos_drv_gpio::gpio::gpio_write(dir_a, 0);
             azos_drv_gpio::gpio::gpio_write(dir_b, 0);
+            let applied = azos_drv_actuator::pwm::pwm_set_duty_pct_reporting(pwm_ch, 0);
+            let mut motors = MOTORS.lock();
+            let m = &mut motors[id as usize];
+            settle(m, id);
+            m.direction = MotorDir::Coast;
+            m.speed_pct = 0;
+            return (MOTOR_REFUSED_HALTED, applied);
         }
     }
-    let applied = azos_drv_actuator::pwm::pwm_set_duty_pct_reporting(pwm_ch, speed);
 
     let changed = {
         let mut motors = MOTORS.lock();
@@ -449,6 +471,28 @@ pub fn motor_set_reporting(id: u32, dir: MotorDir, speed_pct: u32) -> (i32, Opti
     // `safety-core`, which calls into `behavior`) runs.
     if changed { record_motor_change(id, dir, speed); }
     (0, applied)
+}
+
+/// The H-bridge levels of direction pins A and B for `dir`.
+fn pin_levels(dir: MotorDir) -> (u32, u32) {
+    match dir {
+        MotorDir::Forward  => (1, 0),
+        MotorDir::Backward => (0, 1),
+        MotorDir::Brake    => (1, 1),
+        MotorDir::Coast    => (0, 0),
+    }
+}
+
+/// Did the kernel's stop hold a pin or the channel of a wheel at something
+/// other than what a command just wrote (pins `a`/`b` at levels `la`/`lb`,
+/// channel `ch` at `pct` %)? Asked after the writes: the drivers' own
+/// fences order it after them.
+fn overtaken(a: u32, la: u32, b: u32, lb: u32, ch: u32, pct: u32) -> bool {
+    use azos_drv_actuator::pwm::pwm_held;
+    use azos_drv_gpio::gpio::gpio_held;
+    matches!(gpio_held(a), Some(h) if h != la)
+        || matches!(gpio_held(b), Some(h) if h != lb)
+        || matches!(pwm_held(ch), Some(h) if h != pct)
 }
 
 /// Stop a motor (coast).
@@ -511,16 +555,19 @@ pub fn motor_stop_panic(id: u32) {
 /// It touches no lock: the wiring comes from [`WIRING`] (atomics, immutable
 /// after `motor_init`), and the pins and duty go out through the lock-free
 /// GPIO/PWM writers the panic path uses, so it cannot wait on a holder of
-/// `MOTORS`, `GPIO` or `PWM`. Those writers are atomic per pin and per channel
-/// (the simulated backends are atomics; the JH7110 GPIO re-asserts a pending
-/// stop after any locked read-modify-write of its word), so a concurrent
-/// writer cannot tear the stop or lose it to a neighbour pin's stale
-/// read-modify-write.
+/// `MOTORS`, `GPIO` or `PWM`. Those writers HOLD the pins and the channel at
+/// the coast: a command that was already past its checks, and every later
+/// one, cannot change them (refused, or written back if it raced the stop)
+/// until [`motor_release`]. A concurrent writer cannot tear the stop or lose
+/// it to a neighbour pin's stale read-modify-write either (the JH7110 GPIO
+/// re-asserts held pins after any locked read-modify-write of their word).
 ///
 /// The motor table is brought in step: the entry becomes `Coast`/0 now if the
 /// table is free, otherwise as soon as its next holder takes it ([`SAFED`]),
 /// so `motor_state` and the next command's "changed" check never report the
-/// command the kernel just undid. The wheel stays HELD by the effect gate
+/// command the kernel just undid. A command that held the table then, and
+/// whose writes the hold refused, records the coast too
+/// ([`motor_set_reporting`]). The wheel stays HELD by the effect gate
 /// (`azos_actuation::safe_state`) whichever path stops it afterwards.
 ///
 /// [`motor_stop_panic`] stays the panic handler's: it reads the table without
@@ -540,6 +587,21 @@ pub fn motor_safe_state(id: u32) -> bool {
         }
         None => { SAFED.fetch_or(1 << id, Ordering::AcqRel); }
     }
+    true
+}
+
+/// Lift the hold [`motor_safe_state`] put on wheel `id`'s direction pins and
+/// PWM channel, so commands reach them again. The caller is the kernel's
+/// release of the device (`azos_actuation::safe_state::release`, after the
+/// operator's signed warrant); nothing else lifts it. The wheel keeps the
+/// coast until the next command. `false` when the wheel is not initialised.
+pub fn motor_release(id: u32) -> bool {
+    if id as usize >= MAX_MOTORS { return false; }
+    let w = WIRING[id as usize].load(Ordering::Acquire);
+    if w & WIRED == 0 { return false; }
+    azos_drv_gpio::gpio::gpio_release(((w >> 16) & 0xFFFF) as u32);
+    azos_drv_gpio::gpio::gpio_release((w & 0xFFFF) as u32);
+    azos_drv_actuator::pwm::pwm_release(((w >> 32) & 0xFFFF) as u32);
     true
 }
 

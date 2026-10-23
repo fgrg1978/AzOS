@@ -61,11 +61,18 @@
 //!   whose deadline is shorter than the pass period is covered by the late
 //!   completion above only when the stalled op returns.
 //! * **The drivers** are per kind ([`register`]): a function that drives a
-//!   device of the kind to a safe-state op, and one that runs a compensating
-//!   op. They run in the watchdog's task (a real-time task) or in the
-//!   caller's context, so they must not block or take a lock the stalled
-//!   driver may hold (the motor's drive is `azos_robot::motor_safe_state`,
-//!   which takes none and may run on any hart at any time).
+//!   device of the kind to a safe-state op, one that runs a compensating op,
+//!   and one that lifts what the drive holds in the device layer. They run in
+//!   the watchdog's task (a real-time task) or in the caller's context, so
+//!   they must not block or take a lock the stalled driver may hold (the
+//!   motor's drive is `azos_robot::motor_safe_state`, which takes none and
+//!   may run on any hart at any time).
+//! * **The device layer holds the drive too.** The motor's drive holds the
+//!   wheel's pins and PWM channel at the coast (`azos_drv_gpio::hold`,
+//!   `azos_drv_actuator::pwm_hold`): a command that was admitted before the
+//!   hold and is still on its way to the pins, or any path that does not
+//!   cross this gate, cannot write over it. [`release`] lifts that hold with
+//!   the device's (the kind's release driver), after its own.
 //!
 //! # Cost
 //!
@@ -73,7 +80,7 @@
 //! stores, one release store, one compare-and-swap to complete, two clock
 //! reads. Unwatched effects (stops, effects with no deadline) pay none of it.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use azos_decision::{Rule, Verdict};
 
@@ -123,26 +130,34 @@ pub const COMP_REFUSED: u64 = 2;
 /// 0 is "none declared" and never reaches a driver). `true` when it was done.
 pub type DriveFn = fn(subject: u16, op: u8) -> bool;
 
-/// The two drivers of each kind, written once at boot and read only when a
-/// device is driven (a miss or a failure), under a lock the stalled path does
-/// not hold: the lock is taken for the copy of two function pointers, never
-/// across a call.
-static DRIVERS: azos_sync::SpinLock<[Option<(DriveFn, DriveFn)>; MAX_KINDS]> =
+/// Lift what the safe-state drive of device `subject` holds in the device
+/// layer (the motor: its pins and channel). `true` when there was a device.
+pub type ReleaseFn = fn(subject: u16) -> bool;
+
+/// The drivers of one kind: the safe-state drive, the compensating op, the
+/// release.
+type Drivers = (DriveFn, DriveFn, ReleaseFn);
+
+/// The drivers of each kind, written once at boot and read only when a device
+/// is driven (a miss or a failure) or released, under a lock the stalled path
+/// does not hold: the lock is taken for the copy of three function pointers,
+/// never across a call.
+static DRIVERS: azos_sync::SpinLock<[Option<Drivers>; MAX_KINDS]> =
     azos_sync::SpinLock::new([None; MAX_KINDS]);
 /// A bit per kind with drivers registered: the admission asks it on every
 /// watched effect, so it is an atomic and not the lock.
 static REGISTERED: AtomicU32 = AtomicU32::new(0);
 
-/// Register how the kernel drives a device of `kind` to a safe state and how
-/// it runs a compensating op (the kernel, at boot). `kind` must be below
-/// [`MAX_KINDS`].
-pub fn register(kind: u8, safe_state: DriveFn, compensate: DriveFn) {
+/// Register how the kernel drives a device of `kind` to a safe state, how it
+/// runs a compensating op and how it lifts the drive's hold in the device
+/// layer (the kernel, at boot). `kind` must be below [`MAX_KINDS`].
+pub fn register(kind: u8, safe_state: DriveFn, compensate: DriveFn, release: ReleaseFn) {
     assert!((kind as usize) < MAX_KINDS);
-    DRIVERS.lock()[kind as usize] = Some((safe_state, compensate));
+    DRIVERS.lock()[kind as usize] = Some((safe_state, compensate, release));
     REGISTERED.fetch_or(1 << kind, Ordering::Release);
 }
 
-fn drivers(kind: u8) -> Option<(DriveFn, DriveFn)> {
+fn drivers(kind: u8) -> Option<Drivers> {
     DRIVERS.lock().get(kind as usize).copied().flatten()
 }
 
@@ -160,6 +175,12 @@ pub fn can_drive(kind: u8) -> bool {
 static HELD_SINCE: [[AtomicU64; MAX_SUBJECTS as usize]; MAX_KINDS] =
     [const { [const { AtomicU64::new(0) }; MAX_SUBJECTS as usize] }; MAX_KINDS];
 
+/// Per kind and device, the safe-state op of its last drive: a hold that
+/// comes back while [`release`] lifts the device layer's is driven again with
+/// it.
+static HELD_OP: [[AtomicU8; MAX_SUBJECTS as usize]; MAX_KINDS] =
+    [const { [const { AtomicU8::new(0) }; MAX_SUBJECTS as usize] }; MAX_KINDS];
+
 fn held_cell(kind: u8, subject: u16) -> Option<&'static AtomicU64> {
     HELD_SINCE.get(kind as usize)?.get(subject as usize)
 }
@@ -169,11 +190,13 @@ pub fn held(kind: u8, subject: u16) -> bool {
     matches!(held_cell(kind, subject), Some(c) if c.load(Ordering::Acquire) != 0)
 }
 
-/// Hold the device from now: (re)start its minimum hold. Called before the
-/// kernel drives it, so no effect is admitted in between.
-fn hold(kind: u8, subject: u16) {
-    if let Some(c) = held_cell(kind, subject) {
-        c.store(now().max(1), Ordering::Release);
+/// Hold the device from now: (re)start its minimum hold, and note the op it
+/// is driven with. Called before the kernel drives it, so no effect is
+/// admitted in between.
+fn hold(w: &Watched) {
+    if let Some(c) = held_cell(w.kind, w.subject) {
+        HELD_OP[w.kind as usize][w.subject as usize].store(w.safe_op, Ordering::Relaxed);
+        c.store(now().max(1), Ordering::SeqCst);
     }
 }
 
@@ -235,6 +258,15 @@ pub fn release(kind: u8, subject: u16, nonce: u64, sig: &[u8; RELEASE_SIG_BYTES]
         refuse(CAUSE_RELEASE_TOO_EARLY);
         return Err(ReleaseError::TooEarly { remaining_ms: ticks_to_ms(min) });
     }
+    // The device layer's hold goes after the gate's, so no reversible effect
+    // is admitted while the device still refuses it. A miss that held the
+    // device again in between may have driven it BEFORE this lifted the
+    // device layer's hold: that hold is driven again, as it was.
+    release_device(kind, subject);
+    if held(kind, subject) {
+        let op = HELD_OP[kind as usize][subject as usize].load(Ordering::Relaxed);
+        drive_safe(&Watched { kind, class: 0, subject, tid: 0, safe_op: op, deadline: 0 });
+    }
     azos_decision::record_receipt(
         Rule::SafeState,
         Verdict::Admit,
@@ -242,6 +274,15 @@ pub fn release(kind: u8, subject: u16, nonce: u64, sig: &[u8; RELEASE_SIG_BYTES]
         [STATE_SAFE, STATE_COMMANDED, held_ms << 8 | CAUSE_RELEASED],
     );
     Ok(())
+}
+
+/// Lift what the drive of the device holds in the device layer (the kind's
+/// release driver). `false` when the kind has none, or it had no such device.
+fn release_device(kind: u8, subject: u16) -> bool {
+    match drivers(kind) {
+        Some((_, _, r)) => r(subject),
+        None => false,
+    }
 }
 
 /// Length of the body of a hold-release frame: the operator-release proof
@@ -436,7 +477,7 @@ pub fn complete(t: Ticket) -> bool {
     // Someone else handled the miss, possibly BEFORE this op's last write: the
     // op could have landed after the drive, so the device is driven again,
     // with no new record, and the minimum hold counts from this drive.
-    hold(t.w.kind, t.w.subject);
+    hold(&t.w);
     drive_safe(&t.w);
     false
 }
@@ -473,7 +514,7 @@ pub fn watching() -> usize {
 /// driver, or it refused.
 fn drive_safe(w: &Watched) -> bool {
     match drivers(w.kind) {
-        Some((f, _)) if w.safe_op != 0 => f(w.subject, w.safe_op),
+        Some((f, _, _)) if w.safe_op != 0 => f(w.subject, w.safe_op),
         _ => false,
     }
 }
@@ -481,7 +522,7 @@ fn drive_safe(w: &Watched) -> bool {
 /// A watched effect missed its deadline: hold the device, drive it, record.
 /// Called by exactly one party per effect.
 fn handle_miss(w: &Watched) {
-    hold(w.kind, w.subject);
+    hold(w);
     let driven = drive_safe(w);
     azos_decision::record_receipt(
         Rule::SafeState,
@@ -508,7 +549,7 @@ pub fn refuse_held(e: &Effect) -> u64 {
 pub fn compensate(e: &Effect, op: u8) -> bool {
     let (ran, status) = match drivers(e.kind) {
         _ if op == 0 => (false, COMP_NO_INVERSE),
-        Some((_, f)) if f(e.subject, op) => (true, COMP_RAN),
+        Some((_, f, _)) if f(e.subject, op) => (true, COMP_RAN),
         _ => (false, COMP_REFUSED),
     };
     azos_decision::record_receipt(

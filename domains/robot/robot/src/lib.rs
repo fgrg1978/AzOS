@@ -16,7 +16,7 @@ pub mod motor_cmd;
 
 pub use pid::{Pid, Fixed, FIXED_ONE, fixed_mul, fixed_to_i32};
 pub use motor::{
-    motor_init, motor_set, motor_stop, motor_stop_panic, motor_safe_state, motor_brake,
+    motor_init, motor_set, motor_stop, motor_stop_panic, motor_safe_state, motor_release, motor_brake,
     motor_set_reporting, motor_stop_reporting, motor_state, motor_halted,
     Motor, MotorDir, MAX_MOTORS, MOTOR_REFUSED_HALTED,
 };

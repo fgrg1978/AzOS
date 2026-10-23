@@ -50,6 +50,9 @@ pub mod robot {
     /// No motor to drive to a safe state.
     pub fn motor_safe_state(_id: u32) -> bool { false }
 
+    /// No motor whose hold to lift.
+    pub fn motor_release(_id: u32) -> bool { false }
+
     /// No encoder: zero ticks.
     pub fn encoder_read() -> (i64, i64) { (0, 0) }
 
