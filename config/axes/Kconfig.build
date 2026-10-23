@@ -268,25 +268,31 @@ config CHAOS
     depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
     help
       Compiles the fault-injection registry (crates/core/chaos) and its
-      six named injection points: frame-alloc (the page allocator answers
+      nine named injection points: frame-alloc (the page allocator answers
       out of memory), heap-alloc (the kernel heap answers null; test scope
       only, the kernel's heap allocations are infallible), ipc-send (a
       pipe write is refused), timer-wake (the timer sweep wakes
       sleepers CHAOS_TIMER_DELAY_US late), spurious-irq (the tick rings an
-      IPI with no cause at another CPU) and disk-io (a block read or write
-      answers an I/O error). A point is armed from the kernel command line,
-      `chaos=<point>:<rate>[,...]` (one failure in <rate> calls, applied
-      once boot init is done) with `chaos_seed=<n>`, or from a ktest; the
-      `chaos_*` ktests check that each fault is refused cleanly and leaks
-      nothing. The introspection tree's `chaos/` holds each point's rate and
-      counts.
+      IPI with no cause at another CPU), disk-io (a block read or write
+      answers an I/O error), and the device timeouts the drivers' reset
+      policy (DEVICE_TIMEOUT_RESETS) answers: nvme-completion-drop (an NVMe
+      completion is lost), virtio-net-tx-wedge (the NIC gives no transmitted
+      frame back until it is reset) and xhci-command-drop (an xHCI command
+      is never answered). A point is armed from the kernel command line,
+      `chaos=<point>:<rate>[:<times>][,...]` (one failure in <rate> calls,
+      at most <times> of them, applied once boot init is done) with
+      `chaos_seed=<n>`, or from a ktest; the `chaos_*` ktests check that
+      each fault is refused cleanly and leaks nothing, and the gate's
+      device-reset rows inject each timeout once (`:1:1`: the device is
+      reset and serves again) and twice (`:1:2`: the second latches it).
+      The introspection tree's `chaos/` holds each point's rate and counts.
 
       On by default only in a KTEST kernel. Impossible in a release build
       (BUILD_TYPE; the `chaos` feature on a release .config does not
       compile) and with SECURE_BOOT_ENFORCED: a command line must not be
       able to fail a signed image's allocations. Off: every site compiles
       to the code it was before (`fire` is a constant false). On: one load
-      and a branch per site call while its point is disarmed, about 300
+      and a branch per site call while its point is disarmed, about 450
       bytes of .bss. Maps to the kernel cargo feature `chaos`.
 
 config CHAOS_SEED

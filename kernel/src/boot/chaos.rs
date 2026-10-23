@@ -37,7 +37,7 @@ pub(crate) fn arm_from_cmdline(read: impl FnOnce(&mut [u8]) -> Option<usize>) {
             let n = n.min(line.len());
             let armed = azos_chaos::parse_cmdline(&line[..n], |i| match i {
                 CmdlineIssue::Malformed(w) => azos_drv_sys::kwarn!(
-                    "[CHAOS] {} ignored: not <point>:<rate> (points: {:?})",
+                    "[CHAOS] {} ignored: not <point>:<rate>[:<times>] (points: {:?})",
                     core::str::from_utf8(w).unwrap_or("?"), azos_chaos::NAMES),
                 CmdlineIssue::HeapRefused => azos_drv_sys::kwarn!(
                     "[CHAOS] heap-alloc refused from the command line: the kernel's heap allocations are infallible"),
@@ -63,8 +63,10 @@ pub(crate) fn go_live() {
     #[cfg(feature = "chaos")]
     for p in azos_chaos::POINTS {
         let r = azos_chaos::pending(p);
-        if r != 0 {
-            kprintln!("[CHAOS] live: {} fails 1 call in {}", p.name(), r);
+        match azos_chaos::pending_times(p) {
+            _ if r == 0 => {}
+            0 => kprintln!("[CHAOS] live: {} fails 1 call in {}", p.name(), r),
+            t => kprintln!("[CHAOS] live: {} fails 1 call in {}, {} time(s) at most", p.name(), r, t),
         }
     }
     #[cfg(feature = "chaos")]
@@ -93,21 +95,27 @@ mod chaos_ktests {
     azos_ktest::ktest! {
         fn chaos_cmdline_parsed() {
             let seed = azos_chaos::seed();
-            let keep: [u32; azos_chaos::N] = core::array::from_fn(|i| azos_chaos::pending(azos_chaos::POINTS[i]));
+            let keep: [(u32, u32); azos_chaos::N] = core::array::from_fn(|i| {
+                let p = azos_chaos::POINTS[i];
+                (azos_chaos::pending(p), azos_chaos::pending_times(p))
+            });
             let (mut bad, mut heap, mut bad_seed) = (0, 0, 0);
-            let n = azos_chaos::parse_cmdline(b"x=1 chaos=ipc-send:3,heap-alloc:2,nope:1,disk-io:x,timer-wake:0 chaos_seed=42",
+            let n = azos_chaos::parse_cmdline(
+                b"x=1 chaos=ipc-send:3,heap-alloc:2,nope:1,disk-io:x,timer-wake:0,xhci-command-drop:1:2,spurious-irq:1:0 chaos_seed=42",
                 |i| match i {
                     azos_chaos::CmdlineIssue::Malformed(_) => bad += 1,
                     azos_chaos::CmdlineIssue::HeapRefused => heap += 1,
                     azos_chaos::CmdlineIssue::BadSeed(_) => bad_seed += 1,
                 });
             let got = (n, azos_chaos::pending(Point::IpcSend), azos_chaos::pending(Point::HeapAlloc), azos_chaos::seed());
-            for (i, r) in keep.iter().enumerate() {
-                azos_chaos::set_pending(azos_chaos::POINTS[i], *r);
+            let capped = (azos_chaos::pending(Point::XhciCommandDrop), azos_chaos::pending_times(Point::XhciCommandDrop),
+                azos_chaos::pending_times(Point::IpcSend), azos_chaos::pending(Point::SpuriousIrq));
+            for (i, (r, t)) in keep.iter().enumerate() {
+                azos_chaos::set_pending(azos_chaos::POINTS[i], *r, *t);
             }
             azos_chaos::set_seed(seed);
-            if got != (1, 3, 0, 42) || (bad, heap, bad_seed) != (3, 1, 0) {
-                return Err("chaos= parsed to the wrong points, rates or seed");
+            if got != (2, 3, 0, 42) || capped != (1, 2, 0, 0) || (bad, heap, bad_seed) != (4, 1, 0) {
+                return Err("chaos= parsed to the wrong points, rates, caps or seed");
             }
             Ok(())
         }

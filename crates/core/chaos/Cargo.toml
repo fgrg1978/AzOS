@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Fault injection registry (Kconfig CHAOS, development only): named injection points the kernel's alloc, IPC, timer, interrupt and block paths ask, armed from the command line or a test with a deterministic seed. Without the `on` feature every point is a constant false."
+description = "Fault injection registry (Kconfig CHAOS, development only): named injection points the kernel's alloc, IPC, timer, interrupt and block paths and its NVMe, virtio-net and xHCI drivers ask, armed from the command line or a test with a deterministic seed. Without the `on` feature every point is a constant false."
 
 [dependencies]
 azos_limits = { workspace = true }

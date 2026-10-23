@@ -841,6 +841,12 @@ fn drain(dev: &Dev, qi: usize, q: &mut Queue) {
             latch_dead(dev, "foreign completion", false);
             return;
         };
+        // Kconfig CHAOS `nvme-completion-drop`: the completion is consumed
+        // and lost, so the command runs out of its budget and the timeout
+        // policy resets the controller. Not while it is being reset.
+        if RECOVERY.live() && azos_chaos::fire(azos_chaos::Point::NvmeCompletionDrop) {
+            continue;
+        }
         SLOT_STATUS[slot].store(e.status(), Ordering::Relaxed);
         SLOT_DONE[slot].store(true, Ordering::Release);
     }
