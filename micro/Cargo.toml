@@ -24,6 +24,9 @@ dev-key = ["azos_topology/dev-key"]
 # `cfg!`; micro compiles that file by path, so the feature exists here to keep
 # the name declared. It is never enabled (micro has no timer slack).
 qos-rt-slack-canary = []
+# The shared rt_core.rs names ipc-deadline-budget's proxy canary in a
+# `cfg!`; declared for the same reason, never enabled (micro has no IPC proxy).
+rt-proxy-canary = []
 
 [dependencies]
 azos_abi = { path = "../crates/core/abi" }

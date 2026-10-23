@@ -23,3 +23,6 @@ azos_sync = { path = "shims/sync", package = "trap_test_sync" }
 [features]
 # `budget.rs` (pulled by the mm shim) reads this; never enabled here.
 budget-racy-charge-canary = []
+# The kernel feature the pulled-in trap code gates the boot self-tests on
+# (Kconfig BOOT_SELFTESTS); never enabled here.
+boot-selftests = []

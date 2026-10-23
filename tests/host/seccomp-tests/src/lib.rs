@@ -2080,6 +2080,15 @@ mod image_profiles {
                         rest.as_bytes().last().is_none_or(|&c| !is_ident(c))
                     })
                 });
+                // `sys::Lock<T>` (libsys lock.rs): a type, but its `lock` yields
+                // while another thread holds it, so a program that has one
+                // issues what `yield_now` does.
+                if qualified && id == "Lock" {
+                    for s in closure(&fns, "yield_now") {
+                        out.insert(*nrs.get(&s).unwrap_or_else(|| panic!("libsys issues {s}, which syscall_nr.rs does not define")));
+                    }
+                    continue;
+                }
                 if !qualified || next_non_ws(&code, at + id.len()) != Some(b'(') {
                     continue; // not a call: a const, a type, a macro (`sys::cstr!`)
                 }

@@ -1062,7 +1062,7 @@ fn an_outbound_v6_flow_is_answered_through_the_inbound_drop_and_a_stranger_is_no
     let _g = begin();
     let _fw = firewall(Verdict::Drop, &[]);
     let c = tcp::TcpHandle::connect(FE80_PEER, 80, 0).expect("connect");
-    let syn = raw::all().iter().filter_map(|f| Sent::parse(f)).find(|f| f.next == 6 && f.tcp_flags() == SYN);
+    let syn = raw::all().iter().filter_map(|f| Sent::parse(f)).find(|f| f.next == 6 && f.tcp_flags() & (SYN | ACK) == SYN);
     let syn = syn.expect("the SYN left: outbound is accepted");
     let sp = u16::from_be_bytes([syn.payload[0], syn.payload[1]]);
     let seq = u32::from_be_bytes(syn.payload[4..8].try_into().unwrap());

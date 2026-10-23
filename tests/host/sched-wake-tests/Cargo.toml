@@ -44,6 +44,9 @@ azos_abi = { path = "../../../crates/core/abi" }
 sched-timer-heap = []
 # Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
 kill-reblock-canary = []
+# ipc-deadline-budget's proxy canary of the pulled-in `rt_core.rs`, declared
+# for the same reason, never enabled.
+rt-proxy-canary = []
 # Wave 15 canary of the pulled-in `stop_policy.rs` (forced-stop accounting).
 forced-seal-skip-canary = []
 # `elf_bounds.rs` (pulled by path): the gate's canary build accepts a page

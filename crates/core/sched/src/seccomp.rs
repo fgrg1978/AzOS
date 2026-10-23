@@ -735,7 +735,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         image: "COMPMGR.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_CAP_INFO, SYS_SLEEP_UNTIL, 
-            SYS_SPAWN_EX, SYS_ALERT,
+            SYS_SPAWN_EX, SYS_ALERT, SYS_YIELD,
         ],
         audit: false,
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_STAT, DOMAIN_WAIT],
@@ -757,7 +757,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "SH.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL,
+            SYS_EXIT, SYS_INVOKE, SYS_SLEEP_UNTIL, SYS_YIELD,
             SYS_CAP_CLOSE,
             SYS_CAP_INFO,
             SYS_SPAWN_EX, SYS_ALERT, SYS_IPC_CALL_V2,

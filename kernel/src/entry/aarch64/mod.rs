@@ -712,6 +712,7 @@ pub const SELFTEST_SVC_REPLY: u64 = 0x5E1F_7E57_0000_0000;
 /// out one or more ticks. `handle_irq` deliberately zeroes `v8` on every
 /// IRQ (see its comment) — this value is what proves the interrupted
 /// code's copy was never touched despite that.
+#[cfg(feature = "boot-selftests")]
 pub const FP_PROBE_PATTERN: u64 = 0xC0FF_EE12_34AB_CDEF;
 
 /// Publish this CPU's IRQ-stack bounds for [`handle_irq`]'s one-shot
@@ -723,7 +724,8 @@ pub fn set_irq_stack_bounds(base: usize, top: usize) {
 
 /// Whether the IRQ-stack probe ran and, if so, whether `sp` was really
 /// inside `[base, top)` at the time. `(false, _)` means no interrupt has
-/// landed yet.
+/// landed yet. Read by the boot self-tests (Kconfig BOOT_SELFTESTS).
+#[cfg(feature = "boot-selftests")]
 pub fn irq_stack_probe_result() -> (bool, bool) {
     (
         IRQ_STACK_PROBED.load(Ordering::Acquire),

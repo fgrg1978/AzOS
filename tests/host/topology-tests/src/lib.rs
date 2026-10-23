@@ -92,6 +92,13 @@ mod port {
     pub fn port_signal(_link: crate::port_link::PortLink, _kind: PortSourceKind) -> bool {
         false
     }
+
+    /// A call notice (ipc-deadline-budget's cancel and timeout notices):
+    /// nothing is bound in this harness.
+    #[allow(dead_code)]
+    pub fn port_post_notice(_link: crate::port_link::PortLink, _kind: PortSourceKind, _ty: u8, _code: u16, _id: u32) -> bool {
+        false
+    }
 }
 
 // `mmio_cap.rs` touches `cap_store` and the hardware bus, which

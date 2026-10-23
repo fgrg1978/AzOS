@@ -7,7 +7,7 @@
 3	kernel/src/drv_supervisor.rs
 7	kernel/src/ktest.rs
 5	kernel/src/lat_smoke.rs
-13	kernel/src/main.rs
+14	kernel/src/main.rs
 8	kernel/src/rt_smoke.rs
 5	kernel/src/rt_util_smoke.rs
 1	kernel/src/smokes/commander_exit.rs
