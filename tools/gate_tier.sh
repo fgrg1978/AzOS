@@ -150,6 +150,10 @@ fi
 # features come from kconfig_to_cargo.py, a build's extras are a --select.
 [ "$tier" = n0 ] && { printf "  %-26s" "feature source lint..."; if out="$(python3 tools/feature_source_lint.py --self-test 2>&1 && python3 tools/feature_source_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 
+# The generic idle seam is not named after one ISA's instruction
+# (tools/isa_neutral_names.py: Cpu::wait_for_interrupt, IdleChoice::Shallow).
+[ "$tier" = n0 ] && { printf "  %-26s" "isa-neutral names lint..."; if out="$(python3 tools/isa_neutral_names.py --self-test 2>&1 && python3 tools/isa_neutral_names.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # The unsafe budget (tools/unsafe_budget.py): a crate may not carry more
 # `unsafe` than tools/unsafe_budget.tsv says, lose its #![forbid(unsafe_code)],
 # or (a kernel crate) raise its share of code lines in files with unsafe; the
