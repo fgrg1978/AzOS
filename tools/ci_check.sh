@@ -7863,8 +7863,13 @@ aarch64_console_route_row() {
         -drive file="$disk_copy",if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     local pid=$! i=0
+    # Until HELLO.ELF's line is out, prefixed or not (so a direct write still
+    # ends the wait and fails check 1 below). Not the first `reaped`: that is
+    # any task's exit, and on the generic image a boot task exits before the
+    # autorun loader has even read HELLO.ELF, so QEMU was killed before the
+    # ring-3 write this row is about.
     while [ "$i" -lt 90 ]; do
-        grep -aq "SCHED\] aarch64 reaped" "$log" 2>/dev/null && break
+        grep -aq "Hello from user-space!" "$log" 2>/dev/null && { sleep 1; break; }
         grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
         kill -0 "$pid" 2>/dev/null || break
         i=$((i + 1)); sleep 1
