@@ -4,10 +4,13 @@
 //!
 //! # What goes in, what comes out
 //!
-//! * [`mix`] feeds bytes into the state. `credited = true` is for bytes from
-//!   a real entropy source (virtio-rng today); `credited = false` is for
-//!   anything else worth stirring in (MACs, boot timing) and never makes the
-//!   pool seeded on its own.
+//! * [`mix`] feeds bytes into the state and counts `credit` of them toward
+//!   seeding: the bytes of entropy the source vouches for, at most the input
+//!   length. A full-entropy source (virtio-rng, the TPM, RDSEED, RNDRRS)
+//!   credits every byte; Zkr ES16 credits half (its 2:1 conditioning ratio,
+//!   `azos_arch_api::entropy::Source`); RDRAND and anything else worth
+//!   stirring in (MACs, boot timing) credit 0 and never make the pool seeded
+//!   on their own.
 //! * [`fill`] writes output **only when the pool is seeded** and returns
 //!   `false` otherwise, leaving the buffer untouched. The unseeded fallback is
 //!   the caller's: every consumer keeps the path it had before the pool
@@ -100,16 +103,18 @@ impl Pool {
         self.v = hmac_sha256(&self.k, &[&self.v]);
     }
 
-    /// Stir `input` into the state; count it toward (re)seeding if `credited`.
+    /// Stir `input` into the state; count `credit` of its bytes (clamped to
+    /// its length) toward (re)seeding.
     ///
     /// Mixing an empty slice is a no-op on the seed accounting but still runs
     /// the update, as §10.1.2.2 specifies for empty provided data.
-    pub fn mix(&mut self, input: &[u8], credited: bool) {
+    pub fn mix(&mut self, input: &[u8], credit: usize) {
         self.update(input);
-        if !credited {
+        let credit = credit.min(input.len());
+        if credit == 0 {
             return;
         }
-        self.credited = self.credited.saturating_add(input.len());
+        self.credited = self.credited.saturating_add(credit);
         let need = if self.ever_seeded { RESEED_BYTES } else { SEED_BYTES };
         if self.credited >= need {
             self.ever_seeded = true;
@@ -179,8 +184,8 @@ fn with_pool<R>(f: impl FnOnce(&mut Pool) -> R) -> R {
 }
 
 /// Mix `input` into the kernel pool. See [`Pool::mix`] and the locking note.
-pub fn mix(input: &[u8], credited: bool) {
-    with_pool(|p| p.mix(input, credited))
+pub fn mix(input: &[u8], credit: usize) {
+    with_pool(|p| p.mix(input, credit))
 }
 
 /// Whether the kernel pool is seeded. See [`Pool::seeded`].
@@ -321,7 +326,7 @@ impl Pool {
             None => SeedLoad::Absent,
             Some(mut seed) => {
                 let credit = !self.seeded();
-                self.mix(&seed, credit);
+                self.mix(&seed, if credit { seed.len() } else { 0 });
                 secure_zero(&mut seed);
                 if credit { SeedLoad::Credited } else { SeedLoad::Stirred }
             }

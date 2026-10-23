@@ -157,11 +157,11 @@ fn entropy_draw_credits_the_pool_only_when_it_completes() {
     let mut got = [0u8; SEED_BYTES];
     t.get_random(&mut got).unwrap();
     let mut credited = Pool::new();
-    credited.mix(&got, true);
+    credited.mix(&got, usize::MAX);
     assert!(credited.seeded(), "48 credited TPM bytes seed the pool");
     // Mix-only: stirred in, never counted.
     let mut stirred = Pool::new();
-    stirred.mix(&got, false);
+    stirred.mix(&got, 0);
     assert!(!stirred.seeded());
     // A draw that fails on its second command returns an error and the kernel
     // mixes nothing (it only mixes on Ok): the pool is not half-seeded.
@@ -173,7 +173,7 @@ fn entropy_draw_credits_the_pool_only_when_it_completes() {
     r.assert_clean();
     let mut p = Pool::new();
     if t.get_random(&mut part).is_ok() {
-        p.mix(&part, true);
+        p.mix(&part, usize::MAX);
     }
     assert!(!p.seeded());
 }

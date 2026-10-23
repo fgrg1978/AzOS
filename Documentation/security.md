@@ -458,7 +458,7 @@ Sources, mixed at boot by `install_entropy`:
 | Source | Policy | Notes |
 |--------|--------|-------|
 | virtio-rng | Credited | Where the device exists |
-| CPU instruction | `ENTROPY_CPU_SOURCE`: `credit` (default), `mix-only`, `off` | riscv64 Zkr `seed`, aarch64 `RNDRRS` (FEAT_RNG), x86_64 `RDSEED` then `RDRAND`; each used only where its extension choice allows and the probe finds it; bounded retries (`ENTROPY_CPU_RETRIES`) |
+| CPU instruction | `ENTROPY_CPU_SOURCE`: `credit` (default), `mix-only`, `off` | riscv64 Zkr `seed`, aarch64 `RNDRRS` (FEAT_RNG), x86_64 `RDSEED` then `RDRAND`; each used only where its extension choice allows and the probe finds it; bounded retries (`ENTROPY_CPU_RETRIES`). Under `credit` each at its own rate (`azos_arch_api::entropy::Source::credit`): RDSEED and RNDRRS 1:1, Zkr ES16 1:2 (the spec's 2:1 conditioning), RDRAND 0 (DRBG output, mixed only) |
 | TPM 2.0 | `ENTROPY_TPM_SOURCE`: `credit`, `mix-only`, `off` | 48 bytes from `GetRandom`; see "TPM" |
 | Persisted seed | Credited only if no other source seeded the pool | One reserved tail sector (sector 1) of the boot medium, outside the FAT volume and not reachable over USB mass storage; read at boot and immediately replaced by a fresh record drawn from the pool so a seed is never used twice; replaced again at an orderly power-off. Only touched when no partition or filesystem reaches the tail. |
 

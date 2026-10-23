@@ -14,7 +14,7 @@
 //!    S-mode illegal instruction stops the board (see `cache.rs`'s probe).
 //!
 //! Every later read goes through the same trap-safe routine (the boot draws
-//! 24 words once; a few instructions each are nothing next to that), so a
+//! 48 words once; a few instructions each are nothing next to that), so a
 //! firmware that changes its mind cannot take the boot down either.
 //!
 //! The CSR must be accessed with a read-write instruction (`csrrw rd,
@@ -23,7 +23,7 @@
 //! `ENTROPY_CPU_RETRIES`, DEAD gives the source up
 //! (`azos_arch_api::entropy::rv_seed_decode`).
 
-use azos_arch_api::entropy::{self, CpuSeed, Draw};
+use azos_arch_api::entropy::{self, CpuSeed, Draw, Source};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static SELECTED: AtomicBool = AtomicBool::new(false);
@@ -50,7 +50,7 @@ pub fn fill(out: &mut [u8]) -> CpuSeed {
         return CpuSeed::NONE;
     }
     let bytes = entropy::fill(out, entropy::RETRIES, read, core::hint::spin_loop);
-    CpuSeed { bytes, source: "zkr-seed" }
+    CpuSeed { bytes, source: Source::ZkrSeed }
 }
 
 /// One trap-safe `csrrw rd, seed, x0`, decoded; a trap reads as DEAD. Also the

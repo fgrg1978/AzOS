@@ -24,11 +24,12 @@ pub fn pool_fill(out: &mut [u8]) -> bool {
     azos_crypto::entropy::fill(out)
 }
 
-/// Mix `input` into the kernel entropy pool, inside a critical section.
-/// `credited` only for bytes from a real entropy source. See [`pool_fill`].
-pub fn pool_mix(input: &[u8], credited: bool) {
+/// Mix `input` into the kernel entropy pool, inside a critical section,
+/// counting `credit` of its bytes toward a seed (the entropy the source
+/// vouches for; 0 for anything else). See [`pool_fill`].
+pub fn pool_mix(input: &[u8], credit: usize) {
     let _cs = azos_sync::critical_section();
-    azos_crypto::entropy::mix(input, credited)
+    azos_crypto::entropy::mix(input, credit)
 }
 
 pub use azos_crypto::entropy::{

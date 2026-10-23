@@ -365,7 +365,9 @@ choice
     default RV_ZKR_PROBE
     help
       The `seed` CSR (0x015) as a seed source for the boot entropy pool
-      (ENTROPY_CPU_SOURCE says whether it is credited): 16 bits per read,
+      (under ENTROPY_CPU_SOURCE=credit at the spec's 2:1 conditioning
+      ratio: two ES16 bytes count as one, so the boot draws 96 bytes for
+      its 48-byte seed): 16 bits per read,
       only when its status is ES16; BIST/WAIT are retried within
       ENTROPY_CPU_RETRIES, DEAD gives the source up. S-mode reaches the CSR
       only when M-mode firmware set mseccfg.SSEED, so a device tree that

@@ -17,13 +17,18 @@ choice
       the stack canary; without any credited source they stay on their
       runtime-counter paths.
 
-      credit: mixed and credited, so the CPU alone seeds the pool on a
-      board with no entropy device (Linux RANDOM_TRUST_CPU=y). mix-only:
-      mixed, never credited; the pool still needs virtio-rng or the
-      persisted seed (Linux RANDOM_TRUST_CPU=n). off: never read.
+      credit: mixed and credited at each instruction's own rate, so the
+      CPU alone seeds the pool on a board with no entropy device: RDSEED
+      and RNDRRS 1:1, Zkr ES16 at the spec's 2:1 conditioning ratio,
+      RDRAND 0 (DRBG output: mixed, never counted, so a CPU with RDRAND
+      and no RDSEED needs another source). Linux RANDOM_TRUST_CPU=y
+      credits every CPU source 1:1 instead. mix-only: mixed, never
+      credited; the pool still needs virtio-rng or the persisted seed
+      (Linux RANDOM_TRUST_CPU=n). off: never read.
 
-      Cost: one draw of 48 bytes at boot (RDSEED/RNDRRS: a few hundred
-      cycles per 8 bytes; Zkr: 16 bits per CSR read); nothing after.
+      Cost: one draw of 96 bytes at boot, twice the seed so that Zkr's
+      half credit still fills it (RDSEED/RNDRRS: a few hundred cycles per
+      8 bytes; Zkr: 16 bits per CSR read); nothing after.
 
     config ENTROPY_CPU_SOURCE_CREDIT
         bool "credit: mix and credit (trust the CPU)"

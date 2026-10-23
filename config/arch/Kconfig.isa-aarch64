@@ -284,8 +284,8 @@ choice
     default A64_RNG_PROBE
     help
       RNDRRS (reseeded: each read comes from a freshly reseeded DRBG) as a
-      seed source for the boot entropy pool (ENTROPY_CPU_SOURCE says
-      whether it is credited); ID_AA64ISAR0_EL1.RNDR [63:60]. A read with
+      seed source for the boot entropy pool (credited 1:1 under
+      ENTROPY_CPU_SOURCE=credit); ID_AA64ISAR0_EL1.RNDR [63:60]. A read with
       NZCV.Z=1 returned no data and is retried within ENTROPY_CPU_RETRIES.
       Fallback: the pool's other sources. Armv8.5 optional; the Cortex-A76
       of the Raspberry Pi 5 does not have it. Changes no codegen.

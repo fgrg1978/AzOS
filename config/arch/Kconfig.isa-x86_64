@@ -450,10 +450,10 @@ choice
     default X86_RDRAND_PROBE
     help
       CPUID.1:ECX[30]. A seed source for the boot entropy pool when RDSEED
-      is not in use (DRBG output; ENTROPY_CPU_SOURCE says whether it is
-      credited). Exported to ring 3 as HWCAP_X86_RDRAND in the vDSO hwcap word (azos_libsys::vdso_hwcap).
+      is not in use (DRBG output: mixed, never credited, so RDRAND alone
+      never seeds the pool). Exported to ring 3 as HWCAP_X86_RDRAND in the vDSO hwcap word (azos_libsys::vdso_hwcap).
       require adds +rdrand. Fallback: the pool's other sources.
-      Cost: one 48-byte draw at boot; each RDRAND is ~100-500 cycles.
+      Cost: one 96-byte draw at boot; each RDRAND is ~100-500 cycles.
       n: the fallback always. probe: the CPUID probe picks. require: the
       boot refuses a CPU without it.
 
@@ -470,10 +470,10 @@ choice
     default X86_RDSEED_PROBE
     help
       CPUID.(7,0):EBX[18]. The preferred seed source for the boot entropy
-      pool (conditioned entropy, not DRBG output; ENTROPY_CPU_SOURCE says
-      whether it is credited). Exported to ring 3 as HWCAP_X86_RDSEED in
+      pool (conditioned entropy, not DRBG output; credited 1:1 under
+      ENTROPY_CPU_SOURCE=credit). Exported to ring 3 as HWCAP_X86_RDSEED in
       the vDSO hwcap word (azos_libsys::vdso_hwcap). require adds +rdseed. Fallback: RDRAND as
-      X86_RDRAND says, then the pool's other sources. Cost: one 48-byte
+      X86_RDRAND says, then the pool's other sources. Cost: one 96-byte
       draw at boot. n: the fallback always. probe: the CPUID probe picks.
       require: the boot refuses a CPU without it.
 

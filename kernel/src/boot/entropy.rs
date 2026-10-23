@@ -26,12 +26,14 @@ use crate::*;
 /// every board left the pool unseeded. The instruction the boot selected in
 /// `cpu_features` (`ArchPlatform::cpu_seed`: Zkr `seed`, FEAT_RNG `RNDRRS`,
 /// `RDSEED`/`RDRAND`) is drawn whether or not virtio-rng was there, and
-/// mixed as Kconfig `ENTROPY_CPU_SOURCE` says: `credit` (the default, as
-/// Linux RANDOM_TRUST_CPU), `mix-only`, or `off` (never read). A CPU with no
-/// such instruction, or one its extension choice leaves at `n`, reads
-/// nothing and the boot is as before. Neither source credited: the pool
-/// stays unseeded and each consumer stays on its counter path. Canary
-/// `entropy-cpu-skip`: the CPU source is not drawn.
+/// mixed as Kconfig `ENTROPY_CPU_SOURCE` says: `credit` (the default: each
+/// instruction at its own rate, `azos_arch_api::entropy::Source::credit` —
+/// RDSEED and RNDRRS 1:1, Zkr ES16 1:2, RDRAND 0), `mix-only`, or `off`
+/// (never read). The draw is twice the seed (`DRAW_PER_CREDIT`), so Zkr
+/// alone seeds the pool too. A CPU with no such instruction, or one its
+/// extension choice leaves at `n`, reads nothing and the boot is as before.
+/// No source credited: the pool stays unseeded and each consumer stays on
+/// its counter path. Canary `entropy-cpu-skip`: the CPU source is not drawn.
 ///
 /// **The TPM (Kconfig `TPM`).** A TPM 2.0 found by `boot/tpm.rs` is asked for
 /// 48 random bytes as well (`ENTROPY_TPM_SOURCE`, the same three policies as
@@ -40,11 +42,12 @@ use crate::*;
 pub(crate) fn install_entropy(dtb_ptr: usize) {
     use azos_arch_api::entropy::CpuCredit;
     use azos_drv_virtio::virtio::rng::{read_seed, SeedRead};
-    let mut seed = [0u8; crate::boot::entropy_pool::POOL_SEED_BYTES];
-    let virtio = read_seed(&mut seed);
+    use azos_arch_api::entropy::DRAW_PER_CREDIT;
+    let mut seed = [0u8; crate::boot::entropy_pool::POOL_SEED_BYTES * DRAW_PER_CREDIT];
+    let virtio = read_seed(&mut seed[..crate::boot::entropy_pool::POOL_SEED_BYTES]);
     match virtio {
         SeedRead::Read(n) => {
-            crate::boot::entropy_pool::pool_mix(&seed[..n], true);
+            crate::boot::entropy_pool::pool_mix(&seed[..n], n);
             kprintln!("[ENTROPY] pool seeded: {} bytes from virtio-rng", n);
         }
         SeedRead::NotPresent => {}
@@ -55,16 +58,20 @@ pub(crate) fn install_entropy(dtb_ptr: usize) {
     if credit != CpuCredit::Off && !canary!("entropy-cpu-skip") {
         let got = azos_arch_api::ArchPlatform::cpu_seed(&azos_arch::ARCH, &mut seed);
         if got.bytes != 0 {
-            let credited = credit == CpuCredit::Credit;
+            let name = got.source.name();
+            let credited = if credit == CpuCredit::Credit { got.credit() } else { 0 };
             crate::boot::entropy_pool::pool_mix(&seed[..got.bytes], credited);
-            if credited && azos_crypto::entropy::seeded() {
-                kprintln!("[ENTROPY] pool seeded: {} bytes from {} (credited)", got.bytes, got.source);
-            } else if credited {
+            if credited != 0 && azos_crypto::entropy::seeded() {
+                kprintln!("[ENTROPY] pool seeded: {} bytes from {} (credited {})", got.bytes, name, credited);
+            } else if credited != 0 {
                 azos_drv_sys::kwarn!("[ENTROPY] cpu source: only {} bytes from {} before it stopped \
-                                      delivering (credited, short of a seed)", got.bytes, got.source);
+                                      delivering (credited {}, short of a seed)", got.bytes, name, credited);
+            } else if credit == CpuCredit::Credit {
+                kprintln!("[ENTROPY] cpu source: {} bytes from {} mixed, not credited \
+                           (DRBG output, never counted toward a seed)", got.bytes, name);
             } else {
                 kprintln!("[ENTROPY] cpu source: {} bytes from {} mixed, not credited \
-                           (ENTROPY_CPU_SOURCE=mix-only)", got.bytes, got.source);
+                           (ENTROPY_CPU_SOURCE=mix-only)", got.bytes, name);
             }
         }
     }
@@ -74,16 +81,17 @@ pub(crate) fn install_entropy(dtb_ptr: usize) {
     {
         let credit = crate::boot::tpm::CREDIT;
         if crate::boot::tpm::init(dtb_ptr) && credit != CpuCredit::Off {
-            if crate::boot::tpm::random(&mut seed) {
+            let tpm = &mut seed[..crate::boot::entropy_pool::POOL_SEED_BYTES];
+            if crate::boot::tpm::random(tpm) {
                 let credited = credit == CpuCredit::Credit;
-                crate::boot::entropy_pool::pool_mix(&seed, credited);
+                crate::boot::entropy_pool::pool_mix(tpm, if credited { tpm.len() } else { 0 });
                 if credited && azos_crypto::entropy::seeded() {
-                    kprintln!("[ENTROPY] pool seeded: {} bytes from the TPM (credited)", seed.len());
+                    kprintln!("[ENTROPY] pool seeded: {} bytes from the TPM (credited)", tpm.len());
                 } else if credited {
-                    azos_drv_sys::kwarn!("[ENTROPY] TPM source: {} bytes mixed, credited, short of a seed", seed.len());
+                    azos_drv_sys::kwarn!("[ENTROPY] TPM source: {} bytes mixed, credited, short of a seed", tpm.len());
                 } else {
                     kprintln!("[ENTROPY] TPM source: {} bytes mixed, not credited \
-                               (ENTROPY_TPM_SOURCE=mix-only)", seed.len());
+                               (ENTROPY_TPM_SOURCE=mix-only)", tpm.len());
                 }
             }
         }

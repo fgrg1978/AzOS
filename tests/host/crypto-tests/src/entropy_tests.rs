@@ -21,7 +21,7 @@ fn hex(s: &str) -> Vec<u8> {
 
 fn seeded_pool(seed_byte: u8) -> Pool {
     let mut p = Pool::new();
-    p.mix(&[seed_byte; SEED_BYTES], true);
+    p.mix(&[seed_byte; SEED_BYTES], usize::MAX);
     assert!(p.seeded());
     p
 }
@@ -48,7 +48,7 @@ fn drbg_matches_an_independent_implementation() {
     seed.extend(hex("659ba96c601dc69fc902940805ec0ca8"));
     assert_eq!(seed.len(), SEED_BYTES);
     let mut p = Pool::new();
-    p.mix(&seed, true);
+    p.mix(&seed, usize::MAX);
     let mut out = [0u8; 128];
     assert!(p.fill(&mut out));
     assert!(p.fill(&mut out));
@@ -68,14 +68,30 @@ fn the_pool_is_unseeded_until_credited_bytes_are_mixed() {
     let mut out = [0xAAu8; 32];
     assert!(!p.seeded());
     assert!(!p.fill(&mut out));
-    p.mix(&[0x55; 4096], false);
+    p.mix(&[0x55; 4096], 0);
     assert!(!p.fill(&mut out), "uncredited input must not seed the pool");
-    p.mix(&[0x11; SEED_BYTES - 1], true);
+    p.mix(&[0x11; SEED_BYTES - 1], usize::MAX);
     assert!(!p.fill(&mut out), "one credited byte short must not seed the pool");
     assert_eq!(out, [0xAAu8; 32], "an unseeded fill wrote into the buffer");
-    p.mix(&[0x22], true);
+    p.mix(&[0x22], usize::MAX);
     assert!(p.fill(&mut out), "{SEED_BYTES} credited bytes, in two calls, must seed");
     assert_ne!(out, [0xAAu8; 32]);
+}
+
+/// **The credit is a byte count, clamped to the input.** Twice the seed
+/// credited at half (the Zkr ES16 rate) seeds; the same bytes credited one
+/// short of the seed do not; a credit larger than the input counts only the
+/// input (above, `SEED_BYTES - 1` bytes credited `usize::MAX` did not seed).
+#[test]
+fn a_partial_credit_counts_only_its_bytes() {
+    let mut p = Pool::new();
+    p.mix(&[0x33; 2 * SEED_BYTES], SEED_BYTES - 1);
+    assert!(!p.seeded(), "{} credited bytes are short of a seed", SEED_BYTES - 1);
+    p.mix(&[0x44; 2], 1);
+    assert!(p.seeded(), "one more credited byte completes the seed");
+    let mut q = Pool::new();
+    q.mix(&[0x33; 2 * SEED_BYTES], SEED_BYTES);
+    assert!(q.seeded());
 }
 
 /// The same property on the kernel's global instance — the one the consumers
@@ -86,7 +102,7 @@ fn the_global_pool_is_unseeded_until_mixed() {
     assert!(!entropy::seeded());
     assert!(!entropy::fill(&mut out));
     assert_eq!(out, [0u8; 16]);
-    entropy::mix(&[0x42; SEED_BYTES], true);
+    entropy::mix(&[0x42; SEED_BYTES], usize::MAX);
     assert!(entropy::seeded());
     assert!(entropy::fill(&mut out));
     assert_ne!(out, [0u8; 16]);
@@ -121,13 +137,13 @@ fn reseed_changes_output() {
     let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
     assert!(p.fill(&mut a) && q.fill(&mut b));
     assert_eq!(a, b);
-    q.mix(&[0x99; RESEED_BYTES], true);
+    q.mix(&[0x99; RESEED_BYTES], usize::MAX);
     assert!(p.fill(&mut a) && q.fill(&mut b));
     assert_ne!(a, b, "a credited reseed did not change the output");
     assert!(q.seeded());
 
     let (mut p, mut q) = (seeded_pool(8), seeded_pool(8));
-    q.mix(b"mac 52:54:00:12:34:56", false);
+    q.mix(b"mac 52:54:00:12:34:56", 0);
     assert!(p.fill(&mut a) && q.fill(&mut b));
     assert_ne!(a, b, "an uncredited mix did not change the output");
 }

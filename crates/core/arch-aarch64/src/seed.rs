@@ -14,7 +14,7 @@
 //! A64_RNG against it and calls [`select`] once, on the boot CPU, from
 //! `cpu_features`, before `install_entropy` reads.
 
-use azos_arch_api::entropy::{self, CpuSeed};
+use azos_arch_api::entropy::{self, CpuSeed, Source};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static SELECTED: AtomicBool = AtomicBool::new(false);
@@ -33,7 +33,7 @@ pub fn fill(out: &mut [u8]) -> CpuSeed {
         return CpuSeed::NONE;
     }
     let bytes = entropy::fill(out, entropy::RETRIES, rndrrs, core::hint::spin_loop);
-    CpuSeed { bytes, source: "rndrrs" }
+    CpuSeed { bytes, source: Source::Rndrrs }
 }
 
 /// One `RNDRRS` read: 8 bytes, or a retry when Z is set.

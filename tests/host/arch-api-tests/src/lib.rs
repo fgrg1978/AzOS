@@ -2169,6 +2169,50 @@ mod entropy_tests {
         assert_eq!(fill(&mut out, 1, draw, || {}), 48);
         assert_eq!(&out[..4], &[2, 0, 4, 0]);
     }
+
+    /// The credit rates (owner decision 2026-10-23): RDSEED and RNDRRS 1:1,
+    /// Zkr ES16 at the spec's 2:1 conditioning ratio, RDRAND 0. Canary: give
+    /// RDRAND full credit and this fails.
+    #[test]
+    fn each_cpu_source_is_credited_at_its_own_rate() {
+        use azos_arch_api::entropy::{CpuSeed, Source, DRAW_PER_CREDIT};
+        assert_eq!(Source::RdSeed.credit(96), 96);
+        assert_eq!(Source::Rndrrs.credit(96), 96);
+        assert_eq!(Source::ZkrSeed.credit(96), 48);
+        assert_eq!(Source::ZkrSeed.credit(3), 1, "rounded down");
+        assert_eq!(Source::RdRand.credit(96), 0, "RDRAND is DRBG output: never credited");
+        assert_eq!(Source::None.credit(96), 0);
+        assert_eq!(CpuSeed { bytes: 40, source: Source::ZkrSeed }.credit(), 20);
+        assert_eq!(CpuSeed::NONE.credit(), 0);
+        // The lowest credited rate is what the kernel's draw is sized by.
+        for s in [Source::RdSeed, Source::Rndrrs, Source::ZkrSeed] {
+            assert!(s.credit(DRAW_PER_CREDIT) >= 1, "{} needs a larger draw", s.name());
+        }
+    }
+
+    /// The boot's CPU step against the real pool (`kernel/src/boot/entropy.rs`
+    /// mixes `seed[..bytes]` with `CpuSeed::credit`): a full draw of
+    /// `SEED_BYTES * DRAW_PER_CREDIT` from RDSEED, RNDRRS or Zkr seeds an
+    /// empty pool on its own; the same draw from RDRAND leaves it unseeded,
+    /// and so does half a Zkr draw (24 credited bytes of 48).
+    #[test]
+    fn only_a_credited_cpu_source_seeds_the_pool() {
+        use azos_arch_api::entropy::{CpuSeed, Source, DRAW_PER_CREDIT};
+        use azos_crypto::entropy::{Pool, SEED_BYTES};
+        let draw = [0x5Au8; SEED_BYTES * DRAW_PER_CREDIT];
+        let seeds = |source: Source, bytes: usize| {
+            let got = CpuSeed { bytes, source };
+            let mut p = Pool::new();
+            p.mix(&draw[..got.bytes], got.credit());
+            p.seeded()
+        };
+        assert!(seeds(Source::RdSeed, draw.len()));
+        assert!(seeds(Source::Rndrrs, draw.len()));
+        assert!(seeds(Source::ZkrSeed, draw.len()));
+        assert!(!seeds(Source::RdRand, draw.len()), "RDRAND alone must not seed the pool");
+        assert!(!seeds(Source::ZkrSeed, SEED_BYTES), "48 ES16 bytes are 24 credited, short of a seed");
+        assert!(seeds(Source::RdSeed, SEED_BYTES), "48 RDSEED bytes are a seed");
+    }
 }
 
 #[cfg(test)]

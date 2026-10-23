@@ -4,9 +4,9 @@
 //! (`azos_arch_api::entropy`, `ArchPlatform::cpu_seed`).
 //!
 //! RDSEED returns conditioned entropy straight from the source (NIST SP
-//! 800-90B/C), so it is preferred; RDRAND is the output of a DRBG the
-//! hardware reseeds, the fallback when RDSEED is absent or Kconfig
-//! X86_RDSEED is `n`. Either reports "no data" with CF=0 and is retried
+//! 800-90B/C), so it is preferred and credited 1:1; RDRAND is the output of
+//! a DRBG the hardware reseeds, the fallback when RDSEED is absent or Kconfig
+//! X86_RDSEED is `n`, mixed but credited 0 (`Source::credit`). Either reports "no data" with CF=0 and is retried
 //! within `ENTROPY_CPU_RETRIES`, with PAUSE between tries.
 //!
 //! The probe is CPUID (`features::detect`); the kernel resolves Kconfig
@@ -15,7 +15,7 @@
 //! instructions are written as mnemonics in local `asm!`, not enabled as
 //! target features, so nothing else is compiled to assume them.
 
-use azos_arch_api::entropy::{self, CpuSeed, Draw};
+use azos_arch_api::entropy::{self, CpuSeed, Draw, Source};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 const NONE: u8 = 0;
@@ -33,24 +33,16 @@ pub fn select(rdseed: bool, rdrand: bool) -> bool {
     s != NONE
 }
 
-const fn name(s: u8) -> &'static str {
-    match s {
-        RDSEED => "rdseed",
-        RDRAND => "rdrand",
-        _ => "none",
-    }
-}
-
-/// Fill `out` from the selected instruction, or [`CpuSeed::NONE`].
+/// Fill `out` from the selected instruction, or [`CpuSeed::NONE`]. RDRAND's
+/// bytes are mixed but credited 0 ([`Source::RdRand`]).
 pub fn fill(out: &mut [u8]) -> CpuSeed {
-    let s = SOURCE.load(Ordering::Acquire);
-    let draw: fn() -> Draw = match s {
-        RDSEED => rdseed,
-        RDRAND => rdrand,
+    let (draw, source): (fn() -> Draw, Source) = match SOURCE.load(Ordering::Acquire) {
+        RDSEED => (rdseed, Source::RdSeed),
+        RDRAND => (rdrand, Source::RdRand),
         _ => return CpuSeed::NONE,
     };
     let bytes = entropy::fill(out, entropy::RETRIES, draw, core::hint::spin_loop);
-    CpuSeed { bytes, source: name(s) }
+    CpuSeed { bytes, source }
 }
 
 /// One instruction, CF into a byte: 8 bytes, or a retry when CF=0.
