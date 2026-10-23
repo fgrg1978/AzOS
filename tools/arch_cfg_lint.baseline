@@ -32,6 +32,7 @@
 2	kernel/src/boot/blk_irq.rs
 5	kernel/src/boot/dma.rs
 3	kernel/src/boot/ps2_irq.rs
+1	kernel/src/boot/rtc.rs
 4	kernel/src/boot/seams.rs
 1	kernel/src/boot/tpm.rs
 3	kernel/src/ktest.rs
