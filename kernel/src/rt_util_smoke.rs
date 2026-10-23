@@ -44,7 +44,9 @@
 //!   levels. PASS: L is admitted and neither misses a deadline. Canary
 //!   `canary=sched-dl-in-level` on the command line (fixed priority between
 //!   levels, the order before wave 15's classes): H's 5 ms would run first,
-//!   so admission, reading the same switch, refuses L with `levels`. When
+//!   so admission, reading the same switch, refuses L with `levels` (and H
+//!   too while a reservation with a shorter deadline sits at a level below
+//!   it: the IRQ thread's, `IRQ_THREADED`). When
 //!   that rule did not bind there (wave 15, the density sum alone), L missed
 //!   every job.
 //!
