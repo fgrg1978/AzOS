@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "azos_common"
+version = "0.1.0"
+
+[[package]]
+name = "azos_dma"
+version = "0.1.0"
+dependencies = [
+ "azos_common",
+]
+
+[[package]]
 name = "azos_pci"
 version = "0.1.0"
 
@@ -10,5 +21,6 @@ version = "0.1.0"
 name = "azos_pci_tests"
 version = "0.1.0"
 dependencies = [
+ "azos_dma",
  "azos_pci",
 ]
