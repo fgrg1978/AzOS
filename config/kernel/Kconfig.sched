@@ -597,23 +597,22 @@ config CONTROL_TXN_TICKS
     bool "Control plane: transactional ticks (rollback recoverable faults)"
     default y
     help
-      Experiment I-13 — ACCEPTED, default ON. A per-hart checkpoint
-      is armed once at the motor control task's entry; a recoverable fault
+      A per-hart checkpoint is armed once at the motor control task's
+      entry (on the first 8 harts: the table's MAX_TXN_HARTS; a fault on a
+      later hart takes the fatal path); a recoverable fault
       (illegal instruction / misaligned load-store) inside the control loop is
       rolled back — motors safe-stop and the task restarts at its entry —
       instead of `panic=abort` halting the kernel mid-motion.
 
       y (default) = a recoverable fault in the control loop is survivable
-        (safe-stop + restart; abort counted in TXN_ABORTS). Verified:
-        survived=1, aborts=1, 0 FATAL.
-      n = the fault is FATAL (legacy: kernel logs + shuts down). The rollback
+        (safe-stop + restart; abort counted in TXN_ABORTS).
+      n = the fault is FATAL (the kernel logs and shuts down). The rollback
         branch is const-eliminated → trap handler byte-identical to legacy.
 
       Surfaces as `azos_limits::CONTROL_TXN_TICKS`. No-fault hot path is
       unchanged (the arm runs once per task entry, not per tick; the trap-hook
       check only runs on the rare exception path). Recoverable-cause whitelist
-      is conservative (excludes page faults + ecall). Remaining hardening:
-      cert review of the trap-handler hook.
+      is conservative (excludes page faults + ecall).
 
 # ---------------------------------------------------------------------------
 # Real-time band budget (wave 11 SCHED-RT)

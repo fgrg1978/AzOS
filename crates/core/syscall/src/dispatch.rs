@@ -660,7 +660,7 @@ pub fn syscall_verdict(num: u64) -> SyscallEntry {
 }
 
 /// [`syscall_entry_fast`]'s second half, once the filter passed a native
-/// number: the three calls answered from the number alone. Public for the
+/// number: the two calls answered from the number alone. Public for the
 /// trap layer (`kernel/src/trap`), which counts the entry between the verdict
 /// and this.
 #[inline(always)]
@@ -683,7 +683,7 @@ pub fn syscall_register_only(num: u64) -> SyscallEntry {
     // stays in `dispatch_slow`.
     //
     // (Wave 10: the `match` is now `SYSCALL_TABLE`, one small function per
-    // arm, so no frame is fat any more; what these three still skip is
+    // arm, so no frame is fat any more; what these two still skip is
     // `dispatch_slow`'s context stores and the indirect call. Kept: removing
     // them was not measured.)
     //

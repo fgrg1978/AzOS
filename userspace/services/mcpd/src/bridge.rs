@@ -13,9 +13,9 @@
 //!
 //! MCP over a byte stream, as its stdio transport frames it: one JSON-RPC
 //! message (or batch) per line, `\n`-terminated, no newline inside. The
-//! codec is `userspace/lib/mcp`. The native stack gives ring 3 no listening
-//! socket, so the daemon dials out (`MCP_PEER_ADDR`) and serves the MCP server
-//! role over that one stream; one client speaks on it at a time. A longer line
+//! codec is `userspace/lib/mcp`. The daemon dials out (`MCP_PEER_ADDR`: a
+//! relay or the agent's host listens) and serves the MCP server role over
+//! that one stream; one client speaks on it at a time. A longer line
 //! than [`LINE_MAX`] is answered with a parse error and dropped to its newline.
 //!
 //! # A call is a warrant, an op and a receipt

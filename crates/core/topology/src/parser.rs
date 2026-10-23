@@ -83,7 +83,7 @@ pub enum ParseError {
     /// Two tasks declare WRITE on the same motor — see [`motor_write_conflict`].
     MotorWriteConflict,
     /// `format = N` names a CAPS.TOML format this parser does not know
-    /// (only 1 to 7 exist), or appears twice.
+    /// (only 1 to [`CAPS_FORMAT_MAX`] exist), or appears twice.
     UnsupportedFormat,
     /// A key that exists only from a later format (`restart`:
     /// format 2; `abi`: format 3; `imports`, `timer_slack`: format 5; a `[device.NAME]`, `[signer.NAME]` or `[peer.NAME]` section, `export`, `place`, `stateless`, `call_budget_us`: format 6; `shadow`, `isolated`, `kmem_kib`, the device keys `safe_state`, `commit_ns`, `compensate`, the peer keys `noise_pk` and `measurement`: format 7) in a file that did not declare it: the writer and this reader would not

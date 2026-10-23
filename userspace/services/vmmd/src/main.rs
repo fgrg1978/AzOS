@@ -43,7 +43,9 @@
 //!    and the NIC ring are charged to this task's Domain (the kernel only
 //!    pins them until `destroy`), so the `mem_pages` of this task's row must
 //!    cover the guest's `mem_mib`: the build refuses the guest when it does
-//!    not.
+//!    not. A task holds at most `USER_WINDOW_RANGES` (16) mappings, its other
+//!    regions included, so less than 4 MiB of guest RAM is mapped; past that
+//!    the RAM is partial ("guest RAM is partial") and no device model works.
 //! 4. Loads the kernel (an ELF64 executable of the host's ISA, read beneath
 //!    `/fat/VM`), puts the description of the machine next to it (a device
 //!    tree on riscv64 and aarch64, `dtb`; a PVH start_info on x86_64, `pvh`;

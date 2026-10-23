@@ -125,8 +125,8 @@ config INFER_MODEL_SIG_REQUIRED
     help
       The ring-3 inference service (userspace/services/infsrv) verifies the
       GGUF policy /fat/POLICY.GGF against /fat/POLICY.SIG before its start-up
-      self-test parses it: a bare 64-byte Ed25519 signature over the file's
-      bytes, the same key and sidecar format as CAPS.SIG and CONFIG.SIG
+      self-test parses it: a DSIG sidecar (magic, algorithm, length, the
+      signature) over the file's bytes, the same key and format as CAPS.SIG and CONFIG.SIG
       (azos_topology::TRUSTED_PUBKEY; `make` signs it with
       tools/gen_config_sig.py). The file lives on the USB-exposed FAT volume.
 

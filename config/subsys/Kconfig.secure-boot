@@ -18,10 +18,11 @@ config SECURE_BOOT_ENFORCED
       Default: y on every build except BUILD_TYPE_DEV (release-safe;
       the QEMU board is a development build, the boards are release
       builds). A development build keeps the TEST key and unsigned boot.
-      When enabled, the bootloader verifies the kernel image signature
-      using the Ed25519 public key embedded at build time (crates/core/ota, was SECURE_BOOT_KEY_FP -- removed 2026-09-26, V2.6, never consumed)
-      before jumping to _start.  If the signature is absent or invalid,
-      boot halts unconditionally.
+      When enabled, the kernel verifies the signature of the slot's image
+      file early in its boot (kernel/src/boot/ota.rs), with the Ed25519
+      public key embedded at build time (crates/core/ota). If it is absent
+      or invalid, the next boot is pointed at the recovery slot and the
+      board resets, when that slot verifies; otherwise boot halts.
       Disable only for development.  MUST be y for any production
       deployment — enforced by cargo feature `secure-boot-enforced`.
       A BUILD_TYPE_CERTIFIABLE build has it on and cannot turn it off.

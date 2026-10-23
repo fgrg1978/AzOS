@@ -12,7 +12,8 @@
 //! seccomp profile). The files are root names of the volume, and the tree is
 //! the whole volume, because the file layer opens no file inside a directory
 //! yet (`SSHD_CAPS` in the topology builder says why). Present when Kconfig
-//! `SSHD` is `y` (every preset but the MCU kernel and a certifiable build),
+//! `SSHD` is `y` (every build but the MCU kernel, a certifiable build and the
+//! embedded profile),
 //! listening on `SSHD_PORT`.
 //!
 //! The protocol is `server.rs` and what it uses (`wire.rs`, `packet.rs`,

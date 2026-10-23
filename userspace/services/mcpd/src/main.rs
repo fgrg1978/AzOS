@@ -13,10 +13,9 @@
 //! host over a scripted MCP client (`tests/host/mcpd-tests`); this file is the
 //! host they run on and the loop around them.
 //!
-//! One thread. The native stack has no listening socket for ring 3, so the
-//! bridge **dials out** (`MCP_PEER_ADDR`:`MCP_PORT`) and serves the MCP server
-//! role over the stream: a relay or the agent's host listens, the bridge
-//! connects, and the JSON-RPC lines flow as the stdio transport frames them.
+//! One thread. The bridge **dials out** (`MCP_PEER_ADDR`:`MCP_PORT`) and
+//! serves the MCP server role over the stream: a relay or the agent's host
+//! listens, the bridge connects, and the JSON-RPC lines flow as the stdio transport frames them.
 //! A lost link is redialled with a growing wait.
 //!
 //! The root of the warrants is the image's own DICE key (`LinkKey::node_key`,

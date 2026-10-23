@@ -30,7 +30,7 @@
 //! (`azos_ipc::cap::caveat::OP_MASK`, the IDL ops the holder may call, held by
 //! `khost::admit` before this server runs). `brain_client` holds `READ`
 //! unmasked, so it calls [`Server::read`], the raw key, which is also the device
-//! seed of the DICE derivation. `RPCSRV.ELF`, `MCPD.ELF` and `SSHD.ELF` hold
+//! seed of the DICE derivation. `RPCSRV.ELF` and `MCPD.ELF` hold
 //! `READ` masked to [`azos_devif::linkkey::NODE_KEY_OPS`]: they can call
 //! [`Server::node_key`], the key of the caller's own image, from which the seed
 //! cannot be recovered, and no other op. A network-facing task that is

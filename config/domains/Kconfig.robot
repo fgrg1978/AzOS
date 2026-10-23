@@ -144,7 +144,7 @@ config MOTOR_COMMANDER_EXIT_STOP
     default n
     help
       Owner decision (wave 15): when a ring-3 task that commanded a wheel
-      through the typed motor calls (560, 576, 584) exits or dies with
+      through the Motor interface (speed, drive, direction) exits or dies with
       that wheel at a non-zero duty, its exit stops the wheel (duty 0,
       coast) and writes a durable SAFETY_ESTOP record, action 14
       (commander lost: the task and the wheels in its detail). It does
@@ -152,7 +152,9 @@ config MOTOR_COMMANDER_EXIT_STOP
       restarted commander drives again (rt_motor's own SAFE STOP has the
       same contract). rt_motor_task rewrites the wheels every tick only
       while its command channel is live, so without this a ring-3 duty
-      written after its watchdog fired stays on the channel.
+      written after its watchdog fired stays on the channel. A wheel driven
+      through the I/O ring's OP_MOTOR_SPEED is not noted, so its commander's
+      exit does not stop it.
 
       Cost: one atomic store per typed motor call, and per task exit one
       compare-and-swap per wheel (MAX_MOTORS, 4); a stop and a record
@@ -166,8 +168,8 @@ config EFFECT_WRITE_AHEAD
     default y if USE_ROBOT
     default n
     help
-      Innovation B1. A motor op from ring 3 (the Motor interface: speed,
-      drive, direction) is issued by the effect gate
+      Innovation B1. A motor op from ring 3 through the Motor interface
+      (speed, drive, direction) is issued by the effect gate
       (crates/core/actuation/src/effect_gate.rs): its record is committed
       to the flight recorder's ring first, and only then does the op reach
       the wheel. Every effect that reached a wheel has a record; a record
@@ -188,7 +190,8 @@ config EFFECT_WRITE_AHEAD
       is not linked or installed, and the op goes straight to the motor
       layer. Maps to the kernel cargo feature `effect-gate`. The kernel's
       own motor writes (rt_motor_task, the PID loop) are not ring-3 ops and
-      are not recorded by this gate.
+      are not recorded by this gate, nor is the I/O ring's OP_MOTOR_SPEED,
+      which calls the motor layer directly.
 
       Innovation B2, deadline or safe state, rides on the same gate (it has
       no switch of its own: it needs the gate). A motion op carries its

@@ -12,8 +12,8 @@
 //! (`crate::signed`). Not `<file>.SIG`: a two-dot name is not a FAT 8.3 short
 //! name and the kernel's FAT32 driver cannot open it — see [`crate::paths`].
 //!
-//! The trusted public key lives in OTP / eFuse on real hardware
-//! and in a compile-time constant for QEMU / dev builds. It is a key of
+//! The trusted public key is a compile-time constant (`build.rs`, from
+//! `TOPOLOGY_PUBKEY_PATH`). It is a key of
 //! the device's one algorithm ([`azos_crypto::sig::SigAlg::CONFIGURED`]); a
 //! sidecar of another algorithm is refused as malformed.
 //!
@@ -23,7 +23,9 @@
 //!     verify_signature(&toml_bytes, &sidecar, &TRUSTED_PUBKEY)?;
 //! ```
 //!
-//! Failure ⇒ kernel halts before parsing.
+//! Failure ⇒ nothing is parsed; the boot then halts or runs the built-in
+//! topology, as Kconfig `TOPOLOGY_SOURCE_*` and `TOPOLOGY_INVALID_HALT` say
+//! (`crate::signed::decide`).
 
 use azos_crypto::sig::{dsig_signature, key_array, SigAlg, DSIG_FILE_MAX, KEY_LEN, SIG_LEN};
 

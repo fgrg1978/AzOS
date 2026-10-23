@@ -14,8 +14,8 @@
 /// is stored by `mcopy` under a generated short name no lookup reaches).
 pub const POLICY_PATH: &[u8] = b"/fat/POLICY.GGF\0";
 
-/// Ed25519 signature over [`POLICY_PATH`]'s bytes: a bare 64-byte sidecar, the
-/// `CAPS.SIG`/`CONFIG.SIG` format, signed with the same key
+/// The signature over [`POLICY_PATH`]'s bytes: a `DSIG` sidecar
+/// (`azos_crypto::sig`), the `CAPS.SIG`/`CONFIG.SIG` format, signed with the same key
 /// (`azos_topology::TRUSTED_PUBKEY`). An 8.3 name sharing the base name:
 /// `POLICY.GGF.SIG` has two dots and the FAT32 driver could never open it.
 pub const POLICY_SIG_PATH: &[u8] = b"/fat/POLICY.SIG\0";

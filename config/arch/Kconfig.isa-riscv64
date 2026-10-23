@@ -479,7 +479,7 @@ config LOCKED_HUGE_LEAVES
     default n
     help
       A ring-3 topology row with `mem = "locked"` may declare
-      `mem_huge_mib = N` (N even, 2..512): N MiB of RAM reserved at boot,
+      `mem_huge_mib = N` (N even, 2..256): N MiB of RAM reserved at boot,
       2 MiB-aligned and physically contiguous, and mapped into the task at
       exec with level-1 (2 MiB) Sv39 leaves instead of 512 page leaves each.
       One TLB entry then covers 2 MiB of a model, tensor arena or pipeline

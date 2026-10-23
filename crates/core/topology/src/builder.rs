@@ -368,7 +368,7 @@ const RESOURCE_LINK_KEY:   &[u8] = b"linkkey";
 /// `tests/host/topology-tests` holds it to `azos_devif::linkkey::NODE_KEY_OPS`.
 pub const LINK_KEY_NODE_KEY_OPS: u64 = 1 << 2;
 /// The grant of a task that needs its own node identity (`LinkKey::node_key`:
-/// `RPCSRV.ELF`, `MCPD.ELF`, `SSHD.ELF`): `READ` on `linkkey` with an op mask
+/// `RPCSRV.ELF`, `MCPD.ELF`): `READ` on `linkkey` with an op mask
 /// that lists `node_key` and nothing else. `READ` unmasked also calls
 /// `LinkKey::read`, the raw reserved-sector key, which is the device seed every
 /// node key derives from; only `brain_client` (the link itself) holds it that
@@ -3093,7 +3093,7 @@ const MCPD_CAPS: &[CapSpec] = &[
 /// The SSH server's image (`userspace/services/sshd`).
 pub const TASK_SSHD_IMAGE: &[u8] = b"SSHD.ELF";
 /// Does the built-in topology carry the SSH server's row (Kconfig `SSHD`: on
-/// but for the MCU kernel and a certifiable build)? It starts at boot with the
+/// but for the MCU kernel, a certifiable build and the embedded profile)? It starts at boot with the
 /// row.
 pub const SSHD_ROW: bool = azos_limits::SSHD;
 /// Frame budget of `SSHD.ELF`: image, stack, page tables, the hardened

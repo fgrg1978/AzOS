@@ -1514,9 +1514,9 @@ pub struct GuestSpec<'a> {
     pub envelope: Envelope,
     /// `passthrough = [...]` (format 8): the physical devices handed to the
     /// guest itself, each a name [`import_name_ok`] accepts, none twice and
-    /// none also in `devices`; in `passthrough[..passthrough_len]`. Their
-    /// DMA is confined to the guest's memory by the IOMMU; the guest's
-    /// effects through them are bounded by `envelope` like any other.
+    /// none also in `devices`; in `passthrough[..passthrough_len]`. Parsed,
+    /// checked and emitted here; the hypervisor core and the monitor do not
+    /// read it, so no device is handed to a guest.
     pub passthrough: [MaybeStr<'a>; GUEST_PASSTHROUGH],
     /// Entries of `passthrough` in use.
     pub passthrough_len: u8,
@@ -1860,7 +1860,8 @@ pub enum FwAction {
     Allow = 1,
     /// Discard it silently.
     Drop = 2,
-    /// Discard it and tell the sender (TCP reset, ICMP unreachable).
+    /// Discard it and tell the sender: ICMP destination unreachable,
+    /// "administratively prohibited" (a local sender's `send` says -1).
     Reject = 3,
 }
 
