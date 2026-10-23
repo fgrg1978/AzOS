@@ -252,6 +252,61 @@ pub unsafe fn identity_map_devices_above(l2: *mut PageTable, base_pa: u64, ram_e
     count
 }
 
+/// Map the level-2 block holding `pa` Device in the bootstrap map, where
+/// [`crate::mmu::boot_device_block`] says neither of its gigabytes holds it:
+/// in the DRAM window's own L2 (`l2`) when `pa` shares its root slot, else in
+/// `spare`, a zeroed table of the caller's (at physical address `spare_pa`)
+/// that this links from `pa`'s root slot. `false` when the input range does not reach `pa`, or the entry is
+/// taken by something else (another root slot already holds `spare`, or a
+/// table this did not put there). Called by the boot CPU, with the bootstrap
+/// map live in `TTBR0_EL1`, before anything touches `pa`; a slot that was
+/// invalid needs no break-before-make, and a later [`enable_identity_map`]
+/// (each secondary's) leaves both the root slot and `spare` as they are.
+///
+/// # Safety
+/// `l1` and `l2` must be the bootstrap map's tables [`enable_identity_map`]
+/// built for `base_pa` (at any address that reaches them), `spare` a table
+/// nothing else uses whose physical address is `spare_pa`, and no access to
+/// the block may be in flight.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn identity_map_device_block(
+    l1: *mut PageTable,
+    l2: *mut PageTable,
+    spare: *mut PageTable,
+    spare_pa: u64,
+    base_pa: u64,
+    pa: u64,
+) -> bool {
+    use crate::mmu::BootBlock;
+    let device = attr_idx(MAIR_IDX_DEVICE) | BLOCK_BASE | UXN | PXN;
+    unsafe {
+        let (table, index, block) = match crate::mmu::boot_device_block(G, base_pa, pa) {
+            BootBlock::Covered => return true,
+            BootBlock::OutOfRange => return false,
+            BootBlock::Shared { index, block } => (l2, index, block),
+            BootBlock::Own { root, index, block } => {
+                let link = spare_pa | TABLE_DESC;
+                let slot = &raw mut (*l1).0[root];
+                match core::ptr::read_volatile(slot) {
+                    0 => core::ptr::write_volatile(slot, link),
+                    v if v == link => {}
+                    _ => return false,
+                }
+                (spare, index, block)
+            }
+        };
+        let entry = &raw mut (*table).0[index];
+        match core::ptr::read_volatile(entry) {
+            0 => core::ptr::write_volatile(entry, block | device),
+            v if v == block | device => {}
+            _ => return false,
+        }
+        // The stores before the walker reads them (the barriers are its).
+        sysregs::tlbi_vmalle1is();
+    }
+    true
+}
+
 /// Caller-provided configuration for [`enable_identity_map`].
 ///
 /// `l1`/`l2`/`l3` are kept as raw pointers (not `&mut`) because

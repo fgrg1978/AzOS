@@ -310,7 +310,9 @@ mod aarch64_mmu;
 /// end of RAM (a Raspberry Pi 3's peripherals) is what turns Device.
 #[cfg(test)]
 mod aarch64_boot_window {
-    use super::aarch64_mmu::{boot_device_window, boot_tail_blocks, GRANULE_16K, GRANULE_4K, GRANULE_64K};
+    use super::aarch64_mmu::{
+        boot_device_block, boot_device_window, boot_tail_blocks, BootBlock, GRANULE_16K, GRANULE_4K, GRANULE_64K,
+    };
 
     const GIB: u64 = 1 << 30;
     const MIB: u64 = 1 << 20;
@@ -345,6 +347,38 @@ mod aarch64_boot_window {
         assert_eq!(boot_tail_blocks(GRANULE_16K, 0, 0x3C00_0000), (30, 2));
         // 64 KiB: a 512 MiB block holds the end of RAM, nothing is left over.
         assert_eq!(boot_tail_blocks(GRANULE_64K, 0, 0x3C00_0000).1, 0);
+    }
+
+    /// A Raspberry Pi 5's debug PL011 (`uart10`, the CPU's 0x10_7d00_1000 per
+    /// the BCM2712 tree's `soc` ranges) is in neither of the bootstrap map's
+    /// gigabytes: it takes a block of its own. Canary: a function that
+    /// answers `Covered` for it leaves the console unmapped (no first byte).
+    #[test]
+    fn a_console_far_above_ram_gets_its_own_block() {
+        const PI5_UART10: u64 = 0x10_7d00_1000;
+        // 4 KiB: root slot 65 (1 GiB each) is free, a 2 MiB block in a table.
+        assert_eq!(boot_device_block(GRANULE_4K, 0, PI5_UART10),
+            BootBlock::Own { root: 65, index: 488, block: 0x10_7d00_0000 });
+        // 16 KiB: root slot 1 (64..128 GiB) has no block form, so a table too.
+        assert_eq!(boot_device_block(GRANULE_16K, 0, PI5_UART10),
+            BootBlock::Own { root: 1, index: 62, block: 0x10_7c00_0000 });
+        // 64 KiB: root slot 0 spans 4 TiB, the DRAM window's own table holds it.
+        assert_eq!(boot_device_block(GRANULE_64K, 0, PI5_UART10),
+            BootBlock::Shared { index: 131, block: 0x10_6000_0000 });
+    }
+
+    #[test]
+    fn a_device_the_two_gigabytes_hold_needs_nothing() {
+        // QEMU virt: the PL011 at 0x0900_0000 is in the device gigabyte at 0.
+        assert_eq!(boot_device_block(GRANULE_4K, GIB, 0x0900_0000), BootBlock::Covered);
+        // Raspberry Pi 3: the mini UART at 0x3f21_5040 is in the DRAM window's
+        // tail, the local controller at 1 GiB in the device gigabyte.
+        assert_eq!(boot_device_block(GRANULE_4K, 0, 0x3f21_5040), BootBlock::Covered);
+        assert_eq!(boot_device_block(GRANULE_4K, 0, 0x4000_0000), BootBlock::Covered);
+        // Past the 39-bit input range no identity map reaches.
+        assert_eq!(boot_device_block(GRANULE_4K, 0, 1 << 39), BootBlock::OutOfRange);
+        assert_eq!(boot_device_block(GRANULE_16K, 0, 1 << 39), BootBlock::OutOfRange);
+        assert!(matches!(boot_device_block(GRANULE_64K, 0, 1 << 39), BootBlock::Shared { .. }));
     }
 }
 

@@ -245,6 +245,45 @@ pub const fn boot_tail_blocks(g: Granule, base_pa: u64, ram_end: u64) -> (usize,
     }
     (first + start, blocks - start)
 }
+/// Where the bootstrap identity map can put one more Device block, for a
+/// device at `pa` that neither of its gigabytes holds: the console of a board
+/// whose peripherals are far above its RAM (a Raspberry Pi 5's PL011 at
+/// 0x10_7d00_1000, beyond 64 GiB). See [`boot_device_block`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootBlock {
+    /// The DRAM window or the device gigabyte already holds `pa`.
+    Covered,
+    /// `pa` is past the input range: no identity map reaches it.
+    OutOfRange,
+    /// A level-2 block in the DRAM window's own table, at `index`: `pa` shares
+    /// its root slot (16 and 64 KiB, whose root slots span 64 GiB and 4 TiB).
+    Shared { index: usize, block: u64 },
+    /// A level-2 block at `index` of a table of its own, linked from root
+    /// slot `root` (a 4 KiB root slot is one gigabyte; a 16 KiB one has no
+    /// block descriptor, so a table either way).
+    Own { root: usize, index: usize, block: u64 },
+}
+
+/// The block [`BootBlock`] names for `pa`, with the DRAM window at `base_pa`
+/// (granule `g`): `block` is `pa` rounded down to the level-2 block size
+/// (2 MiB, 32 MiB or 512 MiB).
+pub const fn boot_device_block(g: Granule, base_pa: u64, pa: u64) -> BootBlock {
+    let dev = boot_device_window(base_pa);
+    if (pa >= base_pa && pa - base_pa < BOOT_WINDOW) || (pa >= dev && pa - dev < BOOT_WINDOW) {
+        return BootBlock::Covered;
+    }
+    if g.va_bits < 64 && pa >> g.va_bits != 0 {
+        return BootBlock::OutOfRange;
+    }
+    let block = pa & !(g.level_size(1) as u64 - 1);
+    let index = g.vpn(pa as usize, 1);
+    let root = g.vpn(pa as usize, 2);
+    if root == g.vpn(base_pa as usize, 2) {
+        BootBlock::Shared { index, block }
+    } else {
+        BootBlock::Own { root, index, block }
+    }
+}
 const _: () = assert!(GRANULE.page_size() == PAGE_SIZE);
 
 /// Pages in one contiguous-hint run at this build's granule.

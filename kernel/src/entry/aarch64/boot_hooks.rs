@@ -86,9 +86,10 @@ static DT_DEVICE_BLOCKS: AtomicU64 = AtomicU64::new(0);
 /// printed: `/chosen/stdout-path`'s node, a PL011 (`arm,pl011`) or the
 /// BCM2835 mini UART (`brcm,bcm2835-aux-uart`), at its `reg` translated
 /// through the buses' `ranges` (a Raspberry Pi 3's 0x7e215040 is the CPU's
-/// 0x3f215040). First the bootstrap identity map's DRAM gigabyte above the
-/// end of RAM (`/memory`) becomes Device: on that board the console is
-/// there. With no tree, no `stdout-path`, or a UART this kernel has no
+/// 0x3f215040, a Pi 5's 0x7d001000 the CPU's 0x10_7d00_1000). First the
+/// bootstrap identity map's DRAM gigabyte above the end of RAM (`/memory`)
+/// becomes Device: on a Pi 3 the console is there; a console outside both
+/// of the map's gigabytes gets a block of its own (`early_map_device`). With no tree, no `stdout-path`, or a UART this kernel has no
 /// driver for, the console stays the PL011 at QEMU `virt`'s address.
 ///
 /// `dt` is the tree `early_main` parsed; it is read again at its physical
@@ -119,7 +120,10 @@ fn console_from_dt(dtb_ptr: usize, dt: Option<&azos_dtb::DtbInfo>) {
             }
         });
     }
-    if let Some((base, kind)) = found {
+    // A console beyond both of the bootstrap map's gigabytes (a Raspberry Pi
+    // 5's, past 64 GiB) gets a Device block of its own first; one the map
+    // cannot reach is not selected.
+    if let Some((base, kind)) = found.filter(|&(base, _)| crate::entry::aarch64::early_map_device(base as u64)) {
         azos_drv_sys::uart::select_console(base, kind);
         DT_CONSOLE.store(base as u64, Ordering::Relaxed);
         DT_CONSOLE_AUX.store(kind == azos_drv_sys::uart::ConsoleUart::Bcm2835Aux, Ordering::Relaxed);

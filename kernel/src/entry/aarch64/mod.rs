@@ -54,9 +54,9 @@ pub(crate) mod trap;
 /// to run this early.
 ///
 /// `dram_base` is the 1 GiB-aligned base of the RAM the loader put the image
-/// in (`boot.S`: the image's physical address minus its header's
-/// `text_offset`): 0x4000_0000 on QEMU `virt`, 0 on a Raspberry Pi 3. The
-/// primary and every secondary pass the same value.
+/// in (`boot.S`: the image's physical address rounded down to the gigabyte):
+/// 0x4000_0000 on QEMU `virt`, 0 on a Raspberry Pi 3 or 5. The primary and
+/// every secondary pass the same value.
 #[unsafe(no_mangle)]
 pub extern "C" fn aarch64_early_mmu_init(dram_base: u64) {
     // Through the `azos_arch` facade, not `azos_arch_aarch64`
@@ -86,6 +86,7 @@ granule the kernel was built for (ID_AA64MMFR0_EL1.TGran); halting\r\n");
         });
     }
     BOOT_DRAM_BASE.store(dram_base, Ordering::Relaxed);
+    BOOT_SPARE_L2_PA.store(&raw mut BOOT_ID_SPARE_L2 as u64, Ordering::Relaxed);
     // `enable_identity_map` grants EL0 FP (`FPEN = 0b11`); put this hart in
     // the lazy-FP resting state (`fp`'s module doc). Runs on every hart:
     // boot.S calls this function on the primary and on each secondary.
@@ -121,6 +122,30 @@ pub(crate) fn early_map_devices(ram_end: u64) -> usize {
 /// The DRAM base `boot.S` handed [`aarch64_early_mmu_init`] (the same on every
 /// PE). Stored with the MMU on, so a later cacheable read sees it.
 static BOOT_DRAM_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// The bootstrap map's one extra level-2 table, for a device in a root slot
+/// of its own ([`early_map_device`]), and its physical address, taken by
+/// [`aarch64_early_mmu_init`] while the PC still runs at the image's physical
+/// address (afterwards the image runs in the upper half).
+static mut BOOT_ID_SPARE_L2: azos_arch::mmu::setup::PageTable = azos_arch::mmu::setup::PageTable::zero();
+static BOOT_SPARE_L2_PA: AtomicU64 = AtomicU64::new(0);
+
+/// Map the device at `pa` Device in the bootstrap map when neither of its
+/// gigabytes holds it: the console of a board whose peripherals are far above
+/// RAM (a Raspberry Pi 5's PL011 at 0x10_7d00_1000). Boot CPU, with the
+/// bootstrap map still in `TTBR0_EL1`, before `pa` is touched. `false` when
+/// the map cannot reach it (`setup::identity_map_device_block`).
+pub(crate) fn early_map_device(pa: u64) -> bool {
+    let dram_base = BOOT_DRAM_BASE.load(Ordering::Relaxed);
+    let spare_pa = BOOT_SPARE_L2_PA.load(Ordering::Relaxed);
+    // SAFETY: the bootstrap map's own tables for `dram_base`, the spare table
+    // at the physical address recorded for it, and nothing has touched `pa`
+    // yet (the console is selected after this).
+    unsafe {
+        azos_arch::mmu::setup::identity_map_device_block(
+            &raw mut BOOT_ID_L1, &raw mut BOOT_ID_L2, &raw mut BOOT_ID_SPARE_L2, spare_pa, dram_base, pa)
+    }
+}
 
 /// Print `msg` on the PL011 with the MMU still off, then park this PE. For
 /// the one failure that happens before any console exists.
