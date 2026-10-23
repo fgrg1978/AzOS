@@ -301,7 +301,10 @@ config WDT_BCM2835_PM
       crates/drivers/sys/src/wdt.rs). The power-management block of the
       32-bit-bus Raspberry Pis (the Pi 3 B's BCM2837 among them), found by
       the hardware bus as a device-tree node `brcm,bcm2835-pm` or
-      `brcm,bcm2835-pm-wdt` (its first `reg`): its watchdog becomes the
+      `brcm,bcm2835-pm-wdt` (its first `reg`), or the Pi 5's
+      `brcm,bcm2712-pm` (the same block, which Linux drives with the same
+      bcm2835_wdt driver; the Pi 5's firmware has PSCI, so it keeps PSCI for
+      reboot and power-off): its watchdog becomes the
       hardware watchdog sys-wdt arms and the RT tick kicks (16 s at most;
       a longer timeout is armed as 16 s), and it is how such a Pi reboots
       and powers off. Their firmware has no PSCI, so with the node bound and

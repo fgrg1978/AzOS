@@ -35,8 +35,11 @@ wdt              dt:starfive,jh7110-wdt   boot   if=BOARD_VF2
 wdt              dt:arm,sbsa-gwdt   boot   if=WDT_SBSA
 wdt              pci:1022:790b   boot   if=WDT_SP5100_TCO
 wdt              pci:1d94:790b   boot   if=WDT_SP5100_TCO
-# The Raspberry Pi's PM block (`watchdog@7e100000`; BCM2835/6/7): the
+# The Raspberry Pi's PM block (`watchdog@7e100000`; BCM2835/6/7, and the
+# Pi 5's BCM2712, `brcm,bcm2712-pm`, the same block Linux drives with the same
+# bcm2835_wdt; the Pi 5 keeps PSCI for reboot): the
 # hardware watchdog, and the reset handler of a Pi without PSCI. `boot`: the
 # safety net, bound in the same stage as the JH7110's watchdog.
 pm-wdt           dt:brcm,bcm2835-pm   boot   if=WDT_BCM2835_PM
 pm-wdt           dt:brcm,bcm2835-pm-wdt   boot   if=WDT_BCM2835_PM
+pm-wdt           dt:brcm,bcm2712-pm   boot   if=WDT_BCM2835_PM
