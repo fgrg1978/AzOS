@@ -49,11 +49,18 @@
 //! takes no lock. A writer never runs inside a section (nothing in one
 //! frees or unmaps), so it never waits for itself.
 //!
-//! **Cost, measured** (vsbench `uaccess-get-u32`, riscv64, QEMU -icount,
-//! instructions per futex wait, which reads its word twice): 1,920 with the
-//! sections taken out, 1,964 with them (+2.3%: about 22 instructions a
-//! section, interrupts off and on, two stores and a fence), 2,222 with the
-//! alternative the brief named, pinning the frame through its share count
+//! **Cost, measured** (vsbench `uaccess-*`, QEMU -icount -smp 1,
+//! instructions per op, sections against the same build with them taken
+//! out): a section is about 22 instructions on riscv64, 16 on aarch64 and
+//! 21 on x86_64 (interrupts off and on, two stores and a fence), so the
+//! small lanes pay the most. `uaccess-get-u32` (a futex wait whose word
+//! differs) is one section since the futex table answers it from its
+//! unlocked read (`futex_table` `wait_as`): +1.3% on riscv64 (1,647 ->
+//! 1,669), +1.0% on aarch64 (1,583 -> 1,599), +1.2% on x86_64 (1,792 ->
+//! 1,813). It read the word twice before, two sections: +2.3% on riscv64
+//! (1,920 -> 1,964). No lane is above +1.3% on any ISA (the most: x86_64
+//! `uaccess-cstr-7`). The alternative the brief named,
+//! pinning the frame through its share count, cost 2,222 on that lane
 //! (`cow_table`: two compare-and-swap loops on the frame's descriptor and a
 //! second walk to re-check the leaf per page; and that count is the
 //! copy-on-write share count, so a pinned private page reads as shared). A
