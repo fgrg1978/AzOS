@@ -129,9 +129,11 @@ fn no_stick() {
 /// apart by address: a shared one would merge their page caches and skip one
 /// in a sync of every volume).
 ///
-/// **Canary.** Make `Fat32Fs` zero-sized again (`pub struct Fat32Fs;`): the
-/// two statics may share an address and the `addr_eq` assertion is the row
-/// that says so (on this toolchain it does: both are placed at one address).
+/// **Canary, does not discriminate here.** Make `Fat32Fs` zero-sized again
+/// (`pub struct Fat32Fs;`): the host build still places the two statics at
+/// two addresses, so the row stays green. Nothing guarantees that for a
+/// zero-sized static (the kernel's linker may fold them); the `addr_eq`
+/// assertion is the property, kept for the build that would break it.
 #[test]
 fn a_stick_mounts_beside_fat_as_a_volume_of_its_own() {
     let _g = serial();
