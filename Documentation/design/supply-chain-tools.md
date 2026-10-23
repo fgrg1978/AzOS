@@ -1,6 +1,6 @@
 # Supply-chain tools
 
-The tree carries four mechanisms that answer questions about what the build
+The tree carries five mechanisms that answer questions about what the build
 consumes and whether it can be repeated. All of them run on a developer's
 machine, none of them needs a network except where stated, and none of them
 signs, publishes or uploads anything: their output is a local file or an exit
@@ -12,10 +12,11 @@ status.
 | `tools/repro_check.sh` | Does building the same sources twice, in different directories, give byte-identical binaries? | No |
 | `deny.toml` with `cargo-deny` | Do the dependencies obey the licence, ban and source policy? | Only for the advisory database |
 | `third_party/vendor` with `third_party/VENDOR_PIN` | Is the vendored registry tree exactly the one that was reviewed? | No |
+| `REUSE.toml` with `tools/spdx_headers.py` | Does every file state its licence? | No |
 
 `tools/sbom.sh` and `tools/repro_check.sh` are not invoked by any other script
-or make target; they are run by hand. The `cargo-deny` run and the vendor check
-are rows of the project's verification gate (`tools/gate_tier.sh`,
+or make target; they are run by hand. The `cargo-deny` run, the vendor check and
+the licence-header check are rows of the project's verification gate (`tools/gate_tier.sh`,
 `tools/ci_check.sh`).
 
 Source: `tools/sbom.sh`, `tools/repro_check.sh`, `deny.toml`,
@@ -101,9 +102,10 @@ How the two builds differ and what is held equal:
   names with the checkout directory; the wrapper replaces it with a value derived
   from the crate name, version, type, target and cfg flags.
 
-The output is a table with one line per artefact, `MATCH` or `DIFFER` with both
-digests (or `ERROR` if a file is missing). The exit status is 1 if any line is
-not `MATCH`.
+The output is a table with one line per artefact, `MATCH` with the digest,
+`DIFFER` with both digests, or `ERROR` if a file is missing. The exit status is 1
+if any line is not `MATCH` (2 for an unknown argument or a missing
+`image_hashes.rs`).
 
 Options: `--dry-run` prints every command, with the full rustflags, for both
 builds and builds nothing; `--keep` keeps the two temporary roots so a `DIFFER`
@@ -147,7 +149,7 @@ What the file says:
 | `licenses` | Allowed: MIT, BSD-3-Clause, BSD-2-Clause, ISC, Unicode-3.0, Zlib, CC0-1.0. The project is licensed `Apache-2.0 OR GPL-2.0-only`, so every dependency must be usable under both: a dependency licensed Apache-2.0 alone is refused, and `MIT OR Apache-2.0` passes through its MIT option. Workspace crates are `publish = false` and skipped. The confidence threshold is 0.8. |
 | `bans` | Wildcard version requirements are denied (path dependencies between workspace crates are allowed); multiple versions of a crate only warn. `openssl`, `openssl-sys` and `ring` are banned: the project uses pure-Rust cryptography, and `ring` brings assembly that would need vetting per ISA. |
 | `sources` | Unknown registries and unknown git sources are denied; only the crates.io index is allowed. |
-| `advisories` | Yanked crates denied; the RustSec database is read from `~/.cargo/advisory-db`. Two advisories of the vendored TLS provider are ignored with a written reason: RUSTSEC-2023-0071 (`rsa`, Marvin timing attack, no fix exists: the crate only verifies signatures with public keys, and `userspace/lib/tls` accepts no RSA private key, which `tests/host/tls-tests/tests/rsa.rs` checks) and RUSTSEC-2024-0436 (`paste`, unmaintained: a build-time proc-macro). |
+| `advisories` | Yanked crates denied; the RustSec database is read from `~/.cargo/advisory-db`. Two advisories of the vendored TLS provider are ignored with a written reason: RUSTSEC-2023-0071 (`rsa`, Marvin timing attack, no fix exists: the crate only verifies signatures with public keys, and `userspace/lib/tls` and `userspace/lib/quic` load keys only through `azos_tls::NoRsaKeys`, which accepts no RSA private key; `tests/host/tls-tests/tests/rsa.rs` and `tests/host/quic-tests/src/rsa.rs` check it, each with a canary row) and RUSTSEC-2024-0436 (`paste`, unmaintained: a build-time proc-macro). |
 
 Advisories are not part of the offline run, because the RustSec database is a
 git download. With a network, once and by hand:
@@ -207,7 +209,7 @@ the `files` map lists what is on disk.
 |---------|--------|
 | `vendor.py regen` | Needs a network. Runs `cargo vendor`, prunes, and rewrites `VENDOR_PIN`. |
 | `vendor.py check` | Offline. Passes only if the tree is exactly the pin and `cargo-deny` passes on it. |
-| `vendor.py --self-test` | A canary for `check`: corrupts a pin, a source file and a checksum in a temporary copy, one at a time; each must make `check` fail. |
+| `vendor.py --self-test` | A canary for `check`: in a temporary copy, applies eight corruptions one at a time (a pin checksum, a dropped, extra or unpruned pin line, an edited, deleted or added source file, a package checksum), each of which must make the tree comparison fail, and checks that a missing `cargo-deny` fails too. |
 | `vendor.py test` | Offline. Runs the probe's host tests on the stable toolchain. |
 
 `check` compares, for every package: the name, version, package checksum and
@@ -225,3 +227,19 @@ Source: `third_party/VENDOR_PIN`, `userspace/lib/tls-probe/vendor.py`
 (`tree_errors`, `check`, `self_test`, `prune`), `tools/sdk_cargo.py`,
 `tools/ci_check.sh`, `tests/host/tls-tests/.cargo/config.toml`,
 `tests/host/quic-tests/.cargo/config.toml`, `mk/userspace.mk`.
+
+## Licence headers: `REUSE.toml` and `tools/spdx_headers.py`
+
+Every tracked source file (`.rs`, `.S`, `.ld`, `.py`, `.sh`, `.mk`, `Makefile`)
+outside `third_party/` and `lx/glue/` carries an `SPDX-License-Identifier` and `SPDX-FileCopyrightText` header.
+`tools/spdx_headers.py` adds a missing one; with `--check` it writes nothing,
+lists the files that lack one and exits 1, which is a row of the gate's first
+tier. Files that cannot take a comment (documentation, data, images, keys, lock
+files) are covered by `REUSE.toml`: a catch-all annotation gives every path the
+project licence unless the file has its own header, `lx/glue/**` is
+GPL-2.0-only and the relibc patches under `userspace/lib/relibc-azos/patches/`
+are MIT. That no GPL-only source or symbol leaves `lx/glue/` and
+`third_party/` is checked by `tools/lx_license_lint.py` ([linux.md](../linux.md)).
+
+Source: `REUSE.toml`, `tools/spdx_headers.py`, `tools/gate_tier.sh`,
+`tools/lx_license_lint.py`.
