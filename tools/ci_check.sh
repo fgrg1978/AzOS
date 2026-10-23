@@ -8975,6 +8975,58 @@ crash_log_rotation_row() {
 }
 par "crash log: records a real panic, survives reboot" crash_log_rotation_row
 
+# The mount-time check of the boot volume: a FAT32 image whose file chain was
+# cut (tools/fat_damage_image.py: JUNK.BIN's second cluster free in the FAT)
+# and whose clean bit is clear boots; the mount checks it, finds the broken
+# chain, serves /fat read-only (Kconfig FS_CHECK_FAILED's default) and writes
+# the decision record (device-admission, bus 4, why 5) with its receipt.
+# Canary (by hand): `fat-check-never-fails-canary` gives no "check failed"
+# line; skipping the image damage gives "broken=0".
+fat_check_readonly_row() {
+    local label="fs check: a damaged FAT32 boot volume is served read-only"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/fat-check-ro.log" img="$CI_LOG_DIR/fat-check-ro.img"
+    local junk="$CI_LOG_DIR/fat-check-junk.bin" pid i
+    rm -f "$log" "$img" "$junk"
+    if ! kbuild "qemu"; then return; fi
+    make_disk $AZOS_OUT/build/disk.img || return
+    cp $AZOS_OUT/build/disk.img "$img"
+    python3 -c 'import sys; sys.stdout.buffer.write(b"J" * 65536)' >"$junk"
+    if ! mcopy -o -i "$img" "$junk" ::JUNK.BIN || ! python3 tools/fat_damage_image.py "$img" JUNK.BIN >/dev/null; then
+        bad; echo "      could not build the damaged image"; return
+    fi
+    par_ready
+    "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 2 \
+        -drive "file=$img,if=none,format=raw,id=d0" \
+        -device virtio-blk-device,drive=d0 >"$log" 2>&1 &
+    pid=$!; i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "[FS] FAT32 mounted at /fat" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.25
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if ! grep -aqE "\[FAT32\] check: unclean=true .*broken=[1-9]" "$log" 2>/dev/null; then
+        bad; echo "      the mount did not check the unclean volume, or found no broken chain:"
+        grep -a "\[FAT32\]" "$log" | tr -d '\r' | sed "s|^|        |"
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqE "\[FAT32\] check failed: the boot volume is READ-ONLY for this boot \(receipt #[0-9]+\)" "$log" 2>/dev/null; then
+        bad; echo "      no read-only verdict with its decision record:"
+        grep -a "\[FAT32\] check" "$log" | tr -d '\r' | sed "s|^|        |"
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[FS] FAT32 mounted at /fat" "$log" 2>/dev/null; then
+        bad; echo "      the read-only volume was not served at /fat:"
+        tail -5 "$log" | sed "s|^|      |"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$img" "$junk"
+}
+par "fs check: a damaged FAT32 boot volume is served read-only" fat_check_readonly_row
+
 # Canary (2026-09-24, by hand): an unconditional early return after the lock checks in
 # `write_crash_log` — boot 1 panicked identically and never printed the
 # written line; assertion 3 went red. Bucket (a). Reverted.
@@ -10713,6 +10765,17 @@ host_job host_canary_row "fat32: directory-blind entry cache canary" fs-tests di
     subdirs::nested_directories_keep_same_named_files_apart
 host_job host_canary_row "fat32: unjournaled cross-directory rename canary" fs-tests rename-across-unjournaled-canary \
     a_rename_to_a_free_name_in_another_directory_cut_anywhere_has_one_name_on_the_chain
+# The mount-time check's verdict (fs-tests `power_cut`, `azvol_mount`): damage
+# passes on either format, an unclean azvol mount goes unchecked, a recorded
+# FAT32 hard error asks for no check.
+host_job host_canary_row "fs check: FAT32 damage passes canary" fs-tests fat-check-never-fails-canary \
+    s3_a_broken_chain_fails_the_check_and_the_volume_is_served_read_only
+host_job host_canary_row "fs check: FAT32 hard error ignored canary" fs-tests fat-hard-error-ignored-canary \
+    s3_a_clear_hard_error_bit_asks_for_the_check_and_a_clean_unmount_answers_it
+host_job host_canary_row "fs check: azvol damage passes canary" fs-tests azvol-check-never-fails-canary \
+    an_unclean_mount_is_checked_and_damage_makes_the_volume_read_only_or_refused
+host_job host_canary_row "fs check: azvol unclean unchecked canary" fs-tests azvol-unclean-unchecked-canary \
+    an_unclean_mount_is_checked_and_damage_makes_the_volume_read_only_or_refused
 host_job host_canary_row "network: TFTP forged package canary" pkg-tests pkg-verify-skip-canary \
     tftp_source::a_forged_package_fetched_over_tftp_is_refused
 host_job host_canary_row "quic: rsa key canary" quic-tests canary-rsa-keys the_quic_providers_refuse_an_rsa_private_key

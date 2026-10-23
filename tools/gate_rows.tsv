@@ -230,6 +230,11 @@ network: TFTP forged bundle canary	n1	crates/net/tftp/** userspace/services/pkgd
 network: TFTP tampered bundle canary	n1	crates/net/tftp/** userspace/services/pkgd/** userspace/lib/packages/** crates/core/pkg/** crates/core/ota/** tests/host/pkg-tests/** config/subsys/Kconfig.packages
 fat32: directory-blind entry cache canary	n1	crates/fs/** tests/host/fs-tests/**
 fat32: unjournaled cross-directory rename canary	n1	crates/fs/** tests/host/fs-tests/**
+fs check: FAT32 damage passes canary	n1	crates/fs/** tests/host/fs-tests/**
+fs check: FAT32 hard error ignored canary	n1	crates/fs/** tests/host/fs-tests/**
+fs check: azvol damage passes canary	n1	crates/fs/** tests/host/fs-tests/**
+fs check: azvol unclean unchecked canary	n1	crates/fs/** tests/host/fs-tests/**
+fs check: a damaged FAT32 boot volume is served read-only	n1	crates/fs/fs/src/fat32.rs kernel/src/boot/azvol.rs tools/fat_damage_image.py
 network: TFTP forged package canary	n1	crates/net/tftp/** userspace/services/pkgd/** userspace/lib/packages/** crates/core/pkg/** tests/host/pkg-tests/** config/subsys/Kconfig.packages
 quic: rsa key canary	n1	
 soc: effect-after-write canary	n1	

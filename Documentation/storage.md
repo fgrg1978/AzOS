@@ -450,19 +450,30 @@ The volume carries the standard "shut down cleanly" state in two places:
 |----------|-----------|
 | `FAT[1]` bit 27 (`FAT_STATE_CLEAN`), in every FAT copy | set |
 | Boot sector byte `0x41` (`BS_Reserved1`) bit 0 (`BS_STATE_DIRTY`) | clear |
+| `FAT[1]` bit 26 (`FAT_STATE_NO_HARD_ERROR`, a hard error recorded when clear) | set |
 
-A volume is clean only when both agree (`volume_is_clean`). Mount does, in
-order:
+A volume is clean only when the first two agree (`volume_state`); a clear
+hard-error bit asks for the check as well. Mount does, in order:
 
 1. Recover from the journal (`fat32_journal_recover`).
 2. If the volume is not clean, or a journal record was found, run
    `check_volume`: walk every directory and chain with a one-bit-per-cluster
    reachability bitmap, count FAT copies that differ (copy 0 wins), cross-linked
    chains and broken chains, and reclaim lost clusters, but only if the scan
-   completed without a read error or limit. A volume whose bitmap would exceed
-   1 MiB is checked for FAT-copy agreement only. The result is
-   `MountReport`, readable with `fat32_mount_report`.
-3. Mark the volume **dirty for this mount, durably, before the first write**:
+   completed without a read error or limit and found no broken or
+   cross-linked chain (past one, a "lost" cluster may be a live file's tail).
+   A volume whose bitmap would exceed 1 MiB is checked for FAT-copy agreement
+   only. The result is `MountReport`, readable with `fat32_mount_report`.
+3. Judge the check (`check_verdict`): damage (a broken or cross-linked chain,
+   a scan stopped by a read error or a damaged directory, not by its own
+   limit) serves the volume **read-only** for this mount, or refuses it
+   (Kconfig `FS_CHECK_FAILED`); leaked clusters and differing FAT copies are
+   not damage. A read-only mount refuses every write (`write_sector_in`,
+   `write_sector_direct`, the swap file's sector runs) and is never marked
+   dirty, so it stays unclean and the next mount checks it again. The kernel
+   prints the counts and, for a failed check, a decision record
+   (`device-admission`, bus 4, partition 0, why 5 read-only or 6 refused).
+4. Mark the volume **dirty for this mount, durably, before the first write**:
    `mark_volume_dirty` flushes the cache, writes the state straight to the
    device (`write_sector_direct`), and flushes again so the flag reaches the
    medium ahead of every later write. That second flush's answer is not
@@ -477,6 +488,17 @@ does it clear the flag, as the last write, followed by a flush. Anything short
 of that (a cut, a crash, a halt that never gets there) leaves the volume dirty
 and the next mount runs the check. A medium that refuses the flag write
 (write-protected) still mounts, and the unmount then has nothing to clear.
+The clean mark also sets the hard-error bit again: the mount that marked the
+volume dirty passed its check.
+
+The same walk runs by hand, counting only (`fat32_check`: nothing repaired or
+written, so it is safe beside the volume's users; a write in flight shows as a
+lost cluster), through `vfs_check` and the kernel-hosted `Volume` interface
+(`volume.<n>`, the badge naming the volume): the toolbox's `fsck`. An azvol
+volume's `Volume::check` runs the same two ways: after a mount that had to
+rebuild the free-space map or found a superblock copy damaged
+(`azvol_mount::open_plain`, the same Kconfig verdict and record, why 5 or 6
+with the row's partition), and by hand.
 
 ### Write-back and epochs (Kconfig `FS_WRITEBACK`)
 
