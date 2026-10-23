@@ -12279,8 +12279,10 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     # ── Native PCI enumeration (aarch64) ───────
     # ECAM at 0x40_1000_0000 (highmem-ecam) and the 32-bit BAR window, both
     # read from the DTB's `pcie@10000000` node (`[PCI] host bridge: ...
-    # (dtb)`); `iommu=smmuv3` is harmless (bypass until a stream table
-    # entry is programmed).
+    # (dtb)`). `iommu=smmuv3` puts an SMMU on the bus, which the kernel now
+    # drives (IOMMU_SMMUV3): virtio-net-pci translates, virtio-blk-pci (no
+    # driver over PCI) is blocked, NVMe passes through; enumeration is
+    # unaffected.
     pci_enum_row_aarch64() {
         local label="pci: bus 0 enumerates (aarch64)"
         printf "  %-26s" "${label}..."
