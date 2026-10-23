@@ -6,7 +6,9 @@
 // check (`crates/core/ipc/src/mmio_cap.rs`), the capability table, the hardware
 // bus (`crates/drivers/hwbus`, `crates/drivers/bus/src/hwbus.rs`) and the Sv39
 // walker. Transcribed: `process::mmio_map_user` (see `shims/sched`), whose PTEs
-// are read back here through the real `translate_user`.
+// are read back here by a walk of the table ([`leaf`]). Not through
+// `translate_user`: that one is the kernel's own access to user memory, and it
+// refuses a device window (front uaccess-mmio-buffer, `uaccess_mmio.rs`).
 //
 // What a refusal must leave behind is nothing: every refused call below is
 // followed by a check that the task's MMIO window is still empty.
@@ -93,7 +95,27 @@ fn window_base() -> usize {
 }
 
 fn window_is_empty(pt: usize) -> bool {
-    azos_mm::vmm::translate_user(pt, window_base(), false).is_none()
+    leaf(pt, window_base()).is_none()
+}
+
+/// The frame and permissions of the leaf mapping `va` in `pt`, read from the
+/// table words (on the host a physical address is a pointer).
+fn leaf(pt: usize, va: usize) -> Option<(usize, azos_arch_api::PagePerms)> {
+    use azos_arch_api::Mmu as _;
+    use azos_arch::ARCH;
+    let mut t = pt;
+    for level in (0..3).rev() {
+        let w = unsafe { core::ptr::read_volatile((t + ARCH.vpn(va, level) * 8) as *const u64) };
+        if !ARCH.pte_is_valid(w) {
+            return None;
+        }
+        if ARCH.pte_is_leaf(w, level) {
+            let span = 1usize << (12 + 9 * level);
+            return Some((ARCH.pte_phys(w) + (va & (span - 1)), ARCH.pte_perms(w)));
+        }
+        t = ARCH.pte_phys(w);
+    }
+    None
 }
 
 fn map(handle: u64, access: u64) -> i64 {
@@ -113,9 +135,10 @@ fn a_read_capability_maps_the_window_read_only() {
     let va = map(m.rtc as u64, READ);
     assert_eq!(va, window_base() as i64, "did not map at the window");
     let va = va as usize;
-    assert_eq!(azos_mm::vmm::translate_user(pt, va, false), Some(0x0010_1000), "wrong frame");
-    assert_eq!(azos_mm::vmm::user_write_would_be_permitted(pt, va), false, "RTC mapped writable");
-    assert!(azos_mm::vmm::translate_user(pt, va + 0x1000, false).is_none(), "mapped past the window");
+    let (pa, perms) = leaf(pt, va).expect("window not mapped");
+    assert_eq!(pa, 0x0010_1000, "wrong frame");
+    assert!(perms.user && !perms.write, "RTC mapped writable");
+    assert!(leaf(pt, va + 0x1000).is_none(), "mapped past the window");
 }
 
 /// Admitted: RW with an RW capability is writable.
@@ -126,8 +149,11 @@ fn a_read_write_capability_maps_the_window_writable() {
     let m = machine();
     hold(m.bus, CapPerms::RW);
     let va = map(m.bus as u64, RW) as usize;
-    assert_eq!(azos_mm::vmm::translate_user(pt, va, false), Some(0x0400_0000));
-    assert!(azos_mm::vmm::user_write_would_be_permitted(pt, va), "RW mapping is not writable");
+    let (pa, perms) = leaf(pt, va).expect("window not mapped");
+    assert_eq!(pa, 0x0400_0000);
+    assert!(perms.user && perms.write, "RW mapping is not writable");
+    // A kernel copy into the window is refused (front uaccess-mmio-buffer).
+    assert!(azos_mm::vmm::translate_user(pt, va, false).is_none(), "the user walk accepted a device window");
 }
 
 /// Refusal: no capability. `-1` (the dispatch-level `E_PERM`), nothing mapped.

@@ -1637,7 +1637,8 @@ fn translate_user_reserved(pt_phys: usize, vaddr: usize, write: bool) -> Option<
 pub fn translate_user_writable_nofault(pt_phys: usize, vaddr: usize) -> Option<usize> {
     let (pte, mask) = user_leaf(pt_phys, vaddr)?;
     let f = ARCH.pte_perms(pte);
-    (f.user && f.read && f.write).then(|| ARCH.pte_phys(pte) + (vaddr & mask))
+    let pa = ARCH.pte_phys(pte) + (vaddr & mask);
+    (f.user && f.read && f.write && kernel_reaches(f.mem, pa)).then_some(pa)
 }
 
 /// The physical address of `vaddr` when its user page is mapped and
@@ -1648,7 +1649,38 @@ pub fn translate_user_writable_nofault(pt_phys: usize, vaddr: usize) -> Option<u
 pub fn translate_user_readable_nofault(pt_phys: usize, vaddr: usize) -> Option<usize> {
     let (pte, mask) = user_leaf(pt_phys, vaddr)?;
     let f = ARCH.pte_perms(pte);
-    (f.user && f.read).then(|| ARCH.pte_phys(pte) + (vaddr & mask))
+    let pa = ARCH.pte_phys(pte) + (vaddr & mask);
+    (f.user && f.read && kernel_reaches(f.mem, pa)).then_some(pa)
+}
+
+/// Can the kernel reach the frame of a user leaf through its own map of RAM
+/// (`addr::phys_to_virt`), which is how every kernel access to user memory is
+/// made? Not for a user device window (`DOMAIN_MMIO_MAP`,
+/// `process::mmio_map_user`: `PagePerms::USER_MMIO_*`). Its frame is device
+/// space, outside the RAM the PMM manages. aarch64's linear map and x86_64's
+/// direct map hold RAM only (x86_64 also takes the E820 holes out), so the
+/// kernel access was a fatal kernel page fault that ring 3 could trigger with
+/// a `read` into its own register window. On riscv64 the map is the identity
+/// in the task's own table, so the access reached whatever VA == PA maps
+/// there. Refused instead, as Linux's `get_user_pages` refuses `VM_IO`/
+/// `VM_PFNMAP`. The driver that mapped the window does its own register
+/// accesses, with the widths and order the device needs. A kernel copy loop
+/// gives neither, and it would turn one `read` into a burst of side-effecting
+/// register reads.
+///
+/// Two tests, because neither one covers every ISA: the memory type (aarch64
+/// and x86_64 always encode it, riscv64 only with Svpbmt) and the PMM range
+/// (it catches riscv64 without Svpbmt; on x86_64 a device in the 32-bit hole
+/// can sit inside the PMM's span, and the type catches it).
+///
+/// Host canary `uaccess-mmio-canary`: always `true`, the code before this
+/// check (`syscall-tests`' `uaccess_mmio` must fail).
+#[inline(always)]
+fn kernel_reaches(mem: MemType, pa: usize) -> bool {
+    if cfg!(feature = "uaccess-mmio-canary") {
+        return true;
+    }
+    !matches!(mem, MemType::Device) && pmm::frame_index(pa & !(PAGE_SIZE - 1)).is_some()
 }
 
 /// Would a write to `vaddr` be permitted — **without breaking copy-on-write?**
@@ -1668,9 +1700,11 @@ pub fn translate_user_readable_nofault(pt_phys: usize, vaddr: usize) -> Option<u
 /// page that is not COW — the genuinely-not-writable case.
 pub fn user_write_would_be_permitted(pt_phys: usize, vaddr: usize) -> bool {
     match user_leaf(pt_phys, vaddr) {
-        Some((pte, _)) => {
+        Some((pte, mask)) => {
             let f = ARCH.pte_perms(pte);
+            // A device window answers as the copy will ([`kernel_reaches`]).
             f.user && f.read && (f.write || ARCH.pte_is_cow(pte))
+                && kernel_reaches(f.mem, ARCH.pte_phys(pte) + (vaddr & mask))
         }
         // Wave 14: a reserved page is writable if its region (or demand
         // marker) says so; the copy that follows commits it.
@@ -1735,8 +1769,9 @@ fn user_leaf_ok(
     write: bool,
 ) -> Option<usize> {
     let f = ARCH.pte_perms(pte);
-    // Reject kernel/MMIO (no USER bit) and unreadable pages outright.
-    if !f.user || !f.read {
+    // Reject kernel/MMIO (no USER bit) and unreadable pages outright, and a
+    // user device window ([`kernel_reaches`]).
+    if !f.user || !f.read || !kernel_reaches(f.mem, ARCH.pte_phys(pte) + (vaddr & offset_mask)) {
         return None;
     }
     if write && !f.write {

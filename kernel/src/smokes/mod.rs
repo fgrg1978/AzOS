@@ -91,6 +91,9 @@ pub(crate) mod asid_one_per_space;
 // N12f: the kernel half every user root shares (Kconfig RV_KERNEL_GLOBAL).
 #[cfg(all(feature = "qemu", feature = "ktest"))]
 pub(crate) mod kernel_half_shared;
+// A user device window as a copy buffer is EFAULT (front uaccess-mmio-buffer).
+#[cfg(feature = "ktest")]
+pub(crate) mod uaccess_mmio;
 // arch-only: x86_64 has no user images yet; riscv64 and aarch64 reach ring
 // 3 through theirs (the rows that boot them).
 #[cfg(all(feature = "ktest", target_arch = "x86_64"))]

@@ -58,6 +58,10 @@ fork-commit-race-canary = []
 # Host-suite canary (front uaccess-pin): `uaccess::wait_readers` returns at
 # once, as before the access sections; `syscall-tests`' `uaccess_race` fails.
 uaccess-race-canary = []
+# Canary (front uaccess-mmio-buffer): `vmm::kernel_reaches` answers `true`,
+# so a user device window passes the user walk again: `syscall-tests`'
+# `uaccess_mmio` and ktest `uaccess_refuses_a_user_device_window` fail.
+uaccess-mmio-canary = []
 # Canary only (wave 14, DEMANDPAGE): the fault path never asks the region
 # pagers, so the first touch of a demand-paged `mmap` page kills the task
 # (and a kernel copy into one fails). Host rows in syscall-tests must go red.

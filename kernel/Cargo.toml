@@ -289,6 +289,9 @@ cow-spurious-canary = ["azos_mm/cow-spurious-canary"]
 fork-commit-race-canary = ["azos_mm/fork-commit-race-canary"]
 mmap-prot-canary = ["azos_syscall/mmap-prot-canary"]
 demand-region-canary = ["azos_mm/demand-region-canary"]
+# Front uaccess-mmio-buffer: a user device window passes the user walk again;
+# ktest `uaccess_refuses_a_user_device_window` must fail (or the kernel fault).
+uaccess-mmio-canary = ["azos_mm/uaccess-mmio-canary"]
 # Plan item 7 (coherence) canaries, see `crates/core/{sched,ipc}/Cargo.toml`.
 kill-wake-timer-only-canary = ["azos_sched/kill-wake-timer-only-canary"]
 kill-reblock-canary = ["azos_sched/kill-reblock-canary"]

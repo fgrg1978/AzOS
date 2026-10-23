@@ -362,6 +362,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod uaccess_mmio {
+        use super::*;
+        include!("uaccess_mmio.rs");
+    }
+
+    #[cfg(test)]
     mod demand_paging {
         use super::*;
         include!("demand_paging.rs");
