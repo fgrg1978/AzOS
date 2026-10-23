@@ -892,6 +892,15 @@ fn stage_in(slot: usize, mut off: usize, src: &[u8]) {
     }
 }
 
+/// The controller as bring-up left it, read-only from then on (only the
+/// queues' moving parts change, behind [`QLOCK`]). Called once the controller
+/// was bound, never during bring-up.
+fn dev() -> &'static Dev {
+    // SAFETY: `DEV` is written by `attach` alone, single-threaded, before
+    // `queue::bind` publishes the controller; every caller runs after it.
+    unsafe { &*(&raw const DEV) }
+}
+
 /// `true` while the driver may submit.
 fn usable() -> bool {
     READY.load(Ordering::Acquire) && !FAILED.load(Ordering::Acquire)
@@ -919,8 +928,7 @@ pub fn shutdown(floor_ms: u64) -> Option<bool> {
         return None;
     }
     READY.store(false, Ordering::Release);
-    // SAFETY: written once in bring-up, before `bind`.
-    let (bar, rtd3e_us) = unsafe { (DEV.bar, DEV.rtd3e_us) };
+    let (bar, rtd3e_us) = (dev().bar, dev().rtd3e_us);
     wr32(bar, proto::REG_CC, proto::cc_shutdown(rd32(bar, proto::REG_CC)));
     let deadline = deadline_after_us(proto::shutdown_timeout_ms(rtd3e_us, floor_ms).saturating_mul(1000));
     loop {
@@ -957,8 +965,7 @@ fn hw_status(op: u8, st: u16) -> HwStatus {
 
 impl HwQueue for Nvme {
     fn caps(&self) -> HwCaps {
-        // SAFETY: written once in bring-up, before `bind`.
-        let dev = unsafe { &*(&raw const DEV) };
+        let dev = dev();
         HwCaps {
             sectors: dev.capacity,
             max_sectors: dev.max_sectors.max(1),
@@ -1030,8 +1037,7 @@ impl HwQueue for Nvme {
     }
 
     fn reap(&self, out: &mut [HwDone; HW_TAGS_MAX]) -> usize {
-        // SAFETY: bring-up wrote `DEV`.
-        let dev = unsafe { &*(&raw const DEV) };
+        let dev = dev();
         let mut n = 0;
         for qi in 0..dev.queues {
             // One queue at a time: its completions, then the slots on it.
