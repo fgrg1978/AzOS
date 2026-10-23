@@ -8,7 +8,9 @@
 //! Linux kernel core APIs they call: memory allocation, locks, timers,
 //! workqueues, RCU, printk, the device model, reference counts and the
 //! exported-symbol table. No Linux source is copied; behaviour is matched
-//! where drivers can observe it.
+//! where drivers can observe it. Interrupt lines ([`irq`]) and per-CPU
+//! state on one CPU ([`percpu`]) map Linux's models onto the server's
+//! capabilities without a system call of their own.
 //!
 //! Constraints that shape every module:
 //!
@@ -39,6 +41,7 @@ pub mod irq;
 pub mod kref;
 pub mod lock;
 pub mod mem;
+pub mod percpu;
 pub mod printk;
 pub mod rcu;
 pub mod sched;

@@ -88,6 +88,35 @@ A server runs all of its Linux code on one AzOS thread ([Threads in the server](
 - **aarch64.** The loader rewrites `mrs xN, SP_EL0` to `mrs xN, TPIDR_EL0`. `TPIDR_EL0` is writable at EL0. The server's task switch writes the current task's address there, and the server keeps no thread pointer of its own in `TPIDR_EL0` while Linux code runs. The kernel keeps `TPIDR_EL0` per task for a Linux task and for a Linux class server's tasks (`switch_slow` in `crates/core/sched/src/fp.rs`). It uses the same per-slot save and restore for both, and only switches from or to such a task pay for it. A spawn marks the slot when its row names an `lx_class` (`TaskInit::lx_class`), and a thread or fork child of the server inherits the mark. A native task's value is not kept. `mrs xN, TPIDR_EL1` and `mrs xN, TPIDR_EL2` become `movz xN, #0`. Refusing them instead would refuse `ext4.ko`. Its 5 `TPIDR_EL1` reads are `__kern_my_cpu_offset`, and 0 is the exact offset of the server's one CPU. The 5 `TPIDR_EL2` reads are the VHE replacement tails left in `.text` after the alternatives table is stripped: unreachable, and given the same value. Kept as they are: hints, barriers, `brk` and `ldtr`/`sttr`, which run at EL0. Every other system-register access refuses the module. That includes `TPIDR_EL0` itself, which now holds `current`. Also refused: `msr` of a `PSTATE` field (`DAIFSet`, `PAN`), `sys`/`sysl`, `svc`/`hvc`/`smc`, and `eret`.
 - **riscv64.** `tp` is a general register, which the kernel preserves for every task (`crates/core/abi/src/syscall_nr.rs`: `sp`, `gp` and `tp` are kept across a syscall, and a trap saves every register). The server's task switch sets `tp` to the current task, `smp_processor_id()` reads 0 from the task's `thread_info`, and `__per_cpu_offset` is the server's one-entry array. Nothing is rewritten and nothing changes in the kernel.
 
+What the inline per-CPU code reads, in the module set as built: riscv64 `ext4.ko` forms a per-CPU address as the variable's address plus `__per_cpu_offset[cpu]`, with `cpu` loaded from `0x20(tp)`, and keeps the preemption count at `0x8(tp)`. aarch64 keeps the preemption count at `[SP_EL0, #8]`, which the loader turns into `TPIDR_EL0`. So on both, `current` must hold the address of a `task_struct` laid out as the pinned headers lay it out, with `thread_info` first, and only the glue can size one. `lx/emul` therefore carries `current` as an opaque word per task (`lx/emul/src/percpu.rs`, `CurrentOps`): the server creates the word when a task is created (kernel threads, the workqueue worker, irq threads), installs it before the loop switches into the task and installs the loop's own word when the switch comes back, and releases it when the task's slot is freed. Installing is per ISA, in the server: `mv tp` on riscv64, `msr TPIDR_EL0` on aarch64, a store to `const_current_task` on x86_64.
+
+The rest is values, which the glue defines and the ext4 slice adds to `lxbase.c`:
+
+| Symbol | Value on one CPU |
+|---|---|
+| `__per_cpu_offset[NR_CPUS]` | all 0 |
+| `nr_cpu_ids`, `__num_possible_cpus` | 1 |
+| `__cpu_possible_mask` | bit 0 |
+| `pcpu_alloc_noprof`, `free_percpu` | one zeroed copy from `lxh_alloc` with the requested alignment, `lxh_free`; the address is CPU 0's copy |
+| `preempt_schedule`, `preempt_schedule_notrace` | return: nothing ever asks for a reschedule |
+| x86_64 `this_cpu_off`, `cpu_number` | 0 |
+| x86_64 `__preempt_count`, `const_current_task` | the count, and the word the server installs |
+
+A module's own `.data..percpu` (8 bytes in `ext4.ko` on both ISAs) is laid out as data by the loader, and that copy is CPU 0's. The preemption count that matters to the layer's own checks is `lx/emul`'s: `Env::spin_lock` and the other spinlock calls raise it, as on Linux, so a sleep while a spinlock is held is refused and counted, and an item that returns with it raised is fixed up and counted. A block point is never reached with it raised, so one count serves every task.
+
+#### What SMP would need
+
+A server whose Linux code runs on N threads is N CPUs. Beyond the per-thread base registers below:
+
+- **Per-CPU areas.** `__per_cpu_offset[cpu]` becomes the distance from each module's `.data..percpu` to that CPU's copy, so the loader lays out N copies (Linux copies the section once per CPU at load), and `pcpu_alloc_noprof` returns N copies. `nr_cpu_ids`, `__num_possible_cpus` and `__cpu_possible_mask` follow N.
+- **The CPU number** per thread: `thread_info.cpu` in each `task_struct` on riscv64 and aarch64, `cpu_number` through the per-thread GS base on x86_64. A task that moves between threads has to update it, so tasks would stay on the thread that created them.
+- **Real locks.** Spinlocks and `local_irq_save` stop being flags: they need atomics, and the interrupt flag becomes per thread. Mutex and wait-queue hand-off, the run queue, the timer list and the work queue become per-thread structures with cross-thread wake-ups, which on AzOS means a futex or a port notification between the threads.
+- **RCU** needs a grace period that waits for every thread to pass a quiescent point, not one loop pass.
+- **Interrupts** get a target thread: each line binds to the port of the thread that serves it (`DEVICE_IRQ_BIND` already routes a line to one CPU), and `IRQF_PERCPU` and affinity calls map onto that.
+- **`percpu_counter`** batching starts to matter: its sum has to walk every CPU's copy.
+
+None of this is needed while one thread serves a class. The cost of the single thread is that a class's Linux code is serialised, which the native drivers, not the Linux ones, are meant to beat.
+
 A server that runs Linux code on more than one thread has more than one CPU, and the base has to differ per thread:
 
 - **x86_64:** a per-thread user GS base. The kernel keeps a per-task value for the GS swap and writes it only at thread creation, as it does the FS base (`fs_base_to_load`). FSGSBASE stays off.
@@ -110,7 +139,7 @@ Source: `tools/lx_license_lint.py` (T1 to T5, A1).
 2. **lx-insn-rewrite** (`crates/core/lx-loader`, ring 3): the riscv64 `sstatus` rewrites and the aarch64 `SP_EL0`/`TPIDR_EL1`/`TPIDR_EL2` rewrites, with a refusal for anything else privileged. Host tests in `tests/host/lx-loader-tests` over the built filesystem set: no privileged instruction is left, and the canary is a module with one other CSR.
 3. **lx-tpidr-el0** (kernel, aarch64): `TPIDR_EL0` saved and restored per task for the slots whose topology row names an `lx_class`, not only for Linux-personality tasks. Tested with a ktest whose canary keeps only the Linux-personality slots.
 4. **lx-virtual-irq** (`lx/emul`): `request_irq`, `request_threaded_irq`, `free_irq`, `enable_irq` and `disable_irq` over the kernel's mask-until-ACK line, with thread functions on their own tasks. The `irqsave` family over the emulated interrupt flag, with sleeping inside it refused and counted, was already in `lx/emul/src/lock.rs`; the exported `_raw_spin_lock_irqsave` symbols are the ext4 slice's.
-5. **lx-percpu-single** (`lx/emul`, `lxsrv`): the per-CPU and `current` symbols, written at each task switch on all three ISAs.
+5. **lx-percpu-single** (`lx/emul`): the preemption count and the spinlock calls that raise it, the CPU number, and `current` as a word per task, installed at each task switch through the server's `CurrentOps`. The `lxsrv` side (the per-ISA install, the glue values above) comes with the ext4 slice.
 6. **ext4-lx-slice** itself: the symbols `lx/FS_EXT4_UNRESOLVED` lists, over fronts 1 to 5.
 7. **Deferred until a multi-threaded server exists:** the x86_64 per-thread user GS base and the aarch64 per-thread `TPIDRRO_EL0`.
 

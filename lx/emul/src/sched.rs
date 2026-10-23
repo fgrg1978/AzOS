@@ -15,8 +15,10 @@
 //! `mutex_lock`, `wait_for_completion`, ...). There it switches back to the
 //! loop, which resumes it once it is woken or its timeout passes. Nothing
 //! preempts a task between two block points, so spinlocks reduce to
-//! interrupt-state flags, and a condition checked just before a block point
-//! cannot change before the task is parked: there is no lost wake-up.
+//! a held flag, a preemption count and the interrupt-state flag (sleeping
+//! while one is held is refused, see [`crate::percpu`]), and a condition
+//! checked just before a block point cannot change before the task is
+//! parked: there is no lost wake-up.
 //!
 //! Between passes the server blocks in the AzOS port wait until the
 //! deadline [`Env::run_once`] returns (`SYS_PORT_WAIT` with a deadline; no
@@ -69,6 +71,7 @@
 
 use crate::device::{self, DevError, DeviceHandle, DeviceInfo, DeviceModel, Driver, DriverHandle};
 use crate::irq::IrqLines;
+use crate::percpu::CurrentOps;
 use crate::lock::{Completion, IrqState, LockError, Mutex, Semaphore, TaskId, WaitQueueHead};
 use crate::printk::Printk;
 use crate::rcu::{self, Rcu, RcuError, RcuFn};
@@ -152,6 +155,8 @@ struct TaskSlot<C> {
     should_stop: bool,
     /// The stack canary was found broken (counted once).
     overflowed: bool,
+    /// The task's current word (its `task_struct`; see [`crate::percpu`]).
+    current: usize,
 }
 
 impl<C> Clone for TaskSlot<C> {
@@ -202,6 +207,7 @@ impl<C, const N: usize> RunQueue<C, N> {
         granted: false,
         should_stop: false,
         overflowed: false,
+        current: 0,
     };
 
     /// No tasks, no stacks.
@@ -255,6 +261,7 @@ impl<C, const N: usize> RunQueue<C, N> {
         s.granted = false;
         s.should_stop = false;
         s.overflowed = false;
+        s.current = 0;
         Some(i)
     }
 
@@ -305,6 +312,31 @@ impl<C, const N: usize> RunQueue<C, N> {
                 self.make_runnable(i);
             }
         }
+    }
+
+    /// A live task's current word.
+    pub(crate) fn current_word(&self, id: TaskId) -> Option<usize> {
+        self.find(id).map(|i| self.slots[i].current)
+    }
+
+    pub(crate) fn set_current_word(&mut self, id: TaskId, w: usize) {
+        if let Some(i) = self.find(id) {
+            self.slots[i].current = w;
+        }
+    }
+
+    /// Give every live task without a current word one.
+    pub(crate) fn give_words(&mut self, mut f: impl FnMut(TaskId) -> usize) {
+        for s in self.slots.iter_mut().filter(|s| s.func.is_some() && s.current == 0) {
+            s.current = f(s.id);
+        }
+    }
+
+    /// Free slot `i` (its task exited, or was reaped); returns the current
+    /// word it held.
+    fn free(&mut self, i: usize) -> usize {
+        self.slots[i].func = None;
+        core::mem::replace(&mut self.slots[i].current, 0)
     }
 
     /// State of a task.
@@ -431,6 +463,9 @@ pub struct LoopStats {
     pub rcu_leaks: u32,
     /// Items that returned with interrupts still disabled (fixed up).
     pub irq_leaks: u32,
+    /// Items that returned with preemption still disabled (fixed up), and
+    /// unbalanced `preempt_enable` calls.
+    pub preempt_leaks: u32,
     /// Sleeping primitives called from atomic context.
     pub atomic_sleeps: u32,
     /// Sleeping primitives that had to wait but were called outside a task
@@ -473,6 +508,11 @@ pub struct Env {
     pub irq: IrqState,
     /// Interrupt lines.
     pub irqs: IrqLines<IRQ_SLOTS>,
+    /// `preempt_count()` (see [`crate::percpu`]).
+    pub(crate) preempt: u32,
+    pub(crate) current_ops: Option<CurrentOps>,
+    /// The loop's current word.
+    pub(crate) loop_word: usize,
     /// Timer list.
     pub timers: TimerList<Env, TIMER_SLOTS>,
     /// Work FIFO.
@@ -590,6 +630,9 @@ impl Env {
             clock: Clock::new(),
             irq: IrqState::new(),
             irqs: IrqLines::new(),
+            preempt: 0,
+            current_ops: None,
+            loop_word: 0,
             timers: TimerList::new(),
             work: WorkQueue::new(),
             rcu: Rcu::new(),
@@ -607,6 +650,7 @@ impl Env {
                 irqs: 0,
                 rcu_leaks: 0,
                 irq_leaks: 0,
+                preempt_leaks: 0,
                 atomic_sleeps: 0,
                 would_block: 0,
                 stack_overflows: 0,
@@ -672,10 +716,11 @@ impl Env {
         self.context == Context::Hardirq
     }
 
-    /// `in_atomic()`: softirq, hardirq, interrupts off, or inside an RCU
-    /// read section. Sleeping here is a bug on Linux.
+    /// `in_atomic()`: softirq, hardirq, interrupts off, preemption off (a
+    /// spinlock held), or inside an RCU read section. Sleeping here is a bug
+    /// on Linux.
     pub fn in_atomic(&self) -> bool {
-        self.in_softirq() || self.in_hardirq() || self.irq.disabled() || self.rcu.depth() > 0
+        self.in_softirq() || self.in_hardirq() || self.irq.disabled() || self.rcu.depth() > 0 || self.preempt > 0
     }
 
     /// `jiffies`.
@@ -780,7 +825,8 @@ impl Env {
             self.tasks.slots[i].state = TaskState::Exited(code);
             self.tasks.wake_chan(me, usize::MAX);
         } else {
-            self.tasks.slots[i].func = None;
+            let w = self.tasks.free(i);
+            self.current_released(w);
         }
         self.switch_to_loop();
         unreachable!("an exited task was resumed");
@@ -795,20 +841,24 @@ impl Env {
         // previous task (if any) has exited, so nothing runs on it.
         let sp = unsafe { switch::prepare(base, len, task_main, ctx, i) };
         self.tasks.slots[i].sp = sp;
-        Some(self.tasks.slots[i].id)
+        let id = self.tasks.slots[i].id;
+        self.current_created(id);
+        Some(id)
     }
 
     /// Run task slot `i` until it blocks, yields or exits.
     fn resume(&mut self, i: usize) {
         let s = &mut self.tasks.slots[i];
         s.state = TaskState::Running;
-        let (sp, id, base) = (s.sp, s.id, s.stack);
+        let (sp, id, base, word) = (s.sp, s.id, s.stack, s.current);
+        self.current_install(word);
         self.current = Some(i);
         self.context = if id == WORKER_TASK { Context::Work } else { Context::Task(id) };
         let save = core::ptr::addr_of_mut!(self.loop_sp);
         // SAFETY: `sp` was saved by this task's last switch (or built by
         // prepare); the loop's own registers go to `loop_sp`.
         unsafe { switch::switch(save, sp, self as *mut Env as *mut u8) };
+        self.current_install(self.loop_word);
         self.current = None;
         self.context = Context::Idle;
         self.stats.task_runs += 1;
@@ -852,7 +902,8 @@ impl Env {
         let exit = chan(&self.tasks.slots[i]);
         loop {
             if let TaskState::Exited(code) = self.tasks.slots[i].state {
-                self.tasks.slots[i].func = None;
+                let w = self.tasks.free(i);
+                self.current_released(w);
                 return Ok(code);
             }
             self.block(exit, None, seq);
@@ -1259,6 +1310,15 @@ impl Env {
             self.log.pr_err(b"irqs left disabled by an item\n");
             self.irq.enable();
         }
+        if self.preempt != 0 {
+            self.stats.preempt_leaks += 1;
+            self.log.pr_err(b"preemption left disabled by an item\n");
+            self.preempt = 0;
+        }
+    }
+
+    pub(crate) fn stats_mut(&mut self) -> &mut LoopStats {
+        &mut self.stats
     }
 
     /// Run an interrupt handler in hard-interrupt context. It may
