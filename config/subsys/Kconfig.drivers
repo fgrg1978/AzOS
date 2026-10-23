@@ -166,7 +166,6 @@ config DRV_PCI
 
 config PCI_MAX_FUNCTIONS
     int "Most PCI functions the boot enumeration keeps"
-    depends on DRV_PCI
     range 8 256
     default 64 if ARCH_X86_64
     default 32
@@ -181,6 +180,9 @@ config PCI_MAX_FUNCTIONS
 
       Cost: about 250 bytes of the boot stack per function while the boot
       enumerates (16 KiB at 64; the boot stack is 256 KiB); nothing after.
+      Not under DRV_PCI: `make qemu-pci` and the gate's ad-hoc PCI kernels
+      build the cargo feature `pci` on a config without it, and the
+      enumeration reads this constant.
 
 config PCI_SOC_HOST
     # cargo-feature: pci-soc-host
