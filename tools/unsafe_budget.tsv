@@ -108,7 +108,7 @@ domains/robot/flight-math	0	0	0	0	1	0
 domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0
-domains/robot/telemetry	1	0	0	0	0	100
+domains/robot/telemetry	0	0	0	0	1	0
 kernel	331	14	12	51	0	60
 lx/emul	8	0	0	0	0	-
 micro	20	4	0	0	0	68
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	523
+@unsafe-share	522

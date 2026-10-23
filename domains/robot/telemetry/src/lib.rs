@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
+#![forbid(unsafe_code)]
 
 //! Telemetry protocol — binary robot↔server communication (Phase L).
 //!
@@ -114,14 +115,12 @@ pub fn crc8(data: &[u8]) -> u8 {
 // ── Telemetry serialization (Robot → Server) ────────────────────────────────
 
 /// Sequence counter for outgoing telemetry.
-static mut TELEM_SEQ: u8 = 0;
+static TELEM_SEQ: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+/// The next packet's sequence number (wraps at 256). One `fetch_add`, so two
+/// senders never get the same number.
 fn next_seq() -> u8 {
-    unsafe {
-        let s = TELEM_SEQ;
-        TELEM_SEQ = s.wrapping_add(1);
-        s
-    }
+    TELEM_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Write a little-endian i32 to buffer.
