@@ -203,8 +203,10 @@ config USB_STORAGE
       or a transport error (a phase error, a CSW that does not match), goes
       through Reset Recovery (the bulk pipes reopened, Bulk-Only Mass Storage
       Reset, both halts cleared) and runs again, once; a second failure, or a
-      recovery the stick refuses, fails the disk until it is unplugged. At
-      boot the kernel prints the disk and reads its sector 0. QEMU:
+      recovery the stick refuses, fails the disk until it is unplugged. The
+      kernel prints the disk when it is ready, then mounts its volume at /usb
+      (USB_STORAGE_VOLUME) or reads its sector 0. An orderly power-off sends
+      it SYNCHRONIZE CACHE. QEMU:
       `-device qemu-xhci -drive if=none,id=u,file=disk.img
       -device usb-storage,drive=u`.
       n: the class driver is not registered and a stick is only listed.

@@ -22,8 +22,11 @@
 //!   the introspection tree (`usb/devN`) reads its rows;
 //! - the mass-storage class driver (Kconfig `USB_STORAGE`): a stick becomes a
 //!   disk behind its own request queue (`azos_drv_block::usb_msc`); the `usb`
-//!   task drives it after each turn of the core, and a task reads its sector 0
-//!   once it is ready, so the data path is exercised from the first plug;
+//!   task drives it after each turn of the core. With Kconfig
+//!   `USB_STORAGE_VOLUME` its FAT32 volume is mounted at `/usb` once it is
+//!   ready and retired when it goes ([`stick`], `azos_fs::usbvol`), and an
+//!   orderly power-off ejects it ([`storage_shutdown`]); without it a task
+//!   reads its sector 0, so the data path is exercised from the first plug;
 //! - the network class drivers (Kconfig `USB_CDC`, `USB_SMSC95XX`): a CDC-ECM
 //!   or CDC-NCM function, or an SMSC LAN95xx one (the Raspberry Pi 3 B's
 //!   Ethernet), becomes a NIC of the network device table
@@ -623,6 +626,8 @@ mod host {
             let disk: &'static Disk = alloc::boxed::Box::leak(unsafe { slot.assume_init() });
             azos_drv_block::usb_msc::set_hooks(crate::boot::blk_block_until, crate::boot::blk_wake, usb_kick);
             *DISK.lock_irqsave() = Some(disk);
+            #[cfg(feature = "usb-storage-volume")]
+            stick::start();
         }
         #[cfg(feature = "usb-cdc")]
         {
@@ -712,7 +717,8 @@ mod host {
     /// request queue, and say what is there: the evidence, from the first plug,
     /// that the whole path (CBW, data, CSW over the pipes) moves real bytes. A
     /// task of its own: the `usb` task runs the transfers this one waits for.
-    #[cfg(feature = "usb-storage")]
+    /// With `USB_STORAGE_VOLUME` the mount reads the disk instead ([`stick`]).
+    #[cfg(all(feature = "usb-storage", not(feature = "usb-storage-volume")))]
     fn sector0_task(_arg: usize) {
         let Some(disk) = *DISK.lock_irqsave() else { return };
         let mut sector = [0u8; 512];
@@ -726,12 +732,26 @@ mod host {
     }
 
     /// Orderly power-off or reboot (`azos_syscall::handlers`, through the
-    /// devices hook): SYNCHRONIZE CACHE on the mass-storage disk, when one is
-    /// ready, through its request queue (the `usb` task moves the transfer).
-    /// Bounded by Kconfig `USB_MSC_TIMEOUT_MS`; nothing when no disk is
-    /// plugged.
+    /// devices hook): the stick's volume ejected (written back,
+    /// marked clean, SYNCHRONIZE CACHE), else SYNCHRONIZE CACHE on a disk that
+    /// is ready, through its request queue (the `usb` task moves the
+    /// transfers). Bounded by Kconfig `USB_MSC_TIMEOUT_MS` per command;
+    /// nothing when no disk is plugged. Runs on the task that asked for the
+    /// power-off, never on the `usb` task.
     #[cfg(feature = "usb-storage")]
     pub(crate) fn storage_shutdown() {
+        #[cfg(feature = "usb-storage-volume")]
+        match azos_fs::usbvol::eject() {
+            Some(Ok(())) => {
+                crate::kprintln!("[ORDERLY] usb volume: written back, marked clean, synchronize cache ok");
+                return;
+            }
+            Some(Err(())) => {
+                azos_drv_sys::kwarn!("[ORDERLY] usb volume: eject FAILED (the stick may be left dirty)");
+                return;
+            }
+            None => {}
+        }
         let Some(disk) = *DISK.lock_irqsave() else { return };
         if !disk.ready() {
             return;
@@ -739,6 +759,111 @@ mod host {
         match disk.flush(azos_devif::block::OWNER_KERNEL) {
             Ok(()) => crate::kprintln!("[ORDERLY] usb disk: synchronize cache ok"),
             Err(e) => azos_drv_sys::kwarn!("[ORDERLY] usb disk: synchronize cache FAILED ({:?})", e),
+        }
+    }
+
+    /// The stick's FAT32 volume (Kconfig `USB_STORAGE_VOLUME`), mounted at
+    /// [`azos_topology::USB_VOLUME_PATH`] when the disk becomes ready and
+    /// retired when it goes. A task of its own, `usb-vol`: the mount and the
+    /// retirement do disk I/O and take the volume's locks, which a task doing
+    /// I/O on the stick may hold while the `usb` task serves that I/O, so the
+    /// `usb` task only notes what happened ([`stick::note`]). One task, so a
+    /// plug and an unplug are handled in the order they happened.
+    #[cfg(feature = "usb-storage-volume")]
+    pub(crate) mod stick {
+        use core::sync::atomic::{AtomicU8, Ordering};
+
+        use azos_drv_api::block::{DeviceWait, FlushError};
+        use azos_drv_block::queue::{Failure, HwQueue, Outcome};
+        use azos_fs::usbvol;
+
+        use super::{Disk, DISK};
+
+        /// The disk became ready.
+        pub(crate) const READY: u8 = 1;
+        /// The disk went away.
+        pub(crate) const GONE: u8 = 2;
+        static PENDING: AtomicU8 = AtomicU8::new(0);
+        static WAITER: DeviceWait = DeviceWait::new();
+
+        /// The disk as the volume reads and writes it: the kernel's own
+        /// requests (`OWNER_KERNEL`) through its request queue.
+        struct Volume(&'static Disk);
+
+        impl usbvol::Disk for Volume {
+            fn sectors(&self) -> u64 {
+                HwQueue::caps(self.0).sectors
+            }
+            fn read(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+                self.0.read(azos_devif::block::OWNER_KERNEL, sector, count, buf).map_err(|_| ())
+            }
+            fn write(&self, sector: u64, count: u32, buf: &[u8], preflush: bool) -> Result<(), ()> {
+                let flags = if preflush { azos_devif::block::FLAG_PREFLUSH } else { 0 };
+                self.0.write(azos_devif::block::OWNER_KERNEL, sector, count, flags, buf).map_err(|_| ())
+            }
+            fn flush(&self) -> Result<(), FlushError> {
+                match self.0.flush(azos_devif::block::OWNER_KERNEL) {
+                    Ok(()) => Ok(()),
+                    Err(Failure::Ended(Outcome::Unsupported)) => Err(FlushError::Unsupported),
+                    Err(_) => Err(FlushError::Io),
+                }
+            }
+        }
+
+        /// Start the `usb-vol` task: once, with the disk.
+        pub(crate) fn start() {
+            azos_sched::task_create("usb-vol", task, 0, azos_sched::DEFAULT_PRIORITY);
+        }
+
+        /// The `usb` task saw `what` ([`READY`], [`GONE`]) happen to the disk.
+        pub(crate) fn note(what: u8) {
+            // The event first, then the look at who is listed (`DeviceWait`).
+            PENDING.fetch_or(what, Ordering::SeqCst);
+            let tid = WAITER.sleeper();
+            if tid != 0 {
+                crate::boot::blk_wake(tid);
+            }
+        }
+
+        fn task(_arg: usize) {
+            let Some(disk) = *DISK.lock_irqsave() else { return };
+            let vol: &'static Volume = alloc::boxed::Box::leak(alloc::boxed::Box::new(Volume(disk)));
+            let tid = azos_sync::waitqueue::caller_tid();
+            loop {
+                let what = PENDING.swap(0, Ordering::SeqCst);
+                // An unplug before a plug noted in the same look: the old
+                // stick goes first.
+                if what & GONE != 0 && usbvol::mounted() {
+                    usbvol::unplugged();
+                    crate::kprintln!("[USB] volume at {} retired: the stick is gone",
+                        core::str::from_utf8(azos_topology::USB_VOLUME_PATH).unwrap_or("?"));
+                }
+                if what & READY != 0 {
+                    mount(vol);
+                }
+                if what == 0 {
+                    // Until the `usb` task notes something; the re-check
+                    // after listing keeps a note made just before from
+                    // being slept through.
+                    let until = azos_drv_sys::timebase::now()
+                        .saturating_add(azos_syscall::sleep::ms_to_ticks(60_000));
+                    WAITER.park(tid, || PENDING.load(Ordering::SeqCst) != 0, || crate::boot::blk_block_until(until));
+                }
+            }
+        }
+
+        fn mount(vol: &'static Volume) {
+            let at = azos_topology::USB_VOLUME_PATH;
+            let at_s = core::str::from_utf8(at).unwrap_or("?");
+            match usbvol::mount(vol, at) {
+                Ok(m) if m.partitions == 0 => {
+                    crate::kprintln!("[USB] volume mounted at {}: FAT32 on the whole medium", at_s)
+                }
+                Ok(m) => crate::kprintln!(
+                    "[USB] volume mounted at {}: FAT32 at LBA {} ({} partition(s))", at_s, m.base, m.partitions
+                ),
+                Err(why) => crate::kprintln!("[USB] volume not mounted at {}: {:?}", at_s, why),
+            }
         }
     }
 
@@ -1056,8 +1181,16 @@ mod host {
         #[cfg(feature = "usb-hid")]
         hid.poll(&mut st.usb);
         #[cfg(feature = "usb-storage")]
-        if disk.is_some_and(|d| d.drive(&mut st.usb) == Event::Ready) {
-            azos_sched::task_create("usb-msc", sector0_task, 0, azos_sched::DEFAULT_PRIORITY);
+        match disk.map_or(Event::None, |d| d.drive(&mut st.usb)) {
+            #[cfg(not(feature = "usb-storage-volume"))]
+            Event::Ready => {
+                azos_sched::task_create("usb-msc", sector0_task, 0, azos_sched::DEFAULT_PRIORITY);
+            }
+            #[cfg(feature = "usb-storage-volume")]
+            Event::Ready => stick::note(stick::READY),
+            #[cfg(feature = "usb-storage-volume")]
+            Event::Gone => stick::note(stick::GONE),
+            _ => {}
         }
         let turn = Turn {
             #[cfg(feature = "usb-cdc")]

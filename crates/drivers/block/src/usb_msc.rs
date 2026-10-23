@@ -83,6 +83,9 @@ pub enum Event {
     None,
     /// The disk became ready (and a line was printed).
     Ready,
+    /// The disk that was there (ready, failed, or still coming up) went away:
+    /// what was mounted from it is to be retired.
+    Gone,
 }
 
 /// One USB mass-storage disk.
@@ -148,7 +151,8 @@ impl<'q, M: Memory + Send, C: Clock + Send> UsbDisk<'q, M, C> {
             (m.state(), m.identity(), m.caps().map_or(0, |c| c.sectors))
         };
         let code = state_code(state);
-        let event = if self.shown.swap(code, Ordering::AcqRel) != code {
+        let was = self.shown.swap(code, Ordering::AcqRel);
+        let event = if was != code {
             match (state, id) {
                 (State::Ready, Some(id)) => {
                     kprintln!(
@@ -161,7 +165,11 @@ impl<'q, M: Memory + Send, C: Clock + Send> UsbDisk<'q, M, C> {
                     );
                     Event::Ready
                 }
-                (State::Failed(Fail::Gone), _) | (State::Idle, _) => Event::None,
+                // The unplug's turn often cleans up at once (`Idle`, not
+                // `Failed(Gone)` first): any state but idle before it was a disk.
+                (State::Failed(Fail::Gone), _) | (State::Idle, _) => {
+                    if was != state_code(State::Idle) { Event::Gone } else { Event::None }
+                }
                 (State::Failed(f), _) => {
                     kprintln!("[USB] mass storage not used: {:?}", f);
                     Event::None
