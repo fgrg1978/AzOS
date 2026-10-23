@@ -48,24 +48,22 @@ choice
 
     config BOARD_RPI5
         # cargo-feature: rpi5
-        bool "Raspberry Pi 5 (BCM2712, aarch64) - not ported yet"
+        bool "Raspberry Pi 5 (BCM2712, aarch64)"
         depends on ARCH_AARCH64
         help
           Raspberry Pi 5 Model B: BCM2712, 4x Cortex-A76 (ARMv8.2-A: LSE;
-          no PAuth, BTI, MTE or SVE). Port notes, to be verified against
-          the BCM2712 device tree before bring-up:
-          - interrupt controller GIC-400 (GICv2): the backend exists
-            (irq/gicv2.rs, selected from the device tree's arm,gic-400
-            node) and is proven on QEMU virt,gic-version=2 only; the EL2
-            entry (mmu/boot.rs) still writes ICC_SRE_EL2, which a GICv2
-            machine does not have, so the firmware's EL2 handoff is the
-            open part;
-          - most peripherals sit behind the RP1 southbridge on PCIe; the
-            3-pin debug UART is a PL011 on the SoC, the first console;
-          - booted by the Pi firmware (config.txt, kernel8.img, DTB);
-          - generic timer at 54 MHz.
-          Selecting it stops the build with a compile_error! that names
-          what is missing.
+          no PAuth, BTI, MTE or SVE). `make rpi5` builds kernel8.img for
+          the Pi firmware (config.txt, the DTB and kernel8.img on the FAT
+          boot partition; mk/kernel.mk, target rpi5). Every hardware fact
+          comes from the device tree the firmware passes: RAM (/memory),
+          the console (/chosen/stdout-path: the 3-pin debug UART, a PL011
+          on the SoC), the GIC-400 (GICv2, irq/gicv2.rs), PSCI for the
+          secondaries (/psci, through the firmware's TF-A), the mailbox,
+          the PM watchdog and the PCIe controllers; the generic timer's
+          rate is CNTFRQ_EL0 (54 MHz, which TIMER_FREQ's default matches
+          for the compile-time timeouts). The RP1 south bridge is found on
+          PCIe (1de4:0001) and its peripheral window mapped; its devices
+          have no driver yet. Not yet booted on the board.
 
     config BOARD_GENERIC
         bool "Generic / custom (manually specify all addresses)"

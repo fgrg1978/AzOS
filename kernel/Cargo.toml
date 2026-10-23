@@ -117,7 +117,7 @@ k1 = [
     "azos_drv_dmac/k1", "dep:azos_drv_npu", "azos_drv_npu/k1",
     "azos_robot_drivers?/k1", "azos_ota/k1", "link-provisioning-enforced",
 ]
-# Raspberry Pi 5 (BOARD_RPI5): selectable, not ported; see entry/aarch64.rs.
+# Raspberry Pi 5 (BOARD_RPI5): `make rpi5`, kernel8.img for the Pi firmware.
 rpi5 = ["azos_robot_drivers?/rpi5"]
 rvv  = ["azos_arch/rvv", "azos_camera?/rvv"]
 # `kernel/src/boot/inspect_metrics.rs`: the canary build puts a task ID in a

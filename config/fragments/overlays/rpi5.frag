@@ -7,3 +7,7 @@ CONFIG_BOARD_RPI5=y
 # southbridge on PCIe).
 CONFIG_SOC_FRAMEWORKS=y
 CONFIG_DRV_PCI=y
+# The energy model from the firmware's ARM clock range (the mailbox), and with
+# it the thermal task: `make rpi5` builds build/rpi5/kernel8.img for the Pi
+# firmware (mk/kernel.mk, target rpi5).
+CONFIG_ENERGY=y

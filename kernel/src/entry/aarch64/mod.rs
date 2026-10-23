@@ -7,12 +7,6 @@
 
 #![cfg(target_arch = "aarch64")]
 
-// BOARD_RPI5 is selectable in `make config` so the target and its notes
-// live with the other boards, but nothing below drives it yet.
-#[cfg(feature = "rpi5")]
-compile_error!("Raspberry Pi 5 is not ported: it needs the BCM2712 PL011 debug UART as console, \
-firmware boot (kernel8.img) and an EL2 entry that survives a GICv2 machine; see BOARD_RPI5's help");
-
 
 pub(crate) mod board_map;
 pub(crate) mod ext;

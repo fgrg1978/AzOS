@@ -344,16 +344,17 @@ aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	@echo "[AARCH64] Built $(AARCH64_IMG)"
 	@$(MAKE) --no-print-directory prune
 
-# ── Raspberry Pi 5 (BCM2712, aarch64) — not ported ──────────────────────────
+# ── Raspberry Pi 5 (BCM2712, aarch64) ───────────────────────────────────────
 # `make defconfig-robot-sbc-aarch64+rpi5` selects the board in .config. `make rpi5` expands the
-# same profile into build/rpi5.config and builds the aarch64 kernel from it;
-# the build stops at the compile_error! in kernel/src/entry/aarch64.rs, which
-# says what the port still needs (BCM2712 PL011 console, firmware boot, a GICv2
-# EL2 entry). The target exists so the board is visible, and it fails
-# honestly until the port is done. Like every board target it needs the
-# fleet's public key (TOPOLOGY_PUBKEY_PATH) and refuses the test key; the check
-# runs first, before any user image is built.
+# same profile into build/rpi5.config, builds the aarch64 kernel from it and
+# writes the flat Image the Pi firmware loads, build/rpi5/kernel8.img: copy it
+# to the SD card's FAT boot partition next to config.txt and the BCM2712 DTB.
+# Every board fact comes from that DTB at boot, so the image holds none. Like
+# every board target it needs the fleet's public key (TOPOLOGY_PUBKEY_PATH)
+# and refuses the test key; the check runs first, before any user image is
+# built.
 RPI5_KCONFIG := $(OUT_BUILD)/rpi5.config
+RPI5_IMG     := $(OUT_BUILD)/rpi5/kernel8.img
 .PHONY: rpi5 rpi5-key
 $(RPI5_KCONFIG): config/defconfigs/robot-sbc-aarch64+rpi5.config \
 		$(KCONFIG_FILES)
@@ -370,6 +371,9 @@ rpi5: rpi5-key $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/kconfig_to_cargo.py --rustflags $(RPI5_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel \
 	    $$(python3 tools/kconfig_to_cargo.py $(RPI5_KCONFIG) | tr -s ' ')
+	@mkdir -p $(dir $(RPI5_IMG))
+	"$(AARCH64_OBJCOPY)" -O binary $(AARCH64_ELF) $(RPI5_IMG)
+	@echo "[RPI5] Built $(RPI5_IMG)"
 
 # ── AzOS-micro: the MCU kernel (strategic plan, phase 8) ─────────────────────
 #
