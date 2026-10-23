@@ -569,7 +569,8 @@ echo "vsbench: Linux column: $LINUX_IMAGE" >&2
     $(python3 tools/kconfig_to_cargo.py --base "$AZ_CONFIG") >/dev/null 2>&1 ) \
     || die "could not build the AzOS kernel (--features $KM_FEATURES)"
 ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$AZ_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-product" \
-    $CARGO build --release --features "$KP_FEATURES" >/dev/null 2>&1 ) \
+    $CARGO build --release --features "$KP_FEATURES" \
+    $(python3 tools/kconfig_to_cargo.py --base "$AZ_CONFIG") >/dev/null 2>&1 ) \
     || die "could not build the AzOS kernel (--features $KP_FEATURES)"
 [ -f "$KM_KERNEL" ] || die "no kernel at $KM_KERNEL"
 [ -f "$KP_KERNEL" ] || die "no kernel at $KP_KERNEL"
