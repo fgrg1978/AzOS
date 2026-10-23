@@ -77,6 +77,8 @@ config THERMAL
     bool "Thermal framework: zones, trips and cooling by OPP capping"
     depends on ENERGY
     depends on SOC_FRAMEWORKS || !BOARD_VF2
+    # The Raspberry Pi's sensor and ARM clock are the VideoCore firmware's.
+    select RPI_FIRMWARE if ARCH_AARCH64
     default y if ENERGY && !HWCLASS_EMBEDDED && (PRESET_ROBOT || PRESET_IOT_HMI || PRESET_GATEWAY || PRESET_DESKTOP || PRESET_SERVER)
     help
       Emits the kernel cargo feature `thermal` (tools/kconfig_to_cargo.py).

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The Raspberry Pi VideoCore mailbox as the thermal task's board object
-//! (kernel feature `thermal`): the temperature of the SoC and the ARM clock
-//! both go through it (`azos_thermal::rpi`). aarch64-only: the Pi boards are
-//! the only ones with this firmware, and the cache maintenance of the message
-//! buffer is the ISA's.
+//! The Raspberry Pi VideoCore mailbox (kernel feature `rpi-firmware`): the
+//! power of the SoC's blocks goes through it ([`power_on`], the USB host's
+//! before its probe), and with `thermal` it is the thermal task's board
+//! object: the temperature of the SoC and the ARM clock (`azos_thermal::rpi`).
+//! aarch64-only: the Pi boards are the only ones with this firmware, and the
+//! cache maintenance of the message buffer is the ISA's.
 //!
 //! The kernel maps its image in the high half, so the buffer's bus address is
 //! its physical address (`virt_to_phys`) with the VideoCore's alias, and the
@@ -22,8 +23,9 @@
 //! probed before the model is resolved, and the thermal runtime built after it
 //! only reads what was probed.
 
-use azos_firmware::{BusWindow, DmaHooks, Mailbox, MmioPort};
+use azos_firmware::{BusWindow, DmaHooks, Mailbox, MailboxError, MmioPort};
 use azos_sync::SpinLock;
+#[cfg(feature = "thermal")]
 use azos_thermal::rpi::RpiFirmware;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -49,10 +51,36 @@ impl DmaHooks for Hooks {
 
 type Port = MmioPort<Hooks>;
 
+/// What holds the mailbox: the thermal task's board object around it, or the
+/// mailbox alone. Either way there is one, so the power requests and the
+/// thermal ones never share the channel from two buffers.
+#[cfg(feature = "thermal")]
+type Board = RpiFirmware<Port>;
+#[cfg(not(feature = "thermal"))]
+type Board = Mailbox<Port>;
+
+#[cfg(feature = "thermal")]
+fn board(m: Mailbox<Port>) -> Board {
+    RpiFirmware::new(m)
+}
+#[cfg(not(feature = "thermal"))]
+fn board(m: Mailbox<Port>) -> Board {
+    m
+}
+
+#[cfg(feature = "thermal")]
+fn mailbox(b: &mut Board) -> &mut Mailbox<Port> {
+    &mut b.mbox
+}
+#[cfg(not(feature = "thermal"))]
+fn mailbox(b: &mut Board) -> &mut Mailbox<Port> {
+    b
+}
+
 /// The mailbox, where it is built and where it stays: the firmware writes its
 /// answers into the buffer inside, so it must not move once a call has given
 /// up (`azos_firmware::Mailbox`).
-static RPI: SpinLock<Option<RpiFirmware<Port>>> = SpinLock::new(None);
+static RPI: SpinLock<Option<Board>> = SpinLock::new(None);
 
 /// The register window the hwbus probe bound; 0 until it did.
 static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -66,31 +94,51 @@ pub(crate) fn attach(base: usize) {
 }
 
 /// Did the probe bind a mailbox node?
+#[cfg(feature = "thermal")]
 pub(crate) fn attached() -> bool {
     BASE.load(Ordering::Acquire) != 0
 }
 
 /// Turn the mailbox on for the SoC whose root `compatible` is `root` (the
 /// device tree's NUL-separated strings). `false` (and the mailbox stays off,
-/// so no sensor and no ARM clock) when the SoC's bus map is not one
-/// `azos_firmware::BusWindow` knows, or no window was bound.
+/// so no power request, no sensor and no ARM clock) when the SoC's bus map is
+/// not one `azos_firmware::BusWindow` knows, or no window was bound. A
+/// mailbox already on stays as it is.
 pub(crate) fn enable(root: &[u8]) -> bool {
     let base = BASE.load(Ordering::Acquire);
     let Some(window) = BusWindow::for_root_compatible(root) else { return false };
     if base == 0 {
         return false;
     }
+    let mut rpi = RPI.lock();
+    if rpi.is_some() {
+        return true;
+    }
     // SAFETY: `base` is the window `attach` was given, mapped as device
     // memory by the probe; the mailbox lives in the `RPI` static, in kernel
     // memory, and `bus_addr` checks its physical address against `window`
     // for every message.
     let port = unsafe { MmioPort::new(base, window, Hooks) };
-    *RPI.lock() = Some(RpiFirmware::new(Mailbox::new(port)));
+    *rpi = Some(board(Mailbox::new(port)));
     true
+}
+
+/// Power on the firmware's device `device` (`azos_firmware::POWER_DEVICE_*`),
+/// waiting until it is, on the SoC whose root `compatible` is `root`: the
+/// mailbox is turned on first ([`enable`]) if the energy step has not yet.
+/// `Err(None)` when no mailbox can be used (none bound, or a SoC whose bus
+/// map is unknown), `Err(Some(e))` when the firmware refused or has no such
+/// device.
+pub(crate) fn power_on(root: &[u8], device: u32) -> Result<(), Option<MailboxError>> {
+    if !enable(root) {
+        return Err(None);
+    }
+    RPI.lock().as_mut().map_or(Err(None), |b| mailbox(b).power_on(device).map_err(Some))
 }
 
 /// Run `f` on the board object, in place, under its lock. `None` when the
 /// mailbox is not enabled. (The gate row's fake board replaces it.)
+#[cfg(feature = "thermal")]
 #[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
 pub(crate) fn with<R>(f: impl FnOnce(&mut RpiFirmware<Port>) -> R) -> Option<R> {
     RPI.lock().as_mut().map(f)
@@ -103,6 +151,7 @@ pub(crate) fn with<R>(f: impl FnOnce(&mut RpiFirmware<Port>) -> R) -> Option<R> 
 /// is built. `None` when no mailbox node was bound, its SoC's bus map is not
 /// known, or the firmware gave no range that can move (QEMU `raspi`): the
 /// line says which, and the thermal runtime then has the sensor alone.
+#[cfg(feature = "thermal")]
 #[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
 pub(crate) fn energy_model(
     dtb_ptr: usize,

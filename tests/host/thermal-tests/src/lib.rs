@@ -905,6 +905,13 @@ mod firmware {
                         wr(v + 1, rd(v + 1) / 100_000_000 * 100_000_000);
                         written = 8;
                     }
+                    // A firmware with one power device, the USB host: it
+                    // reaches the state asked; any other id is "no device".
+                    TAG_SET_POWER_STATE => {
+                        let state = if rd(v) == POWER_DEVICE_USB_HCD { rd(v + 1) & POWER_ON } else { POWER_NO_DEVICE };
+                        wr(v + 1, state);
+                        written = 8;
+                    }
                     _ => {}
                 }
                 if written != 0 && self.mode != Mode::NoResponseBit {
@@ -991,6 +998,33 @@ mod firmware {
         // a range upside down.
         let m = MsgBuf::<MSG_WORDS>::get_min_clock_rate(CLOCK_ARM);
         assert_eq!(&m.words()[..8], [32, 0, 0x0003_0007, 8, 0, 3, 0, 0]);
+    }
+
+    /// SET_POWER_STATE (0x28001, U-Boot `BCM2835_MBOX_TAG_SET_POWER_STATE`):
+    /// device id then state, on (bit 0) and wait (bit 1). The DT's USB domain
+    /// (`RPI_POWER_DOMAIN_USB`, 6) is the firmware's device 3 (U-Boot
+    /// `BCM2835_MBOX_POWER_DEVID_USB_HCD`). Canary: send the DT index (6) as
+    /// the device id and the firmware powers I2C2, or nothing.
+    #[test]
+    fn power_requests_are_encoded_word_for_word() {
+        let m = MsgBuf::<MSG_WORDS>::set_power_state(POWER_DEVICE_USB_HCD, true);
+        assert_eq!(&m.words()[..8], [32, 0, 0x0002_8001, 8, 0, 3, 3, 0]);
+        let m = MsgBuf::<MSG_WORDS>::set_power_state(POWER_DEVICE_USB_HCD, false);
+        assert_eq!(m.words()[6], POWER_WAIT);
+        assert_eq!(power_device_for_domain(6), Some(POWER_DEVICE_USB_HCD));
+        for other in [0, 5, 7, 22, 23] {
+            assert_eq!(power_device_for_domain(other), None, "domain {other}");
+        }
+    }
+
+    /// The answer says whether the device is on, and the firmware's "no such
+    /// device" bit is an error, not "off".
+    #[test]
+    fn power_on_reads_the_state_the_firmware_reached() {
+        let mut mb = Mailbox::new(FakeVc::new(Mode::Normal));
+        assert_eq!(mb.power_on(POWER_DEVICE_USB_HCD), Ok(()));
+        assert_eq!(mb.power_on(7), Err(MailboxError::NoDevice));
+        assert_eq!(Mailbox::new(FakeVc::new(Mode::ErrorCode)).power_on(POWER_DEVICE_USB_HCD), Err(MailboxError::Refused));
     }
 
     #[test]

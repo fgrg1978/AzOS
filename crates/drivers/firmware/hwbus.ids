@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate's native drivers answer to, for the hardware bus
+# (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
+#
+# Raspberry Pi VideoCore mailbox (`mailbox@7e00b880`, `mailbox@7c013880` on the
+# Pi 5): the board's power domains (the USB host's), and with THERMAL the SoC
+# temperature and the ARM clock, all go through it, so the kernel owns the
+# window (Kconfig RPI_FIRMWARE, kernel/src/entry/aarch64/ext/rpi_mbox.rs).
+rpi-mbox         dt:brcm,bcm2835-mbox   boot   if=RPI_FIRMWARE

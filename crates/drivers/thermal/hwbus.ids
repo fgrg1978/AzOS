@@ -14,9 +14,3 @@ sfctemp          dt:starfive,jh7110-temp   boot   if=BOARD_VF2   if=THERMAL
 # handed the window. `if=SOC_K1 if=THERMAL`: the probe arm exists under those
 # features (kernel/src/boot/hwbus.rs); SOC_K1 is BOARD_K1's frameworks.
 k1-tsensor       dt:spacemit,k1-tsensor    boot   if=SOC_K1   if=THERMAL
-
-# Raspberry Pi VideoCore mailbox (`mailbox@7e00b880`, `mailbox@7c013880` on the
-# Pi 5): the SoC temperature and the ARM clock both go through it, so the
-# kernel's thermal task owns the window. Large boards only, like the rest of
-# the thermal framework (THERMAL is off on HWCLASS_EMBEDDED).
-rpi-mbox         dt:brcm,bcm2835-mbox   boot   if=ARCH_AARCH64   if=THERMAL

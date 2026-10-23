@@ -537,8 +537,74 @@ mod host {
         if !map_dt_window(dev) {
             return Err(ProbeError::Failed);
         }
+        // arch-only: the Raspberry Pi's firmware power domains are aarch64's.
+        #[cfg(all(feature = "rpi-firmware", target_arch = "aarch64"))]
+        if let Some(node) = dev.dt_node {
+            if !rpi_power_domains_on(node, dev.name.as_str()) {
+                return Err(ProbeError::Failed);
+            }
+        }
         let domain = azos_dma::registry::domain_for_mmio(dev.base);
         bring_up(dev.base as usize, domain, bus_reach(dev), dev.name.as_str(), Kind::Dwc2).map_err(|_| ProbeError::Failed)
+    }
+
+    /// Switch on every `power-domains` entry of the node at `node` that the
+    /// Raspberry Pi firmware provides (`raspberrypi,bcm2835-power`: the
+    /// VideoCore powers the block, `rpi_mbox::power_on`), before the device's
+    /// registers are touched: the Pi's USB host is off until then (Linux's
+    /// raspberrypi-power driver does the same through the genpd attach). An
+    /// entry of another provider is not this function's (the SoC frameworks
+    /// own those). `false`, said on the console, when the firmware cannot
+    /// power a domain the device needs.
+    // arch-only: the Raspberry Pi firmware is aarch64's.
+    #[cfg(all(feature = "rpi-firmware", target_arch = "aarch64"))]
+    fn rpi_power_domains_on(node: u32, what: &str) -> bool {
+        use azos_soc::consumer;
+        const PROVIDER: &str = "raspberrypi,bcm2835-power";
+        let mut domains = [0u32; 4];
+        let mut n = 0usize;
+        let mut root = [0u8; 64];
+        let mut root_len = 0usize;
+        let ok = dt_blob(|fdt| {
+            let me = azos_soc::NodeId(node);
+            let count = consumer::count(fdt, me, "power-domains", "#power-domain-cells").unwrap_or(0);
+            for i in 0..count {
+                let Ok(e) = consumer::entry(fdt, me, "power-domains", "#power-domain-cells", i) else { return false };
+                if !fdt.is_compatible(e.provider, PROVIDER) {
+                    continue;
+                }
+                let Ok(id) = e.id() else { return false };
+                if n == domains.len() {
+                    return false;
+                }
+                domains[n] = id;
+                n += 1;
+            }
+            if let Some(c) = fdt.prop(azos_soc::NodeId(0), "compatible") {
+                root_len = c.len().min(root.len());
+                root[..root_len].copy_from_slice(&c[..root_len]);
+            }
+            true
+        })
+        .unwrap_or(true);
+        if !ok {
+            azos_drv_sys::kwarn!("[USB] {}: its power-domains cannot be read", what);
+            return false;
+        }
+        for &id in &domains[..n] {
+            let Some(device) = azos_firmware::power_device_for_domain(id) else {
+                azos_drv_sys::kwarn!("[USB] {}: firmware power domain {} has no device this kernel knows", what, id);
+                return false;
+            };
+            match crate::entry::aarch64::ext::rpi_mbox::power_on(&root[..root_len], device) {
+                Ok(()) => kprintln!("[USB] {}: firmware power domain {} (device {}) on", what, id, device),
+                Err(e) => {
+                    azos_drv_sys::kwarn!("[USB] {}: the firmware did not power domain {} (device {}): {:?}", what, id, device, e);
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Start the `usb` task, once the scheduler exists. A no-op without a

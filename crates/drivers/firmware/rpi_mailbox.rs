@@ -4,16 +4,18 @@
 //!
 //! On every Pi the ARM cores do not own the SoC temperature sensor or the
 //! ARM clock: the VideoCore firmware does, and it answers requests posted
-//! through the mailbox (channel 8, "property tags, ARM to VC"). This module
-//! is the whole of that interface the thermal framework needs:
+//! through the mailbox (channel 8, "property tags, ARM to VC"). Nor do they
+//! own the power of the SoC's blocks: the USB host is off until the firmware
+//! is asked to power it. This module is the whole of that interface the
+//! thermal framework and the board's power domains need:
 //!
 //! * [`MsgBuf`] builds and parses a message: a header, tags (`id`, value
 //!   buffer size, request or response code, value words) and an end tag. The
 //!   encoding is pure, so the host suite checks it word for word.
 //! * The typed requests: [`MsgBuf::get_temperature`], [`MsgBuf::get_max_temperature`],
 //!   [`MsgBuf::get_clock_rate`], [`MsgBuf::get_min_clock_rate`],
-//!   [`MsgBuf::get_max_clock_rate`], [`MsgBuf::set_clock_rate`], each with
-//!   its decoder.
+//!   [`MsgBuf::get_max_clock_rate`], [`MsgBuf::set_clock_rate`],
+//!   [`MsgBuf::set_power_state`], each with its decoder.
 //! * [`Mailbox`] posts a message through a [`MailboxPort`] (the register
 //!   file, the cache maintenance and the bus address of the buffer, supplied
 //!   by the board) and waits, bounded, for the VideoCore's answer.
@@ -96,6 +98,34 @@ pub const TAG_SET_CLOCK_RATE: u32 = 0x0003_8002;
 
 /// Clock id of the ARM cores.
 pub const CLOCK_ARM: u32 = 3;
+/// Set the power state of a device: `device id`, `state` (bit 0 on, bit 1
+/// wait for the change). The answer is the id and the state reached: bit 0
+/// on, bit 1 "no such device". Linux `RPI_FIRMWARE_SET_POWER_STATE`, U-Boot
+/// `BCM2835_MBOX_TAG_SET_POWER_STATE`.
+pub const TAG_SET_POWER_STATE: u32 = 0x0002_8001;
+/// [`TAG_SET_POWER_STATE`]'s state bits: on.
+pub const POWER_ON: u32 = 1 << 0;
+/// In a request, wait until the device is in the state asked.
+pub const POWER_WAIT: u32 = 1 << 1;
+/// In an answer, the firmware has no such device.
+pub const POWER_NO_DEVICE: u32 = 1 << 1;
+/// The USB host controller's device id in the power tags (U-Boot
+/// `BCM2835_MBOX_POWER_DEVID_USB_HCD`, Linux `RPI_OLD_POWER_DOMAIN_USB`).
+pub const POWER_DEVICE_USB_HCD: u32 = 3;
+
+/// The power tags' device id of the domain a device tree names with
+/// `power-domains = <&power N>` (the `raspberrypi,bcm2835-power` provider;
+/// `N` from `dt-bindings/power/raspberrypi-power.h`, where
+/// `RPI_POWER_DOMAIN_USB` is 6), for the domains that have one. Only the
+/// domains a driver here powers are listed: USB.
+pub const fn power_device_for_domain(domain: u32) -> Option<u32> {
+    /// `RPI_POWER_DOMAIN_USB`.
+    const DOMAIN_USB: u32 = 6;
+    match domain {
+        DOMAIN_USB => Some(POWER_DEVICE_USB_HCD),
+        _ => None,
+    }
+}
 /// Temperature id of the SoC.
 pub const TEMP_SOC: u32 = 0;
 
@@ -131,6 +161,9 @@ pub enum MailboxError {
     /// An earlier call gave up and the firmware has not yet answered it; the
     /// buffer is still the firmware's, so nothing was posted.
     Pending,
+    /// The firmware has no device with the id a power request named
+    /// ([`POWER_NO_DEVICE`]), or did not reach the state asked.
+    NoDevice,
     /// The mailbox moved while an answer was owed: the firmware may still
     /// write to the old address, so this mailbox never posts again.
     Moved,
@@ -244,6 +277,23 @@ impl<const N: usize> MsgBuf<N> {
     /// from changing the turbo setting as a side effect; 0 lets it.
     pub fn set_clock_rate(id: u32, hz: u32, skip_turbo: u32) -> Self {
         Self::single(TAG_SET_CLOCK_RATE, &[id, hz, skip_turbo], 3)
+    }
+
+    /// Request: power device `id` on (or off), waiting for the change.
+    pub fn set_power_state(id: u32, on: bool) -> Self {
+        Self::single(TAG_SET_POWER_STATE, &[id, if on { POWER_ON } else { 0 } | POWER_WAIT], 2)
+    }
+
+    /// Decode a [`MsgBuf::set_power_state`] answer for device `id`: whether it
+    /// is now on. [`MailboxError::NoDevice`] when the firmware has none, or
+    /// answered for another device.
+    pub fn power_state(&self, id: u32) -> Result<bool, MailboxError> {
+        let v = self.response(TAG_SET_POWER_STATE)?;
+        let (&dev, &state) = (v.first().ok_or(MailboxError::NoResponse)?, v.get(1).ok_or(MailboxError::NoResponse)?);
+        if dev != id || state & POWER_NO_DEVICE != 0 {
+            return Err(MailboxError::NoDevice);
+        }
+        Ok(state & POWER_ON != 0)
     }
 
     /// A message of one tag. `N` must hold it; the typed requests need [`MSG_WORDS`].
@@ -438,6 +488,15 @@ impl<P: MailboxPort> Mailbox<P> {
     /// The ARM clock's maximum rate, Hz.
     pub fn arm_max_clock_rate(&mut self) -> Result<u32, MailboxError> {
         self.transact(MsgBuf::get_max_clock_rate(CLOCK_ARM))?.clock_rate(TAG_GET_MAX_CLOCK_RATE)
+    }
+
+    /// Power device `id` on and wait until it is: [`MailboxError::NoDevice`]
+    /// when the firmware has no such device or it stayed off.
+    pub fn power_on(&mut self, id: u32) -> Result<(), MailboxError> {
+        match self.transact(MsgBuf::set_power_state(id, true))?.power_state(id)? {
+            true => Ok(()),
+            false => Err(MailboxError::NoDevice),
+        }
     }
 
     /// Set the ARM clock to `hz` and return the rate the firmware settled

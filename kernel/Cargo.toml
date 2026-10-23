@@ -852,6 +852,8 @@ system-suspend = ["energy"]
 # framework) and the Raspberry Pi (VideoCore mailbox); a board with neither
 # builds no zone and creates no task.
 thermal = ["energy", "dep:azos_thermal", "dep:azos_firmware"]
+# The Raspberry Pi VideoCore mailbox (Kconfig RPI_FIRMWARE): power domains, and thermal.
+rpi-firmware = ["dep:azos_firmware"]
 # The thermal gate row (`kernel/src/smokes/thermal_smoke.rs`): the real runtime
 # and task over a fake board (a scripted temperature, a clock that remembers)
 # and the balanced fake model, whose WCET reference clocks are the floors the

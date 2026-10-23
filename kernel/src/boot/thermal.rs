@@ -24,8 +24,8 @@
 //!   (`azos_thermal::k1_soc::k1_plan`); a cluster the tree does not wire
 //!   completely is left alone and its caps are refused.
 //! * **Raspberry Pi** (aarch64, `brcm,bcm2835-mbox`; Pi 5 included): the
-//!   VideoCore mailbox is both the sensor and the ARM clock
-//!   ([`attach_mailbox`], from its hwbus probe). The energy step enables it and
+//!   VideoCore mailbox is both the sensor and the ARM clock (bound by the
+//!   hardware bus, Kconfig RPI_FIRMWARE, `rpi_mbox::attach`). The energy step enables it and
 //!   probes the clock before it resolves the model (the Pi's OPP table is the
 //!   firmware's range, `rpi_mbox::energy_model`); the clock is an actuator only
 //!   if that probe found a range that can move (`RpiFirmware::probe_clock`:
@@ -283,16 +283,6 @@ impl azos_thermal::k1_soc::K1Clocks for LockedClocks {
     fn set_rate(&mut self, clk: azos_soc::clk::Clk, hz: u64) -> Result<u64, azos_soc::Error> {
         super::soc::with(|_fdt, soc, bus, fx| soc.clocks.set_rate(bus, fx, clk, hz)).unwrap_or(Err(azos_soc::Error::NoProvider))
     }
-}
-
-// ── Raspberry Pi: the mailbox ───────────────────────────────────────────────
-
-/// The `brcm,bcm2835-mbox` node's probe: keep the window for the tick
-/// (`entry/aarch64/ext/rpi_mbox.rs` holds the board object).
-// arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
-#[cfg(target_arch = "aarch64")]
-pub(super) fn attach_mailbox(base: usize) {
-    crate::entry::aarch64::ext::rpi_mbox::attach(base);
 }
 
 // ── Construction ────────────────────────────────────────────────────────────

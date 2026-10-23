@@ -506,9 +506,9 @@ impl Drivers for KernelDrivers<'_> {
                 Ok(())
             }
             // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
-            #[cfg(all(feature = "thermal", target_arch = "aarch64"))]
+            #[cfg(all(feature = "rpi-firmware", target_arch = "aarch64"))]
             "rpi-mbox" => {
-                super::thermal::attach_mailbox(map_window(dev)?);
+                crate::entry::aarch64::ext::rpi_mbox::attach(map_window(dev)?);
                 Ok(())
             }
             // The K1's five-channel temperature block. Its clock and reset are

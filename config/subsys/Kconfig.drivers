@@ -317,6 +317,24 @@ config WDT_BCM2835_PM
       halt). n: a Pi has no hardware watchdog and its reboot and power-off
       call a PSCI that is not there.
 
+config RPI_FIRMWARE
+    # cargo-feature: rpi-firmware
+    bool "Raspberry Pi VideoCore firmware mailbox (power domains, and thermal)"
+    default y if ARCH_AARCH64 && !HWCLASS_EMBEDDED
+    depends on ARCH_AARCH64
+    help
+      Kernel feature `rpi-firmware` (crates/drivers/firmware,
+      kernel/src/entry/aarch64/ext/rpi_mbox.rs). The hardware bus binds the
+      device tree's `brcm,bcm2835-mbox` node, the property channel of the
+      VideoCore firmware, which on a Raspberry Pi owns what the ARM cores do
+      not: the power of the SoC's blocks (a `power-domains` entry of the
+      `raspberrypi,bcm2835-power` provider is switched on through it before
+      its device's probe: the USB host, which is off until then) and, with
+      THERMAL, the SoC temperature and the ARM clock. The firmware's DMA uses
+      the bus window of the SoC the tree's root names (azos_firmware
+      BusWindow); a SoC whose map is not known never gets it. QEMU `-M
+      raspi3b` models the property channel. n: a Pi's USB host stays off.
+
 config WDT_BCM2835_PM_ARM
     # cargo-feature: wdt-bcm2835-pm-arm
     bool "Raspberry Pi PM block: arm it as the hardware watchdog"
