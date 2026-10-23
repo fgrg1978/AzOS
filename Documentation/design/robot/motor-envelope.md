@@ -58,8 +58,15 @@ unavoidable is the gate inside the motor layer:
   permits.
 * With no gate installed the answer is 0, not the requested speed. A boot that
   skipped the install, or an early panic path, then stops the motors instead of
-  driving them at whatever was asked. The loader refuses to start ring-3 code
-  while no gate is installed (`motor_gate_installed`).
+  driving them at whatever was asked. The loader, the boot launcher and the
+  driver supervisor refuse to start ring-3 code while
+  `azos_actuation::gate::gate_installed` is false, which folds in
+  `motor_gate_installed` through `set_domain_gate_check`.
+* The raw device interfaces cannot reach a wheel past the gate: a PWM channel
+  or GPIO pin bound to a motor is refused by the kernel-hosted PWM and GPIO
+  interfaces (`crates/core/syscall/src/devices.rs`) and the I/O ring
+  (`pwm_channel_is_motor_bound`, `gpio_pin_is_motor_bound` in
+  `crates/core/syscall/src/handlers.rs`).
 * A second query, `set_motor_halt` / `actuation_halt`, answers true for a
   latched e-stop or full containment. While it does, the motor layer admits
   brake and coast and refuses forward and backward, so direction pins are not
@@ -69,6 +76,16 @@ The control task reports the envelope's interventions on the edges: one
 console line and one `SAFETY_ENVELOPE_REFUSED` flight-recorder record when a
 command first exceeds the envelope, one when it is within bounds again. A
 clamp that holds for a minute is one event.
+
+Every change of a wheel's applied (direction, duty), after the gate, is one
+actuator-command record (`set_motor_recorder`, `record_motor_change` in
+`domains/robot/safety-core/src/actuation.rs`), at most four per wheel per
+second; the value a window suppressed is written at the next window's first
+change. With Kconfig `MOTOR_COMMANDER_EXIT_STOP` (default `y` with the robot
+domain) a ring-3 task that leaves a wheel at a non-zero duty through the
+`Motor` interface and then exits has that wheel stopped (coast, duty 0) and a
+durable `SAFETY_ESTOP` record written that does not latch
+(`crates/core/syscall/src/motor_commander.rs`).
 
 ## Confidence-aware limit
 
@@ -101,7 +118,8 @@ It is not redundant with the sensor-reactive layer. The emergency-stop layer
 right now (obstacle, tilt, battery, temperature). The envelope asks whether this
 command, in itself, is inside the actuator's allowed range. They are
 orthogonal and both are needed. The envelope is also where the per-type speed
-constants (`SAFETY_*_MAX_SPEED_PCT`) are enforced at the output.
+constant (`SAFETY_WHEELED_MAX_SPEED_PCT`, the only one) is enforced at the
+output.
 
 ## Limitations
 
@@ -119,5 +137,5 @@ Source: `domains/robot/behavior/src/safety.rs`, `domains/robot/behavior/src/brai
   check of the commanded motion against a geofence.
 * Types other than wheeled and Ackermann get no per-type magnitude cap in this
   function; their limits live on their own paths.
-* The per-type caps are compile-time constants, not per-deployment
+* The per-type cap is a compile-time constant, not per-deployment
   configuration.
