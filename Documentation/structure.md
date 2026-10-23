@@ -18,23 +18,23 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `kernel/` | The kernel image: `kernel_main`, boot steps, per-ISA entry code, kernel tasks, panic handler, linker scripts. |
 | `crates/` | Kernel libraries, in four groups: `core/`, `drivers/`, `fs/`, `net/`. |
 | `domains/robot/` | The optional robot application domain (linked only when the image selects it). |
-| `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, plus `image_hashes.py`. |
+| `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
 | `sdk/` | The native `std` SDK: target specs, linker scripts, the `std` overlay. |
-| `micro/` | AzOS-micro, a separate MMU-less kernel (riscv32imac, M-mode, PMP) with its own workspace. |
-| `lx/` | The Linux driver compatibility layer: `emul/` (Rust base), `glue/` (C module built against a pinned Linux tree), pin and ABI files. |
-| `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. |
+| `micro/` | AzOS-micro, the MMU-less MCU kernel (riscv32imac, M-mode, PMP region domains, static tasks from the signed topology in `micro/topology/`). It is its own workspace and links the main kernel's pure crates; `make micro` builds it. |
+| `lx/` | The Linux driver compatibility layer: `emul/` (Rust base), `glue/` (C module built against a pinned Linux tree), and the lists it is checked against: `LINUX_PIN` (the Linux stable tag), `HOST_ABI` (every symbol the Linux driver server exports to modules), `DEVICE_SOURCES` (the Linux leaf drivers whose ids the hardware bus matches), `FS_EXT4_UNRESOLVED` (the imports of the ext4 module set). |
+| `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. One fragment, `Kconfig.userspace` (the programs under `userspace/`), is generated at every parse by `tools/gen_userspace_kconfig.py` and is not committed. |
 | `mk/` | Makefile fragments included by the top-level `Makefile`: `vars.mk`, `kernel.mk`, `userspace.mk`, `images.mk`, `host.mk`, `qemu.mk`, `lints.mk`. |
 | `tools/` | Build, check, signing, image-making and analysis scripts (Python and shell); `boot.cmd`, the U-Boot script that boots slots A/B/R from the SD card. |
-| `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), `qemu/` (emulator scenarios), `sdk/` (SDK test program), plus the runner scripts. |
-| `formal/tla/` | TLA+ models: `cap_table` and `topology_load`. |
+| `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), `sdk/` (SDK test program), plus the emulator runner scripts `qemu_boot.sh` and `run_all.sh`. |
+| `formal/` | `tla/` (TLA+ models `cap_table` and `topology_load`, each with its `.cfg`), `INVARIANTS.md` and `README.md`. |
 | `boot/` | `boot.scr.cmd`, a U-Boot boot script. |
 | `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/third_party_fetch.sh`); `patches/`. |
 | `LICENSES/` | Licence texts: Apache-2.0, GPL-2.0-only, MIT. |
 
-Top-level files: `Cargo.toml` (workspace), `Kconfig`, `Makefile`,
+Top-level files: `Cargo.toml` (workspace) and `Cargo.lock`, `Kconfig`, `Makefile`,
 `rust-toolchain.toml`, `linker-efi.ld`, `deny.toml`, `REUSE.toml`, `LICENSE`,
-`NOTICE`, `CONTRIBUTING.md`, `CLA.md`, `SECURITY.md`, `CHANGELOG.md`,
-`ARCHITECTURE.md` (a map, see [../ARCHITECTURE.md](../ARCHITECTURE.md)).
+`NOTICE`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, `SECURITY.md`, `CHANGELOG.md`,
+`ROADMAP.md`, `ARCHITECTURE.md` (a map, see [../ARCHITECTURE.md](../ARCHITECTURE.md)).
 
 Source: the directories above; `Cargo.toml`, `Makefile`, `Kconfig`.
 
@@ -59,7 +59,7 @@ Source: the directories above; `Cargo.toml`, `Makefile`, `Kconfig`.
 | `common` | `azos_common` | Shared basics: error type, panic policy, path helpers, WCET helpers, the global "panicked" flag. |
 | `crypto` | `azos_crypto` | Cryptographic primitives (hashes, ciphers, signatures), `no_std`. |
 | `decision` | `azos_decision` | Explainable decision records and durable refusal receipts. |
-| `devif` | `azos_devif` | The interfaces of what the kernel hosts and a driver endpoint serves (gpio, i2c, spi, can, uart, pwm, motor, sensor, block, clock, entropy, power, time, vm, buzzer, adc, link key). |
+| `devif` | `azos_devif` | The interfaces of what the kernel hosts and a driver endpoint serves (gpio, i2c, spi, can, uart, pwm, motor, sensor, block, clock, entropy, power, time, vm, vm control, buzzer, adc, link key, display, input, sound, inference, keys, memory-object control, the network name and time services), and the outcome code every op answers. |
 | `idl` | `azos_idl` | The AzOS interface definition language: traits annotated with `#[azos_interface]` and their wire form. |
 | `idl-macros` | `azos_idl_macros` | The proc-macro behind `#[azos_interface(id, level, words)]`. |
 | `efi` | `azos_efi` | UEFI boot structures: `BootInfo`, the EFI memory-map iterator, system table and PE/COFF constants. Host-tested; not a dependency of the kernel crate. |
@@ -113,6 +113,7 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `scsi` | SCSI over USB Bulk-Only Transport, both ends: the CBW/CSW wrappers, the target command set (what a device answers) and the initiator side (the USB mass-storage host driver). |
 | `input` | Input devices and what keyboards share. |
 | `usb-hid` | The USB HID class driver (keyboards and mice) over the USB host: report descriptor parser, report decoder, authorization. |
+| `usb` | The native USB host (Kconfig `USB_HOST`, `USB_XHCI`): the xHCI controller driver, the DWC3 dual-role check, the USB core (enumeration, descriptors, hubs, pipes, hot-plug events), the class-driver interface, the mass-storage and CDC (ACM, ECM, NCM) class drivers, and the `lsusb`-style listing. The kernel half is `kernel/src/boot/usb.rs`. |
 | `gpio` | The pin controller and its `Driver` registration. |
 | `actuator` | PWM, the motor PID loop and the buzzer's kernel host. |
 | `buzzer` | Piezo buzzer chip logic, one source for both placements. |
@@ -136,6 +137,7 @@ Source: `crates/drivers/*/Cargo.toml` and each `lib.rs` header.
 |---|---|
 | `crates/fs/fs` (`azos_fs`) | The VFS, FAT32, tmpfs, block cache, page cache, crash log, pstore, and `azvol` (the native volume format with snapshots and per-block authenticated encryption). |
 | `crates/net/net` (`azos_net`) | Ethernet, ARP, IPv4/IPv6, ICMP, UDP, TCP, DHCP, DNS, NTP, IGMP, NAT, packet filter, BSD-style sockets. Polling-based. |
+| `crates/net/ethercat` (`azos_ethercat`) | EtherCAT master protocol logic, `no_std`: frame and datagram builder and parser, the slave-side records a master writes, the AL state machine, distributed-clock arithmetic. It owns no socket or clock; the cyclic loop is the caller's. Tested by `tests/host/ethercat-tests`. |
 | `crates/net/multi-stream` | A stream-ID-prefixed multiplexed wire format for a point-to-point link. |
 | `crates/net/tftp` | A TFTP client: the protocol state machine and a fetch loop over a caller-supplied UDP socket. Used by the package installer in development builds (`PKG_FETCH_TFTP`). |
 
@@ -145,7 +147,7 @@ Source: `crates/fs/fs/src/lib.rs`, `crates/net/net/src/lib.rs`, `crates/net/*/Ca
 
 | Crate (directory under `domains/robot/`) | What it holds |
 |---|---|
-| `safety-core` | The safety path of the actuation authority: the motor gate (`actuation.rs`), the real-time motor loop (`rt_motor.rs`), flight control (`flight_ctrl.rs`). |
+| `safety-core` | The safety path of the actuation authority: the motor gate (`actuation.rs`), the real-time motor loop (`rt_motor.rs`), flight control (`flight_ctrl.rs`), the transactional control ticks rolled back on a synchronous exception (`txn.rs`). |
 | `degrade-policy` | The graded degrade levels and their speed ceilings (leaf crate). |
 | `behavior` | A layered, subsumption-style behavior engine. |
 | `ahrs` | Attitude and heading estimation. |
@@ -189,21 +191,25 @@ one.
 | `tlb` | yes | no | yes |
 | `trap` | yes | no | yes (`trap/`) |
 
-Where a module is absent, the function lives elsewhere: the riscv64 timer is the
+Where a module is absent, the function lives elsewhere: riscv64 has no
+`fork_regs` because its fork snapshot is the trap frame's own `[u64; 32]`
+register file (`azos_sched::task::UserRegs`); the riscv64 timer is the
 CLINT/ACLINT in `crates/core/arch-riscv64/src/irq/clint.rs` and its secondary-hart start is in
 `kernel/src/entry/riscv64/smp.rs`; the aarch64 TLB invalidation is in `mmu` and
-`api_impl`, and its trap frame is in `kernel/src/entry/aarch64/mod.rs`.
+`api_impl`, and its trap frame is in `kernel/src/entry/aarch64/mod.rs`; x86_64 has no `cache`
+(its DMA is cache-coherent), no `lat_hook` (the masked-window tracer is not built
+there), and its `Cpu`, `Interrupts` and `Mmu` impls sit in `lib.rs`.
 
-The one module outside the shared set that is not yet under `ext/` is aarch64's
-`sysregs.rs`.
+The one module outside the shared set that sits outside `ext/` is aarch64's
+`sysregs.rs` (the system-register accessors).
 
 `ext/` per ISA:
 
 | ISA | `crates/core/arch-<isa>/src/ext/` |
 |---|---|
-| riscv64 | `napot.rs` (Svnapot 64 KiB leaves), `pmp.rs` (physical memory protection), `hv/` (H extension primitives) |
+| riscv64 | `napot.rs` (Svnapot 64 KiB leaves), `pmp.rs` (physical memory protection), `ssqosid.rs` (the `srmcfg` resource-partition tag), `hv/` (H extension primitives) |
 | aarch64 | `mitigations.rs`, `sha2_ce.rs` (SHA-256 on the crypto extension), `tlbi_range.rs`, `wfxt.rs`, `hv/` (EL2 primitives) |
-| x86_64 | `ap_trampoline.S` (AP real-mode start), `mitigations.rs`, `retpoline.rs`, `splitlock.rs`, `hv/` (SVM primitives) |
+| x86_64 | `ap_trampoline.S` (AP real-mode start), `hybrid.rs` (the core type each logical processor reports, for the energy model), `mitigations.rs`, `retpoline.rs`, `splitlock.rs`, `hv/` (SVM primitives, declared at the crate root) |
 
 ### kernel/src/entry/<isa>
 
@@ -219,7 +225,7 @@ The one module outside the shared set that is not yet under `ext/` is aarch64's
 | `resume.rs` | yes | yes | yes |
 | `smp.rs` | yes | yes | yes |
 | `trap.rs` | yes | yes | yes |
-| `ext/` | `hv.rs`, `zicboz.rs` | `hv_vectors.rs`, `pan_patch.rs`, `selftests.rs` | `cpu_init.rs`, `hv.rs`, `limine.rs` |
+| `ext/` | `hv.rs`, `zicboz.rs` | `hv_vectors.rs`, `its_route.rs` (PCI MSI routes through the GICv3 ITS, feature `pci`), `pan_patch.rs`, `rpi_mbox.rs` (the VideoCore mailbox as the thermal board object, feature `thermal`), `selftests.rs` | `cpu_init.rs`, `hv.rs`, `hybrid_energy.rs` (core types for the energy model, feature `energy`), `limine.rs`, `thermal_hw.rs` (the thermal board object's MSR and PCI access, feature `thermal`) |
 
 Extra asm files outside the shared set: `kernel/src/entry/riscv64/asm/context_switch_rvv.S` (the
 vector-extension variant) and `kernel/src/entry/x86_64/asm/ap_entry.S` (the application-processor
@@ -239,7 +245,8 @@ Source: `tools/arch_layout_lint.py` (`REQUIRED`), `crates/core/arch-*/src/`,
 | `kernel/src/tasks/` | Kernel tasks created by `kernel_main`, grouped by subsystem. |
 | `kernel/src/smokes/` | Boot self-tests and feature-gated boot smokes. |
 | `kernel/src/*.rs` | Single-purpose modules: `panic.rs`, `pstore.rs`, `ktest.rs`, `drv_supervisor.rs`, `irq_thread.rs`, `console_mode.rs`, and others. |
-| `kernel/linker*.ld` | Linker scripts, one per image family and ISA. |
+| `kernel/linker*.ld` | Linker scripts, one per image family and ISA, each including `linker-common.ld` (the shared boot-stack sizing). Three fragments are `INCLUDE`d at the end: `image-header-riscv64.ld` (the Linux RISC-V Image header fields), `reloc-riscv64.ld` (the KASLR relocation table of the riscv64 MMU images) and `boot-pa-x86_64.ld` (the physical addresses the x86_64 32-bit boot stage names). |
+| `kernel/build.rs` | Linker-script parameters for the translation granule. |
 | `kernel/Cargo.toml` | The feature table. Its `default` list is empty: Kconfig supplies the features. |
 
 Source: `kernel/src/boot/mod.rs`, `kernel/src/tasks/mod.rs`, `kernel/src/trap/mod.rs`,
@@ -253,10 +260,10 @@ ISA by the `mk/userspace.mk` rules.
 
 | Directory | Contents |
 |---|---|
-| `services/` | `compmgr` (component manager), `sh` and `toolbox` (shell and tools), `termd` (terminal server), `namesd` (name server), `pkgd` and `pkg` (package installer), `decisd` and `why` (decision server and query), `inputd` (input server), `compositor` (display server and trusted surface), `power`, `tracectl`, `mcpd`, `ptpd`, `audiod` (audio server), `zenohd`, `rpcsrv` and `rpcquic`, `vmmd` (virtual machine monitor), `lxsrv` and `lxrt` (Linux driver server, Linux runtime), `infsrv` (inference broker and the behavior loop's MLP), `famtools` (four small tool images: behavior, config, flight, ota), and the robot-domain `brain_client` and `reflex`. |
+| `services/` | `compmgr` (component manager), `sh` and `toolbox` (shell and tools), `termd` (terminal server), `namesd` (name server), `logd` (sink of the structured kernel log), `logind` and `sshd` (login service, SSH server), `pkgd` and `pkg` (package installer), `decisd` and `why` (decision server and query), `inputd` (input server), `compositor` (display server and trusted surface), `power`, `tracectl`, `mcpd`, `ptpd`, `audiod` (audio server), `zenohd`, `rpcsrv` and `rpcquic`, `vmmd` (virtual machine monitor), `lxsrv` and `lxrt` (Linux driver server, Linux runtime), `infsrv` (inference broker and the behavior loop's MLP), `famtools` (four small tool images: behavior, config, flight, ota), and the robot-domain `brain_client` and `reflex`. |
 | `drivers/` | Ring-3 hosts of drivers: `buzz_drv`, `ina_drv`, `gpio_drv`. |
-| `lib/` | Libraries for ring-3 programs: `compose` (the compositor's pixel engine), `compositor`, `decisions`, `inspect`, `names`, `packages`, `power`, `term` (typed objects over IPC); `rpc`, `quic`, `tls`, `zenoh`, `mcp`, `ml`, `ualloc` (hardened allocator), `linux_rt`, `relibc-azos` (overlay for the relibc C library). |
-| `tests/` | Ring-3 test programs: `abitest`, `captest`, `ipctest`, `hello`, `epsrv`, and the `lx*` and `relibc` programs. |
+| `lib/` | Libraries for ring-3 programs: `compose` (the compositor's pixel engine), `compositor`, `decisions`, `inspect`, `names`, `packages`, `power`, `term` (typed objects over IPC); `rpc`, `quic`, `tls`, `zenoh`, `mcp`, `ml`, `ualloc` (hardened allocator), `linux_rt`, `relibc-azos` (overlay for the relibc C library); `login` (the `Login` object and the credential the login service checks); `tls-probe` (a rustls client/server handshake run over memory or a stream). |
+| `tests/` | Ring-3 test programs: `abitest` and `abichild` (the processes it spawns), `captest`, `ipctest`, `hello`, `uhello` (a minimal `no_std` program over `libsys`), `epsrv`, `syscall_test`, the `lx*` programs (`lxbench`, `lxhello`, `lxmod`, `lxthreads`) and `relibc`. |
 | `bench/` | `latbench`, `vsbench`, `vssrv`: ring-3 measurement programs. |
 | `thirdparty/` | `busybox.fragment`. |
 
@@ -266,7 +273,7 @@ Source: `userspace/*/`, the header of each program's `main.rs`.
 
 | Path | Contents |
 |---|---|
-| `tests/host/` (one `<name>-tests` crate per area) | One host-side (`std`) crate per area, built with the host toolchain. Most build the real pure modules of a kernel crate with `#[path]` or link the crate itself, against small shims for the target-specific parts. |
+| `tests/host/` (one `<name>-tests` crate per area, plus `flight-sim`) | One host-side (`std`) crate per area, built with the host toolchain. Most build the real pure modules of a kernel crate with `#[path]` or link the crate itself, against small shims for the target-specific parts. |
 | `tests/fuzz/` | Fuzz targets for parsers and decoders: config, dtb, elf, brain-link, fs, gguf, net, sh, topology. |
 | `tests/qemu_boot.sh`, `tests/run_all.sh` | The emulator scenario runners. |
 | `tests/sdk/` | `sdktest`, the SDK's own test program. |
