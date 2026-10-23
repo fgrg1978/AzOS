@@ -146,3 +146,22 @@ fn a_placement_over_a_kernel_mapping_is_einval() {
     assert_eq!(place(pt, hi - 2 * PAGE_SIZE, 2 * PAGE_SIZE, RW), -22);
     assert!(azos_mm::vmm::translate_user(pt, hi - 2 * PAGE_SIZE, false).is_none());
 }
+
+/// The frames run out part-way: `ENOMEM`, every page mapped so far freed
+/// and unmapped, and the whole charge given back.
+#[test]
+fn a_placement_that_runs_out_of_frames_unwinds_and_gives_the_charge_back() {
+    let _g = serial();
+    let pt = fresh();
+    let (lo, _) = win();
+    let mut ballast = Vec::new();
+    while azos_mm::pmm::free_pages() > 100 {
+        ballast.push(azos_mm::pmm::alloc_page().expect("drain"));
+    }
+    let before = azos_mm::shim_pages_in_use();
+    assert_eq!(place(pt, lo, 200 * PAGE_SIZE, RW), -12);
+    assert!(azos_mm::shim_pages_in_use() <= before + 8, "frames stranded");
+    assert!(azos_mm::vmm::translate_user(pt, lo, false).is_none(), "the first page stayed mapped");
+    assert_eq!(azos_sched::shim_user_pages(), 0, "the charge was kept");
+    drop(ballast);
+}
