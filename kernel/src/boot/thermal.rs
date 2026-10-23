@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The thermal framework's user (kernel feature `thermal`, Kconfig `THERMAL`):
-//! the board's [`Runtime`] built at boot from the device tree's
-//! `thermal-zones`, and the kernel task that ticks it.
+//! The board's clock and the thermal framework's user: the board's
+//! [`Runtime`], built at boot, and the kernel task that ticks it.
+//!
+//! The clock half is Kconfig `ENERGY`'s (kernel feature `energy`): the board
+//! object that moves the clocks is built whenever the board has one, and the
+//! task is the energy governor's apply step, with or without a thermal zone.
+//! The zone half is Kconfig `THERMAL`'s (kernel feature `thermal`): the device
+//! tree's `thermal-zones` (on x86_64, the package zone from Kconfig) and the
+//! sensors they read. A build without `THERMAL`, or a board whose tree
+//! declares no zone, gets a runtime with no zone over a board object that
+//! reads no sensor (`azos_thermal::runtime::NoSensor`).
 //!
 //! # Board
 //!
@@ -46,13 +54,20 @@
 //!   `THERMAL_X86_CRITICAL_C` / `THERMAL_X86_POLL_MS` ([`install_x86`]). A
 //!   machine with no such sensor (QEMU TCG, any hypervisor) is refused by the
 //!   probe, with the reason in the boot line, and has no zone and no task.
-//! * Anything else (QEMU): no sensor and no actuator pair, so no zone
-//!   is built and no task exists (invariant I4: nothing changes).
+//! * Anything else (QEMU): no sensor and no actuator, so no runtime is built
+//!   and no task exists (invariant I4: nothing changes).
+//!
+//! The sensors (`sfctemp`, the K1's `TSEN`, the x86 package sensor) are
+//! `THERMAL`'s alone; the clocks (the JH7110's CPU clock, the K1's clusters,
+//! the Pi's ARM clock, the x86 level request) are there with `ENERGY`. The
+//! Pi's mailbox is both, so it is bound with `ENERGY`.
 //!
 //! # The tick
 //!
 //! The task sleeps the zones' polling delay (`Runtime::poll_interval_ms`: the
-//! passive delay while a trip is active) and each time:
+//! passive delay while a trip is active; with no zone, until woken), is woken
+//! early when the governor's choice for a domain changes
+//! (`azos_sched::energy::apply_take`), and each time:
 //!
 //! 1. asks the energy governor seam what it wants per domain
 //!    (`azos_sched::energy::domain_opp`, none while the governor is `Fixed`)
@@ -60,10 +75,14 @@
 //!    (the I1 floor's input);
 //! 2. ticks the runtime: read the zones that are due, cap by the heat, never
 //!    below the deadline or safety floor, set the clock;
-//! 3. leaves every new record of the framework's ring as a console line and a
+//! 3. answers each choice to the governor (`azos_sched::energy::gov_ack`:
+//!    applied, capped, refused by the actuator, no actuator), which asserts
+//!    that every choice for a domain the board can move is answered within
+//!    Kconfig `ENERGY_APPLY_DEADLINE_MS`;
+//! 4. leaves every new record of the framework's ring as a console line and a
 //!    `Rule::Thermal` decision (a trip that fired, a domain the floors keep
 //!    hot, a level raise or fall, a lost sensor, the shutdown request);
-//! 4. on a latched critical trip, powers the machine off in order.
+//! 5. on a latched critical trip, powers the machine off in order.
 //!
 //! The K1 moves a supply over I2C, which no spin lock may be held across
 //! (Kconfig `LOCK_MAX_HOLD_US`; a voltage step is several transfers), so its
@@ -87,7 +106,7 @@
 //! throttle, degrade record and recovery on a machine with no sensor
 //! (`kernel/src/smokes/thermal_smoke.rs`).
 
-#[cfg(all(feature = "vf2", not(feature = "soc")))]
+#[cfg(all(feature = "vf2", feature = "thermal", not(feature = "soc")))]
 compile_error!("THERMAL on the VisionFive 2 needs SOC_FRAMEWORKS: the CPU clock it moves is the frameworks'");
 
 use azos_energy::model::MAX_DOMAINS;
@@ -100,11 +119,12 @@ use crate::kprintln;
 /// The board object the runtime ticks over. The hardware itself lives in the
 /// statics below; this says which one.
 enum Board {
-    /// VisionFive 2: `sfctemp` and the CPU clock of the SoC frameworks. The
-    /// clock is `None` when the tree names none the frameworks have (the
-    /// sensor, the levels and the shutdown still work; every cap is refused
-    /// and raises the level instead).
-    #[cfg(feature = "vf2")]
+    /// VisionFive 2: `sfctemp` (with `THERMAL`) and the CPU clock of the SoC
+    /// frameworks. The clock is `None` when the tree names none the
+    /// frameworks have (the sensor, the levels and the shutdown still work;
+    /// every cap is refused and raises the level instead); without `THERMAL`
+    /// there is no board then.
+    #[cfg(all(feature = "vf2", feature = "soc"))]
     Jh7110 { clock: Option<(azos_soc::clk::Clk, u32)> },
     /// SpacemiT K1: the `TSEN` block, and per cluster a clock and a P1 buck.
     #[cfg(all(feature = "soc-k1", feature = "k1"))]
@@ -123,13 +143,13 @@ enum Board {
     #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
     #[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
     Rpi,
-    /// x86_64: the probed package sensor, and the level request and energy
-    /// meter the CPU has; the board object is built from them for each tick
-    /// (`thermal_hw::board`).
+    /// x86_64: the probed package sensor (`None`: no `THERMAL`, or none the
+    /// probe found), and the level request and energy meter the CPU has; the
+    /// board object is built from them for each tick (`thermal_hw::board`).
     // arch-only: MSRs and CPUID are x86; the gate row builds the fake board instead
     // and never constructs this one.
     #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
-    X86 { kind: azos_thermal::x86_sensor::Kind, pc: azos_thermal::x86::X86Pstate },
+    X86 { kind: Option<azos_thermal::x86_sensor::Kind>, pc: azos_thermal::x86::X86Pstate },
     /// QEMU gate row: a scripted temperature and a clock that remembers.
     #[cfg(feature = "thermal-smoke")]
     Fake(azos_thermal::fake::FakeBoard),
@@ -138,7 +158,7 @@ enum Board {
 impl Board {
     const fn name(&self) -> &'static str {
         match self {
-            #[cfg(feature = "vf2")]
+            #[cfg(all(feature = "vf2", feature = "soc"))]
             Board::Jh7110 { .. } => "jh7110",
             #[cfg(all(feature = "soc-k1", feature = "k1"))]
             Board::K1 { .. } => "k1",
@@ -175,14 +195,14 @@ static TICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool:
 // ── JH7110: the sensor ───────────────────────────────────────────────────────
 
 /// Where the `sfctemp` window was mapped (0: no sensor bound).
-#[cfg(feature = "vf2")]
+#[cfg(all(feature = "vf2", feature = "thermal"))]
 static SFCTEMP_BASE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// The JH7110 temperature sensor over its mapped window.
-#[cfg(feature = "vf2")]
+#[cfg(all(feature = "vf2", feature = "thermal"))]
 struct SfcTempMmio(usize);
 
-#[cfg(feature = "vf2")]
+#[cfg(all(feature = "vf2", feature = "thermal"))]
 impl azos_thermal::jh7110::SfcTempBus for SfcTempMmio {
     fn read32(&mut self, off: usize) -> u32 {
         // SAFETY: the window `hwbus::map_window` mapped for the bound node.
@@ -203,7 +223,7 @@ impl azos_thermal::jh7110::SfcTempBus for SfcTempMmio {
 
 /// The `sfctemp` node's probe: power the sensor up and let it convert, and
 /// remember the window for the tick.
-#[cfg(feature = "vf2")]
+#[cfg(all(feature = "vf2", feature = "thermal"))]
 pub(super) fn attach_sfctemp(base: usize) {
     azos_thermal::jh7110::SfcTemp::new(SfcTempMmio(base)).start();
     SFCTEMP_BASE.store(base, core::sync::atomic::Ordering::Release);
@@ -211,10 +231,10 @@ pub(super) fn attach_sfctemp(base: usize) {
 
 /// A cluster clock the frameworks cannot name: every request is refused, so
 /// the runtime raises the level instead of running hot unannounced.
-#[cfg(feature = "vf2")]
+#[cfg(all(feature = "vf2", feature = "thermal"))]
 struct NoClock;
 
-#[cfg(feature = "vf2")]
+#[cfg(all(feature = "vf2", feature = "thermal"))]
 impl azos_thermal::jh7110::CpuClock for NoClock {
     fn set_cpu_khz(&mut self, _khz: u32) -> Result<(), azos_energy::opp::ActuateError> {
         Err(azos_energy::opp::ActuateError::Unsupported)
@@ -224,14 +244,14 @@ impl azos_thermal::jh7110::CpuClock for NoClock {
 // ── K1: the sensor ──────────────────────────────────────────────────────────
 
 /// Where the `TSEN` window was mapped (0: no sensor bound).
-#[cfg(feature = "soc-k1")]
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
 static K1_TSENSOR_BASE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// The K1 temperature block over its mapped window.
-#[cfg(feature = "soc-k1")]
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
 struct K1TsensorMmio(usize);
 
-#[cfg(feature = "soc-k1")]
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
 impl azos_thermal::k1::K1TsensorBus for K1TsensorMmio {
     fn read32(&mut self, off: usize) -> u32 {
         // SAFETY: the window `hwbus::map_window` mapped for the bound node;
@@ -248,7 +268,7 @@ impl azos_thermal::k1::K1TsensorBus for K1TsensorMmio {
 /// The `k1-tsensor` node's probe: start the block (refused when the window
 /// answers nothing or does not hold the start sequence) and remember the
 /// window for the tick.
-#[cfg(feature = "soc-k1")]
+#[cfg(all(feature = "soc-k1", feature = "thermal"))]
 pub(super) fn attach_k1_tsensor(base: usize) -> Result<(), azos_thermal::k1::StartError> {
     azos_thermal::k1::K1Tsensor::new(K1TsensorMmio(base)).start()?;
     K1_TSENSOR_BASE.store(base, core::sync::atomic::Ordering::Release);
@@ -287,10 +307,12 @@ impl azos_thermal::k1_soc::K1Clocks for LockedClocks {
 
 // ── Construction ────────────────────────────────────────────────────────────
 
-/// Build the board's runtime from the device tree at `dtb_ptr` over the model
-/// the energy step resolved. After `install_energy` and after the sensor's
-/// hwbus probe. Does nothing, and says why, on a board with no sensor and
-/// actuator pair or a tree with no thermal zone.
+/// Build the board's runtime over the model the energy step resolved: with
+/// `THERMAL`, over the zones of the device tree at `dtb_ptr` (x86_64: the
+/// package zone from Kconfig); with none, or without `THERMAL`, a runtime
+/// with no zone, for the board's clock alone. After `install_energy` and
+/// after the hwbus probes. Does nothing, and says why, on a board with
+/// neither a zone nor a clock to move.
 pub(crate) fn install(dtb_ptr: usize) {
     let model = azos_sched::energy::model();
     #[cfg(feature = "thermal-smoke")]
@@ -311,44 +333,131 @@ pub(crate) fn install(dtb_ptr: usize) {
     }
     #[cfg(all(not(feature = "thermal-smoke"), not(target_arch = "x86_64")))]
     {
-        if dtb_ptr == 0 {
-            kprintln!("[THERMAL] no device tree: no thermal zone");
-            return;
-        }
-        // SAFETY: the firmware's blob, parsed before by `early_main`.
-        let dt = unsafe { azos_dtb::dtb_thermal(azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8) };
-        let Some(mut dt) = dt else {
-            kprintln!("[THERMAL] the device tree is not readable: no thermal zone");
+        let dt = zones_of(dtb_ptr);
+        let Some((rt, r, board)) = board_runtime(dt.as_ref(), model, dtb_ptr) else {
+            match &dt {
+                Some(dt) => kprintln!("[THERMAL] no sensor and clock pair for this board: {} zone(s) in the tree unused", dt.zones().len()),
+                None => kprintln!("[THERMAL] no zone and no clock this board can move: no task"),
+            }
             return;
         };
-        // A cooler names a CPU node; the model's masks name logical CPUs.
-        azos_thermal::dt::cpus_by_logical(&mut dt, &super::smp::cpu_of_dt_reg);
-        if dt.zones().is_empty() {
-            kprintln!("[THERMAL] the device tree declares no thermal zone: the framework stays idle");
-            return;
+        if let Some(r) = &r {
+            report_tree(r);
         }
-        let Some((rt, r, board)) = board_runtime(&dt, model, dtb_ptr) else {
-            kprintln!("[THERMAL] no sensor and clock pair for this board: {} zone(s) in the tree unused", dt.zones().len());
-            return;
-        };
-        report_tree(&r);
-        publish(rt, board, "device tree");
+        publish(rt, board, if r.is_some() { "device tree" } else { "no zone: the governor's clock alone" });
     }
 }
 
-/// x86_64: probe the package sensor from CPUID and, when the machine has one,
-/// build its zone from Kconfig and pair it with the level request and the
-/// energy meter the CPU has.
+/// The device tree's thermal zones at `dtb_ptr`, CPUs renumbered to the
+/// logical ones; `None` (and why, on the console) when there is no tree, it
+/// cannot be read or it declares no zone.
+#[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), not(target_arch = "x86_64")))]
+fn zones_of(dtb_ptr: usize) -> Option<azos_dtb::DtThermal> {
+    if dtb_ptr == 0 {
+        kprintln!("[THERMAL] no device tree: no thermal zone");
+        return None;
+    }
+    // SAFETY: the firmware's blob, parsed before by `early_main`.
+    let dt = unsafe { azos_dtb::dtb_thermal(azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8) };
+    let Some(mut dt) = dt else {
+        kprintln!("[THERMAL] the device tree is not readable: no thermal zone");
+        return None;
+    };
+    // A cooler names a CPU node; the model's masks name logical CPUs.
+    azos_thermal::dt::cpus_by_logical(&mut dt, &super::smp::cpu_of_dt_reg);
+    if dt.zones().is_empty() {
+        kprintln!("[THERMAL] the device tree declares no thermal zone");
+        return None;
+    }
+    Some(dt)
+}
+
+/// Without `THERMAL` no zone is read.
+#[cfg(all(not(feature = "thermal"), not(target_arch = "x86_64")))]
+fn zones_of(_dtb_ptr: usize) -> Option<azos_dtb::DtThermal> {
+    None
+}
+
+/// The runtime over the zones of `dt`, or with no zone when there is none;
+/// each domain's boot OPP from `boot_khz`. The report says what the tree had
+/// that could not be used (`None`: no tree was read).
+// arch-only: every aarch64 and x86_64 build has a board that can call it (the
+// Pi, the PC); a riscv64 build only with the VisionFive 2 or the K1.
+#[cfg(all(
+    not(feature = "thermal-smoke"),
+    any(target_arch = "aarch64", target_arch = "x86_64", all(feature = "vf2", feature = "soc"), all(feature = "soc-k1", feature = "k1"))
+))]
+fn runtime(
+    dt: Option<&azos_dtb::DtThermal>,
+    model: &azos_energy::EnergyModel,
+    boot_khz: impl Fn(usize) -> Option<u32>,
+) -> (Runtime, Option<azos_thermal::runtime::Report>) {
+    match dt {
+        Some(dt) => {
+            let (rt, r) = Runtime::from_dt(dt, model, boot_khz);
+            (rt, Some(r))
+        }
+        None => {
+            let mut rt = Runtime::new(azos_energy::thermal::Thermal::new());
+            rt.assume_boot(model, boot_khz);
+            (rt, None)
+        }
+    }
+}
+
+/// x86_64: with `THERMAL`, probe the package sensor from CPUID and build its
+/// zone from Kconfig; pair it (or, with no sensor, nothing) with the level
+/// request and the energy meter the CPU has.
 // arch-only: MSRs and CPUID are x86.
 #[cfg(all(not(feature = "thermal-smoke"), target_arch = "x86_64"))]
 fn install_x86(model: &azos_energy::EnergyModel) {
     use azos_thermal::x86::{boot_khz, Perf, X86Pstate};
     use crate::entry::x86_64::ext::thermal_hw;
+    #[cfg(feature = "thermal")]
+    let zone = package_zone(model);
+    #[cfg(not(feature = "thermal"))]
+    let zone: Option<(azos_thermal::x86_sensor::Kind, azos_dtb::DtThermal)> = None;
+    let hw = thermal_hw::pstate_hw();
+    kprintln!("[THERMAL] x86: level request {:?}, energy meter {:?}", hw.perf, hw.meter);
+    // The level request is carried out for an OPP of the energy model: a
+    // domain with one OPP (the CPUID model of a hybrid part) cannot be capped
+    // and a machine with no model has no domain, so no request would ever be
+    // made. Say so rather than leave a working actuator silently unused.
+    let movable = model.domains().iter().any(|d| d.opps().len() >= 2);
+    if hw.perf != Perf::None && !movable {
+        azos_drv_sys::kwarn!(
+            "[THERMAL] x86: the CPU takes level requests, but the energy model ({}) has no domain with two OPPs: no cap or governor request will be made (declare [energy.domain.*] OPPs in the topology)",
+            model.source.as_str(),
+        );
+    }
+    if zone.is_none() && (hw.perf == Perf::None || !movable) {
+        kprintln!("[THERMAL] x86: no zone and no clock to move: no task");
+        return;
+    }
+    let (kind, dt) = zone.unzip();
+    // The clock the firmware left: the whole range of the part, which is each
+    // domain's fastest OPP and what a cap is lifted back to.
+    let (rt, r) = runtime(dt.as_ref(), model, |d| boot_khz(hw, model, d));
+    if let Some(r) = &r {
+        report_tree(r);
+    }
+    let source = if kind.is_some() { "Kconfig trips" } else { "no zone: the governor's clock alone" };
+    publish(rt, Board::X86 { kind, pc: X86Pstate::new(hw, model) }, source);
+}
+
+/// x86_64: the package sensor the CPU has and its zone, from Kconfig
+/// `THERMAL_X86_PASSIVE_C` / `THERMAL_X86_HOT_C` / `THERMAL_X86_CRITICAL_C` /
+/// `THERMAL_X86_POLL_MS`; `None` (and why) when the probe finds none or the
+/// trips are out of order.
+// arch-only: MSRs and CPUID are x86.
+#[cfg(all(feature = "thermal", not(feature = "thermal-smoke"), target_arch = "x86_64"))]
+fn package_zone(model: &azos_energy::EnergyModel) -> Option<(azos_thermal::x86_sensor::Kind, azos_dtb::DtThermal)> {
+    use crate::entry::x86_64::ext::thermal_hw;
     let kind = match thermal_hw::probe() {
         Ok(kind) => kind,
         Err(why) => {
             kprintln!("[THERMAL] x86: no temperature sensor: {}", why.name());
-            return;
+            return None;
         }
     };
     let (passive, hot, crit, poll) = (
@@ -362,25 +471,9 @@ fn install_x86(model: &azos_energy::EnergyModel) {
             "[THERMAL] x86: THERMAL_X86_PASSIVE_C {} < THERMAL_X86_HOT_C {} < THERMAL_X86_CRITICAL_C {} does not hold: no zone",
             passive, hot, crit,
         );
-        return;
+        return None;
     };
-    let hw = thermal_hw::pstate_hw();
-    kprintln!("[THERMAL] x86: level request {:?}, energy meter {:?}", hw.perf, hw.meter);
-    // The level request is carried out for an OPP of the energy model: a
-    // domain with one OPP (the CPUID model of a hybrid part) cannot be capped
-    // and a machine with no model has no domain, so no request would ever be
-    // made. Say so rather than leave a working actuator silently unused.
-    if hw.perf != Perf::None && !model.domains().iter().any(|d| d.opps().len() >= 2) {
-        azos_drv_sys::kwarn!(
-            "[THERMAL] x86: the CPU takes level requests, but the energy model ({}) has no domain with two OPPs: no cap or governor request will be made (declare [energy.domain.*] OPPs in the topology)",
-            model.source.as_str(),
-        );
-    }
-    // The clock the firmware left: the whole range of the part, which is each
-    // domain's fastest OPP and what a cap is lifted back to.
-    let (rt, r) = Runtime::from_dt(&dt, model, |d| boot_khz(hw, model, d));
-    report_tree(&r);
-    publish(rt, Board::X86 { kind, pc: X86Pstate::new(hw, model) }, "Kconfig trips");
+    Some((kind, dt))
 }
 
 /// Report the runtime and park it for the task.
@@ -396,17 +489,23 @@ fn publish(rt: Runtime, board: Board, source: &str) {
     *STATE.lock() = Some(State { rt, board, reported: 0, level: 0 });
 }
 
-/// The runtime for the hardware that is bound, if any (the boards whose zones
-/// the device tree declares; x86_64 builds its zone in [`install_x86`]).
+/// The runtime for the hardware that is bound, if any: over the zones of
+/// `dt` when the board's sensor is bound (`THERMAL`), else with no zone when
+/// the board has a clock to move (x86_64 builds its runtime in
+/// [`install_x86`]).
 #[cfg(all(not(feature = "thermal-smoke"), not(target_arch = "x86_64")))]
 fn board_runtime(
-    dt: &azos_dtb::DtThermal,
+    dt: Option<&azos_dtb::DtThermal>,
     model: &azos_energy::EnergyModel,
     // Read by the K1 board only (its clusters come from the tree again).
     #[cfg_attr(not(all(feature = "soc-k1", feature = "k1")), allow(unused_variables))] dtb_ptr: usize,
-) -> Option<(Runtime, azos_thermal::runtime::Report, Board)> {
-    #[cfg(feature = "vf2")]
-    if SFCTEMP_BASE.load(core::sync::atomic::Ordering::Acquire) != 0 {
+) -> Option<(Runtime, Option<azos_thermal::runtime::Report>, Board)> {
+    #[cfg(all(feature = "vf2", feature = "soc"))]
+    {
+        #[cfg(feature = "thermal")]
+        let sensed = SFCTEMP_BASE.load(core::sync::atomic::Ordering::Acquire) != 0;
+        #[cfg(not(feature = "thermal"))]
+        let sensed = false;
         // The cluster clock and the rate it runs at: the ceiling the unmoved
         // supply carries, and the OPP the heat restores.
         let clock = super::soc::with(|fdt, soc, bus, _fx| {
@@ -415,24 +514,38 @@ fn board_runtime(
             Some((clk, khz))
         })
         .flatten();
-        if clock.is_none() {
-            azos_drv_sys::kwarn!("[THERMAL] jh7110: no CPU clock the frameworks can move: caps will be refused");
+        let dt = dt.filter(|_| sensed);
+        if dt.is_some() || clock.is_some() {
+            if clock.is_none() {
+                azos_drv_sys::kwarn!("[THERMAL] jh7110: no CPU clock the frameworks can move: caps will be refused");
+            }
+            let (rt, r) = runtime(dt, model, |d| clock.filter(|_| d == 0).map(|(_, khz)| khz));
+            return Some((rt, r, Board::Jh7110 { clock }));
         }
-        let (rt, r) = Runtime::from_dt(dt, model, |d| clock.filter(|_| d == 0).map(|(_, khz)| khz));
-        return Some((rt, r, Board::Jh7110 { clock }));
     }
     #[cfg(all(feature = "soc-k1", feature = "k1"))]
-    if K1_TSENSOR_BASE.load(core::sync::atomic::Ordering::Acquire) != 0 {
-        if let Some((plan, boot)) = k1_plan(dtb_ptr, model) {
-            let (rt, r) = azos_thermal::k1::runtime_from_dt(dt, model, |d| boot.get(d).copied().flatten());
+    {
+        #[cfg(feature = "thermal")]
+        let sensed = K1_TSENSOR_BASE.load(core::sync::atomic::Ordering::Acquire) != 0;
+        #[cfg(not(feature = "thermal"))]
+        let sensed = false;
+        let dt = dt.filter(|_| sensed);
+        let planned = k1_plan(dtb_ptr, model).filter(|(p, _)| p.wires.iter().any(Option::is_some));
+        if dt.is_some() || planned.is_some() {
+            // No frameworks, or a tree the plan cannot be read from: the
+            // sensor still protects the silicon (the critical trip), with no
+            // clock to move; every cap is refused and raises the level instead.
+            let (plan, boot) = planned.unwrap_or_default();
+            let boot = |d: usize| boot.get(d).copied().flatten();
+            let (rt, r) = match dt {
+                Some(dt) => {
+                    let (rt, r) = azos_thermal::k1::runtime_from_dt(dt, model, boot);
+                    (rt, Some(r))
+                }
+                None => runtime(None, model, boot),
+            };
             return Some((rt, r, Board::K1 { plan, lagged: 0 }));
         }
-        // No frameworks, or a tree the plan cannot be read from: the sensor
-        // still protects the silicon (the critical trip), with no clock to
-        // move; every cap is refused and raises the level instead.
-        let none = azos_thermal::k1_soc::K1Plan::default();
-        let (rt, r) = azos_thermal::k1::runtime_from_dt(dt, model, |_| None);
-        return Some((rt, r, Board::K1 { plan: none, lagged: 0 }));
     }
     // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
     #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
@@ -441,8 +554,13 @@ fn board_runtime(
         // that can move (`rpi_mbox::energy_model`): the Pi 5 and the other
         // boards give one, an emulated property channel (QEMU `raspi`) does
         // not, and then the object is the sensor alone and every cap is
-        // refused (the level rises instead).
-        match fw.clock() {
+        // refused (the level rises instead). With no zone and no such range
+        // there is nothing to do.
+        let clock = fw.clock();
+        if dt.is_none() && clock.is_none() {
+            return None;
+        }
+        match clock {
             Some(c) => kprintln!("[THERMAL] rpi: ARM clock {}..{} kHz", c.min_hz / 1000, c.max_hz / 1000),
             None => azos_drv_sys::kwarn!("[THERMAL] rpi: no ARM clock range the firmware lets us move: caps will be refused"),
         }
@@ -450,8 +568,10 @@ fn board_runtime(
         if boot.is_none() {
             azos_drv_sys::kwarn!("[THERMAL] rpi: the firmware did not report the ARM clock: it will not be restored after the heat");
         }
-        Runtime::from_dt(dt, model, |d| boot.filter(|_| d == 0))
-    }) {
+        Some(runtime(dt, model, |d| boot.filter(|_| d == 0)))
+    })
+    .flatten()
+    {
         let (rt, r) = built;
         return Some((rt, r, Board::Rpi));
     }
@@ -558,23 +678,31 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
     };
     #[cfg(not(feature = "thermal-tick-canary"))]
     let settled = match board {
-        #[cfg(feature = "vf2")]
+        #[cfg(all(feature = "vf2", feature = "soc"))]
         Board::Jh7110 { clock } => {
-            let base = SFCTEMP_BASE.load(core::sync::atomic::Ordering::Acquire);
-            let sensor = azos_thermal::jh7110::SfcTemp::new(SfcTempMmio(base));
+            // A sensor that is not bound (base 0) is never read: its runtime
+            // has no zone.
+            #[cfg(feature = "thermal")]
+            let sensor = azos_thermal::jh7110::SfcTemp::new(SfcTempMmio(SFCTEMP_BASE.load(core::sync::atomic::Ordering::Acquire)));
             match *clock {
                 Some((clk, ceiling_khz)) => super::soc::with(|_fdt, soc, bus, fx| {
                     let clock = azos_thermal::soc::SocCpuClock { tree: &mut soc.clocks, bus, fx, clk, ceiling_khz };
-                    rt.tick(&mut azos_thermal::jh7110::Jh7110 { sensor, clock }, model, now, inp)
+                    #[cfg(feature = "thermal")]
+                    let settled = rt.tick(&mut azos_thermal::jh7110::Jh7110 { sensor, clock }, model, now, inp);
+                    #[cfg(not(feature = "thermal"))]
+                    let settled = rt.tick(&mut azos_thermal::runtime::NoSensor(azos_thermal::jh7110::Cluster(clock)), model, now, inp);
+                    settled
                 })
                 .unwrap_or_else(|| rt.last()),
+                #[cfg(feature = "thermal")]
                 None => rt.tick(&mut azos_thermal::jh7110::Jh7110 { sensor, clock: NoClock }, model, now, inp),
+                // Without a sensor and a clock there is no board (`board_runtime`).
+                #[cfg(not(feature = "thermal"))]
+                None => rt.last(),
             }
         }
         #[cfg(all(feature = "soc-k1", feature = "k1"))]
         Board::K1 { plan, lagged } => {
-            let base = K1_TSENSOR_BASE.load(core::sync::atomic::Ordering::Acquire);
-            let sensor = azos_thermal::k1::K1Tsensor::new(K1TsensorMmio(base));
             // No lock is held here: each clock access takes the frameworks'
             // lock for the one operation (`LockedClocks`), and the rail's I2C
             // transfers, hundreds of microseconds, run with none.
@@ -593,10 +721,21 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
                     opp.bind(d, *t);
                 }
             }
-            let mut b = azos_thermal::k1::K1::new(sensor, opp);
-            let settled = rt.tick(&mut b, model, now, inp);
-            *lagged = lagged.wrapping_add(b.opp.lagged());
-            note = b.opp.take_lag();
+            // A block that is not bound (base 0) is never read: its runtime
+            // has no zone.
+            #[cfg(feature = "thermal")]
+            let (settled, mut opp) = {
+                let base = K1_TSENSOR_BASE.load(core::sync::atomic::Ordering::Acquire);
+                let mut b = azos_thermal::k1::K1::new(azos_thermal::k1::K1Tsensor::new(K1TsensorMmio(base)), opp);
+                (rt.tick(&mut b, model, now, inp), b.opp)
+            };
+            #[cfg(not(feature = "thermal"))]
+            let (settled, mut opp) = {
+                let mut b = azos_thermal::runtime::NoSensor(opp);
+                (rt.tick(&mut b, model, now, inp), b.0)
+            };
+            *lagged = lagged.wrapping_add(opp.lagged());
+            note = opp.take_lag();
             settled
         }
         // arch-only: as the variant.
@@ -606,10 +745,12 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
         // arch-only: as the variant.
         #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
         Board::X86 { kind, pc } => {
-            use crate::entry::x86_64::ext::thermal_hw::{board, KernelPlatform};
-            let settled = {
-                let mut hw = board(*kind, pc.actuator(KernelPlatform));
-                rt.tick(&mut hw, model, now, inp)
+            use crate::entry::x86_64::ext::thermal_hw::KernelPlatform;
+            let settled = match *kind {
+                #[cfg(feature = "thermal")]
+                Some(kind) => rt.tick(&mut crate::entry::x86_64::ext::thermal_hw::board(kind, pc.actuator(KernelPlatform)), model, now, inp),
+                // No sensor: a runtime with no zone, the clock alone.
+                _ => rt.tick(&mut azos_thermal::runtime::NoSensor(pc.actuator(KernelPlatform)), model, now, inp),
             };
             // The package energy since the last tick: a counter read, whatever
             // the zone was due.
@@ -623,13 +764,15 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
         _ => rt.last(),
     };
     // The canary and a build with no board object use none of them.
-    let _ = (&inp, now, &board);
+    let _ = (&inp, now, &board, model);
     (settled, note)
 }
 
-/// One evaluation: tick the runtime over the bound board and say what the
-/// ring gained. Returns the sleep until the next one, milliseconds, and
-/// whether a critical trip asked for the shutdown. `None` without a runtime.
+/// One evaluation: tick the runtime over the bound board, answer the
+/// governor's choices and say what the ring gained. Returns the sleep until
+/// the next one, milliseconds (`None`: no zone to poll, sleep until a choice
+/// changes), and whether a critical trip asked for the shutdown. `None`
+/// without a runtime.
 ///
 /// The state is taken out of its lock for the tick and put back
 /// (`thermal/status` says `ticking` meanwhile; only this task writes it): no
@@ -637,7 +780,7 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
 /// rail over I2C, the Raspberry Pi asks the VideoCore by mailbox (replies in
 /// milliseconds), x86 reads another CPU's MSRs by a function-call IPI, the
 /// JH7110 moves a clock through the SoC frameworks.
-fn tick_once() -> Option<(u32, bool)> {
+fn tick_once() -> Option<(Option<u32>, bool)> {
     let model = azos_sched::energy::model();
     let inp = inputs(model);
     let now = now_ms();
@@ -653,7 +796,8 @@ fn tick_once() -> Option<(u32, bool)> {
     TICKING.store(false, core::sync::atomic::Ordering::Release);
     let st = g.as_mut()?;
     let rt = &mut st.rt;
-    let wait = rt.poll_interval_ms().unwrap_or(1000);
+    let wait = rt.poll_interval_ms();
+    let applied = rt.applied;
     // The ring's new records, oldest first, copied out so the lines and the
     // decisions are left with the lock released.
     let fresh = rt.thermal.logged().wrapping_sub(st.reported).min(LOG_LEN as u32) as usize;
@@ -665,6 +809,13 @@ fn tick_once() -> Option<(u32, bool)> {
     let before = st.level;
     st.level = settled.level;
     drop(g);
+
+    // The governor's assertion: every choice it made is answered.
+    for (dom, a) in applied.iter().enumerate() {
+        if let (Some((target, a)), Some(choice)) = (a, inp.want[dom]) {
+            azos_sched::energy::gov_ack(dom, choice as u8, *target as u8, *a);
+        }
+    }
 
     #[cfg(all(feature = "soc-k1", feature = "k1"))]
     if let Some(l) = note {
@@ -707,6 +858,11 @@ fn report(r: &azos_energy::thermal::Record, level_rose: bool) {
 
 fn thermal_task(_: usize) {
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
+    // The governor wakes this task when a choice changes, and asserts it is
+    // answered, for every domain of the model (one the board cannot move
+    // answers so, and leaves the assertion).
+    let domains = azos_sched::energy::model().domains().len().min(MAX_DOMAINS);
+    azos_sched::energy::apply_install(azos_sched::current_task_tid(), (1u32 << domains) - 1);
     loop {
         let wait = match tick_once() {
             Some((wait, false)) => wait,
@@ -716,17 +872,18 @@ fn thermal_task(_: usize) {
             }
             None => return,
         };
-        let end = azos_drv_sys::timebase::now() + wait as u64 * per_ms;
-        while azos_drv_sys::timebase::now() < end {
+        // With no zone the only reason to tick is a changed choice.
+        let end = wait.map_or(u64::MAX, |ms| azos_drv_sys::timebase::now() + ms as u64 * per_ms);
+        while azos_drv_sys::timebase::now() < end && !azos_sched::energy::apply_take() {
             azos_sched::task_block(azos_sched::WaitReason::Timer(end));
         }
     }
 }
 
 /// Create the thermal task, on the lowest CPU outside the real-time ones (as
-/// the reclaim task is placed). Nothing without a runtime with a zone.
+/// the reclaim task is placed). Nothing without a runtime.
 pub(crate) fn create_task() {
-    if STATE.lock().as_ref().and_then(|s| s.rt.poll_interval_ms()).is_none() {
+    if STATE.lock().is_none() {
         return;
     }
     let isolated = azos_topology::get().map_or(0, |t| t.sched_config().isolcpus as usize);

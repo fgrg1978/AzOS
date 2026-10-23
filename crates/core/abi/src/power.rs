@@ -168,6 +168,17 @@ pub const POLICY_STATS_RESERVE_ENTRIES: u64 = 6;
 /// Stats selector: times the power service's report went stale (older than
 /// Kconfig `ENERGY_BATTERY_REPORT_TIMEOUT_MS`), each holding the reserve.
 pub const POLICY_STATS_STALE_ENTRIES: u64 = 7;
+/// Stats selector: governor choices the board's apply step put on the clock
+/// (at the choice, or at the heat's cap or a floor).
+pub const POLICY_STATS_OPP_REACHED: u64 = 8;
+/// Stats selector: of those, the ones the heat capped below the choice.
+pub const POLICY_STATS_OPP_CAPPED: u64 = 9;
+/// Stats selector: governor choices the actuator refused or failed (each first
+/// one of a run leaves a `Rule::OppApply` record).
+pub const POLICY_STATS_OPP_UNAPPLIED: u64 = 10;
+/// Stats selector: governor choices no apply step answered by the deadline, on a
+/// domain the board can move (the governor's assertion; must stay 0).
+pub const POLICY_STATS_OPP_OVERDUE: u64 = 11;
 /// Stats selector base: `POLICY_STATS_LOG_BASE + i` is the `i`-th most recent
 /// refusal record, packed `op << 56 | reason << 48 | seq << 32 | arg` (0 = none):
 /// `op` is the `POWER_OP_POLICY_*` number and `arg` the call's argument as it

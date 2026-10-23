@@ -375,9 +375,15 @@ pub fn eas_place(idx: usize, prev_cpu: usize, candidates: u32) -> Option<usize> 
 // whose CPUs all went idle is re-evaluated by a hart that still runs, from
 // projected signals). Inputs: the busiest CPU signal of the domain and the most
 // loaded hart's admitted real-time density (`rt::ADMITTED_PPM`, lock-free).
-// The decision is recorded here and counted; the thermal task reads it
-// (`domain_opp`) and applies it, capped by the heat, on a board whose thermal
-// runtime has a clock actuator (`kernel/src/boot/thermal.rs`).
+// The decision is recorded here, never applied here: no clock may be moved
+// from the tick (a mailbox round trip, a rail over I2C). The board's apply
+// step (the kernel's `thermal` task, `kernel/src/boot/thermal.rs`, with or
+// without Kconfig `THERMAL`) is woken when a choice changes, moves the clock
+// and acknowledges the outcome ([`gov_ack`]). The governor asserts that it
+// did: a choice for a domain the board can move that is still not
+// acknowledged after the apply deadline is overdue, counted and recorded
+// (`Rule::OppApply`). A board with no actuator (QEMU) installs no apply step,
+// so nothing is asserted there.
 
 use azos_energy::governor::{self, Why};
 use azos_energy::idle::{self, Limit, TeoCpu};
@@ -397,6 +403,26 @@ static GOV_EVALS: AtomicU32 = AtomicU32::new(0);
 static GOV_CHANGES: AtomicU32 = AtomicU32::new(0);
 /// Per `Why`: schedutil, deadline floor, safety floor.
 static GOV_WHY: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+
+/// The apply step's task (0: none, nothing is asserted).
+static APPLY_TID: AtomicU32 = AtomicU32::new(0);
+/// Domains the apply step can move (bit d); an answer of "no actuator"
+/// clears the domain's bit.
+static GOV_ACTUATED: AtomicU32 = AtomicU32::new(0);
+/// A choice changed since the apply step last took the flag.
+static APPLY_PENDING: AtomicBool = AtomicBool::new(false);
+/// Per domain, the choice the apply step last answered for.
+static GOV_ACKED: [AtomicU8; MAX_DOMAINS] = [const { AtomicU8::new(OPP_BOOT) }; MAX_DOMAINS];
+/// Per domain, since when the choice has differed from the acknowledged one.
+static GOV_SINCE: [AtomicU64; MAX_DOMAINS] = [const { AtomicU64::new(0) }; MAX_DOMAINS];
+/// Domains whose last outcome did not reach the clock (bit d).
+static GOV_LOST: AtomicU32 = AtomicU32::new(0);
+/// Choices that reached the clock, of them capped by the heat, refused by the
+/// actuator, overdue.
+static GOV_REACHED: AtomicU32 = AtomicU32::new(0);
+static GOV_CAPPED: AtomicU32 = AtomicU32::new(0);
+static GOV_UNAPPLIED: AtomicU32 = AtomicU32::new(0);
+static GOV_OVERDUE: AtomicU32 = AtomicU32::new(0);
 
 /// What the governor has recorded so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -421,6 +447,117 @@ pub fn gov_stats() -> GovStats {
 /// The OPP last recorded for domain `d` ([`OPP_BOOT`] if none).
 pub fn domain_opp(d: usize) -> u8 {
     GOV_OPP.get(d).map_or(OPP_BOOT, |o| o.load(Ordering::Relaxed))
+}
+
+/// What became of the governor's choices so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ApplyStats {
+    /// Choices the apply step put on the clock (at the choice, the heat's cap
+    /// or a floor).
+    pub reached: u32,
+    /// Of those, the ones the heat capped.
+    pub capped: u32,
+    /// Choices the actuator refused or failed.
+    pub unapplied: u32,
+    /// Choices no apply step answered by the deadline. Must stay 0.
+    pub overdue: u32,
+    /// Domains the apply step can move (bit d).
+    pub actuated: u32,
+}
+
+/// The apply step's counters.
+pub fn apply_stats() -> ApplyStats {
+    ApplyStats {
+        reached: GOV_REACHED.load(Ordering::Relaxed),
+        capped: GOV_CAPPED.load(Ordering::Relaxed),
+        unapplied: GOV_UNAPPLIED.load(Ordering::Relaxed),
+        overdue: GOV_OVERDUE.load(Ordering::Relaxed),
+        actuated: GOV_ACTUATED.load(Ordering::Relaxed),
+    }
+}
+
+/// The board's apply step is the task `tid`, and can move the domains of
+/// `actuated` (bit d). From then on a changed choice wakes it, and a choice it
+/// leaves unanswered past Kconfig `ENERGY_APPLY_DEADLINE_MS` is overdue.
+pub fn apply_install(tid: u32, actuated: u32) {
+    GOV_ACTUATED.store(actuated, Ordering::Relaxed);
+    APPLY_TID.store(tid, Ordering::Release);
+}
+
+/// Take the "a choice changed" flag: the apply step ticks again instead of
+/// sleeping when it was set.
+pub fn apply_take() -> bool {
+    APPLY_PENDING.swap(false, Ordering::AcqRel)
+}
+
+/// The apply step answers for the choice `choice` of domain `d`: it asked the
+/// actuator for `target` (the choice under the heat's cap and the floors) and
+/// got `a`. The first answer of a run that did not reach the clock leaves a
+/// refusal record, the first that reached it again an admission.
+pub fn gov_ack(d: usize, choice: u8, target: u8, a: azos_energy::opp::GovApply) {
+    use azos_energy::opp::{apply_record, ApplyRecord, GovApply};
+    if d >= MAX_DOMAINS {
+        return;
+    }
+    let bit = 1u32 << d;
+    match a {
+        GovApply::NoActuator => {
+            // The board cannot move this domain: nothing to assert there.
+            GOV_ACTUATED.fetch_and(!bit, Ordering::Relaxed);
+        }
+        GovApply::Unapplied(_) => {
+            GOV_UNAPPLIED.fetch_add(1, Ordering::Relaxed);
+        }
+        GovApply::Capped => {
+            GOV_REACHED.fetch_add(1, Ordering::Relaxed);
+            GOV_CAPPED.fetch_add(1, Ordering::Relaxed);
+        }
+        GovApply::Applied | GovApply::Raised => {
+            GOV_REACHED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    GOV_ACKED[d].store(choice, Ordering::Release);
+    let lost = GOV_LOST.load(Ordering::Relaxed) & bit != 0;
+    let verdict = match apply_record(lost, a) {
+        ApplyRecord::None => return,
+        ApplyRecord::Lost => {
+            GOV_LOST.fetch_or(bit, Ordering::Relaxed);
+            azos_decision::Verdict::Refuse
+        }
+        ApplyRecord::Back => {
+            GOV_LOST.fetch_and(!bit, Ordering::Relaxed);
+            azos_decision::Verdict::Admit
+        }
+    };
+    azos_decision::record(azos_decision::Rule::OppApply, verdict, d as u32, [choice as u64, target as u64, a.code() as u64]);
+}
+
+/// The governor's assertion for domain `di` at `at`, from the tick: a choice
+/// the board can move and no apply step answered by the deadline is counted
+/// once and recorded (`Deny`, which stays in the ring: the tick takes no lock
+/// the durable path might) until an answer reaches the clock again.
+fn assert_applied(di: usize, at: u64) {
+    let bit = 1u32 << di;
+    if GOV_ACTUATED.load(Ordering::Relaxed) & bit == 0 || GOV_LOST.load(Ordering::Relaxed) & bit != 0 {
+        return;
+    }
+    let choice = GOV_OPP[di].load(Ordering::Relaxed);
+    let acked = GOV_ACKED[di].load(Ordering::Acquire);
+    let since = GOV_SINCE[di].load(Ordering::Relaxed);
+    let deadline = ticks(azos_limits::ENERGY_APPLY_DEADLINE_MS as u64 * 1_000);
+    if !azos_energy::opp::apply_overdue(choice, acked, since, at, deadline) {
+        return;
+    }
+    if GOV_LOST.fetch_or(bit, Ordering::Relaxed) & bit != 0 {
+        return;
+    }
+    GOV_OVERDUE.fetch_add(1, Ordering::Relaxed);
+    azos_decision::record(
+        azos_decision::Rule::OppApply,
+        azos_decision::Verdict::Deny,
+        di as u32,
+        [choice as u64, OPP_BOOT as u64, azos_energy::opp::APPLY_OVERDUE as u64],
+    );
 }
 
 /// The domain index of `cpu` in the installed model.
@@ -483,9 +620,24 @@ pub fn gov_maybe(_cpu: usize, at: u64) -> u32 {
         }]
         .fetch_add(1, Ordering::Relaxed);
         if prev != dec.opp as u8 {
+            // The wait for an answer starts at the first choice that differs
+            // from the acknowledged one, not at the latest: a choice that
+            // keeps changing under a dead apply step is still overdue.
+            if GOV_ACKED[di].load(Ordering::Acquire) == prev {
+                GOV_SINCE[di].store(at, Ordering::Relaxed);
+            }
             GOV_OPP[di].store(dec.opp as u8, Ordering::Relaxed);
             GOV_CHANGES.fetch_add(1, Ordering::Relaxed);
+            // One wake per apply round: a flag already up has its wake on the
+            // way (a task not yet asleep keeps it as a pending wake).
+            if GOV_ACTUATED.load(Ordering::Relaxed) & (1 << di) != 0 && !APPLY_PENDING.swap(true, Ordering::AcqRel) {
+                let tid = APPLY_TID.load(Ordering::Acquire);
+                if tid != 0 {
+                    let _ = crate::scheduler::wake_task_by_tid(tid, &|r| matches!(r, crate::task::WaitReason::Timer(_)));
+                }
+            }
         }
+        assert_applied(di, at);
     }
     n
 }
@@ -593,8 +745,18 @@ pub fn policy_state(sel: u64) -> Option<u64> {
 /// The policy statistics word `sel` (`POLICY_STATS_*`), `None` for an
 /// unknown one.
 pub fn policy_stats(sel: u64) -> Option<u64> {
-    let g = gov_stats();
-    POLICY.stats_word(g.evals, g.changes, sel)
+    use azos_abi::power::{POLICY_STATS_OPP_CAPPED, POLICY_STATS_OPP_OVERDUE, POLICY_STATS_OPP_REACHED, POLICY_STATS_OPP_UNAPPLIED};
+    let a = apply_stats();
+    Some(match sel {
+        POLICY_STATS_OPP_REACHED => a.reached as u64,
+        POLICY_STATS_OPP_CAPPED => a.capped as u64,
+        POLICY_STATS_OPP_UNAPPLIED => a.unapplied as u64,
+        POLICY_STATS_OPP_OVERDUE => a.overdue as u64,
+        _ => {
+            let g = gov_stats();
+            return POLICY.stats_word(g.evals, g.changes, sel);
+        }
+    })
 }
 
 // ── Stage E4: the idle governor ─────────────────────────────────────────────

@@ -6,7 +6,7 @@ pub(crate) mod hv_vectors;
 #[cfg(feature = "pci")]
 pub(crate) mod its_route;
 pub(crate) mod pan_patch;
-#[cfg(feature = "rpi-firmware")]
+#[cfg(any(feature = "rpi-firmware", feature = "energy"))]
 pub(crate) mod rpi_mbox;
 #[cfg(feature = "wdt-bcm2835-pm")]
 pub(crate) mod rpi_pm;

@@ -18,6 +18,12 @@
 //! * otherwise the clock is left alone (invariant I4: no model, no
 //!   thermal zone, no change).
 //!
+//! A runtime with no zone at all (a build without Kconfig `THERMAL`, a board
+//! whose tree declares none) only ever meets the first case: its tick is the
+//! step that applies the governor's choice, over a board object that reads no
+//! sensor ([`NoSensor`]). What each tick made of the choice is left in
+//! [`Runtime::applied`] for the caller to acknowledge to the governor.
+//!
 //! The OPP "put back" is the one [`azos_energy::opp::Dvfs`] knows: wiring must
 //! [`Dvfs::assume`](azos_energy::opp::Dvfs::assume) the firmware's boot OPP
 //! (the Pi: `arm_clock_rate()` mapped to the nearest OPP) before the first
@@ -44,12 +50,12 @@
 //! records, it does not power the machine off.
 
 use azos_dtb::DtThermal;
-use azos_energy::model::{EnergyModel, PerfDomain, MAX_DOMAINS};
-use azos_energy::opp::{Dvfs, OppActuator};
+use azos_energy::model::{EnergyModel, Opp, PerfDomain, MAX_DOMAINS};
+use azos_energy::opp::{check_applied, ActuateError, Dvfs, GovApply, OppActuator};
 use azos_energy::thermal::{Event, Settled, Thermal};
 
 use crate::dt::{self, Built};
-use crate::sensor::SensorBank;
+use crate::sensor::{SensorBank, SensorError};
 
 /// The shortest sleep between two ticks, milliseconds. A tree that declares a
 /// polling delay of a few milliseconds (or none, which reads as 0 in some
@@ -149,6 +155,23 @@ impl Inputs {
 /// Not set: the OPP before thermal pressure.
 const NONE: u8 = u8::MAX;
 
+/// A board object that moves clocks and reads no sensor: the runtime of a
+/// build or a board with no thermal zone, where the tick only applies the
+/// governor's choice (a zone-less [`Thermal`] never asks for a reading).
+pub struct NoSensor<A>(pub A);
+
+impl<A> SensorBank for NoSensor<A> {
+    fn read_mdeg(&mut self, _sensor: u8) -> Result<i32, SensorError> {
+        Err(SensorError::Absent)
+    }
+}
+
+impl<A: OppActuator> OppActuator for NoSensor<A> {
+    fn set_opp(&mut self, domain: usize, opp: &Opp) -> Result<(), ActuateError> {
+        self.0.set_opp(domain, opp)
+    }
+}
+
 /// The runtime state: the zones, the clocks' bookkeeping and what to put back.
 pub struct Runtime {
     /// The zones and the record ring.
@@ -162,6 +185,11 @@ pub struct Runtime {
     last: Settled,
     /// Evaluations made ([`Runtime::tick`] calls), wrapping.
     pub ticks: u32,
+    /// Per domain, the OPP the last tick asked of the actuator for the
+    /// governor's choice and what became of it (`None`: the governor named
+    /// none), for the caller to answer to the governor
+    /// ([`azos_energy::opp`]'s assertion).
+    pub applied: [Option<(usize, GovApply)>; MAX_DOMAINS],
 }
 
 impl Runtime {
@@ -174,6 +202,7 @@ impl Runtime {
             pressed: [false; MAX_DOMAINS],
             last: Settled { level: 0, shutdown: false },
             ticks: 0,
+            applied: [None; MAX_DOMAINS],
         }
     }
 
@@ -229,6 +258,7 @@ impl Runtime {
         inp: &Inputs,
     ) -> Settled {
         self.ticks = self.ticks.wrapping_add(1);
+        self.applied = [None; MAX_DOMAINS];
         for z in 0..self.thermal.zones().len() {
             if !self.thermal.due(z, now_ms) {
                 continue;
@@ -269,8 +299,12 @@ impl Runtime {
             };
             let Some(want) = want else { continue };
             let lim = self.thermal.limit(d, dom, want, inp.admitted_ppm[dom]);
-            if self.dvfs.set(hw, model, dom, lim.opp).is_err() && pressure && cur.is_none_or(|c| lim.opp < c) {
+            let r = self.dvfs.set(hw, model, dom, lim.opp);
+            if r.is_err() && pressure && cur.is_none_or(|c| lim.opp < c) {
                 self.thermal.unactuated(dom);
+            }
+            if let Some(w) = inp.want[dom] {
+                self.applied[dom] = Some((lim.opp, check_applied(w, lim.opp, r)));
             }
         }
         self.last = self.thermal.settle(now_ms);

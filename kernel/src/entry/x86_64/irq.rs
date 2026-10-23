@@ -122,10 +122,10 @@ pub fn dispatch(vector: u8) -> bool {
             false
         }
         // The function-call IPI: the thermal task's access to another CPU's
-        // level-request registers (`ext/thermal_hw.rs`). Without THERMAL
+        // level-request registers (`ext/thermal_hw.rs`). Without ENERGY
         // nothing sends it and it is only acknowledged.
         encode::CALL_VECTOR => {
-            #[cfg(all(feature = "thermal", not(feature = "thermal-smoke")))]
+            #[cfg(all(feature = "energy", not(feature = "thermal-smoke")))]
             super::ext::thermal_hw::call_ipi();
             apic::eoi();
             false

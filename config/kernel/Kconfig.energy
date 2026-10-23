@@ -45,19 +45,27 @@ config ENERGY
         model at boot: the signed topology's `[energy.domain.*]` sections,
         else the DTB's operating-points-v2 / idle-states, else (x86_64
         hybrid parts) one capacity class per core type the CPUs report
-        through CPUID (Intel P/E, AMD Zen 5/5c), else (Raspberry Pi with
-        THERMAL: the mailbox is the board object) one domain from the
+        through CPUID (Intel P/E, AMD Zen 5/5c), else (Raspberry Pi: the
+        mailbox is the board object) one domain from the
         firmware's ARM clock range with placeholder, unmeasured power, else
         none. The
         model is validated and reported (`[ENERGY]` lines); an invalid one is
         refused and the machine runs with none. The E3 frequency governor
         (Schedutil, DeadlineFloor) and the E4 idle governor run only when the
         topology carries a model and mode `balanced` or `endurance`. The
-        frequency governor changes no clock itself: on a board whose THERMAL
-        runtime has a clock actuator the thermal task applies its recorded
-        OPP, capped by the heat; elsewhere it is counted. The idle governor enters
-        the state it picks (PSCI CPU_SUSPEND, SBI hart_suspend, x86 mwait;
-        `wfi` at depth 0). User space can change the governor, the
+        frequency governor decides in the tick and the board's apply step
+        moves the clock, with or without THERMAL: the kernel's `thermal`
+        task (kernel/src/boot/thermal.rs), built whenever the board has a
+        clock to move (the JH7110's CPU clock with SOC_FRAMEWORKS, the K1's
+        clusters with SOC_K1, the Raspberry Pi's ARM clock through the
+        mailbox, the x86 HWP/CPPC level request), woken when a choice
+        changes. It answers every choice, and the governor asserts the
+        answer comes within ENERGY_APPLY_DEADLINE_MS: a refused or overdue
+        choice is counted (`POLICY_STATS_OPP_*`) and recorded (`opp-apply`).
+        A board with no actuator (QEMU) builds no apply step: the decisions
+        are counted and nothing is asserted. The idle governor enters the
+        state it picks (PSCI CPU_SUSPEND, SBI hart_suspend, x86 mwait; `wfi`
+        at depth 0). User space can change the governor, the
         OPP range of each domain, the headroom, the rate limit and an
         idle-depth limit at run time (the `power` endpoint;
         `POWER.ELF serve` applies a profile); the kernel refuses a value
@@ -142,10 +150,13 @@ config THERMAL
       hart, ticks the runtime, and leaves every trip, floor-bound domain,
       level change, lost sensor and shutdown request as a console line and a
       `thermal` decision record (`why list`). The introspection tree's
-      `thermal/` shows the state. The task is the one place the governor's decision reaches a
-      clock. A board with no sensor and clock pair (QEMU, an x86_64 machine
-      whose probe finds no sensor) builds no zone and creates no task:
-      nothing reads a sensor and no clock is touched (invariant I4). Not wired yet: the level reaches no consumer (the power
+      `thermal/` shows the state. The task is the governor's apply step
+      (ENERGY), which this option gives zones: without THERMAL, or on a
+      board whose tree declares none, the same task applies the governor's
+      choices with no zone. A board with no sensor (QEMU, an x86_64 machine
+      whose probe finds none) builds no zone; with no clock to move either,
+      no task: nothing reads a sensor and no clock is touched (invariant
+      I4). Not wired yet: the level reaches no consumer (the power
       service has no channel for a level the kernel raised); `thermal/` and
       the console are where it shows. Not for a small board
       (HWCLASS_EMBEDDED), which keeps its own native handling.
@@ -156,8 +167,9 @@ config THERMAL_TASK_PRIORITY
     range 12 30
     default 20
     help
-      Read only with THERMAL. kernel/src/boot/thermal.rs, `thermal`: the task that reads the zones and
-      caps the clocks. Never real-time, and pinned to a CPU outside
+      Read only with ENERGY. kernel/src/boot/thermal.rs, `thermal`: the task that reads the zones,
+      caps the clocks and applies the energy governor's choices (with ENERGY
+      alone, on a board with a clock to move, it only applies them). Never real-time, and pinned to a CPU outside
       RCU_NOCBS_CPUS and the topology's isolcpus, so a real-time task never
       waits for it and it never touches a timer a real-time task owns. A
       smaller number runs it sooner under CPU load; it should run before the

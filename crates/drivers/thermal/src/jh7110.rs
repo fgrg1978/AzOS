@@ -126,8 +126,24 @@ impl<B: SfcTempBus, C: CpuClock> SensorBank for Jh7110<B, C> {
 
 impl<B: SfcTempBus, C: CpuClock> OppActuator for Jh7110<B, C> {
     fn set_opp(&mut self, domain: usize, opp: &Opp) -> Result<(), ActuateError> {
+        Cluster(&mut self.clock).set_opp(domain, opp)
+    }
+}
+
+/// The JH7110's CPU clock alone, as an actuator: domain 0 is the cluster. The
+/// board object of a runtime with no zone (no sensor to read).
+pub struct Cluster<C>(pub C);
+
+impl<C: CpuClock> CpuClock for &mut C {
+    fn set_cpu_khz(&mut self, khz: u32) -> Result<(), ActuateError> {
+        (**self).set_cpu_khz(khz)
+    }
+}
+
+impl<C: CpuClock> OppActuator for Cluster<C> {
+    fn set_opp(&mut self, domain: usize, opp: &Opp) -> Result<(), ActuateError> {
         match domain {
-            0 => self.clock.set_cpu_khz(opp.freq_khz),
+            0 => self.0.set_cpu_khz(opp.freq_khz),
             _ => Err(ActuateError::Unsupported),
         }
     }

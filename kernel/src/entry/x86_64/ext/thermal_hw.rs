@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The x86_64 thermal board object's hardware (kernel feature `thermal`):
+//! The x86_64 clock and thermal board object's hardware (kernel feature `energy`; the sensor with `thermal`):
 //! CPUID, `rdmsr`/`wrmsr` and the legacy PCI config port pair, handed to
 //! `azos_thermal::x86_sensor` (the temperature) and `azos_thermal::x86` (the
 //! level request and the energy meter), which decide what to read and write
@@ -18,91 +18,100 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use azos_arch::cpu::features::{decode_ident, read_cpuid, Vendor as ArchVendor};
 use azos_arch::cpu::pstate;
 use azos_arch::irq::{apic, encode};
-use azos_arch::platform_impl::cpuid;
 use azos_thermal::x86 as pc;
-#[cfg(feature = "pci")]
-use azos_thermal::x86_sensor::{SMN_DATA, SMN_INDEX};
-use azos_thermal::x86_sensor::{self, brand_from_leaves, Kind, MsrBus, Refused, RootComplex, Vendor, X86Board, X86Cpu, X86Sensor};
 
-/// `rdmsr` on the executing CPU.
-pub(crate) struct Msr;
+#[cfg(feature = "thermal")]
+pub(crate) use sensor::{board, probe};
 
-impl MsrBus for Msr {
-    fn rdmsr(&mut self, msr: u32) -> u64 {
-        azos_arch::cpu::rdmsr(msr)
+/// The package sensor (Kconfig THERMAL): what the probe reads and the board
+/// object of a tick that reads it.
+#[cfg(feature = "thermal")]
+mod sensor {
+    use azos_arch::cpu::features::{decode_ident, read_cpuid, Vendor as ArchVendor};
+    use azos_arch::platform_impl::cpuid;
+    #[cfg(feature = "pci")]
+    use azos_thermal::x86_sensor::{SMN_DATA, SMN_INDEX};
+    use azos_thermal::x86_sensor::{self, brand_from_leaves, Kind, MsrBus, Refused, RootComplex, Vendor, X86Board, X86Cpu, X86Sensor};
+
+    /// `rdmsr` on the executing CPU.
+    pub(crate) struct Msr;
+
+    impl MsrBus for Msr {
+        fn rdmsr(&mut self, msr: u32) -> u64 {
+            azos_arch::cpu::rdmsr(msr)
+        }
     }
-}
 
-/// The root complex at `00:00.0`, over the legacy port pair.
-pub(crate) struct Root;
+    /// The root complex at `00:00.0`, over the legacy port pair.
+    pub(crate) struct Root;
 
-#[cfg(feature = "pci")]
-impl RootComplex for Root {
-    fn vendor_id(&self) -> u16 {
-        crate::boot_hooks::pci_port_read32(0, 0, 0, 0) as u16
+    #[cfg(feature = "pci")]
+    impl RootComplex for Root {
+        fn vendor_id(&self) -> u16 {
+            crate::boot_hooks::pci_port_read32(0, 0, 0, 0) as u16
+        }
+        fn smn_read(&mut self, addr: u32) -> u32 {
+            // Index write and data read under the lock of the port pair: the
+            // other harts' config accesses (driver enable, MSI setup, hotplug)
+            // take the same lock, so neither the 0xCF8/0xCFC pair nor the SMN
+            // pair is ever split by another access.
+            crate::boot_hooks::pci_port_indirect_read32(0, 0, 0, SMN_INDEX, SMN_DATA, addr)
+        }
     }
-    fn smn_read(&mut self, addr: u32) -> u32 {
-        // Index write and data read under the lock of the port pair: the
-        // other harts' config accesses (driver enable, MSI setup, hotplug)
-        // take the same lock, so neither the 0xCF8/0xCFC pair nor the SMN
-        // pair is ever split by another access.
-        crate::boot_hooks::pci_port_indirect_read32(0, 0, 0, SMN_INDEX, SMN_DATA, addr)
+
+    /// No config-space access in this build (no `pci`): no root complex, so an
+    /// AMD part is refused with `NoRoot`.
+    #[cfg(not(feature = "pci"))]
+    impl RootComplex for Root {
+        fn vendor_id(&self) -> u16 {
+            u16::MAX
+        }
+        fn smn_read(&mut self, _addr: u32) -> u32 {
+            u32::MAX
+        }
     }
-}
 
-/// No config-space access in this build (no `pci`): no root complex, so an
-/// AMD part is refused with `NoRoot`.
-#[cfg(not(feature = "pci"))]
-impl RootComplex for Root {
-    fn vendor_id(&self) -> u16 {
-        u16::MAX
+    /// The brand string, CPUID.0x80000002..4 (zeros when the CPU has none).
+    fn brand() -> [u8; 48] {
+        if cpuid(0x8000_0000, 0).0 < 0x8000_0004 {
+            return [0; 48];
+        }
+        let leaf = |l| {
+            let (a, b, c, d) = cpuid(l, 0);
+            [a, b, c, d]
+        };
+        brand_from_leaves([leaf(0x8000_0002), leaf(0x8000_0003), leaf(0x8000_0004)])
     }
-    fn smn_read(&mut self, _addr: u32) -> u32 {
-        u32::MAX
+
+    /// What the probe reads of this CPU.
+    fn this_cpu() -> X86Cpu {
+        let leaves = read_cpuid();
+        let id = decode_ident(&leaves);
+        let max = cpuid(0, 0).0;
+        let vendor = match id.vendor {
+            ArchVendor::Intel => Vendor::Intel,
+            ArchVendor::Amd => Vendor::Amd,
+            ArchVendor::Hygon => Vendor::Hygon,
+            ArchVendor::Unknown => Vendor::Other,
+        };
+        let l6_eax = if max >= 6 { cpuid(6, 0).0 } else { 0 };
+        X86Cpu::from_cpuid(vendor, id.family, id.model, leaves.l1_ecx, max, l6_eax, brand())
     }
-}
 
-/// The brand string, CPUID.0x80000002..4 (zeros when the CPU has none).
-fn brand() -> [u8; 48] {
-    if cpuid(0x8000_0000, 0).0 < 0x8000_0004 {
-        return [0; 48];
+    /// Which sensor this machine has, or why none. CPUID first, so no MSR the CPU
+    /// lacks is ever read (QEMU TCG has none of them).
+    pub(crate) fn probe() -> Result<Kind, Refused> {
+        x86_sensor::probe(&this_cpu(), &mut Msr, &Root)
     }
-    let leaf = |l| {
-        let (a, b, c, d) = cpuid(l, 0);
-        [a, b, c, d]
-    };
-    brand_from_leaves([leaf(0x8000_0002), leaf(0x8000_0003), leaf(0x8000_0004)])
-}
 
-/// What the probe reads of this CPU.
-fn this_cpu() -> X86Cpu {
-    let leaves = read_cpuid();
-    let id = decode_ident(&leaves);
-    let max = cpuid(0, 0).0;
-    let vendor = match id.vendor {
-        ArchVendor::Intel => Vendor::Intel,
-        ArchVendor::Amd => Vendor::Amd,
-        ArchVendor::Hygon => Vendor::Hygon,
-        ArchVendor::Unknown => Vendor::Other,
-    };
-    let l6_eax = if max >= 6 { cpuid(6, 0).0 } else { 0 };
-    X86Cpu::from_cpuid(vendor, id.family, id.model, leaves.l1_ecx, max, l6_eax, brand())
-}
-
-/// Which sensor this machine has, or why none. CPUID first, so no MSR the CPU
-/// lacks is ever read (QEMU TCG has none of them).
-pub(crate) fn probe() -> Result<Kind, Refused> {
-    x86_sensor::probe(&this_cpu(), &mut Msr, &Root)
-}
-
-/// The board object for one tick: the sensor `kind` over the real MSRs and
-/// root complex, paired with `actuator` (`azos_thermal::x86::X86Pstate::actuator`
-/// over [`KernelPlatform`]).
-pub(crate) fn board<A>(kind: Kind, actuator: A) -> X86Board<Msr, Root, A> {
-    X86Board { sensor: X86Sensor::new(kind, Msr, Root), actuator }
+    /// The board object for one tick: the sensor `kind` over the real MSRs and
+    /// root complex, paired with `actuator` (`azos_thermal::x86::X86Pstate::actuator`
+    /// over [`KernelPlatform`]).
+    pub(crate) fn board<A>(kind: Kind, actuator: A) -> X86Board<Msr, Root, A> {
+        X86Board { sensor: X86Sensor::new(kind, Msr, Root), actuator }
+    }
 }
 
 // ── The level request and the energy meter ──────────────────────────────────

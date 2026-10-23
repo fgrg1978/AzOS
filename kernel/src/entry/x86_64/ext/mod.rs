@@ -10,8 +10,9 @@ pub(crate) mod hybrid_energy;
 pub(crate) mod hv;
 /// CPU microcode from a signed boot module, on every CPU (Kconfig X86_UCODE_LOAD).
 pub(crate) mod ucode;
-/// The x86 thermal board object's CPUID, MSR and config-space access (Kconfig THERMAL).
-#[cfg(all(feature = "thermal", not(feature = "thermal-smoke")))]
+/// The x86 clock and thermal board object's CPUID, MSR and config-space access
+/// (Kconfig ENERGY; the package sensor's part with THERMAL).
+#[cfg(all(feature = "energy", not(feature = "thermal-smoke")))]
 pub(crate) mod thermal_hw;
 /// The Limine boot entry's requests and Rust half (Kconfig X86_BOOT_LIMINE).
 #[cfg(feature = "x86-limine")]

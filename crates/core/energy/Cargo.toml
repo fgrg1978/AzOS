@@ -52,6 +52,13 @@ thermal-floor-canary = []
 # range, and ends it on the step grid instead of at the firmware's maximum.
 # Never in a real build.
 firmware-model-canary = []
+# Host canaries for the governor's apply assertion (tests/host/energy-tests,
+# `apply`): apply-canary makes `opp::check_applied` take every answer of the
+# actuator, a refusal included, as applied; apply-overdue-canary makes
+# `opp::apply_overdue` never fire, so a choice no apply step answers is never
+# reported. The named tests must fail. Never in a real build.
+apply-canary = []
+apply-overdue-canary = []
 
 [dependencies]
 azos_abi = { workspace = true }

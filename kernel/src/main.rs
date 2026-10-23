@@ -2107,9 +2107,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // the DTB, else none.
     #[cfg(feature = "energy")]
     install_energy(num_cpus, dtb_ptr);
-    // Kconfig THERMAL: the board's thermal runtime, from the DTB's
-    // `thermal-zones` over that model; its task is created below.
-    #[cfg(feature = "thermal")]
+    // Kconfig ENERGY (and THERMAL): the board's clock runtime over that model,
+    // with the DTB's `thermal-zones` under THERMAL; its task is created below.
+    #[cfg(feature = "energy")]
     boot::thermal::install(dtb_ptr);
     // Which CPUs share a core, a cluster, a cache, a node and a package, and
     // their capacities: from the DT, the ACPI PPTT or CPUID, for the balancer.
@@ -2329,9 +2329,10 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // placed outside the real-time CPUs the topology has just published.
     #[cfg(feature = "mm-reclaim")]
     create_reclaim_task();
-    // Kconfig THERMAL: reads the zones and caps the clocks (nothing on a board
-    // with no sensor and clock pair).
-    #[cfg(feature = "thermal")]
+    // Kconfig ENERGY (and THERMAL): applies the governor's choices, reads the
+    // zones and caps the clocks (nothing on a board with neither a clock to
+    // move nor a zone).
+    #[cfg(feature = "energy")]
     boot::thermal::create_task();
     // Wave 15: disk completions by interrupt (every ISA), once the
     // scheduler exists to put waiters to sleep.

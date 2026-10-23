@@ -139,3 +139,112 @@ impl Default for Dvfs {
         Self::new()
     }
 }
+
+// ── The governor's assertion: its choice reached the clock ──────────────────
+//
+// The governor decides in the tick (`azos_sched::energy::gov_maybe`), where no
+// clock may be moved (a mailbox round trip, a rail over I2C); the board's task
+// applies the choice later through [`Dvfs::set`], judges the answer with
+// [`check_applied`] and acknowledges it to the governor. The governor asserts
+// the acknowledgement came: a domain the board can move whose choice is still
+// not acknowledged after the apply deadline is overdue ([`apply_overdue`]),
+// which catches an apply path that stopped (or never ran) as well as a clock
+// that refuses. A board with no actuator is not a failure: nothing there can
+// move a clock, and the answer says so instead of counting a refusal.
+
+/// What became of the governor's choice for one domain at one apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GovApply {
+    /// The domain runs at the governor's choice.
+    Applied,
+    /// The domain runs below the choice: the heat capped it (the thermal
+    /// framework's cap).
+    Capped,
+    /// The domain runs above the choice: the deadline or safety floor the
+    /// apply step put on it held it up.
+    Raised,
+    /// The board has no way to move this domain's clock
+    /// ([`ActuateError::Unsupported`]): the choice is recorded, never applied.
+    NoActuator,
+    /// The actuator refused or failed: the choice did not reach the clock.
+    Unapplied(ActuateError),
+}
+
+/// Judge the answer `r` of the [`Dvfs::set`] that asked for `target`, the
+/// OPP the apply step made of the governor's choice `want` (lower under a
+/// heat cap, higher under a floor).
+pub fn check_applied(want: usize, target: usize, r: Result<Applied, ActuateError>) -> GovApply {
+    match r {
+        Err(_) if cfg!(feature = "apply-canary") => GovApply::Applied,
+        Err(ActuateError::Unsupported) => GovApply::NoActuator,
+        Err(e) => GovApply::Unapplied(e),
+        Ok(_) => match target.cmp(&want) {
+            core::cmp::Ordering::Equal => GovApply::Applied,
+            core::cmp::Ordering::Less => GovApply::Capped,
+            core::cmp::Ordering::Greater => GovApply::Raised,
+        },
+    }
+}
+
+impl GovApply {
+    /// The choice reached the clock (at it, or at the cap or floor the apply
+    /// step put on it).
+    pub const fn reached(self) -> bool {
+        matches!(self, GovApply::Applied | GovApply::Capped | GovApply::Raised)
+    }
+
+    /// The number a decision record carries for it: 0 applied, 1 capped,
+    /// 2 raised, 3 no actuator, 4 refused, 5 a transport fault, 6 overdue
+    /// (no answer at all by the deadline, [`apply_overdue`]).
+    pub const fn code(self) -> u32 {
+        match self {
+            GovApply::Applied => 0,
+            GovApply::Capped => 1,
+            GovApply::Raised => 2,
+            GovApply::NoActuator => 3,
+            GovApply::Unapplied(ActuateError::Refused | ActuateError::Unsupported) => 4,
+            GovApply::Unapplied(ActuateError::Fault(_)) => 5,
+        }
+    }
+}
+
+/// [`GovApply::code`]'s number for a choice no apply step answered by the
+/// deadline.
+pub const APPLY_OVERDUE: u32 = 6;
+
+/// Is the governor's choice `decided` (an OPP index) overdue? `acked` is the
+/// choice the apply step last answered for (any outcome), `since` when
+/// `decided` was made and `now` the time, both in the same unit as
+/// `deadline`. A choice already answered is never overdue, whatever the
+/// answer: a refusal is the answer's to report.
+pub fn apply_overdue(decided: u8, acked: u8, since: u64, now: u64, deadline: u64) -> bool {
+    if cfg!(feature = "apply-overdue-canary") {
+        return false;
+    }
+    decided != acked && now.saturating_sub(since) > deadline
+}
+
+/// What a new apply outcome means to the record: the first apply that did
+/// not reach the clock after one that did (or after none) is recorded as a
+/// refusal, the first that reached it again as the recovery; every other one
+/// is only counted, so a clock that keeps refusing at the governor's rate
+/// leaves one record, not one per evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplyRecord {
+    /// Nothing to record.
+    None,
+    /// The choice stopped reaching the clock.
+    Lost,
+    /// The choice reaches the clock again.
+    Back,
+}
+
+/// See [`ApplyRecord`]. `was_lost`: the domain's last outcome did not reach
+/// the clock (an `Unapplied`, or an overdue choice).
+pub fn apply_record(was_lost: bool, now: GovApply) -> ApplyRecord {
+    match now {
+        GovApply::Unapplied(_) if !was_lost => ApplyRecord::Lost,
+        n if n.reached() && was_lost => ApplyRecord::Back,
+        _ => ApplyRecord::None,
+    }
+}

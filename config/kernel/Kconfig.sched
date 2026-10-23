@@ -560,6 +560,23 @@ choice
 
 endchoice
 
+config ENERGY_APPLY_DEADLINE_MS
+    int "Governor: longest wait for a choice to reach the clock (ms)"
+    range 10 10000
+    default 250
+    help
+      The energy governor decides in the tick and the board's apply step
+      (the kernel's `thermal` task, kernel/src/boot/thermal.rs) moves the
+      clock: it is woken when a choice changes and answers each choice
+      (applied, capped by the heat, refused by the actuator). A choice for a
+      domain the board can move that has no answer after this long is
+      overdue: counted (`POLICY_STATS_OPP_OVERDUE`) and recorded
+      (`opp-apply`), which is how a dead or starved apply step shows. The
+      step runs below the real-time band, behind every real-time task of
+      its CPU, and a QEMU TCG guest is slow: the default leaves room for
+      both. A board with no actuator asserts nothing. No effect without
+      ENERGY.
+
 config SCHED_EAS
     bool "Energy-aware wake placement on asymmetric CPUs"
     depends on ENERGY

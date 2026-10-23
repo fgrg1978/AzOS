@@ -447,7 +447,7 @@ fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error>
     if let Err(e) = super::soc::inspect_build(b, root) {
         azos_drv_sys::kwarn!("[INSPECT] the soc subtree does not fit ({:?})", e);
     }
-    #[cfg(feature = "thermal")]
+    #[cfg(feature = "energy")]
     if let Err(e) = super::thermal::inspect_build(b, root) {
         azos_drv_sys::kwarn!("[INSPECT] the thermal subtree does not fit ({:?})", e);
     }
@@ -526,7 +526,7 @@ impl State {
         {
             bad += super::soc::inspect_refresh(w);
         }
-        #[cfg(feature = "thermal")]
+        #[cfg(feature = "energy")]
         {
             bad += super::thermal::inspect_refresh(w);
         }

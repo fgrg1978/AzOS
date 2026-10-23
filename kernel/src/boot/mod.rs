@@ -27,7 +27,7 @@ mod topology;
 pub(crate) use topology::*;
 #[cfg(feature = "energy")]
 mod energy;
-#[cfg(feature = "thermal")]
+#[cfg(feature = "energy")]
 pub(crate) mod thermal;
 #[cfg(feature = "energy")]
 pub(crate) use energy::*;

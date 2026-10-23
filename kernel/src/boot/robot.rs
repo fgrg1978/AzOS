@@ -46,9 +46,9 @@ pub(crate) fn install_robot_hw() {
     #[cfg(all(feature = "soc-k1", feature = "thermal"))]
     super::hwbus::bind(&["k1-tsensor"]);
     // The Raspberry Pi's VideoCore mailbox: the temperature and the ARM clock
-    // the thermal task reads and moves (`boot::thermal`).
+    // the thermal task reads and moves (`boot::thermal`; the clock with ENERGY).
     // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
-    #[cfg(all(feature = "thermal", target_arch = "aarch64"))]
+    #[cfg(all(feature = "energy", target_arch = "aarch64"))]
     super::hwbus::bind(&["rpi-mbox"]);
     // The K1's I2C masters, and its PWM controllers: one node per channel (the
     // GPIO bound earlier, `bind_safety`). The DMA controller is not driven

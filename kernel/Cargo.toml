@@ -863,23 +863,26 @@ board-image = ["azos_sched/board-image"]
 # kernel/build.rs derives the linker-script page alignment from them.
 page-16k = ["azos_arch_api/page-16k", "azos_sched/page-16k"]
 page-64k = ["azos_arch_api/page-64k", "azos_sched/page-64k"]
-# Energy accounting (Kconfig ENERGY, default off): per-task and per-CPU
+# Energy accounting (Kconfig ENERGY; on by default on the wearable, IoT/HMI,
+# desktop and server presets): per-task and per-CPU
 # utilisation tracking in the scheduler, and the energy model read at boot
 # from the topology, else the DTB (`kernel/src/boot/energy.rs`). The seams
 # themselves are compiled in every build, with today's behaviour.
-energy = ["azos_sched/energy", "azos_syscall/energy", "azos_topology/energy"]
+# The board's clock (`kernel/src/boot/thermal.rs`, `azos_thermal`'s actuators)
+# comes with it: the governor's choice reaches the clock with or without THERMAL.
+energy = ["azos_sched/energy", "azos_syscall/energy", "azos_topology/energy", "dep:azos_thermal", "dep:azos_firmware"]
 # System suspend to RAM (Kconfig SYSTEM_SUSPEND, needs ENERGY; never on a robot,
 # industrial or automotive image): installs the platform the `power` endpoint's
 # `suspend` runs on (`kernel/src/boot/energy.rs`, `azos_drv_power::pm`). Without
 # it `suspend` is refused and the refusal recorded.
 system-suspend = ["energy"]
 # Thermal framework (Kconfig THERMAL, needs ENERGY): zones from the DTB, cooling
-# by OPP capping through the board's OPP actuator (`azos_thermal`). The kernel
-# builds the board's runtime at boot and ticks it from a task of its own
-# (`kernel/src/boot/thermal.rs`): the VisionFive 2 (sfctemp and the SoC clock
-# framework) and the Raspberry Pi (VideoCore mailbox); a board with neither
-# builds no zone and creates no task.
-thermal = ["energy", "dep:azos_thermal", "dep:azos_firmware"]
+# by OPP capping through the board's OPP actuator (`azos_thermal`, which ENERGY
+# already brings for the governor). The kernel builds the board's runtime at
+# boot and ticks it from a task of its own (`kernel/src/boot/thermal.rs`); this
+# adds the zones and the sensors they read (sfctemp, the K1's TSEN, the x86
+# package sensor) to it. A board with no sensor builds no zone.
+thermal = ["energy"]
 # The Raspberry Pi VideoCore mailbox (Kconfig RPI_FIRMWARE): power domains, and thermal.
 rpi-firmware = ["dep:azos_firmware"]
 # The thermal gate row (`kernel/src/smokes/thermal_smoke.rs`): the real runtime
