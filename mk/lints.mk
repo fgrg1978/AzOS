@@ -4,9 +4,8 @@
 # Included by the top-level Makefile; the order of the includes there is part of the contract.
 
 # ── make ARCH=<isa> check ───────────────────────────────────────────────────
-# Type-check the kernel for one ISA without linking. For the x86_64 port
-# skeleton (config/arch/Kconfig.isa ARCH_X86_64) it is the only build there is;
-# its errors and compile_error!s are the porting checklist. The target triple
+# Type-check the kernel for one ISA without linking (config/arch/Kconfig.isa
+# ARCH_RISCV64 / ARCH_AARCH64 / ARCH_X86_64). The target triple
 # and the baseline codegen flags (`--rustflags`: x86_64's X86_64_LEVEL) come
 # from the expanded defconfig through tools/kconfig_to_cargo.py, and
 # `-Zbuild-std` (.cargo/config.toml) builds core/alloc from rust-src, so no

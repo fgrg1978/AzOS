@@ -19,7 +19,7 @@ Build
   build-pci              Same, with the PCI bus driver.
   build-fleet            Build the Fleet-profile kernel and its board volume.
   aarch64                Build the aarch64 kernel for QEMU virt ($AZOS_OUT/build/kernel-aarch64.img).
-  x86_64                 Build the x86_64 port skeleton; it stops at the first piece not ported.
+  x86_64                 Build the x86_64 kernel for QEMU microvm ($AZOS_OUT/build/kernel-x86_64.elf).
   userspace              Build the RISC-V user-space programs.
   userspace-aarch64      Build the aarch64 user-space programs.
   busybox                Build BusyBox for riscv64, aarch64 and x86_64 (needs zig, tools/third_party_fetch.sh busybox).
@@ -44,7 +44,7 @@ Run in QEMU
   qemu-aarch64-el2       Boot the aarch64 kernel entered at EL2, as boot firmware does.
   netboot-row            Boot with nothing on a disk, the firmware fetching AzOS over the network: make netboot-row NETBOOT_CASE=x86-pxe|x86-http|riscv64-tftp (cases and canaries: tools/netboot/row.sh).
   netboot-uboot          Build the riscv64 U-Boot the netboot rows boot, from the approved tarball, under $AZOS_OUT/netboot.
-  qemu-x86_64            Boot the x86_64 skeleton on QEMU microvm.
+  qemu-x86_64            Boot the x86_64 kernel on QEMU microvm.
   azos-guest             AzOS inside AzOS: the hypervisor kernel, a guest kernel and the host volume that carries it: make azos-guest ARCH=riscv64|aarch64; boot with tools/run_guest.sh <isa>.
 
 Boards
@@ -56,7 +56,7 @@ Boards
   k1                     Build for the SpacemiT K1 / BananaPi BPI-F3.
   flash-k1               Write the K1 kernel to an SD card (K1_SD=<dev>).
   k1-console             Open the K1 serial console (K1_SERIAL=<dev>).
-  rpi5                   Raspberry Pi 5: not ported; needs TOPOLOGY_PUBKEY_PATH, then stops and says what is missing.
+  rpi5                   Raspberry Pi 5: needs TOPOLOGY_PUBKEY_PATH; the build stops at a compile_error naming the console, boot and EL2 pieces the board needs.
 
 Test & gate
   check0                 Quick check after an edit: type-check riscv64, aarch64 and x86_64, run the host tests the diff reaches.

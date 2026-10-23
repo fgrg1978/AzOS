@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "AZOS — RISC-V (rv64gc + Sv39 + PMP + SBI + RVV-opt) ISA crate. Was crates/core/arch pre-Stage-1; now lives behind the crates/core/arch facade."
+description = "riscv64 ISA crate behind azos_arch: the azos_arch_api contract for Sv39, SBI, the CLINT, PLIC, APLIC and IMSIC, with the optional extensions (V, Svinval, ...) under their Kconfig policies."
 
 [lib]
 name = "azos_arch_riscv64"

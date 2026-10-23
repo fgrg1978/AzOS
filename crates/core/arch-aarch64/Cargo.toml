@@ -2,7 +2,7 @@
 name = "azos_arch_aarch64"
 version = "0.1.0"
 edition = "2021"
-description = "AZOS Phase 2 — aarch64 ISA impl of azos_arch_api (Cpu / Interrupts / Mmu / Boot for VMSAv8-64 + PSCI). GIC v3 + boot.S deferred to B1.boot."
+description = "aarch64 ISA crate behind azos_arch: the azos_arch_api contract (Cpu / Interrupts / Mmu / Boot) for VMSAv8-64, PSCI, GICv2, GICv3 with the ITS, and the generic timer."
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 repository = "https://github.com/azos-project/azos"
