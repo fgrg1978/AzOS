@@ -19,11 +19,24 @@
 //! volume reaching the tail ([`verdict`]). A missing key or seed is safe; a
 //! sector of filesystem data taken for one is not.
 //!
+//! **On a GPT medium the records live in the AzOS records partition**
+//! (`azos_drv_block::partition::GPT_RECORDS_GUID`), not in the tail: a GPT
+//! laid out to its end keeps its backup table there (audit K2-M1). Sector
+//! `offset` of the records is then sector `offset` of that partition, which
+//! must hold [`TAIL_SECTORS`]; the partition table hides it from every
+//! capability and filesystem scan. It is used only once
+//! `partition::verify_backup` finds the backup GPT equal to the primary one,
+//! else [`verdict`] is `RecordsRefused`. A GPT medium without one keeps the
+//! tail rules (`GptBackupReaches` when the backup lies in it). Either way the
+//! I/O is [`read`] and [`write`], so a caller's flush after a write covers
+//! both places.
+//!
 //! Each sector carries its own magic, version and integrity tag, decoded by
 //! its owner; this module only does the raw sector I/O.
 
 use azos_crypto::entropy::{seed_tail_check, SeedTail};
-use core::sync::atomic::{AtomicBool, Ordering};
+use azos_drv_sys::kprintln;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Sectors reserved at the tail of the medium: 8 (4 KiB), one per record
 /// with room to spare.
@@ -68,21 +81,33 @@ pub const ENTROPY_SEED: u32 = 1;
 /// (only a hardware counter closes that).
 pub const DEVICE: u32 = 2;
 
-/// The medium's tail was found [`SeedTail::Clear`] once: nothing repartitions
-/// the medium while the kernel runs, so the answer stands for the boot. Any
-/// other verdict is not kept: it is asked again, in case the first ask came
+/// Where this boot's records start, once [`verdict`] found them usable:
+/// the first tail sector or the first sector of the records partition (0
+/// before, never a valid answer: sector 0 is the MBR). Nothing repartitions
+/// the medium while the kernel runs, so the answer stands for the boot. A
+/// tail refusal is not kept: it is asked again, in case the first ask came
 /// before the block device or its partition table was up.
-static CLEAR: AtomicBool = AtomicBool::new(false);
+static BASE: AtomicU64 = AtomicU64::new(0);
 
-/// Whether the tail of this boot's medium is ours: `Clear` when no partition,
-/// no GPT backup table and no FAT32 volume reaches it.
+/// The published records partition was refused once ([`records_verdict`])
+/// for what its table says: that table is published for the boot, so the
+/// answer stands too, and is not re-read or re-warned on every record access.
+static REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this boot's medium has a records store the kernel may use:
+/// `Clear` when the GPT records partition is present and its backup table
+/// checks out, or (no records partition) when no partition, no GPT backup
+/// table and no FAT32 volume reaches the tail.
 pub fn verdict() -> SeedTail {
-    if CLEAR.load(Ordering::Acquire) {
+    if BASE.load(Ordering::Acquire) != 0 {
         return SeedTail::Clear;
     }
     let cap = azos_drv_block::blkdev::capacity_sectors();
     if cap == 0 {
         return SeedTail::TooSmall;
+    }
+    if let Some((index, start, sectors)) = azos_drv_block::partition::records() {
+        return records_verdict(cap, index, start, sectors);
     }
     let mut s0 = [0u8; 512];
     if azos_drv_block::blkdev::read(0, 1, &mut s0).is_err() {
@@ -102,19 +127,46 @@ pub fn verdict() -> SeedTail {
     }
     let v = seed_tail_check(cap, u64::from(TAIL_SECTORS), &parts[..np], &s0, s1);
     if v == SeedTail::Clear {
-        CLEAR.store(true, Ordering::Release);
+        BASE.store(cap - u64::from(TAIL_SECTORS), Ordering::Release);
     }
     v
 }
 
-/// The LBA of tail sector `offset`, when the tail is ours and `len` bytes fit
-/// one sector.
+/// The verdict on the published records partition `index`
+/// (`start + sectors`) of a medium of `cap` sectors: big enough for the
+/// records, and the backup GPT equal to the primary one.
+fn records_verdict(cap: u64, index: u32, start: u64, sectors: u64) -> SeedTail {
+    use azos_drv_block::partition::{verify_backup, SECTOR};
+    if REFUSED.load(Ordering::Acquire) {
+        return SeedTail::RecordsRefused;
+    }
+    if sectors < u64::from(TAIL_SECTORS) {
+        azos_drv_sys::kwarn!("[DISK] records partition {} refused: {} sectors, the records need {}",
+                             index, sectors, TAIL_SECTORS);
+        REFUSED.store(true, Ordering::Release);
+        return SeedTail::RecordsRefused;
+    }
+    let mut read = |lba: u64, buf: &mut [u8; SECTOR]| azos_drv_block::blkdev::read(lba, 1, buf);
+    if let Err(e) = verify_backup(cap, &mut read) {
+        azos_drv_sys::kwarn!("[DISK] records partition {} refused: backup GPT {:?}", index, e);
+        // A failed read says nothing about the table: asked again next time.
+        if e != azos_drv_block::partition::PartError::Io {
+            REFUSED.store(true, Ordering::Release);
+        }
+        return SeedTail::RecordsRefused;
+    }
+    BASE.store(start, Ordering::Release);
+    kprintln!("[DISK] records: GPT partition {} LBA {} + {}, backup GPT verified", index, start, sectors);
+    SeedTail::Clear
+}
+
+/// The LBA of records sector `offset`, when the records store is usable and
+/// `len` bytes fit one sector.
 fn lba(offset: u32, len: usize) -> Result<u64, ()> {
     if len > 512 || offset >= TAIL_SECTORS || verdict() != SeedTail::Clear {
         return Err(());
     }
-    let cap = azos_drv_block::blkdev::capacity_sectors();
-    Ok(cap - u64::from(TAIL_SECTORS) + u64::from(offset))
+    Ok(BASE.load(Ordering::Acquire) + u64::from(offset))
 }
 
 /// Read `out` (≤ 512 bytes, the start of one sector) from tail sector

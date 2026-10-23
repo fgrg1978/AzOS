@@ -38,9 +38,10 @@ const CFG_READ_MAX: usize = azos_limits::BOOT_INI_MAX_KB * 1024;
 /// longer reads as the wrong length and is refused as malformed.
 const SIG_READ_MAX: usize = azos_topology::CONFIG_SIG_V2_LEN + 32;
 
-/// Is the reserved tail ours on this boot's medium: no partition and no
-/// FAT32 volume reaches it (`reserved_tail::verdict`, which its reads and
-/// writes also require).
+/// Is the records store ours on this boot's medium: the reserved tail with no
+/// partition and no FAT32 volume reaching it, or a GPT medium's verified
+/// records partition (`reserved_tail::verdict`, which its reads and writes
+/// also require).
 pub(crate) fn tail_writable() -> bool {
     crate::reserved_tail::verdict() == azos_crypto::entropy::SeedTail::Clear
 }

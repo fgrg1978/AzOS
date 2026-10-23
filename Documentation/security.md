@@ -594,6 +594,25 @@ capability that the topology row grants, `endpoint = "entropy"`). That endpoint
 has no fallback: an unseeded pool answers `NOT_READY` on every build, and the
 first refusal of a boot is recorded durably.
 
+**Where the records live.** The link key (sector 0), the persisted seed
+(sector 1), the device record (sector 2) and the topology counter floor are
+one sector each of the kernel's record store (`kernel/src/reserved_tail.rs`).
+On an MBR or bare FAT32 medium that store is the reserved tail: the last 8
+sectors, used only when no partition and no filesystem reaches them. A GPT
+medium laid out to its end has its backup table there instead, so on GPT the
+store is the AzOS records partition, GPT type GUID
+`653ED7AA-51CA-43D8-9AF7-54775962C612` (generated once for AzOS;
+`GPT_RECORDS_GUID` in `crates/drivers/block/src/partition.rs`,
+`tools/azos_records.py`), of at least 8 sectors. The partition table publishes
+it but never hands it out: no capability is minted for it, no disk syscall
+names it and no filesystem scan mounts it. A table with two such partitions is
+refused whole. The records are read or written only after the backup GPT
+header on the last sector, and its entry array, are found equal to the
+primary ones; a mismatch leaves the board without them for the boot (no seed,
+unprovisioned, no floor), as a missing tail does. `tools/make_parted_disk.py
+--gpt` builds such an image, and the provisioning tools find the partition on
+their own.
+
 ## TPM
 
 Source: `crates/drivers/tpm/src`, `kernel/src/boot/tpm.rs`, Kconfig `TPM`.

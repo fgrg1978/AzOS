@@ -172,7 +172,8 @@ fn entropy_seed_store(rec: &[u8]) -> Result<bool, ()> {
 /// from the USB MSC export, and this seed is the only entropy a board with no
 /// TRNG has. The tail is only touched when no partition and no FAT32 volume
 /// reaches it (`seed_tail_check`): a rewrite on every boot must not land in
-/// filesystem data on an image built without the headroom.
+/// filesystem data on an image built without the headroom. On a GPT medium,
+/// the AzOS records partition instead (`crate::reserved_tail`).
 ///
 /// No block device, no usable tail, or no valid record on an unseeded pool:
 /// the boot proceeds exactly as it did before this step existed, and says so
@@ -188,8 +189,8 @@ pub(crate) fn install_entropy_seed() {
     }
     let tail = crate::reserved_tail::verdict();
     if tail != el::SeedTail::Clear {
-        kprintln!("[ENTROPY] persisted seed: skipped — reserved tail not usable ({:?}: the \
-                   image has no headroom past its filesystem); pool as before", tail);
+        kprintln!("[ENTROPY] persisted seed: skipped — reserved tail not usable ({:?}: no \
+                   headroom past the filesystem, or no usable records partition); pool as before", tail);
         return;
     }
     let mut sector = [0u8; 512];

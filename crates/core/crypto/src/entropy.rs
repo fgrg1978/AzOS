@@ -363,7 +363,9 @@ pub fn next_seed_record() -> Option<[u8; SEED_FILE_BYTES]> {
 /// Whether the persisted-seed sector can be trusted to be ours.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SeedTail {
-    /// No filesystem the kernel can see reaches the reserved tail.
+    /// No filesystem the kernel can see reaches the reserved tail (or, on a
+    /// GPT medium, the AzOS records partition holds the records instead:
+    /// `kernel/src/reserved_tail.rs`).
     Clear,
     /// A partition, or the bare FAT32 volume, extends into the tail: a write
     /// there would overwrite filesystem data. (An image built without the
@@ -382,6 +384,10 @@ pub enum SeedTail {
     GptBackupReaches,
     /// The medium is no larger than the tail.
     TooSmall,
+    /// A GPT medium with an AzOS records partition the kernel does not use:
+    /// smaller than the tail, or its backup header or entry array does not
+    /// match the primary ones (`azos_drv_block::partition::verify_backup`).
+    RecordsRefused,
 }
 
 /// Decide whether the last `tail_sectors` sectors of a medium of
