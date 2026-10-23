@@ -102,16 +102,17 @@ fn directions_ask_for_the_permission_the_device_needs() {
 #[test]
 fn riscv_device_context_vectors() {
     // fsc = MODE[63:60] | PPN[43:0]; Sv39 = 8, Sv48 = 9; PPN = 0x80200000 >> 12 = 0x80200.
-    let sv39 = riscv::DeviceContext::encode(DomainMode::Translate { root_pa: 0x8020_0000 }, 3);
-    assert_eq!((sv39.tc, sv39.iohgatp, sv39.ta), (1, 0, 0));
+    let sv39 = riscv::DeviceContext::encode(DomainMode::Translate { root_pa: 0x8020_0000 }, 3, 5);
+    // ta: PSCID 5 at 31:12 = 0x5000.
+    assert_eq!((sv39.tc, sv39.iohgatp, sv39.ta), (1, 0, 0x5000));
     assert_eq!(sv39.fsc, 0x8000_0000_0008_0200);
-    let sv48 = riscv::DeviceContext::encode(DomainMode::Translate { root_pa: 0x8020_0000 }, 4);
+    let sv48 = riscv::DeviceContext::encode(DomainMode::Translate { root_pa: 0x8020_0000 }, 4, 5);
     assert_eq!(sv48.fsc, 0x9000_0000_0008_0200);
     // Bypass: valid, first stage Bare.
-    let bypass = riscv::DeviceContext::encode(DomainMode::Bypass, 3);
-    assert_eq!((bypass.tc, bypass.fsc), (1, 0));
+    let bypass = riscv::DeviceContext::encode(DomainMode::Bypass, 3, 0);
+    assert_eq!((bypass.tc, bypass.ta, bypass.fsc), (1, 0, 0));
     // Block: not valid.
-    let block = riscv::DeviceContext::encode(DomainMode::Block, 3);
+    let block = riscv::DeviceContext::encode(DomainMode::Block, 3, 0);
     assert!(!block.is_valid());
     assert_eq!(block.decode_mode(), Some(DomainMode::Block));
     // Round trips.
@@ -142,8 +143,9 @@ fn riscv_command_vectors() {
     assert_eq!(riscv::cmd_iodir_inval_ddt(0x18), [0x0000_1802_0000_0003, 0]);
     // IOFENCE.C: opcode 2, PR bit 12 (0x1000), PW bit 13 (0x2000).
     assert_eq!(riscv::cmd_iofence(), [0x3002, 0]);
-    // IOTINVAL.VMA: opcode 1, func 0, no address/process/guest scope.
-    assert_eq!(riscv::cmd_iotinval_vma_all(), [1, 0]);
+    // IOTINVAL.VMA: opcode 1, func 0, PSCV bit 32, PSCID 31:12; no address
+    // or guest scope.
+    assert_eq!(riscv::cmd_iotinval_vma_pscid(0x18), [0x1_0001_8001, 0]);
 }
 
 #[test]

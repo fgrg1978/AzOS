@@ -13,8 +13,9 @@
 //! DC, base format (32 bytes): `tc`, `iohgatp`, `ta`, `fsc`. Extended format
 //! (64 bytes, when `capabilities.MSI_FLAT`): the same four, then `msiptp`,
 //! `msi_addr_mask`, `msi_addr_pattern`, reserved. `tc.V` is bit 0; `fsc` is
-//! `PPN[43:0] | MODE[63:60]` (Bare 0, Sv39 8, Sv48 9); `iohgatp` stays Bare
-//! (second stage unused). A DDT non-leaf entry is `V | PPN<<10`. Fault
+//! `PPN[43:0] | MODE[63:60]` (Bare 0, Sv39 8, Sv48 9); `ta.PSCID` is bits
+//! 31:12, the tag of the device's cached first-stage translations (`tc.PDTV`
+//! clear: no process directory); `iohgatp` stays Bare (second stage unused). A DDT non-leaf entry is `V | PPN<<10`. Fault
 //! record (32 bytes): `hdr` (`CAUSE[11:0]`, `TTYP[39:34]`, `DID[63:40]`),
 //! reserved, `iotval`, `iotval2`.
 
@@ -22,8 +23,8 @@ use core::sync::atomic::{fence, Ordering};
 
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
-    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, PAGE,
-    POLL,
+    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, PAGE,
+    POLL, TAGS,
 };
 
 // ---- registers (byte offsets) ----
@@ -61,6 +62,9 @@ pub const QCSR_BUSY: u32 = 1 << 17;
 pub const DC_TC_V: u64 = 1 << 0;
 const ATP_MODE_SHIFT: u32 = 60;
 const ATP_PPN_MASK: u64 = (1 << 44) - 1;
+const TA_PSCID_SHIFT: u32 = 12;
+/// PSCIDs are 20 bits wide.
+const PSCID_MASK: u32 = (1 << 20) - 1;
 pub const ATP_MODE_BARE: u64 = 0;
 pub const ATP_MODE_SV39: u64 = 8;
 pub const ATP_MODE_SV48: u64 = 9;
@@ -76,9 +80,10 @@ pub struct DeviceContext {
 
 impl DeviceContext {
     /// The context for `mode`; `levels` is the first-stage depth (3 = Sv39,
-    /// 4 = Sv48). `Block` is a context with `tc.V` clear: the unit refuses
+    /// 4 = Sv48) and `pscid` the tag of a translating device's cached
+    /// translations. `Block` is a context with `tc.V` clear: the unit refuses
     /// the device with cause 258 (DDT entry not valid).
-    pub fn encode(mode: DomainMode, levels: u8) -> Self {
+    pub fn encode(mode: DomainMode, levels: u8, pscid: u32) -> Self {
         match mode {
             DomainMode::Block => DeviceContext { tc: 0, iohgatp: 0, ta: 0, fsc: 0 },
             DomainMode::Bypass => DeviceContext { tc: DC_TC_V, iohgatp: 0, ta: 0, fsc: ATP_MODE_BARE << ATP_MODE_SHIFT },
@@ -87,7 +92,7 @@ impl DeviceContext {
                 DeviceContext {
                     tc: DC_TC_V,
                     iohgatp: 0,
-                    ta: 0,
+                    ta: ((pscid & PSCID_MASK) as u64) << TA_PSCID_SHIFT,
                     fsc: (m << ATP_MODE_SHIFT) | ((root_pa >> 12) & ATP_PPN_MASK),
                 }
             }
@@ -142,10 +147,11 @@ pub const fn cmd_iodir_inval_ddt(dev: u32) -> [u64; 2] {
     [3 | (1 << 33) | ((dev as u64 & 0xff_ffff) << 40), 0]
 }
 
-/// `IOTINVAL.VMA` with no address, process or guest scope: every cached
-/// first-stage translation.
-pub const fn cmd_iotinval_vma_all() -> [u64; 2] {
-    [1, 0]
+/// `IOTINVAL.VMA` scoped to process soft-context `pscid` (PSCV, bit 32;
+/// PSCID 31:12), no address or guest scope: every first-stage translation
+/// cached under that tag.
+pub const fn cmd_iotinval_vma_pscid(pscid: u32) -> [u64; 2] {
+    [1 | (((pscid & PSCID_MASK) as u64) << 12) | (1 << 32), 0]
 }
 
 /// `IOFENCE.C` ordering all prior reads and writes (PR, PW); no memory
@@ -211,6 +217,9 @@ pub fn classify(record: &FaultRecord) -> DmaFault {
 
 // ---- the unit ----
 
+/// The first PSCID of a translating device (0 is left alone, as Linux does).
+const PSCID_FIRST: u16 = 1;
+
 const CQ_ENTRIES: u32 = 256; // 16 bytes each: one page
 const FQ_ENTRIES: u32 = 128; // 32 bytes each: one page
 
@@ -225,6 +234,8 @@ pub struct RiscvIommu<M: Mmio> {
     cq_tail: u32,
     fq: u64,
     fq_head: u32,
+    /// The PSCID of each translating device.
+    tags: Tags,
 }
 
 impl<M: Mmio> RiscvIommu<M> {
@@ -285,6 +296,7 @@ impl<M: Mmio> RiscvIommu<M> {
             cq_tail: 0,
             fq,
             fq_head: 0,
+            tags: Tags::new(PSCID_FIRST, TAGS),
         })
     }
 
@@ -347,9 +359,17 @@ impl<M: Mmio + Send> IommuUnit for RiscvIommu<M> {
         self.pt
     }
 
+    /// A translating device gets a PSCID of its own; one that stops
+    /// translating gives it back once the unit forgot what it cached under it.
     fn attach(&mut self, dev: u32, mode: DomainMode) -> Result<(), IommuError> {
         let slot = self.dc_slot(dev)?;
-        let dc = DeviceContext::encode(mode, self.pt.levels);
+        let pscid = match mode {
+            DomainMode::Translate { .. } => {
+                self.tags.take(dev).ok_or(IommuError::Unsupported("riscv-iommu: out of PSCIDs"))?
+            }
+            _ => 0,
+        };
+        let dc = DeviceContext::encode(mode, self.pt.levels, pscid as u32);
         let (words, n) = dc.to_dwords(self.ext);
         // A valid context may be cached: make it invalid, flush, rewrite the
         // body, and make it valid last (spec 3.1.3 "Device-context update").
@@ -365,13 +385,27 @@ impl<M: Mmio + Send> IommuUnit for RiscvIommu<M> {
         fence(Ordering::Release);
         wr64(self.mem, slot, 0, words[0]);
         self.mem.clean(slot, 8);
-        self.invalidate_dc(dev)
+        self.command(cmd_iodir_inval_ddt(dev))?;
+        // A device's PSCID tags the translations of whatever table it had
+        // before: they go with the context, and a tag is free again only once
+        // they are gone.
+        let Some(tag) = self.tags.of(dev) else {
+            return self.command(cmd_iofence());
+        };
+        self.command(cmd_iotinval_vma_pscid(tag as u32))?;
+        self.command(cmd_iofence())?;
+        if !matches!(mode, DomainMode::Translate { .. }) {
+            self.tags.release(dev);
+        }
+        Ok(())
     }
 
-    fn flush(&mut self, _dev: u32) -> Result<(), IommuError> {
-        // One global first-stage invalidation: simpler than scoping it to a
-        // process-space id nobody uses, and unmaps are rare.
-        self.command(cmd_iotinval_vma_all())?;
+    /// Only a translating device has translations cached, under its PSCID.
+    fn flush(&mut self, dev: u32) -> Result<(), IommuError> {
+        let Some(pscid) = self.tags.of(dev) else {
+            return Ok(());
+        };
+        self.command(cmd_iotinval_vma_pscid(pscid as u32))?;
         self.command(cmd_iofence())
     }
 

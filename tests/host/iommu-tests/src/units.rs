@@ -95,9 +95,10 @@ fn riscv_attach_writes_the_context_body_then_valid_then_invalidates() {
     // Re-attach to a page table: the valid context is torn down first.
     unit.attach(0x18, DomainMode::Translate { root_pa: 0x8020_0000 }).unwrap();
     assert_eq!([read64(dc, 0), read64(dc, 3)], [1, 0x8000_0000_0008_0200]);
-    assert_eq!(cmds(cq, 6)[2..], [
+    // ... and the device's PSCID (1) is invalidated with the new context.
+    assert_eq!(cmds(cq, 7)[2..], [
         riscv::cmd_iodir_inval_ddt(0x18), riscv::cmd_iofence(),
-        riscv::cmd_iodir_inval_ddt(0x18), riscv::cmd_iofence(),
+        riscv::cmd_iodir_inval_ddt(0x18), riscv::cmd_iotinval_vma_pscid(1), riscv::cmd_iofence(),
     ]);
     // Another device in the same leaf shares the leaf page.
     unit.attach(0x19, DomainMode::Bypass).unwrap();
@@ -138,12 +139,45 @@ fn riscv_refuses_a_device_id_beyond_the_directory_and_reports_a_rejected_command
     assert!(matches!(unit.attach(0x18, DomainMode::Bypass), Err(IommuError::Hardware(_))));
 }
 
+/// The PSCID in the device context of `dev` (`ta` is dword 2, PSCID its
+/// bits 31:12), extended format with every device in the first leaf.
+fn rv_pscid(leaf: u64, dev: u32) -> u64 {
+    (read64(leaf + dev as u64 * 64, 2) >> 12) & 0xf_ffff
+}
+
 #[test]
-fn riscv_flush_is_a_global_first_stage_invalidation_then_a_fence() {
+fn riscv_gives_each_translating_device_its_own_pscid_and_flushes_only_it() {
     let mem = TestMem::leak();
-    let mut unit = RiscvIommu::new(riscv_model(RV_CAP_EXT), mem).unwrap();
+    let mmio = riscv_model(RV_CAP_EXT);
+    let mut unit = RiscvIommu::new(mmio.clone(), mem).unwrap();
+    let cq = mem.page(0);
+    let queued = || mmio.get(riscv::REG_CQT) as usize;
+
+    unit.attach(0x18, DomainMode::Translate { root_pa: 0x8020_0000 }).unwrap();
+    unit.attach(0x19, DomainMode::Translate { root_pa: 0x8030_0000 }).unwrap();
+    let leaf = mem.page(3);
+    // Two devices, two tables: two PSCIDs (1 and 2; 0 is never handed out).
+    assert_eq!((rv_pscid(leaf, 0x18), rv_pscid(leaf, 0x19)), (1, 2));
+
+    // A flush names the device's PSCID only: IOTINVAL.VMA (opcode 1) with
+    // PSCV (bit 32) and PSCID 2 at 31:12 = 0x1_0000_2001, then IOFENCE.C.
+    let n = queued();
+    unit.flush(0x19).unwrap();
+    assert_eq!(cmds(cq, queued())[n..], [[0x1_0000_2001, 0], [0x3002, 0]]);
+
+    // Device 0x18 stops translating: its PSCID's translations go before the
+    // PSCID is free, and the next translating device gets it.
+    let n = queued();
+    unit.attach(0x18, DomainMode::Bypass).unwrap();
+    assert!(cmds(cq, queued())[n..].contains(&[0x1_0000_1001, 0]), "IOTINVAL.VMA of PSCID 1");
+    assert_eq!(rv_pscid(leaf, 0x18), 0, "a bypassed device carries no PSCID");
+    unit.attach(0x1a, DomainMode::Translate { root_pa: 0x8040_0000 }).unwrap();
+    assert_eq!(rv_pscid(leaf, 0x1a), 1);
+
+    // A device in bypass caches no translation: nothing to flush.
+    let n = queued();
     unit.flush(0x18).unwrap();
-    assert_eq!(cmds(mem.page(0), 2), vec![riscv::cmd_iotinval_vma_all(), riscv::cmd_iofence()]);
+    assert_eq!(queued(), n);
 }
 
 #[test]
