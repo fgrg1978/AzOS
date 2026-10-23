@@ -121,3 +121,28 @@ config LOG_FLUSHER_PRIORITY
       Cost: one kernel task (its stack, KERNEL_STACK_SIZE_KB) on every
       ISA. Lower it (a larger number) only if logging must yield to
       every other normal task.
+
+config KILL_SWITCH_PRIORITY
+    int "Kill-switch task priority (real-time band: 1..11)"
+    range 1 11
+    default 7
+    help
+      crates/core/actuation/src/kill_switch.rs, `kill-sw`: the kernel task
+      the physical kill switch's GPIO edge interrupt wakes. It samples the
+      line and, on a press, latches the e-stop and stops the actuators, so
+      the edge-to-stop time is the interrupt handler plus this task's wake.
+      7 is above the control loops (8): the latch lands before their next
+      tick instead of after it. The task runs only on an edge and every
+      KILL_SWITCH_RECHECK_MS, so its share of the band is negligible.
+
+config KILL_SWITCH_RECHECK_MS
+    int "Kill-switch re-check period (ms)"
+    range 10 1000
+    default 500
+    help
+      How often the kill-switch task samples its line with no edge: a pin
+      CONFIG.INI arms after boot is taken up within this, a switch already
+      held when the line is armed is a press at the arm, and a board whose
+      GPIO interrupt line could not be routed is read only at this period
+      (the arm line says "polled"). 500 is the period of the poll it
+      replaced (sys-wdt). Lower costs one wake per period.

@@ -16,15 +16,23 @@
 //!   latch bit `b` and no other, and a READ of them is a bug the model refuses
 //!   (it panics), because on the part it returns nothing useful.
 //!
-//! Any offset the model does not know panics too, so a driver that wanders to
-//! the interrupt registers (which this driver must not touch) fails loudly.
-//! Every access is logged, so a test asserts on the sequence, not only the
-//! result.
+//! - the edge registers, from the same driver's irq_chip: `GRER`/`GFER` hold
+//!   one rising / falling detect-enable bit per pin, set by a write of 1 to
+//!   `GSRER`/`GSFER` and cleared by one to `GCRER`/`GCFER` (write-only, a 0
+//!   bit changes nothing); an enabled edge latches the pin's `GEDR` bit
+//!   whatever the mask; a 1 written to `GEDR` clears that bit; the shared line
+//!   is up while any `GEDR` bit is also set in `GAPMASK` (1 = unmasked).
+//!
+//! Any offset the model does not know panics too, so a driver that wanders
+//! off the registers above fails loudly. Every access is logged, so a test
+//! asserts on the sequence, not only the result.
 //!
 //! What it does NOT know, and the board must confirm (listed in the front's
 //! report): that `GPLR` of an output pin follows the latch on this silicon;
 //! the reset state of `GPDR` per pin (the driver relies on firmware's state,
-//! it writes nothing at attach).
+//! it writes nothing at attach); the edge registers' offsets and their
+//! set/clear and write-one-to-clear behaviour (Linux v7.2.9, not a local
+//! copy: no K1 reference manual was available) [verify on silicon].
 
 use super::gpio_k1::*;
 use std::cell::RefCell;
@@ -36,6 +44,15 @@ const M_GPLR: usize = 0x00;
 const M_GPDR: usize = 0x0c;
 const M_GPSR: usize = 0x18;
 const M_GPCR: usize = 0x24;
+const M_GRER: usize = 0x30;
+const M_GFER: usize = 0x3c;
+const M_GEDR: usize = 0x48;
+const M_GSRER: usize = 0x6c;
+const M_GCRER: usize = 0x78;
+const M_GSFER: usize = 0x84;
+const M_GCFER: usize = 0x90;
+const M_GAPMASK: usize = 0x9c;
+const M_REGS: [usize; 12] = [M_GPLR, M_GPDR, M_GPSR, M_GPCR, M_GRER, M_GFER, M_GEDR, M_GSRER, M_GCRER, M_GSFER, M_GCFER, M_GAPMASK];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Access {
@@ -53,19 +70,43 @@ struct Part {
     dir: [u32; 4],
     /// What the outside world drives on each pin, per bank.
     external: [u32; 4],
+    /// Rising / falling detect enables, latched edges, interrupt mask.
+    rer: [u32; 4],
+    fer: [u32; 4],
+    edr: [u32; 4],
+    apmask: [u32; 4],
     log: Vec<Access>,
 }
 
 impl Part {
     fn decode(off: usize) -> (usize, usize) {
         for (bank, base) in M_BANK.iter().enumerate() {
-            for reg in [M_GPLR, M_GPDR, M_GPSR, M_GPCR] {
+            for reg in M_REGS {
                 if off == base + reg {
                     return (bank, reg);
                 }
             }
         }
         panic!("access to offset {off:#x}: not a register this driver may touch")
+    }
+
+    /// The outside drives `pin` to `high`: an enabled edge latches `GEDR`.
+    fn drive(&mut self, pin: u32, high: bool) {
+        let (b, bit) = ((pin / 32) as usize, 1u32 << (pin % 32));
+        let was = self.external[b] & bit != 0;
+        if was == high {
+            return;
+        }
+        if high { self.external[b] |= bit } else { self.external[b] &= !bit }
+        let enabled = if high { self.rer[b] } else { self.fer[b] };
+        if enabled & bit != 0 {
+            self.edr[b] |= bit;
+        }
+    }
+
+    /// The controller's shared interrupt line.
+    fn line(&self) -> bool {
+        (0..4).any(|b| self.edr[b] & self.apmask[b] != 0)
     }
 }
 
@@ -95,6 +136,10 @@ impl K1GpioBus for Model {
         match reg {
             M_GPLR => (p.latch[bank] & p.dir[bank]) | (p.external[bank] & !p.dir[bank]),
             M_GPDR => p.dir[bank],
+            M_GRER => p.rer[bank],
+            M_GFER => p.fer[bank],
+            M_GEDR => p.edr[bank],
+            M_GAPMASK => p.apmask[bank],
             _ => panic!("read of the write-only register at {off:#x}"),
         }
     }
@@ -109,6 +154,14 @@ impl K1GpioBus for Model {
             M_GPDR => p.dir[bank] = v,
             M_GPSR => p.latch[bank] |= v,
             M_GPCR => p.latch[bank] &= !v,
+            M_GRER => p.rer[bank] = v,
+            M_GFER => p.fer[bank] = v,
+            M_GEDR => p.edr[bank] &= !v,
+            M_GSRER => p.rer[bank] |= v,
+            M_GCRER => p.rer[bank] &= !v,
+            M_GSFER => p.fer[bank] |= v,
+            M_GCFER => p.fer[bank] &= !v,
+            M_GAPMASK => p.apmask[bank] = v,
             _ => panic!("write to the read-only register at {off:#x}"),
         }
     }
@@ -233,4 +286,76 @@ fn a_direction_that_did_not_stick_is_reported() {
     // Asking for an input on a gated controller reads 0 = input: that one is
     // indistinguishable from success, and harmless (an input drives nothing).
     assert!(g.set_output(7, false));
+}
+
+#[test]
+fn edge_init_masks_every_bank_disables_detection_and_clears_what_the_firmware_left() {
+    let m = Model::new();
+    {
+        let mut p = m.0.borrow_mut();
+        p.rer = [!0; 4];
+        p.fer = [1, 2, 3, 4];
+        p.edr = [0x10, 0, 0, 0x8000_0000];
+        p.apmask = [!0; 4];
+    }
+    let mut g = K1Gpio::new(m.clone());
+    g.edge_irq_init();
+    let p = m.0.borrow();
+    assert_eq!((p.rer, p.fer, p.edr, p.apmask), ([0; 4], [0; 4], [0; 4], [0; 4]));
+    // Only the edge registers: no level or direction write.
+    assert!(p.log.iter().all(|a| match a {
+        Access::Write(off, _) => [M_GEDR, M_GCRER, M_GCFER, M_GAPMASK].contains(&Part::decode(*off).1),
+        Access::Read(_) => false,
+    }));
+}
+
+#[test]
+fn both_edges_of_the_armed_pin_raise_the_line_and_take_acks_and_masks() {
+    for pin in [0u32, 30, 33, 63, 96] {
+        let m = Model::new();
+        let mut g = K1Gpio::new(m.clone());
+        g.edge_irq_init();
+        m.0.borrow_mut().drive(pin, true); // released, pulled up, before arming
+        assert!(g.set_both_edges(pin, true));
+        assert!(g.set_unmasked(pin, true));
+        assert!(!m.0.borrow().line(), "pin {pin}: arming is not an edge");
+        m.0.borrow_mut().drive(pin, false); // pressed
+        assert!(m.0.borrow().line(), "pin {pin}: a falling edge raises the line");
+        assert!(g.take(pin));
+        assert!(!m.0.borrow().line(), "pin {pin}: acknowledged and masked");
+        m.0.borrow_mut().drive(pin, true); // released while the caller samples
+        assert!(!m.0.borrow().line());
+        assert!(!g.take(pin), "pin {pin}: a masked pin's edge is left for its unmask");
+        assert!(g.set_unmasked(pin, true));
+        assert!(m.0.borrow().line(), "pin {pin}: the edge while masked is taken on the unmask");
+        assert!(g.take(pin));
+        assert!(!g.take(pin), "pin {pin}: one edge, one take");
+    }
+}
+
+#[test]
+fn take_does_not_claim_a_neighbours_edge_and_arming_keeps_the_neighbours_mask() {
+    let m = Model::new();
+    let mut g = K1Gpio::new(m.clone());
+    g.edge_irq_init();
+    m.0.borrow_mut().apmask[0] = 1 << 4;
+    assert!(g.set_both_edges(5, true));
+    assert!(g.set_unmasked(5, true));
+    assert_eq!(m.0.borrow().apmask[0], (1 << 4) | (1 << 5));
+    m.0.borrow_mut().rer[0] |= 1 << 6;
+    m.0.borrow_mut().drive(6, true);
+    assert!(!g.take(5));
+    assert!(g.ack(5));
+    assert_eq!(m.0.borrow().edr[0], 1 << 6, "pin 6's edge is not pin 5's to clear");
+}
+
+#[test]
+fn edge_calls_on_a_pin_the_controller_does_not_have_touch_nothing() {
+    let m = Model::new();
+    let mut g = K1Gpio::new(m.clone());
+    assert!(!g.set_both_edges(128, true));
+    assert!(!g.set_unmasked(128, true));
+    assert!(!g.take(128));
+    assert!(!g.ack(128));
+    assert_eq!(m.log(), vec![]);
 }

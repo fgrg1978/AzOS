@@ -720,6 +720,34 @@ fn task_release_all_resources(tid: u32) {
     azos_sched::prof::add(21, t_ph);
 }
 
+/// The physical kill switch's task (`azos_actuation::kill_switch`), with the
+/// GPIO controller's interrupt line routed to this CPU first: the
+/// controller masks every pin and clears what the firmware left latched,
+/// then the line is enabled, and the task is pinned here so the edge's wake
+/// is local. No routable line (no node, no `interrupts`, the simulation):
+/// the task is placed as any other and reads the line on its re-check period
+/// (the simulation delivers its edges itself, `gpio::gpio_inject`). Created
+/// with the watchdog, so every kernel that runs one runs the other.
+fn create_kill_switch_task() {
+    azos_drv_gpio::gpio::set_edge_waker(azos_actuation::kill_switch::edge_wake);
+    let line = azos_drv_gpio::gpio::gpio_irq_route(super::blk_irq::enable_line);
+    let hart = match line {
+        Some(_) => azos_sched::smp::current_cpu_id() as i8,
+        None => -1,
+    };
+    let idx = azos_sched::task_create_affinity(
+        "kill-switch", azos_actuation::kill_switch::kill_switch_task, 0,
+        azos_limits::KILL_SWITCH_PRIORITY as u32, hart);
+    // In the safety path: exempt from the RT band budget, as the watchdog.
+    azos_sched::rt::exempt_from_band_cap(idx);
+    match line {
+        Some(l) => kprintln!("[SCHED] Created kill-switch task (prio {}, GPIO edges on line {}) [CPU {}]",
+            azos_limits::KILL_SWITCH_PRIORITY, l, hart),
+        None => kprintln!("[SCHED] Created kill-switch task (prio {}, no GPIO interrupt line)",
+            azos_limits::KILL_SWITCH_PRIORITY),
+    }
+}
+
 /// Create the Phase 16 system watchdog. Both ISAs, one call site each.
 ///
 /// `hart` is the pin, and it is a PARAMETER rather than a constant because
@@ -745,6 +773,7 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
     azos_sched::rt::exempt_from_band_cap(idx);
     kprintln!("[SCHED] Created sys-wdt task (Phase 16: canaries + timer liveness) \
                [hart {}]", hart);
+    create_kill_switch_task();
     // Owner rule (wave 15): an RT task never does block I/O. The watchdog
     // above is RT (11): its periodic flush, its durable e-stop records and
     // the OTA boot-good mark go to this task, outside the RT band. Created

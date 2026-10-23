@@ -57,9 +57,9 @@ pub fn set_boot_good_hook(delay_s: u32, mark: fn()) {
 ///    otherwise — latches the e-stop, records it durably, stops both motors
 ///    and disarms the ESC (same U08-1 decision as section 1).
 ///
-/// 3. **GPIO kill switch** — on the pass where a configured `estop_gpio_pin`
-///    first reads low: latches the e-stop, records it durably, stops both
-///    motors and disarms the ESC.
+/// 3. (The GPIO kill switch was a sample of `estop_gpio_pin` here, once per
+///    pass: up to 500 ms to the stop. It is its own task now, woken by the
+///    pin's edge interrupt: `kill_switch::kill_switch_task`.)
 ///
 /// 3b. **Flush** — the pending capability-denial summary, then a flush
 ///    request to the `log-flush` task (this task is RT and never does block
@@ -73,8 +73,6 @@ pub fn system_wdt_task(_: usize) {
     kprintln!("[WDT] Phase 16 system watchdog running");
     let mut last_tick    = TICK_COUNT.load(Ordering::Relaxed);
     let mut frozen_count = 0u32;
-    // Edge state for the kill switch — see the poll below.
-    let mut estop_pin_was_pressed = false;
     let mut boot_good_marked = false;
     // Set once, the first time section 2 finds the tick source unfed — see
     // the `now_tick == 0` arm there.
@@ -276,72 +274,6 @@ pub fn system_wdt_task(_: usize) {
                 }
                 last_tick = now_tick;
             }
-        }
-
-        // ── 3. GPIO kill-switch poll ───────────────────────────────────────
-        let estop_pin = azos_config::CFG_ESTOP_GPIO_PIN.load(Ordering::Relaxed);
-        // EDGE-TRIGGERED, and it was not until 2026-09-10 — because until then
-        // this branch had never run twice. A held switch is ONE event: the
-        // repeat cost a DURABLE flight-recorder write every 500 ms, which on a
-        // board fills the black box with copies of the stop and pushes out the
-        // records that explain why it happened. Measured: 14 identical
-        // `SAFETY_ESTOP` records for one press. Same rule the envelope marker
-        // already follows — "a clamp that holds for a minute is one event, not
-        // six thousand".
-        //
-        // The edge governs the RECORD, never the latch. `estop_activate` is
-        // idempotent and the latch is deliberately not cleared when the pin is
-        // released — an operator decides when it is safe to resume. Releasing
-        // and pressing again IS a second event and records again, which is
-        // what an investigator needs to see.
-        let pressed = estop_pin < 64 && azos_drv_gpio::gpio::gpio_read(estop_pin) == 0;
-        if !pressed { estop_pin_was_pressed = false; }
-        if pressed && !estop_pin_was_pressed {
-            estop_pin_was_pressed = true;
-            // Active-low: pin grounded = ESTOP triggered.
-            //
-            // **Latch it, exactly as the two software paths do.** This branch
-            // used to stop the motors and nothing else — it never called
-            // `estop_activate()`, while the brain-link paths at the PKT_ESTOP
-            // handlers both do. The difference is not cosmetic:
-            // `motor_envelope` opens with `if estop_is_active() { return (0,0) }`,
-            // so without the latch the stop lasts exactly until the next
-            // `MotorCmd` arrives on `CH_MOTOR_CMD` and the envelope waves it
-            // through. The physical kill switch stopped the motors once and let
-            // the next command move them again, while a remote e-stop held.
-            //
-            // A hardware e-stop is the control a person reaches for when the
-            // machine is already doing something wrong, so it should be the
-            // hardest of the three to defeat, not the softest.
-            //
-            // Not auto-cleared when the pin is released, deliberately, and for
-            // the same reason the other two are not: an emergency stop is
-            // released by an operator deciding it is safe to resume — here the
-            // MODE command — never by the condition merely going away.
-            // Latch and stop, in the one place that sequence lives — see
-            // `actuation::latch_and_stop` for why the latch precedes the
-            // wheels and why motors 0 and 1 are all of them. THIS site is the
-            // reason that function exists: its copy of the sequence was once
-            // missing `estop_activate()` entirely, so the physical switch
-            // stopped the wheels and let the next command move them again.
-            crate::gate::latch_and_stop();
-            azos_drv_sys::kwarn!("[WDT] GPIO ESTOP (pin {}) — motors stopped, envelope latched", estop_pin);
-            // Source 2 = the physical switch. Which of the three fired is the
-            // first question after an incident, so it is the action code and
-            // not buried in a detail field.
-            // Durable here too, even though 3b below flushes in the same
-            // iteration: the property belongs to the e-stop, not to where the
-            // call happens to sit. Moving this line would otherwise silently
-            // un-durable it.
-            //
-            // Now written AFTER the stop rather than between the latch and
-            // the wheels, which is where the other three e-stop paths already
-            // wrote theirs. The record is a few microseconds later and the
-            // motors are already clamped by the latch before either happens,
-            // so nothing that matters moved; what it buys is that all four
-            // sources now read "stop everything, then record".
-            let _ = crate::logger::log_safety_violation_durable(
-                crate::logger::SAFETY_ESTOP, 2, estop_pin as u32);
         }
 
         // ── 3b. Push the safety record to disk ──────────────────────────

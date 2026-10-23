@@ -5885,6 +5885,26 @@ mod gpio_k1;
 #[cfg(test)]
 mod gpio_k1_tests;
 
+// The JH7110 sys pin controller's GPIO interrupt registers and the kill
+// switch's debounce (front gpio-edge-irq), the real files, the first against
+// a model of the block.
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/gpio/src/gpio_jh7110_irq.rs"]
+mod gpio_jh7110_irq;
+
+#[cfg(test)]
+mod gpio_jh7110_irq_tests;
+
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/gpio/src/debounce.rs"]
+mod debounce;
+
+#[cfg(test)]
+mod gpio_debounce_tests;
+
+#[cfg(test)]
+mod gpio_edge_path_tests;
+
 #[allow(dead_code)]
 #[path = "../../../../crates/drivers/actuator/src/pwm_k1.rs"]
 mod pwm_k1;

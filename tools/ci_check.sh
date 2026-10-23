@@ -17258,7 +17258,8 @@ PYEOF
     # Two things had to be built before this could be asserted at all, and both
     # were defects rather than missing test scaffolding:
     #
-    #  1. `sys-wdt`, which owns this poll, NEVER RAN UNDER LOAD. Priority 20 —
+    #  1. `sys-wdt`, which owned this poll until the edge interrupt and the
+    #     `kill-switch` task replaced it (2026-10-23), NEVER RAN UNDER LOAD. Priority 20 —
     #     the lowest in the system bar idle — under strict priority with no
     #     aging. Measured with a probe verified present in the binary: it
     #     entered and iterated on an idle boot and did not execute one
@@ -17272,8 +17273,8 @@ PYEOF
     #
     # `estop_gpio_pin` is set by the smoke task, not by CONFIG.INI, and the
     # ORDER is the reason: every simulated GPIO pin powers up reading 0 and the
-    # poll is active-low, so a configured pin would latch the e-stop on the
-    # first poll before anything could move. The task drives the pin high —
+    # switch is active-low, so a configured pin would latch the e-stop at the
+    # arm before anything could move. The task drives the pin high —
     # the released switch, which on a board is a pull-up — and only then arms
     # the config. See `estop_gpio_smoke_task`.
     killswitch_gpio_scenario() {
@@ -17328,17 +17329,29 @@ PYEOF
         # The record is still required to exist, and exactly once: that is the
         # `hits` check below, and it is a different property from the ordering.
         local wdt_line hits press_line
-        wdt_line=$(grep -an "WDT] GPIO ESTOP" "$log" 2>/dev/null | sed -n "1p" | cut -d: -f1)
+        wdt_line=$(grep -an "KILLSW] GPIO ESTOP" "$log" 2>/dev/null | sed -n "1p" | cut -d: -f1)
         press_line=$(grep -an "ESTOPGPIO] pressing the kill switch" "$log" 2>/dev/null | sed -n "1p" | cut -d: -f1)
         if [ -z "$press_line" ]; then
             bad; echo "      the smoke task never pressed the switch — nothing was"
             echo "      testable. logs kept: $log $blog"; return
         fi
         if [ -z "$wdt_line" ]; then
-            bad; echo "      the watchdog never saw the switch. If this went red"
-            echo "      after a scheduling change, check FIRST that sys-wdt runs"
-            echo "      at all under load — it did not until 2026-09-10."
+            bad; echo "      the kill-switch task never saw the switch. If this went"
+            echo "      red after a scheduling change, check FIRST that kill-switch"
+            echo "      runs at all under load (sys-wdt, which polled it before"
+            echo "      2026-10-23, did not until 2026-09-10)."
             echo "      logs kept: $log $blog"; return
+        fi
+        # The press reached the task by its EDGE, not by the slow re-check: the
+        # task prints the edge-to-latch time only for a press an edge woke it
+        # for. The number is TCG time and is not asserted (the 1 ms target is
+        # the board's); a press the re-check found has no such line.
+        local edge_us
+        edge_us=$(grep -a "KILLSW] edge to latch" "$log" 2>/dev/null | sed -n "1p" | tr -d '\r' | sed 's/.*latch \([0-9]*\) us.*/\1/')
+        if [ -z "$edge_us" ]; then
+            bad; echo "      the press was not taken by its edge (no 'edge to latch'"
+            echo "      line): the stop came from the re-check, up to"
+            echo "      KILL_SWITCH_RECHECK_MS late. logs kept: $log $blog"; return
         fi
         # The latching record reached the medium before QEMU was killed: the
         # marker follows the fsync, and it must follow the press. Canary,
@@ -17354,7 +17367,7 @@ PYEOF
             echo "      logs kept: $log $blog"; return
         fi
         # Exactly one record for one press: the edge trigger.
-        hits=$(grep -ac "WDT] GPIO ESTOP" "$log" 2>/dev/null)
+        hits=$(grep -ac "KILLSW] GPIO ESTOP" "$log" 2>/dev/null)
         if [ "$hits" -ne 1 ]; then
             bad; echo "      one press produced $hits e-stop records. A held switch"
             echo "      is one event; repeating it writes a durable record every"

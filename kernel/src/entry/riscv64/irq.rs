@@ -222,6 +222,12 @@ fn kernel_line(irq: u32) -> bool {
         // A reader parked on console input (the user shell's
         // `LOG_CONSOLE_WAIT`, the recovery console's `readline`) is woken.
         Kernel::console_rx().1
+    } else if let Some(woke) = azos_drv_gpio::gpio::gpio_edge_irq(irq) {
+        // The physical kill switch's edge: acknowledged and masked at the
+        // GPIO controller, its task woken to sample, latch and stop
+        // (`azos_actuation::kill_switch`). Never threaded: the IRQ thread
+        // would add a wake to the stop's latency.
+        woke
     } else if let Some(woke) = azos_drv_virtio::virtio::blk::irq(irq) {
         // Wave 15: a disk request completed; its waiter sleeps until this
         // wake (`boot::blk_irq`).

@@ -254,32 +254,38 @@ pub(crate) fn driver_idle_report(who: &str, kind: u32) -> Option<u64> {
 /// estop-gpio-smoke: the PHYSICAL kill switch, the third of the four e-stop
 /// sources, and the only one QEMU cannot present on its own.
 ///
-/// **Why a task and not a line in CONFIG.INI.** The poll in `rt_motor_task` is
-/// active-low — `gpio_read(pin) == 0` means the switch is pressed — and every
-/// simulated GPIO pin powers up reading 0 (`GpioState::new`). On a board the
+/// **Why a task and not a line in CONFIG.INI.** The kill switch is active-low
+/// (no `gpio-keys` node describes it on QEMU, so the task takes the wiring
+/// default) and every simulated GPIO pin powers up reading 0. On a board the
 /// pin sits high through a pull-up and the switch pulls it down; QEMU models
 /// the pin and not the circuit. So an image that merely set
-/// `estop_gpio_pin=30` would latch the e-stop on the first poll, before
-/// anything could move, and the scenario would prove nothing. That is also why
-/// no image in this tree has ever configured it, and why this source had no
-/// coverage at all.
+/// `estop_gpio_pin=30` would latch the e-stop at the arm, before anything
+/// could move, and the scenario would prove nothing. That is also why no
+/// image in this tree has ever configured it.
+///
+/// **The circuit is `gpio_inject`.** The pin is the kill switch's input; this
+/// task plays the switch and its pull-up from outside, and the simulation
+/// takes the edge as the boards' interrupt handler does (acknowledge, mask,
+/// stamp, wake the `kill-switch` task). So the press below goes through the
+/// edge path the boards take, and the task's `edge to latch` line is the
+/// measurement the row reads.
 ///
 /// **Order matters and closes the window by construction.** The pin is driven
 /// HIGH first — the released switch — and only then is the pin number stored
-/// into `CFG_ESTOP_GPIO_PIN`, so there is no interval in which the watchdog
-/// can see an armed switch reading a floating 0. Configuring through the file
-/// could not give that guarantee: the config is applied long before this runs.
+/// into `CFG_ESTOP_GPIO_PIN`, so there is no interval in which the task can
+/// arm a switch reading a floating 0. Configuring through the file could not
+/// give that guarantee: the config is applied long before this runs.
 ///
 /// Pin 30 belongs to nothing else here: 0-3 are the two H-bridges, 13-15 carry
 /// the sensor-bus flags, and 20 and 0 are the two GPIO capabilities the
 /// topology grants to ring 3.
 #[cfg(feature = "estop-gpio-smoke")]
 pub(crate) fn estop_gpio_smoke_task(_arg: usize) {
-    use azos_drv_gpio::gpio::{gpio_set_direction, gpio_write, GpioDir};
+    use azos_drv_gpio::gpio::{gpio_inject, gpio_set_direction, GpioDir};
     const PIN: u32 = 30;
 
-    gpio_set_direction(PIN, GpioDir::Output);
-    gpio_write(PIN, 1);
+    gpio_set_direction(PIN, GpioDir::Input);
+    gpio_inject(PIN, true);
     azos_config::CFG_ESTOP_GPIO_PIN.store(PIN, Ordering::Relaxed);
     kprintln!("[ESTOPGPIO] kill switch armed on pin {} (released)", PIN);
 
@@ -310,10 +316,10 @@ pub(crate) fn estop_gpio_smoke_task(_arg: usize) {
     }
 
     kprintln!("[ESTOPGPIO] pressing the kill switch");
-    gpio_write(PIN, 0);
+    gpio_inject(PIN, false);
 
-    // Stay alive 8 s for the watchdog to poll and for the scenario to see
-    // whether anything drives afterwards.
+    // Stay alive 8 s for the record to reach the disk and for the scenario to
+    // see whether anything drives afterwards.
     let end = now() + 8 * TIMER_FREQ;
     while now() < end { azos_sched::task_yield(); }
     // What the recorder did with the press, for a red latch row to read.

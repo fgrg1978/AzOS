@@ -327,6 +327,7 @@ name = "azos_drv_gpio"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_common",
  "azos_driver_server",
  "azos_drv_api",
  "azos_drv_base",

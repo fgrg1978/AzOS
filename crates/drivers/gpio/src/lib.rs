@@ -11,6 +11,16 @@ pub mod gpio_driver;
 
 pub mod gpio;
 
+/// The kill switch's debounce: which samples of an input line are a new
+/// press. Pure; the host suite pulls the file in with `#[path]`.
+pub mod debounce;
+
+/// The JH7110 sys pin controller's GPIO interrupt registers over a trait
+/// (`gpio.rs`'s `mmio` module is the kernel half). Compiled for the VF2 only;
+/// the host suite pulls the file in with `#[path]`.
+#[cfg(feature = "vf2")]
+pub mod gpio_jh7110_irq;
+
 /// The SpacemiT K1 controller's registers over a trait (`gpio.rs`'s `k1`
 /// module is the kernel half). Compiled for the K1 only; the host suite pulls
 /// the file in with `#[path]`.

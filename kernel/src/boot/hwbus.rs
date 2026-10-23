@@ -209,6 +209,66 @@ fn attach_dwmshc(dev: &Device) -> Result<(), ProbeError> {
     })
 }
 
+/// The GPIO controller: its window and interrupt line to the driver, then
+/// what the tree says about its input pins (`describe_gpio_keys`).
+#[cfg(any(feature = "vf2", feature = "k1"))]
+fn attach_gpio(dev: &Device) -> Result<(), ProbeError> {
+    azos_drv_gpio::gpio::gpio_attach(map_window(dev)?, dev.irq).map_err(|_| ProbeError::Busy)?;
+    #[cfg(feature = "soc")]
+    if let Some(node) = dev.dt_node {
+        describe_gpio_keys(node);
+    }
+    Ok(())
+}
+
+/// Every `gpio-keys` child (the Linux binding: `gpios`, `debounce-interval`)
+/// whose `gpios` names the controller at `node`, recorded with the driver
+/// (`gpio_describe_key`): the kill switch takes its line's polarity and
+/// debounce window from there. The specifier's length is the controller's
+/// `#gpio-cells` and the driver decodes it (`gpio_specifier`), so no board's
+/// layout is assumed here. Without the SoC frameworks there is no tree to
+/// read, and no pin is described.
+#[cfg(all(feature = "soc", any(feature = "vf2", feature = "k1")))]
+fn describe_gpio_keys(node: u32) {
+    use azos_drv_gpio::gpio::{self, KeyLine};
+    let mut described = 0u32;
+    super::soc::with(|fdt, _, _, _| {
+        let ctrl = azos_soc::NodeId(node);
+        let Some(ncells) = fdt.u32_prop(ctrl, "#gpio-cells").map(|n| n as usize) else { return };
+        if ncells == 0 || ncells > 4 {
+            return;
+        }
+        fdt.walk(|keys| {
+            if !fdt.is_compatible(keys, "gpio-keys") || !fdt.is_available(keys) {
+                return;
+            }
+            for child in fdt.children(keys) {
+                let Some(v) = fdt.prop(child, "gpios") else { continue };
+                let Some(ph) = azos_soc::fdt::cell(v, 0) else { continue };
+                if fdt.by_phandle(ph) != Some(ctrl) {
+                    continue;
+                }
+                let mut cells = [0u32; 4];
+                if (0..ncells).any(|i| azos_soc::fdt::cell(v, 1 + i).map(|c| cells[i] = c).is_none()) {
+                    continue;
+                }
+                let Some((pin, flags)) = gpio::gpio_specifier(&cells[..ncells]) else { continue };
+                let key = KeyLine {
+                    active_low: flags & gpio::GPIO_ACTIVE_LOW != 0,
+                    debounce_ms: fdt.u32_prop(child, "debounce-interval")
+                        .unwrap_or(gpio::GPIO_KEYS_DEBOUNCE_MS_DEFAULT),
+                };
+                if gpio::gpio_describe_key(pin, key) {
+                    described += 1;
+                }
+            }
+        });
+    });
+    if described > 0 {
+        kprintln!("[GPIO] {} input line(s) described by the tree (gpio-keys)", described);
+    }
+}
+
 /// The bus number of the controller at `base`.
 #[cfg(all(feature = "k1", feature = "soc"))]
 fn i2c_bus_at(base: u64) -> Option<u8> {
@@ -318,7 +378,7 @@ impl Drivers for KernelDrivers<'_> {
             // mapping record covers an identical window already, so the second
             // call costs no MAX_MMIO_REGIONS slot (`vmm::map_mmio_region`).
             #[cfg(any(feature = "vf2", feature = "k1"))]
-            "gpio" => azos_drv_gpio::gpio::gpio_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
+            "gpio" => attach_gpio(dev),
             #[cfg(any(feature = "vf2", feature = "k1"))]
             "pwm" => azos_drv_actuator::pwm::pwm_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
             #[cfg(feature = "vf2")]
