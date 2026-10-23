@@ -371,8 +371,11 @@ lx-wx-canary = ["lx-server", "azos_mm/lx-wx-canary"]
 # second admission (with the real hart count) when booted `-smp 1`.
 deadline-hart-canary = ["azos_topology/deadline-hart-canary"]
 # `captest-row`: CAPTEST.ELF's own hard-reservation row on CPU 3, which its
-# IRQ section needs under IRQ_THREADED. Four CPUs or more.
-captest-row = ["azos_topology/captest-row"]
+# IRQ section needs under IRQ_THREADED. Four CPUs or more. `use-robot`: only
+# the gate's captest boots build it, and captest reads the robot sensors and
+# drives the motors its row is granted, which a generic image does not have
+# (`sensor_read_ts` -3, `motor speed` -4), so it builds from the robot cell.
+captest-row = ["use-robot", "azos_topology/captest-row"]
 # `dma-contig-canary`: the boot's first topology admission reserves its DMA
 # pool with one free frame in every pool-length taken (frames enough, no run
 # long enough); reserving the pool must refuse it. Gate rows "topology: DMA
