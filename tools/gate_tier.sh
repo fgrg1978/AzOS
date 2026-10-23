@@ -103,12 +103,9 @@ fi
 [ "$lints" = 1 ] && { printf "  %-26s" "arch layout lint..."; if out="$(python3 tools/arch_layout_lint.py --self-test 2>&1 && python3 tools/arch_layout_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "doc lint..."; if out="$(python3 tools/doc_lint.py --self-test 2>&1 && python3 tools/doc_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "req trace lint..."; if out="$(python3 tools/req_trace.py --self-test 2>&1 && python3 tools/req_trace.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
-# The board image's ELF list derived from the topology (tools/test_board_manifest.py).
-[ "$lints" = 1 ] && { printf "  %-26s" "board manifest..."; if out="$(python3 tools/test_board_manifest.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E 'FAIL|Error' | sed -n 1,5p | sed 's/^/      /'; fi; }
-
 # The board image's ELF list (tools/test_board_manifest.py): an orphan service (declared, not built
 # or not shipped) and an orphan ELF (on the disk, not declared); "board: volume = topology" boots only the good case.
-[ "$tier" = n0 ] && { printf "  %-26s" "board manifest tests..."; if out="$(python3 tools/test_board_manifest.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^(FAIL|ERROR)|Error' | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "board manifest..."; if out="$(python3 tools/test_board_manifest.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^(FAIL|ERROR)|Error' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
 # Kconfig is the only source of truth (tools/kconfig_lint.py): cargo-feature
 # tags against kernel/Cargo.toml, no `select` of a visible symbol.
