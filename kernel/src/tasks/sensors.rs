@@ -59,11 +59,11 @@ fn imu_queued_tick(pending: &mut Option<u32>) {
     }
 }
 
-/// VisionFive 2 and K1: the I2C controllers' service step (`i2c::i2c_service`) for
+/// The I2C controllers' service step (`i2c::i2c_service`: DesignWare, K1) for
 /// queued transactions, until the controller interrupt is wired. Sleeps
 /// `I2C_SERVICE_POLL_US` between steps while a bus has work; parks
 /// otherwise until a submit wakes it. Not in the RT band: it sleeps.
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
 pub(crate) fn i2c_service_task(_: usize) {
     use azos_drv_sys::timebase::{freq, now};
     I2C_SVC_TID.store(azos_sched::current_task_tid(), Ordering::Release);
@@ -83,17 +83,17 @@ pub(crate) fn i2c_service_task(_: usize) {
     }
 }
 
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
 static I2C_SVC_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Boot, at the `i2c-svc` task's creation and before the seal: what a submit
 /// calls to get its transaction serviced (a set-once hook).
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
 pub(crate) fn install_i2c_service_kick() {
     azos_drv_bus::i2c::set_service_kick(i2c_service_kick);
 }
 
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
 fn i2c_service_kick() {
     let tid = I2C_SVC_TID.load(Ordering::Acquire);
     if tid != 0 {

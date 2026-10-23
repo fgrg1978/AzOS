@@ -3,7 +3,10 @@
 /// I2C driver — port of kernel/drivers/i2c.c + kernel/include/i2c.h
 ///
 /// QEMU: in-memory simulation with fake IMU + barometer.
-/// VF2:  DesignWare APB I2C — real MMIO transactions (`crate::i2c_txn`).
+/// Synopsys DesignWare APB I2C (Kconfig `I2C_DESIGNWARE`): the VisionFive 2's
+///       and the Raspberry Pi 5 RP1's (`snps,designware-i2c` in the tree) and
+///       Intel LPSS ones (by PCI id) — real MMIO transactions
+///       (`crate::i2c_txn`), brought up by `crate::i2c_dw`.
 /// K1:   SpacemiT K1 I2C (`spacemit,k1-i2c`) — real MMIO transactions
 ///       (`crate::i2c_k1`).
 pub const I2C_MAX_DEVICES: usize = 16;
@@ -28,7 +31,7 @@ pub const I2C_BUS_COUNT:   usize = 4;
 ///
 /// Kept as a top-level pure function, outside both `cfg` modules, for the
 /// same reason `pwm_domain` and `drv_resource` are separate: the MMIO module
-/// it serves is `#[cfg(any(feature = "vf2", feature = "k1"))]` and names MMIO, so
+/// it serves is `#[cfg(any(feature = "i2c-dw", feature = "k1"))]` and names MMIO, so
 /// a host test cannot compile it, while this mapping is plain arithmetic that
 /// `tests/host/drivers-tests` can pull in and check.
 ///
@@ -52,7 +55,7 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 
 /// The locks themselves, MOVED OUT of the board module on 2026-09-08 for exactly
 /// the reason [`i2c_bus_lock_slot`] above is out here: that module is
-/// `#[cfg(any(feature = "vf2", feature = "k1"))]` and names MMIO, so a host test cannot compile it
+/// `#[cfg(any(feature = "i2c-dw", feature = "k1"))]` and names MMIO, so a host test cannot compile it
 /// — and while the array sat inside it, **nothing tested the exclusion**, only
 /// the arithmetic that picks a slot. A mapping test passes just as happily on
 /// an array of one lock aliased across every bus.
@@ -132,7 +135,8 @@ pub static I2C_BUS_LOCKS: [azos_sync::SpinLock<()>; I2C_BUS_COUNT] =
 pub const I2C_TXN_QUEUE_DEPTH: usize = azos_limits::I2C_TXN_QUEUE_DEPTH as usize;
 
 /// Kconfig `I2C_DW_RX_FIFO_DEPTH`: the DesignWare controller's RX FIFO
-/// depth; reads in flight never exceed it.
+/// depth when the IP does not report its own (`IC_COMP_PARAM_1`, read at
+/// attach: `i2c_dw::init_master`); reads in flight never exceed it.
 pub const I2C_DW_RX_FIFO_DEPTH: usize = azos_limits::I2C_DW_RX_FIFO_DEPTH as usize;
 
 /// One transaction queue and state machine per bus (`i2c_bus_lock_slot`).
@@ -162,8 +166,14 @@ impl I2cDevice {
 }
 
 // ── QEMU: in-memory simulation ────────────────────────────────────────────────
+//
+// Only where no controller driver is compiled: a build with one (a board, or
+// Kconfig I2C_DESIGNWARE on a PC) has no simulated sensor to read.
 
-#[cfg(not(any(feature = "vf2", feature = "k1")))]
+#[cfg(all(feature = "i2c-dw", feature = "k1"))]
+compile_error!("I2C: the DesignWare and the SpacemiT K1 controller drivers are one board's choice, not both");
+
+#[cfg(not(any(feature = "i2c-dw", feature = "k1")))]
 mod sim {
     use super::*;
     use azos_sync::SpinLock;
@@ -188,7 +198,7 @@ mod sim {
         }
     }
 
-    /// One lock for every simulated bus, unlike the `vf2` path's per-bus
+    /// One lock for every simulated bus, unlike the controllers' per-bus
     /// locks. This is not an oversight and not the same trade-off: the
     /// simulation has no `IC_TAR`, so it has no bus state to corrupt, and its
     /// whole "transfer" is a bounded memcpy inside one `SpinLock` — there is
@@ -402,26 +412,28 @@ mod sim {
 
 }
 
-#[cfg(not(any(feature = "vf2", feature = "k1")))]
+#[cfg(not(any(feature = "i2c-dw", feature = "k1")))]
 pub use sim::*;
 
-// ── The boards' controllers: VisionFive 2 (DesignWare) and K1 (SpacemiT) ─────
+// ── The controllers: DesignWare (VF2, Pi 5 RP1, Intel LPSS) and K1 (SpacemiT) ─
 //
-// Both boards bind their controllers through the hardware bus (`kernel/src/
-// boot/hwbus.rs`, the `i2c` driver; ids in `hwbus.ids`) and `i2c_attach`
-// numbers them in the order it finds them: the first is bus 0, up to
-// `I2C_BUS_COUNT`. Which controller a bus number names is therefore the
-// board's tree, not a constant here, and the `[I2C] bus N on ...` boot line
-// says which.
+// The controllers bind through the hardware bus (`kernel/src/boot/hwbus.rs`:
+// the `i2c` driver for a device-tree node, the `i2c-lpss-*` ones for an
+// Intel LPSS PCI function; ids in `hwbus.ids`) and `i2c_attach` numbers them
+// in the order it finds them: the first is bus 0, up to `I2C_BUS_COUNT`.
+// Which controller a bus number names is therefore the machine's tree or PCI
+// order, not a constant here, and the `[I2C] bus N on ...` boot line says
+// which.
 //
-// `board` is what the two share: the windows, the queue, the synchronous
+// `board` is what the two IPs share: the windows, the queue, the synchronous
 // transfer that steps its own transaction, the queued read and the service
 // step. What differs is the controller IP, and that is `ctl`: its bring-up
-// (`init_bus`) and one bounded step of its state machine (`step`).
+// (`probe` before the controller is a bus, `init_bus` once it is one) and
+// one bounded step of its state machine (`step`).
 
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
 mod board {
-    use azos_drv_base::window::{Taken, Windows};
+    use azos_drv_base::window::Windows;
     use super::{ctl, i2c_bus_lock_slot, I2C_BUS_COUNT, I2C_BUS_LOCKS, I2C_QUEUES};
 
     /// The controllers' windows, in the order the hardware bus binds the
@@ -456,24 +468,40 @@ mod board {
         }
     }
 
+    /// Why [`i2c_attach`] did not make a bus of a controller.
+    #[derive(Clone, Copy, Debug)]
+    pub enum AttachError {
+        /// Every bus is taken, or `base` already is one.
+        Taken,
+        /// The controller's bring-up refused it (`ctl::probe`): not the IP
+        /// the binding said, or the firmware's facts do not fit it.
+        Refused(ctl::Refused),
+    }
+
     /// Bring the next bus up on the controller the hardware bus bound at
-    /// `base`: the number of the bus it is (0, then 1, ...). `Err` when every
-    /// bus is taken or `base` already is one.
+    /// `base`, with what the binding knows of it (`cfg`): the number of the
+    /// bus it is (0, then 1, ...) and what the bring-up found.
     ///
-    /// Under the bus lock like every other entry point: the bring-up resets or
-    /// disables the controller, which would abort a transfer in flight. A bus
-    /// is reachable only once attached, and attaching it comes first, so the
-    /// lock is uncontended; it is what keeps that true if a bus is ever
-    /// re-initialised to recover it.
-    pub fn i2c_attach(base: usize) -> Result<u8, Taken> {
-        let bus = BUSES.attach_next(base)? as u8;
+    /// `ctl::probe` runs before the controller is a bus: no other entry point
+    /// can reach a window that is not attached, so it needs no lock, and a
+    /// controller it refuses takes no bus number. What is per bus
+    /// (`ctl::init_bus`) runs under the bus lock like every other entry
+    /// point: the bring-up resets or disables the controller, which would
+    /// abort a transfer in flight. The lock is uncontended here; it is what
+    /// keeps that true if a bus is ever re-initialised to recover it.
+    pub fn i2c_attach(base: usize, cfg: &ctl::BusConfig) -> Result<(u8, ctl::Probe), AttachError> {
+        if base == 0 || (0..I2C_BUS_COUNT).any(|i| BUSES.base(i) == Some(base)) {
+            return Err(AttachError::Taken);
+        }
+        let found = ctl::probe(&Mmio(base), cfg).map_err(AttachError::Refused)?;
+        let bus = BUSES.attach_next(base).map_err(|_| AttachError::Taken)? as u8;
         if let Some(slot) = i2c_bus_lock_slot(bus) {
             if let Some(m) = I2C_BUS_LOCKS.get(slot) {
                 let _bus_guard = m.lock();
-                ctl::init_bus(&Mmio(base), slot);
+                ctl::init_bus(&Mmio(base), slot, &found);
             }
         }
-        Ok(bus)
+        Ok((bus, found))
     }
 
     /// A synchronous transfer (wave 15, S1): the transaction goes on the
@@ -610,56 +638,31 @@ mod board {
     }
 }
 
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
 pub use board::*;
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
+pub use ctl::{BusConfig, Probe, Refused};
 
-// ── VisionFive 2 / JH7110: DesignWare APB I2C (`snps,designware-i2c`) ────────
+// ── Synopsys DesignWare APB I2C (`snps,designware-i2c`) ──────────────────────
 //
-// JH7110 has 7 I2C controllers (i2c0..i2c6).
-//
-// DesignWare APB I2C register map (well-documented, used in Linux dwi2c driver):
-//   0x00 IC_CON         — control: master/slave, speed (0=std, 1=fast)
-//   0x04 IC_TAR         — 7-bit target address
-//   0x10 IC_DATA_CMD    — data + read/write command (bit 8: 1=read, 0=write)
-//   0x14 IC_SS_SCL_HCNT — standard speed SCL high count
-//   0x18 IC_SS_SCL_LCNT — standard speed SCL low count
-//   0x1C IC_FS_SCL_HCNT — fast speed SCL high count
-//   0x20 IC_FS_SCL_LCNT — fast speed SCL low count
-//   0x3C IC_INTR_STAT   — interrupt status
-//   0x6C IC_ENABLE      — 1=enable controller
-//   0x70 IC_STATUS      — bit 1: master active, bit 3: TXFIFO not full, bit 6: SDA stalled
-//   0x74 IC_TXFLR       — TX FIFO level
-//   0x78 IC_RXFLR       — RX FIFO level
-//   0x80 IC_CLR_INTR    — clear all interrupts (read)
-//   0xA0 IC_COMP_PARAM_1 — parameters
-//
-// SCL freq = IC_CLK / (HCNT + LCNT + 8)
-// At IC_CLK=100 MHz, 100 kHz std-mode: HCNT=487, LCNT=512 (typical Linux values).
+// The JH7110 has 7 (i2c0..i2c6), the RP1 7 (i2c0..i2c6, behind the Pi 5's
+// PCIe), an Intel PCH up to 6 LPSS I2C functions. The registers, the
+// identity check and the bring-up from the firmware's timing are
+// `crate::i2c_dw`; the transfer registers and bits are `crate::i2c_txn`'s:
+// every transfer, queued or synchronous, runs through its state machine.
 
-#[cfg(feature = "vf2")]
+#[cfg(feature = "i2c-dw")]
 mod ctl {
     use super::board::Mmio;
-    use super::I2C_TXN_QUEUE_DEPTH;
+    use super::{I2C_DW_RX_FIFO_DEPTH, I2C_QUEUES, I2C_TXN_QUEUE_DEPTH};
+    use crate::i2c_dw::{self, InitError, Setup, Timing};
 
-    // Register offsets
-    const IC_CON:        usize = 0x00;
-    const IC_SS_SCL_HCNT: usize = 0x14;
-    const IC_SS_SCL_LCNT: usize = 0x18;
-    const IC_ENABLE:     usize = 0x6C;
-    // 0x40 in the DW_apb_i2c databook; this read 0x80 (IC_TX_ABRT_SOURCE,
-    // which clears nothing) before wave 15. Board validation pending.
-    const IC_CLR_INTR:   usize = 0x40;
-
-    // IC_CON bits
-    const CON_MASTER:    u32 = 1 << 0;
-    const CON_SPEED_STD: u32 = 1 << 1;
-    const CON_10BIT_OFF: u32 = 0;       // 7-bit addressing
-    const CON_RESTART:   u32 = 1 << 5;
-    const CON_SLAVE_DIS: u32 = 1 << 6;
-
-    // The transfer registers and bits (IC_TAR, IC_DATA_CMD, IC_STATUS, the
-    // interrupt registers) are `crate::i2c_txn`'s: every transfer, queued
-    // or synchronous, runs through its state machine.
+    /// What the binding knows of a controller: its clock, rate and times.
+    pub type BusConfig = Timing;
+    /// What the bring-up found: mode, counts, FIFO depth.
+    pub type Probe = Setup;
+    /// Why the bring-up refused a controller.
+    pub type Refused = InitError;
 
     impl crate::i2c_txn::DwRegs for Mmio {
         #[inline]
@@ -668,18 +671,19 @@ mod ctl {
         fn wr(&self, off: usize, val: u32) { self.wr32(off, val) }
     }
 
-    /// Master mode, standard speed (100 kHz), 7-bit, slave disabled.
-    pub(super) fn init_bus(m: &Mmio, _slot: usize) {
-        // Disable controller before programming
-        m.wr32(IC_ENABLE, 0);
-        m.wr32(IC_CON, CON_MASTER | CON_SPEED_STD | CON_10BIT_OFF | CON_RESTART | CON_SLAVE_DIS);
-        // SCL timing for 100 kHz at 100 MHz IC_CLK: HCNT=487, LCNT=512
-        m.wr32(IC_SS_SCL_HCNT, 487);
-        m.wr32(IC_SS_SCL_LCNT, 512);
-        // Re-enable
-        m.wr32(IC_ENABLE, 1);
-        // Clear any pending interrupts
-        let _ = m.rd32(IC_CLR_INTR);
+    /// Before the controller is a bus: check it is a DesignWare I2C and bring
+    /// it up as a master from the binding's facts (`i2c_dw::init_master`);
+    /// it stays disabled until its first transaction.
+    pub(super) fn probe(m: &Mmio, cfg: &Timing) -> Result<Setup, InitError> {
+        i2c_dw::init_master(m, cfg, I2C_DW_RX_FIFO_DEPTH)
+    }
+
+    /// The controller is bus `slot`: its queue keeps reads in flight within
+    /// the RX FIFO the IP reported.
+    pub(super) fn init_bus(_m: &Mmio, slot: usize, found: &Setup) {
+        if let Some(q) = I2C_QUEUES.get(slot) {
+            q.lock().set_fifo_depth(found.rx_depth);
+        }
     }
 
     /// One step of the DesignWare state machine (`crate::i2c_txn`). Returns
@@ -717,6 +721,15 @@ mod ctl {
     /// Kconfig `I2C_K1_FAST_MODE`: 400 kHz (fast mode) or 100 kHz.
     const FAST: bool = azos_limits::I2C_K1_FAST_MODE;
 
+    /// The K1 takes nothing from the binding: its rate is Kconfig
+    /// `I2C_K1_FAST_MODE` (the mainline tree gives every node 400 kHz).
+    pub struct BusConfig;
+    /// Nothing to report from the bring-up.
+    pub type Probe = ();
+    /// The K1's bring-up refuses nothing (a gated controller fails by the
+    /// transfer timeout instead).
+    pub type Refused = core::convert::Infallible;
+
     /// How long a unit reset is held: mainline waits 5 us (i2c-k1.c:159), in
     /// timebase ticks, rounded up.
     const UR_HOLD: u64 = azos_drv_sys::timebase::TIMER_FREQ * 5 / 1_000_000 + 1;
@@ -733,8 +746,13 @@ mod ctl {
         fn wr(&self, off: usize, val: u32) { self.wr32(off, val) }
     }
 
+    /// Nothing to check before the controller is a bus.
+    pub(super) fn probe(_m: &Mmio, _cfg: &BusConfig) -> Result<(), Refused> {
+        Ok(())
+    }
+
     /// Reset the unit; the first step after `UR_HOLD` releases it.
-    pub(super) fn init_bus(m: &Mmio, slot: usize) {
+    pub(super) fn init_bus(m: &Mmio, slot: usize, _found: &()) {
         if let Some(master) = MASTERS.get(slot) {
             master.lock().reset_unit(m, azos_drv_sys::timebase::now());
         }

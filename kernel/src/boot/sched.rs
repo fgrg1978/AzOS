@@ -384,8 +384,8 @@ pub(crate) fn install_sched_hooks() {
         azos_drv_sys::uart::set_console_wait_veto(console_drop_veto);
     }
     // Wave 15 (S1): a synchronous I2C transfer sleeps between the
-    // controller steps of its own transaction (VisionFive 2 DesignWare).
-    #[cfg(any(feature = "vf2", feature = "k1"))]
+    // controller steps of its own transaction (DesignWare, K1).
+    #[cfg(any(feature = "i2c-dw", feature = "k1"))]
     azos_drv_bus::i2c::set_sleep_hook(i2c_sleep_us);
     // The flight recorder asks the same question: an RT caller of
     // `logger_flush` hands the flush to the `log-flush` task.
@@ -1021,7 +1021,7 @@ fn rt_console_wire_check() {
 /// if this context may sleep (a task, preemption on, interrupts on), else
 /// return `false` and the caller steps again at once (early boot, a caller
 /// under a spinlock).
-#[cfg(any(feature = "vf2", feature = "k1"))]
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
 fn i2c_sleep_us(us: u64) -> bool {
     use azos_arch::Interrupts;
     if azos_sched::current_task_tid() == 0

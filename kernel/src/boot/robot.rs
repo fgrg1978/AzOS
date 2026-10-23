@@ -36,8 +36,12 @@ use crate::*;
 /// `install_ring3_seams`/`install_net_config` use it.
 #[inline(always)]
 pub(crate) fn install_robot_hw() {
+    // The DesignWare I2C controllers the tree enables (the VisionFive 2's, the
+    // Raspberry Pi 5 RP1's); an Intel LPSS one bound in the PCI stage already.
+    #[cfg(feature = "i2c-dw")]
+    super::hwbus::bind(&["i2c"]);
     #[cfg(feature = "vf2")]
-    super::hwbus::bind(&["i2c", "pwm", "dmac", "sfctemp"]);
+    super::hwbus::bind(&["pwm", "dmac", "sfctemp"]);
     // The K1's temperature block (Kconfig SOC_K1 and THERMAL).
     #[cfg(all(feature = "soc-k1", feature = "thermal"))]
     super::hwbus::bind(&["k1-tsensor"]);
@@ -55,7 +59,7 @@ pub(crate) fn install_robot_hw() {
     // frameworks' build left them pending).
     #[cfg(all(feature = "k1", feature = "soc-k1"))]
     super::soc::pin_pmic_always_on();
-    #[cfg(not(any(feature = "vf2", feature = "k1")))]
+    #[cfg(not(any(feature = "i2c-dw", feature = "k1")))]
     azos_drv_bus::i2c::i2c_init();
     // What the tree's nodes bound, not what the drivers could drive: a node the
     // tree lacks (or a bind that failed) leaves its controller absent.
@@ -71,10 +75,18 @@ pub(crate) fn install_robot_hw() {
         if azos_drv_actuator::pwm::pwm_has_hardware() { "bound" } else { "ABSENT" },
         azos_drv_bus::i2c::i2c_buses_attached(),
         azos_drv_bus::i2c::I2C_BUS_COUNT);
-    #[cfg(not(any(feature = "vf2", feature = "k1")))]
+    #[cfg(not(any(feature = "vf2", feature = "k1", feature = "i2c-dw")))]
     kprintln!("[HW] GPIO ({} pins), PWM ({} ch), I2C ({} buses) ready",
         azos_drv_gpio::gpio::GPIO_MAX_PINS,
         azos_drv_actuator::pwm::PWM_MAX_CHANNELS,
+        azos_drv_bus::i2c::I2C_BUS_COUNT);
+    // A DesignWare I2C off the VisionFive 2 (the Pi 5, a PC): the GPIO and
+    // PWM are still the simulations, the buses are what bound.
+    #[cfg(all(feature = "i2c-dw", not(feature = "vf2")))]
+    kprintln!("[HW] GPIO ({} pins), PWM ({} ch) simulated, I2C {} of {} buses bound",
+        azos_drv_gpio::gpio::GPIO_MAX_PINS,
+        azos_drv_actuator::pwm::PWM_MAX_CHANNELS,
+        azos_drv_bus::i2c::i2c_buses_attached(),
         azos_drv_bus::i2c::I2C_BUS_COUNT);
 }
 

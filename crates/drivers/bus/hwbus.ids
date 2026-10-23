@@ -4,12 +4,48 @@
 # The ids this crate's native drivers answer to, for the hardware bus
 # (crates/drivers/hwbus; see crates/drivers/sys/hwbus.ids for the format).
 #
-# JH7110 DesignWare APB I2C controllers and the SpacemiT K1's (TWSI,
-# `spacemit,k1-i2c`): every node the tree enables binds, in tree order, and
-# becomes bus 0, 1, ... (crates/drivers/bus/src/i2c.rs).
+# The Synopsys DesignWare APB I2C controllers (the JH7110's, the Raspberry
+# Pi 5 RP1's) and the SpacemiT K1's (TWSI, `spacemit,k1-i2c`): every node
+# the tree enables binds, in tree order, and becomes bus 0, 1, ...
+# (crates/drivers/bus/src/i2c.rs). The RP1's nodes sit behind the Pi 5's PCIe
+# bridge; the tree's `ranges` place them (crates/drivers/dtb).
 # `boot`: the kernel's own sensor tasks and the INA219 monitor drive the
 # buses, so a topology cannot refuse them and ring 3 is never handed a
 # window; the bring-up they had before the bus was unconditional too.
 
-i2c              dt:snps,designware-i2c   boot   if=BOARD_VF2
+i2c              dt:snps,designware-i2c   boot   if=I2C_DESIGNWARE
 i2c              dt:spacemit,k1-i2c       boot   if=BOARD_K1
+
+# Intel LPSS I2C: a DesignWare controller in BAR 0 of a PCI function, behind
+# the LPSS private registers (crates/drivers/bus/src/i2c_dw.rs). The driver
+# name carries the controller's input clock, which Linux keys by PCI id too
+# (drivers/mfd/intel-lpss-pci.c: `spt_i2c_info` 120 MHz, `cnl_i2c_info`
+# 216 MHz). Ids from that table, not checked against a local copy (the
+# Linux tree here has no drivers/mfd sources); later PCHs (Tiger Lake on)
+# are not listed: their clock is not known here. They bind in the PCI stage
+# and number after the tree's buses.
+i2c-lpss-spt     pci:8086:9d60   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:9d61   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:9d62   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:9d63   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:9d64   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:9d65   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:a160   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:a161   boot   if=I2C_DESIGNWARE
+i2c-lpss-spt     pci:8086:a162   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:9de8   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:9de9   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:9dea   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:9deb   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:9dc5   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:9dc6   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:a368   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:a369   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:a36a   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:a36b   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:02e8   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:02e9   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:02ea   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:02eb   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:02c5   boot   if=I2C_DESIGNWARE
+i2c-lpss-cnl     pci:8086:02c6   boot   if=I2C_DESIGNWARE

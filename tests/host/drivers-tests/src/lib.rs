@@ -4533,6 +4533,222 @@ mod i2c_txn_model {
     }
 }
 
+// ── i2c_dw.rs: the DesignWare controller's identity and bring-up ──────────────
+//
+// `init_master` runs here against a register file: IC_COMP_TYPE /
+// IC_COMP_PARAM_1 / IC_COMP_VERSION as the IP reports them, IC_ENABLE_STATUS
+// following IC_ENABLE (or stuck), every write recorded. The expected counts
+// are worked by hand from the formulas `i2c_dw.rs` cites (Linux
+// i2c-designware-common.c, the "DW default" condition).
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/bus/src/i2c_dw.rs"]
+mod i2c_dw;
+
+#[cfg(test)]
+mod i2c_dw_tests {
+    use super::i2c_dw::*;
+    use super::i2c_txn::{DwRegs, IC_ENABLE, IC_ENABLE_STATUS, IC_INTR_MASK};
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    /// A DesignWare 2.01a with 32-entry FIFOs, fast mode, encoded parameters.
+    const PARAM_32_FAST: u32 = (31 << 16) | (31 << 8) | (1 << 7) | (2 << 2) | 2;
+    const VERSION_201A: u32 = 0x3230_312A;
+
+    struct Regs {
+        r: RefCell<BTreeMap<usize, u32>>,
+        writes: RefCell<Vec<(usize, u32)>>,
+        /// IC_ENABLE_STATUS stays set whatever IC_ENABLE says.
+        stuck: bool,
+    }
+
+    impl Regs {
+        fn new(param1: u32) -> Self {
+            let mut r = BTreeMap::new();
+            r.insert(IC_COMP_TYPE, COMP_TYPE_DW);
+            r.insert(IC_COMP_PARAM_1, param1);
+            r.insert(IC_COMP_VERSION, VERSION_201A);
+            r.insert(IC_ENABLE, 1);
+            Regs { r: RefCell::new(r), writes: RefCell::new(vec![]), stuck: false }
+        }
+        fn get(&self, off: usize) -> u32 {
+            *self.r.borrow().get(&off).unwrap_or(&0)
+        }
+        fn set(&self, off: usize, v: u32) {
+            self.r.borrow_mut().insert(off, v);
+        }
+        fn wrote(&self, off: usize) -> bool {
+            self.writes.borrow().iter().any(|&(o, _)| o == off)
+        }
+    }
+
+    impl DwRegs for Regs {
+        fn rd(&self, off: usize) -> u32 {
+            match off {
+                IC_ENABLE_STATUS => (self.stuck || self.get(IC_ENABLE) & 1 != 0) as u32,
+                _ => self.get(off),
+            }
+        }
+        fn wr(&self, off: usize, val: u32) {
+            self.writes.borrow_mut().push((off, val));
+            self.set(off, val);
+        }
+    }
+
+    fn timing(clk: u64, bus_hz: u32) -> Timing {
+        Timing { bus_hz, ..Timing::with_clock(Some(clk)) }
+    }
+
+    /// Standard mode at 100 MHz with the 300 ns default fall:
+    /// HCNT = round(100000 kHz * 4.3 us) - 3 = 427, LCNT = round(100000 * 5.0) - 1
+    /// = 499. Canary: the counts written before this front (487/512, "100 kHz
+    /// at 100 MHz" as a constant whatever the clock) fail it, and the 200 MHz
+    /// case below fails them by a factor of two.
+    #[test]
+    fn standard_mode_counts_follow_the_clock() {
+        let r = Regs::new(PARAM_32_FAST);
+        let s = init_master(&r, &timing(100_000_000, 100_000), 8).unwrap();
+        assert_eq!((s.mode, s.counts), (Mode::Standard, Counts::Computed));
+        assert_eq!((r.get(IC_SS_SCL_HCNT), r.get(IC_SS_SCL_LCNT)), (427, 499));
+        assert_eq!(r.get(IC_CON), CON_MASTER | CON_SPEED_STD | CON_RESTART_EN | CON_SLAVE_DISABLE);
+        assert_eq!(r.get(IC_CON), 0x63);
+        assert_eq!(r.get(IC_ENABLE) & 1, 0, "left disabled: i2c_txn enables per transaction");
+        assert_eq!(r.get(IC_INTR_MASK), 0);
+    }
+
+    /// The RP1's node: `clk_sys` 200 MHz, `i2c-scl-falling-time-ns = <100>`
+    /// (the SDA fall defaults to the SCL one), at 100 kHz and 400 kHz.
+    /// SS: HCNT = round(200000 * 4.1 us) - 3 = 817, LCNT = round(200000 * 4.8) - 1 = 959.
+    /// FS: HCNT = round(200000 * 0.7) - 3 = 137, LCNT = round(200000 * 1.4) - 1 = 279.
+    #[test]
+    fn the_rp1_node_gives_its_fall_time_and_rate() {
+        let t = Timing { scl_fall_ns: Some(100), ..timing(200_000_000, 100_000) };
+        let r = Regs::new(PARAM_32_FAST);
+        init_master(&r, &t, 8).unwrap();
+        assert_eq!((r.get(IC_SS_SCL_HCNT), r.get(IC_SS_SCL_LCNT)), (817, 959));
+        let r = Regs::new(PARAM_32_FAST);
+        let s = init_master(&r, &Timing { bus_hz: 400_000, ..t }, 8).unwrap();
+        assert_eq!(s.mode, Mode::Fast);
+        assert_eq!((r.get(IC_FS_SCL_HCNT), r.get(IC_FS_SCL_LCNT)), (137, 279));
+        assert_eq!(r.get(IC_CON) & 0x6, CON_SPEED_FAST);
+        assert!(!r.wrote(IC_SS_SCL_HCNT), "fast mode programs the FS counts only");
+    }
+
+    /// The VisionFive 2's i2c5 node: 510 ns falls, a 300 ns SDA hold, on a
+    /// 1.11a-or-later IP: the hold is cycles of ic_clk with a non-zero RX
+    /// hold (bits 23:16) forced. At 50 MHz: 300 ns = 15 cycles, 0x1_000F.
+    #[test]
+    fn the_sda_hold_is_written_in_cycles_on_an_ip_that_has_it() {
+        let t = Timing { scl_fall_ns: Some(510), sda_fall_ns: Some(510), sda_hold_ns: Some(300), ..timing(50_000_000, 100_000) };
+        let r = Regs::new(PARAM_32_FAST);
+        let s = init_master(&r, &t, 8).unwrap();
+        assert_eq!(s.sda_hold, Some(0x1_000F));
+        assert_eq!(r.get(IC_SDA_HOLD), 0x1_000F);
+        // An IP before 1.11a has no programmable hold: left alone.
+        let r = Regs::new(PARAM_32_FAST);
+        r.set(IC_COMP_VERSION, 0x3131_3029);
+        assert_eq!(init_master(&r, &t, 8).unwrap().sda_hold, None);
+        assert!(!r.wrote(IC_SDA_HOLD));
+    }
+
+    /// Fast mode plus shares the FS registers with its own timing
+    /// (0.26 / 0.5 us): at 100 MHz, HCNT = round(100000 * 0.56) - 3 = 53,
+    /// LCNT = round(100000 * 0.8) - 1 = 79.
+    #[test]
+    fn fast_mode_plus_uses_its_own_timing() {
+        let r = Regs::new(PARAM_32_FAST);
+        let s = init_master(&r, &timing(100_000_000, 1_000_000), 8).unwrap();
+        assert_eq!(s.mode, Mode::FastPlus);
+        assert_eq!((r.get(IC_FS_SCL_HCNT), r.get(IC_FS_SCL_LCNT)), (53, 79));
+    }
+
+    /// The databook's minimums hold at a slow clock; a clock the 16-bit
+    /// registers cannot count is refused, not truncated.
+    #[test]
+    fn counts_stay_inside_the_registers() {
+        let t = Timing::with_clock(Some(1_000_000));
+        assert_eq!(counts_for(Mode::FastPlus, 1_000_000, &t), Some((6, 8)));
+        let r = Regs::new(PARAM_32_FAST);
+        assert_eq!(init_master(&r, &timing(20_000_000_000, 100_000), 8), Err(InitError::CountsOutOfRange));
+    }
+
+    /// A window that is not a DesignWare I2C (a wrong `reg`, a BAR of
+    /// something else) is refused before any write. Canary: without the
+    /// IC_COMP_TYPE check the bring-up writes IC_ENABLE and IC_CON into it.
+    #[test]
+    fn a_window_that_is_not_a_designware_i2c_is_not_written() {
+        let r = Regs::new(PARAM_32_FAST);
+        r.set(IC_COMP_TYPE, 0x1234_5678);
+        assert_eq!(init_master(&r, &timing(100_000_000, 100_000), 8), Err(InitError::NotDesignWare(0x1234_5678)));
+        assert!(r.writes.borrow().is_empty(), "wrote {:?}", r.writes.borrow());
+    }
+
+    /// The RX depth is the IP's when it encodes one, the fallback otherwise.
+    #[test]
+    fn the_fifo_depth_comes_from_the_ip() {
+        let r = Regs::new(PARAM_32_FAST);
+        let s = init_master(&r, &timing(100_000_000, 100_000), 8).unwrap();
+        assert_eq!((s.rx_depth, s.depth_from_ip), (32, true));
+        assert_eq!(fifo_depths((15 << 16) | (7 << 8)), Some((8, 16)));
+        let r = Regs::new(0);
+        let s = init_master(&r, &timing(100_000_000, 100_000), 8).unwrap();
+        assert_eq!((s.rx_depth, s.depth_from_ip), (8, false));
+    }
+
+    /// No clock from the firmware: the counts the controller holds (the
+    /// firmware's, or the integrator's reset values) are kept and reported;
+    /// a controller that holds none is refused.
+    #[test]
+    fn an_unknown_clock_keeps_the_controllers_counts() {
+        let r = Regs::new(PARAM_32_FAST);
+        r.set(IC_SS_SCL_HCNT, 0x190);
+        r.set(IC_SS_SCL_LCNT, 0x1D6);
+        let s = init_master(&r, &Timing::with_clock(None), 8).unwrap();
+        assert_eq!((s.counts, s.hcnt, s.lcnt), (Counts::Kept, 0x190, 0x1D6));
+        assert!(!r.wrote(IC_SS_SCL_HCNT) && !r.wrote(IC_SS_SCL_LCNT));
+        let r = Regs::new(PARAM_32_FAST);
+        assert_eq!(init_master(&r, &Timing::with_clock(None), 8), Err(InitError::CountsUnknown));
+    }
+
+    /// Only the specification's rates have a timing; the IP's own ceiling
+    /// is respected.
+    #[test]
+    fn rates_without_a_timing_or_above_the_ip_are_refused() {
+        for hz in [50_000, 3_400_000] {
+            let r = Regs::new(PARAM_32_FAST);
+            assert_eq!(init_master(&r, &timing(100_000_000, hz), 8), Err(InitError::UnsupportedRate(hz)));
+        }
+        let r = Regs::new((31 << 16) | (31 << 8) | (1 << 2));
+        assert_eq!(init_master(&r, &timing(100_000_000, 400_000), 8), Err(InitError::RateAboveIp(400_000)));
+        assert!(init_master(&r, &timing(100_000_000, 100_000), 8).is_ok());
+    }
+
+    /// A controller that stays enabled (mid-transfer on a stuck bus) is not
+    /// reprogrammed: the counts are writable only while it is disabled.
+    #[test]
+    fn a_controller_that_stays_enabled_is_refused() {
+        let mut r = Regs::new(PARAM_32_FAST);
+        r.stuck = true;
+        assert_eq!(init_master(&r, &timing(100_000_000, 100_000), 8), Err(InitError::StillEnabled));
+        assert!(!r.wrote(IC_CON));
+    }
+
+    /// Intel LPSS: an I2C function (CAPS type 0) is put in reset and
+    /// released (function and iDMA); a UART or SPI function is refused
+    /// untouched.
+    #[test]
+    fn an_lpss_function_is_released_only_when_it_is_an_i2c() {
+        let r = Regs::new(PARAM_32_FAST);
+        r.set(LPSS_PRIV + 0xFC, 0);
+        assert_eq!(lpss_release(&r), Ok(()));
+        assert_eq!(*r.writes.borrow(), vec![(LPSS_PRIV + 0x04, 0), (LPSS_PRIV + 0x04, 0x7)]);
+        let r = Regs::new(PARAM_32_FAST);
+        r.set(LPSS_PRIV + 0xFC, 1 << 4);
+        assert_eq!(lpss_release(&r), Err(1));
+        assert!(r.writes.borrow().is_empty());
+    }
+}
+
 // The QEMU simulation's queued read (i2c.rs `sim::i2c_submit_read`): it
 // completes at submit, stamped with the caller's clock, through the same
 // per-bus completion slots the DesignWare path fills.

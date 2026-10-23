@@ -92,7 +92,7 @@ vf2 = [
     "azos_drv_block/vf2", "azos_drv_net/vf2", "azos_drv_sensor/vf2",
     "azos_drv_actuator/vf2", "azos_drv_dmac/vf2",
     "azos_robot_drivers?/vf2", "azos_ota/vf2", "link-provisioning-enforced",
-    "azos_crypto/no-bitmanip",
+    "azos_crypto/no-bitmanip", "i2c-dw",
 ]
 # Composes `rvv` rather than re-listing its members. It used to hand-copy four
 # of the five (`arch`, `shell`, `ml`, `camera`) and drop two things: the
@@ -118,7 +118,12 @@ k1 = [
     "azos_robot_drivers?/k1", "azos_ota/k1", "link-provisioning-enforced",
 ]
 # Raspberry Pi 5 (BOARD_RPI5): `make rpi5`, kernel8.img for the Pi firmware.
-rpi5 = ["azos_robot_drivers?/rpi5"]
+rpi5 = ["azos_robot_drivers?/rpi5", "i2c-dw"]
+# Kconfig I2C_DESIGNWARE: the Synopsys DesignWare I2C controllers (the JH7110's,
+# the RP1's, Intel LPSS) instead of the QEMU simulation. The two boards whose
+# I2C is this IP select it (Kconfig.platform), and their features imply it, so
+# a board build never runs the simulated sensors.
+i2c-dw = ["azos_drv_bus/i2c-dw"]
 rvv  = ["azos_arch/rvv", "azos_camera?/rvv"]
 # `kernel/src/boot/inspect_metrics.rs`: the canary build puts a task ID in a
 # public wake row. Declared for the lint and the compiler's cfg check; only

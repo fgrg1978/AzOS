@@ -114,6 +114,7 @@ fn wants_resources(driver: &str) -> bool {
     feature = "vf2",
     feature = "k1",
     feature = "wdt-sbsa",
+    feature = "i2c-dw",
     all(feature = "soc-k1", feature = "thermal"),
     all(feature = "rpi-firmware", target_arch = "aarch64"),
     all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
@@ -156,23 +157,123 @@ fn map_reg(dev: &Device, base: u64, size: u64) -> Result<usize, ProbeError> {
 static I2C_WINDOWS: [core::sync::atomic::AtomicUsize; azos_drv_bus::i2c::I2C_BUS_COUNT] =
     [const { core::sync::atomic::AtomicUsize::new(0) }; azos_drv_bus::i2c::I2C_BUS_COUNT];
 
-/// The rate in Hz the tree assigns to the clock `name` of node `n`: the
-/// `assigned-clock-rates` cell of the `assigned-clocks` entry that is the same
-/// clock as the `clocks` entry called `name`. What the SoC bind would have set
-/// had the provider modelled the clock.
-#[cfg(all(feature = "vf2", feature = "soc"))]
-fn assigned_rate(fdt: &azos_soc::Fdt<'_>, n: azos_soc::NodeId, name: &str) -> Option<u64> {
-    use azos_soc::consumer::{self, Sel};
-    let want = consumer::lookup(fdt, n, "clocks", "clock-names", "#clock-cells", Sel::Name(name)).ok()?;
-    let rates = fdt.prop(n, "assigned-clock-rates")?;
-    (0..consumer::count(fdt, n, "assigned-clocks", "#clock-cells").ok()?).find_map(|i| {
-        let e = consumer::slot(fdt, n, "assigned-clocks", "#clock-cells", i).ok()??;
-        (e.provider == want.provider && e.spec == want.spec)
-            .then(|| azos_soc::fdt::cell(rates, i))
+/// The rate in Hz the tree states for the clock `sel` of node `n`, for a
+/// provider the SoC frameworks do not model: the `assigned-clock-rates` cell
+/// of the `assigned-clocks` entry that is the same clock, on the consumer's
+/// node or on the provider's (the RP1's clock block assigns its own `clk_sys`),
+/// else the `clock-frequency` of a `fixed-clock` provider. What the SoC bind
+/// would have set had the provider modelled the clock.
+#[cfg(all(any(feature = "vf2", feature = "i2c-dw"), feature = "soc"))]
+fn tree_clock_rate(fdt: &azos_soc::Fdt<'_>, n: azos_soc::NodeId, sel: azos_soc::consumer::Sel<'_>) -> Option<u64> {
+    use azos_soc::consumer;
+    let want = consumer::lookup(fdt, n, "clocks", "clock-names", "#clock-cells", sel).ok()?;
+    let assigned = |at: azos_soc::NodeId| -> Option<u64> {
+        let rates = fdt.prop(at, "assigned-clock-rates")?;
+        (0..consumer::count(fdt, at, "assigned-clocks", "#clock-cells").ok()?).find_map(|i| {
+            let e = consumer::slot(fdt, at, "assigned-clocks", "#clock-cells", i).ok()??;
+            (e.provider == want.provider && e.spec == want.spec)
+                .then(|| azos_soc::fdt::cell(rates, i))
+                .flatten()
+                .filter(|&hz| hz != 0)
+                .map(u64::from)
+        })
+    };
+    let fixed = || {
+        fdt.is_compatible(want.provider, "fixed-clock")
+            .then(|| fdt.prop(want.provider, "clock-frequency").and_then(|v| azos_soc::fdt::cell(v, 0)))
             .flatten()
             .filter(|&hz| hz != 0)
             .map(u64::from)
-    })
+    };
+    assigned(n).or_else(|| assigned(want.provider)).or_else(fixed)
+}
+
+/// What the tree says of a DesignWare I2C node's timing: its clock's rate
+/// (the clock framework's when it models the clock, else [`tree_clock_rate`];
+/// the JH7110 provider's table has no I2C APB clock, `soc/src/jh7110/clk.rs`,
+/// the RP1's has no provider at all), `clock-frequency` (the bus rate) and
+/// the I2C binding's fall and hold times. A node outside the tree, or no SoC
+/// frameworks: nothing but the defaults, and the controller's own counts are
+/// kept (`i2c_dw::Counts::Kept`).
+#[cfg(feature = "i2c-dw")]
+fn dw_i2c_timing(dev: &Device) -> azos_drv_bus::i2c_dw::Timing {
+    use azos_drv_bus::i2c_dw::Timing;
+    #[cfg(feature = "soc")]
+    if let Some(node) = dev.dt_node {
+        let facts = super::soc::with(|fdt, soc, bus, _| {
+            use azos_drv_bus::i2c_dw::DEFAULT_BUS_HZ;
+            use azos_soc::consumer::Sel;
+            let n = azos_soc::NodeId(node);
+            let cell = |name: &str| fdt.prop(n, name).and_then(|v| azos_soc::fdt::cell(v, 0));
+            let live = soc.clocks.get(fdt, n, Sel::Index(0)).ok().and_then(|c| soc.clocks.rate(bus, c).ok());
+            Timing {
+                ic_clk_hz: live.or_else(|| tree_clock_rate(fdt, n, Sel::Index(0))),
+                bus_hz: cell("clock-frequency").unwrap_or(DEFAULT_BUS_HZ),
+                scl_fall_ns: cell("i2c-scl-falling-time-ns"),
+                sda_fall_ns: cell("i2c-sda-falling-time-ns"),
+                sda_hold_ns: cell("i2c-sda-hold-time-ns"),
+            }
+        });
+        if let Some(t) = facts {
+            return t;
+        }
+    }
+    let _ = dev;
+    Timing::with_clock(None)
+}
+
+/// An I2C controller node of the tree, its window mapped at `base`: a
+/// DesignWare one with its node's timing facts (`dw_i2c_timing`), a K1 one
+/// recorded by window for the PMIC's bus (`I2C_WINDOWS`).
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
+fn attach_i2c_node(dev: &Device, base: usize) -> Result<(), ProbeError> {
+    #[cfg(feature = "i2c-dw")]
+    let cfg = dw_i2c_timing(dev);
+    #[cfg(feature = "k1")]
+    let cfg = azos_drv_bus::i2c::BusConfig;
+    let _bus = attach_i2c(dev.name.as_str(), dev.base, base, &cfg)?;
+    #[cfg(all(feature = "k1", feature = "soc"))]
+    if let Some(w) = I2C_WINDOWS.get(_bus as usize) {
+        w.store(dev.base as usize, core::sync::atomic::Ordering::Release);
+    }
+    Ok(())
+}
+
+/// An I2C controller, its window mapped at `base`, to the driver with what
+/// the binding knows of it (`timing`; the K1 takes nothing), and the boot
+/// line that says which bus it became.
+#[cfg(any(feature = "i2c-dw", feature = "k1"))]
+fn attach_i2c(name: &str, phys: u64, base: usize, cfg: &azos_drv_bus::i2c::BusConfig) -> Result<u8, ProbeError> {
+    use azos_drv_bus::i2c::AttachError;
+    match azos_drv_bus::i2c::i2c_attach(base, cfg) {
+        Ok((bus, found)) => {
+            #[cfg(feature = "i2c-dw")]
+            {
+                use azos_drv_bus::i2c_dw::{Counts, Mode};
+                let khz = match found.mode { Mode::Standard => 100, Mode::Fast => 400, Mode::FastPlus => 1000 };
+                let fifo = if found.depth_from_ip { "" } else { " (Kconfig: the IP reports none)" };
+                match (found.counts, cfg.ic_clk_hz) {
+                    (Counts::Computed, Some(hz)) => kprintln!(
+                        "[I2C] bus {} on {} ({:#x}): DesignWare {:#x}, {} kHz, ic_clk {} kHz, SCL counts {}/{}, RX FIFO {}{}",
+                        bus, name, phys, found.version, khz, hz / 1000, found.hcnt, found.lcnt, found.rx_depth, fifo),
+                    _ => kprintln!(
+                        "[I2C] bus {} on {} ({:#x}): DesignWare {:#x}, {} kHz, ic_clk unknown: SCL counts {}/{} kept, RX FIFO {}{}",
+                        bus, name, phys, found.version, khz, found.hcnt, found.lcnt, found.rx_depth, fifo),
+                }
+            }
+            #[cfg(feature = "k1")]
+            {
+                let () = found;
+                kprintln!("[I2C] bus {} on {} ({:#x})", bus, name, phys);
+            }
+            Ok(bus)
+        }
+        Err(AttachError::Taken) => Err(ProbeError::Busy),
+        Err(AttachError::Refused(e)) => {
+            azos_drv_sys::kerr!("[I2C] {} ({:#x}) not driven: {:?}", name, phys, e);
+            Err(ProbeError::Failed)
+        }
+    }
 }
 
 /// A device-tree watchdog: the VF2's WDT-L or an SBSA Generic Watchdog,
@@ -260,7 +361,7 @@ fn attach_dwmshc(dev: &Device) -> Result<(), ProbeError> {
         let n = azos_soc::NodeId(node);
         let cell = |name: &str| fdt.prop(n, name).and_then(|v| azos_soc::fdt::cell(v, 0));
         let live = soc.clocks.get(fdt, n, azos_soc::consumer::Sel::Name("ciu")).ok().and_then(|c| soc.clocks.rate(bus, c).ok());
-        (fdt.prop(n, "non-removable").is_some(), cell("fifo-depth"), live.or_else(|| assigned_rate(fdt, n, "ciu")))
+        (fdt.prop(n, "non-removable").is_some(), cell("fifo-depth"), live.or_else(|| tree_clock_rate(fdt, n, azos_soc::consumer::Sel::Name("ciu"))))
     });
     // Without the SoC frameworks (Kconfig SOC_FRAMEWORKS, on by default for
     // this board) there is no tree to read the facts from.
@@ -386,6 +487,65 @@ impl azos_soc::I2cBus for PmicI2c {
     }
 }
 
+/// The input clock of an Intel LPSS I2C function, by the driver name its PCI
+/// id carries in `hwbus.ids` (the Linux `intel-lpss-pci.c` platform info the
+/// id names): Sunrise Point's 120 MHz, Cannon Lake's (and Comet Lake's)
+/// 216 MHz.
+#[cfg(all(feature = "i2c-dw", feature = "pci"))]
+fn lpss_ic_clk_hz(driver: &str) -> Option<u64> {
+    match driver {
+        "i2c-lpss-spt" => Some(120_000_000),
+        "i2c-lpss-cnl" => Some(216_000_000),
+        _ => None,
+    }
+}
+
+/// An Intel LPSS I2C function: its BAR 0 mapped (`map_bars`, as the other PCI
+/// drivers), the LPSS private registers checked to name an I2C and the
+/// function released from reset (`i2c_dw::lpss_release`), then the DesignWare
+/// controller at the BAR's start attached as the next bus, at the clock the
+/// id names and the I2C binding's defaults (100 kHz): an ACPI companion's
+/// timing (`SSCN`/`FMCN`) and its devices' rates need the DSDT, which the
+/// kernel does not read. Polled by the `i2c-svc` task; the function's
+/// interrupt is not routed.
+#[cfg(all(feature = "i2c-dw", feature = "pci"))]
+pub(crate) fn attach_lpss_i2c<C: azos_pci::ConfigSpace>(
+    driver: &str,
+    dev: &Device,
+    cfg: &mut C,
+    f: &azos_pci::FunctionInfo,
+    window: &mut azos_pci::BarWindow,
+) -> Result<(), ProbeError> {
+    use azos_drv_bus::i2c_dw::{lpss_release, Timing};
+    let Some(clk) = lpss_ic_clk_hz(driver) else { return Err(ProbeError::NoSuchDriver) };
+    let bars = azos_drv_virtio::virtio::pci::msix_selftest::map_bars(cfg, f, window).map_err(|e| {
+        azos_drv_sys::kerr!("[I2C] LPSS {} not driven: {:?}", f.bdf, e);
+        ProbeError::Failed
+    })?;
+    let base = bars[0];
+    if base == 0 {
+        azos_drv_sys::kerr!("[I2C] LPSS {} not driven: BAR 0 is not a memory BAR", f.bdf);
+        return Err(ProbeError::Failed);
+    }
+    struct Bar0(usize);
+    impl azos_drv_bus::i2c_txn::DwRegs for Bar0 {
+        fn rd(&self, off: usize) -> u32 {
+            // SAFETY: BAR 0 was just mapped (`map_bars`, at least a page), and
+            // `off` is an LPSS private register inside it.
+            unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+        }
+        fn wr(&self, off: usize, val: u32) {
+            // SAFETY: as `rd`.
+            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
+        }
+    }
+    if let Err(ty) = lpss_release(&Bar0(base)) {
+        azos_drv_sys::kerr!("[I2C] LPSS {} not driven: its CAPS name type {}, not an I2C", f.bdf, ty);
+        return Err(ProbeError::Failed);
+    }
+    attach_i2c(dev.name.as_str(), base as u64, base, &Timing::with_clock(Some(clk))).map(|_| ())
+}
+
 /// What a PCI driver needs besides the device: the configuration space, the
 /// BAR window, the MSI route. The PCI bring-up in `kernel_main` owns them and
 /// lends them for the stage that binds PCI drivers.
@@ -483,19 +643,10 @@ impl Drivers for KernelDrivers<'_> {
             #[cfg(feature = "vf2")]
             "dw-mshc" => attach_dwmshc(dev),
             // One probe per controller the tree enables; the bus number is
-            // the order they bind in (`i2c_attach`).
-            #[cfg(any(feature = "vf2", feature = "k1"))]
-            "i2c" => match azos_drv_bus::i2c::i2c_attach(map_window(dev)?) {
-                Ok(bus) => {
-                    #[cfg(all(feature = "k1", feature = "soc"))]
-                    if let Some(w) = I2C_WINDOWS.get(bus as usize) {
-                        w.store(dev.base as usize, core::sync::atomic::Ordering::Release);
-                    }
-                    kprintln!("[I2C] bus {} on {} ({:#x})", bus, dev.name.as_str(), dev.base);
-                    Ok(())
-                }
-                Err(_) => Err(ProbeError::Busy),
-            },
+            // the order they bind in (`i2c_attach`). A DesignWare node brings
+            // its timing facts (`dw_i2c_timing`).
+            #[cfg(any(feature = "i2c-dw", feature = "k1"))]
+            "i2c" => attach_i2c_node(dev, map_window(dev)?),
             // The thermal sensors: the kernel's thermal task reads them
             // (`boot::thermal`, which keeps the window). The VisionFive 2's
             // `sfctemp` is powered up and left converting; the Raspberry Pi's
@@ -526,7 +677,8 @@ impl Drivers for KernelDrivers<'_> {
             #[cfg(feature = "virtio-snd")]
             "virtio-snd" => azos_drv_virtio::virtio::snd::init_at(base).map_err(|_| ProbeError::Failed),
             #[cfg(feature = "pci")]
-            "nvme" | "ahci" | "virtio-net-pci" | "virtio-gpu-pci" | "virtio-snd-pci" | "e1000e" | "igc" | "rp1" => match self.pci.as_mut() {
+            "nvme" | "ahci" | "virtio-net-pci" | "virtio-gpu-pci" | "virtio-snd-pci" | "e1000e" | "igc" | "rp1"
+            | "i2c-lpss-spt" | "i2c-lpss-cnl" => match self.pci.as_mut() {
                 Some(p) => p.probe(driver, dev),
                 None => Err(ProbeError::Failed),
             },

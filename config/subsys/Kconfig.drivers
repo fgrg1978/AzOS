@@ -831,6 +831,31 @@ config CAMERA_TX_CAPTURE_PERIOD_MS
 
 menu "I2C bus transactions"
 
+config I2C_DESIGNWARE
+    # cargo-feature: i2c-dw
+    bool "I2C: Synopsys DesignWare controllers (VisionFive 2, Raspberry Pi 5 RP1, Intel LPSS)"
+    depends on !BOARD_K1
+    default n
+    help
+      Kernel feature `i2c-dw` (crates/drivers/bus/src/i2c_dw.rs and
+      i2c_txn.rs). Drives every Synopsys DesignWare APB I2C controller the
+      hardware bus finds: a device-tree node `snps,designware-i2c` (the
+      JH7110's, and the RP1's behind the Raspberry Pi 5's PCIe), and an
+      Intel LPSS I2C function by PCI id (crates/drivers/bus/hwbus.ids). Each
+      is checked to be one (IC_COMP_TYPE) and brought up as a master from
+      what the firmware says: the input clock (the node's clock, the PCI
+      id's), the bus rate (`clock-frequency`: 100 kHz, 400 kHz or 1 MHz),
+      the fall and SDA hold times; the FIFO depth and fastest mode from the
+      IP's IC_COMP_PARAM_1. With no input clock known, the SCL counts the
+      controller holds are kept and the boot line says so. Selected by
+      BOARD_VF2 and BOARD_RPI5 (their I2C is this IP); on a PC
+      (BOARD_GENERIC) it is the choice for an Intel board. It replaces the
+      QEMU simulation of the IMU, barometer and INA219: QEMU has no
+      DesignWare controller, so a QEMU build with it has no I2C device. AMD's
+      FCH controllers (ACPI `AMDI0010`) are the same IP but are found only
+      in the DSDT, which the kernel does not walk yet. Board validation
+      pending.
+
 config I2C_TXN_QUEUE_DEPTH
     int "I2C: queued transactions per bus"
     range 2 64
@@ -851,11 +876,14 @@ config I2C_DW_RX_FIFO_DEPTH
     range 2 256
     default 8
     help
-      Read commands in flight never exceed this, so the controller's
+      The RX FIFO depth of a DesignWare controller built without its
+      encoded parameters (IC_COMP_PARAM_1 reads 0); every other one reports
+      its own depth (bits 15:8, plus one), which is used instead. Read
+      commands in flight never exceed the depth, so the controller's
       receive FIFO cannot overflow; it also sets the RX interrupt
-      threshold. Must not exceed the hardware's depth (IC_COMP_PARAM_1
-      bits 15:8, plus one): a larger value lets reads overrun the FIFO.
-      Board validation pending (VisionFive 2): QEMU has no DesignWare I2C.
+      threshold. Must not exceed the hardware's depth: a larger value lets
+      reads overrun the FIFO. Board validation pending: QEMU has no
+      DesignWare I2C.
 
 config I2C_K1_FAST_MODE
     bool "I2C: SpacemiT K1 controllers in fast mode (400 kHz)"

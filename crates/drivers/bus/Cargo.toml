@@ -10,6 +10,10 @@ publish = false
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []
+# Kconfig I2C_DESIGNWARE: the Synopsys DesignWare I2C controllers (the
+# VisionFive 2's, the Raspberry Pi 5 RP1's, Intel LPSS) instead of the QEMU
+# simulation (src/i2c.rs).
+i2c-dw = []
 
 [dependencies]
 azos_common = { workspace = true }

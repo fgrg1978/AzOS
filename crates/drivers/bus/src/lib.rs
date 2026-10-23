@@ -14,6 +14,12 @@ pub mod i2c_driver;
 pub mod i2c;
 pub mod i2c_txn;
 
+// The DesignWare controller's identity check and bring-up (Kconfig
+// I2C_DESIGNWARE): what `i2c.rs` attaches a JH7110, RP1 or Intel LPSS
+// controller with.
+#[cfg(feature = "i2c-dw")]
+pub mod i2c_dw;
+
 // SpacemiT K1 I2C master: the byte-at-a-time state machine `i2c.rs` drives
 // on the K1 board.
 #[cfg(feature = "k1")]

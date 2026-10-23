@@ -1187,6 +1187,10 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                     #[cfg(feature = "wdt-sp5100")]
                     "wdt" => boot::hwbus::attach_sp5100(f.vendor, f.device,
                         azos_pci::ConfigSpace::read32(&*self.cfg, f.bdf, azos_pci::OFF_CLASS_REV) as u8),
+                    // Kconfig I2C_DESIGNWARE: an Intel LPSS I2C function, a
+                    // DesignWare controller in its BAR 0; polled, no MSI.
+                    #[cfg(feature = "i2c-dw")]
+                    "i2c-lpss-spt" | "i2c-lpss-cnl" => boot::hwbus::attach_lpss_i2c(driver, dev, self.cfg, f, self.window),
                     _ => Err(ProbeError::NoSuchDriver),
                 }
             }
@@ -1225,6 +1229,10 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // arms it (`watchdog::hw_init`).
         #[cfg(feature = "wdt-sp5100")]
         boot::hwbus::bind_pci(&["wdt"], &mut pci_bind);
+        // Kconfig I2C_DESIGNWARE: the Intel LPSS I2C functions, buses from 0
+        // in PCI order (a PC has no device tree to bind them from).
+        #[cfg(feature = "i2c-dw")]
+        boot::hwbus::bind_pci(&["i2c-lpss-spt", "i2c-lpss-cnl"], &mut pci_bind);
 
         #[cfg(feature = "mmc-flush-smoke")]
         mmc_flush_smoke(&mut cfg, &funcs[..pci_n], &mut window);
@@ -2471,10 +2479,11 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         azos_sched::RT_MOTOR_PRIORITY, place::pin(place::SENSING)); // RT priority
     #[cfg(feature = "use-robot")]
     azos_sched::rt::exempt_from_band_cap(imu);
-    // Wave 15 (S1): the imu task only queues its reads; on the VisionFive 2
-    // and the K1 this task runs the controller's steps (DesignWare, SpacemiT;
-    // board validation pending; the QEMU simulation completes at submit).
-    #[cfg(all(feature = "use-robot", any(feature = "vf2", feature = "k1")))]
+    // Wave 15 (S1): the imu task only queues its reads; where a controller
+    // driver is compiled (DesignWare: VisionFive 2, Pi 5, Intel LPSS; the
+    // K1's SpacemiT) this task runs the controller's steps (board validation
+    // pending; the QEMU simulation completes at submit).
+    #[cfg(all(feature = "use-robot", any(feature = "i2c-dw", feature = "k1")))]
     {
         install_i2c_service_kick();
         azos_sched::task_create("i2c-svc", i2c_service_task, 0,

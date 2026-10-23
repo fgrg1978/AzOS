@@ -46,11 +46,11 @@ azos_dma = { path = "../../../crates/drivers/dma" }
 # which is what turns a wrapped subtraction into a board reset, so a suite
 # that does not match it is testing a different program.
 # eth.rs is split by a `vf2` cfg the drivers crate declares, and can.rs by
-# both `vf2` and `k1`. Echoed here so the pulled modules do not emit
+# both `vf2` and `k1`, i2c.rs by `i2c-dw` and `k1`. Echoed here so the pulled modules do not emit
 # unexpected_cfgs -- declared rather than silenced, so the condition stays
 # visible in the source.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "rpi5"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("vf2", "k1", "rpi5", "i2c-dw"))'] }
 
 [profile.release]
 overflow-checks = true

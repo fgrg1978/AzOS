@@ -349,14 +349,14 @@ fn vf2_window_bound() -> usize {
         .count();
     let hwbus = repo_file("kernel/src/boot/hwbus.rs");
     // Only the arms a VisionFive 2 image compiles: the `#[cfg(..)]` line above
-    // an arm names `vf2` (the Raspberry Pi mailbox and the K1's sensor are other
-    // boards' windows).
+    // an arm names `vf2`, or `i2c-dw`, which `vf2` implies (the Raspberry Pi
+    // mailbox and the K1's sensor are other boards' windows).
     let mut cfg = "";
     let mut arms = 0;
     for l in hwbus.lines().map(str::trim) {
         if l.starts_with("#[cfg(") {
             cfg = l;
-        } else if l.contains("map_window(dev)?") && cfg.contains("\"vf2\"") {
+        } else if l.contains("map_window(dev)?") && (cfg.contains("\"vf2\"") || cfg.contains("\"i2c-dw\"")) {
             arms += 1;
         }
     }
