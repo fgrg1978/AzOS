@@ -117,15 +117,11 @@ use core::sync::atomic::Ordering;
 use azos_config::ML_ENABLED;
 use azos_drv_sys::kprintln;
 // `flight_control_task`/`rt_motor_task` are read from the shared task
-// roster (kernel-main-merge task) and so must resolve on both ISAs now.
-// `txn_try_rollback` stays riscv64-gated: its only call site is
-// `handle_exception`, which still reads the riscv64-native `TrapFrame`
-// directly and has no aarch64 counterpart in this file — an unconditional
-// import here would be unused (and a build warning) on an aarch64 build.
+// roster (kernel-main-merge task) and so must resolve on every ISA.
+// `txn_try_rollback` is called by each ISA's trap entry
+// (`entry/<isa>/trap.rs`), which imports it itself.
 #[cfg(feature = "use-robot")]
 use azos_safety_core::{flight_ctrl::flight_control_task, rt_motor::rt_motor_task};
-#[cfg(all(target_arch = "riscv64", feature = "use-robot"))]
-use azos_safety_core::txn::txn_try_rollback;
 // NOT `#[cfg]`'d, unlike its three ex-neighbours above: `create_sys_wdt_task`
 // is shared by both `kernel_main`s now, so this name has to resolve on both
 // targets. A `use` left inside the riscv64 group is the exact shape that

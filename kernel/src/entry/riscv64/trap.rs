@@ -300,8 +300,14 @@ impl ArchFrame for TrapFrame {
     /// its whitelist excludes ecall and page faults).
     fn arch_exception(&mut self) -> Disposition {
         let cause = self.scause as usize;
+        // I-13's whitelist on riscv64: a misaligned load or store (AMO
+        // included) taken in S-mode.
         #[cfg(feature = "use-robot")]
-        if txn_try_rollback(self, cause) {
+        if let Some((sp, pc)) = azos_safety_core::txn::txn_try_rollback(
+            !self.came_from_user() && matches!(cause, trap::TRAP_LOAD_MISALIGNED | trap::TRAP_STORE_MISALIGNED),
+        ) {
+            self.regs[2] = sp as _;
+            self.sepc = pc as _;
             return Disposition::Resume;
         }
         if cause == 2 && self.came_from_user() && azos_sched::fp::first_use(&mut self.sstatus) {

@@ -337,7 +337,9 @@ impl ArchFrame for TrapFrame {
     /// First FP/SIMD instruction from EL0 since this task was switched in: load
     /// its FP state and let the instruction re-execute (IRQs stay masked for the
     /// whole arm). An EC 0x07 from EL1 is a kernel FP use outside the allowed
-    /// save/restore code and stays fatal.
+    /// save/restore code and stays fatal. I-13's rollback
+    /// (`azos_safety_core::txn`) is not reached from here: an EL1 alignment
+    /// fault is a data abort (`class` sends it to the page-fault path).
     fn arch_exception(&mut self) -> Disposition {
         // A stale EC 0x07 (an FIQ after an FP trap) must not load FP state.
         if !syndrome_is_live(self) || (self.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK != EC_FP_ACCESS || !self.came_from_user() {

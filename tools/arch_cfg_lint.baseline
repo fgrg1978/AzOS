@@ -2,10 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # tools/arch_cfg_lint.py ratchet: uncovered cfg(target_arch) sites per file.
 # Counts may only go down. Regenerate with --update-baseline.
-5	domains/robot/safety-core/src/txn.rs
 4	kernel/src/boot/seams.rs
 2	kernel/src/boot/stacks.rs
-15	kernel/src/main.rs
+14	kernel/src/main.rs
 2	kernel/src/smokes/mod.rs
 4	kernel/src/smokes/selftest.rs
 1	kernel/src/smokes/tlb_probe.rs

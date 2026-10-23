@@ -15,6 +15,7 @@ pub mod actuation;
 pub mod flight_ctrl;
 pub mod rt_motor;
 pub mod txn;
+pub mod txn_rule;
 
 // Moved to `azos_actuation` (wave 11, DOMAIN): the boot latch replay, the
 // kill switch, the system watchdog task and the tick/heartbeat/WDT feed are

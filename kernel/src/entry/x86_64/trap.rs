@@ -199,6 +199,10 @@ impl ArchFrame for TrapFrame {
     /// Vectors 0..31 other than #PF and NMI (counted in `x86_64_trap_entry`
     /// before any decode): the livepatch's `int3` sequence resumes; a split
     /// lock is the task's kill; everything else is the generic policy's.
+    /// I-13's rollback (`azos_safety_core::txn`) has no fault to take here:
+    /// its whitelist is the misaligned load/store, which ring 0 never faults
+    /// on (#AC is checked at CPL 3 only), and a kernel split lock already
+    /// resumes with detection off on this CPU.
     fn arch_exception(&mut self) -> Disposition {
         let v = self.vector as usize;
         if v == idt::BP && !self.came_from_user() {
