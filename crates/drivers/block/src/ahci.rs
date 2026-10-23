@@ -701,9 +701,12 @@ struct Cmd {
     /// command alone in the device, over when its `PxCI` bit clears.
     queued: bool,
     write: bool,
-    /// FLUSH CACHE EXT or DATA SET MANAGEMENT: an abort means the disk has
-    /// no such command ([`HwStatus::Unsupported`]).
+    /// FLUSH CACHE EXT or DATA SET MANAGEMENT (the one optional command
+    /// that writes): an abort means the disk has no such command
+    /// ([`HwStatus::Unsupported`]).
     optional: bool,
+    /// A write forced to the medium.
+    fua: bool,
     prdtl: u16,
     /// Bytes the HBA must report moved (`PRDBC`) for a command that is not
     /// queued to be whole. The HBA does not count a queued command's bytes
@@ -719,7 +722,7 @@ struct Cmd {
     retried: bool,
 }
 
-const NO_CMD: Cmd = Cmd { queued: false, write: false, optional: false, prdtl: 0, bytes: 0, budget_us: 0, lba: 0, seq: 0, retried: false };
+const NO_CMD: Cmd = Cmd { queued: false, write: false, optional: false, fua: false, prdtl: 0, bytes: 0, budget_us: 0, lba: 0, seq: 0, retried: false };
 
 /// NCQ error recovery under way: the READ LOG EXT is in the device (through
 /// the internal command, header 0), and these queued commands wait for its
@@ -838,8 +841,11 @@ pub struct Ahci<R: Regs> {
     hooks: AtomicPtr<Hooks>,
     taken: AtomicU32,
     slept: AtomicU32,
-    /// Most commands in the device at once since bring-up.
+    /// Most commands in the device at once since bring-up, and the FUA
+    /// writes and TRIMs that completed.
     deepest: AtomicU32,
+    fua_writes: AtomicU32,
+    trims: AtomicU32,
 }
 
 impl<R: Regs> Ahci<R> {
@@ -930,6 +936,8 @@ impl<R: Regs> Ahci<R> {
             taken: AtomicU32::new(0),
             slept: AtomicU32::new(0),
             deepest: AtomicU32::new(0),
+            fua_writes: AtomicU32::new(0),
+            trims: AtomicU32::new(0),
         };
         let id = match me.start_port() {
             Ok(id) => id,
@@ -1213,9 +1221,24 @@ impl<R: Regs> Ahci<R> {
         (self.taken.load(Ordering::Relaxed), self.slept.load(Ordering::Relaxed))
     }
 
-    /// `(command slots in use, most commands in the device at once so far)`.
-    pub fn queue_counts(&self) -> (usize, u32) {
-        (self.slots, self.deepest.load(Ordering::Relaxed))
+    /// `(command slots in use, most commands in the device at once so far,
+    /// FUA writes and TRIMs completed)`.
+    pub fn queue_counts(&self) -> (usize, u32, u32, u32) {
+        let r = |a: &AtomicU32| a.load(Ordering::Relaxed);
+        (self.slots, r(&self.deepest), r(&self.fua_writes), r(&self.trims))
+    }
+
+    /// The commands of `mask` completed `Ok`: count what the evidence counts.
+    fn count_ok(&self, st: &Slots, mask: u32) {
+        for k in bits(mask) {
+            let c = &st.cmd[k];
+            if c.fua {
+                self.fua_writes.fetch_add(1, Ordering::Relaxed);
+            }
+            if c.optional && c.write {
+                self.trims.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn sectors(&self) -> u64 {
@@ -1462,6 +1485,7 @@ impl<R: Regs> Ahci<R> {
             let fin = st.queued & !p.rd(P_SACT);
             if fin != 0 {
                 fence(Ordering::Acquire);
+                self.count_ok(st, fin);
                 st.end(fin, HwStatus::Ok);
                 st.queued &= !fin;
             }
@@ -1502,6 +1526,7 @@ impl<R: Regs> Ahci<R> {
                     azos_drv_sys::kerr!("[AHCI] port {}: {} of {} bytes moved", self.port, moved, c.bytes);
                     HwStatus::Io
                 } else {
+                    self.count_ok(st, st.single);
                     HwStatus::Ok
                 }
             };
@@ -1770,7 +1795,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         }
         let seq = st.next_seq;
         st.next_seq = seq.wrapping_add(1);
-        st.cmd[k] = Cmd { queued, write, optional, prdtl, bytes: bytes as u32, budget_us, lba: cmd.lba, seq, retried: false };
+        st.cmd[k] = Cmd { queued, write, optional, fua: cmd.fua, prdtl, bytes: bytes as u32, budget_us, lba: cmd.lba, seq, retried: false };
         st.armed |= 1 << k;
         self.kick(&mut st);
         self.publish(&st);
@@ -1972,6 +1997,13 @@ pub fn irq_mode() -> bool {
 #[cfg(feature = "ahci")]
 pub fn irq_counts() -> (u32, u32) {
     controller().map_or((0, 0), |c| c.irq_counts())
+}
+
+/// [`Ahci::queue_counts`]: `(command slots, most commands in the disk at
+/// once, FUA writes, TRIMs)`; zeros without a controller.
+#[cfg(feature = "ahci")]
+pub fn queue_counts() -> (usize, u32, u32, u32) {
+    controller().map_or((0, 0, 0, 0), |c| c.queue_counts())
 }
 
 /// The interrupt handler's arm for an MSI of the kernel's `token` (interrupt

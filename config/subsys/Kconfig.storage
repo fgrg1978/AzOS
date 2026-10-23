@@ -75,8 +75,9 @@ config BLK_MERGE_MAX
       device's largest command. 1 turns merging off: every request is its
       own command (the pre-queue behaviour).
 
-      Cost: 8 B per merged request for each command the device can hold at
-      once, in .bss.
+      Cost: 8 B per merged request for each command the request layer
+      tracks in a device (32, the most SATA NCQ holds: HW_TAGS_MAX), per
+      queue, in .bss (2 KiB at the default of 8).
 
 choice
     prompt "Discard (TRIM) of freed blocks"
@@ -86,14 +87,13 @@ choice
       Whether the file systems and the swap area tell the device that
       blocks they freed hold nothing worth keeping (NVMe Dataset Management
       deallocate, virtio-blk VIRTIO_BLK_T_DISCARD, SATA DATA SET MANAGEMENT
-      TRIM), so a flash device can
-      erase them ahead of the next write. Used by FAT32 (the chains freed
-      when a file is truncated, replaced or removed), azvol (the blocks a
-      commit freed, once its superblock is durable; a block a snapshot
-      still names waits for the snapshot) and the swap area (a segment
-      brought back). A device without the command, and a board
-      whose disk is not behind the block request layer (SD/eMMC), is
-      never asked; the first refusal switches the file system's discard
+      TRIM), so a flash device can erase them ahead of the next write. Used
+      by FAT32 (the chains freed when a file is truncated, replaced or
+      removed), azvol (the blocks a commit freed, once its superblock is
+      durable; a block a snapshot still names waits for the snapshot) and
+      the swap area (a segment brought back). A device without the command,
+      and a board whose disk is not behind the block request layer
+      (SD/eMMC), is never asked; the first refusal switches FAT32's discard
       off until the next mount.
 
       A discard is never issued for a block the medium may still need:

@@ -1896,6 +1896,7 @@ fn a_fua_write_with_ncq_is_on_the_medium_when_it_completes() {
     let log = m.log();
     assert!(log[1..].iter().all(|l| l.cmd == 0x61 && l.device == 0xC0), "{:?}", cmds(&m));
     assert_eq!(m.with(|m| (m.flushes, m.fua_writes)), (0, 2));
+    assert_eq!(hw.queue_counts().2, 2, "the driver's count of FUA writes");
     // Without the flag: queued, not forced, and a power cut loses it.
     let (r, w) = layer_write(hw, 400, 4, 0);
     r.expect("write");
@@ -1992,6 +1993,7 @@ fn a_discard_trims_exactly_its_sectors() {
     let mut t = m.with(|m| m.trimmed.clone());
     t.sort();
     assert_eq!(t, vec![(100, 8), (2000, 65535), (2000 + 65535, 70_000 - 65535)]);
+    assert_eq!(hw.queue_counts().3, 2, "the driver's count of TRIM commands");
     assert!(m.disk(100, 8).iter().all(|&b| b == 0));
     assert!(m.disk(2000, 70_000).iter().all(|&b| b == 0));
     assert!(neighbours() == before, "a sector next to a trimmed range changed");

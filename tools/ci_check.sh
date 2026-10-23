@@ -14674,18 +14674,34 @@ PY
     # without DRV_AHCI: the controller enumerates (8086:2922) and nothing drives
     # it, so there is no `[AHCI]` line and no mount (the disk is on no other bus).
     # First boot: not run when this was written (the testing week boots it).
-    x86_ahci_row() { # x86_ahci_row <label> <PASS|FAIL>
-        local label="$1" expect="$2" why="" w
+    #
+    # The queue and the features (boot/ahci.rs `ahci_queue_selftest`): QEMU's
+    # HBA and ide-hd queue (NCQ), so the disk gets more than one command slot
+    # and a read of four commands' worth has two or more in it at once; ide-hd
+    # advertises TRIM by default, so the scratch file FAT32 writes and removes
+    # has its chain discarded as DATA SET MANAGEMENT (TRIMs > 0); FUA is what
+    # IDENTIFY word 84 says, and the block layer's fsync commit must agree.
+    # Canaries: the same image built with AHCI_NCQ_DEPTH=1 must fail the queue
+    # checks and pass the rest; the pass image on an ide-hd with
+    # discard_granularity=0 must show trim=n and no TRIM, and still mount.
+    x86_ahci_row() { # x86_ahci_row <label> <PASS|FAIL|NONCQ|NOTRIM>
+        local label="$1" expect="$2" why="" qwhy="" w
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
-        local def=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config
+        local def=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config hd="ide-hd,drive=sata0,bus=ahci.0" stop='AHCI\] queue:|KERNEL PANIC'
         rm -f "$kimg" "$kimg.features"
-        if [ "$expect" = FAIL ]; then
-            def="$CI_LOG_DIR/x86-${tag}.defconfig"
-            sed '/^CONFIG_DRV_AHCI=y/d' config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config >"$def"
-        fi
+        case "$expect" in
+            FAIL)
+                def="$CI_LOG_DIR/x86-${tag}.defconfig"
+                sed '/^CONFIG_DRV_AHCI=y/d' config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config >"$def"
+                stop='AHCI\] by interrupt|KERNEL PANIC' ;;
+            NONCQ)
+                def="$CI_LOG_DIR/x86-${tag}.defconfig"
+                { sed '/^CONFIG_AHCI_NCQ_DEPTH=/d' config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config; echo CONFIG_AHCI_NCQ_DEPTH=1; } >"$def" ;;
+            NOTRIM) hd="$hd,discard_granularity=0" ;;
+        esac
         make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-ahci-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-ahci-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
             && builtin printf '\n' >"$kimg.features" \
@@ -14693,8 +14709,8 @@ PY
         fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
             || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; return; }
         par_ready
-        X86_MACHINE=q35 x86_qemu "$kimg" "$log" 60 'AHCI\] by interrupt|KERNEL PANIC' -smp 1 \
-            -drive "file=$dimg,if=none,format=raw,id=sata0" -device ich9-ahci,id=ahci -device ide-hd,drive=sata0,bus=ahci.0 \
+        X86_MACHINE=q35 x86_qemu "$kimg" "$log" 60 "$stop" -smp 1 \
+            -drive "file=$dimg,if=none,format=raw,id=sata0" -device ich9-ahci,id=ahci -device "$hd" \
             || { rm -f "$kimg" "$kimg.features" "$dimg"; return; }
         rm -f "$kimg" "$kimg.features" "$dimg"
         grep -aqF '[PCI] host bridge: ECAM' "$log" || why="no PCI host bridge line: the PCI code did not run"
@@ -14717,12 +14733,44 @@ PY
         [ -z "$why" ] && ! grep -aqE '\[AHCI\] port [0-9]+ .*: [0-9]+ sectors mode=irq' "$log" && why="no AHCI disk identified in interrupt mode"
         [ -z "$why" ] && ! grep -aqE '\[AHCI\] by interrupt: [1-9][0-9]* taken, [1-9][0-9]* waits slept \(read ok, flush Ok\(\(\)\), sig 55aa\)' "$log" \
             && why="no AHCI completion arrived by interrupt"
+        [ -z "$why" ] && ! grep -aqE '\[AHCI\] queue: .*scratch file write ok remove ok$' "$log" && why="the FAT32 scratch file was not written and removed"
+        # What IDENTIFY said (fua, trim: y/n), and what the driver counted.
+        local id fua trim q
+        id="$(grep -aE '\[AHCI\] port [0-9]+ .*: [0-9]+ sectors mode=' "$log" | sed -n 's/.* fua=\([yn]\) trim=\([yn]\) .*/\1 \2/p' | sed -n 1p)"
+        fua="${id% *}" trim="${id#* }"
+        q="$(grep -aE '\[AHCI\] queue: ' "$log" | sed -n 1p)"
+        [ -z "$why" ] && [ -z "$id" ] && why="the identify line names no fua=/trim="
+        [ -z "$why" ] && ! printf '%s\n' "$q" | qgrep -qF "fua commit $fua (" && why="the block layer's FUA commit does not follow IDENTIFY (fua=$fua): $q"
+        if [ "$expect" = NOTRIM ]; then
+            [ -z "$why" ] && [ "$trim" != n ] && why="a disk with discard_granularity=0 identified with TRIM"
+            [ -z "$why" ] && ! printf '%s\n' "$q" | qgrep -qE '; 0 TRIMs;' && why="a TRIM went to a disk without it: $q"
+        else
+            [ -z "$why" ] && [ "$trim" != y ] && why="the disk did not identify with TRIM"
+            [ -z "$why" ] && ! printf '%s\n' "$q" | qgrep -qE '; [1-9][0-9]* TRIMs;' && why="the removed file's chain was not TRIMmed: $q"
+        fi
+        grep -aqE '\[AHCI\] port [0-9]+: ([2-9]|[12][0-9]|3[0-2]) command slot\(s\), native command queuing' "$log" \
+            || qwhy="the disk was not driven with NCQ"
+        [ -z "$qwhy" ] && ! printf '%s\n' "$q" | qgrep -qE '^\[AHCI\] queue: [0-9]+ slot\(s\), ([2-9]|[1-9][0-9]+) in the disk at once \(read of [0-9]+ sectors ok\)' \
+            && qwhy="never two commands in the disk at once: $q"
         grep -aqE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log" | sed -n 1p)"
+        if [ "$expect" = NONCQ ]; then
+            if [ -n "$why" ]; then
+                bad; echo "      $why: the canary proves nothing"; echo "      log kept: $log"
+            elif [ -z "$qwhy" ]; then
+                bad; echo "      the queue checks pass with AHCI_NCQ_DEPTH=1: they do not discriminate"; echo "      log kept: $log"
+            else
+                ok; echo "      canary failed as it must: $qwhy"; rm -f "$log"
+            fi
+            return
+        fi
+        [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
         bad; echo "      $why"; echo "      log kept: $log"
     }
     par "x86_64: PCI AHCI mounts FAT (q35)" x86_ahci_row "x86_64: PCI AHCI mounts FAT (q35)" PASS
     par "x86_64: PCI AHCI canary (no driver)" x86_ahci_row "x86_64: PCI AHCI canary (no driver)" FAIL
+    par "x86_64: PCI AHCI canary (NCQ off)" x86_ahci_row "x86_64: PCI AHCI canary (NCQ off)" NONCQ
+    par "x86_64: PCI AHCI disk without TRIM" x86_ahci_row "x86_64: PCI AHCI disk without TRIM" NOTRIM
     # IOMMU on (x86_64): the rv/arm `iommu:` rows on q35 with the unit QEMU models
     # first on the bus: AMD-Vi (`amd-iommu,dma-remap=on`, found through the ACPI
     # IVRS; every device-table entry blocks until its function is placed). No

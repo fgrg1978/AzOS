@@ -15,6 +15,8 @@
 //! the scheduler exists: it hands the driver the two scheduler hooks the other
 //! block drivers use, so a task waiting for a command sleeps until the MSI
 //! (each ISA's interrupt arm calls `ahci::msi_irq`) wakes it.
+//! [`ahci_queue_selftest`] is the evidence the q35 row reads for the queue,
+//! FUA and TRIM.
 
 use crate::kprintln;
 use azos_drv_virtio::virtio::pci::msix_selftest::{map_bars, MsiRoute};
@@ -65,6 +67,39 @@ where
             false
         }
     }
+}
+
+/// Evidence for the command queue and the disk's features, from task context
+/// once the disk is the block device (the `fs-wb` task, after the interrupt
+/// evidence). A read of four commands' worth from sector 0: the request layer
+/// starts them together, so where the disk queues more than one is in it at
+/// once. Then FAT32's own users of FUA and TRIM: a scratch file written and
+/// synced, removed and synced. The sync's write-back commit is a FUA write
+/// where `blkdev::fua_commit` says the disk has one (write then flush
+/// otherwise), and the removed file's chain is discarded (Kconfig
+/// `BLK_DISCARD`) where the disk TRIMs. One `[AHCI] queue:` line says what the
+/// driver counted.
+pub(crate) fn ahci_queue_selftest() {
+    const NAME: [u8; 11] = *b"AHCIQTSTTMP";
+    let n = (4 * azos_drv_block::ahci::XFER_SECTORS as u64).min(azos_drv_block::blkdev::capacity_sectors()) as u32;
+    let mut big = alloc::vec![0u8; n as usize * 512];
+    let rd = azos_drv_block::blkdev::read_quiet(0, n, &mut big).is_ok();
+    let data = alloc::vec![0x5Au8; 64 * 1024];
+    let wr = azos_fs::fat32_write_file(&NAME, &data).is_ok() && azos_fs::fat32_sync().is_ok();
+    let rm = azos_fs::fat32_unlink_root(&NAME).is_ok() && azos_fs::fat32_sync().is_ok();
+    let (slots, deepest, fua, trims) = azos_drv_block::ahci::queue_counts();
+    kprintln!(
+        "[AHCI] queue: {} slot(s), {} in the disk at once (read of {} sectors {}); fua commit {} ({} FUA writes); {} TRIMs; scratch file write {} remove {}",
+        slots,
+        deepest,
+        n,
+        if rd { "ok" } else { "FAILED" },
+        if azos_drv_block::blkdev::fua_commit() { "y" } else { "n" },
+        fua,
+        trims,
+        if wr { "ok" } else { "FAILED" },
+        if rm { "ok" } else { "FAILED" }
+    );
 }
 
 static HOOKS: azos_drv_block::ahci::Hooks = azos_drv_block::ahci::Hooks {
