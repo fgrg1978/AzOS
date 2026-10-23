@@ -350,13 +350,14 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
                 azos_drv_sys::kwarn!("[MM] W^X WARN: {} megapage(s) unsplit (out of memory)", unsplit);
             }
 
-            // Gate canary `wx-skip-canary`: the image keeps its boot-time leaves.
-            #[cfg(not(feature = "wx-skip-canary"))]
-            azos_mm::vmm::enforce_wx(
-                text_start, text_end,
-                ro_start, ro_end,
-                data_start, kernel_end_aligned,
-            );
+            // Runtime gate canary `canary=wx-skip`: the image keeps its boot-time leaves.
+            if !canary!("wx-skip") {
+                azos_mm::vmm::enforce_wx(
+                    text_start, text_end,
+                    ro_start, ro_end,
+                    data_start, kernel_end_aligned,
+                );
+            }
 
             // Read the page table back rather than trust the remap:
             // `enforce_wx` returns nothing, `remap_range` skips anything that
@@ -396,9 +397,8 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
             let mem_start_va = azos_mm::addr::phys_to_virt(mem_start);
             let mem_end_va = azos_mm::addr::phys_to_virt(crate::mem_range_end(mem_start, mem_size));
             let stripped = {
-                // Gate canary `nx-skip-canary`: the sweep covers nothing.
-                #[cfg(feature = "nx-skip-canary")]
-                let mem_end_va = mem_start_va;
+                // Runtime gate canary `canary=nx-skip`: the sweep covers nothing.
+                let mem_end_va = if canary!("nx-skip") { mem_start_va } else { mem_end_va };
                 azos_mm::vmm::strip_exec_outside_image(
                     mem_start_va, mem_end_va, text_start, kernel_end_aligned,
                 )

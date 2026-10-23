@@ -196,11 +196,15 @@ def gen_userspace(root):
 
 
 # The compile-time test hooks the kernel still has (F6 moves them to the
-# runtime `canary=` names): `feature<TAB>class<TAB>why`, class `hot` (a site
-# on a path where a runtime check costs: the why names the path and the cost)
-# or `pending` (not moved yet).
+# runtime `canary=` names): `feature<TAB>class<TAB>why`. The classes that keep
+# a hook compile-time: `hot` (a site on a path where a runtime check costs),
+# `const` (it changes a constant an asm block or a const item takes, which no
+# runtime value can reach), `secure-boot` (its kernel is a secure-boot
+# enforced one, where the runtime canaries are compiled out by design),
+# `host-shared` (a host-test crate compiles the same source with the same
+# feature). `pending`: not moved yet.
 HOOKS_FILE = os.path.join("tools", "compile_time_hooks.tsv")
-HOOK_CLASSES = ("hot", "pending")
+HOOK_CLASSES = ("hot", "const", "secure-boot", "host-shared", "pending")
 
 
 def read_hooks(path):
@@ -283,7 +287,8 @@ def lint(root=k2c.REPO_ROOT, cargo_toml=k2c.KERNEL_CARGO_TOML, generate=True, kc
             if cls not in HOOK_CLASSES:
                 errors.append(f"hooks: {HOOKS_FILE}: `{f}` has class `{cls}`, not one of {', '.join(HOOK_CLASSES)}")
         n = {c: sum(1 for v in listed.values() if v[0] == c) for c in HOOK_CLASSES}
-        report.append(f"{len(hooks)} compile-time test hooks: {n['hot']} hot, {n['pending']} pending "
+        kept = ", ".join(f"{n[c]} {c}" for c in HOOK_CLASSES if c != "pending")
+        report.append(f"{len(hooks)} compile-time test hooks: {kept}, {n['pending']} pending "
                       f"(F6: the pending ones become runtime canary= names; target about 40 in all)")
     # A test hook that turns on a Kconfig symbol's feature bypasses the symbol.
     for f in hooks:

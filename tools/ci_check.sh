@@ -12059,7 +12059,7 @@ else
     # `off += block * 2`): the line reads FAILED while the selection line still
     # reads "enabled", i.e. it catches what the boot probe alone cannot.
     # The Zicboz-present half is now the `mm_zicboz_zero_fill` ktest
-    # (`ktest (rv)`), with its canary `zicboz-skip-canary` (`ktest canaries
+    # (`ktest (rv)`), with its canary `canary=zicboz-skip` (`ktest canaries
     # (rv)`): fast path on, a block size, and a poisoned page that comes back
     # all zero. The absent half needs its own `-cpu`, so it stays a row.
     QEMU_FAIL_RE="$QEMU_FAIL_RE|Zicboz cbo.zero fast path: enabled" \
@@ -14016,12 +14016,12 @@ PY
     # The `canary=` ones are runtime canaries (Kconfig CANARY_RUNTIME,
     # kernel/src/canary_rt.rs): their row boots the pass row's kernel with
     # `-append canary=...` (ktest_row's 5th argument) and builds nothing.
-    #   mm_wx_image                   wx-skip-canary (boot skips enforce_wx)
-    #   mm_nx_outside_image           nx-skip-canary (boot strips nothing)
-    #   mm_ro_after_init_sealed       ro-seal-skip-canary (boot never seals the hooks)
+    #   mm_wx_image                   canary=wx-skip (boot skips enforce_wx)
+    #   mm_nx_outside_image           canary=nx-skip (boot strips nothing)
+    #   mm_ro_after_init_sealed       canary=ro-seal-skip (boot never seals the hooks)
     #   percpu_areas_and_oor_refusal  percpu-oor-canary (area past nr_cpu_ids)
     #   sched_stack_guards_unmapped   canary=stack-guard-skip (no guard pages)
-    #   mm_zicboz_zero_fill (rv)      zicboz-skip-canary (DTB Zicboz ignored)
+    #   mm_zicboz_zero_fill (rv)      canary=zicboz-skip (DTB Zicboz ignored)
     #   kheap_slab_selftest           slab-freelist-canary (panics in slab.rs)
     #   mm_zone_no_cross_type_reuse   zone-share-canary (a freed table frame keeps no zone)
     #   motor_commander_exit_stops_its_wheels  commander-exit-nostop-canary
@@ -14182,7 +14182,7 @@ PY
     # `kcall-atomic-canary`, the second) -> 112.
     # +2 irq_storm_is_contained (canary `irq-storm`),
     # irq_msi_reaches_a_ring3_binding (interrupts as scheduled objects) -> 114.
-    # +3 mm_ro_after_init_sealed (canary `ro-seal-skip-canary`),
+    # +3 mm_ro_after_init_sealed (canary `canary=ro-seal-skip`),
     # mm_kaslr_image_alias, kaslr_stored_pointers_follow_the_image (virtual
     # KASLR; they landed while the gate's slid kernels never reached the plan)
     # -> 117.
@@ -14395,18 +14395,20 @@ PY
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" $AZOS_OUT/build/disk.img
     par "ktest disk RT-inline canary (arm)" ktest_row "ktest disk RT-inline canary (arm)" arm "" \
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" $AZOS_OUT/build/disk-aarch64.img
-    KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,ro-seal-skip-canary,percpu-oor-canary,commander-exit-nostop-canary"
+    KTEST_CANARIES=",percpu-oor-canary,commander-exit-nostop-canary"
+    # F6: the boot-time ones are runtime canaries, armed in the same boot.
+    KTEST_BOOT_CANARIES="canary=wx-skip,nx-skip,ro-seal-skip"
     KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels"
-    # Both ISAs (N2b): `wx-skip-canary` leaves the kernel text writable, so
+    # Both ISAs (N2b): `wx-skip` leaves the kernel text writable, so
     # the one text-write path (`text_poke`, W^X kept) refuses NotRx and the
     # SpinWait probe sites stay linked to their fallback
     # (`spin_sites_patched`; rv64 Zawrs/Zihintpause, `-cpu max` LSE).
-    par "ktest canaries (rv)" ktest_row "ktest canaries (rv)" rv "$KTEST_CANARIES,zicboz-skip-canary" \
-        "$KTEST_CANARIED mm_zicboz_zero_fill spin_sites_patched"
+    par "ktest canaries (rv)" ktest_row "ktest canaries (rv)" rv "$KTEST_CANARIES" \
+        "$KTEST_CANARIED mm_zicboz_zero_fill spin_sites_patched" "$KTEST_BOOT_CANARIES,zicboz-skip"
     # aarch64 also: the same refusal leaves the A64_PAN=probe sites the
     # slow-path branch (`a64_pan_sites_patched`).
     par "ktest canaries (arm)" ktest_row "ktest canaries (arm)" arm "$KTEST_CANARIES" \
-        "$KTEST_CANARIED a64_pan_sites_patched spin_sites_patched"
+        "$KTEST_CANARIED a64_pan_sites_patched spin_sites_patched" "$KTEST_BOOT_CANARIES"
     # DECISION_REFUSALS_DURABLE=n: no refusal leaves a receipt, so `why` has
     # nothing to resolve. `ktest_row` builds `$KTEST_FEATS`; this builds the
     # kernel without `decisions-durable` and expects the one row red.

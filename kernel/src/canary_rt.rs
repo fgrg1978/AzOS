@@ -317,6 +317,17 @@ pub(crate) const NAMES: &[&str] = &[
     // lends its priority to nobody, so the claim owner keeps its own while
     // the waiter blocks (ktest `fat_claim_waiter_donates_to_owner`).
     "claim-no-donate",
+    // boot/early.rs: the boot skips `enforce_wx` (the image keeps its
+    // boot-time RWX leaves) or `strip_exec_outside_image` (RAM outside the
+    // image stays executable): ktests `mm_wx_image`, `mm_nx_outside_image`.
+    "wx-skip",
+    "nx-skip",
+    // kernel_main: the boot never seals the hooks and leaves
+    // `.data.ro_after_init` writable (ktest `mm_ro_after_init_sealed`).
+    "ro-seal-skip",
+    // entry/riscv64/boot_hooks.rs `cpu_features`: the DTB's Zicboz is ignored,
+    // the scalar fallback stays (ktest `mm_zicboz_zero_fill`, riscv64 only).
+    "zicboz-skip",
     // crates/core/sched/src/process.rs `kernel_ctx_addr_ok`: a task with no
     // user page table is no longer refused a user-range VA by the copy
     // helpers (ktest `copyout_refused_in_kernel_context`).

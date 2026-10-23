@@ -359,7 +359,7 @@ azos_ktest::ktest! {
 // Every kernel-image page carries the permissions planned for its section:
 // .text RX, .rodata RO, data/bss RW, none W+X, all 4 KiB leaves, the only
 // unmapped ones the task-stack guards. The page table is read back, not the enforcement call's own claim. Canary
-// `wx-skip-canary` (the boot skips `enforce_wx`).
+// `canary=wx-skip` (the boot skips `enforce_wx`).
 azos_ktest::ktest! {
     // REQ-013
     fn mm_wx_image() {
@@ -392,7 +392,7 @@ azos_ktest::ktest! {
 // The set-once hooks and the x86_64 IDT (`.data.ro_after_init`) are sealed
 // before the ktests run: the flag is set, a hook refuses a late installer, and
 // every mapping of the section reads back read-only (the page table is read,
-// not the seal's own claim). Canary `ro-seal-skip-canary` (the boot never
+// not the seal's own claim). Canary `canary=ro-seal-skip` (the boot never
 // seals): the first check fails.
 azos_ktest::ktest! {
     fn mm_ro_after_init_sealed() {
@@ -480,7 +480,7 @@ azos_ktest::ktest! {
 }
 
 // Nothing executable is mapped outside the kernel image in the kernel's own
-// table (heap, frames, task stacks). Canary `nx-skip-canary` (the boot strips
+// table (heap, frames, task stacks). Canary `canary=nx-skip` (the boot strips
 // nothing).
 azos_ktest::ktest! {
     fn mm_nx_outside_image() {
@@ -577,7 +577,7 @@ azos_ktest::ktest! {
 // block size; then a page poisoned with 0xAA, freed and reallocated (the
 // per-hart cache hands back the newest frame, the same one) must read back all zero:
 // the zero-fill `alloc_page` runs is `cbo.zero` here, not the host tests'
-// scalar stand-in. Canary `zicboz-skip-canary` (the boot ignores the DTB's
+// scalar stand-in. Canary `canary=zicboz-skip` (the boot ignores the DTB's
 // Zicboz): the scalar fallback is chosen and this test is `not ok`. With
 // Kconfig RV_ZICBOZ = n it asserts the opposite: the fast path stays off.
 azos_ktest::ktest! {

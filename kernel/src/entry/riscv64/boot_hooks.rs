@@ -164,7 +164,7 @@ pub fn timer_probe(fw: &Firmware) {
 /// zeroes correctly on this hart (`cache::zicboz_select`; the same "the DTB
 /// claims it, then verify on the real hart" shape as Sstc). Before
 /// `pmm::init`: `alloc_page`'s zero-fill consults it on its first call.
-/// Gate canary `zicboz-skip-canary`: the DTB's Zicboz is ignored. Then the
+/// Runtime gate canary `canary=zicboz-skip`: the DTB's Zicboz is ignored. Then the
 /// vDSO `hwcap` inputs (wave 13, published by `install_vdso`).
 #[inline(always)]
 pub fn cpu_features(fw: &Firmware) {
@@ -185,8 +185,9 @@ pub fn cpu_features(fw: &Firmware) {
     }
     DT_ISA.store(dt, Ordering::Relaxed);
     // Kconfig RV_ZICBOZ = n: the DTB's Zicboz is ignored (as the canary does).
-    #[cfg(not(feature = "zicboz-skip-canary"))]
-    azos_arch::cache::zicboz_select(policy::ZICBOZ.gate(info.isa_zicboz), info.cboz_block_size);
+    if !canary!("zicboz-skip") {
+        azos_arch::cache::zicboz_select(policy::ZICBOZ.gate(info.isa_zicboz), info.cboz_block_size);
+    }
     // Kconfig RV_ZICBOM = n: likewise for `cbo.clean` / `cbo.flush`, the cache
     // maintenance a non-coherent DMA master needs (`boot::dma`).
     azos_arch::cache::zicbom_select(policy::ZICBOM.gate(info.isa_zicbom), info.cbom_block_size);

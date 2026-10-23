@@ -3067,8 +3067,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Every hook (`azos_common::ro_hook!`) is installed and the x86_64 IDT is
     // built: `.data.ro_after_init` goes read-only, before the ktests, any
     // secondary hart and the first task. A hook set from here on panics.
-    // Gate canary `ro-seal-skip-canary`: the hooks stay open and writable.
-    if !cfg!(feature = "ro-seal-skip-canary") {
+    // Runtime gate canary `canary=ro-seal-skip`: the hooks stay open and writable.
+    if !canary!("ro-seal-skip") {
         boot::seal_ro_after_init();
     }
 
