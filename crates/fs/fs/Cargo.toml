@@ -7,7 +7,7 @@ publish = false
 
 [features]
 # Kconfig USB_STORAGE_VOLUME: `usbvol`, the FAT32 volume of a USB stick
-# (fat32.rs compiled a second time over the stick). Enabled through the
+# (a second fat32::Vol over the stick, run by the same FAT32 code). Enabled through the
 # kernel's `usb-storage-volume` feature.
 usb-volume = []
 # Gate canary: a retired mount's inodes stay on its backend (`vfs_unmount`):
