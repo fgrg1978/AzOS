@@ -639,6 +639,35 @@ pub fn take_exit_note_for(
     Err(WaitpidMiss::NotOurs)
 }
 
+/// A Linux task's mmap cursor (`Task::user_mmap_low`), and whether the
+/// current task is a Linux one (`scheduler::current_is_linux`).
+static USER_MMAP_LOW: AtomicU64 = AtomicU64::new(0);
+static CURRENT_IS_LINUX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Test-only control surface — not part of the real `azos_sched` API.
+pub fn shim_set_linux(linux: bool) {
+    shim_assert_serial("shim_set_linux");
+    CURRENT_IS_LINUX.store(linux, Ordering::SeqCst);
+}
+
+/// The kernel's semantics verbatim (`scheduler::update_user_mmap_low`):
+/// `addr == 0` reads the cursor, anything else stores it; the value is
+/// returned either way.
+pub fn update_user_mmap_low(addr: u64) -> u64 {
+    if addr != 0 {
+        USER_MMAP_LOW.store(addr, Ordering::SeqCst);
+    }
+    USER_MMAP_LOW.load(Ordering::SeqCst)
+}
+
+/// `process::USER_MMAP_FLOOR` / `USER_MMAP_CEILING`, restated as
+/// [`user_shm_window`] is: the floor is the break's ceiling (`USER_LOW_MAX`,
+/// 32 MiB), the ceiling the vDSO page (`azos_abi::vdso::VDSO_USER_BASE`) or
+/// the shm window's base, whichever is lower.
+pub fn user_mmap_area() -> (usize, usize) {
+    (0x0200_0000, azos_abi::vdso::VDSO_USER_BASE.min(user_shm_window().0))
+}
+
 /// The kernel's semantics verbatim (`scheduler.rs:3147`): `addr == 0` reads
 /// the current break; anything else stores it and echoes it back.
 pub fn update_user_brk(addr: u64) -> u64 {
@@ -689,6 +718,11 @@ pub mod swcensus {
 pub mod scheduler {
     use crate::filter::SyscallFilter;
     use std::sync::Mutex;
+
+    /// Mirrors `scheduler::current_is_linux` (set by `shim_set_linux`).
+    pub fn current_is_linux() -> bool {
+        super::CURRENT_IS_LINUX.load(super::Ordering::SeqCst)
+    }
 
     /// Mirrors `scheduler::reserve_current_user_window`: `span` bytes of the
     /// current task's window `[lo, hi)`, from the real `user_window.rs`.
@@ -1386,6 +1420,8 @@ pub fn shim_reset() {
     CURRENT_TASK_TID.store(0, Ordering::SeqCst);
     CURRENT_PROC_TID.store(0, Ordering::SeqCst);
     USER_BRK.store(0, Ordering::SeqCst);
+    USER_MMAP_LOW.store(0, Ordering::SeqCst);
+    CURRENT_IS_LINUX.store(false, Ordering::SeqCst);
     USER_PAGES.store(0, Ordering::SeqCst);
     USER_PAGE_LIMIT.store(0, Ordering::SeqCst);
     SCHED_CLASS.store(3, Ordering::SeqCst);

@@ -421,19 +421,17 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
     let mut done = 0usize;
     let first_window = (first_page / WINDOW) as u64;
 
-    // Where a private mapping goes: the break, as an anonymous `mmap`.
+    // Where a private mapping goes: where an anonymous `mmap` goes
+    // (`handlers::mmap_place`, no hint).
     let (private_base, private_end) = if shared {
         (0, 0)
     } else {
-        let base = azos_sched::update_user_brk(0) as usize;
-        if base < azos_mm::vmm::USER_GUARD_LIMIT {
-            return enomem;
-        }
-        let aligned = base.saturating_add(page - 1) & !(page - 1);
-        let end = match pages.checked_mul(page).and_then(|s| aligned.checked_add(s)) {
-            Some(e) if e <= azos_sched::user_shm_window().0 => e,
-            _ => return enomem,
+        let Some(span) = pages.checked_mul(page) else { return enomem };
+        let aligned = match crate::handlers::mmap_place(root, 0, span, 0) {
+            Ok(b) => b,
+            Err(_) => return enomem,
         };
+        let end = aligned + span;
         if !azos_sched::mm_charge(pages as u32) {
             return enomem;
         }
@@ -483,7 +481,7 @@ pub fn sys_file_mmap(cap_raw: u64, len: u64, off: u64, prot: u64, flags: u64) ->
     if shared {
         pieces[0].base as i64 + (in0 * page) as i64
     } else {
-        azos_sched::update_user_brk(private_end as u64);
+        crate::handlers::mmap_placed(private_base, private_end);
         private_base as i64
     }
 }

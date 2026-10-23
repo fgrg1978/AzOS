@@ -432,6 +432,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod mmap_hint {
+        use super::*;
+        include!("mmap_hint.rs");
+    }
+
+    #[cfg(test)]
     mod pagecache_hooks {
         use super::*;
         include!("pagecache_hooks.rs");

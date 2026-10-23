@@ -25,6 +25,12 @@ hv = []
 # Mirrors azos_syscall's gate canary (wave 13): `cfg!(feature =
 # "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
 mmap-prot-canary = []
+# Mirror azos_syscall's mmap-hint canaries (the pulled-in handlers.rs): the
+# rows of src/mmap_hint.rs go red under each. Off: the real behaviour.
+mmap-hint-canary = []
+mmap-noreplace-canary = []
+mmap-hint-window-canary = []
+mmap-brk-apart-canary = []
 # Mirrors azos_syscall's gate canary (wave 15, plan 4a) in the pulled-in
 # ipc_handlers.rs. Off: the real behaviour.
 thread-objects-canary = []

@@ -101,6 +101,15 @@ native-fork-copy-canary = []
 # Wave 13 (security) canary: native and Linux `mmap` map read-write whatever
 # `prot` says, and `mprotect` changes nothing (the `mprot:` rows go red).
 mmap-prot-canary = []
+# mmap-hint canaries, host rows only (tests/host/syscall-tests/src/mmap_hint.rs),
+# never in a real build: a Linux task's hint is not read (`mmap-hint-canary`),
+# `MAP_FIXED_NOREPLACE` falls back like a hint (`mmap-noreplace-canary`), a hint
+# is honoured anywhere vacant, outside the area too (`mmap-hint-window-canary`),
+# and a Linux task's mappings go at its break again (`mmap-brk-apart-canary`).
+mmap-hint-canary = []
+mmap-noreplace-canary = []
+mmap-hint-window-canary = []
+mmap-brk-apart-canary = []
 # SUBTREE-POLICY canary: `families::creation_gate` allows every creation, so a
 # Domain's endpoint, port and MemObj limits are never enforced. The host rows
 # of `tests/host/syscall-tests/src/subtree_policy.rs` must go red.

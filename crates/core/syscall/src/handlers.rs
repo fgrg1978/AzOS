@@ -3027,6 +3027,11 @@ pub const MMAP_PROT_WRITE: u64 = 2;
 /// (a locked mapping must take no fault).
 pub const MMAP_MAP_POPULATE: u64 = 0x8000;
 pub const MMAP_MAP_LOCKED: u64 = 0x2000;
+/// `flags` bit `sys_mmap` honours for a Linux task, Linux's value: place the
+/// mapping exactly at `addr`, or answer `-EEXIST` and leave everything as it
+/// was. Never over another mapping. Plain `MAP_FIXED`, which replaces what
+/// the range holds, has no bit here: the personalities refuse it.
+pub const MMAP_MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
 /// Highest real-time `SchedClass` discriminant (SafetyCritical 0, HardRT 1,
 /// SoftRT 2).
 pub(crate) const RT_CLASS_MAX: u8 = 2;
@@ -3043,10 +3048,147 @@ fn mmap_precommit(flags: u64) -> bool {
         || (azos_mm::pager::PRECOMMIT_RT && azos_sched::current_sched_params().1 <= RT_CLASS_MAX)
 }
 
+/// Where a new mapping of `span` bytes (a page multiple) goes: `sys_mmap`'s
+/// and a private file mapping's (`crate::file_map`). The start, or the
+/// value to return (`-1` or a negative errno). [`mmap_placed`] records it once
+/// the mapping is made.
+///
+/// * **A native task** (and a task the ring-3 Linux runtime hosts): at its
+///   break, which the mapping then moves past, as always. `ualloc`'s guard
+///   pages count on that bump. The hint is not consulted, and
+///   `MAP_FIXED_NOREPLACE` is `-EINVAL`: no native caller places a mapping
+///   yet (`lxsrv`'s module window is the one that will; it needs no other bit).
+/// * **A Linux task**: in its mmap area (`azos_sched::user_mmap_area`),
+///   top-down from the cursor (`azos_sched::update_user_mmap_low`, the lowest
+///   address handed out), as Linux places mappings below its mmap base. The
+///   area starts where the break stops, so the two never meet. Everything
+///   between the floor and the cursor is vacant, so:
+///   - a hint is honoured when its range lies there (and the page table has
+///     nothing in it); otherwise the mapping goes below the cursor, as
+///     Linux falls back. A libc that grows its heap downward by hints (zig's
+///     `PageAllocator`, BusyBox's) gets one contiguous run, one region record.
+///   - `MAP_FIXED_NOREPLACE` takes exactly that range or nothing: `-EINVAL`
+///     for an unaligned address, `-ENOMEM` outside the area, `-EEXIST` when
+///     the range reaches the cursor. Above the cursor a `PROT_NONE` mapping
+///     leaves no record to tell it from a hole, so it is never presumed free.
+pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> Result<usize, i64> {
+    use azos_abi::error::Errno;
+    let page = azos_arch::PAGE_SIZE;
+    if !azos_sched::scheduler::current_is_linux() || cfg!(feature = "mmap-brk-apart-canary") {
+        if flags & MMAP_MAP_FIXED_NOREPLACE != 0 {
+            return Err(Errno::EINVAL.to_syscall_ret());
+        }
+        // **WHY the brk itself has to be checked (null-guard follow-up).**
+        // A task whose brk was never initialised reports **0** (`scheduler.rs`
+        // zeroes `user_brk` at task creation). The range was then reserved
+        // starting at VA 0 and the syscall answered `0` — a *successful*
+        // allocation whose base is the null pointer. Callers cannot tell that
+        // apart from a real address. `vmm::USER_GUARD_LIMIT` makes the first
+        // access to such a pointer kill the task, but the allocation itself is
+        // nonsense: refused here, at the only place that can tell.
+        let base = azos_sched::update_user_brk(0) as usize;
+        if base < azos_mm::vmm::USER_GUARD_LIMIT { return Err(-1); }
+        let aligned = base.saturating_add(page - 1) & !(page - 1);
+        // The mapping must end at or below the shm/MMIO window (and so
+        // strictly below the user VA ceiling: above it the "user" page table is
+        // the kernel's): `shm_map_user` and `mmio_map_user` hand out addresses
+        // there, and `sys_munmap` and teardown never free a frame there, so an
+        // anonymous page placed in it would never be freed.
+        return match aligned.checked_add(span) {
+            Some(end) if end <= azos_sched::user_shm_window().0 => Ok(aligned),
+            _ => Err(-1),
+        };
+    }
+    let (floor, ceiling) = azos_sched::user_mmap_area();
+    let low = match azos_sched::update_user_mmap_low(0) as usize {
+        0 => ceiling,
+        c => c,
+    };
+    let fits = |s: usize| {
+        cfg!(feature = "mmap-hint-window-canary")
+            || (s >= floor && s.checked_add(span).is_some_and(|e| e <= low))
+    };
+    let vacant = |s: usize| azos_mm::vmm::user_range_vacant(user_pt, s, s + span);
+    if flags & MMAP_MAP_FIXED_NOREPLACE != 0 && !cfg!(feature = "mmap-noreplace-canary") {
+        let s = addr as usize;
+        if s & (page - 1) != 0 {
+            return Err(Errno::EINVAL.to_syscall_ret());
+        }
+        if s < floor || s.checked_add(span).is_none_or(|e| e > ceiling) {
+            return Err(Errno::ENOMEM.to_syscall_ret());
+        }
+        return if fits(s) && vacant(s) { Ok(s) } else { Err(Errno::EEXIST.to_syscall_ret()) };
+    }
+    if addr != 0 && !cfg!(feature = "mmap-hint-canary") {
+        if let Some(s) = (addr as usize).checked_add(page - 1).map(|a| a & !(page - 1)) {
+            if fits(s) && vacant(s) {
+                return Ok(s);
+            }
+        }
+    }
+    // Top-down below the cursor, stepping under whatever the page table holds
+    // there (a slot the kernel shares on this board).
+    let mut end = low;
+    while end >= floor.saturating_add(span) {
+        let s = end - span;
+        if vacant(s) {
+            return Ok(s);
+        }
+        let mut p = end - page;
+        while p > s && azos_mm::vmm::user_range_vacant(user_pt, p, p + page) {
+            p -= page;
+        }
+        end = p;
+    }
+    Err(-1)
+}
+
+/// Record a mapping [`mmap_place`] placed at `[start, end)`: a native task's
+/// break moves past it, a Linux task's cursor down to it.
+pub(crate) fn mmap_placed(start: usize, end: usize) {
+    if !azos_sched::scheduler::current_is_linux() || cfg!(feature = "mmap-brk-apart-canary") {
+        azos_sched::update_user_brk(end as u64);
+        return;
+    }
+    let low = azos_sched::update_user_mmap_low(0) as usize;
+    if low == 0 || start < low {
+        azos_sched::update_user_mmap_low(start as u64);
+    }
+}
+
+/// `sys_munmap` emptied `[start, end)`: a Linux task's cursor climbs back over
+/// it when the range began at or below the cursor, so the area below the
+/// cursor stays vacant and a range given back next to it is placed again
+/// (zig's allocator trims each slab's head, just below the cursor).
+fn mmap_unmapped(start: usize, end: usize) {
+    if !azos_sched::scheduler::current_is_linux() {
+        return;
+    }
+    let (_, ceiling) = azos_sched::user_mmap_area();
+    let low = azos_sched::update_user_mmap_low(0) as usize;
+    if low != 0 && start <= low && end > low {
+        azos_sched::update_user_mmap_low(end.min(ceiling) as u64);
+    }
+}
+
+/// Is `va` in the part of a Linux task's mmap area its mmaps handed out
+/// (`[cursor, ceiling)`)? `sys_mprotect` maps a missing page there, as it does
+/// below the break: musl reserves a thread stack `PROT_NONE` and opens it.
+fn mmap_handed_out(va: usize) -> bool {
+    if !azos_sched::scheduler::current_is_linux() {
+        return false;
+    }
+    let (_, ceiling) = azos_sched::user_mmap_area();
+    let low = azos_sched::update_user_mmap_low(0) as usize;
+    low != 0 && va >= low && va < ceiling
+}
+
 /// SYS_MO_MAP: anonymous memory mapping.
 /// a0=addr (hint, 0=any), a1=length, a2=prot, a3=flags, a4=fd (-1 anon), a5=offset.
-/// Returns mapped virtual address, `-EINVAL` for `PROT_EXEC`, or -1 on any
-/// other error.
+/// Placement: [`mmap_place`] (a native task's hint is not consulted).
+/// Returns mapped virtual address, `-EINVAL` for `PROT_EXEC`, a Linux task's
+/// `MAP_FIXED_NOREPLACE` refusal (`-EEXIST`, `-ENOMEM`, `-EINVAL`), or -1 on
+/// any other error.
 ///
 /// Wave 14 (DEMANDPAGE): the range is reserved (a region record) and each
 /// page committed on its first touch, unless [`mmap_precommit`] says
@@ -3087,38 +3229,15 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     let page_size = azos_arch::PAGE_SIZE;
     let num_pages = len.saturating_add(page_size - 1) / page_size;
 
-    // Use brk as base for anonymous mappings, then advance brk
-    // **WHY the brk itself has to be checked (null-guard follow-up).** Both
-    // brk-based allocators take `update_user_brk(0)` as their base, and a task
-    // whose brk was never initialised reports **0** (`scheduler.rs` zeroes
-    // `user_brk` at task creation). The range was then reserved starting at VA
-    // 0 and the syscall answered `0` — a *successful* allocation whose base is
-    // the null pointer. Callers cannot tell that apart from a real address.
-    //
-    // `vmm::USER_GUARD_LIMIT` now makes the first access to such a pointer kill
-    // the task instead of quietly succeeding on a zero page, which turns a
-    // silent corruption into a loud death — but the allocation itself is still
-    // nonsense, and handing out a null base is the actual defect. Refuse it
-    // here, at the only place that can tell the difference.
-    let base = azos_sched::update_user_brk(0) as usize;
-    if base < azos_mm::vmm::USER_GUARD_LIMIT { return -1; }
-    let aligned_base = base.saturating_add(page_size - 1) & !(page_size - 1);
-    // The mapping must stay strictly below the user VA ceiling: above it the
-    // "user" page table is the kernel's (shared L1/L0 tables), so mapping
-    // there would install USER_RW pages into kernel address space. It must
-    // also end at or below the shm/MMIO window, which lies below that
-    // ceiling: `shm_map_user` and `mmio_map_user` hand out addresses there,
-    // and `sys_munmap` and teardown never free a frame there, so an anonymous
-    // page placed in it would never be freed.
     let span = match num_pages.checked_mul(page_size) {
         Some(s) => s,
         None    => return -1,
     };
-    let end_va = match aligned_base.checked_add(span) {
-        Some(e) => e,
-        None    => return -1,
+    let aligned_base = match mmap_place(user_pt, addr, span, flags) {
+        Ok(b) => b,
+        Err(e) => return e,
     };
-    if end_va > azos_sched::user_shm_window().0 { return -1; }
+    let end_va = aligned_base + span;
 
     // Owner decision 102 — charge the whole request before taking one frame.
     //
@@ -3134,7 +3253,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     let canary = cfg!(feature = "mmap-prot-canary");
     let writable = canary || prot & MMAP_PROT_WRITE != 0;
     if prot & (MMAP_PROT_READ | MMAP_PROT_WRITE) == 0 && !canary {
-        azos_sched::update_user_brk(end_va as u64);
+        mmap_placed(aligned_base, end_va);
         return aligned_base as i64;
     }
 
@@ -3145,8 +3264,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     if !mmap_precommit(flags)
         && azos_mm::pager::reserve(user_pt, aligned_base, end_va, writable).is_ok()
     {
-        azos_sched::update_user_brk(end_va as u64);
-        let _ = addr;
+        mmap_placed(aligned_base, end_va);
         return aligned_base as i64;
     }
 
@@ -3181,12 +3299,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
         va += page_size;
     }
 
-    // Advance brk past the mapped region
-    azos_sched::update_user_brk(va as u64);
-
-    // If caller specified an addr hint, we ignore it (simplified). Of
-    // `flags`, only the pre-commit bits are consulted (`mmap_precommit`).
-    let _ = addr;
+    mmap_placed(aligned_base, va);
     aligned_base as i64
 }
 
@@ -3219,12 +3332,13 @@ pub(crate) fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
 /// * `PROT_NONE`: the pages are unmapped and freed (their contents are lost:
 ///   a divergence from Linux, which keeps them for a later `mprotect`).
 /// * Read or read-write: present pages and demand reservations change
-///   permission; a page with nothing behind it below the break (a
-///   `PROT_NONE` mapping's, or an unmapped one) is mapped zeroed and charged.
+///   permission; a page with nothing behind it below the break, or in the
+///   part of a Linux task's mmap area its mmaps handed out (a `PROT_NONE`
+///   mapping's, or an unmapped one), is mapped zeroed and charged.
 ///   Copy-on-write pages keep their sharing (`vmm::protect_user_range`).
 ///
 /// `-EINVAL` for a misaligned or empty range or unknown bits, `-ENOMEM` for a
-/// page past the break or one the kernel owns (shm/MMIO window, a kernel
+/// page past those or one the kernel owns (shm/MMIO window, a kernel
 /// mapping, a locked region). Nothing changes on a refusal.
 pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     use azos_abi::error::Errno;
@@ -3279,7 +3393,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
             // Wave 14: a reserved page is not missing (it is charged and
             // committed on first touch); its region takes the new `prot`.
             azos_mm::vmm::UserPage::Missing if !none && !azos_mm::pager::contains(user_pt, va) => {
-                if va >= brk { return Errno::ENOMEM.to_syscall_ret(); }
+                if va >= brk && !mmap_handed_out(va) { return Errno::ENOMEM.to_syscall_ret(); }
                 missing += 1;
             }
             _ => {}
@@ -3476,6 +3590,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // invalid PTE is never cached in a TLB, so this pass needs no shootdown.
     freed = freed.saturating_add(azos_ipc::memobj::anon_release_range(user_pt, start, end));
     azos_sched::mm_discharge(freed);
+    mmap_unmapped(start, end);
     0
 }
 
