@@ -87,6 +87,18 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# Kernel task placement (tools/task_place_lint.py), as the gate's row does.
+if [ "$tier" = n0 ]; then
+    printf "  %-26s" "task place lint..."
+    if out="$(python3 tools/task_place_lint.py --self-test 2>&1)" \
+       && out="$(python3 tools/task_place_lint.py 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 # Facade bypass ratchet (tools/arch_cfg_lint.py --facade): shared code may not
 # reach ISA-specific azos_arch modules (csr, sbi, sysregs, irq::<chip>, ...);
 # per-file counts in the [facade] section of tools/arch_cfg_lint.baseline.

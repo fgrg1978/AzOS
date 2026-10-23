@@ -146,9 +146,10 @@ pub fn launch() {
         kprintln!("[ML] ring-3 ML service /fat/MLSRV.ELF started, tid={} (reply budget {} us)",
             rc, ML_REPLY_TIMEOUT_US);
         HELPER.store(HELPER_STARTING, Ordering::Release);
-        // Pinned beside the loop (hart 2, `main.rs`): it runs while the loop
-        // sleeps on the timer, and wakes it.
-        azos_sched::task_create_affinity("ml-infer", infer_task, 0, azos_sched::BEHAVIOR_PRIORITY, 2);
+        // Pinned beside the loop (Kconfig TASK_BEHAVIOR_PLACE): it runs while
+        // the loop sleeps on the timer, and wakes it.
+        azos_sched::task_create_affinity("ml-infer", infer_task, 0, azos_sched::BEHAVIOR_PRIORITY,
+            crate::tasks::place::pin(crate::tasks::place::BEHAVIOR));
     } else {
         azos_drv_sys::kwarn!("[ML] ring-3 ML service NOT started (spawn /fat/MLSRV.ELF rc={}): no ML \
                    verdicts this boot, L1 holds STOP (ml_enabled=0 turns ML off)", rc);

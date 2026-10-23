@@ -252,4 +252,100 @@ mod tests {
             assert!(!sv39_canonical && !va48_canonical, "{a:#x}");
         }
     }
+
+    // ── Placement classes (azos_percpu::place, Kconfig TASK_*_PLACE) ──────
+
+    use azos_percpu::place::{pin, resolve, Place};
+
+    #[test]
+    fn every_class_spelling_parses_and_nothing_else_does() {
+        assert_eq!(Place::parse("any"), Some(Place::Any));
+        assert_eq!(Place::parse("boot"), Some(Place::Boot));
+        assert_eq!(Place::parse("general"), Some(Place::General));
+        assert_eq!(Place::parse("last"), Some(Place::Last));
+        assert_eq!(Place::parse("rt.0"), Some(Place::Rt(0)));
+        assert_eq!(Place::parse("rt.1"), Some(Place::Rt(1)));
+        assert_eq!(Place::parse("rt.63"), Some(Place::Rt(63)));
+        // A CPU number is not a class: that is what the classes replace.
+        for bad in ["", "3", "hart3", "cpu2", "rt", "rt.", "rt.x", "rt.123", "LAST", "last ", "rt-0"] {
+            assert_eq!(Place::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    /// The values the build was configured with (config/Kconfig.tasks) are
+    /// classes; the kernel evaluates the same at compile time.
+    #[test]
+    fn the_configured_classes_parse() {
+        for v in [
+            azos_limits::TASK_NET_POLL_PLACE, azos_limits::TASK_AUTORUN_PLACE,
+            azos_limits::TASK_SYS_WDT_PLACE, azos_limits::TASK_OTA_RECV_PLACE,
+            azos_limits::TASK_CONTROL_PLACE, azos_limits::TASK_SENSING_PLACE,
+            azos_limits::TASK_BEHAVIOR_PLACE,
+        ] {
+            assert!(Place::parse(v).is_some(), "{v:?}");
+        }
+    }
+
+    /// The defaults on 4 CPUs are the layout the literal pins gave (control
+    /// 0, sensing 1, behavior and sys-wdt 2, net-poll and autorun 3).
+    #[test]
+    fn four_cpus_keep_the_old_layout() {
+        let r = |p| resolve(p, 4, 2);
+        assert_eq!(r(Place::Rt(0)), Some(0));
+        assert_eq!(r(Place::Rt(1)), Some(1));
+        assert_eq!(r(Place::General), Some(2));
+        assert_eq!(r(Place::Last), Some(3));
+        assert_eq!(r(Place::Boot), Some(0));
+        assert_eq!(r(Place::Any), None);
+    }
+
+    /// Canary for the literal hart: riscv64 pinned net-poll to 3 on every
+    /// board. On 2 CPUs that CPU does not exist; on a K1's 8 it left the last
+    /// four idle of kernel work.
+    #[test]
+    fn the_last_cpu_follows_the_board_not_a_literal() {
+        assert_eq!(resolve(Place::Last, 1, 2), Some(0));
+        assert_eq!(resolve(Place::Last, 2, 2), Some(1));
+        assert_eq!(resolve(Place::Last, 8, 2), Some(7));
+        assert_eq!(resolve(Place::General, 2, 2), Some(1), "no CPU after the cluster: the last");
+        assert_eq!(resolve(Place::General, 8, 2), Some(2));
+        assert_eq!(resolve(Place::Rt(1), 1, 2), Some(0), "a 1-CPU cluster folds rt.1 onto rt.0");
+        assert_eq!(resolve(Place::Rt(3), 8, 0), Some(0), "no cluster: the boot CPU");
+        assert_eq!(resolve(Place::General, 4, 0), Some(0), "no cluster: general starts at CPU 0");
+    }
+
+    /// Whatever the board and the cluster size, a class names a CPU the boot
+    /// has: `task_create_affinity` never has to re-pin it.
+    #[test]
+    fn a_class_always_names_a_cpu_the_boot_has() {
+        let classes = [Place::Boot, Place::General, Place::Last, Place::Rt(0), Place::Rt(1), Place::Rt(9)];
+        for n in 0..=NR_CPUS {
+            for rt in 0..=NR_CPUS + 2 {
+                for p in classes {
+                    let cpu = resolve(p, n, rt).unwrap();
+                    assert!(cpu < n.max(1), "{p:?} n={n} rt={rt} -> {cpu}");
+                }
+            }
+        }
+    }
+
+    /// `pin` resolves against `nr_cpu_ids`, which the firmware's CPU map sets.
+    #[test]
+    fn pin_reads_nr_cpu_ids() {
+        // Read under the lock, asserted after it: a failure here must not
+        // poison the lock for the other tests of the masks.
+        let (last, one) = {
+            let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+            let before = possible();
+            set_possible(&CpuMask::first_n(2.min(NR_CPUS)));
+            let last = pin(Place::Last);
+            set_possible(&CpuMask::first_n(1));
+            let one = pin(Place::Last);
+            set_possible(&before);
+            (last, one)
+        };
+        assert_eq!(last, (2.min(NR_CPUS) - 1) as i8);
+        assert_eq!(one, 0);
+        assert_eq!(pin(Place::Any), -1);
+    }
 }

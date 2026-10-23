@@ -52,6 +52,9 @@
 
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
+// The kernel tasks' placement classes (Kconfig `TASK_*_PLACE`).
+pub mod place;
+
 /// The ceiling (Kconfig `NR_CPUS`): the largest CPU id plus one this build can
 /// run. A CPU id is the dense logical id on every ISA (boot CPU = 0); the
 /// hardware's own number for it is [`hw_id`].

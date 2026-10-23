@@ -2604,6 +2604,19 @@ else
     bad; printf '%s\n' "$bsl_out" | sed -n 1,10p | sed 's/^/      /'
 fi
 
+# Kernel task placement (tools/task_place_lint.py): a `task_create_affinity`
+# whose CPU is a literal (or a name bound to one) fixes a board fact in the
+# code; kernel tasks take a placement class (config/Kconfig.tasks). Ratchet in
+# tools/task_place_lint.baseline (test code that pins on purpose). The row
+# also runs the lint's own canaries (`--self-test`).
+printf "  %-26s" "task place lint (ratchet)..."
+if tpl_out="$(python3 "${REPO_ROOT}/tools/task_place_lint.py" --self-test 2>&1)" \
+   && tpl_out="$(python3 "${REPO_ROOT}/tools/task_place_lint.py" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$tpl_out" | sed -n 1,10p | sed 's/^/      /'
+fi
+
 # Neverallow (tools/check_neverallow.py, `make check-neverallow`): the built-in
 # topology of every preset on every ISA, of every defconfig and the micro
 # kernel's, against the rules in crates/core/topology/src/neverallow.rs. Host

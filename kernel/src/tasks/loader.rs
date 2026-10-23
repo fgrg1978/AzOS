@@ -25,11 +25,10 @@ pub(crate) fn autorun_task(arg: usize) {
     load_and_exec_image(&path[..path_len]);
 }
 
-/// The autorun loader's priority, and its hart at boot. Every successor the M4
-/// supervisor creates (`drv_supervisor`) loads at this priority, on the hart
-/// the driver it replaces was pinned to.
+/// The autorun loader's priority (its CPU: Kconfig TASK_AUTORUN_PLACE). Every
+/// successor the M4 supervisor creates (`drv_supervisor`) loads at this
+/// priority, on the hart the driver it replaces was pinned to.
 pub(crate) const AUTORUN_PRIORITY: u32 = azos_sched::DEFAULT_PRIORITY;
-pub(crate) const AUTORUN_HART: i8 = 3;
 
 /// `SAFETY_EXEC_REFUSED`'s `action_code` for an image the loader could not stage:
 /// it needs more frames than the budget of the row that bounds it, than the allocator

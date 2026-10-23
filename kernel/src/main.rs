@@ -1853,13 +1853,14 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         let port = azos_config::CFG_OTA_AUTO_RECV_PORT.load(
             core::sync::atomic::Ordering::Relaxed);
         if port != 0 && port <= 65535 {
-            // Pinned to CPU 2 — CPUs 0/1 host RT tasks, CPU 2 is quiet.
+            // Kconfig TASK_OTA_RECV_PLACE (`general`: outside the CPUs of
+            // the RT tasks).
             azos_sched::task_create_affinity(
                 "ota-recv",
                 azos_recovery::ota_recv_task_entry,
                 port as usize,
                 azos_sched::NET_POLL_PRIORITY,
-                2,
+                place::pin(place::OTA_RECV),
             );
             kprintln!("[OTA] Auto-recv task created on port {} (early)", port);
         }
@@ -2220,7 +2221,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // `num_cpus` is the same optimistic pre-`wake_harts` count the idle
         // tasks above are placed against, so a hart that fails to come up is
         // handled by that rescue and not by this line.
-        create_sys_wdt_task(2.min(num_cpus.saturating_sub(1)) as i8);
+        create_sys_wdt_task(place::pin(place::SYS_WDT));
     }
 
     // Recovery console task: priority 13 (high normal — above workers, runs in RT task sleep gaps).
@@ -2399,8 +2400,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     }
 
     // Phase G1: behavior engine (runs without ML too — L0, L2, L3 work).
-    // Pinned to hart 2: hart 0 is owned by rt-motor + flight-ctrl (prio 8),
-    // hart 1 by imu + sensor-ahrs (prio 8/14). Without affinity the
+    // Pinned (Kconfig TASK_BEHAVIOR_PLACE: CPU 2 of 4) away from rt-motor +
+    // flight-ctrl (prio 8, rt.0) and imu + sensor-ahrs (prio 8/14, rt.1),
+    // as on hart 2 with those on harts 0 and 1. Without affinity the
     // scheduler was leaving `behavior` competing for hart 3 against
     // every other prio-14+ task, and the brain TCP dial never fired
     // inside the E2E window. Hart 2 is otherwise idle so we get
@@ -2408,16 +2410,16 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     #[cfg(feature = "use-robot")]
     azos_sched::task_create_affinity(
         "behavior", behavior_task, 0,
-        azos_sched::BEHAVIOR_PRIORITY, 2);
+        azos_sched::BEHAVIOR_PRIORITY, place::pin(place::BEHAVIOR));
     #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created behavior task (subsumption L0-L3) [hart 2]");
+    kprintln!("[SCHED] Created behavior task (subsumption L0-L3) [hart {}]", place::pin(place::BEHAVIOR));
     // Wave 15 (B1): the behavior task only queues its brain-link messages;
     // this task puts them on the socket. Below behavior on its hart, so a
     // closed TCP window never delays the subsumption loop.
     #[cfg(feature = "use-robot")]
     azos_sched::task_create_affinity(
         "brain-tx", brain_tx_task, 0,
-        azos_limits::BRAIN_TX_PRIORITY as u32, 2);
+        azos_limits::BRAIN_TX_PRIORITY as u32, place::pin(place::BEHAVIOR));
     // C1: camera frames on a brain connection of their own, only when
     // CONFIG.INI sets `behavior_camera_port` (applied at boot, above). Below
     // behavior on the same hart, so a camera send, capture or handshake never
@@ -2427,27 +2429,27 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         CAMERA_TX_TASK.store(true, core::sync::atomic::Ordering::Release);
         azos_sched::task_create_affinity(
             "camera-tx", camera_tx_task, 0,
-            azos_sched::BEHAVIOR_PRIORITY + 1, 2);
-        kprintln!("[SCHED] Created camera-tx task (camera connection) [hart 2]");
+            azos_sched::BEHAVIOR_PRIORITY + 1, place::pin(place::BEHAVIOR));
+        kprintln!("[SCHED] Created camera-tx task (camera connection) [hart {}]", place::pin(place::BEHAVIOR));
     }
     // Hart 0: dedicated real-time control — PID loop pinned to avoid jitter.
     // The safety loops are exempt from the RT band budget (owner decision,
     // wave 11 SCHED-RT): never throttled when the band runs out.
     #[cfg(feature = "use-robot")]
     let rt_motor = azos_sched::task_create_affinity("rt-motor", rt_motor_task, 0,
-        azos_sched::RT_MOTOR_PRIORITY, 0);
+        azos_sched::RT_MOTOR_PRIORITY, place::pin(place::CONTROL));
     #[cfg(feature = "use-robot")]
     azos_sched::rt::exempt_from_band_cap(rt_motor);
     // RT7: a panic in a safety task is never contained (panic policy).
     #[cfg(feature = "use-robot")]
     panic::register_safety_task(rt_motor, "rt-motor");
     #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created rt-motor task (MotorCmd→PID→PWM + watchdog) [hart 0]");
+    kprintln!("[SCHED] Created rt-motor task (MotorCmd→PID→PWM + watchdog) [hart {}]", place::pin(place::CONTROL));
 
     // Dedicated sensor tasks (AQ0: IO-wait, priority-separated)
     #[cfg(feature = "use-robot")]
     let imu = azos_sched::task_create_affinity("imu", imu_task, 0,
-        azos_sched::RT_MOTOR_PRIORITY, 1); // RT priority, hart 1
+        azos_sched::RT_MOTOR_PRIORITY, place::pin(place::SENSING)); // RT priority
     #[cfg(feature = "use-robot")]
     azos_sched::rt::exempt_from_band_cap(imu);
     // Wave 15 (S1): the imu task only queues its reads; on the VisionFive 2
@@ -2493,22 +2495,12 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // itself stopped being a yield-loop in `b912aa2` (2026-09-03): it blocks
     // on a 1 kHz timer, so the argument above is history, not current
     // behaviour.
-    // Hart pin diverges by ISA (kernel-main-merge task finding — the gate's
-    // own `aarch64 network: NIC found + MAC` row caught this: net-poll never
-    // got created on the hart that row expects, because a first merge pass
-    // kept only riscv64's literal `3`). riscv64's board always enumerates 4
-    // harts in every gate scenario, so a literal pin is safe there — see the
-    // history above. aarch64's own `-smp` varies across gate rows (2 today,
-    // one row at 4), so it pins to the LAST ONLINE hart instead
-    // (`num_cpus - 1`) — this was aarch64's own pre-merge behaviour,
-    // preserved exactly, not new.
-    #[cfg(target_arch = "riscv64")]
-    let net_poll_hart: i8 = 3;
-    #[cfg(target_arch = "aarch64")]
-    let net_poll_hart: i8 = num_cpus.saturating_sub(1) as i8;
-    // Any other ISA (the x86_64 skeleton): aarch64's policy, the last CPU.
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-    let net_poll_hart: i8 = num_cpus.saturating_sub(1) as i8;
+    // One placement on every ISA: Kconfig TASK_NET_POLL_PLACE (`last`, the
+    // last CPU of this boot). riscv64 used to pin a literal 3, wrong under
+    // `-smp` 1 or 2 and on the K1's 8 harts; aarch64's `-smp` varies across
+    // gate rows (the `aarch64 network: NIC found + MAC` row expects CPU 1 at
+    // `-smp 2`).
+    let net_poll_hart: i8 = place::pin(place::NET_POLL);
     install_net_hooks();
     azos_sched::task_create_affinity("net-poll", net_poll_task, 0,
         azos_sched::NET_POLL_PRIORITY, net_poll_hart);
@@ -2530,21 +2522,21 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Hart 1: sensor fusion — dedicated to avoid contention with motor PID on hart 0.
     #[cfg(feature = "use-robot")]
     azos_sched::task_create_affinity("sensor-ahrs", sensor_ahrs_task, 0,
-        azos_sched::SENSOR_AHRS_PRIORITY, 1);
+        azos_sched::SENSOR_AHRS_PRIORITY, place::pin(place::SENSING));
     #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created sensor-ahrs task (IMU+baro+GPS→AHRS→channels) [hart 1]");
+    kprintln!("[SCHED] Created sensor-ahrs task (IMU+baro+GPS→AHRS→channels) [hart {}]", place::pin(place::SENSING));
 
     // Phase J+K: flight controller task (mixer + PID + failsafe).
     // Hart 0: flight controller — same hart as rt-motor for cache locality.
     #[cfg(feature = "use-robot")]
     let flight_ctrl = azos_sched::task_create_affinity("flight-ctrl", flight_control_task, 0,
-        azos_sched::FLIGHT_CTRL_PRIORITY, 0);
+        azos_sched::FLIGHT_CTRL_PRIORITY, place::pin(place::CONTROL));
     #[cfg(feature = "use-robot")]
     azos_sched::rt::exempt_from_band_cap(flight_ctrl);
     #[cfg(feature = "use-robot")]
     panic::register_safety_task(flight_ctrl, "flight-ctrl");
     #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created flight-ctrl task (PID→mixer→ESC + failsafe) [hart 0]");
+    kprintln!("[SCHED] Created flight-ctrl task (PID→mixer→ESC + failsafe) [hart {}]", place::pin(place::CONTROL));
 
     // Phase L: telemetry task (attitude + GPS → UDP).
     #[cfg(feature = "use-robot")]
@@ -2564,13 +2556,12 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     install_ota_boot_good_hook();
     //
     // aarch64 created it above (in its own block, before its probes). Every
-    // other ISA here: riscv64 on hart 2; x86_64 (and any later port) the same
-    // watchdog, and with it the `log-flush` task it owns (the periodic flush
-    // request, the deferred block I/O, LOCKDEP=y's printer), pinned as
-    // aarch64 pins it: CPU 2, or the last online CPU. Before
+    // other ISA here the same watchdog, and with it the `log-flush` task it
+    // owns (the periodic flush request, the deferred block I/O, LOCKDEP=y's
+    // printer), on the same CPU (Kconfig TASK_SYS_WDT_PLACE). Before
     // `wake_secondaries` below, after `NUM_ONLINE_CPUS` (aarch64's reasons).
     #[cfg(not(target_arch = "aarch64"))]
-    create_sys_wdt_task(if cfg!(target_arch = "riscv64") { 2 } else { 2.min(num_cpus.saturating_sub(1)) as i8 });
+    create_sys_wdt_task(place::pin(place::SYS_WDT));
 
     // Create stress-test workers. find_least_loaded_cpu() distributes them
     // evenly across num_cpus CPUs (4 tasks per CPU for 16 total = 15+idle).
@@ -2685,7 +2676,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
             // no longer exists. `userspace: the brain lies` is the scenario
             // that fails if this is put back.
             azos_sched::task_create_affinity("autorun", autorun_task, len,
-                                        AUTORUN_PRIORITY, AUTORUN_HART);
+                                        AUTORUN_PRIORITY, place::pin(place::AUTORUN));
             kprintln!("[SCHED] Created autorun task: {}",
                 core::str::from_utf8(&path[..len]).unwrap_or("?"));
         }

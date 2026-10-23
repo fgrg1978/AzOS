@@ -1,6 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # config/kernel/Kconfig.tasks — Kernel tasks: placement, priorities, supervised restarts
+#
+# A kernel task is pinned by a placement CLASS, never by a CPU number: the
+# class is resolved at boot against the CPUs the firmware's CPU map names
+# (`nr_cpu_ids`), by azos_percpu::place. tools/task_place_lint.py fails a
+# new `task_create_affinity` whose CPU argument is a literal.
+#
+# The classes (the value of every TASK_*_PLACE below):
+#   any      no pin: the scheduler places the task.
+#   boot     the boot CPU (logical CPU 0 on every ISA).
+#   rt.K     the K-th CPU of the real-time cluster (TASK_RT_CLUSTER_CPUS),
+#            the cluster's last CPU when it has fewer; CPU 0 with no cluster.
+#   general  the first CPU after the cluster; the last CPU when there is none.
+#   last     the last CPU.
+# A value that is none of these does not build.
+#
+# Worked example, the defaults: on 4 CPUs the control loops run on CPU 0,
+# the sensor loops on CPU 1, behavior and the watchdog on CPU 2, net-poll
+# and autorun on CPU 3; on 2 CPUs, CPU 0 / 1 / 1 / 1; on 1 CPU everything on
+# CPU 0; on a K1's 8, CPU 0 / 1 / 2 / 7.
 
 config MM_RECLAIM_PRIORITY
     int "Reclaim task priority (outside the RT band: 12..30)"
@@ -146,3 +165,76 @@ config KILL_SWITCH_RECHECK_MS
       GPIO interrupt line could not be routed is read only at this period
       (the arm line says "polled"). 500 is the period of the poll it
       replaced (sys-wdt). Lower costs one wake per period.
+
+config TASK_RT_CLUSTER_CPUS
+    int "Real-time cluster: CPUs, from the boot CPU up"
+    range 0 64
+    default 2
+    help
+      How many CPUs, counted from logical CPU 0, the `rt.K` class spans;
+      the `general` class starts at the first CPU after them. A boot with
+      fewer CPUs than this has a cluster of all of them.
+
+      The cluster is a placement of the kernel's own tasks only: it does
+      not isolate the CPUs (the topology's `[sched] isolcpus` does) and the
+      scheduler still places other work on them.
+
+      Default 2: the control loops (rt.0) and the sensor loops (rt.1) of
+      the robot worked example each have a CPU of their own on a 4-CPU board.
+
+config TASK_NET_POLL_PLACE
+    string "net-poll: placement class"
+    default "last"
+    help
+      The network polling task (kernel/src/tasks/net_poll.rs). Default
+      `last`: away from the control loops and from behavior. Read only
+      with NET.
+
+config TASK_AUTORUN_PLACE
+    string "autorun loader: placement class"
+    default "last"
+    help
+      The task that loads CONFIG.INI's `autorun` image and becomes it
+      (kernel/src/tasks/loader.rs), and the CPU a supervised successor of
+      that image is created on. Default `last`, beside net-poll: the
+      program it becomes serves requests forever and must not compete with
+      the control or behavior loops.
+
+config TASK_SYS_WDT_PLACE
+    string "sys-wdt: placement class"
+    default "general"
+    help
+      The system watchdog task (canaries and timer liveness,
+      kernel/src/boot/sched.rs). Default `general`: the first CPU outside
+      the real-time cluster, where its only other residents are the behavior
+      tasks below it in priority.
+
+config TASK_OTA_RECV_PLACE
+    string "ota-recv: placement class"
+    default "general"
+    help
+      The OTA receiver (CONFIG.INI `ota_auto_recv_port`), created early in
+      the boot. Default `general`: outside the real-time cluster.
+
+config TASK_CONTROL_PLACE
+    string "Robot control loops (rt-motor, flight-ctrl): placement class"
+    default "rt.0"
+    help
+      The motor PID loop and the flight controller, on one CPU (cache
+      locality: flight-ctrl writes what rt-motor reads). Read only with
+      USE_ROBOT. Their priorities stay where they are (azos_sched).
+
+config TASK_SENSING_PLACE
+    string "Robot sensor loops (imu, sensor-ahrs): placement class"
+    default "rt.1"
+    help
+      The IMU reader and the AHRS fusion, on one CPU, apart from the control
+      loops. Read only with USE_ROBOT.
+
+config TASK_BEHAVIOR_PLACE
+    string "Robot behavior (behavior, brain-tx, camera-tx, ml-infer): placement class"
+    default "general"
+    help
+      The behavior loop and the tasks that must share its CPU: brain-tx and
+      camera-tx (below it, so a send never delays the loop) and ml-infer
+      (it runs while the loop sleeps and wakes it). Read only with USE_ROBOT.

@@ -3,6 +3,8 @@
 //! Kernel tasks that `kernel_main` creates, grouped by subsystem. Everything
 //! is re-exported so `kernel_main` names each task entry point directly.
 
+// The placement class of each kernel task (Kconfig `TASK_*_PLACE`).
+pub(crate) mod place;
 mod system;
 pub(crate) use system::*;
 mod net_poll;
