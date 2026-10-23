@@ -278,7 +278,10 @@ def with_kconfig_features(argv):
     if r.returncode != 0:
         sys.stderr.write(r.stderr)
         sys.exit(2)
-    if toks:
+    # A selection that sets nothing (the board the cell is, test hooks only)
+    # builds from the cell's own file: one path per configuration, so
+    # azos_limits does not rebuild for an identical copy.
+    if toks and sha_file(sel).digest() != sha_file(cfg).digest():
         os.environ["KCONFIG_CONFIG"] = sel
     out = r.stdout.split()
     feats = out[out.index("--features"):][:2] if "--features" in out else []
