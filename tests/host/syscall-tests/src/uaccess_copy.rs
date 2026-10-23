@@ -112,3 +112,34 @@ fn a_string_running_into_an_unmapped_page_is_refused() {
     unsafe { *((fr + PAGE_SIZE - 3) as *mut u8) = 0 };
     assert_eq!(azos_mm::uaccess::cstr_in(pt, &mut dst, VA + PAGE_SIZE - 16), Some(13));
 }
+
+/// Every pairing of destination and source alignment (the shifted copy's
+/// eight cases and the aligned one), both directions, on runs that leave
+/// heads and tails of every length.
+#[test]
+fn every_alignment_pairing_copies_exactly() {
+    let _g = serial();
+    let (pt, f) = two_pages();
+    let mut src = [0u8; 400];
+    for (i, b) in src.iter_mut().enumerate() {
+        *b = (i * 13 + 5) as u8;
+    }
+    for ua in 0..8usize {
+        for ka in 0..8usize {
+            for len in [64usize, 71, 129, 200] {
+                for off in 0..2 * PAGE_SIZE {
+                    unsafe { *at(&f, off) = 0xEE };
+                }
+                assert!(azos_mm::uaccess::copy_out(pt, VA + ua, src[ka..].as_ptr(), len));
+                for k in 0..len {
+                    assert_eq!(unsafe { *at(&f, ua + k) }, src[ka + k], "out user+{ua} kernel+{ka} len {len} byte {k}");
+                }
+                assert_eq!(unsafe { *at(&f, ua + len) }, 0xEE);
+                let mut dst = [0xCCu8; 400];
+                assert!(azos_mm::uaccess::copy_in(pt, dst[ka..].as_mut_ptr(), VA + ua, len));
+                assert_eq!(&dst[ka..ka + len], &src[ka..ka + len], "in user+{ua} kernel+{ka} len {len}");
+                assert_eq!(dst[ka + len], 0xCC);
+            }
+        }
+    }
+}

@@ -279,6 +279,7 @@ unsafe fn copy_bytes(dst: *mut u8, src: *const u8, n: usize) {
             4 => wr(dst as *mut u32, rd(src as *const u32)),
             8 => wr(dst as *mut u64, rd(src as *const u64)),
             _ if n >= 64 && (dst as usize | src as usize) & 7 == 0 => copy_words(dst, src, n),
+            _ if n >= 64 => copy_shifted(dst, src, n),
             _ => core::ptr::copy_nonoverlapping(src, dst, n),
         }
     }
@@ -348,6 +349,50 @@ unsafe fn nul_in(k: *const u8, n: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// [`copy_bytes`]' run between addresses of different alignment: bytes up to
+/// an 8-aligned destination, then each destination word built from two
+/// aligned source words by shifts, then the tail by bytes. The kernel builds
+/// for strict alignment (aarch64 `+strict-align`, riscv64 without
+/// misaligned-access support), so `compiler_builtins`' `memcpy` assembles each
+/// such word from eight byte loads: on aarch64 it spent 3.4 instructions a
+/// byte on `uaccess-read-4k`. Every load is of an aligned word all of whose
+/// bytes lie inside `[src, src + n)`: the first one is assembled from bytes.
+///
+/// # Safety
+///
+/// As [`copy_bytes`].
+#[inline(never)]
+unsafe fn copy_shifted(dst: *mut u8, src: *const u8, n: usize) {
+    // SAFETY: every access is inside `[dst, dst + n)` / `[src, src + n)`,
+    // the word loads 8-aligned (see the bounds below).
+    unsafe {
+        let head = (dst as usize).wrapping_neg() & 7;
+        core::ptr::copy_nonoverlapping(src, dst, head);
+        let (d, s, len) = (dst.add(head), src.add(head), n - head);
+        let off = s as usize & 7;
+        if off == 0 {
+            return copy_words(d, s, len);
+        }
+        // The first source word's bytes from `s` up to the next 8-aligned
+        // address, as the low end of an output word.
+        let mut lo = 0u64;
+        for j in 0..8 - off {
+            lo |= (*s.add(j) as u64) << (8 * j);
+        }
+        let base = s.sub(off) as *const u64;
+        let (rs, ls) = (8 * off as u32, 8 * (8 - off) as u32);
+        let mut i = 0;
+        // Word `i + 1` of `base` ends at `s - off + 8 * i + 16`, inside the run.
+        while 8 * i + 16 - off <= len {
+            let hi = base.add(i + 1).read_volatile();
+            (d.add(8 * i) as *mut u64).write_volatile(lo | (hi << ls));
+            lo = hi >> rs;
+            i += 1;
+        }
+        core::ptr::copy_nonoverlapping(s.add(8 * i), d.add(8 * i), len - 8 * i);
+    }
 }
 
 /// Does the word hold a zero byte? (The classic test: a byte borrows into
