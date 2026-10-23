@@ -120,7 +120,7 @@ enum Board {
     /// Raspberry Pi: the VideoCore mailbox.
     // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
     // The gate row builds the fake board instead, and never constructs this one.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
     #[cfg_attr(feature = "thermal-smoke", allow(dead_code))]
     Rpi,
     /// x86_64: the probed package sensor, and the level request and energy
@@ -143,7 +143,7 @@ impl Board {
             #[cfg(all(feature = "soc-k1", feature = "k1"))]
             Board::K1 { .. } => "k1",
             // arch-only: as the variant.
-            #[cfg(target_arch = "aarch64")]
+            #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
             Board::Rpi => "rpi",
             // arch-only: as the variant.
             #[cfg(all(target_arch = "x86_64", not(feature = "thermal-smoke")))]
@@ -435,7 +435,7 @@ fn board_runtime(
         return Some((rt, r, Board::K1 { plan: none, lagged: 0 }));
     }
     // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
     if let Some(built) = crate::entry::aarch64::ext::rpi_mbox::with(|fw| {
         // The ARM clock moves only if the energy step's probe found a range
         // that can move (`rpi_mbox::energy_model`): the Pi 5 and the other
@@ -600,7 +600,7 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
             settled
         }
         // arch-only: as the variant.
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(target_arch = "aarch64", feature = "rpi-firmware"))]
         Board::Rpi => crate::entry::aarch64::ext::rpi_mbox::with(|fw| rt.tick(fw, model, now, inp))
             .unwrap_or_else(|| rt.last()),
         // arch-only: as the variant.
