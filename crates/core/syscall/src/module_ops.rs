@@ -76,6 +76,13 @@ fn err(e: Errno) -> i64 {
     e.to_syscall_ret()
 }
 
+/// Does the calling task hold a live module token (it verified a module
+/// and has not mapped it yet)? The gate of the module window's exact
+/// placement (`module_window.rs`).
+pub fn caller_holds_token() -> bool {
+    TOKENS.lock().live_of(azos_sched::current_task_tid()) > 0
+}
+
 /// `DOMAIN_MODULE_VERIFY`: see `azos_abi::syscall_nr::DOMAIN_MODULE_VERIFY`.
 pub fn sys_module_verify(buf: u64, len: u64, name_ptr: u64, name_len: u64) -> i64 {
     if len == 0 || len > MODULE_MAX_BYTES || name_len == 0 || name_len as usize > NAME_MAX {
@@ -160,6 +167,12 @@ pub fn sys_module_map_x(token: u64, addr: u64, len: u64) -> i64 {
     }
     let Some(end) = addr.checked_add(pages * page) else { return err(Errno::EINVAL) };
     if end as usize > crate::handlers::USER_VA_TOP {
+        return err(Errno::EINVAL);
+    }
+    // Module text lives in the module window, where every relocation of
+    // it was checked to reach (Kconfig LX_MODULE_WINDOW_*).
+    if !crate::module_window::contains(addr as usize, end as usize) {
+        azos_drv_sys::kwarn!("[LX] module map_x REFUSED: tid {} range {:#x}+{:#x} is outside the module window", tid, addr, len);
         return err(Errno::EINVAL);
     }
     let pt = azos_sched::current_user_pt();

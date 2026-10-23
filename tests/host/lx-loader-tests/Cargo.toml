@@ -9,6 +9,8 @@ description = "Host-side tests for crates/core/lx-loader (the Linux driver serve
 # Run with:  make lx-modules && cd tests/host/lx-loader-tests && cargo test --release
 
 [dependencies]
+# The module window (Kconfig LX_MODULE_WINDOW_*).
+azos_limits = { path = "../../../crates/core/limits" }
 azos_lx_loader = { path = "../../../crates/core/lx-loader" }
 
 [profile.release]

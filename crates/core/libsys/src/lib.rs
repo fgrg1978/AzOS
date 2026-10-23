@@ -2073,8 +2073,10 @@ pub fn mcast_leave_typed(cap: u32, group: [u8; 4]) -> isize {
 ///
 /// ABI (`sys_mmap`, `handlers.rs::sys_mmap`): the POSIX six-argument shape is
 /// accepted, but the kernel supports **anonymous mappings only** — it
-/// returns `-1` unless `fd == u64::MAX` (i.e. `-1`). `addr`, `flags` and
-/// `offset` are ignored; the mapping is placed at the current brk. `prot` is
+/// returns `-1` unless `fd == u64::MAX` (i.e. `-1`). `addr` and `offset` are
+/// ignored, and the mapping is placed at the current brk, except with
+/// [`MAP_FIXED_NOREPLACE`] in `flags`: exactly at `addr`, inside a Linux
+/// driver server's module window (`SYS_MO_MAP`). `prot` is
 /// honoured (wave 13): [`PROT_READ`] maps read-only pages (a store faults),
 /// [`PROT_READ`]` | `[`PROT_WRITE`] read-write ones, `0` reserves the range
 /// and maps nothing, `PROT_EXEC` is refused. `len` is capped at
@@ -2092,6 +2094,8 @@ pub fn mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, offset: u64) ->
 
 /// `fd` value [`mmap`] requires for an anonymous mapping.
 pub const MAP_ANON_FD: u64 = u64::MAX;
+
+pub use azos_abi::syscall_nr::MMAP_MAP_FIXED_NOREPLACE as MAP_FIXED_NOREPLACE;
 
 /// Map the device registers of the hardware-bus device `handle` (`access`:
 /// `CapPerms` bits, READ or READ|WRITE). The virtual address, or `-Errno`;

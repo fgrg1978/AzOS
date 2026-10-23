@@ -20,6 +20,9 @@ use azos_lx_loader::{admit, encode, license_is_gpl_compatible, Error, Isa, Modul
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// The module window planner and the set relocated where it puts it.
+mod window;
+
 // ── fixtures ────────────────────────────────────────────────────────────────
 
 fn ko(isa: Isa) -> Vec<u8> {

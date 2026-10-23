@@ -55,9 +55,10 @@ Every user address today lies below `USER_STACK_TOP`, which is the board's `RAM_
 
 The window makes the property explicit and checked:
 
-- Kconfig `LX_MODULE_WINDOW_BASE` and `LX_MODULE_WINDOW_SIZE`, per ISA. The build refuses a window that ends above 2 GiB or above the board's user ceiling, or that overlaps the server image.
-- A fixed, no-replace placement flag on the existing `SYS_MO_MAP`, so no new syscall number. The kernel honours it only inside the window and only for a task whose topology row is the server of a Linux class (`lx_class`). It refuses an overlap with `EEXIST`. The break and hint-less mappings never allocate inside the window.
+- Kconfig `LX_MODULE_WINDOW_BASE` and `LX_MODULE_WINDOW_SIZE`, one default for the three ISAs (64 MiB to 96 MiB), because their user layouts agree there: the image and the break stay below 32 MiB (`USER_LOW_MAX`), the vDSO is at 512 MiB, and no native mapping is placed in between. The build (`crates/core/sched/src/process.rs`) refuses a window that is not page-aligned, that starts below `USER_LOW_MAX` (so the break, which stops there, never grows into it), that ends above the vDSO page, or whose end lies more than 128 MiB above the lowest user address. That last bound is the reach of an aarch64 direct branch (`CALL26`, `JUMP26`; the loader has no veneers), the shortest of the three ISAs; it also keeps riscv64's PC-relative pairs and x86_64's `PC32` and `32S` fields (2 GiB) in reach.
+- A fixed, no-replace placement flag on the existing `SYS_MO_MAP` (`MAP_FIXED_NOREPLACE`, Linux's value 0x100000), so no new syscall number (`crates/core/syscall/src/module_window.rs`). The kernel honours it only inside the window and only for a task that holds a live module token, that is, between its `DOMAIN_MODULE_VERIFY` and the `DOMAIN_MODULE_MAP_X` that consumes the token: only a Linux driver server, while it loads a module. This uses state the kernel already keeps instead of a per-task `lx_class` flag. It refuses an overlap with `EEXIST`, a page the kernel maps for itself (riscv64 shares the low gigabyte's tables with the kernel's device windows) with `EINVAL`, and commits the pages at once, never executable. The break and hint-less mappings never allocate inside the window.
 - `DOMAIN_MODULE_MAP_X` refuses a text range outside the window.
+- The server places each module with the loader's planner (`azos_lx_loader::Window`): text, then data from the next page, so no page is both, then one unmapped guard page.
 
 The server image, whose symbols the modules import, is linked low in every ISA's user layout (`sdk/ld/user_*.ld`: 0x10000 on aarch64 and x86_64, 0x200000 on riscv64). Both of its relocation reaches therefore hold: the x86_64 absolute range and the riscv64 and aarch64 PC-relative range.
 
@@ -135,7 +136,7 @@ Source: `tools/lx_license_lint.py` (T1 to T5, A1).
 
 ### Next fronts
 
-1. **lx-module-window** (kernel, three ISAs): the Kconfig window, the fixed no-replace flag on `SYS_MO_MAP` for Linux class servers, the break kept out of the window, and the window check in `DOMAIN_MODULE_MAP_X`. Host tests in `tests/host/syscall-tests`, each with a canary.
+1. **lx-module-window** (kernel, three ISAs): the Kconfig window, the fixed no-replace flag on `SYS_MO_MAP` for a task that holds a live module token, the break kept out of the window by construction, the window check in `DOMAIN_MODULE_MAP_X`, and the loader's planner, which `lxsrv` uses. Host tests in `tests/host/syscall-tests` and `tests/host/lx-loader-tests`, each with a canary.
 2. **lx-insn-rewrite** (`crates/core/lx-loader`, ring 3): the riscv64 `sstatus` rewrites and the aarch64 `SP_EL0`/`TPIDR_EL1`/`TPIDR_EL2` rewrites, with a refusal for anything else privileged. Host tests in `tests/host/lx-loader-tests` over the built filesystem set: no privileged instruction is left, and the canary is a module with one other CSR.
 3. **lx-tpidr-el0** (kernel, aarch64): `TPIDR_EL0` saved and restored per task for the slots whose topology row names an `lx_class`, not only for Linux-personality tasks. Tested with a ktest whose canary keeps only the Linux-personality slots.
 4. **lx-virtual-irq** (`lx/emul`): `request_irq`, `request_threaded_irq`, `free_irq`, `enable_irq` and `disable_irq` over the kernel's mask-until-ACK line, with thread functions on their own tasks. The `irqsave` family over the emulated interrupt flag, with sleeping inside it refused and counted, was already in `lx/emul/src/lock.rs`; the exported `_raw_spin_lock_irqsave` symbols are the ext4 slice's.
@@ -166,7 +167,7 @@ Source: `tools/lx_license_lint.py` (T1 to T5, A1).
 ## Unresolved questions
 
 - Whether a later slice reads interrupt state, for example `irqs_disabled()` under lockdep. The Kbuild configuration has lockdep off.
-- The window's default per ISA, which depends on the server image layout on each board.
+- Whether the module window's exact placement should also require the row's `lx_class` (the per-task flag lx-tpidr-el0 adds) on top of the live module token.
 
 ## Future possibilities
 

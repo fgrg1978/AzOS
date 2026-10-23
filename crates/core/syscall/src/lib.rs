@@ -85,6 +85,8 @@ pub mod schedctl;
 pub mod motor_commander;
 #[cfg(feature = "lx-loader")]
 pub mod module_ops;
+/// The module window: exact placement for a Linux driver server's modules.
+pub mod module_window;
 /// The pure token table `module_ops` keeps (host-tested).
 #[cfg(feature = "lx-loader")]
 pub mod module_tokens;

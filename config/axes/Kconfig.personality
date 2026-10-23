@@ -219,6 +219,40 @@ config LX_MODULE_TOKENS
       Raise it only when more Linux driver servers than this start at once.
       Outside the LINUX_DRIVERS block so the constant always exists.
 
+config LX_MODULE_WINDOW_BASE
+    hex "Module window of a Linux driver server: base address"
+    default 0x04000000
+    help
+      Lowest user address of the window where a Linux driver server places
+      the text and data of the modules it loads. The server maps each region
+      at an exact address in it (SYS_MO_MAP with MAP_FIXED_NOREPLACE, honoured
+      only for a task that holds a live module token, and only inside the
+      window), and DOMAIN_MODULE_MAP_X refuses text outside it.
+
+      The window keeps every module within reach of the server image and of
+      each other on all three ISAs: the build refuses a window that is not
+      page-aligned, that starts below the image and break ceiling (32 MiB,
+      so the break never grows into it), that ends above the vDSO page, or
+      whose end lies more than 128 MiB above the lowest user address (the
+      reach of an aarch64 direct branch, the shortest of the three; riscv64
+      PC-relative pairs and x86_64 PC32 and 32S fields reach 2 GiB). A
+      placement that meets a page the kernel maps for itself (riscv64 shares
+      the low gigabyte with the kernel's device windows) is refused at run
+      time. The default, 64 MiB to 96 MiB, is clear of all of that on every
+      board in crates/drivers/base/src/platform.rs.
+
+      Outside the LINUX_DRIVERS block so the constant always exists.
+
+config LX_MODULE_WINDOW_SIZE
+    hex "Module window of a Linux driver server: size in bytes"
+    default 0x02000000
+    help
+      Bytes of the module window (LX_MODULE_WINDOW_BASE). Each module takes
+      its text and its data, each rounded up to pages, and one unmapped
+      guard page; the ext4 set (ext4, jbd2, mbcache, crc16) with lxbase.ko
+      takes under 2 MiB. Address space only: nothing is reserved or
+      committed until a module is placed.
+
 config USERSPACE_GPL
     bool "Allow third-party GPL userspace programs (e.g. BusyBox)"
     default n

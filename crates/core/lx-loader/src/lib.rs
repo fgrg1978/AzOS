@@ -16,6 +16,9 @@
 //!    the kernel flips it to read-execute (`DOMAIN_MODULE_MAP_X`), never both.
 //!    `.rodata` goes with data, not text: a constant pool that is executable
 //!    is a gadget source, a writable one is merely writable.
+//!    [`Window`] chooses where the two regions go: page-disjoint, inside
+//!    the module window, which the build checks is within every
+//!    relocation's reach of the server image.
 //! 3. [`Module::load`] copies the bytes, rewrites the privileged
 //!    instructions of the text for ring 3 ([`rewrite_text`]), resolves each
 //!    undefined symbol through the caller's table and applies the
@@ -62,7 +65,10 @@
 
 mod aarch64;
 mod riscv64;
+mod window;
 mod x86_64;
+
+pub use window::{Placement, Window, WindowError};
 
 // ── ELF constants (System V gABI, and the three psABIs) ─────────────────────
 

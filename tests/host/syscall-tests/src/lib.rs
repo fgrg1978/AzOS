@@ -183,6 +183,10 @@ pub mod trace_ctl;
 // file, and its exit release.
 #[path = "../../../../crates/core/syscall/src/module_tokens.rs"]
 pub mod module_tokens;
+// The module window (`SYS_MO_MAP` with `MAP_FIXED_NOREPLACE`), the real
+// file: `handlers.rs` names `crate::module_window`.
+#[path = "../../../../crates/core/syscall/src/module_window.rs"]
+pub mod module_window;
 
 #[cfg(test)]
 mod motor_commander_tests {
@@ -413,6 +417,12 @@ mod handlers {
     mod demand_paging {
         use super::*;
         include!("demand_paging.rs");
+    }
+
+    #[cfg(test)]
+    mod module_window_tests {
+        use super::*;
+        include!("module_window_tests.rs");
     }
 
     #[cfg(test)]

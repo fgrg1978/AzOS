@@ -538,12 +538,24 @@ pub const SYS_MO_CREATE: u64 = 14;
 /// `azos_mm::demand::MAX_DEMAND_ALLOC_BYTES`), `a3` the protection
 /// (`PROT_READ` 1, `PROT_WRITE` 2, 0 reserves the range and maps nothing;
 /// `PROT_EXEC` is refused with `-EINVAL`: W^X holds for ring 3 by
-/// construction), `a4` the flags (ignored). Returns the address, or `-1`.
+/// construction), `a4` the flags (`MAP_POPULATE`/`MAP_LOCKED` commit now;
+/// [`MMAP_MAP_FIXED_NOREPLACE`] below). Returns the address, or `-1`.
+///
+/// With [`MMAP_MAP_FIXED_NOREPLACE`]: exactly at `a1`, inside the module
+/// window of a Linux driver server (Kconfig `LX_MODULE_WINDOW_*`), for a task
+/// that holds a live module token; `-EPERM` without one, `-EINVAL` outside
+/// the window, unaligned, `PROT_NONE` or over a page the kernel maps,
+/// `-EEXIST` over a mapped page, `-ENOMEM` (nothing stays mapped). The break
+/// does not move (`crates/core/syscall/src/module_window.rs`).
 ///
 /// A handle that is not memory is `-ECAPKIND`.
 ///
 /// Foundational case 1 (protection: only the kernel edits the page tables).
 pub const SYS_MO_MAP: u64 = 15;
+
+/// [`SYS_MO_MAP`] flag: map exactly at the address, never over a mapping.
+/// Linux's value of `MAP_FIXED_NOREPLACE`.
+pub const MMAP_MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
 
 /// `SYS_MO_UNMAP` — `a0` names what goes: a `Cap<Shm>` handle, or 0.
 ///

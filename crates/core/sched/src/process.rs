@@ -132,6 +132,20 @@ use elf_bounds::{PF_W, PF_X};
 /// instead of silently losing a kernel mapping.
 const USER_LOW_MAX: usize = 0x0200_0000; // 32 MiB — CLINT base
 
+/// The module window of a Linux driver server (Kconfig
+/// `LX_MODULE_WINDOW_BASE`, `LX_MODULE_WINDOW_SIZE`;
+/// `crates/core/syscall/src/module_window.rs`), checked against the layout
+/// here: page-aligned; above [`USER_LOW_MAX`], so the break, which stops
+/// there, never grows into it; below the vDSO page; and ending within an
+/// aarch64 direct branch (128 MiB, the shortest reach of the three ISAs'
+/// relocations) of the lowest user address, so a module's branch to the
+/// server image or to another module always reaches.
+const LX_WINDOW_END: usize = azos_limits::LX_MODULE_WINDOW_BASE + azos_limits::LX_MODULE_WINDOW_SIZE;
+const _: () = assert!(azos_limits::LX_MODULE_WINDOW_BASE % PAGE_SIZE == 0 && azos_limits::LX_MODULE_WINDOW_SIZE % PAGE_SIZE == 0);
+const _: () = assert!(azos_limits::LX_MODULE_WINDOW_SIZE > 0 && azos_limits::LX_MODULE_WINDOW_BASE >= USER_LOW_MAX);
+const _: () = assert!(LX_WINDOW_END <= vdso::VDSO_USER_BASE);
+const _: () = assert!(LX_WINDOW_END - vmm::USER_GUARD_LIMIT <= 1 << 27);
+
 /// Pure `PT_LOAD` bounds checks, in their own file only so the host test
 /// runner (`tests/host/sched-wake-tests`) can compile them — the rest of this
 /// module cannot leave the target. Declared here rather than in `lib.rs` to

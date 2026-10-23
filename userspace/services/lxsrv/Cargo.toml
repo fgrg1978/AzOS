@@ -8,6 +8,7 @@ description = "The Linux driver server skeleton: starts from its topology row, l
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_limits = { path = "../../../crates/core/limits" }
 azos_lx_loader = { path = "../../../crates/core/lx-loader" }
 azos_ualloc = { path = "../../lib/ualloc" }
 

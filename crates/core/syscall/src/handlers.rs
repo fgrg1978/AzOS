@@ -3078,6 +3078,11 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     // `sys_alloc_demand` already enforces, so the two allocators agree on how
     // much one call may claim.
     if len > azos_mm::demand::MAX_DEMAND_ALLOC_BYTES { return -1; }
+    // A Linux driver server's module memory: an exact address inside its
+    // module window, the break untouched (module_window.rs).
+    if flags & crate::module_window::MMAP_MAP_FIXED_NOREPLACE != 0 {
+        return crate::module_window::map_fixed(user_pt, addr, len, prot, crate::module_window::caller_may_place());
+    }
 
     let page_size = azos_arch::PAGE_SIZE;
     let num_pages = len.saturating_add(page_size - 1) / page_size;
@@ -3191,7 +3196,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
 /// and the physical page is exclusively ours to release.  `vmm::unmap` shoots
 /// the address down on every hart that may hold it before it returns, so no
 /// stale TLB entry survives the free.
-fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
+pub(crate) fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
     let page_size = azos_arch::PAGE_SIZE;
     let mut v = base;
     while v < end {

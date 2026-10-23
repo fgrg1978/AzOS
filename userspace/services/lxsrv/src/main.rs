@@ -13,9 +13,11 @@
 //! 2. check its `.modinfo` (GPL-compatible licence tag, exact `vermagic`);
 //! 3. `DOMAIN_MODULE_VERIFY`: the kernel hashes the file bytes against the
 //!    digest table built into the kernel image and grants a one-shot token;
-//! 4. lay the module out in two anonymous regions (text, data), resolve its
-//!    imports against this server's export table and relocate it
-//!    (`crates/core/lx-loader`);
+//! 4. lay the module out in two anonymous regions (text, data) at the
+//!    addresses the module window gives them (Kconfig `LX_MODULE_WINDOW_*`,
+//!    mapped exactly there with `MAP_FIXED_NOREPLACE` while the verify token
+//!    is live), resolve its imports against this server's export table and
+//!    relocate it (`crates/core/lx-loader`);
 //! 5. `DOMAIN_MODULE_MAP_X`: the kernel flips the text region read-write to
 //!    read-execute (never both);
 //! 6. call the module's `lxtest_init` and compare its result with the value
@@ -51,7 +53,7 @@ compile_error!("lxsrv: no counter or module ISA for this ISA (riscv64, aarch64, 
 
 use core::cell::UnsafeCell;
 use azos_libsys as sys;
-use azos_lx_loader::{admit, Error, Isa, Module};
+use azos_lx_loader::{admit, Error, Isa, Layout, Module, Window};
 use azos_ualloc::UserAlloc;
 
 /// `vermagic` this server accepts (the test module's `.modinfo`). A Linux
@@ -194,6 +196,32 @@ fn mmap_pages(bytes: u64) -> Option<u64> {
     } else {
         Some(r as u64)
     }
+}
+
+struct Win(UnsafeCell<Option<Window>>);
+// SAFETY: single-threaded process; only `place_module` touches it.
+unsafe impl Sync for Win {}
+static WINDOW: Win = Win(UnsafeCell::new(None));
+
+/// Map a module's text and data regions at the addresses the module window
+/// gives them (Kconfig `LX_MODULE_WINDOW_*`): `(text_base, text_len,
+/// data_base, data_len)`. The kernel honours the exact placement only while
+/// this task holds the module's verify token, so call it after
+/// `DOMAIN_MODULE_VERIFY`.
+fn place_module(l: &Layout) -> Option<(u64, u64, u64, u64)> {
+    // SAFETY: see `Win`.
+    let w = unsafe { &mut *WINDOW.0.get() };
+    let w = match w {
+        Some(w) => w,
+        None => w.insert(Window::new(azos_limits::LX_MODULE_WINDOW_BASE as u64, azos_limits::LX_MODULE_WINDOW_SIZE as u64, PAGE).ok()?),
+    };
+    let p = w.place(l).ok()?;
+    for (at, len) in [(p.text_base, p.text_len), (p.data_base, p.data_len)] {
+        if len != 0 && sys::mmap(at, len, 3, sys::MAP_FIXED_NOREPLACE, sys::MAP_ANON_FD, 0) != at as isize {
+            return None;
+        }
+    }
+    Some((p.text_base, p.text_len, p.data_base, p.data_len))
 }
 
 // ── the module path ─────────────────────────────────────────────────────────
@@ -422,12 +450,10 @@ fn lx_load(path: &[u8], name: &[u8], resolve: &mut dyn FnMut(&[u8]) -> Option<u6
     }
     let t_verify = counter();
     let layout = m.layout().ok()?;
-    let (Some(tb), Some(db)) = (mmap_pages(layout.text_size), mmap_pages(layout.data_size)) else {
-        line(&[b"[LX] module ", name, b" FAIL: no memory for the regions"]);
+    let Some((tb, tl, db, dl)) = place_module(&layout) else {
+        line(&[b"[LX] module ", name, b" FAIL: no room for the regions in the module window"]);
         return None;
     };
-    let tl = layout.text_size.div_ceil(PAGE).max(1) * PAGE;
-    let dl = layout.data_size.div_ceil(PAGE).max(1) * PAGE;
     // SAFETY: both regions were just mapped read-write for this process,
     // with these lengths, and are never unmapped.
     let text = unsafe { core::slice::from_raw_parts_mut(tb as *mut u8, tl as usize) };
@@ -694,12 +720,10 @@ fn run() {
         line(&[b"[LXSRV] module LXTEST.KO FAIL: layout"]);
         return;
     };
-    let (Some(text_base), Some(data_base)) = (mmap_pages(layout.text_size), mmap_pages(layout.data_size)) else {
-        line(&[b"[LXSRV] module LXTEST.KO FAIL: no memory for the regions"]);
+    let Some((text_base, text_len, data_base, data_len)) = place_module(&layout) else {
+        line(&[b"[LXSRV] module LXTEST.KO FAIL: no room for the regions in the module window"]);
         return;
     };
-    let text_len = layout.text_size.div_ceil(PAGE) * PAGE;
-    let data_len = layout.data_size.div_ceil(PAGE).max(1) * PAGE;
     // SAFETY: both regions were just mapped read-write for this process,
     // with these lengths, and nothing else refers to them.
     let text = unsafe { core::slice::from_raw_parts_mut(text_base as *mut u8, text_len as usize) };
