@@ -5941,13 +5941,17 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
 # The build bucket: the drivers crate told "kernel" (`azos_drv_sensor/
 # ina219-kernel`) while the topology still declares INADRV.ELF must not link
 # (`kernel/src/tasks/ina219_host.rs`); green only on that assertion's text.
-drvplace_build_canary_row() { # <label> <isa: rv|arm>
+drvplace_build_canary_row() { # <label> <isa: rv|arm|x86>
     local label="$1" isa="$2" out
     local feat="ina219-placement-build-canary"
     local text="DRV_INA219_PLACEMENT: the drivers crate and the topology disagree"
     printf "  %-26s" "${label}..."
     if [ "$isa" = "rv" ]; then
         out="$("$CARGO" build --release --features "qemu,$feat" 2>&1)"
+    elif [ "$isa" = "x86" ]; then
+        # The x86_64 kernel's own build (`make x86_64`): its features come
+        # from the Kconfig expansion, the canary's on top.
+        out="$(make x86_64 X86_64_FEATURES="$feat" 2>&1)"
     else
         out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build \
             --release --target aarch64-unknown-none-softfloat -p azos_kernel \
@@ -15531,6 +15535,54 @@ PY
         bad; echo "      $why"; echo "      log kept: $log"
     }
     par "x86_64: first user task" x86_user_shell_row
+    # Wave 11 (DRVPLACE) on x86_64: the INA219 placement rows of riscv64
+    # (`drivers: INA219 placed in kernel`, `... placement canary`, `... build
+    # canary`) and aarch64. x86_64, like them, reads the QEMU simulation of
+    # the INA219 (crates/drivers/bus/src/i2c.rs: no controller driver is
+    # compiled for QEMU). `ring3-drv-smoke` boots build/disk-x86_64.img, which
+    # carries INADRV.ELF and the component manager; the kinds and their
+    # verdicts are `drvplace_row`'s:
+    #   ina-kernel  `[DRV1] ina219 PASS 7400 mV 1500 mA .. (kernel tid=`: the
+    #               kernel host answered, no ring-3 owner of the power monitor
+    #   ina-canary  `ina219-placement-canary`: must fail on `placement is
+    #               kernel but the topology declares` (the boot check)
+    # The build bucket is `drvplace_build_canary_row ... x86`.
+    x86_drvplace_row() { # x86_drvplace_row <label> <features> <ina-kernel|ina-canary>
+        local label="$1" feats="$2" kind="$3" why=""
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" disk="$CI_LOG_DIR/disk-x86-${tag}.img"
+        x86_disk_prep $AZOS_OUT/build/disk-x86_64.img "$kimg" "$disk" "$feats" || return
+        par_ready
+        x86_qemu "$kimg" "$log" 240 "DRV1\] ina219 (PASS|FAIL)|KERNEL PANIC|\[X86-TRAP\]" -smp 4 \
+            -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+            || { rm -f "$kimg" "$kimg.features" "$disk"; return; }
+        rm -f "$kimg" "$kimg.features" "$disk"
+        case "$kind" in
+            ina-kernel)
+                grep -aqE "\[DRV1\] ina219 PASS 7400 mV 1500 mA [0-9]+% \(kernel tid=" "$log" \
+                    || why="no '[DRV1] ina219 PASS 7400 mV 1500 mA .. (kernel tid=' line"
+                grep -aqF "[DRV1] ina219 FAIL" "$log" && why="an ina219 FAIL line"
+                ;;
+            ina-canary)
+                grep -aqF "[DRV1] ina219 FAIL: placement is kernel but the topology declares" "$log" \
+                    || why="the canary did not fail on the placement check"
+                ;;
+        esac
+        grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
+        if [ -z "$why" ]; then
+            ok
+            grep -a "ina219 read path" "$log" | sed -n '1s|^|      |p'
+            rm -f "$log"; return
+        fi
+        bad; echo "      $why"
+        grep -aE "\[DRV1\] (ina219|buzzer)|\[INA219\]|\[SUP\]" "$log" | sed -n '1,12p' | sed 's|^|        |'
+        echo "      log kept: $log"
+    }
+    par "x86_64 INA219 placed in kernel" x86_drvplace_row "x86_64 INA219 placed in kernel" "ring3-drv-smoke,ina219-kernel" ina-kernel
+    par "x86_64 INA219 placement canary" x86_drvplace_row "x86_64 INA219 placement canary" "ring3-drv-smoke,ina219-placement-canary" ina-canary
+    ci_row "x86_64 INA219 placement build canary" drvplace_build_canary_row "x86_64 INA219 placement build canary" x86
     # D6 on x86_64 (Kconfig LINUX_RUNTIME): the ring-3 runtime hosts a static
     # Linux x86-64 binary. `lxhello rt` (userspace/tests/lxhello/lxhello_x86_64.c)
     # issues the calls a static musl binary issues, in Linux's x86-64 numbers
