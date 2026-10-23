@@ -39,6 +39,12 @@ pub const CSW_STATUS_OK:          u8 = 0x00;
 pub const CSW_STATUS_FAIL:        u8 = 0x01;
 pub const CSW_STATUS_PHASE_ERROR: u8 = 0x02;
 
+/// bRequest of the class request Bulk-Only Mass Storage Reset (BBB §3.1):
+/// host to interface, wValue 0, wIndex the interface, no data. The first step
+/// of Reset Recovery (§5.3.4), before CLEAR_FEATURE(ENDPOINT_HALT) on bulk-IN
+/// and then bulk-OUT.
+pub const REQ_BULK_ONLY_RESET: u8 = 0xFF;
+
 /// Maximum CDB length per BBB spec.
 pub const CBW_CDB_MAX_LEN: usize = 16;
 /// Total wire length of a CBW.

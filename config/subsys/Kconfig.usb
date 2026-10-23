@@ -52,11 +52,13 @@ config USB_MSC_TIMEOUT_MS
     default 10000
     help
       crates/drivers/usb/src/class/msc.rs: a command (a CBW, its data stage and
-      its status) that has not finished after this long fails the disk: every
-      command it holds ends in an I/O error and no new one is started until
-      the stick is unplugged (Reset Recovery is not implemented). It is also
-      how long a unit may take to become ready (spinning up, or reporting a
-      medium change) before it is given up on at plug time. Only with USB_HOST.
+      its status) that has not finished after this long is recalled and the
+      stick goes through Reset Recovery; the command then runs once more, and
+      a second timeout (or one of the recovery's own control requests) fails
+      the disk: every command it holds ends in an I/O error and no new one is
+      started until the stick is unplugged. It is also how long a unit may
+      take to become ready (spinning up, or reporting a medium change) before
+      it is given up on at plug time. Only with USB_HOST.
 
 config USB_HOST
     # cargo-feature: usb-host
@@ -198,10 +200,13 @@ config USB_STORAGE
       stick of USB Attached SCSI (protocol 0x62) is detected and declined.
       It has a request queue of its own and never replaces the boot block
       device. One disk at a time; a command that outlives USB_MSC_TIMEOUT_MS,
-      or a transport error, fails the disk until it is unplugged (Reset
-      Recovery is not implemented). At boot the kernel prints the disk and
-      reads its sector 0. QEMU: `-device qemu-xhci -drive
-      if=none,id=u,file=disk.img -device usb-storage,drive=u`.
+      or a transport error (a phase error, a CSW that does not match), goes
+      through Reset Recovery (the bulk pipes reopened, Bulk-Only Mass Storage
+      Reset, both halts cleared) and runs again, once; a second failure, or a
+      recovery the stick refuses, fails the disk until it is unplugged. At
+      boot the kernel prints the disk and reads its sector 0. QEMU:
+      `-device qemu-xhci -drive if=none,id=u,file=disk.img
+      -device usb-storage,drive=u`.
       n: the class driver is not registered and a stick is only listed.
 
 config USB_STORAGE_VOLUME

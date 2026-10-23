@@ -9,7 +9,7 @@
 //! it misbehave the ways a real stick does.
 
 use azos_devif::outcome::{BUSY, OK, UNSUPPORTED};
-use azos_scsi::bbb::{Cbw, Csw, CBW_TOTAL_LEN, CSW_STATUS_FAIL, CSW_STATUS_OK, CSW_STATUS_PHASE_ERROR};
+use azos_scsi::bbb::{Cbw, Csw, CBW_TOTAL_LEN, CSW_STATUS_FAIL, CSW_STATUS_OK, CSW_STATUS_PHASE_ERROR, REQ_BULK_ONLY_RESET};
 use azos_scsi::initiator::INQUIRY_LEN;
 use azos_scsi::target::{
     execute_scsi, parse_scsi_command, BlockDevice, ScsiCommand, ScsiResponse, Sense, BLOCK_SIZE, SCSI_OP_INQUIRY,
@@ -55,12 +55,14 @@ struct Stick {
     no_cache: bool,
     /// The next READ(10) stalls its data stage (no data is queued).
     stall_read: bool,
-    /// Do not answer the next command at all.
-    mute: bool,
+    /// Do not answer the next this-many commands at all.
+    mute: u32,
     /// Answer the next command's CSW with the wrong tag.
     bad_tag: bool,
-    /// Answer the next command with a phase error CSW.
-    phase_error: bool,
+    /// Answer the next this-many commands with a phase error CSW.
+    phase_error: u32,
+    /// Bulk-Only Mass Storage Resets seen (each forgets a half-done command).
+    resets: usize,
 }
 
 impl Stick {
@@ -83,9 +85,10 @@ impl Stick {
             fail_io: 0,
             no_cache: false,
             stall_read: false,
-            mute: false,
+            mute: 0,
             bad_tag: false,
-            phase_error: false,
+            phase_error: 0,
+            resets: 0,
         }
     }
 
@@ -95,6 +98,13 @@ impl Stick {
 
     /// Look at what the driver sent since the last step and answer it.
     fn step(&mut self, hw: &crate::mock::Hw, dev: &DevRef) {
+        // A Bulk-Only Mass Storage Reset (BBB §3.1): the command in the
+        // middle of its stages is forgotten.
+        let resets = reset_requests(dev).len();
+        if resets > self.resets {
+            self.resets = resets;
+            self.awaiting = None;
+        }
         let new: Vec<(u8, Vec<u8>)> = dev.borrow().out_log[self.seen..].to_vec();
         self.seen += new.len();
         for (_, data) in new {
@@ -118,7 +128,12 @@ impl Stick {
 
     fn csw(&mut self, hw: &crate::mock::Hw, dev: &DevRef, tag: u32, residue: u32, status: u8) {
         let tag = if std::mem::take(&mut self.bad_tag) { tag ^ 0x100 } else { tag };
-        let status = if std::mem::take(&mut self.phase_error) { CSW_STATUS_PHASE_ERROR } else { status };
+        let status = if self.phase_error > 0 {
+            self.phase_error -= 1;
+            CSW_STATUS_PHASE_ERROR
+        } else {
+            status
+        };
         hw.inject_in(dev, 1, &Csw::new(tag, residue, status).encode());
     }
 
@@ -130,7 +145,8 @@ impl Stick {
     fn command(&mut self, hw: &crate::mock::Hw, dev: &DevRef, cbw: &Cbw) {
         let op = cbw.cdb[0];
         self.ops.push(op);
-        if std::mem::take(&mut self.mute) {
+        if self.mute > 0 {
+            self.mute -= 1;
             return;
         }
         let tag = cbw.tag;
@@ -246,7 +262,35 @@ fn bot_device(proto: u8) -> DevRef {
     let cfg = config_desc(1, &[iface(0, 8, 6, proto, vec![ep(0x81, 2, 512, 0), ep(0x02, 2, 512, 0)])]);
     let mut d = MockDev::new(3, dd, cfg);
     d.strings = vec![string_desc("Kingston"), string_desc("DataTraveler")];
+    // Bulk-Only Mass Storage Reset: class, to the interface, no data.
+    d.canned = vec![(0x21, REQ_BULK_ONLY_RESET, vec![])];
     d.into_ref()
+}
+
+/// The Bulk-Only Mass Storage Resets the device saw.
+fn reset_requests(dev: &DevRef) -> Vec<[u8; 8]> {
+    dev.borrow().requests.iter().map(|(s, _)| *s).filter(|s| s[0] == 0x21 && s[1] == REQ_BULK_ONLY_RESET).collect()
+}
+
+/// The control requests of Reset Recovery, in order, as the device saw them:
+/// the reset and the two CLEAR_FEATURE(ENDPOINT_HALT)s after it.
+fn recovery_requests(dev: &DevRef) -> Vec<[u8; 8]> {
+    dev.borrow()
+        .requests
+        .iter()
+        .map(|(s, _)| *s)
+        .filter(|s| (s[0] == 0x21 && s[1] == REQ_BULK_ONLY_RESET) || (s[0] == 0x02 && s[1] == 1))
+        .collect()
+}
+
+/// Bulk-Only Mass Storage Reset to interface 0, then the halts of bulk-IN
+/// (0x81) and bulk-OUT (0x02) cleared: BBB §5.3.4, once.
+fn one_recovery() -> Vec<[u8; 8]> {
+    vec![
+        Setup { request_type: 0x21, request: REQ_BULK_ONLY_RESET, value: 0, index: 0, length: 0 }.to_bytes(),
+        Setup::clear_halt(0x81).to_bytes(),
+        Setup::clear_halt(0x02).to_bytes(),
+    ]
 }
 
 impl Bench {
@@ -614,35 +658,142 @@ fn a_stalled_data_stage_is_cleared_and_fails_the_command() {
     assert_eq!(b.read(0, 1).0, IoStatus::Ok);
 }
 
+// ---- Reset Recovery (BBB §5.3.4) ----
+
+/// **A phase error is recovered, and the command runs again.** The CSW says
+/// phase error: the driver reopens the bulk pipes, sends Bulk-Only Mass
+/// Storage Reset and clears both halts, in that order, then starts the READ
+/// again, which returns the stick's bytes. The disk stays usable.
+///
+/// **Canary.** Make `transport_error` call `self.fail(f)` always (no
+/// recovery, the old behaviour): the read is `Io` and the disk
+/// `Failed(Transport)`.
 #[test]
-fn a_phase_error_fails_the_disk() {
+fn a_phase_error_is_recovered_and_the_command_runs_again() {
     let mut b = Bench::new();
-    b.stick.phase_error = true;
+    b.stick.phase_error = 1;
+    let (st, data) = b.read(4, 2);
+    assert_eq!(st, IoStatus::Ok);
+    assert_eq!(data, b.stick.store[4 * BLOCK_SIZE..6 * BLOCK_SIZE]);
+    assert_eq!(recovery_requests(&b.dev), one_recovery());
+    assert_eq!(b.stick.count(SCSI_OP_READ_10), 2, "the READ ran again after the reset");
+    assert_eq!(b.drv().recoveries(), 1);
+    assert_eq!(b.drv().state(), State::Ready);
+    assert_eq!(b.read(0, 1).0, IoStatus::Ok);
+}
+
+/// **A CSW for another command is recovered the same way.**
+#[test]
+fn a_csw_for_another_command_is_recovered() {
+    let mut b = Bench::new();
+    b.stick.bad_tag = true;
+    assert_eq!(b.read(0, 1).0, IoStatus::Ok);
+    assert_eq!(recovery_requests(&b.dev), one_recovery());
+    assert_eq!(b.drv().state(), State::Ready);
+}
+
+/// **A command the stick never answers is recalled and run again.** After
+/// `USB_MSC_TIMEOUT_MS` the bulk pipes are closed (the controller drops the
+/// transfer still waiting on bulk-IN) and opened again, the stick is reset,
+/// and the READ that it then answers completes.
+///
+/// **Canary.** Skip the reopen (`open` sends the control requests on the old
+/// pipes): the CSW of the new READ is read by the transfer the timed-out one
+/// left queued, under the old tag, and the disk fails.
+#[test]
+fn a_command_the_stick_never_answers_is_recalled_and_run_again() {
+    let mut b = Bench::new();
+    b.stick.mute = 1;
+    let (st, data) = b.read(1, 1);
+    assert_eq!(st, IoStatus::Ok);
+    assert_eq!(data, b.stick.store[BLOCK_SIZE..2 * BLOCK_SIZE]);
+    // It took the configured time, not less.
+    assert!(b.rig.hw.clock().now_us() >= azos_limits::USB_MSC_TIMEOUT_MS as u64 * 1000);
+    assert_eq!(recovery_requests(&b.dev), one_recovery());
+    assert_eq!(b.drv().state(), State::Ready);
+}
+
+/// **A write cut short by a phase error is written once the stick is
+/// back.** The data stage went out, the CSW said phase error; after the
+/// recovery the WRITE runs again, CBW and data, and the bytes are on the
+/// stick.
+#[test]
+fn a_write_cut_short_is_written_after_the_recovery() {
+    let mut b = Bench::new();
+    b.stick.phase_error = 1;
+    let data = vec![0x5a; 2 * BLOCK_SIZE];
+    assert_eq!(b.write(8, &data, false), IoStatus::Ok);
+    assert_eq!(b.stick.store[8 * BLOCK_SIZE..10 * BLOCK_SIZE], data[..]);
+    assert_eq!(b.stick.count(SCSI_OP_WRITE_10), 2);
+}
+
+/// **One recovery per command.** The command fails its transport again after
+/// the reset: it is `Io` and the disk is failed (a stick that cannot keep a
+/// command going is not tried forever).
+///
+/// **Canary.** Do not mark the command recovered (`Io::recovered`): the
+/// driver resets the stick forever and the read never finishes.
+#[test]
+fn a_command_that_fails_again_after_a_recovery_fails_the_disk() {
+    let mut b = Bench::new();
+    b.stick.phase_error = 2;
     let (st, _) = b.read(0, 1);
     assert_eq!(st, IoStatus::Io);
     assert_eq!(b.drv().state(), State::Failed(Fail::Transport));
     assert_eq!(b.drv().take(), Take::Dead);
+    assert_eq!(reset_requests(&b.dev).len(), 1);
 }
 
+/// **A timeout after the recovery fails the disk with `Timeout`.**
 #[test]
-fn a_csw_for_another_command_fails_the_disk() {
+fn a_stick_that_stays_mute_after_a_recovery_fails_the_disk() {
     let mut b = Bench::new();
-    b.stick.bad_tag = true;
-    assert_eq!(b.read(0, 1).0, IoStatus::Io);
-    assert_eq!(b.drv().state(), State::Failed(Fail::Transport));
-}
-
-#[test]
-fn a_command_the_stick_never_answers_fails_the_disk() {
-    let mut b = Bench::new();
-    b.stick.mute = true;
-    let st = b.io(|d| d.start_read(0, 1)).unwrap();
-    assert_eq!(st, IoStatus::Io);
+    b.stick.mute = 2;
+    assert_eq!(b.drv().take(), Take::Granted);
+    b.drv().start_read(0, 1).unwrap();
+    // Two timeouts: longer than `Bench::io` waits.
+    let mut got = None;
+    b.until(
+        |b| {
+            got = b.msc.0.reap();
+            got.is_some()
+        },
+        3 * azos_limits::USB_MSC_TIMEOUT_MS as u32,
+    );
+    assert_eq!(got, Some(IoStatus::Io));
     assert_eq!(b.drv().state(), State::Failed(Fail::Timeout));
-    // It took the configured time, not less.
-    assert!(b.rig.hw.clock().now_us() >= azos_limits::USB_MSC_TIMEOUT_MS as u64 * 1000);
     b.drv().release();
     assert_eq!(b.drv().take(), Take::Dead);
+}
+
+/// **A stick that refuses the reset is failed.** It stalls Bulk-Only Mass
+/// Storage Reset: nothing else is sent and the command is `Io`.
+#[test]
+fn a_reset_the_stick_refuses_fails_the_disk() {
+    let mut b = Bench::new();
+    b.dev.borrow_mut().stall_requests.push(REQ_BULK_ONLY_RESET);
+    b.stick.phase_error = 1;
+    assert_eq!(b.read(0, 1).0, IoStatus::Io);
+    assert_eq!(b.drv().state(), State::Failed(Fail::Transport));
+    assert_eq!(recovery_requests(&b.dev), one_recovery()[..1].to_vec(), "no halt is cleared after a refused reset");
+}
+
+/// **Recoveries do not use the pipes up.** Twice `MAX_PIPES` commands, each
+/// recovered once: every one completes. Each recovery closes and reopens the
+/// bulk pipes; a pipe whose completions were left in its ring (a completion
+/// the close itself posts) would never be handed out again.
+///
+/// **Canary.** In `reopen_bulk`, drop the ends before `pipe_close` (the
+/// order of the open path's give-back): the timed-out transfer's completion
+/// lands in a ring nobody holds, and the opens run out of pipes.
+#[test]
+fn recoveries_do_not_use_up_the_pipes() {
+    let mut b = Bench::new();
+    for i in 0..2 * azos_usb::MAX_PIPES {
+        b.stick.mute = 1;
+        assert_eq!(b.read(0, 1).0, IoStatus::Ok, "recovery {i}");
+    }
+    assert_eq!(b.drv().recoveries() as usize, 2 * azos_usb::MAX_PIPES);
 }
 
 // ---- Unplug ----
@@ -668,7 +819,7 @@ fn unplugging_returns_the_driver_to_idle_and_a_new_stick_works() {
 #[test]
 fn unplugging_with_a_command_in_the_stick_finishes_it_failed() {
     let mut b = Bench::new();
-    b.stick.mute = true;
+    b.stick.mute = u32::MAX;
     assert_eq!(b.drv().take(), Take::Granted);
     b.drv().start_read(0, 1).unwrap();
     b.run(5);

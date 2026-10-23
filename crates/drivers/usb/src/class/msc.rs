@@ -42,11 +42,21 @@
 //!   the first command after it, then cleared).
 //! - Anything else, an invalid or unmatched CSW, a phase error (status 2), a
 //!   transfer that fails otherwise, or a command that outlives
-//!   `USB_MSC_TIMEOUT_MS`: Reset Recovery would be next; this driver does not
-//!   implement it, so the disk is **failed**: every command it holds finishes
-//!   `Io`, [`Msc::take`] answers `Dead`, and the staging memory stays
-//!   allocated (a transfer it could not recall may still be writing to it)
-//!   until the device is unplugged.
+//!   `USB_MSC_TIMEOUT_MS`: **Reset Recovery** (§5.3.4). The bulk pipes are
+//!   closed and opened again through a session ([`Msc::session_wanted`] asks
+//!   for one, [`Msc::open`] does it): that recalls a transfer the device never
+//!   finished (the controller drops the endpoint, so nothing more is written
+//!   into the staging buffer) and starts the host's side of both endpoints
+//!   over. Then, on the control pipe, Bulk-Only Mass Storage Reset, and
+//!   CLEAR_FEATURE(ENDPOINT_HALT) on bulk-IN and on bulk-OUT; the command is
+//!   then started again from its CBW. One recovery per command: a command
+//!   that needs a second, or a recovery that fails (a control stage that does
+//!   not complete, or completes with an error), **fails** the disk: every
+//!   command it holds finishes `Io`, [`Msc::take`] answers `Dead`, and the
+//!   staging memory stays allocated (a control transfer it could not recall
+//!   may still be in the controller) until the device is unplugged. While the
+//!   unit is being identified there is no recovery: a stick that cannot
+//!   answer INQUIRY or READ CAPACITY is failed at once.
 //!
 //! # Flush, FUA
 //!
@@ -77,7 +87,7 @@ use azos_devif::outcome::{BAD_ARGUMENT, BUSY, OK, UNSUPPORTED};
 use azos_devif::Out;
 use azos_scsi::bbb::{
     Csw, CSW_STATUS_FAIL, CSW_STATUS_OK, CSW_TOTAL_LEN, CBW_TOTAL_LEN, INTERFACE_CLASS, INTERFACE_PROTOCOL_BBB,
-    INTERFACE_PROTOCOL_UAS, INTERFACE_SUBCLASS_SCSI,
+    INTERFACE_PROTOCOL_UAS, INTERFACE_SUBCLASS_SCSI, REQ_BULK_ONLY_RESET,
 };
 use azos_scsi::initiator::{
     parse_inquiry, parse_read_capacity_10, parse_sense, CapacityError, Cdb, Inquiry, INQUIRY_LEN,
@@ -87,7 +97,7 @@ use azos_scsi::target::{Sense, BLOCK_SIZE};
 
 use crate::class::{Claim, Match, Scope, UsbClass, UsbDevice};
 use crate::hw::{Clock, DmaBuf, Memory, PAGE};
-use crate::usbcore::desc::Setup;
+use crate::usbcore::desc::{Setup, RT_RECIP_INTERFACE, RT_TYPE_CLASS};
 use crate::usbcore::pipe::{Completion, Dir, PipeEnd, PipeRings, Status, Transfer};
 use azos_rings::Push;
 
@@ -192,6 +202,11 @@ enum Phase {
     ClearData,
     /// CLEAR_FEATURE(ENDPOINT_HALT) on bulk-IN, then the CSW again.
     ClearCsw,
+    /// Reset Recovery on the control pipe: Bulk-Only Mass Storage Reset,
+    /// then CLEAR_FEATURE(ENDPOINT_HALT) on bulk-IN, then on bulk-OUT.
+    Reset,
+    ResetIn,
+    ResetOut,
 }
 
 impl Phase {
@@ -202,6 +217,9 @@ impl Phase {
             Phase::Csw => 3,
             Phase::ClearData => 4,
             Phase::ClearCsw => 5,
+            Phase::Reset => 6,
+            Phase::ResetIn => 7,
+            Phase::ResetOut => 8,
         }
     }
 }
@@ -220,6 +238,8 @@ enum Step {
     SenseAfterIo,
     /// The SYNCHRONIZE CACHE(10) of a FUA write.
     SyncAfterWrite,
+    /// Reset Recovery's control requests ([`Phase::Reset`] ...).
+    Recover,
 }
 
 /// The data stage of a command.
@@ -274,6 +294,8 @@ struct Io {
     retried: bool,
     /// The SYNCHRONIZE CACHE(10) of a FUA write is the command on the wire.
     syncing: bool,
+    /// The command went through a Reset Recovery already.
+    recovered: bool,
 }
 
 /// The one command slot.
@@ -323,6 +345,11 @@ pub struct Msc<'q, M: Memory, C: Clock> {
     busy_declined: u32,
     /// A transfer went into a pipe since [`Msc::take_submitted`] last asked.
     submitted: bool,
+    /// Reset Recovery waits for a session to reopen the bulk pipes in, and
+    /// why it started (what the disk fails with if the recovery does).
+    reopen: Option<Fail>,
+    /// Reset Recoveries that brought the disk back.
+    recoveries: u32,
 }
 
 impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
@@ -352,6 +379,8 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
             uas_declined: 0,
             busy_declined: 0,
             submitted: false,
+            reopen: None,
+            recoveries: 0,
         }
     }
 
@@ -388,6 +417,11 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
         self.busy_declined
     }
 
+    /// Reset Recoveries that brought the disk back.
+    pub fn recoveries(&self) -> u32 {
+        self.recoveries
+    }
+
     /// Whether a transfer was put into a pipe since the last call. The core
     /// moves it to the controller on its next turn: whoever runs the core
     /// (the `usb` task, asleep for its poll period) is woken when this is
@@ -398,21 +432,63 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
 
     // ---- Binding ----
 
-    /// The claim to open a session for: set by [`UsbClass::attach`], cleared
-    /// by [`Msc::open`]. The `usb` task asks after each turn of the core.
+    /// The claim to open a session for: set by [`UsbClass::attach`] (the
+    /// pipes are to be opened) and by a Reset Recovery (the bulk pipes are to
+    /// be opened again), cleared by [`Msc::open`]. The `usb` task asks after
+    /// each turn of the core.
     pub fn session_wanted(&self) -> Option<Claim> {
-        if self.state == State::Claimed { self.claim } else { None }
+        let wanted = self.state == State::Claimed || (self.state == State::Ready && self.reopen.is_some());
+        if wanted && !self.gone { self.claim } else { None }
     }
 
-    /// Open the pipes of the claimed interface through `dev` (the session of
-    /// [`Msc::session_wanted`]) and start identifying the unit.
+    /// Through `dev` (the session of [`Msc::session_wanted`]): open the pipes
+    /// of the claimed interface and start identifying the unit, or reopen the
+    /// bulk pipes of a Reset Recovery and send its control requests.
     pub fn open(&mut self, dev: &mut dyn UsbDevice) {
-        if self.state != State::Claimed {
-            return;
+        match self.state {
+            State::Claimed => match self.open_pipes(dev) {
+                Ok(()) => self.begin_probe(),
+                Err(f) => self.fail(f),
+            },
+            State::Ready => {
+                let Some(why) = self.reopen.take() else { return };
+                match self.reopen_bulk(dev) {
+                    Ok(()) => self.begin_reset(),
+                    Err(_) => self.fail(why),
+                }
+            }
+            _ => {}
         }
-        match self.open_pipes(dev) {
-            Ok(()) => self.begin_probe(),
-            Err(f) => self.fail(f),
+    }
+
+    /// Close the bulk pipes and open them again: a transfer still in the
+    /// controller is dropped with its endpoint, and both endpoints start over
+    /// on the host's side (the device's are cleared by the recovery's
+    /// CLEAR_FEATUREs). Each pipe is closed before its ends are let go of,
+    /// and its completions drained after: a completion the close itself posts
+    /// would otherwise keep the ring from ever being handed out again.
+    fn reopen_bulk(&mut self, dev: &mut dyn UsbDevice) -> Result<(), Fail> {
+        let Some(Pipes { ctl, mut bin, mut bout, ep_in, ep_out }) = self.pipes.take() else { return Err(Fail::Pipe) };
+        for e in [&mut bin, &mut bout] {
+            let _ = dev.pipe_close(e.id as u32);
+            while e.cq.pop().is_some() {}
+        }
+        drop((bin, bout));
+        match (open_one(dev, self.rings, ep_in), open_one(dev, self.rings, ep_out)) {
+            (Ok(bin), Ok(bout)) => {
+                self.pipes = Some(Pipes { ctl, bin, bout, ep_in, ep_out });
+                Ok(())
+            }
+            (a, b) => {
+                // Nothing is queued on what did open: give it back. The
+                // control pipe goes too; the core closes it at unplug.
+                for e in [a.ok(), b.ok(), Some(ctl)].into_iter().flatten() {
+                    let id = e.id;
+                    drop(e);
+                    let _ = dev.pipe_close(id as u32);
+                }
+                Err(Fail::Pipe)
+            }
         }
     }
 
@@ -535,7 +611,7 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
         } else if self.slot != Slot::Taken || self.state != State::Ready {
             return Err(());
         }
-        self.io = Some(Io { kind, lba: lba as u32, sectors: sectors as u16, retried: false, syncing: false });
+        self.io = Some(Io { kind, lba: lba as u32, sectors: sectors as u16, retried: false, syncing: false, recovered: false });
         self.slot = Slot::Running;
         self.begin_io();
         Ok(())
@@ -596,7 +672,7 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
             State::Ready => {
                 if let Some(r) = self.run {
                     if now > r.deadline_us {
-                        self.fail(Fail::Timeout);
+                        self.transport_error(Fail::Timeout);
                     }
                 }
             }
@@ -614,7 +690,7 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
                 _ => &mut p.bin,
             },
             Phase::Csw => &mut p.bin,
-            Phase::ClearData | Phase::ClearCsw => &mut p.ctl,
+            Phase::ClearData | Phase::ClearCsw | Phase::Reset | Phase::ResetIn | Phase::ResetOut => &mut p.ctl,
         };
         pipe.cq.pop().map(|c| (run.phase, c))
     }
@@ -622,13 +698,13 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
     fn complete(&mut self, (phase, c): (Phase, Completion)) {
         let Some(mut run) = self.run else { return };
         if c.tag != Self::wire_tag(&run, phase) {
-            return self.fail(Fail::Transport);
+            return self.transport_error(Fail::Transport);
         }
         let Some(buf) = self.buf.as_ref() else { return };
         match phase {
             Phase::Cbw => {
                 if c.status != Status::Ok || c.actual as usize != CBW_TOTAL_LEN {
-                    return self.fail(Fail::Transport);
+                    return self.transport_error(Fail::Transport);
                 }
                 run.phase = if run.data == Data::None { Phase::Csw } else { Phase::Data };
             }
@@ -645,12 +721,12 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
                         run.stalled = true;
                         run.phase = Phase::ClearData;
                     }
-                    _ => return self.fail(Fail::Transport),
+                    _ => return self.transport_error(Fail::Transport),
                 }
             }
             Phase::ClearData => {
                 if c.status != Status::Ok {
-                    return self.fail(Fail::Transport);
+                    return self.transport_error(Fail::Transport);
                 }
                 run.phase = Phase::Csw;
             }
@@ -661,20 +737,30 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
                     buf.read_bytes(CSW_OFF, &mut raw);
                     return match Csw::parse(&raw) {
                         Some(csw) if csw.tag == run.tag => self.csw(run, csw),
-                        _ => self.fail(Fail::Transport),
+                        _ => self.transport_error(Fail::Transport),
                     };
                 }
                 Status::Stall if !run.csw_retried => {
                     run.csw_retried = true;
                     run.phase = Phase::ClearCsw;
                 }
-                _ => return self.fail(Fail::Transport),
+                _ => return self.transport_error(Fail::Transport),
             },
             Phase::ClearCsw => {
                 if c.status != Status::Ok {
-                    return self.fail(Fail::Transport);
+                    return self.transport_error(Fail::Transport);
                 }
                 run.phase = Phase::Csw;
+            }
+            Phase::Reset | Phase::ResetIn | Phase::ResetOut => {
+                if c.status != Status::Ok {
+                    return self.transport_error(Fail::Transport);
+                }
+                run.phase = match phase {
+                    Phase::Reset => Phase::ResetIn,
+                    Phase::ResetIn => Phase::ResetOut,
+                    _ => return self.recovered(),
+                };
             }
         }
         self.run = Some(run);
@@ -692,7 +778,7 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
                 self.after(run, if short { Outcome::Short } else { Outcome::Good });
             }
             CSW_STATUS_FAIL => self.after(run, Outcome::CheckCondition),
-            _ => self.fail(Fail::Transport),
+            _ => self.transport_error(Fail::Transport),
         }
     }
 
@@ -770,6 +856,8 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
             // A device with no cache answers INVALID OPCODE: its writes were
             // durable when they completed.
             (Step::SyncAfterWrite, _) => self.begin(Step::SenseAfterIo, Cdb::request_sense(SENSE_LEN as u8), Data::In { off: SMALL_OFF, len: SENSE_LEN as u32 }),
+            // Its control requests complete in `complete`, not with a CSW.
+            (Step::Recover, _) => {}
         }
     }
 
@@ -822,6 +910,49 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
         self.submit_phase();
     }
 
+    /// The transport failed `f`-wise under a command of the block layer:
+    /// Reset Recovery, once per command; otherwise (while identifying the
+    /// unit, during a recovery, or for the second time) the disk fails.
+    fn transport_error(&mut self, f: Fail) {
+        // `run` is `None` when a CSW was the trouble (`csw` took it).
+        let recoverable = self.state == State::Ready
+            && self.run.is_none_or(|r| r.step != Step::Recover)
+            && self.io.is_some_and(|io| !io.recovered);
+        if !recoverable {
+            return self.fail(f);
+        }
+        self.run = None;
+        if let Some(io) = self.io {
+            self.io = Some(Io { recovered: true, retried: false, syncing: false, ..io });
+        }
+        // The bulk pipes are reopened in the next session (`open`).
+        self.reopen = Some(f);
+    }
+
+    /// The bulk pipes are new: the recovery's control requests.
+    fn begin_reset(&mut self) {
+        self.next_tag = self.next_tag.wrapping_add(1);
+        self.run = Some(Run {
+            step: Step::Recover,
+            cdb: Cdb::test_unit_ready(),
+            data: Data::None,
+            tag: self.next_tag,
+            phase: Phase::Reset,
+            deadline_us: self.clock.now_us() + TIMEOUT_US,
+            actual: 0,
+            stalled: false,
+            csw_retried: false,
+        });
+        self.submit_phase();
+    }
+
+    /// The device answered the whole recovery: start the command again.
+    fn recovered(&mut self) {
+        self.run = None;
+        self.recoveries += 1;
+        self.begin_io();
+    }
+
     fn wire_tag(run: &Run, phase: Phase) -> u32 {
         run.tag << 4 | phase.code()
     }
@@ -847,13 +978,26 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
                 Data::None => return,
             },
             Phase::Csw => (&mut p.bin, xfer(tag, Dir::In, buf.bus_at(CSW_OFF), CSW_TOTAL_LEN as u32)),
-            Phase::ClearData | Phase::ClearCsw => {
+            Phase::ClearData | Phase::ClearCsw | Phase::ResetIn | Phase::ResetOut => {
                 let ep = match (run.phase, run.data) {
-                    (Phase::ClearData, Data::Out { .. }) => p.ep_out,
+                    (Phase::ClearData, Data::Out { .. }) | (Phase::ResetOut, _) => p.ep_out,
                     _ => p.ep_in,
                 };
                 let mut t = xfer(tag, Dir::Out, 0, 0);
                 t.setup = Setup::clear_halt(ep).to_bytes();
+                (&mut p.ctl, t)
+            }
+            Phase::Reset => {
+                let iface = self.claim.map_or(0, |c| c.iface());
+                let mut t = xfer(tag, Dir::Out, 0, 0);
+                t.setup = Setup {
+                    request_type: RT_TYPE_CLASS | RT_RECIP_INTERFACE,
+                    request: REQ_BULK_ONLY_RESET,
+                    value: 0,
+                    index: iface as u16,
+                    length: 0,
+                }
+                .to_bytes();
                 (&mut p.ctl, t)
             }
         };
@@ -885,6 +1029,7 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
 
     fn fail(&mut self, f: Fail) {
         self.run = None;
+        self.reopen = None;
         self.state = State::Failed(f);
         if matches!(self.slot, Slot::Running) {
             self.slot = Slot::Finished(IoStatus::Io);
@@ -907,6 +1052,7 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
             self.slot = Slot::Finished(IoStatus::Io);
         }
         self.run = None;
+        self.reopen = None;
         self.caps = None;
         self.ident = None;
         self.claim = None;
