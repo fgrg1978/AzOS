@@ -21,9 +21,9 @@ make doc ARCH=x86_64     # the x86_64 build of the same crates
 | Cargo target dir | `$AZOS_OUT/tgt/doc-<arch>` |
 | Toolchain | the pinned nightly of `rust-toolchain.toml`, with `rust-src` |
 | Target | the triple `tools/kconfig_to_cargo.py` derives from the `ARCH` defconfig |
-| Rustdoc flags | `-D warnings` |
+| Rustdoc flags | `-D warnings`, plus the ISA's baseline codegen flags from `tools/kconfig_to_cargo.py --rustflags` |
 
-The target builds `core` from source (`build-std` in `.cargo/config.toml`), so no
+The target builds `core` and `alloc` from source (`build-std` in `.cargo/config.toml`), so no
 cross target has to be installed. Each ISA documents the items compiled for
 that ISA: `azos_libsys`, for one, selects its trap instruction with
 `#[cfg(target_arch = ...)]`.
@@ -96,8 +96,8 @@ kernel, `azos_libsys` and the userspace images all read these definitions.
 | `types` | Frozen `#[repr(C)]` types |
 | `ipc_msg` | The message descriptor of the v2 call (`MsgDesc`, `CapDesc`) |
 | `io_ring` | The io_ring page as ring 3 sees it: offsets, sizes, opcodes, flags |
-| `vdso` | The vDSO's fixed user-space address |
-| `time` | Nanosecond and counter-tick conversions |
+| `vdso` | The vDSO page's fixed user-space address, field offsets and layout version, the per-ISA `hwcap` bits and the per-task page offsets |
+| `time` | `ClockId`, the clock offsets (`ClockWords`), and nanosecond and counter-tick conversions |
 | `drv_kind` | The `DRV_KIND_*` device-kind identifiers of the driver registry |
 | `exit_status` | The exit statuses the kernel assigns when it kills a task |
 | `families` | Operation selectors of the flight, behavior, config and OTA families |
@@ -188,9 +188,14 @@ target `<iface>[.<resource>]` to an interface and a badge (`parse_target`,
 | `Clock` | `clock` | none |
 | `Vm`, `Vcpu` | `vm` | `vm.<n>`, `vcpu.<n>.<k>` |
 | `Net` | `net` | none |
+| `Display` | `display` | `display.<connector>` |
 | `MemCtl` | `memctl` | none |
-| `Buzzer` | `buzzer` | not in `IFACES` |
+| `Sound` | `sound` | `sound.<device>`; the ring-3 audio server serves it on `endpoint.audio` |
 | `time` endpoint | `time` | none |
+| `Buzzer` | `buzzer` | not in `IFACES` |
+| `VmCtl` | `vmctl` | not in `IFACES` |
+| `Infer` | `infer` | not in `IFACES`; served by the ring-3 inference service |
+| `Input` | `input` | not in `IFACES`; served by `INPUTD.ELF` on `endpoint.input` |
 
 `outcome` holds the outcome codes an op answers with (`outcome::REFUSED`,
 `outcome::NOT_READY`, ...).
@@ -239,8 +244,9 @@ surface.
 | `Mmu` | Page size, map and unmap, page-table switch, TLB shootdown |
 | `Boot` | Shutdown, reboot, hart start |
 | `Vector` | Optional SIMD kernels |
-| `Hypervisor` | The guest-control surface, with `Exit`, `GuestCtx`, `Stage2Root` |
-| `ArchPlatform`, `ArchEntry` | The rest of the contract: required methods an ISA must provide, and the kernel's boot hooks |
+| `Pmu` | The cycle, instruction and event counters, with `PmuCaps` |
+| `Hypervisor` | The guest-control surface, with `Exit`, `GuestCtx`, `Stage2Root`; `StageTableMem` (where stage-2 table pages live) and `HypercallHost` (what a hypercall is written against) |
+| `ArchPlatform`, `ArchEntry` | The rest of the contract: required methods an ISA must provide, and the kernel's boot hooks (`FirmwareMemory`, `LineHooks`) |
 
 | Module | Contents |
 |--------|----------|
@@ -249,10 +255,14 @@ surface.
 | `contig` | Contiguous runs of level-0 leaves |
 | `tlb_gen` | Per-hart TLB generation for retained translations |
 | `entropy` | The CPU's entropy instruction as a seed source |
+| `aging` | The Accessed-bit walk behind `Mmu::harvest_accessed` (page aging) |
+| `pmu` | The performance-counter seam behind `Pmu` |
+| `kaslr` | Virtual KASLR (the Kconfig choice `KASLR_NEVER` / `KASLR_PROBE` / `KASLR_REQUIRE`): policy, slide choice, relocation walk and device-tree seed |
 | `lat` | Masked-window tracer (cargo feature `lat-trace`) |
 
 Source: `crates/core/arch-api/src/lib.rs`, `contract.rs`, `isa.rs`, `spin.rs`,
-`contig.rs`, `tlb_gen.rs`, `entropy.rs`, `lat.rs`.
+`contig.rs`, `tlb_gen.rs`, `entropy.rs`, `aging.rs`, `pmu.rs`, `kaslr.rs`,
+`lat.rs`.
 
 ### azos_stdrt
 
