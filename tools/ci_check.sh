@@ -1425,6 +1425,55 @@ blk_reset_row() { # blk_reset_row <label> <riscv64|aarch64> <kernel image> <once
     ok; echo "      one reset, then the next timeout latched the disk dead and said so"; rm -f "$log" "$disk"
 }
 
+# (h) The device timeout policy on a device whose timeout is real
+# (azos_drv_api::recovery; Kconfig CHAOS injects it, crates/core/chaos): with
+# `chaos=<point>:1:1` one command after boot init runs out of its budget
+# (NVMe `nvme-completion-drop`: its completion is lost; virtio-net
+# `virtio-net-tx-wedge`: the transmit ring wedges; xHCI `xhci-command-drop`:
+# a command is never answered). The driver must reset the device once,
+# record it (`[<TAG>] <device> timed out after N ms: device reset, back in
+# service`), and the device must serve after the reset line (`served`: what
+# the row knows only a working device prints). The command that timed out
+# fails typed and is not retried, so the row never expects it to succeed.
+# With `chaos=<point>:1` every command after boot init does: exactly one
+# reset, then the next timeout latches the device dead (`timed out again
+# ... latched dead`). Each mode is the other's canary: DEVICE_TIMEOUT_RESETS=0
+# (latch at the first timeout) fails `once`, a reset forever fails `twice`,
+# and a point that fires nowhere fails both.
+# dev_reset_verdict <once|twice> <log> <tag> <device> <reset-line-bre> <served-ere>
+dev_reset_verdict() {
+    local mode="$1" log="$2" tag="$3" dev="$4" reset_re="$5" served_re="$6" resets lines
+    resets=$(grep -ac "$reset_re" "$log" 2>/dev/null); resets=${resets:-0}
+    lines="$(grep -aE "\[$tag\] $dev|CHAOS\]" "$log" | tr -d '\r' | sed -n '1,10p' | sed 's/^/        /')"
+    if grep -aqE "!!! KERNEL PANIC !!!|AARCH64-TRAP\] unhandled|\[FATAL\]|EXCEPTION\]" "$log" 2>/dev/null; then
+        bad; echo "      the kernel panicked or trapped:"
+        grep -aE -m3 "PANIC|AARCH64-TRAP|FATAL|EXCEPTION" "$log" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    if ! grep -aqF "[CHAOS] live: " "$log" 2>/dev/null; then
+        bad; echo "      no injection point went live (a kernel without Kconfig CHAOS, or no chaos= on its command line)"
+        echo "      log kept: $log"; return
+    fi
+    if [ "$mode" = once ]; then
+        if [ "$resets" -ne 1 ] || grep -aqE "\[$tag\] $dev( timed out again|: the reset)" "$log"; then
+            bad; echo "      one timeout must reset the device once and leave it alive ($resets reset(s)):"
+            echo "$lines"; echo "      log kept: $log"; return
+        fi
+        if ! grep -aqE "\[$tag\] $dev timed out after [0-9]+ ms: device reset, back in service" "$log" \
+            || ! sed -n "/$reset_re/,\$p" "$log" | grep -aqE "$served_re"; then
+            bad; echo "      the reset left no record, or the device did not serve after it:"
+            echo "$lines"; echo "      log kept: $log"; return
+        fi
+        ok; echo "      one timeout: the device was reset, recorded, and served after it"; rm -f "$log"; return
+    fi
+    if [ "$resets" -ne 1 ] \
+        || ! sed -n "/$reset_re/,\$p" "$log" | grep -aqE "\[$tag\] $dev timed out again after [0-9]+ ms with its resets spent: latched dead"; then
+        bad; echo "      a second timeout must latch the device after exactly one reset ($resets reset(s)):"
+        echo "$lines"; echo "      log kept: $log"; return
+    fi
+    ok; echo "      one reset, then the next timeout latched the device dead and said so"; rm -f "$log"
+}
+
 # (e) The seed is never written into filesystem data. An image built WITHOUT the
 # tail headroom (the FAT32 volume is the whole medium) must be left alone: the
 # kernel prints the one skip line and the last 8 sectors, pre-filled with a
@@ -10306,6 +10355,15 @@ host_job host_canary_row "usb: unplug canary" usb-tests canary-unplug \
     unplug_removes_the_device
 host_job host_canary_row "usb: DWC3 dr_mode canary" usb-tests canary-dr-mode \
     a_dwc3_is_a_host_only_when_the_device_tree_says_so
+# The device timeout policy on xHCI (tests/host/usb-tests `reset`): the first
+# timeout latches the controller (no reset), the core keeps the devices a
+# reset controller forgot, a reset keeps the event ring's old cursor.
+host_job host_canary_row "usb: no reset canary" usb-tests canary-xhci-no-reset \
+    a_command_timeout_resets_the_controller_and_the_device_comes_back
+host_job host_canary_row "usb: reset keeps devices canary" usb-tests canary-xhci-reset-keeps-devices \
+    a_command_timeout_resets_the_controller_and_the_device_comes_back
+host_job host_canary_row "usb: reset event ring canary" usb-tests canary-xhci-reset-event-ring \
+    a_command_timeout_resets_the_controller_and_the_device_comes_back
 # USB HID (azos_usb_hid): each canary puts one report-decoding or authorization
 # bug back (a phantom report taken for keys, a report ID not skipped, an unsigned
 # axis, modifiers after their report's keys, a hub tier not compared, a keyboard
@@ -17635,17 +17693,24 @@ PYEOF
     # the PRP self-test (64 sectors over a PRP list against 64 single-sector
     # reads) passed. The canary row builds `nvme-prp-canary` (PRP2 names a data
     # page, not the list) and must see the self-test FAIL.
+    # nvme_qemu <riscv64|aarch64> <kernel-image> <log> <disk> [<command line> <stdin>]:
+    # the NVMe boot, in the background.
+    nvme_qemu() {
+        local isa="$1" kimg="$2" log="$3" disk="$4" append=() in="${6:-/dev/null}"
+        [ -n "${5:-}" ] && append=(-append "$5")
+        if [ "$isa" = riscv64 ]; then
+            "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel "$kimg" "${append[@]}" \
+                -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv <"$in" >"$log" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 256M -nographic -kernel "$kimg" "${append[@]}" \
+                -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv <"$in" >"$log" 2>&1 &
+        fi
+    }
     nvme_boot_boot() { # nvme_boot_boot <riscv64|aarch64> <kernel-image> <log> <disk>
         local isa="$1" kimg="$2" log="$3" disk="$4"
         rm -f "$log"
         par_ready
-        if [ "$isa" = riscv64 ]; then
-            "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel "$kimg" \
-                -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv >"$log" 2>&1 &
-        else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 256M -nographic -kernel "$kimg" \
-                -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv >"$log" 2>&1 &
-        fi
+        nvme_qemu "$isa" "$kimg" "$log" "$disk"
         local qpid=$! i=0
         while [ "$i" -lt 240 ]; do
             grep -aqE "NVME\] prp selftest (PASS|FAIL)|NVME\] controller .* not used|\[FATAL\]" "$log" 2>/dev/null && break
@@ -17730,6 +17795,165 @@ PYEOF
         fi
     }
     par "nvme: dma limit (riscv64)" nvme_dma_row riscv64
+    # dev_boot_shell <pid> <log> <seconds> <reset-bre> <provoke> <then> <stop-ere>:
+    # drive the boot's shell (`robot> `) through fd 9, the write end of the
+    # fifo QEMU reads: before the reset line, type `provoke` (every 8 s; `-`
+    # types nothing) so the device has commands to time out; after it, type
+    # `then` (every 8 s), until `stop` is printed after the reset line, the
+    # boot panics or exits, or `seconds` pass. Typed one byte per 50 ms (the
+    # aarch64 UART's RX path is paced, see `shell_help_row`). Then the boot is
+    # killed.
+    dev_boot_shell() {
+        local pid="$1" log="$2" limit="$3" reset_re="$4" provoke="$5" then="$6" stop="$7" i=0 last=-100 cmd k
+        while [ "$i" -lt $((limit * 2)) ] && kill -0 "$pid" 2>/dev/null; do
+            grep -aqE "!!! KERNEL PANIC !!!|AARCH64-TRAP\] unhandled|\[FATAL\]" "$log" 2>/dev/null && break
+            sed -n "/$reset_re/,\$p" "$log" 2>/dev/null | grep -aqE "$stop" && break
+            cmd="$provoke"
+            grep -aq "$reset_re" "$log" 2>/dev/null && cmd="$then"
+            if [ "$cmd" != - ] && [ $((i - last)) -ge 16 ] && grep -aqF "robot> " "$log" 2>/dev/null; then
+                ( for ((k = 0; k < ${#cmd}; k++)); do printf '%s' "${cmd:k:1}"; sleep 0.05; done; printf '\r' ) >&9 2>/dev/null
+                last=$i
+            fi
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 1
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    }
+    # The NVMe boot disk's reset after a timeout (`dev_reset_verdict`): a lost
+    # completion (`nvme-completion-drop`) in a Kconfig CHAOS kernel. The
+    # lost one is the first after boot init, whichever command it is (a
+    # write-back, often), and its timeout is found by the next command that
+    # waits: the shell lists /fat until the reset line, then reads a file no
+    # boot step reads (HELLO.TXT: its sectors come from the disk, not the
+    # page cache), whose text proves the disk served after the reset.
+    nvme_reset_row() { # nvme_reset_row <riscv64|aarch64> <once|twice>
+        local isa="$1" mode="$2" label rate dsrc kimg
+        if [ "$mode" = once ]; then label="nvme: timeout resets once ($isa)"; rate=1:1; else label="nvme: second timeout latches ($isa)"; rate=1; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/nvme-reset-$mode-$isa.log" disk="$CI_LOG_DIR/nvme-reset-$mode-$isa.img"
+        local kcopy="$CI_LOG_DIR/kernel-nvme-reset-$mode-$isa"
+        if [ "$isa" = riscv64 ]; then dsrc=$AZOS_OUT/build/disk.img; else dsrc=$AZOS_OUT/build/disk-aarch64.img; fi
+        kimg="$(nvme_boot_prepare "$isa" qemu,pci,nvme,chaos)" || return
+        cp "$kimg" "$kcopy"
+        fresh_disk "$dsrc" || return
+        cp "$dsrc.pristine" "$disk"
+        local fifo="$CI_LOG_DIR/nvme-reset-$mode-$isa.fifo" reset_re='\[NVME\] controller reset and brought up again'
+        rm -f "$log" "$fifo"; mkfifo "$fifo" || { bad; echo "      mkfifo failed: $fifo"; return; }
+        par_ready
+        nvme_qemu "$isa" "$kcopy" "$log" "$disk" "chaos=nvme-completion-drop:$rate" "$fifo"
+        local pid=$!
+        exec 9>"$fifo"
+        dev_boot_shell "$pid" "$log" 120 "$reset_re" "ls /fat" "cat /fat/HELLO.TXT" \
+            "Hello from AzOS FAT32|nvme timed out again"
+        exec 9>&-
+        rm -f "$disk" "$kcopy" "$fifo"
+        dev_reset_verdict "$mode" "$log" BLK nvme "$reset_re" 'Hello from AzOS FAT32'
+    }
+    par "nvme: timeout resets once (riscv64)" nvme_reset_row riscv64 once
+    par "nvme: second timeout latches (riscv64)" nvme_reset_row riscv64 twice
+    par "nvme: timeout resets once (aarch64)" nvme_reset_row aarch64 once
+    par "nvme: second timeout latches (aarch64)" nvme_reset_row aarch64 twice
+    # dev_boot_wait <pid> <log> <seconds> <stop-ere>: until the boot prints
+    # `stop`, panics, or exits; then it is killed.
+    dev_boot_wait() {
+        local pid="$1" log="$2" limit="$3" stop="$4" i=0
+        while [ "$i" -lt $((limit * 2)) ] && kill -0 "$pid" 2>/dev/null; do
+            grep -aqE "$stop|!!! KERNEL PANIC !!!|AARCH64-TRAP\] unhandled|\[FATAL\]" "$log" 2>/dev/null && break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 1
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    }
+    # virtio-net's reset after a timeout (`dev_reset_verdict`): a wedged
+    # transmit ring (`virtio-net-tx-wedge`) in a Kconfig CHAOS kernel. The
+    # traffic is the shell's `dhcp` against QEMU's server, typed until the
+    # reset line (the frames sit in the wedged ring until a send finds them
+    # past NET_TX_TIMEOUT_MS) and again after it: a lease after the reset
+    # line is a DISCOVER and a REQUEST sent and an OFFER and an ACK received
+    # through the reset device.
+    net_reset_row() { # net_reset_row <riscv64|aarch64> <once|twice>
+        local isa="$1" mode="$2" label rate dsrc
+        if [ "$mode" = once ]; then label="network: tx timeout resets once ($isa)"; rate=1:1; else label="network: second tx timeout latches ($isa)"; rate=1; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/net-reset-$mode-$isa.log" disk="$CI_LOG_DIR/net-reset-$mode-$isa.img"
+        local kcopy="$CI_LOG_DIR/kernel-net-reset-$mode-$isa"
+        if [ "$isa" = riscv64 ]; then
+            dsrc=$AZOS_OUT/build/disk.img
+            kbuild "qemu,chaos" || return; ci_kernel_check || return; cp "$KERNEL" "$kcopy"
+        else
+            dsrc=$AZOS_OUT/build/disk-aarch64.img
+            a64_kbuild "qemu,chaos" || return; a64_kernel_check || return; cp "$A64_IMG" "$kcopy"
+        fi
+        fresh_disk "$dsrc" || return
+        cp "$dsrc.pristine" "$disk"
+        local fifo="$CI_LOG_DIR/net-reset-$mode-$isa.fifo" reset_re='\[NET\] virtio-net: device reset and programmed again'
+        rm -f "$log" "$fifo"; mkfifo "$fifo" || { bad; echo "      mkfifo failed: $fifo"; return; }
+        par_ready
+        local dev=(-append "chaos=virtio-net-tx-wedge:$rate" -global virtio-mmio.force-legacy=false
+            -drive "file=$disk,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0
+            -netdev user,id=n0 -device virtio-net-device,netdev=n0)
+        if [ "$isa" = riscv64 ]; then
+            "$QEMU" -machine virt -nographic -bios default -smp 2 -kernel "$kcopy" "${dev[@]}" <"$fifo" >"$log" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kcopy" "${dev[@]}" <"$fifo" >"$log" 2>&1 &
+        fi
+        local pid=$!
+        exec 9>"$fifo"
+        dev_boot_shell "$pid" "$log" 150 "$reset_re" dhcp dhcp "DHCP\] Configuration complete|virtio-net timed out again"
+        exec 9>&-
+        rm -f "$disk" "$kcopy" "$fifo"
+        dev_reset_verdict "$mode" "$log" NET virtio-net "$reset_re" 'DHCP\] Configuration complete'
+    }
+    par "network: tx timeout resets once (riscv64)" net_reset_row riscv64 once
+    par "network: second tx timeout latches (riscv64)" net_reset_row riscv64 twice
+    par "network: tx timeout resets once (aarch64)" net_reset_row aarch64 once
+    par "network: second tx timeout latches (aarch64)" net_reset_row aarch64 twice
+    # The xHCI controller's reset after a timeout (`dev_reset_verdict`): a
+    # command never answered (`xhci-command-drop`) in a Kconfig CHAOS kernel,
+    # with a keyboard and a stick on a `qemu-xhci` (the first boot of a USB
+    # device in the gate). The first command after boot init is the first
+    # device's Enable Slot; after the reset both are enumerated again and the
+    # mass-storage class driver reads the stick's sector 0. The class
+    # drivers' side of a reset (their devices go away and come back, the
+    # transfers in flight end Disconnected) is tests/host/usb-tests (`reset`).
+    usb_reset_row() { # usb_reset_row <riscv64|aarch64> <once|twice>
+        local isa="$1" mode="$2" label rate dsrc
+        if [ "$mode" = once ]; then label="usb: timeout resets once ($isa)"; rate=1:1; else label="usb: second timeout latches ($isa)"; rate=1; fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/usb-reset-$mode-$isa.log" stick="$CI_LOG_DIR/usb-reset-$mode-$isa.img"
+        local kcopy="$CI_LOG_DIR/kernel-usb-reset-$mode-$isa"
+        if [ "$isa" = riscv64 ]; then
+            dsrc=$AZOS_OUT/build/disk.img
+            kbuild "qemu,pci,usb-storage,chaos" || return; ci_kernel_check || return; cp "$KERNEL" "$kcopy"
+        else
+            dsrc=$AZOS_OUT/build/disk-aarch64.img
+            a64_kbuild "qemu,pci,usb-storage,chaos" || return; a64_kernel_check || return; cp "$A64_IMG" "$kcopy"
+        fi
+        fresh_disk "$dsrc" || return
+        cp "$dsrc.pristine" "$stick"
+        rm -f "$log"
+        par_ready
+        local dev=(-m 256M -append "chaos=xhci-command-drop:$rate" -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0
+            -drive "if=none,id=stick,format=raw,file=$stick" -device usb-storage,bus=xhci.0,drive=stick)
+        if [ "$isa" = riscv64 ]; then
+            "$QEMU" -machine virt -nographic -bios default -smp 2 -kernel "$kcopy" "${dev[@]}" </dev/null >"$log" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kcopy" "${dev[@]}" </dev/null >"$log" 2>&1 &
+        fi
+        if [ "$mode" = once ]; then
+            dev_boot_wait $! "$log" 90 "mass storage sector 0 read|xhci timed out again"
+        else
+            dev_boot_wait $! "$log" 90 "xhci timed out again"
+        fi
+        rm -f "$stick" "$kcopy"
+        dev_reset_verdict "$mode" "$log" USB xhci '\[USB\] xhci timed out after [0-9]* ms: device reset' \
+            'USB\] mass storage sector 0 read: boot signature present'
+    }
+    par "usb: timeout resets once (riscv64)" usb_reset_row riscv64 once
+    par "usb: second timeout latches (riscv64)" usb_reset_row riscv64 twice
     kbuild "qemu"
 
     # Brain-link key gate (`link-provisioning-enforced`), BOTH directions. build/disk.img
