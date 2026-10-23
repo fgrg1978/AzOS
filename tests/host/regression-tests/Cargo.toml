@@ -34,3 +34,8 @@ proptest = "1"
 # resolve to no-ops on the host (target_os = "macos"/"linux"), but the
 # `use wcet_macro::wcet` import still has to satisfy the compiler.
 wcet-macro = { path = "../../../crates/core/wcet-macro" }
+
+# crates/drivers/dtb (pulled in by #[path]) is no_std for the kernel and for
+# ring-3 images, whose target spec says os "azos" (sdk/targets).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }
