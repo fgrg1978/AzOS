@@ -184,6 +184,9 @@ fn attach_dwmshc(dev: &Device) -> Result<(), ProbeError> {
     });
     // Without the SoC frameworks (Kconfig SOC_FRAMEWORKS, on by default for
     // this board) there is no tree to read the facts from.
+    // The node is still required (no node: no such driver), only not read.
+    #[cfg(not(feature = "soc"))]
+    let _ = node;
     #[cfg(not(feature = "soc"))]
     let facts: Option<(bool, Option<u32>, Option<u64>)> = None;
     let Some((non_removable, fifo_depth, ciu_hz)) = facts else {
