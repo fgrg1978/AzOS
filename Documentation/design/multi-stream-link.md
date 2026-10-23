@@ -3,7 +3,7 @@
 The link between the kernel and the brain (the off-board planner) is one TCP
 connection. A small stream-id and length header in front of each frame lets
 logically separate streams share that connection. This note records what the
-framing is, how it composes with the other link layers, what uses it, and the compile-time scheduling seam for bulk versus control traffic.
+framing is, how it composes with the other link layers, what uses it, and the compile-time scheduling option for bulk versus control traffic.
 
 ## Summary
 
@@ -39,6 +39,10 @@ Source: `crates/net/multi-stream/src/lib.rs` (`wrap`, `unwrap`,
 - `unwrap(frame)` returns `(stream_id, payload_len, payload)`, or `None` for a
   frame shorter than the header or one whose `LEN` claims more bytes than the
   frame holds (a truncated or length-extended frame).
+- `StreamDemux` is the receive side: it walks frames across socket reads
+  (TCP cuts and coalesces them) and hands each payload piece to the caller
+  tagged with its stream id, so a frame of an ignored stream costs no copy.
+  The kernel's brain receive path (`BrainRxStream::feed_wire`) uses it.
 
 Stream ids:
 
@@ -90,8 +94,10 @@ sensor / status packet -> sealed record (encrypted session)
   opens. With the framing off the bytes go out unchanged.
 - **No encoder stage in the stream path.** Camera frames are captured and
   JPEG-encoded once by the capture task into a lock-free frame ring
-  (`crates/drivers/cam-ring`, `FanoutRing`). The capture task never waits for
-  the sender; by default (`CAMERA_RING_OVERWRITE_OLDEST`) a slow sender loses
+  (`crates/drivers/cam-ring`, `FanoutRing`); with a USB camera (`USB_UVC`)
+  the class driver writes the camera's frames into the same ring, and a raw
+  YUY2 frame is converted to JPEG when the sender reads it. The capture task
+  never waits for the sender; by default (`CAMERA_RING_OVERWRITE_OLDEST`) a slow sender loses
   only frames it would have skipped, and takes the newest frame it has not
   taken. The sender packs the JPEG into a `PKT_CAMERA` brain packet and sends
   it through the same sealing path as every other packet.
@@ -110,23 +116,22 @@ sensor / status packet -> sealed record (encrypted session)
   cannot be dropped or reordered once its counter is spent. Sizes are
   `BRAIN_TX_QUEUE_BYTES` and `BRAIN_TX_PRIORITY` in `config/domains/Kconfig.brain`.
 
-## Scheduling policy seam: FIFO or priority
+## Scheduling option: FIFO or priority
 
 Source: `config/domains/Kconfig.brain` (`MULTISTREAM_SCHED_PRIORITY`),
-`kernel/src/tasks/brain_link.rs`, `crates/core/limits/build.rs`.
+`kernel/src/tasks/brain_link.rs` (`ms_policy_log_once`),
+`crates/core/limits/build.rs`.
 
 Under FIFO a large bulk frame already queued delays a control frame behind it
-by the whole frame's transmit time. Under priority the bulk stream is cut into
-chunks (one segment each, with its own 3-byte header) and a control frame is
-sent between chunks, which bounds the hold-off to about one chunk time.
+by the whole frame's transmit time. A priority policy would cut the bulk
+stream into chunks (one segment each, with its own 3-byte header) and send a
+control frame between chunks, bounding the hold-off to about one chunk time.
 
-The choice is a compile-time Kconfig bool, `MULTISTREAM_SCHED_PRIORITY`
-(default `n`, FIFO; only offered in the robot domain), read as the constant
-`azos_limits::MULTISTREAM_SCHED_PRIORITY`. Each binary carries one policy and
-the other branch is eliminated, so there is no runtime selector on the hot
-path.
-
-The production sender does not chunk or interleave; it relies on the
+The Kconfig bool `MULTISTREAM_SCHED_PRIORITY` (default `n`; only offered in
+the robot domain) names that choice as the constant
+`azos_limits::MULTISTREAM_SCHED_PRIORITY`. Its only reader is the one-shot
+`[MS] sched policy` line a QEMU build prints when the framing is on: the
+sender does not chunk or interleave under either value, and relies on the
 transmit-queue lanes above.
 
 ## Limitations
