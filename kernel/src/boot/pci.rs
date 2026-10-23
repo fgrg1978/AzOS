@@ -491,10 +491,10 @@ mod soc {
         // Clocks, resets, power domains and pin state the node names.
         match socfw::bind(d.node) {
             Ok(a) => kprintln!(
-                "[PCI] {}: soc bind domains={} clocks={} resets={} pins={} unmodelled={} (left as the firmware set them)",
-                name, a.domains, a.clocks, a.resets, a.pins, a.unmodelled),
+                "[PCI] {} at {:#x}: soc bind domains={} clocks={} resets={} pins={} unmodelled={} (left as the firmware set them)",
+                name, d.apb.0, a.domains, a.clocks, a.resets, a.pins, a.unmodelled),
             Err(e) => {
-                azos_drv_sys::kwarn!("[PCI] {}: resources refused: {:?}: no enumeration", name, e);
+                azos_drv_sys::kwarn!("[PCI] {} at {:#x}: resources refused: {:?}: no enumeration", name, d.apb.0, e);
                 return None;
             }
         }
@@ -502,7 +502,7 @@ mod soc {
         match bring_up(&d) {
             Ok(h) => Some(h),
             Err(why) => {
-                azos_drv_sys::kwarn!("[PCI] {}: {}: no enumeration", name, why);
+                azos_drv_sys::kwarn!("[PCI] {} at {:#x}: {}: no enumeration", name, d.apb.0, why);
                 let _ = socfw::unbind(d.node);
                 None
             }
@@ -578,11 +578,11 @@ mod soc {
         let report = match report {
             Ok(r) => r,
             Err(HostError::LinkDown { waited_us }) => {
-                kprintln!("[PCI] {}: link down after {} us (nothing in the slot?)", name, waited_us);
+                kprintln!("[PCI] {} at {:#x}: link down after {} us (nothing in the slot?)", name, d.apb.0, waited_us);
                 return Err("link down");
             }
             Err(e) => {
-                azos_drv_sys::kwarn!("[PCI] {}: init refused: {:?}", name, e);
+                azos_drv_sys::kwarn!("[PCI] {} at {:#x}: init refused: {:?}", name, d.apb.0, e);
                 return Err("controller init refused");
             }
         };
@@ -591,8 +591,8 @@ mod soc {
             ConfigAccess::Ecam { size } => BusMapper::Slices { base: d.cfg.0 as usize, size: size as usize },
             ConfigAccess::Indirect { .. } => BusMapper::Free,
         };
-        kprintln!("[PCI] {}: link up after {} us, config {}, MSI {}",
-            name,
+        kprintln!("[PCI] {} at {:#x}: link up after {} us, config {}, MSI {}",
+            name, d.apb.0,
             report.link_wait_us,
             match report.config {
                 ConfigAccess::Ecam { size } => alloc::format!("ECAM {:#x}+{:#x}", d.cfg.0, size),
