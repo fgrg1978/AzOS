@@ -76,14 +76,13 @@ so `shutdown(Both)` on a shared `TcpStream` cannot reach a recycled handle.
 |---|---|---|
 | `TcpStream` over IPv4 | yes | timeouts, nonblocking mode, `shutdown` of the read side and of both |
 | `UdpSocket` over IPv4 | yes | timeouts, multicast join and leave |
-| `TcpListener` | no | `bind` answers `Unsupported`: the native socket ops have no listen or accept |
+| `TcpListener` | no | `bind` answers `Unsupported`: the port layer does not use the kernel's `NODE_LISTEN` and `NODE_ACCEPT` ops, which `azos_libsys::listen_typed` and `accept_typed` wrap for a `no_std` server (`userspace/services/sshd`) |
 | Name lookup | no | no resolver op |
 | IPv6 addresses and UDP over IPv6 | no | no IPv6 `sockaddr` form in the native socket ops, and no UDP over IPv6 in the stack |
 | `shutdown(Write)`, a stream's local address, `peek` | no | `Unsupported` |
 
-A listener and a resolver are service functions, so they are meant to come as IDL
-interfaces on endpoints and not as more socket ops. A program that opens a socket
-needs a system-call filter row that names one op of the `net` invoke class.
+A program that opens a socket needs a system-call filter row that names one op
+of the `net` invoke class.
 
 Source: `crates/core/stdrt/src/net.rs`, `crates/core/stdrt/src/netpure.rs`,
 `sdk/std/sys/net/connection/azos.rs`, `sdk/std/sys/net/connection/azos/addr.rs`.
@@ -149,16 +148,19 @@ programs enter at `_azos_entry`, which aligns the stack and calls `_start`.
 
 | Family | Functions (all in `azos_libsys`) |
 |---|---|
-| Process and thread | `exit`, `getpid`, `yield_now`, `spawn_ex`, `task_kill`, `wait_status`, `waitpid`, `thread_create`, `thread_exit`, `futex_wait`, `futex_wake`, `schedctl`, `qos_hint` |
+| Process and thread | `exit`, `getpid`, `yield_now`, `spawn_ex`, `task_kill`, `wait_status`, `waitpid`, `thread_create`, `thread_exit`, `futex_wait`, `futex_wake`, `schedctl`, `qos_hint`, `task_subreaper` |
+| Confinement | `seccomp` (`DOMAIN_SET_FILTER`), `pledge` (`DOMAIN_PLEDGE`); both one way |
 | Time | `vdso_now_ns`, `vdso_uptime_ms`, `clock_now`, `sleep`, `sleep_until_ns`; `SleepResult` |
+| vDSO and ABI | `vdso_hwcap`, `vdso_hwcap2`, `vdso_task_map`, `vdso_task_counters`, `vdso_sensor_read`, `abi_matches` |
 | Startup block | `startup_init`, `argc`, `arg`, `getenv`, `env_at`, `cwd`, `fd_get`, `dup`, `dup2`, `fd_install` |
-| Memory | `mmap`, `munmap`, `shm_create_typed`, `shm_map_typed`, `shm_protect_typed`, `shm_release_typed` |
+| Memory | `mmap`, `munmap`, `shm_create_typed`, `shm_map_typed`, `shm_protect_typed`, `shm_release_typed`, `shm_acquire_typed`, `shm_end_drop_typed` |
 | Capabilities | `cap_info`, `cap_lookup`, `cap_derive`, `endpoint_derive`, `cap_revoke`, `close_typed`; `CapInfo`, `ty` |
-| IPC | `invoke`, `invoke_desc`, `ipc_call_v2`, `ipc_accept_v2`, `ipc_reply_v2`, `fast_ipc_call_ep`, `fast_ipc_accept`, `fast_ipc_reply`, `fast_ipc_reply_accept` |
-| Ports | `port_create_typed`, `endpoint_create_typed`, `port_bind_typed`, `port_wait_typed`, `port_poll_typed`, `port_destroy_typed` |
-| Files | `root_dir`, `open_at`, `read`, `write`, `file_read_typed`, `file_write_typed`, `stat`, `readdir`, `mkdir`, `unlink`, `rmdir`, `rename`, `truncate`, `fsync_typed`, `console_write`, `print`, `println` |
-| Sockets | `socket_typed`, `connect_typed`, `send_typed`, `recv_typed`, `bind_typed`, `sendto_typed`, `recvfrom_typed`, `mcast_join_typed`, `mcast_leave_typed` |
-| Driver server | `drv_srv_register_typed`, `drv_srv_reply_wait`, `drv_srv_fetch_request`, `drv_srv_reply`, `drv_srv_unregister_typed` |
+| IPC | `invoke`, `invoke_desc`, `ipc_call_v2`, `ipc_accept_v2`, `ipc_reply_v2`, `ipc_reply_delegate`, `fast_ipc_call_ep`, `fast_ipc_accept`, `fast_ipc_reply`, `fast_ipc_reply_accept` |
+| Ports | `port_create_typed`, `endpoint_create_typed`, `port_bind_typed`, `port_bind_timer`, `port_bind_endpoint`, `port_bind_pressure`, `port_unbind_typed`, `port_wait_typed`, `port_wait_until_typed`, `port_poll_typed`, `port_destroy_typed` |
+| Files | `root_dir`, `open_at`, `open_root`, `read`, `write`, `file_read_typed`, `file_write_typed`, `stat`, `statfs`, `readdir`, `mkdir`, `unlink`, `rmdir`, `rename`, `truncate`, `fsync_typed`, `close`, `console_write`, `print`, `println` |
+| Sockets | `socket_typed`, `connect_typed`, `send_typed`, `recv_typed`, `bind_typed`, `listen_typed`, `accept_typed`, `sendto_typed`, `recvfrom_typed`, `mcast_join_typed`, `mcast_leave_typed` |
+| Driver server | `drv_srv_register_typed`, `drv_srv_reply_wait`, `drv_srv_reply_fetch`, `drv_srv_fetch_request`, `drv_srv_reply`, `drv_srv_unregister_typed`, `mmio_map`, `irq_bind`, `irq_ack` |
+| Foreign ABI | `foreign_entry`, `foreign_resume`, `foreign_fork` (for a ring-3 runtime that hosts another system-call ABI) |
 | Rings | `ioring_create_typed`, `ioring_submit_typed`, `ioring_destroy_typed`; `ioring::Ring` is the ring-3 producer and consumer over the ring page |
 
 Modules:
@@ -169,6 +171,7 @@ Modules:
 | `ioring` | Ring-3 view of an io_ring page: SQEs, CQEs and the opcodes. It never enters the kernel, so every system call a program makes is a visible `sys::NAME(..)` call. |
 | `pipe` | The process's half of a POSIX-style pipe: a `Cap<Shm>` region with a byte ring (`azos_bytepipe`), with the futex as the doorbell. |
 | `utest` | The test harness of user code (above). |
+| `hwcap` | The bits of the vDSO hardware-capability word, per ISA. |
 | `pure` | Helpers with no trap, tested on the host (`tests/host/libsys-tests` includes the file with `#[path]`). |
 
 Every call goes through a `sys::name(..)` function, so `tests/host/seccomp-tests`
