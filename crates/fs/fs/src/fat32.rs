@@ -1036,8 +1036,8 @@ fn cluster_first_sector(data_start: u32, cluster: u32, spc: u32) -> Option<u32> 
 /// Maximum number of clusters a single chain may visit before we declare the
 /// volume corrupt.
 ///
-/// FAT cluster chains are attacker-controlled: the volume is exported over USB
-/// mass storage by `msc_gadget`, so an adversary with physical access can set
+/// FAT cluster chains are attacker-controlled: the volume is on a removable
+/// card, so an adversary with physical access and a card reader can set
 /// `FAT[2] = 2` and every naive `while cluster < EOC { cluster = next(cluster) }`
 /// walker spins forever. Because the FAT sector is held in `SECTOR_CACHE`, that
 /// spin does no I/O and never yields — it is a hard hang of whichever hart
@@ -1721,8 +1721,7 @@ const EXTERNAL_WRITE_RANGE_MAX: u64 = crate::bcache::MAX_WAYS as u64;
 
 /// The block layer's write observer (`azos_drv_block::write_observer`):
 /// MEDIUM sectors `[lba, lba + count)` were written by someone other than
-/// this file — the USB mass-storage gadget, a reserved-tail record, ring-3
-/// block entries through a partition's `block` endpoint. Drops the cached copy
+/// this file — a reserved-tail record, ring-3 block entries through a partition's `block` endpoint. Drops the cached copy
 /// of every volume sector in the range; a range outside the volume (the
 /// partition table, another partition, the reserved tail) drops nothing.
 ///
@@ -1800,10 +1799,9 @@ fn fat32_cache_reset() {
 /// them is O(8), not a real cost against a mount that is about to do disk
 /// I/O anyway. (Wave 14: a generation bump, O(1) at any size.)
 ///
-/// Public for the USB mass-storage handback: when the gadget gives the volume
-/// back after a host owned it, the caller drops every line. Every gadget
-/// WRITE_10 already invalidates its own sector through the block layer's
-/// write observer, so this is belt and braces, not the coherence mechanism.
+/// Public for the host tests, which drop every line the way a mount does.
+/// Every other writer of the medium invalidates its own sectors through the
+/// block layer's write observer, so this is not the coherence mechanism.
 pub fn fat32_cache_invalidate_all() {
     SECTOR_CACHE.lock().invalidate_all();
     write_gen_bump();
@@ -5095,7 +5093,7 @@ pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
     FAT32.lock().mounted = false;
     // U09-6: drop every cached sector on unmount too, not just on the next
     // mount. Between this unmount and a future mount, the medium may be
-    // physically swapped (MSC gadget, SD card) with the cache never told;
+    // physically swapped (an SD card) with the cache never told;
     // invalidating here as well as in `fat32_mount` means neither the
     // outgoing nor the incoming volume's sectors can be read through a
     // stale line, regardless of which of the two calls a caller happens to

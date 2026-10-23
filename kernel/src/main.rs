@@ -31,11 +31,6 @@ mod pstore;
 mod entry;
 mod trap;
 
-// DEV03 — USB MSC gadget glue (FAT32-backed LUN over Bulk-Only Transport).
-// USB device controller wiring is stubbed; pure dispatch
-// logic is covered by tests/host/msc-tests.
-#[allow(dead_code)]
-mod msc_gadget;
 // The reserved tail of the boot medium: the link key, the entropy seed, the
 // device record and the topology floor, past the end of the filesystem.
 mod reserved_tail;

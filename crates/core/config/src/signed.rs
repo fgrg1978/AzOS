@@ -4,8 +4,8 @@
 //!
 //! # The problem
 //!
-//! `CONFIG.INI` lives on the same USB-exposed FAT volume `msc_gadget.rs`
-//! hands to any host that plugs in. Before this module existed,
+//! `CONFIG.INI` lives on the FAT volume of a removable card, which any card
+//! reader can rewrite. Before this module existed,
 //! `kernel/src/boot/config_auth.rs` called [`crate::cfg_load`] on whatever bytes it
 //! read back — no signature, no authority check — and those bytes decide:
 //!

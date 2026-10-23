@@ -49,7 +49,7 @@ crates/core/rings	23	4	4	0	0	98
 crates/core/sched	421	135	4	3	0	70
 crates/core/stdrt	44	1	4	0	0	-
 crates/core/sync	46	9	18	0	0	84
-crates/core/syscall	47	2	0	0	0	57
+crates/core/syscall	47	2	0	0	0	58
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	22	0	1	0	0	28
 crates/core/wcet-macro	0	0	0	0	1	-
@@ -78,7 +78,6 @@ crates/drivers/input	6	1	0	0	0	29
 crates/drivers/input/wire	3	2	2	0	0	81
 crates/drivers/iommu	2	0	0	0	0	5
 crates/drivers/irqchip	0	0	0	0	1	0
-crates/drivers/msc	0	0	0	0	1	0
 crates/drivers/net	34	4	5	0	0	64
 crates/drivers/npu	10	2	0	0	0	99
 crates/drivers/nvme	0	0	0	0	1	0
@@ -110,7 +109,7 @@ domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	44
 domains/robot/safety-core	0	0	0	0	1	0
 domains/robot/telemetry	1	0	0	0	0	100
-kernel	324	14	12	50	0	59
+kernel	324	14	12	50	0	60
 lx/emul	8	0	0	0	0	-
 micro	20	4	0	0	0	68
 tools/linux_seccomp_launch	11	2	0	2	0	-
@@ -167,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	517
+@unsafe-share	518

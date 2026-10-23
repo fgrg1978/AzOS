@@ -379,8 +379,7 @@ All crates are `no_std`. "Chip logic" crates contain no host-specific code and a
 | `crates/drivers/power` | `azos_drv_power` | System suspend, power management |
 | `crates/drivers/tpm` | `azos_tpm` | TPM 2.0 TIS/FIFO protocol and commands over MMIO or SPI |
 | `crates/drivers/rtc` | `azos_rtc` | Real-time clocks (goldfish, PL031, MC146818, PCF8563); seeds the wall clock at boot (`kernel/src/boot/rtc.rs`, see [time.md](time.md#real-time-clock)) |
-| `crates/drivers/msc` | `azos_msc` | USB Mass Storage Class bulk-only gadget: descriptors, CBW dispatcher, transport state machine |
-| `crates/drivers/scsi` | `azos_scsi` | SCSI over USB Bulk-Only Transport, both ends: CBW/CSW, the target (gadget) command set, the initiator (host) CDB builders and parsers |
+| `crates/drivers/scsi` | `azos_scsi` | SCSI over USB Bulk-Only Transport, both ends: CBW/CSW, the target (device-side) command set, the initiator (host) CDB builders and parsers |
 | `crates/drivers/firmware` | `azos_firmware` | Firmware mailbox client (`rpi_mailbox.rs`) used by the thermal runtime |
 | `userspace/drivers/gpio_drv`, `buzz_drv`, `ina_drv` | | Ring-3 drivers (`GPIODRV.ELF`, `BUZZDRV.ELF`, `INADRV.ELF`) |
 

@@ -110,8 +110,7 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `nvme` | The NVMe wire protocol: encodings and arithmetic only. |
 | `virtio` | VirtIO transport (MMIO and PCI) and the block, network and entropy devices. |
 | `net` | NIC backend selection and the Ethernet MAC driver. |
-| `msc` | The USB Mass Storage Class (bulk-only) gadget, device side. |
-| `scsi` | SCSI over USB Bulk-Only Transport, both ends: the CBW/CSW wrappers, the target command set (the gadget) and the initiator side (the USB mass-storage host driver). |
+| `scsi` | SCSI over USB Bulk-Only Transport, both ends: the CBW/CSW wrappers, the target command set (what a device answers) and the initiator side (the USB mass-storage host driver). |
 | `input` | Input devices and what keyboards share. |
 | `usb-hid` | The USB HID class driver (keyboards and mice) over the USB host: report descriptor parser, report decoder, authorization. |
 | `gpio` | The pin controller and its `Driver` registration. |
@@ -239,7 +238,7 @@ Source: `tools/arch_layout_lint.py` (`REQUIRED`), `crates/core/arch-*/src/`,
 | `kernel/src/trap/` | The generic trap layer: `syscall.rs`, `fault.rs`, `irq.rs`, `kernel.rs`, `frame.rs`, `crash.rs`. |
 | `kernel/src/tasks/` | Kernel tasks created by `kernel_main`, grouped by subsystem. |
 | `kernel/src/smokes/` | Boot self-tests and feature-gated boot smokes. |
-| `kernel/src/*.rs` | Single-purpose modules: `panic.rs`, `pstore.rs`, `ktest.rs`, `drv_supervisor.rs`, `irq_thread.rs`, `console_mode.rs`, `msc_gadget.rs`, and others. |
+| `kernel/src/*.rs` | Single-purpose modules: `panic.rs`, `pstore.rs`, `ktest.rs`, `drv_supervisor.rs`, `irq_thread.rs`, `console_mode.rs`, and others. |
 | `kernel/linker*.ld` | Linker scripts, one per image family and ISA. |
 | `kernel/Cargo.toml` | The feature table. Its `default` list is empty: Kconfig supplies the features. |
 

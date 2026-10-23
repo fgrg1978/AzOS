@@ -2085,8 +2085,8 @@ config FS_BLOCK_CACHE_KB
       A repeated open/read of a small file, or a repeated spawn of the same
       image, is served from it instead of the block device.  Write-through:
       every write reaches the device before it returns, in the same order as
-      without the cache; writes by anyone else (USB mass-storage gadget,
-      reserved-tail records, a block-interface OP_BLOCK_WRITE) drop the sectors they touch
+      without the cache; writes by anyone else (reserved-tail records,
+      a block-interface OP_BLOCK_WRITE) drop the sectors they touch
       (azos_drv_block::write_observer).  0 or a power of two from 4; 0
       keeps the 8 x 512 B cache this option replaced.
 

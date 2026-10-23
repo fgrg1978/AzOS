@@ -91,9 +91,9 @@
 //! ## There is no other mode
 //!
 //! The brain link is always this session: no plaintext mode, no MAC-only mode,
-//! and no runtime switch (a key in `/fat/CONFIG.INI` would live on the volume
-//! the USB mass-storage gadget also exports, so it would be an
-//! attacker-writable downgrade). A frame travels only inside a message of an
+//! and no runtime switch (a key in `/fat/CONFIG.INI` would live on the FAT
+//! volume of a removable card, so it would be an attacker-writable
+//! downgrade). A frame travels only inside a message of an
 //! established session, so a peer without the link key has nothing to send.
 //!
 //! In-session replay is the transport's counter, so a captured frame replays

@@ -7268,8 +7268,8 @@ mod pstore_record {
 // Wave 14 (FATCACHE): the FAT32 sector cache at a real size (Kconfig
 // `FS_BLOCK_CACHE_KB`; the limits shim says 64 KiB, embedded's default) —
 // file data served from RAM on a repeat, and one test per coherence path:
-// FAT32's own writes, writes through the block layer (USB mass-storage
-// gadget, reserved-tail records), a writer that reports itself
+// FAT32's own writes, writes through the block layer (reserved-tail
+// records), a writer that reports itself
 // (`SYS_DISK_WRITE`), a long external write, writes outside the volume, and
 // a write racing a fill. Each names the canary feature that turns it red.
 #[cfg(test)]
@@ -7354,10 +7354,9 @@ mod fatcache {
         assert_eq!(open_read_close(LEN), new, "the rewrite must be what is read");
     }
 
-    /// **A write through the block layer drops the cached sector** — the USB
-    /// mass-storage gadget's WRITE_10 and the reserved-tail records both go
-    /// through `blkdev::write`, which reports to the observer. A host
-    /// rewriting the image's first data sector, and then its directory entry
+    /// **A write through the block layer drops the cached sector** — the
+    /// reserved-tail records go through `blkdev::write`, which reports to the
+    /// observer. Another writer rewriting the image's first data sector, and then its directory entry
     /// (size 100), must be seen by the next open.
     ///
     /// **Canary.** `fatcache-observer-canary`: the cached sectors answer and
@@ -7367,16 +7366,16 @@ mod fatcache {
         let _g = serial();
         let s = warm(4) as u64;
         let host = [0x5Au8; 512];
-        blkdev::write(s, 1, &host).expect("the gadget's write");
-        assert_eq!(open_read_close(512), host.to_vec(), "the data sector the host wrote");
+        blkdev::write(s, 1, &host).expect("the block-layer write");
+        assert_eq!(open_read_close(512), host.to_vec(), "the data sector the writer wrote");
 
         // The directory entry: the root directory is cluster 2.
         let root = cluster_sector(&Geom::default(), 2) as u64;
         let mut dir = disk_peek(root).expect("the root directory sector");
         let at = dir.chunks(32).position(|e| e[..11] == NAME).expect("the entry") * 32;
         dir[at + 28..at + 32].copy_from_slice(&100u32.to_le_bytes());
-        blkdev::write(root, 1, &dir).expect("the gadget's write");
-        assert_eq!(fat32::fat32_lookup_root(&NAME).map(|e| e.1), Ok(100), "the size the host wrote");
+        blkdev::write(root, 1, &dir).expect("the block-layer write");
+        assert_eq!(fat32::fat32_lookup_root(&NAME).map(|e| e.1), Ok(100), "the size the writer wrote");
         assert_eq!(open_read_close(LEN).len(), 100);
     }
 
@@ -7510,7 +7509,7 @@ mod fatcache {
     ///   medium FAT32 mounts.
     ///
     /// **Canary.** Delete the `note_external_write` call in
-    /// `block_io`, or call `write_quiet` from `msc_gadget.rs`: red.
+    /// `block_io`, or call `write_quiet` from `reserved_tail.rs`: red.
     #[test]
     fn every_medium_writer_is_accounted_for() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
@@ -7901,7 +7900,7 @@ mod ro_stream {
     /// **A stream follows a rewrite.** Open, read; the file is then
     /// rewritten through the driver (a new, shorter chain; the old one is
     /// freed but still holds the old bytes) and, separately, its directory
-    /// entry is rewritten through the block layer (as the USB gadget would).
+    /// entry is rewritten through the block layer (as another writer would).
     /// The same descriptor must read what the directory says now — never the
     /// freed chain, never past the new size.
     ///
@@ -7923,7 +7922,7 @@ mod ro_stream {
         let n = vfs::vfs_read(&mut t, fd, buf.as_mut_ptr(), 8192);
         assert_eq!(&buf[..n.max(0) as usize], &new[..], "the rewrite, at its size");
 
-        // The gadget points the entry back at cluster 3 with 700 bytes.
+        // The block-layer write points the entry back at cluster 3 with 700 bytes.
         let g = Geom::default();
         let root = cluster_sector(&g, 2) as u64;
         let mut dir = fs_test_drivers::disk_peek(root).unwrap();
@@ -7935,7 +7934,7 @@ mod ro_stream {
         fs_test_drivers::blkdev::write(root, 1, &dir).unwrap();
         assert_eq!(vfs::vfs_lseek(&mut t, fd, 0, vfs::SEEK_SET), 0);
         let n = vfs::vfs_read(&mut t, fd, buf.as_mut_ptr(), 8192);
-        assert!(n > 0 && n <= 700, "{n} bytes after the gadget's rewrite");
+        assert!(n > 0 && n <= 700, "{n} bytes after the block-layer rewrite");
         assert_eq!(buf[..64], (0..64).map(pat).collect::<Vec<u8>>()[..]);
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
     }
@@ -8068,7 +8067,7 @@ mod content_stamp {
 
     /// **Every way the volume changes moves the stamp, including a rewrite
     /// that keeps the cluster and the size.** FAT32's own write of another
-    /// file; the USB gadget's write of the file's own data sector through
+    /// file; a write of the file's own data sector through
     /// the block layer (same chain, same size, new bytes); a
     /// `SYS_DISK_WRITE`-style external note; a cache drop; a remount.
     ///
@@ -8089,7 +8088,7 @@ mod content_stamp {
         fs_test_drivers::blkdev::write(data, 1, &sec).unwrap();
         let s2 = stamp();
         assert_eq!((s2.id, s2.size), (s1.id, s1.size), "same chain, same size");
-        assert_ne!(s2, s1, "the gadget rewrote the file's bytes in place");
+        assert_ne!(s2, s1, "a block-layer write rewrote the file's bytes in place");
 
         fs_test_drivers::blkdev::note_external_write(data, 1);
         let s3 = stamp();
@@ -8097,7 +8096,7 @@ mod content_stamp {
 
         fat32::fat32_cache_invalidate_all();
         let s4 = stamp();
-        assert_ne!(s4, s3, "a whole-cache drop (the gadget's handback)");
+        assert_ne!(s4, s3, "a whole-cache drop");
 
         let v = fat32::fat32_mount_volume().expect("mounted");
         assert_eq!(fat32::fat32_unmount(v), Ok(()));

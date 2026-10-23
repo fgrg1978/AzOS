@@ -5,7 +5,7 @@
 //! The FAT32 driver keeps a block cache of the medium (`azos_fs`'s
 //! `bcache.rs`, sized by Kconfig `FS_BLOCK_CACHE_KB`). Its own writes keep
 //! that cache coherent (write-through), but other code writes the same
-//! medium: the USB mass-storage gadget, the reserved-tail records, ring-3
+//! medium: the reserved-tail records, ring-3
 //! block entries through a partition's `block` endpoint. Every one of those
 //! goes through [`blkdev::write`](crate::blkdev::write), which calls
 //! [`notify`] after the device answered, so a new writer is coherent by

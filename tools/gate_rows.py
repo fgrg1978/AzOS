@@ -70,7 +70,7 @@ SUBSYS = [
     ("net", r"network|dhcp|tcp|udp|\barp\b|link|nic\b|\bnet\b|net-|slirp|brain|tftp",
      "crates/net/** crates/drivers/net/** crates/drivers/virtio/**"),
     ("fs", r"\bfs\b|fat|crash log|pstore|boot count|storage|mmc|disk|volume|journal|seed",
-     "crates/fs/** crates/drivers/block/** crates/drivers/msc/** kernel/src/pstore.rs"),
+     "crates/fs/** crates/drivers/block/** kernel/src/pstore.rs"),
     ("sched", r"sched|rt7|edf|cbs|pifast|portwait|preempt|timer|tick|idle|smp|deadline|\bpi\b|pi-|nr_cpus|nrcpus|percpu|cpuid",
      "crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs"),
     ("ipc", r"ipc|port|ring|stream|channel|census",

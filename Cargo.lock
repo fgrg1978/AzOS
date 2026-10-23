@@ -660,7 +660,6 @@ dependencies = [
  "azos_limits",
  "azos_linux_abi",
  "azos_mm",
- "azos_msc",
  "azos_multi_stream",
  "azos_nav",
  "azos_net",
@@ -746,13 +745,6 @@ dependencies = [
  "azos_percpu",
  "azos_sync",
  "linked_list_allocator",
-]
-
-[[package]]
-name = "azos_msc"
-version = "0.1.0"
-dependencies = [
- "azos_scsi",
 ]
 
 [[package]]

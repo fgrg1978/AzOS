@@ -202,10 +202,9 @@ pub fn fill(out: &mut [u8]) -> bool {
 // crate) is only survivable on hardware with no TRNG if a seed can persist
 // ACROSS boots. This is the pure side of that seed: the record format, the
 // load-and-rotate rule, and the check that the storage is not filesystem
-// data. The kernel-side storage location (deliberately NOT the MSC-exported
-// FAT volume — the same USB-readable-PSK reasoning as U06-9/#30) is
-// `kernel/src/msc_gadget.rs`'s reserved tail sectors,
-// `RESERVED_SECTOR_ENTROPY_SEED`; the boot call site is
+// data. The kernel-side storage location (deliberately NOT the FAT volume —
+// the same file-reachable-PSK reasoning as U06-9/#30) is
+// `kernel/src/reserved_tail.rs`'s tail sector `ENTROPY_SEED`; the boot call site is
 // `install_entropy_seed` in `kernel/src/boot/entropy.rs`.
 //
 // Format, one 512-byte sector, `SEED_FILE_BYTES` (73) meaningful:

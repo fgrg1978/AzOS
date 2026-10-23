@@ -39,8 +39,8 @@ config LINK_PROVISIONING_ENFORCED
       keys from a per-connection handshake): there is no plaintext mode and
       no MAC-only mode in any build, and a key in CONFIG.INI cannot change
       that.  This option hardens what surrounds it:
-        * boot halts when the link key (the reserved sector the USB
-          mass-storage gadget cannot address) is missing or invalid, instead
+        * boot halts when the link key (the reserved sector past the
+          filesystem, which no file write can reach) is missing or invalid, instead
           of going on with the link down;
         * the handshake is refused while the entropy pool is unseeded, so
           no session is ever keyed from timing alone;
@@ -241,7 +241,7 @@ config TOPOLOGY_FLOOR_SECTOR
     default 3
     help
       Index in the reserved tail past the FAT32 volume
-      (kernel/src/msc_gadget.rs, 8 sectors) of the "KTPF" floor record
+      (kernel/src/reserved_tail.rs, 8 sectors) of the "KTPF" floor record
       (crates/core/topology/src/device_record.rs). 0 is the link key, 1 the
       entropy seed, 2 the device record; 3..7 are free. Change it only to
       move it off a sector another feature of your build claims, and give

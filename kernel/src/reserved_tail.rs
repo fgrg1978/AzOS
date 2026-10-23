@@ -6,11 +6,9 @@
 //! the topology counter floor).
 //!
 //! U06-9/#30: the link key and the entropy seed used to be FAT32 files, and
-//! anything on the FAT volume is reachable over a USB mass-storage export
-//! block for block. The tail sits at LBAs such an export never reports
-//! (`msc_gadget::Fat32BlockDevice` subtracts [`TAIL_SECTORS`] from the
-//! capacity it hands the SCSI layer), so a USB host cannot address it; a card
-//! reader can.
+//! anything on the FAT volume is reachable by whatever can write a file there.
+//! The tail sits past the end of the filesystem, so no file write can reach
+//! it; a card reader can.
 //!
 //! **The tail is touched only when it is ours.** An image built without the
 //! headroom, or a card whose partition runs to the last sector, has

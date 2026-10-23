@@ -473,9 +473,9 @@ pub fn ota_boot_validate_pure(meta: &mut BootMeta, max_attempts: u32) -> BootVal
     // an oversized field — so `boot_count=4294967295` is a value that survives
     // a round trip through the parser and lands here intact.
     //
-    // That file lives on the FAT volume, which `msc_gadget.rs` exports over
-    // USB mass storage: writing it is a thing an attacker with the USB port
-    // can do, and `ota_boot_validate()` runs unconditionally on every boot.
+    // That file lives on the FAT volume, on a removable card: writing it is a
+    // thing an attacker with a card reader can do, and `ota_boot_validate()`
+    // runs unconditionally on every boot.
     // With `overflow-checks = true` and `panic = "abort"`, a plain `+= 1`
     // there is not a wrong number — it is a panic, and a panic on this
     // codebase is a full board reset. One 12-byte edit would put the robot in

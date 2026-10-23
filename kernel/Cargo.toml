@@ -1256,9 +1256,6 @@ azos_ota       = { workspace = true }
 # bench harness scrapes [BENCH-RES] lines without needing shell input
 # (which is unreliable end-to-end under QEMU TCG SMP).
 azos_bench     = { path = "../domains/robot/bench", features = ["all"], optional = true }
-# DEV03 — USB MSC gadget. Pure no_std protocol crate; kernel side
-# wiring lives in kernel/src/msc_gadget.rs.
-azos_msc       = { workspace = true }
 azos_trace     = { workspace = true }
 azos_ktest     = { workspace = true, optional = true }
 azos_chaos     = { workspace = true }

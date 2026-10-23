@@ -375,8 +375,8 @@ fn read_boot_meta_stored() -> BootMeta {
     // the legacy file carries no `crc=` line, so `parse_boot_meta` accepts
     // whatever bytes are on disk: there is no torn-write detection and, more
     // to the point, no way to tell an old file left by an upgrade from one an
-    // attacker planted. The FAT volume is exported over USB mass storage by
-    // `msc_gadget.rs`, and reaching this branch only requires deleting or
+    // attacker planted. The FAT volume is on a removable card anyone with a
+    // card reader can rewrite, and reaching this branch only requires deleting or
     // corrupting both dual-file records — so "the legacy file is what we
     // read" is a state that can be *caused*, not merely inherited.
     //

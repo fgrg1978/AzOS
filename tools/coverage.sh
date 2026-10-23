@@ -43,7 +43,7 @@ fi
 
 # The same list the gate runs, so this describes the suites that actually gate
 # the tree rather than whatever happens to be on disk.
-SUITES="regression-tests ota-tests sched-policy-tests msc-tests scsi-tests
+SUITES="regression-tests ota-tests sched-policy-tests scsi-tests
         tftp-tests topology-tests config-tests crypto-tests
         flight-math-tests flight-tests abi-tests arch-api-tests gguf-tests efi-tests
         multi-stream-tests drv-api-tests

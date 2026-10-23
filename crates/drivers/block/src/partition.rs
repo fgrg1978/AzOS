@@ -11,7 +11,7 @@
 //!
 //! # What is parsed, and what is refused
 //!
-//! The medium is attacker-writable (SD card, USB MSC gadget), so every field
+//! The medium is attacker-writable (a removable SD card), so every field
 //! is checked before it is used, all arithmetic is checked, and a table that
 //! is present but wrong publishes NOTHING rather than the parts that looked
 //! right: a capability to "partition 1" must not change meaning because a

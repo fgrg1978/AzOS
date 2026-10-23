@@ -652,8 +652,8 @@ granted (the `read` op returns the raw key; `RPCSRV.ELF` and `MCPD.ELF`
 hold the same right masked to the `node_key` op, their own node
 identity). The link is
 always a Noise session: there is no plaintext mode, no MAC-only mode and no
-runtime switch (a `CONFIG.INI` key would live on the volume the USB gadget
-exports, so it would be an attacker-writable downgrade). Without the key the
+runtime switch (a `CONFIG.INI` key would live on the FAT volume of a
+removable card, so it would be an attacker-writable downgrade). Without the key the
 link does not run. Over a TCP connection:
 
 1. The handshake is Noise (`noise.rs`) in `ChaChaPoly_SHA256`, and the robot is

@@ -1579,7 +1579,7 @@ fn try_backend_open(path: &[u8]) -> u32 {
     let file_size = st.size;
 
     // The size comes from the backend's directory entry, which for FAT32 is
-    // attacker-writable (the volume is exposed over the USB MSC gadget), and
+    // attacker-writable (the volume is on a removable card), and
     // it reaches `alloc_raw` below with nothing between. A single ring-3
     // `open("/fat/NAME.EXT")` on an entry claiming ~4 GiB asked the kernel
     // heap for ~4 GiB — the allocator returns null and the open fails, so it

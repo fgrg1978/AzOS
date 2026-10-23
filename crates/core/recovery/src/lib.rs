@@ -622,8 +622,8 @@ fn cmd_ota_recv(port: u16) {
         //    genuinely-signed OLD image with `fw_version = 0xFFFFFFFF`
         //    sails through here.
         //  * `min_fw_version` comes from BOOTMETA, which lives on the FAT
-        //    volume `msc_gadget.rs` exports over USB mass storage. An
-        //    attacker with the USB port rewrites the floor to 0; if both
+        //    volume of a removable card. An attacker with a card reader
+        //    rewrites the floor to 0; if both
         //    dual-file records are destroyed, `ota_read_boot_meta()`'s
         //    unauthenticated legacy fallback hands back 0 anyway.
         //
