@@ -1235,6 +1235,23 @@ entseed_orderly_row() { # entseed_orderly_row <riscv64|aarch64>
 BLK_STALL_TRIES=3
 BLK_STALL_STOPS=10
 BLK_STALL_IOPS=40
+# blk_stall_qemu <riscv64|aarch64> <kernel image> <disk> <log>: boot the
+# throttled disk in the background (the caller waits for `$!`).
+blk_stall_qemu() {
+    local isa="$1" kimg="$2" disk="$3" log="$4"
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = riscv64 ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0,throttling.iops-total=$BLK_STALL_IOPS -device virtio-blk-device,drive=hd0 \
+            -device virtio-rng-device </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$disk",if=none,format=raw,id=hd0,throttling.iops-total=$BLK_STALL_IOPS -device virtio-blk-device,drive=hd0 \
+            -device virtio-rng-device </dev/null >"$log" 2>&1 &
+    fi
+}
 blk_stall_row() { # blk_stall_row <label> <riscv64|aarch64> <kernel image> <pass|canary>
     local label="$1" isa="$2" kimg="$3" want="$4"
     printf "  %-26s" "${label}..."
@@ -1251,18 +1268,7 @@ blk_stall_row() { # blk_stall_row <label> <riscv64|aarch64> <kernel image> <pass
     while [ "$try" -lt "$tries" ]; do
         try=$((try + 1))
         rm -f "$log" "$disk"; cp "$dsrc" "$disk"
-        while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
-        if [ "$isa" = riscv64 ]; then
-            "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
-                -global virtio-mmio.force-legacy=false \
-                -drive file="$disk",if=none,format=raw,id=hd0,throttling.iops-total=$BLK_STALL_IOPS -device virtio-blk-device,drive=hd0 \
-                -device virtio-rng-device </dev/null >"$log" 2>&1 &
-        else
-            qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
-                -kernel "$kimg" -global virtio-mmio.force-legacy=false \
-                -drive file="$disk",if=none,format=raw,id=hd0,throttling.iops-total=$BLK_STALL_IOPS -device virtio-blk-device,drive=hd0 \
-                -device virtio-rng-device </dev/null >"$log" 2>&1 &
-        fi
+        blk_stall_qemu "$isa" "$kimg" "$disk" "$log"
         local pid=$! i=0 stops=0 done_boot=no
         # Every stop is spent before the boot's end marker is looked at: the
         # marker can follow the disk's discovery within one poll, and a row
@@ -1284,6 +1290,9 @@ blk_stall_row() { # blk_stall_row <label> <riscv64|aarch64> <kernel image> <pass
         [ "$done_boot" = yes ] && sleep 1
         kill -CONT "$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         local dead=no
+        # Dead, or a command out of its budget (with the reset policy the
+        # first timeout resets the disk instead of latching it: the canary
+        # sees the timed-out command either way).
         grep -aqE "block I/O disabled|\[BLK\] (device is dead|command at sector)" "$log" 2>/dev/null && dead=yes
         if [ "$want" = canary ]; then
             [ "$dead" = yes ] && { verdict=canary-red; break; }
@@ -1321,6 +1330,89 @@ blk_stall_row() { # blk_stall_row <label> <riscv64|aarch64> <kernel image> <pass
         return
     fi
     ok; rm -f "$log" "$disk"
+}
+
+# (g) The device timeout policy (azos_drv_api::recovery, owner decision
+# 2026-10-23): a command out of its budget resets the disk once, the next
+# timeout latches it dead. Booted on the `blk-stall-canary` kernel (no stall
+# credit), whose budgets the host's stops of the guest DO run out: the stops
+# are the fault injection. `once`: the guest is stopped until one stop lands
+# on a command in flight; the driver must reset the device
+# (`[VIRTIO-BLK] device reset and programmed again`, the `[BLK] virtio-blk
+# timed out ... back in service` record line), not latch it, and the disk
+# must serve the rest of the boot (the persisted seed rewritten and flushed,
+# after the reset). `twice`: the guest is stopped until the disk latches;
+# exactly one reset must come before the latch (`[BLK] virtio-blk timed out
+# again ... latched dead`, `block I/O disabled`). Each is the other's canary:
+# DEVICE_TIMEOUT_RESETS=0 (latch at the first timeout) fails `once`, a reset
+# forever fails `twice`. A boot whose stops caught no command is tried again,
+# up to BLK_STALL_TRIES boots.
+blk_reset_row() { # blk_reset_row <label> <riscv64|aarch64> <kernel image> <once|twice>
+    local label="$1" isa="$2" kimg="$3" mode="$4"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" disk="$CI_LOG_DIR/${tag}.img" dsrc
+    if [ "$isa" = riscv64 ]; then dsrc=$AZOS_OUT/build/disk.img; else dsrc=$AZOS_OUT/build/disk-aarch64.img; fi
+    local reset_re='\[VIRTIO-BLK\] device reset and programmed again' latch_re='block I/O disabled'
+    rm -f "$dsrc"; make_disk "$dsrc"
+    par_ready
+    local try=0 resets=0 latched=no
+    while [ "$try" -lt "$BLK_STALL_TRIES" ]; do
+        try=$((try + 1))
+        rm -f "$log" "$disk"; cp "$dsrc" "$disk"
+        blk_stall_qemu "$isa" "$kimg" "$disk" "$log"
+        local pid=$! i=0 stops=0
+        while [ "$i" -lt 1200 ] && kill -0 "$pid" 2>/dev/null; do
+            grep -aqE "!!! KERNEL PANIC !!!|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+            resets=$(grep -acE "$reset_re" "$log" 2>/dev/null); resets=${resets:-0}
+            grep -aqE "$latch_re" "$log" 2>/dev/null && latched=yes || latched=no
+            [ "$latched" = yes ] && break
+            if [ "$mode" = once ] && [ "$resets" -ge 1 ]; then
+                grep -aqF "persisted seed: rewritten and flushed" "$log" 2>/dev/null && break
+            elif [ "$stops" -lt "$BLK_STALL_STOPS" ] && grep -aqF "[VIRTIO-BLK] Found block device" "$log" 2>/dev/null; then
+                kill -STOP "$pid" 2>/dev/null; sleep 1.2; kill -CONT "$pid" 2>/dev/null
+                stops=$((stops + 1)); sleep 0.5
+                continue
+            fi
+            i=$((i + 1)); sleep 0.1
+        done
+        sleep 1
+        kill -CONT "$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        resets=$(grep -acE "$reset_re" "$log" 2>/dev/null); resets=${resets:-0}
+        grep -aqE "$latch_re" "$log" 2>/dev/null && latched=yes || latched=no
+        if grep -aqE "!!! KERNEL PANIC !!!|AARCH64-TRAP\] unhandled|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      the kernel panicked or trapped after $stops stop(s):"
+            grep -aE -m3 "PANIC|AARCH64-TRAP|FATAL" "$log" | tr -d '\r' | sed 's/^/        /'
+            echo "      log kept: $log"; return
+        fi
+        # No stop caught a command in flight: another boot.
+        [ "$resets" -eq 0 ] && [ "$latched" = no ] && continue
+        break
+    done
+    local lines; lines="$(grep -aE "VIRTIO-BLK\]|\[BLK\]" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /')"
+    if [ "$resets" -eq 0 ] && [ "$latched" = no ]; then
+        bad; echo "      $BLK_STALL_TRIES boots, no stop caught a command in flight: the row proves nothing"
+        echo "      log kept: $log"; return
+    fi
+    if [ "$mode" = once ]; then
+        if [ "$latched" = yes ] || [ "$resets" -ne 1 ]; then
+            bad; echo "      one timeout must reset the disk and leave it alive ($resets reset(s), latched=$latched):"
+            echo "$lines"; echo "      log kept: $log"; return
+        fi
+        if ! grep -aqE "\[BLK\] virtio-blk timed out after [0-9]+ ms: device reset, back in service" "$log" \
+            || ! sed -n "/$reset_re/,\$p" "$log" | grep -aqF "persisted seed: rewritten and flushed"; then
+            bad; echo "      the reset left no record, or the disk did not serve the boot after it:"
+            echo "$lines"; echo "      log kept: $log"; return
+        fi
+        ok; echo "      one timeout: the disk was reset and served the rest of the boot"; rm -f "$log" "$disk"; return
+    fi
+    if [ "$latched" != yes ] || [ "$resets" -ne 1 ] \
+        || ! grep -aqE "\[BLK\] virtio-blk timed out again after [0-9]+ ms with its resets spent: latched dead" "$log"; then
+        bad; echo "      a second timeout must latch the disk after exactly one reset ($resets reset(s), latched=$latched):"
+        echo "$lines"; echo "      log kept: $log"; return
+    fi
+    ok; echo "      one reset, then the next timeout latched the disk dead and said so"; rm -f "$log" "$disk"
 }
 
 # (e) The seed is never written into filesystem data. An image built WITHOUT the
@@ -8129,8 +8221,12 @@ if a64_kbuild "qemu"; then
     fi
     if a64_kbuild "qemu,blk-stall-canary"; then
         BLKSTALL_CAN_A64_IMG="$CI_LOG_DIR/kernel-blkstall-can-a64.img"
-        if ci_wants "aarch64: blk: guest stop canary"; then ci_kflush; cp "$A64_IMG" "$BLKSTALL_CAN_A64_IMG"; fi
+        if ci_wants "aarch64: blk: guest stop canary" "aarch64: blk: timeout resets once" "aarch64: blk: second timeout latches"; then
+            ci_kflush; cp "$A64_IMG" "$BLKSTALL_CAN_A64_IMG"
+        fi
         par "aarch64: blk: guest stop canary" blk_stall_row "aarch64: blk: guest stop canary" aarch64 "$BLKSTALL_CAN_A64_IMG" canary
+        par "aarch64: blk: timeout resets once" blk_reset_row "aarch64: blk: timeout resets once" aarch64 "$BLKSTALL_CAN_A64_IMG" once
+        par "aarch64: blk: second timeout latches" blk_reset_row "aarch64: blk: second timeout latches" aarch64 "$BLKSTALL_CAN_A64_IMG" twice
     else
         printf "  %-26s" "aarch64: blk: guest stop canary..."; bad
         echo "      the blk-stall-canary aarch64 kernel did not build"
@@ -11237,8 +11333,12 @@ else
     fi
     if kbuild "qemu,blk-stall-canary"; then
         BLKSTALL_CAN_RV_KERNEL="$CI_LOG_DIR/kernel-blkstall-can-rv"
-        if ci_wants "riscv64: blk: guest stop canary"; then ci_kflush; cp "$KERNEL" "$BLKSTALL_CAN_RV_KERNEL"; fi
+        if ci_wants "riscv64: blk: guest stop canary" "riscv64: blk: timeout resets once" "riscv64: blk: second timeout latches"; then
+            ci_kflush; cp "$KERNEL" "$BLKSTALL_CAN_RV_KERNEL"
+        fi
         par "riscv64: blk: guest stop canary" blk_stall_row "riscv64: blk: guest stop canary" riscv64 "$BLKSTALL_CAN_RV_KERNEL" canary
+        par "riscv64: blk: timeout resets once" blk_reset_row "riscv64: blk: timeout resets once" riscv64 "$BLKSTALL_CAN_RV_KERNEL" once
+        par "riscv64: blk: second timeout latches" blk_reset_row "riscv64: blk: second timeout latches" riscv64 "$BLKSTALL_CAN_RV_KERNEL" twice
     else
         printf "  %-26s" "riscv64: blk: guest stop canary..."; bad
         echo "      the blk-stall-canary kernel did not build"
