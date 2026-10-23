@@ -340,8 +340,8 @@ fn rq_waiter(i: usize) {
     }
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
     let deadline = azos_drv_sys::timebase::now() + 4_000 * per_ms;
-    let read = || Some(RQ_COND.load(Ordering::Acquire));
-    let rc = azos_sched::futex::wait_requeue_pi(RQ_COND_KEY, RQ_MUTEX_KEY, 0, Some(deadline), &read, &KvaWord(&RQ_MUTEX));
+    let look = || Some((RQ_COND_KEY, RQ_COND.load(Ordering::Acquire)));
+    let rc = azos_sched::futex::wait_requeue_pi(&look, RQ_MUTEX_KEY, 0, Some(deadline), &KvaWord(&RQ_MUTEX));
     RQ_RC[i].store(rc, Ordering::Release);
     if rc == 0 {
         RQ_OWNED_OWN[i].store(RQ_MUTEX.load(Ordering::Acquire) & pf::FUTEX_TID_MASK == me, Ordering::Release);
@@ -385,15 +385,15 @@ azos_ktest::ktest_late! {
         }
         let filed = || ft::TABLE.lock_irqsave().waiters_on(RQ_COND_KEY) == RQ_WAITERS;
         let ok = azos_syscall::sleep::wait_until_ms(1000, 10, filed);
-        let read = || Some(RQ_COND.load(Ordering::Acquire));
+        let look = || Some((RQ_COND_KEY, RQ_COND.load(Ordering::Acquire)));
         let mutex = KvaWord(&RQ_MUTEX);
         // Neither a plain wake, a plain requeue nor a requeue-PI with a
         // stale cmpval takes them.
         let plain = azos_sched::futex::wake_key(RQ_COND_KEY, 8);
-        let moved = azos_sched::futex::requeue(RQ_COND_KEY, RQ_MUTEX_KEY, 0, 8, None, &read);
-        let stale = azos_sched::futex::cmp_requeue_pi(RQ_COND_KEY, RQ_MUTEX_KEY, i32::MAX as u32, 7, &read, &mutex);
+        let moved = azos_sched::futex::requeue(&look, RQ_MUTEX_KEY, 0, 8, None);
+        let stale = azos_sched::futex::cmp_requeue_pi(&look, RQ_MUTEX_KEY, i32::MAX as u32, 7, &mutex);
         RQ_COND.store(1, Ordering::Release);
-        let n = azos_sched::futex::cmp_requeue_pi(RQ_COND_KEY, RQ_MUTEX_KEY, i32::MAX as u32, 1, &read, &mutex);
+        let n = azos_sched::futex::cmp_requeue_pi(&look, RQ_MUTEX_KEY, i32::MAX as u32, 1, &mutex);
         // Proxied: both asleep and enqueued on the PI word's object, the
         // owner boosted to their priority, before anyone is released.
         let proxied = ft::TABLE.lock_irqsave().proxied();

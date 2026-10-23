@@ -57,6 +57,9 @@ memobj-purge-held-canary = ["azos_ipc/memobj-purge-held-canary"]
 memobj-purge-kernel-held-canary = ["azos_ipc/memobj-purge-kernel-held-canary"]
 memobj-purge-locked-canary = ["azos_ipc/memobj-purge-locked-canary"]
 memobj-word-unlocked-canary = ["azos_ipc/memobj-word-unlocked-canary"]
+# Front futex-single-section: the wait's key from a lookup before its look, and
+# no identity check on a PI step's shm word (src/futex_one_look.rs).
+futex-key-outside-canary = []
 delete-revokes-canary = ["azos_ipc/delete-revokes-canary"]
 move-lifts-depth-canary = ["azos_ipc/move-lifts-depth-canary"]
 # SUBTREE-POLICY: mirrors azos_syscall's gate canary in the pulled-in

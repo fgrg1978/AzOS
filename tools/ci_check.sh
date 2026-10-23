@@ -10878,6 +10878,13 @@ host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-r
 # so a waker's store and wake land between the check and the row (futex_table.rs).
 host_job host_canary_row "futex: look before the lock canary" ipc-tests futex-look-unlocked-canary \
     a_wake_between_the_check_and_the_filing_still_finds_the_row
+# A futex call's key and the word it checks or swaps are one word (syscall-tests
+# futex_one_look.rs). futex-key-outside-canary: the wait takes its key from a
+# lookup before its look, and a PI step's shm word is not checked against its key.
+host_job host_canary_row "futex: key before the look canary" syscall-tests futex-key-outside-canary \
+    a_wait_is_filed_under_the_key_of_the_word_it_checked
+host_job host_canary_row "futex: PI word not its key canary" syscall-tests futex-key-outside-canary \
+    a_pi_step_never_touches_a_word_mapped_since_its_key_was_taken
 # Delete is not revoke (20-10): delete-revokes-canary makes a close and an exit
 # revoke the copies of the slot again, as they did before.
 host_job host_canary_row "cap: delete revokes canary" cap-tests delete-revokes-canary \

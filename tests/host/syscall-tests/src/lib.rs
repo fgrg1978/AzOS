@@ -356,6 +356,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod futex_one_look {
+        use super::*;
+        include!("futex_one_look.rs");
+    }
+
+    #[cfg(test)]
     mod demand_paging {
         use super::*;
         include!("demand_paging.rs");

@@ -17,7 +17,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-pub use crate::futex_table::Key;
+pub use crate::futex_table::{Key, Look};
 use crate::futex_table::{self as ft, FutexEnv, WaitResult};
 use crate::scheduler::attrib::Src;
 use crate::task::WaitReason;
@@ -98,18 +98,17 @@ fn errno(r: WaitResult) -> i64 {
     }
 }
 
-/// Wait on `key` while `read()` holds `expected`, until a wake, the absolute
-/// deadline (timer ticks; `None`: none) or a forced stop. Returns 0 (woken),
-/// `-EAGAIN` (the word differs), `-ETIMEDOUT`, `-EINTR` or `-EFAULT`.
-pub fn wait_key(key: Key, expected: u32, deadline: Option<u64>, read: &dyn Fn() -> Option<u32>) -> i64 {
-    // Read before taking the lock as well: a word that is not readable is
-    // refused without the table held, and the read under the lock is then
-    // of a page already resolved.
-    if read().is_none() {
-        return -EFAULT;
-    }
+/// Wait on the word `look` names (its key and value, [`Look`]) while it holds
+/// `expected`, until a wake, the absolute deadline (timer ticks; `None`:
+/// none) or a forced stop. Returns 0 (woken), `-EAGAIN` (the word differs),
+/// `-ETIMEDOUT`, `-EINTR` or `-EFAULT`. The waiter is filed under the key of
+/// the look, which is taken once, with the table locked. A caller waiting on a
+/// user word reads it once before (`azos_syscall::vdso_notify::futex_precheck`:
+/// an unreadable or differing word is answered without the table, and the
+/// look under the lock is then at a page already resolved).
+pub fn wait(look: Look, expected: u32, deadline: Option<u64>) -> i64 {
     let tid = crate::scheduler::current_task_tid();
-    errno(ft::wait_key(&KernelEnv, tid, key, read, expected, deadline.unwrap_or(u64::MAX)))
+    errno(ft::wait_key(&KernelEnv, tid, look, expected, deadline.unwrap_or(u64::MAX)))
 }
 
 /// Wake at most `n` waiters on `key`. Returns how many were woken, or
@@ -169,23 +168,18 @@ pub fn robust_key(proc_id: u32, addr: u64) -> Key {
 }
 
 /// Linux `FUTEX_REQUEUE` (`cmp` `None`) / `FUTEX_CMP_REQUEUE`: wake up to
-/// `nr_wake` waiters on `from`, move up to `nr_requeue` more to `to`.
-/// Returns `(woken, moved)`, `-EAGAIN` when `read()` does not hold `cmp`, `-ENOSYS` with
-/// Kconfig `FUTEX_REQUEUE` off, `-EINVAL` with nothing done when a
+/// `nr_wake` waiters on the word `look` names (`from`), move up to
+/// `nr_requeue` more to `to`. Returns `(woken, moved)`, `-EAGAIN` when the
+/// word does not hold `cmp`, `-ENOSYS` with Kconfig `FUTEX_REQUEUE` off,
+/// `-EINVAL` with nothing done when the two keys differ in kind or a
 /// `FUTEX_WAIT_REQUEUE_PI` waiter is among those it would take (owner
 /// decision 10-10, as Linux).
-pub fn requeue(
-    from: Key, to: Key, nr_wake: u32, nr_requeue: u32, cmp: Option<u32>, read: &dyn Fn() -> Option<u32>,
-) -> Result<(u32, u32), i64> {
+pub fn requeue(look: Look, to: Key, nr_wake: u32, nr_requeue: u32, cmp: Option<u32>) -> Result<(u32, u32), i64> {
     if !ft::REQUEUE {
         return Err(-ENOSYS);
     }
-    if !from.same_kind(&to) {
-        return Err(-EINVAL);
-    }
     let wake_all = CANARY_REQUEUE_WAKE_ALL.load(Ordering::Relaxed);
-    ft::requeue_key(&KernelEnv, from, to, nr_wake, nr_requeue, cmp.map(|c| (read, c)), wake_all)
-        .map_err(errno)
+    ft::requeue_key(&KernelEnv, look, to, nr_wake, nr_requeue, cmp, wake_all).map_err(errno)
 }
 
 // ── The PI seam (interface §4): one key's slot, lent under the table lock ──
@@ -394,7 +388,7 @@ pub fn canary_requeue_pi_no_proxy() {
 }
 
 /// Linux `FUTEX_WAIT_REQUEUE_PI` (wave 15 N10d, Kconfig `FUTEX_PI`): wait
-/// on `from` while `read()` holds `expected`, as a waiter that only
+/// on the word `look` names (`from`) while it holds `expected`, as a waiter that only
 /// `FUTEX_CMP_REQUEUE_PI` to the PI word `to` (`to_word`) takes. Returns 0
 /// owning `to`: the requeuer gave it the free word; or it enqueued it on
 /// `to`'s graph object by proxy and it slept on until the handover (N10e;
@@ -404,24 +398,16 @@ pub fn canary_requeue_pi_no_proxy() {
 /// requeue-PI took it), `-ETIMEDOUT`, `-EINTR`, `-EFAULT`, `-EDEADLK`
 /// and `LOCK_PI`'s other answers; `-EINVAL` when `from == to`, `-ENOSYS`
 /// while `FUTEX_PI` is n or nothing is registered.
-pub fn wait_requeue_pi(
-    from: Key, to: Key, expected: u32, deadline: Option<u64>, read: &dyn Fn() -> Option<u32>, to_word: &dyn PiWord,
-) -> i64 {
+pub fn wait_requeue_pi(look: Look, to: Key, expected: u32, deadline: Option<u64>, to_word: &dyn PiWord) -> i64 {
     use azos_sync::pi_futex::{self as pf, PiCmd};
     if !pf::ENABLED || pf::ops().is_none() {
         return -ENOSYS;
     }
-    // A shm condition and a private PI word may differ in kind (Linux
-    // allows it): no row moves between their chains.
-    if from == to {
-        return -EINVAL;
-    }
-    if read().is_none() {
-        return -EFAULT;
-    }
+    // `from == to` is refused under the lock, by the look's key. The caller
+    // read the user word once before, as for [`wait`].
     let tid = crate::scheduler::current_task_tid();
     let until = deadline.unwrap_or(u64::MAX);
-    let r = ft::wait_requeue_pi_key(&KernelEnv, tid, from, to, read, expected, until);
+    let r = ft::wait_requeue_pi_key(&KernelEnv, tid, look, to, expected, until);
     if r == WaitResult::Proxied {
         // Enqueued on `to` by proxy while it slept: whatever woke it, finish
         // the lock there (owner, heir of an exited owner, or leave the graph
@@ -453,8 +439,8 @@ pub fn wait_requeue_pi(
 }
 
 /// Linux `FUTEX_CMP_REQUEUE_PI` (wave 15 N10d, Kconfig `FUTEX_PI`): when
-/// `read()` holds `cmpval`, take the top waiter and up to `nr_requeue`
-/// more from `from`, every one a `FUTEX_WAIT_REQUEUE_PI` waiter bound for
+/// the word `look` names (`from`) holds `cmpval`, take the top waiter and up
+/// to `nr_requeue` more from `from`, every one a `FUTEX_WAIT_REQUEUE_PI` waiter bound for
 /// the PI word `to` (`to_word`): the top wakes owning `to` if it was free
 /// (`pi_futex::proxy_lock`, under the table lock); the rest are enqueued
 /// on `to`'s graph object on their behalf, unwoken, boosting its owner at
@@ -463,19 +449,13 @@ pub fn wait_requeue_pi(
 /// were taken (Linux: woken + requeued), `-EAGAIN` (cmpval), `-EINVAL`
 /// (a waiter is plain or bound elsewhere; `from == to`), `-EFAULT`,
 /// `-ENOSYS` while `FUTEX_PI` is n or nothing is registered.
-pub fn cmp_requeue_pi(
-    from: Key, to: Key, nr_requeue: u32, cmpval: u32, read: &dyn Fn() -> Option<u32>, to_word: &dyn PiWord,
-) -> i64 {
+pub fn cmp_requeue_pi(look: Look, to: Key, nr_requeue: u32, cmpval: u32, to_word: &dyn PiWord) -> i64 {
     use azos_sync::pi_futex as pf;
     use ft::RequeuePiError as E;
     if !pf::ENABLED || pf::ops().is_none() {
         return -ENOSYS;
     }
-    // A shm condition and a private PI word may differ in kind (Linux
-    // allows it): no row moves between their chains.
-    if from == to {
-        return -EINVAL;
-    }
+    // `from == to` is refused under the lock, by the look's key.
     let plain = CANARY_REQUEUE_PI_PLAIN.load(Ordering::Relaxed);
     let n = nr_requeue.saturating_add(1);
     let mut proxy = |t: &mut ft::FutexTable, top: u32, more: bool| -> Result<bool, i32> {
@@ -502,7 +482,7 @@ pub fn cmp_requeue_pi(
     };
     let mut retried = false;
     loop {
-        return match ft::requeue_pi_key(&KernelEnv, from, to, n, (read, cmpval), plain, &mut proxy, &mut enqueue) {
+        return match ft::requeue_pi_key(&KernelEnv, look, to, n, cmpval, plain, &mut proxy, &mut enqueue) {
             Ok(k) => k as i64,
             Err(E::Fault) => -EFAULT,
             Err(E::ValueChanged) => -EAGAIN,

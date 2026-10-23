@@ -52,14 +52,16 @@
 //! has not blocked yet is stamped (K-C9), so its block returns at once.
 //!
 //! The check and the filing are one hold, with nothing in between: the look
-//! at the word (for a word of a shm region, `memobj_with_mapped_word` takes
-//! the region table inside this hold: order TABLE, then MEMOBJS), the
-//! comparison with `expected`, and the row. So are a requeue's compare and
-//! move, and each PI step's reads, swap and state change
-//! (`futex::with_pi_key`). The host test
+//! at the word ([`Look`]: its key AND its value; for a word of a shm region
+//! `memobj_with_mapped_word` takes the region table inside this hold, order
+//! TABLE, then MEMOBJS), the comparison with `expected`, and the row, filed
+//! under the key that same look gave. So are a requeue's compare and move
+//! (its source key from its look), and each PI step's reads, swap and state
+//! change (`futex::with_pi_key`). The host test
 //! `a_wake_between_the_check_and_the_filing_still_finds_the_row` puts a
 //! waker's store and wake right after the look; canary
-//! `futex-look-unlocked-canary` looks before the lock and loses that wake.
+//! `futex-look-unlocked-canary` decides on a look taken before the lock and
+//! loses that wake.
 //!
 //! The lock is only taken with `lock_irqsave`: a kernel producer may wake a
 //! shared key from an interrupt (`vdso_notify::notify_wake_kernel`).
@@ -690,37 +692,51 @@ pub trait FutexEnv {
     }
 }
 
-/// Wait on `key` while `read()` holds `expected`, until a wake, `deadline`
-/// (`u64::MAX`: none), a stop or a refused block.
-pub fn wait_key<E: FutexEnv>(
-    env: &E, tid: u32, key: Key, read: &dyn Fn() -> Option<u32>, expected: u32, deadline: u64,
-) -> WaitResult {
-    wait_as(env, tid, key, None, read, expected, deadline)
+/// A futex word as one operation sees it, in ONE look (front
+/// futex-single-section): its key and its value, `None` when it cannot be
+/// read. Called with the table locked. For a word of a shm region the key is
+/// (region, offset) and both come from one look at the caller's mapping, so
+/// the key a waiter is filed under is always the key of the word whose value
+/// it checked, whatever the mapping at the address becomes meanwhile (a key
+/// taken by an earlier look could name one region and the value come from
+/// another: the waiter then sleeps under a key no waker of its word uses).
+/// An operation that compares nothing returns its key with any value.
+pub type Look<'a> = &'a dyn Fn() -> Option<(Key, u32)>;
+
+/// Wait on the word `look` names while it holds `expected`, until a wake,
+/// `deadline` (`u64::MAX`: none), a stop or a refused block.
+pub fn wait_key<E: FutexEnv>(env: &E, tid: u32, look: Look, expected: u32, deadline: u64) -> WaitResult {
+    wait_as(env, tid, None, look, expected, deadline)
 }
 
-/// `FUTEX_WAIT_REQUEUE_PI`'s first half: [`wait_key`] on `key` as a
-/// requeue-PI waiter bound for the PI word `to`. Ends in
-/// [`WaitResult::PiOwner`] or [`WaitResult::Requeued`] when
+/// `FUTEX_WAIT_REQUEUE_PI`'s first half: [`wait_key`] as a requeue-PI waiter
+/// bound for the PI word `to` (`Invalid` when the word is `to` itself). Ends
+/// in [`WaitResult::PiOwner`] or [`WaitResult::Requeued`] when
 /// `FUTEX_CMP_REQUEUE_PI` took it (or `Woken`: the canary's plain wake).
 pub fn wait_requeue_pi_key<E: FutexEnv>(
-    env: &E, tid: u32, key: Key, to: Key, read: &dyn Fn() -> Option<u32>, expected: u32, deadline: u64,
+    env: &E, tid: u32, look: Look, to: Key, expected: u32, deadline: u64,
 ) -> WaitResult {
-    wait_as(env, tid, key, Some(to), read, expected, deadline)
+    wait_as(env, tid, Some(to), look, expected, deadline)
 }
 
 fn wait_as<E: FutexEnv>(
-    env: &E, tid: u32, key: Key, rq_to: Option<Key>, read: &dyn Fn() -> Option<u32>, expected: u32, deadline: u64,
+    env: &E, tid: u32, rq_to: Option<Key>, look: Look, expected: u32, deadline: u64,
 ) -> WaitResult {
     let slot = {
         // Canary `futex-look-unlocked-canary`: the word is checked before the
         // table is locked, so a store and its wake can fall between the check
         // and the filing of the row (the lost wake the one hold rules out).
-        let early = cfg!(feature = "futex-look-unlocked-canary").then(read);
+        let early = cfg!(feature = "futex-look-unlocked-canary").then(look);
         let mut t = TABLE.lock_irqsave();
-        match early.unwrap_or_else(read) {
-            None => return WaitResult::Fault,
-            Some(v) if v != expected => return WaitResult::ValueChanged,
-            Some(_) => {}
+        let Some((key, v)) = early.unwrap_or_else(look) else { return WaitResult::Fault };
+        // A shm condition and a private PI word may differ in kind (Linux
+        // allows it): no row moves between their chains. The same word is
+        // no condition of itself.
+        if rq_to == Some(key) {
+            return WaitResult::Invalid;
+        }
+        if v != expected {
+            return WaitResult::ValueChanged;
         }
         // A stop raised before the wait, or a deadline already past, ends
         // it before it files anything: nothing to cancel, no wake to race.
@@ -811,10 +827,12 @@ pub fn wake_key_checked<E: FutexEnv>(env: &E, key: Key, n: u32) -> Result<u32, W
     }
 }
 
-/// Linux `FUTEX_CMP_REQUEUE` / `FUTEX_REQUEUE`: check that `read()` holds
-/// `cmp` (when given), wake up to `nr_wake` waiters on `from` and move up
-/// to `nr_requeue` more to `to`. Returns `(woken, moved)`, or
-/// `Err(ValueChanged | Fault)` with nothing done.
+/// Linux `FUTEX_CMP_REQUEUE` / `FUTEX_REQUEUE`: the word `look` names
+/// (`from`, its key and value from one look under the lock) must hold `cmp`
+/// when given; wake up to `nr_wake` waiters on `from` and move up to
+/// `nr_requeue` more to `to`. Returns `(woken, moved)`, or
+/// `Err(ValueChanged | Fault | Invalid)` with nothing done (`Invalid`: `from`
+/// and `to` differ in kind, or a requeue-PI waiter is in the way).
 ///
 /// The wakes go out in batches of [`WAKE_BATCH`], each taken under one hold
 /// and woken after it; the move happens in the hold that completes the wake
@@ -824,30 +842,34 @@ pub fn wake_key_checked<E: FutexEnv>(env: &E, key: Key, n: u32) -> Result<u32, W
 /// `wake_all` is the herd canary: every waiter is woken, nobody is moved
 /// (the thundering herd a requeue exists to avoid).
 pub fn requeue_key<E: FutexEnv>(
-    env: &E, from: Key, to: Key, nr_wake: u32, nr_requeue: u32,
-    cmp: Option<(&dyn Fn() -> Option<u32>, u32)>, wake_all: bool,
+    env: &E, look: Look, to: Key, nr_wake: u32, nr_requeue: u32, cmp: Option<u32>, wake_all: bool,
 ) -> Result<(u32, u32), WaitResult> {
     let mut woken = 0u32;
     let mut moved = 0u32;
-    let mut first = true;
+    let mut from = None;
     loop {
         let mut out = [(0u32, 0u64); WAKE_BATCH];
         let (k, done) = {
             let mut t = TABLE.lock_irqsave();
-            if first {
-                if let Some((read, want)) = cmp {
-                    match read() {
-                        None => return Err(WaitResult::Fault),
-                        Some(v) if v != want => return Err(WaitResult::ValueChanged),
-                        Some(_) => {}
+            let from = match from {
+                Some(k) => k,
+                None => {
+                    // The first hold: the key and the compare from one look.
+                    let Some((k, v)) = look() else { return Err(WaitResult::Fault) };
+                    if !k.same_kind(&to) {
+                        return Err(WaitResult::Invalid);
                     }
+                    if cmp.is_some_and(|want| v != want) {
+                        return Err(WaitResult::ValueChanged);
+                    }
+                    // Every waiter it would wake or move is checked first.
+                    if t.rqpi_in_the_way(k, nr_wake.saturating_add(nr_requeue)) {
+                        return Err(WaitResult::Invalid);
+                    }
+                    from = Some(k);
+                    k
                 }
-                first = false;
-                // Every waiter it would wake or move is checked first.
-                if t.rqpi_in_the_way(from, nr_wake.saturating_add(nr_requeue)) {
-                    return Err(WaitResult::Invalid);
-                }
-            }
+            };
             let want = if wake_all { WAKE_BATCH as u32 } else { (nr_wake - woken).min(WAKE_BATCH as u32) };
             let k = t.wake(from, want, &mut out);
             let exhausted = (k as u32) < want || want == 0;
@@ -868,9 +890,10 @@ pub fn requeue_key<E: FutexEnv>(
     }
 }
 
-/// Linux `FUTEX_CMP_REQUEUE_PI` (Kconfig `FUTEX_PI`): check that `cmp.0()`
-/// holds `cmp.1`, then take up to `n` (1 + `nr_requeue`) requeue-PI waiters
-/// on `from`, all bound for the PI word `to`. Under the one table lock
+/// Linux `FUTEX_CMP_REQUEUE_PI` (Kconfig `FUTEX_PI`): the word `look` names
+/// (`from`, key and value from one look under the lock) must hold `cmpval`
+/// and must not be `to`; then take up to `n` (1 + `nr_requeue`) requeue-PI
+/// waiters on `from`, all bound for the PI word `to`. Under the one table lock
 /// (both keys' chains, so no bucket order to get wrong) `proxy` first
 /// tries to take the free `to` word for the top waiter (Linux
 /// `futex_proxy_trylock_atomic`; its arguments: the table, the top's TID,
@@ -884,36 +907,44 @@ pub fn requeue_key<E: FutexEnv>(
 /// woken + requeued). `plain` is the canary: no proxy lock, every waiter
 /// wakes as a plain wake.
 pub fn requeue_pi_key<E: FutexEnv>(
-    env: &E, from: Key, to: Key, n: u32, cmp: (&dyn Fn() -> Option<u32>, u32), plain: bool,
+    env: &E, look: Look, to: Key, n: u32, cmpval: u32, plain: bool,
     proxy: &mut dyn FnMut(&mut FutexTable, u32, bool) -> Result<bool, i32>,
     enqueue: &mut dyn FnMut(&mut FutexTable, u32) -> bool,
 ) -> Result<u32, RequeuePiError> {
     let mut total = 0u32;
-    let mut first = true;
+    let mut first = None;
     loop {
         let mut out = [(0u32, 0u64); WAKE_BATCH];
         let want = n - total;
         let (taken, k) = {
             let mut t = TABLE.lock_irqsave();
             let mut owner = None;
-            if first {
-                first = false;
-                match (cmp.0)() {
-                    None => return Err(RequeuePiError::Fault),
-                    Some(v) if v != cmp.1 => return Err(RequeuePiError::ValueChanged),
-                    Some(_) => {}
+            let from = if let Some(k) = first {
+                if t.requeue_pi_peek(k, to, want).is_err() {
+                    // A waiter filed between two batches is bound elsewhere:
+                    // stop at what was taken.
+                    return Ok(total);
                 }
+                k
+            } else {
+                let Some((from, v)) = look() else { return Err(RequeuePiError::Fault) };
+                // A shm condition and a private PI word may differ in kind
+                // (Linux allows it): no row moves between their chains.
+                if from == to {
+                    return Err(RequeuePiError::Invalid);
+                }
+                if v != cmpval {
+                    return Err(RequeuePiError::ValueChanged);
+                }
+                first = Some(from);
                 // Every waiter it would take is checked before any is taken.
                 if let Some((slot, tid, more)) = t.requeue_pi_peek(from, to, n)? {
                     if !plain && proxy(&mut t, tid, more).map_err(RequeuePiError::Pi)? {
                         owner = Some(slot);
                     }
                 }
-            } else if t.requeue_pi_peek(from, to, want).is_err() {
-                // A waiter filed between two batches is bound elsewhere:
-                // stop at what was taken.
-                return Ok(total);
-            }
+                from
+            };
             t.requeue_pi_take(from, want, owner, plain, &mut out, enqueue)
         };
         for &(tid, deadline) in &out[..k] {
@@ -1249,7 +1280,7 @@ mod tests {
         let cond = s(obj, 0);
         let mutex = s(obj, 4);
         let rows: Vec<usize> = (0..8).map(|k| TABLE.lock_irqsave().register(100 + k, cond, u64::MAX).unwrap()).collect();
-        let (woken, moved) = requeue_key(&Quiet, cond, mutex, 1, u32::MAX, Some((&|| Some(5), 5)), wake_all).unwrap();
+        let (woken, moved) = requeue_key(&Quiet, &|| Some((cond, 5)), mutex, 1, u32::MAX, Some(5), wake_all).unwrap();
         let mut t = TABLE.lock_irqsave();
         let ran = rows.iter().enumerate().filter(|(k, &r)| t.settle(r, 100 + *k as u32) == Settle::Woken).count() as u32;
         assert_eq!(ran, woken);
@@ -1276,7 +1307,7 @@ mod tests {
         let cond = s(0xF06, 0);
         let mutex = s(0xF06, 4);
         let rows: Vec<usize> = (0..20).map(|k| TABLE.lock_irqsave().register(700 + k, cond, u64::MAX).unwrap()).collect();
-        assert_eq!(requeue_key(&Quiet, cond, mutex, 10, u32::MAX, None, false), Ok((10, 10)));
+        assert_eq!(requeue_key(&Quiet, &|| Some((cond, 0)), mutex, 10, u32::MAX, None, false), Ok((10, 10)));
         let mut t = TABLE.lock_irqsave();
         assert_eq!(t.waiters_on(mutex), 10);
         for (k, &r) in rows.iter().enumerate() {
@@ -1288,7 +1319,7 @@ mod tests {
     fn cmp_requeue_refuses_a_changed_word_and_does_nothing() {
         let cond = s(0xF02, 0);
         let r = TABLE.lock_irqsave().register(300, cond, u64::MAX).unwrap();
-        assert_eq!(requeue_key(&Quiet, cond, s(0xF02, 4), 1, 1, Some((&|| Some(6), 5)), false), Err(WaitResult::ValueChanged));
+        assert_eq!(requeue_key(&Quiet, &|| Some((cond, 6)), s(0xF02, 4), 1, 1, Some(5), false), Err(WaitResult::ValueChanged));
         assert_eq!(TABLE.lock_irqsave().waiters_on(cond), 1);
         assert_eq!(TABLE.lock_irqsave().cancel_settle(r, 300), Settle::Waiting);
     }
@@ -1302,13 +1333,13 @@ mod tests {
             n: Cell::new(0),
             on_block: Box::new(move |n| {
                 if n == 1 {
-                    let _ = requeue_key(&Quiet, cond, mutex, 0, 1, None, false);
+                    let _ = requeue_key(&Quiet, &|| Some((cond, 0)), mutex, 0, 1, None, false);
                 } else {
                     let _ = wake_key_checked(&Quiet, mutex, 1);
                 }
             }),
         };
-        assert_eq!(wait_key(&env, 400, cond, &|| Some(0), 0, u64::MAX), WaitResult::Woken);
+        assert_eq!(wait_key(&env, 400, &|| Some((cond, 0)), 0, u64::MAX), WaitResult::Woken);
         assert_eq!(env.n.get(), 2, "the requeue alone did not end the wait");
     }
 
@@ -1328,7 +1359,7 @@ mod tests {
             }
         }
         let k = s(0xF04, 0);
-        assert_eq!(wait_key(&Stop, 500, k, &|| Some(1), 1, u64::MAX), WaitResult::Stopped);
+        assert_eq!(wait_key(&Stop, 500, &|| Some((k, 1)), 1, u64::MAX), WaitResult::Stopped);
         assert_eq!(TABLE.lock_irqsave().waiters_on(k), 0);
     }
 
@@ -1382,9 +1413,9 @@ mod tests {
             let v = WORD.load(SeqCst);
             STAGE.store(1, SeqCst);
             until(2, GRACE);
-            Some(v)
+            Some((k, v))
         };
-        let r = wait_key(&env, 800, k, &look, 0, 100);
+        let r = wait_key(&env, 800, &look, 0, 100);
         let woken = waker.join().expect("waker");
         // Woken by that wake, or (a wait that looks again under the lock)
         // answered -EAGAIN by the store: either way not asleep past it.
@@ -1400,8 +1431,8 @@ mod tests {
     #[test]
     fn a_changed_or_unreadable_word_files_nothing() {
         let k = s(0xF05, 0);
-        assert_eq!(wait_key(&Quiet, 600, k, &|| Some(2), 1, u64::MAX), WaitResult::ValueChanged);
-        assert_eq!(wait_key(&Quiet, 600, k, &|| None, 1, u64::MAX), WaitResult::Fault);
+        assert_eq!(wait_key(&Quiet, 600, &|| Some((k, 2)), 1, u64::MAX), WaitResult::ValueChanged);
+        assert_eq!(wait_key(&Quiet, 600, &|| None, 1, u64::MAX), WaitResult::Fault);
         assert_eq!(TABLE.lock_irqsave().waiters_on(k), 0);
     }
 }

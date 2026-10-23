@@ -32,7 +32,7 @@ fn sleep_ms(ms: u64) {
 fn waiter(_: usize) {
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
     let deadline = azos_drv_sys::timebase::now() + 10_000 * per_ms;
-    let rc = azos_sched::futex::wait_key(COND, 0, Some(deadline), &|| Some(WORD.load(Ordering::Acquire)));
+    let rc = azos_sched::futex::wait(&|| Some((COND, WORD.load(Ordering::Acquire))), 0, Some(deadline));
     if rc == 0 {
         RAN.fetch_add(1, Ordering::AcqRel);
     }
@@ -53,8 +53,8 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("the herd never filed on the condition word",
             || waiting(COND) == HERD as usize)?;
         // The broadcast: wake one, move the rest to the mutex word.
-        let read = || Some(WORD.load(Ordering::Acquire));
-        let (woken, moved) = azos_sched::futex::requeue(COND, MUTEX, 1, u32::MAX, Some(0), &read)
+        let look = || Some((COND, WORD.load(Ordering::Acquire)));
+        let (woken, moved) = azos_sched::futex::requeue(&look, MUTEX, 1, u32::MAX, Some(0))
             .map_err(|_| "CMP_REQUEUE refused an unchanged word")?;
         crate::ktest::wait("the woken waiter never ran", || RAN.load(Ordering::Acquire) >= 1)?;
         sleep_ms(20);

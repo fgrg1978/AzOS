@@ -85,7 +85,7 @@ impl Sys for Bell {
         let word = unsafe { &*(addr as *const AtomicU32) };
         let deadline = azos_drv_sys::timebase::now()
             .saturating_add(azos_abi::time::ns_to_ticks_ceil(RING_WAIT_NS, azos_drv_sys::timebase::TIMER_FREQ));
-        let rc = futex::wait_key(self.key(addr), expected, Some(deadline), &|| Some(word.load(Ordering::Acquire)));
+        let rc = futex::wait(&|| Some((self.key(addr), word.load(Ordering::Acquire))), expected, Some(deadline));
         if rc == -futex::EINTR { Slept::Interrupted } else { Slept::Again }
     }
 

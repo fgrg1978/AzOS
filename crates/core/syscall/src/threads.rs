@@ -6,14 +6,6 @@
 //! what a thread group shares. The Linux personality's `clone` (thread
 //! shape), `futex`, `exit` and `set_tid_address` reach the same kernel code.
 
-/// Read the aligned 32-bit user word at `addr`.
-pub(crate) fn read_u32(addr: u64) -> Option<u32> {
-    if addr == 0 {
-        return None;
-    }
-    azos_sched::UserPtr::<u32>::new(addr).read().ok()
-}
-
 /// `SYS_THREAD_CREATE(entry, stack, arg, ctid, tls)`.
 pub fn sys_thread_create(
     entry: u64,

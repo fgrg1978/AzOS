@@ -1288,6 +1288,7 @@ pub mod futex {
         crate::shim_assert_serial("futex::shim_reset");
         CALLS.lock().unwrap_or_else(|e| e.into_inner()).clear();
         *WAKE_ANSWER.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+        *BEFORE_SECTION.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Mirrors `azos_sched::futex::private_key`: the caller's process.
@@ -1295,16 +1296,33 @@ pub mod futex {
         Some(Key::Private { domain: crate::current_proc_tid(), addr })
     }
 
-    /// Mirrors `azos_sched::futex::wait_key`'s answers before it would block:
+    /// What the table's lock section of a wait would see, the word's key and
+    /// value in one look (`azos_sched::futex::Look`).
+    pub type Look<'a> = &'a dyn Fn() -> Option<(Key, u32)>;
+
+    static BEFORE_SECTION: Mutex<Option<fn()>> = Mutex::new(None);
+
+    /// Test-only: run `f` at the start of each wait's section, before its look
+    /// (what another hart does meanwhile: an unmap and a map at the word's
+    /// address). `None` removes it.
+    pub fn shim_set_before_section(f: Option<fn()>) {
+        crate::shim_assert_serial("shim_set_before_section");
+        *BEFORE_SECTION.lock().unwrap_or_else(|e| e.into_inner()) = f;
+    }
+
+    /// Mirrors `azos_sched::futex::wait`'s answers before it would block:
     /// `-EFAULT` for an unreadable word, `-EAGAIN` for one that differs;
-    /// a word that holds `expected` is "woken" at once (0).
-    pub fn wait_key(key: Key, expected: u32, deadline: Option<u64>, read: &dyn Fn() -> Option<u32>) -> i64 {
-        CALLS.lock().unwrap_or_else(|e| e.into_inner()).push(Call { is_wait: true, key, arg: expected, deadline });
-        match read() {
-            None => -14,
-            Some(v) if v != expected => -11,
-            Some(_) => 0,
+    /// a word that holds `expected` is "woken" at once (0). The call is
+    /// recorded with the key the look gave, the key the row would be filed
+    /// under.
+    pub fn wait(look: Look, expected: u32, deadline: Option<u64>) -> i64 {
+        let before = *BEFORE_SECTION.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = before {
+            f();
         }
+        let Some((key, v)) = look() else { return -14 };
+        CALLS.lock().unwrap_or_else(|e| e.into_inner()).push(Call { is_wait: true, key, arg: expected, deadline });
+        if v != expected { -11 } else { 0 }
     }
 
     /// Mirrors `azos_sched::futex::wake_key`.

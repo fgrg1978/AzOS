@@ -1542,12 +1542,14 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                     abs_deadline_ticks(ns, op & FUTEX_CLOCK_REALTIME != 0)
                 })
             };
-            let (key, shm) = match futex_word(uaddr, private) {
-                Ok(w) => w,
-                Err(e) => return e,
-            };
+            if uaddr & 3 != 0 {
+                return neg(le::EINVAL);
+            }
             reach(k::SYS_FUTEX_WAIT);
-            azos_sched::futex::wait_key(key, val as u32, deadline, &|| futex_read(uaddr, shm))
+            if let Err(e) = crate::vdso_notify::futex_precheck(uaddr, val as u32) {
+                return e;
+            }
+            azos_sched::futex::wait(&|| futex_look(uaddr, private), val as u32, deadline)
         }
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
             let (key, _) = match futex_word(uaddr, private) {
@@ -1563,10 +1565,9 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             if nr_wake < 0 || nr_requeue < 0 {
                 return neg(le::EINVAL);
             }
-            let (from, shm) = match futex_word(uaddr, private) {
-                Ok(w) => w,
-                Err(e) => return e,
-            };
+            if uaddr & 3 != 0 {
+                return neg(le::EINVAL);
+            }
             let (to, _) = match futex_word(uaddr2, private) {
                 Ok(w) => w,
                 Err(e) => return e,
@@ -1574,7 +1575,12 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             // A requeue is a wake that moves the rest: the wake's authority.
             reach(k::SYS_FUTEX_WAKE);
             let cmp = (cmd == FUTEX_CMP_REQUEUE).then_some(val3 as u32);
-            match azos_sched::futex::requeue(from, to, nr_wake as u32, nr_requeue as u32, cmp, &|| futex_read(uaddr, shm)) {
+            // FUTEX_REQUEUE compares nothing: its source's key alone.
+            let look = || match cmp {
+                Some(_) => futex_look(uaddr, private),
+                None => futex_word(uaddr, private).ok().map(|(key, _)| (key, 0)),
+            };
+            match azos_sched::futex::requeue(&look, to, nr_wake as u32, nr_requeue as u32, cmp) {
                 // Linux answers woken + requeued for both ops.
                 Ok((woken, moved)) => (woken + moved) as i64,
                 Err(e) => e,
@@ -1583,18 +1589,14 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
         // Wave 15 N10d, Kconfig FUTEX_PI (n: ENOSYS below, as before): the
         // condition variable half of a PI mutex. `uaddr2` is the PI word.
         FUTEX_WAIT_REQUEUE_PI | FUTEX_CMP_REQUEUE_PI if azos_sync::pi_futex::ENABLED => {
-            if uaddr2 & 3 != 0 || uaddr == uaddr2 {
+            if uaddr & 3 != 0 || uaddr2 & 3 != 0 || uaddr == uaddr2 {
                 return neg(le::EINVAL);
             }
-            let (from, shm) = match futex_word(uaddr, private) {
-                Ok(w) => w,
-                Err(e) => return e,
-            };
             let (to, word) = match pi_word(uaddr2, private) {
                 Ok(w) => w,
                 Err(e) => return e,
             };
-            let read = || futex_read(uaddr, shm);
+            let look = || futex_look(uaddr, private);
             if cmd == FUTEX_WAIT_REQUEUE_PI {
                 // Absolute, on the clock the flag names (as FUTEX_LOCK_PI2's).
                 let deadline = if timeout == 0 {
@@ -1608,7 +1610,10 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                     Some(abs_deadline_ticks(ns, op & FUTEX_CLOCK_REALTIME != 0))
                 };
                 reach(k::SYS_FUTEX_WAIT);
-                return azos_sched::futex::wait_requeue_pi(from, to, val as u32, deadline, &read, &word);
+                if let Err(e) = crate::vdso_notify::futex_precheck(uaddr, val as u32) {
+                    return e;
+                }
+                return azos_sched::futex::wait_requeue_pi(&look, to, val as u32, deadline, &word);
             }
             // `val` is nr_wake and must be 1; `timeout` carries nr_requeue.
             let nr_requeue = timeout as u32 as i32;
@@ -1616,7 +1621,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                 return neg(le::EINVAL);
             }
             reach(k::SYS_FUTEX_WAKE);
-            azos_sched::futex::cmp_requeue_pi(from, to, nr_requeue as u32, val3 as u32, &read, &word)
+            azos_sched::futex::cmp_requeue_pi(&look, to, nr_requeue as u32, val3 as u32, &word)
         }
         // Wave 15 N10, Kconfig FUTEX_PI: n answers ENOSYS (below) as before.
         FUTEX_LOCK_PI | FUTEX_LOCK_PI2 | FUTEX_TRYLOCK_PI | FUTEX_UNLOCK_PI if azos_sync::pi_futex::ENABLED => {
@@ -1647,7 +1652,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                 let tid = azos_sched::current_proc_tid();
                 if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
                     let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
-                    return azos_sched::futex::pi_call_key(key, &ShmPiWord { tid, uaddr }, pcmd);
+                    return azos_sched::futex::pi_call_key(key, &ShmPiWord { tid, uaddr, key: (region, off) }, pcmd);
                 }
             }
             sys_futex_pi(uaddr, pcmd)
@@ -1656,9 +1661,16 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
     }
 }
 
+/// The key and value of the word at `uaddr` from one look
+/// (`vdso_notify::futex_look`): without `FUTEX_PRIVATE_FLAG` a word of a shm
+/// region (Kconfig `FUTEX_SHARED`) by its region, any other by the process.
+fn futex_look(uaddr: u64, private: bool) -> Option<(azos_sched::futex::Key, u32)> {
+    crate::vdso_notify::futex_look(uaddr, !private && azos_sched::futex_table::SHARED)
+}
+
 /// The futex-table key of the word at `uaddr`, and whether it is a word of a
-/// shm region (read through the region, [`futex_read`]; a private one through
-/// `copy_from_user`).
+/// shm region, for the calls that compare nothing at it (a wake, a requeue's
+/// target); a call that compares the word keys it by [`futex_look`].
 fn futex_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, bool), i64> {
     if uaddr & 3 != 0 {
         return Err(neg(le::EINVAL));
@@ -1681,7 +1693,7 @@ fn pi_word(uaddr: u64, private: bool) -> Result<(azos_sched::futex::Key, LxPiWor
         let tid = azos_sched::current_proc_tid();
         if let Some((region, off)) = azos_ipc::memobj::memobj_resolve_mapped(tid, uaddr as usize) {
             let key = azos_sched::futex::Key::Shared { obj: region, offset: off as u32 };
-            return Ok((key, LxPiWord::Shm(ShmPiWord { tid, uaddr })));
+            return Ok((key, LxPiWord::Shm(ShmPiWord { tid, uaddr, key: (region, off) })));
         }
     }
     let key = azos_sched::futex::private_key(uaddr).ok_or(neg(le::EFAULT))?;
@@ -1718,8 +1730,11 @@ impl azos_sched::futex::PiWord for LxPiWord {
 /// A PI word of a shm region, resolved through the caller's process mapping
 /// on every access (N10b): a relock after the sleep never trusts a page
 /// taken before it, and an unmapped region answers `EFAULT`. Each access runs
-/// with the region table held (`memobj_with_mapped_word`), so the frame
-/// cannot change owner under it; the swap also needs the mapping writable
+/// with the region table held (`vdso_notify::with_keyed_shm_word`), so the
+/// frame cannot change owner under it, and only while the mapping still names
+/// the word of `key` (the region and offset the call is keyed by): a region
+/// mapped at `uaddr` since answers `EFAULT`, so the PI state of one key never
+/// reads or swaps another key's word. The swap also needs the mapping writable
 /// now, a writable object and a page no clone shares, else `EFAULT`. No
 /// fault-in: only the owner's `SYS_MO_MAP` protect changes a shm mapping's
 /// access (no kernel path write-protects one for a while), and a writable
@@ -1727,35 +1742,25 @@ impl azos_sched::futex::PiWord for LxPiWord {
 struct ShmPiWord {
     tid: u32,
     uaddr: u64,
+    /// `(region, offset)`: the word's identity when the call was keyed.
+    key: (u32, usize),
 }
 
 impl azos_sched::futex::PiWord for ShmPiWord {
     fn read(&self) -> Result<u32, azos_sync::pi_futex::UserFault> {
         use core::sync::atomic::Ordering::Acquire;
-        azos_ipc::memobj::memobj_with_mapped_word(self.tid, self.uaddr as usize, false, |w| w.load(Acquire))
+        crate::vdso_notify::with_keyed_shm_word(self.tid, self.uaddr, self.key, false, |w| w.load(Acquire))
             .ok_or(azos_sync::pi_futex::UserFault)
     }
     fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, azos_sync::pi_futex::UserFault> {
         use core::sync::atomic::Ordering::{AcqRel, Acquire};
-        azos_ipc::memobj::memobj_with_mapped_word(self.tid, self.uaddr as usize, true, |w| {
+        crate::vdso_notify::with_keyed_shm_word(self.tid, self.uaddr, self.key, true, |w| {
             match w.compare_exchange(expected, new, AcqRel, Acquire) {
                 Ok(v) | Err(v) => v,
             }
         })
         .ok_or(azos_sync::pi_futex::UserFault)
     }
-}
-
-/// Read the futex word: through its region, with the region table held across
-/// the load (`memobj_with_mapped_word`), for a shm word; else from user memory.
-fn futex_read(uaddr: u64, shm: bool) -> Option<u32> {
-    if !shm {
-        return crate::threads::read_u32(uaddr);
-    }
-    let tid = azos_sched::current_proc_tid();
-    azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, false, |w| {
-        w.load(core::sync::atomic::Ordering::Acquire)
-    })
 }
 
 /// `wait4(pid, wstatus, options, rusage)`: pid > 0 or -1; `WNOHANG` (1);

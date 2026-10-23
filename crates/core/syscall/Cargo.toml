@@ -76,6 +76,10 @@ hosted-startup-canary = []
 # refuse a call made where it may not block (under a spinlock). The ktest
 # `kernel_endpoint_call_is_refused_under_a_spinlock` must go red.
 kcall-atomic-canary = []
+# Host canary (syscall-tests futex_one_look.rs), never in a real build: a futex
+# wait takes its key from a lookup before the table's section and its value from
+# the look inside it, and a PI step uses its shm word whatever region it now is.
+futex-key-outside-canary = []
 # Wave 13 gate canaries, never in a real build: no signal is ever delivered
 # (`linux-signal-canary`); a broken pipe raises no SIGPIPE
 # (`linux-sigpipe-canary`); a Linux console read is end of file again

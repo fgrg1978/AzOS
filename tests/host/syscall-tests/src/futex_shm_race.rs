@@ -26,15 +26,17 @@
 // shape of the old paths) it returns at once, the frame is free, `alloc_page`
 // hands it out, and the parked access reads (or writes) the new owner's page.
 //
-// The wait runs the real `vdso_notify::sys_futex_wait` (key, then the look at
-// the word, here from the sched shim's `wait_key`); the swap runs the helper
-// `ShmPiWord` calls (linux.rs is not built in this crate).
+// The wait runs the real `vdso_notify::sys_futex_wait` (its look at the word,
+// key and value at once, here from the sched shim's `wait`); the swap runs the
+// region-table access `ShmPiWord` reaches (linux.rs is not built in this
+// crate).
 
 use super::harness::serial;
 use azos_ipc::memobj::{
     memobj_create_ref, memobj_note_mapping_ref, memobj_page_phys_ref, memobj_release_ref, memobj_take_mapping_ref,
     memobj_with_mapped_word, shim_set_word_hook, MapAccess, MemPerms,
 };
+use azos_arch_api::PagePerms;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::SeqCst};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -89,19 +91,22 @@ struct Outcome<T> {
     word_after: u32,
 }
 
-/// Map a fresh one-page region holding [`MINE`] at [`VA`] for [`TID`], start
-/// `access` on its own thread (it parks in the hook), release the region from
-/// a third thread, and see whether the release got through while the access
-/// held the frame.
+/// Map a fresh one-page region holding [`MINE`] at [`VA`] for [`TID`] (the
+/// mapping recorded, and the frame in a real page table: a wait reads the word
+/// through the user's mapping first), start `access` on its own thread (it
+/// parks in the hook), release the region from a third thread, and see
+/// whether the release got through while the access held the frame.
 fn race<T: Send + 'static>(access: fn() -> T) -> Outcome<T> {
+    let pt = azos_mm::pmm::alloc_page().expect("a page-table root").as_usize();
     azos_sched::set_current_task_tid(TID);
     azos_sched::set_current_proc_tid(0);
-    azos_sched::set_current_user_pt(0);
+    azos_sched::set_current_user_pt(pt);
     let r = memobj_create_ref(TID, 1, MemPerms::ReadWrite).expect("a region");
     let frame = memobj_page_phys_ref(r, 0).expect("live").expect("a frame");
     let word = azos_mm::addr::phys_to_virt(frame) as *mut u32;
     unsafe { word.write_volatile(MINE) };
-    assert_eq!(memobj_note_mapping_ref(TID, r, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+    assert_eq!(memobj_note_mapping_ref(TID, r, pt, VA, 1, MapAccess::RW), Ok(true));
+    azos_mm::vmm::map(pt, VA, frame, PagePerms::USER_RW).expect("map");
 
     STAGE.store(0, SeqCst);
     shim_set_word_hook(Some(park));
@@ -145,6 +150,8 @@ fn race<T: Send + 'static>(access: fn() -> T) -> Outcome<T> {
     azos_sched::shim_serial_enter();
     let (taken, released) = releaser.join().expect("releaser");
     shim_set_word_hook(None);
+    azos_mm::vmm::unmap(pt, VA);
+    azos_sched::set_current_user_pt(0);
     let word_after = unsafe { word.read_volatile() };
     for p in held {
         let _ = azos_mm::pmm::free_page(p);
@@ -154,19 +161,22 @@ fn race<T: Send + 'static>(access: fn() -> T) -> Outcome<T> {
     Outcome { freed_under_access, reissued, answer, word_after }
 }
 
-/// The native wait: `SYS_FUTEX_WAIT` on the shm word, expecting [`THEIRS`].
-/// Its own word holds [`MINE`], so the answer is `-EAGAIN`.
+/// The native wait: `SYS_FUTEX_WAIT` on the shm word, expecting [`MINE`]
+/// (its first read, through the user's mapping, matches, so the look under
+/// the futex table runs). Its own word holds [`MINE`], so it matches there
+/// too and the (shim's) wait answers 0.
 ///
 /// **Divergence:** with the word used outside the table lock
-/// (`memobj-word-unlocked-canary`, or the code before this front) the release
-/// returns while the look is parked, the frame is reissued with [`THEIRS`] in
-/// it, and the wait reads the new owner's word: it "matches" and answers 0, as
-/// if it had slept and been woken, on a value of a page it never mapped.
+/// (`memobj-word-unlocked-canary`, or the code before front futex-shm-word)
+/// the release returns while the look is parked, the frame is reissued with
+/// [`THEIRS`] in it, and the look reads the new owner's word: a decision on a
+/// value of a page the process no longer maps (here -EAGAIN; with the new
+/// owner's word equal to `expected`, a wait filed on it).
 #[test]
 fn a_futex_wait_keeps_its_shm_frame_until_its_look_ends() {
     let _g = serial();
     fn wait() -> i64 {
-        crate::vdso_notify::sys_futex_wait(VA as u64, THEIRS as u64, 0)
+        crate::vdso_notify::sys_futex_wait(VA as u64, MINE as u64, 0)
     }
     let o = race(wait);
     assert!(
@@ -174,7 +184,7 @@ fn a_futex_wait_keeps_its_shm_frame_until_its_look_ends() {
         "the region's last release freed the frame of a futex word still being read (reissued: {}, the wait answered {})",
         o.reissued, o.answer,
     );
-    assert_eq!(o.answer, -11, "the wait reads its own word ({MINE}), not {THEIRS}: -EAGAIN");
+    assert_eq!(o.answer, 0, "the wait's look reads its own word ({MINE}), not {THEIRS}");
 }
 
 /// The Linux PI calls' swap of a shm word (`ShmPiWord::cmpxchg`, which runs
@@ -187,7 +197,7 @@ fn a_futex_wait_keeps_its_shm_frame_until_its_look_ends() {
 fn a_pi_swap_keeps_its_shm_frame_until_the_swap_ends() {
     let _g = serial();
     fn swap() -> Option<u32> {
-        memobj_with_mapped_word(TID, VA, true, |w| match w.compare_exchange(THEIRS, 9, SeqCst, SeqCst) {
+        memobj_with_mapped_word(TID, VA, true, |_, _, w| match w.compare_exchange(THEIRS, 9, SeqCst, SeqCst) {
             Ok(v) | Err(v) => v,
         })
     }

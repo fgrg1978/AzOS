@@ -64,8 +64,9 @@ fn a_word_outside_every_region_is_keyed_by_the_process() {
 }
 
 /// `expected` is the word's value as the sleeper last saw it; one that differs
-/// is `-EAGAIN` and nothing blocks. A timeout of 0 is no timeout; any other is
-/// a deadline in the future.
+/// is `-EAGAIN` and nothing blocks (answered by the wait's first read, before
+/// the table is asked). A timeout of 0 is no timeout; any other is a deadline
+/// in the future.
 #[test]
 fn a_wait_on_a_word_that_differs_is_eagain_and_a_timeout_makes_a_deadline() {
     let _g = serial();
@@ -73,6 +74,8 @@ fn a_wait_on_a_word_that_differs_is_eagain_and_a_timeout_makes_a_deadline() {
     let w = word(9);
     let a = w as *const AtomicU32 as u64;
     assert_eq!(crate::vdso_notify::sys_futex_wait(a, 8, 0), -11);
+    assert!(shim_take_calls().is_empty(), "a word that differs reached the futex table");
+    assert_eq!(crate::vdso_notify::sys_futex_wait(a, 9, 0), 0);
     assert_eq!(crate::vdso_notify::sys_futex_wait(a, 9, 1_000_000), 0);
     let calls = shim_take_calls();
     assert_eq!(calls[0].deadline, None, "timeout 0 is no deadline");
@@ -93,12 +96,15 @@ fn expected_is_the_low_32_bits() {
 
 /// The point of the whole surface: a word of a shm region is keyed by (region,
 /// offset), not by an address and not by the process, so two tasks that map
-/// the region at DIFFERENT addresses meet on one key. A wait also reads the
-/// word through the kernel's view of the page (the region's, not the user's).
+/// the region at DIFFERENT addresses meet on one key. A wait reads the word
+/// once through the user's mapping (a word that differs is answered there,
+/// before the table), then decides on the kernel's view of the page (the
+/// region's), from the look that gives the key.
 #[test]
 fn a_word_of_a_mapped_region_has_the_same_key_for_every_mapper() {
     use azos_ipc::memobj::{
-        memobj_acquire_ref, memobj_create_ref, memobj_note_mapping_ref, memobj_release_all, MapAccess, MemPerms,
+        memobj_acquire_ref, memobj_create_ref, memobj_note_mapping_ref, memobj_page_phys_ref, memobj_release_all,
+        MapAccess, MemPerms,
     };
     const OTHER: u32 = 0x6B00_0002;
     const VA_A: usize = 0x4000_0000;
@@ -115,17 +121,21 @@ fn a_word_of_a_mapped_region_has_the_same_key_for_every_mapper() {
     azos_sched::set_current_proc_tid(0);
     assert_eq!(crate::vdso_notify::sys_futex_wake((VA_A + 8) as u64, 1), 0);
     azos_sched::set_current_task_tid(OTHER);
-    // The kernel reads the (zeroed) word through the region: 0 holds, 1 differs.
+    // The second mapper's page table maps its address to the region's frame.
+    let pt = azos_mm::pmm::alloc_page().expect("a page-table root").as_usize();
+    let frame = memobj_page_phys_ref(r, 0).expect("live").expect("a frame");
+    azos_mm::vmm::map(pt, VA_B, frame, azos_arch_api::PagePerms::USER_RW).expect("map");
+    azos_sched::set_current_user_pt(pt);
+    // The (zeroed) word: 0 holds (the look under the table decides, through
+    // the region), 1 differs (answered by the first read: no table call).
     assert_eq!(crate::vdso_notify::sys_futex_wait((VA_B + 8) as u64, 0, 0), 0);
     assert_eq!(crate::vdso_notify::sys_futex_wait((VA_B + 8) as u64, 1, 0), -11);
+    azos_mm::vmm::unmap(pt, VA_B);
+    azos_sched::set_current_user_pt(0);
     // A mapped word is never private: no key names the process or an address.
     assert_eq!(
         shim_take_calls(),
-        vec![
-            Call { is_wait: false, key, arg: 1, deadline: None },
-            Call { is_wait: true, key, arg: 0, deadline: None },
-            Call { is_wait: true, key, arg: 1, deadline: None },
-        ],
+        vec![Call { is_wait: false, key, arg: 1, deadline: None }, Call { is_wait: true, key, arg: 0, deadline: None }],
         "the two mappers, at different addresses, did not meet on one key"
     );
     memobj_release_all(TID);

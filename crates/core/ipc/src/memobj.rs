@@ -1208,20 +1208,26 @@ pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize)> {
 }
 
 /// Run `f` on the aligned 32-bit word `tid` maps at user address `va`, **with
-/// the region table locked across `f`**: `None` when `va` is misaligned or
+/// the region table locked across `f`**, and with the word's identity: `f`
+/// gets [`memobj_resolve_mapped`]'s answer for `va` (the region's packed
+/// reference and the byte offset), then the word, all from one lookup. `None`
+/// when `va` is misaligned or
 /// [`memobj_resolve_mapped`] names no word there, and, for `write`, when the
 /// mapping is not writable now, the object is read-only, or the page shares
 /// its frame with a clone (a write through the kernel's map would show in the
 /// clone and skip the copy-on-write the user's own store takes).
 ///
-/// The futex paths' access to a shm word: the native wait's look at it and
-/// the Linux PI calls' read and compare-and-swap. A region's frames go back to
+/// The futex paths' access to a shm word: a wait's or a requeue's look at it
+/// (its futex key and its value at once), and the Linux PI calls' read and
+/// compare-and-swap (which check that the identity is still their key's). A region's frames go back to
 /// the PMM only under this lock (`drop_refs_locked`, the purge), so the frame
 /// `f` sees cannot change owner before `f` returns, whatever another hart
 /// unmaps, releases or revokes meanwhile. `f` must be short and must not take
 /// this lock (one atomic access). Its order is the futex table's, then this
 /// one (`azos_sched::futex::register_shm_word_of`).
-pub fn memobj_with_mapped_word<R>(tid: u32, va: usize, write: bool, f: impl FnOnce(&AtomicU32) -> R) -> Option<R> {
+pub fn memobj_with_mapped_word<R>(
+    tid: u32, va: usize, write: bool, f: impl FnOnce(u32, usize, &AtomicU32) -> R,
+) -> Option<R> {
     if va % 4 != 0 {
         return None;
     }
@@ -1235,6 +1241,7 @@ pub fn memobj_with_mapped_word<R>(tid: u32, va: usize, write: bool, f: impl FnOn
     {
         return None;
     }
+    let packed = LAYOUT.pack(w.idx as u32, region.generation);
     // SAFETY: a 4-aligned word of a frame of a live region, which cannot be
     // freed while the guard is held (see the doc); the direct map of a RAM
     // frame is valid for an atomic 32-bit access.
@@ -1254,7 +1261,7 @@ pub fn memobj_with_mapped_word<R>(tid: u32, va: usize, write: bool, f: impl FnOn
             h(w.phys);
         }
     }
-    let out = f(word);
+    let out = f(packed, w.off, word);
     drop(held);
     Some(out)
 }
@@ -3857,14 +3864,14 @@ mod tests {
             for off in [p * page, p * page + page / 2 + 4, p * page + page - 4] {
                 tag += 1;
                 assert_eq!(memobj_resolve_mapped(A, VA + off), Some((r, off)));
-                assert_eq!(memobj_with_mapped_word(A, VA + off, true, |w| w.store(tag, Ordering::Release)), Some(()));
+                assert_eq!(memobj_with_mapped_word(A, VA + off, true, |_, _, w| w.store(tag, Ordering::Release)), Some(()));
                 let v = memobj_with_word_ref(r, off, |word| word.load(Ordering::Acquire));
                 assert_eq!(v, Ok(Some(tag)), "offset {off:#x}: the notify word is not the mapped word");
             }
         }
         assert_eq!(memobj_with_word_ref(r, PAGES * page, |w| w.load(Ordering::Acquire)), Ok(None));
         assert_eq!(memobj_resolve_mapped(A, VA + PAGES * page), None);
-        assert_eq!(memobj_with_mapped_word(A, VA + PAGES * page, false, |w| w.load(Ordering::Acquire)), None);
+        assert_eq!(memobj_with_mapped_word(A, VA + PAGES * page, false, |_, _, w| w.load(Ordering::Acquire)), None);
     }
 
     /// The source half of the fix above: the two functions that split a
@@ -4030,8 +4037,8 @@ mod tests {
     fn a_mapped_word_is_written_only_through_a_writable_mapping() {
         let _g = setup();
         const VA: usize = 0x4000_0000;
-        let store = |va: usize| memobj_with_mapped_word(A, va, true, |w| w.store(7, Ordering::Release));
-        let load = |va: usize| memobj_with_mapped_word(A, va, false, |w| w.load(Ordering::Acquire));
+        let store = |va: usize| memobj_with_mapped_word(A, va, true, |_, _, w| w.store(7, Ordering::Release));
+        let load = |va: usize| memobj_with_mapped_word(A, va, false, |_, _, w| w.load(Ordering::Acquire));
 
         let rw = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
         assert_eq!(memobj_note_mapping_ref(A, rw, 0x1000, VA, 1, MapAccess::RO), Ok(true));
@@ -5479,7 +5486,7 @@ mod tests {
         assert_eq!(memobj_page_phys_ref(r, 1), Ok(Some(p1)), "the object's page is the frame the mapper got");
         assert_eq!(memobj_resolve_mapped(A, VA + page + 16), Some((r, page + 16)));
         assert_eq!(
-            memobj_with_mapped_word(A, VA + page + 16, false, |w| w as *const AtomicU32 as usize),
+            memobj_with_mapped_word(A, VA + page + 16, false, |_, _, w| w as *const AtomicU32 as usize),
             Some(azos_mm::addr::phys_to_virt(p1 + 16)),
             "the mapping resolves to the same frame"
         );
