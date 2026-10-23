@@ -4,13 +4,13 @@
 //! of a USB stick, mounted as a second volume beside `/fat`, never in its
 //! place.
 //!
-//! # One file, two volumes
+//! # One driver, two volumes
 //!
-//! `fat32.rs` keeps its volume in statics (the volume lock, the sector cache,
-//! the open-file table, the journal state). This module compiles that same
-//! file a second time, as [`fat32`], so the stick's volume has statics of its
-//! own and shares nothing with `/fat` but the source. What differs is the
-//! sibling `fat32_dev` the file reads, here:
+//! The stick is a second [`fat32::Vol`] ([`USB`]), run by the same FAT32
+//! code as `/fat` ([`fat32::BOOT`]): every function of `fat32.rs` takes the
+//! volume it works on, and the volume holds the state (its lock, its sector
+//! cache, its open files, its journal) and its device. What differs is the
+//! device and the knobs:
 //!
 //! - the device: the [`Disk`] the kernel attaches (the stick's request queue),
 //!   and the stick's own partition table ([`azos_drv_block::partition::parse`]
@@ -19,7 +19,8 @@
 //!   and a write that returned is then on it, not in a cache waiting for the
 //!   `fs-wb` task (which serves `/fat` alone, so this volume hands out no flush
 //!   tickets either: an `fsync` syncs inline);
-//! - a sector cache of its own size, Kconfig `USB_VOLUME_CACHE_KB`;
+//! - a sector cache of its own, of the boot disk's size (one cache type for
+//!   every volume: Kconfig `FS_BLOCK_CACHE_KB`);
 //! - no discard and no native FUA (the class driver has neither);
 //! - its own identity ([`crate::vfs::FS_TYPE_FAT32_REMOVABLE`],
 //!   [`crate::vfs::STAMP_FS_FAT32_REMOVABLE`]): the page cache, the write-back
@@ -50,6 +51,8 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use azos_drv_api::block::FlushError;
 use azos_drv_block::partition::{self as table, PartError, Table};
 use azos_sync::SpinLock;
+
+use crate::fat32::{self, VolDev};
 
 /// A USB disk as this volume reads and writes it: 512-byte sectors.
 pub trait Disk: Sync {
@@ -105,72 +108,66 @@ fn disk() -> Option<&'static dyn Disk> {
     *DISK.lock()
 }
 
-/// What `fat32.rs` sits on and the knobs this volume sets (see the module
-/// doc).
-pub(crate) mod fat32_dev {
-    pub(crate) const WRITEBACK: bool = false;
-    /// Kconfig `USB_VOLUME_CACHE_KB`.
-    pub(crate) const BLOCK_CACHE_KB: usize = azos_limits::USB_VOLUME_CACHE_KB;
-    pub(crate) const FS_TYPE: u32 = crate::vfs::FS_TYPE_FAT32_REMOVABLE;
-    pub(crate) const STAMP_FS: u32 = crate::vfs::STAMP_FS_FAT32_REMOVABLE;
-    pub(crate) const TICKETED: bool = false;
+/// The stick, as the FAT32 code reads and writes it.
+struct UsbDev;
 
-    /// The stick, with the surface of `azos_drv_block::blkdev` that
-    /// `fat32.rs` uses.
-    pub(crate) mod blkdev {
-        use super::super::disk;
-        use azos_drv_api::block::FlushError;
-
-        pub(crate) fn capacity_sectors() -> u64 {
-            disk().map_or(0, |d| d.sectors())
-        }
-        pub(crate) fn read_quiet(sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-            disk().ok_or(())?.read(sector, count, buf)
-        }
-        pub(crate) fn write_quiet(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
-            disk().ok_or(())?.write(sector, count, buf, false)
-        }
-        /// No native FUA ([`fua_commit`] is false), so `fua` is never asked.
-        pub(crate) fn write_run(sector: u64, count: u32, buf: &[u8], preflush: bool, fua: bool) -> Result<(), ()> {
-            if fua {
-                return Err(());
-            }
-            disk().ok_or(())?.write(sector, count, buf, preflush)
-        }
-        pub(crate) fn flush() -> Result<(), FlushError> {
-            disk().ok_or(FlushError::Io)?.flush()
-        }
-        pub(crate) fn fua_commit() -> bool {
-            false
-        }
-        pub(crate) const DISCARD: bool = false;
-        pub(crate) use azos_drv_block::blkdev::DiscardError;
-        pub(crate) fn discard(_runs: &[(u64, u32)]) -> Result<(), DiscardError> {
-            Err(DiscardError::Unsupported)
-        }
-        /// Nobody else reads or writes the stick behind the volume's back:
-        /// there is nothing to observe.
-        pub(crate) fn set_write_observer(_f: fn(u64, u32)) {}
-        pub(crate) fn set_read_observer(_f: fn(u64, u32), _held: fn(u64, u32) -> bool) {}
+impl VolDev for UsbDev {
+    fn capacity_sectors(&self) -> u64 {
+        disk().map_or(0, |d| d.sectors())
     }
-
-    /// The stick's partition table, with the surface of
-    /// `azos_drv_block::partition` that `fat32.rs` uses.
-    pub(crate) mod partition {
-        use super::super::TABLE;
-
-        pub(crate) fn count() -> u32 {
-            TABLE.lock().map_or(0, |t| t.count as u32)
+    fn read_quiet(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+        disk().ok_or(())?.read(sector, count, buf)
+    }
+    fn write_quiet(&self, sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+        disk().ok_or(())?.write(sector, count, buf, false)
+    }
+    /// No native FUA ([`VolDev::fua_commit`] is false), so `fua` is never asked.
+    fn write_run(&self, sector: u64, count: u32, buf: &[u8], preflush: bool, fua: bool) -> Result<(), ()> {
+        if fua {
+            return Err(());
         }
-        pub(crate) fn partition(index: u32) -> Option<(u64, u64)> {
-            TABLE.lock().and_then(|t| t.get(index as usize)).map(|p| (p.start, p.sectors))
-        }
+        disk().ok_or(())?.write(sector, count, buf, preflush)
+    }
+    fn flush(&self) -> Result<(), FlushError> {
+        disk().ok_or(FlushError::Io)?.flush()
+    }
+    fn fua_commit(&self) -> bool {
+        false
+    }
+    fn discard_supported(&self) -> bool {
+        false
+    }
+    fn discard(&self, _runs: &[(u64, u32)]) -> Result<(), fat32::DiscardError> {
+        Err(fat32::DiscardError::Unsupported)
+    }
+    /// Nobody else reads or writes the stick behind the volume's back: there
+    /// is nothing to observe.
+    fn set_write_observer(&self, _f: fn(u64, u32)) {}
+    fn set_read_observer(&self, _f: fn(u64, u32), _held: fn(u64, u32) -> bool) {}
+    fn partition_count(&self) -> u32 {
+        TABLE.lock().map_or(0, |t| t.count as u32)
+    }
+    fn partition(&self, index: u32) -> Option<(u64, u64)> {
+        TABLE.lock().and_then(|t| t.get(index as usize)).map(|p| (p.start, p.sectors))
     }
 }
 
-/// The stick's FAT32 volume: `fat32.rs`, compiled again over `fat32_dev`.
-#[path = "fat32.rs"]
-pub mod fat32;
+/// The stick's volume: the FAT32 code over [`UsbDev`].
+pub static USB: fat32::Vol = fat32::Vol::new(
+    &UsbDev,
+    fat32::Knobs {
+        writeback: false,
+        ticketed: false,
+        fs_type: crate::vfs::FS_TYPE_FAT32_REMOVABLE,
+        stamp: crate::vfs::STAMP_FS_FAT32_REMOVABLE,
+    },
+    &USB_FS,
+    &USB_CACHE,
+);
+/// [`USB`] as a VFS backend.
+pub static USB_FS: fat32::Fat32Fs = fat32::Fat32Fs::of(&USB);
+/// [`USB`]'s sector cache. All-zero until the first mount configures it.
+static USB_CACHE: SpinLock<fat32::SectorCache> = SpinLock::new(fat32::SectorCache::unconfigured());
 
 /// Why [`mount`] did not mount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,12 +227,12 @@ fn attach(disk: &'static dyn Disk, at: &[u8]) -> Result<Mounted, Why> {
     let t = table::parse(disk.sectors(), &mut |lba, buf: &mut [u8; table::SECTOR]| disk.read(lba, 1, buf))
         .map_err(Why::Table)?;
     *TABLE.lock() = Some(t);
-    fat32::fat32_mount().map_err(|()| Why::NoFat32)?;
-    if crate::vfs::vfs_mount_fs(at, &fat32::FAT32_FS).is_err() {
-        let _ = fat32::fat32_unmount(fat32::Volume::assume_mounted());
+    fat32::fat32_mount_on(&USB).map_err(|()| Why::NoFat32)?;
+    if crate::vfs::vfs_mount_fs(at, &USB_FS).is_err() {
+        let _ = fat32::fat32_unmount_on(&USB, fat32::Volume::assume_mounted());
         return Err(Why::Vfs);
     }
-    Ok(Mounted { base: fat32::fat32_volume_base(), partitions: t.count as u32 })
+    Ok(Mounted { base: fat32::fat32_volume_base_on(&USB), partitions: t.count as u32 })
 }
 
 /// Is a volume mounted?
@@ -258,7 +255,7 @@ pub fn eject() -> Option<Result<(), ()>> {
     let r = retire(true)?;
     // The unmount flushed already; once more for what it wrote last (the
     // clean flag), and so a stick that answered the flush wrongly is told.
-    let flushed = match fat32_dev::blkdev::flush() {
+    let flushed = match UsbDev.flush() {
         Ok(()) | Err(FlushError::Unsupported) => true,
         Err(FlushError::Io) => false,
     };
@@ -272,7 +269,7 @@ fn retire(writeback: bool) -> Option<bool> {
     STATE.compare_exchange(MOUNTED, RETIRING, Ordering::AcqRel, Ordering::Acquire).ok()?;
     let at = AT.lock().take()?;
     let paged = crate::vfs::vfs_unmount(at.get(), writeback).is_ok();
-    let unmounted = fat32::fat32_unmount(fat32::Volume::assume_mounted()).is_ok();
+    let unmounted = fat32::fat32_unmount_on(&USB, fat32::Volume::assume_mounted()).is_ok();
     *TABLE.lock() = None;
     STATE.store(IDLE, Ordering::Release);
     Some(paged && unmounted)

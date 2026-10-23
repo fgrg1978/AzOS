@@ -4,9 +4,9 @@
 //! stick, mounted at `/usb` beside the shim disk's `/fat`.
 //!
 //! The stick is [`Stick`], an in-memory [`usbvol::Disk`] that can be pulled
-//! out. The volume code is the real `fat32.rs`, compiled a second time inside
-//! `usbvol`, so every row here is also a row about the seam: the two volumes
-//! must not share a byte of state.
+//! out. The volume is a second `fat32::Vol` run by the same `fat32.rs` code
+//! as `/fat`, so every row here is also a row about the volume table: the
+//! two volumes must not share a byte of state.
 
 use super::{fat32, image::*, serial, usbvol, vfs, vfs_open_close::fresh_volume};
 use azos_drv_api::block::FlushError;
@@ -129,11 +129,9 @@ fn no_stick() {
 /// apart by address: a shared one would merge their page caches and skip one
 /// in a sync of every volume).
 ///
-/// **Canary, does not discriminate here.** Make `Fat32Fs` zero-sized again
-/// (`pub struct Fat32Fs;`): the host build still places the two statics at
-/// two addresses, so the row stays green. Nothing guarantees that for a
-/// zero-sized static (the kernel's linker may fold them); the `addr_eq`
-/// assertion is the property, kept for the build that would break it.
+/// **Canary.** Point `usbvol::USB_FS` at the boot volume
+/// (`Fat32Fs::of(&fat32::BOOT)`): the stick's file lands on the boot disk
+/// and the bytes assertions go red.
 #[test]
 fn a_stick_mounts_beside_fat_as_a_volume_of_its_own() {
     let _g = serial();
@@ -146,11 +144,11 @@ fn a_stick_mounts_beside_fat_as_a_volume_of_its_own() {
     assert!(
         !core::ptr::addr_eq(
             &fat32::FAT32_FS as &dyn vfs::FileSystem as *const dyn vfs::FileSystem,
-            &usbvol::fat32::FAT32_FS as &dyn vfs::FileSystem as *const dyn vfs::FileSystem,
+            &usbvol::USB_FS as &dyn vfs::FileSystem as *const dyn vfs::FileSystem,
         ),
         "the boot volume and the stick are one backend to the VFS"
     );
-    assert_eq!(usbvol::fat32::FAT32_FS.fs_type(), vfs::FS_TYPE_FAT32_REMOVABLE);
+    assert_eq!(usbvol::USB_FS.fs_type(), vfs::FS_TYPE_FAT32_REMOVABLE);
 
     write_file(b"/fat/SAME.TXT", b"boot volume");
     let boot_with_file = fs_test_drivers::disk_image();
@@ -162,12 +160,12 @@ fn a_stick_mounts_beside_fat_as_a_volume_of_its_own() {
     assert!(img[2048 * SECTOR..].windows(12).any(|w| w == b"on the stick"), "the bytes are on the stick");
     assert!(!img[..2048 * SECTOR].windows(12).any(|w| w == b"on the stick"), "never before the partition");
     // The page cache and the spawn cache key by stamp: never the same.
-    let k = usbvol::fat32::FAT32_FS.key_for(b"SAME.TXT").unwrap();
-    let st = usbvol::fat32::FAT32_FS.content_stamp(&k).expect("a stamp");
+    let k = usbvol::USB_FS.key_for(b"SAME.TXT").unwrap();
+    let st = usbvol::USB_FS.content_stamp(&k).expect("a stamp");
     assert_eq!(st.fs, vfs::STAMP_FS_FAT32_REMOVABLE);
     // Only the boot volume's tickets are served (by `fs-wb`): an fsync of a
     // stick file syncs inline.
-    assert!(usbvol::fat32::FAT32_FS.flush_request().is_none());
+    assert!(usbvol::USB_FS.flush_request().is_none());
     assert!(fat32::FAT32_FS.flush_request().is_some());
     no_stick();
 }

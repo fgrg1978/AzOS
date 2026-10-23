@@ -83,10 +83,6 @@ pub(crate) fn install_sched_hooks() {
     // priority to the claim's owner (fs-wb), so prio 13..19 load cannot
     // starve the owner while the waiter waits.
     azos_fs::fat32_claim_pi_hooks(&FAT_CLAIM_PI_HOOKS);
-    // The USB stick's volume is the same FAT32 compiled again
-    // (`azos_fs::usbvol`): its claims lend the same way.
-    #[cfg(feature = "usb-storage-volume")]
-    azos_fs::usbvol::fat32::fat32_claim_pi_hooks(&USB_FAT_CLAIM_PI_HOOKS);
     // Kconfig LOCKDEP (owner rule F7): which task is real-time, by its base
     // priority (its class, not a donation). With LOCKDEP=y outside ktest
     // the `log-flush` task prints lockdep's reports (never a lock path).
@@ -428,14 +424,6 @@ pub(crate) fn install_sched_hooks() {
 /// with its `donation_for` rule and ring-3 floor, and the graph id for
 /// `WAIT_GRAPH` y.
 static FAT_CLAIM_PI_HOOKS: azos_fs::ClaimPiHooks = azos_fs::ClaimPiHooks {
-    donate: azos_sched::scheduler::donate_priority,
-    give_back: azos_sched::scheduler::return_donation,
-    graph_id: kmutex_graph_id,
-};
-/// [`FAT_CLAIM_PI_HOOKS`] for the stick's volume: the same functions, in the
-/// type of its own compile of `fat32.rs`.
-#[cfg(feature = "usb-storage-volume")]
-static USB_FAT_CLAIM_PI_HOOKS: azos_fs::usbvol::fat32::ClaimPiHooks = azos_fs::usbvol::fat32::ClaimPiHooks {
     donate: azos_sched::scheduler::donate_priority,
     give_back: azos_sched::scheduler::return_donation,
     graph_id: kmutex_graph_id,

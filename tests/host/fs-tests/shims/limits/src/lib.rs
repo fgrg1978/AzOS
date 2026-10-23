@@ -36,8 +36,6 @@ pub const TMPFS_MAX_KB: usize = 2048;
 /// fixture volume's working set, so the tests that assert "served from RAM"
 /// assert it at a size a 16 MiB board ships with.
 pub const FS_BLOCK_CACHE_KB: usize = 64;
-/// Kconfig `USB_VOLUME_CACHE_KB` (`usbvol`'s own sector cache).
-pub const USB_VOLUME_CACHE_KB: usize = 16;
 /// Kconfig `FS_WRITEBACK` and its tuning (fat32.rs's write-back cache):
 /// embedded's defaults. On, so every suite runs the write-back paths;
 /// `fat32::fat32_set_writeback(false)` gives a test the write-through ones.

@@ -12,11 +12,88 @@
 
 use azos_sync::SpinLock;
 
-// The device this volume sits on and the knobs that differ per volume: the
-// `fat32_dev` module next to whoever compiles this file. The crate root's is
-// the boot disk (`/fat`); `usbvol` compiles this same file a second time over
-// a USB stick, with statics of its own (a second, separate volume).
+// The boot disk (`/fat`) and its knobs: the `fat32_dev` module next to this
+// file (the crate root's; a host suite that pulls this file gives its own).
+// Every other volume is a [`Vol`] over a [`VolDev`] of its own (`usbvol`).
 use super::fat32_dev::{self as dev, blkdev};
+
+/// Why a discard did not happen: the block layer's answer, for every volume.
+pub use blkdev::DiscardError;
+
+/// The device of a volume, as this file reads and writes it: 512-byte
+/// sectors, the surface of `azos_drv_block::blkdev` the volume uses, and the
+/// medium's partition table.
+pub trait VolDev: Sync {
+    fn capacity_sectors(&self) -> u64;
+    /// A read the cache owner issues (no read observer).
+    fn read_quiet(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()>;
+    /// A write the cache owner issues (no write observer).
+    fn write_quiet(&self, sector: u64, count: u32, buf: &[u8]) -> Result<(), ()>;
+    /// `preflush`: every completed write is durable first; `fua`: this one
+    /// is durable when it returns (asked only where [`VolDev::fua_commit`]).
+    fn write_run(&self, sector: u64, count: u32, buf: &[u8], preflush: bool, fua: bool) -> Result<(), ()>;
+    fn flush(&self) -> Result<(), azos_drv_api::block::FlushError>;
+    /// Does a FUA write commit natively?
+    fn fua_commit(&self) -> bool;
+    /// Is discard compiled in for this device at all?
+    fn discard_supported(&self) -> bool;
+    fn discard(&self, runs: &[(u64, u32)]) -> Result<(), DiscardError>;
+    /// Install the observers of the medium's other readers and writers (the
+    /// boot disk's ring-3 block path); a device nobody else reads does nothing.
+    fn set_write_observer(&self, f: fn(u64, u32));
+    fn set_read_observer(&self, f: fn(u64, u32), held: fn(u64, u32) -> bool);
+    /// The medium's partitions, as `(start, sectors)`.
+    fn partition_count(&self) -> u32;
+    fn partition(&self, index: u32) -> Option<(u64, u64)>;
+}
+
+/// What differs between two volumes beyond their device.
+#[derive(Clone, Copy)]
+pub struct Knobs {
+    /// The cache runs write-back (Kconfig `FS_WRITEBACK` for the boot disk);
+    /// otherwise write-through.
+    pub writeback: bool,
+    /// The `fs-wb` task serves the volume's flush tickets.
+    pub ticketed: bool,
+    /// [`crate::vfs::FileSystem::fs_type`] of the volume.
+    pub fs_type: u32,
+    /// [`crate::vfs::ContentStamp::fs`] of the volume's files.
+    pub stamp: u32,
+}
+
+/// The boot disk: `azos_drv_block::blkdev` and its published partition table.
+struct BootDev;
+
+impl VolDev for BootDev {
+    fn capacity_sectors(&self) -> u64 { blkdev::capacity_sectors() }
+    fn read_quiet(&self, sector: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
+        blkdev::read_quiet(sector, count, buf)
+    }
+    fn write_quiet(&self, sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+        blkdev::write_quiet(sector, count, buf)
+    }
+    fn write_run(&self, sector: u64, count: u32, buf: &[u8], preflush: bool, fua: bool) -> Result<(), ()> {
+        blkdev::write_run(sector, count, buf, preflush, fua)
+    }
+    fn flush(&self) -> Result<(), azos_drv_api::block::FlushError> { blkdev::flush() }
+    fn fua_commit(&self) -> bool { blkdev::fua_commit() }
+    fn discard_supported(&self) -> bool { blkdev::DISCARD }
+    fn discard(&self, runs: &[(u64, u32)]) -> Result<(), DiscardError> {
+        blkdev::discard(runs)
+    }
+    fn set_write_observer(&self, f: fn(u64, u32)) { blkdev::set_write_observer(f) }
+    fn set_read_observer(&self, f: fn(u64, u32), held: fn(u64, u32) -> bool) { blkdev::set_read_observer(f, held) }
+    fn partition_count(&self) -> u32 { dev::partition::count() }
+    fn partition(&self, index: u32) -> Option<(u64, u64)> { dev::partition::partition(index) }
+}
+
+/// The boot volume, `/fat`.
+pub static BOOT: Vol = Vol::new(
+    &BootDev,
+    Knobs { writeback: dev::WRITEBACK, ticketed: dev::TICKETED, fs_type: dev::FS_TYPE, stamp: dev::STAMP_FS },
+    &FAT32_FS,
+    &BOOT_CACHE,
+);
 
 // ── FAT32 on-disk structures ──────────────────────────────────────────────────
 
@@ -30,10 +107,10 @@ pub struct Fat32Bpb {
     pub sec_per_clus:    u8,
     pub rsvd_sec_cnt:    u16,
     pub num_fats:        u8,
-    pub root_ent_cnt:    u16,   // 0 for FAT32
-    pub tot_sec16:       u16,   // 0 for FAT32
+    pub root_ent_cnt:    u16,   // 0 for v.fat32
+    pub tot_sec16:       u16,   // 0 for v.fat32
     pub media:           u8,
-    pub fat_sz16:        u16,   // 0 for FAT32
+    pub fat_sz16:        u16,   // 0 for v.fat32
     pub sec_per_trk:     u16,
     pub num_heads:       u16,
     pub hidd_sec:        u32,
@@ -273,23 +350,23 @@ impl JournalEntry {
 }
 
 /// Write a journal entry to the journal sector.
-fn fat32_journal_write(entry: &JournalEntry) -> Result<(), ()> {
+fn fat32_journal_write(v: &'static Vol, entry: &JournalEntry) -> Result<(), ()> {
     let mut buf = [0u8; SECTOR_SIZE];
     entry.to_sector(&mut buf);
-    write_sector(JOURNAL_SECTOR, &buf)
+    write_sector(v, JOURNAL_SECTOR, &buf)
 }
 
 /// Read the journal entry from the journal sector.
-fn fat32_journal_read() -> Result<JournalEntry, ()> {
+fn fat32_journal_read(v: &'static Vol) -> Result<JournalEntry, ()> {
     let mut buf = [0u8; SECTOR_SIZE];
-    read_sector(JOURNAL_SECTOR, &mut buf)?;
+    read_sector(v, JOURNAL_SECTOR, &mut buf)?;
     Ok(JournalEntry::from_sector(&buf))
 }
 
 /// Clear the journal (set state to EMPTY).
-fn fat32_journal_clear() -> Result<(), ()> {
+fn fat32_journal_clear(v: &'static Vol) -> Result<(), ()> {
     let entry = JournalEntry::empty();
-    fat32_journal_write(&entry)
+    fat32_journal_write(v, &entry)
 }
 
 /// Check and replay journal on mount.
@@ -298,10 +375,10 @@ fn fat32_journal_clear() -> Result<(), ()> {
 /// The first cluster the dirent at `(sector, off)` names, or `None` when
 /// the location is outside the data region or unreadable (U09-10: journal
 /// fields come off an attacker-writable volume).
-fn dirent_first_cluster_at(sector: u32, off: u16) -> Option<(u32, [u8; SECTOR_SIZE])> {
+fn dirent_first_cluster_at(v: &'static Vol, sector: u32, off: u16) -> Option<(u32, [u8; SECTOR_SIZE])> {
     let (data_start, data_clusters, spc) = {
-        let v = FAT32.lock();
-        (v.data_start, v.data_clusters, v.secs_per_clus.max(1))
+        let fv = v.fat32.lock();
+        (fv.data_start, fv.data_clusters, fv.secs_per_clus.max(1))
     };
     let data_end = data_start.saturating_add(data_clusters.saturating_mul(spc));
     let off = off as usize;
@@ -309,7 +386,7 @@ fn dirent_first_cluster_at(sector: u32, off: u16) -> Option<(u32, [u8; SECTOR_SI
         return None;
     }
     let mut buf = [0u8; SECTOR_SIZE];
-    read_sector(sector, &mut buf).ok()?;
+    read_sector(v, sector, &mut buf).ok()?;
     let hi = u16::from_le_bytes([buf[off + DIRENT_OFF_FST_CLUS_HI], buf[off + DIRENT_OFF_FST_CLUS_HI + 1]]);
     let lo = u16::from_le_bytes([buf[off + DIRENT_OFF_FST_CLUS_LO], buf[off + DIRENT_OFF_FST_CLUS_LO + 1]]);
     Some((((hi as u32) << 16) | lo as u32, buf))
@@ -321,14 +398,14 @@ fn dirent_first_cluster_at(sector: u32, off: u16) -> Option<(u32, [u8; SECTOR_SI
 /// state, so a replay over a partly applied rename reproduces the same
 /// bytes; the record is discarded when the dirents it names do not hold
 /// what it says (either before or after the rename).
-fn journal_replay_rename(entry: &JournalEntry) {
+fn journal_replay_rename(v: &'static Vol, entry: &JournalEntry) {
     let src_sector = u32::from_le_bytes([entry._reserved[0], entry._reserved[1], entry._reserved[2], entry._reserved[3]]);
     let src_off = u16::from_le_bytes([entry._reserved[4], entry._reserved[5]]);
     let mut src_name = [0u8; 11];
     src_name.copy_from_slice(&entry._reserved[6..17]);
-    let dst_ok = matches!(dirent_first_cluster_at(entry.dir_sector, entry.dir_offset),
+    let dst_ok = matches!(dirent_first_cluster_at(v, entry.dir_sector, entry.dir_offset),
         Some((c, _)) if c == entry.fat_value || c == entry.cluster);
-    let src = dirent_first_cluster_at(src_sector, src_off);
+    let src = dirent_first_cluster_at(v, src_sector, src_off);
     let src_ok = match &src {
         Some((c, buf)) => {
             let o = src_off as usize;
@@ -344,7 +421,7 @@ fn journal_replay_rename(entry: &JournalEntry) {
     }
     azos_drv_sys::kprintln!("[FAT32] Journal recovery: completing rename (clus={}, old_clus={})",
         entry.cluster, entry.fat_value);
-    let _ = rename_apply(entry.dir_sector, entry.dir_offset, src_sector, src_off, &src_name,
+    let _ = rename_apply(v, entry.dir_sector, entry.dir_offset, src_sector, src_off, &src_name,
         entry.cluster, entry.size, entry.fat_value, true);
 }
 
@@ -354,24 +431,24 @@ fn journal_replay_rename(entry: &JournalEntry) {
 /// chain freed (`free_old`: recovery; a live rename under `defer_frees`
 /// holds it until its record is cleared instead).
 #[allow(clippy::too_many_arguments)]
-fn rename_apply(dst_sector: u32, dst_off: u16, src_sector: u32, src_off: u16, src_name: &[u8; 11],
+fn rename_apply(v: &'static Vol, dst_sector: u32, dst_off: u16, src_sector: u32, src_off: u16, src_name: &[u8; 11],
                 cluster: u32, size: u32, old_chain: u32, free_old: bool) -> Result<(), ()> {
-    fat32_update_dirent_clus_size(dst_sector, dst_off, cluster, size)?;
+    fat32_update_dirent_clus_size(v, dst_sector, dst_off, cluster, size)?;
     let mut buf = [0u8; SECTOR_SIZE];
-    read_sector(src_sector, &mut buf)?;
+    read_sector(v, src_sector, &mut buf)?;
     let o = src_off as usize;
     if buf[o..o + 11] == *src_name {
         buf[o] = DIRENT_MARK_DELETED;
-        write_sector(src_sector, &buf)?;
+        write_sector(v, src_sector, &buf)?;
     }
     if free_old && old_chain >= FAT32_FIRST_DATA_CLUSTER && old_chain != cluster {
-        fat32_free_chain(old_chain);
+        fat32_free_chain_on(v, old_chain);
     }
     Ok(())
 }
 
-fn fat32_journal_recover() -> Result<(), ()> {
-    let entry = fat32_journal_read()?;
+fn fat32_journal_recover(v: &'static Vol) -> Result<(), ()> {
+    let entry = fat32_journal_read(v)?;
 
     // Not a valid journal entry — nothing to recover.
     if entry.magic != JOURNAL_MAGIC {
@@ -417,8 +494,8 @@ fn fat32_journal_recover() -> Result<(), ()> {
             // describe the dirent it points at, and is discarded rather
             // than replayed.
             let (data_start, data_clusters, spc) = {
-                let v = FAT32.lock();
-                (v.data_start, v.data_clusters, v.secs_per_clus.max(1))
+                let fv = v.fat32.lock();
+                (fv.data_start, fv.data_clusters, fv.secs_per_clus.max(1))
             };
             let data_end = data_start.saturating_add(data_clusters.saturating_mul(spc));
             let dirent_matches = entry.dir_sector >= data_start
@@ -426,7 +503,7 @@ fn fat32_journal_recover() -> Result<(), ()> {
                 && (entry.dir_offset as usize) + DIRENT_SIZE <= SECTOR_SIZE
                 && {
                     let mut sec_buf = [0u8; SECTOR_SIZE];
-                    read_sector(entry.dir_sector, &mut sec_buf).is_ok() && {
+                    read_sector(v, entry.dir_sector, &mut sec_buf).is_ok() && {
                         let off = entry.dir_offset as usize;
                         let hi = u16::from_le_bytes(
                             [sec_buf[off + DIRENT_OFF_FST_CLUS_HI], sec_buf[off + DIRENT_OFF_FST_CLUS_HI + 1]],
@@ -444,24 +521,24 @@ fn fat32_journal_recover() -> Result<(), ()> {
                     "[FAT32] Journal recovery: OVERWRITE entry does not match the dirent \
                      it names — discarded, not replayed"
                 );
-                return fat32_journal_clear();
+                return fat32_journal_clear(v);
             }
 
             azos_drv_sys::kprintln!(
                 "[FAT32] Journal recovery: completing overwrite (new_clus={}, old_clus={})",
                 entry.cluster, entry.fat_value
             );
-            let _ = fat32_update_dirent_clus_size(
+            let _ = fat32_update_dirent_clus_size(v, 
                 entry.dir_sector, entry.dir_offset, entry.cluster, entry.size,
             );
             if entry.fat_value >= FAT32_FIRST_DATA_CLUSTER {
-                fat32_free_chain(entry.fat_value);
+                fat32_free_chain_on(v, entry.fat_value);
             }
-            fat32_journal_clear()
+            fat32_journal_clear(v)
         }
         JOURNAL_PENDING if entry.op_type == JOURNAL_OP_RENAME => {
-            journal_replay_rename(&entry);
-            fat32_journal_clear()
+            journal_replay_rename(v, &entry);
+            fat32_journal_clear(v)
         }
         JOURNAL_PENDING => {
             // **A PENDING entry (any other op) is discarded, never acted on.**
@@ -490,12 +567,12 @@ fn fat32_journal_recover() -> Result<(), ()> {
                 "[FAT32] Journal recovery: discarded pending op={}",
                 entry.op_type
             );
-            fat32_journal_clear()
+            fat32_journal_clear(v)
         }
         JOURNAL_COMMITTED => {
             // Operation completed but journal wasn't cleared — just clear it.
             azos_drv_sys::kprintln!("[FAT32] Journal recovery: cleared committed entry");
-            fat32_journal_clear()
+            fat32_journal_clear(v)
         }
         _ => {
             // EMPTY or unknown — nothing to do.
@@ -543,65 +620,200 @@ impl Fat32Vol {
     }
 }
 
-static FAT32: SpinLock<Fat32Vol> = SpinLock::new(Fat32Vol::new());
+/// One FAT32 volume: its device, its knobs and every piece of state that
+/// was a static of this file. [`BOOT`] is the boot disk (`/fat`); a second
+/// volume (`usbvol`, a USB stick) is another `Vol` over another device, run
+/// by the same code: every function that touches a volume takes it as its
+/// first argument.
+pub struct Vol {
+    /// The device the volume sits on.
+    dev: &'static dyn VolDev,
+    /// The knobs that differ per volume.
+    knobs: Knobs,
+    /// The volume as a VFS backend (its page cache and unmount name it).
+    fs: &'static Fat32Fs,
+    /// The sector cache (a static of [`SectorCache`] per volume).
+    sector_cache: &'static SpinLock<SectorCache>,
+    fat32: SpinLock<Fat32Vol>,
+    /// FAT-sector claims: how concurrent FAT mutators stay correct with NO
+    /// mutex held across device I/O (owner rule F1, wave 15 FM).
+    ///
+    /// **What needs excluding.** A FAT entry update (`fat32_write_fat_entry`)
+    /// reads its FAT sector, patches 4 bytes and writes the sector to every FAT
+    /// copy. Two updates of different entries in the SAME sector, interleaved,
+    /// lose one (the second write carries the first's old bytes); two allocators
+    /// that both see entry N free both claim it (U09-2: one file's data aliasing
+    /// another's). Both are per-sector read-modify-write races.
+    ///
+    /// **The protocol.** An updater claims the FAT sector's slot (`sector %
+    /// FAT32_SECTOR_CLAIM_SLOTS`) in [`FAT_SECTOR_BUSY`] with one `fetch_or`, does
+    /// its read-modify-write I/O, and publishes by clearing the bit, bumping
+    /// [`FAT_SECTOR_GEN`] and waking [`FAT_SECTOR_WQ`]. A second updater of the
+    /// same slot sleeps on that wait queue and retries after the publish; while
+    /// it sleeps it lends its priority to the holder ([`ClaimPi`], FX12), so
+    /// load between the two priorities cannot starve the holder (`log-flush`
+    /// at 12 waiting on `fs-wb` at 20 under prio 13..19 load). No RT task
+    /// takes a claim (RT tasks never do block I/O), so the donor is never RT
+    /// and F1's concern, an RT waiter inheriting disk latency, does not arise. The allocator
+    /// scans without any claim, then claims the candidate's sector and re-reads
+    /// it: every write to that sector happens under the claim, so the re-read
+    /// is current and the free entry it finds is really free. Nobody holds two
+    /// claims, so there is no lock order and no deadlock. `chain_nth_or_extend`
+    /// needs no wider hold: once the fresh cluster reads end-of-chain no scan
+    /// can hand it out, so "allocate, then link" is safe as two claims.
+    ///
+    /// **History.** U09-2 introduced `FAT_MUTATE`, held for the whole scan-then-
+    /// mark and the free walk; wave 15 (VF) made it a `Mutex` (as a `SpinLock`
+    /// its device I/O ran preempt-off: 7.24 ms at `fat32_free_chain` on riscv64
+    /// under `-icount`). As a `Mutex` it was held across the virtio-blk wait,
+    /// so a priority-1 waiter donated its priority to a task waiting on the
+    /// device and inherited disk latency (MUTEX survey, F1). The claim replaces
+    /// it; durability and write order are unchanged (every write is still the
+    /// same write-through `write_sector`, in the same order).
+    ///
+    /// The reset-path panic handler refuses to write while any claim is out
+    /// ([`fat32_locks_available`]). Claims are taken only outside `SpinLock`s.
+    ///
+    /// Canaries put the old `FAT_MUTATE` back around the whole allocation, the
+    /// extend branch's alloc-and-link and the whole free walk
+    /// ([`FAT_MUTATE_CANARY`]): `fat-mutate-spin-canary` as a `SpinLock`
+    /// (preempt-off across the I/O: the `lat: ... FAT spinlock canary` rows),
+    /// `fat-mutate-pi-canary` as a `Mutex` (the VF shape: `[LAT] fat pi_io=`
+    /// goes non-zero). `fat-sector-claim-canary` claims nothing
+    /// (fs-tests' concurrent-mutator tests lose an update / double-allocate).
+    fat_sector_busy: core::sync::atomic::AtomicU64,
+    /// Bumped on every claim release; a waiter sleeps only while it is unchanged.
+    fat_sector_gen: core::sync::atomic::AtomicU32,
+    /// The task holding each slot's claim (`caller_tid`), 0 when free: a task
+    /// that panics holding a claim must not be contained, because nobody would
+    /// ever release it ([`fat32_claims_held_by`], the panic policy's check 4).
+    fat_sector_owner: [core::sync::atomic::AtomicU32; 64],
+    /// Updaters waiting for a claimed slot.
+    fat_sector_wq: azos_sync::waitqueue::WaitQueue,
+    /// One [`ClaimPi`] per FAT-sector claim slot.
+    fat_sector_pi: [ClaimPi; 64],
+    /// The task holding the write-back claim (`caller_tid`), 0 when free.
+    wb_busy: core::sync::atomic::AtomicBool,
+    wb_owner: core::sync::atomic::AtomicU32,
+    wb_gen: core::sync::atomic::AtomicU32,
+    wb_wq: azos_sync::waitqueue::WaitQueue,
+    /// The write-back claim's donation state ([`ClaimPi`]).
+    wb_pi: ClaimPi,
+    /// The mode the next configure of the cache takes: `WB` until
+    /// [`fat32_set_writeback`] changes it.
+    wb_on: core::sync::atomic::AtomicBool,
+    /// Sticky: a write-back no caller was waiting for (the task, a reader's)
+    /// failed. The next `fat32_sync_checked` / `fat32_fsync` reports `Io` and
+    /// clears it (Linux's errseq, reduced to one volume-wide bit).
+    wb_error: core::sync::atomic::AtomicBool,
+    /// `WB_CLOCK()` (milliseconds) when the cache went from clean to dirty;
+    /// 0 while clean. The age the `fs-wb` task compares.
+    wb_dirty_since: core::sync::atomic::AtomicU64,
+    /// Last ticket asked for.
+    flush_asked: core::sync::atomic::AtomicU64,
+    /// Every ticket `<=` this is done.
+    flush_done: core::sync::atomic::AtomicU64,
+    /// Tickets `[FLUSH_FAIL_LO, FLUSH_FAIL_HI]` were covered by a failed flush
+    /// (the union of every failure: an error is never lost, a ticket a later
+    /// failure's range spans may read -EIO although its own flush succeeded).
+    flush_fail_lo: core::sync::atomic::AtomicU64,
+    flush_fail_hi: core::sync::atomic::AtomicU64,
+    /// First sector of the mounted volume on the medium.
+    vol_base: core::sync::atomic::AtomicU64,
+    /// Bumped by every write of the volume — FAT32's own (`write_sector`), any
+    /// other writer's (`fat32_on_medium_write`) — and by mount and unmount. A
+    /// read-only stream remembers it with the start cluster it found at open
+    /// (`Fat32Fs::read_handle`); while it is unchanged, nothing can have moved,
+    /// freed or resized that chain, so the stream reads it without looking the
+    /// name up again. Never 0, so a handle of 0 never matches.
+    write_gen: core::sync::atomic::AtomicU32,
+    /// The same events as [`WRITE_GEN`], counted in 64 bits so a value never
+    /// comes back (wave 14, SPAWNCACHE): the verified-image cache stamps what it
+    /// verified with it ([`Fat32Fs::content_stamp`]) and must never take a stamp
+    /// from before a write for one after it. Bumped AFTER `WRITE_GEN`, and every
+    /// bump comes after the write it reports has reached the device and the
+    /// block cache: a reader that loads the epoch, reads, and loads the same
+    /// epoch again read nothing a later bump reports.
+    write_epoch: core::sync::atomic::AtomicU64,
+    /// Sectors of the mounted volume (`tot_sec32`), `u64::MAX` while a mount is
+    /// still reading its BPB. Bounds which medium writes touch the cache.
+    vol_sectors: core::sync::atomic::AtomicU64,
+    /// This mount wrote the dirty flag, so the unmount owes the clear.
+    volume_marked_dirty: core::sync::atomic::AtomicBool,
+    mount_report: SpinLock<MountReport>,
+    /// `fat32_read_range`'s geometry, published by `fat32_mount`: sectors per
+    /// cluster and data start (A), FAT start and the chain-walk bound (B). A
+    /// stream reads it without taking `FAT32`; 0 before the first mount.
+    stream_geom_a: core::sync::atomic::AtomicU64,
+    stream_geom_b: core::sync::atomic::AtomicU64,
+    /// A leaf lock, held for one probe (a hash and an 11-byte compare).
+    dcache: SpinLock<[Dentry; DCACHE_SLOTS]>,
+    /// [`fat32_alloc_cluster`] without the canaries' old lock, for the canary
+    /// build of `chain_nth_or_extend`, which holds that lock itself.
+    /// The FAT sector (relative to the FAT start) the last allocation found a
+    /// free entry in; the next scan starts there. Reset at mount.
+    alloc_hint: core::sync::atomic::AtomicU32,
+    held: SpinLock<[HeldChain; HELD_SLOTS]>,
+    /// Sum of the held chains' `clusters`: what statfs counts as free on top of
+    /// the FAT's zero entries.
+    held_clusters: core::sync::atomic::AtomicU32,
+    /// The device has refused a discard (no such command, or no request layer
+    /// under it): none is sent until the next mount.
+    discard_off: core::sync::atomic::AtomicBool,
+    open_files: SpinLock<[OpenFileEntry; FAT32_MAX_OPEN_FILES]>,
+    /// Bumped by every FAT entry write and every mount.
+    free_gen: core::sync::atomic::AtomicU32,
+    /// `(generation << 32) | free clusters`; valid while the generation matches.
+    free_cache: core::sync::atomic::AtomicU64,
+}
 
-/// FAT-sector claims: how concurrent FAT mutators stay correct with NO
-/// mutex held across device I/O (owner rule F1, wave 15 FM).
-///
-/// **What needs excluding.** A FAT entry update (`fat32_write_fat_entry`)
-/// reads its FAT sector, patches 4 bytes and writes the sector to every FAT
-/// copy. Two updates of different entries in the SAME sector, interleaved,
-/// lose one (the second write carries the first's old bytes); two allocators
-/// that both see entry N free both claim it (U09-2: one file's data aliasing
-/// another's). Both are per-sector read-modify-write races.
-///
-/// **The protocol.** An updater claims the FAT sector's slot (`sector %
-/// FAT32_SECTOR_CLAIM_SLOTS`) in [`FAT_SECTOR_BUSY`] with one `fetch_or`, does
-/// its read-modify-write I/O, and publishes by clearing the bit, bumping
-/// [`FAT_SECTOR_GEN`] and waking [`FAT_SECTOR_WQ`]. A second updater of the
-/// same slot sleeps on that wait queue and retries after the publish; while
-/// it sleeps it lends its priority to the holder ([`ClaimPi`], FX12), so
-/// load between the two priorities cannot starve the holder (`log-flush`
-/// at 12 waiting on `fs-wb` at 20 under prio 13..19 load). No RT task
-/// takes a claim (RT tasks never do block I/O), so the donor is never RT
-/// and F1's concern, an RT waiter inheriting disk latency, does not arise. The allocator
-/// scans without any claim, then claims the candidate's sector and re-reads
-/// it: every write to that sector happens under the claim, so the re-read
-/// is current and the free entry it finds is really free. Nobody holds two
-/// claims, so there is no lock order and no deadlock. `chain_nth_or_extend`
-/// needs no wider hold: once the fresh cluster reads end-of-chain no scan
-/// can hand it out, so "allocate, then link" is safe as two claims.
-///
-/// **History.** U09-2 introduced `FAT_MUTATE`, held for the whole scan-then-
-/// mark and the free walk; wave 15 (VF) made it a `Mutex` (as a `SpinLock`
-/// its device I/O ran preempt-off: 7.24 ms at `fat32_free_chain` on riscv64
-/// under `-icount`). As a `Mutex` it was held across the virtio-blk wait,
-/// so a priority-1 waiter donated its priority to a task waiting on the
-/// device and inherited disk latency (MUTEX survey, F1). The claim replaces
-/// it; durability and write order are unchanged (every write is still the
-/// same write-through `write_sector`, in the same order).
-///
-/// The reset-path panic handler refuses to write while any claim is out
-/// ([`fat32_locks_available`]). Claims are taken only outside `SpinLock`s.
-///
-/// Canaries put the old `FAT_MUTATE` back around the whole allocation, the
-/// extend branch's alloc-and-link and the whole free walk
-/// ([`FAT_MUTATE_CANARY`]): `fat-mutate-spin-canary` as a `SpinLock`
-/// (preempt-off across the I/O: the `lat: ... FAT spinlock canary` rows),
-/// `fat-mutate-pi-canary` as a `Mutex` (the VF shape: `[LAT] fat pi_io=`
-/// goes non-zero). `fat-sector-claim-canary` claims nothing
-/// (fs-tests' concurrent-mutator tests lose an update / double-allocate).
-static FAT_SECTOR_BUSY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-/// Bumped on every claim release; a waiter sleeps only while it is unchanged.
-static FAT_SECTOR_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// The task holding each slot's claim (`caller_tid`), 0 when free: a task
-/// that panics holding a claim must not be contained, because nobody would
-/// ever release it ([`fat32_claims_held_by`], the panic policy's check 4).
-static FAT_SECTOR_OWNER: [core::sync::atomic::AtomicU32; 64] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; 64];
-/// Updaters waiting for a claimed slot.
-static FAT_SECTOR_WQ: azos_sync::waitqueue::WaitQueue = azos_sync::waitqueue::WaitQueue::new();
-/// Kconfig `FAT32_SECTOR_CLAIM_SLOTS` (1..=64): bits of [`FAT_SECTOR_BUSY`] used.
+impl Vol {
+    /// A volume over `dev`, served as `fs`, caching its sectors in `cache`.
+    pub const fn new(dev: &'static dyn VolDev, knobs: Knobs, fs: &'static Fat32Fs, cache: &'static SpinLock<SectorCache>) -> Vol {
+        Vol {
+            dev,
+            knobs,
+            fs,
+            sector_cache: cache,
+            fat32: SpinLock::new(Fat32Vol::new()),
+            fat_sector_busy: core::sync::atomic::AtomicU64::new(0),
+            fat_sector_gen: core::sync::atomic::AtomicU32::new(0),
+            fat_sector_owner: [const { core::sync::atomic::AtomicU32::new(0) }; 64],
+            fat_sector_wq: azos_sync::waitqueue::WaitQueue::new(),
+            fat_sector_pi: [const { ClaimPi::new() }; 64],
+            wb_busy: core::sync::atomic::AtomicBool::new(false),
+            wb_owner: core::sync::atomic::AtomicU32::new(0),
+            wb_gen: core::sync::atomic::AtomicU32::new(0),
+            wb_wq: azos_sync::waitqueue::WaitQueue::new(),
+            wb_pi: ClaimPi::new(),
+            wb_on: core::sync::atomic::AtomicBool::new(knobs.writeback),
+            wb_error: core::sync::atomic::AtomicBool::new(false),
+            wb_dirty_since: core::sync::atomic::AtomicU64::new(0),
+            flush_asked: core::sync::atomic::AtomicU64::new(0),
+            flush_done: core::sync::atomic::AtomicU64::new(0),
+            flush_fail_lo: core::sync::atomic::AtomicU64::new(u64::MAX),
+            flush_fail_hi: core::sync::atomic::AtomicU64::new(0),
+            vol_base: core::sync::atomic::AtomicU64::new(0),
+            write_gen: core::sync::atomic::AtomicU32::new(1),
+            write_epoch: core::sync::atomic::AtomicU64::new(1),
+            vol_sectors: core::sync::atomic::AtomicU64::new(u64::MAX),
+            volume_marked_dirty: core::sync::atomic::AtomicBool::new(false),
+            mount_report: SpinLock::new(MountReport::new()),
+            stream_geom_a: core::sync::atomic::AtomicU64::new(0),
+            stream_geom_b: core::sync::atomic::AtomicU64::new(0),
+            dcache: SpinLock::new([NO_DENTRY; DCACHE_SLOTS]),
+            alloc_hint: core::sync::atomic::AtomicU32::new(0),
+            held: SpinLock::new([HeldChain { first: 0, clusters: 0, epoch: 0 }; HELD_SLOTS]),
+            held_clusters: core::sync::atomic::AtomicU32::new(0),
+            discard_off: core::sync::atomic::AtomicBool::new(false),
+            open_files: SpinLock::new([EMPTY_OPEN_FILE; FAT32_MAX_OPEN_FILES]),
+            free_gen: core::sync::atomic::AtomicU32::new(1),
+            free_cache: core::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+/// Kconfig `FAT32_SECTOR_CLAIM_SLOTS` (1..=64): bits of `Vol::fat_sector_busy` used.
 const FAT_SECTOR_SLOTS: u32 = {
     let n = azos_limits::FAT32_SECTOR_CLAIM_SLOTS;
     assert!(n >= 1 && n <= 64, "FAT32_SECTOR_CLAIM_SLOTS must be 1..=64");
@@ -826,11 +1038,9 @@ impl ClaimNode for () {
     }
 }
 
-/// One [`ClaimPi`] per FAT-sector claim slot.
-static FAT_SECTOR_PI: [ClaimPi; 64] = [const { ClaimPi::new() }; 64];
-
 /// A claim on one FAT sector's slot; released (published) on drop.
 struct FatSectorClaim {
+    v: &'static Vol,
     bit: u64,
     slot: usize,
     /// `fat-mutate-spin-canary`: see [`CanaryHold`].
@@ -858,22 +1068,23 @@ fn canary_hold() -> CanaryHold {
 
 /// Claim the slot of FAT sector `fat_sector_off` (relative to the FAT
 /// start, so the same for every copy), sleeping while another updater holds it.
-fn fat_sector_claim(fat_sector_off: u32) -> FatSectorClaim {
+fn fat_sector_claim(v: &'static Vol, fat_sector_off: u32) -> FatSectorClaim {
     use core::sync::atomic::Ordering::SeqCst;
     let slot = (fat_sector_off % FAT_SECTOR_SLOTS) as usize;
     let bit = if cfg!(feature = "fat-sector-claim-canary") { 0 } else { 1u64 << slot };
     let me = azos_sync::waitqueue::caller_tid();
-    let pi = &FAT_SECTOR_PI[slot];
+    let pi = &v.fat_sector_pi[slot];
     let mut w = ClaimWait::default();
     loop {
         // Read the generation BEFORE trying: a release between the failed
         // try and the sleep then changes it, and `wait_if` (which re-checks
         // under the queue's lock) does not sleep through that publish.
-        let gen = FAT_SECTOR_GEN.load(SeqCst);
+        let gen = v.fat_sector_gen.load(SeqCst);
         #[cfg(feature = "fat-mutate-spin-canary")]
         let hold = canary_hold();
-        if pi.try_take(|| FAT_SECTOR_BUSY.fetch_or(bit, SeqCst) & bit == 0, &FAT_SECTOR_OWNER[slot], me, &mut w) {
+        if pi.try_take(|| v.fat_sector_busy.fetch_or(bit, SeqCst) & bit == 0, &v.fat_sector_owner[slot], me, &mut w) {
             return FatSectorClaim {
+                v,
                 bit,
                 slot,
                 #[cfg(feature = "fat-mutate-spin-canary")]
@@ -882,32 +1093,39 @@ fn fat_sector_claim(fat_sector_off: u32) -> FatSectorClaim {
         }
         #[cfg(feature = "fat-mutate-spin-canary")]
         drop(hold);
-        pi.donate(&FAT_SECTOR_OWNER[slot], me, &mut w);
-        FAT_SECTOR_WQ.wait_if_for(azos_sync::waitstat::Site::FatSector, || FAT_SECTOR_GEN.load(SeqCst) == gen);
+        pi.donate(&v.fat_sector_owner[slot], me, &mut w);
+        v.fat_sector_wq.wait_if_for(azos_sync::waitstat::Site::FatSector, || v.fat_sector_gen.load(SeqCst) == gen);
     }
 }
 
 impl Drop for FatSectorClaim {
     fn drop(&mut self) {
         use core::sync::atomic::Ordering::SeqCst;
+        let v = self.v;
         let bit = self.bit;
-        let owed = FAT_SECTOR_PI[self.slot].release(&FAT_SECTOR_OWNER[self.slot], || {
-            FAT_SECTOR_BUSY.fetch_and(!bit, SeqCst);
+        let owed = v.fat_sector_pi[self.slot].release(&v.fat_sector_owner[self.slot], || {
+            v.fat_sector_busy.fetch_and(!bit, SeqCst);
         });
-        FAT_SECTOR_GEN.fetch_add(1, SeqCst);
-        FAT_SECTOR_WQ.wake_all();
+        v.fat_sector_gen.fetch_add(1, SeqCst);
+        v.fat_sector_wq.wake_all();
         ClaimPi::give_back(owed);
     }
+}
+
+/// [`fat32_claims_held_by_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_claims_held_by(tid: u32) -> u32 {
+    fat32_claims_held_by_on(&BOOT, tid)
 }
 
 /// FAT-sector claims task `tid` holds (0 or 1: claims never nest). The panic
 /// path adds it to the task's held `Mutex` count: a claim abandoned by a
 /// contained task would block every later update of its FAT sectors.
-pub fn fat32_claims_held_by(tid: u32) -> u32 {
+pub fn fat32_claims_held_by_on(v: &'static Vol, tid: u32) -> u32 {
     use core::sync::atomic::Ordering::SeqCst;
     if tid == 0 { return 0; }
-    FAT_SECTOR_OWNER.iter().filter(|o| o.load(SeqCst) == tid).count() as u32
-        + (WB_OWNER.load(SeqCst) == tid) as u32
+    v.fat_sector_owner.iter().filter(|o| o.load(SeqCst) == tid).count() as u32
+        + (v.wb_owner.load(SeqCst) == tid) as u32
 }
 
 /// `fat-pi-io-probe` (the `lat-fat` smoke): FAT32 device I/O issued while
@@ -1175,40 +1393,45 @@ impl ChainWalk {
 // one line's copy (512 B) plus one set's probe (8 tags) at most. Whole-cache
 // drops are a generation bump.
 
-const SECTOR_CACHE_BYTES: usize = if dev::BLOCK_CACHE_KB == 0 {
+const SECTOR_CACHE_BYTES: usize = if azos_limits::FS_BLOCK_CACHE_KB == 0 {
     8 * SECTOR_SIZE
 } else {
-    dev::BLOCK_CACHE_KB * 1024
+    azos_limits::FS_BLOCK_CACHE_KB * 1024
 };
 const SECTOR_CACHE_LINES: usize = SECTOR_CACHE_BYTES / SECTOR_SIZE;
 
-type SectorCache = crate::bcache::BlockCache<SECTOR_CACHE_BYTES, SECTOR_CACHE_LINES>;
+/// A volume's sector cache: one size for every volume (one type, one copy of
+/// the code that runs it).
+pub type SectorCache = crate::bcache::BlockCache<SECTOR_CACHE_BYTES, SECTOR_CACHE_LINES>;
 
 /// All-zero until the first mount configures it (`fat32_cache_reset`), so
 /// the storage is `.bss`, not image bytes.
-static SECTOR_CACHE: SpinLock<SectorCache> = SpinLock::new(SectorCache::unconfigured());
+static BOOT_CACHE: SpinLock<SectorCache> = SpinLock::new(SectorCache::unconfigured());
 
-/// The block device, as the shared cache sees it.
-struct BlkDev;
+/// A volume's device, as the shared cache sees it.
+struct BlkDev(&'static Vol);
 
 impl crate::bcache::BlockIo for BlkDev {
     type FlushErr = FsError;
     fn read(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        blkdev::read_quiet(dev_lba(lba), count, buf)
+        let v = self.0;
+        v.dev.read_quiet(dev_lba(v, lba), count, buf)
     }
     fn write(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
+        let v = self.0;
         // Quiet: this runs with `SECTOR_CACHE` held (`device_flush`'s
         // write-back pass), and the observer takes it.
-        blkdev::write_quiet(dev_lba(lba), count, buf)
+        v.dev.write_quiet(dev_lba(v, lba), count, buf)
     }
     fn flush(&mut self) -> Result<(), FsError> {
-        device_flush_raw()
+        device_flush_raw(self.0)
     }
     fn write_ordered(&mut self, lba: u64, count: u32, buf: &[u8], preflush: bool)
         -> Result<(), crate::bcache::IoError<FsError>>
     {
+        let v = self.0;
         // Quiet, like `write`; the epoch flush rides in the request.
-        blkdev::write_run(dev_lba(lba), count, buf, preflush, false).map_err(|()| crate::bcache::IoError::Io)
+        v.dev.write_run(dev_lba(v, lba), count, buf, preflush, false).map_err(|()| crate::bcache::IoError::Io)
     }
 }
 
@@ -1266,27 +1489,6 @@ struct WbStage(core::cell::UnsafeCell<[u8; WB_RUN_SECTORS * SECTOR_SIZE]>);
 unsafe impl Sync for WbStage {}
 static WB_STAGE: WbStage = WbStage(core::cell::UnsafeCell::new([0u8; WB_RUN_SECTORS * SECTOR_SIZE]));
 
-/// The task holding the write-back claim (`caller_tid`), 0 when free.
-static WB_BUSY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static WB_OWNER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static WB_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static WB_WQ: azos_sync::waitqueue::WaitQueue = azos_sync::waitqueue::WaitQueue::new();
-/// The write-back claim's donation state ([`ClaimPi`]).
-static WB_PI: ClaimPi = ClaimPi::new();
-
-/// The mode the next configure of the cache takes: `WB` until
-/// [`fat32_set_writeback`] changes it.
-static WB_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(WB);
-
-/// Sticky: a write-back no caller was waiting for (the task, a reader's)
-/// failed. The next `fat32_sync_checked` / `fat32_fsync` reports `Io` and
-/// clears it (Linux's errseq, reduced to one volume-wide bit).
-static WB_ERROR: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-/// `WB_CLOCK()` (milliseconds) when the cache went from clean to dirty;
-/// 0 while clean. The age the `fs-wb` task compares.
-static WB_DIRTY_SINCE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
 azos_common::ro_hook! {
     /// Milliseconds, registered by the kernel (`fat32_writeback_hooks`); unset
     /// until then (host tests: age is driven through `fat32_writeback_tick`).
@@ -1318,6 +1520,7 @@ fn wb_wake() {
 
 /// The write-back claim; released on drop.
 struct WbClaim {
+    v: &'static Vol,
     /// `fat-mutate-spin-canary`: see [`CanaryHold`].
     #[cfg(feature = "fat-mutate-spin-canary")]
     _hold: CanaryHold,
@@ -1325,35 +1528,43 @@ struct WbClaim {
 
 /// Take the write-back claim, sleeping while another flusher holds it.
 /// Never called with a `SpinLock` held; never nested.
-fn wb_claim() -> WbClaim {
+fn wb_claim(v: &'static Vol) -> WbClaim {
     use core::sync::atomic::Ordering::SeqCst;
     let me = azos_sync::waitqueue::caller_tid();
     let mut w = ClaimWait::default();
     loop {
-        let gen = WB_GEN.load(SeqCst);
+        let gen = v.wb_gen.load(SeqCst);
         #[cfg(feature = "fat-mutate-spin-canary")]
         let hold = canary_hold();
-        if WB_PI.try_take(|| !WB_BUSY.swap(true, SeqCst), &WB_OWNER, me, &mut w) {
+        if v.wb_pi.try_take(|| !v.wb_busy.swap(true, SeqCst), &v.wb_owner, me, &mut w) {
             return WbClaim {
+                v,
                 #[cfg(feature = "fat-mutate-spin-canary")]
                 _hold: hold,
             };
         }
         #[cfg(feature = "fat-mutate-spin-canary")]
         drop(hold);
-        WB_PI.donate(&WB_OWNER, me, &mut w);
-        WB_WQ.wait_if_for(azos_sync::waitstat::Site::FatWriteback, || WB_GEN.load(SeqCst) == gen);
+        v.wb_pi.donate(&v.wb_owner, me, &mut w);
+        v.wb_wq.wait_if_for(azos_sync::waitstat::Site::FatWriteback, || v.wb_gen.load(SeqCst) == gen);
     }
 }
 
 impl Drop for WbClaim {
     fn drop(&mut self) {
         use core::sync::atomic::Ordering::SeqCst;
-        let owed = WB_PI.release(&WB_OWNER, || WB_BUSY.store(false, SeqCst));
-        WB_GEN.fetch_add(1, SeqCst);
-        WB_WQ.wake_all();
+        let v = self.v;
+        let owed = v.wb_pi.release(&v.wb_owner, || v.wb_busy.store(false, SeqCst));
+        v.wb_gen.fetch_add(1, SeqCst);
+        v.wb_wq.wake_all();
         ClaimPi::give_back(owed);
     }
+}
+
+/// [`fat32_wb_pass_here_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_wb_pass_here() -> bool {
+    fat32_wb_pass_here_on(&BOOT)
 }
 
 /// Is the calling task inside a write-back pass (does it hold the write-back
@@ -1362,9 +1573,9 @@ impl Drop for WbClaim {
 /// class (Kconfig `BLK_IOSCHED_RT_DEADLINE`) asks this, with the flight
 /// recorder's pending record, of the `fs-wb` task and of any task that runs a
 /// pass (an fsync, a sync) while the record waits.
-pub fn fat32_wb_pass_here() -> bool {
+pub fn fat32_wb_pass_here_on(v: &'static Vol) -> bool {
     use core::sync::atomic::Ordering::SeqCst;
-    WB && WB_BUSY.load(SeqCst) && WB_OWNER.load(SeqCst) == azos_sync::waitqueue::caller_tid()
+    v.knobs.writeback && v.wb_busy.load(SeqCst) && v.wb_owner.load(SeqCst) == azos_sync::waitqueue::caller_tid()
 }
 
 /// ktest `fat_claim_waiter_donates_to_owner` (FX12): run `f` holding the
@@ -1384,7 +1595,7 @@ pub fn fat32_ktest_with_wb_claim(f: impl FnOnce()) {
 /// `fat32_fsync`'s ordering flush: such a device gives no ordering to keep).
 /// On a failed write the run stays dirty, nothing later is written, and the
 /// error is returned.
-fn wb_write_back(_claim: &WbClaim, upto: u64, commit: bool) -> Result<bool, FsError> {
+fn wb_write_back(v: &'static Vol, _claim: &WbClaim, upto: u64, commit: bool) -> Result<bool, FsError> {
     let mut committed = false;
     loop {
         // SAFETY: the claim makes this task the stage's only user.
@@ -1393,9 +1604,9 @@ fn wb_write_back(_claim: &WbClaim, upto: u64, commit: bool) -> Result<bool, FsEr
         // pick (one tag scan) and then for each block's copy, never across
         // the whole run (up to FS_WRITEBACK_RUN_KB). A block written in
         // between is copied as it is now and stays dirty at the checkin.
-        let run = SECTOR_CACHE.lock().checkout_begin(upto, WB_RUN_SECTORS, stage.len());
+        let run = v.sector_cache.lock().checkout_begin(upto, WB_RUN_SECTORS, stage.len());
         let run = run.map(|mut run| {
-            while SECTOR_CACHE.lock().checkout_next(&mut run, stage) {}
+            while v.sector_cache.lock().checkout_next(&mut run, stage) {}
             run
         });
         // The first block's line went (written or moved) before its copy:
@@ -1404,8 +1615,8 @@ fn wb_write_back(_claim: &WbClaim, upto: u64, commit: bool) -> Result<bool, FsEr
             continue;
         }
         let Some(run) = run else {
-            if SECTOR_CACHE.lock().dirty_count() == 0 {
-                WB_DIRTY_SINCE.store(0, core::sync::atomic::Ordering::Relaxed);
+            if v.sector_cache.lock().dirty_count() == 0 {
+                v.wb_dirty_since.store(0, core::sync::atomic::Ordering::Relaxed);
             }
             return Ok(committed);
         };
@@ -1419,17 +1630,17 @@ fn wb_write_back(_claim: &WbClaim, upto: u64, commit: bool) -> Result<bool, FsEr
         // run's own lines (they are cleaned at the checkin below), so equal
         // means no other line is dirty, of any epoch.
         let last = commit
-            && blkdev::fua_commit()
-            && SECTOR_CACHE.lock().dirty_count() == run.blocks as usize;
+            && v.dev.fua_commit()
+            && v.sector_cache.lock().dirty_count() == run.blocks as usize;
         // One request: the flush the epoch rule asks for (`flush_first`) goes
         // out ahead of the data with no round trip to this task between them
         // (`Unsupported`, a device with nothing to flush, passes as before).
-        let r = blkdev::write_run(
-            dev_lba(run.lba), run.sectors, &stage[..bytes], run.flush_first || last, last);
+        let r = v.dev.write_run(
+            dev_lba(v, run.lba), run.sectors, &stage[..bytes], run.flush_first || last, last);
         if r.is_ok() && run.flush_first {
-            SECTOR_CACHE.lock().note_ordering_flush();
+            v.sector_cache.lock().note_ordering_flush();
         }
-        SECTOR_CACHE.lock().checkin(&run, r.is_ok());
+        v.sector_cache.lock().checkin(&run, r.is_ok());
         if r.is_err() {
             return Err(FsError::Io);
         }
@@ -1439,11 +1650,17 @@ fn wb_write_back(_claim: &WbClaim, upto: u64, commit: bool) -> Result<bool, FsEr
     }
 }
 
+/// [`fat32_writeback_tick_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_writeback_tick(now_ms: u64) -> bool {
+    fat32_writeback_tick_on(&BOOT, now_ms)
+}
+
 /// The `fs-wb` task's pass at `now_ms`: write everything back and flush when
 /// the oldest unsynced write is `FS_WRITEBACK_MAX_AGE_MS` old or the dirty
 /// share reached `FS_WRITEBACK_WATERMARK_PCT`. Returns whether it wrote. A
 /// failure is kept for the next fsync/sync (`WB_ERROR`).
-pub fn fat32_writeback_tick(now_ms: u64) -> bool {
+pub fn fat32_writeback_tick_on(v: &'static Vol, now_ms: u64) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
     // The page cache's pass first (storage L11): files whose oldest dirty
     // page is old, or the oldest ones over the dirty share, go to `write_at`
@@ -1451,20 +1668,20 @@ pub fn fat32_writeback_tick(now_ms: u64) -> bool {
     // A file it could not write back is kept for the next fsync or sync
     // (`vfs::page_cache_flush_fs`), not for the block cache's error flag.
     let paged = crate::vfs::page_cache_writeback_due(now_ms);
-    if !WB { return paged; }
+    if !v.knobs.writeback { return paged; }
     let (dirty, lines) = {
-        let c = SECTOR_CACHE.lock();
+        let c = v.sector_cache.lock();
         (c.dirty_count(), c.line_count())
     };
     if dirty == 0 { return paged; }
-    let since = WB_DIRTY_SINCE.load(Relaxed);
+    let since = v.wb_dirty_since.load(Relaxed);
     // Pages this pass wrote were old enough to be written: their lines do
     // not wait another age to reach the device.
     let aged = paged || (since != 0
         && now_ms.saturating_sub(since) >= azos_limits::FS_WRITEBACK_MAX_AGE_MS as u64);
     if !aged && !wb_over_watermark(dirty, lines) { return paged; }
-    if device_flush().is_err() {
-        WB_ERROR.store(true, Relaxed);
+    if device_flush(v).is_err() {
+        v.wb_error.store(true, Relaxed);
     }
     true
 }
@@ -1479,69 +1696,83 @@ pub fn fat32_writeback_tick(now_ms: u64) -> bool {
 // submitter only enqueues. With no `fs-wb` task (FS_WRITEBACK=n, or before it
 // runs) the asker syncs inline, as write-through writes wait anyway.
 
-/// Last ticket asked for.
-static FLUSH_ASKED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-/// Every ticket `<=` this is done.
-static FLUSH_DONE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-/// Tickets `[FLUSH_FAIL_LO, FLUSH_FAIL_HI]` were covered by a failed flush
-/// (the union of every failure: an error is never lost, a ticket a later
-/// failure's range spans may read -EIO although its own flush succeeded).
-static FLUSH_FAIL_LO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(u64::MAX);
-static FLUSH_FAIL_HI: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
 /// One flush on behalf of every ticket in `(done, upto]`.
-fn flush_for_tickets(upto: u64) {
+fn flush_for_tickets(v: &'static Vol, upto: u64) {
     use core::sync::atomic::Ordering::SeqCst;
-    let from = FLUSH_DONE.load(SeqCst) + 1;
+    let from = v.flush_done.load(SeqCst) + 1;
     // No volume mounted: nothing of FAT32's to flush (a RAM descriptor's
     // fsync is 0, as the synchronous call answers), not a failure.
-    if matches!(fat32_sync_checked(), Err(e) if e != FsError::NotMounted) {
-        FLUSH_FAIL_LO.fetch_min(from, SeqCst);
-        FLUSH_FAIL_HI.fetch_max(upto, SeqCst);
+    if matches!(fat32_sync_checked_on(v), Err(e) if e != FsError::NotMounted) {
+        v.flush_fail_lo.fetch_min(from, SeqCst);
+        v.flush_fail_hi.fetch_max(upto, SeqCst);
     }
-    FLUSH_DONE.fetch_max(upto, SeqCst);
+    v.flush_done.fetch_max(upto, SeqCst);
+}
+
+/// [`fat32_flush_request_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_flush_request() -> u64 {
+    fat32_flush_request_on(&BOOT)
 }
 
 /// Ask for a flush of every write made so far; answers the ticket to wait
 /// for with [`fat32_flush_done`]. Wakes the `fs-wb` task and returns; with no
 /// task to wake, flushes inline (write-through mode).
-pub fn fat32_flush_request() -> u64 {
+pub fn fat32_flush_request_on(v: &'static Vol) -> u64 {
     use core::sync::atomic::Ordering::SeqCst;
-    let t = FLUSH_ASKED.fetch_add(1, SeqCst) + 1;
-    if WB && WB_WAKE.is_set() {
+    let t = v.flush_asked.fetch_add(1, SeqCst) + 1;
+    if v.knobs.writeback && WB_WAKE.is_set() {
         wb_wake();
     } else {
-        flush_for_tickets(t);
+        flush_for_tickets(v, t);
     }
     t
 }
 
+/// [`fat32_flush_done_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_flush_done(t: u64) -> Option<Result<(), FsError>> {
+    fat32_flush_done_on(&BOOT, t)
+}
+
 /// `None` while ticket `t`'s flush runs; `Some(Ok)` once durable,
 /// `Some(Err(Io))` when a flush covering it failed.
-pub fn fat32_flush_done(t: u64) -> Option<Result<(), FsError>> {
+pub fn fat32_flush_done_on(v: &'static Vol, t: u64) -> Option<Result<(), FsError>> {
     use core::sync::atomic::Ordering::SeqCst;
-    if FLUSH_DONE.load(SeqCst) < t { return None; }
-    if FLUSH_FAIL_LO.load(SeqCst) <= t && t <= FLUSH_FAIL_HI.load(SeqCst) {
+    if v.flush_done.load(SeqCst) < t { return None; }
+    if v.flush_fail_lo.load(SeqCst) <= t && t <= v.flush_fail_hi.load(SeqCst) {
         Some(Err(FsError::Io))
     } else {
         Some(Ok(()))
     }
 }
 
+/// [`fat32_flush_service_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_flush_service() -> bool {
+    fat32_flush_service_on(&BOOT)
+}
+
 /// The `fs-wb` task's half: run one flush for every ticket asked so far.
 /// Returns whether it ran one (the caller then posts the completions).
-pub fn fat32_flush_service() -> bool {
+pub fn fat32_flush_service_on(v: &'static Vol) -> bool {
     use core::sync::atomic::Ordering::SeqCst;
-    let upto = FLUSH_ASKED.load(SeqCst);
-    if upto <= FLUSH_DONE.load(SeqCst) { return false; }
-    flush_for_tickets(upto);
+    let upto = v.flush_asked.load(SeqCst);
+    if upto <= v.flush_done.load(SeqCst) { return false; }
+    flush_for_tickets(v, upto);
     true
+}
+
+/// [`fat32_writeback_now_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_writeback_now() -> Result<(), FsError> {
+    fat32_writeback_now_on(&BOOT)
 }
 
 /// Write every queued write back and flush the device now (what `sync`
 /// does without settling the journal). A no-op flush under write-through.
-pub fn fat32_writeback_now() -> Result<(), FsError> {
-    device_flush()
+pub fn fat32_writeback_now_on(v: &'static Vol) -> Result<(), FsError> {
+    device_flush(v)
 }
 
 /// The `fs-wb` task's wait between passes: a quarter of the age bound.
@@ -1549,9 +1780,15 @@ pub fn fat32_writeback_period_ms() -> u64 {
     (azos_limits::FS_WRITEBACK_MAX_AGE_MS as u64 / 4).max(1)
 }
 
-/// Dirty lines and lines in the FAT32 cache (diagnostics, the `fs-wb` rows).
+/// [`fat32_writeback_dirty_on`] on the boot volume ([`BOOT`]).
+#[inline]
 pub fn fat32_writeback_dirty() -> (usize, usize) {
-    let c = SECTOR_CACHE.lock();
+    fat32_writeback_dirty_on(&BOOT)
+}
+
+/// Dirty lines and lines in the FAT32 cache (diagnostics, the `fs-wb` rows).
+pub fn fat32_writeback_dirty_on(v: &'static Vol) -> (usize, usize) {
+    let c = v.sector_cache.lock();
     (c.dirty_count(), c.line_count())
 }
 
@@ -1559,41 +1796,59 @@ fn wb_over_watermark(dirty: usize, lines: usize) -> bool {
     dirty * 100 >= lines * azos_limits::FS_WRITEBACK_WATERMARK_PCT as usize
 }
 
+/// [`fat32_before_medium_read_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_before_medium_read(lba: u64, count: u32) {
+    fat32_before_medium_read_on(&BOOT, lba, count)
+}
+
 /// `blkdev::read`'s observer: a reader that is not this file is about to
 /// read MEDIUM sectors `[lba, lba + count)`. Dirty lines in that range go to
 /// the device first (all of them, oldest epoch first: a partial write-back
 /// could not keep the epoch rule). Called with no FAT32 lock held.
-pub fn fat32_before_medium_read(lba: u64, count: u32) {
+pub fn fat32_before_medium_read_on(v: &'static Vol, lba: u64, count: u32) {
     use core::sync::atomic::Ordering::Relaxed;
-    if !WB || cfg!(feature = "wb-read-observer-canary") { return; }
-    if !fat32_medium_read_would_wait(lba, count) { return; }
-    let claim = wb_claim();
-    if wb_write_back(&claim, u64::MAX, false).is_err() {
-        WB_ERROR.store(true, Relaxed);
+    if !v.knobs.writeback || cfg!(feature = "wb-read-observer-canary") { return; }
+    if !fat32_medium_read_would_wait_on(v, lba, count) { return; }
+    let claim = wb_claim(v);
+    if wb_write_back(v, &claim, u64::MAX, false).is_err() {
+        v.wb_error.store(true, Relaxed);
     }
+}
+
+/// [`fat32_medium_read_would_wait_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_medium_read_would_wait(lba: u64, count: u32) -> bool {
+    fat32_medium_read_would_wait_on(&BOOT, lba, count)
 }
 
 /// Does the cache hold a dirty sector in medium range `[lba, lba + count)`?
 /// Then [`fat32_before_medium_read`] writes it back, waiting for the device. The
 /// cache's leaf lock only; waits for nothing.
-pub fn fat32_medium_read_would_wait(lba: u64, count: u32) -> bool {
+pub fn fat32_medium_read_would_wait_on(v: &'static Vol, lba: u64, count: u32) -> bool {
     use core::sync::atomic::Ordering::Relaxed;
-    if !WB { return false; }
-    let base = VOL_BASE.load(Relaxed);
-    let end = base.saturating_add(VOL_SECTORS.load(Relaxed));
+    if !v.knobs.writeback { return false; }
+    let base = v.vol_base.load(Relaxed);
+    let end = base.saturating_add(v.vol_sectors.load(Relaxed));
     let first = lba.max(base);
     let last = lba.saturating_add(count as u64).min(end);
-    count != 0 && first < last && SECTOR_CACHE.lock().any_dirty_in(first - base, last - first)
+    count != 0 && first < last && v.sector_cache.lock().any_dirty_in(first - base, last - first)
+}
+
+/// [`fat32_set_writeback_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_set_writeback(on: bool) -> Result<(), FsError> {
+    fat32_set_writeback_on(&BOOT, on)
 }
 
 /// Switch the FAT32 cache between write-back and write-through at run time
 /// (host tests; a kernel canary). Writes every dirty line back first.
-pub fn fat32_set_writeback(on: bool) -> Result<(), FsError> {
-    if on && !WB { return Err(FsError::Unsupported); }
-    WB_ON.store(on, core::sync::atomic::Ordering::Relaxed);
-    let claim = wb_claim();
-    wb_write_back(&claim, u64::MAX, false)?;
-    let mut c = SECTOR_CACHE.lock();
+pub fn fat32_set_writeback_on(v: &'static Vol, on: bool) -> Result<(), FsError> {
+    if on && !v.knobs.writeback { return Err(FsError::Unsupported); }
+    v.wb_on.store(on, core::sync::atomic::Ordering::Relaxed);
+    let claim = wb_claim(v);
+    wb_write_back(v, &claim, u64::MAX, false)?;
+    let mut c = v.sector_cache.lock();
     if c.line_count() == 0 { return Ok(()); }
     let mode = if on { crate::bcache::Mode::WriteBack } else { crate::bcache::Mode::WriteThrough };
     c.configure(SECTOR_SIZE, mode, 0).map_err(|_| FsError::Io)
@@ -1616,57 +1871,45 @@ pub fn fat32_set_writeback(on: bool) -> Result<(), FsError> {
 // bounds every cluster walk, and the mount refuses a `tot_sec32` larger than
 // the partition.
 
-/// First sector of the mounted volume on the medium.
-static VOL_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Bumped by every write of the volume — FAT32's own (`write_sector`), any
-/// other writer's (`fat32_on_medium_write`) — and by mount and unmount. A
-/// read-only stream remembers it with the start cluster it found at open
-/// (`Fat32Fs::read_handle`); while it is unchanged, nothing can have moved,
-/// freed or resized that chain, so the stream reads it without looking the
-/// name up again. Never 0, so a handle of 0 never matches.
-static WRITE_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
-
-/// The same events as [`WRITE_GEN`], counted in 64 bits so a value never
-/// comes back (wave 14, SPAWNCACHE): the verified-image cache stamps what it
-/// verified with it ([`Fat32Fs::content_stamp`]) and must never take a stamp
-/// from before a write for one after it. Bumped AFTER `WRITE_GEN`, and every
-/// bump comes after the write it reports has reached the device and the
-/// block cache: a reader that loads the epoch, reads, and loads the same
-/// epoch again read nothing a later bump reports.
-static WRITE_EPOCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-
-fn write_gen_bump() {
+fn write_gen_bump(v: &'static Vol) {
     use core::sync::atomic::Ordering::AcqRel;
     if cfg!(feature = "write-gen-canary") { return; }
-    if WRITE_GEN.fetch_add(1, AcqRel) == u32::MAX {
+    if v.write_gen.fetch_add(1, AcqRel) == u32::MAX {
         // Wrapped to 0: step past it (a stale handle would need 2^32 writes
         // in between to alias, and still only to the same name's lookup).
-        WRITE_GEN.fetch_add(1, AcqRel);
+        v.write_gen.fetch_add(1, AcqRel);
     }
     if cfg!(feature = "write-epoch-canary") { return; }
-    WRITE_EPOCH.fetch_add(1, AcqRel);
+    v.write_epoch.fetch_add(1, AcqRel);
 }
 
-/// The volume's write epoch (see [`WRITE_EPOCH`]).
+/// [`fat32_write_epoch_on`] on the boot volume ([`BOOT`]).
+#[inline]
 pub fn fat32_write_epoch() -> u64 {
-    WRITE_EPOCH.load(core::sync::atomic::Ordering::Acquire)
+    fat32_write_epoch_on(&BOOT)
 }
 
-/// Sectors of the mounted volume (`tot_sec32`), `u64::MAX` while a mount is
-/// still reading its BPB. Bounds which medium writes touch the cache.
-static VOL_SECTORS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(u64::MAX);
+/// The volume's write epoch (see `Vol::write_epoch`).
+pub fn fat32_write_epoch_on(v: &'static Vol) -> u64 {
+    v.write_epoch.load(core::sync::atomic::Ordering::Acquire)
+}
 
 /// The medium sector of volume sector `sector`.
 #[inline]
-fn dev_lba(sector: u64) -> u64 {
-    VOL_BASE.load(core::sync::atomic::Ordering::Relaxed) + sector
+fn dev_lba(v: &'static Vol, sector: u64) -> u64 {
+    v.vol_base.load(core::sync::atomic::Ordering::Relaxed) + sector
+}
+
+/// [`fat32_volume_base_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_volume_base() -> u64 {
+    fat32_volume_base_on(&BOOT)
 }
 
 /// The first sector of the volume on the medium, as the last mount chose it
 /// (0 for a bare FAT32 medium).
-pub fn fat32_volume_base() -> u64 {
-    VOL_BASE.load(core::sync::atomic::Ordering::Relaxed)
+pub fn fat32_volume_base_on(v: &'static Vol) -> u64 {
+    v.vol_base.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Where a FAT32 volume starts on the medium, and how many sectors it may
@@ -1676,15 +1919,14 @@ pub fn fat32_volume_base() -> u64 {
 /// [`validate_bpb`] and whose `tot_sec32` fits inside it, else the whole
 /// medium from sector 0. A partition that fails either check is skipped, not
 /// fatal: a GPT disk may carry other filesystems before the FAT one.
-fn select_volume() -> (u64, u64) {
-    use dev::partition;
-    for i in 0..partition::count() {
-        let (start, len) = match partition::partition(i) {
+fn select_volume(v: &'static Vol) -> (u64, u64) {
+    for i in 0..v.dev.partition_count() {
+        let (start, len) = match v.dev.partition(i) {
             Some(p) => p,
             None => continue,
         };
         let mut s0 = [0u8; SECTOR_SIZE];
-        if blkdev::read_quiet(start, 1, &mut s0).is_err() {
+        if v.dev.read_quiet(start, 1, &mut s0).is_err() {
             continue;
         }
         let bpb = unsafe { &*(s0.as_ptr() as *const Fat32Bpb) };
@@ -1695,8 +1937,14 @@ fn select_volume() -> (u64, u64) {
     (0, 0)
 }
 
+/// [`fat32_locks_available_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_locks_available() -> bool {
+    fat32_locks_available_on(&BOOT)
+}
+
 /// Non-blocking check for whether the FAT32 locks (`FAT32` volume state,
-/// `SECTOR_CACHE`) are free and no FAT-sector claim ([`FAT_SECTOR_BUSY`])
+/// `SECTOR_CACHE`) are free and no FAT-sector claim (`Vol::fat_sector_busy`)
 /// is out. A claimed sector's next updater sleeps on a wait queue, which the
 /// panic handler must not reach.
 ///
@@ -1707,23 +1955,35 @@ fn select_volume() -> (u64, u64) {
 /// caller that only checked `FS` can still spin here. Like its VFS
 /// counterpart, this is a racy point-in-time check, not a hold — the
 /// locks can be taken by another hart right after this returns `true`.
-pub fn fat32_locks_available() -> bool {
-    FAT32.try_lock().is_some() && SECTOR_CACHE.try_lock().is_some()
-        && FAT_SECTOR_BUSY.load(core::sync::atomic::Ordering::SeqCst) == 0
-        && !WB_BUSY.load(core::sync::atomic::Ordering::SeqCst)
+pub fn fat32_locks_available_on(v: &'static Vol) -> bool {
+    v.fat32.try_lock().is_some() && v.sector_cache.try_lock().is_some()
+        && v.fat_sector_busy.load(core::sync::atomic::Ordering::SeqCst) == 0
+        && !v.wb_busy.load(core::sync::atomic::Ordering::SeqCst)
+}
+
+/// [`fat32_cache_invalidate_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_cache_invalidate(sector: u32) {
+    fat32_cache_invalidate_on(&BOOT, sector)
 }
 
 /// Invalidate every cache line touching `sector` — call after an
 /// out-of-band write (raw block layer, OTA writes that bypass FS).
 #[allow(dead_code)]
-pub fn fat32_cache_invalidate(sector: u32) {
-    SECTOR_CACHE.lock().invalidate(sector as u64);
+pub fn fat32_cache_invalidate_on(v: &'static Vol, sector: u32) {
+    v.sector_cache.lock().invalidate(sector as u64);
 }
 
 /// More medium sectors than this in one write drop the whole cache (O(1))
 /// instead of probing each sector: the lock is never held for more than a
 /// set's worth of probes, however long the write.
 const EXTERNAL_WRITE_RANGE_MAX: u64 = crate::bcache::MAX_WAYS as u64;
+
+/// [`fat32_on_medium_write_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_on_medium_write(lba: u64, count: u32) {
+    fat32_on_medium_write_on(&BOOT, lba, count)
+}
 
 /// The block layer's write observer (`azos_drv_block::write_observer`):
 /// MEDIUM sectors `[lba, lba + count)` were written by someone other than
@@ -1736,13 +1996,13 @@ const EXTERNAL_WRITE_RANGE_MAX: u64 = crate::bcache::MAX_WAYS as u64;
 /// waits on `FAT32`. A reader whose device read raced this write cannot
 /// install what it read: the invalidation bumps the cache's write sequence,
 /// and `install` refuses a token taken before it.
-pub fn fat32_on_medium_write(lba: u64, count: u32) {
+pub fn fat32_on_medium_write_on(v: &'static Vol, lba: u64, count: u32) {
     if cfg!(feature = "fatcache-observer-canary") {
         return;
     }
     use core::sync::atomic::Ordering::Relaxed;
-    let base = VOL_BASE.load(Relaxed);
-    let end = base.saturating_add(VOL_SECTORS.load(Relaxed));
+    let base = v.vol_base.load(Relaxed);
+    let end = base.saturating_add(v.vol_sectors.load(Relaxed));
     let first = lba.max(base);
     let last = lba.saturating_add(count as u64).min(end);
     if count == 0 || first >= last {
@@ -1750,7 +2010,7 @@ pub fn fat32_on_medium_write(lba: u64, count: u32) {
     }
     let n = last - first;
     {
-        let mut c = SECTOR_CACHE.lock();
+        let mut c = v.sector_cache.lock();
         if n > EXTERNAL_WRITE_RANGE_MAX && c.dirty_count() == 0 {
             c.invalidate_all();
         } else {
@@ -1762,21 +2022,21 @@ pub fn fat32_on_medium_write(lba: u64, count: u32) {
     }
     // The FAT may have changed under the held chains: forget them (they
     // leak) rather than free clusters another writer may now use.
-    held_reset();
-    write_gen_bump();
+    held_reset(v);
+    write_gen_bump(v);
 }
 
 /// Configure the cache for a mount and drop every line: 512 B lines (one
 /// per volume sector), write-through, and the observer installed.
-fn fat32_cache_reset() {
-    write_gen_bump();
+fn fat32_cache_reset(v: &'static Vol) {
+    write_gen_bump(v);
     {
-        let mut c = SECTOR_CACHE.lock();
+        let mut c = v.sector_cache.lock();
         if c.line_count() == 0 {
             // First mount: O(lines) once. Cannot fail: 512 is a valid block
             // size for any SECTOR_CACHE_BYTES (a multiple of 512), and a
             // write-through cache is never dirty.
-            let on = WB && WB_ON.load(core::sync::atomic::Ordering::Relaxed);
+            let on = v.knobs.writeback && v.wb_on.load(core::sync::atomic::Ordering::Relaxed);
             let mode = if on { crate::bcache::Mode::WriteBack } else { crate::bcache::Mode::WriteThrough };
             let _ = c.configure(SECTOR_SIZE, mode, 0);
         } else {
@@ -1787,11 +2047,17 @@ fn fat32_cache_reset() {
     // Again once the lines are gone (wave 14, SPAWNCACHE): a reader between
     // the first bump and the drop read the previous medium's lines under the
     // new value.
-    write_gen_bump();
-    blkdev::set_write_observer(fat32_on_medium_write);
-    if WB {
-        blkdev::set_read_observer(fat32_before_medium_read, fat32_medium_read_would_wait);
+    write_gen_bump(v);
+    v.dev.set_write_observer(fat32_on_medium_write);
+    if v.knobs.writeback {
+        v.dev.set_read_observer(fat32_before_medium_read, fat32_medium_read_would_wait);
     }
+}
+
+/// [`fat32_cache_invalidate_all_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_cache_invalidate_all() {
+    fat32_cache_invalidate_all_on(&BOOT)
 }
 
 /// Drop every cache line, regardless of which sector it holds.
@@ -1808,16 +2074,16 @@ fn fat32_cache_reset() {
 /// Public for the host tests, which drop every line the way a mount does.
 /// Every other writer of the medium invalidates its own sectors through the
 /// block layer's write observer, so this is not the coherence mechanism.
-pub fn fat32_cache_invalidate_all() {
-    SECTOR_CACHE.lock().invalidate_all();
-    write_gen_bump();
+pub fn fat32_cache_invalidate_all_on(v: &'static Vol) {
+    v.sector_cache.lock().invalidate_all();
+    write_gen_bump(v);
 }
 
 /// Read a sector, preferring the cache. On miss, fetch via the block
 /// device and install in the LRU-evicted line.
-fn read_sector(sector: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), ()> {
+fn read_sector(v: &'static Vol, sector: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), ()> {
     let token = {
-        let mut c = SECTOR_CACHE.lock();
+        let mut c = v.sector_cache.lock();
         if c.lookup(sector as u64, buf) {
             return Ok(());
         }
@@ -1826,8 +2092,8 @@ fn read_sector(sector: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), ()> {
     // Miss — fetch from the device with the cache lock released.
     crate::census::count(crate::census::DEV_READS);
     pi_io_probe();
-    blkdev::read_quiet(dev_lba(sector as u64), 1, buf)?;
-    SECTOR_CACHE.lock().install(sector as u64, buf, token);
+    v.dev.read_quiet(dev_lba(v, sector as u64), 1, buf)?;
+    v.sector_cache.lock().install(sector as u64, buf, token);
     Ok(())
 }
 
@@ -1835,45 +2101,69 @@ fn read_sector(sector: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), ()> {
 /// for the page cache's fills is held there; a second copy in this cache is
 /// the double caching the page cache replaces. A resident line still answers
 /// (a dirty one is newer than the medium).
-fn read_sector_with(sector: u32, buf: &mut [u8; SECTOR_SIZE], retain: bool) -> Result<(), ()> {
+fn read_sector_with(v: &'static Vol, sector: u32, buf: &mut [u8; SECTOR_SIZE], retain: bool) -> Result<(), ()> {
     if retain {
-        return read_sector(sector, buf);
+        return read_sector(v, sector, buf);
     }
-    if SECTOR_CACHE.lock().lookup(sector as u64, buf) {
+    if v.sector_cache.lock().lookup(sector as u64, buf) {
         return Ok(());
     }
     crate::census::count(crate::census::DEV_READS);
     pi_io_probe();
-    blkdev::read_quiet(dev_lba(sector as u64), 1, buf)
+    v.dev.read_quiet(dev_lba(v, sector as u64), 1, buf)
+}
+
+/// [`fat32_cache_stats_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_cache_stats() -> (u32, u32) {
+    fat32_cache_stats_on(&BOOT)
 }
 
 /// Statistics for diagnostics (`fs cache` shell command, etc.).
 #[allow(dead_code)]
-pub fn fat32_cache_stats() -> (u32, u32) {
-    let st = SECTOR_CACHE.lock().stats();
+pub fn fat32_cache_stats_on(v: &'static Vol) -> (u32, u32) {
+    let st = v.sector_cache.lock().stats();
     (st.hits, st.misses)
+}
+
+/// [`fat32_cache_counters_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_cache_counters() -> crate::bcache::CacheStats {
+    fat32_cache_counters_on(&BOOT)
 }
 
 /// The shared cache's full counters for the FAT32 instance (hits, misses,
 /// write-backs, ordering flushes). The last two stay 0 while the instance is
 /// write-through.
 #[allow(dead_code)]
-pub fn fat32_cache_counters() -> crate::bcache::CacheStats {
-    SECTOR_CACHE.lock().stats()
+pub fn fat32_cache_counters_on(v: &'static Vol) -> crate::bcache::CacheStats {
+    v.sector_cache.lock().stats()
+}
+
+/// [`fat32_cache_epoch_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_cache_epoch() -> u64 {
+    fat32_cache_epoch_on(&BOOT)
 }
 
 /// The FAT32 cache's current epoch (diagnostics, host tests: a barrier
 /// moves it by one).
 #[allow(dead_code)]
-pub fn fat32_cache_epoch() -> u64 {
-    SECTOR_CACHE.lock().epoch()
+pub fn fat32_cache_epoch_on(v: &'static Vol) -> u64 {
+    v.sector_cache.lock().epoch()
+}
+
+/// [`fat32_dirty_epochs_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_dirty_epochs() -> usize {
+    fat32_dirty_epochs_on(&BOOT)
 }
 
 /// Distinct epochs among the FAT32 cache's dirty lines (diagnostics, host
 /// tests).
 #[allow(dead_code)]
-pub fn fat32_dirty_epochs() -> usize {
-    SECTOR_CACHE.lock().dirty_epochs()
+pub fn fat32_dirty_epochs_on(v: &'static Vol) -> usize {
+    v.sector_cache.lock().dirty_epochs()
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -1981,6 +2271,12 @@ fn validate_bpb(bpb: &Fat32Bpb, sector0: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
     Ok(())
 }
 
+/// [`fat32_mount_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_mount() -> Result<(), ()> {
+    fat32_mount_on(&BOOT)
+}
+
 /// Mount a FAT32 filesystem on the first VirtIO block device.
 /// Returns Ok(()) on success.
 ///
@@ -1988,8 +2284,8 @@ fn validate_bpb(bpb: &Fat32Bpb, sector0: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
 /// above `MountReport`) is checked and its leaked space given back
 /// ([`fat32_mount_report`] says what was found), and the volume is marked
 /// dirty until [`fat32_unmount`] clears it.
-pub fn fat32_mount() -> Result<(), ()> {
-    // U09-3: already mounted — nothing to do. `fat32_mount_volume()` is a
+pub fn fat32_mount_on(v: &'static Vol) -> Result<(), ()> {
+    // U09-3: already mounted — nothing to do. `fat32_mount_volume_on()` is a
     // thin wrapper over this function, and its callers — the logger's
     // `open()` on every log rotation, `secure_boot.rs`'s
     // `read_sig_file`/`read_image_file` — used to call through to a full
@@ -2001,35 +2297,35 @@ pub fn fat32_mount() -> Result<(), ()> {
     // and `fat32_journal_recover`'s own doc says it runs "at mount, before
     // userspace exists", which was true for the FIRST mount and false for
     // every mount after. This early-out makes it true again,
-    // unconditionally. `fat32_unmount()` clears `mounted`, so a real
+    // unconditionally. `fat32_unmount_on()` clears `mounted`, so a real
     // remount (media change, an explicit unmount/mount cycle) still runs
     // the full path below.
-    if FAT32.lock().mounted {
+    if v.fat32.lock().mounted {
         return Ok(());
     }
 
     // U09-6: this IS a real mount attempt past the early-out above — drop
     // every cached sector before reading anything. Without this, a remount
-    // after `fat32_unmount()` (media swap, or the crash-recovery path that
+    // after `fat32_unmount_on()` (media swap, or the crash-recovery path that
     // unmounts and remounts the same medium) would read the PREVIOUS
     // medium's cached BPB/root/FAT sectors through `read_sector`'s cache
     // hit, never touching the device this mount is supposed to be reading.
-    fat32_cache_reset();
+    fat32_cache_reset(v);
 
     // Where the volume is: a published partition holding a FAT32 boot
     // sector, or the bare medium. Chosen before the first `read_sector`, and
     // the cache was just emptied, so no line holds a sector of the old base.
-    let (base, part_len) = select_volume();
-    VOL_SECTORS.store(u64::MAX, core::sync::atomic::Ordering::Relaxed);
-    VOL_BASE.store(base, core::sync::atomic::Ordering::Relaxed);
+    let (base, part_len) = select_volume(v);
+    v.vol_sectors.store(u64::MAX, core::sync::atomic::Ordering::Relaxed);
+    v.vol_base.store(base, core::sync::atomic::Ordering::Relaxed);
     // A new volume (or the same one after an unmount): no cached free count
     // carries over.
-    free_count_invalidate();
-    ALLOC_HINT.store(0, core::sync::atomic::Ordering::Relaxed);
-    held_reset();
+    free_count_invalidate(v);
+    v.alloc_hint.store(0, core::sync::atomic::Ordering::Relaxed);
+    held_reset(v);
 
     let mut sector0 = [0u8; SECTOR_SIZE];
-    read_sector(0, &mut sector0)?;
+    read_sector(v, 0, &mut sector0)?;
 
     // Parse BPB (at offset 0 in sector 0)
     let bpb = unsafe { &*(sector0.as_ptr() as *const Fat32Bpb) };
@@ -2046,12 +2342,12 @@ pub fn fat32_mount() -> Result<(), ()> {
     let medium = if part_len != 0 {
         part_len
     } else {
-        blkdev::capacity_sectors().saturating_sub(base)
+        v.dev.capacity_sectors().saturating_sub(base)
     };
     if medium != 0 && bpb.tot_sec32 as u64 > medium && !cfg!(feature = "fat-medium-bound-canary") {
         return Err(());
     }
-    VOL_SECTORS.store(bpb.tot_sec32 as u64, core::sync::atomic::Ordering::Relaxed);
+    v.vol_sectors.store(bpb.tot_sec32 as u64, core::sync::atomic::Ordering::Relaxed);
 
     let spc = bpb.sec_per_clus as u32;
     let fat_start  = bpb.rsvd_sec_cnt as u32;
@@ -2075,15 +2371,15 @@ pub fn fat32_mount() -> Result<(), ()> {
         return Err(());
     }
 
-    let mut v = FAT32.lock();
-    v.fat_start      = fat_start;
-    v.data_start     = data_start;
-    v.root_cluster   = root_clus;
-    v.secs_per_clus  = spc;
-    v.bytes_per_clus = spc * 512;
-    v.fat_sz32       = bpb.fat_sz32;
-    v.num_fats       = bpb.num_fats;
-    v.mounted        = true;
+    let mut fv = v.fat32.lock();
+    fv.fat_start      = fat_start;
+    fv.data_start     = data_start;
+    fv.root_cluster   = root_clus;
+    fv.secs_per_clus  = spc;
+    fv.bytes_per_clus = spc * 512;
+    fv.fat_sz32       = bpb.fat_sz32;
+    fv.num_fats       = bpb.num_fats;
+    fv.mounted        = true;
     // **The anti-cycle bound, published before anything can walk a chain.**
     // The old one was `fat_sz32 * 128` — a figure the attacker writes. A BPB
     // with `num_fats = 0` keeps `data_start` small and passing every other
@@ -2095,15 +2391,15 @@ pub fn fat32_mount() -> Result<(), ()> {
     //
     // `saturating_sub` because a BPB may claim fewer total sectors than its
     // own reserved+FAT region needs — that volume simply has no data.
-    v.data_clusters  = bpb.tot_sec32.saturating_sub(data_start) / spc;
+    fv.data_clusters  = bpb.tot_sec32.saturating_sub(data_start) / spc;
     // The read-only streams' copy of the geometry (wave 14), published with
-    // the fields above while `v` is held. Each pair travels in one word, so a
+    // the fields above while `fv` is held. Each pair travels in one word, so a
     // reader never sees `spc` from one mount and `data_start` from another.
     {
         use core::sync::atomic::Ordering::Release;
-        let limit = chain_walk_limit(v.fat_sz32, v.data_clusters);
-        STREAM_GEOM_A.store(((spc as u64) << 32) | data_start as u64, Release);
-        STREAM_GEOM_B.store(((fat_start as u64) << 32) | limit as u64, Release);
+        let limit = chain_walk_limit(fv.fat_sz32, fv.data_clusters);
+        v.stream_geom_a.store(((spc as u64) << 32) | data_start as u64, Release);
+        v.stream_geom_b.store(((fat_start as u64) << 32) | limit as u64, Release);
     }
 
     azos_drv_sys::kprintln!(
@@ -2112,13 +2408,13 @@ pub fn fat32_mount() -> Result<(), ()> {
     );
 
     // Recover from any incomplete operations before power loss.
-    drop(v);
+    drop(fv);
     // Write-back orders its epochs with device flushes; a device that cannot
     // flush gives no order, so this mount stays write-through (whose journal
     // barriers then refuse, fail closed, as before).
-    if WB && WB_ON.load(core::sync::atomic::Ordering::Relaxed) {
-        let wt = matches!(device_flush_raw(), Err(FsError::Unsupported));
-        let mut c = SECTOR_CACHE.lock();
+    if v.knobs.writeback && v.wb_on.load(core::sync::atomic::Ordering::Relaxed) {
+        let wt = matches!(device_flush_raw(v), Err(FsError::Unsupported));
+        let mut c = v.sector_cache.lock();
         let want = if wt { crate::bcache::Mode::WriteThrough } else { crate::bcache::Mode::WriteBack };
         if c.mode() != want && c.dirty_count() == 0 {
             let _ = c.configure(SECTOR_SIZE, want, 0);
@@ -2127,12 +2423,12 @@ pub fn fat32_mount() -> Result<(), ()> {
     // A journal record found here means the last run was cut inside an
     // operation, whatever the volume's flag says (a volume last written by a
     // build that did not keep the flag).
-    let journal_busy = !fat32_journal_idle();
-    fat32_journal_recover()?;
+    let journal_busy = !fat32_journal_idle_on(v);
+    fat32_journal_recover(v)?;
     // Write-back: what recovery repaired is on the medium before the volume
     // is used (a second cut must not find the same journal record again).
-    if WB && SECTOR_CACHE.lock().dirty_count() != 0 {
-        match device_flush() {
+    if v.knobs.writeback && v.sector_cache.lock().dirty_count() != 0 {
+        match device_flush(v) {
             Ok(()) | Err(FsError::Unsupported) => {}
             Err(_) => return Err(()),
         }
@@ -2144,22 +2440,19 @@ pub fn fat32_mount() -> Result<(), ()> {
     // mount. Best effort throughout: a medium that cannot be repaired or
     // flagged (read-only, a failing sector) still mounts, as it always did.
     let mut rep = MountReport::new();
-    rep.unclean = !volume_is_clean();
+    rep.unclean = !volume_is_clean(v);
     if rep.unclean || journal_busy {
-        check_volume(&mut rep);
-        if WB && SECTOR_CACHE.lock().dirty_count() != 0 {
-            let _ = device_flush();
+        check_volume(v, &mut rep);
+        if v.knobs.writeback && v.sector_cache.lock().dirty_count() != 0 {
+            let _ = device_flush(v);
         }
     }
-    rep.marked_dirty = mark_volume_dirty();
-    VOLUME_MARKED_DIRTY.store(rep.marked_dirty, core::sync::atomic::Ordering::Relaxed);
-    *MOUNT_REPORT.lock() = rep;
+    rep.marked_dirty = mark_volume_dirty(v);
+    v.volume_marked_dirty.store(rep.marked_dirty, core::sync::atomic::Ordering::Relaxed);
+    *v.mount_report.lock() = rep;
 
     Ok(())
 }
-
-/// This mount wrote the dirty flag, so the unmount owes the clear.
-static VOLUME_MARKED_DIRTY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // ── Volume state (dirty bit) and the mount-time check ────────────────────────
 //
@@ -2237,20 +2530,24 @@ impl MountReport {
     }
 }
 
-static MOUNT_REPORT: SpinLock<MountReport> = SpinLock::new(MountReport::new());
+/// [`fat32_mount_report_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_mount_report() -> MountReport {
+    fat32_mount_report_on(&BOOT)
+}
 
 /// The report of the most recent mount of this volume.
-pub fn fat32_mount_report() -> MountReport {
-    *MOUNT_REPORT.lock()
+pub fn fat32_mount_report_on(v: &'static Vol) -> MountReport {
+    *v.mount_report.lock()
 }
 
 /// Whether the medium says "shut down cleanly": the FAT[1] bit set and the
 /// boot sector bit clear. An unreadable sector reads as not clean.
-fn volume_is_clean() -> bool {
-    let fat_start = FAT32.lock().fat_start;
+fn volume_is_clean(v: &'static Vol) -> bool {
+    let fat_start = v.fat32.lock().fat_start;
     let mut boot = [0u8; SECTOR_SIZE];
     let mut fat0 = [0u8; SECTOR_SIZE];
-    if read_sector(0, &mut boot).is_err() || read_sector(fat_start, &mut fat0).is_err() {
+    if read_sector(v, 0, &mut boot).is_err() || read_sector(v, fat_start, &mut fat0).is_err() {
         return false;
     }
     let e = u32::from_le_bytes(fat0[FAT_STATE_ENTRY_OFF..FAT_STATE_ENTRY_OFF + 4].try_into().unwrap());
@@ -2263,15 +2560,15 @@ fn volume_is_clean() -> bool {
 /// Straight to the device ([`write_sector_direct`]): a medium that refuses
 /// the write leaves nothing queued to fail later, and the caller must have
 /// flushed the cache first (`volume_state_write_ready`).
-fn volume_set_clean(clean: bool) -> Result<(), ()> {
+fn volume_set_clean(v: &'static Vol, clean: bool) -> Result<(), ()> {
     let (fat_start, fat_sz32, num_fats) = {
-        let v = FAT32.lock();
-        (v.fat_start, v.fat_sz32, v.num_fats.max(1) as u32)
+        let fv = v.fat32.lock();
+        (fv.fat_start, fv.fat_sz32, fv.num_fats.max(1) as u32)
     };
     {
-        let _claim = fat_sector_claim(0);
+        let _claim = fat_sector_claim(v, 0);
         let mut buf = [0u8; SECTOR_SIZE];
-        read_sector(fat_start, &mut buf)?;
+        read_sector(v, fat_start, &mut buf)?;
         let o = FAT_STATE_ENTRY_OFF;
         let cur = u32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
         let new = if clean { cur | FAT_STATE_CLEAN } else { cur & !FAT_STATE_CLEAN };
@@ -2279,41 +2576,41 @@ fn volume_set_clean(clean: bool) -> Result<(), ()> {
             buf[o..o + 4].copy_from_slice(&new.to_le_bytes());
             for i in 0..num_fats {
                 let sec = i.checked_mul(fat_sz32).and_then(|off| fat_start.checked_add(off)).ok_or(())?;
-                write_sector_direct(sec, &buf)?;
+                write_sector_direct(v, sec, &buf)?;
             }
         }
     }
     let mut boot = [0u8; SECTOR_SIZE];
-    read_sector(0, &mut boot)?;
+    read_sector(v, 0, &mut boot)?;
     let cur = boot[BS_STATE_OFF];
     let new = if clean { cur & !BS_STATE_DIRTY } else { cur | BS_STATE_DIRTY };
     if new != cur {
         boot[BS_STATE_OFF] = new;
-        write_sector_direct(0, &boot)?;
+        write_sector_direct(v, 0, &boot)?;
     }
     Ok(())
 }
 
 /// Nothing dirty in the cache: the precondition of a direct state write. A
 /// dirty line is flushed first (a failed flush says no).
-fn volume_state_write_ready() -> bool {
-    if SECTOR_CACHE.lock().dirty_count() == 0 { return true; }
-    matches!(device_flush(), Ok(())) && SECTOR_CACHE.lock().dirty_count() == 0
+fn volume_state_write_ready(v: &'static Vol) -> bool {
+    if v.sector_cache.lock().dirty_count() == 0 { return true; }
+    matches!(device_flush(v), Ok(())) && v.sector_cache.lock().dirty_count() == 0
 }
 
 /// Mark the volume dirty for this mount, durably, before anything else is
 /// written: a cut after the first write of the mount must find the flag set.
 /// Not fatal: a medium that refuses the write (write-protected) still mounts,
 /// and `false` tells the unmount there is nothing to clear.
-fn mark_volume_dirty() -> bool {
+fn mark_volume_dirty(v: &'static Vol) -> bool {
     if cfg!(feature = "fat-dirty-bit-canary") { return false; }
-    if !volume_state_write_ready() || volume_set_clean(false).is_err() { return false; }
+    if !volume_state_write_ready(v) || volume_set_clean(v, false).is_err() { return false; }
     if cfg!(feature = "fat-dirty-unordered-canary") { return true; }
     // The flag reaches the medium before any later write does: a flush. A
     // device that cannot flush (`Unsupported`) orders nothing, as for
     // `dir_insert`'s barrier; one whose flush fails refuses every later
     // barrier too, so the mount goes on and the first structural write says so.
-    let _ = device_flush_raw();
+    let _ = device_flush_raw(v);
     true
 }
 
@@ -2358,10 +2655,10 @@ impl Marks {
 /// data region, ran through a free cluster or met another chain is counted
 /// in `rep` and ends there); `Ok(false)`: nothing was claimed. `Err`: the FAT
 /// could not be read.
-fn check_mark_chain(first: u32, marks: &mut Marks, rep: &mut MountReport) -> Result<bool, ()> {
+fn check_mark_chain(v: &'static Vol, first: u32, marks: &mut Marks, rep: &mut MountReport) -> Result<bool, ()> {
     let (fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.fat_sz32, fv.data_clusters)
     };
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
     let mut c = first;
@@ -2376,7 +2673,7 @@ fn check_mark_chain(first: u32, marks: &mut Marks, rep: &mut MountReport) -> Res
             return Ok(fresh);
         }
         fresh = true;
-        let next = fat32_next_cluster(c)?;
+        let next = fat32_next_cluster(v, c)?;
         if next == 0 {
             // The chain runs through a FREE cluster: it ends there.
             rep.broken_chains += 1;
@@ -2393,14 +2690,14 @@ fn check_mark_chain(first: u32, marks: &mut Marks, rep: &mut MountReport) -> Res
 /// through a free cluster, or a second entry names it); what hangs off it is
 /// then unknown and the scan is incomplete.
 fn check_scan_dir(
-    dir: u32,
+    v: &'static Vol, dir: u32,
     marks: &mut Marks,
     stack: &mut alloc::vec::Vec<u32>,
     rep: &mut MountReport,
 ) -> Result<(), ()> {
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
     let mut cluster = dir;
@@ -2409,7 +2706,7 @@ fn check_scan_dir(
         let first = cluster_first_sector(data_start, cluster, spc).ok_or(())?;
         for s in 0..spc {
             let mut buf = [0u8; SECTOR_SIZE];
-            read_sector(first + s, &mut buf)?;
+            read_sector(v, first + s, &mut buf)?;
             for e in 0..DIRENTS_PER_SECTOR {
                 let off = e * DIRENT_SIZE;
                 let lead = buf[off];
@@ -2429,7 +2726,7 @@ fn check_scan_dir(
                 let fresh = if cfg!(feature = "fat-check-no-mark-canary") && !is_dir {
                     false
                 } else {
-                    check_mark_chain(c, marks, rep)?
+                    check_mark_chain(v, c, marks, rep)?
                 };
                 if is_dir {
                     if !fresh || stack.len() >= CHECK_DIR_STACK_MAX { return Err(()); }
@@ -2438,7 +2735,7 @@ fn check_scan_dir(
                 }
             }
         }
-        let next = fat32_next_cluster(cluster)?;
+        let next = fat32_next_cluster(v, cluster)?;
         if next >= FAT32_EOC { return Ok(()); }
         // 0 (a free cluster) fails `valid` at the top.
         cluster = next;
@@ -2464,10 +2761,10 @@ fn check_scratch<'a>(
 /// overwritten with copy 0 (every walk and every allocation reads copy 0, so
 /// that is the volume as the driver sees it; a cut between the copies' writes
 /// leaves exactly this). Counts into `rep.fat_mismatch`.
-fn check_fat_copies(rep: &mut MountReport) -> Result<(), ()> {
+fn check_fat_copies(v: &'static Vol, rep: &mut MountReport) -> Result<(), ()> {
     let (fat_start, fat_sz32, num_fats) = {
-        let v = FAT32.lock();
-        (v.fat_start, v.fat_sz32, v.num_fats as u32)
+        let fv = v.fat32.lock();
+        (fv.fat_start, fv.fat_sz32, fv.num_fats as u32)
     };
     if num_fats < 2 { return Ok(()); }
     let mut heap = alloc::vec::Vec::new();
@@ -2478,16 +2775,16 @@ fn check_fat_copies(rep: &mut MountReport) -> Result<(), ()> {
     while s < fat_sz32 {
         let n = run.min(fat_sz32 - s);
         let len = n as usize * SECTOR_SIZE;
-        read_run_cached(fat_start + s, n, &mut a[..len], true)?;
+        read_run_cached(v, fat_start + s, n, &mut a[..len], true)?;
         for k in 1..num_fats {
             let base = k.checked_mul(fat_sz32).and_then(|o| fat_start.checked_add(o)).ok_or(())? + s;
-            read_run_cached(base, n, &mut b[..len], true)?;
+            read_run_cached(v, base, n, &mut b[..len], true)?;
             for i in 0..n as usize {
                 let (x, y) = (&a[i * SECTOR_SIZE..][..SECTOR_SIZE], &b[i * SECTOR_SIZE..][..SECTOR_SIZE]);
                 if x == y { continue; }
                 rep.fat_mismatch += 1;
                 if cfg!(feature = "fat-no-repair-canary") { continue; }
-                write_sector(base + i as u32, x.try_into().unwrap())?;
+                write_sector(v, base + i as u32, x.try_into().unwrap())?;
             }
         }
         s += n;
@@ -2497,10 +2794,10 @@ fn check_fat_copies(rep: &mut MountReport) -> Result<(), ()> {
 
 /// Give back every allocated cluster `marks` does not hold: one FAT pass,
 /// each changed sector rewritten in every copy.
-fn check_reclaim_lost(marks: &Marks, reclaim: bool, rep: &mut MountReport) -> Result<(), ()> {
+fn check_reclaim_lost(v: &'static Vol, marks: &Marks, reclaim: bool, rep: &mut MountReport) -> Result<(), ()> {
     let (fat_start, fat_sz32, num_fats) = {
-        let v = FAT32.lock();
-        (v.fat_start, v.fat_sz32, v.num_fats.max(1) as u32)
+        let fv = v.fat32.lock();
+        (fv.fat_start, fv.fat_sz32, fv.num_fats.max(1) as u32)
     };
     let mut heap = alloc::vec::Vec::new();
     let mut small = [0u8; 2 * SECTOR_SIZE];
@@ -2511,7 +2808,7 @@ fn check_reclaim_lost(marks: &Marks, reclaim: bool, rep: &mut MountReport) -> Re
     let mut s = 0u32;
     while s < sectors {
         let n = run.min(sectors - s);
-        read_run_cached(fat_start + s, n, &mut a[..n as usize * SECTOR_SIZE], true)?;
+        read_run_cached(v, fat_start + s, n, &mut a[..n as usize * SECTOR_SIZE], true)?;
         for i in 0..n {
             let sec = &mut a[i as usize * SECTOR_SIZE..][..SECTOR_SIZE];
             let mut changed = 0u32;
@@ -2533,7 +2830,7 @@ fn check_reclaim_lost(marks: &Marks, reclaim: bool, rep: &mut MountReport) -> Re
                 let buf: &[u8; SECTOR_SIZE] = (&*sec).try_into().unwrap();
                 for k in 0..num_fats {
                     let at = k.checked_mul(fat_sz32).and_then(|o| fat_start.checked_add(o)).ok_or(())? + s + i;
-                    write_sector(at, buf)?;
+                    write_sector(v, at, buf)?;
                 }
                 rep.reclaimed += changed;
             }
@@ -2541,32 +2838,32 @@ fn check_reclaim_lost(marks: &Marks, reclaim: bool, rep: &mut MountReport) -> Re
         s += n;
     }
     if rep.reclaimed != 0 {
-        free_count_invalidate();
-        ALLOC_HINT.store(0, core::sync::atomic::Ordering::Relaxed);
+        free_count_invalidate(v);
+        v.alloc_hint.store(0, core::sync::atomic::Ordering::Relaxed);
     }
     Ok(())
 }
 
 /// The mount-time check of an unclean volume, after journal recovery: FAT
 /// copy agreement, then the lost clusters (allocated, reached by no entry).
-fn check_volume(rep: &mut MountReport) {
+fn check_volume(v: &'static Vol, rep: &mut MountReport) {
     rep.checked = true;
-    if check_fat_copies(rep).is_err() {
+    if check_fat_copies(v, rep).is_err() {
         azos_drv_sys::kprintln!("[FAT32] check: FAT copy comparison or repair failed (read error, or a medium that refuses writes)");
     }
-    let clusters = FAT32.lock().data_clusters;
+    let clusters = v.fat32.lock().data_clusters;
     let Some(mut marks) = Marks::new(clusters) else {
         azos_drv_sys::kprintln!("[FAT32] check: volume too large or heap short, lost clusters not scanned");
         return;
     };
     let mut stack = alloc::vec::Vec::new();
-    let root = FAT32.lock().root_cluster;
+    let root = v.fat32.lock().root_cluster;
     let scanned = (|| -> Result<(), ()> {
-        if !check_mark_chain(root, &mut marks, rep)? { return Err(()); }
+        if !check_mark_chain(v, root, &mut marks, rep)? { return Err(()); }
         stack.try_reserve(1).map_err(|_| ())?;
         stack.push(root);
         while let Some(dir) = stack.pop() {
-            check_scan_dir(dir, &mut marks, &mut stack, rep)?;
+            check_scan_dir(v, dir, &mut marks, &mut stack, rep)?;
         }
         Ok(())
     })();
@@ -2575,17 +2872,17 @@ fn check_volume(rep: &mut MountReport) {
         azos_drv_sys::kprintln!("[FAT32] check: directory scan incomplete, nothing reclaimed");
     }
     let reclaim = rep.complete && !cfg!(feature = "fat-no-repair-canary");
-    if check_reclaim_lost(&marks, reclaim, rep).is_err() {
+    if check_reclaim_lost(v, &marks, reclaim, rep).is_err() {
         azos_drv_sys::kprintln!("[FAT32] check: FAT pass failed");
     }
 }
 
 /// Read the FAT entry for `cluster` to find the next cluster in the chain.
 /// Returns Ok(next_cluster), where >= FAT32_EOC means end of chain.
-fn fat32_next_cluster(cluster: u32) -> Result<u32, ()> {
+fn fat32_next_cluster(v: &'static Vol, cluster: u32) -> Result<u32, ()> {
     let (fat_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.fat_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.fat_start, fv.fat_sz32, fv.data_clusters)
     };
 
     // The FAT only has `fat_sz32 * 128` entries. Without this bound a cluster
@@ -2610,9 +2907,9 @@ fn fat32_next_cluster(cluster: u32) -> Result<u32, ()> {
     // shipped 32 MiB volumes), and copying the whole sector out per step
     // cost more than the data copy it was walking for.
     let mut entry_bytes = [0u8; 4];
-    if !SECTOR_CACHE.lock().lookup_bytes(fat_sector as u64, fat_offset * 4, &mut entry_bytes) {
+    if !v.sector_cache.lock().lookup_bytes(fat_sector as u64, fat_offset * 4, &mut entry_bytes) {
         let mut buf = [0u8; SECTOR_SIZE];
-        read_sector(fat_sector, &mut buf)?;
+        read_sector(v, fat_sector, &mut buf)?;
         entry_bytes.copy_from_slice(&buf[fat_offset * 4..fat_offset * 4 + 4]);
     }
     let entry = u32::from_le_bytes(entry_bytes);
@@ -2628,13 +2925,13 @@ const READ_RUN_MAX_SECTORS: u32 = 64;
 /// request, which then fills the cache (not when `retain` is false: the page
 /// cache's fills hold the data themselves, [`read_sector_with`]). Each cache
 /// step takes the lock for one sector's copy only.
-fn read_run_cached(first: u32, run: u32, dst: &mut [u8], retain: bool) -> Result<(), ()> {
+fn read_run_cached(v: &'static Vol, first: u32, run: u32, dst: &mut [u8], retain: bool) -> Result<(), ()> {
     let mut hit = 0u32;
     if !cfg!(feature = "fatcache-run-bypass-canary") {
         while hit < run {
             let o = hit as usize * SECTOR_SIZE;
             let line = &mut dst[o..o + SECTOR_SIZE];
-            if !SECTOR_CACHE.lock().lookup((first + hit) as u64, line) {
+            if !v.sector_cache.lock().lookup((first + hit) as u64, line) {
                 break;
             }
             hit += 1;
@@ -2646,17 +2943,17 @@ fn read_run_cached(first: u32, run: u32, dst: &mut [u8], retain: bool) -> Result
     let token = if cfg!(feature = "fatcache-token-canary") {
         0
     } else {
-        SECTOR_CACHE.lock().lookup_miss_token()
+        v.sector_cache.lock().lookup_miss_token()
     };
     let o = hit as usize * SECTOR_SIZE;
     crate::census::count(crate::census::DEV_READS);
-    blkdev::read_quiet(dev_lba((first + hit) as u64), run - hit, &mut dst[o..])?;
+    v.dev.read_quiet(dev_lba(v, (first + hit) as u64), run - hit, &mut dst[o..])?;
     for k in hit..run {
         let o = k as usize * SECTOR_SIZE;
-        let mut c = SECTOR_CACHE.lock();
+        let mut c = v.sector_cache.lock();
         // Write-back: a line present now is newer than the device's copy
         // (dirty, or written after the read) — it answers, not the device.
-        if WB && c.mode() == crate::bcache::Mode::WriteBack && !cfg!(feature = "wb-run-overlay-canary")
+        if v.knobs.writeback && c.mode() == crate::bcache::Mode::WriteBack && !cfg!(feature = "wb-run-overlay-canary")
             && c.peek((first + k) as u64, &mut dst[o..o + SECTOR_SIZE])
         {
             continue;
@@ -2671,11 +2968,11 @@ fn read_run_cached(first: u32, run: u32, dst: &mut [u8], retain: bool) -> Result
     Ok(())
 }
 
-/// `fat32_read_range`'s geometry, published by `fat32_mount`: sectors per
-/// cluster and data start (A), FAT start and the chain-walk bound (B). A
-/// stream reads it without taking `FAT32`; 0 before the first mount.
-static STREAM_GEOM_A: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static STREAM_GEOM_B: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// [`fat32_read_range_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_read_range(first: u32, size: u32, offset: u32, dst: &mut [u8], retain: bool) -> usize {
+    fat32_read_range_on(&BOOT, first, size, offset, dst, retain)
+}
 
 /// Read up to `dst.len()` bytes at byte `offset` of the file whose chain
 /// starts at `first` and whose size is `size`; bytes copied (0 at or past
@@ -2692,12 +2989,12 @@ static STREAM_GEOM_B: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomic
 /// `retain: false` (the page cache's fills) leaves the data sectors it reads
 /// out of the block cache: a resident line still answers, a miss is read from
 /// the device and not installed ([`read_sector_with`]).
-pub fn fat32_read_range(first: u32, size: u32, offset: u32, dst: &mut [u8], retain: bool) -> usize {
+pub fn fat32_read_range_on(v: &'static Vol, first: u32, size: u32, offset: u32, dst: &mut [u8], retain: bool) -> usize {
     if offset >= size || dst.is_empty() { return 0; }
     let len = dst.len().min((size - offset) as usize);
     let (a, b) = {
         use core::sync::atomic::Ordering::Acquire;
-        (STREAM_GEOM_A.load(Acquire), STREAM_GEOM_B.load(Acquire))
+        (v.stream_geom_a.load(Acquire), v.stream_geom_b.load(Acquire))
     };
     let (spc, data_start) = ((a >> 32) as u32, a as u32);
     let (fat_start, limit) = ((b >> 32) as u32, b as u32);
@@ -2708,7 +3005,7 @@ pub fn fat32_read_range(first: u32, size: u32, offset: u32, dst: &mut [u8], reta
     if first < FAT32_FIRST_DATA_CLUSTER || steps >= limit { return 0; }
     let mut cl = first;
     for _ in 0..steps {
-        match fat.next(cl) {
+        match fat.next(v, cl) {
             Ok(n) if n >= FAT32_FIRST_DATA_CLUSTER && n < FAT32_EOC => cl = n,
             _ => return 0,
         }
@@ -2725,7 +3022,7 @@ pub fn fat32_read_range(first: u32, size: u32, offset: u32, dst: &mut [u8], reta
             if steps >= limit { break; }
             let n = match next_known.take() {
                 Some(n) => n,
-                None => match fat.next(cl) { Ok(n) => n, Err(()) => break },
+                None => match fat.next(v, cl) { Ok(n) => n, Err(()) => break },
             };
             if n < FAT32_FIRST_DATA_CLUSTER || n >= FAT32_EOC { break; }
             steps += 1;
@@ -2746,7 +3043,7 @@ pub fn fat32_read_range(first: u32, size: u32, offset: u32, dst: &mut [u8], reta
             let mut advanced = 0usize;
             if s + run == spc {
                 while run < whole && run < READ_RUN_MAX_SECTORS && steps + 1 < limit {
-                    let n = match fat.next(tail) { Ok(n) => n, Err(()) => break };
+                    let n = match fat.next(v, tail) { Ok(n) => n, Err(()) => break };
                     let contiguous = n >= FAT32_FIRST_DATA_CLUSTER && n < FAT32_EOC
                         && matches!(
                             (cluster_first_sector(data_start, n, spc), fs.checked_add(s + run)),
@@ -2765,7 +3062,7 @@ pub fn fat32_read_range(first: u32, size: u32, offset: u32, dst: &mut [u8], reta
                 }
             }
             let bytes = run as usize * SECTOR_SIZE;
-            if read_run_cached(fs + s, run, &mut dst[done..done + bytes], retain).is_err() { break; }
+            if read_run_cached(v, fs + s, run, &mut dst[done..done + bytes], retain).is_err() { break; }
             done += bytes;
             pos += bytes;
             if advanced > 0 {
@@ -2775,9 +3072,9 @@ pub fn fat32_read_range(first: u32, size: u32, offset: u32, dst: &mut [u8], reta
         } else {
             let chunk = left.min(SECTOR_SIZE - o);
             let out = &mut dst[done..done + chunk];
-            if !SECTOR_CACHE.lock().lookup_bytes((fs + s) as u64, o, out) {
+            if !v.sector_cache.lock().lookup_bytes((fs + s) as u64, o, out) {
                 let mut sec = [0u8; SECTOR_SIZE];
-                if read_sector_with(fs + s, &mut sec, retain).is_err() { break; }
+                if read_sector_with(v, fs + s, &mut sec, retain).is_err() { break; }
                 out.copy_from_slice(&sec[o..o + chunk]);
             }
             done += chunk;
@@ -2806,13 +3103,13 @@ impl FatWindow {
     }
 
     /// `fat32_next_cluster`, with the same bound.
-    fn next(&mut self, cluster: u32) -> Result<u32, ()> {
+    fn next(&mut self, v: &'static Vol, cluster: u32) -> Result<u32, ()> {
         if cluster >= self.limit { return Err(()); }
         let sector = self.fat_start.checked_add(cluster / FAT32_ENTRIES_PER_SECTOR).ok_or(())?;
         if self.buf.is_none() || self.sector != sector {
             let buf = self.buf.insert([0u8; SECTOR_SIZE]);
-            if !SECTOR_CACHE.lock().lookup(sector as u64, buf) {
-                if read_sector(sector, buf).is_err() {
+            if !v.sector_cache.lock().lookup(sector as u64, buf) {
+                if read_sector(v, sector, buf).is_err() {
                     self.buf = None;
                     return Err(());
                 }
@@ -2826,12 +3123,18 @@ impl FatWindow {
     }
 }
 
+/// [`fat32_read_chain_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
+    fat32_read_chain_on(&BOOT, start_cluster, out_buf)
+}
+
 /// Read all data from a cluster chain into `out_buf`.
 /// Returns bytes written.
-pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
+pub fn fat32_read_chain_on(v: &'static Vol, start_cluster: u32, out_buf: &mut [u8]) -> usize {
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     // Cycle guard — see `ChainWalk`. A self-referential FAT entry would
     // otherwise spin here forever whenever `out_buf` is larger than one cluster.
@@ -2870,7 +3173,7 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
         let whole = ((out_buf.len() - written) / SECTOR_SIZE) as u32;
         if spc > 0 && whole >= spc && !cfg!(feature = "read-chain-sector-canary") {
             let mut run = spc;
-            let mut next = fat32_next_cluster(cluster).ok();
+            let mut next = fat32_next_cluster(v, cluster).ok();
             while let Some(n) = next {
                 if n != cluster.wrapping_add(run / spc)
                     || n < FAT32_FIRST_DATA_CLUSTER || n >= FAT32_EOC
@@ -2882,10 +3185,10 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
                     break;
                 }
                 run += spc;
-                next = fat32_next_cluster(n).ok();
+                next = fat32_next_cluster(v, n).ok();
             }
             let bytes = run as usize * SECTOR_SIZE;
-            if read_run_cached(first_sector, run, &mut out_buf[written..written + bytes], true).is_err() {
+            if read_run_cached(v, first_sector, run, &mut out_buf[written..written + bytes], true).is_err() {
                 break;
             }
             written += bytes;
@@ -2904,7 +3207,7 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
             // the read, not just this cluster: following the chain past a
             // sector it could not read copied nothing and walked on, up to the
             // whole step bound (wave 15, GR4).
-            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+            if read_sector(v, first_sector + s, &mut sec_buf).is_err() {
                 if cfg!(feature = "fat-walk-read-error-canary") { break; }
                 return written;
             }
@@ -2913,7 +3216,7 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
             written += to_copy;
         }
 
-        cluster = match fat32_next_cluster(cluster) {
+        cluster = match fat32_next_cluster(v, cluster) {
             Ok(n) => n,
             Err(_) => break,
         };
@@ -2922,10 +3225,16 @@ pub fn fat32_read_chain(start_cluster: u32, out_buf: &mut [u8]) -> usize {
     written
 }
 
+/// [`fat32_lookup_root_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_lookup_root(name83: &[u8; 11]) -> Result<(u32, u32), ()> {
+    fat32_lookup_root_on(&BOOT, name83)
+}
+
 /// Find a file in the root directory by short name (8.3 format, uppercased).
 /// Returns (start_cluster, file_size) or Err if not found.
-pub fn fat32_lookup_root(name83: &[u8; 11]) -> Result<(u32, u32), ()> {
-    fat32_lookup_root_entry(name83).map(|e| (e.cluster, e.size))
+pub fn fat32_lookup_root_on(v: &'static Vol, name83: &[u8; 11]) -> Result<(u32, u32), ()> {
+    fat32_lookup_root_entry_on(v, name83).map(|e| (e.cluster, e.size))
 }
 
 /// A name on the volume, resolved: the directory it is in and its 8.3 name
@@ -2944,20 +3253,20 @@ struct FName {
 
 impl FName {
     /// A file of the root directory.
-    fn root(name83: &[u8; 11]) -> FName {
+    fn root(v: &'static Vol, name83: &[u8; 11]) -> FName {
         let mut path = [0u8; 13];
         let n = name83_to_path(name83, &mut path);
         let mut key = crate::vfs::ZEROED_KEY;
         // Without the leading slash, as every key is.
         key.bytes[..n - 1].copy_from_slice(&path[1..n]);
-        FName { dir: FAT32.lock().root_cluster, name: *name83, key }
+        FName { dir: v.fat32.lock().root_cluster, name: *name83, key }
     }
 
     /// The file a VFS key names: its directories walked from the root.
     /// `NotFound` when one of them is missing, `WrongType` when one is a file.
-    fn of_key(key: &crate::vfs::InodeKey) -> Result<FName, FsError> {
+    fn of_key(v: &'static Vol, key: &crate::vfs::InodeKey) -> Result<FName, FsError> {
         let n = key.bytes.iter().position(|&b| b == 0).unwrap_or(crate::vfs::INODE_KEY_LEN);
-        let (dir, last) = resolve_parent(&key.bytes[..n])?;
+        let (dir, last) = resolve_parent(v, &key.bytes[..n])?;
         let name = component_to_83(last).ok_or(FsError::InvalidArg)?;
         Ok(FName { dir, name, key: *key })
     }
@@ -3010,24 +3319,30 @@ pub struct RootEntry {
     pub acc_date: u16,
 }
 
+/// [`fat32_lookup_root_entry_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_lookup_root_entry(name83: &[u8; 11]) -> Result<RootEntry, ()> {
+    fat32_lookup_root_entry_on(&BOOT, name83)
+}
+
 /// [`fat32_lookup_root`], keeping the whole entry: attributes and the DOS
 /// dates and times. The same single scan.
-pub fn fat32_lookup_root_entry(name83: &[u8; 11]) -> Result<RootEntry, ()> {
-    let root = FAT32.lock().root_cluster;
-    lookup_entry(root, name83)
+pub fn fat32_lookup_root_entry_on(v: &'static Vol, name83: &[u8; 11]) -> Result<RootEntry, ()> {
+    let root = v.fat32.lock().root_cluster;
+    lookup_entry(v, root, name83)
 }
 
 /// [`fat32_lookup_root_entry`] in any directory (`dir`: its first cluster).
-fn lookup_entry(dir: u32, name83: &[u8; 11]) -> Result<RootEntry, ()> {
+fn lookup_entry(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<RootEntry, ()> {
     // Wave 14: the generation BEFORE the scan stamps what the scan finds, so
     // a write that lands while it runs leaves the entry already stale.
-    let gen = WRITE_GEN.load(core::sync::atomic::Ordering::Acquire);
+    let gen = v.write_gen.load(core::sync::atomic::Ordering::Acquire);
     // Canary: the cache is blind to the directory, as it was when only the
     // root had files (a file of the same name below it is answered for).
     let cdir = if cfg!(feature = "dir-blind-dcache-canary") { 0 } else { dir };
-    if let Some(e) = dcache_get(cdir, name83, gen) { return Ok(e); }
-    let e = lookup_entry_scan(dir, name83)?;
-    dcache_put(cdir, name83, gen, e);
+    if let Some(e) = dcache_get(v, cdir, name83, gen) { return Ok(e); }
+    let e = lookup_entry_scan(v, dir, name83)?;
+    dcache_put(v, cdir, name83, gen, e);
     Ok(e)
 }
 
@@ -3054,9 +3369,6 @@ const NO_DENTRY: Dentry = Dentry {
     e: RootEntry { cluster: 0, size: 0, attr: 0, wrt_date: 0, wrt_time: 0, crt_date: 0, crt_time: 0, acc_date: 0 },
 };
 
-/// A leaf lock, held for one probe (a hash and an 11-byte compare).
-static DCACHE: SpinLock<[Dentry; DCACHE_SLOTS]> = SpinLock::new([NO_DENTRY; DCACHE_SLOTS]);
-
 #[inline]
 fn dcache_slot(dir: u32, name: &[u8; 11]) -> usize {
     let mut h = dir;
@@ -3064,22 +3376,22 @@ fn dcache_slot(dir: u32, name: &[u8; 11]) -> usize {
     (h as usize) % DCACHE_SLOTS
 }
 
-fn dcache_get(dir: u32, name: &[u8; 11], gen: u32) -> Option<RootEntry> {
-    let d = DCACHE.lock()[dcache_slot(dir, name)];
+fn dcache_get(v: &'static Vol, dir: u32, name: &[u8; 11], gen: u32) -> Option<RootEntry> {
+    let d = v.dcache.lock()[dcache_slot(dir, name)];
     let fresh = d.gen == gen || cfg!(feature = "dcache-stale-canary");
     (d.gen != 0 && fresh && d.dir == dir && d.name == *name).then_some(d.e)
 }
 
-fn dcache_put(dir: u32, name: &[u8; 11], gen: u32, e: RootEntry) {
-    DCACHE.lock()[dcache_slot(dir, name)] = Dentry { gen, dir, name: *name, e };
+fn dcache_put(v: &'static Vol, dir: u32, name: &[u8; 11], gen: u32, e: RootEntry) {
+    v.dcache.lock()[dcache_slot(dir, name)] = Dentry { gen, dir, name: *name, e };
 }
 
-fn lookup_entry_scan(dir: u32, name83: &[u8; 11]) -> Result<RootEntry, ()> {
-    if !FAT32.lock().mounted { return Err(()); }
+fn lookup_entry_scan(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<RootEntry, ()> {
+    if !v.fat32.lock().mounted { return Err(()); }
 
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     // Cycle guard — see `ChainWalk`. Reachable from ring 3 via open().
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
@@ -3103,7 +3415,7 @@ fn lookup_entry_scan(dir: u32, name83: &[u8; 11]) -> Result<RootEntry, ()> {
             // "not found" for the wrong reason, indistinguishable from the
             // right one at the call site. Propagate instead.
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
-            read_sector(first_sector + s, &mut sec_buf)?;
+            read_sector(v, first_sector + s, &mut sec_buf)?;
 
             // 16 directory entries per 512-byte sector
             for e in 0..DIRENTS_PER_SECTOR {
@@ -3133,14 +3445,20 @@ fn lookup_entry_scan(dir: u32, name83: &[u8; 11]) -> Result<RootEntry, ()> {
             }
         }
 
-        cluster = fat32_next_cluster(cluster).unwrap_or(FAT32_EOC);
+        cluster = fat32_next_cluster(v, cluster).unwrap_or(FAT32_EOC);
     }
     Err(())
 }
 
-/// Returns true if FAT32 is mounted.
+/// [`fat32_mounted_on`] on the boot volume ([`BOOT`]).
+#[inline]
 pub fn fat32_mounted() -> bool {
-    FAT32.lock().mounted
+    fat32_mounted_on(&BOOT)
+}
+
+/// Returns true if FAT32 is mounted.
+pub fn fat32_mounted_on(v: &'static Vol) -> bool {
+    v.fat32.lock().mounted
 }
 
 // ── Write support (Phase 8) ───────────────────────────────────────────────────
@@ -3150,8 +3468,8 @@ pub fn fat32_mounted() -> bool {
 /// Updates the in-memory sector cache so a subsequent read sees the
 /// fresh contents (write-through). Without invalidation a later
 /// read_sector() would return stale cached data even after a write.
-fn write_sector(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
-    write_sector_in(sector, buf, false)
+fn write_sector(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+    write_sector_in(v, sector, buf, false)
 }
 
 /// [`write_sector`] into the epoch after the current one, with no barrier
@@ -3159,32 +3477,32 @@ fn write_sector(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
 /// cache answers `Uncached` and the sector goes to the device now, which
 /// the caller must have ordered itself. For a directory entry that names
 /// data and a chain written in the current epoch (wave 15, FW).
-fn write_sector_ahead(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
-    write_sector_in(sector, buf, true)
+fn write_sector_ahead(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+    write_sector_in(v, sector, buf, true)
 }
 
-fn write_sector_in(sector: u32, buf: &[u8; SECTOR_SIZE], ahead: bool) -> Result<(), ()> {
-    if WB {
+fn write_sector_in(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE], ahead: bool) -> Result<(), ()> {
+    if v.knobs.writeback {
         loop {
             let r = if ahead {
-                SECTOR_CACHE.lock().write_dirty_ahead(sector as u64, buf)
+                v.sector_cache.lock().write_dirty_ahead(sector as u64, buf)
             } else {
-                SECTOR_CACHE.lock().write_dirty(sector as u64, buf)
+                v.sector_cache.lock().write_dirty(sector as u64, buf)
             };
             match r {
                 crate::bcache::Dirty::Done { first } => {
                     if first {
-                        WB_DIRTY_SINCE.store(wb_now_ms(), core::sync::atomic::Ordering::Relaxed);
+                        v.wb_dirty_since.store(wb_now_ms(), core::sync::atomic::Ordering::Relaxed);
                     }
-                    write_gen_bump();
-                    let (dirty, lines) = fat32_writeback_dirty();
+                    write_gen_bump(v);
+                    let (dirty, lines) = fat32_writeback_dirty_on(v);
                     if wb_over_watermark(dirty, lines) { wb_wake(); }
                     return Ok(());
                 }
                 crate::bcache::Dirty::NeedWriteback(epoch) => {
-                    let claim = wb_claim();
-                    if wb_write_back(&claim, epoch, false).is_err() {
-                        write_gen_bump();
+                    let claim = wb_claim(v);
+                    if wb_write_back(v, &claim, epoch, false).is_err() {
+                        write_gen_bump(v);
                         return Err(());
                     }
                 }
@@ -3192,7 +3510,7 @@ fn write_sector_in(sector: u32, buf: &[u8; SECTOR_SIZE], ahead: bool) -> Result<
             }
         }
     }
-    write_sector_device(sector, buf)
+    write_sector_device(v, sector, buf)
 }
 
 /// [`write_sector`] straight to the device, never through the dirty cache.
@@ -3200,25 +3518,25 @@ fn write_sector_in(sector: u32, buf: &[u8; SECTOR_SIZE], ahead: bool) -> Result<
 /// medium (or fail) now, with nothing queued behind it to retry or reorder:
 /// the volume's clean/dirty flag. The caller has no dirty lines pending, or
 /// this write would carry their sector's newer bytes ahead of their epoch.
-fn write_sector_direct(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
-    write_sector_device(sector, buf)
+fn write_sector_direct(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+    write_sector_device(v, sector, buf)
 }
 
-fn write_sector_device(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+fn write_sector_device(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
     // Quiet: this path keeps the cache coherent itself, just below; the
     // block layer's observer is for writers that do not.
     // Gate canary only: the bump BEFORE the bytes land (the class of order
     // the comment below rules out).
-    if cfg!(feature = "write-gen-early-canary") { write_gen_bump(); }
+    if cfg!(feature = "write-gen-early-canary") { write_gen_bump(v); }
     pi_io_probe();
-    let r = blkdev::write_quiet(dev_lba(sector as u64), 1, buf);
+    let r = v.dev.write_quiet(dev_lba(v, sector as u64), 1, buf);
     if r.is_err() {
         // What the device holds now is unknown; the old line must not answer.
-        SECTOR_CACHE.lock().invalidate(sector as u64);
+        v.sector_cache.lock().invalidate(sector as u64);
     } else if !cfg!(feature = "fatcache-writethrough-canary") {
         // Update the line if present (write-through). Cheaper than a straight
         // invalidate because the next reader pays no miss cost. Never installs.
-        SECTOR_CACHE.lock().update_if_present(sector as u64, buf);
+        v.sector_cache.lock().update_if_present(sector as u64, buf);
     }
     // Whatever the device answered, a directory entry or a FAT link may have
     // moved: every read-only stream looks its name up again. After the cache
@@ -3226,7 +3544,7 @@ fn write_sector_device(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
     // load the new generation, read the old line, and stamp old bytes with a
     // generation no later write moves.
     if !cfg!(feature = "write-gen-early-canary") {
-        write_gen_bump();
+        write_gen_bump(v);
     }
     if r.is_err() { return Err(()); }
     Ok(())
@@ -3237,18 +3555,18 @@ fn write_sector_device(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
 /// The upper 4 bits of the existing entry are preserved (as per FAT32 spec).
 /// Claims the entry's FAT sector for the read-modify-write
 /// ([`fat_sector_claim`]); never call it while holding a claim.
-fn fat32_write_fat_entry(cluster: u32, value: u32) -> Result<(), ()> {
-    let _claim = fat_sector_claim(cluster / FAT32_ENTRIES_PER_SECTOR);
-    fat32_write_fat_entry_claimed(cluster, value)
+fn fat32_write_fat_entry(v: &'static Vol, cluster: u32, value: u32) -> Result<(), ()> {
+    let _claim = fat_sector_claim(v, cluster / FAT32_ENTRIES_PER_SECTOR);
+    fat32_write_fat_entry_claimed(v, cluster, value)
 }
 
 /// The body of [`fat32_write_fat_entry`], for a caller that already holds the
 /// claim on `cluster`'s FAT sector (the allocator, which re-read that sector
 /// under it). Without the claim this is the lost-update race the claim closes.
-fn fat32_write_fat_entry_claimed(cluster: u32, value: u32) -> Result<(), ()> {
+fn fat32_write_fat_entry_claimed(v: &'static Vol, cluster: u32, value: u32) -> Result<(), ()> {
     let (fat_start, fat_sz32, num_fats, data_clusters) = {
-        let v = FAT32.lock();
-        (v.fat_start, v.fat_sz32, v.num_fats, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.fat_start, fv.fat_sz32, fv.num_fats, fv.data_clusters)
     };
 
     // Bound the cluster against the actual FAT size *here*, not only in the
@@ -3269,7 +3587,7 @@ fn fat32_write_fat_entry_claimed(cluster: u32, value: u32) -> Result<(), ()> {
 
     // Read sector from FAT copy 0 for modification.
     let mut buf = [0u8; SECTOR_SIZE];
-    read_sector(fat_start.checked_add(fat_sector_off).ok_or(())?, &mut buf)?;
+    read_sector(v, fat_start.checked_add(fat_sector_off).ok_or(())?, &mut buf)?;
 
     // Preserve upper nibble of the existing entry (FAT32 spec requirement).
     let cur = u32::from_le_bytes([
@@ -3282,7 +3600,7 @@ fn fat32_write_fat_entry_claimed(cluster: u32, value: u32) -> Result<(), ()> {
 
     // Any cached free count is stale from here on, whether or not every copy
     // below is written: bump before the first write, not after.
-    free_count_invalidate();
+    free_count_invalidate(v);
 
     // Write updated sector to all FAT copies.
     // `num_fats` and `fat_sz32` are both straight out of the BPB; compute each
@@ -3295,13 +3613,19 @@ fn fat32_write_fat_entry_claimed(cluster: u32, value: u32) -> Result<(), ()> {
             .and_then(|off| fat_start.checked_add(off))
             .and_then(|base| base.checked_add(fat_sector_off))
             .ok_or(())?;
-        write_sector(sec, &buf)?;
+        write_sector(v, sec, &buf)?;
     }
     // And again after: a statfs scan on another hart that started after the
     // bump above but read this FAT sector before the write landed must not
     // find its generation unchanged and publish the stale count.
-    free_count_invalidate();
+    free_count_invalidate(v);
     Ok(())
+}
+
+/// [`fat32_alloc_cluster_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_alloc_cluster() -> Result<u32, ()> {
+    fat32_alloc_cluster_on(&BOOT)
 }
 
 /// Scan the FAT for a free cluster (entry == 0), mark it as end-of-chain,
@@ -3313,34 +3637,28 @@ fn fat32_write_fat_entry_claimed(cluster: u32, value: u32) -> Result<(), ()> {
 /// happens under that claim, so the copy read is current — and the first
 /// entry still free is marked. If another updater took them all in between,
 /// the scan moves on.
-pub fn fat32_alloc_cluster() -> Result<u32, ()> {
+pub fn fat32_alloc_cluster_on(v: &'static Vol) -> Result<u32, ()> {
     #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
     let _canary = FAT_MUTATE_CANARY.lock();
-    fat32_alloc_cluster_inner()
+    fat32_alloc_cluster_inner(v)
 }
 
-/// [`fat32_alloc_cluster`] without the canaries' old lock, for the canary
-/// build of `chain_nth_or_extend`, which holds that lock itself.
-/// The FAT sector (relative to the FAT start) the last allocation found a
-/// free entry in; the next scan starts there. Reset at mount.
-static ALLOC_HINT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
-fn fat32_alloc_cluster_inner() -> Result<u32, ()> {
-    match alloc_scan() {
+fn fat32_alloc_cluster_inner(v: &'static Vol) -> Result<u32, ()> {
+    match alloc_scan(v) {
         Ok(c) => Ok(c),
         // Full, but chains are held for the next flush (`defer_free`):
         // flush now, which frees every held chain, and scan once more.
         // Not in the FAT_MUTATE canary builds, whose caller may hold the
         // lock the flush's frees would take.
-        Err(()) if fat32_held_clusters() > 0
+        Err(()) if fat32_held_clusters_on(v) > 0
             && !cfg!(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))
-            && device_flush().is_ok() => alloc_scan(),
+            && device_flush(v).is_ok() => alloc_scan(v),
         Err(()) => Err(()),
     }
 }
 
 /// One scan of the FAT for a free entry (see [`fat32_alloc_cluster`]).
-fn alloc_scan() -> Result<u32, ()> {
+fn alloc_scan(v: &'static Vol) -> Result<u32, ()> {
     // **Closed by the write-path audit, 2026-09-23 — this does NOT hand back
     // an out-of-range cluster, and here is why rather than an assertion.**
     // This scans `0..fat_sz32` sectors of FAT entries in ascending cluster
@@ -3354,8 +3672,8 @@ fn alloc_scan() -> Result<u32, ()> {
     // a discriminating host test (`alloc_cluster_never_hands_out_a_cluster_past_the_data_region`
     // in fs-tests).
     let (fat_start, fat_sz32, root_cluster, data_clusters) = {
-        let v = FAT32.lock();
-        (v.fat_start, v.fat_sz32, v.root_cluster, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.fat_start, fv.fat_sz32, fv.root_cluster, fv.data_clusters)
     };
     if fat_sz32 == 0 { return Err(()); }
     // Entries past the data region read free in the FAT's last sector; a
@@ -3371,7 +3689,7 @@ fn alloc_scan() -> Result<u32, ()> {
     let hint = if cfg!(feature = "alloc-hint-canary") {
         0
     } else {
-        ALLOC_HINT.load(core::sync::atomic::Ordering::Relaxed).min(fat_sz32 - 1)
+        v.alloc_hint.load(core::sync::atomic::Ordering::Relaxed).min(fat_sz32 - 1)
     };
     for k in 0..fat_sz32 {
         let sec_idx = (hint + k) % fat_sz32;
@@ -3380,15 +3698,15 @@ fn alloc_scan() -> Result<u32, ()> {
         // addressable sector and hand out a cluster number that does not
         // correspond to the entry we actually read.
         let sec = match fat_start.checked_add(sec_idx) { Some(v) => v, None => return Err(()) };
-        if read_sector(sec, &mut buf).is_err() { return Err(()); }
+        if read_sector(v, sec, &mut buf).is_err() { return Err(()); }
         match first_free_in_fat_sector(&buf, sec_idx, root_cluster)? {
             Some(c) if c < last_valid => {}
             _ => continue,
         }
         // A candidate. Confirm it on a current copy of the sector, under its
         // claim, and mark it there.
-        let _claim = fat_sector_claim(sec_idx);
-        if read_sector(sec, &mut buf).is_err() { return Err(()); }
+        let _claim = fat_sector_claim(v, sec_idx);
+        if read_sector(v, sec, &mut buf).is_err() { return Err(()); }
         let cluster = match first_free_in_fat_sector(&buf, sec_idx, root_cluster)? {
             Some(c) if c < last_valid => c,
             _ => continue, // another updater took them: scan on
@@ -3400,11 +3718,11 @@ fn alloc_scan() -> Result<u32, ()> {
         // failed allocation. Put the entry back to free (best effort: if this
         // fails too, the device is failing and there is nothing better to do)
         // before reporting the failure.
-        if fat32_write_fat_entry_claimed(cluster, 0x0FFF_FFFF).is_err() {
-            let _ = fat32_write_fat_entry_claimed(cluster, 0);
+        if fat32_write_fat_entry_claimed(v, cluster, 0x0FFF_FFFF).is_err() {
+            let _ = fat32_write_fat_entry_claimed(v, cluster, 0);
             return Err(());
         }
-        ALLOC_HINT.store(sec_idx, core::sync::atomic::Ordering::Relaxed);
+        v.alloc_hint.store(sec_idx, core::sync::atomic::Ordering::Relaxed);
         return Ok(cluster);
     }
     Err(()) // Disk full
@@ -3449,46 +3767,52 @@ const SWAP_ZERO_CHUNK: usize = 4096;
 /// leaked tail (the mount check reclaims it), never a live entry over free
 /// clusters. This is the swap file's shrink; an ordinary truncate to a length
 /// that is not zero still rewrites the file (`Fat32Fs::truncate`).
-fn fat32_trim_file(f: &FName, e: RootEntry, new_size: u32) -> Result<(), crate::vfs::FsErr> {
+fn fat32_trim_file(v: &'static Vol, f: &FName, e: RootEntry, new_size: u32) -> Result<(), crate::vfs::FsErr> {
     use crate::vfs::FsErr;
-    let bpc = FAT32.lock().bytes_per_clus.max(1);
+    let bpc = v.fat32.lock().bytes_per_clus.max(1);
     let keep = new_size.div_ceil(bpc).max(1);
-    let last = chain_nth(e.cluster, keep - 1).map_err(fs_err)?;
-    let tail = fat32_next_cluster(last).map_err(|()| FsErr::Io)?;
+    let last = chain_nth(v, e.cluster, keep - 1).map_err(fs_err)?;
+    let tail = fat32_next_cluster(v, last).map_err(|()| FsErr::Io)?;
     let has_tail = tail >= FAT32_FIRST_DATA_CLUSTER && tail < FAT32_EOC;
     if has_tail {
-        fat32_write_fat_entry(last, FAT32_END_OF_CHAIN).map_err(|()| FsErr::Io)?;
+        fat32_write_fat_entry(v, last, FAT32_END_OF_CHAIN).map_err(|()| FsErr::Io)?;
     }
-    let (sector, off) = find_dirent_location(f.dir, &f.name).map_err(|()| FsErr::Io)?;
-    dirent_clus_size_in(sector, off, e.cluster, new_size, false).map_err(|()| FsErr::Io)?;
+    let (sector, off) = find_dirent_location(v, f.dir, &f.name).map_err(|()| FsErr::Io)?;
+    dirent_clus_size_in(v, sector, off, e.cluster, new_size, false).map_err(|()| FsErr::Io)?;
     if has_tail {
         let gone = e.size.div_ceil(bpc).saturating_sub(keep).max(1);
-        if defer_frees() {
-            defer_free(tail, gone.saturating_mul(bpc)).map_err(fs_err)?;
+        if defer_frees(v) {
+            defer_free(v, tail, gone.saturating_mul(bpc)).map_err(fs_err)?;
         } else {
-            order_barrier().or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) }).map_err(fs_err)?;
-            fat32_free_chain(tail);
+            order_barrier(v).or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) }).map_err(fs_err)?;
+            fat32_free_chain_on(v, tail);
         }
     }
     Ok(())
 }
 
-/// Free all clusters in a chain starting at `start`.
+/// [`fat32_free_chain_on`] on the boot volume ([`BOOT`]).
+#[inline]
 pub fn fat32_free_chain(start: u32) {
+    fat32_free_chain_on(&BOOT, start)
+}
+
+/// Free all clusters in a chain starting at `start`.
+pub fn fat32_free_chain_on(v: &'static Vol, start: u32) {
     #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
     let _canary = FAT_MUTATE_CANARY.lock();
-    free_chain_unlocked(start);
+    free_chain_unlocked(v, start);
 }
 
 /// [`fat32_free_chain`] without the canaries' old lock: the release of held
 /// chains runs inside an allocation that a canary build may call with that
 /// lock held.
-fn free_chain_unlocked(start: u32) {
+fn free_chain_unlocked(v: &'static Vol, start: u32) {
     // No hold across the walk: each entry write claims its own FAT sector
     // (`fat32_write_fat_entry`). `next` is read before its cluster is freed,
     // so a cluster an allocator takes the instant it is freed is never
     // followed.
-    let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
+    let (fat_sz32, data_clusters) = { let fv = v.fat32.lock(); (fv.fat_sz32, fv.data_clusters) };
     // Cycle guard — see `ChainWalk`. This loop looks self-terminating on
     // a cycle (freeing FAT[2] makes the next lookup return 0), but that relies
     // on the write succeeding: the `let _ =` swallows a device error, and
@@ -3499,8 +3823,8 @@ fn free_chain_unlocked(start: u32) {
     let mut cluster = start;
     while cluster >= FAT32_FIRST_DATA_CLUSTER && cluster < FAT32_EOC {
         if !walk.visit(cluster) { break; }
-        let next = fat32_next_cluster(cluster).unwrap_or(FAT32_EOC);
-        let _ = fat32_write_fat_entry(cluster, 0); // Mark as free
+        let next = fat32_next_cluster(v, cluster).unwrap_or(FAT32_EOC);
+        let _ = fat32_write_fat_entry(v, cluster, 0); // Mark as free
         cluster = next;
     }
 }
@@ -3530,22 +3854,23 @@ fn free_chain_unlocked(start: u32) {
 struct HeldChain { first: u32, clusters: u32, epoch: u64 }
 
 const HELD_SLOTS: usize = azos_limits::FS_DEFERRED_FREE_SLOTS;
-static HELD: SpinLock<[HeldChain; HELD_SLOTS]> =
-    SpinLock::new([HeldChain { first: 0, clusters: 0, epoch: 0 }; HELD_SLOTS]);
-/// Sum of the held chains' `clusters`: what statfs counts as free on top of
-/// the FAT's zero entries.
-static HELD_CLUSTERS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Whether a chain taken away now is held (write-back with
 /// `FS_DEFERRED_FREE`). Write-through flushes at every barrier, so it keeps
 /// the undeferred order.
-fn defer_frees() -> bool {
-    azos_limits::FS_DEFERRED_FREE && wb_active()
+fn defer_frees(v: &'static Vol) -> bool {
+    azos_limits::FS_DEFERRED_FREE && wb_active(v)
+}
+
+/// [`fat32_held_clusters_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_held_clusters() -> u32 {
+    fat32_held_clusters_on(&BOOT)
 }
 
 /// Clusters held for a later free (statfs counts them free).
-pub fn fat32_held_clusters() -> u32 {
-    HELD_CLUSTERS.load(core::sync::atomic::Ordering::Relaxed)
+pub fn fat32_held_clusters_on(v: &'static Vol) -> u32 {
+    v.held_clusters.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Hold `first`'s chain (named by `size` bytes) until the epoch current now
@@ -3554,24 +3879,24 @@ pub fn fat32_held_clusters() -> u32 {
 /// undeferred order: close the epoch, then free into the next one (the
 /// write-back puts a flush between them). `Err` only from that barrier; the
 /// chain then leaks.
-fn defer_free(first: u32, size: u32) -> Result<(), FsError> {
+fn defer_free(v: &'static Vol, first: u32, size: u32) -> Result<(), FsError> {
     if first < FAT32_FIRST_DATA_CLUSTER { return Ok(()); }
     if cfg!(feature = "deferred-free-canary") {
         // Canary: the chain is freed at once, in the unlinking write's own
         // epoch, and the allocator may reuse it there.
-        fat32_free_chain(first);
+        fat32_free_chain_on(v, first);
         return Ok(());
     }
-    let bpc = FAT32.lock().bytes_per_clus.max(1);
+    let bpc = v.fat32.lock().bytes_per_clus.max(1);
     let clusters = size.div_ceil(bpc).max(1);
     // The top epoch: the unlinking write may be an entry written ahead
     // (`write_sector_ahead`), and the chain is held until it is durable.
-    let epoch = SECTOR_CACHE.lock().top_epoch();
+    let epoch = v.sector_cache.lock().top_epoch();
     {
-        let mut h = HELD.lock();
+        let mut h = v.held.lock();
         if let Some(s) = h.iter_mut().find(|s| s.first == 0) {
             *s = HeldChain { first, clusters, epoch };
-            HELD_CLUSTERS.fetch_add(clusters, core::sync::atomic::Ordering::Relaxed);
+            v.held_clusters.fetch_add(clusters, core::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
     }
@@ -3581,26 +3906,26 @@ fn defer_free(first: u32, size: u32) -> Result<(), FsError> {
     // closed epoch, so the write-back puts a flush before the frees, as
     // write-through's "free one epoch later". One barrier then serves
     // `FS_DEFERRED_FREE_SLOTS` more holds, not one.
-    if wb_active() && !cfg!(feature = "fw-free-one-held-canary") {
+    if wb_active(v) && !cfg!(feature = "fw-free-one-held-canary") {
         // Through `barrier_closing`, like every other barrier, so the
         // `wb-barrier-flushes-canary` build flushes here too (FW2).
-        let top = barrier_closing()?;
-        fat32_free_chain(first);
-        release_held(top);
+        let top = barrier_closing(v)?;
+        fat32_free_chain_on(v, first);
+        release_held(v, top);
         return Ok(());
     }
-    match order_barrier() {
+    match order_barrier(v) {
         // The flush made the unlinking write durable: the chain can be
         // discarded before it is freed.
         Ok(()) => {
-            free_chain_discarding(first);
+            free_chain_discarding(v, first);
             return Ok(());
         }
         // A device that cannot flush gives no durability to discard behind.
         Err(FsError::Unsupported) => {}
         Err(e) => return Err(e),
     }
-    fat32_free_chain(first);
+    fat32_free_chain_on(v, first);
     Ok(())
 }
 
@@ -3615,19 +3940,19 @@ fn defer_free(first: u32, size: u32) -> Result<(), FsError> {
 /// free, so no new data can be erased by the discard. `batched` gathers the
 /// runs of every chain released here and discards them together before the
 /// first free; `online` discards each chain's runs and frees it.
-fn release_held(upto: u64) -> usize {
+fn release_held(v: &'static Vol, upto: u64) -> usize {
     let mut n = 0;
-    let discarding = discard_enabled();
+    let discarding = discard_enabled(v);
     let batched = discarding && azos_limits::BLK_DISCARD_BATCHED;
     let mut waiting = [0u32; HELD_SLOTS];
     let mut held = 0;
     let mut batch = DiscardBatch::new();
     loop {
         let first = {
-            let mut h = HELD.lock();
+            let mut h = v.held.lock();
             match h.iter_mut().find(|s| s.first != 0 && s.epoch <= upto) {
                 Some(s) => {
-                    HELD_CLUSTERS.fetch_sub(s.clusters, core::sync::atomic::Ordering::Relaxed);
+                    v.held_clusters.fetch_sub(s.clusters, core::sync::atomic::Ordering::Relaxed);
                     let f = s.first;
                     *s = HeldChain { first: 0, clusters: 0, epoch: 0 };
                     f
@@ -3637,20 +3962,20 @@ fn release_held(upto: u64) -> usize {
         };
         n += 1;
         if discarding {
-            chain_runs(first, &mut batch);
+            chain_runs(v, first, &mut batch);
             if batched {
                 waiting[held] = first;
                 held += 1;
                 continue;
             }
-            batch.issue();
+            batch.issue(v);
         }
-        free_chain_unlocked(first);
+        free_chain_unlocked(v, first);
     }
     if held != 0 {
-        batch.issue();
+        batch.issue(v);
         for &first in &waiting[..held] {
-            free_chain_unlocked(first);
+            free_chain_unlocked(v, first);
         }
     }
     n
@@ -3658,14 +3983,10 @@ fn release_held(upto: u64) -> usize {
 
 // ── Discard of released chains (Kconfig `BLK_DISCARD`) ───────────────────────
 
-/// The device has refused a discard (no such command, or no request layer
-/// under it): none is sent until the next mount.
-static DISCARD_OFF: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
 /// Is a released chain discarded at all (the option is on and the device has
 /// not refused)?
-fn discard_enabled() -> bool {
-    blkdev::DISCARD && !DISCARD_OFF.load(core::sync::atomic::Ordering::Relaxed)
+fn discard_enabled(v: &'static Vol) -> bool {
+    v.dev.discard_supported() && !v.discard_off.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Sector runs of freed clusters, gathered up to Kconfig `FS_DISCARD_RUNS`
@@ -3682,8 +4003,8 @@ impl DiscardBatch {
     }
 
     /// Add `sectors` sectors from sector `first` of the volume.
-    fn add(&mut self, first: u64, sectors: u32) {
-        let lba = dev_lba(first);
+    fn add(&mut self, v: &'static Vol, first: u64, sectors: u32) {
+        let lba = dev_lba(v, first);
         for r in &mut self.runs[..self.n] {
             if r.0 + r.1 as u64 == lba {
                 r.1 = r.1.saturating_add(sectors);
@@ -3695,7 +4016,7 @@ impl DiscardBatch {
             }
         }
         if self.n == self.runs.len() {
-            self.issue();
+            self.issue(v);
         }
         self.runs[self.n] = (lba, sectors);
         self.n += 1;
@@ -3704,14 +4025,14 @@ impl DiscardBatch {
     /// Discard what has been gathered, wait for it, and start over. The
     /// device's answer is a hint's: a refusal switches discard off for this
     /// mount, a failure is dropped (the clusters are freed either way).
-    fn issue(&mut self) {
+    fn issue(&mut self, v: &'static Vol) {
         if self.n == 0 {
             return;
         }
-        match blkdev::discard(&self.runs[..self.n]) {
-            Ok(()) | Err(blkdev::DiscardError::Io) => {}
-            Err(blkdev::DiscardError::Unsupported) => {
-                DISCARD_OFF.store(true, core::sync::atomic::Ordering::Relaxed);
+        match v.dev.discard(&self.runs[..self.n]) {
+            Ok(()) | Err(DiscardError::Io) => {}
+            Err(DiscardError::Unsupported) => {
+                v.discard_off.store(true, core::sync::atomic::Ordering::Relaxed);
             }
         }
         self.n = 0;
@@ -3721,10 +4042,10 @@ impl DiscardBatch {
 /// Add the clusters of the chain starting at `start`, as runs of contiguous
 /// clusters, to `batch`. The chain is still allocated: the walk is the one
 /// `free_chain_unlocked` makes, with the same cycle guard.
-fn chain_runs(start: u32, batch: &mut DiscardBatch) {
+fn chain_runs(v: &'static Vol, start: u32, batch: &mut DiscardBatch) {
     let (fat_sz32, data_clusters, spc, data_start) = {
-        let v = FAT32.lock();
-        (v.fat_sz32, v.data_clusters, v.secs_per_clus, v.data_start)
+        let fv = v.fat32.lock();
+        (fv.fat_sz32, fv.data_clusters, fv.secs_per_clus, fv.data_start)
     };
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
     // The run being built: its first cluster and its length in clusters.
@@ -3733,7 +4054,7 @@ fn chain_runs(start: u32, batch: &mut DiscardBatch) {
     let mut put = |first: u32, len: u32| {
         if len != 0 {
             if let Some(sec) = cluster_first_sector(data_start, first, spc) {
-                batch.add(sec as u64, len.saturating_mul(spc));
+                batch.add(v, sec as u64, len.saturating_mul(spc));
             }
         }
     };
@@ -3745,37 +4066,37 @@ fn chain_runs(start: u32, batch: &mut DiscardBatch) {
             put(first, len);
             (first, len) = (cluster, 1);
         }
-        cluster = fat32_next_cluster(cluster).unwrap_or(FAT32_EOC);
+        cluster = fat32_next_cluster(v, cluster).unwrap_or(FAT32_EOC);
     }
     put(first, len);
 }
 
 /// Discard the chain at `start` and free it. For a chain whose unlinking
 /// write is durable only.
-fn free_chain_discarding(start: u32) {
-    if discard_enabled() {
+fn free_chain_discarding(v: &'static Vol, start: u32) {
+    if discard_enabled(v) {
         let mut batch = DiscardBatch::new();
-        chain_runs(start, &mut batch);
-        batch.issue();
+        chain_runs(v, start, &mut batch);
+        batch.issue(v);
     }
-    fat32_free_chain(start);
+    fat32_free_chain_on(v, start);
 }
 
 /// Forget every held chain (they leak): a new volume, or the medium changed
 /// under this file.
-fn held_reset() {
-    let mut h = HELD.lock();
+fn held_reset(v: &'static Vol) {
+    let mut h = v.held.lock();
     for s in h.iter_mut() { *s = HeldChain { first: 0, clusters: 0, epoch: 0 }; }
-    HELD_CLUSTERS.store(0, core::sync::atomic::Ordering::Relaxed);
+    v.held_clusters.store(0, core::sync::atomic::Ordering::Relaxed);
     // A new mount asks the device again.
-    DISCARD_OFF.store(false, core::sync::atomic::Ordering::Relaxed);
+    v.discard_off.store(false, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Write `data` into the sectors of `cluster`, zero-padding the last sector.
-fn fat32_write_cluster(cluster: u32, data: &[u8]) -> Result<(), ()> {
+fn fat32_write_cluster(v: &'static Vol, cluster: u32, data: &[u8]) -> Result<(), ()> {
     let (spc, data_start) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start)
     };
     let first_sector = cluster_first_sector(data_start, cluster, spc).ok_or(())?;
     let mut written = 0usize;
@@ -3787,7 +4108,7 @@ fn fat32_write_cluster(cluster: u32, data: &[u8]) -> Result<(), ()> {
             sec_buf[..to_copy].copy_from_slice(&data[written..written + to_copy]);
         }
         // s < spc, and cluster_first_sector proved first_sector + spc fits.
-        write_sector(first_sector + s, &sec_buf)?;
+        write_sector(v, first_sector + s, &sec_buf)?;
         written += to_copy;
         if written >= data.len() { break; }
     }
@@ -3815,7 +4136,7 @@ fn fat32_write_cluster(cluster: u32, data: &[u8]) -> Result<(), ()> {
 /// allocate a cluster, or inserting into a full directory would silently
 /// grow it.
 fn propagate_end_marker(
-    cluster: u32,
+    v: &'static Vol, cluster: u32,
     sector_in_cluster: u32,
     cur_sector: u32,
     entry_idx: usize,
@@ -3838,7 +4159,7 @@ fn propagate_end_marker(
     let next_sector = if sector_in_cluster + 1 < spc {
         Some(cur_sector + 1)
     } else {
-        match fat32_next_cluster(cluster) {
+        match fat32_next_cluster(v, cluster) {
             Ok(next_cluster)
                 if next_cluster >= FAT32_FIRST_DATA_CLUSTER && next_cluster < FAT32_EOC =>
             {
@@ -3849,11 +4170,17 @@ fn propagate_end_marker(
     };
     if let Some(sec) = next_sector {
         let mut buf = [0u8; SECTOR_SIZE];
-        read_sector(sec, &mut buf)?;
+        read_sector(v, sec, &mut buf)?;
         buf[DIRENT_OFF_NAME] = DIRENT_MARK_END;
-        write_sector(sec, &buf)?;
+        write_sector(v, sec, &buf)?;
     }
     Ok(())
+}
+
+/// [`fat32_unlink_root_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_unlink_root(name83: &[u8; 11]) -> Result<(), ()> {
+    fat32_unlink_root_on(&BOOT, name83)
 }
 
 /// Mark a root-directory entry as deleted (first byte = 0xE5). ([`unlink_at`]
@@ -3870,24 +4197,24 @@ fn propagate_end_marker(
 /// Frees nothing: a caller that owns the chain frees it AFTER this returns
 /// (see [`fat32_unlink_path`]), so the dirent is gone from the medium
 /// before its clusters can be handed out again.
-pub fn fat32_unlink_root(name83: &[u8; 11]) -> Result<(), ()> {
-    unlink_at(&FName::root(name83))
+pub fn fat32_unlink_root_on(v: &'static Vol, name83: &[u8; 11]) -> Result<(), ()> {
+    unlink_at(v, &FName::root(v, name83))
 }
 
 /// [`fat32_unlink_root`] for a file in any directory.
-fn unlink_at(f: &FName) -> Result<(), ()> {
+fn unlink_at(v: &'static Vol, f: &FName) -> Result<(), ()> {
     // Before, so the dirent goes with no dirty page waiting to create it
     // again; after, for a page a writer dirtied in between.
-    cache_forget(&f.key);
-    let r = unlink_inner(f.dir, &f.name);
-    cache_forget(&f.key);
+    cache_forget(v, &f.key);
+    let r = unlink_inner(v, f.dir, &f.name);
+    cache_forget(v, &f.key);
     r
 }
 
-fn unlink_inner(dir: u32, name83: &[u8; 11]) -> Result<(), ()> {
+fn unlink_inner(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<(), ()> {
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     // Cycle guard — see `ChainWalk`.
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
@@ -3904,7 +4231,7 @@ fn unlink_inner(dir: u32, name83: &[u8; 11]) -> Result<(), ()> {
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
             // A read error ends the walk (wave 15, GR4): the name may be in
             // the sector it could not read, and skipping it walked on.
-            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+            if read_sector(v, first_sector + s, &mut sec_buf).is_err() {
                 if cfg!(feature = "fat-walk-read-error-canary") { continue; }
                 return Err(());
             }
@@ -3933,13 +4260,13 @@ fn unlink_inner(dir: u32, name83: &[u8; 11]) -> Result<(), ()> {
                         size: 0,
                         _reserved: [0; JOURNAL_RESERVED_SIZE],
                     };
-                    fat32_journal_write(&journal)?;
-                    journal_barrier()?;
+                    fat32_journal_write(v, &journal)?;
+                    journal_barrier(v)?;
 
                     // Step 2: Mark deleted.
                     sec_buf[off] = 0xE5;
-                    write_sector(sector_num, &sec_buf)?;
-                    journal_barrier()?;
+                    write_sector(v, sector_num, &sec_buf)?;
+                    journal_barrier(v)?;
 
                     // Step 3: Journal COMMITTED.
                     let committed = JournalEntry {
@@ -3954,16 +4281,22 @@ fn unlink_inner(dir: u32, name83: &[u8; 11]) -> Result<(), ()> {
                         size: 0,
                         _reserved: [0; JOURNAL_RESERVED_SIZE],
                     };
-                    fat32_journal_write(&committed)?;
+                    fat32_journal_write(v, &committed)?;
 
                     // Step 4: Clear journal.
-                    return fat32_journal_clear();
+                    return fat32_journal_clear(v);
                 }
             }
         }
-        cluster = fat32_next_cluster(cluster).unwrap_or(FAT32_EOC);
+        cluster = fat32_next_cluster(v, cluster).unwrap_or(FAT32_EOC);
     }
     Err(())
+}
+
+/// [`fat32_rename_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_rename(old_name83: &[u8; 11], new_name83: &[u8; 11]) -> Result<(), crate::vfs::FsErr> {
+    fat32_rename_on(&BOOT, old_name83, new_name83)
 }
 
 /// Rename a root-directory file, replacing `new_name83` if it already
@@ -3989,39 +4322,39 @@ fn unlink_inner(dir: u32, name83: &[u8; 11]) -> Result<(), ()> {
 /// record then moves the chain onto it and deletes the source, so a cut never
 /// leaves both names on the chain nor neither. A directory is not moved
 /// across directories (`Unsupported`: its `..` would have to follow).
-pub fn fat32_rename(
-    old_name83: &[u8; 11],
+pub fn fat32_rename_on(
+    v: &'static Vol, old_name83: &[u8; 11],
     new_name83: &[u8; 11],
 ) -> Result<(), crate::vfs::FsErr> {
-    rename_at(&FName::root(old_name83), &FName::root(new_name83))
+    rename_at(v, &FName::root(v, old_name83), &FName::root(v, new_name83))
 }
 
 /// [`fat32_rename`] for names in any directories.
-fn rename_at(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
+fn rename_at(v: &'static Vol, from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
     // A directory takes its files' keys with it (they are paths): everything
     // cached reaches the volume first and none of it is kept.
-    let is_dir = fat32_lookup_dir_entry(from).is_some_and(|e| e.attr & ATTR_DIRECTORY != 0);
+    let is_dir = fat32_lookup_dir_entry(v, from).is_some_and(|e| e.attr & ATTR_DIRECTORY != 0);
     if is_dir {
-        crate::vfs::page_cache_flush_fs(&FAT32_FS)?;
+        crate::vfs::page_cache_flush_fs(v.fs)?;
     }
     // The source's cached bytes reach the file before it moves; what is cached
     // under either name is not the file's afterwards.
-    crate::vfs::page_cache_flush_file(&FAT32_FS, &from.key)?;
-    cache_forget(&to.key);
-    let r = rename_inner(from, to);
-    cache_forget(&from.key);
+    crate::vfs::page_cache_flush_file(v.fs, &from.key)?;
+    cache_forget(v, &to.key);
+    let r = rename_inner(v, from, to);
+    cache_forget(v, &from.key);
     if is_dir {
-        crate::vfs::page_cache_drop(&FAT32_FS, None, 0);
+        crate::vfs::page_cache_drop(v.fs, None, 0);
     }
     r
 }
 
 /// The entry `f` names, if it exists.
-fn fat32_lookup_dir_entry(f: &FName) -> Option<RootEntry> {
-    lookup_entry(f.dir, &f.name).ok()
+fn fat32_lookup_dir_entry(v: &'static Vol, f: &FName) -> Option<RootEntry> {
+    lookup_entry(v, f.dir, &f.name).ok()
 }
 
-fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
+fn rename_inner(v: &'static Vol, from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
     use crate::vfs::FsErr;
     // Every `Err(())` below is a block-device or journal failure, which is
     // what `Io` means; the answers that say WHY the call was refused are
@@ -4030,10 +4363,10 @@ fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
 
     if from.same(to) { return Ok(()); }
     let (old_name83, new_name83) = (&from.name, &to.name);
-    let src = lookup_entry(from.dir, old_name83).map_err(|()| FsErr::NotFound)?;
+    let src = lookup_entry(v, from.dir, old_name83).map_err(|()| FsErr::NotFound)?;
     let (src_cluster, src_size) = (src.cluster, src.size);
     let src_is_dir = src.attr & ATTR_DIRECTORY != 0;
-    let mut dest = lookup_entry(to.dir, new_name83).ok();
+    let mut dest = lookup_entry(v, to.dir, new_name83).ok();
     if let Some(d) = &dest {
         let dest_is_dir = d.attr & ATTR_DIRECTORY != 0;
         // A directory is never a replacement target: the overwrite arm frees
@@ -4046,7 +4379,7 @@ fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
     }
     let across = from.dir != to.dir;
     if src_is_dir && across { return Err(FsErr::Unsupported); }
-    let (src_sector, src_offset) = io!(find_dirent_location(from.dir, old_name83));
+    let (src_sector, src_offset) = io!(find_dirent_location(v, from.dir, old_name83));
     if dest.is_none() && across {
         // The name is free in the other directory: an empty entry takes it
         // (the source's attributes), and the record below is then a rename
@@ -4055,11 +4388,11 @@ fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
             // Canary: the chain is named in the target, then the source is
             // deleted, as two unrelated writes: a cut between them leaves
             // both names on one chain.
-            io!(dir_insert(to.dir, new_name83, src_cluster, src_size, src.attr));
-            io!(unlink_inner(from.dir, old_name83));
+            io!(dir_insert(v, to.dir, new_name83, src_cluster, src_size, src.attr));
+            io!(unlink_inner(v, from.dir, old_name83));
             return Ok(());
         }
-        io!(dir_insert(to.dir, new_name83, 0, 0, src.attr));
+        io!(dir_insert(v, to.dir, new_name83, 0, 0, src.attr));
         dest = Some(RootEntry { cluster: 0, size: 0, ..src });
     }
 
@@ -4072,9 +4405,9 @@ fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
             // ahead of the record; once the record is durable, recovery
             // completes the rename.
             let dest_old_cluster = d.cluster;
-            let defer = defer_frees();
-            let (dest_sector, dest_offset) = io!(find_dirent_location(to.dir, new_name83));
-            io!(journal_barrier());
+            let defer = defer_frees(v);
+            let (dest_sector, dest_offset) = io!(find_dirent_location(v, to.dir, new_name83));
+            io!(journal_barrier(v));
             let mut reserved = [0u8; JOURNAL_RESERVED_SIZE];
             reserved[0..4].copy_from_slice(&src_sector.to_le_bytes());
             reserved[4..6].copy_from_slice(&src_offset.to_le_bytes());
@@ -4091,18 +4424,18 @@ fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
                 size: src_size,
                 _reserved: reserved,
             };
-            io!(fat32_journal_write(&journal));
-            io!(journal_barrier());
-            io!(rename_apply(dest_sector, dest_offset, src_sector, src_offset, old_name83,
+            io!(fat32_journal_write(v, &journal));
+            io!(journal_barrier(v));
+            io!(rename_apply(v, dest_sector, dest_offset, src_sector, src_offset, old_name83,
                 src_cluster, src_size, dest_old_cluster, !defer));
-            io!(journal_barrier());
+            io!(journal_barrier(v));
             let committed = JournalEntry { state: JOURNAL_COMMITTED, ..journal };
-            io!(fat32_journal_write(&committed));
-            io!(fat32_journal_clear());
+            io!(fat32_journal_write(v, &committed));
+            io!(fat32_journal_clear(v));
             // Held until the clear is durable (`defer_free`): recovery of a
             // record whose clear did not land frees this chain again.
             if defer && dest_old_cluster >= FAT32_FIRST_DATA_CLUSTER && dest_old_cluster != src_cluster {
-                let _ = defer_free(dest_old_cluster, d.size);
+                let _ = defer_free(v, dest_old_cluster, d.size);
             }
         }
         None => {
@@ -4111,11 +4444,11 @@ fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
             // the old name or the new one, never both and never neither. The
             // slot, attributes, chain and size are untouched.
             let mut sec_buf = [0u8; SECTOR_SIZE];
-            io!(read_sector(src_sector, &mut sec_buf));
+            io!(read_sector(v, src_sector, &mut sec_buf));
             let o = src_offset as usize;
             if sec_buf[o..o + 11] != *old_name83 { return Err(FsErr::Io); }
             sec_buf[o..o + 11].copy_from_slice(new_name83);
-            io!(write_sector(src_sector, &sec_buf));
+            io!(write_sector(v, src_sector, &sec_buf));
         }
     }
     Ok(())
@@ -4127,10 +4460,10 @@ fn rename_inner(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
 /// path can learn WHERE the old dirent lives before it commits to touching
 /// anything — the journal entry it writes needs that location as ground
 /// truth, recorded before the free/overwrite it is meant to make crash-safe.
-fn find_dirent_location(dir: u32, name83: &[u8; 11]) -> Result<(u32, u16), ()> {
+fn find_dirent_location(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<(u32, u16), ()> {
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     // Cycle guard — see `ChainWalk`.
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
@@ -4146,7 +4479,7 @@ fn find_dirent_location(dir: u32, name83: &[u8; 11]) -> Result<(u32, u16), ()> {
             let mut sec_buf = [0u8; SECTOR_SIZE];
             // A read error ends the walk (wave 15, GR4), as in
             // `fat32_unlink_root`.
-            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+            if read_sector(v, first_sector + s, &mut sec_buf).is_err() {
                 if cfg!(feature = "fat-walk-read-error-canary") { continue; }
                 return Err(());
             }
@@ -4165,7 +4498,7 @@ fn find_dirent_location(dir: u32, name83: &[u8; 11]) -> Result<(u32, u16), ()> {
                 }
             }
         }
-        cluster = fat32_next_cluster(cluster).unwrap_or(FAT32_EOC);
+        cluster = fat32_next_cluster(v, cluster).unwrap_or(FAT32_EOC);
     }
     Err(())
 }
@@ -4181,20 +4514,20 @@ fn find_dirent_location(dir: u32, name83: &[u8; 11]) -> Result<(u32, u16), ()> {
 /// got this far, replaying converges to the same state instead of doing
 /// further damage.
 fn fat32_update_dirent_clus_size(
-    dir_sector: u32, dir_offset: u16, cluster: u32, size: u32,
+    v: &'static Vol, dir_sector: u32, dir_offset: u16, cluster: u32, size: u32,
 ) -> Result<(), ()> {
-    dirent_clus_size_in(dir_sector, dir_offset, cluster, size, false)
+    dirent_clus_size_in(v, dir_sector, dir_offset, cluster, size, false)
 }
 
 /// [`fat32_update_dirent_clus_size`], the sector written ahead
 /// (`write_sector_ahead`) when `ahead`.
 fn dirent_clus_size_in(
-    dir_sector: u32, dir_offset: u16, cluster: u32, size: u32, ahead: bool,
+    v: &'static Vol, dir_sector: u32, dir_offset: u16, cluster: u32, size: u32, ahead: bool,
 ) -> Result<(), ()> {
     let off = dir_offset as usize;
     if off + DIRENT_SIZE > SECTOR_SIZE { return Err(()); }
     let mut sec_buf = [0u8; SECTOR_SIZE];
-    read_sector(dir_sector, &mut sec_buf)?;
+    read_sector(v, dir_sector, &mut sec_buf)?;
     let hi = ((cluster >> 16) & 0xFFFF) as u16;
     let lo = (cluster & 0xFFFF) as u16;
     sec_buf[off + DIRENT_OFF_FST_CLUS_HI]     = (hi & 0xFF) as u8;
@@ -4205,16 +4538,16 @@ fn dirent_clus_size_in(
     sec_buf[off + DIRENT_OFF_FILE_SIZE + 1] = ((size >> 8) & 0xFF) as u8;
     sec_buf[off + DIRENT_OFF_FILE_SIZE + 2] = ((size >> 16) & 0xFF) as u8;
     sec_buf[off + DIRENT_OFF_FILE_SIZE + 3] = ((size >> 24) & 0xFF) as u8;
-    if ahead { write_sector_ahead(dir_sector, &sec_buf) } else { write_sector(dir_sector, &sec_buf) }
+    if ahead { write_sector_ahead(v, dir_sector, &sec_buf) } else { write_sector(v, dir_sector, &sec_buf) }
 }
 
 /// Allocate a fresh cluster chain and write `data` into it, extending one
 /// cluster at a time. Never called with empty `data` — callers special-case
 /// that as cluster 0 (no chain), matching a FAT32 zero-length file.
-fn fat32_alloc_and_write_chain(data: &[u8], bytes_per_clus: usize) -> Result<u32, ()> {
-    let fc = fat32_alloc_cluster()?;
-    if fat32_write_chain_from(fc, data, bytes_per_clus).is_err() {
-        fat32_free_chain(fc);
+fn fat32_alloc_and_write_chain(v: &'static Vol, data: &[u8], bytes_per_clus: usize) -> Result<u32, ()> {
+    let fc = fat32_alloc_cluster_on(v)?;
+    if fat32_write_chain_from(v, fc, data, bytes_per_clus).is_err() {
+        fat32_free_chain_on(v, fc);
         return Err(());
     }
     Ok(fc)
@@ -4228,22 +4561,28 @@ fn fat32_alloc_and_write_chain(data: &[u8], bytes_per_clus: usize) -> Result<u32
 /// Found by `tests/fuzz/fs-fuzz` (wave 11): this loop used to `?` out of the
 /// middle of a chain — disk full is the everyday case — and no caller freed
 /// what it had taken, so every failed write shrank the volume for good.
-fn fat32_write_chain_from(fc: u32, data: &[u8], bytes_per_clus: usize) -> Result<(), ()> {
+fn fat32_write_chain_from(v: &'static Vol, fc: u32, data: &[u8], bytes_per_clus: usize) -> Result<(), ()> {
     let mut cur = fc;
     let mut off = 0usize;
     loop {
         let end = (off + bytes_per_clus).min(data.len());
-        fat32_write_cluster(cur, &data[off..end])?;
+        fat32_write_cluster(v, cur, &data[off..end])?;
         off = end;
         if off >= data.len() { break; }
-        let next = fat32_alloc_cluster()?;
-        if fat32_write_fat_entry(cur, next).is_err() {
-            fat32_free_chain(next);
+        let next = fat32_alloc_cluster_on(v)?;
+        if fat32_write_fat_entry(v, cur, next).is_err() {
+            fat32_free_chain_on(v, next);
             return Err(());
         }
         cur = next;
     }
     Ok(())
+}
+
+/// [`fat32_write_file_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_write_file(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
+    fat32_write_file_on(&BOOT, name83, data)
 }
 
 /// Create or overwrite a file in the FAT32 root directory ([`write_file_at`]
@@ -4280,13 +4619,13 @@ fn fat32_write_chain_from(fc: u32, data: &[u8], bytes_per_clus: usize) -> Result
 /// why replaying steps 3 and 4 is safe no matter how far the crashed attempt
 /// got. This is exactly the "journal the unlink and the create as one
 /// operation" fix the prior audit named as the remaining work.
-pub fn fat32_write_file(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
-    write_file_at(&FName::root(name83), data)
+pub fn fat32_write_file_on(v: &'static Vol, name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
+    write_file_at(v, &FName::root(v, name83), data)
 }
 
 /// [`fat32_write_file`] for a file in any directory.
-fn write_file_at(f: &FName, data: &[u8]) -> Result<(), ()> {
-    write_file_journaled(f, data)?;
+fn write_file_at(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
+    write_file_journaled(v, f, data)?;
     // The whole-file write is complete on the device's side; make it durable
     // before telling the caller it is written (`vfs_close` reports this
     // result, and `CRASH.LOG`/`BOOTMETA` are written this way).
@@ -4304,10 +4643,16 @@ fn write_file_at(f: &FName, data: &[u8]) -> Result<(), ()> {
     // are the calls that claim it. (Only an empty-file create reaches this
     // point on such a device: every other path crossed a `journal_barrier`,
     // which refuses `Unsupported`.)
-    match device_flush() {
+    match device_flush(v) {
         Ok(()) | Err(FsError::Unsupported) => Ok(()),
         Err(_) => Err(()),
     }
+}
+
+/// [`fat32_write_file_queued_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_write_file_queued(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
+    fat32_write_file_queued_on(&BOOT, name83, data)
 }
 
 /// [`fat32_write_file`] without its final flush, under write-back: the
@@ -4317,36 +4662,36 @@ fn write_file_at(f: &FName, data: &[u8]) -> Result<(), ()> {
 /// what is not promised is WHICH until an fsync/sync (or the `fs-wb` task's
 /// age bound) has run. The VFS proxy's close and fsync use it (fsync then
 /// flushes: `FileSystem::fsync`). Write-through: exactly `fat32_write_file`.
-pub fn fat32_write_file_queued(name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
-    write_file_queued_at(&FName::root(name83), data)
+pub fn fat32_write_file_queued_on(v: &'static Vol, name83: &[u8; 11], data: &[u8]) -> Result<(), ()> {
+    write_file_queued_at(v, &FName::root(v, name83), data)
 }
 
 /// [`fat32_write_file_queued`] for a file in any directory.
-fn write_file_queued_at(f: &FName, data: &[u8]) -> Result<(), ()> {
-    if !wb_active() || cfg!(feature = "wb-close-flushes-canary") {
-        return write_file_at(f, data);
+fn write_file_queued_at(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
+    if !wb_active(v) || cfg!(feature = "wb-close-flushes-canary") {
+        return write_file_at(v, f, data);
     }
-    write_file_journaled(f, data)
+    write_file_journaled(v, f, data)
 }
 
 /// The journaled create/overwrite protocol behind [`fat32_write_file`].
-fn write_file_journaled(f: &FName, data: &[u8]) -> Result<(), ()> {
-    if !FAT32.lock().mounted { return Err(()); }
+fn write_file_journaled(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
+    if !v.fat32.lock().mounted { return Err(()); }
     // The cached pages are the old file's; again after, for a page a writer
     // dirtied while the new file was being made.
-    cache_forget(&f.key);
-    let r = write_file_journaled_inner(f, data);
-    cache_forget(&f.key);
+    cache_forget(v, &f.key);
+    let r = write_file_journaled_inner(v, f, data);
+    cache_forget(v, &f.key);
     r
 }
 
-fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
+fn write_file_journaled_inner(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
 
     // Read-only: is this an overwrite, and if so, where does the old dirent
     // live? Nothing is modified here — the old file is still fully intact
     // after this block, whichever branch `fat32_write_file` takes below.
-    let overwrite = match lookup_entry(f.dir, &f.name).map(|e| (e.cluster, e.size)) {
-        Ok((old_cluster, old_size)) => match find_dirent_location(f.dir, &f.name) {
+    let overwrite = match lookup_entry(v, f.dir, &f.name).map(|e| (e.cluster, e.size)) {
+        Ok((old_cluster, old_size)) => match find_dirent_location(v, f.dir, &f.name) {
             Ok((dir_sector, dir_offset)) => Some((old_cluster, old_size, dir_sector, dir_offset)),
             // Lookup found it but the location scan didn't (e.g. a
             // concurrent-looking, mid-directory-walk mismatch) — fail
@@ -4357,7 +4702,7 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
         Err(_) => None,
     };
 
-    let bytes_per_clus = FAT32.lock().bytes_per_clus as usize;
+    let bytes_per_clus = v.fat32.lock().bytes_per_clus as usize;
     if bytes_per_clus == 0 { return Err(()); }
 
     if let Some((old_cluster, old_size, dir_sector, dir_offset)) = overwrite {
@@ -4365,7 +4710,7 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
         let new_cluster = if data.is_empty() {
             0u32
         } else {
-            fat32_alloc_and_write_chain(data, bytes_per_clus)?
+            fat32_alloc_and_write_chain(v, data, bytes_per_clus)?
         };
 
         // Barrier 0: the new chain (data + FAT) on the medium BEFORE the
@@ -4377,8 +4722,8 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
         // Nothing names the new chain until that record is written, so a
         // failure here gives it back (wave 11, `tests/fuzz/fs-fuzz`). Not after
         // it: recovery may install `new_cluster` into the dirent.
-        if journal_barrier().is_err() {
-            if new_cluster >= FAT32_FIRST_DATA_CLUSTER { fat32_free_chain(new_cluster); }
+        if journal_barrier(v).is_err() {
+            if new_cluster >= FAT32_FIRST_DATA_CLUSTER { fat32_free_chain_on(v, new_cluster); }
             return Err(());
         }
 
@@ -4394,29 +4739,29 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
             size: data.len() as u32,
             _reserved: [0; JOURNAL_RESERVED_SIZE],
         };
-        fat32_journal_write(&journal)?;
+        fat32_journal_write(v, &journal)?;
         // Barrier 1: the record before the first write it covers. Without
         // it the old chain's free could reach the medium while neither the
         // record nor the new dirent did: a live dirent over free clusters.
-        journal_barrier()?;
+        journal_barrier(v)?;
 
-        let defer = defer_frees();
-        fat32_update_dirent_clus_size(dir_sector, dir_offset, new_cluster, data.len() as u32)?;
+        let defer = defer_frees(v);
+        fat32_update_dirent_clus_size(v, dir_sector, dir_offset, new_cluster, data.len() as u32)?;
         if !defer && old_cluster >= FAT32_FIRST_DATA_CLUSTER {
-            fat32_free_chain(old_cluster);
+            fat32_free_chain_on(v, old_cluster);
         }
         // Barrier 2: the mutation before the commit. A COMMITTED (or
         // cleared) record that overtook it would stop recovery from
         // finishing a half-applied overwrite.
-        journal_barrier()?;
+        journal_barrier(v)?;
 
         let committed = JournalEntry { state: JOURNAL_COMMITTED, ..journal };
-        fat32_journal_write(&committed)?;
-        fat32_journal_clear()?;
+        fat32_journal_write(v, &committed)?;
+        fat32_journal_clear(v)?;
         // Held until the clear is durable (`defer_free`): recovery of a
         // PENDING record frees the old chain again, so it must not have
         // been reused before the clear landed.
-        if defer { let _ = defer_free(old_cluster, old_size); }
+        if defer { let _ = defer_free(v, old_cluster, old_size); }
         return Ok(());
     }
 
@@ -4424,7 +4769,7 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
     let first_cluster = if data.is_empty() {
         0u32  // Empty file: no cluster
     } else {
-        let fc = fat32_alloc_cluster()?;
+        let fc = fat32_alloc_cluster_on(v)?;
 
         // Step 1: Write journal (PENDING) before any FAT/dir modifications.
         let journal = JournalEntry {
@@ -4444,29 +4789,29 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
         // failure from here to the dirent frees the chain itself. It used to
         // `?` out and keep it: disk full leaked the whole partial chain on
         // every attempt (wave 11, `tests/fuzz/fs-fuzz`).
-        let written = fat32_journal_write(&journal).is_ok()
+        let written = fat32_journal_write(v, &journal).is_ok()
             // Barrier 1: the record before the writes it describes. A PENDING
             // `WRITE_DIR` is discarded at mount, so this one is not what keeps
             // the volume consistent (barrier 2 is); it keeps the owner's
             // journal-first protocol exact.
-            && journal_barrier().is_ok()
+            && journal_barrier(v).is_ok()
             // Steps 2-3: data clusters, FAT chain.
-            && fat32_write_chain_from(fc, data, bytes_per_clus).is_ok()
+            && fat32_write_chain_from(v, fc, data, bytes_per_clus).is_ok()
             // Barrier 2: data + FAT chain on the medium before the dirent that
             // makes them a file. Without it the dirent can land first and name
             // clusters whose data or FAT links the medium never received —
             // and a PENDING `WRITE_DIR` is discarded, not rolled back.
-            && journal_barrier().is_ok();
+            && journal_barrier(v).is_ok();
         if !written {
-            fat32_free_chain(fc);
-            let _ = fat32_journal_clear();
+            fat32_free_chain_on(v, fc);
+            let _ = fat32_journal_clear(v);
             return Err(());
         }
         fc
     };
 
     // Step 4: Write the directory entry.
-    match dir_insert(f.dir, &f.name, first_cluster, data.len() as u32, DIRENT_ATTR_ARCHIVE_FILE) {
+    match dir_insert(v, f.dir, &f.name, first_cluster, data.len() as u32, DIRENT_ATTR_ARCHIVE_FILE) {
         Ok(_) => {}
         // No cluster for a directory extension: nothing in the directory was
         // written, so the chain built above is referenced by nothing. Hand
@@ -4476,9 +4821,9 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
         // `WRITE_DIR`, which mount discards.
         Err(FsError::NoSpace) => {
             if first_cluster >= FAT32_FIRST_DATA_CLUSTER {
-                fat32_free_chain(first_cluster);
+                fat32_free_chain_on(v, first_cluster);
             }
-            let _ = fat32_journal_clear();
+            let _ = fat32_journal_clear(v);
             return Err(());
         }
         // Any other failure may have reached the directory — but usually
@@ -4487,10 +4832,10 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
         // dirent over freed clusters is worse than a leak, and a leak per
         // attempt is what this used to be (wave 11, `tests/fuzz/fs-fuzz`).
         Err(_) => {
-            let named = matches!(lookup_entry(f.dir, &f.name), Ok(e) if e.cluster == first_cluster);
+            let named = matches!(lookup_entry(v, f.dir, &f.name), Ok(e) if e.cluster == first_cluster);
             if first_cluster >= FAT32_FIRST_DATA_CLUSTER && !named {
-                fat32_free_chain(first_cluster);
-                let _ = fat32_journal_clear();
+                fat32_free_chain_on(v, first_cluster);
+                let _ = fat32_journal_clear(v);
             }
             return Err(());
         }
@@ -4509,10 +4854,10 @@ fn write_file_journaled_inner(f: &FName, data: &[u8]) -> Result<(), ()> {
         size: 0,
         _reserved: [0; JOURNAL_RESERVED_SIZE],
     };
-    fat32_journal_write(&committed)?;
+    fat32_journal_write(v, &committed)?;
 
     // Step 6: Clear journal.
-    fat32_journal_clear()
+    fat32_journal_clear(v)
 }
 
 /// Convert a raw filename (no slashes) to FAT32 8.3 format.
@@ -4529,6 +4874,12 @@ fn path_to_83_local(name: &[u8]) -> Option<[u8; 11]> {
     Some(result)
 }
 
+/// [`fat32_unlink_path_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
+    fat32_unlink_path_on(&BOOT, name)
+}
+
 /// Unlink a root-directory file by raw filename (e.g. `b"TEST.TXT"`).
 /// Marks the directory entry deleted, then frees its cluster chain.
 ///
@@ -4537,11 +4888,11 @@ fn path_to_83_local(name: &[u8]) -> Option<[u8; 11]> {
 /// on the medium over clusters the FAT already called free — the next
 /// allocation would cross-link them. Now the worst a cut leaves is a
 /// deleted dirent and a leaked chain.
-pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
+pub fn fat32_unlink_path_on(v: &'static Vol, name: &[u8]) -> Result<(), ()> {
     let name83 = path_to_83_local(name).ok_or(())?;
-    let cluster = fat32_lookup_root(&name83).map(|(c, _)| c).unwrap_or(0);
-    fat32_unlink_root(&name83)?;
-    if cluster >= 2 { fat32_free_chain(cluster); }
+    let cluster = fat32_lookup_root_on(v, &name83).map(|(c, _)| c).unwrap_or(0);
+    fat32_unlink_root_on(v, &name83)?;
+    if cluster >= 2 { fat32_free_chain_on(v, cluster); }
     Ok(())
 }
 
@@ -4569,8 +4920,8 @@ pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
 ///   `vfs_open(O_TRUNC)`, which flush or drop around it; `fat32_mkdir` of a
 ///   name a cached file holds fails (`Exists`), and a directory is never
 ///   cached.
-fn cache_forget(key: &crate::vfs::InodeKey) {
-    crate::vfs::page_cache_drop(&FAT32_FS, Some(key), 0);
+fn cache_forget(v: &'static Vol, key: &crate::vfs::InodeKey) {
+    crate::vfs::page_cache_drop(v.fs, Some(key), 0);
 }
 
 // ── Sync (AS — Power-Loss Safety) ────────────────────────────────────────────
@@ -4594,16 +4945,16 @@ fn cache_forget(key: &crate::vfs::InodeKey) {
 /// issues no I/O — the device sees exactly the write/flush sequence it saw
 /// before the cache was shared (`tests/host/fs-tests` `durability`/`power_cut`
 /// assert that sequence).
-fn device_flush() -> Result<(), FsError> {
-    if WB && SECTOR_CACHE.lock().mode() == crate::bcache::Mode::WriteBack {
+fn device_flush(v: &'static Vol) -> Result<(), FsError> {
+    if v.knobs.writeback && v.sector_cache.lock().mode() == crate::bcache::Mode::WriteBack {
         // Write-back: under the claim, close the epoch FIRST (a write made
         // after this point is not this flush's to make durable, and cannot
         // keep it running), write back through it, then flush the device.
-        let claim = wb_claim();
+        let claim = wb_claim(v);
         // `barrier` returns the highest epoch it closed: the one a
         // directory entry was written ahead into (`write_sector_ahead`)
         // when there is one, so this flush makes it durable too.
-        let upto = SECTOR_CACHE.lock().barrier();
+        let upto = v.sector_cache.lock().barrier();
         // The pass may end with a run that is itself the flush (PREFLUSH |
         // FUA: `wb_write_back`'s `commit`). Only then is the explicit flush
         // skipped: a pass that wrote nothing, or whose last run was not the
@@ -4612,32 +4963,32 @@ fn device_flush() -> Result<(), FsError> {
         let committed = if cfg!(feature = "wb-flush-no-writeback-canary") {
             false
         } else {
-            wb_write_back(&claim, upto, true)?
+            wb_write_back(v, &claim, upto, true)?
         };
-        let r = if committed { Ok(()) } else { device_flush_raw() };
+        let r = if committed { Ok(()) } else { device_flush_raw(v) };
         if r.is_ok() {
-            SECTOR_CACHE.lock().note_flushed();
+            v.sector_cache.lock().note_flushed();
         }
         drop(claim);
         // Every epoch `<= upto` is durable now: free the chains their
         // unlinking writes released (`defer_free`), into the epoch just
         // opened. Outside the claim: a free may have to write back.
         if r.is_ok() && !cfg!(feature = "wb-flush-no-writeback-canary") {
-            release_held(upto);
+            release_held(v, upto);
         }
         return r;
     }
     {
-        let mut c = SECTOR_CACHE.lock();
-        match c.write_back_all(&mut BlkDev) {
+        let mut c = v.sector_cache.lock();
+        match c.write_back_all(&mut BlkDev(v)) {
             Ok(()) => {}
             Err(crate::bcache::IoError::Flush(e)) => return Err(e),
             Err(_) => return Err(FsError::Io),
         }
     }
-    let r = device_flush_raw();
+    let r = device_flush_raw(v);
     if r.is_ok() {
-        let mut c = SECTOR_CACHE.lock();
+        let mut c = v.sector_cache.lock();
         c.note_flushed();
         c.barrier();
     }
@@ -4645,8 +4996,8 @@ fn device_flush() -> Result<(), FsError> {
 }
 
 /// The device flush alone, with the driver's answer mapped to `FsError`.
-fn device_flush_raw() -> Result<(), FsError> {
-    match blkdev::flush() {
+fn device_flush_raw(v: &'static Vol) -> Result<(), FsError> {
+    match v.dev.flush() {
         Ok(()) => Ok(()),
         Err(azos_drv_api::block::FlushError::Unsupported) => Err(FsError::Unsupported),
         Err(azos_drv_api::block::FlushError::Io) => Err(FsError::Io),
@@ -4667,13 +5018,13 @@ fn device_flush_raw() -> Result<(), FsError> {
 /// the call then answers `Err(Unsupported)`): it mutates one dirent in
 /// place, its caller is told the result is not durable either way, and
 /// nothing is replayed from it at mount.
-fn journal_barrier() -> Result<(), ()> {
-    order_barrier().map_err(|_| ())
+fn journal_barrier(v: &'static Vol) -> Result<(), ()> {
+    order_barrier(v).map_err(|_| ())
 }
 
 /// Whether the FAT32 cache is in write-back mode now.
-fn wb_active() -> bool {
-    WB && SECTOR_CACHE.lock().mode() == crate::bcache::Mode::WriteBack
+fn wb_active(v: &'static Vol) -> bool {
+    v.knobs.writeback && v.sector_cache.lock().mode() == crate::bcache::Mode::WriteBack
 }
 
 /// Every write issued before this reaches the medium before any issued
@@ -4683,8 +5034,8 @@ fn wb_active() -> bool {
 /// cut leaves the same states as with the flush here. A write-back mount
 /// requires a device that flushes (`fat32_mount` probes it), so the
 /// fail-closed rule for `Unsupported` above holds by construction.
-fn order_barrier() -> Result<(), FsError> {
-    barrier_closing().map(|_| ())
+fn order_barrier(v: &'static Vol) -> Result<(), FsError> {
+    barrier_closing(v).map(|_| ())
 }
 
 /// [`order_barrier`], returning the highest epoch it closed: every write
@@ -4693,22 +5044,34 @@ fn order_barrier() -> Result<(), FsError> {
 /// `wb-barrier-flushes-canary` build: a device flush, which closes the same
 /// epochs and makes them durable. Every barrier FAT32 puts between its own
 /// writes goes through here, so the canary reaches each of them.
-fn barrier_closing() -> Result<u64, FsError> {
-    if wb_active() && !cfg!(feature = "wb-barrier-flushes-canary") {
-        return Ok(SECTOR_CACHE.lock().barrier());
+fn barrier_closing(v: &'static Vol) -> Result<u64, FsError> {
+    if wb_active(v) && !cfg!(feature = "wb-barrier-flushes-canary") {
+        return Ok(v.sector_cache.lock().barrier());
     }
-    let top = SECTOR_CACHE.lock().top_epoch();
-    device_flush().map(|()| top)
+    let top = v.sector_cache.lock().top_epoch();
+    device_flush(v).map(|()| top)
+}
+
+/// [`fat32_journal_idle_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_journal_idle() -> bool {
+    fat32_journal_idle_on(&BOOT)
 }
 
 /// `true` when the journal sector holds no PENDING or COMMITTED record —
 /// what mount-time recovery must leave behind. Read-only; for the
 /// power-cut gate row, which asserts it after every cut.
-pub fn fat32_journal_idle() -> bool {
-    match fat32_journal_read() {
+pub fn fat32_journal_idle_on(v: &'static Vol) -> bool {
+    match fat32_journal_read(v) {
         Ok(e) => e.magic != JOURNAL_MAGIC || (e.state != JOURNAL_PENDING && e.state != JOURNAL_COMMITTED),
         Err(()) => false,
     }
+}
+
+/// [`fat32_check_root_chain_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_check_root_chain(name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &'static str> {
+    fat32_check_root_chain_on(&BOOT, name83)
 }
 
 /// Structural check of `name83`'s root-directory chain, read-only.
@@ -4731,14 +5094,14 @@ pub fn fat32_journal_idle() -> bool {
 /// Linux's FAT driver reads such a file the same way and fsck.fat trims it.
 /// A tail through a FREE cluster is not sound: `chain_nth_or_extend` orders
 /// a new cluster's end-of-chain mark before the link to it.
-pub fn fat32_check_root_chain(name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &'static str> {
-    let (first, size) = match fat32_lookup_root(name83) {
+pub fn fat32_check_root_chain_on(v: &'static Vol, name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &'static str> {
+    let (first, size) = match fat32_lookup_root_on(v, name83) {
         Ok(v) => v,
         Err(()) => return Ok(None),
     };
     let (bpc, data_clusters) = {
-        let v = FAT32.lock();
-        (v.bytes_per_clus, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.bytes_per_clus, fv.data_clusters)
     };
     if bpc == 0 { return Err("volume not mounted"); }
     let want = (size as u64).div_ceil(bpc as u64);
@@ -4760,7 +5123,7 @@ pub fn fat32_check_root_chain(name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &
         if seen > want && cfg!(feature = "fat-check-exact-chain-canary") {
             return Err("chain longer than its size");
         }
-        let next = fat32_next_cluster(cluster).map_err(|()| "FAT unreadable")?;
+        let next = fat32_next_cluster(v, cluster).map_err(|()| "FAT unreadable")?;
         if next == 0 { return Err("a live chain runs through a FREE cluster"); }
         if next >= FAT32_EOC { break; }
         cluster = next;
@@ -4770,12 +5133,18 @@ pub fn fat32_check_root_chain(name83: &[u8; 11]) -> Result<Option<(u32, u32)>, &
 }
 
 /// Clear a committed journal entry so the NEXT mount does not replay it.
-fn journal_settle() -> Result<(), ()> {
-    let entry = fat32_journal_read()?;
+fn journal_settle(v: &'static Vol) -> Result<(), ()> {
+    let entry = fat32_journal_read(v)?;
     if entry.magic == JOURNAL_MAGIC && entry.state == JOURNAL_COMMITTED {
-        fat32_journal_clear()?;
+        fat32_journal_clear(v)?;
     }
     Ok(())
+}
+
+/// [`fat32_sync_checked_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_sync_checked() -> Result<(), FsError> {
+    fat32_sync_checked_on(&BOOT)
 }
 
 /// Settle the journal, then flush the device, so every write this volume has
@@ -4783,29 +5152,35 @@ fn journal_settle() -> Result<(), ()> {
 ///
 /// Returns the device's answer: `Unsupported` if it cannot flush, `Io` if the
 /// flush failed. `NotMounted` / `Io` from the journal step as before.
-pub fn fat32_sync_checked() -> Result<(), FsError> {
-    if !FAT32.lock().mounted { return Err(FsError::NotMounted); }
+pub fn fat32_sync_checked_on(v: &'static Vol) -> Result<(), FsError> {
+    if !v.fat32.lock().mounted { return Err(FsError::NotMounted); }
     // The page cache's dirty pages reach the block cache first (storage L11):
     // `write_at` puts their data and chain in the current epoch and the
     // entry ahead of it, then the flush below makes it all durable. A write-back
     // that failed is this call's verdict, after the rest was synced.
-    let paged = crate::vfs::page_cache_flush_fs(&FAT32_FS).map_err(|_| FsError::Io);
-    journal_settle().map_err(|()| FsError::Io)?;
-    device_flush()?;
-    wb_take_error()?;
+    let paged = crate::vfs::page_cache_flush_fs(v.fs).map_err(|_| FsError::Io);
+    journal_settle(v).map_err(|()| FsError::Io)?;
+    device_flush(v)?;
+    wb_take_error(v)?;
     paged
 }
 
 /// `Err(Io)` once after a write-back no caller waited for failed.
-fn wb_take_error() -> Result<(), FsError> {
-    if WB_ERROR.swap(false, core::sync::atomic::Ordering::Relaxed) { Err(FsError::Io) } else { Ok(()) }
+fn wb_take_error(v: &'static Vol) -> Result<(), FsError> {
+    if v.wb_error.swap(false, core::sync::atomic::Ordering::Relaxed) { Err(FsError::Io) } else { Ok(()) }
+}
+
+/// [`fat32_sync_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_sync() -> Result<(), ()> {
+    fat32_sync_on(&BOOT)
 }
 
 /// [`fat32_sync_checked`] with the error folded to `()`, for the callers and
 /// the `FileSystem::sync` signature that take `Result<(), ()>`. `Err` now
 /// includes "the device could not confirm the flush".
-pub fn fat32_sync() -> Result<(), ()> {
-    fat32_sync_checked().map_err(|_| ())
+pub fn fat32_sync_on(v: &'static Vol) -> Result<(), ()> {
+    fat32_sync_checked_on(v).map_err(|_| ())
 }
 
 // ── Directory listing ─────────────────────────────────────────────────────────
@@ -4829,17 +5204,23 @@ fn format_83_name(raw: &[u8; 11]) -> ([u8; 13], usize) {
     (buf, len)
 }
 
+/// [`fat32_ls_root_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_ls_root(cb: impl FnMut(&[u8], u32, bool)) {
+    fat32_ls_root_on(&BOOT, cb)
+}
+
 /// Enumerate all entries in the FAT32 root directory.
 ///
 /// Calls `cb(name, file_size, is_dir)` for each valid, non-deleted entry.
 /// Deleted entries, LFN entries, and volume-ID entries are skipped.
-pub fn fat32_ls_root(mut cb: impl FnMut(&[u8], u32, bool)) {
-    if !FAT32.lock().mounted { return; }
-    let root_cluster = FAT32.lock().root_cluster;
+pub fn fat32_ls_root_on(v: &'static Vol, mut cb: impl FnMut(&[u8], u32, bool)) {
+    if !v.fat32.lock().mounted { return; }
+    let root_cluster = v.fat32.lock().root_cluster;
 
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     // Cycle guard — see `ChainWalk`.
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
@@ -4857,7 +5238,7 @@ pub fn fat32_ls_root(mut cb: impl FnMut(&[u8], u32, bool)) {
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
             // A read error ends the listing (wave 15, GR4): it used to leave
             // only this cluster and follow the chain on.
-            if read_sector(first_sector + s, &mut sec_buf).is_err() {
+            if read_sector(v, first_sector + s, &mut sec_buf).is_err() {
                 if cfg!(feature = "fat-walk-read-error-canary") { break 'outer; }
                 return;
             }
@@ -4881,7 +5262,7 @@ pub fn fat32_ls_root(mut cb: impl FnMut(&[u8], u32, bool)) {
             }
         }
 
-        cluster = fat32_next_cluster(cluster).unwrap_or(FAT32_EOC);
+        cluster = fat32_next_cluster(v, cluster).unwrap_or(FAT32_EOC);
     }
 }
 
@@ -4978,6 +5359,8 @@ pub struct DirEntryInfo {
 /// `DirEntryInfo` at a time via `next()`.  Skips deleted / LFN / volume-ID
 /// entries.  Stops at the first `DIRENT_MARK_END` sentinel.
 pub struct Fat32DirIter {
+    /// The volume the directory is on.
+    v: &'static Vol,
     cluster: u32,
     sector_in_cluster: u32,
     entry_in_sector: usize,
@@ -5032,15 +5415,24 @@ const EMPTY_OPEN_FILE: OpenFileEntry = OpenFileEntry {
     cache_name: None,
 };
 
-static OPEN_FILES: SpinLock<[OpenFileEntry; FAT32_MAX_OPEN_FILES]> =
-    SpinLock::new([EMPTY_OPEN_FILE; FAT32_MAX_OPEN_FILES]);
-
 // ── Volume mount/unmount API ─────────────────────────────────────────────────
+
+/// [`fat32_mount_volume_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_mount_volume() -> Result<Volume, FsError> {
+    fat32_mount_volume_on(&BOOT)
+}
 
 /// Mount the FAT32 filesystem and return a `Volume` handle.  Wraps
 /// [`fat32_mount`] for a more modern API surface.
-pub fn fat32_mount_volume() -> Result<Volume, FsError> {
-    fat32_mount().map(|()| Volume { _private: () }).map_err(|()| FsError::NotMounted)
+pub fn fat32_mount_volume_on(v: &'static Vol) -> Result<Volume, FsError> {
+    fat32_mount_on(v).map(|()| Volume { _private: () }).map_err(|()| FsError::NotMounted)
+}
+
+/// [`fat32_unmount_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
+    fat32_unmount_on(&BOOT, _vol)
 }
 
 /// Unmount the FAT32 filesystem.  Flushes the journal and closes all open
@@ -5049,11 +5441,11 @@ pub fn fat32_mount_volume() -> Result<Volume, FsError> {
 /// Anything short of a clean unmount (a cut, a crash, a halt that never gets
 /// here) leaves the volume dirty and the next mount checks it.  Safe to call
 /// even if no volume is mounted.
-pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
-    let was_mounted = FAT32.lock().mounted;
+pub fn fat32_unmount_on(v: &'static Vol, _vol: Volume) -> Result<(), FsError> {
+    let was_mounted = v.fat32.lock().mounted;
     // Sync + close every currently-open file so no write is lost.
     let slots_to_close: [(bool, u16); FAT32_MAX_OPEN_FILES] = {
-        let t = OPEN_FILES.lock();
+        let t = v.open_files.lock();
         let mut out = [(false, 0u16); FAT32_MAX_OPEN_FILES];
         for i in 0..FAT32_MAX_OPEN_FILES {
             out[i] = (t[i].in_use, t[i].generation);
@@ -5063,40 +5455,40 @@ pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
     for i in 0..FAT32_MAX_OPEN_FILES {
         if slots_to_close[i].0 {
             let h = Fat32File { slot: i as u16, generation: slots_to_close[i].1 };
-            let _ = fat32_close(h);
+            let _ = fat32_close_on(v, h);
         }
     }
     // Canary: the clean flag goes out ahead of the flush that makes the
     // mount's writes durable, so a cut can keep it over a volume that leaks.
     // (A direct write, as the flag's always is, so it is not queued behind
     // the rest: it reaches the medium first.)
-    if cfg!(feature = "fat-clean-early-canary") && VOLUME_MARKED_DIRTY.load(core::sync::atomic::Ordering::Relaxed) {
-        let _ = volume_set_clean(true);
+    if cfg!(feature = "fat-clean-early-canary") && v.volume_marked_dirty.load(core::sync::atomic::Ordering::Relaxed) {
+        let _ = volume_set_clean(v, true);
     }
     // The sync writes the page cache's dirty pages back first (they are writes
     // the volume has not seen, and the clean flag below promises there are
     // none) and fails if they could not be.
-    let mut settled = fat32_sync().is_ok();
+    let mut settled = fat32_sync_on(v).is_ok();
     // That flush freed the held chains into a new epoch (`defer_free`):
     // write it too, or the invalidation below drops the frees.
-    if SECTOR_CACHE.lock().dirty_count() > 0 {
-        settled &= device_flush().is_ok();
+    if v.sector_cache.lock().dirty_count() > 0 {
+        settled &= device_flush(v).is_ok();
     }
     // Clean only if everything above is on the medium and nothing is still
     // held for a free that has not run: the flag promises no lost space.
-    settled &= was_mounted && fat32_held_clusters() == 0 && fat32_journal_idle();
-    held_reset();
-    if settled && volume_state_write_ready()
-        && VOLUME_MARKED_DIRTY.swap(false, core::sync::atomic::Ordering::Relaxed)
+    settled &= was_mounted && fat32_held_clusters_on(v) == 0 && fat32_journal_idle_on(v);
+    held_reset(v);
+    if settled && volume_state_write_ready(v)
+        && v.volume_marked_dirty.swap(false, core::sync::atomic::Ordering::Relaxed)
     {
         // Last write of the mount, flushed: a cut before it lands leaves the
         // volume dirty, which only costs the next mount a check.
-        if volume_set_clean(true).is_ok() {
-            let _ = device_flush_raw();
+        if volume_set_clean(v, true).is_ok() {
+            let _ = device_flush_raw(v);
         }
     }
     // Mark volume unmounted.
-    FAT32.lock().mounted = false;
+    v.fat32.lock().mounted = false;
     // U09-6: drop every cached sector on unmount too, not just on the next
     // mount. Between this unmount and a future mount, the medium may be
     // physically swapped (an SD card) with the cache never told;
@@ -5104,9 +5496,9 @@ pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
     // outgoing nor the incoming volume's sectors can be read through a
     // stale line, regardless of which of the two calls a caller happens to
     // make first.
-    fat32_cache_invalidate_all();
+    fat32_cache_invalidate_all_on(v);
     // The medium may be another one at the next mount: so are the pages.
-    crate::vfs::page_cache_drop(&FAT32_FS, None, 0);
+    crate::vfs::page_cache_drop(v.fs, None, 0);
     Ok(())
 }
 
@@ -5164,10 +5556,10 @@ struct DirentLocation {
 
 /// Search a directory (given by its starting cluster) for an entry matching
 /// `name83`.
-fn dir_find_in(dir_cluster: u32, name83: &[u8; 11]) -> Result<DirentLocation, FsError> {
+fn dir_find_in(v: &'static Vol, dir_cluster: u32, name83: &[u8; 11]) -> Result<DirentLocation, FsError> {
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     // Cycle guard — see `ChainWalk`. This is the walker a ring-3
     // `open()` reaches first, so a `FAT[n] = n` cycle here hangs the hart that
@@ -5183,7 +5575,7 @@ fn dir_find_in(dir_cluster: u32, name83: &[u8; 11]) -> Result<DirentLocation, Fs
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
             let sec_num = first_sector + s;
             let mut buf = [0u8; SECTOR_SIZE];
-            read_sector(sec_num, &mut buf).map_err(|()| FsError::Io)?;
+            read_sector(v, sec_num, &mut buf).map_err(|()| FsError::Io)?;
             for e in 0..FAT32_DIRENTS_PER_SECTOR {
                 let off = e * FAT32_DIR_ENTRY_SIZE;
                 if buf[off + DIRENT_OFF_NAME] == DIRENT_MARK_END {
@@ -5221,7 +5613,7 @@ fn dir_find_in(dir_cluster: u32, name83: &[u8; 11]) -> Result<DirentLocation, Fs
                 }
             }
         }
-        cluster = fat32_next_cluster(cluster).map_err(|()| FsError::Io)?;
+        cluster = fat32_next_cluster(v, cluster).map_err(|()| FsError::Io)?;
     }
     Err(FsError::NotFound)
 }
@@ -5230,18 +5622,18 @@ fn dir_find_in(dir_cluster: u32, name83: &[u8; 11]) -> Result<DirentLocation, Fs
 ///
 /// Returns `(parent_dir_cluster, last_component)` — the caller can then call
 /// `dir_find_in(parent_dir_cluster, ...)` or insert a new entry.
-fn resolve_parent<'a>(path: &'a [u8]) -> Result<(u32, &'a [u8]), FsError> {
-    if !fat32_mounted() { return Err(FsError::NotMounted); }
+fn resolve_parent<'a>(v: &'static Vol, path: &'a [u8]) -> Result<(u32, &'a [u8]), FsError> {
+    if !fat32_mounted_on(v) { return Err(FsError::NotMounted); }
     let mut comps: [&[u8]; FAT32_MAX_PATH_DEPTH] = [&[]; FAT32_MAX_PATH_DEPTH];
     let n = split_path(path, &mut comps)?;
     if n == 0 { return Err(FsError::InvalidArg); }
 
-    let root_cluster = FAT32.lock().root_cluster;
+    let root_cluster = v.fat32.lock().root_cluster;
     let mut dir_cluster = root_cluster;
     // Walk all but the last component.
     for i in 0..(n - 1) {
         let name83 = component_to_83(comps[i]).ok_or(FsError::InvalidArg)?;
-        let loc = dir_find_in(dir_cluster, &name83)?;
+        let loc = dir_find_in(v, dir_cluster, &name83)?;
         if loc.attr & ATTR_DIRECTORY == 0 { return Err(FsError::WrongType); }
         if loc.first_cluster < FAT32_FIRST_DATA_CLUSTER { return Err(FsError::NotFound); }
         dir_cluster = loc.first_cluster;
@@ -5257,15 +5649,15 @@ fn resolve_parent<'a>(path: &'a [u8]) -> Result<(u32, &'a [u8]), FsError> {
 ///
 /// Returns the sector and offset where the entry landed.
 fn dir_insert(
-    dir_cluster: u32,
+    v: &'static Vol, dir_cluster: u32,
     name83: &[u8; 11],
     first_cluster: u32,
     size: u32,
     attr: u8,
 ) -> Result<(u32, u16), FsError> {
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     // Cycle guard — see `ChainWalk`. Here the cap MUST return an error
     // rather than fall out of the loop: the code below the loop extends the
@@ -5285,7 +5677,7 @@ fn dir_insert(
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
             let sec_num = first_sector + s;
             let mut buf = [0u8; SECTOR_SIZE];
-            read_sector(sec_num, &mut buf).map_err(|()| FsError::Io)?;
+            read_sector(v, sec_num, &mut buf).map_err(|()| FsError::Io)?;
             for e in 0..FAT32_DIRENTS_PER_SECTOR {
                 let off = e * FAT32_DIR_ENTRY_SIZE;
                 let first_byte = buf[off + DIRENT_OFF_NAME];
@@ -5300,18 +5692,18 @@ fn dir_insert(
                         // `propagate_end_marker`; the old same-sector-only
                         // check left every cross-boundary case (the only
                         // case at all when `spc == 1`) unterminated.
-                        propagate_end_marker(
+                        propagate_end_marker(v, 
                             cluster, s, sec_num, e, FAT32_DIRENTS_PER_SECTOR,
                             spc, data_start, &mut buf,
                         ).map_err(|()| FsError::Io)?;
                     }
-                    write_sector(sec_num, &buf).map_err(|()| FsError::Io)?;
+                    write_sector(v, sec_num, &buf).map_err(|()| FsError::Io)?;
                     return Ok((sec_num, off as u16));
                 }
             }
         }
         last_cluster = cluster;
-        cluster = fat32_next_cluster(cluster).map_err(|()| FsError::Io)?;
+        cluster = fat32_next_cluster(v, cluster).map_err(|()| FsError::Io)?;
     }
 
     // Extend the directory by one cluster: allocate it (the allocator marks
@@ -5322,15 +5714,15 @@ fn dir_insert(
     // stale data onto the directory, whose bytes every later walk would read
     // as entries. Now a failure before the link leaves the directory exactly
     // as it was and, at worst, one allocated cluster nothing references.
-    let new_clus = fat32_alloc_cluster().map_err(|()| FsError::NoSpace)?;
+    let new_clus = fat32_alloc_cluster_on(v).map_err(|()| FsError::NoSpace)?;
     let filled = cluster_first_sector(data_start, new_clus, spc).ok_or(()).and_then(|first_sector| {
         let mut buf = [0u8; SECTOR_SIZE];
         write_dirent_into_buf(&mut buf, 0, name83, first_cluster, size, attr);
-        write_sector(first_sector, &buf)?;
+        write_sector(v, first_sector, &buf)?;
         let zero = [0u8; SECTOR_SIZE];
         for s in 1..spc {
             // s < spc, and cluster_first_sector proved first_sector + spc fits.
-            write_sector(first_sector + s, &zero)?;
+            write_sector(v, first_sector + s, &zero)?;
         }
         Ok(first_sector)
     });
@@ -5341,9 +5733,9 @@ fn dir_insert(
     // (a device that cannot flush orders nothing, as before); an I/O error
     // is. Once per directory extension, never on the common insert.
     let first_sector = match filled {
-        Ok(sec) if matches!(order_barrier(), Ok(()) | Err(FsError::Unsupported)) => sec,
+        Ok(sec) if matches!(order_barrier(v), Ok(()) | Err(FsError::Unsupported)) => sec,
         _ => {
-            fat32_free_chain(new_clus);
+            fat32_free_chain_on(v, new_clus);
             return Err(FsError::Io);
         }
     };
@@ -5354,9 +5746,9 @@ fn dir_insert(
     // references the extension. If the undo fails too, `new_clus` stays
     // allocated: a cluster copy 0 may still reference must not be freed
     // (a later allocation would hand it out while this directory uses it).
-    if fat32_write_fat_entry(last_cluster, new_clus).is_err() {
-        if fat32_write_fat_entry(last_cluster, FAT32_END_OF_CHAIN).is_ok() {
-            fat32_free_chain(new_clus);
+    if fat32_write_fat_entry(v, last_cluster, new_clus).is_err() {
+        if fat32_write_fat_entry(v, last_cluster, FAT32_END_OF_CHAIN).is_ok() {
+            fat32_free_chain_on(v, new_clus);
         }
         return Err(FsError::Io);
     }
@@ -5391,25 +5783,25 @@ fn write_dirent_into_buf(
 /// Update the size + first-cluster fields of an existing dirent (in-place).
 /// Used after writes extend/truncate a file.
 fn dir_update_meta(
-    dir_sector: u32,
+    v: &'static Vol, dir_sector: u32,
     dir_offset: u16,
     first_cluster: u32,
     size: u32,
 ) -> Result<(), FsError> {
-    dir_update_meta_in(dir_sector, dir_offset, first_cluster, size, false)
+    dir_update_meta_in(v, dir_sector, dir_offset, first_cluster, size, false)
 }
 
 /// [`dir_update_meta`] with the sector written ahead (`write_sector_ahead`)
 /// when `ahead`.
 fn dir_update_meta_in(
-    dir_sector: u32,
+    v: &'static Vol, dir_sector: u32,
     dir_offset: u16,
     first_cluster: u32,
     size: u32,
     ahead: bool,
 ) -> Result<(), FsError> {
     let mut buf = [0u8; SECTOR_SIZE];
-    read_sector(dir_sector, &mut buf).map_err(|()| FsError::Io)?;
+    read_sector(v, dir_sector, &mut buf).map_err(|()| FsError::Io)?;
     let off = dir_offset as usize;
     let hi = ((first_cluster >> 16) & 0xFFFF) as u16;
     let lo = (first_cluster & 0xFFFF) as u16;
@@ -5419,7 +5811,7 @@ fn dir_update_meta_in(
         .copy_from_slice(&lo.to_le_bytes());
     buf[off + DIRENT_OFF_FILE_SIZE..off + DIRENT_OFF_FILE_SIZE + 4]
         .copy_from_slice(&size.to_le_bytes());
-    if ahead { write_sector_ahead(dir_sector, &buf) } else { write_sector(dir_sector, &buf) }
+    if ahead { write_sector_ahead(v, dir_sector, &buf) } else { write_sector(v, dir_sector, &buf) }
         .map_err(|()| FsError::Io)?;
     Ok(())
 }
@@ -5429,20 +5821,20 @@ fn dir_update_meta_in(
 /// Walk the cluster chain starting at `first_cluster` and return the cluster
 /// number at the `n`-th position (0-indexed).  If the chain ends before that
 /// position, returns `Err(FsError::NotFound)`.
-fn chain_nth(first_cluster: u32, n: u32) -> Result<u32, FsError> {
+fn chain_nth(v: &'static Vol, first_cluster: u32, n: u32) -> Result<u32, FsError> {
     if first_cluster < FAT32_FIRST_DATA_CLUSTER { return Err(FsError::NotFound); }
     // A chain longer than the FAT has entries is a cycle. `n` is already
     // bounded by the u32 file position, so this is not a hang, but a crafted
     // cycle would otherwise make one `fat32_read` grind through millions of
     // FAT lookups and then hand back data from a cluster the file never owned.
-    let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
+    let (fat_sz32, data_clusters) = { let fv = v.fat32.lock(); (fv.fat_sz32, fv.data_clusters) };
     if n >= chain_walk_limit(fat_sz32, data_clusters) { return Err(FsError::Io); }
     // A cycle is caught at its first repeat, not after `n` lookups.
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
     walk.visit(first_cluster);
     let mut cur = first_cluster;
     for _ in 0..n {
-        let next = fat32_next_cluster(cur).map_err(|()| FsError::Io)?;
+        let next = fat32_next_cluster(v, cur).map_err(|()| FsError::Io)?;
         if next < FAT32_FIRST_DATA_CLUSTER || next >= FAT32_EOC {
             return Err(FsError::NotFound);
         }
@@ -5457,10 +5849,10 @@ fn chain_nth(first_cluster: u32, n: u32) -> Result<u32, FsError> {
 /// answers (`NotFound` where the chain ends, `Io` past the volume's bound or
 /// on a failed FAT read). One step from a cluster a full walk already proved
 /// is on the chain cannot loop.
-fn chain_step(cluster: u32, n: u32) -> Result<u32, FsError> {
-    let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
+fn chain_step(v: &'static Vol, cluster: u32, n: u32) -> Result<u32, FsError> {
+    let (fat_sz32, data_clusters) = { let fv = v.fat32.lock(); (fv.fat_sz32, fv.data_clusters) };
     if n >= chain_walk_limit(fat_sz32, data_clusters) { return Err(FsError::Io); }
-    let next = fat32_next_cluster(cluster).map_err(|()| FsError::Io)?;
+    let next = fat32_next_cluster(v, cluster).map_err(|()| FsError::Io)?;
     if next < FAT32_FIRST_DATA_CLUSTER || next >= FAT32_EOC {
         return Err(FsError::NotFound);
     }
@@ -5470,12 +5862,12 @@ fn chain_step(cluster: u32, n: u32) -> Result<u32, FsError> {
 /// Walk the cluster chain starting at `first_cluster` to the `n`-th position,
 /// allocating new clusters as needed.  The final cluster is marked as
 /// end-of-chain.  Returns the cluster number at position `n`.
-fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
+fn chain_nth_or_extend(v: &'static Vol, first_cluster: u32, n: u32) -> Result<u32, FsError> {
     if first_cluster < FAT32_FIRST_DATA_CLUSTER { return Err(FsError::InvalidArg); }
     // Same bound as `chain_nth`: no legitimate chain can be longer than the
     // number of entries the FAT holds, and refusing early stops a crafted
     // cycle from turning one write into millions of FAT lookups.
-    let (fat_sz32, data_clusters) = { let v = FAT32.lock(); (v.fat_sz32, v.data_clusters) };
+    let (fat_sz32, data_clusters) = { let fv = v.fat32.lock(); (fv.fat_sz32, fv.data_clusters) };
     if n >= chain_walk_limit(fat_sz32, data_clusters) { return Err(FsError::Io); }
     // A cycle is caught at its first repeat, as in `chain_nth`; never
     // extended (the link below would graft onto the ring).
@@ -5483,7 +5875,7 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
     walk.visit(first_cluster);
     let mut cur = first_cluster;
     for _ in 0..n {
-        let next = fat32_next_cluster(cur).map_err(|()| FsError::Io)?;
+        let next = fat32_next_cluster(v, cur).map_err(|()| FsError::Io)?;
         if next >= FAT32_FIRST_DATA_CLUSTER && next < FAT32_EOC && !walk.visit(next) {
             return Err(FsError::Io);
         }
@@ -5494,7 +5886,7 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
             // across the device I/O).
             #[cfg(any(feature = "fat-mutate-spin-canary", feature = "fat-mutate-pi-canary"))]
             let _canary = FAT_MUTATE_CANARY.lock(); // the old hold: alloc + both links
-            let fresh = fat32_alloc_cluster_inner().map_err(|()| FsError::NoSpace)?;
+            let fresh = fat32_alloc_cluster_inner(v).map_err(|()| FsError::NoSpace)?;
             // FW2: `fresh`'s end-of-chain mark reaches the medium before the
             // link to it. In one FAT sector the two are one sector write;
             // across a sector boundary they are two lines of one epoch, and
@@ -5509,9 +5901,9 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
             if fresh / FAT32_ENTRIES_PER_SECTOR != cur / FAT32_ENTRIES_PER_SECTOR
                 && !cfg!(feature = "fw-tail-link-unordered-canary")
             {
-                if let Err(e) = order_barrier() {
+                if let Err(e) = order_barrier(v) {
                     if e != FsError::Unsupported {
-                        let _ = fat32_write_fat_entry(fresh, 0);
+                        let _ = fat32_write_fat_entry(v, fresh, 0);
                         return Err(e);
                     }
                 }
@@ -5519,9 +5911,9 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
             // A failed link would leak `fresh` (allocated, in no chain):
             // undo it as `dir_insert` does, and give `fresh` back only when
             // `cur` is end-of-chain again in every copy.
-            if fat32_write_fat_entry(cur, fresh).is_err() {
-                if fat32_write_fat_entry(cur, FAT32_END_OF_CHAIN).is_ok() {
-                    let _ = fat32_write_fat_entry(fresh, 0);
+            if fat32_write_fat_entry(v, cur, fresh).is_err() {
+                if fat32_write_fat_entry(v, cur, FAT32_END_OF_CHAIN).is_ok() {
+                    let _ = fat32_write_fat_entry(v, fresh, 0);
                 }
                 return Err(FsError::Io);
             }
@@ -5529,7 +5921,7 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
             // marked it so under its sector's claim (wave 15, FW: this
             // rewrote it, a FAT read-modify-write per copy per cluster).
             if cfg!(feature = "fw-chain-walk-canary") {
-                fat32_write_fat_entry(fresh, FAT32_END_OF_CHAIN).map_err(|()| FsError::Io)?;
+                fat32_write_fat_entry(v, fresh, FAT32_END_OF_CHAIN).map_err(|()| FsError::Io)?;
             }
             cur = fresh;
         } else {
@@ -5553,7 +5945,7 @@ fn chain_nth_or_extend(first_cluster: u32, n: u32) -> Result<u32, FsError> {
 /// gap in B reads back as A's bytes. `first_cluster` must already be
 /// allocated (the caller ensures that before a hole can exist).
 fn zero_fill_range(
-    first_cluster: u32,
+    v: &'static Vol, first_cluster: u32,
     start: u32,
     end: u32,
     bytes_per_clus: u32,
@@ -5564,7 +5956,7 @@ fn zero_fill_range(
     while pos < end {
         let cluster_index = pos / bytes_per_clus;
         let offset_in_cluster = (pos % bytes_per_clus) as usize;
-        let cluster = chain_nth_or_extend(first_cluster, cluster_index)?;
+        let cluster = chain_nth_or_extend(v, first_cluster, cluster_index)?;
         let first_sector = cluster_first_sector(data_start, cluster, spc)
             .ok_or(FsError::Io)?;
 
@@ -5583,10 +5975,10 @@ fn zero_fill_range(
             // offset_in_sector + to_zero) — legitimate data below `start`,
             // or a tail this call was not asked to zero — are preserved
             // rather than clobbered with zeros.
-            read_sector(sec_num, &mut sec_buf).map_err(|()| FsError::Io)?;
+            read_sector(v, sec_num, &mut sec_buf).map_err(|()| FsError::Io)?;
         }
         for b in &mut sec_buf[offset_in_sector..offset_in_sector + to_zero] { *b = 0; }
-        write_sector(sec_num, &sec_buf).map_err(|()| FsError::Io)?;
+        write_sector(v, sec_num, &sec_buf).map_err(|()| FsError::Io)?;
 
         pos += to_zero as u32;
     }
@@ -5595,8 +5987,8 @@ fn zero_fill_range(
 
 // ── File handle pool helpers ─────────────────────────────────────────────────
 
-fn alloc_handle(entry: OpenFileEntry) -> Result<Fat32File, FsError> {
-    let mut t = OPEN_FILES.lock();
+fn alloc_handle(v: &'static Vol, entry: OpenFileEntry) -> Result<Fat32File, FsError> {
+    let mut t = v.open_files.lock();
     for i in 0..FAT32_MAX_OPEN_FILES {
         if !t[i].in_use {
             let gen = t[i].generation.wrapping_add(1);
@@ -5611,10 +6003,10 @@ fn alloc_handle(entry: OpenFileEntry) -> Result<Fat32File, FsError> {
 }
 
 fn with_handle<R>(
-    file: Fat32File,
+    v: &'static Vol, file: Fat32File,
     f: impl FnOnce(&mut OpenFileEntry) -> Result<R, FsError>,
 ) -> Result<R, FsError> {
-    let mut t = OPEN_FILES.lock();
+    let mut t = v.open_files.lock();
     let slot = file.slot as usize;
     if slot >= FAT32_MAX_OPEN_FILES { return Err(FsError::BadHandle); }
     if !t[slot].in_use || t[slot].generation != file.generation {
@@ -5623,11 +6015,17 @@ fn with_handle<R>(
     f(&mut t[slot])
 }
 
-fn snapshot_handle(file: Fat32File) -> Result<OpenFileEntry, FsError> {
-    with_handle(file, |e| Ok(*e))
+fn snapshot_handle(v: &'static Vol, file: Fat32File) -> Result<OpenFileEntry, FsError> {
+    with_handle(v, file, |e| Ok(*e))
 }
 
 // ── Public open/close/read/write/seek/sync ───────────────────────────────────
+
+/// [`fat32_open_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_open(vol: Volume, path: &[u8], flags: u32) -> Result<Fat32File, FsError> {
+    fat32_open_on(&BOOT, vol, path, flags)
+}
 
 /// Open a file by absolute path (e.g. `b"/log/boot.log"`).  Supports nested
 /// directories up to `FAT32_MAX_PATH_DEPTH` deep.
@@ -5635,42 +6033,42 @@ fn snapshot_handle(file: Fat32File) -> Result<OpenFileEntry, FsError> {
 /// The file is also the page cache's (storage L11), under its key
 /// (`key_of_path`): `TRUNCATE` forgets its pages, and the handle's reads and
 /// writes settle them (see `fat32_read` and `fat32_write`).
-pub fn fat32_open(vol: Volume, path: &[u8], flags: u32) -> Result<Fat32File, FsError> {
+pub fn fat32_open_on(v: &'static Vol, vol: Volume, path: &[u8], flags: u32) -> Result<Fat32File, FsError> {
     let name = key_of_path(path);
     if let Some(n) = &name {
         if flags & open_flags::TRUNCATE != 0 {
-            cache_forget(n);
+            cache_forget(v, n);
         }
     }
-    open_entry(vol, path, flags, name)
+    open_entry(v, vol, path, flags, name)
 }
 
 /// The file's dirty pages go to the volume, for a direct reader or writer.
-fn settle_cache(key: &crate::vfs::InodeKey) -> Result<(), FsError> {
-    crate::vfs::page_cache_flush_file(&FAT32_FS, key).map_err(|_| FsError::Io)
+fn settle_cache(v: &'static Vol, key: &crate::vfs::InodeKey) -> Result<(), FsError> {
+    crate::vfs::page_cache_flush_file(v.fs, key).map_err(|_| FsError::Io)
 }
 
 /// [`fat32_open`] with the page cache not consulted: what `Fat32Fs::read_at`
 /// and `write_at` (the cache's own fill and write-back) open with, and the
 /// body of the public call. `cache_name` is what the handle's later reads and
 /// writes settle (`None`: nothing).
-fn open_entry(_vol: Volume, path: &[u8], flags: u32, cache_name: Option<crate::vfs::InodeKey>) -> Result<Fat32File, FsError> {
-    if !fat32_mounted() { return Err(FsError::NotMounted); }
+fn open_entry(v: &'static Vol, _vol: Volume, path: &[u8], flags: u32, cache_name: Option<crate::vfs::InodeKey>) -> Result<Fat32File, FsError> {
+    if !fat32_mounted_on(v) { return Err(FsError::NotMounted); }
     if flags & (open_flags::READ | open_flags::WRITE) == 0 {
         return Err(FsError::InvalidArg);
     }
 
-    let (parent_cluster, last) = resolve_parent(path)?;
+    let (parent_cluster, last) = resolve_parent(v, path)?;
     let name83 = component_to_83(last).ok_or(FsError::InvalidArg)?;
-    open_at(parent_cluster, &name83, flags, cache_name)
+    open_at(v, parent_cluster, &name83, flags, cache_name)
 }
 
 /// [`open_entry`] for a file whose directory is already resolved (`flags`
 /// checked, volume mounted).
-fn open_at(parent_cluster: u32, name83: &[u8; 11], flags: u32, cache_name: Option<crate::vfs::InodeKey>) -> Result<Fat32File, FsError> {
+fn open_at(v: &'static Vol, parent_cluster: u32, name83: &[u8; 11], flags: u32, cache_name: Option<crate::vfs::InodeKey>) -> Result<Fat32File, FsError> {
 
     let (dir_sector, dir_offset, first_cluster, size) =
-        match dir_find_in(parent_cluster, name83) {
+        match dir_find_in(v, parent_cluster, name83) {
             Ok(loc) => {
                 if loc.attr & ATTR_DIRECTORY != 0 { return Err(FsError::WrongType); }
                 (loc.sector, loc.offset, loc.first_cluster, loc.size)
@@ -5678,7 +6076,7 @@ fn open_at(parent_cluster: u32, name83: &[u8; 11], flags: u32, cache_name: Optio
             Err(FsError::NotFound) => {
                 if flags & open_flags::CREATE == 0 { return Err(FsError::NotFound); }
                 // Create empty dirent (no cluster allocated yet).
-                let (sec, off) = dir_insert(
+                let (sec, off) = dir_insert(v, 
                     parent_cluster,
                     name83,
                     0,
@@ -5730,23 +6128,23 @@ fn open_at(parent_cluster: u32, name83: &[u8; 11], flags: u32, cache_name: Optio
             size: 0,
             _reserved: [0; JOURNAL_RESERVED_SIZE],
         };
-        fat32_journal_write(&journal).map_err(|()| FsError::Io)?;
+        fat32_journal_write(v, &journal).map_err(|()| FsError::Io)?;
         // Barriers as in `write_file_journaled`'s overwrite arm (no chain
         // to order ahead of the record: the new side is empty).
-        journal_barrier().map_err(|()| FsError::Io)?;
+        journal_barrier(v).map_err(|()| FsError::Io)?;
 
-        let defer = defer_frees();
-        dir_update_meta(dir_sector, dir_offset, 0, 0)?;
+        let defer = defer_frees(v);
+        dir_update_meta(v, dir_sector, dir_offset, 0, 0)?;
         if !defer && old_cluster >= FAT32_FIRST_DATA_CLUSTER {
-            fat32_free_chain(old_cluster);
+            fat32_free_chain_on(v, old_cluster);
         }
-        journal_barrier().map_err(|()| FsError::Io)?;
+        journal_barrier(v).map_err(|()| FsError::Io)?;
 
         let committed = JournalEntry { state: JOURNAL_COMMITTED, ..journal };
-        fat32_journal_write(&committed).map_err(|()| FsError::Io)?;
-        fat32_journal_clear().map_err(|()| FsError::Io)?;
+        fat32_journal_write(v, &committed).map_err(|()| FsError::Io)?;
+        fat32_journal_clear(v).map_err(|()| FsError::Io)?;
         // Held until the clear is durable, as in `write_file_journaled`.
-        if defer { let _ = defer_free(old_cluster, entry.size); }
+        if defer { let _ = defer_free(v, old_cluster, entry.size); }
 
         entry.first_cluster = 0;
         entry.size = 0;
@@ -5758,25 +6156,31 @@ fn open_at(parent_cluster: u32, name83: &[u8; 11], flags: u32, cache_name: Optio
         entry.pos = entry.size;
     }
 
-    alloc_handle(entry)
+    alloc_handle(v, entry)
+}
+
+/// [`fat32_read_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_read(file: Fat32File, buf: &mut [u8]) -> Result<usize, FsError> {
+    fat32_read_on(&BOOT, file, buf)
 }
 
 /// Read up to `buf.len()` bytes starting at the file's current position.
 /// Returns the number of bytes actually read (0 at EOF).
-pub fn fat32_read(file: Fat32File, buf: &mut [u8]) -> Result<usize, FsError> {
-    if let Some(n) = snapshot_handle(file)?.cache_name {
-        settle_cache(&n)?;
+pub fn fat32_read_on(v: &'static Vol, file: Fat32File, buf: &mut [u8]) -> Result<usize, FsError> {
+    if let Some(n) = snapshot_handle(v, file)?.cache_name {
+        settle_cache(v, &n)?;
     }
     // File data the page cache can hold is not also held by the block cache.
     // This handle API is not the page cache's (OTA and driver images, config),
     // so with a cache installed these reads are one-shot and retain nothing.
-    fat32_read_with(file, buf, !crate::vfs::page_cache_installed())
+    fat32_read_with(v, file, buf, !crate::vfs::page_cache_installed())
 }
 
 /// [`fat32_read`]; `retain: false` leaves the data sectors it reads out of the
 /// block cache ([`read_sector_with`]).
-fn fat32_read_with(file: Fat32File, buf: &mut [u8], retain: bool) -> Result<usize, FsError> {
-    let mut e = snapshot_handle(file)?;
+fn fat32_read_with(v: &'static Vol, file: Fat32File, buf: &mut [u8], retain: bool) -> Result<usize, FsError> {
+    let mut e = snapshot_handle(v, file)?;
     if e.flags & open_flags::READ == 0 { return Err(FsError::InvalidArg); }
     if e.pos >= e.size || buf.is_empty() { return Ok(0); }
 
@@ -5784,8 +6188,8 @@ fn fat32_read_with(file: Fat32File, buf: &mut [u8], retain: bool) -> Result<usiz
     // provable if `bytes_per_clus == spc * 512` was read atomically. Three
     // separate locks let a concurrent (re)mount interleave and break that.
     let (bytes_per_clus, spc, data_start) = {
-        let v = FAT32.lock();
-        (v.bytes_per_clus, v.secs_per_clus, v.data_start)
+        let fv = v.fat32.lock();
+        (fv.bytes_per_clus, fv.secs_per_clus, fv.data_start)
     };
     if bytes_per_clus == 0 { return Err(FsError::NotMounted); }
 
@@ -5803,8 +6207,8 @@ fn fat32_read_with(file: Fat32File, buf: &mut [u8], retain: bool) -> Result<usiz
         let offset_in_cluster = (e.pos % bytes_per_clus) as usize;
         let cluster = match at {
             Some((i, c)) if i == cluster_index => c,
-            Some((i, c)) if i + 1 == cluster_index => chain_step(c, cluster_index)?,
-            _ => chain_nth(e.first_cluster, cluster_index)?,
+            Some((i, c)) if i + 1 == cluster_index => chain_step(v, c, cluster_index)?,
+            _ => chain_nth(v, e.first_cluster, cluster_index)?,
         };
         at = Some((cluster_index, cluster));
         let first_sector = cluster_first_sector(data_start, cluster, spc)
@@ -5818,7 +6222,7 @@ fn fat32_read_with(file: Fat32File, buf: &mut [u8], retain: bool) -> Result<usiz
         let sec_num = first_sector + sector_index;
 
         let mut sec_buf = [0u8; SECTOR_SIZE];
-        read_sector_with(sec_num, &mut sec_buf, retain).map_err(|()| FsError::Io)?;
+        read_sector_with(v, sec_num, &mut sec_buf, retain).map_err(|()| FsError::Io)?;
 
         let avail_in_sector = SECTOR_SIZE - offset_in_sector;
         let chunk = remaining.min(avail_in_sector);
@@ -5831,11 +6235,17 @@ fn fat32_read_with(file: Fat32File, buf: &mut [u8], retain: bool) -> Result<usiz
     }
 
     // Persist updated position back into the slot.
-    with_handle(file, |slot| {
+    with_handle(v, file, |slot| {
         slot.pos = e.pos;
         Ok(())
     })?;
     Ok(written)
+}
+
+/// [`fat32_write_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_write(file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
+    fat32_write_on(&BOOT, file, buf)
 }
 
 /// Write `buf` at the file's current position, extending the file and the
@@ -5853,20 +6263,20 @@ fn fat32_read_with(file: Fat32File, buf: &mut [u8], retain: bool) -> Result<usiz
 /// file are written back first (this write is a read-modify-write of sectors
 /// they may cover) and the cached pages are forgotten after: they are older
 /// than the bytes written.
-pub fn fat32_write(file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
-    let Some(n) = snapshot_handle(file)?.cache_name else { return fat32_write_raw(file, buf) };
-    settle_cache(&n)?;
-    let r = fat32_write_raw(file, buf);
-    cache_forget(&n);
+pub fn fat32_write_on(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
+    let Some(n) = snapshot_handle(v, file)?.cache_name else { return fat32_write_raw(v, file, buf) };
+    settle_cache(v, &n)?;
+    let r = fat32_write_raw(v, file, buf);
+    cache_forget(v, &n);
     r
 }
 
 /// [`fat32_write`] with the page cache not consulted (`Fat32Fs::write_at`: the
 /// cache's write-back).
-fn fat32_write_raw(file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
+fn fat32_write_raw(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
     if buf.is_empty() { return Ok(0); }
 
-    let mut e = snapshot_handle(file)?;
+    let mut e = snapshot_handle(v, file)?;
     if e.flags & open_flags::WRITE == 0 { return Err(FsError::InvalidArg); }
 
     // APPEND: jump to current size before every write.
@@ -5884,8 +6294,8 @@ fn fat32_write_raw(file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
     // One lock for the whole geometry — see the matching comment in
     // `fat32_read`; `sector_index < spc` depends on a consistent snapshot.
     let (bytes_per_clus, spc, data_start) = {
-        let v = FAT32.lock();
-        (v.bytes_per_clus, v.secs_per_clus, v.data_start)
+        let fv = v.fat32.lock();
+        (fv.bytes_per_clus, fv.secs_per_clus, fv.data_start)
     };
     if bytes_per_clus == 0 { return Err(FsError::NotMounted); }
 
@@ -5893,7 +6303,7 @@ fn fat32_write_raw(file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
     let before = e;
     let mut fresh_first = None;
     if e.first_cluster < FAT32_FIRST_DATA_CLUSTER {
-        let fresh = fat32_alloc_cluster().map_err(|()| FsError::NoSpace)?;
+        let fresh = fat32_alloc_cluster_on(v).map_err(|()| FsError::NoSpace)?;
         // fat32_alloc_cluster already marks it EOC (0x0FFF_FFFF).
         e.first_cluster = fresh;
         e.dirty = true;
@@ -5906,24 +6316,24 @@ fn fat32_write_raw(file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
     // `zero_fill_range`.
     let mut written = 0usize;
     let outcome = if e.pos > e.size {
-        zero_fill_range(e.first_cluster, e.size, e.pos, bytes_per_clus, spc, data_start)
+        zero_fill_range(v, e.first_cluster, e.size, e.pos, bytes_per_clus, spc, data_start)
     } else {
         Ok(())
     }
-    .and_then(|()| write_loop(&mut e, buf, &mut written, bytes_per_clus, spc, data_start));
+    .and_then(|()| write_loop(v, &mut e, buf, &mut written, bytes_per_clus, spc, data_start));
 
     // Nothing landed and the chain was started by this call: hand the chain
     // back and leave the handle as it was. Kept, it would be allocated and
     // named by nothing until a later write or close happened to record it.
     if outcome.is_err() && written == 0 {
         if let Some(fresh) = fresh_first {
-            fat32_free_chain(fresh);
+            fat32_free_chain_on(v, fresh);
             e = before;
         }
     }
     // Persist updated size/position/dirty/first_cluster back into the slot —
     // also after a failure, so what reached the device is counted.
-    with_handle(file, |slot| {
+    with_handle(v, file, |slot| {
         slot.pos = e.pos;
         slot.size = e.size;
         slot.first_cluster = e.first_cluster;
@@ -5941,7 +6351,7 @@ fn fat32_write_raw(file: Fat32File, buf: &[u8]) -> Result<usize, FsError> {
 /// sector the device accepted, so on an `Err` they describe exactly what
 /// landed.
 fn write_loop(
-    e: &mut OpenFileEntry,
+    v: &'static Vol, e: &mut OpenFileEntry,
     buf: &[u8],
     written: &mut usize,
     bytes_per_clus: u32,
@@ -5960,8 +6370,8 @@ fn write_loop(
         let cluster = match cursor {
             Some((i, c)) if i == cluster_index && !cfg!(feature = "fw-chain-walk-canary") => c,
             Some((i, c)) if i + 1 == cluster_index && !cfg!(feature = "fw-chain-walk-canary") =>
-                chain_nth_or_extend(c, 1)?,
-            _ => chain_nth_or_extend(e.first_cluster, cluster_index)?,
+                chain_nth_or_extend(v, c, 1)?,
+            _ => chain_nth_or_extend(v, e.first_cluster, cluster_index)?,
         };
         cursor = Some((cluster_index, cluster));
         let first_sector = cluster_first_sector(data_start, cluster, spc)
@@ -5980,11 +6390,11 @@ fn write_loop(
             && (offset_in_sector != 0
                 || (buf.len() - written_now) < SECTOR_SIZE);
         if sector_is_within_size {
-            read_sector(sec_num, &mut sec_buf).map_err(|()| FsError::Io)?;
+            read_sector(v, sec_num, &mut sec_buf).map_err(|()| FsError::Io)?;
         } else if offset_in_sector != 0 {
             // Past current size but starting mid-sector — read to preserve
             // whatever junk is there (treated as zeros after size extension).
-            read_sector(sec_num, &mut sec_buf).map_err(|()| FsError::Io)?;
+            read_sector(v, sec_num, &mut sec_buf).map_err(|()| FsError::Io)?;
             // Zero the tail beyond current size so stale bytes don't leak.
             for b in &mut sec_buf[offset_in_sector..] { *b = 0; }
         }
@@ -5993,7 +6403,7 @@ fn write_loop(
         let chunk = (buf.len() - written_now).min(avail_in_sector);
         sec_buf[offset_in_sector..offset_in_sector + chunk]
             .copy_from_slice(&buf[written_now..written_now + chunk]);
-        write_sector(sec_num, &sec_buf).map_err(|()| FsError::Io)?;
+        write_sector(v, sec_num, &sec_buf).map_err(|()| FsError::Io)?;
 
         *written += chunk;
         e.pos += chunk as u32;
@@ -6003,10 +6413,16 @@ fn write_loop(
     Ok(())
 }
 
+/// [`fat32_seek_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_seek(file: Fat32File, whence: SeekFrom) -> Result<u32, FsError> {
+    fat32_seek_on(&BOOT, file, whence)
+}
+
 /// Seek within an open file.  Seeking past EOF is allowed but will NOT
 /// allocate clusters until a write happens.
-pub fn fat32_seek(file: Fat32File, whence: SeekFrom) -> Result<u32, FsError> {
-    with_handle(file, |e| {
+pub fn fat32_seek_on(v: &'static Vol, file: Fat32File, whence: SeekFrom) -> Result<u32, FsError> {
+    with_handle(v, file, |e| {
         let new = match whence {
             SeekFrom::Start(p) => p,
             SeekFrom::Current(d) => {
@@ -6021,6 +6437,12 @@ pub fn fat32_seek(file: Fat32File, whence: SeekFrom) -> Result<u32, FsError> {
         e.pos = new;
         Ok(new)
     })
+}
+
+/// [`fat32_fsync_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_fsync(file: Fat32File) -> Result<(), FsError> {
+    fat32_fsync_on(&BOOT, file)
 }
 
 /// Make everything written through `file` durable: its data sectors, its
@@ -6045,23 +6467,29 @@ pub fn fat32_seek(file: Fat32File, whence: SeekFrom) -> Result<u32, FsError> {
 /// written, the device cannot confirm it) and `Err(Io)` both leave it set,
 /// and the next `fsync` or `close` writes the entry and asks again. An `Ok`
 /// from this function therefore always follows a confirmed flush.
-pub fn fat32_fsync(file: Fat32File) -> Result<(), FsError> {
-    let snapshot = snapshot_handle(file)?;
+pub fn fat32_fsync_on(v: &'static Vol, file: Fat32File) -> Result<(), FsError> {
+    let snapshot = snapshot_handle(v, file)?;
     if !snapshot.dirty { return Ok(()); }
-    match order_barrier() {
+    match order_barrier(v) {
         Ok(()) | Err(FsError::Unsupported) => {}
         Err(e) => return Err(e),
     }
-    dir_update_meta(
+    dir_update_meta(v, 
         snapshot.dir_sector,
         snapshot.dir_offset,
         snapshot.first_cluster,
         snapshot.size,
     )?;
-    let _ = journal_settle();
-    device_flush()?;
-    wb_take_error()?;
-    with_handle(file, |e| { e.dirty = false; Ok(()) })
+    let _ = journal_settle(v);
+    device_flush(v)?;
+    wb_take_error(v)?;
+    with_handle(v, file, |e| { e.dirty = false; Ok(()) })
+}
+
+/// [`fat32_close_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_close(file: Fat32File) -> Result<(), FsError> {
+    fat32_close_on(&BOOT, file)
 }
 
 /// Close an open file handle.  Implicitly fsyncs if the file is dirty.
@@ -6071,9 +6499,9 @@ pub fn fat32_fsync(file: Fat32File) -> Result<(), FsError> {
 /// until wave 11 this returned `Ok` even when the entry write or the flush
 /// had failed, so a caller that checked `close` could not learn that the
 /// data it had written was not durable (fsyncgate).
-pub fn fat32_close(file: Fat32File) -> Result<(), FsError> {
-    let synced = fat32_fsync(file);
-    with_handle(file, |e| {
+pub fn fat32_close_on(v: &'static Vol, file: Fat32File) -> Result<(), FsError> {
+    let synced = fat32_fsync_on(v, file);
+    with_handle(v, file, |e| {
         e.in_use = false;
         e.dirty = false;
         e.pos = 0;
@@ -6097,21 +6525,21 @@ pub fn fat32_close(file: Fat32File) -> Result<(), FsError> {
 /// at the write-back or the fsync that closes both epochs. Every reader
 /// looks the entry up through the cache, so it sees the new size at once.
 /// Write-through: an ordering barrier (a device flush), then the entry.
-pub fn fat32_release(file: Fat32File) -> Result<(), FsError> {
-    let snapshot = snapshot_handle(file)?;
-    let r = if snapshot.dirty && wb_active() && !cfg!(feature = "fw-entry-per-write-canary") {
-        dir_update_meta_in(snapshot.dir_sector, snapshot.dir_offset,
+pub fn fat32_release(v: &'static Vol, file: Fat32File) -> Result<(), FsError> {
+    let snapshot = snapshot_handle(v, file)?;
+    let r = if snapshot.dirty && wb_active(v) && !cfg!(feature = "fw-entry-per-write-canary") {
+        dir_update_meta_in(v, snapshot.dir_sector, snapshot.dir_offset,
             snapshot.first_cluster, snapshot.size, true)
     } else if snapshot.dirty {
-        match order_barrier() {
-            Ok(()) | Err(FsError::Unsupported) => dir_update_meta(
+        match order_barrier(v) {
+            Ok(()) | Err(FsError::Unsupported) => dir_update_meta(v, 
                 snapshot.dir_sector, snapshot.dir_offset, snapshot.first_cluster, snapshot.size),
             Err(e) => Err(e),
         }
     } else {
         Ok(())
     };
-    with_handle(file, |e| {
+    with_handle(v, file, |e| {
         e.in_use = false;
         e.dirty = false;
         e.pos = 0;
@@ -6122,33 +6550,46 @@ pub fn fat32_release(file: Fat32File) -> Result<(), FsError> {
     r
 }
 
-/// Return `(position, size)` for an open file.  Useful for tests.
+/// [`fat32_file_stat_on`] on the boot volume ([`BOOT`]).
+#[inline]
 pub fn fat32_file_stat(file: Fat32File) -> Result<(u32, u32), FsError> {
-    with_handle(file, |e| Ok((e.pos, e.size)))
+    fat32_file_stat_on(&BOOT, file)
+}
+
+/// Return `(position, size)` for an open file.  Useful for tests.
+pub fn fat32_file_stat_on(v: &'static Vol, file: Fat32File) -> Result<(u32, u32), FsError> {
+    with_handle(v, file, |e| Ok((e.pos, e.size)))
 }
 
 // ── Directories: opendir / readdir / mkdir ───────────────────────────────────
 
+/// [`fat32_opendir_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_opendir(_vol: Volume, path: &[u8]) -> Result<Fat32DirIter, FsError> {
+    fat32_opendir_on(&BOOT, _vol, path)
+}
+
 /// Open a directory by absolute path (`b"/"` for root).  Returns an iterator
 /// that yields each non-deleted, non-LFN, non-volume-ID entry.
-pub fn fat32_opendir(_vol: Volume, path: &[u8]) -> Result<Fat32DirIter, FsError> {
-    if !fat32_mounted() { return Err(FsError::NotMounted); }
+pub fn fat32_opendir_on(v: &'static Vol, _vol: Volume, path: &[u8]) -> Result<Fat32DirIter, FsError> {
+    if !fat32_mounted_on(v) { return Err(FsError::NotMounted); }
     let mut comps: [&[u8]; FAT32_MAX_PATH_DEPTH] = [&[]; FAT32_MAX_PATH_DEPTH];
     let n = split_path(path, &mut comps)?;
-    let root_cluster = FAT32.lock().root_cluster;
+    let root_cluster = v.fat32.lock().root_cluster;
     let mut dir_cluster = root_cluster;
     for i in 0..n {
         let name83 = component_to_83(comps[i]).ok_or(FsError::InvalidArg)?;
-        let loc = dir_find_in(dir_cluster, &name83)?;
+        let loc = dir_find_in(v, dir_cluster, &name83)?;
         if loc.attr & ATTR_DIRECTORY == 0 { return Err(FsError::WrongType); }
         if loc.first_cluster < FAT32_FIRST_DATA_CLUSTER { return Err(FsError::NotFound); }
         dir_cluster = loc.first_cluster;
     }
-    let mut walk = { let v = FAT32.lock(); ChainWalk::for_volume(v.fat_sz32, v.data_clusters) };
+    let mut walk = { let fv = v.fat32.lock(); ChainWalk::for_volume(fv.fat_sz32, fv.data_clusters) };
     // The first cluster is the walk's first visit, so a self-link is seen
     // at the first advance.
     walk.visit(dir_cluster);
     Ok(Fat32DirIter {
+        v,
         cluster: dir_cluster,
         sector_in_cluster: 0,
         entry_in_sector: 0,
@@ -6160,10 +6601,11 @@ pub fn fat32_opendir(_vol: Volume, path: &[u8]) -> Result<Fat32DirIter, FsError>
 impl Fat32DirIter {
     /// Return the next valid directory entry, or `None` at end.
     pub fn next(&mut self) -> Option<DirEntryInfo> {
+        let v = self.v;
         if self.done { return None; }
         let (spc, data_start) = {
-            let v = FAT32.lock();
-            (v.secs_per_clus, v.data_start)
+            let fv = v.fat32.lock();
+            (fv.secs_per_clus, fv.data_start)
         };
         loop {
             if self.cluster < FAT32_FIRST_DATA_CLUSTER || self.cluster >= FAT32_EOC {
@@ -6180,7 +6622,7 @@ impl Fat32DirIter {
                 // first_sector + spc fits in u32.
                 let sec_num = first_sector + self.sector_in_cluster;
                 let mut buf = [0u8; SECTOR_SIZE];
-                if read_sector(sec_num, &mut buf).is_err() {
+                if read_sector(v, sec_num, &mut buf).is_err() {
                     self.done = true;
                     return None;
                 }
@@ -6226,7 +6668,7 @@ impl Fat32DirIter {
                 self.sector_in_cluster += 1;
             }
             self.sector_in_cluster = 0;
-            self.cluster = match fat32_next_cluster(self.cluster) {
+            self.cluster = match fat32_next_cluster(v, self.cluster) {
                 Ok(n) => n,
                 Err(()) => { self.done = true; return None; }
             };
@@ -6240,25 +6682,31 @@ impl Fat32DirIter {
     }
 }
 
+/// [`fat32_mkdir_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_mkdir(_vol: Volume, path: &[u8]) -> Result<(), FsError> {
+    fat32_mkdir_on(&BOOT, _vol, path)
+}
+
 /// Create a new subdirectory at `path`.  The parent directory must exist.
 /// Writes `.` (self) and `..` (parent) entries into the new directory.
-pub fn fat32_mkdir(_vol: Volume, path: &[u8]) -> Result<(), FsError> {
-    if !fat32_mounted() { return Err(FsError::NotMounted); }
-    let (parent_cluster, last) = resolve_parent(path)?;
+pub fn fat32_mkdir_on(v: &'static Vol, _vol: Volume, path: &[u8]) -> Result<(), FsError> {
+    if !fat32_mounted_on(v) { return Err(FsError::NotMounted); }
+    let (parent_cluster, last) = resolve_parent(v, path)?;
     let name83 = component_to_83(last).ok_or(FsError::InvalidArg)?;
 
     // Fail if an entry already exists.
-    if dir_find_in(parent_cluster, &name83).is_ok() { return Err(FsError::Exists); }
+    if dir_find_in(v, parent_cluster, &name83).is_ok() { return Err(FsError::Exists); }
 
     // Allocate a cluster for the new directory and zero every sector.
-    let new_clus = fat32_alloc_cluster().map_err(|()| FsError::NoSpace)?;
+    let new_clus = fat32_alloc_cluster_on(v).map_err(|()| FsError::NoSpace)?;
     let (spc, data_start) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start)
     };
     let first_sector = match cluster_first_sector(data_start, new_clus, spc) {
         Some(v) => v,
-        None => { fat32_free_chain(new_clus); return Err(FsError::Io); }
+        None => { fat32_free_chain_on(v, new_clus); return Err(FsError::Io); }
     };
     let mut buf = [0u8; SECTOR_SIZE];
     // '.' entry -> new_clus itself.
@@ -6266,7 +6714,7 @@ pub fn fat32_mkdir(_vol: Volume, path: &[u8]) -> Result<(), FsError> {
     dot_name[0] = b'.';
     write_dirent_into_buf(&mut buf, 0, &dot_name, new_clus, 0, DIRENT_ATTR_SUBDIR);
     // '..' entry -> parent cluster (root stored as 0 per FAT32 convention).
-    let root_cluster = FAT32.lock().root_cluster;
+    let root_cluster = v.fat32.lock().root_cluster;
     let dotdot_target = if parent_cluster == root_cluster { 0 } else { parent_cluster };
     let mut dotdot_name = [b' '; 11];
     dotdot_name[0] = b'.';
@@ -6282,16 +6730,16 @@ pub fn fat32_mkdir(_vol: Volume, path: &[u8]) -> Result<(), FsError> {
     // The rest of the sector is already zero (DIRENT_MARK_END).
     // A failed write frees the cluster it allocated, as a failed insert does
     // below: nothing names it yet, so it would otherwise leak for good.
-    if write_sector(first_sector, &buf).is_err() {
-        fat32_free_chain(new_clus);
+    if write_sector(v, first_sector, &buf).is_err() {
+        fat32_free_chain_on(v, new_clus);
         return Err(FsError::Io);
     }
     // Zero remaining sectors in the cluster so iteration terminates.
     let zero = [0u8; SECTOR_SIZE];
     for s in 1..spc {
         // s < spc, and cluster_first_sector proved first_sector + spc fits.
-        if write_sector(first_sector + s, &zero).is_err() {
-            fat32_free_chain(new_clus);
+        if write_sector(v, first_sector + s, &zero).is_err() {
+            fat32_free_chain_on(v, new_clus);
             return Err(FsError::Io);
         }
     }
@@ -6304,17 +6752,17 @@ pub fn fat32_mkdir(_vol: Volume, path: &[u8]) -> Result<(), FsError> {
     // order `dir_insert` keeps for a directory extension. `Unsupported` is a
     // device that orders nothing, as there.
     if !cfg!(feature = "mkdir-unordered-canary")
-        && !matches!(order_barrier(), Ok(()) | Err(FsError::Unsupported))
+        && !matches!(order_barrier(v), Ok(()) | Err(FsError::Unsupported))
     {
-        fat32_free_chain(new_clus);
+        fat32_free_chain_on(v, new_clus);
         return Err(FsError::Io);
     }
     // Insert dirent for the new dir into the parent.
-    match dir_insert(parent_cluster, &name83, new_clus, 0, DIRENT_ATTR_SUBDIR) {
+    match dir_insert(v, parent_cluster, &name83, new_clus, 0, DIRENT_ATTR_SUBDIR) {
         Ok(_) => Ok(()),
         Err(e) => {
             // Roll back: free the allocated cluster.
-            fat32_free_chain(new_clus);
+            fat32_free_chain_on(v, new_clus);
             Err(e)
         }
     }
@@ -6322,7 +6770,7 @@ pub fn fat32_mkdir(_vol: Volume, path: &[u8]) -> Result<(), FsError> {
 
 // Provide a const constructor to let callers build a Volume handle without
 // going through `fat32_mount_volume` — useful in tests that mount via the
-// legacy `fat32_mount()` API.
+// legacy `fat32_mount_on()` API.
 impl Volume {
     pub const fn assume_mounted() -> Self { Volume { _private: () } }
 }
@@ -6338,16 +6786,23 @@ impl Volume {
 
 /// FAT32 as a value the VFS can be handed.
 ///
-/// A handle to the module's own volume state (the `FAT32` static and its
-/// lock), not a copy of it: [`FAT32_FS`] is the one value. Not zero-sized: the
-/// VFS tells backends apart by address (`mount_index`, the page cache), and
-/// two zero-sized statics may share one, which a second compile of this file
-/// (`usbvol`) would make two volumes' handles.
-pub struct Fat32Fs { _not_zero_sized: u8 }
+/// A handle to one volume's state ([`Vol`]), not a copy of it: one static
+/// per volume ([`FAT32_FS`] for [`BOOT`], `usbvol::USB_FS` for the stick),
+/// which the VFS tells apart by address (`mount_index`, the page cache).
+pub struct Fat32Fs { vol: &'static Vol }
 
-/// The volume as a backend (`vfs_mount_fs`): what its own page-cache and
-/// unmount paths name it by, and what `vfs::FAT32_FS` re-exports for `/fat`.
-pub static FAT32_FS: Fat32Fs = Fat32Fs { _not_zero_sized: 0 };
+/// The boot volume as a backend (`vfs_mount_fs`): what its own page-cache and
+/// unmount paths name it by ([`Vol`]'s `fs`), and what `vfs::FAT32_FS`
+/// re-exports for `/fat`.
+pub static FAT32_FS: Fat32Fs = Fat32Fs { vol: &BOOT };
+
+impl Fat32Fs {
+    /// The backend of volume `v` (its own static: the VFS tells backends
+    /// apart by address).
+    pub const fn of(v: &'static Vol) -> Fat32Fs {
+        Fat32Fs { vol: v }
+    }
+}
 
 /// The longest 8.3 name as text (`NAME.EXT`) is twelve bytes; the generic key
 /// must hold at least one. Checked here, where the requirement is, rather than
@@ -6359,26 +6814,29 @@ const _: () = assert!(12 < crate::vfs::INODE_KEY_LEN);
 /// The file a key names, as the `FileSystem` methods that cannot report why
 /// (`Option`, `()`) see it.
 #[inline]
-fn named(key: &crate::vfs::InodeKey) -> Option<FName> {
-    FName::of_key(key).ok()
+fn named(v: &'static Vol, key: &crate::vfs::InodeKey) -> Option<FName> {
+    FName::of_key(v, key).ok()
 }
 
 impl crate::vfs::FileSystem for Fat32Fs {
     #[inline]
-    fn fs_type(&self) -> u32 { dev::FS_TYPE }
+    fn fs_type(&self) -> u32 { self.vol.knobs.fs_type }
 
     #[inline]
-    fn mount(&self) -> Result<(), ()> { fat32_mount() }
+    fn mount(&self) -> Result<(), ()> { fat32_mount_on(self.vol) }
 
     #[inline]
-    fn sync(&self) -> Result<(), ()> { fat32_sync() }
+    fn sync(&self) -> Result<(), ()> { fat32_sync_on(self.vol) }
 
     /// A file's fsync is the volume's (`fat32_sync_checked`), so a volume
     /// flush ticket is every descriptor's. Only where the `fs-wb` task serves
     /// this volume's tickets (`dev::TICKETED`); elsewhere `None`, and the
     /// caller syncs inline.
     #[inline]
-    fn flush_request(&self) -> Option<u64> { if dev::TICKETED { Some(fat32_flush_request()) } else { None } }
+    fn flush_request(&self) -> Option<u64> {
+        let v = self.vol;
+        if v.knobs.ticketed { Some(fat32_flush_request_on(v)) } else { None }
+    }
 
     #[inline]
     fn flush_done(&self, t: u64) -> Option<Result<(), crate::vfs::FsErr>> {
@@ -6405,8 +6863,9 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// and access stamps as Unix seconds (local time, as FAT stores it; 0
     /// for a stamp of 0).
     fn stat(&self, key: &crate::vfs::InodeKey) -> Option<crate::vfs::FileStat> {
-        let f = named(key)?;
-        let e = lookup_entry(f.dir, &f.name).ok()?;
+        let v = self.vol;
+        let f = named(v, key)?;
+        let e = lookup_entry(v, f.dir, &f.name).ok()?;
         let is_dir = e.attr & ATTR_DIRECTORY != 0;
         let mut st = if is_dir {
             crate::vfs::FileStat::dir(e.size as u64)
@@ -6428,17 +6887,19 @@ impl crate::vfs::FileSystem for Fat32Fs {
         st: &crate::vfs::FileStat,
         dst: &mut [u8],
     ) -> usize {
+        let v = self.vol;
         // The cookie is the start cluster `stat` already found. The key is not
         // needed, and using it would cost a second scan of the same directory.
-        fat32_read_chain(st.cookie, dst)
+        fat32_read_chain_on(v, st.cookie, dst)
     }
 
     #[inline]
     fn write_all(&self, key: &crate::vfs::InodeKey, src: &[u8]) -> Result<(), ()> {
-        let f = named(key).ok_or(())?;
+        let v = self.vol;
+        let f = named(v, key).ok_or(())?;
         // Queued under write-back (wave 15): a close is not a durability
         // point; `fsync` (below, `fat32_sync_checked`) is.
-        write_file_queued_at(&f, src)
+        write_file_queued_at(v, &f, src)
     }
 
     /// Deletes the directory entry and then frees the cluster chain, which
@@ -6446,10 +6907,11 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// — the same operation, entered with a key instead of a raw filename.
     #[inline]
     fn unlink(&self, key: &crate::vfs::InodeKey) -> Result<(), ()> {
-        let f = named(key).ok_or(())?;
-        let cluster = lookup_entry(f.dir, &f.name).map(|e| e.cluster).unwrap_or(0);
-        unlink_at(&f)?;
-        if cluster >= 2 { fat32_free_chain(cluster); }
+        let v = self.vol;
+        let f = named(v, key).ok_or(())?;
+        let cluster = lookup_entry(v, f.dir, &f.name).map(|e| e.cluster).unwrap_or(0);
+        unlink_at(v, &f)?;
+        if cluster >= 2 { fat32_free_chain_on(v, cluster); }
         Ok(())
     }
 
@@ -6480,7 +6942,8 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// then (see `WRITE_GEN`).
     #[inline]
     fn read_handle(&self, cookie: u32) -> u64 {
-        ((WRITE_GEN.load(core::sync::atomic::Ordering::Acquire) as u64) << 32) | cookie as u64
+        let v = self.vol;
+        ((v.write_gen.load(core::sync::atomic::Ordering::Acquire) as u64) << 32) | cookie as u64
     }
 
     /// The handle's start cluster is the one `stat` reports now: the name was
@@ -6496,25 +6959,27 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// happened since. `None` for a directory, an empty file, or a lookup a
     /// write overlapped.
     fn content_stamp(&self, key: &crate::vfs::InodeKey) -> Option<crate::vfs::ContentStamp> {
-        let f = named(key)?;
-        let epoch = fat32_write_epoch();
-        let e = lookup_entry(f.dir, &f.name).ok()?;
+        let v = self.vol;
+        let f = named(v, key)?;
+        let epoch = fat32_write_epoch_on(v);
+        let e = lookup_entry(v, f.dir, &f.name).ok()?;
         if e.attr & ATTR_DIRECTORY != 0 || e.cluster < 2 || e.size == 0 {
             return None;
         }
-        if fat32_write_epoch() != epoch {
+        if fat32_write_epoch_on(v) != epoch {
             return None;
         }
         Some(crate::vfs::ContentStamp {
-            fs: dev::STAMP_FS, epoch, id: e.cluster as u64, size: e.size as u64,
+            fs: v.knobs.stamp, epoch, id: e.cluster as u64, size: e.size as u64,
         })
     }
 
     /// One root-entry lookup, none of `stat`'s date conversions.
     #[inline]
     fn stat_brief(&self, key: &crate::vfs::InodeKey) -> Option<(u64, bool, u32)> {
-        let f = named(key)?;
-        let e = lookup_entry(f.dir, &f.name).ok()?;
+        let v = self.vol;
+        let f = named(v, key)?;
+        let e = lookup_entry(v, f.dir, &f.name).ok()?;
         Some((e.size as u64, e.attr & ATTR_DIRECTORY != 0, e.cluster))
     }
 
@@ -6531,14 +6996,15 @@ impl crate::vfs::FileSystem for Fat32Fs {
         offset: u64,
         dst: &mut [u8],
     ) -> usize {
+        let v = self.vol;
         let offset = match u32::try_from(offset) { Ok(o) => o, Err(_) => return 0 };
-        let gen = WRITE_GEN.load(core::sync::atomic::Ordering::Acquire);
+        let gen = v.write_gen.load(core::sync::atomic::Ordering::Acquire);
         if (handle >> 32) as u32 == gen && size <= u32::MAX as u64 {
-            return fat32_read_range(handle as u32, size as u32, offset, dst, true);
+            return fat32_read_range_on(v, handle as u32, size as u32, offset, dst, true);
         }
-        let Some(f) = named(key) else { return 0 };
-        match lookup_entry(f.dir, &f.name) {
-            Ok(e) if e.attr & ATTR_DIRECTORY == 0 => fat32_read_range(e.cluster, e.size, offset, dst, true),
+        let Some(f) = named(v, key) else { return 0 };
+        match lookup_entry(v, f.dir, &f.name) {
+            Ok(e) if e.attr & ATTR_DIRECTORY == 0 => fat32_read_range_on(v, e.cluster, e.size, offset, dst, true),
             _ => 0,
         }
     }
@@ -6558,12 +7024,13 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// behind it).
     #[inline]
     fn read_at(&self, key: &crate::vfs::InodeKey, offset: u64, dst: &mut [u8]) -> usize {
+        let v = self.vol;
         // FAT32 files end below 4 GiB; an offset past that is past EOF.
         let offset = match u32::try_from(offset) { Ok(o) => o, Err(_) => return 0 };
-        let Some(f) = named(key) else { return 0 };
-        match lookup_entry(f.dir, &f.name) {
+        let Some(f) = named(v, key) else { return 0 };
+        match lookup_entry(v, f.dir, &f.name) {
             Ok(e) if e.attr & ATTR_DIRECTORY == 0 => {
-                fat32_read_range(e.cluster, e.size, offset, dst, !crate::vfs::page_cache_installed())
+                fat32_read_range_on(v, e.cluster, e.size, offset, dst, !crate::vfs::page_cache_installed())
             }
             _ => 0,
         }
@@ -6576,10 +7043,11 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// that exists only as an `InodeKey` (no dirent yet) still lands.
     #[inline]
     fn write_at(&self, key: &crate::vfs::InodeKey, offset: u64, src: &[u8]) -> Result<usize, ()> {
+        let v = self.vol;
         let offset = u32::try_from(offset).map_err(|_| ())?;
-        let f = named(key).ok_or(())?;
+        let f = named(v, key).ok_or(())?;
         let t0 = crate::census::now();
-        let file = open_at(
+        let file = open_at(v, 
             f.dir,
             &f.name,
             open_flags::WRITE | open_flags::CREATE,
@@ -6587,8 +7055,8 @@ impl crate::vfs::FileSystem for Fat32Fs {
         ).map_err(|_| ())?;
         let t1 = crate::census::now();
         crate::census::add(crate::census::W_LOOKUP, t0, t1);
-        let result = match fat32_seek(file, SeekFrom::Start(offset)) {
-            Ok(_)  => fat32_write_raw(file, src).map_err(|_| ()),
+        let result = match fat32_seek_on(v, file, SeekFrom::Start(offset)) {
+            Ok(_)  => fat32_write_raw(v, file, src).map_err(|_| ()),
             Err(_) => Err(()),
         };
         let t2 = crate::census::now();
@@ -6596,7 +7064,7 @@ impl crate::vfs::FileSystem for Fat32Fs {
         // The directory entry follows the data and the FAT chain in a later
         // epoch (`fat32_release`); no flush — `fsync` is the durability
         // point (`FileSystem::fsync`, `fat32_sync_checked`).
-        let released = fat32_release(file);
+        let released = fat32_release(v, file);
         crate::census::add(crate::census::W_ENTRY, t2, crate::census::now());
         match (result, released) {
             (Ok(n), Ok(())) => Ok(n),
@@ -6615,10 +7083,11 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// An empty file through the journaled whole-file write, only when no
     /// entry exists (that write would otherwise truncate).
     fn create(&self, key: &crate::vfs::InodeKey) -> Result<(), crate::vfs::FsErr> {
-        let f = FName::of_key(key).map_err(fs_err)?;
-        if lookup_entry(f.dir, &f.name).is_ok() { return Ok(()); }
+        let v = self.vol;
+        let f = FName::of_key(v, key).map_err(fs_err)?;
+        if lookup_entry(v, f.dir, &f.name).is_ok() { return Ok(()); }
         // Queued under write-back, like `write_all`: durable at fsync/sync.
-        write_file_queued_at(&f, &[]).map_err(|()| crate::vfs::FsErr::Io)
+        write_file_queued_at(v, &f, &[]).map_err(|()| crate::vfs::FsErr::Io)
     }
 
     /// Every length through the journaled whole-file write, the path every
@@ -6631,11 +7100,12 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// that is a second journaled path to keep correct, and a FAT32 file is
     /// already held whole in memory by the proxy that opens it.)
     fn truncate(&self, key: &crate::vfs::InodeKey, len: u64) -> Result<(), crate::vfs::FsErr> {
+        let v = self.vol;
         let t0 = crate::census::now();
         let r = (|| -> Result<(), crate::vfs::FsErr> {
             use crate::vfs::FsErr;
-            let f = FName::of_key(key).map_err(fs_err)?;
-            let e = lookup_entry(f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+            let f = FName::of_key(v, key).map_err(fs_err)?;
+            let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
             if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
             if len == e.size as u64 { return Ok(()); }
             if len == 0 && !cfg!(feature = "fat-proxy-writes-canary") {
@@ -6658,16 +7128,16 @@ impl crate::vfs::FileSystem for Fat32Fs {
                 // stamped with that later epoch (`defer_free`). A chain freed
                 // at once (write-through, `FS_DEFERRED_FREE` off) keeps the
                 // entry in the current epoch, ordered before the free.
-                let (sector, off) = find_dirent_location(f.dir, &f.name).map_err(|()| FsErr::Io)?;
-                let ahead = defer_frees() && !cfg!(feature = "fw-entry-per-write-canary");
-                dirent_clus_size_in(sector, off, 0, 0, ahead).map_err(|()| FsErr::Io)?;
+                let (sector, off) = find_dirent_location(v, f.dir, &f.name).map_err(|()| FsErr::Io)?;
+                let ahead = defer_frees(v) && !cfg!(feature = "fw-entry-per-write-canary");
+                dirent_clus_size_in(v, sector, off, 0, 0, ahead).map_err(|()| FsErr::Io)?;
                 if e.cluster >= FAT32_FIRST_DATA_CLUSTER {
-                    if defer_frees() {
-                        defer_free(e.cluster, e.size).map_err(fs_err)?;
+                    if defer_frees(v) {
+                        defer_free(v, e.cluster, e.size).map_err(fs_err)?;
                     } else {
-                        order_barrier().or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) })
+                        order_barrier(v).or_else(|e| if e == FsError::Unsupported { Ok(()) } else { Err(e) })
                             .map_err(fs_err)?;
-                        fat32_free_chain(e.cluster);
+                        fat32_free_chain_on(v, e.cluster);
                     }
                 }
                 return Ok(());
@@ -6677,10 +7147,10 @@ impl crate::vfs::FileSystem for Fat32Fs {
             buf.try_reserve_exact(len).map_err(|_| FsErr::NoSpace)?;
             buf.resize(len, 0u8);
             let keep = len.min(e.size as usize);
-            if keep > 0 && fat32_read_chain(e.cluster, &mut buf[..keep]) != keep {
+            if keep > 0 && fat32_read_chain_on(v, e.cluster, &mut buf[..keep]) != keep {
                 return Err(FsErr::Io);
             }
-            write_file_queued_at(&f, &buf).map_err(|()| FsErr::Io)
+            write_file_queued_at(v, &f, &buf).map_err(|()| FsErr::Io)
         })();
         crate::census::add(crate::census::TRUNC, t0, crate::census::now());
         r
@@ -6692,21 +7162,23 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// clusters. `NotEmpty` when it holds anything besides `.` and `..`,
     /// `NotDir` for a file.
     fn rmdir(&self, name: &[u8]) -> Result<(), crate::vfs::FsErr> {
+        let v = self.vol;
         use crate::vfs::FsErr;
         let key = self.key_for(name).ok_or(FsErr::Invalid)?;
-        let f = FName::of_key(&key).map_err(fs_err)?;
-        let e = lookup_entry(f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+        let f = FName::of_key(v, &key).map_err(fs_err)?;
+        let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
         if e.attr & ATTR_DIRECTORY == 0 { return Err(FsErr::NotDir); }
-        if !fat32_dir_is_empty(e.cluster).map_err(|()| FsErr::Io)? { return Err(FsErr::NotEmpty); }
-        unlink_at(&f).map_err(|()| FsErr::Io)?;
-        if e.cluster >= FAT32_FIRST_DATA_CLUSTER { fat32_free_chain(e.cluster); }
+        if !fat32_dir_is_empty(v, e.cluster).map_err(|()| FsErr::Io)? { return Err(FsErr::NotEmpty); }
+        unlink_at(v, &f).map_err(|()| FsErr::Io)?;
+        if e.cluster >= FAT32_FIRST_DATA_CLUSTER { fat32_free_chain_on(v, e.cluster); }
         Ok(())
     }
 
     /// Volume-wide: the journal is settled and the device flushed
     /// (`fat32_sync_checked`); FAT32 keeps no per-file dirty state here.
     fn fsync(&self, _key: &crate::vfs::InodeKey) -> Result<(), crate::vfs::FsErr> {
-        fat32_sync_checked().map_err(fs_err)
+        let v = self.vol;
+        fat32_sync_checked_on(v).map_err(fs_err)
     }
 
     /// Swap file (`MM_SWAP_BACKEND_FILE`): a grow appends zeroed clusters
@@ -6715,9 +7187,10 @@ impl crate::vfs::FileSystem for Fat32Fs {
     /// any other shrink [`fat32_trim_file`]. Durable on return. A FAT32 file
     /// ends below 4 GiB: more is `NoSpace`.
     fn swap_resize(&self, key: &crate::vfs::InodeKey, len: u64) -> Result<(), crate::vfs::FsErr> {
+        let v = self.vol;
         use crate::vfs::FsErr;
-        let f = FName::of_key(key).map_err(fs_err)?;
-        let e = lookup_entry(f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+        let f = FName::of_key(v, key).map_err(fs_err)?;
+        let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
         if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
         let want = u32::try_from(len).map_err(|_| FsErr::NoSpace)?;
         if want > e.size {
@@ -6736,9 +7209,9 @@ impl crate::vfs::FileSystem for Fat32Fs {
         } else if want == 0 && e.size != 0 {
             self.truncate(key, 0)?;
         } else if want < e.size {
-            fat32_trim_file(&f, e, want)?;
+            fat32_trim_file(v, &f, e, want)?;
         }
-        fat32_sync_checked().map_err(fs_err)
+        fat32_sync_checked_on(v).map_err(fs_err)
     }
 
     /// Swap file: the clusters of the chain, in order, as runs of sectors
@@ -6751,15 +7224,16 @@ impl crate::vfs::FileSystem for Fat32Fs {
         len: u64,
         out: &mut [crate::vfs::SectorRun],
     ) -> Result<usize, crate::vfs::FsErr> {
+        let v = self.vol;
         use crate::vfs::{FsErr, SectorRun};
-        let f = FName::of_key(key).map_err(fs_err)?;
-        let e = lookup_entry(f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+        let f = FName::of_key(v, key).map_err(fs_err)?;
+        let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
         if e.attr & ATTR_DIRECTORY != 0 || len > e.size as u64 { return Err(FsErr::Invalid); }
         let mut left = len.div_ceil(SECTOR_SIZE as u64);
         if left == 0 { return Ok(0); }
         let (spc, data_start, fat_sz32, data_clusters) = {
-            let v = FAT32.lock();
-            (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+            let fv = v.fat32.lock();
+            (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
         };
         let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
         let (mut cl, mut n) = (e.cluster, 0usize);
@@ -6767,7 +7241,7 @@ impl crate::vfs::FileSystem for Fat32Fs {
             if cl < FAT32_FIRST_DATA_CLUSTER || cl >= FAT32_EOC || !walk.visit(cl) { return Err(FsErr::Invalid); }
             let first = cluster_first_sector(data_start, cl, spc).ok_or(FsErr::Invalid)?;
             let take = left.min(spc as u64) as u32;
-            let lba = dev_lba(first as u64);
+            let lba = dev_lba(v, first as u64);
             match n.checked_sub(1).map(|i| out[i]) {
                 Some(r) if r.lba + r.sectors as u64 == lba => out[n - 1].sectors += take,
                 _ => {
@@ -6777,33 +7251,36 @@ impl crate::vfs::FileSystem for Fat32Fs {
                 }
             }
             left -= take as u64;
-            if left > 0 { cl = fat32_next_cluster(cl).map_err(|()| FsErr::Io)?; }
+            if left > 0 { cl = fat32_next_cluster(v, cl).map_err(|()| FsErr::Io)?; }
         }
         Ok(n)
     }
 
     fn mkdir(&self, name: &[u8]) -> Result<(), crate::vfs::FsErr> {
-        fat32_mkdir(Volume { _private: () }, name).map_err(fs_err)
+        let v = self.vol;
+        fat32_mkdir_on(v, Volume { _private: () }, name).map_err(fs_err)
     }
 
     /// Within a directory or from one to another (a file; see
     /// `fat32_rename`).
     fn rename(&self, from: &[u8], to: &[u8]) -> Result<(), crate::vfs::FsErr> {
+        let v = self.vol;
         let a = self.key_for(from).ok_or(crate::vfs::FsErr::Invalid)?;
         let b = self.key_for(to).ok_or(crate::vfs::FsErr::Invalid)?;
-        rename_at(&FName::of_key(&a).map_err(fs_err)?, &FName::of_key(&b).map_err(fs_err)?)
+        rename_at(v, &FName::of_key(v, &a).map_err(fs_err)?, &FName::of_key(v, &b).map_err(fs_err)?)
     }
 
     fn statfs(&self) -> Result<crate::vfs::StatFs, crate::vfs::FsErr> {
+        let v = self.vol;
         let (bpc, clusters) = {
-            let v = FAT32.lock();
-            if !v.mounted { return Err(crate::vfs::FsErr::NotFound); }
-            (v.bytes_per_clus, v.data_clusters)
+            let fv = v.fat32.lock();
+            if !fv.mounted { return Err(crate::vfs::FsErr::NotFound); }
+            (fv.bytes_per_clus, fv.data_clusters)
         };
         // Held chains (`defer_free`) count as free: the allocator flushes
         // and frees them rather than report the volume full.
-        let free = (fat32_free_clusters().map_err(|()| crate::vfs::FsErr::Io)? as u64
-            + fat32_held_clusters() as u64).min(clusters as u64);
+        let free = (fat32_free_clusters(v).map_err(|()| crate::vfs::FsErr::Io)? as u64
+            + fat32_held_clusters_on(v) as u64).min(clusters as u64);
         Ok(crate::vfs::StatFs {
             fs_type: crate::vfs::FS_TYPE_FAT32, block_size: bpc,
             blocks: clusters as u64, blocks_free: free,
@@ -6821,7 +7298,8 @@ impl crate::vfs::FileSystem for Fat32Fs {
         cookie: u64,
         out: &mut crate::vfs::DirEnt,
     ) -> Result<Option<u64>, crate::vfs::FsErr> {
-        let mut it = fat32_opendir(Volume { _private: () }, dir).map_err(fs_err)?;
+        let v = self.vol;
+        let mut it = fat32_opendir_on(v, Volume { _private: () }, dir).map_err(fs_err)?;
         let mut i = 0u64;
         while let Some(e) = it.next() {
             if i == cookie {
@@ -6875,10 +7353,10 @@ pub(crate) fn dos_to_unix(date: u16, time: u16) -> u64 {
 /// Does the directory whose chain starts at `cluster` hold nothing but `.`,
 /// `..`, deleted entries and long-name fragments? Walks the whole chain up to
 /// its end marker, under the same cycle bound as every other walker.
-fn fat32_dir_is_empty(cluster: u32) -> Result<bool, ()> {
+fn fat32_dir_is_empty(v: &'static Vol, cluster: u32) -> Result<bool, ()> {
     let (spc, data_start, fat_sz32, data_clusters) = {
-        let v = FAT32.lock();
-        (v.secs_per_clus, v.data_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
     };
     let mut walk = ChainWalk::for_volume(fat_sz32, data_clusters);
     let mut c = cluster;
@@ -6887,7 +7365,7 @@ fn fat32_dir_is_empty(cluster: u32) -> Result<bool, ()> {
         let first = cluster_first_sector(data_start, c, spc).ok_or(())?;
         for s in 0..spc {
             let mut buf = [0u8; SECTOR_SIZE];
-            read_sector(first + s, &mut buf)?;
+            read_sector(v, first + s, &mut buf)?;
             for e in 0..DIRENTS_PER_SECTOR {
                 let off = e * DIRENT_SIZE;
                 match buf[off] {
@@ -6902,7 +7380,7 @@ fn fat32_dir_is_empty(cluster: u32) -> Result<bool, ()> {
                 return Ok(false);
             }
         }
-        c = fat32_next_cluster(c).unwrap_or(FAT32_EOC);
+        c = fat32_next_cluster(v, c).unwrap_or(FAT32_EOC);
     }
     Ok(true)
 }
@@ -6919,30 +7397,26 @@ fn fat32_dir_is_empty(cluster: u32) -> Result<bool, ()> {
 // sees the generation move and stores nothing, so a stale count is never
 // published.
 
-/// Bumped by every FAT entry write and every mount.
-static FREE_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
-/// `(generation << 32) | free clusters`; valid while the generation matches.
-static FREE_CACHE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 /// Full FAT scans `statfs` has made (host tests read it; nothing else does).
 pub static FREE_SCANS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-fn free_count_invalidate() {
-    FREE_GEN.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+fn free_count_invalidate(v: &'static Vol) {
+    v.free_gen.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
 }
 
 /// Free clusters in the first FAT: the cached count if no FAT entry changed
 /// since it was taken, else a fresh scan.
-fn fat32_free_clusters() -> Result<u32, ()> {
+fn fat32_free_clusters(v: &'static Vol) -> Result<u32, ()> {
     use core::sync::atomic::Ordering;
-    let gen = FREE_GEN.load(Ordering::Acquire);
-    let c = FREE_CACHE.load(Ordering::Acquire);
+    let gen = v.free_gen.load(Ordering::Acquire);
+    let c = v.free_cache.load(Ordering::Acquire);
     if (c >> 32) as u32 == gen {
         return Ok(c as u32);
     }
-    let free = fat32_free_clusters_scan()?;
+    let free = fat32_free_clusters_scan(v)?;
     FREE_SCANS.fetch_add(1, Ordering::Relaxed);
-    if FREE_GEN.load(Ordering::Acquire) == gen {
-        FREE_CACHE.store(((gen as u64) << 32) | free as u64, Ordering::Release);
+    if v.free_gen.load(Ordering::Acquire) == gen {
+        v.free_cache.store(((gen as u64) << 32) | free as u64, Ordering::Release);
     }
     Ok(free)
 }
@@ -6950,11 +7424,11 @@ fn fat32_free_clusters() -> Result<u32, ()> {
 /// Free clusters in the first FAT, counted from the device (not through the
 /// sector cache, so a `statfs` does not evict the hot sectors). FAT writes
 /// are write-through, so the device is current.
-fn fat32_free_clusters_scan() -> Result<u32, ()> {
+fn fat32_free_clusters_scan(v: &'static Vol) -> Result<u32, ()> {
     let (fat_start, fat_sz32, clusters) = {
-        let v = FAT32.lock();
-        if !v.mounted { return Err(()); }
-        (v.fat_start, v.fat_sz32, v.data_clusters)
+        let fv = v.fat32.lock();
+        if !fv.mounted { return Err(()); }
+        (fv.fat_start, fv.fat_sz32, fv.data_clusters)
     };
     let last = clusters.checked_add(FAT32_FIRST_DATA_CLUSTER).ok_or(())?;
     let mut free = 0u32;
@@ -6966,8 +7440,8 @@ fn fat32_free_clusters_scan() -> Result<u32, ()> {
         // The cache first: under write-back it may hold a FAT sector the
         // device does not have yet. Not installed on a miss (a scan of the
         // whole FAT would evict everything hot).
-        if !SECTOR_CACHE.lock().peek(lba as u64, &mut buf) {
-            blkdev::read_quiet(dev_lba(lba as u64), 1, &mut buf)?;
+        if !v.sector_cache.lock().peek(lba as u64, &mut buf) {
+            v.dev.read_quiet(dev_lba(v, lba as u64), 1, &mut buf)?;
         }
         for k in 0..SECTOR_SIZE / 4 {
             let c = first + k as u32;

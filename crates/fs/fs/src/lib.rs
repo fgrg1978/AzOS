@@ -8,15 +8,14 @@ pub mod bcache;
 pub mod census;
 pub mod vfs;
 pub mod fat32;
-/// What `fat32` (the boot volume, `/fat`) sits on and the knobs that are
-/// per volume: `fat32.rs` reads them from its sibling `fat32_dev`, so the
-/// same file compiled again over another disk (`usbvol`) is a second volume.
+/// What `fat32::BOOT` (the boot volume, `/fat`) sits on and its knobs:
+/// `fat32.rs` reads them from its sibling `fat32_dev`, so a host suite that
+/// pulls the file gives its own disk. Every other volume is a `fat32::Vol`
+/// over a device of its own (`usbvol`).
 mod fat32_dev {
     pub(crate) use azos_drv_block::{blkdev, partition};
     /// Kconfig `FS_WRITEBACK`.
     pub(crate) const WRITEBACK: bool = azos_limits::FS_WRITEBACK;
-    /// Kconfig `FS_BLOCK_CACHE_KB`.
-    pub(crate) const BLOCK_CACHE_KB: usize = azos_limits::FS_BLOCK_CACHE_KB;
     pub(crate) const FS_TYPE: u32 = crate::vfs::FS_TYPE_FAT32;
     pub(crate) const STAMP_FS: u32 = crate::vfs::STAMP_FS_FAT32;
     /// The `fs-wb` task serves this volume's flush tickets.

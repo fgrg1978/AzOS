@@ -36,13 +36,12 @@ extern crate fs_test_drivers as azos_drv_sys;
 #[allow(dead_code)]
 #[path = "../../../../crates/fs/fs/src/fat32.rs"]
 mod fat32;
-// `fat32.rs`'s device and per-volume knobs, as `crates/fs/fs/src/lib.rs`
-// gives them to the boot volume: the shim disk.
+// The boot volume's device and knobs (`fat32::BOOT`), as
+// `crates/fs/fs/src/lib.rs` gives them: the shim disk.
 #[allow(dead_code)]
 mod fat32_dev {
     pub(crate) use azos_drv_block::{blkdev, partition};
     pub(crate) const WRITEBACK: bool = azos_limits::FS_WRITEBACK;
-    pub(crate) const BLOCK_CACHE_KB: usize = azos_limits::FS_BLOCK_CACHE_KB;
     pub(crate) const FS_TYPE: u32 = crate::vfs::FS_TYPE_FAT32;
     pub(crate) const STAMP_FS: u32 = crate::vfs::STAMP_FS_FAT32;
     pub(crate) const TICKETED: bool = true;
@@ -189,14 +188,15 @@ mod envelope_delete;
 // Every mounted volume made durable (orderly power-off, `Power::sync`): `sync_all.rs`.
 #[cfg(test)]
 mod sync_all;
-// The removable volume (`usbvol`): `fat32.rs` compiled a second time over a
-// USB stick, mounted beside `/fat`. Pulled whole; it pulls `fat32.rs` again
-// itself (`#[path]` relative to its own directory).
+// The removable volume (`usbvol`): a second `fat32::Vol` over a USB stick,
+// mounted beside `/fat`, run by the same FAT32 code.
 #[allow(dead_code)]
 #[path = "../../../../crates/fs/fs/src/usbvol.rs"]
 mod usbvol;
+
 #[cfg(test)]
 mod usb_volume;
+
 // A small-file lane on /fat, for before/after numbers (`#[ignore]`).
 #[cfg(test)]
 mod bench_small;
