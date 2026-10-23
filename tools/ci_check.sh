@@ -7430,8 +7430,10 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # INFER_MODEL_SIG_REQUIRED, default y. The behavior loop's model, the bundle
 # `/fat/BEHAVIOR.MBL`, carries its signature inside (over its manifest, which
 # holds the cost table the admission believes) and is verified whatever the
-# switch says. Plain `qemu` kernels (just built above), one fresh disk copy per
-# boot.
+# switch says. The service is started by the behavior loop
+# (`kernel/src/behavior_ml.rs`, compiled with `use-robot` only), so the rows
+# boot `qemu,use-robot` kernels, built from the robot cell (the generic gate
+# kernel never spawns MLSRV.ELF), one fresh disk copy per boot.
 #
 #   signed:   the disk as `make` builds it -- the bundle loaded "(signature
 #             verified)", GGUF self-test 3/3.
@@ -7459,11 +7461,12 @@ ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
     local disk kimg=""
     if [ "$isa" = "rv" ]; then
         disk=$AZOS_OUT/build/disk-envelope.img
+        kbuild "qemu,use-robot" || { bad; echo "      riscv64 kernel (qemu,use-robot) did not build"; return; }
+        kimg="$CI_LOG_DIR/${tag}-kernel.elf"; cp "$KERNEL" "$kimg"
     else
         disk=$AZOS_OUT/build/disk-aarch64.img
-        kimg="$CI_LOG_DIR/${tag}-kernel.img"
-        if [ ! -f "$A64_IMG" ]; then bad; echo "      not built: $A64_IMG"; return; fi
-        cp "$A64_IMG" "$kimg"
+        a64_kbuild "qemu,use-robot" || { bad; echo "      aarch64 kernel (qemu,use-robot) did not build"; return; }
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
     fi
     [ -f "$disk.pristine" ] || make_disk "$disk"
     cp "$disk.pristine" "$img"
@@ -7486,7 +7489,7 @@ ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
     rm -f "$tmp"
     if [ "$isa" = "rv" ]; then
         par_ready
-        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -7549,6 +7552,10 @@ par_row ml_data_sig_row "ml data unsigned"          rv  nosig
 par_row ml_data_sig_row "aarch64 ml data signed"    arm signed
 par_row ml_data_sig_row "aarch64 ml data tampered"  arm tampered
 par_row ml_data_sig_row "aarch64 ml data unsigned"  arm nosig
+# The rows after these read the plain `qemu` kernels again (the spectre rows'
+# "two qemu kernels just built"), not the robot ones the six rows booted.
+kbuild "qemu"
+a64_kbuild "qemu" >/dev/null 2>&1 || true
 
 # ── Spectre v1: the syscall-table index is masked in the built kernel ───────
 #
