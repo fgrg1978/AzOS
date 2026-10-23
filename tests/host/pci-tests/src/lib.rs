@@ -321,8 +321,10 @@ fn unimplemented_bar_slots_are_skipped_entirely() {
 /// **Decode is off while a BAR reads all-1s.** A function the firmware left
 /// decoding (a PC's) is sized with Memory and I/O Space cleared, and gets
 /// both back as found.
+/// A host bridge (class 0x0600) is the exception: its decode stays on.
 /// **Canary:** `decode_bars` without the Command clear: the fake counts the
-/// all-1s writes taken while decoding.
+/// all-1s writes taken while decoding; without the host-bridge test the
+/// bridge's count is 0.
 #[test]
 fn bars_are_sized_with_decode_off_and_decode_comes_back() {
     let mut bus = FakeBus::new();
@@ -341,6 +343,20 @@ fn bars_are_sized_with_decode_off_and_decode_comes_back() {
     assert_eq!(f.sized_while_decoding, 0, "an all-1s BAR was live");
     assert_eq!(f.command(), CMD_MEM_SPACE | CMD_IO_SPACE | CMD_BUS_MASTER, "decode back as found");
     assert_ne!(f.dwords[1] & (1 << 29), 0, "a Status error bit survives (RW1C written 0)");
+
+    // A host bridge keeps its decode while its BARs are sized: on a chipset
+    // its Command bits can gate the hierarchy's memory decode (ECAM included).
+    let mut bus = FakeBus::new();
+    let mut f = FakeFunction::new();
+    f.set_header(0x8086, 0x29c0);
+    f.dwords[2] = 0x0600_0000;
+    f.configure_mem_bar(0, false, false, 0xfed1_0000, 0x4000);
+    f.dwords[1] = CMD_MEM_SPACE as u32;
+    bus.put(0, f);
+    decode_bars(&mut bus, bdf);
+    let f = bus.funcs[0].as_ref().unwrap();
+    assert_eq!(f.command(), CMD_MEM_SPACE);
+    assert_ne!(f.sized_while_decoding, 0, "the host bridge is sized with its decode on, as Linux does");
 
     // A function with decode off stays off.
     let mut bus = FakeBus::new();

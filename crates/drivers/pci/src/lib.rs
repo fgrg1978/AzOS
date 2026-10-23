@@ -307,7 +307,10 @@ const fn bar_slots(header_type: u8) -> usize {
 /// I/O and Memory Space bits are cleared for the walk and put back as found
 /// after it (Linux `__pci_read_base` does the same). Nothing in this kernel
 /// reaches config space through a BAR, so the walk does not cut its own
-/// access.
+/// access. A host bridge (class 0x0600) keeps its decode: on a real chipset
+/// its Command bits can gate the memory decode of the whole hierarchy, the
+/// ECAM window the walk reads through included (Linux's
+/// `quirk_mmio_always_on` for `PCI_CLASS_BRIDGE_HOST`).
 ///
 /// A 64-bit BAR consumes its own slot plus the next one (which holds the
 /// high 32 address bits, never itself sized); this returns one `Bar` for
@@ -321,7 +324,8 @@ pub fn decode_bars<C: ConfigSpace>(cfg: &mut C, bdf: Bdf) -> ([Option<Bar>; BAR_
     let mut n = 0usize;
     let mut i = 0usize;
     let slots = bar_slots(cfg.read8(bdf, OFF_HEADER_TYPE));
-    let decode = cfg.read16(bdf, OFF_COMMAND) & (CMD_IO_SPACE | CMD_MEM_SPACE);
+    let host_bridge = cfg.read32(bdf, OFF_CLASS_REV) >> 16 == CLASS_BRIDGE_HOST;
+    let decode = if host_bridge { 0 } else { cfg.read16(bdf, OFF_COMMAND) & (CMD_IO_SPACE | CMD_MEM_SPACE) };
     if slots != 0 && decode != 0 {
         clear_command_bits(cfg, bdf, decode);
     }
@@ -763,6 +767,9 @@ pub fn format_function_line(info: &FunctionInfo, buf: &mut dyn fmt::Write) -> fm
 // ---------------------------------------------------------------------
 // Command register (MSI-X delivery needs both bits)
 // ---------------------------------------------------------------------
+
+/// Base class and sub class (config 0x0b, 0x0a) of a host bridge.
+pub const CLASS_BRIDGE_HOST: u32 = 0x0600;
 
 pub const CMD_IO_SPACE: u16 = 1 << 0;
 pub const CMD_MEM_SPACE: u16 = 1 << 1;
