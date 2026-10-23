@@ -2,15 +2,16 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 /// UDP layer — port of net/udp.c
 ///
-/// Simple UDP send/receive with 8 bound ports.
-/// Ring-buffer per socket (4 packets, one full-MTU datagram each).
+/// Simple UDP send/receive with Kconfig `UDP_MAX_SOCKETS` bound ports.
+/// Ring-buffer per socket (`UDP_RX_SLOTS` packets, one full-MTU datagram each).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use azos_sync::SpinLock;
 use super::ip;
 
-pub const UDP_MAX_SOCKETS: usize = 8;
+/// Kconfig `UDP_MAX_SOCKETS` (default 8): the bound ports.
+pub const UDP_MAX_SOCKETS: usize = azos_limits::UDP_MAX_SOCKETS;
 /// Kconfig `UDP_RX_SLOTS` (default 4; a power of two, asserted below and
 /// in crates/core/limits/build.rs).
 const UDP_RX_SLOTS: usize = azos_limits::UDP_RX_SLOTS;
@@ -276,12 +277,13 @@ impl UdpTable {
 }
 
 // The point of the split, enforced rather than described. A comment saying
-// "this is two cache lines" rots the day somebody puts a fat field back in
-// `UdpSocket`; this does not compile that day.
+// "four identities to a cache line" rots the day somebody puts a fat field
+// back in `UdpSocket`; this does not compile that day.
 const _: () = assert!(
-    core::mem::size_of::<[UdpSocket; UDP_MAX_SOCKETS]>() <= 128,
-    "the socket identities must stay within two cache lines: dispatch scans \
-     all of them for every arriving datagram",
+    core::mem::size_of::<UdpSocket>() <= 16,
+    "a socket identity must stay 16 bytes: dispatch scans all \
+     UDP_MAX_SOCKETS of them (two cache lines at the default 8) for every \
+     arriving datagram",
 );
 
 // `%` on a power of two is a mask; on anything else it is a division, and it

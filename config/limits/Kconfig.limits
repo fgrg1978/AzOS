@@ -166,10 +166,8 @@ config MAX_SOCKETS
     help
       Combined pool for all socket types: the table of socket descriptors.
       TCP connection state is not in it (see TCP_MAX_CONNS and TCP_BUF_SIZE),
-      and the UDP datagram rings are not in it either: UDP has its own fixed
-      table of 8 sockets (UDP_MAX_SOCKETS, a literal in
-      crates/net/net/src/udp.rs, not a Kconfig symbol), each with
-      UDP_RX_SLOTS datagram slots.
+      and the UDP datagram rings are not in it either: UDP has its own
+      table of UDP_MAX_SOCKETS sockets, each with UDP_RX_SLOTS datagram slots.
       USE_GATEWAY on the Edge profile starts it at 128.
       Must be at least TCP_MAX_CONNS + 4 (the build refuses less).  One task
       may hold half of them (MAX_SOCKETS_PER_TASK).

@@ -414,6 +414,17 @@ config DNS_CACHE_SIZE
       Cost: 80 B of RAM per entry (DNS_CACHE, .bss), the same on riscv64 and
       aarch64: 328 B at the default 4.
 
+config UDP_MAX_SOCKETS
+    int "UDP sockets (bound ports) the stack holds"
+    range 4 64
+    default 8
+    help
+      crates/net/net/src/udp.rs: the table of bound UDP ports, each with
+      UDP_RX_SLOTS datagram slots. The kernel's own clients (DHCP, DNS, NTP,
+      TFTP, PTP) bind from it too. Cost: 16 B per socket for its identity,
+      which dispatch scans for every arriving datagram, plus UDP_RX_SLOTS x
+      1,488 B of slots.
+
 config UDP_RX_SLOTS
     int "Datagrams queued per UDP socket"
     range 2 64
@@ -426,7 +437,7 @@ config UDP_RX_SLOTS
       crates/core/limits/build.rs refuses any other value.
 
       Cost: 11,904 B of RAM per slot (the UDP table, .bss), the same on riscv64
-      and aarch64: 8 UDP sockets (UDP_MAX_SOCKETS, a literal) x one 1,488-byte
+      and aarch64: 8 UDP sockets (UDP_MAX_SOCKETS' default) x one 1,488-byte
       datagram slot each.  47,912 B for the whole UDP table at the default 4
       slots; 64 slots (the range limit) would be 761,856 B of slots.  It does not
       depend on MAX_SOCKETS.

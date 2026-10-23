@@ -4416,6 +4416,21 @@ mod udp_icmp {
         g
     }
 
+    /// The table holds the ports Kconfig `UDP_MAX_SOCKETS` says, and the next
+    /// bind is refused. **Canary** (by hand): built with a `.config` at 12
+    /// against the old literal 8 table, the ninth bind fails.
+    #[test]
+    fn the_udp_table_holds_the_kconfig_count() {
+        let _g = begin();
+        for i in 0..azos_limits::UDP_MAX_SOCKETS {
+            assert!(udp::bind(7000 + i as u16) >= 0, "bind {i} of {}", azos_limits::UDP_MAX_SOCKETS);
+        }
+        assert_eq!(udp::bind(7999), -1, "one more than the table holds");
+        for i in 0..udp::UDP_MAX_SOCKETS {
+            udp::unbind(i);
+        }
+    }
+
     /// Wrap `body` in an IPv4 header with a correct header checksum.
     fn ipv4(proto: u8, src: [u8; 4], dst: [u8; 4], body: &[u8]) -> Vec<u8> {
         let mut p = vec![0u8; 20];
