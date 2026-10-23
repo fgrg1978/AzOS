@@ -404,7 +404,7 @@ fn slow_start_lasts_until_the_send_ring_is_full() {
     };
     let mut flight = 0usize;
     let mut una = ours;
-    assert_eq!(offer(&mut flight), 2, "precondition: the initial window is two segments");
+    assert_eq!(offer(&mut flight), 10, "precondition: the initial window is ten segments (RFC 6928)");
     loop {
         una = una.wrapping_add(SEG as u32);
         flight -= 1;

@@ -597,10 +597,17 @@ fn bytes_delivered_per_round_trip() {
 /// too. ACKs: one per two data segments plus the window updates a draining
 /// reader sends, at most 8 per round trip (measured: 6.1 at 128 KiB, 4.4 at
 /// 16 KiB; per-segment ACKs exceed it at both: 23,648 for 17,481 frames,
-/// 2,976 for 2,192). B/RTT: 94.6% of the ring, the 124,000 this test held at
-/// 128 KiB (per-segment ACKs reach 96.9% at 128 KiB and 97.2% at 16 KiB; a
-/// window-update step too coarse for the ring, TCP_WINDOW_UPDATE_SHIFT=2 at
-/// 16 KiB, delivered 70.8%).
+/// 2,976 for 2,192). B/RTT: the ring less one window-update step
+/// (`TCP_BUF_SIZE >> TCP_WINDOW_UPDATE_SHIFT`), the most of an opened window
+/// `recv` may hold back for a round trip. On this link every flight arrives in
+/// one instant, so a sender limited by our window settles on whatever right
+/// edge the updates of the previous round trip reached: with an initial window
+/// of 2 (until 2026-10-23) that was 95.7% of the ring at 128 KiB, with RFC
+/// 6928's ten it is 84.7% (111,011 B/RTT), the last 17 KiB of each drain held
+/// under the 32 KiB step and carried by the next flight's first ACK, as
+/// Linux's `tcp_cleanup_rbuf` rule would. A window-update step too coarse for
+/// the ring, TCP_WINDOW_UPDATE_SHIFT=2 at 16 KiB, delivered 70.8%, under its
+/// 75% floor.
 #[test]
 fn a_bulk_transfer_is_acknowledged_every_second_segment() {
     const RTTS: usize = 200;
@@ -619,7 +626,8 @@ fn a_bulk_transfer_is_acknowledged_every_second_segment() {
         "{} pure ACKs for {} data frames: more than one per two segments plus 8 updates per RTT",
         r.pure_acks, r.data_frames);
     // The window must not close for want of an update.
-    let floor = (azos_limits::TCP_BUF_SIZE as u64 - 1) * 946 / 1000;
+    let step = (azos_limits::TCP_BUF_SIZE >> azos_limits::TCP_WINDOW_UPDATE_SHIFT) as u64;
+    let floor = azos_limits::TCP_BUF_SIZE as u64 - 1 - step;
     assert!(r.delivered / RTTS as u64 >= floor,
         "{} B/RTT under {floor}: window updates held too long", r.delivered / RTTS as u64);
 }

@@ -34,8 +34,16 @@ const RTO_INITIAL: u64 = 1_000 * TICKS_PER_MS;
 const VAR_FLOOR: u64 = 200 * TICKS_PER_MS;
 /// `INVALID_ACK_INTERVAL_MS`.
 const INVALID_ACK_INTERVAL: u64 = 500 * TICKS_PER_MS;
-/// The clock `begin()` sets.
-const T0: u64 = 10_000;
+/// `SYN_RETRY_INTERVAL_MS`: when an unanswered SYN-ACK is sent again.
+const SYN_RETRY: u64 = 1_000 * TICKS_PER_MS;
+/// The clock when `open` returns, and so when a test's first segment leaves:
+/// one SYN retry interval after the clock `begin()` sets, the instant an
+/// unanswered SYN-ACK is resent (`open_after_lost_synack`).
+const T0: u64 = 10_000 + SYN_RETRY;
+
+/// The initial window in 1000-byte segments at an MSS of 1000: RFC 6928's
+/// min(10 * SMSS, max(2 * SMSS, 14600)) bytes.
+const IW: usize = 10;
 
 /// Segment size in these tests, advertised as the peer's MSS.
 const SEG: usize = 1000;
@@ -131,8 +139,24 @@ fn pattern(off: usize, n: usize) -> Vec<u8> {
 }
 
 /// Passive open on `port` whose SYN advertises `mss_v` and, with `sack`,
-/// SACK-Permitted. Returns (idx, our SND.NXT, the peer's next sequence).
+/// SACK-Permitted. Returns (idx, our SND.NXT, the peer's next sequence), with
+/// the clock at `T0` and the window at RFC 6928's initial window.
 fn open(port: u16, peer_port: u16, peer_isn: u32, mss_v: u16, sack: bool) -> (usize, u32, u32) {
+    open_inner(port, peer_port, peer_isn, mss_v, sack, false)
+}
+
+/// `open`, with the first SYN-ACK lost: the peer's third leg answers the one
+/// resent at `T0`. The window then starts at one segment (RFC 5681 §3.1), and
+/// slow start from one reaches a flight of any size, one ACK at a time.
+fn open_after_lost_synack(
+    port: u16, peer_port: u16, peer_isn: u32, mss_v: u16, sack: bool,
+) -> (usize, u32, u32) {
+    open_inner(port, peer_port, peer_isn, mss_v, sack, true)
+}
+
+fn open_inner(
+    port: u16, peer_port: u16, peer_isn: u32, mss_v: u16, sack: bool, lost_synack: bool,
+) -> (usize, u32, u32) {
     assert!(tcp::listen(port) >= 0, "no free connection slot for the listener");
     let mut opts = mss(mss_v).to_vec();
     if sack {
@@ -141,8 +165,15 @@ fn open(port: u16, peer_port: u16, peer_isn: u32, mss_v: u16, sack: bool) -> (us
     wire::clear_sent();
     deliver(&seg(peer_port, port, peer_isn, 0, SYN, WIN, &opts, &[]));
     let synack = sent().pop().expect("a SYN to a listening port must be answered");
-    assert_eq!(synack.flags, SYN | ACK, "expected a SYN-ACK");
+    assert_eq!(synack.flags & (SYN | ACK | RST | FIN), SYN | ACK, "expected a SYN-ACK");
     let idx = slot_in(tcp::TcpState::SynRcvd).expect("the SYN must open a half-open slot");
+    azos_drv_irqchip::clint::set_test_time(T0);
+    if lost_synack {
+        wire::clear_sent();
+        tcp::tcp_tick();
+        let again = sent().pop().expect("an unanswered SYN-ACK is resent");
+        assert_eq!((again.flags & (SYN | ACK), again.seq), (SYN | ACK, synack.seq));
+    }
     let ours = synack.seq.wrapping_add(1);
     let theirs = peer_isn.wrapping_add(1);
     deliver(&seg(peer_port, port, theirs, ours, ACK, WIN, &[], &[]));
@@ -205,11 +236,11 @@ fn in_flight(
     port: u16, peer_port: u16, peer_isn: u32, mss_v: u16, sack: bool, n: usize,
 ) -> (Stream, u32, u32) {
     assert!(n >= 2);
-    let (idx, ours, theirs) = open(port, peer_port, peer_isn, mss_v, sack);
+    let (idx, ours, theirs) = open_after_lost_synack(port, peer_port, peer_isn, mss_v, sack);
     let mut s = Stream::new(idx);
-    assert_eq!(s.fill(), 2, "precondition: the initial window");
+    assert_eq!(s.fill(), 1, "precondition: a window of one segment");
     let mut una = ours;
-    for _ in 2..n {
+    for _ in 1..n {
         una = una.wrapping_add(SEG as u32);
         peer_ack(port, peer_port, theirs, una, WIN, &[]);
         assert_eq!(s.fill(), 2, "precondition: slow start");
@@ -219,38 +250,60 @@ fn in_flight(
     (s, una, theirs)
 }
 
-/// Three segments in flight, the first one acknowledged before them: the
-/// state every duplicate-ACK test starts from. Returns (idx, SND.UNA, peer's
-/// next sequence). SND.UNA sits at stream offset 1000.
+/// Three segments in flight, the two before them acknowledged: the state
+/// every duplicate-ACK test starts from. Returns (idx, SND.UNA, peer's next
+/// sequence). SND.UNA sits at stream offset 2000.
 fn three_in_flight(port: u16, peer_port: u16, peer_isn: u32) -> (usize, u32, u32) {
-    let (idx, ours, theirs) = open(port, peer_port, peer_isn, SEG as u16, false);
-    let mut s = Stream::new(idx);
-    assert_eq!(s.fill(), 2, "precondition: the initial window");
-    let una = ours.wrapping_add(SEG as u32);
-    peer_ack(port, peer_port, theirs, una, WIN, &[]);
-    assert_eq!(s.fill(), 2, "precondition: slow start");
-    wire::clear_sent();
-    (idx, una, theirs)
+    let (s, una, theirs) = in_flight(port, peer_port, peer_isn, SEG as u16, false, 3);
+    assert_eq!(s.next - 3 * SEG, 2 * SEG);
+    (s.idx, una, theirs)
 }
 
 // ── The send window ─────────────────────────────────────────────────────────
 
-/// A second segment leaves while the first is unacknowledged. The window
-/// starts at two of our 1460-byte segments, 2920 bytes: two 1000-byte
-/// segments fit and a third does not.
+/// The first flight is RFC 6928's initial window: min(10 * SMSS, max(2 * SMSS,
+/// 14600)) bytes, before any ACK. At an MSS of 1000 that is ten 1000-byte
+/// segments, and an eleventh waits.
 #[test]
-fn several_segments_are_in_flight_before_the_first_is_acknowledged() {
+fn the_initial_window_is_ten_segments() {
     let _g = begin();
     let (idx, ours, _theirs) = open(7900, 46000, 0x2000_0000, SEG as u16, false);
     let mut s = Stream::new(idx);
 
-    assert_eq!(s.fill(), 2, "cwnd 2920 admits two 1000-byte segments before any ACK");
+    assert_eq!(s.fill(), IW, "cwnd 10000 admits ten 1000-byte segments before any ACK");
     let out = data_sent();
-    assert_eq!(out.len(), 2, "both must be on the wire, not only counted");
+    assert_eq!(out.len(), IW, "all must be on the wire, not only counted");
     assert_eq!(out[0].seq, ours);
     assert_eq!(out[1].seq, ours.wrapping_add(SEG as u32), "the second follows the first");
     assert_eq!(out[1].payload, pattern(SEG, SEG));
     assert!(tcp::is_unacked(idx));
+}
+
+/// The byte term of RFC 6928's formula: at an MSS of 1460 the initial window
+/// is 14600 bytes, fourteen 1000-byte segments; at 536 it is 10 * 536 = 5360
+/// bytes, ten segments of 536.
+#[test]
+fn the_initial_window_follows_the_mss() {
+    let _g = begin();
+    let (idx, _ours, _theirs) = open(7908, 46008, 0x2080_0000, 1460, false);
+    assert_eq!(Stream::new(idx).fill(), 14, "14600 bytes hold fourteen 1000-byte segments");
+
+    let (idx, _ours, _theirs) = open(7918, 46018, 0x2090_0000, 536, false);
+    let mut k = 0;
+    while tcp::send_data(idx, &pattern(k * 536, SEG)) > 0 {
+        k += 1;
+        assert!(k <= 20, "the window never closed");
+    }
+    assert_eq!(k, 10, "ten segments of the peer's 536-byte MSS");
+}
+
+/// A SYN-ACK that had to be resent starts the window at one segment (RFC 5681
+/// §3.1): the path has already lost a segment of this connection.
+#[test]
+fn a_resent_synack_starts_the_window_at_one_segment() {
+    let _g = begin();
+    let (idx, _ours, _theirs) = open_after_lost_synack(7919, 46019, 0x20A0_0000, SEG as u16, false);
+    assert_eq!(Stream::new(idx).fill(), 1, "one segment after a lost SYN-ACK");
 }
 
 /// Slow start: every segment acknowledged opens the window by one, so each
@@ -258,9 +311,9 @@ fn several_segments_are_in_flight_before_the_first_is_acknowledged() {
 #[test]
 fn slow_start_releases_two_segments_for_each_one_acknowledged() {
     let _g = begin();
-    let (idx, ours, theirs) = open(7901, 46001, 0x2100_0000, SEG as u16, false);
+    let (idx, ours, theirs) = open_after_lost_synack(7901, 46001, 0x2100_0000, SEG as u16, false);
     let mut s = Stream::new(idx);
-    assert_eq!(s.fill(), 2);
+    assert_eq!(s.fill(), 1);
     for round in 1..=4u32 {
         peer_ack(7901, 46001, theirs, ours.wrapping_add(round * SEG as u32), WIN, &[]);
         assert_eq!(s.fill(), 2, "round {round}: one segment acknowledged, cwnd += 1000");
@@ -270,9 +323,10 @@ fn slow_start_releases_two_segments_for_each_one_acknowledged() {
 /// Congestion avoidance: above ssthresh the window grows by SMSS*SMSS/cwnd
 /// per ACK (RFC 5681 eq. 3), about one segment per window.
 ///
-/// A timeout with 2000 bytes in flight sets ssthresh to max(2000/2, 2*1000) =
-/// 2000 and cwnd to 1000; the ACK of both segments brings cwnd back to 2000,
-/// which is ssthresh. From there, one segment acknowledged per round:
+/// Two segments in flight (S1, S2, after S0's ACK); a timeout with 2000 bytes
+/// in flight sets ssthresh to max(2000/2, 2*1000) = 2000 and cwnd to 1000; the
+/// ACK of both segments brings cwnd back to 2000, which is ssthresh. From
+/// there, one segment acknowledged per round:
 ///
 /// | round | cwnd                     | in flight | fits |
 /// |-------|--------------------------|-----------|------|
@@ -285,17 +339,19 @@ fn slow_start_releases_two_segments_for_each_one_acknowledged() {
 #[test]
 fn congestion_avoidance_grows_by_about_one_segment_per_window() {
     let _g = begin();
-    let (idx, ours, theirs) = open(7902, 46002, 0x2200_0000, SEG as u16, false);
+    let (idx, ours, theirs) = open_after_lost_synack(7902, 46002, 0x2200_0000, SEG as u16, false);
     let mut s = Stream::new(idx);
+    assert_eq!(s.fill(), 1);
+    peer_ack(7902, 46002, theirs, ours.wrapping_add(SEG as u32), WIN, &[]);
     assert_eq!(s.fill(), 2);
 
     azos_drv_irqchip::clint::set_test_time(T0 + RTO_INITIAL);
     tcp::tcp_tick();
-    peer_ack(7902, 46002, theirs, ours.wrapping_add(2 * SEG as u32), WIN, &[]);
+    peer_ack(7902, 46002, theirs, ours.wrapping_add(3 * SEG as u32), WIN, &[]);
     assert_eq!(s.fill(), 2, "precondition: cwnd is back at ssthresh, 2000");
 
     let mut counts = Vec::new();
-    for round in 3..=6u32 {
+    for round in 4..=7u32 {
         peer_ack(7902, 46002, theirs, ours.wrapping_add(round * SEG as u32), WIN, &[]);
         counts.push(s.fill());
     }
@@ -310,7 +366,7 @@ fn a_timeout_resends_one_segment_and_collapses_the_window() {
     let _g = begin();
     let (idx, ours, theirs) = open(7903, 46003, 0x2300_0000, SEG as u16, false);
     let mut s = Stream::new(idx);
-    assert_eq!(s.fill(), 2);
+    assert_eq!(s.fill(), IW);
     wire::clear_sent();
 
     azos_drv_irqchip::clint::set_test_time(T0 + RTO_INITIAL);
@@ -319,13 +375,14 @@ fn a_timeout_resends_one_segment_and_collapses_the_window() {
     assert_eq!(out.len(), 1, "a timeout resends one segment, got {}", out.len());
     assert_eq!(out[0].seq, ours, "from SND.UNA");
     assert_eq!(out[0].payload, pattern(0, SEG));
-    assert_eq!(tcp::send_data(idx, &pattern(2 * SEG, SEG)), 0,
-        "2000 bytes in flight against a one-segment window");
+    assert_eq!(tcp::send_data(idx, &pattern(IW * SEG, SEG)), 0,
+        "10000 bytes in flight against a one-segment window");
 
-    // The peer had the second segment: one ACK covers both. In slow start
-    // from 1000 that makes 2000, room for two.
-    peer_ack(7903, 46003, theirs, ours.wrapping_add(2 * SEG as u32), WIN, &[]);
-    assert_eq!(s.fill(), 2, "the window must regrow from one segment, not resume at 2920");
+    // The peer had every other segment: one ACK covers them all. ssthresh
+    // is max(10000 / 2, 2000) = 5000, and slow start from 1000 adds at most
+    // two segments for one ACK: 3000, room for three.
+    peer_ack(7903, 46003, theirs, ours.wrapping_add((IW * SEG) as u32), WIN, &[]);
+    assert_eq!(s.fill(), 3, "the window must regrow from one segment, not resume at ten");
 }
 
 // ── Duplicate ACKs and fast retransmit ──────────────────────────────────────
@@ -344,7 +401,7 @@ fn the_third_duplicate_ack_resends_the_first_unacknowledged_segment() {
     let out = data_sent();
     assert_eq!(out.len(), 1, "the third duplicate must resend exactly one segment");
     assert_eq!(out[0].seq, una);
-    assert_eq!(out[0].payload, pattern(SEG, SEG), "the bytes at SND.UNA, from the ring");
+    assert_eq!(out[0].payload, pattern(2 * SEG, SEG), "the bytes at SND.UNA, from the ring");
 }
 
 /// An ACK that repeats SND.UNA with a different window is a window update, not
@@ -438,7 +495,8 @@ fn a_resend_skips_the_ranges_the_peer_has_sacked() {
 /// the second segment's clock starts when the first is acknowledged, not
 /// when the first was sent.
 ///
-/// Both leave at T0; the first is acknowledged 900 ms later. That ACK is also
+/// The initial window leaves at T0; the first segment is acknowledged 900 ms
+/// later. That ACK is also
 /// the connection's first RTT sample, so RTO becomes SRTT + 4 * RTTVAR =
 /// 900 + 4 * 450 = 2700 ms (§2.2). A timer still running from T0 expires at
 /// T0 + 2700 ms; one restarted by the ACK, at T0 + 3600 ms.
@@ -447,7 +505,7 @@ fn an_ack_of_new_data_restarts_the_retransmission_timer() {
     let _g = begin();
     let (idx, ours, theirs) = open(7909, 46009, 0x2900_0000, SEG as u16, false);
     let mut s = Stream::new(idx);
-    assert_eq!(s.fill(), 2);
+    assert_eq!(s.fill(), IW);
 
     let acked_at = T0 + 900 * TICKS_PER_MS;
     let rto = 2_700 * TICKS_PER_MS;

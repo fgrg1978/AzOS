@@ -549,8 +549,15 @@ const KEEPALIVE_MAX_PROBES: u8 = 3;
 // Congestion control (Reno)
 // ---------------------------------------------------------------------------
 
-/// Initial congestion window: 2 segments.
-const CWND_INITIAL: u32 = TCP_MSS as u32 * 2;
+/// Initial window (RFC 6928 §2): min(10 × SMSS, max(2 × SMSS, 14600)) bytes,
+/// never past the send ring. Set when the handshake completes, once the SMSS
+/// is known ([`TcpConn::open_window`]). Linux, FreeBSD and Windows start at
+/// ten segments; the two of RFC 5681 cost a short transfer (an RPC reply, a
+/// package index) four extra round trips to reach the same window.
+const IW_SEGMENTS: u32 = 10;
+
+/// The byte bound in RFC 6928's formula, for a small SMSS.
+const IW_BYTES: u32 = 14_600;
 
 /// Initial slow-start threshold: equals receive buffer size.
 const SSTHRESH_INITIAL: u32 = TCP_BUF_SIZE as u32;
@@ -1037,7 +1044,9 @@ impl TcpConn {
         self.persist_time     = 0;
         self.persist_ticks    = 0;
         self.persist_probes   = 0;
-        self.cwnd             = CWND_INITIAL;
+        // Set when the handshake completes and the SMSS is known
+        // (`open_window`): nothing is sent before that.
+        self.cwnd             = 0;
         self.ssthresh         = SSTHRESH_INITIAL;
         self.remote_mss       = TCP_DEFAULT_REMOTE_MSS;
         // What one path allowed says nothing about the next connection's.
@@ -1109,6 +1118,21 @@ impl TcpConn {
         let ours = mss_for(&self.remote_ip) as u32;
         let path = if self.pmtu_mss == 0 { ours } else { self.pmtu_mss as u32 };
         (self.remote_mss as u32).min(ours).min(path)
+    }
+
+    /// Start the congestion window as the handshake completes (RFC 6928 §2).
+    /// One segment when our SYN or SYN-ACK had to be retransmitted (RFC 5681
+    /// §3.1): the path already lost a segment of this connection.
+    fn open_window(&mut self) {
+        let smss = self.smss();
+        self.cwnd = if self.retx_count != 0 {
+            smss
+        } else {
+            (IW_SEGMENTS * smss).min((2 * smss).max(IW_BYTES))
+        }.min(TCP_SND_BUF_SIZE as u32);
+        // The handshake's retries are not the data's: the retransmission
+        // budget starts afresh.
+        self.retx_count = 0;
     }
 
     /// Copy `bytes` into the send ring `off` bytes past SND.UNA.
@@ -2925,6 +2949,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     c.remote_window = peer_win as u32;
                     c.last_activity = now;
                     c.keepalive_probes = 0;
+                    c.open_window();
                 }
                 // The first segment without SYN: its window is scaled.
                 let (seq_n, ack_n, win) = {
@@ -3006,6 +3031,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     c.remote_window = peer_win as u32;
                     c.last_activity = now;
                     c.keepalive_probes = 0;
+                    c.open_window();
                     let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
                     drop(t);
                     send_segment(&mac, &ip, src_ip, dst_port, src_port,
@@ -3022,6 +3048,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                 c.remote_window = (peer_win as u32) << c.snd_wscale;
                 c.last_activity = now;
                 c.keepalive_probes = 0;
+                c.open_window();
             }
             // `CloseWait` shares Established's segment processing: the peer
             // has sent its FIN, but RFC 1122 §4.2.2.13 says nothing stops US

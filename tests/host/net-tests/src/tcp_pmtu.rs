@@ -331,10 +331,10 @@ fn the_resend_at_a_lowered_mss_ends_the_measurement() {
 /// 1240 + 440, the bytes unchanged, and the report for the second datagram,
 /// or one claiming 1400, raises nothing.
 ///
-/// No congestion response: cwnd is still 2920, and the ACK of the flight grows
-/// it by one SMSS to 4160 in slow start — room for three 1240-byte segments. A
-/// sender that treated the report as a loss would have cut cwnd to one
-/// segment, and could resend only the first 1240 bytes.
+/// No congestion response: cwnd is still the initial window, 14600, and the
+/// ACK of the flight grows it in slow start. A sender that treated the report
+/// as a loss would have cut cwnd to one segment, and could resend only the
+/// first 1240 bytes.
 #[test]
 fn a_valid_frag_needed_resends_the_flight_at_the_new_size_without_a_congestion_response() {
     let _g = begin();
@@ -379,8 +379,8 @@ fn a_valid_frag_needed_resends_the_flight_at_the_new_size_without_a_congestion_r
         assert!(k < 20);
     }
     // Slow start counts bytes (RFC 3465, L = 2 SMSS): the ACK of 2920 bytes
-    // grows 2920 by 2 x 1240, to 5400 -- four segments of the new MSS.
-    assert_eq!(k, 4, "cwnd must be 5400 after the flight's ACK, not one segment");
+    // grows 14600 by 2 x 1240, to 17080 -- thirteen segments of the new MSS.
+    assert_eq!(k, 13, "cwnd must be 17080 after the flight's ACK, not one segment");
 }
 
 /// The lowered MSS is one connection's (the owner's rule: per connection, no
@@ -416,17 +416,26 @@ struct Path {
 
 /// Send `total` bytes over a connection whose path has an `mtu`-byte hop. The
 /// router drops every larger datagram and, with `report`, answers each with a
-/// Fragmentation Needed quoting it. The receiver keeps only in-order bytes and
-/// acknowledges what it has after every burst. The clock moves 1 ms per round
+/// Fragmentation Needed quoting it. The receiver holds what arrives beyond a
+/// hole, as a receiver does, and acknowledges what it has in order after
+/// every burst: the initial window puts ten segments in flight, and new data
+/// leaves behind a resend of the old flight. The clock moves 1 ms per round
 /// and `tcp_tick` runs every round, until everything is delivered or
 /// `limit_ms` pass.
 fn transfer(port: u16, peer_port: u16, peer_isn: u32, mtu: usize, report: bool,
             total: usize, limit_ms: u64) -> Path {
+    // On a stretch of clock of its own, ten minutes past T0: the reports an
+    // initial window of ten oversized segments draws spend the global budget
+    // (`PMTU_ICMP_BUDGET_PER_WINDOW`) for their window, and the next test,
+    // back at T0, must find it fresh.
+    azos_drv_irqchip::clint::set_test_time(T0 + 600_000 * TICKS_PER_MS);
     let (idx, ours, theirs) = open(port, peer_port, peer_isn, 1460, false);
     let start = azos_drv_sys::timebase::now();
     let mut now = start;
     let mut offered = 0usize;
     let mut p = Path { delivered: 0, largest: 0, corrupt: false, elapsed_ms: 0 };
+    // Held beyond the hole: stream offset -> bytes.
+    let mut held: std::collections::BTreeMap<usize, Vec<u8>> = Default::default();
     while p.delivered < total && now - start < limit_ms * TICKS_PER_MS {
         while offered < total {
             let n = (total - offered).min(1460);
@@ -449,14 +458,17 @@ fn transfer(port: u16, peer_port: u16, peer_isn: u32, mtu: usize, report: bool,
                 continue;
             }
             arrived = true;
-            let off = tx.seq.wrapping_sub(ours) as usize;
-            if off <= p.delivered && off + tx.payload.len() > p.delivered {
-                let fresh = &tx.payload[p.delivered - off..];
-                if fresh != pattern(p.delivered, fresh.len()).as_slice() {
-                    p.corrupt = true;
+            p.largest = p.largest.max(tx.payload.len());
+            held.insert(tx.seq.wrapping_sub(ours) as usize, tx.payload.clone());
+            while let Some((&off, _)) = held.iter().find(|(&o, _)| o <= p.delivered) {
+                let bytes = held.remove(&off).unwrap();
+                if off + bytes.len() > p.delivered {
+                    let fresh = &bytes[p.delivered - off..];
+                    if fresh != pattern(p.delivered, fresh.len()).as_slice() {
+                        p.corrupt = true;
+                    }
+                    p.delivered += fresh.len();
                 }
-                p.delivered += fresh.len();
-                p.largest = p.largest.max(tx.payload.len());
             }
         }
         if arrived {
