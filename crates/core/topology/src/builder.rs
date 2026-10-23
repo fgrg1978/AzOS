@@ -1942,9 +1942,11 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // and the mixer thread asks for its own deadline reservation at start
     // (`SYS_SCHEDCTL` with the `time` warrant this row grants; Kconfig
     // `AUDIOD_PUMP_*`), which admission places like any runtime reservation.
+    // At [`SERVICE_PRIORITY`], above its clients (`beep`, the shell), as every
+    // server outranks the tasks that call it.
     // Pushed after the PTP daemon, so no index another test pins moves.
     if AUDIOD_ROW {
-        topo.push_task(MaybeStr::from_bytes(TASK_AUDIOD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, AUDIOD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_AUDIOD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, AUDIOD_CAPS)
             .expect("default_minimal_topology: AUDIOD.ELF push failed");
         topo.set_last_task_mem_pages(AUDIOD_MEM_PAGES);
         topo.set_last_task_start(true);
