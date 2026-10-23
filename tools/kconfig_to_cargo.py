@@ -551,7 +551,8 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
             raise SelectError(f"`{t}` is not a feature of kernel/Cargo.toml")
     with open(base, encoding="utf-8") as fh:
         text = fh.read()
-    tmp = out + ".tmp"
+    # Rows of a parallel gate derive the same copy at once: each writes its own.
+    tmp = f"{out}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
         for k, v in lines.items():
@@ -560,8 +561,10 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
         env = dict(os.environ, KCONFIG_CONFIG=tmp)
         r = subprocess.run([sys.executable, "-m", "olddefconfig"], cwd=REPO_ROOT, env=env,
                            capture_output=True, text=True)
-        if os.path.exists(tmp + ".old"):
+        try:
             os.unlink(tmp + ".old")  # olddefconfig's backup of the unexpanded copy
+        except FileNotFoundError:
+            pass
         if r.returncode != 0:
             os.unlink(tmp)
             raise SelectError(f"olddefconfig failed on {base} + {' '.join(lines)}: {r.stderr.strip()}")

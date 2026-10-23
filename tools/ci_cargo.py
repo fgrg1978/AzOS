@@ -17,8 +17,9 @@ What a row builds beyond its configuration is its selection, `--select
 TOKENS` (this wrapper's flag, never cargo's): Kconfig lines, features a
 Kconfig symbol owns (applied to a copy of the configuration, which
 KCONFIG_CONFIG then names) and test hooks (tools/kconfig_to_cargo.py
-`select`). A kernel call with `--features` of its own is refused. The
-rewritten argv is what the cache keys on and `CI_BUILD_ACC` logs.
+`select`). A kernel call's own `--features` is refused unless every name
+restates its configuration (a script passing kconfig_to_cargo.py's output on).
+The rewritten argv is what the cache keys on and `CI_BUILD_ACC` logs.
 
 A kernel whose selection names a feature that closes over `use-robot` builds from the
 robot cell: when `CI_ROBOT_FEATS` (",f1,f2,...,", tools/gate_rows.py
@@ -212,6 +213,23 @@ def take_selection(argv):
     return out, toks
 
 
+def take_features(argv):
+    """(the names a `--features`/`-F` list gives, argv without it)."""
+    out, names, j = [], [], 0
+    while j < len(argv):
+        a = argv[j]
+        if a in ("--features", "-F") and j + 1 < len(argv):
+            names += argv[j + 1].replace(",", " ").split()
+            j += 2
+            continue
+        if a.startswith("--features="):
+            names += a.split("=", 1)[1].replace(",", " ").split()
+        else:
+            out.append(a)
+        j += 1
+    return names, out
+
+
 def route_robot(tokens):
     """KCONFIG_CONFIG -> the robot cell for a kernel that asks for a robot feature."""
     robot = set(f for f in os.environ.get("CI_ROBOT_FEATS", "").split(",") if f)
@@ -226,18 +244,16 @@ def with_kconfig_features(argv):
     reads (KCONFIG_CONFIG, else the workspace .config), with the row's
     selection (`--select`) applied to it first (tools/kconfig_to_cargo.py
     `select`: a copy of the configuration under $AZOS_OUT/build/kselect/,
-    which KCONFIG_CONFIG then names). A kernel call that names `--features`
-    itself is refused: Kconfig is the only source of the kernel's features."""
+    which KCONFIG_CONFIG then names). A kernel call's own `--features` is
+    refused unless each name is one the configuration gives: Kconfig is the
+    only source of the kernel's features."""
     argv, toks = take_selection(argv)
     if not kernel_call(argv):
         if toks:
             sys.stderr.write("ci_cargo: --select is for a kernel build or check: %s\n" % " ".join(argv))
             sys.exit(2)
         return argv
-    if any(a in ("--features", "-F") or a.startswith("--features=") for a in argv):
-        sys.stderr.write("ci_cargo: a kernel build names its features through --select "
-                         "(tools/kconfig_to_cargo.py), never --features: %s\n" % " ".join(argv))
-        sys.exit(2)
+    named, argv = take_features(argv)
     route_robot(toks)
     top = git(["rev-parse", "--show-toplevel"], os.getcwd()).decode().strip()
     cfg = os.environ.get("KCONFIG_CONFIG") or os.path.join(top, ".config")
@@ -266,6 +282,15 @@ def with_kconfig_features(argv):
         os.environ["KCONFIG_CONFIG"] = sel
     out = r.stdout.split()
     feats = out[out.index("--features"):][:2] if "--features" in out else []
+    # `--features` of a caller that restates its configuration (a script that
+    # passes `kconfig_to_cargo.py <its .config>` on): accepted only when every
+    # name is one the configuration (with the selection) already gives.
+    extra = sorted(set(named) - set(feats[1].split(",") if feats else []))
+    if extra:
+        sys.stderr.write("ci_cargo: a kernel build names its features through --select "
+                         "(tools/kconfig_to_cargo.py), never --features; not in its configuration: %s\n"
+                         % ",".join(extra))
+        sys.exit(2)
     if "--" in argv:
         at = argv.index("--")
         return argv[:at] + feats + argv[at:]

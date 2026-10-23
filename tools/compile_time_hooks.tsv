@@ -12,10 +12,10 @@
 # feature), and
 # `hot`: a site on the trap, interrupt, syscall, IPC, context-switch, TLB or
 # allocator path, where a runtime `canary!` costs on every pass: one load, one
-# bit test and a branch (3 instructions on riscv64), against the vsbench null
-# syscall lane's 334 (0.9 % a site) and an IPC round trip's 1,933 instructions
-# (0.16 % a site, riscv64); a cargo feature compiles to nothing. Each such line
-# names the path. tools/kconfig_lint.py checks this list against
+# bit test and a branch (3 instructions on riscv64), against a null syscall
+# of 334 instructions (bench-minimal under -icount, 2026-09-16: 0.9 % a site)
+# and an IPC round trip of about 1,933 (riscv64, Chain E, 2026-10-11: 0.16 % a
+# site); a cargo feature compiles to nothing. Each such line names the path. tools/kconfig_lint.py checks this list against
 # kernel/Cargo.toml in both directions: a new hook is a runtime name, or a
 # `hot` line here.
 #
