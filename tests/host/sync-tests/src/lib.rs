@@ -61,6 +61,8 @@ pub mod preempt;
 // code, not a copy that could drift from it. `spinlock.rs` needs
 // `azos_arch::cpu::{read_sstatus, write_sstatus}`, which is why this
 // crate's arch shim grew `write_sstatus` alongside these modules.
+// `lock_level` is the kernel's `scope` locks', which this crate does not pull.
+#[allow(dead_code)]
 #[path = "../../../../crates/core/sync/src/spinlock.rs"]
 pub mod spinlock;
 

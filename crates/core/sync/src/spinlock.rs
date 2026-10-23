@@ -179,7 +179,6 @@ impl<T> SpinLock<T> {
     /// checks the level order (`paired`: the second lock of a `lock_pair`).
     #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
     #[inline(always)]
-    #[allow(dead_code)] // used by `scope`, which the host tests do not pull in
     pub(crate) fn lock_level(&self, _level: u8, _paired: bool) -> SpinLockGuard<'_, T> {
         let _preempt = critical_section();
         #[cfg(feature = "lockdep")]

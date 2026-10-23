@@ -317,7 +317,7 @@ pub(super) fn migrate_off(from: usize, to: usize) -> usize {
 }
 
 /// Drop `idx`'s entry (tick-probe cleanup).
-#[allow(dead_code)]
+#[cfg(feature = "sched-tick-probe")]
 pub(super) fn cancel(idx: usize) {
     let mut g = Guard::local();
     if attached(g.h) {

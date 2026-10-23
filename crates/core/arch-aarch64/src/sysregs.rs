@@ -8,9 +8,7 @@
 /// `DAIF` mask bits. Setting these in `DAIF` *masks* (disables)
 /// the corresponding interrupt class — counter-intuitive vs
 /// x86/RISC-V where the bit usually means "enabled".
-#[allow(dead_code)]
 pub const DAIF_D: u64 = 1 << 9; // Debug
-#[allow(dead_code)]
 pub const DAIF_A: u64 = 1 << 8; // SError
 pub const DAIF_I: u64 = 1 << 7; // IRQ
 pub const DAIF_F: u64 = 1 << 6; // FIQ

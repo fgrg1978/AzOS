@@ -1756,7 +1756,6 @@ pub fn ids(out: &mut [(u8, u8, u32, u32)]) -> usize {
 // ===========================================================================
 
 #[cfg(not(target_os = "none"))]
-#[allow(dead_code)]
 mod host {
     use core::cell::UnsafeCell;
     use core::ops::{Deref, DerefMut};

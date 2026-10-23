@@ -14,8 +14,6 @@
 //! `sysregs::write_cntv_cval_el0` directly — this module is a convenience
 //! API used by some callers, not the kernel's only path to the timer.
 
-#![allow(dead_code)]
-
 #[cfg(target_arch = "aarch64")]
 use crate::sysregs;
 

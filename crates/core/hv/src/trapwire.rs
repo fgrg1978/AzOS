@@ -29,9 +29,6 @@
 //! indexes are free-running counters; the ring is full when they are
 //! [`TRAPS`] apart.
 
-// Each reader uses a part of the file.
-#![allow(dead_code)]
-
 pub const TRAPS: u32 = 64;
 pub const TRAP_BYTES: usize = 32;
 pub const CPL_BYTES: usize = 16;

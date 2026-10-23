@@ -463,9 +463,12 @@ fn generate(args: &Args, tr: &ItemTrait, methods: &[Method]) -> TokenStream {
 
         /// The generated support for the interface: its id, level, op table
         /// and server dispatcher, as associated items.
+        // reason: generated for every interface; a client or a server uses
+        // its own subset of it.
         #[allow(non_snake_case, dead_code, clippy::all)]
         #vis struct #idl_ty;
 
+        // reason: as above.
         #[allow(non_snake_case, dead_code, clippy::all)]
         impl #idl_ty {
             /// The interface id.

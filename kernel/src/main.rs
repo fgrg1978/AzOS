@@ -23,11 +23,8 @@ mod lockdep_log;
 // boot (Kconfig `PSTORE_SIZE_KB`).
 mod pstore;
 
-// Item 2 Stage 3 batch 7 — per-arch trap entry modules + TrapContext
-// trait. Defines the cross-arch surface for trap handling; the
-// existing riscv trap_handler in this file still uses the native
-// TrapFrame directly (S3.b7 scaffolding only — refactor is .next).
-#[allow(dead_code)]
+// Each ISA's entry: asm stubs, boot hooks, trap-frame decode, interrupt
+// controller (`entry/<isa>/`); the shared trap policy is `trap/`.
 mod entry;
 mod trap;
 
@@ -37,9 +34,9 @@ mod reserved_tail;
 
 // The cold-restart supervisor for ring-3 drivers.
 mod drv_supervisor;
-// The buzzer's callers are the robot domain's (behavior, sensors); the placement
-// machinery is built for every image that has the driver row.
-#[cfg_attr(not(feature = "use-robot"), allow(dead_code))]
+// The buzzer's placement machinery is built for every image that has the
+// driver row; the plays only the robot domain makes (behavior, sensors) are
+// `use-robot`.
 mod buzzer;
 
 // Who has the console, the ring-3 user shell or the recovery console.
@@ -658,13 +655,14 @@ use azos_arch::ArchEntry as _;
 
 /// Early-boot output the shared `kernel_main` body needs past
 /// `boot::early_main`'s return. `heap_start`/`kernel_end_aligned` are read
-/// only by the riscv64 PMP audit block inside the shared body, so an aarch64
-/// build leaves them unread; `#[allow(dead_code)]` rather than per-field
-/// `cfg`, since the generic early boot computes them on every ISA.
-#[allow(dead_code)]
+/// only by the riscv64 PMP audit block inside the shared body, so the other
+/// ISAs leave them unread; an allow on those two rather than a `cfg`, since
+/// the generic early boot computes them on every ISA.
 pub struct EarlyBoot {
     pub num_cpus: usize,
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
     pub heap_start: usize,
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
     pub kernel_end_aligned: usize,
     /// The DTB's `pci-host-ecam-generic` node (`azos_dtb::dtb_pci_host`),
     /// read during early boot. `None`: no DTB, or no such node.

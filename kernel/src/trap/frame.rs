@@ -40,19 +40,24 @@ pub enum TrapClass {
 
 /// What the report of a fatal kernel page fault is told: the generic policy
 /// resolves everything that needs the kernel, the ISA lays the lines out (each
-/// layout prints the fields it has a place for).
+/// layout prints the fields it has a place for: riscv64 names the cause and
+/// address from its own CSRs, the other two print `write`/`va` only).
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct KernelFault {
     /// Was the faulting access a write?
+    #[cfg_attr(target_arch = "riscv64", allow(dead_code))]
     pub write: bool,
     /// The faulting virtual address.
+    #[cfg_attr(target_arch = "riscv64", allow(dead_code))]
     pub va: u64,
     /// The CPU that took the fault.
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
     pub cpu: usize,
     /// Is `va` in the null guard (a null pointer dereference)?
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
     pub null_guard: bool,
     /// Faults the system resolved silently so far: `(cow, demand)`.
+    #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
     pub resolved: (u64, u64),
 }
 
@@ -136,15 +141,16 @@ pub enum Cow {
 /// Each ISA constructs the variants its own cases need (`Kill`: x86_64's split
 /// lock; `Fatal`: aarch64's failed FP trap).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Disposition {
     /// Handled: resume the trapped context.
     Resume,
     /// Nothing special: the generic policy decides.
     Default,
     /// Fatal whoever caused it.
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
     Fatal,
     /// Kill the current task with this exit status (`128 + signal`).
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
     Kill(i32),
 }
 

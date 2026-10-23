@@ -14,7 +14,7 @@
 crates/core/abi	0	0	0	0	1	0
 crates/core/actuation	2	0	0	0	0	46
 crates/core/arch	0	0	0	0	1	0
-crates/core/arch-aarch64	199	48	1	2	0	77
+crates/core/arch-aarch64	197	47	1	2	0	76
 crates/core/arch-api	27	10	0	0	0	30
 crates/core/arch-riscv64	151	42	0	3	0	91
 crates/core/arch-x86_64	146	17	4	11	0	57
@@ -24,7 +24,7 @@ crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
 crates/core/common	5	0	0	0	0	35
 crates/core/config	8	0	0	0	0	75
-crates/core/crypto	16	2	1	0	0	24
+crates/core/crypto	16	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	59
 crates/core/devif	2	1	0	0	0	21
 crates/core/efi	3	3	0	0	0	-
@@ -42,7 +42,7 @@ crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
 crates/core/mm	246	29	10	0	0	78
 crates/core/ota	1	0	0	0	0	20
-crates/core/percpu	2	4	1	0	0	100
+crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	62
 crates/core/rings	23	4	4	0	0	98
@@ -109,7 +109,7 @@ domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0
 domains/robot/telemetry	1	0	0	0	0	100
-kernel	332	14	12	51	0	60
+kernel	331	14	12	51	0	60
 lx/emul	8	0	0	0	0	-
 micro	20	4	0	0	0	68
 tools/linux_seccomp_launch	11	2	0	2	0	-

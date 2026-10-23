@@ -952,9 +952,9 @@ pub unsafe fn select_conduit_from_fdt(fdt_ptr: u64) -> bool {
     const MAX_TOTAL_LEN: u32 = 4 * 1024 * 1024; // sanity cap; real DTBs are KBs
     const FDT_BEGIN_NODE: u32 = 1;
     const FDT_END_NODE: u32 = 2;
+    const FDT_END: u32 = 9;
     const FDT_PROP: u32 = 3;
     const FDT_NOP: u32 = 4;
-    const FDT_END: u32 = 9;
     const MAX_DEPTH: usize = 24;
     const MAX_NAME_LEN: usize = 64;
 

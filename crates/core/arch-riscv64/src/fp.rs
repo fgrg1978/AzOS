@@ -16,8 +16,6 @@
 //! `context_switch_rvv.S`) once `init_vector_state` has sized them, so an RVV
 //! caller is preemptible and masks no interrupt.
 
-#![allow(dead_code)]
-
 use core::arch::asm;
 
 /// Read the `cycle` CSR (rdcycle) — used for benchmarking.
@@ -417,10 +415,7 @@ pub unsafe extern "C" fn rvv_ctx_restore(tid: u32) {
 // different vector idiom that could pass for unrelated reasons.
 //
 // Gated on the existing `rvv` feature (not a new crate feature): the kernel
-// side is gated on its own `rvv-isolation-probe` feature instead, and
-// nothing there requires a matching feature to exist in this crate's own
-// Cargo.toml, which is out of scope for this change. `#![allow(dead_code)]`
-// at the top of this file covers these being unused in a plain `rvv` build.
+// side is gated on its own `rvv-isolation-probe` feature instead.
 
 /// Fill v0-v31 with `pattern`, `vlen_bytes()` bytes per register (the
 /// hart's real `vlenb`, from `init_vector_state` — NOT a fixed 512-byte
@@ -522,26 +517,4 @@ pub fn bench_matmul(
     matmul_f32_rvv(cv, a, b, m, k, n);
     let t2 = rdcycle();
     (t1 - t0, t2 - t1)
-}
-
-// ── Cross-arch face ──────────────────────────────────────────────────────────
-//
-// Mirrors `arch-aarch64::vector` and `arch-x86_64::vector`, doing the
-// V-extension detection internally instead of pushing it onto callers
-// (Item 2 Stage 3 batch 4). The scalar form is [`dot_f32_scalar`] above.
-
-/// Best available f32 dot product for the current build. With the
-/// `rvv` feature on and the V extension compiled in, dispatches to
-/// [`dot_f32_rvv`]; otherwise falls back to the scalar form.
-///
-/// Kconfig `RV_V`: n compiles the vector kernels out; probe and require
-/// compile them in and take them only when the boot found V
-/// ([`usable`]).
-#[inline]
-pub fn dot_f32_best(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(all(target_arch = "riscv64", feature = "rvv"))]
-    if usable() {
-        return dot_f32_rvv(a, b);
-    }
-    dot_f32_scalar(a, b)
 }

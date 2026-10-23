@@ -29,7 +29,7 @@ pub mod ext;
 pub use ext::hv::HvImpl;
 /// The SBI calls into the M-mode firmware (OpenSBI).
 pub mod firmware;
-/// The V-extension kernels, their context state and the cross-arch `dot_f32_best` face.
+/// The V-extension kernels and their context state.
 pub mod fp;
 /// The interrupt controllers: PLIC, APLIC, IMSIC.
 pub mod irq;

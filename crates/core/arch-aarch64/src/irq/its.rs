@@ -362,16 +362,22 @@ const EVENT_ID_BITS_MINUS1: u8 = 2; // log2(8) - 1
 #[cfg(target_arch = "aarch64")]
 const ITT_ENTRY_BYTES_CAP: usize = 32;
 
+// reason: the ITS reads and writes it by physical address; no Rust code does.
+#[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[repr(align(4096))]
 #[derive(Clone, Copy)]
 struct CmdQueue([u8; 4096]);
 
+// reason: the ITS reads and writes it by physical address; no Rust code does.
+#[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[repr(align(4096))]
 #[derive(Clone, Copy)]
 struct DeviceTable([u8; 4096]);
 
+// reason: the ITS reads and writes it by physical address; no Rust code does.
+#[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[repr(align(256))]
 #[derive(Clone, Copy)]
@@ -386,6 +392,8 @@ struct PropTable([u8; gic::lpi_prop_table_size(gic::LPI_ID_BITS)]);
 /// at that size regardless of how few LPIs are actually pending-tracked,
 /// same "the alignment IS the size floor" reasoning as `gic.rs`'s
 /// `LPI_ID_BITS`.
+// reason: the ITS reads and writes it by physical address; no Rust code does.
+#[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[repr(align(65536))]
 struct PendTable([u8; 65536]);

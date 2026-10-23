@@ -100,7 +100,9 @@ mod store;
 mod trap;
 mod virtq;
 /// The wire form of the trap rings: the kernel's file, included here so the
-/// two ends cannot drift (`azos_hv::trapwire`).
+/// two ends cannot drift (`azos_hv::trapwire`). This end uses its half (the
+/// kernel encodes traps, vmmd decodes them).
+#[allow(dead_code)]
 #[path = "../../../../crates/core/hv/src/trapwire.rs"]
 mod wire;
 

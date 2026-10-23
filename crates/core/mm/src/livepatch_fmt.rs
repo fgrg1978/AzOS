@@ -55,6 +55,8 @@ use azos_limits::LIVEPATCH_MAX_FUNCS;
 // The encoders trace's static keys use, pulled in as source so the one
 // definition serves both (the mm crate cannot depend on the trace crate,
 // which depends on it).
+// reason: shared source; this crate uses the redirect encoders (`a64_b`,
+// `rv_jal`, `A64_NOP`), the trace crate the rest.
 #[allow(dead_code)]
 #[path = "../../trace/src/jump.rs"]
 pub(crate) mod jump;

@@ -37,11 +37,6 @@
 //! decision 2026-09-28): every actuator held, no ring-3 program
 //! started, console and OTA alive, the boot never confirmed — the
 //! device waits for a good image.
-//! `#![allow(dead_code)]` stays for the parts only the host tests
-//! in `tests/host/ota-tests` reach (`RECOVERY_FORCE_FLAG`, the
-//! button and flag triggers).
-
-#![allow(dead_code)]
 
 /// Crash count at which the boot-loop trigger arms: the OTA FSM's
 /// `max_attempts`, the same constant, so "attempts exhausted" and

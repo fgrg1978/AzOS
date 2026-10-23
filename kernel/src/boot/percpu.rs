@@ -105,9 +105,6 @@ const MAX_PERCPU_VARS: usize = 16;
 // SAFETY: `()` is zero-sized; any bytes are a valid `()`.
 static NO_VAR: azos_percpu::PerCpuRemote<()> = unsafe { azos_percpu::PerCpuRemote::zeroed() };
 
-/// Bytes of one per-CPU area, as `setup_per_cpu_areas` laid it out (0 before).
-static AREA_BYTES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
 /// Visit every per-CPU variable the kernel keeps in the areas, in layout order.
 fn with_percpu_vars<R>(f: impl FnOnce(&[&'static dyn azos_percpu::PerCpuVar]) -> R) -> R {
     let mut vars: [&'static dyn azos_percpu::PerCpuVar; MAX_PERCPU_VARS] = [&NO_VAR; MAX_PERCPU_VARS];
@@ -166,7 +163,6 @@ pub(crate) fn setup_per_cpu_areas() {
     let boot = boot_cpu();
     with_percpu_vars(|vars| {
         let bytes = azos_percpu::area_bytes(vars);
-        AREA_BYTES.store(bytes, Ordering::Relaxed);
         let mut total = 0usize;
         for cpu in azos_percpu::possible().iter() {
             let stacks = if cpu == boot { 0 } else { STACKS_BYTES };
@@ -209,12 +205,6 @@ pub(crate) fn setup_per_cpu_areas() {
 fn boot_cpu() -> usize {
     use azos_arch::{Cpu, ARCH};
     ARCH.percpu_base()
-}
-
-/// Bytes of one per-CPU area (0 before `setup_per_cpu_areas`).
-#[allow(dead_code)]
-pub(crate) fn percpu_area_bytes() -> usize {
-    AREA_BYTES.load(Ordering::Relaxed)
 }
 
 /// The property the areas exist for, checked once at boot: every possible CPU

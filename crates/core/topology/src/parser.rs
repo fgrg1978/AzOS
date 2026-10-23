@@ -332,27 +332,6 @@ fn skip_inline_ws(input: &[u8]) -> &[u8] {
     &input[i..]
 }
 
-/// Skip leading whitespace (incl. newlines, comments).
-fn skip_ws_and_comments(mut input: &[u8]) -> &[u8] {
-    loop {
-        // Inline whitespace + newlines.
-        let mut i = 0;
-        while i < input.len() && (is_ws(input[i]) || is_eol(input[i])) {
-            i += 1;
-        }
-        input = &input[i..];
-        if input.is_empty() || input[0] != b'#' {
-            return input;
-        }
-        // Comment — skip to next newline.
-        let mut j = 0;
-        while j < input.len() && !is_eol(input[j]) {
-            j += 1;
-        }
-        input = &input[j..];
-    }
-}
-
 /// Read one logical line (until first `\n`), returning (line, rest).
 /// The newline is consumed in `rest`. Strips trailing `\r`.
 fn take_line(input: &[u8]) -> (&[u8], &[u8]) {
@@ -738,16 +717,11 @@ fn trim_trailing_ws(s: &[u8]) -> &[u8] {
 // ──────────────────────────────────────────────────────────────────────────
 
 /// One inline-table field as a (key, value) pair, used during parsing.
-///
-/// Some variants are unused today but exist for forward compatibility
-/// with future inline-table fields (numeric thresholds, bool gates).
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 enum InlineValue<'a> {
     Str(&'a [u8]),
     Int(u64),
     Bool(bool),
-    Range(u8, u8),
 }
 
 /// Maximum fields per inline table — over-provisioned for forward-compat
@@ -3849,16 +3823,6 @@ fn parse_hex<const N: usize>(s: &[u8]) -> Result<[u8; N], ParseError> {
         out[i] = (hi << 4) | lo;
     }
     Ok(out)
-}
-
-// Avoid unused-import warning when `current_section` is only set, never
-// read in a code path the compiler cares about.
-#[allow(dead_code)]
-fn _unused_section_ref(_s: Section<'_>) {}
-
-#[allow(dead_code)]
-fn _unused_skip(_input: &[u8]) -> &[u8] {
-    skip_ws_and_comments(_input)
 }
 
 #[cfg(test)]
