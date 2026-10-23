@@ -144,8 +144,8 @@ userspace/services/infsrv	11	2	0	0	0	-
 userspace/services/inputd	3	0	2	0	0	-
 userspace/services/logd	1	0	0	0	0	-
 userspace/services/logind	1	0	0	0	0	-
-userspace/services/lxrt	8	2	0	2	0	-
-userspace/services/lxsrv	23	0	1	0	0	-
+userspace/services/lxrt	11	3	1	3	0	-
+userspace/services/lxsrv	24	0	1	0	0	-
 userspace/services/mcpd	1	0	0	0	0	-
 userspace/services/namesd	1	0	0	0	0	-
 userspace/services/pkg	1	0	0	0	0	-
