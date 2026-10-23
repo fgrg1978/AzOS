@@ -44,7 +44,7 @@ pub const MAX_MOUNTS:   usize = azos_limits::VFS_MAX_MOUNTS;
 /// largest, `captest.elf`, is 27 KiB, and `POLICY.GGF` is read through a 4 KiB
 /// buffer).
 ///
-/// **Not "far below the heap" — the opposite.** `config/Kconfig.limits`'
+/// **Not "far below the heap" — the opposite.** `config/limits/Kconfig.limits`'
 /// `KERNEL_HEAP_SIZE` is 32 KiB on the default profile (512 KiB on the
 /// largest documented one); this ceiling is 8 MiB either way, 16×-256×
 /// LARGER than the heap it allocates from. The allocation simply fails

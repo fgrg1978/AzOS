@@ -156,7 +156,7 @@ Source: `crates/fs/fs/src/lib.rs`, `crates/net/net/src/lib.rs`, `crates/net/*/Ca
 | `drivers` | Drivers only this domain uses: ESC outputs and the RC receiver. |
 | `bench` | Synthetic microbenchmarks for kernel subsystems. |
 
-Source: `domains/robot/*/Cargo.toml`, `config/Kconfig.use`.
+Source: `domains/robot/*/Cargo.toml`, `config/axes/Kconfig.use`.
 
 ## Per-ISA layout
 

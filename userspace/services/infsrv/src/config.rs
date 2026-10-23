@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The Kconfig numbers of the service (`config/Kconfig.limits`, "Inference
+//! The Kconfig numbers of the service (`config/limits/Kconfig.limits`, "Inference
 //! service"), as the sizes they are used as.
 
 /// `INFSRV_MODELS`: bundles held at once.

@@ -15,7 +15,7 @@ Every task has a priority number in `0..32`; a lower number is more urgent. Each
 
 Levels `12..31` are fair levels. Priority is the only per-task knob the dispatcher reads for the band and the fair class; the class itself is derived from priority and from whether the task holds a reservation (see [Dispatch classes](#dispatch-classes)).
 
-Source: `crates/core/sched/src/task.rs` (constants), `crates/core/sched/src/scheduler/mod.rs` (`PerCpuSched`, `CPU_LOCKS`, `cpu_enqueue_locked`, `cpu_dequeue`, `enqueue_remote_aware`), `config/Kconfig.timing`.
+Source: `crates/core/sched/src/task.rs` (constants), `crates/core/sched/src/scheduler/mod.rs` (`PerCpuSched`, `CPU_LOCKS`, `cpu_enqueue_locked`, `cpu_dequeue`, `enqueue_remote_aware`), `config/kernel/Kconfig.sched`.
 
 ## Dispatch classes
 
@@ -40,7 +40,7 @@ Two class vocabularies exist and are separate types:
 
 The dispatcher (`do_schedule`) takes its pick from a fused path: `rt::pick` when the hart has real-time state, otherwise the ready-bitmap dequeue (`cpu_dequeue`), which hands the fair levels to EEVDF. `classes::pick_here` walks the same queues through the `SchedClassOps` table (`classes::TABLE`) in precedence order and is the class-by-class view of that decision; `sc::pick_in_precedence` and `sc::should_preempt` are the pure walk and the cross-class preemption rule. Each class implements `SchedClassOps` (`enqueue`, `dequeue`, `pick`, `tick`, `preempt_check`): `StopClass`, `DlClass`, `RtClass`, `FairClass`, `IdleClass`.
 
-Source: `crates/core/sched/src/sc.rs`, `crates/core/sched/src/classes.rs`, `crates/core/sched/src/class.rs`, `crates/core/sched/src/scheduler/mod.rs` (`do_schedule`, `cpu_dequeue`), `config/Kconfig.timing` (`SCHED_CLASS_*`, `SCHED_DEFAULT_*`).
+Source: `crates/core/sched/src/sc.rs`, `crates/core/sched/src/classes.rs`, `crates/core/sched/src/class.rs`, `crates/core/sched/src/scheduler/mod.rs` (`do_schedule`, `cpu_dequeue`), `config/kernel/Kconfig.sched` (`SCHED_CLASS_*`, `SCHED_DEFAULT_*`).
 
 ## Scheduling context
 
@@ -114,15 +114,15 @@ A run-time refusal is printed and, but for `Envelope`, written as a `Rule::Deadl
 
 ### Entry points
 
-`SYS_SCHEDCTL` (`sys_schedctl`) moves the calling task to a class: `SCHEDCTL_CLASS_DL` takes a runtime and a period (the relative deadline is the period), `SCHEDCTL_CLASS_RT` and `SCHEDCTL_CLASS_FAIR` take a priority. DL and RT require a warrant with `WRITE` on a `time` endpoint, checked first; a refusal is recorded. Fair needs none but cannot leave the band or a reservation. Topology `deadline` rows reach `reserve` from the spawn path (`crates/core/syscall/src/spawn.rs`). With `IRQ_THREADED`, binding an interrupt line requires the binder to hold a hard reservation (see `config/Kconfig.timing`).
+`SYS_SCHEDCTL` (`sys_schedctl`) moves the calling task to a class: `SCHEDCTL_CLASS_DL` takes a runtime and a period (the relative deadline is the period), `SCHEDCTL_CLASS_RT` and `SCHEDCTL_CLASS_FAIR` take a priority. DL and RT require a warrant with `WRITE` on a `time` endpoint, checked first; a refusal is recorded. Fair needs none but cannot leave the band or a reservation. Topology `deadline` rows reach `reserve` from the spawn path (`crates/core/syscall/src/spawn.rs`). With `IRQ_THREADED`, binding an interrupt line requires the binder to hold a hard reservation (see `config/kernel/Kconfig.sched`).
 
-Source: `crates/core/sched/src/rt_core.rs`, `crates/core/sched/src/rt.rs`, `crates/core/abi/src/rt_levels.rs`, `crates/core/topology/src/deadline.rs`, `crates/core/syscall/src/schedctl.rs`, `crates/core/abi/src/syscall_nr.rs` (`SYS_SCHEDCTL`), `config/Kconfig.timing`.
+Source: `crates/core/sched/src/rt_core.rs`, `crates/core/sched/src/rt.rs`, `crates/core/abi/src/rt_levels.rs`, `crates/core/topology/src/deadline.rs`, `crates/core/syscall/src/schedctl.rs`, `crates/core/abi/src/syscall_nr.rs` (`SYS_SCHEDCTL`), `config/kernel/Kconfig.sched`.
 
 ## Real-time class: the band
 
 Priorities `0..12` form the band. Dispatch inside it is strict priority, FIFO within a level, with no time slicing; a ready task of a more urgent level preempts (`RtClass::preempt_check`). The band is bounded by a per-hart budget (`rt_core::Band`): in each window of `RT_BAND_WINDOW_MS`, while a task outside the band is ready on the hart, the band may run at most `RT_BAND_CAP_PCT` percent. Past it, the pick skips the band levels until the window ends (`rt_core::band_throttled`). With nothing else ready the band keeps the CPU, and the overshoot is charged. A cap of 100 disables the budget. Enforcement instants (budget exhaustion, window end, reservation budget, replenishment) are armed with `timebase::arm_if_earlier`, which only writes the comparator when the instant is earlier than what the hart already has programmed.
 
-Source: `crates/core/sched/src/rt_core.rs` (`Band`, `band_cap_ticks`), `crates/core/sched/src/rt.rs` (`pick`, `tick`), `crates/drivers/sys/src/timebase.rs` (`arm_if_earlier`), `config/Kconfig.timing` (`RT_BAND_WINDOW_MS`, `RT_BAND_CAP_PCT`).
+Source: `crates/core/sched/src/rt_core.rs` (`Band`, `band_cap_ticks`), `crates/core/sched/src/rt.rs` (`pick`, `tick`), `crates/drivers/sys/src/timebase.rs` (`arm_if_earlier`), `config/kernel/Kconfig.sched` (`RT_BAND_WINDOW_MS`, `RT_BAND_CAP_PCT`).
 
 ## Fair class: EEVDF
 
@@ -136,7 +136,7 @@ Every task outside the band and idle is a fair task, scheduled by Earliest Eligi
 * **Queue.** The queue is the fair levels' ready lists; the pick is O(ready fair tasks on the hart). There is no tree.
 * **Hook.** `fairq::qos_override` is the place where the SC's `qos_id` would choose weight and slice; it returns `None`.
 
-Source: `crates/core/sched/src/eevdf_core.rs`, `crates/core/sched/src/fairq.rs`, `config/Kconfig.timing` (`FAIR_SLICE_US`).
+Source: `crates/core/sched/src/eevdf_core.rs`, `crates/core/sched/src/fairq.rs`, `config/kernel/Kconfig.sched` (`FAIR_SLICE_US`).
 
 ## Idle class
 
@@ -200,7 +200,7 @@ Two priority-inheritance mechanisms coexist. The wait graph is the one selected 
 | user-driver proxy | `donate_priority` / `return_donation` |
 | kernel mutex, PI futex | wait graph; without `WAIT_GRAPH` the mutex sleeps and excludes but boosts nobody and PI futexes answer `ENOSYS` |
 
-Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `kernel/src/boot/sched.rs` (`register_sched`, `PROXY_HOOKS`), `crates/fs/fs/src/fat32.rs`, `config/Kconfig.limits` (`WAIT_GRAPH`, `PI_MAX_DEPTH`, `FUTEX_PI`).
+Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `kernel/src/boot/sched.rs` (`register_sched`, `PROXY_HOOKS`), `crates/fs/fs/src/fat32.rs`, `config/kernel/Kconfig.sync` (`WAIT_GRAPH`, `PI_MAX_DEPTH`, `FUTEX_PI`).
 
 ## CPU topology
 
@@ -235,13 +235,13 @@ With `SCHED_BALANCE`, queued fair tasks move between CPUs so that none idles whi
 * **What may move.** Only queued, ready fair tasks that are not pinned, not a reservation, not mid-switch. Not a participant, as sender or receiver: an `isolcpus` CPU (`fairq::set_isolated_cpus`) and a CPU with real-time state (`fairq::rt_cpu`: a band task, an exhausted band window, an admitted reservation).
 * **Bounds.** `SCHED_BALANCE_MOVES` tasks and `SCHED_BALANCE_SCAN` queue entries per pass. A sender whose lock is held is skipped (`Take::Busy`).
 
-Source: `crates/core/sched/src/scheduler/balance.rs`, `crates/core/sched/src/fairq.rs` (`balance_idle`, `set_isolated_cpus`, `rt_cpu`), `kernel/src/boot/topology.rs`, `config/Kconfig.timing`.
+Source: `crates/core/sched/src/scheduler/balance.rs`, `crates/core/sched/src/fairq.rs` (`balance_idle`, `set_isolated_cpus`, `rt_cpu`), `kernel/src/boot/topology.rs`, `config/kernel/Kconfig.sched`.
 
 ## Energy-aware placement
 
 On CPUs that differ in capacity, a woken fair task can be placed where the energy model says it adds the least energy. It applies when all of the following hold: `SCHED_EAS` is built in, a model is installed, the topology's energy mode is not `performance`, and the model is asymmetric (`energy::install` sets the gate). It never applies to real-time or deadline tasks or pinned tasks. The candidates are the online CPUs that are neither isolated nor hold real-time state, minus the CPUs the power policy parked, restricted to the domains the task's QoS class is mapped to. `EnergyModel::eas_pick` chooses among them; when it answers `Overutilised` (a candidate CPU's utilisation reaches `EAS_FIT_PCT` percent of its domain's fastest-OPP capacity, or the task fits none of them), `find_best_cpu` decides. Otherwise it compares, per performance domain, the CPU with the most spare capacity and the CPU the task last ran on, by the energy the task adds at the OPP the domain would need, and moves the task off its last CPU only for a saving of more than 1/16 of its cost there. The model, the policy and the mode are described in [energy.md](energy.md).
 
-Source: `crates/core/sched/src/scheduler/wake.rs` (`wake_target_cpu`, `eas_wake_cpu`), `crates/core/sched/src/energy.rs` (`eas_active`, `eas_place`), `crates/core/energy/src/model.rs` (`eas_pick`, `EAS_FIT_PCT`), `config/Kconfig.timing` (`SCHED_EAS`).
+Source: `crates/core/sched/src/scheduler/wake.rs` (`wake_target_cpu`, `eas_wake_cpu`), `crates/core/sched/src/energy.rs` (`eas_active`, `eas_place`), `crates/core/energy/src/model.rs` (`eas_pick`, `EAS_FIT_PCT`), `config/kernel/Kconfig.sched` (`SCHED_EAS`).
 
 ## Core scheduling
 
@@ -249,7 +249,7 @@ With `SCHED_CORE`, the hardware threads of one core (the `Smt` mask, more than o
 
 Real-time keeps priority: a strong claim displaces the siblings' fair tasks at once and is never displaced by a fair one. A fair candidate refused for `SCHED_CORE_PATIENCE_US` displaces its siblings the same way. The IPC direct switch is allowed on a core-scheduled hart only between tasks with the same claim (`core_direct_ok`). A hart with no SMT sibling is not affected.
 
-Source: `crates/core/sched/src/topo.rs` (`Claim`, `Admit`, `CoreSched`, `core_pick`), `crates/core/sched/src/scheduler/mod.rs` (`core_smt`, `core_claim_of`, `core_direct_ok`), `config/Kconfig.timing` (`SCHED_CORE*`).
+Source: `crates/core/sched/src/topo.rs` (`Claim`, `Admit`, `CoreSched`, `core_pick`), `crates/core/sched/src/scheduler/mod.rs` (`core_smt`, `core_claim_of`, `core_direct_ok`), `config/kernel/Kconfig.sched` (`SCHED_CORE*`).
 
 ## Tickless busy CPUs (`NOHZ_FULL`)
 
@@ -261,13 +261,13 @@ A CPU of the topology's `[sched] isolcpus` that runs exactly one real-time task,
 * The tick returns on an enqueue on the CPU (`timebase::tick_restart`), on a switch off the task, or when the stopped tick's own interrupt finds the CPU no longer alone.
 * An isolated CPU's user mode is an extended quiescent state for RCU (`azos_sync::qsbr::set_tickless_cpus`), so no grace period waits for a tick it does not take.
 
-Source: `crates/drivers/sys/src/nohz.rs`, `crates/drivers/sys/src/timebase.rs` (`set_tick_stop_hook`, `tick_stopped`, `tick_restart`), `crates/core/sched/src/scheduler/mod.rs` (`nohz_publish`, `nohz_tick_hook`), `crates/core/sync/src/qsbr.rs`, `config/Kconfig.timing` (`NOHZ_FULL`, `NOHZ_FULL_RESIDUAL_MS`).
+Source: `crates/drivers/sys/src/nohz.rs`, `crates/drivers/sys/src/timebase.rs` (`set_tick_stop_hook`, `tick_stopped`, `tick_restart`), `crates/core/sched/src/scheduler/mod.rs` (`nohz_publish`, `nohz_tick_hook`), `crates/core/sync/src/qsbr.rs`, `config/kernel/Kconfig.sched` (`NOHZ_FULL`, `NOHZ_FULL_RESIDUAL_MS`).
 
 ## Timer sleepers
 
 A task that sleeps on a timer is armed in a per-CPU indexed min-heap (`timer_heap::TimerHeap`, `sched-timer-heap`) on the CPU it blocks on, with one entry per task slot. That CPU's tick pops the due entries (`wake_expired_timers`), and `nearest_timer_deadline` feeds the tickless comparator. Entries are not removed when a sleeper is woken another way; the top entry is validated against the live task (`peek_live`) when it is reached. See [time.md](time.md) for the clocks the deadlines are read on.
 
-Source: `crates/core/sched/src/timer_heap.rs`, `crates/core/sched/src/timer_sleepers.rs`, `crates/core/sched/src/wait.rs`, `config/Kconfig.timing` (`SCHED_TIMER_HEAP_PER_CPU`, `SCHED_TIMER_WAKE_BATCH`).
+Source: `crates/core/sched/src/timer_heap.rs`, `crates/core/sched/src/timer_sleepers.rs`, `crates/core/sched/src/wait.rs`, `config/kernel/Kconfig.sched` (`SCHED_TIMER_HEAP_PER_CPU`, `SCHED_TIMER_WAKE_BATCH`).
 
 ## Module layout
 

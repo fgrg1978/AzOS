@@ -123,7 +123,7 @@ pub struct DtbInfo {
     pub isa_v: bool,
     /// Zba, Zbs, Svpbmt (exact tokens) and F, D (letters, as `isa_v`):
     /// the inputs of the boot's `[ISA]` line and its baseline check
-    /// (config/Kconfig.arch RISCV64_LEVEL, RV_*).
+    /// (config/arch/Kconfig.isa-riscv64 RISCV64_LEVEL, RV_*).
     pub isa_zba: bool,
     pub isa_zbs: bool,
     pub isa_svpbmt: bool,
@@ -132,7 +132,7 @@ pub struct DtbInfo {
     /// Svadu (exact token): the hart sets the A bit itself (RV_SVADU).
     pub isa_svadu: bool,
     /// Zawrs, Zacas (exact tokens): the spin-wait hint and the CAS of
-    /// `SpinWait` (config/Kconfig.arch RV_ZAWRS, RV_ZACAS).
+    /// `SpinWait` (config/arch/Kconfig.isa-riscv64 RV_ZAWRS, RV_ZACAS).
     pub isa_zawrs: bool,
     pub isa_zacas: bool,
     /// Zihintpause: `SpinWait::cpu_relax`'s `pause` (RV_ZIHINTPAUSE).
@@ -144,7 +144,7 @@ pub struct DtbInfo {
     pub isa_f: bool,
     pub isa_d: bool,
     /// The H (hypervisor) letter of the base segment, as `isa_v`: the first
-    /// of the two steps `azos_arch::ext::hv::probe` takes (config/Kconfig.arch RV_H).
+    /// of the two steps `azos_arch::ext::hv::probe` takes (config/arch/Kconfig.isa-riscv64 RV_H).
     pub isa_h: bool,
     /// Ssqosid (exact token): the `srmcfg` partition tag (RV_SSQOSID); the
     /// first of the two steps `azos_arch::ext::ssqosid::select` takes.

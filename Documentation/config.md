@@ -16,23 +16,23 @@ ignored by git; the fragments are the source.
 
 | Fragment | What it holds |
 |---|---|
-| `config/Kconfig.preset` | The preset and the profile axes (below). |
-| `config/Kconfig.use` | The `USE` axis: what the image is for, derived from the preset and never asked. |
-| `config/Kconfig.robot`, `config/Kconfig.brain` | The robot domain menus, shown only for `USE_ROBOT`. |
-| `config/Kconfig.arch` | ISA selection and the hardware support model (below). |
-| `config/Kconfig.hv` | The hypervisor core (`HV`, `HV_REQUIRE`, `HV_MAX_VCPUS`). |
-| `config/Kconfig.platform` | Board selection and platform addresses, and the x86_64 platform menu. |
-| `config/Kconfig.limits` | The resource cap table: every static-array bound, with defaults per hardware class. |
-| `config/Kconfig.timing` | Scheduler, IPC, timers and watchdog. |
-| `config/Kconfig.network` | Ethernet and the TCP/IP stack parameters. |
-| `config/Kconfig.security`, `config/Kconfig.mitigations` | Secure boot, link encryption, hardening, the threat model. |
-| `config/Kconfig.packages`, `config/Kconfig.ota` | Signed application packages and OTA updates. |
-| `config/Kconfig.drivers` | Driver enables and per-driver placement (kernel or ring 3). |
-| `config/Kconfig.linux` | The Linux compatibility layer. |
-| `config/Kconfig.relibc` | `CONFIG_RELIBC`, the C library for ported C programs. |
+| `config/axes/Kconfig.preset` | The preset and the profile axes (below). |
+| `config/axes/Kconfig.use` | The `USE` axis: what the image is for, derived from the preset and never asked. |
+| `config/domains/Kconfig.robot`, `config/domains/Kconfig.brain` | The robot domain menus, shown only for `USE_ROBOT`. |
+| `config/arch/Kconfig.isa` | ISA selection and the hardware support model (below). |
+| `config/axes/Kconfig.virt` | The hypervisor core (`HV`, `HV_REQUIRE`, `HV_MAX_VCPUS`). |
+| `config/arch/Kconfig.platform` | Board selection and platform addresses, and the x86_64 platform menu. |
+| `config/limits/Kconfig.limits` | The resource cap table: every static-array bound, with defaults per hardware class. |
+| `config/kernel/Kconfig.sched` | Scheduler, IPC, timers and watchdog. |
+| `config/subsys/Kconfig.net` | Ethernet and the TCP/IP stack parameters. |
+| `config/subsys/Kconfig.ota`, `config/axes/Kconfig.security` | Secure boot, link encryption, hardening, the threat model. |
+| `config/subsys/Kconfig.packages`, `config/subsys/Kconfig.ota` | Signed application packages and OTA updates. |
+| `config/subsys/Kconfig.drivers` | Driver enables and per-driver placement (kernel or ring 3). |
+| `config/axes/Kconfig.personality` | The Linux compatibility layer. |
+| `config/axes/Kconfig.libc` | `CONFIG_RELIBC`, the C library for ported C programs. |
 | `Kconfig.userspace` | Generated at every parse by `tools/gen_userspace_kconfig.py` from the directories under `userspace/`; never committed. |
-| `config/Kconfig.development` | Build type, debug probes, in-kernel tests, tracing, logging. |
-| `config/Kconfig.micro` | The MCU kernel (`micro/`). |
+| `config/kernel/Kconfig.trace` | Build type, debug probes, in-kernel tests, tracing, logging. |
+| `config/kernel/Kconfig.micro` | The MCU kernel (`micro/`). |
 
 `tools/kconfig_lint.py` enforces the single-source rule: every `# cargo-feature:` tag names a
 feature of `kernel/Cargo.toml` and sits in a `config` block of an existing symbol, each
@@ -41,8 +41,8 @@ feature has exactly one owning symbol, no `select` forces a visible symbol, and
 
 ## Axes and presets
 
-Source: `config/Kconfig.preset`, `config/Kconfig.use`, `config/Kconfig.hv`,
-`config/Kconfig.development`, `tools/check_presets.py`.
+Source: `config/axes/Kconfig.preset`, `config/axes/Kconfig.use`, `config/axes/Kconfig.virt`,
+`config/kernel/Kconfig.trace`, `tools/check_presets.py`.
 
 One `PRESET` choice sets the defaults of every axis, and through them the options the axes
 own. A preset works through `default ... if PRESET_*` lines and `imply`; it never `select`s,
@@ -60,7 +60,7 @@ board, RAM, hardware class).
 | Virtualization role | `VIRT_*` | `NONE`, `HOSTED`, `SPLIT`, `STATIC` | The hypervisor role (see [virtualization.md](virtualization.md)). |
 | Build type | `BUILD_TYPE_*` | `DEV`, `RELEASE`, `CERTIFIABLE` | Named by the defconfig, not keyed on the board or the preset: release is the default and every QEMU defconfig says `BUILD_TYPE_DEV`. A release build forces off the test-only machinery (`KTEST`, `CHAOS`, `CANARY_RUNTIME`) and refuses the test signing key. |
 
-The limits in `config/Kconfig.limits` default by `HWCLASS` directly: `HWCLASS_EMBEDDED`,
+The limits in `config/limits/Kconfig.limits` default by `HWCLASS` directly: `HWCLASS_EMBEDDED`,
 `HWCLASS_SBC || HWCLASS_DESKTOP` (the edge tables) and `HWCLASS_SERVER` (the fleet tables).
 
 | Preset | USE | Real-time class | Security | Notes |
@@ -83,7 +83,7 @@ does not name.
 
 ### Hardware support model
 
-Source: `config/Kconfig.arch`, `tools/kconfig_to_cargo.py`, `crates/core/limits/build.rs`.
+Source: `config/arch/Kconfig.isa-riscv64`, `tools/kconfig_to_cargo.py`, `crates/core/limits/build.rs`.
 
 Every ISA is configured the same way. Each ISA has a baseline level (`RISCV64_LEVEL`,
 `AARCH64_LEVEL`, `X86_64_LEVEL`) that is the only thing codegen assumes for the whole kernel
@@ -172,7 +172,7 @@ ring 3 is refused.
 ## Adding an option
 
 Source: `tools/kconfig_to_cargo.py`, `tools/kconfig_lint.py`, `crates/core/limits/build.rs`,
-`config/Kconfig.limits`.
+`config/limits/Kconfig.limits`.
 
 1. **Declare it** in the fragment that owns its subject, with a type, a prompt (or none for
    a derived symbol), a `default` per hardware class where the value is a size, and a

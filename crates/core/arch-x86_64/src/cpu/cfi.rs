@@ -21,7 +21,7 @@
 //! * `context_switch` resumes a task through a `ret`, not a `jmp`: the
 //!   resume address is no landing pad.
 //! * No shadow stack (`X86_CET_SHSTK`): not enabled, see
-//!   config/Kconfig.security, "Hardware control-flow integrity".
+//!   config/kernel/Kconfig.hardening, "Hardware control-flow integrity".
 //! * Ring 3 gets nothing from this: `IA32_U_CET` is per process (an XSAVES
 //!   supervisor/user component), so the vDSO's `HWCAP_X86_CET_IBT`, which
 //!   reads `CR4.CET`, says the kernel enforces on itself.

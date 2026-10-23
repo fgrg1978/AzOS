@@ -19,7 +19,7 @@
 //! - any other target: the portable shift formula, Linux's generic one
 //!   (`tests/host/cap-tests` runs the aarch64 sequence on an aarch64 host).
 //!
-//! Switch: `CONFIG_MITIGATION_SPECTRE_V1_INDEX` (config/Kconfig.mitigations). Off, every
+//! Switch: `CONFIG_MITIGATION_SPECTRE_V1_INDEX` (config/axes/Kconfig.security). Off, every
 //! function here returns the index unchanged and compiles to nothing.
 //!
 //! Lives in this crate, next to the switch, because every file that indexes a

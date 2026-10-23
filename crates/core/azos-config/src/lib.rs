@@ -192,11 +192,11 @@ fn infer_int_type(key: &str) -> &'static str {
 /// Returns `(rust_name, scale_factor)`.  The scale is applied to the raw
 /// integer value before writing the const literal.
 ///
-/// Handles the config/Kconfig.limits pattern where `KERNEL_HEAP_SIZE` is stored
+/// Handles the config/limits/Kconfig.limits pattern where `KERNEL_HEAP_SIZE` is stored
 /// in KiB but consumers want bytes.
 fn byte_expanded_key(key: &str) -> Option<(&'static str, u64)> {
     match key {
-        // KERNEL_HEAP_SIZE is declared in KiB in config/Kconfig.limits
+        // KERNEL_HEAP_SIZE is declared in KiB in config/limits/Kconfig.limits
         "KERNEL_HEAP_SIZE"    => Some(("KERNEL_HEAP_SIZE_BYTES",    1024)),
         // Explicit KB suffixed stack sizes
         "USER_STACK_SIZE_KB"        => Some(("USER_STACK_SIZE_BYTES",        1024)),

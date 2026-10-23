@@ -70,7 +70,7 @@ ENTRY(_start)
  * marker — "did not compile" is this ASSERT's own discriminating bucket.
  */
 /*
- * Translation granule (config/Kconfig.arch AARCH64_PAGE_*). `kernel/build.rs`
+ * Translation granule (config/arch/Kconfig.isa AARCH64_PAGE_*). `kernel/build.rs`
  * writes `azos_granule.ld` from the cargo features `page-16k`/`page-64k`:
  * `AZOS_PAGE_SIZE` (4 KiB unless a feature says otherwise — every
  * page-aligned section below aligns to it, so W^X never finds `.text` and
@@ -145,7 +145,7 @@ SECTIONS
     {
         *(.text .text.*)
     } > RAM_VMA AT> RAM_LMA
-    /* Live-update patch pool (Kconfig LIVEPATCH_POOL_KIB, config/Kconfig.development):
+    /* Live-update patch pool (Kconfig LIVEPATCH_POOL_KIB, config/kernel/Kconfig.livepatch):
      * RX room inside the image's text range, so the W^X and no-exec-outside-
      * the-image checks (_text_start.._text_end) cover it. The size reaches
      * the linker as --defsym=__patch_pool_bytes (tools/kconfig_to_cargo.py

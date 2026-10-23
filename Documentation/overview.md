@@ -29,14 +29,14 @@ x86_64). A driver written once can be hosted in either place (see
 | Kernel targets | `riscv64imac-unknown-none-elf`, `aarch64-unknown-none-softfloat`, `x86_64-unknown-none` (`mk/vars.mk`) |
 | Ring-3 programs | `userspace/`; Rust `std` targets `*-unknown-azos` in `sdk/targets/` |
 | Second, separate kernel for MMU-less parts | `micro/` (riscv32imac, M-mode, PMP) |
-| Application domains are optional features | `config/Kconfig.use`, `domains/robot/` |
+| Application domains are optional features | `config/axes/Kconfig.use`, `domains/robot/` |
 
 AzOS is a general-purpose kernel with application domains on top. The `robot`
 domain (`domains/robot/`) is linked only when the image selects it
-(`USE_ROBOT` in `config/Kconfig.use`, kernel feature `use-robot`); the shared
+(`USE_ROBOT` in `config/axes/Kconfig.use`, kernel feature `use-robot`); the shared
 actuation authority (`crates/core/actuation`) is linked by every domain.
 
-Source: `kernel/src/main.rs`, `kernel/Cargo.toml`, `config/Kconfig.use`,
+Source: `kernel/src/main.rs`, `kernel/Cargo.toml`, `config/axes/Kconfig.use`,
 `micro/src/lib.rs`, `sdk/README.md`.
 Next: [structure.md](structure.md) for the directory map.
 
@@ -222,7 +222,7 @@ sources the fragments in `config/`, and `.config` is generated output.
 - **Outputs stay out of the checkout.** Build products go under `$AZOS_OUT`
   (`mk/vars.mk`, `tools/out_dir.py`).
 
-Source: `Kconfig`, `config/Kconfig.preset`, `config/Kconfig.use`,
+Source: `Kconfig`, `config/axes/Kconfig.preset`, `config/axes/Kconfig.use`,
 `kernel/Cargo.toml`, `crates/core/azos-config/src/lib.rs`,
 `crates/core/limits`, `tools/kconfig_to_cargo.py`, `mk/vars.mk`.
 Next: [config.md](config.md), [building.md](building.md).
@@ -277,11 +277,11 @@ What the code does not try to be:
 - **Not a desktop system.** Display support is a framebuffer
   (`crates/drivers/fb`); there is no window system in the tree.
 - **Not a robot kernel.** The robot domain is one optional use of the kernel
-  (`config/Kconfig.use`).
+  (`config/axes/Kconfig.use`).
 - **Not the planner.** Perception, planning and models live outside the kernel;
   the kernel decides whether a proposed action takes effect.
 - **No ambient authority.** No global device namespace and no root user: see
   [authority by capability](#authority-by-capability).
 
-Source: `sdk/README.md`, `config/Kconfig.use`, `crates/core/abi/src/syscall_nr.rs`,
+Source: `sdk/README.md`, `config/axes/Kconfig.use`, `crates/core/abi/src/syscall_nr.rs`,
 `crates/core/linux-abi/src/lib.rs`, `crates/drivers/fb/src/lib.rs`.

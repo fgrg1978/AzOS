@@ -124,7 +124,7 @@ pub const fn is_rt_priority(prio: u32) -> bool {
 }
 
 /// Stack size for kernel tasks.
-/// Sourced from Kconfig `KERNEL_STACK_SIZE_KB` (see config/Kconfig.limits) — with
+/// Sourced from Kconfig `KERNEL_STACK_SIZE_KB` (see config/limits/Kconfig.limits) — with
 /// guard page (4 KiB unmapped at bottom), usable size is this minus 4 KiB.
 /// Rust kernel tasks with nested calls (PID, flight controller, kprintln
 /// formatting) need substantial stack space.

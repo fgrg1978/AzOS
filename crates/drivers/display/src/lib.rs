@@ -41,7 +41,7 @@ mod hdmi;
 mod imp {
     use azos_drv_base::platform::hw::{DC8200_MAIN_BASE, HDMI_TX_BASE};
 
-    /// Kconfig-driven framebuffer dimensions (`config/Kconfig.platform`,
+    /// Kconfig-driven framebuffer dimensions (`config/arch/Kconfig.platform`,
     /// `HDMI_WIDTH`/`HDMI_HEIGHT`). Wiring these through is what makes
     /// this "configurable at compile time" — but changing them alone
     /// does NOT give you a different display mode: the CRTC/HDMI timing

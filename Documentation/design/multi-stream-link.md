@@ -108,11 +108,11 @@ sensor / status packet -> sealed record (encrypted session)
   `BRAIN_TX_CONTROL_RESERVE_BYTES` stay free, and a refused telemetry frame is
   dropped before it is sealed and counted. This matters because a sealed record
   cannot be dropped or reordered once its counter is spent. Sizes are
-  `BRAIN_TX_QUEUE_BYTES` and `BRAIN_TX_PRIORITY` in `config/Kconfig.brain`.
+  `BRAIN_TX_QUEUE_BYTES` and `BRAIN_TX_PRIORITY` in `config/domains/Kconfig.brain`.
 
 ## Scheduling policy seam: FIFO or priority
 
-Source: `config/Kconfig.brain` (`MULTISTREAM_SCHED_PRIORITY`),
+Source: `config/domains/Kconfig.brain` (`MULTISTREAM_SCHED_PRIORITY`),
 `kernel/src/tasks/brain_link.rs`, `crates/core/limits/build.rs`.
 
 Under FIFO a large bulk frame already queued delays a control frame behind it

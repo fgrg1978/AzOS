@@ -16,7 +16,7 @@ This document describes how the kernel decides where tasks run, how fast CPUs ru
 
 Kconfig `ENERGY` compiles in utilisation tracking, the model and the governors. Without it the three seams (placement, frequency governor, idle governor) are `const`s with one behaviour each and fold to the code they replaced: legacy wake placement, no frequency request, `wfi` in the idle task. `THERMAL`, `SCHED_EAS` and `SYSTEM_SUSPEND` depend on it; `CPU_HOTPLUG` is independent.
 
-Source: `config/Kconfig.timing` (`ENERGY`, `THERMAL`, `SCHED_EAS`), `crates/core/energy/src/lib.rs`, `crates/core/energy/src/seams.rs`.
+Source: `config/kernel/Kconfig.energy` (`ENERGY`, `THERMAL`, `SCHED_EAS`), `crates/core/energy/src/lib.rs`, `crates/core/energy/src/seams.rs`.
 
 ## Energy model
 
@@ -84,7 +84,7 @@ A device-tree state is not entered, on riscv64 and aarch64, if it has no suspend
 
 x86_64: a state is on the ladder only if `MONITOR`/`MWAIT` are usable with the `CPUID.5` extensions, `CPUID.5:EDX` lists a sub-state for its hint, and, for any hint above C1/C1E, the CPU reports that neither the local APIC timer nor the TSC stops in it (`ARAT` and the invariant TSC bit). Exit latencies and residencies come from per-model tables; a model with no table gets no deep state, because a latency is never guessed. AMD and Hygon get the single `MWAITX` C1 state. The model's idle list for a domain without an `idle` table is `[hlt, ladder...]`; a topology-declared table is checked against the ladder, and `cpu_idle` is capped at the first state the table understates (`cap_depth`). With `IF` clear, or no ladder, every depth is `hlt`.
 
-Source: `crates/core/arch-api/src/lib.rs` (`Cpu::cpu_idle`), `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-riscv64/src/firmware.rs` (`hart_suspend_retentive`, `IdleLadder`, `SuspendState`), `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-aarch64/src/firmware.rs` (`cpu_suspend_standby`, `IdleLadder`, `SuspendState`), `crates/core/arch-x86_64/src/lib.rs`, `crates/core/arch-x86_64/src/cpu/idle.rs`, `kernel/src/boot/energy.rs` (`install_idle_states`, `report_idle_ladder`), `kernel/src/tasks/system.rs` (`idle_wait`, `idle_task`), `config/Kconfig.platform` (`CPU_IDLE_POWERDOWN`).
+Source: `crates/core/arch-api/src/lib.rs` (`Cpu::cpu_idle`), `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-riscv64/src/firmware.rs` (`hart_suspend_retentive`, `IdleLadder`, `SuspendState`), `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-aarch64/src/firmware.rs` (`cpu_suspend_standby`, `IdleLadder`, `SuspendState`), `crates/core/arch-x86_64/src/lib.rs`, `crates/core/arch-x86_64/src/cpu/idle.rs`, `kernel/src/boot/energy.rs` (`install_idle_states`, `report_idle_ladder`), `kernel/src/tasks/system.rs` (`idle_wait`, `idle_task`), `config/arch/Kconfig.platform` (`CPU_IDLE_POWERDOWN`).
 
 ### The idle governor
 
@@ -189,7 +189,7 @@ The introspection tree's `thermal/` shows the board, the evaluations made, the l
 
 The QEMU row `thermal-smoke` runs the same task and runtime over a fake board (a scripted temperature, a clock that only remembers: `azos_thermal::fake`) and the balanced fake model, and walks the temperature through the passive and hot trips and back: throttle to the floors, the degrade record, the clocks restored (`kernel/src/smokes/thermal_smoke.rs`).
 
-Source: `crates/core/energy/src/thermal.rs`, `crates/core/energy/src/model.rs` (`from_clock_range`), `crates/drivers/thermal/src/rpi.rs`, `kernel/src/boot/thermal.rs`, `kernel/src/boot/energy.rs`, `kernel/src/entry/aarch64/ext/rpi_mbox.rs`, `kernel/src/entry/x86_64/ext/thermal_hw.rs`, `crates/core/arch-x86_64/src/cpu/pstate.rs`, `crates/drivers/thermal/src/x86.rs`, `crates/drivers/thermal/src/x86_sensor.rs`, `kernel/src/smokes/thermal_smoke.rs`, `crates/drivers/thermal/src/runtime.rs`, `crates/drivers/thermal/src/fake.rs`, `crates/drivers/thermal/src/sensor.rs`, `crates/drivers/thermal/src/dt.rs`, `crates/drivers/thermal/src/k1.rs`, `crates/drivers/thermal/src/k1_soc.rs`, `crates/drivers/soc/src/k1/`, `crates/drivers/thermal/src/lib.rs`, `config/Kconfig.timing` (`THERMAL`), `kernel/Cargo.toml` (feature `thermal`).
+Source: `crates/core/energy/src/thermal.rs`, `crates/core/energy/src/model.rs` (`from_clock_range`), `crates/drivers/thermal/src/rpi.rs`, `kernel/src/boot/thermal.rs`, `kernel/src/boot/energy.rs`, `kernel/src/entry/aarch64/ext/rpi_mbox.rs`, `kernel/src/entry/x86_64/ext/thermal_hw.rs`, `crates/core/arch-x86_64/src/cpu/pstate.rs`, `crates/drivers/thermal/src/x86.rs`, `crates/drivers/thermal/src/x86_sensor.rs`, `kernel/src/smokes/thermal_smoke.rs`, `crates/drivers/thermal/src/runtime.rs`, `crates/drivers/thermal/src/fake.rs`, `crates/drivers/thermal/src/sensor.rs`, `crates/drivers/thermal/src/dt.rs`, `crates/drivers/thermal/src/k1.rs`, `crates/drivers/thermal/src/k1_soc.rs`, `crates/drivers/soc/src/k1/`, `crates/drivers/thermal/src/lib.rs`, `config/kernel/Kconfig.energy` (`THERMAL`), `kernel/Cargo.toml` (feature `thermal`).
 
 ## Run-time policy
 
@@ -267,7 +267,7 @@ Op classes travel in the badge the signed topology stamps on the grant (`CLASS_R
 
 **Endpoints and rows.** Each device is served on a task-hosted endpoint, `endpoint.pm-<device>` (`runtime::DEVICES`: `gpio`, `ina`). The driver's row (`GPIODRV.ELF`, `INADRV.ELF`) holds `READ` on it, which is the right to serve; `POWER.ELF`'s row holds `EXEC` on it (the `ina` grant exists only where the monitor has a ring-3 row, `INADRV_ROW`). The kernel badges the calling grant when it seeds the row (`cap_seed`, `runtime::grant_badge`): the low bits are the op classes (holding the grant is `CLASS_READ`; `WRITE` and `EXEC` map to their classes, so `POWER.ELF` carries observe and control and cannot take a wakelock), the bits above are the device's key (its position in `runtime::DEVICES`, plus one). Ring 3 has no by-name lookup of a task-hosted endpoint and its pool index is the topology's row order, so the power service scans the endpoint capabilities it holds once, at start, and takes the one whose badge carries each device's key (`devices::resolve`).
 
-Source: `crates/core/devif/src/power.rs` (`DevicePower`, `runtime`), `userspace/drivers/gpio_drv/src/main.rs`, `userspace/drivers/ina_drv/src/main.rs`, `config/Kconfig.drivers` (`DEVICE_WAKELOCKS`).
+Source: `crates/core/devif/src/power.rs` (`DevicePower`, `runtime`), `userspace/drivers/gpio_drv/src/main.rs`, `userspace/drivers/ina_drv/src/main.rs`, `config/subsys/Kconfig.drivers` (`DEVICE_WAKELOCKS`).
 
 ## CPU hotplug
 
@@ -300,7 +300,7 @@ The scheduler walks the online CPUs as a prefix `0..n`, so offline takes the hig
 | `FirmwareRefused` | the firmware refused; the CPU is as it was |
 | `NeverStopped` | online only: the CPU never stopped here, so there is no saved context to resume |
 
-Source: `crates/core/sched/src/smp.rs` (`cpu_offline`, `cpu_online`), `crates/core/sched/src/hart_set.rs` (`HotplugReason`, `check_offline`, `check_online`), `crates/core/sched/src/scheduler/lifecycle.rs` (`migrate_off_cpu`), `crates/core/sched/src/timer_sleepers.rs` (`migrate_off`), `crates/core/arch-riscv64/src/firmware.rs`, `crates/core/arch-aarch64/src/firmware.rs`, `crates/core/arch-x86_64/src/smp.rs`, `crates/core/syscall/src/power.rs` (`cpu_online`), `config/Kconfig.platform` (`CPU_HOTPLUG`).
+Source: `crates/core/sched/src/smp.rs` (`cpu_offline`, `cpu_online`), `crates/core/sched/src/hart_set.rs` (`HotplugReason`, `check_offline`, `check_online`), `crates/core/sched/src/scheduler/lifecycle.rs` (`migrate_off_cpu`), `crates/core/sched/src/timer_sleepers.rs` (`migrate_off`), `crates/core/arch-riscv64/src/firmware.rs`, `crates/core/arch-aarch64/src/firmware.rs`, `crates/core/arch-x86_64/src/smp.rs`, `crates/core/syscall/src/power.rs` (`cpu_online`), `config/arch/Kconfig.platform` (`CPU_HOTPLUG`).
 
 ## System suspend
 
@@ -340,7 +340,7 @@ In the kernel's platform (`KernelSuspend`), wake sources are the interrupt capab
 
 On a resume where the monotonic counter stopped, `slept_ns` (the persistent clock's advance minus the monotonic clock's) is added to the boot offset with `vdso_add_suspended`, so `CLOCK_BOOTTIME` includes the sleep ([time.md](time.md)).
 
-Source: `crates/drivers/power/src/pm/suspend.rs`, `crates/drivers/power/src/pm.rs`, `kernel/src/boot/energy.rs` (`KernelSuspend`, `install_suspend`), `config/Kconfig.platform` (`SYSTEM_SUSPEND`), `crates/core/devif/src/power.rs` (`Power::suspend`).
+Source: `crates/drivers/power/src/pm/suspend.rs`, `crates/drivers/power/src/pm.rs`, `kernel/src/boot/energy.rs` (`KernelSuspend`, `install_suspend`), `config/arch/Kconfig.platform` (`SYSTEM_SUSPEND`), `crates/core/devif/src/power.rs` (`Power::suspend`).
 
 ## Battery
 
@@ -351,4 +351,4 @@ The signed topology's `[degrade.NAME]` rows (a level, the charge it is entered a
 * **Report age.** The kernel keeps the age of the last accepted report (`battery_alive`, `check_report_age`). A report older than `ENERGY_BATTERY_REPORT_TIMEOUT_MS` holds the same reserve until the next accepted report, counted from boot, so a service that never starts is held the same way. A refused report is not a sign of life.
 * **Scope.** Only a machine whose topology declares `[degrade.NAME]` rows has a battery for the reserve to apply to.
 
-Source: `crates/core/energy/src/policy.rs` (`BatteryLimits`, `DegradeRow`, `report_battery`, `check_report_age`), `crates/core/sched/src/energy.rs` (`install_battery`, `policy_report_battery`), `kernel/src/boot/energy.rs` (`install_battery`), `userspace/services/power/src/battery.rs`, `config/Kconfig.timing` (`ENERGY_BATTERY_RESERVE_PCT`, `ENERGY_BATTERY_REPORT_TIMEOUT_MS`).
+Source: `crates/core/energy/src/policy.rs` (`BatteryLimits`, `DegradeRow`, `report_battery`, `check_report_age`), `crates/core/sched/src/energy.rs` (`install_battery`, `policy_report_battery`), `kernel/src/boot/energy.rs` (`install_battery`), `userspace/services/power/src/battery.rs`, `config/kernel/Kconfig.energy` (`ENERGY_BATTERY_RESERVE_PCT`, `ENERGY_BATTERY_REPORT_TIMEOUT_MS`).

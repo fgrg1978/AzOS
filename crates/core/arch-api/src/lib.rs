@@ -281,7 +281,7 @@ pub fn ticks_to_us(ticks: u64, hz: u64) -> u64 {
 
 // The base page (translation granule) is a build-time choice. RISC-V Sv39
 // has one base page, 4 KiB; aarch64 VMSAv8-64 has three granules and Kconfig
-// `AARCH64_PAGE_4K` / `_16K` / `_64K` (config/Kconfig.arch) picks one. The
+// `AARCH64_PAGE_4K` / `_16K` / `_64K` (config/arch/Kconfig.isa) picks one. The
 // choice reaches this crate as a cargo feature (`page-16k`, `page-64k`;
 // neither = 4 KiB) emitted by `tools/kconfig_to_cargo.py` and forwarded by the
 // kernel crate. `azos_limits::PAGE_SHIFT` carries the same choice from

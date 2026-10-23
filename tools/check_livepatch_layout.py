@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """Live-update build hooks: the linker scripts and a linked kernel against
-the Kconfig (config/Kconfig.development, "Live-update build hooks").
+the Kconfig (config/kernel/Kconfig.livepatch, "Live-update build hooks").
 
   check_livepatch_layout.py scripts
       every kernel linker script (kernel/linker*.ld, linker-efi.ld) defines

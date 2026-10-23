@@ -20,7 +20,7 @@
 //!
 //! Not read by any safety decision (the only consumer is the sensor
 //! syscall), which is what allows the ring-3 placement at all; the drivers a
-//! safety decision reads have no placement switch (Kconfig.drivers).
+//! safety decision reads have no placement switch (config/subsys/Kconfig.drivers).
 
 use azos_abi::drv_kind::power_op;
 

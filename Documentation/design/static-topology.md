@@ -743,7 +743,7 @@ release refuses the test key. The same key verifies the signed `CONFIG.INI`.
 
 Source: `crates/core/topology/src/signed.rs`, `crates/core/topology/src/verify.rs`,
 `crates/core/topology/build.rs`, `crates/core/topology/src/state.rs`,
-`kernel/src/boot/topology.rs`, `config/Kconfig.security`.
+`kernel/src/boot/topology.rs`, `config/subsys/Kconfig.topology`.
 
 ## Admission
 
@@ -880,7 +880,7 @@ Source: `crates/core/topology/src/builder.rs`, `crates/core/topology/Cargo.toml`
 
 The topology is stored in fixed arrays. Their sizes are Kconfig symbols, so a
 small profile pays for a small table. The ones that bound the formats above:
-`MAX_TASKS`, `MAX_CAPS_TOTAL`, `MAX_CAPS_PER_TASK` (`config/Kconfig.limits`),
+`MAX_TASKS`, `MAX_CAPS_TOTAL`, `MAX_CAPS_PER_TASK` (`config/limits/Kconfig.limits`),
 and `TOPOLOGY_MAX_CLASSES`, `TOPOLOGY_MAX_PIPELINES`,
 `TOPOLOGY_MAX_DEVICE_ROWS`, `TOPOLOGY_MAX_IMPORTS`, `TOPOLOGY_IMPORTS_TOTAL`,
 `TOPOLOGY_MAX_SIGNERS`, `TOPOLOGY_SIGNER_WARRANTS_TOTAL`, `TOPOLOGY_MAX_PEERS`,
@@ -895,10 +895,10 @@ and `TOPOLOGY_MAX_CLASSES`, `TOPOLOGY_MAX_PIPELINES`,
 `TOPOLOGY_MAX_MODELS`, `TOPOLOGY_MAX_USB_RULES`, `TOPOLOGY_GUEST_PASSTHROUGH`,
 `TOPOLOGY_NAME_MAX`,
 `TOPOLOGY_TARGET_MAX`, `TOPOLOGY_INLINE_FIELDS_MAX` and the buffer sizes
-`TOPOLOGY_CAPS_MAX_KB` and `TOPOLOGY_SCHED_MAX_KB` (`config/Kconfig.security`).
+`TOPOLOGY_CAPS_MAX_KB` and `TOPOLOGY_SCHED_MAX_KB` (`config/subsys/Kconfig.topology`).
 A file that exceeds one of them is refused, never truncated.
 
-Source: `config/Kconfig.limits`, `config/Kconfig.security`.
+Source: `config/limits/Kconfig.limits`, `config/subsys/Kconfig.topology`.
 
 ## Design choices and costs
 

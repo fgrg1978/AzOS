@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """check_presets.py — every preset expands on every ISA (`make check-presets`).
 
-For each PRESET_* symbol of config/Kconfig.preset and each ISA
+For each PRESET_* symbol of config/axes/Kconfig.preset and each ISA
 (tools/kconfig_to_cargo.py ARCH_TO_TARGET), a two-line .config (the preset and
 the ISA) is expanded with kconfiglib, as `olddefconfig` does, and handed to
 tools/kconfig_to_cargo.py (the cargo arguments and the baseline rustflags).
@@ -40,10 +40,10 @@ sys.path.insert(0, HERE)
 import gen_userspace_kconfig as gus  # noqa: E402
 import kconfig_to_cargo as k2c  # noqa: E402
 
-# The axes (config/Kconfig.preset; USE is the USE_* set, derived from the
-# preset and never asked; BUILD_TYPE is the one of config/Kconfig.development):
+# The axes (config/axes/Kconfig.preset; USE is the USE_* set, derived from the
+# preset and never asked; BUILD_TYPE is the one of config/axes/Kconfig.build):
 # each must come out with one member on, except USE for a preset that has no
-# USE_* symbol (config/Kconfig.use: one exists only where something reads it),
+# USE_* symbol (config/axes/Kconfig.use: one exists only where something reads it),
 # which must come out with none.
 AXIS_MEMBERS = {
     "HWCLASS": ["HWCLASS_EMBEDDED", "HWCLASS_SBC", "HWCLASS_DESKTOP", "HWCLASS_SERVER"],
@@ -70,7 +70,7 @@ QOS_TOLERANCE = {
 }
 
 
-# Hardware bus policy (HWBUS_AUTOBIND, config/Kconfig.drivers): the presets that
+# Hardware bus policy (HWBUS_AUTOBIND, config/subsys/Kconfig.drivers): the presets that
 # are machines users plug things into bind what the driver tables match; the
 # embedded-control presets (and the small-board firmware and wearable ones)
 # detect everything and bind only what the signed topology admits.

@@ -55,7 +55,7 @@ is the bare id.
 
 Source: `crates/core/abi/src/cap.rs` (`slot_word`, `CapHandle`),
 `crates/core/ipc/src/cap.rs` (`CapSlot`, `CapExt`, `CapTable`),
-`crates/core/ipc/src/objref.rs`, `config/Kconfig.limits`.
+`crates/core/ipc/src/objref.rs`, `config/limits/Kconfig.limits`.
 
 ### Generations
 
@@ -262,7 +262,7 @@ Source: `crates/core/ipc/src/cap.rs` (`Warrant`, `Quota`, `DeriveSpec`,
 `derive_warrant`, `narrow_warrant`, `WARRANT_DEPTH_MAX`, `CapTable::sweep_dead`),
 `crates/core/ipc/src/cap_store.rs` (`sweep`, `revoke_derived`, `move_caps`,
 `mint_badged`), `crates/core/decision/src/prov.rs` (`warrant_ref`),
-`config/Kconfig.limits`.
+`config/limits/Kconfig.limits`.
 
 ### Lazy revocation
 
@@ -307,7 +307,7 @@ warrant is ever published and a shadow row is seeded with no capabilities.
 Source: `crates/core/abi/src/cap.rs` (`slot_word::WEAK`,
 `slot_word::WEAK_KEEPS`, `slot_word::perms`), `crates/core/ipc/src/cap.rs`
 (`Warrant::WEAK`, `CapTable::mark_weak`, `CapTable::shadow_refusal`),
-`crates/core/topology/src/types.rs` (`shadow`), `config/Kconfig.security`
+`crates/core/topology/src/types.rs` (`shadow`), `config/kernel/Kconfig.ipc`
 (`CAP_WEAK`).
 
 ## Caveats
@@ -526,4 +526,4 @@ Source: `userspace/lib/rpc/src/lib.rs`, `userspace/lib/rpc/src/wire.rs`
 (`Token`, `cav`), `userspace/lib/rpc/src/session.rs` (`Remint`, `Refusal`,
 `Budget`, `Quota`), `userspace/lib/rpc/src/engine.rs` (`warrant`,
 `revoke_export`), `crates/core/abi/src/invoke.rs` (`ENDPOINT_DERIVE`),
-`config/Kconfig.network` (`RPC_REVOKE_BOUND_MS`).
+`config/subsys/Kconfig.rpc` (`RPC_REVOKE_BOUND_MS`).

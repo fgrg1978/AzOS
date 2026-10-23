@@ -12,8 +12,8 @@ every refusal here produces.
 |------|-------------|
 | Capabilities and the syscall boundary | `crates/core/abi/src/cap.rs`, `crates/core/ipc/src/cap.rs`, `crates/core/syscall/src/invoke.rs` |
 | Per-image syscall filters | `crates/core/sched/src/seccomp.rs`, `crates/core/sched/src/filter.rs` |
-| Control-flow integrity | `crates/core/arch-aarch64/src/cpu/cfi.rs`, `crates/core/arch-x86_64/src/cpu/cfi.rs`, `config/Kconfig.security` |
-| Speculation mitigations | `crates/core/arch-x86_64/src/ext/mitigations.rs`, `crates/core/arch-aarch64/src/ext/mitigations.rs`, `crates/core/limits/src/nospec.rs`, `config/Kconfig.mitigations` |
+| Control-flow integrity | `crates/core/arch-aarch64/src/cpu/cfi.rs`, `crates/core/arch-x86_64/src/cpu/cfi.rs`, `config/subsys/Kconfig.topology` |
+| Speculation mitigations | `crates/core/arch-x86_64/src/ext/mitigations.rs`, `crates/core/arch-aarch64/src/ext/mitigations.rs`, `crates/core/limits/src/nospec.rs`, `config/axes/Kconfig.security` |
 | Secure boot, signed artefacts | `crates/core/ota/src/secure_boot.rs`, `crates/core/ota/src/update.rs`, `crates/core/topology/src/verify.rs`, `crates/core/topology/src/signed.rs`, `crates/core/pkg/src` |
 | Crypto primitives | `crates/core/crypto/src` |
 | Entropy, TPM | `crates/core/crypto/src/entropy.rs`, `kernel/src/boot/entropy.rs`, `crates/drivers/tpm/src`, `kernel/src/boot/tpm.rs` |
@@ -171,8 +171,8 @@ run.
 
 Source: `crates/core/arch-aarch64/src/cpu/cfi.rs`,
 `crates/core/arch-x86_64/src/cpu/cfi.rs`, `tools/kconfig_to_cargo.py`
-(`cfi_rustflags`), `config/Kconfig.security` (section "Hardware control-flow
-integrity"), `config/Kconfig.arch`.
+(`cfi_rustflags`), `config/subsys/Kconfig.topology` (section "Hardware control-flow
+integrity"), `config/arch/Kconfig.isa`.
 
 The model is the same on every ISA: forward edges (an indirect call or jump may
 only land on a landing pad) and backward edges (a return address is signed or
@@ -193,14 +193,14 @@ compiler does not support it for riscv64).
 
 ## Speculation mitigations
 
-Source: `config/Kconfig.mitigations`,
+Source: `config/axes/Kconfig.security`,
 `crates/core/arch-x86_64/src/ext/mitigations.rs`,
 `crates/core/arch-aarch64/src/ext/mitigations.rs`,
 `crates/core/arch-x86_64/src/ext/retpoline.rs`,
 `crates/core/limits/src/nospec.rs`.
 
 Every mitigation is a switch in `make config`; none is forced. The threat model
-is the security posture (`SECURITY_*`, `config/Kconfig.preset`): the
+is the security posture (`SECURITY_*`, `config/axes/Kconfig.security`): the
 physical-access postures (`SECURITY_SEPARATION_STATIC`, `SECURITY_CONFIDENTIAL`)
 set defaults with `imply`, never `select`, so a switch set by hand wins.
 
@@ -258,7 +258,7 @@ speculation barrier on syscall entry.
 Source: `crates/core/arch-api/src/kaslr.rs`,
 `crates/core/arch-{aarch64,riscv64,x86_64}/src/mmu/kaslr.rs` and
 `kaslr_boot.rs`, `kernel/linker-*.ld`, `kernel/build.rs` (the `-pie` link),
-`config/Kconfig.security` (the `KASLR` choice), `tools/kaslr_image.sh`,
+`config/kernel/Kconfig.hardening` (the `KASLR` choice), `tools/kaslr_image.sh`,
 `tools/kaslr_boot_row.sh`.
 
 Kconfig `KASLR` is `n` / `probe` / `require` (default `probe` on every build
@@ -532,7 +532,7 @@ node_static_key = HKDF-SHA256(salt = measurement, ikm = device seed,
 
 Source: `crates/core/crypto/src/keystore.rs`, `crates/core/devif/src/keys.rs`,
 `crates/core/syscall/src/keys.rs`, `crates/drivers/tpm/src/tpm.rs`,
-`kernel/src/boot/keys.rs`, `config/Kconfig.security`.
+`kernel/src/boot/keys.rs`, `config/subsys/Kconfig.topology`.
 
 A task that signs, seals or derives does not hold the key: it holds a handle on a
 key the kernel keeps, and asks the kernel to use it (the kernel-hosted `keys`
@@ -587,7 +587,7 @@ Source: `crates/core/syscall/src/keys.rs` (`login_in`), `crates/core/crypto/src/
 (`login_public`), `crates/core/sched/src/domain.rs` (the grant, `set_owner_root`),
 `crates/core/syscall/src/ushell.rs` (`SPAWN_F_USER`), `userspace/services/logind`,
 `userspace/services/termd/src/{secure,service}.rs`, `userspace/lib/login`,
-`config/Kconfig.limits` (`CONSOLE_LOGIN`), `config/Kconfig.security` (`LOGIN_*`).
+`config/subsys/Kconfig.console` (`CONSOLE_LOGIN`), `config/subsys/Kconfig.topology` (`LOGIN_*`).
 
 With Kconfig `CONSOLE_LOGIN` and at least one `[login.NAME]` row in the signed topology the
 console is **gated**: the native shell is a session of a user, started by the login service,
@@ -634,7 +634,7 @@ restarts it).
 Source: `crates/core/syscall/src/link_key.rs`,
 `crates/core/crypto/src/secure_channel.rs`,
 `domains/robot/behavior/src/encrypt_link.rs`, `userspace/lib/rpc/src/chan.rs`,
-`config/Kconfig.security`.
+`config/subsys/Kconfig.topology`.
 
 There are two kinds of authenticated link.
 

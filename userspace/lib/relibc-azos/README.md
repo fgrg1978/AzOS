@@ -16,13 +16,13 @@ Nothing of relibc is stored in this repository except what AzOS adds to it:
 | `userspace/lib/relibc-azos/patches/` | the changes to upstream files (MIT, like the tree they patch) |
 | `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module (Apache-2.0 OR GPL-2.0-only); the Rust targets are the native specs (`sdk/targets`) and a C program is linked with their layout (`tools/user_link_args.py --driver`), no linker script |
 | `tools/relibc_build.sh` | copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs |
-| `config/Kconfig.relibc` | `CONFIG_RELIBC`: the switch, read from each ISA's own configuration |
+| `config/axes/Kconfig.libc` | `CONFIG_RELIBC`: the switch, read from each ISA's own configuration |
 | `make relibc` | all of it, for every ISA whose configuration sets `CONFIG_RELIBC=y` (the QEMU defconfigs do) |
 
 `tools/lx_license_lint.py` accepts MIT only in `patches/` (rule T6) and checks the
 pin with every other third-party tree (`--pin`).
 
-Source: `tools/third_party_fetch.sh`, `tools/relibc_build.sh`, `config/Kconfig.relibc`,
+Source: `tools/third_party_fetch.sh`, `tools/relibc_build.sh`, `config/axes/Kconfig.libc`,
 `.gitmodules`.
 
 ## The platform layer (`overlay/src/platform/azos`)

@@ -2578,7 +2578,7 @@ impl fmt::Write for Uart {
 // ---- Kernel log levels ----
 //
 // Linux numbering (`KERN_ERR` 3 .. `KERN_DEBUG` 7). A build keeps the lines
-// at or below `CONFIG_LOG_LEVEL` (config/Kconfig.development); a line above
+// at or below `CONFIG_LOG_LEVEL` (config/kernel/Kconfig.trace); a line above
 // it sits behind a constant-false `if`, so its format string, its formatting
 // code and its call are not in the image and its arguments are not
 // evaluated. The arguments still type-check, so a variable read only by a

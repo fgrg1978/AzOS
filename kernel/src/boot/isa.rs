@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The `[ISA]` boot line and the refusals (config/Kconfig.arch, "Hardware
+//! The `[ISA]` boot line and the refusals (config/arch/Kconfig.isa, "Hardware
 //! support model"; `azos_arch_api::isa`). Each ISA's boot hooks resolve
 //! their extensions and call [`report`] once.
 //!
@@ -183,7 +183,7 @@ fn compute_build_id() {
 }
 
 /// `[PATCH] pool=<KiB> sites=<n> entry_nops=<n>`: the live-update build hooks
-/// (config/Kconfig.development) as the linker laid them out. The pool and site
+/// (config/kernel/Kconfig.livepatch) as the linker laid them out. The pool and site
 /// table sizes come from the linker symbols, not from the Kconfig, so a
 /// script that lost the section shows here; `entry_nops` is the Kconfig value
 /// the compiler was given. With `LIVEPATCH`, the build-id line follows.

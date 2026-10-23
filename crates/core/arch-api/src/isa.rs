@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The hardware-support model every ISA shares (config/Kconfig.arch):
+//! The hardware-support model every ISA shares (config/arch/Kconfig.isa):
 //! a baseline level per ISA, then each optional extension a three-way
 //! `make config` choice — [`ExtPolicy`] — resolved at boot against what
 //! the CPU reports into an [`ExtState`]. The boot prints one `[ISA]` line
@@ -126,7 +126,7 @@ pub fn write_report<W: fmt::Write>(w: &mut W, baseline: &str, exts: &[Ext]) -> f
 
 /// Bytes per `.azos_patch` entry: the 8-byte address of a patchable function
 /// entry (the compiler's `__patchable_function_entries`) or of a registered
-/// site (config/Kconfig.development, "Live-update build hooks").
+/// site (config/kernel/Kconfig.livepatch, "Live-update build hooks").
 pub const PATCH_SITE_BYTES: usize = 8;
 
 /// `[PATCH] pool=<KiB> sites=<n> entry_nops=<n>` — one line, no newline.
@@ -167,7 +167,7 @@ macro_rules! ext_policy {
     };
 }
 
-/// riscv64 (config/Kconfig.arch `RISCV64_LEVEL`, `RV_*`).
+/// riscv64 (config/arch/Kconfig.isa-riscv64 `RISCV64_LEVEL`, `RV_*`).
 pub mod riscv64 {
     use super::ExtPolicy;
 
@@ -205,7 +205,7 @@ pub mod riscv64 {
     pub const PMU: ExtPolicy = ext_policy!(RV_PMU_NEVER, RV_PMU_REQUIRE);
 }
 
-/// aarch64 (config/Kconfig.arch `AARCH64_LEVEL`, `A64_*`).
+/// aarch64 (config/arch/Kconfig.isa-aarch64 `AARCH64_LEVEL`, `A64_*`).
 pub mod aarch64 {
     use super::ExtPolicy;
 
@@ -244,7 +244,7 @@ pub mod aarch64 {
     pub const HAFDBS: ExtPolicy = ext_policy!(A64_HAFDBS_NEVER, A64_HAFDBS_REQUIRE);
     pub const PMU: ExtPolicy = ext_policy!(A64_PMU_NEVER, A64_PMU_REQUIRE);
 
-    // Speculation mitigations (config/Kconfig.mitigations, `A64_MIT_*`).
+    // Speculation mitigations (config/axes/Kconfig.security, `A64_MIT_*`).
     pub const MIT_SPECTRE_V2: ExtPolicy = ext_policy!(A64_MIT_SPECTRE_V2_NEVER, A64_MIT_SPECTRE_V2_REQUIRE);
     pub const MIT_SSB: ExtPolicy = ext_policy!(A64_MIT_SSB_NEVER, A64_MIT_SSB_REQUIRE);
     pub const MIT_BHB: ExtPolicy = ext_policy!(A64_MIT_BHB_NEVER, A64_MIT_BHB_REQUIRE);
@@ -256,7 +256,7 @@ pub mod aarch64 {
     pub const TLBIRANGE_MIN_PAGES: usize = azos_limits::A64_TLBIRANGE_MIN_PAGES as usize;
 }
 
-/// x86_64 (config/Kconfig.arch `X86_64_LEVEL`, `X86_*`).
+/// x86_64 (config/arch/Kconfig.isa-x86_64 `X86_64_LEVEL`, `X86_*`).
 pub mod x86_64 {
     use super::ExtPolicy;
 
@@ -316,7 +316,7 @@ pub mod x86_64 {
     pub const VMX: ExtPolicy = ext_policy!(X86_VMX_NEVER, X86_VMX_REQUIRE);
     pub const PMU: ExtPolicy = ext_policy!(X86_PMU_NEVER, X86_PMU_REQUIRE);
 
-    // Speculation mitigations (config/Kconfig.mitigations, `X86_MIT_*`): the
+    // Speculation mitigations (config/axes/Kconfig.security, `X86_MIT_*`): the
     // same n / probe / require choice, decided by `azos_arch::mitigations`.
     pub const MIT_MELTDOWN: ExtPolicy = ext_policy!(X86_MIT_MELTDOWN_NEVER, X86_MIT_MELTDOWN_REQUIRE);
     pub const MIT_L1TF: ExtPolicy = ext_policy!(X86_MIT_L1TF_NEVER, X86_MIT_L1TF_REQUIRE);

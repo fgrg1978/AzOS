@@ -78,7 +78,7 @@ pub extern "C" fn aarch64_early_mmu_init() {
     static mut L2: PageTable = PageTable::zero();
     static mut L3: PageTable = PageTable::zero();
 
-    // config/Kconfig.arch AARCH64_PAGE_*: a PE that does not implement the
+    // config/arch/Kconfig.isa AARCH64_PAGE_*: a PE that does not implement the
     // granule this kernel was built for never translates once the MMU is on,
     // and nothing could be printed after that. Say so now, on the PL011 by
     // physical address (MMU off: the access is to Device memory), and stop.

@@ -316,7 +316,7 @@ pub fn firmware_done(_dtb_ptr: usize, num_cpus: usize) {
     kprintln!();
 }
 
-/// The baseline check and the `[ISA]` line (config/Kconfig.arch): Zicboz,
+/// The baseline check and the `[ISA]` line (config/arch/Kconfig.isa): Zicboz,
 /// Sstc, the spin extensions and Zkr as the probes resolved them (DTB plus
 /// a trap-safe execution probe), the rest as cpu@0's device tree declares
 /// them. A level above

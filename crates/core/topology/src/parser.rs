@@ -963,7 +963,7 @@ fn parse_cap_perms(s: &[u8]) -> Result<CapPerms, ParseError> {
 /// saying it "matches `azos_ipc::cap::MAX_CAPS_PER_TASK`" — a comment
 /// holding an invariant that nothing checked, and which was already false for
 /// the embedded (32) and fleet (512) profiles, since both this and `ipc`'s
-/// copy ignored the `config/Kconfig.limits` value they claimed to track. A scratch
+/// copy ignored the `config/limits/Kconfig.limits` value they claimed to track. A scratch
 /// buffer smaller than the cap table it mirrors rejects valid topologies;
 /// larger, it wastes stack. `types.rs` in this same crate was already
 /// importing `MAX_TASKS`/`MAX_CAPS_TOTAL` from `azos_limits` — this now

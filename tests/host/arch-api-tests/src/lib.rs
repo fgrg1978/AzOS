@@ -2019,7 +2019,7 @@ mod lat_tests {
     }
 }
 
-/// config/Kconfig.arch's hardware-support model (`azos_arch_api::isa`): the
+/// config/arch/Kconfig.isa's hardware-support model (`azos_arch_api::isa`): the
 /// three-way choice, its resolution against the probe, and the boot line.
 #[cfg(test)]
 mod isa_tests {
@@ -2401,7 +2401,7 @@ mod tlb_space_mask_tests {
     }
 }
 
-/// The live-update build hooks (config/Kconfig.development): the `[PATCH]`
+/// The live-update build hooks (config/kernel/Kconfig.trace): the `[PATCH]`
 /// boot line, and the linker scripts it reads its symbols from.
 #[cfg(test)]
 mod livepatch_tests {

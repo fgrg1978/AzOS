@@ -43,7 +43,7 @@ pub mod sc;
 pub mod slot_bitmap;
 
 /// `scheduler::ring_claim_audit`'s slot sets, at the fleet profile's
-/// `MAX_TASKS` (4096, `config/Kconfig.limits`), with slots on both sides of word
+/// `MAX_TASKS` (4096, `config/limits/Kconfig.limits`), with slots on both sides of word
 /// boundaries.
 ///
 /// `scheduler.rs` does not compile for the host, so what runs here is the
@@ -70,7 +70,7 @@ mod slot_bitmap_tests {
         assert_eq!(words_for(65), 2);
         assert_eq!(W, 64, "fleet, MAX_TASKS 4096");
         assert_eq!(SlotBitmap::<W>::capacity(), FLEET_SLOTS);
-        assert_eq!(words_for(16384), 256, "the config/Kconfig.limits ceiling");
+        assert_eq!(words_for(16384), 256, "the config/limits/Kconfig.limits ceiling");
     }
 
     /// Every slot is its own member: inserting one never makes another present,

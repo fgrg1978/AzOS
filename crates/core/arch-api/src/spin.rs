@@ -8,7 +8,7 @@
 //! extension: `core::sync::atomic` (an LR/SC loop on riscv64, LDAXR/STLXR
 //! at Armv8.0, LOCK CMPXCHG on x86_64) and a relax loop. An ISA overrides
 //! the methods it has a better instruction for, each behind its
-//! config/Kconfig.arch choice ([`crate::isa::ExtPolicy`]):
+//! config/arch/Kconfig.isa choice ([`crate::isa::ExtPolicy`]):
 //!
 //! | ISA     | `cas32/cas64`                 | `wait_hint32/64`            | `cpu_relax` |
 //! |---------|-------------------------------|-----------------------------|-------------|

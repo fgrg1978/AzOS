@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The Kconfig symbols (`config/Kconfig.micro`) as typed constants, with the
+//! The Kconfig symbols (`config/kernel/Kconfig.micro`) as typed constants, with the
 //! relations between them checked at compile time. The values are
 //! `azos_limits`' (the `.config` of `make micro`); nothing here has a default
 //! of its own.

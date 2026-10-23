@@ -12,7 +12,7 @@
 /// `ttas`: wraps data in a `SpinLock<T>` to ensure exclusive access. The lock word
 /// is a `u32` (0 free, 1 held): acquired with `SpinWait::swap32` (riscv64
 /// `amoswap.w.aq`, LSE `SWPA` or LDAXR/STXR, `XCHG`, per
-/// config/Kconfig.arch) and waited on with `SpinWait::wait_while32`
+/// config/arch/Kconfig.isa) and waited on with `SpinWait::wait_while32`
 /// (Zawrs `wrs.nto`, `LDAXR`+`WFE`, WAITPKG `UMWAIT`, or `cpu_relax`). A
 /// 32-bit word, not a byte: riscv64 has no sub-word AMO or CAS without Zabha.
 ///

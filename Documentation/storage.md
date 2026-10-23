@@ -450,7 +450,7 @@ directory entry durable, and is freed into the next epoch (`defer_free`,
 
 Source: `crates/fs/fs/src/fat32.rs`, `crates/fs/fs/src/bcache.rs`,
 `crates/drivers/block/src/blkdev.rs`, `kernel/src/boot/sched.rs`,
-`config/Kconfig.limits`.
+`config/limits/Kconfig.limits`.
 
 ## The page-cache path
 
@@ -817,7 +817,7 @@ Source: `crates/core/ipc/src/file_cap.rs`, `crates/core/common/src/path.rs`,
 
 The ext4 module set is the unmodified Linux `fs/ext4` code, built as
 relocatable modules and checked and mapped by the kernel. The Kconfig symbols
-`LX_FS_EXT4_RO` and `LX_FS_EXT4_RW` are declared in `config/Kconfig.linux`.
+`LX_FS_EXT4_RO` and `LX_FS_EXT4_RW` are declared in `config/axes/Kconfig.personality`.
 
 The tree contains:
 
@@ -830,14 +830,14 @@ The tree contains:
 | The list of imports of the ext4 module set that neither the host ABI (`lx/HOST_ABI`) nor an earlier module exports | `lx/FS_EXT4_UNRESOLVED` (the Linux VFS, page cache, buffer heads, bio, wait queues and per-CPU data are among the symbols listed) |
 
 Linux filesystems use the native `BlockDevice` rather than a Linux block
-driver (`config/Kconfig.linux`).
+driver (`config/axes/Kconfig.personality`).
 
 Three details of the native side are shaped by ext4: `bcache.rs` accepts block
 sizes from 512 B to 4 KiB, `NAME_MAX` in `vfs.rs` is 255 (ext4's name limit),
 and `FileSystem::readdir` takes a cookie rather than an index because a hashed
 directory cannot be addressed by position. An image that contains a Linux
-module is GPL-2.0-only as a whole (`config/Kconfig.linux`).
+module is GPL-2.0-only as a whole (`config/axes/Kconfig.personality`).
 
-Source: `config/Kconfig.linux`, `tools/lx_kbuild/run.sh`, `crates/core/lx-loader/src/lib.rs`,
+Source: `config/axes/Kconfig.personality`, `tools/lx_kbuild/run.sh`, `crates/core/lx-loader/src/lib.rs`,
 `lx/FS_EXT4_UNRESOLVED`, `.gitmodules`, `lx/emul/src/lib.rs`,
 `crates/fs/fs/src/bcache.rs`, `crates/fs/fs/src/vfs.rs`.

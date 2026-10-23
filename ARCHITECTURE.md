@@ -220,7 +220,7 @@ kernel APIs such modules call (`lx/emul`) and a small C base module built
 against a pinned Linux tree (`lx/glue`).
 
 - Source: `crates/core/linux-abi`, `crates/core/lx-loader`, `lx/`,
-  `userspace/services/{lxsrv,lxrt}`, `config/Kconfig.linux`.
+  `userspace/services/{lxsrv,lxrt}`, `config/axes/Kconfig.personality`.
 - Doc: [linux.md](Documentation/linux.md).
 
 ### Network
@@ -244,7 +244,7 @@ Kconfig; a TPM driver core; the primitives in `azos_crypto`.
 
 - Source: `crates/core/sched/src/seccomp.rs`, `crates/core/topology/src/verify.rs`,
   `crates/core/crypto`, `crates/core/mm/src/wx.rs`, `crates/drivers/tpm`,
-  `userspace/lib/ualloc`, `config/Kconfig.security`, `config/Kconfig.mitigations`.
+  `userspace/lib/ualloc`, `config/subsys/Kconfig.topology`, `config/axes/Kconfig.security`.
 - Doc: [security.md](Documentation/security.md).
 
 ### Update
@@ -326,7 +326,7 @@ SVM) sit behind `azos_arch_api::Hypervisor` and live in the `hv` module of each 
 crate's `ext/`.
 
 - Source: `crates/core/hv`, `userspace/services/vmmd`,
-  `crates/core/arch-*/src/ext/hv/`, `kernel/src/boot/hv.rs`, `config/Kconfig.hv`.
+  `crates/core/arch-*/src/ext/hv/`, `kernel/src/boot/hv.rs`, `config/axes/Kconfig.virt`.
 - Doc: [virtualization.md](Documentation/virtualization.md).
 
 ### API reference
@@ -346,7 +346,7 @@ envelope. It is linked only when the image selects `USE_ROBOT` (kernel feature
 `azos_actuation::hooks`. Its ring-3 pieces are
 `userspace/services/{brain_client,reflex,infsrv}`.
 
-Source: `domains/robot/`, `config/Kconfig.use`, `crates/core/actuation/src/hooks.rs`.
+Source: `domains/robot/`, `config/axes/Kconfig.use`, `crates/core/actuation/src/hooks.rs`.
 
 ## AzOS-micro
 
@@ -356,7 +356,7 @@ the same capability and IPC ABI, and it compiles the main kernel's pure modules
 (scheduling context, EDF/CBS arithmetic, QSBR rules) with `#[path]`. Tasks are
 static rows of the topology; there is no fork and no exec.
 
-- Source: `micro/`, `config/Kconfig.micro`, `config/defconfigs/micro.config`,
+- Source: `micro/`, `config/kernel/Kconfig.micro`, `config/defconfigs/micro.config`,
   `tests/host/micro-tests`.
 
 ## Adding an ISA
@@ -371,7 +371,7 @@ An ISA is three pieces, and the layout lint reports which files are missing.
    `resume.rs` and `ext/`.
 3. A branch in the facade (`crates/core/arch/src/lib.rs`), a kernel linker
    script (`kernel/linker-*.ld`), the ring-3 target spec (`sdk/targets/`, which
-   carries the user image layout too) and a Kconfig ISA symbol (`config/Kconfig.arch`).
+   carries the user image layout too) and a Kconfig ISA symbol (`config/arch/Kconfig.isa`).
 
 Check with `python3 tools/arch_layout_lint.py`. See
 [Documentation/structure.md](Documentation/structure.md#per-isa-layout) for the

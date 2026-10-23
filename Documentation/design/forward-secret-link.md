@@ -140,7 +140,7 @@ life.
 
 ## Policy and configuration
 
-Source: `config/Kconfig.security` (`LINK_PROVISIONING_ENFORCED`),
+Source: `config/subsys/Kconfig.secure-boot` (`LINK_PROVISIONING_ENFORCED`),
 `crates/core/topology/src/types.rs` (`Topology::brain_noise_pk`),
 `domains/robot/behavior/src/encrypt_link.rs` (`brain_pinned_key`,
 `link_key_copy`).

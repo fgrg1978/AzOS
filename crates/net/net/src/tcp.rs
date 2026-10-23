@@ -101,7 +101,7 @@ fn mss_for(remote: &IpAddr) -> usize {
 // ---------------------------------------------------------------------------
 
 /// Per-connection receive ring buffer size (bytes), from `.config`
-/// (`CONFIG_TCP_BUF_SIZE`, a per-profile default in `config/Kconfig.network`).
+/// (`CONFIG_TCP_BUF_SIZE`, a per-profile default in `config/subsys/Kconfig.net`).
 /// Must be a power of two for efficient modular arithmetic
 /// (`crates/core/limits/build.rs` rejects anything else), and large enough for
 /// loss recovery (see the assertion after `DUP_ACK_THRESHOLD`).
@@ -118,7 +118,7 @@ const TCP_BUF_MASK: usize = TCP_BUF_SIZE - 1;
 
 /// Per-connection send ring: every byte between SND.UNA and SND.NXT, kept once.
 ///
-/// The same size as the receive ring, which is what `config/Kconfig.limits` already
+/// The same size as the receive ring, which is what `config/limits/Kconfig.limits` already
 /// budgets per connection ("RX + TX"). It is also the hard ceiling on bytes in
 /// flight: `cwnd` and the peer's window may both be larger, but a byte that is
 /// not in this ring cannot be retransmitted, so it is never sent.

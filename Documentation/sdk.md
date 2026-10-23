@@ -176,7 +176,7 @@ can derive the exact system-call profile of an image from its sources.
 
 ## relibc
 
-Source: `userspace/lib/relibc-azos/README.md`, `config/Kconfig.relibc`,
+Source: `userspace/lib/relibc-azos/README.md`, `config/axes/Kconfig.libc`,
 `tools/third_party_fetch.sh`, `tools/relibc_build.sh`, `.gitmodules`.
 
 relibc is Redox's C library, written in Rust (MIT). It is the porting layer for C
@@ -193,7 +193,7 @@ Nothing of relibc is stored in the repository except what AzOS adds to it:
 | `userspace/lib/relibc-azos/patches/` | The changes to upstream files. |
 | `userspace/lib/relibc-azos/overlay/` | AzOS's own files: the `azos` platform module, three target specs, three linker scripts. |
 | `tools/relibc_build.sh` | Copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs. |
-| `config/Kconfig.relibc` | `CONFIG_RELIBC`, the switch, read from each ISA's configuration. |
+| `config/axes/Kconfig.libc` | `CONFIG_RELIBC`, the switch, read from each ISA's configuration. |
 
 The platform layer (`userspace/lib/relibc-azos/overlay/src/platform/azos/`) implements relibc's `Pal` over
 `azos_libsys`:

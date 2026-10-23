@@ -67,7 +67,7 @@ const _: () = assert!(
      `use-robot` feature: build with $(python3 tools/kconfig_to_cargo.py <config>)",
 );
 // Wave 15: the same rule for the two robot subsystems the .config can turn
-// off (config/Kconfig.robot RC_INPUT, GEOFENCE). On means compiled in.
+// off (config/domains/Kconfig.robot RC_INPUT, GEOFENCE). On means compiled in.
 const _: () = assert!(
     !azos_limits::RC_INPUT || cfg!(feature = "rc-input"),
     "the .config selects RC_INPUT but the kernel was built without the `rc-input` feature",
@@ -274,7 +274,7 @@ global_asm!(
 
 // ── Page size: one Kconfig choice, two routes into the build ────────────
 //
-// config/Kconfig.arch's AARCH64_PAGE_* choice reaches `azos_limits` as
+// config/arch/Kconfig.isa's AARCH64_PAGE_* choice reaches `azos_limits` as
 // PAGE_SHIFT (from `.config`) and `azos_arch_api` as the cargo feature
 // `page-16k`/`page-64k` (tools/kconfig_to_cargo.py). Every page-table walk
 // uses the second; budgets and Kconfig checks use the first. A build that

@@ -165,7 +165,7 @@ pub(crate) fn boot_selftests() {
                   canary_low, canary_high, ttbr1_now);
     }
 
-    // ── Translation granule readback (config/Kconfig.arch AARCH64_PAGE_*) ──
+    // ── Translation granule readback (config/arch/Kconfig.isa AARCH64_PAGE_*) ──
     //
     // Decoded from the LIVE TCR_EL1, not from the constants that asked for
     // it: TG0 (bits [15:14]) and TG1 ([31:30]) use different encodings, so

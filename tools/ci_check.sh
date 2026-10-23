@@ -367,7 +367,7 @@ build() {
 # vf2/k1 must be built exactly as the Makefile ships them — with their linker
 # script. Without it CI validates a binary nobody ever runs.
 # The ISA extensions each board's build compiles with, DERIVED, never copied:
-# the board's Kconfig (config/Kconfig.arch: the K1's RV_ZBA/ZBB/ZBS default to
+# the board's Kconfig (config/arch/Kconfig.isa-riscv64: the K1's RV_ZBA/ZBB/ZBS default to
 # `require`) through tools/kconfig_to_cargo.py --rustflags, the emitter the
 # Makefile's `k1` rule uses too. A board built here without the flags it ships
 # with is a different binary from the one that ships, and the guard rows below
@@ -449,7 +449,7 @@ FLEET_RUSTFLAGS="-C link-arg=-Tkernel/linker-fleet.ld -C code-model=medium -C ta
 FLEET_KERNEL="${FLEET_DIR}/riscv64imac-unknown-none-elf/release/kernel"
 FLEET_BUILT=0
 
-# The profile defaults to the warn log level (config/Kconfig.development);
+# The profile defaults to the warn log level (config/kernel/Kconfig.trace);
 # the gate builds it at debug, as it builds every kernel it boots, because its
 # boot rows wait for an info line ("Starting scheduler on boot CPU"). The
 # release level is built by the board rows (vf2) and booted by vsbench.
@@ -2592,7 +2592,7 @@ build       "supall-canary"       --release --features qemu,supall-smoke,supall-
 # Wave 10: the "behavior ARP sleeps" rows boot `arp-timing` on both ISAs.
 build       "arp-timing"          --release --features qemu,arp-timing
 # Wave 11: the display features `make config` offers (DRV_DISPLAY_RAMFB,
-# DRV_DISPLAY_HDMI in config/Kconfig.drivers). No row boots either; building
+# DRV_DISPLAY_HDMI in config/subsys/Kconfig.display). No row boots either; building
 # them here is what keeps the options from rotting unseen.
 build       "ramfb"               --release --features qemu,ramfb,fb-console,fb-panic-screen
 build       "hdmi"                --release --features vf2,hdmi
@@ -8147,7 +8147,7 @@ a64_kbuild "" >/dev/null 2>&1 || true
 
 # ── aarch64: the translation granule is a Kconfig choice (wave 11, PAGESIZE) ──
 #
-# config/Kconfig.arch AARCH64_PAGE_16K / _64K, expanded from the same
+# config/arch/Kconfig.isa AARCH64_PAGE_16K / _64K, expanded from the same
 # qemu-aarch64 defconfig the 4 KiB rows use. The features come from
 # tools/kconfig_to_cargo.py (the row fails if `page-<N>k` is missing from its
 # output); the user images, their digest table and the disk come from
@@ -22407,7 +22407,7 @@ par_row lx_module_row "lx: hwcap canary, Zbc bit cleared (rv)"    rv  "qemu,lx-s
 #
 # Owner decision: the RC receiver and the geofence were inert (no byte source
 # fed the SBUS decoder, nothing called `geofence_set` on a normal boot). Both
-# are now Kconfig subsystems (config/Kconfig.robot RC_INPUT / GEOFENCE, robot
+# are now Kconfig subsystems (config/domains/Kconfig.robot RC_INPUT / GEOFENCE, robot
 # default y, kernel features `rc-input` / `geofence`), and these rows prove
 # one property per boot (kernel/src/smokes/rc_fence.rs; a latched e-stop would
 # mask the next one). The receiver and the GPS are board-blocked, so the test

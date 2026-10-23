@@ -4,7 +4,7 @@
 //! and the claim pass of `scheduler::ring_claim_audit` written over it.
 //!
 //! The audit used one `u64` over task slots, which holds 64 slots; the fleet
-//! profile has 4096 (`config/Kconfig.limits` `MAX_TASKS`). The bitmap here is
+//! profile has 4096 (`config/limits/Kconfig.limits` `MAX_TASKS`). The bitmap here is
 //! `[u64; W]` with `W = words_for(MAX_TASKS)`, one word at the edge value.
 //!
 //! **Why a file of its own.** `scheduler.rs` does not compile for the host

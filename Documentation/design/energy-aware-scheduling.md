@@ -300,7 +300,7 @@ Source: `crates/core/energy/src/governor.rs`, `crates/core/energy/src/idle.rs`,
 
 ## Non-goals
 
-Source: `config/Kconfig.platform` (`SYSTEM_SUSPEND`),
+Source: `config/arch/Kconfig.platform` (`SYSTEM_SUSPEND`),
 `crates/core/energy/src/governor.rs`.
 
 - Whole-machine suspend is not a scheduler seam. It exists separately behind
@@ -313,7 +313,7 @@ Source: `config/Kconfig.platform` (`SYSTEM_SUSPEND`),
 ## Current limits
 
 Source: `crates/core/sched/src/energy.rs`, `crates/core/energy/src/seams.rs`,
-`crates/core/energy/src/opp.rs`, `config/Kconfig.timing` (`THERMAL`).
+`crates/core/energy/src/opp.rs`, `config/kernel/Kconfig.energy` (`THERMAL`).
 
 - The governor decision is recorded and counted; no actuator applies it to a
   clock.

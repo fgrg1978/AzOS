@@ -71,7 +71,7 @@ def _read_ota_max_image_size() -> int:
                     return int(line.strip().split("=", 1)[1]) * 1024 * 1024
     except (OSError, ValueError):
         pass
-    return 8 * 1024 * 1024  # Kconfig default (config/Kconfig.ota: OTA_MAX_IMAGE_SIZE_MB default 8)
+    return 8 * 1024 * 1024  # Kconfig default (config/subsys/Kconfig.ota: OTA_MAX_IMAGE_SIZE_MB default 8)
 
 
 OTA_MAX_IMAGE_SIZE = _read_ota_max_image_size()

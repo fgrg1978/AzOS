@@ -352,7 +352,7 @@ def test_embedded_ram_size_comes_through() -> None:
     """config/defconfigs/embedded.config expands to RAM_SIZE=64 and the embedded profile.
 
     RAM_SIZE is the RAM the board is expected to have (the build checks the heap
-    against it). The generic board's default is 256 (config/Kconfig.platform), so the value has to
+    against it). The generic board's default is 256 (config/arch/Kconfig.platform), so the value has to
     survive olddefconfig from the defconfig itself. The expansion runs in a
     temporary directory through KCONFIG_CONFIG, the way the gate expands the
     fleet defconfig, and never touches the workspace .config.
@@ -602,7 +602,7 @@ def _tf(flags: str) -> list[str]:
 
 
 def test_isa_level_and_require_reach_the_codegen() -> None:
-    """config/Kconfig.arch's hardware-support model: the level and every
+    """config/arch/Kconfig.isa's hardware-support model: the level and every
     `require` extension become target features (kernel and user images),
     `probe` and `n` never do, the soft-float aarch64 kernel never gets a
     feature that needs the SIMD registers, and the per-board defaults
@@ -721,7 +721,7 @@ def test_x86_64_level_and_require_reach_the_codegen() -> None:
 
 
 def test_kaslr_links_position_independent() -> None:
-    """Kconfig KASLR (config/Kconfig.security): any policy but `n`, where the
+    """Kconfig KASLR (config/kernel/Kconfig.hardening): any policy but `n`, where the
     choice exists, builds the KERNEL's code for a static position-independent
     link (`pie` code on x86_64, whose `-mcmodel=kernel` absolute operands
     cannot be slid; the `-pie` link itself is kernel/build.rs's, so no build
@@ -776,7 +776,7 @@ def test_kaslr_links_position_independent() -> None:
 
 
 def test_page_size_reaches_the_build() -> None:
-    """config/Kconfig.arch's aarch64 granule choice emits `page-16k`/`page-64k`
+    """config/arch/Kconfig.isa's aarch64 granule choice emits `page-16k`/`page-64k`
     and PAGE_SHIFT 14/16; 4 KiB emits neither (it is their absence), and a
     riscv64 config has no granule choice at all (PAGE_SHIFT 12, no feature)."""
     import tempfile

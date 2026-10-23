@@ -33,7 +33,7 @@ azos_flight    = { workspace = true, optional = true }
 azos_ota       = { workspace = true }
 azos_ipc       = { workspace = true }
 azos_abi       = { workspace = true }
-# `CONSOLE_LOCKDOWN` (config/Kconfig.mitigations), read by `authority.rs`.
+# `CONSOLE_LOCKDOWN` (config/axes/Kconfig.security), read by `authority.rs`.
 azos_limits    = { workspace = true }
 # `wcet`/`bench` (tools/bench_e2e.sh).
 azos_bench     = { path = "../../../domains/robot/bench", features = ["all"], optional = true }

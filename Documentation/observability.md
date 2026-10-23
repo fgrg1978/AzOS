@@ -561,7 +561,7 @@ Perfetto JSON directly.
 ## Kernel log
 
 Source: `crates/drivers/sys/src/uart.rs`, `crates/drivers/sys/src/console_defer.rs`,
-`config/Kconfig.development` (`LOG_LEVEL`), `crates/core/actuation/src/logger.rs`.
+`config/kernel/Kconfig.trace` (`LOG_LEVEL`), `crates/core/actuation/src/logger.rs`.
 
 Kernel output goes to the console UART through macros in `azos_drv_sys`:
 

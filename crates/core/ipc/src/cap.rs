@@ -290,7 +290,7 @@ pub fn trace_grant_cap(tid: u32, perms: CapPerms) -> Option<Cap<targets::Trace>>
 /// per partition; the build-time constant is the *upper bound*.
 ///
 /// **Imported, not restated (2026-09-18).** This was `= 256`, hardcoded,
-/// while `config/Kconfig.limits` declared the same name with per-profile values
+/// while `config/limits/Kconfig.limits` declared the same name with per-profile values
 /// (32 embedded / 256 edge / 512 fleet) and generated it into
 /// `azos_limits`. So building any profile other than edge left the cap
 /// table the wrong size — the point of Kconfig-driven limits, silently defeated — and,

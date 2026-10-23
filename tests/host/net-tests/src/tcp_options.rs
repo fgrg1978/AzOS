@@ -328,10 +328,10 @@ fn an_active_open_offers_both_options_in_a_syn_whose_window_is_not_scaled() {
 /// byte for byte. `STATE` was measured on 2026-09-14 (6,088 B) and grew by 24 B in wave 15 (delayed-ACK state, N6) and by 24 B for the IPv6
 /// endpoint addresses (`tcp::IpAddr`): 268,280 B per connection
 /// at 131072 (edge, embedded) and 38,904 B at 16384 (fleet), the figures
-/// `config/Kconfig.limits` quotes. `STATE` is exact on purpose:
+/// `config/limits/Kconfig.limits` quotes. `STATE` is exact on purpose:
 /// whoever adds or resizes a `TcpConn` field updates it here, together with
-/// those figures in `config/Kconfig.limits` (also quoted in
-/// `config/Kconfig.network` and `config/defconfigs/fleet.config`).
+/// those figures in `config/limits/Kconfig.limits` (also quoted in
+/// `config/subsys/Kconfig.net` and `config/defconfigs/fleet.config`).
 #[test]
 fn a_connection_is_two_rings_of_the_configured_size_plus_fixed_state() {
     const STATE: usize = 6_136;
@@ -375,7 +375,7 @@ fn the_offered_shift_and_the_syn_window_follow_the_configured_ring() {
 /// every ACK of one full segment releases two until the next pair no longer
 /// fits in the ring. A threshold below the ring would end slow start early, and
 /// from there an ACK of one segment releases one. The peer's window,
-/// 65535 << 7, is larger than any ring `config/Kconfig.network` allows.
+/// 65535 << 7, is larger than any ring `config/subsys/Kconfig.net` allows.
 ///
 /// A threshold at or above the ring cannot be told apart from `TCP_BUF_SIZE`
 /// this way: `grow_cwnd` stops at the ring either way.

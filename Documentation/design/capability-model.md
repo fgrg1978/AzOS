@@ -129,7 +129,7 @@ reuses the same pool index.
 
 Source: `crates/core/ipc/src/cap_store.rs` (module documentation),
 `crates/core/ipc/src/cap.rs` (`CapTable`, `CapSlot`, `objref`),
-`config/Kconfig.limits` (`MAX_CAPS_PER_TASK`, `CAP_SLOT_EXT`).
+`config/limits/Kconfig.limits` (`MAX_CAPS_PER_TASK`, `CAP_SLOT_EXT`).
 
 ## 4. Dereferencing a handle
 
@@ -291,7 +291,7 @@ Every slot records the slot it was derived from. Together the slots form a
 Source: `crates/core/ipc/src/cap.rs` (`Warrant`, `caveat`, `derive_warrant`,
 `narrow_warrant`, `WARRANT_DEPTH_MAX`), `crates/core/ipc/src/cap_store.rs`
 (`sweep`, `revoke_derived`, `warrant_step`), `crates/core/abi/src/cap.rs`
-(`slot_word::WEAK`), `config/Kconfig.limits` (`WARRANT_DEPTH_MAX`).
+(`slot_word::WEAK`), `config/limits/Kconfig.limits` (`WARRANT_DEPTH_MAX`).
 
 ## 7. Containment
 
@@ -445,4 +445,4 @@ Source: the publications and systems named above; no repository path.
   pool shares are build options; a deployment sizes them.
 
 Source: `crates/core/ipc/src/cap.rs` (`CapKind`, `CAVEATS_MAX` and `caveat`),
-`crates/core/abi/src/cap.rs` (`MAX_GENERATION`), `config/Kconfig.limits`.
+`crates/core/abi/src/cap.rs` (`MAX_GENERATION`), `config/limits/Kconfig.limits`.

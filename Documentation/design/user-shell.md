@@ -428,7 +428,7 @@ Source: `crates/core/topology/src/builder.rs` (`SH_CAPS`, `SH_CAPS_LOCKDOWN`,
 `TOOLBOX_CAPS_LOCKDOWN`, `SH_PRIORITY`, `TOOL_PRIORITY`, `TASK_VIEW_CAP`, the
 `shjobs` policy), `crates/core/sched/src/seccomp.rs` (`IMAGE_PROFILES`),
 `crates/core/syscall/src/handlers.rs` (`SECCOMP_KILL_EXIT_CODE`),
-`config/Kconfig.mitigations` (`CONSOLE_LOCKDOWN`).
+`config/axes/Kconfig.security` (`CONSOLE_LOCKDOWN`).
 
 ## 10. Boot handoff and the recovery console
 
@@ -491,7 +491,7 @@ Source: `kernel/src/console_mode.rs`, `kernel/src/tasks/loader.rs`
 (`recovery_task`), `kernel/src/main.rs`, `crates/core/recovery/src/lib.rs`,
 `crates/core/ipc/src/authority_policy.rs` (`AUTHORITY_TABLE`),
 `tools/gen_userspace_kconfig.py` (`CONSOLE_PROGRAM`),
-`config/Kconfig.limits` (`USER_SHELL`, `SH_START_TIMEOUT_S`, `RECOVERY_CONSOLE`,
+`config/subsys/Kconfig.console` (`USER_SHELL`, `SH_START_TIMEOUT_S`, `RECOVERY_CONSOLE`,
 `KERNEL_CMDLINE_INIT`).
 
 ## 11. Failure behaviour

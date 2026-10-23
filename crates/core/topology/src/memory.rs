@@ -18,7 +18,7 @@
 //! # The unit: 4 KiB, whatever the base page
 //!
 //! A `mem_pages` page is 4 KiB ([`TOPOLOGY_PAGE`]) on every build, including
-//! an aarch64 kernel built with a 16 or 64 KiB granule (config/Kconfig.arch).
+//! an aarch64 kernel built with a 16 or 64 KiB granule (config/arch/Kconfig.isa).
 //! A signed topology therefore means the same number of bytes on every ISA
 //! and granule. The kernel converts at the allocator boundary — a budget of
 //! `n` topology pages is `ceil(n × 4 KiB / PAGE_SIZE)` frames

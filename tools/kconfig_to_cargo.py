@@ -60,13 +60,13 @@ ARCH_TO_TARGET: dict[str, str] = {
     # hard-float `aarch64-unknown-none` (Makefile TARGET_AARCH64); this map
     # is only used for kernel builds.
     "CONFIG_ARCH_AARCH64": "aarch64-unknown-none-softfloat",
-    # The x86_64 port skeleton (config/Kconfig.arch): type-checked only, with
+    # The x86_64 port skeleton (config/arch/Kconfig.isa): type-checked only, with
     # `-Zbuild-std` (no installed target needed). The baseline level comes
     # from `--rustflags` below.
     "CONFIG_ARCH_X86_64": "x86_64-unknown-none",
 }
 
-# The compile-time BASELINE codegen may assume, per ISA (config/Kconfig.arch,
+# The compile-time BASELINE codegen may assume, per ISA (config/arch/Kconfig.isa,
 # "Hardware support model"): the level plus every extension set to
 # `require`. Every `probe` extension is detected at boot and emitted only
 # inside gated asm, never as a global target-feature. One emitter for the
@@ -226,8 +226,8 @@ def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool 
 
 
 def cfi_policy(cfg: dict[str, str], symbol: str) -> str:
-    """One extension choice's `n` / `probe` / `require` (config/Kconfig.arch,
-    CFI_* in config/Kconfig.security): a choice with no member set reads as
+    """One extension choice's `n` / `probe` / `require` (config/arch/Kconfig.isa,
+    CFI_* in config/kernel/Kconfig.hardening): a choice with no member set reads as
     `probe`, the way azos_arch_api::isa::ExtPolicy::from_kconfig does."""
     if cfg.get(f"CONFIG_{symbol}_NEVER") == "y":
         return "never"
@@ -254,7 +254,7 @@ def cfi_rustflags(cfg: dict[str, str]) -> list[str]:
                IA32_S_CET.ENDBR_EN enforce it, arch-x86_64/src/cpu/cfi.rs).
                The kernel shadow stack (X86_CET_SHSTK) is not a codegen mode.
       riscv64: nothing. Zicfilp (`lpad`) has no symbol until the boot can
-               probe and refuse it; see "Not done" in config/Kconfig.security.
+               probe and refuse it; see "Not done" in config/kernel/Kconfig.hardening.
     """
     if cfg.get("CONFIG_ARCH_AARCH64") == "y":
         modes = [m for sym, m in (("A64_BTI", "bti"), ("A64_PAUTH", "pac-ret"))
@@ -266,7 +266,7 @@ def cfi_rustflags(cfg: dict[str, str]) -> list[str]:
 
 
 def x86_mitigation_rustflags(cfg: dict[str, str]) -> list[str]:
-    """The x86_64 kernel's Spectre v2 build hook (config/Kconfig.mitigations):
+    """The x86_64 kernel's Spectre v2 build hook (config/axes/Kconfig.security):
     X86_MIT_SPECTRE_V2 = probe builds every indirect call and jump through
     the external thunk `__x86_indirect_thunk_r11`
     (crates/core/arch-x86_64/src/retpoline.rs), whose path the boot chooses
@@ -278,7 +278,7 @@ def x86_mitigation_rustflags(cfg: dict[str, str]) -> list[str]:
 
 
 def kaslr_rustflags(cfg: dict[str, str]) -> list[str]:
-    """Virtual KASLR (config/Kconfig.security, KASLR), kernel only: the CODEGEN
+    """Virtual KASLR (config/kernel/Kconfig.hardening, KASLR), kernel only: the CODEGEN
     half of the position-independent kernel, for any policy but `n` where the
     choice exists (KASLR_AVAILABLE). The LINK half (`-pie`,
     `--no-dynamic-linker`, `-z notext`, `-z norelro`) is kernel/build.rs's,
@@ -318,7 +318,7 @@ def kaslr_rustflags(cfg: dict[str, str]) -> list[str]:
 
 
 def livepatch_rustflags(cfg: dict[str, str]) -> list[str]:
-    """The live-update build hooks (config/Kconfig.development, "Live-update
+    """The live-update build hooks (config/kernel/Kconfig.livepatch, "Live-update
     build hooks"), kernel only: LIVEPATCH_ENTRY_NOPS > 0 is
     `-Z patchable-function-entry=N,0`, LIVEPATCH_FP is
     `-C force-frame-pointers=yes`, and LIVEPATCH_POOL_KIB > 0 reaches the
@@ -460,7 +460,7 @@ def _load_tags():
 KCONFIG_TO_CARGO_FEATURE, BASE_FEATURES = _load_tags()
 
 # Drivers a safety decision reads (the first placement rule; the list is
-# written out in config/Kconfig.drivers): never placed in ring 3. None has a
+# written out in config/subsys/Kconfig.drivers): never placed in ring 3. None has a
 # placement choice; a .config that places one there anyway (a choice added
 # by mistake, or a hand-edited file) is refused rather than built.
 SAFETY_READ_DRIVERS: frozenset[str] = frozenset({
@@ -616,7 +616,7 @@ def main() -> int:
     if bad:
         for k in bad:
             print(f"kconfig_to_cargo: {k}: a driver a safety decision reads is never "
-                  f"placed in ring 3 (config/Kconfig.drivers)", file=sys.stderr)
+                  f"placed in ring 3 (config/subsys/Kconfig.drivers)", file=sys.stderr)
         return 1
 
     if sdk_env_only:

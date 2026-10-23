@@ -53,7 +53,7 @@ marks it reserved. Colour and memory node are not stored: colour is
 Allocation is a buddy allocator (`buddy.rs`). A free block of order `k` is
 `2^k` frames starting at a frame number divisible by `2^k`; only its first
 frame is linked into a list, but every frame of it has `F_FREE`. Orders run
-`0..=PMM_MAX_ORDER` (Kconfig, `config/Kconfig.limits`). Because frame numbers
+`0..=PMM_MAX_ORDER` (Kconfig, `config/limits/Kconfig.limits`). Because frame numbers
 are absolute, a buddy block of the right order is also aligned in physical
 address space, which is what a 2 MiB leaf needs.
 
@@ -94,7 +94,7 @@ Only order-0 frames are zoned. `PMM_ZONE_MAX_PAGES` bounds each zone.
 
 Source: `crates/core/mm/src/frame.rs`, `crates/core/mm/src/buddy.rs`,
 `crates/core/mm/src/pmm.rs`, `crates/core/mm/src/zone.rs`,
-`config/Kconfig.limits`.
+`config/limits/Kconfig.limits`.
 
 ## MemObj kinds
 
@@ -348,7 +348,7 @@ Source: `crates/core/mm/src/resv.rs`, `crates/core/mm/src/huge.rs`,
 `crates/core/arch-aarch64/src/cpu/features.rs`,
 `crates/core/arch-aarch64/src/mmu/mod.rs`,
 `crates/core/arch-riscv64/src/ext/napot.rs`,
-`config/Kconfig.limits`, `config/Kconfig.arch`.
+`config/limits/Kconfig.limits`, `config/arch/Kconfig.isa`.
 
 ## User stacks
 
@@ -381,7 +381,7 @@ program header table, inside the first `STREAM_HDR_BYTES` of a streamed image,
 which an ELF note in the middle of the file would not.
 
 Source: `crates/core/sched/src/process.rs`, `crates/core/sched/src/elf_bounds.rs`,
-`tools/user_stacks.py`, `config/Kconfig.limits`.
+`tools/user_stacks.py`, `config/limits/Kconfig.limits`.
 
 ## Kernel memory charged to the Domain
 
@@ -575,7 +575,7 @@ Source: `crates/core/mm/src/zpool.rs`, `crates/core/mm/src/swap.rs`,
 `crates/core/mm/src/pager.rs`, `crates/core/mm/src/budget.rs`,
 `crates/core/crypto/src/wkdm.rs`, `crates/core/ipc/src/memobj.rs`,
 `kernel/src/tasks/reclaim.rs`, `kernel/src/boot/swap.rs`,
-`config/Kconfig.limits`.
+`config/limits/Kconfig.limits`.
 
 ## Marker PTEs
 
@@ -679,4 +679,4 @@ Source: `crates/core/arch-api/src/lib.rs`,
 `crates/core/arch-riscv64/src/tlb.rs`,
 `crates/core/arch-aarch64/src/api_impl.rs`,
 `crates/core/arch-x86_64/src/lib.rs`,
-`crates/core/arch-x86_64/src/tlb.rs`, `config/Kconfig.arch`.
+`crates/core/arch-x86_64/src/tlb.rs`, `config/arch/Kconfig.isa`.

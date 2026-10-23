@@ -7,7 +7,7 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
-# The kernel framebuffer console (config/Kconfig.drivers FB_CONSOLE): a text
+# The kernel framebuffer console (config/subsys/Kconfig.display FB_CONSOLE): a text
 # grid mirroring the UART console, flushed to the framebuffer.
 console = []
 # The lock-free panic screen (FB_PANIC_SCREEN): the panic report drawn

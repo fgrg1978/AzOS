@@ -12,7 +12,7 @@
 //!    its bit and falls back. Instructions above the baseline are emitted
 //!    only inside gated `asm!` (or `#[target_feature]` functions reached only
 //!    after the probe), never as a global target-feature.
-//! 3. **Per-extension `X86_*` choice** (config/Kconfig.arch: n / probe /
+//! 3. **Per-extension `X86_*` choice** (config/arch/Kconfig.isa: n / probe /
 //!    require, `azos_arch_api::isa::x86_64`): n never selects the path,
 //!    probe takes this module's answer, require refuses a CPU without it
 //!    (the kernel's `[ISA]` boot line, `boot::isa`).

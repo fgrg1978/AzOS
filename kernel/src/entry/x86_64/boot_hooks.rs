@@ -311,7 +311,7 @@ pub fn cpu_features(_fw: &()) {
     kprintln!("[SPIN] cas: lock cmpxchg; wait: {}", if wp { "umonitor+umwait (WAITPKG)" } else { "pause" });
 }
 
-/// Kconfig `X86_MIT_*` (config/Kconfig.mitigations): decide the speculation
+/// Kconfig `X86_MIT_*` (config/axes/Kconfig.security): decide the speculation
 /// mitigations from what this CPU reports (`azos_arch::ext::mitigations`), write
 /// the boot CPU's controls (each secondary writes its own, `smp.rs`), and
 /// print the verdicts. A `require`d choice the CPU leaves open stops the boot.
@@ -830,7 +830,7 @@ pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
         .store(st.smap as u8, core::sync::atomic::Ordering::Release);
     kprintln!("[MM] x86_64 SMEP={} SMAP={} UMIP={}", st.smep, st.smap, st.umip);
     // Kconfig X86_CET_IBT: from here an indirect branch in ring 0 must land on
-    // an ENDBR64 (the whole kernel is built with them, config/Kconfig.security).
+    // an ENDBR64 (the whole kernel is built with them, config/subsys/Kconfig.topology).
     let ibt = enable_ibt();
     IBT_ON.store(ibt, core::sync::atomic::Ordering::Relaxed);
     kprintln!("[CFI] x86_64 IBT={} (X86_CET_IBT {})", ibt,

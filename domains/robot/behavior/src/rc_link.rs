@@ -29,7 +29,7 @@ pub const RC_CENTER_US: i32 = 1500;
 /// Pulse width of a stick at either end, as a deflection from centre.
 pub const RC_HALF_TRAVEL_US: i32 = 500;
 
-/// The receiver policy, from Kconfig (see `config/Kconfig.robot`, "RC input
+/// The receiver policy, from Kconfig (see `config/domains/Kconfig.robot`, "RC input
 /// and geofence"). Channels are 1-based as on a transmitter; 0 means "none".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RcPolicy {

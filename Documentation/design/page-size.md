@@ -56,7 +56,7 @@ counted in 4 KiB units (`TOPOLOGY_PAGE`) on every build and is converted to
 frames at the allocator, so a topology means the same number of bytes on every
 ISA and granule.
 
-Source: `config/Kconfig.arch` (`AARCH64_PAGE_*`, `PAGE_SHIFT`),
+Source: `config/arch/Kconfig.isa` (`AARCH64_PAGE_*`, `PAGE_SHIFT`),
 `crates/core/arch-api/src/lib.rs`, `crates/core/arch-riscv64/src/lib.rs`,
 `crates/core/arch-aarch64/src/mmu/mod.rs`, `kernel/src/main.rs`,
 `kernel/src/entry/aarch64/mod.rs`, `crates/core/libsys/src/lib.rs`,
@@ -90,7 +90,7 @@ The way to get most of the TLB benefit without the rounding is to keep the base
 page small and map the few big, long-lived regions with larger translations.
 That is what the next three sections do.
 
-Source: `config/Kconfig.arch`, `crates/core/topology/src/memory.rs`.
+Source: `config/arch/Kconfig.isa`, `crates/core/topology/src/memory.rs`.
 
 ## 3. Boot-reserved 2 MiB leaves for locked rows
 
@@ -123,7 +123,7 @@ fully populated, never forked.
 - **Cost of the shape.** Memory is pinned and unreclaimable. Internal
   fragmentation is explicit: the topology author sizes the region.
 
-Source: `config/Kconfig.arch` (`LOCKED_HUGE_LEAVES`), `crates/core/mm/src/huge.rs`,
+Source: `config/arch/Kconfig.isa-riscv64` (`LOCKED_HUGE_LEAVES`), `crates/core/mm/src/huge.rs`,
 `crates/core/mm/src/vmm.rs`, `crates/core/sched/src/process.rs`,
 `crates/core/pkg/src/admit.rs`, `crates/core/topology/src/memory.rs`,
 `crates/core/topology/src/types.rs`.
@@ -164,7 +164,7 @@ This is the opposite model from the previous section: reservation is
 opportunistic and reversible, the locked-row region is declared, static and
 permanent.
 
-Source: `config/Kconfig.limits` (`MM_THP_RESV`), `crates/core/mm/src/resv.rs`,
+Source: `config/kernel/Kconfig.mm` (`MM_THP_RESV`), `crates/core/mm/src/resv.rs`,
 `crates/core/mm/src/pager.rs`, `crates/core/mm/src/vmm.rs`.
 
 ## 5. Contiguous runs of small leaves
@@ -199,7 +199,7 @@ entry, as a hint the hardware may ignore.
   is the whole probe (`ext::napot::select`). Setting N on a hart without the
   extension is a reserved-bit fault, so the decision is made once at boot.
 
-Source: `config/Kconfig.arch` (`A64_CONTIG_HINT`, `RV_SVNAPOT_*`),
+Source: `config/arch/Kconfig.isa-aarch64` (`A64_CONTIG_HINT`, `RV_SVNAPOT_*`),
 `crates/core/arch-api/src/contig.rs`, `crates/core/arch-riscv64/src/ext/napot.rs`,
 `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/mm/src/vmm.rs`.
 
@@ -265,7 +265,7 @@ Source: `crates/core/arch-api/src/lib.rs`, `crates/core/arch-aarch64/src/cpu/fea
 - Not built: a runtime choice of base page; promotion of executable or
   copy-on-write memory; a contiguous-run counterpart on x86_64.
 
-Source: `config/Kconfig.limits` (`MM_THP_RESV`), `config/Kconfig.arch`,
+Source: `config/kernel/Kconfig.mm` (`MM_THP_RESV`), `config/arch/Kconfig.isa`,
 `crates/core/mm/src/vmm.rs`.
 
 ## 8. References

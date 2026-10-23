@@ -37,7 +37,7 @@ use crate::isa::ExtPolicy;
 pub const POLICY: ExtPolicy = ExtPolicy::from_kconfig(azos_limits::KASLR_NEVER, azos_limits::KASLR_REQUIRE);
 
 /// Is this build position-independent and does its boot try to slide it?
-/// `KASLR_AVAILABLE` (config/Kconfig.security) is false where the choice is
+/// `KASLR_AVAILABLE` (config/kernel/Kconfig.hardening) is false where the choice is
 /// hidden (a small riscv64 board, the x86_64 Limine image), which a hidden
 /// choice would otherwise read as `probe`; then no relocation code is built.
 pub const ENABLED: bool = azos_limits::KASLR_AVAILABLE && POLICY.allowed();

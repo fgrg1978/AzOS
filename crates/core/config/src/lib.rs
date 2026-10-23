@@ -155,7 +155,7 @@ pub static CFG_OTA_AUTO_RECV_PORT: AtomicU32 = AtomicU32::new(0);
 
 // ── Q4.2: sched_hz clamp (owner decision, 2026-09-25) ────────────────────────
 //
-// Two sources fed the scheduler tick: Kconfig `SCHED_HZ` (`config/Kconfig.timing`,
+// Two sources fed the scheduler tick: Kconfig `SCHED_HZ` (`config/kernel/Kconfig.sched`,
 // the compile-time default for this board/profile) and CONFIG.INI's
 // `sched_hz` key on the removable FAT volume, which used to override it
 // outright (`kernel/src/main.rs`, `if cfg_hz >= 10 { sched_hz_set(...) }` —
@@ -163,7 +163,7 @@ pub static CFG_OTA_AUTO_RECV_PORT: AtomicU32 = AtomicU32::new(0);
 // tick above what was compiled in for this board. Decision: CONFIG.INI may
 // only LOWER `SCHED_HZ`, within `[SCHED_HZ_FLOOR, SCHED_HZ]`.
 //
-// `SCHED_HZ_FLOOR` is a single constant (`config/Kconfig.timing`) rather than a
+// `SCHED_HZ_FLOOR` is a single constant (`config/kernel/Kconfig.sched`) rather than a
 // paired MIN/MAX: the ceiling is already `SCHED_HZ` itself (board/profile
 // dependent — 100/250/500 across defconfigs), so a separate MAX would just
 // be a second number required to stay in lockstep with the first. Only the

@@ -33,7 +33,7 @@ tree also builds desktop and server configurations.
   machine has, and a set that does not fit is refused. An interrupt line can
   be bound to a handler that runs on its own reservation (Kconfig
   `IRQ_THREADED`). Source: `crates/core/sched/src/sc.rs`,
-  `config/Kconfig.timing`.
+  `config/kernel/Kconfig.sched`.
 - **A small native ABI.** 33 system calls, plus `SYS_INVOKE(handle, op,
   words)` for operations on an object a task holds a handle to. Devices and
   services are interfaces declared as Rust traits in an IDL
@@ -77,7 +77,7 @@ The same source builds for **riscv64, aarch64 and x86_64** behind one
 architecture API (`crates/core/arch-api`). Each ISA has a compile-time
 baseline level, and every optional extension above it is a three-way
 `make config` choice (`n`, `probe`, `require`) resolved at boot. Source:
-`config/Kconfig.arch`, `crates/core/arch-api/src/isa.rs`.
+`config/arch/Kconfig.isa`, `crates/core/arch-api/src/isa.rs`.
 
 `make config` starts from a preset, and the preset sets the defaults of the
 other axes (hardware class, real-time mode, driver placement, security
@@ -91,7 +91,7 @@ posture):
 | Computers | Desktop, Server |
 
 Kconfig is the single source of configuration. Source: `Kconfig`,
-`config/Kconfig.preset`.
+`config/axes/Kconfig.preset`.
 
 ## Programming interfaces
 

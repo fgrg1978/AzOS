@@ -16,7 +16,7 @@ same envelope and leaves the same record as an effect of a native task.
 
 ## Roles and options
 
-Source: `config/Kconfig.preset`, `config/Kconfig.hv`, `config/Kconfig.arch`,
+Source: `config/axes/Kconfig.virt`, `config/axes/Kconfig.virt`, `config/arch/Kconfig.isa`,
 `kernel/src/boot/hv.rs`, `crates/core/hv/src/admit.rs`.
 
 The role is the `VIRT` axis. Any role but `none` builds the hypervisor core (`HV` is derived
@@ -39,8 +39,8 @@ starts at `SPLIT`; everything else is `NONE`.
 | `HV_REQUIRE` | Refuse to boot when the CPU cannot host the guests. Default on for `STATIC`; otherwise the boot prints why and goes on without guests. |
 | `HV_MAX_VCPUS` | The vCPU pool, 1 to 64 over all guests; 32 bytes of RAM per vCPU. The built-in row of `VMMD.ELF` is granted an endpoint for each of the first 16. |
 | `RV_H`, `X86_SVM`, `X86_VMX` | The CPU extension, each `n` / `probe` / `require` (see [config.md](config.md)). On aarch64 the boot trampoline keeps EL2 when it was entered there. |
-| `TOPOLOGY_MAX_GUESTS`, `TOPOLOGY_GUEST_DEVICES` | Guest rows and device entries per row the topology holds (`config/Kconfig.security`). |
-| `MAX_MEMOBJS` | A guest's RAM is memory-object frames, so the rows' `mem_mib` add up to at most half the table of memory objects (`config/Kconfig.limits`). |
+| `TOPOLOGY_MAX_GUESTS`, `TOPOLOGY_GUEST_DEVICES` | Guest rows and device entries per row the topology holds (`config/subsys/Kconfig.topology`). |
+| `MAX_MEMOBJS` | A guest's RAM is memory-object frames, so the rows' `mem_mib` add up to at most half the table of memory objects (`config/limits/Kconfig.limits`). |
 
 A CPU that cannot host guests, or a role of `none`, is "no hypervisor, with the reason" on the
 boot line, never a boot failure (`HV_REQUIRE` refuses before that). The `qemu-hv`,

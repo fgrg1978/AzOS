@@ -37,7 +37,7 @@
 //!
 //! # Placement
 //! Whether a driver runs in the kernel or in a ring-3 server is chosen per
-//! driver at build time (`config/Kconfig.drivers`); the in-kernel drivers in
+//! driver at build time (`config/subsys/Kconfig.drivers`); the in-kernel drivers in
 //! the `azos_drv_*` crates remain the default.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};

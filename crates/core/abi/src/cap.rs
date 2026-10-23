@@ -143,7 +143,7 @@ impl CapHandle {
     /// deliberate (2026-10-17: two bits of `GEN_BITS` went to `PERMS_BITS`).
     ///
     /// **Spent one bit of it on 2026-09-18**, 6 → 5, which is precisely what
-    /// the sentence above reserved it for. `config/Kconfig.limits` has declared
+    /// the sentence above reserved it for. `config/limits/Kconfig.limits` has declared
     /// `MAX_CAPS_PER_TASK = 512` for the Fleet tier (`HWCLASS_SERVER`) since it
     /// existed, while `SLOT_BITS` addressed only 256 — so the fleet kernel
     /// was built with `pack()` silently truncating slot indices, and slot
@@ -186,7 +186,7 @@ impl CapHandle {
     /// is a follow-up for the owner to approve, not part of this change.
     /// 256 → 512 on 2026-09-18, alongside `SLOT_BITS` 8 → 9. This is the
     /// CEILING the handle encoding supports, not any one profile's value:
-    /// `config/Kconfig.limits` sets 32 (embedded), 256 (edge) and 512 (fleet), and
+    /// `config/limits/Kconfig.limits` sets 32 (embedded), 256 (edge) and 512 (fleet), and
     /// it is `crates/core/ipc`'s assert — now bound to the *configured* constant
     /// rather than a local copy — that checks each profile against this
     /// encoding. This mirror only keeps `abi` self-consistent.

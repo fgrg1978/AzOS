@@ -108,7 +108,7 @@ impl From<ProxyError> for DriverError {
 /// a block + cross-hart wake + switch back, so a reply that lands inside it
 /// saves that round trip; a driver that is not running is never spun on.
 ///
-/// Per board since 2026-09-28: Kconfig `PROXY_SPIN_US` (`config/Kconfig.drivers`,
+/// Per board since 2026-09-28: Kconfig `PROXY_SPIN_US` (`config/subsys/Kconfig.drivers`,
 /// default 20, set explicitly in the board and QEMU defconfigs; its help says
 /// how to measure it on a board). 0 turns the spin off.
 pub const PROXY_SPIN_US: u64 = azos_limits::PROXY_SPIN_US as u64;

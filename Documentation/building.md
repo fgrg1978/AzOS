@@ -170,7 +170,7 @@ when a changed path is in it or in a crate it depends on through `path =` depend
 
 ## ktest
 
-Source: `crates/core/ktest/src/lib.rs`, `kernel/src/ktest.rs`, `config/Kconfig.development`.
+Source: `crates/core/ktest/src/lib.rs`, `kernel/src/ktest.rs`, `config/kernel/Kconfig.trace`.
 
 `ktest!` defines an in-kernel test, `fn() -> Result<(), &'static str>`, and places its entry
 in the `azos_ktest` link section, which every kernel linker script brackets with

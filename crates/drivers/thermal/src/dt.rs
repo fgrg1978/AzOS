@@ -136,7 +136,7 @@ fn zone_of(dt: &DtThermal, dz: &DtZone, model: &EnergyModel, sensor: u8, b: &mut
             let placed = (|| {
                 let trip = trip?;
                 let cpu = cpu_of(dt, c.phandle)?;
-                // The domain masks cover CPUs 0..31 (`Kconfig.limits`): a CPU
+                // The domain masks cover CPUs 0..31 (`config/limits/Kconfig.limits`): a CPU
                 // past that is in no domain.
                 let bit = u32::try_from(cpu).ok().and_then(|c| 1u32.checked_shl(c))?;
                 let dom = model.domains().iter().position(|d| d.cpus & bit != 0)?;

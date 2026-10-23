@@ -38,7 +38,7 @@
 //! bits are already well above the floor below.
 //!
 //! Every packed kind has at least [`MIN_GEN_BITS`] of generation. That holds for
-//! every legal `.config`, not only the three profile defaults: `config/Kconfig.limits`
+//! every legal `.config`, not only the three profile defaults: `config/limits/Kconfig.limits`
 //! bounds `MAX_PORTS` to `range 4 65536`, and 65536
 //! slots take 16 index bits, leaving exactly 16. The compile-time asserts below
 //! fire if that range is ever widened.
@@ -451,7 +451,7 @@ mod tests {
     /// Every profile's default and the Kconfig range limit keep at least
     /// `MIN_GEN_BITS`, whichever profile this host build resolved. The
     /// compile-time asserts check the built profile; this checks the others.
-    /// Values from `config/Kconfig.limits` (`MAX_PORTS`
+    /// Values from `config/limits/Kconfig.limits` (`MAX_PORTS`
     /// 8/32/512, `range 4 65536`).
     #[test]
     fn every_profile_keeps_sixteen_generation_bits() {

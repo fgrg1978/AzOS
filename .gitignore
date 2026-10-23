@@ -51,7 +51,7 @@ rfcs/
 docs/
 
 # Generated at every Kconfig parse from the directories under userspace/
-# (tools/gen_userspace_kconfig.py, run by the root Kconfig): not committed.
+# (tools/gen_userspace_kconfig.py, run by config/Kconfig): not committed.
 config/Kconfig.userspace
 config/Kconfig.userspace.tmp.*
 /tools/farm/boards.ini

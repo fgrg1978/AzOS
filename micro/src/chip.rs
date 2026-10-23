@@ -5,7 +5,7 @@
 //! kernel indexes its board's MMIO table (`mmio_cap.rs`), so a topology
 //! row means the same thing as long as the chip is the same. The one chip is
 //! QEMU virt (the defaults of MICRO_RAM_BASE, MICRO_UART_BASE, MICRO_CLINT_BASE
-//! and MICRO_TIMEBASE_HZ, `config/Kconfig.micro`); a new chip is a new table.
+//! and MICRO_TIMEBASE_HZ, `config/kernel/Kconfig.micro`); a new chip is a new table.
 
 use crate::pmp_core::{R, W};
 

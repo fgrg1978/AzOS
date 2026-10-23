@@ -54,7 +54,7 @@ SECTIONS
     . = ALIGN(4K);
     _text_start = .;
     .text : AT(ADDR(.text) - KERNEL_VA_OFFSET_LITERAL) { KEEP(*(.text.boot)) *(.text .text.*) }
-    /* Live-update patch pool (Kconfig LIVEPATCH_POOL_KIB, config/Kconfig.development):
+    /* Live-update patch pool (Kconfig LIVEPATCH_POOL_KIB, config/kernel/Kconfig.livepatch):
      * RX room inside the image's text range, so the W^X and no-exec-outside-
      * the-image checks (_text_start.._text_end) cover it. The size reaches
      * the linker as --defsym=__patch_pool_bytes (tools/kconfig_to_cargo.py

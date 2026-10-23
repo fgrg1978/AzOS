@@ -75,7 +75,7 @@ Drivers bind in stages, because they depend on each other's order (entropy befor
 
 `user_window(handle)` returns the register window ring 3 may map for a device (used by `DOMAIN_MMIO_MAP`). It answers `None` for a stale handle, a device with no window, or a device a kernel driver owns or may still take. `claim_user_window` books the mapping so no kernel driver is bound to the device afterwards.
 
-Source: `crates/drivers/hwbus/src/{lib,bus,device,pattern,policy,tables}.rs`, `crates/drivers/hwbus/build.rs`, `crates/drivers/bus/src/hwbus.rs`, `kernel/src/boot/hwbus.rs`, `config/Kconfig.drivers`.
+Source: `crates/drivers/hwbus/src/{lib,bus,device,pattern,policy,tables}.rs`, `crates/drivers/hwbus/build.rs`, `crates/drivers/bus/src/hwbus.rs`, `kernel/src/boot/hwbus.rs`, `config/subsys/Kconfig.drivers`.
 
 ## Discovery: PCI and PCIe
 
@@ -133,7 +133,7 @@ A driver's chip logic can be written once and hosted in two places: in the kerne
 
 **The ring-3 path.** A ring-3 task registers as the driver for a hardware kind (`DOMAIN_DRIVER_REGISTER`, with a capability). A typed hardware call whose driver runs in ring 3 becomes a `DriverRequest` (`azos_drv_sys::user_driver_proxy`), is queued by `driver_submit_request`, and the client blocks until the reply is published. The driver loops on `DOMAIN_DRIVER_REPLY_WAIT`, which publishes a reply and waits for the next request in one call. Hardware interrupts reach the driver through `driver_signal_irq` and the driver loop's fetch. Two Kconfig knobs shape the proxy: `PROXY_SPIN_US` (how long a client polls before it blocks, only while the driver runs on another hart) and `PROXY_REPLY_TIMEOUT_MS`.
 
-**Choosing the host.** A driver that exists in both hosts has a placement choice in `config/Kconfig.drivers` (`DRV_INA219_PLACEMENT`, `DRV_BUZZER_PLACEMENT`; `DRV_RING3_DEFAULT` sets the starting value of every such choice to `ring3`). The signed topology can also say it, in the driver's row:
+**Choosing the host.** A driver that exists in both hosts has a placement choice in `config/subsys/Kconfig.drivers` (`DRV_INA219_PLACEMENT`, `DRV_BUZZER_PLACEMENT`; `DRV_RING3_DEFAULT` sets the starting value of every such choice to `ring3`). The signed topology can also say it, in the driver's row:
 
 | Row key | Meaning |
 |---|---|
@@ -143,11 +143,11 @@ A driver's chip logic can be written once and hosted in two places: in the kerne
 
 At run time `azos_topology::placement::Elastic` decides moves and `Elastic::commit`, the one place the host changes, writes a `Rule::Placement` decision record. A stateless driver whose kernel host faulted is served from its ring-3 host, which the component manager started at boot and keeps up (the controller routes calls and never starts or ends a ring-3 host; it hands the PWM channel over with each move, and the kernel's `Pwm` service refuses the ring-3 host's writes to the buzzer's channel while the kernel host holds it). A stateless driver with a `call_budget_us` whose ring-3 calls break the budget moves into the kernel, if the kernel host's measured cost fits and it has not faulted within the hold-off; a refusal is recorded too (`DRV_BUZZER_CALL_BUDGET_US` is the build-time value for the buzzer row).
 
-**Drivers a safety decision reads have no placement choice.** The closed rule in `config/Kconfig.drivers` is that a driver a safety decision reads always runs in the kernel. `tools/kconfig_to_cargo.py` enforces it: it refuses a `.config` that sets `CONFIG_DRV_<NAME>_PLACEMENT_RING3=y` for any name in `SAFETY_READ_DRIVERS` (`CLINT`, `PLIC`, `WDT`, `PWM`, `GPIO`, `MOTOR`, `MOTOR_PID`, `ESC`, `RC`, `I2C`, `IMU`, `RANGEFINDER`, `ADS1115`, `UART`, `VIRTIO_BLK`, `MMC`).
+**Drivers a safety decision reads have no placement choice.** The closed rule in `config/subsys/Kconfig.drivers` is that a driver a safety decision reads always runs in the kernel. `tools/kconfig_to_cargo.py` enforces it: it refuses a `.config` that sets `CONFIG_DRV_<NAME>_PLACEMENT_RING3=y` for any name in `SAFETY_READ_DRIVERS` (`CLINT`, `PLIC`, `WDT`, `PWM`, `GPIO`, `MOTOR`, `MOTOR_PID`, `ESC`, `RC`, `I2C`, `IMU`, `RANGEFINDER`, `ADS1115`, `UART`, `VIRTIO_BLK`, `MMC`).
 
 Ring-3 driver programs in the tree: `userspace/drivers/gpio_drv` (`GPIODRV.ELF`, which registers for the GPIO driver kind, answers proxy requests and serves the device-power interface), `userspace/drivers/buzz_drv` (`BUZZDRV.ELF`) and `userspace/drivers/ina_drv` (`INADRV.ELF`). The latter two host the chip logic of `crates/drivers/buzzer` and `crates/drivers/ina219`; their kernel hosts are in `crates/drivers/actuator` and the kernel feature `ina219-kernel`. A ring-3 driver that serves the device-power interface keeps a wakelock ledger (`DEVICE_WAKELOCKS`, `DEVICE_WAKELOCK_TTL_MAX_MS`).
 
-Source: `crates/drivers/driver_server/src/lib.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `crates/core/topology/src/placement.rs`, `config/Kconfig.drivers`, `tools/kconfig_to_cargo.py`, `userspace/drivers/`.
+Source: `crates/drivers/driver_server/src/lib.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `crates/core/topology/src/placement.rs`, `config/subsys/Kconfig.drivers`, `tools/kconfig_to_cargo.py`, `userspace/drivers/`.
 
 ## Device interfaces
 
@@ -214,7 +214,7 @@ The USB host is native (Kconfig `USB_HOST`, `USB_XHCI`; not on a small board, `H
 
 **What is not here yet.** UAS, more than one serial function (the table has one plug slot), DHCP and address configuration for a secondary interface that comes with a USB adapter, the interface registry entry and capability minting for `UsbClass`/`UsbDevice` over endpoints (ring-3 placement), the MSI-X route for interrupter 0 (the `usb` task polls every `USB_POLL_MS`), isochronous OUT endpoints, streams, USB 3 link power management, and a second controller.
 
-Source: `crates/drivers/usb/src/`, `crates/drivers/usb/hwbus.ids`, `crates/drivers/usb-hid/src/`, `crates/drivers/scsi/`, `crates/drivers/block/src/usb_msc.rs`, `crates/drivers/net/src/usb_cdc.rs`, `kernel/src/boot/usb.rs`, `kernel/src/boot/usb_hid.rs`, `config/Kconfig.drivers`, `tests/host/usb-tests/`, `tests/host/usb-hid-tests/`, `tests/host/scsi-tests/`.
+Source: `crates/drivers/usb/src/`, `crates/drivers/usb/hwbus.ids`, `crates/drivers/usb-hid/src/`, `crates/drivers/scsi/`, `crates/drivers/block/src/usb_msc.rs`, `crates/drivers/net/src/usb_cdc.rs`, `kernel/src/boot/usb.rs`, `kernel/src/boot/usb_hid.rs`, `config/subsys/Kconfig.usb`, `tests/host/usb-tests/`, `tests/host/usb-hid-tests/`, `tests/host/scsi-tests/`.
 
 ## SoC resource frameworks
 
@@ -276,7 +276,7 @@ A device whose DMA stops short of the top of RAM (a 32-bit master on a machine w
 
 A coherent device needs nothing. A non-coherent master needs, per transfer, a `clean` before the device runs (write back dirty lines) and a `flush` (clean plus invalidate) before a device write and after the device ran; a bare invalidate is never used, because a buffer that does not start and end on a cache line shares edge lines with neighbours. `CacheOp`, `op_for_device(dir)` and `op_for_cpu(dir)` pick the operation from the `Direction` (`ToDevice`, `FromDevice`, `Bidirectional`); the `Maintain` trait lets a host test drive the same sequence. The boot installs the pair, only when the hardware has it: riscv64 Zicbom `cbo.clean` / `cbo.flush` or, on a core without Zicbom (the JH7110's U74), the `Flush64` register of the SiFive composable cache controller the device tree names (`sifive,ccache0`, `starfive,jh7110-ccache`; `azos_dma::ccache` walks the 64-byte physical lines of a range, the controller has no clean-only operation so the same flush serves both halves), aarch64 `dc cvac` / `dc civac`, and nothing on x86_64, which is coherent. Coherence is a property of the master: `DMA_NONCOHERENT` sets the platform default and a device-tree `dma-coherent` property, recorded by the hardware bus, turns maintenance off for the devices that declare it. With `DMA_NONCOHERENT` the boot refuses to continue where no cache maintenance is available.
 
-Source: `crates/drivers/dma/src/`, `kernel/src/boot/dma.rs`, `crates/drivers/dtb/src/lib.rs`, `config/Kconfig.drivers`.
+Source: `crates/drivers/dma/src/`, `kernel/src/boot/dma.rs`, `crates/drivers/dtb/src/lib.rs`, `config/subsys/Kconfig.drivers`.
 
 ## IOMMU
 
@@ -314,7 +314,7 @@ A hardware line is bound to an event port, and the cost of serving it is a reser
 
 **Message-signalled interrupts.** A line number with `MSI_LINE` set names a slot (`MSI_LINE | k`), not a controller input. The bind allocates a vector (x86_64: a LAPIC vector; riscv64 with AIA: an IMSIC identity), enables it on the CPU, and replies with the address and data the device must write. The unbind returns the vector. An MSI cannot be masked at the controller, so a delivery to a binding whose handler is out of budget is dropped at the top half and counted (`irq_msi_drops`). Platforms that do not deliver MSI to ring 3 refuse the slot (`msi_supported` in `LineHooks`).
 
-Source: `crates/core/ipc/src/irq_bind.rs`, `crates/core/abi/src/invoke.rs`, `crates/drivers/irqchip/src/`, `kernel/src/irq_thread.rs`, `config/Kconfig.timing`.
+Source: `crates/core/ipc/src/irq_bind.rs`, `crates/core/abi/src/invoke.rs`, `crates/drivers/irqchip/src/`, `kernel/src/irq_thread.rs`, `config/kernel/Kconfig.sched`.
 
 ## SpacemiT K1 bring-up
 

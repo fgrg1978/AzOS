@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Arm speculation mitigations (config/Kconfig.mitigations, `A64_MIT_*`):
+//! Arm speculation mitigations (config/axes/Kconfig.security, `A64_MIT_*`):
 //! what this core is exposed to, from its ID registers first and the MIDR
 //! tables only for what has no register bit, what the firmware offers for the
 //! rest, and what the kernel does about it. The aarch64 twin of

@@ -168,7 +168,7 @@ fn get_bool(cfg: &ConfigMap, key: &str) -> bool {
 // Every check panics with a descriptive message on failure.
 // ---------------------------------------------------------------------------
 /// The ISA baseline level and the extension choices it contains
-/// (config/Kconfig.arch, "Hardware support model"): an extension that is
+/// (config/arch/Kconfig.isa, "Hardware support model"): an extension that is
 /// part of the level is in the compiled code, so `n` or `probe` for it
 /// would be a promise the binary cannot keep.
 fn validate_isa_levels(cfg: &ConfigMap) {
@@ -188,7 +188,7 @@ fn validate_isa_levels(cfg: &ConfigMap) {
         }
     }
     if on("ARCH_X86_64") {
-        // config/Kconfig.arch hides these choices' contradicting members;
+        // config/arch/Kconfig.isa hides these choices' contradicting members;
         // a hand-edited .config is refused here.
         let level = [("X86_64_LEVEL_V4", 4), ("X86_64_LEVEL_V3", 3), ("X86_64_LEVEL_V1", 1)]
             .iter().find(|(k, _)| on(k)).map(|&(_, l)| l).unwrap_or(2);
@@ -306,7 +306,7 @@ fn run_validations(cfg: &ConfigMap) {
     }
     // -----------------------------------------------------------------------
     // Options for code that does not exist yet (wave 11). The Linux
-    // compatibility menu (config/Kconfig.linux) is laid out before
+    // compatibility menu (config/axes/Kconfig.personality) is laid out before
     // its code; none of its symbols may be silently inert, so a .config that
     // enables one does not build. A stage that lands removes its symbols
     // from this list in the same change that wires them.
@@ -356,7 +356,7 @@ fn run_validations(cfg: &ConfigMap) {
     // -----------------------------------------------------------------------
     // Network socket capacity
     //
-    // The original design note said +16; config/Kconfig.limits help text says +4.
+    // The original design note said +16; config/limits/Kconfig.limits help text says +4.
     // We use +4 to match the Kconfig documentation and to allow the only
     // existing defconfig (edge: MAX_SOCKETS=16, TCP_MAX_CONNS=8) to pass.
     // (Kconfig says "+4 reserved UDP slots" and is the normative per-file
@@ -574,7 +574,7 @@ fn run_validations(cfg: &ConfigMap) {
     //
     // This is a structural invariant — independent of Kconfig range, which
     // already enforces >= 16, but the panic message documents the constraint
-    // for anyone editing config/Kconfig.limits later.
+    // for anyone editing config/limits/Kconfig.limits later.
     // -----------------------------------------------------------------------
     const WCET_FIXED_POINTS: u64 = 9;
     let wcet_max_points = get_u64_required(cfg, "WCET_MAX_POINTS");
@@ -588,7 +588,7 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
-    // PAGE_SHIFT (config/Kconfig.arch): the base page. riscv64 has exactly
+    // PAGE_SHIFT (config/arch/Kconfig.isa): the base page. riscv64 has exactly
     // one (Sv39, 4 KiB); aarch64 takes 12, 14 or 16 from the AARCH64_PAGE_*
     // choice. The kernel additionally asserts that azos_arch_api's
     // feature-selected PAGE_SIZE equals 1 << this, so `.config` and the
@@ -761,7 +761,7 @@ fn run_validations(cfg: &ConfigMap) {
     // comment someone has to remember to re-read.
     //
     // SCHED_HZ_FLOOR is a brand-new key (added the same day as this check):
-    // an existing `.config` on disk was generated before config/Kconfig.timing knew
+    // an existing `.config` on disk was generated before config/kernel/Kconfig.sched knew
     // about it and will not contain it until the next `make
     // defconfig-<profile>` / `olddefconfig` regenerates it. Unlike the
     // required keys above (which have always been in every `.config` this
@@ -808,7 +808,7 @@ fn run_validations(cfg: &ConfigMap) {
                     (0 wheeled, 1 drone, 2 humanoid, 3 ackermann).");
         }
     }
-    // Wave 15 (config/Kconfig.robot, RC input): a switch that shares a
+    // Wave 15 (config/domains/Kconfig.robot, RC input): a switch that shares a
     // channel with a stick, or the kill switch on the mode switch, turns an
     // ordinary stick movement into a stop or a hand-over. Refused, not
     // guessed at. Channel 0 is "none".
@@ -843,7 +843,7 @@ fn run_validations(cfg: &ConfigMap) {
         }
     }
 
-    // The RPC link over QUIC (config/Kconfig.network): three UDP sockets share the
+    // The RPC link over QUIC (config/subsys/Kconfig.rpc): three UDP sockets share the
     // stack's address (the server's, the relay's local one, the QUIC endpoint), and
     // the stack gives a port to one socket; and the relay has a peer to carry
     // frames to.
@@ -859,7 +859,7 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
-    // LOG_LEVEL (config/Kconfig.development): the kernel's log macros
+    // LOG_LEVEL (config/kernel/Kconfig.trace): the kernel's log macros
     // (crates/drivers/sys/src/uart.rs) compare it against Linux's numbers,
     // so any other value would silently compile a level in or out. It must
     // also be the one the LOG_LEVEL_* choice selected: a hand-edited
@@ -891,7 +891,7 @@ fn run_validations(cfg: &ConfigMap) {
                 "validation FAIL: SCHED_HZ_FLOOR ({sched_hz_floor}) > SCHED_HZ ({sched_hz}). \
                  CONFIG.INI's sched_hz floor cannot exceed this board/profile's compile-time \
                  ceiling, or every CONFIG.INI request would be rejected as garbage. \
-                 Fix: lower SCHED_HZ_FLOOR in config/Kconfig.timing or raise SCHED_HZ in .config."
+                 Fix: lower SCHED_HZ_FLOOR in config/kernel/Kconfig.sched or raise SCHED_HZ in .config."
             );
         }
     }

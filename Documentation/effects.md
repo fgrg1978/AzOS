@@ -107,7 +107,7 @@ Source: `crates/core/actuation/src/effect_gate.rs` (`Effect`, `Class`,
 `crates/core/actuation/src/estop.rs` (`estop_activate`,
 `verify_operator_release`), `crates/core/actuation/src/hooks.rs`,
 `crates/core/syscall/src/motor_host.rs`, `crates/drivers/soc/src/effect.rs`,
-`config/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).
+`config/domains/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).
 
 ## Write-ahead receipts and the safety reserve
 
@@ -167,7 +167,7 @@ unrecorded, because there is nowhere to commit to.
 Source: `crates/core/actuation/src/effect_gate.rs` (`issue`, `Why`, `Refusal`,
 `Timing`), `crates/core/actuation/src/logger.rs` (`commit_effect_record`,
 `EffectCommit`, `RING_SAFETY_RESERVE`, `ORDINARY_RING_LIMIT`,
-`STOP_KEEPS_FREE`, `LOG_FLUSH_WATERMARK`), `config/Kconfig.limits`
+`STOP_KEEPS_FREE`, `LOG_FLUSH_WATERMARK`), `config/limits/Kconfig.limits`
 (`LOG_RING_SAFETY_RESERVE`).
 
 ## Deadline or safe state
@@ -249,7 +249,7 @@ Source: `crates/core/actuation/src/safe_state.rs` (`arm`, `cancel`,
 `complete`, `sweep`, `register`, `held`, `release`, `release_from_frame`,
 `ReleaseError`, `compensate`, `HOLD_RELEASE_BODY_BYTES`, `CAUSE_*`, `COMP_*`),
 `crates/core/actuation/src/effect_gate.rs` (`Timing`), `crates/core/actuation/src/sys_wdt.rs`,
-`config/Kconfig.robot` (`EFFECT_WATCH_SLOTS`, `B2_HOLD_MIN_MS`).
+`config/domains/Kconfig.robot` (`EFFECT_WATCH_SLOTS`, `B2_HOLD_MIN_MS`).
 
 ## Receipt-conditioned warrants
 
@@ -524,7 +524,7 @@ Source: `crates/core/abi/src/ipc_msg.rs` (`LABEL_*`, `LABEL_KNOWN`,
 `Envelope`), `crates/core/syscall/src/topo_sched.rs`,
 `crates/core/syscall/src/fastpath.rs`, `crates/core/actuation/src/effect_gate.rs`
 (`ProvenanceProbe`, `set_provenance_probe`, `ENVELOPE_DUTY_CAP_PCT`),
-`config/Kconfig.limits` (`IPC_LABELS`).
+`config/kernel/Kconfig.ipc` (`IPC_LABELS`).
 
 ### Declassification
 
@@ -665,7 +665,7 @@ Source: `crates/core/decision/src/lib.rs` (`Rule`, `Verdict`, `RuleInfo`,
 `crates/core/decision/src/receipt.rs`, `crates/core/decision/src/deny.rs`,
 `userspace/lib/decisions/src/lib.rs` (`DECISIONS_ID`, `ENDPOINT`),
 `userspace/services/why/src/main.rs`, `crates/core/recovery/src/lib.rs`
-(`cmd_why`), `config/Kconfig.development` (`DECISION_RECORDS_DEV`,
+(`cmd_why`), `config/kernel/Kconfig.decisions` (`DECISION_RECORDS_DEV`,
 `DECISION_REFUSALS_DURABLE`, `DECISION_DENY_DURABLE_PER_SEC`,
 `DECISION_DENY_DURABLE_BURST`, `DECISION_RECORDS_ENTRIES`,
 `DECISION_JOURNAL_ENTRIES`).

@@ -29,7 +29,7 @@ Source: `crates/core/abi/src/time.rs` (`ClockOffsets`, `clock_now_with`).
 
 `azos_abi::time` converts between nanoseconds and ticks with two functions both sides use: `ns_to_ticks_ceil(ns, freq)` rounds up, so a deadline converted here is never reached early; `ticks_to_ns(ticks, freq)` rounds down and returns 0 for a zero frequency. Both split the value at the second to avoid wide intermediates and saturate rather than wrap.
 
-Source: `crates/drivers/sys/src/timebase.rs`, `crates/core/arch-api/src/lib.rs` (`Cpu::now_ticks`), `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-x86_64/src/lib.rs`, `crates/core/abi/src/time.rs`, `config/Kconfig.platform` (`TIMER_FREQ`).
+Source: `crates/drivers/sys/src/timebase.rs`, `crates/core/arch-api/src/lib.rs` (`Cpu::now_ticks`), `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-x86_64/src/lib.rs`, `crates/core/abi/src/time.rs`, `config/arch/Kconfig.platform` (`TIMER_FREQ`).
 
 ## Clock ids
 

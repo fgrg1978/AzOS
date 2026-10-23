@@ -144,7 +144,7 @@ A `Probe` extension that replaces a hot-path instruction (compare-and-swap, a wa
 
 The provided `SpinWait` bodies are the fallback every ISA has without the extension (`core::sync::atomic`, a relax loop); an ISA overrides what it has a better instruction for. Under `Never` only the fallback is compiled. Under `Require` the extension is inlined with no branch. Under `Probe` (riscv64, aarch64) each use is a site in the `.azos_keys` section, linked as the safe form and rewritten once on the boot CPU, before secondaries start, if the probe found the extension (`ArchEntry::boot_patch`, `kernel/src/boot/spin_patch.rs`, site keys `SITE_KEY_CAS`, `SITE_KEY_WAIT`, `SITE_KEY_RELAX`). After boot a probe site costs what a `Require` site costs. Callers never name an ISA. Orderings are explicit (`CasOrder`: relaxed, acquire, release, acquire-release) and never sequentially consistent.
 
-Source: `crates/core/arch-api/src/isa.rs`, `crates/core/arch-api/src/spin.rs`, `config/Kconfig.arch`, `kernel/src/boot/spin_patch.rs`.
+Source: `crates/core/arch-api/src/isa.rs`, `crates/core/arch-api/src/spin.rs`, `config/arch/Kconfig.isa`, `kernel/src/boot/spin_patch.rs`.
 
 ## Per-ISA layout
 

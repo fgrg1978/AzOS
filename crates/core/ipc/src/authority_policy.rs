@@ -21,7 +21,7 @@ use azos_devif::key;
 /// endpoint (host key, `azos_devif::key`) a consequential command needs the
 /// `WRITE` right on, and whether that need is checked on every build or only
 /// under the production console lockdown (`CONFIG_CONSOLE_LOCKDOWN`,
-/// config/Kconfig.mitigations).
+/// config/axes/Kconfig.security).
 pub struct AuthorityRow {
     pub cmd: &'static str,
     /// The host key of the endpoint the command acts through.

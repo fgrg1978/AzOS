@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! x86 speculative-execution mitigations, chosen by probe (Kconfig
-//! `X86_MIT_*`, config/Kconfig.mitigations): the decision is a pure function
+//! `X86_MIT_*`, config/axes/Kconfig.security): the decision is a pure function
 //! of what the CPU reports, so a wrong bit or a wrong table row is a host
 //! test failure (`tests/host/arch-tests`, which includes this file after
 //! `cpu/features.rs` under the crate's module names: it names no crate but

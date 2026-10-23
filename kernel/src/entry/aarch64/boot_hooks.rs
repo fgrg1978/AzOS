@@ -331,7 +331,7 @@ pub extern "C" fn azos_spec_apply(boot_cpu: u64) {
     }
 }
 
-/// Kconfig `A64_MIT_*` (config/Kconfig.mitigations) on the boot CPU: decide
+/// Kconfig `A64_MIT_*` (config/axes/Kconfig.security) on the boot CPU: decide
 /// from the ID registers, the MIDR and the firmware's answers
 /// (`azos_arch::ext::mitigations`), finish what boot.S could not (the firmware
 /// workaround needs the conduit), print the verdicts. A `require`d choice the

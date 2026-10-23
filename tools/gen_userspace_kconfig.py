@@ -47,7 +47,7 @@ Output, in a menu "Userspace programs":
 
   * one bool per image, `USERSPACE_<STEM>` ("include in the board volume");
     BusyBox is not generated: its one symbol is `BUSYBOX` in
-    config/Kconfig.linux, which the console choice below reads;
+    config/axes/Kconfig.personality, which the console choice below reads;
   * `choice` CONSOLE_PROGRAM: native sh, BusyBox sh, any other included
     image, a custom /fat path with arguments, or none;
   * the derived strings the kernel and the topology read: CONSOLE_PATH and

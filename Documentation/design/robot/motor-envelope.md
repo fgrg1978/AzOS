@@ -23,7 +23,7 @@ allocation and no I/O. The steps, in order:
    per-type limits are handled on their own paths (the flight loop in
    `domains/robot/safety-core/src/flight_ctrl.rs` reads the same e-stop latch
    every tick). The robot type is a build-time choice
-   (`ROBOT_TYPE_ID`, Kconfig `config/Kconfig.robot`).
+   (`ROBOT_TYPE_ID`, Kconfig `config/domains/Kconfig.robot`).
 3. **Confidence cap.** If the most recent brain command was marked
    low-confidence, the cap becomes `min(cap, SAFETY_LOW_CONFIDENCE_CAP_PCT)` (40).
 4. **Degrade-level cap.** The cap becomes `min(cap, level_cap_pct(degrade_level()))`

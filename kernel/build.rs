@@ -6,7 +6,7 @@
 //! remaps whole pages, so `.text` and `.rodata` must not share one) and
 //! links the kernel `KERNEL_VA_OFFSET` above its load address. Both depend
 //! on the granule the cargo features `page-16k` / `page-64k` select
-//! (config/Kconfig.arch `AARCH64_PAGE_*`; neither = 4 KiB). A linker script
+//! (config/arch/Kconfig.isa `AARCH64_PAGE_*`; neither = 4 KiB). A linker script
 //! cannot read a cargo feature, so this writes them into
 //! `$OUT_DIR/azos_granule.ld`, which the script `INCLUDE`s through the
 //! search path added below.
@@ -17,7 +17,7 @@
 //! and `crates/core/arch-aarch64/src/mmu.rs` ever disagree the kernel fails
 //! to link. The riscv64 linker scripts do not include the file.
 //!
-//! It also owns the link half of virtual KASLR (config/Kconfig.security,
+//! It also owns the link half of virtual KASLR (config/kernel/Kconfig.hardening,
 //! KASLR): any policy but `n`, where the choice exists, links the kernel as a
 //! static position-independent executable, so the boot's relocation walk
 //! (`*_early_kaslr`) has a table of `R_*_RELATIVE` entries to apply. The

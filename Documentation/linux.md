@@ -14,7 +14,7 @@ Related pages: [hal.md](hal.md) for the `Hypervisor` trait and the trap layer; [
 
 A task whose signed topology row says `abi = "linux"` traps with Linux system call numbers. The personality answers them. It is selected per task by the row, never by the image: a row says it or the task is native, so no native task ever reaches the Linux table.
 
-Source: `crates/core/syscall/src/linux.rs`, `crates/core/linux-abi/src/lib.rs`, `crates/core/topology/src/types.rs`, `config/Kconfig.linux`.
+Source: `crates/core/syscall/src/linux.rs`, `crates/core/linux-abi/src/lib.rs`, `crates/core/topology/src/types.rs`, `config/axes/Kconfig.personality`.
 
 ### What a Linux row may hold
 
@@ -78,7 +78,7 @@ Bounds that Kconfig sets: `LINUX_ROBUST_LIST_LIMIT` (robust futex list entries w
 
 Unmodified Linux kernel modules run in ring-3 server processes, one process per driver class, through a compatibility layer, over a pinned Linux tree. A server holds no actuator capability, and no safety decision reads its output. The kernel never links a Linux object.
 
-Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`, `userspace/services/lxsrv`, `config/Kconfig.linux`, `tools/lx_*`.
+Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`, `userspace/services/lxsrv`, `config/axes/Kconfig.personality`, `tools/lx_*`.
 
 ### Pieces
 
@@ -130,7 +130,7 @@ The digest covers the input bytes, not the relocated text. A server that is alre
 
 The filesystem set (`<isa>/fs/*.ko`: `crc16`, `mbcache`, `jbd2`, `ext4`, built by `make lx-kbuild` from `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c`) is held to K1 and K4. Its imports are not K3-gated. `lx/FS_EXT4_UNRESOLVED` lists, per ISA, the imports of that set that neither `lx/HOST_ABI` nor an earlier module exports, and `tests/host/lx-loader-tests` fails when the list differs from the set the built modules compute. A symbol leaves the list in the change that provides it.
 
-The Kconfig menu "Linux compatibility" (`config/Kconfig.linux`) defines `LINUX_DRIVERS` and one option per class: filesystems (`LX_FS_EXT2`, `LX_FS_EXT4_RO`, `LX_FS_EXT4_RW`; Linux filesystems use the native `BlockDevice`, and the ext4 options are read-only without journal replay or read-write with `jbd2`), USB (`LX_USB_XHCI`, `LX_USB_DWC3`, `LX_USB_HID`, `LX_USB_STORAGE`, `LX_USB_CDC`, `LX_USB_UVC`), and further classes (`LX_SND_ASOC`, `LX_DRM_PANEL`, `LX_IIO`, `LX_WIFI`, `LX_BLUETOOTH`). `LX_ACCEPT_UNCONFINED_DMA` is the build-time acceptance a DMA-capable class needs on a board without an IOMMU. The configuration validator in `crates/core/limits/build.rs` refuses a `.config` that sets any class option or `LX_ACCEPT_UNCONFINED_DMA`, and `LINUX_DRIVERS` builds only together with `LX_SERVER_SKELETON`. The boolean enable and class options (`LINUX_DRIVERS`, `LX_SERVER_SKELETON`, the `LX_FS_*`, `LX_USB_*` and later-class options, `LX_ACCEPT_UNCONFINED_DMA`) default to `n`. The non-boolean symbols have their own defaults: `LX_MODULE_TOKENS` is a count (the pinned tag is the `tag` of `third_party/linux` in `.gitmodules`, not a Kconfig option). A small board (`HWCLASS_EMBEDDED`) cannot enable `LINUX_DRIVERS` at all.
+The Kconfig menu "Linux compatibility" (`config/axes/Kconfig.personality`) defines `LINUX_DRIVERS` and one option per class: filesystems (`LX_FS_EXT2`, `LX_FS_EXT4_RO`, `LX_FS_EXT4_RW`; Linux filesystems use the native `BlockDevice`, and the ext4 options are read-only without journal replay or read-write with `jbd2`), USB (`LX_USB_XHCI`, `LX_USB_DWC3`, `LX_USB_HID`, `LX_USB_STORAGE`, `LX_USB_CDC`, `LX_USB_UVC`), and further classes (`LX_SND_ASOC`, `LX_DRM_PANEL`, `LX_IIO`, `LX_WIFI`, `LX_BLUETOOTH`). `LX_ACCEPT_UNCONFINED_DMA` is the build-time acceptance a DMA-capable class needs on a board without an IOMMU. The configuration validator in `crates/core/limits/build.rs` refuses a `.config` that sets any class option or `LX_ACCEPT_UNCONFINED_DMA`, and `LINUX_DRIVERS` builds only together with `LX_SERVER_SKELETON`. The boolean enable and class options (`LINUX_DRIVERS`, `LX_SERVER_SKELETON`, the `LX_FS_*`, `LX_USB_*` and later-class options, `LX_ACCEPT_UNCONFINED_DMA`) default to `n`. The non-boolean symbols have their own defaults: `LX_MODULE_TOKENS` is a count (the pinned tag is the `tag` of `third_party/linux` in `.gitmodules`, not a Kconfig option). A small board (`HWCLASS_EMBEDDED`) cannot enable `LINUX_DRIVERS` at all.
 
 ### Leaf drivers and the hardware bus
 
@@ -160,11 +160,11 @@ An image that contains a Linux module is distributed as GPL-2.0-only as a whole;
 
 A guest kernel is not a separate component. It is a virtual machine the signed topology declares, hosted by the same hypervisor core as any other guest. Nothing in `crates/core/hv` or `userspace/services/vmmd` is specific to Linux; this section describes the path any unmodified guest kernel takes, and the boundary around it.
 
-Source: `crates/core/hv`, `crates/core/arch-api/src/lib.rs` (the `Hypervisor` trait), `userspace/services/vmmd`, `crates/core/devif/src/vm.rs`, `config/Kconfig.hv`, `config/Kconfig.preset`.
+Source: `crates/core/hv`, `crates/core/arch-api/src/lib.rs` (the `Hypervisor` trait), `userspace/services/vmmd`, `crates/core/devif/src/vm.rs`, `config/axes/Kconfig.virt`, `config/axes/Kconfig.preset`.
 
 ### Roles and hardware
 
-`VIRT` (Kconfig, `config/Kconfig.preset`) is the role of the image:
+`VIRT` (Kconfig, `config/axes/Kconfig.virt`) is the role of the image:
 
 | Role | Meaning |
 |---|---|

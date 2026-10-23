@@ -8,7 +8,7 @@ The rules are `azos_topology::neverallow::RULES` (crates/core/topology/src/never
 This script builds the topology each configuration would run and has the host
 checker (tests/host/topology-tests/src/bin/topo_neverallow.rs) apply them:
 
-  * every PRESET_* of config/Kconfig.preset on every ISA (the way
+  * every PRESET_* of config/axes/Kconfig.preset on every ISA (the way
     tools/check_presets.py expands them);
   * every config/defconfigs/*.config as it stands (the board images);
   * the micro kernel's signed topology (tools/micro_topology.py), parsed under

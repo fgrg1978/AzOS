@@ -129,7 +129,7 @@ interrupted stack.
 Source: `kernel/src/entry/riscv64/asm/trap_entry.S`,
 `kernel/src/entry/aarch64/asm/trap_entry.S`,
 `kernel/src/entry/x86_64/asm/trap_entry.S`, `kernel/src/entry/*/trap.rs`,
-`crates/core/syscall/src/fastpath.rs`, `config/Kconfig.limits`
+`crates/core/syscall/src/fastpath.rs`, `config/kernel/Kconfig.ipc`
 (`SYSCALL_LEAN_ENTRY`, `IPC_FASTPATH`, `IPC_FASTPATH_RESUME`).
 
 ## 3. Time without a trap
@@ -182,7 +182,7 @@ Programming the next timer interrupt has a choice only on riscv64.
 
 Source: `crates/core/arch-riscv64/src/irq/clint.rs`,
 `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-api/src/isa.rs`,
-`config/Kconfig.arch`.
+`config/arch/Kconfig.isa`.
 
 ## 5. Reply and accept in one trap
 
@@ -380,7 +380,7 @@ Source: `crates/core/sched/src/asid.rs`, `crates/core/arch-api/src/tlb_gen.rs`,
 `kernel/src/entry/riscv64/asm/context_switch.S`,
 `kernel/src/entry/aarch64/asm/context_switch.S`,
 `kernel/src/entry/x86_64/asm/context_switch.S`, `kernel/src/boot/early.rs`,
-`crates/core/mm/src/vmm.rs`, `config/Kconfig.arch` (`TLB_RETAIN`, `ASID_BITS`,
+`crates/core/mm/src/vmm.rs`, `config/kernel/Kconfig.mm` (`TLB_RETAIN`, `ASID_BITS`,
 `TLB_SPACE_MASK`, `TLB_ASID_SCOPED`, `RV_KERNEL_GLOBAL`).
 
 ## 9. Limits

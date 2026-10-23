@@ -136,7 +136,7 @@ pub use pure::{
 ///
 /// This used to be a hardcoded `2 * 1024 * 1024` inside [`pure`] that ignored
 /// the Kconfig symbol entirely — the symbol was declared, emitted as
-/// `OTA_MAX_IMAGE_SIZE_BYTES`, and referenced by nobody. `config/Kconfig.ota`'s own
+/// `OTA_MAX_IMAGE_SIZE_BYTES`, and referenced by nobody. `config/subsys/Kconfig.ota`'s own
 /// help text documented the intent to migrate it and it never happened.
 ///
 /// It lives here rather than in [`pure`] because that module must stay

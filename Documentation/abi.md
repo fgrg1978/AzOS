@@ -71,7 +71,7 @@ A successful exec does not return; the new image starts with every
 general-purpose register zero except its stack pointer.
 
 Source: `crates/core/abi/src/syscall_nr.rs` (module documentation, `REG_*`
-constants), `config/Kconfig.limits` (`SYSCALL_LEAN_ENTRY`).
+constants), `config/kernel/Kconfig.ipc` (`SYSCALL_LEAN_ENTRY`).
 
 ## The syscall table
 
@@ -393,7 +393,7 @@ caveat lowers one (see [ipc.md](ipc.md#derived-capabilities-and-caveats)). The
 actuation gate holds a physical effect to the most restrictive envelope among
 the kinds in the label of the request that caused it.
 
-Source: `crates/core/abi/src/ipc_msg.rs`, `config/Kconfig.limits`.
+Source: `crates/core/abi/src/ipc_msg.rs`, `config/limits/Kconfig.limits`.
 
 ## Error model
 

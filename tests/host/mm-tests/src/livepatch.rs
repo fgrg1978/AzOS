@@ -817,7 +817,7 @@ fn the_limits_and_the_header_sizes_are_the_documented_ones() {
     assert_eq!((FUNC_LEN, RELOC_LEN), (24, 16));
     assert!(MAX_FUNCS >= 1);
     assert_eq!(Claim::EMPTY.state, SLOT_FREE);
-    // The RAM of the patch table, as config/Kconfig.security says it: 8 B per
+    // The RAM of the patch table, as config/subsys/Kconfig.topology says it: 8 B per
     // function, 8 B per patch.
     assert_eq!(core::mem::size_of::<Claim>(), 8 + 8 * MAX_FUNCS);
 }

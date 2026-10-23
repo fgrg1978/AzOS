@@ -18,7 +18,7 @@ publish = false
 # the scheduler options and the rest of the old default list are the `base`
 # tags there.
 default = []
-# The Robot application domain (wave 11, DOMAIN; config/Kconfig.use
+# The Robot application domain (wave 11, DOMAIN; config/axes/Kconfig.use
 # USE_ROBOT). Links the robot crates under domains/robot/ — behavior and
 # the brain link, the motor/sensor/flight stack, the robot safety layer
 # (safety-core), the robot shell commands, the in-kernel benches — and the
@@ -41,7 +41,7 @@ use-robot = [
     "dep:azos_camera", "dep:azos_robot_drivers",
     "azos_recovery/use-robot", "azos_syscall/use-robot",
 ]
-# Wave 15 (config/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
+# Wave 15 (config/domains/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
 # domain default y, off = compiled out). `rc-input`: the RC receiver feeds the
 # safety path (link loss / kill switch latch the e-stop, the sticks drive
 # through L0 and the motor envelope) — kernel/src/tasks/rc_safety.rs and
@@ -51,7 +51,7 @@ use-robot = [
 # only when its symbol is y.
 rc-input = ["use-robot", "azos_behavior?/rc-input"]
 geofence = ["use-robot", "azos_behavior?/geofence"]
-# virtio-input keyboards and mice by interrupt (config/Kconfig.drivers
+# virtio-input keyboards and mice by interrupt (config/subsys/Kconfig.drivers
 # DRV_VIRTIO_INPUT; crates/drivers/virtio/src/virtio/input.rs, wired by
 # kernel/src/boot/input_irq.rs). The driver is always compiled (as the
 # entropy source is); the feature is the boot wiring and the interrupt arms.
@@ -59,7 +59,7 @@ geofence = ["use-robot", "azos_behavior?/geofence"]
 # tools/kconfig_to_cargo.py when the symbol is n. With no such device on the
 # machine it prints nothing and costs one slot scan at boot.
 virtio-input = []
-# The virtio-sound device (config/Kconfig.drivers DRV_VIRTIO_SND;
+# The virtio-sound device (config/subsys/Kconfig.drivers DRV_VIRTIO_SND;
 # crates/drivers/virtio/src/virtio/snd.rs): the `Sound` endpoint the kernel
 # hosts over it (`azos_syscall/virtio-snd`) and the boot wiring
 # (kernel/src/boot/snd_irq.rs). The driver is always compiled, as
@@ -68,7 +68,7 @@ virtio-snd = ["azos_syscall/virtio-snd"]
 # Gate canary only (row `sh: virtio keyboard, canary`): key bytes dropped.
 virtio-input-canary = ["virtio-input", "azos_drv_virtio/input-rx-canary"]
 # PS/2 keyboard and mouse on the i8042 controller, by interrupt (config/
-# Kconfig.drivers DRV_PS2, x86_64 only; crates/drivers/input/src/ps2.rs,
+# config/subsys/Kconfig.drivers DRV_PS2, x86_64 only; crates/drivers/input/src/ps2.rs,
 # wired by kernel/src/boot/ps2_irq.rs and the arm in
 # kernel/src/entry/x86_64/irq.rs). The driver is always compiled (it lives in
 # `azos_drv_input` beside the keymap virtio-input shares); the feature is the
@@ -508,7 +508,7 @@ no-ml       = ["azos_recovery/no-ml", "azos_behavior?/no-ml"]
 # including boot_efi.S, so `efi_main` was dead-stripped. `crates/core/efi` and
 # `tests/host/efi-tests` stay (host parser suite in the gate); only the kernel
 # wiring and the two dead boot .S files are gone.
-# config/Kconfig.security SECURE_BOOT_ENFORCED. Forces the boot sequence
+# config/subsys/Kconfig.secure-boot SECURE_BOOT_ENFORCED. Forces the boot sequence
 # (kernel/src/boot/ota.rs, right after the active-slot CRC check) to verify
 # the Ed25519 signature of the active OTA slot and halt instead of
 # booting on any non-Verified result. See crates/core/ota/src/secure_boot.rs.
@@ -802,7 +802,7 @@ hwcap-clear-canary = []
 # service), `$AZOS_OUT/build/board/image_hashes.rs`. Passed by `make vf2`/`k1`/`build-fleet`,
 # never by a QEMU or bare-`cargo` build. See crates/core/sched/Cargo.toml.
 board-image = ["azos_sched/board-image"]
-# Translation granule (config/Kconfig.arch AARCH64_PAGE_*; aarch64 only, and
+# Translation granule (config/arch/Kconfig.isa AARCH64_PAGE_*; aarch64 only, and
 # tools/kconfig_to_cargo.py emits the token). Neither = 4 KiB. The kernel
 # asserts at compile time that the granule these select equals
 # azos_limits::PAGE_SHIFT from `.config`, so the two cannot disagree;
@@ -863,8 +863,8 @@ energy-slack-canary = ["energy-gov-smoke", "azos_sched/energy-slack-canary"]
 sched-tick-probe = ["azos_sched/sched-tick-probe"]
 # U02-3: O(NUM_PRIORITIES) placement, timer-sleeper heap,
 # fast-IPC hand-off co-location. Owned by SCHED_O1_PLACEMENT, SCHED_TIMER_HEAP
-# and SCHED_IPC_AFFINITY (config/Kconfig.timing); see crates/core/sched/Cargo.toml.
-# History of the three scheduler options (config/Kconfig.timing SCHED_*):
+# and SCHED_IPC_AFFINITY (config/kernel/Kconfig.sched); see crates/core/sched/Cargo.toml.
+# History of the three scheduler options (config/kernel/Kconfig.sched SCHED_*):
 # Owner decision 2026-09-27 (after gate 184): the wave-4 scheduler changes
 # are on by default once a gate is green with them. `sched-timer-heap` joined
 # the list in wave 8 (owner decision round 9). It had been left out after gate
@@ -900,7 +900,7 @@ sched-ipc-affinity = ["azos_sched/sched-ipc-affinity"]
 sched-reap-event = ["azos_sched/sched-reap-event"]
 # VF2-only DC8200 + Innosilicon HDMI TX framebuffer driver
 # (crates/drivers/display). Opt-in, not part of the `vf2` feature bundle: fixed
-# resolution (HDMI_WIDTH/HDMI_HEIGHT in config/Kconfig.platform), no EDID
+# resolution (HDMI_WIDTH/HDMI_HEIGHT in config/arch/Kconfig.platform), no EDID
 # negotiation, solid-color milestone only — never validated against real
 # hardware (QEMU has no model for this peripheral at all).
 hdmi = ["azos_display", "azos_display/vf2"]
@@ -921,7 +921,7 @@ fb-generic = ["azos_fb"]
 # screen (FB_PANIC_SCREEN).
 fb-console = ["fb-generic", "azos_fb/console", "azos_drv_sys/console-mirror"]
 fb-panic-screen = ["fb-generic", "azos_fb/panic-screen"]
-# Wave 11 (LAT): masked-window tracer, Kconfig `LAT_TRACE` (config/Kconfig.development,
+# Wave 11 (LAT): masked-window tracer, Kconfig `LAT_TRACE` (config/kernel/Kconfig.trace,
 # mapped by tools/kconfig_to_cargo.py). Records per hart the longest
 # interrupts-masked and preemption-disabled windows and their call sites,
 # read out in the introspection tree's `latency/`. Off: no hook, no table, no node.
@@ -956,7 +956,7 @@ ktest = ["dep:azos_ktest", "azos_sync/ktest", "azos_sched/ktest", "azos_ipc/ktes
 # configuration (crates/core/sync/src/lockdep.rs). `ktest` pulls it in too,
 # and Kconfig LOCKDEP_N / LOCKDEP_KTEST then decide whether it checks.
 lockdep = ["azos_sync/lockdep"]
-# Kconfig CHAOS (config/Kconfig.development): the fault-injection registry
+# Kconfig CHAOS (config/axes/Kconfig.build): the fault-injection registry
 # and its sites (crates/core/chaos). Cargo unifies the crate's `on` feature,
 # so every crate that asks a point sees it on. Never with secure-boot-enforced.
 chaos = ["azos_chaos/on"]
