@@ -277,7 +277,10 @@ kb_cfg() {
     [ -n "$need" ] || return 0
     mkdir -p "$CI_LOG_DIR"
     cfg="$(cd "$CI_LOG_DIR" && pwd)/kcfg-$isa-$(printf '%s' "$(basename "$base" .config)$need" | tr -c 'A-Za-z0-9\n' '-').config"
-    if [ ! -f "$cfg" ]; then
+    # Keyed on the base too: the gate rewrites the base only when its
+    # expansion changed (a symbol added, a default moved), so a cached file
+    # older than it was expanded from an older Kconfig tree.
+    if [ ! -f "$cfg" ] || [ "$base" -nt "$cfg" ]; then
         cp "$base" "$cfg.tmp" \
             && for s in $need; do printf 'CONFIG_%s=y\n' "$s" >>"$cfg.tmp"; done \
             && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg.tmp" python3 -m olddefconfig >/dev/null 2>&1) \
