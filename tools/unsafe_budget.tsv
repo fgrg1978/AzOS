@@ -90,7 +90,7 @@ crates/drivers/soc	0	0	0	0	1	0
 crates/drivers/sys	60	9	4	0	0	55
 crates/drivers/thermal	0	0	0	0	1	0
 crates/drivers/tpm	0	0	0	0	1	0
-crates/drivers/usb	10	1	1	0	0	27
+crates/drivers/usb	19	1	1	0	0	37
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	145	42	8	0	0	90
 crates/fs/fs	46	8	4	0	0	58
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	520
+@unsafe-share	522
