@@ -90,7 +90,15 @@
 //!   of WRITE FPDMA QUEUED (the Device register's bit 7) with NCQ, WRITE DMA
 //!   FUA EXT without. Elsewhere the layer refuses a FUA request and its
 //!   callers order their writes with a flush (`blkdev::fua_commit`).
-//! * **No discard.** Nothing asks a SATA disk for TRIM.
+//! * **TRIM.** Where IDENTIFY says the disk has it (word 169 bit 0, on a disk
+//!   of ATA8-ACS or later, as Linux's `ata_id_has_trim`), a discard is DATA
+//!   SET MANAGEMENT with the TRIM bit: one 512-byte block of up to 64 LBA
+//!   range entries ([`TRIM_MAX_SECTORS`] a command), staged in the slot's
+//!   first page. It is not queued (SEND FPDMA QUEUED is not used: Linux
+//!   keeps a list of disks whose queued TRIM is broken, and it would need
+//!   the NCQ Send and Receive log read first), so it waits for the queue to
+//!   drain as a flush does. A disk that aborts it has no TRIM after all
+//!   ([`HwStatus::Unsupported`]: FAT32 stops asking until the next mount).
 //!
 //! DMA coherence is assumed (the PCs this driver is for), as for NVMe.
 
@@ -192,6 +200,9 @@ const SIG_UNSET: u32 = 0xFFFF_FFFF;
 // ---- ATA ----
 
 const ATA_IDENTIFY: u8 = 0xEC;
+const ATA_DATA_SET_MANAGEMENT: u8 = 0x06;
+/// DATA SET MANAGEMENT's Features: the TRIM bit.
+const DSM_TRIM: u8 = 0x01;
 const ATA_READ_DMA_EXT: u8 = 0x25;
 const ATA_READ_LOG_EXT: u8 = 0x2F;
 const ATA_WRITE_DMA_EXT: u8 = 0x35;
@@ -212,6 +223,14 @@ const NCQ_LOG_TAG: u8 = 0x1F;
 
 pub const SECTOR_SIZE: usize = 512;
 const PAGE: usize = 4096;
+
+/// LBA range entries in one 512-byte DATA SET MANAGEMENT block (8 bytes
+/// each: the 48-bit LBA, then a 16-bit sector count), and the sectors one
+/// entry and one command cover. The driver sends one block a command, which
+/// every disk with TRIM takes.
+pub const TRIM_RANGES: usize = SECTOR_SIZE / 8;
+pub const TRIM_RANGE_SECTORS: u32 = 0xFFFF;
+pub const TRIM_MAX_SECTORS: u32 = TRIM_RANGES as u32 * TRIM_RANGE_SECTORS;
 
 // ---- Memory layout ----
 
@@ -299,6 +318,31 @@ pub fn read_log_fis(log: u8, sectors: u32) -> [u8; 20] {
     h2d_fis(ATA_READ_LOG_EXT, log as u64, sectors)
 }
 
+/// DATA SET MANAGEMENT with the TRIM bit, one 512-byte block of ranges: the
+/// TRIM bit in Features (byte 3), the blocks in Count, no LBA.
+pub fn dsm_trim_fis() -> [u8; 20] {
+    let mut f = h2d_fis(ATA_DATA_SET_MANAGEMENT, 0, 1);
+    f[3] = DSM_TRIM;
+    f
+}
+
+/// The range block that trims `sectors` sectors from `lba`: entries of at
+/// most [`TRIM_RANGE_SECTORS`], little-endian, the rest of the block zero
+/// (an entry of 0 sectors is ignored). `sectors <= TRIM_MAX_SECTORS`.
+pub fn trim_ranges(lba: u64, sectors: u32, out: &mut [u8; SECTOR_SIZE]) {
+    out.fill(0);
+    let (mut at, mut left) = (lba, sectors);
+    for e in out.chunks_exact_mut(8) {
+        if left == 0 {
+            break;
+        }
+        let n = left.min(TRIM_RANGE_SECTORS);
+        e.copy_from_slice(&((at & 0xFFFF_FFFF_FFFF) | (n as u64) << 48).to_le_bytes());
+        at += n as u64;
+        left -= n;
+    }
+}
+
 /// IDENTIFY DEVICE addresses no sector: its FIS carries no LBA, and the
 /// device register is 0.
 fn identify_fis() -> [u8; 20] {
@@ -332,6 +376,8 @@ pub struct Ident {
     /// Force Unit Access writes (WRITE DMA FUA EXT, and the FUA bit of WRITE
     /// FPDMA QUEUED).
     pub fua: bool,
+    /// DATA SET MANAGEMENT with the TRIM bit.
+    pub trim: bool,
 }
 
 /// Why a disk or a controller is not brought up.
@@ -387,7 +433,12 @@ pub fn decode_identify(w: &[u16; 256]) -> Result<Ident, AhciError> {
     // as the disk's FUA for the FPDMA bit too (`ata_id_has_fua`); so does
     // this driver.
     let fua = w[84] & 0xC000 == 0x4000 && w[84] & (1 << 6) != 0;
-    Ok(Ident { sectors, flush_ext: w[83] & (1 << 13) != 0, ncq_depth, fua })
+    // Word 169 bit 0: TRIM, believed (as by Linux's `ata_id_has_trim`) on a
+    // disk whose major version (word 80, its highest bit of 1-14; FFFFh is
+    // not reported) is ATA8-ACS (7) or later.
+    let major = if w[80] == 0xFFFF { 0 } else { (1..=14).rev().find(|b| w[80] >> b & 1 != 0).unwrap_or(0) };
+    let trim = major >= 7 && w[169] & 1 != 0;
+    Ok(Ident { sectors, flush_ext: w[83] & (1 << 13) != 0, ncq_depth, fua, trim })
 }
 
 /// The model string (words 27-46: two characters a word, the first in the
@@ -557,7 +608,7 @@ pub struct Budgets {
     pub identify_us: u64,
     /// A read or a write. A spinning disk may retry a bad sector for seconds.
     pub io_us: u64,
-    /// A flush writes the whole volatile cache back.
+    /// A flush writes the whole volatile cache back; a TRIM is given as long.
     pub flush_us: u64,
     /// Resets after a command timeout before the driver latches dead
     /// (Kconfig `DEVICE_TIMEOUT_RESETS`).
@@ -650,8 +701,9 @@ struct Cmd {
     /// command alone in the device, over when its `PxCI` bit clears.
     queued: bool,
     write: bool,
-    /// FLUSH CACHE EXT: an abort means the disk has no flush.
-    flush: bool,
+    /// FLUSH CACHE EXT or DATA SET MANAGEMENT: an abort means the disk has
+    /// no such command ([`HwStatus::Unsupported`]).
+    optional: bool,
     prdtl: u16,
     /// Bytes the HBA must report moved (`PRDBC`) for a command that is not
     /// queued to be whole. The HBA does not count a queued command's bytes
@@ -667,7 +719,7 @@ struct Cmd {
     retried: bool,
 }
 
-const NO_CMD: Cmd = Cmd { queued: false, write: false, flush: false, prdtl: 0, bytes: 0, budget_us: 0, lba: 0, seq: 0, retried: false };
+const NO_CMD: Cmd = Cmd { queued: false, write: false, optional: false, prdtl: 0, bytes: 0, budget_us: 0, lba: 0, seq: 0, retried: false };
 
 /// NCQ error recovery under way: the READ LOG EXT is in the device (through
 /// the internal command, header 0), and these queued commands wait for its
@@ -750,6 +802,7 @@ pub struct Ahci<R: Regs> {
     /// this disk again, all of it.
     ident: Ident,
     fua: bool,
+    trim: bool,
     /// Slots in use (1 without NCQ), and whether reads and writes are queued.
     slots: usize,
     ncq: bool,
@@ -842,6 +895,7 @@ impl<R: Regs> Ahci<R> {
             flush_ext: false,
             ident: Ident::default(),
             fua: false,
+            trim: false,
             slots: 0,
             ncq: false,
             irq,
@@ -888,6 +942,7 @@ impl<R: Regs> Ahci<R> {
         me.flush_ext = id.flush_ext;
         me.ident = id;
         me.fua = id.fua;
+        me.trim = id.trim;
         let want = queue_depth(cap, &id);
         me.slots = me.alloc_slots(mask, want);
         if me.slots == 0 {
@@ -938,7 +993,7 @@ impl<R: Regs> Ahci<R> {
         let mut model = [0u8; 40];
         let n = model_string(&words, &mut model);
         azos_drv_sys::kprintln!(
-            "[AHCI] port {} {}: {} sectors mode={} xfer={} KiB flush={} ncq={} fua={} (w75 {:#06x} w76 {:#06x} w84 {:#06x})",
+            "[AHCI] port {} {}: {} sectors mode={} xfer={} KiB flush={} ncq={} fua={} trim={} (w75 {:#06x} w76 {:#06x} w84 {:#06x} w169 {:#06x})",
             self.port,
             core::str::from_utf8(&model[..n]).unwrap_or("?"),
             id.sectors,
@@ -947,9 +1002,11 @@ impl<R: Regs> Ahci<R> {
             if id.flush_ext { "y" } else { "n" },
             id.ncq_depth,
             if id.fua { "y" } else { "n" },
+            if id.trim { "y" } else { "n" },
             words[75],
             words[76],
-            words[84]
+            words[84],
+            words[169]
         );
 
         // Interrupts last: nothing was left pending by the polled commands.
@@ -1416,8 +1473,8 @@ impl<R: Regs> Ahci<R> {
                 return After::Nothing;
             }
             let single = st.single;
-            let flush = single != 0 && st.cmd[single.trailing_zeros() as usize].flush;
-            let aborted = flush && (tfd >> 8) & ATA_ERR_ABRT != 0 && ev & IS_TFES != 0;
+            let optional = single != 0 && st.cmd[single.trailing_zeros() as usize].optional;
+            let aborted = optional && (tfd >> 8) & ATA_ERR_ABRT != 0 && ev & IS_TFES != 0;
             if !aborted {
                 azos_drv_sys::kerr!("[AHCI] port {}: error interrupt {:#010x}, task file {:#06x}: {} command(s) failed, port restarted",
                     self.port, ev & IS_FATAL, tfd & 0xFFFF, (st.queued | single).count_ones());
@@ -1438,7 +1495,7 @@ impl<R: Regs> Ahci<R> {
             let c = st.cmd[k];
             let status = if tfd & (TFD_ERR | TFD_DF) != 0 {
                 azos_drv_sys::kerr!("[AHCI] port {}: command ended with task file {:#06x}", self.port, tfd & 0xFFFF);
-                if c.flush && (tfd >> 8) & ATA_ERR_ABRT != 0 { HwStatus::Unsupported } else { HwStatus::Io }
+                if c.optional && (tfd >> 8) & ATA_ERR_ABRT != 0 { HwStatus::Unsupported } else { HwStatus::Io }
             } else {
                 let moved = get32(self.cl_va + CL_OFF + k * HDR_BYTES + 4);
                 if moved != c.bytes {
@@ -1613,8 +1670,8 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         HwCaps {
             sectors: self.sectors,
             max_sectors: XFER_SECTORS as u32,
-            // No TRIM: the layer refuses a discard.
-            max_discard_sectors: 0,
+            // 0 without TRIM: the layer refuses a discard.
+            max_discard_sectors: if self.trim { TRIM_MAX_SECTORS } else { 0 },
             fua: self.fua,
         }
     }
@@ -1650,7 +1707,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         if k >= self.slots || self.claimed.load(Ordering::Acquire) >> k & 1 == 0 || !self.recovery.live() {
             return Err(());
         }
-        let (fis, write, bytes, flush, budget_us, queued) = match cmd.op {
+        let (fis, write, bytes, optional, budget_us, queued) = match cmd.op {
             HwOp::Read | HwOp::Write => {
                 let bytes = cmd.sectors as usize * SECTOR_SIZE;
                 let write = cmd.op == HwOp::Write;
@@ -1690,6 +1747,20 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
                 self.publish(&st);
                 return Ok(());
             }
+            HwOp::Discard if self.trim => {
+                if cmd.sectors == 0
+                    || cmd.sectors > TRIM_MAX_SECTORS
+                    || cmd.lba.checked_add(cmd.sectors as u64).is_none_or(|end| end > self.sectors)
+                {
+                    return Err(());
+                }
+                let mut ranges = [0u8; SECTOR_SIZE];
+                trim_ranges(cmd.lba, cmd.sectors, &mut ranges);
+                self.stage_in(k, 0, &ranges);
+                // A TRIM may erase what it deallocates before it answers:
+                // the flush's budget.
+                (dsm_trim_fis(), true, SECTOR_SIZE, true, self.b.flush_us, false)
+            }
             HwOp::Discard => return Err(()),
         };
         let prdtl = self.build_slot(k, &fis, bytes);
@@ -1699,7 +1770,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         }
         let seq = st.next_seq;
         st.next_seq = seq.wrapping_add(1);
-        st.cmd[k] = Cmd { queued, write, flush, prdtl, bytes: bytes as u32, budget_us, lba: cmd.lba, seq, retried: false };
+        st.cmd[k] = Cmd { queued, write, optional, prdtl, bytes: bytes as u32, budget_us, lba: cmd.lba, seq, retried: false };
         st.armed |= 1 << k;
         self.kick(&mut st);
         self.publish(&st);

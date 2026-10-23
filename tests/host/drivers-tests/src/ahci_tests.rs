@@ -30,6 +30,11 @@
 //! EXT, or WRITE FPDMA QUEUED with its FUA bit). A FUA write to a disk whose
 //! IDENTIFY does not advertise FUA is refused.
 //!
+//! TRIM: DATA SET MANAGEMENT (06h, Features bit 0) carries its ranges as a
+//! data-out block of 8-byte entries; the model zeroes the sectors it names
+//! (what a deallocated sector reads is the disk's choice) and logs them. A
+//! disk without TRIM in IDENTIFY aborts it.
+//!
 //! Time: while the HBA's interrupt is off, every poll of a port register
 //! makes the model's device progress (`latency` reads of `PxCI` per command);
 //! once the driver has turned the interrupt on (`GHC.IE` and `PxIE`), reads
@@ -244,6 +249,9 @@ struct Inner {
     fua: bool,
     /// What a power cut leaves of `disk`.
     durable: Vec<u8>,
+    /// IDENTIFY word 169 bit 0: TRIM; `trim_aborts`: advertised and aborted.
+    trim: bool,
+    trim_aborts: bool,
     /// Reads of `PxCI`/`PxSACT` a command takes while the HBA's interrupt is off.
     latency: u32,
     fault: Fault,
@@ -259,6 +267,8 @@ struct Inner {
     /// READ LOG EXT of the NCQ error log, answered.
     log_reads: u32,
     fua_writes: u32,
+    /// The ranges TRIM deallocated: (first sector, sectors).
+    trimmed: Vec<(u64, u32)>,
     /// `ST` 1 -> 0 transitions per port.
     stops: Vec<u32>,
     violations: Vec<String>,
@@ -726,6 +736,38 @@ impl Inner {
                     }
                 }
             }
+            0x06 => {
+                if log.features != 0x01 || !log.write || log.lba != 0 || log.count as usize * SECTOR != bytes || bytes == 0 {
+                    self.violation(format!(
+                        "DATA SET MANAGEMENT: features {:#04x}, write {}, lba {}, {} blocks for {bytes} bytes",
+                        log.features, log.write, log.lba, log.count
+                    ));
+                }
+                if !self.trim || self.trim_aborts {
+                    abort = Some(0x04);
+                } else {
+                    let mut block = vec![0u8; bytes];
+                    let mut off = 0;
+                    for &(pa, len) in &log.prds {
+                        // SAFETY: a PRD the driver named: memory it owns.
+                        unsafe { std::ptr::copy_nonoverlapping(virt(pa) as *const u8, block[off..].as_mut_ptr(), len) };
+                        off += len;
+                    }
+                    for e in block.chunks_exact(8) {
+                        let v = u64::from_le_bytes(e.try_into().unwrap());
+                        let (lba, n) = (v & 0xFFFF_FFFF_FFFF, (v >> 48) as u32);
+                        if n == 0 {
+                            continue;
+                        }
+                        if (lba + n as u64) as usize * SECTOR > self.disk.len() {
+                            self.violation(format!("TRIM range beyond the disk: {lba} + {n}"));
+                            continue;
+                        }
+                        self.disk[lba as usize * SECTOR..(lba as usize + n as usize) * SECTOR].fill(0);
+                        self.trimmed.push((lba, n));
+                    }
+                }
+            }
             0xEA => {
                 self.flushes += 1;
                 if self.flush_aborts || !self.flush_ext {
@@ -794,6 +836,9 @@ impl Inner {
             w[117] = 2048;
         }
         w[84] = 0x4000 | if self.fua { 1 << 6 } else { 0 };
+        // Major version: ATA/ATAPI-4 to ATA8-ACS (bits 4-7).
+        w[80] = 0x00F0;
+        w[169] = self.trim as u16;
         // Serial ATA capabilities: Gen1 and Gen2 speeds, and NCQ at `depth`.
         w[76] = 0x0006;
         if self.depth > 0 {
@@ -864,6 +909,8 @@ impl Mock {
             depth: 0,
             lifo: false,
             fua: false,
+            trim: false,
+            trim_aborts: false,
             latency: 2,
             fault: Fault::None,
             bad: Vec::new(),
@@ -874,6 +921,7 @@ impl Mock {
             max_in_flight: 0,
             log_reads: 0,
             fua_writes: 0,
+            trimmed: Vec::new(),
             stops: vec![0; ports],
             violations: Vec::new(),
         })));
@@ -1040,7 +1088,17 @@ fn identify_is_decoded_and_the_disks_the_driver_cannot_drive_are_refused() {
     let mut w = ident_words();
     w[60] = 0xFFFF;
     w[61] = 0x0FFF;
-    assert_eq!(decode_identify(&w), Ok(Ident { sectors: 0x12_3456, flush_ext: true, ncq_depth: 0, fua: false }));
+    assert_eq!(decode_identify(&w), Ok(Ident { sectors: 0x12_3456, flush_ext: true, ncq_depth: 0, fua: false, trim: false }));
+    // Word 169 bit 0 is TRIM, on a disk of major version 7 (word 80) or later.
+    w[169] = 1;
+    w[80] = 0x00F0;
+    assert!(decode_identify(&w).unwrap().trim);
+    w[80] = 0x0070;
+    assert!(!decode_identify(&w).unwrap().trim, "an ATA/ATAPI-6 disk");
+    w[80] = 0xFFFF;
+    assert!(!decode_identify(&w).unwrap().trim, "major version not reported");
+    w[169] = 0;
+    w[80] = 0;
     // Word 84 bit 6 is FUA, when word 84 is valid (bits 15:14 = 01b).
     w[84] = 0x4040;
     assert!(decode_identify(&w).unwrap().fua);
@@ -1087,8 +1145,8 @@ fn attach_resets_the_hba_spins_the_port_up_and_identifies_the_disk() {
     let caps = hw.caps();
     assert_eq!(caps.sectors, 256);
     assert_eq!(caps.max_sectors as usize, XFER_SECTORS);
-    assert!(!caps.fua, "SATA has no FUA outside NCQ");
-    assert_eq!(caps.max_discard_sectors, 0);
+    assert!(!caps.fua, "this disk's IDENTIFY has no FUA");
+    assert_eq!(caps.max_discard_sectors, 0, "nor TRIM");
     let log = m.log();
     assert_eq!(log.len(), 1);
     assert_eq!(log[0].cmd, 0xEC);
@@ -1278,6 +1336,7 @@ fn one_command_is_in_the_device_at_a_time() {
     assert!(hw.start(0, &big).is_err());
     let past = data_cmd(HwOp::Read, 1020, 8, &[]);
     assert!(hw.start(0, &past).is_err());
+    // No TRIM in this disk's IDENTIFY.
     assert!(hw.start(0, &HwCmd { op: HwOp::Discard, lba: 0, sectors: 8, fua: false, segs: &[] }).is_err());
     hw.release(0);
     // Nor a slot that was not claimed.
@@ -1544,7 +1603,7 @@ fn the_queue_depth_is_the_disks_the_hbas_and_the_configured_whichever_is_least()
     assert_eq!(decode_identify(&w).unwrap().ncq_depth, 8);
     w[76] = 0xFFFF;
     assert_eq!(decode_identify(&w).unwrap().ncq_depth, 0, "word 76 not implemented");
-    let id = |d| Ident { sectors: 1, flush_ext: true, ncq_depth: d, fua: false };
+    let id = |d| Ident { sectors: 1, flush_ext: true, ncq_depth: d, fua: false, trim: false };
     let cap = |slots: u32, sncq: bool| (slots - 1) << 8 | if sncq { CAP_SNCQ } else { 0 };
     assert_eq!(queue_depth(cap(32, true), &id(32)), MAX_SLOTS);
     assert_eq!(queue_depth(cap(32, true), &id(8)), 8.min(MAX_SLOTS));
@@ -1887,6 +1946,100 @@ fn a_disk_without_fua_is_not_asked_for_it() {
     assert_eq!(flush(&hw), HwStatus::Ok);
     assert_eq!(m.durable(9, 5), w);
     assert_eq!(m.with(|m| m.fua_writes), 0);
+    expect(&m, 0);
+}
+
+// ── TRIM ────────────────────────────────────────────────────────────────
+
+/// **Discriminates.** DATA SET MANAGEMENT is 06h with the TRIM bit in
+/// Features and one block in Count; a range of 70000 sectors is two entries
+/// (65535, then 4465), each the 48-bit LBA with the count in the top 16
+/// bits, little-endian, the rest of the block zero. Canaries: `<< 48` ->
+/// `<< 32` in `trim_ranges`; `f[3] = DSM_TRIM` dropped.
+#[test]
+fn the_trim_command_and_its_range_block_are_laid_out_as_the_spec_has_them() {
+    let f = dsm_trim_fis();
+    assert_eq!(&f[..14], &[0x27, 0x80, 0x06, 0x01, 0, 0, 0, 0x40, 0, 0, 0, 0, 1, 0]);
+    let mut b = [0xAAu8; 512];
+    trim_ranges(0x12_3456_789A, 70000, &mut b);
+    assert_eq!(&b[..8], &[0x9A, 0x78, 0x56, 0x34, 0x12, 0x00, 0xFF, 0xFF]);
+    let second = 0x12_3456_789Au64 + 65535;
+    let mut want = second.to_le_bytes();
+    want[6..8].copy_from_slice(&((70_000u32 - 65535) as u16).to_le_bytes());
+    assert_eq!(&b[8..16], &want);
+    assert!(b[16..].iter().all(|&x| x == 0));
+    assert_eq!(TRIM_MAX_SECTORS, 64 * 65535);
+}
+
+/// **Discriminates.** A disk whose IDENTIFY has TRIM: the driver offers
+/// discard (`max_discard_sectors`), and the request layer's discard of two
+/// ranges (one of them two range entries long) deallocates exactly those
+/// sectors and no neighbour, as DATA SET MANAGEMENT that waits for the queue
+/// of reads in the disk to drain (the model records a command that is not
+/// queued issued beside queued ones). Canaries: `max_discard_sectors: if
+/// self.trim {..} else {0}` -> `0` (the layer refuses); `trim_ranges` called
+/// with `cmd.sectors / 2`.
+#[test]
+fn a_discard_trims_exactly_its_sectors() {
+    let m = Mock::ncq(1, 0, 72_016, 32);
+    m.with(|m| m.trim = true);
+    let hw: &'static Ahci<Mock> = Box::leak(Box::new(new_ahci(&m, false)));
+    assert_eq!(hw.caps().max_discard_sectors, TRIM_MAX_SECTORS);
+    let q: &'static ReqQueue = Box::leak(Box::new(ReqQueue::new()));
+    let neighbours = || [99usize, 108, 1999, 72_000].map(|s| m.disk(s, 1));
+    let before = neighbours();
+    q.discard(hw, 10, &[(100, 8), (2000, 70_000)], true).expect("discard");
+    let mut t = m.with(|m| m.trimmed.clone());
+    t.sort();
+    assert_eq!(t, vec![(100, 8), (2000, 65535), (2000 + 65535, 70_000 - 65535)]);
+    assert!(m.disk(100, 8).iter().all(|&b| b == 0));
+    assert!(m.disk(2000, 70_000).iter().all(|&b| b == 0));
+    assert!(neighbours() == before, "a sector next to a trimmed range changed");
+    // Behind queued reads: issued once they are over.
+    if MAX_SLOTS >= 3 {
+        let tags = vec![start_read(hw, 10, 2), start_read(hw, 20, 2)];
+        let Claim::Tag(d) = hw.claim() else { panic!() };
+        hw.start(d, &HwCmd { op: HwOp::Discard, lba: 30, sectors: 4, fua: false, segs: &[] }).unwrap();
+        let st = finish(hw, &[tags[0], tags[1], d]);
+        assert_eq!(st, vec![HwStatus::Ok; 3]);
+        for t in tags {
+            hw.release(t);
+        }
+        hw.release(d);
+        assert_eq!(*cmds(&m).last().unwrap(), 0x06);
+    }
+    expect(&m, 0);
+}
+
+/// **Discriminates.** A disk without TRIM in IDENTIFY: no discard is offered,
+/// the request layer refuses one (`UNSUPPORTED`: `blkdev::discard` answers
+/// `Unsupported` and FAT32 stops asking), and the driver refuses one handed
+/// to it without touching the disk. A disk that advertises TRIM and aborts it
+/// ends `Unsupported` too, not `Io`, and carries on. Canaries:
+/// `HwOp::Discard if self.trim` -> `HwOp::Discard` (the driver sends it to
+/// the disk without TRIM, which the model aborts and logs); `optional`
+/// false for the TRIM (`Io`).
+#[test]
+fn a_disk_without_trim_is_not_asked_and_one_that_aborts_it_has_none() {
+    let m = Mock::ncq(1, 0, 256, 32);
+    let hw: &'static Ahci<Mock> = Box::leak(Box::new(new_ahci(&m, false)));
+    assert_eq!(hw.caps().max_discard_sectors, 0);
+    let q: &'static ReqQueue = Box::leak(Box::new(ReqQueue::new()));
+    assert_eq!(q.discard(hw, 10, &[(8, 8)], true), Err(Failure::Refused(azos_devif::outcome::UNSUPPORTED)));
+    let Claim::Tag(d) = hw.claim() else { panic!() };
+    assert!(hw.start(d, &HwCmd { op: HwOp::Discard, lba: 8, sectors: 8, fua: false, segs: &[] }).is_err());
+    hw.release(d);
+    assert!(!cmds(&m).contains(&0x06));
+
+    let m = Mock::ncq(1, 0, 256, 32);
+    m.with(|m| {
+        m.trim = true;
+        m.trim_aborts = true;
+    });
+    let hw = new_ahci(&m, false);
+    let (st, _) = run(&hw, &HwCmd { op: HwOp::Discard, lba: 8, sectors: 8, fua: false, segs: &[] });
+    assert_eq!(st, HwStatus::Unsupported);
+    assert_eq!(read(&hw, 8, 8), (HwStatus::Ok, m.disk(8, 8)));
     expect(&m, 0);
 }
 

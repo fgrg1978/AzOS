@@ -85,7 +85,8 @@ choice
     help
       Whether the file systems and the swap area tell the device that
       blocks they freed hold nothing worth keeping (NVMe Dataset Management
-      deallocate, virtio-blk VIRTIO_BLK_T_DISCARD), so a flash device can
+      deallocate, virtio-blk VIRTIO_BLK_T_DISCARD, SATA DATA SET MANAGEMENT
+      TRIM), so a flash device can
       erase them ahead of the next write. Used by FAT32 (the chains freed
       when a file is truncated, replaced or removed) and the swap area (a
       segment brought back). A device without the command, and a board
