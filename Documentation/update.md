@@ -9,7 +9,9 @@ Four mechanisms change a running system, from the largest unit to the smallest:
 | Signed livepatch | Individual non-sleeping kernel functions | At once, until reboot |
 | Service swap by endpoint handover | One ring-3 server | At once |
 
-A fifth piece, the rollback floor, makes the first three monotonic. Signature
+A fifth piece, the rollback floor, makes the first three monotonic. Signed
+application packages, which add programs and topology rows without replacing
+the slot, are summarised under "Application packages" below. Signature
 formats and keys are in [security.md](security.md); the decision records and
 console lines each step writes are in [observability.md](observability.md).
 
@@ -29,8 +31,9 @@ The boot volume holds two kernel slots and one recovery slot:
 |------|---------|
 | `/fat/KERN_A.BIN`, `/fat/KERN_B.BIN` | Raw kernel binaries of slots A and B; no header |
 | `KERN_A.SIG`, `KERN_B.SIG` | Their `RSIG` signature sidecars ([security.md](security.md)) |
-| `KERN_R.BIN`, `KERN_R.SIG` | The recovery slot R. OTA never writes it; `ota_inactive_slot_pure` never returns it. Boot steering can select it when the running slot fails secure-boot verification. |
+| `KERN_R.BIN`, `KERN_R.SIG` | The recovery slot R. OTA never writes it; `ota_inactive_slot_pure` never returns it. In a `SECURE_BOOT_ENFORCED` build, boot steering selects it when the running slot fails secure-boot verification and R's own signature verifies. |
 | `BOOTMETA.A`, `BOOTMETA.B` | The boot record, two files |
+| `BOOTMETA` | The same record as plain INI with no sequence number or CRC, rewritten after every record write for U-Boot (`tools/boot.cmd`, `env import -t`), which picks the slot it loads from this file |
 
 **The boot record** (`BootMeta`) is INI text: `active_slot` (`a`, `b` or `r`),
 `boot_count`, `last_good`, per-slot firmware version, image size and CRC-32,
@@ -38,7 +41,9 @@ The boot volume holds two kernel slots and one recovery slot:
 `sec_epoch_b`, `min_sec_epoch`, and a `bad_slots` mask. Each write goes to the
 older of the two files with an incremented sequence number and a CRC; a read
 takes the valid file with the higher sequence number. A power loss during a write
-leaves the other file intact, so a record is replaced atomically.
+leaves the other file intact, so a record is replaced atomically. When neither
+file is valid the kernel reads the plain `BOOTMETA` (`ota_read_boot_meta`), which
+is not authenticated, and warns once that its floor is not to be trusted.
 
 **Trial and confirmation.** A newly selected slot boots on trial:
 
@@ -48,25 +53,41 @@ leaves the other file intact, so a record is replaced atomically.
   slot and raises the anti-rollback floors to the confirmed slot's values.
 - When `boot_count` exceeds `max_attempts`, `ota_boot_validate_pure` rolls the
   active slot back to `last_good`. With nothing to roll back to, the kernel enters
-  safe mode. If `last_good` is recorded in `bad_slots` (it failed signature
-  verification) the rollback is refused rather than falling back into an unsigned
-  image.
+  safe mode. If `last_good` is recorded in `bad_slots` the rollback is refused and
+  the boot enters safe mode as well. A slot is recorded there only by a
+  `SECURE_BOOT_ENFORCED` build, which verifies the slots it is not running at
+  boot, and only when its signature is present and fails (`Failed`); a slot with
+  no sidecar, or any slot on a build without the feature, is never recorded.
 - An orderly reboot or power-off before confirmation does not count toward the
   limit (`ota_void_boot_pure`), and does not confirm the boot either.
-- The console's `ota rollback` and the `ota` endpoint's `OTA_OP_ROLLBACK` return
-  to `last_good` at the next boot; they answer `-EACCES` if that slot failed
+- The console's `ota rollback`, and `OTA.ELF rollback` through the `ota`
+  endpoint's `OTA_OP_ROLLBACK` (needs `WRITE`), return to `last_good` at the next
+  boot; they answer `-EACCES` if that slot failed
   verification.
 
-**Kernel-only install.** `ota recv <port>` (recovery console) starts a listener
-(`OTA_DEFAULT_PORT`) that receives a 24-byte `ROTA` header (magic, header
-version, size, CRC-32, firmware version, platform id, flags) followed by the raw
-kernel. The header is never stored. `tools/ota_send.py` is the sender and
-`tools/sign_ota.py` makes the signature sidecar. A kernel-only install zeroes the
-slot's epoch and withdraws any signed set of that slot, so the slot boots the
-volume's root files.
+**Kernel-only install.** `ota recv <port>` (recovery console) listens on the
+given TCP port (`tools/ota_send.py` sends to `OTA_DEFAULT_PORT`, 8080, by default)
+and receives a 24-byte `ROTA` header (magic, header version, size, CRC-32,
+firmware version, platform id, flags) followed by the raw kernel, at most
+`OTA_MAX_IMAGE_SIZE_MB`. The header is never stored and is not signed: its
+version is checked against `min_fw_version` only as an early, advisory refusal.
+`tools/ota_send.py` is the sender and `tools/sign_ota.py` makes the signature
+sidecar. The image is written to `KERN_<slot>.TMP` and verified
+(`secure_boot_verify_staged_detailed`) before it replaces the slot: a present
+signature that fails is refused on every build, an image with no usable
+signature only with `SECURE_BOOT_ENFORCED`; otherwise it is installed with a
+warning. Kconfig `OTA_SIG_MANDATORY` plays no part here: only the build reads it,
+to refuse `SECURE_BOOT_ENFORCED=y` with it off. A build with no trusted key (an all-zero `SECURE_BOOT_PUBKEY`, the
+development default) reads no sidecar, so every image is `Unverified` there. The
+floor check against the signed version runs only for a verified image. A
+kernel-only install zeroes the slot's epoch and withdraws any signed set of that
+slot, so the slot boots the volume's root files.
 
-**Boot-time verification.** The running slot's signature is checked before SMP
-bring-up; see "Secure boot and signed artefacts" in [security.md](security.md).
+**Boot-time verification.** The signature of the active slot's file on the
+volume is checked before SMP bring-up and printed on every build; only
+`SECURE_BOOT_ENFORCED` refuses to go on without `Verified`. The kernel checks the
+file, not the image U-Boot already loaded from the slot the plain `BOOTMETA`
+named. See "Secure boot and signed artefacts" in [security.md](security.md).
 
 ## Whole-system update
 
@@ -99,17 +120,19 @@ together because they share one slot.
    it arrives in the installer's package buffer, so it is at most
    `PKG_MAX_KB`). The running system is never touched. A crash, a full volume or a forged part
    leaves no marker, and "no marker" is what the switch reads as "not staged".
-   The installer holds no authority over the boot record, only a write tree on
-   `/fat/PKG` and `READ` on the `ota` endpoint (to learn the inactive slot).
+   The installer holds no authority over the boot record: its part in an update
+   is a write tree on `/fat/PKG` and `READ` on the `ota` endpoint (to learn the
+   inactive slot).
 2. **Switch** (`ota_update_switch`, reached through `OTA_OP_SWITCH` on the
-   kernel-hosted `ota` endpoint, needs `WRITE`). The stager's verdict is not a
+   kernel-hosted `ota` endpoint, needs `WRITE`; `OTA.ELF switch` is the tool). The stager's verdict is not a
    trust anchor, so `update::verify_set` runs again, with the key and floors only
    the kernel holds. The set must be in the inactive slot, the active slot must
    be the last confirmed one (`TrialPending` otherwise: switching would destroy
    the way back), and `sec_epoch` and the kernel version must not be below the
    floors (`ota_update_allowed_pure`, `SwitchRefusal`). With no update key
-   installed the switch answers `NoKey`. The switch refuses while this boot is
-   unconfirmed or another switch runs.
+   installed (an all-zero `SECURE_BOOT_PUBKEY`) the switch answers `NoKey`. The
+   switch refuses while this boot is unconfirmed (`BootUnconfirmed`) or another
+   switch runs (`Busy`).
 3. **Boot** (`ota_install_boot_set`, first thing after the volume mounts). A slot
    with a signed set makes the set's files the ones the root of the volume names,
    but only when BOOTMETA records a non-zero `sec_epoch` for the slot and the
@@ -297,9 +320,8 @@ The request is the recovery console's `swap <image path>`
    charge of the endpoints moves to the successor's domain first; the identity
    word changes, so resolve-cache entries miss on their own and a task that
    resolved the old server and calls after the flip is refused like any call to an
-   endpoint that changed server, not lost. Driver-server slots and service names
-   are handed over (`driver_adopt`, `service_adopt`), and the queued calls' wake
-   goes to the successor.
+   endpoint that changed server, not lost. Driver-server slots are handed over
+   (`driver_adopt`), and the queued calls' wake goes to the successor.
 5. **Stop** the old server, which is no longer supervised.
 
 Any step before the flip cancels: the old server serves on, its queued calls are
@@ -309,8 +331,29 @@ delivers to no one during a handover.
 
 Refused up front (`sup_swap_refused`): an image that is not a serving spawned
 image, a driver-server task (its kind is registered by the old task; a pure IPC
-server only), the console, a missing actuation gate, and safe mode. The state
+server only), a missing actuation gate, and safe mode. The state
 between servers is not transferred: the successor starts from its image.
+
+## Application packages
+
+Source: `crates/core/pkg/src`, `userspace/services/pkgd`, `userspace/services/pkg`,
+`kernel/src/boot/pkg_apply.rs`, `config/Kconfig.packages`.
+
+A package (`.azpkg`, built by `tools/azpkg.py`) is images plus the topology rows
+they ask for, signed by a signer the signed topology names. `pkg install FILE`
+(or `pkg fetch`) has `PKGD.ELF` verify and admit it and stage it as
+`XXXXXXXX.PKG` on its native volume with a journal record; nothing it decides is
+trusted by the kernel. At the next boot, before the topology is published,
+`pkg_apply` verifies and admits every staged package again, merges its rows into
+the candidate topology and writes its programs to `APPS/` after a snapshot of the
+volume. That boot is a trial judged by the same attempt count as an A/B slot:
+confirmed, or rolled back to the snapshot with the packages removed and a
+`package-install` refusal on record. The limits are Kconfig `PKG_MAX_KB`,
+`PKG_META_MAX_KB`, `PKG_MAX_IMAGES`, `PKG_MAX_STAGED`, `PKG_MAX_API` and
+`PKG_SNAPSHOTS_KEPT`; `PKG_FETCH_TFTP` (development builds only) lets `pkg fetch`
+use a TFTP source. The signature and admission rules are "Packages" in
+[security.md](security.md); the commands are under `pkgd` in
+[services.md](services.md).
 
 ## Rollback floor and its backends
 
@@ -320,10 +363,15 @@ Source: `crates/core/ota/src/floor.rs`, `crates/core/ota/src/pure.rs`,
 
 Two floors keep updates from going backwards: `min_fw_version` (the kernel's
 authenticated version) and `min_sec_epoch` (the whole system's epoch). A
-manifest or blob below the floor is refused whatever its signature. The floors
-only advance when a boot is confirmed, and they advance to the confirmed slot's
-own signed values (`ota_confirmed_epoch`), never to a number read from an
-unsigned field. Because the version in the kernel signature is the one signed
+manifest or blob below the floor is refused whatever its signature. A
+kernel-only image is held to `min_fw_version` by its signed version only when it
+verifies; an unverified one, which only a build without `SECURE_BOOT_ENFORCED`
+installs, meets the advisory header check alone. The floors only advance when a
+boot is confirmed, and they advance to the confirmed slot's own signed values:
+the authenticated version (0 for a slot installed unverified) and the slot's
+epoch (`ota_confirmed_epoch`), which BOOTMETA records and the boot accepts only
+when the signed marker in the slot's set directory carries it (otherwise the
+boot is never confirmed). Because the version in the kernel signature is the one signed
 into the manifest, a sender cannot claim a higher version for an old image to
 pin the floor.
 
