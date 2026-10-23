@@ -560,8 +560,12 @@ fn tick_board(st: &mut State, model: &azos_energy::EnergyModel, now: u64, inp: &
     let State { rt, board, .. } = st;
     #[allow(unused_mut)]
     let mut note = Note::default();
+    // The canary never ticks a board, so nothing reads the model.
     #[cfg(feature = "thermal-tick-canary")]
-    let settled = rt.last();
+    let settled = {
+        let _ = model;
+        rt.last()
+    };
     #[cfg(not(feature = "thermal-tick-canary"))]
     let settled = match board {
         #[cfg(feature = "vf2")]
