@@ -211,6 +211,30 @@ config TCP_ECN
       segment. Off: no SYN asks for ECN and none is agreed to. The same on
       riscv64, aarch64 and x86_64.
 
+config TCP_SYNCOOKIES
+    bool "TCP SYN cookies under a SYN flood (RFC 4987)"
+    default y
+    help
+      A listener whose half-open connections fill their cap (half the
+      connection table), or a table with no free slot, answers a further
+      SYN with a SYN-ACK whose sequence number is a cookie: a keyed MAC of
+      the 4-tuple, the peer's ISN and a 64 s clock, with the peer's MSS in
+      two bits (crates/net/net/src/tcp.rs, cookie_make). No slot is taken
+      until the third leg comes back with it, so a flood of spoofed SYNs
+      costs the table nothing. With Timestamps the cookie also carries the
+      Window Scale, SACK and ECN the SYN offered (in our TSval's low bits);
+      without them the connection has the MSS only. A cookie is valid for
+      64 to 128 s, and only while cookies have been sent in the last 128 s.
+      Linux and FreeBSD turn it on by default.
+
+      Off: the listener reaps its oldest half-open connection for the new
+      SYN instead (U06-7): a sustained flood churns the table but never
+      deafens the listener.
+
+      Cost when set: no RAM; one HMAC-SHA256 per SYN under pressure and per
+      third leg that matches no connection. The same on riscv64, aarch64
+      and x86_64.
+
 config NET_WAIT_SLOTS
     int "Tasks that can wait on one kind of network event at once"
     range 1 64

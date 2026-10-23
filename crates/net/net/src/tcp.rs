@@ -21,6 +21,8 @@
 ///   - ECN (RFC 3168, Kconfig `TCP_ECN`): negotiated in the handshake; a mark
 ///     is echoed until the sender says it reacted, and the sender halves its
 ///     window once per window of data
+///   - SYN cookies (RFC 4987 §3.6, Kconfig `TCP_SYNCOOKIES`): a listener whose
+///     half-open slots are all taken answers with a stateless SYN-ACK
 ///   - Simultaneous open (RFC 793 §3.4)
 
 use azos_sync::SpinLock;
@@ -1564,6 +1566,11 @@ impl TcpLayer {
         None
     }
 
+    /// Whether `alloc` would find a slot.
+    fn has_free_slot(&self) -> bool {
+        self.conns.iter().any(|c| c.state == TcpState::Closed)
+    }
+
     /// The handle of slot `idx` as it stands now.
     fn handle(&self, idx: usize) -> TcpHandle {
         TcpHandle { slot: idx as u32, gen: self.conns[idx].gen }
@@ -1681,6 +1688,166 @@ fn generate_isn(src_ip: &IpAddr, dst_ip: &IpAddr, src_port: u16, dst_port: u16) 
     // repeats for the same 4-tuple within one boot even if F() ever did.
     let ticks = azos_drv_sys::timebase::now();
     (h.wrapping_add(ticks as u32), ts_off)
+}
+
+// ---------------------------------------------------------------------------
+// SYN cookies (RFC 4987 §3.6)
+// ---------------------------------------------------------------------------
+
+/// Kconfig `TCP_SYNCOOKIES`: a listener whose half-open slots are all taken
+/// answers a SYN with a cookie instead of reaping its oldest half-open slot.
+const TCP_SYNCOOKIES: bool = azos_limits::TCP_SYNCOOKIES;
+
+/// A cookie's clock period: 64 s, Linux's. A cookie is valid in the period it
+/// was made and the next one, 64 to 128 s, a SYN-ACK retransmission budget
+/// with room to spare (`SYN_MAX_RETRIES` x `SYN_RETRY_INTERVAL_MS`).
+const COOKIE_PERIOD_TICKS: u64 = 64 * azos_drv_sys::timebase::TIMER_FREQ;
+
+/// The MSS a cookie can say, by its two-bit index: the common values, Linux's
+/// table with 1220 for the IPv6 minimum MTU. The peer's MSS is rounded down to
+/// one of them.
+const COOKIE_MSS: [u16; 4] = [536, 1220, 1440, 1460];
+
+/// Layout of a cookie, the ISS of our cookie SYN-ACK: 5 bits of the period
+/// counter, 2 of MSS index, 25 of keyed MAC over the 4-tuple, the peer's ISN,
+/// the counter and the index. A forged ACK passes with odds of 2^-25 a guess.
+const COOKIE_T_SHIFT: u32 = 27;
+const COOKIE_MSS_SHIFT: u32 = 25;
+const COOKIE_MAC_MASK: u32 = (1 << COOKIE_MSS_SHIFT) - 1;
+
+/// Without Timestamps a cookie carries only the MSS: the SYN-ACK offers
+/// nothing else, because nothing else would be remembered. With them, the
+/// low bits of our TSval (echoed back in the ACK's TSecr) carry the rest:
+/// bits 0-3 the peer's Window Scale shift (`COOKIE_NO_WSCALE`: none), bit 4
+/// SACK, bit 5 ECN (Linux's `cookie_init_timestamp`).
+const COOKIE_TS_BITS: u32 = 6;
+const COOKIE_TS_MASK: u32 = (1 << COOKIE_TS_BITS) - 1;
+const COOKIE_NO_WSCALE: u32 = 0xF;
+const COOKIE_TS_SACK: u32 = 1 << 4;
+const COOKIE_TS_ECN: u32 = 1 << 5;
+
+/// When the last cookie left, plus one; 0 while none has. A cookie ACK is
+/// checked only within two periods of it: a listener that is not under a
+/// flood does not hand out connections to whoever guesses a MAC.
+static COOKIE_SENT_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The period counter at `now`.
+fn cookie_period(now: u64) -> u32 {
+    (now / COOKIE_PERIOD_TICKS) as u32
+}
+
+/// The 25-bit MAC of a cookie: HMAC-SHA256 under the ISN secret, over a label
+/// of its own (no cookie equals the HMAC of an ISN), the 4-tuple, the peer's
+/// ISN, the period counter and the MSS index.
+fn cookie_mac(local: &IpAddr, remote: &IpAddr, lport: u16, rport: u16,
+              peer_isn: u32, period: u32, mss_idx: u32) -> u32 {
+    let secret = *ISN_SECRET.lock();
+    let mac = azos_crypto::hkdf::hmac_sha256(
+        &secret,
+        &[b"azos-tcp-syncookie", local.octets(), &lport.to_be_bytes(), remote.octets(),
+          &rport.to_be_bytes(), &peer_isn.to_be_bytes(), &period.to_be_bytes(),
+          &[mss_idx as u8]],
+    );
+    u32::from_le_bytes([mac[0], mac[1], mac[2], mac[3]]) & COOKIE_MAC_MASK
+}
+
+/// The cookie for a SYN from `remote:rport` with ISN `peer_isn` that offered
+/// `mss`, made at `now`.
+fn cookie_make(local: &IpAddr, remote: &IpAddr, lport: u16, rport: u16,
+               peer_isn: u32, mss: u16, now: u64) -> u32 {
+    let idx = COOKIE_MSS.iter().rposition(|&m| m <= mss).unwrap_or(0) as u32;
+    let t = cookie_period(now);
+    ((t & 0x1F) << COOKIE_T_SHIFT) | (idx << COOKIE_MSS_SHIFT)
+        | cookie_mac(local, remote, lport, rport, peer_isn, t, idx)
+}
+
+/// The MSS a cookie (SEG.ACK - 1 of the third leg) carries, if it is one this
+/// listener made for this 4-tuple and this peer ISN (SEG.SEQ - 1) in the
+/// current period or the one before.
+fn cookie_check(local: &IpAddr, remote: &IpAddr, lport: u16, rport: u16,
+                peer_isn: u32, cookie: u32, now: u64) -> Option<u16> {
+    let idx = (cookie >> COOKIE_MSS_SHIFT) & 0x3;
+    let t = cookie_period(now);
+    [t, t.wrapping_sub(1)].into_iter()
+        .filter(|p| p & 0x1F == cookie >> COOKIE_T_SHIFT)
+        .any(|p| cookie_mac(local, remote, lport, rport, peer_isn, p, idx)
+             == cookie & COOKIE_MAC_MASK)
+        .then_some(COOKIE_MSS[idx as usize])
+}
+
+/// Answer a SYN to listening port `lport` with a cookie SYN-ACK: no slot is
+/// taken. What the SYN offered is kept only as far as the cookie can say it.
+fn cookie_synack(mac: &[u8; 6], local: &IpAddr, remote: &IpAddr, lport: u16, rport: u16,
+                 peer_isn: u32, flags: u8, opts: &SynOptions, now: u64) {
+    let iss = cookie_make(local, remote, lport, rport, peer_isn, opts.mss, now);
+    let ecn = TCP_ECN && flags & (TCP_ECE | TCP_CWR) == TCP_ECE | TCP_CWR;
+    let (offer, ece) = match (TCP_TIMESTAMPS, opts.ts) {
+        (true, Some(tsval)) => {
+            let bits = opts.wscale.map_or(COOKIE_NO_WSCALE, |s| s as u32)
+                | if opts.sack_ok { COOKIE_TS_SACK } else { 0 }
+                | if ecn { COOKIE_TS_ECN } else { 0 };
+            // Our clock with its low bits replaced, never ahead of it: the
+            // TSvals that follow on the connection must not go backwards.
+            let off = generate_isn(local, remote, lport, rport).1;
+            let now_ts = ts_clock(now).wrapping_add(off);
+            let mut ts = (now_ts & !COOKIE_TS_MASK) | bits;
+            if (ts.wrapping_sub(now_ts) as i32) > 0 { ts = ts.wrapping_sub(1 << COOKIE_TS_BITS); }
+            (SynOffer { wscale: opts.wscale.is_some(), sack: opts.sack_ok, ts: Some((ts, tsval)) }, ecn)
+        }
+        _ => (SynOffer { wscale: false, sack: false, ts: None }, false),
+    };
+    COOKIE_SENT_AT.store(now.wrapping_add(1), core::sync::atomic::Ordering::Relaxed);
+    let flags = TCP_SYN | TCP_ACK | if ece { TCP_ECE } else { 0 };
+    send_syn_segment(mac, local, remote, lport, rport, flags, iss, peer_isn.wrapping_add(1), offer);
+}
+
+/// The third leg of a cookie handshake, an ACK to a listening port that
+/// matches no connection: a connection, Established, when SEG.ACK - 1 is a
+/// cookie this listener made for the 4-tuple and SEG.SEQ - 1. Its slot index,
+/// or `None` (not a cookie, too old, no cookie sent lately, no free slot).
+fn cookie_accept(local: &IpAddr, remote: &IpAddr, lport: u16, rport: u16, seq: u32,
+                 ack_num: u32, peer_win: u16, ts: Option<(u32, u32)>, now: u64) -> Option<usize> {
+    use core::sync::atomic::Ordering::Relaxed;
+    let sent = COOKIE_SENT_AT.load(Relaxed);
+    if sent == 0 || now.wrapping_sub(sent.wrapping_sub(1)) >= 2 * COOKIE_PERIOD_TICKS {
+        return None;
+    }
+    let iss = ack_num.wrapping_sub(1);
+    let mss = cookie_check(local, remote, lport, rport, seq.wrapping_sub(1), iss, now)?;
+    let ts_off = generate_isn(local, remote, lport, rport).1;
+    let mut t = TCP.lock();
+    let idx = t.alloc()?;
+    let c = &mut t.conns[idx];
+    c.local_ip    = *local;
+    c.local_port  = lport;
+    c.remote_ip   = *remote;
+    c.remote_port = rport;
+    c.reset_conn_state();
+    c.set_iss(ack_num);
+    c.ack         = seq;
+    c.remote_mss  = mss;
+    c.ts_off      = ts_off;
+    // With Timestamps the ACK echoes the TSval whose low bits hold the rest.
+    if let (true, Some((tsval, tsecr))) = (TCP_TIMESTAMPS, ts) {
+        let bits = tsecr & COOKIE_TS_MASK;
+        c.ts_ok        = true;
+        c.ts_recent    = tsval;
+        c.ts_recent_at = now;
+        if bits & COOKIE_NO_WSCALE != COOKIE_NO_WSCALE {
+            c.wscale_ok  = true;
+            c.snd_wscale = ((bits & COOKIE_NO_WSCALE) as u8).min(TCP_WSCALE_MAX);
+            c.rcv_wscale = RCV_WSCALE;
+        }
+        c.sack_ok = bits & COOKIE_TS_SACK != 0;
+        c.ecn_ok  = TCP_ECN && bits & COOKIE_TS_ECN != 0;
+    }
+    c.state         = TcpState::Established;
+    // What our SYN-ACK advertised (unscaled), as on the stateful path.
+    c.rcv_adv       = c.ack.wrapping_add(TCP_WINDOW_SIZE as u32);
+    c.remote_window = (peer_win as u32) << c.snd_wscale;
+    c.ts_last_ack   = c.ack;
+    c.open_window();
+    Some(idx)
 }
 
 // ---------------------------------------------------------------------------
@@ -3637,6 +3804,16 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
         // does a SYN open a connection.
         if flags & TCP_RST != 0 { return; }
         if flags & TCP_ACK != 0 {
+            // The third leg of a cookie handshake (RFC 4987 §3.6): the slot is
+            // made now, and this segment then goes through it as the first one
+            // of the connection, data and all.
+            if TCP_SYNCOOKIES && flags & TCP_SYN == 0
+                && cookie_accept(&ip, src_ip, dst_port, src_port, seq, ack_num, peer_win,
+                                 ts_in, now).is_some()
+            {
+                timer_kick();
+                return handle(src_ip, dst_ip, data, ce);
+            }
             send_rst(&mac, &ip, src_ip, dst_port, src_port, flags, seq, ack_num, 0);
             return;
         }
@@ -3659,6 +3836,15 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                 }
                 n
             };
+            // Cookies: the half-open slots are all taken, or the table is
+            // full. The SYN-ACK is stateless; the slot waits for the third leg.
+            if TCP_SYNCOOKIES
+                && (half_open >= MAX_HALF_OPEN_PER_LISTENER || !TCP.lock().has_free_slot())
+            {
+                let peer_opts = parse_syn_options(data, off);
+                cookie_synack(&mac, &ip, src_ip, dst_port, src_port, seq, flags, &peer_opts, now);
+                return;
+            }
             if half_open >= MAX_HALF_OPEN_PER_LISTENER {
                 // U06-7: a SYN trickle at or below the reaper's own cadence
                 // (one every `SYN_MAX_RETRIES` x `SYN_RETRY_INTERVAL_MS` =
@@ -3667,9 +3853,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                 // never deafen the listener permanently", which held only for
                 // a single burst, not a sustained trickle. The audit's [rec]
                 // is SYN cookies (stateless until the third leg, once the ISN
-                // is the HMAC from U06-6); that is a bigger change than fits
-                // here, so this is the documented fallback it names instead:
-                // reap the OLDEST half-open slot for this listener and let
+                // is the HMAC from U06-6); with Kconfig TCP_SYNCOOKIES (above)
+                // they answer instead. Without them this is the fallback it
+                // names: reap the OLDEST half-open slot for this listener and let
                 // the new SYN take it. An attacker sending one SYN per
                 // reaped slot still churns the table indefinitely (no CPU or
                 // memory cost beyond today's), but a legitimate client is no

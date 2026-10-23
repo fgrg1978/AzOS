@@ -572,6 +572,11 @@ mod tcp_timestamps;
 #[cfg(test)]
 mod tcp_ecn;
 
+/// SYN cookies (RFC 4987): a listener at its half-open cap answers without
+/// state, and the third leg that brings the cookie back is the connection.
+#[cfg(test)]
+mod tcp_syncookies;
+
 /// The send window, congestion control and loss recovery, and the RFC 793
 /// replies around a connection; and a simulated link between two endpoints
 /// that measures what the window delivers per round trip.
