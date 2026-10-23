@@ -18212,10 +18212,10 @@ PYEOF
         local kcopy="$CI_LOG_DIR/kernel-usb-reset-$mode-$isa"
         if [ "$isa" = riscv64 ]; then
             dsrc=$AZOS_OUT/build/disk.img
-            kbuild "qemu,pci,usb-storage,chaos" || return; ci_kernel_check || return; cp "$KERNEL" "$kcopy"
+            kbuild "qemu,pci,usb-xhci,usb-storage,chaos" || return; ci_kernel_check || return; cp "$KERNEL" "$kcopy"
         else
             dsrc=$AZOS_OUT/build/disk-aarch64.img
-            a64_kbuild "qemu,pci,usb-storage,chaos" || return; a64_kernel_check || return; cp "$A64_IMG" "$kcopy"
+            a64_kbuild "qemu,pci,usb-xhci,usb-storage,chaos" || return; a64_kernel_check || return; cp "$A64_IMG" "$kcopy"
         fi
         fresh_disk "$dsrc" || return
         cp "$dsrc.pristine" "$stick"
@@ -21184,12 +21184,12 @@ args vk1 'vk 2'" 40 \
             "[VIRTIO-SND] " "beep: 12 of 12 periods played"
         # USB mass storage with its volume (helpers above `usb_stick_image`).
         # The USB features are not `base` ones: a gate build names them.
-        par_row usb_mount_row "usb: stick volume mounted beside /fat ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-storage-volume"
+        par_row usb_mount_row "usb: stick volume mounted beside /fat ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-xhci,usb-storage-volume"
         par "usb: crash log exported to the stick ($ush_isa)" usb_export_row \
             "usb: crash log exported to the stick ($ush_isa)" "usb: exported log on the stick, volume clean ($ush_isa)" \
-            "$ush_isa" "$ush_feat,pci,usb-storage-volume"
-        par_row usb_pkg_row "usb: a package on the stick reaches the installer ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-storage-volume"
-        par_row usb_unplug_row "usb: pulled stick retires its volume ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-storage-volume"
+            "$ush_isa" "$ush_feat,pci,usb-xhci,usb-storage-volume"
+        par_row usb_pkg_row "usb: a package on the stick reaches the installer ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-xhci,usb-storage-volume"
+        par_row usb_unplug_row "usb: pulled stick retires its volume ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-xhci,usb-storage-volume"
         # The input server (Kconfig INPUTD, on in the QEMU defconfigs): `input
         # watch` takes the focus and prints what the virtio keyboard sends, the
         # keys that make console bytes included (`q`, `x`) and the ones that do
