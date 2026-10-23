@@ -2290,6 +2290,40 @@ impl IoPorts {
     }
 }
 
+/// What [`nicq_attach`] answers: the interface's MAC, the longest frame a
+/// slot carries and the stamp the receive descriptors carry
+/// (`azos_abi::nic_queue::STAMP_HW` or `STAMP_SW`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NicqAttached {
+    pub mac: [u8; 6],
+    pub frame_max: usize,
+    pub stamp: u8,
+}
+
+/// Take the NIC queue the `ty::NIC_QUEUE` handle `queue` names from the
+/// kernel's stack and run it on the rings in the regions `rx` (the kernel
+/// fills it; the handle needs `WRITE`) and `tx` (the kernel drains it;
+/// `READ`): `DEVICE_NICQ_ATTACH`. The kernel writes each ring's geometry into
+/// its header (`azos_abi::nic_queue`), so the caller builds its views with
+/// `SpscBytes::from_header` after this returns. `Err` the `-Errno`.
+pub fn nicq_attach(queue: u32, rx: u32, tx: u32) -> Result<NicqAttached, isize> {
+    let (rc, r) = invoke(queue, invoke_abi::DEVICE_NICQ_ATTACH, [rx as u64, tx as u64, 0, 0]);
+    if rc < 0 {
+        return Err(rc);
+    }
+    Ok(NicqAttached {
+        mac: azos_abi::nic_queue::mac_of_word(r[0]),
+        frame_max: r[1] as usize,
+        stamp: r[2] as u8,
+    })
+}
+
+/// Send what this task pushed on the transmit ring of its attached queue
+/// `queue` (`DEVICE_NICQ_KICK`). The frames sent, or `-Errno`.
+pub fn nicq_kick(queue: u32) -> isize {
+    invoke(queue, invoke_abi::DEVICE_NICQ_KICK, [0; 4]).0
+}
+
 // ---- Driver server: serve a driver `kind` from userspace (E11.AQ3) ----
 
 /// Find the handle of a capability this task already holds.

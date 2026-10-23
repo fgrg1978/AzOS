@@ -8,8 +8,9 @@ use azos_topology::default_minimal;
 
 /// **The row is the whole of the daemon's authority**: `WRITE` on the kernel's
 /// `clock` endpoint (`Clock::sample` moves time; no `READ`, so it claims no
-/// service, and no `transfer`: it lends the right to nobody) and the
-/// kernel's view of the `[clock]` row (`inspect.clock`). The row exists,
+/// service, and no `transfer`: it lends the right to nobody), the
+/// kernel's view of the `[clock]` row (`inspect.clock`) and, with Kconfig
+/// `PTPD_NIC_QUEUE`, queue 0 of that interface (`READ|WRITE`, the attach's). The row exists,
 /// and starts, only with Kconfig `PTPD`, and then the built-in topology also
 /// declares the `[clock]` row naming the domain the daemon serves.
 ///
@@ -17,7 +18,7 @@ use azos_topology::default_minimal;
 /// red (it would claim to be the clock service, not a caller of it). With
 /// `PTPD` off the test checks only that no row and no clock row exist.
 #[test]
-fn the_daemon_row_writes_clock_and_reads_the_root() {
+fn the_daemon_row_writes_clock_and_reads_the_clock_view() {
     let t = default_minimal();
     assert_eq!(t.admission_check(), Ok(()));
     let row = t.tasks().iter().find(|r| r.name.as_bytes() == azos_topology::builder::TASK_PTPD_IMAGE);
@@ -27,10 +28,16 @@ fn the_daemon_row_writes_clock_and_reads_the_root() {
         return;
     };
     let caps = t.caps_of(row);
-    assert_eq!(caps.len(), 2);
+    let nicq = azos_limits::PTPD_NIC_QUEUE;
+    assert_eq!(caps.len(), if nicq == 0 { 2 } else { 3 }, "a NIC queue exactly when Kconfig PTPD_NIC_QUEUE names one");
     assert_eq!((caps[0].kind, caps[0].perms, caps[0].transfer), (CapKind::Endpoint, CapPerms::WRITE, false));
     assert_eq!(caps[0].target.as_bytes(), b"clock");
-    assert_eq!((caps[1].kind, caps[1].perms), (CapKind::Node, CapPerms::READ), "the read-only root");
+    assert_eq!((caps[1].kind, caps[1].perms), (CapKind::MemObj, CapPerms::READ.union(CapPerms::MAP)), "the [clock] view");
+    assert_eq!(caps[1].target.as_bytes(), b"inspect.clock");
+    if nicq != 0 {
+        assert_eq!((caps[2].kind, caps[2].perms, caps[2].transfer), (CapKind::Device, CapPerms::RW, false));
+        assert_eq!(caps[2].target.as_bytes(), format!("nicq.eth{nicq}.0").as_bytes(), "queue 0 of the configured interface");
+    }
     assert!(row.start, "the kernel starts it with the row");
     assert_eq!(t.clock().ptp_domain, Some(azos_limits::PTPD_DOMAIN as u8), "the domain it serves is the [clock] row's");
 }

@@ -1386,11 +1386,14 @@ mod image_profiles {
             src!("userspace/services/audiod/src/mixer.rs"),
             src!("userspace/services/audiod/src/server.rs"),
         ]),
-        // The PTP daemon: its loop, and the engine, codec and helpers beside
-        // it (which issue no call of their own).
+        // The PTP daemon: its loop, its NIC queue (the rings, the attach, the
+        // kick, the wait), and the engine, codec and helpers beside it (which
+        // issue no call of their own).
         ("PTPD.ELF", Lang::Rust, &[
             src!("userspace/services/ptpd/src/main.rs"),
+            src!("userspace/services/ptpd/src/queue.rs"),
             src!("userspace/services/ptpd/src/bmc.rs"),
+            src!("userspace/services/ptpd/src/l2.rs"),
             src!("userspace/services/ptpd/src/link.rs"),
             src!("userspace/services/ptpd/src/port.rs"),
             src!("userspace/services/ptpd/src/wire.rs"),

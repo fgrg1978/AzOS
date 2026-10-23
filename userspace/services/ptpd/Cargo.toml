@@ -4,12 +4,15 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The AzOS PTP daemon (ring 3): an IEEE 1588 slave over UDP (ports 319 and 320) with software timestamps, best-master-clock selection and the mean path delay measured end to end. It offers each measurement to the kernel's Clock interface (SOURCE_PTP), which filters, slews or steps the wall clock; the domain it serves is the topology's [clock] row. Excluded from workspace; built standalone."
+description = "The AzOS PTP daemon (ring 3): an IEEE 1588 slave over Ethernet on the NIC queue its row grants (timestamps taken at the driver), else over UDP (ports 319 and 320) with software timestamps, best-master-clock selection and the mean path delay measured end to end. It offers each measurement to the kernel's Clock interface (SOURCE_PTP), which filters, slews or steps the wall clock; the domain it serves is the topology's [clock] row. Excluded from workspace; built standalone."
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
 azos_inspect_lib = { path = "../../lib/inspect" }
 azos_abi = { path = "../../../crates/core/abi" }
+# `NET_MAX_INTERFACES` (the interfaces a row's NIC queue may name) and
+# `PTPD_RING_SLOTS` (the size of its rings).
+azos_limits = { path = "../../../crates/core/limits" }
 
 [profile.release]
 opt-level = "s"

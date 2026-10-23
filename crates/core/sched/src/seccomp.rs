@@ -1186,21 +1186,25 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // The PTP daemon (Kconfig PTPD). One thread. Its view region is mapped
     // (`MEMOBJ_ACQUIRE`, `SYS_MO_MAP`) for its domain, the console written. Two UDP sockets (create,
     // bind, join the PTP group, send, receive; `DOMAIN_NET_GETIP` for the
-    // address its clock identity is made of). Each measurement is one call on the kernel's
+    // address its clock identity is made of), or the NIC queue its row grants:
+    // the two ring regions it makes (`SYS_MO_CREATE`, `SYS_MO_MAP`, and
+    // `SYS_MO_UNMAP` for one it could not map), the attach, the transmit kick
+    // and the wait on the receive ring (`SYS_FUTEX_WAIT`). Each measurement is one call on the kernel's
     // `clock` interface (`SYS_IPC_CALL_V2` through the endpoint `SYS_CAP_INFO`
     // finds), `SYS_SLEEP_UNTIL` the idle wait, the clock read `DOMAIN_UPTIME`
-    // where the vDSO has no counter. No heap, no spawn, no thread, no device, no
-    // file write: it holds the right to move time and passes none of it on.
+    // where the vDSO has no counter. No heap, no spawn, no thread, no file
+    // write: it holds the right to move time and passes none of it on.
     ImageProfile {
         image: "PTPD.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_MO_MAP, SYS_SLEEP_UNTIL,
+            SYS_EXIT, SYS_INVOKE, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_SLEEP_UNTIL, SYS_FUTEX_WAIT,
             SYS_IPC_CALL_V2, SYS_CAP_INFO, SYS_CAP_CLOSE,
         ],
         audit: false,
         ops: inv_ops![MEMOBJ_ACQUIRE, 
             LOG_CONSOLE_WRITE, DOMAIN_UPTIME, DOMAIN_PLEDGE,
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_MCAST_JOIN, NODE_SENDTO, NODE_RECVFROM,
+            DEVICE_NICQ_ATTACH, DEVICE_NICQ_KICK,
         ],
         ifaces: &[azos_devif::key::CLOCK],
     },

@@ -13,24 +13,28 @@
 //! `bmc.rs`, tested on the host (`tests/host/ptpd-tests`); this file is the
 //! host it runs on and the loop around it.
 //!
-//! **Transport**: IEEE 1588 over UDP, the multicast group 224.0.1.129 on ports
-//! 319 (event) and 320 (general). 802.1AS (gPTP) over raw Ethernet is not
-//! here: it needs a packet socket, which the kernel keeps to itself.
+//! **Transport**: IEEE 1588 over Ethernet (Annex F, EtherType 0x88F7, `l2.rs`)
+//! on the NIC queue the row grants (`queue.rs`, Kconfig `PTPD_NIC_QUEUE`),
+//! when the kernel hands it over; else over UDP, the multicast group
+//! 224.0.1.129 on ports 319 (event) and 320 (general).
 //!
 //! **Domain**: the `ptp_domain` of the `[clock]` row of the topology. A node
 //! whose row declares none takes no part in PTP: the program says so and ends.
 //!
-//! One thread: it drains the sockets, runs the timers and sleeps a millisecond
-//! when nothing arrived. Software timestamps are taken after the datagram is
-//! taken off the socket, so the poll period bounds their accuracy (see
-//! `port.rs`).
+//! One thread: it drains the queue or the sockets, runs the timers and sleeps a
+//! millisecond when nothing arrived. On the NIC queue every timestamp is the
+//! queue's, read where the frame crossed the driver. Over UDP they are taken
+//! after the datagram is taken off the socket, so the poll period bounds their
+//! accuracy (see `port.rs`).
 
 #![no_std]
 #![no_main]
 
 mod bmc;
+mod l2;
 mod link;
 mod port;
+mod queue;
 mod wire;
 
 use azos_abi::invoke::{pledge_case, pledge_class, CLASS_NET, CLASS_READ, CLASS_WRITE};
@@ -92,25 +96,42 @@ fn read_domain() -> Option<u64> {
     tree.read_u64("clock/ptp_domain").ok()?
 }
 
+/// What the messages travel on.
+enum Link {
+    /// The NIC queue of the row.
+    Eth(queue::Queue),
+    /// UDP sockets: one bound to the event port, in the group, one to the
+    /// general port.
+    Udp { event: u32, general: u32 },
+}
+
 /// The kernel as the engine sees it.
 struct Env {
     clock: ClockClient<Ep>,
-    /// UDP socket bound to the event port, in the group.
-    event: u32,
-    /// ... and to the general port.
-    general: u32,
+    link: Link,
 }
 
 fn wall() -> i128 {
     sys::clock_now(ClockId::REAL).map_or(0, |t| t as i128)
 }
 
+/// The wall time of a stamp on the monotonic clock.
+fn wall_of(stamp_ns: u64) -> i128 {
+    l2::wall_of(stamp_ns, wall(), sys::vdso_now_ns())
+}
+
 impl Host for Env {
     fn send(&mut self, msg: &[u8]) -> Option<i128> {
-        // The software transmit timestamp: as late as the call allows. Only
-        // Delay_Req is sent, and it is an event message.
-        let t = wall();
-        (sys::sendto_typed(self.event, msg, Some(&sys::sockaddr_in(link::GROUP, link::PORT_EVENT))) > 0).then_some(t)
+        // Only Delay_Req is sent, and it is an event message.
+        match &mut self.link {
+            // The queue's departure stamp.
+            Link::Eth(q) => q.send(msg).map(wall_of),
+            Link::Udp { event, .. } => {
+                // The software transmit timestamp: as late as the call allows.
+                let t = wall();
+                (sys::sendto_typed(*event, msg, Some(&sys::sockaddr_in(link::GROUP, link::PORT_EVENT))) > 0).then_some(t)
+            }
+        }
     }
 
     fn sample(&mut self, offset_ns: i64, delay_ns: u64) -> Sampled {
@@ -175,9 +196,27 @@ fn open() -> (u32, u32, [u8; 8]) {
 /// Take what is queued on the medium: each message goes to the engine with its
 /// arrival time. Whether anything came.
 fn drain(env: &mut Env, port: &mut Port) -> bool {
+    if matches!(env.link, Link::Eth(_)) {
+        let mut f = [0u8; queue::FRAME_MAX];
+        let mut any = false;
+        for _ in 0..2 * BURST {
+            let got = match &mut env.link {
+                Link::Eth(q) => q.recv(&mut f),
+                Link::Udp { .. } => None,
+            };
+            let Some((n, stamp)) = got else { break };
+            any = true;
+            // The arrival time is the queue's stamp.
+            if let Some(msg) = l2::message(&f[..n]) {
+                port.rx(env, stamp, wall_of(stamp), msg);
+            }
+        }
+        return any;
+    }
+    let Link::Udp { event, general } = env.link else { return false };
     let mut buf = [0u8; RX_MAX];
     let mut any = false;
-    for sock in [env.event, env.general] {
+    for sock in [event, general] {
         for _ in 0..BURST {
             let n = sys::recvfrom_typed(sock, &mut buf, None);
             if n <= 0 {
@@ -203,12 +242,31 @@ fn main() -> ! {
         say(format_args!("[ptpd] the row holds no clock endpoint: nothing to steer, not running (a topology to fix, not a failure to restart)"));
         sys::exit(0);
     };
-    let (event, general, identity) = open();
-    say(format_args!("[ptpd] domain {}, IEEE 1588 over UDP", domain));
-    let mut env = Env { clock: ClockClient::new(Ep(ep)), event, general };
+    let (link, identity) = match queue::Queue::open(azos_limits::PTPD_RING_SLOTS as u32) {
+        Ok(q) => {
+            say(format_args!(
+                "[ptpd] domain {}, IEEE 1588 over Ethernet on the row's NIC queue ({:02x?}), stamped at the driver",
+                domain, q.mac
+            ));
+            let id = l2::mac_identity(q.mac);
+            (Link::Eth(q), id)
+        }
+        Err(why) => {
+            match why {
+                queue::Unused::NotGranted => {}
+                queue::Unused::NoMemory => say(format_args!("[ptpd] no memory for the NIC queue's rings: UDP instead")),
+                queue::Unused::Refused(e) => say(format_args!("[ptpd] the kernel keeps the row's NIC queue (rc={}): UDP instead", e)),
+            }
+            let (event, general, identity) = open();
+            say(format_args!("[ptpd] domain {}, IEEE 1588 over UDP", domain));
+            (Link::Udp { event, general }, identity)
+        }
+    };
+    let mut env = Env { clock: ClockClient::new(Ep(ep)), link };
     let mut port = Port::new(Config { domain, identity });
-    // Setup is over: the program holds its sockets, its endpoint and its
-    // console. Narrow to the steady state; a failure leaves it as wide as it was.
+    // Setup is over: the program holds its queue or its sockets, its endpoint
+    // and its console. Narrow to the steady state; a failure leaves it as wide
+    // as it was.
     if sys::pledge(STEADY) < 0 {
         say(format_args!("[ptpd] cannot narrow to the steady state: running with the full call set"));
     }
@@ -216,7 +274,10 @@ fn main() -> ! {
         let got = drain(&mut env, &mut port);
         port.tick(&mut env, sys::vdso_now_ns());
         if !got {
-            sys::sleep(IDLE_MS);
+            match &mut env.link {
+                Link::Eth(q) => q.wait(IDLE_MS),
+                Link::Udp { .. } => sys::sleep(IDLE_MS),
+            }
         }
     }
 }

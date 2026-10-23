@@ -3072,8 +3072,25 @@ pub const TASK_PTPD_IMAGE: &[u8] = b"PTPD.ELF";
 /// starts at boot with the row.
 pub const PTPD_ROW: bool = azos_limits::PTPD;
 /// Frame budget of `PTPD.ELF`: image, stack, page tables and the receive
-/// buffers on its stack; it has no heap.
-const PTPD_MEM_PAGES: u32 = 32;
+/// buffers on its stack (it has no heap), and the two rings of its NIC queue
+/// when the row grants one ([`PTPD_RING_UNITS`]).
+const PTPD_MEM_PAGES: u32 = 32 + if PTPD_NIC_QUEUE == 0 { 0 } else { PTPD_RING_UNITS };
+/// The interface whose queue 0 the row grants (Kconfig `PTPD_NIC_QUEUE`, `ethN`;
+/// 0: none, the daemon runs over UDP).
+const PTPD_NIC_QUEUE: u8 = azos_limits::PTPD_NIC_QUEUE as u8;
+/// Topology pages of the daemon's two rings (Kconfig `PTPD_RING_SLOTS` frames
+/// each), whole base pages each.
+const PTPD_RING_UNITS: u32 = {
+    let page = 1u64 << azos_limits::PAGE_SHIFT;
+    let frames = (azos_abi::nic_queue::ring_bytes(azos_limits::PTPD_RING_SLOTS as u32) as u64).div_ceil(page);
+    crate::memory::units_for(2 * frames, page) as u32
+};
+/// The row's NIC queue target, `nicq.eth<PTPD_NIC_QUEUE>.0`.
+const PTPD_NICQ_TARGET: [u8; 11] = {
+    let mut t = *b"nicq.eth0.0";
+    t[8] = b'0' + PTPD_NIC_QUEUE;
+    t
+};
 /// The kernel's clock interface (`azos_devif::clock`): the bare interface
 /// name, no resource.
 const RESOURCE_CLOCK: &[u8] = b"clock";
@@ -3085,11 +3102,20 @@ const RESOURCE_VOLUME_BOOT: &[u8] = b"volume.0";
 const RESOURCE_SOUND: &[u8] = b"sound.0";
 /// `PTPD.ELF`'s authority: `WRITE` on `clock` (`Clock::sample` moves the wall
 /// clock) and the kernel's view of the `[clock]` row ([`INSPECT_CLOCK_CAP`]:
-/// the domain). The sockets of its transport are not capabilities of the row.
-const PTPD_CAPS: &[CapSpec] = &[
-    CapSpec { kind: CapKind::Endpoint, perms: CapPerms::WRITE, target: MaybeStr::from_bytes(RESOURCE_CLOCK), transfer: false, ops: 0 },
-    INSPECT_CLOCK_CAP,
-];
+/// the domain), and with Kconfig `PTPD_NIC_QUEUE` the NIC queue it runs IEEE
+/// 1588 over Ethernet on (`READ|WRITE`, the attach's rights). The sockets of
+/// its UDP transport are not capabilities of the row.
+const PTPD_CAPS: &[CapSpec] = if PTPD_NIC_QUEUE == 0 {
+    &[PTPD_CLOCK_CAP, INSPECT_CLOCK_CAP]
+} else {
+    &[
+        PTPD_CLOCK_CAP,
+        INSPECT_CLOCK_CAP,
+        CapSpec { kind: CapKind::Device, perms: CapPerms::RW, target: MaybeStr::from_bytes(&PTPD_NICQ_TARGET), transfer: false, ops: 0 },
+    ]
+};
+const PTPD_CLOCK_CAP: CapSpec =
+    CapSpec { kind: CapKind::Endpoint, perms: CapPerms::WRITE, target: MaybeStr::from_bytes(RESOURCE_CLOCK), transfer: false, ops: 0 };
 
 /// The audio server's image (`userspace/services/audiod`).
 pub const TASK_AUDIOD_IMAGE: &[u8] = b"AUDIOD.ELF";
