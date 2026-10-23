@@ -32,7 +32,7 @@ build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
 build-fleet: $(IMAGE_HASHES_BOARD) $(OUT_BUILD)/disk-board-fleet.img
 	$(call require_board_key,FLEET)
 	$(call check_board_priv_if_given,FLEET)
-	@$(MAKE) defconfig-fleet
+	@$(MAKE) defconfig-generic-server-riscv64+board-generic
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
 	RUSTFLAGS="$(FLEET_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags .config)" \
 	$(CARGO) build $(CARGO_FLAGS) -p azos_kernel --features board-image \
@@ -43,10 +43,10 @@ build-fleet: $(IMAGE_HASHES_BOARD) $(OUT_BUILD)/disk-board-fleet.img
 # Build the minimal hello.elf user-space test binary + GPIO ring-3 driver.
 # ── VisionFive 2 targets ──────────────────────────────────────────────────────
 
-# U12-2: expand config/defconfigs/vf2.config the way `aarch64:` expands its own
+# U12-2: expand config/defconfigs/robot-sbc-riscv64+vf2.config the way `aarch64:` expands its own
 # profile, instead of building from whatever the workspace `.config` happens
-# to hold. Before this, `vf2:` never read config/defconfigs/vf2.config at all — only
-# comments referenced it — so a VF2 image built after `make defconfig-edge`
+# to hold. Before this, `vf2:` never read config/defconfigs/robot-sbc-riscv64+vf2.config at all — only
+# comments referenced it — so a VF2 image built after `make defconfig-generic-sbc-riscv64-dev`
 # (BOARD_QEMU, RAM_SIZE=256) shipped an 8 GiB board's `azos_limits` with
 # QEMU's 256 MiB expected-RAM bound, silently.
 # The config of each vf2 variant: the profile, the lines the variant adds
@@ -63,7 +63,7 @@ VF2_EXTRA_dev    := CONFIG_BUILD_TYPE_DEV=y
 # wall time); on the board the hold times are real, so the ktest image enforces.
 VF2_EXTRA_ktest  := CONFIG_BUILD_TYPE_DEV=y CONFIG_KTEST=y CONFIG_TOPOLOGY_SOURCE_BUILTIN=y CONFIG_LOCKDEP_HOLD_ENFORCE=y
 VF2_EXTRA_pstore := CONFIG_BUILD_TYPE_DEV=y CONFIG_PSTORE_SIZE_KB=4
-VF2_KCONFIG_DEPS := config/defconfigs/vf2.config \
+VF2_KCONFIG_DEPS := config/defconfigs/robot-sbc-riscv64+vf2.config \
 		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
 
 # What a variant adds is a stamp its config depends on (rewritten only when the
@@ -76,13 +76,13 @@ $(OUT_BUILD)/vf2-%.extra: FORCE
 
 $(OUT_BUILD)/vf2.config: $(VF2_KCONFIG_DEPS)
 	@mkdir -p $(OUT_BUILD)
-	cp config/defconfigs/vf2.config $@
+	cp config/defconfigs/robot-sbc-riscv64+vf2.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_BOARD_VF2=y$$' $@ || { echo "[VF2] $@ lost CONFIG_BOARD_VF2"; exit 1; }
 
 $(VF2_VARIANT_CONFIGS): $(OUT_BUILD)/vf2-%.config: $(VF2_KCONFIG_DEPS) $(OUT_BUILD)/vf2-%.extra
 	@mkdir -p $(OUT_BUILD)
-	cp config/defconfigs/vf2.config $@
+	cp config/defconfigs/robot-sbc-riscv64+vf2.config $@
 	@for l in $(VF2_EXTRA_$*); do echo "$$l" >> $@; done
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_BOARD_VF2=y$$' $@ || { echo "[VF2] $@ lost CONFIG_BOARD_VF2"; exit 1; }
@@ -155,18 +155,18 @@ vf2-console:
 K1_KCONFIG := $(OUT_BUILD)/k1.config
 
 # The fleet profile expanded on its own (wave 15): `build-fleet` expands it
-# into the workspace .config (`defconfig-fleet`); its volume's topology is
+# into the workspace .config (`defconfig-generic-server-riscv64+board-generic`); its volume's topology is
 # emitted from this copy, which the same defconfig yields.
-$(OUT_BUILD)/fleet.config: config/defconfigs/fleet.config \
+$(OUT_BUILD)/fleet.config: config/defconfigs/generic-server-riscv64+board-generic.config \
 		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
 	@mkdir -p $(OUT_BUILD)
-	cp config/defconfigs/fleet.config $@
+	cp config/defconfigs/generic-server-riscv64+board-generic.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 
-$(K1_KCONFIG): config/defconfigs/k1.config \
+$(K1_KCONFIG): config/defconfigs/robot-sbc-riscv64+k1.config \
 		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
 	@mkdir -p $(OUT_BUILD)
-	cp config/defconfigs/k1.config $@
+	cp config/defconfigs/robot-sbc-riscv64+k1.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_BOARD_K1=y$$' $@ || { echo "[K1] $@ lost CONFIG_BOARD_K1"; exit 1; }
 
@@ -253,18 +253,29 @@ oldconfig:
 olddefconfig:
 	$(PYTHON) -m olddefconfig
 
+# A committed config/defconfigs/NAME.config, else NAME assembled from the
+# fragments under config/fragments/ (tools/gen_defconfigs.py: the name is
+# <preset>-<hwclass>-<arch>[-<build>][+<overlay>...]).
 defconfig-%:
-	@cp $(KCONFIG_DEFCONFIG_DIR)/$*.config $(KCONFIG_CONFIG)
-	@$(PYTHON) -m olddefconfig
+	@if [ -f $(KCONFIG_DEFCONFIG_DIR)/$*.config ]; then cp $(KCONFIG_DEFCONFIG_DIR)/$*.config $(KCONFIG_CONFIG); \
+	else $(PYTHON) tools/gen_defconfigs.py --print '$*' >$(KCONFIG_CONFIG).new && mv $(KCONFIG_CONFIG).new $(KCONFIG_CONFIG); fi
+	@KCONFIG_CONFIG=$(KCONFIG_CONFIG) $(PYTHON) -m olddefconfig
 	@echo "[CONFIG] active = $*"
+
+# The committed defconfigs, regenerated from their fragments (`make lint`
+# checks them with --check).
+.PHONY: defconfigs
+defconfigs:
+	$(PYTHON) tools/gen_defconfigs.py
 
 .PHONY: savedefconfig
 savedefconfig:
-	$(PYTHON) -m savedefconfig --out $(KCONFIG_DEFCONFIG_DIR)/last_saved.config
+	@mkdir -p $(OUT_BUILD)
+	$(PYTHON) -m savedefconfig --out $(OUT_BUILD)/last_saved.config
 
 $(KCONFIG_CONFIG):
-	@echo "[CONFIG] no .config — falling back to edge defconfig"
-	@$(MAKE) defconfig-edge
+	@echo "[CONFIG] no .config — falling back to generic-sbc-riscv64-dev"
+	@$(MAKE) defconfig-generic-sbc-riscv64-dev
 
 # The development QEMU kernels' configuration (see `build`): `.config` at
 # QEMU_LOG_LEVEL. Re-derived on every make, replaced only when it changed
@@ -334,7 +345,7 @@ aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	@$(MAKE) --no-print-directory prune
 
 # ── Raspberry Pi 5 (BCM2712, aarch64) — not ported ──────────────────────────
-# `make defconfig-rpi5` selects the board in .config. `make rpi5` expands the
+# `make defconfig-robot-sbc-aarch64+rpi5` selects the board in .config. `make rpi5` expands the
 # same profile into build/rpi5.config and builds the aarch64 kernel from it;
 # the build stops at the compile_error! in kernel/src/entry/aarch64.rs, which
 # says what the port still needs (BCM2712 PL011 console, firmware boot, a GICv2
@@ -344,10 +355,10 @@ aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 # runs first, before any user image is built.
 RPI5_KCONFIG := $(OUT_BUILD)/rpi5.config
 .PHONY: rpi5 rpi5-key
-$(RPI5_KCONFIG): config/defconfigs/rpi5.config \
+$(RPI5_KCONFIG): config/defconfigs/robot-sbc-aarch64+rpi5.config \
 		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
 	@mkdir -p $(OUT_BUILD)
-	cp config/defconfigs/rpi5.config $@
+	cp config/defconfigs/robot-sbc-aarch64+rpi5.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_BOARD_RPI5=y$$' $@ || { echo "[RPI5] $@ lost CONFIG_BOARD_RPI5"; exit 1; }
 
@@ -364,11 +375,11 @@ rpi5: rpi5-key $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
 #
 # A separate kernel (micro/, its own workspace): riscv32imac, M-mode, PMP
 # region domains. It is built from the same Kconfig (config/kernel/Kconfig.micro,
-# config/defconfigs/micro.config), reads a signed topology in the main
+# config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config), reads a signed topology in the main
 # kernel's format, and shares the pure crates of the main kernel. Nothing
 # here touches the main kernel's build or its .config.
 #
-#   make micro-config     build/micro.config from config/defconfigs/micro.config
+#   make micro-config     build/micro.config from config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config
 #   make micro-topology   build/micro/topology/{CAPS.TOM,CAPS.SIG,SCHED.TOM}
 #   make micro-check      type-check the image (no link)
 #   make micro            build/micro/azos-micro.elf
@@ -396,11 +407,11 @@ MICRO_SRC      := $(wildcard micro/src/*.rs micro/src/tasks/*.rs) micro/Cargo.to
 micro-config: $(MICRO_CONFIG)
 # Every Kconfig file: a symbol added to any of them (config/limits/Kconfig.limits) must reach
 # micro.config, or azos_limits refuses the stale file in micro-tests.
-$(MICRO_CONFIG): config/defconfigs/micro.config $(KCONFIG_FILES)
+$(MICRO_CONFIG): config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config $(KCONFIG_FILES)
 	@mkdir -p $(@D)
-	cp config/defconfigs/micro.config $@
+	cp config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config $@
 	KCONFIG_CONFIG="$@" $(PYTHON) -m olddefconfig
-	@echo "[CONFIG] micro = config/defconfigs/micro.config"
+	@echo "[CONFIG] micro = config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config"
 
 micro-topology: $(MICRO_TOPO_DIR)/CAPS.SIG
 $(MICRO_TOPO_DIR)/CAPS.SIG: micro/topology/CAPS.in micro/topology/SCHED.TOM tools/micro_topology.py tools/gen_config_sig.py $(MICRO_PRIV)

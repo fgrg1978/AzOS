@@ -171,7 +171,7 @@ AZ_LEVEL="CONFIG_LOG_LEVEL_$(printf '%s' "$VSBENCH_LOG_LEVEL" | tr '[:lower:]' '
 K_FEATURES="qemu,bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}"
 VSBENCH_LANES="${VSBENCH_LANES:-}"
 R_CONFIG="$BENCH_TARGET/riscv64.config"
-{ grep -v 'LOG_LEVEL' "${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/qemu.config}" \
+{ grep -v 'LOG_LEVEL' "${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config}" \
     && echo "$AZ_LEVEL"; } >"$R_CONFIG.new" \
     && ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$R_CONFIG.new" python3 -m olddefconfig >/dev/null 2>&1 ) \
     && grep -q "^$AZ_LEVEL\$" "$R_CONFIG.new" \
@@ -196,10 +196,10 @@ A_IMG="$BENCH_TARGET/azos-aarch64/kernel.img"
 # kernel riscv64 constants (TIMER_FREQ 10 MHz against the aarch64 config's
 # value): every sleep/deadline lane in the aarch64 column fired early.
 A_CONFIG="$WORK/qemu-aarch64.config"
-{ grep -v 'LOG_LEVEL' "$REPO_ROOT/config/defconfigs/qemu-aarch64.config" && echo "$AZ_LEVEL"; } >"$A_CONFIG" \
+{ grep -v 'LOG_LEVEL' "$REPO_ROOT/config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config" && echo "$AZ_LEVEL"; } >"$A_CONFIG" \
     && ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$A_CONFIG" python3 -m olddefconfig >/dev/null 2>&1 ) \
     && grep -q '^CONFIG_ARCH_AARCH64=y$' "$A_CONFIG" && grep -q "^$AZ_LEVEL\$" "$A_CONFIG" \
-    || die "could not expand config/defconfigs/qemu-aarch64.config"
+    || die "could not expand config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config"
 ( cd "$REPO_ROOT" && env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
     KCONFIG_CONFIG="$A_CONFIG" \
     CARGO_TARGET_DIR="$BENCH_TARGET/azos-aarch64" \

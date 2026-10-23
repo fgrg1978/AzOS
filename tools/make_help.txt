@@ -6,13 +6,12 @@ Configure
   nconfig                Same, with the ncurses front end.
   oldconfig              Update .config after a Kconfig change, asking about new symbols.
   olddefconfig           Update .config after a Kconfig change, taking defaults.
-  defconfig-edge         Load the Edge profile (default for RISC-V on QEMU).
-  defconfig-embedded     Load the Embedded profile (smallest footprint).
-  defconfig-fleet        Load the Fleet profile (gateway boards, 1 GiB+ RAM).
-  defconfig-vf2          Load the VisionFive 2 configuration.
-  defconfig-k1           Load the SpacemiT K1 configuration.
-  defconfig-rpi5         Load the Raspberry Pi 5 configuration (not ported yet).
-  savedefconfig          Write the minimal form of .config to config/defconfigs/last_saved.config.
+  defconfig-generic-sbc-riscv64-dev  Load a defconfig: config/defconfigs/<name>.config, or <name> assembled
+                         from config/fragments/ (<preset>-<hwclass>-<arch>[-<build>][+<overlay>...]).
+                         This one is the fallback when there is no .config; others:
+                         defconfig-robot-sbc-riscv64+vf2, defconfig-industrial-embedded-aarch64+board-generic.
+  defconfigs             Regenerate the committed config/defconfigs/ from config/fragments/.
+  savedefconfig          Write the minimal form of .config to $AZOS_OUT/build/last_saved.config.
 
 Build
   build                  Build the RISC-V kernel for QEMU (default target).
@@ -26,7 +25,7 @@ Build
   busybox                Build BusyBox for riscv64, aarch64 and x86_64 (needs zig, tools/third_party_fetch.sh busybox).
   relibc                 Build relibc and the C programs against it, for each ISA whose configuration sets CONFIG_RELIBC (needs zig, cbindgen, tools/third_party_fetch.sh relibc).
   check                  Type-check the kernel without linking: make check ARCH=riscv64|aarch64|x86_64.
-  micro-config           Expand config/defconfigs/micro.config into $AZOS_OUT/build/micro.config (AzOS-micro, the MCU kernel).
+  micro-config           Expand config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config into $AZOS_OUT/build/micro.config (AzOS-micro, the MCU kernel).
   micro-topology         Write and sign the micro kernel's topology ($AZOS_OUT/build/micro/topology).
   micro-check            Type-check the micro kernel (riscv32, built from source).
   micro                  Build the micro kernel: $AZOS_OUT/build/micro/azos-micro.elf (riscv32imac, M-mode, PMP).

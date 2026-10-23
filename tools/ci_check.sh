@@ -377,7 +377,7 @@ build() {
 # its own copy for the build row.)
 K1_ISA_KCONFIG="$AZOS_OUT/target/ci-k1-isa.config"
 mkdir -p "$AZOS_OUT/target"
-K1_ISA="$(cp "$REPO_ROOT/config/defconfigs/k1.config" "$K1_ISA_KCONFIG" \
+K1_ISA="$(cp "$REPO_ROOT/config/defconfigs/robot-sbc-riscv64+k1.config" "$K1_ISA_KCONFIG" \
     && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$K1_ISA_KCONFIG" python3 -m olddefconfig >/dev/null 2>&1) \
     && python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --rustflags "$K1_ISA_KCONFIG")"
 case "$K1_ISA" in
@@ -392,7 +392,7 @@ build_board() {
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if ! board_config "$feat"; then
-        bad; echo "      could not expand config/defconfigs/${feat}.config with python3 -m olddefconfig"
+        bad; echo "      could not expand config/defconfigs/robot-sbc-riscv64+${feat}.config with python3 -m olddefconfig"
         return
     fi
     local out rc kfeat
@@ -440,7 +440,7 @@ build_board() {
 # The build goes through `build`, so warnings fail it too; the touch before
 # the matrix reaches this target dir as well. `fleet_config_applied` then
 # checks that the constants compiled in came from this config, not `.config`.
-# Wave 11 (DOMAIN, owner decision): config/defconfigs/fleet.config and
+# Wave 11 (DOMAIN, owner decision): config/defconfigs/generic-server-riscv64+board-generic.config and
 # embedded.config are Generic; the robot image these rows always built is
 # robot-fleet.config / robot-embedded.config (same profile, USE_ROBOT).
 FLEET_DIR="${FLEET_DIR:-$AZOS_OUT/target/fleet}"
@@ -457,7 +457,7 @@ fleet_config() {
     local tmp rc
     mkdir -p "$FLEET_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/robot-fleet.config" "$tmp/fleet.config" \
+    cp "${REPO_ROOT}/config/defconfigs/robot-server-riscv64+board-generic.config" "$tmp/fleet.config" \
       && echo "CONFIG_LOG_LEVEL_DEBUG=y" >>"$tmp/fleet.config" \
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/fleet.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/fleet.config" \
@@ -514,7 +514,7 @@ embedded_config() {
     local tmp rc
     mkdir -p "$EMBEDDED_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/robot-embedded.config" "$tmp/embedded.config" \
+    cp "${REPO_ROOT}/config/defconfigs/robot-embedded-riscv64+board-generic.config" "$tmp/embedded.config" \
       && echo "CONFIG_LOG_LEVEL_DEBUG=y" >>"$tmp/embedded.config" \
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/embedded.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/embedded.config" \
@@ -554,13 +554,19 @@ embedded_config_applied() {
 # Anything that needs a DIFFERENT config overrides the variable inline on its
 # own command; `a64_kbuild` and `build_board` below are given exactly that
 # override so aarch64 and the board rows are not silently repointed here.
+# The gate's kernels, one per ISA: config/defconfigs/<name>.config, assembled
+# from config/fragments/ by tools/gen_defconfigs.py (the name says what it is
+# made of: preset-hwclass-arch-build+overlays).
+GATE_DEFC_RV=robot-sbc-riscv64-dev+qemu+linux+gui
+GATE_DEFC_A64=robot-sbc-aarch64-dev+qemu+linux+gui
+GATE_DEFC_X86=robot-sbc-x86_64-dev+qemu+linux+gui
 PRIMARY_DIR="${PRIMARY_DIR:-$AZOS_OUT/target/primary}"
 PRIMARY_CONFIG="${PRIMARY_DIR}/qemu.config"
 primary_config() {
     local tmp rc
     mkdir -p "$PRIMARY_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/qemu.config" "$tmp/qemu.config" \
+    cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_RV}.config" "$tmp/qemu.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/qemu.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q '^CONFIG_BOARD_QEMU=y$' "$tmp/qemu.config" \
       && { cmp -s "$tmp/qemu.config" "$PRIMARY_CONFIG" || cp "$tmp/qemu.config" "$PRIMARY_CONFIG"; }
@@ -571,7 +577,7 @@ primary_config() {
 if primary_config; then
     export KCONFIG_CONFIG="$PRIMARY_CONFIG"
 else
-    echo "FATAL: could not expand config/defconfigs/qemu.config with python3 -m olddefconfig" >&2
+    echo "FATAL: could not expand config/defconfigs/${GATE_DEFC_RV}.config with python3 -m olddefconfig" >&2
     exit 1
 fi
 primary_config_applied() {
@@ -595,7 +601,7 @@ primary_config_applied() {
 # KCONFIG_CONFIG at all, so it inherited whatever ARCH_RISCV64 workspace
 # `.config` was checked out — confirmed live: the aarch64 target's
 # `generated.rs` carried `USER_STACK_SIZE_KB: usize = 16` (riscv64's
-# default) while `config/defconfigs/qemu-aarch64.config` (ARCH_AARCH64) expands
+# default) while `config/defconfigs/${GATE_DEFC_A64}.config` (ARCH_AARCH64) expands
 # to 32, the value `make aarch64` actually ships.
 AARCH64_DIR="${AARCH64_DIR:-$AZOS_OUT/target/primary-aarch64}"
 AARCH64_CONFIG="${AARCH64_DIR}/qemu-aarch64.config"
@@ -603,7 +609,7 @@ aarch64_config() {
     local tmp rc
     mkdir -p "$AARCH64_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/qemu-aarch64.config" "$tmp/qemu-aarch64.config" \
+    cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_A64}.config" "$tmp/qemu-aarch64.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/qemu-aarch64.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q '^CONFIG_ARCH_AARCH64=y$' "$tmp/qemu-aarch64.config" \
       && { cmp -s "$tmp/qemu-aarch64.config" "$AARCH64_CONFIG" || cp "$tmp/qemu-aarch64.config" "$AARCH64_CONFIG"; }
@@ -612,7 +618,7 @@ aarch64_config() {
     return $rc
 }
 if ! aarch64_config; then
-    echo "FATAL: could not expand config/defconfigs/qemu-aarch64.config with python3 -m olddefconfig" >&2
+    echo "FATAL: could not expand config/defconfigs/${GATE_DEFC_A64}.config with python3 -m olddefconfig" >&2
     exit 1
 fi
 aarch64_config_applied() {
@@ -636,7 +642,7 @@ aarch64_config_applied() {
 # `fleet_config` does, instead of inheriting the primary column's
 # `qemu.config` (or the workspace `.config`) via `build_board`. Keyed off
 # `feat` ("vf2"/"k1") so `build_board` needs no new parameter —
-# `config/defconfigs/$feat.config` already exists for both names.
+# `config/defconfigs/robot-sbc-riscv64+$feat.config` exists for both names.
 board_config() { # board_config <feat>
     local feat="$1" dir cfg tmp rc marker
     dir="$AZOS_OUT/target/board-${feat}"
@@ -644,7 +650,7 @@ board_config() { # board_config <feat>
     marker="$(printf 'CONFIG_BOARD_%s' "$feat" | tr '[:lower:]' '[:upper:]')=y"
     mkdir -p "$dir" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/${feat}.config" "$tmp/${feat}.config" \
+    cp "${REPO_ROOT}/config/defconfigs/robot-sbc-riscv64+${feat}.config" "$tmp/${feat}.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/${feat}.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q "^${marker}$" "$tmp/${feat}.config" \
       && { cmp -s "$tmp/${feat}.config" "$cfg" || cp "$tmp/${feat}.config" "$cfg"; }
@@ -2233,8 +2239,8 @@ echo "=== AzOS CI Check ==="
 # U12-3: name the configuration a passing row means something about. Both
 # SHAs are of the EXPANDED defconfig (post `olddefconfig`), not the raw file,
 # so a stale `depends on`/`default` in Kconfig itself still changes it.
-echo "  primary config  (config/defconfigs/qemu.config):         $(shasum -a 256 "$PRIMARY_CONFIG" | cut -c1-12)"
-echo "  aarch64 config  (config/defconfigs/qemu-aarch64.config):  $(shasum -a 256 "$AARCH64_CONFIG" | cut -c1-12)"
+echo "  primary config  (config/defconfigs/${GATE_DEFC_RV}.config):         $(shasum -a 256 "$PRIMARY_CONFIG" | cut -c1-12)"
+echo "  aarch64 config  (config/defconfigs/${GATE_DEFC_A64}.config):  $(shasum -a 256 "$AARCH64_CONFIG" | cut -c1-12)"
 echo ""
 
 # TCB crate-boundary check (tools/tcb_check.sh). Pure
@@ -2699,7 +2705,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     local feats="$1"
     rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" "${A64_IMG_OUT}.features"
     local out
-    # KCONFIG_CONFIG pinned to config/defconfigs/qemu-aarch64.config (U12-3): without
+    # KCONFIG_CONFIG pinned to config/defconfigs/${GATE_DEFC_A64}.config (U12-3): without
     # this override every aarch64 build inherited the exported primary-column
     # KCONFIG_CONFIG above (an ARCH_RISCV64 config before this change existed
     # at all), so `azos_limits` built ARCH_RISCV64's constants for an
@@ -8174,7 +8180,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
     local cfg="$AARCH64_DIR/qemu-aarch64-${g}k.config" log="$CI_LOG_DIR/aarch64-granule-${g}k.log"
     local tdir="$AZOS_OUT/target/aarch64-${g}k" out feats
     rm -f "$log"
-    cp "${REPO_ROOT}/config/defconfigs/qemu-aarch64.config" "$cfg" \
+    cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_A64}.config" "$cfg" \
         && echo "CONFIG_AARCH64_PAGE_${g}K=y" >>"$cfg" \
         && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1
     if ! grep -q "^CONFIG_PAGE_SHIFT=${shift_want}$" "$cfg" 2>/dev/null; then
@@ -8984,8 +8990,8 @@ rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
     local label="rt7: panic ${mode} (${isa})"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
-    local defc=qemu src_disk="$AZOS_OUT/build/disk.img" policy=CONTAIN feats="qemu,rt-panic-canary"
-    [ "$isa" = arm ] && { defc=qemu-aarch64; src_disk="$AZOS_OUT/build/disk-aarch64.img"; }
+    local defc="$GATE_DEFC_RV" src_disk="$AZOS_OUT/build/disk.img" policy=CONTAIN feats="qemu,rt-panic-canary"
+    [ "$isa" = arm ] && { defc="$GATE_DEFC_A64"; src_disk="$AZOS_OUT/build/disk-aarch64.img"; }
     [ "$mode" = reset ] && policy=RESET
     [ "$mode" = spin ] && feats="qemu,rt-panic-canary-spin"
     [ "$mode" = safety ] && feats="qemu,rt-panic-canary-safety"
@@ -9153,7 +9159,7 @@ rt7_drone_default_row() {
     printf "  %-26s" "rt7: drone → contain..."
     mkdir -p "$CI_LOG_DIR"
     local cfg; cfg="$(cd "$CI_LOG_DIR" && pwd)/rt7-drone.config"
-    cp "${REPO_ROOT}/config/defconfigs/qemu.config" "$cfg"
+    cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_RV}.config" "$cfg"
     echo "CONFIG_ROBOT_DRONE=y" >>"$cfg"
     if (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
        && grep -q '^CONFIG_ROBOT_DRONE=y$' "$cfg" && grep -q '^CONFIG_PANIC_POLICY_CONTAIN=y$' "$cfg" \
@@ -9231,8 +9237,8 @@ drvcontain_row() { # drvcontain_row <isa: rv|arm> [features] [PASS|FAIL-record|d
     local isa="$1" feats="${2:-qemu,drv-contain-smoke,buzzer-kernel}" expect="${3:-PASS}"
     printf "  %-26s" "rt7: driver contained, demoted (${isa})..."
     mkdir -p "$CI_LOG_DIR"
-    local defc=qemu src_disk="$AZOS_OUT/build/disk-drv.img"
-    [ "$isa" = arm ] && { defc=qemu-aarch64; src_disk="$AZOS_OUT/build/disk-aarch64-drv.img"; }
+    local defc="$GATE_DEFC_RV" src_disk="$AZOS_OUT/build/disk-drv.img"
+    [ "$isa" = arm ] && { defc="$GATE_DEFC_A64"; src_disk="$AZOS_OUT/build/disk-aarch64-drv.img"; }
     local cfg log disk kimg
     cfg="$(cd "$CI_LOG_DIR" && pwd)/drvcontain-${isa}.config"
     log="$CI_LOG_DIR/drvcontain-${isa}.log"
@@ -9561,7 +9567,7 @@ if fleet_config; then
     if [ "$FAIL" -eq "$fail_before" ] && ci_wants "fleet (+linker)" && ci_wants "fleet config applied"; then FLEET_BUILT=1; fi
 else
     printf "  %-26s" "fleet (+linker)..."
-    bad; echo "      could not expand config/defconfigs/robot-fleet.config with python3 -m olddefconfig"
+    bad; echo "      could not expand config/defconfigs/robot-server-riscv64+board-generic.config with python3 -m olddefconfig"
 fi
 if embedded_config; then
     fail_before=$FAIL
@@ -9572,7 +9578,7 @@ if embedded_config; then
        && ci_wants "embedded (+linker)" && ci_wants "embedded config applied"; then EMBEDDED_BUILT=1; fi
 else
     printf "  %-26s" "embedded (+linker)..."
-    bad; echo "      could not expand config/defconfigs/robot-embedded.config with python3 -m olddefconfig"
+    bad; echo "      could not expand config/defconfigs/robot-embedded-riscv64+board-generic.config with python3 -m olddefconfig"
 fi
 
 # ── Topology/config key: a production build names its key (wave 11) ──────
@@ -10224,7 +10230,7 @@ if fleet_config; then
     fi
 else
     printf "  %-26s" "net-tests (fleet ring)..."
-    bad; echo "      could not expand config/defconfigs/robot-fleet.config with python3 -m olddefconfig"
+    bad; echo "      could not expand config/defconfigs/robot-server-riscv64+board-generic.config with python3 -m olddefconfig"
 fi
 # Not under crates/: the allow-list and BPF program of the Linux+seccomp
 # column of vsbench, checked against userspace/bench/vsbench/src/abi_linux.rs.
@@ -11095,7 +11101,7 @@ else
           && mcopy -o -i "$img" "$sig" ::CONFIG.SIG
         rc=$?; rm -f "$ini" "$sig"; return $rc
     }
-    # The embedded image (config/defconfigs/robot-embedded.config, kernel/linker-embedded.ld)
+    # The embedded image (config/defconfigs/robot-embedded-riscv64+board-generic.config, kernel/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
     # from the device tree.
     #
@@ -11148,7 +11154,7 @@ else
         for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB" "embedded: census and task view"; do
             printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass, or its gate-key topology volume was not built; not booted"; done
     fi
-    # The fleet image (config/defconfigs/robot-fleet.config, kernel/linker-fleet.ld), whose
+    # The fleet image (config/defconfigs/robot-server-riscv64+board-generic.config, kernel/linker-fleet.ld), whose
     # tables are sized for 4096 tasks. Its first boots found three faults the
     # marker alone would not have caught:
     #   * RAM_SIZE 256 left no room for the 256 MiB heap after a ~134 MiB image
@@ -13186,8 +13192,8 @@ PY
     # appends its base features), so leaving it out of --features alone changed
     # nothing and the canary never bit.
     ktest_row_nodur() {
-        local KTEST_FEATS="$KTEST_FEATS_NODUR" isa="$2" defc=qemu cfg
-        [ "$isa" = arm ] && defc=qemu-aarch64
+        local KTEST_FEATS="$KTEST_FEATS_NODUR" isa="$2" defc="$GATE_DEFC_RV" cfg
+        [ "$isa" = arm ] && defc="$GATE_DEFC_A64"
         mkdir -p "$CI_LOG_DIR"
         cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-nodur-${isa}.config"
         cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg" \
@@ -13351,8 +13357,8 @@ PY
             && grep -q "^CONFIG_LOCK_MAX_HOLD_US=${KTEST_HOLD_US}\$" "$1"
     }
     ktest_hold_row() { # ktest_hold_row <label> <isa: rv|arm> <expected not-ok names> [kernel command line] [ERE]
-        local label="$1" isa="$2" defc=qemu cfg tag
-        [ "$isa" = arm ] && defc=qemu-aarch64
+        local label="$1" isa="$2" defc="$GATE_DEFC_RV" cfg tag
+        [ "$isa" = arm ] && defc="$GATE_DEFC_A64"
         mkdir -p "$CI_LOG_DIR"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         # Absolute: `azos_limits`' build script resolves KCONFIG_CONFIG from
@@ -13429,8 +13435,8 @@ PY
     # passed over by more acquisitions than the CPUs ahead of them.
     KTEST_TTAS_RE='^# spin_lock_fifo_bounded: impl=ttas '
     ktest_ttas_row() { # ktest_ttas_row <label> <isa: rv|arm>
-        local label="$1" isa="$2" defc=qemu cfg tag
-        [ "$isa" = arm ] && defc=qemu-aarch64
+        local label="$1" isa="$2" defc="$GATE_DEFC_RV" cfg tag
+        [ "$isa" = arm ] && defc="$GATE_DEFC_A64"
         mkdir -p "$CI_LOG_DIR"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         cfg="$(cd "$CI_LOG_DIR" && pwd)/${tag}.config"
@@ -13782,7 +13788,7 @@ PY
     }
     par "x86_64: virtio sound" x86_snd_row "x86_64: virtio sound" with PASS
     par "x86_64: virtio sound canary" x86_snd_row "x86_64: virtio sound canary" without FAIL
-    # PCI on x86_64 (Kconfig DRV_PCI + DRV_NVME, config/defconfigs/qemu-x86_64-pci.config):
+    # PCI on x86_64 (Kconfig DRV_PCI + DRV_NVME, config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config):
     # QEMU microvm has no PCI bus unless `pcie=on`, and then neither an MCFG nor
     # ports 0xCF8/0xCFC, so the ECAM comes from Kconfig X86_PCI_ECAM_BASE. The
     # FAT32 volume is an NVMe namespace: the controller enumerates, completes by
@@ -13797,11 +13803,11 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
-        local def=config/defconfigs/qemu-x86_64-pci.config
+        local def=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config
         rm -f "$kimg" "$kimg.features"
         if [ -n "$ecam" ]; then
             def="$CI_LOG_DIR/x86-${tag}.defconfig"
-            sed "s/^CONFIG_X86_PCI_ECAM_BASE=.*/CONFIG_X86_PCI_ECAM_BASE=$ecam/" config/defconfigs/qemu-x86_64-pci.config >"$def"
+            sed "s/^CONFIG_X86_PCI_ECAM_BASE=.*/CONFIG_X86_PCI_ECAM_BASE=$ecam/" config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config >"$def"
         fi
         make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-pci-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-pci-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
@@ -13858,11 +13864,11 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
-        local def=config/defconfigs/qemu-x86_64-pci.config
+        local def=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config
         rm -f "$kimg" "$kimg.features"
         if [ "$expect" = FAIL ]; then
             def="$CI_LOG_DIR/x86-${tag}.defconfig"
-            sed '/^CONFIG_DRV_AHCI=y/d' config/defconfigs/qemu-x86_64-pci.config >"$def"
+            sed '/^CONFIG_DRV_AHCI=y/d' config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config >"$def"
         fi
         make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-ahci-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-ahci-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
@@ -13918,7 +13924,7 @@ PY
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
         rm -f "$kimg" "$kimg.features"
-        make x86_64 X86_64_DEFCONFIG=config/defconfigs/qemu-x86_64-pci.config \
+        make x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config \
             X86_64_KCONFIG="$AZOS_OUT/build/x86_64-igc-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-igc-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
             && builtin printf '\n' >"$kimg.features" \
@@ -14192,7 +14198,7 @@ PY
     x86_ktest_row_nodur() {
         local def="$CI_LOG_DIR/x86-why-nodur.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-why-nodur.elf X86_KBUILD_ARGS
         mkdir -p "$CI_LOG_DIR"
-        { cat config/defconfigs/qemu-x86_64.config; echo "CONFIG_DECISION_REFUSALS_DURABLE=n"; } >"$def"
+        { cat config/defconfigs/${GATE_DEFC_X86}.config; echo "CONFIG_DECISION_REFUSALS_DURABLE=n"; } >"$def"
         X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-why-nodur.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-why-nodur X86_64_IMG=$X86_KBUILD_OUT"
         x86_ktest_row "$@"
     }
@@ -14349,7 +14355,7 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local log="$CI_LOG_DIR/x86-lxrt.log" kimg="$CI_LOG_DIR/kernel-x86-lxrt" disk="$CI_LOG_DIR/disk-x86-lxrt.img"
         local def="$CI_LOG_DIR/x86-lxrt.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-lxrt.elf X86_KBUILD_ARGS
-        { cat config/defconfigs/qemu-x86_64.config; echo "CONFIG_LINUX_RUNTIME=y"; } >"$def"
+        { cat config/defconfigs/${GATE_DEFC_X86}.config; echo "CONFIG_LINUX_RUNTIME=y"; } >"$def"
         X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-lxrt.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-lxrt X86_64_IMG=$X86_KBUILD_OUT"
         # The runtime is embedded in the kernel (`include_bytes!`): built first.
         make $X86_KBUILD_ARGS "$AZOS_OUT/build/x86_64/linux_rt.elf" >/dev/null 2>&1 \
@@ -15439,8 +15445,8 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local slug defc base cfg kimg img log why="" pid i rec last
         slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
-        defc=qemu; base=$AZOS_OUT/build/disk.img
-        [ "$isa" = arm ] && { defc=qemu-aarch64; base=$AZOS_OUT/build/disk-aarch64.img; }
+        defc="$GATE_DEFC_RV"; base=$AZOS_OUT/build/disk.img
+        [ "$isa" = arm ] && { defc="$GATE_DEFC_A64"; base=$AZOS_OUT/build/disk-aarch64.img; }
         cfg="$(cd "$CI_LOG_DIR" && pwd)/${slug}.config"
         kimg="$CI_LOG_DIR/${slug}-kernel"; img="$CI_LOG_DIR/${slug}.img"; log="$CI_LOG_DIR/${slug}.log"
         rm -f "$log" "$img" "$kimg"
@@ -20511,9 +20517,9 @@ cat /fat/RTOUT.TXT"
         lx_rt_k="$CI_LOG_DIR/kernel-lxrt-${ush_isa}"
         lx_rt_kc="$CI_LOG_DIR/kernel-lxrt-canary-${ush_isa}"
         if [ "$ush_isa" = rv ]; then
-            cp "${REPO_ROOT}/config/defconfigs/qemu.config" "$lx_rt_cfg"
+            cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_RV}.config" "$lx_rt_cfg"
         else
-            cp "${REPO_ROOT}/config/defconfigs/qemu-aarch64.config" "$lx_rt_cfg"
+            cp "${REPO_ROOT}/config/defconfigs/${GATE_DEFC_A64}.config" "$lx_rt_cfg"
         fi
         printf 'CONFIG_LINUX_RUNTIME=y\n' >>"$lx_rt_cfg"
         if (cd "$REPO_ROOT" && KCONFIG_CONFIG="$lx_rt_cfg" python3 -m olddefconfig >/dev/null 2>&1) \
@@ -21635,10 +21641,10 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     generic_build_row() { # generic_build_row <rv|arm>
         local isa="$1" label defc cfg args log out rc robot_feats elf robot_elf triple n
         if [ "$isa" = rv ]; then
-            label="generic: riscv64 builds, no robot crate"; defc=qemu
+            label="generic: riscv64 builds, no robot crate"; defc="$GATE_DEFC_RV"
             triple=riscv64imac-unknown-none-elf; robot_elf="$KERNEL"
         else
-            label="generic: aarch64 builds, no robot crate"; defc=qemu-aarch64
+            label="generic: aarch64 builds, no robot crate"; defc="$GATE_DEFC_A64"
             triple=aarch64-unknown-none-softfloat; robot_elf="$AZOS_OUT/target/${triple}/release/kernel"
         fi
         printf "  %-26s" "${label}..."
@@ -22077,7 +22083,7 @@ fi
 # ── hv: AzOS inside AzOS (the judge of tools/run_guest.sh) ───────────────────
 #
 # `make ARCH=<isa> azos-guest` + `tools/run_guest.sh <isa>` boot the hypervisor
-# kernel (config/defconfigs/qemu-*hv-guest.config: its built-in topology declares
+# kernel (config/defconfigs/robot-sbc-*-dev+qemu+linux+hv-host+hv-example-guest.config: its built-in topology declares
 # `[guest.azos]`) with a guest AzOS kernel on its volume, and PASS when a line the
 # guest wrote reaches the host console: `[vm0] ` (the prefix VMMD.ELF puts on every
 # guest line) and the banner of the guest kernel. The host kernel's own lines
@@ -22541,10 +22547,10 @@ rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
     local dir="$AZOS_OUT/target/generic"
     local re='rc_safety|rc_link|geofence'
     if [ "$isa" = rv ]; then
-        defc=qemu; triple=riscv64imac-unknown-none-elf
+        defc="$GATE_DEFC_RV"; triple=riscv64imac-unknown-none-elf
         kbuild "qemu" || return; on_elf="$KERNEL"
     else
-        defc=qemu-aarch64; triple=aarch64-unknown-none-softfloat
+        defc="$GATE_DEFC_A64"; triple=aarch64-unknown-none-softfloat
         a64_kbuild "qemu" || { printf "  %-26s" "${label}..."; bad; echo "      aarch64 qemu kernel did not build"; return; }
         on_elf="$A64_KERNEL"
     fi

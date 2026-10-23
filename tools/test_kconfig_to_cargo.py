@@ -98,30 +98,30 @@ PHANTOM_FEATURES: frozenset[str] = frozenset({
 # Each entry: (defconfig_stem, expected_target, must_include_features,
 #              must_exclude_features)
 DEFCONFIG_EXPECTATIONS: list[tuple[str, str, set[str], set[str]]] = [
-    # edge — all defaults, riscv64 QEMU, no features override
+    # generic-sbc-riscv64-dev — all defaults, riscv64 QEMU, no features override
     (
-        "edge",
+        "generic-sbc-riscv64-dev",
         "riscv64imac-unknown-none-elf",
         set(),                              # no features required
         {"vf2", "k1", "no-ml"},  # must not appear
     ),
-    # qemu — identical to edge (explicit alias)
+    # the riscv64 gate kernel (robot)
     (
-        "qemu",
+        "robot-sbc-riscv64-dev+qemu+linux+gui",
         "riscv64imac-unknown-none-elf",
         set(),
         {"vf2", "k1", "no-ml"},
     ),
     # vf2 — must emit vf2 feature
     (
-        "vf2",
+        "robot-sbc-riscv64+vf2",
         "riscv64imac-unknown-none-elf",
         {"vf2", "soc", "soc-jh7110"},       # SOC_FRAMEWORKS / SOC_JH7110, the board's frameworks
         {"k1", "no-ml", "soc-k1"},
     ),
     # k1 — must emit k1 feature, and the K1 providers of the SoC frameworks
     (
-        "k1",
+        "robot-sbc-riscv64+k1",
         "riscv64imac-unknown-none-elf",
         {"k1", "soc", "soc-k1"},            # SOC_FRAMEWORKS / SOC_K1, the board's frameworks
         {"vf2", "no-ml", "soc-jh7110"},
@@ -129,21 +129,21 @@ DEFCONFIG_EXPECTATIONS: list[tuple[str, str, set[str], set[str]]] = [
     # embedded — no cargo feature at all: its sizing is constants only, and
     # small-mem (PMM capped at 128 pages) must not come back
     (
-        "embedded",
+        "generic-embedded-riscv64+board-generic",
         "riscv64imac-unknown-none-elf",
         set(),
         {"azos_mm/small-mem", "vf2", "k1", "qemu", "no-ml"},
     ),
     # fleet — all defaults, large caps via constants (no cargo features)
     (
-        "fleet",
+        "generic-server-riscv64+board-generic",
         "riscv64imac-unknown-none-elf",
         set(),
         {"vf2", "k1", "no-ml"},
     ),
     # qemu-aarch64 — must emit aarch64 target
     (
-        "qemu-aarch64",
+        "robot-sbc-aarch64-dev+qemu+linux+gui",
         "aarch64-unknown-none-softfloat",
         set(),
         {"vf2", "k1", "no-ml", "soc", "soc-jh7110", "soc-k1"},  # no aarch64 board enables the SoC frameworks
@@ -268,22 +268,31 @@ def test_target_triples_are_valid() -> None:
 
 def test_expected_features_present_and_absent() -> None:
     """For each defconfig, verify must_include and must_exclude feature sets."""
-    for defconfig_name, _target, must_include, must_exclude in DEFCONFIG_EXPECTATIONS:
-        defconfig_path = DEFCONFIGS_DIR / f"{defconfig_name}.config"
-        output = run_bridge(defconfig_path)
-        _target_triple, features = parse_output(output)
-        feat_set = set(features)
+    import tempfile
 
-        for feat in must_include:
-            assert feat in feat_set, (
-                f"defconfig={defconfig_name}: required feature '{feat}' not emitted. "
-                f"Got: {sorted(feat_set)}"
-            )
-        for feat in must_exclude:
-            assert feat not in feat_set, (
-                f"defconfig={defconfig_name}: excluded feature '{feat}' was emitted. "
-                f"Got: {sorted(feat_set)}"
-            )
+    # Every build expands a defconfig before the bridge reads it (make's rules,
+    # the gate's): so does this test, and a board line that only repeats its
+    # board's default stays out of the board's fragment.
+    with tempfile.TemporaryDirectory() as td:
+        for defconfig_name, _target, must_include, must_exclude in DEFCONFIG_EXPECTATIONS:
+            _expected_features_one(Path(td), defconfig_name, must_include, must_exclude)
+
+
+def _expected_features_one(t: Path, defconfig_name: str, must_include: set, must_exclude: set) -> None:
+    _expand((DEFCONFIGS_DIR / f"{defconfig_name}.config").read_text(encoding="utf-8").splitlines(),
+            t, "expected.config")
+    _target_triple, features = parse_output(run_bridge(t / "expected.config"))
+    feat_set = set(features)
+    for feat in must_include:
+        assert feat in feat_set, (
+            f"defconfig={defconfig_name}: required feature '{feat}' not emitted. "
+            f"Got: {sorted(feat_set)}"
+        )
+    for feat in must_exclude:
+        assert feat not in feat_set, (
+            f"defconfig={defconfig_name}: excluded feature '{feat}' was emitted. "
+            f"Got: {sorted(feat_set)}"
+        )
 
 
 def test_missing_dot_config_emits_nothing() -> None:
@@ -301,12 +310,12 @@ def test_missing_dot_config_emits_nothing() -> None:
 
 
 def test_aarch64_target_selection() -> None:
-    """qemu-aarch64 defconfig must select aarch64-unknown-none-softfloat.
+    """The aarch64 gate defconfig must select aarch64-unknown-none-softfloat.
 
     The aarch64 KERNEL is FP-free (lazy user FP); userspace stays hard-float
     and is not built through this bridge.
     """
-    defconfig_path = DEFCONFIGS_DIR / "qemu-aarch64.config"
+    defconfig_path = DEFCONFIGS_DIR / "robot-sbc-aarch64-dev+qemu+linux+gui.config"
     output = run_bridge(defconfig_path)
     target, _features = parse_output(output)
     assert target == "aarch64-unknown-none-softfloat", (
@@ -349,7 +358,7 @@ def test_no_config_emits_small_mem() -> None:
 
 
 def test_embedded_ram_size_comes_through() -> None:
-    """config/defconfigs/embedded.config expands to RAM_SIZE=64 and the embedded profile.
+    """config/defconfigs/generic-embedded-riscv64+board-generic.config expands to RAM_SIZE=64 and the embedded profile.
 
     RAM_SIZE is the RAM the board is expected to have (the build checks the heap
     against it). The generic board's default is 256 (config/arch/Kconfig.platform), so the value has to
@@ -362,14 +371,14 @@ def test_embedded_ram_size_comes_through() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         cfg = Path(td) / "embedded.config"
-        shutil.copyfile(DEFCONFIGS_DIR / "embedded.config", cfg)
+        shutil.copyfile(DEFCONFIGS_DIR / "generic-embedded-riscv64+board-generic.config", cfg)
         env = dict(os.environ, KCONFIG_CONFIG=str(cfg))
         result = subprocess.run(
             [sys.executable, "-m", "olddefconfig"],
             cwd=REPO_ROOT, env=env, capture_output=True, text=True,
         )
         assert result.returncode == 0, (
-            f"olddefconfig failed on config/defconfigs/embedded.config "
+            f"olddefconfig failed on config/defconfigs/generic-embedded-riscv64+board-generic.config "
             f"(kconfiglib is required, as for the gate's fleet row):\n{result.stderr}"
         )
         expanded = cfg.read_text(encoding="utf-8").splitlines()
@@ -392,7 +401,7 @@ def test_embedded_ram_size_comes_through() -> None:
 
 
 def test_fleet_ram_size_holds_the_heap() -> None:
-    """config/defconfigs/fleet.config expands to RAM_SIZE=1024.
+    """config/defconfigs/generic-server-riscv64+board-generic.config expands to RAM_SIZE=1024.
 
     The limits build refuses a heap that is not smaller than RAM_SIZE, and the
     fleet heap (256 MiB) is taken from RAM after a ~134 MiB image. At the generic board's default of 256 the
@@ -404,14 +413,14 @@ def test_fleet_ram_size_holds_the_heap() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         cfg = Path(td) / "fleet.config"
-        shutil.copyfile(DEFCONFIGS_DIR / "fleet.config", cfg)
+        shutil.copyfile(DEFCONFIGS_DIR / "generic-server-riscv64+board-generic.config", cfg)
         env = dict(os.environ, KCONFIG_CONFIG=str(cfg))
         result = subprocess.run(
             [sys.executable, "-m", "olddefconfig"],
             cwd=REPO_ROOT, env=env, capture_output=True, text=True,
         )
         assert result.returncode == 0, (
-            f"olddefconfig failed on config/defconfigs/fleet.config:\n{result.stderr}"
+            f"olddefconfig failed on config/defconfigs/generic-server-riscv64+board-generic.config:\n{result.stderr}"
         )
         expanded = cfg.read_text(encoding="utf-8").splitlines()
         assert "CONFIG_HWCLASS_SERVER=y" in expanded, "fleet profile lost in expansion"
@@ -427,8 +436,9 @@ def test_fleet_ram_size_holds_the_heap() -> None:
 
 def test_default_target_is_riscv64() -> None:
     """Any defconfig without an explicit ARCH_ key defaults to riscv64."""
-    # edge, qemu, embedded, fleet, vf2, k1 are all riscv64
-    riscv64_defconfigs = ["edge", "qemu", "embedded", "fleet", "vf2", "k1"]
+    riscv64_defconfigs = ["generic-sbc-riscv64-dev", "robot-sbc-riscv64-dev+qemu+linux+gui",
+                          "generic-embedded-riscv64+board-generic", "generic-server-riscv64+board-generic",
+                          "robot-sbc-riscv64+vf2", "robot-sbc-riscv64+k1"]
     for name in riscv64_defconfigs:
         defconfig_path = DEFCONFIGS_DIR / f"{name}.config"
         output = run_bridge(defconfig_path)
@@ -619,17 +629,17 @@ def test_isa_level_and_require_reach_the_codegen() -> None:
         _expand(["CONFIG_ARCH_RISCV64=y", NO_SLIDE, "CONFIG_RV_ZBB_REQUIRE=y", "CONFIG_RV_ZICBOZ_REQUIRE=y"], t, "rvb.config")
         assert _isa(t / "rvb.config", "--rustflags", "--skip-base") == "-C target-feature=+zbb"
         assert "require=zaamo,zalrsc,zbb" in _isa(t / "rvb.config", "--target-features")
-        _expand((DEFCONFIGS_DIR / "k1.config").read_text().splitlines(), t, "k1.config")
+        _expand((DEFCONFIGS_DIR / "robot-sbc-riscv64+k1.config").read_text().splitlines(), t, "k1.config")
         # A product config (not BUILD_TYPE_DEV) slides its kernel: the PIE link
         # flags follow the target features (test_kaslr_links_position_independent).
         assert _isa(t / "k1.config", "--rustflags").replace(KASLR_PIE, "").endswith("+zba,+zbb,+zbs")
-        _expand((DEFCONFIGS_DIR / "vf2.config").read_text().splitlines(), t, "vf2.config")
+        _expand((DEFCONFIGS_DIR / "robot-sbc-riscv64+vf2.config").read_text().splitlines(), t, "vf2.config")
         assert "zb" not in _isa(t / "vf2.config", "--rustflags")
         _expand(["CONFIG_ARCH_AARCH64=y", NO_SLIDE], t, "a.config")
         # No `require`, so no target feature; BTI and PAuth are `probe`, whose
         # landing pads and signed returns are no-ops on a core without them.
         assert _isa(t / "a.config", "--rustflags") == BP.strip() == _isa(t / "a.config", "--user-rustflags")
-        rpi = [l for l in (DEFCONFIGS_DIR / "qemu-aarch64.config").read_text().splitlines()
+        rpi = [l for l in (DEFCONFIGS_DIR / "robot-sbc-aarch64-dev+qemu+linux+gui.config").read_text().splitlines()
                if "BOARD_" not in l] + ["CONFIG_BOARD_RPI5=y"]
         out = _expand(rpi, t, "rpi5.config")
         assert "CONFIG_AARCH64_LEVEL_8_2=y" in out and "CONFIG_A64_LSE_REQUIRE=y" in out
@@ -683,7 +693,7 @@ def test_x86_64_level_and_require_reach_the_codegen() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
-        out = _expand((DEFCONFIGS_DIR / "qemu-x86_64.config").read_text().splitlines(), t, "q.config")
+        out = _expand((DEFCONFIGS_DIR / "robot-sbc-x86_64-dev+qemu+linux+gui.config").read_text().splitlines(), t, "q.config")
         assert "CONFIG_X86_64_LEVEL_V2=y" in out
         assert "CONFIG_X86_SSE4_2_REQUIRE=y" in out and "CONFIG_X86_POPCNT_REQUIRE=y" in out
         for ext in ("AVX2", "AVX512F", "AES", "SHA_NI", "RDSEED", "CET_SHSTK", "INVARIANT_TSC"):
@@ -751,7 +761,9 @@ def test_kaslr_links_position_independent() -> None:
         # Defaults: probe on every build type, the development defconfigs
         # included (they slide, with exactly the flags a probe asks for);
         # require on a Hardened posture and on a certifiable build.
-        for name, isa in (("qemu.config", "RISCV64"), ("qemu-aarch64.config", "AARCH64"), ("qemu-x86_64.config", "X86_64")):
+        for name, isa in (("robot-sbc-riscv64-dev+qemu+linux+gui.config", "RISCV64"),
+                          ("robot-sbc-aarch64-dev+qemu+linux+gui.config", "AARCH64"),
+                          ("robot-sbc-x86_64-dev+qemu+linux+gui.config", "X86_64")):
             out = _expand((DEFCONFIGS_DIR / name).read_text().splitlines(), t, name)
             assert "CONFIG_KASLR_PROBE=y" in out, name
             assert _pie(isa) in _isa(t / name, "--rustflags"), name
@@ -815,28 +827,29 @@ def _bridge_args(cfg: Path) -> list[str]:
     return feats
 
 
-PROFILE_DEFCONFIGS = ("edge", "embedded", "fleet")
-# Defconfigs of another kernel: micro.config configures AzOS-micro (`make
-# micro`), which no main-kernel feature set is built from, so it is neither a
-# profile nor a robot image.
-OTHER_KERNEL_DEFCONFIGS = ("micro",)
-# The kernels that run inside the hypervisor guests (`make azos-guest`) are the
-# general preset on purpose: a guest needs no robot domain.
-GUEST_KERNEL_DEFCONFIGS = ("qemu-guest", "qemu-aarch64-guest")
+# The Generic profile defconfigs (the edge, embedded and fleet tiers).
+PROFILE_DEFCONFIGS = ("generic-sbc-riscv64-dev", "generic-embedded-riscv64+board-generic",
+                      "generic-server-riscv64+board-generic")
+# AzOS-micro (`make micro`) is another kernel, which no main-kernel feature
+# set is built from: neither a profile nor a robot image.
+OTHER_KERNEL_DEFCONFIGS = ("generic-embedded-riscv64-dev+board-generic+micro",)
 
 # The base features a non-robot .config builds without: the domain feature
-# and the robot subsystems it owns (`base` tags in config/Kconfig.*).
+# and the robot subsystems it owns (`base` tags in config/*/Kconfig.*).
 ROBOT_ONLY_DEFAULTS = ("use-robot", "rc-input", "geofence")
 
 
 def test_profile_defconfigs_generic_robot_variants_robot() -> None:
-    """Owner decision (wave 11): the profile defconfigs (edge, embedded,
-    fleet) are Generic; each has a robot-<profile> twin that selects
-    PRESET_ROBOT and differs from it in the preset line only. Every other
-    shipped defconfig (boards, experimental) is a robot image, so the gate's
-    rows build the image they always built."""
+    """Owner decision (wave 11): the profile defconfigs are Generic, and the
+    robot twin of each (`robot-` in place of `generic-`, assembled from the
+    same fragments by tools/gen_defconfigs.py) differs from it in the preset
+    line only. Every committed defconfig is Generic exactly when its name
+    says so: a robot- cell links the robot crates, a generic- cell does not."""
     import shutil
     import tempfile
+
+    sys.path.insert(0, str(TOOLS_DIR))
+    import gen_defconfigs
 
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
@@ -848,9 +861,10 @@ def test_profile_defconfigs_generic_robot_variants_robot() -> None:
             if d.stem in OTHER_KERNEL_DEFCONFIGS:
                 continue
             feats = _bridge_args(cfg)
-            if d.stem in PROFILE_DEFCONFIGS or d.stem in GUEST_KERNEL_DEFCONFIGS:
+            if d.stem.startswith("generic-"):
                 assert "use-robot" not in feats, f"{d.name}: {feats}"
             else:
+                assert d.stem.startswith("robot-"), d.name
                 assert "use-robot" in feats, f"{d.name}: no use-robot in {feats}"
         # "Differs in the domain only" is a property of what each file SETS,
         # plus: the domain switch alone explains every expanded value. It is
@@ -862,18 +876,18 @@ def test_profile_defconfigs_generic_robot_variants_robot() -> None:
         settings = lambda ls: [l for l in ls if l.startswith("CONFIG_")
                                or re.fullmatch(r"# CONFIG_\w+ is not set", l)]
         for p in PROFILE_DEFCONFIGS:
-            assert f"robot-{p}" in expanded, f"no robot-{p}.config"
+            twin = "robot-" + p[len("generic-"):]
             g = settings((DEFCONFIGS_DIR / f"{p}.config").read_text(encoding="utf-8").splitlines())
-            r = settings((DEFCONFIGS_DIR / f"robot-{p}.config").read_text(encoding="utf-8").splitlines())
+            r = settings(gen_defconfigs.assemble(twin).splitlines())
             diff = [l for l in r if l not in g] + [l for l in g if l not in r]
             assert sorted(diff) == ["CONFIG_PRESET_GENERIC=y", "CONFIG_PRESET_ROBOT=y"], \
-                f"robot-{p} sets more than the preset beyond {p}: {diff}"
+                f"{twin} sets more than the preset beyond {p}: {diff}"
             switched = _expand([l for l in g if l != "CONFIG_PRESET_GENERIC=y"]
                                + ["CONFIG_PRESET_ROBOT=y"], t, f"switched-{p}.config")
             g2 = [l for l in switched if l.startswith("CONFIG_")]
-            r2 = [l for l in expanded[f"robot-{p}"] if l.startswith("CONFIG_")]
+            r2 = [l for l in _expand(r, t, f"{twin}.config") if l.startswith("CONFIG_")]
             diff = [l for l in r2 if l not in g2] + [l for l in g2 if l not in r2]
-            assert not diff, f"robot-{p} differs from {p} + PRESET_ROBOT: {diff}"
+            assert not diff, f"{twin} differs from {p} + PRESET_ROBOT: {diff}"
 
 
 def test_generic_drops_only_the_domain_feature() -> None:

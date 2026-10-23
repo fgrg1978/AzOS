@@ -7,14 +7,14 @@
 # It reads the same signed topology and speaks the same IPC and capability
 # ABI as the main kernel, recompiled for 32-bit words. Nothing here changes
 # what the main kernel builds: the symbols exist only under MICRO, and
-# `config/defconfigs/micro.config` is the one configuration that sets it.
+# `config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config` is the one configuration that sets it.
 
 config MICRO
     bool "Describe an AzOS-micro build (riscv32, M-mode, PMP)"
     default n
     help
       Selects the micro kernel's configuration (`make micro` reads
-      config/defconfigs/micro.config, which sets this). The main kernel
+      config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config, which sets this). The main kernel
       ignores every MICRO_* symbol. Its topology limits come from the
       HWCLASS table like any other build: micro.config picks embedded.
 

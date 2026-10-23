@@ -65,7 +65,7 @@ Source: `Makefile`, `mk/kernel.mk`, `mk/userspace.mk`, `mk/qemu.mk`, `mk/lints.m
 | Ring-3 programs | `make userspace` | `make userspace-aarch64` | `make userspace-x86_64` |
 | Run in QEMU | `make qemu`, `qemu-smp` (4 CPUs), `qemu-full-smp` (disk, network, a program), `qemu-rvv`, `qemu-gdb` | `make qemu-aarch64` (entered at EL1), `qemu-aarch64-el2` | `make qemu-x86_64` (microvm); `qemu-pci-x86_64`, `run-x86-pc` |
 | Type-check only | `make ARCH=riscv64 check` | `make ARCH=aarch64 check` | `make ARCH=x86_64 check` |
-| Default configuration | `config/defconfigs/qemu.config` | `config/defconfigs/qemu-aarch64.config` | `config/defconfigs/qemu-x86_64.config` |
+| Default configuration | `config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config` | `config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config` | `config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config` |
 
 Each kernel target expands its defconfig with `olddefconfig` into a file under
 `$AZOS_OUT/build/`, builds with the target and `--features` that `tools/kconfig_to_cargo.py`

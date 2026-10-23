@@ -4,7 +4,8 @@
 # Fails if `make help` (tools/make_help.txt) names a target the Makefile does
 # not define. A target counts as defined when the make database holds a rule
 # for it, or a pattern rule that matches it (defconfig-%); a defconfig-<name>
-# target must also have config/defconfigs/<name>.config.
+# target must also have config/defconfigs/<name>.config or be a name
+# tools/gen_defconfigs.py assembles.
 #
 # Usage: bash tools/check_make_help.sh
 set -u
@@ -37,7 +38,8 @@ for t in $names; do
     fi
     if [ $ok = 1 ]; then
         case "$t" in
-            defconfig-*) [ -f "config/defconfigs/${t#defconfig-}.config" ] || ok=0 ;;
+            defconfig-*) [ -f "config/defconfigs/${t#defconfig-}.config" ] \
+                || python3 tools/gen_defconfigs.py --print "${t#defconfig-}" >/dev/null 2>&1 || ok=0 ;;
         esac
     fi
     if [ $ok = 0 ]; then

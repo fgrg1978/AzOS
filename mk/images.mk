@@ -1121,10 +1121,10 @@ board_topo_features = board-image$$(python3 tools/kconfig_to_cargo.py $(1) | sed
 #   make azos-guest [ARCH=riscv64|aarch64]
 #
 # Builds, for one ISA, the two halves of the nested boot and joins them:
-#   host.kernel   the hypervisor kernel (config/defconfigs/qemu-hv-guest.config and its
+#   host.kernel   the hypervisor kernel (config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest.config and its
 #                 aarch64 sibling: VIRT on, Kconfig HV_EXAMPLE_GUEST, so its
 #                 built-in topology declares `[guest.azos]`),
-#   GUEST.BIN     the guest kernel (config/defconfigs/qemu-guest.config and siblings:
+#   GUEST.BIN     the guest kernel (config/defconfigs/generic-sbc-riscv64-dev+qemu+hv-guest.config and siblings:
 #                 no hypervisor inside, small RAM) as the flat image VMMD.ELF
 #                 loads: the bytes of guest RAM from its first byte on, entered at
 #                 byte 0 (userspace/services/vmmd/src/life.rs). The kernel is linked
@@ -1153,10 +1153,10 @@ endif
 AZOS_GUEST_DIR := $(OUT_BUILD)/azos-guest/$(ARCH)
 AZOS_GUEST_DISK_MIB ?= 4
 
-AZOS_GUEST_DEFCONFIG_riscv64 := config/defconfigs/qemu-guest.config
-AZOS_GUEST_DEFCONFIG_aarch64 := config/defconfigs/qemu-aarch64-guest.config
-AZOS_HOST_DEFCONFIG_riscv64  := config/defconfigs/qemu-hv-guest.config
-AZOS_HOST_DEFCONFIG_aarch64  := config/defconfigs/qemu-aarch64-hv-guest.config
+AZOS_GUEST_DEFCONFIG_riscv64 := config/defconfigs/generic-sbc-riscv64-dev+qemu+hv-guest.config
+AZOS_GUEST_DEFCONFIG_aarch64 := config/defconfigs/generic-sbc-aarch64-dev+qemu+hv-guest.config
+AZOS_HOST_DEFCONFIG_riscv64  := config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest.config
+AZOS_HOST_DEFCONFIG_aarch64  := config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest.config
 AZOS_HOST_VOLUME_riscv64     := $(OUT_BUILD)/disk-sh.img
 AZOS_HOST_VOLUME_aarch64     := $(OUT_BUILD)/disk-aarch64-sh.img
 AZOS_HASHES_riscv64          := $(IMAGE_HASHES)

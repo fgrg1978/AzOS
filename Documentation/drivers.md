@@ -318,10 +318,10 @@ Source: `crates/core/ipc/src/irq_bind.rs`, `crates/core/abi/src/invoke.rs`, `cra
 
 ## SpacemiT K1 bring-up
 
-The K1 (BananaPi BPI-F3) builds from `config/defconfigs/k1.config`, a release image that needs the fleet's signing key. The same board as a development build (the TEST key allowed) is that file plus `CONFIG_BUILD_TYPE_DEV=y`, with no second defconfig to keep in step; it type-checks with no board and no fleet key:
+The K1 (BananaPi BPI-F3) builds from `config/defconfigs/robot-sbc-riscv64+k1.config`, a release image that needs the fleet's signing key. The same board as a development build (the TEST key allowed) is that file plus `CONFIG_BUILD_TYPE_DEV=y`, with no second defconfig to keep in step; it type-checks with no board and no fleet key:
 
 ```
-cp config/defconfigs/k1.config "$AZOS_OUT/k1-dev.config"
+cp config/defconfigs/robot-sbc-riscv64+k1.config "$AZOS_OUT/k1-dev.config"
 echo CONFIG_BUILD_TYPE_DEV=y >> "$AZOS_OUT/k1-dev.config"
 TOPOLOGY_PUBKEY_PATH="$PWD/tools/keys/test_pub.bin" \
   make ARCH=riscv64 check CHECK_DEFCONFIG_riscv64="$AZOS_OUT/k1-dev.config"

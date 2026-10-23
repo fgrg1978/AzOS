@@ -48,7 +48,7 @@ fn main() {
     if !config_path.exists() {
         eprintln!(
             "cargo:warning=azos_limits: .config not found at {} — \
-             run `make defconfig-edge` to generate it.  \
+             run `make defconfig-generic-sbc-riscv64-dev` to generate it.  \
              Emitting empty generated.rs.",
             config_path.display()
         );
@@ -56,7 +56,7 @@ fn main() {
         let dest = out_dir.join("generated.rs");
         fs::write(
             &dest,
-            "// GENERATED — .config was absent at build time.  Run `make defconfig-edge`.\n",
+            "// GENERATED — .config was absent at build time.  Run `make defconfig-generic-sbc-riscv64-dev`.\n",
         )
         .expect("could not write empty generated.rs");
         return;

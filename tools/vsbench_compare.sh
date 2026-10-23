@@ -542,7 +542,7 @@ KP_FEATURES="qemu${VSBENCH_PRODUCT_EXTRA_FEATURES:+,$VSBENCH_PRODUCT_EXTRA_FEATU
 [ -n "${VSBENCH_PRODUCT_EXTRA_FEATURES:-}" ] && echo "vsbench: CANARY/diagnostic product features: $KP_FEATURES" >&2
 # Both AzOS kernels are release builds (owner, round 65): the caller's
 # configuration (`$KCONFIG_CONFIG`, the gate's primary column; else
-# config/defconfigs/qemu.config) with the kernel log level set to
+# config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config) with the kernel log level set to
 # VSBENCH_LOG_LEVEL, warn by default, so the numbers are those of a kernel
 # that prints only errors and refusals, not of the gate's debug console. A
 # diagnostic run that reads info lines from the boot log (e.g.
@@ -555,7 +555,7 @@ esac
 AZ_LEVEL="CONFIG_LOG_LEVEL_$(printf '%s' "$VSBENCH_LOG_LEVEL" | tr '[:lower:]' '[:upper:]')=y"
 AZ_CONFIG="$BENCH_TARGET/azos.config"
 mkdir -p "$BENCH_TARGET"
-{ grep -v 'LOG_LEVEL' "${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/qemu.config}" \
+{ grep -v 'LOG_LEVEL' "${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config}" \
     && echo "$AZ_LEVEL"; } >"$AZ_CONFIG.new" \
     && ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$AZ_CONFIG.new" python3 -m olddefconfig >/dev/null 2>&1 ) \
     && grep -q "^$AZ_LEVEL\$" "$AZ_CONFIG.new" \

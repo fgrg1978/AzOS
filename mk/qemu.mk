@@ -147,7 +147,7 @@ X86_64_PCI_IMG := $(OUT_BUILD)/kernel-x86_64-pci.elf
 
 .PHONY: x86_64-pci qemu-pci-x86_64
 x86_64-pci:
-	$(MAKE) x86_64 X86_64_DEFCONFIG=config/defconfigs/qemu-x86_64-pci.config \
+	$(MAKE) x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config \
 	    X86_64_KCONFIG=$(OUT_BUILD)/x86_64-pci.config \
 	    X86_64_TARGET_DIR=$(OUT_TARGET)/x86_64-pci \
 	    X86_64_IMG=$(X86_64_PCI_IMG)
@@ -176,7 +176,7 @@ X86_64_LIMINE_IMG := $(OUT_BUILD)/kernel-x86_64-limine.elf
 
 .PHONY: x86_64-limine
 x86_64-limine:
-	$(MAKE) x86_64 X86_64_DEFCONFIG=config/defconfigs/qemu-x86_64-limine.config \
+	$(MAKE) x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+limine.config \
 	    X86_64_KCONFIG=$(OUT_BUILD)/x86_64-limine.config \
 	    X86_64_LINKER=kernel/linker-x86_64-limine.ld \
 	    X86_64_TARGET_DIR=$(OUT_TARGET)/x86_64-limine \

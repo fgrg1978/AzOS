@@ -16,7 +16,7 @@ constants, profile flags, architecture flags.
 Run after every Kconfig change:
 
     cd azos
-    make defconfig-edge          # or any defconfig
+    make defconfig-generic-sbc-riscv64-dev          # or any defconfig
     python3 tools/export_kernel_consts.py
 
 Or wire into the Makefile as a post-defconfig hook.

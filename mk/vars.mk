@@ -541,12 +541,12 @@ K1_BAUD    ?= 115200
 K1_LINKER   := kernel/linker-k1.ld
 # ISA extensions the K1 has and the VF2 does not.
 #
-# The SpacemiT X60 is an RVA22 part (`config/defconfigs/k1.config`: rv64gcv), and RVA22
+# The SpacemiT X60 is an RVA22 part (`config/defconfigs/robot-sbc-riscv64+k1.config`: rv64gcv), and RVA22
 # mandates Zba, Zbb and Zbs. So the compiler may use them everywhere in a K1
 # build — address arithmetic, bit counting, the scheduler's ready-bitmap pick —
 # not only in hand-written `asm!`.
 #
-# **Only the K1.** The VF2's JH7110 is rv64gc (SiFive U74, `config/defconfigs/vf2.config`):
+# **Only the K1.** The VF2's JH7110 is rv64gc (SiFive U74, `config/defconfigs/robot-sbc-riscv64+vf2.config`):
 # it has none of these, and a binary carrying them dies with an illegal
 # instruction on its first one. Both binaries are called `kernel`, so nothing but
 # a check stops one reaching the wrong board — `tools/ci_check.sh` disassembles
@@ -754,7 +754,7 @@ IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
 # The aarch64 counterpart of `make build` / `make qemu`. Three things differ
 # from RISC-V, and each is here on purpose:
 #
-#  * Its own Kconfig profile. config/defconfigs/qemu-aarch64.config is minimal, so it
+#  * Its own Kconfig profile. config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config is minimal, so it
 #    is expanded by olddefconfig into build/aarch64.config — the same expansion
 #    tools/ci_check.sh does for the fleet profile — and handed to the build via
 #    KCONFIG_CONFIG. The workspace .config (the RISC-V edge profile) is not
@@ -777,7 +777,7 @@ AARCH64_LINKER   := kernel/linker-aarch64.ld
 AARCH64_KCONFIG  := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX).config
 # `make aarch64 AARCH64_DEFCONFIG=<file> AARCH64_KCONFIG=<expanded> AARCH64_IMG=<image> ...` builds another
 # configuration beside the default one (`make azos-guest`, the x86_64 `X86_64_DEFCONFIG` shape).
-AARCH64_DEFCONFIG ?= config/defconfigs/qemu-aarch64.config
+AARCH64_DEFCONFIG ?= config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config
 # A non-default granule builds in its own target directory: switching granule
 # rebuilds every crate (azos_arch_api's PAGE_SIZE is a feature), and the
 # 4 KiB kernel's artifacts should survive it.
@@ -805,7 +805,7 @@ QEMU_AARCH64_KERNEL_FLAGS := -cpu max,pauth=on -smp 2 -nographic
 # another configuration into its own expanded file, so the default one never
 # goes stale under it (a build from a configuration of its own).
 X86_64_FEATURES ?=
-X86_64_DEFCONFIG ?= config/defconfigs/qemu-x86_64.config
+X86_64_DEFCONFIG ?= config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config
 X86_64_KCONFIG ?= $(OUT_BUILD)/x86_64.config
 # Where cargo builds this kernel: the Limine variant has its own directory so
 # the two never rebuild each other (RUSTFLAGS differ in the linker script).

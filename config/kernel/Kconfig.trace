@@ -36,7 +36,7 @@ choice
 
       Every deployment profile defaults to warn: errors, security
       refusals and safety warnings only. The QEMU development configs
-      (config/defconfigs/qemu.config, qemu-aarch64.config), which the
+      (config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config, qemu-aarch64.config), which the
       gate builds, select debug so every gate row reads its lines.
 
       Not affected by the level: the console output of the shell and of

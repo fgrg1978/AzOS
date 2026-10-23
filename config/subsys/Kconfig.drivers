@@ -766,7 +766,7 @@ config I2C_SERVICE_POLL_US
       no FIFO here: a step moves ONE byte, so a transaction takes about
       (bytes + 2) steps and this period is the gap between bytes (the
       controller holds SCL low meanwhile); keep it near one byte time at the
-      bus rate (config/defconfigs/k1.config sets the minimum).
+      bus rate (config/defconfigs/robot-sbc-riscv64+k1.config sets the minimum).
 
 config DEVIF_PUMP_POLL_US
     int "device pump: look again at a source with no interrupt after (us)"

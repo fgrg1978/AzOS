@@ -40,7 +40,7 @@ objcopy="$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-objcopy"
 case "$isa" in
     riscv64)
         cfg="$out/riscv64.config"; tdir="$out/target"
-        cp config/defconfigs/qemu.config "$cfg"
+        cp config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config "$cfg"
         KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null
         make "$AZOS_OUT/build/image_hashes.rs" >&2
         rf="$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
@@ -53,7 +53,7 @@ case "$isa" in
         ;;
     x86_64)
         cfg="$out/x86_64.config"; tdir="$out/target"
-        cp config/defconfigs/qemu-x86_64-limine.config "$cfg"
+        cp config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+limine.config "$cfg"
         KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null
         make "$AZOS_OUT/build/image_hashes_x86_64.rs" >&2
         # shellcheck disable=SC2046

@@ -20,29 +20,27 @@ Options and choices: 831. Defconfigs: 23.
 
 | Column | File |
 |---|---|
-| edge | config/defconfigs/edge.config |
-| embedded | config/defconfigs/embedded.config |
-| experimental | config/defconfigs/experimental.config |
-| fleet | config/defconfigs/fleet.config |
-| k1 | config/defconfigs/k1.config |
-| micro | config/defconfigs/micro.config |
-| qemu-aarch64-guest | config/defconfigs/qemu-aarch64-guest.config |
-| qemu-aarch64-hv-guest | config/defconfigs/qemu-aarch64-hv-guest.config |
-| qemu-aarch64-hv | config/defconfigs/qemu-aarch64-hv.config |
-| qemu-aarch64 | config/defconfigs/qemu-aarch64.config |
-| qemu-guest | config/defconfigs/qemu-guest.config |
-| qemu-hv-guest | config/defconfigs/qemu-hv-guest.config |
-| qemu-hv | config/defconfigs/qemu-hv.config |
-| qemu-x86_64-hv | config/defconfigs/qemu-x86_64-hv.config |
-| qemu-x86_64-limine | config/defconfigs/qemu-x86_64-limine.config |
-| qemu-x86_64-pci | config/defconfigs/qemu-x86_64-pci.config |
-| qemu-x86_64 | config/defconfigs/qemu-x86_64.config |
-| qemu | config/defconfigs/qemu.config |
-| robot-edge | config/defconfigs/robot-edge.config |
-| robot-embedded | config/defconfigs/robot-embedded.config |
-| robot-fleet | config/defconfigs/robot-fleet.config |
-| rpi5 | config/defconfigs/rpi5.config |
-| vf2 | config/defconfigs/vf2.config |
+| generic-embedded-riscv64+board-generic | config/defconfigs/generic-embedded-riscv64+board-generic.config |
+| generic-embedded-riscv64-dev+board-generic+micro | config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config |
+| generic-sbc-aarch64-dev+qemu+hv-guest | config/defconfigs/generic-sbc-aarch64-dev+qemu+hv-guest.config |
+| generic-sbc-aarch64-dev+qemu+linux+gui | config/defconfigs/generic-sbc-aarch64-dev+qemu+linux+gui.config |
+| generic-sbc-riscv64-dev+qemu+hv-guest | config/defconfigs/generic-sbc-riscv64-dev+qemu+hv-guest.config |
+| generic-sbc-riscv64-dev+qemu+linux+gui | config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config |
+| generic-sbc-riscv64-dev | config/defconfigs/generic-sbc-riscv64-dev.config |
+| generic-sbc-x86_64-dev+qemu+linux+gui | config/defconfigs/generic-sbc-x86_64-dev+qemu+linux+gui.config |
+| generic-server-riscv64+board-generic | config/defconfigs/generic-server-riscv64+board-generic.config |
+| robot-embedded-riscv64+board-generic | config/defconfigs/robot-embedded-riscv64+board-generic.config |
+| robot-sbc-aarch64+rpi5 | config/defconfigs/robot-sbc-aarch64+rpi5.config |
+| robot-sbc-aarch64-dev+qemu+linux+gui | config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config |
+| robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest.config |
+| robot-sbc-riscv64+k1 | config/defconfigs/robot-sbc-riscv64+k1.config |
+| robot-sbc-riscv64+vf2 | config/defconfigs/robot-sbc-riscv64+vf2.config |
+| robot-sbc-riscv64-dev+qemu+linux+gui | config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config |
+| robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest.config |
+| robot-sbc-x86_64-dev+qemu+linux+gui | config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config |
+| robot-sbc-x86_64-dev+qemu+linux+limine | config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+limine.config |
+| robot-sbc-x86_64-dev+qemu+linux+pci | config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config |
+| robot-server-riscv64+board-generic | config/defconfigs/robot-server-riscv64+board-generic.config |
 
 ## config/Kconfig.arch
 
@@ -611,44 +609,44 @@ Options and choices: 831. Defconfigs: 23.
 
 ### Linux compatibility
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `BUSYBOX` | BusyBox (static, run through the Linux personality) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LINUX_ABI` | Linux syscall personality (static Linux binaries) | n | n | n | n | n | n | n | y | y | y | n | y | y | y | y | y | y | y | n | n | n | n | n |
-| `LINUX_DRIVERS` | Linux driver support (ring-3 servers) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LINUX_RUNTIME` | Host the Linux personality in a ring-3 runtime (trap reflect) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_ACCEPT_UNCONFINED_DMA` | Allow DMA-capable Linux servers on a board without an IOMMU | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_SERVER_SKELETON` | Server skeleton only (development) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `USERSPACE_GPL` | Allow third-party GPL userspace programs (e.g. BusyBox) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `BUSYBOX` | BusyBox (static, run through the Linux personality) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LINUX_ABI` | Linux syscall personality (static Linux binaries) | n | n | n | y | n | y | n | y | n | n | n | y | y | n | n | y | y | y | y | y | n |
+| `LINUX_DRIVERS` | Linux driver support (ring-3 servers) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LINUX_RUNTIME` | Host the Linux personality in a ring-3 runtime (trap reflect) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_ACCEPT_UNCONFINED_DMA` | Allow DMA-capable Linux servers on a board without an IOMMU | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_SERVER_SKELETON` | Server skeleton only (development) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `USERSPACE_GPL` | Allow third-party GPL userspace programs (e.g. BusyBox) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 
 ### Linux compatibility / Filesystems (lxsrv-fs)
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `LX_FS_EXT2` | ext2 | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_FS_EXT4_RO` | ext4 read-only (no journal replay) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_FS_EXT4_RW` | ext4 read-write with journal (jbd2) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `LX_FS_EXT2` | ext2 | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_FS_EXT4_RO` | ext4 read-only (no journal replay) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_FS_EXT4_RW` | ext4 read-write with journal (jbd2) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 
 ### Linux compatibility / Later classes (each needs its own design work)
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `LX_BLUETOOTH` | Bluetooth | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_DRM_PANEL` | Display panels (DRM/KMS panel drivers) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_IIO` | IIO sensors | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_SND_ASOC` | Audio (ALSA core + ASoC codecs) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_WIFI` | Wi-Fi (mac80211 / cfg80211) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `LX_BLUETOOTH` | Bluetooth | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_DRM_PANEL` | Display panels (DRM/KMS panel drivers) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_IIO` | IIO sensors | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_SND_ASOC` | Audio (ALSA core + ASoC codecs) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_WIFI` | Wi-Fi (mac80211 / cfg80211) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 
 ### Linux compatibility / USB (lxsrv-usb)
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `LX_USB_CDC` | CDC serial (cdc-acm) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_USB_DWC3` | Board USB controller (xhci-plat over dwc3) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_USB_HID` | HID keyboard / mouse (usbhid) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_USB_STORAGE` | Mass storage (usb-storage) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_USB_UVC` | UVC camera (uvcvideo) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `LX_USB_XHCI` | xHCI host controller over PCI (xhci-pci, usbcore, hub) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `LX_USB_CDC` | CDC serial (cdc-acm) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_USB_DWC3` | Board USB controller (xhci-plat over dwc3) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_USB_HID` | HID keyboard / mouse (usbhid) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_USB_STORAGE` | Mass storage (usb-storage) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_USB_UVC` | UVC camera (uvcvideo) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `LX_USB_XHCI` | xHCI host controller over PCI (xhci-pci, usbcore, hub) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 
 ## config/Kconfig.micro
 
@@ -662,64 +660,64 @@ Options and choices: 831. Defconfigs: 23.
 
 ### Mitigations
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `A64_MIT_BHB_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `A64_MIT_BHB_PROBE` | probe: mitigate when the core is affected, say so when the tree cannot | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n | n | n | n | n | n | y | n |
-| `A64_MIT_BHB_REQUIRE` | require: refuse to boot on an affected core the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `A64_MIT_SPECTRE_V2_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `A64_MIT_SPECTRE_V2_PROBE` | probe: mitigate when the core is affected, say so when the tree cannot | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n | n | n | n | n | n | y | n |
-| `A64_MIT_SPECTRE_V2_REQUIRE` | require: refuse to boot on an affected core the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `A64_MIT_SSB_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `A64_MIT_SSB_PROBE` | probe: mitigate when the core is affected, say so when the tree cannot | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n | n | n | n | n | n | y | n |
-| `A64_MIT_SSB_REQUIRE` | require: refuse to boot on an affected core the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `CONSOLE_LOCKDOWN` | Production console lockdown: no kernel console, unprivileged user shell | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ELF_REFUSE_EXEC_HEADERS` | ELF loader: refuse an executable segment that maps the ELF headers | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `INFER_MODEL_SIG_REQUIRED` | Require an Ed25519 signature on the inference service's model data files | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `MITIGATION_SPECTRE_V1_INDEX` | Spectre v1: mask table indices that come from ring 3 | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `X86_MIT_BHI_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_BHI_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_BHI_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_GDS_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_GDS_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_GDS_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_L1TF_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_L1TF_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_L1TF_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_MDS_TAA_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_MDS_TAA_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_MDS_TAA_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_MELTDOWN_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_MELTDOWN_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_MELTDOWN_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_RETBLEED_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_RETBLEED_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_RETBLEED_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_RFDS_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_RFDS_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_RFDS_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_SPECTRE_V2_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_SPECTRE_V2_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_SPECTRE_V2_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_SRSO_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_SRSO_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_SRSO_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_ZENBLEED_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `X86_MIT_ZENBLEED_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | n | n | n | n | n | n |
-| `X86_MIT_ZENBLEED_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| choice | Branch history injection | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | Gather data sampling (Downfall) | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | L1 terminal fault: PTE inversion | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | MDS and TAA: clear the CPU buffers on return to ring 3 | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | Meltdown (rogue data cache load): kernel page-table isolation | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | Register file data sampling | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | Retbleed (return instruction prediction) | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | Spectre v2 (branch target injection): CSV2 | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n | n | n | n | PROBE | n |
-| choice | Spectre v2 (branch target injection): eIBRS, AutoIBRS, else retpoline | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | Spectre v4 (speculative store bypass): SSBS | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n | n | n | n | PROBE | n |
-| choice | Spectre-BHB (branch history injection) | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n | n | n | n | PROBE | n |
-| choice | Speculative return stack overflow (AMD) | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
-| choice | Zenbleed (AMD Zen 2) | n | n | n | n | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | PROBE | n | n | n | n | n | n |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `A64_MIT_BHB_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `A64_MIT_BHB_PROBE` | probe: mitigate when the core is affected, say so when the tree cannot | n | n | y | y | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
+| `A64_MIT_BHB_REQUIRE` | require: refuse to boot on an affected core the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `A64_MIT_SPECTRE_V2_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `A64_MIT_SPECTRE_V2_PROBE` | probe: mitigate when the core is affected, say so when the tree cannot | n | n | y | y | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
+| `A64_MIT_SPECTRE_V2_REQUIRE` | require: refuse to boot on an affected core the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `A64_MIT_SSB_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `A64_MIT_SSB_PROBE` | probe: mitigate when the core is affected, say so when the tree cannot | n | n | y | y | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
+| `A64_MIT_SSB_REQUIRE` | require: refuse to boot on an affected core the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `CONSOLE_LOCKDOWN` | Production console lockdown: no kernel console, unprivileged user shell | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `ELF_REFUSE_EXEC_HEADERS` | ELF loader: refuse an executable segment that maps the ELF headers | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
+| `INFER_MODEL_SIG_REQUIRED` | Require an Ed25519 signature on the inference service's model data files | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
+| `MITIGATION_SPECTRE_V1_INDEX` | Spectre v1: mask table indices that come from ring 3 | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
+| `X86_MIT_BHI_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_BHI_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_BHI_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_GDS_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_GDS_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_GDS_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_L1TF_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_L1TF_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_L1TF_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_MDS_TAA_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_MDS_TAA_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_MDS_TAA_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_MELTDOWN_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_MELTDOWN_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_MELTDOWN_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_RETBLEED_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_RETBLEED_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_RETBLEED_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_RFDS_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_RFDS_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_RFDS_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_SPECTRE_V2_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_SPECTRE_V2_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_SPECTRE_V2_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_SRSO_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_SRSO_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_SRSO_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_ZENBLEED_NEVER` | n: do not look at it, do nothing | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `X86_MIT_ZENBLEED_PROBE` | probe: mitigate when the CPU is affected, say so when the tree cannot | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `X86_MIT_ZENBLEED_REQUIRE` | require: refuse to boot on an affected CPU the tree cannot mitigate | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| choice | Branch history injection | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | Gather data sampling (Downfall) | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | L1 terminal fault: PTE inversion | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | MDS and TAA: clear the CPU buffers on return to ring 3 | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | Meltdown (rogue data cache load): kernel page-table isolation | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | Register file data sampling | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | Retbleed (return instruction prediction) | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | Spectre v2 (branch target injection): CSV2 | n | n | PROBE | PROBE | n | n | n | n | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n |
+| choice | Spectre v2 (branch target injection): eIBRS, AutoIBRS, else retpoline | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | Spectre v4 (speculative store bypass): SSBS | n | n | PROBE | PROBE | n | n | n | n | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n |
+| choice | Spectre-BHB (branch history injection) | n | n | PROBE | PROBE | n | n | n | n | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n |
+| choice | Speculative return stack overflow (AMD) | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
+| choice | Zenbleed (AMD Zen 2) | n | n | n | n | n | n | n | PROBE | n | n | n | n | n | n | n | n | n | PROBE | PROBE | PROBE | n |
 
 ## config/Kconfig.network
 
@@ -832,29 +830,29 @@ Options and choices: 831. Defconfigs: 23.
 
 ### Robot
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `ROBOT_ACKERMANN` | Ackermann (car-like, 2-channel: throttle + steering) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ROBOT_DRONE` | Drone (4-channel quadrotor PWM) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ROBOT_HUMANOID` | Humanoid (N-channel joint angles) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ROBOT_NONE` | None (no platform chosen at build time) | n | n | y | n | y | n | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| `ROBOT_WHEELED` | Wheeled (2-channel differential drive) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| choice | Robot type | n | n | NONE | n | NONE | n | n | NONE | NONE | NONE | n | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ROBOT_ACKERMANN` | Ackermann (car-like, 2-channel: throttle + steering) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `ROBOT_DRONE` | Drone (4-channel quadrotor PWM) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `ROBOT_HUMANOID` | Humanoid (N-channel joint angles) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `ROBOT_NONE` | None (no platform chosen at build time) | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| `ROBOT_WHEELED` | Wheeled (2-channel differential drive) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| choice | Robot type | n | n | n | n | n | n | n | n | n | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE |
 
 ### Robot / RC input and geofence
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `GEOFENCE` | On-board geofence armed at the home fix | n | n | y | n | y | n | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| `RC_FAILSAFE_ESTOP` | RC link loss latches the e-stop | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `RC_INPUT` | RC receiver feeds the safety path | n | n | y | n | y | n | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `GEOFENCE` | On-board geofence armed at the home fix | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| `RC_FAILSAFE_ESTOP` | RC link loss latches the e-stop | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
+| `RC_INPUT` | RC receiver feeds the safety path | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
 
 ### Robot / Safety layer and motor control
 
-| Symbol | Prompt | edge | embedded | experimental | fleet | k1 | micro | qemu-aarch64-guest | qemu-aarch64-hv-guest | qemu-aarch64-hv | qemu-aarch64 | qemu-guest | qemu-hv-guest | qemu-hv | qemu-x86_64-hv | qemu-x86_64-limine | qemu-x86_64-pci | qemu-x86_64 | qemu | robot-edge | robot-embedded | robot-fleet | rpi5 | vf2 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `EFFECT_WRITE_AHEAD` | Write-ahead receipts: record a ring-3 motor op before it reaches the wheel | n | n | y | n | y | n | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| `MOTOR_COMMANDER_EXIT_STOP` | A dead motor commander's wheels go to a safe stop | n | n | y | n | y | n | n | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `EFFECT_WRITE_AHEAD` | Write-ahead receipts: record a ring-3 motor op before it reaches the wheel | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| `MOTOR_COMMANDER_EXIT_STOP` | A dead motor commander's wheels go to a safe stop | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
 
 ## config/Kconfig.security
 

@@ -79,7 +79,7 @@ fn aarch64_require_builds_the_same_pads_and_adds_its_target_features() {
 
 #[test]
 fn the_raspberry_pi_5_has_neither_extension_and_so_no_pads() {
-    let defcfg = std::fs::read_to_string(crate::repo().join("config/defconfigs/qemu-aarch64.config")).unwrap();
+    let defcfg = std::fs::read_to_string(crate::repo().join("config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config")).unwrap();
     let mut lines: Vec<&str> = defcfg.lines().filter(|l| !l.contains("BOARD_")).collect();
     lines.push("CONFIG_BOARD_RPI5=y");
     let (k, u) = both(&expand("rpi5.config", &lines));

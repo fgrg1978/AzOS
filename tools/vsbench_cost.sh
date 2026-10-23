@@ -8,7 +8,7 @@
 #
 # The gate kernel (bench-minimal, tools/vsbench_compare.sh with
 # VSBENCH_GATE_ONLY=1) is built twice from the same tree and the same base
-# configuration ($KCONFIG_CONFIG, else config/defconfigs/qemu.config): once
+# configuration ($KCONFIG_CONFIG, else config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config): once
 # with `# CONFIG_<SYMBOL> is not set`, once with `CONFIG_<SYMBOL>=y`. Both boot
 # the same VSBENCH.ELF under `-icount shift=0,sleep=off` at one hart
 # (VSBENCH_SMP=1 with VSBENCH_ICOUNT=1 is bit-exact: a lane's ns/op is an
@@ -43,7 +43,7 @@ set -euo pipefail
 SYM="$1" PERMILLE="$2" LANES="$3"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/out_dir.py")}"; export AZOS_OUT
-BASE="${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/qemu.config}"
+BASE="${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config}"
 OUT="$AZOS_OUT/build/vsbench-cost-$(printf '%s' "$SYM" | tr '[:upper:]' '[:lower:]')"
 mkdir -p "$OUT"
 die() { echo "vsbench-cost: $*" >&2; exit 1; }

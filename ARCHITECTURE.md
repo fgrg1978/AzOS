@@ -356,7 +356,7 @@ the same capability and IPC ABI, and it compiles the main kernel's pure modules
 (scheduling context, EDF/CBS arithmetic, QSBR rules) with `#[path]`. Tasks are
 static rows of the topology; there is no fork and no exec.
 
-- Source: `micro/`, `config/kernel/Kconfig.micro`, `config/defconfigs/micro.config`,
+- Source: `micro/`, `config/kernel/Kconfig.micro`, `config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config`,
   `tests/host/micro-tests`.
 
 ## Adding an ISA

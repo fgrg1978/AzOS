@@ -105,14 +105,14 @@ def main():
         cfg = os.path.join(tmp, "t.config")
 
         # 1. The real tree.
-        rc, log, v = defconfig(tmp, "edge", cfg)
+        rc, log, v = defconfig(tmp, "generic-sbc-riscv64-dev", cfg)
         check(rc == 0, "edge defconfig expands")
         on = {k[len("USERSPACE_"):] for k, x in v.items()
               if k.startswith("USERSPACE_") and x == "y"} - {"GPL", "TOPOLOGY_ROWS"}
         check(on == BOARD_DEFAULT, f"edge: board images by default = topology rows ({sorted(on ^ BOARD_DEFAULT)} differ)")
         check(v.get("CONSOLE_PROGRAM_SH") == "y" and v.get("CONSOLE_PATH") == '"/fat/TERMD.ELF"'
               and v.get("USER_SHELL") == "y", "edge: console = native shell session (TERMD.ELF), USER_SHELL=y")
-        rc, log, v = defconfig(tmp, "embedded", cfg)
+        rc, log, v = defconfig(tmp, "generic-embedded-riscv64+board-generic", cfg)
         check(v.get("CONSOLE_PROGRAM_NONE") == "y" and "USER_SHELL" not in v
               and v.get("CONSOLE_PATH") == '""', "embedded: console = none, USER_SHELL=n")
         on = {k[len("USERSPACE_"):] for k, x in v.items() if k.startswith("USERSPACE_") and x == "y"} - {"GPL"}
@@ -139,7 +139,7 @@ def main():
         os.makedirs(dummy)
         with open(os.path.join(dummy, "Cargo.toml"), "w") as f:
             f.write('[package]\nname = "dummyprg"\ndescription = "A test program."\n')
-        rc, log, v = defconfig(tmp, "edge", cfg)
+        rc, log, v = defconfig(tmp, "generic-sbc-riscv64-dev", cfg)
         gen = open(os.path.join(tmp, "config", "Kconfig.userspace")).read()
         check("config USERSPACE_DUMMYPRG" in gen and "config CONSOLE_PROGRAM_DUMMYPRG" in gen,
               "added dir: USERSPACE_DUMMYPRG and its console choice are generated")

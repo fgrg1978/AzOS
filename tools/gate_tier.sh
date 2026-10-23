@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # The gate's short tiers (wave 15). `make ci` is the full gate (N2).
 #
-#   tools/gate_tier.sh n0   `make check` for riscv64, aarch64 and x86_64, the
+#   tools/gate_tier.sh n0   `make check` for riscv64, aarch64 and x86_64 (generic and robot), the
 #                           output-dir lint (tools/out_dir_lint.py), the
 #                           unsafe and size budgets (`make size-check`), plus
 #                           cargo-deny (licences, bans, sources; offline), plus
@@ -45,10 +45,14 @@ fi
 # notes and the aarch64 build's known noise (A64_KNOWN_NOISE in ci_check.sh);
 # the x86_64 skeleton by exit status, as the gate's "x86_64: make check" row.
 noise='^warning: [A-Za-z0-9_-]+@[0-9]|prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0'
+# Each ISA twice: the generic gate cell and the robot one (the robot crates
+# under domains/robot/ and the kernel's `use-robot` code).
 if [ "$tier" = n0 ]; then
-    for arch in riscv64 aarch64 x86_64; do
-        printf "  %-26s" "check ${arch}..."
-        if out="$(make ARCH="$arch" check 2>&1)" \
+    for arch in riscv64 aarch64 x86_64 riscv64:robot aarch64:robot x86_64:robot; do
+        preset=generic
+        case "$arch" in *:robot) preset=robot; arch="${arch%:robot}" ;; esac
+        printf "  %-26s" "check ${arch}$([ "$preset" = robot ] && echo ' robot')..."
+        if out="$(make ARCH="$arch" CHECK_PRESET="$preset" check 2>&1)" \
            && { [ "$arch" = x86_64 ] || ! printf '%s\n' "$out" | grep -E '^warning:' | qgrep -qvE "$noise"; }; then
             echo ok
         else
@@ -192,6 +196,18 @@ fi
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "feature matrix..."
     if out="$(python3 tools/gen_feature_matrix.py --self-test 2>&1 && python3 tools/gen_feature_matrix.py --check 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
+# The committed defconfigs are what their fragments assemble, and each keeps
+# the axes its name gives (tools/gen_defconfigs.py; `make defconfigs` rewrites them).
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "defconfigs from fragments..."
+    if out="$(python3 tools/gen_defconfigs.py --self-test 2>&1 && python3 tools/gen_defconfigs.py --check 2>&1)"; then
         echo ok
     else
         echo FAIL; fail=1

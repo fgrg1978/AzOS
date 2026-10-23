@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 fn num(cfg: &azos_config::ConfigMap, key: &str) -> u64 {
     let v = cfg.get(key).unwrap_or_else(|| {
-        panic!("azos_micro: {key} is not in the .config: build with `make micro` (config/defconfigs/micro.config)")
+        panic!("azos_micro: {key} is not in the .config: build with `make micro` (config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config)")
     });
     match v.strip_prefix("0x") {
         Some(h) => u64::from_str_radix(h, 16),
@@ -32,7 +32,7 @@ fn main() {
     let cfg = azos_config::parse_config(config.to_str().unwrap())
         .unwrap_or_else(|e| panic!("azos_micro: cannot read {}: {e}", config.display()));
     if cfg.get("MICRO").map(String::as_str) != Some("y") {
-        panic!("azos_micro: {} does not set MICRO (use config/defconfigs/micro.config)", config.display());
+        panic!("azos_micro: {} does not set MICRO (use config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config)", config.display());
     }
     // The bin only: the library is also built for the host test suite.
     let kib = 1024u64;

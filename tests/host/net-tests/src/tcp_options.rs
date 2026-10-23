@@ -331,7 +331,7 @@ fn an_active_open_offers_both_options_in_a_syn_whose_window_is_not_scaled() {
 /// `config/limits/Kconfig.limits` quotes. `STATE` is exact on purpose:
 /// whoever adds or resizes a `TcpConn` field updates it here, together with
 /// those figures in `config/limits/Kconfig.limits` (also quoted in
-/// `config/subsys/Kconfig.net` and `config/defconfigs/fleet.config`).
+/// `config/subsys/Kconfig.net` and `config/defconfigs/generic-server-riscv64+board-generic.config`).
 #[test]
 fn a_connection_is_two_rings_of_the_configured_size_plus_fixed_state() {
     const STATE: usize = 6_136;

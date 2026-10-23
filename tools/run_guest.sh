@@ -8,8 +8,9 @@
 #   tools/run_guest.sh <isa> --judge FILE      only judge a console log (no build, no QEMU)
 #
 # `make ARCH=<isa> azos-guest` (mk/images.mk) builds the host kernel
-# (config/defconfigs/qemu-*hv-guest.config: VIRT on, Kconfig HV_EXAMPLE_GUEST), the
-# guest kernel (config/defconfigs/qemu-*guest.config) and the host volume that
+# (config/defconfigs/robot-sbc-<isa>-dev+qemu+linux+hv-host+hv-example-guest.config: VIRT on,
+# Kconfig HV_EXAMPLE_GUEST), the
+# guest kernel (config/defconfigs/generic-sbc-<isa>-dev+qemu+hv-guest.config) and the host volume that
 # carries VMMD.ELF, VM/GUEST.BIN and VM/DISK.IMG; --no-build uses what it
 # left. QEMU then runs the host with the CPU's virtualisation extension on
 # (riscv64 -cpu rv64,h=true; aarch64 -M virt,virtualization=on,gic-version=3),

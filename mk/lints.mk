@@ -12,11 +12,14 @@
 # `-Zbuild-std` (.cargo/config.toml) builds core/alloc from rust-src, so no
 # target has to be installed. RUSTFLAGS is set only when the ISA has baseline
 # flags: an empty one would override riscv64's build.rustflags.
+# CHECK_PRESET picks the gate cell: generic (the default, the image the gate
+# is about) or robot (the robot worked example, which links domains/robot/).
 ARCH ?= riscv64
-CHECK_DEFCONFIG_riscv64 := config/defconfigs/qemu.config
-CHECK_DEFCONFIG_aarch64 := config/defconfigs/qemu-aarch64.config
-CHECK_DEFCONFIG_x86_64  := config/defconfigs/qemu-x86_64.config
-CHECK_KCONFIG := $(OUT_BUILD)/check-$(ARCH).config
+CHECK_PRESET ?= generic
+CHECK_DEFCONFIG_riscv64 := config/defconfigs/$(CHECK_PRESET)-sbc-riscv64-dev+qemu+linux+gui.config
+CHECK_DEFCONFIG_aarch64 := config/defconfigs/$(CHECK_PRESET)-sbc-aarch64-dev+qemu+linux+gui.config
+CHECK_DEFCONFIG_x86_64  := config/defconfigs/$(CHECK_PRESET)-sbc-x86_64-dev+qemu+linux+gui.config
+CHECK_KCONFIG := $(OUT_BUILD)/check-$(ARCH)-$(CHECK_PRESET).config
 # The image table the kernel `include!`s, made when missing (order-only: a
 # type-check never waits for a userspace rebuild; `make` refreshes the table).
 # Without it a fresh worktree's `make check0` failed in azos_sched.

@@ -45,9 +45,9 @@ tdir="$out/target"
 cargo="${CARGO:-$(command -v cargo || echo "$HOME/.cargo/bin/cargo")}"
 
 case "$isa" in
-    riscv64) defcfg=config/defconfigs/qemu.config ;;
-    aarch64) defcfg=config/defconfigs/qemu-aarch64.config ;;
-    x86_64)  defcfg=config/defconfigs/qemu-x86_64.config ;;
+    riscv64) defcfg=config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config ;;
+    aarch64) defcfg=config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config ;;
+    x86_64)  defcfg=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config ;;
 esac
 cp "$defcfg" "$cfg"
 if [ "$mode" = slid ]; then echo "CONFIG_KASLR_PROBE=y" >>"$cfg"; else echo "CONFIG_KASLR_NEVER=y" >>"$cfg"; fi

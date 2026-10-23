@@ -6616,7 +6616,7 @@ mod mcp_row_tests {
         assert_eq!(t.guests().len(), azos_topology::builder::EXAMPLE_GUEST_ROW as usize);
         // Off (the default build): no guest at all. The test has teeth in both
         // builds; the declared row is checked with the Kconfig on: expand
-        // config/defconfigs/qemu-hv-guest.config into a file and run the tests
+        // config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest.config into a file and run the tests
         // with KCONFIG_CONFIG=<that file>.
         if !azos_topology::builder::EXAMPLE_GUEST_ROW {
             assert!(t.guests().is_empty(), "no HV_EXAMPLE_GUEST: the built-in topology declares no guest");

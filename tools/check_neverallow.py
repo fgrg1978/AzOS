@@ -12,7 +12,7 @@ checker (tests/host/topology-tests/src/bin/topo_neverallow.rs) apply them:
     tools/check_presets.py expands them);
   * every config/defconfigs/*.config as it stands (the board images);
   * the micro kernel's signed topology (tools/micro_topology.py), parsed under
-    config/defconfigs/micro.config.
+    config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config.
 
 Each configuration is expanded with kconfiglib, as `olddefconfig` does. The
 cargo features of the kernel it asks for (tools/kconfig_to_cargo.py) are
@@ -55,7 +55,7 @@ import kconfig_to_cargo as k2c  # noqa: E402
 HOST_CRATE = os.path.join(ROOT, "tests", "host", "topology-tests")
 TOPOLOGY_SRC = os.path.join(ROOT, "crates", "core", "topology", "src")
 DEFCONFIGS = os.path.join(ROOT, "config", "defconfigs")
-MICRO_DEFCONFIG = "micro.config"
+MICRO_DEFCONFIG = "generic-embedded-riscv64-dev+board-generic+micro.config"
 TARGET_DIR = os.path.join(out_root(), "target", "neverallow-check")
 
 # Configurations (by name) that may fail azos_limits validation even with the
@@ -229,7 +229,7 @@ def run_checker(cfg_path, features, files=()):
 
 def canary(cs):
     """The checker must refuse the canary topology."""
-    c = next((c for c in cs if not c.micro and c.name.startswith("defconfig qemu")), cs[0])
+    c = next((c for c in cs if not c.micro and "+qemu" in c.name), cs[0])
     feats = c.features + ["neverallow-row-canary"]
     if c.isa_feature:
         feats.append(c.isa_feature)

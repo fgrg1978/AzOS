@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
 /*
- * Linker script for AZOS embedded-profile builds (config/defconfigs/embedded.config).
+ * Linker script for AZOS embedded-profile builds (config/defconfigs/generic-embedded-riscv64+board-generic.config).
  *
  * Target: rv64 boards with 16-64 MiB of RAM. The layout is kernel/linker.ld's
  * (same symbols, same `.stack` section with its red zone below _kernel_end);

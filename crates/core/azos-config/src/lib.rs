@@ -13,7 +13,7 @@
 //! use std::collections::HashMap;
 //!
 //! fn main() {
-//!     let cfg = parse_config(".config").expect("no .config — run `make defconfig-edge`");
+//!     let cfg = parse_config(".config").expect("no .config — run `make defconfig-generic-sbc-riscv64-dev`");
 //!     let mut out = String::new();
 //!     emit_rust(&cfg, &mut out, "abcdef012345");  // 12-char SHA-256 prefix
 //!     std::fs::write(&format!("{}/generated.rs", std::env::var("OUT_DIR").unwrap()), out).unwrap();
