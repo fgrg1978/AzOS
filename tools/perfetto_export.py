@@ -69,7 +69,8 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
          "mem-pressure", "purge", "wipe", "mission-energy",
          "deferred-activity", "time-protection", "attest", "boot-chain",
          "ras", "fieldbus", "audio-capture", "focus",
-         "usb-authorize", "block-timeout", "clock-set", "estop-release"]
+         "usb-authorize", "block-timeout", "clock-set", "estop-release",
+         "thermal"]
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
@@ -148,6 +149,7 @@ FIELDS = {
     "block-timeout": (["sector", "waited_ms", "action"], None),
     "clock-set": (["clock", "new_ns", "reason"], None),
     "estop-release": (["cause", "floor", "nonce"], None),
+    "thermal": (["event", "arg", "temp_mdeg"], None),
 }
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",
