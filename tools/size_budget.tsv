@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2472222
-riscv64-qemu	.rodata	368160
-riscv64-qemu	.data	3123232
-riscv64-qemu	.bss	4421472
-riscv64-qemu	reason	int25: thirteen fronts (ring3-prio, input-arbiter, ipv6-filter, storage-durability, dev-timeout-reset, xhci-reset, iommu-tags, gpio-edge-irq, gpio-drv-wire, entropy-watchdogs, pi3b-complete, pi3b-boot, usb-msc-user)
+riscv64-qemu	.text	2483308
+riscv64-qemu	.rodata	368432
+riscv64-qemu	.data	3129504
+riscv64-qemu	.bss	4417376
+riscv64-qemu	reason	int26: tcp-correctness, io-barriers, kernel-tasks-kconfig, kernel-dead-code, unsafe-trim, boot-selftests-off, docs-code-followups, gpt-azos-partition, ipc-deadline-budget, ahci-ncq-fua-trim, x86-kernel-tools
