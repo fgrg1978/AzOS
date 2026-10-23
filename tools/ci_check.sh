@@ -14315,10 +14315,10 @@ PY
     par "ktest lockdep canaries (x86)" x86_ktest_row "ktest lockdep canaries (x86)" "" \
         "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES"
     # GR3: see `ktest exit status canary (rv)`; x86_64's clean status is 1.
-    # x86_64 also runs `irq_storm_is_contained`, whose last check is the
-    # irq-budget decision record: `decision-skip` writes none, so it fails too.
+    # KTEST_STATUS_CANARIED already names `irq_storm_is_contained` (every ISA
+    # reads the irq-budget record since wave 15 L5).
     par "ktest exit status canary (x86)" ktest_status_canary_row x86_ktest_row "ktest exit status canary (x86)" "" \
-        "$KTEST_STATUS_CANARIED irq_storm_is_contained" "$KTEST_STATUS_CANARIES"
+        "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
     # N4: see `ktest rcu canaries (rv)`.
     par "ktest rcu canaries (x86)" x86_ktest_row "ktest rcu canaries (x86)" "" \
         "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
