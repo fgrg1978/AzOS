@@ -267,7 +267,8 @@ pub fn wake_fast_ipc_server(server_tid: u32) {
 }
 
 /// Wake the client task blocked waiting for a fast IPC reply, addressed by
-/// the client's TID (K-C10 — preferred over [`wake_fast_ipc_client`]).
+/// the client's TID (K-C10: a sweep cannot stamp a client that has not
+/// blocked yet).
 ///
 /// `fast_ipc_reply()` returns the `caller_tid` that owns the exchange, so the
 /// addressee is known at the call site and this can close the window where the
@@ -334,20 +335,6 @@ pub fn wake_port_timed_waiter(tid: u32) {
         tid,
         &|r| matches!(r, WaitReason::Timer(_)),
     );
-}
-
-/// Wake the client task blocked waiting for a fast IPC reply (by exchange
-/// handle, sweep-based).
-///
-/// K-C10: **superseded by [`wake_fast_ipc_client_tid`]** for the reply path;
-/// still the right shape for `fast_ipc_release_all`'s orphan wake, whose
-/// addressee is unknown (the dying server never learns the client's TID).
-/// The handle match means a re-let seat's new client can never be woken by a
-/// dead exchange's orphan sweep. A sweep still cannot address a client that
-/// has not reached `task_block()` yet — acceptable for the orphan path,
-/// whose client has been blocked for the whole exchange by construction.
-pub fn wake_fast_ipc_client(handle: u64) {
-    wake_matching(|r| matches!(r, WaitReason::FastIpcClient(h) if *h == handle));
 }
 
 /// Internal: scan all tasks and wake those matching the predicate.

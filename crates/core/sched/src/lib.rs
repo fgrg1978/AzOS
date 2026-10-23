@@ -185,7 +185,7 @@ pub use wait::{
     task_block, task_block_outcome, task_block_killable, task_block_unless_killed, current_task_killed, BlockOutcome,
     wake_by_ring, wake_by_port,
     wake_expired_timers,
-    wake_fast_ipc_server, wake_fast_ipc_client,
+    wake_fast_ipc_server,
 };
 
 /// The shared-memory / MMIO VA window, `[base, limit)`.

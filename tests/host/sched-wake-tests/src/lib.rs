@@ -834,27 +834,12 @@ mod tests {
             ("ring", with_log(|| { wait::wake_by_ring(5); scheduler::log() })),
             ("port", with_log(|| { wait::wake_by_port(5); scheduler::log() })),
             ("timers", with_log(|| { wait::wake_expired_timers(9999); scheduler::log() })),
-            // Legacy slot-keyed client wake — still a sweep, still lossy.
-            ("client_by_slot", with_log(|| { wait::wake_fast_ipc_client(3); scheduler::log() })),
         ] {
             assert_eq!(log.len(), MAX_TASKS, "{label}: must sweep the whole pool");
             for c in &log {
                 assert!(matches!(c, Call::Sweep { .. }),
                         "{label}: must not use the TID-directed path: {c:?}");
             }
-        }
-    }
-
-    #[test]
-    fn legacy_slot_keyed_client_wake_still_matches_the_slot() {
-        // Kept only for the un-migrated SYS_IPC_FAST_REPLY call site; its
-        // predicate must stay identical to the TID variant's.
-        let log = with_log(|| { wait::wake_fast_ipc_client(3); scheduler::log() });
-        match &log[0] {
-            Call::Sweep { accepts, .. } => {
-                assert_eq!(*accepts, vec![WaitReason::FastIpcClient(3)]);
-            }
-            other => panic!("expected a sweep, got {other:?}"),
         }
     }
 
@@ -1556,12 +1541,10 @@ mod tests {
 //     progress at all, or as a board reset — distinguishable because the
 //     panic handler prints first.
 //
-// Expected result today: with the K-C10 fix in `wake_fast_ipc_server` the
-// FAST_ACCEPT side is closed, but the client side is only closed once
-// `SYS_IPC_FAST_REPLY` switches from `wake_fast_ipc_client(slot)` to
-// `wake_fast_ipc_client_tid(caller_tid, slot)`. Until that call-site change
-// lands, this scenario should still hang — which makes it a genuine
-// regression test rather than a formality.
+// Expected result today: green. Both sides wake by TID (K-C10):
+// `wake_fast_ipc_server` on FAST_ACCEPT, `wake_fast_ipc_client_tid` on
+// FAST_REPLY. Put either back on a sweep and this scenario hangs — which
+// makes it a genuine regression test rather than a formality.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Carril E — ELF loader bounds and hart-liveness accounting

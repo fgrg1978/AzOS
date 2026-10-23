@@ -965,8 +965,8 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
         // `_slot_idx`: only the ipc-trace build reads it, and the
         // warning gate compiles without that feature.
         azos_ipc::FastIpcReply::Woke { caller_tid, slot_idx: _slot_idx, donee } => {
-            // **WHY the wake is addressed by TID (K-C10).** The
-            // sweep-keyed `wake_fast_ipc_client` matches on
+            // **WHY the wake is addressed by TID (K-C10).** A
+            // sweep-keyed wake would match on
             // `WaitReason::FastIpcClient(handle)`, which only exists
             // once the client is already `Blocked`. `SYS_IPC_FAST_CALL`
             // claims its slot, wakes the server and only *then* blocks,

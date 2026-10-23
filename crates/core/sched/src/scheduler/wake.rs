@@ -720,10 +720,10 @@ pub fn wq_wake_by_tid(tid: u32) {
 ///   2. `wake_fast_ipc_server(server_tid)`,
 ///   3. `task_block(WaitReason::FastIpcClient(slot))`.
 ///
-/// On SMP the server can wake, accept and reply **between 2 and 3**. Its
-/// `wake_fast_ipc_client*` then finds the client not yet `Blocked`,
-/// `try_wake_task` returns early, and the client proceeds to block on a wake
-/// that will never come again — sleeping forever while pinning the slot.
+/// On SMP the server can wake, accept and reply **between 2 and 3**. A
+/// sweep-keyed client wake would find the client not yet `Blocked`,
+/// `try_wake_task` would return early, and the client would block on a wake
+/// that never comes again — sleeping forever while pinning the slot.
 /// `SYS_IPC_FAST_ACCEPT` is symmetric.
 ///
 /// # Why this cannot be fixed inside `try_wake_task`

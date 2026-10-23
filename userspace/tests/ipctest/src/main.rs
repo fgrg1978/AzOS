@@ -845,7 +845,7 @@ fn fork_reg_canary() {
 // **There is NO delay between ACCEPT and REPLY, on purpose.** That is the
 // whole point: `SYS_IPC_FAST_CALL` allocates the slot, wakes the server, and
 // only *then* blocks the caller. A server that answers inside that window on
-// another hart has its `wake_fast_ipc_client` land on a task that is not yet
+// another hart has its client wake land on a task that is not yet
 // blocked, the wake is lost, and the client sleeps forever. A `sleep()`
 // between accept and reply makes the client always reach `task_block` first
 // and hides the bug — a test that hides the bug it exists to find is worse
