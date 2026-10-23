@@ -3,8 +3,9 @@
 The link between the kernel and the brain (the off-board planner) is a Noise
 session whose keys come from fresh ephemeral keys on every connection, and it
 is the only mode the link has: no plaintext, no MAC-only mode, no runtime
-switch. Each brain-protocol packet is one transport message and its layout is
-unchanged. This note describes the handshake, the transport, rekeying, the
+switch. The kernel seals each brain-protocol packet it sends as one transport
+message (a message it receives may carry a run of them), and the packet layout
+is unchanged. This note describes the handshake, the transport, rekeying, the
 policy and the limits of the forward-secrecy claim.
 
 ## Summary
@@ -16,8 +17,9 @@ Source: `crates/core/crypto/src/secure_channel.rs`,
 
 Layers on the wire, outermost first:
 
-1. **Stream framing** (`crates/net/multi-stream`): a stream id and a length
-   in front of each frame, see `multi-stream-link.md`.
+1. **Stream framing** (`crates/net/multi-stream`), only with `multi_stream=1`
+   in `CONFIG.INI` (off by default): a stream id and a length in front of each
+   frame, see `multi-stream-link.md`.
 2. **Noise transport** (`azos_crypto::secure_channel`): a Noise handshake
    (`IK` or `XX`, X25519, ChaCha20-Poly1305, SHA-256), then one transport
    message per frame.
@@ -25,9 +27,8 @@ Layers on the wire, outermost first:
 
 There is one MAC: the Poly1305 tag. Replay inside a session is refused by the
 transport's message counter, and a frame recorded in an earlier session fails
-the AEAD under the new keys. The HMAC envelope that used to sit inside the
-session (an 8-byte nonce, a 16-byte truncated HMAC and a 2-byte length around
-each packet, with its own replay floor) and the HMAC-only mode are gone.
+the AEAD under the new keys. There is no second MAC or replay floor inside
+the session.
 
 ## What the session gives
 
@@ -133,10 +134,12 @@ The message and byte limits are enforced by the link on both sides; a
 generation that overruns them without a rekey is a violation. The wall-clock
 trigger belongs to the caller, because the module has no clock: the kernel's
 behavior loop and the camera task call `request_rekey` when their timer
-expires. The thresholds are constants, not configuration keys. The interval
-can only be shortened (`rekey_interval_secs` clamps a request to 5..3600 s),
-because a file on the USB-exported volume must not be able to lengthen a key's
-life.
+expires. The thresholds are constants, not configuration keys: the kernel's
+timers use `REKEY_INTERVAL_SECS` (5 s under the gate's `link-rekey-smoke`
+feature, `BRAIN_LINK_REKEY_SECS` in `kernel/src/tasks/brain_link.rs`).
+`rekey_interval_secs`, the clamp a configured request would go through
+(5..3600 s, so a file on the USB-exported volume could only shorten a key's
+life), has no caller outside the host tests.
 
 ## Policy and configuration
 
@@ -151,7 +154,8 @@ on it.
 
 - **No key, no link.** With no valid link key in the reserved sector the brain
   connection is closed rather than downgraded to anything weaker. The boot
-  goes on, with the link down, unless `LINK_PROVISIONING_ENFORCED` is built in.
+  goes on, with the link down, unless `LINK_PROVISIONING_ENFORCED` is built in
+  (default `n`; the `vf2` and `k1` board features build it in).
 - **The brain's key is the topology's.** `brain_pinned_key()` reads the
   `noise_pk` of the signed topology's `[peer.brain]` row and selects `IK`;
   with no such row (or a row without a key) the link is `XX`. There is no
@@ -161,8 +165,9 @@ on it.
 - **`LINK_PROVISIONING_ENFORCED`** (cargo feature `link-provisioning-enforced`, robot
   domain, fixed at compile time with no runtime override): boot halts without
   a valid link key; a handshake is refused while the entropy pool is unseeded;
-  and the UART bridge, which carries brain-protocol frames outside any
-  session, is down in both directions.
+  and the UART bridge, which carries brain-protocol frames (motion commands
+  included) outside any session with no authentication, is down in both
+  directions.
 
 ## Entropy
 
@@ -196,7 +201,9 @@ Source: `crates/core/crypto/src/noise.rs`,
   pattern with a published security analysis, built from the primitives in
   `crates/core/crypto` (`x25519`, `chachapoly`, `sha256`, `hkdf`). The brain
   speaks the same patterns from its Python implementation, and the host tests
-  pin every wire byte against it.
+  (`tests/host/aead-link-tests`) pin the derived static keys and the `IK` and
+  `XX` handshake bytes for fixed keys, the vectors the brain's test suite
+  asserts too.
 - **Keys derived from the link key, with an optional second factor.** The
   deployed secret stays one 32-byte key; pinning the brain's own static key in
   the signed topology adds a factor a leaked link key does not cover.
