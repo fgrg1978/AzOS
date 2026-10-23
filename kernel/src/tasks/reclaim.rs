@@ -365,13 +365,10 @@ fn reclaim_task(_: usize) {
     }
 }
 
-/// Create the reclaim task (Kconfig `MM_RECLAIM_COMPRESS`; nothing without
-/// it): on the lowest CPU outside the real-time ones. With no such CPU there is
-/// no task, said once, and reclaim stays off for the boot.
+/// Create the reclaim task (Kconfig `MM_RECLAIM_COMPRESS`, the module's
+/// feature): on the lowest CPU outside the real-time ones. With no such CPU
+/// there is no task, said once, and reclaim stays off for the boot.
 pub(crate) fn create_reclaim_task() {
-    if !azos_limits::MM_RECLAIM_COMPRESS {
-        return;
-    }
     let isolated = azos_topology::get().map_or(0, |t| t.sched_config().isolcpus as usize);
     let rt = azos_sync::qsbr::NOCBS_CPUS | isolated;
     let Some(cpu) = azos_sync::qsbr_core::callback_cpu(azos_percpu::nr_cpu_ids(), rt, azos_percpu::cpu_possible) else {

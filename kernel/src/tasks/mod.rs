@@ -21,7 +21,9 @@ mod loader;
 mod loader_admit;
 pub(crate) use loader::*;
 // Kconfig `MM_RECLAIM_COMPRESS`: the memory reclaim task.
+#[cfg(feature = "mm-reclaim")]
 mod reclaim;
+#[cfg(feature = "mm-reclaim")]
 pub(crate) use reclaim::*;
 mod ina219_host;
 mod buzzer_host;

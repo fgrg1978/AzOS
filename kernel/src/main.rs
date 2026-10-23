@@ -2310,6 +2310,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     create_rcu_callback_task();
     // The memory reclaim task (Kconfig MM_RECLAIM_COMPRESS; nothing with it off),
     // placed outside the real-time CPUs the topology has just published.
+    #[cfg(feature = "mm-reclaim")]
     create_reclaim_task();
     // Kconfig THERMAL: reads the zones and caps the clocks (nothing on a board
     // with no sensor and clock pair).

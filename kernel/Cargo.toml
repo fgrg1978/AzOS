@@ -483,6 +483,8 @@ iommu-amdvi = ["pci", "azos_iommu"]
 net = []
 # Kconfig AUTORUN: the boot's `autorun` task (CONFIG.INI `autorun=<path>`).
 autorun = []
+# Kconfig MM_RECLAIM_COMPRESS: the reclaim task (kernel/src/tasks/reclaim.rs).
+mm-reclaim = []
 net-smoke = ["net"]
 dhcp-smoke = ["net"]
 # Two riscv64 kernel tasks pinned to the SAME hart each fill v0-v31 with a

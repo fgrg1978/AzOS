@@ -336,8 +336,12 @@ choice
           Cost: about 0.1 KiB of .bss, the pool's lock, counters and key slot.
 
     config MM_RECLAIM_COMPRESS
+        # cargo-feature: mm-reclaim base
         bool "reclaim+compress: anonymous pages are compressed before anything else"
         help
+          Kernel feature `mm-reclaim`: the reclaim task (kernel/src/tasks/reclaim.rs)
+          is compiled and created; without it, neither.
+
           A page the reclaimer picks is compressed (MM_COMPRESS_ALGO) into a
           segment of the compressed-page pool, encrypted under an ephemeral
           boot key, charged to the owning Domain's pool quota (H5), and its
