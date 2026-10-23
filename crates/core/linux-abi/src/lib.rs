@@ -896,14 +896,35 @@ pub mod mman {
     pub const MAP_ANONYMOUS: u64 = 0x20;
     pub const MAP_LOCKED: u64 = 0x2000;
     pub const MAP_POPULATE: u64 = 0x8000;
+    pub const MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
+
+    /// The `flags` an anonymous private `mmap` passes to the native call, or
+    /// `-EINVAL` for what the personality refuses before asking: plain
+    /// `MAP_FIXED`, an executable mapping (W^X) and an empty one. The hint
+    /// travels in its own argument; of the flags, the pre-commit bits and
+    /// `MAP_FIXED_NOREPLACE` (the native bit has Linux's value) do.
+    ///
+    /// `MAP_FIXED` replaces whatever the range holds. Answering it would let a
+    /// stray or hostile address unmap the program's own stack, its heap, the
+    /// vDSO or the runtime's pages without a word, and nothing a Linux program
+    /// of this tree needs asks for it: refused, loudly. `MAP_FIXED_NOREPLACE`
+    /// (alone or with `MAP_FIXED`, which it then overrides, as on Linux) is the
+    /// exact placement that cannot clobber: the address or `-EEXIST`.
+    pub fn anon_map_flags(len: u64, prot: u64, flags: u64) -> Result<u64, i64> {
+        let fixed = flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE == 0;
+        if fixed || prot & PROT_EXEC != 0 || len == 0 {
+            return Err(-crate::errno::EINVAL);
+        }
+        Ok(flags & (MAP_POPULATE | MAP_LOCKED | MAP_FIXED_NOREPLACE))
+    }
 
     /// The `flags` a file-backed `mmap` passes to the kernel's `NODE_MMAP`, or
     /// `-EINVAL` for what the personality refuses before asking: `MAP_FIXED`
-    /// (the kernel places the mapping), an executable mapping (W^X) and an
-    /// empty one. Only `MAP_SHARED` and `MAP_PRIVATE` travel; the kernel
-    /// requires exactly one of them.
+    /// and `MAP_FIXED_NOREPLACE` (the kernel places a file mapping), an
+    /// executable mapping (W^X) and an empty one. Only `MAP_SHARED` and
+    /// `MAP_PRIVATE` travel; the kernel requires exactly one of them.
     pub fn file_map_flags(len: u64, prot: u64, flags: u64) -> Result<u64, i64> {
-        if flags & MAP_FIXED != 0 || prot & PROT_EXEC != 0 || len == 0 {
+        if flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0 || prot & PROT_EXEC != 0 || len == 0 {
             return Err(-crate::errno::EINVAL);
         }
         Ok(flags & (MAP_SHARED | MAP_PRIVATE))

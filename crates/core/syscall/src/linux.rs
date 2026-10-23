@@ -1839,19 +1839,21 @@ fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, off: u64) -> i6
     }
     // Linux ignores `fd` for an anonymous mapping, and so does this.
     let _ = fd;
-    if flags & MAP_FIXED != 0 || prot & PROT_EXEC != 0 || len == 0 {
-        return neg(le::EINVAL);
-    }
+    let flags = match anon_map_flags(len, prot, flags) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
     reach(k::SYS_MO_MAP);
-    // Wave 14: the pre-commit bits travel (same values in both ABIs).
-    let r = crate::handlers::sys_mmap(addr, len, prot, flags & (MAP_POPULATE | MAP_LOCKED), u64::MAX, 0);
+    // The hint and `MAP_FIXED_NOREPLACE` are the kernel's to honour
+    // (`handlers::mmap_place`); the pre-commit bits travel too (wave 14).
+    let r = crate::handlers::sys_mmap(addr, len, prot, flags, u64::MAX, 0);
     lx::errno_from_native(r, le::ENOMEM)
 }
 
 /// `mmap` of an open file: the page cache's mapping (`NODE_MMAP`,
 /// `crate::file_map`). Exactly one of `MAP_SHARED` / `MAP_PRIVATE`; the address
-/// hint and `MAP_FIXED` are not honoured (the kernel places the mapping), and
-/// an executable mapping is refused (W^X).
+/// hint is not honoured and `MAP_FIXED` / `MAP_FIXED_NOREPLACE` are refused
+/// (the kernel places the mapping), and an executable mapping is refused (W^X).
 fn sys_mmap_file(len: u64, prot: u64, flags: u64, fd: u64, off: u64) -> i64 {
     use lx::mman::*;
     let flags = match file_map_flags(len, prot, flags) {

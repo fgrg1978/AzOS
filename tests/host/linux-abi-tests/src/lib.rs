@@ -1000,6 +1000,34 @@ mod file_mmap_args {
         // Neither flag, or both, reach the kernel as they are, to be refused there.
         assert_eq!(file_map_flags(1, PROT_READ, 0), Ok(0));
         assert_eq!(file_map_flags(1, PROT_READ, MAP_SHARED | MAP_PRIVATE), Ok(MAP_SHARED | MAP_PRIVATE));
+        // The kernel places a file mapping: no exact placement either.
+        assert_eq!(file_map_flags(4096, PROT_READ, MAP_PRIVATE | MAP_FIXED_NOREPLACE), einval, "NOREPLACE");
+    }
+
+    /// The anonymous `mmap` of both personalities (`mman::anon_map_flags`,
+    /// `linux.rs` and `linux_rt`): plain `MAP_FIXED` (replace what the range
+    /// holds) refused with `-EINVAL`, as are `PROT_EXEC` and a zero length;
+    /// `MAP_FIXED_NOREPLACE`, alone or over `MAP_FIXED`, travels with the
+    /// pre-commit bits, and nothing else does. Canaries (by hand, 2026-10-23):
+    /// testing `MAP_FIXED` alone (not "without NOREPLACE"): the FIXED|NOREPLACE
+    /// row red; dropping `MAP_FIXED_NOREPLACE` from the mask: both NOREPLACE
+    /// rows red.
+    #[test]
+    fn an_anonymous_mmap_refuses_replacing_fixed_and_passes_noreplace() {
+        use azos_linux_abi::mman::*;
+        let einval = Err(-azos_linux_abi::errno::EINVAL);
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        assert_eq!(anon_map_flags(4096, PROT_READ, anon | MAP_FIXED), einval, "MAP_FIXED");
+        assert_eq!(anon_map_flags(4096, PROT_READ | PROT_EXEC, anon), einval, "W^X");
+        assert_eq!(anon_map_flags(0, PROT_READ, anon), einval, "empty");
+        assert_eq!(anon_map_flags(4096, PROT_READ, anon), Ok(0));
+        assert_eq!(anon_map_flags(4096, PROT_READ, anon | MAP_FIXED_NOREPLACE), Ok(MAP_FIXED_NOREPLACE));
+        assert_eq!(
+            anon_map_flags(4096, PROT_READ, anon | MAP_FIXED | MAP_FIXED_NOREPLACE),
+            Ok(MAP_FIXED_NOREPLACE),
+            "NOREPLACE overrides FIXED"
+        );
+        assert_eq!(anon_map_flags(1, PROT_WRITE, anon | MAP_POPULATE | MAP_LOCKED), Ok(MAP_POPULATE | MAP_LOCKED));
     }
 }
 

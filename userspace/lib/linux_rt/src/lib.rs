@@ -1346,11 +1346,13 @@ impl<N: Native> Runtime<N> {
             return neg(le::ENOSYS);
         }
         let _ = fd;
-        if flags & MAP_FIXED != 0 || prot & PROT_EXEC != 0 || len == 0 {
-            return neg(le::EINVAL);
-        }
-        // The pre-commit bits travel (same values in both ABIs).
-        let r = self.native.mmap(addr, len, prot, flags & (MAP_POPULATE | MAP_LOCKED));
+        let flags = match anon_map_flags(len, prot, flags) {
+            Ok(f) => f,
+            Err(e) => return e,
+        };
+        // The hint, `MAP_FIXED_NOREPLACE` and the pre-commit bits travel (same
+        // values in both ABIs); the kernel places the mapping.
+        let r = self.native.mmap(addr, len, prot, flags);
         lx::errno_from_native(r, le::ENOMEM)
     }
 
