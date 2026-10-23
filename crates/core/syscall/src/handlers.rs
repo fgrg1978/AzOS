@@ -3003,12 +3003,19 @@ fn mcast_group_arg(a1: u64) -> Option<[u8; 4]> {
 ///
 /// The capability is resolved before the group is read, so a forged or
 /// contained handle gets the capability's answer whatever group it names —
-/// the order the rest of the family keeps with its buffers.
+/// the order the rest of the family keeps with its buffers. Then the socket's
+/// owner stamp, as every other socket call checks it (`socket_access_ok`): a
+/// `Cap<Socket>` holds a bare socket index, so a handle that outlived its
+/// socket, or was moved out of its owner's table, names whatever socket took
+/// the index since, and is refused with -1 as `NODE_LISTEN` refuses it.
 pub fn sys_mcast_join_typed(cap_raw: u64, group: u64) -> i64 {
     let fd = match socket_fd_for(cap_raw, azos_abi::cap::CapPerms::WRITE, azos_abi::invoke::NODE_MCAST_JOIN) {
         Ok(fd) => fd,
         Err(e) => return e,
     };
+    if !socket_access_ok(fd) {
+        return -1;
+    }
     let Some(g) = mcast_group_arg(group) else {
         return azos_abi::error::Errno::EINVAL.to_syscall_ret();
     };
@@ -3020,12 +3027,17 @@ pub fn sys_mcast_join_typed(cap_raw: u64, group: u64) -> i64 {
 
 /// `NODE_MCAST_LEAVE`: a0=cap, a1=group. Needs only a live
 /// `Cap<Socket>` (`CapPerms::NONE`), like `SYS_CAP_CLOSE`: giving a membership
-/// back is cleanup, and containment must not keep a group joined.
+/// back is cleanup, and containment must not keep a group joined. The owner
+/// stamp is checked as for the join: a stale handle must not drop another
+/// task's membership.
 pub fn sys_mcast_leave_typed(cap_raw: u64, group: u64) -> i64 {
     let fd = match socket_fd_for(cap_raw, azos_abi::cap::CapPerms::NONE, azos_abi::invoke::NODE_MCAST_LEAVE) {
         Ok(fd) => fd,
         Err(e) => return e,
     };
+    if !socket_access_ok(fd) {
+        return -1;
+    }
     let Some(g) = mcast_group_arg(group) else {
         return azos_abi::error::Errno::EINVAL.to_syscall_ret();
     };

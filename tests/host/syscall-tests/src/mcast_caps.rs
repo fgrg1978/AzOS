@@ -182,22 +182,19 @@ fn containment_refuses_the_join_and_leaves_the_leave_live() {
 /// A group outside `224.0.0.0/4`, inside `224.0.0.0/24`, or wider than 32
 /// bits is refused before the socket is looked at.
 ///
-/// **The capability names a free slot on purpose.** A group check that were
-/// skipped falls through to the slot and answers `-EBADF` — an assertion that
-/// fails — instead of joining, which would transmit through this crate's
-/// `todo!()` stand-ins. The last assertion is the positive control: a real
-/// group does reach the slot.
+/// **The socket is the caller's own UDP socket on purpose**, past every check
+/// in front of the group's: a group check that were skipped goes on to a
+/// join, whose Membership Report transmits through this crate's `todo!()`
+/// stand-ins and fails the test with a panic instead of joining.
 #[test]
 fn groups_outside_the_joinable_range_are_refused_before_the_socket() {
     const TID: u32 = 6605;
     let _g = serial();
     let _s = ring3_caller(TID);
 
-    let free = (0..azos_net::MAX_SOCKETS as u32)
-        .find(|&fd| azos_net::socket_owner(fd as i32).is_none())
-        .expect("no free socket slot");
-    let cap = grant(TID, CapPerms::RW, free);
-
+    let fd = plain_udp();
+    assert!(fd >= 0, "socket failed: {fd}");
+    let cap = grant(TID, CapPerms::RW, fd as u32);
     for (group, what) in [
         (UNICAST, "unicast"),
         (0xFFFF_FFFF, "limited broadcast"),
@@ -213,9 +210,41 @@ fn groups_outside_the_joinable_range_are_refused_before_the_socket() {
     }
     assert_eq!(super::sys_mcast_leave_typed(cap, (1u64 << 32) | GROUP), err(Errno::EINVAL),
                "leave of a group with a 33rd bit");
-    assert_eq!(super::sys_mcast_join_typed(cap, GROUP), err(Errno::EBADF),
-               "a real group did not reach the socket behind the capability");
     assert!(seen().is_empty(), "a group refusal recorded as a denial: {:?}", seen());
+}
+
+/// **A handle to a socket the caller does not own acts on nothing.** A
+/// `Cap<Socket>` holds a bare socket index: a handle moved out of its owner's
+/// table, or one that outlived its socket, names whatever socket holds the
+/// index now. Join and leave check the owner stamp as every other socket call
+/// does (`socket_access_ok`) and answer -1, for another task's live socket and
+/// for a free slot alike, before the group or the socket layer is reached.
+///
+/// **Canary.** Drop the owner check from either call: the other task's socket
+/// answers the socket layer's `-EINVAL` (a group it never joined) and the free
+/// slot its `-EBADF`, not -1.
+#[test]
+fn join_and_leave_refuse_a_socket_the_caller_does_not_own() {
+    const TID: u32 = 6607;
+    const OTHER: u32 = 6608;
+    let _g = serial();
+    let _other = ring3_caller(OTHER);
+    let theirs = plain_udp();
+    assert!(theirs >= 0, "socket failed: {theirs}");
+    assert_eq!(azos_net::socket_owner(theirs as i32), Some(OTHER));
+    let _s = ring3_caller(TID);
+
+    let stale = grant(TID, CapPerms::RW, theirs as u32);
+    assert_eq!(super::sys_mcast_join_typed(stale, UNICAST), -1, "join on another task's socket");
+    assert_eq!(super::sys_mcast_leave_typed(stale, GROUP), -1, "leave on another task's socket");
+
+    let free = (0..azos_net::MAX_SOCKETS as u32)
+        .find(|&fd| azos_net::socket_owner(fd as i32).is_none())
+        .expect("no free socket slot");
+    let dangling = grant(TID, CapPerms::RW, free);
+    assert_eq!(super::sys_mcast_join_typed(dangling, GROUP), -1, "join on a free slot");
+    assert_eq!(super::sys_mcast_leave_typed(dangling, GROUP), -1, "leave on a free slot");
+    assert_eq!(azos_net::socket_owner(theirs as i32), Some(OTHER), "the other task's socket changed hands");
 }
 
 /// A socket that is not UDP is refused with `-EINVAL` on both calls.
