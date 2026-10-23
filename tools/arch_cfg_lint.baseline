@@ -28,7 +28,6 @@
 17	crates/drivers/irqchip/src/irqchip.rs
 17	crates/drivers/irqchip/src/user_irq.rs
 4	crates/drivers/virtio/src/virtio/pci.rs
-4	domains/robot/safety-core/src/txn.rs
 2	kernel/src/boot/blk_irq.rs
 5	kernel/src/boot/dma.rs
 3	kernel/src/boot/ps2_irq.rs
