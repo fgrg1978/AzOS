@@ -178,6 +178,23 @@ impl<R: Regs, M: Memory, C: Clock> Hc<R, M, C> {
             Kind::Dwc2 => true,
         }
     }
+    /// The controller was reset under the core's devices ([`Xhci::reset_pending`]).
+    /// A DWC2 has no reset path: never.
+    pub fn reset_pending(&self) -> bool {
+        match self.kind {
+            Kind::Xhci => self.xhci_ref().reset_pending(),
+            #[cfg(feature = "dwc2")]
+            Kind::Dwc2 => false,
+        }
+    }
+    /// The core removed the reset controller's devices ([`Xhci::ack_reset`]).
+    pub fn ack_reset(&mut self) {
+        match self.kind {
+            Kind::Xhci => self.xhci_mut().ack_reset(),
+            #[cfg(feature = "dwc2")]
+            Kind::Dwc2 => {}
+        }
+    }
     pub fn dma_mask(&self) -> u64 {
         each!(self, c => c.dma_mask())
     }
