@@ -527,7 +527,7 @@ pub fn is_slot(isa: u8, bytes: &[u8]) -> bool {
     match isa {
         ISA_RISCV64 => bytes == [0x13, 0, 0, 0] || bytes == [0x01, 0, 0x01, 0],
         ISA_AARCH64 => bytes == jump::A64_NOP.to_le_bytes(),
-        ISA_X86_64 => bytes.len() == 5 && bytes[..4] == [0x0f, 0x1f, 0x44, 0],
+        ISA_X86_64 => bytes.len() == 5 && bytes[..4] == jump::X86_NOP5[..4],
         _ => false,
     }
 }
@@ -553,14 +553,8 @@ pub enum Redirect {
     Bytes5([u8; 5]),
 }
 
-/// `jmp rel32` at `from` to `to`.
-pub fn x86_jmp(from: u64, to: u64) -> Option<[u8; 5]> {
-    let rel = to.wrapping_sub(from.wrapping_add(5)) as i64;
-    let rel = i32::try_from(rel).ok()?;
-    let mut b = [0xe9, 0, 0, 0, 0];
-    b[1..].copy_from_slice(&rel.to_le_bytes());
-    Some(b)
-}
+/// `jmp rel32` at `from` to `to`: the static-key sites' encoder.
+pub use jump::x86_jmp;
 
 /// The redirect of the entry at `from` (a [`site`]) to the body at `to`.
 pub fn redirect(isa: u8, from: u64, to: u64) -> Result<Redirect, Reason> {

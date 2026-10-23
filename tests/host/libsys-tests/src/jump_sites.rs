@@ -16,6 +16,14 @@ const RV: [(u64, u64, u32); 3] = [
     (0x8021_ef64, 0x8021_f632, 0x6ce0_006f),
     (0x802c_f02c, 0x802c_f0f2, 0x0c60_006f),
 ];
+// x86_64: (site, target, the five bytes at the site), a built kernel's
+// `.azos_keys` (its RELATIVE relocations) and llvm-objdump. The third is the
+// near target the assembler would have made a two-byte `jmp rel8`.
+const X86: [(u64, u64, [u8; 5]); 3] = [
+    (0xffff_ffff_8013_ca05, 0xffff_ffff_8013_d313, [0xe9, 0x09, 0x09, 0x00, 0x00]),
+    (0xffff_ffff_8013_d119, 0xffff_ffff_8013_d347, [0xe9, 0x29, 0x02, 0x00, 0x00]),
+    (0xffff_ffff_8021_c0d1, 0xffff_ffff_8021_c0d8, [0xe9, 0x02, 0x00, 0x00, 0x00]),
+];
 const A64: [(u64, u64, u32); 3] = [
     (0xffff_ff80_4008_8fb0, 0xffff_ff80_4008_9564, 0x1400_016d),
     (0xffff_ff80_4008_a284, 0xffff_ff80_4008_a544, 0x1400_00b0),
@@ -145,4 +153,35 @@ fn an_alternative_site_reads_its_two_words() {
     assert_eq!(KeySite { site: 0x8020_0001, ..cas }.alt_word(), Err(SiteError::Misaligned));
     assert_eq!(KeySite { site: 0xffff_ff80_4000_0002, ..a }.alt_word(), Err(SiteError::Misaligned));
     assert_eq!(KeySite { kind: KIND_RV_JAL, ..cas }.alt_word(), Err(SiteError::Kind));
+}
+
+#[test]
+fn an_x86_site_is_the_assembler_s_jmp_or_the_five_byte_nop() {
+    for (site, target, bytes) in X86 {
+        assert_eq!(x86_jmp(site, target), Some(bytes), "x86 {site:#x}");
+        let k = KeySite { site, target, key: 1, kind: KIND_X86_JMP };
+        assert_eq!(k.x86_bytes(true), Ok(bytes));
+        assert_eq!(k.x86_bytes(false), Ok(X86_NOP5));
+        assert_eq!(k.x86_state(&bytes), Ok(true));
+        assert_eq!(k.x86_state(&X86_NOP5), Ok(false));
+    }
+    let k = KeySite { site: X86[0].0, target: X86[0].1, key: 1, kind: KIND_X86_JMP };
+    // Another site's jmp, the int3 of a sequence in progress, the two-byte
+    // jmp, another five-byte nop form: refused.
+    assert_eq!(k.x86_state(&X86[1].2), Err(SiteError::Unexpected));
+    assert_eq!(k.x86_state(&[0xcc, 0x09, 0x09, 0x00, 0x00]), Err(SiteError::Unexpected));
+    assert_eq!(k.x86_state(&[0xeb, 0x07, 0x90, 0x90, 0x90]), Err(SiteError::Unexpected));
+    assert_eq!(k.x86_state(&[0x0f, 0x1f, 0x44, 0x00, 0x08]), Err(SiteError::Unexpected));
+    // Backward, and the edges of rel32 (counted from the end of the five bytes).
+    let s = 0x1_0040_0000u64;
+    assert_eq!(x86_jmp(s, s - 0x10), Some([0xe9, 0xeb, 0xff, 0xff, 0xff]));
+    assert!(x86_jmp(s, s + 5 + i32::MAX as u64).is_some());
+    assert_eq!(x86_jmp(s, s + 5 + i32::MAX as u64 + 1), None);
+    assert!(x86_jmp(s, (s + 5).wrapping_sub(1 << 31)).is_some());
+    assert_eq!(x86_jmp(s, (s + 5).wrapping_sub((1 << 31) + 1)), None);
+    assert_eq!(KeySite { target: k.site.wrapping_sub(4 << 30), ..k }.x86_bytes(true), Err(SiteError::Range));
+    // The kinds do not mix: a word kind has no five bytes, an x86 site no word.
+    let rv = KeySite { site: RV[0].0, target: RV[0].1, key: 1, kind: KIND_RV_JAL };
+    assert_eq!(rv.x86_bytes(true), Err(SiteError::Kind));
+    assert!(KeySite { site: 0xffff_ffff_8040_0000, ..k }.word(true).is_err());
 }

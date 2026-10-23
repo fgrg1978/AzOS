@@ -276,9 +276,7 @@ endchoice
 config KTRACE_STATIC_KEYS
     bool "Tracepoints as patched branches (static keys)"
     depends on KTRACE
-    default y if ARCH_RISCV64
-    default y if ARCH_AARCH64
-    default n if ARCH_X86_64
+    default y
     help
       Each tracepoint is one instruction in the kernel text, a branch to
       the class's mask test while the class may record and a nop while it
@@ -292,9 +290,13 @@ config KTRACE_STATIC_KEYS
       never-executable alias, writes the word, unmaps the alias with a
       shootdown on every CPU and synchronises every CPU's instruction
       fetch (riscv64: fence.i and an SBI remote fence.i; aarch64: IC
-      IALLUIS, DSB, ISB). Each site is a single naturally aligned 32-bit
-      instruction swapped for another (nop and jal/b), which aarch64
-      allows concurrently (CMODX) and riscv64 Linux relies on.
+      IALLUIS, DSB, ISB; x86_64: a serialising IPI). On riscv64 and
+      aarch64 each site is a single naturally aligned 32-bit instruction
+      swapped for another (nop and jal/b), which aarch64 allows
+      concurrently (CMODX) and riscv64 Linux relies on. On x86_64 a site
+      is a five-byte jmp rel32 or nop, rewritten by the int3 sequence
+      (Linux's text_poke_bp): a CPU that runs it mid-change takes the
+      breakpoint and continues as the new instruction.
 
       Every site is linked as the branch, so a kernel that cannot patch
       (this off, or no free alias address at boot) keeps the
@@ -317,6 +319,8 @@ config KTRACE_KEY_BATCH
       stack per site in the batch. Raise it for fewer shootdowns on a
       mask change (rare), lower it if the hold bound fires on a slower
       core or with more tracepoints. Read only with KTRACE_STATIC_KEYS.
+      x86_64 rewrites one site per hold (its int3 sequence is three
+      writes, each with a serialising IPI to every CPU).
 
 config KTRACE_CLASS_SCHED
     bool "Trace class: scheduler (switch, wakeup)"

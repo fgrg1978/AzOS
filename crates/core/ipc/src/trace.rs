@@ -161,6 +161,25 @@ fn site_word(s: &azos_trace::jump::KeySite) -> u32 {
     unsafe { core::ptr::read_volatile(s.site as usize as *const u32) }
 }
 
+/// The five bytes an x86_64 site (`KIND_X86_JMP`, any alignment) holds now.
+fn site_bytes(s: &azos_trace::jump::KeySite) -> [u8; 5] {
+    let mut b = [0u8; 5];
+    for (i, o) in b.iter_mut().enumerate() {
+        // SAFETY: as `site_word`; the five bytes are the site's instruction.
+        *o = unsafe { core::ptr::read_volatile((s.site as usize as *const u8).add(i)) };
+    }
+    b
+}
+
+/// Is the site the branch (`Ok(true)`) or the nop (`Ok(false)`) now?
+fn site_state(s: &azos_trace::jump::KeySite) -> Result<bool, azos_trace::jump::SiteError> {
+    if s.kind == azos_trace::jump::KIND_X86_JMP {
+        s.x86_state(&site_bytes(s))
+    } else {
+        s.state(site_word(s))
+    }
+}
+
 /// Rewrite the sites of the classes in `classes` to match the class mask
 /// (branch for a class in it, nop otherwise). `(rewritten, refused)`.
 ///
@@ -172,15 +191,23 @@ fn site_word(s: &azos_trace::jump::KeySite) -> u32 {
 /// mask change between two batches is safe: the later batches read the new
 /// mask, and that change's own `apply` covers every site of the classes it
 /// changed, so the text converges on the last mask either way.
+///
+/// An x86_64 site (`KIND_X86_JMP`) is not a word to batch: x86 names no
+/// instruction another CPU may fetch while it changes, so each is its own
+/// `int3` sequence (`text_poke::write_bp5`: three writes, each with its
+/// serialising IPI to every CPU), one site per hold. [`KEYS`] is waited for
+/// with interrupts on (`text_poke::lock_text`), so a CPU waiting for it still
+/// takes those IPIs.
 fn apply(classes: u32) -> (usize, usize) {
-    use azos_trace::jump::KeySite;
+    use azos_trace::jump::{KeySite, KIND_X86_JMP};
     const BATCH: usize = azos_limits::KTRACE_KEY_BATCH as usize;
     let sites = azos_trace::key_sites();
     let (mut i, mut done, mut refused) = (0usize, 0usize, 0usize);
     while i < sites.len() {
         let mut batch: [(usize, u32); BATCH] = [(0, 0); BATCH];
         let mut n = 0usize;
-        let _g = KEYS.lock_irqsave();
+        let mut x86_refused = None;
+        let _g = azos_mm::text_poke::lock_text(&KEYS);
         let mask = azos_trace::mask();
         while i < sites.len() && n < BATCH {
             let s: &KeySite = &sites[i];
@@ -189,6 +216,25 @@ fn apply(classes: u32) -> (usize, usize) {
                 continue;
             }
             let on = mask & (1 << s.key) != 0;
+            if s.kind == KIND_X86_JMP {
+                let cur = site_bytes(s);
+                let new = match (s.x86_state(&cur), s.x86_bytes(on)) {
+                    (Ok(c), Ok(_)) if c == on => continue,
+                    (Ok(_), Ok(w)) => w,
+                    _ => {
+                        refused += 1;
+                        continue;
+                    }
+                };
+                match azos_mm::text_poke::write_bp5(s.site as usize, &cur, &new) {
+                    Ok(()) => done += 1,
+                    Err(e) => {
+                        refused += 1;
+                        x86_refused = Some(e);
+                    }
+                }
+                break;
+            }
             let (cur, want) = match (s.state(site_word(s)), s.word(on)) {
                 (Ok(cur), Ok(w)) => (cur, w),
                 _ => {
@@ -201,6 +247,13 @@ fn apply(classes: u32) -> (usize, usize) {
             }
             batch[n] = (s.site as usize, want);
             n += 1;
+        }
+        // An x86_64 site is the only kind of its kernel, so no word batch is
+        // pending beside it.
+        if let Some(e) = x86_refused {
+            drop(_g);
+            azos_drv_sys::kerr!("[TRACE] static keys: text write refused ({:?})", e);
+            continue;
         }
         if n == 0 {
             continue;
@@ -242,7 +295,7 @@ fn keys_init(text: (usize, usize)) {
     // hold (a page-table walk per site).
     let (mut nop, mut branch, mut rx) = (0, 0, 0);
     for s in sites() {
-        match s.state(site_word(s)) {
+        match site_state(s) {
             Ok(true) => branch += 1,
             Ok(false) => nop += 1,
             Err(_) => {}
@@ -269,7 +322,7 @@ pub fn set_mask(m: u32) -> u32 {
     // The mask first, under KEYS; the text after, a batch per hold
     // ([`apply`] re-reads the mask under each).
     let (prev, now) = {
-        let _g = KEYS.lock_irqsave();
+        let _g = azos_mm::text_poke::lock_text(&KEYS);
         let prev = azos_trace::set_mask(m);
         (prev, azos_trace::mask())
     };

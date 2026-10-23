@@ -16,7 +16,7 @@ crates/core/actuation	0	0	0	0	1	0
 crates/core/arch	0	0	0	0	1	0
 crates/core/arch-aarch64	197	47	1	2	0	76
 crates/core/arch-api	27	10	0	0	0	30
-crates/core/arch-riscv64	151	42	0	3	0	91
+crates/core/arch-riscv64	153	42	0	3	0	91
 crates/core/arch-x86_64	146	17	4	11	0	57
 crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
@@ -33,7 +33,7 @@ crates/core/hv	3	1	0	0	0	5
 crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
 crates/core/inspect	1	1	0	0	0	3
-crates/core/ipc	38	10	4	0	0	53
+crates/core/ipc	39	10	4	0	0	53
 crates/core/ktest	3	0	0	0	0	67
 crates/core/libsys	86	10	2	0	0	94
 crates/core/libsys-macros	0	0	0	0	1	-
@@ -46,18 +46,18 @@ crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	62
 crates/core/rings	22	4	4	0	0	98
-crates/core/sched	421	135	4	3	0	70
+crates/core/sched	429	136	4	3	0	70
 crates/core/stdrt	44	1	4	0	0	-
 crates/core/sync	46	9	18	0	0	84
-crates/core/syscall	47	2	0	0	0	58
+crates/core/syscall	47	2	0	0	0	57
 crates/core/topology	4	0	1	0	0	1
-crates/core/trace	22	0	1	0	0	28
+crates/core/trace	23	0	1	0	0	29
 crates/core/wcet-macro	0	0	0	0	1	-
 crates/drivers/actuator	5	0	0	0	0	40
 crates/drivers/api	0	0	0	0	1	0
 crates/drivers/baro	0	0	0	0	1	0
 crates/drivers/base	0	0	0	0	1	0
-crates/drivers/block	91	6	1	0	0	92
+crates/drivers/block	91	6	1	0	0	91
 crates/drivers/bus	11	1	1	0	0	65
 crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
@@ -109,7 +109,7 @@ domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0
 domains/robot/telemetry	0	0	0	0	1	0
-kernel	333	14	12	51	0	60
+kernel	333	14	12	51	0	59
 lx/emul	8	0	0	0	0	-
 micro	20	4	0	0	0	68
 tools/linux_seccomp_launch	11	2	0	2	0	-
@@ -163,4 +163,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	511
+@unsafe-share	510

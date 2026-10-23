@@ -40,6 +40,9 @@
 //!
 //! Writes are serialised by one lock taken with interrupts masked, so the
 //! alias is only ever one page at a time and only on the CPU that holds it.
+//! It is waited for with interrupts as the waiter had them ([`lock_text`]):
+//! on x86_64 the holder waits, interrupts masked, for every CPU to take its
+//! serialising IPI, which a CPU spinning with interrupts masked never would.
 //!
 //! # Livepatch (Kconfig `LIVEPATCH`)
 //!
@@ -63,7 +66,7 @@
 use crate::vmm;
 use azos_arch::{ArchPlatform, ARCH};
 use azos_arch_api::{Mmu, PagePerms, PAGE_SIZE};
-use azos_sync::SpinLock;
+use azos_sync::{IrqSaveGuard, SpinLock};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 // The blob format, the checks that admit it, the relocations and the entry
@@ -99,6 +102,23 @@ pub enum PokeError {
     /// instruction ([`write_insns_boot`]) that straddles a page is written
     /// through two adjacent alias pages mapped before either half.
     CrossesPage,
+}
+
+/// Take `l` with interrupts masked, as `lock_irqsave` does, but wait for it
+/// with them as the caller had them: a failed try puts them back before the
+/// next. The holder of a text-write lock (this module's, or a caller's around
+/// a batch of writes, the static keys' `KEYS`) waits with interrupts masked
+/// for every CPU's TLB shootdown and instruction-fetch IPIs on x86_64
+/// ([`sync_all`]); a CPU spinning for the same lock with interrupts masked
+/// would never take them, and the two would wait on each other. Held, it is
+/// the ordinary irqsave guard.
+pub fn lock_text<T>(l: &SpinLock<T>) -> IrqSaveGuard<'_, T> {
+    loop {
+        if let Some(g) = l.try_lock_irqsave() {
+            return g;
+        }
+        core::hint::spin_loop();
+    }
 }
 
 /// Candidate alias slots tried above the RAM map (2 MiB apart).
@@ -188,7 +208,7 @@ fn write_impl(words: &[(usize, u32)], halves: bool) -> Result<usize, PokeError> 
     let alias = alias().ok_or(PokeError::Unavailable)?;
     let (ts, te) = (TEXT_START.load(Ordering::Relaxed), TEXT_END.load(Ordering::Relaxed));
     let kpt = vmm::kernel_pagetable();
-    let _g = LOCK.lock_irqsave();
+    let _g = lock_text(&LOCK);
     let mut done = 0;
     let mut res = Ok(());
     for &(va, w) in words {
@@ -284,7 +304,7 @@ pub fn write_bytes(va: usize, bytes: &[u8]) -> Result<usize, PokeError> {
         return Err(PokeError::OutOfText);
     }
     let kpt = vmm::kernel_pagetable();
-    let _g = LOCK.lock_irqsave();
+    let _g = lock_text(&LOCK);
     let mut done = 0;
     let mut res = Ok(());
     while done < bytes.len() {
@@ -343,7 +363,7 @@ static BP_LOCK: SpinLock<()> = SpinLock::new(());
 /// is refused the site is left armed: the trap stays handled (as `old`) and
 /// every later call is refused.
 pub fn write_bp5(site: usize, old: &[u8; 5], new: &[u8; 5]) -> Result<(), PokeError> {
-    let _g = BP_LOCK.lock_irqsave();
+    let _g = lock_text(&BP_LOCK);
     if BP_SITE.load(Ordering::SeqCst) != 0 {
         // A previous sequence could not put its site back.
         return Err(PokeError::Unavailable);

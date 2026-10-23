@@ -344,12 +344,12 @@ pub fn cpu_stats(cpu: usize) -> (u32, u32) {
 
 // ── Static keys (Kconfig `KTRACE_STATIC_KEYS`) ─────────────────────────────
 
-/// The site emitter. `branch!(CLASS)` is one 32-bit instruction, linked as a
-/// branch to the class's mask test and recorded in `.azos_keys` (see
-/// [`jump`]); the fall-through (a patched nop) answers `false`.
+/// The site emitter. `branch!(CLASS)` is one instruction, linked as a branch
+/// to the class's mask test and recorded in `.azos_keys` (see [`jump`]); the
+/// fall-through (a patched nop) answers `false`.
 // arch-only: patched-branch static keys exist per ISA; an ISA without them
-// keeps KTRACE_STATIC_KEYS off (its default on x86_64) and tests the mask.
-#[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
+// keeps KTRACE_STATIC_KEYS off and tests the mask.
+#[cfg(any(target_arch = "riscv64", all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
 mod keys {
     #[cfg(target_arch = "riscv64")]
     macro_rules! branch {
@@ -407,6 +407,34 @@ mod keys {
             false
         }};
     }
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    macro_rules! branch {
+        ($class:expr) => {{
+            // SAFETY: as riscv64's.
+            unsafe {
+                core::arch::asm!(
+                    // Spelled as bytes: the assembler would relax a near
+                    // target to the two-byte `jmp rel8`, and the site is
+                    // patched to the five-byte nop and back.
+                    "2: .byte 0xe9",
+                    ".4byte {on} - 3f",
+                    "3:",
+                    ".pushsection .azos_keys, \"a\"",
+                    ".balign 8",
+                    ".8byte 2b",
+                    ".8byte {on}",
+                    ".4byte {class}",
+                    ".4byte {kind}",
+                    ".popsection",
+                    on = label { return $crate::isa::mask_now() & (1 << $class) != 0; },
+                    class = const $class,
+                    kind = const $crate::jump::KIND_X86_JMP,
+                    options(nostack, preserves_flags),
+                );
+            }
+            false
+        }};
+    }
     pub(crate) use branch;
 }
 
@@ -447,7 +475,7 @@ macro_rules! class_on {
                 return false;
             }
             // arch-only: static keys (see `mod keys`).
-            #[cfg(any(target_arch = "riscv64", all(target_arch = "aarch64", target_os = "none")))]
+            #[cfg(any(target_arch = "riscv64", all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
             if STATIC_KEYS {
                 return keys::branch!($class);
             }

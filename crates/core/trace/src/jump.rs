@@ -6,13 +6,14 @@
 //!
 //! Pure: no `asm!`, no memory access beyond the table's own fields, so the
 //! host test suite pulls this file in by `#[path]` and checks the encoders
-//! against assembler output on both ISAs.
+//! against assembler output on every ISA.
 //!
 //! # A site
 //!
-//! Every tracepoint check is one naturally aligned 32-bit instruction in the
-//! kernel text, linked as a branch to the class's mask test (`jal zero,
-//! target` on riscv64, `b target` on aarch64) and recorded in the section
+//! Every tracepoint check is one instruction in the kernel text, linked as a
+//! branch to the class's mask test (`jal zero, target` on riscv64 and `b
+//! target` on aarch64, one naturally aligned 32-bit word; `jmp rel32` on
+//! x86_64, five bytes at any address) and recorded in the section
 //! `.azos_keys` as a [`KeySite`]. Turning a class off rewrites its sites to
 //! the ISA's nop, turning it on rewrites them back to the branch. The
 //! branch target re-tests the runtime mask, so a site in either state, at
@@ -30,7 +31,8 @@ pub struct KeySite {
     pub target: u64,
     /// The key: a trace class (`azos_abi::trace::TRACE_CLASS_*`).
     pub key: u32,
-    /// The instruction form, [`KIND_RV_JAL`] or [`KIND_A64_B`].
+    /// The instruction form, [`KIND_RV_JAL`], [`KIND_A64_B`] or
+    /// [`KIND_X86_JMP`].
     pub kind: u32,
 }
 
@@ -38,6 +40,11 @@ pub struct KeySite {
 pub const KIND_RV_JAL: u32 = 1;
 /// aarch64: `b target` / `nop`.
 pub const KIND_A64_B: u32 = 2;
+/// x86_64: `jmp rel32` / the five-byte nop [`X86_NOP5`]. Not a 32-bit word:
+/// [`KeySite::x86_bytes`] and [`KeySite::x86_state`], and written by the
+/// `int3` sequence (`azos_mm::text_poke::write_bp5`), since x86 names no
+/// instruction another CPU may fetch while it changes.
+pub const KIND_X86_JMP: u32 = 7;
 
 /// aarch64 boot-once PAN sites (Kconfig `A64_PAN=probe`; not a trace key):
 /// the `UserAccess` window's `msr PAN, #0` ([`KIND_A64_PAN_CLR`]) and its
@@ -86,6 +93,9 @@ pub const KEY_SPIN_RELAX: u32 = 67;
 pub const RV_NOP: u32 = 0x0000_0013;
 /// aarch64 `nop`.
 pub const A64_NOP: u32 = 0xd503_201f;
+/// x86_64 `nopl 0x0(%rax,%rax,1)`, the one five-byte nop (Linux's
+/// `BYTES_NOP5`): a CPU is never inside it when it becomes a `jmp`.
+pub const X86_NOP5: [u8; 5] = [0x0f, 0x1f, 0x44, 0x00, 0x00];
 
 const RV_JAL_OPCODE: u32 = 0x6f;
 const A64_B_OPCODE: u32 = 0x1400_0000;
@@ -126,6 +136,16 @@ pub fn a64_b_offset(w: u32) -> Option<i64> {
     Some((((w & 0x03ff_ffff) << 6) as i32 >> 4) as i64)
 }
 
+/// `jmp rel32` placed at `from`: the offset counts from the end of the five
+/// bytes and must fit a signed 32-bit field.
+pub fn x86_jmp(from: u64, to: u64) -> Option<[u8; 5]> {
+    let rel = to.wrapping_sub(from.wrapping_add(5)) as i64;
+    let rel = i32::try_from(rel).ok()?;
+    let mut b = [0xe9, 0, 0, 0, 0];
+    b[1..].copy_from_slice(&rel.to_le_bytes());
+    Some(b)
+}
+
 /// Why a site cannot be patched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SiteError {
@@ -164,6 +184,28 @@ impl KeySite {
         if word == on {
             Ok(true)
         } else if word == off {
+            Ok(false)
+        } else {
+            Err(SiteError::Unexpected)
+        }
+    }
+
+    /// An x86_64 site ([`KIND_X86_JMP`]): the five bytes for `on` (the `jmp`)
+    /// or off ([`X86_NOP5`]). Any address: the `int3` sequence never needs
+    /// the bytes to be one atomic store.
+    pub fn x86_bytes(&self, on: bool) -> Result<[u8; 5], SiteError> {
+        match (self.kind, on) {
+            (KIND_X86_JMP, false) => Ok(X86_NOP5),
+            (KIND_X86_JMP, true) => x86_jmp(self.site, self.target).ok_or(SiteError::Range),
+            _ => Err(SiteError::Kind),
+        }
+    }
+
+    /// [`state`](Self::state) for an x86_64 site: the five bytes read from it.
+    pub fn x86_state(&self, bytes: &[u8; 5]) -> Result<bool, SiteError> {
+        if *bytes == self.x86_bytes(true)? {
+            Ok(true)
+        } else if *bytes == self.x86_bytes(false)? {
             Ok(false)
         } else {
             Err(SiteError::Unexpected)
