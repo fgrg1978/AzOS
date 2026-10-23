@@ -13,8 +13,8 @@ Source: `rust-toolchain.toml`, `.cargo/config.toml`, `Makefile`, `mk/vars.mk`,
 
 | Tool | Used for |
 |---|---|
-| Rust nightly with `rust-src` and `llvm-tools-preview` | Everything. `rust-toolchain.toml` pins the channel, so every build uses one compiler. Kernel and ring-3 builds use `-Zbuild-std` (`.cargo/config.toml`), so no prebuilt target is needed. |
-| Python 3 with `kconfiglib` | `make config` and every `olddefconfig` step; the build tools under `tools/`. The `PYTHON` make variable names the interpreter. |
+| Rust nightly with `rust-src` and `llvm-tools-preview` | Everything. `rust-toolchain.toml` pins a dated nightly, so every build uses one compiler. Kernel and ring-3 builds use `-Zbuild-std` (`.cargo/config.toml`), so no prebuilt target is needed. |
+| Python 3 with `kconfiglib` | `make config` and every `olddefconfig` step; the build tools under `tools/`. The `PYTHON` make variable names the interpreter (default `/opt/homebrew/bin/python3`, `mk/kernel.mk`). |
 | QEMU: `qemu-system-riscv64`, `qemu-system-aarch64`, `qemu-system-x86_64` | `make qemu*` targets and the QEMU scenarios of the gate. |
 | `zig`, `cbindgen` | `make relibc` and `make busybox` (C programs): `zig` is the C compiler and linker, `cbindgen` generates relibc's headers. |
 | A Linux-targeting `clang` (`LX_CC`) | The Linux module fixtures (`LXTEST.KO`) and the static Linux test program. |
@@ -61,9 +61,9 @@ Source: `Makefile`, `mk/kernel.mk`, `mk/userspace.mk`, `mk/qemu.mk`, `mk/lints.m
 
 | | riscv64 | aarch64 | x86_64 |
 |---|---|---|---|
-| Kernel | `make build` (`make build-rvv` adds the vector extension) | `make aarch64` writes `$AZOS_OUT/build/kernel-aarch64.img` | `make x86_64` writes `$AZOS_OUT/build/kernel-x86_64.elf` |
+| Kernel | `make build` (`make build-rvv` adds the vector extension, `make build-pci` the PCI bus driver) | `make aarch64` writes `$AZOS_OUT/build/kernel-aarch64.img` (`kernel-aarch64-16k.img` or `-64k` with another granule) | `make x86_64` writes `$AZOS_OUT/build/kernel-x86_64.elf` |
 | Ring-3 programs | `make userspace` | `make userspace-aarch64` | `make userspace-x86_64` |
-| Run in QEMU | `make qemu`, `qemu-smp` (4 CPUs), `qemu-full-smp` (disk, network, a program), `qemu-rvv`, `qemu-gdb` | `make qemu-aarch64` (entered at EL1), `qemu-aarch64-el2` | `make qemu-x86_64` (microvm); `qemu-pci-x86_64`, `run-x86-pc` |
+| Run in QEMU | `make qemu`, `qemu-smp` (4 CPUs), `qemu-full-smp` (disk, network, a program), `qemu-rvv`, `qemu-full-smp-rvv`, `qemu-pci` (PCI block and NVMe), `qemu-gdb` (waits on `:1234`) | `make qemu-aarch64` (entered at EL1), `qemu-aarch64-el2` | `make qemu-x86_64` (microvm); `qemu-pci-x86_64` (microvm with `pcie=on`, an NVMe disk); `run-x86-pc` (q35 with OVMF, booted by Limine from an ESP; needs `LIMINE_DIR`, `OVMF_CODE`, `OVMF_VARS`) |
 | Type-check only | `make ARCH=riscv64 check` | `make ARCH=aarch64 check` | `make ARCH=x86_64 check` |
 | Default configuration | `config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config` | `config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config` | `config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config` |
 
@@ -73,11 +73,15 @@ prints, and embeds the table of image hashes the seccomp profiles are bound to. 
 
 | Variable | Meaning |
 |---|---|
+| `ARCH=riscv64\|aarch64\|x86_64` | The ISA of `make check` and `make azos-guest` |
 | `AARCH64_PAGE_SIZE=4096\|16384\|65536` | The aarch64 translation granule of the kernel and the programs |
 | `QEMU_LOG_LEVEL=err\|warn\|info\|debug` | Log level of the QEMU kernels (default `debug`) |
 | `CHECK_FEATURES=...` | Extra cargo features for `make check`, for example `qemu,ktest` |
 | `CHECK_DEFCONFIG_<isa>=...` | A different defconfig for `make check` |
-| `TOPOLOGY_PUBKEY_PATH=<file>` | The topology public key a release build embeds |
+| `TOPOLOGY_PUBKEY_PATH=<file>` | The topology public key a release build embeds; `vf2`, `k1`, `rpi5` and `build-fleet` refuse to build without it |
+| `BUILD_TYPE=DEV` | `vf2` only: a development image (the test key allowed, `KTEST` possible); unset is the product build |
+| `NETBOOT_CASE=<case>` | The case `make netboot-row` runs (default `x86-pxe`) |
+| `PRUNE_ARGS=--dry-run` | `make prune` only reports |
 
 Other targets:
 
@@ -85,11 +89,18 @@ Other targets:
 |---|---|
 | `make sdk`, `make sdk-check` | The std programs for the three ISAs; the port layer's checks ([sdk.md](sdk.md)) |
 | `make relibc`, `make busybox` | C programs against relibc; BusyBox for the three ISAs (needs `zig` and the fetched tree, `tools/third_party_fetch.sh busybox`) |
-| `make micro-config`, `micro-check`, `micro`, `micro-test`, `micro-qemu` | The MCU kernel (`micro/`) |
+| `make micro-config`, `micro-topology`, `micro-check`, `micro`, `micro-test`, `micro-qemu` | The MCU kernel (`micro/`): riscv32imac, M-mode, PMP |
+| `make vf2`, `flash-vf2`, `vf2-console`, `vf2-ktest`, `vf2-pstore` | The VisionFive 2 image, writing it to an SD card (`VF2_SD`), its serial console (`VF2_SERIAL`), and the board-farm rows (`tools/farm/README.md`) |
+| `make k1`, `flash-k1`, `k1-console` | The same for the SpacemiT K1 (`K1_SD`, `K1_SERIAL`) |
+| `make build-fleet` | The Fleet-profile kernel and its board volume |
+| `make azos-guest ARCH=riscv64\|aarch64` | The hypervisor kernel, a guest kernel and the host volume that carries it; `tools/run_guest.sh <isa>` boots it |
 | `make topology-files` | The signed capability topology files for both ISAs |
 | `make make-gguf` | The policy file |
 | `make qemu-systest` | The system-call test program in ring 3 |
 | `make qemu-dhcp-smoke`, `qemu-net-pair` | Network smoke runs |
+| `make lx-kbuild`, `lx-compare` | Linux modules built by Linux's Kbuild in a container; instruction counts against Linux on the same QEMU |
+| `make ota-send`, `tftp-serve`, `boot-scr` | Send firmware over TCP; serve it over TFTP; the U-Boot A/B slot-selection script |
+| `make worktree-seed FROM=<worktree>` | Seed a fresh worktree's cargo caches from another |
 
 The hypervisor kernels use the `*-hv` defconfigs and QEMU CPU options that expose the
 extension (`-cpu rv64,h=true` on riscv64, `virtualization=on` on aarch64, `-cpu max,svm=on`
@@ -170,14 +181,15 @@ when a changed path is in it or in a crate it depends on through `path =` depend
 
 ## ktest
 
-Source: `crates/core/ktest/src/lib.rs`, `kernel/src/ktest.rs`, `config/kernel/Kconfig.trace`.
+Source: `crates/core/ktest/src/lib.rs`, `kernel/src/ktest.rs`, `config/axes/Kconfig.build`.
 
 `ktest!` defines an in-kernel test, `fn() -> Result<(), &'static str>`, and places its entry
 in the `azos_ktest` link section, which every kernel linker script brackets with
 `__start_azos_ktest` and `__stop_azos_ktest`. The tests are compiled only with Kconfig
 `KTEST` (the kernel feature `ktest`, development builds only); with the feature off the crate
 is not in the dependency graph and the section is empty. A ktest kernel runs the registry
-at boot, prints TAP on the console, and powers off.
+at boot, prints TAP on the console, and powers off. On aarch64 it leaves QEMU through
+semihosting `SYS_EXIT` (`KTEST_SEMIHOSTING_EXIT`), because PSCI `SYSTEM_OFF` carries no status.
 
 | Phase | Macro | Runs |
 |---|---|---|
@@ -199,6 +211,7 @@ Source: `mk/lints.mk`, `tools/gate_tier.sh`, `tools/ci_check.sh`, `tools/check_f
 | N1, the change check | `make check1` | N0's suites, then the per-ISA smoke boots and the QEMU gate rows that the diff maps to |
 | Fronts' check | `make check-fast` | Per ISA: one ktest boot, one boot of the same kernel with every composable runtime canary armed, and one userspace boot (the ABI conformance checks) |
 | Full | `make ci` | `tools/ci_check.sh`: every feature combination built with zero warnings, every host suite, every lint, and every QEMU scenario |
+| Full, with the brain | `make ci-full` | `make ci`, then the AzOSRobotBrain tests and the protocol sync check (`tools/ci_full.sh`) |
 | Presets | `make check-presets` | Every preset expands on every ISA ([config.md](config.md)) |
 | Topology rules | `make check-neverallow` | No preset's, defconfig's or the MCU kernel's topology breaks a `neverallow` rule |
 
@@ -207,7 +220,7 @@ check; `n2` rows run only in the full gate) and the path globs that select it. T
 the working tree against `GATE_BASE` (default `HEAD`); `GATE_DRY=1` prints what would run.
 Knobs of the full gate: `CI_TIER=fast` (every build, host and lint row, one QEMU row per
 subsystem per ISA) or `CI_TIER=rows` with `CI_ROWS` (the rows named); `CI_JOBS` or
-`GATE_JOBS` (jobs at once); `CI_SKIP_QEMU=1`; `CI_SKIP_FUZZ=1`; `CI_INJECT_FAIL=<row>` (a
+`GATE_JOBS` (jobs at once, default 4); `CI_SKIP_QEMU=1`; `CI_SKIP_FUZZ=1`; `CI_INJECT_FAIL=<row>` (a
 canary: that row must fail). Per-row timing goes to `$AZOS_OUT/build/ci-logs/timing.tsv`. The
 gate is run by hand; there is no hosted CI.
 
@@ -228,11 +241,15 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | Presets | `python3 tools/check_presets.py` | every preset expands on every ISA |
 | Feature matrix | `python3 tools/gen_feature_matrix.py --check` | `Documentation/os-feature-matrix.md` is what the Kconfig tree and the defconfigs yield |
 | Make help | `bash tools/check_make_help.sh` | `make help` names no target the Makefile lacks |
+| Documentation | `python3 tools/doc_lint.py` | every path and relative link in the public docs exists; `Documentation/README.md` links every file |
+| Requirement trace | `python3 tools/req_trace.py` | the `// REQ-nnn` tags in the code agree with `formal/INVARIANTS.md` |
+| SPDX headers | `python3 tools/spdx_headers.py --check` | every tracked source file carries its licence header |
+| Conflict markers | `git grep` | no tracked file outside `third_party/` holds a merge-conflict marker line |
 | Supply chain | `cargo deny check licenses bans sources` | licences, bans and sources of the registry crates (`deny.toml`) |
 
 Other checks live in `tools/`: `tools/arch_stub_check.py`, `tools/aarch64_fp_free_check.sh`
 (the kernel names no FP register outside the lazy user-FP save and restore),
-`tools/lx_license_lint.py` and `tools/spdx_headers.py` (licences).
+and `tools/lx_license_lint.py` (the licences of the Linux driver layer).
 
 ## A usual order
 
