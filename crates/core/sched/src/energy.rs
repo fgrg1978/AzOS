@@ -478,8 +478,14 @@ pub fn apply_stats() -> ApplyStats {
 
 /// The board's apply step is the task `tid`, and can move the domains of
 /// `actuated` (bit d). From then on a changed choice wakes it, and a choice it
-/// leaves unanswered past Kconfig `ENERGY_APPLY_DEADLINE_MS` is overdue.
+/// leaves unanswered past Kconfig `ENERGY_APPLY_DEADLINE_MS` is overdue. The
+/// wait starts here: a choice the governor made before the step existed (at
+/// boot, before the task was created) is not overdue for having waited for it.
 pub fn apply_install(tid: u32, actuated: u32) {
+    let at = now();
+    for since in GOV_SINCE.iter() {
+        since.store(at, Ordering::Relaxed);
+    }
     GOV_ACTUATED.store(actuated, Ordering::Relaxed);
     APPLY_TID.store(tid, Ordering::Release);
 }
