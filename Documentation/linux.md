@@ -93,7 +93,7 @@ Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`,
 | Server | `userspace/services/lxsrv` (`LXSRV.ELF`) | Runs the whole module path; its topology row (kernels with the `lx-server` feature) grants one capability, READ on the kernel entropy pool, which keys its allocator. |
 | Module build | `tools/lx_kbuild/`, `make lx-kbuild` | Runs Kbuild for riscv64 and aarch64 in a pinned container with no network and the tree mounted read-only; `make lx-kbuild-repro` rebuilds from scratch and requires identical `.ko` hashes. |
 | Device ids | `lx/DEVICE_SOURCES`, `tools/lx_device_table.py` | See [Leaf drivers](#leaf-drivers-and-the-hardware-bus). |
-| Licence lint | `tools/lx_license_lint.py` | See [Licence boundary](#licence-boundary). |
+| Licence lint | `tools/lx_license_lint.py` | See [Licensing of the driver layer](#licensing-of-the-driver-layer). |
 
 ### Threads in the server
 
@@ -152,9 +152,20 @@ The Kconfig menu "Linux compatibility" (`config/axes/Kconfig.personality`) defin
 
 A leaf-driver server drives devices only through ring-3 capabilities: a mapped register window (`DOMAIN_MMIO_MAP`), interrupt binding with `DEVICE_IRQ_BIND`, and the DMA and IOMMU services described in [drivers.md](drivers.md#dma). Because a bus master can write any physical address on a machine with no IOMMU, `LX_ACCEPT_UNCONFINED_DMA` (which depends on a DMA-capable class option) is the build-time acceptance of that; like the class options, the configuration validator refuses it.
 
-### Licence boundary
+### Licensing of the driver layer
 
-The project is `Apache-2.0 OR GPL-2.0-only`. The Rust in the Linux layer (`lx/emul`, `crates/core/lx-loader`, `userspace/services/lxsrv`) includes no Linux header and keeps that licence. The rule `tools/lx_license_lint.py` enforces is: no GPL-only source, symbol or object outside `lx/glue/` and `third_party/`.
+The project is `Apache-2.0 OR GPL-2.0-only`. Code that includes a Linux kernel header is GPL-2.0-only, and the layer keeps it in one place: `lx/glue/`. Every source file there carries `SPDX-License-Identifier: GPL-2.0-only`, exactly. The rule is set by directory, not by file content: a C or assembly file anywhere else may not include a Linux kernel header (`<linux/...>`, `<asm/...>`, `<asm-generic/...>`, `<uapi/...>`) at all, so a shim that needs one is glue and moves to `lx/glue/`. Everything else in the layer keeps the project licence:
+
+| Part | Licence | Why |
+|---|---|---|
+| `lx/glue/` (`lxbase.c`, its `Kbuild`) | GPL-2.0-only | Compiled against Linux headers by Linux's Kbuild |
+| `third_party/linux` and every `.ko` built from it | GPL-2.0-only | Unmodified Linux; the submodule carries no patch |
+| `lx/emul`, `crates/core/lx-loader`, `userspace/services/lxsrv` | `Apache-2.0 OR GPL-2.0-only` | Rust that includes no Linux header and copies no Linux code: it re-implements behaviour |
+| `lx/` data files (`LINUX_PIN`, `HOST_ABI`, `DEVICE_SOURCES`, `FS_EXT4_UNRESOLVED`) and `tools/lx_*` | `Apache-2.0 OR GPL-2.0-only` | Lists and tools of this project; they read the Linux tree as data |
+| `LXTEST.KO` (`userspace/tests/lxmod/lxtest.c`) | `Apache-2.0 OR GPL-2.0-only`, module tag `Dual Apache/GPL` | This project's C, built with no Linux header |
+| The kernel image | `Apache-2.0 OR GPL-2.0-only` | It never links a Linux object: no GPL code runs in ring 0 |
+
+A server process that loads a Linux module runs GPL-2.0-only code as part of one program, and is distributed under GPL-2.0-only as a whole. The rule `tools/lx_license_lint.py` enforces is: no GPL-only source, symbol or object outside `lx/glue/` and `third_party/`. Its `--self-test` plants one violation per rule and requires each rule to report it.
 
 | Rule | Checks (over `git ls-files`) |
 |---|---|
