@@ -325,7 +325,7 @@ fn any_addr(port: u16) -> [u8; 16] {
 fn bind_port(raw: i64, port: u16) -> i64 {
     let addr = any_addr(port);
     azos_sched::set_current_user_pt(0);
-    let r = super::sys_bind_typed(raw as u64, addr.as_ptr() as u64);
+    let r = super::sys_bind_typed(raw as u64, addr.as_ptr() as u64, addr.len() as u64);
     azos_sched::set_current_user_pt(0x1000);
     r
 }
@@ -448,11 +448,11 @@ fn an_op_mask_gates_each_socket_op_by_its_class() {
         assert_eq!(super::sys_send_typed(h, 0, 4), denied);
         assert_eq!(super::sys_connect_typed(h, 0, 16), denied);
         assert_eq!(super::sys_recv_typed(h, 0, 4), denied);
-        assert_eq!(super::sys_bind_typed(h, 0), denied);
+        assert_eq!(super::sys_bind_typed(h, 0, 16), denied);
         assert_eq!(super::sys_mcast_join_typed(h, 0), denied);
         assert_eq!(super::sys_mcast_leave_typed(h, 0), denied);
     }
-    assert_ne!(super::sys_bind_typed(net, 0), denied);
+    assert_ne!(super::sys_bind_typed(net, 0, 16), denied);
     // The close: CTL.
     for h in [net, rd] {
         assert_eq!(super::sys_close_typed(h), denied);
