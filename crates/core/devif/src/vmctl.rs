@@ -75,10 +75,10 @@ const CLOSED_OFF: usize = 8;
 
 impl ConsoleRing {
     fn closed_word(base: usize) -> &'static core::sync::atomic::AtomicU32 {
-        // SAFETY: `base` is the start of a console ring's region (2 pages,
-        // 64-byte aligned, zero when made), shared by the monitor and its one
-        // holder; the word lies inside the head line.
-        unsafe { &*((base + CLOSED_OFF) as *const core::sync::atomic::AtomicU32) }
+        // `base` is the start of a console ring's region (2 pages, 64-byte
+        // aligned, zero when made), shared by the monitor and its one holder;
+        // the word lies inside the head line.
+        azos_rings::region::atomic_at(base, CLOSED_OFF)
     }
 
     /// Monitor: the ring at `base` is not written any more. Call it after the

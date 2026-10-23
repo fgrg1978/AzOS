@@ -93,6 +93,7 @@
 
 use crate::outcome::{self, Out};
 use azos_idl::{azos_interface, Cap, Reader, Wire, Writer};
+use core::sync::atomic::AtomicU8;
 
 /// The interface id (ASCII "DISP").
 pub const DISPLAY_ID: u32 = 0x4449_5350;
@@ -451,15 +452,14 @@ pub trait Scanout: Sync {
     fn connector(&self) -> Option<ConnectorInfo>;
     /// Mode `index` of the connector ([`Display::mode`] answers it).
     fn mode(&self, index: u32) -> Option<Mode>;
-    /// Copy `rect` of the image at `src` (rows `stride` bytes apart, its first
+    /// Copy `rect` of the image `src` (rows `stride` bytes apart, its first
     /// row screen row `top`) onto the scanout. `false` when the copy was
     /// refused: nothing was copied.
     ///
-    /// # Safety
-    ///
-    /// `src` is readable for `src_len` bytes for the whole call and is not
-    /// freed or unmapped meanwhile; its bytes may change.
-    unsafe fn copy_rect(&self, src: *const u8, src_len: usize, stride: u32, top: u32, rect: Rect) -> bool;
+    /// `src` is memory another party may write while it is read (a display
+    /// client's surface), so it is atomics, not `&[u8]`: the slice keeps it
+    /// mapped for the call, and its bytes may change meanwhile.
+    fn copy_rect(&self, src: &[AtomicU8], stride: u32, top: u32, rect: Rect) -> bool;
     /// `rect` was drawn: tell the display (the flip hook of a source that
     /// scans out a copy; nothing for a scanout the CPU draws into directly).
     fn flip(&self, rect: Rect);

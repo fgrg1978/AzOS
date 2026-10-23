@@ -14,6 +14,7 @@ use azos_devif::display::{
 use azos_fb::pixel::PixelFormat;
 use azos_fb::scanout::{publish_edid, SCANOUT};
 use azos_fb::FbInfo;
+use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
 
 mod common;
@@ -45,9 +46,8 @@ fn the_framebuffer_is_a_scanout_with_modes_a_copy_and_a_handover() {
     assert_eq!(s.mode(0), None);
     assert!(!s.retire_console() && !s.resume_console());
     assert!(!publish_edid(&[0u8; 300]), "not an EDID");
-    let blank = [0u8; 16];
-    // SAFETY: `blank` is readable for 16 bytes.
-    assert!(!unsafe { s.copy_rect(blank.as_ptr(), 16, 16, 0, Rect::new(0, 0, 1, 1)) }, "no screen to copy onto");
+    let blank: [AtomicU8; 16] = Default::default();
+    assert!(!s.copy_rect(&blank, 16, 0, Rect::new(0, 0, 1, 1)), "no screen to copy onto");
 
     // ── a 640x480 XRGB8888 framebuffer with a padded stride ──
     let (w, h, stride) = (640u32, 480u32, 640 * 4 + 64);
@@ -123,8 +123,9 @@ fn the_framebuffer_is_a_scanout_with_modes_a_copy_and_a_handover() {
             img[row * src_stride + x * 4..][..4].copy_from_slice(&v.to_le_bytes());
         }
     }
-    // SAFETY: `img` is a live Vec of `img.len()` bytes.
-    let copy = |top: u32, r: Rect| unsafe { s.copy_rect(img.as_ptr(), img.len(), stride, top, r) };
+    // The image as the scanout sees a client's surface: bytes that may change.
+    let img: Vec<AtomicU8> = img.into_iter().map(AtomicU8::new).collect();
+    let copy = |top: u32, r: Rect| s.copy_rect(&img, stride, top, r);
     assert!(copy(100, Rect::new(5, 150, 10, 20)));
     let px = |x: u32, y: u32| u32::from_le_bytes(unsafe { std::slice::from_raw_parts(base.add((y * stride + x * 4) as usize), 4) }.try_into().unwrap());
     assert_eq!(px(5, 150), 150 * 1000 + 6);

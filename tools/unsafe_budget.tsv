@@ -26,7 +26,7 @@ crates/core/common	5	0	0	0	0	35
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	16	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	59
-crates/core/devif	2	1	0	0	0	21
+crates/core/devif	0	0	0	0	1	0
 crates/core/efi	3	3	0	0	0	-
 crates/core/energy	0	0	0	0	1	0
 crates/core/hv	3	1	0	0	0	5
@@ -45,7 +45,7 @@ crates/core/ota	1	0	0	0	0	20
 crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	62
-crates/core/rings	23	4	4	0	0	98
+crates/core/rings	22	4	4	0	0	98
 crates/core/sched	421	135	4	3	0	70
 crates/core/stdrt	44	1	4	0	0	-
 crates/core/sync	46	9	18	0	0	84
@@ -67,7 +67,7 @@ crates/drivers/dma	22	12	2	0	0	56
 crates/drivers/dmac	8	0	0	0	0	99
 crates/drivers/driver_server	0	0	0	0	1	0
 crates/drivers/dtb	92	40	0	0	0	100
-crates/drivers/fb	10	2	2	0	0	39
+crates/drivers/fb	10	1	2	0	0	39
 crates/drivers/firmware	2	1	0	0	0	100
 crates/drivers/gpio	4	0	0	0	0	59
 crates/drivers/gps	0	0	0	0	1	0
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	520
+@unsafe-share	518

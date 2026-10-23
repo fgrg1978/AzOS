@@ -27,6 +27,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_idl",
+ "azos_rings",
 ]
 
 [[package]]
@@ -45,6 +46,10 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "azos_rings"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"

@@ -154,9 +154,9 @@ pub struct TraceRecord {
 
 #[inline(always)]
 fn word(addr: usize) -> &'static AtomicU32 {
-    // SAFETY: every caller passes an address inside a region laid out as the
-    // module doc says, 4-byte aligned (every offset above is).
-    unsafe { &*(addr as *const AtomicU32) }
+    // Every caller passes an address inside a region laid out as the module
+    // doc says, 4-byte aligned (every offset above is).
+    super::atomic_at(addr, 0)
 }
 
 /// Write the region header and reset every ring of a region at `base`

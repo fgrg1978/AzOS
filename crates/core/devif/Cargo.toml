@@ -9,3 +9,4 @@ description = "The interfaces of the services the kernel hosts and of the device
 [dependencies]
 azos_abi = { path = "../abi" }
 azos_idl = { path = "../idl" }
+azos_rings = { path = "../rings" }

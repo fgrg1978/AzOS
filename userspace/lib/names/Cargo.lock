@@ -27,6 +27,7 @@ dependencies = [
 name = "azos_names"
 version = "0.1.0"
 dependencies = [
+ "azos_abi",
  "azos_idl",
 ]
 

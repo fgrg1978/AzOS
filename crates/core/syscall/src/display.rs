@@ -474,15 +474,17 @@ impl azos_devif::Display for Server {
                 };
                 let Some(band) = band else { return Out::err(outcome::FAULT) };
                 let take = end.min(band.top + band.rows) - row;
-                let src = azos_mm::addr::phys_to_virt(band.phys) as *const u8;
+                let src = azos_mm::addr::phys_to_virt(band.phys) as *const core::sync::atomic::AtomicU8;
                 let len = band.rows as usize * stride as usize;
                 // The rows fit 16 bits: they lie inside the screen the rectangle
                 // was checked against, and a rectangle names its rows in 16 bits.
                 let (Ok(y), Ok(h)) = (u16::try_from(row), u16::try_from(take)) else { return Out::err(outcome::FAULT) };
                 // SAFETY: the object is pinned by the kernel and is one contiguous
                 // run (module doc, "Trust in the surface"); the direct map covers
-                // it, and `rows * stride` bytes of it are rows by `band_take`.
-                let copied = unsafe { sc.copy_rect(src, len, stride, band.top, Rect { x: r.x, y, w: r.w, h }) };
+                // it, and `rows * stride` bytes of it are rows by `band_take`. The
+                // client writes it meanwhile, so the bytes are atomics.
+                let src = unsafe { core::slice::from_raw_parts(src, len) };
+                let copied = sc.copy_rect(src, stride, band.top, Rect { x: r.x, y, w: r.w, h });
                 if !copied {
                     // `check_surface`, `band_take` and `Present::check` made this
                     // impossible; the scanout refusing is the kernel's own bug.

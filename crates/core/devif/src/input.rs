@@ -50,6 +50,7 @@
 
 use crate::outcome::Out;
 use azos_idl::{azos_interface, Lent, Reader, Wire, Writer};
+use azos_rings::region::{atomic_at, RegionWord};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// The interface id (ASCII "INPT").
@@ -120,13 +121,12 @@ pub struct Warrant;
 /// `azos_rings::region::SpscRing` of [`RING_SLOTS`] slots at its start.
 pub struct EventRing;
 
-/// The atomic at byte `off` of the shared region at `base`.
-fn cell<T>(base: usize, off: usize) -> &'static T {
-    // SAFETY: `base` is the start of a region one page long, 64-byte aligned,
-    // zero when made, shared by the server and its holders; every offset this
-    // module names is inside the first line or two of it, aligned for its type,
-    // and `T` is an atomic, which any bit pattern is valid for.
-    unsafe { &*((base + off) as *const T) }
+/// The atomic at byte `off` of the shared region at `base`: a region one page
+/// long, 64-byte aligned, zero when made, shared by the server and its
+/// holders; every offset this module names is inside the first line or two of
+/// it, aligned for its type.
+fn cell<T: RegionWord>(base: usize, off: usize) -> &'static T {
+    atomic_at(base, off)
 }
 
 // Offsets of the two words the ring protocol leaves free in the head line (the

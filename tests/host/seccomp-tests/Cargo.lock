@@ -44,6 +44,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_idl",
+ "azos_rings",
 ]
 
 [[package]]
@@ -86,6 +87,10 @@ dependencies = [
  "azos_limits",
  "azos_linux_abi",
 ]
+
+[[package]]
+name = "azos_rings"
+version = "0.1.0"
 
 [[package]]
 name = "azos_seccomp_tests"

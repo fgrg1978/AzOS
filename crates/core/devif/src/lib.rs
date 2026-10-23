@@ -23,6 +23,7 @@
 //! row uses, `endpoint = "gpio.17"`), its IDL id and its host key (what a
 //! kernel-hosted endpoint is owned by).
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub use azos_idl::{Cap, IdlError, Lent, MsgDesc, Reader, Result as IdlResult, Transport, Wire, Writer};
 

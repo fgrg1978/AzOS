@@ -155,11 +155,14 @@ impl Scanout for FbScanout {
         mode_at(cur, e.as_ref(), index)
     }
 
-    unsafe fn copy_rect(&self, src: *const u8, src_len: usize, stride: u32, top: u32, rect: display::Rect) -> bool {
+    fn copy_rect(&self, src: &[core::sync::atomic::AtomicU8], stride: u32, top: u32, rect: display::Rect) -> bool {
         let Some(dst) = crate::surface() else { return false };
         let r = crate::Rect { x: rect.x as u32, y: rect.y as u32, w: rect.w as u32, h: rect.h as u32 };
-        // SAFETY: the caller's promise about `src`.
-        unsafe { crate::blit::copy_rect_raw(&dst, src, src_len, stride as usize, top as usize, r) }.is_some()
+        // SAFETY: `src` is a live slice for the whole call, so its bytes are
+        // readable and stay mapped; they are atomics, so they may change while
+        // they are read, which is what `copy_rect_raw` allows.
+        unsafe { crate::blit::copy_rect_raw(&dst, src.as_ptr().cast::<u8>(), src.len(), stride as usize, top as usize, r) }
+            .is_some()
     }
 
     fn flip(&self, rect: display::Rect) {

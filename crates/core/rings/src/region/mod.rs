@@ -93,12 +93,42 @@ pub enum RingSleep {
 // the caller, between "reserve" and "publish", so the Dekker protocol exists
 // once whatever a slot holds.
 
+/// An atomic a shared region holds at a fixed offset: any bit pattern is a
+/// valid value of it, so a word the other side wrote (or never wrote) can be
+/// read as one. Sealed; the region layouts use these two.
+pub trait RegionWord: region_word::Sealed {}
+mod region_word {
+    pub trait Sealed {}
+    impl Sealed for core::sync::atomic::AtomicU32 {}
+    impl Sealed for core::sync::atomic::AtomicU64 {}
+}
+impl RegionWord for core::sync::atomic::AtomicU32 {}
+impl RegionWord for core::sync::atomic::AtomicU64 {}
+
+/// The atomic at byte `off` of the shared region at `base`: the one place a
+/// region's address becomes a reference, for the rings here and for every
+/// other layout over a shared mapping (`azos_devif`'s event and console
+/// rings).
+///
+/// The contract is the one every view of a region carries (an [`SpscRing`]'s
+/// `base`): `base` is the start of a mapping this task keeps for the rest of
+/// its life, zero when made, shared with tasks that use the same layout, and
+/// `off` names a word of that layout inside it, aligned for `T`.
+#[inline(always)]
+pub fn atomic_at<T: RegionWord>(base: usize, off: usize) -> &'static T {
+    debug_assert!((base + off) % core::mem::align_of::<T>() == 0, "unaligned region word");
+    // SAFETY: the contract above: the address is mapped for `'static`, aligned
+    // for `T`, and `T` is an atomic every bit pattern is valid for, so a
+    // shared reference to it is sound whatever the other side stores.
+    unsafe { &*((base + off) as *const T) }
+}
+
 #[inline(always)]
 pub(crate) fn ring_word(base: usize, off: usize) -> &'static core::sync::atomic::AtomicU32 {
-    // SAFETY: `base` is the start of a mapping at least `bytes(cap)` long,
-    // 64-byte aligned (the constructor's contract), shared with exactly one
-    // other task that uses the same layout.
-    unsafe { &*((base + off) as *const core::sync::atomic::AtomicU32) }
+    // `base` is the start of a mapping at least `bytes(cap)` long, 64-byte
+    // aligned (the constructor's contract), shared with exactly one other task
+    // that uses the same layout.
+    atomic_at(base, off)
 }
 
 pub(crate) fn ring_init(base: usize) {
