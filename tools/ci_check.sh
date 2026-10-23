@@ -15899,7 +15899,7 @@ PY
         # its hart). Proving that for a build nobody ships is proving the wrong
         # thing, and the inheritance is invisible: the scenario passes either
         # way, so nothing would ever tell you.
-        kbuild "qemu"
+        kbuild "qemu,use-robot"   # the brain link is the robot's: the robot cell
 
         if ! python3 tools/fake_brain.py --selftest >/dev/null 2>&1; then
             bad; echo "      tools/fake_brain.py selftest failed — its framing no"
@@ -17515,7 +17515,7 @@ PYEOF
     # carries no link key, so the enforced kernel must refuse; build/disk-linkkey.img
     # carries one, so the same kernel must boot past the gate. Testing only the
     # refusal would pass just as happily on a gate wired to always refuse.
-    par "link auth rejects missing key" kq "qemu,link-provisioning-enforced" "link auth rejects missing key" "SECCHAN] FATAL" 120 \
+    par "link auth rejects missing key" kq "qemu,use-robot,link-provisioning-enforced" "link auth rejects missing key" "SECCHAN] FATAL" 120 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
@@ -17797,7 +17797,7 @@ PYEOF
     # The marker is the kernel's own confirmation of the round trip, not the
     # driver's "I started" line: a driver that registers and then answers
     # nothing would satisfy the latter.
-    kbuild "qemu"
+    kbuild "qemu,use-robot"   # the bench (robot domain) and the GPIO driver row boot the robot cell
     rm -f $AZOS_OUT/build/disk-gpiodrv.img
     make_disk $AZOS_OUT/build/disk-gpiodrv.img
     # The smoke's own verdict counts here, where gpio_drv is the autorun, and
