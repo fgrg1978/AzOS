@@ -257,10 +257,19 @@ pub struct Run {
     cap: u32,
 }
 
-/// A block cache with `BYTES` of storage and up to `LINES` lines.
+/// A block cache with `BYTES` of storage and up to `LINES` lines: the
+/// storage, sized at compile time, and its bookkeeping ([`Core`]). The code
+/// that runs it is not generic: every operation is [`CacheMut`]'s (or
+/// [`CacheRef`]'s, the read-only ones) over the storage as slices, so caches
+/// of different sizes share one copy of it. The methods here forward.
 pub struct BlockCache<const BYTES: usize, const LINES: usize> {
+    c: Core,
     tags: [Tag; LINES],
     data: [u8; BYTES],
+}
+
+/// What a cache knows about its lines, whatever its size.
+struct Core {
     block: usize,
     lines: usize,
     /// Lines per set; `lines` is a multiple of it.
@@ -298,10 +307,11 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// cache with zero lines, which caches nothing and still passes every
     /// read and write through; `configure` reports the error instead.
     pub const fn new(block: usize, mode: Mode) -> Self {
-        let (lines, ways, set_mask) = Self::geometry(block, mode);
+        let (lines, ways, set_mask) = geometry(block, mode, BYTES, LINES);
         Self {
             tags: [EMPTY_TAG; LINES],
             data: [0u8; BYTES],
+            c: Core {
             block: if lines == 0 { MIN_BLOCK } else { block },
             lines,
             ways,
@@ -318,6 +328,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             dseq: 0,
             naway: 0,
             stats: CacheStats { hits: 0, misses: 0, writebacks: 0, ordering_flushes: 0 },
+            },
         }
     }
 
@@ -330,6 +341,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         Self {
             tags: [EMPTY_TAG; LINES],
             data: [0u8; BYTES],
+            c: Core {
             block: 0,
             lines: 0,
             ways: 0,
@@ -346,189 +358,229 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             dseq: 0,
             naway: 0,
             stats: CacheStats { hits: 0, misses: 0, writebacks: 0, ordering_flushes: 0 },
+            },
         }
     }
 
-    /// `(lines, ways, set_mask)` for `block`-byte lines in `mode`. See the
-    /// module doc's "Geometry".
-    const fn geometry(block: usize, mode: Mode) -> (usize, usize, u64) {
-        let n = Self::lines_for(block);
-        if n == 0 {
-            return (0, 0, 0);
-        }
-        let _ = mode;
-        if n <= MAX_WAYS {
-            return (n, n, 0);
-        }
-        let sets_max = n / MAX_WAYS;
-        let sets = 1usize << (usize::BITS - 1 - sets_max.leading_zeros());
-        (sets * MAX_WAYS, MAX_WAYS, (sets - 1) as u64)
+    /// The cache as its operations run over it.
+    #[inline]
+    pub fn view(&mut self) -> CacheMut<'_> {
+        CacheMut { c: &mut self.c, tags: &mut self.tags, data: &mut self.data }
     }
 
-    const fn lines_for(block: usize) -> usize {
-        if block < MIN_BLOCK || block > MAX_BLOCK || !block.is_power_of_two() {
-            return 0;
-        }
-        if BYTES % block != 0 {
-            return 0;
-        }
-        let n = BYTES / block;
-        if n == 0 || n > LINES { 0 } else { n }
+    /// The cache, read-only.
+    #[inline]
+    pub fn get(&self) -> CacheRef<'_> {
+        CacheRef { c: &self.c, tags: &self.tags, data: &self.data }
     }
 
-    /// Change block size, mode and base. Drops every line; refuses while any
-    /// line is dirty.
-    pub fn configure(&mut self, block: usize, mode: Mode, base_lba: u64) -> Result<(), ConfigError> {
-        if self.dirty_count() != 0 {
-            return Err(ConfigError::Dirty);
-        }
-        let (lines, ways, set_mask) = Self::geometry(block, mode);
-        if lines == 0 {
-            return Err(ConfigError::BadBlockSize);
-        }
-        // Every tag is dropped below, so the old geometry's stamps cannot
-        // alias a block under the new one.
-        self.block = block;
-        self.lines = lines;
-        self.ways = ways;
-        self.set_mask = set_mask;
-        self.mode = mode;
-        self.base_lba = base_lba;
-        self.clear_tags();
-        self.wseq = self.wseq.wrapping_add(1);
-        Ok(())
-    }
+    #[inline]
+    pub fn block_size(&self) -> usize { self.get().block_size() }
+    #[inline]
+    pub fn line_count(&self) -> usize { self.get().line_count() }
+    #[inline]
+    pub fn ways(&self) -> usize { self.get().ways() }
+    #[inline]
+    pub fn mode(&self) -> Mode { self.get().mode() }
+    #[inline]
+    pub fn stats(&self) -> CacheStats { self.get().stats() }
+    #[inline]
+    pub fn epoch(&self) -> u64 { self.get().epoch() }
+    #[inline]
+    pub fn top_epoch(&self) -> u64 { self.get().top_epoch() }
+    #[inline]
+    pub fn dirty_count(&self) -> usize { self.get().dirty_count() }
+    #[cfg(test)]
+    #[inline]
+    pub fn dirty_scan(&self) -> usize { self.get().dirty_scan() }
+    #[inline]
+    pub fn oldest_dirty_epoch(&self) -> Option<u64> { self.get().oldest_dirty_epoch() }
+    #[inline]
+    pub fn dirty_epochs(&self) -> usize { self.get().dirty_epochs() }
+    #[inline]
+    pub fn lba_of(&self, block: u64) -> Option<u64> { self.get().lba_of(block) }
+    #[inline]
+    pub fn peek(&self, block: u64, dst: &mut [u8]) -> bool { self.get().peek(block, dst) }
+    #[inline]
+    pub fn any_dirty_in(&self, first: u64, count: u64) -> bool { self.get().any_dirty_in(first, count) }
+    #[inline]
+    pub fn lookup_miss_token(&self) -> u64 { self.get().lookup_miss_token() }
+    #[inline]
+    pub fn configure(&mut self, block: usize, mode: Mode, base_lba: u64) -> Result<(), ConfigError> { self.view().configure(block, mode, base_lba) }
+    #[inline]
+    pub fn reset_stats(&mut self) { self.view().reset_stats() }
+    #[inline]
+    pub fn lookup(&mut self, block: u64, dst: &mut [u8]) -> bool { self.view().lookup(block, dst) }
+    #[inline]
+    pub fn lookup_bytes(&mut self, block: u64, offset: usize, dst: &mut [u8]) -> bool { self.view().lookup_bytes(block, offset, dst) }
+    #[inline]
+    pub fn install(&mut self, block: u64, src: &[u8], token: u64) -> bool { self.view().install(block, src, token) }
+    #[inline]
+    pub fn update_if_present(&mut self, block: u64, src: &[u8]) { self.view().update_if_present(block, src) }
+    #[inline]
+    pub fn invalidate(&mut self, block: u64) -> bool { self.view().invalidate(block) }
+    #[inline]
+    pub fn invalidate_range(&mut self, first: u64, count: u64) -> usize { self.view().invalidate_range(first, count) }
+    #[inline]
+    pub fn invalidate_all(&mut self) -> usize { self.view().invalidate_all() }
+    #[cfg(test)]
+    #[inline]
+    pub fn force_generation(&mut self, g: u32) { self.view().force_generation(g) }
+    #[inline]
+    pub fn read<D: BlockIo>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError<D::FlushErr>> { self.view().read(dev, block, dst) }
+    #[inline]
+    pub fn write<D: BlockIo>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError<D::FlushErr>> { self.view().write(dev, block, src) }
+    #[inline]
+    pub fn write_dirty(&mut self, block: u64, src: &[u8]) -> Dirty { self.view().write_dirty(block, src) }
+    #[inline]
+    pub fn write_dirty_ahead(&mut self, block: u64, src: &[u8]) -> Dirty { self.view().write_dirty_ahead(block, src) }
+    #[inline]
+    pub fn checkout_run(&mut self, upto: u64, max_blocks: usize, buf: &mut [u8]) -> Option<Run> { self.view().checkout_run(upto, max_blocks, buf) }
+    #[inline]
+    pub fn checkout_begin(&mut self, upto: u64, max_blocks: usize, buf_len: usize) -> Option<Run> { self.view().checkout_begin(upto, max_blocks, buf_len) }
+    #[inline]
+    pub fn checkout_next(&mut self, run: &mut Run, buf: &mut [u8]) -> bool { self.view().checkout_next(run, buf) }
+    #[inline]
+    pub fn checkin(&mut self, run: &Run, ok: bool) { self.view().checkin(run, ok) }
+    #[inline]
+    pub fn note_ordering_flush(&mut self) { self.view().note_ordering_flush() }
+    #[inline]
+    pub fn barrier(&mut self) -> u64 { self.view().barrier() }
+    #[inline]
+    pub fn write_back_all<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().write_back_all(dev) }
+    #[inline]
+    pub fn sync<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> { self.view().sync(dev) }
+    #[inline]
+    pub fn note_flushed(&mut self) { self.view().note_flushed() }
+}
 
-    pub fn block_size(&self) -> usize { self.block }
-    pub fn line_count(&self) -> usize { self.lines }
-    pub fn ways(&self) -> usize { self.ways }
-    pub fn mode(&self) -> Mode { self.mode }
-    pub fn stats(&self) -> CacheStats { self.stats }
-    pub fn reset_stats(&mut self) { self.stats = CacheStats::default(); }
-    pub fn epoch(&self) -> u64 { self.epoch }
+/// `(lines, ways, set_mask)` for `block`-byte lines in `mode`, in a cache of
+/// `bytes` of storage and `tags` tags. See the
+/// module doc's "Geometry".
+const fn geometry(block: usize, mode: Mode, bytes: usize, tags: usize) -> (usize, usize, u64) {
+    let n = lines_for(block, bytes, tags);
+    if n == 0 {
+        return (0, 0, 0);
+    }
+    let _ = mode;
+    if n <= MAX_WAYS {
+        return (n, n, 0);
+    }
+    let sets_max = n / MAX_WAYS;
+    let sets = 1usize << (usize::BITS - 1 - sets_max.leading_zeros());
+    (sets * MAX_WAYS, MAX_WAYS, (sets - 1) as u64)
+}
+
+const fn lines_for(block: usize, bytes: usize, tags: usize) -> usize {
+    if block < MIN_BLOCK || block > MAX_BLOCK || !block.is_power_of_two() {
+        return 0;
+    }
+    if bytes % block != 0 {
+        return 0;
+    }
+    let n = bytes / block;
+    if n == 0 || n > tags { 0 } else { n }
+}
+
+/// A cache's lines and bookkeeping, borrowed for an operation that changes
+/// them ([`BlockCache::view`]).
+pub struct CacheMut<'a> {
+    c: &'a mut Core,
+    tags: &'a mut [Tag],
+    data: &'a mut [u8],
+}
+
+/// A cache, borrowed for a look ([`BlockCache::get`]).
+pub struct CacheRef<'a> {
+    c: &'a Core,
+    tags: &'a [Tag],
+    data: &'a [u8],
+}
+
+impl<'a> CacheRef<'a> {
+    pub fn block_size(&self) -> usize { self.c.block }
+    pub fn line_count(&self) -> usize { self.c.lines }
+    pub fn ways(&self) -> usize { self.c.ways }
+    pub fn mode(&self) -> Mode { self.c.mode }
+    pub fn stats(&self) -> CacheStats { self.c.stats }
+    pub fn epoch(&self) -> u64 { self.c.epoch }
     /// The highest epoch a dirty line may be in now: the current one, or
     /// the one after it when a line was written ahead into it.
-    pub fn top_epoch(&self) -> u64 { self.epoch.max(self.ahead) }
+    pub fn top_epoch(&self) -> u64 { self.c.epoch.max(self.c.ahead) }
 
     /// Dirty lines. O(1): a counter every transition keeps exact.
     pub fn dirty_count(&self) -> usize {
-        self.ndirty
+        self.c.ndirty
     }
 
     /// Host tests: the dirty count by a scan, to check the counter against.
     #[cfg(test)]
     pub fn dirty_scan(&self) -> usize {
-        let g = self.gen;
-        self.tags[..self.lines].iter().filter(|t| t.gen == g && t.dirty).count()
+        let g = self.c.gen;
+        self.tags[..self.c.lines].iter().filter(|t| t.gen == g && t.dirty).count()
     }
 
     /// The oldest epoch any dirty line belongs to, `None` when none is dirty.
     /// O(lines).
     pub fn oldest_dirty_epoch(&self) -> Option<u64> {
-        if self.ndirty == 0 {
+        if self.c.ndirty == 0 {
             return None;
         }
-        let g = self.gen;
-        self.tags[..self.lines].iter().filter(|t| t.gen == g && t.dirty).map(|t| t.epoch).min()
+        let g = self.c.gen;
+        self.tags[..self.c.lines].iter().filter(|t| t.gen == g && t.dirty).map(|t| t.epoch).min()
     }
 
     /// Distinct epochs among the dirty lines (diagnostics and host tests:
     /// how many ordered groups a write-back of everything would write).
     /// O(lines^2) at worst; never on a hot path.
     pub fn dirty_epochs(&self) -> usize {
-        let g = self.gen;
-        let live = || self.tags[..self.lines].iter().filter(move |t| t.gen == g && t.dirty);
+        let g = self.c.gen;
+        let live = || self.tags[..self.c.lines].iter().filter(move |t| t.gen == g && t.dirty);
         live().enumerate()
             .filter(|&(i, t)| !live().take(i).any(|u| u.epoch == t.epoch))
             .count()
     }
 
-    fn sectors(&self) -> u32 { (self.block / SECTOR_BYTES) as u32 }
+    fn sectors(&self) -> u32 { (self.c.block / SECTOR_BYTES) as u32 }
 
     /// The first LBA of `block`, or `None` on overflow.
     pub fn lba_of(&self, block: u64) -> Option<u64> {
-        block.checked_mul(self.sectors() as u64)?.checked_add(self.base_lba)
+        block.checked_mul(self.sectors() as u64)?.checked_add(self.c.base_lba)
     }
 
-    fn line(&self, i: usize) -> &[u8] {
-        &self.data[i * self.block..(i + 1) * self.block]
-    }
-
-    fn line_mut(&mut self, i: usize) -> &mut [u8] {
-        let b = self.block;
-        &mut self.data[i * b..(i + 1) * b]
+    fn line(&self, i: usize) -> &'a [u8] {
+        let d: &'a [u8] = self.data;
+        &d[i * self.c.block..(i + 1) * self.c.block]
     }
 
     /// First tag of `block`'s set.
     #[inline]
     fn set_of(&self, block: u64) -> usize {
-        (block & self.set_mask) as usize * self.ways
+        (block & self.c.set_mask) as usize * self.c.ways
     }
 
     #[inline]
     fn find(&self, block: u64) -> Option<usize> {
         let s = self.set_of(block);
-        let g = self.gen;
-        self.tags[s..s + self.ways].iter().position(|t| t.gen == g && t.block == block && !t.shadow).map(|i| s + i)
+        let g = self.c.gen;
+        self.tags[s..s + self.c.ways].iter().position(|t| t.gen == g && t.block == block && !t.shadow).map(|i| s + i)
     }
 
     /// The line (live or shadow) holding `block`'s dirty contents of `epoch`.
     #[inline]
     fn find_dirty_epoch(&self, block: u64, epoch: u64) -> Option<usize> {
         let s = self.set_of(block);
-        let g = self.gen;
-        self.tags[s..s + self.ways].iter()
+        let g = self.c.gen;
+        self.tags[s..s + self.c.ways].iter()
             .position(|t| t.gen == g && t.block == block && t.dirty && t.epoch == epoch)
             .map(|i| s + i)
-    }
-
-    fn touch(&mut self, i: usize) {
-        self.clock = self.clock.saturating_add(1);
-        self.tags[i].last_use = self.clock;
-    }
-
-    /// Copy `block` into `dst` if it is cached. Counts a hit; a miss is
-    /// counted by [`install`](Self::install), after the device answered.
-    pub fn lookup(&mut self, block: u64, dst: &mut [u8]) -> bool {
-        if dst.len() != self.block {
-            return false;
-        }
-        match self.find(block) {
-            Some(i) => {
-                dst.copy_from_slice(self.line(i));
-                self.touch(i);
-                self.stats.hits = self.stats.hits.saturating_add(1);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Copy `dst.len()` bytes at `offset` of `block`'s line, if it is cached:
-    /// a FAT entry is 4 bytes, and copying its whole 512-byte sector out to
-    /// read them was most of what a cached cluster-chain step cost. Counts a
-    /// hit; `false` (nothing copied) on a miss or a range past the line.
-    pub fn lookup_bytes(&mut self, block: u64, offset: usize, dst: &mut [u8]) -> bool {
-        let end = match offset.checked_add(dst.len()) {
-            Some(e) if e <= self.block => e,
-            _ => return false,
-        };
-        match self.find(block) {
-            Some(i) => {
-                dst.copy_from_slice(&self.line(i)[offset..end]);
-                self.touch(i);
-                self.stats.hits = self.stats.hits.saturating_add(1);
-                true
-            }
-            None => false,
-        }
     }
 
     /// Copy `block` into `dst` if it is cached, counting nothing and not
     /// touching LRU: for a reader that overlays the cache on what it read
     /// from the device, or scans without wanting to disturb the hot set.
     pub fn peek(&self, block: u64, dst: &mut [u8]) -> bool {
-        if dst.len() != self.block {
+        if dst.len() != self.c.block {
             return false;
         }
         match self.find(block) {
@@ -543,24 +595,203 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// Whether any of `count` blocks from `first` is dirty: `MAX_WAYS`
     /// probes per block up to a set's worth, one O(lines) scan beyond.
     pub fn any_dirty_in(&self, first: u64, count: u64) -> bool {
-        if self.ndirty == 0 {
+        if self.c.ndirty == 0 {
             return false;
         }
-        if count <= MAX_WAYS as u64 && self.naway == 0 {
-            let g = self.gen;
+        if count <= MAX_WAYS as u64 && self.c.naway == 0 {
+            let g = self.c.gen;
             return (0..count).any(|k| {
                 let b = first.wrapping_add(k);
                 let s = self.set_of(b);
-                self.tags[s..s + self.ways].iter().any(|t| t.gen == g && t.block == b && t.dirty)
+                self.tags[s..s + self.c.ways].iter().any(|t| t.gen == g && t.block == b && t.dirty)
             });
         }
         let end = first.saturating_add(count);
-        let g = self.gen;
-        self.tags[..self.lines].iter().any(|t| t.gen == g && t.dirty && t.block >= first && t.block < end)
+        let g = self.c.gen;
+        self.tags[..self.c.lines].iter().any(|t| t.gen == g && t.dirty && t.block >= first && t.block < end)
     }
 
     /// The token to pass to [`install`](Self::install) after a miss.
-    pub fn lookup_miss_token(&self) -> u64 { self.wseq }
+    pub fn lookup_miss_token(&self) -> u64 { self.c.wseq }
+
+    #[inline]
+    fn live(&self, i: usize) -> bool {
+        self.tags[i].gen == self.c.gen
+    }
+
+    /// An empty or clean line outside `block`'s set, scanning the following
+    /// sets in turn; `None` when every other line is dirty. O(lines) worst.
+    fn free_line_elsewhere(&self, block: u64) -> Option<usize> {
+        let sets = self.c.lines / self.c.ways.max(1);
+        if sets <= 1 {
+            return None;
+        }
+        let own = (block & self.c.set_mask) as usize;
+        let g = self.c.gen;
+        for k in 1..sets {
+            let s = ((own + k) % sets) * self.c.ways;
+            if let Some(j) = self.tags[s..s + self.c.ways].iter().position(|t| t.gen != g || !t.dirty) {
+                return Some(s + j);
+            }
+        }
+        None
+    }
+
+    /// In `block`'s set: first empty line, else the least recently used clean
+    /// line, else the dirty line with the oldest (epoch, last use). FAT32's
+    /// cache picked "first empty, else least recently used"; with no dirty
+    /// lines (write-through) this is the same choice. A write-back cache is
+    /// one set, so its dirty choice is global.
+    fn pick_victim(&self, block: u64) -> usize {
+        let mut best_clean: Option<(u64, usize)> = None;
+        let mut best_dirty: Option<((u64, u64), usize)> = None;
+        let s = self.set_of(block);
+        let g = self.c.gen;
+        for (k, t) in self.tags[s..s + self.c.ways].iter().enumerate() {
+            let i = s + k;
+            if t.gen != g {
+                return i;
+            }
+            if t.dirty {
+                let k = (t.epoch, t.last_use);
+                if best_dirty.map_or(true, |(b, _)| k < b) { best_dirty = Some((k, i)); }
+            } else if best_clean.map_or(true, |(b, _)| t.last_use < b) {
+                best_clean = Some((t.last_use, i));
+            }
+        }
+        match (best_clean, best_dirty) {
+            (Some((_, i)), _) => i,
+            (None, Some((_, i))) => i,
+            (None, None) => s,
+        }
+    }
+
+}
+
+impl CacheMut<'_> {
+    #[inline]
+    fn r(&self) -> CacheRef<'_> {
+        CacheRef { c: self.c, tags: self.tags, data: self.data }
+    }
+
+    #[inline]
+    pub fn block_size(&self) -> usize { self.r().block_size() }
+    #[inline]
+    pub fn line_count(&self) -> usize { self.r().line_count() }
+    #[inline]
+    pub fn ways(&self) -> usize { self.r().ways() }
+    #[inline]
+    pub fn mode(&self) -> Mode { self.r().mode() }
+    #[inline]
+    pub fn stats(&self) -> CacheStats { self.r().stats() }
+    #[inline]
+    pub fn epoch(&self) -> u64 { self.r().epoch() }
+    #[inline]
+    pub fn top_epoch(&self) -> u64 { self.r().top_epoch() }
+    #[inline]
+    pub fn dirty_count(&self) -> usize { self.r().dirty_count() }
+    #[cfg(test)]
+    #[inline]
+    pub fn dirty_scan(&self) -> usize { self.r().dirty_scan() }
+    #[inline]
+    pub fn oldest_dirty_epoch(&self) -> Option<u64> { self.r().oldest_dirty_epoch() }
+    #[inline]
+    pub fn dirty_epochs(&self) -> usize { self.r().dirty_epochs() }
+    #[inline]
+    fn sectors(&self) -> u32 { self.r().sectors() }
+    #[inline]
+    pub fn lba_of(&self, block: u64) -> Option<u64> { self.r().lba_of(block) }
+    #[inline]
+    fn line(&self, i: usize) -> &[u8] { self.r().line(i) }
+    #[inline]
+    fn set_of(&self, block: u64) -> usize { self.r().set_of(block) }
+    #[inline]
+    fn find(&self, block: u64) -> Option<usize> { self.r().find(block) }
+    #[inline]
+    fn find_dirty_epoch(&self, block: u64, epoch: u64) -> Option<usize> { self.r().find_dirty_epoch(block, epoch) }
+    #[inline]
+    pub fn peek(&self, block: u64, dst: &mut [u8]) -> bool { self.r().peek(block, dst) }
+    #[inline]
+    pub fn any_dirty_in(&self, first: u64, count: u64) -> bool { self.r().any_dirty_in(first, count) }
+    #[inline]
+    pub fn lookup_miss_token(&self) -> u64 { self.r().lookup_miss_token() }
+    #[inline]
+    fn live(&self, i: usize) -> bool { self.r().live(i) }
+    #[inline]
+    fn free_line_elsewhere(&self, block: u64) -> Option<usize> { self.r().free_line_elsewhere(block) }
+    #[inline]
+    fn pick_victim(&self, block: u64) -> usize { self.r().pick_victim(block) }
+
+    /// Change block size, mode and base. Drops every line; refuses while any
+    /// line is dirty.
+    pub fn configure(&mut self, block: usize, mode: Mode, base_lba: u64) -> Result<(), ConfigError> {
+        if self.dirty_count() != 0 {
+            return Err(ConfigError::Dirty);
+        }
+        let (lines, ways, set_mask) = geometry(block, mode, self.data.len(), self.tags.len());
+        if lines == 0 {
+            return Err(ConfigError::BadBlockSize);
+        }
+        // Every tag is dropped below, so the old geometry's stamps cannot
+        // alias a block under the new one.
+        self.c.block = block;
+        self.c.lines = lines;
+        self.c.ways = ways;
+        self.c.set_mask = set_mask;
+        self.c.mode = mode;
+        self.c.base_lba = base_lba;
+        self.clear_tags();
+        self.c.wseq = self.c.wseq.wrapping_add(1);
+        Ok(())
+    }
+
+    pub fn reset_stats(&mut self) { self.c.stats = CacheStats::default(); }
+    fn line_mut(&mut self, i: usize) -> &mut [u8] {
+        let b = self.c.block;
+        &mut self.data[i * b..(i + 1) * b]
+    }
+
+    fn touch(&mut self, i: usize) {
+        self.c.clock = self.c.clock.saturating_add(1);
+        self.tags[i].last_use = self.c.clock;
+    }
+
+    /// Copy `block` into `dst` if it is cached. Counts a hit; a miss is
+    /// counted by [`install`](Self::install), after the device answered.
+    pub fn lookup(&mut self, block: u64, dst: &mut [u8]) -> bool {
+        if dst.len() != self.c.block {
+            return false;
+        }
+        match self.find(block) {
+            Some(i) => {
+                dst.copy_from_slice(self.line(i));
+                self.touch(i);
+                self.c.stats.hits = self.c.stats.hits.saturating_add(1);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Copy `dst.len()` bytes at `offset` of `block`'s line, if it is cached:
+    /// a FAT entry is 4 bytes, and copying its whole 512-byte sector out to
+    /// read them was most of what a cached cluster-chain step cost. Counts a
+    /// hit; `false` (nothing copied) on a miss or a range past the line.
+    pub fn lookup_bytes(&mut self, block: u64, offset: usize, dst: &mut [u8]) -> bool {
+        let end = match offset.checked_add(dst.len()) {
+            Some(e) if e <= self.c.block => e,
+            _ => return false,
+        };
+        match self.find(block) {
+            Some(i) => {
+                dst.copy_from_slice(&self.line(i)[offset..end]);
+                self.touch(i);
+                self.c.stats.hits = self.c.stats.hits.saturating_add(1);
+                true
+            }
+            None => false,
+        }
+    }
 
     /// Install `src`, just read from the device, as `block`. Counts a miss.
     ///
@@ -569,8 +800,8 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// may predate it. Also skipped when the only victim is dirty — the
     /// split path does no I/O, so it never evicts a dirty line.
     pub fn install(&mut self, block: u64, src: &[u8], token: u64) -> bool {
-        self.stats.misses = self.stats.misses.saturating_add(1);
-        if src.len() != self.block || token != self.wseq || self.lines == 0 {
+        self.c.stats.misses = self.c.stats.misses.saturating_add(1);
+        if src.len() != self.c.block || token != self.c.wseq || self.c.lines == 0 {
             return false;
         }
         if let Some(i) = self.find(block) {
@@ -593,15 +824,15 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// Update `block`'s line if present (after the caller wrote the device
     /// itself). Never installs. Bumps the write sequence either way.
     pub fn update_if_present(&mut self, block: u64, src: &[u8]) {
-        self.wseq = self.wseq.wrapping_add(1);
-        if src.len() != self.block {
+        self.c.wseq = self.c.wseq.wrapping_add(1);
+        if src.len() != self.c.block {
             return;
         }
         if let Some(i) = self.find(block) {
             self.line_mut(i).copy_from_slice(src);
             if self.tags[i].dirty {
                 self.tags[i].dirty = false;
-                self.ndirty -= 1;
+                self.c.ndirty -= 1;
             }
         }
     }
@@ -609,16 +840,16 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// Forget `block`. A dirty line is dropped with it; returns whether one
     /// was.
     pub fn invalidate(&mut self, block: u64) -> bool {
-        self.wseq = self.wseq.wrapping_add(1);
+        self.c.wseq = self.c.wseq.wrapping_add(1);
         let s = self.set_of(block);
-        let g = self.gen;
+        let g = self.c.gen;
         let mut was_dirty = false;
-        let (lo, hi) = if self.naway != 0 { (0, self.lines) } else { (s, s + self.ways) };
+        let (lo, hi) = if self.c.naway != 0 { (0, self.c.lines) } else { (s, s + self.c.ways) };
         for i in lo..hi {
             let t = self.tags[i];
             if t.gen == g && t.block == block {
-                if t.dirty { self.ndirty -= 1; was_dirty = true; }
-                if t.away { self.naway -= 1; }
+                if t.dirty { self.c.ndirty -= 1; was_dirty = true; }
+                if t.away { self.c.naway -= 1; }
                 self.tags[i] = EMPTY_TAG;
             }
         }
@@ -635,21 +866,21 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// drop the dirty lines OUTSIDE it (pending writes of other blocks), so
     /// it is one O(lines) scan that drops exactly the lines inside.
     pub fn invalidate_range(&mut self, first: u64, count: u64) -> usize {
-        if count > MAX_WAYS as u64 && self.ndirty != 0 && !cfg!(feature = "wb-observer-drop-canary") {
-            self.wseq = self.wseq.wrapping_add(1);
+        if count > MAX_WAYS as u64 && self.c.ndirty != 0 && !cfg!(feature = "wb-observer-drop-canary") {
+            self.c.wseq = self.c.wseq.wrapping_add(1);
             let end = first.saturating_add(count);
-            let g = self.gen;
+            let g = self.c.gen;
             let mut dropped = 0;
             let mut away = 0;
-            for t in self.tags[..self.lines].iter_mut() {
+            for t in self.tags[..self.c.lines].iter_mut() {
                 if t.gen == g && t.block >= first && t.block < end {
                     if t.dirty { dropped += 1; }
                     if t.away { away += 1; }
                     *t = EMPTY_TAG;
                 }
             }
-            self.ndirty -= dropped;
-            self.naway -= away;
+            self.c.ndirty -= dropped;
+            self.c.naway -= away;
             return dropped;
         }
         if count > MAX_WAYS as u64 {
@@ -659,7 +890,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         for k in 0..count {
             if self.invalidate(first.wrapping_add(k)) { dropped += 1; }
         }
-        self.wseq = self.wseq.wrapping_add(1);
+        self.c.wseq = self.c.wseq.wrapping_add(1);
         dropped
     }
 
@@ -669,12 +900,12 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// Write-through: a generation bump, O(1). Write-back counts the dirty
     /// lines first (O(lines)); its owner is about to lose data anyway.
     pub fn invalidate_all(&mut self) -> usize {
-        self.wseq = self.wseq.wrapping_add(1);
-        let dropped = self.ndirty;
-        self.ndirty = 0;
-        self.naway = 0;
-        self.gen = self.gen.wrapping_add(1);
-        if self.gen == 0 {
+        self.c.wseq = self.c.wseq.wrapping_add(1);
+        let dropped = self.c.ndirty;
+        self.c.ndirty = 0;
+        self.c.naway = 0;
+        self.c.gen = self.c.gen.wrapping_add(1);
+        if self.c.gen == 0 {
             // 2^32 drops: wipe the stamps so no old tag aliases the new
             // generation.
             self.clear_tags();
@@ -687,74 +918,22 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         for t in self.tags.iter_mut() {
             *t = EMPTY_TAG;
         }
-        self.ndirty = 0;
-        self.naway = 0;
-        self.gen = 1;
+        self.c.ndirty = 0;
+        self.c.naway = 0;
+        self.c.gen = 1;
     }
 
     /// Host tests: jump the generation to `g`, leaving every tag's stamp as
     /// it is, to reach the wrap in a few steps instead of 2^32.
     #[cfg(test)]
     pub fn force_generation(&mut self, g: u32) {
-        self.gen = g;
-    }
-
-    #[inline]
-    fn live(&self, i: usize) -> bool {
-        self.tags[i].gen == self.gen
-    }
-
-    /// An empty or clean line outside `block`'s set, scanning the following
-    /// sets in turn; `None` when every other line is dirty. O(lines) worst.
-    fn free_line_elsewhere(&self, block: u64) -> Option<usize> {
-        let sets = self.lines / self.ways.max(1);
-        if sets <= 1 {
-            return None;
-        }
-        let own = (block & self.set_mask) as usize;
-        let g = self.gen;
-        for k in 1..sets {
-            let s = ((own + k) % sets) * self.ways;
-            if let Some(j) = self.tags[s..s + self.ways].iter().position(|t| t.gen != g || !t.dirty) {
-                return Some(s + j);
-            }
-        }
-        None
-    }
-
-    /// In `block`'s set: first empty line, else the least recently used clean
-    /// line, else the dirty line with the oldest (epoch, last use). FAT32's
-    /// cache picked "first empty, else least recently used"; with no dirty
-    /// lines (write-through) this is the same choice. A write-back cache is
-    /// one set, so its dirty choice is global.
-    fn pick_victim(&self, block: u64) -> usize {
-        let mut best_clean: Option<(u64, usize)> = None;
-        let mut best_dirty: Option<((u64, u64), usize)> = None;
-        let s = self.set_of(block);
-        let g = self.gen;
-        for (k, t) in self.tags[s..s + self.ways].iter().enumerate() {
-            let i = s + k;
-            if t.gen != g {
-                return i;
-            }
-            if t.dirty {
-                let k = (t.epoch, t.last_use);
-                if best_dirty.map_or(true, |(b, _)| k < b) { best_dirty = Some((k, i)); }
-            } else if best_clean.map_or(true, |(b, _)| t.last_use < b) {
-                best_clean = Some((t.last_use, i));
-            }
-        }
-        match (best_clean, best_dirty) {
-            (Some((_, i)), _) => i,
-            (None, Some((_, i))) => i,
-            (None, None) => s,
-        }
+        self.c.gen = g;
     }
 
     /// Callers never pass a live dirty victim (it is written back, or
     /// refused, first).
     fn fill(&mut self, i: usize, block: u64, src: &[u8], dirty: bool) {
-        self.fill_at(i, block, src, dirty, self.epoch);
+        self.fill_at(i, block, src, dirty, self.c.epoch);
     }
 
     /// [`fill`](Self::fill) into `epoch` (the current one, or the one after
@@ -762,14 +941,14 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     fn fill_at(&mut self, i: usize, block: u64, src: &[u8], dirty: bool, epoch: u64) {
         self.line_mut(i).copy_from_slice(src);
         let dseq = if dirty { self.next_dseq() } else { 0 };
-        self.tags[i] = Tag { block, epoch, last_use: 0, gen: self.gen, dirty, dseq, shadow: false, away: false };
-        if dirty { self.ndirty += 1; }
+        self.tags[i] = Tag { block, epoch, last_use: 0, gen: self.c.gen, dirty, dseq, shadow: false, away: false };
+        if dirty { self.c.ndirty += 1; }
         self.touch(i);
     }
 
     fn next_dseq(&mut self) -> u64 {
-        self.dseq = self.dseq.wrapping_add(1);
-        self.dseq
+        self.c.dseq = self.c.dseq.wrapping_add(1);
+        self.c.dseq
     }
 
     /// Write dirty line `i` to the device, keeping the epoch rule: if a
@@ -777,22 +956,22 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     fn write_line<D: BlockIo>(&mut self, dev: &mut D, i: usize) -> Result<(), IoError<D::FlushErr>> {
         let t = self.tags[i];
         let lba = self.lba_of(t.block).ok_or(IoError::Range)?;
-        let preflush = self.pending_lo.is_some_and(|lo| lo < t.epoch);
+        let preflush = self.c.pending_lo.is_some_and(|lo| lo < t.epoch);
         let n = self.sectors();
-        let b = self.block;
+        let b = self.c.block;
         dev.write_ordered(lba, n, &self.data[i * b..(i + 1) * b], preflush)?;
         if preflush {
-            self.pending_lo = None;
-            self.stats.ordering_flushes = self.stats.ordering_flushes.saturating_add(1);
+            self.c.pending_lo = None;
+            self.c.stats.ordering_flushes = self.c.stats.ordering_flushes.saturating_add(1);
         }
         self.tags[i].dirty = false;
-        self.ndirty -= 1;
+        self.c.ndirty -= 1;
         if self.tags[i].shadow {
-            if self.tags[i].away { self.naway -= 1; }
+            if self.tags[i].away { self.c.naway -= 1; }
             self.tags[i] = EMPTY_TAG;
         }
-        self.pending_lo = Some(self.pending_lo.map_or(t.epoch, |lo| lo.min(t.epoch)));
-        self.stats.writebacks = self.stats.writebacks.saturating_add(1);
+        self.c.pending_lo = Some(self.c.pending_lo.map_or(t.epoch, |lo| lo.min(t.epoch)));
+        self.c.stats.writebacks = self.c.stats.writebacks.saturating_add(1);
         Ok(())
     }
 
@@ -813,7 +992,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// Read `block` into `dst` (exactly one block), from the cache or the
     /// device.
     pub fn read<D: BlockIo>(&mut self, dev: &mut D, block: u64, dst: &mut [u8]) -> Result<(), IoError<D::FlushErr>> {
-        if dst.len() != self.block {
+        if dst.len() != self.c.block {
             return Err(IoError::Range);
         }
         if self.lookup(block, dst) {
@@ -821,8 +1000,8 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         }
         let lba = self.lba_of(block).ok_or(IoError::Range)?;
         dev.read(lba, self.sectors(), dst).map_err(|()| IoError::Io)?;
-        self.stats.misses = self.stats.misses.saturating_add(1);
-        if self.lines == 0 {
+        self.c.stats.misses = self.c.stats.misses.saturating_add(1);
+        if self.c.lines == 0 {
             return Ok(());
         }
         let v = self.make_room(dev, block)?;
@@ -832,12 +1011,12 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
 
     /// Write `src` (exactly one block) as `block`, by the cache's mode.
     pub fn write<D: BlockIo>(&mut self, dev: &mut D, block: u64, src: &[u8]) -> Result<(), IoError<D::FlushErr>> {
-        if src.len() != self.block {
+        if src.len() != self.c.block {
             return Err(IoError::Range);
         }
         let lba = self.lba_of(block).ok_or(IoError::Range)?;
-        self.wseq = self.wseq.wrapping_add(1);
-        if self.mode == Mode::WriteThrough || self.lines == 0 {
+        self.c.wseq = self.c.wseq.wrapping_add(1);
+        if self.c.mode == Mode::WriteThrough || self.c.lines == 0 {
             dev.write(lba, self.sectors(), src).map_err(|()| IoError::Io)?;
             if let Some(i) = self.find(block) {
                 self.line_mut(i).copy_from_slice(src);
@@ -847,20 +1026,20 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         if let Some(i) = self.find(block) {
             // A line written ahead (`write_dirty_ahead`): this write joins
             // its epoch, which closes the current one first.
-            if self.tags[i].dirty && self.tags[i].epoch > self.epoch {
-                self.epoch = self.tags[i].epoch;
+            if self.tags[i].dirty && self.tags[i].epoch > self.c.epoch {
+                self.c.epoch = self.tags[i].epoch;
             }
             // Re-dirtying a line that belongs to an older, still-unwritten
             // epoch: write the old contents first, so the older epoch is
             // complete on the device before this block moves forward.
-            if self.tags[i].dirty && self.tags[i].epoch < self.epoch {
+            if self.tags[i].dirty && self.tags[i].epoch < self.c.epoch {
                 self.write_back_before(dev, self.tags[i].epoch)?;
                 self.write_line(dev, i)?;
             }
             self.line_mut(i).copy_from_slice(src);
-            if !self.tags[i].dirty { self.ndirty += 1; }
+            if !self.tags[i].dirty { self.c.ndirty += 1; }
             self.tags[i].dirty = true;
-            self.tags[i].epoch = self.epoch;
+            self.tags[i].epoch = self.c.epoch;
             self.tags[i].dseq = self.next_dseq();
             self.touch(i);
             return Ok(());
@@ -908,20 +1087,20 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     }
 
     fn write_dirty_in(&mut self, block: u64, src: &[u8], ahead: bool) -> Dirty {
-        if src.len() != self.block || self.lines == 0 || self.mode == Mode::WriteThrough {
+        if src.len() != self.c.block || self.c.lines == 0 || self.c.mode == Mode::WriteThrough {
             return Dirty::Uncached;
         }
-        let first = self.ndirty == 0;
-        let mut te = if ahead { self.epoch.saturating_add(1) } else { self.epoch };
+        let first = self.c.ndirty == 0;
+        let mut te = if ahead { self.c.epoch.saturating_add(1) } else { self.c.epoch };
         if let Some(i) = self.find(block) {
             let t = self.tags[i];
             if t.dirty && t.epoch > te {
                 // Held ahead: a plain write joins its epoch (the current one
                 // closes); an ahead write already targets it.
                 te = t.epoch;
-                if !ahead { self.epoch = te; }
+                if !ahead { self.c.epoch = te; }
             }
-            if ahead { self.ahead = self.ahead.max(te); }
+            if ahead { self.c.ahead = self.c.ahead.max(te); }
             if t.dirty && t.epoch < te && !cfg!(feature = "wb-epoch-merge-canary") {
                 // Keep the older epoch's contents as a shadow for write-back
                 // and put the new contents in another line of the set — no
@@ -931,7 +1110,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
                 }
                 let v = self.pick_victim(block);
                 if v != i && !(self.live(v) && self.tags[v].dirty) {
-                    self.wseq = self.wseq.wrapping_add(1);
+                    self.c.wseq = self.c.wseq.wrapping_add(1);
                     self.tags[i].shadow = true;
                     self.fill_at(v, block, src, true, te);
                     return Dirty::Done { first };
@@ -942,21 +1121,21 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
                 let Some(w) = self.free_line_elsewhere(block) else {
                     return Dirty::NeedWriteback(t.epoch);
                 };
-                self.wseq = self.wseq.wrapping_add(1);
-                let b = self.block;
+                self.c.wseq = self.c.wseq.wrapping_add(1);
+                let b = self.c.block;
                 self.data.copy_within(i * b..(i + 1) * b, w * b);
                 self.tags[w] = Tag { shadow: true, away: true, ..t };
-                self.naway += 1;
-                self.ndirty += 1;
+                self.c.naway += 1;
+                self.c.ndirty += 1;
                 self.line_mut(i).copy_from_slice(src);
                 self.tags[i].epoch = te;
                 self.tags[i].dseq = self.next_dseq();
                 self.touch(i);
                 return Dirty::Done { first };
             }
-            self.wseq = self.wseq.wrapping_add(1);
+            self.c.wseq = self.c.wseq.wrapping_add(1);
             self.line_mut(i).copy_from_slice(src);
-            if !t.dirty { self.ndirty += 1; }
+            if !t.dirty { self.c.ndirty += 1; }
             self.tags[i].dirty = true;
             self.tags[i].epoch = te;
             self.tags[i].dseq = self.next_dseq();
@@ -967,8 +1146,8 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         if self.live(v) && self.tags[v].dirty {
             return Dirty::NeedWriteback(self.tags[v].epoch);
         }
-        if ahead { self.ahead = self.ahead.max(te); }
-        self.wseq = self.wseq.wrapping_add(1);
+        if ahead { self.c.ahead = self.c.ahead.max(te); }
+        self.c.wseq = self.c.wseq.wrapping_add(1);
         self.fill_at(v, block, src, true, te);
         Dirty::Done { first }
     }
@@ -1004,12 +1183,12 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// dirty at the checkin, so it is written again; it is never cleaned
     /// with contents the device did not get.
     pub fn checkout_begin(&mut self, upto: u64, max_blocks: usize, buf_len: usize) -> Option<Run> {
-        if self.ndirty == 0 || self.lines == 0 {
+        if self.c.ndirty == 0 || self.c.lines == 0 {
             return None;
         }
-        let g = self.gen;
+        let g = self.c.gen;
         let mut start: Option<((u64, u64), usize)> = None;
-        for (i, t) in self.tags[..self.lines].iter().enumerate() {
+        for (i, t) in self.tags[..self.c.lines].iter().enumerate() {
             if t.gen == g && t.dirty {
                 let k = (t.epoch, t.block);
                 if start.map_or(true, |(b, _)| k < b) { start = Some((k, i)); }
@@ -1020,13 +1199,13 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             return None;
         }
         let lba = self.lba_of(block)?;
-        let b = self.block;
+        let b = self.c.block;
         if buf_len < b {
             return None;
         }
         let cap = max_blocks.min(buf_len / b).max(1);
         let flush_first = !cfg!(feature = "wb-no-ordering-flush-canary")
-            && self.pending_lo.map_or(false, |lo| lo < epoch);
+            && self.c.pending_lo.map_or(false, |lo| lo < epoch);
         Some(Run {
             block,
             lba,
@@ -1034,7 +1213,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             sectors: 0,
             epoch,
             flush_first,
-            seq: self.dseq,
+            seq: self.c.dseq,
             idx0,
             cap: cap as u32,
         })
@@ -1049,7 +1228,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// empty: the owner drops it, without a checkin, and begins again.
     pub fn checkout_next(&mut self, run: &mut Run, buf: &mut [u8]) -> bool {
         let n = run.blocks as usize;
-        let b = self.block;
+        let b = self.c.block;
         if n >= run.cap as usize || buf.len() < (n + 1) * b {
             return false;
         }
@@ -1057,7 +1236,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             return false;
         }
         let Some(blk) = run.block.checked_add(n as u64) else { return false };
-        let g = self.gen;
+        let g = self.c.gen;
         let i = if n == 0 {
             let t = self.tags[run.idx0];
             if t.gen == g && t.block == blk && t.dirty && t.epoch == run.epoch {
@@ -1083,7 +1262,7 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
         if !ok {
             return;
         }
-        let g = self.gen;
+        let g = self.c.gen;
         for k in 0..run.blocks as u64 {
             let blk = run.block + k;
             let i = if k == 0 {
@@ -1099,10 +1278,10 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
             if let Some(i) = i {
                 let t = self.tags[i];
                 if t.dseq <= run.seq {
-                    self.ndirty -= 1;
-                    self.stats.writebacks = self.stats.writebacks.saturating_add(1);
+                    self.c.ndirty -= 1;
+                    self.c.stats.writebacks = self.c.stats.writebacks.saturating_add(1);
                     if t.shadow {
-                        if t.away { self.naway -= 1; }
+                        if t.away { self.c.naway -= 1; }
                         self.tags[i] = EMPTY_TAG;
                     } else {
                         self.tags[i].dirty = false;
@@ -1110,13 +1289,13 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
                 }
             }
         }
-        self.pending_lo = Some(self.pending_lo.map_or(run.epoch, |lo| lo.min(run.epoch)));
+        self.c.pending_lo = Some(self.c.pending_lo.map_or(run.epoch, |lo| lo.min(run.epoch)));
     }
 
     /// The owner flushed the device to keep the epoch rule (`flush_first`).
     pub fn note_ordering_flush(&mut self) {
-        self.pending_lo = None;
-        self.stats.ordering_flushes = self.stats.ordering_flushes.saturating_add(1);
+        self.c.pending_lo = None;
+        self.c.stats.ordering_flushes = self.c.stats.ordering_flushes.saturating_add(1);
     }
 
     /// Close the current epoch, and the one after it if a line was written
@@ -1124,8 +1303,8 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// before it. Returns the highest epoch closed (what a write-back must
     /// reach to make everything before the barrier durable).
     pub fn barrier(&mut self) -> u64 {
-        let top = self.epoch.max(self.ahead);
-        self.epoch = top.saturating_add(1);
+        let top = self.c.epoch.max(self.c.ahead);
+        self.c.epoch = top.saturating_add(1);
         top
     }
 
@@ -1139,14 +1318,14 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     /// Write every dirty line of an epoch older than `epoch`, oldest first
     /// (`u64::MAX`: every dirty line).
     fn write_back_before<D: BlockIo>(&mut self, dev: &mut D, epoch: u64) -> Result<(), IoError<D::FlushErr>> {
-        if self.ndirty == 0 {
+        if self.c.ndirty == 0 {
             return Ok(());
         }
         loop {
             // Oldest epoch, then lowest block: a deterministic order.
             let mut next: Option<((u64, u64), usize)> = None;
-            let g = self.gen;
-            for (i, t) in self.tags[..self.lines].iter().enumerate() {
+            let g = self.c.gen;
+            for (i, t) in self.tags[..self.c.lines].iter().enumerate() {
                 if t.gen == g && t.dirty && (epoch == u64::MAX || t.epoch < epoch) {
                     let k = (t.epoch, t.block);
                     if next.map_or(true, |(b, _)| k < b) { next = Some((k, i)); }
@@ -1163,13 +1342,14 @@ impl<const BYTES: usize, const LINES: usize> BlockCache<BYTES, LINES> {
     pub fn sync<D: BlockIo>(&mut self, dev: &mut D) -> Result<(), IoError<D::FlushErr>> {
         self.write_back_all(dev)?;
         dev.flush().map_err(IoError::Flush)?;
-        self.pending_lo = None;
+        self.c.pending_lo = None;
         Ok(())
     }
 
     /// Record that the owner flushed the device itself (the split path):
     /// nothing written before this point is pending any more.
     pub fn note_flushed(&mut self) {
-        self.pending_lo = None;
+        self.c.pending_lo = None;
     }
+
 }
