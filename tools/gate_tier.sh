@@ -203,6 +203,18 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# The option index of Documentation/config.md is what the Kconfig tree declares
+# (tools/gen_config_index.py; regenerate with it when a symbol changes).
+if [ "$tier" = n0 ]; then
+    printf "  %-26s" "config option index..."
+    if out="$(python3 tools/gen_config_index.py --check 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 # The committed defconfigs are what their fragments assemble, and each keeps
 # the axes its name gives (tools/gen_defconfigs.py; `make defconfigs` rewrites them).
 if [ "$lints" = 1 ]; then

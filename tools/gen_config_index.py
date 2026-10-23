@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Regenerate the Kconfig option index ("Reference index" table) of the
-configuration guide, or print it.
+"""Regenerate the option index ("Option index" table) of the configuration
+guide, Documentation/config.md, or print it.
 
 Usage: python3 tools/gen_config_index.py [--check | --list]
 
-The guide is not part of the public tree. Its path is taken from
-$AZOS_CONFIG_DOC, else the CONFIG.md of the first private documentation directory (see
-DOC_DIRS) that has one. Those directories are gitignored: kept locally, not
-published.
-With no guide present, --check still parses the whole Kconfig tree (a
-parse error or a symbol with no declaration fails it) and reports that the
-document comparison was skipped; --list prints the table to stdout.
-
-Reads the Kconfig tree with kconfiglib (the root `Kconfig` and every fragment
+Reads the Kconfig tree with kconfiglib (the root `Kconfig` and every topic file
 it sources) and writes one row per declared symbol, sorted by name: the
-symbol, the fragment that declares it, and its prompt text, or "(no prompt —
+symbol, the file that declares it, and its prompt text, or "(no prompt —
 internal/derived)" for a promptless one. It also rewrites the option count in
-the paragraph above the table. Nothing else in the document is touched.
+the sentence above the table. Nothing else in the document is touched.
 
 --check  exit 1 if the document is out of date; write nothing.
+--list   print the table to stdout.
 """
 
 import os
@@ -30,21 +23,10 @@ import sys
 import kconfiglib
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DOC_DIRS = ("docs", "rfcs")
-DOC_CANDIDATES = [os.path.join(REPO, d, "CONFIG.md") for d in DOC_DIRS]
-
-
-def find_doc():
-    env = os.environ.get("AZOS_CONFIG_DOC")
-    if env:
-        return env
-    for path in DOC_CANDIDATES:
-        if os.path.exists(path):
-            return path
-    return None
-HEADER = "| Option | Fragment | Description |"
-RULE = "|--------|----------|-------------|"
-COUNT_RE = re.compile(r"This index is now the FULL list — \d+ options")
+DOC = os.path.join(REPO, "Documentation", "config.md")
+HEADER = "| Option | File | Description |"
+RULE = "|--------|------|-------------|"
+COUNT_RE = re.compile(r"The index lists every declared option: \d+\.")
 
 
 def rows():
@@ -74,7 +56,7 @@ def render(text):
     table = rows()
     new = lines[: start + 2] + table + lines[end:]
     body = "\n".join(new)
-    body, n = COUNT_RE.subn(f"This index is now the FULL list — {len(table)} options", body)
+    body, n = COUNT_RE.subn(f"The index lists every declared option: {len(table)}.", body)
     assert n == 1, "count sentence not found"
     return body
 
@@ -83,19 +65,7 @@ def main():
     if "--list" in sys.argv:
         print("\n".join([HEADER, RULE] + rows()))
         return 0
-    doc = find_doc()
-    if doc is None:
-        table = rows()
-        if not table:
-            print("gen_config_index: the Kconfig tree declares no symbols")
-            return 1
-        if "--check" in sys.argv:
-            print(f"gen_config_index: Kconfig parsed, {len(table)} options; "
-                  "no configuration guide present, document comparison skipped")
-            return 0
-        print("gen_config_index: no configuration guide found "
-              "(set AZOS_CONFIG_DOC); use --list to print the table")
-        return 1
+    doc = DOC
     with open(doc, encoding="utf-8") as f:
         text = f.read()
     new = render(text)
