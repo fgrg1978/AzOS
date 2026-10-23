@@ -12,10 +12,9 @@
 //! IPv6 form is Linux's `sockaddr_in6` so the same text means the same thing to
 //! a ported program: family, port (big endian), flow info (big endian), the 16
 //! address bytes, the scope id (little endian, the ISAs' byte order), 28 bytes.
-//! The kernel reads only the first 16 bytes of either, whatever length the call
-//! passes (`handlers.rs::read_sockaddr`), so an IPv6 socket address does not
-//! reach a socket yet; the length argument of `NODE_BIND` and `NODE_CONNECT` is
-//! already part of the call.
+//! `NODE_BIND` and `NODE_CONNECT` take either: the length argument says which
+//! (`handlers.rs::read_sockaddr_wire`). `NODE_SENDTO` and `NODE_RECVFROM` speak
+//! the IPv4 form only: the stack has no UDP over IPv6 sockets.
 
 /// `AF_INET`, the family of a 16-byte `sockaddr_in`.
 pub const AF_INET: u16 = 2;

@@ -410,7 +410,7 @@ fn node_op(c: &mut Call) -> i64 {
         NODE_READ => h::sys_file_read_typed(hd, w[0], w[1]),
         NODE_WRITE => h::sys_file_write_typed(hd, w[0], w[1]),
         NODE_FSYNC => h::sys_fsync_typed(hd),
-        NODE_BIND => h::sys_bind_typed(hd, w[0]),
+        NODE_BIND => h::sys_bind_typed(hd, w[0], w[1]),
         NODE_CONNECT => h::sys_connect_typed(hd, w[0], w[1]),
         NODE_SEND => h::sys_send_typed(hd, w[0], w[1]),
         NODE_RECV => h::sys_recv_typed(hd, w[0], w[1]),

@@ -631,6 +631,12 @@ mod dns_names;
 mod toolbox_views;
 #[cfg(test)]
 mod envelope_egress;
+/// The ring-3 socket address encoder (`azos_stdrt::netpure`), so a test feeds
+/// the kernel's parser the bytes `std` writes.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../../crates/core/stdrt/src/netpure.rs"]
+mod netpure;
 #[cfg(test)]
 mod conformance_ntp;
 

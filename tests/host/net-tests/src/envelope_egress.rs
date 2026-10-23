@@ -193,6 +193,31 @@ fn an_ipv6_connect_is_classed_by_its_address() {
     assert_eq!(ASKED.lock().unwrap()[0], (TASK, DestClass::Public as u8, 1, 443));
 }
 
+/// A task's `sockaddr_in6`, as `std` encodes it, reaches the IPv6 connect
+/// (`NODE_CONNECT` read only 16 bytes and called the IPv4 one, which refuses
+/// an `AF_INET6` socket with -1). **Canary.** Parse `AF_INET6` as the IPv4
+/// form in `WireAddr::parse`: -1, red.
+#[test]
+fn a_ring3_sockaddr_in6_reaches_the_ipv6_connect() {
+    let _s = begin(1);
+    let fd = socket::socket_create_owned(AF_INET6, SOCK_STREAM, 0, TASK);
+    assert!(fd >= 0);
+    let mut ip = [0u8; 16];
+    ip[..4].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
+    ip[15] = 1;
+    let mut raw = [0u8; crate::netpure::SOCKADDR_V6_LEN];
+    let n = crate::netpure::Addr::V6 { ip, port: 443, flowinfo: 7, scope_id: 2 }.encode(&mut raw);
+    assert_eq!(n, socket::SOCKADDR_IN6_LEN);
+    assert!(socket::WireAddr::parse(&raw[..socket::SOCKADDR_IN_LEN]).is_none(), "16 bytes are not a sockaddr_in6");
+    let a = socket::WireAddr::parse(&raw[..n]).expect("a sockaddr_in6");
+    assert_eq!(socket::socket_connect_wire_with_yield(fd, &a, 0, || {}), EGRESS_REFUSED, "the IPv6 connect asked the gate");
+    assert_eq!(ASKED.lock().unwrap()[0], (TASK, DestClass::Public as u8, 1, 443));
+    // The IPv4 form still reaches the IPv4 calls.
+    let mut raw4 = [0u8; crate::netpure::SOCKADDR_V6_LEN];
+    let n4 = crate::netpure::Addr::V4 { ip: PRIVATE, port: 53 }.encode(&mut raw4);
+    assert!(matches!(socket::WireAddr::parse(&raw4[..n4]), Some(socket::WireAddr::V4(SockAddr { port: 53, addr: PRIVATE, .. }))));
+}
+
 /// What is not gated: loopback, a kernel-owned socket (the brain link, OTA,
 /// TFTP belong to no Domain), and a build with no gate installed.
 #[test]

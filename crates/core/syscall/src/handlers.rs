@@ -15,7 +15,6 @@ use crate::no_robot::{robot as azos_robot, imu as azos_imu, gps as azos_gps};
 use crate::file_ops::{cstr_to_bytes, file_ops};
 use azos_sync::kmutex::Mutex;
 use azos_net::{
-    socket_bind,
     socket_create_owned,
     socket_recv, socket_close,
     SockAddr, net_get_ip,
@@ -2511,18 +2510,43 @@ fn socket_access_ok(fd: u64) -> bool {
 /// Layout: family(u16 LE), port(u16 BE), addr(4 bytes), 8 bytes pad.
 fn read_sockaddr(ptr: u64) -> Option<SockAddr> {
     if ptr == 0 { return None; }
-    // For user-space callers, copy via page tables; kernel callers use raw ptr.
     let mut raw = [0u8; 16];
-    if azos_sched::current_user_pt() != 0 {
-        raw = azos_sched::UserPtr::<[u8; 16]>::new(ptr).read().ok()?;
-    } else {
-        let src = unsafe { core::slice::from_raw_parts(ptr as *const u8, 16) };
-        raw.copy_from_slice(src);
+    if !copy_in(&mut raw, ptr) {
+        return None;
     }
     let family = u16::from_le_bytes([raw[0], raw[1]]);
     let port   = u16::from_be_bytes([raw[2], raw[3]]);
     let addr   = [raw[4], raw[5], raw[6], raw[7]];
     Some(SockAddr { family, port, addr })
+}
+
+/// Copy `dst.len()` bytes at `ptr` from the caller (user memory through its
+/// page tables; a kernel caller's pointer as is).
+fn copy_in(dst: &mut [u8], ptr: u64) -> bool {
+    if azos_sched::current_user_pt() != 0 {
+        return azos_sched::UserSlice::<u8>::new(ptr, dst.len()).read_into(dst).is_ok();
+    }
+    // SAFETY: a kernel caller passes a buffer of at least the length it named.
+    dst.copy_from_slice(unsafe { core::slice::from_raw_parts(ptr as *const u8, dst.len()) });
+    true
+}
+
+/// Read the `sockaddr` of `NODE_BIND` / `NODE_CONNECT`: the 16-byte
+/// `sockaddr_in`, or for `AF_INET6` the 28-byte `sockaddr_in6` when `addrlen`
+/// says the caller passed one (no byte past the length it named is read).
+fn read_sockaddr_wire(ptr: u64, addrlen: u64) -> Option<azos_net::socket::WireAddr> {
+    use azos_net::socket::{WireAddr, SOCKADDR_IN6_LEN, SOCKADDR_IN_LEN};
+    if ptr == 0 { return None; }
+    let mut raw = [0u8; SOCKADDR_IN6_LEN];
+    if !copy_in(&mut raw[..SOCKADDR_IN_LEN], ptr) {
+        return None;
+    }
+    let v6 = u16::from_le_bytes([raw[0], raw[1]]) == azos_net::socket::AF_INET6 as u16;
+    let n = if v6 && addrlen >= SOCKADDR_IN6_LEN as u64 { SOCKADDR_IN6_LEN } else { SOCKADDR_IN_LEN };
+    if n > SOCKADDR_IN_LEN && !copy_in(&mut raw[SOCKADDR_IN_LEN..n], ptr + SOCKADDR_IN_LEN as u64) {
+        return None;
+    }
+    WireAddr::parse(&raw[..n])
 }
 
 /// DOMAIN_SOCKET: a0=domain, a1=type, a2=proto. Returns socket fd or -1.
@@ -2538,13 +2562,14 @@ pub fn sys_socket(domain: u64, sock_type: u64, proto: u64) -> i64 {
     socket_create_owned(domain as u32, sock_type as u32, proto as u32, owner) as i64
 }
 
-/// NODE_BIND: a0=fd, a1=sockaddr_ptr, a2=addrlen. Returns 0 or -1.
-pub fn sys_bind(fd: u64, addr_ptr: u64, _addrlen: u64) -> i64 {
+/// NODE_BIND: a0=fd, a1=sockaddr_ptr, a2=addrlen (a `sockaddr_in`, or a
+/// `sockaddr_in6` for an `AF_INET6` socket). Returns 0 or -1.
+pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> i64 {
     // Ownership gate: binding another task's socket would let an attacker
     // steer the port it is about to listen on.
     if !socket_access_ok(fd) { return -1; }
-    match read_sockaddr(addr_ptr) {
-        Some(addr) => socket_bind(fd as i32, &addr) as i64,
+    match read_sockaddr_wire(addr_ptr, addrlen) {
+        Some(addr) => azos_net::socket::socket_bind_wire(fd as i32, &addr) as i64,
         None       => -1,
     }
 }
@@ -2554,7 +2579,7 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, _addrlen: u64) -> i64 {
 /// `-1` for a socket the caller does not own; `-EAGAIN` while degraded mode is
 /// contained, as `SYS_CONNECT_TYPED` answers — choosing where a socket talks
 /// to is a write to it.
-pub fn sys_connect_syscall(fd: u64, addr_ptr: u64, _addrlen: u64) -> i64 {
+pub fn sys_connect_syscall(fd: u64, addr_ptr: u64, addrlen: u64) -> i64 {
     // Ownership gate FIRST — before `fd` is used for anything at all:
     // connecting another task's socket redirects its stream to an
     // attacker-chosen peer.
@@ -2567,10 +2592,11 @@ pub fn sys_connect_syscall(fd: u64, addr_ptr: u64, _addrlen: u64) -> i64 {
     // connection's 4-tuple, which the peer may still hold (TIME-WAIT) and
     // answer with a RST.
     let src_port = 0;
-    match read_sockaddr(addr_ptr) {
+    // A `sockaddr_in`, or a `sockaddr_in6` for an `AF_INET6` socket.
+    match read_sockaddr_wire(addr_ptr, addrlen) {
         // Yield-aware: connect must not report success until the handshake
         // completes, and waiting without yielding would burn the hart.
-        Some(addr) => azos_net::socket::socket_connect_with_yield(
+        Some(addr) => azos_net::socket::socket_connect_wire_with_yield(
             fd as i32, &addr, src_port,
             || crate::sleep::sleep_ms(1),
         ) as i64,
@@ -2853,10 +2879,11 @@ pub fn sys_send_typed(cap_raw: u64, buf_ptr: u64, len: u64) -> i64 {
     }
 }
 
-/// Bind a `Cap<Socket>` to the local sockaddr at `addr_ptr`. Requires `WRITE`.
-pub fn sys_bind_typed(cap_raw: u64, addr_ptr: u64) -> i64 {
+/// Bind a `Cap<Socket>` to the local sockaddr at `addr_ptr` (`addrlen`
+/// bytes). Requires `WRITE`.
+pub fn sys_bind_typed(cap_raw: u64, addr_ptr: u64, addrlen: u64) -> i64 {
     match socket_fd_for(cap_raw, azos_abi::cap::CapPerms::WRITE, azos_abi::invoke::NODE_BIND) {
-        Ok(fd) => sys_bind(fd, addr_ptr, 16),
+        Ok(fd) => sys_bind(fd, addr_ptr, addrlen),
         Err(e) => e,
     }
 }

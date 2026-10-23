@@ -31,8 +31,7 @@
 //!
 //! **What the kernel does not offer** (each is named where a caller would
 //! reach it): a half-close, a socket's own address, the peer of an accepted
-//! connection, IPv6 `sockaddr` (the kernel reads 16 bytes), UDP over IPv6, and
-//! a resolver.
+//! connection, UDP over IPv6, and a resolver.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 

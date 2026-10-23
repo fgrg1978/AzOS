@@ -57,6 +57,43 @@ pub struct SockAddr6 {
     pub addr: [u8; 16],
 }
 
+/// Bytes of the `sockaddr_in` a task passes: the family (`u16` little
+/// endian), the port (big endian), the address, 8 bytes of padding.
+pub const SOCKADDR_IN_LEN: usize = 16;
+/// Bytes of a `sockaddr_in6`, Linux's layout (the one `azos_stdrt::netpure`
+/// writes): the family, the port (big endian), the flow info (big endian),
+/// the 16 address bytes, the scope id.
+pub const SOCKADDR_IN6_LEN: usize = 28;
+
+/// The socket address a task passes to `NODE_BIND` or `NODE_CONNECT`.
+#[derive(Clone, Copy)]
+pub enum WireAddr {
+    V4(SockAddr),
+    V6(SockAddr6),
+}
+
+impl WireAddr {
+    /// Read the bytes a task passed (as many as its length said, at most
+    /// [`SOCKADDR_IN6_LEN`]). `AF_INET6` needs the whole `sockaddr_in6`; any
+    /// other family is the 16-byte IPv4 form, as these calls have always read
+    /// it. The flow info and the scope id are not kept: the stack routes on
+    /// neither. `None` when the bytes are short of the family's form.
+    pub fn parse(raw: &[u8]) -> Option<WireAddr> {
+        if raw.len() < SOCKADDR_IN_LEN {
+            return None;
+        }
+        let family = u16::from_le_bytes([raw[0], raw[1]]);
+        let port = u16::from_be_bytes([raw[2], raw[3]]);
+        if family == AF_INET6 as u16 {
+            let a = raw.get(8..24).filter(|_| raw.len() >= SOCKADDR_IN6_LEN)?;
+            let mut addr = [0u8; 16];
+            addr.copy_from_slice(a);
+            return Some(WireAddr::V6(SockAddr6 { port, addr }));
+        }
+        Some(WireAddr::V4(SockAddr { family, port, addr: [raw[4], raw[5], raw[6], raw[7]] }))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum SockKind {
     Free,
@@ -450,6 +487,14 @@ pub fn socket_bind6(fd: i32, addr: &SockAddr6) -> i32 {
     0
 }
 
+/// `NODE_BIND` for either family: [`socket_bind`] or [`socket_bind6`].
+pub fn socket_bind_wire(fd: i32, addr: &WireAddr) -> i32 {
+    match addr {
+        WireAddr::V4(a) => socket_bind(fd, a),
+        WireAddr::V6(a) => socket_bind6(fd, a),
+    }
+}
+
 /// Listen on a TCP socket using the local port stored during bind().
 pub fn socket_listen_bound(fd: i32) -> i32 {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return -1; }
@@ -688,6 +733,15 @@ pub fn socket_connect6_with_yield<F: FnMut()>(
     t.sockets[fd].slot = h.slot() as i32;
     t.sockets[fd].tcp  = Some(h);
     0
+}
+
+/// `NODE_CONNECT` for either family: [`socket_connect_with_yield`] or
+/// [`socket_connect6_with_yield`].
+pub fn socket_connect_wire_with_yield<F: FnMut()>(fd: i32, addr: &WireAddr, src_port: u16, yield_fn: F) -> i32 {
+    match addr {
+        WireAddr::V4(a) => socket_connect_with_yield(fd, a, src_port, yield_fn),
+        WireAddr::V6(a) => socket_connect6_with_yield(fd, a, src_port, yield_fn),
+    }
 }
 
 /// Wait for the three-way handshake of `h` to finish, calling `yield_fn`
