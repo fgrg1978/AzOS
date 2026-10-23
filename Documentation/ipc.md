@@ -41,7 +41,13 @@ the owner is `KERNEL_HOST_BASE` (`0xFFFF_0000`) plus a host key in `1..0xFFF0`
 interface ids of the kernel-hosted interfaces are in `azos_devif::IFACES`
 (see [idl.md](idl.md#interface-ids-and-the-registry)). A task finds a
 capability it already holds with `SYS_CAP_INFO` (`CAP_INFO_LOOKUP`; for a
-kernel-hosted endpoint the resource is `host_key << 32 | badge`).
+kernel-hosted endpoint the resource is `host_key << 32 | badge`). A request to
+a kernel-hosted endpoint may carry capability entries only for the interfaces
+whose ops take one (`Uart`, `Adc`, `Vm`, `Display`, `MemCtl`, `Keys`, `Sound`;
+`khost::takes_caps`); the entries stay in the caller's table and the kernel
+resolves them there. Every other kernel-hosted interface refuses such a
+request. The image profile lists the kernel-hosted interfaces a program may
+call, and an unlisted one is handled like an unlisted syscall.
 
 An endpoint that is not yet served (a named endpoint that no server has
 claimed) refuses calls. If the serving task dies, or the endpoint is destroyed,
@@ -60,7 +66,8 @@ A server can bind an endpoint it serves to an event port with
 `PORT_SRC_ENDPOINT` to be told when no sender capability is left ([Event ports](#event-ports)).
 
 Source: `crates/core/ipc/src/endpoint.rs`, `crates/core/ipc/src/ep_queue.rs`,
-`crates/core/ipc/src/fastcall.rs`, `crates/core/devif/src/lib.rs`.
+`crates/core/ipc/src/fastcall.rs`, `crates/core/devif/src/lib.rs`,
+`crates/core/syscall/src/khost.rs`.
 
 ## Fast call
 
@@ -71,7 +78,7 @@ and output positions; the registers they map to on each ISA are in the table in
 | Call | Inputs | Result |
 |---|---|---|
 | `SYS_IPC_FAST_CALL_EP` | `a0` `Cap<Endpoint>` (`WRITE`); `a1`..`a4` request words; `a5` a capability to move with the request (0 none), with `FAST_CALL_CAP_SHARE` (bit 32) set to share it instead | `a0` reply word 0, `a1`..`a3` reply words 1 to 3; or a negative code |
-| `SYS_IPC_FAST_ACCEPT` | none | `a0` handle of the exchange, `a1` caller's task id, `a2`..`a5` request words, `a6` badge of the capability the call came through; `-1` when nothing arrived |
+| `SYS_IPC_FAST_ACCEPT` | none | `a0` handle of the exchange, `a1` caller's task id, `a2`..`a5` request words, `a6` the server's handle of the capability the request moved (0 when it moved none); `-1` when nothing arrived |
 | `SYS_IPC_FAST_REPLY` | `a0` handle from the accept; `a1`..`a4` reply words | 0 delivered, `-2` stale handle, `-1` other refusal |
 | `SYS_IPC_FAST_REPLY_ACCEPT` | `a0` handle from the previous accept; `a2`..`a5` reply words; `a1` is not read | as the accept; `-2` stale, `-3` other refusal of the reply (nothing accepted) |
 
@@ -174,7 +181,7 @@ charged, transferred or shared. It is named by a `Cap<Shm>`.
 | Kind | Raw | Frames | Created by | Charged |
 |---|---:|---|---|---|
 | `Anon` | 0 | one zeroed frame per page | ring 3 (`SYS_MO_CREATE`) or the kernel | yes |
-| `Contig` | 2 | physically contiguous zeroed run | the kernel only | yes |
+| `Contig` | 2 | physically contiguous zeroed run, one bus address for a device | ring 3 (`SYS_MO_CREATE`) or the kernel | yes |
 | `Paged` | 3 | file pages, filled on demand: a file's page cache | the kernel only | no (system memory) |
 
 A region has at most `MAX_MEMOBJ_PAGES` (64) pages and at most
@@ -188,8 +195,8 @@ back when the last reference goes.
 | Bits | Field |
 |---|---|
 | 1..0 | access mode: 0 read-only, 1 read-write |
-| 15..8 | kind: `SHM_KIND_ANON` only from ring 3 |
-| 23..16 | attributes: `SHM_ATTR_SWAPPABLE` (1), `SHM_ATTR_NO_KERNEL_MAP` (2); `SHM_ATTR_VOLATILE` (4): the owner may make the object droppable under memory pressure (`MemCtl`, see [memory.md](memory.md)) |
+| 15..8 | kind: `SHM_KIND_ANON` (0) or `SHM_KIND_CONTIG` (2); `Paged` is the kernel's. A `Contig` object takes no `SHM_ATTR_SWAPPABLE`, no `SHM_ATTR_VOLATILE` and no clone, and fails with `-ENOMEM` when no run of that length is free |
+| 23..16 | attributes: `SHM_ATTR_SWAPPABLE` (1), `SHM_ATTR_NO_KERNEL_MAP` (2); `SHM_ATTR_VOLATILE` (4, `Anon` only): the owner may make the object droppable under memory pressure (`MemCtl`, see [memory.md](memory.md)) |
 | 24 | `SHM_CREATE_CLONE`: copy-on-write snapshot of the object the capability in bits 63..32 names (`READ`); `a0` is then 0 or the source's page count |
 | 63..32 | the source capability when bit 24 is set, else 0 |
 
@@ -373,7 +380,7 @@ takes an event; `PORT_DESTROY` frees the port.
 |---|---:|---|---|
 | io_ring | 1 | a `Cap<IoRing>` with `READ` | `PORT_EVENT_RING` (2) |
 | timer | 2 | an absolute deadline in ns; one-shot; binding a key already armed re-arms it | `PORT_EVENT_TIMER` (4) |
-| endpoint notices | 3 | a `Cap<Endpoint>` with `READ`, held by the serving task | `PORT_EVENT_NO_SENDERS` (5), `PORT_EVENT_SOURCE_GONE` (6) |
+| endpoint notices | 3 | a `Cap<Endpoint>` with `READ`, held by the serving task; only with Kconfig `IPC_PORT_NOTICES` (a bind is `-EINVAL` otherwise) | `PORT_EVENT_NO_SENDERS` (5), `PORT_EVENT_SOURCE_GONE` (6) |
 | memory pressure | 4 | `DOMAIN_SELF` (the caller's own Domain); one port per Domain, a second bind replaces the first; remove takes the port and key | `PORT_EVENT_PRESSURE` (7) |
 | interrupt line | n/a | from the line's side: `DEVICE_IRQ_BIND` with the port handle | `PORT_EVENT_IRQ` (3) |
 
@@ -401,7 +408,7 @@ program one poll to give memory back. It exists only with Kconfig
 |---:|---:|---|
 | 0 | 8 | key, as bound |
 | 8 | 1 | source type (`PORT_EVENT_*`) |
-| 9 | 1 | reserved, 0 |
+| 9 | 1 | CPU (`PORT_EVENT_CPU_OFFSET`): for `PORT_EVENT_IRQ`, the CPU the line is routed to; 0 for every other event |
 | 10 | 2 | code (`PORT_EVENT_CODE_OFFSET`): a positive errno for a notice (`ENOSENDERS`, `EREVOKED`, `EPEERDIED`), 0 for an ordinary event |
 | 12 | 4 | source id |
 
@@ -510,12 +517,13 @@ is gated, like any entry, by the owner's seccomp profile (it stands for
 `MEMOBJ_ACQUIRE`) and its Domain's pledge mask. The block opcodes do not take
 the flag (their `reg` is half of a sector number).
 
-**Authorization.** Each entry is checked, in order, against the submitter's
-seccomp profile for the syscall the opcode stands for, the capability the ring's
-owner must hold, and, for a write, containment; it then runs through the same
-function its typed call runs. A refused entry completes with `CQE_F_REFUSED`
-and one of, in the order checked: `-ENOSYS` (an opcode this kernel does not
-execute), `-EPERM` (seccomp), `-EINVAL` (an argument rejected before the
+**Authorization.** Each entry is checked, in order, against the ring owner's
+seccomp profile for the call the opcode stands for, the owner's Domain pledge
+mask for the same call, the capability the owner must hold, and, for a write,
+containment; it then runs through the same function its typed call runs. A
+refused entry completes with `CQE_F_REFUSED` and one of, in the order checked:
+`-ENOSYS` (an opcode this kernel does not execute), `-EPERM` (seccomp),
+`-EACCES` (the pledge mask), `-EINVAL` (an argument rejected before the
 capability check reads it), `-ECAPPERMS` (a capability the owner does not hold),
 `-EAGAIN` (a write refused by containment, or a motor command refused by the
 halt rule), or the typed call's own code. At most `RING_SQ_SIZE` entries run per
