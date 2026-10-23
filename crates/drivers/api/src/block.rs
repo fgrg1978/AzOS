@@ -47,6 +47,32 @@ pub enum FlushError {
     Io,
 }
 
+/// What a record that must survive a power cut came to: its write, then the
+/// device's flush (owner decision 2026-10-23, Q2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Durability {
+    /// Written, and the device confirmed the flush.
+    Durable,
+    /// Written, but the device has no cache control ([`FlushError::Unsupported`]):
+    /// the kernel cannot confirm the record survives a power cut, so it does
+    /// not claim it did. Fails closed: a caller treats it as not committed.
+    Unconfirmed,
+    /// The write or the flush failed.
+    Failed,
+}
+
+impl Durability {
+    /// The verdict for a write that `wrote` (or did not) followed by `flush`.
+    /// Only a confirmed flush is durable.
+    pub fn of(wrote: bool, flush: Result<(), FlushError>) -> Durability {
+        match (wrote, flush) {
+            (false, _) | (true, Err(FlushError::Io)) => Durability::Failed,
+            (true, Err(FlushError::Unsupported)) => Durability::Unconfirmed,
+            (true, Ok(())) => Durability::Durable,
+        }
+    }
+}
+
 // ── What a queued device offers ─────────────────────────────────────────
 //
 // The request layer (`azos_drv_block::queue`) drives a device through

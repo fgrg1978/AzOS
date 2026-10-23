@@ -273,6 +273,10 @@ pub enum Rule {
     /// up), the degrade level changed, a sensor was lost or came back, or a
     /// critical trip requested the shutdown (`azos_thermal`, Kconfig `THERMAL`).
     Thermal = 65,
+    /// A record that must survive a power cut (an anti-rollback floor) was
+    /// written, but the device has no cache control, so the kernel does not
+    /// claim it durable (owner decision 2026-10-23, Q2).
+    Durability = 66,
 }
 
 /// The verdict of a record.
@@ -300,7 +304,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 66] = [
+pub const RULES: [RuleInfo; 67] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, 0)
         // and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
@@ -934,6 +938,17 @@ pub const RULES: [RuleInfo; 66] = [
         fields: ["event", "arg", "temp_mdeg"],
         rejected_if_yes: "leave the clock where the governor put it: the zone is above a trip and the machine would run hot unannounced",
         rejected_if_no: "cool by the clock alone: a floor holds it up, or the clock will not move, so the machine slows down or shuts down instead",
+    },
+    RuleInfo {
+        // The subject is the record: 1 the topology counter floor, 2 the
+        // CONFIG.SIG counter floor. `from` and `to` are the floor before and
+        // the one written; `flush` 1 is the device's `Unsupported`. Only
+        // `refuse` is recorded: the floor stays the old one for this boot.
+        name: "durability",
+        subject: "record",
+        fields: ["from", "to", "flush"],
+        rejected_if_yes: "-",
+        rejected_if_no: "claim the floor raised: the device cannot confirm the write survives a power cut, so an older signed file could come back unannounced",
     },
 ];
 

@@ -74,21 +74,42 @@ fn read_device_record_uncached() -> Option<DeviceRecord> {
     DeviceRecord::decode(&sector)
 }
 
+/// `Rule::Durability` subject: the topology counter floor (`topology.rs`).
+pub(crate) const FLOOR_RECORD_TOPOLOGY: u32 = 1;
+/// `Rule::Durability` subject: the CONFIG.SIG counter floor (the device record).
+const FLOOR_RECORD_CONFIG: u32 = 2;
+
+/// A floor written to the reserved tail whose flush the device answered
+/// `Unsupported` (no cache control): not claimed raised, the boot goes on,
+/// and a `Rule::Durability` refusal says so (owner decision 2026-10-23, Q2;
+/// `azos_drv_api::block::Durability::Unconfirmed`). `what` names the floor in
+/// the console line.
+pub(crate) fn floor_unconfirmed(record: u32, what: &str, from: u64, to: u64) {
+    azos_drv_sys::kwarn!("{} counter floor written ({} -> {}) but NOT claimed raised: the device has no \
+               cache control, durability unconfirmed; the floor stays {} for this boot (recorded)",
+        what, from, to, from);
+    azos_decision::record(azos_decision::Rule::Durability, azos_decision::Verdict::Refuse, record, [from, to, 1]);
+}
+
 /// Raise the floor to `counter` and flush. The config is already loaded when
 /// this runs; a failed write leaves the old floor, which only means an older
-/// signed file stays acceptable until a later boot raises it.
+/// signed file stays acceptable until a later boot raises it. A write the
+/// device cannot confirm durable is not claimed raised either: this boot keeps
+/// the old floor ([`floor_unconfirmed`]).
 fn write_floor(rec: DeviceRecord, counter: u64) {
+    use azos_drv_api::block::Durability;
     let new = DeviceRecord { floor: counter, ..rec };
-    let ok = crate::reserved_tail::write(crate::reserved_tail::DEVICE, &new.encode()).is_ok()
-        && !matches!(azos_drv_block::blkdev::flush(),
-                     Err(e) if e != azos_drv_api::block::FlushError::Unsupported);
-    if ok {
-        // SAFETY: boot hart only (Phase G2).
-        unsafe { DEVICE_RECORD = Some(Some(new)); }
-        kprintln!("[CFG] config counter floor raised {} -> {}", rec.floor, counter);
-    } else {
-        azos_drv_sys::kerr!("[CFG] WARNING: config counter floor NOT raised ({} -> {}): the device \
-                   record write failed; an older signed CONFIG.INI stays acceptable", rec.floor, counter);
+    let wrote = crate::reserved_tail::write(crate::reserved_tail::DEVICE, &new.encode()).is_ok();
+    let verdict = if wrote { Durability::of(true, azos_drv_block::blkdev::flush()) } else { Durability::Failed };
+    match verdict {
+        Durability::Durable => {
+            // SAFETY: boot hart only (Phase G2).
+            unsafe { DEVICE_RECORD = Some(Some(new)); }
+            kprintln!("[CFG] config counter floor raised {} -> {}", rec.floor, counter);
+        }
+        Durability::Unconfirmed => floor_unconfirmed(FLOOR_RECORD_CONFIG, "[CFG] config", rec.floor, counter),
+        Durability::Failed => azos_drv_sys::kerr!("[CFG] WARNING: config counter floor NOT raised ({} -> {}): \
+                   the device record write failed; an older signed CONFIG.INI stays acceptable", rec.floor, counter),
     }
 }
 

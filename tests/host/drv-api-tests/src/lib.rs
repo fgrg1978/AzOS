@@ -205,3 +205,34 @@ mod registry_tests {
         assert_eq!(REGISTRY_MAX_DRIVERS, 32);
     }
 }
+
+/// Owner decision 2026-10-23 (Q2): a record that must survive a power cut
+/// (the topology and config anti-rollback floors) is durable only when the
+/// device confirmed the flush. A device with no cache control answers
+/// `Unsupported`, which used to count as committed; it fails closed now.
+///
+/// **Canary.** Map `(true, Err(Unsupported))` to `Durable` in
+/// `Durability::of` (the old `!matches!(flush, Err(e) if e != Unsupported)`):
+/// `an_unsupported_flush_is_not_durable` goes red.
+#[cfg(test)]
+mod durability_tests {
+    use azos_drv_api::block::{Durability, FlushError};
+
+    #[test]
+    fn a_confirmed_flush_is_durable() {
+        assert_eq!(Durability::of(true, Ok(())), Durability::Durable);
+    }
+
+    #[test]
+    fn an_unsupported_flush_is_not_durable() {
+        assert_eq!(Durability::of(true, Err(FlushError::Unsupported)), Durability::Unconfirmed);
+        assert_ne!(Durability::of(true, Err(FlushError::Unsupported)), Durability::Durable);
+    }
+
+    #[test]
+    fn a_failed_write_or_flush_is_a_failure() {
+        assert_eq!(Durability::of(true, Err(FlushError::Io)), Durability::Failed);
+        assert_eq!(Durability::of(false, Ok(())), Durability::Failed);
+        assert_eq!(Durability::of(false, Err(FlushError::Unsupported)), Durability::Failed);
+    }
+}

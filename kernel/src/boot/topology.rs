@@ -316,18 +316,22 @@ fn read_topo_floor() -> u64 {
 
 /// Raise the floor to the counter of the topology just installed, and flush.
 /// A failed write leaves the old floor: an older signed topology stays
-/// acceptable until a later boot raises it (CONFIG.SIG v2's rule).
+/// acceptable until a later boot raises it (CONFIG.SIG v2's rule). A write the
+/// device cannot confirm durable (no cache control) is not claimed raised
+/// either (owner decision 2026-10-23, Q2): the boot goes on and a
+/// `Rule::Durability` record says so.
 fn raise_topo_floor(old: u64, new: u64) {
+    use azos_drv_api::block::Durability;
     let rec = azos_topology::device_record::topo_floor_encode(new);
-    let ok = super::config_auth::tail_writable()
-        && crate::reserved_tail::write(azos_limits::TOPOLOGY_FLOOR_SECTOR as u32, &rec).is_ok()
-        && !matches!(azos_drv_block::blkdev::flush(),
-                     Err(e) if e != azos_drv_api::block::FlushError::Unsupported);
-    if ok {
-        kprintln!("[TOPO] topology counter floor raised {} -> {}", old, new);
-    } else {
-        azos_drv_sys::kwarn!("[TOPO] WARNING: topology counter floor NOT raised ({} -> {}): the reserved \
-                   tail write failed; an older signed topology stays acceptable", old, new);
+    let wrote = super::config_auth::tail_writable()
+        && crate::reserved_tail::write(azos_limits::TOPOLOGY_FLOOR_SECTOR as u32, &rec).is_ok();
+    let verdict = if wrote { Durability::of(true, azos_drv_block::blkdev::flush()) } else { Durability::Failed };
+    match verdict {
+        Durability::Durable => kprintln!("[TOPO] topology counter floor raised {} -> {}", old, new),
+        Durability::Unconfirmed => super::config_auth::floor_unconfirmed(
+            super::config_auth::FLOOR_RECORD_TOPOLOGY, "[TOPO] topology", old, new),
+        Durability::Failed => azos_drv_sys::kwarn!("[TOPO] WARNING: topology counter floor NOT raised ({} -> {}): \
+                   the reserved tail write failed; an older signed topology stays acceptable", old, new),
     }
 }
 

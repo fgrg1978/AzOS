@@ -488,6 +488,7 @@ mod tests {
             (Rule::ClockSet, 63, "clock-set"),
             (Rule::EstopRelease, 64, "estop-release"),
             (Rule::Thermal, 65, "thermal"),
+            (Rule::Durability, 66, "durability"),
         ];
         assert_eq!(azos_decision::RULES.len(), all.len(), "a rule without a name, or a name without a rule");
         for &(rule, num, name) in all {
