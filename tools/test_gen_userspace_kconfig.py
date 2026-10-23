@@ -33,8 +33,10 @@ BOARD_DEFAULT = {
     "COMPMGR", "SSHD",
 }
 # On every preset but MCU and certifiable: the component manager supervises
-# every ring-3 row, and SSHD is on (public keys only).
+# every ring-3 row, and SSHD is on (public keys only) except on the embedded
+# profile (Kconfig SSHD: default n if PROFILE_EMBEDDED, so its image is off too).
 ALWAYS = {"COMPMGR", "SSHD"}
+ALWAYS_EMBEDDED = ALWAYS - {"SSHD"}
 FAILS = []
 
 
@@ -114,8 +116,8 @@ def main():
         check(v.get("CONSOLE_PROGRAM_NONE") == "y" and "USER_SHELL" not in v
               and v.get("CONSOLE_PATH") == '""', "embedded: console = none, USER_SHELL=n")
         on = {k[len("USERSPACE_"):] for k, x in v.items() if k.startswith("USERSPACE_") and x == "y"} - {"GPL"}
-        check(v.get("DECISION_REFUSALS_DURABLE") == "y" and on == {"DECISD"} | ALWAYS,
-              f"embedded: only the started row's image is built by default ({sorted(on)})")
+        check(v.get("DECISION_REFUSALS_DURABLE") == "y" and "SSHD" not in v and on == {"DECISD"} | ALWAYS_EMBEDDED,
+              f"embedded: only the started row's image is built by default, no SSHD ({sorted(on)})")
         # Discriminates: the started image follows its start condition, and a
         # named image is built whatever the topology starts.
         # (A saved .config pins what it holds as the user's choice, so the
@@ -129,7 +131,7 @@ def main():
         rc, log = olddefconfig(tmp, cfg)
         v2 = values(cfg)
         on = {k[len("USERSPACE_"):] for k, x in v2.items() if k.startswith("USERSPACE_") and x == "y"} - {"GPL"}
-        check(rc == 0 and on == {"TOOLBOX"} | ALWAYS,
+        check(rc == 0 and on == {"TOOLBOX"} | ALWAYS_EMBEDDED,
               f"embedded: no decision records -> DECISD n; a named image is built ({sorted(on)})")
 
         # 2. Add a program directory.
