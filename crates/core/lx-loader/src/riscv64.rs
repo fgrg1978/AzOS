@@ -110,6 +110,81 @@ pub mod encode {
     }
 }
 
+/// The ring-3 rewrite of riscv64 module text (see [`crate::rewrite_text`]).
+///
+/// Every privileged instruction is in the `SYSTEM` major opcode, and none has
+/// a compressed form, so a 16-bit instruction is always kept. Of the
+/// `SYSTEM` instructions a Linux module carries:
+///
+/// - `ebreak` is `BUG()`/`WARN()`, a breakpoint the kernel delivers as a
+///   fault in user mode too: kept.
+/// - `rdtime` (`csrrs rd, time, x0`) reads a counter user mode may read:
+///   AzOS sets `scounteren.TM` on every hart at boot. `cycle` and `instret`
+///   are user-readable only when a PMU client asks, so they are refused.
+/// - `csrrci rd, sstatus, SIE` saves and masks interrupts around the generic
+///   per-CPU operations. In a server no Linux handler can interrupt module
+///   code (an interrupt is a notification its loop handles between tasks), so
+///   the masked state is the server's own: the save becomes
+///   `addi rd, zero, SIE` ("interrupts were on"), and with `rd = x0`
+///   (`local_irq_disable`) a `nop`.
+/// - `csrs sstatus, rs` and `csrc sstatus, rs` (the matching restore, and
+///   `SUM` around inline user access) and `csrsi sstatus, SIE`
+///   (`local_irq_enable`) become `nop`. A pair brackets a per-CPU operation
+///   that cannot block, so it needs no depth of the virtual flag, and `SUM`
+///   means nothing in a server: the "user" pointer an ioctl handler sees is
+///   the server's own memory.
+///
+/// Anything else is refused: another CSR, a read of `sstatus` whose value
+/// would be used (`csrr rd, sstatus`: a constant would lie inside an
+/// `irqsave` section, and a call into the virtual flag does not fit one
+/// instruction slot without a free link register), `ecall` (an SBI call in
+/// Linux, never meant for the AzOS syscall table), `sret`, `wfi`,
+/// `sfence.vma` and the hypervisor instructions.
+pub mod rewrite {
+    use crate::{Insn, Rewrite};
+
+    const SYSTEM: u32 = 0x73;
+    const EBREAK: u32 = 0x0010_0073;
+    const CSR_SSTATUS: u32 = 0x100;
+    const CSR_TIME: u32 = 0xc01;
+    /// `sstatus.SIE`, also the 5-bit immediate of `csrrci`/`csrrsi`.
+    pub const SR_SIE: u32 = 0x2;
+    /// `addi x0, x0, 0`.
+    pub const NOP: u32 = 0x0000_0013;
+
+    /// The length of the instruction whose low half is `lo`: 2 or 4 bytes,
+    /// or 0 for the 48-bit and longer encodings no module uses.
+    pub fn len(lo: u16) -> usize {
+        match lo & 0x1f {
+            l if l & 0x3 != 0x3 => 2,
+            0x1f => 0,
+            _ => 4,
+        }
+    }
+
+    /// `addi rd, zero, SIE`.
+    pub fn li_sie(rd: u32) -> u32 {
+        (SR_SIE << 20) | (rd << 7) | 0x13
+    }
+
+    /// What the ring-3 rewrite does with the 32-bit instruction `insn`.
+    pub fn classify(insn: u32) -> Insn {
+        if insn & 0x7f != SYSTEM {
+            return Insn::Keep;
+        }
+        let rd = (insn >> 7) & 0x1f;
+        let rs1 = (insn >> 15) & 0x1f;
+        match ((insn >> 12) & 0x7, insn >> 20) {
+            (0, _) if insn == EBREAK => Insn::Keep,
+            (2, CSR_TIME) if rs1 == 0 => Insn::Keep,
+            (7, CSR_SSTATUS) if rs1 == SR_SIE && rd != 0 => Insn::Rewrite(li_sie(rd), Rewrite::IrqSave),
+            (6, CSR_SSTATUS) | (7, CSR_SSTATUS) if rs1 == SR_SIE && rd == 0 => Insn::Rewrite(NOP, Rewrite::SstatusWrite),
+            (2, CSR_SSTATUS) | (3, CSR_SSTATUS) if rd == 0 && rs1 != 0 => Insn::Rewrite(NOP, Rewrite::SstatusWrite),
+            _ => Insn::Refuse,
+        }
+    }
+}
+
 /// A relocation on a section that is not loaded is never applied, but the
 /// two linker-relaxation markers mean the module was built without
 /// `-mno-relax`, so its instruction sequences may assume a relaxing linker

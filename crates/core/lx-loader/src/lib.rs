@@ -16,8 +16,25 @@
 //!    the kernel flips it to read-execute (`DOMAIN_MODULE_MAP_X`), never both.
 //!    `.rodata` goes with data, not text: a constant pool that is executable
 //!    is a gadget source, a writable one is merely writable.
-//! 3. [`Module::load`] copies the bytes, resolves each undefined symbol
-//!    through the caller's table and applies the relocations.
+//! 3. [`Module::load`] copies the bytes, rewrites the privileged
+//!    instructions of the text for ring 3 ([`rewrite_text`]), resolves each
+//!    undefined symbol through the caller's table and applies the
+//!    relocations.
+//!
+//! **The ring-3 rewrite.** Module code is built to run in ring 0. The few
+//! privileged instructions the module set executes are rewritten at load
+//! time against the server's own state, as Linux applies its alternatives at
+//! module load: riscv64's inline interrupt save and restore and `SUM` toggles
+//! of `sstatus` (the server's interrupt state is virtual), and aarch64's
+//! `current` (`SP_EL0`, rewritten to `TPIDR_EL0`) and per-CPU base
+//! (`TPIDR_EL1`, 0 in a one-thread server). The rewrite changes only the exact
+//! encodings in [`rewrite::riscv64`] and [`rewrite::aarch64`], decoding each
+//! text section from its start; any other privileged instruction, and a text
+//! section holding data (a `$d` mapping symbol) that a linear decode cannot
+//! tell from code, refuses the module. The kernel's digest covers the file
+//! bytes, and the rewrite is a fixed function of them, as relocation is.
+//! (x86_64 modules carry no privileged instruction in the set: their per-CPU
+//! and `current` accesses are `%gs`-relative memory operands.)
 //!
 //! **Scope by construction.** Modules are compiled with
 //! `-mcmodel=medany -mno-relax` (riscv64), the small code model with
@@ -129,8 +146,12 @@ pub enum Error<'a> {
     /// No `SHT_SYMTAB` section, or more than one.
     NoSymtab,
     /// A section kind the loader refuses: TLS, `SHT_REL` on an allocated
-    /// section, or a name in [`REFUSED_PREFIXES`].
+    /// section, a name in [`REFUSED_PREFIXES`], or a text section that holds
+    /// data (a `$d` mapping symbol), which the ring-3 rewrite cannot decode.
     RefusedSection(&'a [u8]),
+    /// A privileged instruction the ring-3 rewrite has no stand-in for
+    /// ([`rewrite_text`]): `(text section name, offset in it, encoding)`.
+    Privileged(&'a [u8], u64, u32),
     /// A symbol kind the loader refuses (`STT_TLS`, `STT_GNU_IFUNC`,
     /// `SHN_COMMON`): the module was not built with the flags 6.2 requires.
     RefusedSymbol(&'a [u8]),
@@ -660,6 +681,7 @@ impl<'a> Module<'a> {
             let dst = if r == Region::Text { &mut *text } else { &mut *data };
             dst[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
         }
+        let rewrites = self.rewrite(text)?;
         // Symbols are refused or resolved before any relocation is applied,
         // so a module with one bad import changes no byte of the regions
         // beyond the copy above.
@@ -723,7 +745,35 @@ impl<'a> Module<'a> {
                 }
             }
         }
-        Ok(Loaded { module: *self, bases })
+        Ok(Loaded { module: *self, bases, rewrites })
+    }
+
+    /// The ring-3 rewrite ([`rewrite_text`]) of every placed text section of
+    /// `text`, after the copy. A text section with a `$d` mapping symbol
+    /// (data among the code) is refused first: a linear decode could take
+    /// its bytes for an instruction.
+    fn rewrite(&self, text: &mut [u8]) -> Result<Rewrites, Error<'a>> {
+        for i in 1..self.symbol_count() {
+            let s = self.sym(i)?;
+            if s.shndx != SHN_UNDEF && s.shndx < SHN_LORESERVE && self.sym_name(&s)?.starts_with(b"$d")
+                && matches!(self.placement(s.shndx as usize)?, Some((Region::Text, _)))
+            {
+                return Err(Error::RefusedSection(self.section_name(s.shndx as usize)?));
+            }
+        }
+        let mut counts = Rewrites::default();
+        for i in 0..self.shnum {
+            let Some((Region::Text, at)) = self.placement(i)? else { continue };
+            let sec = self.section(i)?;
+            if sec.kind == SHT_NOBITS {
+                continue;
+            }
+            let code = &mut text[at as usize..(at + sec.size) as usize];
+            if let Err((off, insn)) = rewrite_text(self.isa, code, &mut counts) {
+                return Err(Error::Privileged(self.section_name(i)?, off, insn));
+            }
+        }
+        Ok(counts)
     }
 
     fn check_unplaced_reloc(&self, rtype: u32, target: usize) -> Result<(), Error<'a>> {
@@ -792,9 +842,15 @@ struct RelocCtx<'m, 'a, 'r> {
 pub struct Loaded<'a> {
     module: Module<'a>,
     bases: Bases,
+    rewrites: Rewrites,
 }
 
 impl<'a> Loaded<'a> {
+    /// What the ring-3 rewrite changed in the module's text.
+    pub fn rewrites(&self) -> Rewrites {
+        self.rewrites
+    }
+
     /// Run-time address of the defined, non-local symbol `name`
     /// (a module's `init` entry point, for instance).
     pub fn symbol(&self, name: &[u8]) -> Option<u64> {
@@ -954,4 +1010,101 @@ fn fits_signed(v: i64, bits: u32) -> bool {
 pub mod encode {
     pub use crate::aarch64::encode as aarch64;
     pub use crate::riscv64::encode as riscv64;
+}
+
+/// The per-ISA tables of the ring-3 rewrite ([`rewrite_text`]), public so the
+/// host tests can check each rule against hand-assembled encodings.
+pub mod rewrite {
+    pub use crate::aarch64::rewrite as aarch64;
+    pub use crate::riscv64::rewrite as riscv64;
+}
+
+// ── The ring-3 rewrite ──────────────────────────────────────────────────────
+
+/// What the ring-3 rewrite does with one instruction of module text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Insn {
+    /// Runs in ring 3 as it is.
+    Keep,
+    /// Becomes this encoding, of the same length.
+    Rewrite(u32, Rewrite),
+    /// Privileged, with no stand-in: the module is refused.
+    Refuse,
+}
+
+/// Which rule rewrote an instruction (the counts are [`Rewrites`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rewrite {
+    /// riscv64 `csrrci rd, sstatus, SIE` (`rd` not `x0`): `addi rd, zero, SIE`.
+    IrqSave,
+    /// riscv64 `csrs`/`csrc sstatus, rs`, `csrci`/`csrsi sstatus, SIE`: `nop`.
+    SstatusWrite,
+    /// aarch64 `mrs xN, SP_EL0`: `mrs xN, TPIDR_EL0`.
+    Current,
+    /// aarch64 `mrs xN, TPIDR_EL1` or `TPIDR_EL2`: `movz xN, #0`.
+    PercpuBase,
+}
+
+/// How many instructions each rule rewrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Rewrites {
+    /// [`Rewrite::IrqSave`].
+    pub irq_save: u32,
+    /// [`Rewrite::SstatusWrite`].
+    pub sstatus_write: u32,
+    /// [`Rewrite::Current`].
+    pub current: u32,
+    /// [`Rewrite::PercpuBase`].
+    pub percpu_base: u32,
+}
+
+impl Rewrites {
+    fn count(&mut self, r: Rewrite) {
+        let n = match r {
+            Rewrite::IrqSave => &mut self.irq_save,
+            Rewrite::SstatusWrite => &mut self.sstatus_write,
+            Rewrite::Current => &mut self.current,
+            Rewrite::PercpuBase => &mut self.percpu_base,
+        };
+        *n += 1;
+    }
+}
+
+/// Rewrite the privileged instructions of `code`, one text section as
+/// placed, for ring 3, in place, adding to `counts`. The section is decoded
+/// from its start (riscv64 takes each length from the low bits; aarch64 is 4
+/// bytes); a tail shorter than one instruction is not code (aarch64's
+/// one-byte `.plt` and `.text.ftrace_trampoline` placeholders).
+/// `Err((offset, encoding))` at the first instruction refused, or at a
+/// riscv64 encoding longer than 32 bits.
+pub fn rewrite_text(isa: Isa, code: &mut [u8], counts: &mut Rewrites) -> Result<(), (u64, u32)> {
+    let mut at = 0usize;
+    while let Some(lo) = rd_u16(code, at) {
+        let n = match isa {
+            Isa::Riscv64 => rewrite::riscv64::len(lo),
+            Isa::Aarch64 => 4,
+        };
+        if n == 0 {
+            return Err((at as u64, lo as u32));
+        }
+        if n == 2 {
+            at += 2;
+            continue;
+        }
+        let Some(insn) = rd_u32(code, at) else { break };
+        let verdict = match isa {
+            Isa::Riscv64 => rewrite::riscv64::classify(insn),
+            Isa::Aarch64 => rewrite::aarch64::classify(insn),
+        };
+        match verdict {
+            Insn::Keep => {}
+            Insn::Rewrite(new, why) => {
+                code[at..at + 4].copy_from_slice(&new.to_le_bytes());
+                counts.count(why);
+            }
+            Insn::Refuse => return Err((at as u64, insn)),
+        }
+        at += 4;
+    }
+    Ok(())
 }

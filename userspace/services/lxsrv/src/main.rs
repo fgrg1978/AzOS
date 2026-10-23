@@ -51,7 +51,7 @@ compile_error!("lxsrv: no counter or module ISA for this ISA (riscv64, aarch64, 
 
 use core::cell::UnsafeCell;
 use azos_libsys as sys;
-use azos_lx_loader::{admit, Isa, Module};
+use azos_lx_loader::{admit, Error, Isa, Module};
 use azos_ualloc::UserAlloc;
 
 /// `vermagic` this server accepts (the test module's `.modinfo`). A Linux
@@ -450,6 +450,11 @@ fn lx_load(path: &[u8], name: &[u8], resolve: &mut dyn FnMut(&[u8]) -> Option<u6
         r
     }) {
         Ok(l) => l,
+        Err(Error::Privileged(sec, off, insn)) => {
+            line(&[b"[LX] module ", name, b" REFUSED: privileged instruction ", hex(insn as u64, &mut [0u8; 18]),
+                   b" at ", sec, b"+", hex(off, &mut [0u8; 18])]);
+            return None;
+        }
         Err(_) => {
             line(&[b"[LX] module ", name, b" FAIL: relocation refused; first unresolved import: '", missing, b"'"]);
             return None;

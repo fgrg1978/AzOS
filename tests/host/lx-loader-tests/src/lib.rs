@@ -938,3 +938,359 @@ fn fs_withholding_one_recorded_import_fails_the_load() {
         }
     }
 }
+
+// ── The ring-3 rewrite ────────────────────────────────────────────────────
+//
+// Module text is built for ring 0; `Module::load` rewrites the privileged
+// instructions the server can stand in for (`rewrite_text`) and refuses the
+// rest. The rules are checked one by one against llvm-mc encodings (LLVM 22,
+// `--show-encoding`; riscv64 without `+c` where the 32-bit form is meant),
+// and the whole filesystem set against counts taken from its disassembly
+// (`llvm-objdump -d` of the pinned Kbuild): each rule's canary is the rule
+// removed from its table, which turns its test red.
+
+use azos_lx_loader::{rewrite, rewrite_text, Insn, Rewrite, Rewrites};
+
+const RV_NOP: u32 = 0x0000_0013;
+
+#[test]
+fn rv_irq_save_becomes_li_sie() {
+    // csrrci a5, sstatus, 2 -> li a5, 2 (addi a5, zero, 2)
+    assert_eq!(rewrite::riscv64::classify(0x1001_77f3), Insn::Rewrite(0x0020_0793, Rewrite::IrqSave));
+    // csrrci a0, sstatus, 2 -> li a0, 2: the register is kept
+    assert_eq!(rewrite::riscv64::classify(0x1001_7573), Insn::Rewrite(0x0020_0513, Rewrite::IrqSave));
+}
+
+#[test]
+fn rv_sstatus_writes_become_nop() {
+    for insn in [
+        0x1007_a073u32, // csrs sstatus, a5   (irqrestore; SUM set)
+        0x1007_3073,    // csrc sstatus, a4   (SUM clear)
+        0x1001_7073,    // csrci sstatus, 2   (local_irq_disable)
+        0x1001_6073,    // csrsi sstatus, 2   (local_irq_enable)
+    ] {
+        assert_eq!(rewrite::riscv64::classify(insn), Insn::Rewrite(RV_NOP, Rewrite::SstatusWrite), "{insn:#010x}");
+    }
+}
+
+#[test]
+fn a64_current_becomes_tpidr_el0() {
+    // mrs x1, SP_EL0 -> mrs x1, TPIDR_EL0
+    assert_eq!(rewrite::aarch64::classify(0xd538_4101), Insn::Rewrite(0xd53b_d041, Rewrite::Current));
+    // every register: xN -> xN
+    for rt in 0..31u32 {
+        assert_eq!(rewrite::aarch64::classify(0xd538_4100 | rt), Insn::Rewrite(0xd53b_d040 | rt, Rewrite::Current));
+    }
+}
+
+#[test]
+fn a64_percpu_base_becomes_zero() {
+    // mrs x0, TPIDR_EL1 / TPIDR_EL2 -> mov x0, #0 (movz)
+    assert_eq!(rewrite::aarch64::classify(0xd538_d080), Insn::Rewrite(0xd280_0000, Rewrite::PercpuBase));
+    assert_eq!(rewrite::aarch64::classify(0xd53c_d040), Insn::Rewrite(0xd280_0000, Rewrite::PercpuBase));
+    assert_eq!(rewrite::aarch64::classify(0xd538_d087), Insn::Rewrite(0xd280_0007, Rewrite::PercpuBase));
+}
+
+#[test]
+fn user_mode_instructions_are_kept() {
+    for insn in [
+        0x0010_0073u32, // ebreak (BUG/WARN)
+        0xc010_27f3,    // rdtime a5 (scounteren.TM is set at boot)
+        0x0020_0793,    // li a5, 2
+        0x0000_0013,    // nop
+    ] {
+        assert_eq!(rewrite::riscv64::classify(insn), Insn::Keep, "riscv64 {insn:#010x}");
+    }
+    for insn in [
+        0xd421_0000u32, // brk #0x800
+        0xd503_201f,    // nop
+        0xd503_3bbf,    // dmb ish
+        0xd503_3fdf,    // isb
+        0xd503_203f,    // yield
+        0xd503_229f,    // csdb
+        0xd503_233f,    // paciasp
+        0xd503_245f,    // bti c
+        0xf840_0820,    // ldtr x0, [x1]
+        0xf800_0820,    // sttr x0, [x1]
+        0xd280_0000,    // mov x0, #0
+    ] {
+        assert_eq!(rewrite::aarch64::classify(insn), Insn::Keep, "aarch64 {insn:#010x}");
+    }
+}
+
+#[test]
+fn rv_other_privileged_instructions_are_refused() {
+    for insn in [
+        0x1800_2573u32, // csrr a0, satp
+        0x1000_27f3,    // csrr a5, sstatus (its value would be used)
+        0x1007_27f3,    // csrrs a5, sstatus, a4
+        0x1001_67f3,    // csrrsi a5, sstatus, 2
+        0x1000_f7f3,    // csrrci a5, sstatus, 1 (not SIE)
+        0x1007_9073,    // csrw sstatus, a5
+        0xc000_2573,    // rdcycle a0
+        0x0000_0073,    // ecall
+        0x1020_0073,    // sret
+        0x1050_0073,    // wfi
+        0x1200_0073,    // sfence.vma
+    ] {
+        assert_eq!(rewrite::riscv64::classify(insn), Insn::Refuse, "{insn:#010x}");
+    }
+}
+
+#[test]
+fn a64_other_privileged_instructions_are_refused() {
+    for insn in [
+        0xd538_1000u32, // mrs x0, SCTLR_EL1
+        0xd503_42df,    // msr DAIFSet, #2
+        0xd500_419f,    // msr PAN, #1
+        0xd518_4100,    // msr SP_EL0, x0
+        0xd51b_d040,    // msr TPIDR_EL0, x0 (TPIDR_EL0 now holds `current`)
+        0xd53b_d041,    // mrs x1, TPIDR_EL0
+        0xd53b_d063,    // mrs x3, TPIDRRO_EL0
+        0xd53b_e040,    // mrs x0, CNTVCT_EL0
+        0xd50b_7e20,    // dc civac, x0
+        0xd508_871f,    // tlbi vmalle1
+        0xd400_0001,    // svc #0
+        0xd400_0002,    // hvc #0
+        0xd400_0003,    // smc #0
+        0xd69f_03e0,    // eret
+    ] {
+        assert_eq!(rewrite::aarch64::classify(insn), Insn::Refuse, "{insn:#010x}");
+    }
+}
+
+#[test]
+fn rewrite_text_follows_lengths_and_ignores_a_short_tail() {
+    // riscv64: c.ebreak (2 bytes) puts the csrrci at offset 2; a 32-bit
+    // instruction cut by the end of the section is not code.
+    let mut code = Vec::new();
+    code.extend_from_slice(&0x9002u16.to_le_bytes());
+    code.extend_from_slice(&0x1001_77f3u32.to_le_bytes());
+    code.extend_from_slice(&0x1007_a073u32.to_le_bytes());
+    code.extend_from_slice(&0x77f3u16.to_le_bytes());
+    let mut n = Rewrites::default();
+    rewrite_text(Isa::Riscv64, &mut code, &mut n).expect("rewrite");
+    assert_eq!(u32le(&code, 2), 0x0020_0793);
+    assert_eq!(u32le(&code, 6), RV_NOP);
+    assert_eq!(u16le(&code, 10), 0x77f3);
+    assert_eq!(n, Rewrites { irq_save: 1, sstatus_write: 1, ..Rewrites::default() });
+    // The refusal names the offset and the encoding.
+    let mut bad = [0x02, 0x90, 0x73, 0x25, 0x00, 0x18];
+    assert_eq!(rewrite_text(Isa::Riscv64, &mut bad, &mut Rewrites::default()), Err((2, 0x1800_2573)));
+    // aarch64: a one-byte placeholder section (`.plt`).
+    assert_eq!(rewrite_text(Isa::Aarch64, &mut [0u8], &mut Rewrites::default()), Ok(()));
+    let mut a = [0x01, 0x41, 0x38, 0xd5, 0x00];
+    let mut n = Rewrites::default();
+    rewrite_text(Isa::Aarch64, &mut a, &mut n).expect("rewrite");
+    assert_eq!((u32le(&a, 0), n.current), (0xd53b_d041, 1));
+}
+
+/// A Kbuild module of the set (`make lx-kbuild`), or `None` with a SKIP; with
+/// `LX_REQUIRE_FS` (the gate row) a missing one is a failure.
+fn fs_ko(isa: Isa, name: &str) -> Option<Vec<u8>> {
+    let got = kbuild(isa, name);
+    assert!(got.is_some() || std::env::var_os("LX_REQUIRE_FS").is_none(), "{name} not built, but LX_REQUIRE_FS is set");
+    got
+}
+
+/// Every module of the set, and the two Kbuild modules every server loads.
+const RING3_SET: [&str; 6] = ["lxbase.ko", "xz_dec.ko", "fs/crc16.ko", "fs/mbcache.ko", "fs/jbd2.ko", "fs/ext4.ko"];
+
+/// Load `obj` alone, every import bound near its text; the placed text and
+/// what the rewrite changed.
+fn ring3_load(obj: &[u8], isa: Isa) -> Result<(Vec<u8>, Rewrites), String> {
+    let m = Module::parse(obj, Some(isa)).map_err(|e| format!("parse {e:?}"))?;
+    let l = m.layout().map_err(|e| format!("layout {e:?}"))?;
+    let (tb, db) = (0x1100_0000u64, 0x1180_0000u64);
+    let mut text = vec![0xa5u8; l.text_size as usize];
+    let mut data = vec![0xa5u8; l.data_size as usize];
+    let ld = m
+        .load(&mut text, tb, &mut data, db, &mut |n: &[u8]| Some(tb + (fnv(n) % 0x1_0000) * 16))
+        .map_err(|e| format!("load {e:?}"))?;
+    Ok((text, ld.rewrites()))
+}
+
+/// The placed text sections of `obj`: `(name, offset in the text region, size)`.
+fn text_sections(obj: &[u8], isa: Isa) -> Vec<(String, usize, usize)> {
+    let m = Module::parse(obj, Some(isa)).unwrap();
+    let (shs, _, _) = read_elf(obj);
+    shs.iter()
+        .enumerate()
+        .filter_map(|(i, s)| match m.placement(i).unwrap() {
+            Some((Region::Text, at)) if s.kind != 8 => Some((s.name.clone(), at as usize, s.size)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The test's own reading of "still privileged in ring 3", written from the
+/// ISA manuals apart from the loader's tables: riscv64, a `SYSTEM` opcode
+/// other than `ebreak` and `rdtime`; aarch64, a system-class instruction
+/// other than a hint, a barrier or a read of `TPIDR_EL0` (EL0's own), an
+/// exception generation other than `brk`, and `eret`/`drps`.
+fn still_privileged(isa: Isa, code: &[u8]) -> Vec<(usize, u32)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 2 <= code.len() {
+        if isa == Isa::Riscv64 && code[at] & 3 != 3 {
+            at += 2;
+            continue;
+        }
+        if at + 4 > code.len() {
+            break;
+        }
+        let w = u32le(code, at);
+        let bad = match isa {
+            Isa::Riscv64 => w & 0x7f == 0x73 && w != 0x0010_0073 && w & 0xffff_f07f != 0xc010_2073,
+            Isa::Aarch64 => {
+                let hint_or_barrier = w & 0xffff_e01f == 0xd503_201f;
+                let el0_read = w & !0x1f == 0xd53b_d040;
+                (w >> 22 == 0x354 && !hint_or_barrier && !el0_read)
+                    || (w >> 24 == 0xd4 && w & 0xffe0_001f != 0xd420_0000)
+                    || w & 0xffdf_f000 == 0xd69f_0000
+            }
+        };
+        if bad {
+            out.push((at, w));
+        }
+        at += 4;
+    }
+    out
+}
+
+#[test]
+fn fs_set_rewrite_counts_match_its_disassembly() {
+    // From `llvm-objdump -d` of the pinned Kbuild: riscv64 ext4.ko has 11
+    // `csrrci rd, sstatus, 0x2`, 16 `csrs sstatus` (11 restores, 5 SUM sets)
+    // and 4 `csrc sstatus` (SUM clears); aarch64 has 73, 25 and 2
+    // `mrs xN, SP_EL0` in ext4, jbd2 and mbcache, and 5 `TPIDR_EL1` plus 5
+    // `TPIDR_EL2` reads in ext4.
+    let want = |isa: Isa, name: &str| -> Rewrites {
+        match (isa, name) {
+            (Isa::Riscv64, "fs/ext4.ko") => Rewrites { irq_save: 11, sstatus_write: 20, ..Rewrites::default() },
+            (Isa::Aarch64, "fs/ext4.ko") => Rewrites { current: 73, percpu_base: 10, ..Rewrites::default() },
+            (Isa::Aarch64, "fs/jbd2.ko") => Rewrites { current: 25, ..Rewrites::default() },
+            (Isa::Aarch64, "fs/mbcache.ko") => Rewrites { current: 2, ..Rewrites::default() },
+            _ => Rewrites::default(),
+        }
+    };
+    for isa in [Isa::Riscv64, Isa::Aarch64] {
+        for name in RING3_SET {
+            let Some(obj) = fs_ko(isa, name) else { continue };
+            let (_, got) = ring3_load(&obj, isa).unwrap_or_else(|e| panic!("{isa:?} {name}: {e}"));
+            assert_eq!(got, want(isa, name), "{isa:?} {name}: rewrites");
+        }
+    }
+}
+
+#[test]
+fn fs_set_keeps_no_privileged_instruction_in_ring3() {
+    for isa in [Isa::Riscv64, Isa::Aarch64] {
+        let mut before = 0;
+        for name in RING3_SET {
+            let Some(obj) = fs_ko(isa, name) else { continue };
+            let (text, _) = ring3_load(&obj, isa).unwrap_or_else(|e| panic!("{isa:?} {name}: {e}"));
+            for (sec, at, size) in text_sections(&obj, isa) {
+                let (shs, _, _) = read_elf(&obj);
+                let file = shs.iter().find(|s| s.name == sec).unwrap();
+                // The oracle sees the privileged instructions in the file ...
+                before += still_privileged(isa, &obj[file.off..file.off + size]).len();
+                // ... and none in what the loader placed.
+                let left = still_privileged(isa, &text[at..at + size]);
+                assert!(left.is_empty(), "{isa:?} {name} {sec}: still privileged {:x?}", &left[..left.len().min(4)]);
+            }
+        }
+        // Not vacuous: the files do hold privileged instructions (ext4's).
+        if fs_ko(isa, "fs/ext4.ko").is_some() {
+            assert!(before > 0, "{isa:?}: the oracle found no privileged instruction in the files");
+        }
+    }
+}
+
+#[test]
+fn fs_set_text_decodes_in_step_with_its_symbols() {
+    // A linear decode is right only if it lands on every function and label
+    // the symbol table puts in the text; riscv64 mixes 2- and 4-byte lengths.
+    for isa in [Isa::Riscv64, Isa::Aarch64] {
+        for name in RING3_SET {
+            let Some(obj) = fs_ko(isa, name) else { continue };
+            let (shs, syms, _) = read_elf(&obj);
+            for (i, s) in shs.iter().enumerate().filter(|(_, s)| s.flags & 0x6 == 0x6 && s.kind == 1 && s.size >= 4) {
+                let code = &obj[s.off..s.off + s.size];
+                let mut starts = BTreeSet::new();
+                let mut at = 0;
+                while at < code.len() {
+                    starts.insert(at as u64);
+                    at += if isa == Isa::Riscv64 && code[at] & 3 != 3 { 2 } else { 4 };
+                }
+                starts.insert(code.len() as u64);
+                for y in syms.iter().filter(|y| y.shndx as usize == i && !y.name.is_empty()) {
+                    assert!(starts.contains(&y.value), "{isa:?} {name} {}: {} at {:#x} is not an instruction boundary",
+                            s.name, y.name, y.value);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fs_module_with_an_unknown_privileged_instruction_is_refused() {
+    // One rewritten site of ext4.ko's .text replaced by an instruction the
+    // rewrite has no stand-in for: the load names it.
+    for (isa, site, other) in [
+        (Isa::Riscv64, 0x1001_7073u32, 0x1800_2573u32), // csrrci xN, sstatus, 2 -> csrr a0, satp
+        (Isa::Aarch64, 0xd538_4100, 0xd538_1000),       // mrs xN, SP_EL0 -> mrs x0, SCTLR_EL1
+    ] {
+        let Some(mut obj) = fs_ko(isa, "fs/ext4.ko") else { continue };
+        let (shs, _, _) = read_elf(&obj);
+        let text = shs.iter().find(|s| s.name == ".text").unwrap();
+        let (off, size) = (text.off, text.size);
+        let mask = if isa == Isa::Riscv64 { 0xffff_f07f } else { 0xffff_ffe0 };
+        let mut at = 0;
+        let hit = loop {
+            assert!(at + 4 <= size, "{isa:?}: no {site:#x} in ext4.ko .text");
+            let w = u32le(&obj, off + at);
+            if w & mask == site {
+                break at;
+            }
+            at += if isa == Isa::Riscv64 && obj[off + at] & 3 != 3 { 2 } else { 4 };
+        };
+        obj[off + hit..off + hit + 4].copy_from_slice(&other.to_le_bytes());
+        let m = Module::parse(&obj, Some(isa)).unwrap();
+        let l = m.layout().unwrap();
+        let mut t = vec![0u8; l.text_size as usize];
+        let mut d = vec![0u8; l.data_size as usize];
+        let r = m.load(&mut t, 0x1100_0000, &mut d, 0x1180_0000, &mut |n: &[u8]| Some(0x1100_0000 + (fnv(n) % 0x1_0000) * 16));
+        assert_eq!(r.err(), Some(Error::Privileged(&b".text"[..], hit as u64, other)), "{isa:?}");
+    }
+}
+
+#[test]
+fn fs_module_with_data_in_its_text_is_refused() {
+    // A `$d` mapping symbol in a text section: data among the code, which a
+    // linear decode could misread. One `$x` of ext4.ko renamed `$d`.
+    for isa in [Isa::Riscv64, Isa::Aarch64] {
+        let Some(mut obj) = fs_ko(isa, "fs/ext4.ko") else { continue };
+        let (shs, syms, _) = read_elf(&obj);
+        let in_text = |y: &Sy| shs.get(y.shndx as usize).is_some_and(|s| s.flags & 0x6 == 0x6);
+        let x = syms.iter().find(|y| y.name.starts_with("$x") && in_text(y)).expect("a $x mapping symbol in the text");
+        let sec = shs[x.shndx as usize].name.clone();
+        let st = shs.iter().find(|s| s.kind == 2).unwrap();
+        let strtab = &shs[st.link];
+        let pat = format!("\0{}\0", x.name);
+        let at = obj[strtab.off..strtab.off + strtab.size]
+            .windows(pat.len())
+            .position(|w| w == pat.as_bytes())
+            .expect("the name in the string table");
+        obj[strtab.off + at + 2] = b'd';
+        let m = Module::parse(&obj, Some(isa)).unwrap();
+        let l = m.layout().unwrap();
+        let mut t = vec![0u8; l.text_size as usize];
+        let mut d = vec![0u8; l.data_size as usize];
+        let r = m.load(&mut t, 0x1100_0000, &mut d, 0x1180_0000, &mut |n: &[u8]| Some(0x1100_0000 + (fnv(n) % 0x1_0000) * 16));
+        match r.err() {
+            Some(Error::RefusedSection(s)) => assert!(s.ends_with(b"text"), "{isa:?}: refused {}", String::from_utf8_lossy(s)),
+            e => panic!("{isa:?}: {sec} with a $d symbol was not refused ({e:?})"),
+        }
+    }
+}

@@ -66,6 +66,71 @@ pub mod encode {
     }
 }
 
+/// The ring-3 rewrite of aarch64 module text (see [`crate::rewrite_text`]).
+///
+/// A Linux module reaches EL1 state in two ways the server can stand in for:
+///
+/// - `current` is `mrs xN, SP_EL0` (EL0 cannot read `SP_EL0` as a system
+///   register). It becomes `mrs xN, TPIDR_EL0`, which EL0 reads and writes:
+///   the server's task switch writes the current Linux task there, and the
+///   kernel keeps `TPIDR_EL0` per task for a Linux class server's tasks.
+/// - The per-CPU base is `mrs xN, TPIDR_EL1` (`__kern_my_cpu_offset`; 5 reads
+///   in `ext4.ko`). It becomes `movz xN, #0`. A server runs all its Linux code
+///   on one thread, which is one CPU to Linux, so its per-CPU offset is 0 and
+///   every per-CPU variable is used at its loaded address. Refusing the read
+///   instead would refuse `ext4.ko`, and no other value is right. A server
+///   that runs Linux code on more than one thread needs a base per thread
+///   (`TPIDRRO_EL0`, kernel-written), and this rewrite then changes with it.
+///   `mrs xN, TPIDR_EL2` is the VHE form of the same read, left in the
+///   replacement tails of the alternatives Kbuild strips: unreachable, and
+///   given the same value so that no privileged instruction is left.
+///
+/// Kept as they are, because EL0 runs them: hints (`nop`, `yield`, `csdb`,
+/// `bti`, the PAC hints), barriers (`dmb`, `dsb`, `isb`, `clrex`), `brk`
+/// (`BUG()`/`WARN()`), and `ldtr`/`sttr` (inline user access, an ordinary
+/// load or store at EL0). Refused: every other system register access
+/// (`TPIDR_EL0` itself included, which now holds `current`), `msr` of a
+/// `PSTATE` field (`DAIFSet`, `DAIFClr`, `PAN`), `sys`/`sysl` (`dc`, `ic`,
+/// `at`, `tlbi`), `svc`, `hvc`, `smc`, `hlt`, `dcps*`, `eret` and `drps`.
+pub mod rewrite {
+    use crate::{Insn, Rewrite};
+
+    /// `mrs x0, SP_EL0`; the register is bits 4:0.
+    pub const MRS_SP_EL0: u32 = 0xd538_4100;
+    /// `mrs x0, TPIDR_EL0`.
+    pub const MRS_TPIDR_EL0: u32 = 0xd53b_d040;
+    /// `mrs x0, TPIDR_EL1`.
+    pub const MRS_TPIDR_EL1: u32 = 0xd538_d080;
+    /// `mrs x0, TPIDR_EL2`.
+    pub const MRS_TPIDR_EL2: u32 = 0xd53c_d040;
+    /// `movz x0, #0`.
+    pub const MOVZ_0: u32 = 0xd280_0000;
+
+    /// What the ring-3 rewrite does with `insn`.
+    pub fn classify(insn: u32) -> Insn {
+        let rt = insn & 0x1f;
+        // The system class: hints, barriers, PSTATE, sys/sysl, mrs/msr.
+        if insn & 0xffc0_0000 == 0xd500_0000 {
+            let (l, op0, crn) = ((insn >> 21) & 1, (insn >> 19) & 0x3, (insn >> 12) & 0xf);
+            return match insn & !0x1f {
+                MRS_SP_EL0 => Insn::Rewrite(MRS_TPIDR_EL0 | rt, Rewrite::Current),
+                MRS_TPIDR_EL1 | MRS_TPIDR_EL2 => Insn::Rewrite(MOVZ_0 | rt, Rewrite::PercpuBase),
+                _ if l == 0 && op0 == 0 && (crn == 2 || crn == 3) && rt == 0x1f => Insn::Keep,
+                _ => Insn::Refuse,
+            };
+        }
+        // Exception generation: only `brk`.
+        if insn & 0xff00_0000 == 0xd400_0000 {
+            return if insn & 0xffe0_001f == 0xd420_0000 { Insn::Keep } else { Insn::Refuse };
+        }
+        // `eret`, `eretaa`, `eretab`, `drps`.
+        if insn & 0xffdf_f000 == 0xd69f_0000 {
+            return Insn::Refuse;
+        }
+        Insn::Keep
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply<'a>(
     rtype: u32,
