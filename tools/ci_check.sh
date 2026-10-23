@@ -14673,14 +14673,18 @@ PY
     # interrupt that woke a sleeping waiter. The canary kernel is the same image
     # without DRV_AHCI: the controller enumerates (8086:2922) and nothing drives
     # it, so there is no `[AHCI]` line and no mount (the disk is on no other bus).
-    # First boot: not run when this was written (the testing week boots it).
+    # First boot (2026-10-23, ahci-ncq-fua-trim): the PASS, NCQ-off and no-TRIM
+    # boots were run by hand with this function's QEMU line and their logs
+    # replayed through its greps; the function itself has not run under `par`.
     #
     # The queue and the features (boot/ahci.rs `ahci_queue_selftest`): QEMU's
     # HBA and ide-hd queue (NCQ), so the disk gets more than one command slot
     # and a read of four commands' worth has two or more in it at once; ide-hd
     # advertises TRIM by default, so the scratch file FAT32 writes and removes
     # has its chain discarded as DATA SET MANAGEMENT (TRIMs > 0); FUA is what
-    # IDENTIFY word 84 says, and the block layer's fsync commit must agree.
+    # IDENTIFY word 84 says, and the block layer's fsync commit must agree
+    # (QEMU's ide-hd has no FUA: only the fallback is seen here; a FUA write
+    # is proven by the host model, `ahci_tests.rs`).
     # Canaries: the same image built with AHCI_NCQ_DEPTH=1 must fail the queue
     # checks and pass the rest; the pass image on an ide-hd with
     # discard_granularity=0 must show trim=n and no TRIM, and still mount.
