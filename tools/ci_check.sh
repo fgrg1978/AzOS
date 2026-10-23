@@ -391,8 +391,8 @@ case "$K1_ISA" in
      exit 1 ;;
 esac
 
-build_board() {
-    local label="$1" feat="$2" ld="kernel/linker-$2.ld" isa="${3:-}"
+build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
+    local label="$1" feat="$2" ld="kernel/linker-${5:-$2}.ld" isa="${3:-}" target="${4:-}"
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if ! board_config "$feat"; then
@@ -406,8 +406,14 @@ build_board() {
     # board's defconfig turns on (K1: ENERGY and THERMAL, refused at compile
     # time without their features).
     kfeat="$(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" "$AZOS_OUT/target/board-${feat}/${feat}.config" | sed -n 's/.*--features \([^ ]*\).*/\1/p')"
-    out="$(TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$AZOS_OUT/target/board-${feat}/${feat}.config" \
-           RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release --features "${kfeat:-$feat}" \
+    # A board of another ISA (`<target>`) builds in its own target dir, so it
+    # neither rebuilds nor overwrites the shared triple the QEMU rows boot.
+    local tflags=() tenv=()
+    if [ -n "$target" ]; then
+        tflags=(--target "$target"); tenv=("CARGO_TARGET_DIR=$AZOS_OUT/target/board-${feat}")
+    fi
+    out="$(env ${tenv[@]+"${tenv[@]}"} TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$AZOS_OUT/target/board-${feat}/${feat}.config" \
+           RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release ${tflags[@]+"${tflags[@]}"} --features "${kfeat:-$feat}" \
            --config "build.rustflags=['-C','link-arg=-T$ld']" 2>&1)"; rc=$?
     # The exit status counts here too, as in `build`. Warnings do too, as of
     # U12-5: this used to check `^error` only, so vf2/k1 — the only two rows
@@ -10216,6 +10222,10 @@ isa_guard   "vf2: no B extension" none
 build_board "k1 (+linker)"        k1 "$K1_ISA"
 board_config_applied "k1 config applied" k1
 isa_guard   "k1: B extension" some
+# The Raspberry Pi 5 (aarch64, BCM2712): the release kernel `make rpi5` builds,
+# from config/defconfigs/rpi5.config and the aarch64 linker script. Until the
+# port it was a compile_error!; nothing boots it here (QEMU has no raspi5).
+build_board "rpi5 (+linker)"      rpi5 "" aarch64-unknown-none-softfloat aarch64
 # The fleet profile: 1024 TCP connections, a 1022 MiB linker region. See
 # `fleet_config` for why it does not use `make build-fleet`.
 if fleet_config; then
