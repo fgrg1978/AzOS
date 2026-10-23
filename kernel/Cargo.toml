@@ -449,6 +449,9 @@ usb-storage = ["usb-hc", "azos_drv_block/usb-msc"]
 # A USB network function as a NIC (derived: USB_CDC or USB_SMSC95XX turns
 # it on; azos_drv_net's adapter, crates/drivers/net/src/usb_net.rs).
 usb-net = ["usb-hc", "azos_drv_net/usb-net"]
+# Kconfig USB_STORAGE_VOLUME: the stick's FAT32 volume mounted beside /fat
+# (crates/fs/fs/src/usbvol.rs).
+usb-storage-volume = ["usb-storage", "azos_fs/usb-volume"]
 # Kconfig USB_CDC: the CDC class driver: ECM/NCM as a NIC of the network device
 # table (crates/drivers/net/src/usb_net.rs), ACM as a `Uart` port
 # (kernel/src/boot/usb/serial.rs).

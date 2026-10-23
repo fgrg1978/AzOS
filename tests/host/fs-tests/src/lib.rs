@@ -36,6 +36,17 @@ extern crate fs_test_drivers as azos_drv_sys;
 #[allow(dead_code)]
 #[path = "../../../../crates/fs/fs/src/fat32.rs"]
 mod fat32;
+// `fat32.rs`'s device and per-volume knobs, as `crates/fs/fs/src/lib.rs`
+// gives them to the boot volume: the shim disk.
+#[allow(dead_code)]
+mod fat32_dev {
+    pub(crate) use azos_drv_block::{blkdev, partition};
+    pub(crate) const WRITEBACK: bool = azos_limits::FS_WRITEBACK;
+    pub(crate) const BLOCK_CACHE_KB: usize = azos_limits::FS_BLOCK_CACHE_KB;
+    pub(crate) const FS_TYPE: u32 = crate::vfs::FS_TYPE_FAT32;
+    pub(crate) const STAMP_FS: u32 = crate::vfs::STAMP_FS_FAT32;
+    pub(crate) const TICKETED: bool = true;
+}
 
 // The shared block cache. `fat32.rs` keeps its sector cache in
 // one, so the seam needs it; `bcache_tests` below drives it directly against
@@ -178,6 +189,14 @@ mod envelope_delete;
 // Every mounted volume made durable (orderly power-off, `Power::sync`): `sync_all.rs`.
 #[cfg(test)]
 mod sync_all;
+// The removable volume (`usbvol`): `fat32.rs` compiled a second time over a
+// USB stick, mounted beside `/fat`. Pulled whole; it pulls `fat32.rs` again
+// itself (`#[path]` relative to its own directory).
+#[allow(dead_code)]
+#[path = "../../../../crates/fs/fs/src/usbvol.rs"]
+mod usbvol;
+#[cfg(test)]
+mod usb_volume;
 
 #[cfg(test)]
 mod image {
@@ -1471,15 +1490,15 @@ mod vfs_backend {
     /// canonical path text, directories joined with `/`.
     #[test]
     fn key_for_produces_the_uppercase_8_3_path() {
-        let k = fat32::Fat32Fs.key_for(b"config.ini").expect("a legal 8.3 name");
+        let k = fat32::FAT32_FS.key_for(b"config.ini").expect("a legal 8.3 name");
         assert_eq!(&k.bytes[..10], b"CONFIG.INI");
         assert!(k.bytes[10..].iter().all(|&b| b == 0), "the key is NUL-padded");
 
-        let k = fat32::Fat32Fs.key_for(b"hello").expect("no extension is legal");
+        let k = fat32::FAT32_FS.key_for(b"hello").expect("no extension is legal");
         assert_eq!(&k.bytes[..5], b"HELLO");
         assert!(k.bytes[5..].iter().all(|&b| b == 0), "no dot without an extension");
 
-        let k = fat32::Fat32Fs.key_for(b"pkg/Sys_b/kern.bin").expect("a file in subdirectories");
+        let k = fat32::FAT32_FS.key_for(b"pkg/Sys_b/kern.bin").expect("a file in subdirectories");
         assert_eq!(&k.bytes[..18], b"PKG/SYS_B/KERN.BIN");
         assert!(k.bytes[18..].iter().all(|&b| b == 0));
     }
@@ -1490,17 +1509,17 @@ mod vfs_backend {
     /// walk allows or longer than a key are not.
     #[test]
     fn key_for_refuses_what_this_backend_cannot_name() {
-        assert!(fat32::Fat32Fs.key_for(b"").is_none(), "empty");
-        assert!(fat32::Fat32Fs.key_for(b"sub/file.txt").is_some(), "subdirectory");
-        assert!(fat32::Fat32Fs.key_for(b"/file.txt").is_none(), "leading slash");
-        assert!(fat32::Fat32Fs.key_for(b"sub/").is_none(), "trailing slash");
-        assert!(fat32::Fat32Fs.key_for(b"sub//file.txt").is_none(), "empty component");
-        assert!(fat32::Fat32Fs.key_for(b"sub/..").is_none(), "dot-dot");
-        assert!(fat32::Fat32Fs.key_for(b"TOOLONGNAME.TXT").is_none(), "base > 8");
-        assert!(fat32::Fat32Fs.key_for(b"NAME.TOOLONG").is_none(), "ext > 3");
-        assert!(fat32::Fat32Fs.key_for(b"sub/TOOLONGNAME.TXT").is_none(), "base > 8 below a directory");
-        assert!(fat32::Fat32Fs.key_for(b"a/b/c/d/e/f/g/h/i").is_none(), "nine components");
-        assert!(fat32::Fat32Fs.key_for(b"abcdefgh.abc/abcdefgh.abc/abcdefgh.abc/abcdefgh.abc/abcdefgh.abc/f").is_none(),
+        assert!(fat32::FAT32_FS.key_for(b"").is_none(), "empty");
+        assert!(fat32::FAT32_FS.key_for(b"sub/file.txt").is_some(), "subdirectory");
+        assert!(fat32::FAT32_FS.key_for(b"/file.txt").is_none(), "leading slash");
+        assert!(fat32::FAT32_FS.key_for(b"sub/").is_none(), "trailing slash");
+        assert!(fat32::FAT32_FS.key_for(b"sub//file.txt").is_none(), "empty component");
+        assert!(fat32::FAT32_FS.key_for(b"sub/..").is_none(), "dot-dot");
+        assert!(fat32::FAT32_FS.key_for(b"TOOLONGNAME.TXT").is_none(), "base > 8");
+        assert!(fat32::FAT32_FS.key_for(b"NAME.TOOLONG").is_none(), "ext > 3");
+        assert!(fat32::FAT32_FS.key_for(b"sub/TOOLONGNAME.TXT").is_none(), "base > 8 below a directory");
+        assert!(fat32::FAT32_FS.key_for(b"a/b/c/d/e/f/g/h/i").is_none(), "nine components");
+        assert!(fat32::FAT32_FS.key_for(b"abcdefgh.abc/abcdefgh.abc/abcdefgh.abc/abcdefgh.abc/abcdefgh.abc/f").is_none(),
             "a path that does not fit the key");
     }
 
@@ -1517,13 +1536,13 @@ mod vfs_backend {
         put_dirent(&mut img, &g, 0, b"DATA    BIN", 3, 300);
         mount(img);
 
-        let key = fat32::Fat32Fs.key_for(b"data.bin").expect("legal name");
-        let st  = fat32::Fat32Fs.stat(&key).expect("the entry exists");
+        let key = fat32::FAT32_FS.key_for(b"data.bin").expect("legal name");
+        let st  = fat32::FAT32_FS.stat(&key).expect("the entry exists");
         assert_eq!(st.size, 300, "size comes from the directory entry");
         assert!(!st.is_dir);
 
         let mut out = [0u8; 512];
-        let n = fat32::Fat32Fs.read_all(&key, &st, &mut out);
+        let n = fat32::FAT32_FS.read_all(&key, &st, &mut out);
         assert_eq!(n, 512, "one whole cluster is read");
         assert!(out.iter().all(|&b| b == 0xCD));
     }
@@ -1548,12 +1567,12 @@ mod vfs_backend {
         put_dirent(&mut img, &g, 1, b"TWO     BIN", 4, 512);
         mount(img);
 
-        let k2 = fat32::Fat32Fs.key_for(b"two.bin").expect("legal name");
-        let s2 = fat32::Fat32Fs.stat(&k2).expect("the entry exists");
+        let k2 = fat32::FAT32_FS.key_for(b"two.bin").expect("legal name");
+        let s2 = fat32::FAT32_FS.stat(&k2).expect("the entry exists");
         assert_eq!(s2.cookie, 4, "the cookie is TWO.BIN's start cluster");
 
         let mut out = [0u8; 512];
-        fat32::Fat32Fs.read_all(&k2, &s2, &mut out);
+        fat32::FAT32_FS.read_all(&k2, &s2, &mut out);
         assert!(out.iter().all(|&b| b == 0x22), "TWO.BIN's cluster, not ONE.BIN's");
     }
 
@@ -1567,14 +1586,14 @@ mod vfs_backend {
         set_fat(&mut img, &g, 2, 0x0FFF_FFFF);
         mount(img);
 
-        let key = fat32::Fat32Fs.key_for(b"absent.bin").expect("legal name");
-        assert!(fat32::Fat32Fs.stat(&key).is_none());
+        let key = fat32::FAT32_FS.key_for(b"absent.bin").expect("legal name");
+        assert!(fat32::FAT32_FS.stat(&key).is_none());
     }
 
     /// The tag the VFS mount table stores for this backend.
     #[test]
     fn fs_type_is_the_fat32_tag() {
-        assert_eq!(fat32::Fat32Fs.fs_type(), super::vfs::FS_TYPE_FAT32);
+        assert_eq!(fat32::FAT32_FS.fs_type(), super::vfs::FS_TYPE_FAT32);
     }
 }
 
@@ -1638,10 +1657,10 @@ mod vfs_open_close {
     /// cluster chain.
     pub(super) fn on_disk(name: &[u8]) -> Vec<u8> {
         use vfs::FileSystem;
-        let key = fat32::Fat32Fs.key_for(name).expect("a legal 8.3 name");
-        let st  = fat32::Fat32Fs.stat(&key).expect("the file exists on the volume");
+        let key = fat32::FAT32_FS.key_for(name).expect("a legal 8.3 name");
+        let st  = fat32::FAT32_FS.stat(&key).expect("the file exists on the volume");
         let mut buf = vec![0u8; (st.size as usize) + 1024];
-        let n = fat32::Fat32Fs.read_all(&key, &st, &mut buf);
+        let n = fat32::FAT32_FS.read_all(&key, &st, &mut buf);
         buf.truncate(n.min(st.size as usize));
         buf
     }
@@ -1693,12 +1712,12 @@ mod vfs_open_close {
         use vfs::FileSystem;
 
         append_record(&mut t, b"/fat/GROW.LOG", b"0123456789");
-        let key = fat32::Fat32Fs.key_for(b"grow.log").unwrap();
-        assert_eq!(fat32::Fat32Fs.stat(&key).unwrap().size, 10);
+        let key = fat32::FAT32_FS.key_for(b"grow.log").unwrap();
+        assert_eq!(fat32::FAT32_FS.stat(&key).unwrap().size, 10);
 
         append_record(&mut t, b"/fat/GROW.LOG", b"abcde");
         assert_eq!(
-            fat32::Fat32Fs.stat(&key).unwrap().size, 15,
+            fat32::FAT32_FS.stat(&key).unwrap().size, 15,
             "the size on disk must be first + second, not just the second",
         );
     }
@@ -1837,8 +1856,8 @@ mod vfs_open_close {
             // Wave 15: FAT32 writes in place, so both writes are in the file
             // already, whichever descriptor closes last.
             use vfs::FileSystem;
-            let key = fat32::Fat32Fs.key_for(b"lend.txt").unwrap();
-            assert_eq!(fat32::Fat32Fs.stat(&key).map(|st| st.size), Some(6));
+            let key = fat32::FAT32_FS.key_for(b"lend.txt").unwrap();
+            assert_eq!(fat32::FAT32_FS.stat(&key).map(|st| st.size), Some(6));
         }
 
         let mut last = vfs::fd_detach(&mut t, fd).expect("the last descriptor hands back the flush");
@@ -2031,9 +2050,9 @@ mod vfs_open_close {
         assert!(fd >= 0, "an append open of an existing file opens it in place");
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
 
-        let key = fat32::Fat32Fs.key_for(b"crash.log").unwrap();
+        let key = fat32::FAT32_FS.key_for(b"crash.log").unwrap();
         assert_eq!(
-            fat32::Fat32Fs.stat(&key).unwrap().size, huge as u64,
+            fat32::FAT32_FS.stat(&key).unwrap().size, huge as u64,
             "the directory entry must be untouched by the refused open",
         );
     }
@@ -2117,7 +2136,7 @@ mod vfs_open_close {
 
         assert_eq!(on_disk(b"crash.log"), b"PANIC A\nPANIC B\n");
         assert!(
-            fat32::Fat32Fs.key_for(b"crash.old").and_then(|k| fat32::Fat32Fs.stat(&k)).is_none(),
+            fat32::FAT32_FS.key_for(b"crash.old").and_then(|k| fat32::FAT32_FS.stat(&k)).is_none(),
             "no rotation happened, so /fat/CRASH.OLD must not exist",
         );
     }
@@ -2137,8 +2156,8 @@ mod vfs_open_close {
         // ONE cannot make the other look correct by symmetry.
         let old_content = b"OLD ENTRY ONE\nOLD ENTRY TWO\n";
         assert_eq!(
-            fat32::Fat32Fs.write_all(
-                &fat32::Fat32Fs.key_for(b"crash.log").unwrap(), old_content,
+            fat32::FAT32_FS.write_all(
+                &fat32::FAT32_FS.key_for(b"crash.log").unwrap(), old_content,
             ),
             Ok(()),
         );
@@ -2162,7 +2181,7 @@ mod vfs_open_close {
             "CRASH.OLD must hold exactly what CRASH.LOG held before rotation",
         );
         assert!(
-            fat32::Fat32Fs.key_for(b"azrepl.tmp").and_then(|k| fat32::Fat32Fs.stat(&k)).is_none(),
+            fat32::FAT32_FS.key_for(b"azrepl.tmp").and_then(|k| fat32::FAT32_FS.stat(&k)).is_none(),
             "the rotated log goes through the atomic replace, which leaves no temp file",
         );
     }
@@ -2189,8 +2208,8 @@ mod vfs_open_close {
 
         let old_content = b"OLD CONTENT THAT MUST NOT BLOCK THE NEW ENTRY\n";
         assert_eq!(
-            fat32::Fat32Fs.write_all(
-                &fat32::Fat32Fs.key_for(b"crash.log").unwrap(), old_content,
+            fat32::FAT32_FS.write_all(
+                &fat32::FAT32_FS.key_for(b"crash.log").unwrap(), old_content,
             ),
             Ok(()),
         );
@@ -2206,7 +2225,7 @@ mod vfs_open_close {
             );
         }
         assert!(
-            fat32::Fat32Fs.key_for(b"crash.old").and_then(|k| fat32::Fat32Fs.stat(&k)).is_none(),
+            fat32::FAT32_FS.key_for(b"crash.old").and_then(|k| fat32::FAT32_FS.stat(&k)).is_none(),
             "fixture check: CRASH.OLD must not exist before the call under test",
         );
         // One free cluster left: enough for either file's data, not for the
@@ -2269,11 +2288,11 @@ mod vfs_open_close {
         fresh_volume();
         use vfs::FileSystem;
 
-        let key = fat32::Fat32Fs.key_for(b"stream.txt").unwrap();
-        assert_eq!(fat32::Fat32Fs.write_at(&key, 0, b"hello world"), Ok(11));
+        let key = fat32::FAT32_FS.key_for(b"stream.txt").unwrap();
+        assert_eq!(fat32::FAT32_FS.write_at(&key, 0, b"hello world"), Ok(11));
 
         let mut buf = [0u8; 32];
-        let n = fat32::Fat32Fs.read_at(&key, 0, &mut buf);
+        let n = fat32::FAT32_FS.read_at(&key, 0, &mut buf);
         assert_eq!(&buf[..n], b"hello world");
     }
 
@@ -2287,11 +2306,11 @@ mod vfs_open_close {
         fresh_volume();
         use vfs::FileSystem;
 
-        let key = fat32::Fat32Fs.key_for(b"seek.txt").unwrap();
-        assert_eq!(fat32::Fat32Fs.write_at(&key, 0, b"0123456789"), Ok(10));
+        let key = fat32::FAT32_FS.key_for(b"seek.txt").unwrap();
+        assert_eq!(fat32::FAT32_FS.write_at(&key, 0, b"0123456789"), Ok(10));
 
         let mut buf = [0u8; 4];
-        let n = fat32::Fat32Fs.read_at(&key, 6, &mut buf);
+        let n = fat32::FAT32_FS.read_at(&key, 6, &mut buf);
         assert_eq!(&buf[..n], b"6789", "must start at byte 6, not byte 0");
     }
 
@@ -2307,12 +2326,12 @@ mod vfs_open_close {
         fresh_volume();
         use vfs::FileSystem;
 
-        let key = fat32::Fat32Fs.key_for(b"hole.txt").unwrap();
-        assert_eq!(fat32::Fat32Fs.write_at(&key, 0, b"AB"), Ok(2));
-        assert_eq!(fat32::Fat32Fs.write_at(&key, 10, b"Z"), Ok(1));
+        let key = fat32::FAT32_FS.key_for(b"hole.txt").unwrap();
+        assert_eq!(fat32::FAT32_FS.write_at(&key, 0, b"AB"), Ok(2));
+        assert_eq!(fat32::FAT32_FS.write_at(&key, 10, b"Z"), Ok(1));
 
         let mut buf = [0u8; 11];
-        let n = fat32::Fat32Fs.read_at(&key, 0, &mut buf);
+        let n = fat32::FAT32_FS.read_at(&key, 0, &mut buf);
         assert_eq!(n, 11, "size must now be offset(10) + len(1)");
         assert_eq!(&buf[..2], b"AB");
         assert_eq!(&buf[2..10], &[0u8; 8], "the hole must read as zero");
@@ -2328,11 +2347,11 @@ mod vfs_open_close {
         fresh_volume();
         use vfs::FileSystem;
 
-        let key = fat32::Fat32Fs.key_for(b"short.txt").unwrap();
-        assert_eq!(fat32::Fat32Fs.write_at(&key, 0, b"hi"), Ok(2));
+        let key = fat32::FAT32_FS.key_for(b"short.txt").unwrap();
+        assert_eq!(fat32::FAT32_FS.write_at(&key, 0, b"hi"), Ok(2));
 
         let mut buf = [0u8; 8];
-        assert_eq!(fat32::Fat32Fs.read_at(&key, 100, &mut buf), 0);
+        assert_eq!(fat32::FAT32_FS.read_at(&key, 100, &mut buf), 0);
     }
 
     /// `write_at` streams: it must not cost a whole-file-sized allocation
@@ -2348,15 +2367,15 @@ mod vfs_open_close {
         fresh_volume();
         use vfs::FileSystem;
 
-        let key = fat32::Fat32Fs.key_for(b"append.txt").unwrap();
+        let key = fat32::FAT32_FS.key_for(b"append.txt").unwrap();
         let mut off = 0u64;
         for chunk in [&b"AAAA"[..], &b"BB"[..], &b"CCCCCC"[..]] {
-            let n = fat32::Fat32Fs.write_at(&key, off, chunk).unwrap();
+            let n = fat32::FAT32_FS.write_at(&key, off, chunk).unwrap();
             off += n as u64;
         }
 
         let mut buf = [0u8; 16];
-        let n = fat32::Fat32Fs.read_at(&key, 0, &mut buf);
+        let n = fat32::FAT32_FS.read_at(&key, 0, &mut buf);
         assert_eq!(&buf[..n], b"AAAABBCCCCCC");
     }
 }
@@ -5472,8 +5491,8 @@ mod vfs_p2 {
         let fd = vfs::vfs_open(&mut t, b"/fat/ONE.TXT", O_WRONLY | O_CREAT | O_TRUNC);
         assert_eq!(vfs::vfs_write(&mut t, fd, b"hello".as_ptr(), 5), 5);
         assert_eq!(vfs::vfs_fsync(&mut t, fd), Ok(()), "fsync must write the dirty proxy");
-        let key = fat32::Fat32Fs.key_for(b"ONE.TXT").unwrap();
-        assert_eq!(fat32::Fat32Fs.stat(&key).unwrap().size, 5, "fsync did not reach the volume");
+        let key = fat32::FAT32_FS.key_for(b"ONE.TXT").unwrap();
+        assert_eq!(fat32::FAT32_FS.stat(&key).unwrap().size, 5, "fsync did not reach the volume");
         vfs::vfs_close(&mut t, fd);
 
         assert_eq!(vfs::vfs_mkdir(b"/fat/SUB"), Ok(()));
@@ -5611,7 +5630,7 @@ mod full_root_create {
     }
 
     fn free_clusters() -> u64 {
-        fat32::Fat32Fs.statfs().ok().expect("statfs on a mounted volume").blocks_free
+        fat32::FAT32_FS.statfs().ok().expect("statfs on a mounted volume").blocks_free
     }
 
     /// The root chain grew by exactly one cluster, which holds the new entry
@@ -5684,8 +5703,8 @@ mod full_root_create {
         let _g = serial();
         let _wt = crate::write_through();
         let g = full_root_volume();
-        let key = fat32::Fat32Fs.key_for(b"empty.bin").unwrap();
-        assert_eq!(fat32::Fat32Fs.create(&key), Ok(()));
+        let key = fat32::FAT32_FS.key_for(b"empty.bin").unwrap();
+        assert_eq!(fat32::FAT32_FS.create(&key), Ok(()));
         assert_root_extended(&g, b"EMPTY   BIN");
         assert_eq!(fat32::fat32_lookup_root(b"EMPTY   BIN"), Ok((0, 0)));
     }
@@ -6169,14 +6188,14 @@ mod fat32_round23 {
     }
 
     fn free() -> u64 {
-        fat32::Fat32Fs.statfs().expect("statfs on a mounted volume").blocks_free
+        fat32::FAT32_FS.statfs().expect("statfs on a mounted volume").blocks_free
     }
 
     fn read(name: &[u8]) -> Vec<u8> {
-        let key = fat32::Fat32Fs.key_for(name).unwrap();
-        let st = fat32::Fat32Fs.stat(&key).expect("the file exists");
+        let key = fat32::FAT32_FS.key_for(name).unwrap();
+        let st = fat32::FAT32_FS.stat(&key).expect("the file exists");
         let mut b = vec![0u8; st.size as usize + 1024];
-        let n = fat32::Fat32Fs.read_all(&key, &st, &mut b);
+        let n = fat32::FAT32_FS.read_all(&key, &st, &mut b);
         b.truncate(n.min(st.size as usize));
         b
     }
@@ -6192,24 +6211,24 @@ mod fat32_round23 {
         let _g = serial();
         fresh();
         let before = free();
-        assert_eq!(fat32::Fat32Fs.mkdir(b"EMPTY"), Ok(()));
+        assert_eq!(fat32::FAT32_FS.mkdir(b"EMPTY"), Ok(()));
         assert_eq!(free(), before - 1, "mkdir took one cluster");
-        assert_eq!(fat32::Fat32Fs.rmdir(b"EMPTY"), Ok(()));
+        assert_eq!(fat32::FAT32_FS.rmdir(b"EMPTY"), Ok(()));
         assert_eq!(free(), before, "rmdir did not give the cluster back");
         assert_eq!(fat32::fat32_lookup_root(b"EMPTY      "), Err(()), "still listed");
 
-        assert_eq!(fat32::Fat32Fs.mkdir(b"FULL"), Ok(()));
+        assert_eq!(fat32::FAT32_FS.mkdir(b"FULL"), Ok(()));
         let f = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/FULL/IN.TXT",
                                   fat32::open_flags::WRITE | fat32::open_flags::CREATE)
             .expect("create a file inside the directory");
         assert_eq!(fat32::fat32_write(f, b"x"), Ok(1));
         let _ = fat32::fat32_close(f);
-        assert_eq!(fat32::Fat32Fs.rmdir(b"FULL"), Err(FsErr::NotEmpty));
+        assert_eq!(fat32::FAT32_FS.rmdir(b"FULL"), Err(FsErr::NotEmpty));
         assert!(fat32::fat32_lookup_root(b"FULL       ").is_ok(), "a refused rmdir removed it");
 
         assert_eq!(fat32::fat32_write_file(b"PLAIN   TXT", b"data"), Ok(()));
-        assert_eq!(fat32::Fat32Fs.rmdir(b"PLAIN.TXT"), Err(FsErr::NotDir));
-        assert_eq!(fat32::Fat32Fs.rmdir(b"NOSUCH"), Err(FsErr::NotFound));
+        assert_eq!(fat32::FAT32_FS.rmdir(b"PLAIN.TXT"), Err(FsErr::NotDir));
+        assert_eq!(fat32::FAT32_FS.rmdir(b"NOSUCH"), Err(FsErr::NotFound));
     }
 
     /// **truncate to any length**: shorter keeps the prefix, longer
@@ -6222,23 +6241,23 @@ mod fat32_round23 {
     fn truncate_keeps_the_prefix_and_zero_fills() {
         let _g = serial();
         fresh();
-        let key = fat32::Fat32Fs.key_for(b"T.TXT").unwrap();
+        let key = fat32::FAT32_FS.key_for(b"T.TXT").unwrap();
         assert_eq!(fat32::fat32_write_file(b"T       TXT", b"abcdef"), Ok(()));
         let before = free();
-        assert_eq!(fat32::Fat32Fs.truncate(&key, 3), Ok(()));
+        assert_eq!(fat32::FAT32_FS.truncate(&key, 3), Ok(()));
         assert_eq!(read(b"T.TXT"), b"abc");
-        assert_eq!(fat32::Fat32Fs.truncate(&key, 700), Ok(()));
+        assert_eq!(fat32::FAT32_FS.truncate(&key, 700), Ok(()));
         let long = read(b"T.TXT");
         assert_eq!(long.len(), 700);
         assert_eq!(&long[..3], b"abc");
         assert!(long[3..].iter().all(|&b| b == 0), "the extension is not zero-filled");
         assert_eq!(free(), before - 1, "700 bytes on 512-byte clusters is one more cluster");
-        assert_eq!(fat32::Fat32Fs.truncate(&key, 0), Ok(()));
+        assert_eq!(fat32::FAT32_FS.truncate(&key, 0), Ok(()));
         assert_eq!(read(b"T.TXT"), b"");
-        assert_eq!(fat32::Fat32Fs.mkdir(b"ADIR"), Ok(()));
-        let dkey = fat32::Fat32Fs.key_for(b"ADIR").unwrap();
-        assert_eq!(fat32::Fat32Fs.truncate(&dkey, 1), Err(FsErr::Invalid));
-        assert_eq!(fat32::Fat32Fs.truncate(&key, 1 << 32), Err(FsErr::NoSpace));
+        assert_eq!(fat32::FAT32_FS.mkdir(b"ADIR"), Ok(()));
+        let dkey = fat32::FAT32_FS.key_for(b"ADIR").unwrap();
+        assert_eq!(fat32::FAT32_FS.truncate(&dkey, 1), Err(FsErr::Invalid));
+        assert_eq!(fat32::FAT32_FS.truncate(&key, 1 << 32), Err(FsErr::NoSpace));
     }
 
     /// **statfs scans the FAT once, and never answers stale.** A second
@@ -6302,10 +6321,10 @@ mod inode_key_64 {
     /// refused.
     #[test]
     fn the_fat_key_is_the_canonical_path_and_zero_fills_the_rest() {
-        let k = fat32::Fat32Fs.key_for(b"crash.log").expect("legal 8.3 name");
+        let k = fat32::FAT32_FS.key_for(b"crash.log").expect("legal 8.3 name");
         assert_eq!(&k.bytes[..9], b"CRASH.LOG");
         assert!(k.bytes[9..].iter().all(|&b| b == 0));
-        assert!(fat32::Fat32Fs.key_for(b"a-long-name-that-is-not-8.3.txt").is_none());
+        assert!(fat32::FAT32_FS.key_for(b"a-long-name-that-is-not-8.3.txt").is_none());
     }
 }
 
@@ -6461,17 +6480,17 @@ mod herm_wave11 {
 
         // unlink: a file goes, its clusters come back, a second unlink is
         // ENOENT, a directory is EISDIR and survives.
-        let free_before = vfs::FileSystem::statfs(&fat32::Fat32Fs).unwrap().blocks_free;
+        let free_before = vfs::FileSystem::statfs(&fat32::FAT32_FS).unwrap().blocks_free;
         let mut t = vfs::ScratchFds::new();
         let fd = vfs::vfs_open(&mut t, b"/fat/F.TXT", vfs::O_WRONLY | vfs::O_CREAT);
         assert!(fd >= 0);
         assert_eq!(vfs::vfs_write(&mut t, fd, b"hello".as_ptr(), 5), 5);
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
         assert!(vfs::vfs_stat(b"/fat/F.TXT").is_some());
-        assert!(vfs::FileSystem::statfs(&fat32::Fat32Fs).unwrap().blocks_free < free_before);
+        assert!(vfs::FileSystem::statfs(&fat32::FAT32_FS).unwrap().blocks_free < free_before);
         assert_eq!(vfs::vfs_unlink(b"/fat/F.TXT"), Ok(()));
         assert!(vfs::vfs_stat(b"/fat/F.TXT").is_none());
-        assert_eq!(vfs::FileSystem::statfs(&fat32::Fat32Fs).unwrap().blocks_free, free_before,
+        assert_eq!(vfs::FileSystem::statfs(&fat32::FAT32_FS).unwrap().blocks_free, free_before,
                    "unlink must give the file's clusters back");
         assert_eq!(vfs::vfs_unlink(b"/fat/F.TXT"), Err(FsErr::NotFound));
         assert_eq!(vfs::vfs_unlink(b"/fat/SUB"), Err(FsErr::IsDir));
@@ -6588,8 +6607,8 @@ mod herm_wave11 {
         assert_eq!(vfs::vfs_fsync(&mut t, fd), Err(FsErr::Io), "the second fsync must not be Ok");
         disk_write_fail_clear();
         assert_eq!(vfs::vfs_fsync(&mut t, fd), Ok(()));
-        let key = vfs::FileSystem::key_for(&fat32::Fat32Fs, b"REC.LOG").unwrap();
-        let st = vfs::FileSystem::stat(&fat32::Fat32Fs, &key).unwrap();
+        let key = vfs::FileSystem::key_for(&fat32::FAT32_FS, b"REC.LOG").unwrap();
+        let st = vfs::FileSystem::stat(&fat32::FAT32_FS, &key).unwrap();
         assert_eq!(st.size as usize, REC.len(), "the buffer reached the volume");
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
     }
@@ -6785,7 +6804,7 @@ pub mod fuzz_entry {
     }
 
     fn free_clusters() -> Option<u64> {
-        fat32::Fat32Fs.statfs().ok().map(|s| s.blocks_free)
+        fat32::FAT32_FS.statfs().ok().map(|s| s.blocks_free)
     }
 
     /// Mount `data` as a FAT32 medium and drive the read and write paths over
@@ -6941,7 +6960,7 @@ mod fuzz_regressions {
     const EOC: u32 = 0x0FFF_FFFF;
 
     fn free() -> u64 {
-        fat32::Fat32Fs.statfs().expect("statfs on a mounted volume").blocks_free
+        fat32::FAT32_FS.statfs().expect("statfs on a mounted volume").blocks_free
     }
 
     fn mounted_default() -> Geom {
@@ -7848,14 +7867,14 @@ mod ro_stream {
         let chain: Vec<u32> = (3..259).collect();
         let size = 256 * 512 - 100;
         volume(1, &chain, size);
-        let key = fat32::Fat32Fs.key_for(b"FRAG.BIN").expect("key");
+        let key = fat32::FAT32_FS.key_for(b"FRAG.BIN").expect("key");
         let want: Vec<u8> = (0..size).map(pat).collect();
         let before = cache_ops();
         let mut got = Vec::new();
         let mut page = [0u8; 4096];
         let mut off = 0u64;
         loop {
-            let n = fat32::Fat32Fs.read_at(&key, off, &mut page);
+            let n = fat32::FAT32_FS.read_at(&key, off, &mut page);
             if n == 0 { break; }
             got.extend_from_slice(&page[..n]);
             off += n as u64;
@@ -7867,10 +7886,10 @@ mod ro_stream {
         assert!(ops <= 3 * 256, "{ops} cache operations to fill 256 sectors by pages");
         // An offset in the middle, a short read, the end of the file.
         let mut b = [0u8; 700];
-        assert_eq!(fat32::Fat32Fs.read_at(&key, 40_000, &mut b), 700);
+        assert_eq!(fat32::FAT32_FS.read_at(&key, 40_000, &mut b), 700);
         assert!(b[..] == want[40_000..40_700]);
-        assert_eq!(fat32::Fat32Fs.read_at(&key, size as u64 - 10, &mut b), 10);
-        assert_eq!(fat32::Fat32Fs.read_at(&key, size as u64, &mut b), 0);
+        assert_eq!(fat32::FAT32_FS.read_at(&key, size as u64 - 10, &mut b), 10);
+        assert_eq!(fat32::FAT32_FS.read_at(&key, size as u64, &mut b), 0);
     }
 
     /// **The handle API reads a long file in time linear in its length too.**

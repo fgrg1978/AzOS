@@ -34,6 +34,18 @@ config USB_HID_REPEAT_PERIOD_MS
       usb task runs every USB_POLL_MS, so a period below it repeats once per
       turn. Only with USB_HID.
 
+config USB_VOLUME_CACHE_KB
+    int "USB stick volume: sector cache (KiB, 0 or a power of two from 4)"
+    range 0 4096
+    default 16 if PROFILE_EMBEDDED
+    default 64
+    help
+      crates/fs/fs/src/usbvol.rs: the sector cache of the stick's FAT32
+      volume (USB_STORAGE_VOLUME), its own and not /fat's (FS_BLOCK_CACHE_KB):
+      FAT and directory sectors are read once per stick, not once per
+      lookup. In .bss whether or not a stick is plugged. 0 keeps the eight
+      lines the driver needs.
+
 config USB_MSC_TIMEOUT_MS
     int "USB mass storage: milliseconds a command may take"
     range 1000 120000
@@ -191,6 +203,28 @@ config USB_STORAGE
       reads its sector 0. QEMU: `-device qemu-xhci -drive
       if=none,id=u,file=disk.img -device usb-storage,drive=u`.
       n: the class driver is not registered and a stick is only listed.
+
+config USB_STORAGE_VOLUME
+    # cargo-feature: usb-storage-volume
+    bool "Mount the FAT32 volume of a USB stick beside /fat"
+    default y if USB_STORAGE
+    default n
+    depends on USB_STORAGE
+    help
+      Kernel feature `usb-storage-volume` (crates/fs/fs/src/usbvol.rs,
+      kernel/src/boot/usb.rs). When a stick becomes ready its partition table
+      is read (MBR or GPT, else the bare medium) and the first FAT32 volume on
+      it is mounted at /usb: a second, separate volume (the FAT32 driver
+      compiled a second time, with its own state and its own sector cache,
+      USB_VOLUME_CACHE_KB), never in /fat's place. Write-through: a write that
+      returned is on the stick. Ring 3 reaches it beneath a Cap<Dir> tree the
+      topology grants on /usb (the package installer reads a package from it,
+      the shell writes the crash log to it). Pulling the stick out retires the
+      mount: open files on it fail their reads and writes, the next stick
+      mounts afresh. An orderly power-off or reboot writes it back, marks it
+      clean and sends SYNCHRONIZE CACHE. Cost: a second copy of the FAT32
+      code in the kernel image.
+      n: a stick is a disk with no filesystem user.
 
 config USB_CDC
     # cargo-feature: usb-cdc

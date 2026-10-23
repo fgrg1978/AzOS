@@ -41,23 +41,23 @@ fn poisoned_volume() {
 }
 
 fn key(name: &[u8]) -> InodeKey {
-    fat32::Fat32Fs.key_for(name).expect("an 8.3 name")
+    fat32::FAT32_FS.key_for(name).expect("an 8.3 name")
 }
 
 fn runs_of(k: &InodeKey, len: u64) -> Result<Vec<SectorRun>, FsErr> {
     let mut out = [SectorRun::default(); 32];
-    let n = fat32::Fat32Fs.swap_runs(k, len, &mut out)?;
+    let n = fat32::FAT32_FS.swap_runs(k, len, &mut out)?;
     Ok(out[..n].to_vec())
 }
 
 fn free_clusters() -> u64 {
-    fat32::Fat32Fs.statfs().unwrap().blocks_free
+    fat32::FAT32_FS.statfs().unwrap().blocks_free
 }
 
 fn read_all(k: &InodeKey) -> Vec<u8> {
-    let st = fat32::Fat32Fs.stat(k).unwrap();
+    let st = fat32::FAT32_FS.stat(k).unwrap();
     let mut b = vec![0xFFu8; st.size as usize];
-    assert_eq!(fat32::Fat32Fs.read_at(k, 0, &mut b), b.len());
+    assert_eq!(fat32::FAT32_FS.read_at(k, 0, &mut b), b.len());
     b
 }
 
@@ -79,7 +79,7 @@ fn raw_fill(runs: &[SectorRun], byte: u8) {
 fn a_fat32_swap_file_grows_in_zeroed_clusters_and_its_runs_cover_it() {
     let _g = serial();
     poisoned_volume();
-    let fs = fat32::Fat32Fs;
+    let fs = &fat32::FAT32_FS;
     let k = key(b"SWAPT.AZS");
     fs.create(&k).unwrap();
     assert_eq!(fs.swap_runs(&k, 0, &mut []), Ok(0), "an empty file has no runs");
@@ -106,7 +106,7 @@ fn a_fat32_swap_file_grows_in_zeroed_clusters_and_its_runs_cover_it() {
 fn a_fragmented_fat32_swap_file_reports_every_run_and_refuses_more_than_it_may() {
     let _g = serial();
     poisoned_volume();
-    let fs = fat32::Fat32Fs;
+    let fs = &fat32::FAT32_FS;
     let (k, other) = (key(b"SWAPT.AZS"), key(b"OTHER.BIN"));
     fs.create(&k).unwrap();
     fs.create(&other).unwrap();
@@ -141,7 +141,7 @@ fn a_fragmented_fat32_swap_file_reports_every_run_and_refuses_more_than_it_may()
 fn a_fat32_shrink_keeps_the_head_frees_the_tail_and_leaves_a_sound_volume() {
     let _g = serial();
     poisoned_volume();
-    let fs = fat32::Fat32Fs;
+    let fs = &fat32::FAT32_FS;
     let (k, other) = (key(b"SWAPT.AZS"), key(b"OTHER.BIN"));
     fs.create(&k).unwrap();
     assert_eq!(fs.swap_resize(&k, LEN_40), Ok(()));
@@ -202,7 +202,7 @@ fn a_fat32_shrink_keeps_the_head_frees_the_tail_and_leaves_a_sound_volume() {
 fn a_fat32_swap_file_that_cannot_grow_is_refused_and_can_still_shrink() {
     let _g = serial();
     poisoned_volume();
-    let fs = fat32::Fat32Fs;
+    let fs = &fat32::FAT32_FS;
     let k = key(b"SWAPT.AZS");
     fs.create(&k).unwrap();
     assert_eq!(fs.swap_resize(&k, 8 * SECTOR as u64), Ok(()));

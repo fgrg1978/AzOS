@@ -8,12 +8,29 @@ pub mod bcache;
 pub mod census;
 pub mod vfs;
 pub mod fat32;
+/// What `fat32` (the boot volume, `/fat`) sits on and the knobs that are
+/// per volume: `fat32.rs` reads them from its sibling `fat32_dev`, so the
+/// same file compiled again over another disk (`usbvol`) is a second volume.
+mod fat32_dev {
+    pub(crate) use azos_drv_block::{blkdev, partition};
+    /// Kconfig `FS_WRITEBACK`.
+    pub(crate) const WRITEBACK: bool = azos_limits::FS_WRITEBACK;
+    /// Kconfig `FS_BLOCK_CACHE_KB`.
+    pub(crate) const BLOCK_CACHE_KB: usize = azos_limits::FS_BLOCK_CACHE_KB;
+    pub(crate) const FS_TYPE: u32 = crate::vfs::FS_TYPE_FAT32;
+    pub(crate) const STAMP_FS: u32 = crate::vfs::STAMP_FS_FAT32;
+    /// The `fs-wb` task serves this volume's flush tickets.
+    pub(crate) const TICKETED: bool = true;
+}
 pub mod tmpfs;
 pub mod crash_log;
 pub mod pstore;
 pub mod pagecache;
 pub mod probe;
 pub mod azvol;
+// The FAT32 volume of a USB stick, beside `/fat` (Kconfig `USB_STORAGE_VOLUME`).
+#[cfg(feature = "usb-volume")]
+pub mod usbvol;
 // An azvol volume as a `vfs::FileSystem`. Declared here and not in
 // `azvol/mod.rs`, which stays `core` + `alloc` (see the file's header).
 #[path = "azvol/mount.rs"]
@@ -81,6 +98,8 @@ pub use vfs::{
     FileSystem, InodeKey, InodeBacking, FileStat, StatFs, DirEnt, FsErr,
     NAME_MAX, S_IFREG, S_IFDIR, S_IFCHR,
     vfs_stat, vfs_statfs, vfs_readdir, vfs_mkdir, vfs_rmdir, vfs_rename, vfs_unlink, vfs_on_mount,
+    // A removable volume's retirement (`usbvol`).
+    vfs_unmount,
     vfs_truncate, vfs_fsync,
     // Every mounted volume made durable: the orderly power-off and `Power::sync`.
     SyncAll, sync_volumes, vfs_sync_all,

@@ -85,6 +85,11 @@ pub const FS_TYPE_FAT32: u32 = 1;
 /// `kernel/src/boot/azvol.rs`, served by `azvol::mount::AzvolFs`. 2 is tmpfs
 /// (its own file names it); 3 is unassigned.
 pub const FS_TYPE_AZVOL: u32 = 4;
+/// The FAT32 volume of a USB stick (`usbvol`, Kconfig `USB_STORAGE_VOLUME`):
+/// the same format as `/fat`, a second, separate backend. Its `statfs` still
+/// says [`FS_TYPE_FAT32`] (the format); this tag is the backend's identity
+/// (the write-back failure bit, the page cache's key).
+pub const FS_TYPE_FAT32_REMOVABLE: u32 = 5;
 
 /// Null sentinel for inode indices (equivalent to C's NULL pointer).
 pub const NO_IDX: u32 = u32::MAX;
@@ -139,6 +144,9 @@ pub struct ContentStamp {
 
 /// [`ContentStamp::fs`] of the FAT32 volume.
 pub const STAMP_FS_FAT32: u32 = 1;
+/// [`ContentStamp::fs`] of the removable FAT32 volume: a file there never
+/// stamps like one on `/fat` (both number their clusters and epochs alike).
+pub const STAMP_FS_FAT32_REMOVABLE: u32 = 2;
 
 /// The key of an inode that has no backing filesystem.
 pub const ZEROED_KEY: InodeKey = InodeKey { bytes: [0u8; INODE_KEY_LEN] };
@@ -821,9 +829,9 @@ const ZEROED_MOUNT: MountPoint = MountPoint {
     path: [0u8; 64], fs_type: 0, active: false, fs_idx: 0, fs: None,
 };
 
-/// The FAT32 backend, as a value. Zero-sized: it is a handle to the module's
-/// own global volume state, not a second copy of it.
-pub static FAT32_FS: crate::fat32::Fat32Fs = crate::fat32::Fat32Fs;
+/// The FAT32 backend, as a value: a handle to the module's own global volume
+/// state, not a second copy of it (`fat32.rs` owns the static).
+pub use crate::fat32::FAT32_FS;
 
 /// The backend registered for a `FS_TYPE_*` tag, or `None`.
 ///
@@ -1353,17 +1361,27 @@ fn vfs_mount_inner(
     backend: Option<&'static dyn FileSystem>,
 ) -> Result<(), ()> {
     let mut fs = FS.lock();
-    if fs.mount_count >= MAX_MOUNTS { return Err(()); }
-    let idx = fs.mount_count;   // snapshot before mutable borrow
+    let count = fs.mount_count.min(MAX_MOUNTS);
     // A path that does not fit used to be truncated into a DIFFERENT mount
     // point; refused now. So is a second mount on a path already mounted:
     // `backend_for_path` answers with the first match, so the second would
     // be unreachable while counting against `MAX_MOUNTS`.
     let path = trim_nul(path);
     if path.is_empty() || path.len() > 63 { return Err(()); }
-    for m in &fs.mounts[..idx] {
+    for m in &fs.mounts[..count] {
         if m.active && trim_nul(&m.path) == path { return Err(()); }
     }
+    // A path [`vfs_unmount`] retired takes its slot back (a stick plugged in
+    // again is the same mount, with the same index), so plugging and
+    // unplugging does not run the table out.
+    let idx = match fs.mounts[..count].iter().position(|m| !m.active && trim_nul(&m.path) == path) {
+        Some(i) => i,
+        None if count >= MAX_MOUNTS => return Err(()),
+        None => {
+            fs.mount_count += 1;
+            count
+        }
+    };
     let mp = &mut fs.mounts[idx];
     let n = path.len();
     mp.path[..n].copy_from_slice(&path[..n]);
@@ -1372,8 +1390,70 @@ fn vfs_mount_inner(
     mp.active  = true;
     mp.fs_idx  = 0;
     mp.fs      = backend;
-    fs.mount_count += 1;
     Ok(())
+}
+
+/// What the inodes of a retired mount are served by ([`vfs_unmount`]):
+/// nothing. Every call fails, and a read or write of a descriptor on it
+/// returns an error rather than an end of file. Not zero-sized, so its
+/// address is its own.
+struct GoneFs { _not_zero_sized: u8 }
+static GONE_FS: GoneFs = GoneFs { _not_zero_sized: 0 };
+/// [`FileSystem::fs_type`] of [`GONE_FS`]: no backend's.
+const FS_TYPE_GONE: u32 = u32::MAX;
+
+impl FileSystem for GoneFs {
+    fn fs_type(&self) -> u32 { FS_TYPE_GONE }
+    fn mount(&self) -> Result<(), ()> { Err(()) }
+    fn sync(&self) -> Result<(), ()> { Err(()) }
+    fn key_for(&self, _name: &[u8]) -> Option<InodeKey> { None }
+    fn stat(&self, _key: &InodeKey) -> Option<FileStat> { None }
+    fn read_all(&self, _key: &InodeKey, _st: &FileStat, _dst: &mut [u8]) -> usize { 0 }
+    fn write_all(&self, _key: &InodeKey, _src: &[u8]) -> Result<(), ()> { Err(()) }
+    fn unlink(&self, _key: &InodeKey) -> Result<(), ()> { Err(()) }
+    fn read_at(&self, _key: &InodeKey, _offset: u64, _dst: &mut [u8]) -> usize { 0 }
+    fn write_at(&self, _key: &InodeKey, _offset: u64, _src: &[u8]) -> Result<usize, ()> { Err(()) }
+}
+
+/// Is `b` the backend of a retired mount?
+fn is_gone(b: &dyn FileSystem) -> bool {
+    b.fs_type() == FS_TYPE_GONE
+}
+
+/// Retire the mount at `path`: a removable volume that went away (a USB stick
+/// pulled out) or one being ejected. The path names nothing from now on, and
+/// every inode the mount's backend serves (an open descriptor, a proxy) is
+/// handed to [`GONE_FS`], so its reads and writes fail. They must not reach
+/// the backend again: a path-keyed backend would answer them from whatever
+/// medium is mounted next. Then the page cache drops the backend's pages:
+/// with `writeback` (an orderly eject) its dirty ones are written to the
+/// backend first, after the retirement, so no write can dirty another page
+/// behind it; without (the medium is gone) they are lost. `Err` when no
+/// backend is mounted at `path`, or the write-back failed (the mount is
+/// retired either way).
+pub fn vfs_unmount(path: &[u8], writeback: bool) -> Result<(), ()> {
+    let backend = {
+        let mut fs = FS.lock();
+        let path = trim_nul(path);
+        let count = fs.mount_count.min(MAX_MOUNTS);
+        let i = fs.mounts[..count].iter().position(|m| m.active && trim_nul(&m.path) == path).ok_or(())?;
+        let b = fs.mounts[i].fs.ok_or(())?;
+        fs.mounts[i].active = false;
+        for n in fs.inodes.iter_mut() {
+            if n.backing.fs.is_some_and(|f| same_backend(f, b)) {
+                n.backing.fs = Some(&GONE_FS);
+            }
+        }
+        b
+    };
+    let r = if writeback { page_cache_flush_fs(backend).map_err(|_| ()) } else { Ok(()) };
+    page_cache_drop(backend, None, 0);
+    r
+}
+
+/// The same backend: the one value, and the same tag (the page cache's test).
+fn same_backend(a: &dyn FileSystem, b: &dyn FileSystem) -> bool {
+    core::ptr::addr_eq(a as *const dyn FileSystem, b as *const dyn FileSystem) && a.fs_type() == b.fs_type()
 }
 
 /// Get a single directory entry by index.
@@ -2501,6 +2581,8 @@ fn vfs_read_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *mut u8
     // Streaming backend: read in place at the descriptor's offset. The
     // count is clamped to `i32::MAX` so the return value cannot wrap.
     if let (Some(backend), true) = (backing.fs, backing.streaming) {
+        // A retired mount's file: an error, not an end of file.
+        if is_gone(backend) { return -1; }
         let want = count.min(i32::MAX as usize);
         // Safety: the caller hands a buffer of `count` writable bytes, the
         // same contract the ramfs copy below relies on.

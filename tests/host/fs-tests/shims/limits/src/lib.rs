@@ -27,7 +27,8 @@ pub mod nospec;
 /// `VFS_MAX_FILES`, `VFS_MAX_MOUNTS`, `TMPFS_MAX_FILES`, `TMPFS_MAX_KB`).
 /// The shipped defaults, so the tests that fill a table fill the same one.
 pub const VFS_MAX_FILES: usize = 128;
-pub const VFS_MAX_MOUNTS: usize = 6;
+/// 7: the default with `USB_STORAGE_VOLUME` (`/usb`, the `usb_volume` rows).
+pub const VFS_MAX_MOUNTS: usize = 7;
 pub const TMPFS_MAX_FILES: usize = 64;
 pub const TMPFS_MAX_KB: usize = 2048;
 /// Kconfig `FS_BLOCK_CACHE_KB` (fat32.rs's sector cache): embedded's 64,
@@ -35,6 +36,8 @@ pub const TMPFS_MAX_KB: usize = 2048;
 /// fixture volume's working set, so the tests that assert "served from RAM"
 /// assert it at a size a 16 MiB board ships with.
 pub const FS_BLOCK_CACHE_KB: usize = 64;
+/// Kconfig `USB_VOLUME_CACHE_KB` (`usbvol`'s own sector cache).
+pub const USB_VOLUME_CACHE_KB: usize = 16;
 /// Kconfig `FS_WRITEBACK` and its tuning (fat32.rs's write-back cache):
 /// embedded's defaults. On, so every suite runs the write-back paths;
 /// `fat32::fat32_set_writeback(false)` gives a test the write-through ones.

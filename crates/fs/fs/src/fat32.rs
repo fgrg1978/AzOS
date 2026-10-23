@@ -12,6 +12,12 @@
 
 use azos_sync::SpinLock;
 
+// The device this volume sits on and the knobs that differ per volume: the
+// `fat32_dev` module next to whoever compiles this file. The crate root's is
+// the boot disk (`/fat`); `usbvol` compiles this same file a second time over
+// a USB stick, with statics of its own (a second, separate volume).
+use super::fat32_dev::{self as dev, blkdev};
+
 // ── FAT32 on-disk structures ──────────────────────────────────────────────────
 
 /// BIOS Parameter Block (BPB) as found at sector 0.
@@ -1169,10 +1175,10 @@ impl ChainWalk {
 // one line's copy (512 B) plus one set's probe (8 tags) at most. Whole-cache
 // drops are a generation bump.
 
-const SECTOR_CACHE_BYTES: usize = if azos_limits::FS_BLOCK_CACHE_KB == 0 {
+const SECTOR_CACHE_BYTES: usize = if dev::BLOCK_CACHE_KB == 0 {
     8 * SECTOR_SIZE
 } else {
-    azos_limits::FS_BLOCK_CACHE_KB * 1024
+    dev::BLOCK_CACHE_KB * 1024
 };
 const SECTOR_CACHE_LINES: usize = SECTOR_CACHE_BYTES / SECTOR_SIZE;
 
@@ -1188,12 +1194,12 @@ struct BlkDev;
 impl crate::bcache::BlockIo for BlkDev {
     type FlushErr = FsError;
     fn read(&mut self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), ()> {
-        azos_drv_block::blkdev::read_quiet(dev_lba(lba), count, buf)
+        blkdev::read_quiet(dev_lba(lba), count, buf)
     }
     fn write(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
         // Quiet: this runs with `SECTOR_CACHE` held (`device_flush`'s
         // write-back pass), and the observer takes it.
-        azos_drv_block::blkdev::write_quiet(dev_lba(lba), count, buf)
+        blkdev::write_quiet(dev_lba(lba), count, buf)
     }
     fn flush(&mut self) -> Result<(), FsError> {
         device_flush_raw()
@@ -1202,7 +1208,7 @@ impl crate::bcache::BlockIo for BlkDev {
         -> Result<(), crate::bcache::IoError<FsError>>
     {
         // Quiet, like `write`; the epoch flush rides in the request.
-        azos_drv_block::blkdev::write_run(dev_lba(lba), count, buf, preflush, false).map_err(|()| crate::bcache::IoError::Io)
+        blkdev::write_run(dev_lba(lba), count, buf, preflush, false).map_err(|()| crate::bcache::IoError::Io)
     }
 }
 
@@ -1242,8 +1248,8 @@ impl crate::bcache::BlockIo for BlkDev {
 // the wire while an older one was still in flight, which no flush orders.
 // Lock order: FAT-sector claim -> write-back claim -> `SECTOR_CACHE`.
 
-/// Kconfig `FS_WRITEBACK`.
-const WB: bool = azos_limits::FS_WRITEBACK;
+/// Kconfig `FS_WRITEBACK` (the boot volume; a removable one is write-through).
+const WB: bool = dev::WRITEBACK;
 
 /// Sectors in one coalesced write-back request (Kconfig `FS_WRITEBACK_RUN_KB`).
 const WB_RUN_SECTORS: usize = if WB {
@@ -1413,12 +1419,12 @@ fn wb_write_back(_claim: &WbClaim, upto: u64, commit: bool) -> Result<bool, FsEr
         // run's own lines (they are cleaned at the checkin below), so equal
         // means no other line is dirty, of any epoch.
         let last = commit
-            && azos_drv_block::blkdev::fua_commit()
+            && blkdev::fua_commit()
             && SECTOR_CACHE.lock().dirty_count() == run.blocks as usize;
         // One request: the flush the epoch rule asks for (`flush_first`) goes
         // out ahead of the data with no round trip to this task between them
         // (`Unsupported`, a device with nothing to flush, passes as before).
-        let r = azos_drv_block::blkdev::write_run(
+        let r = blkdev::write_run(
             dev_lba(run.lba), run.sectors, &stage[..bytes], run.flush_first || last, last);
         if r.is_ok() && run.flush_first {
             SECTOR_CACHE.lock().note_ordering_flush();
@@ -1671,14 +1677,14 @@ pub fn fat32_volume_base() -> u64 {
 /// medium from sector 0. A partition that fails either check is skipped, not
 /// fatal: a GPT disk may carry other filesystems before the FAT one.
 fn select_volume() -> (u64, u64) {
-    use azos_drv_block::partition;
+    use dev::partition;
     for i in 0..partition::count() {
         let (start, len) = match partition::partition(i) {
             Some(p) => p,
             None => continue,
         };
         let mut s0 = [0u8; SECTOR_SIZE];
-        if azos_drv_block::blkdev::read_quiet(start, 1, &mut s0).is_err() {
+        if blkdev::read_quiet(start, 1, &mut s0).is_err() {
             continue;
         }
         let bpb = unsafe { &*(s0.as_ptr() as *const Fat32Bpb) };
@@ -1782,9 +1788,9 @@ fn fat32_cache_reset() {
     // the first bump and the drop read the previous medium's lines under the
     // new value.
     write_gen_bump();
-    azos_drv_block::blkdev::set_write_observer(fat32_on_medium_write);
+    blkdev::set_write_observer(fat32_on_medium_write);
     if WB {
-        azos_drv_block::blkdev::set_read_observer(fat32_before_medium_read, fat32_medium_read_would_wait);
+        blkdev::set_read_observer(fat32_before_medium_read, fat32_medium_read_would_wait);
     }
 }
 
@@ -1820,7 +1826,7 @@ fn read_sector(sector: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), ()> {
     // Miss — fetch from the device with the cache lock released.
     crate::census::count(crate::census::DEV_READS);
     pi_io_probe();
-    azos_drv_block::blkdev::read_quiet(dev_lba(sector as u64), 1, buf)?;
+    blkdev::read_quiet(dev_lba(sector as u64), 1, buf)?;
     SECTOR_CACHE.lock().install(sector as u64, buf, token);
     Ok(())
 }
@@ -1838,7 +1844,7 @@ fn read_sector_with(sector: u32, buf: &mut [u8; SECTOR_SIZE], retain: bool) -> R
     }
     crate::census::count(crate::census::DEV_READS);
     pi_io_probe();
-    azos_drv_block::blkdev::read_quiet(dev_lba(sector as u64), 1, buf)
+    blkdev::read_quiet(dev_lba(sector as u64), 1, buf)
 }
 
 /// Statistics for diagnostics (`fs cache` shell command, etc.).
@@ -2040,7 +2046,7 @@ pub fn fat32_mount() -> Result<(), ()> {
     let medium = if part_len != 0 {
         part_len
     } else {
-        azos_drv_block::blkdev::capacity_sectors().saturating_sub(base)
+        blkdev::capacity_sectors().saturating_sub(base)
     };
     if medium != 0 && bpb.tot_sec32 as u64 > medium && !cfg!(feature = "fat-medium-bound-canary") {
         return Err(());
@@ -2644,7 +2650,7 @@ fn read_run_cached(first: u32, run: u32, dst: &mut [u8], retain: bool) -> Result
     };
     let o = hit as usize * SECTOR_SIZE;
     crate::census::count(crate::census::DEV_READS);
-    azos_drv_block::blkdev::read_quiet(dev_lba((first + hit) as u64), run - hit, &mut dst[o..])?;
+    blkdev::read_quiet(dev_lba((first + hit) as u64), run - hit, &mut dst[o..])?;
     for k in hit..run {
         let o = k as usize * SECTOR_SIZE;
         let mut c = SECTOR_CACHE.lock();
@@ -3205,7 +3211,7 @@ fn write_sector_device(sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
     // the comment below rules out).
     if cfg!(feature = "write-gen-early-canary") { write_gen_bump(); }
     pi_io_probe();
-    let r = azos_drv_block::blkdev::write_quiet(dev_lba(sector as u64), 1, buf);
+    let r = blkdev::write_quiet(dev_lba(sector as u64), 1, buf);
     if r.is_err() {
         // What the device holds now is unknown; the old line must not answer.
         SECTOR_CACHE.lock().invalidate(sector as u64);
@@ -3659,7 +3665,7 @@ static DISCARD_OFF: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicB
 /// Is a released chain discarded at all (the option is on and the device has
 /// not refused)?
 fn discard_enabled() -> bool {
-    azos_drv_block::blkdev::DISCARD && !DISCARD_OFF.load(core::sync::atomic::Ordering::Relaxed)
+    blkdev::DISCARD && !DISCARD_OFF.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Sector runs of freed clusters, gathered up to Kconfig `FS_DISCARD_RUNS`
@@ -3702,9 +3708,9 @@ impl DiscardBatch {
         if self.n == 0 {
             return;
         }
-        match azos_drv_block::blkdev::discard(&self.runs[..self.n]) {
-            Ok(()) | Err(azos_drv_block::blkdev::DiscardError::Io) => {}
-            Err(azos_drv_block::blkdev::DiscardError::Unsupported) => {
+        match blkdev::discard(&self.runs[..self.n]) {
+            Ok(()) | Err(blkdev::DiscardError::Io) => {}
+            Err(blkdev::DiscardError::Unsupported) => {
                 DISCARD_OFF.store(true, core::sync::atomic::Ordering::Relaxed);
             }
         }
@@ -3996,16 +4002,16 @@ fn rename_at(from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
     // cached reaches the volume first and none of it is kept.
     let is_dir = fat32_lookup_dir_entry(from).is_some_and(|e| e.attr & ATTR_DIRECTORY != 0);
     if is_dir {
-        crate::vfs::page_cache_flush_fs(&crate::vfs::FAT32_FS)?;
+        crate::vfs::page_cache_flush_fs(&FAT32_FS)?;
     }
     // The source's cached bytes reach the file before it moves; what is cached
     // under either name is not the file's afterwards.
-    crate::vfs::page_cache_flush_file(&crate::vfs::FAT32_FS, &from.key)?;
+    crate::vfs::page_cache_flush_file(&FAT32_FS, &from.key)?;
     cache_forget(&to.key);
     let r = rename_inner(from, to);
     cache_forget(&from.key);
     if is_dir {
-        crate::vfs::page_cache_drop(&crate::vfs::FAT32_FS, None, 0);
+        crate::vfs::page_cache_drop(&FAT32_FS, None, 0);
     }
     r
 }
@@ -4564,7 +4570,7 @@ pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
 ///   name a cached file holds fails (`Exists`), and a directory is never
 ///   cached.
 fn cache_forget(key: &crate::vfs::InodeKey) {
-    crate::vfs::page_cache_drop(&crate::vfs::FAT32_FS, Some(key), 0);
+    crate::vfs::page_cache_drop(&FAT32_FS, Some(key), 0);
 }
 
 // ── Sync (AS — Power-Loss Safety) ────────────────────────────────────────────
@@ -4640,7 +4646,7 @@ fn device_flush() -> Result<(), FsError> {
 
 /// The device flush alone, with the driver's answer mapped to `FsError`.
 fn device_flush_raw() -> Result<(), FsError> {
-    match azos_drv_block::blkdev::flush() {
+    match blkdev::flush() {
         Ok(()) => Ok(()),
         Err(azos_drv_api::block::FlushError::Unsupported) => Err(FsError::Unsupported),
         Err(azos_drv_api::block::FlushError::Io) => Err(FsError::Io),
@@ -4783,7 +4789,7 @@ pub fn fat32_sync_checked() -> Result<(), FsError> {
     // `write_at` puts their data and chain in the current epoch and the
     // entry ahead of it, then the flush below makes it all durable. A write-back
     // that failed is this call's verdict, after the rest was synced.
-    let paged = crate::vfs::page_cache_flush_fs(&crate::vfs::FAT32_FS).map_err(|_| FsError::Io);
+    let paged = crate::vfs::page_cache_flush_fs(&FAT32_FS).map_err(|_| FsError::Io);
     journal_settle().map_err(|()| FsError::Io)?;
     device_flush()?;
     wb_take_error()?;
@@ -5100,7 +5106,7 @@ pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
     // make first.
     fat32_cache_invalidate_all();
     // The medium may be another one at the next mount: so are the pages.
-    crate::vfs::page_cache_drop(&crate::vfs::FAT32_FS, None, 0);
+    crate::vfs::page_cache_drop(&FAT32_FS, None, 0);
     Ok(())
 }
 
@@ -5641,7 +5647,7 @@ pub fn fat32_open(vol: Volume, path: &[u8], flags: u32) -> Result<Fat32File, FsE
 
 /// The file's dirty pages go to the volume, for a direct reader or writer.
 fn settle_cache(key: &crate::vfs::InodeKey) -> Result<(), FsError> {
-    crate::vfs::page_cache_flush_file(&crate::vfs::FAT32_FS, key).map_err(|_| FsError::Io)
+    crate::vfs::page_cache_flush_file(&FAT32_FS, key).map_err(|_| FsError::Io)
 }
 
 /// [`fat32_open`] with the page cache not consulted: what `Fat32Fs::read_at`
@@ -6332,11 +6338,16 @@ impl Volume {
 
 /// FAT32 as a value the VFS can be handed.
 ///
-/// Zero-sized on purpose: the volume state is the module's `FAT32` static and
-/// its lock, so this is a handle to it, not a second copy. A future
-/// multi-volume FAT32 would carry a volume index here and nothing in
-/// `vfs.rs` would change.
-pub struct Fat32Fs;
+/// A handle to the module's own volume state (the `FAT32` static and its
+/// lock), not a copy of it: [`FAT32_FS`] is the one value. Not zero-sized: the
+/// VFS tells backends apart by address (`mount_index`, the page cache), and
+/// two zero-sized statics may share one, which a second compile of this file
+/// (`usbvol`) would make two volumes' handles.
+pub struct Fat32Fs { _not_zero_sized: u8 }
+
+/// The volume as a backend (`vfs_mount_fs`): what its own page-cache and
+/// unmount paths name it by, and what `vfs::FAT32_FS` re-exports for `/fat`.
+pub static FAT32_FS: Fat32Fs = Fat32Fs { _not_zero_sized: 0 };
 
 /// The longest 8.3 name as text (`NAME.EXT`) is twelve bytes; the generic key
 /// must hold at least one. Checked here, where the requirement is, rather than
@@ -6354,7 +6365,7 @@ fn named(key: &crate::vfs::InodeKey) -> Option<FName> {
 
 impl crate::vfs::FileSystem for Fat32Fs {
     #[inline]
-    fn fs_type(&self) -> u32 { crate::vfs::FS_TYPE_FAT32 }
+    fn fs_type(&self) -> u32 { dev::FS_TYPE }
 
     #[inline]
     fn mount(&self) -> Result<(), ()> { fat32_mount() }
@@ -6363,9 +6374,11 @@ impl crate::vfs::FileSystem for Fat32Fs {
     fn sync(&self) -> Result<(), ()> { fat32_sync() }
 
     /// A file's fsync is the volume's (`fat32_sync_checked`), so a volume
-    /// flush ticket is every descriptor's.
+    /// flush ticket is every descriptor's. Only where the `fs-wb` task serves
+    /// this volume's tickets (`dev::TICKETED`); elsewhere `None`, and the
+    /// caller syncs inline.
     #[inline]
-    fn flush_request(&self) -> Option<u64> { Some(fat32_flush_request()) }
+    fn flush_request(&self) -> Option<u64> { if dev::TICKETED { Some(fat32_flush_request()) } else { None } }
 
     #[inline]
     fn flush_done(&self, t: u64) -> Option<Result<(), crate::vfs::FsErr>> {
@@ -6493,7 +6506,7 @@ impl crate::vfs::FileSystem for Fat32Fs {
             return None;
         }
         Some(crate::vfs::ContentStamp {
-            fs: crate::vfs::STAMP_FS_FAT32, epoch, id: e.cluster as u64, size: e.size as u64,
+            fs: dev::STAMP_FS, epoch, id: e.cluster as u64, size: e.size as u64,
         })
     }
 
@@ -6954,7 +6967,7 @@ fn fat32_free_clusters_scan() -> Result<u32, ()> {
         // device does not have yet. Not installed on a miss (a scan of the
         // whole FAT would evict everything hot).
         if !SECTOR_CACHE.lock().peek(lba as u64, &mut buf) {
-            azos_drv_block::blkdev::read_quiet(dev_lba(lba as u64), 1, &mut buf)?;
+            blkdev::read_quiet(dev_lba(lba as u64), 1, &mut buf)?;
         }
         for k in 0..SECTOR_SIZE / 4 {
             let c = first + k as u32;

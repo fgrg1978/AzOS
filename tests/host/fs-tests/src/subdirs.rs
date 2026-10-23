@@ -69,7 +69,7 @@ fn names(dir: &[u8]) -> Vec<String> {
 }
 
 fn free_clusters() -> u64 {
-    fat32::Fat32Fs.statfs().expect("statfs").blocks_free
+    fat32::FAT32_FS.statfs().expect("statfs").blocks_free
 }
 
 fn mkdir(path: &[u8]) {

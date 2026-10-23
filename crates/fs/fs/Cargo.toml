@@ -6,6 +6,10 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
+# Kconfig USB_STORAGE_VOLUME: `usbvol`, the FAT32 volume of a USB stick
+# (fat32.rs compiled a second time over the stick). Enabled through the
+# kernel's `usb-storage-volume` feature.
+usb-volume = []
 # ktest `fat_claim_waiter_donates_to_owner` (kernel/src/ktest.rs, FX12):
 # `fat32_ktest_with_wb_claim` holds the write-back claim around a closure.
 # Enabled through the kernel's `ktest` feature.

@@ -31,7 +31,7 @@ use super::{fat32, image::*, serial, tmpfs, vfs};
 use azos_mm::pager::{fill_page, write_back_page, PageBacking, PageIoError, PageKey, PAGE_KEY_LEN};
 use vfs::FileSystem;
 
-static FAT: fat32::Fat32Fs = fat32::Fat32Fs;
+use fat32::FAT32_FS as FAT;
 
 /// The cache's granules: 512 stands for "not the 4096 the old code assumed".
 const GRANULES: [usize; 2] = [512, 4096];

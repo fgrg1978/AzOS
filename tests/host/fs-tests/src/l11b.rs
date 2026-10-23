@@ -58,7 +58,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use vfs::{FileSystem, FsErr, InodeKey, PageCacheHooks, O_APPEND, O_RDONLY, O_RDWR, O_TRUNC};
 
-static FAT: fat32::Fat32Fs = fat32::Fat32Fs;
+use fat32::FAT32_FS as FAT;
 
 // ── The cache: what the kernel's object table is, on the host ───────────────
 
