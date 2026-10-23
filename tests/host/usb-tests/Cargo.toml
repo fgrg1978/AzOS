@@ -18,6 +18,13 @@ azos_scsi = { path = "../../../crates/drivers/scsi" }
 azos_limits = { path = "../../../crates/core/limits" }
 azos_inspect = { path = "../../../crates/core/inspect" }
 azos_hwbus = { path = "../../../crates/drivers/hwbus" }
+# The device timeout policy's records (`tests::reset`).
+azos_drv_api = { path = "../../../crates/drivers/api" }
+
+[dev-dependencies]
+# `tests/chaos.rs` arms the xHCI injection point (the registry built in, as a
+# Kconfig CHAOS kernel has it; nothing else arms a point here).
+azos_chaos = { path = "../../../crates/core/chaos", features = ["on"] }
 
 [features]
 canary-ac64 = ["azos_usb/canary-ac64"]
@@ -29,6 +36,9 @@ canary-64k = ["azos_usb/canary-64k"]
 canary-route = ["azos_usb/canary-route"]
 canary-unplug = ["azos_usb/canary-unplug"]
 canary-dr-mode = ["azos_usb/canary-dr-mode"]
+canary-xhci-no-reset = ["azos_usb/canary-xhci-no-reset"]
+canary-xhci-reset-keeps-devices = ["azos_usb/canary-xhci-reset-keeps-devices"]
+canary-xhci-reset-event-ring = ["azos_usb/canary-xhci-reset-event-ring"]
 
 [profile.release]
 overflow-checks = true

@@ -23,6 +23,10 @@ azos_devif  = { workspace = true }
 azos_scsi   = { workspace = true }
 azos_cam_ring = { workspace = true }
 azos_inspect = { workspace = true, optional = true }
+# The device timeout policy a command that goes unanswered follows.
+azos_drv_api = { workspace = true }
+# Kconfig CHAOS: the `xhci-command-drop` injection point (off: a constant false).
+azos_chaos = { workspace = true }
 
 [features]
 # The introspection listing (`usb/devN` nodes): needs azos_inspect.
@@ -48,6 +52,15 @@ canary-64k = []
 canary-route = []
 # A device stays in the table after the port reports it gone.
 canary-unplug = []
+# A command that times out latches the controller dead at once, as before the
+# device timeout policy: no reset.
+canary-xhci-no-reset = []
+# After a reset the core keeps its device table: the devices the controller
+# forgot are neither removed nor enumerated again.
+canary-xhci-reset-keeps-devices = []
+# A reset leaves the event ring's cursor where it was, while the controller
+# starts writing at the first entry: the reset's own command never completes.
+canary-xhci-reset-event-ring = []
 # A DWC3 whose dr_mode is not `host` is taken for a host anyway.
 canary-dr-mode = []
 # A received NTB's datagram is not checked against the end of the block.

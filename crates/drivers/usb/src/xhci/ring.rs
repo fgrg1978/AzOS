@@ -157,6 +157,15 @@ impl EventRing {
         self.buf.bus()
     }
 
+    /// Empty the ring at its start, as a reset controller will write it: the
+    /// page zeroed, the dequeue position first, the cycle state 1.
+    pub fn reset<M: Memory>(&mut self, m: &M) {
+        self.buf.zero();
+        m.to_device(self.buf.cpu(), PAGE);
+        self.deq = 0;
+        self.ccs = true;
+    }
+
     /// The next event, if the controller has written one.
     pub fn pop<M: Memory>(&mut self, m: &M) -> Option<Trb> {
         m.from_device(self.buf.cpu().wrapping_add(self.deq * TRB_BYTES), TRB_BYTES);

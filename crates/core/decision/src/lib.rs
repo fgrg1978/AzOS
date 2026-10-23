@@ -281,6 +281,10 @@ pub enum Rule {
     /// taking none, and the driver reset the device or latched it dead
     /// (`azos_drv_api::recovery`, Kconfig `NET_TX_TIMEOUT_MS`).
     NetTimeout = 67,
+    /// A USB host controller left a command unanswered past its budget, and
+    /// the driver reset the controller or latched it dead
+    /// (`azos_drv_api::recovery`).
+    UsbTimeout = 68,
 }
 
 /// The verdict of a record.
@@ -308,7 +312,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 68] = [
+pub const RULES: [RuleInfo; 69] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, 0)
         // and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
@@ -965,6 +969,18 @@ pub const RULES: [RuleInfo; 68] = [
         fields: ["pending", "waited_ms", "action"],
         rejected_if_yes: "keep the device: frames sat in its ring and it took none of them",
         rejected_if_no: "reset again: the device wedged once more after a clean reset, and a NIC that keeps half-working is worse than one that is plainly gone",
+    },
+    RuleInfo {
+        // The subject is the controller (its topology row id). `trb_type` is the type of the command the
+        // controller did not answer (xHCI 1.2 table 6-91: 9 Enable Slot, 11 Address Device, 12 Configure
+        // Endpoint, ...), `waited_ms` how long it waited, `action` 2 reset the controller (its devices went
+        // away and were enumerated again), 5 latched it dead with its resets spent, 6 the reset did not bring
+        // it back (`azos_drv_api::recovery::Action`).
+        name: "usb-timeout",
+        subject: "device",
+        fields: ["trb_type", "waited_ms", "action"],
+        rejected_if_yes: "keep the controller: a command went unanswered, and every device behind it is unreachable until it answers",
+        rejected_if_no: "reset again: the controller stopped answering once more after a clean reset, and a host that keeps half-working loses its devices at random",
     },
 ];
 

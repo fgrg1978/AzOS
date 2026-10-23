@@ -38,6 +38,23 @@
 //! what was queued behind the failure as stopped, and moves the dequeue
 //! pointer to the enqueue pointer, so the ring is usable again. The device
 //! side of a stall (CLEAR_FEATURE ENDPOINT_HALT) is the class driver's.
+//!
+//! # A controller that stops answering
+//!
+//! A command its deadline passes on is the device timeout policy's
+//! (`azos_drv_api::recovery`, Kconfig `DEVICE_TIMEOUT_RESETS`, the
+//! `usb-timeout` decision record): with a reset left, the controller is
+//! halted, reset (HCRST, then Controller Not Ready clears) and programmed
+//! again over the memory it had (`Xhci::reset`), and every device it held
+//! is gone: the controller refuses commands and transfers
+//! ([`Error::Reset`]) until the USB core has removed each of them, their
+//! transfers ending `Disconnected` and their class drivers told, and taken
+//! the reset ([`Xhci::ack_reset`]); the core then enumerates the ports
+//! again. With the resets spent, or when the reset does not bring the same
+//! controller back, it is halted and latched dead until reboot, its memory
+//! never reused. A host system error or a host controller error the
+//! controller reports latches it dead at once: it is not a timeout, and
+//! the policy's reset is for a controller that went quiet.
 
 use super::context::{self, EpParams, Layout, SlotParams};
 use super::regs::{self, Caps, Speed};
@@ -45,6 +62,7 @@ use super::ring::{EventRing, ProducerRing, RING_TRBS};
 use super::trb::{self, cc, ty, Trb, TRB_BYTES};
 use crate::hw::{Arena, Clock, DmaBuf, Memory, Regs, PAGE};
 use crate::{MAX_DEVICES, MAX_PIPES};
+use azos_drv_api::recovery::{Class, Recovery, Verdict};
 
 /// Endpoints the controller tracks: the control endpoint of every device slot
 /// first, then one per open pipe.
@@ -82,6 +100,10 @@ pub enum Error {
     Bounce,
     /// The DMA domain of the device would not start.
     Dma,
+    /// The controller was reset after a command timed out: the devices it
+    /// held are gone, and nothing is accepted until the core has removed
+    /// them ([`Xhci::ack_reset`]).
+    Reset,
 }
 
 /// Who a transfer descriptor belongs to.
@@ -259,6 +281,9 @@ pub struct Xhci<R: Regs, M: Memory, C: Clock> {
     irq: bool,
     arena: Arena,
     dcbaa: DmaBuf,
+    /// The event ring segment table (one segment), for a reset to program
+    /// again.
+    erst: DmaBuf,
     scratch_array: Option<DmaBuf>,
     scratch_bufs: Option<DmaBuf>,
     cmd: ProducerRing,
@@ -277,7 +302,11 @@ pub struct Xhci<R: Regs, M: Memory, C: Clock> {
     ev_head: usize,
     ev_count: usize,
     lost_events: u32,
-    dead: bool,
+    /// Live, being reset, or latched dead (the device timeout policy).
+    recovery: Recovery,
+    /// Reset after a timeout, and the core has not removed the devices the
+    /// controller forgot yet ([`Xhci::ack_reset`]).
+    reset_pending: bool,
 }
 
 const NO_EP: u16 = u16::MAX;
@@ -383,6 +412,7 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             addr_of_mut!((*p).irq).write(irq);
             addr_of_mut!((*p).arena).write(arena);
             addr_of_mut!((*p).dcbaa).write(dcbaa);
+            addr_of_mut!((*p).erst).write(erst);
             addr_of_mut!((*p).scratch_array).write(None);
             addr_of_mut!((*p).scratch_bufs).write(None);
             addr_of_mut!((*p).cmd).write(cmd_ring);
@@ -411,10 +441,12 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             addr_of_mut!((*p).ev_head).write(0);
             addr_of_mut!((*p).ev_count).write(0);
             addr_of_mut!((*p).lost_events).write(0);
-            addr_of_mut!((*p).dead).write(false);
+            addr_of_mut!((*p).recovery)
+                .write(Recovery::new(Class::Usb, "xhci", azos_limits::DEVICE_TIMEOUT_RESETS as u8));
+            addr_of_mut!((*p).reset_pending).write(false);
             &mut *p
         };
-        match x.start(erst, hc_page) {
+        match x.start(hc_page) {
             Ok(()) => Ok(x),
             Err(e) => {
                 x.free_dma();
@@ -424,10 +456,11 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     }
 
     /// Everything after the memory exists: scratchpads, the registers, run.
-    fn start(&mut self, erst: DmaBuf, hc_page: usize) -> Result<(), Error> {
-        let (op, rt, caps) = (self.op, self.rt, self.caps);
+    fn start(&mut self, hc_page: usize) -> Result<(), Error> {
+        let caps = self.caps;
         // Scratchpad buffers: an array of bus addresses, each a page of the
-        // controller's page size, owned by the controller for good.
+        // controller's page size, owned by the controller for good (a reset
+        // gives it the same ones again).
         if caps.scratchpads > 0 {
             let n = caps.scratchpads as usize;
             let arr_len = (n * 8).next_multiple_of(PAGE);
@@ -441,16 +474,24 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             self.mem.to_device(arr.cpu(), arr_len);
             self.dcbaa.w64(0, arr.bus());
         }
-        self.mem.to_device(self.dcbaa.cpu(), PAGE);
-
-        // The event ring segment table: one segment.
-        erst.w64(0, self.evt.base());
-        erst.w32(8, RING_TRBS as u32);
-        self.mem.to_device(erst.cpu(), 16);
-
         if !self.mem.enable() {
             return Err(Error::Dma);
         }
+        self.program()
+    }
+
+    /// Give a halted, reset controller the memory it has and run it: the
+    /// device context base array, the command ring, the event ring of
+    /// interrupter 0, Run/Stop, a command round trip, port power. Bring-up
+    /// and a reset both.
+    fn program(&mut self) -> Result<(), Error> {
+        let (op, rt, caps) = (self.op, self.rt, self.caps);
+        self.mem.to_device(self.dcbaa.cpu(), PAGE);
+        // The event ring segment table: one segment.
+        self.erst.w64(0, self.evt.base());
+        self.erst.w32(8, RING_TRBS as u32);
+        self.mem.to_device(self.erst.cpu(), 16);
+
         let r = &self.regs;
         r.write32(op + regs::CONFIG, self.slots_en as u32);
         r.write64(op + regs::DCBAAP, self.dcbaa.bus());
@@ -460,7 +501,7 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
         let ir0 = rt + regs::ir(0);
         r.write32(ir0 + regs::ERSTSZ, 1);
         r.write64(ir0 + regs::ERDP, self.evt.base());
-        r.write64(ir0 + regs::ERSTBA, erst.bus());
+        r.write64(ir0 + regs::ERSTBA, self.erst.bus());
         r.write32(ir0 + regs::IMAN, regs::IMAN_IP | if self.irq { regs::IMAN_IE } else { 0 });
         r.write32(op + regs::USBCMD, regs::CMD_RS | regs::CMD_HSEE | if self.irq { regs::CMD_INTE } else { 0 });
         wait_reg(&self.regs, &self.clock, op + regs::USBSTS, regs::STS_HCH, 0, HALT_TIMEOUT_US)?;
@@ -511,8 +552,23 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     pub fn irq_mode(&self) -> bool {
         self.irq
     }
+    /// Latched dead until reboot: a timeout with the resets spent, a reset
+    /// that did not bring the controller back, or an error it reported.
     pub fn is_dead(&self) -> bool {
-        self.dead
+        self.recovery.dead()
+    }
+    /// Was the controller reset, with the devices it held still in the
+    /// core's tables? The core removes every one of them, then calls
+    /// [`Xhci::ack_reset`]; until then commands and transfers are refused
+    /// ([`Error::Reset`]), so nothing is sent for a slot the controller
+    /// forgot.
+    pub fn reset_pending(&self) -> bool {
+        self.reset_pending
+    }
+    /// The core has removed the devices of the reset controller: it takes
+    /// commands and transfers again.
+    pub fn ack_reset(&mut self) {
+        self.reset_pending = false;
     }
     pub fn lost_events(&self) -> u32 {
         self.lost_events
@@ -575,8 +631,10 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             self.regs.write32(self.op + regs::USBSTS, regs::STS_EINT);
             self.regs.write32(ir0 + regs::IMAN, regs::IMAN_IP | if self.irq { regs::IMAN_IE } else { 0 });
         }
+        // A host system error or a host controller error: latched dead at
+        // once (module documentation).
         if self.regs.read32(self.op + regs::USBSTS) & (regs::STS_HSE | regs::STS_HCE) != 0 {
-            self.dead = true;
+            self.recovery.latch();
         }
     }
 
@@ -598,12 +656,21 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     /// other than success is [`Error::Command`]; the event is returned so the
     /// caller can read the slot id of an Enable Slot.
     pub fn command(&mut self, t: Trb) -> Result<Trb, Error> {
-        if self.dead {
+        if self.recovery.dead() {
             return Err(Error::Dead);
         }
+        if self.reset_pending {
+            return Err(Error::Reset);
+        }
         self.cmd_done = None;
+        let ty = t.trb_type();
         let at = self.cmd.push(&self.mem, t);
-        self.doorbell(0, 0);
+        // Kconfig CHAOS `xhci-command-drop`: the doorbell is not rung, so the
+        // controller never answers and the command runs out of its budget.
+        // Not while a reset is in progress.
+        if !(self.recovery.live() && azos_chaos::fire(azos_chaos::Point::XhciCommandDrop)) {
+            self.doorbell(0, 0);
+        }
         let deadline = self.clock.now_us() + CMD_TIMEOUT_US;
         loop {
             self.poll();
@@ -613,18 +680,94 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
                 }
                 // A completion of an earlier, abandoned command: ignore.
             }
-            if self.dead {
+            if self.recovery.dead() {
                 return Err(Error::Dead);
             }
             if self.clock.now_us() >= deadline {
                 // The controller did not answer: stop the command ring so a
-                // late completion cannot be taken for the next command's.
+                // late completion cannot be taken for the next command's,
+                // then let the timeout policy decide.
                 self.regs.write64(self.op + regs::CRCR, regs::CRCR_CA);
-                self.dead = true;
+                self.timed_out(ty, CMD_TIMEOUT_US / 1000);
                 return Err(Error::Timeout);
             }
             self.clock.delay_us(50);
         }
+    }
+
+    /// A command of type `ty` went unanswered for `waited_ms`: reset the
+    /// controller, or, with the resets spent, latch it dead (module
+    /// documentation). A command that times out while the controller is
+    /// being reset (the reset's own round trip) fails the reset.
+    fn timed_out(&mut self, ty: u8, waited_ms: u64) {
+        // Canary: the first timeout latches the controller, as before the policy.
+        if cfg!(feature = "canary-xhci-no-reset") {
+            self.recovery.latch();
+            self.halt();
+            return;
+        }
+        match self.recovery.timed_out(ty as u64, waited_ms) {
+            Verdict::Reset => {
+                let ok = self.reset().is_ok();
+                if !ok {
+                    self.halt();
+                }
+                self.recovery.reset_done(ok, ty as u64, waited_ms);
+            }
+            Verdict::Latch => self.halt(),
+            Verdict::Handled => {}
+        }
+    }
+
+    /// Halt the controller (Run/Stop cleared, so it walks no ring again), and
+    /// reset it: HCRST, then Controller Not Ready clears. It must be the same
+    /// controller (its capability registers unchanged). Then it is programmed
+    /// again over the same memory: the slot entries of the device context
+    /// base array cleared (the scratchpad array kept), the command and event
+    /// rings emptied at their start, interrupter 0, Run/Stop, a command round
+    /// trip. The slots, endpoints and descriptors the driver had are left as
+    /// they were: the core removes every device ([`Xhci::reset_pending`]),
+    /// which ends their transfers and gives their pages back.
+    fn reset(&mut self) -> Result<(), Error> {
+        let op = self.op;
+        self.halt();
+        wait_reg(&self.regs, &self.clock, op + regs::USBSTS, regs::STS_HCH, regs::STS_HCH, HALT_TIMEOUT_US)?;
+        self.regs.write32(op + regs::USBCMD, regs::CMD_HCRST);
+        wait_reg(&self.regs, &self.clock, op + regs::USBCMD, regs::CMD_HCRST, 0, RESET_TIMEOUT_US)?;
+        wait_reg(&self.regs, &self.clock, op + regs::USBSTS, regs::STS_CNR, 0, RESET_TIMEOUT_US)?;
+        let r = &self.regs;
+        let caps = Caps::decode(
+            r.read32(regs::CAPLENGTH),
+            r.read32(regs::HCSPARAMS1),
+            r.read32(regs::HCSPARAMS2),
+            r.read32(regs::HCCPARAMS1),
+            r.read32(regs::DBOFF),
+            r.read32(regs::RTSOFF),
+        );
+        if caps != self.caps {
+            return Err(Error::BadCaps);
+        }
+        for slot in 1..=self.slots_en as usize {
+            self.dcbaa.w64(8 * slot, 0);
+        }
+        self.cmd.reset(&self.mem);
+        // Canary: the event ring keeps the cursor of before the reset, where
+        // the controller starts writing at its first entry.
+        if !cfg!(feature = "canary-xhci-reset-event-ring") {
+            self.evt.reset(&self.mem);
+        }
+        self.cmd_done = None;
+        self.program()?;
+        self.reset_pending = true;
+        Ok(())
+    }
+
+    /// Clear Run/Stop (and the interrupt enable): the controller stops
+    /// walking its rings. A latched controller is left so, its memory never
+    /// reused: one whose halt was not confirmed may still write to it.
+    fn halt(&self) {
+        let c = self.regs.read32(self.op + regs::USBCMD);
+        self.regs.write32(self.op + regs::USBCMD, c & !(regs::CMD_RS | regs::CMD_INTE));
     }
 
     // ---- Ports ----
@@ -955,8 +1098,11 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
 
     /// Queue one transfer descriptor on endpoint `ep` and ring its doorbell.
     pub fn queue_td(&mut self, ep: u16, spec: TdSpec) -> Result<(), Error> {
-        if self.dead {
+        if self.recovery.dead() {
             return Err(Error::Dead);
+        }
+        if self.reset_pending {
+            return Err(Error::Reset);
         }
         let ix = self.ep_ix(ep)?;
         let mask = self.mask;
@@ -1154,7 +1300,7 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     pub fn recover_halted(&mut self) -> usize {
         let mut n = 0;
         for ix in 0..MAX_EPS {
-            if !self.eps[ix].halted || self.dead {
+            if !self.eps[ix].halted || self.recovery.dead() || self.reset_pending {
                 continue;
             }
             let (slot, dci) = (self.eps[ix].slot, self.eps[ix].dci);

@@ -27,8 +27,8 @@ placement-norecord-canary = []
 lx-server = []
 default = []
 # The QEMU machines' hardware bus rows (`builder::BUILTIN_DEVICE_ROWS`): the
-# virtio-mmio and virtio-pci devices and the NVMe controller the QEMU kernel's
-# drivers bind. A board image lists its own hardware. The kernel's `qemu`
+# virtio-mmio and virtio-pci devices, the NVMe controller and the xHCI host
+# controller the QEMU kernel's drivers bind. A board image lists its own hardware. The kernel's `qemu`
 # turns it on.
 qemu-devices = []
 # The topology carries an `EnergySpec` (mode + model) and

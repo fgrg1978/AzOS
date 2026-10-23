@@ -790,13 +790,13 @@ fn device_row(name: &str) -> u32 {
         .map_or(BLOCK_NO_ROW, |i| i as u32)
 }
 
-/// Where a kernel-placed block or network driver reports what the device
-/// timeout policy did (`azos_drv_api::recovery::set_sink`): reset the device
-/// (action 2), latched it dead with its resets spent (5), or found the reset
-/// did not bring it back (6). The `Rule::BlockTimeout` record (`sector`,
-/// `waited_ms`, `action`) or the `Rule::NetTimeout` one (`pending`,
-/// `waited_ms`, `action`), subject the device's topology row, and a console
-/// line. `Deny`, the ring only, for the reason [`block_timeout_sink`] gives:
+/// Where a kernel-placed block, network or USB host driver reports what the
+/// device timeout policy did (`azos_drv_api::recovery::set_sink`): reset the
+/// device (action 2), latched it dead with its resets spent (5), or found the
+/// reset did not bring it back (6). The `Rule::BlockTimeout` record (`sector`,
+/// `waited_ms`, `action`), the `Rule::NetTimeout` one (`pending`, `waited_ms`,
+/// `action`) or the `Rule::UsbTimeout` one (`trb_type`, `waited_ms`,
+/// `action`), subject the device's topology row, and a console line. `Deny`, the ring only, for the reason [`block_timeout_sink`] gives:
 /// the durable sink may be the very disk that just timed out.
 pub(crate) fn device_timeout_sink(
     class: azos_drv_api::recovery::Class,
@@ -809,11 +809,13 @@ pub(crate) fn device_timeout_sink(
     let rule = match class {
         Class::Block => azos_decision::Rule::BlockTimeout,
         Class::Net => azos_decision::Rule::NetTimeout,
+        Class::Usb => azos_decision::Rule::UsbTimeout,
     };
     azos_decision::record(rule, azos_decision::Verdict::Deny, device_row(device), [detail, waited_ms, action as u64]);
     let tag = match class {
         Class::Block => "BLK",
         Class::Net => "NET",
+        Class::Usb => "USB",
     };
     match action {
         Action::Reset => {

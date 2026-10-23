@@ -119,6 +119,12 @@ pub struct St {
     legsup: u32,
     legctl: u32,
     inject: Vec<(usize, usize, u8)>,
+    /// Commands the controller takes off its ring and never answers.
+    lose_commands: u32,
+    /// HCRST never completes (the bit stays set).
+    hcrst_stuck: bool,
+    /// Host controller resets done (HCRST writes that completed).
+    pub hc_resets: u32,
     /// Command TRB types executed, in order.
     pub commands: Vec<u8>,
     /// Interrupts the controller raised (an event posted with EHB clear).
@@ -308,6 +314,10 @@ impl St {
             }
             let at = self.cmd_ptr;
             self.cmd_ptr += 16;
+            if self.lose_commands > 0 {
+                self.lose_commands -= 1;
+                continue;
+            }
             self.commands.push(ty);
             let (code, slot) = self.exec_cmd(ty, &t);
             self.post([at as u32, (at >> 32) as u32, (code as u32) << 24, 33 << 10 | (slot as u32) << 24]);
@@ -777,6 +787,10 @@ impl St {
             o if o == OP => {
                 let was = self.usbcmd;
                 if v & 2 != 0 {
+                    if self.hcrst_stuck {
+                        self.usbcmd |= 2;
+                        return;
+                    }
                     self.hc_reset();
                     return;
                 }
@@ -838,6 +852,7 @@ impl St {
     }
 
     fn hc_reset(&mut self) {
+        self.hc_resets += 1;
         self.usbcmd = 0;
         self.usbsts = 1;
         self.ev_size = 0;
@@ -845,6 +860,13 @@ impl St {
         self.iman = 0;
         for s in &mut self.slots {
             *s = Slot::default();
+        }
+        // Every port back to its default state: disabled, and a device still
+        // connected reports its connection again.
+        for p in &mut self.ports {
+            p.ped = false;
+            p.reset_done_at = None;
+            p.changes = if p.ccs { 1 << 17 } else { 0 };
         }
     }
 
@@ -931,6 +953,9 @@ impl Hw {
                 legsup: 1 | if bios_owned { 1 << 16 } else { 0 },
                 legctl: if bios_owned { 1 | 1 << 4 | 1 << 13 } else { 0 },
                 inject: Vec::new(),
+                lose_commands: 0,
+                hcrst_stuck: false,
+                hc_resets: 0,
                 commands: Vec::new(),
                 interrupts_raised: 0,
                 fault: None,
@@ -1038,6 +1063,22 @@ impl Hw {
     /// (the endpoint halts).
     pub fn inject_error(&self, slot: usize, dci: usize, code: u8) {
         self.st.borrow_mut().inject.push((slot, dci, code));
+    }
+
+    /// The next `n` commands are taken off the ring and never answered (a
+    /// controller that stopped answering).
+    pub fn lose_commands(&self, n: u32) {
+        self.st.borrow_mut().lose_commands = n;
+    }
+
+    /// From now on a host controller reset never completes.
+    pub fn stick_hcrst(&self) {
+        self.st.borrow_mut().hcrst_stuck = true;
+    }
+
+    /// Host controller resets done, the bring-up's included.
+    pub fn hc_resets(&self) -> u32 {
+        self.st.borrow().hc_resets
     }
 
     pub fn fault(&self) -> Option<String> {

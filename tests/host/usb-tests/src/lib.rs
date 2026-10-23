@@ -21,6 +21,12 @@
 //! | `canary-route` | route string of a device behind a hub | `route_string_names_the_hub_ports` |
 //! | `canary-unplug` | device kept after the port says gone | `unplug_removes_the_device` |
 //! | `canary-dr-mode` | a DWC3 in device or otg mode driven as a host | `a_dwc3_is_a_host_only_when_the_device_tree_says_so` |
+//! | `canary-xhci-no-reset` | a command timeout latches the controller, no reset | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
+//! | `canary-xhci-reset-keeps-devices` | the core keeps the devices a reset controller forgot | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
+//! | `canary-xhci-reset-event-ring` | a reset keeps the event ring's old cursor | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
+//!
+//! `tests/chaos.rs` drives the kernel's injection point (`azos_chaos`,
+//! `xhci-command-drop`) instead of the mock, in a process of its own.
 
 pub mod devices;
 pub mod harness;
@@ -28,5 +34,7 @@ pub mod mock;
 
 #[cfg(test)]
 mod msc;
+#[cfg(test)]
+mod reset;
 #[cfg(test)]
 mod tests;

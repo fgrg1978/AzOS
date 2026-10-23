@@ -15,6 +15,13 @@ name = "azos_cam_ring"
 version = "0.1.0"
 
 [[package]]
+name = "azos_chaos"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_common"
 version = "0.1.0"
 
@@ -30,6 +37,14 @@ dependencies = [
 name = "azos_dma"
 version = "0.1.0"
 dependencies = [
+ "azos_common",
+]
+
+[[package]]
+name = "azos_drv_api"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
  "azos_common",
 ]
 
@@ -83,8 +98,10 @@ name = "azos_usb"
 version = "0.1.0"
 dependencies = [
  "azos_cam_ring",
+ "azos_chaos",
  "azos_devif",
  "azos_dma",
+ "azos_drv_api",
  "azos_idl",
  "azos_inspect",
  "azos_limits",
@@ -97,6 +114,7 @@ name = "azos_usb_tests"
 version = "0.1.0"
 dependencies = [
  "azos_devif",
+ "azos_drv_api",
  "azos_hwbus",
  "azos_idl",
  "azos_inspect",

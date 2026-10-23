@@ -28,6 +28,15 @@
 //! reads every driver may make ([`Usb::control_allowed`]). Class and vendor
 //! requests to the device or to a hub port, SET_CONFIGURATION, SET_ADDRESS and
 //! the rest of the device-wide standard requests are the core's.
+//!
+//! # A controller reset
+//!
+//! A command the controller leaves unanswered makes it reset itself
+//! (`crate::xhci`, the device timeout policy). Every device it held is then
+//! gone: the next turn removes each one as an unplug would (its transfers
+//! end `Disconnected`, its class drivers are told, `Detached` is emitted),
+//! then enumerates every connected port again, so a class driver sees its
+//! device go away and come back with a new generation.
 
 pub mod desc;
 mod enumerate;
@@ -337,18 +346,24 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             core::ptr::addr_of_mut!((*p).stats).write(Stats::default());
             &mut *p
         };
-        for p in 1..=u.hc.ports() {
-            if u.hc.port_status(p).connected() {
-                u.mark_root(p);
-                u.mark_connect(p, true);
+        u.look_at_connected_ports();
+        Ok(u)
+    }
+
+    /// Every root port with something connected is enumerated on the next
+    /// turn: at start, and after a controller reset.
+    fn look_at_connected_ports(&mut self) {
+        for p in 1..=self.hc.ports() {
+            if self.hc.port_status(p).connected() {
+                self.mark_root(p);
+                self.mark_connect(p, true);
             }
         }
         // Power-good: a port the controller powered just now needs its
         // device to come up before the first look.
-        if u.hc.caps().ppc {
-            u.hc.clock().delay_us(100_000);
+        if self.hc.caps().ppc {
+            self.hc.clock().delay_us(100_000);
         }
-        Ok(u)
     }
 
     pub fn controller(&self) -> &Xhci<R, M, C> {
@@ -413,8 +428,11 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
     pub fn service(&mut self, reg: &mut Registry<'_>) {
         self.hc.poll();
         self.drain();
+        self.after_reset(reg);
         self.root_ports(reg);
         self.hub_ports(reg);
+        // A reset the enumeration's commands made, before anything is queued.
+        self.after_reset(reg);
         self.pump();
         // What the controller finished while the submissions went in.
         self.hc.poll();
@@ -423,6 +441,34 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             self.drain();
         }
         self.flush_events();
+    }
+
+    /// The controller was reset (module documentation): remove every device
+    /// it held, children with their hubs, then look at every connected port
+    /// again. The controller refuses commands until [`Xhci::ack_reset`], so
+    /// the removal sends nothing for the slots it forgot.
+    fn after_reset(&mut self, reg: &mut Registry<'_>) {
+        if !self.hc.reset_pending() {
+            return;
+        }
+        // Canary: the core keeps the devices the controller forgot.
+        if !cfg!(feature = "canary-xhci-reset-keeps-devices") {
+            for slot in 1..=MAX_DEVICES as u8 {
+                if self.devices[slot as usize - 1].is_some_and(|d| d.parent == 0) {
+                    self.remove_device(reg, slot);
+                }
+            }
+            // A child its hub no longer listed.
+            for slot in 1..=MAX_DEVICES as u8 {
+                if self.devices[slot as usize - 1].is_some() {
+                    self.remove_device(reg, slot);
+                }
+            }
+        }
+        self.hc.ack_reset();
+        self.root_pending = [0; 4];
+        self.root_connect = [0; 4];
+        self.look_at_connected_ports();
     }
 
     /// Hand the controller's events to whoever they belong to.
@@ -814,6 +860,8 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             Ok(()) => Ok(()),
             Err(xhci::Error::Busy) => Err(SubmitError::Busy),
             Err(xhci::Error::Bounce) => Err(SubmitError::Refused(Status::Bounce)),
+            // The controller was reset: the device is about to be removed.
+            Err(xhci::Error::Reset) => Err(SubmitError::Refused(Status::Disconnected)),
             Err(_) => Err(SubmitError::Refused(Status::Invalid)),
         }
     }
