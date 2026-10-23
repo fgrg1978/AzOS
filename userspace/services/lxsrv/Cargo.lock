@@ -158,6 +158,7 @@ name = "lxsrv"
 version = "0.1.0"
 dependencies = [
  "azos_libsys",
+ "azos_limits",
  "azos_lx_loader",
  "azos_ualloc",
 ]
