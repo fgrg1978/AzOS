@@ -14190,7 +14190,7 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
-        x86_kbuild "ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=ktest,chaos,decisions$extra did not build"; return; }
+        x86_kbuild "use-robot,ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=use-robot,ktest,chaos,decisions$extra did not build"; return; }
         if [ -n "${5:-}" ]; then
             dimg="$CI_LOG_DIR/disk-ktest-${tag}.img"
             fresh_disk "$5" && cp "$5" "$dimg" || { bad; echo "      disk image $5 did not build"; return; }
@@ -14264,7 +14264,7 @@ PY
     x86_ktest_row_nodur() {
         local def="$CI_LOG_DIR/x86-why-nodur.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-why-nodur.elf X86_KBUILD_ARGS
         mkdir -p "$CI_LOG_DIR"
-        { cat config/defconfigs/${GATE_DEFC_X86}.config; echo "CONFIG_DECISION_REFUSALS_DURABLE=n"; } >"$def"
+        { cat config/defconfigs/${GATE_ROBOT_DEFC_X86}.config; echo "CONFIG_DECISION_REFUSALS_DURABLE=n"; } >"$def"
         X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-why-nodur.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-why-nodur X86_64_IMG=$X86_KBUILD_OUT"
         x86_ktest_row "$@"
     }
