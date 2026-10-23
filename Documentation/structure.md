@@ -96,7 +96,6 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `sys` | System devices every image needs: console UART and `kprint!`, the monotonic clock and timer programming, the hardware watchdog, WCET measurement. |
 | `soc` | SoC resource frameworks a driver asks of the SoC first: clock tree, reset lines, regulators, pin control, power domains. |
 | `dma` | The DMA mapping API (`DmaDomain`) and the domains that need no hardware. |
-| `dmac` | The DMA controller driver. |
 | `iommu` | IOMMU support behind one interface. |
 | `irqchip` | Which interrupt controller a boot uses and who owns each external line. |
 | `hwbus` | The runtime hardware bus (device table logic). |

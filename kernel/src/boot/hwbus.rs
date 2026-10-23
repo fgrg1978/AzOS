@@ -34,7 +34,7 @@
 //! which carries the e-stop line, and `wdt`; [`bind_safety`] raises a
 //! `[SAFETY]` error when either stays absent) bind right after the SoC
 //! frameworks are installed, before any task exists and long before sys-wdt
-//! arms the watchdog; `i2c`, `pwm`, `dmac` and `sfctemp` (and the K1's `pwm` and
+//! arms the watchdog; `i2c`, `pwm` and `sfctemp` (and the K1's `pwm` and
 //! `k1-tsensor`) bind with the robot hardware (`install_robot_hw`). The microSD
 //! controller (`starfive,jh7110-mmc`, `dw-mshc`) binds in the stage right
 //! before the block device is brought up: [`attach_dwmshc`] reads the node's
@@ -627,8 +627,6 @@ impl Drivers for KernelDrivers<'_> {
                 }
                 crate::entry::aarch64::ext::rpi_pm::attach(map_window(dev)?).map_err(|_| ProbeError::Busy)
             }
-            #[cfg(feature = "vf2")]
-            "dmac" => azos_drv_dmac::dma::dma_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
             #[cfg(feature = "vf2")]
             "dw-mshc" => attach_dwmshc(dev),
             // One probe per controller the tree enables; the bus number is

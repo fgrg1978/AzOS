@@ -106,7 +106,7 @@ crate_dir() {
 
 CORE_CRATES="
 abi arch arch-api arch-riscv64 arch-aarch64 arch-x86_64 common sync mm limits
-api base irqchip sys gpio bus virtio block drivers/net sensor actuator npu power dmac
+api base irqchip sys gpio bus virtio block drivers/net sensor actuator npu power
 driver_server ina219 buzzer rings pci dma iommu
 ipc sched syscall net energy
 crypto

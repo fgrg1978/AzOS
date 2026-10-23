@@ -334,7 +334,7 @@ impl<M: Mmio> VirtioPciDevice<M> {
     }
 
     /// Select and size one queue, program its three ring addresses
-    /// (already-translated [bus addresses][azos_drv_dmac::dma::DmaAddr] — this
+    /// (already-translated [bus addresses][azos_dma::DmaAddr] — this
     /// function takes raw `u64` so it has no dependency on `crates/drivers/dma`;
     /// the caller does that translation), and enable it.
     ///

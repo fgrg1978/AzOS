@@ -90,7 +90,7 @@ vf2 = [
     "azos_drv_base/vf2", "azos_arch/vf2", "azos_drv_sys/vf2",
     "azos_drv_gpio/vf2", "azos_drv_bus/vf2", "azos_drv_virtio/vf2",
     "azos_drv_block/vf2", "azos_drv_net/vf2", "azos_drv_sensor/vf2",
-    "azos_drv_actuator/vf2", "azos_drv_dmac/vf2",
+    "azos_drv_actuator/vf2",
     "azos_robot_drivers?/vf2", "azos_ota/vf2", "link-provisioning-enforced",
     "azos_crypto/no-bitmanip", "i2c-dw",
 ]
@@ -114,7 +114,7 @@ k1 = [
     "rvv", "azos_drv_base/k1", "azos_arch/k1", "azos_drv_sys/k1",
     "azos_drv_gpio/k1", "azos_drv_bus/k1", "azos_drv_virtio/k1",
     "azos_drv_block/k1", "azos_drv_sensor/k1", "azos_drv_actuator/k1",
-    "azos_drv_dmac/k1", "dep:azos_drv_npu", "azos_drv_npu/k1",
+    "dep:azos_drv_npu", "azos_drv_npu/k1",
     "azos_robot_drivers?/k1", "azos_ota/k1", "link-provisioning-enforced",
 ]
 # Raspberry Pi 5 (BOARD_RPI5): `make rpi5`, kernel8.img for the Pi firmware.
@@ -1291,7 +1291,6 @@ azos_cam_ring      = { workspace = true }
 azos_drv_actuator  = { workspace = true }
 azos_drv_npu       = { workspace = true, optional = true }
 azos_drv_power     = { workspace = true }
-azos_drv_dmac      = { workspace = true }
 azos_robot_drivers = { workspace = true, optional = true }
 azos_drv_api       = { workspace = true }
 azos_abi = { workspace = true }

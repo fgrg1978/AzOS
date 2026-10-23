@@ -5,12 +5,12 @@
 
 use crate::*;
 
-/// PWM/I2C/DMA bring-up + the robot motor-binding table
+/// PWM/I2C bring-up + the robot motor-binding table
 /// (the `pwm_channel_is_motor_bound`/`gpio_pin_is_motor_bound` guards,
 /// and the `gpio-aq3-smoke`/`reflex-smoke` tasks, all need this).
 ///
 /// On a board (`vf2`, `k1`) the controllers are the device tree's: the hardware
-/// bus binds `i2c`, `pwm`, `dmac` and `sfctemp` (`vf2`) or `i2c` (`k1`: the
+/// bus binds `i2c`, `pwm` and `sfctemp` (`vf2`) or `i2c` (`k1`: the
 /// other K1 controllers have no native driver yet) to their nodes here, and
 /// the thermal sensors of the boards that have one (the K1's temperature block,
 /// the Raspberry Pi's mailbox; GPIO and the watchdog bound earlier,
@@ -41,7 +41,7 @@ pub(crate) fn install_robot_hw() {
     #[cfg(feature = "i2c-dw")]
     super::hwbus::bind(&["i2c"]);
     #[cfg(feature = "vf2")]
-    super::hwbus::bind(&["pwm", "dmac", "sfctemp"]);
+    super::hwbus::bind(&["pwm", "sfctemp"]);
     // The K1's temperature block (Kconfig SOC_K1 and THERMAL).
     #[cfg(all(feature = "soc-k1", feature = "thermal"))]
     super::hwbus::bind(&["k1-tsensor"]);
@@ -102,7 +102,7 @@ pub(crate) fn install_robot_hw() {
 /// hardware could answer — same "nothing called it here" gap class already
 /// documented by `install_robot_hw`/`install_topology`/`install_sched_hooks`.
 /// None of the drivers called below (`payload`, `robot`, `motor_pid`, `spi`,
-/// `can`, `dma`, `pm`, `imu`, `baro`, `gps`, `rangefinder`, `csi`,
+/// `can`, `pm`, `imu`, `baro`, `gps`, `rangefinder`, `csi`,
 /// `esc`, `rc`) branch on `target_arch` in their own crates — the
 /// same "simulated in QEMU on both ISAs" property `install_robot_hw`'s own
 /// doc establishes for GPIO/PWM/I2C — so this compiles and behaves
@@ -146,10 +146,8 @@ pub(crate) fn install_robot_payload_and_sensors() {
     // are unverified (see `platform.rs`'s VF2 checklist); re-add the day a
     // board's `boot_hooks.rs` maps them.
     azos_drv_bus::can::can_init();
-    #[cfg(not(feature = "vf2"))]
-    azos_drv_dmac::dma::dma_init();
     // eth_init() already called above during network init sequence.
-    kprintln!("[HW] SPI, CAN, DMA, USB initialized");
+    kprintln!("[HW] CAN initialized");
 
     // F14: SpacemiT K1 NPU initialization.
     #[cfg(feature = "k1")]

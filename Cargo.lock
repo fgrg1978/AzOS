@@ -315,15 +315,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "azos_drv_dmac"
-version = "0.1.0"
-dependencies = [
- "azos_drv_base",
- "azos_drv_sys",
- "azos_sync",
-]
-
-[[package]]
 name = "azos_drv_gpio"
 version = "0.1.0"
 dependencies = [
@@ -638,7 +629,6 @@ dependencies = [
  "azos_drv_base",
  "azos_drv_block",
  "azos_drv_bus",
- "azos_drv_dmac",
  "azos_drv_gpio",
  "azos_drv_input",
  "azos_drv_irqchip",

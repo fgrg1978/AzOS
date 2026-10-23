@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The JH7110 board controllers (GPIO, I2C, PWM, watchdog, DMA controller,
-//! temperature sensor) bind to their device-tree nodes through the hardware
+//! The JH7110 board controllers (GPIO, I2C, PWM, watchdog, temperature
+//! sensor) bind to their device-tree nodes through the hardware
 //! bus: the real `crates/drivers/*/hwbus.ids` rows decide, the node gives the
 //! window and the interrupt, and the SoC frameworks give the node its
 //! resources before the driver is asked.
@@ -13,7 +13,7 @@
 //! `window_tests`.
 //!
 //! Canary (removes what a row relies on, the named rows must FAIL): take the
-//! `boot` word off a line of `crates/drivers/{gpio,bus,actuator,sys,dmac}/hwbus.ids`
+//! `boot` word off a line of `crates/drivers/{gpio,bus,actuator,sys}/hwbus.ids`
 //! and `a_topology_only_image_still_binds_the_controllers_the_kernel_drives`
 //! goes red; put the sys pad controller back in `crates/drivers/soc/hwbus.ids`
 //! and every row here stops at the table builder, which refuses an id with two
@@ -83,6 +83,8 @@ const I2C2: Node = Node { name: "i2c@10050000", compat: &["snps,designware-i2c"]
 const I2C5: Node = Node { name: "i2c@12050000", compat: &["snps,designware-i2c"], base: 0x1205_0000, size: 0x1_0000, irq: 41, reset: 22 };
 const PWM: Node = Node { name: "pwm@120d0000", compat: &["starfive,jh7110-pwm", "opencores,pwm-v1"], base: 0x120d_0000, size: 0x1_0000, irq: 0, reset: 23 };
 const WDT: Node = Node { name: "watchdog@13070000", compat: &["starfive,jh7110-wdt"], base: 0x1307_0000, size: 0x1_0000, irq: 92, reset: 26 };
+/// The general-purpose AXI DMA controller: no row claims it (no kernel code
+/// moves data through it).
 const DMA: Node = Node { name: "dma-controller@16050000", compat: &["starfive,jh7110-axi-dma"], base: 0x1605_0000, size: 0x1_0000, irq: 73, reset: 27 };
 const TEMP: Node = Node { name: "temperature-sensor@120e0000", compat: &["starfive,jh7110-temp"], base: 0x120e_0000, size: 0x1_0000, irq: 122, reset: 29 };
 /// The crypto engine's ARM PL080 (`sdma@16008000`): nothing claims it.
@@ -214,7 +216,7 @@ fn each_controller_binds_to_its_driver_with_the_window_and_interrupt_of_its_node
         bus.bind_all(&rules(&native, Policy::Auto), reg, &mut Quiet);
         let want: Vec<(String, u64, u64, u32)> = [
             ("gpio", &GPIO), ("i2c", &I2C2), ("i2c", &I2C5), ("pwm", &PWM),
-            ("wdt", &WDT), ("dmac", &DMA), ("sfctemp", &TEMP),
+            ("wdt", &WDT), ("sfctemp", &TEMP),
         ]
         .iter()
         .map(|(d, n)| (d.to_string(), n.base as u64, n.size as u64, n.irq))
@@ -232,11 +234,11 @@ fn the_resources_come_first_for_every_controller_but_the_pad_controllers_gpio() 
         assert_eq!(
             calls,
             ["probe:gpio", "resources:i2c", "probe:i2c", "resources:i2c", "probe:i2c", "resources:pwm", "probe:pwm",
-             "resources:wdt", "probe:wdt", "resources:dmac", "probe:dmac", "resources:sfctemp", "probe:sfctemp"]
+             "resources:wdt", "probe:wdt", "resources:sfctemp", "probe:sfctemp"]
         );
         // Each given node's own reset line came up, in the same order.
         let resets: Vec<u32> = reg.rig.ops().iter().filter(|o| o.0 == RESET && o.1 == Op::Deassert).map(|o| o.2).collect();
-        assert_eq!(resets, [I2C2.reset, I2C5.reset, PWM.reset, WDT.reset, DMA.reset, TEMP.reset]);
+        assert_eq!(resets, [I2C2.reset, I2C5.reset, PWM.reset, WDT.reset, TEMP.reset]);
         assert!(!resets.contains(&GPIO.reset), "the pad controller's node is the SoC framework's");
     });
 }
@@ -274,12 +276,12 @@ fn a_topology_only_image_still_binds_the_controllers_the_kernel_drives() {
     let native = native_table();
     with_registry(&all_nodes(), |bus, reg, hs| {
         bus.bind_all(&rules(&native, Policy::TopologyOnly), reg, &mut Quiet);
-        // The seven controllers and the clock controller's record (the SoC
-        // frameworks' own `boot` row) bind; the PL080 has no row and none is
-        // refused by the policy.
+        // The six controllers and the clock controller's record (the SoC
+        // frameworks' own `boot` row) bind; the AXI DMA controller and the
+        // PL080 have no row and none is refused by the policy.
         let bound = hs.iter().filter(|h| bus.get(**h).unwrap().state == State::Bound).count();
-        assert_eq!(bound, 8, "{:?}", reg.calls);
-        assert_eq!(reg.probed.len(), 7);
+        assert_eq!(bound, 7, "{:?}", reg.calls);
+        assert_eq!(reg.probed.len(), 6);
         assert!(bus.iter().all(|(_, s)| s.state != State::NotAdmitted && s.state != State::ProbeFailed));
     });
 }
@@ -312,9 +314,9 @@ fn the_safety_read_drivers_bind_in_their_own_stage_before_the_rest() {
         assert_eq!(first, ["gpio", "wdt"]);
         assert_eq!(bus.get(hs[2]).unwrap().state, State::Detected, "the I2C waits for the robot hardware stage");
         // Stage 2 (`install_robot_hw`): the rest.
-        bus.bind_where(&rules, reg, &mut Quiet, &stage(&["i2c", "pwm", "dmac", "sfctemp"]));
+        bus.bind_where(&rules, reg, &mut Quiet, &stage(&["i2c", "pwm", "sfctemp"]));
         let all: Vec<&str> = reg.probed.iter().map(|p| p.0.as_str()).collect();
-        assert_eq!(all, ["gpio", "wdt", "i2c", "i2c", "pwm", "dmac", "sfctemp"]);
+        assert_eq!(all, ["gpio", "wdt", "i2c", "i2c", "pwm", "sfctemp"]);
         assert!(matches!(bus.get(hs[1]).unwrap().binding, Binding::Native(_)));
     });
 }
@@ -367,7 +369,7 @@ fn vf2_window_bound() -> usize {
         .and_then(|l| l.split('=').nth(1))
         .map(|v| v.trim().trim_end_matches(';').trim().parse().expect("a number"))
         .expect("I2C_BUS_COUNT");
-    assert!(fixed >= 5 && arms >= 6 && buses >= 2, "the parse found fixed={fixed} arms={arms} buses={buses}");
+    assert!(fixed >= 5 && arms >= 5 && buses >= 2, "the parse found fixed={fixed} arms={arms} buses={buses}");
     2 + fixed + azos_soc::boot::MAX_WINDOWS_JH7110 + arms + (buses - 1)
 }
 

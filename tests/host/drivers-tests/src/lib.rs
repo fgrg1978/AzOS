@@ -31,7 +31,6 @@ extern crate self as azos_drv_virtio;
 extern crate self as azos_drv_input;
 extern crate self as azos_drv_block;
 extern crate self as azos_drv_net;
-extern crate self as azos_drv_dmac;
 
 /// Stand-in for `crate::clint`, reduced to the one constant the drivers read.
 /// QEMU's value, because that is what the rest of the tree calibrates against.
