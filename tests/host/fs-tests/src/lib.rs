@@ -197,6 +197,9 @@ mod sync_all;
 mod usbvol;
 #[cfg(test)]
 mod usb_volume;
+// A small-file lane on /fat, for before/after numbers (`#[ignore]`).
+#[cfg(test)]
+mod bench_small;
 
 #[cfg(test)]
 mod image {
