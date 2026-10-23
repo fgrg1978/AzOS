@@ -173,7 +173,15 @@ mod host {
                 }
             };
             let cpu = azos_mm::addr::phys_to_virt(pa as usize) as *mut u8;
+            // The allocator zeroed the block through the CPU's caches: on a
+            // controller that does not snoop them, RAM still holds what was
+            // there and the dirty lines could be evicted over what it writes.
+            // Written back and dropped once, whole, before it is handed out
+            // (`Memory::alloc_region` promises zeroes; a coherent domain makes
+            // this a no-op).
             // SAFETY: `len` bytes of the direct map at `pa`, ours until freed.
+            unsafe { azos_dma::cache::sync_for_device(self.domain, cpu as usize, len, Direction::Bidirectional) };
+            // SAFETY: as above.
             Some(unsafe { DmaBuf::new(cpu, bus, len) })
         }
 

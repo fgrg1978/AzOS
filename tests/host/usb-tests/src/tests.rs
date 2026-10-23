@@ -961,3 +961,46 @@ fn lsusb_listing_is_published_through_the_inspection_tree() {
     assert_eq!(get("usb/devices"), 2);
     assert_eq!(get(&format!("usb/dev{ks}/present")), 0);
 }
+
+// ---- A controller that does not snoop the CPU's caches ----
+
+/// Every ring, context and table the controller reads was cleaned after the
+/// CPU wrote it, and none it writes holds a dirty line (the mock faults
+/// otherwise: `Config::noncoherent`).
+fn noncoherent() -> Config {
+    Config { noncoherent: true, ..cfg() }
+}
+
+#[test]
+fn a_noncoherent_controller_starts_and_wraps_its_command_ring() {
+    let hw = Hw::new(Config { scratch: 4, ..noncoherent() });
+    let mut x = Xhci::new(hw.regs(), hw.mem(), hw.clock(), u64::MAX, false).unwrap();
+    for i in 0..700 {
+        x.command(Trb::noop_cmd()).unwrap_or_else(|e| panic!("command {i}: {e:?}"));
+    }
+    assert_eq!(hw.commands().len(), 701);
+    assert_eq!(hw.fault(), None);
+}
+
+#[test]
+fn a_noncoherent_controller_enumerates_through_a_hub_and_reuses_its_pages() {
+    let mut rig = Rig::with(noncoherent());
+    let h = hub_device(false, 4, 3, false);
+    rig.hw.attach_root(1, h.clone());
+    rig.settle();
+    assert_eq!(rig.hw.fault(), None);
+    // Unplug and replug: the new device's context and rings are arena pages
+    // the last one used, zeroed again by the CPU.
+    for round in 0..3 {
+        let st = stick();
+        rig.hw.hub_attach(&h, 2, st.clone());
+        rig.settle();
+        assert_eq!(rig.hw.fault(), None, "round {round}");
+        assert_eq!(ids(&rig, &st), (0x0781, 0x5567), "round {round}");
+        assert_eq!(st.borrow().configuration, 1, "round {round}");
+        rig.hw.hub_detach(&h, 2);
+        rig.settle();
+        assert_eq!(rig.hw.fault(), None, "round {round}");
+        assert_eq!(rig.usb.devices().count(), 1, "round {round}: only the hub is left");
+    }
+}

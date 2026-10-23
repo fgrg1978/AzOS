@@ -409,7 +409,7 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             return Err(Error::NoMemory);
         };
         let (Some(dcbaa), Some(cmd_page), Some(evt_page), Some(erst), Some(input)) =
-            (arena.page(), arena.page(), arena.page(), arena.page(), arena.page())
+            (arena.page(&mem), arena.page(&mem), arena.page(&mem), arena.page(&mem), arena.page(&mem))
         else {
             mem.free_region(region);
             return Err(Error::NoMemory);
@@ -610,7 +610,7 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     }
     /// A page of the arena for the core's own use (its control buffer).
     pub fn take_page(&mut self) -> Option<DmaBuf> {
-        self.arena.page()
+        self.arena.page(&self.mem)
     }
 
     /// Ring doorbell `target`: `io_wmb` orders the TRBs (and their cache
@@ -878,8 +878,8 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
     /// control endpoint's max packet size.
     pub fn address_device(&mut self, slot: u8, params: SlotParams, ep0_mps: u16) -> Result<(), Error> {
         let si = self.slot_ix(slot)?;
-        let dev = self.arena.page().ok_or(Error::NoMemory)?;
-        let ring_page = match self.arena.page() {
+        let dev = self.arena.page(&self.mem).ok_or(Error::NoMemory)?;
+        let ring_page = match self.arena.page(&self.mem) {
             Some(p) => p,
             None => {
                 self.arena.release(dev);
@@ -991,7 +991,7 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
         let mut add = 1u32;
         let mut pages = [DmaBuf::EMPTY; 8];
         for (i, s) in specs.iter().enumerate() {
-            let page = match self.arena.page() {
+            let page = match self.arena.page(&self.mem) {
                 Some(p) => p,
                 None => {
                     for p in &pages[..i] {

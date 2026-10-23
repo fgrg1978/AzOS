@@ -45,6 +45,7 @@ canary-dwc2-hprt-w1c = ["azos_usb/canary-dwc2-hprt-w1c"]
 canary-dwc2-toggle = ["azos_usb/canary-dwc2-toggle"]
 canary-dwc2-no-bounce = ["azos_usb/canary-dwc2-no-bounce"]
 canary-dwc2-split = ["azos_usb/canary-dwc2-split"]
+canary-arena-clean = ["azos_usb/canary-arena-clean"]
 
 [profile.release]
 overflow-checks = true

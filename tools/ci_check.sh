@@ -10540,6 +10540,8 @@ host_job host_canary_row "usb: DWC2 split canary" usb-tests canary-dwc2-split \
 # `pm_wdt`).
 host_job host_canary_row "power: PM halt partition canary" power-tests pm-partition-canary \
     a_power_off_resets_into_the_halt_partition
+host_job host_canary_row "usb: arena clean canary" usb-tests canary-arena-clean \
+    a_noncoherent_controller_enumerates_through_a_hub_and_reuses_its_pages
 # USB HID (azos_usb_hid): each canary puts one report-decoding or authorization
 # bug back (a phantom report taken for keys, a report ID not skipped, an unsigned
 # axis, modifiers after their report's keys, a hub tier not compared, a keyboard

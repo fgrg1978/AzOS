@@ -34,6 +34,7 @@
 //!
 //! `tests/chaos.rs` drives the kernel's injection point (`azos_chaos`,
 //! `xhci-command-drop`) instead of the mock, in a process of its own.
+//! | `canary-arena-clean` | an arena page zeroed and never cleaned for a non-coherent controller | `a_noncoherent_controller_enumerates_through_a_hub_and_reuses_its_pages` |
 
 pub mod devices;
 pub mod dwc2_mock;

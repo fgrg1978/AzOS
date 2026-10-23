@@ -15,6 +15,17 @@
 //! asked for, contexts read at the wrong stride, a ring entry with the wrong
 //! cycle bit: each one wedges or fails the controller, the way it would
 //! hardware, and the canary for the matching driver bug turns a test red.
+//!
+//! With [`Config::noncoherent`] the controller does not snoop the CPU's
+//! caches. Each region then has a second copy, the RAM the controller reads
+//! and writes, apart from the bytes the CPU sees; `to_device` and
+//! `from_device` are what the kernel's `KMem` makes them, a write-back and
+//! drop of every 64-byte line they touch, and a line is dirty while the CPU's
+//! bytes differ from what RAM held at the line's last sync. The controller
+//! faults when it reads a line the CPU holds dirty with other bytes (it would
+//! read stale data) or writes one the CPU holds dirty (a later eviction would
+//! overwrite what it stored), and the CPU sees what the controller wrote only
+//! after `from_device`.
 
 use std::alloc::{alloc_zeroed, Layout};
 use std::cell::{Cell, RefCell};
@@ -46,11 +57,13 @@ pub struct Config {
     pub reset_us: u64,
     /// The firmware owns the controller at power-on (USB Legacy Support).
     pub bios_owned: bool,
+    /// The controller does not snoop the CPU's caches (see the module doc).
+    pub noncoherent: bool,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { ac64: true, csz64: false, scratch: 0, max_slots: 32, ports: 4, ppc: false, pagesize: 1, reset_us: 20_000, bios_owned: false }
+        Config { ac64: true, csz64: false, scratch: 0, max_slots: 32, ports: 4, ppc: false, pagesize: 1, reset_us: 20_000, bios_owned: false, noncoherent: false }
     }
 }
 
@@ -58,6 +71,64 @@ struct Region {
     bus: u64,
     ptr: *mut u8,
     len: usize,
+    /// Non-coherent only: what RAM holds (the controller's view), and what
+    /// it held at each line's last sync (a line is dirty while the CPU's bytes
+    /// differ from that).
+    ram: Option<Box<[u8]>>,
+    synced: Option<Box<[u8]>>,
+}
+
+/// The cache line the non-coherent model maintains by.
+const LINE: usize = 64;
+
+/// What RAM holds before the CPU's zeroes reach it.
+const STALE: u8 = 0xa5;
+
+impl Region {
+    fn cpu(&self, off: usize) -> u8 {
+        // SAFETY: `off < len` (callers), `ptr` is the region's live memory.
+        unsafe { std::ptr::read_volatile(self.ptr.add(off)) }
+    }
+
+    fn set_cpu(&self, off: usize, v: u8) {
+        // SAFETY: as `cpu`.
+        unsafe { std::ptr::write_volatile(self.ptr.add(off), v) }
+    }
+
+    /// The bytes of the line at `l` (a line offset): CPU, RAM and synced.
+    fn line(&self, l: usize) -> std::ops::Range<usize> {
+        l..(l + LINE).min(self.len)
+    }
+
+    /// The CPU holds the line at `l` dirty.
+    fn dirty(&self, l: usize) -> bool {
+        let synced = self.synced.as_ref().unwrap();
+        self.line(l).any(|i| self.cpu(i) != synced[i])
+    }
+
+    /// The CPU holds the line at `l` dirty with bytes RAM does not have.
+    fn stale_for_device(&self, l: usize) -> bool {
+        let ram = self.ram.as_ref().unwrap();
+        self.dirty(l) && self.line(l).any(|i| self.cpu(i) != ram[i])
+    }
+
+    /// Write back (when dirty) and drop the lines of `[off, off + len)`.
+    fn flush(&mut self, off: usize, len: usize) {
+        let mut l = off - off % LINE;
+        while l < off + len {
+            let dirty = self.dirty(l);
+            for i in self.line(l) {
+                if dirty {
+                    let v = self.cpu(i);
+                    self.ram.as_mut().unwrap()[i] = v;
+                }
+                let v = self.ram.as_ref().unwrap()[i];
+                self.set_cpu(i, v);
+                self.synced.as_mut().unwrap()[i] = v;
+            }
+            l += LINE;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -149,7 +220,33 @@ impl St {
         self.regions
             .iter()
             .find(|r| bus >= r.bus && bus + n as u64 <= r.bus + r.len as u64)
-            .map(|r| r.ptr.wrapping_add((bus - r.bus) as usize))
+            .map(|r| match &r.ram {
+                Some(ram) => ram.as_ptr().wrapping_add((bus - r.bus) as usize) as *mut u8,
+                None => r.ptr.wrapping_add((bus - r.bus) as usize),
+            })
+    }
+
+    /// Non-coherent: a controller access to `[bus, bus + n)` that the CPU's
+    /// caches make wrong (see the module doc), as a fault.
+    fn check_lines(&mut self, bus: u64, n: usize, write: bool) {
+        let Some(r) = self.regions.iter().find(|r| r.ram.is_some() && bus >= r.bus && bus + n as u64 <= r.bus + r.len as u64) else {
+            return;
+        };
+        let off = (bus - r.bus) as usize;
+        let mut l = off - off % LINE;
+        while l < off + n {
+            let bad = if write { r.dirty(l) } else { r.stale_for_device(l) };
+            if bad {
+                let why = if write {
+                    format!("DMA write to {:#x}: the CPU holds the line dirty", r.bus + l as u64)
+                } else {
+                    format!("DMA read of {:#x}: the CPU wrote the line and never cleaned it", r.bus + l as u64)
+                };
+                self.fault(why);
+                return;
+            }
+            l += LINE;
+        }
     }
 
     fn fault(&mut self, why: String) {
@@ -175,6 +272,7 @@ impl St {
 
     fn rd(&mut self, bus: u64, n: usize) -> Option<Vec<u8>> {
         let p = self.dma(bus, n)?;
+        self.check_lines(bus, n, false);
         let mut v = vec![0u8; n];
         for (i, b) in v.iter_mut().enumerate() {
             *b = unsafe { std::ptr::read_volatile(p.add(i)) };
@@ -184,6 +282,7 @@ impl St {
 
     fn wr(&mut self, bus: u64, data: &[u8]) -> bool {
         let Some(p) = self.dma(bus, data.len()) else { return false };
+        self.check_lines(bus, data.len(), true);
         for (i, b) in data.iter().enumerate() {
             unsafe { std::ptr::write_volatile(p.add(i), *b) };
         }
@@ -1213,7 +1312,16 @@ impl Memory for MockMem {
         if bus + len as u64 - 1 > mask {
             return None;
         }
-        st.regions.push(Region { bus, ptr, len });
+        let mut r = Region { bus, ptr, len, ram: None, synced: None };
+        if st.cfg.noncoherent {
+            // RAM still holds what was there and the CPU's zeroes sit dirty
+            // in its cache, until the region is written back and dropped
+            // whole, as the kernel's `KMem::alloc_region` does.
+            r.ram = Some(vec![STALE; len].into_boxed_slice());
+            r.synced = Some(vec![STALE; len].into_boxed_slice());
+            r.flush(0, len);
+        }
+        st.regions.push(r);
         // SAFETY: `ptr` is `len` bytes of live, leaked memory.
         Some(unsafe { DmaBuf::new(ptr, bus, len) })
     }
@@ -1227,6 +1335,23 @@ impl Memory for MockMem {
         true
     }
 
-    fn to_device(&self, _cpu: *const u8, _len: usize) {}
-    fn from_device(&self, _cpu: *const u8, _len: usize) {}
+    fn to_device(&self, cpu: *const u8, len: usize) {
+        self.sync(cpu, len);
+    }
+    fn from_device(&self, cpu: *const u8, len: usize) {
+        self.sync(cpu, len);
+    }
+}
+
+impl MockMem {
+    /// Both directions are a flush, as `KMem` makes them (`Bidirectional`);
+    /// nothing for a coherent controller.
+    fn sync(&self, cpu: *const u8, len: usize) {
+        let mut st = self.0.st.borrow_mut();
+        let Some(r) = st.regions.iter_mut().find(|r| r.ram.is_some() && cpu >= r.ptr as *const u8 && (cpu as usize) + len <= r.ptr as usize + r.len) else {
+            return;
+        };
+        let off = cpu as usize - r.ptr as usize;
+        r.flush(off, len);
+    }
 }

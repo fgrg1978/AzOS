@@ -71,6 +71,8 @@ canary-xhci-reset-event-ring = []
 canary-msc-no-recovery = []
 # A DWC3 whose dr_mode is not `host` is taken for a host anyway.
 canary-dr-mode = []
+# An arena page zeroed by the CPU is not cleaned for a non-coherent controller.
+canary-arena-clean = []
 # A received NTB's datagram is not checked against the end of the block.
 canary-ntb-bounds = []
 # No byte pads a transmission that ends on a packet boundary (the core queues

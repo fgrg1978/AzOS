@@ -135,8 +135,9 @@ impl DmaBuf {
 pub trait Memory {
     /// A zeroed, physically contiguous block of `len` bytes (a multiple of
     /// 4 KiB), aligned to `align`, every byte of it reachable at a bus
-    /// address no higher than `mask`, and mapped for the device. `None`:
-    /// none to be had.
+    /// address no higher than `mask`, and mapped for the device. Zero as the
+    /// device sees it too: a controller that does not snoop the CPU's caches
+    /// gets the block written back and dropped first. `None`: none to be had.
     fn alloc_region(&self, len: usize, align: usize, mask: u64) -> Option<DmaBuf>;
     /// Give a block back (unmapped first).
     fn free_region(&self, b: DmaBuf);
@@ -188,14 +189,22 @@ impl Arena {
         Some(Arena { base: region, used: [0; ARENA_WORDS] })
     }
 
-    /// One zeroed page. `None` when all are in use.
-    pub fn page(&mut self) -> Option<DmaBuf> {
+    /// One zeroed page, zero for the controller too: on a machine whose
+    /// controller does not snoop the CPU's caches the zeroes are cleaned out,
+    /// or it would read what the page held before (a stale TRB with a valid
+    /// cycle bit) and a dirty line evicted later would overwrite what it
+    /// wrote. `None` when all are in use.
+    pub fn page<M: Memory>(&mut self, m: &M) -> Option<DmaBuf> {
         for p in 0..ARENA_PAGES {
             let (w, b) = (p / 64, p % 64);
             if self.used[w] & (1 << b) == 0 {
                 self.used[w] |= 1 << b;
                 let page = self.base.sub(p * PAGE, PAGE);
                 page.zero();
+                #[cfg(not(feature = "canary-arena-clean"))]
+                m.to_device(page.cpu(), PAGE);
+                #[cfg(feature = "canary-arena-clean")]
+                let _ = m;
                 return Some(page);
             }
         }
