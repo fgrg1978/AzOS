@@ -14950,11 +14950,13 @@ PY
     # the machine with an HPET to watch the TSC against (microvm has none, so
     # its rows never start the task). QEMU's TSC is not invariant, so the
     # kernel is the PCI one with X86_TSC_CLOCK_ALWAYS: the TSC is the clock and
-    # the watchdog checks it every X86_TSC_WATCHDOG_MS. The plain boot runs
-    # 20 s, about 40 checks, and must not demote the TSC; the canary boot arms
-    # `canary=x86-tsc-skew` (the TSC made to run four times the bound fast) on
-    # the same kernel, and the watchdog must demote it to the HPET with the
-    # boot going on after it.
+    # the watchdog checks it every X86_TSC_WATCHDOG_MS. Its bound is 2%
+    # (X86_TSC_WATCHDOG_PPM=20000): QEMU's 20 ms boot calibration is already
+    # 1000-1800 ppm off unloaded, more under the gate's load. The plain boot
+    # runs 20 s, about 40 checks, and must not demote the TSC; the canary boot
+    # arms `canary=x86-tsc-skew` (the TSC made to run four times the bound
+    # fast) on the same kernel, and the watchdog must demote it to the HPET,
+    # whose clock must then run one more interval.
     x86_tsc_watchdog_row() { # x86_tsc_watchdog_row <label> <PASS|FAIL>
         local label="$1" expect="$2" why="" w
         printf "  %-26s" "${label}..."
@@ -14963,13 +14965,13 @@ PY
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
         local def="$CI_LOG_DIR/x86-${tag}.defconfig" append="" stop='KERNEL PANIC|TSC demoted' secs=20
         rm -f "$kimg" "$kimg.features"
-        { cat config/defconfigs/qemu-x86_64-pci.config; echo 'CONFIG_X86_TSC_CLOCK_ALWAYS=y'; } >"$def"
+        { cat config/defconfigs/qemu-x86_64-pci.config; echo 'CONFIG_X86_TSC_CLOCK_ALWAYS=y'; echo 'CONFIG_X86_TSC_WATCHDOG_PPM=20000'; } >"$def"
         make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-tscwd-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-tscwd" X86_64_IMG="$kimg" >/dev/null 2>&1 \
             && builtin printf '\n' >"$kimg.features" \
             || { bad; echo "      make x86_64 (qemu-x86_64-pci.config + X86_TSC_CLOCK_ALWAYS) did not build"; return; }
         if [ "$expect" = FAIL ]; then
-            append="canary=x86-tsc-skew" stop='KERNEL PANIC|AzOS shell'
+            append="canary=x86-tsc-skew" stop='KERNEL PANIC|clock runs: '
             secs=60
         fi
         par_ready
@@ -14983,8 +14985,8 @@ PY
         if [ -z "$why" ] && [ "$expect" = FAIL ]; then
             if ! grep -aqE '\[TIMER\] TSC demoted: it ran \+[0-9]+ ppm from the HPET \(bound [0-9]+ ppm\); the clock is the HPET from now on' "$log"; then
                 why="the skewed TSC was not demoted: the watchdog does not discriminate"
-            elif ! sed -n '/TSC demoted/,$p' "$log" | grep -aqF 'AzOS shell'; then
-                why="the boot did not go on after the demotion (no shell on the HPET clock)"
+            elif ! grep -aqE '\[TIMER\] the HPET clock runs: [1-9][0-9]* ms over one [0-9]+ ms interval' "$log"; then
+                why="the HPET clock did not run an interval after the demotion"
             fi
         elif [ -z "$why" ]; then
             grep -aqF 'TSC demoted' "$log" && why="an agreeing TSC was demoted: $(grep -aF 'TSC demoted' "$log" | sed -n 1p)"
