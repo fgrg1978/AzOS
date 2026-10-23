@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2421266
-riscv64-qemu	.rodata	338560
-riscv64-qemu	.data	3117408
-riscv64-qemu	.bss	4409184
-riscv64-qemu	reason	initial baseline: the riscv64 QEMU defconfig kernel at af6317c8
+riscv64-qemu	.text	2450460
+riscv64-qemu	.rodata	363016
+riscv64-qemu	.data	3117280
+riscv64-qemu	.bss	4421472
+riscv64-qemu	reason	int23
