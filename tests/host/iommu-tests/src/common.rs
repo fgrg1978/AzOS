@@ -17,6 +17,9 @@ pub struct TestMem {
     pub invalidated: Mutex<Vec<(u64, usize)>>,
     /// Every `clean` call: (pa, len).
     pub cleaned: Mutex<Vec<(u64, usize)>>,
+    /// The first 64-bit word at `pa` when each `clean` call made it visible:
+    /// what a unit could have read at that moment.
+    pub cleaned_first: Mutex<Vec<(u64, u64)>>,
 }
 
 impl TestMem {
@@ -26,6 +29,7 @@ impl TestMem {
             limit: Mutex::new(usize::MAX),
             invalidated: Mutex::new(Vec::new()),
             cleaned: Mutex::new(Vec::new()),
+            cleaned_first: Mutex::new(Vec::new()),
         }))
     }
     pub fn page(&self, i: usize) -> u64 {
@@ -40,6 +44,10 @@ impl TestMem {
     /// Was `invalidate` called on a range inside `[pa, pa + len)`?
     pub fn invalidated_in(&self, pa: u64, len: u64) -> bool {
         self.invalidated.lock().unwrap().iter().any(|&(p, _)| p >= pa && p < pa + len)
+    }
+    /// The first word at `pa` each time a `clean` started there.
+    pub fn cleaned_values(&self, pa: u64) -> Vec<u64> {
+        self.cleaned_first.lock().unwrap().iter().filter(|&&(p, _)| p == pa).map(|&(_, v)| v).collect()
     }
     /// Was `clean` called on a range that covers all of `[pa, pa + len)`?
     pub fn cleaned_all(&self, pa: u64, len: u64) -> bool {
@@ -66,6 +74,7 @@ impl TableMem for TestMem {
     }
     fn clean(&self, pa: u64, len: usize) {
         self.cleaned.lock().unwrap().push((pa, len));
+        self.cleaned_first.lock().unwrap().push((pa, read64(pa, 0)));
     }
     fn invalidate(&self, pa: u64, len: usize) {
         self.invalidated.lock().unwrap().push((pa, len));

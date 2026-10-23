@@ -321,7 +321,9 @@ fn amd_dte_vectors() {
     assert_eq!(t, [0x6000_0000_8020_0803, 2, 1 << 60, 0]);
     // Pass-through: translation valid, Mode 0.
     assert_eq!(amdvi::encode_dte(DomainMode::Bypass, 4, 1), [0x6000_0000_0000_0003, 1, 1 << 60, 0]);
-    assert_eq!(amdvi::encode_dte(DomainMode::Block, 4, 1), [0; 4]);
+    // Block: V (bit 0) and TV (bit 1) with Mode 0 and IR/IW (61, 62) clear =
+    // translation off, no access; an all-zero DTE would pass DMA through.
+    assert_eq!(amdvi::encode_dte(DomainMode::Block, 4, 1), [0x3, 0, 0, 0]);
 }
 
 #[test]

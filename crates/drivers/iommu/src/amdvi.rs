@@ -17,6 +17,15 @@
 //! DTE qword 0: `V` 0, `TV` 1, `Mode` 11:9 (0 = translation off, n = n-level
 //! table), `HostPageTableRoot` 51:12, `IR` 61, `IW` 62. Qword 1: `DomainID`
 //! 15:0. Qword 2: `IntCtl` 61:60 (1 = forward interrupts unmapped).
+//!
+//! An all-zero DTE does NOT block: with `V` clear the unit passes the
+//! device's DMA through untranslated (AMD IOMMU spec, DTE `V`). Blocking is `V` and `TV` set with `Mode` 0 and `IR`/`IW`
+//! clear: translation off and neither reads nor writes permitted, the entry
+//! Linux gives every device at init (`init_device_table_dma`: "make sure any
+//! uninitialized DTE will block DMA"). So the bring-up writes it into every
+//! entry of a fresh table, and `attach` passes through it, never through
+//! zero, while it rewrites an entry. Interrupt requests are not covered:
+//! interrupt remapping is out of this crate's scope (`IV` stays clear).
 
 use core::sync::atomic::{fence, Ordering};
 
@@ -70,13 +79,16 @@ const DTE_ROOT_MASK: u64 = 0x000f_ffff_ffff_f000;
 pub const DTE_IR: u64 = 1 << 61;
 pub const DTE_IW: u64 = 1 << 62;
 const DTE_INTCTL_PASS: u64 = 1 << 60;
+/// Qword 0 of a blocking DTE (`encode_dte`).
+const DTE_BLOCK: u64 = DTE_V | DTE_TV;
 
 /// The four qwords of the DTE for `mode`; `levels` is the depth of the table
-/// at `root_pa` (1..=6) and `domain_id` its domain. `Block` is an entry with
-/// `V` clear: the unit refuses the device (ILLEGAL_DEV_TABLE_ENTRY).
+/// at `root_pa` (1..=6) and `domain_id` its domain. `Block` is `V` and `TV`
+/// with translation off and no permission (module doc): the unit refuses
+/// every access (IO_PAGE_FAULT); it carries no domain id.
 pub const fn encode_dte(mode: DomainMode, levels: u8, domain_id: u16) -> [u64; 4] {
     match mode {
-        DomainMode::Block => [0; 4],
+        DomainMode::Block => [DTE_BLOCK, 0, 0, 0],
         DomainMode::Bypass => [
             DTE_V | DTE_TV | DTE_IR | DTE_IW,
             domain_id as u64,
@@ -192,7 +204,8 @@ pub struct AmdVi<M: Mmio> {
 
 impl<M: Mmio> AmdVi<M> {
     /// Bring the unit up for requester ids `0..=max_dev`. Every device is
-    /// refused (DTE invalid) until `attach`ed.
+    /// blocked until `attach`ed: every entry of the table, those past
+    /// `max_dev` in its last page included, starts as a blocking DTE.
     pub fn new(mmio: M, mem: &'static dyn TableMem, max_dev: u32) -> Result<Self, IommuError> {
         if max_dev > 0xffff {
             return Err(IommuError::DeviceOutOfRange);
@@ -201,6 +214,10 @@ impl<M: Mmio> AmdVi<M> {
         let devtab = mem
             .alloc_aligned(bytes as usize, (bytes as usize).next_power_of_two())
             .ok_or(IommuError::NoMemory)?;
+        for i in 0..bytes / DTE_BYTES {
+            wr64(mem, devtab + i * DTE_BYTES, 0, DTE_BLOCK);
+        }
+        mem.clean(devtab, bytes as usize);
         let cmd = mem.alloc_page().ok_or(IommuError::NoMemory)?;
         let evt = mem.alloc_page().ok_or(IommuError::NoMemory)?;
         let sem = mem.alloc_page().ok_or(IommuError::NoMemory)?;
@@ -328,8 +345,9 @@ impl<M: Mmio + Send> IommuUnit for AmdVi<M> {
         };
         let dte = encode_dte(mode, self.pt.levels, did);
         let slot = self.devtab + dev as u64 * DTE_BYTES;
-        // Invalid first, then the body, then the qword that carries V.
-        wr64(self.mem, slot, 0, 0);
+        // Blocking first (an invalid entry would pass DMA through), then the
+        // body, then the qword that carries the mode.
+        wr64(self.mem, slot, 0, DTE_BLOCK);
         for i in 1..4 {
             wr64(self.mem, slot, i, dte[i]);
         }

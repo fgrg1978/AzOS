@@ -654,6 +654,30 @@ fn amd_attach_writes_the_device_table_entry_and_invalidates() {
 }
 
 #[test]
+fn amd_blocks_every_device_it_was_not_told_about_and_never_passes_through_zero() {
+    // A blocking DTE's qword 0: V (bit 0) | TV (bit 1), Mode 0, IR/IW clear.
+    const BLOCK: u64 = 0x3;
+    let mem = TestMem::leak();
+    let mut unit = AmdVi::new(amd_model(), mem, 0x3f).unwrap();
+    let devtab = mem.page(0);
+    // 64 entries need one page, which holds 128: all of them block, those
+    // past the highest requester id included, and the unit sees them.
+    assert!((0..128).all(|dev| read64(devtab + dev * 32, 0) == BLOCK), "a fresh table blocks");
+    assert!(mem.cleaned_all(devtab, 4096));
+
+    // Rewriting an entry passes through blocking, never through zero (V clear
+    // = untranslated DMA), whatever the unit reads mid-update.
+    let dte = devtab + 0x18 * 32;
+    unit.attach(0x18, DomainMode::Bypass).unwrap();
+    unit.attach(0x18, DomainMode::Translate { root_pa: 0x8020_0000 }).unwrap();
+    unit.attach(0x18, DomainMode::Block).unwrap();
+    let seen = mem.cleaned_values(dte);
+    assert!(seen.contains(&BLOCK), "the update went through a blocking entry");
+    assert!(seen.iter().all(|&q0| q0 & 1 == 1), "never an invalid (pass-through) entry: {seen:x?}");
+    assert_eq!(read64(dte, 0), BLOCK);
+}
+
+#[test]
 fn amd_poll_faults_reads_the_event_log() {
     let mem = TestMem::leak();
     let mmio = amd_model();
