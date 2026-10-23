@@ -227,7 +227,7 @@ if [[ "${BENCH_BOOT}" == "1" ]]; then
     cleanup_run    # stop QEMU (kernel is in its wfi halt loop)
     BB_N=$(grep -c "\[BENCH-RES\]" "${QEMU_LOG}" 2>/dev/null || true)
     echo "[BENCH] bench_boot: ${BB_N} [BENCH-RES] lines captured"
-    [[ "${BB_N}" -gt 0 ]] || die "no [BENCH-RES] captured (bench_boot=1 in CONFIG.INI? built --features qemu?)"
+    [[ "${BB_N}" -gt 0 ]] || die "no [BENCH-RES] captured (bench_boot=1 in CONFIG.INI? a kernel of a QEMU .config?)"
 
     mkdir -p "${BENCH_RESULTS}"
     OUT_JSON="${BENCH_RESULTS}/${GIT_SHA_SHORT}.json"

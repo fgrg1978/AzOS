@@ -121,7 +121,7 @@ config PANIC_STOP_WAIT_US
 # ---------------------------------------------------------------------------
 
 config CRASHDUMP
-    # cargo-feature: crashdump base
+    # cargo-feature: crashdump
     bool "Crash dump: a minidump of every ring-3 task a fault kills"
     default n if HWCLASS_EMBEDDED
     default y

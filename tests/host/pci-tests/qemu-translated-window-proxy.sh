@@ -28,7 +28,7 @@
 # empty window when `bus != cpu`): the host bridge line loses its `-> cpu`
 # part and the bridge line is not printed, so the row goes red.
 set -u
-KERNEL="${KERNEL:?set KERNEL to the kernel built with --features qemu,pci}"
+KERNEL="${KERNEL:?set KERNEL to the kernel built with the pci selection (CONFIG_DRV_PCI=y)}"
 OUT="${AZOS_OUT:-$HOME/azos-out}/pci-translated-proxy"
 mkdir -p "$OUT"
 log="$OUT/proxy.log"

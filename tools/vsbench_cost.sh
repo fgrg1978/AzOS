@@ -30,9 +30,8 @@
 # only (vsbench_compare.sh's VSBENCH_AZOS_EXTRA_FEATURES): the canary, a
 # feature known to cost more than the bound (`lockdep`), must fail the row.
 #
-# The switch must reach the kernel through the .config: a `# cargo-feature:`
-# symbol needs the `base` modifier (the gate kernel takes
-# `kconfig_to_cargo.py --base`), checked below.
+# The switch must reach the kernel through the .config (its `# cargo-feature:`
+# tag, which tools/kconfig_to_cargo.py emits), checked below.
 #
 # Kernels: $AZOS_OUT/target/vsbench-cost-{off,on}; logs and the per-lane
 # table: $AZOS_OUT/build/vsbench-cost-<symbol>/.
@@ -76,16 +75,16 @@ for side in off on; do
     { grep -v -E "^(# )?CONFIG_$SYM[= ]" "$BASE"; echo "$line"; } >"$cfg"
     ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null ) || die "olddefconfig failed on $cfg"
     grep -qx "$line" "$cfg" || die "$line did not survive olddefconfig ($cfg): a dependency is off"
-    ( cd "$REPO_ROOT" && python3 tools/kconfig_to_cargo.py --base "$cfg" ) >"$cfg.base"
+    ( cd "$REPO_ROOT" && python3 tools/kconfig_to_cargo.py "$cfg" ) >"$cfg.base"
 done
 cmp -s "$OUT/off.config.base" "$OUT/on.config.base" \
-    && die "$SYM changes nothing in kconfig_to_cargo.py --base: the A/B would compare one kernel with itself"
+    && die "$SYM changes no feature kconfig_to_cargo.py derives: the A/B would compare one kernel with itself"
 
 for side in off on; do
     extra=""
     if [ "$side" = on ] && [ -n "${VSBENCH_COST_ON_FEATURES:-}" ]; then
         extra="$VSBENCH_COST_ON_FEATURES"
-        echo "vsbench-cost: CANARY: the on column also has --features $extra" >&2
+        echo "vsbench-cost: CANARY: the on column also selects $extra" >&2
     fi
     echo "vsbench-cost: $side column ($(line_of "$side")), lanes $LANES" >&2
     KCONFIG_CONFIG="$OUT/$side.config" VSBENCH_AZOS_EXTRA_FEATURES="$extra" VSBENCH_GATE_ONLY=1 VSBENCH_ICOUNT=1 \

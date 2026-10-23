@@ -107,11 +107,12 @@ X_CONFIG="$WORK/qemu-x86_64.config"
     || die "could not expand config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config"
 # The Makefile's `x86_64` recipe, into this script's own target directory.
 X_ELF="$BENCH_TARGET/azos-x86_64/x86_64-unknown-none/release/kernel"
-( cd "$REPO_ROOT" && env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$X_CONFIG" \
+( cd "$REPO_ROOT" && args="$(python3 tools/kconfig_to_cargo.py --out "$X_CONFIG.sel" "$X_CONFIG" \
+        --select "bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}")" \
+    && env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$X_CONFIG.sel" \
     CARGO_TARGET_DIR="$BENCH_TARGET/azos-x86_64" \
     RUSTFLAGS="-C link-arg=-Tkernel/linker-x86_64.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/kconfig_to_cargo.py --rustflags "$X_CONFIG")" \
-    $CARGO build --release -p azos_kernel $(python3 tools/kconfig_to_cargo.py "$X_CONFIG" | tr -s ' ') \
-    --features "bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}" \
+    $CARGO build --release -p azos_kernel $args \
     >"$WORK/build-x86_64.log" 2>&1 ) \
     || die "could not build the x86_64 AzOS kernel (bench-minimal) — see $WORK/build-x86_64.log"
 [ -f "$X_ELF" ] || die "no kernel at $X_ELF"

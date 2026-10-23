@@ -35,7 +35,7 @@ config USE_GENERIC
       default features (tools/kconfig_to_cargo.py).
 
 config USE_ROBOT
-    # cargo-feature: use-robot base
+    # cargo-feature: use-robot
     def_bool PRESET_ROBOT
     help
       Links the robot crates (kernel feature `use-robot`):

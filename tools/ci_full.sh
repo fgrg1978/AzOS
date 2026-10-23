@@ -74,10 +74,16 @@ echo ""
 echo "[1/3] AzOS builds"
 cd "$OS_DIR"
 
-check_build "default (QEMU)"    $CARGO build --release $(python3 tools/kconfig_to_cargo.py --base .config)
-check_build "no-ml"             $CARGO build --release --features no-ml $(python3 tools/kconfig_to_cargo.py --base .config)
-check_build "vf2"               $CARGO build --release --features vf2 $(python3 tools/kconfig_to_cargo.py --base .config)
-check_build "k1"                $CARGO build --release --features k1 $(python3 tools/kconfig_to_cargo.py --base .config)
+# The .config's own kernel, and three selections on it (tools/kconfig_to_cargo.py
+# --select: each a copy of the .config the build reads; Kconfig is the only
+# source of the kernel's features).
+SEL_DIR="$(python3 tools/out_dir.py)/build"
+mkdir -p "$SEL_DIR"
+sel() { python3 tools/kconfig_to_cargo.py --select "$1" --out "$SEL_DIR/ci-full-$1.config" .config; }
+check_build "default (QEMU)"    $CARGO build --release -p azos_kernel $(python3 tools/kconfig_to_cargo.py .config)
+check_build "no-ml"             env KCONFIG_CONFIG="$SEL_DIR/ci-full-no-ml.config" $CARGO build --release -p azos_kernel $(sel no-ml)
+check_build "vf2"               env KCONFIG_CONFIG="$SEL_DIR/ci-full-vf2.config" $CARGO build --release -p azos_kernel $(sel vf2)
+check_build "k1"                env KCONFIG_CONFIG="$SEL_DIR/ci-full-k1.config" $CARGO build --release -p azos_kernel $(sel k1)
 echo ""
 
 # ── 2. AzOS Robot Brain tests ────────────────────────────────────────────

@@ -618,16 +618,17 @@ PKGD_ELF_BOARD := $(BOARD_DIR)/pkgd.elf
 IMAGE_ELFS_BOARD := $(patsubst PKGD.ELF=%,PKGD.ELF=$(PKGD_ELF_BOARD),$(patsubst MLSRV.ELF=%,MLSRV.ELF=$(MLSRV_ELF_BOARD),$(IMAGE_ELFS)))
 IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
 
-# The application domain of the .config decides the crates (wave 11):
-# The kernel has no cargo `default` features: Kconfig is the only source.
-# A recipe that names its board and test features by hand (`--features qemu`)
-# adds `$(QEMU_DEV_BASE)`, the `base` features the .config sets (the
-# application domain, the scheduler options, driver placement), so `make
-# config` (Generic) + `make` builds the Generic kernel and a Robot .config
-# the robot one. `-p azos_kernel`, here and in every kernel recipe
-# below: without it cargo builds every workspace member, and a Generic build
-# then compiled the robot crates anyway (domains/robot/*, as members), with
-# none of the features the kernel would have given them.
+# The .config decides the kernel's features (wave 11, F5): Kconfig is the
+# only source. A kernel recipe builds `-p azos_kernel` with what
+# tools/kconfig_to_cargo.py prints for its configuration; what a target builds
+# beyond it (a smoke, a driver) is a selection, `--select` (`kernel_select`
+# below), applied to a copy of the configuration that the build then reads, so
+# the constants azos_limits generates agree with the features. No recipe names
+# a feature itself (tools/feature_source_lint.py). `-p azos_kernel`, here and
+# in every kernel recipe below: without it cargo builds every workspace
+# member, and a Generic build then compiled the robot crates anyway
+# (domains/robot/*, as members), with none of the features the kernel would
+# have given them.
 #
 # The development QEMU kernels (`build`, `build-rvv`, `build-pci` and the
 # `qemu-*` smoke targets) build from `$(QEMU_DEV_KCONFIG)`: the `.config`
@@ -637,7 +638,11 @@ IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
 # its profile's level, warn. `make qemu QEMU_LOG_LEVEL=warn` boots what ships.
 QEMU_DEV_KCONFIG := $(OUT_BUILD)/qemu-dev.config
 QEMU_DEV_ENV      = KCONFIG_CONFIG="$(QEMU_DEV_KCONFIG)"
-QEMU_DEV_BASE     = $$(python3 tools/kconfig_to_cargo.py --base $(QEMU_DEV_KCONFIG))
+QEMU_DEV_ARGS     = $$(python3 tools/kconfig_to_cargo.py $(QEMU_DEV_KCONFIG))
+# `$(call kernel_select,<config>,<selection>,<copy>)`: a recipe line that
+# writes <copy> (<config> with the selection applied) and leaves its cargo
+# arguments in `$$args`; the build that follows reads KCONFIG_CONFIG=<copy>.
+kernel_select = args="$$(python3 tools/kconfig_to_cargo.py --select '$(2)' --out '$(3)' '$(1)')" || exit 1
 #
 # `QEMU_DEV_ISA`: the Kconfig's riscv64 codegen beyond .cargo/config.toml's
 # baseline (RV_ZBA/ZBB/ZBS set to `require`), merged into the target's
@@ -802,11 +807,12 @@ QEMU_AARCH64_KERNEL_FLAGS := -cpu max,pauth=on -smp 2 -nographic
 # build/disk-x86_64.img) the volume is a virtio-blk-device on the microvm
 # virtio-mmio window and the console program runs in ring 3; without one it
 # stops at the kernel shell. Same Kconfig expansion as `check`.
-# X86_64_FEATURES adds cargo features (`make x86_64 X86_64_FEATURES=ktest`).
+# X86_64_SELECT is a selection on the configuration (`make x86_64
+# X86_64_SELECT=ktest`, tools/kconfig_to_cargo.py --select).
 # X86_64_DEFCONFIG / X86_64_KCONFIG (a path relative to the tree) build from
 # another configuration into its own expanded file, so the default one never
 # goes stale under it (a build from a configuration of its own).
-X86_64_FEATURES ?=
+X86_64_SELECT ?=
 X86_64_DEFCONFIG ?= config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config
 X86_64_KCONFIG ?= $(OUT_BUILD)/x86_64.config
 # Where cargo builds this kernel: the Limine variant has its own directory so

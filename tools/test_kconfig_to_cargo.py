@@ -1000,8 +1000,8 @@ def test_refusal_receipts_follow_their_symbol() -> None:
     is the `decisions` feature and is separate: y by default on every preset
     but a small board (owner 2026-10-22, receipts on), a `base` tag, and n
     drops it alone.
-    Canary: remove the `# cargo-feature:` tag (or its `base`) from a symbol ->
-    the y case loses the feature."""
+    Canary: remove the `# cargo-feature:` tag from a symbol -> the y case
+    loses the feature."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
@@ -1010,9 +1010,6 @@ def test_refusal_receipts_follow_their_symbol() -> None:
             _expand([f"CONFIG_PRESET_{dom}=y"], t, f"{dom}.config")
             feats = _bridge_args(t / f"{dom}.config")
             assert "decisions-durable" in feats and "decisions" in feats, f"{dom}: {feats}"
-            base = subprocess.run([sys.executable, str(TOOLS_DIR / "kconfig_to_cargo.py"), "--base",
-                                   str(t / f"{dom}.config")], capture_output=True, text=True).stdout
-            assert "decisions," in base or base.rstrip().endswith("decisions"), f"{dom} --base: {base}"
         _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_DECISION_REFUSALS_DURABLE=n"], t, "off.config")
         feats = _bridge_args(t / "off.config")
         assert "decisions-durable" not in feats and "decisions" in feats, f"n kept or dropped: {feats}"
@@ -1276,12 +1273,10 @@ def test_presets_set_the_axes_and_certifiable_forces_signing() -> None:
 
 
 def test_driver_placement_reaches_the_build() -> None:
-    """DRV_INA219_PLACEMENT: `kernel` is the kernel feature `ina219-kernel`,
-    from the full bridge and from `--base` (`make build`); `ring3`
-    (the default) is no feature, as a build naming its features by hand."""
+    """DRV_INA219_PLACEMENT: `kernel` is the kernel feature `ina219-kernel`;
+    `ring3` (the default) is no feature."""
     import tempfile
 
-    script = TOOLS_DIR / "kconfig_to_cargo.py"
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         d = _expand([], t, "d.config")
@@ -1292,9 +1287,6 @@ def test_driver_placement_reaches_the_build() -> None:
             _expand(dom + ["CONFIG_DRV_INA219_PLACEMENT_KERNEL=y"], t, "k.config")
             feats = _bridge_args(t / "k.config")
             assert "ina219-kernel" in feats, (dom, feats)
-            out = subprocess.run([sys.executable, str(script), "--base", str(t / "k.config")],
-                                 capture_output=True, text=True, check=True).stdout
-            assert "ina219-kernel" in out, (dom, out)
         # Wave 12: the buzzer's choice, the same way.
         assert "CONFIG_DRV_BUZZER_PLACEMENT_RING3=y" in d, "the buzzer's default is not ring3"
         assert "buzzer-kernel" not in feats or "CONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y" in d, feats
@@ -1317,26 +1309,6 @@ def test_a_safety_read_driver_is_never_placed_in_ring3() -> None:
         c.write_text("CONFIG_ARCH_RISCV64=y\nCONFIG_DRV_INA219_PLACEMENT_RING3=y\n")
         r = subprocess.run([sys.executable, str(script), str(c)], capture_output=True, text=True)
         assert r.returncode == 0, r
-
-
-def test_base_for_hand_written_targets() -> None:
-    """`--base` (used by `make build`, which names `--features qemu` itself)
-    prints only the base features, never the board or the target."""
-    import tempfile
-
-    script = TOOLS_DIR / "kconfig_to_cargo.py"
-    with tempfile.TemporaryDirectory() as td:
-        t = Path(td)
-        _expand([], t, "g.config")
-        _expand(["CONFIG_PRESET_ROBOT=y"], t, "r.config")
-        run = lambda c: subprocess.run([sys.executable, str(script), "--base", str(c)],
-                                       capture_output=True, text=True, check=True).stdout.split()
-        g = run(t / "g.config")
-        assert g[0] == "--features" and "--target" not in g, g
-        assert "qemu" not in g[1].split(","), g
-        assert sorted(g[1].split(",")) == sorted(ALWAYS_BASE + FULL_PROFILE_BASE), g
-        r = run(t / "r.config")
-        assert "use-robot" in r[1].split(",") and "qemu" not in r[1].split(","), r
 
 
 def test_select_applies_a_selection_through_kconfig() -> None:
@@ -1445,7 +1417,6 @@ def _run_all_tests() -> int:
         test_presets_set_the_axes_and_certifiable_forces_signing,
         test_driver_placement_reaches_the_build,
         test_a_safety_read_driver_is_never_placed_in_ring3,
-        test_base_for_hand_written_targets,
         test_scheduler_options_follow_their_symbols,
         test_kaslr_links_position_independent,
         test_select_applies_a_selection_through_kconfig,

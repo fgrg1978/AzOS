@@ -39,7 +39,7 @@ rm -f "$SRV_LOG" "$CLI_LOG"
 
 if [ ! -f "$KERNEL" ]; then
     echo "[net-pair] kernel not found: $KERNEL" >&2
-    echo "[net-pair] build it first: cargo build --release --features qemu,net-smoke" >&2
+    echo "[net-pair] build it first: make qemu-net-pair (the net-smoke selection)" >&2
     exit 4
 fi
 

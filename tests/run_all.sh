@@ -37,10 +37,13 @@ echo "╚═══════════════════════�
 # ── 1. Build all 4 kernel configs ──
 section "Build: 4 kernel configs"
 
-for cfg in "" "--features vf2" "--features k1" "--features no-ml"; do
-    name=${cfg:-"QEMU (default)"}
-    name=${name/--features /}
-    if cargo build --release $cfg $(python3 tools/kconfig_to_cargo.py --base .config) 2>&1 | grep -q "Finished"; then
+# The .config's kernel and three selections on it (tools/kconfig_to_cargo.py
+# --select: a copy of the .config the build reads).
+sel_dir="$(python3 tools/out_dir.py)/build"; mkdir -p "$sel_dir"
+for sel in "" vf2 k1 no-ml; do
+    name=${sel:-"QEMU (default)"}
+    if args="$(python3 tools/kconfig_to_cargo.py --select "$sel" --out "$sel_dir/run-all-$name.config" .config)" \
+       && KCONFIG_CONFIG="$sel_dir/run-all-$name.config" cargo build --release -p azos_kernel $args 2>&1 | grep -q "Finished"; then
         pass_section "Build $name"
     else
         fail_section "Build $name"

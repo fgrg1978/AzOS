@@ -146,6 +146,10 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# No build names a kernel feature by hand (tools/feature_source_lint.py): the
+# features come from kconfig_to_cargo.py, a build's extras are a --select.
+[ "$tier" = n0 ] && { printf "  %-26s" "feature source lint..."; if out="$(python3 tools/feature_source_lint.py --self-test 2>&1 && python3 tools/feature_source_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # The unsafe budget (tools/unsafe_budget.py): a crate may not carry more
 # `unsafe` than tools/unsafe_budget.tsv says, lose its #![forbid(unsafe_code)],
 # or (a kernel crate) raise its share of code lines in files with unsafe; the

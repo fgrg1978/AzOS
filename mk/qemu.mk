@@ -35,11 +35,12 @@ $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img:
 	dd if=/dev/zero of=$@ bs=1M count=8 2>/dev/null
 
 # NOTE: depends on `build-pci`, not plain `build` — the latter's
-# `--features qemu` alone does not compile in `crates/drivers/pci`/`virtio/pci.rs`
+# configuration alone does not compile in `crates/drivers/pci`/`virtio/pci.rs`
 # at all (they're behind the `pci` feature), so a kernel built via `build`
 # would boot but never print a `[PCI]` line.
 build-pci: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) --features qemu,pci $(QEMU_DEV_BASE)
+	$(call kernel_select,$(QEMU_DEV_KCONFIG),pci,$(OUT_BUILD)/qemu-dev-pci.config); \
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-pci.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 
 qemu-pci: build-pci $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_PCI_ARGS) -kernel $(KERNEL_ELF)
@@ -48,7 +49,8 @@ qemu-pci: build-pci $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
 # controller's namespace, MSI-X through the AIA IMSIC (a PLIC machine boots
 # too, polled). The disk is the repo's `build/disk.img`.
 build-nvme: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) --features qemu,pci,nvme $(QEMU_DEV_BASE)
+	$(call kernel_select,$(QEMU_DEV_KCONFIG),pci$(comma)nvme,$(OUT_BUILD)/qemu-dev-nvme.config); \
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-nvme.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 
 qemu-nvme: build-nvme $(OUT_BUILD)/disk.img
 	$(QEMU) -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel $(KERNEL_ELF) \
@@ -64,10 +66,11 @@ qemu-nvme: build-nvme $(OUT_BUILD)/disk.img
 # Boots the flat Image, not the ELF: QEMU hands a DTB pointer in x0 only to an
 # Image, and the kernel reads the host bridge (ECAM, mem32 window) from it
 # (`[PCI] host bridge: ... (dtb)`). The ELF boots with x0 = 0 and falls back to
-# the built-in constants. Build the kernel with `--features qemu,pci` first.
+# the built-in constants. Build the kernel with DRV_PCI on (`make aarch64` from a
+# configuration with CONFIG_DRV_PCI=y) first.
 AARCH64_PCI_IMG := $(OUT_BUILD)/kernel-aarch64-pci.img
 qemu-pci-aarch64: $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
-	@test -f $(AARCH64_ELF) || { echo "build the aarch64 kernel with --features qemu,pci first: $(AARCH64_ELF)"; exit 1; }
+	@test -f $(AARCH64_ELF) || { echo "build the aarch64 kernel with CONFIG_DRV_PCI=y first: $(AARCH64_ELF)"; exit 1; }
 	@mkdir -p $(OUT_BUILD)
 	"$(AARCH64_OBJCOPY)" -O binary $(AARCH64_ELF) $(AARCH64_PCI_IMG)
 	qemu-system-aarch64 -M virt,gic-version=3,iommu=smmuv3 -cpu max,pauth=on -nographic \
@@ -102,7 +105,8 @@ qemu-systest: build userspace $(OUT_BUILD)/disk-systest.img
 # end up with an address from the 10.0.2.x pool, not just that the call
 # returned. Prints `[DHCPSMOKE] PASS ...` or `FAIL <reason>`.
 qemu-dhcp-smoke: $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ENV) $(CARGO) build --release --features qemu,dhcp-smoke $(QEMU_DEV_BASE)
+	$(call kernel_select,$(QEMU_DEV_KCONFIG),dhcp-smoke,$(OUT_BUILD)/qemu-dev-dhcp-smoke.config); \
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-dhcp-smoke.config" $(CARGO) build --release -p azos_kernel $$args
 	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) \
 		-netdev user,id=net0 -device virtio-net-device,netdev=net0
 
@@ -131,7 +135,8 @@ qemu-gdb: build
 # it covers TCP handshake + RX checksum validation in both directions.
 # Fails the build on FAIL, panic, or timeout.
 qemu-net-pair: $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ENV) $(CARGO) build --release --features qemu,net-smoke $(QEMU_DEV_BASE)
+	$(call kernel_select,$(QEMU_DEV_KCONFIG),net-smoke,$(OUT_BUILD)/qemu-dev-net-smoke.config); \
+	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-net-smoke.config" $(CARGO) build --release -p azos_kernel $$args
 	QEMU=$(QEMU) bash tools/net_pair_smoke.sh
 
 QEMU_X86_64_DISK ?=

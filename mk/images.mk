@@ -439,7 +439,7 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 	mcopy -i $@ $@.tmp_board_bootmeta ::BOOTMETA
 	# Wave 15: the board kernel's topology as signed files (TOPOLOGY_SOURCE),
 	# bound to this volume's device id, signed with the board key.
-	$(call topo_bind,riscv64,$(BOARD_VOL_KCONFIG),$(call board_topo_features,$(BOARD_VOL_KCONFIG)),$(BOARD_DIR)/topo-$(basename $(notdir $@)),$@,$(BOARD_SIGN_PRIV))
+	$(call topo_bind,riscv64,$(BOARD_VOL_KCONFIG),board-image,$(BOARD_DIR)/topo-$(basename $(notdir $@)),$@,$(BOARD_SIGN_PRIV))
 	# The topology's images plus the ones this volume's .config selects
 	# under "Userspace programs" (`make config`).
 	# The images this volume's topology declares, from its own .config (the
@@ -1035,8 +1035,9 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 # only a kernel of that ISA declares. It parses its own output back and exits
 # 1 unless the result equals the built-in topology field by field.
 #
-#   TOPO_KERNEL_FEATURES   kernel features of the kernel that boots the files
-#                          (default `qemu`, the gate's QEMU kernels)
+#   TOPO_SELECT            the selection the kernel that boots the files was
+#                          built with beyond its .config (tools/kconfig_to_cargo.py
+#                          --select; default none)
 #   TOPO_KCONFIG_RISCV64   its .config (default $(QEMU_DEV_KCONFIG))
 #   TOPO_KCONFIG_AARCH64   (default $(AARCH64_KCONFIG))
 #   TOPO_KCONFIG_X86_64    (default $(X86_64_KCONFIG))
@@ -1052,7 +1053,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 # canary and smoke feature adds or changes rows), and under the QEMU default
 # TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN a signed default topology on the shared
 # disk would replace each of them.
-TOPO_KERNEL_FEATURES ?= qemu
+TOPO_SELECT ?=
 TOPO_KCONFIG_RISCV64 ?= $(QEMU_DEV_KCONFIG)
 TOPO_KCONFIG_AARCH64 ?= $(AARCH64_KCONFIG)
 TOPO_KCONFIG_X86_64 ?= $(X86_64_KCONFIG)
@@ -1068,20 +1069,22 @@ topo_kconfig = $(TOPO_KCONFIG_$(call topo_isa_var,$(1)))
 topo_isa_var = $(if $(filter aarch64,$(1)),AARCH64,$(if $(filter x86_64,$(1)),X86_64,RISCV64))
 topo_set = $(1)/CAPS.TOM $(1)/CAPS.SIG $(1)/SCHED.TOM
 
-# The azos_topology features a kernel built with features $(1) (a comma list,
-# or a shell expression printing one) turns on, as `--features` arguments.
-topo_features = $$($(CARGO) tree -q -p azos_kernel --features "$(1)" -e features -i azos_topology --prefix none \
+# The azos_topology features the kernel of .config $(1) built with selection
+# $(2) turns on, as `--features` arguments: the kernel's features are the
+# configuration's with the selection applied (copy $(3)), as its build has them.
+topo_features = $$($(CARGO) tree -q -p azos_kernel -e features -i azos_topology --prefix none \
+	--features "$$(python3 tools/kconfig_to_cargo.py --select '$(2)' --out '$(3)' '$(1)' | sed -n 's/.*--features //p')" \
 	| sed -n 's/^azos_topology feature "\(.*\)"$$/azos_topology\/\1/p' | grep -v '/default$$' | sort -u | tr '\n' ' ')
 
-# $(call topo_emit,<riscv64|aarch64|x86_64>,<.config>,<kernel features>,<out dir>,<extra topo_emit args>)
+# $(call topo_emit,<riscv64|aarch64|x86_64>,<.config>,<kernel selection>,<out dir>,<extra topo_emit args>)
 define topo_emit
 	@mkdir -p $(4)
-	feats="emit-target-$(1) $(call topo_features,$(3))"; \
+	feats="emit-target-$(1) $(call topo_features,$(2),$(3),$(4).kconfig)"; \
 	cd tests/host/topology-tests && KCONFIG_CONFIG="$(abspath $(2))" CARGO_TARGET_DIR="$(OUT_TGT)/tests/host/topology-tests/emit-$(1)" \
 		$(CARGO) run -q --release --bin topo_emit --features "$$feats" -- "$(4)/CAPS.TOM" "$(4)/SCHED.TOM" $(5)
 endef
 
-# $(call topo_bind,<isa>,<.config>,<kernel features>,<out dir>,<image>,<priv key>):
+# $(call topo_bind,<isa>,<.config>,<kernel selection>,<out dir>,<image>,<priv key>):
 # emit bound to <image>'s device id (or TOPO_DEVICE) and TOPO_COUNTER, sign
 # CAPS.TOM with <priv key>, put the three files on <image> (and drop a stale
 # SCHED.SIG). The image must already carry its device record.
@@ -1098,22 +1101,22 @@ endef
 .PHONY: topo-volume
 topo-volume: $(TOPO_EMIT_DEPS) $(call topo_kconfig,$(TOPO_ISA)) $(TEST_PRIV_KEY)
 	@[ -n "$(TOPO_IMAGE)" ] && [ -f "$(TOPO_IMAGE)" ] || { echo "[TOPO] topo-volume needs TOPO_IMAGE=<an existing image>"; exit 1; }
-	$(call topo_bind,$(TOPO_ISA),$(call topo_kconfig,$(TOPO_ISA)),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/vol-$(TOPO_ISA),$(TOPO_IMAGE),$(TOPO_PRIV))
+	$(call topo_bind,$(TOPO_ISA),$(call topo_kconfig,$(TOPO_ISA)),$(TOPO_SELECT),$(OUT_BUILD)/topo/vol-$(TOPO_ISA),$(TOPO_IMAGE),$(TOPO_PRIV))
 	@echo "[TOPO] $(TOPO_IMAGE): signed topology bound to device $$(cat $(OUT_BUILD)/topo/vol-$(TOPO_ISA).device), counter $(TOPO_COUNTER)"
 
 # What the inspection files were emitted for: rewritten only when it changes.
 $(TOPO_DIR_RISCV64)/inputs $(TOPO_DIR_AARCH64)/inputs $(TOPO_DIR_X86_64)/inputs: FORCE
 	@mkdir -p $(@D)
-	@printf '%s\n' "$(TOPO_KERNEL_FEATURES) $(TOPO_DEVICE) $(TOPO_COUNTER) $(abspath $(call topo_kconfig,$(notdir $(@D))))" > $@.tmp
+	@printf '%s\n' "$(TOPO_SELECT) $(TOPO_DEVICE) $(TOPO_COUNTER) $(abspath $(call topo_kconfig,$(notdir $(@D))))" > $@.tmp
 	@cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
 
 topo_emit_args = $(if $(TOPO_DEVICE),--device $(TOPO_DEVICE)) --counter $(TOPO_COUNTER)
 $(TOPO_DIR_RISCV64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_RISCV64) $(TOPO_DIR_RISCV64)/inputs
-	$(call topo_emit,riscv64,$(TOPO_KCONFIG_RISCV64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_RISCV64),$(topo_emit_args))
+	$(call topo_emit,riscv64,$(TOPO_KCONFIG_RISCV64),$(TOPO_SELECT),$(TOPO_DIR_RISCV64),$(topo_emit_args))
 $(TOPO_DIR_AARCH64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_AARCH64) $(TOPO_DIR_AARCH64)/inputs
-	$(call topo_emit,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_AARCH64),$(topo_emit_args))
+	$(call topo_emit,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_SELECT),$(TOPO_DIR_AARCH64),$(topo_emit_args))
 $(TOPO_DIR_X86_64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_X86_64) $(TOPO_DIR_X86_64)/inputs
-	$(call topo_emit,x86_64,$(TOPO_KCONFIG_X86_64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_X86_64),$(topo_emit_args))
+	$(call topo_emit,x86_64,$(TOPO_KCONFIG_X86_64),$(TOPO_SELECT),$(TOPO_DIR_X86_64),$(topo_emit_args))
 # Written by the same run, after CAPS.TOM.
 $(TOPO_DIR_RISCV64)/SCHED.TOM: $(TOPO_DIR_RISCV64)/CAPS.TOM ; @true
 $(TOPO_DIR_AARCH64)/SCHED.TOM: $(TOPO_DIR_AARCH64)/CAPS.TOM ; @true
@@ -1133,25 +1136,24 @@ topology-files: $(call topo_set,$(TOPO_DIR_RISCV64)) $(call topo_set,$(TOPO_DIR_
 
 $(OUT_BUILD)/disk-topo.img: $(OUT_BUILD)/disk.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_RISCV64) $(TEST_PRIV_KEY)
 	cp $(OUT_BUILD)/disk.img $@
-	$(call topo_bind,riscv64,$(TOPO_KCONFIG_RISCV64),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/img-riscv64,$@,$(TEST_PRIV_KEY))
+	$(call topo_bind,riscv64,$(TOPO_KCONFIG_RISCV64),$(TOPO_SELECT),$(OUT_BUILD)/topo/img-riscv64,$@,$(TEST_PRIV_KEY))
 	@echo "[DISK] FAT32 image with the signed topology (test key, counter $(TOPO_COUNTER)): $@"
 
 $(OUT_BUILD)/disk-aarch64-topo.img: $(OUT_BUILD)/disk-aarch64.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_AARCH64) $(TEST_PRIV_KEY)
 	cp $(OUT_BUILD)/disk-aarch64.img $@
-	$(call topo_bind,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/img-aarch64,$@,$(TEST_PRIV_KEY))
+	$(call topo_bind,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_SELECT),$(OUT_BUILD)/topo/img-aarch64,$@,$(TEST_PRIV_KEY))
 	@echo "[DISK] FAT32 image with the signed topology (test key, counter $(TOPO_COUNTER)): $@"
 
 $(OUT_BUILD)/disk-x86_64-topo.img: $(OUT_BUILD)/disk-x86_64.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_X86_64) $(TEST_PRIV_KEY)
 	cp $(OUT_BUILD)/disk-x86_64.img $@
-	$(call topo_bind,x86_64,$(TOPO_KCONFIG_X86_64),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/img-x86_64,$@,$(TEST_PRIV_KEY))
+	$(call topo_bind,x86_64,$(TOPO_KCONFIG_X86_64),$(TOPO_SELECT),$(OUT_BUILD)/topo/img-x86_64,$@,$(TEST_PRIV_KEY))
 	@echo "[DISK] FAT32 image with the signed topology (test key, counter $(TOPO_COUNTER)): $@"
 
-# The board volumes' sets: each product profile's topology (BOARD_VOL_KCONFIG,
-# with `board-image` and that profile's features), bound to the volume's own
-# device record and signed with the board key (`require_board_priv`), never
-# the test key. Used inside the build/disk-board*.img recipe, after the volume
-# is provisioned.
-board_topo_features = board-image$$(python3 tools/kconfig_to_cargo.py $(1) | sed -n 's/.*--features /,/p')
+# The board volumes' sets: each product profile's topology (BOARD_VOL_KCONFIG
+# with the `board-image` selection the board kernels build with), bound to the
+# volume's own device record and signed with the board key
+# (`require_board_priv`), never the test key. Used inside the
+# build/disk-board*.img recipe, after the volume is provisioned.
 
 
 # ── AzOS inside AzOS (hypervisor guest) ──────────────────────────────────────

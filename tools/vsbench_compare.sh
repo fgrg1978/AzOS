@@ -537,11 +537,12 @@ KP_KERNEL="$BENCH_TARGET/azos-product/riscv64imac-unknown-none-elf/release/kerne
 # VSBENCH_AZOS_EXTRA_FEATURES: extra kernel features for the gate kernel only,
 # for a diagnostic run (e.g. `spawn-census`, whose `[SPAWN-CENSUS]` lines land in
 # its boot log). Empty by default: the numbers then are the gate kernel's.
-KM_FEATURES="qemu,bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}"
+# Each is a selection on the configuration (tools/kconfig_to_cargo.py --select).
+KM_FEATURES="bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}"
 # VSBENCH_PRODUCT_EXTRA_FEATURES: the same, for the product kernel only (wave
 # 15: the product column's udp-roundtrip failed only there, so its probe had
 # to be built into that kernel). Empty by default.
-KP_FEATURES="qemu${VSBENCH_PRODUCT_EXTRA_FEATURES:+,$VSBENCH_PRODUCT_EXTRA_FEATURES}"
+KP_FEATURES="${VSBENCH_PRODUCT_EXTRA_FEATURES:-}"
 [ -n "${VSBENCH_PRODUCT_EXTRA_FEATURES:-}" ] && echo "vsbench: CANARY/diagnostic product features: $KP_FEATURES" >&2
 # Both AzOS kernels are release builds (owner, round 65): the caller's
 # configuration (`$KCONFIG_CONFIG`, the gate's primary column; else
@@ -572,15 +573,15 @@ case "$LINUX_IMAGE" in "~/"*) LINUX_IMAGE="$HOME/${LINUX_IMAGE#\~/}" ;; esac
 [ -n "$LINUX_IMAGE" ] || die "no riscv64 Linux image configured: set VSBENCH_LINUX_IMAGE \
 or the riscv64= line of tools/vsbench_linux.conf"
 echo "vsbench: Linux column: $LINUX_IMAGE" >&2
-( cd "$REPO_ROOT" && KCONFIG_CONFIG="$AZ_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-bench-minimal" \
-    $CARGO build --release --features "$KM_FEATURES" \
-    $(python3 tools/kconfig_to_cargo.py --base "$AZ_CONFIG") >/dev/null 2>&1 ) \
-    || die "could not build the AzOS kernel (--features $KM_FEATURES)"
+( cd "$REPO_ROOT" && args="$(python3 tools/kconfig_to_cargo.py --select "$KM_FEATURES" --out "$AZ_CONFIG.km" "$AZ_CONFIG")" \
+    && KCONFIG_CONFIG="$AZ_CONFIG.km" CARGO_TARGET_DIR="$BENCH_TARGET/azos-bench-minimal" \
+    $CARGO build --release -p azos_kernel $args >/dev/null 2>&1 ) \
+    || die "could not build the AzOS kernel (selection $KM_FEATURES)"
 if [ "$VSBENCH_GATE_ONLY" != "1" ]; then
-    ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$AZ_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-product" \
-        $CARGO build --release --features "$KP_FEATURES" \
-        $(python3 tools/kconfig_to_cargo.py --base "$AZ_CONFIG") >/dev/null 2>&1 ) \
-        || die "could not build the AzOS kernel (--features $KP_FEATURES)"
+    ( cd "$REPO_ROOT" && args="$(python3 tools/kconfig_to_cargo.py --select "$KP_FEATURES" --out "$AZ_CONFIG.kp" "$AZ_CONFIG")" \
+        && KCONFIG_CONFIG="$AZ_CONFIG.kp" CARGO_TARGET_DIR="$BENCH_TARGET/azos-product" \
+        $CARGO build --release -p azos_kernel $args >/dev/null 2>&1 ) \
+        || die "could not build the AzOS kernel (selection ${KP_FEATURES:-none})"
     [ -f "$KP_KERNEL" ] || die "no kernel at $KP_KERNEL"
 fi
 [ -f "$KM_KERNEL" ] || die "no kernel at $KM_KERNEL"

@@ -598,6 +598,7 @@ Options and choices: 876. Defconfigs: 21.
 | `CANARY_RUNTIME` | Runtime gate canaries: canary=&lt;name&gt;\[,&lt;name&gt;\] on the kernel command line | n | n | y | y | y | y | n | y | n | n | n | y | y | n | n | y | y | y | y | y | n |
 | `CAP_REVOKE_CHAIN_CANARY` | Canary: skip the revoked-ancestor check on a capability's use | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `CHAOS` | Fault injection (chaos=&lt;point&gt;:&lt;rate&gt; on the kernel command line) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `FLIGHT_TOOL_DRIVETRAIN` | Gate kernel: the drivetrain belongs to FLIGHT.ELF | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `KTEST` | In-kernel tests (ktest): run every registered test at boot, then power off | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `KTEST_SEMIHOSTING_EXIT` | ktest runner leaves QEMU through semihosting SYS_EXIT (aarch64) | n | n | y | y | n | n | n | n | n | n | n | y | y | n | n | n | n | n | n | n | n |
 | `LAT_FAT_SMOKE` | Gate kernel: the latency smoke with its disk load through FAT32 | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
@@ -814,7 +815,6 @@ Options and choices: 876. Defconfigs: 21.
 
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `FLIGHT_TOOL_DRIVETRAIN` | Gate kernel: the drivetrain belongs to FLIGHT.ELF | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `ROBOT_ACKERMANN` | Ackermann (car-like, 2-channel: throttle + steering) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `ROBOT_DRONE` | Drone (4-channel quadrotor PWM) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `ROBOT_HUMANOID` | Humanoid (N-channel joint angles) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |

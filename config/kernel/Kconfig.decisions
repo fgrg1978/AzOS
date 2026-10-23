@@ -3,7 +3,7 @@
 # config/kernel/Kconfig.decisions — Decision records (why a request was refused or granted)
 
 config DECISION_RECORDS_DEV
-    # cargo-feature: decisions base
+    # cargo-feature: decisions
     bool "Explainable decision records: the ring, every rule"
     default y if KTEST || !HWCLASS_EMBEDDED
     default n
@@ -34,7 +34,7 @@ config DECISION_RECORDS_DEV
       was called DECISION_RECORDS before the split).
 
 config DECISION_REFUSALS_DURABLE
-    # cargo-feature: decisions-durable base
+    # cargo-feature: decisions-durable
     bool "Explainable decision records: durable receipt of every refusal"
     default y
     help

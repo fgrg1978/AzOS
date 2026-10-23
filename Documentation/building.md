@@ -76,7 +76,7 @@ prints, and embeds the table of image hashes the seccomp profiles are bound to. 
 | `ARCH=riscv64\|aarch64\|x86_64` | The ISA of `make check` and `make azos-guest` |
 | `AARCH64_PAGE_SIZE=4096\|16384\|65536` | The aarch64 translation granule of the kernel and the programs |
 | `QEMU_LOG_LEVEL=err\|warn\|info\|debug` | Log level of the QEMU kernels (default `debug`) |
-| `CHECK_FEATURES=...` | Extra cargo features for `make check`, for example `qemu,ktest` |
+| `CHECK_SELECT=...` | A selection on the cell `make check` type-checks (`tools/kconfig_to_cargo.py --select`), for example `ktest` |
 | `CHECK_DEFCONFIG_<isa>=...` | A different defconfig for `make check` |
 | `TOPOLOGY_PUBKEY_PATH=<file>` | The topology public key a release build embeds; `vf2`, `k1`, `rpi5` and `build-fleet` refuse to build without it |
 | `BUILD_TYPE=DEV` | `vf2` only: a development image (the test key allowed, `KTEST` possible); unset is the product build |

@@ -157,12 +157,12 @@ def build(arch, cfg_path, linker=None):
     """Build the kernel for ARCH from CFG_PATH; return (elf path | None, error text)."""
     env = dict(os.environ)
     env["KCONFIG_CONFIG"] = cfg_path
-    # The kernel has no cargo `default`: the .config's base features.
-    base = subprocess.run([sys.executable, os.path.join(REPO, "tools", "kconfig_to_cargo.py"),
-                           "--base", cfg_path], capture_output=True, text=True,
-                          check=True).stdout.split()
+    # The kernel has no cargo `default`: the .config's features.
+    out = subprocess.run([sys.executable, os.path.join(REPO, "tools", "kconfig_to_cargo.py"),
+                          cfg_path], capture_output=True, text=True, check=True).stdout.split()
+    feats = out[out.index("--features"):][:2] if "--features" in out else []
     if arch == "riscv64":
-        cmd = ["cargo", "build", "--release", "--features", "qemu"] + base
+        cmd = ["cargo", "build", "--release", "-p", "azos_kernel"] + feats
         if linker:
             env["RUSTFLAGS"] = (f"-C link-arg=-T{linker} -C code-model=medium "
                                 "-C target-feature=+zaamo,+zalrsc")
@@ -171,7 +171,7 @@ def build(arch, cfg_path, linker=None):
         env.pop("RUSTFLAGS", None)
         env.pop("CARGO_BUILD_RUSTFLAGS", None)
         cmd = ["cargo", "build", "--release", "--target", "aarch64-unknown-none-softfloat",
-               "-p", "azos_kernel", "--features", "qemu", *base,
+               "-p", "azos_kernel", *feats,
                "--config",
                'build.rustflags=["-C","link-arg=-T%s"]' % (linker or "kernel/linker-aarch64.ld")]
         elf = os.path.join(target_dir(), "aarch64-unknown-none-softfloat", "release", "kernel")

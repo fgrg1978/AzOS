@@ -30,12 +30,16 @@ bash "$here/run.sh" check || exit $?
 [ -f $AZOS_OUT/build/lx/kbuild/SHA256SUMS ] || bash "$here/run.sh" build $AZOS_OUT/build/lx/kbuild
 bash "$here/run.sh" linux $AZOS_OUT/build/lx/kbuild-linux >/dev/null
 make -s lx-modules $AZOS_OUT/build/image_hashes.rs $AZOS_OUT/build/image_hashes_aarch64.rs >/dev/null
-KCONFIG_CONFIG="$AZOS_OUT/target/primary/qemu.config" cargo build -q --release --features qemu,lx-server,bench-minimal \
-    $(python3 tools/kconfig_to_cargo.py --base "$AZOS_OUT/target/primary/qemu.config")
-env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AZOS_OUT/target/primary-aarch64/qemu-aarch64.config" \
-    cargo build -q --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-    --features qemu,lx-server,bench-minimal \
-    $(python3 tools/kconfig_to_cargo.py --base "$AZOS_OUT/target/primary-aarch64/qemu-aarch64.config") --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]'
+# The gate's cells with the lx bench selection (tools/kconfig_to_cargo.py --select).
+sel=CONFIG_LINUX_DRIVERS=y,lx-server,bench-minimal
+rv_cfg="$AZOS_OUT/target/primary/qemu.config" arm_cfg="$AZOS_OUT/target/primary-aarch64/qemu-aarch64.config"
+args="$(python3 tools/kconfig_to_cargo.py --select "$sel" --out "$rv_cfg.lxbench" "$rv_cfg")" || exit 1
+# shellcheck disable=SC2086
+KCONFIG_CONFIG="$rv_cfg.lxbench" cargo build -q --release -p azos_kernel $args
+args="$(python3 tools/kconfig_to_cargo.py --select "$sel" --out "$arm_cfg.lxbench" "$arm_cfg")" || exit 1
+# shellcheck disable=SC2086
+env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$arm_cfg.lxbench" \
+    cargo build -q --release -p azos_kernel $args --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]'
 make -s $AZOS_OUT/build/disk-lxbench.img $AZOS_OUT/build/disk-aarch64-lxbench.img >/dev/null
 oc="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
 cp $AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel "$out/kos-rv.kernel"

@@ -181,10 +181,10 @@ short_digest() {
 #   name  kind(cargo|asm)  build_dir(relative to the source root)  config_toml(relative to build_dir; - for a ring-3 image: its target spec)  rel_bin(under CARGO_TARGET_DIR)  extra_cargo_args  nightly(0|1)
 # Matches Makefile's `userspace:` target and its $(KERNEL_ELF) build.
 # ---------------------------------------------------------------------
-# The kernel has no cargo `default`: its base features come from the .config.
-KERNEL_BASE="$(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --base "$REPO_ROOT/.config" | sed 's/^--features //')"
+# The kernel has no cargo `default`: its features come from the .config.
+KERNEL_ARGS="$(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" "$REPO_ROOT/.config" | sed 's/^--target [^ ]* //')"
 ARTIFACTS=(
-    "kernel|cargo|.|.cargo/config.toml|${TARGET_TRIPLE}/release/kernel|--features qemu${KERNEL_BASE:+,$KERNEL_BASE}|0"
+    "kernel|cargo|.|.cargo/config.toml|${TARGET_TRIPLE}/release/kernel|${KERNEL_ARGS}|0"
     "uhello|cargo|userspace/tests/uhello|-|${USER_TRIPLE}/release/uhello||1"
     "reflex|cargo|userspace/services/reflex|-|${USER_TRIPLE}/release/reflex||1"
     "brain_client|cargo|userspace/services/brain_client|-|${USER_TRIPLE}/release/brain_client||1"

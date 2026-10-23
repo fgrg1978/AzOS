@@ -312,7 +312,7 @@ config LINUX_ABI
       priority-inheritance futexes.
 
 config LINUX_RUNTIME
-    # cargo-feature: linux-runtime base
+    # cargo-feature: linux-runtime
     bool "Host the Linux personality in a ring-3 runtime (trap reflect)"
     default n
     depends on LINUX_ABI && !HWCLASS_EMBEDDED && !AARCH64_PAGE_16K && !AARCH64_PAGE_64K

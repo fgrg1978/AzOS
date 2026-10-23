@@ -27,20 +27,19 @@ CHECK_TABLE_aarch64 := $(IMAGE_HASHES_AARCH64)
 CHECK_TABLE_x86_64  := $(OUT_BUILD)/image_hashes_x86_64.rs $(THIRDPARTY_HASHES_X86_64)
 
 .PHONY: check
-# CHECK_FEATURES adds cargo features (`make check CHECK_FEATURES=qemu,ktest`):
-# FEATURES= is not read here, so a ktest-only file is otherwise never compiled.
-CHECK_FEATURES ?=
+# CHECK_SELECT is a selection on the cell (`make check CHECK_SELECT=ktest`,
+# tools/kconfig_to_cargo.py --select): a ktest-only file is otherwise never compiled.
+CHECK_SELECT ?=
 check: | $(CHECK_TABLE_$(ARCH))
 	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
 	@mkdir -p $(OUT_BUILD)
 	cp "$(CHECK_DEFCONFIG_$(ARCH))" "$(CHECK_KCONFIG)"
 	KCONFIG_CONFIG="$(CHECK_KCONFIG)" $(PYTHON) -m olddefconfig
+	$(call kernel_select,$(CHECK_KCONFIG),$(CHECK_SELECT),$(CHECK_KCONFIG:.config=-sel.config)); \
 	rf="$$(python3 tools/kconfig_to_cargo.py --rustflags "$(CHECK_KCONFIG)")"; \
 	if [ -n "$$rf" ]; then export RUSTFLAGS="$$rf"; else unset RUSTFLAGS; fi; \
-	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CHECK_KCONFIG)" \
-	    $(CARGO) check --release -p azos_kernel \
-	    $$(python3 tools/kconfig_to_cargo.py "$(CHECK_KCONFIG)" | tr -s ' ') \
-	    $(if $(CHECK_FEATURES),--features $(CHECK_FEATURES))
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CHECK_KCONFIG:.config=-sel.config)" \
+	    $(CARGO) check --release -p azos_kernel $$args
 
 # ── CI: build all feature combinations (0 errors, 0 warnings). ───────────────
 ci:
@@ -104,8 +103,8 @@ size-kernel: $(SIZE_KCONFIG) | $(IMAGE_HASHES)
 	rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base $(SIZE_KCONFIG))"; \
 	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]"; \
 	env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(SIZE_KCONFIG)" \
-	    $(CARGO) build --release --target-dir $(SIZE_TARGET_DIR) -p azos_kernel --features qemu \
-	    $${isa:+--config "$$isa"} $$(python3 tools/kconfig_to_cargo.py --base $(SIZE_KCONFIG))
+	    $(CARGO) build --release --target-dir $(SIZE_TARGET_DIR) -p azos_kernel \
+	    $${isa:+--config "$$isa"} $$(python3 tools/kconfig_to_cargo.py $(SIZE_KCONFIG))
 	@$(MAKE) --no-print-directory prune
 
 size-check: size-kernel

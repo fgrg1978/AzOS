@@ -99,8 +99,16 @@ case "$isa" in
         rf="$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
         isa_cfg=""; [ -z "$rf" ] || isa_cfg="target.riscv64imac-unknown-none-elf.rustflags=[$rf]"
         # shellcheck disable=SC2046
-        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$cargo" build --release -p azos_kernel --features "qemu${KASLR_EXTRA_FEATURES:+,$KASLR_EXTRA_FEATURES}" \
-            ${isa_cfg:+--config "$isa_cfg"} $(python3 tools/kconfig_to_cargo.py --base "$cfg") >&2
+        # KASLR_EXTRA_FEATURES: a selection on a copy of the configuration.
+        sel="$cfg"
+        if [ -n "${KASLR_EXTRA_FEATURES:-}" ]; then
+            sel="$cfg.sel"
+            args="$(python3 tools/kconfig_to_cargo.py --select "$KASLR_EXTRA_FEATURES" --out "$sel" "$cfg")" || exit 1
+        else
+            args="$(python3 tools/kconfig_to_cargo.py "$cfg")"
+        fi
+        KCONFIG_CONFIG="$sel" CARGO_TARGET_DIR="$tdir" "$cargo" build --release -p azos_kernel \
+            ${isa_cfg:+--config "$isa_cfg"} $args >&2
         reloc_lint "$tdir/riscv64imac-unknown-none-elf/release/kernel" R_RISCV_RELATIVE
         # A flat binary, as the boards take it (VF2/K1 `kernel.bin`): QEMU puts a
         # raw `-kernel` at the start of RAM past the firmware, where the image is

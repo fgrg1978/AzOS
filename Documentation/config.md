@@ -608,7 +608,7 @@ The index lists every declared option: 1272.
 | `FIREWALL_INBOUND_DROP` | `config/subsys/Kconfig.net` | Firewall: drop inbound packets no rule accepts |
 | `FIREWALL_TCP_TIMEOUT_S` | `config/subsys/Kconfig.net` | Firewall: idle timeout of an established TCP flow (s) |
 | `FIREWALL_UDP_TIMEOUT_S` | `config/subsys/Kconfig.net` | Firewall: idle timeout of a tracked UDP flow (s) |
-| `FLIGHT_TOOL_DRIVETRAIN` | `config/domains/Kconfig.robot` | Gate kernel: the drivetrain belongs to FLIGHT.ELF |
+| `FLIGHT_TOOL_DRIVETRAIN` | `config/axes/Kconfig.build` | Gate kernel: the drivetrain belongs to FLIGHT.ELF |
 | `FP_HARDFLOAT_D` | `config/arch/Kconfig.isa` | RISC-V D extension (32 × f64 = 256 B, default rv64) |
 | `FP_HARDFLOAT_F` | `config/arch/Kconfig.isa` | RISC-V F extension (32 × f32 = 128 B) |
 | `FP_NEON` | `config/arch/Kconfig.isa` | Aarch64 NEON (32 × 128-bit q-regs = 512 B) |

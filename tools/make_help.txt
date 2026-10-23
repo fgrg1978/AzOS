@@ -101,5 +101,5 @@ Variables
   NETBOOT_CASE=<case>                  netboot-row: the row to run (default x86-pxe; the list is at the top of tools/netboot/row.sh).
   BUILD_TYPE=DEV                       vf2 only: a development image (the TEST key allowed, KTEST possible); unset is the product build.
 
-Boot the signed-image fixtures with --features qemu,secure-boot-enforced and an
+Boot the signed-image fixtures with the secure-boot-enforced selection and an
 absolute PROD_PUBKEY_PATH, for example $PWD/tools/keys/test_pub.bin.

@@ -9,8 +9,8 @@ configuration, and whatever it builds beyond that (a gate row's smoke, a
 canary, a driver) is a build selection, `--select TOKENS`, which
 kconfig_to_cargo.py applies to a copy of the configuration (`select`: Kconfig
 lines, features a Kconfig symbol owns, test hooks). This lint fails on a
-kernel `cargo build|check` in the Makefile, mk/*.mk, tools/*.sh or
-tools/*.py that carries `--features` (or `-F`) of its own.
+kernel `cargo build|check` in the Makefile, mk/*.mk, or a shell or Python
+script under tools/ or tests/ that carries `--features` (or `-F`) of its own.
 
 A kernel build is a `cargo build|check` of the workspace root (no `cd` into
 another crate, no `--manifest-path`, no `-p` but `azos_kernel`), or a call of
@@ -37,15 +37,18 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-# The files the rule covers, relative to the root.
+# The files the rule covers, relative to the root: the Makefile, mk/*.mk, and
+# every shell and Python script under tools/ and tests/.
 def scanned(root=ROOT):
     out = ["Makefile"]
-    for d, pat in (("mk", ".mk"), ("tools", ".sh"), ("tools", ".py")):
-        p = os.path.join(root, d)
-        out += sorted(os.path.join(d, f) for f in os.listdir(p)
-                      if f.endswith(pat) and " " not in f)
-    me = os.path.relpath(os.path.abspath(__file__), HERE)
-    return [f for f in out if f != os.path.join("tools", me)]
+    out += sorted(os.path.join("mk", f) for f in os.listdir(os.path.join(root, "mk")) if f.endswith(".mk"))
+    for top in ("tools", "tests"):
+        for d, dirs, files in os.walk(os.path.join(root, top)):
+            dirs[:] = sorted(x for x in dirs if x not in ("target", "__pycache__") and " " not in x)
+            out += sorted(os.path.relpath(os.path.join(d, f), root) for f in files
+                          if f.endswith((".sh", ".py")) and " " not in f)
+    me = os.path.relpath(os.path.abspath(__file__), root)
+    return [f for f in out if f != me]
 
 
 # The one file `--fix` rewrites: the gate, whose `$CARGO` is tools/ci_cargo.py.

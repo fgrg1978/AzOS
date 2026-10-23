@@ -207,7 +207,7 @@ def lint(root=k2c.REPO_ROOT, cargo_toml=k2c.KERNEL_CARGO_TOML, generate=True, kc
     for o in orphans:
         errors.append(f"tags: {o}: `# cargo-feature:` outside a config block")
     by_feat, by_sym = {}, {}
-    for sym, feat, inv, where in tags:
+    for sym, feat, where in tags:
         by_feat.setdefault(feat, []).append(sym)
         by_sym.setdefault(sym, []).append(feat)
         if feat not in feats:
@@ -224,7 +224,7 @@ def lint(root=k2c.REPO_ROOT, cargo_toml=k2c.KERNEL_CARGO_TOML, generate=True, kc
             errors.append(f"select: {where}: {sym} selects the visible symbol {target}")
 
     if kconfig:
-        errors += kconfig_checks(root, {sym: feat for sym, feat, _, _ in tags})
+        errors += kconfig_checks(root, {sym: feat for sym, feat, _ in tags})
 
     # The feature set comes from Kconfig alone: no cargo `default`.
     if feats.get("default"):

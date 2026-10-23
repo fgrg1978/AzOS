@@ -163,7 +163,7 @@ config MOTOR_COMMANDER_EXIT_STOP
       to leave its last duty running after it exits.
 
 config EFFECT_WRITE_AHEAD
-    # cargo-feature: effect-gate base
+    # cargo-feature: effect-gate
     bool "Write-ahead receipts: record a ring-3 motor op before it reaches the wheel"
     default y if USE_ROBOT
     default n
@@ -279,7 +279,7 @@ endmenu # Safety layer and motor control
 menu "RC input and geofence"
 
 config RC_INPUT
-    # cargo-feature: rc-input base
+    # cargo-feature: rc-input
     bool "RC receiver feeds the safety path"
     default y if USE_ROBOT
     default n
@@ -394,7 +394,7 @@ config RC_STICK_FULL_SCALE_PCT
       bound. Lower it to give a novice operator less authority.
 
 config GEOFENCE
-    # cargo-feature: geofence base
+    # cargo-feature: geofence
     bool "On-board geofence armed at the home fix"
     default y if USE_ROBOT
     default n
@@ -433,16 +433,5 @@ config GEOFENCE_MIN_SATELLITES
       literal GEOFENCE_MIN_SATELLITES = 4 in safety.rs. No cost.
 
 endmenu # RC input and geofence
-
-config FLIGHT_TOOL_DRIVETRAIN
-    # cargo-feature: flight-tool-drivetrain
-    bool "Gate kernel: the drivetrain belongs to FLIGHT.ELF"
-    depends on BUILD_TYPE_DEV
-    default n
-    help
-      The built-in topology gives the drivetrain (motor.0/motor.1 WRITE) to
-      FLIGHT.ELF instead of the autorun row, so `flight arm` from the user
-      shell can succeed (one writer per motor; the gate's `sh: family
-      tools` rows). Implies the actuation profile. Never in a product.
 
 comment "Fleet OTA has no build-time option: tools/fleet_ota_deploy.py"

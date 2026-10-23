@@ -175,7 +175,8 @@ AZ_LEVEL="CONFIG_LOG_LEVEL_$(printf '%s' "$VSBENCH_LOG_LEVEL" | tr '[:lower:]' '
 # VSBENCH_AZOS_EXTRA_FEATURES: extra kernel features on both ISAs (e.g.
 # `switch-census`, whose `[SW-CENSUS]` lines need VSBENCH_LOG_LEVEL=debug).
 # VSBENCH_LANES: only the named vsbench sections (see vsbench_compare.sh).
-K_FEATURES="qemu,bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}"
+# A selection on each ISA's configuration (tools/kconfig_to_cargo.py --select).
+K_FEATURES="bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}"
 VSBENCH_LANES="${VSBENCH_LANES:-}"
 R_CONFIG="$BENCH_TARGET/riscv64.config"
 { grep -v 'LOG_LEVEL' "${KCONFIG_CONFIG:-$REPO_ROOT/config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config}" \
@@ -185,11 +186,10 @@ R_CONFIG="$BENCH_TARGET/riscv64.config"
     || die "could not derive the riscv64 kernel configuration ($R_CONFIG.new)"
 if cmp -s "$R_CONFIG.new" "$R_CONFIG"; then rm -f "$R_CONFIG.new"; else mv "$R_CONFIG.new" "$R_CONFIG"; fi
 R_KERNEL="$BENCH_TARGET/azos-riscv64/riscv64imac-unknown-none-elf/release/kernel"
-( cd "$REPO_ROOT" && KCONFIG_CONFIG="$R_CONFIG" CARGO_TARGET_DIR="$BENCH_TARGET/azos-riscv64" \
-    $CARGO build --release --features "$K_FEATURES" \
-    $(python3 tools/kconfig_to_cargo.py --base "$R_CONFIG") >"$WORK/build-riscv64.log" 2>&1 ) \
-    || die "could not build the riscv64 AzOS kernel (--features \
-qemu,bench-minimal) — see $WORK/build-riscv64.log"
+( cd "$REPO_ROOT" && args="$(python3 tools/kconfig_to_cargo.py --select "$K_FEATURES" --out "$R_CONFIG.sel" "$R_CONFIG")" \
+    && KCONFIG_CONFIG="$R_CONFIG.sel" CARGO_TARGET_DIR="$BENCH_TARGET/azos-riscv64" \
+    $CARGO build --release -p azos_kernel $args >"$WORK/build-riscv64.log" 2>&1 ) \
+    || die "could not build the riscv64 AzOS kernel (selection $K_FEATURES) — see $WORK/build-riscv64.log"
 [ -f "$R_KERNEL" ] || die "no kernel at $R_KERNEL"
 
 # The aarch64 kernel is soft-float (FP-free, user FP saved lazily), so it is
@@ -207,15 +207,14 @@ A_CONFIG="$WORK/qemu-aarch64.config"
     && ( cd "$REPO_ROOT" && KCONFIG_CONFIG="$A_CONFIG" python3 -m olddefconfig >/dev/null 2>&1 ) \
     && grep -q '^CONFIG_ARCH_AARCH64=y$' "$A_CONFIG" && grep -q "^$AZ_LEVEL\$" "$A_CONFIG" \
     || die "could not expand config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config"
-( cd "$REPO_ROOT" && env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
-    KCONFIG_CONFIG="$A_CONFIG" \
+( cd "$REPO_ROOT" && args="$(python3 tools/kconfig_to_cargo.py --select "$K_FEATURES" --out "$A_CONFIG.sel" "$A_CONFIG")" \
+    && env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS \
+    KCONFIG_CONFIG="$A_CONFIG.sel" \
     CARGO_TARGET_DIR="$BENCH_TARGET/azos-aarch64" \
-    $CARGO build --release --target "$A_TRIPLE" -p azos_kernel \
-    --features "$K_FEATURES" $(python3 tools/kconfig_to_cargo.py --base "$A_CONFIG") \
+    $CARGO build --release -p azos_kernel $args \
     --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' \
     >"$WORK/build-aarch64.log" 2>&1 ) \
-    || die "could not build the aarch64 AzOS kernel (--features \
-qemu,bench-minimal) — see $WORK/build-aarch64.log"
+    || die "could not build the aarch64 AzOS kernel (selection $K_FEATURES) — see $WORK/build-aarch64.log"
 [ -f "$A_ELF" ] || die "no kernel at $A_ELF"
 A64_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
 [ -x "$A64_OBJCOPY" ] || die "llvm-objcopy not found: $A64_OBJCOPY"

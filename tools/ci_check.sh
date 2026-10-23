@@ -258,46 +258,11 @@ ci_phase "setup, lints, image tables"
 # level of the QEMU section), and a bare `|| return` would be wrong in half of
 # them. It marks the gate failed and says why; the row that follows then fails
 # with its own message, now explained rather than mysterious.
-# kb_cfg <rv|a64> <features>: the Kconfig a kernel with these cargo features
-# needs. A native driver's id is in the hwbus match table only when its Kconfig
-# symbol is on (`crates/drivers/*/hwbus.ids`, `if=DRV_PCI`), so the cargo feature
-# alone builds the code and leaves the device unmatched ("no NIC", NVMe not
-# bound). Prints nothing when the base config already serves; else the path of
-# a copy of it with the symbols on.
-kb_cfg() {
-    local isa="$1" feats=",$2," syms="" base cfg s
-    case "$feats" in *,pci,*|*,nvme,*|*,nvme-prp-canary,*|*,ahci,*|*,e1000e,*) syms="DRV_PCI" ;; esac
-    case "$feats" in *,nvme,*|*,nvme-prp-canary,*) syms="$syms DRV_NVME" ;; esac
-    case "$feats" in *,ahci,*) syms="$syms DRV_AHCI" ;; esac
-    case "$feats" in *,e1000e,*) syms="$syms DRV_E1000E" ;; esac
-    [ -n "$syms" ] || return 0
-    if [ "$isa" = rv ]; then base="${KCONFIG_CONFIG:-$PRIMARY_CONFIG}"; else base="$AARCH64_CONFIG"; fi
-    local need=""
-    for s in $syms; do grep -q "^CONFIG_$s=y" "$base" 2>/dev/null || need="$need $s"; done
-    [ -n "$need" ] || return 0
-    mkdir -p "$CI_LOG_DIR"
-    cfg="$(cd "$CI_LOG_DIR" && pwd)/kcfg-$isa-$(printf '%s' "$(basename "$base" .config)$need" | tr -c 'A-Za-z0-9\n' '-').config"
-    # Keyed on the base too: the gate rewrites the base only when its
-    # expansion changed (a symbol added, a default moved), so a cached file
-    # older than it was expanded from an older Kconfig tree.
-    if [ ! -f "$cfg" ] || [ "$base" -nt "$cfg" ]; then
-        cp "$base" "$cfg.tmp" \
-            && for s in $need; do printf 'CONFIG_%s=y\n' "$s" >>"$cfg.tmp"; done \
-            && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg.tmp" python3 -m olddefconfig >/dev/null 2>&1) \
-            && mv "$cfg.tmp" "$cfg" || { rm -f "$cfg.tmp"; echo "kb_cfg: could not enable$need on $base" >&2; return 1; }
-    fi
-    printf '%s\n' "$cfg"
-}
-
 kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     local feats="$1"; shift
     # A robot kernel builds from the robot cell unless the row named its own.
     if [ -z "${KB_ROBOT_DONE:-}" ] && [ "${KCONFIG_CONFIG:-}" = "$PRIMARY_CONFIG" ] && ci_robot_feats "$feats"; then
         KB_ROBOT_DONE=1 KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" kbuild "$feats" "$@"; return
-    fi
-    if [ -z "${KB_CFG_DONE:-}" ]; then
-        local _kc; _kc="$(kb_cfg rv "$feats")" || return 1
-        if [ -n "$_kc" ]; then KB_CFG_DONE=1 KCONFIG_CONFIG="$_kc" kbuild "$feats" "$@"; return; fi
     fi
     par_shared "kbuild $feats" || return 1
     if [ $# -eq 0 ] && ci_kb_defer rv "$feats"; then return 0; fi
@@ -319,7 +284,7 @@ kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     echo "      disk. Whatever row follows is about to boot it and report a"
     echo "      verdict for a kernel that was never asked for. Re-run the"
     echo "      build by hand to see the error:"
-    echo "        cargo build --release --features ${feats}"
+    echo "        tools/ci_cargo.py build --release --select ${feats}"
     return 1
 }
 
@@ -407,13 +372,10 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
         bad; echo "      could not expand config/defconfigs/robot-sbc-<arch>+${feat}.config (one, with CONFIG_BOARD_${feat}) with python3 -m olddefconfig"
         return
     fi
-    local out rc kfeat
+    local out rc
     BOARD_BUILT=""
-    # The features are the board config's (tools/kconfig_to_cargo.py, as `make
-    # vf2`/`make k1` derive them): `--features <board>` alone left out what the
-    # board's defconfig turns on (K1: ENERGY and THERMAL, refused at compile
-    # time without their features).
-    kfeat="$(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" "$AZOS_OUT/target/board-${feat}/${feat}.config" | sed -n 's/.*--features \([^ ]*\).*/\1/p')"
+    # The features are the board config's (tools/ci_cargo.py takes them from
+    # KCONFIG_CONFIG, as `make vf2`/`make k1` do).
     # A board of another ISA (`<target>`) builds in its own target dir, so it
     # neither rebuilds nor overwrites the shared triple the QEMU rows boot.
     local tflags=() tenv=()
@@ -423,7 +385,7 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
         tflags=(--target "$target" -p azos_kernel); tenv=("CARGO_TARGET_DIR=$AZOS_OUT/target/board-${feat}")
     fi
     out="$(env ${tenv[@]+"${tenv[@]}"} TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$AZOS_OUT/target/board-${feat}/${feat}.config" \
-           RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release ${tflags[@]+"${tflags[@]}"} --select "${kfeat:-$feat}" \
+           RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release ${tflags[@]+"${tflags[@]}"} \
            --config "build.rustflags=['-C','link-arg=-T$ld']" 2>&1)"; rc=$?
     # The exit status counts here too, as in `build`. Warnings do too, as of
     # U12-5: this used to check `^error` only, so vf2/k1 — the only two rows
@@ -2357,7 +2319,7 @@ QEMU_FAIL_RE="${QEMU_FAIL_RE:-FAILED:|PAGE FAULT\] OUT OF MEMORY|RFC [0-9/]+ FAI
 # The same check on the other two ISAs: `a64_kernel_check` (`CI_EXPECT_A64`
 # against `${A64_IMG}.features`, the image every aarch64 row boots) and
 # `x86_kernel_check <image>` (`CI_EXPECT_X86` against `<image>.features`,
-# the row's private copy; X86_64_FEATURES terms, so "" is the plain kernel).
+# the row's private copy; X86_64_SELECT terms, so "" is the plain kernel).
 ci_kernel_check_file() { # ci_kernel_check_file <kernel> <expected features>
     local k="$1" want="$2" got
     got="$(cat "${k}.features" 2>/dev/null)"
@@ -2492,16 +2454,15 @@ kq() {
 # same .config and features on <smp> CPUs to it (`--check-log`). Rows
 # "topology: dry boot on N hart(s)".
 dry_boot_row() {
-    local label="$1" smp="$2" marker="$3" feats="qemu,deadline-hart-canary" slug log base out
+    local label="$1" smp="$2" marker="$3" feats="qemu,deadline-hart-canary" slug log out
     kbuild "$feats" || return
     QEMU_KEEP_LOG=1 QEMU_FAIL_RE='\[FATAL\]' qemu_run "$label" "$marker" 60 -smp "$smp"
     slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
     log="$CI_LOG_DIR/${slug}.log"
     printf "  %-26s" "${label}: records..."
     if [ ! -f "$log" ]; then bad; echo "      no boot log to compare with (the boot above did not pass)"; return; fi
-    base="$(python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --base "$KCONFIG_CONFIG" | sed -n 's/.*--features \([^ ]*\).*/\1/p')"
     if out="$(cd "$REPO_ROOT" && make -s sim SIM_DEFCONFIG="$KCONFIG_CONFIG" SIM_CPUS="$smp" \
-            SIM_FEATURES="${base:+$base,}$feats" SIM_ARGS="--check-log $log" 2>&1)"; then
+            SIM_SELECT="$feats" SIM_ARGS="--check-log $log" 2>&1)"; then
         ok; rm -f "$log"
     else
         bad; echo "$out" | grep -E "check-log|^error" | sed 's/^/      /'; echo "      boot log kept: $log"
@@ -2916,14 +2877,14 @@ fi; ci_row_end
 build       "default (QEMU)"      --release
 build       "qemu"                --release
 build       "no-ml"               --release --select no-ml
-build       "rvv"                 --release --select rvv
+build       "rvv"                 --release --select CONFIG_RV_V_PROBE=y
 build       "net-smoke"           --release --select net-smoke
 build       "dhcp-smoke"          --release --select dhcp-smoke
 # Secure-boot policy is fixed at compile time, so if this feature
 # is not built in CI it can break with nobody noticing — exactly the way
 # esp32c3 rotted.
 build       "secure-boot-enforced" --release --select secure-boot-enforced
-build       "link-provisioning-enforced" --release --select link-provisioning-enforced
+build       "link-provisioning-enforced" --release --select use-robot,link-provisioning-enforced
 build       "reflex-smoke"        --release --select reflex-smoke
 build       "envelope-smoke"      --release --select envelope-smoke
 build       "geofence-smoke"      --release --select geofence-smoke
@@ -3131,10 +3092,6 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
 a64_kbuild() { # a64_kbuild <comma-separated-features>
     if [ -z "${KB_ROBOT_DONE:-}" ] && [ "$AARCH64_CONFIG" = "$GATE_AARCH64_CONFIG" ] && ci_robot_feats "$1"; then
         KB_ROBOT_DONE=1 AARCH64_CONFIG="$ROBOT_AARCH64_CONFIG" a64_kbuild "$@"; return
-    fi
-    if [ -z "${KB_CFG_DONE:-}" ] && [ $# -eq 1 ]; then
-        local _kc; _kc="$(kb_cfg a64 "$1")" || return 1
-        if [ -n "$_kc" ]; then KB_CFG_DONE=1 AARCH64_CONFIG="$_kc" a64_kbuild "$1"; return; fi
     fi
     par_shared "a64_kbuild $1" || return 1
     if [ $# -eq 1 ] && ci_kb_defer a64 "$1"; then return 0; fi
@@ -3588,7 +3545,7 @@ aarch64_hv_row() {
     mkdir -p "$CI_LOG_DIR"
     local log="$CI_LOG_DIR/aarch64-hv-entry.log"
     rm -f "$log"
-    if ! a64_kbuild "qemu,hv"; then
+    if ! a64_kbuild "qemu,CONFIG_VIRT_SPLIT=y"; then
         bad; echo "      aarch64 kernel (--features qemu,hv) did not build"; return
     fi
     local img_copy="$CI_LOG_DIR/kernel-aarch64-hv.img"
@@ -5059,7 +5016,7 @@ otabun_volume() {
     [ "$isa" = aarch64 ] && tisa=aarch64
     par_shared "make topo-volume" || return 1
     make topo-volume TOPO_IMAGE="$disk" TOPO_ISA="$tisa" TOPO_KCONFIG_RISCV64="$PRIMARY_CONFIG" \
-        TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" TOPO_KERNEL_FEATURES="qemu,secure-boot-enforced" >"$work/topo.log" 2>&1 || return 1
+        TOPO_KCONFIG_AARCH64="$AARCH64_CONFIG" TOPO_SELECT="secure-boot-enforced" >"$work/topo.log" 2>&1 || return 1
     mcopy -n -i "$disk" ::CONFIG.INI "$ini.in" 2>/dev/null \
       && sed -e 's/^behavior_server_port=.*/behavior_server_port=0/' "$ini.in" >"$ini" \
       && grep -q '^behavior_server_port=0' "$ini" \
@@ -6001,7 +5958,7 @@ drvplace_build_canary_row() { # <label> <isa: rv|arm|x86>
     elif [ "$isa" = "x86" ]; then
         # The x86_64 kernel's own build (`make x86_64`): its features come
         # from the Kconfig expansion, the canary's on top.
-        out="$(make x86_64 X86_64_FEATURES="$feat" 2>&1)"
+        out="$(make x86_64 X86_64_SELECT="$feat" 2>&1)"
     else
         out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build \
             --release --target aarch64-unknown-none-softfloat -p azos_kernel \
@@ -8853,7 +8810,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
     rm -f "$kelf"
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
             "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --select "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE"; then
         bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
     fi
@@ -10458,9 +10415,8 @@ build_board "rpi5 (+linker)"      rpi5 "$RPI5_ISA" aarch64-unknown-none-softfloa
 # `fleet_config` for why it does not use `make build-fleet`.
 if fleet_config; then
     fail_before=$FAIL
-    # shellcheck disable=SC2046
     TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$FLEET_CONFIG" CARGO_TARGET_DIR="$FLEET_DIR" RUSTFLAGS="$FLEET_RUSTFLAGS" \
-        build "fleet (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$FLEET_CONFIG")
+        build "fleet (+linker)" --release
     fleet_config_applied
     # A skipped row (CI_TIER=rows) leaves FAIL alone too: only a build that
     # ran and passed, with its config check, makes the fleet kernel bootable.
@@ -10471,9 +10427,8 @@ else
 fi
 if embedded_config; then
     fail_before=$FAIL
-    # shellcheck disable=SC2046
     TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$EMBEDDED_CONFIG" CARGO_TARGET_DIR="$EMBEDDED_DIR" RUSTFLAGS="$EMBEDDED_RUSTFLAGS" \
-        build "embedded (+linker)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$EMBEDDED_CONFIG")
+        build "embedded (+linker)" --release
     if [ "$FAIL" -eq "$fail_before" ] && embedded_config_applied \
        && ci_wants "embedded (+linker)" && ci_wants "embedded config applied"; then EMBEDDED_BUILT=1; fi
 else
@@ -12228,8 +12183,7 @@ else
     product_gatekey_disk() { # <.config> <out image> [keyless]
         local img="$2" ini="$2.tmp_config.ini" sig="$2.tmp_config.sig" lk="$2.tmp_linkkey" rc
         cp $AZOS_OUT/build/disk.img "$img" \
-          && make topo-volume TOPO_IMAGE="$img" TOPO_ISA=riscv64 TOPO_KCONFIG_RISCV64="$1" TOPO_PRIV="$GATE_RELEASE_PRIV" \
-                TOPO_KERNEL_FEATURES="$(python3 tools/kconfig_to_cargo.py "$1" | sed -n 's/.*--features //p')" >/dev/null 2>&1 \
+          && make topo-volume TOPO_IMAGE="$img" TOPO_ISA=riscv64 TOPO_KCONFIG_RISCV64="$1" TOPO_PRIV="$GATE_RELEASE_PRIV" >/dev/null 2>&1 \
           && mcopy -n -i "$img" ::CONFIG.INI "$ini" \
           && python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" --priv "$GATE_RELEASE_PRIV" --out "$sig" >/dev/null \
           && mcopy -o -i "$img" "$sig" ::CONFIG.SIG \
@@ -14834,7 +14788,7 @@ PY
 
     # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
-    # `make x86_64` (X86_64_FEATURES adds cargo features), booted by hand-made
+    # `make x86_64` (X86_64_SELECT adds to the configuration), booted by hand-made
     # QEMU lines like the Makefile's `qemu-x86_64`. These rows attach no
     # disk, so "boots" means the kernel shell on COM1 (the userspace rows
     # below attach one).
@@ -14844,7 +14798,7 @@ PY
     #                               no FAILED, no x86 trap report; COM1's
     #                               output went through the TX ring by the
     #                               THR-empty interrupt (C1; the canary
-    #                               X86_64_FEATURES=console-tx-sync prints
+    #                               X86_64_SELECT=console-tx-sync prints
     #                               "polled" and fails it)
     #   x86_64: smp 2               CPU 1 started by INIT-SIPI-SIPI, takes its
     #                               ticks and the reschedule IPI
@@ -14948,7 +14902,7 @@ PY
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
-        # `.features` (the X86_64_FEATURES terms, "" for the plain kernel)
+        # `.features` (the X86_64_SELECT terms, "" for the plain kernel)
         # travels with it, for `x86_kernel_check`.
         rm -f "$2" "$2.features"
         # `X86_KBUILD_ARGS` / `X86_KBUILD_OUT`: a build from another
@@ -14956,7 +14910,7 @@ PY
         # Without one, the gate's cell: generic, or robot when the features
         # close over `use-robot`, each expanded into its own file.
         local def; def="$(gate_defc x86 "$1")"
-        make x86_64 X86_64_FEATURES="$1" ${X86_KBUILD_ARGS:-X86_64_DEFCONFIG=config/defconfigs/$def.config X86_64_KCONFIG=$AZOS_OUT/build/x86_64-$def.config} >/dev/null 2>&1 && cp "${X86_KBUILD_OUT:-$AZOS_OUT/build/kernel-x86_64.elf}" "$2" \
+        make x86_64 X86_64_SELECT="$1" ${X86_KBUILD_ARGS:-X86_64_DEFCONFIG=config/defconfigs/$def.config X86_64_KCONFIG=$AZOS_OUT/build/x86_64-$def.config} >/dev/null 2>&1 && cp "${X86_KBUILD_OUT:-$AZOS_OUT/build/kernel-x86_64.elf}" "$2" \
             && builtin printf '%s\n' "$1" >"$2.features"
     }
     x86_qemu() { # x86_qemu <image> <log> <secs> <stop ERE or ""> [qemu args...]; sets X86_QRC
@@ -14990,7 +14944,7 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
-        x86_kbuild "$feats" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=$feats did not build"; return; }
+        x86_kbuild "$feats" "$kimg" || { bad; echo "      make x86_64 X86_64_SELECT=$feats did not build"; return; }
         par_ready
         x86_qemu "$kimg" "$log" 60 "$stop" -smp "$smp" -cpu "$cpu" || { rm -f "$kimg" "$kimg.features"; return; }
         rm -f "$kimg" "$kimg.features"
@@ -15123,7 +15077,7 @@ PY
         local kimg="$CI_LOG_DIR/kernel-x86-stack-$2-${3:-generic}"
         mkdir -p "$CI_LOG_DIR"
         if ! x86_kbuild "$3" "$kimg"; then
-            printf "  %-26s" "${1}..."; bad; echo "      make x86_64 X86_64_FEATURES=$3 did not build"; return
+            printf "  %-26s" "${1}..."; bad; echo "      make x86_64 X86_64_SELECT=$3 did not build"; return
         fi
         par_ready
         if [ "$2" = frames ]; then frame_row "$1" "$kimg" 8192
@@ -15160,7 +15114,7 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" sock="$CI_LOG_DIR/x86-${tag}.mon"
-        x86_kbuild "$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=$extra did not build"; return; }
+        x86_kbuild "$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_SELECT=$extra did not build"; return; }
         rm -f "$sock"; : >"$log"
         par_ready
         ( local t=0
@@ -15449,7 +15403,7 @@ PY
         rm -f "$kimg" "$kimg.features"
         # One target directory per feature set: the two PASS rows share theirs.
         make x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
-            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-${expect}" X86_64_IMG="$kimg" X86_64_FEATURES="$feats" >/dev/null 2>&1 \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-${expect}" X86_64_IMG="$kimg" X86_64_SELECT="$feats" >/dev/null 2>&1 \
             && builtin printf '%s\n' "$feats" >"$kimg.features" \
             || { bad; echo "      make x86_64 (qemu-x86_64-pci.config, $feats) did not build"; return; }
         par_ready
@@ -15826,7 +15780,7 @@ PY
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/ktest-${tag}.log" kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
-        x86_kbuild "use-robot,ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_FEATURES=use-robot,ktest,chaos,decisions$extra did not build"; return; }
+        x86_kbuild "use-robot,ktest,chaos,decisions$extra" "$kimg" || { bad; echo "      make x86_64 X86_64_SELECT=use-robot,ktest,chaos,decisions$extra did not build"; return; }
         if [ -n "${5:-}" ]; then
             dimg="$CI_LOG_DIR/disk-ktest-${tag}.img"
             fresh_disk "$5" && cp "$5" "$dimg" || { bad; echo "      disk image $5 did not build"; return; }
@@ -19192,8 +19146,9 @@ PYEOF
     }
     nvme_boot_prepare() { # nvme_boot_prepare <isa> <features>: builds the kernel, echoes the image path
         local isa="$1" feats="$2"
-        # `kbuild`/`a64_kbuild` turn Kconfig DRV_PCI and DRV_NVME on for the pci and
-        # nvme features (`kb_cfg`): the NVMe id is in the native match table only then.
+        # The pci and nvme features are Kconfig DRV_PCI and DRV_NVME in the build's
+        # configuration (`--select`, tools/ci_cargo.py): the NVMe id is in the native
+        # match table only then.
         if [ "$isa" = riscv64 ]; then
             kbuild "$feats" || return 1
             echo "$KERNEL"
@@ -20380,7 +20335,7 @@ PYEOF
     # off, so the kernel would take an illegal-instruction trap on its first
     # vector op. `-cpu rv64,v=true` is therefore part of the scenario, not an
     # optimisation.
-    par "rvv: vector path runs" kq "qemu,rvv" "rvv: vector path runs" "Phase 11 complete" 120 \
+    par "rvv: vector path runs" kq "qemu,CONFIG_RV_V_PROBE=y" "rvv: vector path runs" "Phase 11 complete" 120 \
         -smp 4 -cpu rv64,v=true,vlen=256,elen=64
 
     # ── rvv: vector state isolated across tasks (2026-09-26) ─────────────────
@@ -20393,7 +20348,7 @@ PYEOF
     # with distinct patterns, yield 8 times, and check; OK only if both survive.
     # Runs at vlen=256 like the row above; the old sizing page-faults there.
     QEMU_FAIL_RE="$QEMU_FAIL_RE|RVV\] ISOLATION FAILED" \
-        par "rvv: vector state isolated" kq "qemu,rvv,rvv-isolation-probe" "rvv: vector state isolated" "RVV] ISOLATION OK" 60 \
+        par "rvv: vector state isolated" kq "qemu,CONFIG_RV_V_PROBE=y,rvv-isolation-probe" "rvv: vector state isolated" "RVV] ISOLATION OK" 60 \
             -smp 4 -cpu rv64,v=true,vlen=256,elen=64
     kbuild "qemu"
     # ── Native PCI enumeration (riscv64) ───────────
@@ -23636,7 +23591,7 @@ input watch -n 100 &
         if [ "$isa" = x86 ]; then
             img="$dir/kernel-x86_64.elf"; rm -f "$img"
             make x86_64 X86_64_DEFCONFIG="$cfg" X86_64_KCONFIG="$dir/x86_64.config" X86_64_TARGET_DIR="$dir" \
-                X86_64_IMG="$img" X86_64_FEATURES="$feats" >/dev/null 2>&1
+                X86_64_IMG="$img" X86_64_SELECT="$feats" >/dev/null 2>&1
         elif [ "$isa" = rv ]; then
             elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
             KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --select "$feats" >/dev/null 2>&1
@@ -23930,7 +23885,7 @@ x=con; echo bb\$x-ok
         cfg="$(login_cfg "$isa")" || { bad; echo "      could not make a config with CONSOLE_LOGIN on"; return; }
         if [ "$isa" = rv ]; then
             tisa=riscv64
-            KB_CFG_DONE=1 KCONFIG_CONFIG="$cfg" kbuild "qemu" || { bad; echo "      riscv64 kernel (console login) did not build"; return; }
+            KCONFIG_CONFIG="$cfg" kbuild "qemu" || { bad; echo "      riscv64 kernel (console login) did not build"; return; }
             cp "$KERNEL" "$kimg"
             if [ ! -f "$AZOS_OUT/build/disk-sh.img.pristine" ]; then
                 rm -f $AZOS_OUT/build/disk-drvbase.img "$AZOS_OUT/build/disk-sh.img"; make_disk "$AZOS_OUT/build/disk-sh.img"
@@ -23938,7 +23893,7 @@ x=con; echo bb\$x-ok
             cp "$AZOS_OUT/build/disk-sh.img.pristine" "$img"
         else
             tisa=aarch64
-            KB_CFG_DONE=1 AARCH64_CONFIG="$cfg" a64_kbuild "qemu" || { bad; echo "      aarch64 kernel (console login) did not build"; return; }
+            AARCH64_CONFIG="$cfg" a64_kbuild "qemu" || { bad; echo "      aarch64 kernel (console login) did not build"; return; }
             cp "$A64_IMG" "$kimg"
             if [ ! -f "$AZOS_OUT/build/disk-aarch64-sh.img.pristine" ]; then
                 rm -f $AZOS_OUT/build/disk-aarch64-drvbase.img "$AZOS_OUT/build/disk-aarch64-sh.img"; make_disk "$AZOS_OUT/build/disk-aarch64-sh.img"
@@ -23955,7 +23910,7 @@ x=con; echo bb\$x-ok
             || { bad; echo "      login_enroll failed"; return; }
         par_shared "make topo-volume" || return 1
         if ! make topo-volume TOPO_IMAGE="$img" TOPO_ISA="$tisa" TOPO_KCONFIG_RISCV64="$cfg" TOPO_KCONFIG_AARCH64="$cfg" \
-                TOPO_KERNEL_FEATURES="qemu" >"$work/topo.log" 2>&1; then
+                >"$work/topo.log" 2>&1; then
             bad; echo "      make topo-volume failed; log kept: $work/topo.log"; return
         fi
         if ! mcopy -n -i "$img" ::CAPS.TOM "$work/CAPS.TOM" \
@@ -24095,7 +24050,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     generic_robot_re="$(printf '%s\n' "$GENERIC_ROBOT_CRATES" | paste -sd'|' -)"
     generic_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
     generic_build_row() { # generic_build_row <rv|arm>
-        local isa="$1" label defc cfg args log out rc robot_feats elf robot_elf triple n
+        local isa="$1" label defc cfg args tgt log out rc robot_feats elf robot_elf triple n
         if [ "$isa" = rv ]; then
             label="generic: riscv64 builds, no robot crate"; defc="$GATE_DEFC_RV"
             triple=riscv64imac-unknown-none-elf; robot_elf="$KERNEL"
@@ -24114,16 +24069,17 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             bad; echo "      could not expand a Generic ${defc} config"; return
         fi
         args="$(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$cfg")"
+        tgt="${args%% --features*}"  # the build's target; its features come from KCONFIG_CONFIG (ci_cargo)
         case "$args" in *use-robot*)
             bad; echo "      kconfig_to_cargo emitted use-robot for a Generic config: $args"; return ;; esac
         if [ "$isa" = rv ]; then
             # shellcheck disable=SC2086
             out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$GENERIC_DIR" "$CARGO" build --release \
-                -p azos_kernel $args 2>&1)"; rc=$?
+                -p azos_kernel $tgt 2>&1)"; rc=$?
         else
             # shellcheck disable=SC2086
             out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" \
-                CARGO_TARGET_DIR="$GENERIC_DIR" "$CARGO" build --release -p azos_kernel $args \
+                CARGO_TARGET_DIR="$GENERIC_DIR" "$CARGO" build --release -p azos_kernel $tgt \
                 --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; rc=$?
         fi
         printf '%s\n' "$out" >"$log"
@@ -24847,31 +24803,31 @@ PY
         grep -aE "\[LXSRV\]|\[LX\]" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'
     fi
 }
-par_row lx_module_row "lx: module loads and runs"        rv  "qemu,lx-server"        load   PASS
-par_row lx_module_row "lx: module tamper refused"        rv  "qemu,lx-server"        tamper PASS
+par_row lx_module_row "lx: module loads and runs"        rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        load   PASS
+par_row lx_module_row "lx: module tamper refused"        rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        tamper PASS
 par_row lx_module_row "lx: tamper canary (no digest)"    rv  "qemu,lx-verify-canary" tamper FAIL
 par_row lx_module_row "lx: W^X canary (text writable)"   rv  "qemu,lx-wx-canary"     load   FAIL
 par_row lx_module_row "lx: default kernel, no server"    rv  "qemu"                  off    PASS
-par_row lx_module_row "lx: default-off canary"           rv  "qemu,lx-server"        off    FAIL
-par_row lx_module_row "aarch64 lx: module loads and runs"     arm "qemu,lx-server"        load   PASS
-par_row lx_module_row "aarch64 lx: module tamper refused"     arm "qemu,lx-server"        tamper PASS
+par_row lx_module_row "lx: default-off canary"           rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        off    FAIL
+par_row lx_module_row "aarch64 lx: module loads and runs"     arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        load   PASS
+par_row lx_module_row "aarch64 lx: module tamper refused"     arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        tamper PASS
 par_row lx_module_row "aarch64 lx: tamper canary"             arm "qemu,lx-verify-canary" tamper FAIL
 par_row lx_module_row "aarch64 lx: W^X canary"                arm "qemu,lx-wx-canary"     load   FAIL
-par_row lx_module_row "lx: Kbuild xz_dec.ko runs (rv)"         rv  "qemu,lx-server"        linux        PASS
-par_row lx_module_row "lx: Kbuild module tamper refused (rv)"  rv  "qemu,lx-server"        linux-tamper PASS
-par_row lx_module_row "lx: Kbuild fixture canary (rv)"         rv  "qemu,lx-server"        linux-other  FAIL
-par_row lx_module_row "lx: Kbuild xz_dec.ko runs (arm)"        arm "qemu,lx-server"        linux        PASS
-par_row lx_module_row "lx: Kbuild module tamper refused (arm)" arm "qemu,lx-server"        linux-tamper PASS
-par_row lx_module_row "lx: Kbuild fixture canary (arm)"        arm "qemu,lx-server"        linux-other  FAIL
+par_row lx_module_row "lx: Kbuild xz_dec.ko runs (rv)"         rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux        PASS
+par_row lx_module_row "lx: Kbuild module tamper refused (rv)"  rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-tamper PASS
+par_row lx_module_row "lx: Kbuild fixture canary (rv)"         rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-other  FAIL
+par_row lx_module_row "lx: Kbuild xz_dec.ko runs (arm)"        arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux        PASS
+par_row lx_module_row "lx: Kbuild module tamper refused (arm)" arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-tamper PASS
+par_row lx_module_row "lx: Kbuild fixture canary (arm)"        arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-other  FAIL
 # Wave 13: the vDSO hwcap word (ID registers / device tree), lxbase's CRC
 # path chosen from it, the kernel SHA-256 path, and lxsrv's counter frequency
 # equal to the kernel's. The canary clears the CRC32 bit: lxbase must fall
 # back to its tables (and still decode correctly), so the row goes red.
-par_row lx_module_row "lx: hwcap (rv)"                         rv  "qemu,lx-server"        hwcap        PASS
-par_row lx_module_row "lx: hwcap + zknh SHA-256 (rv)"          rv  "qemu,lx-server"        zknh         PASS
-par_row lx_module_row "lx: hwcap (arm)"                        arm "qemu,lx-server"        hwcap        PASS
-par_row lx_module_row "lx: hwcap canary, CRC32 bit cleared (arm)" arm "qemu,lx-server,hwcap-clear-canary" hwcap-canary FAIL
-par_row lx_module_row "lx: hwcap canary, Zbc bit cleared (rv)"    rv  "qemu,lx-server,hwcap-clear-canary" hwcap-canary FAIL
+par_row lx_module_row "lx: hwcap (rv)"                         rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        hwcap        PASS
+par_row lx_module_row "lx: hwcap + zknh SHA-256 (rv)"          rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        zknh         PASS
+par_row lx_module_row "lx: hwcap (arm)"                        arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        hwcap        PASS
+par_row lx_module_row "lx: hwcap canary, CRC32 bit cleared (arm)" arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server,hwcap-clear-canary" hwcap-canary FAIL
+par_row lx_module_row "lx: hwcap canary, Zbc bit cleared (rv)"    rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server,hwcap-clear-canary" hwcap-canary FAIL
 # ── RC input and geofence wired into the safety path (wave 15) ─────────────
 #
 # Owner decision: the RC receiver and the geofence were inert (no byte source
@@ -25003,7 +24959,7 @@ par_row rcfence_row "geofence: no-fence canary (arm)"                arm "qemu,f
 # (rc_safety / rc_link / geofence) in the ELF — after finding them in the
 # default robot kernel of the same ISA, so a query gone blind cannot pass.
 rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
-    local label="$1" isa="$2" defc cfg args log out rc elf on_elf triple nmb n_on n_off
+    local label="$1" isa="$2" defc cfg args tgt log out rc elf on_elf triple nmb n_on n_off
     # The Generic rows' target dir: same toolchain and dependencies, so cargo
     # reuses core/alloc and every crate and relinks only what the features
     # change, instead of a second build-std tree per ISA.
@@ -25029,6 +24985,7 @@ rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
         bad; echo "      could not expand a ${defc} config with RC_INPUT=n GEOFENCE=n"; return
     fi
     args="$(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$cfg")"
+    tgt="${args%% --features*}"  # the build's target; its features come from KCONFIG_CONFIG (ci_cargo)
     if printf '%s' "$args" | qgrep -qE 'rc-input|geofence' \
        || ! printf '%s' "$args" | qgrep -q 'use-robot'; then
         bad; echo "      kconfig_to_cargo did not drop exactly rc-input and geofence: $args"; return
@@ -25036,11 +24993,11 @@ rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
     if [ "$isa" = rv ]; then
         # shellcheck disable=SC2086
         out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release \
-            -p azos_kernel $args 2>&1)"; rc=$?
+            -p azos_kernel $tgt 2>&1)"; rc=$?
     else
         # shellcheck disable=SC2086
         out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" \
-            CARGO_TARGET_DIR="$dir" "$CARGO" build --release -p azos_kernel $args \
+            CARGO_TARGET_DIR="$dir" "$CARGO" build --release -p azos_kernel $tgt \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; rc=$?
     fi
     printf '%s\n' "$out" >"$log"

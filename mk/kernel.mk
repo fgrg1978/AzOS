@@ -5,9 +5,9 @@
 # Included by the top-level Makefile; the order of the includes there is part of the contract.
 
 build: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel --features qemu \
+	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
 		$${isa:+--config "$$isa"} \
-		$(QEMU_DEV_BASE)
+		$(QEMU_DEV_ARGS)
 	@$(MAKE) --no-print-directory prune
 
 # Cargo never deletes an artifact: every feature set leaves another copy of
@@ -19,9 +19,11 @@ PRUNE_ARGS ?= --quiet
 prune:
 	@python3 tools/prune_build.py $(PRUNE_ARGS)
 
-# Build kernel with RVV 1.0 support (requires QEMU with -cpu rv64,v=true).
+# Build kernel with RVV 1.0 support (requires QEMU with -cpu rv64,v=true):
+# the development configuration with the vector extension probed (RV_V_PROBE).
 build-rvv: $(IMAGE_HASHES) $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) --features rvv,qemu $${isa:+--config "$$isa"} $(QEMU_DEV_BASE)
+	$(call kernel_select,$(QEMU_DEV_KCONFIG),CONFIG_RV_V_PROBE=y,$(OUT_BUILD)/qemu-dev-rvv.config); \
+	$(QEMU_DEV_ISA) KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-rvv.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $${isa:+--config "$$isa"} $$args
 	@$(MAKE) --no-print-directory prune
 
 # Build kernel with the fleet defconfig (HWCLASS_SERVER) and the fleet linker script
@@ -33,10 +35,10 @@ build-fleet: $(IMAGE_HASHES_BOARD) $(OUT_BUILD)/disk-board-fleet.img
 	$(call require_board_key,FLEET)
 	$(call check_board_priv_if_given,FLEET)
 	@$(MAKE) defconfig-generic-server-riscv64+board-generic
-	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
+	$(call kernel_select,.config,board-image,$(OUT_BUILD)/fleet-image.config); \
+	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" KCONFIG_CONFIG="$(OUT_BUILD)/fleet-image.config" \
 	RUSTFLAGS="$(FLEET_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags .config)" \
-	$(CARGO) build $(CARGO_FLAGS) -p azos_kernel --features board-image \
-		$$(python3 tools/kconfig_to_cargo.py .config | tr -s ' ')
+	$(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 	@echo "[FLEET] kernel built, volume $(OUT_BUILD)/disk-board-fleet.img (signed topology) — use a gateway board with >= 1 GiB RAM"
 	@$(MAKE) --no-print-directory prune
 
@@ -88,9 +90,10 @@ $(VF2_VARIANT_CONFIGS): $(OUT_BUILD)/vf2-%.config: $(VF2_KCONFIG_DEPS) $(OUT_BUI
 	@grep -q '^CONFIG_BOARD_VF2=y$$' $@ || { echo "[VF2] $@ lost CONFIG_BOARD_VF2"; exit 1; }
 	@for l in $(VF2_EXTRA_$*); do grep -qx "$$l" $@ || { echo "[VF2] $@ lost $$l"; exit 1; }; done
 
-# Features the variant adds to what its config derives: the pstore smoke
-# (kernel/src/pstore.rs) is a cargo feature of its own, not a Kconfig symbol.
-VF2_EXTRA_FEATURES := $(if $(filter pstore,$(VF2_TEST)),--features pstore-smoke)
+# The selection a vf2 kernel builds with beyond its config: the board volume's
+# image table (BOARD_IMAGE), and the pstore variant's smoke
+# (kernel/src/pstore.rs), a test hook.
+VF2_SELECT := board-image$(if $(filter pstore,$(VF2_TEST)),$(comma)pstore-smoke)
 
 # Build kernel for VisionFive 2 (JH7110). --target/--features come from the
 # expanded profile through tools/kconfig_to_cargo.py, as `make aarch64` does;
@@ -100,11 +103,11 @@ VF2_EXTRA_FEATURES := $(if $(filter pstore,$(VF2_TEST)),--features pstore-smoke)
 vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG) $(VF2_DISK)
 	$(call require_board_key,VF2)
 	$(call check_board_priv_if_given,VF2)
+	$(call kernel_select,$(VF2_KCONFIG),$(VF2_SELECT),$(VF2_KCONFIG:.config=-image.config)); \
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
-	KCONFIG_CONFIG="$(VF2_KCONFIG)" \
+	KCONFIG_CONFIG="$(VF2_KCONFIG:.config=-image.config)" \
 	RUSTFLAGS="$(VF2_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags $(VF2_KCONFIG))" \
-	$(CARGO) build --release --target-dir $(VF2_TARGET_DIR) -p azos_kernel --features board-image $(VF2_EXTRA_FEATURES) \
-		$$(python3 tools/kconfig_to_cargo.py $(VF2_KCONFIG) | tr -s ' ') \
+	$(CARGO) build --release --target-dir $(VF2_TARGET_DIR) -p azos_kernel $$args \
 		--config "build.rustflags=['-C','link-arg=-T$(VF2_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
 	riscv64-unknown-elf-objcopy -O binary \
@@ -178,11 +181,11 @@ $(K1_KCONFIG): config/defconfigs/robot-sbc-riscv64+k1.config \
 k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG) $(OUT_BUILD)/disk-board-k1.img
 	$(call require_board_key,K1)
 	$(call check_board_priv_if_given,K1)
+	$(call kernel_select,$(K1_KCONFIG),board-image,$(K1_KCONFIG:.config=-image.config)); \
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
-	KCONFIG_CONFIG="$(K1_KCONFIG)" \
+	KCONFIG_CONFIG="$(K1_KCONFIG:.config=-image.config)" \
 	RUSTFLAGS="$(K1_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags $(K1_KCONFIG))" \
-	$(CARGO) build --release -p azos_kernel --features board-image \
-		$$(python3 tools/kconfig_to_cargo.py $(K1_KCONFIG) | tr -s ' ') \
+	$(CARGO) build --release -p azos_kernel $$args \
 		--config "build.rustflags=['-C','link-arg=-T$(K1_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
 	riscv64-unknown-elf-objcopy -O binary \
@@ -300,11 +303,10 @@ $(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(KCONFIG_FILES)
 
 # The seccomp table of the x86_64 images (crates/core/sched/src/seccomp.rs).
 x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
-	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(X86_64_KCONFIG)" CARGO_TARGET_DIR="$(X86_64_TARGET_DIR)" \
+	$(call kernel_select,$(X86_64_KCONFIG),$(X86_64_SELECT),$(X86_64_KCONFIG:.config=-sel.config)); \
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(X86_64_KCONFIG:.config=-sel.config)" CARGO_TARGET_DIR="$(X86_64_TARGET_DIR)" \
 	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
-	    $(CARGO) build --release -p azos_kernel \
-	    $$(python3 tools/kconfig_to_cargo.py $(X86_64_KCONFIG) | tr -s ' ') \
-	    $(if $(X86_64_FEATURES),--features $(X86_64_FEATURES))
+	    $(CARGO) build --release -p azos_kernel $$args
 	@mkdir -p $(OUT_BUILD)
 	cp $(X86_64_ELF) $(X86_64_IMG)
 	@echo "[X86_64] Built $(X86_64_IMG)"

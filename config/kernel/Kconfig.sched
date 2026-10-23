@@ -195,7 +195,7 @@ config QOS_SLACK_BACKGROUND_US
 # configuration, the way the kernel's old `default` list had them.
 # ---------------------------------------------------------------------------
 config SCHED_O1_PLACEMENT
-    # cargo-feature: sched-o1-placement base
+    # cargo-feature: sched-o1-placement
     bool "O(priorities) wake placement (a per-priority load histogram)"
     default y
     help
@@ -206,7 +206,7 @@ config SCHED_O1_PLACEMENT
       block and wake, the saving on machines with more than one hart online.
 
 config SCHED_TIMER_HEAP
-    # cargo-feature: sched-timer-heap base
+    # cargo-feature: sched-timer-heap
     bool "Timer sleepers in an indexed min-heap"
     default y
     help
@@ -215,7 +215,7 @@ config SCHED_TIMER_HEAP
       sweeping MAX_TASKS every tick. Off: the per-tick sweep.
 
 config SCHED_IPC_AFFINITY
-    # cargo-feature: sched-ipc-affinity base
+    # cargo-feature: sched-ipc-affinity
     bool "Fast-IPC hand-off wakes co-locate on the waker's hart"
     default y
     help

@@ -62,20 +62,25 @@ kcfg() {
 }
 OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
 
-build_rv() { # build_rv <features> <copy>
-    KCONFIG_CONFIG="$RV_CFG" cargo build --release --features "$1" \
-        $(python3 "$REPO/tools/kconfig_to_cargo.py" --base "$RV_CFG") >>"$OUT/build-rv.log" 2>&1 \
+# The kernels build from their cell with a selection applied
+# (tools/kconfig_to_cargo.py --select): Kconfig is the only source of features.
+build_rv() { # build_rv <selection> <copy>
+    local args
+    args="$(python3 "$REPO/tools/kconfig_to_cargo.py" --select "$1" --out "$RV_CFG.sel" "$RV_CFG")" || return 1
+    # shellcheck disable=SC2086
+    KCONFIG_CONFIG="$RV_CFG.sel" cargo build --release -p azos_kernel $args >>"$OUT/build-rv.log" 2>&1 \
         && cp $AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel "$2"
 }
 build_arm() {
-    env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$ARM_CFG" cargo build --release \
-        --target aarch64-unknown-none-softfloat -p azos_kernel --features "$1" \
-        $(python3 "$REPO/tools/kconfig_to_cargo.py" --base "$ARM_CFG") \
+    local args
+    args="$(python3 "$REPO/tools/kconfig_to_cargo.py" --select "$1" --out "$ARM_CFG.sel" "$ARM_CFG")" || return 1
+    # shellcheck disable=SC2086
+    env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$ARM_CFG.sel" cargo build --release -p azos_kernel $args \
         --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >>"$OUT/build-arm.log" 2>&1 \
         && "$OBJCOPY" -O binary $AZOS_OUT/target/aarch64-unknown-none-softfloat/release/kernel "$2"
 }
-build_x86() { # the x86_64 build adds `qemu` itself; X86_64_FEATURES are the extras
-    make x86_64 X86_64_FEATURES="$1" >>"$OUT/build-x86.log" 2>&1 && cp $AZOS_OUT/build/kernel-x86_64.elf "$2"
+build_x86() { # X86_64_SELECT is the selection on the x86_64 cell
+    make x86_64 X86_64_SELECT="$1" >>"$OUT/build-x86.log" 2>&1 && cp $AZOS_OUT/build/kernel-x86_64.elf "$2"
 }
 DISK_rv=$AZOS_OUT/build/disk-abitest.img
 DISK_arm=$AZOS_OUT/build/disk-aarch64-abitest.img

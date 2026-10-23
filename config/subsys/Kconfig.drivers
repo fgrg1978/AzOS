@@ -409,7 +409,7 @@ config DRV_IGC
       virtio-net only.
 
 config DRV_VIRTIO_INPUT
-    # cargo-feature: virtio-input base
+    # cargo-feature: virtio-input
     bool "virtio-input keyboards and mice (QEMU)"
     default n if HWCLASS_EMBEDDED
     default y
@@ -436,7 +436,7 @@ config DRV_VIRTIO_INPUT
       to ask for one.
 
 config DRV_VIRTIO_SND
-    # cargo-feature: virtio-snd base
+    # cargo-feature: virtio-snd
     bool "virtio-sound audio device (QEMU)"
     default n if HWCLASS_EMBEDDED
     default y
@@ -466,7 +466,7 @@ config DRV_VIRTIO_SND
       `Device` singleton); the host's two stream records. Not measured yet.
 
 config DRV_PS2
-    # cargo-feature: ps2 base
+    # cargo-feature: ps2
     bool "PS/2 keyboard and mouse (i8042 controller, PC)"
     depends on ARCH_X86_64
     default n if HWCLASS_EMBEDDED
@@ -516,7 +516,7 @@ config PS2_WAIT_SPINS
       it moves with the bus.
 
 config DRV_RTC
-    # cargo-feature: rtc base
+    # cargo-feature: rtc
     bool "Real-time clock (seeds the wall clock at boot, written back by a reference)"
     default n if HWCLASS_EMBEDDED
     default y
@@ -642,7 +642,7 @@ choice DRV_INA219_PLACEMENT
       ADS1115), so both are allowed.
 
     config DRV_INA219_PLACEMENT_KERNEL
-        # cargo-feature: ina219-kernel base
+        # cargo-feature: ina219-kernel
         bool "kernel"
         help
           Kernel feature `ina219-kernel`: a kernel task samples the chip
@@ -678,7 +678,7 @@ choice DRV_BUZZER_PLACEMENT
       both are allowed.
 
     config DRV_BUZZER_PLACEMENT_KERNEL
-        # cargo-feature: buzzer-kernel base
+        # cargo-feature: buzzer-kernel
         bool "kernel"
         help
           Kernel feature `buzzer-kernel`: the driver starts in the kernel. A
@@ -1062,7 +1062,7 @@ config DMA_NONCOHERENT
 # is the one opt-out from confinement.
 
 config IOMMU_RISCV
-    # cargo-feature: iommu-riscv base
+    # cargo-feature: iommu-riscv
     bool "RISC-V IOMMU (riscv-iommu-pci): confine PCI DMA"
     default y
     depends on DRV_PCI && ARCH_RISCV64
@@ -1081,7 +1081,7 @@ config IOMMU_RISCV
       n: no IOMMU is driven.
 
 config IOMMU_SMMUV3
-    # cargo-feature: iommu-smmuv3 base
+    # cargo-feature: iommu-smmuv3
     bool "Arm SMMUv3 (QEMU virt iommu=smmuv3): confine PCI DMA"
     default y
     depends on DRV_PCI && ARCH_AARCH64
@@ -1095,7 +1095,7 @@ config IOMMU_SMMUV3
       without an IOMMU. n: no IOMMU is driven.
 
 config IOMMU_VTD
-    # cargo-feature: iommu-vtd base
+    # cargo-feature: iommu-vtd
     bool "Intel VT-d (QEMU q35 intel-iommu): confine PCI DMA"
     default y
     depends on DRV_PCI && ARCH_X86_64
@@ -1108,7 +1108,7 @@ config IOMMU_VTD
       without it (and tries IOMMU_AMDVI). n: no VT-d unit is driven.
 
 config IOMMU_AMDVI
-    # cargo-feature: iommu-amdvi base
+    # cargo-feature: iommu-amdvi
     bool "AMD-Vi: confine PCI DMA"
     default y
     depends on DRV_PCI && ARCH_X86_64

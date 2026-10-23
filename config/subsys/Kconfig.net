@@ -7,7 +7,7 @@
 
 config NET
     bool "TCP/IP stack: bring-up, the net-poll task and the network clients"
-    # cargo-feature: net base
+    # cargo-feature: net
     default y
     help
       Kernel feature `net`. With it, the boot brings the network up (the

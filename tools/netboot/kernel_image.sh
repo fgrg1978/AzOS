@@ -46,8 +46,8 @@ case "$isa" in
         rf="$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
         isa_cfg=""; [ -z "$rf" ] || isa_cfg="target.riscv64imac-unknown-none-elf.rustflags=[$rf]"
         # shellcheck disable=SC2046
-        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$cargo" build --release -p azos_kernel --features qemu \
-            ${isa_cfg:+--config "$isa_cfg"} $(python3 tools/kconfig_to_cargo.py --base "$cfg") >&2
+        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$cargo" build --release -p azos_kernel \
+            ${isa_cfg:+--config "$isa_cfg"} $(python3 tools/kconfig_to_cargo.py "$cfg") >&2
         "$objcopy" -O binary "$tdir/riscv64imac-unknown-none-elf/release/kernel" "$out/kernel-riscv64.bin"
         echo "$out/kernel-riscv64.bin"
         ;;

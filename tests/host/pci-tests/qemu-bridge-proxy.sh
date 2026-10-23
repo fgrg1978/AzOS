@@ -38,7 +38,7 @@
 # A QEMU that rejects `pcie-root-port` flags prints its own error into the log.
 set -u
 ISA="${ISA:-riscv64}"
-KERNEL="${KERNEL:?set KERNEL to the kernel built with --features qemu,pci}"
+KERNEL="${KERNEL:?set KERNEL to the kernel built with the pci selection (CONFIG_DRV_PCI=y)}"
 OUT="${AZOS_OUT:-$HOME/azos-out}/pci-bridge-proxy"
 mkdir -p "$OUT"
 log="$OUT/proxy-$ISA.log"

@@ -294,7 +294,7 @@ def kaslr_rustflags(cfg: dict[str, str]) -> list[str]:
     `--no-dynamic-linker`, `-z notext`, `-z norelro`) is kernel/build.rs's,
     read from the same configuration the kernel's policy constant is compiled
     from, so every command line that builds the kernel gets it: it lived here
-    once, and the gate's and check-fast's builds, which pass only `--base`,
+    once, and the gate's and check-fast's builds, which passed only `--base`,
     linked `probe` kernels with an empty relocation table that the boot slid
     anyway (they hung after the W^X check).
 
@@ -384,7 +384,6 @@ DEFAULT_TARGET = "riscv64imac-unknown-none-elf"
 #
 #     config FOO
 #         # cargo-feature: foo            (FOO=y enables `foo`)
-#         # cargo-feature: foo base          (also in `--base`, see below)
 #
 # The tags are read here, from the Kconfig files themselves, so there is no
 # second table to keep in step. tools/kconfig_lint.py checks them against
@@ -394,7 +393,6 @@ DEFAULT_TARGET = "riscv64imac-unknown-none-elf"
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TAG_RE = re.compile(r"^\s*#\s*cargo-feature:\s*(\S+)((?:\s+[a-z]+)*)\s*$")
-TAG_MODIFIERS = ("base",)
 _BLOCK_START_RE = re.compile(r"^\s*(?:menu)?config\s+(\w+)\s*$")
 _OTHER_KEYWORD_RE = re.compile(
     r"^\s*(?:choice|endchoice|menu|endmenu|if|endif|comment|source|mainmenu)\b")
@@ -421,12 +419,12 @@ def kconfig_files(root: str = REPO_ROOT) -> list[str]:
 def parse_cargo_feature_tags(root: str = REPO_ROOT):
     """Read every `# cargo-feature:` tag.
 
-    Returns `(tags, orphans)`: `tags` is a list of `(symbol, feature,
-    modifiers, file)` in Kconfig source order (`modifiers` a tuple of
-    TAG_MODIFIERS; an unknown word is an error, not ignored); `orphans` the `file:line` of
-    tags that sit outside any `config` block (they would silently do nothing).
+    Returns `(tags, orphans)`: `tags` is a list of `(symbol, feature, file)`
+    in Kconfig source order (a word after the feature is an error, not
+    ignored); `orphans` the `file:line` of tags that sit outside any `config`
+    block (they would silently do nothing).
     """
-    tags: list[tuple[str, str, tuple, str]] = []
+    tags: list[tuple[str, str, str]] = []
     orphans: list[str] = []
     for path in kconfig_files(root):
         cur = None
@@ -437,12 +435,11 @@ def parse_cargo_feature_tags(root: str = REPO_ROOT):
                     if cur is None:
                         orphans.append(f"{os.path.relpath(path, root)}:{no}")
                     else:
-                        mods = tuple(m.group(2).split())
-                        bad = [w for w in mods if w not in TAG_MODIFIERS]
-                        if bad:
+                        extra = m.group(2).split()
+                        if extra:
                             raise SystemExit(f"kconfig_to_cargo: {os.path.relpath(path, root)}:{no}: "
-                                             f"unknown cargo-feature modifier {bad[0]!r}")
-                        tags.append((cur, m.group(1), mods, os.path.relpath(path, root)))
+                                             f"a cargo-feature tag names one feature, not {extra[0]!r}")
+                        tags.append((cur, m.group(1), os.path.relpath(path, root)))
                     continue
                 m = _BLOCK_START_RE.match(line)
                 if m:
@@ -457,17 +454,11 @@ def _load_tags():
     if orphans:
         raise SystemExit("kconfig_to_cargo: cargo-feature tag outside a config block: "
                          + ", ".join(orphans))
-    direct = {"CONFIG_" + s: f for s, f, m, _ in tags}
-    base = frozenset(f for _, f, m, _ in tags if "base" in m)
-    return direct, base
+    return {"CONFIG_" + s: f for s, f, _ in tags}
 
 
-# CONFIG_<symbol> -> cargo feature for FOO=y; and the
-# `base` features: those that shape the image whatever board or test feature a
-# build names by hand (the application domain, the scheduler options, driver
-# placement). `--base` emits only these, for the Makefile and script recipes
-# that name their board features themselves (`--features qemu`).
-KCONFIG_TO_CARGO_FEATURE, BASE_FEATURES = _load_tags()
+# CONFIG_<symbol> -> cargo feature for FOO=y.
+KCONFIG_TO_CARGO_FEATURE = _load_tags()
 
 # Drivers a safety decision reads (the first placement rule; the list is
 # written out in config/subsys/Kconfig.drivers): never placed in ring 3. None has a
@@ -477,13 +468,6 @@ SAFETY_READ_DRIVERS: frozenset[str] = frozenset({
     "CLINT", "PLIC", "WDT", "PWM", "GPIO", "MOTOR", "MOTOR_PID", "ESC", "RC",
     "I2C", "IMU", "RANGEFINDER", "ADS1115", "UART", "VIRTIO_BLK", "MMC",
 })
-
-
-def base_features(cfg: dict[str, str]) -> list[str]:
-    """The `base` features whose symbol the .config sets y (the application
-    domain, the scheduler options, the driver placement)."""
-    return [f for k, f in KCONFIG_TO_CARGO_FEATURE.items()
-            if f in BASE_FEATURES and cfg.get(k) == "y"]
 
 
 def placement_violations(cfg: dict[str, str]) -> list[str]:
@@ -556,7 +540,8 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
         elif t in sym_of:
             if cfg.get(sym_of[t]) != "y":
                 lines[sym_of[t]] = "y"
-        elif t in feats and TEST_HOOK_RE.search(t):
+        elif (t in feats or "/" in t) and TEST_HOOK_RE.search(t.rsplit("/", 1)[-1]):
+            # A test hook of the kernel, or of one of its crates (`azos_pci/msix-enable-canary`).
             if t not in hooks:
                 hooks.append(t)
         elif t in feats:
@@ -575,6 +560,8 @@ def select(base: str, tokens: list[str], out: str) -> list[str]:
         env = dict(os.environ, KCONFIG_CONFIG=tmp)
         r = subprocess.run([sys.executable, "-m", "olddefconfig"], cwd=REPO_ROOT, env=env,
                            capture_output=True, text=True)
+        if os.path.exists(tmp + ".old"):
+            os.unlink(tmp + ".old")  # olddefconfig's backup of the unexpanded copy
         if r.returncode != 0:
             os.unlink(tmp)
             raise SelectError(f"olddefconfig failed on {base} + {' '.join(lines)}: {r.stderr.strip()}")
@@ -687,11 +674,6 @@ def sdk_env(cfg: dict[str, str]) -> list[str]:
 
 def main() -> int:
     args = sys.argv[1:]
-    # `--base`: only the `base` features (BASE_FEATURES: the application
-    # domain, the scheduler options, driver placement). For recipes that name
-    # their own board and test features by hand (`make build` is `--features
-    # qemu`), so the .config still decides the image.
-    base_only = "--base" in args
     # `--rustflags`: only the kernel's baseline codegen flags
     # (baseline_rustflags); `--user-rustflags`: the user images' ones;
     # `--toml`: either as the inside of a TOML array; `--target-features`:
@@ -724,7 +706,7 @@ def main() -> int:
     if (sel_tokens is None) != (sel_out is None):
         print("kconfig_to_cargo: --select and --out go together", file=sys.stderr)
         return 2
-    args = [a for a in args if a not in ("--base", "--rustflags", "--user-rustflags",
+    args = [a for a in args if a not in ("--rustflags", "--user-rustflags",
                                          "--toml", "--target-features", "--skip-base", "--sdk-env")]
     dot_config_path = args[0] if args else DOT_CONFIG_DEFAULT
 
@@ -764,12 +746,6 @@ def main() -> int:
         arch = next((k for k in CONTROLLED_FEATURES if cfg.get(k) == "y"), "CONFIG_ARCH_RISCV64")
         print("require=" + ",".join(isa_features(cfg, user=False)))
         print("control=" + ",".join(CONTROLLED_FEATURES.get(arch, [])))
-        return 0
-
-    if base_only:
-        feats = base_features(cfg)
-        if feats:
-            print(f"--features {','.join(feats)}")
         return 0
 
     parts: list[str] = []
