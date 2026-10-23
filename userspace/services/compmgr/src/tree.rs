@@ -296,27 +296,6 @@ fn valid(r: &Row<'_>) -> Option<Restart> {
     (!r.image.is_empty() && r.image.len() <= NAME_MAX && dir_ok).then_some(restart)
 }
 
-/// Read the view into `buf` with `read`, which fills a prefix of the slice it
-/// is given and returns its length, 0 at the end of the file, or a negative
-/// errno (the VFS hands a file out in pieces of at most one page). The length
-/// read, or the errno of the read that failed. A view that failed to read is
-/// no view, not a cut one ([`Tree::load`] supervises the rows of a cut view;
-/// rows from a failed read would be supervised as if they were all of them).
-pub fn read_view(buf: &mut [u8], mut read: impl FnMut(&mut [u8]) -> isize) -> Result<usize, isize> {
-    let mut got = 0;
-    while got < buf.len() {
-        let n = read(&mut buf[got..]);
-        if n < 0 {
-            return Err(n);
-        }
-        if n == 0 {
-            break;
-        }
-        got += n as usize;
-    }
-    Ok(got)
-}
-
 /// The tree.
 pub struct Tree {
     comps: [Comp; MAX_COMPONENTS],

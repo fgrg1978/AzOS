@@ -44,7 +44,8 @@ mod tree;
 
 use azos_idl::OnFailure;
 use azos_libsys as sys;
-use azos_inspect_lib::{str_in, u64_in, Inspector, Source, Str, Value};
+use core::fmt::Write as _;
+use azos_inspect_lib::{str_in, u64_in, Error, Inspector, Source, Str, Value};
 use tree::{Event, EventKind, Host, Intensity, Row, Tree, DIR_MAX, MAX_COMPONENTS, NAME_MAX};
 
 /// How long the loop sleeps when no restart is due: the latency of noticing
@@ -54,6 +55,9 @@ const POLL_NS: u64 = 20_000_000;
 const COOLDOWN_NS: u64 = 1_000_000_000;
 /// The signal number a forced stop carries (`SYS_ALERT` takes 1..=31).
 const SIGKILL: u64 = 9;
+/// The exit code when the plan cannot be read (sysexits `EX_NOINPUT`); a
+/// panic exits with 70.
+const NO_VIEW_EXIT: i32 = 66;
 /// A directory, "/", an 8.3 name and the NUL.
 const PATH_MAX: usize = tree::DIR_MAX + 1 + 12 + 1;
 
@@ -78,14 +82,14 @@ struct Plan {
 
 /// The startable components of the plan (`components/` of the view its row
 /// grants, `MemObj inspect.components`), in order; `whole`
-/// when `rows` says every component is there. An unreadable tree is an empty
-/// plan that is not whole.
-fn read_plan(plan: &mut Plan) {
-    let Ok(public) = sys::inspect_map(azos_abi::cap::SHM_INSPECT_COMPONENTS) else { return };
+/// when `rows` says every component is there. A view that cannot be mapped or
+/// read is no plan, not an empty one: the error.
+fn read_plan(plan: &mut Plan) -> Result<(), NoPlan> {
+    let public = sys::inspect_map(azos_abi::cap::SHM_INSPECT_COMPONENTS).map_err(NoPlan::Map)?;
     // SAFETY: the mapping lives as long as the task, read-only, and the kernel
     // writes the region only with aligned 64-bit stores.
-    let Ok(mut view) = (unsafe { Inspector::from_mapped(public, None) }) else { return };
-    let _ = view.with(Source::Public, |r| {
+    let mut view = unsafe { Inspector::from_mapped(public, None) }.map_err(NoPlan::Tree)?;
+    view.with(Source::Public, |r| {
         plan.n = 0;
         plan.whole = false;
         let Some(dir) = r.lookup("components")? else { return Ok(()) };
@@ -118,7 +122,15 @@ fn read_plan(plan: &mut Plan) {
         }
         plan.whole = !over && u64_in(r, dir, "rows")? == Some(listed);
         Ok(())
-    });
+    })
+    .map_err(NoPlan::Tree)
+}
+
+/// Why there is no plan: the view region was not mapped (the errno), or its
+/// tree did not read.
+enum NoPlan {
+    Map(isize),
+    Tree(Error),
 }
 
 const _: () = assert!(NAME_MAX <= 128 && DIR_MAX <= 128);
@@ -223,6 +235,13 @@ impl Line {
     }
 }
 
+impl core::fmt::Write for Line {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.put(s.as_bytes());
+        Ok(())
+    }
+}
+
 struct TreeCell(core::cell::UnsafeCell<Tree>);
 // SAFETY: one thread.
 unsafe impl Sync for TreeCell {}
@@ -248,8 +267,20 @@ fn main() -> ! {
     let mut host = Kernel;
     // SAFETY: the one reference, for the life of the program.
     let plan = unsafe { &mut *PLAN.0.get() };
-    read_plan(plan);
+    let got = read_plan(plan);
     let _ = sys::console_write(sys::STDOUT, b"[compmgr] AzOS component manager\n");
+    // No plan, nothing to supervise: end, so the kernel's supervision of the
+    // manager sees the failure and restarts it, instead of an idle manager
+    // that looks healthy and started nothing.
+    if let Err(e) = got {
+        let mut line = Line::new();
+        let _ = match e {
+            NoPlan::Map(rc) => writeln!(line, "[compmgr] cannot map the plan rc={rc}"),
+            NoPlan::Tree(t) => writeln!(line, "[compmgr] cannot read the plan: {t:?}"),
+        };
+        let _ = sys::console_write(sys::STDOUT, line.bytes());
+        sys::exit(NO_VIEW_EXIT);
+    }
     let mut rows = [Row { image: b"", restart: b"", serves: b"", needs: b"", dir: b"" }; MAX_COMPONENTS];
     for (r, p) in rows.iter_mut().zip(plan.rows.iter().flatten()) {
         *r = Row {

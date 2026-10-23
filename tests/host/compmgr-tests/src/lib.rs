@@ -169,47 +169,6 @@ mod tests {
                            TERMD.ELF on-failure endpoint.term -\n\
                            SH.ELF on-failure - endpoint.names,endpoint.term\n";
 
-    // ---- reading the view ------------------------------------------------------
-
-    /// A read that fails is an error the manager sees, not the end of the
-    /// file: the rows read before it would be supervised as the whole view.
-    /// Canary: the loop that stopped on `n <= 0` returned `Ok(10)` here.
-    #[test]
-    fn a_failed_read_of_the_view_is_an_error_not_its_end() {
-        let mut buf = [0u8; 64];
-        let mut calls = 0;
-        let r = read_view(&mut buf, |b| {
-            calls += 1;
-            if calls == 1 {
-                b[..10].copy_from_slice(b"A.ELF no -");
-                10
-            } else {
-                -5
-            }
-        });
-        assert_eq!(r, Err(-5));
-    }
-
-    /// The pieces the VFS hands out are joined, up to the end of the file or
-    /// of the buffer.
-    #[test]
-    fn the_view_is_read_in_pieces_to_its_end() {
-        const FILE: &[u8] = b"A.ELF no - -\nend\n";
-        fn pieces(at: &mut usize) -> impl FnMut(&mut [u8]) -> isize + '_ {
-            move |b| {
-                let n = (FILE.len() - *at).min(5).min(b.len());
-                b[..n].copy_from_slice(&FILE[*at..*at + n]);
-                *at += n;
-                n as isize
-            }
-        }
-        let mut buf = [0u8; 64];
-        assert_eq!(read_view(&mut buf, pieces(&mut 0)), Ok(FILE.len()));
-        assert_eq!(&buf[..FILE.len()], FILE);
-        let mut small = [0u8; 8];
-        assert_eq!(read_view(&mut small, pieces(&mut 0)), Ok(8), "a full buffer ends the read");
-    }
-
     // ---- start order -------------------------------------------------------
 
     #[test]
