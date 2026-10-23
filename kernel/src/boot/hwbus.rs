@@ -516,7 +516,7 @@ pub(crate) fn attach_lpss_i2c<C: azos_pci::ConfigSpace>(
     f: &azos_pci::FunctionInfo,
     window: &mut azos_pci::BarWindow,
 ) -> Result<(), ProbeError> {
-    use azos_drv_bus::i2c_dw::{lpss_release, Timing};
+    use azos_drv_bus::i2c_dw::Timing;
     let Some(clk) = lpss_ic_clk_hz(driver) else { return Err(ProbeError::NoSuchDriver) };
     let bars = azos_drv_virtio::virtio::pci::msix_selftest::map_bars(cfg, f, window).map_err(|e| {
         azos_drv_sys::kerr!("[I2C] LPSS {} not driven: {:?}", f.bdf, e);
@@ -527,19 +527,7 @@ pub(crate) fn attach_lpss_i2c<C: azos_pci::ConfigSpace>(
         azos_drv_sys::kerr!("[I2C] LPSS {} not driven: BAR 0 is not a memory BAR", f.bdf);
         return Err(ProbeError::Failed);
     }
-    struct Bar0(usize);
-    impl azos_drv_bus::i2c_txn::DwRegs for Bar0 {
-        fn rd(&self, off: usize) -> u32 {
-            // SAFETY: BAR 0 was just mapped (`map_bars`, at least a page), and
-            // `off` is an LPSS private register inside it.
-            unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
-        }
-        fn wr(&self, off: usize, val: u32) {
-            // SAFETY: as `rd`.
-            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
-        }
-    }
-    if let Err(ty) = lpss_release(&Bar0(base)) {
+    if let Err(ty) = azos_drv_bus::i2c::i2c_lpss_release(base) {
         azos_drv_sys::kerr!("[I2C] LPSS {} not driven: its CAPS name type {}, not an I2C", f.bdf, ty);
         return Err(ProbeError::Failed);
     }

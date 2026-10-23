@@ -457,7 +457,9 @@ mod board {
         #[inline(always)]
         pub(super) fn rd32(&self, off: usize) -> u32 {
             // SAFETY: `self.0` is a window the hardware bus mapped for a bound
-            // node (`i2c_attach`'s caller), and `off` is a register of the IP.
+            // device (a node's `reg`, an LPSS function's BAR 0: the caller of
+            // `i2c_attach` / `i2c_lpss_release`), and `off` is a register of
+            // the IP or of the LPSS private block inside that window.
             unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
         }
 
@@ -642,6 +644,8 @@ mod board {
 pub use board::*;
 #[cfg(any(feature = "i2c-dw", feature = "k1"))]
 pub use ctl::{BusConfig, Probe, Refused};
+#[cfg(feature = "i2c-dw")]
+pub use ctl::i2c_lpss_release;
 
 // ── Synopsys DesignWare APB I2C (`snps,designware-i2c`) ──────────────────────
 //
@@ -676,6 +680,14 @@ mod ctl {
     /// it stays disabled until its first transaction.
     pub(super) fn probe(m: &Mmio, cfg: &Timing) -> Result<Setup, InitError> {
         i2c_dw::init_master(m, cfg, I2C_DW_RX_FIFO_DEPTH)
+    }
+
+    /// Intel LPSS: release the function whose BAR 0 is mapped at `base` from
+    /// reset, after its `CAPS` named an I2C (`i2c_dw::lpss_release`); then
+    /// [`i2c_attach`](super::i2c_attach) takes the controller at `base`.
+    /// `Err(type)`: another LPSS function type, left untouched.
+    pub fn i2c_lpss_release(base: usize) -> Result<(), u32> {
+        i2c_dw::lpss_release(&Mmio(base))
     }
 
     /// The controller is bus `slot`: its queue keeps reads in flight within
