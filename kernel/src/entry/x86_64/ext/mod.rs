@@ -14,3 +14,6 @@ pub(crate) mod thermal_hw;
 /// The Limine boot entry's requests and Rust half (Kconfig X86_BOOT_LIMINE).
 #[cfg(feature = "x86-limine")]
 pub(crate) mod limine;
+/// The clocksource's boot record and the TSC watchdog task (Kconfig
+/// X86_TSC_CLOCK, X86_TSC_WATCHDOG).
+pub(crate) mod tsc_watchdog;

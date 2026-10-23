@@ -2318,6 +2318,10 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // with no sensor and clock pair).
     #[cfg(feature = "thermal")]
     boot::thermal::create_task();
+    // x86_64: the clocksource's record and the TSC watchdog (Kconfig
+    // X86_TSC_WATCHDOG), outside the real-time CPUs like the thermal task.
+    #[cfg(target_arch = "x86_64")]
+    entry::x86_64::ext::tsc_watchdog::start();
     // Wave 15: disk completions by interrupt (every ISA), once the
     // scheduler exists to put waiters to sleep.
     wire_virtio_blk_irq();

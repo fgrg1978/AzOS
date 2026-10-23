@@ -565,6 +565,90 @@ config X86_TSC_CALIBRATE_MS
       is about one reference tick over the window: at 20 ms with the
       PIT, ~40 ppm. 54 is the PIT counter's limit. No runtime cost.
 
+choice
+    prompt "The TSC as the clock"
+    default X86_TSC_CLOCK_INVARIANT
+    help
+      Which counter the kernel clock reads (crates/core/arch-x86_64/src/
+      timer.rs `now_ticks`; the [TIMER] boot line names it). The TSC is
+      one instruction; the fallbacks are the HPET main counter (an MMIO
+      read, X86_HPET) and the ACPI PM timer (a port read, about a
+      microsecond, X86_PMTIMER), in that order. Ring 3 reads the clock
+      without a syscall only while it is the TSC.
+      invariant: only a TSC with CPUID.80000007H:EDX[8] under
+      X86_INVARIANT_TSC (not n) is the clock; any other TSC can change
+      rate with the P-state or stop in a C-state, so the HPET or the PM
+      timer is the clock instead, and the TSC stays the clock only on a
+      board with neither (QEMU microvm). always: the TSC is the clock,
+      invariant or not, as on Linux, and the watchdog (X86_TSC_WATCHDOG)
+      is what demotes it.
+
+    config X86_TSC_CLOCK_INVARIANT
+        bool "invariant: only an invariant TSC is the clock"
+    config X86_TSC_CLOCK_ALWAYS
+        bool "always: the TSC is the clock, invariant or not (Linux)"
+endchoice
+
+config X86_TSC_WATCHDOG
+    bool "Watch the TSC against the HPET or the ACPI PM timer"
+    default y
+    help
+      While the TSC is the clock, a kernel task on a CPU outside the
+      real-time ones (RCU_NOCBS_CPUS, the topology's isolcpus) compares
+      the TSC with the HPET (else the PM timer) every
+      X86_TSC_WATCHDOG_MS, as Linux's clocksource watchdog does. A drift
+      beyond X86_TSC_WATCHDOG_PPM demotes the TSC for the rest of the
+      boot: the clock goes on from where it was on the HPET or the PM
+      timer, ring 3 reads it through the syscall, a [TIMER] line says so
+      and a `clocksource` decision record is written. Costs one task and,
+      per interval, three counter reads with interrupts off. n trusts
+      the TSC with no check (Linux's tsc=reliable). Without an HPET or
+      a PM timer there is nothing to compare with and no task.
+
+config X86_TSC_WATCHDOG_MS
+    int "TSC watchdog interval (ms)"
+    range 100 2000
+    default 500
+    help
+      How often the watchdog compares the TSC with its reference (Linux:
+      500 ms). The same task reads a 24-bit PM timer or a 32-bit HPET
+      that is the clock at this interval, so that its count is extended
+      past each wrap (half the 24-bit PM timer's 4.69 s period is the
+      2000 ms limit). A shorter interval finds a drift sooner and wakes
+      the CPU more often.
+
+config X86_TSC_WATCHDOG_PPM
+    int "TSC watchdog bound, rate measured at boot (ppm)"
+    range 50 100000
+    default 500
+    help
+      The drift beyond which the watchdog demotes the TSC, in parts per
+      million of the interval, when its rate was measured against the
+      HPET, the PM timer or the PIT (the [TIMER] line's "from"). Linux
+      uses 500 when both counters are calibrated. The time the reference
+      reads around the TSC read took is added to the bound; a check
+      whose reads took more than a quarter of it is retried, three times,
+      then skipped.
+
+config X86_TSC_WATCHDOG_PPM_STATED
+    int "TSC watchdog bound, rate stated by CPUID (ppm)"
+    range 50 100000
+    default 4000
+    help
+      The same bound when the TSC rate came from CPUID 15H/16H or the
+      hypervisor leaf, which can be off by more than a measurement
+      (Linux: 4000 for an uncalibrated counter).
+
+config X86_TSC_WATCHDOG_PRIORITY
+    int "TSC watchdog task priority (outside the RT band: 12..30)"
+    range 12 30
+    default 20
+    help
+      kernel/src/entry/x86_64/ext/tsc_watchdog.rs, `tsc-watchdog`. Never
+      real-time, pinned like the thermal task. A smaller number runs it
+      sooner under CPU load; a check that runs late measures a longer
+      interval, which the bound scales with.
+
 config X86_LAPIC_TIMER_DIVIDE
     int "LAPIC timer divide (one-shot fallback)"
     range 1 128

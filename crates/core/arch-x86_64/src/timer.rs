@@ -14,6 +14,18 @@
 //! frequency. Until then the scale is 1:1; the switch keeps
 //! the clock continuous (`base_*`), and it happens once, single-threaded.
 //!
+//! **The clocksource.** The clock is the TSC only while the TSC can be
+//! trusted with time ([`encode::tsc_is_clock`], Kconfig `X86_TSC_CLOCK`):
+//! otherwise it is the *reference* ([`find_reference`]: the HPET main
+//! counter, else the ACPI PM timer), its count extended past its wraps
+//! ([`encode::extend`]) and scaled to ticks the same way. While the TSC is
+//! the clock, the `tsc-watchdog` task (Kconfig `X86_TSC_WATCHDOG`,
+//! kernel/src/entry/x86_64/ext/tsc_watchdog.rs) compares it with the
+//! reference ([`watch`]) and on a drift [`demote`]s it, as Linux's
+//! clocksource watchdog does. Either switch keeps the clock continuous and
+//! happens at most once a boot; `now_ticks` pays one load and a branch for
+//! it.
+//!
 //! **The timer** fires `TIMER_VECTOR` at a deadline in clock ticks: the
 //! TSC-deadline MSR when the CPU has it and Kconfig `X86_TSC_DEADLINE`
 //! allows it (the deadline converted back to TSC, rounded up), else the
@@ -22,9 +34,10 @@
 
 #![cfg(target_arch = "x86_64")]
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::irq::encode::{self, Scale, TimerMode, TIMER_VECTOR};
+pub use crate::irq::encode::{Clocksource, Watch};
 use crate::cpu;
 use crate::platform_impl::{cpuid, platform};
 
@@ -40,6 +53,29 @@ static SOURCE: AtomicU8 = AtomicU8::new(TscSource::Assumed as u8);
 static DEADLINE_MODE: AtomicBool = AtomicBool::new(false);
 static LAPIC_HZ: AtomicU64 = AtomicU64::new(0);
 static TO_LAPIC: AtomicU64 = AtomicU64::new(0);
+
+/// The counter `now_ticks` reads (`Clocksource`). Stored with Release after
+/// the `CLK_*` words, so a reader that sees it sees them.
+static CLOCK: AtomicU8 = AtomicU8::new(Clocksource::Tsc as u8);
+/// The reference (`Clocksource::Tsc` = none): what it is, where (the HPET
+/// block's address or the PM timer's port), its rate and its valid bits.
+/// Written once, by `calibrate`.
+static REF_KIND: AtomicU8 = AtomicU8::new(Clocksource::Tsc as u8);
+static REF_AT: AtomicUsize = AtomicUsize::new(0);
+static REF_HZ: AtomicU64 = AtomicU64::new(0);
+static REF_MASK: AtomicU64 = AtomicU64::new(0);
+/// The newest extended reference count any CPU read (`encode::extend`).
+static REF_LAST: AtomicU64 = AtomicU64::new(0);
+/// The reference as the clock: `ticks = CLK_TICKS + (count - CLK_BASE) *
+/// CLK_MULT >> 32`.
+static CLK_BASE: AtomicU64 = AtomicU64::new(0);
+static CLK_TICKS: AtomicU64 = AtomicU64::new(0);
+static CLK_MULT: AtomicU64 = AtomicU64::new(0);
+
+/// HPET registers (IA-PC HPET 1.0a §2.3): GCAP_ID, GEN_CONF, MAIN_COUNTER.
+const HPET_GCAP: usize = 0x0;
+const HPET_CONF: usize = 0x10;
+const HPET_COUNTER: usize = 0xF0;
 
 /// IA32_TSC_DEADLINE.
 const TSC_DEADLINE_MSR: u32 = 0x6E0;
@@ -86,6 +122,9 @@ impl TscSource {
 /// The clock, in TIMER_FREQ ticks.
 #[inline(always)]
 pub fn now_ticks() -> u64 {
+    if CLOCK.load(Ordering::Acquire) != Clocksource::Tsc as u8 {
+        return reference_ticks();
+    }
     let tsc = cpu::rdtsc();
     let scale = Scale { mult: TO_TICKS.load(Ordering::Relaxed) };
     BASE_TICKS.load(Ordering::Relaxed)
@@ -119,6 +158,65 @@ pub fn tsc_hz() -> u64 {
 
 pub fn source() -> TscSource {
     TscSource::from_u8(SOURCE.load(Ordering::Relaxed))
+}
+
+/// The counter the clock reads.
+pub fn clock() -> Clocksource {
+    Clocksource::from_u8(CLOCK.load(Ordering::Acquire))
+}
+
+/// The reference the TSC is checked against and falls back to, if the
+/// board has one.
+pub fn reference() -> Option<Clocksource> {
+    match Clocksource::from_u8(REF_KIND.load(Ordering::Relaxed)) {
+        Clocksource::Tsc => None,
+        r => Some(r),
+    }
+}
+
+/// Does the reference wrap within a boot? A 24-bit or 32-bit counter does;
+/// a 64-bit HPET does not.
+pub fn reference_wraps() -> bool {
+    reference().is_some() && REF_MASK.load(Ordering::Relaxed) != u64::MAX
+}
+
+/// One raw read of the reference.
+fn ref_read() -> u64 {
+    let at = REF_AT.load(Ordering::Relaxed);
+    let raw = match Clocksource::from_u8(REF_KIND.load(Ordering::Relaxed)) {
+        // SAFETY: the HPET block from the ACPI HPET table, identity-mapped
+        // by boot.S and then by the kernel tables' device windows.
+        Clocksource::Hpet => unsafe { core::ptr::read_volatile((at + HPET_COUNTER) as *const u64) },
+        Clocksource::PmTimer => cpu::inl(at as u16) as u64,
+        Clocksource::Tsc => 0,
+    };
+    raw & REF_MASK.load(Ordering::Relaxed)
+}
+
+/// The reference's count extended past its wraps (any CPU, any context).
+fn ref_count() -> u64 {
+    let mask = REF_MASK.load(Ordering::Relaxed);
+    if mask == u64::MAX {
+        return ref_read();
+    }
+    loop {
+        // The read after the load: a later CPU's newer count makes this
+        // one's read the older, never the other way round.
+        let last = REF_LAST.load(Ordering::Acquire);
+        let Some(next) = encode::extend(last, ref_read(), mask) else {
+            return last;
+        };
+        if next == last || REF_LAST.compare_exchange(last, next, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return next;
+        }
+    }
+}
+
+/// The clock when it is the reference (out of `now_ticks`' line).
+#[inline(never)]
+fn reference_ticks() -> u64 {
+    let scale = Scale { mult: CLK_MULT.load(Ordering::Relaxed) };
+    CLK_TICKS.load(Ordering::Relaxed).wrapping_add(scale.apply(ref_count().wrapping_sub(CLK_BASE.load(Ordering::Relaxed))))
 }
 
 /// The TSC value `us` microseconds from now (for spin delays before and
@@ -214,17 +312,17 @@ fn rate_hpet(ms: u32) -> Option<u64> {
     let hpet = platform().acpi.hpet?;
     let base = hpet.addr as usize;
     // SAFETY: the HPET block from the ACPI HPET table, identity-mapped by
-    // boot.S; GCAP_ID 0x0, GEN_CONF 0x10, MAIN_COUNTER 0xF0.
+    // boot.S (`HPET_*`).
     let (cap, conf) = unsafe {
-        (core::ptr::read_volatile(base as *const u64), core::ptr::read_volatile((base + 0x10) as *const u64))
+        (core::ptr::read_volatile((base + HPET_GCAP) as *const u64), core::ptr::read_volatile((base + HPET_CONF) as *const u64))
     };
     let hz = encode::hpet_hz((cap >> 32) as u32)?;
     let wide = cap & (1 << 13) != 0;
     // SAFETY: as above; ENABLE_CNF (bit 0) starts the main counter.
-    unsafe { core::ptr::write_volatile((base + 0x10) as *mut u64, conf | 1) };
+    unsafe { core::ptr::write_volatile((base + HPET_CONF) as *mut u64, conf | 1) };
     let read = || {
         // SAFETY: as above.
-        let v = unsafe { core::ptr::read_volatile((base + 0xF0) as *const u64) };
+        let v = unsafe { core::ptr::read_volatile((base + HPET_COUNTER) as *const u64) };
         if wide { v } else { v & 0xFFFF_FFFF }
     };
     let want = hz * ms as u64 / 1000;
@@ -243,7 +341,7 @@ fn rate_hpet(ms: u32) -> Option<u64> {
     };
     let t1 = cpu::rdtsc();
     // SAFETY: as above: the configuration as found.
-    unsafe { core::ptr::write_volatile((base + 0x10) as *mut u64, conf) };
+    unsafe { core::ptr::write_volatile((base + HPET_CONF) as *mut u64, conf) };
     encode::rate_from_window(t1 - t0, elapsed, hz).filter(|hz| (TSC_HZ_MIN..=TSC_HZ_MAX).contains(hz))
 }
 
@@ -292,6 +390,8 @@ pub fn clock_plan() -> encode::ClockPlan {
 /// off, before any AP). Without an invariant TSC (or under `n`) the rates
 /// CPUID and the hypervisor state are not taken: HPET, then PIT, measure it,
 /// and CPUID 16H's nominal rate is the last resort ([`encode::ClockPlan`]).
+/// Then the reference is found, and it becomes the clock when the TSC may
+/// not be ([`encode::tsc_is_clock`]).
 ///
 /// The PIT's channel 0 is the kernel's whichever source wins (its line, IRQ
 /// 0, stays masked for good): its data port is reserved, and no ring-3 grant
@@ -313,7 +413,148 @@ pub fn calibrate() -> TscSource {
     let (hz, src) = found.unwrap_or((TICK_HZ, TscSource::Assumed));
     set_rate(hz);
     SOURCE.store(src as u8, Ordering::Relaxed);
+    find_reference();
+    if !encode::tsc_is_clock(azos_limits::X86_TSC_CLOCK_ALWAYS, clock_plan(), reference().is_some()) {
+        switch_to_reference();
+    }
     src
+}
+
+/// Publish the reference (from `calibrate`): the HPET (Kconfig `X86_HPET`)
+/// with its main counter left running, else the PM timer (`X86_PMTIMER`),
+/// each only if its count moves. The PIT is none: its 16-bit count wraps
+/// every 55 ms.
+fn find_reference() {
+    let p = platform();
+    let hpet = azos_limits::X86_HPET.then_some(p.acpi.hpet).flatten().and_then(|h| {
+        let base = h.addr as usize;
+        // SAFETY: the HPET block from the ACPI HPET table, identity-mapped
+        // by boot.S.
+        let cap = unsafe { core::ptr::read_volatile((base + HPET_GCAP) as *const u64) };
+        let hz = encode::hpet_hz((cap >> 32) as u32)?;
+        // SAFETY: as above; ENABLE_CNF (bit 0) starts the main counter, and
+        // nothing stops it after this.
+        unsafe {
+            let conf = core::ptr::read_volatile((base + HPET_CONF) as *const u64);
+            core::ptr::write_volatile((base + HPET_CONF) as *mut u64, conf | 1);
+        }
+        Some((Clocksource::Hpet, base, hz, if cap & (1 << 13) != 0 { u64::MAX } else { 0xFFFF_FFFF }))
+    });
+    let pmt = || {
+        let f = p.acpi.fadt.filter(|f| azos_limits::X86_PMTIMER && f.pm_tmr_port != 0)?;
+        Some((Clocksource::PmTimer, f.pm_tmr_port as usize, encode::PMTMR_HZ, encode::pmtmr_mask(f.pm_tmr_wide) as u64))
+    };
+    for (kind, at, hz, mask) in [hpet, pmt()].into_iter().flatten() {
+        REF_AT.store(at, Ordering::Relaxed);
+        REF_HZ.store(hz, Ordering::Relaxed);
+        REF_MASK.store(mask, Ordering::Relaxed);
+        REF_KIND.store(kind as u8, Ordering::Relaxed);
+        // A counter that does not move (a port nothing answers reads
+        // all-ones) is no reference.
+        let c0 = ref_read();
+        if (0..1u32 << 16).any(|_| ref_read() != c0) {
+            return;
+        }
+    }
+    REF_KIND.store(Clocksource::Tsc as u8, Ordering::Relaxed);
+}
+
+/// Make the reference the clock, going on from the TSC's reading of now.
+/// Interrupts off on this CPU; other CPUs may be reading the clock.
+fn switch_to_reference() {
+    let (Some(kind), Some(scale)) = (reference(), Scale::new(REF_HZ.load(Ordering::Relaxed), TICK_HZ)) else {
+        return;
+    };
+    let ticks = now_ticks();
+    let count = ref_read();
+    REF_LAST.store(count, Ordering::Relaxed);
+    CLK_BASE.store(count, Ordering::Relaxed);
+    CLK_TICKS.store(ticks, Ordering::Relaxed);
+    CLK_MULT.store(scale.mult, Ordering::Relaxed);
+    CLOCK.store(kind as u8, Ordering::Release);
+}
+
+/// Demote the TSC: the reference is the clock for the rest of the boot
+/// (the `tsc-watchdog` task, on a drift). Returns the new clock, or `None`
+/// when the TSC was not the clock or there is no reference.
+pub fn demote() -> Option<Clocksource> {
+    if clock() != Clocksource::Tsc {
+        return None;
+    }
+    let on = cpu::rflags() & (1 << 9) != 0;
+    cpu::cli();
+    switch_to_reference();
+    if on {
+        cpu::sti();
+    }
+    Some(clock()).filter(|&c| c != Clocksource::Tsc)
+}
+
+/// The watchdog's state between two checks: the TSC and the reference at
+/// the last good read.
+pub struct Watchdog {
+    tsc: u64,
+    count: u64,
+    primed: bool,
+}
+
+impl Watchdog {
+    pub const fn new() -> Self {
+        Watchdog { tsc: 0, count: 0, primed: false }
+    }
+}
+
+impl Default for Watchdog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The drift bound in ppm (Kconfig `X86_TSC_WATCHDOG_PPM` for a TSC rate
+/// measured against a counter at boot, `X86_TSC_WATCHDOG_PPM_STATED` for one
+/// CPUID or the hypervisor stated).
+pub fn watch_bound_ppm() -> u64 {
+    match source() {
+        TscSource::Hpet | TscSource::PmTimer | TscSource::Pit => azos_limits::X86_TSC_WATCHDOG_PPM as u64,
+        _ => azos_limits::X86_TSC_WATCHDOG_PPM_STATED as u64,
+    }
+}
+
+/// One watchdog check (Linux's `watchdog_check_freq`): the reference read
+/// on both sides of a TSC read with interrupts off, compared with the last
+/// good read. A read whose window took more than a quarter of the bound
+/// over the interval is retried, three times, then the check is skipped and
+/// the next one starts afresh. `inject_ppm` makes the TSC run that much
+/// fast (the gate's injected skew). `Rebase` for the first check.
+pub fn watch(w: &mut Watchdog, inject_ppm: u64) -> Watch {
+    let (hz, mask) = (REF_HZ.load(Ordering::Relaxed), REF_MASK.load(Ordering::Relaxed));
+    let ppm = watch_bound_ppm();
+    let interval_ns = azos_limits::X86_TSC_WATCHDOG_MS as u64 * 1_000_000;
+    let window_max = (interval_ns as u128 * ppm as u128 / 4_000_000) as u64;
+    for _ in 0..3 {
+        let on = cpu::rflags() & (1 << 9) != 0;
+        cpu::cli();
+        let c0 = ref_count();
+        let t = cpu::rdtsc();
+        let c1 = ref_count();
+        if on {
+            cpu::sti();
+        }
+        let window = encode::count_ns(c1.wrapping_sub(c0), hz);
+        if window > window_max {
+            continue;
+        }
+        let last = core::mem::replace(w, Watchdog { tsc: t, count: c0, primed: true });
+        if !last.primed {
+            return Watch::Rebase;
+        }
+        let tsc_ns = encode::count_ns(t.wrapping_sub(last.tsc), tsc_hz());
+        let tsc_ns = tsc_ns.saturating_add((tsc_ns as u128 * inject_ppm as u128 / 1_000_000) as u64);
+        let ref_ns = encode::count_ns(c0.wrapping_sub(last.count), hz);
+        return encode::watch(tsc_ns, ref_ns, window, encode::wrap_span_ns(mask, hz), ppm);
+    }
+    w.primed = false;
+    Watch::Rebase
 }
 
 fn set_rate(hz: u64) {
@@ -392,8 +633,17 @@ pub fn init_local() {
 #[inline]
 pub fn set_deadline(deadline: u64) {
     if deadline_mode() {
+        let tsc = if clock() == Clocksource::Tsc {
+            ticks_to_tsc(deadline)
+        } else {
+            // The clock is not the TSC: convert the time left, so a TSC
+            // that drifts misses by its drift over one timeout, not over the
+            // boot (Linux keeps its lapic-deadline timer the same way).
+            let scale = Scale { mult: TO_TSC.load(Ordering::Relaxed) };
+            cpu::rdtsc().saturating_add(scale.apply_ceil(deadline.saturating_sub(now_ticks())))
+        };
         // 0 would disarm.
-        cpu::wrmsr(TSC_DEADLINE_MSR, ticks_to_tsc(deadline).max(1));
+        cpu::wrmsr(TSC_DEADLINE_MSR, tsc.max(1));
     } else {
         let delta = deadline.saturating_sub(now_ticks());
         let scale = Scale { mult: TO_LAPIC.load(Ordering::Relaxed) };

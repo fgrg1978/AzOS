@@ -44,6 +44,10 @@ pub(crate) const NAMES: &[&str] = &[
     // is mapped 1:1 in the low half again (ktest `x86_low_half_maps_no_ram`,
     // x86_64 only).
     "x86-low-alias",
+    // entry/x86_64/ext/tsc_watchdog.rs: the TSC is made to run four times the
+    // watchdog's bound fast, so the watchdog must demote it (gate row
+    // `x86_64: TSC watchdog demotes a skewed TSC (q35)`, x86_64 only).
+    "x86-tsc-skew",
     // entry/aarch64/pan_patch.rs: the A64_PAN=probe sites are not rewritten
     // at boot (ktest `a64_pan_sites_patched`, aarch64 only).
     "pan-patch-skip",

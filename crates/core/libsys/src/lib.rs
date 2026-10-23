@@ -364,8 +364,10 @@ fn read_time_csr() -> u64 {
 /// `ecall`, whose handler reads the same CSR). It leaves the bit clear when
 /// the probe trapped and when built to force the trap.
 pub fn vdso_rdtime_native() -> bool {
-    // `flags` is written once, before any user task runs, and never changes:
-    // no seqlock, like the timebase and the magic.
+    // `flags` is written once, before any user task runs: no seqlock, like
+    // the timebase and the magic. The bit can only go clear later (x86_64's
+    // TSC demoted, `azos_mm::vdso::vdso_clear_flags`), so it is read on
+    // every call.
     unsafe { rdtime_is_native(vdso_read_u32(0), vdso_read_u32(12)) }
 }
 

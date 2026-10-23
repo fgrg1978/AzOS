@@ -114,9 +114,11 @@ impl ArchEntry for Entry {
 
     /// The TSC's scale to the clock (`azos_arch::timer`'s calibration, final
     /// before the vDSO is installed): ring 3 reads the TSC (`CR4.TSD`
-    /// clear) and converts it exactly as `now_ticks` does.
+    /// clear) and converts it exactly as `now_ticks` does. None while the
+    /// clock is not the TSC (Kconfig `X86_TSC_CLOCK`): ring 3 then asks the
+    /// kernel, as after a demotion (`ext::tsc_watchdog`).
     fn vdso_counter_scale(&self) -> Option<(u64, u64, u64)> {
-        if cfg!(feature = "vdso-force-syscall") {
+        if cfg!(feature = "vdso-force-syscall") || azos_arch::timer::clock() != azos_arch::timer::Clocksource::Tsc {
             return None;
         }
         Some(azos_arch::timer::counter_scale())

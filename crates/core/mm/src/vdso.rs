@@ -86,7 +86,10 @@ pub struct VdsoData {
     /// [`VDSO_FLAG_RDTIME_NATIVE`]; the other bits are zero.
     ///
     /// Written **once**, by [`vdso_set_flags`] during boot, before any user
-    /// task runs, and never changed: outside the seqlock like `timebase_hz`.
+    /// task runs, outside the seqlock like `timebase_hz`. The one later
+    /// change is [`vdso_clear_flags`]: x86_64 clears the bit when the TSC is
+    /// demoted, and a reader that read it set before makes one more read
+    /// through the old counter scale.
     pub flags: AtomicU32,
     /// Monotonic tick counter (incremented every timer IRQ).
     pub uptime_ticks: AtomicU64,
@@ -197,6 +200,15 @@ pub fn vdso_set_flags(flags: u32) {
     if phys == 0 { return; }
     let data = unsafe { &*(crate::addr::phys_to_virt(phys) as *const VdsoData) };
     data.flags.store(flags, Ordering::Release);
+}
+
+/// Clear `bits` of [`VdsoData::flags`] at run time: a counter ring 3 read
+/// natively is no longer the clock (x86_64's TSC watchdog), so ring 3 asks
+/// the kernel from its next read on.
+pub fn vdso_clear_flags(bits: u32) {
+    if let Some(data) = page() {
+        data.flags.fetch_and(!bits, Ordering::Release);
+    }
 }
 
 /// Publish [`VdsoData::hwcap`]. Called once during boot, after
