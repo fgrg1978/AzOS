@@ -2,9 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! A controller that stops answering: the device timeout policy
 //! (`azos_drv_api::recovery`, Kconfig `DEVICE_TIMEOUT_RESETS` = 1). A
-//! command the mock never answers resets the controller once and the
-//! devices come back; the next one latches it dead; a reset that does not
-//! complete latches it at once.
+//! command the mock never answers, or a host system error it raises,
+//! resets the controller once and the devices come back; the next fault of
+//! either cause latches it dead; a reset that does not complete latches it
+//! at once.
 
 use std::cell::RefCell;
 
@@ -13,15 +14,21 @@ use azos_rings::Push;
 use azos_usb::class::Match;
 use azos_usb::usbcore::pipe::{Completion, Dir, Status, Transfer};
 use azos_usb::usbcore::OpenError;
+use azos_usb::xhci::Fault;
 use azos_usb::{Claim, EventKind};
 
 use crate::devices::*;
 use crate::harness::Rig;
 
 /// Configure Endpoint, the command `open_pipe` sends (xHCI 1.2 table 6-91).
-const CONFIGURE_ENDPOINT: u64 = 12;
+const CONFIGURE_ENDPOINT: u8 = 12;
 /// Enable Slot, the first command of an enumeration.
-const ENABLE_SLOT: u64 = 9;
+const ENABLE_SLOT: u8 = 9;
+
+/// The record's first field for a timeout of a command of type `ty`.
+fn timeout(ty: u8) -> u64 {
+    Fault::Timeout.detail(ty)
+}
 /// Disable Slot, which a removal sends for a slot the controller holds.
 const DISABLE_SLOT: u8 = 10;
 
@@ -79,7 +86,7 @@ fn a_command_timeout_resets_the_controller_and_the_device_comes_back() {
     let kinds: Vec<EventKind> = rig.drain_events().iter().map(|e| e.kind).collect();
     assert_eq!(kinds, vec![EventKind::Detached, EventKind::Attached]);
     assert_eq!(rig.usb.devices().count(), 1);
-    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::Reset, CONFIGURE_ENDPOINT)]);
+    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::Reset, timeout(CONFIGURE_ENDPOINT))]);
     assert!(rig.hw.fault().is_none(), "{:?}", rig.hw.fault());
 }
 
@@ -102,7 +109,7 @@ fn transfers_in_flight_at_a_reset_end_disconnected() {
     assert!(!rig.usb.pipe_in_use(id), "the pipe outlived the reset");
     assert_eq!(rig.driver(d).detached, vec![claim.0]);
     assert_eq!(rig.usb.devices().count(), 2, "both devices are enumerated after the reset");
-    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::Reset, ENABLE_SLOT)]);
+    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::Reset, timeout(ENABLE_SLOT))]);
 }
 
 #[test]
@@ -120,8 +127,8 @@ fn a_second_timeout_latches_the_controller_dead() {
     assert_eq!(
         records(),
         vec![
-            (Class::Usb, "xhci", Action::Reset, CONFIGURE_ENDPOINT),
-            (Class::Usb, "xhci", Action::Latched, CONFIGURE_ENDPOINT),
+            (Class::Usb, "xhci", Action::Reset, timeout(CONFIGURE_ENDPOINT)),
+            (Class::Usb, "xhci", Action::Latched, timeout(CONFIGURE_ENDPOINT)),
         ]
     );
     // Dead until reboot: the next command is refused, not sent.
@@ -140,5 +147,28 @@ fn a_reset_that_does_not_complete_latches_the_controller() {
     assert_eq!(rig.usb.open_pipe(claim, 0x81), Err(OpenError::Fault));
     assert!(rig.usb.controller().is_dead());
     assert_eq!(rig.hw.hc_resets(), 1, "the stuck reset completed");
-    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::ResetFailed, CONFIGURE_ENDPOINT)]);
+    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::ResetFailed, timeout(CONFIGURE_ENDPOINT))]);
+}
+
+#[test]
+fn a_host_system_error_resets_the_controller_and_a_second_latches_it() {
+    listen();
+    let (mut rig, d, claim) = with_keyboard();
+    let hse = Fault::HostSystemError.detail(0);
+    rig.hw.raise_hse();
+    rig.service();
+    assert!(!rig.usb.controller().is_dead(), "a host system error latched the controller: no reset");
+    assert_eq!(rig.hw.hc_resets(), 2, "bring-up and one reset");
+    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::Reset, hse)]);
+    rig.settle();
+    assert_eq!(rig.driver(d).detached, vec![claim.0], "the class driver was not told its device went away");
+    assert_eq!(rig.driver(d).attached.len(), 2, "the device did not come back");
+    let again = Claim(rig.driver(d).attached[1].0);
+    assert!(rig.usb.open_pipe(again, 0x81).is_ok(), "the controller does not serve after its reset");
+    // The reset is spent: the next error latches the controller.
+    rig.hw.raise_hse();
+    rig.service();
+    assert!(rig.usb.controller().is_dead(), "the second host system error reset the controller again");
+    assert_eq!(rig.hw.hc_resets(), 2, "a latched controller is not reset");
+    assert_eq!(records(), vec![(Class::Usb, "xhci", Action::Reset, hse), (Class::Usb, "xhci", Action::Latched, hse)]);
 }

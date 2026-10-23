@@ -43,7 +43,7 @@
 //!
 //! A command its deadline passes on is the device timeout policy's
 //! (`azos_drv_api::recovery`, Kconfig `DEVICE_TIMEOUT_RESETS`, the
-//! `usb-timeout` decision record): with a reset left, the controller is
+//! `usb-host-fault` decision record): with a reset left, the controller is
 //! halted, reset (HCRST, then Controller Not Ready clears) and programmed
 //! again over the memory it had (`Xhci::reset`), and every device it held
 //! is gone: the controller refuses commands and transfers
@@ -53,8 +53,11 @@
 //! again. With the resets spent, or when the reset does not bring the same
 //! controller back, it is halted and latched dead until reboot, its memory
 //! never reused. A host system error or a host controller error the
-//! controller reports latches it dead at once: it is not a timeout, and
-//! the policy's reset is for a controller that went quiet.
+//! controller reports (USBSTS.HSE, USBSTS.HCE: xHCI 1.2 section 4.10.2.6 and
+//! 4.24.1 ask for a reset) goes through the same policy (owner decision
+//! 2026-10-23): one reset, shared with the timeouts, and the next fault of
+//! any of the three causes latches. The record names the cause
+//! ([`Fault`]).
 
 use super::context::{self, EpParams, Layout, SlotParams};
 use super::regs::{self, Caps, Speed};
@@ -104,6 +107,27 @@ pub enum Error {
     /// held are gone, and nothing is accepted until the core has removed
     /// them ([`Xhci::ack_reset`]).
     Reset,
+}
+
+/// Why the controller is reset or latched, in the `usb-host-fault` record:
+/// the high byte of its first field ([`Fault::detail`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Fault {
+    /// A command went unanswered for its budget.
+    Timeout = 1,
+    /// USBSTS.HSE: the controller hit a host system error (its DMA failed).
+    HostSystemError = 2,
+    /// USBSTS.HCE: the controller found an internal error.
+    HostControllerError = 3,
+}
+
+impl Fault {
+    /// The record's first field: the cause, then the type of the command
+    /// that went unanswered (0 for an error the controller reported).
+    pub const fn detail(self, trb_type: u8) -> u64 {
+        (self as u64) << 8 | trb_type as u64
+    }
 }
 
 /// Who a transfer descriptor belongs to.
@@ -631,10 +655,17 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             self.regs.write32(self.op + regs::USBSTS, regs::STS_EINT);
             self.regs.write32(ir0 + regs::IMAN, regs::IMAN_IP | if self.irq { regs::IMAN_IE } else { 0 });
         }
-        // A host system error or a host controller error: latched dead at
-        // once (module documentation).
-        if self.regs.read32(self.op + regs::USBSTS) & (regs::STS_HSE | regs::STS_HCE) != 0 {
-            self.recovery.latch();
+        // A host system error or a host controller error: the device fault
+        // policy, as a timeout (module documentation).
+        let sts = self.regs.read32(self.op + regs::USBSTS);
+        if sts & (regs::STS_HSE | regs::STS_HCE) != 0 {
+            // Canary: the controller latches at once, as before the decision.
+            if cfg!(feature = "canary-xhci-hse-latches") {
+                self.recovery.latch();
+                return;
+            }
+            let cause = if sts & regs::STS_HCE != 0 { Fault::HostControllerError } else { Fault::HostSystemError };
+            self.fault(cause, 0, 0);
         }
     }
 
@@ -683,36 +714,41 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
             if self.recovery.dead() {
                 return Err(Error::Dead);
             }
+            // An error the controller reported reset it under this command.
+            if self.reset_pending {
+                return Err(Error::Reset);
+            }
             if self.clock.now_us() >= deadline {
                 // The controller did not answer: stop the command ring so a
                 // late completion cannot be taken for the next command's,
                 // then let the timeout policy decide.
                 self.regs.write64(self.op + regs::CRCR, regs::CRCR_CA);
-                self.timed_out(ty, CMD_TIMEOUT_US / 1000);
+                self.fault(Fault::Timeout, ty, CMD_TIMEOUT_US / 1000);
                 return Err(Error::Timeout);
             }
             self.clock.delay_us(50);
         }
     }
 
-    /// A command of type `ty` went unanswered for `waited_ms`: reset the
-    /// controller, or, with the resets spent, latch it dead (module
-    /// documentation). A command that times out while the controller is
-    /// being reset (the reset's own round trip) fails the reset.
-    fn timed_out(&mut self, ty: u8, waited_ms: u64) {
+    /// The controller faulted (`cause`; a timeout of a command of type `ty`
+    /// after `waited_ms`): reset it, or, with the resets spent, latch it dead
+    /// (module documentation). A fault while the controller is being reset
+    /// (the reset's own round trip timing out) fails the reset.
+    fn fault(&mut self, cause: Fault, ty: u8, waited_ms: u64) {
+        let detail = cause.detail(ty);
         // Canary: the first timeout latches the controller, as before the policy.
         if cfg!(feature = "canary-xhci-no-reset") {
             self.recovery.latch();
             self.halt();
             return;
         }
-        match self.recovery.timed_out(ty as u64, waited_ms) {
+        match self.recovery.timed_out(detail, waited_ms) {
             Verdict::Reset => {
                 let ok = self.reset().is_ok();
                 if !ok {
                     self.halt();
                 }
-                self.recovery.reset_done(ok, ty as u64, waited_ms);
+                self.recovery.reset_done(ok, detail, waited_ms);
             }
             Verdict::Latch => self.halt(),
             Verdict::Handled => {}

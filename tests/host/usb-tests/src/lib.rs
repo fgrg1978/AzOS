@@ -24,6 +24,7 @@
 //! | `canary-xhci-no-reset` | a command timeout latches the controller, no reset | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
 //! | `canary-xhci-reset-keeps-devices` | the core keeps the devices a reset controller forgot | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
 //! | `canary-xhci-reset-event-ring` | a reset keeps the event ring's old cursor | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
+//! | `canary-xhci-hse-latches` | a host system error latches the controller, no reset | `a_host_system_error_resets_the_controller_and_a_second_latches_it` |
 //!
 //! `tests/chaos.rs` drives the kernel's injection point (`azos_chaos`,
 //! `xhci-command-drop`) instead of the mock, in a process of its own.

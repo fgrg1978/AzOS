@@ -30,7 +30,7 @@
 //! at once ([`Recovery::latch`] for the last).
 //!
 //! Every reset and every latch the policy decides is reported to the kernel's
-//! sink ([`set_sink`]): the `block-timeout` / `net-timeout` / `usb-timeout`
+//! sink ([`set_sink`]): the `block-timeout` / `net-timeout` / `usb-host-fault`
 //! decision record (`azos_decision`), `action` [`Action`].
 //!
 //! Rejected: reset forever with a backoff (Q8 c): a device that wedges again
@@ -52,7 +52,8 @@ pub enum Class {
     Block = 0,
     /// `net-timeout` (virtio-net, e1000e, igc).
     Net = 1,
-    /// `usb-timeout` (xHCI).
+    /// `usb-host-fault` (xHCI: a command timeout, and the host system and
+    /// host controller errors it reports, which take the same policy).
     Usb = 2,
 }
 
@@ -90,8 +91,9 @@ azos_common::ro_hook! {
     /// action, detail, waited_ms)`: `device` is the driver's name for it (its
     /// topology row's: `virtio-blk`, `nvme`, `e1000e`, `xhci`, ...), `detail`
     /// the first sector of the command that timed out (block), the frames the
-    /// ring held (network) or the TRB type of the command that went
-    /// unanswered (USB host), `waited_ms` how long it waited. Called from the
+    /// ring held (network) or the cause and the TRB type of the command
+    /// that went unanswered (USB host, `azos_usb::xhci::Fault::detail`),
+    /// `waited_ms` how long it waited. Called from the
     /// driver's reap or send path; it must not do I/O on the device it is
     /// told about. Unset: not reported.
     static SINK: fn(Class, &'static str, Action, u64, u64);

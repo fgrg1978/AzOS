@@ -1071,6 +1071,14 @@ impl Hw {
         self.st.borrow_mut().lose_commands = n;
     }
 
+    /// The controller hits a host system error: USBSTS.HSE set, and it halts
+    /// (xHCI 1.2 section 4.10.2.6).
+    pub fn raise_hse(&self) {
+        let mut st = self.st.borrow_mut();
+        st.usbcmd &= !1;
+        st.usbsts |= 1 << 2 | 1;
+    }
+
     /// From now on a host controller reset never completes.
     pub fn stick_hcrst(&self) {
         self.st.borrow_mut().hcrst_stuck = true;

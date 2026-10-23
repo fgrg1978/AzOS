@@ -8,5 +8,5 @@ pub mod regs;
 pub mod ring;
 pub mod trb;
 
-pub use controller::{Done, Error, EpSpec, HcEvent, Owner, PortStatus, TdKind, TdSpec, Xhci};
+pub use controller::{Done, Error, EpSpec, Fault, HcEvent, Owner, PortStatus, TdKind, TdSpec, Xhci};
 pub use regs::{Caps, Speed};

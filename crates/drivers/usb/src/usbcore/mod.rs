@@ -31,8 +31,8 @@
 //!
 //! # A controller reset
 //!
-//! A command the controller leaves unanswered makes it reset itself
-//! (`crate::xhci`, the device timeout policy). Every device it held is then
+//! A command the controller leaves unanswered, or an error it reports, makes
+//! it reset itself (`crate::xhci`, the device fault policy). Every device it held is then
 //! gone: the next turn removes each one as an unplug would (its transfers
 //! end `Disconnected`, its class drivers are told, `Detached` is emitted),
 //! then enumerates every connected port again, so a class driver sees its
@@ -562,6 +562,10 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             }
             if self.hc.is_dead() {
                 return Err(UsbError::Hc(xhci::Error::Dead));
+            }
+            // An error the controller reported reset it: the transfer is gone.
+            if self.hc.reset_pending() {
+                return Err(UsbError::Hc(xhci::Error::Reset));
             }
             if self.hc.clock().now_us() >= deadline {
                 return Err(UsbError::Timeout);

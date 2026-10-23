@@ -39,6 +39,7 @@ canary-dr-mode = ["azos_usb/canary-dr-mode"]
 canary-xhci-no-reset = ["azos_usb/canary-xhci-no-reset"]
 canary-xhci-reset-keeps-devices = ["azos_usb/canary-xhci-reset-keeps-devices"]
 canary-xhci-reset-event-ring = ["azos_usb/canary-xhci-reset-event-ring"]
+canary-xhci-hse-latches = ["azos_usb/canary-xhci-hse-latches"]
 
 [profile.release]
 overflow-checks = true

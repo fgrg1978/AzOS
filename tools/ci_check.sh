@@ -10355,15 +10355,18 @@ host_job host_canary_row "usb: unplug canary" usb-tests canary-unplug \
     unplug_removes_the_device
 host_job host_canary_row "usb: DWC3 dr_mode canary" usb-tests canary-dr-mode \
     a_dwc3_is_a_host_only_when_the_device_tree_says_so
-# The device timeout policy on xHCI (tests/host/usb-tests `reset`): the first
+# The device fault policy on xHCI (tests/host/usb-tests `reset`): the first
 # timeout latches the controller (no reset), the core keeps the devices a
-# reset controller forgot, a reset keeps the event ring's old cursor.
+# reset controller forgot, a reset keeps the event ring's old cursor, a host
+# system error latches the controller (no reset).
 host_job host_canary_row "usb: no reset canary" usb-tests canary-xhci-no-reset \
     a_command_timeout_resets_the_controller_and_the_device_comes_back
 host_job host_canary_row "usb: reset keeps devices canary" usb-tests canary-xhci-reset-keeps-devices \
     a_command_timeout_resets_the_controller_and_the_device_comes_back
 host_job host_canary_row "usb: reset event ring canary" usb-tests canary-xhci-reset-event-ring \
     a_command_timeout_resets_the_controller_and_the_device_comes_back
+host_job host_canary_row "usb: HSE latches canary" usb-tests canary-xhci-hse-latches \
+    a_host_system_error_resets_the_controller_and_a_second_latches_it
 # USB HID (azos_usb_hid): each canary puts one report-decoding or authorization
 # bug back (a phantom report taken for keys, a report ID not skipped, an unsigned
 # axis, modifiers after their report's keys, a hub tier not compared, a keyboard

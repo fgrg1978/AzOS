@@ -795,7 +795,7 @@ fn device_row(name: &str) -> u32 {
 /// device (action 2), latched it dead with its resets spent (5), or found the
 /// reset did not bring it back (6). The `Rule::BlockTimeout` record (`sector`,
 /// `waited_ms`, `action`), the `Rule::NetTimeout` one (`pending`, `waited_ms`,
-/// `action`) or the `Rule::UsbTimeout` one (`trb_type`, `waited_ms`,
+/// `action`) or the `Rule::UsbHostFault` one (`cause_trb`, `waited_ms`,
 /// `action`), subject the device's topology row, and a console line. `Deny`, the ring only, for the reason [`block_timeout_sink`] gives:
 /// the durable sink may be the very disk that just timed out.
 pub(crate) fn device_timeout_sink(
@@ -809,7 +809,7 @@ pub(crate) fn device_timeout_sink(
     let rule = match class {
         Class::Block => azos_decision::Rule::BlockTimeout,
         Class::Net => azos_decision::Rule::NetTimeout,
-        Class::Usb => azos_decision::Rule::UsbTimeout,
+        Class::Usb => azos_decision::Rule::UsbHostFault,
     };
     azos_decision::record(rule, azos_decision::Verdict::Deny, device_row(device), [detail, waited_ms, action as u64]);
     let tag = match class {
@@ -817,14 +817,27 @@ pub(crate) fn device_timeout_sink(
         Class::Net => "NET",
         Class::Usb => "USB",
     };
-    match action {
-        Action::Reset => {
+    // A USB host controller's own error (`azos_usb::xhci::Fault`, the second
+    // byte of `detail`: 2 host system error, 3 host controller error).
+    let reported = match (class, detail >> 8) {
+        (Class::Usb, 2) => Some("a host system error"),
+        (Class::Usb, 3) => Some("a host controller error"),
+        _ => None,
+    };
+    match (action, reported) {
+        (Action::Reset, Some(e)) => {
+            azos_drv_sys::kerr!("[{}] {} reported {}: device reset, back in service", tag, device, e)
+        }
+        (Action::Latched, Some(e)) => {
+            azos_drv_sys::kerr!("[{}] {} reported {} with its resets spent: latched dead until reboot", tag, device, e)
+        }
+        (Action::Reset, None) => {
             azos_drv_sys::kerr!("[{}] {} timed out after {} ms: device reset, back in service", tag, device, waited_ms)
         }
-        Action::Latched => {
+        (Action::Latched, None) => {
             azos_drv_sys::kerr!("[{}] {} timed out again after {} ms with its resets spent: latched dead until reboot", tag, device, waited_ms)
         }
-        Action::ResetFailed => {
+        (Action::ResetFailed, _) => {
             azos_drv_sys::kerr!("[{}] {}: the reset after a timeout did not bring it back: latched dead until reboot", tag, device)
         }
     }

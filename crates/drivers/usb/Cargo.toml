@@ -58,6 +58,9 @@ canary-xhci-no-reset = []
 # After a reset the core keeps its device table: the devices the controller
 # forgot are neither removed nor enumerated again.
 canary-xhci-reset-keeps-devices = []
+# A host system error or a host controller error latches the controller dead at
+# once, as before the owner's decision: no reset.
+canary-xhci-hse-latches = []
 # A reset leaves the event ring's cursor where it was, while the controller
 # starts writing at the first entry: the reset's own command never completes.
 canary-xhci-reset-event-ring = []
