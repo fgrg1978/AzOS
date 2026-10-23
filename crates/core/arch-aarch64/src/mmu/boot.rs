@@ -48,7 +48,8 @@ use core::arch::global_asm;
 //                              kernel does not depend on it (it reads
 //                              CNTVCT_EL0, as ring 3 does); only the
 //                              `cntvoff-canary` feature sets it nonzero
-//   ICC_SRE_EL2 SRE+Enable=1   EL1 may use GICv3 sysregs
+//   ICC_SRE_EL2 SRE+Enable=1   EL1 may use GICv3 sysregs (only where
+//                              ID_AA64PFR0_EL1.GIC says they exist)
 //   SCTLR_EL1 = 0x30450838     reserved-bits mask, MMU off, SPAN=0 (O3.2)
 //   CPACR_EL1.FPEN = 0b11      EL0/EL1 may use FP/SIMD/NEON
 //   SPSR_EL2 = 0x3C5           EL1h, DAIF masked
@@ -145,10 +146,19 @@ _azos_drop_to_el1:
     movk    x10, #{off0}
     msr     CNTVOFF_EL2, x10
 
+    // Only where the GICv3 system-register interface exists
+    // (ID_AA64PFR0_EL1.GIC [27:24] non-zero): without it ICC_SRE_EL2 is
+    // UNDEFINED, and with VBAR_EL2 unset that is a silent hang at EL2. A
+    // GICv2 machine or one with no GIC at all (the Raspberry Pi 3's BCM2836
+    // local controller) has none; QEMU raspi3b enters here at EL2.
+    mrs     x10, ID_AA64PFR0_EL1
+    ubfx    x10, x10, #24, #4
+    cbz     x10, 1f
     mov     x10, #1                 // ICC_SRE_EL2.SRE
     orr     x10, x10, #(1 << 3)     // ICC_SRE_EL2.Enable
     msr     S3_4_C12_C9_5, x10      // ICC_SRE_EL2
     isb
+1:
 
     // O3.2 (owner decision, PAN): SPAN (bit 23) cleared — 0x30C5 -> 0x3045
     // — so PSTATE.PAN is SET automatically on every EL0->EL1 exception,
