@@ -127,7 +127,7 @@ sim: | $(IMAGE_HASHES)
 	@cp "$(SIM_DEFCONFIG)" "$(SIM_KCONFIG)" && KCONFIG_CONFIG="$(SIM_KCONFIG)" python3 -m olddefconfig >/dev/null
 	@isa=$$(sed -nE 's/^CONFIG_ARCH_(RISCV64|AARCH64|X86_64)=y$$/\1/p' "$(SIM_KCONFIG)" | tr A-Z a-z); \
 	test -n "$$isa" || { echo "[SIM] $(SIM_KCONFIG): no CONFIG_ARCH_*"; exit 2; }; \
-	feats="emit-target-$$isa $(call topo_features,$(SIM_FEATURES)) $(SIM_EXTRA_FEATURES)"; \
+	feats="azos_topology/emit-target-$$isa $(call topo_features,$(SIM_FEATURES)) $(SIM_EXTRA_FEATURES)"; \
 	echo "[SIM] $(SIM_DEFCONFIG) ($$isa), kernel features $(SIM_FEATURES)"; \
 	cd tools/azos_sim && KCONFIG_CONFIG="$(abspath $(SIM_KCONFIG))" CARGO_TARGET_DIR="$(OUT_TGT)/tools/azos_sim" \
 		$(CARGO) run -q --release --features "$$feats" -- $(if $(SIM_CPUS),--cpus $(SIM_CPUS)) $(SIM_ARGS) "$(SIM_TOPOLOGY)"
