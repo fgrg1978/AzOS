@@ -31,6 +31,7 @@
 //! constants. What is NOT verified is a real device accepting what the units
 //! program: that is the QEMU rows of the gate and the board testing.
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod amdvi;
 pub mod domain;
@@ -100,16 +101,22 @@ pub trait Mmio {
 }
 
 /// Memory the units read: device tables, queues, page tables. All 4 KiB
-/// zeroed pages, addressed by physical address; `ptr` is the CPU's pointer to
-/// the same bytes (they differ on aarch64 and x86_64).
+/// zeroed pages, addressed by physical address; the CPU reaches the same
+/// bytes through the implementor's mapping of them (the two addresses differ
+/// on aarch64 and x86_64), one 64-bit word at a time.
 pub trait TableMem: Sync {
     /// One zeroed page, or `None`.
     fn alloc_page(&self) -> Option<u64>;
     /// `bytes` of zeroed, physically contiguous memory whose address is a
     /// multiple of `align` (a power of two).
     fn alloc_aligned(&self, bytes: usize, align: usize) -> Option<u64>;
-    /// The CPU's pointer to physical address `pa`.
-    fn ptr(&self, pa: u64) -> *mut u8;
+    /// The `idx`-th 64-bit word at `pa`, a volatile load (a unit may write it).
+    /// `pa` is memory allocated through this `TableMem`, and `idx` stays
+    /// inside the structure the caller sized.
+    fn read64(&self, pa: u64, idx: usize) -> u64;
+    /// Store `val` as the `idx`-th 64-bit word at `pa`, a volatile store (a
+    /// unit may read it at any time); `pa` and `idx` as [`TableMem::read64`].
+    fn write64(&self, pa: u64, idx: usize, val: u64);
     /// Make CPU stores to `[pa, pa + len)` visible to a unit that does not
     /// snoop the CPU's caches. A no-op for a coherent one.
     fn clean(&self, pa: u64, len: usize);
@@ -125,15 +132,12 @@ pub trait TableMem: Sync {
 
 /// Read the `idx`-th 64-bit word at `pa`.
 pub fn rd64(mem: &dyn TableMem, pa: u64, idx: usize) -> u64 {
-    // SAFETY: `pa` names memory this crate allocated through `mem`; `idx`
-    // stays inside the structure the caller sized.
-    unsafe { core::ptr::read_volatile((mem.ptr(pa) as *const u64).add(idx)) }
+    mem.read64(pa, idx)
 }
 
 /// Write the `idx`-th 64-bit word at `pa`.
 pub fn wr64(mem: &dyn TableMem, pa: u64, idx: usize, val: u64) {
-    // SAFETY: as `rd64`.
-    unsafe { core::ptr::write_volatile((mem.ptr(pa) as *mut u64).add(idx), val) }
+    mem.write64(pa, idx, val)
 }
 
 /// Spin until `cond` holds, for at most `tries` polls.

@@ -76,7 +76,7 @@ crates/drivers/imu	0	0	0	0	1	0
 crates/drivers/ina219	0	0	0	0	1	0
 crates/drivers/input	3	1	0	0	0	32
 crates/drivers/input/wire	3	2	2	0	0	80
-crates/drivers/iommu	2	0	0	0	0	7
+crates/drivers/iommu	0	0	0	0	1	0
 crates/drivers/irqchip	0	0	0	0	1	0
 crates/drivers/net	32	4	6	0	0	65
 crates/drivers/npu	10	2	0	0	0	99
@@ -109,7 +109,7 @@ domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0
 domains/robot/telemetry	0	0	0	0	1	0
-kernel	331	14	12	51	0	60
+kernel	333	14	12	51	0	60
 lx/emul	8	0	0	0	0	-
 micro	20	4	0	0	0	68
 tools/linux_seccomp_launch	11	2	0	2	0	-

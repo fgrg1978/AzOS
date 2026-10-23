@@ -306,6 +306,13 @@ mod hw {
     /// Table, queue and page-table memory from the page allocator.
     struct KMem;
 
+    impl KMem {
+        /// The CPU's pointer to physical address `pa`: the direct map.
+        fn ptr(pa: u64) -> *mut u8 {
+            azos_mm::addr::phys_to_virt(pa as usize) as *mut u8
+        }
+    }
+
     impl TableMem for KMem {
         fn alloc_page(&self) -> Option<u64> {
             azos_mm::pmm::alloc_page().ok().map(|p| p.as_usize() as u64)
@@ -316,8 +323,14 @@ mod hw {
                 .ok()
                 .map(|p| p.as_usize() as u64)
         }
-        fn ptr(&self, pa: u64) -> *mut u8 {
-            azos_mm::addr::phys_to_virt(pa as usize) as *mut u8
+        fn read64(&self, pa: u64, idx: usize) -> u64 {
+            // SAFETY: `pa` is table memory this module allocated (the trait's
+            // contract), which the direct map covers; `idx` is inside it.
+            unsafe { core::ptr::read_volatile((Self::ptr(pa) as *const u64).add(idx)) }
+        }
+        fn write64(&self, pa: u64, idx: usize, val: u64) {
+            // SAFETY: as `read64`.
+            unsafe { core::ptr::write_volatile((Self::ptr(pa) as *mut u64).add(idx), val) }
         }
         fn clean(&self, pa: u64, len: usize) {
             // A unit that does not snoop the CPU's caches reads what the CPU
@@ -325,7 +338,7 @@ mod hw {
             // whose IOMMU doesn't either.
             if !COHERENT {
                 // SAFETY: the range is table memory this module allocated.
-                unsafe { azos_dma::cache::clean_installed(self.ptr(pa) as usize, len) };
+                unsafe { azos_dma::cache::clean_installed(Self::ptr(pa) as usize, len) };
             }
         }
         fn invalidate(&self, pa: u64, len: usize) {
@@ -334,7 +347,7 @@ mod hw {
             // so the write-back half of the flush writes nothing.
             if !COHERENT {
                 // SAFETY: as `clean` above.
-                unsafe { azos_dma::cache::flush_installed(self.ptr(pa) as usize, len) };
+                unsafe { azos_dma::cache::flush_installed(Self::ptr(pa) as usize, len) };
             }
         }
     }

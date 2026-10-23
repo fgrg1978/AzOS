@@ -69,8 +69,13 @@ impl TableMem for TestMem {
         self.pages.lock().unwrap().push(p);
         Some(p)
     }
-    fn ptr(&self, pa: u64) -> *mut u8 {
-        pa as *mut u8
+    fn read64(&self, pa: u64, idx: usize) -> u64 {
+        // SAFETY: a test page this file allocated; volatile, as a kernel's.
+        unsafe { core::ptr::read_volatile((pa as *const u64).add(idx)) }
+    }
+    fn write64(&self, pa: u64, idx: usize, val: u64) {
+        // SAFETY: as `read64`.
+        unsafe { core::ptr::write_volatile((pa as *mut u64).add(idx), val) }
     }
     fn clean(&self, pa: u64, len: usize) {
         self.cleaned.lock().unwrap().push((pa, len));
