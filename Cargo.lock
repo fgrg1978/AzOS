@@ -448,10 +448,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "azos_efi"
-version = "0.1.0"
-
-[[package]]
 name = "azos_energy"
 version = "0.1.0"
 dependencies = [

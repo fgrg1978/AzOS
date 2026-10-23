@@ -10488,7 +10488,7 @@ echo "[2/4] Running host test suites..."
 # the work exists, everyone assumes it runs, nobody checked.
 HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests scsi-tests
          tftp-tests topology-tests config-tests crypto-tests
-         flight-math-tests abi-tests arch-api-tests arch-stub-tests kaslr-tests gguf-tests efi-tests
+         flight-math-tests abi-tests arch-api-tests arch-stub-tests kaslr-tests gguf-tests
          multi-stream-tests drv-api-tests
          cam-ring-tests dtb-tests aead-link-tests
          cap-tests vmmd-tests hv-tests

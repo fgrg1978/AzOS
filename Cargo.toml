@@ -64,9 +64,6 @@ exclude = [
     # config-tests — host-side tests for INI parser + runtime atomics.
     # Run with:  cd tests/host/config-tests && cargo test
     "tests/host/config-tests",
-    # efi-tests — host-side tests for BootInfo + EfiMemoryIter + PE/COFF.
-    # Run with:  cd tests/host/efi-tests && cargo test
-    "tests/host/efi-tests",
     # arch-api-tests — host-side tests for the cross-ISA trait surface
     # + PagePerms constants + arch_name strings. Includes a Stub impl
     # that proves the traits are dyn-compatible and self-consistent.
@@ -458,7 +455,6 @@ members = [
     "crates/core/inspect",
     # The interfaces of what the kernel hosts and of what a driver endpoint serves (D6 A).
     "crates/core/devif",
-    "crates/core/efi",
     "crates/drivers/driver_server",
     # Driver framework API surface (host-testable, no riscv deps).
     "crates/drivers/api",
@@ -599,7 +595,6 @@ azos_decision  = { path = "crates/core/decision" }
 azos_inspect   = { path = "crates/core/inspect" }
 azos_devif     = { path = "crates/core/devif" }
 azos_idl       = { path = "crates/core/idl" }
-azos_efi       = { path = "crates/core/efi" }
 azos_driver_server = { path = "crates/drivers/driver_server" }
 azos_crypto    = { path = "crates/core/crypto" }
 azos_topology  = { path = "crates/core/topology" }

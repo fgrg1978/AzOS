@@ -201,7 +201,7 @@ lx-loader
 # links `fs` and `ota`, so it can never be CORE. A CORE crate that starts to
 # call one of them is a CORE -> SCAFFOLD edge this check will name.
 SCAFFOLD_CRATES="
-fs camera ota efi display bench cam-ring telemetry tftp
+fs camera ota display bench cam-ring telemetry tftp
 ktest
 fb inspect tpm thermal firmware soc recovery
 usb rtc usb-hid scsi pkg

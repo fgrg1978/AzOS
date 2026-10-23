@@ -547,8 +547,8 @@ no-ml       = ["azos_recovery/no-ml", "azos_behavior?/no-ml"]
 # path — no-opensbi's ELF entry was never `_start_mmode`, all harts would
 # have shared one stack, and nothing set `mtvec`; uefi had no `global_asm!`
 # including boot_efi.S, so `efi_main` was dead-stripped. `crates/core/efi` and
-# `tests/host/efi-tests` stay (host parser suite in the gate); only the kernel
-# wiring and the two dead boot .S files are gone.
+# `tests/host/efi-tests` followed on 2026-10-23 (owner: no user; the UEFI
+# boot front re-creates what it needs).
 # config/subsys/Kconfig.secure-boot SECURE_BOOT_ENFORCED. Forces the boot sequence
 # (kernel/src/boot/ota.rs, right after the active-slot CRC check) to verify
 # the Ed25519 signature of the active OTA slot and halt instead of

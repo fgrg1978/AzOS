@@ -62,7 +62,6 @@ Source: the directories above; `Cargo.toml`, `Makefile`, `Kconfig`.
 | `devif` | `azos_devif` | The interfaces of what the kernel hosts and a driver endpoint serves (gpio, i2c, spi, can, uart, pwm, motor, sensor, block, clock, entropy, power, time, vm, vm control, buzzer, adc, link key, display, input, sound, inference, keys, memory-object control, the network name and time services), and the outcome code every op answers. |
 | `idl` | `azos_idl` | The AzOS interface definition language: traits annotated with `#[azos_interface]` and their wire form. |
 | `idl-macros` | `azos_idl_macros` | The proc-macro behind `#[azos_interface(id, level, words)]`. |
-| `efi` | `azos_efi` | UEFI boot structures: `BootInfo`, the EFI memory-map iterator, system table and PE/COFF constants. Host-tested; not a dependency of the kernel crate. |
 | `energy` | `azos_energy` | Utilisation tracking, energy model, placement / governor / idle seams, OPP bookkeeping. |
 | `hv` | `azos_hv` | The hypervisor core: guest admission, VM objects, guest memory, vCPU loop, virtual LAPIC/IOAPIC. |
 | `inspect` | `azos_inspect` | The introspection tree: typed nodes in a region the kernel alone writes. |
