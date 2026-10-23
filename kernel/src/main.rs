@@ -2639,6 +2639,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
 
     // Phase U4: autorun ELF — if CONFIG.INI has `autorun=<path>`, spawn a
     // task that loads and exec's that ELF at boot (e.g. brain client).
+    // Kconfig AUTORUN: without it the key is not read.
+    #[cfg(feature = "autorun")]
     if let Some(path) = azos_config::cfg_get(b"autorun") {
         if !path.is_empty() {
             // Copy path to a static buffer so the autorun task can access it.
@@ -2702,7 +2704,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // nothing else does: it does the moves, and supervises the kernel host.
     let elastic_rows = azos_topology::get().is_some_and(|t| t.tasks().iter().any(|r| r.place.elastic()));
     {
-        let autorun = azos_config::cfg_get(b"autorun").is_some_and(|p| !p.is_empty());
+        let autorun = cfg!(feature = "autorun")
+            && azos_config::cfg_get(b"autorun").is_some_and(|p| !p.is_empty());
         let ml = cfg!(not(feature = "no-ml")) && ML_ENABLED.load(Ordering::Acquire);
         if autorun || start_rows || ml || elastic_rows {
             drv_supervisor::start();

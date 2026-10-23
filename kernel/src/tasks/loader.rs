@@ -19,6 +19,7 @@ use crate::*;
 /// function used to be `#[cfg(target_arch = "riscv64")]`; removing that
 /// gate is the whole change needed to make aarch64's `kernel_main` able to
 /// call it too.
+#[cfg(feature = "autorun")]
 pub(crate) fn autorun_task(arg: usize) {
     let path_len = arg;
     let path = unsafe { &*(&raw const AUTORUN_PATH) };
@@ -544,7 +545,9 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
 // Shared by every ISA — `autorun_task` itself lost its riscv64-only gate for
 // the same reason (see that function's own doc): this buffer and its length
 // constant are pure data, read/written identically by every `kernel_main`.
+#[cfg(feature = "autorun")]
 pub(crate) const AUTORUN_PATH_MAX: usize = 64;
+#[cfg(feature = "autorun")]
 const _: () = assert!(
     AUTORUN_PATH_MAX > azos_config::MAX_VAL,
     "AUTORUN_PATH_MAX must leave room for the longest value CONFIG.INI can \
@@ -552,4 +555,5 @@ const _: () = assert!(
 );
 
 /// Static buffer for autorun ELF path (set during boot, read by autorun_task).
+#[cfg(feature = "autorun")]
 pub(crate) static mut AUTORUN_PATH: [u8; AUTORUN_PATH_MAX] = [0u8; AUTORUN_PATH_MAX];

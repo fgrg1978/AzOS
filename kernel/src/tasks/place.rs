@@ -11,6 +11,7 @@ pub(crate) use azos_percpu::place::pin;
 
 #[cfg(feature = "net")]
 pub(crate) const NET_POLL: Place = Place::of_kconfig(azos_limits::TASK_NET_POLL_PLACE);
+#[cfg(feature = "autorun")]
 pub(crate) const AUTORUN: Place = Place::of_kconfig(azos_limits::TASK_AUTORUN_PLACE);
 pub(crate) const SYS_WDT: Place = Place::of_kconfig(azos_limits::TASK_SYS_WDT_PLACE);
 #[cfg(feature = "net")]

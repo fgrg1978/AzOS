@@ -190,6 +190,24 @@ config TASK_NET_POLL_PLACE
       `last`: away from the control loops and from behavior. Read only
       with NET.
 
+config AUTORUN
+    bool "autorun: load and become CONFIG.INI's `autorun` image at boot"
+    # cargo-feature: autorun base
+    default y
+    help
+      Kernel feature `autorun`: the boot creates the `autorun` task when
+      CONFIG.INI (on the boot volume) names an image with `autorun=<path>`;
+      the task loads it and becomes it (kernel/src/tasks/loader.rs).
+
+      The rule: Kconfig decides whether the feature exists, CONFIG.INI only
+      whether a boot uses it. With AUTORUN=n the `autorun` key is not read at
+      all (a CONFIG.INI that sets it changes nothing) and none of the task's
+      code is compiled. The loader itself stays: the driver supervisor's
+      successors and the topology's `start = true` rows are loaded by it.
+
+      Cost when set: one task while the image loads (it becomes the program),
+      and a 64-byte path buffer. The same on riscv64, aarch64 and x86_64.
+
 config TASK_AUTORUN_PLACE
     string "autorun loader: placement class"
     default "last"

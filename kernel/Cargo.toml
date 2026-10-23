@@ -481,6 +481,8 @@ iommu-vtd = ["pci", "azos_iommu"]
 iommu-amdvi = ["pci", "azos_iommu"]
 # Kconfig NET: network bring-up, the net-poll task and the network clients.
 net = []
+# Kconfig AUTORUN: the boot's `autorun` task (CONFIG.INI `autorun=<path>`).
+autorun = []
 net-smoke = ["net"]
 dhcp-smoke = ["net"]
 # Two riscv64 kernel tasks pinned to the SAME hart each fill v0-v31 with a
