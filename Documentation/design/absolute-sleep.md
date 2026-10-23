@@ -70,9 +70,9 @@ Source: `crates/core/syscall/src/sleep.rs` (`block_until`),
   deadline (`nearest_timer_deadline`) and the next scheduler tick
   (`set_next_tick_smart`). A deadline more than one tick away wakes on time; a
   nearer one waits for the interrupt that is already programmed.
-- There are no signals, hence no `EINTR`. A wake stamped for another reason
-  before the deadline makes the task block again; the call returns only once
-  the counter is at or past the deadline.
+- The call has no `EINTR`. A wake stamped for another reason before the
+  deadline makes the task block again; the call returns only once the counter
+  is at or past the deadline.
 - A task that is killed while sleeping leaves the sleep at its next syscall
   instead of sleeping out its deadline.
 - If the scheduler refuses the block because preemption is disabled on the hart,
@@ -94,9 +94,11 @@ Source: `crates/core/ipc/src/io_ring.rs` (`OP_TIMER`),
   and completes with `0` in the first pass at or after the deadline. It is
   checked against the syscall filter row of `SYS_SLEEP_UNTIL` before it parks.
 - **Linux personality.** `nanosleep` and `rt_sigsuspend` in the table of
-  `crates/core/linux-abi/src/lib.rs` map onto `SYS_SLEEP_UNTIL`.
-- **Syscall filters.** A seccomp profile in `crates/core/sched/src/seccomp.rs`
-  must list the syscall explicitly; an image that sleeps needs it in its row.
+  `crates/core/linux-abi/src/lib.rs` reach `SYS_SLEEP_UNTIL`.
+- **Syscall filters.** An image profile (`IMAGE_PROFILES` in
+  `crates/core/sched/src/seccomp.rs`) must list the syscall explicitly; an
+  image that sleeps needs it in its row. The role profile `PROFILE_MINIMAL`
+  carries it through `COMMON`.
 
 ## Interface shape
 
