@@ -149,15 +149,18 @@ mod qemu_imp {
 
     /// Hand the buffer to QEMU's `ramfb` device via `fw_cfg`. `None` without
     /// `-device ramfb` on the QEMU command line (`ramfb::init` says why).
-    /// The buffer is identity-mapped on riscv64, so its address is its
-    /// physical address.
+    /// The device scans out guest physical memory, so it is handed the
+    /// buffer's physical address: a `.bss` symbol's own address is not that
+    /// once KASLR slid the image (`azos_mm::addr::virt_to_phys`).
     pub fn qemu_display_init() -> Option<FbInfo> {
-        let addr = core::ptr::addr_of_mut!(FRAMEBUFFER) as usize;
-        if !crate::ramfb::init(addr, FB_WIDTH as u32, FB_HEIGHT as u32, STRIDE as u32) {
+        let va = core::ptr::addr_of_mut!(FRAMEBUFFER) as usize;
+        // Gate canary `ramfb-va-canary`: the virtual address again.
+        let pa = if cfg!(feature = "ramfb-va-canary") { va } else { azos_mm::addr::virt_to_phys(va) };
+        if !crate::ramfb::init(pa, FB_WIDTH as u32, FB_HEIGHT as u32, STRIDE as u32) {
             return None;
         }
         Some(FbInfo {
-            phys: addr as u64,
+            phys: pa as u64,
             width: FB_WIDTH as u32,
             height: FB_HEIGHT as u32,
             stride: STRIDE as u32,

@@ -18,6 +18,9 @@ vf2 = []
 # all" check that QEMU can actually run, unlike the vf2 path above. See
 # ramfb.rs's module doc comment.
 qemu = []
+# Gate canary only: ramfb is handed the framebuffer's virtual address again;
+# the `display: ramfb on a slid kernel` canary row must then fail.
+ramfb-va-canary = ["qemu"]
 
 [dependencies]
 azos_arch    = { workspace = true }
@@ -25,3 +28,5 @@ azos_drv_base = { workspace = true }
 azos_drv_sys  = { workspace = true }
 azos_limits  = { workspace = true }
 azos_fb      = { workspace = true }
+azos_mm      = { workspace = true }
+azos_dma     = { workspace = true }

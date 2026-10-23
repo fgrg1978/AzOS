@@ -37,6 +37,10 @@ const REG_SELECTOR: usize = 0x08;
 // base+8, data at base+0, DMA register at base+16.
 const REG_DMA: usize = 0x10;
 
+/// The interface word: bit 0 the classic registers, bit 1 the DMA one
+/// (`FW_CFG_VERSION_DMA`), little endian.
+const FW_CFG_ID: u16 = 0x01;
+const FW_CFG_VERSION_DMA: u32 = 0x02;
 const FW_CFG_FILE_DIR: u16 = 0x19;
 
 // fw_cfg DMA control bits (`include/standard-headers/linux/qemu_fw_cfg.h`).
@@ -93,45 +97,86 @@ fn read_data(buf: &mut [u8]) {
 /// DMA-reads it directly, so field order/endianness must match
 /// `hw/nvram/fw_cfg.c`'s `FWCfgDmaAccess` exactly). 16 bytes, no padding
 /// (u64 `address` is already 8-byte aligned after two u32 fields).
-#[repr(C)]
+#[repr(C, align(16))]
 struct DmaAccess {
     control: u32,
     length: u32,
     address: u64,
 }
 
-/// Write `payload` to the currently-selected-by-DMA fw_cfg file via the
-/// DMA protocol — the only functional write path (see `REG_DATA`'s doc
-/// comment). `sel` is the file's selector key from
-/// `find_ramfb_selector()`.
-///
-/// `dma` and `payload` must be plain guest-RAM buffers whose addresses
-/// QEMU can read directly (same identity-mapping assumption as the
-/// framebuffer itself — see `lib.rs`'s `qemu_imp` module doc comment).
-fn dma_write_file(sel: u16, payload: &[u8], dma: &mut DmaAccess) -> bool {
-    dma.control = (((sel as u32) << 16) | FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_WRITE).to_be();
-    dma.length = (payload.len() as u32).to_be();
-    dma.address = (payload.as_ptr() as u64).to_be();
+/// The `RAMFBCfg` payload (addr, fourcc, flags, width, height, stride).
+const RAMFB_CFG_BYTES: usize = 28;
 
-    // A single 8-byte write to REG_DMA (offset 0 within the DMA
-    // sub-region) synchronously triggers `fw_cfg_dma_transfer()` in
-    // QEMU — the whole transfer (select + write + callback) completes
-    // before this store instruction retires; no polling needed.
+/// The descriptor and the payload the device reads, in `.bss`, not on the
+/// stack: a kernel stack need not be memory with a physical address the
+/// kernel can name (`azos_mm::addr::virt_to_phys` covers the image and the
+/// RAM map). Written by `init` alone, once, on the boot CPU.
+static mut DMA: DmaAccess = DmaAccess { control: 0, length: 0, address: 0 };
+static mut CFG: [u8; RAMFB_CFG_BYTES] = [0; RAMFB_CFG_BYTES];
+
+/// How long the device has to answer a DMA request. QEMU completes it
+/// inside the doorbell store; the budget bounds a device that never does.
+const DMA_BUDGET_US: u64 = 100_000;
+
+/// Why a DMA write did not happen.
+#[derive(Debug)]
+enum DmaFail {
+    /// The device set the error bit (the file refused the payload).
+    Refused,
+    /// The device never wrote the descriptor back: it could not read it (an
+    /// address that is not guest physical memory) or does not run.
+    NoAnswer,
+}
+
+/// Write `CFG` to fw_cfg file `sel` (the selector key from
+/// `find_ramfb_selector()`) via the DMA protocol, the only functional write
+/// path (see `REG_DATA`'s doc comment). QEMU reads the descriptor and the
+/// payload from guest physical memory, so both are handed by their physical
+/// addresses.
+fn dma_write_file(sel: u16) -> Result<(), DmaFail> {
+    let dma = &raw mut DMA;
+    let payload_pa = azos_mm::addr::virt_to_phys((&raw const CFG) as usize) as u64;
+    let dma_pa = azos_mm::addr::virt_to_phys(dma as usize) as u64;
+    // SAFETY: `init` is the only user of `DMA`, once, on the boot CPU.
     unsafe {
         core::ptr::write_volatile(
-            (FW_CFG_BASE + REG_DMA) as *mut u64,
-            (core::ptr::addr_of!(*dma) as u64).to_be(),
+            core::ptr::addr_of_mut!((*dma).control),
+            (((sel as u32) << 16) | FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_WRITE).to_be(),
         );
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*dma).length), (RAMFB_CFG_BYTES as u32).to_be());
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*dma).address), payload_pa.to_be());
     }
 
-    // QEMU writes the result back into `dma.control` (big-endian) —
-    // ERROR bit clear means the write_cb (ramfb_fw_cfg_write) ran. Must
-    // be a volatile read: the compiler has no reason to know the
-    // device just overwrote this field out from under it.
-    let result_be = unsafe {
-        core::ptr::read_volatile(core::ptr::addr_of!(dma.control))
-    };
-    u32::from_be(result_be) & FW_CFG_DMA_CTL_ERROR == 0
+    // The descriptor and the payload before the doorbell. A single 8-byte
+    // write to REG_DMA starts `fw_cfg_dma_transfer()`.
+    azos_dma::order::io_wmb();
+    // SAFETY: the fw_cfg DMA register of the board's mapped window.
+    unsafe { core::ptr::write_volatile((FW_CFG_BASE + REG_DMA) as *mut u64, dma_pa.to_be()) };
+
+    // The device clears `control` when it is done and leaves only the error
+    // bit if it failed (Linux `fw_cfg_wait_for_control`). A volatile read:
+    // the device writes the field behind the compiler's back.
+    let f = azos_drv_sys::timebase::TIMER_FREQ;
+    let end = azos_drv_sys::timebase::now().saturating_add(DMA_BUDGET_US.saturating_mul(f) / 1_000_000);
+    loop {
+        // SAFETY: as above.
+        let control = u32::from_be(unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*dma).control)) });
+        if control & !FW_CFG_DMA_CTL_ERROR == 0 {
+            return if control & FW_CFG_DMA_CTL_ERROR == 0 { Ok(()) } else { Err(DmaFail::Refused) };
+        }
+        if azos_drv_sys::timebase::now() >= end {
+            return Err(DmaFail::NoAnswer);
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Does this fw_cfg have the DMA interface (`FW_CFG_ID` bit 1)?
+fn has_dma() -> bool {
+    select(FW_CFG_ID);
+    let mut id = [0u8; 4];
+    read_data(&mut id);
+    u32::from_le_bytes(id) & FW_CFG_VERSION_DMA != 0
 }
 
 /// Search the fw_cfg file directory for `etc/ramfb`, returning its
@@ -159,9 +204,7 @@ fn find_ramfb_selector() -> Option<u16> {
 }
 
 /// Configure QEMU's `ramfb` device to display `fb_addr` (a *guest
-/// physical* address QEMU can read directly — this kernel's identity
-/// mapping in QEMU makes the virtual and physical addresses the same, so
-/// the framebuffer's own `.bss` address works directly) as an
+/// physical* address, which the device reads directly) as an
 /// XRGB8888 framebuffer of `width`x`height`, `stride` bytes/row.
 ///
 /// Returns `false` (does nothing else) if `ramfb` wasn't found in the
@@ -177,22 +220,26 @@ pub fn init(fb_addr: usize, width: u32, height: u32, stride: u32) -> bool {
         return false;
     };
 
+    if !has_dma() {
+        azos_drv_sys::kerr!("[RAMFB] fw_cfg has no DMA interface: 'etc/ramfb' cannot be written");
+        return false;
+    }
+
     // 28-byte `RAMFBCfg` payload (addr, fourcc, flags, width, height,
     // stride — confirmed field order against QEMU mainline
     // `hw/display/ramfb.c`'s `struct RAMFBCfg`), all big-endian.
-    let mut payload = [0u8; 28];
+    let mut payload = [0u8; RAMFB_CFG_BYTES];
     payload[0..8].copy_from_slice(&(fb_addr as u64).to_be_bytes());
     payload[8..12].copy_from_slice(&FOURCC_XRGB8888.to_be_bytes());
     payload[12..16].copy_from_slice(&0u32.to_be_bytes()); // flags
     payload[16..20].copy_from_slice(&width.to_be_bytes());
     payload[20..24].copy_from_slice(&height.to_be_bytes());
     payload[24..28].copy_from_slice(&stride.to_be_bytes());
+    // SAFETY: `init` is the only user of `CFG`, once, on the boot CPU.
+    unsafe { core::ptr::write_volatile(&raw mut CFG, payload) };
 
-    let mut dma = DmaAccess { control: 0, length: 0, address: 0 };
-    if !dma_write_file(sel, &payload, &mut dma) {
-        azos_drv_sys::kerr!(
-            "[RAMFB] DMA write rejected by device (bad fourcc/dimensions/size?)"
-        );
+    if let Err(why) = dma_write_file(sel) {
+        azos_drv_sys::kerr!("[RAMFB] DMA write of 'etc/ramfb' failed: {:?}", why);
         return false;
     }
 

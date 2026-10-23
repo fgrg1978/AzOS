@@ -14,6 +14,10 @@
 #        kaslr_boot_row.sh (a judge that reads "slid" here passes an image
 #        that does nothing).
 #
+# KASLR_EXTRA_FEATURES (comma-separated) adds kernel features to the riscv64
+# build (the `display: ramfb on a slid kernel` rows: `ramfb`, and its canary);
+# such an image wants its own [outdir].
+#
 # Each build has its own config and its own cargo target directory under
 # <outdir> (default $AZOS_OUT/build/kaslr-<isa>-<mode>), so it never rebuilds
 # or overwrites the gate's images. The user images and their digest tables
@@ -95,7 +99,7 @@ case "$isa" in
         rf="$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
         isa_cfg=""; [ -z "$rf" ] || isa_cfg="target.riscv64imac-unknown-none-elf.rustflags=[$rf]"
         # shellcheck disable=SC2046
-        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$cargo" build --release -p azos_kernel --features qemu \
+        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$cargo" build --release -p azos_kernel --features "qemu${KASLR_EXTRA_FEATURES:+,$KASLR_EXTRA_FEATURES}" \
             ${isa_cfg:+--config "$isa_cfg"} $(python3 tools/kconfig_to_cargo.py --base "$cfg") >&2
         reloc_lint "$tdir/riscv64imac-unknown-none-elf/release/kernel" R_RISCV_RELATIVE
         # A flat binary, as the boards take it (VF2/K1 `kernel.bin`): QEMU puts a

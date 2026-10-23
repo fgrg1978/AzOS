@@ -3118,6 +3118,55 @@ for kaslr_isa in aarch64 riscv64 x86_64; do
     par "kaslr: slid ($kaslr_isa)"  kaslr_row "$kaslr_isa" slid
     par "kaslr: plain ($kaslr_isa)" kaslr_row "$kaslr_isa" plain
 done
+# ── ramfb on a slid kernel (riscv64, DRV_DISPLAY_RAMFB) ──────────────────
+#
+# QEMU's ramfb reads guest physical memory: the framebuffer address and the
+# fw_cfg DMA descriptor and payload it is handed must be physical addresses,
+# and a `.bss` symbol's address is not one once KASLR slid the image into the
+# upper half. The row builds the slid riscv64 image (tools/kaslr_image.sh)
+# with `ramfb`, boots it once with `-device ramfb` and wants: the image slid,
+# `[RAMFB] configured` (the device cleared the descriptor's control word: it
+# read the descriptor), and the configured address below the image base (a
+# physical address, not an image one), the same address on the `[FB] ramfb`
+# line. Canary (`ramfb-va-canary`, built apart): the framebuffer's virtual
+# address again; the address check must then fail.
+ramfb_slid_row() { # ramfb_slid_row <pass|canary>
+    local want="$1" feats=ramfb label="display: ramfb on a slid kernel (rv)" img out log pid i=0 base addr fb why=""
+    [ "$want" = canary ] && { feats=ramfb-va-canary; label="display: ramfb slid canary (rv)"; }
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    out="$CI_LOG_DIR/ramfb-slid-$want.out"; log="$CI_LOG_DIR/ramfb-slid-$want.log"
+    if ! img="$(KASLR_EXTRA_FEATURES="$feats" "$REPO_ROOT/tools/kaslr_image.sh" riscv64 slid "$AZOS_OUT/build/kaslr-riscv64-$feats" 2>"$out.build")"; then
+        bad; echo "      the slid $feats image did not build — log kept: $out.build"; return
+    fi
+    par_ready
+    rm -f "$log"
+    "$QEMU" -machine virt -nographic -bios default -m 256M -smp 2 -kernel "$img" -device ramfb </dev/null >"$log" 2>&1 &
+    pid=$!
+    while [ "$i" -lt 180 ] && kill -0 "$pid" 2>/dev/null; do
+        tr -d '\r' <"$log" | grep -aqE '^\[FB\] (ramfb|no framebuffer)|^\[RAMFB\] .*(failed|no DMA|not found)|KERNEL PANIC|\[FATAL\]' && break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; sleep 0.2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    base="$(tr -d '\r' <"$log" | sed -n -E 's/^\[KASLR\] image slid to (0x[0-9a-f]+),.*/\1/p' | sed -n 1p)"
+    addr="$(tr -d '\r' <"$log" | sed -n -E 's/^\[RAMFB\] configured: [0-9]+x[0-9]+ @ (0x[0-9a-f]+),.*/\1/p' | sed -n 1p)"
+    fb="$(tr -d '\r' <"$log" | sed -n -E 's/^\[FB\] ramfb .* at (0x[0-9a-f]+), .*/\1/p' | sed -n 1p)"
+    if [ -z "$base" ]; then why="the image did not slide (no \"[KASLR] image slid to\" line)"
+    elif [ -z "$addr" ]; then why="ramfb was not configured: $(tr -d '\r' <"$log" | grep -a '^\[RAMFB\]' | sed -n 1p)"
+    elif ! python3 -c 'import sys; sys.exit(0 if int(sys.argv[1], 16) < int(sys.argv[2], 16) else 1)' "$addr" "$base"; then
+        why="the device was handed $addr, an image address (image at $base), not a physical one"
+    elif [ "$fb" != "$addr" ]; then why="the [FB] line names ${fb:-no address}, ramfb was handed $addr"
+    fi
+    if [ "$want" = canary ]; then
+        if [ -n "$why" ] && [ -n "$base" ]; then ok; rm -f "$log" "$out.build"
+        else bad; echo "      canary did not bite: the virtual address passed the row${why:+ ($why)} — log kept: $log"; fi
+        return
+    fi
+    if [ -n "$why" ]; then bad; echo "      $why — log kept: $log"; return; fi
+    ok; rm -f "$log" "$out.build"
+}
+par "display: ramfb on a slid kernel (rv)" ramfb_slid_row pass
+par "display: ramfb slid canary (rv)" ramfb_slid_row canary
 # ── hv (S6): the resident EL2 stub, and the guest entry behind it (aarch64) ───
 #
 # Two rows on QEMU `virtualization=on,gic-version=3`, which gives a boot an EL2

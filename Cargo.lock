@@ -219,10 +219,12 @@ name = "azos_display"
 version = "0.1.0"
 dependencies = [
  "azos_arch",
+ "azos_dma",
  "azos_drv_base",
  "azos_drv_sys",
  "azos_fb",
  "azos_limits",
+ "azos_mm",
 ]
 
 [[package]]

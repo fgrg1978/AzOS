@@ -911,6 +911,9 @@ hdmi = ["azos_display", "azos_display/vf2"]
 # ramfb -display <backend>` on the QEMU command line too (not
 # `-nographic`, which every other QEMU boot this session has used).
 ramfb = ["fb-generic", "azos_display", "azos_display/qemu"]
+# Gate canary: ramfb is handed the framebuffer's virtual address (the
+# `display: ramfb on a slid kernel` canary row).
+ramfb-va-canary = ["ramfb", "azos_display/ramfb-va-canary"]
 # The generic framebuffer (Kconfig FB_GENERIC): ramfb, Limine or a device-tree
 # simple-framebuffer, mapped write-combining (kernel/src/boot/fb.rs).
 fb-generic = ["azos_fb"]
