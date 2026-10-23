@@ -1278,8 +1278,13 @@ azos_ktest::ktest_late! {
 // construction and keeps the property on every ISA. The waiter is known to be
 // in the lock's wait before the flush under the queued lock (its pending bit
 // or queue tail is in the word); under the test-and-set lock it is given
-// SD_WAIT_SPINS polls to get there. Canary `spin-service-canary` (by hand,
-// x86_64 -smp 4): the flush never returns and the run hangs, CPU 0 masked.
+// SD_WAIT_SPINS polls to get there. A CPU that has only run kernel tasks may
+// have published no root (its CR3 was never written), and a shootdown names
+// only the CPUs that did, so the waiter publishes the root it runs on
+// (`publish_user_root`: its own task's word, the live one). Canary
+// `spin-service-canary` (by hand, x86_64 -smp 4): the flush never returns and
+// the run hangs at this test, CPU 0 masked; without the waiter's publication
+// the canary passed (CPU 1 was no target).
 
 /// Polls the runner gives a test-and-set waiter to reach its wait steps.
 const SD_WAIT_SPINS: u32 = 100_000;
@@ -1291,6 +1296,12 @@ static SD_STAGE: AtomicUsize = AtomicUsize::new(0);
 fn sd_waiter(_: usize) {
     while SD_STAGE.load(Ordering::Acquire) == 0 {
         azos_sched::task_yield();
+    }
+    {
+        use azos_arch::{ArchPlatform as _, Interrupts as _, ARCH};
+        let s = ARCH.disable_all();
+        ARCH.publish_user_root(azos_sched::current_task_satp() as usize);
+        ARCH.restore(s);
     }
     SD_STAGE.store(2, Ordering::Release);
     let mut g = SD_L.lock_irqsave();
