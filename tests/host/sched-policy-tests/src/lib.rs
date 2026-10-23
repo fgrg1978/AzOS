@@ -30,6 +30,8 @@ mod core_sched;
 mod nohz;
 #[cfg(test)]
 mod cpu_power;
+#[cfg(test)]
+mod rt_exactness;
 
 #[path = "../../../../crates/core/sched/src/rt_core.rs"]
 pub mod rt_core;

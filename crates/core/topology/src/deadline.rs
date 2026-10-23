@@ -24,10 +24,15 @@
 //!   implicit deadlines (`deadline == period`); with a constrained deadline it
 //!   under-counts. A task that needs 2 ms of every 10 ms but must finish within 4 ms
 //!   of release is a 50% task to the CPU, not a 20% one.
-//! * A **sufficient** test, not a necessary one. Density-at-most-1 never admits an
-//!   infeasible set; it can refuse a feasible one that only exact demand-bound
-//!   analysis would admit. For a robot that is the right side to err on: a refusal
-//!   is a message at boot, a wrong admission is a missed deadline on a wheel.
+//! * Exact for what the kernel enforces. For sporadic `(runtime, deadline,
+//!   period)` tasks density is only sufficient: demand-bound analysis (QPA)
+//!   admits more. But a row runs inside a CBS server, and the server's wake rule
+//!   (`azos_sched::rt_core::Cbs::release`) gives a task that wakes past its
+//!   deadline a new budget at once, so a server can draw `runtime` every
+//!   `deadline`, not every `period`; for servers of that rate the density sum is
+//!   the exact EDF bound. A demand-bound admission would promise deadlines one
+//!   self-suspending row can break (`tests/host/sched-policy-tests`,
+//!   `rt_exactness`).
 //! * Placement is first-fit by decreasing density, tasks with equal density taken
 //!   in declaration order, so the verdict is deterministic. Bin packing is NP-hard
 //!   in general, so a set that only a cleverer packing would fit can be refused
