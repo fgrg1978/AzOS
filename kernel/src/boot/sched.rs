@@ -1084,25 +1084,29 @@ mod percpu_accessor_ktests {
     }
 }
 
-// lx-tpidr-el0: a Linux class server's aarch64 `TPIDR_EL0` is its own across
-// a switch (the ring-3 loader maps a module's `current`, `mrs xN, SP_EL0`, to
-// it). Late: two kernel tasks pinned to one CPU. The first, created as a
-// Linux class server's (`TaskInit::lx_class`), writes its value and sleeps;
-// the second, native, then writes another; the first must read its own back.
-// riscv64 (`tp`, a general register) and x86_64 (a one-thread server, user GS
-// base 0) keep nothing for it (`fp::switch_slow`). Canary cargo feature
-// `lx-tpidr-canary` (only a Linux task's is kept): `not ok`.
-// arch-only: TPIDR_EL0 is aarch64's; the other ISAs keep nothing for a Linux
-// class server, so there is nothing to test there.
+// arm-tpidr-all-tasks: every task's aarch64 `TPIDR_EL0` is its own across a
+// switch (relibc writes it from EL0), and a new task starts with 0, not the
+// value its hart's previous task left (`fp::switch_thread_pointer`). Late:
+// (1) two native kernel tasks pinned to one CPU each write their own value and
+// take turns, sleeping while the other runs; each must read its own back
+// every turn. (2) A task writes a value and ends; a new task on the same CPU
+// must read 0. riscv64 (`tp`, in every trap frame) and x86_64 (FS base, which
+// ring 3 cannot write) have no EL0-written register to test this way. Canary
+// cargo feature `tpidr-foreign-only-canary` (only a Linux task's is kept, the
+// old rule): both `not ok`.
+// arch-only: TPIDR_EL0 is aarch64's EL0-writable thread pointer (see above).
 #[cfg(all(feature = "ktest", target_arch = "aarch64"))]
-mod lx_tpidr_ktests {
-    use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+mod tpidr_ktests {
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-    const SERVER: u64 = 0x1c5e_0000_0000_5e01;
-    const NATIVE: u64 = 0x1c5e_0000_0000_0a02;
-    /// 1: the server wrote its value; 2: the native task wrote its own;
-    /// 3: the server read its value back into `SEEN`.
-    static STEP: AtomicU8 = AtomicU8::new(0);
+    const VALUE: [u64; 2] = [0x7d1d_0000_0000_0a01, 0x7d1d_0000_0000_0b02];
+    const ROUNDS: usize = 4;
+    /// Whose turn it is: task `i` checks at `2 * round + i`, then adds 1.
+    static STEP: AtomicUsize = AtomicUsize::new(0);
+    /// Tasks finished.
+    static DONE: AtomicUsize = AtomicUsize::new(0);
+    /// The first wrong value a task read back (0: none), or what the new
+    /// task found.
     static SEEN: AtomicU64 = AtomicU64::new(0);
 
     /// This CPU's `TPIDR_EL0` becomes `v`; returns what it held.
@@ -1114,42 +1118,76 @@ mod lx_tpidr_ktests {
         old
     }
 
-    fn server(_: usize) {
-        swap_tpidr_el0(SERVER);
-        STEP.store(1, Ordering::Release);
-        // Asleep, the native task runs on this CPU and writes its value.
-        let _ = crate::ktest::wait("", || STEP.load(Ordering::Acquire) >= 2);
-        SEEN.store(swap_tpidr_el0(SERVER), Ordering::Relaxed);
-        STEP.store(3, Ordering::Release);
+    fn take_turns(i: usize) {
+        let mine = VALUE[i];
+        swap_tpidr_el0(mine);
+        for round in 0..ROUNDS {
+            // Asleep, the other task runs on this CPU and writes its own.
+            if crate::ktest::wait("", || STEP.load(Ordering::Acquire) == 2 * round + i).is_err() {
+                break;
+            }
+            let got = swap_tpidr_el0(mine);
+            if got != mine {
+                let _ = SEEN.compare_exchange(0, got, Ordering::Relaxed, Ordering::Relaxed);
+            }
+            STEP.fetch_add(1, Ordering::Release);
+        }
+        DONE.fetch_add(1, Ordering::Release);
     }
 
-    fn native(_: usize) {
-        let _ = crate::ktest::wait("", || STEP.load(Ordering::Acquire) >= 1);
-        swap_tpidr_el0(NATIVE);
-        STEP.store(2, Ordering::Release);
+    fn leave_value(_: usize) {
+        swap_tpidr_el0(VALUE[0]);
+        DONE.fetch_add(1, Ordering::Release);
+    }
+
+    fn read_value(_: usize) {
+        SEEN.store(swap_tpidr_el0(0), Ordering::Relaxed);
+        DONE.fetch_add(1, Ordering::Release);
+    }
+
+    fn spawn(name: &str, entry: fn(usize), arg: usize, cpu: i8) -> Result<(), &'static str> {
+        azos_sched::try_task_create_init(name, entry, arg, azos_sched::DEFAULT_PRIORITY, cpu,
+            azos_sched::filter::TaskInit::default())
+            .map(|_| ())
+            .ok_or("no slot for a test task")
     }
 
     azos_ktest::ktest_late! {
-        fn lx_class_server_keeps_tpidr_el0() {
-            if !azos_sched::fp::SWITCH_STATE {
-                // Neither LINUX_ABI nor LINUX_DRIVERS: no task keeps one.
-                return Ok(());
-            }
+        fn native_tasks_keep_tpidr_el0() {
             let cpu = (azos_percpu::nr_cpu_ids() - 1) as i8;
             STEP.store(0, Ordering::Relaxed);
+            DONE.store(0, Ordering::Relaxed);
             SEEN.store(0, Ordering::Relaxed);
-            let lx = azos_sched::filter::TaskInit { lx_class: true, ..Default::default() };
-            azos_sched::try_task_create_init("ktest-lx-tp", server, 0, azos_sched::DEFAULT_PRIORITY, cpu, lx)
-                .ok_or("no slot for the Linux class task")?;
-            azos_sched::try_task_create_init("ktest-native-tp", native, 0, azos_sched::DEFAULT_PRIORITY, cpu,
-                azos_sched::filter::TaskInit::default())
-                .ok_or("no slot for the native task")?;
+            spawn("ktest-tp-a", take_turns, 0, cpu)?;
+            spawn("ktest-tp-b", take_turns, 1, cpu)?;
             crate::ktest::wait("the two tasks did not finish within KTEST_LATE_TIMEOUT_MS",
-                || STEP.load(Ordering::Acquire) == 3)?;
+                || DONE.load(Ordering::Acquire) == 2)?;
+            if STEP.load(Ordering::Relaxed) != 2 * ROUNDS {
+                return Err("the two tasks did not take every turn");
+            }
             match SEEN.load(Ordering::Relaxed) {
-                SERVER => Ok(()),
-                NATIVE => Err("the Linux class task read the native task's TPIDR_EL0"),
-                _ => Err("the Linux class task read a TPIDR_EL0 neither task wrote"),
+                0 => Ok(()),
+                v if VALUE.contains(&v) => Err("a native task read the other task's TPIDR_EL0"),
+                _ => Err("a native task read a TPIDR_EL0 neither task wrote"),
+            }
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn new_task_starts_with_tpidr_el0_zero() {
+            let cpu = (azos_percpu::nr_cpu_ids() - 1) as i8;
+            DONE.store(0, Ordering::Relaxed);
+            SEEN.store(u64::MAX, Ordering::Relaxed);
+            spawn("ktest-tp-old", leave_value, 0, cpu)?;
+            crate::ktest::wait("the first task did not finish within KTEST_LATE_TIMEOUT_MS",
+                || DONE.load(Ordering::Acquire) == 1)?;
+            spawn("ktest-tp-new", read_value, 0, cpu)?;
+            crate::ktest::wait("the new task did not finish within KTEST_LATE_TIMEOUT_MS",
+                || DONE.load(Ordering::Acquire) == 2)?;
+            match SEEN.load(Ordering::Relaxed) {
+                0 => Ok(()),
+                v if v == VALUE[0] => Err("a new task started with the previous task's TPIDR_EL0"),
+                _ => Err("a new task started with a TPIDR_EL0 nobody gave it"),
             }
         }
     }

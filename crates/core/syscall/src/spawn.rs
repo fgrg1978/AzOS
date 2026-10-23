@@ -374,17 +374,10 @@ pub fn spawn_path_ex(
             );
             return SpawnEx::Failed(azos_abi::error::Errno::EACCES.to_syscall_ret());
         }
-        // A row that names a Linux class (`lx_class`) is that class's
-        // server: on aarch64 its thread pointer is kept per task. Only a
-        // kernel with the driver layer (Kconfig LINUX_DRIVERS) starts one.
-        let lx_row = azos_limits::LINUX_DRIVERS
-            && azos_topology::get().is_some_and(|t| {
-                t.tasks().iter().any(|r| r.name.as_bytes() == plan.topology_key.as_bytes() && !r.lx_class.is_empty())
-            });
         let t_elf = census::now();
         cs.add(census::POLICY, t_policy, t_elf);
         let prepare = |elf: azos_sched::spawn::ElfImage<'_>| {
-            azos_sched::spawn::spawn_prepare(elf, plan.filter, plan.profile.image, params, mem, linux_row, lx_row)
+            azos_sched::spawn::spawn_prepare(elf, plan.filter, plan.profile.image, params, mem, linux_row)
         };
         let prepared = match &src {
             Source::Kept(p) => prepare(azos_sched::spawn::ElfImage::Cached { pages: &p.pages, kept: p.kept }),

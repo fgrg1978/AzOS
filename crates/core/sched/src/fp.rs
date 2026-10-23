@@ -18,10 +18,12 @@
 //!   starts clean ([`exec_reset`]).
 //!
 //! aarch64 needs none of this: its kernel saves the FP/SIMD file of every
-//! task already. What it keeps here is the EL0 thread pointer `TPIDR_EL0`
-//! of the tasks that use it: a Linux task's (musl's TLS) and a Linux class
-//! server's (the ring-3 loader maps a module's `current`, `mrs xN, SP_EL0`,
-//! to it).
+//! task already.
+//!
+//! Every task's thread pointer is its own on every ISA
+//! ([`switch_thread_pointer`], also called by `set_current_task`): riscv64
+//! `tp` (a general register every trap frame saves), aarch64 `TPIDR_EL0` and
+//! x86_64 FS base (kept per slot here).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::task::MAX_TASKS;
@@ -38,47 +40,26 @@ pub const SSTATUS_FS_CLEAN: usize = 2 << 13;
 /// The `sstatus.FS` field.
 pub const SSTATUS_FS_MASK: usize = 3 << 13;
 
-/// Does this build have tasks whose per-thread CPU state a switch moves
-/// ([`switch_slow`])? Linux tasks (Kconfig `LINUX_ABI`) and Linux class
-/// servers (Kconfig `LINUX_DRIVERS`). Without either, `set_current_task`
-/// compiles none of it.
-pub const SWITCH_STATE: bool = azos_limits::LINUX_ABI || azos_limits::LINUX_DRIVERS;
+/// Does this build have tasks whose per-thread CPU state the out-of-line
+/// path moves ([`switch_slow`])? Only a Linux task's riscv64 F/D file (Kconfig
+/// `LINUX_ABI`); on the other ISAs `set_current_task` compiles none of it.
+pub const SWITCH_STATE: bool = azos_limits::LINUX_ABI && cfg!(all(target_arch = "riscv64", target_os = "none"));
 
-/// Per slot: the task belongs to a Linux class server, whose topology row
-/// names an `lx_class` (`TaskInit::lx_class`). Written by [`reset`] at slot
-/// creation, before the slot's switch flag is published.
-static LX_CLASS: [AtomicBool; MAX_TASKS] = [const { AtomicBool::new(false) }; MAX_TASKS];
-
-/// A new task in slot `idx` has not used the FP file. `lx_class`: it belongs
-/// to a Linux class server ([`slot_is_lx_class`]).
-pub fn reset(idx: usize, lx_class: bool) {
+/// A new task in slot `idx` has not used the FP file, and has no thread
+/// pointer: its first switch in loads 0 ([`switch_thread_pointer`]), never
+/// the value the hart's previous task left.
+pub fn reset(idx: usize) {
     if idx < MAX_TASKS {
         USED[idx].store(false, Ordering::Relaxed);
-        LX_CLASS[idx].store(lx_class, Ordering::Relaxed);
-        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-        TLS[idx].store(0, Ordering::Relaxed);
-        // x86_64: a new task has no thread pointer (FS base 0).
-        #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+        #[cfg(all(target_os = "none", not(target_arch = "riscv64")))]
         TLS[idx].store(0, Ordering::Relaxed);
     }
 }
 
-/// Does slot `idx` belong to a Linux class server? Its switches take
-/// [`switch_slow`] (`scheduler::publish_filter_word`).
-pub fn slot_is_lx_class(idx: usize) -> bool {
-    idx < MAX_TASKS && LX_CLASS[idx].load(Ordering::Relaxed)
-}
-
-/// Does the current task belong to a Linux class server? A thread or a fork
-/// child it creates belongs to the same server.
-pub fn current_is_lx_class() -> bool {
-    crate::scheduler::current_slot().is_some_and(slot_is_lx_class)
-}
-
-/// aarch64: each Linux task's and Linux class server task's `TPIDR_EL0`
-/// (musl's thread pointer; a server's Linux `current`). EL1 never writes it
-/// and a native image never uses it, but a spawned task's entry writes it
-/// (0), so the value of such a task is kept per slot across switches.
+/// aarch64: each task's `TPIDR_EL0` (relibc's and musl's thread pointer, a
+/// Linux class server's Linux `current`), saved when it leaves a hart. EL0
+/// writes the register itself, so the value is read back at every switch
+/// away ([`switch_thread_pointer`]).
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
@@ -90,44 +71,18 @@ static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
 static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
 
-/// Save `prev`'s file and load `next`'s, for the slots that use it. Called by
-/// `set_current_task` on the switching hart before the switch, and only when
-/// `prev` or `next` is a Linux task or a Linux class server's (its slot's
-/// switch flag is set); the kernel itself never touches the FP file in
-/// between. On aarch64 it carries such a task's `TPIDR_EL0` instead (the
-/// FP/SIMD file is the kernel's own lazy switch there). Out of line on purpose: its two 32-register blocks inlined
-/// into `do_schedule` cost every native switch (+90 on `switch-loaded`).
+/// riscv64: save `prev`'s F/D file and load `next`'s, for the slots that use
+/// it. Called by `set_current_task` on the switching hart before the switch,
+/// and only when `prev` or `next` is a Linux task (its slot's switch flag is
+/// set, [`SWITCH_STATE`]); the kernel itself never touches the FP file in
+/// between. The other ISAs have nothing here: aarch64's FP/SIMD file is the
+/// kernel's own lazy switch, x86_64's is the XSAVE switch. Out of line on
+/// purpose: its two 32-register blocks inlined into `do_schedule` cost every
+/// native switch (+90 on `switch-loaded`).
 #[inline(never)]
 pub fn switch_slow(prev: usize, next: usize) {
     // Gate canary only (`linux-abi-fp-canary`): nothing follows the task.
-    if cfg!(feature = "linux-abi-fp-canary") {
-        return;
-    }
-    // arch-only: aarch64 keeps the EL0 thread pointer in TPIDR_EL0 and this
-    // saves it across a switch, for a Linux task and for a Linux class
-    // server's tasks. x86_64 does the same for FS base in its own switch
-    // path, for every task; a Linux class server needs no GS base there,
-    // because it runs its Linux code on one thread, whose `%gs:sym` reads
-    // `sym` with the user GS base 0 that every task has (CR4.FSGSBASE off).
-    // riscv64 keeps the thread pointer in `tp`, a general register that every
-    // trap frame saves and every syscall preserves
-    // (`azos_abi::syscall_nr`), so nothing is kept for it here.
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    if SWITCH_STATE && prev != next {
-        if prev < MAX_TASKS && keeps_tpidr(prev) {
-            let v: u64;
-            // SAFETY: reading this hart's EL0 thread pointer.
-            unsafe { core::arch::asm!("mrs {0}, TPIDR_EL0", out(reg) v) };
-            TLS[prev].store(v, Ordering::Relaxed);
-        }
-        if next < MAX_TASKS && keeps_tpidr(next) {
-            let v = TLS[next].load(Ordering::Relaxed);
-            // SAFETY: EL1 writes the incoming task's EL0 thread pointer; the
-            // kernel itself does not use TPIDR_EL0.
-            unsafe { core::arch::asm!("msr TPIDR_EL0, {0}", in(reg) v) };
-        }
-    }
-    if !azos_limits::LINUX_ABI || !cfg!(all(target_arch = "riscv64", target_os = "none")) {
+    if cfg!(feature = "linux-abi-fp-canary") || !SWITCH_STATE {
         return;
     }
     if prev < MAX_TASKS && prev != next && USED[prev].load(Ordering::Relaxed) {
@@ -139,16 +94,6 @@ pub fn switch_slow(prev: usize, next: usize) {
         // SAFETY: the incoming slot's area, saved when it last left a hart.
         unsafe { load(core::ptr::addr_of!(AREA[next]) as *const u64) }
     }
-}
-
-/// aarch64: does slot `idx` keep its own `TPIDR_EL0` ([`TLS`])? A Linux
-/// task does, and so does a Linux class server's. Gate canary
-/// `lx-tpidr-canary`: only a Linux task does (ktest
-/// `lx_class_server_keeps_tpidr_el0` is `not ok`).
-// arch-only: only aarch64 keeps a thread pointer here (see `switch_slow`).
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
-fn keeps_tpidr(idx: usize) -> bool {
-    crate::scheduler::slot_is_foreign(idx) || (!cfg!(feature = "lx-tpidr-canary") && slot_is_lx_class(idx))
 }
 
 /// An illegal-instruction trap from user mode with `FS = Off` in `sstatus`
@@ -221,17 +166,22 @@ pub fn frame_load(a: &[u64; 33]) {
 static CUR_FS: [core::sync::atomic::AtomicU64; crate::MAX_CPUS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::MAX_CPUS];
 
-/// x86_64: this CPU is about to run `next`: put its FS base in the MSR.
-/// Called by `set_current_task` for EVERY switch, native or Linux, because a
-/// native thread can have a thread pointer too (`SYS_THREAD_CREATE`'s
-/// `tls`). Ring 3 cannot change its FS base (CR4.FSGSBASE is off and no call
-/// sets it), so nothing is read back from the MSR: the per-slot value is
-/// the task's, and `CUR_FS` is what this CPU's MSR holds. The MSR is
+/// CPU `cpu` stops running slot `prev` and starts `next`: the thread pointer
+/// becomes `next`'s. Called by `set_current_task` for EVERY switch, native or
+/// Linux, kernel task or not, because every task can have one (relibc's and
+/// musl's TLS, `SYS_THREAD_CREATE`'s `tls`, a Linux class server's
+/// `current`). A new slot's is 0 ([`reset`]), so no task starts with the
+/// one its hart's previous task left. The caller has interrupts off.
+///
+/// x86_64: the FS base. Ring 3 cannot change it (CR4.FSGSBASE is off and no
+/// call sets it), so nothing is read back from the MSR: the per-slot value
+/// is the task's, and `CUR_FS` is what this CPU's MSR holds. The MSR is
 /// written only when the two differ (`azos_arch::cpu::fs_base_to_load`).
-/// The caller has interrupts off.
+/// The user GS base is 0 for every task (`x86_64_enter_user`, and a fork
+/// child takes its parent's), so nothing is kept for it.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 #[inline]
-pub fn switch_fs_base(cpu: usize, next: usize) {
+pub fn switch_thread_pointer(cpu: usize, _prev: usize, next: usize) {
     if next >= MAX_TASKS || cpu >= crate::MAX_CPUS {
         return;
     }
@@ -241,9 +191,52 @@ pub fn switch_fs_base(cpu: usize, next: usize) {
         CUR_FS[cpu].store(b, Ordering::Relaxed);
     }
 }
+/// aarch64: `TPIDR_EL0`. EL0 writes it without a call (relibc's
+/// `activate_tls`, a thread's start shim, musl), so unlike x86_64's FS base
+/// it is read back from the register as `prev` leaves (`mrs`, a store) and
+/// `next`'s is written (a load, `msr`): four instructions on every switch.
+/// The kernel itself never uses `TPIDR_EL0` (its hart id is `TPIDR_EL1`).
+/// Gate canaries: `tpidr-foreign-only-canary` keeps it only for a Linux
+/// task, the old rule (ktests `native_tasks_keep_tpidr_el0` and
+/// `new_task_starts_with_tpidr_el0_zero` are `not ok`);
+/// `linux-abi-fp-canary` keeps it for every task but a Linux one.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[inline]
+pub fn switch_thread_pointer(_cpu: usize, prev: usize, next: usize) {
+    let keeps = |idx: usize| {
+        if cfg!(feature = "linux-abi-fp-canary") {
+            !crate::scheduler::slot_is_foreign(idx)
+        } else if cfg!(feature = "tpidr-foreign-only-canary") {
+            crate::scheduler::slot_is_foreign(idx)
+        } else {
+            true
+        }
+    };
+    if prev < MAX_TASKS && keeps(prev) {
+        let v: u64;
+        // SAFETY: reading this hart's EL0 thread pointer, the outgoing
+        // task's.
+        unsafe { core::arch::asm!("mrs {0}, TPIDR_EL0", out(reg) v, options(nomem, nostack, preserves_flags)) };
+        TLS[prev].store(v, Ordering::Relaxed);
+    }
+    if next < MAX_TASKS && keeps(next) {
+        let v = TLS[next].load(Ordering::Relaxed);
+        // SAFETY: EL1 writes the incoming task's EL0 thread pointer; the
+        // kernel itself does not use TPIDR_EL0.
+        unsafe { core::arch::asm!("msr TPIDR_EL0, {0}", in(reg) v, options(nomem, nostack, preserves_flags)) };
+    }
+}
+/// riscv64: nothing. The thread pointer is `tp`, a general register that
+/// every trap frame saves and restores and every syscall preserves
+/// (`azos_abi::syscall_nr`), so it is the task's own already; a new task's
+/// first entry zeroes it with the rest. A host build has no thread pointer
+/// to switch.
+#[cfg(any(target_arch = "riscv64", not(target_os = "none")))]
+#[inline(always)]
+pub fn switch_thread_pointer(_cpu: usize, _prev: usize, _next: usize) {}
 
 /// x86_64: the current task's FS base becomes `base` now (the one writer of
-/// the MSR besides [`switch_fs_base`]): a task's first entry to ring 3 and an
+/// the MSR besides [`switch_thread_pointer`]): a task's first entry to ring 3 and an
 /// exec. The slot's value, this CPU's cache and the MSR change together with
 /// interrupts off, so no switch sees them apart.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
@@ -270,13 +263,12 @@ pub fn exec_reset() {
         if cfg!(feature = "exec-regs-canary") {
             return;
         }
+        // The register only: the slot's copy is written as the task
+        // leaves the hart ([`switch_thread_pointer`]).
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-        {
-            TLS[me].store(0, Ordering::Relaxed);
-            // SAFETY: EL1 clears this task's EL0 thread pointer; the kernel
-            // itself does not use TPIDR_EL0.
-            unsafe { core::arch::asm!("msr TPIDR_EL0, xzr") };
-        }
+        // SAFETY: EL1 clears this task's EL0 thread pointer; the kernel
+        // itself does not use TPIDR_EL0.
+        unsafe { core::arch::asm!("msr TPIDR_EL0, xzr") };
         #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
         set_fs_base(0);
     }

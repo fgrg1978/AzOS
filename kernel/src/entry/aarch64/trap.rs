@@ -294,8 +294,9 @@ impl ArchFrame for TrapFrame {
     /// NEON/FP file are none of them GPRs, and a version that zero-padded the 31
     /// GPRs into a bare array silently dropped all four on every fork (a child
     /// resumed with a zeroed FP/SIMD file and no TLS pointer). `TrapFrame`
-    /// carries everything but `TPIDR_EL0` (never written by EL1, so it survives
-    /// a same-task syscall round trip, but a forked CHILD is a fresh task that
+    /// carries everything but `TPIDR_EL0` (EL1 writes it only at a switch,
+    /// which keeps every task's, so it survives a same-task syscall round
+    /// trip, but a forked CHILD is a fresh task that
     /// never ran the parent's code and needs it captured here). The untaken
     /// branch hands out a zero-initialised `static`: `Default::default()` on it
     /// measured WORSE than the copy (it zeroes the same 528 bytes).

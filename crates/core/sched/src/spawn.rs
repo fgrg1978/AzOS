@@ -288,9 +288,7 @@ pub enum SpawnError {
 ///
 /// `sched` is the child's `(priority, class_raw)`: its topology row's when it
 /// has one (wave 7, resolved by the caller), `None` for the scheduler's
-/// default (`DEFAULT_PRIORITY`, `DEFAULT_SCHED_CLASS_RAW`). `linux`: the
-/// row makes the child a Linux task; `lx_class`: the row names a Linux
-/// class, so the child is that class's server (`TaskInit::lx_class`).
+/// default (`DEFAULT_PRIORITY`, `DEFAULT_SCHED_CLASS_RAW`).
 ///
 /// Every failure after the address space exists destroys it with
 /// `vmm::destroy_user_pagetable`, the teardown for a page table no task has
@@ -304,7 +302,6 @@ pub fn spawn_prepare(
     sched: Option<(u32, u8)>,
     mem: crate::process::MemSpec,
     linux: bool,
-    lx_class: bool,
 ) -> Result<SpawnPrepared, SpawnError> {
     // Without the personality a Linux child cannot be made, nor on an ISA
     // whose Linux ABI the in-kernel table cannot translate (x86_64) unless
@@ -412,7 +409,6 @@ pub fn spawn_prepare(
         } else {
             crate::task::ABI_LINUX
         },
-        lx_class,
         ..TaskInit::default()
     };
     // Fallible creation: `SYS_SPAWN_EX` is reachable from ring 3 in a loop, and

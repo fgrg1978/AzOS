@@ -73,7 +73,7 @@ pub mod encode {
 /// - `current` is `mrs xN, SP_EL0` (EL0 cannot read `SP_EL0` as a system
 ///   register). It becomes `mrs xN, TPIDR_EL0`, which EL0 reads and writes:
 ///   the server's task switch writes the current Linux task there, and the
-///   kernel keeps `TPIDR_EL0` per task for a Linux class server's tasks.
+///   kernel keeps `TPIDR_EL0` per task, as it does for every task.
 /// - The per-CPU base is `mrs xN, TPIDR_EL1` (`__kern_my_cpu_offset`; 5 reads
 ///   in `ext4.ko`). It becomes `movz xN, #0`. A server runs all its Linux code
 ///   on one thread, which is one CPU to Linux, so its per-CPU offset is 0 and

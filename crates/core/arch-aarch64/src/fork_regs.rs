@@ -86,8 +86,10 @@ pub struct ForkRegs {
     /// the child resumes in the exact same mode (EL0t) and condition-flag
     /// state the parent's `svc` trapped from.
     pub spsr_el1: u64,
-    /// `TPIDR_EL0` — the userspace TLS/thread-pointer register. EL1 never
-    /// writes it (this kernel's own hart id lives in `TPIDR_EL1` — see
+    /// `TPIDR_EL0` — the userspace TLS/thread-pointer register. EL1 writes it
+    /// only at a task switch, which saves the outgoing task's and puts back
+    /// the incoming one's (`azos_sched::fp::switch_thread_pointer`; this
+    /// kernel's own hart id lives in `TPIDR_EL1` — see
     /// `crates/core/sched/src/smp.rs`), so a syscall round-trip on the SAME task
     /// preserves it for free by simply never touching it; a forked CHILD is
     /// a brand-new task dispatched onto a kernel stack that never ran the

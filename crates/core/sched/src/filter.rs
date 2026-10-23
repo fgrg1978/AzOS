@@ -428,10 +428,4 @@ pub struct TaskInit {
     /// a fresh one (`crate::domain`). `None` for every task that is its own
     /// process: a spawn, a fork, a kernel task.
     pub domain: Option<u32>,
-    /// The task belongs to a Linux class server: its topology row names an
-    /// `lx_class` (a spawn), or its creator belongs to one (a thread, a
-    /// fork). On aarch64 its `TPIDR_EL0` is then kept per task
-    /// (`fp::switch_slow`). In place before the task is runnable, for the
-    /// reason `abi` is.
-    pub lx_class: bool,
 }

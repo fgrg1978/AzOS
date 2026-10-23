@@ -261,9 +261,10 @@ fd-private-offset-busybox-canary = ["azos_fs/fd-private-offset-canary", "linux-b
 linux-stream-tamper-test = ["linux-busybox-test", "azos_syscall/stream-hash-flip-canary"]
 linux-stream-tamper-canary = ["linux-busybox-test", "azos_syscall/stream-hash-nocheck-canary"]
 linux-abi-fp-canary = ["azos_sched/linux-abi-fp-canary", "azos_topology/linux-abi-test"]
-# Gate canary (ktest build): a Linux class server's aarch64 TPIDR_EL0 is not
-# kept per task; ktest `lx_class_server_keeps_tpidr_el0` is `not ok`.
-lx-tpidr-canary = ["azos_sched/lx-tpidr-canary"]
+# Gate canary (ktest build): aarch64 TPIDR_EL0 is kept per task only for a
+# Linux task, not a native one; ktests `native_tasks_keep_tpidr_el0` and
+# `new_task_starts_with_tpidr_el0_zero` are `not ok`.
+tpidr-foreign-only-canary = ["azos_sched/tpidr-foreign-only-canary"]
 linux-busybox-fork-canary = ["linux-busybox-test", "azos_syscall/linux-abi-fork-canary"]
 # Wave 13 (SIGNALS): signal delivery, console input and execve across rows.
 # `linux-exec-row-test` gives BUSYBOX.ELF's row `/fat` and the grant to exec
