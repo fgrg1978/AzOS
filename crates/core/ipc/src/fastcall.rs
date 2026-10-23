@@ -261,6 +261,26 @@ impl CallEdge for NodeSel<false> {
     }
 }
 
+/// The server the task in slot `idx` is blocked calling: the slot whose call
+/// node its wait-graph edge names (`CALL_NODES` is indexed by server slot),
+/// `None` when it waits on anything else or nothing. Lock-free, as every
+/// reader of an edge outside the graph lock is (`Edge::leave`): the pick's
+/// proxy execution follows it (`azos_sched::rt::set_call_server_hook`), and
+/// the worst a stale read does is one pick that runs the server a moment
+/// longer on the caller's reservation. Always `None` with WAIT_GRAPH n.
+pub fn call_server_of(idx: usize) -> Option<usize> {
+    use waitgraph::SchedPi;
+    if !GRAPH {
+        return None;
+    }
+    let on = azos_sched::classes::PI.blocked_on(idx as waitgraph::TaskId)?;
+    let base = CALL_NODES.as_ptr() as usize;
+    let size = core::mem::size_of::<DonorNode>().max(1);
+    let off = on.addr().wrapping_sub(base);
+    let s = off / size;
+    (off % size == 0 && s < CALL_NODES.len()).then_some(s)
+}
+
 /// Runtime canary `ipc-call-no-edge`: a call takes no wait-graph edge, so a
 /// low-priority server answers at its own priority (ktest
 /// `waitgraph_ipc_call_boosts_server`, WAIT_GRAPH y). Zero-sized with n.
@@ -546,7 +566,13 @@ pub fn wait_state(handle: u64, caller_tid: u32) -> FastIpcWait {
 /// The call is withdrawn and the record freed (the caller's next call needs
 /// it); `was_queued` is exact: no server saw the request.
 pub fn abandon(handle: u64, caller_tid: u32) -> Abandoned {
+    // A call its server holds: the server is told it is cancelled (after the
+    // withdrawal, so a reply that reads the notice finds the call over).
+    let served = ep_queue::handle_rec(handle).and_then(ep_queue::in_service_call).filter(|&(_, h)| h == handle);
     let a = ep_queue::abandon(handle, caller_tid);
+    if let Some((ep, h)) = served {
+        crate::endpoint::post_call_notice(ep, h, CODE_CANCELED);
+    }
     if GRAPH {
         if let Some(idx) = azos_sched::idx_for_tid(caller_tid) {
             Edge::leave(idx);
@@ -564,7 +590,12 @@ pub fn release_all(tid: u32) {
     // otherwise wait for an answer nobody holds the right to give.
     ep_queue::release_holder(tid, complete_one);
     let Some(idx) = azos_sched::idx_for_tid(tid) else { return };
+    let served = ep_queue::in_service_call(idx);
     let Some(c) = ep_queue::release_caller(idx, tid) else { return };
+    // A call its server holds: cancelled for it (see [`abandon`]).
+    if let Some((ep, h)) = served.filter(|&(_, h)| h == c.handle) {
+        crate::endpoint::post_call_notice(ep, h, CODE_CANCELED);
+    }
     // A dying client's donation goes back to its server; nobody else is
     // left to return it.
     if GRAPH {
@@ -578,6 +609,21 @@ pub fn release_all(tid: u32) {
     // one dying).
     for h in c.stranded() {
         crate::cap_store::delete_moved(c.server, azos_abi::cap::CapHandle(h));
+    }
+}
+
+/// The codes of a call notice (`PORT_EVENT_CALL_NOTICE`): withdrawn, and its
+/// lent budget ran out.
+const CODE_CANCELED: u16 = azos_abi::error::Errno::ECANCELED as u16;
+const CODE_TIMED_OUT: u16 = azos_abi::error::Errno::ETIMEDOUT as u16;
+
+/// The reservation the task in slot `holder` lent its call ran out while
+/// its server worked on it (`azos_sched::rt`'s proxy execution,
+/// `set_proxy_timeout_hook`): the server gets a timeout notice for the call.
+/// From the pick or the tick, interrupts off, no run-queue lock held.
+pub fn proxy_timed_out(holder: usize) {
+    if let Some((ep, h)) = ep_queue::in_service_call(holder) {
+        crate::endpoint::post_call_notice(ep, h, CODE_TIMED_OUT);
     }
 }
 

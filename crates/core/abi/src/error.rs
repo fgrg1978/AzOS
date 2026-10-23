@@ -85,8 +85,12 @@ pub enum Errno {
     ENAMETOOLONG = 36,
     /// Directory not empty (`DOMAIN_RMDIR`; Linux's value).
     ENOTEMPTY = 39,
+    /// A wait ran out (Linux's value): the futex wait, and the code of a
+    /// `PORT_EVENT_CALL_NOTICE` whose caller's lent budget ran out.
+    ETIMEDOUT = 110,
     /// Operation canceled (Linux's value): an io_ring entry linked
-    /// (`SQE_F_LINK`) to one that failed or did not complete in its pass.
+    /// (`SQE_F_LINK`) to one that failed or did not complete in its pass,
+    /// and the code of a `PORT_EVENT_CALL_NOTICE` whose caller withdrew.
     ECANCELED = 125,
     /// Not the object's owner, or not otherwise authorized for this call —
     /// `-99`, the value `crates/core/syscall`'s handlers have returned as their
@@ -224,6 +228,7 @@ impl Errno {
             36 => Some(Errno::ENAMETOOLONG),
             38 => Some(Errno::ENOSYS),
             39 => Some(Errno::ENOTEMPTY),
+            110 => Some(Errno::ETIMEDOUT),
             125 => Some(Errno::ECANCELED),
             99 => Some(Errno::ENOTOWNER),
             200 => Some(Errno::ECAPKIND),
@@ -278,6 +283,7 @@ impl fmt::Display for Errno {
             Errno::ENOSYS => "function not implemented",
             Errno::ENAMETOOLONG => "file name too long",
             Errno::ENOTEMPTY => "directory not empty",
+            Errno::ETIMEDOUT => "timed out",
             Errno::ECANCELED => "operation canceled",
             Errno::ENOTOWNER => "not the object's owner, or not otherwise authorized",
             Errno::ECAPKIND => "capability has wrong kind",
@@ -333,6 +339,7 @@ mod tests {
             Errno::EEOF,
             Errno::EPURGED,
             Errno::EADMIT,
+            Errno::ETIMEDOUT,
         ];
         for e in cases {
             let ret = e.to_syscall_ret();

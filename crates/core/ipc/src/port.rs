@@ -90,10 +90,11 @@ const _: () = assert!(PORT_MAX_SOURCES >= 2 && PORT_MAX_SOURCES <= 64);
 
 // `PortEvent::source_type` values (`azos_abi::syscall_nr`, their one home):
 // an io_ring, an IRQ (the value `irq_bind` writes), a timer, an
-// endpoint's no-senders notice, a source that is gone (wave 15 N5b), a
+// endpoint's no-senders and call notices, a source that is gone (wave 15 N5b), a
 // Domain's change of memory pressure.
 pub use azos_abi::syscall_nr::{
-    PORT_EVENT_IRQ, PORT_EVENT_NO_SENDERS, PORT_EVENT_PRESSURE, PORT_EVENT_RING, PORT_EVENT_SOURCE_GONE,
+    PORT_EVENT_CALL_NOTICE, PORT_EVENT_IRQ, PORT_EVENT_NO_SENDERS, PORT_EVENT_PRESSURE, PORT_EVENT_RING,
+    PORT_EVENT_SOURCE_GONE,
     PORT_EVENT_TIMER,
 };
 
@@ -901,6 +902,28 @@ pub fn port_source_gone(link: PortLink, kind: PortSourceKind, code: u16) -> bool
         let Some((i, s)) = link_slot_locked(&ports, link, kind) else { return false };
         ports[i].sources[s].gone = code.max(1);
         ports[i].sources[s].pending = false;
+        detach_waiters_locked(&mut ports, i, WaiterState::Woken)
+    };
+    woken.wake(link.port);
+    true
+}
+
+/// The source `link` names (holding `kind`) has a notice for its port: one
+/// event of type `source_type`, with `code` and `id` as its code and
+/// `source_id` and the binding's key, on the port's bounded queue (a full
+/// queue drops it, as an interrupt's event is dropped), and the port's
+/// waiters woken. `false` when the link named no live source. Safe where an
+/// interrupt's delivery is ([`port_queue_event_bound`]): the scheduler's
+/// pick and tick post a call's timeout notice through it.
+pub fn port_post_notice(link: PortLink, kind: PortSourceKind, source_type: u8, code: u16, id: u32) -> bool {
+    if link.is_none() {
+        return false;
+    }
+    let woken = {
+        let mut ports = PORTS.lock_irqsave();
+        let Some((i, s)) = link_slot_locked(&ports, link, kind) else { return false };
+        let key = ports[i].sources[s].user_key;
+        queue_locked(&mut ports[i], PortEvent { key, source_type, source_id: id, code, cpu: 0 });
         detach_waiters_locked(&mut ports, i, WaiterState::Woken)
     };
     woken.wake(link.port);
@@ -2525,6 +2548,30 @@ mod tests {
         assert!(added, "the freed slot takes it");
         port_unbind_link(l2, CH2);
         assert_eq!(sources(r), PORT_MAX_SOURCES - 1, "the undo freed it");
+    }
+
+    /// A call notice (`port_post_notice`, the endpoint's cancel and timeout
+    /// notices) is one event on the queue with the binding's key, the type,
+    /// code and id given; the source stays bound (it is not a gone event), and
+    /// a link that names no live source posts nothing.
+    ///
+    /// **Canary.** Post with the source's handle instead of `id`: the
+    /// `source_id` assertion goes red.
+    #[test]
+    fn a_call_notice_is_one_queued_event_with_the_bindings_key() {
+        let _g = setup();
+        const EP: PortSourceKind = PortSourceKind::Endpoint(0x55);
+        let r = port_create_ref(A as usize).expect("create");
+        let (link, _) = port_bind_object(r, EP, 9, 0x77).expect("bind");
+        assert!(port_post_notice(link, EP, PORT_EVENT_CALL_NOTICE, 125, 0xABCD));
+        let e = port_poll_ref(r).expect("the notice");
+        assert_eq!((e.key, e.source_type, e.source_id, e.code), (0x77, PORT_EVENT_CALL_NOTICE, 0xABCD, 125));
+        assert_eq!(port_poll_ref(r), Err(PortCapError::Empty), "one event per notice");
+        assert!(port_link_valid(link, EP), "the endpoint stays bound");
+        assert!(!port_post_notice(link, PortSourceKind::Endpoint(0x56), PORT_EVENT_CALL_NOTICE, 110, 1), "another endpoint");
+        assert!(!port_post_notice(PortLink::NONE, EP, PORT_EVENT_CALL_NOTICE, 110, 1));
+        assert_eq!(port_destroy_ref(r), Ok(()));
+        assert!(!port_post_notice(link, EP, PORT_EVENT_CALL_NOTICE, 110, 1), "the port is gone");
     }
 
     /// IRQ events (the queue) and table sources alternate when both are

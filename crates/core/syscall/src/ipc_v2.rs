@@ -284,8 +284,13 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
     // The first capability fills the v1 record's `moved_cap`, which the exit
     // and drain paths revoke; a v1 accept refuses the call (N11c).
     let moved_cap = got.first().map_or(0, |h| h.0);
+    // A call with a deadline lends the caller to its server (the wait-graph
+    // call edge): the server runs at the caller's urgency and, as a passive
+    // server, on the caller's reservation (`azos_sched::rt` proxy execution).
+    // One without a deadline lends nothing, as before.
+    let lend = d.deadline != 0;
     let Some(handle) =
-        fastcall::call_v2_msg(caller_idx, caller_tid, dest, first_words(&p), moved_cap, false, badge, &p)
+        fastcall::call_v2_msg(caller_idx, caller_tid, dest, first_words(&p), moved_cap, lend, badge, &p)
     else {
         give_back(server, caller_tid, &xs[..nx], got);
         return E_PERM;

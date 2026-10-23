@@ -352,6 +352,32 @@ pub fn flush_notices() {
     }
 }
 
+/// The serving task of endpoint slot `i` holds call `handle`, which ended for
+/// its caller (`code`: `ECANCELED` withdrawn, `ETIMEDOUT` its lent budget ran
+/// out): one `PORT_EVENT_CALL_NOTICE` on the port the endpoint's notices are
+/// bound to (`source_id` the handle's low 32 bits). Nothing when the endpoint
+/// is gone or unbound, or with Kconfig `IPC_PORT_NOTICES` n. No lock held;
+/// takes `ENDPOINTS`, then `PORTS` (`port::port_post_notice`).
+pub fn post_call_notice(i: usize, handle: u64, code: u16) {
+    if !azos_limits::IPC_PORT_NOTICES {
+        return;
+    }
+    let target = {
+        let eps = ENDPOINTS.lock_irqsave();
+        let Some(e) = eps.get(i) else { return };
+        (e.active && !e.link.is_none()).then(|| (e.link, LAYOUT.pack(i as u32, e.generation)))
+    };
+    if let Some((link, r)) = target {
+        let _ = crate::port::port_post_notice(
+            link,
+            crate::port::PortSourceKind::Endpoint(r),
+            azos_abi::syscall_nr::PORT_EVENT_CALL_NOTICE,
+            code,
+            handle as u32,
+        );
+    }
+}
+
 /// Store `link` as the port source endpoint `r` reports its notices to
 /// (`PORT_BIND`, source 3), for its serving task `tid` only
 /// (`NotOwner` otherwise). The rules of `channel::channel_set_link`: stored

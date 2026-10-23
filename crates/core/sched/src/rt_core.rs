@@ -539,6 +539,42 @@ pub fn first_fit_by(loads: &[HartLoad], mask: u32, density: u32, band: bool, ban
 /// applies too, so a set admitted at boot is admitted here.
 pub use azos_abi::rt_levels::{levels_fit, Booked};
 
+/// Proxy execution (the wait graph's stage 2, seL4 MCS passive servers):
+/// the task that runs a reservation whose holder is blocked in a call.
+///
+/// From `holder`, follow the chain of calls (`server_of(t)`: the server `t`
+/// is blocked calling, `None` when `t` waits on anything else) for at most
+/// `depth` hops, to the first task that is not blocked (`blocked(t)`). That
+/// task is the proxy, unless it holds a reservation of its own
+/// (`reserved(t)`): an active server runs on its own scheduling context and
+/// is ordered by its own deadline. `None` when the holder is not blocked,
+/// the chain leaves the calls or comes back to the holder, or is longer than
+/// `depth`. Canary `rt-proxy-canary`: never a proxy (stage 1: the server runs
+/// on its own priority, boosted).
+pub fn proxy_chain(
+    holder: usize,
+    depth: usize,
+    blocked: impl Fn(usize) -> bool,
+    server_of: impl Fn(usize) -> Option<usize>,
+    reserved: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if cfg!(feature = "rt-proxy-canary") || !blocked(holder) {
+        return None;
+    }
+    let mut t = holder;
+    for _ in 0..depth {
+        let s = server_of(t)?;
+        if s == holder {
+            return None;
+        }
+        if !blocked(s) {
+            return if reserved(s) { None } else { Some(s) };
+        }
+        t = s;
+    }
+    None
+}
+
 /// Microseconds to counter ticks at `freq` Hz, rounded up (a reservation is
 /// never shorter than declared). Saturating.
 #[inline]

@@ -519,7 +519,13 @@ pub(super) unsafe fn ipc_wake_target_cpu(idx: usize, task: &Task) -> usize {
             let here = current_cpu_id();
             if here < num_online {
                 let waker = PER_CPU[here].current_idx.load(Ordering::Relaxed);
-                if !outranked_on(here, task.priority.load(Ordering::Relaxed), idx, waker) {
+                // Outranked or not, a server woken by a caller that holds a
+                // reservation here goes here: it runs on that reservation
+                // (`rt` proxy execution), above what outranks its own
+                // priority. Asked only of an outranked wake.
+                if !outranked_on(here, task.priority.load(Ordering::Relaxed), idx, waker)
+                    || rt::proxy_target(here, waker, idx)
+                {
                     return here;
                 }
             }

@@ -200,6 +200,10 @@ rt-edf-canary = []
 rt-cbs-canary = []
 # Run-time admission accepts every well-formed reservation.
 rt-admit-canary = []
+# Proxy execution is off: a reservation whose holder is blocked in a call runs
+# nothing (`rt_core::proxy_chain`; host row `a_passive_server_runs_on_the_
+# reservation_of_the_call_it_serves`).
+rt-proxy-canary = []
 # The CBS wake rule tests the budget against the bandwidth q/t, not the
 # density q/d: a self-suspending server with d < t runs above its density.
 rt-wake-rate-canary = []

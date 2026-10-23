@@ -380,7 +380,7 @@ takes an event; `PORT_DESTROY` frees the port.
 |---|---:|---|---|
 | io_ring | 1 | a `Cap<IoRing>` with `READ` | `PORT_EVENT_RING` (2) |
 | timer | 2 | an absolute deadline in ns; one-shot; binding a key already armed re-arms it | `PORT_EVENT_TIMER` (4) |
-| endpoint notices | 3 | a `Cap<Endpoint>` with `READ`, held by the serving task; only with Kconfig `IPC_PORT_NOTICES` (a bind is `-EINVAL` otherwise) | `PORT_EVENT_NO_SENDERS` (5), `PORT_EVENT_SOURCE_GONE` (6) |
+| endpoint notices | 3 | a `Cap<Endpoint>` with `READ`, held by the serving task; only with Kconfig `IPC_PORT_NOTICES` (a bind is `-EINVAL` otherwise) | `PORT_EVENT_NO_SENDERS` (5), `PORT_EVENT_SOURCE_GONE` (6), `PORT_EVENT_CALL_NOTICE` (8) |
 | memory pressure | 4 | `DOMAIN_SELF` (the caller's own Domain); one port per Domain, a second bind replaces the first; remove takes the port and key | `PORT_EVENT_PRESSURE` (7) |
 | interrupt line | n/a | from the line's side: `DEVICE_IRQ_BIND` with the port handle | `PORT_EVENT_IRQ` (3) |
 
@@ -395,6 +395,11 @@ storm on one class does not starve the other. A port holds at most
 no-senders event is level at bind: binding an endpoint that has no sender
 reports one at once. `PORT_EVENT_SOURCE_GONE` is delivered once when a bound
 source is destroyed or its owner dies, and frees the source's slot.
+`PORT_EVENT_CALL_NOTICE` tells the serving task that a call it holds ended for
+its caller: `source_id` the low 32 bits of the call's handle, code `ECANCELED`
+(the caller withdrew, was killed or exited) or `ETIMEDOUT` (the reservation the
+caller lent ran out while the server, running on it as a passive server, worked
+on the call). It rides the bounded queue, as an interrupt's event does.
 The pressure source has no slot: the Domain keeps the port's reference, and the
 reclaim task queues one event per change of the Domain's frame-budget level
 (`source_id` 0 normal, 1 warning from the high watermark, 2 critical at the

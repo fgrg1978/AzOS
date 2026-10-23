@@ -10556,6 +10556,10 @@ host_job host_canary_row "envelope: config row canary" actuation-tests envelope-
 host_job host_canary_row "envelope: ota row canary" actuation-tests envelope-row-canary an_ota_row_stops_a_domain_at_the_step_its_level_reaches
 host_job host_canary_row "envelope: rt_time row canary" actuation-tests envelope-row-canary an_rt_time_row_caps_what_one_reservation_may_take
 host_job host_canary_row "envelope: reserve canary" sched-policy-tests rt-envelope-canary a_reservation_the_row_holds_is_refused_and_leaves_one_record
+# Proxy execution (`rt_core::proxy_chain`): a reservation whose holder is blocked
+# in a call never finds the passive server that works on it.
+host_job host_canary_row "sched: proxy execution canary" sched-policy-tests rt-proxy-canary \
+    a_passive_server_runs_on_the_reservation_of_the_call_it_serves
 host_job host_canary_row "envelope: stage canary" ota-tests update-canary-apply-gate a_held_stage_writes_nothing_and_asks_once
 host_job host_canary_row "envelope: switch canary" ota-tests update-canary-apply-gate a_held_switch_promotes_nothing
 # The installer's development package source (Kconfig PKG_FETCH_TFTP;

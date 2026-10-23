@@ -855,6 +855,16 @@ pub const PORT_EVENT_SOURCE_GONE: u8 = 6;
 /// per change, and a queue that is full drops the newest.
 pub const PORT_EVENT_PRESSURE: u8 = 7;
 
+/// Event source type: a call the endpoint's serving task holds (accepted, not
+/// yet answered) ended for its caller ([`PORT_SRC_ENDPOINT`]). The event's
+/// `source_id` is the low 32 bits of the call's handle, its key the one the
+/// endpoint was bound with, its code `ECANCELED` (the caller withdrew: it was
+/// killed or exited, and a reply finds the call over) or `ETIMEDOUT` (the
+/// budget the caller lent ran out while the server worked on it: it now runs
+/// at its own priority, and the deadline is likely missed). One event each
+/// time; the port's bounded queue drops one that finds it full.
+pub const PORT_EVENT_CALL_NOTICE: u8 = 8;
+
 /// Byte offset of the event's code (`u16`, little-endian; a positive errno,
 /// 0 for an ordinary event) in the 16-byte port event. Bytes 12..16 are
 /// `source_id`.

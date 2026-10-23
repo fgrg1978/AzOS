@@ -1796,3 +1796,81 @@ mod thread_birth_order {
         assert!(!b.contains("user_pt"), "the wait loop reads user_pt: {b}");
     }
 }
+
+/// Proxy execution (`rt_core::proxy_chain`): which task runs a reservation
+/// whose holder is blocked in a chain of calls.
+#[cfg(test)]
+mod proxy_tests {
+    use super::rt_core::proxy_chain;
+
+    /// Tasks 0..8: `blocked[t]`, `calls[t]` (the server `t` is blocked
+    /// calling), `reserved[t]`.
+    struct Chain {
+        blocked: [bool; 8],
+        calls: [Option<usize>; 8],
+        reserved: [bool; 8],
+    }
+
+    impl Chain {
+        fn proxy(&self, holder: usize, depth: usize) -> Option<usize> {
+            proxy_chain(holder, depth, |t| self.blocked[t], |t| self.calls[t], |t| self.reserved[t])
+        }
+    }
+
+    const A: usize = 1;
+    const B: usize = 2;
+    const C: usize = 3;
+
+    /// A deadline task A (reserved) calls B (passive), which calls C
+    /// (passive): A's reservation runs C, the end of the chain, and runs B
+    /// once C has answered. An active server (its own reservation) at the end
+    /// runs on its own: no proxy. A holder that runs is its own runner.
+    ///
+    /// **Canary** `rt-proxy-canary` (`cargo test --features rt-proxy-canary`):
+    /// no proxy is ever found, and this test goes red.
+    #[test]
+    fn a_passive_server_runs_on_the_reservation_of_the_call_it_serves() {
+        let mut c = Chain { blocked: [false; 8], calls: [None; 8], reserved: [false; 8] };
+        c.reserved[A] = true;
+        c.blocked[A] = true;
+        c.calls[A] = Some(B);
+        c.blocked[B] = true;
+        c.calls[B] = Some(C);
+        assert_eq!(c.proxy(A, 16), Some(C), "two hops: the server at the end of the chain");
+        // C answers B: B runs again, on A's reservation.
+        c.blocked[B] = false;
+        c.calls[B] = None;
+        assert_eq!(c.proxy(A, 16), Some(B));
+        // An active server serves on its own reservation.
+        c.reserved[B] = true;
+        assert_eq!(c.proxy(A, 16), None);
+        // A runs: nothing to proxy.
+        c.reserved[B] = false;
+        c.blocked[A] = false;
+        assert_eq!(c.proxy(A, 16), None);
+    }
+
+    /// The chain is followed only through calls, only `depth` hops, and
+    /// never around a cycle.
+    #[test]
+    fn the_chain_stops_at_anything_but_a_call_at_the_depth_and_at_a_cycle() {
+        let mut c = Chain { blocked: [true; 8], calls: [None; 8], reserved: [false; 8] };
+        c.reserved[A] = true;
+        // A blocked on something that is not a call (a futex, its accept).
+        assert_eq!(c.proxy(A, 16), None);
+        // A -> B -> C -> 4 -> 5, all blocked but 5.
+        c.calls[A] = Some(B);
+        c.calls[B] = Some(C);
+        c.calls[C] = Some(4);
+        c.calls[4] = Some(5);
+        c.blocked[5] = false;
+        assert_eq!(c.proxy(A, 4), Some(5));
+        assert_eq!(c.proxy(A, 3), None, "longer than the depth");
+        // B waits on something else: the chain ends there, blocked.
+        c.calls[B] = None;
+        assert_eq!(c.proxy(A, 16), None);
+        // A cycle back to the holder.
+        c.calls[B] = Some(A);
+        assert_eq!(c.proxy(A, 16), None);
+    }
+}

@@ -311,6 +311,7 @@ mod error_tests {
             Errno::EEOF,
             Errno::EPURGED,
             Errno::EADMIT,
+            Errno::ETIMEDOUT,
             Errno::EINTR,
             Errno::EPIPE,
         ];

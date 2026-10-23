@@ -1351,6 +1351,16 @@ pub fn abandon(handle: u64, caller: u32) -> Abandoned {
     Abandoned { donee, was_queued: st == S_PENDING }
 }
 
+/// The endpoint slot and handle of the call the task in slot `caller_idx`
+/// has in service (accepted, not yet answered), if it has one: what a notice
+/// to its server names (`fastcall`'s cancel and timeout notices). One
+/// lock-free read of the record's tag, racy by design: a call answered in
+/// between is told about once too often, and its server finds it over.
+pub fn in_service_call(caller_idx: usize) -> Option<(usize, u64)> {
+    let t = RECORDS.get(caller_idx)?.tag.load(Ordering::Acquire);
+    (tag_state(t) == S_ACCEPTED).then(|| (tag_ep(t), make_handle(caller_idx, tag_gen(t))))
+}
+
 /// The task in slot `idx` (TID `tid`) is exiting: withdraw its own call if
 /// it is in one. Returns what the exit sweep must do after (the stranded
 /// capabilities, [`Completed::stranded`], belong to `server`; `donee` is
@@ -1889,6 +1899,23 @@ mod tests {
 
     /// More calls in flight than any fixed table would hold: 150 callers queue on one endpoint and every
     /// one is served, in arrival order.
+    /// What a call notice names (`in_service_call`): only a call its server
+    /// holds, by its endpoint and handle; not one still queued, not one
+    /// answered.
+    #[test]
+    fn only_an_accepted_unanswered_call_is_in_service() {
+        let _e = env();
+        let (idx, tid) = (11, 78);
+        assert_eq!(in_service_call(idx), None, "no call");
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        assert_eq!(in_service_call(idx), None, "queued: no server holds it");
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(in_service_call(idx), Some((EP, h)));
+        assert!(matches!(reply(h, SERVER, false, RSP), Reply::Woke { .. }));
+        assert_eq!(in_service_call(idx), None, "answered");
+        assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE));
+    }
+
     #[test]
     fn more_than_64_concurrent_calls_all_succeed() {
         let _e = env();

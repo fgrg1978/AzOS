@@ -440,7 +440,7 @@ returns `None` for a non-negative value or a number it does not know.
 
 | Range | Codes |
 |---|---|
-| POSIX-aligned | `EPERM` 1, `ENOENT` 2, `ESRCH` 3, `EINTR` 4, `EIO` 5, `EBADF` 9, `ECHILD` 10, `EAGAIN` 11, `ENOMEM` 12, `EACCES` 13, `EFAULT` 14, `EBUSY` 16, `EEXIST` 17, `ENODEV` 19, `ENOTDIR` 20, `EISDIR` 21, `EINVAL` 22, `EMFILE` 24, `ENOSPC` 28, `EROFS` 30, `EPIPE` 32, `ENAMETOOLONG` 36, `ENOSYS` 38, `ENOTEMPTY` 39, `ECANCELED` 125 |
+| POSIX-aligned | `EPERM` 1, `ENOENT` 2, `ESRCH` 3, `EINTR` 4, `EIO` 5, `EBADF` 9, `ECHILD` 10, `EAGAIN` 11, `ENOMEM` 12, `EACCES` 13, `EFAULT` 14, `EBUSY` 16, `EEXIST` 17, `ENODEV` 19, `ENOTDIR` 20, `EISDIR` 21, `EINVAL` 22, `EMFILE` 24, `ENOSPC` 28, `EROFS` 30, `EPIPE` 32, `ENAMETOOLONG` 36, `ENOSYS` 38, `ENOTEMPTY` 39, `ETIMEDOUT` 110, `ECANCELED` 125 |
 | Authorization | `ENOTOWNER` 99: not the object's owner, or not otherwise authorized, for checks that are not a capability-table lookup |
 | Capabilities | `ECAPKIND` 200 (wrong kind), `ECAPPERMS` 201 (missing right), `ECAPSTALE` 202 (generation stale: revoked or freed) |
 | Policy | `ETOPOLOGY` 203 (not allowed by the signed topology), `ESAFETY` 204 (safety policy), `EAUTH` 205, `EREPLAY` 206, `EOTASIG` 207, `EROLLBACK` 208, `EQUOTA` 209, `EABIVERSION` 210 |

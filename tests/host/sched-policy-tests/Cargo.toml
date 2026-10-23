@@ -32,6 +32,9 @@ qos-rt-slack-canary = []
 # Canary of `rt_receipt.rs`: the Domain's `rt_time` row is never asked;
 # `a_reservation_the_row_holds_is_refused_and_leaves_one_record` must go red.
 rt-envelope-canary = []
+# Canary of `rt_core.rs`: proxy execution never finds a proxy;
+# `a_passive_server_runs_on_the_reservation_of_the_call_it_serves` must go red.
+rt-proxy-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources

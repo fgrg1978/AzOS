@@ -507,10 +507,14 @@ fn store_class(sc: &SchedContext, idx: usize, class: Class, prio: Option<u32>, b
 
 /// The Legacy priority number an effective attribute runs at. Stop and DL
 /// take the top level: the class precedence (Q6) puts them above every RT
-/// level, and Legacy dispatch has no per-task absolute deadline to install,
-/// so a DL donor's deadline stays exact in the graph (`waitgraph::effective`)
-/// and the owner runs at the top level. RT is its own number. Fair and idle
-/// do not boost (stage 1: no weight inheritance).
+/// level. A DL donor's deadline stays exact in the graph
+/// (`waitgraph::effective`) and is installed in EDF by the pick itself when
+/// the edge is an IPC call (stage 2, proxy execution, `rt::proxy_of`): the
+/// donor's reservation runs its server, in the donor's deadline order and on
+/// the donor's budget. Where it cannot (the server placed on another hart,
+/// or a kernel mutex or PI futex edge, whose object the pick cannot follow
+/// lock-free), the owner runs at the top level, as in stage 1. RT is its own
+/// number. Fair and idle do not boost (stage 1: no weight inheritance).
 pub const fn pi_prio(a: PiAttr) -> u32 {
     match a {
         PiAttr::Stop | PiAttr::Dl { .. } => 0,

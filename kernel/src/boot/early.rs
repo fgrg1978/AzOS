@@ -557,6 +557,10 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
         message: lines.msi_message,
     });
     azos_sched::rt::set_irq_sc_hook(azos_ipc::irq_bind::irq_sc_throttle);
+    // Proxy execution: the pick follows a reservation holder's call to its
+    // server, and a lent budget that runs out tells that server.
+    azos_sched::rt::set_call_server_hook(azos_ipc::fastcall::call_server_of);
+    azos_sched::rt::set_proxy_timeout_hook(azos_ipc::fastcall::proxy_timed_out);
     a.irq_routing_init(hart_id);
     a.smp_probe(fw_table);
     a.timer_init();

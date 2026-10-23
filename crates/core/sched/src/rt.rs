@@ -25,6 +25,20 @@
 //!   reservation that runs out is throttled until its deadline (the pick
 //!   skips it), a soft one has its deadline postponed by a period.
 //!
+//! * **Proxy execution: a passive server runs on its caller's reservation**
+//!   (seL4 MCS passive servers; the wait graph's stage 2, `azos_sync::
+//!   waitgraph`). A reservation whose task is blocked in a call (its
+//!   wait-graph IPC call edge) is run by the task at the end of that chain of
+//!   calls ([`proxy_of`]) when that task holds no reservation of its own: the
+//!   pick orders it by the caller's absolute deadline, and its run time is
+//!   charged to the caller's budget (the dispatch tail books it on the
+//!   caller's slot). A budget that runs out throttles the proxy exactly as it
+//!   would the caller, and the server is told (a timeout notice on its
+//!   endpoint, [`set_proxy_timeout_hook`]). Only a server placed on the
+//!   reservation's hart can be its proxy (the IPC wake co-locates it,
+//!   `wake::ipc_wake_target_cpu`); elsewhere it runs at the priority the
+//!   wait graph boosts it to.
+//!
 //! # What it costs when unused
 //!
 //! The dispatch tail tests one per-hart word ([`FLAGS`]) and the next task's
@@ -118,7 +132,9 @@ unsafe fn rt_cpu_init(p: *mut RtCpu) {
         p.write(RtCpu {
             set: [const { AtomicUsize::new(usize::MAX) }; SET_CAP],
             res: core::cell::UnsafeCell::new([Cbs::NONE; SET_CAP]),
-            owner: core::cell::UnsafeCell::new(Owner { band: Band::NEW, cur: usize::MAX, cur_slot: 0, cur_since: 0 }),
+            owner: core::cell::UnsafeCell::new(Owner {
+                band: Band::NEW, cur: usize::MAX, cur_slot: 0, cur_since: 0, timeout_due: usize::MAX,
+            }),
         })
     };
 }
@@ -153,6 +169,10 @@ struct Owner {
     cur_slot: usize,
     /// When `cur` was last charged.
     cur_since: u64,
+    /// A reservation that ran out while a proxy ran on it: its holder, whose
+    /// call's server is told once the dispatch path is left
+    /// ([`flush_timeout`]). `usize::MAX` = none.
+    timeout_due: usize,
 }
 
 
@@ -307,6 +327,102 @@ fn slot_of(cpu: usize, idx: usize) -> Option<usize> {
     set_of(cpu).iter().position(|s| s.load(Ordering::Acquire) == idx)
 }
 
+/// The longest chain of calls [`proxy_of`] follows (the wait graph's own
+/// bound, Kconfig `PI_MAX_DEPTH`).
+const PROXY_DEPTH: usize = azos_sync::waitgraph::PI_MAX_DEPTH;
+
+azos_common::ro_hook! {
+    /// The server a task is blocked calling: `fn(slot) -> Option<server
+    /// slot>`, `azos_ipc::fastcall::call_server_of` (the task's wait-graph
+    /// edge is an IPC call node). Unset: no proxy execution (host suites, a
+    /// build without `WAIT_GRAPH`). A function address because `azos_ipc` is
+    /// above this crate.
+    static CALL_SERVER_HOOK: fn(usize) -> Option<usize>;
+}
+
+/// Install [`CALL_SERVER_HOOK`]. Once, at boot.
+pub fn set_call_server_hook(hook: fn(usize) -> Option<usize>) {
+    CALL_SERVER_HOOK.set(hook);
+}
+
+/// The proxy of reservation holder `holder` (see the module doc): the task
+/// at the end of its chain of calls ([`rt_core::proxy_chain`], at most
+/// [`PROXY_DEPTH`] hops), if it holds no reservation of its own. `None`
+/// otherwise: the holder runs itself, or nothing runs on the reservation.
+#[inline]
+fn proxy_of(holder: usize) -> Option<usize> {
+    let hook = CALL_SERVER_HOOK.get()?;
+    if holder >= MAX_TASKS {
+        return None;
+    }
+    rt_core::proxy_chain(
+        holder,
+        PROXY_DEPTH,
+        |t| unsafe { task_ref(t) }.state() == TaskState::Blocked,
+        |t| hook(t).filter(|&s| s < MAX_TASKS),
+        |t| super::classes::class_of(t) == Some(crate::sc::Class::Dl),
+    )
+}
+
+/// The task that runs reservation `k` of `cpu` (holder `holder`) when one of
+/// the two is queued and ready here: the holder itself, else its proxy.
+#[inline]
+unsafe fn runner(cpu: usize, holder: usize) -> Option<usize> {
+    let ready_here = |i: usize| {
+        let t = unsafe { task_ref(i) };
+        t.queued.load(Ordering::Relaxed) && t.state() == TaskState::Ready
+    };
+    if ready_here(holder) {
+        return Some(holder);
+    }
+    proxy_of(holder).filter(|&s| ready_here(s) && unsafe { task_ref(s) }.context.tp as usize == cpu)
+}
+
+/// The slot of `cpu` whose reservation `idx` runs on: its own, else the one
+/// it is the proxy of.
+#[inline]
+fn charged_slot(cpu: usize, idx: usize) -> Option<usize> {
+    slot_of(cpu, idx).or_else(|| set_iter(cpu).find(|&(_, h)| proxy_of(h) == Some(idx)).map(|(k, _)| k))
+}
+
+azos_common::ro_hook! {
+    /// A reservation ran out while a proxy served its holder's call: `fn(holder
+    /// slot)`, `azos_ipc::fastcall::proxy_timed_out` (the server gets a timeout
+    /// notice on its endpoint). Unset: nobody is told.
+    static PROXY_TIMEOUT_HOOK: fn(usize);
+}
+
+/// Install [`PROXY_TIMEOUT_HOOK`]. Once, at boot.
+pub fn set_proxy_timeout_hook(hook: fn(usize)) {
+    PROXY_TIMEOUT_HOOK.set(hook);
+}
+
+/// Tell the server of a reservation that ran out under it ([`Owner::timeout_due`]).
+/// Called by the pick and the tick of `cpu` once its owner state is written
+/// and before a run-queue lock is taken; the hook wakes a port's waiters, as
+/// an interrupt's delivery does.
+#[inline]
+fn flush_timeout(o: &mut Owner) {
+    if o.timeout_due == usize::MAX {
+        return;
+    }
+    let holder = core::mem::replace(&mut o.timeout_due, usize::MAX);
+    if let Some(hook) = PROXY_TIMEOUT_HOOK.get() {
+        hook(holder);
+    }
+}
+
+/// Must a server `idx` woken on `cpu` by `waker` stay there, whatever
+/// outranks its own priority (`wake::ipc_wake_target_cpu`)? Yes when the
+/// waker holds a reservation on `cpu` and the server none: the server runs
+/// on the waker's reservation there ([`proxy_of`]).
+#[inline]
+pub(super) fn proxy_target(cpu: usize, waker: usize, idx: usize) -> bool {
+    waker < MAX_TASKS
+        && reserved_here(cpu, waker)
+        && super::classes::class_of(idx) != Some(crate::sc::Class::Dl)
+}
+
 /// Does `cpu` hold a reservation for `idx`? A reservation is the DL class's,
 /// whatever level it queues at: the fair pick (`fairq.rs`) leaves it out.
 #[inline]
@@ -405,6 +521,11 @@ unsafe fn charge_cur(cpu: usize, o: &mut Owner, now: u64, running: bool) -> bool
         if r.throttled {
             irq_sc_changed(o.cur, true);
         }
+        // A proxy ran it out: the holder's call has used the budget it lent.
+        let holder = set_of(cpu)[o.cur_slot].load(Ordering::Relaxed);
+        if holder != o.cur && holder < MAX_TASKS {
+            o.timeout_due = holder;
+        }
     }
     out
 }
@@ -450,7 +571,7 @@ unsafe fn on_switch_slow(cpu: usize, next_idx: usize, next_prio: u32) {
         o.band.start(now);
     }
     if FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0 {
-        if let Some(k) = slot_of(cpu, next_idx) {
+        if let Some(k) = charged_slot(cpu, next_idx) {
             let r = unsafe { res(cpu, k) };
             if r.release_due {
                 wake(r, now);
@@ -518,12 +639,13 @@ pub(super) unsafe fn peek_dl(cpu: usize) -> Option<usize> {
     let classes = super::classes::dl_above_band();
     let mut best = None;
     let (mut bp, mut bd) = (u32::MAX, u64::MAX);
-    for (k, idx) in set_iter(cpu) {
-        let t = unsafe { task_ref(idx) };
+    for (k, holder) in set_iter(cpu) {
         let r = unsafe { res(cpu, k) };
-        if !t.queued.load(Ordering::Relaxed) || t.state() != TaskState::Ready || r.throttled {
+        if r.throttled {
             continue;
         }
+        let Some(idx) = (unsafe { runner(cpu, holder) }) else { continue };
+        let t = unsafe { task_ref(idx) };
         let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
         if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), skip_band) {
             continue;
@@ -609,6 +731,7 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
     }
     unsafe { refresh_set(cpu, now) };
     sync_flags(cpu, o);
+    flush_timeout(o);
     let resv = FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0;
     // Every reservation ranks above the band (`rt_core::dl_rank`).
     let classes = super::classes::dl_above_band();
@@ -661,15 +784,16 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
         rt_core::StopPick::Pass => {}
     }
 
-    // The best eligible queued reservation.
+    // The best eligible queued reservation (its holder, or its proxy).
     let mut best = usize::MAX;
     let (mut bp, mut bd) = (u32::MAX, u64::MAX);
-    for (k, idx) in set_iter(cpu) {
-        let t = unsafe { task_ref(idx) };
+    for (k, holder) in set_iter(cpu) {
         let r = unsafe { res(cpu, k) };
-        if !t.queued.load(Ordering::Relaxed) || t.state() != TaskState::Ready || r.throttled {
+        if r.throttled {
             continue;
         }
+        let Some(idx) = (unsafe { runner(cpu, holder) }) else { continue };
+        let t = unsafe { task_ref(idx) };
         let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
         if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), skip_band) {
             continue;
@@ -808,14 +932,16 @@ pub(super) unsafe fn tick(cpu: usize, cur_idx: usize) -> bool {
             u32::MAX
         };
         let skip_band = o.band.exhausted && bm & NONBAND_LEVELS != 0;
-        for (k, idx) in set_iter(cpu) {
-            let t = unsafe { task_ref(idx) };
+        for (k, holder) in set_iter(cpu) {
             let r = unsafe { res(cpu, k) };
-            if preempt || cur_exempt || idx == cur_idx || !t.queued.load(Ordering::Relaxed)
-                || t.state() != TaskState::Ready || r.throttled
-            {
+            if preempt || cur_exempt || r.throttled {
                 continue;
             }
+            let Some(idx) = (unsafe { runner(cpu, holder) }) else { continue };
+            if idx == cur_idx {
+                continue;
+            }
+            let t = unsafe { task_ref(idx) };
             let p = prio_bucket(t.priority.load(Ordering::Relaxed)) as u32;
             if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), skip_band) {
                 continue;
@@ -834,6 +960,7 @@ pub(super) unsafe fn tick(cpu: usize, cur_idx: usize) -> bool {
     }
     sync_flags(cpu, o);
     unsafe { arm(cpu, now) };
+    flush_timeout(o);
     preempt
 }
 
@@ -1070,7 +1197,8 @@ pub(super) fn release(idx: usize) {
         }
         if cpu == crate::smp::current_cpu_id() {
             let o = unsafe { &mut *owner_of(cpu) };
-            if o.cur == idx {
+            // Its own task or a proxy running on it.
+            if o.cur == idx || (o.cur < MAX_TASKS && o.cur_slot == k) {
                 o.cur = usize::MAX;
             }
         }
