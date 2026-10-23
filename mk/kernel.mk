@@ -353,15 +353,31 @@ aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 # every board target it needs the fleet's public key (TOPOLOGY_PUBKEY_PATH)
 # and refuses the test key; the check runs first, before any user image is
 # built.
-RPI5_KCONFIG := $(OUT_BUILD)/rpi5.config
-RPI5_IMG     := $(OUT_BUILD)/rpi5/kernel8.img
+#
+# `make rpi5 BUILD_TYPE=DEV` is the bring-up image, build/rpi5-dev/kernel8.img
+# from build/rpi5-dev.config: BUILD_TYPE_DEV (secure boot off, the TEST key
+# allowed) and the built-in topology, since the Pi 5 has no storage driver
+# yet and a release image halts at the signed boot slots it cannot read; and
+# info-level console lines, the boot steps a board check reads.
+RPI5_SUFFIX  := $(if $(BOARD_DEV),-dev)
+RPI5_EXTRA   := $(if $(BOARD_DEV),CONFIG_BUILD_TYPE_DEV=y CONFIG_TOPOLOGY_SOURCE_BUILTIN=y CONFIG_LOG_LEVEL_INFO=y)
+RPI5_KCONFIG := $(OUT_BUILD)/rpi5$(RPI5_SUFFIX).config
+RPI5_IMG     := $(OUT_BUILD)/rpi5$(RPI5_SUFFIX)/kernel8.img
 .PHONY: rpi5 rpi5-key
-$(RPI5_KCONFIG): config/defconfigs/robot-sbc-aarch64+rpi5.config \
+# The variant's lines as a stamp, as for the vf2 variants: a config expanded
+# before they changed is rebuilt.
+.PRECIOUS: $(OUT_BUILD)/rpi5$(RPI5_SUFFIX).extra
+$(OUT_BUILD)/rpi5$(RPI5_SUFFIX).extra: FORCE
+	@mkdir -p $(OUT_BUILD)
+	@[ "$$(cat $@ 2>/dev/null)" = "$(RPI5_EXTRA)" ] || printf '%s\n' "$(RPI5_EXTRA)" > $@
+$(RPI5_KCONFIG): config/defconfigs/robot-sbc-aarch64+rpi5.config $(OUT_BUILD)/rpi5$(RPI5_SUFFIX).extra \
 		$(KCONFIG_FILES)
 	@mkdir -p $(OUT_BUILD)
 	cp config/defconfigs/robot-sbc-aarch64+rpi5.config $@
+	@for l in $(RPI5_EXTRA); do echo "$$l" >> $@; done
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 	@grep -q '^CONFIG_BOARD_RPI5=y$$' $@ || { echo "[RPI5] $@ lost CONFIG_BOARD_RPI5"; exit 1; }
+	@for l in $(RPI5_EXTRA); do grep -qx "$$l" $@ || { echo "[RPI5] $@ lost $$l"; exit 1; }; done
 
 rpi5-key:
 	$(call require_board_key,RPI5)

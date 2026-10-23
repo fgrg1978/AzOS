@@ -652,7 +652,8 @@ QEMU_DEV_ISA = rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --ski
 # on), signs the board volume with the TEST pair unless TOPOLOGY_PUBKEY_PATH /
 # TOPOLOGY_PRIVKEY_PATH name another, and tools/check_board_keys.py runs with
 # --allow-test. Nothing else changes: the TEST key is a build-type decision,
-# never a fallback. DEV is refused for every goal but the vf2 ones.
+# never a fallback. DEV is refused for every goal but the vf2 ones and `rpi5`
+# (`make rpi5 BUILD_TYPE=DEV`: the bring-up image, see mk/kernel.mk).
 #   VF2_TEST=ktest   (`make vf2-ktest`)   DEV + CONFIG_KTEST: the farm's test kernel
 #   VF2_TEST=pstore  (`make vf2-pstore`)  DEV + a pstore region + the pstore smoke
 # Each variant has its own expanded config, kernel and volume
@@ -663,6 +664,7 @@ $(error BUILD_TYPE is DEV or RELEASE (unset is RELEASE), got "$(BUILD_TYPE)")
 endif
 BOARD_DEV := $(filter DEV,$(BUILD_TYPE))
 VF2_GOALS := vf2 vf2-ktest vf2-pstore flash-vf2
+DEV_GOALS := $(VF2_GOALS) rpi5
 VF2_TEST ?=
 ifneq ($(filter-out ktest pstore,$(VF2_TEST)),)
 $(error VF2_TEST is ktest or pstore (make vf2-ktest / vf2-pstore), got "$(VF2_TEST)")
@@ -673,8 +675,8 @@ $(error VF2_TEST=$(VF2_TEST) needs BUILD_TYPE=DEV)
 endif
 endif
 ifneq ($(BOARD_DEV),)
-ifneq ($(filter-out $(VF2_GOALS),$(or $(MAKECMDGOALS),all)),)
-$(error BUILD_TYPE=DEV is for the vf2 targets only ($(VF2_GOALS)), not: $(filter-out $(VF2_GOALS),$(or $(MAKECMDGOALS),all)))
+ifneq ($(filter-out $(DEV_GOALS),$(or $(MAKECMDGOALS),all)),)
+$(error BUILD_TYPE=DEV is for the board targets $(DEV_GOALS) only, not: $(filter-out $(DEV_GOALS),$(or $(MAKECMDGOALS),all)))
 endif
 TOPOLOGY_PUBKEY_PATH ?= tools/keys/test_pub.bin
 TOPOLOGY_PRIVKEY_PATH ?= tools/keys/test_priv.bin
