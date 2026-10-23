@@ -21056,7 +21056,8 @@ echo usb-row-older-54 > /fat/CRASH.OLD
 cat /fat/CRASH.LOG > /usb/CRASH.LOG
 cat /fat/CRASH.OLD > /usb/CRASH.OLD
 !power shutdown
-#wait POWER\] shutdown by" 200 \
+#wait POWER\] shutdown by
+#wait \[ORDERLY\] usb volume" 200 \
             "[USB] volume mounted at /usb" "[ORDERLY] usb volume: written back, marked clean, synchronize cache ok" \
             "[POWER] shutdown by tid"
         printf "  %-26s" "$2..."
