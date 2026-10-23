@@ -18,7 +18,8 @@ use core::sync::atomic::{fence, Ordering};
 
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
-    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, POLL,
+    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, POLL,
+    TAGS,
 };
 
 // ---- registers ----
@@ -130,6 +131,7 @@ pub fn encode_cd(root_pa: u64, levels: u8, oas: u64, asid: u16) -> [u64; CD_DWOR
 // ---- commands ----
 pub const CMD_CFGI_STE: u64 = 0x03;
 pub const CMD_CFGI_ALL: u64 = 0x04;
+pub const CMD_CFGI_CD_ALL: u64 = 0x06;
 pub const CMD_TLBI_NH_ASID: u64 = 0x11;
 pub const CMD_TLBI_NSNH_ALL: u64 = 0x30;
 pub const CMD_SYNC: u64 = 0x46;
@@ -137,6 +139,10 @@ pub const CMD_SYNC: u64 = 0x46;
 /// `CFGI_STE` for stream `sid` (leaf: only that STE).
 pub const fn cmd_cfgi_ste(sid: u32) -> [u64; 2] {
     [CMD_CFGI_STE | ((sid as u64) << 32), 1]
+}
+/// `CFGI_CD_ALL` for stream `sid`: every Context Descriptor cached for it.
+pub const fn cmd_cfgi_cd_all(sid: u32) -> [u64; 2] {
+    [CMD_CFGI_CD_ALL | ((sid as u64) << 32), 0]
 }
 /// `CFGI_ALL`: every cached configuration (`Range` 31 = the whole space).
 pub const fn cmd_cfgi_all() -> [u64; 2] {
@@ -212,6 +218,9 @@ pub fn classify(record: &EventRecord) -> DmaFault {
 
 // ---- the unit ----
 
+/// The first ASID of a translating device (0 is left alone, as Linux does).
+const ASID_FIRST: u16 = 1;
+
 const OVFLG: u32 = 1 << 31;
 const CONS_ERR_MASK: u32 = 0x7f << 24;
 
@@ -229,8 +238,11 @@ pub struct Smmuv3<M: Mmio> {
     evtq: u64,
     evtq_log2: u32,
     evtq_cons: u32,
-    cd_page: u64,
-    cd_next: u64,
+    /// One Context Descriptor per ASID: the CD of ASID `a` is at
+    /// `cds + (a - ASID_FIRST) * CD_BYTES`.
+    cds: u64,
+    /// The ASID of each translating device.
+    tags: Tags,
 }
 
 impl<M: Mmio> Smmuv3<M> {
@@ -279,7 +291,7 @@ impl<M: Mmio> Smmuv3<M> {
         let evtq = mem.alloc_page().ok_or(IommuError::NoMemory)?;
         // The unit writes the event queue: no dirty zero lines over its records.
         mem.clean(evtq, 4096);
-        let cd_page = mem.alloc_page().ok_or(IommuError::NoMemory)?;
+        let cds = mem.alloc_page().ok_or(IommuError::NoMemory)?;
 
         // Linear format (FMT 0), LOG2SIZE.
         mmio.write64(REG_STRTAB_BASE, strtab & 0x000f_ffff_ffff_ffc0);
@@ -305,8 +317,8 @@ impl<M: Mmio> Smmuv3<M> {
             evtq,
             evtq_log2,
             evtq_cons: 0,
-            cd_page,
-            cd_next: 0,
+            cds,
+            tags: Tags::new(ASID_FIRST, TAGS),
         };
         unit.command(cmd_cfgi_all())?;
         unit.command(cmd_tlbi_nsnh_all())?;
@@ -374,15 +386,15 @@ impl<M: Mmio> Smmuv3<M> {
         Ok(self.strtab + dev as u64 * STE_BYTES)
     }
 
-    /// A fresh 64-byte slot for a Context Descriptor.
-    fn cd_slot(&mut self) -> Result<u64, IommuError> {
-        if self.cd_next == 4096 / CD_BYTES {
-            self.cd_page = self.mem.alloc_page().ok_or(IommuError::NoMemory)?;
-            self.cd_next = 0;
-        }
-        let slot = self.cd_page + self.cd_next * CD_BYTES;
-        self.cd_next += 1;
-        Ok(slot)
+    /// The Context Descriptor of `asid`.
+    fn cd_of(&self, asid: u16) -> u64 {
+        self.cds + (asid - ASID_FIRST) as u64 * CD_BYTES
+    }
+
+    /// Drop what the unit cached under `asid` (the commands are queued: a
+    /// `sync` completes them).
+    fn tlbi_asid(&mut self, asid: u16) -> Result<(), IommuError> {
+        self.command(cmd_tlbi_nh_asid(asid))
     }
 
     fn write_ste(&mut self, dev: u32, slot: u64, ste: [u64; STE_DWORDS]) -> Result<(), IommuError> {
@@ -394,8 +406,7 @@ impl<M: Mmio> Smmuv3<M> {
         fence(Ordering::Release);
         wr64(self.mem, slot, 0, ste[0]);
         self.mem.clean(slot, 8);
-        self.command(cmd_cfgi_ste(dev))?;
-        self.sync()
+        self.command(cmd_cfgi_ste(dev))
     }
 }
 
@@ -409,6 +420,9 @@ impl<M: Mmio + Send> IommuUnit for Smmuv3<M> {
     }
 
     /// The device must not be mid-DMA: a live STE is made invalid first.
+    /// A translating device gets an ASID and a CD of its own; one that stops
+    /// translating gives its ASID back once the unit forgot what it cached
+    /// under it.
     fn attach(&mut self, dev: u32, mode: DomainMode) -> Result<(), IommuError> {
         let slot = self.ste_slot(dev)?;
         if rd64(self.mem, slot, 0) & STE_V != 0 {
@@ -417,23 +431,43 @@ impl<M: Mmio + Send> IommuUnit for Smmuv3<M> {
             self.command(cmd_cfgi_ste(dev))?;
             self.sync()?;
         }
-        let cd_pa = match mode {
+        match mode {
             DomainMode::Translate { root_pa } => {
-                let cd_pa = self.cd_slot()?;
-                let cd = encode_cd(root_pa, self.pt.levels, self.oas, 1);
+                let asid = self.tags.take(dev).ok_or(IommuError::Unsupported("smmuv3: out of ASIDs"))?;
+                let cd_pa = self.cd_of(asid);
+                // Nothing reads this CD now: the device's STE is invalid and
+                // no other device's points at it.
+                let cd = encode_cd(root_pa, self.pt.levels, self.oas, asid);
                 for (i, w) in cd.iter().enumerate() {
                     wr64(self.mem, cd_pa, i, *w);
                 }
                 self.mem.clean(cd_pa, CD_BYTES as usize);
-                cd_pa
+                self.write_ste(dev, slot, encode_ste(mode, cd_pa))?;
+                // The unit may hold the stream's old CD and, under this ASID,
+                // translations of the table the device had before.
+                self.command(cmd_cfgi_cd_all(dev))?;
+                self.tlbi_asid(asid)?;
+                self.sync()
             }
-            _ => 0,
-        };
-        self.write_ste(dev, slot, encode_ste(mode, cd_pa))
+            _ => {
+                self.write_ste(dev, slot, encode_ste(mode, 0))?;
+                if let Some(asid) = self.tags.of(dev) {
+                    self.tlbi_asid(asid)?;
+                    self.sync()?;
+                    self.tags.release(dev);
+                    return Ok(());
+                }
+                self.sync()
+            }
+        }
     }
 
-    fn flush(&mut self, _dev: u32) -> Result<(), IommuError> {
-        self.command(cmd_tlbi_nsnh_all())?;
+    /// Only a translating device has translations cached, under its ASID.
+    fn flush(&mut self, dev: u32) -> Result<(), IommuError> {
+        let Some(asid) = self.tags.of(dev) else {
+            return Ok(());
+        };
+        self.tlbi_asid(asid)?;
         self.sync()
     }
 

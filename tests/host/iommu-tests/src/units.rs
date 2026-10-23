@@ -244,10 +244,11 @@ fn smmu_attach_writes_the_cd_then_the_ste_and_syncs() {
     assert_eq!(read64(ste, 0), cd_page | 0xb, "translate, pointing at the first CD slot");
     assert_eq!(read64(cd_page, 0), 0x0001_E205_C000_3510);
     assert_eq!(read64(cd_page, 1), 0x8020_0000);
-    // The live STE was invalidated first: CFGI+SYNC, then CFGI+SYNC again.
-    assert_eq!(cmds(cmdq, 9)[5..], [
+    // The live STE was invalidated first (CFGI+SYNC); then the new STE, the
+    // stream's cached CDs and the ASID's translations go, and one SYNC.
+    assert_eq!(cmds(cmdq, 11)[5..], [
         smmuv3::cmd_cfgi_ste(0x18), smmuv3::cmd_sync(),
-        smmuv3::cmd_cfgi_ste(0x18), smmuv3::cmd_sync(),
+        smmuv3::cmd_cfgi_ste(0x18), smmuv3::cmd_cfgi_cd_all(0x18), smmuv3::cmd_tlbi_nh_asid(1), smmuv3::cmd_sync(),
     ]);
     // A second translating device takes the next CD slot.
     unit.attach(0x19, DomainMode::Translate { root_pa: 0x8030_0000 }).unwrap();
@@ -255,6 +256,55 @@ fn smmu_attach_writes_the_cd_then_the_ste_and_syncs() {
 
     assert_eq!(unit.attach(0x100, DomainMode::Bypass), Err(IommuError::DeviceOutOfRange));
     unit.flush(0x18).unwrap();
+}
+
+/// The ASID in the CD the STE of `dev` points at: STE dword 0 bits 51:6 are
+/// the CD address, CD dword 0 bits 63:48 the ASID.
+fn smmu_asid(strtab: u64, dev: u32) -> u64 {
+    let cd = read64(strtab + dev as u64 * 64, 0) & 0x000f_ffff_ffff_ffc0;
+    read64(cd, 0) >> 48
+}
+
+/// Commands `from..to` of the queue at `cmdq`, as the unit read them.
+fn smmu_cmds(cmdq: u64, from: usize, to: usize) -> Vec<[u64; 2]> {
+    cmds(cmdq, to)[from..].to_vec()
+}
+
+#[test]
+fn smmu_gives_each_translating_device_its_own_asid_and_flushes_only_it() {
+    let mem = TestMem::leak();
+    let mmio = smmu_model(SMMU_IDR0, SMMU_IDR1);
+    let mut unit = Smmuv3::new(mmio.clone(), mem, 0xff).unwrap();
+    let (strtab, cmdq) = (mem.page(0), mem.page(1));
+    // CMDQ_PROD counts the commands queued (the wrap bit stays clear below 256).
+    let queued = || mmio.get(smmuv3::REG_CMDQ_PROD) as usize;
+
+    unit.attach(0x18, DomainMode::Translate { root_pa: 0x8020_0000 }).unwrap();
+    unit.attach(0x19, DomainMode::Translate { root_pa: 0x8030_0000 }).unwrap();
+    // Two devices, two tables: two ASIDs (1 and 2; 0 is never handed out).
+    assert_eq!((smmu_asid(strtab, 0x18), smmu_asid(strtab, 0x19)), (1, 2));
+
+    // A flush names the device's ASID only: TLBI_NH_ASID (0x11) with ASID 2
+    // at 63:48, then CMD_SYNC (0x46, CS = SEV at 13:12 = 0x2046).
+    let n = queued();
+    unit.flush(0x19).unwrap();
+    assert_eq!(smmu_cmds(cmdq, n, queued()), [[0x0002_0000_0000_0011, 0], [0x2046, 0]]);
+
+    // Device 0x18 stops translating: its ASID's translations go before the
+    // ASID is free, and the next translating device gets it, in the same CD.
+    let cd0 = read64(strtab + 0x18 * 64, 0) & 0x000f_ffff_ffff_ffc0;
+    let n = queued();
+    unit.attach(0x18, DomainMode::Bypass).unwrap();
+    assert!(smmu_cmds(cmdq, n, queued()).contains(&[0x0001_0000_0000_0011, 0]), "TLBI of ASID 1");
+    unit.attach(0x20, DomainMode::Translate { root_pa: 0x8040_0000 }).unwrap();
+    assert_eq!(smmu_asid(strtab, 0x20), 1);
+    assert_eq!(read64(strtab + 0x20 * 64, 0) & 0x000f_ffff_ffff_ffc0, cd0);
+    assert_eq!(read64(cd0, 1), 0x8040_0000, "the CD now holds the new device's table");
+
+    // A device in bypass caches no translation: nothing to flush.
+    let n = queued();
+    unit.flush(0x18).unwrap();
+    assert_eq!(queued(), n);
 }
 
 #[test]

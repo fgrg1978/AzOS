@@ -213,6 +213,8 @@ fn smmu_command_vectors() {
     // CFGI_STE: opcode 0x03 in 7:0, StreamID in 63:32; dword 2 bit 0 = Leaf.
     assert_eq!(smmuv3::cmd_cfgi_ste(0x18), [0x18_0000_0003, 1]);
     assert_eq!(smmuv3::cmd_cfgi_all(), [0x04, 31]);
+    // CFGI_CD_ALL: opcode 0x06, StreamID in 63:32.
+    assert_eq!(smmuv3::cmd_cfgi_cd_all(0x18), [0x18_0000_0006, 0]);
     assert_eq!(smmuv3::cmd_tlbi_nsnh_all(), [0x30, 0]);
     assert_eq!(smmuv3::cmd_tlbi_nh_asid(1), [0x0001_0000_0000_0011, 0]);
     // CMD_SYNC: opcode 0x46, CS bits 13:12 = 2 (SEV).
