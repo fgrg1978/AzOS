@@ -30,6 +30,9 @@
 //! The loader's memory-map entry for the image is not RAM, so the page
 //! allocator never sees those frames.
 //!
+//! The module request's files become the record's PVH module list, so the
+//! microcode loader reads one list whichever entry ran.
+//!
 //! Not done: no command line (the kernel-file request is not made), the
 //! loader's parked APs are left to the INIT/SIPI path (their memory stays
 //! reserved), 5-level paging is not requested, and the kernel is not
@@ -44,7 +47,7 @@
 use core::cell::UnsafeCell;
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
-use azos_arch::firmware::bootinfo::{HvmStartInfo, MemEntry, MAX_MEM_ENTRIES, PVH_MAGIC, START_INFO_LIMINE};
+use azos_arch::firmware::bootinfo::{HvmStartInfo, MemEntry, ModEntry, MAX_MEM_ENTRIES, MAX_MODULES, PVH_MAGIC, START_INFO_LIMINE};
 use azos_arch::firmware::limine::{self as lm, FbInfo, Responses, Snapshot, VirtMem};
 use azos_arch::mmu::{image_phys, set_image_slide, slide_for, DIRECT_MAP_BASE, KERNEL_VA_OFFSET};
 
@@ -115,6 +118,11 @@ static REQ_SMBIOS: Request = Request::new(lm::ID_SMBIOS);
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 static REQ_SMP: SmpRequest = SmpRequest { req: Request::new(lm::ID_SMP), flags: 0 };
+/// The files limine.conf's `module_path:` lines load (the signed microcode
+/// image, `make x86-pc-esp X86_PC_UCODE=...`).
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static REQ_MODULE: Request = Request::new(lm::ID_MODULE);
 #[used]
 #[unsafe(link_section = ".limine_requests_end")]
 static REQUESTS_END: Words<2> = Words(UnsafeCell::new(lm::REQUESTS_END_MARKER));
@@ -132,6 +140,7 @@ unsafe impl<T> Sync for BootCell<T> {}
 struct Record {
     si: HvmStartInfo,
     memmap: [MemEntry; MAX_MEM_ENTRIES],
+    modules: [ModEntry; MAX_MODULES],
 }
 
 /// Everything later boot code can ask about.
@@ -154,6 +163,7 @@ static RECORD: BootCell<Record> = BootCell(UnsafeCell::new(Record {
         reserved: 0,
     },
     memmap: [MemEntry { addr: 0, size: 0, kind: 0, reserved: 0 }; MAX_MEM_ENTRIES],
+    modules: [ModEntry { paddr: 0, size: 0, cmdline_paddr: 0, reserved: 0 }; MAX_MODULES],
 }));
 static HANDOFF: BootCell<Handoff> =
     BootCell(UnsafeCell::new(Handoff { snap: Snapshot::EMPTY, e820_dropped: 0 }));
@@ -301,6 +311,7 @@ pub extern "C" fn limine_prepare() -> u64 {
         smbios: REQ_SMBIOS.response(),
         smp: REQ_SMP.req.response(),
         kernel_address: REQ_KERNEL_ADDRESS.response(),
+        module: REQ_MODULE.response(),
     };
     let text_start = addr_of!(_text_start) as u64;
     let image_end = addr_of!(_kernel_end) as u64;
@@ -339,12 +350,15 @@ pub extern "C" fn limine_prepare() -> u64 {
             refuse("the kernel image is above 4 GiB: its boot record cannot be read by the 32-bit word", Some(("at", record_pa)));
         }
         let (n, dropped) = lm::to_e820(snap.memmap(), &mut rec.memmap);
+        for (e, &(paddr, size)) in rec.modules.iter_mut().zip(snap.modules()) {
+            *e = ModEntry { paddr, size, cmdline_paddr: 0, reserved: 0 };
+        }
         rec.si = HvmStartInfo {
             magic: PVH_MAGIC,
             version: 1,
             flags: START_INFO_LIMINE,
-            nr_modules: 0,
-            modlist_paddr: 0,
+            nr_modules: snap.n_modules as u32,
+            modlist_paddr: image_phys(addr_of!(rec.modules) as u64),
             cmdline_paddr: 0,
             rsdp_paddr: snap.rsdp,
             memmap_paddr: image_phys(addr_of!(rec.memmap) as u64),
@@ -442,5 +456,16 @@ pub fn log_boot_info() {
         }
         (None, Some(why)) => kwarn!("[LIMINE] SMP response dropped: {}", why),
         (None, None) => kprintln!("[LIMINE] no SMP response"),
+    }
+    match s.module_error {
+        Some(why) => kwarn!("[LIMINE] module response dropped: {}", why),
+        None => {
+            for &(pa, size) in s.modules() {
+                kprintln!("[LIMINE] module at {:#x}, {} bytes", pa, size);
+            }
+            if s.modules_dropped != 0 {
+                kwarn!("[LIMINE] {} module(s) past the {} kept were ignored", s.modules_dropped, MAX_MODULES);
+            }
+        }
     }
 }

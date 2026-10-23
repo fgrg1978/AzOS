@@ -8,6 +8,8 @@ pub(crate) mod cpu_init;
 pub(crate) mod hybrid_energy;
 /// The hardware-virtualization probe and record (Kconfig X86_SVM, X86_VMX).
 pub(crate) mod hv;
+/// CPU microcode from a signed boot module, on every CPU (Kconfig X86_UCODE_LOAD).
+pub(crate) mod ucode;
 /// The x86 thermal board object's CPUID, MSR and config-space access (Kconfig THERMAL).
 #[cfg(all(feature = "thermal", not(feature = "thermal-smoke")))]
 pub(crate) mod thermal_hw;

@@ -210,6 +210,36 @@ config ELF_REFUSE_EXEC_HEADERS
 
 if ARCH_X86_64
 
+config X86_UCODE_LOAD
+    bool "Load CPU microcode at boot from a signed boot module"
+    default y
+    help
+      Early microcode loading, as Linux does it: the boot CPU loads the
+      newest patch for itself before the CPU features and the speculation
+      mitigations below are probed (a patch adds MD_CLEAR, RFDS_CLEAR,
+      GDS_CTRL, the Zenbleed and Inception fixes), and every secondary CPU
+      loads the same patch as it comes up, before its own mitigation MSRs.
+
+      The patch comes from a boot module, the signed microcode image
+      `make ucode` builds (mk/firmware.mk) from the published Intel and AMD
+      files: QEMU's `-initrd` on the PVH entry, or `module_path:` on the
+      Limine ESP. The image is verified like any other signed image (an
+      `RSIG` by the update key, SECURE_BOOT_PUBKEY) before a byte of it is
+      parsed; then the Intel update (signature, platform flags, checksums,
+      the extended signature table) or the AMD patch (the container's
+      equivalence table) for this CPU is written to
+      IA32_BIOS_UPDT_TRIG / MSR_AMD64_PATCH_LOADER and the revision is read
+      back. Nothing is loaded under a hypervisor, which owns the microcode
+      (Linux skips it too), and nothing older than the revision in force.
+      Each outcome, with the revision before and after, is a `boot-chain`
+      decision record (stage 6).
+
+      Cost: none without a module. With one, a SHA-256 over the image and
+      one signature check on the boot CPU (an image of every Intel and AMD
+      file is about 18 MiB; one CPU's file is kilobytes), the matched patch
+      kept in RAM for the secondaries, and one MSR write per CPU.
+      n: no module is looked at; the CPU runs the firmware's microcode.
+
 comment "x86_64 speculative-execution mitigations (n / probe / require)"
 comment "Chosen by probe: ARCH_CAPABILITIES and CPUID first, the family/model table only for what has no bit."
 

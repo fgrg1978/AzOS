@@ -4,7 +4,7 @@
 //! pure: the request identifiers and response layouts, the base-revision
 //! handshake, the memory map reduced to the E820 entries the platform code
 //! already reads, and the framebuffer / RSDP / SMBIOS / SMP / kernel-address
-//! answers validated into one [`Snapshot`]. Limine loads a higher-half
+//! / module answers validated into one [`Snapshot`]. Limine loads a higher-half
 //! kernel at a physical address of ITS choosing and maps it at the virtual
 //! address the ELF links at; the kernel does not move itself to a fixed
 //! place but records where it is ([`Snapshot::image_phys`], turned into the
@@ -54,6 +54,10 @@ pub const ID_RSDP: [u64; 4] = request_id(0xc5e7_7b6b_397e_7b43, 0x2763_7845_accd
 pub const ID_SMBIOS: [u64; 4] = request_id(0x9e90_46f1_1e09_5391, 0xaa4a_520f_efbd_e5ee);
 pub const ID_SMP: [u64; 4] = request_id(0x95a6_7b81_9a1b_857e, 0xa0b6_1b72_3b6a_73e0);
 pub const ID_KERNEL_ADDRESS: [u64; 4] = request_id(0x71ba_7686_3cc5_5f63, 0xb264_4a48_c516_a487);
+/// The module request (the files `module_path:` lines of limine.conf load):
+/// both words checked against the v10 `BOOTX64.EFI`, which compares them as
+/// immediates.
+pub const ID_MODULE: [u64; 4] = request_id(0x3e7e_2797_02be_32af, 0xca1c_4f3b_d128_0cee);
 
 /// Memory-map entry types (`LIMINE_MEMMAP_*`). [verify] (a newer spec adds
 /// a "reserved but mapped" type; any unknown type maps to reserved.)
@@ -139,9 +143,15 @@ pub struct Snapshot {
     /// Framebuffers the loader reported (only the first is kept).
     pub fb_count: u64,
     pub smp: Option<SmpInfo>,
+    /// The modules `(physical address, bytes)`, loader order.
+    pub modules: [(u64, u64); super::bootinfo::MAX_MODULES],
+    pub n_modules: usize,
+    /// Modules the loader reported past `MAX_MODULES`.
+    pub modules_dropped: u64,
     /// Why an optional response was dropped (the boot goes on without it).
     pub fb_error: Option<&'static str>,
     pub smp_error: Option<&'static str>,
+    pub module_error: Option<&'static str>,
 }
 
 impl Snapshot {
@@ -159,12 +169,20 @@ impl Snapshot {
         fb: None,
         fb_count: 0,
         smp: None,
+        modules: [(0, 0); super::bootinfo::MAX_MODULES],
+        n_modules: 0,
+        modules_dropped: 0,
         fb_error: None,
         smp_error: None,
+        module_error: None,
     };
 
     pub fn memmap(&self) -> &[MmapEntry] {
         &self.memmap[..self.n_memmap]
+    }
+
+    pub fn modules(&self) -> &[(u64, u64)] {
+        &self.modules[..self.n_modules]
     }
 }
 
@@ -279,6 +297,7 @@ pub struct Responses {
     pub smbios: u64,
     pub smp: u64,
     pub kernel_address: u64,
+    pub module: u64,
 }
 
 fn parse_memmap<M: VirtMem>(m: &M, resp: u64, snap: &mut Snapshot) -> Result<(), Error> {
@@ -370,6 +389,31 @@ fn parse_smp<M: VirtMem>(m: &M, resp: u64) -> Result<SmpInfo, Error> {
     Ok(info)
 }
 
+fn parse_modules<M: VirtMem>(m: &M, resp: u64, hhdm: u64, snap: &mut Snapshot) -> Result<(), Error> {
+    // response: revision @0, module_count @8, modules (pointer to pointers)
+    // @16. file: revision @0, address @8, size @16, then the path and the
+    // media fields, unread.
+    let count = u64_at(m, resp + 8).ok_or(Error::Bad("module response"))?;
+    if count == 0 {
+        return Ok(());
+    }
+    let arr = u64_at(m, resp + 16).filter(|&a| a != 0).ok_or(Error::Bad("module response"))?;
+    let keep = count.min(snap.modules.len() as u64);
+    for i in 0..keep {
+        let p = u64_at(m, arr + i * 8).filter(|&p| p != 0).ok_or(Error::Bad("module pointer"))?;
+        let address = u64_at(m, p + 8).ok_or(Error::Bad("module"))?;
+        let size = u64_at(m, p + 16).ok_or(Error::Bad("module"))?;
+        let pa = normalize_pa(address, hhdm);
+        if size == 0 || pa == 0 || pa.checked_add(size).is_none() {
+            return Err(Error::Bad("module address or size"));
+        }
+        snap.modules[i as usize] = (pa, size);
+    }
+    snap.n_modules = keep as usize;
+    snap.modules_dropped = count - keep;
+    Ok(())
+}
+
 /// Read every response into one validated [`Snapshot`]. The memory map, the
 /// HHDM and the kernel address are required; the rest are optional (absent
 /// = the field stays empty). `link_virt` is the address the image is linked
@@ -427,6 +471,12 @@ pub fn parse<M: VirtMem>(m: &M, r: &Responses, link_virt: u64) -> Result<Snapsho
             Ok(s) => snap.smp = Some(s),
             Err(Error::Bad(why)) => snap.smp_error = Some(why),
             Err(_) => {}
+        }
+    }
+    if r.module != 0 {
+        if let Err(Error::Bad(why)) = parse_modules(m, r.module, snap.hhdm, &mut snap) {
+            snap.n_modules = 0;
+            snap.module_error = Some(why);
         }
     }
     Ok(snap)

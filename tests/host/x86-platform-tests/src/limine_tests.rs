@@ -106,6 +106,17 @@ fn good() -> (Mem, Responses) {
         m.u32(info, i as u32);
         m.u32(info + 4, 2 * i as u32);
     }
+    // modules: two files, the first at an HHDM address, the second already
+    // physical (both are normalised).
+    let module = B + 0x3000;
+    m.u64(module + 8, 2);
+    m.u64(module + 16, B + 0x3020);
+    for (i, (addr, size)) in [(HHDM + 0x3f10_0000, 0x1_2345u64), (0x3f18_0000, 0x200)].into_iter().enumerate() {
+        let file = B + 0x3040 + 0x40 * i as u64;
+        m.u64(B + 0x3020 + 8 * i as u64, file);
+        m.u64(file + 8, addr);
+        m.u64(file + 16, size);
+    }
     let r = Responses {
         base_revision: OK_WORDS,
         memmap: mm,
@@ -115,6 +126,7 @@ fn good() -> (Mem, Responses) {
         smbios,
         smp,
         kernel_address: ka,
+        module,
     };
     (m, r)
 }
@@ -138,6 +150,7 @@ fn a_complete_set_of_responses_parses() {
     let smp = s.smp.unwrap();
     assert_eq!((smp.bsp_lapic_id, smp.x2apic, smp.count), (0, false, 3));
     assert_eq!(&smp.lapic_ids[..3], &[0, 2, 4]);
+    assert_eq!(s.modules(), &[(0x3f10_0000, 0x1_2345), (0x3f18_0000, 0x200)]);
 }
 
 #[test]
@@ -173,7 +186,7 @@ fn the_required_responses_are_required() {
 #[test]
 fn the_optional_responses_are_optional() {
     let (m, r) = good();
-    let x = Responses { framebuffer: 0, rsdp: 0, smbios: 0, smp: 0, ..r };
+    let x = Responses { framebuffer: 0, rsdp: 0, smbios: 0, smp: 0, module: 0, ..r };
     let s = lm::parse(&m, &x, LINK_VIRT).unwrap();
     assert!(s.fb.is_none() && s.smp.is_none());
     assert_eq!((s.rsdp, s.smbios32, s.smbios64), (0, 0, 0));
@@ -332,6 +345,34 @@ fn the_smp_response_reports_the_cpus_and_the_x2apic_mode() {
     assert_eq!(s.smp_error, Some("smp cpu pointer"));
 }
 
+#[test]
+fn the_module_response_lists_the_files_and_a_bad_one_drops_only_itself() {
+    // More modules than the platform keeps: counted.
+    let (mut m, r) = good();
+    let n = bootinfo::MAX_MODULES as u64 + 2;
+    m.u64(r.module + 8, n);
+    for i in 0..n {
+        let file = B + 0x3200 + 0x40 * i;
+        m.u64(B + 0x3100 + 8 * i, file);
+        m.u64(file + 8, HHDM + 0x4000_0000 + 0x1000 * i);
+        m.u64(file + 16, 0x1000);
+    }
+    m.u64(r.module + 16, B + 0x3100);
+    let s = lm::parse(&m, &r, LINK_VIRT).unwrap();
+    assert_eq!((s.n_modules, s.modules_dropped), (bootinfo::MAX_MODULES, 2));
+    assert_eq!(s.modules()[1], (0x4000_1000, 0x1000));
+    // An empty file drops the answer (no module is trusted), not the boot.
+    let (mut m, r) = good();
+    m.u64(B + 0x3040 + 0x40 + 16, 0);
+    let s = lm::parse(&m, &r, LINK_VIRT).unwrap();
+    assert_eq!((s.n_modules, s.module_error), (0, Some("module address or size")));
+    // Zero modules is no error.
+    let (mut m, r) = good();
+    m.u64(r.module + 8, 0);
+    let s = lm::parse(&m, &r, LINK_VIRT).unwrap();
+    assert!(s.modules().is_empty() && s.module_error.is_none());
+}
+
 // ── the PMM floor around an image the loader placed ─────────────────────────
 
 /// The memory map of a q35 under OVMF with 256 MiB: low RAM, a 7 MiB window
@@ -391,7 +432,7 @@ fn the_images_frames_are_cut_out_of_the_holes_the_direct_map_leaves() {
                e(5 * MB, 3 * MB, bootinfo::E820_RESERVED), e(8 * MB, 8 * MB, bootinfo::E820_RAM)];
     let collect = |keep| {
         let mut v = Vec::new();
-        bootinfo::for_each_hole_except(&map, 16 * MB, keep, |s, l| v.push((s, l)));
+        bootinfo::for_each_hole_except(&map, 16 * MB, &[keep], |s, l| v.push((s, l)));
         v
     };
     assert_eq!(collect((0, 0)), vec![(0x9_f000, MB - 0x9_f000), (5 * MB, 3 * MB)], "no kept range: the plain holes");
@@ -404,4 +445,17 @@ fn the_images_frames_are_cut_out_of_the_holes_the_direct_map_leaves() {
     assert_eq!(collect((7 * MB, MB)), vec![(0x9_f000, MB - 0x9_f000), (5 * MB, 2 * MB)]);
     // A kept range in RAM, away from every hole, changes nothing.
     assert_eq!(collect((2 * MB, MB)), collect((0, 0)));
+    // The image and a boot module in the same hole (Limine puts both in its
+    // executable-and-modules memory), listed in either order: both kept,
+    // the gaps between them still holes, in address order.
+    let two = |keep: &[(u64, u64)]| {
+        let mut v = Vec::new();
+        bootinfo::for_each_hole_except(&map, 16 * MB, keep, |s, l| v.push((s, l)));
+        v
+    };
+    let want = vec![(0x9_f000, MB - 0x9_f000), (5 * MB, MB / 2), (6 * MB, MB), (7 * MB + MB / 2, MB / 2)];
+    assert_eq!(two(&[(5 * MB + MB / 2, MB / 2), (7 * MB, MB / 2)]), want);
+    assert_eq!(two(&[(7 * MB, MB / 2), (5 * MB + MB / 2, MB / 2)]), want);
+    // Overlapping kept ranges, and an empty one, cut once.
+    assert_eq!(two(&[(5 * MB, 2 * MB), (6 * MB, 2 * MB), (0, 0)]), vec![(0x9_f000, MB - 0x9_f000)]);
 }

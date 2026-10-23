@@ -65,6 +65,9 @@ pub(crate) fn firmware_labels(n: usize, _dtb_ptr: usize, raw: &mut [CpuRaw]) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     super::ext::cpu_init::init_cpu(cpu);
+    // Kconfig X86_UCODE_LOAD: the boot CPU's patch, before this CPU's CPUID
+    // is read for its core type and before its mitigation MSRs below.
+    super::ext::ucode::this_cpu(cpu);
     // CPUID answers for the CPU that runs it: this CPU's core type, for the
     // energy model the boot CPU makes once every CPU has recorded. Held here,
     // interrupts off, until it has installed it: no CPU enters the scheduler

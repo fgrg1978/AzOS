@@ -15,7 +15,7 @@
 use core::cell::UnsafeCell;
 
 use crate::firmware::acpi::{self, AcpiError, AcpiInfo, PhysMem};
-use crate::firmware::bootinfo::{self, HvmStartInfo, MemEntry, VirtioMmio, MAX_MEM_ENTRIES, PVH_MAGIC};
+use crate::firmware::bootinfo::{self, HvmStartInfo, MemEntry, ModEntry, VirtioMmio, MAX_MEM_ENTRIES, MAX_MODULES, PVH_MAGIC};
 
 /// The dense CPU-number ceiling (Kconfig `NR_CPUS`).
 pub const NR_CPUS: usize = azos_limits::NR_CPUS;
@@ -55,6 +55,11 @@ pub struct Platform {
     pub cmdline_len: usize,
     /// The command line's full length (it may have been cut to CMDLINE_MAX).
     pub cmdline_full_len: usize,
+    /// The boot modules `(physical address, bytes)`, in the loader's order.
+    pub modules: [(u64, u64); MAX_MODULES],
+    pub n_modules: usize,
+    /// Modules past `MAX_MODULES`, and entries that could not be read.
+    pub modules_dropped: usize,
     pub acpi: AcpiInfo,
     pub acpi_err: Option<AcpiError>,
     pub rsdp_source: Source,
@@ -83,6 +88,9 @@ static PLATFORM: BootCell<Platform> = BootCell(UnsafeCell::new(Platform {
     cmdline: [0; CMDLINE_MAX],
     cmdline_len: 0,
     cmdline_full_len: 0,
+    modules: [(0, 0); MAX_MODULES],
+    n_modules: 0,
+    modules_dropped: 0,
     acpi: AcpiInfo::EMPTY,
     acpi_err: None,
     rsdp_source: Source::None,
@@ -115,6 +123,10 @@ impl Platform {
     }
     pub fn virtio(&self) -> &[VirtioMmio] {
         &self.virtio[..self.n_virtio]
+    }
+    /// The boot modules `(physical address, bytes)`.
+    pub fn modules(&self) -> &[(u64, u64)] {
+        &self.modules[..self.n_modules]
     }
     pub fn madt(&self) -> Option<&acpi::Madt> {
         self.acpi.madt.as_ref()
@@ -281,6 +293,23 @@ pub unsafe fn discover(start_info_pa: usize) {
             p.cmdline_full_len = len;
             p.cmdline_len = len.min(CMDLINE_MAX);
         }
+        // The modules: where each file is; the list itself is not kept.
+        if si.modlist_paddr != 0 {
+            for i in 0..si.nr_modules as usize {
+                let pa = si.modlist_paddr + (i * core::mem::size_of::<ModEntry>()) as u64;
+                let e = mem.read(pa, core::mem::size_of::<ModEntry>())
+                    // SAFETY: one ModEntry's bytes; read_unaligned.
+                    .map(|b| unsafe { core::ptr::read_unaligned(b.as_ptr() as *const ModEntry) })
+                    .filter(|e| e.size != 0 && e.paddr.checked_add(e.size).is_some());
+                match e {
+                    Some(e) if p.n_modules < MAX_MODULES => {
+                        p.modules[p.n_modules] = (e.paddr, e.size);
+                        p.n_modules += 1;
+                    }
+                    _ => p.modules_dropped += 1,
+                }
+            }
+        }
     }
 
     // ── ACPI ──
@@ -345,15 +374,19 @@ pub unsafe fn discover(start_info_pa: usize) {
         p.virtio_source = Source::MicrovmLayout;
     }
 
-    // ── The AP trampoline page: low RAM no boot information sits in ──
-    let mut avoid = [(0u64, 0u64); 4 + acpi::MAX_TABLES + 2 * acpi::MAX_IOMMU_REGIONS];
+    // ── The AP trampoline page: low RAM no boot information or module sits in ──
+    let mut avoid = [(0u64, 0u64); 4 + acpi::MAX_TABLES + 2 * acpi::MAX_IOMMU_REGIONS + MAX_MODULES];
     let mut na = 0;
-    p.for_each_boot_span(|s, l| {
+    let mut add = |s: u64, l: u64| {
         if na < avoid.len() {
             avoid[na] = (s & !0xFFF, ((s & 0xFFF) + l + 0xFFF) & !0xFFF);
             na += 1;
         }
-    });
+    };
+    p.for_each_boot_span(&mut add);
+    for &(s, l) in p.modules() {
+        add(s, l);
+    }
     p.trampoline_pa = bootinfo::pick_trampoline(p.memmap(), &avoid[..na], azos_limits::X86_AP_TRAMPOLINE_PA as u64);
 }
 

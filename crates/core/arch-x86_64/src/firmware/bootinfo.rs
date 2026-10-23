@@ -33,6 +33,21 @@ pub struct MemEntry {
     pub reserved: u32,
 }
 
+/// One PVH module-list entry (`hvm_modlist_entry`): a file the loader put
+/// in memory for the kernel (QEMU's `-initrd`; the Limine entry builds the
+/// same list from its module response).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModEntry {
+    pub paddr: u64,
+    pub size: u64,
+    pub cmdline_paddr: u64,
+    pub reserved: u64,
+}
+
+/// The modules this boot keeps (the microcode image is the only user).
+pub const MAX_MODULES: usize = 4;
+
 pub const PVH_MAGIC: u32 = 0x336e_c578;
 /// `HvmStartInfo::flags` bit the Limine entry sets on the PVH-shaped record
 /// it builds from Limine's responses (a bit no Xen flag uses): the platform
@@ -96,26 +111,34 @@ pub fn for_each_hole(map: &[MemEntry], end: u64, mut f: impl FnMut(u64, u64)) {
     }
 }
 
-/// [`for_each_hole`] less the range `keep` (`(start, len)`): the holes the
-/// direct map leaves out. The kernel image is one the loader reports as
-/// reserved (Limine's executable-and-modules memory), yet the image's frames
-/// stay in the direct map like every RAM frame the kernel owns, so the
-/// range is cut out of the holes. A hole `keep` splits comes out as two.
-pub fn for_each_hole_except(map: &[MemEntry], end: u64, keep: (u64, u64), mut f: impl FnMut(u64, u64)) {
-    let (ks, ke) = (keep.0, keep.0.saturating_add(keep.1));
-    for_each_hole(map, end, |s, l| {
-        let e = s + l;
-        if keep.1 == 0 || ke <= s || e <= ks {
-            f(s, l);
-            return;
+/// [`for_each_hole`] less the ranges `keep` (`(start, len)` each): the holes
+/// the direct map leaves out. The kernel image and the boot modules are
+/// memory the loader reports as reserved (Limine's executable-and-modules
+/// memory), yet their frames stay in the direct map like every RAM frame the
+/// kernel owns, so the ranges are cut out of the holes. A hole a range
+/// splits comes out as two, in address order.
+pub fn for_each_hole_except(map: &[MemEntry], end: u64, keep: &[(u64, u64)], mut f: impl FnMut(u64, u64)) {
+    for_each_hole(map, end, |s, l| cut(s, s + l, keep, &mut f));
+}
+
+/// `[s, e)` less every range of `keep`, in address order. The first range
+/// that overlaps splits it; the pieces go on against the ranges after it
+/// (the ones before overlap neither piece).
+fn cut(s: u64, e: u64, keep: &[(u64, u64)], f: &mut impl FnMut(u64, u64)) {
+    let hit = keep.iter().position(|&(ks, kl)| kl != 0 && ks < e && s < ks.saturating_add(kl));
+    let Some(i) = hit else {
+        if s < e {
+            f(s, e - s);
         }
-        if s < ks {
-            f(s, ks - s);
-        }
-        if ke < e {
-            f(ke, e - ke);
-        }
-    });
+        return;
+    };
+    let (ks, ke) = (keep[i].0, keep[i].0.saturating_add(keep[i].1));
+    if s < ks {
+        cut(s, ks, &keep[i + 1..], f);
+    }
+    if ke < e {
+        cut(ke, e, &keep[i + 1..], f);
+    }
 }
 
 /// Is `[pa, pa + len)` entirely inside one RAM entry?

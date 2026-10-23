@@ -232,6 +232,9 @@ pub fn timer_probe(_fw: &()) {
 /// user must also gate on the same policy (`azos_arch_api::isa::x86_64`).
 pub fn cpu_features(_fw: &()) {
     use azos_arch_api::isa::{x86_64 as p, Ext};
+    // Kconfig X86_UCODE_LOAD: the microcode first; what is probed below
+    // (CPUID, ARCH_CAPABILITIES, the mitigation MSRs) may change with it.
+    crate::entry::x86_64::ext::ucode::boot_cpu();
     if let Err(missing) = azos_arch::cpu::features::check_baseline(p::LEVEL_NUM) {
         crate::boot::isa::refuse_level(p::LEVEL, missing);
     }
@@ -424,7 +427,7 @@ pub fn pmm_floor(mem_start: usize, mem_size: usize, image_start_pa: usize, image
     let p = platform();
     let pages = (mem_start + mem_size) / azos_arch::PAGE_SIZE - mem_start.div_ceil(azos_arch::PAGE_SIZE);
     let bytes = azos_mm::frame::table_bytes(pages) as u64;
-    let mut avoid = [(0u64, 0u64); 4 + azos_arch::firmware::acpi::MAX_TABLES + 2 * azos_arch::firmware::acpi::MAX_IOMMU_REGIONS + 2];
+    let mut avoid = [(0u64, 0u64); 4 + azos_arch::firmware::acpi::MAX_TABLES + 2 * azos_arch::firmware::acpi::MAX_IOMMU_REGIONS + 3];
     let mut n = 0;
     let mut add = |s: u64, l: u64| {
         if n < avoid.len() {
@@ -434,6 +437,11 @@ pub fn pmm_floor(mem_start: usize, mem_size: usize, image_start_pa: usize, image
     };
     add(image_start_pa as u64, (image_end_pa - image_start_pa) as u64);
     p.for_each_boot_span(&mut add);
+    // The microcode patch the secondaries load (the rest of its module is
+    // no longer read).
+    if let Some((s, l)) = crate::entry::x86_64::ext::ucode::kept_frames() {
+        add(s, l);
+    }
     if let Some(t) = p.trampoline_pa {
         add(t, azos_arch::PAGE_SIZE as u64);
     }
@@ -486,6 +494,14 @@ pub fn reserve_firmware_table(_fw_table: usize) {
         azos_mm::pmm::reserve_range(t as usize, azos_arch::PAGE_SIZE);
         boot += azos_arch::PAGE_SIZE as u64;
     }
+    // The microcode patch every secondary loads (Kconfig X86_UCODE_LOAD);
+    // in a hole (a Limine module) it is not the allocator's anyway.
+    if let Some((s, l)) = crate::entry::x86_64::ext::ucode::kept_frames() {
+        if s < end {
+            azos_mm::pmm::reserve_range(s as usize, l as usize);
+            boot += l;
+        }
+    }
     kprintln!("[MM] Reserved {} KiB of memory-map holes, {} KiB of boot information", holes >> 10, boot >> 10);
     // Kconfig X86_MIT_L1TF: a not-present PTE this kernel writes names frame 0
     // (it holds no address), so PTE inversion holds only while nothing lives there.
@@ -514,6 +530,13 @@ impl azos_arch::mmu::TableMem for DirectTables {
     fn alloc_table(&mut self) -> Option<usize> { None }
 }
 
+/// What stays in the direct map though the loader's map may call it a hole:
+/// the kernel image's frames, and the frames of the microcode patch the
+/// secondaries read (a Limine module is the loader's reserved memory).
+fn direct_map_keep() -> [(u64, u64); 2] {
+    [image_frames(), crate::entry::x86_64::ext::ucode::kept_frames().unwrap_or((0, 0))]
+}
+
 /// The kernel image's frames `(start, len)`, page-aligned: reserved memory in
 /// the loader's map under Limine, but RAM the kernel owns, so the direct map
 /// keeps them (the image's alias there is made read-only by `early_main`).
@@ -536,7 +559,7 @@ fn unmap_direct_map_holes() -> u64 {
     let end = azos_mm::vmm::ram_end() as u64;
     let levels = azos_arch::mmu::levels();
     let mut removed = 0u64;
-    azos_arch::firmware::bootinfo::for_each_hole_except(platform().memmap(), end, image_frames(), |s, l| {
+    azos_arch::firmware::bootinfo::for_each_hole_except(platform().memmap(), end, &direct_map_keep(), |s, l| {
         let (mut pa, e) = (s as usize, (s + l) as usize);
         while pa < e {
             let va = azos_mm::addr::phys_to_virt(pa);
@@ -575,7 +598,7 @@ pub fn kernel_mmio_windows() -> impl Iterator<Item = (usize, usize)> {
             leaves += 1;
             let (s, e) = (leaf.phys as u64, (leaf.phys + azos_arch::mmu::level_size(leaf.level)) as u64);
             let mut hit = false;
-            azos_arch::firmware::bootinfo::for_each_hole_except(platform().memmap(), end, image_frames(),
+            azos_arch::firmware::bootinfo::for_each_hole_except(platform().memmap(), end, &direct_map_keep(),
                                                       |hs, hl| hit |= hs < e && s < hs + hl);
             if hit {
                 bad += 1;

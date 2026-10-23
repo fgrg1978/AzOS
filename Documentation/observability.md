@@ -143,7 +143,7 @@ what `RuleInfo::fields` names.
 | 53 | `deferred-activity` | tid | kind, wait_ms, reason | An activity deferred to an idle or charging window, or run now for its deadline |
 | 54 | `time-protection` | domain | from, to, mechanism | Timing-carrying state flushed or partitioned on a Domain switch, or not possible |
 | 55 | `attest` | tid | scope, nonce, reason | A quote of the measured state given to a verifier, or refused |
-| 56 | `boot-chain` | stage | version, floor, reason | A boot chain link verified before it ran, or refused |
+| 56 | `boot-chain` | stage | version, floor, reason | A boot chain link verified before it ran, or refused; stage 6 is the CPU microcode (revision after, revision before, outcome and CPU) |
 | 57 | `ras` | cpu | kind, addr, action | A hardware error report and the action taken on it |
 | 58 | `fieldbus` | bus | node, id, reason | A fieldbus node or frame admitted, or refused |
 | 59 | `audio-capture` | tid | device, rate_hz, reason | An audio capture stream admitted, or refused |

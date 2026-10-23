@@ -867,9 +867,13 @@ pub const RULES: [RuleInfo; 75] = [
         rejected_if_no: "give no quote: a quote of a state that does not match, or to a caller without the right, would vouch for a machine it should not",
     },
     RuleInfo {
-        // The subject is the stage (1 loader, 2 kernel, 3 configuration, 4 topology, 5 service image).
-        // `version` is the stage's version, `floor` the rollback floor in force, `reason` 0 verified, 1 bad
-        // signature, 2 version below the floor, 3 digest differs from the one the previous stage signed.
+        // The subject is the stage (1 loader, 2 kernel, 3 configuration, 4 topology, 5 service image, 6 CPU
+        // microcode). `version` is the stage's version, `floor` the rollback floor in force, `reason` 0 verified,
+        // 1 bad signature, 2 version below the floor, 3 digest differs from the one the previous stage signed.
+        // Stage 6 (kernel/src/entry/x86_64/ext/ucode.rs): `version` is the revision after, `floor` the one
+        // before, `reason` bits 0..8 are 0 applied, 1 bad signature, 4 no patch for the CPU, 5 written and not
+        // taken, 6 malformed container, 7 a hypervisor owns the microcode, 8 up to date, 9 a secondary unlike
+        // the boot CPU; the logical CPU is above them.
         name: "boot-chain",
         subject: "stage",
         fields: ["version", "floor", "reason"],
