@@ -2419,7 +2419,7 @@ mod gic_select;
 
 #[cfg(test)]
 mod gic_select_tests {
-    use super::gic_select::{from_node, Gic};
+    use super::gic_select::{from_node, Finder, Gic};
 
     fn compat(names: &[&str]) -> Vec<u8> {
         names.iter().flat_map(|n| n.bytes().chain([0])).collect()
@@ -2463,6 +2463,34 @@ mod gic_select_tests {
         assert_eq!(from_node(&compat(&["arm,gic-400"]), w, None), None, "no CPU interface");
         assert_eq!(from_node(&compat(&["arm,gic-400"]), w, Some((0x2000, 0))), None, "empty window");
         assert_eq!(from_node(&compat(&["arm,gic-400"]), (u64::MAX - 8, 0x1000), Some(w)), None, "wraps");
+    }
+
+    /// A Raspberry Pi 3 tree names no GIC but both halves of the BCM2836 pair
+    /// (armctrl after the local block in document order, or before it): that
+    /// pair, with armctrl's registers at its own address, 0x200 into its
+    /// page. One half alone is nothing; a GIC anywhere in the tree wins.
+    /// Canary: round armctrl to its page and every register is read 0x200 low.
+    #[test]
+    fn a_tree_with_the_bcm2836_pair_and_no_gic_is_that_pair() {
+        let local = compat(&["brcm,bcm2836-l1-intc"]);
+        let armctrl = compat(&["brcm,bcm2836-armctrl-ic"]);
+        let mut f = Finder::new();
+        f.node(&armctrl, (0x3f00_b200, 0x200), None);
+        f.node(&compat(&["arm,pl011", "arm,primecell"]), (0x3f20_1000, 0x200), None);
+        f.node(&local, (0x4000_0000, 0x100), None);
+        assert_eq!(f.done(), Some(Gic::Bcm2836 { local: (0x4000_0000, 0x100), armctrl: (0x3f00_b200, 0x200) }));
+        let mut f = Finder::new();
+        f.node(&local, (0x4000_0000, 0x100), None);
+        assert_eq!(f.done(), None, "the local block alone");
+        let mut f = Finder::new();
+        f.node(&local, (0x4000_0000, 0x100), None);
+        f.node(&armctrl, (0x3f00_b200, 0x200), None);
+        f.node(&compat(&["arm,gic-400"]), (0x1000, 0x1000), Some((0x2000, 0x1000)));
+        assert_eq!(f.done(), Some(Gic::V2 { gicd: (0x1000, 0x1000), gicc: (0x2000, 0x1000) }));
+        let mut f = Finder::new();
+        f.node(&compat(&["arm,gic-v3"]), (0x0800_0000, 0x1_0000), None);
+        f.node(&compat(&["arm,gic-400"]), (0x1000, 0x1000), Some((0x2000, 0x1000)));
+        assert_eq!(f.done(), Some(Gic::V3), "the first GIC node wins, as before");
     }
 }
 

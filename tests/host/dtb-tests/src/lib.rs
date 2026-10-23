@@ -1515,6 +1515,27 @@ mod tests {
 
     fn cells(v: &[u32]) -> Vec<u8> { v.iter().flat_map(|c| c.to_be_bytes()).collect() }
 
+    /// The Raspberry Pi 3 B tree starts its four Cortex-A53s through a spin
+    /// table: `cpu-release-addr` 0xd8, 0xe0, 0xe8, 0xf0 (the firmware's
+    /// armstub, and QEMU's), `reg` the MPIDR affinity. QEMU `virt` uses PSCI:
+    /// no CPU is listed. Canary: read `cpu-release-addr` with `/cpus`'
+    /// `#address-cells` (1) and every address comes out 0.
+    #[test]
+    fn qemu_raspi3b_cpus_are_spin_table_ones() {
+        let b = fixture(include_bytes!("../fixtures/qemu-raspi3b.dtb"));
+        let mut out = [azos_dtb::SpinCpu::default(); 8];
+        let n = unsafe { azos_dtb::dtb_spin_table(b.as_ptr(), &mut out) };
+        assert_eq!(n, Some(4));
+        let got: Vec<(u64, u64)> = out[..4].iter().map(|c| (c.reg, c.release_addr)).collect();
+        assert_eq!(got, [(0, 0xd8), (1, 0xe0), (2, 0xe8), (3, 0xf0)]);
+        let v = fixture(include_bytes!("../fixtures/qemu-aarch64-virt.dtb"));
+        assert_eq!(unsafe { azos_dtb::dtb_spin_table(v.as_ptr(), &mut out) }, Some(0));
+        // A short buffer keeps the count.
+        let mut one = [azos_dtb::SpinCpu::default(); 1];
+        assert_eq!(unsafe { azos_dtb::dtb_spin_table(b.as_ptr(), &mut one) }, Some(4));
+        assert_eq!(one[0], azos_dtb::SpinCpu { reg: 0, release_addr: 0xd8 });
+    }
+
     /// A `stdout-path` that names nothing resolves to nothing, not to some
     /// other node.
     #[test]

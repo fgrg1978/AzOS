@@ -3,7 +3,8 @@
 //! GICv3 — ARM Generic Interrupt Controller v3, and the entry point of every
 //! interrupt-controller access on this ISA.
 //!
-//! When the boot selected a GICv2 ([`super::gicv2::active`]) each function
+//! When the boot selected a GICv2 ([`super::gicv2::active`]) or the BCM2836
+//! pair ([`super::bcm2836::active`]) each function
 //! that touches the hardware hands over to [`super::gicv2`]; the ring-3 line
 //! ownership below (the bitmaps, the trigger notes) is shared by both.
 //!
@@ -218,6 +219,10 @@ fn gicd_wait_rwp() {
 /// before any redistributor / CPU-interface init.
 #[cfg(target_arch = "aarch64")]
 pub fn init_distributor() {
+    if super::bcm2836::active() {
+        note_spi_limit_lines(super::bcm2836::INTID_LIMIT);
+        return super::bcm2836::init_distributor();
+    }
     if super::gicv2::active() {
         return super::gicv2::init_distributor();
     }
@@ -322,6 +327,9 @@ pub fn init_redistributor_at(rd_base: usize) {
 /// Must run AFTER `init_redistributor` for the calling PE.
 #[cfg(target_arch = "aarch64")]
 pub fn init_cpu_interface() {
+    if super::bcm2836::active() {
+        return super::bcm2836::init_cpu_interface();
+    }
     if super::gicv2::active() {
         return super::gicv2::init_cpu_interface();
     }
@@ -377,6 +385,9 @@ pub fn init_cpu_interface() {
 #[cfg(target_arch = "aarch64")]
 pub fn enable_spi(intid: u32) {
     debug_assert!(intid >= 32, "use enable_ppi for INTIDs below 32");
+    if super::bcm2836::active() {
+        return super::bcm2836::enable_spi(intid);
+    }
     if super::gicv2::active() {
         return super::gicv2::enable_spi(intid);
     }
@@ -438,6 +449,11 @@ pub fn route_spi(intid: u32, mpidr: u64, edge: bool) {
 /// same-hart task spins on it.
 #[cfg(target_arch = "aarch64")]
 fn route_spi_raw(intid: u32, mpidr: u64, edge: bool) {
+    // The BCM2836 pair has no per-line target or trigger: the GPU's lines go
+    // to one core together, every line is a level. Enabled where it is.
+    if super::bcm2836::active() {
+        return enable_spi(intid);
+    }
     let v2 = super::gicv2::active();
     let cfg_reg = GICD_BASE + GICD_ICFGR0 + (intid / 16) as usize * 4;
     let daif: u64;
@@ -480,6 +496,9 @@ fn route_spi_raw(intid: u32, mpidr: u64, edge: bool) {
 /// [`enable_spi`], whatever the device does.
 #[cfg(target_arch = "aarch64")]
 pub fn disable_spi(intid: u32) {
+    if super::bcm2836::active() {
+        return super::bcm2836::disable_spi(intid);
+    }
     if super::gicv2::active() {
         return super::gicv2::disable_spi(intid);
     }
@@ -576,7 +595,12 @@ static SPI_LIMIT: AtomicU32 = AtomicU32::new(1020);
 
 /// Record [`SPI_LIMIT`] from a `GICD_TYPER` value.
 pub fn note_spi_limit(typer: u32) {
-    let lines = 32 * ((typer & 0x1F) + 1);
+    note_spi_limit_lines(32 * ((typer & 0x1F) + 1));
+}
+
+/// [`note_spi_limit`] for a controller that says its line count another way
+/// (the BCM2836 pair: [`super::bcm2836::INTID_LIMIT`]).
+pub fn note_spi_limit_lines(lines: u32) {
     SPI_LIMIT.store(lines.min(1020), Ordering::Relaxed);
 }
 
@@ -658,6 +682,9 @@ pub fn user_spi_bind(intid: u32, mpidr: u64) -> bool {
 /// `(GICD_IROUTER<intid>, edge, enabled)`.
 #[cfg(target_arch = "aarch64")]
 pub fn spi_state(intid: u32) -> (u64, bool, bool) {
+    if super::bcm2836::active() {
+        return super::bcm2836::spi_state(intid);
+    }
     if super::gicv2::active() {
         return super::gicv2::spi_state(intid);
     }
@@ -688,6 +715,9 @@ pub const PPI_EL1_PHYS_TIMER: u32 = 30;
 /// form the affinity-walk SMP path uses.
 #[cfg(target_arch = "aarch64")]
 pub fn enable_ppi(cpu_id: usize, intid: u32) {
+    if super::bcm2836::active() {
+        return super::bcm2836::enable_ppi(intid);
+    }
     if super::gicv2::active() {
         return super::gicv2::enable_ppi(intid);
     }
@@ -701,6 +731,9 @@ pub fn enable_ppi_at(rd_base: usize, intid: u32) {
     debug_assert!(intid < 32, "use enable_spi for INTIDs >= 32");
     // A GICv2 has no redistributor: `rd_base` (0 from `smp::secondary_init`)
     // is not read, the register is the calling CPU's own banked copy.
+    if super::bcm2836::active() {
+        return super::bcm2836::enable_ppi(intid);
+    }
     if super::gicv2::active() {
         return super::gicv2::enable_ppi(intid);
     }
@@ -719,6 +752,9 @@ pub fn enable_ppi_at(rd_base: usize, intid: u32) {
 #[cfg(target_arch = "aarch64")]
 pub fn disable_ppi_at(rd_base: usize, intid: u32) {
     debug_assert!(intid < 32, "use disable_spi for INTIDs >= 32");
+    if super::bcm2836::active() {
+        return super::bcm2836::disable_ppi(intid);
+    }
     let sgi_base = rd_base + GICR_SGI_OFFSET;
     unsafe {
         mmio_write32(sgi_base + GICR_ICENABLER0, 1u32 << intid);
@@ -790,6 +826,9 @@ pub fn find_redistributor(target_affinity: u32, max_frames: usize) -> Option<usi
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn send_sgi(target_affinity: u32, intid: u8) {
+    if super::bcm2836::active() {
+        return super::bcm2836::send_sgi(target_affinity, intid);
+    }
     if super::gicv2::active() {
         return super::gicv2::send_sgi(target_affinity, intid);
     }
@@ -810,6 +849,9 @@ pub fn send_sgi(target_affinity: u32, intid: u8) {
 /// after handling.
 #[cfg(target_arch = "aarch64")]
 pub fn iar1() -> u32 {
+    if super::bcm2836::active() {
+        return super::bcm2836::iar();
+    }
     if super::gicv2::active() {
         return super::gicv2::iar();
     }
@@ -827,6 +869,9 @@ pub fn iar1() -> u32 {
 /// Signal end-of-interrupt for `intid` returned by `iar1`.
 #[cfg(target_arch = "aarch64")]
 pub fn eoir1(intid: u32) {
+    if super::bcm2836::active() {
+        return super::bcm2836::eoir(intid);
+    }
     if super::gicv2::active() {
         return super::gicv2::eoir(intid);
     }

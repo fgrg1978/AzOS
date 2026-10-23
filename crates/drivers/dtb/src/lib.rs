@@ -2566,6 +2566,117 @@ unsafe fn node_at_path(ptr: *const u8, path: &[u8]) -> Option<u32> {
     }
 }
 
+/// One CPU a spin table starts (`enable-method = "spin-table"`): its `reg`
+/// (the MPIDR affinity on aarch64, as [`dtb_cpu_regs`] reads it) and its
+/// `cpu-release-addr`, the physical word the firmware's holding loop polls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct SpinCpu {
+    pub reg: u64,
+    pub release_addr: u64,
+}
+
+/// Every `/cpus/cpu@N` node whose `enable-method` is `"spin-table"` and that
+/// has a `cpu-release-addr`, in document order, into `out` (capped at its
+/// length). Returns how many there were, `None` for a malformed blob. A CPU
+/// with another enable method (`psci`) or none is not listed: PSCI starts it,
+/// or nothing does.
+///
+/// `cpu-release-addr` is a 64-bit value in two cells whatever the parent's
+/// `#address-cells` (Linux `Documentation/arch/arm64/booting.rst`); `reg` is
+/// read with `/cpus`' `#address-cells`.
+///
+/// # Safety
+/// Same precondition as [`dtb_parse`].
+pub unsafe fn dtb_spin_table(ptr: *const u8, out: &mut [SpinCpu]) -> Option<usize> {
+    if ptr.is_null() {
+        return None;
+    }
+    let hdr = unsafe { parse_header(ptr) }?;
+    if hdr.magic != FDT_MAGIC || hdr.version < 16 {
+        return None;
+    }
+    let end = hdr.totalsize as usize;
+    if end < FDT_HEADER_SIZE || end > MAX_DTB_SIZE {
+        return None;
+    }
+    let mut off = hdr.off_dt_struct as usize;
+    let strings_off = hdr.off_dt_strings as usize;
+    let strings_end = strings_off.checked_add(hdr.size_dt_strings as usize)?;
+    if off >= end || strings_end > end {
+        return None;
+    }
+    let cell = |at: usize| -> u64 { unsafe { read_be32(ptr, at) as u64 } };
+    let (mut depth, mut in_cpus, mut in_cpu, mut cpus_ac) = (0usize, false, false, 1usize);
+    let (mut reg, mut spin, mut release) = (None, false, None);
+    let mut found = 0usize;
+    loop {
+        if off.checked_add(4)? > end {
+            return None;
+        }
+        let tok = unsafe { read_be32(ptr, off) };
+        off += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                let n = unsafe { strlen_bounded(ptr, off, end) }?;
+                // SAFETY: bounds-checked above.
+                let name = unsafe { core::slice::from_raw_parts(ptr.add(off), n) };
+                depth += 1;
+                if depth == 2 {
+                    in_cpus = name == b"cpus";
+                } else if depth == 3 && in_cpus {
+                    in_cpu = name == b"cpu" || name.starts_with(b"cpu@");
+                    (reg, spin, release) = (None, false, None);
+                }
+                off = align4_checked(off + n + 1)?;
+            }
+            FDT_END_NODE => {
+                if depth == 3 && in_cpu {
+                    if let (Some(r), true, Some(a)) = (reg, spin, release) {
+                        if let Some(slot) = out.get_mut(found) {
+                            *slot = SpinCpu { reg: r, release_addr: a };
+                        }
+                        found += 1;
+                    }
+                    in_cpu = false;
+                }
+                if depth == 2 {
+                    in_cpus = false;
+                }
+                depth = depth.checked_sub(1)?;
+            }
+            FDT_PROP => {
+                if off.checked_add(8)? > end {
+                    return None;
+                }
+                let len = unsafe { read_be32(ptr, off) } as usize;
+                let name = strings_off.checked_add(unsafe { read_be32(ptr, off + 4) } as usize)?;
+                off += 8;
+                if off.checked_add(len)? > end || name >= strings_end {
+                    return None;
+                }
+                let is = |p: &[u8]| unsafe { streq(ptr, name, strings_end, p) };
+                if depth == 2 && in_cpus && is(b"#address-cells") && len == 4 {
+                    cpus_ac = cell(off) as usize;
+                } else if depth == 3 && in_cpu {
+                    if is(b"reg") && (cpus_ac == 1 || cpus_ac == 2) && len >= 4 * cpus_ac {
+                        reg = Some(if cpus_ac == 2 { cell(off) << 32 | cell(off + 4) } else { cell(off) });
+                    } else if is(b"enable-method") {
+                        // SAFETY: bounds-checked above.
+                        let v = unsafe { core::slice::from_raw_parts(ptr.add(off), len) };
+                        spin = v.split(|&b| b == 0).next() == Some(&b"spin-table"[..]);
+                    } else if is(b"cpu-release-addr") && len == 8 {
+                        release = Some(cell(off) << 32 | cell(off + 4));
+                    }
+                }
+                off = align4_checked(off + len)?;
+            }
+            FDT_NOP => {}
+            FDT_END => return Some(found),
+            _ => return None,
+        }
+    }
+}
+
 /// Read just the FDT header's `magic` and `totalsize`, with none of
 /// [`dtb_parse`]'s structure-block walk.
 ///

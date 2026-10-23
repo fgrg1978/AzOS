@@ -617,6 +617,46 @@ _aarch64_secondary_entry:
 
 .size _aarch64_secondary_entry, . - _aarch64_secondary_entry
 
+// ── Spin-table pen ───────────────────────────────────────────────────────
+//
+// A CPU the firmware held in a spin table (device tree `enable-method =
+// "spin-table"`, a Raspberry Pi 3) jumps here when the boot CPU writes this
+// address to its `cpu-release-addr` (`azos_arch::smp::spin_table_release`,
+// early in the boot): MMU off, the firmware's exception level, no argument.
+// It waits for its slot of `AZOS_SPIN_GO` (crates/core/arch-aarch64/src/
+// smp.rs) to hold its own affinity key with bit 63 set — the boot CPU writes
+// it when it starts the CPU (`spin_table_start`) and cleans the line to the
+// point of coherency, which is what these Device-type loads see — and then
+// enters `_aarch64_secondary_entry` with the slot's index, its logical id, in
+// x0: the same entry and contract PSCI `CPU_ON` gives.
+.globl _aarch64_spin_pen
+.align 2
+_aarch64_spin_pen:
+    hint    #38                      // bti jc: the firmware's `br`
+    // x1 = this CPU's affinity key: Aff2:Aff1:Aff0 from MPIDR_EL1[23:0] and
+    // Aff3 ([39:32]) at [31:24] (`azos_arch::cpu::mpidr_affinity_key`).
+    mrs     x9, MPIDR_EL1
+    and     x1, x9, #0xffffff
+    ubfx    x9, x9, #32, #8
+    orr     x1, x1, x9, lsl #24
+    adrp    x2, AZOS_SPIN_GO
+    add     x2, x2, :lo12:AZOS_SPIN_GO
+1:
+    mov     x0, #0
+2:
+    ldr     x3, [x2, x0, lsl #3]
+    tbz     x3, #63, 3f
+    cmp     w3, w1
+    b.eq    _aarch64_secondary_entry
+3:
+    add     x0, x0, #1
+    cmp     x0, #MAX_HARTS
+    b.lo    2b
+    wfe
+    b       1b
+
+.size _aarch64_spin_pen, . - _aarch64_spin_pen
+
 // Entry EL, recorded before the EL2->EL1 drop so kernel_main can print
 // it: 1 if this boot took the trampoline, 0 if QEMU started us at EL1
 // directly (`virtualization=on` vs not, on `-M virt`).
@@ -645,3 +685,4 @@ boot_entry_el:
 .extern aarch64_secondary_mmu_init
 .extern secondary_main
 .extern AZOS_SECONDARY_SP
+.extern AZOS_SPIN_GO

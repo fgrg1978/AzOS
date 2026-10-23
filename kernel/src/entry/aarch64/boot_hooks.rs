@@ -18,7 +18,7 @@ use azos_arch_api::isa::aarch64 as policy;
 use core::sync::atomic::{AtomicU64, Ordering};
 use azos_drv_sys::kprintln;
 use azos_arch::FirmwareMemory;
-use azos_arch::irq::{gic, gicv2};
+use azos_arch::irq::{bcm2836, gic, gicv2};
 use azos_arch::{timer as arch_timer, Interrupts, ARCH};
 use azos_drv_base::platform::hw;
 use core::sync::atomic::Ordering as AOrdering;
@@ -240,22 +240,52 @@ pub fn firmware_table(_hart_id: usize, dtb_ptr: usize, dt: Option<azos_dtb::DtbI
         None => azos_drv_sys::kerr!("[DTB] Parse failed (invalid or unsupported FDT)"),
     }
     let gic = if dt.is_some() { dtb_gic(dtb_ptr) } else { None };
+    if dt.is_some() {
+        spin_table_release(dtb_ptr, &cpus);
+    }
     Firmware { info: dt, cpus, gic }
 }
 
-/// The first GIC node of the tree at `dtb_ptr` (`azos_drv_irqchip::gic`
+/// The secondaries a spin table holds (`enable-method = "spin-table"`, a
+/// Raspberry Pi 3), released now into the kernel's own pen (boot.S
+/// `_aarch64_spin_pen`), where they wait with the MMU off until
+/// `wake_secondaries` starts them. Now, because the release word is a
+/// physical address the bootstrap identity map still reaches (RAM page 0 on
+/// a Pi, which the null guard later takes out of the linear map); the pen is
+/// in the image, which nothing moves or frees.
+fn spin_table_release(dtb_ptr: usize, cpus: &azos_percpu::CpuMap) {
+    unsafe extern "C" {
+        fn _aarch64_spin_pen();
+    }
+    let mut spin = [azos_dtb::SpinCpu::default(); azos_percpu::NR_CPUS];
+    // SAFETY: the firmware's tree, readable through the bootstrap map.
+    let Some(n) = (unsafe { azos_dtb::dtb_spin_table(dtb_ptr as *const u8, &mut spin) }) else { return };
+    let pen = azos_mm::addr::virt_to_phys(_aarch64_spin_pen as *const () as usize) as u64;
+    let mut released = 0;
+    for c in &spin[..n.min(spin.len())] {
+        let key = azos_arch::cpu::mpidr_affinity_key(c.reg) as usize;
+        // Logical CPU 0 is the one running this; a CPU the map left out is
+        // never started, so it stays in the firmware's loop.
+        let Some(cpu) = (1..cpus.len()).find(|&i| cpus.hw_id(i) == Some(key)) else { continue };
+        // SAFETY: the tree's release word, identity-mapped by the bootstrap
+        // map (it is RAM below the image); `pen` is the pen's physical address.
+        unsafe { azos_arch::smp::spin_table_release(cpu, c.release_addr, pen) };
+        released += 1;
+    }
+    if released != 0 {
+        kprintln!("[SMP] spin table: {} CPU(s) released into the kernel's pen at {:#x}", released, pen);
+    }
+}
+
+/// The interrupt controller of the tree at `dtb_ptr` (`azos_drv_irqchip::gic`
 /// decides which compatibles count).
 fn dtb_gic(dtb_ptr: usize) -> Option<azos_drv_irqchip::gic::Gic> {
-    let mut found = None;
+    let mut found = azos_drv_irqchip::gic::Finder::new();
     // SAFETY: the firmware's device-tree pointer, as `dtb_cpu_map` reads it.
     let _ = unsafe {
-        azos_dtb::dtb_devices(dtb_ptr as *const u8, &mut |d| {
-            if found.is_none() {
-                found = azos_drv_irqchip::gic::from_node(d.compatible, (d.base, d.size), d.reg2);
-            }
-        })
+        azos_dtb::dtb_devices(dtb_ptr as *const u8, &mut |d| found.node(d.compatible, (d.base, d.size), d.reg2))
     };
-    found
+    found.done()
 }
 
 /// GICv3 or GICv2: a tree that names a GIC-400 / Cortex-A15 GIC with both its
@@ -266,10 +296,18 @@ fn dtb_gic(dtb_ptr: usize) -> Option<azos_drv_irqchip::gic::Gic> {
 #[inline(always)]
 pub fn irqchip_probe(fw: &Firmware) {
     use azos_drv_irqchip::gic::Gic;
-    if let Some(Gic::V2 { gicd, gicc }) = fw.gic {
-        gicv2::select(gicd.0, gicd.1, gicc.0, gicc.1);
-        kprintln!("[GIC] device tree names a GICv2: GICD={:#x} (+{:#x}) GICC={:#x} (+{:#x})",
-            gicd.0, gicd.1, gicc.0, gicc.1);
+    match fw.gic {
+        Some(Gic::V2 { gicd, gicc }) => {
+            gicv2::select(gicd.0, gicd.1, gicc.0, gicc.1);
+            kprintln!("[GIC] device tree names a GICv2: GICD={:#x} (+{:#x}) GICC={:#x} (+{:#x})",
+                gicd.0, gicd.1, gicc.0, gicc.1);
+        }
+        Some(Gic::Bcm2836 { local, armctrl }) => {
+            bcm2836::select(local.0, local.1, armctrl.0, armctrl.1);
+            kprintln!("[IRQ] device tree names no GIC but the BCM2836 pair: local={:#x} (+{:#x}) \
+                       armctrl={:#x} (+{:#x})", local.0, local.1, armctrl.0, armctrl.1);
+        }
+        _ => {}
     }
 }
 
@@ -631,6 +669,16 @@ pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
     // constraint riscv64's `irq_stacks_arm()` documents.
     crate::aarch64_irq_stacks_arm();
 
+    if bcm2836::active() {
+        let [(local, _), (armctrl, _)] = bcm2836::windows();
+        gic::init_distributor();
+        gic::init_cpu_interface();
+        gic::enable_ppi(0, crate::entry::aarch64::TIMER_PPI_ENABLED);
+        gic::enable_ppi(0, 0);
+        kprintln!("[IRQ] BCM2836 local={:#x} + armctrl={:#x} initialized, PPI {} (timer) + SGI 0 (mailbox 0) enabled",
+            local, armctrl, crate::entry::aarch64::TIMER_PPI_ENABLED);
+        return;
+    }
     if gicv2::active() {
         let [(gicd, _), (gicc, _)] = gicv2::windows();
         let rev = gicv2::hardware_arch_rev();
@@ -748,9 +796,13 @@ pub fn console_irq(_hart_id: usize, dtb_ptr: usize) {
     }
 }
 
-/// Trigger types for ring-3 SPIs come from the GIC node the boot drives.
+/// Trigger types for ring-3 SPIs come from the GIC node the boot drives. The
+/// BCM2836 pair has none to program: every line is a level.
 #[inline(always)]
 pub fn irq_trigger_controller() -> Option<azos_dtb::IrqController> {
+    if bcm2836::active() {
+        return None;
+    }
     Some(if gicv2::active() {
         azos_dtb::IrqController::GicV2
     } else {
@@ -760,7 +812,7 @@ pub fn irq_trigger_controller() -> Option<azos_dtb::IrqController> {
 
 /// The controller the boot drives, for the log lines.
 fn gic_name() -> &'static str {
-    if gicv2::active() { "GICv2" } else { "GICv3" }
+    if bcm2836::active() { "BCM2836" } else if gicv2::active() { "GICv2" } else { "GICv3" }
 }
 
 /// Trigger types for ring-3 SPIs (wave 9 IRQ4): `gic::user_spi_bind`
@@ -821,6 +873,10 @@ pub fn irq_routing_init(hart_id: usize) {
         kprintln!("[ITS] none: a GICv2 has no ITS (PCI MSI-X stays unrouted)");
         return;
     }
+    if bcm2836::active() {
+        kprintln!("[ITS] none: the BCM2836 pair has no ITS");
+        return;
+    }
     // Bring the ITS up and enable LPIs on hart 0's
     // redistributor. `rd_base` here is EXACTLY the frame
     // `init_redistributor(0)` two lines up already programmed
@@ -868,7 +924,9 @@ pub fn smp_probe(dtb_ptr: usize) {
     }
     kprintln!("[SMP] PSCI conduit: {:?} (from {})",
         azos_arch::firmware::conduit(),
-        if psci_from_fdt { "FDT /psci" } else { "crate::entry EL" });
+        if !psci_from_fdt { "crate::entry EL" }
+        else if azos_arch::firmware::conduit() == azos_arch::firmware::Conduit::None { "FDT: no /psci node" }
+        else { "FDT /psci" });
     mitigations();
 }
 

@@ -56,6 +56,12 @@ pub enum Conduit {
     /// running ATF/TF-A, OP-TEE, or any other secure-monitor that
     /// implements PSCI.
     Smc,
+    /// No PSCI firmware: the device tree has no `/psci` node (a Raspberry
+    /// Pi 3, whose firmware starts the other cores through a spin table and
+    /// leaves no EL3 monitor behind). Every call answers
+    /// `PSCI_NOT_SUPPORTED` without trapping: an `SMC` with no monitor, or
+    /// an `HVC` into an EL2 with no vectors, hangs the core silently.
+    None,
 }
 
 /// Active conduit. AtomicU8: 0 = HVC, 1 = SMC. Defaults to HVC
@@ -66,6 +72,7 @@ static CONDUIT: core::sync::atomic::AtomicU8 =
 
 const CONDUIT_HVC: u8 = 0;
 const CONDUIT_SMC: u8 = 1;
+const CONDUIT_NONE: u8 = 2;
 
 /// Override the active PSCI conduit. Safe to call from any EL;
 /// takes effect on the next PSCI call.
@@ -73,6 +80,7 @@ pub fn set_conduit(c: Conduit) {
     let v = match c {
         Conduit::Hvc => CONDUIT_HVC,
         Conduit::Smc => CONDUIT_SMC,
+        Conduit::None => CONDUIT_NONE,
     };
     CONDUIT.store(v, core::sync::atomic::Ordering::Release);
 }
@@ -81,6 +89,7 @@ pub fn set_conduit(c: Conduit) {
 pub fn conduit() -> Conduit {
     match CONDUIT.load(core::sync::atomic::Ordering::Acquire) {
         CONDUIT_SMC => Conduit::Smc,
+        CONDUIT_NONE => Conduit::None,
         _ => Conduit::Hvc,
     }
 }
@@ -144,6 +153,7 @@ pub(crate) fn psci_call(fn_id: u32, arg0: u64, arg1: u64, arg2: u64) -> i64 {
                 options(nostack, preserves_flags),
             );
         },
+        Conduit::None => return PSCI_NOT_SUPPORTED as i64,
     }
     x0 as i64
 }
@@ -893,7 +903,8 @@ pub fn system_reset() -> ! {
 
 /// Find the PSCI conduit from the `/psci` node's `method` property in
 /// a flattened devicetree (`"hvc"` or `"smc"`), and apply it via
-/// [`set_conduit`].
+/// [`set_conduit`]; a well-formed tree with no `/psci` node at all selects
+/// [`Conduit::None`] (no PSCI firmware, a Raspberry Pi 3).
 ///
 /// Every offset this walk touches is checked against the header's own
 /// declared bounds — `size_dt_struct` for the struct walk, `size_dt_strings`
@@ -964,10 +975,14 @@ pub unsafe fn select_conduit_from_fdt(fdt_ptr: u64) -> bool {
 
     // The actual struct-block walk, split out so it can use `?` for
     // every bounds check instead of threading `Option` by hand.
-    fn find_method(data: &[u8], strings: &[u8], off_dt_struct: usize) -> Option<Conduit> {
+    // `Some(None)`: the walk reached the end of the tree without a `/psci`
+    // node, i.e. the firmware has no PSCI. `None`: a malformed walk, or a
+    // node whose `method` this does not know.
+    fn find_method(data: &[u8], strings: &[u8], off_dt_struct: usize) -> Option<Option<Conduit>> {
         let mut off = off_dt_struct;
         let mut psci_depth = [false; MAX_DEPTH];
         let mut depth: usize = 0;
+        let mut psci_seen = false;
 
         loop {
             let tok = be32(data, off)?;
@@ -975,6 +990,7 @@ pub unsafe fn select_conduit_from_fdt(fdt_ptr: u64) -> bool {
             if tok == FDT_BEGIN_NODE {
                 let name = cstr(data.get(off..)?, MAX_NAME_LEN)?;
                 let is_psci = name.starts_with(b"psci") && matches!(name.get(4), None | Some(b'@'));
+                psci_seen |= is_psci;
                 off = off.checked_add(name.len())?.checked_add(1)?; // + NUL
                 off = off.checked_add(3)? & !3; // 4-byte pad, per FDT spec
                 if depth >= MAX_DEPTH {
@@ -997,16 +1013,19 @@ pub unsafe fn select_conduit_from_fdt(fdt_ptr: u64) -> bool {
                     let pname = cstr(strings.get(nameoff..)?, MAX_NAME_LEN)?;
                     if pname == b"method" {
                         return match cstr(prop_data, prop_data.len())? {
-                            b"hvc" => Some(Conduit::Hvc),
-                            b"smc" => Some(Conduit::Smc),
+                            b"hvc" => Some(Some(Conduit::Hvc)),
+                            b"smc" => Some(Some(Conduit::Smc)),
                             _ => None, // unrecognised conduit name
                         };
                     }
                 }
             } else if tok == FDT_NOP {
                 // no-op token, nothing to advance beyond the tag itself
+            } else if tok == FDT_END && depth == 0 && !psci_seen {
+                // The whole tree, and no /psci node in it.
+                return Some(None);
             } else {
-                // FDT_END or any unknown token: no /psci method found
+                // Any unknown token, or a /psci node without a usable method
                 return None;
             }
         }
@@ -1084,9 +1103,14 @@ pub unsafe fn select_conduit_from_fdt(fdt_ptr: u64) -> bool {
     };
 
     match find_method(struct_block, strings, off_dt_struct) {
-        Some(c) => {
+        Some(Some(c)) => {
             set_conduit(c);
             PSCI_NAMED.store(true, core::sync::atomic::Ordering::Release);
+            true
+        }
+        // A tree that describes no PSCI firmware: there is none to call.
+        Some(None) => {
+            set_conduit(Conduit::None);
             true
         }
         None => false,

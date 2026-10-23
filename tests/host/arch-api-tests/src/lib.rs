@@ -85,6 +85,12 @@ mod aarch64_gic;
 mod aarch64_gicv2;
 #[allow(dead_code)]
 use crate::aarch64_gicv2 as gicv2;
+// The BCM2836 pair (a Raspberry Pi 2/3), the third backend `gic.rs` hands to.
+#[allow(dead_code)]
+#[path = "../../../../crates/core/arch-aarch64/src/irq/bcm2836.rs"]
+mod aarch64_bcm2836;
+#[allow(dead_code)]
+use crate::aarch64_bcm2836 as bcm2836;
 #[allow(dead_code)]
 use crate::aarch64_cpu as cpu;
 
@@ -1622,6 +1628,31 @@ mod aarch64_psci_fdt_tests {
         assert_eq!(conduit(), Conduit::Hvc);
     }
 
+    /// A well-formed tree with no `/psci` node (a Raspberry Pi 3: spin table,
+    /// no EL3 monitor) selects no conduit, so no `smc`/`hvc` is ever issued;
+    /// a `/psci` node with a method it does not know still falls back.
+    /// Canary: treat the tree's end as "nothing found" (`false`) and the boot
+    /// picks SMC from the entry EL, and the first PSCI call hangs at EL3.
+    #[test]
+    fn a_tree_without_psci_selects_no_conduit() {
+        let _g = serial();
+        set_conduit(Conduit::Hvc);
+        let mut f = Fdt::new();
+        f.begin_node(b"");
+        f.begin_node(b"cpus");
+        f.prop(b"enable-method", b"brcm,bcm2836-smp\0");
+        f.end_node();
+        f.end_node();
+        f.struct_block.extend_from_slice(&FDT_END.to_be_bytes());
+        let blob = f.finish(None, None, &[]);
+        assert!(unsafe { select_conduit_from_fdt(blob.as_ptr() as u64) });
+        assert_eq!(conduit(), Conduit::None);
+        set_conduit(Conduit::Smc);
+        let blob = Fdt::well_formed_psci(b"psci-jtag-fake\0");
+        assert!(!unsafe { select_conduit_from_fdt(blob.as_ptr() as u64) });
+        assert_eq!(conduit(), Conduit::Smc, "unchanged: the entry-EL fallback decides");
+    }
+
     #[test]
     fn detects_smc_under_a_well_formed_psci_node() {
         let _g = serial();
@@ -2475,6 +2506,84 @@ mod livepatch_tests {
             .output()
             .expect("python3");
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+}
+
+/// Host tests for the pure parts of `bcm2836.rs` (pulled above as
+/// `aarch64_bcm2836`): the INTID vocabulary the GIC callers keep, and the
+/// pending-word walk Linux's `irq-bcm2835.c` does.
+#[cfg(test)]
+mod aarch64_bcm2836_tests {
+    use crate::aarch64_bcm2836::*;
+
+    /// The timers and the PMU keep the PPI numbers of their GIC bindings, so
+    /// `PPI_VIRT_TIMER` (27) is the virtual timer on a Pi too. Canary: swap
+    /// two local sources and the tick arrives on the wrong INTID.
+    #[test]
+    fn local_sources_keep_the_gic_ppi_numbers() {
+        assert_eq!(local_intid(3), Some(crate::aarch64_gic::PPI_VIRT_TIMER));
+        assert_eq!(local_intid(1), Some(crate::aarch64_gic::PPI_EL1_PHYS_TIMER));
+        assert_eq!((local_intid(0), local_intid(2), local_intid(9)), (Some(29), Some(26), Some(23)));
+        for m in 4..=8 {
+            assert_eq!(local_intid(m), None, "mailboxes are SGIs, 8 is the cascade");
+        }
+        for t in 0..4 {
+            assert_eq!(timer_bit(local_intid(t).unwrap()), Some(t), "the control bit of each timer");
+        }
+    }
+
+    /// `<bank n>` of the armctrl binding to INTID and back. The mini UART's
+    /// `<1 29>` (GPU line 29, the AUX block) is INTID 93; bank 0 has eight.
+    #[test]
+    fn armctrl_lines_are_the_spis_past_32() {
+        assert_eq!(armctrl_intid(1, 29), Some(93));
+        assert_eq!(armctrl_intid(2, 25), Some(121), "the PL011");
+        assert_eq!(armctrl_intid(0, 8), None);
+        assert_eq!(armctrl_intid(3, 0), None);
+        for (b, n) in [(0, 0), (0, 7), (1, 0), (1, 31), (2, 0), (2, 31)] {
+            let i = armctrl_intid(b, n).unwrap();
+            assert_eq!(armctrl_line(i), Some((b as usize, n)));
+        }
+        assert_eq!(armctrl_line(31), None);
+        assert_eq!(armctrl_line(INTID_LIMIT), None);
+    }
+
+    /// The walk over the pending words: an ARM-block line first, then a GPU
+    /// line the basic word repeats (a shortcut, which names the line without
+    /// the bank's own word), then bank 1, then bank 2. Canary: read the bank
+    /// words before the shortcuts and GPU 57 (bank 2's 25, the PL011's
+    /// shortcut bit 19) is lost when bank 2's word is the only other one.
+    #[test]
+    fn the_pending_walk_is_linuxs() {
+        assert_eq!(next_armctrl_line(0, 0, 0), None);
+        assert_eq!(next_armctrl_line(1 << 3, 0, 0), Some(3), "an ARM-block line");
+        assert_eq!(next_armctrl_line(1 << 10, 0, 0), Some(32 + 7), "shortcut 0: GPU 7");
+        assert_eq!(next_armctrl_line(1 << 19, 0, 0), Some(64 + 25), "shortcut 9: GPU 57, the PL011");
+        assert_eq!(next_armctrl_line(1 << 8, 1 << 29, 0), Some(32 + 29), "bank 1: the AUX block");
+        assert_eq!(next_armctrl_line(1 << 9, 0, 1 << 30), Some(64 + 30));
+        // Bank bits with an empty bank word: nothing to take.
+        assert_eq!(next_armctrl_line(1 << 8, 0, 0), None);
+        // Bits outside the valid mask are ignored.
+        assert_eq!(next_armctrl_line(1 << 31, 0, 0), None);
+    }
+
+    /// An IPI before the tick, the tick before a peripheral; an empty mailbox
+    /// word with its source bit set takes nothing from the mailbox.
+    #[test]
+    fn a_cores_source_word_decodes_in_priority_order() {
+        assert_eq!(decode_source(1 << 4 | 1 << 3 | 1 << 8, 1 << 2), Source::Sgi(2));
+        assert_eq!(decode_source(1 << 3 | 1 << 8, 0), Source::Local(27));
+        assert_eq!(decode_source(1 << 4 | 1 << 8, 0), Source::Cascade);
+        assert_eq!(decode_source(1 << 9, 0), Source::Local(23));
+        assert_eq!(decode_source(0, 0), Source::None);
+        assert_eq!(decode_source(1 << 4, 1 << 20), Source::None, "mailbox bits past 15 are no SGI");
+    }
+
+    #[test]
+    fn selecting_the_pair_publishes_its_two_windows() {
+        select(0x4000_0000, 0x100, 0x3f00_b200, 0x200);
+        assert!(active());
+        assert_eq!(windows(), [(0x4000_0000, 0x100), (0x3f00_b200, 0x200)]);
     }
 }
 

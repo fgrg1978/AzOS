@@ -17,7 +17,7 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
     azos_drv_sys::uart::enable_smp_lock();
     kprintln!("[SMP] UART lock enabled");
 
-    kprintln!("[SMP] Starting {} secondary hart(s) via PSCI CPU_ON...", dtb_num_cpus - 1);
+    kprintln!("[SMP] Starting {} secondary hart(s) via PSCI CPU_ON or the spin table...", dtb_num_cpus - 1);
     // A secondary reads `AZOS_SECONDARY_SP` and first uses its boot stack
     // with its MMU (so its caches) off: push the boot CPU's writes to both
     // out to the point of coherency, and drop any line of the stacks a later

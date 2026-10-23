@@ -121,6 +121,13 @@ pub unsafe fn wake_hart(hart_id: usize) -> isize {
         return -1;
     };
 
+    // A CPU the firmware held in a spin table waits in the kernel's pen
+    // (`azos_arch::smp::spin_table_release`): let it out, to the same entry
+    // with the same x0 `CPU_ON` would give it.
+    if azos_arch::smp::spin_table_parked(hart_id) {
+        return if azos_arch::smp::spin_table_start(hart_id, affinity as u32) { 0 } else { -1 };
+    }
+
     let target_cpu = psci_target(affinity as u32);
 
     // PSCI `CPU_ON` takes a PHYSICAL entry point — `_aarch64_secondary_entry`
