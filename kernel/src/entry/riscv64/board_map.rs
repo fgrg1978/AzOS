@@ -38,8 +38,8 @@ const BOARD_WINDOWS: &[(usize, usize)] = {
         // VF2. Display (--features hdmi only, crates/drivers/display), added
         // after the same class of missing mapping was caught on QEMU's ramfb.
         #[cfg(feature = "vf2")] (0x0200_0000, 0x1_0000), // CLINT
-        // GPIO, PWM, I2C, the watchdog, the DMA controller and the SD/MMC
-        // controller are not here: the hardware bus maps each node's window
+        // GPIO, PWM, I2C, the watchdog and the SD/MMC controller are not
+        // here: the hardware bus maps each node's window
         // when it binds the driver (kernel/src/boot/hwbus.rs, "Board
         // controllers").
         #[cfg(feature = "vf2")] (hw::ETH0_BASE, azos_drv_net::dwmac::reg::WINDOW), // MAC, MTL and DMA blocks
@@ -47,11 +47,9 @@ const BOARD_WINDOWS: &[(usize, usize)] = {
         #[cfg(all(feature = "vf2", feature = "hdmi"))] (hw::DC8200_TOP_BASE, 0x1000),
         #[cfg(all(feature = "vf2", feature = "hdmi"))] (hw::DC8200_MAIN_BASE, 0x2000),
         #[cfg(all(feature = "vf2", feature = "hdmi"))] (hw::HDMI_TX_BASE, 0x1000),
-        // K1. F14: NPU MMIO (1 MiB, covers all command/data registers). The
-        // GPIO, PWM and I2C controllers are not here: the hardware bus maps
-        // each node's window when it binds the driver.
+        // K1. The GPIO, PWM and I2C controllers are not here: the hardware
+        // bus maps each node's window when it binds the driver.
         #[cfg(feature = "k1")] (hw::MMC0_BASE, 0x2000),
         #[cfg(feature = "k1")] (hw::WDT_BASE, 0x1000),
-        #[cfg(feature = "k1")] (hw::NPU_BASE, hw::NPU_SIZE),
     ]
 };

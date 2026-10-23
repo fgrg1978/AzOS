@@ -364,13 +364,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "azos_drv_npu"
-version = "0.1.0"
-dependencies = [
- "azos_drv_base",
-]
-
-[[package]]
 name = "azos_drv_power"
 version = "0.1.0"
 dependencies = [
@@ -633,7 +626,6 @@ dependencies = [
  "azos_drv_input",
  "azos_drv_irqchip",
  "azos_drv_net",
- "azos_drv_npu",
  "azos_drv_power",
  "azos_drv_sensor",
  "azos_drv_sys",

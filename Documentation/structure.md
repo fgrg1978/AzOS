@@ -123,7 +123,6 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `power` | System suspend. |
 | `tpm` | The TPM 2.0 TIS/FIFO and CRB interfaces and the commands. |
 | `rtc` | Real-time clocks behind one `Rtc` trait: goldfish, PL031, MC146818 CMOS, PCF8563 over I2C. |
-| `npu` | An NPU driver. |
 | `firmware` | A firmware mailbox property-protocol encoder. The crate is a single source file at the crate directory root, which its `Cargo.toml` declares as the library root. |
 | `chip_source.rs` | Not a crate: a file `include!`d by the build scripts of `buzzer` and `ina219` to fingerprint their source. |
 

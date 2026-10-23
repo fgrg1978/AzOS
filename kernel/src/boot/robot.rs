@@ -92,7 +92,7 @@ pub(crate) fn install_robot_hw() {
 
 /// Robot payload + drivers + sensor bring-up (Phase 10 + Phase E1-O):
 /// payload abstraction (E04), `robot_init()`, motor PID, the Phase H driver
-/// set (SPI/CAN/DMA/USB/PM + K1 NPU), and the full sensor suite (IMU/baro/
+/// set (CAN, PM), and the full sensor suite (IMU/baro/
 /// GPS/rangefinders/CSI camera/WiFi/ESC/RC).
 ///
 /// NEW shared behaviour on aarch64 (kernel-main-merge task, owner-authorized
@@ -149,17 +149,6 @@ pub(crate) fn install_robot_payload_and_sensors() {
     // eth_init() already called above during network init sequence.
     kprintln!("[HW] CAN initialized");
 
-    // F14: SpacemiT K1 NPU initialization.
-    #[cfg(feature = "k1")]
-    {
-        let npu_ver = azos_drv_npu::npu::npu_init();
-        let (major, minor, patch) = azos_drv_npu::npu::npu_version();
-        kprintln!("[NPU] SpacemiT K1 NPU initialized — HW v{}.{}.{} ({:#010x})",
-            major, minor, patch, npu_ver);
-        // Clock-gate off until first inference to save ~200 mW standby.
-        azos_drv_npu::npu::npu_power_gate();
-        kprintln!("[NPU] Clock-gated (power off) — will wake on first job");
-    }
     kprintln!();
 
     // ---- Phase 11: RISC-V Vector Extension (RVV 1.0) ----

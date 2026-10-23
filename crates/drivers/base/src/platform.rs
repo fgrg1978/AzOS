@@ -390,14 +390,6 @@ pub mod hw {
     /// for `k1` (U05-3) — this address is unused, not a corrected target.
     pub const WDT_BASE:    usize = 0xD401_5000;
 
-    // ── NPU (Neural Processing Unit) ─────────────────────────────────────────
-    /// SpacemiT K1 NPU MMIO base.
-    /// Compatible: "spacemit,k1x-npu".  Reference: K1 BSP DTS (bpi-f3.dts).
-    /// Performance: ~2 TOPS INT8; supports conv, pool, activation, eltwise.
-    pub const NPU_BASE:    usize = 0xC080_0000;
-    /// NPU MMIO region size (1 MiB covers all command/data registers).
-    pub const NPU_SIZE:    usize = 0x0010_0000;
-
     // vDSO placement — K1 is the one board NO value of `VDSO_USER_BASE` can
     // fix, and this assert encodes *that* fact rather than silently omitting
     // a check. `RAM_BASE == 0` means the kernel's megapage identity map

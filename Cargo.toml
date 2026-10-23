@@ -406,7 +406,6 @@ members = [
     "crates/drivers/net",
     "crates/drivers/sensor",
     "crates/drivers/actuator",
-    "crates/drivers/npu",
     "crates/drivers/power",
     "domains/robot/drivers",
     "crates/core/mm",
@@ -550,7 +549,6 @@ azos_drv_block = { path = "crates/drivers/block" }
 azos_drv_net = { path = "crates/drivers/net" }
 azos_drv_sensor = { path = "crates/drivers/sensor" }
 azos_drv_actuator = { path = "crates/drivers/actuator" }
-azos_drv_npu = { path = "crates/drivers/npu" }
 azos_drv_power = { path = "crates/drivers/power" }
 azos_robot_drivers = { path = "domains/robot/drivers" }
 azos_mm = { path = "crates/core/mm" }

@@ -98,7 +98,7 @@ SUBSYS = [
      "crates/core/syscall/src/linux.rs"),
     ("trace", r"trace|flight recorder", "crates/core/trace/** crates/core/rings/** kernel/src/lat_trace.rs"),
     ("energy", r"energy|power", "crates/core/energy/** crates/drivers/power/**"),
-    ("ml", r"\bml\b|ml |ml-|gguf|mlsrv|infsrv|npu", "userspace/lib/ml/** userspace/services/infsrv/** crates/drivers/npu/**"),
+    ("ml", r"\bml\b|ml |ml-|gguf|mlsrv|infsrv", "userspace/lib/ml/** userspace/services/infsrv/**"),
     ("inspect", r"inspect|views",
      "crates/core/inspect/** userspace/lib/inspect/** kernel/src/boot/inspect*.rs crates/core/ipc/src/inspect_region.rs "
      "userspace/** crates/core/abi/** crates/core/libsys/** crates/core/topology/**"),
