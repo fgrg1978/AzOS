@@ -70,7 +70,7 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
          "deferred-activity", "time-protection", "attest", "boot-chain",
          "ras", "fieldbus", "audio-capture", "focus",
          "usb-authorize", "block-timeout", "clock-set", "estop-release",
-         "thermal", "net-timeout", "usb-host-fault"]
+         "thermal", "durability", "net-timeout", "usb-host-fault"]
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
@@ -150,6 +150,7 @@ FIELDS = {
     "clock-set": (["clock", "new_ns", "reason"], None),
     "estop-release": (["cause", "floor", "nonce"], None),
     "thermal": (["event", "arg", "temp_mdeg"], None),
+    "durability": (["from", "to", "flush"], None),
     "net-timeout": (["pending", "waited_ms", "action"], None),
     "usb-host-fault": (["cause_trb", "waited_ms", "action"], None),
 }

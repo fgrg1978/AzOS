@@ -151,8 +151,9 @@ what `RuleInfo::fields` names.
 | 63 | `clock-set` | tid | clock, new_ns, reason | A clock set outright, or the set refused |
 | 64 | `estop-release` | - | cause, floor, nonce | A verified e-stop release refused because its nonce floor could not be made durable |
 | 65 | `thermal` | zone | event, arg, temp_mdeg | A trip fired (place), a domain the floors keep hot, a level raise, a lost sensor or the shutdown request (refuse), or the relaxation of any of them (admit) |
-| 66 | `net-timeout` | device | pending, waited_ms, action | A NIC's transmit ring wedged and the action taken (2 device reset, 5 latched with its resets spent, 6 the reset did not bring it back) |
-| 67 | `usb-host-fault` | device | cause_trb, waited_ms, action | A USB host controller left a command unanswered or reported a host system / host controller error (`cause_trb`: cause 1 timeout, 2 HSE, 3 HCE in its second byte, the unanswered command's TRB type in its first), and the action taken (2 controller reset and its devices enumerated again, 5 latched with its resets spent, 6 the reset did not bring it back) |
+| 66 | `durability` | record | from, to, flush | A record that must survive a power cut (1 the topology counter floor, 2 the CONFIG.SIG floor) written to a device that cannot confirm the flush (`flush` 1: `Unsupported`): refused, the floor stays the old one this boot |
+| 67 | `net-timeout` | device | pending, waited_ms, action | A NIC's transmit ring wedged and the action taken (2 device reset, 5 latched with its resets spent, 6 the reset did not bring it back) |
+| 68 | `usb-host-fault` | device | cause_trb, waited_ms, action | A USB host controller left a command unanswered or reported a host system / host controller error (`cause_trb`: cause 1 timeout, 2 HSE, 3 HCE in its second byte, the unanswered command's TRB type in its first), and the action taken (2 controller reset and its devices enumerated again, 5 latched with its resets spent, 6 the reset did not bring it back) |
 
 **Reading them.**
 
