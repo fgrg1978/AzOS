@@ -989,12 +989,8 @@ pub fn arch_map_late_mmio() {
         azos_drv_sys::kwarn!("[MM] virtio-mmio {:#x} (+{:#x}) not mapped", hw::VIRTIO_MMIO_BASE, len);
     }
     // This runs after `install_device_only_ttbr0`, writing new PTEs into the
-    // table already live in `TTBR0_EL1`: without the barrier and TLB
-    // invalidate, the next access may still see a translation fault.
-    {
-        use azos_arch::Mmu;
-        azos_arch::ARCH.flush_tlb_all();
-    }
+    // table already live in `TTBR0_EL1`: `map_mmio_region` ends with the
+    // barrier and TLB invalidate the next access needs.
 }
 
 /// Final hand-off to the scheduler: the shared "[SCHED] Starting
