@@ -142,6 +142,7 @@
 //! and remains true after it.
 
 #![no_std]
+#![forbid(unsafe_code)]
 // Bench names carry byte-size suffixes (`_64B`, `_1K`, `_256B`, `_1500B`)
 // that read far better than the snake-case the linter wants
 // (`_64_b`/`_1_k`).  The suffix IS the spec — it names the payload size the

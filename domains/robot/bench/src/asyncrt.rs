@@ -50,15 +50,7 @@ use crate::{BenchResult, report, best_of};
 use azos_drv_sys::wcet::read_cycles;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-/// Minimal no-op waker (no executor / no wake list — we poll directly).
-fn noop_raw_waker() -> RawWaker {
-    fn no_op(_: *const ()) {}
-    fn clone(_: *const ()) -> RawWaker { noop_raw_waker() }
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
-    RawWaker::new(core::ptr::null(), &VTABLE)
-}
+use core::task::{Context, Poll, Waker};
 
 /// A future that yields (`Pending`) `n` times before completing. Each poll
 /// resumes from the prior await point and yields again — modelling the
@@ -82,12 +74,9 @@ impl Future for CountdownYield {
 /// Per-resume cost: poll a yielding future `iters` times (each poll = one
 /// cooperative resume).
 pub fn bench_poll_resume(iters: u64) -> BenchResult {
-    // SAFETY: noop waker holds no state; vtable is 'static.
-    let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
-    let mut cx = Context::from_waker(&waker);
-    let mut fut = CountdownYield { n: iters + 1 };
-    // SAFETY: `fut` lives on this stack frame and is never moved after pinning.
-    let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
+    // No executor and no wake list: the loop polls directly.
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut pinned = core::pin::pin!(CountdownYield { n: iters + 1 });
 
     let start = read_cycles();
     for _ in 0..iters {

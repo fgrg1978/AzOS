@@ -100,7 +100,7 @@ crates/net/net	17	0	0	0	0	59
 crates/net/tftp	0	0	0	0	1	-
 domains/robot/ahrs	0	0	0	0	1	0
 domains/robot/behavior	4	1	0	0	0	9
-domains/robot/bench	2	0	0	0	0	5
+domains/robot/bench	0	0	0	0	1	0
 domains/robot/degrade-policy	0	0	0	0	1	0
 domains/robot/drivers	0	0	0	0	1	0
 domains/robot/flight	1	0	0	0	0	15
