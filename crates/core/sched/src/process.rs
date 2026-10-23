@@ -1783,9 +1783,10 @@ fn kernel_ctx_refuse(addr: usize, len: usize, op: &'static str) -> bool {
 /// Copy `len` bytes FROM user virtual address `user_src` INTO kernel buffer `kernel_dst`.
 ///
 /// When the current task has a user PT (user_pt != 0), each source page is
-/// translated via [`vmm::translate_user`] — which enforces `VALID + USER +
-/// READ`, rejecting kernel/MMIO addresses — and copied from the physical
-/// address a page at a time.  For kernel tasks (user_pt == 0) a kernel
+/// resolved with `VALID + USER + READ` (kernel/MMIO addresses rejected; a
+/// reserved page committed through [`vmm::translate_user`]) and copied from
+/// the kernel's map of its frame, the walk and the copy in one access section
+/// (`azos_mm::uaccess`: no concurrent unmap frees the frame under the copy).  For kernel tasks (user_pt == 0) a kernel
 /// pointer ([`KERNEL_CTX_FLOOR`] and above) is used directly and a user-range
 /// one is REFUSED; a ring-3 task never gets here (a task that ran an ELF via
 /// `exec_user`, or a forked child or thread, has `user_pt != 0` set before it
@@ -1802,7 +1803,7 @@ fn kernel_ctx_refuse(addr: usize, len: usize, op: &'static str) -> bool {
 ///
 /// **O3.2 (owner decision, PAN/SUM) — why the [`UserAccess`] guard around
 /// this function's own access does not protect THIS access.** The
-/// per-page read below goes through `azos_mm::addr::phys_to_virt(pa)`
+/// per-page read (`azos_mm::uaccess`) goes through `azos_mm::addr::phys_to_virt(pa)`
 /// — the kernel's OWN mapping of that physical frame (`U=0`/no `AP_EL0` on
 /// aarch64; a plain kernel VA on riscv64), never the user's own `U=1`/
 /// `AP_EL0` mapping of the same page. Neither PAN nor `SUM=0` gates a
@@ -1831,31 +1832,10 @@ pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool 
         unsafe { core::ptr::copy_nonoverlapping(user_src as *const u8, kernel_dst, len); }
         return true;
     }
-    let mut done = 0usize;
-    while done < len {
-        let va   = user_src + done;
-        let Some(pa) = vmm::translate_user(user_pt, va, false) else { return false; };
-        let chunk = (PAGE_SIZE - (va & (PAGE_SIZE - 1))).min(len - done);
-        // O3.2: PAN/SUM window around the one access that touches this
-        // page's contents. `translate_user` above already validated
-        // `VALID + USER + READ` against the page table — this guard is not
-        // what makes THIS access safe (that is `translate_user`'s job);
-        // it is what keeps a FUTURE bug that skips `translate_user` and
-        // dereferences a raw user VA directly from silently succeeding
-        // outside this narrow window.
-        {
-            let _ua = ARCH.user_access();
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    azos_mm::addr::phys_to_virt(pa) as *const u8,
-                    kernel_dst.add(done),
-                    chunk,
-                );
-            }
-        }
-        done += chunk;
-    }
-    true
+    // uaccess-pin: the walk and the copy of each page in one access
+    // section (`azos_mm::uaccess`), so a concurrent unmap cannot free the
+    // frame under the copy.
+    azos_mm::uaccess::copy_in(user_pt, kernel_dst, user_src, len)
 }
 
 /// Copy `len` bytes FROM kernel buffer `kernel_src` INTO user virtual address `user_dst`.
@@ -1906,8 +1886,10 @@ pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool 
 /// ever see it and the client waits forever.
 ///
 /// Walks the same pages, with the same write permission, that `copy_to_user`
-/// would. There is no TOCTOU window worth guarding: the only writer of this
-/// task's page table is its own page-fault handler, synchronous on this hart.
+/// would. The answer is a snapshot: another thread of the process (`munmap`,
+/// `mprotect`), the reclaimer or a fork can change the table right after it,
+/// and the copy that follows then fails cleanly (each of its pages is walked
+/// again inside an access section, `azos_mm::uaccess`).
 ///
 /// In kernel context (no user page table) the answer is the one `copy_to_user`
 /// gives: yes for a kernel address, no for a user-range one
@@ -1973,9 +1955,13 @@ pub fn user_range_writable(user_dst: usize, len: usize) -> bool {
 /// reachable whenever the destination sits in a page the task has not written
 /// since it forked. Ring 3 can drive the allocator toward that state.
 ///
-/// After this returns `true`, nothing between here and the copy can revoke the
-/// permission: the only writer of this task's page table is its own fault
-/// handler, which cannot run while this hart is inside the syscall.
+/// After this returns `true`, only another actor can revoke the permission
+/// before the copy: another thread of the process (`munmap`, `mprotect`), the
+/// reclaimer taking the page out, a fork write-protecting it. Each is a
+/// layout change the caller's own program raced or a page the copy commits
+/// again (`azos_mm::uaccess` faults a reclaimed page back in); this task's
+/// own fault handler is not the only writer of the table, as this comment
+/// used to say.
 ///
 /// On a partial failure the pages already broken stay broken. That is the cost
 /// 100c objected to when a *check* paid it; here the caller was going to write
@@ -2043,25 +2029,8 @@ pub fn copy_to_user(user_dst: usize, kernel_src: *const u8, len: usize) -> bool 
         unsafe { core::ptr::copy_nonoverlapping(kernel_src, user_dst as *mut u8, len); }
         return true;
     }
-    let mut done = 0usize;
-    while done < len {
-        let va   = user_dst + done;
-        let Some(pa) = vmm::translate_user(user_pt, va, true) else { return false; };
-        let chunk = (PAGE_SIZE - (va & (PAGE_SIZE - 1))).min(len - done);
-        // O3.2: see copy_from_user's own comment on this guard.
-        {
-            let _ua = ARCH.user_access();
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    kernel_src.add(done),
-                    azos_mm::addr::phys_to_virt(pa) as *mut u8,
-                    chunk,
-                );
-            }
-        }
-        done += chunk;
-    }
-    true
+    // uaccess-pin: see `copy_from_user`.
+    azos_mm::uaccess::copy_out(user_pt, user_dst, kernel_src, len)
 }
 
 /// Compare-and-swap the current task's 32-bit user word at `user_addr`
@@ -2079,15 +2048,7 @@ pub fn user_cas_u32(user_addr: usize, old: u32, new: u32) -> Result<(), Option<u
     if user_pt == 0 {
         return Err(None);
     }
-    let Some(pa) = vmm::translate_user(user_pt, user_addr, true) else { return Err(None) };
-    let _ua = ARCH.user_access();
-    // SAFETY: `translate_user` validated a writable user page and `pa` is
-    // 4-aligned within it; the kernel's direct map of a RAM frame is valid
-    // for an atomic 32-bit access.
-    let w = unsafe { &*(azos_mm::addr::phys_to_virt(pa) as *const core::sync::atomic::AtomicU32) };
-    w.compare_exchange(old, new, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire)
-        .map(|_| ())
-        .map_err(Some)
+    azos_mm::uaccess::cas_u32(user_pt, user_addr, old, new, true)
 }
 
 /// [`user_cas_u32`] that never faults: the page must already be writable
@@ -2103,13 +2064,7 @@ pub fn user_cas_u32_nofault(user_addr: usize, old: u32, new: u32) -> Result<(), 
     if user_pt == 0 {
         return Err(None);
     }
-    let Some(pa) = vmm::translate_user_writable_nofault(user_pt, user_addr) else { return Err(None) };
-    let _ua = ARCH.user_access();
-    // SAFETY: as `user_cas_u32`: a writable user page, `pa` 4-aligned in it.
-    let w = unsafe { &*(azos_mm::addr::phys_to_virt(pa) as *const core::sync::atomic::AtomicU32) };
-    w.compare_exchange(old, new, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire)
-        .map(|_| ())
-        .map_err(Some)
+    azos_mm::uaccess::cas_u32(user_pt, user_addr, old, new, false)
 }
 
 /// Make the current task's user word at `user_addr` writable now, as a
@@ -2151,30 +2106,9 @@ pub fn copy_cstr_from_user(dst: &mut [u8], user_ptr: usize) -> Option<usize> {
         }
     }
 
-    // User task — resolve and scan one page at a time.
-    loop {
-        if len >= dst.len() { return None; }
-        let va = user_ptr.checked_add(len)?;
-        let pa = vmm::translate_user(user_pt, va, false)?;
-        // Bytes remaining in this physical page starting at `va`.
-        let page_remaining = PAGE_SIZE - (va & (PAGE_SIZE - 1));
-        let mut off = 0usize;
-        while off < page_remaining {
-            if len >= dst.len() { return None; }
-            // `pa` is PHYSICAL (from `translate_user`); the kernel reads it
-            // through its own mapping — identity on riscv64, upper half on
-            // aarch64. O3.2 guard: see copy_from_user's own comment.
-            let b = {
-                let _ua = ARCH.user_access();
-                unsafe { *((azos_mm::addr::phys_to_virt(pa) + off) as *const u8) }
-            };
-            dst[len] = b;
-            if b == 0 { return Some(len); }
-            len += 1;
-            off += 1;
-        }
-        // Crossed the page boundary; next iteration re-walks the next page.
-    }
+    // User task — resolve and scan one page at a time, each page in one
+    // access section (uaccess-pin, see `copy_from_user`).
+    azos_mm::uaccess::cstr_in(user_pt, dst, user_ptr)
 }
 
 // ── sys_brk ───────────────────────────────────────────────────────────────────

@@ -332,6 +332,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod uaccess_race {
+        use super::*;
+        include!("uaccess_race.rs");
+    }
+
+    #[cfg(test)]
     mod demand_paging {
         use super::*;
         include!("demand_paging.rs");

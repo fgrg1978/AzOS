@@ -55,6 +55,9 @@ cow-ro-canary = []
 # committed-page counter instead of counting its own pages, so a page a
 # sibling thread commits during the fork is left out of the child's charge.
 fork-commit-race-canary = []
+# Host-suite canary (front uaccess-pin): `uaccess::wait_readers` returns at
+# once, as before the access sections; `syscall-tests`' `uaccess_race` fails.
+uaccess-race-canary = []
 # Canary only (wave 14, DEMANDPAGE): the fault path never asks the region
 # pagers, so the first touch of a demand-paged `mmap` page kills the task
 # (and a kernel copy into one fails). Host rows in syscall-tests must go red.

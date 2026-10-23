@@ -888,7 +888,7 @@ impl Reclaimee for AnonReclaim<'_> {
         };
         // No hart may write the frame once this returns; until it does one
         // can still, through a translation it cached.
-        ARCH.tlb_shootdown(v.space, v.va, PAGE_SIZE);
+        crate::vmm::user_shootdown(v.space, v.va, PAGE_SIZE);
         self.flight = Some(Flight { space: v.space, va: v.va, frame, original, ticket, state: FlightState::Out });
         true
     }

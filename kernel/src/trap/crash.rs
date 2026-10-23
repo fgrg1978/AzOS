@@ -187,20 +187,8 @@ fn registers<F: ArchFrame>(frame: &F, out: &mut [u64; cd::MAX_REGS]) -> (cd::Isa
 /// maps it readable: nothing is committed, copied-on-write or allocated (the
 /// read `prof.rs` does from the timer interrupt). How many bytes.
 fn read_stack(pt: usize, sp: u64, out: &mut [u8]) -> usize {
-    let page = azos_arch::PAGE_SIZE;
-    let mut n = 0;
-    while n < out.len() {
-        let Some(va) = (sp as usize).checked_add(n) else { break };
-        let take = (page - va % page).min(out.len() - n);
-        let Some(pa) = azos_mm::vmm::translate_user_readable_nofault(pt, va) else { break };
-        // SAFETY: the kernel's own mapping of a frame the page table says is
-        // the task's, `take` bytes inside one page.
-        unsafe {
-            core::ptr::copy_nonoverlapping(azos_mm::addr::phys_to_virt(pa) as *const u8, out.as_mut_ptr().add(n), take);
-        }
-        n += take;
-    }
-    n
+    // Each page in one access section (uaccess-pin).
+    azos_mm::uaccess::copy_in_resident(pt, out.as_mut_ptr(), sp as usize, out.len())
 }
 
 /// The SHA-256 of the image the build copied under `name`: the key of its

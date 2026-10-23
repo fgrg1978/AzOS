@@ -48,6 +48,7 @@ lx-wx-canary = []
 cow-ro-canary = []
 # ... and the wave 14 (FORKSPAWN) `pager.rs` canary.
 fork-commit-race-canary = []
+uaccess-race-canary = []
 # ... and `cfg!(feature = "demand-region-canary")` in the pulled-in `vmm.rs`
 # (wave 14, DEMANDPAGE).
 demand-region-canary = []

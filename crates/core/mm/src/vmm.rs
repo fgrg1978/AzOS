@@ -1108,6 +1108,22 @@ pub fn unmap_kernel(pt_phys: usize, vaddr: usize) {
     unmap_inner(pt_phys, vaddr, false);
 }
 
+/// The TLB shootdown of a change that takes a user leaf away (clears it,
+/// write-protects it, moves its page to another frame), complete for the
+/// kernel's own copies too: after the shootdown it waits until no CPU is in a
+/// user-memory access section that may have walked the old leaf
+/// ([`crate::uaccess::wait_readers`]). Those copies go through the kernel's
+/// map of the frame, which the shootdown does not reach; without the wait a
+/// `munmap` by another thread freed a frame a copy was still writing (host
+/// test `uaccess_race.rs`). Every user-leaf shootdown in this crate goes
+/// through here, so the frame is free to be freed, reused or read once it
+/// returns. A kernel-half shootdown (`propagate_kernel_entries`) does not.
+pub(crate) fn user_shootdown(root: usize, va: usize, len: usize) -> usize {
+    let r = ARCH.tlb_shootdown(root, va, len);
+    crate::uaccess::wait_readers();
+    r
+}
+
 fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
     // Silent no-op rather than an error because `unmap` already returns
     // nothing and every caller treats "not mapped" as success. What must not
@@ -1171,7 +1187,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
 
         // Full TLB flush — the megapage TLB entry must be invalidated.
         if shoot {
-            ARCH.tlb_shootdown(pt_phys, 0, azos_arch_api::TLB_ALL);
+            user_shootdown(pt_phys, 0, azos_arch_api::TLB_ALL);
         } else {
             ARCH.flush_tlb_all();
         }
@@ -1188,7 +1204,7 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
         }
         unsafe { core::ptr::write_volatile(pte_ptr, ARCH.pte_empty()) };
         if shoot {
-            ARCH.tlb_shootdown(pt_phys, vaddr, PAGE_SIZE);
+            user_shootdown(pt_phys, vaddr, PAGE_SIZE);
         } else {
             ARCH.flush_tlb_page(vaddr);
         }
@@ -1430,7 +1446,7 @@ fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
                 let _ = member(k).compare_exchange(w, ARCH.pte_contig_member(w, k), Ordering::AcqRel, Ordering::Acquire);
             }
         }
-        ARCH.tlb_shootdown(pt_phys, base_va, run * PAGE_SIZE);
+        user_shootdown(pt_phys, base_va, run * PAGE_SIZE);
         return;
     }
     use azos_arch_api::Interrupts;
@@ -1447,7 +1463,7 @@ fn break_contig_run(pt_phys: usize, vaddr: usize, slot: *mut u64) {
         }
     }
     if broke {
-        ARCH.tlb_shootdown(pt_phys, base_va, run * PAGE_SIZE);
+        user_shootdown(pt_phys, base_va, run * PAGE_SIZE);
         for k in 0..run {
             if old[k] != 0 {
                 member(k).store(ARCH.pte_contig_member(old[k], k), Ordering::Release);
@@ -3640,7 +3656,7 @@ pub fn unmap_user_and_free(
         Some(owned) => {
             // Shoot down BEFORE the free: another hart must not read a frame
             // the allocator may already have reissued.
-            ARCH.tlb_shootdown(pt_phys, vaddr & !(PAGE_SIZE - 1), PAGE_SIZE);
+            user_shootdown(pt_phys, vaddr & !(PAGE_SIZE - 1), PAGE_SIZE);
             if owned != 0 {
                 let _ = pmm::free_page(PhysAddr::new(owned));
                 return true;
@@ -3683,7 +3699,7 @@ pub fn unmap_user_range_and_free(
             i += 1;
         }
         if cleared {
-            ARCH.tlb_shootdown(pt_phys, batch_start, va - batch_start);
+            user_shootdown(pt_phys, batch_start, va - batch_start);
         }
         for &f in &frames[..n] {
             let _ = pmm::free_page(PhysAddr::new(f));
@@ -3840,7 +3856,7 @@ pub fn protect_user_range(pt_phys: usize, start: usize, end: usize, write: bool)
         va += PAGE_SIZE;
     }
     if changed != 0 {
-        ARCH.tlb_shootdown(pt_phys, first, va - first);
+        user_shootdown(pt_phys, first, va - first);
     }
     changed
 }
@@ -3906,7 +3922,7 @@ pub fn set_user_range_write(pt_phys: usize, start: usize, end: usize, write: boo
         va += PAGE_SIZE;
     }
     if changed != 0 {
-        ARCH.tlb_shootdown(pt_phys, first, va - first);
+        user_shootdown(pt_phys, first, va - first);
     }
     changed
 }
@@ -3975,7 +3991,7 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
         }
         va += PAGE_SIZE;
     }
-    ARCH.tlb_shootdown(pt_phys, start, end - start);
+    user_shootdown(pt_phys, start, end - start);
     Ok(changed)
 }
 
@@ -4431,7 +4447,7 @@ fn l1_replace(pt_phys: usize, block_va: usize, slot: &core::sync::atomic::Atomic
     let irq = ARCH.disable_all();
     let broke = slot.compare_exchange(old, azos_arch_api::PTE_BBM_PARK, Ordering::AcqRel, Ordering::Acquire).is_ok();
     if broke {
-        ARCH.tlb_shootdown(pt_phys, block_va, MEGA_SIZE);
+        user_shootdown(pt_phys, block_va, MEGA_SIZE);
         slot.store(new, Ordering::Release);
         // The barrier every install ends with: the walker sees the word.
         ARCH.flush_tlb_page(block_va);
@@ -4492,7 +4508,7 @@ pub(crate) fn promote_user_block(pt_phys: usize, block_va: usize, run_pa: usize,
 /// differently), then free the table and its charge.
 pub(crate) fn promote_finish(pt_phys: usize, block_va: usize, old_l0: usize, flushed: bool) {
     if !flushed {
-        ARCH.tlb_shootdown(pt_phys, block_va, MEGA_SIZE);
+        user_shootdown(pt_phys, block_va, MEGA_SIZE);
     }
     let _ = pmm::free_page(PhysAddr::new(old_l0));
     let _ = table_charge(pt_phys, false);
@@ -4539,7 +4555,7 @@ pub(crate) fn split_user_mega(pt_phys: usize, vaddr: usize) -> bool {
         return promoted_leaf(pt_phys, vaddr).is_none();
     };
     if !flushed {
-        ARCH.tlb_shootdown(pt_phys, block, MEGA_SIZE);
+        user_shootdown(pt_phys, block, MEGA_SIZE);
     }
     true
 }
@@ -4610,7 +4626,7 @@ fn free_user_mega(pt_phys: usize, block_va: usize) -> u32 {
     if slot.compare_exchange(w, ARCH.pte_empty(), Ordering::AcqRel, Ordering::Acquire).is_err() {
         return 0;
     }
-    ARCH.tlb_shootdown(pt_phys, block_va, MEGA_SIZE);
+    user_shootdown(pt_phys, block_va, MEGA_SIZE);
     free_mega_frames(ARCH.pte_phys(w))
 }
 

@@ -45,6 +45,9 @@ pub mod aging;
 /// partition (host-tested, `#[path]`).
 pub mod swap;
 pub mod pager;
+/// User-memory access sections: what keeps a frame a kernel copy is using
+/// from being freed or reused under it (host-tested, `#[path]`).
+pub mod uaccess;
 /// Wave 14 (SPAWNCACHE): a verified image's frames, kept for its next spawn.
 pub mod image_frames;
 pub mod kheap;

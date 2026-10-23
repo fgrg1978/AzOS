@@ -152,7 +152,7 @@ fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: b
             // the first store actually traps into `handle_cow_fault` on
             // whichever hart makes it (a downgrade: a stale writable entry
             // would let the parent write the frame the child now shares).
-            ARCH.tlb_shootdown(parent_pt, 0, azos_arch_api::TLB_ALL);
+            crate::vmm::user_shootdown(parent_pt, 0, azos_arch_api::TLB_ALL);
             // Blank leaf tables the walk unhooked go only now, after every
             // hart has dropped its translations through them.
             vmm::release_pruned_tables(parent_pt, &pruned.tables[..pruned.n]);
@@ -165,7 +165,7 @@ fn fork_cow_walk(parent_pt: usize, skip_lo: usize, skip_hi: usize, concurrent: b
             // installed, so the teardown's decref leaves them alive for the
             // parent. Flush anyway — some parent PTEs lost their WRITE bit.
             vmm::destroy_user_pagetable(child_pt);
-            ARCH.tlb_shootdown(parent_pt, 0, azos_arch_api::TLB_ALL);
+            crate::vmm::user_shootdown(parent_pt, 0, azos_arch_api::TLB_ALL);
             vmm::release_pruned_tables(parent_pt, &pruned.tables[..pruned.n]);
             Err(e)
         }
@@ -581,13 +581,13 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
                 // entry itself, which is the state this wanted.
                 let _ = slot.compare_exchange(new_pte, pte, core::sync::atomic::Ordering::AcqRel,
                                               core::sync::atomic::Ordering::Acquire);
-                ARCH.tlb_shootdown(pt, aligned_addr, PAGE_SIZE);
+                crate::vmm::user_shootdown(pt, aligned_addr, PAGE_SIZE);
                 return Ok(());
             }
             if won {
                 // The read-only translation goes, as after a copy: a hart
                 // still holding it would fault on its next store.
-                ARCH.tlb_shootdown(pt, aligned_addr, PAGE_SIZE);
+                crate::vmm::user_shootdown(pt, aligned_addr, PAGE_SIZE);
             }
             // Lost: another thread changed the entry; the access retries on
             // whatever it says now, as the copy path's loser does.
@@ -657,7 +657,7 @@ pub fn handle_cow_fault(pt: usize, fault_addr: usize) -> KResult<()> {
     // every hart that may hold it BEFORE the old frame can be freed below — a
     // hart still reading through a stale entry would otherwise read (and,
     // once reissued, see) a frame this address space no longer owns.
-    ARCH.tlb_shootdown(pt, aligned_addr, PAGE_SIZE);
+    crate::vmm::user_shootdown(pt, aligned_addr, PAGE_SIZE);
 
     // Drop our reference on the old page.  If we were the last holder,
     // free it back to the PMM.

@@ -127,6 +127,11 @@ pub mod swap;
 #[path = "../../../../../../crates/core/mm/src/pager.rs"]
 pub mod pager;
 
+// Front uaccess-pin: the user-memory access sections the copy loops run in
+// and every user shootdown waits for (`uaccess_race.rs`).
+#[path = "../../../../../../crates/core/mm/src/uaccess.rs"]
+pub mod uaccess;
+
 // Wave 14 (SPAWNCACHE): a verified image's kept frames, the real file
 // (`image_cache.rs`, pulled into this suite, keeps and maps them).
 #[path = "../../../../../../crates/core/mm/src/image_frames.rs"]

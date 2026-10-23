@@ -1982,23 +1982,6 @@ fn sys_rt_sigaction(s: u64, act: u64, oact: u64, setsize: u64) -> i64 {
     0
 }
 
-/// The kernel address of the aligned user word at `ptr`, through the
-/// current task's page table (`write`: a store is allowed there, after any
-/// copy-on-write break). An aligned word never spans two pages, so one
-/// translation serves it: what `copy_*_user` does for a run of bytes, without
-/// the run.
-fn user_word(ptr: u64, write: bool) -> Option<*mut u64> {
-    if ptr == 0 || ptr & 7 != 0 {
-        return None;
-    }
-    let pt = azos_sched::current_user_pt();
-    if pt == 0 {
-        return None;
-    }
-    let pa = azos_mm::vmm::translate_user(pt, ptr as usize, write)?;
-    Some(azos_mm::addr::phys_to_virt(pa) as *mut u64)
-}
-
 #[inline(never)]
 fn sys_rt_sigprocmask(how: u64, set: u64, oset: u64, setsize: u64) -> i64 {
     use lx::sig::*;
@@ -2006,8 +1989,10 @@ fn sys_rt_sigprocmask(how: u64, set: u64, oset: u64, setsize: u64) -> i64 {
         return neg(le::EINVAL);
     }
     let new = if set != 0 {
-        // SAFETY: a translated, aligned user word, read once.
-        match user_word(set, false).map(|p| unsafe { core::ptr::read_volatile(p) }).or_else(|| get_u64(set)) {
+        // One read of the word, in one access section (uaccess-pin: the
+        // former direct pointer to the frame outlived the walk that found
+        // it, and a sibling's `munmap` could free the frame under it).
+        match get_u64(set) {
             Some(v) => Some(v),
             None => return neg(le::EFAULT),
         }
@@ -2027,11 +2012,8 @@ fn sys_rt_sigprocmask(how: u64, set: u64, oset: u64, setsize: u64) -> i64 {
         });
     }
     if oset != 0 {
-        match user_word(oset, true) {
-            // SAFETY: a translated, aligned, writable user word.
-            Some(p) => unsafe { core::ptr::write_volatile(p, old) },
-            None if put_user(oset, &old.to_le_bytes()) => {}
-            None => return neg(le::EFAULT),
+        if !put_user(oset, &old.to_le_bytes()) {
+            return neg(le::EFAULT);
         }
     }
     0

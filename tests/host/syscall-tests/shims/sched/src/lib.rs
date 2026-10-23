@@ -21,19 +21,18 @@
 //! against the base of [`user_shm_window`]) are both functions of it — a `todo!()` here
 //! means zero mmap coverage. [`shim_set_brk`] is the test-only writer.
 //!
-//! **`copy_from_user` / `copy_to_user` are a deliberate transcription, and
-//! the only place in this crate where kernel logic is retyped rather than
-//! pulled.** The originals live in `crates/core/sched/src/process.rs:752` and
-//! `:792`, inside a 4,000-line RV64 module (fork, context switch, ELF
-//! loading) that cannot be `#[path]`-pulled. What is copied is the
-//! zero-length/overflow guard and the per-page chunking loop; **the decision
-//! that matters — is this user VA mapped, with USER and the right R/W bit —
-//! is not copied**, it is a call into the real `azos_mm::vmm::
-//! translate_user`. So a test that shows `sys_connect` refusing a pointer
-//! whose 16-byte read crosses into an unmapped page is exercising the
-//! kernel's real Sv39 permission walk; only the loop around it is local.
-//! Read any such test as proving what `sys_connect` does with a refusal,
-//! not as coverage of `process.rs` itself.
+//! **`copy_from_user` / `copy_to_user` / `copy_cstr_from_user` keep only
+//! their front transcribed.** The originals live in
+//! `crates/core/sched/src/process.rs`, inside a 4,000-line RV64 module (fork,
+//! context switch, ELF loading) that cannot be `#[path]`-pulled. What is
+//! retyped is the zero-length/overflow guard and the kernel-task branch; the
+//! per-page loop and **the decision that matters — is this user VA mapped,
+//! with USER and the right R/W bit** — are the real `azos_mm::uaccess` loop
+//! (front uaccess-pin), which walks with the real `azos_mm::vmm`. So a test
+//! that shows `sys_connect` refusing a pointer whose 16-byte read crosses into
+//! an unmapped page is exercising the kernel's real Sv39 permission walk and
+//! copy loop. Read any such test as proving what `sys_connect` does with a
+//! refusal, not as coverage of `process.rs` itself.
 //!
 //! Every other function signature here matches the real one exactly (so
 //! `handlers.rs` compiles unchanged) but is `todo!()`: no test in this crate
@@ -382,12 +381,9 @@ pub fn shim_reset_user_windows() {
     USER_WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
-/// Transcribed from `crates/core/sched/src/process.rs:752`. See the module doc:
-/// the permission decision is delegated to the real
-/// `azos_mm::vmm::translate_user`, only the guard and the chunking loop
-/// are local.
+/// The front transcribed from `crates/core/sched/src/process.rs`; the loop is
+/// the real `azos_mm::uaccess::copy_in`. See the module doc.
 pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool {
-    use azos_arch::mmu::PAGE_SIZE;
     if len == 0 { return true; }
     if user_src.checked_add(len).is_none() { return false; }
     let user_pt = current_user_pt();
@@ -395,19 +391,10 @@ pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool 
         unsafe { core::ptr::copy_nonoverlapping(user_src as *const u8, kernel_dst, len); }
         return true;
     }
-    let mut done = 0usize;
-    while done < len {
-        let va = user_src + done;
-        let Some(pa) = azos_mm::vmm::translate_user(user_pt, va, false) else { return false; };
-        let chunk = (PAGE_SIZE - (va & (PAGE_SIZE - 1))).min(len - done);
-        unsafe { core::ptr::copy_nonoverlapping(pa as *const u8, kernel_dst.add(done), chunk); }
-        done += chunk;
-    }
-    true
+    azos_mm::uaccess::copy_in(user_pt, kernel_dst, user_src, len)
 }
 
-/// Transcribed from `crates/core/sched/src/process.rs:792`; same caveat as
-/// [`copy_from_user`]. It uses the PROBE, not `translate_user(.., true)`:
+/// Transcribed from `crates/core/sched/src/process.rs`. It uses the PROBE, not `translate_user(.., true)`:
 /// asking whether a write would be permitted must not break a COW page, which
 /// is what production does since owner decision 100c.
 /// Mirrors `process.rs`'s `user_range_writable`: the same walk `copy_to_user`
@@ -452,8 +439,8 @@ pub fn user_range_prepare_write(user_dst: usize, len: usize) -> bool {
     true
 }
 
+/// As [`copy_from_user`]: the loop is the real `azos_mm::uaccess::copy_out`.
 pub fn copy_to_user(user_dst: usize, kernel_src: *const u8, len: usize) -> bool {
-    use azos_arch::mmu::PAGE_SIZE;
     if len == 0 { return true; }
     if user_dst.checked_add(len).is_none() { return false; }
     let user_pt = current_user_pt();
@@ -461,29 +448,17 @@ pub fn copy_to_user(user_dst: usize, kernel_src: *const u8, len: usize) -> bool 
         unsafe { core::ptr::copy_nonoverlapping(kernel_src, user_dst as *mut u8, len); }
         return true;
     }
-    let mut done = 0usize;
-    while done < len {
-        let va = user_dst + done;
-        let Some(pa) = azos_mm::vmm::translate_user(user_pt, va, true) else { return false; };
-        let chunk = (PAGE_SIZE - (va & (PAGE_SIZE - 1))).min(len - done);
-        unsafe { core::ptr::copy_nonoverlapping(kernel_src.add(done), pa as *mut u8, chunk); }
-        done += chunk;
-    }
-    true
+    azos_mm::uaccess::copy_out(user_pt, user_dst, kernel_src, len)
 }
 
-/// Transcribed from `crates/core/sched/src/process.rs`, for the same reason
-/// `copy_from_user`/`copy_to_user` above are: it reads the current task's page
-/// table through a module of RV64 assembly, but the decision that matters —
-/// whether a user VA resolves at all — is delegated to the real
-/// `vmm::translate_user`, exactly as the original does.
+/// The front transcribed from `crates/core/sched/src/process.rs`, as
+/// `copy_from_user`'s; the per-page scan is the real `azos_mm::uaccess::cstr_in`.
 ///
 /// This was `todo!()` until `file_ops_seam.rs` became the first test in the
 /// crate to drive a ring-3 path through it. The stub was honest: the note said
 /// "not reached by any test in this crate", and it was true, because the file
 /// syscalls had no host coverage at all.
 pub fn copy_cstr_from_user(dst: &mut [u8], user_ptr: usize) -> Option<usize> {
-    use azos_arch::mmu::PAGE_SIZE;
     let user_pt = current_user_pt();
     let mut len = 0usize;
 
@@ -499,22 +474,8 @@ pub fn copy_cstr_from_user(dst: &mut [u8], user_ptr: usize) -> Option<usize> {
         }
     }
 
-    // User task — resolve and scan one page at a time.
-    loop {
-        if len >= dst.len() { return None; }
-        let va = user_ptr.checked_add(len)?;
-        let pa = azos_mm::vmm::translate_user(user_pt, va, false)?;
-        let page_remaining = PAGE_SIZE - (va & (PAGE_SIZE - 1));
-        let mut off = 0usize;
-        while off < page_remaining {
-            if len >= dst.len() { return None; }
-            let b = unsafe { *((pa + off) as *const u8) };
-            dst[len] = b;
-            if b == 0 { return Some(len); }
-            len += 1;
-            off += 1;
-        }
-    }
+    // User task — the real per-page loop.
+    azos_mm::uaccess::cstr_in(user_pt, dst, user_ptr)
 }
 
 pub fn sys_brk_impl(_addr: u64) -> i64 {

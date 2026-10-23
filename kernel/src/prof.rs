@@ -180,11 +180,11 @@ fn read_user(a: u64) -> Option<u64> {
     if pt == 0 || a & 7 != 0 {
         return None;
     }
-    let pa = azos_mm::vmm::translate_user_readable_nofault(pt, a as usize)?;
-    // SAFETY: the kernel's own mapping of a frame the page table says is the
-    // task's (the same read `copy_from_user` does; never the user's VA, so
-    // neither PAN nor SUM is involved), 8-byte aligned inside one page.
-    Some(unsigned(unsafe { core::ptr::read_volatile(azos_mm::addr::phys_to_virt(pa) as *const u64) }))
+    // One resident read in one access section (uaccess-pin): a frame the
+    // walk finds is not freed under the read.
+    let mut w = [0u8; 8];
+    (azos_mm::uaccess::copy_in_resident(pt, w.as_mut_ptr(), a as usize, 8) == 8)
+        .then(|| unsigned(u64::from_ne_bytes(w)))
 }
 
 fn walk_user(i: &Interrupted, out: &mut [u64]) -> Walk {
