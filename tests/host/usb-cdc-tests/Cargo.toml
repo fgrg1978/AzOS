@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the CDC class drivers of crates/drivers/usb (class/cdc.rs): the NTB-16 parser and builder on hostile and well-formed blocks, the class-specific descriptor parser, and CDC-ECM, CDC-NCM and CDC-ACM functions over the xHCI mock of tests/host/usb-tests (a fake controller with fake devices behind it). Excluded from the workspace like the other *-tests crates."
+description = "Host-side tests for the USB network and serial class drivers of crates/drivers/usb (class/cdc.rs, class/smsc95xx.rs) and the kernel NIC adapter (crates/drivers/net/src/usb_net.rs): the NTB-16 parser and builder on hostile and well-formed blocks, the class-specific descriptor parser, and CDC-ECM, CDC-NCM and CDC-ACM functions over the xHCI mock of tests/host/usb-tests (a fake controller with fake devices behind it). Excluded from the workspace like the other *-tests crates."
 
 # Run with:  cd tests/host/usb-cdc-tests && CARGO_TARGET_DIR=~/azos-out/usb-cdc-tests cargo test --release --target aarch64-apple-darwin
 # Canaries: `cargo test --release --target aarch64-apple-darwin --features canary-<name>` must FAIL.
@@ -17,7 +17,7 @@ azos_idl = { path = "../../../crates/core/idl" }
 azos_devif = { path = "../../../crates/core/devif" }
 azos_limits = { path = "../../../crates/core/limits" }
 azos_drv_api = { path = "../../../crates/drivers/api" }
-# The locks of crates/drivers/net/src/usb_cdc.rs (included below with #[path]),
+# The locks of crates/drivers/net/src/usb_net.rs (included below with #[path]),
 # on std, as the other host suites that include driver files have them.
 azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 
@@ -28,6 +28,8 @@ canary-ntb-align = ["azos_usb/canary-ntb-align"]
 canary-no-clear-halt = ["azos_usb/canary-no-clear-halt"]
 canary-mismatch = ["azos_usb/canary-mismatch"]
 canary-ntb-input-size = ["azos_usb/canary-ntb-input-size"]
+canary-smsc-zlp = ["azos_usb/canary-smsc-zlp"]
+canary-smsc-rx-bounds = ["azos_usb/canary-smsc-rx-bounds"]
 
 [profile.release]
 overflow-checks = true

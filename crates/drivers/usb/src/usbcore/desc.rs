@@ -54,6 +54,7 @@ pub const REQ_SET_HUB_DEPTH: u8 = 12;
 pub const RT_DIR_IN: u8 = 0x80;
 pub const RT_TYPE_STANDARD: u8 = 0 << 5;
 pub const RT_TYPE_CLASS: u8 = 1 << 5;
+pub const RT_TYPE_VENDOR: u8 = 2 << 5;
 pub const RT_TYPE_MASK: u8 = 3 << 5;
 pub const RT_RECIP_DEVICE: u8 = 0;
 pub const RT_RECIP_INTERFACE: u8 = 1;

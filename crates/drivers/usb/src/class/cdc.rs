@@ -7,7 +7,7 @@
 //! serve [`UsbClass`], claim interfaces, and move data only through the pipes
 //! the core opened for those claims. This file is the protocol and nothing
 //! else: no lock, no hardware. The kernel half wraps one function in a lock
-//! (`crates/drivers/net/src/usb_cdc.rs` for the NIC, which registers with the
+//! (`crates/drivers/net/src/usb_net.rs` for the NIC, which registers with the
 //! device table as `net_device::register_usb`) and turns the crank from the
 //! `usb` task: [`CdcNet::session_wanted`] / [`CdcNet::open`] after each turn
 //! of the core, then [`CdcNet::service`] ([`CdcAcm::pump`] for a serial line).
@@ -177,7 +177,7 @@ const LINE_ACTIVE: u16 = 0b11;
 
 /// How long one control request of setup may take: the USB 2.0 limit for a
 /// request with a data stage (§9.2.6.4).
-const CTL_TIMEOUT_US: u64 = 5_000_000;
+pub(crate) const CTL_TIMEOUT_US: u64 = 5_000_000;
 /// Language the MAC address string is asked in: US English, which every
 /// device that has strings has (index 0 lists others; none is needed).
 const LANG_EN_US: u16 = 0x0409;
@@ -188,7 +188,7 @@ pub const MAX_BAD_RUN: u32 = 32;
 // ---- Sizes (Kconfig USB_CDC_BUFS, USB_CDC_NTB_KB) ----
 
 /// Buffers per direction.
-const BUFS: usize = azos_limits::USB_CDC_BUFS as usize;
+pub(crate) const BUFS: usize = azos_limits::USB_CDC_BUFS as usize;
 /// NTB buffer of an NCM function.
 const NTB_BYTES: usize = azos_limits::USB_CDC_NTB_KB as usize * 1024;
 /// Buffer of an ECM function: one frame, VLAN tag included, a multiple of
@@ -971,7 +971,7 @@ impl<'q> Bind<'q> {
 
 /// Open the pipe of endpoint `ep` (0: control) and take the driver's ends of
 /// its rings.
-fn open_one<'q>(dev: &mut dyn UsbDevice, rings: &'q [PipeRings], ep: u8) -> Result<PipeEnd<'q>, Fail> {
+pub(crate) fn open_one<'q>(dev: &mut dyn UsbDevice, rings: &'q [PipeRings], ep: u8) -> Result<PipeEnd<'q>, Fail> {
     let p = dev.pipe_open(ep as u32);
     if p.code != OK {
         return Err(Fail::Pipe);
@@ -1774,6 +1774,44 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
     pub fn tx_end(&mut self) {
         self.batching = false;
         let _ = self.flush();
+    }
+}
+
+impl<M: Memory, C: Clock> super::net::NetFunction for CdcNet<'_, M, C> {
+    const RULES: &'static [Match] = &[Self::comm_rule(), Self::data_rule()];
+
+    fn session_wanted(&self) -> Option<Claim> {
+        CdcNet::session_wanted(self)
+    }
+    fn open(&mut self, dev: &mut dyn UsbDevice) {
+        CdcNet::open(self, dev)
+    }
+    fn service(&mut self) {
+        CdcNet::service(self)
+    }
+    fn is_ready(&self) -> bool {
+        CdcNet::is_ready(self)
+    }
+    fn rx_pending(&self) -> bool {
+        CdcNet::rx_pending(self)
+    }
+    fn take_submitted(&mut self) -> bool {
+        CdcNet::take_submitted(self)
+    }
+    fn mac(&self) -> [u8; 6] {
+        CdcNet::mac(self)
+    }
+    fn send(&mut self, frame: &[u8]) -> Result<(), SendError> {
+        CdcNet::send(self, frame)
+    }
+    fn recv(&mut self, out: &mut [u8]) -> usize {
+        CdcNet::recv(self, out)
+    }
+    fn tx_begin(&mut self) {
+        CdcNet::tx_begin(self)
+    }
+    fn tx_end(&mut self) {
+        CdcNet::tx_end(self)
     }
 }
 

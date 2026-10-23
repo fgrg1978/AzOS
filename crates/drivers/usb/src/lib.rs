@@ -22,6 +22,9 @@
 //! - [`class::cdc`]: the communications class drivers: CDC-ACM as a `Uart`
 //!   (a USB serial console) and CDC-ECM / CDC-NCM (NTB parser) as a NIC for
 //!   the network device table.
+//! - [`class::smsc95xx`]: the SMSC LAN95xx Ethernet function (the Raspberry
+//!   Pi 3 B's) as a NIC; it and the CDC one are [`class::net::NetFunction`]s,
+//!   the one shape the kernel's NIC adapter takes.
 //! - [`listing`]: the `lsusb`-style listing, a watcher class driver whose rows
 //!   the kernel publishes through the introspection tree.
 //!
@@ -51,8 +54,10 @@ pub const MAX_DEVICES: usize = azos_limits::USB_MAX_DEVICES as usize;
 pub const MAX_PIPES: usize = azos_limits::USB_MAX_PIPES as usize;
 /// Entries of each ring of a pipe (Kconfig `USB_PIPE_DEPTH`).
 pub const PIPE_DEPTH: usize = azos_limits::USB_PIPE_DEPTH as usize;
-/// Class drivers (and watchers) registered at once.
-pub const MAX_CLASS_DRIVERS: usize = 8;
+/// Class drivers (and watchers) registered at once: the kernel's lister,
+/// HID, mass storage, the two CDC functions (two interfaces each), the camera
+/// and the LAN95xx function, and one spare.
+pub const MAX_CLASS_DRIVERS: usize = 10;
 
 const _: () = assert!(PIPE_DEPTH.is_power_of_two(), "USB_PIPE_DEPTH must be a power of two");
 const _: () = assert!(MAX_DEVICES <= 127, "slot ids are 7 bits in a claim");

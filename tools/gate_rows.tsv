@@ -280,6 +280,8 @@ usb-cdc: NTB alignment canary	n1	crates/drivers/usb/** tests/host/usb-cdc-tests/
 usb-cdc: halt clear canary	n1	crates/drivers/usb/** tests/host/usb-cdc-tests/** tests/host/usb-tests/** crates/drivers/net/** crates/drivers/api/** crates/core/rings/** crates/core/idl/** crates/core/devif/**
 usb-cdc: union canary	n1	crates/drivers/usb/** tests/host/usb-cdc-tests/** tests/host/usb-tests/** crates/drivers/net/** crates/drivers/api/** crates/core/rings/** crates/core/idl/** crates/core/devif/**
 usb-cdc: NTB input size canary	n1	crates/drivers/usb/** tests/host/usb-cdc-tests/** tests/host/usb-tests/** crates/drivers/net/** crates/drivers/api/** crates/core/rings/** crates/core/idl/** crates/core/devif/**
+usb-net: LAN95xx pad canary	n1	crates/drivers/usb/** tests/host/usb-cdc-tests/** tests/host/usb-tests/** crates/drivers/net/** crates/drivers/api/** crates/core/rings/** crates/core/idl/** crates/core/devif/**
+usb-net: LAN95xx rx bounds canary	n1	crates/drivers/usb/** tests/host/usb-cdc-tests/** tests/host/usb-tests/** crates/drivers/net/** crates/drivers/api/** crates/core/rings/** crates/core/idl/** crates/core/devif/**
 usb: isochronous halt canary	n1	crates/drivers/usb/** tests/host/usb-uvc-tests/** tests/host/usb-tests/** crates/drivers/cam-ring/** crates/core/rings/** crates/core/idl/** crates/core/devif/**
 usb: isochronous burst canary	n1	crates/drivers/usb/** tests/host/usb-uvc-tests/** tests/host/usb-tests/** crates/drivers/cam-ring/** crates/core/rings/** crates/core/idl/** crates/core/devif/**
 usb-uvc: error flag canary	n1	crates/drivers/usb/** tests/host/usb-uvc-tests/** tests/host/usb-tests/** crates/drivers/cam-ring/** crates/core/rings/** crates/core/idl/** crates/core/devif/**

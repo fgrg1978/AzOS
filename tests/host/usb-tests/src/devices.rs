@@ -146,6 +146,10 @@ pub struct MockDev {
     /// arm for (GET_NTB_PARAMETERS) or a standard one it has none for
     /// (SET_INTERFACE) is given here by the test that needs it.
     pub canned: Vec<(u8, u8, Vec<u8>)>,
+    /// Vendor requests (bmRequestType type 2), answered by the test's model
+    /// of the chip (a USB Ethernet function's register file).
+    #[allow(clippy::type_complexity)]
+    pub vendor: Option<Box<dyn FnMut([u8; 8], &[u8]) -> Result<Vec<u8>, ()>>>,
 }
 
 impl MockDev {
@@ -165,6 +169,7 @@ impl MockDev {
             report_descs: Vec::new(),
             fail_everything: false,
             canned: Vec::new(),
+            vendor: None,
         }
     }
 
@@ -198,6 +203,11 @@ impl MockDev {
         let index = u16::from_le_bytes([setup[4], setup[5]]);
         if let Some((_, _, answer)) = self.canned.iter().find(|(t, r, _)| *t == rt && *r == req) {
             return Ok(answer.clone());
+        }
+        if rt & 0x60 == 0x40 {
+            if let Some(v) = self.vendor.as_mut() {
+                return v(setup, out);
+            }
         }
         match (rt, req) {
             (0x80, 6) => match (value >> 8) as u8 {

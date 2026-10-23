@@ -24,9 +24,10 @@
 //!   disk behind its own request queue (`azos_drv_block::usb_msc`); the `usb`
 //!   task drives it after each turn of the core, and a task reads its sector 0
 //!   once it is ready, so the data path is exercised from the first plug;
-//! - the network class driver (Kconfig `USB_CDC`): a CDC-ECM or CDC-NCM
-//!   function becomes a NIC of the network device table
-//!   (`azos_drv_net::usb_cdc`). The `usb` task drives it after each turn of the
+//! - the network class drivers (Kconfig `USB_CDC`, `USB_SMSC95XX`): a CDC-ECM
+//!   or CDC-NCM function, or an SMSC LAN95xx one (the Raspberry Pi 3 B's
+//!   Ethernet), becomes a NIC of the network device table
+//!   (`azos_drv_net::usb_net`). The `usb` task drives it after each turn of the
 //!   core; when the function comes up the NIC is registered and the stack
 //!   gets an interface for it (`azos_net::net_nic_added`, and a DHCP exchange
 //!   when it is the primary one and CONFIG.INI asks for it), when it goes the
@@ -80,10 +81,14 @@ mod host {
     use azos_drv_block::usb_msc::{Event, UsbDisk};
     #[cfg(feature = "usb-storage")]
     use azos_usb::class::msc::Msc;
-    #[cfg(feature = "usb-cdc")]
-    use azos_drv_net::usb_cdc::{Event as NicEvent, UsbNic};
+    #[cfg(feature = "usb-net")]
+    use azos_drv_net::usb_net::{Event as NicEvent, UsbNic};
+    #[cfg(feature = "usb-net")]
+    use azos_usb::class::net::NetFunction;
     #[cfg(feature = "usb-cdc")]
     use azos_usb::class::cdc::{CdcAcm, CdcNet};
+    #[cfg(feature = "usb-smsc95xx")]
+    use azos_usb::class::smsc95xx::Smsc95xx;
     #[cfg(feature = "usb-cdc")]
     use super::serial::{Event as SerialEvent, UsbSerial};
     #[cfg(feature = "usb-uvc")]
@@ -235,7 +240,7 @@ mod host {
         usb: alloc::boxed::Box<Host>,
         events: Consumer<'static, UsbEvent, EVENT_DEPTH>,
         /// What the controller's DMA reaches, for the class drivers' buffers.
-        #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+        #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         dma: (&'static dyn DmaDomain, u64),
     }
 
@@ -245,12 +250,26 @@ mod host {
     type Disk = UsbDisk<'static, KMem, KClock>;
     #[cfg(feature = "usb-storage")]
     static DISK: azos_sync::SpinLock<Option<&'static Disk>> = azos_sync::SpinLock::new(None);
-    /// The USB network function, once the scheduler exists: leaked, because
-    /// the device table holds it as a `&'static dyn NetDevice`.
+    /// The USB network functions, once the scheduler exists: leaked, because
+    /// the device table holds one as a `&'static dyn NetDevice`. A CDC-ECM/NCM
+    /// function, and an SMSC LAN95xx one (the Raspberry Pi 3 B's Ethernet).
     #[cfg(feature = "usb-cdc")]
-    type Nic = UsbNic<'static, KMem, KClock>;
+    type Nic = UsbNic<CdcNet<'static, KMem, KClock>>;
     #[cfg(feature = "usb-cdc")]
     static NIC: azos_sync::SpinLock<Option<&'static Nic>> = azos_sync::SpinLock::new(None);
+    #[cfg(feature = "usb-smsc95xx")]
+    type SmscNic = UsbNic<Smsc95xx<'static, KMem, KClock>>;
+    #[cfg(feature = "usb-smsc95xx")]
+    static SMSC: azos_sync::SpinLock<Option<&'static SmscNic>> = azos_sync::SpinLock::new(None);
+    /// Which function holds the device table's one USB NIC (`register_usb`):
+    /// [`NIC_CDC`], [`NIC_SMSC`], 0 for none. The other one coming up is
+    /// told it has no number; its going down must not take the holder's away.
+    #[cfg(feature = "usb-net")]
+    static NIC_HOLDER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+    #[cfg(feature = "usb-cdc")]
+    const NIC_CDC: u8 = 1;
+    #[cfg(feature = "usb-smsc95xx")]
+    const NIC_SMSC: u8 = 2;
     /// The USB serial function, leaked for the same reason: the `Uart` table
     /// holds it as a `&'static dyn SerialLine`.
     #[cfg(feature = "usb-cdc")]
@@ -279,7 +298,7 @@ mod host {
     #[cfg(feature = "usb-uvc")]
     static CAMERA_SEEN: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(u8::MAX);
     /// The `usb` task, for [`usb_kick`].
-    #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+    #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
     static USB_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
     /// Held by the `usb` task for the length of a service call, which sleeps in
@@ -368,14 +387,14 @@ mod host {
         }
         // The class drivers' buffers go under what the controller reaches,
         // which may be less than the bus allows (an xHCI without AC64, a DWC2).
-        #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+        #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         let reach = hc.dma_mask();
         // SAFETY: the controller started: every field is written.
         let usb = unsafe { slot.assume_init() };
         *STATE.lock() = Some(State {
             usb,
             events,
-            #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+            #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
             dma: (domain, reach),
         });
         Ok(())
@@ -414,10 +433,9 @@ mod host {
         DTB.store(dtb_ptr, core::sync::atomic::Ordering::Relaxed);
     }
 
-    /// What `f` makes of the `dr_mode` property of the device-tree node at
-    /// `node` (`None` when the node has none); `None` for a tree that cannot
-    /// be read.
-    fn dt_dr_mode<T>(node: u32, f: impl FnOnce(Option<&[u8]>) -> T) -> Option<T> {
+    /// What `f` makes of the device tree the firmware handed the kernel;
+    /// `None` for a tree that cannot be read.
+    fn dt_blob<T>(f: impl FnOnce(&azos_soc::Fdt<'_>) -> T) -> Option<T> {
         let ptr = DTB.load(core::sync::atomic::Ordering::Relaxed);
         if ptr == 0 {
             return None;
@@ -432,8 +450,14 @@ mod host {
         }
         // SAFETY: `total` bytes from the header's own size field.
         let blob = unsafe { core::slice::from_raw_parts(base, total) };
-        let fdt = azos_soc::Fdt::parse(blob)?;
-        Some(f(fdt.prop(azos_soc::NodeId(node), "dr_mode")))
+        Some(f(&azos_soc::Fdt::parse(blob)?))
+    }
+
+    /// What `f` makes of the `dr_mode` property of the device-tree node at
+    /// `node` (`None` when the node has none); `None` for a tree that cannot
+    /// be read.
+    fn dt_dr_mode<T>(node: u32, f: impl FnOnce(Option<&[u8]>) -> T) -> Option<T> {
+        dt_blob(|fdt| f(fdt.prop(azos_soc::NodeId(node), "dr_mode")))
     }
 
     /// Map a device-tree controller's window: `false` when it has none or the
@@ -506,7 +530,7 @@ mod host {
     /// Start the `usb` task, once the scheduler exists. A no-op without a
     /// controller.
     pub(crate) fn start_usb_task() {
-        #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+        #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         let Some((domain, mask)) = STATE.lock().as_ref().map(|s| s.dma) else { return };
         #[cfg(feature = "usb-storage")]
         {
@@ -533,6 +557,12 @@ mod host {
             #[cfg(feature = "usb-cdc-console")]
             azos_drv_sys::uart::set_console_tee(super::console::tee);
         }
+        #[cfg(feature = "usb-smsc95xx")]
+        {
+            let f = Smsc95xx::new(KMem { domain }, KClock, mask, &RINGS[..], smsc_mac());
+            let nic: &'static SmscNic = alloc::boxed::Box::leak(alloc::boxed::Box::new(UsbNic::new(f, usb_kick)));
+            *SMSC.lock_irqsave() = Some(nic);
+        }
         #[cfg(feature = "usb-uvc")]
         {
             // The stream the CSI path would have made: its capture size and
@@ -547,7 +577,7 @@ mod host {
             let cam = Uvc::new(KMem { domain }, KClock, mask, &RINGS[..], &CAM_RING, want, camera_stamp);
             *CAMERA.lock() = Some(cam);
         }
-        #[cfg(not(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc")))]
+        #[cfg(not(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc")))]
         if STATE.lock().is_none() {
             return;
         }
@@ -556,7 +586,7 @@ mod host {
 
     /// Wake the `usb` task: a class driver queued a transfer, which the core
     /// moves to the controller on its next turn.
-    #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+    #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
     fn usb_kick() {
         let tid = USB_TID.load(core::sync::atomic::Ordering::Acquire);
         if tid != 0 {
@@ -565,7 +595,7 @@ mod host {
     }
 
     fn usb_task(_arg: usize) {
-        #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+        #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         USB_TID.store(azos_sync::waitqueue::caller_tid(), core::sync::atomic::Ordering::Release);
         loop {
             service_once();
@@ -576,7 +606,7 @@ mod host {
     /// Until the next turn of the core is due: `USB_POLL_MS`, or sooner when
     /// a class driver kicks the task.
     fn nap() {
-        #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+        #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         {
             let ticks = azos_syscall::sleep::ms_to_ticks(nap_ms());
             if crate::boot::blk_block_until(azos_drv_sys::timebase::now().saturating_add(ticks)) {
@@ -635,26 +665,31 @@ mod host {
     /// What one turn of the core did to the network and serial functions, for
     /// the code that runs once the host's lock is released (the stack and the
     /// `Uart` table take locks of their own).
-    #[cfg(feature = "usb-cdc")]
+    #[derive(Default)]
     struct Turn {
-        nic: NicEvent,
-        serial: SerialEvent,
+        #[cfg(feature = "usb-cdc")]
+        nic: Option<NicEvent>,
+        #[cfg(feature = "usb-cdc")]
+        serial: Option<SerialEvent>,
+        #[cfg(feature = "usb-smsc95xx")]
+        smsc: Option<NicEvent>,
     }
-    #[cfg(not(feature = "usb-cdc"))]
-    type Turn = ();
-    #[cfg(feature = "usb-cdc")]
-    const NO_TURN: Turn = Turn { nic: NicEvent::None, serial: SerialEvent::None };
-    #[cfg(not(feature = "usb-cdc"))]
-    const NO_TURN: Turn = ();
 
     fn service_once() {
         let turn = service_core();
         #[cfg(feature = "usb-cdc")]
         {
-            nic_turn(turn.nic);
-            serial_turn(turn.serial);
+            if let (Some(nic), Some(t)) = (*NIC.lock_irqsave(), turn.nic) {
+                nic_turn(nic, t, NIC_CDC);
+            }
+            if let Some(t) = turn.serial {
+                serial_turn(t);
+            }
         }
-        #[cfg(not(feature = "usb-cdc"))]
+        #[cfg(feature = "usb-smsc95xx")]
+        if let (Some(nic), Some(t)) = (*SMSC.lock_irqsave(), turn.smsc) {
+            nic_turn(nic, t, NIC_SMSC);
+        }
         let _ = turn;
     }
 
@@ -708,21 +743,27 @@ mod host {
         }
     }
 
-    /// The network function after a turn of the core: tell the device table and
+    /// A network function after a turn of the core: tell the device table and
     /// the stack when it came up or went away, and the poller when frames wait.
-    #[cfg(feature = "usb-cdc")]
-    fn nic_turn(turn: NicEvent) {
+    /// `who` is the function's [`NIC_HOLDER`] value.
+    #[cfg(feature = "usb-net")]
+    fn nic_turn<F: NetFunction + Send>(nic: &'static UsbNic<F>, turn: NicEvent, who: u8) {
         use azos_drv_api::net::NetDevice;
-        let Some(nic) = *NIC.lock_irqsave() else { return };
+        use core::sync::atomic::Ordering;
         match turn {
             NicEvent::Up => {
                 let mac = nic.mac();
+                if NIC_HOLDER.compare_exchange(0, who, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                    azos_drv_sys::kwarn!("[USB-NET] a network function is up, but another holds the USB NIC");
+                    return;
+                }
                 let Some(n) = azos_drv_net::net_device::register_usb(nic) else {
-                    azos_drv_sys::kwarn!("[USB-CDC] a network function is up, but the NIC table has no number for it");
+                    NIC_HOLDER.store(0, Ordering::Release);
+                    azos_drv_sys::kwarn!("[USB-NET] a network function is up, but the NIC table has no number for it");
                     return;
                 };
                 kprintln!(
-                    "[USB-CDC] network function up: NIC {}, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    "[USB-NET] network function up: NIC {}, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     n, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
                 if azos_net::net_nic_added(n) == Some(azos_net::PRIMARY_IF)
                     && azos_config::CFG_NET_DHCP.load(core::sync::atomic::Ordering::Relaxed) != 0
@@ -731,8 +772,10 @@ mod host {
                 }
             }
             NicEvent::Down => {
-                azos_drv_net::net_device::unregister_usb();
-                kprintln!("[USB-CDC] network function removed");
+                if NIC_HOLDER.compare_exchange(who, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                    azos_drv_net::net_device::unregister_usb();
+                    kprintln!("[USB-NET] network function removed");
+                }
             }
             NicEvent::None => {}
         }
@@ -741,15 +784,43 @@ mod host {
         }
     }
 
+    /// The MAC address of the LAN95xx function: the device tree's
+    /// `local-mac-address` (or `mac-address`) of its `usb424,ec00` node, which
+    /// the Raspberry Pi firmware fills in from the board's OTP; else a locally
+    /// administered one from the entropy pool (the chips on the Pis have no
+    /// EEPROM), else a fixed locally administered one, said so.
+    #[cfg(feature = "usb-smsc95xx")]
+    fn smsc_mac() -> [u8; 6] {
+        let from_tree = dt_blob(|fdt| {
+            let n = ["usb424,ec00", "usb424,ec01", "usb424,9500", "usb424,9e00"].iter().find_map(|c| fdt.find_compatible(c))?;
+            let v = fdt.prop(n, "local-mac-address").or_else(|| fdt.prop(n, "mac-address"))?;
+            let m: [u8; 6] = v.get(..6)?.try_into().ok()?;
+            // Not all-zero (a tree the firmware did not fill in), not multicast.
+            (m != [0; 6] && m[0] & 1 == 0).then_some(m)
+        })
+        .flatten();
+        if let Some(m) = from_tree {
+            return m;
+        }
+        let mut m = [0u8; 6];
+        if azos_crypto::entropy::fill(&mut m) {
+            // Locally administered, unicast.
+            m[0] = (m[0] & !1) | 2;
+            return m;
+        }
+        azos_drv_sys::kwarn!("[USB-NET] no MAC address for the LAN95xx and no entropy: a fixed local one");
+        [0x02, 0x41, 0x7a, 0x4f, 0x53, 0x95]
+    }
+
     /// The DHCP exchange of a primary interface that came with the adapter: the
     /// one the boot made before any NIC existed could not be answered. A task of
     /// its own, because the exchange waits for the network and the `usb` task
     /// must keep moving the frames it waits for.
-    #[cfg(feature = "usb-cdc")]
+    #[cfg(feature = "usb-net")]
     fn dhcp_task(_arg: usize) {
-        kprintln!("[USB-CDC] running DHCP on the new interface");
+        kprintln!("[USB-NET] running DHCP on the new interface");
         if !azos_net::dhcp::dhcp_start(azos_sched::task_yield) {
-            azos_drv_sys::kwarn!("[USB-CDC] DHCP failed: the interface keeps its static configuration");
+            azos_drv_sys::kwarn!("[USB-NET] DHCP failed: the interface keeps its static configuration");
         }
     }
 
@@ -833,7 +904,7 @@ mod host {
 
     fn service_core() -> Turn {
         let mut g = STATE.lock();
-        let Some(st) = g.as_mut() else { return NO_TURN };
+        let Some(st) = g.as_mut() else { return Turn::default() };
         let mut lister = UsbClassDirect(SharedLister);
         #[cfg(feature = "usb-hid")]
         let mut hid = crate::boot::usb_hid::HID.lock();
@@ -857,6 +928,10 @@ mod host {
         let mut serial_comm = serial.map(|p| UsbClassDirect(p.class()));
         #[cfg(feature = "usb-cdc")]
         let mut serial_data = serial.map(|p| UsbClassDirect(p.class()));
+        #[cfg(feature = "usb-smsc95xx")]
+        let smsc = *SMSC.lock_irqsave();
+        #[cfg(feature = "usb-smsc95xx")]
+        let mut smsc_class = smsc.map(|n| UsbClassDirect(n.class()));
         #[cfg(feature = "usb-uvc")]
         let mut camera = UsbClassDirect(SharedCamera);
         let mut reg = Registry::new();
@@ -869,7 +944,8 @@ mod host {
         }
         #[cfg(feature = "usb-cdc")]
         {
-            let [comm, data] = Nic::rules();
+            let rules = <CdcNet<'static, KMem, KClock> as NetFunction>::RULES;
+            let (comm, data) = (rules[0], rules[1]);
             if let Some(c) = nic_comm.as_mut() {
                 let _ = reg.register(3, comm, c);
             }
@@ -886,6 +962,12 @@ mod host {
         }
         #[cfg(feature = "usb-uvc")]
         let _ = reg.register(7, Camera::rule(), &mut camera);
+        // The LAN95xx function: vendor-class interfaces, its product ids
+        // checked at attach.
+        #[cfg(feature = "usb-smsc95xx")]
+        if let Some(c) = smsc_class.as_mut() {
+            let _ = reg.register(8, Smsc95xx::<'static, KMem, KClock>::rule(), c);
+        }
         st.usb.service(&mut reg);
         drop(reg);
         // The class drivers' second half: what needs the core, after its turn.
@@ -897,13 +979,14 @@ mod host {
         if disk.is_some_and(|d| d.drive(&mut st.usb) == Event::Ready) {
             azos_sched::task_create("usb-msc", sector0_task, 0, azos_sched::DEFAULT_PRIORITY);
         }
-        #[cfg(feature = "usb-cdc")]
         let turn = Turn {
-            nic: nic.map_or(NicEvent::None, |n| n.drive(&mut st.usb)),
-            serial: serial.map_or(SerialEvent::None, |p| p.drive(&mut st.usb)),
+            #[cfg(feature = "usb-cdc")]
+            nic: nic.map(|n| n.drive(&mut st.usb)),
+            #[cfg(feature = "usb-cdc")]
+            serial: serial.map(|p| p.drive(&mut st.usb)),
+            #[cfg(feature = "usb-smsc95xx")]
+            smsc: smsc.map(|n| n.drive(&mut st.usb)),
         };
-        #[cfg(not(feature = "usb-cdc"))]
-        let turn = ();
         while let Some(ev) = st.events.pop() {
             match ev.kind {
                 EventKind::Attached => kprintln!(

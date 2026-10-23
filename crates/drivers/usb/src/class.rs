@@ -34,6 +34,8 @@ use crate::MAX_CLASS_DRIVERS;
 
 pub mod cdc;
 pub mod msc;
+pub mod net;
+pub mod smsc95xx;
 pub mod uvc;
 
 /// The interface id of [`UsbClass`] (ASCII "USBC").

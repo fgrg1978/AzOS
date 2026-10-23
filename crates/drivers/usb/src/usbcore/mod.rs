@@ -28,7 +28,10 @@
 //! those that address its interface or its interface's endpoints, plus the
 //! reads every driver may make ([`Usb::control_allowed`]). Class and vendor
 //! requests to the device or to a hub port, SET_CONFIGURATION, SET_ADDRESS and
-//! the rest of the device-wide standard requests are the core's.
+//! the rest of the device-wide standard requests are the core's; the one
+//! exception is a vendor request to a device (not a hub) whose only interface
+//! the claim holds, which is how a vendor function (a USB Ethernet chip's
+//! registers) is reached, and concerns nothing but that function.
 //!
 //! # A controller reset
 //!
@@ -654,10 +657,20 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             };
         }
         // Class and vendor requests: the interface and its endpoints only. A
-        // request to the device or to a hub port is the core's.
+        // request to the device or to a hub port is the core's, except a
+        // vendor one to a device whose only interface the claim holds: the
+        // function is the whole device then, and vendor functions (a USB
+        // Ethernet chip's register file) are reached that way.
         match recip {
             RT_RECIP_INTERFACE => !claim.is_device_scope() && (setup.index & 0xff) as u8 == claim.iface(),
             RT_RECIP_ENDPOINT => Self::claim_has_endpoint(d, claim, (setup.index & 0xff) as u8).is_some(),
+            0 => {
+                setup.kind() == desc::RT_TYPE_VENDOR
+                    && !claim.is_device_scope()
+                    && d.config.interfaces().len() == 1
+                    && d.config.interfaces()[0].number == claim.iface()
+                    && !d.is_hub()
+            }
             _ => false,
         }
     }

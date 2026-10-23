@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel's adapter (`crates/drivers/net/src/usb_cdc.rs`): a network
+//! The kernel's adapter (`crates/drivers/net/src/usb_net.rs`): a network
 //! function as the `NetDevice` the stack addresses, driven the way the `usb`
 //! task drives it.
 
@@ -16,7 +16,8 @@ use azos_usb_tests::mock::{MockClock, MockMem};
 
 use crate::fixtures::*;
 use crate::net::{datagrams, eth, ncm_block};
-use crate::usb_cdc::{Event, UsbNic};
+use crate::usb_net::{Event, UsbNic};
+use azos_usb::class::net::NetFunction;
 
 thread_local! {
     static KICKS: Cell<u32> = const { Cell::new(0) };
@@ -32,8 +33,8 @@ fn kicks() -> u32 {
 
 /// The mock's memory and clock are `Rc`s; the adapter wants `Send` (the
 /// kernel's are). Everything here runs on the test's own thread.
-struct SendMem(MockMem);
-struct SendClock(MockClock);
+pub(crate) struct SendMem(pub(crate) MockMem);
+pub(crate) struct SendClock(pub(crate) MockClock);
 
 // SAFETY: the test never moves a bench to another thread.
 unsafe impl Send for SendMem {}
@@ -67,7 +68,8 @@ impl Clock for SendClock {
     }
 }
 
-type Nic = UsbNic<'static, SendMem, SendClock>;
+type Cdc = azos_usb::class::cdc::CdcNet<'static, SendMem, SendClock>;
+type Nic = UsbNic<Cdc>;
 
 fn nic_over(rig: &Rig) -> Nic {
     UsbNic::new(
@@ -89,12 +91,12 @@ impl Bench {
         let nic = nic_over(&rig);
         rig.hw.attach_root(1, dev.clone());
         let mut b = Bench { rig, nic, dev, events: vec![] };
-        b.until(|b| b.events.contains(&Event::Up) || matches!(b.nic.state(), State::Failed(_)), 3000);
+        b.until(|b| b.events.contains(&Event::Up) || b.nic.inspect(|f| matches!(f.state(), State::Failed(_))), 3000);
         b
     }
 
     fn turn(&mut self) {
-        let [r0, r1] = Nic::rules();
+        let [r0, r1] = [Cdc::RULES[0], Cdc::RULES[1]];
         let (mut a, mut b) = (UsbClassDirect(self.nic.class()), UsbClassDirect(self.nic.class()));
         let mut reg = Registry::new();
         reg.register(0, r0, &mut a).unwrap();

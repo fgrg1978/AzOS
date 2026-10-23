@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! A USB network function (CDC-ECM or CDC-NCM) as a NIC of the network
-//! device table (cargo feature `usb-cdc`).
+//! A USB network function as a NIC of the network device table (cargo feature
+//! `usb-net`): a CDC-ECM or CDC-NCM function (`azos_usb::class::cdc`, Kconfig
+//! `USB_CDC`) or an SMSC LAN95xx one (`azos_usb::class::smsc95xx`, Kconfig
+//! `USB_SMSC95XX`), each an `azos_usb::class::net::NetFunction`.
 //!
-//! The protocol is `azos_usb::class::cdc` (descriptors, setup, NTB-16, the
+//! The protocol is the class driver's (descriptors or registers, setup, the
 //! bulk pipes; pure and host-tested against an xHCI mock); this file is what
 //! the kernel adds, as `block/src/usb_msc.rs` does for a stick: one lock
 //! around the protocol, the [`NetDevice`] it implements, and the class-driver
@@ -35,14 +37,16 @@
 //! `usb` task wakes it when [`UsbNic::rx_pending`] says frames wait
 //! (`kernel/src/boot/usb.rs`).
 //!
-//! The class driver is registered with the core twice, once per interface of
-//! the function ([`UsbNic::rules`]), through two [`NicClass`] handles.
+//! The class driver is registered with the core once per rule of the function
+//! ([`NetFunction::RULES`]: a CDC function's two interfaces, a vendor
+//! function's one), through as many [`NicClass`] handles.
 
 use azos_devif::Out;
 use azos_drv_api::net::{NetDevice, NetError};
 use azos_sync::kmutex::Mutex;
-use azos_usb::class::cdc::{CdcNet, SendError, State};
-use azos_usb::class::{Match, UsbClass};
+use azos_usb::class::cdc::SendError;
+use azos_usb::class::net::NetFunction;
+use azos_usb::class::UsbClass;
 use azos_usb::hw::{Clock, Memory, Regs};
 use azos_usb::usbcore::Usb;
 
@@ -57,45 +61,39 @@ pub enum Event {
 }
 
 /// One USB network function.
-pub struct UsbNic<'q, M: Memory, C: Clock> {
-    cdc: Mutex<CdcNet<'q, M, C>>,
+pub struct UsbNic<F: NetFunction> {
+    func: Mutex<F>,
     /// Wake the `usb` task: a transfer was queued.
     kick: fn(),
     /// The NIC was reported up and not yet down. Touched by the `usb` task only.
     up: core::sync::atomic::AtomicBool,
 }
 
-impl<'q, M: Memory + Send, C: Clock + Send> UsbNic<'q, M, C> {
-    pub fn new(cdc: CdcNet<'q, M, C>, kick: fn()) -> Self {
-        UsbNic { cdc: Mutex::new(cdc), kick, up: core::sync::atomic::AtomicBool::new(false) }
+impl<F: NetFunction + Send> UsbNic<F> {
+    pub fn new(func: F, kick: fn()) -> Self {
+        UsbNic { func: Mutex::new(func), kick, up: core::sync::atomic::AtomicBool::new(false) }
     }
 
-    /// The rules to register the class driver under, one registry entry each
-    /// (the communications interface, then the data interface).
-    pub const fn rules() -> [Match; 2] {
-        [CdcNet::<'q, M, C>::comm_rule(), CdcNet::<'q, M, C>::data_rule()]
-    }
-
-    /// A class driver to register with the USB core (call twice, one per
-    /// rule): it takes this NIC's lock for each call, which the registry holds
-    /// for a whole service call otherwise.
-    pub fn class(&self) -> NicClass<'_, 'q, M, C> {
+    /// A class driver to register with the USB core (once per rule): it
+    /// takes this NIC's lock for each call, which the registry holds for a
+    /// whole service call otherwise.
+    pub fn class(&self) -> NicClass<'_, F> {
         NicClass(self)
     }
 
     /// Turn the crank from the `usb` task, after the core's turn: open the
     /// pipes of the claims the core handed over, advance the setup, reap what
     /// completed, and say whether the NIC came up or went away.
-    pub fn drive<R: Regs, M2: Memory, C2: Clock>(&self, usb: &mut Usb<'_, R, M2, C2>) -> Event {
+    pub fn drive<R: Regs, M: Memory, C: Clock>(&self, usb: &mut Usb<'_, R, M, C>) -> Event {
         use core::sync::atomic::Ordering;
         let ready = {
-            let mut c = self.cdc.lock();
-            while let Some(claim) = c.session_wanted() {
+            let mut f = self.func.lock();
+            while let Some(claim) = f.session_wanted() {
                 let mut session = usb.session(claim);
-                c.open(&mut session);
+                f.open(&mut session);
             }
-            c.service();
-            c.is_ready()
+            f.service();
+            f.is_ready()
         };
         match (ready, self.up.swap(ready, Ordering::AcqRel)) {
             (true, false) => Event::Up,
@@ -104,21 +102,23 @@ impl<'q, M: Memory + Send, C: Clock + Send> UsbNic<'q, M, C> {
         }
     }
 
-    pub fn state(&self) -> State {
-        self.cdc.lock().state()
+    /// Look at the protocol under the lock (its state and counters, for the
+    /// boot's lines and the tests).
+    pub fn inspect<T>(&self, f: impl FnOnce(&F) -> T) -> T {
+        f(&self.func.lock())
     }
 
-    /// Do received frames wait for the stack ([`CdcNet::rx_pending`])? The
-    /// `usb` task wakes the network poller on it after each turn.
+    /// Do received frames wait for the stack? The `usb` task wakes the
+    /// network poller on it after each turn.
     pub fn rx_pending(&self) -> bool {
-        self.cdc.lock().rx_pending()
+        self.func.lock().rx_pending()
     }
 
     /// Run `f` on the protocol under the lock; wake the `usb` task if it
     /// queued a transfer.
-    fn with<T>(&self, f: impl FnOnce(&mut CdcNet<'q, M, C>) -> T) -> T {
+    fn with<T>(&self, f: impl FnOnce(&mut F) -> T) -> T {
         let (r, submitted) = {
-            let mut c = self.cdc.lock();
+            let mut c = self.func.lock();
             let r = f(&mut c);
             (r, c.take_submitted())
         };
@@ -129,7 +129,7 @@ impl<'q, M: Memory + Send, C: Clock + Send> UsbNic<'q, M, C> {
     }
 }
 
-impl<'q, M: Memory + Send, C: Clock + Send> NetDevice for UsbNic<'q, M, C> {
+impl<F: NetFunction + Send> NetDevice for UsbNic<F> {
     fn send(&self, frame: &[u8]) -> Result<usize, NetError> {
         self.with(|c| c.send(frame)).map(|()| frame.len()).map_err(|e| match e {
             SendError::NotReady => NetError::NotReady,
@@ -143,15 +143,15 @@ impl<'q, M: Memory + Send, C: Clock + Send> NetDevice for UsbNic<'q, M, C> {
     }
 
     fn mac(&self) -> [u8; 6] {
-        self.cdc.lock().mac()
+        self.func.lock().mac()
     }
 
     fn is_ready(&self) -> bool {
-        self.cdc.lock().is_ready()
+        self.func.lock().is_ready()
     }
 
     fn tx_batch_begin(&self) {
-        self.cdc.lock().tx_begin();
+        self.func.lock().tx_begin();
     }
 
     fn tx_batch_end(&self) {
@@ -161,14 +161,14 @@ impl<'q, M: Memory + Send, C: Clock + Send> NetDevice for UsbNic<'q, M, C> {
 
 /// The class driver the USB core is given: it forwards to the NIC's protocol
 /// under its lock.
-pub struct NicClass<'a, 'q, M: Memory, C: Clock>(&'a UsbNic<'q, M, C>);
+pub struct NicClass<'a, F: NetFunction>(&'a UsbNic<F>);
 
-impl<M: Memory + Send, C: Clock + Send> UsbClass for NicClass<'_, '_, M, C> {
+impl<F: NetFunction + Send> UsbClass for NicClass<'_, F> {
     fn attach(&mut self, claim: u32, vid_pid: u32, triple: u32, speed_port: u32) -> Out<u32> {
-        self.0.cdc.lock().attach(claim, vid_pid, triple, speed_port)
+        self.0.func.lock().attach(claim, vid_pid, triple, speed_port)
     }
 
     fn detach(&mut self, claim: u32) -> Out<u32> {
-        self.0.cdc.lock().detach(claim)
+        self.0.func.lock().detach(claim)
     }
 }

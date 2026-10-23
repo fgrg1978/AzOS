@@ -445,10 +445,16 @@ usb-hid = ["usb-hc", "dep:azos_usb_hid"]
 # Kconfig USB_STORAGE: the mass-storage class driver, as a disk behind its own
 # request queue (crates/drivers/block/src/usb_msc.rs).
 usb-storage = ["usb-hc", "azos_drv_block/usb-msc"]
+# A USB network function as a NIC (derived: USB_CDC or USB_SMSC95XX turns
+# it on; azos_drv_net's adapter, crates/drivers/net/src/usb_net.rs).
+usb-net = ["usb-hc", "azos_drv_net/usb-net"]
 # Kconfig USB_CDC: the CDC class driver: ECM/NCM as a NIC of the network device
-# table (crates/drivers/net/src/usb_cdc.rs), ACM as a `Uart` port
+# table (crates/drivers/net/src/usb_net.rs), ACM as a `Uart` port
 # (kernel/src/boot/usb/serial.rs).
-usb-cdc = ["usb-hc", "azos_drv_net/usb-cdc"]
+usb-cdc = ["usb-net"]
+# Kconfig USB_SMSC95XX: the SMSC LAN95xx USB Ethernet function as a NIC
+# (crates/drivers/usb/src/class/smsc95xx.rs; the Raspberry Pi 3 B's Ethernet).
+usb-smsc95xx = ["usb-net"]
 # Kconfig USB_CDC_CONSOLE: the console over the CDC-ACM function
 # (kernel/src/boot/usb/console.rs); taps the console through the drv_sys hook.
 usb-cdc-console = ["usb-cdc", "azos_drv_sys/console-mirror"]

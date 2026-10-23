@@ -105,6 +105,14 @@ canary-dwc2-no-bounce = []
 # split transaction.
 canary-dwc2-split = []
 
+# The SMSC LAN95xx Ethernet function (tests/host/usb-cdc-tests, `smsc`).
+#
+# A transfer that ends on a packet boundary is sent as it is: the device waits
+# for a short packet that never comes.
+canary-smsc-zlp = []
+# A receive status word is not checked against the end of its transfer.
+canary-smsc-rx-bounds = []
+
 # The USB video class driver (tests/host/usb-uvc-tests).
 #
 # A payload the camera flags with the error bit is appended to its frame anyway.

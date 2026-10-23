@@ -10445,6 +10445,13 @@ host_job host_canary_row "usb-cdc: union canary" usb-cdc-tests canary-mismatch \
     a_function_that_is_not_what_it_says_is_failed_not_driven
 host_job host_canary_row "usb-cdc: NTB input size canary" usb-cdc-tests canary-ntb-input-size \
     an_ncm_function_reads_the_block_parameters_and_limits_the_devices_blocks
+# The SMSC LAN95xx function (class/smsc95xx.rs, `smsc` in the same suite): a
+# transfer on a packet boundary sent unpadded, a status word not bounded by its
+# transfer.
+host_job host_canary_row "usb-net: LAN95xx pad canary" usb-cdc-tests canary-smsc-zlp \
+    a_transfer_ending_on_a_packet_boundary_gets_a_byte_of_padding
+host_job host_canary_row "usb-net: LAN95xx rx bounds canary" usb-cdc-tests canary-smsc-rx-bounds \
+    the_parser_never_reads_past_the_transfer
 # USB video class (azos_usb::class::uvc) and the isochronous pipes under it:
 # each canary puts one bug back (an isochronous endpoint halting on a bus error,
 # the packets of a burst not counted, a payload's error flag ignored, the frame

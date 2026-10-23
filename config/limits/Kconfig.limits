@@ -1746,12 +1746,12 @@ config USB_CDC_BUFS
     range 2 8
     default 4
     help
-      crates/drivers/usb/src/class/cdc.rs: the buffers a CDC-ECM, CDC-NCM or
-      CDC-ACM function keeps queued on each of its two bulk pipes: that many
-      receive buffers posted to the device and that many transmit buffers in
-      flight, from one pool of 2 x this x the buffer size allocated when the
-      function is opened. Never more than USB_PIPE_DEPTH (the build asserts
-      it). Only with USB_HOST.
+      crates/drivers/usb/src/class/cdc.rs and smsc95xx.rs: the buffers a
+      CDC-ECM, CDC-NCM, CDC-ACM or SMSC LAN95xx function keeps queued on each
+      of its two bulk pipes: that many receive buffers posted to the device
+      and that many transmit buffers in flight, from one pool of this x the
+      two buffer sizes allocated when the function is opened. Never more than
+      USB_PIPE_DEPTH (the build asserts it). Only with USB_HOST.
 
 config USB_CDC_NTB_KB
     int "USB CDC-NCM: network transfer block size (KiB, a multiple of 4)"

@@ -20,9 +20,9 @@ e1000e = ["azos_drv_virtio/pci", "dep:azos_pci", "dep:azos_mm"]
 # and wire helpers are e1000e.rs's wire half, which therefore compiles for it
 # too (without e1000e's device half).
 igc = ["azos_drv_virtio/pci", "dep:azos_pci", "dep:azos_mm"]
-# Kconfig USB_CDC: the USB CDC-ECM/NCM function as a NIC (usb_cdc.rs) over the
-# USB host's communications class driver.
-usb-cdc = ["dep:azos_usb", "dep:azos_devif"]
+# Kconfig USB_CDC / USB_SMSC95XX: a USB network function (CDC-ECM/NCM, SMSC
+# LAN95xx) as a NIC (usb_net.rs) over the USB host's class driver.
+usb-net = ["dep:azos_usb", "dep:azos_devif"]
 
 [dependencies]
 azos_sync       = { workspace = true }

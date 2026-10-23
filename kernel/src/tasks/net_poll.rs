@@ -212,7 +212,7 @@ fn net_timer_kick() {
 /// until a TCP deadline or its self-heal ceiling when the machine booted with
 /// interrupt-driven NICs or with none. Same wake as [`net_msi_wake`], stamped if
 /// the task is not asleep yet.
-#[cfg(feature = "usb-cdc")]
+#[cfg(feature = "usb-net")]
 pub(crate) fn net_rx_kick() {
     let tid = NET_POLL_TID.load(Ordering::Acquire);
     if tid != 0 {

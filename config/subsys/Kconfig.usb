@@ -229,6 +229,33 @@ config USB_CDC
       n: the class driver is not registered; an adapter or a serial device is
       only listed.
 
+config USB_SMSC95XX
+    # cargo-feature: usb-smsc95xx
+    bool "USB Ethernet: SMSC LAN95xx (the Raspberry Pi 3 B's on-board Ethernet) as a NIC"
+    default y if USB_DWC2
+    default n
+    depends on USB_XHCI || USB_DWC2
+    help
+      Kernel feature `usb-smsc95xx` (crates/drivers/usb/src/class/smsc95xx.rs,
+      the adapter crates/drivers/net/src/usb_net.rs it shares with USB_CDC,
+      kernel/src/boot/usb.rs). The vendor class driver of the SMSC (Microchip)
+      LAN9500, LAN9500A, LAN9505, LAN9512, LAN9514, LAN9530 and LAN9730 USB
+      Ethernet functions: the chip's registers through its vendor requests,
+      the lite and PHY resets, the internal PHY autonegotiating 10/100 with
+      pause, bulk-in bursts of several frames, one frame per bulk-out
+      transfer. When the function is ready it becomes a NIC of the network
+      device table (net_device::register_usb, the one USB NIC: the first
+      USB network function up holds it), with DHCP when CONFIG.INI asks for
+      it, as a CDC function would. The MAC address is the device tree's
+      `local-mac-address` of the `usb424,ec00` node (the Pi firmware fills it
+      in), else a locally administered one from the entropy pool. Not
+      driven: link-state tracking (the NIC is up while the function is
+      present), checksum offload, multicast hash filtering, the EEPROM,
+      suspend. QEMU has no LAN95xx model: the driver is exercised by
+      tests/host/usb-cdc-tests (`smsc`) against a fake chip, and on a
+      Raspberry Pi 3 B. USB_CDC_BUFS sizes its buffers too.
+      n: a Pi 3 B has no Ethernet.
+
 config USB_CDC_CONSOLE
     # cargo-feature: usb-cdc-console
     bool "USB serial console: the console on the first CDC-ACM device that comes up"

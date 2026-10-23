@@ -24,9 +24,10 @@ pub mod pci_nic;
 // Kconfig DRV_IGC: the Intel I225/I226 2.5 GbE NIC over PCI.
 #[cfg(feature = "igc")]
 pub mod igc;
-// Kconfig USB_CDC: a USB network function (CDC-ECM/NCM) as a NIC.
-#[cfg(feature = "usb-cdc")]
-pub mod usb_cdc;
+// Kconfig USB_CDC / USB_SMSC95XX: a USB network function (CDC-ECM/NCM, SMSC
+// LAN95xx) as a NIC.
+#[cfg(feature = "usb-net")]
+pub mod usb_net;
 
 // Real Ethernet MAC driver (Cadence MACB/GEM on VF2; stub on QEMU).
 #[allow(dead_code)]

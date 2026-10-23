@@ -706,6 +706,27 @@ fn transaction_error_is_reported_as_such() {
 }
 
 #[test]
+fn a_vendor_request_to_the_device_needs_the_claim_on_its_only_interface() {
+    // `control_allowed` itself: a vendor request to the device is the
+    // function's when the claim holds the device's only interface (a USB
+    // Ethernet chip's registers), the core's otherwise; a class request to
+    // the device stays the core's either way.
+    let vendor_in = Setup { request_type: 0xc0, request: 0xa1, value: 0, index: 0x14, length: 4 };
+    let class_dev = Setup { request_type: 0xa0, request: 0x01, value: 0, index: 0, length: 4 };
+    let (rig, _, slot, _) = with_stick();
+    assert!(!rig.usb.control_allowed(rig.claim(slot, 0), &vendor_in), "the stick has two interfaces");
+    let mut rig = Rig::new();
+    rig.add_driver(Match::interface_class(3), true);
+    let kb = keyboard();
+    rig.hw.attach_root(1, kb.clone());
+    rig.settle();
+    let s = rig.slot_of(&kb);
+    assert!(rig.usb.control_allowed(rig.claim(s, 0), &vendor_in));
+    assert!(!rig.usb.control_allowed(rig.claim(s, 0), &class_dev));
+    assert!(!rig.usb.control_allowed(Claim::new(s, azos_usb::class::WHOLE_DEVICE, rig.usb.device(s).unwrap().generation), &vendor_in));
+}
+
+#[test]
 fn control_requests_are_confined_to_the_claimed_interface() {
     let (mut rig, _, slot, _) = with_stick();
     let claim = rig.claim(slot, 0);

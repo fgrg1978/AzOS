@@ -5,7 +5,7 @@
 //!
 //! The protocol is `azos_usb::class::cdc::CdcAcm` (descriptors, setup, the
 //! bulk pipes, DTR/RTS, SET_LINE_CODING; pure and host-tested against an xHCI
-//! mock); this file is what the kernel adds, as `crates/drivers/net/src/usb_cdc.rs`
+//! mock); this file is what the kernel adds, as `crates/drivers/net/src/usb_net.rs`
 //! does for the network function: one lock around the protocol, the
 //! [`SerialLine`] the `Uart` table hosts it as, and the class-driver handle the
 //! USB core is given.
