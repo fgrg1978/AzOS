@@ -41,7 +41,12 @@ def rows():
         node = sym.nodes[0]
         prompt = next((n.prompt[0] for n in sym.nodes if n.prompt), None)
         desc = prompt if prompt else "(no prompt — internal/derived)"
-        out.append((sym.name, f"| `{sym.name}` | `{node.filename}` | {desc} |"))
+        # config/Kconfig.userspace is generated at every parse (gitignored):
+        # its symbols name the generator, a file the checkout has.
+        where = node.filename
+        if where.endswith("Kconfig.userspace"):
+            where = "tools/gen_userspace_kconfig.py"
+        out.append((sym.name, f"| `{sym.name}` | `{where}` | {desc} |"))
     out.sort(key=lambda r: r[0])
     return [r[1] for r in out]
 

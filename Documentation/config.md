@@ -24,7 +24,7 @@ generated and ignored by git.
 | `config/subsys/` | Subsystems and drivers: storage, file systems, network, RPC, network services, the signed topology, secure boot, entropy and TPM, the keystore, packages, drivers, USB, display and input, console and login, audio, OTA. |
 | `config/domains/` | Application domains, shown only for their `USE`: the robot domain and its brain link. |
 | `config/limits/` | The resource cap table: the integers that bound a static table, with defaults per hardware class. |
-| `config/Kconfig.userspace` | Generated at every parse by `tools/gen_userspace_kconfig.py` from the directories under `userspace/`; never committed. |
+| config/Kconfig.userspace | Generated at every parse by `tools/gen_userspace_kconfig.py` from the directories under `userspace/`; never committed. |
 | `config/fragments/`, `config/defconfigs/` | The defconfig matrix (below). |
 
 The topic files, in menu order:
@@ -463,61 +463,61 @@ The index lists every declared option: 1197.
 | `COMPOSITOR_BANNER_MS` | `config/subsys/Kconfig.display` | Compositor: milliseconds the trusted-path banner holds the focus gate after the Secure Attention Key |
 | `COMPOSITOR_FRAME_MS` | `config/subsys/Kconfig.display` | Compositor: milliseconds between two looks at the clients' damage and the trusted page |
 | `COMPOSITOR_SURFACE_PAGES` | `config/subsys/Kconfig.display` | Compositor: 4 KiB pages of the screen's surface the server's row may hold |
-| `CONSOLE_ARGS` | `config/Kconfig.userspace` | (no prompt — internal/derived) |
+| `CONSOLE_ARGS` | `tools/gen_userspace_kconfig.py` | (no prompt — internal/derived) |
 | `CONSOLE_DEFER_BYTES` | `config/subsys/Kconfig.console` | Console deferred-line buffer (bytes) |
 | `CONSOLE_LOCKDOWN` | `config/axes/Kconfig.security` | Production console lockdown: no kernel console, unprivileged user shell |
 | `CONSOLE_LOGIN` | `config/subsys/Kconfig.console` | Console login: the native shell starts only after a secure-attention login |
-| `CONSOLE_PATH` | `config/Kconfig.userspace` | (no prompt — internal/derived) |
-| `CONSOLE_PROGRAM_ABICHILD` | `config/Kconfig.userspace` | ABICHILD.ELF (userspace/tests/abichild) |
-| `CONSOLE_PROGRAM_ABITEST` | `config/Kconfig.userspace` | ABITEST.ELF (userspace/tests/abitest) |
-| `CONSOLE_PROGRAM_AUDIOD` | `config/Kconfig.userspace` | AUDIOD.ELF (userspace/services/audiod) |
-| `CONSOLE_PROGRAM_BEHAVIOR` | `config/Kconfig.userspace` | BEHAVIOR.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_BRAINCLI` | `config/Kconfig.userspace` | BRAINCLI.ELF (userspace/services/brain_client) |
-| `CONSOLE_PROGRAM_BUSYBOX_SH` | `config/Kconfig.userspace` | BusyBox sh (BUSYBOX.ELF, Linux personality, GPL-2.0-only) |
-| `CONSOLE_PROGRAM_BUZZDRV` | `config/Kconfig.userspace` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
-| `CONSOLE_PROGRAM_CAPTEST` | `config/Kconfig.userspace` | CAPTEST.ELF (userspace/tests/captest) |
-| `CONSOLE_PROGRAM_COMPMGR` | `config/Kconfig.userspace` | COMPMGR.ELF (userspace/services/compmgr) |
-| `CONSOLE_PROGRAM_COMPSRV` | `config/Kconfig.userspace` | COMPSRV.ELF (userspace/services/compositor) |
-| `CONSOLE_PROGRAM_CONFIG` | `config/Kconfig.userspace` | CONFIG.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_CUSTOM` | `config/Kconfig.userspace` | Custom image and arguments |
-| `CONSOLE_PROGRAM_CUSTOM_ARGS` | `config/Kconfig.userspace` | Custom console program: argv (space-separated, argv[0] first) |
-| `CONSOLE_PROGRAM_CUSTOM_PATH` | `config/Kconfig.userspace` | Custom console program: image path (/fat/NAME.ELF) |
-| `CONSOLE_PROGRAM_DECISD` | `config/Kconfig.userspace` | DECISD.ELF (userspace/services/decisd) |
-| `CONSOLE_PROGRAM_EPSRV` | `config/Kconfig.userspace` | EPSRV.ELF (userspace/tests/epsrv) |
-| `CONSOLE_PROGRAM_FLIGHT` | `config/Kconfig.userspace` | FLIGHT.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_GPIODRV` | `config/Kconfig.userspace` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
-| `CONSOLE_PROGRAM_HELLO` | `config/Kconfig.userspace` | HELLO.ELF (userspace/tests/hello) |
-| `CONSOLE_PROGRAM_INADRV` | `config/Kconfig.userspace` | INADRV.ELF (userspace/drivers/ina_drv) |
-| `CONSOLE_PROGRAM_INPUTD` | `config/Kconfig.userspace` | INPUTD.ELF (userspace/services/inputd) |
-| `CONSOLE_PROGRAM_IPCTEST` | `config/Kconfig.userspace` | IPCTEST.ELF (userspace/tests/ipctest) |
-| `CONSOLE_PROGRAM_LATBENCH` | `config/Kconfig.userspace` | LATBENCH.ELF (userspace/bench/latbench) |
-| `CONSOLE_PROGRAM_LOGD` | `config/Kconfig.userspace` | LOGD.ELF (userspace/services/logd) |
-| `CONSOLE_PROGRAM_LOGIND` | `config/Kconfig.userspace` | LOGIND.ELF (userspace/services/logind) |
-| `CONSOLE_PROGRAM_LXHELLO` | `config/Kconfig.userspace` | LXHELLO.ELF (userspace/tests/lxhello) |
-| `CONSOLE_PROGRAM_LXSRV` | `config/Kconfig.userspace` | LXSRV.ELF (userspace/services/lxsrv) |
-| `CONSOLE_PROGRAM_LXTHR` | `config/Kconfig.userspace` | LXTHR.ELF (userspace/tests/lxthreads) |
-| `CONSOLE_PROGRAM_MCPD` | `config/Kconfig.userspace` | MCPD.ELF (userspace/services/mcpd) |
-| `CONSOLE_PROGRAM_MLSRV` | `config/Kconfig.userspace` | MLSRV.ELF (userspace/services/infsrv) |
-| `CONSOLE_PROGRAM_NONE` | `config/Kconfig.userspace` | None (the in-kernel shell has the console) |
-| `CONSOLE_PROGRAM_OTA` | `config/Kconfig.userspace` | OTA.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_PKG` | `config/Kconfig.userspace` | PKG.ELF (userspace/services/pkg) |
-| `CONSOLE_PROGRAM_PKGD` | `config/Kconfig.userspace` | PKGD.ELF (userspace/services/pkgd) |
-| `CONSOLE_PROGRAM_POWER` | `config/Kconfig.userspace` | POWER.ELF (userspace/services/power) |
-| `CONSOLE_PROGRAM_PTPD` | `config/Kconfig.userspace` | PTPD.ELF (userspace/services/ptpd) |
-| `CONSOLE_PROGRAM_REFLEX` | `config/Kconfig.userspace` | REFLEX.ELF (userspace/services/reflex) |
-| `CONSOLE_PROGRAM_RPCQUIC` | `config/Kconfig.userspace` | RPCQUIC.ELF (userspace/services/rpcquic) |
-| `CONSOLE_PROGRAM_RPCSRV` | `config/Kconfig.userspace` | RPCSRV.ELF (userspace/services/rpcsrv) |
-| `CONSOLE_PROGRAM_SH` | `config/Kconfig.userspace` | Native shell (SH.ELF, served by TERMD.ELF, named by NAMESD.ELF) |
-| `CONSOLE_PROGRAM_SSHD` | `config/Kconfig.userspace` | SSHD.ELF (userspace/services/sshd) |
-| `CONSOLE_PROGRAM_SYSTEST` | `config/Kconfig.userspace` | SYSTEST.ELF (userspace/tests/syscall_test) |
-| `CONSOLE_PROGRAM_TOOLBOX` | `config/Kconfig.userspace` | TOOLBOX.ELF (userspace/services/toolbox) |
-| `CONSOLE_PROGRAM_TRACECTL` | `config/Kconfig.userspace` | TRACECTL.ELF (userspace/services/tracectl) |
-| `CONSOLE_PROGRAM_UHELLO` | `config/Kconfig.userspace` | UHELLO.ELF (userspace/tests/uhello) |
-| `CONSOLE_PROGRAM_VMMD` | `config/Kconfig.userspace` | VMMD.ELF (userspace/services/vmmd) |
-| `CONSOLE_PROGRAM_VSBENCH` | `config/Kconfig.userspace` | VSBENCH.ELF (userspace/bench/vsbench) |
-| `CONSOLE_PROGRAM_VSSRV` | `config/Kconfig.userspace` | VSSRV.ELF (userspace/bench/vssrv) |
-| `CONSOLE_PROGRAM_WHY` | `config/Kconfig.userspace` | WHY.ELF (userspace/services/why) |
-| `CONSOLE_PROGRAM_ZENOHD` | `config/Kconfig.userspace` | ZENOHD.ELF (userspace/services/zenohd) |
+| `CONSOLE_PATH` | `tools/gen_userspace_kconfig.py` | (no prompt — internal/derived) |
+| `CONSOLE_PROGRAM_ABICHILD` | `tools/gen_userspace_kconfig.py` | ABICHILD.ELF (userspace/tests/abichild) |
+| `CONSOLE_PROGRAM_ABITEST` | `tools/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
+| `CONSOLE_PROGRAM_AUDIOD` | `tools/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
+| `CONSOLE_PROGRAM_BEHAVIOR` | `tools/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_BRAINCLI` | `tools/gen_userspace_kconfig.py` | BRAINCLI.ELF (userspace/services/brain_client) |
+| `CONSOLE_PROGRAM_BUSYBOX_SH` | `tools/gen_userspace_kconfig.py` | BusyBox sh (BUSYBOX.ELF, Linux personality, GPL-2.0-only) |
+| `CONSOLE_PROGRAM_BUZZDRV` | `tools/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
+| `CONSOLE_PROGRAM_CAPTEST` | `tools/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
+| `CONSOLE_PROGRAM_COMPMGR` | `tools/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |
+| `CONSOLE_PROGRAM_COMPSRV` | `tools/gen_userspace_kconfig.py` | COMPSRV.ELF (userspace/services/compositor) |
+| `CONSOLE_PROGRAM_CONFIG` | `tools/gen_userspace_kconfig.py` | CONFIG.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_CUSTOM` | `tools/gen_userspace_kconfig.py` | Custom image and arguments |
+| `CONSOLE_PROGRAM_CUSTOM_ARGS` | `tools/gen_userspace_kconfig.py` | Custom console program: argv (space-separated, argv[0] first) |
+| `CONSOLE_PROGRAM_CUSTOM_PATH` | `tools/gen_userspace_kconfig.py` | Custom console program: image path (/fat/NAME.ELF) |
+| `CONSOLE_PROGRAM_DECISD` | `tools/gen_userspace_kconfig.py` | DECISD.ELF (userspace/services/decisd) |
+| `CONSOLE_PROGRAM_EPSRV` | `tools/gen_userspace_kconfig.py` | EPSRV.ELF (userspace/tests/epsrv) |
+| `CONSOLE_PROGRAM_FLIGHT` | `tools/gen_userspace_kconfig.py` | FLIGHT.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_GPIODRV` | `tools/gen_userspace_kconfig.py` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
+| `CONSOLE_PROGRAM_HELLO` | `tools/gen_userspace_kconfig.py` | HELLO.ELF (userspace/tests/hello) |
+| `CONSOLE_PROGRAM_INADRV` | `tools/gen_userspace_kconfig.py` | INADRV.ELF (userspace/drivers/ina_drv) |
+| `CONSOLE_PROGRAM_INPUTD` | `tools/gen_userspace_kconfig.py` | INPUTD.ELF (userspace/services/inputd) |
+| `CONSOLE_PROGRAM_IPCTEST` | `tools/gen_userspace_kconfig.py` | IPCTEST.ELF (userspace/tests/ipctest) |
+| `CONSOLE_PROGRAM_LATBENCH` | `tools/gen_userspace_kconfig.py` | LATBENCH.ELF (userspace/bench/latbench) |
+| `CONSOLE_PROGRAM_LOGD` | `tools/gen_userspace_kconfig.py` | LOGD.ELF (userspace/services/logd) |
+| `CONSOLE_PROGRAM_LOGIND` | `tools/gen_userspace_kconfig.py` | LOGIND.ELF (userspace/services/logind) |
+| `CONSOLE_PROGRAM_LXHELLO` | `tools/gen_userspace_kconfig.py` | LXHELLO.ELF (userspace/tests/lxhello) |
+| `CONSOLE_PROGRAM_LXSRV` | `tools/gen_userspace_kconfig.py` | LXSRV.ELF (userspace/services/lxsrv) |
+| `CONSOLE_PROGRAM_LXTHR` | `tools/gen_userspace_kconfig.py` | LXTHR.ELF (userspace/tests/lxthreads) |
+| `CONSOLE_PROGRAM_MCPD` | `tools/gen_userspace_kconfig.py` | MCPD.ELF (userspace/services/mcpd) |
+| `CONSOLE_PROGRAM_MLSRV` | `tools/gen_userspace_kconfig.py` | MLSRV.ELF (userspace/services/infsrv) |
+| `CONSOLE_PROGRAM_NONE` | `tools/gen_userspace_kconfig.py` | None (the in-kernel shell has the console) |
+| `CONSOLE_PROGRAM_OTA` | `tools/gen_userspace_kconfig.py` | OTA.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_PKG` | `tools/gen_userspace_kconfig.py` | PKG.ELF (userspace/services/pkg) |
+| `CONSOLE_PROGRAM_PKGD` | `tools/gen_userspace_kconfig.py` | PKGD.ELF (userspace/services/pkgd) |
+| `CONSOLE_PROGRAM_POWER` | `tools/gen_userspace_kconfig.py` | POWER.ELF (userspace/services/power) |
+| `CONSOLE_PROGRAM_PTPD` | `tools/gen_userspace_kconfig.py` | PTPD.ELF (userspace/services/ptpd) |
+| `CONSOLE_PROGRAM_REFLEX` | `tools/gen_userspace_kconfig.py` | REFLEX.ELF (userspace/services/reflex) |
+| `CONSOLE_PROGRAM_RPCQUIC` | `tools/gen_userspace_kconfig.py` | RPCQUIC.ELF (userspace/services/rpcquic) |
+| `CONSOLE_PROGRAM_RPCSRV` | `tools/gen_userspace_kconfig.py` | RPCSRV.ELF (userspace/services/rpcsrv) |
+| `CONSOLE_PROGRAM_SH` | `tools/gen_userspace_kconfig.py` | Native shell (SH.ELF, served by TERMD.ELF, named by NAMESD.ELF) |
+| `CONSOLE_PROGRAM_SSHD` | `tools/gen_userspace_kconfig.py` | SSHD.ELF (userspace/services/sshd) |
+| `CONSOLE_PROGRAM_SYSTEST` | `tools/gen_userspace_kconfig.py` | SYSTEST.ELF (userspace/tests/syscall_test) |
+| `CONSOLE_PROGRAM_TOOLBOX` | `tools/gen_userspace_kconfig.py` | TOOLBOX.ELF (userspace/services/toolbox) |
+| `CONSOLE_PROGRAM_TRACECTL` | `tools/gen_userspace_kconfig.py` | TRACECTL.ELF (userspace/services/tracectl) |
+| `CONSOLE_PROGRAM_UHELLO` | `tools/gen_userspace_kconfig.py` | UHELLO.ELF (userspace/tests/uhello) |
+| `CONSOLE_PROGRAM_VMMD` | `tools/gen_userspace_kconfig.py` | VMMD.ELF (userspace/services/vmmd) |
+| `CONSOLE_PROGRAM_VSBENCH` | `tools/gen_userspace_kconfig.py` | VSBENCH.ELF (userspace/bench/vsbench) |
+| `CONSOLE_PROGRAM_VSSRV` | `tools/gen_userspace_kconfig.py` | VSSRV.ELF (userspace/bench/vssrv) |
+| `CONSOLE_PROGRAM_WHY` | `tools/gen_userspace_kconfig.py` | WHY.ELF (userspace/services/why) |
+| `CONSOLE_PROGRAM_ZENOHD` | `tools/gen_userspace_kconfig.py` | ZENOHD.ELF (userspace/services/zenohd) |
 | `CONSOLE_RT_APPEND_ONLY` | `config/kernel/Kconfig.trace` | Real-time callers of the kernel log only append to the console |
 | `CONSOLE_TX_IRQ_BUDGET` | `config/subsys/Kconfig.console` | Console: most bytes one TX interrupt moves to the UART |
 | `CONSOLE_TX_RING_BYTES` | `config/subsys/Kconfig.console` | Console UART transmit ring (bytes) |
@@ -1243,54 +1243,54 @@ The index lists every declared option: 1197.
 | `USB_STORAGE` | `config/subsys/Kconfig.usb` | USB mass storage (bulk-only sticks and disks) as a block device |
 | `USB_UVC` | `config/subsys/Kconfig.usb` | USB video class (UVC webcams) as the perception camera |
 | `USB_XHCI` | `config/subsys/Kconfig.usb` | xHCI host controller (USB 3.x/2.0/1.1, PCI class 0C0330 and device tree) |
-| `USERSPACE_ABICHILD` | `config/Kconfig.userspace` | ABICHILD.ELF (userspace/tests/abichild) |
-| `USERSPACE_ABITEST` | `config/Kconfig.userspace` | ABITEST.ELF (userspace/tests/abitest) |
-| `USERSPACE_AUDIOD` | `config/Kconfig.userspace` | AUDIOD.ELF (userspace/services/audiod) |
-| `USERSPACE_BEHAVIOR` | `config/Kconfig.userspace` | BEHAVIOR.ELF (userspace/services/famtools) |
-| `USERSPACE_BRAINCLI` | `config/Kconfig.userspace` | BRAINCLI.ELF (userspace/services/brain_client) |
-| `USERSPACE_BUZZDRV` | `config/Kconfig.userspace` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
-| `USERSPACE_CAPTEST` | `config/Kconfig.userspace` | CAPTEST.ELF (userspace/tests/captest) |
-| `USERSPACE_COMPMGR` | `config/Kconfig.userspace` | COMPMGR.ELF (userspace/services/compmgr) |
-| `USERSPACE_COMPSRV` | `config/Kconfig.userspace` | COMPSRV.ELF (userspace/services/compositor) |
-| `USERSPACE_CONFIG` | `config/Kconfig.userspace` | CONFIG.ELF (userspace/services/famtools) |
-| `USERSPACE_DECISD` | `config/Kconfig.userspace` | DECISD.ELF (userspace/services/decisd) |
-| `USERSPACE_EPSRV` | `config/Kconfig.userspace` | EPSRV.ELF (userspace/tests/epsrv) |
-| `USERSPACE_FLIGHT` | `config/Kconfig.userspace` | FLIGHT.ELF (userspace/services/famtools) |
-| `USERSPACE_GPIODRV` | `config/Kconfig.userspace` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
+| `USERSPACE_ABICHILD` | `tools/gen_userspace_kconfig.py` | ABICHILD.ELF (userspace/tests/abichild) |
+| `USERSPACE_ABITEST` | `tools/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
+| `USERSPACE_AUDIOD` | `tools/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
+| `USERSPACE_BEHAVIOR` | `tools/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
+| `USERSPACE_BRAINCLI` | `tools/gen_userspace_kconfig.py` | BRAINCLI.ELF (userspace/services/brain_client) |
+| `USERSPACE_BUZZDRV` | `tools/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
+| `USERSPACE_CAPTEST` | `tools/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
+| `USERSPACE_COMPMGR` | `tools/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |
+| `USERSPACE_COMPSRV` | `tools/gen_userspace_kconfig.py` | COMPSRV.ELF (userspace/services/compositor) |
+| `USERSPACE_CONFIG` | `tools/gen_userspace_kconfig.py` | CONFIG.ELF (userspace/services/famtools) |
+| `USERSPACE_DECISD` | `tools/gen_userspace_kconfig.py` | DECISD.ELF (userspace/services/decisd) |
+| `USERSPACE_EPSRV` | `tools/gen_userspace_kconfig.py` | EPSRV.ELF (userspace/tests/epsrv) |
+| `USERSPACE_FLIGHT` | `tools/gen_userspace_kconfig.py` | FLIGHT.ELF (userspace/services/famtools) |
+| `USERSPACE_GPIODRV` | `tools/gen_userspace_kconfig.py` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
 | `USERSPACE_GPL` | `config/axes/Kconfig.personality` | Allow third-party GPL userspace programs (e.g. BusyBox) |
-| `USERSPACE_HELLO` | `config/Kconfig.userspace` | HELLO.ELF (userspace/tests/hello) |
-| `USERSPACE_INADRV` | `config/Kconfig.userspace` | INADRV.ELF (userspace/drivers/ina_drv) |
-| `USERSPACE_INPUTD` | `config/Kconfig.userspace` | INPUTD.ELF (userspace/services/inputd) |
-| `USERSPACE_IPCTEST` | `config/Kconfig.userspace` | IPCTEST.ELF (userspace/tests/ipctest) |
-| `USERSPACE_LATBENCH` | `config/Kconfig.userspace` | LATBENCH.ELF (userspace/bench/latbench) |
-| `USERSPACE_LOGD` | `config/Kconfig.userspace` | LOGD.ELF (userspace/services/logd) |
-| `USERSPACE_LOGIND` | `config/Kconfig.userspace` | LOGIND.ELF (userspace/services/logind) |
-| `USERSPACE_LXHELLO` | `config/Kconfig.userspace` | LXHELLO.ELF (userspace/tests/lxhello) |
-| `USERSPACE_LXSRV` | `config/Kconfig.userspace` | LXSRV.ELF (userspace/services/lxsrv) |
-| `USERSPACE_LXTHR` | `config/Kconfig.userspace` | LXTHR.ELF (userspace/tests/lxthreads) |
-| `USERSPACE_MCPD` | `config/Kconfig.userspace` | MCPD.ELF (userspace/services/mcpd) |
-| `USERSPACE_MLSRV` | `config/Kconfig.userspace` | MLSRV.ELF (userspace/services/infsrv) |
-| `USERSPACE_NAMESD` | `config/Kconfig.userspace` | NAMESD.ELF (userspace/services/namesd) |
-| `USERSPACE_OTA` | `config/Kconfig.userspace` | OTA.ELF (userspace/services/famtools) |
-| `USERSPACE_PKG` | `config/Kconfig.userspace` | PKG.ELF (userspace/services/pkg) |
-| `USERSPACE_PKGD` | `config/Kconfig.userspace` | PKGD.ELF (userspace/services/pkgd) |
-| `USERSPACE_POWER` | `config/Kconfig.userspace` | POWER.ELF (userspace/services/power) |
-| `USERSPACE_PTPD` | `config/Kconfig.userspace` | PTPD.ELF (userspace/services/ptpd) |
-| `USERSPACE_REFLEX` | `config/Kconfig.userspace` | REFLEX.ELF (userspace/services/reflex) |
-| `USERSPACE_RPCQUIC` | `config/Kconfig.userspace` | RPCQUIC.ELF (userspace/services/rpcquic) |
-| `USERSPACE_RPCSRV` | `config/Kconfig.userspace` | RPCSRV.ELF (userspace/services/rpcsrv) |
-| `USERSPACE_SH` | `config/Kconfig.userspace` | SH.ELF (userspace/services/sh) |
-| `USERSPACE_SSHD` | `config/Kconfig.userspace` | SSHD.ELF (userspace/services/sshd) |
-| `USERSPACE_SYSTEST` | `config/Kconfig.userspace` | SYSTEST.ELF (userspace/tests/syscall_test) |
-| `USERSPACE_TERMD` | `config/Kconfig.userspace` | TERMD.ELF (userspace/services/termd) |
-| `USERSPACE_TOOLBOX` | `config/Kconfig.userspace` | TOOLBOX.ELF (userspace/services/toolbox) |
-| `USERSPACE_TRACECTL` | `config/Kconfig.userspace` | TRACECTL.ELF (userspace/services/tracectl) |
-| `USERSPACE_UHELLO` | `config/Kconfig.userspace` | UHELLO.ELF (userspace/tests/uhello) |
-| `USERSPACE_VMMD` | `config/Kconfig.userspace` | VMMD.ELF (userspace/services/vmmd) |
-| `USERSPACE_VSBENCH` | `config/Kconfig.userspace` | VSBENCH.ELF (userspace/bench/vsbench) |
-| `USERSPACE_VSSRV` | `config/Kconfig.userspace` | VSSRV.ELF (userspace/bench/vssrv) |
-| `USERSPACE_WHY` | `config/Kconfig.userspace` | WHY.ELF (userspace/services/why) |
-| `USERSPACE_ZENOHD` | `config/Kconfig.userspace` | ZENOHD.ELF (userspace/services/zenohd) |
+| `USERSPACE_HELLO` | `tools/gen_userspace_kconfig.py` | HELLO.ELF (userspace/tests/hello) |
+| `USERSPACE_INADRV` | `tools/gen_userspace_kconfig.py` | INADRV.ELF (userspace/drivers/ina_drv) |
+| `USERSPACE_INPUTD` | `tools/gen_userspace_kconfig.py` | INPUTD.ELF (userspace/services/inputd) |
+| `USERSPACE_IPCTEST` | `tools/gen_userspace_kconfig.py` | IPCTEST.ELF (userspace/tests/ipctest) |
+| `USERSPACE_LATBENCH` | `tools/gen_userspace_kconfig.py` | LATBENCH.ELF (userspace/bench/latbench) |
+| `USERSPACE_LOGD` | `tools/gen_userspace_kconfig.py` | LOGD.ELF (userspace/services/logd) |
+| `USERSPACE_LOGIND` | `tools/gen_userspace_kconfig.py` | LOGIND.ELF (userspace/services/logind) |
+| `USERSPACE_LXHELLO` | `tools/gen_userspace_kconfig.py` | LXHELLO.ELF (userspace/tests/lxhello) |
+| `USERSPACE_LXSRV` | `tools/gen_userspace_kconfig.py` | LXSRV.ELF (userspace/services/lxsrv) |
+| `USERSPACE_LXTHR` | `tools/gen_userspace_kconfig.py` | LXTHR.ELF (userspace/tests/lxthreads) |
+| `USERSPACE_MCPD` | `tools/gen_userspace_kconfig.py` | MCPD.ELF (userspace/services/mcpd) |
+| `USERSPACE_MLSRV` | `tools/gen_userspace_kconfig.py` | MLSRV.ELF (userspace/services/infsrv) |
+| `USERSPACE_NAMESD` | `tools/gen_userspace_kconfig.py` | NAMESD.ELF (userspace/services/namesd) |
+| `USERSPACE_OTA` | `tools/gen_userspace_kconfig.py` | OTA.ELF (userspace/services/famtools) |
+| `USERSPACE_PKG` | `tools/gen_userspace_kconfig.py` | PKG.ELF (userspace/services/pkg) |
+| `USERSPACE_PKGD` | `tools/gen_userspace_kconfig.py` | PKGD.ELF (userspace/services/pkgd) |
+| `USERSPACE_POWER` | `tools/gen_userspace_kconfig.py` | POWER.ELF (userspace/services/power) |
+| `USERSPACE_PTPD` | `tools/gen_userspace_kconfig.py` | PTPD.ELF (userspace/services/ptpd) |
+| `USERSPACE_REFLEX` | `tools/gen_userspace_kconfig.py` | REFLEX.ELF (userspace/services/reflex) |
+| `USERSPACE_RPCQUIC` | `tools/gen_userspace_kconfig.py` | RPCQUIC.ELF (userspace/services/rpcquic) |
+| `USERSPACE_RPCSRV` | `tools/gen_userspace_kconfig.py` | RPCSRV.ELF (userspace/services/rpcsrv) |
+| `USERSPACE_SH` | `tools/gen_userspace_kconfig.py` | SH.ELF (userspace/services/sh) |
+| `USERSPACE_SSHD` | `tools/gen_userspace_kconfig.py` | SSHD.ELF (userspace/services/sshd) |
+| `USERSPACE_SYSTEST` | `tools/gen_userspace_kconfig.py` | SYSTEST.ELF (userspace/tests/syscall_test) |
+| `USERSPACE_TERMD` | `tools/gen_userspace_kconfig.py` | TERMD.ELF (userspace/services/termd) |
+| `USERSPACE_TOOLBOX` | `tools/gen_userspace_kconfig.py` | TOOLBOX.ELF (userspace/services/toolbox) |
+| `USERSPACE_TRACECTL` | `tools/gen_userspace_kconfig.py` | TRACECTL.ELF (userspace/services/tracectl) |
+| `USERSPACE_UHELLO` | `tools/gen_userspace_kconfig.py` | UHELLO.ELF (userspace/tests/uhello) |
+| `USERSPACE_VMMD` | `tools/gen_userspace_kconfig.py` | VMMD.ELF (userspace/services/vmmd) |
+| `USERSPACE_VSBENCH` | `tools/gen_userspace_kconfig.py` | VSBENCH.ELF (userspace/bench/vsbench) |
+| `USERSPACE_VSSRV` | `tools/gen_userspace_kconfig.py` | VSSRV.ELF (userspace/bench/vssrv) |
+| `USERSPACE_WHY` | `tools/gen_userspace_kconfig.py` | WHY.ELF (userspace/services/why) |
+| `USERSPACE_ZENOHD` | `tools/gen_userspace_kconfig.py` | ZENOHD.ELF (userspace/services/zenohd) |
 | `USER_ALLOC_BLOCK_KB` | `config/kernel/Kconfig.hardening` | Ring-3 allocator: size-class block, KiB |
 | `USER_ALLOC_GUARD_PAGES` | `config/kernel/Kconfig.hardening` | Ring-3 allocator: guard pages around blocks and large allocations |
 | `USER_ALLOC_MAX_MAPS` | `config/kernel/Kconfig.hardening` | Ring-3 allocator: live mappings (blocks + large allocations) |
