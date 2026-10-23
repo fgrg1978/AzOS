@@ -31,9 +31,18 @@
 #     permanently "modified" and the pin row could never pass.
 #   * Kbuild in a container (tools/lx_kbuild/) needs every `Kconfig*` file (the
 #     top-level Kconfig sources them from all over the tree, and a missing one
-#     is a hard error), x86's syscall table (the top-level Kbuild's
-#     missing-syscalls check reads it on every arch) and drivers/Makefile (an
-#     in-tree single-module target descends through it). +1.7 MB.
+#     is a hard error) and drivers/Makefile (an in-tree single-module target
+#     descends through it). +1.7 MB.
+#   * The x86_64 module build needs all of arch/x86/ (16 MB; its syscall
+#     table is read on every arch, by the top-level Kbuild's missing-syscalls
+#     check) and objtool's sources (4.4 MB): x86_64 selects OBJTOOL
+#     unconditionally (HAVE_STATIC_CALL_INLINE, HAVE_UACCESS_VALIDATION), so
+#     `modules_prepare` builds tools/objtool through tools/Makefile, with
+#     tools/build, tools/lib, tools/scripts and the tools/arch/ headers of
+#     both the host and the target. Without tools/Makefile, `make -s
+#     modules_prepare` still succeeds (make finds no rule and the directory
+#     tools/objtool exists), and the first module then fails on
+#     "objtool: not found".
 #   * drivers/net/ethernet/intel/igc and igb (1.4 MB) are the register-level
 #     reference the native Intel NIC driver (crates/drivers/net/src/igc.rs) is
 #     checked against: its host tests cite igc_regs.h, igc_defines.h, igc_hw.h
@@ -94,7 +103,13 @@ linux_sparse() {
 /LICENSES/
 /tools/include/
 Kconfig*
-/arch/x86/entry/syscalls/
+/arch/x86/
+/tools/Makefile
+/tools/objtool/
+/tools/build/
+/tools/lib/
+/tools/scripts/
+/tools/arch/
 /drivers/Makefile
 /fs/Makefile
 /fs/mbcache.c

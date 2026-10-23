@@ -23,7 +23,10 @@
 # configuration plus <arch>.linux.config (the difference is recorded in
 # <isa>/config-vs-modules.diff).
 #
-# <arch> is riscv or arm64. Configures tinyconfig + common.config +
+# <arch> is riscv, arm64 or x86_64 (Linux ARCH names). x86_64, not x86:
+# Kconfig then fixes 64BIT=y (under ARCH=x86, tinyconfig answers that prompt
+# n and builds i386 unless a fragment says otherwise), and the output
+# directory is already the ISA's name. Configures tinyconfig + common.config +
 # <arch>.config + each SYMBOL=m in a fresh O= directory inside the
 # container, runs modules_prepare, builds lx/glue as an external module
 # (lxbase.ko) and each upstream module as an in-tree single target: Linux's
@@ -43,6 +46,7 @@ arch="$1"; shift
 case "$arch" in
     riscv) cross=riscv64-linux-gnu- ;;
     arm64) cross=aarch64-linux-gnu- ;;
+    x86_64) cross=x86_64-linux-gnu- ;;
     *) echo "kbuild-in: unknown arch $arch" >&2; exit 2 ;;
 esac
 o="/work/$mode-$arch"   # container-local: the host mount is slow and case-insensitive
