@@ -10,6 +10,9 @@
 #   tools/gate_tier.sh n1   n0's host suites, then tools/ci_check.sh under
 #                           CI_TIER=rows with the per-ISA smoke boots and the
 #                           n1 rows the diff maps to (`make check1`)
+#   tools/gate_tier.sh lints  n0's lints alone, no build and no host suite: the
+#                           full gate's "n0 lints" row, so `make ci` runs the
+#                           same lints as `make check0`
 #
 # The diff is the working tree against GATE_BASE (default HEAD); see
 # tools/rows_for_diff.py for how paths map to rows and suites.
@@ -20,12 +23,14 @@ qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
 cd "$(dirname "$0")/.." || exit 2
 tier="${1:-}"
 base="${GATE_BASE:-HEAD}"
-case "$tier" in n0|n1) ;; *) echo "usage: tools/gate_tier.sh n0|n1"; exit 2 ;; esac
+case "$tier" in n0|n1|lints) ;; *) echo "usage: tools/gate_tier.sh n0|n1|lints"; exit 2 ;; esac
+lints=0; case "$tier" in n0|lints) lints=1 ;; esac
 # Outputs live under $AZOS_OUT (tools/out_dir.py), never in the checkout.
 AZOS_OUT="${AZOS_OUT:-$(python3 tools/out_dir.py)}"; export AZOS_OUT
 export TOPOLOGY_PUBKEY_PATH="${TOPOLOGY_PUBKEY_PATH:-$PWD/tools/keys/test_pub.bin}"
 
-suites="$(python3 tools/rows_for_diff.py --base "$base" --host)" || exit 2
+suites=""
+[ "$tier" = lints ] || { suites="$(python3 tools/rows_for_diff.py --base "$base" --host)" || exit 2; }
 fail=0
 t0=$SECONDS
 
@@ -54,7 +59,7 @@ fi
 
 # Nothing writes into the checkout (tools/out_dir_lint.py): its canary first,
 # then the tree.
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "output dir lint..."
     if out="$(python3 tools/out_dir_lint.py --self-test 2>&1)" \
        && out="$(python3 tools/out_dir_lint.py 2>&1)"; then
@@ -66,7 +71,7 @@ if [ "$tier" = n0 ]; then
 fi
 
 # The boot sequence lint (tools/boot_seq_lint.py), as the gate's row does.
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "boot seq lint..."
     if out="$(python3 tools/boot_seq_lint.py --self-test 2>&1)" \
        && out="$(python3 tools/boot_seq_lint.py 2>&1)"; then
@@ -80,7 +85,7 @@ fi
 # Facade bypass ratchet (tools/arch_cfg_lint.py --facade): shared code may not
 # reach ISA-specific azos_arch modules (csr, sbi, sysregs, irq::<chip>, ...);
 # per-file counts in the [facade] section of tools/arch_cfg_lint.baseline.
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "facade bypass..."
     if out="$(python3 tools/arch_cfg_lint.py --self-test 2>&1)" \
        && out="$(python3 tools/arch_cfg_lint.py --facade 2>&1)"; then
@@ -92,16 +97,18 @@ if [ "$tier" = n0 ]; then
 fi
 
 # The trap layer is written once (tools/trap_lint.py): no dispatch logic in entry/<isa>/, a case for every syscall number.
-[ "$tier" = n0 ] && { printf "  %-26s" "trap layer lint..."; if out="$(python3 tools/trap_lint.py --self-test 2>&1 && python3 tools/trap_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "trap layer lint..."; if out="$(python3 tools/trap_lint.py --self-test 2>&1 && python3 tools/trap_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 
 # The three ISAs share one file layout (tools/arch_layout_lint.py): same module set, ISA-only code under ext/.
-[ "$tier" = n0 ] && { printf "  %-26s" "arch layout lint..."; if out="$(python3 tools/arch_layout_lint.py --self-test 2>&1 && python3 tools/arch_layout_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
-[ "$tier" = n0 ] && { printf "  %-26s" "doc lint..."; if out="$(python3 tools/doc_lint.py --self-test 2>&1 && python3 tools/doc_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
-[ "$tier" = n0 ] && { printf "  %-26s" "req trace lint..."; if out="$(python3 tools/req_trace.py --self-test 2>&1 && python3 tools/req_trace.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "arch layout lint..."; if out="$(python3 tools/arch_layout_lint.py --self-test 2>&1 && python3 tools/arch_layout_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "doc lint..."; if out="$(python3 tools/doc_lint.py --self-test 2>&1 && python3 tools/doc_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "req trace lint..."; if out="$(python3 tools/req_trace.py --self-test 2>&1 && python3 tools/req_trace.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+# The board image's ELF list derived from the topology (tools/test_board_manifest.py).
+[ "$lints" = 1 ] && { printf "  %-26s" "board manifest..."; if out="$(python3 tools/test_board_manifest.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E 'FAIL|Error' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
 # Kconfig is the only source of truth (tools/kconfig_lint.py): cargo-feature
 # tags against kernel/Cargo.toml, no `select` of a visible symbol.
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "kconfig lint..."
     if out="$(python3 tools/kconfig_lint.py --self-test 2>&1)" \
        && out="$(python3 tools/kconfig_lint.py 2>&1 | grep -v '^REPORT')" \
@@ -116,7 +123,7 @@ fi
 # The unsafe budget (tools/unsafe_budget.py): a crate may not carry more
 # `unsafe` than tools/unsafe_budget.tsv says, and the baseline moves in the
 # same commit as the code.
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "unsafe budget..."
     if out="$(python3 tools/unsafe_budget.py --self-test 2>&1)" \
        && out="$(python3 tools/unsafe_budget.py 2>&1)"; then
@@ -128,7 +135,7 @@ if [ "$tier" = n0 ]; then
 fi
 
 # Every preset expands on every ISA (tools/check_presets.py, about 3 s).
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "presets..."
     if out="$(python3 tools/check_presets.py 2>&1)"; then
         echo ok
@@ -140,7 +147,7 @@ fi
 
 # No merge leftovers: a tracked file (vendored third_party/ aside) holds no line
 # that starts a conflict marker.
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "conflict markers..."
     if out="$(git grep -nE '^(<<<<<<<|>>>>>>>) ' -- . ':!third_party' 2>/dev/null)"; then
         echo FAIL; fail=1
@@ -152,7 +159,7 @@ fi
 
 # Every tracked source file carries its SPDX licence header (tools/spdx_headers.py;
 # run it without --check to add the missing ones).
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "spdx headers..."
     if out="$(python3 tools/spdx_headers.py --check 2>&1)"; then
         echo ok
@@ -164,7 +171,7 @@ fi
 
 # The committed OS feature matrix is what the Kconfig tree yields
 # (tools/gen_feature_matrix.py; regenerate with it when a symbol or a defconfig changes).
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "feature matrix..."
     if out="$(python3 tools/gen_feature_matrix.py --self-test 2>&1 && python3 tools/gen_feature_matrix.py --check 2>&1)"; then
         echo ok
@@ -175,7 +182,7 @@ if [ "$tier" = n0 ]; then
 fi
 
 # `make help` must not name a target the Makefile lacks (tools/check_make_help.sh).
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "make help targets..."
     if out="$(bash tools/check_make_help.sh 2>&1)"; then
         echo ok
@@ -188,7 +195,7 @@ fi
 # Supply chain (deny.toml): licences, bans and sources of the registry crates
 # the kernel links, offline (metadata from cargo; no advisory database, which
 # only a network run can fetch, see deny.toml).
-if [ "$tier" = n0 ]; then
+if [ "$lints" = 1 ]; then
     printf "  %-26s" "cargo deny..."
     mkdir -p "$AZOS_OUT/build"; dmd="$AZOS_OUT/build/deny-metadata.json"
     if out="$(cargo metadata --offline --locked --format-version 1 2>&1 >"$dmd")" \
