@@ -2278,6 +2278,31 @@ x86_kernel_check() { # x86_kernel_check <image>
     [ -n "${CI_EXPECT_X86+x}" ] || return 0
     ci_kernel_check_file "$1" "$CI_EXPECT_X86"
 }
+# The verdict of an `iommu:` row (the IOMMU confines the NIC, tools/gate_rows.tsv)
+# on its boot log. PASS: the unit came up, the NIC got its own translating
+# domain, the DHCP lease came through the translation and nothing faulted.
+# CANARY (`iommu-tx-canary`, TX staging buffers unmapped): the unit refused
+# the device's read of an unmapped page and the fault task logged it, and no
+# lease came through. <trap ERE>: the ISA's kernel-fault line.
+iommu_net_verdict() { # iommu_net_verdict <log> <flavour> <PASS|CANARY> <trap ERE>
+    local log="$1" flavour="$2" expect="$3" why=""
+    if grep -aqE "$4" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception — log kept: $log"; return
+    fi
+    grep -aqF "[IOMMU] $flavour at " "$log" || why="no '[IOMMU] $flavour at' line: the unit was not found or not brought up"
+    [ -z "$why" ] && ! grep -aqE 'IOMMU\] [0-9a-f:.]+ virtio-net-pci: translating domain installed' "$log" \
+        && why="the NIC got no translating domain"
+    if [ -z "$why" ] && [ "$expect" = CANARY ]; then
+        grep -aqE 'IOMMU\] fault: device 0x[0-9a-f]+ addr 0x[0-9a-f]+ UnmappedIova' "$log" \
+            || why="canary did not bite: no UnmappedIova fault from the unmapped TX buffers"
+        [ -z "$why" ] && grep -aqF '[DHCPSMOKE] PASS' "$log" && why="canary did not bite: a lease came through unmapped buffers"
+    elif [ -z "$why" ]; then
+        grep -aqF '[DHCPSMOKE] PASS' "$log" || why="no DHCP lease through the translating domain"
+        [ -z "$why" ] && grep -aqF '[IOMMU] fault' "$log" && why="the unit refused a DMA: $(grep -aF '[IOMMU] fault' "$log" | sed -n 1p)"
+    fi
+    if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+    bad; echo "      $why — log kept: $log"
+}
 qemu_run() { # qemu_run <label> <success-marker> <timeout-s> <qemu-args...>
     local label="$1" marker limit="$3"
     marker="$(ci_marker "$2")"; shift 3
@@ -12376,17 +12401,17 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     # the self-test's 8192+N). Canary: `msix-enable-canary` -> mode=irq
     # msix=n, rx=0, DHCPSMOKE FAIL; `aarch64 network: DHCP lease` (MMIO) is
     # the control that passes.
-    pci_net_dhcp_boot_aarch64() { # pci_net_dhcp_boot_aarch64 <log>
-        local log="$1" img_copy="${1%.log}-kernel.img"
+    pci_net_dhcp_boot_aarch64() { # pci_net_dhcp_boot_aarch64 <log> [machine options] [stop ERE]
+        local log="$1" img_copy="${1%.log}-kernel.img" stop="${3:-NET\] msix counts \(after dhcp\)}"
         rm -f "$log"; cp "$A64_IMG" "$img_copy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        qemu-system-aarch64 -M "virt,gic-version=3${2:+,$2}" -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" \
             -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
             </dev/null >"$log" 2>&1 &
         local qpid=$! i=0
         while [ "$i" -lt 90 ]; do
-            grep -aqF "NET] msix counts (after dhcp)" "$log" 2>/dev/null && break
+            grep -aqE "$stop" "$log" 2>/dev/null && break
             grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
             kill -0 "$qpid" 2>/dev/null || break
             i=$((i + 1)); sleep 1
@@ -12439,6 +12464,34 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         fi
     }
     par "aarch64 pci dhcp canary" pci_net_dhcp_canary_aarch64
+
+    # ── IOMMU on (aarch64): the SMMUv3 confines the NIC ──
+    # `iommu=smmuv3` puts an SMMUv3 in `virt`'s device tree; the kernel finds it
+    # through the hardware bus (`smmuv3`, crates/drivers/iommu/hwbus.ids), gives
+    # virtio-net-pci a translating domain with an ASID of its own and blocks the
+    # functions no driver binds. The lease must still come through the stage 1
+    # table: TX reads, RX writes and the MSI-X doorbell writes are all
+    # translated, and nothing faults. Canary `iommu-tx-canary`: the TX staging
+    # buffers are left unmapped, so the SMMU refuses the device's first frame
+    # read and the fault task logs it (the wait stops on that line, printed
+    # once the task runs).
+    iommu_net_row_aarch64() { # iommu_net_row_aarch64 <label> <PASS|CANARY>
+        local label="$1" expect="$2" feats="qemu,pci,dhcp-smoke"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        [ "$expect" = CANARY ] && feats="$feats,iommu-tx-canary"
+        a64_kbuild "$feats" || { bad; echo "      $feats aarch64 kernel did NOT build (row not run)"; return; }
+        a64_kernel_check || return
+        local log="$CI_LOG_DIR/iommu-net-aarch64-$expect.log"
+        if [ "$expect" = CANARY ]; then
+            pci_net_dhcp_boot_aarch64 "$log" iommu=smmuv3 'IOMMU\] fault|AARCH64-TRAP\] unhandled'
+        else
+            pci_net_dhcp_boot_aarch64 "$log" iommu=smmuv3
+        fi
+        iommu_net_verdict "$log" smmuv3 "$expect" "AARCH64-TRAP\] unhandled"
+    }
+    par "aarch64 iommu: smmuv3 translates the NIC" iommu_net_row_aarch64 "aarch64 iommu: smmuv3 translates the NIC" PASS
+    par "aarch64 iommu: smmuv3 refuses unmapped" iommu_net_row_aarch64 "aarch64 iommu: smmuv3 refuses unmapped" CANARY
 
     # Ring-3 capabilities, seeded from the topology into the task's capability
     # table; cap_check and the typed calls answer from it. captest asserts BOTH
@@ -14280,6 +14333,37 @@ PY
     }
     par "x86_64: PCI AHCI mounts FAT (q35)" x86_ahci_row "x86_64: PCI AHCI mounts FAT (q35)" PASS
     par "x86_64: PCI AHCI canary (no driver)" x86_ahci_row "x86_64: PCI AHCI canary (no driver)" FAIL
+    # IOMMU on (x86_64): the rv/arm `iommu:` rows on q35 with the unit QEMU models
+    # first on the bus, AMD-Vi (`amd-iommu,dma-remap=on`, found through the ACPI
+    # IVRS; every device-table entry blocks until its function is placed) and
+    # Intel VT-d (`intel-iommu`, the DMAR). The NIC is a virtio-net-pci function
+    # (`-nic none`: no q35 default e1000e). Canary `iommu-tx-canary` as there.
+    x86_iommu_row() { # x86_iommu_row <label> <qemu IOMMU device> <flavour> <PASS|CANARY>
+        local label="$1" unit="$2" flavour="$3" expect="$4" feats="dhcp-smoke" stop='DHCPSMOKE\]|KERNEL PANIC|\[X86-TRAP\]'
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        [ "$expect" = CANARY ] && { feats="$feats,iommu-tx-canary"; stop='IOMMU\] fault|KERNEL PANIC|\[X86-TRAP\]'; }
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
+        rm -f "$kimg" "$kimg.features"
+        # One target directory per feature set: the two PASS rows share theirs.
+        make x86_64 X86_64_DEFCONFIG=config/defconfigs/qemu-x86_64-pci.config X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-${expect}" X86_64_IMG="$kimg" X86_64_FEATURES="$feats" >/dev/null 2>&1 \
+            && builtin printf '%s\n' "$feats" >"$kimg.features" \
+            || { bad; echo "      make x86_64 (qemu-x86_64-pci.config, $feats) did not build"; return; }
+        par_ready
+        X86_MACHINE=q35 x86_qemu "$kimg" "$log" 90 "$stop" -smp 1 -nic none -device "$unit" \
+            -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
+            || { rm -f "$kimg" "$kimg.features"; return; }
+        rm -f "$kimg" "$kimg.features"
+        iommu_net_verdict "$log" "$flavour" "$expect" 'KERNEL PANIC|\[X86-TRAP\]'
+    }
+    par "x86_64 iommu: amd-vi translates the NIC" x86_iommu_row "x86_64 iommu: amd-vi translates the NIC" \
+        amd-iommu,dma-remap=on amd-vi PASS
+    par "x86_64 iommu: amd-vi refuses unmapped" x86_iommu_row "x86_64 iommu: amd-vi refuses unmapped" \
+        amd-iommu,dma-remap=on amd-vi CANARY
+    par "x86_64 iommu: vt-d translates the NIC" x86_iommu_row "x86_64 iommu: vt-d translates the NIC" intel-iommu vt-d PASS
+    par "x86_64 iommu: vt-d refuses unmapped" x86_iommu_row "x86_64 iommu: vt-d refuses unmapped" intel-iommu vt-d CANARY
     # The Intel I225/I226 driver (Kconfig DRV_IGC, crates/drivers/net/src/igc.rs, built
     # into qemu-x86_64-pci.config) on QEMU's `-device igb`: an 82576, the same advanced
     # descriptors, bound to the same driver by its id (hwbus.ids). The controller is reset,
@@ -19045,16 +19129,17 @@ PYEOF
     # runs in IRQ mode (it decides by route, never by the enable read-back),
     # no RX MSI arrives, no frame is read and the lease fails — while
     # `network: DHCP lease` (MMIO, polled) passes on the same stack.
-    pci_net_dhcp_boot_riscv64() { # pci_net_dhcp_boot_riscv64 <log>
-        local log="$1"
+    pci_net_dhcp_boot_riscv64() { # pci_net_dhcp_boot_riscv64 <log> [stop ERE] [QEMU args before the NIC...]
+        local log="$1" stop="${2:-NET\] msix counts \(after dhcp\)}"
+        shift; [ $# -gt 0 ] && shift
         rm -f "$log"
         par_ready
-        "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" \
+        "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" "$@" \
             -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
             </dev/null >"$log" 2>&1 &
         local qpid=$! i=0
         while [ "$i" -lt 90 ]; do
-            grep -aqF "NET] msix counts (after dhcp)" "$log" 2>/dev/null && break
+            grep -aqE "$stop" "$log" 2>/dev/null && break
             grep -aqE "EXCEPTION\]|panic" "$log" 2>/dev/null && break
             kill -0 "$qpid" 2>/dev/null || break
             i=$((i + 1)); sleep 1
@@ -19105,6 +19190,26 @@ PYEOF
         fi
     }
     par "network: pci dhcp canary" pci_net_dhcp_canary_riscv64
+
+    # ── IOMMU on (riscv64): the RISC-V IOMMU confines the NIC ──
+    # The aarch64 rows' twin with `-device riscv-iommu-pci` (first on the bus):
+    # the kernel finds the function through the hardware bus (`riscv-iommu`,
+    # class 0x0806), gives virtio-net-pci a translating domain with a PSCID of
+    # its own, and the lease must still come through Sv39 with the MSI-X writes
+    # into the IMSIC translated too. Canary `iommu-tx-canary` as on aarch64.
+    iommu_net_row_riscv64() { # iommu_net_row_riscv64 <label> <PASS|CANARY>
+        local label="$1" expect="$2" feats="qemu,pci,dhcp-smoke"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        [ "$expect" = CANARY ] && feats="$feats,iommu-tx-canary"
+        kbuild "$feats" || return
+        local log="$CI_LOG_DIR/iommu-net-riscv64-$expect.log" stop=""
+        [ "$expect" = CANARY ] && stop='IOMMU\] fault|EXCEPTION\]|panic'
+        pci_net_dhcp_boot_riscv64 "$log" "$stop" -device riscv-iommu-pci
+        iommu_net_verdict "$log" riscv-iommu "$expect" "EXCEPTION\]|panic"
+    }
+    par "iommu: riscv-iommu translates the NIC" iommu_net_row_riscv64 "iommu: riscv-iommu translates the NIC" PASS
+    par "iommu: riscv-iommu refuses unmapped" iommu_net_row_riscv64 "iommu: riscv-iommu refuses unmapped" CANARY
     kbuild "qemu"
     # The runtime half, after the scheduler starts: a host datagram through a
     # UDP hostfwd reaches the NIC, and the ISR of its RX MSI must take
