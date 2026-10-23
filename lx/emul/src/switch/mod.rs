@@ -40,6 +40,8 @@ use riscv64 as isa;
 mod x86_64;
 #[cfg(target_arch = "x86_64")]
 use x86_64 as isa;
+#[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64", target_arch = "x86_64")))]
+compile_error!("lx_emul: no task switch for this ISA (switch/<isa>.rs)");
 
 pub(crate) use isa::switch;
 
