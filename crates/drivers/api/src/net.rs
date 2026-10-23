@@ -41,6 +41,16 @@ pub trait NetDevice: Send + Sync {
     fn tx_batch_begin(&self) {}
     /// Close a batch and announce everything it queued: a flush point.
     fn tx_batch_end(&self) {}
+    /// Look at the transmit ring's budget (`recovery::TxWatch`, Kconfig
+    /// `NET_TX_TIMEOUT_MS`): take back the frames the device sent, and reset
+    /// the device (the timeout policy) if the ring is past its budget.
+    /// Returns the tick by which the ring must be looked at again while
+    /// frames are outstanding (`recovery::TX_LOOK_US` from now), `None` when
+    /// there are none. The network poller calls it on every pass. Default:
+    /// no budget to watch.
+    fn tx_watch(&self) -> Option<u64> {
+        None
+    }
     /// Hand up to `max` received frames to `f`, in arrival order, and
     /// return how many. Each slice is valid only during its `f` call. A
     /// backend that owns its RX buffers passes them in place (virtio-net:

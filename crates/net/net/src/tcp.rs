@@ -4453,12 +4453,40 @@ fn conn_deadline(c: &TcpConn) -> Option<u64> {
     d
 }
 
+/// When the NICs' transmit rings must next be looked at (the receive pass
+/// sets it from `net_device::tx_watch`); 0: no ring holds frames.
+static TX_WATCH_DUE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The receive pass looked at the transmit rings: `due` is when they must be
+/// looked at again (`None`: no ring holds frames).
+pub fn set_tx_watch_due(due: Option<u64>) {
+    TX_WATCH_DUE.store(due.unwrap_or(0), core::sync::atomic::Ordering::Relaxed);
+}
+
 /// The earliest tick at which [`tcp_tick`] has work on any connection, or
-/// `None` when no clock can give it any. The net poll task sleeps until
+/// the transmit rings must be looked at ([`set_tx_watch_due`]), or `None`
+/// when no clock can give the poller any. The net poll task sleeps until
 /// this (bounded by its ceiling), on the kernel's timer: no periodic tick.
 pub fn next_deadline() -> Option<u64> {
-    let t = TCP.lock();
-    t.conns.iter().filter_map(conn_deadline).min()
+    let tcp = {
+        let t = TCP.lock();
+        t.conns.iter().filter_map(conn_deadline).min()
+    };
+    match (tcp, TX_WATCH_DUE.load(core::sync::atomic::Ordering::Relaxed)) {
+        (d, 0) => d,
+        (Some(a), b) => Some(a.min(b)),
+        (None, b) => Some(b),
+    }
+}
+
+/// A frame was sent: its ring's budget clock may have started, and the poll
+/// task, if it sleeps more than `look` ticks from now, is kicked to look at
+/// the ring in time (`net_device::tx_watch`).
+pub fn note_tx_sent(look: u64) {
+    let w = POLL_WAKE_AT.load(core::sync::atomic::Ordering::SeqCst);
+    if w != 0 && w > azos_drv_sys::timebase::now().saturating_add(look) {
+        timer_kick();
+    }
 }
 
 /// The net poll task is running: nothing armed now needs a kick.

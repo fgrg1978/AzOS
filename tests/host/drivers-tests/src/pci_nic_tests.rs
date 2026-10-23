@@ -326,3 +326,39 @@ fn igc_wedged_transmit_ring_is_reset_once_then_latched() {
     }
     tx_timeout_scenario(&NIC, &MEM, restart, &COUNT);
 }
+
+/// **Discriminates.** A sender that sends seldom (a DHCP or TCP retry, here
+/// one frame per 100 ms, twice the stall gap) never sees its wedged ring run
+/// out of budget by itself: the stall clock credits every gap between two
+/// sends as time the guest did not run. The poller's look (`tx_watch`, every
+/// 10 ms here, as the network poller does every `TX_LOOK_US`) keeps the gaps
+/// short, so the ring is found wedged within its budget and the NIC reset.
+/// Canary: `tx_watch` answering `None` without a look (the 2-second bound
+/// fires: the sends alone never reset it).
+#[test]
+fn e1000e_a_seldom_sender_is_found_wedged_by_the_poller() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<E1000eWire, N, N> = Nic::with_tx_budget(&MEM, TX_BUDGET_MS);
+    static COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    fn restart(nic: &Nic<E1000eWire, N, N>) -> bool {
+        relive(nic, &MEM, &COUNT)
+    }
+    crate::recovery_records::listen();
+    let _rig = bring_up(&NIC, &MEM, None);
+    NIC.set_restart(restart);
+    assert_eq!(NIC.send(&[0u8; 60]), Ok(60));
+    assert!(NIC.tx_watch().is_some(), "a ring holding a frame asks for no look");
+    let t0 = std::time::Instant::now();
+    let mut last_send = t0;
+    while COUNT.load(core::sync::atomic::Ordering::SeqCst) == 0 {
+        assert!(t0.elapsed().as_secs() < 2, "a seldom sender's wedged ring was never declared wedged");
+        let _ = NIC.tx_watch();
+        if last_send.elapsed().as_millis() >= 100 {
+            let _ = NIC.send(&[0u8; 60]);
+            last_send = std::time::Instant::now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(NIC.is_ready() && !NIC.is_dead());
+    assert_eq!(NIC.tx_watch(), None, "a reset ring still asks for a look");
+}

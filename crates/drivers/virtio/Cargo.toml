@@ -56,4 +56,6 @@ azos_drv_sys     = { workspace = true }
 azos_dma         = { workspace = true }
 azos_devif       = { workspace = true }
 azos_limits      = { workspace = true }
+# Kconfig CHAOS: the `virtio-net-tx-wedge` injection point (off: a constant false).
+azos_chaos       = { workspace = true }
 azos_pci         = { workspace = true, optional = true }

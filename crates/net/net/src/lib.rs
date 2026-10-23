@@ -120,10 +120,16 @@ fn tx_link(frame: &[u8]) -> Option<Iface> {
 pub fn net_raw_send(frame: &[u8]) -> i32 {
     let Some(link) = tx_link(frame) else { return -1 };
     match azos_drv_net::net_device::send(link.nic as usize, frame) {
-        Ok(n) => n as i32,
+        Ok(n) => {
+            // The frame may have started the ring's budget clock: the poller
+            // must look at the ring within its cadence (`tx_watch`).
+            tcp::note_tx_sent(azos_drv_net::net_device::tx_look_ticks());
+            n as i32
+        }
         Err(_) => -1,
     }
 }
+
 
 /// Receive a raw Ethernet frame from NIC `nic`.
 /// Returns the number of bytes received, or 0 if none available.
@@ -289,6 +295,9 @@ fn net_poll_pass() -> bool {
     let t0 = azos_drv_sys::wcet::read_cycles();
     let mut drained = 0usize;
     let mut budget_hit = false;
+    // The transmit rings' budget (Kconfig NET_TX_TIMEOUT_MS) is looked at
+    // on every pass: a send alone looks too seldom (`TxWatch`).
+    tcp::set_tx_watch_due(azos_drv_net::net_device::tx_watch());
     net_tx_batch_begin();
     for ifindex in 1..=MAX_IFS as IfIndex {
         let Some(link) = ip::iface_get(ifindex).filter(|i| i.attached()) else { continue };

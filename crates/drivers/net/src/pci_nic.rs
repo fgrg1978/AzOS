@@ -38,7 +38,7 @@ use crate::e1000e::{
 };
 use azos_dma::Direction;
 use azos_drv_api::net::NetError;
-use azos_drv_api::recovery::{Class, Recovery, StallClock, TxWatch, Verdict, STALL_GAP_US};
+use azos_drv_api::recovery::{Class, Recovery, StallClock, TxWatch, Verdict, STALL_GAP_US, TX_LOOK_US};
 use azos_drv_virtio::virtio::Dma;
 use azos_sync::SpinLock;
 use core::cell::UnsafeCell;
@@ -277,6 +277,9 @@ pub struct Nic<W: Wire, const RX_N: usize, const TX_N: usize> {
     msi_token: AtomicU32,
     /// Receive interrupts taken (`ICR` carried a receive cause).
     rx_irqs: AtomicU32,
+    /// The transmit ring holds announced frames (`TxState::watch` runs):
+    /// [`Nic::tx_watch`] takes the lock only then.
+    tx_watched: AtomicBool,
     /// Live, being reset after a wedged transmit ring, or latched dead.
     recovery: Recovery,
     /// The transmit ring's budget in time the guest ran (Kconfig
@@ -333,6 +336,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             msi_armed: AtomicBool::new(false),
             msi_token: AtomicU32::new(0),
             rx_irqs: AtomicU32::new(0),
+            tx_watched: AtomicBool::new(false),
             recovery: Recovery::new(Class::Net, W::NAME, azos_limits::DEVICE_TIMEOUT_RESETS as u8),
             tx_budget_ms,
             stall: StallClock::new(),
@@ -404,6 +408,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         {
             let mut tx = self.tx.lock();
             *tx = TxState { dma, buf_bus: tx_buf_bus, cur: TxCursor::new(), depth: 0, pending: 0, watch: TxWatch::new() };
+            self.tx_watched.store(false, Ordering::Relaxed);
         }
         io_wmb();
         r.wr(W::RX.tail, rx_cur.rdt(RX_N) as u32);
@@ -571,6 +576,39 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         let held = (tx.cur.tail as usize + TX_N - tx.cur.clean as usize) % TX_N;
         let (t, credit) = self.look();
         tx.watch.reclaimed(t, credit, freed, held.saturating_sub(tx.pending as usize));
+        self.tx_watched.store(tx.watch.running(), Ordering::Relaxed);
+    }
+
+    /// [`reclaim`](Self::reclaim), then look at the ring's budget:
+    /// `Some((held, waited))` when its announced frames sat past it, for the
+    /// caller to drop the lock and call [`tx_timed_out`](Self::tx_timed_out).
+    fn reclaim_and_watch(&self, tx: &mut TxState) -> Option<(u64, u64)> {
+        self.reclaim(tx);
+        let (t, _) = self.look();
+        let budget = self.tx_budget_ms.saturating_mul(azos_drv_sys::timebase::TIMER_FREQ) / 1000;
+        if !tx.watch.expired(&self.stall, t, budget) {
+            return None;
+        }
+        let held = (tx.cur.tail as usize + TX_N - tx.cur.clean as usize) % TX_N;
+        Some((held as u64, tx.watch.waited(t)))
+    }
+
+    /// `NetDevice::tx_watch`: look at the transmit ring between sends, so its
+    /// budget runs out for a sender that sends seldom too (`TxWatch`).
+    pub fn tx_watch(&self) -> Option<u64> {
+        if !self.tx_watched.load(Ordering::Relaxed) || !self.ready.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut tx = self.tx.lock();
+        if !self.ready.load(Ordering::Acquire) {
+            return None;
+        }
+        if let Some((held, waited)) = self.reclaim_and_watch(&mut tx) {
+            drop(tx);
+            self.tx_timed_out(held, waited);
+            return None;
+        }
+        tx.watch.running().then(|| now() + TX_LOOK_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000)
     }
 
     /// Tell the controller about every frame published so far.
@@ -583,12 +621,13 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         tx.pending = 0;
         let (t, credit) = self.look();
         tx.watch.published(t, credit);
+        self.tx_watched.store(true, Ordering::Relaxed);
     }
 
     /// Frames sat in the transmit ring past the budget with the controller
     /// taking none (`held` of them, for `waited` ticks): the timeout policy
     /// resets the controller once, then latches it dead. Called by `send`
-    /// with no lock held.
+    /// or [`Nic::tx_watch`] with no lock held.
     #[cold]
     fn tx_timed_out(&self, held: u64, waited: u64) {
         let ms = waited.saturating_mul(1000) / azos_drv_sys::timebase::TIMER_FREQ.max(1);
@@ -657,14 +696,9 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             // Being reset: the ring is the restart's until it is live again.
             return Err(NetError::NotReady);
         }
-        self.reclaim(&mut tx);
-        let (t, _) = self.look();
-        let budget = self.tx_budget_ms.saturating_mul(azos_drv_sys::timebase::TIMER_FREQ) / 1000;
-        if tx.watch.expired(&self.stall, t, budget) {
-            let held = (tx.cur.tail as usize + TX_N - tx.cur.clean as usize) % TX_N;
-            let waited = tx.watch.waited(t);
+        if let Some((held, waited)) = self.reclaim_and_watch(&mut tx) {
             drop(tx);
-            self.tx_timed_out(held as u64, waited);
+            self.tx_timed_out(held, waited);
             return Err(NetError::NotReady);
         }
         let Some(i) = tx.cur.push(TX_N) else {

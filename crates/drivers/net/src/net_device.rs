@@ -311,6 +311,39 @@ pub fn mac(nic: usize) -> [u8; 6] {
     }
 }
 
+/// How often, in ticks, a transmit ring that holds frames is looked at
+/// ([`tx_watch`], `recovery::TX_LOOK_US`); the stack's poller keeps to it.
+pub fn tx_look_ticks() -> u64 {
+    azos_drv_api::recovery::TX_LOOK_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000
+}
+
+/// Look at every NIC's transmit ring (`NetDevice::tx_watch`): take back
+/// what the devices sent, reset a NIC whose ring is past its budget, and
+/// return the earliest tick by which a ring that still holds frames must be
+/// looked at again (`None`: no ring holds any).
+pub fn tx_watch() -> Option<u64> {
+    let mut due: Option<u64> = None;
+    for nic in 0..MAX_NICS {
+        let d = match backend(nic) {
+            BACKEND_ETH => crate::eth::EthNetDevice.tx_watch(),
+            #[cfg(feature = "vf2")]
+            BACKEND_DWMAC => crate::dwmac::board::DwmacNetDevice.tx_watch(),
+            #[cfg(feature = "e1000e")]
+            BACKEND_E1000E => crate::e1000e::E1000eNetDevice.tx_watch(),
+            #[cfg(feature = "igc")]
+            BACKEND_IGC => crate::igc::IgcNetDevice.tx_watch(),
+            BACKEND_VIRTIO => azos_drv_virtio::virtio::net::VirtioNetDevice.tx_watch(),
+            BACKEND_USB => usb_nic().and_then(|d| d.tx_watch()),
+            _ => None,
+        };
+        due = match (due, d) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    due
+}
+
 /// Open a TX batch on every NIC (see `NetDevice::tx_batch_begin`): sends
 /// until [`tx_batch_end`] may share one doorbell. No-op without a NIC, and on
 /// the Cadence board Ethernet.

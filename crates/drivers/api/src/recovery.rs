@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! What a kernel-placed controller does when the device stops answering: one
-//! policy for every block and network driver (owner decision 2026-10-23, Q8 a).
+//! policy for every block, network and USB host controller driver (owner
+//! decision 2026-10-23, Q8 a).
 //!
-//! A command (block) or a transmit ring (network) that runs out of its budget
-//! makes the driver ask [`Recovery::timed_out`]:
+//! A command (block, USB host) or a transmit ring (network) that runs out of
+//! its budget makes the driver ask [`Recovery::timed_out`]:
 //!
 //! * **Reset**, while the device has resets left (Kconfig
 //!   `DEVICE_TIMEOUT_RESETS`, default 1, counted per boot): the driver stops
 //!   the device, confirms the stop (virtio status reads 0, NVMe `CSTS.RDY`
-//!   drops, the AHCI HBA reset bit clears, the NIC's reset bit clears), ends
-//!   every command the device held with a typed error
-//!   (`block::HwStatus::Timeout` for the one whose budget ran out,
-//!   `block::HwStatus::Reset` for the others; a NIC drops the frames in its
-//!   ring), programs the device again over the same memory and tells
+//!   drops, the AHCI HBA reset bit clears, the NIC's reset bit clears, the
+//!   xHCI controller halts and its reset bit clears), ends every command the
+//!   device held with a typed error (`block::HwStatus::Timeout` for the one
+//!   whose budget ran out, `block::HwStatus::Reset` for the others; a NIC
+//!   drops the frames in its ring; a USB host's devices are gone, their
+//!   transfers end `Disconnected`, and they are enumerated again), programs
+//!   the device again over the same memory and tells
 //!   [`Recovery::reset_done`] whether it came back. Nothing is requeued: a
 //!   started request is never recalled (`azos_drv_block::queue`), and the
 //!   caller of a failed one sees an error and decides.
@@ -27,8 +30,8 @@
 //! at once ([`Recovery::latch`] for the last).
 //!
 //! Every reset and every latch the policy decides is reported to the kernel's
-//! sink ([`set_sink`]): the `block-timeout` / `net-timeout` decision record
-//! (`azos_decision`), `action` [`Action`].
+//! sink ([`set_sink`]): the `block-timeout` / `net-timeout` / `usb-timeout`
+//! decision record (`azos_decision`), `action` [`Action`].
 //!
 //! Rejected: reset forever with a backoff (Q8 c): a device that wedges again
 //! after a clean reset is failing, and a disk that keeps half-working is what
@@ -49,6 +52,8 @@ pub enum Class {
     Block = 0,
     /// `net-timeout` (virtio-net, e1000e, igc).
     Net = 1,
+    /// `usb-timeout` (xHCI).
+    Usb = 2,
 }
 
 /// What the policy did; the values are the `action` field of the class's
@@ -83,9 +88,10 @@ azos_common::ro_hook! {
     /// Where the policy's resets and latches are reported (the kernel: the
     /// class's decision record and a console line), as `sink(class, device,
     /// action, detail, waited_ms)`: `device` is the driver's name for it (its
-    /// topology row's: `virtio-blk`, `nvme`, `e1000e`, ...), `detail` the
-    /// first sector of the command that timed out (block) or the frames the
-    /// ring held (network), `waited_ms` how long it waited. Called from the
+    /// topology row's: `virtio-blk`, `nvme`, `e1000e`, `xhci`, ...), `detail`
+    /// the first sector of the command that timed out (block), the frames the
+    /// ring held (network) or the TRB type of the command that went
+    /// unanswered (USB host), `waited_ms` how long it waited. Called from the
     /// driver's reap or send path; it must not do I/O on the device it is
     /// told about. Unset: not reported.
     static SINK: fn(Class, &'static str, Action, u64, u64);
@@ -193,8 +199,16 @@ fn report(r: &Recovery, action: Action, detail: u64, waited_ms: u64) {
 /// Kept under the driver's transmit lock: [`published`](Self::published)
 /// after a frame is put on the ring, [`reclaimed`](Self::reclaimed) after
 /// the completed ones are taken back, [`expired`](Self::expired) when a send
-/// looks. A ring that empties stops the clock; one that keeps moving restarts
-/// it at every reclaim that freed something.
+/// or the network poller looks (`NetDevice::tx_watch`). A ring that empties
+/// stops the clock; one that keeps moving restarts it at every reclaim that
+/// freed something.
+///
+/// The stall clock credits every gap between two looks longer than
+/// [`STALL_GAP_US`] as time the guest did not run, so a ring that holds
+/// frames must be looked at more often than that: a send alone is not enough
+/// (a DHCP or TCP retry comes seconds apart, and every such gap would be
+/// credited, so the ring never ran out of its budget). While
+/// [`running`](Self::running), the poller looks every [`TX_LOOK_US`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TxWatch {
     /// Tick of the last progress while frames were outstanding; 0: none
@@ -243,4 +257,15 @@ impl TxWatch {
     pub fn clear(&mut self) {
         self.since = 0;
     }
+
+    /// Frames are outstanding: the clock runs, and the ring must be looked at
+    /// within [`TX_LOOK_US`].
+    pub fn running(&self) -> bool {
+        self.since != 0
+    }
 }
+
+/// How often the network poller looks at a transmit ring whose
+/// [`TxWatch`] runs: well inside [`STALL_GAP_US`], so a gap the stall clock
+/// credits is one the guest really did not run.
+pub const TX_LOOK_US: u64 = STALL_GAP_US / 2;

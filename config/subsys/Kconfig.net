@@ -643,7 +643,14 @@ config NET_TX_TIMEOUT_MS
       time the guest ran: a host that stopped the guest does not count.
       Linux's netdev watchdog default is the same 5 s.
 
-      Cost: nothing in RAM; a clock read and a compare per send.
+      The ring is looked at by every send and, while it holds frames, by
+      the network poller every 25 ms (recovery::TX_LOOK_US, half the stall
+      clock's gap): a sender that sends seldom (a DHCP or TCP retry) gets
+      the same budget as a busy one.
+
+      Cost: nothing in RAM; a clock read and a compare per send, an atomic
+      load per receive pass, and while frames sit in the ring one poller
+      wake per 25 ms.
 
 config NET_RX_BATCH_MAX
     int "virtio-net RX frames popped per lock and handed up by reference"

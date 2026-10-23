@@ -42,7 +42,7 @@ use super::{
     mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
 };
-use azos_drv_api::recovery::{Class, Recovery, StallClock, TxWatch, Verdict, STALL_GAP_US};
+use azos_drv_api::recovery::{Class, Recovery, StallClock, TxWatch, Verdict, STALL_GAP_US, TX_LOOK_US};
 use azos_sync::SpinLock;
 
 // ---- VirtIO Net header (prepended to every packet) ----
@@ -178,6 +178,10 @@ struct NetState {
     stats: NetQueueStats,
     /// How long the announced TX frames have sat with no progress.
     watch: TxWatch,
+    /// Kconfig CHAOS `virtio-net-tx-wedge` fired: the device is taken to
+    /// have stopped taking frames: it is not told of new ones and nothing is
+    /// reclaimed until a reset.
+    tx_wedged: bool,
     /// Feature word 0 the MMIO transport accepted: a reset device must
     /// accept the same again.
     accepted: u32,
@@ -215,6 +219,7 @@ impl NetState {
             kick_every_frame: false,
             stats: NetQueueStats::zeroed(),
             watch: TxWatch::new(),
+            tx_wedged: false,
             accepted: 0,
             rx_lent: [0; RX_LENT_WORDS],
             #[cfg(all(feature = "pci", target_os = "none"))]
@@ -586,24 +591,15 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
     // Being reset, or stopped for good: the frame is dropped.
     if !net.ready || !RECOVERY.live() { return Err(()); }
 
-    // The only place descriptors come back — which is what makes the early
-    // return safe.
-    let mut freed = 0;
-    while let Some(done) = unsafe { virtq_poll(&mut net.txq) } {
-        unsafe { tx_reclaim_chain(&mut net, done) };
-        freed += 1;
+    // Kconfig CHAOS `virtio-net-tx-wedge`: from this send on the device
+    // takes no frame and gives none back, as a wedged one would, until the
+    // timeout policy resets it.
+    if !net.tx_wedged && azos_chaos::fire(azos_chaos::Point::VirtioNetTxWedge) {
+        net.tx_wedged = true;
     }
-    // Frames still in the ring (two descriptors each), less those of an
-    // open batch, which the device was never told about.
-    let held = (net.txq.num - net.txq.free_count) as usize / 2;
-    let (t, credit) = look();
-    let announced = held.saturating_sub(net.tx_pending as usize);
-    net.watch.reclaimed(t, credit, freed, announced);
-    let budget = azos_limits::NET_TX_TIMEOUT_MS as u64 * azos_drv_sys::timebase::TIMER_FREQ / 1000;
-    if net.watch.expired(&STALL, t, budget) {
-        let waited = net.watch.waited(t);
+    if let Some((held, waited)) = tx_reclaim(&mut net) {
         drop(net);
-        tx_timed_out(held as u64, waited);
+        tx_timed_out(held, waited);
         return Err(());
     }
     if net.tx_cb_on && net.txq.free_count >= 2 {
@@ -666,6 +662,54 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
+/// Take back the frames the device sent, and look at the transmit ring's
+/// budget: `Some((held, waited))` when its announced frames sat past
+/// `NET_TX_TIMEOUT_MS` (`held` in the ring, `waited` ticks), for the caller
+/// to drop `NET` and call [`tx_timed_out`]. The only place descriptors come
+/// back (a send, and the poller's [`tx_watch`]) — which is what makes the
+/// send's early return safe.
+fn tx_reclaim(net: &mut NetState) -> Option<(u64, u64)> {
+    let mut freed = 0;
+    while !net.tx_wedged {
+        let Some(done) = (unsafe { virtq_poll(&mut net.txq) }) else { break };
+        unsafe { tx_reclaim_chain(net, done) };
+        freed += 1;
+    }
+    // Frames still in the ring (two descriptors each), less those of an
+    // open batch, which the device was never told about.
+    let held = (net.txq.num - net.txq.free_count) as usize / 2;
+    let (t, credit) = look();
+    let announced = held.saturating_sub(net.tx_pending as usize);
+    net.watch.reclaimed(t, credit, freed, announced);
+    TX_WATCHED.store(net.watch.running(), Ordering::Relaxed);
+    let budget = azos_limits::NET_TX_TIMEOUT_MS as u64 * azos_drv_sys::timebase::TIMER_FREQ / 1000;
+    net.watch.expired(&STALL, t, budget).then(|| (held as u64, net.watch.waited(t)))
+}
+
+/// The transmit ring holds announced frames (`NetState::watch` runs): the
+/// poller's [`tx_watch`] takes `NET` only then.
+static TX_WATCHED: AtomicBool = AtomicBool::new(false);
+
+/// `NetDevice::tx_watch`: look at the transmit ring between sends, so its
+/// budget runs out for a sender that sends seldom too (`TxWatch`).
+pub fn tx_watch() -> Option<u64> {
+    if !TX_WATCHED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut net = NET.lock();
+    if !net.ready || !RECOVERY.live() {
+        return None;
+    }
+    if let Some((held, waited)) = tx_reclaim(&mut net) {
+        drop(net);
+        tx_timed_out(held, waited);
+        return None;
+    }
+    net.watch.running().then(|| {
+        azos_drv_sys::timebase::now() + TX_LOOK_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000
+    })
+}
+
 /// Ring doorbell `q` (0 = RX, 1 = TX) through this NIC's transport.
 #[inline(always)]
 unsafe fn ring_doorbell(net: &NetState, q: u16) {
@@ -688,6 +732,11 @@ fn tx_kick(net: &mut NetState) {
     // not NO_NOTIFY spares the doorbell).
     let (t, credit) = look();
     net.watch.published(t, credit);
+    TX_WATCHED.store(true, Ordering::Relaxed);
+    // Wedged (Kconfig CHAOS): the device is not told, so it sends nothing.
+    if net.tx_wedged {
+        return;
+    }
     if net.kick_every_frame || unsafe { virtq_kick_decision(&mut net.txq) } {
         unsafe { ring_doorbell(net, 1) };
         net.stats.tx_doorbells += 1;
@@ -1074,6 +1123,8 @@ fn reset_locked(net: &mut NetState) -> bool {
     net.tx_cb_on = false;
     net.rx_irq_on = true;
     net.watch.clear();
+    TX_WATCHED.store(false, Ordering::Relaxed);
+    net.tx_wedged = false;
     post_rx_buffers(net);
     // SAFETY: the RX queue was just given to the device again.
     unsafe { ring_doorbell(net, 0) };
@@ -1152,6 +1203,7 @@ fn stop_locked(net: &mut NetState) {
         unsafe { mmio_write(net.dev.base, VIRTIO_MMIO_STATUS, 0) };
     }
     net.ready = false;
+    TX_WATCHED.store(false, Ordering::Relaxed);
 }
 
 /// Hand RX descriptor `desc_idx` (already filled in) back to the device:
@@ -1320,6 +1372,11 @@ impl NetDevice for VirtioNetDevice {
     #[inline]
     fn is_ready(&self) -> bool {
         is_ready()
+    }
+
+    #[inline]
+    fn tx_watch(&self) -> Option<u64> {
+        tx_watch()
     }
 
     #[inline]

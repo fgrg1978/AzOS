@@ -441,6 +441,10 @@ mod device {
         fn tx_batch_end(&self) {
             NIC.tx_batch_end()
         }
+        #[inline]
+        fn tx_watch(&self) -> Option<u64> {
+            NIC.tx_watch()
+        }
     }
 }
 
