@@ -942,6 +942,13 @@ impl HwQueue for VirtioBlk {
             if !READY.load(Ordering::Acquire) || RECOVERY.dead() || vq.desc.is_null() || vq.num == 0 {
                 return Err(());
             }
+            // Anything the device posted is taken first: a completion naming no
+            // command in flight latches the driver dead here, before this one
+            // could be mistaken for complete.
+            drain(q);
+            if RECOVERY.dead() {
+                return Err(());
+            }
             if RECOVERY.resetting() {
                 // Claimed before the reset began: the device is being reset
                 // and programmed again, so the command ends at once as one
@@ -952,13 +959,6 @@ impl HwQueue for VirtioBlk {
                 SLOT_DONE[t].store(true, Ordering::Relaxed);
                 SLOT_INFLIGHT[t].store(true, Ordering::Release);
                 return Ok(());
-            }
-            // Anything the device posted is taken first: a completion naming no
-            // command in flight latches the driver dead here, before this one
-            // could be mistaken for complete.
-            drain(q);
-            if !RECOVERY.live() {
-                return Err(());
             }
 
             BLK_REQ_HDR[t].0.req_type = rtype;

@@ -1386,13 +1386,15 @@ blk_reset_row() { # blk_reset_row <label> <riscv64|aarch64> <kernel image> <once
             grep -aE -m3 "PANIC|AARCH64-TRAP|FATAL" "$log" | tr -d '\r' | sed 's/^/        /'
             echo "      log kept: $log"; return
         fi
-        # No stop caught a command in flight: another boot.
+        # No stop caught a command in flight (or, for `twice`, only one of
+        # them did): another boot.
         [ "$resets" -eq 0 ] && [ "$latched" = no ] && continue
+        [ "$mode" = twice ] && [ "$resets" -eq 1 ] && [ "$latched" = no ] && continue
         break
     done
     local lines; lines="$(grep -aE "VIRTIO-BLK\]|\[BLK\]" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /')"
-    if [ "$resets" -eq 0 ] && [ "$latched" = no ]; then
-        bad; echo "      $BLK_STALL_TRIES boots, no stop caught a command in flight: the row proves nothing"
+    if [ "$latched" = no ] && { [ "$resets" -eq 0 ] || [ "$mode" = twice ]; } && [ "$resets" -le 1 ]; then
+        bad; echo "      $BLK_STALL_TRIES boots, the stops did not catch enough commands in flight ($resets reset(s)): the row proves nothing"
         echo "      log kept: $log"; return
     fi
     if [ "$mode" = once ]; then

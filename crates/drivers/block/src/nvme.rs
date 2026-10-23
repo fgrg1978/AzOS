@@ -918,9 +918,9 @@ fn mark_late(late: u32) {
 /// queue or staging page): bring it up again over the pages it had, as
 /// bring-up did (admin queue, enable, queue count, the I/O queue pairs), and
 /// end the commands it held (`late` ones `Timeout`, the others `Reset`). Each
-/// I/O queue is emptied and its commands ended under its lock, so a `submit`
-/// either published before (and its command is ended here) or finds the
-/// controller being reset. Namespace 1 is not identified again: a controller
+/// I/O queue is emptied and its commands ended under its lock (the admin
+/// commands run without it), so a `submit` either published before (and its
+/// command is ended here) or finds the controller being reset. Namespace 1 is not identified again: a controller
 /// reset does not change it, and the staging pages that bring-up identified
 /// into may hold a finished read the layer has not copied out yet.
 fn bring_up_again(dev: &Dev, late: u32) -> Result<(), NvmeError> {
@@ -947,25 +947,34 @@ fn bring_up_again(dev: &Dev, late: u32) -> Result<(), NvmeError> {
         return Err(NvmeError::Admin("set number of queues"));
     }
     for qi in 0..queues {
-        let _g = QLOCK[qi].lock();
-        // SAFETY: queue `qi` is under its lock; the controller has no I/O
-        // queue yet, so it touches neither page.
-        let q = unsafe { &mut (*(&raw mut QUEUES))[qi] };
-        // SAFETY: as above.
-        unsafe {
-            core::ptr::write_bytes(q.sq as *mut u8, 0, PAGE);
-            core::ptr::write_bytes(q.cq as *mut u8, 0, PAGE);
-        }
-        *q = Queue { sq: q.sq, cq: q.cq, sq_pa: q.sq_pa, cq_pa: q.cq_pa, ..QUEUE_ZERO };
-        let (qid, cq_pa, sq_pa, irq) = (qid_of(qi), q.cq_pa, q.sq_pa, dev.irq);
+        // Under the lock only to wait out a `submit` that began before the
+        // reset, empty the queue and end its commands; the admin commands
+        // that create it again run with no lock held (owner rule F1: no
+        // queue lock across a device wait). A `submit` meanwhile finds the
+        // controller being reset, and a reap's drain finds the zeroed
+        // completion queue empty.
+        let (cq_pa, sq_pa) = {
+            let _g = QLOCK[qi].lock();
+            // SAFETY: queue `qi` is under its lock; the controller has no
+            // I/O queue yet, so it touches neither page.
+            let q = unsafe { &mut (*(&raw mut QUEUES))[qi] };
+            // SAFETY: as above.
+            unsafe {
+                core::ptr::write_bytes(q.sq as *mut u8, 0, PAGE);
+                core::ptr::write_bytes(q.cq as *mut u8, 0, PAGE);
+            }
+            *q = Queue { sq: q.sq, cq: q.cq, sq_pa: q.sq_pa, cq_pa: q.cq_pa, ..QUEUE_ZERO };
+            for slot in (qi..SLOTS).step_by(queues) {
+                if SLOT_INFLIGHT[slot].load(Ordering::Acquire) && !SLOT_DONE[slot].load(Ordering::Acquire) {
+                    SLOT_STATUS[slot].store(if late & (1 << slot) != 0 { ST_TIMEOUT } else { ST_RESET }, Ordering::Relaxed);
+                    SLOT_DONE[slot].store(true, Ordering::Release);
+                }
+            }
+            (q.cq_pa, q.sq_pa)
+        };
+        let (qid, irq) = (qid_of(qi), dev.irq);
         a.admin(|cid| proto::create_io_cq(cid, qid, IO_DEPTH, cq_pa, qid, irq), "create io cq")?;
         a.admin(|cid| proto::create_io_sq(cid, qid, IO_DEPTH, sq_pa, qid), "create io sq")?;
-        for slot in (qi..SLOTS).step_by(queues) {
-            if SLOT_INFLIGHT[slot].load(Ordering::Acquire) && !SLOT_DONE[slot].load(Ordering::Acquire) {
-                SLOT_STATUS[slot].store(if late & (1 << slot) != 0 { ST_TIMEOUT } else { ST_RESET }, Ordering::Relaxed);
-                SLOT_DONE[slot].store(true, Ordering::Release);
-            }
-        }
     }
     Ok(())
 }
