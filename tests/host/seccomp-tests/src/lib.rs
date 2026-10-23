@@ -1065,7 +1065,7 @@ mod image_profiles {
     const TOPOLOGY_SRC: &str = include_str!("../../../../crates/core/topology/src/builder.rs");
 
     /// The images the shell starts as pipeline stages: the `Cap<Launch>` grants
-    /// its row holds (`SH_CAPS` and the package tool's `PKG_LAUNCH` in the
+    /// its row holds (`SH_CAPS_BASE` and the package tool's `PKG_LAUNCH` in the
     /// topology builder) that have a native profile. A pipe end arrives in
     /// their startup block as a region, which `startup_init` maps, and a read,
     /// write or close on it sleeps, wakes and gives the end up. Their rows
@@ -1076,7 +1076,7 @@ mod image_profiles {
     /// stage the moment it is in it, and this finds it.
     fn pipe_stages() -> Vec<String> {
         let mut out = Vec::new();
-        for start in ["const SH_CAPS: &[CapSpec] = &[", "const PKG_LAUNCH: CapSpec = CapSpec {"] {
+        for start in ["const SH_CAPS_BASE: &[CapSpec] = &[", "const PKG_LAUNCH: CapSpec = CapSpec {"] {
             let at = TOPOLOGY_SRC.find(start).unwrap_or_else(|| panic!("builder.rs no longer has `{start}`"));
             let rest = &TOPOLOGY_SRC[at..];
             let end = rest.find("\n];").or_else(|| rest.find("\n};")).expect("the end of the grant list");
