@@ -174,7 +174,7 @@ Source: `crates/core/abi/src/cap.rs` (`CapPerms`).
 |------------------|---------------------------------------------------------------------------------------------|
 | `SYS_CAP_INFO`   | reads what the caller holds without using it. Queries: `CAP_INFO_LOOKUP` (find a handle by type and resource), `CAP_INFO_TREE` (find the directory tree covering a path), `CAP_INFO_QUERY` (type, rights, badge, expiry of a handle). Needs no right and is not subject to containment. |
 | `SYS_CAP_CLOSE`  | deletes a handle and releases the object it names by type (io_ring, port, memory object, file, socket or endpoint); copies derived from it stay alive. Closing the last `READ` (serving) capability of an endpoint the caller serves ends its role as a server's death does: queued calls end `PEER_DIED`, a named endpoint stays unclaimed, an anonymous one is freed |
-| `SYS_CAP_DERIVE` | mints a badged, optionally dated copy of an endpoint capability that holds `DUP`; the copy is a child of the source in the warrant tree. A kernel-hosted endpoint refuses it, because its badge is the resource. |
+| `SYS_CAP_DERIVE` | mints a badged, optionally dated copy of an endpoint capability that holds `DUP`; the copy is a child of the source in the warrant tree. A kernel-hosted endpoint refuses it, because its badge is the resource. An expiry already past is refused with `EDEADLINE` before anything is minted (`Rule::DeadlineExpired`). |
 | `SYS_CAP_REVOKE` | revokes every capability derived from a handle and keeps the handle; returns the replacement handle, and the old value is stale |
 
 Capabilities also move between Domains in an IPC message. Each capability entry
@@ -188,7 +188,8 @@ locks before the sender loses anything, and either every entry lands or none
 does.
 
 `ENDPOINT_DERIVE` (an `invoke` op on an endpoint capability) is the derive that
-can also append caveats, up to `ENDPOINT_DERIVE_CAVEATS_MAX` (4).
+can also append caveats, up to `ENDPOINT_DERIVE_CAVEATS_MAX` (4). It applies the
+same expiry rule as `SYS_CAP_DERIVE`.
 
 Source: `crates/core/abi/src/syscall_nr.rs` (`SYS_CAP_INFO`, `SYS_CAP_CLOSE`,
 `SYS_CAP_DERIVE`, `SYS_CAP_REVOKE`, `CAP_INFO_LOOKUP`, `CAP_INFO_TREE`,
@@ -464,9 +465,22 @@ signed topology, and the grant is as narrow as the action.
   none of these capabilities, so every row is refused and recorded.
 - **Task policies.** The subtree policy above is the other administrative
   lever: a parent's `subtree` row bounds every Domain beneath it.
+- **The pledge.** A program can narrow, one way, which syscall cases and
+  `SYS_INVOKE` op classes its own Domain may still use (`DOMAIN_PLEDGE`); see
+  [abi.md](abi.md#cases-entry-counters-and-the-pledge). It removes authority
+  and grants none.
+- **User sessions.** A Domain's owner (`owner_root`, 0 for the system) is
+  inherited from the Domain that created it and changes only at a spawn with
+  `SPAWN_F_USER`, which spends the one-shot login grant
+  the `keys` interface's `login` op arms for the caller's Domain when a
+  credential matches a `[login.NAME]` row of the signed topology. The grant
+  lapses after Kconfig `LOGIN_GRANT_TTL_S` (default 20 s); without it the
+  spawn is refused with `EACCES`.
 
 Source: `crates/core/topology/src/builder.rs` (`TASK_VIEW_CAP`,
 `INSPECT_ADMIN_CAP`), `crates/core/ipc/src/inspect_region.rs` (`seed_mint`),
+`crates/core/syscall/src/keys.rs` (`take_login_grant`),
+`crates/core/sched/src/domain.rs` (`login_grant`),
 `crates/core/ipc/src/authority_policy.rs` (`AUTHORITY_TABLE`,
 `console_seed_ifaces`, `may_proceed`),
 `crates/core/ipc/src/cap_seed.rs`.
