@@ -25,6 +25,19 @@
 
 set -uo pipefail
 
+# bash reads a script while it runs it: an edit to this file during a run (a
+# row fixed in the same worktree, a checkout) moves what its next read finds,
+# and the run dies on a "syntax error" at a line that is fine (two fronts'
+# rows runs, 2026-10-23, after the robust-list rows). So the gate runs from a
+# copy taken as it starts; CI_CHECK_DIR is the checkout's tools/.
+if [ "${CI_CHECK_SNAP:-}" != "$0" ]; then
+    CI_CHECK_DIR="$(cd "$(dirname "$0")" && pwd)"; export CI_CHECK_DIR
+    ci_snap="$(mktemp "${TMPDIR:-/tmp}/ci_check.XXXXXX")" && cp "$0" "$ci_snap" \
+        || { echo "ci_check: cannot copy $0 to run from"; exit 2; }
+    CI_CHECK_SNAP="$ci_snap" exec bash "$ci_snap" "$@"
+fi
+rm -f "$0"; unset CI_CHECK_SNAP   # the copy: bash holds it open
+
 # qgrep: `grep -q` at the end of a pipe, made safe under pipefail. grep -q
 # exits on its first match; if the writer still has bytes to send it takes
 # SIGPIPE and the pipeline reports 141, so a match reads as "absent". The
@@ -41,9 +54,9 @@ CARGO="${CARGO:-cargo}"
 # the kernel already built from identical inputs (CI_KCACHE; on and kept
 # between runs under CI_TIER=rows, off otherwise: see "The kernel cache" below).
 export CI_REAL_CARGO="$CARGO"
-CARGO="$(cd "$(dirname "$0")" && pwd)/ci_cargo.py"
+CARGO="$CI_CHECK_DIR/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$CI_CHECK_DIR/.." && pwd)"
 # Every build output and every image QEMU loads lives under $AZOS_OUT, never in
 # the checkout (tools/out_dir.py computes the default). Each cargo call names its
 # own target dir (tools/ci_cargo.py defaults it), so a caller's is dropped.
