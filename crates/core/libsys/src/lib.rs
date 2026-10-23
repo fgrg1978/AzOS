@@ -1742,9 +1742,10 @@ pub fn file_write_typed(cap: u32, buf: &[u8]) -> isize {
 }
 
 /// Revoke a capability and release what it names. Handles `Cap<File>`,
-/// `Cap<Socket>` and `Cap<Endpoint>` (closing the last `READ` capability of an
-/// endpoint the caller serves also ends its role as a server); any other kind
-/// is `-ECAPKIND`. A second close of the same handle is `-ECAPSTALE`. A pipe
+/// `Cap<Socket>`, `Cap<Endpoint>` (closing the last `READ` capability of an
+/// endpoint the caller serves also ends its role as a server) and a range of
+/// I/O ports (its ports close in every thread that opened them); any other
+/// kind is `-ECAPKIND`. A second close of the same handle is `-ECAPSTALE`. A pipe
 /// token gives up its end ([`pipe::close`]).
 pub fn close_typed(cap: u32) -> isize {
     if pipe::is_token(cap) {
@@ -2205,6 +2206,8 @@ pub fn irq_ack(line: u32) -> isize {
 pub struct IoPorts {
     first: u16,
     last: u16,
+    /// The capability's handle.
+    handle: u32,
 }
 
 /// Open the `count` ports from `first` to the calling thread: the capability
@@ -2222,7 +2225,7 @@ pub fn ioport_open(first: u16, count: u16) -> Result<IoPorts, isize> {
         return Err(h);
     }
     ioport_enable(h as u32)?;
-    Ok(IoPorts { first, last: first + (count - 1) })
+    Ok(IoPorts { first, last: first + (count - 1), handle: h as u32 })
 }
 
 /// `DEVICE_IOPORT_ENABLE` on the `ty::IOPORT` handle `h`: 0, or the errno.
@@ -2237,6 +2240,13 @@ impl IoPorts {
     /// The first and last port of the range.
     pub fn bounds(&self) -> (u16, u16) {
         (self.first, self.last)
+    }
+
+    /// Give the ports up: the capability is closed ([`close_typed`]), and
+    /// the range closes in every thread of this task that opened it, from
+    /// their next instruction. 0, or the errno.
+    pub fn close(self) -> isize {
+        close_typed(self.handle)
     }
 
     /// `in al, dx`: a byte from `port`. A port outside every open range

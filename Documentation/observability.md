@@ -161,6 +161,7 @@ what `RuleInfo::fields` names.
 | 71 | `power-assertion` | task | reason, ttl_ms, id | A system power assertion (keep the machine out of system suspend) refused by its quota, or released by the kernel at its timeout with the holder silent; a grant is not recorded |
 | 72 | `nic-queue` | tid | ifindex, queue, why | A program refused a NIC queue that carries the node's own stack (1) or the route to its link peer, the e-stop's path (2) |
 | 73 | `clocksource` | clock | reason, drift_ppm, limit_ppm | x86_64: the TSC refused as the clock at boot (not invariant) or demoted by the watchdog (it drifted from the HPET or the PM timer) (refuse), or kept though not invariant because nothing else can be read (admit) |
+| 74 | `ioport-reserved` | tid | first, last, kernel_port | A topology row's I/O port grant refused: the range holds a port a kernel driver bound (COM1, the CMOS clock, PCI configuration, the 8042, the PIT's channel 0) |
 
 **Reading them.**
 

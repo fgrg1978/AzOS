@@ -167,6 +167,11 @@ fn rate_hypervisor() -> Option<u64> {
 const TSC_HZ_MIN: u64 = 1_000_000;
 const TSC_HZ_MAX: u64 = 100_000_000_000;
 
+/// The PIT's channel 0 data port and its mode register (which every channel
+/// shares: a command's top two bits name its channel).
+const PIT_CH0: u16 = 0x40;
+const PIT_MODE: u16 = 0x43;
+
 /// The TSC against the PIT's channel 0, read through the latch command:
 /// its gate is always on, unlike channel 2's, which hangs off port 0x61 and
 /// a PC speaker QEMU microvm does not have. Mode 0 from 0xFFFF counts down
@@ -174,14 +179,14 @@ const TSC_HZ_MAX: u64 = 100_000_000_000;
 fn rate_pit(ms: u32) -> Option<u64> {
     let want = encode::pit_count_for_ms(ms)? as u64;
     let read = || {
-        cpu::outb(0x43, 0x00); // latch channel 0
-        let lo = cpu::inb(0x40) as u64;
-        let hi = cpu::inb(0x40) as u64;
+        cpu::outb(PIT_MODE, 0x00); // latch channel 0
+        let lo = cpu::inb(PIT_CH0) as u64;
+        let hi = cpu::inb(PIT_CH0) as u64;
         lo | hi << 8
     };
-    cpu::outb(0x43, 0x30); // channel 0, lobyte/hibyte, mode 0, binary
-    cpu::outb(0x40, 0xFF);
-    cpu::outb(0x40, 0xFF);
+    cpu::outb(PIT_MODE, 0x30); // channel 0, lobyte/hibyte, mode 0, binary
+    cpu::outb(PIT_CH0, 0xFF);
+    cpu::outb(PIT_CH0, 0xFF);
     let c0 = read();
     let t0 = cpu::rdtsc();
     // A missing PIT reads 0xFFFF forever: bounded, then the range check.
@@ -252,6 +257,9 @@ fn rate_pmtimer(ms: u32) -> Option<u64> {
         return None;
     }
     let port = f.pm_tmr_port;
+    // The counter the clock was measured on is the kernel's: no ring-3 grant
+    // may open it (a dword: four ports).
+    azos_arch_api::ioport::reserve(port, port.saturating_add(3));
     let want = encode::pmtmr_ticks_for_ms(ms)?;
     let read = || cpu::inl(port);
     let c0 = read();
@@ -284,7 +292,14 @@ pub fn clock_plan() -> encode::ClockPlan {
 /// off, before any AP). Without an invariant TSC (or under `n`) the rates
 /// CPUID and the hypervisor state are not taken: HPET, then PIT, measure it,
 /// and CPUID 16H's nominal rate is the last resort ([`encode::ClockPlan`]).
+///
+/// The PIT's channel 0 is the kernel's whichever source wins (its line, IRQ
+/// 0, stays masked for good): its data port is reserved, and no ring-3 grant
+/// may open it. The mode register (0x43) is not: channel 2, the PC speaker,
+/// is programmed through it too, and nothing reads channel 0 after this
+/// boot-time measurement (`azos_ipc::ioport_cap` has the rule).
 pub fn calibrate() -> TscSource {
+    azos_arch_api::ioport::reserve(PIT_CH0, PIT_CH0);
     let ms = azos_limits::X86_TSC_CALIBRATE_MS as u32;
     let stated = clock_plan() == encode::ClockPlan::Stated;
     let trust_cpuid = azos_limits::X86_TSC_FREQ_CPUID && stated;

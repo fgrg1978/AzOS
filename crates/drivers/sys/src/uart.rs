@@ -907,6 +907,8 @@ mod com16550_pio {
     //! the console's ring by the THR-empty interrupt (`enable_tx_irq`), one
     //! FIFO load per interrupt, as the MMIO 16550.
     const COM1: u16 = 0x3F8;
+    /// The 16550's eight registers, `COM1..COM1 + 8`.
+    const REGS: u16 = 8;
     const REG_THR: u16 = 0;
     const REG_IER: u16 = 1;
     const REG_FCR: u16 = 2;
@@ -927,8 +929,10 @@ mod com16550_pio {
     #[inline(always)]
     fn inb(reg: u16) -> u8 { azos_arch::cpu::inb(COM1 + reg) }
 
-    /// 115200 8N1, FIFOs on, interrupts off (polled).
+    /// 115200 8N1, FIFOs on, interrupts off (polled). The registers are
+    /// the kernel's from here: no ring-3 grant may open them.
     pub fn init() {
+        azos_arch::ioport::reserve(COM1, COM1 + REGS - 1);
         outb(REG_IER, 0x00);
         outb(REG_LCR, 0x80);
         outb(REG_THR, 0x01);

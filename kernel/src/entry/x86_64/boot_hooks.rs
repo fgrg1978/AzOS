@@ -1111,18 +1111,25 @@ pub fn iommu_unit_bases() -> (Option<u64>, Option<u64>) {
 #[cfg(feature = "pci")]
 static PCI_PORT: azos_sync::SpinLock<()> = azos_sync::SpinLock::new(());
 
+/// The pair's address port (a dword at 0xCF8) and data port (a dword at
+/// 0xCFC, each of its bytes a port).
+#[cfg(feature = "pci")]
+const PCI_ADDR: u16 = 0xCF8;
+#[cfg(feature = "pci")]
+const PCI_DATA: u16 = 0xCFC;
+
 /// The address/data sequence of a 32-bit read; the caller holds [`PCI_PORT`].
 #[cfg(feature = "pci")]
 fn port_read32_locked(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    azos_arch::cpu::outl(0xCF8, azos_arch::irq::encode::pci_port_address(bus, device, function, offset));
-    azos_arch::cpu::inl(0xCFC)
+    azos_arch::cpu::outl(PCI_ADDR, azos_arch::irq::encode::pci_port_address(bus, device, function, offset));
+    azos_arch::cpu::inl(PCI_DATA)
 }
 
 /// The write twin of [`port_read32_locked`].
 #[cfg(feature = "pci")]
 fn port_write32_locked(bus: u8, device: u8, function: u8, offset: u8, val: u32) {
-    azos_arch::cpu::outl(0xCF8, azos_arch::irq::encode::pci_port_address(bus, device, function, offset));
-    azos_arch::cpu::outl(0xCFC, val);
+    azos_arch::cpu::outl(PCI_ADDR, azos_arch::irq::encode::pci_port_address(bus, device, function, offset));
+    azos_arch::cpu::outl(PCI_DATA, val);
 }
 
 /// PCI configuration mechanism #1: a 32-bit read of `offset` (< 256, a
@@ -1164,7 +1171,13 @@ pub fn pci_port_indirect_read32(bus: u8, device: u8, function: u8, index_off: u8
 /// segment-0 ECAM window (the HPET, the IOAPICs and virtio-mmio were mapped with
 /// the kernel tables). A not-present -> present change needs no TLB flush
 /// on x86.
+///
+/// With `pci` the configuration port pair is the kernel's from here, ECAM or
+/// not (the SMN reads of an AMD root complex use it): no ring-3 grant may
+/// open it.
 pub fn arch_map_late_mmio() {
+    #[cfg(feature = "pci")]
+    azos_arch::ioport::reserve(PCI_ADDR, PCI_DATA + 3);
     #[cfg(feature = "pci")]
     if let Some((base, _)) = pci_ecam_bus0() {
         if !crate::boot::map_mmio_region(base, ECAM_BUS0_SIZE as usize) {

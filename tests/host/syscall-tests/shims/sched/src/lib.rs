@@ -1257,15 +1257,25 @@ pub mod group {
 /// edge in `vdso_notify.rs`: which key a word gets, and what is refused first.
 /// `azos_sched::ioport`'s surface `syscall/src/ioport.rs` calls. The host
 /// suite's port space is 0 (its .config is not x86_64's), so the op answers
-/// before it gets here.
+/// before it reaches `enable`; a revocation records what it was asked.
 pub mod ioport {
+    use std::sync::Mutex;
+
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum EnableError {
         NoPorts,
         Full,
     }
-    pub fn enable(_first: u16, _last: u16) -> Result<(), EnableError> {
+    pub fn enable(_first: u16, _last: u16, _table: u32) -> Result<(), EnableError> {
         todo!("not reached: the host suite has no port space")
+    }
+
+    /// Every `revoke(table, first, last)` asked, in order.
+    pub static REVOKED: Mutex<Vec<(u32, u16, u16)>> = Mutex::new(Vec::new());
+
+    pub fn revoke(table: u32, first: u16, last: u16) -> usize {
+        REVOKED.lock().unwrap().push((table, first, last));
+        0
     }
 }
 

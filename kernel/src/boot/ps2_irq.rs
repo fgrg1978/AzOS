@@ -40,6 +40,12 @@ pub(crate) fn wire_ps2_irq() {
             return;
         }
     };
+    // The controller answered: its two ports are the kernel's, and no
+    // ring-3 grant may open them (one command to 0x64 pulses the CPU's reset
+    // line).
+    use azos_drv_input::i8042::{PORT_CMD, PORT_DATA};
+    azos_arch::ioport::reserve(PORT_DATA, PORT_DATA);
+    azos_arch::ioport::reserve(PORT_CMD, PORT_CMD);
     // The handler must know the lines before the IOAPIC unmasks them, and
     // the controller must not raise one before it is routed.
     let kbd_line = if kbd { p.isa_irq(1) } else { (u32::MAX, false, false) };

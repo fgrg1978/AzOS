@@ -132,8 +132,10 @@ pub(crate) fn install_sched_hooks() {
     azos_ipc::cap_store::set_swept_hook(azos_ipc::memobj::memobj_warrant_swept);
     // Wave 11: a channel/io_ring port binding dies with the
     // capability it was made through and follows it when it moves
-    // (`azos_ipc::port::port_cap_event`). Before the first user task.
-    azos_ipc::cap_store::set_cap_event_hook(azos_ipc::port::port_cap_event);
+    // (`azos_ipc::port::port_cap_event`); the I/O ports a thread opened
+    // close with theirs (`azos_syscall::ioport::ioport_cap_event`). Before
+    // the first user task.
+    azos_ipc::cap_store::set_cap_event_hook(cap_event);
     // KMEM-CHARGE: the capability table, endpoints and MemObjs a Domain owns
     // are charged to its kernel-memory ledger (`azos_sched::domain`), against
     // its row's `kmem_kib`. Before the first user task.
@@ -476,6 +478,13 @@ fn robust_shm_word_of(proc_id: u32, va: u64) -> Option<(u32, u32)> {
 fn mapping_protect(root: usize, va: usize, pages: usize, write: bool) -> usize {
     let end = va.saturating_add(pages.saturating_mul(azos_arch::PAGE_SIZE));
     azos_mm::vmm::set_user_range_write(root, va, end, write)
+}
+
+/// The capability store's one event hook (`cap_store::CapEventHook`): the
+/// port bindings, then the I/O ports.
+fn cap_event(e: azos_ipc::cap_store::CapEvent) {
+    azos_ipc::port::port_cap_event(e);
+    azos_syscall::ioport::ioport_cap_event(e);
 }
 
 /// `azos_ipc::memobj::UnmapHook`: remove a MOVE's, a revoke's or a shrink's

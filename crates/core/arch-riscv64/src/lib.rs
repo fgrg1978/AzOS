@@ -18,6 +18,9 @@ pub use azos_arch_api::{ArchEntry, ArchPlatform, FirmwareMemory, PAGE_SHIFT, PAG
 pub use azos_arch_api::{CasOrder, SpinWait};
 // The performance counters (`ARCH.cycles()`, `.instructions()`, `.event(sel)`).
 pub use azos_arch_api::Pmu;
+// Ring-3 port I/O's seam, and the ports the kernel's drivers reserve
+// (`ioport::reserve`, where each binds; empty off x86_64).
+pub use azos_arch_api::ioport;
 // Sv39 has one base page size: the contract's must agree with `mmu`'s.
 const _: () = assert!(mmu::PAGE_SIZE == PAGE_SIZE && mmu::PAGE_SHIFT == PAGE_SHIFT);
 

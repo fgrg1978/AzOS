@@ -224,7 +224,10 @@ fn probe() -> Option<(Chip, &'static str)> {
     {
         // No ACPI flag is consulted: a machine without a CMOS clock leaves
         // the ports floating, and the driver tells that bus from a chip on
-        // its first read (status D reads 0xff where no chip does).
+        // its first read (status D reads 0xff where no chip does). The pair
+        // is the kernel's either way (the index port's bit 7 also masks the
+        // NMI): no ring-3 grant may open it.
+        azos_arch::ioport::reserve(azos_rtc::mc146818::PORT_INDEX, azos_rtc::mc146818::PORT_DATA);
         let c = azos_rtc::mc146818::Mc146818::new(
             PcPorts,
             Some(azos_rtc::mc146818::CENTURY_DEFAULT),

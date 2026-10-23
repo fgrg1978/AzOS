@@ -547,3 +547,28 @@ fn the_port_op_answers_enodev_without_a_port_space() {
     let unknown = op(CapKind::Device, CLASS_DRIVER, 250) as u64;
     assert_eq!(invoke(forged, INVOKE_REGS | unknown, 0, 0, 0, 0), Errno::EINVAL.to_syscall_ret());
 }
+
+/// **A port-range capability takes its ports with it.** `SYS_CAP_CLOSE` on
+/// one revokes it (a second close is stale), and the capability store's
+/// event for it, as for any revocation, closes its range in the holder's
+/// table (`azos_sched::ioport::revoke`, the shim records the ask): the
+/// table's index and the range's bounds.
+///
+/// **Canary.** Drop the `ty::IOPORT` arm of `sys_close_typed`: the close is
+/// `-ECAPKIND` and nothing closes.
+#[test]
+fn closing_a_port_capability_closes_its_ports() {
+    let _g = serial();
+    let (tid, _) = ring3();
+    let table = azos_ipc::cap_store::table_slot(tid).expect("a live table") as u32;
+    let range = azos_abi::cap::ioport_range(0x80, 1).unwrap();
+    let cap = azos_ipc::cap_store::grant::<targets::IoPorts>(tid, CapPerms::RW, range).expect("a free slot");
+    azos_ipc::cap_store::set_cap_event_hook(crate::ioport::ioport_cap_event);
+    azos_sched::ioport::REVOKED.lock().unwrap().clear();
+    let r = crate::handlers::sys_close_typed(cap.raw().as_raw() as u64);
+    let second = crate::handlers::sys_close_typed(cap.raw().as_raw() as u64);
+    azos_ipc::cap_store::set_cap_event_hook(|_| {});
+    assert_eq!(r, 0, "the holder closes its port range");
+    assert_eq!(*azos_sched::ioport::REVOKED.lock().unwrap(), vec![(table, 0x80, 0x80)]);
+    assert_eq!(second, Errno::ECAPSTALE.to_syscall_ret(), "the capability went with the close");
+}

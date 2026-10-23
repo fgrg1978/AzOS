@@ -491,10 +491,13 @@ impl Kernel {
     /// the kernel has panicked, park here (never returns, no EOI owed). Then
     /// queue the wakes another CPU left for this one (`SCHED_REMOTE_WAKE_DEFER`:
     /// its try of our queue lock failed). One load each when there are none.
+    /// Then the running thread's I/O ports, which a revocation on another CPU
+    /// may have closed (`azos_sched::ioport::revoke`): nothing off x86_64.
     #[inline]
     pub fn ipi_work() {
         azos_actuation::watchdog::halt_if_panicked();
         azos_sched::scheduler::drain_remote_wakes();
+        azos_sched::ioport::refresh();
     }
 
     /// The console UART's interrupt: empty the FIFO into the ring the readers

@@ -1691,6 +1691,8 @@ pub fn sys_close_typed(cap_raw: u64) -> i64 {
             0
         }
         Some(ty::ENDPOINT) => close_endpoint(CapHandle::from_raw(cap_raw as u32)),
+        // A port range: revoked, and the ports its threads opened close.
+        Some(ty::IOPORT) => crate::ioport::ioport_close(raw),
         Some(kind) => {
             // A kind with no close here is `ECAPKIND` for a handle the caller
             // holds, but a handle that names no live slot is stale whatever

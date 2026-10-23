@@ -35,6 +35,8 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 - `ty::IOPORT` (`Device` class 3), a range of I/O ports (`cap::ioport_range`,
   `cap::ioport_bounds`), and `DEVICE_IOPORT_ENABLE`, the op that opens it
   to the calling thread (x86_64; `-ENODEV` where the ISA has no ports).
+  `SYS_CAP_CLOSE` on it revokes it, and the ports close in every thread of
+  the holder that opened them.
 - `SYS_MO_CREATE` takes the memory-object kind `SHM_KIND_CONTIG` (one
   physically contiguous run, for memory a device reads or writes) from ring 3,
   without the swappable, volatile or clone fields.

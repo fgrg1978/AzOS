@@ -496,6 +496,7 @@ mod tests {
             (Rule::PowerAssertion, 71, "power-assertion"),
             (Rule::NicQueue, 72, "nic-queue"),
             (Rule::Clocksource, 73, "clocksource"),
+            (Rule::IoportReserved, 74, "ioport-reserved"),
         ];
         assert_eq!(azos_decision::RULES.len(), all.len(), "a rule without a name, or a name without a rule");
         for &(rule, num, name) in all {

@@ -359,9 +359,12 @@ pub unsafe fn discover(start_info_pa: usize) {
 
 /// Remap both 8259 PICs above the exception vectors (a spurious IRQ 7/15
 /// then lands on a harmless vector, never on #DF) and mask every line: the
-/// IOAPIC and the LAPIC carry every interrupt.
+/// IOAPIC and the LAPIC carry every interrupt. Every port written here is
+/// the kernel's from then on: no ring-3 grant may open one (an unmasked
+/// 8259 line would raise a vector the kernel never routed).
 pub fn mask_8259() {
     for (port, v) in crate::irq::encode::pic_remap(crate::irq::encode::PIC_VECTOR_BASE) {
+        azos_arch_api::ioport::reserve(port, port);
         crate::cpu::outb(port, v);
     }
     crate::cpu::outb(0x21, 0xFF);

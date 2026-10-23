@@ -259,7 +259,10 @@ config X86_IOPORT_BITMAP_PORTS
       which covers the PC's legacy ISA ports (0x000..0x3FF: the PIT, the
       speaker, COM2-4);
       65536 (8 KiB per CPU, Linux's IO_BITMAP_BITS) reaches the I/O BARs
-      PCI firmware assigns above 0x1000.  Only x86_64 has a port space: on
+      PCI firmware assigns above 0x1000.  The ports the kernel's own
+      drivers bind (COM1, the CMOS clock, 0xCF8-0xCFF, the 8042, the PIT's
+      channel 0, the 8259s, the ACPI PM timer) are never granted, whatever
+      the topology asks: one more bit per port of .bss records them.  Only x86_64 has a port space: on
       riscv64 and aarch64 this must stay 0, and the op answers -ENODEV
       there.  A switch between tasks that hold no port costs one load and
       one test; a switch to one that does copies only its bitmap bytes, and
@@ -272,7 +275,7 @@ config X86_IOPORT_RANGES
     help
       The ranges (one per `DEVICE_IOPORT_ENABLE`) a thread can hold open at
       once; the next is refused with -EMFILE.  Each task slot keeps them
-      (4 bytes each, plus 8) when X86_IOPORT_BITMAP_PORTS is not 0, and
-      nothing otherwise.  A PC-speaker driver opens two (PIT channel 2 and
+      (4 bytes each, plus 14, rounded up to 8) when X86_IOPORT_BITMAP_PORTS
+      is not 0, and nothing otherwise.  A PC-speaker driver opens two (PIT channel 2 and
       its command port, then port 0x61).
 

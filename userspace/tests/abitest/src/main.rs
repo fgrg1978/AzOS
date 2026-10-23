@@ -1711,10 +1711,14 @@ fn check_fault_kills_only_the_child() {
 /// a child whose row grants the POST port 0x80 (`ioport.128.1`) reads it in
 /// ring 3 (exit 0); a read of 0x84, which no range opens, kills it with #GP as
 /// its own fault (128+SIGSEGV); so does a read of 0x80 by a child that never
-/// opened it. This task's row grants no port: `ioport_open` finds nothing.
+/// opened it, and one by a child that opened it, read it, and closed its
+/// capability (the revocation takes the open port back). This task's row
+/// grants no port: `ioport_open` finds nothing.
 ///
-/// **Canary.** Clear the bitmap's bits where `trap::iomap::fill` sets them
-/// (the polarity): `stray` reads 0x84 and exits 3.
+/// **Canaries.** Clear the bitmap's bits where `trap::iomap::fill` sets them
+/// (the polarity): `stray` reads 0x84 and exits 3. Make
+/// `azos_syscall::ioport::ioport_cap_event` return at once (a revocation
+/// that leaves the bitmap loaded): `revoked` reads 0x80 again and exits 3.
 fn check_ioports() {
     const E_NOENT: isize = -2;
     const E_NODEV: isize = -19;
@@ -1732,6 +1736,7 @@ fn check_ioports() {
         (&b"granted"[..], 0isize, &b"ioport: a granted port reads in ring 3"[..]),
         (b"stray", 139, b"ioport: a port outside the grant faults, the child's fault (128+SIGSEGV)"),
         (b"closed", 139, b"ioport: a granted port never opened faults (128+SIGSEGV)"),
+        (b"revoked", 139, b"ioport: a port whose capability was closed faults (128+SIGSEGV)"),
     ] {
         let pid = spawn_child(&[b"ioport", mode]);
         if pid <= 0 {

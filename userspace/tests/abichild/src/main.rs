@@ -128,13 +128,30 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 /// one port, the POST port 0x80 (`ioport.128.1`, QEMU topologies). `granted`:
 /// open it and read it, exit 0. `stray`: open it, then read port 0x84, which
 /// no range opens: the #GP kills the child (139); 3 if the read ran. `closed`:
-/// read 0x80 without opening it: killed the same way, 3 if it ran. 4: the
-/// open was refused. Reads only, and of ports with nothing behind them on
-/// QEMU, so a check that fails to fault changes no device.
+/// read 0x80 without opening it: killed the same way, 3 if it ran. `revoked`:
+/// open it and read it, close its capability, read it again: killed the
+/// same way (the close took the port back), 3 if the second read ran, 5 if
+/// the close was refused. 4: the open was refused. Reads only, and of ports
+/// with nothing behind them on QEMU, so a check that fails to fault changes
+/// no device.
 fn ioport(which: &[u8]) -> ! {
     const POST: u16 = 0x80;
     const STRAY: u16 = 0x84;
     match which {
+        b"revoked" => {
+            let Ok(io) = sys::ioport_open(POST, 1) else { sys::exit(4) };
+            core::hint::black_box(io.inb(POST));
+            if io.close() != 0 {
+                sys::exit(5);
+            }
+            // The range is closed: the bare instruction (the `IoPorts` went
+            // with the close).
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                core::arch::asm!("in al, dx", in("dx") POST, out("al") _, options(nomem, nostack));
+            }
+            sys::exit(3)
+        }
         b"granted" | b"stray" => {
             let Ok(io) = sys::ioport_open(POST, 1) else { sys::exit(4) };
             let port = if which == b"granted" { POST } else { STRAY };

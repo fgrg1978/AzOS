@@ -68,6 +68,11 @@ impl<P: Ports> PcSpeaker<P> {
         PcSpeaker { ports }
     }
 
+    /// The ports back, to give them up (a speaker whose check failed).
+    pub fn into_ports(self) -> P {
+        self.ports
+    }
+
     fn program(&mut self, d: u16) {
         self.ports.outb(PORT_MODE, MODE_CH2_SQUARE);
         self.ports.outb(PORT_CH2, d as u8);

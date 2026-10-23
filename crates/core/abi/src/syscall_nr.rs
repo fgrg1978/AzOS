@@ -247,7 +247,8 @@ pub const SYS_CAP_INFO: u64 = 1;
 
 /// `SYS_CAP_CLOSE` — `a0` a handle: delete the capability and release what it
 /// names, chosen by its type (a file, a socket, an io_ring, a
-/// port, a memory object). Only the caller's own slot goes: a copy made from
+/// port, a memory object, a range of I/O ports, whose ports close in every
+/// thread of the holder that opened them). Only the caller's own slot goes: a copy made from
 /// the handle (a DUP over IPC, a spawn's share) stays alive in its holder's
 /// table and keeps its mappings; [`SYS_CAP_REVOKE`] is what takes copies back.
 /// A handle of a type with nothing to release is just deleted. A second close

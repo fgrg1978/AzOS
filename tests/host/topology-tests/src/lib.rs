@@ -3029,6 +3029,56 @@ mod ioport_cap_tests {
         assert!(ioport_resolve("97.1", CapPerms::RW, 1024).is_some(), "positive control");
     }
 
+    /// The kernel's own ports are never granted, whatever a signed row asks,
+    /// and each refusal is recorded: a row asking for COM1 (0x3F8) gets
+    /// nothing and leaves an `ioport-reserved` record naming the range and
+    /// the first kernel port in it. The speaker's ranges, next to the PIT's
+    /// channel 0, still mint: 0x43 and 0x61 are granted by rule
+    /// (`ioport_cap.rs`'s module doc).
+    ///
+    /// **Canary.** Drop the `reserved` test of `ioport_grant_in`: the COM1
+    /// row mints, and no record is written.
+    #[test]
+    fn a_row_asking_for_a_kernel_port_is_refused_and_recorded() {
+        use crate::ioport_cap::ioport_grant_in;
+        use azos_arch_api::ioport::PortSet;
+        use azos_decision::{Rule, Verdict};
+        // The machine the kernel bound: COM1, the PIT's channel 0, the CMOS pair.
+        let kernel: PortSet<32> = PortSet::new();
+        kernel.insert(0x3F8, 0x3FF);
+        kernel.insert(0x40, 0x40);
+        kernel.insert(0x70, 0x71);
+        let reserved = |f, l| kernel.first_in(f, l);
+        let records = |tid: u32| {
+            let mut got = Vec::new();
+            azos_decision::for_each(|r| {
+                if r.rule == Rule::IoportReserved as u8 && r.subject == tid {
+                    got.push((r.verdict, r.n));
+                }
+            });
+            got
+        };
+        let tid = fresh_tid();
+        assert!(ioport_grant_in(tid, "1016.1", CapPerms::RW, 1024, reserved).is_none(), "COM1's data port");
+        assert_eq!(records(tid), vec![(Verdict::Refuse as u8, [0x3F8, 0x3F8, 0x3F8])]);
+        let tid = fresh_tid();
+        assert!(ioport_grant_in(tid, "1008.16", CapPerms::RW, 1024, reserved).is_none(), "a range over COM1");
+        assert!(ioport_grant_in(tid, "64.4", CapPerms::RW, 1024, reserved).is_none(), "the PIT with channel 0");
+        assert_eq!(records(tid), vec![(Verdict::Refuse as u8, [0x3F0, 0x3FF, 0x3F8]),
+                                      (Verdict::Refuse as u8, [0x40, 0x43, 0x40])]);
+        // The positive controls: no kernel port in the range, a grant and no record.
+        let tid = fresh_tid();
+        for spec in ["66.2", "97.1", "128.1", "1000.8"] {
+            assert!(ioport_grant_in(tid, spec, CapPerms::RW, 1024, reserved).is_some(), "{spec}");
+        }
+        assert_eq!(records(tid), vec![]);
+        // A target the minter refuses first is not a kernel-port refusal.
+        let tid = fresh_tid();
+        assert!(ioport_grant_in(tid, "1016.1", CapPerms::READ, 1024, reserved).is_none());
+        assert!(ioport_grant_in(tid, "1020.8", CapPerms::RW, 1024, reserved).is_none());
+        assert_eq!(records(tid), vec![]);
+    }
+
     /// The seed arm reaches the minter: on this build's port space (the
     /// host suite's .config, 0 off x86_64) a grant mints exactly when the
     /// space holds the range.

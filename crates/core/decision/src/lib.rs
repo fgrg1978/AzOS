@@ -308,6 +308,11 @@ pub enum Rule {
     /// although not invariant because nothing else can be read
     /// (`azos_arch::timer`, Kconfig `X86_TSC_CLOCK`, `X86_TSC_WATCHDOG`).
     Clocksource = 73,
+    /// A signed topology row asked for a range of I/O ports that holds one the
+    /// kernel drives itself (`azos_arch_api::ioport::reserve`: COM1, the CMOS
+    /// clock, the PCI configuration pair, the 8042, the PIT's channel 0), and
+    /// the minter refused the grant (`azos_ipc::ioport_cap`).
+    IoportReserved = 74,
 }
 
 /// The verdict of a record.
@@ -335,7 +340,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 74] = [
+pub const RULES: [RuleInfo; 75] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, 0)
         // and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
@@ -1067,6 +1072,16 @@ pub const RULES: [RuleInfo; 74] = [
         fields: ["reason", "drift_ppm", "limit_ppm"],
         rejected_if_yes: "refuse the TSC: it is the only counter the board has, so the clock keeps it and says it is not invariant",
         rejected_if_no: "keep the TSC as the clock: its rate is not constant (not invariant) or it left the reference by more than the bound, so every timeout would drift with it",
+    },
+    RuleInfo {
+        // The subject is the task the row seeds. `first` and `last` are the
+        // range it asked for, `kernel_port` the first port of it a kernel
+        // driver bound.
+        name: "ioport-reserved",
+        subject: "tid",
+        fields: ["first", "last", "kernel_port"],
+        rejected_if_yes: "-",
+        rejected_if_no: "grant the ports as the signed row asks: a ring-3 access would race the kernel's driver of that port (its console, clock, PCI configuration or timer)",
     },
 ];
 
