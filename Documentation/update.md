@@ -337,7 +337,7 @@ between servers is not transferred: the successor starts from its image.
 ## Application packages
 
 Source: `crates/core/pkg/src`, `userspace/services/pkgd`, `userspace/services/pkg`,
-`kernel/src/boot/pkg_apply.rs`, `config/Kconfig.packages`.
+`kernel/src/boot/pkg_apply.rs`, `config/subsys/Kconfig.packages`.
 
 A package (`.azpkg`, built by `tools/azpkg.py`) is images plus the topology rows
 they ask for, signed by a signer the signed topology names. `pkg install FILE`

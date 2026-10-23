@@ -36,7 +36,7 @@ Source: `config/kernel/Kconfig.energy` (`ENERGY`, `THERMAL`, `SCHED_EAS`), `conf
 * **The power figures are a placeholder, unmeasured**: `FIRMWARE_PLACEHOLDER_MAX_POWER_MW` (2000 mW per CPU) at the top and cubic in the clock below it, raised to stay strictly increasing (the validation refuses a zero or a non-increasing power). They order the OPPs and nothing else; the model has one domain, so the energy-aware placement has nothing to compare, and the frequency governor reads capacity, not power. Measured figures are the signed topology's `[energy.domain.NAME]` row, which ranks first and replaces the table whole (its OPPs should lie inside the firmware's range: `set_opp` refuses a rate outside it).
 * **No range, no table**: a firmware that does not answer the range tags (QEMU's `raspi`) leaves no actuator and no model; the line says so.
 
-Kconfig `ENERGY` and `THERMAL` must both be on for any of this: the firmware model is asked for only in a `THERMAL` build (`firmware_model`), and `config/defconfigs/rpi5.config` sets neither.
+Kconfig `ENERGY` and `THERMAL` must both be on for any of this: the firmware model is asked for only in a `THERMAL` build (`firmware_model`), and `config/defconfigs/robot-sbc-aarch64+rpi5.config` sets neither.
 
 The energy mode is the topology's alone (`[energy] mode`): `EnergyMode::Performance`, `Balanced` or `Endurance`. It is not a Kconfig symbol.
 

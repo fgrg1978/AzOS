@@ -272,7 +272,7 @@ mod tests {
         }
     }
 
-    /// The values the build was configured with (config/Kconfig.tasks) are
+    /// The values the build was configured with (config/kernel/Kconfig.tasks) are
     /// classes; the kernel evaluates the same at compile time.
     #[test]
     fn the_configured_classes_parse() {

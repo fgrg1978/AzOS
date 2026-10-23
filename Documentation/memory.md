@@ -425,7 +425,7 @@ task's teardown. One record frame holds `image_frames::MAX_PAGES` pages
 (`PAGE_SIZE / 16`) per image.
 
 Source: `crates/core/syscall/src/image_cache.rs`,
-`crates/core/mm/src/image_frames.rs`, `config/Kconfig.limits`.
+`crates/core/mm/src/image_frames.rs`, `config/limits/Kconfig.limits`.
 
 ## Kernel heap
 
@@ -466,7 +466,7 @@ objects (`0x6b`) and red-zones the class slack (`0xbb`), and panics on a
 write after free or an overrun.
 
 Source: `crates/core/mm/src/kheap.rs`, `crates/core/mm/src/slab.rs`,
-`config/Kconfig.limits`, `config/Kconfig.security`.
+`config/limits/Kconfig.limits`, `config/subsys/Kconfig.topology`.
 
 ## Kernel image permissions (W^X)
 

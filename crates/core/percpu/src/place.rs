@@ -110,7 +110,7 @@ pub const fn resolve(p: Place, ncpu: usize, rt: usize) -> Option<usize> {
 /// affinity argument of `task_create_affinity` (`-1`: no pin).
 pub fn pin(p: Place) -> i8 {
     match resolve(p, crate::nr_cpu_ids(), azos_limits::TASK_RT_CLUSTER_CPUS as usize) {
-        // `NR_CPUS` is at most 64 (config/Kconfig.limits), so the id fits.
+        // `NR_CPUS` is at most 64 (config/limits/Kconfig.limits), so the id fits.
         Some(cpu) => cpu as i8,
         None => -1,
     }

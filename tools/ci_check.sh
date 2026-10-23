@@ -2684,7 +2684,7 @@ fi
 
 # Kernel task placement (tools/task_place_lint.py): a `task_create_affinity`
 # whose CPU is a literal (or a name bound to one) fixes a board fact in the
-# code; kernel tasks take a placement class (config/Kconfig.tasks). Ratchet in
+# code; kernel tasks take a placement class (config/kernel/Kconfig.tasks). Ratchet in
 # tools/task_place_lint.baseline (test code that pins on purpose). The row
 # also runs the lint's own canaries (`--self-test`).
 printf "  %-26s" "task place lint (ratchet)..."
