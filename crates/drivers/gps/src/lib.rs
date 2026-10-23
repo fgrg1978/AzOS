@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
+#![forbid(unsafe_code)]
 
 //! GPS driver — NMEA parser over UART (Phase I2).
 //!
@@ -72,10 +73,13 @@ impl GpsPosition {
 static GPS_UART_BUS: AtomicU8 = AtomicU8::new(0);
 static GPS_READY: AtomicBool = AtomicBool::new(false);
 
-/// NMEA sentence accumulator (single static buffer).
+/// NMEA sentence accumulator: the bytes of the sentence being received.
 const NMEA_BUF_CAP: usize = 128;
-static mut NMEA_BUF: [u8; NMEA_BUF_CAP] = [0u8; NMEA_BUF_CAP];
-static mut NMEA_POS: usize = 0;
+struct Nmea {
+    buf: [u8; NMEA_BUF_CAP],
+    pos: usize,
+}
+static NMEA: SpinLock<Nmea> = SpinLock::new(Nmea { buf: [0u8; NMEA_BUF_CAP], pos: 0 });
 
 /// The last parsed position and when its sentence completed, published as one
 /// item so a reader never pairs a fix with another sentence's time.
@@ -217,34 +221,38 @@ pub fn gps_info() {
 /// Call this for each byte received from the GPS UART.
 /// Returns `true` if a sentence was successfully parsed this call.
 pub fn gps_feed_byte(b: u8) -> bool {
-    unsafe {
+    // A complete sentence is copied out and parsed with the accumulator's
+    // lock released: the parse publishes under `LAST_TX`.
+    let mut line = [0u8; NMEA_BUF_CAP];
+    let len = {
+        let mut n = NMEA.lock();
         match b {
             b'$' => {
                 // Start of a new sentence.
-                NMEA_POS = 0;
-                NMEA_BUF[0] = b;
-                NMEA_POS = 1;
-                false
+                n.buf[0] = b;
+                n.pos = 1;
+                return false;
             }
             b'\n' | b'\r' => {
-                if NMEA_POS > 6 {
-                    let len = NMEA_POS;
-                    NMEA_POS = 0;
-                    parse_sentence(&NMEA_BUF[..len])
-                } else {
-                    NMEA_POS = 0;
-                    false
+                let len = n.pos;
+                n.pos = 0;
+                if len <= 6 {
+                    return false;
                 }
+                line[..len].copy_from_slice(&n.buf[..len]);
+                len
             }
             _ => {
-                if NMEA_POS < NMEA_BUF_CAP {
-                    NMEA_BUF[NMEA_POS] = b;
-                    NMEA_POS += 1;
+                if n.pos < NMEA_BUF_CAP {
+                    let at = n.pos;
+                    n.buf[at] = b;
+                    n.pos += 1;
                 }
-                false
+                return false;
             }
         }
-    }
+    };
+    parse_sentence(&line[..len])
 }
 
 /// Parse a complete NMEA sentence (without trailing CR/LF).

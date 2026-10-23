@@ -70,7 +70,7 @@ crates/drivers/dtb	92	40	0	0	0	100
 crates/drivers/fb	10	2	2	0	0	39
 crates/drivers/firmware	2	1	0	0	0	100
 crates/drivers/gpio	4	0	0	0	0	59
-crates/drivers/gps	1	0	0	0	0	100
+crates/drivers/gps	0	0	0	0	1	0
 crates/drivers/hwbus	0	0	0	0	1	0
 crates/drivers/imu	0	0	0	0	1	0
 crates/drivers/ina219	0	0	0	0	1	0
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	522
+@unsafe-share	520
