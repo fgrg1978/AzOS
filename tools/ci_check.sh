@@ -1528,6 +1528,72 @@ PY
     ok; rm -f "$log" "$disk"
 }
 
+# (e) A GPT medium laid out to its end (owner batch 6): no reserved tail, the
+# backup table is there (audit K2-M1), so the records live in the AzOS records
+# partition. `build/disk-gpt.img` (tools/make_parted_disk.py --gpt) carries
+# disk.img's FAT32 volume in partition 0 and disk.img's tail, the device
+# record included, in the records partition. Two boots of one copy,
+# virtio-rng present: boot 1 resolves the records partition with the backup
+# GPT verified, reads the device record and provisions a seed; boot 2 reads
+# that seed back from the partition and replaces it. On the host the seed is
+# in the partition (seed_provision.py follows the GPT), it changed between
+# the boots, and the last 33 sectors (backup array and header) are byte for
+# byte as built.
+# Canary (by hand, reverted): `reserved_tail::verdict` without its records
+# partition arm -> boot 1 prints "reserved tail not usable (GptBackupReaches"
+# and no records line.
+entseed_gpt_row() { # entseed_gpt_row riscv64
+    local isa="$1" label="$1: GPT records partition"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local l1="$CI_LOG_DIR/entseed-gpt-$isa-1.log" l2="$CI_LOG_DIR/entseed-gpt-$isa-2.log"
+    local disk="$CI_LOG_DIR/entseed-gpt-$isa.img" dsrc=$AZOS_OUT/build/disk-gpt.img stop='Stack canary: '
+    rm -f "$l1" "$l2" "$disk"
+    rm -f $AZOS_OUT/build/disk.img "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
+    par_ready
+    local h1 h2 b0 b1 want
+    b0="$(tail -c $((33 * 512)) "$disk" | shasum -a 256)"
+    entseed_boot "$isa" "$disk" "$l1" yes "$stop" 120
+    entseed_log_sane "$l1" "boot 1" || return
+    h1="$(entseed_show "$disk")"
+    entseed_boot "$isa" "$disk" "$l2" yes "$stop" 120
+    entseed_log_sane "$l2" "boot 2" || return
+    h2="$(entseed_show "$disk")"
+    b1="$(tail -c $((33 * 512)) "$disk" | shasum -a 256)"
+    for want in "[DISK] partitions: 2 (GPT)" \
+                "[DISK] records: GPT partition 1 LBA " \
+                "backup GPT verified" \
+                "[CFG] device " \
+                "persisted seed: no valid record in reserved sector 1" \
+                "persisted seed: rewritten and flushed"; do
+        if ! grep -aqF "$want" "$l1"; then
+            bad; echo "      boot 1 missing: $want (readback: '$h1')"
+            grep -aE "DISK\]|ENTROPY\]|CFG\]" "$l1" | tr -d '\r' | sed 's/^/        /'
+            echo "      logs kept: $l1 $l2"; return
+        fi
+    done
+    if [ "${h1%% *}" != valid ]; then
+        bad; echo "      no seed in the records partition after boot 1 (readback: '$h1')"
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    if ! grep -aqF "persisted seed: mixed 64 bytes, not credited (pool already seeded)" "$l2" \
+       || ! grep -aqF "persisted seed: rewritten and flushed" "$l2"; then
+        bad; echo "      boot 2 did not read back and replace the seed boot 1 left:"
+        grep -a "ENTROPY\]" "$l2" | tr -d '\r' | sed 's/^/        /'
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    if [ "${h2%% *}" != valid ] || [ "$h1" = "$h2" ]; then
+        bad; echo "      the stored seed did not change between the two boots:"
+        echo "        after boot 1: $h1"; echo "        after boot 2: $h2"
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    if [ "$b0" != "$b1" ]; then
+        bad; echo "      the backup GPT (last 33 sectors) changed across the boots"
+        echo "      logs kept: $l1 $l2"; return
+    fi
+    ok; rm -f "$l1" "$l2" "$disk"
+}
+
 # Where a failing scenario's log is kept.
 #
 # It used to be a mktemp deleted on every path, success or failure. That
@@ -11702,7 +11768,7 @@ else
     ENTSEED_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-rv"
     if ci_wants "riscv64: persisted seed rotates" "riscv64: persisted seed seeds" \
             "riscv64: seed diskless unchanged" "riscv64: seed spares the filesystem" \
-            "riscv64: blk: guest stop survives"; then
+            "riscv64: GPT records partition" "riscv64: blk: guest stop survives"; then
         ci_kflush; cp "$KERNEL" "$ENTSEED_RV_KERNEL"
     fi
     par "riscv64: blk: guest stop survives" blk_stall_row "riscv64: blk: guest stop survives" riscv64 "$ENTSEED_RV_KERNEL" pass
@@ -11710,6 +11776,7 @@ else
     par "riscv64: persisted seed seeds" entseed_alone_row riscv64
     par "riscv64: seed diskless unchanged" entseed_diskless_row riscv64
     par "riscv64: seed spares the filesystem" entseed_noheadroom_row riscv64
+    par "riscv64: GPT records partition" entseed_gpt_row riscv64
     if kbuild "qemu,orderly-reboot-smoke"; then
         ENTSEED_ORD_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-ord-rv"
         if ci_wants "riscv64: seed refreshed at reboot"; then ci_kflush; cp "$KERNEL" "$ENTSEED_ORD_RV_KERNEL"; fi
