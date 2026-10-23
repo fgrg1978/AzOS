@@ -7069,6 +7069,75 @@ rt_io_canary_row() { # <label> <isa: rv|arm>
 par_row rt_io_canary_row "rt: RT block I/O panics, canary (rv)"  rv
 par_row rt_io_canary_row "rt: RT block I/O panics, canary (arm)" arm
 
+# ── virtio-blk discard reaches the device (virtio 1.2 section 5.2.6.2) ─────
+#
+# A DISCARD segment carries no flags: `unmap` is WRITE_ZEROES's, and a device
+# must answer S_UNSUPP to a discard that sets it (QEMU does). Each refusal
+# switched FAT32's discard off until the next mount, so no discard ever
+# reached the medium. `blk-discard-smoke` (kernel/src/smokes/storage.rs)
+# replaces a file after /fat mounts and syncs, so FAT32 discards the old
+# chain; the driver says how the device answered the first discard. The row
+# wants `the device took the first one` before `[DISCARDSMOKE] done`.
+# Canary (`blk-discard-unmap-canary`, built apart): the segment sets `unmap`
+# again; the same boot must print `the device refused the first one`.
+blk_discard_row() { # blk_discard_row <label> <rv|arm> <pass|canary>
+    local label="$1" isa="$2" want="$3" feats="qemu,blk-discard-smoke"
+    [ "$want" = canary ] && feats="$feats,blk-discard-unmap-canary"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$img"
+    if [ "$isa" = "rv" ]; then
+        kbuild "$feats" || { bad; echo "      riscv64 kernel ($feats) did not build"; return; }
+        make_disk $AZOS_OUT/build/disk.img; cp $AZOS_OUT/build/disk.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.elf"; cp "$KERNEL" "$kimg"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    else
+        a64_kbuild "$feats" || { bad; echo "      aarch64 kernel ($feats) did not build"; return; }
+        make_disk $AZOS_OUT/build/disk-aarch64.img; cp $AZOS_OUT/build/disk-aarch64.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+            -drive file="$img",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqE 'DISCARDSMOKE\] (done|FAIL)|KERNEL PANIC|\[FATAL\]' "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$img" "$kimg"
+    local took refused fin
+    took="$(tr -d '\r' <"$log" | grep -ac '^\[VIRTIO-BLK\] discard: the device took the first one$')"
+    refused="$(tr -d '\r' <"$log" | grep -ac '^\[VIRTIO-BLK\] discard: the device refused the first one')"
+    fin="$(tr -d '\r' <"$log" | grep -ac '^\[DISCARDSMOKE\] done$')"
+    if [ "$fin" != 1 ]; then
+        bad; echo "      the smoke did not finish:"
+        tr -d '\r' <"$log" | grep -aE 'DISCARDSMOKE|VIRTIO-BLK\] (Disk|discard|Error)|PANIC|FATAL' | sed -n 1,6p | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    if [ "$want" = canary ]; then
+        if [ "$refused" = 1 ] && [ "$took" = 0 ]; then ok; rm -f "$log"
+        else bad; echo "      a discard with unmap set was not refused (took=$took refused=$refused) — log kept: $log"; fi
+        return
+    fi
+    if [ "$took" = 1 ] && [ "$refused" = 0 ]; then ok; rm -f "$log"; return; fi
+    bad; echo "      no discard reached the device (took=$took refused=$refused):"
+    tr -d '\r' <"$log" | grep -aE 'VIRTIO-BLK\] (Disk|discard)' | sed 's/^/        /'
+    echo "      log kept: $log"
+}
+par_row blk_discard_row "storage: virtio-blk discard (rv)"         rv  pass
+par_row blk_discard_row "storage: virtio-blk discard canary (rv)"  rv  canary
+par_row blk_discard_row "storage: virtio-blk discard (arm)"        arm pass
+par_row blk_discard_row "storage: virtio-blk discard canary (arm)" arm canary
+
 # ── Wave 15 (GR5): the panic report is not spliced by another CPU's output ──
 #
 # The full gate failed `rt: RT block I/O panics, canary (arm)` once in five:

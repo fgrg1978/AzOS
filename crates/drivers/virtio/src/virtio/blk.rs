@@ -676,12 +676,24 @@ unsafe fn drain(q: usize) {
     }
 }
 
+/// The device has answered a discard (`hw_status` says how, once per boot).
+static DISCARD_ANSWERED: AtomicBool = AtomicBool::new(false);
+
 /// Map the device's status byte of a finished command to what the layer is
 /// told.
 fn hw_status(op: u8, st: u8) -> HwStatus {
     let s = proto::status_of(op == OP_DATA, st);
     if s == HwStatus::Io {
         azos_drv_sys::kerr!("[VIRTIO-BLK] Error: status {}", st);
+    }
+    // The first discard's answer, once: a device that refuses the command
+    // switches the file system's discard off without a word otherwise.
+    if op == OP_DISCARD && s != HwStatus::Io && !DISCARD_ANSWERED.swap(true, Ordering::Relaxed) {
+        if s == HwStatus::Ok {
+            azos_drv_sys::kprintln!("[VIRTIO-BLK] discard: the device took the first one");
+        } else {
+            azos_drv_sys::kwarn!("[VIRTIO-BLK] discard: the device refused the first one (status {})", st);
+        }
     }
     s
 }
@@ -780,6 +792,10 @@ impl HwQueue for VirtioBlk {
                     return Err(());
                 }
                 let seg = proto::discard_segment(cmd.lba, cmd.sectors);
+                // Gate canary `blk-discard-unmap-canary`: the segment carries
+                // `unmap` again, which the device must refuse.
+                #[cfg(feature = "blk-discard-unmap-canary")]
+                let seg = { let mut s = seg; s[12] = 1; s };
                 // SAFETY: as for a write's staging copy; the segment is 16 bytes.
                 unsafe {
                     core::ptr::copy_nonoverlapping(

@@ -61,6 +61,7 @@ pci = []
 # is a known value).
 blk-poll-canary = []
 blk-stall-canary = []
+blk-discard-unmap-canary = []
 # virtio/blk.rs's F1 probe and its canary (wave 15): known values, never enabled.
 blk-wait-probe = []
 blk-lock-wait-canary = []

@@ -23,9 +23,9 @@ pub(crate) use aarch64_sched::*;
 mod ipc_census;
 #[cfg(feature = "ipc-census")]
 pub(crate) use ipc_census::*;
-#[cfg(any(feature = "fat-barrier-smoke", feature = "mmc-flush-smoke", feature = "disk-part-row"))]
+#[cfg(any(feature = "fat-barrier-smoke", feature = "mmc-flush-smoke", feature = "disk-part-row", feature = "blk-discard-smoke"))]
 mod storage;
-#[cfg(any(feature = "fat-barrier-smoke", feature = "mmc-flush-smoke", feature = "disk-part-row"))]
+#[cfg(any(feature = "fat-barrier-smoke", feature = "mmc-flush-smoke", feature = "disk-part-row", feature = "blk-discard-smoke"))]
 pub(crate) use storage::*;
 #[cfg(feature = "dhcp-smoke")]
 mod net;

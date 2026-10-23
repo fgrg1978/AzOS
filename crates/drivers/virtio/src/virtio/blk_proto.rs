@@ -91,13 +91,14 @@ pub const DESCS_PER_REQUEST: usize = 3;
 pub const DISCARD_SEG_BYTES: usize = 16;
 
 /// One discard segment (`virtio_blk_discard_write_zeroes`): the first sector,
-/// the sector count and the flags, little endian. The `unmap` flag is set: the
-/// device may free the backing store, not just zero it.
+/// the sector count and the flags, little endian. The flags are 0: `unmap` is
+/// a WRITE_ZEROES flag, and virtio 1.2 section 5.2.6.2 makes the device answer
+/// `S_UNSUPP` to a DISCARD that sets it (QEMU does), which would switch the
+/// file system's discard off at its first use.
 pub fn discard_segment(sector: u64, sectors: u32) -> [u8; DISCARD_SEG_BYTES] {
     let mut s = [0u8; DISCARD_SEG_BYTES];
     s[0..8].copy_from_slice(&sector.to_le_bytes());
     s[8..12].copy_from_slice(&sectors.to_le_bytes());
-    s[12..16].copy_from_slice(&1u32.to_le_bytes());
     s
 }
 

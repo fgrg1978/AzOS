@@ -1291,6 +1291,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                 }
                 #[cfg(feature = "fat-barrier-smoke")]
                 fat_barrier_smoke();
+                #[cfg(feature = "blk-discard-smoke")]
+                blk_discard_smoke();
                 // Shared with aarch64's kernel_main — see `install_flight_recorder`'s
                 // own doc for the full reasoning and the ordering constraint (must run
                 // before `robot_init()`).

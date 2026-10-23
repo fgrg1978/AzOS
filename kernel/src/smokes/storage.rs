@@ -58,6 +58,28 @@ pub(crate) fn fat_barrier_smoke() {
     loop { core::hint::spin_loop(); }
 }
 
+/// virtio-blk discard (virtio 1.2 section 5.2.6.2): FAT32 discards the chain a
+/// replaced file releases (Kconfig `BLK_DISCARD`). Writes `DISCARD.DAT` with
+/// three clusters' worth, replaces it with one, and syncs the volume, which
+/// discards the old chain whether the cache writes through (at the replace) or
+/// back (at the sync, `release_held`). The verdict is the driver's own line on
+/// the first discard's answer (`[VIRTIO-BLK] discard: ...`); this prints
+/// `[DISCARDSMOKE] done` after it, or `[DISCARDSMOKE] FAIL <why>`.
+#[cfg(feature = "blk-discard-smoke")]
+pub(crate) fn blk_discard_smoke() {
+    const NAME: [u8; 11] = *b"DISCARD DAT";
+    let old = [0x5au8; 1400]; // 3 clusters of 512 B on the gate image
+    let new = [0xa5u8; 400];  // 1
+    let a = azos_fs::fat32_write_file(&NAME, &old);
+    let b = azos_fs::fat32_write_file(&NAME, &new);
+    let c = azos_fs::fat32_sync();
+    if a.is_err() || b.is_err() || c.is_err() {
+        kprintln!("[DISCARDSMOKE] FAIL write {:?}, replace {:?}, sync {:?}", a, b, c);
+    } else {
+        kprintln!("[DISCARDSMOKE] done");
+    }
+}
+
 /// Wave 7 (STOR): `mmc::mmc_flush` against QEMU's `sdhci-pci` + `sd-card`,
 /// the only SDHCI-v3 host this tree can run `mmc.rs` on. Binds the driver
 /// to the function's BAR 0 and its INTx source, runs the SD init flow, then,

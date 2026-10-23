@@ -14,6 +14,10 @@ blk-poll-canary = []
 # budget is wall-clock again and a paused guest latches the disk dead; the
 # `blk: guest stop` canary rows must then see the disk disabled.
 blk-stall-canary = []
+# Gate canary only: a discard segment sets `unmap` again, which virtio 1.2
+# section 5.2.6.2 makes the device refuse; the `storage: virtio-blk discard`
+# canary row must then see the refusal.
+blk-discard-unmap-canary = []
 # Gate canary only: a keyboard's key bytes are dropped instead of queued in the
 # console ring (`input::irq`); the `sh: virtio keyboard` row must then fail.
 input-rx-canary = []

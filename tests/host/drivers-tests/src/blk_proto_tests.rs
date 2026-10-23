@@ -7,11 +7,13 @@ use crate::virtio::blk_proto::*;
 use azos_drv_api::block::HwStatus;
 
 #[test]
-fn a_discard_segment_is_sector_count_and_the_unmap_flag_little_endian() {
+fn a_discard_segment_is_sector_and_count_little_endian_with_no_flags() {
     let s = discard_segment(0x0102_0304_0506_0708, 0x0A0B_0C0D);
     assert_eq!(&s[0..8], &[8, 7, 6, 5, 4, 3, 2, 1]);
     assert_eq!(&s[8..12], &[0x0D, 0x0C, 0x0B, 0x0A]);
-    assert_eq!(&s[12..16], &[1, 0, 0, 0], "unmap: the device may free the backing store");
+    // virtio 1.2 section 5.2.6.2: a DISCARD with `unmap` set is answered
+    // S_UNSUPP; the flag belongs to WRITE_ZEROES.
+    assert_eq!(&s[12..16], &[0, 0, 0, 0], "a discard sets no flag (unmap would be refused)");
     assert_eq!(s.len(), DISCARD_SEG_BYTES);
 }
 

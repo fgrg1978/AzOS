@@ -542,6 +542,10 @@ mmc-flush-smoke = ["qemu", "pci", "azos_drv_block/mmc-pci"]
 # The gate's power-cut row boots every cut of that write log. See
 # `fat_barrier_smoke` in kernel/src/smokes/storage.rs.
 fat-barrier-smoke = ["qemu"]
+# Gate rows `storage: virtio-blk discard`: after /fat mounts, a file is
+# written and replaced and the volume synced, so FAT32 discards the released
+# chain (`blk_discard_smoke` in kernel/src/smokes/storage.rs).
+blk-discard-smoke = ["qemu"]
 # Canary for the row above: `mmc_flush` answers Ok before touching the card.
 mmc-flush-canary = ["mmc-flush-smoke", "azos_drv_block/mmc-flush-canary"]
 # Canary for the interrupt row: the SD host's driver refuses to leave polled
@@ -1068,6 +1072,8 @@ blk-lock-wait-canary = ["lat-fat", "azos_drv_virtio/blk-lock-wait-canary"]
 blk-poll-canary = ["azos_drv_virtio/blk-poll-canary"]
 # Gate canary: virtio-blk's command budget is wall-clock again (no stall credit).
 blk-stall-canary = ["azos_drv_virtio/blk-stall-canary"]
+# Gate canary: a virtio-blk discard sets `unmap`, which the device refuses.
+blk-discard-unmap-canary = ["azos_drv_virtio/blk-discard-unmap-canary"]
 # Wave 15 (RL), owner rule "an RT task never does block I/O": the flight
 # recorder treats every caller as non-RT, so rt-motor's durable SAFE STOP
 # record flushes in rt-motor and RT_BLOCK_IO_CHECK must panic naming it.
