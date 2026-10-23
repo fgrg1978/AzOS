@@ -10481,7 +10481,7 @@ done
 # buckets: discriminates / does not / did not compile.
 if ci_row_begin "thermal(floor-canary)"; then
 printf "  %-26s" "thermal(floor-canary)..."
-th_want="runtime::heat_pulls_the_clock_down_one_step_per_read_to_the_floor_and_no_further thermal::a_blind_zone_does_not_cap_below_the_floors thermal::a_floor_that_holds_the_clock_up_is_bound_and_cautious thermal::heat_never_undercuts_the_real_time_or_safety_floor thermal::the_clock_stays_at_the_floor_even_at_the_critical_trip "
+th_want="rpi::heat_throttles_the_arm_clock_through_the_firmware_and_never_under_the_floor runtime::heat_pulls_the_clock_down_one_step_per_read_to_the_floor_and_no_further thermal::a_blind_zone_does_not_cap_below_the_floors thermal::a_floor_that_holds_the_clock_up_is_bound_and_cautious thermal::heat_never_undercuts_the_real_time_or_safety_floor thermal::the_clock_stays_at_the_floor_even_at_the_critical_trip x86_pc::heat_caps_the_clock_through_hwp_and_never_below_the_realtime_floor "
 if th_out=$( (cd "${REPO_ROOT}/tests/host/thermal-tests" && CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/thermal-tests" "$CARGO" test --release --features thermal-floor-canary 2>&1) ); then
     bad; echo "      the suite passed with the floor removed: no test pins it"
 elif echo "$th_out" | qgrep -qE "^error(\[E[0-9]+\]|: could not compile)"; then
