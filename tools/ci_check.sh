@@ -16845,7 +16845,8 @@ PYEOF
     estop_release_authority_binary_canary() {
         local label="safety: no test-only e-stop proof in the kernel binary"
         printf "  %-26s" "${label}..."
-        kbuild "qemu"
+        # The e-stop's release authority is the robot's (use-robot): the robot cell.
+        kbuild "qemu,use-robot"
         local elf="$AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel"
         if [ ! -f "$elf" ]; then
             bad; echo "      $elf does not exist after a supposedly successful build."
