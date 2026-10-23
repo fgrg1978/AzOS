@@ -12,9 +12,15 @@
 //! and `tests/host/syscall-tests` maps through it. A pair with `span == 0` is
 //! free, so an all-zero table (the `core::mem::zeroed` task pool) is empty.
 
-/// Reservations one task can hold at once: `MAX_MEMOBJS_PER_TASK` (8) shm
-/// mappings plus as many MMIO mappings. A map past it is refused.
-pub const USER_WINDOW_RANGES: usize = 16;
+/// MMIO mappings one task can hold beside its shm ones.
+pub const MMIO_RANGES: usize = 8;
+
+/// Reservations one task can hold at once: as many shm mappings as one task
+/// may own MemObjs (`MAX_MEMOBJS_PER_TASK`, half of Kconfig `MAX_MEMOBJS`),
+/// plus [`MMIO_RANGES`] MMIO mappings. A map past it is refused. The monitor
+/// (`VMMD.ELF`) maps every MemObj of a guest's RAM, so this is what bounds
+/// the RAM it can serve.
+pub const USER_WINDOW_RANGES: usize = azos_limits::MAX_MEMOBJS as usize / 2 + MMIO_RANGES;
 
 /// Reserve `span` bytes inside `[lo, hi)` at the lowest address where they
 /// overlap no reserved pair. `None` when `span` is 0, when no pair is free, or

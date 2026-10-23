@@ -23929,14 +23929,14 @@ fi
 # guest line) and the banner of the guest kernel. The host kernel's own lines
 # cannot pass for it.
 #
-# The gate has NO row that boots the guest: it cannot pass today. VMMD.ELF maps
-# every MemObj of the guest's RAM into its own address space and a task holds 16
-# mappings (USER_WINDOW_RANGES, 4 MiB of 256 KiB objects), below the RAM of a
-# guest kernel (Kconfig HV_EXAMPLE_GUEST_MEM_MIB; GUEST.BIN alone is 6.9 MiB);
-# the monitor logs "guest RAM is partial" and serves no console. (A first
-# riscv64 run did not reach even that: the host's spawn of VMMD.ELF answered
-# rc=-1, as every other spawn of that boot did; the cause is open.) x86_64 has no guest entry (mk/images.mk). Add the
-# boot rows (and the build row they need) when those two limits move. What the
+# The gate has NO row that boots the guest yet. VMMD.ELF maps every MemObj of the
+# guest's RAM into its own address space; a task now maps as many as it may own
+# (USER_WINDOW_RANGES = MAX_MEMOBJS / 2 + its MMIO), so the 24 MiB guest
+# (Kconfig HV_EXAMPLE_GUEST_MEM_MIB) fits the qemu-*-hv defconfigs' 256, but no
+# boot has shown the banner. (A first riscv64 run did not reach the monitor: the
+# host's spawn of VMMD.ELF answered rc=-1, as every other spawn of that boot did;
+# the cause is open.) x86_64 has no guest entry (mk/images.mk). Add the boot rows
+# (and the build row they need) once a boot passes. What the
 # gate does run is the judge, on canned consoles: the one part of the tool that
 # needs no QEMU, and the canary a boot row would rely on.
 hv_guest_judge() {

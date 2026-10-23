@@ -1900,7 +1900,7 @@ pub mod user_window;
 
 #[cfg(test)]
 mod user_window_tests {
-    use super::user_window::{release, reserve, reserve_at, USER_WINDOW_RANGES};
+    use super::user_window::{release, reserve, reserve_at, MMIO_RANGES, USER_WINDOW_RANGES};
 
     const P: usize = 4096;
     const LO: usize = 0x6000_0000;
@@ -1908,6 +1908,22 @@ mod user_window_tests {
 
     fn empty() -> [[usize; 2]; USER_WINDOW_RANGES] {
         [[0; 2]; USER_WINDOW_RANGES]
+    }
+
+    /// **A task maps every MemObj it may own, and its MMIO beside them**: half
+    /// of Kconfig `MAX_MEMOBJS` shm mappings plus `MMIO_RANGES`. The monitor
+    /// maps a guest's whole RAM this way.
+    ///
+    /// **Canary.** The old literal 16: the 17th reservation is refused (at the
+    /// default `MAX_MEMOBJS` of 32).
+    #[test]
+    fn a_task_maps_every_memobj_it_may_own() {
+        let want = azos_limits::MAX_MEMOBJS as usize / 2 + MMIO_RANGES;
+        let mut w = empty();
+        for i in 0..want {
+            assert_eq!(reserve(&mut w, LO, LO + want * P, P), Some(LO + i * P), "mapping {i}");
+        }
+        assert_eq!(reserve(&mut w, LO, LO + 2 * want * P, P), None, "and no more");
     }
 
     /// **A released range is handed out again** — the property the board-wide

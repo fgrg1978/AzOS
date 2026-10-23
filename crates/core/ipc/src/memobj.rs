@@ -646,6 +646,18 @@ pub(crate) fn protect_range(root: usize, va: usize, pages: usize, write: bool) -
 /// the machine out.
 pub const MAX_MEMOBJS_PER_TASK: usize = MAX_MEMOBJS / 2;
 
+/// MemObjs of the example guest's RAM (Kconfig `HV_EXAMPLE_GUEST_MEM_MIB`),
+/// all made and mapped by the monitor, one per `MAX_MEMOBJ_PAGES` pages (a
+/// task maps as many as it may own: `azos_sched::user_window`).
+const EXAMPLE_GUEST_RAM_OBJS: usize =
+    (azos_limits::HV_EXAMPLE_GUEST_MEM_MIB as usize * 1024 * 1024).div_ceil(MAX_MEMOBJ_PAGES * azos_arch::PAGE_SIZE);
+// The build refuses an example guest the monitor could not map whole: below
+// its quota (the monitor owns its trap page and NIC ring too).
+const _: () = assert!(
+    !azos_limits::HV_EXAMPLE_GUEST || EXAMPLE_GUEST_RAM_OBJS < MAX_MEMOBJS_PER_TASK,
+    "HV_EXAMPLE_GUEST_MEM_MIB needs more MemObjs than VMMD.ELF may own: raise MAX_MEMOBJS"
+);
+
 /// An Anon object of `perms`, `page_count` pages; its index, or `None`.
 pub fn memobj_create(owner_task: u32, page_count: usize, perms: MemPerms) -> Option<u32> {
     memobj_create_ref(owner_task, page_count, perms).map(|r| LAYOUT.idx(r))

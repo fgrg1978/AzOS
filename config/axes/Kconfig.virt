@@ -147,15 +147,14 @@ config HV_EXAMPLE_GUEST_MEM_MIB
       MAX_MEMOBJ_PAGES pages and the guests may take half of MAX_MEMOBJS (the
       qemu-*-hv defconfigs set 256, see above).
 
-      What VMMD.ELF can make today is less: it maps every MemObj of the RAM
-      into its own address space and a task holds at most 16 mappings
-      (`USER_WINDOW_RANGES`, crates/core/sched/src/user_window.rs), and one
-      task owns at most MAX_MEMOBJS / 2 MemObjs. 24 MiB is 96 objects: the
-      monitor says "guest RAM is partial" and serves no device until one of
-      those limits grows. That is why the gate has no row that boots the
-      guest: the success path (a `[vm0] ` banner on the host console) is out of
-      reach until VMMD.ELF can map the whole RAM of a guest kernel (the 4 MiB,
-      16 objects, that fits today is below a kernel's heap plus its image). x86_64 has no guest entry either (mk/images.mk).
+      VMMD.ELF maps every MemObj of the RAM into its own address space, and a
+      task maps as many as it may own (MAX_MEMOBJS / 2,
+      crates/core/sched/src/user_window.rs): 24 MiB is 96 objects at a 4 KiB
+      page (24 at aarch64's 16 KiB granule), so the qemu-*-hv defconfigs'
+      MAX_MEMOBJS of 256 holds it, and the build refuses a size that would
+      not fit (crates/core/ipc/src/memobj.rs). The gate has no row that
+      boots the guest yet (tools/ci_check.sh, hv_guest_judge, says why).
+      x86_64 has no guest entry (mk/images.mk).
 
       Cost: none until the guest starts; then this much RAM.
 

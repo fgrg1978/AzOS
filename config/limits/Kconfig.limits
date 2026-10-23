@@ -1206,7 +1206,9 @@ config MAX_MEMOBJS
       of up to 64 pages, the eight holder records and the object's attributes;
       about 28 KiB at the default 32 with the table's generations and lock), the same
       on every 64-bit ISA; plus the frames of the objects that exist, taken from
-      the page allocator (up to 64 pages each, charged to the holder's Domain).
+      the page allocator (up to 64 pages each, charged to the holder's Domain);
+      plus 8 B per slot in every task, whose mapping window holds as many shm
+      mappings as it may own objects (crates/core/sched/src/user_window.rs).
 
 config MEMOBJ_RESOLVE_WAYS
     int "MemObj: processes whose last shm-word lookup is remembered"
