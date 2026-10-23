@@ -108,14 +108,12 @@ impl RxRing {
     /// Push `desc`, then `frame` (cut to a slot). A full ring drops it (and
     /// counts it); `Err` when the region can no longer be touched.
     pub fn push(&mut self, desc: Desc, frame: &[u8], stamp_ns: u64) -> Result<(), ()> {
-        let mut item = [0u8; nq::SLOT_PAYLOAD];
-        let n = frame.len().min(nq::FRAME_MAX);
-        item[..nq::DESC_BYTES].copy_from_slice(&desc.encode());
-        item[nq::DESC_BYTES..nq::DESC_BYTES + n].copy_from_slice(&frame[..n]);
+        let head = desc.encode();
+        let frame = &frame[..frame.len().min(nq::FRAME_MAX)];
         let prod = &mut self.prod;
         let step = azos_ipc::memobj::memobj_with_span_ref(self.region, SpscBytes::bytes(self.cap, SLOT_BYTES), |base| {
             prod.rebase(base);
-            prod.push(stamp_ns, &item[..nq::DESC_BYTES + n])
+            prod.push_parts(stamp_ns, &head, frame)
         });
         match step {
             Ok(Some(p)) => {

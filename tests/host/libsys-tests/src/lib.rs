@@ -530,6 +530,32 @@ mod spsc_bytes {
         assert_eq!(out[r.payload_max()], 0, "nothing past the slot's room was copied");
     }
 
+    /// **Discriminates.** `push_parts` lays its head and its body end to end in
+    /// one slot, and clamps the two together to the slot's room: a body past
+    /// the room is cut, a head that fills it leaves no body. Canary: copy the
+    /// body at the slot's start (drop the `add(a)`) and the first item reads
+    /// the body over its head.
+    #[test]
+    fn two_parts_land_end_to_end_in_one_slot_and_are_clamped_together() {
+        let mut b = Buf([0; 4096]);
+        let mut p = BytesProducer::new(ring(&mut b));
+        let r = *p.ring();
+        assert_eq!(p.push_parts(5, b"head", b"body"), Publish::Done);
+        p.push_parts(6, &[1u8; 8], &[2u8; 200]);
+        p.push_parts(7, &[3u8; 200], b"lost");
+        let mut out = [0u8; 256];
+        let (_, info) = r.try_pop(&mut out);
+        assert_eq!((info.len, info.acq_ns), (8, 5));
+        assert_eq!(&out[..8], b"headbody");
+        let room = r.payload_max();
+        let (_, info) = r.try_pop(&mut out);
+        assert_eq!(info.len as usize, room);
+        assert_eq!((&out[..8], out[8], out[room - 1], out[room]), (&[1u8; 8][..], 2, 2, 0));
+        let (_, info) = r.try_pop(&mut out);
+        assert_eq!(info.len as usize, room, "a head that fills the slot leaves no body");
+        assert!(out[..room].iter().all(|b| *b == 3));
+    }
+
     #[test]
     fn a_full_ring_drops_the_newest_and_never_blocks() {
         let mut b = Buf([0; 4096]);

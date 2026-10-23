@@ -282,6 +282,23 @@ impl BytesProducer {
         ring_word(self.ring.base, RING_PROD_WAIT).store(0, Ordering::Relaxed);
     }
 
+    /// [`BytesProducer::push_with`] copying `head` then `body` into one slot
+    /// (truncated to it): a descriptor and the frame behind it, with no
+    /// staging copy of the two.
+    pub fn push_parts(&mut self, acq_ns: u64, head: &[u8], body: &[u8]) -> Publish {
+        self.push_with(acq_ns, |dst, room| {
+            let a = head.len().min(room);
+            let b = body.len().min(room - a);
+            // SAFETY: `dst` has `room` bytes inside the slot, and `a + b` is at
+            // most `room`.
+            unsafe {
+                core::ptr::copy_nonoverlapping(head.as_ptr(), dst, a);
+                core::ptr::copy_nonoverlapping(body.as_ptr(), dst.add(a), b);
+            }
+            a + b
+        })
+    }
+
     /// [`BytesProducer::push_with`] copying `src` (truncated to the slot).
     pub fn push(&mut self, acq_ns: u64, src: &[u8]) -> Publish {
         self.push_with(acq_ns, |dst, room| {
