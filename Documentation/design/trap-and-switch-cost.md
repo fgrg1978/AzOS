@@ -39,9 +39,10 @@ view of a saved frame, and shared by riscv64, aarch64 and x86_64.
 - Generics, not trait objects: a build has one frame type and one services
   type, so there is one instantiation of each function and no virtual call on
   the trap path.
-- `tools/trap_lint.py` fails the build if dispatch logic (a `match` on syscall
-  numbers, the page-fault policy, the fatal tail) reappears under
-  `kernel/src/entry/`.
+- `tools/trap_lint.py`, a row of `make check0` (`tools/gate_tier.sh n0`),
+  fails if dispatch logic (a syscall number, the page-fault policy, the fatal
+  tail) reappears under `kernel/src/entry/`, or if one of the four policy files
+  names a kernel crate.
 
 The syscall flow (`enter` in `kernel/src/trap/syscall.rs`) runs in this order:
 
@@ -50,11 +51,14 @@ The syscall flow (`enter` in `kernel/src/trap/syscall.rs`) runs in this order:
 2. Interrupts are switched on. The trap return masks them again before it
    touches the return address (see
    [aarch64 trap-return windows](arch/aarch64-trap-return-windows.md)).
-3. The filter verdict. The task's seccomp profile is consulted first for every
-   call, native and Linux numbers alike
-   (`azos_syscall::syscall_verdict`).
-4. The prologue (`prologue`): the entry tracepoint, and the entry counted in the
-   running Domain under the call's foundational case (`syscall_case`).
+3. The filter verdict (`azos_syscall::syscall_verdict`). A native task's number
+   is checked against its seccomp profile before anything else; a denied call
+   kills the task. A Linux-personality task's number is not looked up here: it
+   is sent to the personality, which checks the profile on each native call
+   its translation reaches.
+4. The prologue (`prologue`): the entry tracepoint, the entry counted in the
+   running Domain under the call's foundational case (`syscall_case`), and the
+   Domain's pledge mask, which refuses the call with `EACCES` before it runs.
 5. The call itself. A native call may be answered from its number alone
    (`azos_syscall::syscall_register_only`: `SYS_GETPID`, `SYS_YIELD`), may take
    the IPC fast path when the lean entry selected it, or goes to the table. The
@@ -92,11 +96,13 @@ the callee-saved registers, the stack, thread and global pointers, the link
 register and the call's output registers, and nothing else. With Kconfig
 `SYSCALL_LEAN_ENTRY`, a native task's syscall takes an entry that does not
 store the clobbered registers and returns them zeroed, so nothing the kernel
-left in them reaches ring 3. Every other trap, and every Linux-personality task
-(whose ABI preserves everything), takes the full save. The entry tells the two
-apart by a tag in the frame, written once when the task first enters user mode
-and never by a trap: a user trap whose cause equals the frame's tag is a native
-task's syscall.
+left in them reaches ring 3. Every other trap takes the full save, and so does
+every Linux-personality task (whose ABI preserves everything) on riscv64 and
+aarch64. There the entry tells the two apart by a tag in the frame, written once when the task
+first enters user mode and never by a trap: a user trap whose cause equals the
+frame's tag is a native task's syscall. On x86_64 only a `syscall` instruction
+reaches `syscall_entry`, and the Linux ABI clobbers `rcx` and `r11` as well, so
+every `syscall`, Linux tasks' included, takes the lean path.
 
 | ISA | Lean entry | What is clobbered and zeroed |
 |---|---|---|
@@ -148,8 +154,11 @@ Reading the clock is a read of a shared page, not a system call.
 - On riscv64 the `time` CSR may be emulated by M-mode firmware on a hart that
   lacks it in hardware. There `rdtime` is an illegal-instruction trap into the
   firmware, dearer than the system call it would replace. The kernel therefore
-  sets `VDSO_FLAG_RDTIME_NATIVE` only where it knows the read is native, and
-  `vdso_rdtime_native` is what libsys tests. With the flag clear, `uptime`
+  sets `VDSO_FLAG_RDTIME_NATIVE` only where it knows the read is native (a
+  riscv64 QEMU build, and x86_64 when it publishes the counter scale; never on
+  a riscv64 board build), and `vdso_rdtime_native` is what libsys tests. On
+  aarch64 `cntvct_el0` never traps from EL0, so `vdso_now_ns` reads it without
+  looking at the flag. With the flag clear, `uptime`
   falls back to `DOMAIN_UPTIME` through `uptime_ecall`, which returns the same
   counter, so a caller cannot tell the paths apart except by cost.
 - Kernel feature `vdso-force-syscall` leaves the flag clear (and, on x86_64,
@@ -163,7 +172,7 @@ Source: `crates/core/mm/src/vdso.rs`, `crates/core/abi/src/vdso.rs`,
 
 ## 4. The timer
 
-Programming the next timer interrupt has a choice only on riscv64.
+Programming the next timer interrupt has a choice on riscv64 and x86_64.
 
 - Without Sstc the timer is programmed with the SBI `set_timer` call, a trip
   into firmware. With Sstc it is one write to the `stimecmp` CSR.
@@ -177,12 +186,16 @@ Programming the next timer interrupt has a choice only on riscv64.
   re-tested per program. It is made on the boot hart only.
 - Kconfig `RV_SSTC_NEVER`, `RV_SSTC_PROBE` (default) and `RV_SSTC_REQUIRE` set
   the policy.
-- aarch64 (the generic timer) and x86_64 (the TSC deadline) have one mechanism
-  each, reached through `Interrupts::set_timer_deadline` in `azos_arch_api`.
+- x86_64 writes the TSC-deadline MSR when CPUID.1:ECX[24] reports it and
+  Kconfig `X86_TSC_DEADLINE_*` allows it, else the LAPIC one-shot counter
+  calibrated against the TSC (`select_mode` in
+  `crates/core/arch-x86_64/src/timer.rs`, once, on the boot CPU).
+- aarch64 (the generic timer) has one mechanism. All three are reached through
+  `Interrupts::set_timer_deadline` in `azos_arch_api`.
 
 Source: `crates/core/arch-riscv64/src/irq/clint.rs`,
-`crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-api/src/isa.rs`,
-`config/arch/Kconfig.isa`.
+`crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-x86_64/src/timer.rs`,
+`crates/core/arch-api/src/isa.rs`, `config/arch/Kconfig.isa`.
 
 ## 5. Reply and accept in one trap
 
@@ -241,7 +254,8 @@ A ring-3 driver's loop has the same shape and the same fold.
   queue is empty, for at most a bounded time. A driver on the polling form is
   runnable for as long as it lives and its hart never idles; the parking form
   lets a service that answers a few requests a second sleep the rest of the
-  time. The ring-3 drivers in `userspace/drivers/` serve on it. A client that
+  time. `gpio_drv` and `ina_drv` in `userspace/drivers/` serve on it
+  (`buzz_drv` serves its interface over IPC v2 instead). A client that
   waits on the reply donates its priority to the driver after the wake.
 - Replies are delivered into a row owned by the request's waiter
   (`ReplyWaiters` in `crates/drivers/driver_server/src/reply_wait.rs`), so a
@@ -265,9 +279,10 @@ runs them.
   The page also carries a data buffer for larger results.
 - **Rules.** What makes this safer than a plain batching interface is that each
   entry is authorized as the call it stands for would be:
-  1. **Seccomp per entry.** `opcode_gate` maps each opcode to the syscall, the
-     kernel-hosted interface key, or the `SYS_INVOKE` op it stands for, and the
-     ring owner's profile is consulted for it. The profile is always the
+  1. **Seccomp and pledge per entry.** `opcode_gate` maps each opcode to the
+     syscall, the kernel-hosted interface key, or the `SYS_INVOKE` op it stands
+     for, and the ring owner's profile, then its Domain's pledge mask, is
+     consulted for it. The profile is always the
      owner's, including when a kernel-side poller runs the ring, so a
      capability and a profile of two different tasks never combine to admit an
      entry. A filter on the ring's submit call alone would never see the
@@ -285,8 +300,8 @@ runs them.
      entries.
 - **Beyond sensors and actuators.** The same table serves file read and write,
   block read and write, `fsync`, timers, futex-word waits and network send and
-  receive. Entries that must wait park on the ring (up to `IORING_MAX_PARKED`
-  at a time, each holding a reserved completion slot) and complete in a later
+  receive. Entries that must wait park on the ring (up to Kconfig
+  `IORING_MAX_PARKED` at a time, each holding a reserved completion slot) and complete in a later
   pass. A file entry is handed to a worker instead of running in the submit, and
   a block entry is queued on the block request layer and completed by the worker
   (Kconfig `IORING_ASYNC`; without it only a real-time submitter's file entries
