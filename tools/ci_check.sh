@@ -14945,6 +14945,55 @@ PY
     }
     par "x86_64: TPM over CRB (q35 tpm-crb)" x86_tpm_crb_row "x86_64: TPM over CRB (q35 tpm-crb)" PASS
     par "x86_64: TPM over CRB canary (no START)" x86_tpm_crb_row "x86_64: TPM over CRB canary (no START)" FAIL
+    # The TSC watchdog (Kconfig X86_TSC_WATCHDOG, crates/core/arch-x86_64/src/
+    # timer.rs `watch`, kernel/src/entry/x86_64/ext/tsc_watchdog.rs) on QEMU q35,
+    # the machine with an HPET to watch the TSC against (microvm has none, so
+    # its rows never start the task). QEMU's TSC is not invariant, so the
+    # kernel is the PCI one with X86_TSC_CLOCK_ALWAYS: the TSC is the clock and
+    # the watchdog checks it every X86_TSC_WATCHDOG_MS. The plain boot runs
+    # 20 s, about 40 checks, and must not demote the TSC; the canary boot arms
+    # `canary=x86-tsc-skew` (the TSC made to run four times the bound fast) on
+    # the same kernel, and the watchdog must demote it to the HPET with the
+    # boot going on after it.
+    x86_tsc_watchdog_row() { # x86_tsc_watchdog_row <label> <PASS|FAIL>
+        local label="$1" expect="$2" why="" w
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
+        local def="$CI_LOG_DIR/x86-${tag}.defconfig" append="" stop='KERNEL PANIC|TSC demoted' secs=20
+        rm -f "$kimg" "$kimg.features"
+        { cat config/defconfigs/qemu-x86_64-pci.config; echo 'CONFIG_X86_TSC_CLOCK_ALWAYS=y'; } >"$def"
+        make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-tscwd-${tag}.config" \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-tscwd" X86_64_IMG="$kimg" >/dev/null 2>&1 \
+            && builtin printf '\n' >"$kimg.features" \
+            || { bad; echo "      make x86_64 (qemu-x86_64-pci.config + X86_TSC_CLOCK_ALWAYS) did not build"; return; }
+        if [ "$expect" = FAIL ]; then
+            append="canary=x86-tsc-skew" stop='KERNEL PANIC|AzOS shell'
+            secs=60
+        fi
+        par_ready
+        X86_MACHINE=q35 x86_qemu "$kimg" "$log" "$secs" "$stop" -smp 2 ${append:+-append "$append"} \
+            || { rm -f "$kimg" "$kimg.features"; return; }
+        rm -f "$kimg" "$kimg.features"
+        for w in '[TIMER] watchdog: TSC against the HPET every' '[SCHED] Starting scheduler on boot CPU'; do
+            grep -aqF -- "$w" "$log" || { why="missing: $w"; break; }
+        done
+        grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
+        if [ -z "$why" ] && [ "$expect" = FAIL ]; then
+            if ! grep -aqE '\[TIMER\] TSC demoted: it ran \+[0-9]+ ppm from the HPET \(bound [0-9]+ ppm\); the clock is the HPET from now on' "$log"; then
+                why="the skewed TSC was not demoted: the watchdog does not discriminate"
+            elif ! sed -n '/TSC demoted/,$p' "$log" | grep -aqF 'AzOS shell'; then
+                why="the boot did not go on after the demotion (no shell on the HPET clock)"
+            fi
+        elif [ -z "$why" ]; then
+            grep -aqF 'TSC demoted' "$log" && why="an agreeing TSC was demoted: $(grep -aF 'TSC demoted' "$log" | sed -n 1p)"
+        fi
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"; echo "      log kept: $log"
+    }
+    par "x86_64: TSC watchdog keeps the TSC (q35)" x86_tsc_watchdog_row "x86_64: TSC watchdog keeps the TSC (q35)" PASS
+    par "x86_64: TSC watchdog demotes a skewed TSC (q35)" x86_tsc_watchdog_row "x86_64: TSC watchdog demotes a skewed TSC (q35)" FAIL
     # The Intel I225/I226 driver (Kconfig DRV_IGC, crates/drivers/net/src/igc.rs, built
     # into qemu-x86_64-pci.config) on QEMU's `-device igb`: an 82576, the same advanced
     # descriptors, bound to the same driver by its id (hwbus.ids). The controller is reset,
