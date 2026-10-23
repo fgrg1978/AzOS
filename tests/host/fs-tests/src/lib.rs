@@ -5285,6 +5285,246 @@ mod partition_tests {
     }
 }
 
+// ── The AzOS records partition (GPT) ──────────────────────────────
+//
+// A whole GPT medium built here the way `tools/make_parted_disk.py --gpt`
+// builds the gate's: protective MBR, primary header and 128 x 128 B array,
+// a FAT partition at 2048 + 100, the records partition (8 sectors) right
+// after it, the backup array and header in the last 33 sectors.
+#[cfg(test)]
+mod records_partition_tests {
+    use super::partition::{self, crc32_update, parse, verify_backup, PartError, Partition, SECTOR,
+                           GPT_RECORDS_GUID, MBR_RECORDS};
+
+    const FAT_GUID: [u8; 16] =
+        [0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7];
+    const REC: u64 = 2148;
+    const LAST_USABLE: u64 = REC + 7;
+    const CAP: u64 = LAST_USABLE + 1 + 32 + 1;
+    const BACKUP_ARRAY: u64 = CAP - 33;
+
+    fn put32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
+    fn put64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
+    fn at(lba: u64) -> usize { lba as usize * SECTOR }
+
+    /// Write the header at `lba` (pointing at `alt` and its array at
+    /// `entries`), CRCs computed over the array that is there.
+    fn header(img: &mut [u8], lba: u64, alt: u64, entries: u64) {
+        let o = at(lba);
+        let h = &mut img[o..o + SECTOR];
+        h.fill(0);
+        h[0..8].copy_from_slice(b"EFI PART");
+        put32(h, 8, 0x0001_0000);
+        put32(h, 12, 92);
+        put64(h, 24, lba);
+        put64(h, 32, alt);
+        put64(h, 40, 34);
+        put64(h, 48, LAST_USABLE);
+        h[56..72].copy_from_slice(&[0x5A; 16]);
+        put64(h, 72, entries);
+        put32(h, 80, 128);
+        put32(h, 84, 128);
+        recrc(img, lba);
+    }
+
+    /// Recompute the array CRC and then the header CRC of the header at `lba`.
+    fn recrc(img: &mut [u8], lba: u64) {
+        let o = at(lba);
+        let entries = u64::from_le_bytes(img[o + 72..o + 80].try_into().unwrap());
+        let crc = crc32_update(0, &img[at(entries)..at(entries) + 128 * 128]);
+        put32(img, o + 88, crc);
+        put32(img, o + 16, 0);
+        let hc = crc32_update(0, &img[o..o + 92]);
+        put32(img, o + 16, hc);
+    }
+
+    fn entry(img: &mut [u8], array: u64, i: usize, ty: &[u8; 16], first: u64, last: u64) {
+        let o = at(array) + 128 * i;
+        img[o..o + 16].copy_from_slice(ty);
+        img[o + 16..o + 32].copy_from_slice(&[i as u8 + 1; 16]);
+        put64(img, o + 32, first);
+        put64(img, o + 40, last);
+    }
+
+    /// The medium, with `records` as the second entry's type GUID in both
+    /// arrays.
+    fn medium(records: &[u8; 16]) -> Vec<u8> {
+        let mut img = vec![0u8; CAP as usize * SECTOR];
+        let mbr = &mut img[..SECTOR];
+        mbr[446 + 4] = 0xEE;
+        mbr[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
+        mbr[446 + 12..446 + 16].copy_from_slice(&((CAP - 1) as u32).to_le_bytes());
+        mbr[510] = 0x55;
+        mbr[511] = 0xAA;
+        for array in [2, BACKUP_ARRAY] {
+            entry(&mut img, array, 0, &FAT_GUID, 2048, REC - 1);
+            entry(&mut img, array, 1, records, REC, LAST_USABLE);
+        }
+        header(&mut img, 1, CAP - 1, 2);
+        header(&mut img, CAP - 1, 1, BACKUP_ARRAY);
+        img
+    }
+
+    fn reader(img: &[u8]) -> impl FnMut(u64, &mut [u8; SECTOR]) -> Result<(), ()> + '_ {
+        move |lba, buf| {
+            let o = lba as usize * SECTOR;
+            if o + SECTOR > img.len() { return Err(()); }
+            buf.copy_from_slice(&img[o..o + SECTOR]);
+            Ok(())
+        }
+    }
+
+    fn parse_img(img: &[u8]) -> Result<partition::Table, PartError> { parse(CAP, &mut reader(img)) }
+    fn verify(img: &[u8]) -> Result<(), PartError> { verify_backup(CAP, &mut reader(img)) }
+
+    /// **The type GUID is the documented one, in entry byte order.** The
+    /// first three fields of 653ED7AA-51CA-43D8-9AF7-54775962C612 are
+    /// little-endian on disk; `tools/azos_records.py`, which the image build
+    /// and the provisioning tools use, names the same text.
+    #[test]
+    fn the_records_guid_is_653ed7aa_in_entry_byte_order() {
+        let text = "653ED7AA-51CA-43D8-9AF7-54775962C612";
+        let hex: Vec<u8> = text.split('-').flat_map(|g| {
+            (0..g.len()).step_by(2).map(move |i| u8::from_str_radix(&g[i..i + 2], 16).unwrap())
+        }).collect();
+        let mut le = [0u8; 16];
+        le[0..4].copy_from_slice(&[hex[3], hex[2], hex[1], hex[0]]);
+        le[4..6].copy_from_slice(&[hex[5], hex[4]]);
+        le[6..8].copy_from_slice(&[hex[7], hex[6]]);
+        le[8..16].copy_from_slice(&hex[8..16]);
+        assert_eq!(GPT_RECORDS_GUID, le);
+        let tool = include_str!("../../../../tools/azos_records.py");
+        assert!(tool.contains(&format!("RECORDS_GUID_TEXT = \"{text}\"")),
+                "tools/azos_records.py names another records GUID");
+    }
+
+    /// **The records partition is found, verified, and never handed out.**
+    /// The table publishes it (the FAT partition keeps index 0), `records`
+    /// names it, the backup checks out, and `partition` (the view of the
+    /// capability minter, the disk syscalls and the FAT scan) answers `None`
+    /// for it while `extent` still accounts for it.
+    ///
+    /// **Canary.** Drop the `RECORDS_AT` test in `partition()`: the records
+    /// partition becomes mintable and `partition(1)` is `Some`.
+    #[test]
+    fn a_gpt_records_partition_is_the_kernels_alone() {
+        let _g = super::serial();
+        let img = medium(&GPT_RECORDS_GUID);
+        let t = parse_img(&img).unwrap();
+        assert_eq!(t.count, 2);
+        assert_eq!(t.parts[0], Partition { start: 2048, sectors: 100, mbr_type: 0 });
+        assert_eq!(t.parts[1], Partition { start: REC, sectors: 8, mbr_type: MBR_RECORDS });
+        assert_eq!(t.records_index(), Some(1));
+        assert_eq!(verify(&img), Ok(()));
+        partition::reset_for_tests();
+        assert!(partition::publish(&t));
+        assert_eq!(partition::records(), Some((1, REC, 8)));
+        assert_eq!(partition::partition(0), Some((2048, 100)));
+        assert_eq!(partition::partition(1), None, "the records partition was handed out");
+        assert!(!partition::contains(1, REC, 1));
+        assert_eq!(partition::resolve(1, 0, 1), None);
+        assert_eq!(partition::extent(1), Some((REC, 8)));
+        assert_eq!(partition::partition(u32::MAX), None);
+        partition::reset_for_tests();
+        assert_eq!(partition::records(), None);
+    }
+
+    /// **A wrong GUID is not the records partition**, and a GPT without one
+    /// publishes its partitions with none: the GUID in canonical text byte
+    /// order (the classic endianness slip), its last byte changed, and the
+    /// swap GUID. The kernel then keeps the tail rules for that medium
+    /// (`GptBackupReaches` on a GPT laid out to its end).
+    ///
+    /// **Canary.** Compare only the first 8 GUID bytes in `parse_gpt`: the
+    /// `last byte` case is taken for the records partition.
+    #[test]
+    fn a_wrong_or_missing_guid_is_no_records_partition() {
+        let _g = super::serial();
+        let mut text_order = GPT_RECORDS_GUID;
+        text_order[0..4].reverse();
+        text_order[4..6].reverse();
+        text_order[6..8].reverse();
+        let mut last_byte = GPT_RECORDS_GUID;
+        last_byte[15] ^= 1;
+        for (what, g) in [("text byte order", text_order), ("last byte", last_byte), ("basic data", FAT_GUID)] {
+            let img = medium(&g);
+            let t = parse_img(&img).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+            assert_eq!(t.records_index(), None, "{what}");
+            assert!(t.parts[..t.count].iter().all(|p| p.mbr_type == 0), "{what}");
+            partition::reset_for_tests();
+            assert!(partition::publish(&t));
+            assert_eq!(partition::records(), None, "{what}");
+            assert_eq!(partition::partition(1), Some((REC, 8)), "{what}: an ordinary partition");
+        }
+        partition::reset_for_tests();
+    }
+
+    /// **Two records partitions refuse the whole table**: which one holds the
+    /// key must not depend on entry order, and the second one must not be
+    /// handed out either.
+    ///
+    /// **Canary.** Drop the `TwoRecords` return in `parse_gpt`: the table
+    /// parses, with partition 0 (the FAT one, retyped) as the records one.
+    #[test]
+    fn two_records_partitions_refuse_the_table() {
+        let mut img = medium(&GPT_RECORDS_GUID);
+        for array in [2, BACKUP_ARRAY] {
+            entry(&mut img, array, 0, &GPT_RECORDS_GUID, 2048, REC - 1);
+        }
+        recrc(&mut img, 1);
+        recrc(&mut img, CAP - 1);
+        assert_eq!(parse_img(&img).map(|t| t.count), Err(PartError::TwoRecords));
+    }
+
+    /// **A corrupt GPT refuses the records**: the backup is checked whole
+    /// against the primary one. Each case changes one thing, CRCs recomputed
+    /// unless the CRC is the case. The table itself still parses from the
+    /// primary copy (a stale backup costs the records, not the partitions),
+    /// except when the primary array is the one corrupted.
+    ///
+    /// **Canary.** Drop the `entries_crc` comparison from `verify_backup`:
+    /// the `backup moves the records` case verifies.
+    ///
+    /// **Canary.** Drop `p.alternate_lba != last`: `primary points elsewhere`
+    /// verifies off the copy on the last sector anyway.
+    #[test]
+    fn a_corrupt_gpt_refuses_the_records() {
+        type Edit = fn(&mut Vec<u8>);
+        let cases: &[(&str, Edit, Result<(), PartError>, bool)] = &[
+            ("backup header crc", |i| i[at(CAP - 1) + 16] ^= 1, Err(PartError::BadHeaderCrc), true),
+            ("backup array byte", |i| i[at(BACKUP_ARRAY) + 128 + 40] ^= 1, Err(PartError::BadEntriesCrc), true),
+            ("backup signature", |i| i[at(CAP - 1)] = b'X', Err(PartError::BadGptHeader), true),
+            ("backup missing", |i| { let o = at(CAP - 1); i[o..o + SECTOR].fill(0); }, Err(PartError::BadGptHeader), true),
+            ("backup moves the records", |i| {
+                put64(i, at(BACKUP_ARRAY) + 128 + 32, REC + 1);
+                recrc(i, CAP - 1);
+            }, Err(PartError::BadBackup), true),
+            ("backup other disk", |i| { i[at(CAP - 1) + 56] ^= 1; recrc(i, CAP - 1); }, Err(PartError::BadBackup), true),
+            ("backup last usable", |i| { put64(i, at(CAP - 1) + 48, LAST_USABLE - 1); recrc(i, CAP - 1); },
+             Err(PartError::BadBackup), true),
+            ("backup alternate not 1", |i| { put64(i, at(CAP - 1) + 32, 2); recrc(i, CAP - 1); },
+             Err(PartError::BadBackup), true),
+            ("backup array inside the usable range", |i| {
+                let src = at(BACKUP_ARRAY);
+                let arr = i[src..src + 128 * 128].to_vec();
+                i[at(100)..at(100) + 128 * 128].copy_from_slice(&arr);
+                put64(i, at(CAP - 1) + 72, 100);
+                recrc(i, CAP - 1);
+            }, Err(PartError::BadBackup), true),
+            ("primary points elsewhere", |i| { put64(i, at(1) + 32, CAP - 2); recrc(i, 1); },
+             Err(PartError::BadBackup), true),
+            ("primary array byte", |i| i[at(2) + 40] ^= 1, Err(PartError::BadEntriesCrc), false),
+        ];
+        for (what, edit, want, parses) in cases {
+            let mut img = medium(&GPT_RECORDS_GUID);
+            assert_eq!(verify(&img), Ok(()), "{what}: the base medium");
+            edit(&mut img);
+            assert_eq!(verify(&img), *want, "{what}");
+            assert_eq!(parse_img(&img).is_ok(), *parses, "{what}: the table");
+        }
+    }
+}
+
 // ── The P2 trait and VFS surface ──────────────────────────────────
 //
 // tmpfs mounted at `/tmp` is the streaming backend; FAT32 at `/fat` stays a

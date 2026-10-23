@@ -42,6 +42,26 @@
 //! [`extent`] still does, for the accounting of what lies where on the medium.
 //! Its index stays reserved, so the other partitions keep their numbers.
 //!
+//! # The AzOS records partition
+//!
+//! On a GPT medium the kernel's own records (the brain-link key, the entropy
+//! seed, the device record, the topology counter floor: `kernel/src/
+//! reserved_tail.rs`) live in a small partition of type
+//! [`GPT_RECORDS_GUID`], 653ED7AA-51CA-43D8-9AF7-54775962C612 (generated once,
+//! at random, for AzOS; `tools/azos_records.py` carries the same bytes). A
+//! GPT laid out to its end keeps its backup table where an MBR medium keeps
+//! the reserved tail, so the tail cannot be used there (audit K2-M1). The
+//! partition is the kernel's from the moment the table is published:
+//! [`partition`] never names it, so no capability is minted for it and no
+//! filesystem scan mounts it; [`extent`] and [`records`] still do. A table
+//! naming two of them is refused whole ([`PartError::TwoRecords`]): which one
+//! holds the key must not depend on entry order.
+//!
+//! The records are written only after [`verify_backup`] finds the backup
+//! header and array equal to the primary ones. That check is the records'
+//! alone: a GPT whose backup is stale (a resized disk) still publishes its
+//! partitions, as before.
+//!
 //! This file has no dependency on the rest of the crate (it names only
 //! `core`), so the host test crates pull it with `#[path]`.
 
@@ -64,6 +84,17 @@ pub const MBR_SWAP: u8 = 0x82;
 pub const GPT_SWAP_GUID: [u8; 16] =
     [0x6D, 0xFD, 0x57, 0x06, 0xAB, 0xA4, 0xC4, 0x43, 0x84, 0xE5, 0x09, 0x33, 0xC8, 0x6F, 0x1B, 0xC8];
 
+/// The GPT type GUID of the AzOS records partition,
+/// 653ED7AA-51CA-43D8-9AF7-54775962C612, as it lies in an entry (the first
+/// three fields little-endian).
+pub const GPT_RECORDS_GUID: [u8; 16] =
+    [0xAA, 0xD7, 0x3E, 0x65, 0xCA, 0x51, 0xD8, 0x43, 0x9A, 0xF7, 0x54, 0x77, 0x59, 0x62, 0xC6, 0x12];
+
+/// The `mbr_type` a GPT entry of type [`GPT_RECORDS_GUID`] carries. `0xEE` is
+/// the protective-MBR type: an MBR holding such an entry is parsed as GPT, so
+/// no MBR-scheme partition can carry it.
+pub const MBR_RECORDS: u8 = 0xEE;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scheme {
     /// No partition table: a bare filesystem or an empty medium.
@@ -77,8 +108,8 @@ pub enum Scheme {
 pub struct Partition {
     pub start: u64,
     pub sectors: u64,
-    /// The MBR type byte; for a GPT entry 0, or [`MBR_SWAP`] when its type
-    /// GUID is the swap one.
+    /// The MBR type byte; for a GPT entry 0, [`MBR_SWAP`] when its type
+    /// GUID is the swap one, or [`MBR_RECORDS`] for the records one.
     pub mbr_type: u8,
 }
 
@@ -86,6 +117,10 @@ impl Partition {
     /// Is this a swap partition (either scheme)?
     pub const fn is_swap(&self) -> bool {
         self.mbr_type == MBR_SWAP
+    }
+    /// Is this the AzOS records partition (GPT only)?
+    pub const fn is_records(&self) -> bool {
+        self.mbr_type == MBR_RECORDS
     }
 }
 
@@ -108,6 +143,10 @@ impl Table {
     /// The index of the first swap partition.
     pub fn swap_index(&self) -> Option<usize> {
         self.parts[..self.count].iter().position(Partition::is_swap)
+    }
+    /// The index of the records partition.
+    pub fn records_index(&self) -> Option<usize> {
+        self.parts[..self.count].iter().position(Partition::is_records)
     }
     fn push(&mut self, p: Partition) -> Result<(), PartError> {
         if self.count >= MAX_PARTS {
@@ -136,6 +175,11 @@ pub enum PartError {
     BadHeaderCrc,
     /// The GPT entry array CRC32 does not match.
     BadEntriesCrc,
+    /// Two entries of the records type ([`GPT_RECORDS_GUID`]).
+    TwoRecords,
+    /// The backup GPT header is not on the last sector, or it or its entry
+    /// array does not match the primary ones ([`verify_backup`]).
+    BadBackup,
 }
 
 fn le16(b: &[u8], o: usize) -> u16 { u16::from_le_bytes([b[o], b[o + 1]]) }
@@ -230,12 +274,29 @@ where
     Ok(t)
 }
 
-fn parse_gpt<F>(capacity: u64, read: &mut F) -> Result<Table, PartError>
+/// The fields of a GPT header that the parser and [`verify_backup`] use.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GptHeader {
+    my_lba: u64,
+    alternate_lba: u64,
+    first_usable: u64,
+    last_usable: u64,
+    disk_guid: [u8; 16],
+    entries_lba: u64,
+    n_entries: u32,
+    esize: u32,
+    entries_crc: u32,
+}
+
+/// Read the GPT header at `lba` and check it: signature, size, CRC32, its own
+/// LBA, the usable range and the entry array inside the medium, and the
+/// array's CRC32 over exactly `n_entries * esize` bytes.
+fn read_gpt_header<F>(lba: u64, capacity: u64, read: &mut F) -> Result<GptHeader, PartError>
 where
     F: FnMut(u64, &mut [u8; SECTOR]) -> Result<(), ()>,
 {
     let mut h = [0u8; SECTOR];
-    read(1, &mut h).map_err(|()| PartError::Io)?;
+    read(lba, &mut h).map_err(|()| PartError::Io)?;
     if &h[0..8] != b"EFI PART" {
         return Err(PartError::BadGptHeader);
     }
@@ -249,45 +310,61 @@ where
     if crc32_update(0, &hc[..hsize]) != stored {
         return Err(PartError::BadHeaderCrc);
     }
-    let my_lba = le64(&h, 24);
-    let first_usable = le64(&h, 40);
-    let last_usable = le64(&h, 48);
-    let entries_lba = le64(&h, 72);
-    let n_entries = le32(&h, 80);
-    let esize = le32(&h, 84);
-    let entries_crc = le32(&h, 88);
-    if my_lba != 1
-        || first_usable < 2
-        || first_usable > last_usable
-        || last_usable >= capacity
-        || entries_lba < 2
-        || n_entries > GPT_MAX_ENTRIES
-        || !(128..=512).contains(&esize)
-        || esize % 8 != 0
+    let mut disk_guid = [0u8; 16];
+    disk_guid.copy_from_slice(&h[56..72]);
+    let g = GptHeader {
+        my_lba: le64(&h, 24),
+        alternate_lba: le64(&h, 32),
+        first_usable: le64(&h, 40),
+        last_usable: le64(&h, 48),
+        disk_guid,
+        entries_lba: le64(&h, 72),
+        n_entries: le32(&h, 80),
+        esize: le32(&h, 84),
+        entries_crc: le32(&h, 88),
+    };
+    if g.my_lba != lba
+        || g.first_usable < 2
+        || g.first_usable > g.last_usable
+        || g.last_usable >= capacity
+        || g.entries_lba < 2
+        || g.n_entries > GPT_MAX_ENTRIES
+        || !(128..=512).contains(&g.esize)
+        || g.esize % 8 != 0
     {
         return Err(PartError::BadGptHeader);
     }
-    let bytes = (n_entries as u64) * (esize as u64); // <= 128 * 512
+    let bytes = (g.n_entries as u64) * (g.esize as u64); // <= 128 * 512
     let n_sectors = bytes.div_ceil(SECTOR as u64);
-    let array_end = entries_lba.checked_add(n_sectors).ok_or(PartError::BadGptHeader)?;
+    let array_end = g.entries_lba.checked_add(n_sectors).ok_or(PartError::BadGptHeader)?;
     if array_end > capacity {
         return Err(PartError::BadGptHeader);
     }
-    // First pass: the CRC over exactly `bytes` bytes.
     let mut crc = 0u32;
     let mut left = bytes as usize;
     let mut buf = [0u8; SECTOR];
     for k in 0..n_sectors {
-        read(entries_lba + k, &mut buf).map_err(|()| PartError::Io)?;
+        read(g.entries_lba + k, &mut buf).map_err(|()| PartError::Io)?;
         let take = left.min(SECTOR);
         crc = crc32_update(crc, &buf[..take]);
         left -= take;
     }
-    if crc != entries_crc {
+    if crc != g.entries_crc {
         return Err(PartError::BadEntriesCrc);
     }
-    // Second pass: the entries. An entry may straddle sectors (esize is a
-    // multiple of 8, not of 512), so it is assembled byte by byte.
+    Ok(g)
+}
+
+fn parse_gpt<F>(capacity: u64, read: &mut F) -> Result<Table, PartError>
+where
+    F: FnMut(u64, &mut [u8; SECTOR]) -> Result<(), ()>,
+{
+    let GptHeader { first_usable, last_usable, entries_lba, n_entries, esize, .. } =
+        read_gpt_header(1, capacity, read)?;
+    let mut buf = [0u8; SECTOR];
+    // The entries, their CRC checked by `read_gpt_header`. An entry may
+    // straddle sectors (esize is a multiple of 8, not of 512), so it is
+    // assembled byte by byte.
     let mut t = Table::empty(Scheme::Gpt);
     let mut ent = [0u8; 512];
     let mut have_sector = u64::MAX;
@@ -314,10 +391,45 @@ where
         }
         let sectors = (last - first).checked_add(1).ok_or(PartError::OutOfRange)?;
         let hi = last_usable.checked_add(1).ok_or(PartError::OutOfRange)?;
-        let mbr_type = if ent[0..16] == GPT_SWAP_GUID { MBR_SWAP } else { 0 };
+        let mbr_type = if ent[0..16] == GPT_SWAP_GUID {
+            MBR_SWAP
+        } else if ent[0..16] == GPT_RECORDS_GUID {
+            if t.records_index().is_some() {
+                return Err(PartError::TwoRecords);
+            }
+            MBR_RECORDS
+        } else {
+            0
+        };
         accept(&mut t, Partition { start: first, sectors, mbr_type }, first_usable, hi)?;
     }
     Ok(t)
+}
+
+/// Check the backup GPT of a medium of `capacity` sectors against its
+/// primary one: the primary header's `AlternateLBA` is the last sector (where
+/// UEFI puts the backup), the header there passes every check the primary
+/// passes (its own LBA, CRC32, its entry array's CRC32) and points back at
+/// LBA 1, its array lies past the usable range, and it describes the same
+/// disk, usable range and array (size and CRC32) as the primary. Any
+/// difference is [`PartError::BadBackup`] (a failing check of the backup
+/// itself keeps its own error): one of the two copies was changed, and
+/// nothing says which one is right.
+pub fn verify_backup<F>(capacity: u64, read: &mut F) -> Result<(), PartError>
+where
+    F: FnMut(u64, &mut [u8; SECTOR]) -> Result<(), ()>,
+{
+    let p = read_gpt_header(1, capacity, read)?;
+    let last = capacity.checked_sub(1).ok_or(PartError::BadBackup)?;
+    if p.alternate_lba != last {
+        return Err(PartError::BadBackup);
+    }
+    let b = read_gpt_header(last, capacity, read)?;
+    let same = b.alternate_lba == 1
+        && b.entries_lba > b.last_usable
+        && (b.first_usable, b.last_usable, b.disk_guid) == (p.first_usable, p.last_usable, p.disk_guid)
+        && (b.n_entries, b.esize, b.entries_crc) == (p.n_entries, p.esize, p.entries_crc);
+    if same { Ok(()) } else { Err(PartError::BadBackup) }
 }
 
 // ── The published table ──────────────────────────────────────────────────────
@@ -333,6 +445,8 @@ static LENS: [AtomicU64; MAX_PARTS] = [const { AtomicU64::new(0) }; MAX_PARTS];
 static COUNT: AtomicU32 = AtomicU32::new(0);
 /// Index of the swap partition plus one; 0 for none.
 static SWAP_AT: AtomicU32 = AtomicU32::new(0);
+/// Index of the records partition plus one; 0 for none.
+static RECORDS_AT: AtomicU32 = AtomicU32::new(0);
 /// Set by [`claim_swap`]: the swap partition is the kernel's.
 static SWAP_CLAIMED: AtomicBool = AtomicBool::new(false);
 static PUBLISHED: AtomicBool = AtomicBool::new(false);
@@ -349,6 +463,7 @@ pub fn publish(t: &Table) -> bool {
         LENS[i].store(p.sectors, Ordering::Relaxed);
     }
     SWAP_AT.store(t.swap_index().map_or(0, |i| i as u32 + 1), Ordering::Relaxed);
+    RECORDS_AT.store(t.records_index().map_or(0, |i| i as u32 + 1), Ordering::Relaxed);
     COUNT.store(t.count as u32, Ordering::Release);
     true
 }
@@ -369,14 +484,26 @@ pub fn claim_swap() -> Option<(u64, u64)> {
 }
 
 /// Partition `index` of the published table, as `(start, sectors)`. `None`
-/// for the swap partition once the kernel has claimed it: this is the view
-/// of everything that hands the medium to someone (capabilities, the disk
-/// syscalls, the filesystem scan).
+/// for the swap partition once the kernel has claimed it, and always for the
+/// records partition: this is the view of everything that hands the medium
+/// to someone (capabilities, the disk syscalls, the filesystem scan).
 pub fn partition(index: u32) -> Option<(u64, u64)> {
     if SWAP_CLAIMED.load(Ordering::Acquire) && index + 1 == SWAP_AT.load(Ordering::Relaxed) {
         return None;
     }
+    if RECORDS_AT.load(Ordering::Acquire).checked_sub(1) == Some(index) {
+        return None;
+    }
     extent(index)
+}
+
+/// The published records partition, as `(index, start, sectors)`; `None`
+/// when the table has none (or is not published yet). Its contents are the
+/// kernel's alone: [`partition`] never names it.
+pub fn records() -> Option<(u32, u64, u64)> {
+    let at = RECORDS_AT.load(Ordering::Acquire);
+    let (start, sectors) = extent(at.checked_sub(1)?)?;
+    Some((at - 1, start, sectors))
 }
 
 /// Partition `index` as `(start, sectors)` *whoever owns it*, the claimed swap
@@ -439,6 +566,7 @@ pub fn resolve(index: u32, rel: u64, count: u64) -> Option<u64> {
 pub fn reset_for_tests() {
     COUNT.store(0, Ordering::Release);
     SWAP_AT.store(0, Ordering::Relaxed);
+    RECORDS_AT.store(0, Ordering::Relaxed);
     SWAP_CLAIMED.store(false, Ordering::Release);
     PUBLISHED.store(false, Ordering::Release);
 }
