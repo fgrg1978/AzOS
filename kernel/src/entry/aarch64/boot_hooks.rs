@@ -728,6 +728,8 @@ pub fn virtio_mmio_line(slot: usize, _base: usize) -> Option<u32> {
 
 /// Route `line` (an edge SPI on QEMU `virt`) to this PE and enable it.
 /// `entry::aarch64::trap::handle_irq` dispatches it to the NIC.
+// Kconfig NET: the network bring-up (`boot::net`) is its only caller.
+#[cfg(feature = "net")]
 #[inline(always)]
 pub fn net_mmio_unmask(_hart: usize, line: u32) {
     let mpidr = azos_arch::cpu::read_mpidr().raw;

@@ -479,8 +479,10 @@ iommu-riscv = ["pci", "azos_iommu"]
 iommu-smmuv3 = ["pci", "azos_iommu"]
 iommu-vtd = ["pci", "azos_iommu"]
 iommu-amdvi = ["pci", "azos_iommu"]
-net-smoke = []
-dhcp-smoke = []
+# Kconfig NET: network bring-up, the net-poll task and the network clients.
+net = []
+net-smoke = ["net"]
+dhcp-smoke = ["net"]
 # Two riscv64 kernel tasks pinned to the SAME hart each fill v0-v31 with a
 # distinct pattern, yield to each other, then verify their own pattern
 # survived — a canary for the rvv_ctx_save/restore TID-vs-offset-120 bug

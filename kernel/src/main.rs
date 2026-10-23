@@ -1563,6 +1563,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
 
         // Network: set IP/mask/gateway BEFORE net_init() — see
         // `install_net_config`'s own doc for the ordering reason.
+        #[cfg(feature = "net")]
         install_net_config();
 
         // Scheduler Hz -- Q4.2 (owner decision, 2026-09-25): CONFIG.INI on
@@ -1626,8 +1627,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // ── Network init (uses IP/mask/gw set above) ─────────────────────────────
     // Init transport drivers first, then the IP/TCP/UDP stack. See
     // `install_net`'s own doc for the conformance-probe reasoning.
+    #[cfg(feature = "net")]
     let nic_present = install_net();
-    #[cfg(feature = "vf2")]
+    #[cfg(all(feature = "net", feature = "vf2"))]
     {
         // The board Ethernet is the Synopsys DesignWare QoS MAC (gmac0). The
         // Cadence driver `eth.rs` is not called: its register model is the
@@ -1658,6 +1660,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         kprintln!("[NETSMOKE] node={} ip=10.0.0.{} mac_octet={}", node, node, mac[5]);
     }
 
+    #[cfg(feature = "net")]
     azos_net::net_init();
     kprintln!();
 
@@ -1848,7 +1851,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // rt-motor / flight-ctrl / sensor-ahrs are created and the timer ISR
     // starts preempting kernel_main on the boot CPU, late init code may
     // never run to completion. Spawning early guarantees the listener is
-    // registered while the boot CPU is still single-tasking.
+    // registered while the boot CPU is still single-tasking. Kconfig NET.
+    #[cfg(feature = "net")]
     {
         let port = azos_config::CFG_OTA_AUTO_RECV_PORT.load(
             core::sync::atomic::Ordering::Relaxed);
@@ -2052,6 +2056,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Kconfig VIRT: admit the topology's `[guest.NAME]` rows (the monitor's VMs).
     #[cfg(feature = "hv")]
     install_hv(num_cpus);
+    #[cfg(feature = "net")]
     install_firewall();
     // The native volumes the topology declares (`[volume.NAME]`), mounted at
     // their rows' paths now that the rows and the partition table exist.
@@ -2500,10 +2505,12 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // `-smp` 1 or 2 and on the K1's 8 harts; aarch64's `-smp` varies across
     // gate rows (the `aarch64 network: NIC found + MAC` row expects CPU 1 at
     // `-smp 2`).
-    let net_poll_hart: i8 = place::pin(place::NET_POLL);
+    // Kconfig NET: the wait hooks always, the task only once a NIC is bound
+    // (`start_net_poll`; the USB network function creates it when it comes).
+    #[cfg(feature = "net")]
     install_net_hooks();
-    azos_sched::task_create_affinity("net-poll", net_poll_task, 0,
-        azos_sched::NET_POLL_PRIORITY, net_poll_hart);
+    #[cfg(feature = "net")]
+    start_net_poll();
     // Kconfig IOMMU_*: the log of what the IOMMU refused, drained by a task
     // (the unit's own interrupts stay off). Only when a unit is up.
     #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
@@ -2511,11 +2518,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         azos_sched::task_create("iommu-faults", boot::fault_task, 0, 13);
         kprintln!("[SCHED] Created iommu-faults task (every {} ms)", azos_limits::IOMMU_FAULT_POLL_MS);
     }
-    // Prints the BOUND, not an invented rate: this task's cadence is whatever
-    // the scheduler tick grants it (see `NET_POLL_INTERVAL`). The old line
-    // asserted a flat "100Hz" while the code asked for 1 kHz.
-    kprintln!("[SCHED] Created net-poll task (IO-wait, <= sched_hz={} Hz) [hart {}]",
-              azos_drv_sys::timebase::sched_hz_get(), net_poll_hart);
+    #[cfg(feature = "net")]
     start_net_clients();
 
     // Phase I1: sensor + AHRS fusion task (~100 Hz).
@@ -3116,7 +3119,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     //
     // This compares against the standard, not against ourselves: an IPv4
     // header is built and the bytes **RFC 791** prescribes are asserted, at
-    // their offsets, in network order.
+    // their offsets, in network order. Kconfig NET, as the loopback check below.
+    #[cfg(feature = "net")]
     {
         use azos_net::ip;
         let src = [10u8, 0, 2, 15];
@@ -3937,6 +3941,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Skipped when there is no IP yet: with `0.0.0.0` loopback is disabled on
     // purpose — `dst == our_ip` would hold for destination `0.0.0.0` — and a
     // failure here would be correct, not a defect.
+    #[cfg(feature = "net")]
     {
         let ip = azos_net::net_get_ip();
         if ip != [0, 0, 0, 0] {

@@ -44,6 +44,9 @@ use crate::*;
 ///   30 s idle: 17 900 iterations (596/s) with the 1 ms timer, 0 without.
 ///   Timer interrupts did not move measurably (603/s -> 616/s): `rt-motor`
 ///   and `flight-ctrl` also sleep 1 ms, and the tick coalesces the three.
+///   Today no boot creates the task without a NIC ([`start_net_poll`]); the
+///   mode stays for a NIC that went away.
+#[cfg(feature = "net")]
 pub(crate) fn net_poll_task(_: usize) {
     kprintln!("[NET-POLL] Phase U1: dedicated network polling task started");
 
@@ -165,6 +168,26 @@ pub(crate) fn net_poll_task(_: usize) {
     }
 }
 
+/// Create the net-poll task (Kconfig NET), once, when a NIC is bound: by the
+/// boot after `net_init` when it found one, and by the USB network function
+/// when it comes up later (`boot::usb`). A boot with no NIC has none: no frame
+/// can arrive, and a waiter on the stack is woken by the path that delivers
+/// to it (`install_net_hooks`). The CPU is Kconfig TASK_NET_POLL_PLACE.
+#[cfg(feature = "net")]
+pub(crate) fn start_net_poll() {
+    static STARTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if !azos_drv_net::net_device::is_ready() || STARTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let cpu = crate::tasks::place::pin(crate::tasks::place::NET_POLL);
+    azos_sched::task_create_affinity("net-poll", net_poll_task, 0,
+        azos_sched::NET_POLL_PRIORITY, cpu);
+    // Prints the BOUND, not an invented rate: this task's cadence is whatever
+    // the scheduler tick grants it (see `NET_POLL_INTERVAL`).
+    kprintln!("[SCHED] Created net-poll task (IO-wait, <= sched_hz={} Hz) [hart {}]",
+              azos_drv_sys::timebase::sched_hz_get(), cpu);
+}
+
 /// TID of `net_poll_task`, published by the task itself (0 = not running).
 static NET_POLL_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -191,6 +214,7 @@ pub(crate) fn net_msi_wake() -> bool {
 /// poller (a `connect`, the first byte of a `send`, a held window update from
 /// `recv`, a FIN from `close`, a segment delivered by loopback) earlier than
 /// its wake kicks it (`tcp::poll_sleep_until`), on every NIC mode.
+#[cfg(feature = "net")]
 pub(crate) fn install_net_hooks() {
     azos_net::wait::set_hooks(azos_sched::current_task_tid, net_wait_block, net_wait_wake);
     azos_net::tcp::set_timer_kick(net_timer_kick);
@@ -200,6 +224,7 @@ pub(crate) fn install_net_hooks() {
 /// task's wake was armed elsewhere. Same wake as [`net_msi_wake`] (stamped
 /// if the task is not asleep yet, so a kick that lands between
 /// `poll_sleep_until` and `task_block` is not lost), counted apart.
+#[cfg(feature = "net")]
 fn net_timer_kick() {
     let tid = NET_POLL_TID.load(Ordering::Acquire);
     let woke = tid != 0 && azos_sched::scheduler::wake_task_by_tid(
@@ -224,6 +249,7 @@ pub(crate) fn net_rx_kick() {
 /// `azos_net::wait` block hook: sleep until `deadline` or a wake from the
 /// receive path. `false` when the scheduler refused to block (K-C29: a
 /// critical section is open), so the caller falls back to its own wait.
+#[cfg(feature = "net")]
 fn net_wait_block(deadline: u64) -> bool {
     azos_sched::task_block_killable(azos_sched::WaitReason::Timer(deadline))
         != azos_sched::BlockOutcome::Refused
@@ -231,16 +257,19 @@ fn net_wait_block(deadline: u64) -> bool {
 
 /// `azos_net::wait` wake hook: the event a waiter registered for landed.
 /// Same wake as [`net_msi_wake`]: stamped if the waiter has not blocked yet.
+#[cfg(feature = "net")]
 fn net_wait_wake(tid: u32) {
     let _ = azos_sched::scheduler::wake_task_by_tid(
         tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
 }
 
 /// [`net_timer_kick`] calls that dispatched the poller.
+#[cfg(feature = "net")]
 static NET_TIMER_KICKS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Iterations of `net_poll_task`'s loop (one per wake). Read over the GDB
 /// stub to count the poller's wakes per second.
+#[cfg(feature = "net")]
 static NET_POLL_ITERS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// [`net_msi_wake`] outcomes: `[not dispatched (stamped, not blocked yet,

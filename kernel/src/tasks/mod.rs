@@ -9,7 +9,9 @@ mod system;
 pub(crate) use system::*;
 mod net_poll;
 pub(crate) use net_poll::*;
+#[cfg(feature = "net")]
 mod net_clients;
+#[cfg(feature = "net")]
 pub(crate) use net_clients::*;
 #[cfg(feature = "use-robot")]
 mod sensors;

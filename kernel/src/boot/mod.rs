@@ -118,7 +118,9 @@ pub(crate) mod hwbus;
 // built from the device tree.
 #[cfg(feature = "soc")]
 pub(crate) mod soc;
+#[cfg(feature = "net")]
 mod net;
+#[cfg(feature = "net")]
 pub(crate) use net::*;
 // The keystore's roots (the TPM's secret, the volume's), read before the first task.
 pub(crate) mod keys;

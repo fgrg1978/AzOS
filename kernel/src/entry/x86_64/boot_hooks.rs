@@ -869,6 +869,8 @@ pub fn virtio_mmio_line(_slot: usize, base: usize) -> Option<u32> {
 
 /// Unmask `line` (redirected by [`irqchip_init`]); `irq::device` dispatches
 /// it to the NIC.
+// Kconfig NET: the network bring-up (`boot::net`) is its only caller.
+#[cfg(feature = "net")]
 #[inline(always)]
 pub fn net_mmio_unmask(_hart: usize, line: u32) {
     // A line that failed to unmask leaves the NIC polled, silently (K1 L8).

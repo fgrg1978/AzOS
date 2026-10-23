@@ -440,6 +440,8 @@ pub fn virtio_mmio_line(slot: usize, _base: usize) -> Option<u32> {
 
 /// Route (AIA: APLIC source -> this hart's IMSIC) and enable `line` for
 /// `hart`, as [`console_irq`] does for the UART.
+// Kconfig NET: the network bring-up (`boot::net`) is its only caller.
+#[cfg(feature = "net")]
 #[inline(always)]
 pub fn net_mmio_unmask(hart: usize, line: u32) {
     if let Some(cfg) = azos_drv_irqchip::irqchip::wire_aia_source(line, hart as u32) {

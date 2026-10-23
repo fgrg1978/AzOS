@@ -84,6 +84,7 @@ pub(crate) fn install_topology(num_cpus: usize) {
     }
     declare_endpoints();
     // The topology's static routes, now that the interfaces they name exist.
+    #[cfg(feature = "net")]
     super::net::install_static_routes();
 }
 

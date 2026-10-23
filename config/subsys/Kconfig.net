@@ -5,6 +5,31 @@
 # All network constants with defaults matching the
 # current codebase values from crates/net/net/src/*.
 
+config NET
+    bool "TCP/IP stack: bring-up, the net-poll task and the network clients"
+    # cargo-feature: net base
+    default y
+    help
+      Kernel feature `net`. With it, the boot brings the network up (the
+      CONFIG.INI address, the NIC probe, `net_init`, the firewall and static
+      routes of the topology, the OTA receiver when CONFIG.INI names its
+      port, the SNTP client with NTP_CLIENT, the boot's protocol
+      conformance and loopback checks), and creates the net-poll task once a
+      NIC is bound: at boot, or when a NIC comes later (the USB network
+      function). A boot with no NIC has no net-poll task; a loopback
+      connection then has no TCP timers running (no in-tree user opens TCP
+      to its own address without a NIC; UDP loopback is delivered inline).
+
+      Off: none of that is compiled. The stack crate itself (crates/net/net)
+      is still linked: the syscall, recovery and actuation crates call it
+      without a feature of their own, so a socket call answers as on a
+      machine with no interface (open: a `net` feature for those crates).
+      The NIC drivers stay too (their own Kconfig symbols); their interrupt
+      wakes no task.
+
+      Cost when set: the net-poll task (a 16 KiB stack) while a NIC is
+      bound, and the bring-up above. The same on riscv64, aarch64 and x86_64.
+
 # ---------------------------------------------------------------------------
 # Ethernet / IP
 # ---------------------------------------------------------------------------
