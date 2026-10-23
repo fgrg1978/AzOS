@@ -116,23 +116,14 @@ sensor / status packet -> sealed record (encrypted session)
   cannot be dropped or reordered once its counter is spent. Sizes are
   `BRAIN_TX_QUEUE_BYTES` and `BRAIN_TX_PRIORITY` in `config/domains/Kconfig.brain`.
 
-## Scheduling option: FIFO or priority
+## No scheduling policy between streams
 
-Source: `config/domains/Kconfig.brain` (`MULTISTREAM_SCHED_PRIORITY`),
-`kernel/src/tasks/brain_link.rs` (`ms_policy_log_once`),
-`crates/core/limits/build.rs`.
-
-Under FIFO a large bulk frame already queued delays a control frame behind it
-by the whole frame's transmit time. A priority policy would cut the bulk
-stream into chunks (one segment each, with its own 3-byte header) and send a
-control frame between chunks, bounding the hold-off to about one chunk time.
-
-The Kconfig bool `MULTISTREAM_SCHED_PRIORITY` (default `n`; only offered in
-the robot domain) names that choice as the constant
-`azos_limits::MULTISTREAM_SCHED_PRIORITY`. Its only reader is the one-shot
-`[MS] sched policy` line a QEMU build prints when the framing is on: the
-sender does not chunk or interleave under either value, and relies on the
-transmit-queue lanes above.
+The sender puts every frame on `STREAM_CONTROL` in the order it was sealed and
+does not chunk or interleave; control is protected by the transmit-queue lanes
+above. A compile-time "priority" policy (bulk cut into chunks with control
+between them) was measured at a hold-off ratio of 8.4 to 8.6 times against a
+target of 10, its chunked sender was never built, and its Kconfig switch was
+removed.
 
 ## Limitations
 

@@ -81,9 +81,8 @@ fn main() {
     // Bools a valid .config leaves out (wave 11). kconfiglib writes nothing
     // for a bool that is n and hidden: a `visible if` menu (the Robot menu
     // outside USE_ROBOT), an `if` block, a `depends on`. The value is n
-    // all the same, and code that is compiled into every image still reads
-    // some of them (`MULTISTREAM_SCHED_PRIORITY` in kernel/src/tasks/brain_link.rs), so
-    // each one the Kconfig tree declares as hideable is filled in as n.
+    // all the same, and code that is compiled into every image may still read
+    // one, so each one the Kconfig tree declares as hideable is filled in as n.
     // A bool that is always written is not filled: a .config without one
     // predates the Kconfig tree, and its consumer fails to compile instead
     // of reading a silent `false` (regenerate with `make olddefconfig`).

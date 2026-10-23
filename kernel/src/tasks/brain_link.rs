@@ -730,7 +730,6 @@ pub(crate) fn tx_drain(
 pub(crate) fn frame_wire(inner: &[u8], out: &mut [u8]) -> usize {
     if azos_config::CFG_MULTI_STREAM.load(Ordering::Relaxed) {
         use azos_multi_stream as ms;
-        ms_policy_log_once();
         ms::wrap(ms::STREAM_CONTROL, inner, out).unwrap_or(0)
     } else {
         match out.get_mut(..inner.len()) {
@@ -739,21 +738,6 @@ pub(crate) fn frame_wire(inner: &[u8], out: &mut [u8]) -> usize {
                 inner.len()
             }
             None => 0,
-        }
-    }
-}
-
-/// One-shot log of the compiled multi-stream scheduling policy (qemu only).
-fn ms_policy_log_once() {
-    #[cfg(feature = "qemu")]
-    {
-        use core::sync::atomic::{AtomicBool, Ordering as O};
-        static MS_POLICY_LOGGED: AtomicBool = AtomicBool::new(false);
-        if !MS_POLICY_LOGGED.swap(true, O::Relaxed) {
-            azos_drv_sys::kprintln!(
-                "[MS] sched policy: {} (compile-time)",
-                if azos_limits::MULTISTREAM_SCHED_PRIORITY { "priority" } else { "fifo" },
-            );
         }
     }
 }

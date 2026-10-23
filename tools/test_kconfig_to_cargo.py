@@ -476,9 +476,6 @@ def test_domain_defaults_to_generic_and_robot_type_is_wired() -> None:
         out = _expand([], t)
         assert "CONFIG_USE_GENERIC=y" in out, "Generic is not the default domain"
         assert "CONFIG_ROBOT_TYPE_ID=0" in out, "Generic must start the envelope as wheeled"
-        assert not any("CONFIG_MULTISTREAM_SCHED_PRIORITY" in l for l in out), (
-            "the brain-link option is shown outside the Robot domain"
-        )
         out = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_ROBOT_DRONE=y"], t)
         assert "CONFIG_ROBOT_TYPE_ID=1" in out, "Robot + Drone must give ROBOT_TYPE_ID=1"
         out = _expand(["CONFIG_PRESET_ROBOT=y"], t)

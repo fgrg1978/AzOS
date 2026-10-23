@@ -656,8 +656,7 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let (syms, _) = read_kconfig_tree(&root, "Kconfig").expect("read the Kconfig tree");
         let hidden = hidden_bools(&syms);
-        // The Robot menu is `visible if USE_ROBOT`; the brain link is in it.
-        assert!(hidden.iter().any(|n| n == "MULTISTREAM_SCHED_PRIORITY"));
+        // The Robot menu is `visible if USE_ROBOT`.
         assert!(hidden.iter().any(|n| n == "ROBOT_DRONE"));
         // A top-level switch is always written: never filled in.
         assert!(!hidden.iter().any(|n| n == "CONTROL_TXN_TICKS"));
