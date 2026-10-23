@@ -1254,13 +1254,13 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // where it held `WRITE` and accepted anyway. `SYS_IPC_FAST_ACCEPT` blocks
     // and nothing wakes a server nobody calls.
     //
-    // `soft_rt` at 16, its client's (`autorun`) class and priority: a server
-    // never runs below a client it serves (`Topology::server_below_client`).
+    // At [`AUTORUN_SERVER_PRIORITY`], one above its client `autorun`: every
+    // server outranks its clients (`Topology::server_not_above_client`).
     #[cfg(feature = "ipc-endpoint-canary")]
     topo.push_task(
         MaybeStr::from_bytes(TASK_EPSRV_IMAGE),
-        MaybeStr::from_bytes(NAME_SOFT_RT),
-        16,
+        MaybeStr::from_bytes(NAME_HARD_RT),
+        AUTORUN_SERVER_PRIORITY,
         &[CapSpec {
             kind: CapKind::Endpoint,
             perms: CapPerms::READ,
@@ -1275,19 +1275,23 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // fixed when the capability is SEEDED, by image name. Retiring
     // `SYS_IPC_FAST_CALL` therefore needed the peer to become an image.
     //
-    // **`soft_rt` at 16, the client's class and priority (wave 7).** `vsbench`
-    // runs under the `autorun` row (16). Declared `best_effort`/0 the server
-    // is applied at 24, and the `ipc-roundtrip` lane then measures a
-    // cross-bucket hand-off rather than the IPC path: measured with `-icount`,
-    // 2277 -> 2403 instructions on aarch64 and 2659 -> 2789 on riscv64
-    // (cause not isolated; a likely one: across buckets the direct switch's
-    // paired histogram re-account no longer cancels,
-    // `ipc_direct::pair_cancels`). Same bucket, the lane is unchanged.
+    // **At [`AUTORUN_SERVER_PRIORITY`], one above its client** (owner decision
+    // 2026-10-23: every server strictly outranks its clients). `vsbench` runs
+    // under the `autorun` row (16). From wave 7 the row shared its client's
+    // bucket (`soft_rt` 16), because across buckets the `ipc-roundtrip` lane
+    // measures a cross-bucket hand-off as well as the IPC path: with
+    // `-icount`, 2277 -> 2403 instructions on aarch64 and 2659 -> 2789 on
+    // riscv64 at 24 (cause not isolated; a likely one: across buckets the
+    // direct switch's paired histogram re-account no longer cancels,
+    // `ipc_direct::pair_cancels`). The owner accepts that cost; at 15 against
+    // 16 it is 2306 -> 2608 instructions per round trip on riscv64
+    // (`VSBENCH_ICOUNT=1 VSBENCH_SMP=1`, bench-minimal kernel; 9893 -> 9943
+    // ns/op on the product kernel), 2026-10-23.
     #[cfg(feature = "ipc-endpoint-canary")]
     topo.push_task(
         MaybeStr::from_bytes(TASK_VSSRV_IMAGE),
-        MaybeStr::from_bytes(NAME_SOFT_RT),
-        16,
+        MaybeStr::from_bytes(NAME_HARD_RT),
+        AUTORUN_SERVER_PRIORITY,
         &[
             CapSpec {
                 kind: CapKind::Endpoint,
@@ -1396,7 +1400,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // **The buzzer: `best_effort` at [`SERVICE_PRIORITY`] (24), like
     // GPIODRV.ELF** (owner decision 2026-09-28; wave 9 had the drivers at
     // `soft_rt` 16; the INA219's row below has a reservation instead): above the
-    // interactive session ([`SH_PRIORITY`], 25), never equal to it. A client
+    // interactive session ([`SH_PRIORITY`], 26), never equal to it. A client
     // more urgent than the driver donates its priority for the span of each
     // request (`UserDriverProxy`), so a request is served at the client's
     // priority (down to the ring-3 floor, 12): that donation, not the row, is
@@ -1561,9 +1565,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // kernel gives the task the user principal (`apply_principal`), the only
     // way a task acts as one. A tool it starts runs under its own row.
     //
-    // Priorities (lower = more urgent): the shell (25) below every server of
-    // the session ([`SERVICE_PRIORITY`], 24: the terminal and name servers it
-    // calls) and above every tool it starts (26). ^C does not depend on them:
+    // Priorities (lower = more urgent): the shell (26) below every server of
+    // the session (the terminal server it calls, 25, and the login and name
+    // servers, 24) and above every tool it starts (27). ^C does not depend on them:
     // the console's RX interrupt delivers it to the foreground job itself
     // (`console_signal`). The order keeps a tool from out-ranking its
     // spawner (`fork_child_entry` also yields until the spawner publishes its
@@ -1677,13 +1681,13 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // the console program of the native shell session. Its row is its whole
     // authority, `READ` on `endpoint.term` (it serves it); console input it
     // claims by `LOG_CONSOLE_WAIT`, as the shell did. The shell's row holds
-    // `WRITE` on the same name. Above the shell it serves
-    // ([`SERVICE_PRIORITY`]), so the interrupt key is read at least as
-    // promptly as the shell runs. `start` follows the console program
+    // `WRITE` on the same name. At [`CLIENT_SERVICE_PRIORITY`]: above the
+    // shell it serves, so the interrupt key is read more promptly than the
+    // shell runs, and below the login server it calls. `start` follows the console program
     // (below); `on-failure` like the shell: `hangup` ends it with code 0 and
     // gives the console back to the kernel shell.
     if azos_limits::USERSPACE_TERMD {
-        topo.push_task(MaybeStr::from_bytes(TASK_TERMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, TERMD_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_TERMD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), CLIENT_SERVICE_PRIORITY, TERMD_CAPS)
             .expect("default_minimal_topology: TERMD.ELF push failed");
         topo.set_last_task_mem_pages(TERMD_MEM_PAGES);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
@@ -2644,27 +2648,32 @@ const FAT_RW: CapSpec = CapSpec {
     target: MaybeStr::from_bytes(b"/fat"), transfer: false, ops: 0,
 };
 
-// The `best_effort`/`session` priorities (lower = more urgent; the fair class
-// weighs a task by its number, `azos_sched::eevdf_core::weight_of_prio`). A
-// server never runs below a client it serves (`Topology::server_below_client`,
-// the priority-ceiling rule), and every server of the interactive session
-// runs above it: the order is the rows' service graph, from the leaves up.
+// The ring-3 priorities (lower = more urgent; the fair class weighs a task by
+// its number, `azos_sched::eevdf_core::weight_of_prio`). Every server strictly
+// outranks every client it serves (`Topology::server_not_above_client`, owner
+// decision 2026-10-23): the order is the rows' service graph, from the leaves
+// up, and no server shares a bucket with a client.
 
+/// The servers of the `autorun` row (16), `EPSRV.ELF` and `VSSRV.ELF`:
+/// `hard_rt` 15, without a reservation, so the fair class runs them one
+/// above their client.
+pub const AUTORUN_SERVER_PRIORITY: u8 = 15;
 /// The most urgent `best_effort` number: a service that calls no service
-/// below it — the session's servers (`TERMD.ELF`, `NAMESD.ELF`,
-/// `LOGIND.ELF`, `INPUTD.ELF`), the decision and package servers, the ring-3
-/// device drivers and the board programs. Above the shell, never equal to it.
+/// below it — the session's leaf servers (`NAMESD.ELF`, `LOGIND.ELF`,
+/// `INPUTD.ELF`), the decision and package servers, the ring-3 device drivers
+/// and the board programs. Above the shell, never equal to it.
 pub const SERVICE_PRIORITY: u8 = 24;
 /// A service that is itself a client of a [`SERVICE_PRIORITY`] row
-/// (`COMPSRV.ELF` calls the input and decision servers, `RPCSRV.ELF` the
-/// decision server): below the services it calls, above its own clients.
+/// (`TERMD.ELF` calls the login server, `COMPSRV.ELF` the input and decision
+/// servers, `RPCSRV.ELF` the decision server): below the services it calls,
+/// above its own clients.
 pub const CLIENT_SERVICE_PRIORITY: u8 = 25;
 /// `SH.ELF`'s priority: below every server of the session, above every tool
 /// it starts.
-pub const SH_PRIORITY: u8 = 25;
+pub const SH_PRIORITY: u8 = 26;
 /// The priority of every tool image the shell starts (`TOOLBOX.ELF`,
 /// `POWER.ELF`): below the shell, inside `best_effort`.
-pub const TOOL_PRIORITY: u8 = 26;
+pub const TOOL_PRIORITY: u8 = 27;
 
 /// Live `TOOLBOX.ELF` instances: Kconfig `TOOLBOX_INSTANCES` (a four-stage
 /// pipeline and four background jobs; fewer on the embedded profile).

@@ -383,12 +383,12 @@ Source: `userspace/services/sh/src/parse.rs`, `userspace/services/sh/src/path.rs
 
 ## 9. Authority: rows and profiles
 
-**The shell's row.** Class `session` (the interactive class: fair-share at the latency QoS tier, reported as `interactive`), priority 24, a 64-page frame budget
+**The shell's row.** Class `session` (the interactive class: fair-share at the latency QoS tier, reported as `interactive`), priority 26, a 64-page frame budget
 and no heap. It imports `term`. Outside lockdown it holds a launch grant for
 each tool image, read and write on `/fat` and `/tmp`, the read-only root
 directory the redirections open beneath, and the full task view (`"tasks"`).
 It holds no `Power`, motor, GPIO, PWM, I2C, socket or disk authority. Tools run
-at priority 26, so a CPU-bound tool does not out-rank the shell on its hart.
+at priority 27, so a CPU-bound tool does not out-rank the shell on its hart.
 
 **A policy row binds the shell's jobs.** The row `shjobs` is a subtree policy
 on the shell's domain: every program the shell starts, and the shell, may not

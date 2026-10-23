@@ -7,10 +7,9 @@
 //!   range (the number the row declares is the number `row_sched` applies),
 //!   and no ring-3 image row without a reservation sits below the ring-3
 //!   floor (12) that `topo_sched::resolve` would raise it to.
-//! * A server never runs below a client it serves
-//!   (`Topology::server_below_client`, the priority-ceiling rule), and the
-//!   pairs where it only equals its client are exactly the documented ones:
-//!   every other server outranks its clients.
+//! * Every server strictly outranks every client it serves
+//!   (`Topology::server_not_above_client`, owner decision 2026-10-23): no
+//!   server runs below a client, and none only equals one.
 //! * The interactive session (`SH.ELF`) runs below every server it depends on
 //!   (the terminal, name and input servers) and is not equal to any ring-3
 //!   driver.
@@ -20,11 +19,10 @@
 //!   with the chip's own sample period.
 //!
 //! **Canaries.** Put `INPUTD.ELF` back at `TOOL_PRIORITY` in `builder.rs`:
-//! `the_session_s_servers_outrank_it` is red, and with the compositor at 25
-//! `no_server_runs_below_a_client_it_serves` is red too. Put `GPIODRV.ELF`
-//! back at `0`: `no_row_relies_on_the_clamp` is red. Put `SH.ELF` back at 24:
-//! `only_the_documented_pairs_are_equal` (TERMD.ELF equals it) and
-//! `the_session_s_servers_outrank_it` are red. Push `INADRV.ELF` with
+//! `the_session_s_servers_outrank_it` and `every_server_outranks_its_clients`
+//! are red. Put `GPIODRV.ELF` back at `0`: `no_row_relies_on_the_clamp` is
+//! red. Put `SH.ELF` back at 25: `every_server_outranks_its_clients`
+//! (TERMD.ELF only equals it) and `the_session_s_servers_outrank_it` are red. Push `INADRV.ELF` with
 //! `push_task` (no profile): `the_ina219_driver_holds_an_admitted_reservation`
 //! is red.
 
@@ -68,11 +66,11 @@ fn no_row_relies_on_the_clamp() {
 }
 
 #[test]
-fn no_server_runs_below_a_client_it_serves() {
+fn every_server_outranks_its_clients() {
     let t = default_minimal();
-    if let Some(e) = t.server_below_client() {
+    if let Some(e) = t.server_not_above_client() {
         panic!(
-            "{} ({}) serves {} ({}) on `{}` from below",
+            "{} ({}) serves {} ({}) on `{}` without outranking it",
             name(&t, e.server),
             prio(&t, name(&t, e.server).as_bytes()),
             name(&t, e.client),
@@ -82,22 +80,10 @@ fn no_server_runs_below_a_client_it_serves() {
     }
 }
 
-/// The pairs where a server only equals its client, each for a stated reason:
-/// * `VSSRV.ELF` / `autorun` (gate builds): the benchmark server shares its
-///   client's bucket, so `ipc-roundtrip` measures IPC and not a cross-priority
-///   hand-off (owner decision 2026-09-28, round 15). `EPSRV.ELF`, the other
-///   gate server of `autorun`, follows it.
-/// * `LOGIND.ELF` / `TERMD.ELF` (Kconfig CONSOLE_LOGIN): both serve the shell
-///   at [`SERVICE_PRIORITY`](azos_topology::builder::SERVICE_PRIORITY), the
-///   top of `best_effort`, and the shell sits one below them.
-const EQUAL_BY_DESIGN: &[(&str, &str)] = &[
-    ("EPSRV.ELF", "autorun"),
-    ("VSSRV.ELF", "autorun"),
-    ("LOGIND.ELF", "TERMD.ELF"),
-];
-
+/// No server only equals a client (owner decision 2026-10-23: none by
+/// design), listed in full so a failure names every pair at once.
 #[test]
-fn only_the_documented_pairs_are_equal() {
+fn no_server_only_equals_its_client() {
     let t = default_minimal();
     let mut equal = Vec::new();
     t.for_each_service_edge(|e: ServiceEdge<'_>| {
@@ -105,9 +91,7 @@ fn only_the_documented_pairs_are_equal() {
             equal.push((name(&t, e.server), name(&t, e.client)));
         }
     });
-    for p in &equal {
-        assert!(EQUAL_BY_DESIGN.contains(p), "{} only equals its client {}", p.0, p.1);
-    }
+    assert!(equal.is_empty(), "servers that only equal their clients: {equal:?}");
 }
 
 #[test]
@@ -131,8 +115,8 @@ fn the_session_s_servers_outrank_it() {
     }
 }
 
-/// The rule itself, on a two-row topology: a server below its client is
-/// found, one equal to or above it is not, and an `imports` entry is a call
+/// The rule itself, on a two-row topology: a server below or equal to its
+/// client is found, one above it is not, and an `imports` entry is a call
 /// like a grant.
 #[test]
 fn the_ceiling_rule_reads_grants_and_imports() {
@@ -153,17 +137,17 @@ fn the_ceiling_rule_reads_grants_and_imports() {
         t
     };
     let below = build(26, 24);
-    let e = below.server_below_client().expect("a server below its client is found");
+    let e = below.server_not_above_client().expect("a server below its client is found");
     assert_eq!((e.server, e.client, e.endpoint), (0, 1, &b"demo"[..]));
-    assert_eq!(build(24, 24).server_below_client(), None);
-    assert_eq!(build(24, 26).server_below_client(), None);
+    assert!(build(24, 24).server_not_above_client().is_some(), "a server equal to its client is found");
+    assert_eq!(build(24, 26).server_not_above_client(), None);
     // A client that reaches the server by an import instead of a grant.
     let mut t = Box::new(Topology::empty());
     azos_topology::parse_sched(SCHED, &mut t).expect("parse");
     t.push_task(MaybeStr::from_bytes(b"srv"), MaybeStr::from_bytes(b"best_effort"), 26, &[serve]).unwrap();
     t.push_task(MaybeStr::from_bytes(b"cli"), MaybeStr::from_bytes(b"best_effort"), 24, &[]).unwrap();
     t.set_last_task_imports(&[MaybeStr::from_bytes(b"demo")]).unwrap();
-    assert_eq!(t.server_below_client().map(|e| (e.server, e.client)), Some((0, 1)));
+    assert_eq!(t.server_not_above_client().map(|e| (e.server, e.client)), Some((0, 1)));
 }
 
 /// What `topo_sched::row_reservation` reads for `INADRV.ELF`, row by row: a

@@ -3501,10 +3501,9 @@ mod row_sched_tests {
         // starts, all scheduled as best_effort (the shell's class is
         // `session`, which has the same range), so ^C does not depend on
         // equal-priority slicing.
-        let (sh, tool) = (25, 26);
-        for n in [&b"TERMD.ELF"[..], b"NAMESD.ELF"] {
-            assert_eq!(applied(&t, n), ("best_effort".into(), 24, 24));
-        }
+        let (sh, tool) = (26, 27);
+        assert_eq!(applied(&t, b"TERMD.ELF"), ("best_effort".into(), 25, 25));
+        assert_eq!(applied(&t, b"NAMESD.ELF"), ("best_effort".into(), 24, 24));
         assert_eq!(applied(&t, b"SH.ELF"), ("session".into(), sh, sh));
         for n in [&b"TOOLBOX.ELF"[..], b"POWER.ELF", b"FLIGHT.ELF", b"BEHAVIOR.ELF", b"CONFIG.ELF", b"OTA.ELF"] {
             assert_eq!(applied(&t, n), ("best_effort".into(), tool, tool));
@@ -3512,13 +3511,11 @@ mod row_sched_tests {
         // Rows that name no task the kernel creates; resolved all the same.
         assert_eq!(applied(&t, b"supervisor"), ("safety_critical".into(), 0, 0));
         assert_eq!(applied(&t, b"brain_link"), ("best_effort".into(), 24, 24));
-        // Gate-only rows. The benchmark server shares its client's bucket so
-        // `ipc-roundtrip` measures IPC, not a cross-priority hand-off.
+        // Gate-only rows: the servers of `autorun` (16), one above it.
         #[cfg(feature = "ipc-endpoint-canary")]
         {
-            assert_eq!(applied(&t, b"VSSRV.ELF"), ("soft_rt".into(), 16, 16));
-            // A server in its client's (`autorun`) bucket, never below it.
-            assert_eq!(applied(&t, b"EPSRV.ELF"), ("soft_rt".into(), 16, 16));
+            assert_eq!(applied(&t, b"VSSRV.ELF"), ("hard_rt".into(), 15, 15));
+            assert_eq!(applied(&t, b"EPSRV.ELF"), ("hard_rt".into(), 15, 15));
         }
     }
 

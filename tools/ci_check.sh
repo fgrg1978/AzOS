@@ -17815,7 +17815,7 @@ PYEOF
     # Wave 7: the marker is the line printed AFTER the round trip, with the
     # answering driver's live priority and class read from the scheduler by
     # its registered TID. 24/best_effort is what the `GPIODRV.ELF` topology
-    # row declares (`SERVICE_PRIORITY`, above the shell's 25); before the
+    # row declares (`SERVICE_PRIORITY`, above the shell's 26); before the
     # topology was applied it read 16. Any other value is a verdict line that
     # only the failure prints, so it is matched as one rather than timing out.
     QEMU_FAIL_RE="$QEMU_FAIL_RE|\[AQ3\] GPIO ring-3 (round-trip FAILED|unexpected reply)|\[AQ3\] gpio_drv idle FAIL|\[AQ3\] proxy round trip FAIL|\[AQ3\] gpio_drv tid=[0-9]+ runs at priority=([^2]|2[^4]|24[0-9])|\[AQ3\] gpio_drv tid=[0-9]+ runs at priority=24 class=[^b]" \
@@ -20435,7 +20435,7 @@ kill 2" 120 \
         # USHELL2. ^C on ONE hart: the console's RX interrupt delivers ^C to
         # the foreground job itself (`console_signal`), whatever the
         # priorities. The `[SPAWN][PRIO]` line pins the number the tool
-        # actually ran at (shell 25, tool 26).
+        # actually ran at (shell 26, tool 27).
         # Wave 14: the `[SPAWN][PRIO]` line of a spawn that applied its row's
         # priority as declared is debug output (`spawn-log`); both rows ask
         # for it, and so do the `linux:` rows below that wait for `row=<ELF>`
@@ -20447,7 +20447,7 @@ kill 2" 120 \
 #wait spin: computing
 ^C
 echo after-spin \$?" 120 \
-            "row=TOOLBOX.ELF class=best_effort declared=26 applied=26" "stopped by an ancestor" "after-spin 130"
+            "row=TOOLBOX.ELF class=best_effort declared=27 applied=27" "stopped by an ancestor" "after-spin 130"
         # The power family's ring-3 form: `POWER.ELF`, through the
         # `power` endpoint its row grants. Rate read, set, read back;
         # suspend, which this image refuses with reason 1 (not built in): the

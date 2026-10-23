@@ -127,17 +127,16 @@ impl<'a> Topology<'a> {
         }
     }
 
-    /// The first pair whose server runs LESS urgently than its client (a
-    /// larger priority number, as [`row_sched`](Self::row_sched) applies it),
-    /// or `None`.
+    /// The first pair whose server does not outrank its client (a priority
+    /// number equal to or larger than the client's, as
+    /// [`row_sched`](Self::row_sched) applies it), or `None`.
     ///
-    /// The rule is the priority ceiling's: a server runs at least as urgently
-    /// as every client it serves, so a client never preempts the request it
-    /// is waiting on and a request is never served below its caller. Equal is
-    /// allowed (a server in its client's bucket, `VSSRV.ELF`). A row whose
-    /// class the topology does not declare is skipped: `admission_check`
-    /// refuses it first.
-    pub fn server_below_client(&self) -> Option<ServiceEdge<'a>> {
+    /// Every server strictly outranks every client it serves (owner decision
+    /// 2026-10-23): a client never preempts the request it is waiting on, a
+    /// request is never served below its caller, and a server never competes
+    /// with its clients in their own bucket. A row whose class the topology
+    /// does not declare is skipped: `admission_check` refuses it first.
+    pub fn server_not_above_client(&self) -> Option<ServiceEdge<'a>> {
         let prio = |i: usize| match self.row_sched(self.tasks()[i].name.as_bytes()) {
             RowSched::Apply { priority, .. } => Some(priority),
             _ => None,
@@ -146,7 +145,7 @@ impl<'a> Topology<'a> {
         self.for_each_service_edge(|e| {
             if found.is_none() {
                 if let (Some(s), Some(c)) = (prio(e.server), prio(e.client)) {
-                    if s > c {
+                    if s >= c {
                         found = Some(e);
                     }
                 }
