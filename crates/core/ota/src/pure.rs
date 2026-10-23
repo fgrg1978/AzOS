@@ -530,6 +530,25 @@ pub fn ota_boot_validate_pure(meta: &mut BootMeta, max_attempts: u32) -> BootVal
     }
 }
 
+/// The step a file replacement (open, write, close, flush) failed at, from
+/// what the last three answered: `written` the bytes the write took (negative:
+/// refused) of the `len` asked, `closed` the close's code (the FAT32 proxy
+/// writes the entry and the data there), `synced` whether the volume's flush
+/// succeeded. The earliest step that failed is the one named: a flush cannot
+/// make durable what the write or the close did not take.
+pub fn ota_replace_verdict_pure(written: isize, len: usize, closed: i32, synced: bool) -> Result<(), &'static str> {
+    if written < 0 || written as usize != len {
+        return Err("write");
+    }
+    if closed != 0 {
+        return Err("close (the write to the volume)");
+    }
+    if !synced {
+        return Err("sync (the flush to the medium)");
+    }
+    Ok(())
+}
+
 /// Are the running slot's boot attempts exhausted after validation, i.e.
 /// did [`ota_boot_validate_pure`] answer `Exhausted` or `RollbackRefused`?
 /// A rollback resets the count to 1, so it never is.

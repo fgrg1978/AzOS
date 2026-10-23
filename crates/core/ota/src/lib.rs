@@ -269,7 +269,7 @@ fn fs_read_meta_record(path: &[u8]) -> Option<BootMetaRecord> {
 }
 
 /// Replace the file at `path` with `bytes` (open with `O_CREAT|O_TRUNC`,
-/// write, close) and request a flush.
+/// write, close) and flush the volume.
 ///
 /// Returns the step that failed, for the console. Every BOOTMETA writer used
 /// to ignore all three return values, so a record the volume refused — gate
@@ -291,15 +291,10 @@ fn fs_replace_file(path: &[u8], bytes: &[u8]) -> Result<(), &'static str> {
     // Flush the FAT32 dirty cache so the record is durable on disk
     // before we return. A torn write here is exactly the case
     // OT02.B is designed to survive — but we still want each record
-    // to be as durable as possible.
-    let _ = azos_fs::fat32_sync();
-    if written < 0 || written as usize != bytes.len() {
-        return Err("write");
-    }
-    if closed != 0 {
-        return Err("close (the write to the volume)");
-    }
-    Ok(())
+    // to be as durable as possible, and a record the volume did not
+    // flush is reported like one it did not take.
+    let synced = azos_fs::fat32_sync().is_ok();
+    pure::ota_replace_verdict_pure(written as isize, bytes.len(), closed, synced)
 }
 
 /// Say that a BOOTMETA file was not written, and at which step.
@@ -782,10 +777,8 @@ impl update::Store for FatStore {
         // The FAT32 proxy writes the entry and the data at the close; flush the
         // dirty cache so the file is on the medium before the record that
         // depends on it, as `fs_replace_file` does for BOOTMETA.
-        if was_writing {
-            let _ = azos_fs::fat32_sync();
-        }
-        if closed == 0 { Ok(()) } else { Err(update::IoErr::Io) }
+        let synced = !was_writing || azos_fs::fat32_sync().is_ok();
+        if closed == 0 && synced { Ok(()) } else { Err(update::IoErr::Io) }
     }
 
     fn remove(&mut self, path: &[u8]) -> Result<(), update::IoErr> {

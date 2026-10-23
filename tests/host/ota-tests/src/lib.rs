@@ -1257,4 +1257,15 @@ mod tests {
         assert_eq!(ota_boot_validate_pure(&mut meta, 3), BootValidateOutcome::Exhausted);
         assert!(recovery_armed(&meta));
     }
+
+    /// A BOOTMETA replacement whose flush failed is not written: the record
+    /// may still be only in the cache. The earlier step is named first.
+    #[test]
+    fn a_meta_write_the_volume_did_not_flush_is_refused() {
+        assert_eq!(ota_replace_verdict_pure(64, 64, 0, true), Ok(()));
+        assert_eq!(ota_replace_verdict_pure(64, 64, 0, false), Err("sync (the flush to the medium)"));
+        assert_eq!(ota_replace_verdict_pure(-1, 64, 0, false), Err("write"));
+        assert_eq!(ota_replace_verdict_pure(63, 64, 0, true), Err("write"));
+        assert_eq!(ota_replace_verdict_pure(64, 64, -5, false), Err("close (the write to the volume)"));
+    }
 }
