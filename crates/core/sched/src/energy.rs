@@ -308,8 +308,8 @@ pub fn seams() -> Seams {
 // (host-tested); this half gathers its inputs and nothing else. The signals
 // are busy fractions at whatever OPP the CPU ran at, so each is scaled by the
 // capacity of the OPP its domain's governor last recorded (the fastest one
-// before a decision, which is where firmware leaves the clock when no clock
-// driver applies a decision).
+// before a decision, which is where firmware leaves the clock while no
+// decision is applied).
 
 /// Energy-aware placement is on: `SCHED_EAS`, a model, a mode other than
 /// `performance`, and CPUs that differ in capacity. One relaxed load.
@@ -375,8 +375,8 @@ pub fn eas_place(idx: usize, prev_cpu: usize, candidates: u32) -> Option<usize> 
 // whose CPUs all went idle is re-evaluated by a hart that still runs, from
 // projected signals). Inputs: the busiest CPU signal of the domain and the most
 // loaded hart's admitted real-time density (`rt::ADMITTED_PPM`, lock-free).
-// There is no clock driver on any board, so the decision is recorded here and
-// counted, never applied.
+// The decision is recorded here and counted, never applied: the boards' OPP
+// actuators (`azos_drv_thermal`) serve the thermal manager, not this governor.
 
 use azos_energy::governor::{self, Why};
 use azos_energy::idle::{self, Limit, TeoCpu};

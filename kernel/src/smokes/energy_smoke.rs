@@ -335,7 +335,7 @@ mod gov {
             "[ENERGY] gov {} {} big_quiet={} (util {}) big_before_burst={} big_burst_max={} rt_reserved={} \
              big_with_rt={} big_after_release={} min_opp_little/big={}/{} evals={} changes={} \
              why(schedutil/deadline/wcet)={}/{}/{} (need 1, 1, 3, true, 2, 1, >=1/>=1; \
-             decisions recorded only: no clock driver)",
+             decisions recorded, none applied)",
             if gov_ok { "PASS" } else { "FAIL" }, isa(), quiet, quiet_util, before, busy_max, reserved,
             with_rt, released, mins.0, mins.1, g.evals, g.changes, g.why[0], g.why[1], g.why[2],
         );

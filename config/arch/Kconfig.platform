@@ -87,8 +87,8 @@ config TIMER_FREQ
     # 100x-short DHCP/ARP/safety timeout on that ISA (gate 182c).
     default 54000000 if BOARD_RPI5
     default 1000000000 if ARCH_AARCH64
-    # x86_64 skeleton: the TSC rate is per-CPU and calibrated at boot; a port
-    # makes the TIMER_FREQ-derived timeouts runtime. Placeholder until then.
+    # x86_64: a unit, not a hardware rate: `now_ticks` scales the TSC, rated
+    # at boot, to it (crates/core/arch-x86_64/src/timer.rs).
     default 1000000000 if ARCH_X86_64
     default 10000000 if BOARD_QEMU
     default 4000000  if BOARD_VF2
@@ -97,7 +97,8 @@ config TIMER_FREQ
     range 1000000 2000000000
     help
       Frequency of the hardware timer counter used by the scheduler
-      (CLINT mtime on RISC-V, generic timer on Aarch64).  This is NOT
+      (CLINT mtime on RISC-V, generic timer on Aarch64, the scaled TSC on
+      x86_64).  This is NOT
       the CPU clock — it is the timer increment rate.
       QEMU virt: 10 MHz.  JH7110 (VF2): 4 MHz.  K1: 24 MHz.
       Must match hardware to get correct tick math.

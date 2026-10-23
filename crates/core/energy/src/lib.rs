@@ -20,7 +20,8 @@
 //!   `dyn`. Today's behaviour (`Legacy`, `Fixed`, `WfiOnly`) unless the
 //!   signed topology's mode opts in (`balanced`/`endurance` with a model).
 //! * [`governor`] — E3: schedutil, the deadline floor (I1), the WCET floor
-//!   (I6). Decisions are recorded; no board has a clock driver to apply them.
+//!   (I6). Decisions are recorded, not applied: the boards' OPP actuators
+//!   (`azos_drv_thermal`) serve the thermal manager only.
 //! * [`idle`] — E4: the TEO-like idle state choice (I3).
 //! * [`opp`] — the OPP actuation seam (`OppActuator`) and the per-domain
 //!   current-OPP bookkeeping (`Dvfs`).
