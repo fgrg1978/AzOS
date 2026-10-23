@@ -235,6 +235,32 @@ fn toward_safe(dir: u32, pct: u32) -> bool {
     pct == 0 || dir == DIR_BRAKE || dir == DIR_COAST
 }
 
+/// One wheel's `speed` op for task `tid`: 0 coasts, anything else drives
+/// forward. **The one path of a speed command from ring 3**: the `Motor`
+/// interface's `speed` and the io_ring's `OP_MOTOR_SPEED` entry
+/// (`ioring_ops::motor_wheel`) both come here. The effect gate first (the
+/// write-ahead record, a held wheel's refusal, the deadline watch, the
+/// provenance of `tid`), then the motor layer with its halt rule and
+/// envelope, then the commander note that lets `tid`'s exit stop the wheel
+/// (`motor_commander`). `Ok` with the motor layer's code and the duty its
+/// write left (see `MotorServer::speed` for why that, and not a read back);
+/// `Err` when the gate refused and nothing reached the wheel.
+pub fn wheel_speed(id: u32, tid: u32, pct: u32) -> Result<(i32, Option<u32>), ()> {
+    let dir = if pct == 0 { DIR_COAST } else { DIR_FORWARD };
+    let effect = MotorEffect { wheel: id, tid, dir, pct, toward_safe: toward_safe(dir, pct),
+                               timing: timing_of(toward_safe(dir, pct), id, azos_devif::motor::MotorIdl::OP_SPEED) };
+    let (rc, applied) = through_gate(&effect, || {
+        let r = if pct == 0 {
+            motor_stop_reporting(id)
+        } else {
+            motor_set_reporting(id, MotorDir::Forward, pct)
+        };
+        (r, took(r.0))
+    })?;
+    crate::motor_commander::note(id, tid, applied);
+    Ok((rc, applied))
+}
+
 /// The `Motor` interface served for one caller.
 pub struct MotorServer(pub Caller);
 
@@ -310,20 +336,9 @@ impl azos_devif::Motor for MotorServer {
             Ok(id) => id,
             Err(o) => return o,
         };
-        let dir = if pct == 0 { DIR_COAST } else { DIR_FORWARD };
-        let effect = MotorEffect { wheel: id, tid: self.0.tid, dir, pct, toward_safe: toward_safe(dir, pct),
-                                   timing: timing_of(toward_safe(dir, pct), id, azos_devif::motor::MotorIdl::OP_SPEED) };
-        let Ok((rc, applied)) = through_gate(&effect, || {
-            let r = if pct == 0 {
-                motor_stop_reporting(id)
-            } else {
-                motor_set_reporting(id, MotorDir::Forward, pct)
-            };
-            (r, took(r.0))
-        }) else {
+        let Ok((rc, applied)) = wheel_speed(id, self.0.tid, pct) else {
             return Out::err(outcome::REFUSED);
         };
-        crate::motor_commander::note(id, self.0.tid, applied);
 
         // The marker that says ring 3 COMMANDED a motor, not merely that it
         // ran. **It reports the duty the write itself left on the channel, not

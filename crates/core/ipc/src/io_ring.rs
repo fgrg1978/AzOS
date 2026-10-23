@@ -1557,8 +1557,10 @@ pub struct IoRingOps {
     pub pwm_set:       fn(channel: u32, duty_pct: u32) -> OpResult,
     /// ONE wheel, as the `Motor` interface's `speed` commands one: 0 stops (coast),
     /// anything else drives forward at that percentage. `OP_MOTOR_SPEED` calls
-    /// it once per wheel, so the halt rule and the envelope apply to each.
-    pub motor_wheel:   fn(id: u32, speed_pct: u32) -> OpResult,
+    /// it once per wheel, so the halt rule and the envelope apply to each. The
+    /// command is `owner_tid`'s: the effect gate records it as that task's,
+    /// and that task's exit stops the wheel.
+    pub motor_wheel:   fn(owner_tid: u32, id: u32, speed_pct: u32) -> OpResult,
     /// `NODE_SEND` below the trap: resolve the `Cap<Socket>` handle `cap`
     /// in `owner_tid`'s table (`WRITE`, with containment) as the typed call
     /// does, record a refusal as it does, and queue at most `len` bytes on the
@@ -2864,8 +2866,8 @@ fn dispatch_sqe(
             if p0 > 100 || p1 > 100 {
                 return Err(IO_ERR_INVALID_PARAM);
             }
-            let left = (ops.motor_wheel)(0, p0);
-            let right = (ops.motor_wheel)(1, p1);
+            let left = (ops.motor_wheel)(owner_tid, 0, p0);
+            let right = (ops.motor_wheel)(owner_tid, 1, p1);
             match (left, right) {
                 (Err(e), _) | (_, Err(e)) => Err(e),
                 (Ok(l), _) if l < 0 => Ok(l),
@@ -3522,7 +3524,7 @@ mod tests {
     /// The wheel whose `motor_wheel` call refuses with `-EAGAIN`, as the
     /// kernel's entry does under the halt rule; `u32::MAX` for none.
     static MOTOR_REFUSES: AtomicU32 = AtomicU32::new(u32::MAX);
-    fn hook_motor_wheel(id: u32, pct: u32) -> OpResult {
+    fn hook_motor_wheel(_owner: u32, id: u32, pct: u32) -> OpResult {
         MOTOR_SEEN.lock().unwrap_or_else(|e| e.into_inner()).push((id, pct));
         if MOTOR_REFUSES.load(AOrd::SeqCst) == id { Err(IO_ERR_CONTAINED) } else { Ok(0) }
     }

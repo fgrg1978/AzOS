@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Wave 15 ktest (owner decision): a task that dies commanding a wheel leaves
-//! it at a SAFE STOP. A probe task drives wheel 0 at 30 % through the motor
-//! layer and notes itself as the wheel's commander, exactly as the typed
-//! motor calls do for a ring-3 caller (`motor_commander::note_current`), and
-//! returns; its exit hook (`kernel/src/boot/sched.rs`) must take the wheel
-//! and have the motor layer confirm duty 0. The hook also writes the
+//! it at a SAFE STOP. A probe task drives wheel 0 at 30 % through the
+//! kernel's io_ring motor entry (`KERNEL_IORING_OPS.motor_wheel`, as its own
+//! ring's owner), which is the `Motor` interface's `speed` op
+//! (`motor_host::wheel_speed`: the effect gate, the motor layer, the
+//! commander note), and returns; its exit hook (`kernel/src/boot/sched.rs`)
+//! must take the wheel and have the motor layer confirm duty 0. A ring entry
+//! that skipped that path names no commander, and the test reports `not ok`. The hook also writes the
 //! `SAFETY_ESTOP` / action 14 record and its `[MOTOR] commander ... SAFE
 //! STOP` line. Canary `commander-exit-nostop-canary`: the wheel is taken and
 //! never stopped, so the test reports `not ok`.
@@ -20,18 +22,19 @@
 //!
 //! The duty is read from the stop's own report, not from the channel
 //! afterwards: `rt_motor_task` writes the same wheel every control tick
-//! while its command channel is live, so a later read could be its duty.
+//! while its command channel is live, so a later read could be its duty. For
+//! the same reason the probe's own write is judged by the commander it named
+//! (a wheel is noted only at a non-zero applied duty), read right after it.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 const WHEEL: u32 = 0;
 /// Mid-band: the probe only writes the wheel and returns.
 const PROBE_PRIO: u32 = 10;
-/// The probe's write was refused (the motor layer applied nothing).
-const REFUSED: u32 = u32::MAX;
-
 static TID: AtomicU32 = AtomicU32::new(0);
-static APPLIED: AtomicU32 = AtomicU32::new(REFUSED);
+/// The probe's ring entry completed (not refused) and left the probe named as
+/// the wheel's commander.
+static NOTED: AtomicBool = AtomicBool::new(false);
 /// The last task whose exit hook has run its releases.
 static RELEASED: AtomicU32 = AtomicU32::new(0);
 /// The last stop the hook noted: `(tid << 1) | 1` when it came after that
@@ -52,9 +55,9 @@ pub(crate) fn note_stopped(tid: u32) {
 
 fn commander(_: usize) {
     let me = azos_sched::current_task_tid();
-    let (_rc, applied) = azos_robot::motor_set_reporting(WHEEL, azos_robot::MotorDir::Forward, 30);
-    azos_syscall::motor_commander::note(WHEEL, me, applied);
-    APPLIED.store(applied.unwrap_or(REFUSED), Ordering::Release);
+    let done = (azos_syscall::ioring_ops::KERNEL_IORING_OPS.motor_wheel)(me, WHEEL, 30);
+    let noted = matches!(done, Ok(rc) if rc >= 0) && azos_syscall::motor_commander::commander(WHEEL) == me;
+    NOTED.store(noted, Ordering::Release);
     TID.store(me, Ordering::Release);
 }
 
@@ -66,9 +69,8 @@ azos_ktest::ktest_late! {
         azos_sched::task_create_affinity("cmdr-probe", commander, 0, PROBE_PRIO, 1);
         crate::ktest::wait("the commander probe never ran", || TID.load(Ordering::Acquire) != 0)?;
         let tid = TID.load(Ordering::Acquire);
-        match APPLIED.load(Ordering::Acquire) {
-            REFUSED | 0 => return Err("the probe's 30 % write was refused: no wheel to stop"),
-            _ => {}
+        if !NOTED.load(Ordering::Acquire) {
+            return Err("the probe's 30 % ring entry named no commander (refused, or it skipped the typed op's path)");
         }
         crate::ktest::wait("the commander's exit never took its wheel", || {
             azos_syscall::motor_commander::last_exit_stop().0 == tid

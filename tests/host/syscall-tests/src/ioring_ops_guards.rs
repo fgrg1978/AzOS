@@ -6,8 +6,9 @@
 // **What is real here.** The ring's own checks (`crates/core/ipc/src/io_ring.rs`,
 // pulled in whole by `shims/ipc`) run against `KERNEL_IORING_OPS`: the
 // submitter's filter through the real `SyscallFilter::verdict_for`, the
-// owner's real capability table, the real `motor_set_reporting` with its halt
-// rule (`shims/robot`), and the typed call on the same state wherever the two
+// owner's real capability table, the real `motor_host::wheel_speed` (the
+// effect gate's seam, the real `motor_set_reporting` with its halt rule from
+// `shims/robot`, the real commander table), and the typed call on the same state wherever the two
 // doors must give the same answer. The ring page is mapped by the
 // `shm_map_user` stand-in into a real Sv39 table and read back through the
 // real `translate_user`.
@@ -374,7 +375,7 @@ fn a_sensor_entry_needs_the_capability_and_reads_what_the_interface_reads() {
 /// drives both wheels: the refusal is the latch, not the path.
 ///
 /// **Canary.** Make `motor_wheel` write the channel itself
-/// (`pwm_set_duty_pct(CH, speed)` in place of `motor_set_reporting`): the
+/// (`pwm_set_duty_pct(CH, speed)` in place of `motor_host::wheel_speed`): the
 /// latched entry writes duty 60.
 #[test]
 fn a_motor_entry_under_a_latched_estop_holds_both_wheels_at_duty_zero() {
@@ -409,6 +410,97 @@ fn a_motor_entry_under_a_latched_estop_holds_both_wheels_at_duty_zero() {
     let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 60, 60, 0)) };
     assert_eq!(done(c), (0, 0));
     assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 60), (PwmOp::SetDutyPct, CH[1], 60)]);
+}
+
+// ── The effect gate on the ring ─────────────────────────────────────────────
+//
+// A stand-in for the kernel's gate (`azos_actuation::effect_gate`, covered by
+// `actuation-tests`), as `motor_guards.rs` installs one for the typed op: it
+// keeps what it was asked to issue and, when told to, refuses a motion op as
+// the real one refuses it (a full recorder ring, a held wheel, a deadline the
+// server cannot meet). A stop is never refused.
+
+static RING_GATE_SEEN: Mutex<Vec<(u32, u32, u32, bool)>> = Mutex::new(Vec::new());
+static RING_GATE_REFUSES: AtomicBool = AtomicBool::new(false);
+
+fn ring_gate(e: &crate::motor_host::MotorEffect, op: &mut dyn FnMut() -> bool) -> bool {
+    RING_GATE_SEEN.lock().unwrap_or_else(|x| x.into_inner()).push((e.wheel, e.tid, e.pct, e.toward_safe));
+    if RING_GATE_REFUSES.load(Ordering::SeqCst) && !e.toward_safe {
+        return false;
+    }
+    op();
+    true
+}
+
+fn ring_gate_seen() -> Vec<(u32, u32, u32, bool)> {
+    core::mem::take(&mut *RING_GATE_SEEN.lock().unwrap_or_else(|x| x.into_inner()))
+}
+
+/// What no gate does: run the op. Put back when a test here ends.
+fn no_gate(_e: &crate::motor_host::MotorEffect, op: &mut dyn FnMut() -> bool) -> bool {
+    op();
+    true
+}
+
+struct RingGate;
+
+impl Drop for RingGate {
+    fn drop(&mut self) {
+        crate::motor_host::set_effect_gate(no_gate);
+        RING_GATE_REFUSES.store(false, Ordering::SeqCst);
+    }
+}
+
+/// **A motor entry is the typed `speed` op, effect gate and commander
+/// included.** Each wheel's command reaches the effect gate as the RING
+/// OWNER's (its record, its hold, its deadline watch and provenance are
+/// that task's) before it reaches the wheel, and a wheel left turning names
+/// the owner as its commander, so the owner's death stops it (Kconfig
+/// `MOTOR_COMMANDER_EXIT_STOP`). A motion entry the gate refuses writes
+/// nothing and completes refused with the typed call's `-EAGAIN`; a stop is
+/// never refused and clears the commander.
+///
+/// **Canary.** Make `motor_wheel` call `motor_set_reporting` /
+/// `motor_stop_reporting` directly again: the gate sees nothing, the
+/// refused entry drives both wheels, and no wheel names a commander.
+#[test]
+fn a_motor_entry_goes_through_the_effect_gate_and_names_its_owner_as_commander() {
+    let _g = serial();
+    let (s, pt) = ring3();
+    grant_dev(s.tid, azos_devif::key::MOTOR, 0, CapPerms::RW);
+    grant_dev(s.tid, azos_devif::key::MOTOR, 1, CapPerms::RW);
+    wheels();
+    let (cap, _va, ring) = create(pt);
+    let _gate = RingGate;
+    ring_gate_seen();
+    crate::motor_host::set_effect_gate(ring_gate);
+
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 30, 40, 0)) };
+    assert_eq!(done(c), (0, 0));
+    assert_eq!(ring_gate_seen(), vec![(0, s.tid, 30, false), (1, s.tid, 40, false)],
+               "the entry's commands did not reach the effect gate as the owner's");
+    assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 30), (PwmOp::SetDutyPct, CH[1], 40)]);
+    if azos_limits::MOTOR_COMMANDER_EXIT_STOP {
+        for id in 0..2 {
+            assert_eq!(crate::motor_commander::commander(id), s.tid,
+                       "wheel {id} left turning names no commander: the owner's exit would not stop it");
+        }
+    }
+
+    RING_GATE_REFUSES.store(true, Ordering::SeqCst);
+    clear_pwm_calls();
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 60, 60, 0)) };
+    assert_eq!(done(c), (E_CONTAINED as i32, CQE_F_REFUSED), "a refused motion entry did not complete refused");
+    assert!(pwm_calls().is_empty(), "a motion entry the gate refused wrote {:?}", pwm_calls());
+    assert_eq!(ring_gate_seen().len(), 2);
+
+    let (_, c) = unsafe { submit(cap, ring, sqe(OP_MOTOR_SPEED, 0, 0, 0)) };
+    assert_eq!(done(c), (0, 0), "a stop entry was refused");
+    assert_eq!(ring_gate_seen(), vec![(0, s.tid, 0, true), (1, s.tid, 0, true)]);
+    assert_eq!(pwm_calls(), vec![(PwmOp::SetDutyPct, CH[0], 0), (PwmOp::SetDutyPct, CH[1], 0)]);
+    for id in 0..2 {
+        assert_eq!(crate::motor_commander::commander(id), 0, "a stopped wheel {id} still names a commander");
+    }
 }
 
 /// **Containment refuses the PWM entry with the code every contained write

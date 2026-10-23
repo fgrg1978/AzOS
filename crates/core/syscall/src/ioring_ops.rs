@@ -4,7 +4,8 @@
 //!
 //! Each entry calls what the matching typed syscall calls once that call has
 //! resolved its capability: the sensor read is `handlers::sensor_read_into`,
-//! a wheel is `motor_set_reporting` / `motor_stop_reporting`, a PWM duty or
+//! a wheel is `motor_host::wheel_speed` (the effect gate, the motor layer,
+//! the commander note), a PWM duty or
 //! GPIO pin goes through the same motor-binding guard and driver call. There
 //! is no second implementation of any operation. What the typed call's
 //! resolution decides is decided per entry by `io_ring::dispatch_sqe` instead:
@@ -24,7 +25,7 @@ use azos_abi::cap::ty;
 use crate::no_robot::{robot as azos_robot};
 use azos_abi::error::Errno;
 use azos_ipc::io_ring::{BlockStart, IoRingOps, OpResult, PinnedBuf, IO_ERR_INVALID_PARAM};
-use azos_robot::{motor_set_reporting, motor_stop_reporting, MotorDir, MOTOR_REFUSED_HALTED};
+use azos_robot::MOTOR_REFUSED_HALTED;
 
 /// The table `io_ring_register_ops` installs.
 pub static KERNEL_IORING_OPS: IoRingOps = KERNEL_IORING_OPS_TABLE;
@@ -306,15 +307,16 @@ fn pwm_set(channel: u32, duty_pct: u32) -> OpResult {
     Ok(if rc == 0 { 0 } else { errno(Errno::EIO) })
 }
 
-/// One wheel, as `motor.speed` commands it: 0 coasts, anything else
-/// drives forward. The halt rule, the e-stop latch and the envelope are the
-/// motor layer's and apply here unchanged; a command the halt rule refuses has
-/// still written duty 0, and answers the typed call's `-EAGAIN` as a refusal.
-fn motor_wheel(id: u32, speed_pct: u32) -> OpResult {
-    let (rc, applied) = if speed_pct == 0 {
-        motor_stop_reporting(id)
-    } else {
-        motor_set_reporting(id, MotorDir::Forward, speed_pct)
+/// One wheel, as `motor.speed` commands it, for the ring's owner: the same
+/// call (`motor_host::wheel_speed`), so the effect gate's record, hold,
+/// deadline watch and provenance, the motor layer's halt rule and envelope,
+/// and the commander note that stops the wheel when `owner_tid` dies all
+/// apply as they do to the typed op. A command the halt rule refuses has
+/// still written duty 0 and, like one the effect gate refuses (nothing
+/// reached the wheel), answers the typed call's refusal: `-EAGAIN`.
+fn motor_wheel(owner_tid: u32, id: u32, speed_pct: u32) -> OpResult {
+    let Ok((rc, applied)) = crate::motor_host::wheel_speed(id, owner_tid, speed_pct) else {
+        return Err(crate::handlers::E_CONTAINED as i32);
     };
     // The applied duty comes out of the write itself; see the marker in
     // `MotorServer::speed` for why it is not read back afterwards.
