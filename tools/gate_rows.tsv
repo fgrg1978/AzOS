@@ -1,8 +1,6 @@
 # Gate rows: key, tier, deps (tools/gate_rows.py --write keeps listed rows).
 # tier n1: `make check1` may run the row when the diff touches one of its deps.
 # tier n2: only the full gate (`make ci`) runs it. deps: space-separated globs.
-aarch64 boots (ARMv8.5)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs kernel/src/boot/isa.rs crates/core/arch-api/src/isa.rs
-aarch64 boots (ARMv8.0)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs kernel/src/boot/isa.rs crates/core/arch-api/src/isa.rs
 aarch64 kernel boots (EL1)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 kernel boots (EL2)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 kernel boots (EL1, -smp 4)	n2	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
@@ -18,6 +16,8 @@ aarch64 kernel boots (EL2, no hypervisor)	n2	crates/core/arch-aarch64/** kernel/
 aarch64 hv: guest entry ready	n2	crates/core/arch-aarch64/** kernel/src/entry/** kernel/Cargo.toml
 aarch64 kernel boots on cortex-a53 (8.0)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 aarch64 kernel boots on cortex-a53 (8.0, EL2)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+aarch64 boots (ARMv8.0)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs kernel/src/boot/isa.rs crates/core/arch-api/src/isa.rs
+aarch64 boots (ARMv8.5)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs kernel/src/boot/isa.rs crates/core/arch-api/src/isa.rs
 aarch64 shell answers help	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 pl011 rx irq count	n2	crates/drivers/** kernel/src/drv_supervisor.rs kernel/src/console_mode.rs kernel/src/boot/launch.rs crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 userspace	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
