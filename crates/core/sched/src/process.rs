@@ -1151,7 +1151,10 @@ fn load_elf_into(
     // Canary (`user-stack-request-canary`): the request is not read, and every
     // image gets the default stack. Never in a normal build.
     #[cfg(feature = "user-stack-request-canary")]
-    let stack_req = 0;
+    let stack_req = {
+        let _ = stack_req;
+        0
+    };
     let stack = match elf_bounds::stack_bytes(stack_req, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_MAX) {
         Ok(b) => b,
         Err(_) if !native => elf_bounds::foreign_stack_bytes(stack_req, PAGE_SIZE, USER_STACK_SIZE, USER_STACK_MAX),
