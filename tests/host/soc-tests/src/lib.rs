@@ -6,7 +6,7 @@
 
 // The DesignWare I2C bring-up (crates/drivers/bus), pulled in by path as
 // drivers-tests does: the VisionFive 2 rows feed it the rate the clock tree
-// resolves (`vf2_i2c_clock_tests`).
+// resolves (`vf2_clock_tests`).
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "../../../../crates/drivers/bus/src/i2c_txn.rs"]
@@ -46,6 +46,6 @@ mod regulator_tests;
 #[cfg(test)]
 mod hwbus_tests;
 #[cfg(test)]
-mod vf2_i2c_clock_tests;
+mod vf2_clock_tests;
 #[cfg(test)]
 mod wire;

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The VisionFive 2's I2C clock, end to end: a tree shaped like mainline
+//! The VisionFive 2's device clocks, end to end: a tree shaped like mainline
 //! `jh7110.dtsi` (the oscillator, the system clock generator fed by the PLL
-//! block inside the system syscon, an I2C controller naming
-//! `JH7110_SYSCLK_I2C0_APB`), built the way the kernel builds it
-//! (`Storage::scan`, `Soc::build`), with the registers as U-Boot's SPL
-//! leaves them; then the DesignWare bring-up (`i2c_dw.rs`, pulled in by path)
-//! fed the rate the tree resolves, as `kernel/src/boot/hwbus.rs`
-//! (`dw_i2c_timing`) feeds it.
+//! block inside the system syscon, and the devices the kernel binds through
+//! the hardware bus: an I2C controller, the watchdog, the PWM, the
+//! temperature sensor, the two SD/eMMC controllers, each with the `clocks`,
+//! `resets` and assigned rates of mainline), built the way the kernel builds
+//! it (`Storage::scan`, `Soc::build`), with the registers as U-Boot's SPL
+//! leaves them. Each device binds; the I2C one then feeds the DesignWare
+//! bring-up (`i2c_dw.rs`, pulled in by path) the rate the tree resolves, as
+//! `kernel/src/boot/hwbus.rs` (`dw_i2c_timing`) feeds it.
 use crate::bind_tests::model;
 use crate::i2c_dw::{init_master, Counts, Timing};
 use crate::i2c_txn::{DwRegs, IC_ENABLE, IC_ENABLE_STATUS};
@@ -33,11 +35,23 @@ const I2C0: &str = "/soc/i2c@10030000";
 /// dt-bindings headers).
 const I2C0_APB: u32 = 138;
 const I2C0_RST: u32 = 76;
+/// The other devices' `JH7110_SYSCLK_*` (the reset ids are written in the
+/// nodes): SDIO0/1 AHB 91/92, SDCARD 93/94, PWM APB 121, WDT APB/CORE
+/// 122/123, TEMP APB/CORE 129/130.
+const SDIO0_AHB: u32 = 91;
+const SDIO0_SDCARD: u32 = 93;
+const PWM_APB: u32 = 121;
+const WDT_APB: u32 = 122;
+const WDT_CORE: u32 = 123;
+const TEMP_APB: u32 = 129;
+const TEMP_CORE: u32 = 130;
 
-/// The clock and reset nodes of mainline `jh7110.dtsi` the I2C needs, and
-/// `i2c0` with the VisionFive 2's properties (`jh7110-common.dtsi`). The
-/// syscrg's `clocks` keeps a board input before the PLLs, as the real list
-/// does, so the inputs are found by name.
+/// The clock and reset nodes of mainline `jh7110.dtsi`, `i2c0` with the
+/// VisionFive 2's properties (`jh7110-common.dtsi`), and the watchdog, PWM,
+/// temperature sensor and SD/eMMC nodes with their `clocks`, `resets` and
+/// (SD/eMMC) `assigned-clock-rates` of mainline. The syscrg's `clocks` keeps
+/// a board input before the PLLs, as the real list does, so the inputs are
+/// found by name.
 fn vf2_tree() -> Vec<u8> {
     let mut b = Builder::new();
     b.cells("#address-cells", &[2]).cells("#size-cells", &[2]);
@@ -65,6 +79,20 @@ fn vf2_tree() -> Vec<u8> {
         .cells("i2c-sda-falling-time-ns", &[510])
         .cells("i2c-scl-falling-time-ns", &[510])
         .end();
+    b.begin("pwm@120d0000")
+        .strs("compatible", &["starfive,jh7110-pwm", "opencores,pwm-v1"])
+        .cells("reg", &[0, 0x120d_0000, 0, 0x10000])
+        .cells("clocks", &[SYSCRG, PWM_APB])
+        .cells("resets", &[SYSCRG, 108])
+        .end();
+    b.begin("temperature-sensor@120e0000")
+        .str("compatible", "starfive,jh7110-temp")
+        .cells("reg", &[0, 0x120e_0000, 0, 0x10000])
+        .cells("clocks", &[SYSCRG, TEMP_CORE, SYSCRG, TEMP_APB])
+        .strs("clock-names", &["sense", "bus"])
+        .cells("resets", &[SYSCRG, 124, SYSCRG, 123])
+        .strs("reset-names", &["sense", "bus"])
+        .end();
     b.begin("clock-controller@13020000")
         .str("compatible", "starfive,jh7110-syscrg")
         .cells("reg", &[0, 0x1302_0000, 0, 0x10000])
@@ -84,6 +112,25 @@ fn vf2_tree() -> Vec<u8> {
         .ph(PLLCLK)
         .end();
     b.end();
+    b.begin("watchdog@13070000")
+        .str("compatible", "starfive,jh7110-wdt")
+        .cells("reg", &[0, 0x1307_0000, 0, 0x10000])
+        .cells("clocks", &[SYSCRG, WDT_APB, SYSCRG, WDT_CORE])
+        .strs("clock-names", &["apb", "core"])
+        .cells("resets", &[SYSCRG, 109, SYSCRG, 110])
+        .end();
+    for (k, base) in [(0u32, 0x1601_0000u32), (1, 0x1602_0000)] {
+        b.begin(&format!("mmc@{base:x}"))
+            .str("compatible", "starfive,jh7110-mmc")
+            .cells("reg", &[0, base, 0, 0x10000])
+            .cells("clocks", &[SYSCRG, SDIO0_AHB + k, SYSCRG, SDIO0_SDCARD + k])
+            .strs("clock-names", &["biu", "ciu"])
+            .cells("resets", &[SYSCRG, 64 + k])
+            .strs("reset-names", &["reset"])
+            .cells("assigned-clocks", &[SYSCRG, SDIO0_SDCARD + k])
+            .cells("assigned-clock-rates", &[50_000_000])
+            .end();
+    }
     b.end(); // soc
     b.finish()
 }
@@ -130,6 +177,8 @@ fn rig<'p>(st: &'p mut Storage, fdt: &Fdt<'_>) -> Rig<'p> {
     let mut bus = TraceBus::new(&log).hook(model());
     let mut fx = Sink::new(&log);
     let soc = Soc::build(st, fdt, &mut Io { bus: &mut bus, i2c: None }, &mut fx);
+    // syscrg, the PLLs, the two fixed clocks: inside the six clock slots.
+    assert_eq!((soc.report.clocks, soc.report.dropped), (4, 0));
     seed_firmware(&mut bus);
     log.clear();
     Rig { soc, bus, fx, log }
@@ -269,4 +318,94 @@ fn the_designware_driver_computes_its_counts_from_that_rate() {
     assert_eq!((dw.get(IC_SS_SCL_HCNT), dw.get(IC_SS_SCL_LCNT)), (220, 257));
     // SDA hold: round(49_500 * 300 / 1e6) = 15 cycles TX, RX hold forced to 1.
     assert_eq!(dw.get(IC_SDA_HOLD), (1 << 16) | 15);
+}
+
+/// Bind the node at `path` on a fresh board; what it applied and the gates it
+/// opened (the syscrg writes that set bit 31), in order.
+fn bind_on_board(path: &str) -> (Applied, Vec<(u64, u32)>, u64) {
+    let blob = vf2_tree();
+    let fdt = Fdt::parse(&blob).unwrap();
+    let mut st = Storage::new();
+    let mut r = rig(&mut st, &fdt);
+    let n = by_path(&fdt, path).unwrap();
+    let a = bind::bind(&mut r.soc, &fdt, &mut r.bus, &mut r.fx, n).unwrap_or_else(|e| panic!("{path}: bind refused: {e:?}"));
+    let writes = r.log.writes();
+    assert!(writes.iter().all(|(a, _)| !(SYSCON_BASE..SYSCON_BASE + 0x1000).contains(a)), "{path} wrote a PLL");
+    let gates = writes.iter().copied().filter(|(a, v)| (SYSCRG_BASE..SYSCRG_BASE + 0x2f8).contains(a) && v & (1 << 31) != 0).collect();
+    // The rate of the node's last clock, as a driver would read it.
+    let last = consumer_count(&fdt, n) - 1;
+    let c = r.soc.clocks.get(&fdt, n, Sel::Index(last)).unwrap();
+    let hz = r.soc.clocks.rate(&mut r.bus, c).unwrap();
+    (a, gates, hz)
+}
+
+fn consumer_count(fdt: &Fdt<'_>, n: azos_soc::NodeId) -> usize {
+    azos_soc::consumer::count(fdt, n, "clocks", "#clock-cells").unwrap()
+}
+
+const GATE: u32 = 1 << 31;
+
+#[test]
+fn the_watchdog_binds_with_its_apb_and_core_gates() {
+    let (a, gates, core_hz) = bind_on_board("/soc/watchdog@13070000");
+    assert_eq!(a, Applied { domains: 0, rates: 0, clocks: 2, resets: 2, pins: false, unmodelled: 0 });
+    assert_eq!(gates, [(sys(12), GATE), (sys(WDT_APB), GATE), (sys(WDT_CORE), GATE)]);
+    // The core counts the oscillator.
+    assert_eq!(core_hz, 24_000_000);
+}
+
+#[test]
+fn the_pwm_binds_with_its_apb_gate() {
+    let (a, gates, hz) = bind_on_board("/soc/pwm@120d0000");
+    assert_eq!(a, Applied { domains: 0, rates: 0, clocks: 1, resets: 1, pins: false, unmodelled: 0 });
+    assert_eq!(gates, [(sys(12), GATE), (sys(PWM_APB), GATE)]);
+    assert_eq!(hz, 49_500_000);
+}
+
+#[test]
+fn the_temperature_sensor_binds_and_its_sense_clock_has_no_gate() {
+    let (a, gates, bus_hz) = bind_on_board("/soc/temperature-sensor@120e0000");
+    assert_eq!(a, Applied { domains: 0, rates: 0, clocks: 2, resets: 2, pins: false, unmodelled: 0 });
+    // temp_core (130) is a divider of the oscillator: nothing to open.
+    assert_eq!(gates, [(sys(12), GATE), (sys(TEMP_APB), GATE)]);
+    assert_eq!(bus_hz, 49_500_000);
+}
+
+#[test]
+fn the_sd_controllers_bind_at_their_assigned_card_rate() {
+    for k in 0..2u32 {
+        let path = format!("/soc/mmc@{:x}", 0x1601_0000 + 0x1_0000 * k);
+        let (a, gates, ciu_hz) = bind_on_board(&path);
+        assert_eq!(a, Applied { domains: 0, rates: 1, clocks: 2, resets: 1, pins: false, unmodelled: 0 }, "{path}");
+        // ahb0 (9), the AHB gate, then the card clock's gate over the
+        // divider the assigned rate wrote: 396 MHz (axi_cfg0) / 8.
+        assert_eq!(
+            gates,
+            [(sys(9), GATE), (sys(SDIO0_AHB + k), GATE), (sys(SDIO0_SDCARD + k), GATE | 8)],
+            "{path}"
+        );
+        assert_eq!(ciu_hz, 49_500_000, "{path}");
+    }
+}
+
+/// Every clock of the table resolves a rate on the board: each chain fits
+/// `clk::MAX_DEPTH` (the APB gates' are the longest: gate, apb0, apb_bus,
+/// stg_axiahb, axi_cfg0, bus_root, pll2, osc = 8) and every parent exists.
+#[test]
+fn every_table_clock_resolves_within_the_depth_limit() {
+    let blob = vf2_tree();
+    let fdt = Fdt::parse(&blob).unwrap();
+    let mut st = Storage::new();
+    let mut r = rig(&mut st, &fdt);
+    let prov = r.soc.clocks.get(&fdt, by_path(&fdt, I2C0).unwrap(), Sel::Index(0)).unwrap().prov;
+    // The dividers the firmware seed leaves alone read 0 (stopped): the CPU
+    // ones, the card clocks, the sensing clock.
+    for id in [1u32, 2, 93, 94, 130] {
+        r.bus.regs.insert(sys(id), 1);
+    }
+    for d in azos_soc::jh7110::clk::SYS_CLOCKS {
+        let c = Clk { prov, id: d.id as u16 };
+        let hz = r.soc.clocks.rate(&mut r.bus, c).unwrap_or_else(|e| panic!("{} ({}): {e:?}", d.name, d.id));
+        assert!(hz > 0, "{} ({})", d.name, d.id);
+    }
 }

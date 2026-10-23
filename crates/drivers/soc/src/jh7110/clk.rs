@@ -15,7 +15,8 @@
 //! A clock is one of: a gate, a divider, a gate with a divider, or a mux;
 //! the table says which and where its input comes from. The table below
 //! holds the clocks the VisionFive 2's kernel drivers use (CPU and bus
-//! roots, the AXI/AHB/APB chain, the UARTs, the I2C controllers' APB clocks).
+//! roots, the AXI/AHB/APB chain, the UARTs, the SD/eMMC, PWM, watchdog,
+//! temperature sensor and I2C controllers' clocks).
 //!
 //! What the register tables confirm (field presence and widths, the mux
 //! inputs, the largest divider the TRM allows): every `Kind` and `max` below,
@@ -26,12 +27,17 @@
 //! `pll2_out` are inputs, provided by the PLL controller node the `clocks`
 //! property names (`starfive,jh7110-pll`, [`super::pll`]).
 //!
-//! The parents of `apb_bus` and of the I2C APB gates are the ones U-Boot's
-//! JH7110 clock driver (`drivers/clk/starfive/clk-jh7110.c`, v2025.07)
-//! registers: `apb_bus` divides `stg_axiahb`, `i2c2_apb` and `i2c5_apb` gate
-//! `apb0`. U-Boot registers no other I2C APB clock; the other five gating
-//! `apb0` too is the mainline Linux driver's table (`clk-starfive-jh7110-sys.c`),
-//! not checked against a copy of it here.
+//! The parents, kinds and divider widths of the clocks past the bus chain
+//! are the ones U-Boot's JH7110 clock driver (`drivers/clk/starfive/
+//! clk-jh7110.c`, v2025.07) registers: `apb_bus` divides `stg_axiahb`;
+//! `i2c2_apb`, `i2c5_apb`, `wdt_apb` and the UART APB clocks gate `apb0`;
+//! `wdt_core` and the UART cores gate the oscillator; `sdio*_ahb` gate
+//! `ahb0`; `sdio*_sdcard` gate and divide `axi_cfg0` (4-bit divider). U-Boot
+//! registers neither the other five I2C APB clocks nor `pwm_apb`,
+//! `temp_apb` and `temp_core`: those lines are the mainline Linux driver's
+//! table (`clk-starfive-jh7110-sys.c`: gates of `apb0`, `temp_core` a
+//! divider of the oscillator, max 24), from memory, not checked against a
+//! copy of it here.
 
 use crate::clk::{ClockOps, Parent};
 use crate::{Bus, Error, Result};
@@ -101,6 +107,25 @@ pub const SYS_CLOCKS: &[Desc] = &[
     clk!(11, "apb_bus_func", Kind::Div { max: 8 }, [Parent::Local(8)]),
     // T2-62: gate.
     clk!(12, "apb0", Kind::Gate, [Parent::Local(11)]),
+    // SDIO 0/1 (the microSD and eMMC controllers' `biu` and `ciu`): the AHB
+    // gates under ahb0, the card clocks gates with a divider (max 15, a
+    // 4-bit field) of axi_cfg0. [verify] T2-141..T2-144 by the numbering.
+    clk!(91, "sdio0_ahb", Kind::Gate, [Parent::Local(9)]),
+    clk!(92, "sdio1_ahb", Kind::Gate, [Parent::Local(9)]),
+    clk!(93, "sdio0_sdcard", Kind::GateDiv { max: 15 }, [Parent::Local(7)]),
+    clk!(94, "sdio1_sdcard", Kind::GateDiv { max: 15 }, [Parent::Local(7)]),
+    // PWM APB gate under apb0. [verify] T2-171 by the numbering; not in
+    // U-Boot's table (module doc).
+    clk!(121, "pwm_apb", Kind::Gate, [Parent::Local(12)]),
+    // Watchdog: the APB gate under apb0, the core gate on the oscillator.
+    // [verify] T2-172, T2-173 by the numbering.
+    clk!(122, "wdt_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(123, "wdt_core", Kind::Gate, [OSC]),
+    // Temperature sensor: the APB gate under apb0, the sensing clock a
+    // divider (max 24) of the oscillator. [verify] T2-179, T2-180 by the
+    // numbering; not in U-Boot's table (module doc).
+    clk!(129, "temp_apb", Kind::Gate, [Parent::Local(12)]),
+    clk!(130, "temp_core", Kind::Div { max: 24 }, [OSC]),
     // I2C 0..6 APB gates (the controllers' `ref` clock), under apb0 (module
     // doc). [verify] T2-188..T2-194 by the table's numbering (table = id +
     // 50, as every line above), not read in the TRM.
