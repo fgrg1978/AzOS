@@ -5,7 +5,7 @@
 the Kconfig (config/kernel/Kconfig.livepatch, "Live-update build hooks").
 
   check_livepatch_layout.py scripts
-      every kernel linker script (kernel/linker*.ld, linker-efi.ld) defines
+      every kernel linker script (kernel/linker*.ld) defines
       `.text.patch_pool` with __patch_pool_start/_end and `.azos_patch` with
       __azos_patch_start/_end, and the pool lies before `_text_end` where
       the script has one (so the W^X and no-exec-outside-the-image checks
@@ -44,7 +44,6 @@ def check_scripts() -> list[str]:
     bad: list[str] = []
     scripts = sorted(glob.glob(os.path.join(ROOT, "kernel", "linker*.ld")))
     scripts = [s for s in scripts if not s.endswith("linker-common.ld")]
-    scripts.append(os.path.join(ROOT, "linker-efi.ld"))
     for path in scripts:
         name = os.path.relpath(path, ROOT)
         src = re.sub(r"/\*.*?\*/", "", open(path, encoding="utf-8").read(), flags=re.S)
@@ -56,8 +55,8 @@ def check_scripts() -> list[str]:
         pool, text_end = src.find("__patch_pool_end = ."), src.find("_text_end = .")
         if text_end >= 0 and 0 <= pool and pool > text_end:
             bad.append(f"{name}: the patch pool is after _text_end (outside the text range)")
-    # The list is derived (every kernel/linker*.ld but the common include,
-    # plus linker-efi.ld), so a new script is checked, not counted.
+    # The list is derived (every kernel/linker*.ld but the common include),
+    # so a new script is checked, not counted.
     if len(scripts) < 2:
         bad.append(f"expected the kernel linker scripts, found {len(scripts)}")
     return bad

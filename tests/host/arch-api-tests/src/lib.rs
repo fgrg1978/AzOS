@@ -2352,7 +2352,7 @@ mod livepatch_tests {
         assert_eq!(line(0, 0, 0), "[PATCH] pool=0 sites=0 entry_nops=0");
     }
 
-    /// Every linker script (derived: kernel/linker*.ld but the common include, and linker-efi.ld) carries the pool, the site table and their symbols
+    /// Every linker script (derived: kernel/linker*.ld but the common include) carries the pool, the site table and their symbols
     /// (tools/check_livepatch_layout.py scripts). A script that loses one is
     /// a kernel whose `[PATCH]` line reads zero while the Kconfig says 64.
     #[test]

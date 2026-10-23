@@ -32,7 +32,7 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `LICENSES/` | Licence texts: Apache-2.0, GPL-2.0-only, MIT. |
 
 Top-level files: `Cargo.toml` (workspace) and `Cargo.lock`, `Kconfig`, `Makefile`,
-`rust-toolchain.toml`, `linker-efi.ld`, `deny.toml`, `REUSE.toml`, `LICENSE`,
+`rust-toolchain.toml`, `deny.toml`, `REUSE.toml`, `LICENSE`,
 `NOTICE`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, `SECURITY.md`, `CHANGELOG.md`,
 `ROADMAP.md`, `ARCHITECTURE.md` (a map, see [../ARCHITECTURE.md](../ARCHITECTURE.md)).
 
