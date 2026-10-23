@@ -252,8 +252,15 @@ unsafe fn copy_bytes(dst: *mut u8, src: *const u8, n: usize) {
     use core::ptr::{read_unaligned as rd, write_unaligned as wr};
     // SAFETY: the caller's contract, for each width.
     unsafe {
+        let aligned = (dst as usize | src as usize) & n.wrapping_sub(1) == 0;
         match n {
             1 => *dst = *src,
+            // Aligned (a futex word, a handle in a kernel struct): one load
+            // and one store. Unaligned: the bytewise sequence the ISA needs
+            // (riscv64 without Zicclsm splits a misaligned access in bytes).
+            2 if aligned => (dst as *mut u16).write((src as *const u16).read()),
+            4 if aligned => (dst as *mut u32).write((src as *const u32).read()),
+            8 if aligned => (dst as *mut u64).write((src as *const u64).read()),
             2 => wr(dst as *mut u16, rd(src as *const u16)),
             4 => wr(dst as *mut u32, rd(src as *const u32)),
             8 => wr(dst as *mut u64, rd(src as *const u64)),
@@ -291,6 +298,44 @@ unsafe fn copy_words(dst: *mut u8, src: *const u8, n: usize) {
     }
 }
 
+/// The index of the first NUL in the `n` bytes at `k`: a byte at a time to
+/// the first 8-aligned byte, then a word at a time while no byte of the word
+/// is the NUL (reading past the NUL stays inside the page the caller
+/// validated), then bytes again. Scanning first and copying the found run
+/// with [`copy_bytes`] after is what keeps a string near a byte an
+/// instruction: copying word by word into an unaligned kernel buffer costs a
+/// riscv64 without misaligned stores eight byte stores per word (vsbench
+/// `uaccess-cstr-256`: the byte loop spent nine instructions a byte).
+///
+/// # Safety
+///
+/// `k` is valid for reads of `n` bytes, and of the whole aligned word around
+/// any of them (the bytes are inside one page).
+#[inline(always)]
+unsafe fn nul_in(k: *const u8, n: usize) -> Option<usize> {
+    let mut i = 0;
+    // SAFETY: every read is inside `[k, k + n)` or the aligned word around a
+    // byte of it, inside the page (the caller's contract).
+    unsafe {
+        while i < n && (k as usize + i) & 7 != 0 {
+            if *k.add(i) == 0 {
+                return Some(i);
+            }
+            i += 1;
+        }
+        while i + 8 <= n && !has_zero_byte((k.add(i) as *const u64).read_volatile()) {
+            i += 8;
+        }
+        while i < n {
+            if *k.add(i) == 0 {
+                return Some(i);
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
 /// Does the word hold a zero byte? (The classic test: a byte borrows into
 /// its top bit only when it was zero.)
 #[inline(always)]
@@ -300,11 +345,63 @@ const fn has_zero_byte(w: u64) -> bool {
     w.wrapping_sub(LO) & !w & HI != 0
 }
 
+/// Largest access [`copy_small`] takes: two words, what an argument, a handle
+/// or a futex word is.
+const SMALL: usize = 16;
+
+/// A copy of at most [`SMALL`] bytes inside one page: one section, one walk,
+/// one scalar copy, in a function small enough to keep its state in a few
+/// registers (the general loop saves thirteen). `None` on a miss, which the
+/// caller hands to the general loop (it faults the page in and retries).
+/// `to_user`: `user` is the destination (`k` the source), else the source.
+#[inline(never)]
+fn copy_small(pt: usize, user: usize, k: *mut u8, len: usize, to_user: bool) -> Option<()> {
+    let _s = enter();
+    let pa = resident(pt, user, to_user)?;
+    #[cfg(not(target_os = "none"))]
+    {
+        let h = *HOOK.lock();
+        if let Some(h) = h {
+            h(pa);
+        }
+    }
+    let _ua = ARCH.user_access();
+    let u = crate::addr::phys_to_virt(pa) as *mut u8;
+    // SAFETY: `pa` is a frame of `pt` resolved inside this section with the
+    // permission the direction needs, `len` bytes fit in its page (the
+    // caller checked), and `k` holds `len` bytes.
+    unsafe {
+        if to_user {
+            copy_bytes(u, k, len);
+        } else {
+            copy_bytes(k, u, len);
+        }
+    }
+    Some(())
+}
+
+/// Does `[va, va + len)` fit [`copy_small`]: short, and inside one page?
+#[inline(always)]
+fn small(va: usize, len: usize) -> bool {
+    len != 0 && len <= SMALL && (va & (PAGE_SIZE - 1)) + len <= PAGE_SIZE
+}
+
 /// Copy `len` bytes from the kernel buffer `src` to user `va` of the address
 /// space `pt`, a page per section. `false` on any page that is not (and
 /// cannot be made) user-writable, or a range that wraps. Pages before a
 /// failing one are written.
+#[inline]
 pub fn copy_out(pt: usize, va: usize, src: *const u8, len: usize) -> bool {
+    if small(va, len) && copy_small(pt, va, src as *mut u8, len, true).is_some() {
+        return true;
+    }
+    copy_out_pages(pt, va, src, len)
+}
+
+/// [`copy_out`]'s loop, out of line: its frame (thirteen saved registers on
+/// riscv64) is not paid by the scalar path.
+#[inline(never)]
+fn copy_out_pages(pt: usize, va: usize, src: *const u8, len: usize) -> bool {
     if va.checked_add(len).is_none() {
         return false;
     }
@@ -329,7 +426,17 @@ pub fn copy_out(pt: usize, va: usize, src: *const u8, len: usize) -> bool {
 /// Copy `len` bytes from user `va` of `pt` into the kernel buffer `dst`, a
 /// page per section. `false` on any page that is not user-readable (a
 /// reserved page not touched yet is committed first), or a range that wraps.
+#[inline]
 pub fn copy_in(pt: usize, dst: *mut u8, va: usize, len: usize) -> bool {
+    if small(va, len) && copy_small(pt, va, dst, len, false).is_some() {
+        return true;
+    }
+    copy_in_pages(pt, dst, va, len)
+}
+
+/// [`copy_in`]'s loop, out of line (see [`copy_out_pages`]).
+#[inline(never)]
+fn copy_in_pages(pt: usize, dst: *mut u8, va: usize, len: usize) -> bool {
     if va.checked_add(len).is_none() {
         return false;
     }
@@ -382,40 +489,13 @@ pub fn cstr_in(pt: usize, dst: &mut [u8], va: usize) -> Option<usize> {
         let start = len;
         let found = with_frame(pt, at, false, |pa| {
             let k = crate::addr::phys_to_virt(pa) as *const u8;
-            let mut i = 0;
-            // A byte at a time to the first 8-aligned byte, then a word at a
-            // time while no byte of the word is the NUL (reading past the NUL
-            // stays inside this page, which the walk validated), then a byte
-            // at a time again: about a byte an instruction, against nine for
-            // the byte loop alone (vsbench `uaccess-cstr-256`).
-            while i < n && (k as usize + i) & 7 != 0 {
-                // SAFETY: `i < n`, inside the frame's page.
-                let c = unsafe { *k.add(i) };
-                dst[start + i] = c;
-                if c == 0 {
-                    return Some(start + i);
-                }
-                i += 1;
-            }
-            while i + 8 <= n {
-                // SAFETY: 8 bytes at `i` (8-aligned), inside the page.
-                let w = unsafe { (k.add(i) as *const u64).read_volatile() };
-                if has_zero_byte(w) {
-                    break;
-                }
-                dst[start + i..start + i + 8].copy_from_slice(&w.to_ne_bytes());
-                i += 8;
-            }
-            while i < n {
-                // SAFETY: as above.
-                let c = unsafe { *k.add(i) };
-                dst[start + i] = c;
-                if c == 0 {
-                    return Some(start + i);
-                }
-                i += 1;
-            }
-            None
+            // SAFETY: `n` bytes of the frame's page, validated by the walk.
+            let nul = unsafe { nul_in(k, n) };
+            let m = nul.map_or(n, |e| e + 1);
+            // SAFETY: `m <= n` bytes of the page into `dst[start..start + m]`
+            // (`n <= dst.len() - start`).
+            unsafe { copy_bytes(dst[start..start + m].as_mut_ptr(), k, m) };
+            nul.map(|e| start + e)
         })?;
         if found.is_some() {
             return found;

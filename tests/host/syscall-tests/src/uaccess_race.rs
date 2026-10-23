@@ -267,3 +267,30 @@ fn a_fork_waits_for_a_write_in_flight() {
     );
     assert!(o.copied);
 }
+
+/// The scalar path (`copy_small`: an argument, a futex word) under the same
+/// race as the page copy above.
+///
+/// **Divergence:** as `copy_to_user_keeps_its_frame_until_the_copy_ends`,
+/// for the eight bytes the parked scalar store then writes into the reissued
+/// frame.
+#[test]
+fn a_scalar_copy_keeps_its_frame_until_it_ends() {
+    let _g = serial();
+    fn copy(pt: usize) -> bool {
+        let v = 0xA5A5_A5A5_A5A5_A5A5u64;
+        azos_mm::uaccess::copy_out(pt, VA, &v as *const u64 as *const u8, 8)
+    }
+    fn zero(p: *mut u8) {
+        unsafe { core::ptr::write_bytes(p, 0, PAGE_SIZE) };
+    }
+    let o = race(copy, unmap, zero);
+    let scribbled = o.reissued && unsafe { *(o.frame as *const u8) } == 0xA5;
+    assert!(
+        !o.freed_under_copy,
+        "munmap freed the frame of a scalar store still in flight (reissued: {}, overwritten: {})",
+        o.reissued, scribbled,
+    );
+    assert!(o.copied);
+    assert_eq!(o.freed, 1);
+}
