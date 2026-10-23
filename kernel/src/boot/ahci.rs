@@ -15,8 +15,9 @@
 //! the scheduler exists: it hands the driver the two scheduler hooks the other
 //! block drivers use, so a task waiting for a command sleeps until the MSI
 //! (each ISA's interrupt arm calls `ahci::msi_irq`) wakes it.
-//! [`ahci_queue_selftest`] is the evidence the q35 row reads for the queue,
-//! FUA and TRIM.
+//! [`ahci_queue_selftest`] (Kconfig `BOOT_SELFTESTS`: it writes and removes
+//! a scratch file) is the evidence the q35 row reads for the queue, FUA and
+//! TRIM.
 
 use crate::kprintln;
 use azos_drv_virtio::virtio::pci::msix_selftest::{map_bars, MsiRoute};
@@ -78,7 +79,9 @@ where
 /// where `blkdev::fua_commit` says the disk has one (write then flush
 /// otherwise), and the removed file's chain is discarded (Kconfig
 /// `BLK_DISCARD`) where the disk TRIMs. One `[AHCI] queue:` line says what the
-/// driver counted.
+/// driver counted. A boot self-test (Kconfig `BOOT_SELFTESTS`): a default
+/// boot leaves the disk's files alone.
+#[cfg(feature = "boot-selftests")]
 pub(crate) fn ahci_queue_selftest() {
     const NAME: [u8; 11] = *b"AHCIQTSTTMP";
     let n = (4 * azos_drv_block::ahci::XFER_SECTORS as u64).min(azos_drv_block::blkdev::capacity_sectors()) as u32;

@@ -854,6 +854,7 @@ fn fs_writeback_task(_: usize) {
         let (taken, slept) = azos_drv_block::ahci::irq_counts();
         kprintln!("[AHCI] by interrupt: {} taken, {} waits slept (read {}, flush {:?}, sig {:02x}{:02x})",
             taken, slept, if rd { "ok" } else { "FAILED" }, fl, s0[510], s0[511]);
+        #[cfg(feature = "boot-selftests")]
         ahci_queue_selftest();
     }
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);

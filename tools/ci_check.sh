@@ -14688,23 +14688,26 @@ PY
     # Canaries: the same image built with AHCI_NCQ_DEPTH=1 must fail the queue
     # checks and pass the rest; the pass image on an ide-hd with
     # discard_granularity=0 must show trim=n and no TRIM, and still mount.
+    # The queue evidence is a boot self-test (it writes and removes a scratch
+    # file): every image of the row is built with Kconfig BOOT_SELFTESTS.
     x86_ahci_row() { # x86_ahci_row <label> <PASS|FAIL|NONCQ|NOTRIM>
         local label="$1" expect="$2" why="" qwhy="" w
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
-        local def=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config hd="ide-hd,drive=sata0,bus=ahci.0" stop='AHCI\] queue:|KERNEL PANIC'
+        local base=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config def="$CI_LOG_DIR/x86-${tag}.defconfig"
+        local hd="ide-hd,drive=sata0,bus=ahci.0" stop='AHCI\] queue:|KERNEL PANIC'
         rm -f "$kimg" "$kimg.features"
         case "$expect" in
             FAIL)
-                def="$CI_LOG_DIR/x86-${tag}.defconfig"
-                sed '/^CONFIG_DRV_AHCI=y/d' config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config >"$def"
+                { sed '/^CONFIG_DRV_AHCI=y/d' "$base"; echo "$GATE_KCONFIG_EXTRA"; } >"$def"
                 stop='AHCI\] by interrupt|KERNEL PANIC' ;;
             NONCQ)
-                def="$CI_LOG_DIR/x86-${tag}.defconfig"
-                { sed '/^CONFIG_AHCI_NCQ_DEPTH=/d' config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config; echo CONFIG_AHCI_NCQ_DEPTH=1; } >"$def" ;;
-            NOTRIM) hd="$hd,discard_granularity=0" ;;
+                { sed '/^CONFIG_AHCI_NCQ_DEPTH=/d' "$base"; echo CONFIG_AHCI_NCQ_DEPTH=1; echo "$GATE_KCONFIG_EXTRA"; } >"$def" ;;
+            *)
+                { cat "$base"; echo "$GATE_KCONFIG_EXTRA"; } >"$def"
+                [ "$expect" = NOTRIM ] && hd="$hd,discard_granularity=0" ;;
         esac
         make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-ahci-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-ahci-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
