@@ -40,8 +40,9 @@ BOOT_LIMIT_S="${CHECK_FAST_BOOT_LIMIT_S:-300}"
 mkdir -p "$OUT"
 t0=$SECONDS
 
-# The gate's own configurations (tools/ci_check.sh primary_config /
-# aarch64_config): the same paths, so the kernels share its build cache.
+# The robot cells of the gate's configurations (the ktest counts and the
+# system boot are the robot kernel's), at the gate's primary paths so the
+# kernels share its build cache.
 cfg() { # cfg <defconfig> <out>
     local tmp rc=0; tmp="$(mktemp -d)" || return 1
     mkdir -p "$(dirname "$2")"
@@ -80,7 +81,8 @@ DISK_x86=$AZOS_OUT/build/disk-x86_64-abitest.img
 
 builds_ok=1
 if [ "${CHECK_FAST_NOBUILD:-0}" != 1 ]; then
-    cfg qemu.config "$RV_CFG" && cfg qemu-aarch64.config "$ARM_CFG" \
+    cfg robot-sbc-riscv64-dev+qemu+linux+gui.config "$RV_CFG" \
+        && cfg robot-sbc-aarch64-dev+qemu+linux+gui.config "$ARM_CFG" \
 || { echo "check-fast: olddefconfig failed"; exit 2; }
     # A canary list the kernel would cut fails here, before any build.
     for isa in $ISAS; do
