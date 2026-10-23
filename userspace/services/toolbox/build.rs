@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The stack this image asks for: 20 KiB.
-//! Its deepest static chain is 14.6 KiB: `ps` holds the task table (6 KiB, twice).
+//! The stack this image asks for: 24 KiB.
+//! Its deepest static chain is 16.6 KiB (`main > ps`, which holds the task
+//! table twice), 20.8 KiB with the 25% margin tools/user_stacks.py adds.
 //!
 //! lld writes it as the `p_memsz` of the image's `PT_GNU_STACK` header, which
 //! the loader reads (crates/core/sched/src/process.rs, `elf_bounds::stack_bytes`):
@@ -10,5 +11,5 @@
 //! image's deepest static call chain.
 
 fn main() {
-    println!("cargo:rustc-link-arg-bins=-zstack-size={}", 20 * 1024);
+    println!("cargo:rustc-link-arg-bins=-zstack-size={}", 24 * 1024);
 }
