@@ -43,7 +43,7 @@ use azos_drv_virtio::virtio::Dma;
 use azos_sync::SpinLock;
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// The registers of one queue (offsets from BAR 0).
 #[derive(Clone, Copy, Debug)]
@@ -111,26 +111,6 @@ impl<W: Wire> Regs<W> {
     fn link_is_up(&self) -> bool {
         self.rd(REG_STATUS) & STATUS_LU != 0
     }
-}
-
-/// Order the writes to ring memory before the doorbell write that tells
-/// the controller to read them. `fence w,o` / `dsb st` order a memory
-/// write before a device write, which the portable fences do not
-/// promise (the same fence the NVMe driver issues before its doorbells).
-#[inline(always)]
-pub fn io_wmb() {
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: a fence has no operands and no effect beyond ordering.
-    unsafe {
-        core::arch::asm!("fence w, o", options(nostack))
-    }
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: as above.
-    unsafe {
-        core::arch::asm!("dsb st", options(nostack))
-    }
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-    fence(Ordering::SeqCst);
 }
 
 fn now() -> u64 {
@@ -410,7 +390,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             *tx = TxState { dma, buf_bus: tx_buf_bus, cur: TxCursor::new(), depth: 0, pending: 0, watch: TxWatch::new() };
             self.tx_watched.store(false, Ordering::Relaxed);
         }
-        io_wmb();
+        azos_dma::order::io_wmb();
         r.wr(W::RX.tail, rx_cur.rdt(RX_N) as u32);
 
         // Link: wait for it once, here.
@@ -482,7 +462,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         if rx.cur.unposted == 0 {
             return;
         }
-        io_wmb();
+        azos_dma::order::io_wmb();
         self.regs().wr(W::RX.tail, rx.cur.rdt(RX_N) as u32);
         rx.cur.flushed();
     }
@@ -519,7 +499,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
                 return Ok(0);
             }
             // The write-back is visible: the frame it describes is too.
-            fence(Ordering::Acquire);
+            azos_dma::order::dma_rmb();
             let len = st.len as usize;
             let accept = rx_accept(&st, rx.cur.discarding, buf.len().min(BUF_SIZE));
             if accept {
@@ -616,7 +596,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         if tx.pending == 0 {
             return;
         }
-        io_wmb();
+        azos_dma::order::io_wmb();
         self.regs().wr(W::TX.tail, tx.cur.tail as u32);
         tx.pending = 0;
         let (t, credit) = self.look();

@@ -27,8 +27,6 @@
 //! zero, while it rewrites an entry. Interrupt requests are not covered:
 //! interrupt remapping is out of this crate's scope (`IV` stays clear).
 
-use core::sync::atomic::{fence, Ordering};
-
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
     rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, POLL,
@@ -270,7 +268,8 @@ impl<M: Mmio> AmdVi<M> {
         wr64(self.mem, self.cmd, slot + 1, cmd[1]);
         self.mem.clean(self.cmd + self.cmd_tail, ENTRY as usize);
         self.cmd_tail = (self.cmd_tail + ENTRY) % LOG_BYTES;
-        fence(Ordering::SeqCst);
+        // The tail write is the doorbell: the command before it, for the unit.
+        azos_dma::order::io_wmb();
         self.mmio.write64(REG_CMD_TAIL, self.cmd_tail);
         Ok(())
     }
@@ -355,7 +354,7 @@ impl<M: Mmio + Send> IommuUnit for AmdVi<M> {
             wr64(self.mem, slot, i, dte[i]);
         }
         self.mem.clean(slot, DTE_BYTES as usize);
-        fence(Ordering::Release);
+        azos_dma::order::dma_wmb();
         wr64(self.mem, slot, 0, dte[0]);
         self.mem.clean(slot, 8);
         self.command(cmd_inv_dev_entry(dev))?;

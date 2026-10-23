@@ -36,3 +36,55 @@ pub fn io_wmb() {
     #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
+
+/// Order every earlier memory write before every later memory write, as a
+/// device reading that memory sees them: a descriptor's body before the word
+/// that hands it over (an ownership bit, a cycle bit, a valid bit). Not a
+/// doorbell barrier: [`io_wmb`] is.
+///
+/// On riscv64 `fence w,o` (the doorbell barrier) does not order a memory write
+/// before another memory write, so this one is `fence w,w` (Linux
+/// `dma_wmb`). On aarch64 the two are the same `dmb oshst`: `fence(Release)`
+/// (`dmb ish`) covers only the inner-shareable domain, and a device observes
+/// from the outer one. x86_64: stores retire in order; the compiler is kept
+/// from reordering them.
+#[inline(always)]
+pub fn dma_wmb() {
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: as `io_wmb`.
+    unsafe {
+        core::arch::asm!("fence w, w", options(nostack, preserves_flags))
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: as `io_wmb`.
+    unsafe {
+        core::arch::asm!("dmb oshst", options(nostack, preserves_flags))
+    }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}
+
+/// Order the read of a word a device wrote last (an ownership, done or phase
+/// bit) before every later memory read: the rest of the descriptor, the
+/// buffer it describes. Call it after the check that says the device is done.
+///
+/// Without it the CPU may read the buffer before the word that says it is
+/// ready, and see what was there before the device wrote it. riscv64
+/// `fence r,r`, aarch64 `dmb oshld` (Linux `dma_rmb`; `fence(Acquire)` is
+/// `dmb ishld`, the inner-shareable domain only). x86_64 does not reorder a
+/// load with an older load; the compiler is kept from doing it.
+#[inline(always)]
+pub fn dma_rmb() {
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: as `io_wmb`.
+    unsafe {
+        core::arch::asm!("fence r, r", options(nostack, preserves_flags))
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: as `io_wmb`.
+    unsafe {
+        core::arch::asm!("dmb oshld", options(nostack, preserves_flags))
+    }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}

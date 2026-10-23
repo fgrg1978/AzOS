@@ -105,7 +105,7 @@ impl<R: MsiRoute> CpuVectors for R {
 use azos_nvme as proto;
 use azos_pci::{BarWindow, ConfigSpace, FunctionInfo};
 use azos_sync::kmutex::Mutex;
-use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 const SECTOR_SIZE: usize = 512;
 const PAGE: usize = proto::PAGE_SIZE;
@@ -327,25 +327,6 @@ fn slot_give(slot: usize) {
 
 // ---- Registers and barriers ----
 
-/// Order the writes to queue memory before the doorbell write that tells
-/// the controller to read them. `fence w,o` / `dsb st` order a memory write
-/// before a device write, which the portable fences do not promise.
-#[inline(always)]
-fn io_wmb() {
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: a fence has no operands and no effect beyond ordering.
-    unsafe {
-        core::arch::asm!("fence w, o", options(nostack))
-    }
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: as above.
-    unsafe {
-        core::arch::asm!("dsb st", options(nostack))
-    }
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-    fence(Ordering::SeqCst);
-}
-
 #[inline(always)]
 fn rd32(bar: usize, off: usize) -> u32 {
     // SAFETY: `bar` is BAR 0 mapped by `map_bars`; `off` is a register
@@ -453,8 +434,8 @@ fn sqe_write(sq: usize, index: u16, sqe: &proto::Sqe) {
 }
 
 /// The entry at `index` of a completion queue page. The phase dword is read
-/// first and the rest only if it is new, behind an acquire fence: the
-/// controller writes the phase tag last.
+/// first and the rest only if it is new, behind a read barrier as the device
+/// sees it (`dma_rmb`): the controller writes the phase tag last.
 fn cqe_peek(cq: usize, cur: &proto::CqCursor) -> Option<proto::Cqe> {
     let p = (cq + cur.head as usize * proto::CQE_BYTES) as *const u32;
     // SAFETY: `cq` is a queue page of ours and `head < depth`.
@@ -464,7 +445,7 @@ fn cqe_peek(cq: usize, cur: &proto::CqCursor) -> Option<proto::Cqe> {
         if !proto::cqe_is_new(&e, cur.phase) {
             return None;
         }
-        fence(Ordering::Acquire);
+        azos_dma::order::dma_rmb();
         Some(proto::Cqe {
             dw0: core::ptr::read_volatile(p),
             dw1: core::ptr::read_volatile(p.add(1)),
@@ -490,7 +471,7 @@ impl Dev {
         let sqe = mk(cid);
         sqe_write(self.asq, self.a_tail, &sqe);
         self.a_tail = proto::ring_next(self.a_tail, ADMIN_DEPTH);
-        io_wmb();
+        azos_dma::order::io_wmb();
         // SAFETY: the admin SQ tail doorbell of a mapped controller.
         unsafe { core::ptr::write_volatile(self.sq_doorbell(0) as *mut u32, self.a_tail as u32) };
         let deadline = deadline_after_us(ADMIN_TIMEOUT_US);
@@ -684,7 +665,7 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
     wr32(bar, proto::REG_AQA, proto::aqa(ADMIN_DEPTH as u32, ADMIN_DEPTH as u32));
     wr64(bar, proto::REG_ASQ, asq_pa);
     wr64(bar, proto::REG_ACQ, acq_pa);
-    io_wmb();
+    azos_dma::order::io_wmb();
     wr32(bar, proto::REG_CC, proto::cc_enable());
     wait_ready(bar, true, cap.ready_timeout_ms)?;
 
@@ -1006,7 +987,7 @@ fn submit(dev: &Dev, qi: usize, q: &mut Queue, slot: usize, sqe: &proto::Sqe) ->
     SLOT_INFLIGHT[slot].store(true, Ordering::Release);
     sqe_write(q.sq, q.tail, sqe);
     q.tail = proto::ring_next(q.tail, IO_DEPTH);
-    io_wmb();
+    azos_dma::order::io_wmb();
     // SAFETY: the SQ tail doorbell of queue `qi` of a mapped controller.
     unsafe { core::ptr::write_volatile(dev.sq_doorbell(qid_of(qi)) as *mut u32, q.tail as u32) };
     Ok(())

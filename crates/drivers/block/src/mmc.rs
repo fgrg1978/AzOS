@@ -317,26 +317,6 @@ impl Regs for Hw {
     }
 }
 
-/// A store to RAM (descriptors, bounce pages) ordered before the MMIO store
-/// that tells the controller to read it. `fence w,o` / `dsb st` order a
-/// memory write before a device write, which the portable fences do not
-/// promise.
-#[inline(always)]
-fn io_wmb() {
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: a fence has no operands and no effect beyond ordering.
-    unsafe {
-        core::arch::asm!("fence w, o", options(nostack))
-    }
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: as above.
-    unsafe {
-        core::arch::asm!("dsb st", options(nostack))
-    }
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-    core::sync::atomic::fence(Ordering::SeqCst);
-}
-
 /// The MMIO read that saw the controller finish ordered before the CPU's
 /// reads of what it wrote to RAM.
 #[inline(always)]
@@ -782,7 +762,7 @@ fn xfer_chunk<R: Regs>(r: &R, idx: usize, turn: &Turn<'_>, write: bool, addr: u3
             azos_dma::cache::sync_for_device(domain, d.page_va[p].load(Ordering::Relaxed), PAGE, dir);
         }
     }
-    io_wmb();
+    azos_dma::order::io_wmb();
 
     if !turn.wait(|| wait_inhibit(r, true)) { return Err(()); }
 

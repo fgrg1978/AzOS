@@ -331,25 +331,6 @@ impl Regs for Hw {
     }
 }
 
-/// Order the writes to the command list and table before the doorbell write
-/// that tells the HBA to read them. `fence w,o` / `dsb st` order a memory
-/// write before a device write, which the portable fences do not promise.
-#[inline(always)]
-fn io_wmb() {
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: a fence has no operands and no effect beyond ordering.
-    unsafe {
-        core::arch::asm!("fence w, o", options(nostack))
-    }
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: as above.
-    unsafe {
-        core::arch::asm!("dsb st", options(nostack))
-    }
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
-    fence(Ordering::SeqCst);
-}
-
 /// One port's registers.
 struct Port<'a, R: Regs> {
     r: &'a R,
@@ -749,7 +730,7 @@ impl<R: Regs> Ahci<R> {
     fn exec_polled(&self, fis: &[u8; 20], bytes: usize, timeout_us: u64) -> Result<(), AhciError> {
         self.build_command(fis, false, bytes);
         let p = self.port_regs();
-        io_wmb();
+        azos_dma::order::io_wmb();
         p.wr(P_CI, 1);
         let deadline = deadline_after_us(timeout_us);
         loop {
@@ -1169,7 +1150,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         self.reported.store(false, Ordering::Relaxed);
         self.inflight.store(true, Ordering::Release);
         if op != OP_NO_FLUSH {
-            io_wmb();
+            azos_dma::order::io_wmb();
             self.port_regs().wr(P_CI, 1);
         }
         Ok(())

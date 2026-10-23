@@ -57,13 +57,13 @@ crates/drivers/actuator	5	0	0	0	0	40
 crates/drivers/api	0	0	0	0	1	0
 crates/drivers/baro	0	0	0	0	1	0
 crates/drivers/base	0	0	0	0	1	0
-crates/drivers/block	95	6	1	0	0	92
+crates/drivers/block	87	6	1	0	0	92
 crates/drivers/bus	11	1	1	0	0	65
 crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	11	0	0	0	0	100
-crates/drivers/dma	18	12	2	0	0	54
+crates/drivers/dma	22	12	2	0	0	56
 crates/drivers/dmac	8	0	0	0	0	99
 crates/drivers/driver_server	0	0	0	0	1	0
 crates/drivers/dtb	92	40	0	0	0	100
@@ -78,7 +78,7 @@ crates/drivers/input	3	1	0	0	0	32
 crates/drivers/input/wire	3	2	2	0	0	80
 crates/drivers/iommu	2	0	0	0	0	7
 crates/drivers/irqchip	0	0	0	0	1	0
-crates/drivers/net	34	4	6	0	0	65
+crates/drivers/net	32	4	6	0	0	65
 crates/drivers/npu	10	2	0	0	0	99
 crates/drivers/nvme	0	0	0	0	1	0
 crates/drivers/pci	0	0	0	0	1	0
@@ -96,7 +96,7 @@ crates/drivers/virtio	145	42	8	0	0	90
 crates/fs/fs	46	8	4	0	0	58
 crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
-crates/net/net	17	0	0	0	0	58
+crates/net/net	17	0	0	0	0	59
 crates/net/tftp	0	0	0	0	1	-
 domains/robot/ahrs	0	0	0	0	1	0
 domains/robot/behavior	4	1	0	0	0	9

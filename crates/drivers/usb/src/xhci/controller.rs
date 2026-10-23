@@ -516,6 +516,8 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
         self.erst.w32(8, RING_TRBS as u32);
         self.mem.to_device(self.erst.cpu(), 16);
 
+        // The tables above are read once the registers below name them.
+        azos_dma::order::io_wmb();
         let r = &self.regs;
         r.write32(op + regs::CONFIG, self.slots_en as u32);
         r.write64(op + regs::DCBAAP, self.dcbaa.bus());
@@ -611,7 +613,11 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
         self.arena.page()
     }
 
+    /// Ring doorbell `target`: `io_wmb` orders the TRBs (and their cache
+    /// maintenance) before the register write that makes the controller read
+    /// them.
     fn doorbell(&self, target: usize, value: u32) {
+        azos_dma::order::io_wmb();
         self.regs.write32(self.db + 4 * target, value);
     }
 

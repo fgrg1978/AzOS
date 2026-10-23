@@ -14,8 +14,6 @@
 //! `EPD1` 30, `V` 31, `IPS` 34:32, `AA64` 41, `R` 45, `A` 46, `ASET` 47,
 //! `ASID` 63:48; dword 1 `TTB0` 51:4; dword 3 `MAIR`.
 
-use core::sync::atomic::{fence, Ordering};
-
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
     rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, POLL,
@@ -351,7 +349,8 @@ impl<M: Mmio> Smmuv3<M> {
         wr64(self.mem, self.cmdq, slot + 1, cmd[1]);
         self.mem.clean(self.cmdq + slot as u64 * 8, 16);
         self.cmdq_prod = (self.cmdq_prod + 1) & wrap_mask;
-        fence(Ordering::SeqCst);
+        // The tail write is the doorbell: the command before it, for the unit.
+        azos_dma::order::io_wmb();
         self.mmio.write32(REG_CMDQ_PROD, self.cmdq_prod);
         Ok(())
     }
@@ -403,7 +402,7 @@ impl<M: Mmio> Smmuv3<M> {
             wr64(self.mem, slot, i, *w);
         }
         self.mem.clean(slot, STE_BYTES as usize);
-        fence(Ordering::Release);
+        azos_dma::order::dma_wmb();
         wr64(self.mem, slot, 0, ste[0]);
         self.mem.clean(slot, 8);
         self.command(cmd_cfgi_ste(dev))

@@ -18,20 +18,21 @@ use crate::hw::{DmaBuf, Memory, PAGE};
 pub const RING_TRBS: usize = PAGE / TRB_BYTES;
 
 /// Writing a TRB: parameter and status first, the control word (which holds
-/// the cycle bit) last and behind a fence, so the controller never sees a
-/// half-written entry as valid.
+/// the cycle bit) last and behind a write barrier as the device sees it
+/// (`dma_wmb`), so the controller never sees a half-written entry as valid.
 fn put(buf: &DmaBuf, idx: usize, t: Trb, cycle: bool) {
     let o = idx * TRB_BYTES;
     buf.w64(o, t.param);
     buf.w32(o + 8, t.status);
-    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    azos_dma::order::dma_wmb();
     buf.w32(o + 12, (t.control & !C_CYCLE) | cycle as u32);
 }
 
 fn get(buf: &DmaBuf, idx: usize) -> Trb {
     let o = idx * TRB_BYTES;
     let control = buf.r32(o + 12);
-    core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+    // The controller writes the cycle bit last: the rest is read after it.
+    azos_dma::order::dma_rmb();
     Trb { param: buf.r64(o), status: buf.r32(o + 8), control }
 }
 
@@ -124,7 +125,7 @@ impl ProducerRing {
         }
         // Publish: flip the first TRB's cycle bit to the real one.
         let o = first_idx * TRB_BYTES + 12;
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        azos_dma::order::dma_wmb();
         let c = self.buf.r32(o);
         self.buf.w32(o, (c & !C_CYCLE) | first_cycle as u32);
         m.to_device(self.buf.cpu().wrapping_add(first_idx * TRB_BYTES), TRB_BYTES);

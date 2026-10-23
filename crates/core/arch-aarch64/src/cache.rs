@@ -48,14 +48,18 @@ fn line_size_bytes() -> usize {
     4usize << ((ctr >> 16) & 0xf)
 }
 
-/// `DSB ISH` — wait for all preceding memory accesses (across
-/// the Inner Shareable domain) to complete.
+/// `DSB SY` — wait for every preceding maintenance by VA to the point of
+/// coherency, and every memory access, to complete for the full system. A
+/// non-coherent DMA master is not in the inner-shareable domain, so `dsb ish`
+/// does not tell it the clean is done: Linux ends `dcache_clean_poc` /
+/// `dcache_inval_poc` with `dsb sy` for the same reason. Not `nomem`: memory
+/// accesses must not move across it.
 #[cfg(target_arch = "aarch64")]
 #[inline]
-fn dsb_ish() {
+fn dsb_sy() {
     // SAFETY: a barrier.
     unsafe {
-        core::arch::asm!("dsb ish", options(nostack, nomem, preserves_flags));
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
     }
 }
 
@@ -81,7 +85,7 @@ pub unsafe fn dcache_clean(va: usize, len: usize) {
         }
         p += line;
     }
-    dsb_ish();
+    dsb_sy();
 }
 
 /// **Clean and invalidate** the D-cache range — writes dirty lines back and
@@ -106,7 +110,7 @@ pub unsafe fn dcache_clean_and_invalidate(va: usize, len: usize) {
         }
         p += line;
     }
-    dsb_ish();
+    dsb_sy();
 }
 
 /// Invalidate **all** of this PE's I-cache (Inner Shareable —

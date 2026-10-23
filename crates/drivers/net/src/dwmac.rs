@@ -56,7 +56,6 @@
 
 use azos_dma::Direction;
 use azos_drv_api::net::{NetError, ETH_FRAME_MAX};
-use core::sync::atomic::{fence, Ordering};
 
 // ── Register map ────────────────────────────────────────────────────────
 
@@ -793,7 +792,8 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
     }
 
     /// Write `w` into `d` with `des3` (the ownership word) last, and hand the
-    /// line to the device.
+    /// line to the device. `dma_wmb`: the body before OWN as the device sees
+    /// them (`fence(Release)` is `dmb ish` on aarch64, not the outer domain).
     fn publish(&self, d: *mut Desc, w: [u32; 4]) {
         let p = d as *mut u32;
         // SAFETY: `d` is a descriptor of `mem`.
@@ -801,19 +801,23 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
             core::ptr::write_volatile(p, w[0]);
             core::ptr::write_volatile(p.add(1), w[1]);
             core::ptr::write_volatile(p.add(2), w[2]);
-            fence(Ordering::Release);
+            azos_dma::order::dma_wmb();
             core::ptr::write_volatile(p.add(3), w[3]);
             self.dma.sync_for_device(d as *const u8, DESC_STRIDE, Direction::Bidirectional);
         }
     }
 
     /// The descriptor's `des3` after taking the line back from the device.
+    /// Every caller decides on OWN in it, then reads what the device wrote (the
+    /// frame, the status): `dma_rmb` keeps those reads after this one.
     fn des3(&self, d: *mut Desc) -> u32 {
         // SAFETY: `d` is a descriptor of `mem`.
-        unsafe {
+        let d3 = unsafe {
             self.dma.sync_for_cpu(d as *const u8, DESC_STRIDE, Direction::Bidirectional);
             core::ptr::read_volatile((d as *const u32).add(3))
-        }
+        };
+        azos_dma::order::dma_rmb();
+        d3
     }
 
     // ── receive ────────────────────────────────────────────────────────
@@ -836,8 +840,10 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
         self.announce_rx();
     }
 
+    /// The tail write is the doorbell: `io_wmb` orders the descriptors before
+    /// it for the device.
     fn announce_rx(&self) {
-        fence(Ordering::SeqCst);
+        azos_dma::order::io_wmb();
         let tail = self.rx_desc_bus + (self.rx_post * DESC_STRIDE) as u64;
         self.hw.wr(reg::DMA_CH0_RXDESC_TAIL, tail as u32);
     }
@@ -974,8 +980,9 @@ impl<H: Hw, D: DmaOps> Dwmac<H, D> {
         Ok(frame.len())
     }
 
+    /// As [`Self::announce_rx`].
     fn announce_tx(&mut self) {
-        fence(Ordering::SeqCst);
+        azos_dma::order::io_wmb();
         let tail = self.tx_desc_bus + (self.tx_head * DESC_STRIDE) as u64;
         self.hw.wr(reg::DMA_CH0_TXDESC_TAIL, tail as u32);
         self.tx_unannounced = false;
@@ -1138,7 +1145,7 @@ pub mod board {
     use azos_drv_virtio::virtio::Dma;
     use azos_sync::SpinLock;
     use core::cell::UnsafeCell;
-    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
     const BASE: usize = azos_drv_base::platform::hw::ETH0_BASE;
 

@@ -19,8 +19,6 @@
 //! record (32 bytes): `hdr` (`CAUSE[11:0]`, `TTYP[39:34]`, `DID[63:40]`),
 //! reserved, `iotval`, `iotval2`.
 
-use core::sync::atomic::{fence, Ordering};
-
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
     rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, PAGE,
@@ -311,7 +309,8 @@ impl<M: Mmio> RiscvIommu<M> {
         wr64(self.mem, self.cq, slot + 1, cmd[1]);
         self.mem.clean(self.cq + slot as u64 * 8, 16);
         self.cq_tail = (self.cq_tail + 1) % CQ_ENTRIES;
-        fence(Ordering::SeqCst);
+        // The tail write is the doorbell: the command before it, for the unit.
+        azos_dma::order::io_wmb();
         self.mmio.write32(REG_CQT, self.cq_tail);
         let tail = self.cq_tail;
         let done = wait_for(POLL, || {
@@ -382,7 +381,7 @@ impl<M: Mmio + Send> IommuUnit for RiscvIommu<M> {
             wr64(self.mem, slot, i, words[i]);
         }
         self.mem.clean(slot, n * 8);
-        fence(Ordering::Release);
+        azos_dma::order::dma_wmb();
         wr64(self.mem, slot, 0, words[0]);
         self.mem.clean(slot, 8);
         self.command(cmd_iodir_inval_ddt(dev))?;
