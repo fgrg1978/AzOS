@@ -81,6 +81,9 @@ pub struct Device {
     /// published PCI BAR); 0 while unknown.
     pub base: u64,
     pub size: u64,
+    /// The second register window of a device-tree node, `(base, size)`;
+    /// `None` when the node has one (the SBSA watchdog's refresh frame).
+    pub reg2: Option<(u64, u64)>,
     /// The first interrupt specifier cell (DT), or the line the transport
     /// uses; 0 when none is known.
     pub irq: u32,
@@ -121,6 +124,7 @@ impl Device {
             compat_len: 0,
             base: 0,
             size: 0,
+            reg2: None,
             irq: 0,
             dma_mask: u64::MAX,
             dma_coherent: false,
@@ -200,6 +204,12 @@ impl Device {
     /// [`Device::dma_coherent`]).
     pub fn with_dma_coherent(mut self, coherent: bool) -> Self {
         self.dma_coherent = coherent;
+        self
+    }
+
+    /// The device with its second register window (see [`Device::reg2`]).
+    pub fn with_reg2(mut self, reg2: Option<(u64, u64)>) -> Self {
+        self.reg2 = reg2;
         self
     }
 

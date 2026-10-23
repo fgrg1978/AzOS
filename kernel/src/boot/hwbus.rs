@@ -113,11 +113,25 @@ fn wants_resources(driver: &str) -> bool {
 #[cfg(any(
     feature = "vf2",
     feature = "k1",
+    feature = "wdt-sbsa",
     all(feature = "soc-k1", feature = "thermal"),
     all(feature = "thermal", target_arch = "aarch64")
 ))]
 fn map_window(dev: &Device) -> Result<usize, ProbeError> {
-    let (base, size) = (dev.base as usize, dev.size as usize);
+    map_reg(dev, dev.base, dev.size)
+}
+
+/// Map one register window of `dev` (`base`, `size`): see [`map_window`].
+// arch-only: as `map_window`.
+#[cfg(any(
+    feature = "vf2",
+    feature = "k1",
+    feature = "wdt-sbsa",
+    all(feature = "soc-k1", feature = "thermal"),
+    all(feature = "thermal", target_arch = "aarch64")
+))]
+fn map_reg(dev: &Device, base: u64, size: u64) -> Result<usize, ProbeError> {
+    let (base, size) = (base as usize, size as usize);
     if base == 0 || size == 0 {
         return Err(ProbeError::Failed);
     }
@@ -157,6 +171,69 @@ fn assigned_rate(fdt: &azos_soc::Fdt<'_>, n: azos_soc::NodeId, name: &str) -> Op
             .filter(|&hz| hz != 0)
             .map(u64::from)
     })
+}
+
+/// A device-tree watchdog: the VF2's WDT-L or an SBSA Generic Watchdog,
+/// whichever the node's `compatible` names (the id table bound only the ones
+/// this image compiles).
+fn attach_wdt(dev: &Device) -> Result<(), ProbeError> {
+    #[cfg(feature = "vf2")]
+    if dev.compatible().any(|c| c == "starfive,jh7110-wdt") {
+        return azos_drv_sys::wdt::wdt_attach(map_window(dev)?).map_err(|_| ProbeError::Busy);
+    }
+    #[cfg(feature = "wdt-sbsa")]
+    if dev.compatible().any(|c| c == "arm,sbsa-gwdt") {
+        use azos_drv_sys::wdt_sbsa::FRAME_BYTES;
+        let Some((rbase, rsize)) = dev.reg2 else {
+            azos_drv_sys::kerr!("[WDT] {}: arm,sbsa-gwdt without a refresh frame (second reg)", dev.name.as_str());
+            return Err(ProbeError::Failed);
+        };
+        if dev.size < FRAME_BYTES || rsize < FRAME_BYTES {
+            return Err(ProbeError::Failed);
+        }
+        let (ctrl, refresh) = (map_window(dev)?, map_reg(dev, rbase, rsize)?);
+        let v = azos_drv_sys::wdt::sbsa_attach(ctrl, refresh).map_err(|_| ProbeError::Busy)?;
+        kprintln!("[WDT] SBSA generic watchdog: control {:#x}, refresh {:#x}, architecture version {}",
+                  dev.base, rbase, v);
+        return Ok(());
+    }
+    let _ = dev;
+    Err(ProbeError::NoSuchDriver)
+}
+
+/// The AMD FCH watchdog behind the SMBus function `vendor:device` at
+/// `revision` (the PCI bring-up's `wdt` probe): a layout this driver knows,
+/// the PM window mapped and the watchdog's decode turned on, then its window
+/// mapped and handed over (`azos_drv_sys::wdt_sp5100`).
+#[cfg(feature = "wdt-sp5100")]
+pub(crate) fn attach_sp5100(vendor: u16, device: u16, revision: u8) -> Result<(), ProbeError> {
+    use azos_drv_sys::wdt_sp5100 as t;
+    if !t::is_efch_mmio(vendor, device, revision) {
+        kprintln!("[WDT] FCH {:04x}:{:04x} rev {:#04x}: not the Zen layout, watchdog not driven",
+                  vendor, device, revision);
+        return Err(ProbeError::NoSuchDriver);
+    }
+    let map = |phys: u64, len: u64| {
+        if super::map_mmio_region(phys as usize, len as usize) { Ok(phys as usize) } else { Err(ProbeError::Failed) }
+    };
+    let pm = map(t::PM_PHYS, t::PM_BYTES)?;
+    if let Err(e) = azos_drv_sys::wdt::sp5100_decode(pm) {
+        azos_drv_sys::kerr!("[WDT] FCH watchdog: {:?}", e);
+        return Err(ProbeError::Failed);
+    }
+    let wdt = map(t::WDT_PHYS, t::WDT_BYTES)?;
+    match azos_drv_sys::wdt::sp5100_attach(pm, wdt) {
+        Ok(fired) => {
+            kprintln!("[WDT] AMD FCH watchdog at {:#x}{}", t::WDT_PHYS,
+                      if fired { "; the last reset was the watchdog's" } else { "" });
+            Ok(())
+        }
+        Err(t::Refused::Busy) => Err(ProbeError::Busy),
+        Err(e) => {
+            azos_drv_sys::kerr!("[WDT] FCH watchdog: {:?}", e);
+            Err(ProbeError::Failed)
+        }
+    }
 }
 
 /// The VisionFive 2's microSD controller: the facts of its device-tree node
@@ -381,8 +458,16 @@ impl Drivers for KernelDrivers<'_> {
             "gpio" => attach_gpio(dev),
             #[cfg(any(feature = "vf2", feature = "k1"))]
             "pwm" => azos_drv_actuator::pwm::pwm_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
-            #[cfg(feature = "vf2")]
-            "wdt" => azos_drv_sys::wdt::wdt_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
+            // The watchdogs: a device-tree node here, the AMD FCH's SMBus
+            // function through the PCI bring-up (it reads the revision).
+            "wdt" => match dev.kind {
+                #[cfg(feature = "wdt-sp5100")]
+                hwbus::BusKind::Pci => match self.pci.as_mut() {
+                    Some(p) => p.probe(driver, dev),
+                    None => Err(ProbeError::Failed),
+                },
+                _ => attach_wdt(dev),
+            },
             #[cfg(feature = "vf2")]
             "dmac" => azos_drv_dmac::dma::dma_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
             #[cfg(feature = "vf2")]
@@ -638,6 +723,7 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
                 }
                 let name = core::str::from_utf8(d.name).unwrap_or("?");
                 add(Device::dt(name, d.compatible, d.base, d.size, d.irq)
+                    .with_reg2(d.reg2)
                     .with_dma_mask(d.dma_mask)
                     .with_dma_coherent(d.dma_coherent)
                     .with_dt_node(d.dt_node));

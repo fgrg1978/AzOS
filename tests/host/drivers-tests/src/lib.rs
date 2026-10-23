@@ -308,6 +308,17 @@ mod nvme_route;
 #[cfg(test)]
 mod nvme_route_tests;
 
+// The SBSA Generic Watchdog and the AMD FCH watchdog: the register logic
+// `azos_drv_sys::wdt` drives as found backends, over scripted registers.
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/sys/src/wdt_sbsa.rs"]
+mod wdt_sbsa;
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/sys/src/wdt_sp5100.rs"]
+mod wdt_sp5100;
+#[cfg(test)]
+mod wdt_tests;
+
 // The AHCI SATA host driver itself (command list and table, PRDT over the
 // staging pages, port restart, interrupt completion), run over a register-level
 // model of the HBA and an ATA disk (`ahci_tests.rs`). It reaches the registers

@@ -1178,6 +1178,11 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                     #[cfg(feature = "fb-generic")]
                     "virtio-gpu-pci" => azos_drv_virtio::virtio::gpu::init_pci(self.cfg, f, self.window)
                         .map_err(|_| ProbeError::Failed),
+                    // Kconfig WDT_SP5100_TCO: the AMD FCH's SMBus function names
+                    // the FCH; its revision picks the layout.
+                    #[cfg(feature = "wdt-sp5100")]
+                    "wdt" => boot::hwbus::attach_sp5100(f.vendor, f.device,
+                        azos_pci::ConfigSpace::read32(&*self.cfg, f.bdf, azos_pci::OFF_CLASS_REV) as u8),
                     _ => Err(ProbeError::NoSuchDriver),
                 }
             }
@@ -1212,6 +1217,10 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // (`wire_virtio_snd_irq`).
         #[cfg(feature = "virtio-snd")]
         boot::hwbus::bind_pci(&["virtio-snd-pci"], &mut pci_bind);
+        // Kconfig WDT_SP5100_TCO: the AMD FCH watchdog, long before sys-wdt
+        // arms it (`watchdog::hw_init`).
+        #[cfg(feature = "wdt-sp5100")]
+        boot::hwbus::bind_pci(&["wdt"], &mut pci_bind);
 
         #[cfg(feature = "mmc-flush-smoke")]
         mmc_flush_smoke(&mut cfg, &funcs[..pci_n], &mut window);

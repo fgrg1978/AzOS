@@ -64,8 +64,14 @@ impl ratelimit::RateLimit {
 // `crate::Uart`. The kprint!/kprintln! macros go through `uart::kernel_log`.
 pub use uart::Uart;
 
-// Hardware watchdog timer (DesignWare WDT on VF2/K1; no-op on QEMU).
+// Hardware watchdog timer (VF2 WDT-L, the SBSA and AMD FCH watchdogs the
+// bus finds; the software watchdog alone elsewhere).
 pub mod wdt;
+// The register logic of the watchdogs `wdt` drives as found backends.
+#[cfg(feature = "wdt-sbsa")]
+pub mod wdt_sbsa;
+#[cfg(feature = "wdt-sp5100")]
+pub mod wdt_sp5100;
 
 // F16: WCET (Worst-Case Execution Time) instrumentation — cycle-accurate
 // timing using rdcycle CSR + atomic statistics per named measurement point.

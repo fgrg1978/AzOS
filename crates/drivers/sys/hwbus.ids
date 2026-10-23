@@ -27,3 +27,11 @@ uart             dt:spacemit,k1-uart   boot
 # net. It binds in the first stage after the SoC frameworks (clock and reset
 # on), long before sys-wdt arms it, and no topology can refuse it.
 wdt              dt:starfive,jh7110-wdt   boot   if=BOARD_VF2
+
+# The SBSA Generic Watchdog (control frame, then refresh frame) and the AMD
+# FCH watchdog, found through the FCH's SMBus function (`wdt::sp5100_attach`
+# checks the revision). `boot`: the safety net; the PCI one binds in the PCI
+# stage, its window is the FCH's own, not a BAR.
+wdt              dt:arm,sbsa-gwdt   boot   if=WDT_SBSA
+wdt              pci:1022:790b   boot   if=WDT_SP5100_TCO
+wdt              pci:1d94:790b   boot   if=WDT_SP5100_TCO

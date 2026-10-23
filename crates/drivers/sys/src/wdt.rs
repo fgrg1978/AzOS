@@ -9,6 +9,12 @@
 //! | QEMU     | none (soft only) | — | no-op |
 //! | VF2 (JH7110) | `starfive,jh7110-wdt` (WDT-L, NOT DesignWare) | the node's `reg` (`0x1307_0000` on the stock tree), handed over by [`wdt_attach`] | unlock → `INTCLR=1` → lock |
 //! | K1 (SpacemiT) | **none** — no watchdog node anywhere in mainline `k1.dtsi` | — | [`wdt_has_hardware`] is `false` |
+//! | Arm SBSA/BSA machines | the Generic Watchdog, `arm,sbsa-gwdt` (Kconfig `WDT_SBSA`) | the node's two `reg` frames, handed over by [`sbsa_attach`] | write `WRR` (`wdt_sbsa`) |
+//! | AMD Zen (FCH) | the FCH watchdog ("SP5100 TCO"), found by its SMBus function `1022:790b` (Kconfig `WDT_SP5100_TCO`) | the FCH's own window, decoded by [`sp5100_decode`], handed over by [`sp5100_attach`] | `CONTROL.trigger` (`wdt_sp5100`) |
+//!
+//! The SBSA and FCH watchdogs are [`Found`] backends: the bus finds at most
+//! one, and the public calls below drive it besides the VF2's own path. No
+//! board selects one: the device tree or the PCI bus says which is there.
 //!
 //! The window is the hardware bus's: the kernel binds the `wdt` driver to the
 //! `starfive,jh7110-wdt` node right after the SoC frameworks (so its clocks
@@ -127,6 +133,211 @@ pub fn wdt_attach(base: usize) -> Result<(), azos_drv_base::window::Taken> {
     WINDOW.attach(base)
 }
 
+// ── Watchdogs the hardware bus found (SBSA, AMD FCH) ────────────────────────
+
+/// A hardware watchdog the bus found and handed over: what [`wdt_init`],
+/// [`wdt_kick`] and [`wdt_disable`] drive.
+pub struct Found {
+    /// The driver, for the boot log.
+    pub name: &'static str,
+    /// Arm for a timeout in ms; the timeout actually armed (the counter's
+    /// range clamps the request), which the idle keepalive follows.
+    arm: fn(u32) -> u32,
+    /// Restart the count. The timer interrupt calls it.
+    kick: fn(),
+    /// Stop the count.
+    disarm: fn(),
+}
+
+/// The backends this image compiles, in a fixed order: [`FOUND`] holds one
+/// plus the index of the one the bus found, 0 for none.
+static BACKENDS: &[&Found] = &[
+    #[cfg(feature = "wdt-sbsa")]
+    &sbsa::FOUND,
+    #[cfg(feature = "wdt-sp5100")]
+    &sp5100::FOUND,
+];
+
+static FOUND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// The backend the bus found, if any.
+#[inline(always)]
+pub fn found() -> Option<&'static Found> {
+    match FOUND.load(Ordering::Acquire) as usize {
+        0 => None,
+        i => BACKENDS.get(i - 1).copied(),
+    }
+}
+
+/// Make `w` the hardware watchdog. Refused when one is already installed:
+/// the bus found a second.
+#[cfg(any(feature = "wdt-sbsa", feature = "wdt-sp5100"))]
+fn install(w: &'static Found) -> Result<(), azos_drv_base::window::Taken> {
+    let i = BACKENDS.iter().position(|b| core::ptr::eq(*b, w)).ok_or(azos_drv_base::window::Taken)? + 1;
+    FOUND.compare_exchange(0, i as u8, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ()).map_err(|_| azos_drv_base::window::Taken)
+}
+
+/// The SBSA Generic Watchdog (`wdt_sbsa`): its two frames.
+#[cfg(feature = "wdt-sbsa")]
+mod sbsa {
+    use super::Ordering;
+    use crate::wdt_sbsa as g;
+    use azos_drv_base::window::Window;
+
+    pub(super) static CTRL: Window = Window::new();
+    pub(super) static REFRESH: Window = Window::new();
+
+    struct Mmio { ctrl: usize, refresh: usize }
+
+    impl g::Frames for Mmio {
+        fn ctrl_read32(&self, off: usize) -> u32 {
+            // SAFETY: `ctrl` is the control frame the bus mapped
+            // (`sbsa_attach`, at least `FRAME_BYTES`); `off` is a register in it.
+            unsafe { core::ptr::read_volatile((self.ctrl + off) as *const u32) }
+        }
+        fn ctrl_write32(&self, off: usize, val: u32) {
+            // SAFETY: as for `ctrl_read32`.
+            unsafe { core::ptr::write_volatile((self.ctrl + off) as *mut u32, val) }
+        }
+        fn refresh_write32(&self, off: usize, val: u32) {
+            // SAFETY: `refresh` is the mapped refresh frame, as above.
+            unsafe { core::ptr::write_volatile((self.refresh + off) as *mut u32, val) }
+        }
+    }
+
+    fn frames() -> Option<Mmio> {
+        Some(Mmio { ctrl: CTRL.base()?, refresh: REFRESH.base()? })
+    }
+
+    /// The architecture version, read once at attach.
+    pub(super) static VERSION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+    fn arm(ms: u32) -> u32 {
+        let Some(f) = frames() else { return 0 };
+        let v = VERSION.load(Ordering::Relaxed);
+        let (wor, armed) = g::wor_for_ms(ms, crate::timebase::freq(), v);
+        g::arm(&f, wor, v);
+        armed
+    }
+
+    fn kick() {
+        if let Some(f) = frames() {
+            g::kick(&f);
+        }
+    }
+
+    fn disarm() {
+        if let Some(f) = frames() {
+            g::disarm(&f);
+        }
+    }
+
+    pub(super) static FOUND: super::Found = super::Found { name: "sbsa-gwdt", arm, kick, disarm };
+
+    pub(super) fn version_of(ctrl: usize, refresh: usize) -> u32 {
+        g::version(&Mmio { ctrl, refresh })
+    }
+}
+
+/// Hand the driver the SBSA Generic Watchdog the bus bound: `ctrl` and
+/// `refresh`, the node's two frames, mapped. Nothing is armed until
+/// [`wdt_init`]. Refused when either window is 0 or a watchdog is already
+/// installed. The architecture version, for the boot log.
+#[cfg(feature = "wdt-sbsa")]
+pub fn sbsa_attach(ctrl: usize, refresh: usize) -> Result<u32, azos_drv_base::window::Taken> {
+    if ctrl == 0 || refresh == 0 || found().is_some() {
+        return Err(azos_drv_base::window::Taken);
+    }
+    let v = sbsa::version_of(ctrl, refresh);
+    sbsa::VERSION.store(v, Ordering::Relaxed);
+    sbsa::CTRL.attach(ctrl)?;
+    sbsa::REFRESH.attach(refresh)?;
+    install(&sbsa::FOUND)?;
+    Ok(v)
+}
+
+/// The AMD FCH watchdog (`wdt_sp5100`): its window.
+#[cfg(feature = "wdt-sp5100")]
+mod sp5100 {
+    use crate::wdt_sp5100 as t;
+    use azos_drv_base::window::Window;
+
+    pub(super) static WINDOW: Window = Window::new();
+
+    pub(super) struct Mmio(pub(super) usize);
+
+    impl t::Regs for Mmio {
+        fn read32(&self, off: usize) -> u32 {
+            // SAFETY: the watchdog window the kernel mapped (`sp5100_attach`,
+            // `WDT_BYTES`); `off` is one of its two registers.
+            unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+        }
+        fn write32(&self, off: usize, val: u32) {
+            // SAFETY: as for `read32`.
+            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
+        }
+    }
+
+    pub(super) struct PmMmio(pub(super) usize);
+
+    impl t::Pm for PmMmio {
+        fn read8(&self, off: usize) -> u8 {
+            // SAFETY: the FCH PM window the kernel mapped (`PM_BYTES`); `off`
+            // is one of its byte registers.
+            unsafe { core::ptr::read_volatile((self.0 + off) as *const u8) }
+        }
+        fn write8(&self, off: usize, val: u8) {
+            // SAFETY: as for `read8`.
+            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u8, val) }
+        }
+    }
+
+    fn arm(ms: u32) -> u32 {
+        let Some(b) = WINDOW.base() else { return 0 };
+        let (s, armed) = t::seconds_for_ms(ms);
+        t::arm(&Mmio(b), s);
+        armed
+    }
+
+    fn kick() {
+        if let Some(b) = WINDOW.base() {
+            t::kick(&Mmio(b));
+        }
+    }
+
+    fn disarm() {
+        if let Some(b) = WINDOW.base() {
+            t::disarm(&Mmio(b));
+        }
+    }
+
+    pub(super) static FOUND: super::Found = super::Found { name: "sp5100-tco", arm, kick, disarm };
+}
+
+/// Turn on the decode of the FCH watchdog's window through the PM registers
+/// at `pm` (mapped `wdt_sp5100::PM_PHYS`, `PM_BYTES`). `Ok`: the kernel may
+/// map `wdt_sp5100::WDT_PHYS` and call [`sp5100_attach`].
+#[cfg(feature = "wdt-sp5100")]
+pub fn sp5100_decode(pm: usize) -> Result<(), crate::wdt_sp5100::Refused> {
+    crate::wdt_sp5100::enable_decode(&sp5100::PmMmio(pm))
+}
+
+/// Set the FCH watchdog up (1 s resolution, reset action, stopped) and hand it
+/// to the driver: `pm` and `wdt`, both mapped. `Ok(fired)`: whether the last
+/// reset was the watchdog's. Nothing is armed until [`wdt_init`].
+#[cfg(feature = "wdt-sp5100")]
+pub fn sp5100_attach(pm: usize, wdt: usize) -> Result<bool, crate::wdt_sp5100::Refused> {
+    use crate::wdt_sp5100::Refused;
+    if wdt == 0 || found().is_some() {
+        return Err(Refused::Busy);
+    }
+    let fired = crate::wdt_sp5100::setup(&sp5100::PmMmio(pm), &sp5100::Mmio(wdt))?;
+    sp5100::WINDOW.attach(wdt).map_err(|_| Refused::Busy)?;
+    install(&sp5100::FOUND).map_err(|_| Refused::Busy)?;
+    Ok(fired)
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Initialise the hardware watchdog with the given timeout in milliseconds.
@@ -137,6 +348,9 @@ pub fn wdt_attach(base: usize) -> Result<(), azos_drv_base::window::Taken> {
 pub fn wdt_init(timeout_ms: u32) {
     #[cfg(feature = "vf2")]
     hw_wdt_init(timeout_ms);
+    // A found watchdog's counter may hold less: what is armed is what the
+    // keepalive follows.
+    let timeout_ms = found().map_or(timeout_ms, |w| (w.arm)(timeout_ms));
     if wdt_has_hardware() || cfg!(feature = "wdt-sim") {
         ARMED_MS.store(timeout_ms, Ordering::Release);
     }
@@ -162,19 +376,25 @@ pub fn armed_timeout_ms() -> u32 {
 pub fn wdt_kick() {
     #[cfg(feature = "vf2")]
     hw_wdt_kick();
+    if let Some(w) = found() {
+        (w.kick)();
+    }
 }
 
 /// Disable the watchdog (use only during graceful shutdown).
 pub fn wdt_disable() {
     #[cfg(feature = "vf2")]
     hw_wdt_disable();
+    if let Some(w) = found() {
+        (w.disarm)();
+    }
     ARMED_MS.store(0, Ordering::Release);
 }
 
 /// Returns true if the platform has a hardware watchdog this driver can
 /// actually arm: a VF2 whose tree has the `starfive,jh7110-wdt` node (bound
-/// by the hardware bus, [`wdt_attach`]). A tree without the node is the
-/// software watchdog alone, not a fault.
+/// by the hardware bus, [`wdt_attach`]), or a [`Found`] watchdog (SBSA, AMD
+/// FCH). A machine without one is the software watchdog alone, not a fault.
 ///
 /// **K1 corrected 2026-09-26 (U05-3): always `false`.** Mainline `k1.dtsi`
 /// has no watchdog node at all (`grep -i "watchdog\|wdt" k1.dtsi` → no
@@ -185,9 +405,10 @@ pub fn wdt_disable() {
 /// protection would otherwise trust a kick that reaches nothing.
 pub fn wdt_has_hardware() -> bool {
     #[cfg(feature = "vf2")]
-    return WINDOW.base().is_some();
-    #[cfg(not(feature = "vf2"))]
-    false
+    if WINDOW.base().is_some() {
+        return true;
+    }
+    found().is_some()
 }
 
 // ── StarFive WDT-L implementation (VF2 only — see `wdt_has_hardware`) ───────

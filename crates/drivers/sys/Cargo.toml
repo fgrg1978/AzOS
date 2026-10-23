@@ -24,6 +24,10 @@ wcet    = []
 # hart 0's idle keepalive runs at the derived period under QEMU. The kick is
 # still a no-op. Never in a board build.
 wdt-sim = []
+# Kconfig WDT_SBSA / WDT_SP5100_TCO: the SBSA Generic Watchdog and the AMD
+# FCH watchdog as the hardware watchdog the bus finds (`wdt::found`).
+wdt-sbsa = []
+wdt-sp5100 = []
 # Wave 13 canary: `^C` on a console lent to a Linux job is queued as a byte,
 # not turned into SIGINT. Never in a real build.
 console-isig-canary = []

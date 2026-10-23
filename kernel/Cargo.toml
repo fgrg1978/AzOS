@@ -864,6 +864,10 @@ energy-gov-smoke = ["energy-smoke", "azos_topology/energy-fake-balanced"]
 # Gate row "idle keepalive (simulated WDT)": the watchdog timeout is recorded
 # as armed under QEMU, so hart 0's idle keepalive runs at the derived period.
 wdt-sim = ["azos_drv_sys/wdt-sim"]
+# Kconfig WDT_SBSA / WDT_SP5100_TCO: the SBSA Generic Watchdog (device tree)
+# and the AMD FCH watchdog (PCI) as the hardware watchdog.
+wdt-sbsa = ["azos_drv_sys/wdt-sbsa"]
+wdt-sp5100 = ["pci", "azos_drv_sys/wdt-sp5100"]
 energy-i1-canary = ["energy-gov-smoke", "azos_energy/i1-canary"]
 energy-i3-canary = ["energy-gov-smoke", "azos_energy/i3-canary"]
 energy-slack-canary = ["energy-gov-smoke", "azos_sched/energy-slack-canary"]

@@ -254,6 +254,42 @@ config DRV_E1000E
       not done. n: the driver is not compiled and the NIC table holds board
       Ethernet and virtio-net only.
 
+config WDT_SBSA
+    # cargo-feature: wdt-sbsa
+    bool "Arm SBSA Generic Watchdog"
+    default y if ARCH_AARCH64
+    default n
+    depends on ARCH_AARCH64
+    help
+      Kernel feature `wdt-sbsa` (crates/drivers/sys/src/wdt_sbsa.rs,
+      crates/drivers/sys/src/wdt.rs). The watchdog of Arm server-class and
+      BSA machines, found by the hardware bus as a device-tree node
+      `arm,sbsa-gwdt` (two `reg` frames: control, then refresh): it becomes
+      the hardware watchdog sys-wdt arms and the RT tick kicks. The counter
+      runs at the live CNTFRQ; the reset comes at the second expiry (WS1),
+      so the offset register holds half the timeout. The ACPI description
+      (GTDT) is not read: the aarch64 boot has no ACPI table walk. QEMU
+      `virt` has no such watchdog (only `sbsa-ref`, through firmware ACPI).
+      n: such a machine has the software watchdog only.
+
+config WDT_SP5100_TCO
+    # cargo-feature: wdt-sp5100
+    bool "AMD FCH watchdog (SP5100 TCO) on Zen chipsets"
+    default y if ARCH_X86_64
+    default n
+    depends on ARCH_X86_64 && DRV_PCI
+    help
+      Kernel feature `wdt-sp5100` (crates/drivers/sys/src/wdt_sp5100.rs,
+      crates/drivers/sys/src/wdt.rs). The watchdog in the Fusion Controller
+      Hub of AMD Zen machines (the Ryzen boards), found by the hardware bus
+      through the FCH's SMBus function (PCI 1022:790b, revision 0x51 or
+      later; Hygon 1d94:790b): the PM registers turn on the decode of its
+      window and select the 1 s resolution, its action is set to reset,
+      and it becomes the hardware watchdog sys-wdt arms and the RT tick
+      kicks (65535 s at most, whole seconds). Older SB800/SP5100 layouts
+      (index/data ports) are not driven. QEMU models no FCH. n: such a
+      machine has the software watchdog only.
+
 config DRV_IGC
     # cargo-feature: igc
     bool "Intel I225/I226 2.5 GbE Ethernet (igc) over PCIe"
