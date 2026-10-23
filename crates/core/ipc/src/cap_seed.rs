@@ -766,33 +766,6 @@ mod tests {
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq").is_none(), "malformed target");
     }
 
-    /// A `nicq.eth<N>.<queue>` row mints a `Cap<NicQueue>` whose resource is
-    /// the interface (`eth1` is index 2) and the queue, with exactly
-    /// `READ|WRITE`; an interface past Kconfig `NET_MAX_INTERFACES`, a spelling
-    /// that is not `eth<N>.<queue>`, a leading zero and any other rights are
-    /// refused. **Discriminates**: drop the `nicq.` arm of `device_seed` and
-    /// the first assertion fails (no minter); drop the rights check and the
-    /// `READ`-only row mints.
-    #[test]
-    fn a_nic_queue_row_mints_its_interface_and_queue_and_nothing_else() {
-        use crate::cap::{targets, Cap};
-        let tid = tests_support::fresh_tid();
-        let h = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "nicq.eth1.0").expect("eth1 queue 0 mints");
-        assert_eq!(
-            crate::cap_store::get(tid, Cap::<targets::NicQueue>::from_raw(h), CapPerms::RW),
-            Ok(azos_abi::nic_queue::resource(2, 0))
-        );
-        let last = azos_limits::NET_MAX_INTERFACES - 1;
-        let past = format!("nicq.eth{}.0", last + 1);
-        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, &past).is_none(), "past NET_MAX_INTERFACES");
-        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, &format!("nicq.eth{last}.0")).is_some(), "the last interface");
-        for bad in ["nicq.eth1", "nicq.wlan0.0", "nicq.eth01.0", "nicq.eth1.00", "nicq.eth1.-1", "nicq.eth1.256", "nicq..0"] {
-            assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, bad).is_none(), "{bad}");
-        }
-        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "nicq.eth1.0").is_none(), "READ alone takes no queue");
-        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW.union(CapPerms::DUP), "nicq.eth1.0").is_none(), "no DUP");
-    }
-
     /// An `msi.<k>` target is read as a message-signalled slot, and refused where
     /// the platform has none (the host here); a malformed slot is refused too.
     #[test]

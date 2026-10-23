@@ -54,7 +54,7 @@ use azos_abi::nic_queue::{self as nq, Desc};
 use azos_ipc::cap::{targets, Cap, CapError};
 use azos_net::nic_queue::{self as taken, Refusal};
 use azos_net::{IfIndex, MAX_IFS};
-use azos_rings::region::{BytesProducer, Publish, RingStep, SpscBytes, RING_HEAD, RING_SLOTS, SLOT_HDR_BYTES};
+use azos_rings::region::{BytesProducer, Publish, RingStep, SlotInfo, SpscBytes, RING_HEAD, RING_SLOTS, SLOT_HDR_BYTES};
 use azos_sync::SpinLock;
 
 use crate::devices::{ring_region, RegionRefusal};
@@ -68,33 +68,119 @@ const _: () = assert!(
     "the slot geometry the ABI states is not the ring code's"
 );
 
-/// The kernel's end of one ring: the region and the slot count its size
-/// implies. Holds no address (module doc).
+/// The slots of a ring in a region of `bytes`: the most a power of two fits,
+/// `None` below two.
+fn slots_in(bytes: usize) -> Option<u32> {
+    let room = bytes.checked_sub(SpscBytes::bytes(0, SLOT_BYTES))? / SLOT_BYTES as usize;
+    if room < 2 {
+        return None;
+    }
+    Some(1u32 << (usize::BITS - 1 - room.leading_zeros()).min(30))
+}
+
+fn view(base: usize, cap: u32) -> SpscBytes {
+    SpscBytes { base, cap, slot_bytes: SLOT_BYTES }
+}
+
+/// The kernel's end of a queue's receive ring: the region (a packed reference,
+/// no address), the slot count its size implies, and the producer with its own
+/// head, sequence and counts.
+pub struct RxRing {
+    region: u32,
+    cap: u32,
+    prod: BytesProducer,
+    /// A push asked for the reader's doorbell since the last ring.
+    wake: bool,
+}
+
+impl RxRing {
+    /// Lay the ring out in `region` of `bytes`: header zeroed, geometry
+    /// written. `None` for a region too small for two slots, or one the kernel
+    /// cannot touch as one piece.
+    pub fn lay_out(region: u32, bytes: usize) -> Option<RxRing> {
+        let cap = slots_in(bytes)?;
+        let prod = azos_ipc::memobj::memobj_with_span_ref(region, SpscBytes::bytes(cap, SLOT_BYTES), |base| {
+            BytesProducer::new(view(base, cap))
+        });
+        Some(RxRing { region, cap, prod: prod.ok()??, wake: false })
+    }
+
+    /// Push `desc`, then `frame` (cut to a slot). A full ring drops it (and
+    /// counts it); `Err` when the region can no longer be touched.
+    pub fn push(&mut self, desc: Desc, frame: &[u8], stamp_ns: u64) -> Result<(), ()> {
+        let mut item = [0u8; nq::SLOT_PAYLOAD];
+        let n = frame.len().min(nq::FRAME_MAX);
+        item[..nq::DESC_BYTES].copy_from_slice(&desc.encode());
+        item[nq::DESC_BYTES..nq::DESC_BYTES + n].copy_from_slice(&frame[..n]);
+        let prod = &mut self.prod;
+        let step = azos_ipc::memobj::memobj_with_span_ref(self.region, SpscBytes::bytes(self.cap, SLOT_BYTES), |base| {
+            prod.rebase(base);
+            prod.push(stamp_ns, &item[..nq::DESC_BYTES + n])
+        });
+        match step {
+            Ok(Some(p)) => {
+                self.wake |= p == Publish::Wake;
+                Ok(())
+            }
+            _ => Err(()),
+        }
+    }
+
+    /// The region whose head word to wake, once, when a push since the last
+    /// call found the reader announced asleep.
+    pub fn take_wake(&mut self) -> Option<u32> {
+        core::mem::take(&mut self.wake).then_some(self.region)
+    }
+}
+
+/// The kernel's end of a queue's transmit ring: the region and its slot count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Ring {
+pub struct TxRing {
     region: u32,
     cap: u32,
 }
 
-impl Ring {
-    /// The ring a region of `bytes` holds: the most slots a power of two fits,
-    /// `None` below two.
-    fn of(region: u32, bytes: usize) -> Option<Ring> {
-        let room = bytes.checked_sub(SpscBytes::bytes(0, SLOT_BYTES))? / SLOT_BYTES as usize;
-        if room < 2 {
-            return None;
-        }
-        let cap = 1u32 << (usize::BITS - 1 - room.leading_zeros()).min(30);
-        Some(Ring { region, cap })
+impl TxRing {
+    /// Lay the ring out in `region` of `bytes`, as [`RxRing::lay_out`].
+    pub fn lay_out(region: u32, bytes: usize) -> Option<TxRing> {
+        let cap = slots_in(bytes)?;
+        let laid = azos_ipc::memobj::memobj_with_span_ref(region, SpscBytes::bytes(cap, SLOT_BYTES), |base| {
+            view(base, cap).init()
+        });
+        matches!(laid, Ok(Some(()))).then_some(TxRing { region, cap })
     }
 
-    fn bytes(&self) -> usize {
-        SpscBytes::bytes(self.cap, SLOT_BYTES)
+    /// Slots of the ring.
+    pub fn slots(&self) -> u32 {
+        self.cap
     }
 
-    fn view(&self, base: usize) -> SpscBytes {
-        SpscBytes { base, cap: self.cap, slot_bytes: SLOT_BYTES }
+    /// Pop the oldest slot into `buf`: its header and, when the producer said
+    /// it may be asleep, the offset of the word to wake it on. `Ok(None)` when
+    /// the ring is empty, `Err` when the region can no longer be touched.
+    pub fn pop(&self, buf: &mut [u8; nq::SLOT_PAYLOAD]) -> Result<Option<(SlotInfo, Option<usize>)>, ()> {
+        let step = azos_ipc::memobj::memobj_with_span_ref(self.region, SpscBytes::bytes(self.cap, SLOT_BYTES), |base| {
+            let (step, info) = view(base, self.cap).try_pop(buf);
+            match step {
+                RingStep::Blocked => None,
+                RingStep::DoneWake { addr } => Some((info, Some(addr - base))),
+                RingStep::Done => Some((info, None)),
+            }
+        });
+        step.ok().flatten().ok_or(())
     }
+}
+
+/// What a popped transmit slot asks: its descriptor, and the frame when it may
+/// leave from `mac` (a transmit descriptor, at least an Ethernet header, at
+/// most a slot, the interface's own MAC as the source). `len` is the slot
+/// header's length, untrusted, clamped to the slot.
+pub fn tx_frame(buf: &[u8; nq::SLOT_PAYLOAD], len: u32, mac: [u8; 6]) -> (Desc, Option<&[u8]>) {
+    let n = (len as usize).min(nq::SLOT_PAYLOAD);
+    let desc = Desc::decode(&buf[..n]).unwrap_or_default();
+    let frame = &buf[nq::DESC_BYTES.min(n)..n];
+    let ok = desc.kind == nq::DESC_TX && (nq::FRAME_MIN..=nq::FRAME_MAX).contains(&frame.len()) && frame[6..12] == mac;
+    (desc, ok.then_some(frame))
 }
 
 /// One taken queue.
@@ -104,12 +190,8 @@ struct Attachment {
     /// Which attachment of the interface this is (bumped by every attach).
     gen: u32,
     mac: [u8; 6],
-    rx: Ring,
-    /// The receive ring's producer: its own head, sequence and counts.
-    rx_prod: BytesProducer,
-    /// A push asked for the reader's doorbell since the last ring.
-    rx_wake: bool,
-    tx: Ring,
+    rx: RxRing,
+    tx: TxRing,
     /// A kick is draining the transmit ring.
     draining: bool,
 }
@@ -187,17 +269,12 @@ fn attach(tid: u32, ifindex: IfIndex, queue: u8, rx_raw: u64, tx_raw: u64) -> Re
     if rx_region == tx_region {
         return Err(Errno::EINVAL.to_syscall_ret());
     }
-    let (Some(rx), Some(tx)) = (Ring::of(rx_region, rx_bytes), Ring::of(tx_region, tx_bytes)) else {
+    // Lay both rings out (header zeroed, geometry written), each in one step
+    // of its region; a region too small, or one the kernel cannot touch as one
+    // piece, is refused.
+    let (Some(rx), Some(tx)) = (RxRing::lay_out(rx_region, rx_bytes), TxRing::lay_out(tx_region, tx_bytes)) else {
         return Err(Errno::EINVAL.to_syscall_ret());
     };
-    // Lay both rings out (header zeroed, geometry written), each in one step
-    // of its region; a region the kernel cannot touch as one piece is refused.
-    let rx_prod = azos_ipc::memobj::memobj_with_span_ref(rx.region, rx.bytes(), |base| BytesProducer::new(rx.view(base)));
-    let Ok(Some(rx_prod)) = rx_prod else { return Err(Errno::EINVAL.to_syscall_ret()) };
-    let tx_ok = azos_ipc::memobj::memobj_with_span_ref(tx.region, tx.bytes(), |base| tx.view(base).init());
-    if !matches!(tx_ok, Ok(Some(()))) {
-        return Err(Errno::EINVAL.to_syscall_ret());
-    }
     // Booked before the take: the receive pass finds the attachment as soon as
     // the queue is taken, and no frame of it is lost to an empty slot.
     {
@@ -208,7 +285,7 @@ fn attach(tid: u32, ifindex: IfIndex, queue: u8, rx_raw: u64, tx_raw: u64) -> Re
         }
         *last = last.wrapping_add(1);
         *slot = Some(Attachment {
-            owner: tid, gen: *last, mac: [0; 6], rx, rx_prod, rx_wake: false, tx, draining: false,
+            owner: tid, gen: *last, mac: [0; 6], rx, tx, draining: false,
         });
     }
     match taken::take(tid, ifindex, queue) {
@@ -242,29 +319,6 @@ fn end(ifindex: IfIndex, gen: Option<u32>) {
     }
 }
 
-/// Push one item on the receive ring of attachment `a`: `desc`, then `frame`
-/// (cut to a slot). `Err` when the region can no longer be touched.
-fn push_rx(a: &mut Attachment, desc: Desc, frame: &[u8], stamp_ns: u64) -> Result<(), ()> {
-    let mut item = [0u8; nq::SLOT_PAYLOAD];
-    let n = frame.len().min(nq::FRAME_MAX);
-    item[..nq::DESC_BYTES].copy_from_slice(&desc.encode());
-    item[nq::DESC_BYTES..nq::DESC_BYTES + n].copy_from_slice(&frame[..n]);
-    let rx = a.rx;
-    let prod = &mut a.rx_prod;
-    let step = azos_ipc::memobj::memobj_with_span_ref(rx.region, rx.bytes(), |base| {
-        prod.rebase(base);
-        prod.push(stamp_ns, &item[..nq::DESC_BYTES + n])
-    });
-    match step {
-        Ok(Some(Publish::Wake)) => {
-            a.rx_wake = true;
-            Ok(())
-        }
-        Ok(Some(_)) => Ok(()),
-        _ => Err(()),
-    }
-}
-
 /// The receive pass's sink (`azos_net::nic_queue::Sink`): one frame of a
 /// taken queue, stamped at the driver boundary.
 pub fn rx_sink(ifindex: IfIndex, frame: &[u8], stamp_ns: u64) {
@@ -272,7 +326,7 @@ pub fn rx_sink(ifindex: IfIndex, frame: &[u8], stamp_ns: u64) {
     let gone = {
         let mut t = ATTACHED.lock();
         match t[i].0.as_mut() {
-            Some(a) => push_rx(a, Desc { kind: nq::DESC_RX, flags: nq::STAMP_SW, tx_seq: 0 }, frame, stamp_ns)
+            Some(a) => a.rx.push(Desc { kind: nq::DESC_RX, flags: nq::STAMP_SW, tx_seq: 0 }, frame, stamp_ns)
                 .is_err()
                 .then_some(a.gen),
             None => None,
@@ -289,7 +343,7 @@ pub fn rx_end(ifindex: IfIndex) {
     let Some(i) = index(ifindex) else { return };
     let ring = {
         let mut t = ATTACHED.lock();
-        t[i].0.as_mut().and_then(|a| core::mem::take(&mut a.rx_wake).then_some(a.rx.region))
+        t[i].0.as_mut().and_then(|a| a.rx.take_wake())
     };
     if let Some(region) = ring {
         crate::vdso_notify::notify_wake_kernel(region, RING_HEAD as u32, 1);
@@ -319,36 +373,21 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
     let mut buf = [0u8; nq::SLOT_PAYLOAD];
     // At most one ring's worth: a producer that keeps pushing cannot hold the
     // caller here.
-    for _ in 0..tx.cap {
-        let step = azos_ipc::memobj::memobj_with_span_ref(tx.region, tx.bytes(), |base| {
-            let (step, info) = tx.view(base).try_pop(&mut buf);
-            let wake = match step {
-                RingStep::DoneWake { addr } => Some(addr - base),
-                _ => None,
-            };
-            (step != RingStep::Blocked, wake, info)
-        });
-        let (popped, wake, info) = match step {
-            Ok(Some(s)) => s,
-            _ => {
+    for _ in 0..tx.slots() {
+        let (info, wake) = match tx.pop(&mut buf) {
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            Err(()) => {
                 gone = true;
                 break;
             }
         };
-        if !popped {
-            break;
-        }
         if wake.is_some() {
             wake_producer = wake;
         }
-        let n = (info.len as usize).min(nq::SLOT_PAYLOAD);
-        let desc = Desc::decode(&buf[..n]).unwrap_or_default();
-        let frame = &buf[nq::DESC_BYTES.min(n)..n];
-        let shaped = desc.kind == nq::DESC_TX
-            && (nq::FRAME_MIN..=nq::FRAME_MAX).contains(&frame.len())
-            && frame[6..12] == mac;
+        let (desc, frame) = tx_frame(&buf, info.len, mac);
         let stamp = taken::stamp_now();
-        let ok = shaped && azos_net::nic_queue_send(ifindex, frame);
+        let ok = frame.is_some_and(|f| azos_net::nic_queue_send(ifindex, f));
         sent += ok as i64;
         if desc.flags & nq::TX_STAMP != 0 {
             let done = Desc {
@@ -358,7 +397,7 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
             };
             let mut t = ATTACHED.lock();
             if let Some(a) = t[i].0.as_mut().filter(|a| a.gen == gen) {
-                gone |= push_rx(a, done, &[], stamp).is_err();
+                gone |= a.rx.push(done, &[], stamp).is_err();
             }
         }
         if gone {
@@ -369,7 +408,7 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
         let mut t = ATTACHED.lock();
         t[i].0.as_mut().filter(|a| a.gen == gen).and_then(|a| {
             a.draining = false;
-            core::mem::take(&mut a.rx_wake).then_some(a.rx.region)
+            a.rx.take_wake()
         })
     };
     if gone {

@@ -10702,6 +10702,10 @@ host_job host_canary_row "envelope: truncate canary" fs-tests envelope-delete-ca
 host_job host_canary_row "envelope: snapshot drop canary" fs-tests envelope-delete-canary a_refused_snapshot_drop_leaves_the_snapshot
 host_job host_canary_row "envelope: egress canary" net-tests envelope-egress-canary a_sendto_past_the_rows_reach_is_refused_and_nothing_leaves
 host_job host_canary_row "envelope: connect canary" net-tests envelope-egress-canary a_connect_asks_once_for_the_peer_and_a_refused_one_connects_nothing
+# A NIC queue a ring-3 program took (crates/net/net/src/nic_queue.rs): the
+# canary makes the receive pass ignore the take, and the named test, alone,
+# must go red (the stack would get the queue's frames).
+host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-canary a_taken_queue_goes_to_the_sink_and_the_stack_sees_none_of_it
 host_job host_canary_row "envelope: delete row canary" actuation-tests envelope-row-canary a_contained_delete_row_refuses_every_delete_with_a_receipt
 host_job host_canary_row "envelope: egress row canary" actuation-tests envelope-row-canary an_egress_row_holds_a_domain_to_the_classes_its_level_reaches
 # The config, ota and rt_time kinds of the same gate (Documentation/effects.md,

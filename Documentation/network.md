@@ -556,6 +556,12 @@ shape (Kconfig `NET_NIC_QUEUES`):
   the attach, not at the seed: a NIC can come and go, and a route can change.
 - **The attachment ends** with `DEVICE_NICQ_DETACH`, the owner's exit, or a
   ring's region going away, and the queue goes back to the stack.
+- **Who uses it.** The PTP daemon (`PTPD.ELF`, Kconfig `PTPD_NIC_QUEUE`):
+  IEEE 1588 over Ethernet (Annex F, EtherType 0x88F7) on the queue, every
+  timestamp the queue's instead of a clock read after a socket poll. It falls
+  back to UDP when the kernel keeps the queue. What one frame costs on the
+  rings against the socket path is measured at boot by the
+  `nicq-cost-probe` kernel feature (`kernel/src/smokes/nicq_cost.rs`).
 
 ## TLS and QUIC in ring 3
 

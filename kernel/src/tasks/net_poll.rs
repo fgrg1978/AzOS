@@ -49,6 +49,8 @@ use crate::*;
 #[cfg(feature = "net")]
 pub(crate) fn net_poll_task(_: usize) {
     kprintln!("[NET-POLL] Phase U1: dedicated network polling task started");
+    #[cfg(feature = "nicq-cost-probe")]
+    crate::smokes::nicq_cost_probe();
 
     // Requested poll period: 1 ms — **a floor, not a rate.**
     //

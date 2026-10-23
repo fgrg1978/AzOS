@@ -477,6 +477,7 @@ mod checksum_sum {
 mod rx_owner;
 
 /// The interfaces whose NIC queue a ring-3 program took (`ty::NIC_QUEUE`).
+#[allow(dead_code)]
 #[path = "../../../../crates/net/net/src/nic_queue.rs"]
 mod nic_queue;
 #[cfg(test)]

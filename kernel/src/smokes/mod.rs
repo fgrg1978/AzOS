@@ -20,6 +20,10 @@ pub(crate) mod cpuid_probe;
 mod trace_cost;
 #[cfg(feature = "trace-cost-probe")]
 pub(crate) use trace_cost::*;
+#[cfg(feature = "nicq-cost-probe")]
+mod nicq_cost;
+#[cfg(feature = "nicq-cost-probe")]
+pub(crate) use nicq_cost::*;
 #[cfg(all(target_arch = "aarch64", feature = "boot-selftests"))]
 mod aarch64_sched;
 #[cfg(all(target_arch = "aarch64", feature = "boot-selftests"))]

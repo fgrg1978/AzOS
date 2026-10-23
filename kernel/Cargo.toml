@@ -1005,6 +1005,10 @@ trace-cap-canary = ["azos_topology/trace-cap-canary"]
 # Wave 15 diagnostic: `[TRACE-COST]`, the tracepoint's masked, recording and
 # full-ring cost measured at boot (kernel/src/smokes/trace_cost.rs). Never shipped.
 trace-cost-probe = []
+# What one frame costs on a NIC queue's rings against the socket path, both
+# directions, measured at boot in the net-poll task (kernel/src/smokes/nicq_cost.rs).
+# Never shipped.
+nicq-cost-probe = []
 # Wave 15 gate canary: the static-key patcher writes through the executable
 # text mapping; the boot must die on a store fault at that address
 # (`trace: static-key W^X canary`).
