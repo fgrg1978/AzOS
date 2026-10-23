@@ -1513,6 +1513,46 @@ mod tests {
         assert_eq!((info.mem_base, info.mem_size), (0, 0x3c00_0000), "QEMU's /memory: RAM at 0, VC RAM out");
     }
 
+    /// The Raspberry Pi 5 tree (fixtures/rpi5-bcm2712.dts, written from
+    /// recollection of Linux's bcm2712 sources: the arithmetic, not the
+    /// board's map). The console is `uart10` through an alias with options
+    /// (`serial10:115200n8`), its `reg` under `soc`'s one-cell children and
+    /// two-cell parent: the CPU's 0x10_7d00_1000, past 64 GiB. Canary: drop
+    /// the `soc` ranges translation and the base reads 0x7d00_1000, inside a
+    /// Pi 5's RAM.
+    #[test]
+    fn rpi5_stdout_is_the_debug_pl011_far_above_ram() {
+        let b = fixture(include_bytes!("../fixtures/rpi5-bcm2712.dtb"));
+        assert_eq!(stdout_device(&b), Some((b"arm,pl011".to_vec(), 0x10_7d00_1000)));
+        let info = unsafe { dtb_parse(b.as_ptr()) }.expect("rpi5 blob parses");
+        // The first /memory range only: the RAM above 1 GiB (the firmware's
+        // second range) is not used yet.
+        assert_eq!((info.mem_base, info.mem_size), (0, 0x3fc0_0000));
+        assert_eq!(info.num_cpus, 4);
+    }
+
+    /// The Pi 5 blocks the boot drives from the tree, at their CPU addresses:
+    /// the GIC-400's distributor and CPU interface (`reg` 0 and 1), the
+    /// VideoCore mailbox, the PM block, and the PCIe controllers, the one
+    /// marked `disabled` left out.
+    #[test]
+    fn rpi5_devices_are_at_their_cpu_addresses() {
+        let b = fixture(include_bytes!("../fixtures/rpi5-bcm2712.dtb"));
+        let mut seen = Vec::new();
+        let _ = unsafe {
+            azos_dtb::dtb_devices(b.as_ptr(), &mut |d: &azos_dtb::DtDevice<'_>| {
+                let c = d.compatible.split(|&c| c == 0).next().unwrap().to_vec();
+                seen.push((c, d.base, d.size, d.reg2));
+            })
+        };
+        let find = |c: &[u8]| seen.iter().filter(|s| s.0 == c).map(|s| (s.1, s.2, s.3)).collect::<Vec<_>>();
+        assert_eq!(find(b"arm,gic-400"), [(0x10_7fff_9000, 0x1000, Some((0x10_7fff_a000, 0x2000)))]);
+        assert_eq!(find(b"brcm,bcm2835-mbox"), [(0x10_7c01_3880, 0x40, None)]);
+        assert_eq!(find(b"brcm,bcm2712-pm"), [(0x10_7d20_0000, 0x604, None)]);
+        let pcie: Vec<u64> = find(b"brcm,bcm2712-pcie").iter().map(|p| p.0).collect();
+        assert_eq!(pcie, [0x10_0011_0000, 0x10_0012_0000], "pcie0 is disabled");
+    }
+
     fn cells(v: &[u32]) -> Vec<u8> { v.iter().flat_map(|c| c.to_be_bytes()).collect() }
 
     /// The Raspberry Pi 3 B tree starts its four Cortex-A53s through a spin

@@ -45,3 +45,12 @@ path = "tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb"
 precedence = "override"
 SPDX-FileCopyrightText = "The Linux kernel device-tree authors (bcm283x/bcm2837 .dts/.dtsi)"
 SPDX-License-Identifier = "GPL-2.0-only"
+
+# A trimmed Raspberry Pi 5 device tree written from recollection of Linux's
+# arch/arm64/boot/dts/broadcom/bcm2712.dtsi and bcm2712-rpi-5-b.dts, and its
+# dtc output. Derived from GPL-2.0-only sources, so it is GPL-2.0-only too.
+[[annotations]]
+path = ["tests/host/dtb-tests/fixtures/rpi5-bcm2712.dts", "tests/host/dtb-tests/fixtures/rpi5-bcm2712.dtb"]
+precedence = "override"
+SPDX-FileCopyrightText = "The Linux kernel device-tree authors (bcm2712 .dts/.dtsi)"
+SPDX-License-Identifier = "GPL-2.0-only"

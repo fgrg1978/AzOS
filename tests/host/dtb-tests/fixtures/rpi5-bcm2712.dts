@@ -1,0 +1,212 @@
+// A Raspberry Pi 5 Model B device tree, trimmed to what the kernel reads at
+// boot, WRITTEN FROM RECOLLECTION of Linux's
+// arch/arm64/boot/dts/broadcom/bcm2712.dtsi and bcm2712-rpi-5-b.dts (no copy
+// of either was at hand). /memory is what the firmware patches in for an
+// 8 GiB board. Every address and property here is to be confirmed against
+// the DTB the firmware hands the kernel on the board; the host tests built
+// on it prove the parser's arithmetic, not the board's map.
+//
+// Compile: dtc -I dts -O dtb -o rpi5-bcm2712.dtb rpi5-bcm2712.dts
+/dts-v1/;
+
+/ {
+	compatible = "raspberrypi,5-model-b", "brcm,bcm2712";
+	model = "Raspberry Pi 5 Model B Rev 1.0";
+	#address-cells = <2>;
+	#size-cells = <2>;
+	interrupt-parent = <&gicv2>;
+
+	aliases {
+		serial10 = "/soc@107c000000/serial@7d001000";
+	};
+
+	chosen {
+		stdout-path = "serial10:115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0x3fc00000>,
+		      <0x0 0x40000000 0x1 0xc0000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		atf@0 {
+			reg = <0x0 0x0 0x0 0x80000>;
+			no-map;
+		};
+	};
+
+	clocks {
+		clk_osc: clk-osc {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-output-names = "osc";
+			clock-frequency = <54000000>;
+		};
+		clk_vpu: clk-vpu {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <750000000>;
+			clock-output-names = "vpu-clock";
+		};
+		clk_uart: clk-uart {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <9216000>;
+			clock-output-names = "uart-clock";
+		};
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a76";
+			reg = <0x000>;
+			enable-method = "psci";
+		};
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a76";
+			reg = <0x100>;
+			enable-method = "psci";
+		};
+		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a76";
+			reg = <0x200>;
+			enable-method = "psci";
+		};
+		cpu3: cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a76";
+			reg = <0x300>;
+			enable-method = "psci";
+		};
+	};
+
+	psci {
+		compatible = "arm,psci-1.0", "arm,psci-0.2";
+		method = "smc";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <1 13 0xf08>, <1 14 0xf08>, <1 11 0xf08>, <1 10 0xf08>, <1 12 0xf08>;
+	};
+
+	firmware {
+		compatible = "raspberrypi,bcm2835-firmware", "simple-mfd";
+		mboxes = <&mailbox>;
+	};
+
+	soc: soc@107c000000 {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x7c000000 0x10 0x7c000000 0x04000000>;
+		/* Emulate a contiguous 30-bit address range for DMA */
+		dma-ranges = <0xc0000000 0x00 0x00000000 0x40000000>,
+			     <0x7c000000 0x10 0x7c000000 0x04000000>;
+
+		mailbox: mailbox@7c013880 {
+			compatible = "brcm,bcm2835-mbox";
+			reg = <0x7c013880 0x40>;
+			interrupts = <0 33 4>;
+			#mbox-cells = <0>;
+		};
+
+		uart10: serial@7d001000 {
+			compatible = "arm,pl011", "arm,primecell";
+			reg = <0x7d001000 0x200>;
+			interrupts = <0 121 4>;
+			clocks = <&clk_uart>, <&clk_vpu>;
+			clock-names = "uartclk", "apb_pclk";
+			arm,primecell-periphid = <0x00241011>;
+		};
+
+		pm: watchdog@7d200000 {
+			compatible = "brcm,bcm2712-pm";
+			reg = <0x7d200000 0x604>;
+			reg-names = "pm";
+			#power-domain-cells = <1>;
+			#reset-cells = <1>;
+			clocks = <&clk_vpu>;
+			system-power-controller;
+		};
+
+		gicv2: interrupt-controller@7fff9000 {
+			compatible = "arm,gic-400";
+			reg = <0x7fff9000 0x1000>,
+			      <0x7fffa000 0x2000>,
+			      <0x7fffc000 0x2000>,
+			      <0x7fffe000 0x2000>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+			interrupts = <1 9 0xf04>;
+		};
+	};
+
+	axi: axi {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		dma-ranges;
+
+		pcie0: pcie@1000100000 {
+			compatible = "brcm,bcm2712-pcie";
+			reg = <0x10 0x00100000 0x0 0x9310>;
+			device_type = "pci";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			linux,pci-domain = <0>;
+			ranges = <0x02000000 0x00 0x00000000 0x17 0x00000000 0x0 0xfffffffc>;
+			status = "disabled";
+		};
+
+		pcie1: pcie@1000110000 {
+			compatible = "brcm,bcm2712-pcie";
+			reg = <0x10 0x00110000 0x0 0x9310>;
+			device_type = "pci";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			linux,pci-domain = <1>;
+			ranges = <0x02000000 0x00 0x00000000 0x1b 0x00000000 0x0 0xfffffffc>,
+				 <0x43000000 0x04 0x00000000 0x18 0x00000000 0x3 0x00000000>;
+			dma-ranges = <0x02000000 0x10 0x00000000 0x00 0x00000000 0x10 0x00000000>;
+		};
+
+		pcie2: pcie@1000120000 {
+			compatible = "brcm,bcm2712-pcie";
+			reg = <0x10 0x00120000 0x0 0x9310>;
+			device_type = "pci";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			linux,pci-domain = <2>;
+			ranges = <0x02000000 0x00 0x00000000 0x1f 0x00000000 0x0 0xfffffffc>,
+				 <0x43000000 0x04 0x00000000 0x1c 0x00000000 0x3 0x00000000>;
+			dma-ranges = <0x02000000 0x10 0x00000000 0x00 0x00000000 0x10 0x00000000>;
+
+			pci@0,0 {
+				device_type = "pci";
+				reg = <0x0 0x0 0x0 0x0 0x0>;
+				#address-cells = <3>;
+				#size-cells = <2>;
+				ranges;
+
+				rp1: pci-ep-bus@0 {
+					compatible = "pci1de4,1";
+					reg = <0x10000 0x0 0x0 0x0 0x0>;
+				};
+			};
+		};
+	};
+};
