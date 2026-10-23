@@ -113,7 +113,7 @@ fn rt_watchdog_report(action: u8, detail: u32) {
 pub fn rt_motor_task(_: usize) {
     // I-13: arm the transactional checkpoint so a recoverable (misaligned)
     // fault mid-tick restarts here — safe-stop + continue — instead of halting
-    // the kernel. The reset SP is the task's CLEAN stack top (pre-prologue),
+    // the kernel; a restart is reported (console and record) by the arm. The reset SP is the task's CLEAN stack top (pre-prologue),
     // not a mid-function SP, so each restart runs the entry prologue exactly
     // once and the stack does not leak a frame per rollback. Re-runs on every
     // (re)entry; the abort budget (MAX_TXN_RESTARTS) bounds deterministic faults.
@@ -258,6 +258,11 @@ pub fn rt_motor_task(_: usize) {
         if CANARY_PANIC.load(Ordering::Acquire) {
             panic!("rt-panic-canary: deliberate panic in rt-motor (a safety task)");
         }
+
+        // I-13 ktest: the injected recoverable fault, at the same lock-free
+        // point (`txn::txn_try_rollback`'s precondition), restarts the task.
+        #[cfg(feature = "ktest")]
+        crate::txn::txn_take_injected();
 
         // I-13: a completed tick proves forward progress — clear the restart
         // streak so the abort budget only counts consecutive no-progress

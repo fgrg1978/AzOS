@@ -597,15 +597,16 @@ config CONTROL_TXN_TICKS
     bool "Control plane: transactional ticks (rollback recoverable faults)"
     default y
     help
-      A per-hart checkpoint is armed once at the motor control task's
-      entry (on the first 8 harts: the table's MAX_TXN_HARTS; a fault on a
-      later hart takes the fatal path); a recoverable fault
-      (illegal instruction / misaligned load-store) inside the control loop is
-      rolled back — motors safe-stop and the task restarts at its entry —
-      instead of `panic=abort` halting the kernel mid-motion.
+      A checkpoint is armed at the motor control task's entry, for that
+      task only; a recoverable fault of it in kernel mode (riscv64: a
+      misaligned load/store; aarch64: an EL1 Alignment fault; x86_64 has
+      none, ring 0 never raises #AC) is rolled back — motors safe-stop and
+      the task restarts at its entry, which writes a SAFETY_TXN_ROLLBACK
+      record — instead of halting the kernel mid-motion.
 
       y (default) = a recoverable fault in the control loop is survivable
-        (safe-stop + restart; abort counted in TXN_ABORTS).
+        (safe-stop + restart; abort counted in TXN_ABORTS). aarch64 ktest
+        `txn_rolls_back_an_el1_alignment_fault`.
       n = the fault is FATAL (the kernel logs and shuts down). The rollback
         branch is const-eliminated → trap handler byte-identical to legacy.
 

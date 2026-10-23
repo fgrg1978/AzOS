@@ -502,6 +502,12 @@ pub const SAFETY_RELEASE_NONCE: u8 = 0x11;
 /// overwrites the oldest, [`LOG_SERIAL_WRAP`] files back.
 pub const SAFETY_OPERATOR_KEY: u8 = 0x1D;
 
+/// I-13 rolled a recoverable fault of the control task back
+/// (`azos_safety_core::txn`): the motor command was zeroed and the task
+/// restarted at its entry, which writes this record. `action_code` 0,
+/// `detail` the boot's rollback count so far. Not a latch: the loop runs on.
+pub const SAFETY_TXN_ROLLBACK: u8 = 0x1E;
+
 /// Bytes of a release-key fingerprint: what fits a record's payload after the
 /// kind and its three reserved bytes.
 pub const OPERATOR_KEY_FP_BYTES: usize = LOG_PAYLOAD_BYTES - 4;
@@ -1986,15 +1992,22 @@ pub fn commit_effect_record(payload: [u8; LOG_PAYLOAD_BYTES], refusable: bool) -
 
 /// Log a safety violation. Bumps the violation counter.
 pub fn log_safety_violation(violation_code: u8, action_code: u8, detail: u32) {
+    let _ = log_safety_violation_admitted(violation_code, action_code, detail);
+}
+
+/// [`log_safety_violation`], saying whether the ring took the record (never
+/// while the recorder is inactive: no volume).
+pub fn log_safety_violation_admitted(violation_code: u8, action_code: u8, detail: u32) -> bool {
     LOG_SAFETY_COUNT.fetch_add(1, Ordering::Relaxed);
     let mut payload = [0u8; LOG_PAYLOAD_BYTES];
     payload[0] = violation_code;
     payload[1] = action_code;
     payload[4..8].copy_from_slice(&detail.to_le_bytes());
-    if push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, reserve_admit(&payload)).is_none()
-        && LOG_ACTIVE.load(Ordering::Acquire) {
+    let admitted = push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, reserve_admit(&payload)).is_some();
+    if !admitted && LOG_ACTIVE.load(Ordering::Acquire) {
         note_latch_lost(&payload);
     }
+    admitted
 }
 
 /// Record a safety violation AND push it to disk before returning.

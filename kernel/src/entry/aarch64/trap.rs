@@ -58,6 +58,32 @@ impl Drop for LatTrapExit {
     }
 }
 
+// I-13's restart point (`TrapFrame::arch_page_fault`): the trap returns here
+// with the control task's clean stack top in x0 and its entry in x1, at the
+// PSTATE of the fault (EL1h, its interrupt mask). `blr`, not `br`: the entry's
+// BTI landing pad is a `bti c`. The entry never returns.
+#[cfg(feature = "use-robot")]
+core::arch::global_asm!(
+    r#"
+.pushsection .text.aarch64_txn_restart, "ax"
+.p2align 2
+.globl aarch64_txn_restart
+aarch64_txn_restart:
+    mov     sp, x0
+    mov     x0, xzr
+    blr     x1
+    udf     #0
+.size aarch64_txn_restart, . - aarch64_txn_restart
+.popsection
+"#
+);
+
+#[cfg(feature = "use-robot")]
+unsafe extern "C" {
+    /// I-13's restart point (the `global_asm!` above).
+    fn aarch64_txn_restart();
+}
+
 /// The IPC fast path's view of an `svc` frame: `x0..x5` in, `x1..x6` out
 /// (the registers `ArchFrame::write_out` writes).
 pub(crate) struct SvcRegs<'a>(&'a mut TrapFrame);
@@ -334,12 +360,39 @@ impl ArchFrame for TrapFrame {
         (num == PROBE_IRQ_IN_SYSCALL_NR).then(probe_irq_in_syscall)
     }
 
+    /// I-13 (`azos_safety_core::txn`): an EL1 Alignment fault of the armed
+    /// control task restarts it at its entry, as a misaligned load or store
+    /// does on riscv64 (its `arch_exception`). The fault is a data abort, so
+    /// it is decoded here, ahead of the page-fault policy; every other abort,
+    /// and this one when the rollback declines it, keeps that policy.
+    /// Canary `txn-align-route-canary`: the old routing (no decode), so the
+    /// fault is the fatal kernel page fault it used to be.
+    #[cfg(feature = "use-robot")]
+    fn arch_page_fault(&mut self) -> bool {
+        if cfg!(feature = "txn-align-route-canary")
+            || !syndrome_is_live(self)
+            || self.came_from_user()
+            || !azos_arch::sysregs::el1_alignment_fault(self.esr_el1)
+        {
+            return false;
+        }
+        let Some((sp, pc)) = azos_safety_core::txn::txn_try_rollback(true) else {
+            return false;
+        };
+        // The frame holds no EL1 stack pointer to rewrite (it sits on SP_EL1
+        // itself, which `trap_return` pops): the `eret` goes to
+        // `aarch64_txn_restart`, which takes SP from x0 and calls the entry
+        // in x1.
+        self.regs[REG_X0] = sp as u64;
+        self.regs[1] = pc as u64;
+        self.elr_el1 = aarch64_txn_restart as *const () as u64;
+        true
+    }
+
     /// First FP/SIMD instruction from EL0 since this task was switched in: load
     /// its FP state and let the instruction re-execute (IRQs stay masked for the
     /// whole arm). An EC 0x07 from EL1 is a kernel FP use outside the allowed
-    /// save/restore code and stays fatal. I-13's rollback
-    /// (`azos_safety_core::txn`) is not reached from here: an EL1 alignment
-    /// fault is a data abort (`class` sends it to the page-fault path).
+    /// save/restore code and stays fatal.
     fn arch_exception(&mut self) -> Disposition {
         // A stale EC 0x07 (an FIQ after an FP trap) must not load FP state.
         if !syndrome_is_live(self) || (self.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK != EC_FP_ACCESS || !self.came_from_user() {

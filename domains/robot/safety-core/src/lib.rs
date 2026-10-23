@@ -8,7 +8,7 @@
 //!
 //! The kernel stays the composition root. It creates every task (name,
 //! priority, hart), calls the ISR-side functions from its trap handler, calls
-//! `txn::txn_try_rollback` from `handle_exception`, and installs the hook for
+//! `txn::txn_try_rollback` from each ISA's trap entry, and installs the hook for
 //! the one scaffolding call this path makes (the OTA boot-good mark).
 
 pub mod actuation;

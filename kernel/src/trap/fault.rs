@@ -12,8 +12,9 @@
 //!
 //! The ISA keeps only its own special cases ([`FaultServices::arch_page_fault`],
 //! [`FaultServices::arch_exception`]: x86_64's NMI and split-lock, riscv64's
-//! first FP use and transactional rollback, aarch64's FP trap) and the register
-//! dump of its frame ([`Frame::print`]).
+//! first FP use and transactional rollback, aarch64's FP trap and the
+//! transactional rollback of an EL1 Alignment fault, which arrives as a data
+//! abort) and the register dump of its frame ([`Frame::print`]).
 
 use core::fmt;
 

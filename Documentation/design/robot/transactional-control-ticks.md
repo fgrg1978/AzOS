@@ -11,14 +11,24 @@ constraints that make it safe, and which architectures it covers.
 
 Source: `domains/robot/safety-core/src/txn.rs`, `kernel/src/entry/riscv64/trap.rs`, `kernel/src/entry/aarch64/trap.rs`, `kernel/src/entry/x86_64/trap.rs`
 
-The rollback exists on **riscv64 only**. The trap hook, `txn_try_rollback`, is
-compiled for `target_arch = "riscv64"` and has one caller, `arch_exception` in
-`kernel/src/entry/riscv64/trap.rs`. It rewrites a RISC-V `TrapFrame` and has no
-counterpart written against the exception frames of aarch64 or x86_64. On those architectures the control task still arms its
-checkpoint and clears its streak (`txn_arm`, `txn_note_tick_complete` compile
-everywhere), but no trap handler consults it, so a fault in the control loop
-takes the generic fatal path. Giving another architecture the mechanism means a
-rollback hook against its own exception frame.
+The hook, `txn_try_rollback(recoverable) -> Option<(sp, pc)>`, has no ISA code:
+each ISA's trap entry decodes whether the fault is in the whitelist and was
+taken in kernel mode, and writes the returned restart point into its own frame.
+
+* **riscv64**: a misaligned load or store (AMO included) taken in S-mode, in
+  `arch_exception`. The frame's `regs[2]` (sp) and `sepc` are rewritten.
+* **aarch64**: an EL1 Alignment fault (`ESR_EL1.EC` 0x25, DFSC `0b100001`,
+  `azos_arch::sysregs::el1_alignment_fault`). It is a data abort, so it is
+  decoded in `arch_page_fault`, ahead of the page-fault policy; every other
+  abort, and this one when the rollback declines it, keeps that policy. With
+  `SCTLR_EL1.A` clear, an ordinary Normal-memory access never takes it; an
+  exclusive or acquire/release access off its natural alignment, or any Device
+  memory access, does. The frame holds no EL1 stack pointer (it sits on
+  `SP_EL1` itself), so the trap returns to `aarch64_txn_restart`, which loads
+  sp from x0 and calls the entry in x1.
+* **x86_64**: nothing to take. Ring 0 never raises #AC for a misaligned
+  access (it is checked at CPL 3 only), and a kernel split lock already
+  resumes with detection off on that CPU.
 
 The mechanism is part of the robot profile (feature `use-robot`) and is selected
 by Kconfig `CONTROL_TXN_TICKS`, default on. With it off, the rollback branch is
@@ -28,24 +38,26 @@ a compile-time constant `false` and the trap handler is unchanged.
 
 Source: `domains/robot/safety-core/src/txn.rs`, `domains/robot/safety-core/src/rt_motor.rs`, `domains/robot/robot/src/lib.rs`
 
-**Checkpoint.** A per-hart slot holds `armed`, a stack pointer and a program
-counter. `rt_motor_task` arms it at the top of the task, before its loop, with
+**Checkpoint.** One slot holds the armed task's id, a stack pointer and a
+program counter. It belongs to the task, not to a CPU: a fault of any other
+task is never restarted on the control task's stack. `rt_motor_task` arms it at the top of the task, before its loop, with
 `txn_arm(azos_sched::current_task_stack_top(), rt_motor_task as usize)`: the
 task's clean stack top and its own entry address.
 
-**Rollback.** `arch_exception` calls `txn_try_rollback(frame, cause)` first,
-before the generic exception policy. If the cause is whitelisted, the hart's
-checkpoint is armed and the restart budget is not exhausted, the hook:
+**Rollback.** The ISA's trap entry calls `txn_try_rollback` before its generic
+policy. If the fault is whitelisted, was taken by the armed task in kernel mode
+and the restart budget is not exhausted (`txn_rule.rs`), the hook:
 
 1. disarms the slot and counts the restart (`TXN_RESTART_STREAK`, `TXN_ABORTS`);
 2. requests a stop with `motor_cmd_zero()`;
-3. rewrites the saved frame, `regs[2]` (sp) to the checkpoint stack and `sepc`
-   to the task entry;
-4. returns `true`, and the trap returns with `Disposition::Resume`.
+3. returns the checkpoint stack and the task entry, which the trap entry writes
+   into its frame (see Coverage), and the trap returns there.
 
 The task then restarts at its entry. Restarting at a function entry rather than
 mid-tick needs no setjmp/longjmp: the prologue rebuilds the frame and the task
-never returns. The task re-arms on re-entry.
+never returns. The task re-arms on re-entry, and that re-arm reports the
+restart: a `[TXN]` console line and a `SAFETY_TXN_ROLLBACK` record, written
+from task context (the trap writes none).
 
 **Stopping.** `motor_cmd_zero` is one atomic `fetch_max` of a timestamp
 (`MOTOR_ZERO_AT`, in `domains/robot/robot/src/lib.rs`); a command published after it overrides it, and the reader
@@ -60,7 +72,8 @@ outputs: the guarantee is about the command channel, not about the actuator.
 Source: `domains/robot/safety-core/src/txn.rs`
 
 **1. A conservative cause whitelist.** Only misaligned load and misaligned store
-(`TRAP_LOAD_MISALIGNED`, `TRAP_STORE_MISALIGNED`) are recoverable. The
+(riscv64 `TRAP_LOAD_MISALIGNED`, `TRAP_STORE_MISALIGNED`; aarch64 the EL1
+Alignment fault) are recoverable. The
 plausible transient is bad alignment in data coming from outside the loop,
 such as a field of a sensor frame. Illegal instruction is excluded because it
 is almost always a real defect (corrupt code, a bad function pointer) that must

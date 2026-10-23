@@ -39,6 +39,10 @@ mod sysregs;
 mod a64_cfi;
 #[cfg(test)]
 mod pac_keys;
+// aarch64 I-13: the syndrome the trap entry hands to the control-tick
+// rollback (`sysregs::el1_alignment_fault`).
+#[cfg(test)]
+mod esr_align;
 
 // Deep idle (SBI HSM hart_suspend): the parameter decode and the depth ladder.
 #[cfg(test)]

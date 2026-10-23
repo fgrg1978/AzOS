@@ -432,7 +432,7 @@ const EC_SVC64:           u64 = 0x15; // SVC from aarch64 EL0
 const EC_INSTR_ABORT_EL0: u64 = 0x20;
 const EC_INSTR_ABORT_EL1: u64 = 0x21;
 const EC_DATA_ABORT_EL0:  u64 = 0x24;
-const EC_DATA_ABORT_EL1:  u64 = 0x25;
+const EC_DATA_ABORT_EL1:  u64 = azos_arch::sysregs::ESR_EC_DATA_ABORT_CUR;
 
 /// SPSR_EL1.M[3:0] = 0 ⇒ came from EL0 (user).
 const SPSR_M_MASK: u64 = 0xF;

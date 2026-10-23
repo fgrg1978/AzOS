@@ -13826,8 +13826,11 @@ PY
     # +1 shootdown_reaches_a_masked_lock_waiter (a lock's holder shoots a page
     # down while another CPU waits for the lock masked; canary
     # `spin-service-canary`, x86_64 only: the run hangs) -> 122.
+    # +1 txn_rolls_back_an_el1_alignment_fault (aarch64 only: I-13 takes an
+    # EL1 Alignment fault of the control task; canary
+    # `txn-align-route-canary`, a fatal kernel page fault) -> arm 123.
     KTEST_N_RV=122
-    KTEST_N_ARM=122
+    KTEST_N_ARM=123
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).

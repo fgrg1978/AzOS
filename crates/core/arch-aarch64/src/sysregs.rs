@@ -486,6 +486,23 @@ pub const SCTLR_EL1_ATA0: u64 = 1 << 42;
 /// by accident, only inside an explicit [`UserAccess`] window.
 pub const SCTLR_EL1_SPAN: u64 = 1 << 23;
 
+/// `ESR_EL1.EC` of a Data Abort taken without a change in Exception level:
+/// an EL1 access faulted.
+pub const ESR_EC_DATA_ABORT_CUR: u64 = 0x25;
+/// `ESR_EL1.ISS.DFSC` (bits [5:0]) of a Data Abort: Alignment fault.
+pub const ESR_DFSC_ALIGNMENT: u64 = 0b10_0001;
+
+/// Is the live syndrome `esr` an EL1 data access that took an Alignment
+/// fault? With `SCTLR_EL1.A` clear (boot value, `mmu/boot.rs`) a Normal
+/// memory load or store at any address takes none; an exclusive or
+/// acquire/release access off its natural alignment does (`ldxr`, `ldar`,
+/// an LSE atomic across 16 bytes), and so does any Device memory access.
+/// The trap entry sends this fault to I-13's rollback
+/// (`azos_safety_core::txn`); every other abort keeps the page-fault path.
+pub const fn el1_alignment_fault(esr: u64) -> bool {
+    (esr >> 26) & 0x3F == ESR_EC_DATA_ABORT_CUR && esr & 0x3F == ESR_DFSC_ALIGNMENT
+}
+
 /// O3.2 (owner decision, PAN): RAII guard that clears `PSTATE.PAN` for its
 /// lifetime, restoring it on drop. Construct this immediately before the
 /// ONE instruction that dereferences a validated user-space physical-page

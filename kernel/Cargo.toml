@@ -1006,7 +1006,7 @@ switch-census = ["azos_sched/switch-census"]
 x86-limine = []
 # Kconfig KTEST (wave 15): the in-kernel test registry's runner
 # (kernel/src/ktest.rs) and every `ktest!` test. Off: none of it is compiled.
-ktest = ["dep:azos_ktest", "azos_sync/ktest", "azos_sched/ktest", "azos_ipc/ktest", "azos_fs/ktest", "azos_syscall/ktest", "azos_mm/ktest"]
+ktest = ["dep:azos_ktest", "azos_sync/ktest", "azos_sched/ktest", "azos_ipc/ktest", "azos_fs/ktest", "azos_syscall/ktest", "azos_mm/ktest", "azos_safety_core?/ktest"]
 # Kconfig LOCKDEP_Y (wave 15, N1): lockdep-lite in every kernel of the
 # configuration (crates/core/sync/src/lockdep.rs). `ktest` pulls it in too,
 # and Kconfig LOCKDEP_N / LOCKDEP_KTEST then decide whether it checks.
@@ -1201,6 +1201,11 @@ rt-util-admit-canary = ["sched-rt-util", "azos_sched/rt-admit-canary"]
 # control loops keep their period; otherwise it takes the reset path. See
 # kernel/src/smokes/rt_panic_smoke.rs.
 rt-panic-canary = ["qemu", "use-robot"]
+# I-13 canary (aarch64): the trap entry routes an EL1 Alignment fault the old
+# way, to the page-fault policy, never to the rollback: the control task's
+# injected fault in ktest `txn_rolls_back_an_el1_alignment_fault` is then the
+# fatal kernel page fault (`[FATAL] ... kernel page fault`, no TAP summary).
+txn-align-route-canary = ["use-robot"]
 # The same panic with a SpinLock held: must take the reset path under either
 # policy (the containment predicate's depth check).
 rt-panic-canary-spin = ["rt-panic-canary"]
