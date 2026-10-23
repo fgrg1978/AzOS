@@ -73,14 +73,11 @@ struct State {
     /// How many times each page has been handed to `free_page`. Anything
     /// other than 0 or 1 at the end of a test is a double free.
     frees: [u32; SHIM_PAGES],
-    /// The reverse map (`FrameDesc::owner`, `owner_idx`) of each page.
-    owner: [(u32, u32); SHIM_PAGES],
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     used: [false; SHIM_PAGES],
     frees: [0; SHIM_PAGES],
-    owner: [(0, 0); SHIM_PAGES],
 });
 
 fn base() -> usize {
@@ -160,42 +157,9 @@ pub mod pmm {
             None => return Err(()),
         };
         let mut s = state();
-        // The invariant `memobj.rs` keeps: a frame is cleared of its holder
-        // before it goes back to the allocator.
-        assert_eq!(s.owner[i].0, 0, "a frame was freed while it still names its holder object");
         s.frees[i] += 1;
         s.used[i] = false;
         Ok(())
-    }
-
-    /// `pmm::frame_owner`: the holder object and page index of a pool frame.
-    pub fn frame_owner(phys: usize) -> Option<(u32, u32)> {
-        let i = index_of(phys)?;
-        let o = state().owner[i];
-        if o.0 == 0 { None } else { Some(o) }
-    }
-
-    /// `pmm::set_frame_owner`: `false` for a frame outside the pool or free.
-    pub fn set_frame_owner(phys: usize, owner: u32, idx: u32) -> bool {
-        let Some(i) = index_of(phys) else { return false };
-        let mut s = state();
-        if owner == 0 || !s.used[i] {
-            return false;
-        }
-        s.owner[i] = (owner, idx);
-        true
-    }
-
-    /// `pmm::clear_frame_owner_if`.
-    pub fn clear_frame_owner_if(phys: usize, owner: u32) -> bool {
-        let Some(i) = index_of(phys) else { return false };
-        let mut s = state();
-        if s.owner[i].0 == owner && owner != 0 {
-            s.owner[i] = (0, 0);
-            true
-        } else {
-            false
-        }
     }
 
     pub fn free_pages() -> usize {
@@ -308,7 +272,6 @@ pub fn shim_reset() {
     let mut s = state();
     s.used = [false; SHIM_PAGES];
     s.frees = [0; SHIM_PAGES];
-    s.owner = [(0, 0); SHIM_PAGES];
 }
 
 /// How many times the page at `addr` has been freed. 0 = still held,

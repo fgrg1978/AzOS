@@ -460,8 +460,6 @@ mod buddy_tests;
 #[cfg(test)]
 mod zone_tests;
 #[cfg(test)]
-mod rmap;
-#[cfg(test)]
 mod ro_hooks;
 
 /// The W^X boundary rule (`crates/core/mm/src/wx.rs`).

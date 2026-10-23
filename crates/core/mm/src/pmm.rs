@@ -152,28 +152,6 @@ pub fn set_frame_modifier(phys: usize, bit: u32, on: bool) -> bool {
     }
 }
 
-/// The object that holds the frame at `phys` and the frame's page index in it
-/// (`FrameDesc::owner`, the reverse map), or `None` for a frame no object holds
-/// or one that is not managed.
-pub fn frame_owner(phys: usize) -> Option<(u32, u32)> {
-    desc_of(phys).and_then(|d| d.owner())
-}
-
-/// Record that object `owner` (non-zero) holds the frame at `phys` as its page
-/// `idx`. `false` when the frame is not managed or not allocated.
-pub fn set_frame_owner(phys: usize, owner: u32, idx: u32) -> bool {
-    let Some(d) = desc_of(phys) else { return false };
-    if owner == 0 || d.state() & F_ALLOCATED == 0 { return false; }
-    d.set_owner(owner, idx);
-    true
-}
-
-/// Forget the holder of the frame at `phys` if it is `owner`: call it before
-/// the frame goes back to the allocator. `true` when the record was `owner`'s.
-pub fn clear_frame_owner_if(phys: usize, owner: u32) -> bool {
-    desc_of(phys).is_some_and(|d| d.clear_owner_if(owner))
-}
-
 /// Initialize the PMM.
 ///
 /// `mem_start`: physical start of RAM (e.g., 0x8000_0000).

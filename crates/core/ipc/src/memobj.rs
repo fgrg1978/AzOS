@@ -861,14 +861,6 @@ fn claim_slot_cow(
         region.cow_shared = cow_shared;
         region.paged = paged;
         region.ident = LAYOUT.pack(slot as u32, gen);
-        // The reverse map: each frame this object allocated names it. A frame
-        // another object shares (a COW clone) keeps naming its allocator. A
-        // Paged object has no frame yet (`0`): each names it when it is filled.
-        for (idx, &p) in pages.iter().enumerate() {
-            if p != 0 && cow_shared & (1u64 << idx) == 0 {
-                let _ = azos_mm::pmm::set_frame_owner(p, region.ident, idx as u32);
-            }
-        }
         // The creator's initial reference is booked against *it*, so its own
         // later `memobj_release` is the only thing that can give it back.
         region.holders[0] = MemHolder { tid: owner_task, refs: 1, ..MemHolder::empty() };
@@ -1473,8 +1465,6 @@ fn release_frame(region: &mut MemObj, i: usize) {
     if p == 0 {
         return;
     }
-    // Before the frame can be freed or reissued: a free frame names no object.
-    let _ = azos_mm::pmm::clear_frame_owner_if(p, region.ident);
     let shared = region.cow_shared & (1u64 << i) != 0;
     if !shared || azos_mm::cow::page_decref(p) {
         let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(p));
@@ -1766,11 +1756,6 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     // the two objects write the same bytes.
     if !cfg!(feature = "memobj-cow-no-break-canary") {
         o.phys_pages[page] = fresh.as_usize();
-        // The reverse map follows the page: the new frame names this object,
-        // and the shared one stops naming it (it goes on naming its allocator
-        // when that is another object).
-        let _ = azos_mm::pmm::clear_frame_owner_if(old, o.ident);
-        let _ = azos_mm::pmm::set_frame_owner(fresh.as_usize(), o.ident, page as u32);
     }
     o.cow_shared &= !(1u64 << page);
     drop(regions);
@@ -2542,8 +2527,7 @@ pub fn anon_release_range(root: usize, start: usize, end: usize) -> u32 {
 //   that needs it is three phases, as `memobj_cow_break` is: look under the
 //   table lock, do the I/O, take the lock again and re-check the object (the
 //   packed reference still live, the page still as it was) before installing;
-// * a frame is installed only into an empty slot and names the object at once
-//   (`set_frame_owner`), the reverse map every other kind has;
+// * a frame is installed only into an empty slot;
 // * the page being written back is pinned by the `flushing` bit, which every
 //   path that frees or rewrites a frame honours.
 
@@ -2659,7 +2643,7 @@ pub fn memobj_create_paged(
 /// if the slot is still empty (a racing fill that won keeps its frame, this
 /// one's goes back).
 fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
-    let (backing, key, off, size, ident) = {
+    let (backing, key, off, size) = {
         let regions = MEMOBJS.lock_irqsave();
         let i = paged_slot(&regions, r)?;
         let o = &regions[i];
@@ -2670,7 +2654,7 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
             return Ok(());
         }
         let st = o.paged.as_ref().ok_or(MemObjError::BadArg)?;
-        (st.backing, st.key, paged_file_off(st, idx), st.size, o.ident)
+        (st.backing, st.key, paged_file_off(st, idx), st.size)
     };
     let frame = azos_mm::pmm::alloc_page().map_err(|_| MemObjError::NoMem)?;
     // SAFETY: allocated just above and published nowhere yet.
@@ -2683,7 +2667,6 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
     match paged_slot(&regions, r) {
         Ok(i) if regions[i].phys_pages[idx] == 0 => {
             regions[i].phys_pages[idx] = frame.as_usize();
-            let _ = azos_mm::pmm::set_frame_owner(frame.as_usize(), ident, idx as u32);
             Ok(())
         }
         other => {
@@ -4827,16 +4810,12 @@ mod tests {
         release_all_holders(&tids, r);
     }
 
-    /// **A COW clone shares frames and the reverse map follows the rule: the
-    /// object that allocated a frame names it until it lets go.** The clone's
-    /// shared pages are still the source's; a source that goes first leaves them
-    /// nameless (the clone still holds them); the clone's break gives it frames
-    /// of its own that name the clone, and its old shared frame stops naming
-    /// the clone's source only when the source is the one releasing. The shim's
-    /// `free_page` refuses a frame that still names an object, so every release
-    /// below also checks the clearing.
+    /// **A COW clone shares frames until the break, and the last sharer frees
+    /// them.** The clone's break gives it a frame of its own; a source that goes
+    /// first leaves the clone's shared page alive; the clone's last release
+    /// frees what it holds.
     #[test]
-    fn a_cow_clone_leaves_the_frames_naming_their_allocator_until_the_break() {
+    fn a_cow_clone_shares_frames_until_the_break_and_the_last_release_frees_them() {
         let _g = setup();
         let _h = Hooks::install();
         azos_sched::shim_set_current(A, 0x1000);
@@ -4845,25 +4824,18 @@ mod tests {
         let shared: Vec<usize> = (0..2).map(|i| memobj_page_phys_ref(src, i).unwrap().unwrap()).collect();
         let clone = memobj_clone(A, src, B, MemPerms::ReadWrite).expect("clone");
         assert_eq!(memobj_page_phys_ref(clone, 0), Ok(Some(shared[0])), "the clone shares the frame");
-        for (i, &p) in shared.iter().enumerate() {
-            assert_eq!(azos_mm::pmm::frame_owner(p), Some((src, i as u32)), "still the allocator's");
-        }
-        // The clone breaks page 0: a frame of its own, naming the clone.
+        // The clone breaks page 0: a frame of its own.
         assert_eq!(memobj_cow_break(clone, 0), Ok(()));
         let own = memobj_page_phys_ref(clone, 0).unwrap().unwrap();
         assert_ne!(own, shared[0]);
-        assert_eq!(azos_mm::pmm::frame_owner(own), Some((clone, 0)));
-        assert_eq!(azos_mm::pmm::frame_owner(shared[0]), Some((src, 0)), "the source's frame is the source's");
         // The source lets go while the clone still shares page 1: the frame
-        // lives on, nameless.
+        // lives on.
         release_all_holders(&[A], src);
         assert_eq!(memobj_info(LAYOUT.idx(src)), None);
-        assert_eq!(azos_mm::pmm::frame_owner(shared[1]), None);
         assert_eq!(azos_mm::shim_free_count(shared[1]), 0, "still held by the clone");
         assert_eq!(azos_mm::shim_free_count(shared[0]), 1, "page 0 had one sharer left: the source");
-        // The clone's last release frees what it holds, clearing first.
+        // The clone's last release frees what it holds.
         release_all_holders(&[B], clone);
-        assert_eq!(azos_mm::pmm::frame_owner(own), None);
         assert_eq!(azos_mm::shim_pages_in_use(), 0);
     }
 
@@ -4984,7 +4956,6 @@ mod tests {
         assert_eq!(memobj_paged_read_ref(r, 10, &mut buf[..20]), Ok(20));
         memobj_paged_frame_ref(r, 1, false).expect("a hit");
         assert_eq!(f.reads.load(Ordering::SeqCst), 3, "a hit read the file again");
-        assert_eq!(azos_mm::pmm::frame_owner(memobj_page_phys_ref(r, 1).unwrap().unwrap()), Some((r, 1)), "the frame names the object");
 
         let mut tail = [0u8; 50];
         assert_eq!(memobj_paged_read_ref(r, 2 * page + 90, &mut tail), Ok(10), "the file ends there");
@@ -5071,12 +5042,10 @@ mod tests {
         assert_eq!(memobj_paged_read_ref(r, 0, &mut b), Ok(4));
         assert_eq!(memobj_paged_read_ref(r, page, &mut b), Ok(4));
         assert_eq!(memobj_paged_write_ref(r, page + 8, &[0x55]), Ok((1, 1)));
-        let p0 = memobj_page_phys_ref(r, 0).unwrap().unwrap();
         assert_eq!(azos_mm::shim_pages_in_use(), 2);
 
         assert_eq!(memobj_paged_drop_clean(8), 1, "dropped a dirty page");
         assert_eq!(azos_mm::shim_pages_in_use(), 1, "the clean frame went back to the allocator");
-        assert_eq!(azos_mm::pmm::frame_owner(p0), None);
         assert_eq!(memobj_paged_info_ref(r).unwrap().resident, 0b010);
         assert_eq!(memobj_paged_drop_clean(8), 0, "the dirty page stays");
 
@@ -5158,7 +5127,6 @@ mod tests {
         assert_eq!(unmaps(), vec![(ROOT_A, VA + page, 1)], "the rmap unmapped the page from the holder's space");
         assert_eq!(memobj_page_phys_ref(r, 1), Ok(None));
         assert_eq!(memobj_resolve_mapped(A, VA + page), None, "the mapping names no word of a page that is out");
-        assert_eq!(azos_mm::pmm::frame_owner(p1), None);
         assert_eq!(f.data.lock().unwrap()[base + page], 0x77, "and the file has the write");
 
         // Filled again, still mapped: the same page, from the file.

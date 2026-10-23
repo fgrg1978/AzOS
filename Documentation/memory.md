@@ -43,7 +43,6 @@ marks it reserved. Colour and memory node are not stored: colour is
 | `order` | On the head frame of a free block, the block's order; `NOT_HEAD` otherwise. |
 | `next`, `prev` | Free-list (and per-hart cache) links, as table indexes. |
 | `zone` | The type zone the frame belongs to (`0` = none). |
-| `owner`, `owner_idx` | Reverse map: the object that holds the frame and the frame's page index in it. Opaque to `frame.rs`. |
 
 | State bit | Meaning |
 |-----------|---------|
@@ -154,31 +153,22 @@ Source: `crates/core/ipc/src/memobj.rs`.
 
 ## Object rmap
 
-A revoke, a page drop, or a purge needs every mapping of a frame without
-scanning page tables. Two pieces make that possible:
-
-* **Frame to object.** `FrameDesc::owner` and `owner_idx` name the holder
-  object (its packed `(index, generation)` reference, which goes stale on its
-  own when the slot is reused) and the frame's page index in it.
-  `pmm::set_frame_owner`, `pmm::frame_owner` and `pmm::clear_frame_owner_if`
-  are the accessors. The writer holds the object's lock; the field is cleared
-  before the frame goes back to the allocator, so a free frame never names an
-  object.
-* **Object to mappings.** The object's holder table doubles as its mapping
-  list: each `MemHolder` records at most one mapping (page-table root, virtual
-  address, page count, writable or not). `MAX_MEMOBJ_HOLDERS` bounds the list.
+A revoke, a page drop, or a purge needs every mapping of an object's frame without
+scanning page tables. The object's holder table doubles as its mapping list:
+each `MemHolder` records at most one mapping (page-table root, virtual address,
+page count, writable or not). `MAX_MEMOBJ_HOLDERS` bounds the list.
 
 `memobj_warrant_swept`, `memobj_paged_drop_clean` and `memobj_purge_volatile`
-are the readers of the second piece: they walk the object's holder list, and remove the one PTE (a
-page drop) or the whole recorded mapping (a revoke, a purge) each mapping has. The
-mapping records of a page drop stay; a later touch of the hole is the pager's
-to resolve. A revoke clears the record and leaves the window to its task to
-give back. A `pinned` holder (a failed map may have left a PTE no record
-names) keeps its pinned reference through a revoke and refuses a page drop.
+are its readers: they walk the object's holder list, and remove the one PTE (a page drop) or the whole
+recorded mapping (a revoke, a purge) each mapping has. The mapping records of a page
+drop stay; a later touch of the hole is the pager's to resolve. A revoke clears
+the record and leaves the window to its task to give back. A `pinned` holder (a
+failed map may have left a PTE no record names) keeps its pinned reference
+through a revoke and refuses a page drop.
 
-No kernel path reads the frame-to-object half: the object table keeps it
-(create, copy-on-write break, page-cache fill) and the host tests check it.
-It is the entry that finds a frame's mappings starting from the frame.
+There is no frame-to-object half: no reader needs to go from a frame to the
+object that holds it (the anonymous reclaimer walks page tables, the page
+cache's walks its objects).
 
 The same `refcount` field is the copy-on-write share count used by
 `cow::fork_cow`, `page_addref` and `page_decref` (`crates/core/mm/src/cow.rs`,

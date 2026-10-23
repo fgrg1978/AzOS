@@ -19,19 +19,10 @@
 //! | `order`    | on the head of a free block, the block's order                |
 //! | `next/prev`| free-list (and per-hart cache) links, as table indexes        |
 //! | `zone`     | the type zone the frame belongs to (`zone.rs`); `0` = none    |
-//! | `owner`    | the object that holds the frame (opaque to this file); `0` = none |
-//! | `owner_idx`| the frame's page index inside that object                     |
 //!
-//! `owner` and `owner_idx` are the reverse map: from a frame to the one object
-//! that holds it and the place it has there, so that whoever needs every
-//! mapping of a frame (a reclaimer, a revoke of one page) asks the object
-//! instead of scanning page tables. This file does not interpret the value: the
-//! memory-object table (`ipc/src/memobj.rs`) writes its packed
-//! `(index, generation)` reference, which goes stale on its own when the object
-//! is freed. A frame two objects share (a COW clone) names the object that
-//! allocated it until that object lets go of it; the other sharer's mapping is
-//! found through the sharer's own list. The writers clear the field before the
-//! frame goes back to the allocator, so a free frame never names an object.
+//! There is **no owner field**: nothing goes from a frame to the object that
+//! holds it (a revoke or a page drop walks the object's own mapping list,
+//! `ipc/src/memobj.rs`; the anonymous reclaimer walks page tables).
 //!
 //! There is **no colour and no node field**: the cache colour of a frame is
 //! `pfn & (colours - 1)` and its memory node is a function of its address
@@ -40,8 +31,8 @@
 //!
 //! # Cost
 //!
-//! 32 B per frame (eight words, exactly the alignment; the owner pair filled
-//! the two words the padding left, so the reverse map costs no RAM): 0.78 % of
+//! 32 B per frame (six words of fields, padded to the 32-byte alignment, so
+//! two descriptors share a 64-byte line and none straddles one): 0.78 % of
 //! RAM at 4 KiB frames. The array lives in RAM, just above the kernel image
 //! (`pmm::init`), and is itself reserved. There is no Domain field: nothing
 //! reads a frame's Domain, and the Domain's budget counts pages.
@@ -113,10 +104,6 @@ pub struct FrameDesc {
     /// `zone::Zone` tag: set when a zoned allocation first takes the frame,
     /// never cleared (a tagged frame is never given back to the buddy lists).
     pub(crate) zone: AtomicU32,
-    /// Reverse map: the holder object's reference (opaque here, `0` = none).
-    pub(crate) owner: AtomicU32,
-    /// Reverse map: the frame's page index inside its holder object.
-    pub(crate) owner_idx: AtomicU32,
 }
 
 const _: () = assert!(core::mem::size_of::<FrameDesc>() == 32);
@@ -132,8 +119,6 @@ impl FrameDesc {
             next: AtomicU32::new(NIL),
             prev: AtomicU32::new(NIL),
             zone: AtomicU32::new(0),
-            owner: AtomicU32::new(0),
-            owner_idx: AtomicU32::new(0),
         }
     }
     /// The state bits.
@@ -142,36 +127,6 @@ impl FrameDesc {
     /// The COW share count; `0` is untracked.
     #[inline(always)]
     pub fn refcount(&self) -> u32 { self.refcount.load(Ordering::Relaxed) }
-
-    /// The holder object and the page index in it, or `None` for a frame no
-    /// object holds.
-    #[inline(always)]
-    pub fn owner(&self) -> Option<(u32, u32)> {
-        // The index is written first and the owner last (`set_owner`), so a
-        // non-zero owner read here has its index in place.
-        match self.owner.load(Ordering::Acquire) {
-            0 => None,
-            o => Some((o, self.owner_idx.load(Ordering::Relaxed))),
-        }
-    }
-
-    /// Record that object `owner` (non-zero) holds this frame as its page
-    /// `idx`. The caller holds the object's lock, which is what serialises
-    /// the writers of one frame.
-    #[inline(always)]
-    pub fn set_owner(&self, owner: u32, idx: u32) {
-        debug_assert!(owner != 0);
-        self.owner_idx.store(idx, Ordering::Relaxed);
-        self.owner.store(owner, Ordering::Release);
-    }
-
-    /// Forget the holder, but only when it is `owner`: the frame is being let
-    /// go of by `owner`, and a frame another object has since taken keeps its
-    /// own record. `true` when the record was `owner`'s and is gone.
-    #[inline(always)]
-    pub fn clear_owner_if(&self, owner: u32) -> bool {
-        self.owner.compare_exchange(owner, 0, Ordering::AcqRel, Ordering::Relaxed).is_ok()
-    }
 }
 
 /// The descriptor array: where it is, which frame number its first entry
