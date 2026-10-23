@@ -10689,6 +10689,11 @@ host_job host_canary_row "hv: vm clock canary" hv-tests canary-clock-per-vcpu \
     a_vcpu_started_after_a_pause_is_told_the_time_the_running_one_was_told
 host_job host_canary_row "perm: vdso mprotect canary (host)" syscall-tests vdso-write-canary \
     mprotect_never_makes_the_vdso_writable
+# A Linux module loads only from the signed build-time digest table: the
+# verdict refuses a name with no row (module_tokens::verdict). The canary
+# admits such a name, as a second root of trust would, and the test must fail.
+host_job host_canary_row "lx: unlisted module canary (host)" syscall-tests module-unlisted-canary \
+    a_ko_outside_the_table_is_refused
 # POSIX pipe (azos_bytepipe): each canary breaks one of the four emulation
 # points, or the recovery of a lock a dying process owned, and requires exactly
 # its test to fail.

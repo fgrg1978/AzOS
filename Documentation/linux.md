@@ -122,6 +122,14 @@ The digest covers the input bytes, not the relocated text. A server that is alre
 
 `LXSRV.ELF` also probes the token rules: a forged token, a range larger than the verified module and a token used twice are each refused. Its test module `LXTEST.KO` is compiled by `make` for both ISAs from this project's own C (`userspace/tests/lxmod/lxtest.c`), with no Linux header.
 
+### Only the build-time table admits a module
+
+A `.ko` loads only if the signed build-time table lists it. There is no second root of trust for module code: no manifest, signing key or runtime list that the kernel consults besides `MODULE_SHA256`. Anonymous memory becomes executable only through `DOMAIN_MODULE_MAP_X`, and `exec` maps only images whose SHA-256 the build computed. The kernel looks the name up exactly (no prefix or case folding) and compares the digest with that row's only (`azos_syscall::module_tokens::verdict`), so a module outside the table is refused even when its bytes equal a listed module's. `tools/module_hashes.py` writes the table only from the `NAME=path` pairs the Makefile passes for the modules the build produced, refuses a name listed twice, and leaves out a module that was not built (`--skip-missing`), so a kernel built without it refuses it too. Adding, removing or changing a module is a kernel rebuild and an update of the signed image ([update.md](update.md)).
+
+The cost is that every new or changed `.ko` needs a kernel rebuild and an image update. The rejected alternative was a module manifest signed with the topology key and checked by the kernel, which would let a module ship without a kernel rebuild. It would make that key a second root of trust for executable code, and the manifest's parser and its rollback rules a second admission path to audit. Linux's equivalent (`CONFIG_MODULE_SIG` with keys on the builtin trusted keyring) admits any module signed by a trusted key; this layer admits only the exact bytes the build hashed.
+
+`tests/host/syscall-tests` holds the verdict to that (`a_ko_outside_the_table_is_refused`, with the gate canary `module-unlisted-canary`, which admits an unlisted name and must turn the test red), and the gate's QEMU rows hold the kernel path: a tampered `LXTEST.KO` or `XZ_DEC.KO` is refused and recorded, and the `lx-verify-canary` kernel, which skips the digest compare for a listed name, turns the tamper row red.
+
 ### Module set and symbol discipline
 
 `lxbase.ko` is built first and every other module after it. The rules, in `tools/lx_license_lint.py --ko DIR` over the Kbuild output:

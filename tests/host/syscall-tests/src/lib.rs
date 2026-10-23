@@ -255,6 +255,42 @@ mod module_tokens_tests {
     }
 }
 
+#[cfg(test)]
+mod module_table_tests {
+    use crate::module_tokens::{verdict, Verdict};
+
+    const A: [u8; 32] = [0xa1; 32];
+    const B: [u8; 32] = [0xb2; 32];
+    /// The shape `tools/module_hashes.py` writes: `(8.3 name, SHA-256)`.
+    const TABLE: &[(&str, [u8; 32])] = &[("LXBASE.KO", A), ("XZ_DEC.KO", B)];
+
+    /// A module outside the build-time table is refused, whatever its bytes:
+    /// with a digest nobody lists, with the digest of a listed module, under
+    /// a name that only resembles a row's, and against an empty table. Canary
+    /// `module-unlisted-canary` (a name with no row is admitted, as a second
+    /// root of trust would make it): the first assertion goes red.
+    #[test]
+    fn a_ko_outside_the_table_is_refused() {
+        assert_eq!(verdict(TABLE, b"EXTRA.KO", &[0x5a; 32]), Verdict::NoEntry, "a module outside the table was admitted");
+        assert_eq!(verdict(TABLE, b"EXTRA.KO", &A), Verdict::NoEntry, "a listed module's digest admitted another name");
+        for near in [&b"LXBASE"[..], b"LXBASE.K", b"LXBASE.KO\0", b"lxbase.ko", b"LXBASE.KO "] {
+            assert_eq!(verdict(TABLE, near, &A), Verdict::NoEntry, "{:?} matched the LXBASE.KO row", near);
+        }
+        assert_eq!(verdict(&[], b"LXBASE.KO", &A), Verdict::NoEntry, "an empty table admitted a module");
+    }
+
+    /// A listed name is admitted only with its own row's digest.
+    #[test]
+    fn a_listed_ko_needs_its_own_digest() {
+        assert_eq!(verdict(TABLE, b"LXBASE.KO", &A), Verdict::Listed);
+        assert_eq!(verdict(TABLE, b"XZ_DEC.KO", &B), Verdict::Listed);
+        assert_eq!(verdict(TABLE, b"XZ_DEC.KO", &A), Verdict::DigestNotInTable, "another row's digest was accepted");
+        let mut flipped = B;
+        flipped[31] ^= 1;
+        assert_eq!(verdict(TABLE, b"XZ_DEC.KO", &flipped), Verdict::DigestNotInTable);
+    }
+}
+
 // Wave 6 (front V): the per-task vDSO page and the native futex calls. A
 // sibling of `link_key` for the same reason; `#[path]`, not `include!`.
 #[path = "../../../../crates/core/syscall/src/vdso_notify.rs"]

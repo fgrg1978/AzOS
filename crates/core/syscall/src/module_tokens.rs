@@ -1,11 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The live-token table behind `DOMAIN_MODULE_VERIFY` / `DOMAIN_MODULE_MAP_X`
-//! (`module_ops.rs`): which task holds which one-shot token. Pure, with no
-//! lock and no kernel call, so `tests/host/syscall-tests` pulls it in with
-//! `#[path]`; `module_ops.rs` keeps it under its own spin lock.
+//! The two pure halves of `DOMAIN_MODULE_VERIFY` / `DOMAIN_MODULE_MAP_X`
+//! (`module_ops.rs`): the verdict on a module against the build-time digest
+//! table, and the live-token table (which task holds which one-shot token).
+//! No lock and no kernel call, so `tests/host/syscall-tests` pulls this file
+//! in with `#[path]`; `module_ops.rs` keeps the tokens under its own spin lock.
 //!
-//! Sized by Kconfig `LX_MODULE_TOKENS`.
+//! The token table is sized by Kconfig `LX_MODULE_TOKENS`.
+
+/// What the digest table (`MODULE_SHA256`, generated into the kernel image
+/// by `tools/module_hashes.py`) says about a module the server hands in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// The name has a row and the bytes hash to that row's digest.
+    Listed,
+    /// The name has a row, but the bytes are not the ones the build hashed.
+    DigestNotInTable,
+    /// No row has this name: a module outside the table. There is no second
+    /// list, key or manifest that could admit it; the only way in is a kernel
+    /// rebuilt with the module in the table.
+    NoEntry,
+}
+
+/// The verdict on module `name` whose file bytes hash to `digest`. The name
+/// must equal a row's name exactly (no prefix, no case folding), and the
+/// digest is compared only with that row's: a module outside the table cannot
+/// borrow the digest of a listed one.
+pub fn verdict(table: &[(&str, [u8; 32])], name: &[u8], digest: &[u8; 32]) -> Verdict {
+    match table.iter().find(|(n, _)| n.as_bytes() == name) {
+        Some((_, d)) if d == digest => Verdict::Listed,
+        Some(_) => Verdict::DigestNotInTable,
+        // Host canary, never in a real build: a name with no row is admitted,
+        // which is what a second root of trust would make true.
+        None if cfg!(feature = "module-unlisted-canary") => Verdict::Listed,
+        None => Verdict::NoEntry,
+    }
+}
 
 /// One live token: the task it is bound to, its nonce, and how many pages it
 /// allows to become executable.

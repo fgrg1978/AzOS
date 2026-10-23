@@ -250,6 +250,7 @@ hv: stage-2 rollback canary	n1	crates/core/arch-api/**
 hv: egress ceiling canary	n1	crates/core/arch-api/** crates/core/topology/**
 hv: vm clock canary	n1	crates/core/hv/** crates/core/arch-api/**
 perm: vdso mprotect canary (host)	n1	crates/core/mm/** crates/core/percpu/** userspace/** sdk/targets/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/**
+lx: unlisted module canary (host)	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** lx/** crates/core/lx-loader/** crates/core/linux-abi/** userspace/tests/lx* crates/core/syscall/src/linux.rs
 pipe: no EOF canary	n1	
 pipe: no EPIPE canary	n1	
 pipe: split atomic canary	n1	crates/core/mm/** crates/core/percpu/**

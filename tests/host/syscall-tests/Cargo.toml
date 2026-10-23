@@ -72,6 +72,8 @@ ipc-admit-canary = []
 # Wave 15: mirrors azos_syscall's canary of the same name (the pulled-in
 # module_tokens.rs): a dead task's module tokens are kept.
 module-token-leak-canary = []
+# ... and its digest-table verdict: a module name with no row is admitted.
+module-unlisted-canary = []
 # ... and the pulled-in motor_commander.rs's gate canary (exercised by the
 # kernel ktest, declared here so the host build knows the name).
 commander-exit-nostop-canary = []

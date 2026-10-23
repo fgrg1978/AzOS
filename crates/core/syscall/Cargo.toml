@@ -136,6 +136,9 @@ lx-verify-canary = ["lx-loader"]
 # Wave 15 canary, never in a real build: a task's module tokens are not
 # dropped at its exit (`tests/host/syscall-tests`, `module_tokens`).
 module-token-leak-canary = ["lx-loader"]
+# Host canary, never in a real build: a module name with no row in the digest
+# table is admitted (`tests/host/syscall-tests`, `module_tokens::verdict`).
+module-unlisted-canary = ["lx-loader"]
 # Wave 15 gate canary: a dead commander's wheels are taken off the table and
 # never stopped (ktest `motor_commander_exit_stops_its_wheels`).
 commander-exit-nostop-canary = []
