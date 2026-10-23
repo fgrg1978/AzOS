@@ -128,7 +128,7 @@ fn task_x(_: usize) {
         fail(3);
     }
     WB.store(wb, Ordering::SeqCst);
-    azos_sched::set_task_user_info(Y_IDX.load(Ordering::SeqCst), wb as u64, 0, 0);
+    azos_sched::set_task_user_info(Y_IDX.load(Ordering::SeqCst), wb as u64, 0, 0, 0);
     STAGE.store(1, Ordering::SeqCst);
     azos_sched::task_yield(); // straight to Y: A -> B, same ASID
     while STAGE.load(Ordering::SeqCst) < 2 {

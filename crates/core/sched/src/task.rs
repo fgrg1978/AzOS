@@ -931,6 +931,11 @@ pub struct Task {
     pub task_satp: u64,
     pub user_pt:   u64,
     pub user_brk:  u64,
+    /// A Linux task's mmap cursor: the lowest address its mmap area has
+    /// handed out, 0 before the first (the area's ceiling,
+    /// `process::USER_MMAP_CEILING`). The area below it is vacant. One per
+    /// thread group, on the leader's slot, like the break.
+    pub user_mmap_low: u64,
 
     /// The domain this task belongs to (`crate::domain`): the owner of its
     /// capability table and of the frame budget (owner decision 102, scan

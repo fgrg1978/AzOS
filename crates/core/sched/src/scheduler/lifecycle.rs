@@ -718,6 +718,7 @@ pub fn try_task_create_init(
                         stale_user_pt  = task.user_pt;
                         task.user_pt   = 0;
                         task.user_brk  = 0;
+                        task.user_mmap_low = 0;
                         // Owner decision 102 / D2 — the frame budget is the
                         // domain's, and a new domain starts from zero (limit
                         // included: every path that gives a task a budget sets
@@ -1185,6 +1186,7 @@ unsafe fn release_address_space_at_exit(idx: usize) {
     task.task_satp = kernel_task_satp();
     let user_pt = core::mem::replace(&mut task.user_pt, 0);
     task.user_brk = 0;
+    task.user_mmap_low = 0;
     let exec_old_pt = if task.exec_ctx_ready.swap(false, Ordering::Relaxed) {
         EXEC_HANDOFFS.fetch_sub(1, Ordering::Relaxed);
         core::mem::replace(&mut task.exec_old_pt, 0)
@@ -1412,6 +1414,7 @@ unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
             core::mem::swap(&mut a.tid, &mut b.tid);
             core::mem::swap(&mut a.name, &mut b.name);
             core::mem::swap(&mut a.user_brk, &mut b.user_brk);
+            core::mem::swap(&mut a.user_mmap_low, &mut b.user_mmap_low);
             core::mem::swap(&mut a.user_window, &mut b.user_window);
             core::mem::swap(&mut a.mem, &mut b.mem);
             for arr in [&PARENT_TID, &DWP_TID] {
@@ -1584,6 +1587,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
         task.task_satp = kernel_task_satp();
         task.user_pt = 0;
         task.user_brk = 0;
+        task.user_mmap_low = 0;
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
         #[cfg(target_arch = "riscv64")]
         azos_arch::cpu::write_satp(task.task_satp as usize);

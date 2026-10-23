@@ -2545,8 +2545,9 @@ fn fork_hooked_inner(
     vmm::copy_kernel_entries_to_user(child_pt);
     crate::prof::add(2, t_ph);
 
-    // Get parent's brk to set in child.
+    // Get parent's brk and mmap cursor to set in child.
     let parent_brk = crate::scheduler::update_user_brk(0);
+    let parent_mmap_low = crate::scheduler::update_user_mmap_low(0);
 
     // Create child task. We use a trampoline that just yields forever — the real
     // entry will be set via the pending exec mechanism when we SRET.
@@ -2614,7 +2615,7 @@ fn fork_hooked_inner(
     // Apply the child's user page table so context_switch.S writes the
     // correct SATP when the child is scheduled.
     let child_satp = crate::asid::new_root_word(child_pt) as u64;
-    crate::scheduler::set_task_user_info(child_idx, child_satp, child_pt as u64, parent_brk);
+    crate::scheduler::set_task_user_info(child_idx, child_satp, child_pt as u64, parent_brk, parent_mmap_low);
     // The child runs under its parent's budget limit (it has no
     // row of its own) and starts charged for its page tables. It is never
     // locked: a locked parent cannot get here.
@@ -3008,6 +3009,20 @@ const _: () = assert!(USER_MMIO_BASE > USER_LOW_MAX);
 // exists to prevent.
 const _: () = assert!(USER_MMIO_BASE >= vdso::VDSO_USER_BASE + PAGE_SIZE);
 const _: () = assert!(USER_MMIO_BASE >= azos_abi::foreign::RUNTIME_LIMIT);
+
+/// The mmap area of a Linux task, `[USER_MMAP_FLOOR, USER_MMAP_CEILING)`:
+/// `sys_mmap` places its mappings top-down from the ceiling, as Linux places
+/// them below its mmap base, and apart from the program break. The floor is
+/// the break's own ceiling ([`USER_LOW_MAX`], where `sys_brk_impl` stops), so
+/// the break can never grow into a mapping and no mapping sits where it
+/// grows. The ceiling is the vDSO page, below the Linux runtime's window and
+/// (on every board) the shm/MMIO window. What the kernel maps into the area
+/// on a board (riscv64's CLINT, PLIC and UART slots) is not restated here:
+/// the placement asks the page table and steps over it.
+pub(crate) const USER_MMAP_FLOOR: usize = USER_LOW_MAX;
+pub(crate) const USER_MMAP_CEILING: usize =
+    if vdso::VDSO_USER_BASE < USER_MMIO_BASE { vdso::VDSO_USER_BASE } else { USER_MMIO_BASE };
+const _: () = assert!(USER_MMAP_FLOOR < USER_MMAP_CEILING);
 
 /// Maximum size of a single MMIO mapping (1 MiB).
 const USER_MMIO_MAX_SIZE: usize = 1024 * 1024;

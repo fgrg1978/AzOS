@@ -437,7 +437,7 @@ pub fn spawn_prepare(
     // From here the page table is published on the child's slot: the child's
     // exit path owns its teardown (K-C22(C)), and the reuse-time reclaim in
     // `try_task_create_init` if the child was already past that point.
-    crate::scheduler::set_task_user_info(idx, ctx.satp, ctx.user_pt, ctx.brk);
+    crate::scheduler::set_task_user_info(idx, ctx.satp, ctx.user_pt, ctx.brk, 0);
     // A spawned image has PAC keys of its own (A64_PAUTH_PROC_KEYS); they reach
     // the hart when the child consumes its hand-off.
     crate::pac::draw(idx);

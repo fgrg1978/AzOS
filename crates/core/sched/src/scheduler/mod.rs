@@ -2860,6 +2860,7 @@ pub(crate) fn set_task_thread_info(idx: usize, task_satp: u64, user_pt: u64) {
             TASKS[idx].task_satp = task_satp;
             TASKS[idx].user_pt = user_pt;
             TASKS[idx].user_brk = 0;
+            TASKS[idx].user_mmap_low = 0;
         }
     }
 }
@@ -2875,7 +2876,8 @@ pub(crate) fn set_current_task_satp(task_satp: u64) {
     }
 }
 
-/// Update the task_satp, user_pt and user_brk of the current task.
+/// Update the task_satp, user_pt and user_brk of the current task (and
+/// start its mmap cursor over: a new address space has handed nothing out).
 /// Called by exec_user after a new user page table has been built.
 pub fn set_current_user_info(task_satp: u64, user_pt: u64, brk: u64) {
     let idx = my_idx();
@@ -2884,6 +2886,7 @@ pub fn set_current_user_info(task_satp: u64, user_pt: u64, brk: u64) {
             TASKS[idx].task_satp = task_satp;
             TASKS[idx].user_pt   = user_pt;
             TASKS[idx].user_brk  = brk;
+            TASKS[idx].user_mmap_low = 0;
             // A new image starts from nothing: new PAC keys (installed by
             // `take_current_task_exec_slots` when the hand-off is consumed).
             crate::pac::draw(idx);
@@ -2967,17 +2970,28 @@ pub fn task_user_pt(tid: u32) -> Option<usize> {
 /// Read + update user_brk for the current task (sys_brk).
 /// Returns new brk value, or old brk if addr == 0.
 pub fn update_user_brk(addr: u64) -> u64 {
+    update_group_word(addr, |t| &mut t.user_brk)
+}
+
+/// Read + update the current task's mmap cursor (`Task::user_mmap_low`), as
+/// [`update_user_brk`] does the break: `addr == 0` reads it (0: nothing
+/// handed out yet), anything else stores it.
+pub fn update_user_mmap_low(addr: u64) -> u64 {
+    update_group_word(addr, |t| &mut t.user_mmap_low)
+}
+
+/// The word `pick` names in the current thread group's slot (wave 13: one
+/// break and one mmap cursor per group, on the leader's slot): `addr == 0`
+/// reads it, anything else stores it; the value is returned either way.
+fn update_group_word(addr: u64, pick: fn(&mut Task) -> &mut u64) -> u64 {
     let idx = my_idx();
     unsafe {
         if idx == usize::MAX { return 0; }
-        // Wave 13: one break per thread group, on the leader's slot.
-        let idx = proc_slot(idx);
-        if addr == 0 {
-            TASKS[idx].user_brk
-        } else {
-            TASKS[idx].user_brk = addr;
-            addr
+        let w = pick(task_mut(proc_slot(idx)));
+        if addr != 0 {
+            *w = addr;
         }
+        *w
     }
 }
 
@@ -3029,13 +3043,16 @@ pub fn release_user_window_of(tid: u32, base: usize, span: usize) -> bool {
     }
 }
 
-/// Set user info for a specific task by pool index (used by fork).
-pub fn set_task_user_info(idx: usize, task_satp: u64, user_pt: u64, brk: u64) {
+/// Set user info for a specific task by pool index (used by fork, whose child
+/// copies the parent's break and mmap cursor with its address space, and by
+/// spawn, whose new address space has handed nothing out: cursor 0).
+pub fn set_task_user_info(idx: usize, task_satp: u64, user_pt: u64, brk: u64, mmap_low: u64) {
     unsafe {
         if idx < MAX_TASKS && TASK_VALID[idx].load(Ordering::Relaxed) {
             TASKS[idx].task_satp = task_satp;
             TASKS[idx].user_pt   = user_pt;
             TASKS[idx].user_brk  = brk;
+            TASKS[idx].user_mmap_low = mmap_low;
             // Owner decision 102 — a new address space starts from zero. Both
             // writers of this budget are "this task now has that page
             // table", so both reset here (see `set_current_user_info` above

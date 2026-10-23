@@ -159,7 +159,7 @@ pub use scheduler::classes;
 pub use scheduler::{setup_stack_guard_pages, stack_guard_readback, stack_guard_addr};
 
 pub use scheduler::{
-    set_current_user_info, set_task_user_info, update_user_brk,
+    set_current_user_info, set_task_user_info, update_user_brk, update_user_mmap_low,
 };
 
 pub use task::{
@@ -197,6 +197,12 @@ pub use wait::{
 /// syscall crate is how the two would drift.
 pub fn user_shm_window() -> (usize, usize) {
     (process::USER_MMIO_BASE, process::USER_MMIO_LIMIT)
+}
+
+/// A Linux task's mmap area, `[floor, ceiling)` (`process::USER_MMAP_FLOOR`):
+/// where `sys_mmap` places its mappings, top-down, apart from the break.
+pub fn user_mmap_area() -> (usize, usize) {
+    (process::USER_MMAP_FLOOR, process::USER_MMAP_CEILING)
 }
 
 pub use process::{
