@@ -31,11 +31,7 @@ use bin::BinSource;
 /// The records read at once: the table's worth.
 const FILE_MAX: usize = bin::MAX * azos_decisions::PROVENANCE_SIZE;
 
-struct Cell(core::cell::UnsafeCell<Service<BinSource>>);
-// SAFETY: one thread.
-unsafe impl Sync for Cell {}
-
-static SERVICE: Cell = Cell(core::cell::UnsafeCell::new(Service(BinSource::new())));
+static SERVICE: sys::Lock<Service<BinSource>> = sys::Lock::new(Service(BinSource::new()));
 
 /// The admin region's records back to back into `buf`, in slot order (the
 /// decoder sorts them by id; an empty slot is skipped); the bytes written (0 when the tree is not there: the kernel was built without
@@ -60,8 +56,8 @@ fn read_records(tree: &mut Inspector<'static>, buf: &mut [u8]) -> usize {
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
-    // SAFETY: the one reference, for the life of the program.
-    let svc = unsafe { &mut *SERVICE.0.get() };
+    // The one reference, for the life of the program.
+    let svc = SERVICE.lock().leak();
     let _ = sys::console_write(sys::STDOUT, b"[decisd] AzOS decision server (Decisions on endpoint.decisions)\n");
     let mut file = [0u8; FILE_MAX];
     let public = sys::inspect_map(azos_abi::cap::SHM_INSPECT_PUBLIC).ok();

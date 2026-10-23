@@ -242,31 +242,23 @@ impl core::fmt::Write for Line {
     }
 }
 
-struct TreeCell(core::cell::UnsafeCell<Tree>);
-// SAFETY: one thread.
-unsafe impl Sync for TreeCell {}
-
 /// The tree: a static, so its table is not on the stack. The restart limit is
 /// the kernel supervisor's, from the same Kconfig symbols.
-static TREE: TreeCell = TreeCell(core::cell::UnsafeCell::new(Tree::new(Intensity {
+static TREE: sys::Lock<Tree> = sys::Lock::new(Tree::new(Intensity {
     burst: azos_limits::SUP_RESTART_BURST as u8,
     interval_ns: azos_limits::SUP_RESTART_INTERVAL_S as u64 * 1_000_000_000,
     cooldown_ns: COOLDOWN_NS,
-})));
-
-struct PlanCell(core::cell::UnsafeCell<Plan>);
-// SAFETY: one thread.
-unsafe impl Sync for PlanCell {}
+}));
 
 /// The plan as read: a static, as the tree is (its rows are 24 copies of five
 /// strings, more than a ring-3 stack holds).
-static PLAN: PlanCell = PlanCell(core::cell::UnsafeCell::new(Plan { rows: [None; MAX_COMPONENTS], n: 0, whole: false }));
+static PLAN: sys::Lock<Plan> = sys::Lock::new(Plan { rows: [None; MAX_COMPONENTS], n: 0, whole: false });
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
     let mut host = Kernel;
-    // SAFETY: the one reference, for the life of the program.
-    let plan = unsafe { &mut *PLAN.0.get() };
+    // The one reference, for the life of the program.
+    let plan = PLAN.lock().leak();
     let got = read_plan(plan);
     let _ = sys::console_write(sys::STDOUT, b"[compmgr] AzOS component manager\n");
     // No plan, nothing to supervise: end, so the kernel's supervision of the
@@ -291,8 +283,8 @@ fn main() -> ! {
             dir: p.dir.as_bytes(),
         };
     }
-    // SAFETY: the one reference, for the life of the program.
-    let tree = unsafe { &mut *TREE.0.get() };
+    // The one reference, for the life of the program.
+    let tree = TREE.lock().leak();
     tree.load(&rows[..plan.n], plan.whole, &mut host);
     tree.start_all(&mut host);
     loop {

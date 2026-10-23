@@ -36,8 +36,7 @@
 #![no_std]
 #![no_main]
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use azos_buzzer::{Driver, Pwm, BUZZER_PWM_CHANNEL, SOURCE_MARKER};
 use azos_devif::{BuzzerIdl, MsgDesc};
@@ -79,14 +78,7 @@ struct State {
     last_ms: u64,
 }
 
-struct Shared {
-    lock: AtomicBool,
-    state: UnsafeCell<Option<State>>,
-}
-// SAFETY: `state` is touched only with `lock` held (`with`).
-unsafe impl Sync for Shared {}
-
-static SHARED: Shared = Shared { lock: AtomicBool::new(false), state: UnsafeCell::new(None) };
+static SHARED: sys::Lock<Option<State>> = sys::Lock::new(None);
 
 /// Bumped by the main thread whenever a call may have changed the sound; the
 /// timer thread's futex word.
@@ -95,15 +87,7 @@ static CHANGED: AtomicU32 = AtomicU32::new(0);
 /// Run `f` on the shared state. Spins (yielding) while the other thread has
 /// it: its critical sections are a few register-form calls long.
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    while SHARED.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        sys::yield_now();
-    }
-    // SAFETY: the lock is held.
-    let r = match unsafe { (*SHARED.state.get()).as_mut() } {
-        Some(st) => Some(f(st)),
-        None => None,
-    };
-    SHARED.lock.store(false, Ordering::Release);
+    let r = SHARED.lock().as_mut().map(f);
     r.expect("buzz_drv: state used before it was set up")
 }
 
@@ -161,13 +145,10 @@ pub extern "C" fn _start() -> ! {
     // buzzer's has one holder), so this cuts nothing the kernel host plays; the
     // refusals are ignored, as is a timed step of a sound left over from before
     // a move.
-    // SAFETY: no other thread exists yet.
-    unsafe {
-        *SHARED.state.get() = Some(State {
-            drv: Driver::new(EpPwm(PwmClient::new(Regs(pwm)))),
-            last_ms: clock_ms().unwrap_or(0),
-        });
-    }
+    *SHARED.lock() = Some(State {
+        drv: Driver::new(EpPwm(PwmClient::new(Regs(pwm)))),
+        last_ms: clock_ms().unwrap_or(0),
+    });
     // The stack is the timer thread's alone, and its top is 16-aligned.
     let top = core::ptr::addr_of_mut!(TIMER_STACK) as usize + core::mem::size_of::<Stack>();
     if sys::thread_create(timer_thread, top, 0, core::ptr::null_mut()) < 0 {

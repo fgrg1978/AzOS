@@ -39,8 +39,6 @@
 #![no_std]
 #![no_main]
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 // The chip logic and the request dispatch are `crates/drivers/ina219`, the
 // same source the in-kernel host compiles (Kconfig DRV_INA219_PLACEMENT).
@@ -201,24 +199,13 @@ impl State {
     }
 }
 
-struct Shared {
-    lock: AtomicBool,
-    state: UnsafeCell<Option<State>>,
-}
-// SAFETY: `state` is touched only with `lock` held (`with`).
-unsafe impl Sync for Shared {}
-
-static SHARED: Shared = Shared { lock: AtomicBool::new(false), state: UnsafeCell::new(None) };
+/// What the two threads share.
+static SHARED: sys::Lock<Option<State>> = sys::Lock::new(None);
 
 /// Run `f` on the shared state. Spins (yielding) while the other thread has
 /// it: its critical sections are a few register-form I2C calls long.
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    while SHARED.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        sys::yield_now();
-    }
-    // SAFETY: the lock is held.
-    let r = unsafe { (*SHARED.state.get()).as_mut().map(f) };
-    SHARED.lock.store(false, Ordering::Release);
+    let r = SHARED.lock().as_mut().map(f);
     r.expect("ina_drv: state used before it was set up")
 }
 
@@ -336,9 +323,9 @@ pub extern "C" fn _start() -> ! {
         t_us,
         next_us: t_us + SAMPLE_PERIOD_US,
     };
-    // SAFETY: no other thread exists yet.
-    unsafe {
-        let st = (*SHARED.state.get()).insert(state);
+    {
+        let mut shared = SHARED.lock();
+        let st = shared.insert(state);
         st.pm = Pm::new(quota, st.now_ns());
     }
     // The stack is the endpoint thread's alone, and its top is 16-aligned.

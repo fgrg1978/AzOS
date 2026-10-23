@@ -42,6 +42,66 @@ mod store;
 #[path = "../../../../userspace/services/toolbox/src/log_view.rs"]
 mod log_view;
 
+// The ring-3 programs' lock for a shared static, as shipped. Its one syscall,
+// the yield of a contended `lock`, is the host's.
+#[allow(dead_code)]
+#[path = "../../../../crates/core/libsys/src/lock.rs"]
+mod lock;
+#[allow(dead_code)]
+fn yield_now() {
+    std::thread::yield_now();
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::lock::Lock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// One guard at a time: four threads doing a read, a yield and a write
+    /// lose no update. Canary: make `lock` take the flag with a plain store
+    /// instead of the compare-exchange and the count comes up short.
+    #[test]
+    fn one_holder_at_a_time() {
+        static L: Lock<u64> = Lock::new(0);
+        const ROUNDS: u64 = 2_000;
+        let ts: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..ROUNDS {
+                        let mut g = L.lock();
+                        let v = *g;
+                        std::thread::yield_now();
+                        *g = v + 1;
+                    }
+                })
+            })
+            .collect();
+        for t in ts {
+            t.join().unwrap();
+        }
+        assert_eq!(*L.lock(), 4 * ROUNDS, "two holders at once lost an update");
+    }
+
+    /// A leaked guard keeps the lock: the reference it returns stays the only
+    /// one, and a later `lock` does not get in. Canary: release the flag in
+    /// `leak` and the second thread takes the lock.
+    #[test]
+    fn a_leaked_guard_keeps_the_lock_for_good() {
+        static L: Lock<u32> = Lock::new(7);
+        static GOT: AtomicBool = AtomicBool::new(false);
+        let v: &'static mut u32 = L.lock().leak();
+        *v += 1;
+        // The contender never returns; the process ends with it parked.
+        std::thread::spawn(|| {
+            let _g = L.lock();
+            GOT.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!GOT.load(Ordering::SeqCst), "a lock was taken after its guard was leaked");
+        assert_eq!(*v, 8);
+    }
+}
+
 #[cfg(test)]
 mod logd_store;
 #[cfg(test)]

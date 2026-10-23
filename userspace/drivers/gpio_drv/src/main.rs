@@ -31,8 +31,6 @@
 #![no_std]
 #![no_main]
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use azos_libsys as sys;
 use sys::dev::MsgDesc;
@@ -157,24 +155,13 @@ struct State {
     gate: Gate,
 }
 
-struct Shared {
-    lock: AtomicBool,
-    state: UnsafeCell<Option<State>>,
-}
-// SAFETY: `state` is touched only with `lock` held (`with`).
-unsafe impl Sync for Shared {}
-
-static SHARED: Shared = Shared { lock: AtomicBool::new(false), state: UnsafeCell::new(None) };
+/// What the two threads share.
+static SHARED: sys::Lock<Option<State>> = sys::Lock::new(None);
 
 /// Run `f` on the shared state. Spins (yielding) while the other thread has
 /// it: its critical sections are a few instructions long.
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    while SHARED.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        sys::yield_now();
-    }
-    // SAFETY: the lock is held.
-    let r = unsafe { (*SHARED.state.get()).as_mut().map(f) };
-    SHARED.lock.store(false, Ordering::Release);
+    let r = SHARED.lock().as_mut().map(f);
     r.expect("gpio_drv: state used before it was set up")
 }
 
@@ -250,10 +237,7 @@ pub extern "C" fn _start() -> ! {
     // instead of polling it; the park is bounded by the kernel (park 0 = its
     // default), and a bound that passes returns -1 to be called again.
     let quota = sys::dev::power::runtime::Quota::new(azos_limits::DEVICE_WAKELOCKS as u32, azos_limits::DEVICE_WAKELOCK_TTL_MAX_MS as u32);
-    // SAFETY: no other thread exists yet.
-    unsafe {
-        *SHARED.state.get() = Some(State { pm: Pm::new(quota, now_ns()), gate: Gate { gated: false } });
-    }
+    *SHARED.lock() = Some(State { pm: Pm::new(quota, now_ns()), gate: Gate { gated: false } });
     // The stack is the endpoint thread's alone, and its top is 16-aligned.
     let top = core::ptr::addr_of_mut!(PM_STACK) as usize + core::mem::size_of::<Stack>();
     if sys::thread_create(pm_thread, top, 0, core::ptr::null_mut()) < 0 {

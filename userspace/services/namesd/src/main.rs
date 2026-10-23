@@ -101,17 +101,13 @@ impl Host for Kernel {
     }
 }
 
-struct ServiceCell(core::cell::UnsafeCell<Service<Kernel>>);
-// SAFETY: one thread.
-unsafe impl Sync for ServiceCell {}
-
-static SERVICE: ServiceCell =
-    ServiceCell(core::cell::UnsafeCell::new(Service::new(Kernel { view: None }, azos_limits::NAMES_LEND_TTL_MS as u64 * 1_000_000)));
+static SERVICE: sys::Lock<Service<Kernel>> =
+    sys::Lock::new(Service::new(Kernel { view: None }, azos_limits::NAMES_LEND_TTL_MS as u64 * 1_000_000));
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
-    // SAFETY: the one reference, for the life of the program.
-    let svc = unsafe { &mut *SERVICE.0.get() };
+    // The one reference, for the life of the program.
+    let svc = SERVICE.lock().leak();
     let _ = sys::console_write(sys::STDOUT, b"[namesd] AzOS name server (Names on endpoint.names)\n");
     // The view, mapped once. The kernel writes an endpoint's pool index and
     // server where they change, so those this task's spawn created are in it

@@ -106,6 +106,10 @@ pub mod utest;
 pub mod ioring;
 #[cfg(not(target_arch = "riscv32"))]
 pub mod pipe;
+#[cfg(not(target_arch = "riscv32"))]
+mod lock;
+#[cfg(not(target_arch = "riscv32"))]
+pub use lock::{Lock, LockGuard};
 
 #[cfg(not(target_arch = "riscv32"))]
 pub mod dev;

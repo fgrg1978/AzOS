@@ -143,11 +143,7 @@ impl Kernel for Sys {
     }
 }
 
-struct Cell(core::cell::UnsafeCell<Option<Daemon<Sys>>>);
-// SAFETY: one thread.
-unsafe impl Sync for Cell {}
-
-static DAEMON: Cell = Cell(core::cell::UnsafeCell::new(None));
+static DAEMON: sys::Lock<Option<Daemon<Sys>>> = sys::Lock::new(None);
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
@@ -155,8 +151,8 @@ fn main() -> ! {
         say("[logind] no keys interface: no login can be verified\n");
         sys::exit(1)
     };
-    // SAFETY: the one reference, for the life of the program.
-    let slot = unsafe { &mut *DAEMON.0.get() };
+    // The one reference, for the life of the program.
+    let slot = DAEMON.lock().leak();
     let svc = slot.insert(Daemon::new(Sys { keys, logins: None }));
     say("[logind] AzOS login service (Login on endpoint.login)\n");
 

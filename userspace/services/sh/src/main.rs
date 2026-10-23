@@ -22,6 +22,7 @@
 
 #![no_std]
 #![no_main]
+#![forbid(unsafe_code)]
 
 mod ident;
 mod parse;
@@ -1244,11 +1245,7 @@ fn is_file(p: &[u8]) -> bool {
     stat_mode(p).is_some_and(|m| m & azos_abi::syscall_nr::STAT_S_IFMT != azos_abi::syscall_nr::STAT_S_IFDIR)
 }
 
-struct ShellCell(core::cell::UnsafeCell<Shell>);
-// SAFETY: one thread.
-unsafe impl Sync for ShellCell {}
-
-static SHELL: ShellCell = ShellCell(core::cell::UnsafeCell::new(Shell {
+static SHELL: sys::Lock<Shell> = sys::Lock::new(Shell {
     root: None,
     env: Env::new(),
     cwd: [0; path::PATH_MAX],
@@ -1259,12 +1256,12 @@ static SHELL: ShellCell = ShellCell(core::cell::UnsafeCell::new(Shell {
     term: TerminalClient::new(Renewing::new(SysCall, 0, [0; azos_names::NAME_WORDS], 0)),
     text: [0; LINE_MAX],
     text_len: 0,
-}));
+});
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
-    // SAFETY: the one reference, for the life of the program.
-    let sh = unsafe { &mut *SHELL.0.get() };
+    // The one reference, for the life of the program.
+    let sh = SHELL.lock().leak();
     sh.root = u32::try_from(sys::root_dir()).ok();
     let start = sys::cwd();
     sh.cwd[..start.len()].copy_from_slice(start);

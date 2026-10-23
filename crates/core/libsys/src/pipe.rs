@@ -46,7 +46,7 @@ use crate::{
 };
 pub use azos_bytepipe::End;
 use azos_bytepipe::{BytePipe, PipeError, Slept, Sys, HEADER_BYTES};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 const E_AGAIN: isize = -11;
 const E_MFILE: isize = -24;
@@ -136,24 +136,10 @@ struct Rec {
 
 const FREE: Rec = Rec { used: false, cap: 0, pipe: None, open: [false; 2], nonblock: [false; 2] };
 
-struct Table {
-    lock: AtomicBool,
-    recs: core::cell::UnsafeCell<[Rec; MAX_PIPES]>,
-}
-
-// SAFETY: every access is under `lock`.
-unsafe impl Sync for Table {}
-
-static TABLE: Table = Table { lock: AtomicBool::new(false), recs: core::cell::UnsafeCell::new([FREE; MAX_PIPES]) };
+static TABLE: crate::Lock<[Rec; MAX_PIPES]> = crate::Lock::new([FREE; MAX_PIPES]);
 
 fn with<R>(f: impl FnOnce(&mut [Rec; MAX_PIPES]) -> R) -> R {
-    while TABLE.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-        core::hint::spin_loop();
-    }
-    // SAFETY: the flag is held.
-    let r = f(unsafe { &mut *TABLE.recs.get() });
-    TABLE.lock.store(false, Ordering::Release);
-    r
+    f(&mut TABLE.lock())
 }
 
 /// The region size of a new pipe, in pages.
