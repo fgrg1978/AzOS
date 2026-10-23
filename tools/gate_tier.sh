@@ -118,6 +118,8 @@ fi
 
 # The three ISAs share one file layout (tools/arch_layout_lint.py): same module set, ISA-only code under ext/.
 [ "$lints" = 1 ] && { printf "  %-26s" "arch layout lint..."; if out="$(python3 tools/arch_layout_lint.py --self-test 2>&1 && python3 tools/arch_layout_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+# No `allow(dead_code)` in kernel/ or crates/core/ without a `// reason:` (tools/dead_code_lint.py).
+[ "$lints" = 1 ] && { printf "  %-26s" "dead code lint..."; if out="$(python3 tools/dead_code_lint.py --self-test 2>&1 && python3 tools/dead_code_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 # No linker script and no per-crate cargo config under userspace/, one target spec per ISA (sdk/targets).
 [ "$lints" = 1 ] && { printf "  %-26s" "user image layout lint..."; if out="$(python3 tools/user_entry_lint.py --self-test 2>&1 && python3 tools/user_entry_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "doc lint..."; if out="$(python3 tools/doc_lint.py --self-test 2>&1 && python3 tools/doc_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
