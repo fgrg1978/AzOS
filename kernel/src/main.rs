@@ -1564,19 +1564,35 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // link that is down forever — refusing to boot surfaces the
         // provisioning error here, on the console, instead of in the field
         // as "robot won't talk".
+        //
+        // A keyless link is refused in every build, so the refusal is a
+        // `login` decision record in every build (`azos_decision::RULES`:
+        // method 5 the brain link, attempt 0, reason 4 no key to verify
+        // with); the console line names its id. It is made before the flight
+        // recorder is armed (`install_robot_hw`, below), so it is in the ring
+        // and the journal, not on the medium.
         #[cfg(feature = "use-robot")]
         {
             if !link_keyed {
+                const LOGIN_METHOD_BRAIN_LINK: u64 = 5;
+                const LOGIN_NO_KEY: u64 = 4;
+                let receipt = azos_decision::record_receipt(
+                    azos_decision::Rule::Login,
+                    azos_decision::Verdict::Refuse,
+                    0,
+                    [LOGIN_METHOD_BRAIN_LINK, 0, LOGIN_NO_KEY],
+                );
                 if azos_behavior::encrypt_link::link_provisioning_enforced() {
                     azos_drv_sys::kerr!("[SECCHAN] FATAL: brain link has no key — {} — \
-                               link-provisioning-enforced is compiled in, refusing to boot",
-                        link_key_reason);
+                               link-provisioning-enforced is compiled in, refusing to boot \
+                               (decision {})",
+                        link_key_reason, receipt);
                     loop { azos_arch::Cpu::wfi(&azos_arch::ARCH); }
                 }
                 azos_drv_sys::kwarn!("[SECCHAN] WARNING: brain link has no key — {} \
                            (link-provisioning-enforced not compiled in — booting anyway, \
-                           the link stays down)",
-                    link_key_reason);
+                           the link stays down; decision {})",
+                    link_key_reason, receipt);
             }
         }
 
