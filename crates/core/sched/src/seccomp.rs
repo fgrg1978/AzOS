@@ -573,7 +573,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_IPC_CALL_V2, SYS_IPC_FAST_CALL_EP,
         ],
         audit: false,
-        ops: CONSOLE_OPS,
+        // `DOMAIN_UPTIME`: the clock on x86_64 (libsys `uptime`), where the
+        // vDSO says the counter is not native.
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::MOTOR, azos_devif::key::SENSOR],
     },
     // AUDIT MODE. abitest asserts the kernel's answer to wrong and missing

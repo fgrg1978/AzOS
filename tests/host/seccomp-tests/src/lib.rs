@@ -3402,10 +3402,11 @@ mod image_profiles {
         // +3 with the Linux runtime (`userspace/services/lxrt`), one per ISA
         // that hosts the personality: it is embedded in the kernel, not on a
         // disk, so it is in no `SOURCES`/`IMAGE_ELFS`.
+        // +4 on x86_64 with SYSTEST.ELF, CAPTEST.ELF, LATBENCH.ELF and LXSRV.ELF.
         assert_eq!(
             recipes,
-            rust_images + 42 + 1 + 38 + 3,
-            "expected {rust_images} riscv64 + 42 aarch64 + 1 board + 38 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
+            rust_images + 42 + 1 + 42 + 3,
+            "expected {rust_images} riscv64 + 42 aarch64 + 1 board + 42 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
         );
         // The SDK's recipes: WHY.ELF on three ISAs and the SDK's own test, sdktest,
         // on three.
