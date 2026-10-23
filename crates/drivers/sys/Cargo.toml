@@ -31,6 +31,8 @@ wdt-sp5100 = []
 # Kconfig WDT_BCM2835_PM: the Raspberry Pi's PM block as the hardware
 # watchdog and the reset handler (`wdt::pm_attach`).
 bcm2835-pm = ["dep:azos_drv_power"]
+# The PM block is also the hardware watchdog (Kconfig WDT_BCM2835_PM_ARM).
+bcm2835-pm-arm = ["bcm2835-pm"]
 # Wave 13 canary: `^C` on a console lent to a Linux job is queued as a byte,
 # not turned into SIGINT. Never in a real build.
 console-isig-canary = []

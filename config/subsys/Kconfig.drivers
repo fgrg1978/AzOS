@@ -317,6 +317,21 @@ config WDT_BCM2835_PM
       halt). n: a Pi has no hardware watchdog and its reboot and power-off
       call a PSCI that is not there.
 
+config WDT_BCM2835_PM_ARM
+    # cargo-feature: wdt-bcm2835-pm-arm
+    bool "Raspberry Pi PM block: arm it as the hardware watchdog"
+    default y
+    depends on WDT_BCM2835_PM
+    help
+      Kernel feature `wdt-bcm2835-pm-arm` (crates/drivers/sys/src/wdt.rs).
+      y: the PM block bound by WDT_BCM2835_PM is the hardware watchdog
+      sys-wdt arms and the RT tick kicks. n: it is only the reboot and
+      power-off of a Pi without PSCI, and no hardware watchdog is armed (the
+      software watchdog still runs). QEMU `-M raspi3b` needs n: its PM model
+      resets the machine on the arming write itself (it has no countdown),
+      so an armed watchdog reboots it at the scheduler's start, as the
+      gate's raspi3b rows build (tools/ci_check.sh); a real Pi keeps y.
+
 config DRV_IGC
     # cargo-feature: igc
     bool "Intel I225/I226 2.5 GbE Ethernet (igc) over PCIe"

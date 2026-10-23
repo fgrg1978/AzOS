@@ -407,14 +407,21 @@ mod pm {
 
 /// Hand the driver the PM block the hardware bus bound at `base`. Nothing is
 /// written: the watchdog stays as the firmware left it until [`wdt_init`] arms
-/// it. `Err` when a block is already attached or another watchdog was found.
+/// it, and only with Kconfig WDT_BCM2835_PM_ARM. `Err` when a block is already
+/// attached or another watchdog was found.
 #[cfg(feature = "bcm2835-pm")]
 pub fn pm_attach(base: usize) -> Result<(), azos_drv_base::window::Taken> {
     if found().is_some() {
         return Err(azos_drv_base::window::Taken);
     }
     pm::WINDOW.attach(base)?;
-    install(&pm::FOUND)
+    // Kconfig WDT_BCM2835_PM_ARM = n: the block is the reset handler only, and
+    // no hardware watchdog is armed (QEMU raspi3b resets on the arming write).
+    if cfg!(feature = "bcm2835-pm-arm") {
+        install(&pm::FOUND)
+    } else {
+        Ok(())
+    }
 }
 
 /// Reset the SoC through the PM block: `halt` false reboots, true leaves the
