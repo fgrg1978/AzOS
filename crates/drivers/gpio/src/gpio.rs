@@ -225,20 +225,19 @@ mod mmio {
         STOP_PENDING.fetch_and(!(1u64 << pin), Ordering::AcqRel);
     }
 
-    /// Bring the GPIO up on the controller the bus bound at `base`: every pin
-    /// is an input until a caller says otherwise. `Err` when a controller is
-    /// already attached.
+    /// Hand the driver the controller the hardware bus bound at `base`.
+    /// `Err` when a controller is already attached.
+    ///
+    /// **Nothing is written.** This used to set every pad's `DOEN` byte to
+    /// "input", and the window is the whole pad multiplexer, not a bank of
+    /// spare GPIOs: the pads the firmware routed to a peripheral (UART0's TX,
+    /// the I2C and PWM pads) had their output enable taken away, so the
+    /// console went silent at the GPIO bind. A pin is now an input or an
+    /// output when its user says so (`gpio_set_direction`: the motors, the
+    /// payload, the camera power), and every other pad keeps what the
+    /// firmware gave it, as the K1 module already did.
     pub fn gpio_attach(base: usize) -> Result<(), Taken> {
         WINDOW.attach(base)?;
-        // Default every pin's DOEN byte to GPOEN_DISABLE (input, tri-state)
-        // rather than the old model's "write 0xFFFF_FFFF" (which used to
-        // select output-signal-source 127 on 4 pins per word — not "input").
-        for pin in 0..GPIO_MAX_PINS as u32 {
-            let (word, shift) = dout_doen_word_and_shift(pin);
-            let mask = DOEN_FIELD_MASK << shift;
-            let cur = reg_read32(DOEN + word);
-            reg_write32(DOEN + word, (cur & !mask) | ((GPOEN_DISABLE << shift) & mask));
-        }
         Ok(())
     }
 
@@ -330,8 +329,9 @@ pub use mmio::*;
 // * only a direction change is a read-modify-write (`GPDR`), under
 //   `DIR_LOCK`;
 // * attach writes nothing: the pins keep the firmware's direction and level
-//   (the board's reset and power-enable lines are driven by U-Boot, and an
-//   "every pin an input" start like the VF2's would drop them);
+//   (the board's reset and power-enable lines are driven by U-Boot; the VF2
+//   module's attach writes nothing either, since it stopped tri-stating the
+//   pads);
 // * the controller has 128 pins, the kernel's pin space is `GPIO_MAX_PINS`
 //   (64, `azos_devif::gpio::PINS`): pins 64..127 (bank 2 and 3, among them the
 //   BPI-F3's user LED, GPIO 96) are not reachable until that constant moves.
