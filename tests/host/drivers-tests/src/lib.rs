@@ -5517,7 +5517,7 @@ mod ps2_i8042 {
 
 #[cfg(test)]
 mod input_events {
-    use super::events::{attention, console_holds, install, observe, publish, stream_push, Pushed, RING_BYTES};
+    use super::events::{attention, console_holds, install, observe, publish, stream_push, Pushed, FOCUS_BYTES, RING_BYTES};
     use super::keymap::{pack, unpack, EV_KEY, EV_REL, RING_CAP};
     use azos_input_wire::event::{
         DROPS_OFFSET, FOCUS_OFFSET, STREAM_CAP, STREAM_CONSOLE, STREAM_DROPS_OFFSET, STREAM_OFFSET,
@@ -5546,13 +5546,19 @@ mod input_events {
         #[repr(align(64))]
         struct Mem([u8; RING_BYTES]);
         let mem = Box::leak(Box::new(Mem([0xFF; RING_BYTES])));
+        // The focus word's page: a region of its own.
+        #[repr(align(64))]
+        struct Page([u8; FOCUS_BYTES]);
+        let fpage = Box::leak(Box::new(Page([0xFF; FOCUS_BYTES])));
+        let fbase = fpage.0.as_mut_ptr() as usize;
         let base = mem.0.as_mut_ptr() as usize;
         let drops = || unsafe { &*((base + DROPS_OFFSET) as *const AtomicU32) }.load(Ordering::Acquire);
         // SAFETY: the leaked box lives for the rest of the process.
         unsafe {
-            assert!(!install(base + 8, OBJ, waker), "an unaligned base is refused");
-            assert!(install(base, OBJ, waker));
-            assert!(!install(base, OBJ, waker), "the ring is installed once");
+            assert!(!install(base + 8, fbase, OBJ, waker), "an unaligned base is refused");
+            assert!(!install(base, fbase + 8, OBJ, waker), "an unaligned focus page is refused");
+            assert!(install(base, fbase, OBJ, waker));
+            assert!(!install(base, fbase, OBJ, waker), "the ring is installed once");
         }
         assert_eq!(drops(), 0, "install zeroes the counter");
         let ring = SpscRing { base, cap: RING_CAP };
@@ -5631,7 +5637,7 @@ mod input_events {
 
         // The focus word: the input server's decision, read per event; the chord
         // gives the keyboard back to the console without the server.
-        let focus = unsafe { &*((base + FOCUS_OFFSET) as *const AtomicU32) };
+        let focus = unsafe { &*((fbase + FOCUS_OFFSET) as *const AtomicU32) };
         assert_eq!(focus.load(Ordering::Acquire), 0, "install zeroes the focus word: the console's");
         assert!(console_holds());
         focus.store(7, Ordering::Release);
@@ -5639,6 +5645,16 @@ mod input_events {
         attention();
         assert_eq!(focus.load(Ordering::Acquire), 0);
         assert!(console_holds(), "the chord hands the keyboard back to the console");
+
+        // **Discriminates** the split: the terminal server maps the event region
+        // read-write, and whatever it writes there (here: every byte after the
+        // stream's counter, and the whole region at the end of the test) does
+        // not move the decision, which only the focus page holds.
+        focus.store(7, Ordering::Release);
+        for i in STREAM_DROPS_OFFSET + 4..RING_BYTES {
+            mem.0[i] = 0;
+        }
+        assert!(!console_holds(), "the console cannot take the keyboard back through its region");
 
         // **Discriminates** the stream's wake (the input server used to poll it
         // on a timer): a push into a stream whose consumer announced a sleep
@@ -5663,6 +5679,11 @@ mod input_events {
         assert!(matches!(stream.consumer_sleep(), RingSleep::Wait { .. }));
         assert!(publish(pack(EV_REL, 0, 2), true).kept());
         assert_eq!(WAKES.load(Ordering::SeqCst), wakes + 2);
+        // The whole region rewritten by its other holder: still the holder's.
+        mem.0.fill(0);
+        assert!(!console_holds(), "no word of the event region is the focus");
+        focus.store(0, Ordering::Release);
+        assert!(console_holds());
     }
 }
 

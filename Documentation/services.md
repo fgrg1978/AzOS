@@ -316,8 +316,10 @@ kernel's journal; the warrant being minted and revoked is already there as `CapD
 are the console's: the drivers type keys into the console input and publish the rest into the
 terminal server's ring, as without the server. While a task holds it the drivers give the
 console nothing of it but the modifier keys (no text) and the chord: the server writes its
-decision into the drivers' region (the focus word, `azos_input_wire::event::FOCUS_OFFSET`: 0 the
-console, else the holder's generation) and the drivers read it for every event
+decision into the focus word (`azos_input_wire::event::FOCUS_OFFSET`: 0 the console, else the
+holder's generation), a kernel-owned page of its own (`MemObj input.focus`, granted read-write to
+`INPUTD.ELF`'s row alone, so the terminal server, which maps the event region read-write, cannot
+set it), and the drivers read it for every event
 (`azos_drv_input::keymap::route`). The stream carries every event and marks the ones the console
 was given, which the server delivers to nobody, so no key reaches two parties: a passphrase
 typed into a window never reaches the shell. The chord sets the word back to the console in the

@@ -4,9 +4,10 @@
 //!
 //! A ring-3 program whose topology row is its whole authority: one grant of
 //! `endpoint.input`, `READ` (it serves it) with the call right and `transfer`
-//! (the source its warrants are derived from), and `MemObj
-//! input.events` (the drivers' region, read-write: the server moves the tail
-//! of the stream). It serves the `Input` object (`crates/core/devif/src/
+//! (the source its warrants are derived from), `MemObj input.events` (the
+//! drivers' region, read-write: the server moves the tail of the stream) and
+//! `MemObj input.focus` (the focus word's page, read-write, this row's alone).
+//! It serves the `Input` object (`crates/core/devif/src/
 //! input.rs`) and delivers the input drivers' stream only to the task that
 //! holds the focus; the decisions are `focus.rs`'s, which the host suite
 //! (`tests/host/inputd-tests`) drives.
@@ -41,7 +42,7 @@ mod focus;
 
 use azos_devif::input::{EventRing, InputIdl, TrustedPage, RING_PAGES, RING_SLOTS};
 use azos_idl::MsgDesc;
-use azos_input_wire::event::{FOCUS_OFFSET, REGION_TOTAL, STREAM_CAP, STREAM_DROPS_OFFSET, STREAM_OFFSET};
+use azos_input_wire::event::{FOCUS_BYTES, FOCUS_OFFSET, REGION_TOTAL, STREAM_CAP, STREAM_DROPS_OFFSET, STREAM_OFFSET};
 use azos_libsys as sys;
 use azos_rings::region::{RingSleep, RingStep, SpscRing};
 use core::cell::UnsafeCell;
@@ -58,6 +59,8 @@ const SOURCE_RIGHTS: u8 = azos_abi::cap::CapPerms::WRITE.union(azos_abi::cap::Ca
 struct Sys {
     /// Where the region of the drivers is mapped.
     region: usize,
+    /// Where the focus word's page is mapped (this row's alone).
+    focus: usize,
     /// The trusted-path page: its capability and where it is mapped.
     page: u32,
     page_base: usize,
@@ -71,11 +74,13 @@ impl Sys {
         SpscRing { base: self.region + STREAM_OFFSET, cap: STREAM_CAP }
     }
 
-    /// The region's word at `off`: the stream's drop counter or the focus word.
-    fn word(&self, off: usize) -> &AtomicU32 {
-        // SAFETY: `open_region` checked the mapping reaches `REGION_TOTAL`,
-        // past both words' lines; it stays mapped for the life of the program.
-        unsafe { &*((self.region + off) as *const AtomicU32) }
+    /// The word at `off` of the mapping at `base`: the stream's drop counter of
+    /// the drivers' region, or the focus word of its page.
+    fn word(base: usize, off: usize) -> &'static AtomicU32 {
+        // SAFETY: `open_region` checked each mapping reaches the words used in
+        // it (`REGION_TOTAL`, `FOCUS_BYTES`); both stay mapped for the life of
+        // the program.
+        unsafe { &*((base + off) as *const AtomicU32) }
     }
 }
 
@@ -88,7 +93,7 @@ impl Host for Sys {
     }
 
     fn stream_drops(&mut self) -> u32 {
-        self.word(STREAM_DROPS_OFFSET).load(Ordering::Acquire)
+        Self::word(self.region, STREAM_DROPS_OFFSET).load(Ordering::Acquire)
     }
 
     fn now_ns(&mut self) -> u64 {
@@ -140,7 +145,7 @@ impl Host for Sys {
     }
 
     fn set_focus(&mut self, generation: u32) {
-        self.word(FOCUS_OFFSET).store(generation, Ordering::Release);
+        Self::word(self.focus, FOCUS_OFFSET).store(generation, Ordering::Release);
     }
 
     fn log(&mut self, line: &[u8]) {
@@ -162,10 +167,11 @@ fn make_region(pages: u64) -> Option<(u32, usize)> {
     Some((cap as u32, va as usize))
 }
 
-/// Map the drivers' region (`MemObj input.events`): its base, when the row
-/// grants it and it is long enough to hold both rings and the focus word.
-fn open_region() -> Option<usize> {
-    let cap = sys::cap_lookup(sys::ty::SHM.raw(), azos_abi::cap::SHM_INPUT_EVENTS);
+/// Map the kernel-owned region the row grants under `key` (`MemObj
+/// input.events`, `MemObj input.focus`): its base, when it is granted and at
+/// least `bytes` long.
+fn open_region(key: u32, bytes: usize) -> Option<usize> {
+    let cap = sys::cap_lookup(sys::ty::SHM.raw(), key);
     if cap < 0 {
         return None;
     }
@@ -175,7 +181,7 @@ fn open_region() -> Option<usize> {
     }
     let pages = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
     let va = sys::shm_map_typed(cap as u32);
-    (va > 0 && pages * sys::PAGE_SIZE >= REGION_TOTAL).then_some(va as usize)
+    (va > 0 && pages * sys::PAGE_SIZE >= bytes).then_some(va as usize)
 }
 
 /// The capability on this server's endpoint: the row's one grant, with `READ`
@@ -274,9 +280,15 @@ fn log(line: &[u8]) {
 
 #[sys::main(panic_exit = 70)]
 fn main() -> ! {
-    let Some(region) = open_region() else {
+    let Some(region) = open_region(azos_abi::cap::SHM_INPUT_EVENTS, REGION_TOTAL) else {
         log(b"[inputd] no input event region in this row (no keyboard or mouse driver): nothing to serve\n");
         sys::exit(0);
+    };
+    // Without the word the drivers cannot be told who holds the keyboard: the
+    // console keeps it, and a grant would lend a ring nothing is routed to.
+    let Some(focus) = open_region(azos_abi::cap::SHM_INPUT_FOCUS, FOCUS_BYTES) else {
+        log(b"[inputd] the row grants no focus word (MemObj input.focus): the console keeps the keyboard\n");
+        sys::exit(1);
     };
     let Some(source) = find_source() else {
         log(b"[inputd] the row grants no call right to lend on endpoint.input\n");
@@ -286,7 +298,7 @@ fn main() -> ! {
         log(b"[inputd] no memory object for the trusted-path page\n");
         sys::exit(1);
     };
-    let mut svc = Service::new(Sys { region, page, page_base, source }, azos_limits::COMPOSITOR);
+    let mut svc = Service::new(Sys { region, focus, page, page_base, source }, azos_limits::COMPOSITOR);
     svc.attach();
     // SAFETY: no other thread exists yet.
     unsafe { *STATE.0.get() = Some(svc) };

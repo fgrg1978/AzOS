@@ -8,7 +8,7 @@
 //! ring, which the ring-3 terminal server (`termd`) drains; with Kconfig
 //! `INPUTD`, every event also in the input server's stream, and the console's
 //! two only while the console holds the focus (the input server's decision,
-//! the region's focus word). [`keymap`] decides which (evdev codes in, bytes
+//! its focus word). [`keymap`] decides which (evdev codes in, bytes
 //! out); [`events`] is the region. virtio-input
 //! (`azos_drv_virtio::virtio::input`), the PS/2 controller ([`ps2`]) and the
 //! USB HID sink (`kernel/src/boot/usb_hid.rs`) are the producers.

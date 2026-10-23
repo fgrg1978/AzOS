@@ -2036,11 +2036,12 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // the input drivers' stream to the task that holds the focus. Its row is
     // its whole authority: `READ` on `endpoint.input` (it serves it) with the
     // call right and `transfer` in the same grant (the source its warrants are
-    // derived from) and the drivers' region `MemObj input.events`, which it
-    // shares with the terminal server (each uses its own ring of it). It reads
-    // no console byte. At [`SERVICE_PRIORITY`]: above the session whose input
-    // it delivers and above every caller (the compositor, the tools). Pushed
-    // before the component manager's row, as every row that starts is.
+    // derived from), the drivers' region `MemObj input.events`, which it
+    // shares with the terminal server (each uses its own ring of it), and the
+    // focus word `MemObj input.focus`, its alone. It reads no console byte. At
+    // [`SERVICE_PRIORITY`]: above the session whose input it delivers and above
+    // every caller (the compositor, the tools). Pushed before the component
+    // manager's row, as every row that starts is.
     if INPUTD_ROW {
         topo.push_task(MaybeStr::from_bytes(TASK_INPUTD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, INPUTD_CAPS)
             .expect("default_minimal_topology: INPUTD.ELF push failed");
@@ -3201,8 +3202,17 @@ const INPUTD_EVENTS: CapSpec = CapSpec {
     perms: CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP),
     target: MaybeStr::from_bytes(b"input.events"), transfer: false, ops: 0,
 };
+/// The focus word, `READ|WRITE|MAP`: the server writes who holds the keyboard,
+/// the drivers read it. This row is the only one granted it (the terminal
+/// server's grant of the events region is read-write, so the word has a page
+/// of its own: `azos_ipc::kregion`).
+const INPUTD_FOCUS: CapSpec = CapSpec {
+    kind: CapKind::MemObj,
+    perms: CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP),
+    target: MaybeStr::from_bytes(b"input.focus"), transfer: false, ops: 0,
+};
 /// `INPUTD.ELF`'s authority.
-const INPUTD_CAPS: &[CapSpec] = &[INPUT_SERVE, INPUTD_EVENTS];
+const INPUTD_CAPS: &[CapSpec] = &[INPUT_SERVE, INPUTD_EVENTS, INPUTD_FOCUS];
 
 /// Does the built-in topology carry the compositor's row? It does when the
 /// build has one (Kconfig `COMPOSITOR`, which needs a framebuffer and the input

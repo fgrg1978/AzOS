@@ -3768,7 +3768,7 @@ pub fn sys_cap_lookup(kind_raw: u64, resource: u64) -> i64 {
         return Errno::EINVAL.to_syscall_ret();
     }
     // A `Shm` lookup may name a kernel-owned region by its key
-    // (`SHM_INSPECT_*`, `SHM_INPUT_EVENTS`, `SHM_CONSOLE_SCREEN`), since the
+    // (`SHM_INSPECT_*`, `SHM_INPUT_EVENTS`, `SHM_INPUT_FOCUS`, `SHM_CONSOLE_SCREEN`), since the
     // consumer cannot know the region's packed
     // reference; the table is then asked about that region.
     if kind == ty::SHM {

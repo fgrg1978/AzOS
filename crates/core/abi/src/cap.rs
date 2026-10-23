@@ -291,6 +291,12 @@ pub const SHM_CONSOLE_SCREEN: u32 = 0x5354_0005;
 /// `{ts, level, module, msg}` of every kernel log line, which `logd` drains
 /// into its files. `logd` is the only task granted it.
 pub const SHM_KLOG_RING: u32 = 0x5354_0006;
+/// [`SHM_INPUT_EVENTS`] for the input focus word (`MemObj input.focus`, Kconfig
+/// INPUTD), granted `READ|WRITE|MAP` to the input server alone: who the
+/// keyboard and the pointer belong to, which the input drivers read for every
+/// event. A page of its own, so no other holder of the input regions can write
+/// it.
+pub const SHM_INPUT_FOCUS: u32 = 0x5354_0007;
 
 /// `SYS_CAP_INFO(ty::SHM, SHM_INSPECT_NAMES)`: the handle of this task's
 /// `Cap<Shm>` to the name server's view of the topology (`MemObj

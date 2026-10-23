@@ -279,15 +279,22 @@ fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
             }
             if c.kind == CapKind::MemObj {
                 regions += 1;
-                // The terminal server's two regions are the only ones a task
-                // writes (the ring's tail, the screen's overlay words).
-                let rw = matches!(c.target.as_bytes(), b"input.events" | b"console.screen");
+                // The terminal server's two regions and the input server's
+                // focus word are the only ones a task writes (the ring's tail,
+                // the screen's overlay words, who holds the keyboard).
+                let rw = matches!(c.target.as_bytes(), b"input.events" | b"console.screen" | b"input.focus");
                 let want = if rw { VIEW.union(CapPerms::WRITE) } else { VIEW };
                 assert_eq!((given, c.transfer), (want, false), "{who:?}: a region is mapped and read (and written only by the terminal server's two), nothing more");
                 // The input server writes the tail of its own ring of the events region.
                 assert!(
                     !rw || matches!(task.name.as_str(), "TERMD.ELF" | "INPUTD.ELF"),
                     "{who:?}: only the terminal server and the input server hold a writable region"
+                );
+                // The focus word is the input server's alone: the console must
+                // not be able to name itself the holder of the keyboard.
+                assert!(
+                    c.target.as_bytes() != b"input.focus" || task.name.as_str() == "INPUTD.ELF",
+                    "{who:?}: only the input server holds the focus word"
                 );
             } else {
                 assert!(!given.contains(CapPerms::MAP), "{who:?}: MAP is for memory objects");

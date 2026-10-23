@@ -20,8 +20,9 @@
 //! **The server is the one arbiter of the keyboard and the pointer.** With
 //! nobody holding the focus they are the console's (the terminal server's);
 //! with a holder, the holder's alone. The decision reaches the drivers as the
-//! focus word of their region ([`Host::set_focus`]: 0 the console, else the
-//! holder's generation), which they read for every event: while it names a
+//! focus word ([`Host::set_focus`]: 0 the console, else the holder's
+//! generation; a page only this server is granted, `MemObj input.focus`),
+//! which they read for every event: while it names a
 //! holder no key becomes a console byte and no event reaches the terminal
 //! server's ring, except the modifiers (no text) and the chord below. The
 //! stream carries every event, and marks those the console was given

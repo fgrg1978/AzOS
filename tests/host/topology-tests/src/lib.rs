@@ -4339,16 +4339,42 @@ mod launch_cap_tests {
             let inputd = topo.find_task(&MaybeStr::from_bytes(b"INPUTD.ELF")).unwrap();
             assert!(inputd.start, "the server starts at boot");
             let regions: Vec<_> = topo.caps_of(inputd).iter().filter(|c| c.kind == CapKind::MemObj).collect();
-            assert_eq!(regions.len(), 1);
-            assert_eq!(regions[0].target.as_bytes(), b"input.events");
-            assert_eq!(regions[0].perms, CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP));
-            assert!(!regions[0].transfer);
-            assert_eq!(topo.caps_of(inputd).len(), 2, "its endpoint and the drivers' region: nothing else");
+            assert_eq!(regions.iter().map(|c| c.target.as_bytes()).collect::<Vec<_>>(), [&b"input.events"[..], &b"input.focus"[..]]);
+            for r in &regions {
+                assert_eq!(r.perms, CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP));
+                assert!(!r.transfer);
+            }
+            assert_eq!(topo.caps_of(inputd).len(), 3, "its endpoint, the drivers' region and the focus word: nothing else");
         } else {
             assert!(servers.is_empty() && callers.is_empty() && grants == 0, "no server row, no endpoint");
             assert!(topo.find_task(&MaybeStr::from_bytes(b"INPUTD.ELF")).is_none());
         }
         assert_eq!(topo.admission_check(), Ok(()));
+    }
+
+    /// **Discriminates** the focus split (owner 2026-10-23): the focus word,
+    /// which decides whether the console or the focus holder gets the keyboard,
+    /// is granted to the input server's row alone. Every other row, the
+    /// terminal server's first (it maps the event region read-write), holds no
+    /// capability on `input.focus`, so it cannot map, let alone write, the word.
+    ///
+    /// **Canary.** Add `INPUTD_FOCUS` to `TERMD_CAPS` (the terminal server
+    /// could then set itself the holder): red here, and on the terminal
+    /// server's own row test.
+    #[test]
+    fn only_the_input_server_is_granted_the_focus_word() {
+        let topo = default_minimal();
+        let holders: Vec<String> = topo
+            .tasks()
+            .iter()
+            .filter(|t| topo.caps_of(t).iter().any(|c| c.target.as_bytes() == b"input.focus"))
+            .map(|t| t.name.as_str().to_string())
+            .collect();
+        let want: &[&str] = if azos_topology::builder::INPUTD_ROW { &["INPUTD.ELF"] } else { &[] };
+        assert_eq!(holders, want, "the focus word is the input server's alone");
+        if let Some(termd) = topo.find_task(&MaybeStr::from_bytes(b"TERMD.ELF")) {
+            assert!(topo.caps_of(termd).iter().all(|c| c.target.as_bytes() != b"input.focus"), "the console cannot set who holds the keyboard");
+        }
     }
 
     /// Wave 12 (owner round 48): the shell and the tool image (`ps`) hold the

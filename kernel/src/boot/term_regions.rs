@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The two kernel-owned regions the ring-3 terminal server (`TERMD.ELF`)
+//! The kernel-owned regions the ring-3 terminal server (`TERMD.ELF`)
 //! turns into keys and a mouse, as gpm does on a Linux console:
 //!
 //! * **`input.events`** (a keyboard or mouse driver configured: Kconfig
 //!   `DRV_VIRTIO_INPUT`, `DRV_PS2`): the ring of events no driver turned into
 //!   a console byte (`azos_drv_input::events`). The drivers write it through
 //!   the direct map, the server maps it and moves the tail. With Kconfig
-//!   `INPUTD` it also holds the input server's stream and the focus word, and
-//!   the input server's row is granted it too.
+//!   `INPUTD` it also holds the input server's stream, and the input server's
+//!   row is granted it too.
+//! * **`input.focus`** (Kconfig `INPUTD`): one page with the input server's
+//!   focus word (who holds the keyboard), granted to the input server's row
+//!   alone; the drivers read it through the direct map.
 //! * **`console.screen`** (Kconfig `FB_CONSOLE`): the framebuffer console's
 //!   screen region (`azos_input_wire::screen`): what is on the screen, the
 //!   lines scrolled off it (`FB_CONSOLE_SCROLLBACK`), the mouse modes
 //!   programs set, and the overlay the server asks the renderer to draw.
 //!
-//! Both are contiguous memory objects the kernel creates here, once, and
+//! All are contiguous memory objects the kernel creates here, once, and
 //! publishes to the minter (`azos_ipc::kregion`); a topology row grants one
 //! with `MemObj input.events` / `MemObj console.screen`, `READ|WRITE|MAP`
-//! (`TERMD.ELF`'s row, and `INPUTD.ELF`'s for `input.events`). No task has
-//! them otherwise: they are not reachable by name, address or ambient access.
+//! (`TERMD.ELF`'s row, and `INPUTD.ELF`'s for `input.events` and
+//! `input.focus`). No task has them otherwise: they are not reachable by name,
+//! address or ambient access.
 //!
 //! Called from `kernel_main` after the framebuffer is up (so the grid is
 //! there to publish) and before any input line is enabled (so the ring is
@@ -51,13 +55,33 @@ fn install_input_ring() {
         azos_drv_sys::kwarn!("[INPUT] no memory for the event ring: keys with no byte and the mouse are not delivered");
         return;
     };
-    // SAFETY: a fresh, zeroed, page-aligned kernel-owned region that is never
-    // freed; the consumer's mapping of it is shared memory by design.
+    // With the input server, the focus word: a page of its own, which only the
+    // input server's row is granted (the terminal server's grant of the event
+    // region is read-write). Without memory for it the console keeps the
+    // keyboard and the input server finds no word to arbitrate with.
+    let focus = if azos_limits::INPUTD {
+        match region(azos_drv_input::events::FOCUS_BYTES) {
+            Some((fobj, fbase, _)) => Some((fobj, fbase as usize)),
+            None => {
+                azos_drv_sys::kwarn!("[INPUT] no memory for the focus word: the console keeps the keyboard");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // SAFETY: fresh, zeroed, page-aligned kernel-owned regions that are never
+    // freed; the consumers' mappings of them are shared memory by design.
     // The stream's consumer (the input server) sleeps on a word of the region:
     // the producers wake it through the futex key the region's reference names.
-    if unsafe { azos_drv_input::events::install(base as usize, obj, azos_syscall::vdso_notify::notify_wake_kernel) } {
+    let fbase = focus.map_or(0, |(_, b)| b);
+    if unsafe { azos_drv_input::events::install(base as usize, fbase, obj, azos_syscall::vdso_notify::notify_wake_kernel) } {
         azos_ipc::kregion::publish(azos_ipc::kregion::Region::InputEvents, obj);
         azos_drv_sys::kprintln!("[INPUT] event ring {} slots, granted as MemObj input.events", azos_input_wire::event::RING_CAP);
+        if let Some((fobj, _)) = focus {
+            azos_ipc::kregion::publish(azos_ipc::kregion::Region::InputFocus, fobj);
+            azos_drv_sys::kprintln!("[INPUT] focus word, granted as MemObj input.focus");
+        }
     }
 }
 

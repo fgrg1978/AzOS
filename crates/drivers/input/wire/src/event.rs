@@ -88,8 +88,8 @@ pub const REGION_BYTES: usize = DROPS_OFFSET + 64;
 /// the focus. The terminal server drains the first ring and never the second,
 /// and the input server the second and never the first, so neither is
 /// disturbed by the other. Producers write the stream only with `INPUTD` on;
-/// then the focus word ([`FOCUS_OFFSET`]) decides what the first ring and the
-/// console get at all.
+/// then the focus word ([`FOCUS_OFFSET`], a region of its own) decides what
+/// the first ring and the console get at all.
 pub const STREAM_CAP: u32 = 128;
 
 /// Byte offset of the stream ring in the region (64-byte aligned: it follows
@@ -103,20 +103,26 @@ pub const STREAM_OFFSET: usize = REGION_BYTES;
 /// button state it holds when this moves.
 pub const STREAM_DROPS_OFFSET: usize = STREAM_OFFSET + 256 + STREAM_CAP as usize * 8;
 
-/// Byte offset of the **focus word**: who the keyboard and the pointer belong
-/// to, on a line of its own after the stream's counter. 0: the console (the
-/// terminal server); otherwise the generation of the task that holds the focus
-/// (`azos_devif::input`). The input server writes it when the focus moves; the
-/// producers read it for every event and route by it
+/// Bytes of the whole region: both rings and both counters' lines. Less than
+/// one page.
+pub const REGION_TOTAL: usize = STREAM_DROPS_OFFSET + 64;
+
+/// The **focus word**: who the keyboard and the pointer belong to. 0: the
+/// console (the terminal server); otherwise the generation of the task that
+/// holds the focus (`azos_devif::input`). It lives at [`FOCUS_OFFSET`] of a
+/// kernel-owned page of its own (`MemObj input.focus`, [`FOCUS_BYTES`]), which
+/// only the input server is granted, read-write: the terminal server maps the
+/// event region read-write (it moves the first ring's tail), so a word in that
+/// region would be the console's to set. The input server writes it when the
+/// focus moves; the producers read it for every event and route by it
 /// (`azos_drv_input::keymap::route`), and a producer that sees the Secure
 /// Attention chord sets it back to 0 itself, so the chord reaches the console
 /// whatever the input server does. 0 is also its value before the input server
 /// runs and after it exits.
-pub const FOCUS_OFFSET: usize = STREAM_DROPS_OFFSET + 64;
+pub const FOCUS_OFFSET: usize = 0;
 
-/// Bytes of the whole region: both rings, both counters' lines and the focus
-/// word's. Less than one page.
-pub const REGION_TOTAL: usize = FOCUS_OFFSET + 64;
+/// Bytes of the focus word's region: the word's line.
+pub const FOCUS_BYTES: usize = FOCUS_OFFSET + 64;
 
 /// Set in the type half of a **stream** word whose event the console was given
 /// (the focus word was 0 when the producer routed it): the input server tracks

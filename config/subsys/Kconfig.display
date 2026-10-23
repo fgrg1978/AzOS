@@ -105,8 +105,8 @@ config INPUTD
       terminal server, which drains the first ring: arrows, F-keys, the mouse
       on the framebuffer console), so a build with no graphical client sees no
       change on the shell; while a task holds it, the drivers give the console
-      nothing of it but the modifier keys and the chord (the region's focus
-      word, which the server writes). A serial line is the console's always.
+      nothing of it but the modifier keys and the chord (the focus word, a
+      kernel page granted read-write to the server's row alone). A serial line is the console's always.
       The drivers wake the server when they push into an empty stream (a
       futex on the region), so no timer is involved. The toolbox applet
       `input watch` is a client. Needs CAP_SLOT_EXT: a warrant is a

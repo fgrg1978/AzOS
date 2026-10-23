@@ -15,8 +15,8 @@
 //!
 //! **One arbiter.** With the input server (Kconfig `INPUTD`) the keyboard and
 //! the pointer belong to whoever holds the focus, and the input server decides
-//! who that is: it writes the region's focus word
-//! (`azos_input_wire::event::FOCUS_OFFSET`, read by `events::console_holds`)
+//! who that is: it writes the focus word (`azos_input_wire::event::FOCUS_OFFSET`,
+//! a page of its own, read by `events::console_holds`)
 //! and [`route`] obeys it for every event. While the console holds the focus
 //! (the word is 0, the default) an event goes where it always went. While a
 //! task holds it, no event becomes a console byte or reaches the terminal

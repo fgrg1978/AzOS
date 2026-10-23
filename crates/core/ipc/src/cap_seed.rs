@@ -271,8 +271,9 @@ pub fn seed_one_cap_ops(
         // The kernel-owned regions: the introspection tree (Kconfig INSPECT,
         // `inspect.public` and `inspect.admin`, `READ|MAP` only; the admin
         // region also needs the task view in the table already) and the
-        // terminal server's two (`input.events`, `console.screen`,
-        // `READ|WRITE|MAP`, `kregion.rs`). The installed minter decides; a
+        // terminal server's two (`input.events`, `console.screen`) and the
+        // input server's focus word (`input.focus`), `READ|WRITE|MAP`,
+        // `kregion.rs`. The installed minter decides; a
         // target it does not know is refused, not read as "no minter": a
         // region that does not exist at boot has no name to seed. Without an
         // installed minter (a host test) every memory-object target is

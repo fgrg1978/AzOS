@@ -26,17 +26,16 @@
 //! kernel's `notify_wake_kernel` on the region), after the lock is released.
 //! So a key reaches the holder as soon as the server runs, with no timer.
 //!
-//! **The focus word** (`FOCUS_OFFSET`, after the stream's counter) is the input
-//! server's decision of who the keyboard and the pointer belong to: 0 the
-//! console, else the generation of the task that holds the focus. The producers
-//! read it for each event ([`console_holds`]) and route by it
-//! (`keymap::route`); every stream word of an event the console was given is
-//! marked (`STREAM_CONSOLE`), so the server never hands it to a holder as well.
-//! The Secure Attention chord resets it to the console here ([`attention`]),
-//! before the server has seen the chord. Without `INPUTD` nothing reads it.
-//! The terminal server maps the region read-write too (it moves the first
-//! ring's tail), so it could write the word: the word arbitrates between the
-//! console and the other tasks, and the terminal server is the console.
+//! **The focus word** is the input server's decision of who the keyboard and
+//! the pointer belong to: 0 the console, else the generation of the task that
+//! holds the focus. It is in a page of its own (`MemObj input.focus`), not in
+//! this region: the terminal server maps this one read-write, and the word must
+//! be the input server's alone to write. The producers read it for each event
+//! ([`console_holds`]) and route by it (`keymap::route`); every stream word of
+//! an event the console was given is marked (`STREAM_CONSOLE`), so the server
+//! never hands it to a holder as well. The Secure Attention chord resets it to
+//! the console here ([`attention`]), before the server has seen the chord.
+//! Without `INPUTD` there is no such page and the console holds the keyboard.
 //!
 //! The ring has one producer and two drivers (virtio-input's interrupt arm
 //! and the PS/2 one) may run on different CPUs, so [`publish`] takes one lock
@@ -68,10 +67,13 @@ use core::sync::atomic::{AtomicU32, Ordering};
 // without the rings crate. The stream ring follows it, with its own counter.
 const _: () = assert!(DROPS_OFFSET == SpscRing::bytes(RING_CAP));
 const _: () = assert!(STREAM_DROPS_OFFSET == STREAM_OFFSET + SpscRing::bytes(STREAM_CAP));
-const _: () = assert!(STREAM_OFFSET % 64 == 0 && FOCUS_OFFSET % 64 == 0 && REGION_TOTAL <= 4096);
+const _: () = assert!(STREAM_OFFSET % 64 == 0 && REGION_TOTAL <= 4096);
 
-/// Bytes the region occupies: both rings, both drop counters, the focus word.
+/// Bytes the region occupies: both rings and both drop counters.
 pub const RING_BYTES: usize = REGION_TOTAL;
+
+/// Bytes of the focus word's page that are used (`azos_input_wire::event::FOCUS_BYTES`).
+pub const FOCUS_BYTES: usize = azos_input_wire::event::FOCUS_BYTES;
 
 /// Wakes up to `n` waiters on the word at `offset` of the region `obj`: the
 /// kernel's `notify_wake_kernel`, which an interrupt handler may call.
@@ -82,26 +84,31 @@ fn no_waker(_: u32, _: u32, _: u32) -> u32 {
 }
 
 /// The installed region: its base in the kernel's direct map (0 until
-/// [`install`]), its reference and the waker of the stream's consumer.
+/// [`install`]), the focus word's page (0: none, the console holds the
+/// keyboard), the region's reference and the waker of the stream's consumer.
 #[derive(Clone, Copy)]
 struct Region {
     base: usize,
+    focus: usize,
     obj: u32,
     wake: Waker,
 }
 
-static BASE: SpinLock<Region> = SpinLock::new(Region { base: 0, obj: 0, wake: no_waker });
+static BASE: SpinLock<Region> = SpinLock::new(Region { base: 0, focus: 0, obj: 0, wake: no_waker });
 
 /// Make `base` (at least [`RING_BYTES`] of zeroed, 64-byte aligned memory the
 /// kernel owns for good) the event ring, and zero its header; `obj` is the
-/// region's reference, which `wake` takes to wake the stream's consumer. Boot,
-/// once, before the interrupt lines of the input devices are enabled.
+/// region's reference, which `wake` takes to wake the stream's consumer.
+/// `focus` is the focus word's page (at least [`FOCUS_BYTES`], the same
+/// conditions; 0 when the build has no input server). Boot, once, before the
+/// interrupt lines of the input devices are enabled.
 ///
 /// # Safety
-/// `base` must satisfy the above and stay valid and mapped for the life of the
-/// kernel; the consumer's mapping of it is shared memory by design.
-pub unsafe fn install(base: usize, obj: u32, wake: Waker) -> bool {
-    if base == 0 || base % 64 != 0 {
+/// `base` and `focus` must satisfy the above and stay valid and mapped for the
+/// life of the kernel; the consumers' mappings of them are shared memory by
+/// design.
+pub unsafe fn install(base: usize, focus: usize, obj: u32, wake: Waker) -> bool {
+    if base == 0 || base % 64 != 0 || focus % 64 != 0 {
         return false;
     }
     let mut g = BASE.lock();
@@ -110,30 +117,32 @@ pub unsafe fn install(base: usize, obj: u32, wake: Waker) -> bool {
     }
     SpscRing { base, cap: RING_CAP }.init();
     SpscRing { base: base + STREAM_OFFSET, cap: STREAM_CAP }.init();
-    for off in [DROPS_OFFSET, STREAM_DROPS_OFFSET, FOCUS_OFFSET] {
-        // SAFETY: the region is `RING_BYTES` long (the caller's contract).
-        unsafe { &*((base + off) as *const AtomicU32) }.store(0, Ordering::Relaxed);
+    word(base, DROPS_OFFSET).store(0, Ordering::Relaxed);
+    word(base, STREAM_DROPS_OFFSET).store(0, Ordering::Relaxed);
+    if focus != 0 {
+        word(focus, FOCUS_OFFSET).store(0, Ordering::Relaxed);
     }
-    *g = Region { base, obj, wake };
+    *g = Region { base, focus, obj, wake };
     true
 }
 
-/// The word at `off` of the region at `base`.
+/// The word at `off` of the region at `base` (the event region or the focus
+/// word's page).
 fn word(base: usize, off: usize) -> &'static AtomicU32 {
-    // SAFETY: `install` checked the base, the region is `RING_BYTES` long and
-    // never freed; every offset used is inside it.
+    // SAFETY: `install` checked the base, the regions are as long as its
+    // contract says and never freed; every offset used is inside them.
     unsafe { &*((base + off) as *const AtomicU32) }
 }
 
 /// Does the console hold the keyboard and the pointer (the focus word is 0)?
-/// Always without Kconfig `INPUTD` (there is no one else to give them to) and
-/// before the region exists.
+/// Always without Kconfig `INPUTD` (there is no one else to give them to, and
+/// no focus page) and before the region exists.
 pub fn console_holds() -> bool {
     if !azos_limits::INPUTD {
         return true;
     }
     let g = BASE.lock();
-    g.base == 0 || word(g.base, FOCUS_OFFSET).load(Ordering::Acquire) == 0
+    g.focus == 0 || word(g.focus, FOCUS_OFFSET).load(Ordering::Acquire) == 0
 }
 
 /// The Secure Attention chord was pressed: the keyboard is the console's from
@@ -145,8 +154,8 @@ pub fn attention() {
         return;
     }
     let g = BASE.lock();
-    if g.base != 0 {
-        word(g.base, FOCUS_OFFSET).store(0, Ordering::Release);
+    if g.focus != 0 {
+        word(g.focus, FOCUS_OFFSET).store(0, Ordering::Release);
     }
 }
 

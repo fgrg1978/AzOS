@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Kernel-owned regions a topology row grants a task: `input.events` (the
-//! ring the input drivers publish into, whose consumer moves the tail) and
-//! `console.screen` (the framebuffer console's screen region, whose reader
-//! writes the overlay words), both for reading AND writing; and `klog.ring`
-//! (the structured kernel log, whose readers keep their own cursors) for
-//! reading only.
+//! ring the input drivers publish into, whose consumer moves the tail),
+//! `input.focus` (the input server's word saying who holds the keyboard, which
+//! the drivers read) and `console.screen` (the framebuffer console's screen
+//! region, whose reader writes the overlay words), all for reading AND
+//! writing; and `klog.ring` (the structured kernel log, whose readers keep
+//! their own cursors) for reading only.
 //!
 //! Like the introspection regions ([`crate::inspect_region`]): the kernel
 //! creates a contiguous memory object at boot and publishes its packed
@@ -33,6 +34,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// No region published.
 const NONE: u32 = u32::MAX;
 static INPUT_EVENTS: AtomicU32 = AtomicU32::new(NONE);
+static INPUT_FOCUS: AtomicU32 = AtomicU32::new(NONE);
 static CONSOLE_SCREEN: AtomicU32 = AtomicU32::new(NONE);
 static KLOG_RING: AtomicU32 = AtomicU32::new(NONE);
 
@@ -44,6 +46,8 @@ pub const VIEW: CapPerms = CapPerms::READ.union(CapPerms::MAP);
 
 /// The target of the input event ring's row.
 pub const TARGET_INPUT_EVENTS: &str = "input.events";
+/// The target of the input focus word's row (the input server's alone).
+pub const TARGET_INPUT_FOCUS: &str = "input.focus";
 /// The target of the console screen region's row.
 pub const TARGET_CONSOLE_SCREEN: &str = "console.screen";
 /// The target of the structured kernel log's row.
@@ -53,6 +57,7 @@ pub const TARGET_KLOG_RING: &str = "klog.ring";
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
     InputEvents,
+    InputFocus,
     ConsoleScreen,
     KlogRing,
 }
@@ -61,6 +66,7 @@ impl Region {
     fn slot(self) -> &'static AtomicU32 {
         match self {
             Region::InputEvents => &INPUT_EVENTS,
+            Region::InputFocus => &INPUT_FOCUS,
             Region::ConsoleScreen => &CONSOLE_SCREEN,
             Region::KlogRing => &KLOG_RING,
         }
@@ -69,7 +75,7 @@ impl Region {
     /// The rights a row for this region asks for, and the capability carries.
     pub const fn perms(self) -> CapPerms {
         match self {
-            Region::InputEvents | Region::ConsoleScreen => RW,
+            Region::InputEvents | Region::InputFocus | Region::ConsoleScreen => RW,
             Region::KlogRing => VIEW,
         }
     }
@@ -77,6 +83,7 @@ impl Region {
     fn of_target(target: &str) -> Option<Region> {
         match target {
             TARGET_INPUT_EVENTS => Some(Region::InputEvents),
+            TARGET_INPUT_FOCUS => Some(Region::InputFocus),
             TARGET_CONSOLE_SCREEN => Some(Region::ConsoleScreen),
             TARGET_KLOG_RING => Some(Region::KlogRing),
             _ => None,
@@ -129,9 +136,10 @@ pub fn seed_mint_any(tid: u32, target: &str, perms: CapPerms) -> Option<CapHandl
 /// returned as given (it then matches nothing: a key is above every pool
 /// index).
 pub fn lookup_resource(resource: u32) -> u32 {
-    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_INPUT_EVENTS, SHM_KLOG_RING};
+    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_INPUT_EVENTS, SHM_INPUT_FOCUS, SHM_KLOG_RING};
     let region = match resource {
         SHM_INPUT_EVENTS => Region::InputEvents,
+        SHM_INPUT_FOCUS => Region::InputFocus,
         SHM_CONSOLE_SCREEN => Region::ConsoleScreen,
         SHM_KLOG_RING => Region::KlogRing,
         _ => return resource,
@@ -145,7 +153,7 @@ pub fn lookup_resource(resource: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_INPUT_EVENTS, SHM_KLOG_RING};
+    use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_INPUT_EVENTS, SHM_INPUT_FOCUS, SHM_KLOG_RING};
     use std::sync::{Mutex, MutexGuard};
 
     /// The published refs are process-wide statics: one test at a time.
@@ -162,6 +170,7 @@ mod tests {
 
     fn clear() {
         publish(Region::InputEvents, NONE);
+        publish(Region::InputFocus, NONE);
         publish(Region::ConsoleScreen, NONE);
         publish(Region::KlogRing, NONE);
     }
@@ -215,6 +224,12 @@ mod tests {
         assert!(seed_mint(tid, "inspect.public", RW).is_none());
         assert!(seed_mint(tid, TARGET_INPUT_EVENTS, RW).is_some());
         assert!(seed_mint(tid, TARGET_CONSOLE_SCREEN, RW).is_some());
+        // The focus word: unpublished, nothing; published, exactly RW.
+        assert!(seed_mint(tid, TARGET_INPUT_FOCUS, RW).is_none());
+        publish(Region::InputFocus, 2);
+        assert!(seed_mint(tid, TARGET_INPUT_FOCUS, VIEW).is_none());
+        assert!(seed_mint(tid, TARGET_INPUT_FOCUS, RW.union(CapPerms::DUP)).is_none());
+        assert!(seed_mint(tid, TARGET_INPUT_FOCUS, RW).is_some());
         clear();
     }
 
@@ -225,6 +240,10 @@ mod tests {
         publish(Region::ConsoleScreen, 1);
         assert_eq!(lookup_resource(SHM_INPUT_EVENTS), crate::cap::objref::resource_index(ty::SHM, 0));
         assert_eq!(lookup_resource(SHM_CONSOLE_SCREEN), crate::cap::objref::resource_index(ty::SHM, 1));
+        assert_eq!(lookup_resource(SHM_INPUT_FOCUS), SHM_INPUT_FOCUS, "the focus word is not published here");
+        publish(Region::InputFocus, 3);
+        assert_eq!(lookup_resource(SHM_INPUT_FOCUS), crate::cap::objref::resource_index(ty::SHM, 3));
+        assert_ne!(lookup_resource(SHM_INPUT_FOCUS), lookup_resource(SHM_INPUT_EVENTS), "a region of its own");
         assert_eq!(lookup_resource(3), 3, "any other value stays");
         clear();
     }

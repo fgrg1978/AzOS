@@ -30,8 +30,9 @@
 //! **The keyboard is the console's only while nobody holds the focus.** With
 //! the input server (Kconfig `INPUTD`, `userspace/services/inputd`) the
 //! keyboard and the pointer belong to whoever holds the focus, and the input
-//! server decides who: this server is the focus client nobody has to ask for
-//! it, the one that has them while no other task holds the focus. While a task
+//! server decides who (its focus word, a page this server is not granted):
+//! this server is the focus client nobody has to ask for it, the one that has
+//! them while no other task holds the focus. While a task
 //! holds it the drivers type nothing into the console input and publish
 //! nothing into the ring here but the modifier keys (no text; they keep the
 //! state here true) and Ctrl+Alt+Delete, which takes the focus back for the
