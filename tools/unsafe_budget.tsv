@@ -12,7 +12,7 @@
 # crate	blocks	fns	impls	attrs	forbid	share
 .	5	10	1	0	0	-
 crates/core/abi	0	0	0	0	1	0
-crates/core/actuation	2	0	0	0	0	46
+crates/core/actuation	0	0	0	0	1	0
 crates/core/arch	0	0	0	0	1	0
 crates/core/arch-aarch64	197	47	1	2	0	76
 crates/core/arch-api	27	10	0	0	0	30
@@ -22,7 +22,7 @@ crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
-crates/core/common	5	0	0	0	0	35
+crates/core/common	4	0	0	0	0	40
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	16	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	59
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	516
+@unsafe-share	511

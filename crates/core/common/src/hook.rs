@@ -24,8 +24,11 @@
 //!    panics with the hook's name before it gets that far.
 //!
 //! A hook that is installed after boot (a driver probed at run time, a test
-//! canary) is NOT a `Hook`: it belongs in a plain atomic, and nothing here
-//! pretends otherwise.
+//! canary, a job queued for a worker) is NOT a `Hook`: it belongs in a plain
+//! [`AtomicFn`], writable for the kernel's whole life, and nothing here
+//! pretends otherwise. `Hook` is an `AtomicFn` with the set-once rule and the
+//! section on top; the one conversion between a function and a word is the
+//! `AtomicFn`'s.
 //!
 //! **Hosted builds** (anything that is neither `target_os = "none"` nor `"azos"`: the
 //! host test suites) have no section to protect and reinstall hooks per test, so there
@@ -62,30 +65,118 @@ pub fn is_sealed() -> bool {
     SEALED.load(Ordering::Acquire)
 }
 
+/// What [`AtomicFn::install`] found in the slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Install {
+    /// The slot was empty and now holds the function.
+    Stored,
+    /// The slot already held this same function; nothing changed.
+    Same,
+    /// The slot holds a different function; nothing changed.
+    Taken,
+}
+
+/// An atomic slot holding a plain `fn(..) -> ..` pointer, or nothing.
+///
+/// `F` must be a function pointer (checked by size; a function's address is
+/// never 0, so 0 is the empty slot). The word only ever holds 0 or the bits of
+/// an `F` stored by one of the methods below, which is what makes reading it
+/// back as an `F` sound.
+#[repr(transparent)]
+pub struct AtomicFn<F: Copy> {
+    raw: AtomicUsize,
+    _f: PhantomData<F>,
+}
+
+impl<F: Copy> AtomicFn<F> {
+    /// An empty slot.
+    pub const fn new() -> Self {
+        Self { raw: AtomicUsize::new(0), _f: PhantomData }
+    }
+
+    #[inline(always)]
+    fn word(f: F) -> usize {
+        const { assert!(size_of::<F>() == size_of::<usize>(), "an AtomicFn holds a fn pointer") };
+        // SAFETY: `F` is pointer-sized (asserted above) and `Copy`; reading its
+        // bytes as a `usize` is `f as usize`.
+        unsafe { transmute_copy::<F, usize>(&f) }
+    }
+
+    #[inline(always)]
+    fn func(raw: usize) -> Option<F> {
+        const { assert!(size_of::<F>() == size_of::<usize>(), "an AtomicFn holds a fn pointer") };
+        if raw == 0 {
+            None
+        } else {
+            // SAFETY: `raw` was read from `self.raw`, which holds 0 or a word
+            // made by `word` from a valid `F` (the type's invariant).
+            Some(unsafe { transmute_copy::<usize, F>(&raw) })
+        }
+    }
+
+    /// Store `f` if the slot is empty (a compare-exchange from 0).
+    pub fn install(&self, f: F) -> Install {
+        let w = Self::word(f);
+        match self.raw.compare_exchange(0, w, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Install::Stored,
+            Err(cur) if cur == w => Install::Same,
+            Err(_) => Install::Taken,
+        }
+    }
+
+    /// Replace the slot's content with `f` (`None` empties it).
+    #[inline]
+    pub fn set(&self, f: Option<F>) {
+        self.raw.store(f.map_or(0, Self::word), Ordering::Release);
+    }
+
+    /// Empty the slot and return what it held.
+    #[inline]
+    pub fn take(&self) -> Option<F> {
+        Self::func(self.raw.swap(0, Ordering::AcqRel))
+    }
+
+    /// The stored function, if any.
+    #[inline]
+    pub fn get(&self) -> Option<F> {
+        Self::func(self.raw.load(Ordering::Acquire))
+    }
+
+    /// [`AtomicFn::get`] with a relaxed load. Sound because the pointee is
+    /// code, which needs no publication; use `get` when the function reads
+    /// state the installer wrote.
+    #[inline]
+    pub fn get_relaxed(&self) -> Option<F> {
+        Self::func(self.raw.load(Ordering::Relaxed))
+    }
+
+    /// Is a function stored?
+    #[inline]
+    pub fn is_set(&self) -> bool {
+        self.raw.load(Ordering::Acquire) != 0
+    }
+}
+
+impl<F: Copy> Default for AtomicFn<F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A function pointer installed once at boot and read-only afterwards.
 ///
-/// `F` must be a plain `fn(..) -> ..` pointer (checked by size; a pointer is
-/// never 0, so 0 means "not installed").
+/// `F` must be a plain `fn(..) -> ..` pointer (see [`AtomicFn`]).
 #[repr(C)]
 pub struct Hook<F: Copy> {
-    raw: AtomicUsize,
+    slot: AtomicFn<F>,
     name: &'static str,
-    _f: PhantomData<F>,
 }
 
 impl<F: Copy> Hook<F> {
     /// An empty hook. `name` is what the panic record says. Use [`ro_hook!`],
     /// which also puts the static in the right section.
     pub const fn new(name: &'static str) -> Self {
-        Self { raw: AtomicUsize::new(0), name, _f: PhantomData }
-    }
-
-    #[inline(always)]
-    fn addr(f: F) -> usize {
-        const { assert!(size_of::<F>() == size_of::<usize>(), "a Hook holds a fn pointer") };
-        // SAFETY: `F` is pointer-sized (asserted above) and `Copy`; reading its
-        // bytes as a `usize` is the `f as usize` the old statics did.
-        unsafe { transmute_copy::<F, usize>(&f) }
+        Self { slot: AtomicFn::new(), name }
     }
 
     /// Install `f` once. Ok for the first installer and for the same `f`
@@ -95,11 +186,9 @@ impl<F: Copy> Hook<F> {
         if is_sealed() {
             return Err(SetError::Sealed);
         }
-        let a = Self::addr(f);
-        match self.raw.compare_exchange(0, a, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => Ok(()),
-            Err(cur) if cur == a => Ok(()),
-            Err(_) => Err(SetError::AlreadySet),
+        match self.slot.install(f) {
+            Install::Stored | Install::Same => Ok(()),
+            Install::Taken => Err(SetError::AlreadySet),
         }
     }
 
@@ -112,7 +201,7 @@ impl<F: Copy> Hook<F> {
     pub fn set(&self, f: F) {
         #[cfg(not(any(target_os = "none", target_os = "azos")))]
         if !is_sealed() {
-            self.raw.store(Self::addr(f), Ordering::Release);
+            self.slot.set(Some(f));
             return;
         }
         match self.try_set(f) {
@@ -129,44 +218,27 @@ impl<F: Copy> Hook<F> {
     /// The installed function, if any.
     #[inline]
     pub fn get(&self) -> Option<F> {
-        const { assert!(size_of::<F>() == size_of::<usize>(), "a Hook holds a fn pointer") };
-        let raw = self.raw.load(Ordering::Acquire);
-        if raw == 0 {
-            None
-        } else {
-            // SAFETY: only `try_set`/`set` store here, and they store the
-            // address of a valid `F` (pointer-sized, asserted above).
-            Some(unsafe { transmute_copy::<usize, F>(&raw) })
-        }
+        self.slot.get()
     }
 
     /// [`Hook::get`] with a relaxed load, for the hottest readers (a per-CPU
-    /// id lookup). Sound because the pointee is code, which needs no
-    /// publication; use `get` when the hook's function reads state the
-    /// installer wrote.
+    /// id lookup); see [`AtomicFn::get_relaxed`].
     #[inline]
     pub fn get_relaxed(&self) -> Option<F> {
-        const { assert!(size_of::<F>() == size_of::<usize>(), "a Hook holds a fn pointer") };
-        let raw = self.raw.load(Ordering::Relaxed);
-        if raw == 0 {
-            None
-        } else {
-            // SAFETY: as in `get`.
-            Some(unsafe { transmute_copy::<usize, F>(&raw) })
-        }
+        self.slot.get_relaxed()
     }
 
     /// Forget the installed function: host-test hygiene (hooks are
     /// process-wide there). Hosted builds only; a bare-metal hook is set once.
     #[cfg(not(any(target_os = "none", target_os = "azos")))]
     pub fn clear_for_tests(&self) {
-        self.raw.store(0, Ordering::Release);
+        self.slot.set(None);
     }
 
     /// Is a function installed?
     #[inline]
     pub fn is_set(&self) -> bool {
-        self.raw.load(Ordering::Acquire) != 0
+        self.slot.is_set()
     }
 
     /// The name given at [`Hook::new`].

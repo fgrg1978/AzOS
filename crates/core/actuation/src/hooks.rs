@@ -12,7 +12,7 @@
 //! may be taken. Registration happens once per hook, at boot, before the
 //! scheduler starts.
 
-use core::sync::atomic::{AtomicPtr, Ordering};
+use azos_common::hook::{AtomicFn, Install};
 
 /// Room for every hook a domain registers per table. The robot domain
 /// registers one per table today.
@@ -20,24 +20,22 @@ pub const MAX_HOOKS: usize = 4;
 
 /// A table of up to [`MAX_HOOKS`] hooks, run in registration order.
 pub struct HookTable {
-    slots: [AtomicPtr<()>; MAX_HOOKS],
+    slots: [AtomicFn<fn()>; MAX_HOOKS],
 }
 
 impl HookTable {
     pub const fn new() -> Self {
-        HookTable { slots: [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_HOOKS] }
+        HookTable { slots: [const { AtomicFn::new() }; MAX_HOOKS] }
     }
 
     /// Append `hook`. Registering the same function twice is a no-op, so a
     /// repeated install cannot run a stop twice. Panics when the table is
     /// full: a boot that cannot register its stop work must not go on.
     pub fn register(&self, hook: fn()) {
-        let p = hook as *mut ();
         for slot in &self.slots {
-            match slot.compare_exchange(core::ptr::null_mut(), p, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return,
-                Err(cur) if cur == p => return,
-                Err(_) => continue,
+            match slot.install(hook) {
+                Install::Stored | Install::Same => return,
+                Install::Taken => continue,
             }
         }
         panic!("actuation: hook table full ({} hooks)", MAX_HOOKS);
@@ -45,21 +43,14 @@ impl HookTable {
 
     /// How many hooks are registered.
     pub fn len(&self) -> usize {
-        self.slots.iter().filter(|s| !s.load(Ordering::Acquire).is_null()).count()
+        self.slots.iter().filter(|s| s.is_set()).count()
     }
 
     /// Run every registered hook, in registration order.
     #[inline]
     pub fn run(&self) {
         for slot in &self.slots {
-            let p = slot.load(Ordering::Acquire);
-            if p.is_null() {
-                return;
-            }
-            // SAFETY: every non-null slot was stored by `register` from a
-            // `fn()`, and function pointers round-trip through `*mut ()` on
-            // every target this kernel builds for.
-            let f: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(p) };
+            let Some(f) = slot.get() else { return };
             f();
         }
     }

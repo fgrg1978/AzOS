@@ -22,7 +22,8 @@
 //!   - events_dropped         (ring-buffer overflow counter)
 //!   - flush_errors           (storage errors during flush)
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use azos_common::hook::{AtomicFn, Install};
 use azos_sync::waitqueue::WaitQueue;
 use azos_sync::SpinLock;
 
@@ -1359,7 +1360,7 @@ static FLUSH_WQ: WaitQueue = WaitQueue::new();
 
 /// Deferred I/O jobs posted by RT tasks (one-shot `fn()`s the flusher runs).
 /// Slots claimed with a CAS from 0; a full table refuses the job.
-static DEFERRED_IO: [AtomicUsize; LOG_FLUSHER_JOBS] = [const { AtomicUsize::new(0) }; LOG_FLUSHER_JOBS];
+static DEFERRED_IO: [AtomicFn<fn()>; LOG_FLUSHER_JOBS] = [const { AtomicFn::new() }; LOG_FLUSHER_JOBS];
 /// Kconfig `LOG_FLUSHER_JOBS`: deferred I/O job slots.
 pub const LOG_FLUSHER_JOBS: usize = azos_limits::LOG_FLUSHER_JOBS as usize;
 
@@ -1396,7 +1397,7 @@ pub fn logger_request_flush() {
 /// slot is taken (the caller retries on its next pass). Never blocks.
 pub fn logger_defer_io(job: fn()) -> bool {
     for slot in DEFERRED_IO.iter() {
-        if slot.compare_exchange(0, job as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+        if slot.install(job) == Install::Stored {
             logger_request_flush();
             return true;
         }
@@ -1444,10 +1445,7 @@ pub fn logger_flusher_pass() -> u32 {
         let _ = logger_flush_now();
     }
     for slot in DEFERRED_IO.iter() {
-        let job = slot.swap(0, Ordering::AcqRel);
-        if job != 0 {
-            // SAFETY: only `logger_defer_io` stores here, and it stores a `fn()`.
-            let job: fn() = unsafe { core::mem::transmute::<usize, fn()>(job) };
+        if let Some(job) = slot.take() {
             job();
         }
     }
@@ -2747,20 +2745,16 @@ pub fn set_serial_for_test(n: u32) {
 /// [`set_serial_for_test`]; it lets a host test take that window
 /// deterministically (a nested push from the hook is the other producer).
 #[cfg(test)]
-static RING_EVICT_HOOK: AtomicUsize = AtomicUsize::new(0);
+static RING_EVICT_HOOK: AtomicFn<fn()> = AtomicFn::new();
 
 #[cfg(test)]
 pub fn set_ring_evict_hook_for_test(f: Option<fn()>) {
-    RING_EVICT_HOOK.store(f.map_or(0, |f| f as usize), Ordering::SeqCst);
+    RING_EVICT_HOOK.set(f);
 }
 
 #[cfg(test)]
 fn ring_after_evict_hook() {
-    let f = RING_EVICT_HOOK.swap(0, Ordering::SeqCst);
-    if f != 0 {
-        // SAFETY: only `set_ring_evict_hook_for_test` stores a non-zero
-        // value, and it stores a `fn()`.
-        let f: fn() = unsafe { core::mem::transmute::<usize, fn()>(f) };
+    if let Some(f) = RING_EVICT_HOOK.take() {
         f();
     }
 }

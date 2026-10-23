@@ -71,6 +71,31 @@ mod estop;
 #[path = "../../../../crates/core/actuation/src/hooks.rs"]
 mod hooks;
 
+/// `HookTable`: registration order, and a second registration of the same
+/// function is a no-op (a repeated install cannot run a stop twice).
+/// Canary: treat `Install::Same` as a taken slot in `register` and the
+/// repeated hook runs twice.
+#[cfg(test)]
+mod hook_table {
+    use super::hooks::HookTable;
+    use std::sync::Mutex;
+
+    static RAN: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    fn a() { RAN.lock().unwrap().push(b'a'); }
+    fn b() { RAN.lock().unwrap().push(b'b'); }
+
+    #[test]
+    fn hooks_run_once_each_in_registration_order() {
+        static T: HookTable = HookTable::new();
+        T.register(a);
+        T.register(b);
+        T.register(a);
+        assert_eq!(T.len(), 2, "the same hook took a second slot");
+        T.run();
+        assert_eq!(*RAN.lock().unwrap(), b"ab");
+    }
+}
+
 /// A host medium with a volatile write cache: `write` lands in the cache,
 /// `fsync` makes it durable, and a power cut loses the cache. It can also be
 /// told to cut the power at the Nth observable step of a run.

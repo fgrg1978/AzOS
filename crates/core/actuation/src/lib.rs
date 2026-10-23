@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
+#![forbid(unsafe_code)]
 
 //! The authority over irreversible effects that every domain with an
 //! actuator shares (owner decision, wave 11: safety is cross-cutting).
