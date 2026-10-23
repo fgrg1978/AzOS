@@ -15,6 +15,8 @@
 //! - [`parser`] — alloc-free TOML subset parser.
 //! - [`neverallow`] — the assertions no topology may break, checked by
 //!   `admission_check` and `make check-neverallow`.
+//! - [`boot_admission`] — the pure half of the kernel's boot admission and
+//!   the records it writes, shared with the host dry boot (`tools/azos_sim`).
 //! - [`placement`] — where a driver row runs, and whether it may move.
 //! - [`verify`] — Ed25519 signature verification of the TOML bytes
 //!   against the trusted topology key.
@@ -56,6 +58,7 @@
 #![deny(missing_docs)]
 
 pub mod apply;
+pub mod boot_admission;
 pub mod builder;
 pub mod deadline;
 pub mod device_record;

@@ -126,34 +126,26 @@ fn install_builtin(num_cpus: usize) {
 /// admission refusal has its own record or none; this is for that one.
 fn record_neverallow(e: &azos_topology::AdmissionError) {
     let azos_topology::AdmissionError::Neverallow(r) = e else { return };
-    azos_decision::record(
-        azos_decision::Rule::Neverallow,
-        azos_decision::Verdict::Refuse,
-        r.row as u32,
-        [r.rule as u64, r.kind as u64, r.grant as u64],
-    );
+    if let Some(rc) = azos_topology::boot_admission::neverallow_receipt(e) {
+        rc.record();
+    }
     azos_drv_sys::kerr!("[TOPO] neverallow rule {} ({}) refuses row {}, grant {}: {}",
         r.rule, r.rule().id, r.row, r.grant, r.rule().text);
 }
 
 /// A topology refused because a row with `isolated = true` names no CPU
 /// (`Deadline(IsolatedWithoutCpu)`: the topology never picks the CPU of an
-/// isolated row) leaves the boot admission's record: `Rule::DeadlineAdmission`,
-/// `Verdict::Refuse`, subject = the CPUs of this board, `[0, 0, row + 1]` (the
-/// refused topology is already gone, so no row count). The third number carries the refused row's index plus one in its low 32
-/// bits and nothing above them (a reason in bits 32.. would read as a run-time
-/// reservation's refusal, `ProvenanceRecord::is_rt_refusal`). This is the
+/// isolated row) leaves the boot admission's record
+/// (`boot_admission::isolated_without_cpu_receipt`: `Rule::DeadlineAdmission`,
+/// subject = the CPUs of this board, `[0, 0, row + 1]`). This is the
 /// install-time check (`admission_check`), which runs before [`admit`], so
 /// `admit`'s own record for a deadline refusal is never reached for it.
 fn record_isolated_without_cpu(e: &azos_topology::AdmissionError, num_cpus: usize) {
     use azos_topology::{AdmissionError, DeadlineRefusal};
     let AdmissionError::Deadline(DeadlineRefusal::IsolatedWithoutCpu { task }) = e else { return };
-    azos_decision::record(
-        azos_decision::Rule::DeadlineAdmission,
-        azos_decision::Verdict::Refuse,
-        num_cpus as u32,
-        [0, 0, *task as u64 + 1],
-    );
+    if let Some(rc) = azos_topology::boot_admission::isolated_without_cpu_receipt(e, num_cpus) {
+        rc.record();
+    }
     azos_drv_sys::kerr!("[TOPO] row {} has isolated = true and no cpu_mask: an isolated row must name its CPU", task);
 }
 
@@ -473,50 +465,45 @@ fn admit(
     use azos_topology::signed::SignedRefusal;
     use azos_topology::{AdmissionError, MemoryRefusal};
 
-    // 1. Deadlines and the band.
+    // 1. Deadlines and the band: decided and recorded by the step the host
+    // dry boot (`tools/azos_sim`) replays too.
     use azos_decision::{record, Rule, Verdict};
+    use azos_topology::boot_admission::{self as ba, DeadlineOutcome};
     let rows = topo.tasks().len() as u64;
     // The cross-level rule binds only in the order the scheduler dispatches
     // reservations in (`classes::level_order`; the `sched-dl-in-level`
     // canary is armed before this runs), as at run-time `reserve`.
-    let r = match topo.deadline_admission(num_cpus, azos_sched::classes::level_order()) {
-        Ok(r) => r,
-        Err(e) => {
-            // The third number names the first row refused (`record_row`).
-            let row = if let AdmissionError::Deadline(d) = &e { d.record_row() } else { 0 };
-            record(Rule::DeadlineAdmission, Verdict::Refuse, num_cpus as u32, [0, rows, row]);
+    let step = ba::deadline_step(topo, num_cpus, azos_sched::classes::level_order());
+    step.receipts().for_each(ba::Receipt::record);
+    let (r, band) = match step.outcome {
+        DeadlineOutcome::Refused(e) => {
             if mode == Mode::Final {
                 halt_refused(format_args!("[TOPO] Deadline admission REFUSED on {} CPU(s): {:?}", num_cpus, e));
             }
             return Err(SignedRefusal::Admission(e));
         }
+        DeadlineOutcome::Admitted(r) => (r, None),
+        DeadlineOutcome::BandRefused(r, e) => (r, Some(e)),
     };
-    record(Rule::DeadlineAdmission, Verdict::Admit, num_cpus as u32, [r.placed as u64, rows, 0]);
     if r.placed > 0 {
         kprintln!("[TOPO] Deadline admission: {} real-time task(s) placed on {} CPU(s)", r.placed, num_cpus);
-        let band = band_check(topo, &r);
-        let v = if band.is_ok() { Verdict::Admit } else { Verdict::Refuse };
-        let row = band.err().map_or(0, |e| e.record_row());
-        record(Rule::RtBandCap, v, num_cpus as u32, [r.placed as u64, azos_limits::RT_BAND_CAP_PCT as u64, row]);
-        if let Err(e) = band {
-            if mode == Mode::Final {
-                halt_refused(format_args!("[TOPO] Deadline admission REFUSED: {:?} — the band's rows on that CPU exceed \
-                     RT_BAND_CAP_PCT={} %", e, azos_limits::RT_BAND_CAP_PCT));
-            }
-            return Err(SignedRefusal::Admission(AdmissionError::Deadline(e)));
+    }
+    if let Some(e) = band {
+        if mode == Mode::Final {
+            halt_refused(format_args!("[TOPO] Deadline admission REFUSED: {:?} — the band's rows on that CPU exceed \
+                 RT_BAND_CAP_PCT={} %", e, azos_limits::RT_BAND_CAP_PCT));
         }
+        return Err(SignedRefusal::Admission(AdmissionError::Deadline(e)));
     }
 
     // 2. A row that asks for a 2 MiB-leaf region on a kernel built without
     // the option is refused, not run without the region it was written for.
-    if !azos_limits::LOCKED_HUGE_LEAVES {
-        if let Some((i, t)) = topo.tasks().iter().enumerate().find(|(_, t)| t.mem_huge_mib != 0) {
-            if mode == Mode::Final {
-                halt_refused(format_args!("[TOPO] Memory admission REFUSED: row {} ({}) declares mem_huge_mib = {} but this \
-                     kernel was built without LOCKED_HUGE_LEAVES", i, t.name.as_str(), t.mem_huge_mib));
-            }
-            return Err(SignedRefusal::HugeLeaves);
+    if let Some((i, t)) = ba::huge_leaves_refusal(topo) {
+        if mode == Mode::Final {
+            halt_refused(format_args!("[TOPO] Memory admission REFUSED: row {} ({}) declares mem_huge_mib = {} but this \
+                 kernel was built without LOCKED_HUGE_LEAVES", i, t.name.as_str(), t.mem_huge_mib));
         }
+        return Err(SignedRefusal::HugeLeaves);
     }
 
     // 3. The DMA pool, then the rows' budgets against what is left. Below,
@@ -673,25 +660,6 @@ mod dma_contig_canary {
 fn halt_refused(what: core::fmt::Arguments<'_>) -> ! {
     azos_drv_sys::kerr!("{} — halting", what);
     loop { azos_arch::ARCH.wfi(); }
-}
-
-/// The band condition of [`admit`].
-fn band_check(
-    topo: &azos_topology::Topology<'static>,
-    r: &azos_topology::deadline::Report,
-) -> Result<(), azos_topology::DeadlineRefusal> {
-    let tasks = topo.tasks();
-    let in_band = |ti: u16| {
-        let Some(t) = tasks.get(ti as usize) else { return false };
-        let Some(c) = topo.find_class(&t.class_name) else { return false };
-        let (lo, hi) = c.priority_range;
-        (t.priority.clamp(lo, hi.max(lo)) as u32) < azos_sched::RT_PRIORITY_THRESHOLD
-    };
-    let density = |ti: u16| tasks.get(ti as usize)
-        .and_then(|t| azos_topology::deadline::profile_density(&t.profile))
-        .unwrap_or(u32::MAX);
-    let limit = (azos_limits::RT_BAND_CAP_PCT as u32).saturating_mul(10_000);
-    r.band_check(in_band, density, limit)
 }
 
 /// `DMA_POOL_FLOOR_KB` in topology pages.

@@ -2844,6 +2844,11 @@ mod cap_seed_bridge_tests {
 #[cfg(test)]
 mod pm_endpoint_tests;
 
+// ── The boot admission's pure half, which the host dry boot replays ──
+
+#[cfg(test)]
+mod boot_admission_tests;
+
 #[cfg(test)]
 mod input_trusted_tests;
 
