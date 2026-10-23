@@ -6,7 +6,7 @@
 
 ## Summary
 
-The next three slices of the Linux driver layer ([linux.md](../linux.md#path-2-the-linux-kernel-driver-slice-lx)) are ext4 (Kconfig `LX_FS_EXT4_RO`, then `LX_FS_EXT4_RW`), the URB adapter for the HID quirk drivers, and the IMX219 sensor pilot. This note lists the Linux sources each one needs at the pinned tag, and specifies what running the ext4 module set in a ring-3 server needs on all three ISAs, with no GPL code in ring 0: a fixed low window for module memory, a virtual interrupt flag, and per-CPU state and `current` without privileged registers. On the module set as built, per-CPU state and interrupt state need no kernel mechanism while a server runs its Linux code on one thread. The kernel side is the window, plus a per-thread base register once a server runs more than one thread.
+The next three slices of the Linux driver layer ([linux.md](../linux.md#path-2-the-linux-kernel-driver-slice-lx)) are ext4 (Kconfig `LX_FS_EXT4_RO`, then `LX_FS_EXT4_RW`), the URB adapter for the HID quirk drivers, and the IMX219 sensor pilot. This note lists the Linux sources each one needs at the pinned tag, and specifies what running the ext4 module set in a ring-3 server needs on all three ISAs, with no GPL code in ring 0: a fixed low window for module memory, a virtual interrupt flag, and per-CPU state and `current` without privileged registers. On the module set as built, interrupt state needs no kernel mechanism on any ISA, and per-CPU state needs none on riscv64 and x86_64 while a server runs its Linux code on one thread. The kernel side is the window, the aarch64 thread pointer kept per task for a Linux class server, and a per-thread base register once a server runs more than one thread.
 
 Source: `lx/FS_EXT4_UNRESOLVED`, `lx/DEVICE_SOURCES`, `tools/lx_fetch_linux.sh`, `tools/lx_kbuild/`.
 
@@ -40,7 +40,7 @@ The counts below come from disassembling `ext4.ko`, `jbd2.ko` and `mbcache.ko`, 
 
 | | riscv64 | aarch64 | x86_64 |
 |---|---|---|---|
-| `current` | `tp`, a general register: 180, 47 and 10 instructions read through it | `mrs xN, SP_EL0`: 73, 25 and 2 | `%gs:const_current_task(%rip)`: 44 in `ext4.ko` |
+| `current` | `tp`, a general register: 180, 47 and 10 instructions use it | `mrs xN, SP_EL0`: 73, 25 and 2 | `%gs:const_current_task(%rip)`: 44 in `ext4.ko` |
 | Per-CPU base | `__per_cpu_offset[cpu]`, an imported array | `mrs xN, TPIDR_EL1`: 5 in `ext4.ko`. The 5 `TPIDR_EL2` reads are the VHE alternative, which is unreachable once the Kbuild drops the alternatives table | `%gs:sym(%rip)`: 97, 25 and 3 accesses, all `R_X86_64_PC32`. In `ext4.ko` they reach `const_current_task` (44), `__preempt_count` (39), the module's own `.data..percpu` (4), `this_cpu_off` (1) and `cpu_number` (1) |
 | Inline interrupt state | In `ext4.ko`: 11 `csrrci rd, sstatus, SIE` saves and their 11 `csrs sstatus` restores (the generic per-CPU operations, which mask interrupts), and 9 `csrs`/`csrc sstatus` of `SUM` (inline user access in `__ext4_ioctl`) | none | none (no `cli`, `sti`, `pushf` or `popf`) |
 | Imported interrupt state | `_raw_spin_lock_irqsave`, `_raw_spin_unlock_irqrestore` | the same | the same |
@@ -84,8 +84,8 @@ Source: `lx/emul/src/sched.rs` (atomic context), `crates/core/lx-loader/src/lib.
 A server runs all of its Linux code on one AzOS thread ([Threads in the server](../linux.md#threads-in-the-server)). To Linux that thread is one CPU, whose per-CPU offset is 0. Each per-CPU variable is then used at its loaded address. The module's `.data..percpu` is loaded as data, and the server defines the per-CPU symbols the modules import as plain variables.
 
 - **x86_64.** Every `%gs` access is `%gs:sym(%rip)`, whose effective address is the GS base plus the address of `sym`. The user GS base is 0 for every task: a fresh image enters ring 3 with zero FS and GS bases, a fork copies its parent's, and nothing else writes the GS base. `CR4.FSGSBASE` is off, so ring 3 cannot write it either. So `%gs:sym` is `sym`, and no kernel change is needed. The server defines `const_current_task`, `__preempt_count`, `this_cpu_off` (0) and `cpu_number` (0), and its task switch writes `const_current_task`.
-- **aarch64.** The loader rewrites `mrs xN, SP_EL0` to `mrs xN, TPIDR_EL0`. `TPIDR_EL0` is writable at EL0, and the kernel already switches it per task. The server's task switch writes the current task's address there, and the server keeps no thread pointer of its own in `TPIDR_EL0` while Linux code runs. `mrs xN, TPIDR_EL1` and `mrs xN, TPIDR_EL2` become `movz xN, #0`. Any other access to an EL1 or EL2 register, or to `DAIF`, refuses the module.
-- **riscv64.** `tp` is a general register, which the kernel saves with the others. The server's task switch sets `tp` to the current task, `smp_processor_id()` reads 0 from the task's `thread_info`, and `__per_cpu_offset` is the server's one-entry array. Nothing is rewritten and nothing changes in the kernel.
+- **aarch64.** The loader rewrites `mrs xN, SP_EL0` to `mrs xN, TPIDR_EL0`. `TPIDR_EL0` is writable at EL0. The server's task switch writes the current task's address there, and the server keeps no thread pointer of its own in `TPIDR_EL0` while Linux code runs. The kernel today saves and restores `TPIDR_EL0` only for Linux-personality tasks (`switch_slow` in `crates/core/sched/src/fp.rs`). A native task's value is lost when a Linux task runs on the same hart, and the next native task inherits whatever was left there. So the kernel must keep `TPIDR_EL0` per task for a Linux class server too: the same per-slot save and restore, for the slots whose row names an `lx_class`. `mrs xN, TPIDR_EL1` and `mrs xN, TPIDR_EL2` become `movz xN, #0`. Any other access to an EL1 or EL2 register, or to `DAIF`, refuses the module.
+- **riscv64.** `tp` is a general register, which the kernel preserves for every task (`crates/core/abi/src/syscall_nr.rs`: `sp`, `gp` and `tp` are kept across a syscall, and a trap saves every register). The server's task switch sets `tp` to the current task, `smp_processor_id()` reads 0 from the task's `thread_info`, and `__per_cpu_offset` is the server's one-entry array. Nothing is rewritten and nothing changes in the kernel.
 
 A server that runs Linux code on more than one thread has more than one CPU, and the base has to differ per thread:
 
@@ -93,13 +93,13 @@ A server that runs Linux code on more than one thread has more than one CPU, and
 - **aarch64:** a per-thread `TPIDRRO_EL0`, which is kernel-written and read-only at EL0. It replaces the `movz xN, #0` rewrite with `mrs xN, TPIDRRO_EL0`.
 - **riscv64:** nothing. The CPU number lives in the task's `thread_info`, and `__per_cpu_offset` is the server's array.
 
-The ext4 slice does not need these: it runs on one thread. They are built with the first server that runs more than one.
+The ext4 slice does not need these: it runs on one thread. They are built with the first server that runs more than one. On aarch64 the per-task `TPIDR_EL0` already gives each thread its own `current`.
 
 Source: `kernel/src/entry/x86_64/trap.rs` (`IA32_KERNEL_GS_BASE` at the first entry and after a fork), `crates/core/arch-x86_64/src/cpu/mod.rs` (`fs_base_to_load`), `crates/core/sched/src/fp.rs` (`TPIDR_EL0`), `lx/emul/src/switch/`.
 
 ### No GPL code in ring 0
 
-The kernel's part is the window: a flag and its checks in project code. The rewriter lives in `crates/core/lx-loader`, and the virtual interrupt flag and per-CPU symbols in `lx/emul` and `lxsrv`. All of it is project Rust under the project licence. Linux code stays in `lxbase.ko` and the Linux modules, mapped only in the server.
+The kernel's part is the window (a flag and its checks) and, on aarch64, `TPIDR_EL0` kept per task for a Linux class server, all in project code. The rewriter lives in `crates/core/lx-loader`, and the virtual interrupt flag and per-CPU symbols in `lx/emul` and `lxsrv`. All of it is project Rust under the project licence. Linux code stays in `lxbase.ko` and the Linux modules, mapped only in the server.
 
 Source: `tools/lx_license_lint.py` (T1 to T5, A1).
 
@@ -107,10 +107,11 @@ Source: `tools/lx_license_lint.py` (T1 to T5, A1).
 
 1. **lx-module-window** (kernel, three ISAs): the Kconfig window, the fixed no-replace flag on `SYS_MO_MAP` for Linux class servers, the break kept out of the window, and the window check in `DOMAIN_MODULE_MAP_X`. Host tests in `tests/host/syscall-tests`, each with a canary.
 2. **lx-insn-rewrite** (`crates/core/lx-loader`, ring 3): the riscv64 `sstatus` rewrites and the aarch64 `SP_EL0`/`TPIDR_EL1`/`TPIDR_EL2` rewrites, with a refusal for anything else privileged. Host tests in `tests/host/lx-loader-tests` over the built filesystem set: no privileged instruction is left, and the canary is a module with one other CSR.
-3. **lx-virtual-irq** (`lx/emul`): the `irqsave` family over an atomic depth, with sleeping inside it refused and counted.
-4. **lx-percpu-single** (`lx/emul`, `lxsrv`): the per-CPU and `current` symbols, written at each task switch on all three ISAs.
-5. **ext4-lx-slice** itself: the symbols `lx/FS_EXT4_UNRESOLVED` lists, over fronts 1 to 4.
-6. **Deferred until a multi-threaded server exists:** the x86_64 per-thread user GS base and the aarch64 per-thread `TPIDRRO_EL0`.
+3. **lx-tpidr-el0** (kernel, aarch64): `TPIDR_EL0` saved and restored per task for the slots whose topology row names an `lx_class`, not only for Linux-personality tasks. Tested with a ktest whose canary keeps only the Linux-personality slots.
+4. **lx-virtual-irq** (`lx/emul`): the `irqsave` family over an atomic depth, with sleeping inside it refused and counted.
+5. **lx-percpu-single** (`lx/emul`, `lxsrv`): the per-CPU and `current` symbols, written at each task switch on all three ISAs.
+6. **ext4-lx-slice** itself: the symbols `lx/FS_EXT4_UNRESOLVED` lists, over fronts 1 to 5.
+7. **Deferred until a multi-threaded server exists:** the x86_64 per-thread user GS base and the aarch64 per-thread `TPIDRRO_EL0`.
 
 ## Drawbacks
 
@@ -124,6 +125,7 @@ Source: `tools/lx_license_lint.py` (T1 to T5, A1).
 - **Trap and emulate in the kernel.** Rejected: an instruction emulator for an untrusted server would run in supervisor mode, and every per-CPU operation on riscv64 and every `current` read on aarch64 would cost a trap.
 - **Rebuild the modules with different code generation.** Rejected for now: Linux offers no option that moves `current` off `SP_EL0` or makes riscv64 per-CPU operations stop masking interrupts. Changing the flags would change the pinned build that `make lx-kbuild-repro` reproduces.
 - **A per-thread base register from the start.** Rejected for the first slice: no server needs one yet.
+- **aarch64 `current` without a kernel change.** The loader could rewrite `mrs xN, SP_EL0` into a PC-relative literal load (`ldr xN, <slot>`, ±1 MiB) of a "current" word that it places in a read-write page within reach of every module's text. This works only while all of a server's Linux code runs on one thread, because the word is shared by every thread of the address space. It also ties the layout to the 1 MiB reach. Kept as the fallback if the per-task `TPIDR_EL0` costs more on the switch path than it saves.
 
 ## Prior art
 
