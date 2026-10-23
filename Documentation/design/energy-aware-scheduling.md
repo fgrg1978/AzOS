@@ -3,7 +3,7 @@
 Energy is decided in three places that the scheduling policy does not own:
 where a woken task runs, how fast a CPU runs, and how deep an idle CPU
 sleeps. This note describes the mechanisms, the invariants that keep them from
-touching real-time and safety guarantees, and the current limits. All of it is behind Kconfig `ENERGY` (cargo feature `energy`);
+touching real-time and safety guarantees, and the limits. All of it is behind Kconfig `ENERGY` (cargo feature `energy`);
 without it the kernel runs the behaviour it had before these seams existed.
 
 ## Principle
@@ -22,7 +22,7 @@ The seams are enum-dispatched (no `dyn`), because the variant set is closed
 and known at build time. The `azos_energy` crate is pure `no_std` data and
 integer arithmetic. The kernel half (gathering inputs, applying answers) is `crates/core/sched/src/energy.rs`.
 
-The default selection (the default `Seams` constant in `seams.rs`) is
+The default selection (`Seams::TODAY` in `seams.rs`) is
 `Placement::Legacy`, `Governor::Fixed` (no request, the clock stays where the platform left it) and
 `IdleGovernor::WfiOnly`. `Seams::select` chooses anything else only when an
 energy model is present **and** the signed topology's mode is `balanced` or
@@ -30,7 +30,7 @@ energy model is present **and** the signed topology's mode is `balanced` or
 
 ## Energy model
 
-Source: `crates/core/energy/src/model.rs`, `crates/core/energy/src/dt.rs`,
+Source: `crates/core/energy/src/model.rs` (`resolve`), `crates/core/energy/src/dt.rs`,
 `crates/core/topology/src/parser.rs` (`parse_energy`),
 `kernel/src/boot/energy.rs` (`install_energy`).
 
@@ -55,12 +55,19 @@ Sources, in order (`resolve`):
    `[energy.domain.NAME]` (keys `cpus`, `wcet_ref_khz`, `opps`, `idle`).
 2. The device tree: `operating-points-v2` and `idle-states`, extracted by
    `azos_dtb::dtb_energy` and turned into a model by `azos_energy::dt`.
-3. None. Every seam then keeps its default behaviour.
+3. x86_64 hybrid parts: one capacity class per core type the CPUs report
+   through CPUID (Intel P/E, AMD Zen 5/5c), once every started CPU has recorded
+   its own (`EnergyModel::from_core_classes`).
+4. The board firmware's clock range: on a Raspberry Pi with Kconfig `THERMAL`,
+   one domain from the mailbox's ARM clock range, with placeholder power
+   (`rpi_mbox::energy_model`, `EnergyModel::from_clock_range`).
+5. None. Every seam then keeps its default behaviour.
 
 `EnergyModel::validate` rejects a model that does not describe the machine:
 every CPU must be in exactly one domain, frequencies strictly increasing,
 capacities in `1..=1024` and non-decreasing, power non-zero and strictly
-increasing, exit latencies non-decreasing, and some domain's fastest OPP must
+increasing, exit latencies non-decreasing, each target residency at least its
+exit latency, and some domain's fastest OPP must
 have capacity exactly 1024. A refused model becomes "none" and the fault is
 logged. A model declared by the topology that fails validation does not fall
 through to the device tree: the signed file named a model, and substituting
@@ -135,8 +142,10 @@ does not itself change a clock. Applying an OPP goes through the
 `OppActuator` trait (`crates/core/energy/src/opp.rs`): a platform implements
 it for its clock interface, `NoActuator` stands for a platform that cannot
 change its clock, and `Dvfs` keeps the per-domain current-OPP bookkeeping.
-The governor decision is recorded and counted; no actuator is wired to it
-(see Thermal below for the other user of the trait).
+The governor itself changes no clock. On a board whose thermal runtime has a
+clock actuator, the thermal task applies the recorded OPP at each of its ticks,
+capped by the heat (see Thermal below); elsewhere the decision is only recorded
+and counted.
 
 ## Idle governor
 
@@ -262,7 +271,7 @@ reserve too, because a stale charge cannot be vouched for.
 ## Thermal
 
 Source: `crates/core/energy/src/thermal.rs`, `crates/drivers/thermal/`,
-Kconfig `THERMAL`.
+`kernel/src/boot/thermal.rs`, Kconfig `THERMAL`.
 
 The thermal framework is policy plus platform adapters: zones and trips from
 the device tree's `thermal-zones`, step-wise cooling by capping a domain's
@@ -271,11 +280,16 @@ clock cannot do raises the degrade level, and a critical trip requests an
 orderly shutdown. The runtime entry point is `Runtime::tick` in
 `crates/drivers/thermal/src/runtime.rs`, generic over a sensor bank and an
 `OppActuator`. The kernel's `thermal` task (`kernel/src/boot/thermal.rs`) builds
-the runtime from the device tree on a board that has a sensor and clock pair
-(the VisionFive 2, a Raspberry Pi) and ticks it at the zones' polling delay,
-with the governor's recorded OPP and the admitted real-time density as inputs;
-that tick is where a governor decision first reaches a clock. A board with no
-pair (QEMU, x86_64) builds no zone: no sensor is read and no clock is touched.
+the runtime on a board that has a sensor (the VisionFive 2's `sfctemp` with the
+SoC CPU clock, the SpacemiT K1's `TSEN` with each cluster's clock and PMIC
+supply, a Raspberry Pi's VideoCore mailbox, an x86_64 package sensor with the
+CPU's HWP or CPPC level request; x86_64 takes its one zone from Kconfig
+`THERMAL_X86_*` instead of a device tree) and ticks it at the zones' polling
+delay, with the governor's recorded OPP and the admitted real-time density as
+inputs; that tick is where a governor decision reaches a clock. A sensor with
+no clock that can move refuses every cap, so heat raises the degrade level. A
+machine with no sensor (QEMU, an x86_64 hypervisor guest) builds no zone: no
+sensor is read and no clock is touched.
 
 ## Invariants
 
@@ -310,13 +324,15 @@ Source: `config/arch/Kconfig.platform` (`SYSTEM_SUSPEND`),
 - Any energy decision on the safety path (emergency stop, actuation gate,
   watchdog).
 
-## Current limits
+## Limits
 
 Source: `crates/core/sched/src/energy.rs`, `crates/core/energy/src/seams.rs`,
-`crates/core/energy/src/opp.rs`, `config/kernel/Kconfig.energy` (`THERMAL`).
+`crates/core/energy/src/opp.rs`, `crates/drivers/thermal/src/runtime.rs`,
+`config/kernel/Kconfig.energy` (`THERMAL`).
 
-- The governor decision is recorded and counted; no actuator applies it to a
-  clock.
+- The governor decision reaches a clock only through the thermal task, on a
+  board whose thermal runtime has a clock actuator; elsewhere it is recorded
+  and counted.
 - There is no per-task performance floor or ceiling (a `uclamp`-like hint).
   The per-task inputs are the QoS hint, which maps to a set of domains and to a
   timer-slack tier, and the topology row's `timer_slack` opt-in.
