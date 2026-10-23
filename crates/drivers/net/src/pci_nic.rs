@@ -205,6 +205,19 @@ impl<const RX_N: usize, const TX_N: usize> Mem<RX_N, TX_N> {
     }
 }
 
+/// Whether the rings can be driven behind `dma`: only where the controller
+/// snoops the CPU's caches. Several 16-byte descriptors share a cache line, and
+/// neither controller can space them apart (the ring is a dense array of
+/// `RDLEN`/`TDLEN` bytes; there is no descriptor skip field, as DesignWare's
+/// DSL). Behind a master that does not snoop, writing one descriptor back
+/// writes the CPU's stale copy of its neighbours too, over the done bits the
+/// controller stored in them, and the ring stops. Linux gives these rings
+/// uncached memory (`dma_alloc_coherent`); there is none here, so the
+/// function is refused instead.
+pub fn rings_drivable(dma: &Dma) -> bool {
+    dma.coherent()
+}
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -757,6 +770,8 @@ mod bring_up {
         /// `RAL0/RAH0` hold no usable station address (reset did not
         /// finish, or the NVM is blank).
         NoMac,
+        /// The function's DMA is not cache-coherent ([`rings_drivable`]).
+        NonCoherent,
     }
 
     /// What differs between the controllers during bring-up.
@@ -904,6 +919,9 @@ mod bring_up {
                 return Err(NicError::AlreadyUp);
             }
             let model = C::identify(info)?;
+            if !rings_drivable(&Dma::pci(info.bdf.requester_id())) {
+                return Err(NicError::NonCoherent);
+            }
             let bar_base = map_bars(cfg, info, window).map_err(NicError::Bars)?;
             let bar = bar_base[0];
             if bar == 0 {

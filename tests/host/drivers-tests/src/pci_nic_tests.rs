@@ -18,7 +18,7 @@ use super::e1000e::{
     STATUS_LU,
 };
 use super::igc::IgcWire;
-use super::pci_nic::{Mem, Nic, Wire};
+use super::pci_nic::{rings_drivable, Mem, Nic, Wire};
 use azos_dma::Direction;
 use azos_drv_api::net::NetError;
 use azos_drv_virtio::virtio::Dma;
@@ -361,4 +361,15 @@ fn e1000e_a_seldom_sender_is_found_wedged_by_the_poller() {
     }
     assert!(NIC.is_ready() && !NIC.is_dead());
     assert_eq!(NIC.tx_watch(), None, "a reset ring still asks for a look");
+}
+
+/// Descriptors share cache lines, so a function whose DMA does not snoop the
+/// CPU's caches is refused before anything is mapped; a coherent one is
+/// driven.
+#[test]
+fn the_rings_are_refused_behind_a_master_that_does_not_snoop() {
+    assert!(rings_drivable(&Dma::fallback()), "a coherent domain is driven");
+    const BASE: u64 = 0xD00D_2000;
+    azos_dma::registry::declare_mmio(BASE, false).expect("declare once");
+    assert!(!rings_drivable(&Dma::mmio(BASE as usize)), "a non-coherent domain must be refused");
 }

@@ -57,7 +57,7 @@ crates/drivers/actuator	5	0	0	0	0	40
 crates/drivers/api	0	0	0	0	1	0
 crates/drivers/baro	0	0	0	0	1	0
 crates/drivers/base	0	0	0	0	1	0
-crates/drivers/block	87	6	1	0	0	92
+crates/drivers/block	91	6	1	0	0	92
 crates/drivers/bus	11	1	1	0	0	65
 crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80

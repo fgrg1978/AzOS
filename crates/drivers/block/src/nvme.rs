@@ -77,8 +77,16 @@
 //!   deallocate of one range, offered only where `ONCS` says the controller
 //!   has the command.
 //!
-//! DMA coherence is assumed (QEMU, and the coherent PCIe hosts this tree
-//! targets), as it is for the virtio drivers.
+//! * **Cache coherence.** The function's DMA domain says whether the
+//!   controller snoops the CPU's caches. Where it does not (the JH7110's PCIe
+//!   on the VisionFive 2, Kconfig `DMA_NONCOHERENT`), every page the controller
+//!   reads is cleaned after the CPU wrote it (a submission entry, a PRP list,
+//!   a write's bounce pages) and every page it writes is flushed before the
+//!   command and again before the CPU reads it (a completion entry, a read's
+//!   bounce pages, an Identify page). Each queue, list and bounce page is a
+//!   page of its own, and the CPU never writes a completion queue after
+//!   bring-up flushed it, so no line is shared between a CPU write and a
+//!   device write. Where it does, every sync is a no-op.
 
 use crate::queue::{Claim, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, HW_TAGS_MAX};
 use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US};
@@ -102,6 +110,7 @@ impl<R: MsiRoute> CpuVectors for R {
         MsiRoute::isr_token(self, vec)
     }
 }
+use azos_dma::{Direction, DmaDomain};
 use azos_nvme as proto;
 use azos_pci::{BarWindow, ConfigSpace, FunctionInfo};
 use azos_sync::kmutex::Mutex;
@@ -201,6 +210,9 @@ struct Dev {
     per_cpu: bool,
     /// `CAP.TO`: how long `CSTS.RDY` may take to follow `CC.EN`.
     ready_ms: u64,
+    /// The function's DMA domain: whether the CPU's caches need maintaining
+    /// around the controller's DMA ([`for_device`], [`for_cpu`]).
+    dma: &'static dyn DmaDomain,
 }
 
 const DEV_ZERO: Dev = Dev {
@@ -222,6 +234,7 @@ const DEV_ZERO: Dev = Dev {
     irq: false,
     per_cpu: false,
     ready_ms: 0,
+    dma: azos_dma::registry::fallback(),
 };
 
 static mut DEV: Dev = DEV_ZERO;
@@ -390,7 +403,7 @@ impl azos_dma::PageSource for Pmm {
 /// One zeroed page from the page allocator that the controller can reach
 /// (`dma_mask`: the highest address its DMA gets to, `u64::MAX` for no
 /// limit): `(CPU address, device address)`.
-fn alloc_page(dma_mask: u64) -> Result<(usize, u64), NvmeError> {
+fn alloc_page(dma: &dyn DmaDomain, dma_mask: u64) -> Result<(usize, u64), NvmeError> {
     let pa = azos_dma::alloc_below(&Pmm, dma_mask, PAGE).map_err(|e| {
         if e == azos_dma::DmaError::NeedsBounce {
             kprintln!("[NVME] no page at or below {:#x}: the controller cannot reach the free memory", dma_mask);
@@ -407,7 +420,35 @@ fn alloc_page(dma_mask: u64) -> Result<(usize, u64), NvmeError> {
             ALLOCATED_N += 1;
         }
     }
+    // The zeroes reach RAM and no line of the page stays in the cache: a
+    // dirty one evicted later would overwrite what the controller wrote.
+    for_device(dma, va, PAGE, Direction::Bidirectional);
     Ok((va, pa as u64))
+}
+
+/// Hand `[va, va + len)` of a page [`alloc_page`] took to the controller for a
+/// transfer of `dir`: written back (and, for a page it writes, dropped) when
+/// the domain is not cache-coherent; nothing when it is.
+fn for_device(dma: &dyn DmaDomain, va: usize, len: usize, dir: Direction) {
+    // SAFETY: every caller passes a range of a page `alloc_page` took, mapped
+    // in the direct map for as long as the driver is up.
+    unsafe { azos_dma::cache::sync_for_device(dma, va, len, dir) }
+}
+
+/// Take `[va, va + len)` back from the controller after a transfer of `dir`:
+/// the stale lines dropped when the domain is not cache-coherent.
+fn for_cpu(dma: &dyn DmaDomain, va: usize, len: usize, dir: Direction) {
+    // SAFETY: as `for_device`.
+    unsafe { azos_dma::cache::sync_for_cpu(dma, va, len, dir) }
+}
+
+/// [`for_device`] over bytes `[0, bytes)` of slot `slot`'s bounce pages.
+fn slot_for_device(dma: &dyn DmaDomain, slot: usize, bytes: usize, dir: Direction) {
+    for p in 0..proto::pages_spanned(0, bytes) {
+        // SAFETY: the slot is the caller's; bring-up set its pages.
+        let va = unsafe { SLOT_VA[slot][p] };
+        for_device(dma, va, (bytes - p * PAGE).min(PAGE), dir);
+    }
 }
 
 /// Give back every page `alloc_page` took (a failed bring-up).
@@ -424,20 +465,24 @@ fn free_pages() {
 
 // ---- Admin queue (bring-up only, polled) ----
 
-fn sqe_write(sq: usize, index: u16, sqe: &proto::Sqe) {
+fn sqe_write(dma: &dyn DmaDomain, sq: usize, index: u16, sqe: &proto::Sqe) {
     let p = (sq + index as usize * proto::SQE_BYTES) as *mut u32;
     for (i, d) in sqe.0.iter().enumerate() {
         // SAFETY: `sq` is a queue page of ours and `index < depth`, so the
         // 64-byte entry lies inside it.
         unsafe { core::ptr::write_volatile(p.add(i), *d) }
     }
+    for_device(dma, p as usize, proto::SQE_BYTES, Direction::ToDevice);
 }
 
 /// The entry at `index` of a completion queue page. The phase dword is read
 /// first and the rest only if it is new, behind a read barrier as the device
 /// sees it (`dma_rmb`): the controller writes the phase tag last.
-fn cqe_peek(cq: usize, cur: &proto::CqCursor) -> Option<proto::Cqe> {
+fn cqe_peek(dma: &dyn DmaDomain, cq: usize, cur: &proto::CqCursor) -> Option<proto::Cqe> {
     let p = (cq + cur.head as usize * proto::CQE_BYTES) as *const u32;
+    // The CPU never writes a completion queue: dropping the entry's line
+    // loses nothing, and the read below then comes from RAM.
+    for_cpu(dma, p as usize, proto::CQE_BYTES, Direction::FromDevice);
     // SAFETY: `cq` is a queue page of ours and `head < depth`.
     unsafe {
         let dw3 = core::ptr::read_volatile(p.add(3));
@@ -469,14 +514,14 @@ impl Dev {
         self.a_cid = self.a_cid.wrapping_add(1);
         let cid = self.a_cid;
         let sqe = mk(cid);
-        sqe_write(self.asq, self.a_tail, &sqe);
+        sqe_write(self.dma, self.asq, self.a_tail, &sqe);
         self.a_tail = proto::ring_next(self.a_tail, ADMIN_DEPTH);
         azos_dma::order::io_wmb();
         // SAFETY: the admin SQ tail doorbell of a mapped controller.
         unsafe { core::ptr::write_volatile(self.sq_doorbell(0) as *mut u32, self.a_tail as u32) };
         let deadline = deadline_after_us(ADMIN_TIMEOUT_US);
         loop {
-            if let Some(e) = cqe_peek(self.acq, &self.a_cq) {
+            if let Some(e) = cqe_peek(self.dma, self.acq, &self.a_cq) {
                 self.a_cq.advance(ADMIN_DEPTH);
                 // SAFETY: the admin CQ head doorbell.
                 unsafe { core::ptr::write_volatile(self.cq_doorbell(0) as *mut u32, self.a_cq.head as u32) };
@@ -627,7 +672,11 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
     // SAFETY: bring-up is single-threaded and runs before any user of `DEV`
     // and `QUEUES`.
     let dev = unsafe { &mut *(&raw mut DEV) };
-    *dev = Dev { bar, dstrd: cap.dstrd, irq, per_cpu: route.per_cpu(), ready_ms: cap.ready_timeout_ms, ..DEV_ZERO };
+    let dma = azos_dma::registry::domain_for(Some(info.bdf.requester_id()));
+    if !dma.coherent() {
+        kprintln!("[NVME] DMA is not cache-coherent: queue, list and staging pages are synced around every command");
+    }
+    *dev = Dev { bar, dstrd: cap.dstrd, irq, per_cpu: route.per_cpu(), ready_ms: cap.ready_timeout_ms, dma, ..DEV_ZERO };
     // SAFETY: as above.
     unsafe { *(&raw mut QUEUES) = [QUEUE_ZERO; MAXQ] };
     READY.store(false, Ordering::Relaxed);
@@ -638,22 +687,22 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
 
     // Memory: the admin pages, then every slot's pages. The I/O queues come
     // after the controller says how many it grants.
-    let (asq, asq_pa) = alloc_page(dma_mask)?;
-    let (acq, acq_pa) = alloc_page(dma_mask)?;
+    let (asq, asq_pa) = alloc_page(dma, dma_mask)?;
+    let (acq, acq_pa) = alloc_page(dma, dma_mask)?;
     dev.asq = asq;
     dev.asq_pa = asq_pa;
     dev.acq = acq;
     dev.acq_pa = acq_pa;
     for s in 0..SLOTS {
         for p in 0..SLOT_PAGES {
-            let (va, pa) = alloc_page(dma_mask)?;
+            let (va, pa) = alloc_page(dma, dma_mask)?;
             // SAFETY: single-threaded bring-up.
             unsafe {
                 SLOT_VA[s][p] = va;
                 SLOT_PA[s][p] = pa;
             }
         }
-        let (va, pa) = alloc_page(dma_mask)?;
+        let (va, pa) = alloc_page(dma, dma_mask)?;
         // SAFETY: as above.
         unsafe {
             LIST_VA[s] = va;
@@ -672,7 +721,9 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
     // Identify controller, then namespace 1, into slot 0's first page.
     // SAFETY: slot 0's page is not in use yet.
     let (scratch_va, scratch_pa) = unsafe { (SLOT_VA[0][0], SLOT_PA[0][0]) };
+    for_device(dma, scratch_va, PAGE, Direction::FromDevice);
     dev.admin(|cid| proto::identify(cid, 0, proto::CNS_CONTROLLER, scratch_pa), "identify controller")?;
+    for_cpu(dma, scratch_va, PAGE, Direction::FromDevice);
     let mut id = [0u8; 4096];
     // SAFETY: `scratch_va` is a whole page the controller just filled.
     unsafe { core::ptr::copy_nonoverlapping(scratch_va as *const u8, id.as_mut_ptr(), PAGE) };
@@ -680,7 +731,9 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
     if ctrl.namespaces == 0 {
         return Err(NvmeError::Format);
     }
+    for_device(dma, scratch_va, PAGE, Direction::FromDevice);
     dev.admin(|cid| proto::identify(cid, NSID, proto::CNS_NAMESPACE, scratch_pa), "identify namespace")?;
+    for_cpu(dma, scratch_va, PAGE, Direction::FromDevice);
     // SAFETY: as above.
     unsafe { core::ptr::copy_nonoverlapping(scratch_va as *const u8, id.as_mut_ptr(), PAGE) };
     let ns = proto::decode_namespace(&id);
@@ -699,8 +752,8 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
     }
     dev.queues = queues;
     for q in 0..queues {
-        let (sq, sq_pa) = alloc_page(dma_mask)?;
-        let (cq, cq_pa) = alloc_page(dma_mask)?;
+        let (sq, sq_pa) = alloc_page(dma, dma_mask)?;
+        let (cq, cq_pa) = alloc_page(dma, dma_mask)?;
         // SAFETY: single-threaded bring-up.
         unsafe { (*(&raw mut QUEUES))[q] = Queue { sq, cq, sq_pa, cq_pa, ..QUEUE_ZERO } };
         let qid = qid_of(q);
@@ -812,7 +865,7 @@ fn ns_to_ticks(ns: u64) -> u64 {
 /// latch dead. Caller holds [`QLOCK`]`[qi]`.
 fn drain(dev: &Dev, qi: usize, q: &mut Queue) {
     let mut any = false;
-    while let Some(e) = cqe_peek(q.cq, &q.cur) {
+    while let Some(e) = cqe_peek(dev.dma, q.cq, &q.cur) {
         q.cur.advance(IO_DEPTH);
         any = true;
         q.sq_head = e.sq_head();
@@ -985,7 +1038,7 @@ fn submit(dev: &Dev, qi: usize, q: &mut Queue, slot: usize, sqe: &proto::Sqe) ->
     SLOT_DONE[slot].store(false, Ordering::Relaxed);
     SLOT_REPORTED[slot].store(false, Ordering::Relaxed);
     SLOT_INFLIGHT[slot].store(true, Ordering::Release);
-    sqe_write(q.sq, q.tail, sqe);
+    sqe_write(dev.dma, q.sq, q.tail, sqe);
     q.tail = proto::ring_next(q.tail, IO_DEPTH);
     azos_dma::order::io_wmb();
     // SAFETY: the SQ tail doorbell of queue `qi` of a mapped controller.
@@ -995,15 +1048,19 @@ fn submit(dev: &Dev, qi: usize, q: &mut Queue, slot: usize, sqe: &proto::Sqe) ->
 
 /// Where the data of a command of `bytes` bytes sits and how the controller
 /// finds it: build the PRPs over slot `slot`'s pages.
-fn prps_for(slot: usize, bytes: usize) -> Result<(u64, u64), ()> {
+fn prps_for(dma: &dyn DmaDomain, slot: usize, bytes: usize) -> Result<(u64, u64), ()> {
     let n = proto::pages_spanned(0, bytes);
     // SAFETY: the slot is this caller's; its pages and list were set at
     // bring-up and are never freed while the driver is up.
-    unsafe {
+    let prps = unsafe {
         let list = core::slice::from_raw_parts_mut(LIST_VA[slot] as *mut u64, PAGE / 8);
         let pages = core::slice::from_raw_parts((&raw const SLOT_PA[slot]) as *const u64, n);
-        proto::build_prps(pages, 0, bytes, LIST_PA[slot], list).map_err(|_| ())
-    }
+        proto::build_prps(pages, 0, bytes, LIST_PA[slot], list).map_err(|_| ())?
+    };
+    // The list holds at most an entry per page; the controller reads it.
+    // SAFETY: as above.
+    for_device(dma, unsafe { LIST_VA[slot] }, n * 8, Direction::ToDevice);
+    Ok(prps)
 }
 
 /// Copy `src` into slot `slot`'s bounce pages, from byte `off` of them.
@@ -1130,8 +1187,9 @@ impl HwQueue for Nvme {
 
     fn start(&self, tag: u8, cmd: &HwCmd<'_>) -> Result<(), ()> {
         let slot = tag as usize;
-        // SAFETY: `max_sectors` and `queues` are written in bring-up, before `bind`.
-        let (max, queues) = unsafe { (DEV.max_sectors, DEV.queues) };
+        // SAFETY: `max_sectors`, `queues` and `dma` are written in bring-up,
+        // before `bind`.
+        let (max, queues, dma) = unsafe { (DEV.max_sectors, DEV.queues, DEV.dma) };
         let (sqe, op, budget) = match cmd.op {
             HwOp::Read | HwOp::Write => {
                 let bytes = cmd.sectors as usize * SECTOR_SIZE;
@@ -1146,14 +1204,19 @@ impl HwQueue for Nvme {
                         off += s.len();
                     }
                 }
-                let (prp1, prp2) = prps_for(slot, bytes)?;
+                // A write's pages written back; a read's dropped too, so no
+                // dirty line is evicted over what the controller stores.
+                slot_for_device(dma, slot, bytes, if write { Direction::ToDevice } else { Direction::FromDevice });
+                let (prp1, prp2) = prps_for(dma, slot, bytes)?;
                 let sqe = proto::read_write(slot as u16, NSID, write, cmd.lba, cmd.sectors, prp1, prp2);
                 (if cmd.fua { proto::with_fua(sqe) } else { sqe }, OP_DATA, IO_TIMEOUT_US)
             }
             HwOp::Flush => (proto::flush(slot as u16, NSID), OP_FLUSH, FLUSH_TIMEOUT_US),
             HwOp::Discard => {
                 // One range, in the slot's first bounce page.
-                stage_in(slot, 0, &proto::dsm_range(cmd.lba, cmd.sectors));
+                let range = proto::dsm_range(cmd.lba, cmd.sectors);
+                stage_in(slot, 0, &range);
+                slot_for_device(dma, slot, range.len(), Direction::ToDevice);
                 // SAFETY: bring-up set the slot's pages.
                 let pa = unsafe { SLOT_PA[slot][0] };
                 (proto::dataset_management_deallocate(slot as u16, NSID, 1, pa), OP_DISCARD, IO_TIMEOUT_US)
@@ -1231,9 +1294,11 @@ impl HwQueue for Nvme {
             let n = (dst.len() - done).min(PAGE - off % PAGE);
             // SAFETY: the controller posted this slot's completion, so it is
             // done with the pages; the slot is still the caller's until
-            // `release`. `off + dst.len()` is inside the command's data.
+            // `release`. `off + dst.len()` is inside the command's data;
+            // `dma` was written in bring-up, before `bind`.
             unsafe {
                 let src = (SLOT_VA[slot][off / PAGE] + off % PAGE) as *const u8;
+                for_cpu(DEV.dma, src as usize, n, Direction::FromDevice);
                 core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr().add(done), n);
             }
             done += n;
@@ -1265,7 +1330,7 @@ impl HwQueue for Nvme {
         // Re-check after listing the waiter: a completion posted before the
         // listing raised its interrupt before anyone could be woken.
         // SAFETY: bring-up wrote `DEV`.
-        let queues = unsafe { DEV.queues };
+        let (queues, dma) = unsafe { (DEV.queues, DEV.dma) };
         WAITER.park(
             tid,
             || {
@@ -1274,7 +1339,7 @@ impl HwQueue for Nvme {
                         let _g = QLOCK[qi].lock();
                         // SAFETY: queue `qi` is under its lock.
                         let q = unsafe { &(*(&raw const QUEUES))[qi] };
-                        cqe_peek(q.cq, &q.cur).is_some()
+                        cqe_peek(dma, q.cq, &q.cur).is_some()
                     })
             },
             || {
