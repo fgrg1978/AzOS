@@ -738,6 +738,7 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
                 add(Device::dt(name, d.compatible, d.base, d.size, d.irq)
                     .with_reg2(d.reg2)
                     .with_dma_mask(d.dma_mask)
+                    .with_dma_offset(d.dma_offset)
                     .with_dma_coherent(d.dma_coherent)
                     .with_dt_node(d.dt_node));
             })

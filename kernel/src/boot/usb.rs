@@ -150,7 +150,9 @@ mod host {
 
     impl Memory for KMem {
         fn alloc_region(&self, len: usize, align: usize, mask: u64) -> Option<DmaBuf> {
-            let pa = azos_dma::alloc_below(&Pmm, mask, len).ok()?;
+            // `mask` is what the controller reaches on its bus; the domain
+            // says which CPU addresses map there (a translated bus moves them).
+            let pa = azos_dma::alloc_below(&Pmm, self.domain.cpu_limit(mask), len).ok()?;
             if pa % align as u64 != 0 {
                 azos_dma::PageSource::free(&Pmm, pa, len);
                 return None;
@@ -193,17 +195,22 @@ mod host {
         }
 
         /// The direct map of a class driver's buffer, where the bus address
-        /// is the physical one (a domain that translates nothing) and names
-        /// RAM the kernel manages: what a DWC2 copies the partial last packet
-        /// of an IN through (`azos_usb::dwc2`). An IOMMU domain: `None`.
+        /// names a physical one by arithmetic (a domain that remaps nothing,
+        /// on an identity bus or one that moves addresses by an offset:
+        /// `DmaDomain::phys_of`) and that is RAM the kernel manages: what a
+        /// DWC2 copies the partial last packet of an IN through
+        /// (`azos_usb::dwc2`). An IOMMU domain: `None`.
         fn cpu_of(&self, bus: u64, len: usize) -> Option<*mut u8> {
             if len == 0 || !matches!(self.domain.kind(), DomainKind::Identity | DomainKind::Soft) {
                 return None;
             }
-            let start = usize::try_from(bus).ok()?;
+            let start = usize::try_from(self.domain.phys_of(bus)).ok()?;
             let end = start.checked_add(len - 1)?;
-            azos_mm::pmm::frame_index(start)?;
-            azos_mm::pmm::frame_index(end)?;
+            // The frames the bytes lie in (`frame_index` takes a frame's own,
+            // page-aligned, address: a byte address inside it is no frame).
+            let page = azos_arch_api::PAGE_SIZE - 1;
+            azos_mm::pmm::frame_index(start & !page)?;
+            azos_mm::pmm::frame_index(end & !page)?;
             Some(azos_mm::addr::phys_to_virt(start) as *mut u8)
         }
     }
@@ -346,6 +353,13 @@ mod host {
         Xhci,
         #[cfg(feature = "usb-dwc2")]
         Dwc2,
+    }
+
+    /// The highest bus address a device-tree controller's DMA reaches: its
+    /// CPU-side limit (`dma-ranges`) moved by its bus's offset, the same number
+    /// on an identity bus.
+    fn bus_reach(dev: &azos_drv_bus::hwbus::Device) -> u64 {
+        dev.dma_mask.checked_add(dev.dma_offset).unwrap_or(u64::MAX)
     }
 
     /// Start the controller whose registers are at `base` and publish the host.
@@ -499,7 +513,7 @@ mod host {
             azos_usb::dwc3::set_host_mode(&KRegs { base: dev.base as usize });
         }
         let domain = azos_dma::registry::domain_for_mmio(dev.base);
-        bring_up(dev.base as usize, domain, dev.dma_mask, dev.name.as_str(), Kind::Xhci).map_err(|_| ProbeError::Failed)
+        bring_up(dev.base as usize, domain, bus_reach(dev), dev.name.as_str(), Kind::Xhci).map_err(|_| ProbeError::Failed)
     }
 
     /// Attach a DesignWare USB 2.0 core (`brcm,bcm2835-usb`, the Raspberry
@@ -524,7 +538,7 @@ mod host {
             return Err(ProbeError::Failed);
         }
         let domain = azos_dma::registry::domain_for_mmio(dev.base);
-        bring_up(dev.base as usize, domain, dev.dma_mask, dev.name.as_str(), Kind::Dwc2).map_err(|_| ProbeError::Failed)
+        bring_up(dev.base as usize, domain, bus_reach(dev), dev.name.as_str(), Kind::Dwc2).map_err(|_| ProbeError::Failed)
     }
 
     /// Start the `usb` task, once the scheduler exists. A no-op without a

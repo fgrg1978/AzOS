@@ -1569,7 +1569,7 @@ mod noncoherent {
         // Its own window: only this controller is declared non-coherent.
         m.base.store(0xD00D_1000, Ordering::SeqCst);
         azos_dma::cache::install(clean_fn, flush_fn);
-        azos_dma::registry::declare_mmio(0xD00D_1000, false).expect("declare once");
+        azos_dma::registry::declare_mmio(0xD00D_1000, 0xD00D_1000, azos_dma::registry::MmioView::coherent(false)).expect("declare once");
         m.with(|i| i.on_data_cmd = Some(cmd_marker));
         CALLS.lock().unwrap().clear();
 

@@ -70,6 +70,21 @@ pub trait DmaDomain: Sync {
     fn enable(&self) -> Result<(), DmaError>;
     /// See [`DomainOps::allow_msi`].
     fn allow_msi(&self, doorbell: u64) -> Result<(), DmaError>;
+    /// The highest CPU physical address (inclusive) whose mapping lands at or
+    /// below the bus address `bus_limit`: what to allocate under for a device
+    /// that reaches `bus_limit`. The bus address is the physical one in every
+    /// domain but a translated bus's (`registry::declare_mmio` with an offset).
+    fn cpu_limit(&self, bus_limit: u64) -> u64 {
+        bus_limit
+    }
+    /// The CPU physical address behind bus address `bus` in a domain that
+    /// remaps nothing but may move the bus (the inverse of what `map` added):
+    /// `bus` itself everywhere but a translated bus's. Meaningful only for an
+    /// identity or software-checked domain; an IOMMU's bus address names no
+    /// physical address by arithmetic.
+    fn phys_of(&self, bus: u64) -> u64 {
+        bus
+    }
 }
 
 fn end_of(pa: u64, len: usize) -> Result<u64, DmaError> {

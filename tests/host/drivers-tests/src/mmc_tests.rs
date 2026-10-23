@@ -782,7 +782,7 @@ mod noncoherent {
         let _h = crate::dwmshc_tests::CACHE_HOOKS.lock().unwrap_or_else(|e| e.into_inner());
         let (_g, m) = setup(true);
         azos_dma::cache::install(clean_fn, flush_fn);
-        azos_dma::registry::declare_mmio(m.base() as u64, false).expect("declare once");
+        azos_dma::registry::declare_mmio(m.base() as u64, m.base() as u64, azos_dma::registry::MmioView::coherent(false)).expect("declare once");
         CALLS.lock().unwrap().clear();
 
         let data = pattern(16, 0x3C); // two pages

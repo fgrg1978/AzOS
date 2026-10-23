@@ -2132,7 +2132,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 ///
 /// QEMU machines (`qemu-devices`, turned on by the kernel's `qemu`): the
 /// virtio-mmio disk, NIC, keyboard, display, sound and entropy device, the
-/// virtio-pci NIC, display and sound device, an NVMe controller, an AHCI SATA host, QEMU's e1000e (82574L) and igb (82576), and an xHCI host controller (`-device qemu-xhci`). A board image lists the hardware its drivers bind.
+/// virtio-pci NIC, display and sound device, an NVMe controller, an AHCI SATA host, QEMU's e1000e (82574L) and igb (82576), an xHCI host controller (`-device qemu-xhci`), and
+/// `-M raspi3b`'s DWC2 USB host (the Raspberry Pi 3's). A board image lists the hardware its drivers bind.
 #[cfg(feature = "qemu-devices")]
 pub const BUILTIN_DEVICE_ROWS: &[(&[u8], &[u8])] = &[
     (b"virtio-blk", b"virtio:2"),
@@ -2149,6 +2150,7 @@ pub const BUILTIN_DEVICE_ROWS: &[(&[u8], &[u8])] = &[
     (b"e1000e", b"pci:8086:10d3"),
     (b"igc", b"pci:8086:10c9"),
     (b"xhci", b"pciclass:0c0330:ffffff"),
+    (b"dwc2", b"dt:brcm,bcm2835-usb"),
 ];
 /// See the QEMU build's.
 #[cfg(not(feature = "qemu-devices"))]

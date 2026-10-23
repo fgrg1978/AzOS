@@ -2396,11 +2396,47 @@ mod device_nodes {
         assert_eq!(dma_ranges_limit(&pci_shift, 3, 2, 2), DMA_UNREACHABLE, "PCI address differs from CPU's");
     }
 
+    /// A bus that moves its devices' DMA by one offset from CPU address 0
+    /// (the Raspberry Pi's `/soc`) gives them its window and the offset, for
+    /// the platform domain to apply; one that also starts above 0, or two
+    /// entries that move differently, leave them unreachable. Canary: keep
+    /// the old refusal of any translation and the Pi's USB host gets no DMA
+    /// memory at all.
     #[test]
-    fn a_translated_bus_leaves_the_device_unreachable() {
-        use azos_dtb::DMA_UNREACHABLE;
+    fn a_translated_bus_gives_its_window_and_offset() {
+        use azos_dtb::{dma_ranges_window, DMA_UNREACHABLE};
+        let offsets = |blob: &[u8]| {
+            let mut v = Vec::new();
+            let _ = unsafe { dtb_devices(blob.as_ptr(), &mut |d: &DtDevice<'_>| v.push((d.dma_mask, d.dma_offset))) };
+            v
+        };
         let alias = [be32(0xc000_0000), be64(0), be32(0x4000_0000)].concat();
-        assert_eq!(masks(&behind_dma(Some(alias)))[1].1, DMA_UNREACHABLE);
+        assert_eq!(offsets(&behind_dma(Some(alias.clone())))[1], (0x3fff_ffff, 0xc000_0000));
+        assert_eq!(offsets(&behind_dma(Some(alias)))[0], (u64::MAX, 0), "a device outside the bus");
+        assert_eq!(dma_ranges_window(&[be32(0xc000_0000), be64(0), be32(0x3f00_0000)].concat(), 1, 2, 1),
+            (0x3eff_ffff, 0xc000_0000), "bcm283x.dtsi's /soc");
+        let above = [be32(0xc000_0000), be64(0x1000_0000), be32(0x1000)].concat();
+        assert_eq!(dma_ranges_window(&above, 1, 2, 1), (DMA_UNREACHABLE, 0), "a window that starts above 0");
+        let two = [be32(0xc000_0000), be64(0), be32(0x1000), be32(0x8000_0000), be64(0), be32(0x1000)].concat();
+        assert_eq!(dma_ranges_window(&two, 1, 2, 1), (DMA_UNREACHABLE, 0), "two offsets");
+        let same = [be32(0xc000_0000), be64(0), be32(0x1000), be32(0xc000_0000), be64(0), be32(0x4000)].concat();
+        assert_eq!(dma_ranges_window(&same, 1, 2, 1), (0x3fff, 0xc000_0000), "one offset, the widest entry");
+    }
+
+    /// The Raspberry Pi 3 B tree: the USB host under `/soc` gets the VideoCore
+    /// bus's window and offset.
+    #[test]
+    fn qemu_raspi3b_usb_is_behind_the_videocore_offset() {
+        let b = include_bytes!("../fixtures/qemu-raspi3b.dtb").to_vec();
+        let mut usb = None;
+        let _ = unsafe {
+            dtb_devices(b.as_ptr(), &mut |d: &DtDevice<'_>| {
+                if d.name == b"usb@7e980000" {
+                    usb = Some((d.base, d.dma_mask, d.dma_offset));
+                }
+            })
+        };
+        assert_eq!(usb, Some((0x3f98_0000, 0x3eff_ffff, 0xc000_0000)));
     }
 
     /// A node's `dma-ranges` describes its children's DMA, not its own: a bus

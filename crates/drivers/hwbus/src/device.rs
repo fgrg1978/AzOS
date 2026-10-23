@@ -93,6 +93,11 @@ pub struct Device {
     /// function's 64-bit one) when nothing narrows it. A driver that
     /// allocates DMA memory allocates at or below it.
     pub dma_mask: u64,
+    /// What the bus adds to a CPU physical address to give the device's DMA
+    /// address (device tree `dma-ranges`; 0xc000_0000 on a Raspberry Pi's
+    /// VideoCore bus): 0, the default, on an identity bus. The platform DMA
+    /// domain applies it (`azos_dma::registry::declare_mmio`).
+    pub dma_offset: u64,
     /// The firmware declared the device's DMA cache-coherent with the CPU
     /// (DT `dma-coherent` on the node or a bus above it). `false`: nothing
     /// declared, so the platform default (Kconfig `DMA_NONCOHERENT`) holds;
@@ -127,6 +132,7 @@ impl Device {
             reg2: None,
             irq: 0,
             dma_mask: u64::MAX,
+            dma_offset: 0,
             dma_coherent: false,
             dt_node: None,
         }
@@ -197,6 +203,13 @@ impl Device {
     /// The device with its DMA reach limited to `mask` (see [`Device::dma_mask`]).
     pub fn with_dma_mask(mut self, mask: u64) -> Self {
         self.dma_mask = mask;
+        self
+    }
+
+    /// The device behind a bus that moves its DMA addresses by `offset` (see
+    /// [`Device::dma_offset`]).
+    pub fn with_dma_offset(mut self, offset: u64) -> Self {
+        self.dma_offset = offset;
         self
     }
 

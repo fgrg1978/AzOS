@@ -389,7 +389,7 @@ fn declaring_a_non_coherent_master_coherent_is_caught_by_the_model() {
 // Registry
 // -----------------------------------------------------------------------
 
-use azos_dma::registry::{self, InstallError};
+use azos_dma::registry::{self, InstallError, MmioView};
 
 static DEFAULT_DOMAIN: IdentityDomain = IdentityDomain::new(true);
 static NIC_DOMAIN: IdentityDomain = IdentityDomain::new(false);
@@ -418,8 +418,8 @@ fn registry_answers_own_then_default_then_fallback() {
     // A platform device that differs from the default in coherence only.
     const DISK: u64 = 0x1000_1000;
     assert!(registry::domain_for_mmio(DISK).coherent(), "undeclared: the default's answer");
-    registry::declare_mmio(DISK, false).unwrap();
-    assert_eq!(registry::declare_mmio(DISK, true), Err(InstallError::Taken));
+    registry::declare_mmio(DISK, DISK, MmioView::coherent(false)).unwrap();
+    assert_eq!(registry::declare_mmio(DISK, DISK, MmioView::coherent(true)), Err(InstallError::Taken));
     let view = registry::domain_for_mmio(DISK);
     assert!(!view.coherent(), "declared non-coherent over a coherent default");
     assert!(registry::domain_for_mmio(DISK + 0x1000).coherent(), "another device keeps the default");
@@ -440,10 +440,32 @@ fn registry_answers_own_then_default_then_fallback() {
     assert!(transmit(&m, &ops, registry::domain_for_mmio(DISK + 0x1000)));
     assert_eq!(ops.calls.get(), 0);
 
-    for k in 1..registry::MAX_MMIO as u64 {
-        registry::declare_mmio(DISK + 0x2000 * (k + 1), true).unwrap();
+    // A bus that moves DMA addresses (the Raspberry Pi's `/soc`: bus =
+    // CPU + 0xc000_0000 for CPU 0..=0x3eff_ffff), one record for the range
+    // of register bases of its devices. Canary: drop the offset in `map` and
+    // the controller is handed CPU addresses the VideoCore bus does not see
+    // as RAM.
+    const SOC: (u64, u64) = (0x3f00_3000, 0x3f98_0000);
+    registry::declare_mmio(SOC.0, SOC.1, MmioView::translated(0xc000_0000, 0x3eff_ffff)).unwrap();
+    assert_eq!(registry::declare_mmio(0x3f20_0000, 0x3f20_0000, MmioView::coherent(true)), Err(InstallError::Taken),
+        "a range holds its devices");
+    let usb = registry::domain_for_mmio(0x3f98_0000);
+    assert_eq!(usb.map(0x0100_0000, 0x1000, Direction::Bidirectional), Ok(DmaAddr(0xc100_0000)));
+    assert_eq!(usb.unmap(DmaAddr(0xc100_0000), 0x1000), Ok(()), "the default sees its own address back");
+    assert_eq!(usb.map(0x3eff_f000, 0x2000, Direction::ToDevice), Err(DmaError::NeedsBounce), "past the window");
+    assert!(usb.coherent(), "coherence stays the default's");
+    assert_eq!(usb.cpu_limit(0xffff_ffff), 0x3eff_ffff, "a 32-bit master: the window bounds it");
+    assert_eq!(usb.cpu_limit(0xc0ff_ffff), 0x00ff_ffff);
+    assert_eq!(usb.cpu_limit(0x8000_0000), 0, "below the bus window: nothing");
+    assert_eq!(usb.phys_of(0xc100_0040), 0x0100_0040, "a bus address back to its CPU address");
+    assert_eq!(registry::domain_for_mmio(DISK).phys_of(0x1234), 0x1234, "an identity bus");
+    assert_eq!(registry::domain_for_mmio(0x4000_0000).map(0x1000, 0x10, Direction::ToDevice), Ok(DmaAddr(0x1000)),
+        "outside the range: the default");
+
+    for k in 2..registry::MAX_MMIO as u64 {
+        registry::declare_mmio(DISK + 0x2000 * (k + 1), DISK + 0x2000 * (k + 1), MmioView::coherent(true)).unwrap();
     }
-    assert_eq!(registry::declare_mmio(0x9999, true), Err(InstallError::Full));
+    assert_eq!(registry::declare_mmio(0x9999, 0x9999, MmioView::coherent(true)), Err(InstallError::Full));
 }
 
 // -----------------------------------------------------------------------

@@ -155,26 +155,71 @@ mod ccache {
     }
 }
 
-/// Record, from what the hardware bus found, the platform devices whose DMA
-/// the firmware declared cache-coherent (device tree `dma-coherent`) on a
-/// platform whose default is not: their drivers skip the cache maintenance
-/// ([`azos_dma::registry::declare_mmio`]). Nothing to do where the default is
-/// already coherent (a device cannot be less coherent than that). Counted so
-/// the boot log shows what the firmware said.
-fn declare_coherent_devices() {
-    if COHERENT {
-        return;
-    }
-    let (mut declared, mut refused) = (0u32, 0u32);
+/// Record, from what the hardware bus found, the platform devices that differ
+/// from the default domain ([`azos_dma::registry::declare_mmio`]): those whose
+/// DMA the firmware declared cache-coherent (device tree `dma-coherent`) on a
+/// platform whose default is not, so their drivers skip the cache
+/// maintenance; and those behind a bus whose `dma-ranges` moves their DMA
+/// addresses (a Raspberry Pi's VideoCore bus sees RAM at 0xc000_0000), so
+/// every address their drivers hand them carries the offset. A device cannot
+/// be less coherent than a coherent default. Counted so the boot log shows
+/// what the firmware said.
+fn declare_mmio_devices() {
+    use azos_dma::registry::MmioView;
+    let view_of = |d: &azos_drv_bus::hwbus::Device| -> Option<MmioView> {
+        let declare_coherent = !COHERENT && d.dma_coherent;
+        if d.base == 0 || (!declare_coherent && d.dma_offset == 0) {
+            return None;
+        }
+        Some(MmioView {
+            coherent: declare_coherent.then_some(true),
+            offset: d.dma_offset,
+            cpu_limit: if d.dma_offset == 0 { u64::MAX } else { d.dma_mask },
+        })
+    };
+    let (mut coherent, mut translated, mut refused) = (0u32, 0u32, 0u32);
     azos_drv_bus::hwbus::with(|bus| {
-        for (_, slot) in bus.iter().filter(|(_, s)| s.dev.dma_coherent && s.dev.base != 0) {
-            match azos_dma::registry::declare_mmio(slot.dev.base, true) {
-                Ok(()) => declared += 1,
-                Err(_) => refused += 1,
+        // One record per run of devices that share a view: the smallest range
+        // of register bases holding them, if no device with another view (or
+        // none) starts inside it; else one record per device.
+        let mut done = [0u64; 64];
+        let mut ndone = 0usize;
+        for (_, slot) in bus.iter() {
+            let Some(view) = view_of(&slot.dev) else { continue };
+            if done[..ndone].contains(&slot.dev.base) {
+                continue;
+            }
+            let same = |d: &azos_drv_bus::hwbus::Device| view_of(d) == Some(view);
+            let (lo, hi) = bus.iter().filter(|(_, s)| same(&s.dev))
+                .fold((u64::MAX, 0), |(lo, hi), (_, s)| (lo.min(s.dev.base), hi.max(s.dev.base)));
+            let clean = !bus.iter().any(|(_, s)| !same(&s.dev) && s.dev.base != 0 && lo <= s.dev.base && s.dev.base <= hi);
+            let (lo, hi) = if clean { (lo, hi) } else { (slot.dev.base, slot.dev.base) };
+            let members = bus.iter().filter(|(_, s)| same(&s.dev) && lo <= s.dev.base && s.dev.base <= hi).count() as u32;
+            match azos_dma::registry::declare_mmio(lo, hi, view) {
+                Ok(()) => {
+                    if view.coherent.is_some() {
+                        coherent += members;
+                    }
+                    if view.offset != 0 {
+                        translated += members;
+                        kprintln!("[DMA] devices at {:#x}..={:#x}: bus address = CPU address + {:#x}, CPU 0..={:#x} (dma-ranges)",
+                            lo, hi, view.offset, view.cpu_limit);
+                    }
+                }
+                Err(_) => refused += members,
+            }
+            for (_, s) in bus.iter().filter(|(_, s)| same(&s.dev) && lo <= s.dev.base && s.dev.base <= hi) {
+                if ndone < done.len() {
+                    done[ndone] = s.dev.base;
+                    ndone += 1;
+                }
             }
         }
     });
-    kprintln!("[DMA] {} device(s) declared dma-coherent by the firmware, {} not recorded", declared, refused);
+    if !COHERENT || translated != 0 {
+        kprintln!("[DMA] {} device(s) declared dma-coherent by the firmware, {} behind a translating bus, {} not recorded",
+            coherent, translated, refused);
+    }
 }
 
 /// Install the default domain over RAM `[ram.0, ram.1)`. Before the first
@@ -187,7 +232,7 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
              than corrupt DMA data",
         );
     }
-    declare_coherent_devices();
+    declare_mmio_devices();
     let coherence = if COHERENT { "coherent" } else { "non-coherent, cache maintenance on" };
     let installed = if azos_limits::DMA_DOMAIN_SOFT {
         SOFT.set(SoftState::new(AddrRange::new(ram.0, ram.1), FULL_RANGE, COHERENT));

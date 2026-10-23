@@ -1502,33 +1502,44 @@ pub fn decode_pci_ranges(ranges: &[u8], child_ac: u32, parent_ac: u32, child_sc:
 pub const DMA_UNREACHABLE: u64 = 0;
 
 /// The highest CPU physical address (inclusive) a device behind a bus with
-/// this `dma-ranges` can reach: the largest `size - 1` of its entries
-/// (devicetree `dma-ranges`: `child-bus-address parent-bus-address size` per
-/// entry, the child address in the node's own `#address-cells`, the parent
-/// address in its parent's, the size in its `#size-cells`; for a PCI host
-/// bridge the child address is the 3 cells of PCI, whose high cell holds the
-/// space flags and is not an address). `u64::MAX` when the property restricts
-/// nothing: empty (the identity), no complete entry, or cell counts outside
-/// the binding.
-///
-/// A mask only describes a window that starts at 0 and maps the bus address
-/// to the same CPU address, because the driver hands the controller the CPU
-/// physical address it allocated. Every entry that is anything else (its
-/// child address differs from its parent address, so the bus sees the memory
-/// under another address, as on the Raspberry Pi's `0xc0000000` alias; or it
-/// starts above 0, so memory below it is out of reach) makes the whole
-/// property [`DMA_UNREACHABLE`]: the refusal is explicit, not a mask the
-/// controller would misread. Such a bus needs a domain that adds the offset
-/// and the lower bound, not a mask.
+/// this `dma-ranges` can reach, for a bus that maps bus addresses to the same
+/// CPU addresses ([`dma_ranges_window`] with no offset): the largest
+/// `size - 1` of its entries. `u64::MAX` when the property restricts nothing,
+/// [`DMA_UNREACHABLE`] when it translates (a PCI host bridge's inbound
+/// windows are read this way: its devices are given CPU addresses).
 pub fn dma_ranges_limit(ranges: &[u8], child_ac: u32, parent_ac: u32, size_cells: u32) -> u64 {
+    match dma_ranges_window(ranges, child_ac, parent_ac, size_cells) {
+        (limit, 0) => limit,
+        _ => DMA_UNREACHABLE,
+    }
+}
+
+/// What a device behind a bus with this `dma-ranges` can reach, as `(limit,
+/// offset)`: `limit` the highest CPU physical address (inclusive), `offset`
+/// what the bus adds to a CPU address to give the device's (bus address =
+/// CPU address + offset, wrapping). Devicetree `dma-ranges`: `child-bus-address
+/// parent-bus-address size` per entry, the child address in the node's own
+/// `#address-cells`, the parent address in its parent's, the size in its
+/// `#size-cells`; for a PCI host bridge the child address is the 3 cells of
+/// PCI, whose high cell holds the space flags and is not an address.
+///
+/// `(u64::MAX, 0)` when the property restricts nothing: empty (the identity),
+/// no complete entry, or cell counts outside the binding. A window must start
+/// at CPU address 0 and every entry must move addresses by the same offset:
+/// the Raspberry Pi's `<0xc0000000 0x0 0x3f000000>` (RAM seen by the
+/// VideoCore bus at 0xc0000000) is `(0x3eff_ffff, 0xc000_0000)`. Anything
+/// else (a window that starts above 0, so memory under it is out of reach;
+/// two entries with different offsets) is `(DMA_UNREACHABLE, 0)`: the
+/// refusal is explicit, not a window the domain would misapply.
+pub fn dma_ranges_window(ranges: &[u8], child_ac: u32, parent_ac: u32, size_cells: u32) -> (u64, u64) {
     if !(1..=3).contains(&child_ac) || !(1..=2).contains(&parent_ac) || !(1..=2).contains(&size_cells) {
-        return u64::MAX;
+        return (u64::MAX, 0);
     }
     let entry = (child_ac + parent_ac + size_cells) as usize * 4;
     // A PCI child address is `phys.hi phys.mid phys.lo`: the address is the
     // last two cells.
     let (child_off, child_cells) = if child_ac == 3 { (4, 2) } else { (0, child_ac) };
-    let mut limit: Option<u64> = None;
+    let mut window: Option<(u64, u64)> = None;
     for e in ranges.chunks_exact(entry) {
         let (Some(child), Some(parent), Some(size)) = (
             cells_at(e, child_off, child_cells),
@@ -1540,13 +1551,14 @@ pub fn dma_ranges_limit(ranges: &[u8], child_ac: u32, parent_ac: u32, size_cells
         if size == 0 {
             continue;
         }
-        if child != parent || parent != 0 {
-            return DMA_UNREACHABLE;
+        let offset = child.wrapping_sub(parent);
+        if parent != 0 || window.is_some_and(|(_, o)| o != offset) {
+            return (DMA_UNREACHABLE, 0);
         }
         let top = size - 1;
-        limit = Some(limit.map_or(top, |l| l.max(top)));
+        window = Some((window.map_or(top, |(l, _)| l.max(top)), offset));
     }
-    limit.unwrap_or(u64::MAX)
+    window.unwrap_or((u64::MAX, 0))
 }
 
 /// The first node whose `compatible` names `pci-host-ecam-generic` and whose
@@ -2890,9 +2902,14 @@ pub struct DtDevice<'a> {
     /// The highest CPU physical address (inclusive) the node's DMA can reach,
     /// from the `dma-ranges` of its ancestors (a node's own `dma-ranges`
     /// describes its children, not itself; [`dma_ranges_limit`]);
-    /// `u64::MAX` when none of them restricts it, [`DMA_UNREACHABLE`] when one
-    /// translates or offsets the bus.
+    /// `u64::MAX` when none of them restricts it, [`DMA_UNREACHABLE`] when
+    /// they translate in a way [`dma_ranges_window`] refuses, or two of them
+    /// move the bus by different offsets.
     pub dma_mask: u64,
+    /// What the bus adds to a CPU physical address to give the device's DMA
+    /// address ([`dma_ranges_window`]): 0 on an identity bus, 0xc000_0000
+    /// under a Raspberry Pi's `/soc`. The platform DMA domain applies it.
+    pub dma_offset: u64,
     /// The node, or an ancestor, carries the `dma-coherent` property: the
     /// firmware declares its DMA cache-coherent with the CPU. `false` is
     /// "nothing declared", not "declared non-coherent".
@@ -3040,19 +3057,26 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                     if let (Some(compatible), Some((base, size)), true) = (n.compatible, n.reg, enabled) {
                         // A node's `dma-ranges` describes its CHILDREN's
                         // DMA, so only the ancestors' count, not the node's
-                        // own; the tightest wins (a nested translation is
-                        // not composed: see `dma_ranges_limit`).
-                        let dma_mask = (1..depth)
-                            .filter_map(|k| {
-                                let (ca, sc) = stack[k].cells;
-                                Some(dma_ranges_limit(stack[k].dma_ranges?, ca, stack[k - 1].cells.0, sc))
-                            })
-                            .min()
-                            .unwrap_or(u64::MAX);
+                        // own; the tightest limit wins, and the one ancestor
+                        // that moves the bus gives the offset (two that move it
+                        // differently are not composed: unreachable).
+                        let (mut dma_mask, mut dma_offset) = (u64::MAX, 0u64);
+                        for k in 1..depth {
+                            let (ca, sc) = stack[k].cells;
+                            let Some(r) = stack[k].dma_ranges else { continue };
+                            let (limit, offset) = dma_ranges_window(r, ca, stack[k - 1].cells.0, sc);
+                            if offset != 0 && dma_offset != 0 && offset != dma_offset {
+                                dma_mask = DMA_UNREACHABLE;
+                            }
+                            if offset != 0 {
+                                dma_offset = offset;
+                            }
+                            dma_mask = dma_mask.min(limit);
+                        }
                         // `dma-coherent` is inherited: a bus node that has it
                         // speaks for every device behind it.
                         let dma_coherent = stack[1..=depth].iter().any(|a| a.dma_coherent);
-                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_coherent, dt_node: n.at });
+                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, dt_node: n.at });
                         count += 1;
                     }
                 }
