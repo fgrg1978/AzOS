@@ -9975,11 +9975,11 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # CONFIG_BOOT_SELFTESTS=y to the derived config and the row names every
 # marker and symbol it found.
 SELFTESTS_OFF_SETTLE_S="${SELFTESTS_OFF_SETTLE_S:-3}"
-# The task bodies a self-test kernel links, as legacy-mangled path segments
-# (`11worker_task`, not `18ioring_worker_task`); `phase3_yield_shim` is
-# `no_mangle`. `idle_task` is linked by every kernel: the positive control.
+# The task bodies a self-test kernel links, as length-prefixed path segments
+# of the mangled names (`11worker_task`, not `18ioring_worker_task`);
+# `phase3_yield_shim` is `no_mangle`. `idle_task` is linked by every kernel: the positive control.
 SELFTESTS_OFF_SYMS='(^|[0-9])(ipc_demo_task|worker_task|rvv_bench_task|phase3_task_a|aarch64_migrate_probe_task|gpio_user_driver_smoke_task|net_conformance)|phase3_yield_shim'
-SELFTESTS_OFF_MARKS='Created ipc-demo task|[IPC] |Created worker task|stress-test workers|[TASK] Worker|task A and task B created|smp-migrate-probe|Created rvv-bench|[AQ3]|Zicboz zero-fill|svc #0 self-test|[TIMER] ticks:|FP/SIMD survives interrupt|AARCH64-IRQSTACK] hart 0|int3 self-test|NMI self-test|tick self-test|[NET]  RFC|loopback|[PCI] msix'
+SELFTESTS_OFF_MARKS='Created ipc-demo task|[IPC] |Created worker task|stress-test workers|[TASK] Worker|task A and task B created|smp-migrate-probe|Created rvv-bench|[AQ3]|Zicboz zero-fill|svc #0 self-test|[TIMER] ticks:|FP/SIMD survives interrupt|AARCH64-IRQSTACK] hart 0|int3 self-test|NMI self-test|tick self-test|[NET]  RFC|[NET]  loopback|UDP loopback|[PCI] msix'
 selftests_off_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
 selftests_off_check() { # selftests_off_check <boot log> <elf>; prints why, or nothing
     local log="$1" elf="$2" n m found=""
