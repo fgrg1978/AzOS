@@ -29,7 +29,7 @@ config INFSRV_ENERGY_WINDOW_MS
 config ENERGY
     # cargo-feature: energy
     bool "Energy-aware scheduling: utilisation tracking and the energy model"
-    default n
+    default y if PRESET_WEARABLE || PRESET_IOT_HMI || PRESET_DESKTOP || PRESET_SERVER
     help
       Energy-aware scheduling. Emits the kernel cargo feature `energy`
       (tools/kconfig_to_cargo.py).
@@ -66,7 +66,10 @@ config ENERGY
         under QEMU -icount by the gate's energy row (one run per ISA and
         tracker, 2026-10-03): switch hook 73-76 instructions per call on
         riscv64 and 128-271 on aarch64; tick hook 61-71 and 187-382.
-      n (default) = none of the above is compiled.
+      n = none of the above is compiled. The default is y on the
+      wearable, IoT/HMI, desktop and server presets (battery or power bill
+      first) and n on the others (robot, industrial, automotive, firmware,
+      gateway, generic: the clock stays where firmware left it).
 
       The energy MODE (performance / balanced / endurance) is not a Kconfig
       symbol: the signed topology chooses it (`[energy] mode`, invariant
