@@ -22,6 +22,7 @@
 //! | Router Advertisement (RX)   | ✓ (SLAAC prefix, default router MAC) |
 //! | SLAAC global address        | ✓ (one /64, EUI-64 interface id) |
 //! | TCP over IPv6 (TX/RX frame) | ✓      |
+//! | Packet filter (ingress, egress) | ✓ (`filter.rs`, the IPv4 path's) |
 //! | DAD, neighbour cache        | ✗ (future)     |
 //! | DHCPv6                      | ✗ (future)     |
 //!
@@ -32,9 +33,14 @@
 //!
 //! ## Packet flow
 //! ```text
-//! RX: ethernet_rx → ipv6_rx → [icmpv6_rx | udpv6_rx | tcp::handle_checked_v6]
-//! TX: udpv6_send / tcp_send → ipv6_build_header → emit → ethernet_send
+//! RX: ethernet_rx → ipv6_rx → filter::ingress_v6 → [icmpv6_rx | udpv6_rx | tcp::handle_checked_v6]
+//! TX: udpv6_send / tcp_send → ipv6_build_header → emit → filter::egress → ethernet_send
 //! ```
+//!
+//! The packet filter (`filter.rs`) is asked about every packet `ipv6_rx` takes
+//! and every packet this file sends, the Neighbour Discovery ones included;
+//! the built-in firewall's inbound default lets Neighbour Discovery through
+//! (`filter::ND_TYPES`).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use azos_sync::SpinLock;
@@ -65,6 +71,8 @@ pub const NEXTHDR_ICMPV6:   u8  = 58;
 pub const NEXTHDR_UDP:      u8  = 17;
 pub const NEXTHDR_TCP:      u8  = 6;
 
+/// Destination Unreachable (RFC 4443 §3.1), the answer to a refused packet.
+pub const ICMPV6_DEST_UNREACHABLE: u8 = 1;
 /// ICMPv6 type codes.
 pub const ICMPV6_ECHO_REQ:  u8  = 128;
 pub const ICMPV6_ECHO_REPLY:u8  = 129;
@@ -104,6 +112,8 @@ pub const MCAST_ALL_NODES: [u8; 16] = [
     0xFF, 0x02, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0x01,
 ];
+/// The loopback address, `::1`: never the source a refusal is answered to.
+pub const LOOPBACK: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 /// All-routers multicast address (`FF02::2`).
 pub const MCAST_ALL_ROUTERS: [u8; 16] = [
     0xFF, 0x02, 0, 0, 0, 0, 0, 0,
@@ -564,7 +574,7 @@ fn icmpv6_neighbor_advertisement(dst: &[u8; 16], dst_mac: &[u8; 6], target: &[u8
     na[2] = (csum >> 8) as u8;
     na[3] = csum as u8;
 
-    super::ethernet::send_ipv6_to_mac(&mut frame, frame_len, dst_mac);
+    emit_to(&mut frame, frame_len, dst, Some(dst_mac));
 }
 
 // ── IPv6 receive dispatcher ───────────────────────────────────────────────────
@@ -600,22 +610,37 @@ pub fn ipv6_rx(frame: &[u8], frame_len: usize) {
     let next_hdr = frame[6];
     let payload  = &frame[IPV6_HDR_SIZE..IPV6_HDR_SIZE + payload_len];
 
+    // RFC 4861 §6.1.2, §7.1.1: a Router Solicitation, Router or Neighbor
+    // Solicitation or Advertisement, or Redirect (types 133 to 137) whose hop
+    // limit is not 255 has crossed a router, so it did not come from this
+    // link. Without this any host on the Internet could set our address (RA)
+    // or have a frame sent to a MAC of its choosing (NS option).
+    let off_link_nd = next_hdr == NEXTHDR_ICMPV6
+        && payload.first().is_some_and(|t| (ICMPV6_RS..=ICMPV6_REDIRECT).contains(t))
+        && frame[7] != ND_HOP_LIMIT;
+    // Packet filter, ingress hook: after every check above and only for what
+    // an arm below takes (a connection is to one of our unicast addresses,
+    // never to a group), so a filter sees only datagrams this stack would
+    // otherwise have delivered, as on the IPv4 path.
+    let taken = match next_hdr {
+        NEXTHDR_ICMPV6 => !off_link_nd,
+        NEXTHDR_UDP => true,
+        NEXTHDR_TCP => is_our_addr(dst),
+        _ => false,
+    };
+    if !taken { return; }
+    // Canary (host suite `net-tests`): IPv6 skips the filter, as it did
+    // before the filter covered it.
+    if !cfg!(feature = "fw-ipv6-canary")
+        && !super::filter::ingress_v6(&frame[..IPV6_HDR_SIZE + payload_len])
+    {
+        return;
+    }
+
     match next_hdr {
-        NEXTHDR_ICMPV6 => {
-            // RFC 4861 §6.1.2, §7.1.1: a Router Solicitation, Router or
-            // Neighbor Solicitation or Advertisement, or Redirect (types 133 to
-            // 137) whose hop limit is not 255 has crossed a router, so it did
-            // not come from this link. Without this any host on the Internet
-            // could set our address (RA) or have a frame sent to a MAC of its
-            // choosing (NS option).
-            if let Some(&t) = payload.first() {
-                if (ICMPV6_RS..=ICMPV6_REDIRECT).contains(&t) && frame[7] != ND_HOP_LIMIT { return; }
-            }
-            icmpv6_rx(src, dst, payload);
-        }
+        NEXTHDR_ICMPV6 => { icmpv6_rx(src, dst, payload); }
         NEXTHDR_UDP    => { super::udp::udpv6_rx(src, dst, payload); }
-        // A connection is to one of our unicast addresses, never to a group.
-        NEXTHDR_TCP if is_our_addr(dst) => { super::tcp::handle_checked_v6(src, dst, payload); }
+        NEXTHDR_TCP    => { super::tcp::handle_checked_v6(src, dst, payload); }
         _ => {}
     }
 }
@@ -709,6 +734,7 @@ fn send_router_solicitation(mac: &[u8; 6]) {
     rs[10..16].copy_from_slice(mac);
     let csum = pseudo_checksum(&src, &MCAST_ALL_ROUTERS, NEXTHDR_ICMPV6, rs);
     rs[2..4].copy_from_slice(&csum.to_be_bytes());
+    if egress_refused(&frame[..frame_len]).is_some() { return; }
     let _ = super::net_raw_send(&frame[..frame_len]);
 }
 
@@ -817,10 +843,59 @@ fn next_hop_mac(dst: &[u8; 16]) -> Option<[u8; 6]> {
 /// link: to the router's MAC for an off-link destination, otherwise by
 /// `ethernet::send_ipv6`.
 fn emit(frame: &mut [u8], frame_len: usize, dst: &[u8; 16]) -> bool {
-    match next_hop_mac(dst) {
+    emit_to(frame, frame_len, dst, None)
+}
+
+/// [`emit`] to `mac` when the caller knows the link-layer address. Every IPv6
+/// packet this host sends leaves here, so the packet filter's egress hook is
+/// asked once, before the link sees it; the Router Solicitation, built whole
+/// (see [`send_router_solicitation`]), asks it itself. `true` when the frame was
+/// handed to the driver or the filter dropped it (lost "on the wire"),
+/// `false` when it could not leave or the filter rejected it: the caller's
+/// error, as `ip::send` reports it.
+fn emit_to(frame: &mut [u8], frame_len: usize, dst: &[u8; 16], mac: Option<&[u8; 6]>) -> bool {
+    if frame_len > frame.len() || frame_len < ETH_HDR_LEN { return false; }
+    if let Some(v) = egress_refused(&frame[..frame_len]) {
+        return v == super::filter::Verdict::Drop;
+    }
+    match mac.copied().or_else(|| next_hop_mac(dst)) {
         Some(mac) => super::ethernet::send_ipv6_to_mac(frame, frame_len, &mac),
         None      => super::ethernet::send_ipv6(frame, frame_len, dst),
     }
+}
+
+/// The packet filter's egress verdict on a whole IPv6 frame, `None` when it
+/// may leave.
+fn egress_refused(frame: &[u8]) -> Option<super::filter::Verdict> {
+    // Canary (host suite `net-tests`): see `ipv6_rx`.
+    if cfg!(feature = "fw-ipv6-canary") { return None; }
+    match super::filter::egress(&frame[ETH_HDR_LEN..]) {
+        super::filter::Verdict::Accept => None,
+        v => Some(v),
+    }
+}
+
+/// Largest ICMPv6 error message: the whole packet within the minimum IPv6
+/// MTU, 1280 (RFC 4443 §2.4 (c)).
+const ICMPV6_ERROR_MAX: usize = 1280 - IPV6_HDR_SIZE;
+
+/// Send an ICMPv6 error of `kind` and `code` from `src` to `dst` about
+/// `invoking` (the whole offending packet, header first), quoting as much of
+/// it as fits [`ICMPV6_ERROR_MAX`]. `true` when it left.
+pub fn icmpv6_send_error(src: &[u8; 16], dst: &[u8; 16], kind: u8, code: u8, invoking: &[u8]) -> bool {
+    let quoted = invoking.len().min(ICMPV6_ERROR_MAX - 8);
+    let msg_len = 8 + quoted;
+    let frame_len = ETH_HDR_LEN + IPV6_HDR_SIZE + msg_len;
+    let mut frame = [0u8; ETH_HDR_LEN + 1280];
+    ipv6_build_header(&mut frame[ETH_HDR_LEN..], NEXTHDR_ICMPV6, src, dst, msg_len as u16);
+    let msg = &mut frame[ETH_HDR_LEN + IPV6_HDR_SIZE..frame_len];
+    msg[0] = kind;
+    msg[1] = code;
+    // msg[2..4] checksum (below), msg[4..8] unused (zero).
+    msg[8..].copy_from_slice(&invoking[..quoted]);
+    let csum = pseudo_checksum(src, dst, NEXTHDR_ICMPV6, msg);
+    msg[2..4].copy_from_slice(&csum.to_be_bytes());
+    emit(&mut frame, frame_len, dst)
 }
 
 /// Send one TCP segment (`segment`: header, options, payload, checksum

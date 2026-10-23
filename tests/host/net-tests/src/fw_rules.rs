@@ -113,7 +113,9 @@ fn judge(fw: &Firewall, hook: Hook, pkt: &[u8]) -> Verdict {
 fn rule(hook: Hook, proto: u8, ports: Option<(u16, u16)>, net: Option<([u8; 4], u8)>, action: Verdict) -> FwRule {
     let (port_lo, port_hi) = ports.unwrap_or((0, 0));
     let (addr, net_len) = net.unwrap_or(([0; 4], 0));
-    FwRule { hook, proto, port_lo, port_hi, net: u32::from_be_bytes(addr), net_len, action }
+    let mut net = [0u8; 16];
+    net[..4].copy_from_slice(&addr);
+    FwRule { hook, proto, port_lo, port_hi, net, net_len, net_v6: false, action }
 }
 
 fn firewall(inbound: Verdict, rules: &[FwRule]) -> Firewall {
@@ -125,6 +127,39 @@ fn firewall(inbound: Verdict, rules: &[FwRule]) -> Firewall {
 /// A gateway: inbound dropped unless a rule or a flow lets it in.
 fn gateway(rules: &[FwRule]) -> Firewall {
     firewall(Verdict::Drop, rules)
+}
+
+/// An IPv6 packet: the 40-byte header around `l4`.
+fn ip6_packet(src: [u8; 16], dst: [u8; 16], proto: u8, hop: u8, l4: &[u8]) -> Vec<u8> {
+    let mut p = vec![0x60, 0, 0, 0];
+    p.extend_from_slice(&(l4.len() as u16).to_be_bytes());
+    p.extend_from_slice(&[proto, hop]);
+    p.extend_from_slice(&src);
+    p.extend_from_slice(&dst);
+    p.extend_from_slice(l4);
+    p
+}
+
+fn udp6(src: [u8; 16], sport: u16, dst: [u8; 16], dport: u16) -> Vec<u8> {
+    let mut l4 = Vec::new();
+    l4.extend_from_slice(&sport.to_be_bytes());
+    l4.extend_from_slice(&dport.to_be_bytes());
+    l4.extend_from_slice(&8u16.to_be_bytes());
+    l4.extend_from_slice(&[0, 0]);
+    ip6_packet(src, dst, PROTO_UDP, 64, &l4)
+}
+
+fn icmp6(src: [u8; 16], dst: [u8; 16], kind: u8, hop: u8) -> Vec<u8> {
+    ip6_packet(src, dst, 58, hop, &[kind, 0, 0, 0, 0, 0, 0, 0])
+}
+
+fn rule6(hook: Hook, proto: u8, net: [u8; 16], net_len: u8, action: Verdict) -> FwRule {
+    FwRule { hook, proto, port_lo: 0, port_hi: 0, net, net_len, net_v6: true, action }
+}
+
+/// `2001:db8:0:N::H`.
+const fn a6(n: u8, h: u8) -> [u8; 16] {
+    [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, n, 0, 0, 0, 0, 0, 0, 0, h]
 }
 
 // ── Rules ───────────────────────────────────────────────────────────────────
@@ -562,4 +597,99 @@ fn on_the_stack_an_outbound_row_drops_or_rejects_what_the_caller_sent() {
     assert_eq!(wire::sent_count(), 0);
     assert_eq!(datagram(9), 0, "mirror: another port leaves");
     assert_eq!(wire::sent_count(), 1);
+}
+
+// ── IPv6 ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn a_prefix_matches_its_own_family_only_and_no_prefix_matches_both() {
+    let _g = begin();
+    // 10.0.0.0/8 as IPv4; an IPv6 address whose first byte is 10 is not in it.
+    let mut v6_ten = [0u8; 16];
+    v6_ten[0] = 10;
+    v6_ten[15] = 9;
+    let v4_ten = rule(Hook::Ingress, PROTO_UDP, None, Some(([10, 0, 0, 0], 8)), Verdict::Accept);
+    let fw = gateway(&[v4_ten]);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp(PEER_IP, 1, OUR_IP, 2)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(v6_ten, 1, a6(1, 2), 2)), Verdict::Drop, "a v4 prefix never matches v6");
+
+    let v6_net = rule6(Hook::Ingress, PROTO_UDP, a6(1, 0), 64, Verdict::Accept);
+    let fw = gateway(&[v6_net]);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(a6(1, 9), 1, a6(1, 2), 2)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(a6(2, 9), 1, a6(1, 2), 2)), Verdict::Drop, "another /64");
+    assert_eq!(judge(&fw, Hook::Ingress, &udp([0x20, 0x01, 0x0d, 0xb8], 1, OUR_IP, 2)), Verdict::Drop, "a v6 prefix never matches v4");
+
+    let any = rule(Hook::Ingress, PROTO_UDP, Some((2, 2)), None, Verdict::Accept);
+    let fw = gateway(&[any]);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp(PEER_IP, 1, OUR_IP, 2)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(a6(7, 9), 1, a6(1, 2), 2)), Verdict::Accept);
+}
+
+#[test]
+fn an_ipv6_prefix_is_matched_bit_by_bit() {
+    let _g = begin();
+    // 2001:db8:0:100::/56 holds :100: to :1ff:, and /128 one host.
+    let mut net = a6(0, 0);
+    net[6] = 1;
+    let fw = gateway(&[rule6(Hook::Ingress, PROTO_UDP, net, 55, Verdict::Accept)]);
+    let at = |hi: u8, lo: u8| {
+        let mut a = a6(lo, 9);
+        a[6] = hi;
+        udp6(a, 1, a6(1, 2), 2)
+    };
+    assert_eq!(judge(&fw, Hook::Ingress, &at(1, 0)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &at(1, 0xff)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &at(0, 0xff)), Verdict::Accept, "/55: bit 56 is outside");
+    assert_eq!(judge(&fw, Hook::Ingress, &at(2, 0)), Verdict::Drop);
+    let fw = gateway(&[rule6(Hook::Ingress, PROTO_UDP, a6(1, 9), 128, Verdict::Accept)]);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(a6(1, 9), 1, a6(1, 2), 2)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(a6(1, 8), 1, a6(1, 2), 2)), Verdict::Drop);
+}
+
+#[test]
+fn icmp_in_a_row_is_icmpv6_for_an_ipv6_packet() {
+    let _g = begin();
+    let fw = gateway(&[rule(Hook::Ingress, ip::IP_PROTO_ICMP, None, None, Verdict::Accept)]);
+    assert_eq!(judge(&fw, Hook::Ingress, &icmp_echo(PEER_IP, OUR_IP)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &icmp6(a6(1, 9), a6(1, 2), 128, 64)), Verdict::Accept);
+    // Protocol 1 inside an IPv6 header is not ICMPv6.
+    assert_eq!(judge(&fw, Hook::Ingress, &ip6_packet(a6(1, 9), a6(1, 2), 1, 64, &[8, 0, 0, 0])), Verdict::Drop);
+}
+
+#[test]
+fn the_inbound_default_passes_exactly_the_neighbour_discovery_types_at_hop_limit_255() {
+    let _g = begin();
+    let fw = gateway(&[]);
+    for t in 0..=255u8 {
+        let want = if (133..=137).contains(&t) { Verdict::Accept } else { Verdict::Drop };
+        assert_eq!(judge(&fw, Hook::Ingress, &icmp6(a6(1, 9), a6(1, 2), t, 255)), want, "type {t}");
+        assert_eq!(judge(&fw, Hook::Ingress, &icmp6(a6(1, 9), a6(1, 2), t, 254)), Verdict::Drop, "type {t}, hop 254");
+    }
+    // Under an accepting default a row still decides about them.
+    let fw = firewall(Verdict::Accept, &[rule6(Hook::Ingress, 58, a6(1, 0), 64, Verdict::Drop)]);
+    assert_eq!(judge(&fw, Hook::Ingress, &icmp6(a6(1, 9), a6(1, 2), 134, 255)), Verdict::Drop);
+}
+
+#[test]
+fn a_v6_flow_is_tracked_by_whole_addresses_and_never_answers_a_v4_packet() {
+    let _g = begin();
+    let fw = gateway(&[]);
+    let (us, peer) = (a6(1, 2), a6(1, 9));
+    assert_eq!(judge(&fw, Hook::Egress, &udp6(us, 4444, peer, 53)), Verdict::Accept);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(peer, 53, us, 4444)), Verdict::Accept, "the answer passes");
+    // Same last four bytes, another prefix: not the flow.
+    let mut other = peer;
+    other[7] = 2;
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(other, 53, us, 4444)), Verdict::Drop);
+    // An IPv4 packet whose addresses are the flow's first four bytes.
+    assert_eq!(judge(&fw, Hook::Ingress, &udp([0x20, 0x01, 0x0d, 0xb8], 53, [0x20, 0x01, 0x0d, 0xb8], 4444)), Verdict::Drop);
+    // And an IPv4 flow does not admit IPv6 packets with its bytes in front.
+    assert_eq!(judge(&fw, Hook::Egress, &udp(OUR_IP, 5555, PEER_IP, 53)), Verdict::Accept);
+    let mut p6 = [0u8; 16];
+    p6[..4].copy_from_slice(&PEER_IP);
+    let mut o6 = [0u8; 16];
+    o6[..4].copy_from_slice(&OUR_IP);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp6(p6, 53, o6, 5555)), Verdict::Drop);
+    assert_eq!(judge(&fw, Hook::Ingress, &udp(PEER_IP, 53, OUR_IP, 5555)), Verdict::Accept);
+    assert_eq!(fw.tracked(now()), 2);
 }

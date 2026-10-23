@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The packet-filter seam of the IPv4 path.
+//! The packet-filter seam of the IP paths, IPv4 and IPv6.
 //!
 //! One interface, [`PacketFilter`], and three places it is asked: [`Hook::Ingress`]
 //! (a datagram for this host, after the header checks and the destination
@@ -10,6 +10,14 @@
 //! `NET_IP_FORWARD` is on: the NAT of `nat.rs` is its tracker). A simple
 //! built-in firewall and a complex external one plug in the same way: install
 //! an object, answer [`Verdict`] for each packet.
+//!
+//! **Both address families, one filter.** `ip.rs` asks it about IPv4 packets,
+//! `ipv6.rs` about IPv6 ones, through the same hooks and the same
+//! [`PacketView`] (its `v6` flag says which family the addresses are in). IPv6
+//! has no forwarding path, so it meets the ingress and egress hooks only. The
+//! Neighbour Discovery messages `ipv6.rs` sends itself (the Neighbour
+//! Advertisement, the Router Solicitation) are asked about too: an installed
+//! filter sees every IPv6 packet this host sends and every one it takes.
 //!
 //! **The default is no filter, and it costs one branch.** [`active`] is a single
 //! relaxed load of a flag; the packet view is built, and the filter asked, only
@@ -22,15 +30,15 @@
 //! |----------|------------------------------------------------|---------------------------|
 //! | `Accept` | the packet goes on                             | the packet goes on        |
 //! | `Drop`   | silently discarded                             | discarded, `send` says 0  |
-//! | `Reject` | discarded, ICMP "administratively prohibited" to the sender | discarded, `send` says -1 |
+//! | `Reject` | discarded, ICMP or ICMPv6 "administratively prohibited" to the sender | discarded, `send` says -1 |
 //!
 //! A sender does not need to be told it was dropped (`Drop`: the packet is lost
 //! on the wire, TCP retransmits); a local caller whose own datagram is refused
 //! is told (`Reject`): there is no peer to answer, so the error return is the
 //! reply. ICMP is never sent about a broadcast or multicast datagram, about an
-//! ICMP datagram, or to a source that is not a single host (RFC 1122 §3.2.2),
-//! and the replies are themselves rate-limited so a flood of refused packets
-//! cannot be turned into a flood of replies.
+//! ICMP datagram, or to a source that is not a single host (RFC 1122 §3.2.2;
+//! for IPv6, RFC 4443 §2.4 (e)), and the replies are themselves rate-limited so
+//! a flood of refused packets cannot be turned into a flood of replies.
 //!
 //! **Refusals leave a record.** Every `Drop` and `Reject` bumps a counter and
 //! is offered to [`azos_decision`] as [`Rule::PacketRefused`]. A refusal record
@@ -38,7 +46,10 @@
 //! wrong thing, so the stack rate-limits before it records: a token bucket of
 //! [`RECORDS_PER_SEC`] with a burst of [`RECORD_BURST`]; the refusals it holds
 //! back are counted, and the count rides in the third number of the next record
-//! written, the way the capability-denial bucket reports its drops.
+//! written, the way the capability-denial bucket reports its drops. An IPv6
+//! refusal is recorded by the last four bytes of each address (the word the
+//! egress gate records for an IPv6 destination too) and bit 32 of the second
+//! number set.
 //!
 //! **The connection state is the filter's business.** The hooks take an
 //! `Option<&ConnState>` so a filter that is handed state can use it; the stack
@@ -56,7 +67,18 @@
 //! the peer has answered, packets of the flow pass in both directions whatever
 //! the rules say. The table has [`CT_SLOTS`] entries and never grows.
 //!
-use super::ip;
+//! A rule with an address prefix matches its own family only; a rule without
+//! one matches both, and its `icmp` means ICMP for an IPv4 packet and ICMPv6
+//! for an IPv6 one. The inbound default never refuses the five Neighbour
+//! Discovery messages ([`ND_TYPES`]: Router Solicitation 133, Router
+//! Advertisement 134, Neighbour Solicitation 135, Neighbour Advertisement 136,
+//! Redirect 137) when their hop limit is 255, the mark of a message that did
+//! not cross a router (RFC 4861 §6.1, §7.1): they are to IPv6 what ARP is to
+//! IPv4, which the filter never sees, and SLAAC needs the advertisement and
+//! the solicitation. A row still decides about them first. Every other ICMPv6
+//! type, echo request and reply among them, gets the policy, as ICMP does.
+//!
+use super::{ip, ipv6};
 use azos_decision::{Rule, Verdict as Decided};
 use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -103,42 +125,80 @@ pub struct ConnState {
     pub reply: bool,
 }
 
-/// A read-only view of one IPv4 packet: the header fields a rule matches on
-/// and the bytes behind them. Built over a packet the stack has already
-/// validated (length, header checksum) or built itself.
+/// A read-only view of one IPv4 or IPv6 packet: the header fields a rule
+/// matches on and the bytes behind them. Built over a packet the stack has
+/// already validated (length, header checksum) or built itself.
 #[derive(Clone, Copy, Debug)]
 pub struct PacketView<'a> {
-    pub src: [u8; 4],
-    pub dst: [u8; 4],
+    /// IPv6 when `true`, IPv4 when `false`.
+    pub v6: bool,
+    /// Source and destination in network order: all 16 bytes for IPv6, the
+    /// first four for IPv4 (the rest zero), the layout of the topology's
+    /// `IpAddr`.
+    pub src: [u8; 16],
+    pub dst: [u8; 16],
+    /// The IPv4 protocol, or the IPv6 next header (this stack takes no
+    /// extension header, so it is the transport's number).
     pub proto: u8,
-    /// The whole IP packet, header first, exactly `total_length` bytes.
+    /// The whole IP packet, header first, exactly `total_length` bytes (IPv6:
+    /// the 40-byte header and the payload length).
     pub packet: &'a [u8],
-    /// Header length in bytes (options included).
-    pub ihl: usize,
+    /// Header length in bytes (IPv4 options included; 40 for IPv6).
+    pub hdr_len: usize,
 }
 
 impl<'a> PacketView<'a> {
-    /// A view over `packet`, or `None` when it is not a whole IPv4 header.
+    /// A view over `packet`, or `None` when it is not a whole IPv4 or IPv6
+    /// header.
     pub fn parse(packet: &'a [u8]) -> Option<Self> {
-        if packet.len() < ip::IP_HDR_MIN || packet[0] >> 4 != 4 {
+        match packet.first()? >> 4 {
+            4 => Self::parse_v4(packet),
+            6 => Self::parse_v6(packet),
+            _ => None,
+        }
+    }
+
+    fn parse_v4(packet: &'a [u8]) -> Option<Self> {
+        if packet.len() < ip::IP_HDR_MIN {
             return None;
         }
-        let ihl = (packet[0] & 0x0F) as usize * 4;
-        if ihl < ip::IP_HDR_MIN || packet.len() < ihl {
+        let hdr_len = (packet[0] & 0x0F) as usize * 4;
+        if hdr_len < ip::IP_HDR_MIN || packet.len() < hdr_len {
             return None;
         }
-        Some(PacketView {
-            src: [packet[12], packet[13], packet[14], packet[15]],
-            dst: [packet[16], packet[17], packet[18], packet[19]],
-            proto: packet[9],
-            packet,
-            ihl,
-        })
+        let (mut src, mut dst) = ([0u8; 16], [0u8; 16]);
+        src[..4].copy_from_slice(&packet[12..16]);
+        dst[..4].copy_from_slice(&packet[16..20]);
+        Some(PacketView { v6: false, src, dst, proto: packet[9], packet, hdr_len })
+    }
+
+    fn parse_v6(packet: &'a [u8]) -> Option<Self> {
+        if packet.len() < ipv6::IPV6_HDR_SIZE {
+            return None;
+        }
+        let (mut src, mut dst) = ([0u8; 16], [0u8; 16]);
+        src.copy_from_slice(&packet[8..24]);
+        dst.copy_from_slice(&packet[24..40]);
+        Some(PacketView { v6: true, src, dst, proto: packet[6], packet, hdr_len: ipv6::IPV6_HDR_SIZE })
     }
 
     /// The transport segment: everything after the IP header.
     pub fn payload(&self) -> &'a [u8] {
-        &self.packet[self.ihl..]
+        &self.packet[self.hdr_len..]
+    }
+
+    /// Is this an ICMP message of its family (ICMP for IPv4, ICMPv6 for IPv6)?
+    pub fn is_icmp(&self) -> bool {
+        self.proto == if self.v6 { ipv6::NEXTHDR_ICMPV6 } else { ip::IP_PROTO_ICMP }
+    }
+
+    /// One of the Neighbour Discovery messages ([`ND_TYPES`]) with the hop
+    /// limit, 255, that says it did not cross a router.
+    pub fn is_neighbour_discovery(&self) -> bool {
+        self.v6
+            && self.proto == ipv6::NEXTHDR_ICMPV6
+            && self.packet[7] == ipv6::ND_HOP_LIMIT
+            && self.payload().first().is_some_and(|t| ND_TYPES.contains(t))
     }
 
     /// Source port of a TCP or UDP datagram.
@@ -170,6 +230,12 @@ impl<'a> PacketView<'a> {
         Some(u16::from_be_bytes([p[at], p[at + 1]]))
     }
 }
+
+/// The ICMPv6 types of Neighbour Discovery (RFC 4861 §4): Router
+/// Solicitation, Router Advertisement, Neighbour Solicitation and
+/// Advertisement, Redirect. The set `ipv6.rs` refuses unless its hop limit is
+/// 255, and the set the built-in firewall's inbound default never refuses.
+pub const ND_TYPES: core::ops::RangeInclusive<u8> = ipv6::ICMPV6_RS..=ipv6::ICMPV6_REDIRECT;
 
 /// A packet filter. Installed with [`set_filter`]; asked once per packet per hook.
 ///
@@ -322,28 +388,48 @@ fn refused(hook: Hook, v: Verdict, pkt: &PacketView) {
     };
     RECORDED.fetch_add(1, Ordering::Relaxed);
     let (sport, dport) = (pkt.src_port().unwrap_or(0) as u64, pkt.dst_port().unwrap_or(0) as u64);
-    // n[0]: src << 32 | dst. n[1]: hook, verdict, protocol, ports.
-    // n[2]: refusals held back by the rate limit since the previous record.
+    let (src, dst) = (record_word(pkt, &pkt.src), record_word(pkt, &pkt.dst));
+    // n[0]: src << 32 | dst. n[1]: hook, verdict, protocol, bit 32 for IPv6,
+    // ports. n[2]: refusals held back by the rate limit since the previous
+    // record.
     azos_decision::record(
         Rule::PacketRefused,
         Decided::Refuse,
-        u32::from_be_bytes(pkt.src),
+        src,
         [
-            (u32::from_be_bytes(pkt.src) as u64) << 32 | u32::from_be_bytes(pkt.dst) as u64,
-            (hook as u64) << 56 | (v as u64) << 48 | (pkt.proto as u64) << 40 | sport << 16 | dport,
+            (src as u64) << 32 | dst as u64,
+            (hook as u64) << 56 | (v as u64) << 48 | (pkt.proto as u64) << 40 | (pkt.v6 as u64) << 32 | sport << 16 | dport,
             owed,
         ],
     );
 }
 
-/// Judge a packet addressed to this host. `true`: let it through. Otherwise it
+/// The 32 bits of an address a refusal record carries: the IPv4 address, or
+/// the last four bytes of an IPv6 one.
+fn record_word(pkt: &PacketView, a: &[u8; 16]) -> u32 {
+    let at = if pkt.v6 { 12 } else { 0 };
+    u32::from_be_bytes([a[at], a[at + 1], a[at + 2], a[at + 3]])
+}
+
+/// Judge an IPv4 packet addressed to this host, which came in on the
+/// interface with `our_mac` and `our_ip`. `true`: let it through. Otherwise it
 /// has been discarded here (and answered, for `Reject`).
 #[inline(always)]
 pub fn ingress(packet: &[u8], our_mac: &[u8; 6], our_ip: &[u8; 4]) -> bool {
     if !active() {
         return true;
     }
-    receive(Hook::Ingress, packet, None, our_mac, our_ip)
+    receive(Hook::Ingress, packet, None, Some((our_mac, our_ip)))
+}
+
+/// [`ingress`] for an IPv6 packet: the answer to a `Reject` needs no
+/// interface, `ipv6.rs` has one.
+#[inline(always)]
+pub fn ingress_v6(packet: &[u8]) -> bool {
+    if !active() {
+        return true;
+    }
+    receive(Hook::Ingress, packet, None, None)
 }
 
 /// Judge a packet this host would route. Same contract as [`ingress`]; `conn`
@@ -353,7 +439,7 @@ pub fn forward(packet: &[u8], conn: Option<&ConnState>, our_mac: &[u8; 6], our_i
     if !active() {
         return true;
     }
-    receive(Hook::Forward, packet, conn, our_mac, our_ip)
+    receive(Hook::Forward, packet, conn, Some((our_mac, our_ip)))
 }
 
 /// Refuse a packet the stack itself decided not to forward (the NAT table has
@@ -366,12 +452,13 @@ pub fn refuse(hook: Hook, v: Verdict, packet: &[u8], our_mac: &[u8; 6], our_ip: 
     let Some(view) = PacketView::parse(packet) else { return };
     refused(hook, v, &view);
     if v == Verdict::Reject {
-        reject(&view, our_mac, our_ip);
+        answer(&view, Some((our_mac, our_ip)));
     }
 }
 
-/// Judge a packet this host built. The caller acts on the verdict: nothing for
-/// `Accept`, a discard for the others (see the table in the module doc).
+/// Judge a packet this host built, IPv4 or IPv6. The caller acts on the
+/// verdict: nothing for `Accept`, a discard for the others (see the table in
+/// the module doc).
 #[inline(always)]
 pub fn egress(packet: &[u8]) -> Verdict {
     if !active() {
@@ -383,16 +470,29 @@ pub fn egress(packet: &[u8]) -> Verdict {
     }
 }
 
+/// The interface an IPv4 packet came in on (its MAC and address), which
+/// answers a `Reject`; `None` for IPv6.
+type Iface<'a> = Option<(&'a [u8; 6], &'a [u8; 4])>;
+
 #[inline(never)]
-fn receive(hook: Hook, packet: &[u8], conn: Option<&ConnState>, our_mac: &[u8; 6], our_ip: &[u8; 4]) -> bool {
+fn receive(hook: Hook, packet: &[u8], conn: Option<&ConnState>, iface: Iface) -> bool {
     let Some(view) = PacketView::parse(packet) else { return true };
     match ask(hook, &view, conn) {
         Verdict::Accept => true,
         Verdict::Drop => false,
         Verdict::Reject => {
-            reject(&view, our_mac, our_ip);
+            answer(&view, iface);
             false
         }
+    }
+}
+
+/// Tell the sender of `view` it was refused, in its own family.
+fn answer(view: &PacketView, iface: Iface) {
+    match iface {
+        Some((our_mac, our_ip)) if !view.v6 => reject(view, our_mac, our_ip),
+        None if view.v6 => reject_v6(view),
+        _ => {}
     }
 }
 
@@ -404,12 +504,10 @@ fn reject(view: &PacketView, our_mac: &[u8; 6], our_ip: &[u8; 4]) {
         REPLY_HELD.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    let now = azos_drv_sys::timebase::now();
-    if REPLY_BUCKET.lock().admit(now, REPLIES_PER_SEC, REPLY_BURST).is_none() {
-        REPLY_HELD.fetch_add(1, Ordering::Relaxed);
+    if !admit_reply() {
         return;
     }
-    let quoted = (view.ihl + 8).min(view.packet.len());
+    let quoted = (view.hdr_len + 8).min(view.packet.len());
     let mut icmp = [0u8; 8 + ip::IP_HDR_MIN + ip::IP_OPTS_MAX + 8];
     icmp[0] = ip::ICMP_DEST_UNREACHABLE;
     icmp[1] = ICMP_ADMIN_PROHIBITED;
@@ -419,26 +517,71 @@ fn reject(view: &PacketView, our_mac: &[u8; 6], our_ip: &[u8; 4]) {
     icmp[2] = cs[0];
     icmp[3] = cs[1];
     REPLIED.fetch_add(1, Ordering::Relaxed);
-    let _ = ip::send(our_mac, our_ip, &view.src, ip::IP_PROTO_ICMP, &icmp[..len]);
+    let _ = ip::send(our_mac, our_ip, &v4(&view.src), ip::IP_PROTO_ICMP, &icmp[..len]);
 }
 
 /// Code 13 of Destination Unreachable.
 const ICMP_ADMIN_PROHIBITED: u8 = 13;
 
+/// The IPv4 address in a view's 16-byte field.
+fn v4(a: &[u8; 16]) -> [u8; 4] {
+    [a[0], a[1], a[2], a[3]]
+}
+
+/// ICMPv6 Destination Unreachable, code 1 "communication with destination
+/// administratively prohibited" (RFC 4443 §3.1), to the sender of `view`, from
+/// the address it was sent to, carrying as much of it as fits the minimum
+/// IPv6 MTU.
+fn reject_v6(view: &PacketView) {
+    if !may_answer_v6(view) {
+        REPLY_HELD.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    if !admit_reply() {
+        return;
+    }
+    REPLIED.fetch_add(1, Ordering::Relaxed);
+    let _ = ipv6::icmpv6_send_error(&view.dst, &view.src, ipv6::ICMPV6_DEST_UNREACHABLE, ICMPV6_ADMIN_PROHIBITED, view.packet);
+}
+
+/// Code 1 of ICMPv6 Destination Unreachable.
+const ICMPV6_ADMIN_PROHIBITED: u8 = 1;
+
+/// RFC 4443 §2.4 (e): no ICMPv6 error about an ICMPv6 message (this stack
+/// sends none about informational ones either, as for IPv4), a datagram to a
+/// group, or one whose source is not a single host.
+fn may_answer_v6(view: &PacketView) -> bool {
+    let single_host = |a: &[u8; 16]| {
+        !ipv6::is_unspecified(a) && !ipv6::is_multicast(a) && *a != ipv6::LOOPBACK
+    };
+    !view.is_icmp() && single_host(&view.src) && single_host(&view.dst)
+}
+
+/// Is there a token for one more rejection? Counts the one held back.
+fn admit_reply() -> bool {
+    let now = azos_drv_sys::timebase::now();
+    if REPLY_BUCKET.lock().admit(now, REPLIES_PER_SEC, REPLY_BURST).is_none() {
+        REPLY_HELD.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    true
+}
+
 /// RFC 1122 §3.2.2: no ICMP error about an ICMP datagram, a broadcast or
 /// multicast datagram, or one whose source is not a single host.
 fn may_answer(view: &PacketView) -> bool {
-    if view.proto == ip::IP_PROTO_ICMP {
+    if view.is_icmp() {
         return false;
     }
     let single_host = |a: &[u8; 4]| {
         *a != [0; 4] && *a != [0xff; 4] && a[0] != 127 && !super::igmp::is_multicast(a)
     };
-    if !single_host(&view.src) || !single_host(&view.dst) {
+    let (src, dst) = (v4(&view.src), v4(&view.dst));
+    if !single_host(&src) || !single_host(&dst) {
         return false;
     }
     let (ip, mask) = (super::net_get_ip(), super::net_get_mask());
-    let directed_broadcast = (0..4).all(|i| view.dst[i] == (ip[i] & mask[i]) | !mask[i]);
+    let directed_broadcast = (0..4).all(|i| dst[i] == (ip[i] & mask[i]) | !mask[i]);
     !directed_broadcast
 }
 
@@ -470,16 +613,21 @@ pub struct FwRule {
     /// Which hook the rule looks at.
     pub hook: Hook,
     /// IP protocol number; 0 matches any (protocol 0 is IPv6 hop-by-hop, which
-    /// an IPv4 packet never carries).
+    /// this stack never takes). `ip::IP_PROTO_ICMP` matches ICMPv6 in an IPv6
+    /// packet: a row's `icmp` names the ICMP of the packet's family.
     pub proto: u8,
     /// First and last destination port matched (TCP and UDP only); `port_lo`
     /// 0 matches any packet.
     pub port_lo: u16,
     pub port_hi: u16,
-    /// The remote address prefix, host order: the source of an ingress packet,
-    /// the destination of an egress or forwarded one. `net_len` 0 matches any.
-    pub net: u32,
+    /// The remote address prefix in network order, laid out as
+    /// [`PacketView::src`]: the source of an ingress packet, the destination of
+    /// an egress or forwarded one. `net_len` 0 matches any address of either
+    /// family; otherwise the prefix is IPv6 when `net_v6`, IPv4 when not, and
+    /// matches packets of that family only.
+    pub net: [u8; 16],
     pub net_len: u8,
+    pub net_v6: bool,
     pub action: Verdict,
 }
 
@@ -489,13 +637,19 @@ impl FwRule {
         proto: 0,
         port_lo: 0,
         port_hi: 0,
-        net: 0,
+        net: [0; 16],
         net_len: 0,
+        net_v6: false,
         action: Verdict::Accept,
     };
 
     fn matches(&self, hook: Hook, pkt: &PacketView) -> bool {
-        if self.hook != hook || (self.proto != 0 && self.proto != pkt.proto) {
+        let proto_ok = match self.proto {
+            0 => true,
+            ip::IP_PROTO_ICMP => pkt.is_icmp(),
+            p => p == pkt.proto,
+        };
+        if self.hook != hook || !proto_ok {
             return false;
         }
         if self.port_lo != 0 && !pkt.dst_port().is_some_and(|p| (self.port_lo..=self.port_hi).contains(&p)) {
@@ -504,20 +658,30 @@ impl FwRule {
         if self.net_len == 0 {
             return true;
         }
-        let remote = u32::from_be_bytes(if hook == Hook::Ingress { pkt.src } else { pkt.dst });
-        let mask = u32::MAX << (32 - self.net_len.min(32) as u32);
-        remote & mask == self.net & mask
+        if self.net_v6 != pkt.v6 {
+            return false;
+        }
+        let remote = if hook == Hook::Ingress { &pkt.src } else { &pkt.dst };
+        let bits = self.net_len.min(if self.net_v6 { 128 } else { 32 }) as usize;
+        let (whole, rest) = (bits / 8, bits % 8);
+        if remote[..whole] != self.net[..whole] {
+            return false;
+        }
+        let mask = !(0xFFu8 >> rest);
+        rest == 0 || remote[whole] & mask == self.net[whole] & mask
     }
 }
 
-/// The 5-tuple of a TCP or UDP packet, and its TCP flags (0 for UDP).
+/// The 5-tuple of a TCP or UDP packet, its family and its TCP flags (0 for
+/// UDP). Whole addresses: an IPv4 and an IPv6 flow never share an entry.
 #[derive(Clone, Copy)]
 struct Tuple {
-    src: u32,
-    dst: u32,
+    src: [u8; 16],
+    dst: [u8; 16],
     sport: u16,
     dport: u16,
     proto: u8,
+    v6: bool,
     flags: u8,
 }
 
@@ -527,14 +691,7 @@ impl Tuple {
     fn of(pkt: &PacketView) -> Option<Self> {
         let (sport, dport) = (pkt.src_port()?, pkt.dst_port()?);
         let flags = if pkt.proto == ip::IP_PROTO_TCP { pkt.tcp_flags()? } else { 0 };
-        Some(Tuple {
-            src: u32::from_be_bytes(pkt.src),
-            dst: u32::from_be_bytes(pkt.dst),
-            sport,
-            dport,
-            proto: pkt.proto,
-            flags,
-        })
+        Some(Tuple { src: pkt.src, dst: pkt.dst, sport, dport, proto: pkt.proto, v6: pkt.v6, flags })
     }
 
     /// May this packet open a flow: any UDP datagram, a TCP SYN without ACK.
@@ -558,18 +715,22 @@ enum Dir {
 /// One tracked flow, in the direction of the packet that opened it.
 #[derive(Clone, Copy)]
 struct Flow {
-    src: u32,
-    dst: u32,
+    src: [u8; 16],
+    dst: [u8; 16],
     sport: u16,
     dport: u16,
     proto: u8,
+    v6: bool,
     state: u8,
     /// Timebase tick at which the entry stops counting; 0 for a free slot.
     expires: u64,
 }
 
+// The per-entry cost Kconfig `FIREWALL_CONNTRACK_MAX` states.
+const _: () = assert!(core::mem::size_of::<Flow>() == 48);
+
 impl Flow {
-    const EMPTY: Flow = Flow { src: 0, dst: 0, sport: 0, dport: 0, proto: 0, state: 0, expires: 0 };
+    const EMPTY: Flow = Flow { src: [0; 16], dst: [0; 16], sport: 0, dport: 0, proto: 0, v6: false, state: 0, expires: 0 };
 
     fn live(&self, now: u64) -> bool {
         self.expires > now
@@ -581,7 +742,7 @@ impl Flow {
     }
 
     fn direction(&self, t: &Tuple) -> Option<Dir> {
-        if self.proto != t.proto {
+        if self.proto != t.proto || self.v6 != t.v6 {
             None
         } else if (self.src, self.dst, self.sport, self.dport) == (t.src, t.dst, t.sport, t.dport) {
             Some(Dir::Original)
@@ -630,25 +791,33 @@ impl Inner {
         }
     }
 
-    /// First match wins; no match gets the default policy.
+    /// First match wins; no match gets the default policy, under which the
+    /// inbound Neighbour Discovery messages always pass (module doc).
     fn rule_verdict(&self, hook: Hook, pkt: &PacketView) -> Verdict {
         for r in &self.rules[..self.nrules] {
             if r.matches(hook, pkt) {
                 return r.action;
             }
         }
-        if hook == Hook::Egress { Verdict::Accept } else { self.inbound }
+        if hook == Hook::Egress || pkt.is_neighbour_discovery() { Verdict::Accept } else { self.inbound }
     }
 
     /// The first slot of the set both directions of the flow share.
     fn set_of(&self, t: &Tuple) -> usize {
-        let a = (t.src as u64) << 16 | t.sport as u64;
-        let b = (t.dst as u64) << 16 | t.dport as u64;
+        let (a, b) = ((t.src, t.sport), (t.dst, t.dport));
         let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-        let mut h = self.seed ^ t.proto as u64;
-        for w in [lo, hi] {
+        let mut h = self.seed ^ t.proto as u64 ^ (t.v6 as u64) << 8;
+        let mut mix = |w: u64| {
             h = (h ^ w).wrapping_mul(0x9E37_79B9_7F4A_7C15);
             h ^= h >> 29;
+        };
+        for (addr, port) in [lo, hi] {
+            // An IPv4 address fills the first word, the rest are zero.
+            mix(u64::from_be_bytes([addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7]]));
+            if t.v6 {
+                mix(u64::from_be_bytes([addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15]]));
+            }
+            mix(port as u64);
         }
         (h >> 32) as usize % SETS * WAYS
     }
@@ -693,6 +862,7 @@ impl Inner {
             sport: t.sport,
             dport: t.dport,
             proto: t.proto,
+            v6: t.v6,
             // A host talking to itself is answered by construction: the copy of
             // the packet that comes back in at the ingress hook must pass.
             state: if local { ST_REPLIED | ST_LOCAL } else { 0 },

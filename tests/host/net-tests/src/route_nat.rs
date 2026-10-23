@@ -750,8 +750,8 @@ impl PacketFilter for Probe {
     fn check(&self, hook: Hook, pkt: &PacketView, conn: Option<&ConnState>) -> Verdict {
         self.calls.lock().unwrap().push(Call {
             hook,
-            src: pkt.src,
-            dst: pkt.dst,
+            src: pkt.src[..4].try_into().unwrap(),
+            dst: pkt.dst[..4].try_into().unwrap(),
             sport: pkt.src_port(),
             dport: pkt.dst_port(),
             conn: conn.copied(),

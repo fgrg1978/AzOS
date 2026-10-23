@@ -354,6 +354,13 @@ config FIREWALL_INBOUND_DROP
       "unreachable" errors back declares a row for them, and so for the DHCP
       reply (udp port 68) and the IGMP queries (proto any, the router).
 
+      IPv6 gets the same policy. The one exception is Neighbour Discovery:
+      ICMPv6 types 133 (Router Solicitation), 134 (Router Advertisement),
+      135 (Neighbour Solicitation), 136 (Neighbour Advertisement) and 137
+      (Redirect) with hop limit 255 are never dropped by this default, so
+      address resolution and SLAAC keep working; a row can still refuse them.
+      Every other ICMPv6 type, echo included, is dropped like ICMP.
+
       On by default under USE_GATEWAY. With this off and no row that refuses
       anything the filter is not installed at all and the stack pays one
       branch per packet.
@@ -378,8 +385,9 @@ config FIREWALL_CONNTRACK_MAX
       cannot push out an established one. The table is kept only when a rule or
       the inbound policy can refuse something a reply must still pass.
 
-      Cost: 24 B of RAM per entry (the filter's table, .bss), the same on
-      riscv64, aarch64 and x86_64: 6,144 B at the default 256.
+      Cost: 48 B of RAM per entry (the filter's table, .bss; whole IPv6
+      addresses), the same on riscv64, aarch64 and x86_64: 12,288 B at the
+      default 256.
 
 config FIREWALL_UDP_TIMEOUT_S
     int "Firewall: idle timeout of a tracked UDP flow (s)"

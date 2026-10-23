@@ -890,3 +890,208 @@ fn a_v6_connect_to_a_dead_peer_gives_up_and_frees_the_slot() {
     assert_eq!(tcp_rx::count_in(tcp::TcpState::SynSent), 0, "the slot is free again");
     socket_close(c);
 }
+
+// ── The packet filter on the IPv6 path ───────────────────────────────────────
+//
+// `filter.rs` judges IPv6 at the ingress hook (`ipv6_rx`) and the egress hook
+// (`ipv6::emit_to`, the Router Solicitation), with the IPv4 path's rules, flow
+// table and refusal records. Each refusal below has its mirror, the same
+// packet with no filter or an admitting row drawing the answer the refusal
+// removes; the canary `fw-ipv6-canary` (IPv6 skips the hooks, the code before
+// the filter covered it) turns every refusal red.
+
+use super::filter::{self, Firewall, FwRule, Hook, Verdict};
+
+/// Takes the filter off the stack on the way out, whatever the test did.
+struct Unfiltered;
+
+impl Drop for Unfiltered {
+    fn drop(&mut self) {
+        filter::reset_for_test();
+    }
+}
+
+/// Install a built-in firewall with `inbound` and `rules`, for the rest of the
+/// test (leaked: the filter seam keeps a `'static`).
+fn firewall(inbound: Verdict, rules: &[FwRule]) -> Unfiltered {
+    filter::reset_for_test();
+    let fw: &'static Firewall = Box::leak(Box::new(Firewall::new()));
+    assert_eq!(fw.load(inbound, rules.iter().copied(), 0x5EED_0006), Some(rules.len()));
+    filter::set_filter(fw);
+    Unfiltered
+}
+
+/// A row for an IPv6 prefix (`len` 0: any address of either family).
+fn rule6(hook: Hook, proto: u8, port: u16, net: [u8; 16], len: u8, action: Verdict) -> FwRule {
+    FwRule { hook, proto, port_lo: port, port_hi: port, net, net_len: len, net_v6: len != 0, action }
+}
+
+fn echo_to(dst: [u8; 16]) -> Vec<u8> {
+    let mut echo = vec![128, 0, 0, 0, 0x12, 0x34, 0, 1];
+    echo.extend_from_slice(b"fw6");
+    frame6(OUR_MAC, FE80_PEER, dst, 58, 64, echo, 2)
+}
+
+fn ns_for(target: [u8; 16]) -> Vec<u8> {
+    let mut ns = vec![135, 0, 0, 0, 0, 0, 0, 0];
+    ns.extend_from_slice(&target);
+    ns.extend(slla(PEER_MAC));
+    frame6(OUR_MAC, FE80_PEER, target, 58, 255, ns, 2)
+}
+
+/// Packet-refused records written since `first_seq`.
+fn refusals_since(first_seq: u64) -> Vec<azos_decision::Record> {
+    let mut v = Vec::new();
+    azos_decision::for_each(|r| {
+        if r.seq >= first_seq && r.rule == azos_decision::Rule::PacketRefused as u8 {
+            v.push(*r);
+        }
+    });
+    v
+}
+
+#[test]
+fn a_gateway_drops_v6_echo_and_syn_while_slaac_and_neighbour_discovery_still_work() {
+    let _g = begin();
+    let me = ipv6::ipv6_link_local();
+
+    // Mirror first, no filter: the echo is answered, a SYN to a closed port reset.
+    assert_eq!(inject(echo_to(me)).iter().filter(|s| s.payload[0] == 129).count(), 1);
+    let syn = seg6(FE80_PEER, me, 40100, 23, 1, 0, SYN, &[], &[]);
+    assert!(inject(syn.clone()).iter().any(|s| s.next == 6 && s.tcp_flags() & RST != 0));
+
+    let _fw = firewall(Verdict::Drop, &[]);
+    let before = azos_decision::total() + 1;
+    let refused = filter::stats().refused;
+
+    // SLAAC under the inbound default: the advertisement is taken...
+    assert!(inject(ra_with_prefix(3600, 1800)).is_empty());
+    assert_eq!(ipv6::ipv6_global(), Some(our_global()), "the Router Advertisement passed");
+    // ...and a solicitation for the new address is answered.
+    let out = inject(ns_for(our_global()));
+    assert_eq!(out.len(), 1, "the Neighbour Solicitation passed and the advertisement left");
+    assert_eq!((out[0].payload[0], out[0].src), (136, our_global()));
+    assert_eq!(filter::stats().refused, refused, "Neighbour Discovery is not refused");
+
+    // The echo and the SYN are dropped without a word.
+    assert!(inject(echo_to(me)).is_empty(), "echo_refused");
+    assert!(inject(syn).is_empty(), "syn_refused");
+    assert_eq!(filter::stats().refused, refused + 2);
+
+    // Recorded as IPv6: the last four bytes of each address, bit 32 of n[1].
+    let r = refusals_since(before);
+    assert_eq!(r.len(), 2);
+    let word = |a: &[u8; 16]| u32::from_be_bytes(a[12..16].try_into().unwrap());
+    let meta = |p: u8, sp: u64, dp: u64| {
+        (Hook::Ingress as u64) << 56 | (Verdict::Drop as u64) << 48 | (p as u64) << 40 | 1 << 32 | sp << 16 | dp
+    };
+    assert_eq!(r[0].subject, word(&FE80_PEER));
+    assert_eq!(r[0].n, [(word(&FE80_PEER) as u64) << 32 | word(&me) as u64, meta(58, 0, 0), 0]);
+    assert_eq!(r[1].n[1], meta(6, 40100, 23));
+}
+
+#[test]
+fn neighbour_discovery_passes_the_default_only_with_hop_limit_255_and_a_row_still_decides() {
+    let _g = begin();
+    let me = ipv6::ipv6_link_local();
+    let _fw = firewall(Verdict::Drop, &[]);
+    // Hop limit 64: not from this link. `ipv6_rx` discards it before the
+    // filter is asked, so it is not counted as a refusal either.
+    let mut ns = vec![135, 0, 0, 0, 0, 0, 0, 0];
+    ns.extend_from_slice(&me);
+    ns.extend(slla(PEER_MAC));
+    let refused = filter::stats().refused;
+    assert!(inject(frame6(OUR_MAC, FE80_PEER, me, 58, 64, ns, 2)).is_empty());
+    assert_eq!(filter::stats().refused, refused, "the filter was not asked about an off-link ND message");
+    assert_eq!(inject(ns_for(me)).len(), 1, "the same solicitation at hop limit 255 is answered");
+
+    // A row for ICMP (no prefix: both families, ICMPv6 here) is asked first.
+    let _fw = firewall(Verdict::Drop, &[rule6(Hook::Ingress, super::ip::IP_PROTO_ICMP, 0, [0; 16], 0, Verdict::Drop)]);
+    assert!(inject(ns_for(me)).is_empty(), "a row that drops ICMP drops Neighbour Discovery too");
+    // And one that admits ICMP admits the echo the default drops.
+    let _fw = firewall(Verdict::Drop, &[rule6(Hook::Ingress, super::ip::IP_PROTO_ICMP, 0, [0; 16], 0, Verdict::Accept)]);
+    assert_eq!(inject(echo_to(me)).iter().filter(|s| s.payload[0] == 129).count(), 1);
+}
+
+#[test]
+fn a_v6_row_admits_its_port_from_its_prefix_and_a_v4_row_does_not_match_v6() {
+    let _g = begin();
+    let me = ipv6::ipv6_link_local();
+    assert!(tcp::TcpHandle::listen6(7010).is_some());
+    let fe80 = addr(0xFE80, 0, 0, 0, 0, 0, 0, 0);
+    // The IPv4 row names 254.128.0.0/16, the first bytes of fe80::: a family
+    // confusion would let it admit the IPv6 SYN.
+    let mut v4 = [0u8; 16];
+    v4[..2].copy_from_slice(&[0xFE, 0x80]);
+    let v4_row = FwRule { hook: Hook::Ingress, proto: 6, port_lo: 7010, port_hi: 7010, net: v4, net_len: 16, net_v6: false, action: Verdict::Accept };
+    let _fw = firewall(Verdict::Drop, &[v4_row]);
+    assert!(inject(seg6(FE80_PEER, me, 40110, 7010, 1, 0, SYN, &[], &[])).is_empty(), "v4_row_admitted_v6");
+
+    let _fw = firewall(Verdict::Drop, &[rule6(Hook::Ingress, 6, 7010, fe80, 64, Verdict::Accept)]);
+    let out = inject(seg6(FE80_PEER, me, 40111, 7010, 1, 0, SYN, &[], &[]));
+    assert_eq!((out.len(), out[0].tcp_flags()), (1, SYN | ACK), "the row admits the SYN");
+    // The prefix is matched: from another /64 the default applies.
+    let far = addr(0x2001, 0xdb8, 0, 9, 0, 0, 0, 9);
+    assert!(inject(seg6(far, me, 40112, 7010, 1, 0, SYN, &[], &[])).is_empty());
+}
+
+#[test]
+fn a_v6_reject_answers_icmpv6_administratively_prohibited_quoting_the_packet() {
+    let _g = begin();
+    let me = ipv6::ipv6_link_local();
+    let _fw = firewall(Verdict::Accept, &[rule6(Hook::Ingress, 6, 23, [0; 16], 0, Verdict::Reject)]);
+    let syn = seg6(FE80_PEER, me, 40120, 23, 7, 0, SYN, &[], &[]);
+    let out = inject(syn.clone());
+    assert_eq!(out.len(), 1, "one answer, and no RST");
+    let e = &out[0];
+    assert_eq!((e.next, e.payload[0], e.payload[1]), (58, 1, 1), "Destination Unreachable, administratively prohibited");
+    assert_eq!((e.src, e.dst), (me, FE80_PEER));
+    assert_eq!(ref_checksum(&e.src, &e.dst, 58, &e.payload), 0);
+    assert_eq!(&e.payload[8..], &syn[14..], "the whole offending packet is quoted");
+
+    // Never about an ICMPv6 message.
+    let _fw = firewall(Verdict::Accept, &[rule6(Hook::Ingress, 58, 0, [0; 16], 0, Verdict::Reject)]);
+    assert!(inject(echo_to(me)).is_empty());
+}
+
+#[test]
+fn an_outbound_v6_flow_is_answered_through_the_inbound_drop_and_a_stranger_is_not() {
+    let _g = begin();
+    let _fw = firewall(Verdict::Drop, &[]);
+    let c = tcp::TcpHandle::connect(FE80_PEER, 80, 0).expect("connect");
+    let syn = raw::all().iter().filter_map(|f| Sent::parse(f)).find(|f| f.next == 6 && f.tcp_flags() == SYN);
+    let syn = syn.expect("the SYN left: outbound is accepted");
+    let sp = u16::from_be_bytes([syn.payload[0], syn.payload[1]]);
+    let seq = u32::from_be_bytes(syn.payload[4..8].try_into().unwrap());
+    // A stranger on another port is not the flow.
+    let stranger = seg6(FE80_PEER, syn.src, 81, sp, 500, seq + 1, SYN | ACK, &[], &[]);
+    assert!(inject(stranger).is_empty(), "stranger_admitted");
+    // The peer's answer passes, and the handshake ends.
+    let out = inject(seg6(FE80_PEER, syn.src, 80, sp, 500, seq + 1, SYN | ACK, &[], &[]));
+    assert!(out.iter().any(|s| s.tcp_flags() == ACK), "the answer passed and was acknowledged");
+    assert!(c.state() == tcp::TcpState::Established);
+}
+
+#[test]
+fn an_outbound_v6_row_drops_or_rejects_what_the_stack_sends() {
+    let _g = begin();
+    let fe80 = addr(0xFE80, 0, 0, 0, 0, 0, 0, 0);
+    let sent = || raw::all().iter().filter_map(|f| Sent::parse(f)).filter(|s| s.next == 17).count();
+
+    raw::reset();
+    assert!(ipv6::udpv6_send(&FE80_PEER, 5000, 53, b"q"), "mirror: no filter");
+    assert_eq!(sent(), 1);
+
+    let _fw = firewall(Verdict::Accept, &[rule6(Hook::Egress, 17, 53, fe80, 10, Verdict::Drop)]);
+    raw::reset();
+    assert!(ipv6::udpv6_send(&FE80_PEER, 5000, 53, b"q"), "a drop reads as sent");
+    assert_eq!(sent(), 0, "egress_dropped");
+
+    let _fw = firewall(Verdict::Accept, &[rule6(Hook::Egress, 17, 53, fe80, 10, Verdict::Reject)]);
+    raw::reset();
+    assert!(!ipv6::udpv6_send(&FE80_PEER, 5000, 53, b"q"), "a reject is the caller's error");
+    assert_eq!(sent(), 0, "egress_rejected");
+    // Another port is not the row's.
+    assert!(ipv6::udpv6_send(&FE80_PEER, 5000, 54, b"q"));
+    assert_eq!(sent(), 1);
+}

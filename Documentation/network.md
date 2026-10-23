@@ -174,9 +174,10 @@ Source: `crates/net/net/src/ipv6.rs`, `crates/net/net/src/socket.rs`.
 | Duplicate address detection, neighbour cache, DHCPv6 | No |
 
 The IPv6 stack is one global address on the primary interface. A frame
-arriving on another interface is not handed to it. The firewall and the NAT
-hooks are IPv4 only; the kernel skips and counts topology firewall rows whose
-address is IPv6.
+arriving on another interface is not handed to it. The packet filter's ingress
+and egress hooks and the built-in firewall cover IPv6 as they cover IPv4 (see
+below); the NAT and the forward hook are IPv4 only, as the stack does not
+route IPv6.
 
 The ring-3 standard-library port reads a 16-byte IPv4 socket address, so
 `std::net` is IPv4 only (`sdk/std/sys/net/connection/azos.rs` documents what
@@ -279,7 +280,9 @@ The raw descriptor-style calls (`sys_socket`, `sys_bind`, ...) still exist in
 
 Source: `crates/net/net/src/filter.rs`.
 
-The IPv4 path asks one installed object, a `PacketFilter`, at three hooks:
+The IPv4 path asks one installed object, a `PacketFilter`, at three hooks; the
+IPv6 path asks the same object at the first two (`ipv6_rx` and the one send
+funnel of `ipv6.rs`, the Neighbour Discovery messages it sends included):
 
 | Hook | Asked when |
 |------|-----------|
@@ -295,8 +298,10 @@ pub trait PacketFilter: Sync {
 
 `check` runs on any hart, possibly concurrently; it must be quick, must not
 block and must not call back into the stack's send path. A `PacketView` is a
-read-only view of an IPv4 packet already validated by the stack: addresses,
-protocol, header length and, for TCP and UDP, ports and the TCP flag byte.
+read-only view of an IPv4 or IPv6 packet already validated by the stack: the
+family (`v6`), addresses (16 bytes; an IPv4 address in the first four),
+protocol or next header, header length and, for TCP and UDP, ports and the TCP
+flag byte.
 `ConnState` (phase `New`, `Established` or `Related`, and a reply flag) is what
 a tracker knows of the flow; the stack passes `None` at ingress and egress and
 the NAT's view at forward.
@@ -311,17 +316,21 @@ Verdicts:
 |---------|--------------------|--------|
 | `Accept` | The packet goes on | The packet goes on |
 | `Drop` | Discarded silently | Discarded; `send` reports 0 |
-| `Reject` | Discarded; ICMP "administratively prohibited" (type 3, code 13) to the sender | Discarded; `send` reports -1 |
+| `Reject` | Discarded; ICMP "administratively prohibited" (type 3, code 13) to the sender, for IPv6 ICMPv6 Destination Unreachable code 1 | Discarded; `send` reports -1 |
 
 No ICMP is sent about a broadcast or multicast datagram, about an ICMP
-datagram, or to a source that is not a single host (RFC 1122 section 3.2.2),
-and replies are rate-limited (`REPLIES_PER_SEC`, `REPLY_BURST`).
+datagram, or to a source that is not a single host (RFC 1122 section 3.2.2;
+for IPv6, RFC 4443 section 2.4 (e)), and replies are rate-limited
+(`REPLIES_PER_SEC`, `REPLY_BURST`).
 
 Every `Drop` and `Reject` bumps a counter and is offered to the decision
 recorder as `Rule::PacketRefused`. The record is rate-limited before it is
 written (`RECORDS_PER_SEC`, `RECORD_BURST`, a token bucket); the refusals it
 holds back are counted and the count rides in the third number of the next
-record written. `filter::stats` returns the counters.
+record written. The first number is source and destination (32 bits each),
+the second the hook, verdict, protocol, an IPv6 flag (bit 32) and the ports;
+an IPv6 address is recorded by its last four bytes. `filter::stats` returns
+the counters.
 
 ## The built-in firewall
 
@@ -343,16 +352,26 @@ A row has these fields:
 | `proto` | no | `any` (default), `tcp`, `udp` or `icmp` |
 | `port` | no | First destination port matched (1 to 65535); only with `tcp` or `udp` |
 | `port_end` | no | Last port of a range; needs `port` |
-| `addr` | no | Remote prefix such as `10.0.0.0/8`: the source of an `in` packet, the destination of an `out` or `forward` one |
+| `addr` | no | Remote prefix such as `10.0.0.0/8` or `2001:db8::/32`: the source of an `in` packet, the destination of an `out` or `forward` one |
+
+A row with an IPv4 prefix judges IPv4 packets only, one with an IPv6 prefix
+IPv6 packets only, and a row without `addr` both; its `icmp` is ICMP for an
+IPv4 packet and ICMPv6 for an IPv6 one. A `forward` row with an IPv6 prefix
+never matches: the stack does not route IPv6.
 
 Rows are tried in file order and the first match decides. A packet no row
 matches gets the default policy: inbound drop when Kconfig
 `FIREWALL_INBOUND_DROP` is on (its default is on under `USE_GATEWAY`),
-otherwise accept; outbound is always accepted by default. The topology parser
-rejects a row that an earlier one makes unreachable.
+otherwise accept; outbound is always accepted by default. The inbound default
+never drops the Neighbour Discovery messages, ICMPv6 types 133 to 137 (router
+and neighbour solicitation and advertisement, redirect) with hop limit 255:
+they are to IPv6 what ARP is to IPv4, and SLAAC needs them. A row still
+decides about them first. The topology parser rejects a row that an earlier
+one makes unreachable.
 
 The firewall is stateful for TCP and UDP. A flow that one side opened with an
-accepted packet is tracked by its 5-tuple, and once the peer has answered,
+accepted packet is tracked by its 5-tuple (whole addresses and the family, so
+an IPv4 and an IPv6 flow never share an entry), and once the peer has answered,
 packets of the flow pass in both directions whatever the rules say. The flow
 table has `CT_SLOTS` entries (Kconfig `FIREWALL_CONNTRACK_MAX`, rounded to
 sets of four ways), is hashed with a boot-time key so the set index is not in

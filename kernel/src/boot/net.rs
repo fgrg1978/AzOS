@@ -61,8 +61,9 @@ pub(crate) fn start_net_clients() {
 /// any traffic that matters: the stack asks the filter at three hooks and, with
 /// none installed, pays one branch. The filter is installed only if it could
 /// refuse something: no row that refuses and an accepting default leaves the
-/// stack as it was. IPv6 rows are skipped, counted and reported: the hooks are
-/// the IPv4 path's.
+/// stack as it was. A row with an IPv6 prefix judges IPv6 packets, one with an
+/// IPv4 prefix IPv4 packets, one with no prefix both; a `forward` row with an
+/// IPv6 prefix never matches (the stack does not route IPv6).
 ///
 /// Shared between both `kernel_main`s: nothing in it is per ISA.
 pub(crate) fn install_firewall() {
@@ -72,9 +73,7 @@ pub(crate) fn install_firewall() {
     static FIREWALL: filter::Firewall = filter::Firewall::new();
 
     let rows = azos_topology::get().map_or(&[][..], |t| t.firewalls());
-    let v6 = |r: &azos_topology::FirewallSpec| r.addr.is_some_and(|p| p.addr.v6);
-    let skipped_v6 = rows.iter().filter(|r| v6(r)).count();
-    let rules = rows.iter().filter(|r| !v6(r)).map(|r| FwRule {
+    let rules = rows.iter().map(|r| FwRule {
         hook: match r.dir {
             FwDir::In => Hook::Ingress,
             FwDir::Out => Hook::Egress,
@@ -88,8 +87,9 @@ pub(crate) fn install_firewall() {
         },
         port_lo: r.port_lo,
         port_hi: r.port_hi,
-        net: r.addr.map_or(0, |p| u32::from_be_bytes([p.addr.bytes[0], p.addr.bytes[1], p.addr.bytes[2], p.addr.bytes[3]])),
+        net: r.addr.map_or([0; 16], |p| p.addr.bytes),
         net_len: r.addr.map_or(0, |p| p.len),
+        net_v6: r.addr.is_some_and(|p| p.addr.v6),
         action: match r.action {
             FwAction::Allow => Verdict::Accept,
             FwAction::Drop => Verdict::Drop,
@@ -112,8 +112,8 @@ pub(crate) fn install_firewall() {
     if FIREWALL.needed() {
         filter::set_filter(&FIREWALL);
     }
-    kprintln!("[FW] {} rule(s), {} IPv6 row(s) skipped, inbound default {}, {} flow slots: {}",
-        n, skipped_v6, if inbound == Verdict::Drop { "drop" } else { "accept" }, filter::CT_SLOTS,
+    kprintln!("[FW] {} rule(s), IPv4 and IPv6, inbound default {}, {} flow slots: {}",
+        n, if inbound == Verdict::Drop { "drop" } else { "accept" }, filter::CT_SLOTS,
         if filter::active() { "installed" } else { "nothing to refuse, not installed" });
 }
 

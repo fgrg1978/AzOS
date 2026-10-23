@@ -11,6 +11,8 @@ description = "Host-side tests for crates/net/net: TCP, UDP, IP, ARP, IGMP, DHCP
 # Gate canary (crates/net/net): the egress gate is never asked.
 [features]
 envelope-egress-canary = []
+# Gate canary (crates/net/net): IPv6 skips the packet filter at both hooks.
+fw-ipv6-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
@@ -49,4 +51,4 @@ overflow-checks = true
 # `tcp.rs` carries a `qemu`-gated RX trace probe that the net crate declares as
 # a feature. Declared rather than silenced, so the condition stays visible.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))', 'cfg(feature, values("arp-timing"))', 'cfg(feature, values("loopback-preempt-probe"))', 'cfg(feature, values("loopback-guard-canary"))', 'cfg(feature, values("tcp-handle-gen-canary"))', 'cfg(feature, values("tcp-ephemeral-port-canary"))', 'cfg(feature, values("envelope-egress-canary"))', 'cfg(fuzzing)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))', 'cfg(feature, values("arp-timing"))', 'cfg(feature, values("loopback-preempt-probe"))', 'cfg(feature, values("loopback-guard-canary"))', 'cfg(feature, values("tcp-handle-gen-canary"))', 'cfg(feature, values("tcp-ephemeral-port-canary"))', 'cfg(feature, values("envelope-egress-canary"))', 'cfg(feature, values("fw-ipv6-canary"))', 'cfg(fuzzing)'] }

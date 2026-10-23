@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The packet-filter seam of the IPv4 path (`crates/net/net/src/filter.rs`):
+//! The packet-filter seam (`crates/net/net/src/filter.rs`) on the IPv4 path:
 //! the three hooks, what each verdict does, the null filter, and the rate limit
-//! on refusal records.
+//! on refusal records. The IPv6 path's hooks are in `ipv6_tcp.rs`.
 //!
 //! **The real `ip.rs` is in the loop.** Packets come in through `ip::handle`
 //! and go out through `ip::send`; what a test reads is the wire the stack wrote
@@ -53,8 +53,8 @@ impl PacketFilter for Probe {
     fn check(&self, hook: Hook, pkt: &PacketView, conn: Option<&ConnState>) -> Verdict {
         self.calls.lock().unwrap().push(Call {
             hook,
-            src: pkt.src,
-            dst: pkt.dst,
+            src: pkt.src[..4].try_into().unwrap(),
+            dst: pkt.dst[..4].try_into().unwrap(),
             proto: pkt.proto,
             len: pkt.packet.len(),
             sport: pkt.src_port(),
@@ -434,12 +434,26 @@ fn forward_with_no_filter_accepts_without_looking() {
 // ── The view ────────────────────────────────────────────────────────────────
 
 #[test]
-fn view_refuses_what_is_not_an_ipv4_header_and_has_no_ports_for_other_protocols() {
+fn view_refuses_what_is_not_an_ip_header_and_has_no_ports_for_other_protocols() {
     assert!(PacketView::parse(&[]).is_none());
     assert!(PacketView::parse(&[0x45; 19]).is_none(), "shorter than a header");
-    let mut v6 = udp(PEER_IP, OUR_IP, 1, 2, b"");
-    v6[0] = 0x65;
-    assert!(PacketView::parse(&v6).is_none(), "not version 4");
+    for version in [0x55, 0x75] {
+        let mut other = udp(PEER_IP, OUR_IP, 1, 2, b"");
+        other[0] = version;
+        assert!(PacketView::parse(&other).is_none(), "neither version 4 nor 6");
+    }
+    let v4 = udp(PEER_IP, OUR_IP, 1, 2, b"");
+    let v = PacketView::parse(&v4).unwrap();
+    assert_eq!((v.v6, &v.src[..4], &v.src[4..], v.hdr_len), (false, &PEER_IP[..], &[0u8; 12][..], 20));
+    // An IPv6 header: version 6, the next header is the protocol, ports after 40 bytes.
+    let mut v6 = vec![0x60, 0, 0, 0, 0, 8, ip::IP_PROTO_UDP, 64];
+    v6.extend_from_slice(&[0xFE, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+    v6.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    v6.extend_from_slice(&[0x13, 0x88, 0x00, 0x35, 0, 8, 0, 0]);
+    let v = PacketView::parse(&v6).unwrap();
+    assert_eq!((v.v6, v.src[15], v.dst[0], v.proto, v.hdr_len), (true, 9, 0x20, ip::IP_PROTO_UDP, 40));
+    assert_eq!((v.src_port(), v.dst_port()), (Some(5000), Some(53)));
+    assert!(PacketView::parse(&v6[..39]).is_none(), "an IPv6 header cut short");
     let mut short_ihl = udp(PEER_IP, OUR_IP, 1, 2, b"");
     short_ihl[0] = 0x43;
     assert!(PacketView::parse(&short_ihl).is_none(), "IHL under 5");

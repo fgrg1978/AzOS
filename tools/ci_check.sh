@@ -11405,6 +11405,42 @@ else
         fi
     }
     par "network: IPv6 SLAAC on the wire" ipv6_tcp_row
+    # The packet filter on the IPv6 path (tools/ipv6_fw_row.sh): a peer on a
+    # `dgram` netdev advertises a prefix, solicits the SLAAC address, pings it
+    # and sends a SYN to a closed port. Under FIREWALL_INBOUND_DROP=y the
+    # advertisement and the solicitation pass (a Neighbour Advertisement comes
+    # back) and the echo and the SYN draw nothing; the control boots the
+    # default kernel (no firewall) with the same probes and must get the echo
+    # reply and the RST, so the first row's silence is the filter's.
+    ipv6_fw_row() { # ipv6_fw_row <label> refuse|answer
+        local label="$1" expect="$2"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local out="$CI_LOG_DIR/ipv6-fw-$expect.out" kimg="$CI_LOG_DIR/kernel-ipv6-fw-$expect" cfg
+        if [ "$expect" = refuse ]; then
+            # Absolute: `azos_limits`' build script resolves KCONFIG_CONFIG
+            # from its own crate directory.
+            cfg="$(cd "$CI_LOG_DIR" && pwd)/ipv6-fw-drop.config"
+            cp "$PRIMARY_CONFIG" "$cfg" && printf 'CONFIG_FIREWALL_INBOUND_DROP=y\n' >>"$cfg"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+                || { bad; echo "      olddefconfig failed on $cfg"; return; }
+            grep -q '^CONFIG_FIREWALL_INBOUND_DROP=y$' "$cfg" \
+                || { bad; echo "      $cfg does not carry CONFIG_FIREWALL_INBOUND_DROP=y"; return; }
+            KCONFIG_CONFIG="$cfg" kbuild "qemu" || return
+        else
+            kbuild "qemu" || return
+        fi
+        ci_kernel_check || return
+        cp "$KERNEL" "$kimg"
+        par_ready
+        if EXPECT="$expect" OUT="$CI_LOG_DIR/ipv6-fw-row" bash "$REPO_ROOT/tools/ipv6_fw_row.sh" "$kimg" >"$out" 2>&1; then
+            ok; rm -f "$out" "$kimg"
+        else
+            bad; sed 's/^/      /' "$out"
+        fi
+    }
+    par "network: IPv6 firewall refuses" ipv6_fw_row "network: IPv6 firewall refuses" refuse
+    par "network: IPv6 firewall control" ipv6_fw_row "network: IPv6 firewall control" answer
     # IO-QUEUES N1: TX doorbell batching and its runtime canary (the row is
     # defined with the aarch64 network rows).
     par "network: TX doorbell batching" net_tx_batch_row "network: TX doorbell batching" rv PASS

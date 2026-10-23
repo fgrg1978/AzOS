@@ -24,6 +24,10 @@ tcp-ephemeral-port-canary = []
 # connect or a first `sendto` to a destination off the node goes out whatever
 # the Domain's `egress` envelope row says. Never in a real build.
 envelope-egress-canary = []
+# Gate canary (host suite `net-tests`): the IPv6 path skips the packet filter
+# at both hooks, as it did before the filter covered IPv6, so a refusing
+# policy lets IPv6 through. Never in a real build.
+fw-ipv6-canary = []
 # Enables `[TCP-RX]` / `[TCP-TX]` per-segment trace probes in `tcp.rs`.
 # Propagated from the kernel's `qemu` feature.  Free in production builds.
 qemu = []

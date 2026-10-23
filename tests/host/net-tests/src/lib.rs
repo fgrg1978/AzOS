@@ -413,6 +413,10 @@ mod tcp_handle;
 #[cfg(test)]
 mod pf_hooks;
 
+/// The built-in firewall: rules, default policy, flow table, both families.
+#[cfg(test)]
+mod fw_rules;
+
 /// Several interfaces in one stack: the registry, routing, ARP per interface.
 #[cfg(test)]
 mod net_ifs;
