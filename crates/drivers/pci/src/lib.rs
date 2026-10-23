@@ -299,6 +299,16 @@ const fn bar_slots(header_type: u8) -> usize {
 /// BAR, not just at the end, so a fault mid-walk cannot leave two BARs
 /// disabled at once).
 ///
+/// **Decode is off while the BARs are sized.** A BAR that reads all-1s is,
+/// for that instant, a window at the top of the address space: with Memory
+/// or I/O Space decode on (the firmware of a PC leaves it on for the devices
+/// it used) the function claims cycles meant for whatever lives there, the
+/// local APIC and the flash below 4 GiB among them. The Command register's
+/// I/O and Memory Space bits are cleared for the walk and put back as found
+/// after it (Linux `__pci_read_base` does the same). Nothing in this kernel
+/// reaches config space through a BAR, so the walk does not cut its own
+/// access.
+///
 /// A 64-bit BAR consumes its own slot plus the next one (which holds the
 /// high 32 address bits, never itself sized); this returns one `Bar` for
 /// the pair and the caller does not see the consumed slot separately. A
@@ -311,6 +321,10 @@ pub fn decode_bars<C: ConfigSpace>(cfg: &mut C, bdf: Bdf) -> ([Option<Bar>; BAR_
     let mut n = 0usize;
     let mut i = 0usize;
     let slots = bar_slots(cfg.read8(bdf, OFF_HEADER_TYPE));
+    let decode = cfg.read16(bdf, OFF_COMMAND) & (CMD_IO_SPACE | CMD_MEM_SPACE);
+    if slots != 0 && decode != 0 {
+        clear_command_bits(cfg, bdf, decode);
+    }
 
     while i < slots {
         let off = OFF_BAR0 + (i as u16) * 4;
@@ -374,6 +388,9 @@ pub fn decode_bars<C: ConfigSpace>(cfg: &mut C, bdf: Bdf) -> ([Option<Bar>; BAR_
         i += 1;
     }
 
+    if slots != 0 && decode != 0 {
+        set_command_bits(cfg, bdf, decode);
+    }
     (out, n)
 }
 
@@ -386,11 +403,11 @@ fn size_probe_32<C: ConfigSpace>(cfg: &mut C, bdf: Bdf, off: u16, orig: u32, dec
     cfg.write32(bdf, off, orig); // restore before doing anything else
 
     let masked = probed & decode_mask;
-    if masked == 0 {
-        return 0;
-    }
-    // Size = ~masked + 1, in the same bit width as the mask.
-    ((!masked).wrapping_add(1)) as u64
+    // The size is the lowest address bit the BAR decodes. Not `!masked + 1`:
+    // an I/O BAR that decodes 16 bits reads its upper half back as 0
+    // (0x0000_ffe1 for 32 bytes), and the complement would make it 4 GiB
+    // (Linux `pci_size` takes the lowest set bit too).
+    (masked & masked.wrapping_neg()) as u64
 }
 
 // ---------------------------------------------------------------------
@@ -457,6 +474,22 @@ pub fn parse_msix<C: ConfigSpace>(cfg: &C, bdf: Bdf, cap: Capability) -> MsixInf
     }
 }
 
+/// Do the MSI-X table and the PBA lie inside the memory BARs they name?
+/// Both are read off config space the device controls: a BIR of 6 or 7, an
+/// I/O or absent BAR, or an offset plus the table (16 bytes a vector) or the
+/// PBA (a bit a vector, in dwords) that runs past the BAR's size would send
+/// [`program_msix_entry`]'s writes outside the window the kernel mapped.
+pub fn msix_fits(msix: &MsixInfo, bars: &[Option<Bar>]) -> bool {
+    let fits = |bir: u8, off: u32, len: u64| {
+        bars.iter().flatten().any(|b| {
+            b.index == bir && b.kind != BarKind::Io && off as u64 + len <= b.size
+        })
+    };
+    let n = msix.table_size as u64;
+    fits(msix.table_bar, msix.table_offset, n * MSIX_TABLE_ENTRY_SIZE as u64)
+        && fits(msix.pba_bar, msix.pba_offset, n.div_ceil(32) * 4)
+}
+
 // ---------------------------------------------------------------------
 // One-line-per-function report (the gate keys on this format)
 // ---------------------------------------------------------------------
@@ -475,6 +508,8 @@ pub struct FunctionInfo {
     pub bars: [Option<Bar>; BAR_COUNT],
     pub bar_count: usize,
     pub msi: Option<MsiInfo>,
+    /// `None` too when the capability is there but its table or PBA does
+    /// not fit its BAR ([`msix_fits`]): the function is driven without it.
     pub msix: Option<MsixInfo>,
     pub vendor_cap: Option<Capability>,
 }
@@ -490,7 +525,7 @@ pub fn probe_function<C: ConfigSpace>(cfg: &mut C, bdf: Bdf) -> Option<FunctionI
     let caps = walk_capabilities(cfg, bdf);
 
     let msi = caps.find(CAP_ID_MSI).map(|c| parse_msi(cfg, bdf, c));
-    let msix = caps.find(CAP_ID_MSIX).map(|c| parse_msix(cfg, bdf, c));
+    let msix = caps.find(CAP_ID_MSIX).map(|c| parse_msix(cfg, bdf, c)).filter(|m| msix_fits(m, &bars));
     let vendor_cap = caps.find(CAP_ID_VENDOR);
 
     Some(FunctionInfo { bdf, vendor, device, class, bars, bar_count, msi, msix, vendor_cap })
@@ -527,6 +562,28 @@ impl Reach<'_> {
     }
 }
 
+/// The functions [`enumerate_tree`] found: the first `n` of `funcs`, and how
+/// many more there were that did not fit (`dropped`: the capacity `N` is
+/// Kconfig `PCI_MAX_FUNCTIONS` in the kernel). A dropped function is still
+/// walked through (a bridge's buses behind it are numbered), it just has no
+/// slot: no driver sees it.
+pub struct Found<const N: usize> {
+    pub funcs: [Option<FunctionInfo>; N],
+    pub n: usize,
+    pub dropped: usize,
+}
+
+impl<const N: usize> Found<N> {
+    fn push(&mut self, info: FunctionInfo) {
+        if self.n < N {
+            self.funcs[self.n] = Some(info);
+            self.n += 1;
+        } else {
+            self.dropped += 1;
+        }
+    }
+}
+
 /// Probe devices 0..32 of `bus` (function 0 gates whether 1..8 are probed at
 /// all, per spec: a non-multifunction function-0 header means the rest of
 /// that device's functions cannot exist), push every function found to `out`
@@ -534,8 +591,7 @@ impl Reach<'_> {
 fn scan_bus<C: ConfigSpace, const N: usize>(
     cfg: &mut C,
     bus: u8,
-    out: &mut [Option<FunctionInfo>; N],
-    n: &mut usize,
+    out: &mut Found<N>,
     on_bridge: &mut dyn FnMut(&mut C, Bdf),
 ) {
     for device in 0u8..32 {
@@ -550,10 +606,7 @@ fn scan_bus<C: ConfigSpace, const N: usize>(
         for function in 0u8..max_func {
             let bdf = Bdf::new(bus, device, function);
             let Some(info) = probe_function(cfg, bdf) else { continue };
-            if *n < N {
-                out[*n] = Some(info);
-                *n += 1;
-            }
+            out.push(info);
             if cfg.read8(bdf, OFF_HEADER_TYPE) & HEADER_TYPE_MASK == HEADER_TYPE_BRIDGE {
                 on_bridge(cfg, bdf);
             }
@@ -593,8 +646,7 @@ fn number_below<C: ConfigSpace, const N: usize>(
     cfg: &mut C,
     st: &mut Numbering<'_, '_>,
     bdf: Bdf,
-    out: &mut [Option<FunctionInfo>; N],
-    n: &mut usize,
+    out: &mut Found<N>,
 ) {
     // The bus number is narrowed once, with the bound as the conversion: a
     // `next` past 255 (the firmware used bus 255) has no bus to give, and an
@@ -614,14 +666,14 @@ fn number_below<C: ConfigSpace, const N: usize>(
     if st.reach.bus(sec) {
         let mut below = [Bdf::new(0, 0, 0); MAX_UNNUMBERED];
         let mut n_below = 0usize;
-        scan_bus(cfg, sec, out, n, &mut |_, b| {
+        scan_bus(cfg, sec, out, &mut |_, b| {
             if n_below < MAX_UNNUMBERED {
                 below[n_below] = b;
                 n_below += 1;
             }
         });
         for b in &below[..n_below] {
-            number_below(cfg, st, *b, out, n);
+            number_below(cfg, st, *b, out);
         }
     }
     // `next` is at most 256 here, so `next - 1` fits; saturate rather than wrap.
@@ -631,8 +683,8 @@ fn number_below<C: ConfigSpace, const N: usize>(
 /// Enumerate the functions of bus 0 and of every bus behind a PCI-to-PCI
 /// bridge: devices 0..32, functions 0..8, in bus order (bus 0 first, then
 /// the buses in the order their bridges were found). Fixed output capacity
-/// `N`; QEMU `virt` with the gate's device list needs single digits, so 32
-/// is headroom.
+/// `N` (the kernel's is Kconfig `PCI_MAX_FUNCTIONS`); the functions past it
+/// are counted in [`Found::dropped`], never silently lost.
 ///
 /// `ensure_bus(b)` is called once, before bus `b > 0` is read, and answers
 /// whether its configuration space is reachable (the kernel maps that bus's
@@ -649,9 +701,8 @@ fn number_below<C: ConfigSpace, const N: usize>(
 pub fn enumerate_tree<C: ConfigSpace, const N: usize>(
     cfg: &mut C,
     ensure_bus: &mut dyn FnMut(u8) -> bool,
-) -> ([Option<FunctionInfo>; N], usize) {
-    let mut out: [Option<FunctionInfo>; N] = [None; N];
-    let mut n = 0usize;
+) -> Found<N> {
+    let mut out = Found { funcs: [None; N], n: 0, dropped: 0 };
     let mut reach = Reach { ensure: ensure_bus, asked: [false; 256], ok: [false; 256] };
     let mut queue = [0u8; TREE_MAX_BUSES];
     let (mut head, mut tail) = (0usize, 1usize);
@@ -668,7 +719,7 @@ pub fn enumerate_tree<C: ConfigSpace, const N: usize>(
         if !reach.bus(bus) {
             continue;
         }
-        scan_bus(cfg, bus, &mut out, &mut n, &mut |cfg, bdf| {
+        scan_bus(cfg, bus, &mut out, &mut |cfg, bdf| {
             let sec = cfg.read8(bdf, OFF_SECONDARY_BUS);
             let sub = cfg.read8(bdf, OFF_SUBORDINATE_BUS);
             if sec > bus {
@@ -687,10 +738,10 @@ pub fn enumerate_tree<C: ConfigSpace, const N: usize>(
 
     let mut st = Numbering { reach: &mut reach, next: highest as u16 + 1, budget: TREE_MAX_BUSES - tail };
     for bdf in &unnumbered[..n_unnumbered] {
-        number_below(cfg, &mut st, *bdf, &mut out, &mut n);
+        number_below(cfg, &mut st, *bdf, &mut out);
     }
 
-    (out, n)
+    out
 }
 
 /// Format one function as the gate's one-line-per-function text, e.g.
@@ -713,8 +764,14 @@ pub fn format_function_line(info: &FunctionInfo, buf: &mut dyn fmt::Write) -> fm
 // Command register (MSI-X delivery needs both bits)
 // ---------------------------------------------------------------------
 
+pub const CMD_IO_SPACE: u16 = 1 << 0;
 pub const CMD_MEM_SPACE: u16 = 1 << 1;
 pub const CMD_BUS_MASTER: u16 = 1 << 2;
+/// Interrupt Disable: the function does not assert its INTx pin. Set while
+/// MSI or MSI-X is on (PCI Local Bus 3.0 section 6.8: a function "is
+/// prohibited from using its INTx# pin" then, and a device that still drives
+/// it shares a line with nobody's handler); cleared when MSI-X goes off.
+pub const CMD_INTX_DISABLE: u16 = 1 << 10;
 
 /// Set `bits` in the Command register (a read-modify-write that never
 /// clears a bit the caller didn't name). **`CMD_BUS_MASTER` is not
@@ -783,14 +840,21 @@ pub const MSGCTRL_FUNCTION_MASK: u16 = 1 << 14;
 /// Set or clear MSI-X Enable at the capability level (Message Control bit
 /// 15) — the bit the stage-1a canary flips: "disable the MSI-X enable bit
 /// -> the per-vector count stays 0 and the row fails". Leaves Function
-/// Mask (bit 14) untouched.
+/// Mask (bit 14) untouched. INTx goes off before MSI-X goes on and comes
+/// back after it goes off ([`CMD_INTX_DISABLE`], Linux `pci_intx_for_msi`).
 pub fn msix_set_enable<C: ConfigSpace>(cfg: &mut C, bdf: Bdf, msix: &MsixInfo, enable: bool) {
     let enable = enable && !cfg!(feature = "msix-enable-canary");
+    if enable {
+        set_command_bits(cfg, bdf, CMD_INTX_DISABLE);
+    }
     let dword = cfg.read32(bdf, msix.cap_offset);
     let msg_ctrl = (dword >> 16) as u16;
     let new_ctrl = if enable { msg_ctrl | MSGCTRL_MSIX_ENABLE } else { msg_ctrl & !MSGCTRL_MSIX_ENABLE };
     let merged = ((new_ctrl as u32) << 16) | (dword & 0xffff);
     cfg.write32(bdf, msix.cap_offset, merged);
+    if !enable {
+        clear_command_bits(cfg, bdf, CMD_INTX_DISABLE);
+    }
 }
 
 /// Is MSI-X Enable currently set? Re-reads hardware rather than trusting
@@ -849,6 +913,8 @@ pub fn program_msi<C: ConfigSpace>(cfg: &mut C, bdf: Bdf, msi: &MsiInfo, addr: u
     if msi.per_vector_masking {
         cfg.write32(bdf, mask_off, 0);
     }
+    // INTx off before the message path is on ([`CMD_INTX_DISABLE`]).
+    set_command_bits(cfg, bdf, CMD_INTX_DISABLE);
     // One vector: Multiple Message Enable (bits 6:4) = 0.
     set_ctrl(cfg, &|c| c & !MSGCTRL_MSI_MME_MASK | MSGCTRL_MSI_ENABLE);
     true
@@ -872,34 +938,46 @@ pub trait BarMem {
     fn write32(&mut self, offset: usize, val: u32);
 }
 
-/// Program MSI-X table entry `index`: message address `addr` (64-bit —
-/// e.g. a RISC-V IMSIC hart file's physical address, or a GICv3 ITS
-/// translater address on aarch64; this function has no ISA content, only
-/// the PCI-defined entry layout), message data `data` (the interrupt
-/// identity), and the per-vector mask bit.
+/// Program MSI-X table entry `index` of `msix`'s table: message address
+/// `addr` (64-bit — e.g. a RISC-V IMSIC hart file's physical address, or a
+/// GICv3 ITS translater address on aarch64; this function has no ISA
+/// content, only the PCI-defined entry layout), message data `data` (the
+/// interrupt identity), and the per-vector mask bit. `false`, nothing
+/// written, for an `index` past the table: the table ends at
+/// `table_size` entries, and what follows it in the BAR (or past the BAR,
+/// for a table at its end) is not ours to write. That the table itself
+/// fits its BAR is [`msix_fits`]'s, checked when the function is probed.
 pub fn program_msix_entry<M: BarMem>(
     mem: &mut M,
-    table_offset: u32,
+    msix: &MsixInfo,
     index: u16,
     addr: u64,
     data: u32,
     masked: bool,
-) {
-    let base = table_offset as usize + msix_table_entry_offset(index) as usize;
+) -> bool {
+    if index >= msix.table_size {
+        return false;
+    }
+    let base = msix.table_offset as usize + msix_table_entry_offset(index) as usize;
     mem.write32(base, addr as u32);
     mem.write32(base + 4, (addr >> 32) as u32);
     mem.write32(base + 8, data);
     mem.write32(base + 12, if masked { MSIX_VECTOR_CTRL_MASK } else { 0 });
+    true
 }
 
-/// Read back pending bit `index` from the PBA. The real completion count
+/// Read back pending bit `index` from `msix`'s PBA (`None` past the table).
+/// The real completion count
 /// this task's acceptance criteria wants is driven by the interrupt
 /// controller (APLIC/IMSIC), not by polling this — this function exists
 /// for tests and diagnostics, not the hot path.
-pub fn msix_pba_pending<M: BarMem>(mem: &M, pba_offset: u32, index: u16) -> bool {
+pub fn msix_pba_pending<M: BarMem>(mem: &M, msix: &MsixInfo, index: u16) -> Option<bool> {
+    if index >= msix.table_size {
+        return None;
+    }
     let (word, bit) = msix_pba_word_and_bit(index);
-    let val = mem.read32(pba_offset as usize + word as usize * 4);
-    (val >> bit) & 1 != 0
+    let val = mem.read32(msix.pba_offset as usize + word as usize * 4);
+    Some((val >> bit) & 1 != 0)
 }
 
 // ---------------------------------------------------------------------

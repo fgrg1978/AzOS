@@ -164,6 +164,24 @@ config DRV_PCI
       MSI block above the IOAPIC lines (X86_MSI_VECTORS). Built and
       booted by the gate's PCI rows. n: the PCI code is not compiled.
 
+config PCI_MAX_FUNCTIONS
+    int "Most PCI functions the boot enumeration keeps"
+    depends on DRV_PCI
+    range 8 256
+    default 64 if ARCH_X86_64
+    default 32
+    help
+      The capacity of the table the boot enumeration fills
+      (azos_pci::enumerate_tree, kernel/src/main.rs): every function on
+      bus 0 and behind the bridges, in bus order. A function past it is
+      counted and said ("[PCI] dropped N function(s)") and no driver sees
+      it. QEMU's machines need single digits; a PC is denser (a desktop
+      chipset's root ports, bridges and multi-function devices reach
+      40-60), hence x86_64's 64.
+
+      Cost: about 250 bytes of the boot stack per function while the boot
+      enumerates (16 KiB at 64; the boot stack is 256 KiB); nothing after.
+
 config PCI_SOC_HOST
     # cargo-feature: pci-soc-host
     bool "SoC PCIe host controllers: JH7110 (PLDA) and BCM2712 (brcmstb)"

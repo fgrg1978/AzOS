@@ -36,6 +36,12 @@ impl BarMem for FakeBar {
     }
 }
 
+/// An MSI-X capability's parse: `n` vectors, the table at `table_offset` and
+/// the PBA at `pba_offset`, both in BAR 0.
+fn msix_info(n: u16, table_offset: u32, pba_offset: u32) -> MsixInfo {
+    MsixInfo { cap_offset: 0x40, table_size: n, table_bar: 0, table_offset, pba_bar: 0, pba_offset }
+}
+
 // -----------------------------------------------------------------------
 // Pure arithmetic
 // -----------------------------------------------------------------------
@@ -69,7 +75,7 @@ fn program_msix_entry_writes_all_four_dwords() {
     let addr: u64 = 0x2800_2000; // an IMSIC hart file address, e.g. hart 2
     let data: u32 = 42; // the interrupt identity
 
-    program_msix_entry(&mut bar, table_offset, 3, addr, data, false);
+    assert!(program_msix_entry(&mut bar, &msix_info(4, table_offset, 0x2000), 3, addr, data, false));
 
     let base = (table_offset + msix_table_entry_offset(3)) as usize;
     assert_eq!(bar.read32(base), addr as u32);
@@ -85,7 +91,7 @@ fn program_msix_entry_masked_sets_only_the_mask_bit() {
     let addr: u64 = 0x2800_1000;
     let data: u32 = 7;
 
-    program_msix_entry(&mut bar, table_offset, 0, addr, data, true);
+    assert!(program_msix_entry(&mut bar, &msix_info(1, table_offset, 0x2000), 0, addr, data, true));
 
     assert_eq!(bar.read32(0), addr as u32, "masking must not corrupt the address");
     assert_eq!(bar.read32(4), (addr >> 32) as u32);
@@ -96,8 +102,9 @@ fn program_msix_entry_masked_sets_only_the_mask_bit() {
 #[test]
 fn program_msix_entry_addresses_do_not_overlap_between_vectors() {
     let mut bar = FakeBar::new();
-    program_msix_entry(&mut bar, 0, 0, 0x1111, 1, false);
-    program_msix_entry(&mut bar, 0, 1, 0x2222, 2, false);
+    let m = msix_info(2, 0, 0x2000);
+    assert!(program_msix_entry(&mut bar, &m, 0, 0x1111, 1, false));
+    assert!(program_msix_entry(&mut bar, &m, 1, 0x2222, 2, false));
 
     assert_eq!(bar.read32(0), 0x1111);
     assert_eq!(bar.read32(4 * 4), 0x2222, "vector 1's entry must start at byte 16, not overwrite vector 0");
@@ -116,10 +123,75 @@ fn msix_pba_pending_reads_the_right_bit() {
     bar.write32(pba_offset as usize, 1 << 5);
     bar.write32(pba_offset as usize + 4, 1 << 3);
 
-    assert!(msix_pba_pending(&bar, pba_offset, 5));
-    assert!(!msix_pba_pending(&bar, pba_offset, 4), "adjacent bit must not read as set");
-    assert!(msix_pba_pending(&bar, pba_offset, 35));
-    assert!(!msix_pba_pending(&bar, pba_offset, 0));
+    let m = msix_info(64, 0x1000, pba_offset);
+    assert_eq!(msix_pba_pending(&bar, &m, 5), Some(true));
+    assert_eq!(msix_pba_pending(&bar, &m, 4), Some(false), "adjacent bit must not read as set");
+    assert_eq!(msix_pba_pending(&bar, &m, 35), Some(true));
+    assert_eq!(msix_pba_pending(&bar, &m, 0), Some(false));
+    assert_eq!(msix_pba_pending(&bar, &m, 64), None, "past the table");
+}
+
+// -----------------------------------------------------------------------
+// Bounds: the table ends where the capability says, inside its BAR
+// -----------------------------------------------------------------------
+
+/// A vector past `table_size` is refused and nothing is written: what
+/// follows the table (here the PBA) is not a table entry.
+/// **Canary:** drop the `index >= table_size` check: the PBA is overwritten.
+#[test]
+fn program_msix_entry_refuses_a_vector_past_the_table() {
+    let mut bar = FakeBar::new();
+    // Two vectors at 0x1000, the PBA right after the table.
+    let m = msix_info(2, 0x1000, 0x1020);
+    bar.write32(0x1020, 0x5a5a_5a5a);
+    assert!(program_msix_entry(&mut bar, &m, 1, 0x2800_0000, 1, false));
+    assert!(!program_msix_entry(&mut bar, &m, 2, 0x2800_0000, 2, false));
+    assert_eq!(bar.read32(0x1020), 0x5a5a_5a5a, "the PBA after the table is untouched");
+}
+
+/// The table and the PBA must lie inside the memory BAR the BIR names: an
+/// offset (or a table size) the device reports past its BAR, an I/O BAR, an
+/// absent one or a reserved BIR is no MSI-X table, and the function is
+/// probed without MSI-X.
+/// **Canary:** `probe_function` without the `msix_fits` filter: the line
+/// says msix=y for the table that runs past BAR 0.
+#[test]
+fn an_msix_table_outside_its_bar_is_no_msix() {
+    let bar0 = Bar { index: 0, kind: BarKind::Mem32, prefetchable: false, address: 0, size: 0x1000 };
+    let io2 = Bar { index: 2, kind: BarKind::Io, prefetchable: false, address: 0xc000, size: 0x100 };
+    let bars = [Some(bar0), Some(io2), None, None, None, None];
+    assert!(msix_fits(&msix_info(64, 0, 0x800), &bars), "64 vectors fill 0x400, the PBA 8 bytes");
+    assert!(msix_fits(&msix_info(256, 0, 0xfe0), &bars), "a table that ends at the BAR's end");
+    assert!(!msix_fits(&msix_info(257, 0, 0x800), &bars), "a table one entry past the BAR");
+    assert!(msix_fits(&msix_info(4, 0, 0xffc), &bars), "a one-dword PBA in the last dword");
+    assert!(!msix_fits(&msix_info(33, 0, 0xffc), &bars), "a second PBA dword past the BAR's end");
+    assert!(!msix_fits(&msix_info(4, 0xff8, 0x800), &bars), "a table that starts in and runs out");
+    assert!(!msix_fits(&msix_info(4, 0, 0x1000), &bars), "a PBA past the BAR");
+    let mut m = msix_info(4, 0, 0x800);
+    m.table_bar = 2;
+    assert!(!msix_fits(&m, &bars), "an I/O BAR");
+    m.table_bar = 1;
+    assert!(!msix_fits(&m, &bars), "an absent BAR");
+    m.table_bar = 6;
+    assert!(!msix_fits(&m, &bars), "a reserved BIR");
+
+    // Through the probe: one function whose capability names a table at
+    // 0x2000 in a 4 KiB BAR 0.
+    let mut bus = FakeBus::new();
+    let mut f = FakeFunction::new();
+    f.set_header(0x1af4, 0x1041);
+    f.configure_mem_bar(0, false, false, 0x4000_0000, 0x1000);
+    f.write_u8(0x40, CAP_ID_MSIX);
+    f.write_u8(0x41, 0);
+    f.write_u16(0x42, 3);
+    f.write_u32(0x44, 0x2000);
+    f.write_u32(0x48, 0x800);
+    f.set_cap_list(0x40);
+    bus.put(0, f);
+    let info = probe_function(&mut bus, Bdf::new(0, 0, 0)).unwrap();
+    assert!(info.msix.is_none(), "the table past BAR 0 is not used");
+    bus.funcs[0].as_mut().unwrap().write_u32(0x44, 0x0);
+    assert!(probe_function(&mut bus, Bdf::new(0, 0, 0)).unwrap().msix.is_some(), "the same table at 0 is");
 }
 
 // -----------------------------------------------------------------------
@@ -128,6 +200,8 @@ fn msix_pba_pending_reads_the_right_bit() {
 // bit -> the count stays 0 and the row fails").
 // -----------------------------------------------------------------------
 
+/// Also: INTx Disable follows MSI-X Enable (set with it, cleared after it).
+/// **Canary:** `msix_set_enable` without the Command writes: INTx stays on.
 #[test]
 fn msix_set_enable_round_trips_through_config_space() {
     let mut bus = FakeBus::new();
@@ -150,6 +224,7 @@ fn msix_set_enable_round_trips_through_config_space() {
 
     msix_set_enable(&mut bus, bdf, &msix, true);
     assert!(msix_is_enabled(&bus, bdf, &msix));
+    assert_ne!(bus.read16(bdf, OFF_COMMAND) & CMD_INTX_DISABLE, 0, "INTx off while MSI-X is on");
 
     // (b) — the canary's negation: flip it back off, count-side effects
     // (an actual delivered-interrupt counter) are exercised at the
@@ -157,6 +232,7 @@ fn msix_set_enable_round_trips_through_config_space() {
     // toggles cleanly and does not stick.
     msix_set_enable(&mut bus, bdf, &msix, false);
     assert!(!msix_is_enabled(&bus, bdf, &msix), "must be possible to re-disable — the canary's negation path");
+    assert_eq!(bus.read16(bdf, OFF_COMMAND) & CMD_INTX_DISABLE, 0, "INTx back once MSI-X is off");
 }
 
 #[test]

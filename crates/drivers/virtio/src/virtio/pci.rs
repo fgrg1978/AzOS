@@ -776,7 +776,7 @@ pub mod msix_selftest {
         let mut table = KernelBar { base: table_base };
         for vec in 0..2u16 {
             let (addr, data) = route.target(vec);
-            azos_pci::program_msix_entry(&mut table, msix.table_offset, vec, addr, data, false);
+            azos_pci::program_msix_entry(&mut table, &msix, vec, addr, data, false);
             ids[vec as usize] = data;
             target = addr;
         }

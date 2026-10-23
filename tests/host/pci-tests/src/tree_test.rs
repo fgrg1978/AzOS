@@ -139,7 +139,7 @@ fn ids(funcs: &[Option<FunctionInfo>], n: usize) -> Vec<(u8, u8, u8, u16, u16)> 
 fn a_function_carries_its_class_code() {
     let mut t = Tree::new();
     t.endpoint(0, 4, 0, 0x8086, 0x5845, 0x010802, false);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| false);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| false);
     assert_eq!(n, 1);
     assert_eq!(f[0].unwrap().class, 0x010802);
 }
@@ -155,7 +155,7 @@ fn buses_behind_bridges_are_walked_in_discovery_order() {
     t.bridge(0, 3, 3);
     t.endpoint(3, 0, 0, 0x1b36, 0x000d, 0x0c0330, false);
     let mut asked = Vec::new();
-    let (f, n) = enumerate_tree::<Tree, 16>(&mut t, &mut |b| { asked.push(b); true });
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 16>(&mut t, &mut |b| { asked.push(b); true });
     // Bus 0 first (its bridges included), then buses in the order found: 1, 3, then 2 behind 1.
     assert_eq!(ids(&f, n), [
         (0, 1, 0, 0x1af4, 0x1041), (0, 2, 0, 0x1b36, 0x000c), (0, 3, 0, 0x1b36, 0x000c),
@@ -171,7 +171,7 @@ fn a_bus_the_caller_cannot_reach_is_skipped() {
     let mut t = Tree::new();
     t.bridge(0, 2, 1);
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| false);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| false);
     assert_eq!(ids(&f, n), [(0, 2, 0, 0x1b36, 0x000c)]);
 }
 
@@ -186,7 +186,7 @@ fn a_bridge_that_leads_nowhere_or_back_adds_no_bus_when_it_cannot_be_numbered() 
     t.bridge(1, 2, 0); // points back at the root
     t.bridge(0, 3, 1); // a second bridge to a bus already queued
     let mut asked = Vec::new();
-    let (f, n) = enumerate_tree::<Tree, 16>(&mut t, &mut |b| { asked.push(b); true });
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 16>(&mut t, &mut |b| { asked.push(b); true });
     assert_eq!(asked, [1]);
     assert_eq!(n, 3 + 1 + 2, "the root's three bridges, the endpoint and two bridges on bus 1");
     let _ = f;
@@ -199,16 +199,21 @@ fn only_function_0_of_a_single_function_device_is_probed() {
     t.endpoint(0, 5, 1, 0x1af4, 0x1042, 0x010000, false); // would be a ghost
     t.endpoint(0, 6, 0, 0x8086, 0x1234, 0x020000, true);
     t.endpoint(0, 6, 3, 0x8086, 0x1235, 0x020000, false);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     assert_eq!(ids(&f, n), [(0, 5, 0, 0x1af4, 0x1041), (0, 6, 0, 0x8086, 0x1234), (0, 6, 3, 0x8086, 0x1235)]);
 }
 
+/// The capacity (Kconfig `PCI_MAX_FUNCTIONS` in the kernel) is a bound, not
+/// a panic, and what it drops is counted: the boot says "dropped N".
+/// **Canary:** `push` without the `dropped += 1`: the count stays 0.
 #[test]
 fn the_output_capacity_is_a_bound_not_a_panic() {
     let mut t = Tree::new();
     for d in 0..10 {
         t.endpoint(0, d, 0, 0x1af4, 0x1041, 0x020000, false);
     }
-    let (_, n) = enumerate_tree::<Tree, 4>(&mut t, &mut |_| true);
-    assert_eq!(n, 4);
+    let Found { n, dropped, .. } = enumerate_tree::<Tree, 4>(&mut t, &mut |_| true);
+    assert_eq!((n, dropped), (4, 6));
+    let Found { n, dropped, .. } = enumerate_tree::<Tree, 10>(&mut t, &mut |_| true);
+    assert_eq!((n, dropped), (10, 0), "exactly full drops nothing");
 }

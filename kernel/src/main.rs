@@ -886,8 +886,15 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         // secondary number: a bus's 1 MiB slice of the ECAM window is mapped
         // when its bridge is found (port I/O, with no ECAM, reaches them all).
         let buses = cfg.bus_mapper();
-        let (funcs, pci_n) = azos_pci::enumerate_tree::<KernelConfigSpace, 32>(&mut cfg, &mut |bus| buses.map(bus));
+        let azos_pci::Found { funcs, n: pci_n, dropped } = azos_pci::enumerate_tree::<
+            KernelConfigSpace,
+            { azos_limits::PCI_MAX_FUNCTIONS },
+        >(&mut cfg, &mut |bus| buses.map(bus));
         kprintln!("[PCI] bus 0 enumeration: {} function(s) found", pci_n);
+        if dropped != 0 {
+            azos_drv_sys::kwarn!("[PCI] dropped {} function(s) past PCI_MAX_FUNCTIONS ({}): no driver sees them",
+                                 dropped, azos_limits::PCI_MAX_FUNCTIONS);
+        }
         let behind = funcs[..pci_n].iter().flatten().filter(|f| f.bdf.bus != 0).count();
         if behind != 0 {
             kprintln!("[PCI] {} of them behind bridges", behind);

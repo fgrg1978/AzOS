@@ -32,7 +32,7 @@ fn a_bridge_the_firmware_left_dark_gets_a_bus_and_its_devices_are_found() {
     t.bridge(0, 2, 0); // secondary 0: dark
     t.endpoint(1, 0, 0, 0x1af4, 0x1041, 0x020000, false);
     let mut asked = Vec::new();
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |b| { asked.push(b); true });
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |b| { asked.push(b); true });
     assert_eq!(buses(&t, 0, 2), (0, 1, 1));
     assert_eq!(ids(&f, n), [(0, 1, 0), (0, 2, 0), (1, 0, 0)]);
     assert_eq!(asked, [1], "the new bus is asked for once, before it is read");
@@ -50,7 +50,7 @@ fn numbering_is_depth_first_so_a_bridges_range_holds_exactly_the_buses_behind_it
     t.bridge(1, 0, 0); // C, on A's bus
     t.endpoint(2, 0, 0, 0x8086, 0x5845, 0x010802, false); // behind C
     t.endpoint(3, 0, 0, 0x10ec, 0x8168, 0x020000, false); // behind B
-    let (f, n) = enumerate_tree::<Tree, 16>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 16>(&mut t, &mut |_| true);
     assert_eq!(buses(&t, 0, 1), (0, 1, 2), "A: its own bus and C's");
     assert_eq!(buses(&t, 1, 0), (1, 2, 2), "C");
     assert_eq!(buses(&t, 0, 2), (0, 3, 3), "B comes after A's whole range");
@@ -65,7 +65,7 @@ fn numbering_starts_above_every_bus_the_firmware_used() {
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
     t.bridge(0, 2, 0); // dark
     t.endpoint(4, 0, 0, 0x10ec, 0x8168, 0x020000, false);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     assert_eq!(buses(&t, 0, 1), (0, 1, 3), "the firmware's bridge is untouched");
     assert_eq!(buses(&t, 0, 2), (0, 4, 4));
     assert!(ids(&f, n).contains(&(4, 0, 0)));
@@ -80,7 +80,7 @@ fn no_bus_number_is_handed_out_past_255() {
     t.bridge_range(0, 1, 255, 255); // firmware: bus 255 behind it
     t.bridge(0, 2, 0); // dark
     let before = t.reg(0, 2, OFF_PRIMARY_BUS);
-    let (_f, _n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: _f, n: _n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     assert_eq!(buses(&t, 0, 1), (0, 255, 255), "the firmware's bridge is untouched");
     assert_eq!(t.reg(0, 2, OFF_PRIMARY_BUS), before, "the dark bridge was not numbered");
 }
@@ -90,7 +90,7 @@ fn a_tree_the_firmware_numbered_is_not_written_to() {
     let mut t = Tree::new();
     t.bridge(0, 2, 1);
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
-    let (_, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     assert_eq!(n, 2);
     assert!(
         t.writes.iter().all(|(bdf, off, _)| !(bdf.device == 2 && bdf.bus == 0 && *off == OFF_PRIMARY_BUS)),
@@ -105,7 +105,7 @@ fn hardware_that_ignores_the_numbers_leaves_the_bridge_as_found() {
     t.ignoring.insert((0, 2, 0));
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
     let before = t.reg(0, 2, OFF_PRIMARY_BUS);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     assert_eq!(ids(&f, n), [(0, 2, 0)]);
     assert_eq!(t.reg(0, 2, OFF_PRIMARY_BUS), before);
     // It asked, was refused, and put back what it had read.
@@ -117,7 +117,7 @@ fn a_bus_the_caller_cannot_reach_ends_the_numbering_below_that_bridge() {
     let mut t = Tree::new();
     t.bridge(0, 2, 0);
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| false);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| false);
     assert_eq!(ids(&f, n), [(0, 2, 0)]);
     assert_eq!(buses(&t, 0, 2), (0, 1, 1), "numbered, but nothing behind it is read");
 }
@@ -128,7 +128,7 @@ fn only_a_bridges_two_bars_are_sized_and_nothing_else_of_its_header_is_written()
     t.bridge(0, 2, 1);
     t.bar(0, 2, 0, 0, false, false, 0x1000);
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
-    let (f, _) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n: _, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let bridge = f[0].unwrap();
     assert_eq!((bridge.bar_count, bridge.bars[0].map(|b| b.size)), (1, Some(0x1000)));
     for (bdf, off, _) in &t.writes {
@@ -158,7 +158,7 @@ fn a_64bit_prefetchable_bar_behind_a_bridge_gets_a_window_that_covers_it() {
     t.endpoint(1, 0, 0, 0x1af4, 0x1041, 0x020000, false);
     t.bar(1, 0, 0, 0, true, true, 0x4000); // 64-bit prefetchable: slots 0-1
     t.bar(1, 0, 0, 2, false, false, 0x1000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
 
@@ -194,7 +194,7 @@ fn a_bar_on_bus_0_is_placed_on_demand_after_the_bridge_windows() {
     t.bridge(0, 2, 1);
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
     t.bar(1, 0, 0, 0, false, false, 0x4000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     place_behind_bridges(&mut t, &f[..n], &mut w);
     let on_bus0 = func(&f, 0, 1).bars[0].unwrap();
@@ -209,7 +209,7 @@ fn a_nonprefetchable_64bit_bar_and_a_32bit_prefetchable_one_use_the_memory_windo
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
     t.bar(1, 0, 0, 0, true, false, 0x4000); // NVMe-style BAR0
     t.bar(1, 0, 0, 2, false, true, 0x2000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     let b = plan.iter().next().copied().unwrap();
@@ -227,7 +227,7 @@ fn with_no_64bit_window_a_prefetchable_bar_behind_a_bridge_goes_in_the_memory_wi
     t.bridge(0, 2, 1);
     t.endpoint(1, 0, 0, 0x1af4, 0x1041, 0x020000, false);
     t.bar(1, 0, 0, 0, true, true, 0x4000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = BarWindow::new(0x4000_0000, GIB);
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     let b = plan.iter().next().copied().unwrap();
@@ -246,7 +246,7 @@ fn nested_bridges_sum_into_their_parents_window() {
     t.bridge(1, 1, 2);
     t.endpoint(2, 0, 0, 0x8086, 0x2222, 0x020000, false);
     t.bar(2, 0, 0, 0, false, false, 2 * MIB);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     assert_eq!(plan.unplaced, 0);
@@ -277,7 +277,7 @@ fn siblings_get_disjoint_windows() {
     t.bridge(0, 2, 2);
     t.endpoint(2, 0, 0, 0x8086, 0x2222, 0x020000, false);
     t.bar(2, 0, 0, 0, true, true, 0x10_0000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     let v: Vec<_> = plan.iter().map(|b| b.pref.unwrap()).collect();
@@ -297,7 +297,7 @@ fn a_bridge_the_firmware_opened_a_window_on_is_left_as_found_with_what_is_behind
         let mut raw = |off: u16, v: u32| t.write32(Bdf::new(0, 2, 0), off, v);
         raw(0x20, 0x500f_5000);
     }
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     assert_eq!((plan.iter().count(), plan.left_alone), (0, 1));
     assert_eq!(t.reg(0, 2, 0x20), 0x500f_5000, "not rewritten");
@@ -312,7 +312,7 @@ fn a_window_that_does_not_fit_is_counted_not_programmed() {
     t.bridge(0, 2, 1);
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
     t.bar(1, 0, 0, 0, false, false, 4 * MIB);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = BarWindow::new(0x4000_0000, 2 * MIB);
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     assert_eq!((plan.iter().count(), plan.unplaced), (0, 1));
@@ -325,7 +325,7 @@ fn the_plan_reads_like_one_console_line() {
     t.bridge(0, 2, 0);
     t.endpoint(1, 0, 0, 0x1af4, 0x1041, 0x020000, false);
     t.bar(1, 0, 0, 0, true, true, 0x4000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let plan = place_behind_bridges(&mut t, &f[..n], &mut window());
     assert_eq!(plan.to_string(), "bridge 00:02.0 buses 1-1 pref 0x400000000+0x100000");
 }
@@ -340,7 +340,7 @@ fn a_bridge_that_decodes_only_32_bits_never_gets_a_pref64_reservation() {
     t.pref_32bit_only(0, 2);
     t.endpoint(1, 0, 0, 0x1af4, 0x1041, 0x020000, false);
     t.bar(1, 0, 0, 0, true, true, 0x4000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     assert_eq!(plan.unplaced, 0);
@@ -361,7 +361,7 @@ fn a_bridge_below_a_32bit_only_bridge_gets_no_pref64_window_either() {
     t.bridge(1, 1, 2); // decodes 64 bits itself, but its parent does not
     t.endpoint(2, 0, 0, 0x8086, 0x2222, 0x020000, false);
     t.bar(2, 0, 0, 0, true, true, 0x4000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     assert_eq!(plan.unplaced, 0);
@@ -380,7 +380,7 @@ fn a_window_the_bridge_cannot_hold_drops_the_bars_reserved_behind_it() {
     t.bridge(0, 2, 1);
     t.endpoint(1, 0, 0, 0x8086, 0x5845, 0x010802, false);
     t.bar(1, 0, 0, 0, false, false, 0x4000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = BarWindow::new(0x1_0000_0000, GIB);
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     assert_eq!((plan.iter().count(), plan.unplaced), (0, 1));
@@ -397,7 +397,7 @@ fn device_sizes_that_overflow_leave_the_bridge_unplaced_not_wrapped() {
     t.endpoint(1, 0, 0, 0x1af4, 0x1041, 0x020000, false);
     t.bar(1, 0, 0, 0, true, true, 1 << 63);
     t.bar(1, 0, 0, 2, true, true, 1 << 63);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let mut w = window();
     let plan = place_behind_bridges(&mut t, &f[..n], &mut w);
     assert_eq!(plan.iter().count(), 0);
@@ -411,7 +411,7 @@ fn device_sizes_that_overflow_leave_the_bridge_unplaced_not_wrapped() {
     t.endpoint(2, 0, 0, 0x8086, 0x2222, 0x020000, false);
     t.bar(2, 0, 0, 0, true, false, 1 << 63);
     t.bar(2, 0, 0, 2, true, false, 1 << 63);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let plan = place_behind_bridges(&mut t, &f[..n], &mut window());
     assert_eq!(plan.iter().count(), 0);
     assert!(plan.unplaced >= 1, "{plan}");
@@ -426,7 +426,7 @@ fn bridge_windows_and_bars_behind_a_translating_host_bridge_are_bus_addresses() 
     t.endpoint(1, 0, 0, 0x1af4, 0x1041, 0x020000, false);
     t.bar(1, 0, 0, 0, true, true, 0x4000);
     t.bar(1, 0, 0, 2, false, false, 0x1000);
-    let (f, n) = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
+    let Found { funcs: f, n, .. } = enumerate_tree::<Tree, 8>(&mut t, &mut |_| true);
     let fw = FirmwareWindows {
         mem32: Some(HostWindow { cpu_base: 0x6000_0000, bus_base: 0x4000_0000, size: GIB }),
         mem64: Some(HostWindow { cpu_base: 0x20_0000_0000, bus_base: 0x40_0000_0000, size: 4 * GIB }),

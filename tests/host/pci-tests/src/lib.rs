@@ -29,11 +29,30 @@ struct FakeFunction {
     /// True size (bytes) of each BAR slot, used to compute what an
     /// all-1s probe reads back. 0 = BAR not implemented (reads back 0).
     bar_size: [u64; 6],
+    /// An I/O BAR that decodes 16 address bits: its upper half reads 0.
+    io16: [bool; 6],
+    /// All-1s BAR writes taken while Memory or I/O Space decode was on: each
+    /// one a window at the top of the address space, live.
+    sized_while_decoding: u32,
 }
 
 impl FakeFunction {
     fn new() -> Self {
-        FakeFunction { dwords: [0; 1024], bar_fixed_bits: [0; 6], bar_size: [0; 6] }
+        FakeFunction {
+            dwords: [0; 1024], bar_fixed_bits: [0; 6], bar_size: [0; 6], io16: [false; 6],
+            sized_while_decoding: 0,
+        }
+    }
+
+    fn command(&self) -> u16 {
+        self.dwords[1] as u16
+    }
+
+    fn configure_io_bar(&mut self, index: usize, address: u32, size: u64, io16: bool) {
+        self.bar_fixed_bits[index] = 0x1;
+        self.bar_size[index] = size;
+        self.io16[index] = io16;
+        self.write_u32(OFF_BAR0 + index as u16 * 4, (address & !0x3) | 0x1);
     }
 
     fn set_header(&mut self, vendor: u16, device: u16) {
@@ -141,17 +160,28 @@ impl ConfigSpace for FakeBus {
         if (OFF_BAR0..OFF_BAR0 + 24).contains(&offset) && offset % 4 == 0 {
             let index = ((offset - OFF_BAR0) / 4) as usize;
 
+            let io = f.bar_fixed_bits[index.min(5)] & 1 != 0;
             if val == 0xffff_ffff {
+                if f.command() & (CMD_IO_SPACE | CMD_MEM_SPACE) != 0 {
+                    f.sized_while_decoding += 1;
+                }
                 let size = f.bar_size[index.min(5)];
                 if size == 0 {
                     f.dwords[(offset / 4) as usize] = f.bar_fixed_bits[index.min(5)];
                 } else {
-                    let mask32 = if size > 0xffff_ffff { 0u32 } else { (!(size - 1)) as u32 };
+                    let mut mask32 = if size > 0xffff_ffff { 0u32 } else { (!(size - 1)) as u32 };
+                    if io {
+                        mask32 &= !0x3;
+                    }
+                    if f.io16[index.min(5)] {
+                        mask32 &= 0xffff;
+                    }
                     f.dwords[(offset / 4) as usize] = mask32 | f.bar_fixed_bits[index.min(5)];
                 }
                 return;
             }
-            f.dwords[(offset / 4) as usize] = (val & !0xf) | f.bar_fixed_bits[index.min(5)];
+            let low = if io { 0x3 } else { 0xf };
+            f.dwords[(offset / 4) as usize] = (val & !low) | f.bar_fixed_bits[index.min(5)];
             return;
         }
 
@@ -207,7 +237,7 @@ fn zero_vendor_is_absent_and_a_zeroed_bus_is_empty() {
         bus.put(d, FakeFunction::new());
     }
     assert!(!function_exists(&bus, Bdf::new(0, 5, 0)));
-    let (_, n) = enumerate_tree::<FakeBus, 32>(&mut bus, &mut |_| false);
+    let Found { n, .. } = enumerate_tree::<FakeBus, 32>(&mut bus, &mut |_| false);
     assert_eq!(n, 0);
 }
 
@@ -286,6 +316,57 @@ fn unimplemented_bar_slots_are_skipped_entirely() {
     let (bars, n) = decode_bars(&mut bus, Bdf::new(0, 0, 0));
     assert_eq!(n, 1, "unimplemented BAR slots must not produce entries");
     assert_eq!(bars[0].unwrap().size, 0x1000);
+}
+
+/// **Decode is off while a BAR reads all-1s.** A function the firmware left
+/// decoding (a PC's) is sized with Memory and I/O Space cleared, and gets
+/// both back as found.
+/// **Canary:** `decode_bars` without the Command clear: the fake counts the
+/// all-1s writes taken while decoding.
+#[test]
+fn bars_are_sized_with_decode_off_and_decode_comes_back() {
+    let mut bus = FakeBus::new();
+    let mut f = FakeFunction::new();
+    f.set_header(0x8086, 0x10d3);
+    f.configure_mem_bar(0, false, false, 0xfebc_0000, 0x2_0000);
+    f.configure_io_bar(2, 0xc000, 0x20, false);
+    // Memory + I/O decode + bus master on, a Status error bit pending.
+    f.dwords[1] = 1 << 29 | (CMD_MEM_SPACE | CMD_IO_SPACE | CMD_BUS_MASTER) as u32;
+    bus.put(0, f);
+    let bdf = Bdf::new(0, 0, 0);
+    let (bars, n) = decode_bars(&mut bus, bdf);
+    assert_eq!(n, 2);
+    assert_eq!((bars[0].unwrap().size, bars[1].unwrap().size), (0x2_0000, 0x20));
+    let f = bus.funcs[0].as_ref().unwrap();
+    assert_eq!(f.sized_while_decoding, 0, "an all-1s BAR was live");
+    assert_eq!(f.command(), CMD_MEM_SPACE | CMD_IO_SPACE | CMD_BUS_MASTER, "decode back as found");
+    assert_ne!(f.dwords[1] & (1 << 29), 0, "a Status error bit survives (RW1C written 0)");
+
+    // A function with decode off stays off.
+    let mut bus = FakeBus::new();
+    let mut f = FakeFunction::new();
+    f.set_header(0x8086, 0x10d3);
+    f.configure_mem_bar(0, false, false, 0, 0x1000);
+    bus.put(0, f);
+    decode_bars(&mut bus, bdf);
+    assert_eq!(bus.funcs[0].as_ref().unwrap().command(), 0);
+}
+
+/// An I/O BAR that decodes 16 address bits reads its upper half back as 0
+/// (`0x0000_ffe1` for 32 bytes): the size is the lowest decoded bit, 32,
+/// not the complement of the whole word (4 GiB).
+/// **Canary:** size as `!masked + 1`: 0xffff_0020.
+#[test]
+fn a_sixteen_bit_io_bar_sizes_by_its_lowest_bit() {
+    let mut bus = FakeBus::new();
+    let mut f = FakeFunction::new();
+    f.set_header(0x8086, 0x2922);
+    f.configure_io_bar(4, 0xd000, 0x20, true);
+    bus.put(0, f);
+    let (bars, n) = decode_bars(&mut bus, Bdf::new(0, 0, 0));
+    assert_eq!(n, 1);
+    let b = bars[0].unwrap();
+    assert_eq!((b.kind, b.address, b.size), (BarKind::Io, 0xd000, 0x20));
 }
 
 // -----------------------------------------------------------------------
@@ -388,7 +469,7 @@ fn enumerate_and_format_one_line_per_function() {
     f0.set_cap_list(0x40);
     bus.put(0, f0);
 
-    let (funcs, n) = enumerate_tree::<FakeBus, 8>(&mut bus, &mut |_| false);
+    let Found { funcs, n, .. } = enumerate_tree::<FakeBus, 8>(&mut bus, &mut |_| false);
     assert_eq!(n, 1);
 
     let mut line = String::new();

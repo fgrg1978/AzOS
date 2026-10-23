@@ -1480,7 +1480,7 @@ where
             // The message is a DMA write to the doorbell: a translating
             // domain must let it through.
             dma.allow_msi(addr).map_err(|_| PciNetError::Dma)?;
-            azos_pci::program_msix_entry(&mut table, m.table_offset, vec, addr, data, false);
+            azos_pci::program_msix_entry(&mut table, &m, vec, addr, data, false);
         }
         // Read one entry back so a table the device ignores shows up here
         // rather than as silence later.

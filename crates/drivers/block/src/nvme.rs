@@ -649,7 +649,7 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
         let mut table = KernelBar::new(table_base);
         for vec in 0..=routed as u16 {
             let (addr, data) = route.target(vec);
-            azos_pci::program_msix_entry(&mut table, m.table_offset, vec, addr, data, false);
+            azos_pci::program_msix_entry(&mut table, &m, vec, addr, data, false);
         }
         azos_pci::msix_set_enable(cfg, info.bdf, &m, true);
         msix_on = azos_pci::msix_is_enabled(cfg, info.bdf, &m);

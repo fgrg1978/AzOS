@@ -1541,7 +1541,7 @@ where
             // The message is a DMA write to the doorbell: a translating domain
             // must let it through.
             dma.allow_msi(addr).map_err(|_| InitError::Dma)?;
-            azos_pci::program_msix_entry(&mut table, m.table_offset, 0, addr, data, false);
+            azos_pci::program_msix_entry(&mut table, &m, 0, addr, data, false);
             let _ = BarMem::read32(&table, m.table_offset as usize);
             azos_pci::msix_set_enable(cfg, info.bdf, &m, true);
         }

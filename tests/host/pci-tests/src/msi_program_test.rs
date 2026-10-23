@@ -77,6 +77,20 @@ fn msi_per_vector_mask_is_cleared() {
     assert_eq!(bus.read32(bdf, CAP + 16), 0);
 }
 
+/// **Discriminates.** MSI on is INTx off: the Command register's Interrupt
+/// Disable is set, the decode and bus-master bits around it are kept, and a
+/// refused message leaves it as it was (the INTx pin still serves).
+/// **Canary:** `program_msi` without the `CMD_INTX_DISABLE` write.
+#[test]
+fn msi_on_turns_intx_off() {
+    let (mut bus, bdf, msi) = bus_with_msi(0);
+    set_command_bits(&mut bus, bdf, CMD_MEM_SPACE | CMD_BUS_MASTER);
+    assert!(!program_msi(&mut bus, bdf, &msi, 1 << 32, 1));
+    assert_eq!(bus.read16(bdf, OFF_COMMAND) & CMD_INTX_DISABLE, 0, "refused: INTx untouched");
+    assert!(program_msi(&mut bus, bdf, &msi, 0xfee0_1000, 0x41));
+    assert_eq!(bus.read16(bdf, OFF_COMMAND), CMD_MEM_SPACE | CMD_BUS_MASTER | CMD_INTX_DISABLE);
+}
+
 /// **Discriminates.** A message that does not fit is refused and nothing is
 /// written: data above 16 bits, or an address above 4 GiB on a function with
 /// only the low half. A version that truncates writes a wrong doorbell.
