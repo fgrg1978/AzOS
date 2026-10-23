@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The commands AzOS sends a TPM 2.0.
 //!
-//! * `startup`: the first command after reset.
+//! * `startup`: the first command after reset; `shutdown`: the last one
+//!   before an orderly power-off.
 //! * `get_random`: the TPM's RNG, a hardware entropy source the kernel may
 //!   credit to its pool (policy is the caller's: this returns bytes).
 //! * `pcr_extend` / `pcr_read`: the measured-boot hook. One SHA-256 digest at
@@ -150,6 +151,18 @@ impl<R: TisRegs, C: Clock> Tpm<R, C> {
             Ok(_) | Err(Error::Tpm(wire::RC_INITIALIZE)) => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// `TPM2_Shutdown`: the orderly end of a TPM cycle, the last command
+    /// before the power goes. Without it the next `Startup` counts an
+    /// unorderly shutdown, which feeds the dictionary-attack lockout. `State`
+    /// also saves the state a `Startup(State)` resumes; the next boot's
+    /// `Startup(Clear)` after it is a TPM Restart (TPM 2.0 Part 1, Startup).
+    pub fn shutdown(&mut self, kind: StartupType) -> Result<(), Error> {
+        let mut c = Cmd::new(wire::ST_NO_SESSIONS, wire::CC_SHUTDOWN);
+        c.u16(kind as u16);
+        let mut out = [0u8; RESP_MAX];
+        self.run(c.finish()?, Duration::Medium, wire::ST_NO_SESSIONS, &mut out).map(|_| ())
     }
 
     /// Fill `out` with TPM random bytes, 32 per command.

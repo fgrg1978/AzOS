@@ -242,3 +242,24 @@ config IORING_ASYNC
       a context switch of the worker per batch. A real-time submitter's block
       entry allocates its bounce buffer and takes the hart queue's spinlock
       (a read also the write-back cache's) in its own submit; it never sleeps.
+
+config POWER_OFF_STEP_TIMEOUT_MS
+    int "Orderly power-off: longest wait for one storage step (ms)"
+    range 100 60000
+    default 5000
+    help
+      crates/core/syscall/src/handlers.rs (`orderly_storage_down`): an orderly
+      power-off or reboot, whoever asks for it (the power service, a thermal
+      critical trip, the kernel's own smokes), makes data durable before the
+      power goes: every mounted filesystem written back (`vfs_sync_all`;
+      FAT32's flush runs on the `fs-wb` task and is waited for at most this
+      long), the boot disk flushed, its controller told to shut down (NVMe
+      CC.SHN, waited for at most this long or the controller's RTD3E,
+      whichever is longer, up to 60 s), then the kernel-held devices (a USB
+      disk's SYNCHRONIZE CACHE, TPM2_Shutdown). A step that runs out of time
+      is reported and the power-off goes on: it never hangs. The power
+      service's own `sync` (the `Power` interface) waits the same bound.
+      5 s is Linux's NVMe shutdown default.
+
+      Cost: none until a power-off; a slow device lengthens it by at most
+      this much per step.

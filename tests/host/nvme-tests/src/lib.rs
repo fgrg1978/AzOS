@@ -387,7 +387,9 @@ fn controller_decode() {
     id[77] = 5;
     id[525] = 1;
     let c = decode_controller(&id);
-    assert_eq!(c, Controller { namespaces: 3, mdts: 5, volatile_write_cache: true, dataset_management: false });
+    assert_eq!(c, Controller { namespaces: 3, mdts: 5, volatile_write_cache: true, dataset_management: false, rtd3e_us: 0 });
+    id[88..92].copy_from_slice(&8_000_000u32.to_le_bytes());
+    assert_eq!(decode_controller(&id).rtd3e_us, 8_000_000, "RTD3E is bytes 91:88, little-endian");
     id[520] = 1 << 2;
     assert!(decode_controller(&id).dataset_management, "ONCS bit 2");
     id[520] = !(1 << 2);
@@ -416,4 +418,37 @@ fn namespace_decode_follows_the_formatted_lba_format() {
 fn granted_queues_are_zero_based_in_the_completion() {
     assert_eq!(granted_queues(0x0001_0003), (4, 2));
     assert_eq!(granted_queues(0), (1, 1));
+}
+
+// ── Shutdown (orderly power-off, section 7.6.2) ─────────────────────────
+
+/// `CC.SHN` = 01b in bits 15:14, every other field of `CC` kept (`EN` too:
+/// a shutdown is asked of a running controller); `CSTS.SHST` = 10b in bits
+/// 3:2 is complete, 01b (occurring) and 00b are not.
+///
+/// **Canary.** `CC_SHN_NORMAL` as `0b10 << 14` (an abrupt shutdown) or
+/// `CSTS_SHST_COMPLETE` as `0b01 << 2` (occurring): this row goes red.
+#[test]
+fn shutdown_notification_and_status_encodings() {
+    let en = cc_enable();
+    assert_eq!(cc_shutdown(en), en | 1 << 14);
+    assert_eq!(cc_shutdown(en) & CC_EN, CC_EN, "the controller stays enabled");
+    assert_eq!(cc_shutdown(en | 0b11 << 14), en | 1 << 14, "an earlier SHN value is replaced, not or-ed");
+    assert!(shutdown_complete(0b10 << 2 | CSTS_RDY));
+    assert!(!shutdown_complete(0b01 << 2), "processing occurring is not complete");
+    assert!(!shutdown_complete(0));
+    assert!(!shutdown_complete(0b11 << 2), "a reserved value is not complete");
+}
+
+/// The wait after `CC.SHN`: RTD3E when the controller gives a longer one
+/// than the floor, never past 60 s (Linux's clamp), and the floor alone when
+/// RTD3E is 0 (not reported).
+#[test]
+fn shutdown_timeout_is_rtd3e_clamped() {
+    assert_eq!(shutdown_timeout_ms(0, 5_000), 5_000, "no RTD3E: the floor");
+    assert_eq!(shutdown_timeout_ms(1_000_000, 5_000), 5_000, "a shorter RTD3E: the floor");
+    assert_eq!(shutdown_timeout_ms(8_000_000, 5_000), 8_000, "a longer RTD3E is honoured");
+    assert_eq!(shutdown_timeout_ms(8_000_001, 5_000), 8_001, "rounded up to the millisecond");
+    assert_eq!(shutdown_timeout_ms(u32::MAX, 5_000), RTD3E_CAP_MS, "never past the cap");
+    assert_eq!(shutdown_timeout_ms(u32::MAX, 90_000), 90_000, "a floor above the cap stands");
 }

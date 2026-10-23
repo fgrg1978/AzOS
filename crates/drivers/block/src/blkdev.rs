@@ -547,3 +547,28 @@ pub fn flush() -> Result<(), FlushError> {
     rt_io_check();
     BACKEND.flush()
 }
+
+/// Orderly power-off or reboot (`azos_syscall::handlers`, after every
+/// filesystem was synced): flush the boot disk once more, so a write that
+/// went around the filesystems (the reserved tail, a raw partition) is
+/// durable too, then tell its controller to shut down where it has a
+/// shutdown of its own (NVMe `CC.SHN`). One `[ORDERLY] disk:` line says what
+/// each answered. Bounded: the flush by the backend's command budget, the
+/// shutdown wait by Kconfig `POWER_OFF_STEP_TIMEOUT_MS` (or the controller's
+/// RTD3E); the power-off goes on whatever they answered.
+pub fn shutdown() {
+    let flush = match flush() {
+        Ok(()) => "ok",
+        Err(FlushError::Unsupported) => "unsupported (no cache control)",
+        Err(FlushError::Io) => "FAILED",
+    };
+    #[cfg(feature = "nvme")]
+    let ctl = match crate::nvme::shutdown(azos_limits::POWER_OFF_STEP_TIMEOUT_MS as u64) {
+        None => "none",
+        Some(true) => "nvme complete",
+        Some(false) => "nvme NOT confirmed",
+    };
+    #[cfg(not(feature = "nvme"))]
+    let ctl = "none";
+    azos_drv_sys::kprintln!("[ORDERLY] disk: flush {}, controller shutdown {}", flush, ctl);
+}

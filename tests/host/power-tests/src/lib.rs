@@ -437,6 +437,7 @@ mod wire {
         fn state(&self, sel: u32) -> Out<u64> { word(self.0.state(sel)) }
         fn stats(&self, sel: u32) -> Out<u64> { word(self.0.stats(sel)) }
         fn cpu_online(&mut self, _cpu: u32, _on: u32) -> Out<u32> { Out::err(outcome::UNSUPPORTED) }
+        fn sync(&mut self) -> Out<u32> { Out::err(outcome::UNSUPPORTED) }
     }
 
     /// The request goes through the wire form to the server's dispatcher.
@@ -478,9 +479,11 @@ mod wire {
     #[test]
     fn the_op_table_marks_the_readers_idempotent_only() {
         let ops = PowerIdl::OPS;
-        assert_eq!(ops.len(), 17);
+        assert_eq!(ops.len(), 18);
         for o in ops {
-            let reader = o.name == "state" || o.name == "stats" || o.name == "sched_hz";
+            // `sync` changes nothing a second ask would undo: the second
+            // writes back what the first did not, if anything.
+            let reader = o.name == "state" || o.name == "stats" || o.name == "sched_hz" || o.name == "sync";
             assert_eq!(o.idempotent(), reader, "{}", o.name);
         }
     }

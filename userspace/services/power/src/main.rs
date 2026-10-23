@@ -53,7 +53,8 @@
 //! * `power state`: print the policy state, the battery and the statistics.
 //! * `power devices`: print the runtime power of each tracked device.
 //! * `power suspend | reboot | shutdown | sched_hz [HZ]`: the recovery
-//!   console's commands as a client of the same capability.
+//!   console's commands as a client of the same capability. `reboot` and
+//!   `shutdown` sync every filesystem first (`Power::sync`).
 //!
 //! Exit 0 on success, 1 when the kernel refused or a call failed, 2 on a
 //! usage error.
@@ -637,6 +638,27 @@ fn unanswered(what: &[u8], code: u32) -> i32 {
     1
 }
 
+/// Before a reboot or power-off: every filesystem made durable
+/// (`Power::sync`, owner decision 2026-10-23). A failure is said and the
+/// power-off goes on: the kernel's orderly path syncs again after this one.
+fn sync_first(k: &mut Kernel) {
+    match k.c.sync() {
+        Ok(o) if o.is_ok() => {
+            put(1, b"power: filesystems synced (");
+            put_num(1, false, o.value as u64);
+            put(1, b" volume(s))\n");
+        }
+        Ok(o) => {
+            put(2, b"power: sync: outcome ");
+            put_num(2, false, o.code as u64);
+            put(2, b", ");
+            put_num(2, false, o.value as u64);
+            put(2, b" volume(s) not confirmed; going on\n");
+        }
+        Err(_) => put(2, b"power: sync got no answer; going on\n"),
+    }
+}
+
 /// An op that answers only the outcome: `Ok` when served.
 fn served(r: Result<sys::dev::Out<()>, sys::dev::IdlError>) -> Result<(), u32> {
     match r {
@@ -725,11 +747,13 @@ fn run() -> i32 {
         // `#[once_only]` ops: sent once. A served power-off does not answer, so
         // no answer is not a failure to retry, and nothing here sends it again.
         (b"reboot", _) => {
+            sync_first(&mut k);
             if let Err(c) = served(k.c.reboot()) {
                 return unanswered(op_name, c);
             }
         }
         (b"shutdown", _) => {
+            sync_first(&mut k);
             if let Err(c) = served(k.c.shutdown()) {
                 return unanswered(op_name, c);
             }

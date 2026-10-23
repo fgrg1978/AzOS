@@ -187,20 +187,59 @@ fn a_sample_never_copies_past_the_callers_buffer() {
     assert_eq!(c.len as usize, SAMPLE_BYTES);
 }
 
-// ── Console flush before a reset (wave 10) ───────────────────────────────────
+// ── The orderly power-off: data durable, then the console, then the reset ──
+
+/// What the orderly path's seams record into the shim's ordered log.
+struct SyncRecorder;
+impl crate::file_ops::FileOps for SyncRecorder {
+    fn open_at(&self, _: &[u8], _: &[u8], _: u32) -> i64 { -1 }
+    fn close(&self, _: i32) -> i64 { -1 }
+    fn read(&self, _: i32, _: &mut [u8]) -> i64 { -1 }
+    fn write(&self, _: i32, _: &[u8]) -> i64 { -1 }
+    fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { -1 }
+    fn dup(&self, _: i32) -> i64 { -1 }
+    fn mkdir(&self, _: &[u8]) -> i64 { -1 }
+    fn unlink(&self, _: &[u8]) -> i64 { -1 }
+    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; 64], u32, bool)> { None }
+    fn release_all(&self, _: u32) -> usize { 0 }
+    fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { 0 }
+    fn sync_all(&self) -> crate::file_ops::SyncAllOut {
+        syscall_test_drivers::shim_fwd::note("sync_all");
+        crate::file_ops::SyncAllOut { volumes: 1, failed: 0, timed_out: 0 }
+    }
+}
+static SYNC_RECORDER: SyncRecorder = SyncRecorder;
+fn records_hook() { syscall_test_drivers::shim_fwd::note("records_hook"); }
+fn devices_hook() { syscall_test_drivers::shim_fwd::note("devices_hook"); }
 
 /// A reboot or power-off that passed its right first (`Power::reboot`,
-/// `Power::shutdown`; the right is `power_guards.rs`'s) puts every deferred
-/// kernel console line on the wire (`uart::console_flush_for_reboot`): a
-/// line printed just before the reset while ring 3 owned the console used
-/// to be lost with the RAM that held it. Kernel context passes the gate
-/// (`serial()` leaves `user_pt == 0`); the SBI stand-in then panics, so a
-/// recorded flush was made BEFORE the reset call.
+/// `Power::shutdown`; the right is `power_guards.rs`'s), and the thermal
+/// trip's, which calls the same function, run in this order (owner decision
+/// 2026-10-23, Q1):
 ///
-/// **Canary.** Delete the flush from `reboot_orderly`: the log is empty.
+/// 1. this boot's records (OTA's void, the entropy seed: writes);
+/// 2. every mounted filesystem synced (`FileOps::sync_all`), the records too;
+/// 3. the boot disk flushed and its controller shut down (`blkdev::shutdown`);
+/// 4. the kernel-held devices (USB disk SYNCHRONIZE CACHE, TPM2_Shutdown);
+/// 5. every deferred kernel console line on the wire
+///    (`uart::console_flush_for_reboot`): a line printed just before the reset
+///    while ring 3 owned the console used to be lost with the RAM that held it;
+/// 6. the reset. The SBI stand-in panics, so everything recorded was made
+///    BEFORE the reset call.
+///
+/// Kernel context passes the gate (`serial()` leaves `user_pt == 0`).
+///
+/// **Canaries.** Delete `orderly_storage_down()` from `power_off_orderly`
+/// (the power-off loses every write since the last `fs-wb` pass): the
+/// shutdown log has no sync. Swap its sync and disk lines: the disk is shut
+/// down before the filesystems are written back, wrong order. Delete the flush
+/// from `reboot_orderly`: no console flush.
 #[test]
-fn power_control_flushes_the_console_before_the_reset() {
+fn an_orderly_reset_makes_data_durable_then_flushes_the_console() {
     let _g = serial();
+    crate::file_ops::set_file_ops(&SYNC_RECORDER);
+    crate::handlers::set_orderly_power_hook(records_hook);
+    crate::handlers::set_orderly_devices_hook(devices_hook);
     let calls: [(&str, fn() -> i64); 2] = [
         ("reboot", || crate::handlers::reboot_orderly()),
         ("shutdown", || crate::handlers::power_off_orderly()),
@@ -208,8 +247,15 @@ fn power_control_flushes_the_console_before_the_reset() {
     for (name, call) in calls {
         syscall_test_drivers::shim_fwd::arm(Default::default());
         let r = std::panic::catch_unwind(call);
-        let log = syscall_test_drivers::shim_fwd::disarm().expect("recorder armed").log;
+        let mut log = syscall_test_drivers::shim_fwd::disarm().expect("recorder armed").log;
+        // The clock reads that time the steps are not steps.
+        log.retain(|e| e != "get_time");
         assert!(r.is_err(), "{name}: the reset stand-in was not reached");
-        assert_eq!(log, vec!["console_flush_for_reboot".to_string()], "{name}");
+        assert_eq!(
+            log,
+            ["records_hook", "sync_all", "blkdev_shutdown", "devices_hook", "console_flush_for_reboot"],
+            "{name}",
+        );
     }
+    crate::file_ops::__file_ops_clear_for_tests();
 }

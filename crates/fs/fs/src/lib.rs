@@ -82,6 +82,8 @@ pub use vfs::{
     NAME_MAX, S_IFREG, S_IFDIR, S_IFCHR,
     vfs_stat, vfs_statfs, vfs_readdir, vfs_mkdir, vfs_rmdir, vfs_rename, vfs_unlink, vfs_on_mount,
     vfs_truncate, vfs_fsync,
+    // Every mounted volume made durable: the orderly power-off and `Power::sync`.
+    SyncAll, sync_volumes, vfs_sync_all,
     // `storage_delete` of the effect gate: asked before a delete takes effect.
     DeleteGate, DeleteOp, set_delete_gate, delete_admitted,
     INODE_KEY_LEN, ZEROED_KEY, NO_BACKING, FAT32_FS,

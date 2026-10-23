@@ -2288,14 +2288,51 @@ azos_common::ro_hook! {
     static ORDERLY_POWER_HOOK: fn();
 }
 
+azos_common::ro_hook! {
+    /// The devices the kernel holds that an orderly power-off or reboot shuts
+    /// down after the boot disk (`orderly_storage_down`): a USB disk's
+    /// SYNCHRONIZE CACHE, then TPM2_Shutdown(STATE), the last command the TPM
+    /// gets. Installed by the kernel at boot: this crate names neither driver.
+    static ORDERLY_DEVICES_HOOK: fn();
+}
+
 /// Install the orderly power-off hook. Called once at boot.
 pub fn set_orderly_power_hook(f: fn()) {
     ORDERLY_POWER_HOOK.set(f);
 }
 
+/// Install the kernel-held devices' shutdown hook. Called once at boot.
+pub fn set_orderly_devices_hook(f: fn()) {
+    ORDERLY_DEVICES_HOOK.set(f);
+}
+
 /// Run the orderly power-off hook, if installed.
 fn orderly_power_off() {
     if let Some(f) = ORDERLY_POWER_HOOK.get() { f(); }
+}
+
+/// Make the data durable before the power goes (owner decision 2026-10-23,
+/// Q1), whoever asked for the power-off or reboot: every mounted filesystem
+/// written back (`FileOps::sync_all`), then the boot disk flushed and its
+/// controller shut down (`blkdev::shutdown`: NVMe CC.SHN), then the kernel-held
+/// devices ([`ORDERLY_DEVICES_HOOK`]). The power service syncs first through
+/// `Power::sync`; this is the net under it and under the callers that have no
+/// service (the thermal critical trip). Each step is bounded (Kconfig
+/// `POWER_OFF_STEP_TIMEOUT_MS`, the devices' own command budgets) and the
+/// power-off goes on after it, whatever it answered.
+///
+/// After the hook of this boot's records ([`orderly_power_off`]): OTA's void
+/// and the entropy seed are writes, and this makes them durable too.
+fn orderly_storage_down() {
+    let ms = |t0: u64| {
+        (azos_drv_sys::timebase::now().saturating_sub(t0)) * 1000 / azos_drv_sys::timebase::TIMER_FREQ.max(1)
+    };
+    let t0 = azos_drv_sys::timebase::now();
+    let fs = crate::file_ops::file_ops().map(|o| o.sync_all()).unwrap_or_default();
+    azos_drv_sys::kprintln!("[ORDERLY] filesystems: {} volume(s) synced, {} failed, {} timed out ({} ms)",
+        fs.volumes, fs.failed, fs.timed_out, ms(t0));
+    azos_drv_block::blkdev::shutdown();
+    if let Some(f) = ORDERLY_DEVICES_HOOK.get() { f(); }
 }
 
 /// An orderly power-off: the `power` interface's `shutdown`
@@ -2304,6 +2341,7 @@ fn orderly_power_off() {
 pub fn power_off_orderly() -> ! {
     // Authorised: an orderly power-off. Not a crash; say so on the volume.
     orderly_power_off();
+    orderly_storage_down();
     // Deferred kernel lines reach the wire before the power-off (see
     // `reboot_orderly`).
     azos_drv_sys::uart::console_flush_for_reboot();
@@ -2317,6 +2355,7 @@ pub fn power_off_orderly() -> ! {
 /// it checked the caller's `WRITE`, and the kernel's own smokes.
 pub fn reboot_orderly() -> ! {
     orderly_power_off();
+    orderly_storage_down();
     // Deferred kernel lines (ring 3 may own the console on another hart)
     // reach the wire before the reset, not never.
     azos_drv_sys::uart::console_flush_for_reboot();

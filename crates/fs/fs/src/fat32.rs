@@ -6367,6 +6367,11 @@ impl crate::vfs::FileSystem for Fat32Fs {
     #[inline]
     fn flush_request(&self) -> Option<u64> { Some(fat32_flush_request()) }
 
+    #[inline]
+    fn flush_done(&self, t: u64) -> Option<Result<(), crate::vfs::FsErr>> {
+        fat32_flush_done(t).map(|r| r.map_err(fs_err))
+    }
+
     /// 8.3 conversion of every component, and the directories: the key is the
     /// canonical path (`key_of_path`). A leading, trailing or doubled slash
     /// names nothing.

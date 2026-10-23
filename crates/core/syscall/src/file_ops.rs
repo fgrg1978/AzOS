@@ -195,6 +195,13 @@ pub trait FileOps: Sync {
     /// durable, `Some(-errno)` when it failed.
     fn fsync_done(&self, _ticket: u64) -> Option<i64> { Some(0) }
 
+    /// Make every mounted volume durable (`azos_fs::vfs_sync_all`), waiting
+    /// at most Kconfig `POWER_OFF_STEP_TIMEOUT_MS` for a flush that runs on a
+    /// task of its own: the orderly power-off and reboot
+    /// (`handlers::power_off_orderly`), and the `Power` interface's `sync`.
+    /// The default, with no filesystem behind the seam: nothing to sync.
+    fn sync_all(&self) -> SyncAllOut { SyncAllOut::default() }
+
     /// `DOMAIN_STATFS`: capacity and free space of the filesystem `path` is on.
     fn statfs(&self, _path: &[u8]) -> Result<StatFsOut, i64> { Err(-1) }
 
@@ -290,6 +297,17 @@ impl StatOut {
         b[STAT_OFF_CTIME..STAT_OFF_CTIME + 8].copy_from_slice(&self.ctime.to_le_bytes());
         b
     }
+}
+
+/// [`FileOps::sync_all`]'s answer: the VFS's `SyncAll` across the seam.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncAllOut {
+    /// Distinct mounted volumes asked.
+    pub volumes: u32,
+    /// Of those, the ones whose sync failed (an unconfirmed flush included).
+    pub failed: u32,
+    /// Of those, the ones whose flush was still running when the time was up.
+    pub timed_out: u32,
 }
 
 /// The registered implementation. `None` until [`set_file_ops`] runs, normally

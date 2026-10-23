@@ -273,6 +273,20 @@ impl azos_devif::Power for Server {
         }
     }
 
+    fn sync(&mut self) -> Out<u32> {
+        if let Err(o) = self.gate(CapPerms::WRITE, "sync") {
+            return o;
+        }
+        // The same sync the orderly power-off runs (`FileOps::sync_all`).
+        let r = crate::file_ops::file_ops().map(|o| o.sync_all()).unwrap_or_default();
+        azos_drv_sys::kprintln!("[POWER] sync by tid {}: {} volume(s) synced, {} failed, {} timed out",
+            self.0.tid, r.volumes, r.failed, r.timed_out);
+        match r.failed + r.timed_out {
+            0 => Out::ok(r.volumes),
+            bad => Out::new(outcome::FAULT, bad),
+        }
+    }
+
     fn state(&self, sel: u32) -> Out<u64> {
         if let Err(o) = self.gate(CapPerms::READ, "power policy get") {
             return o;

@@ -318,6 +318,22 @@ pub(crate) fn init(dtb_ptr: usize) -> bool {
     true
 }
 
+/// Orderly power-off or reboot, the TPM's last command
+/// (`azos_syscall::handlers::orderly_storage_down`, through the devices hook):
+/// `TPM2_Shutdown(STATE)` (owner decision 2026-10-23), so the next boot's
+/// `Startup(CLEAR)` does not count an unorderly shutdown toward the
+/// dictionary-attack lockout. The TPM leaves [`TPM`] first: nothing sends it a
+/// command after its Shutdown. Bounded by the driver's command timeouts; the
+/// power-off goes on whatever it answered.
+pub(crate) fn shutdown() {
+    let Some(mut tpm) = TPM.lock().take() else { return };
+    match tpm.shutdown(azos_tpm::tpm::StartupType::State) {
+        Ok(()) => kprintln!("[ORDERLY] tpm: TPM2_Shutdown(STATE) ok"),
+        Err(e) => azos_drv_sys::kwarn!("[ORDERLY] tpm: TPM2_Shutdown(STATE) failed ({:?}): the next Startup \
+                   counts an unorderly shutdown", e),
+    }
+}
+
 /// Fill `out` with TPM random bytes (the pool's seed source). `false` when
 /// there is no TPM or it failed.
 pub(crate) fn random(out: &mut [u8]) -> bool {

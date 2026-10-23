@@ -428,6 +428,12 @@ pub trait FileSystem: Sync {
     /// synchronously with [`fsync`](Self::fsync).
     fn flush_request(&self) -> Option<u64> { None }
 
+    /// Has the flush of ticket `t` ([`flush_request`](Self::flush_request))
+    /// completed? `None` while it runs, `Some(Ok)` once durable. The default,
+    /// for a backend that hands out no ticket: `Unsupported`, never `Ok` (a
+    /// ticket nobody can answer for is not durable).
+    fn flush_done(&self, _t: u64) -> Option<Result<(), FsErr>> { Some(Err(FsErr::Unsupported)) }
+
     /// Create a directory at `name` (relative to the mount point).
     fn mkdir(&self, _name: &[u8]) -> Result<(), FsErr> { Err(FsErr::Unsupported) }
 
@@ -3186,6 +3192,82 @@ pub fn fd_fsync_finish(mut work: FsyncWork) -> Result<(), FsErr> {
         fd_free(&mut work.lone, 0);
     }
     r
+}
+
+// ─── Every volume made durable (orderly power-off, `Power::sync`) ────────────
+
+/// What [`vfs_sync_all`] did: every distinct mounted backend was asked once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncAll {
+    /// Backends asked (a backend mounted at two points is one volume).
+    pub volumes: u32,
+    /// Of those, the ones whose sync failed (the device could not confirm the
+    /// flush included).
+    pub failed: u32,
+    /// Of those, the ones whose ticketed flush had not completed when
+    /// `expired` said the time was up: left running, not waited for.
+    pub timed_out: u32,
+}
+
+/// Every mounted backend once, in mount order: copied out under the table's
+/// lock, which no backend call is made under (owner rule F1).
+fn mounted_volumes(out: &mut [&'static dyn FileSystem; MAX_MOUNTS]) -> usize {
+    let fs = FS.lock();
+    let mut n = 0;
+    for m in &fs.mounts[..fs.mount_count.min(MAX_MOUNTS)] {
+        let Some(b) = m.fs.filter(|_| m.active) else { continue };
+        let seen = out[..n].iter()
+            .any(|o| core::ptr::addr_eq(*o as *const dyn FileSystem, b as *const dyn FileSystem));
+        if !seen {
+            out[n] = b;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Make each of `volumes` durable: a backend with a ticketed flush
+/// ([`FileSystem::flush_request`], FAT32's `fs-wb` task does the I/O) is
+/// waited for, calling `pause` between looks, until it answers or `expired`
+/// says the time is up; any other backend is synced inline
+/// ([`FileSystem::sync`], which for FAT32 also writes the page cache back).
+/// Every volume is asked, whatever an earlier one answered.
+pub fn sync_volumes(
+    volumes: &[&'static dyn FileSystem],
+    expired: &dyn Fn() -> bool,
+    pause: &dyn Fn(),
+) -> SyncAll {
+    let mut r = SyncAll { volumes: volumes.len() as u32, ..SyncAll::default() };
+    for b in volumes {
+        let ok = match b.flush_request() {
+            None => b.sync().is_ok(),
+            Some(t) => loop {
+                match b.flush_done(t) {
+                    Some(done) => break done.is_ok(),
+                    None if expired() => {
+                        r.timed_out += 1;
+                        break true;
+                    }
+                    None => pause(),
+                }
+            },
+        };
+        if !ok {
+            r.failed += 1;
+        }
+    }
+    r
+}
+
+/// Make every mounted volume durable ([`sync_volumes`] over the mount table):
+/// the kernel's orderly power-off and reboot, and the `Power` interface's
+/// `sync`. Bounded by `expired` for the backends that flush on a task of their
+/// own; an inline sync is bounded by the device's own command budgets.
+pub fn vfs_sync_all(expired: &dyn Fn() -> bool, pause: &dyn Fn()) -> SyncAll {
+    // The entries past `n` are filler, never read.
+    let mut volumes: [&'static dyn FileSystem; MAX_MOUNTS] = [&FAT32_FS; MAX_MOUNTS];
+    let n = mounted_volumes(&mut volumes);
+    sync_volumes(&volumes[..n], expired, pause)
 }
 
 // ─── The page cache seam (storage L11, part B) ──────────────────────────────

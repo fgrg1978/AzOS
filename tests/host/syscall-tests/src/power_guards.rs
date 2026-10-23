@@ -214,3 +214,55 @@ fn cpu_online_checks_the_right_then_the_direction_then_the_build() {
     assert_eq!(rw.cpu_online(1, 0).code, built);
     assert_eq!(rw.cpu_online(1, 1).code, built);
 }
+
+/// `sync` (owner decision 2026-10-23): what the power service asks before a
+/// reboot or power-off. The right (`WRITE`) first: refused and recorded
+/// without it, and nothing is synced. With it, every volume through the same
+/// `FileOps::sync_all` the orderly path runs: `OK` with the volumes synced,
+/// `FAULT` with the ones that failed or ran out of time.
+///
+/// **Canary** (run). Make `sync` answer `Out::ok(r.volumes)` whatever the
+/// failures: the `FAULT` row fails.
+#[test]
+fn sync_needs_write_and_answers_what_the_volumes_did() {
+    use crate::file_ops::{FileOps, SyncAllOut};
+    static CALLS: AtomicU32 = AtomicU32::new(0);
+    static ANSWER: std::sync::Mutex<SyncAllOut> =
+        std::sync::Mutex::new(SyncAllOut { volumes: 0, failed: 0, timed_out: 0 });
+    struct Volumes;
+    impl FileOps for Volumes {
+        fn open_at(&self, _: &[u8], _: &[u8], _: u32) -> i64 { -1 }
+        fn close(&self, _: i32) -> i64 { -1 }
+        fn read(&self, _: i32, _: &mut [u8]) -> i64 { -1 }
+        fn write(&self, _: i32, _: &[u8]) -> i64 { -1 }
+        fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { -1 }
+        fn dup(&self, _: i32) -> i64 { -1 }
+        fn mkdir(&self, _: &[u8]) -> i64 { -1 }
+        fn unlink(&self, _: &[u8]) -> i64 { -1 }
+        fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; 64], u32, bool)> { None }
+        fn release_all(&self, _: u32) -> usize { 0 }
+        fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { 0 }
+        fn sync_all(&self) -> SyncAllOut {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            *ANSWER.lock().unwrap()
+        }
+    }
+    static VOLUMES: Volumes = Volumes;
+    let _g = serial();
+    let tid = setup();
+    crate::file_ops::set_file_ops(&VOLUMES);
+    CALLS.store(0, Ordering::SeqCst);
+
+    assert_eq!(server(tid, CapPerms::NONE).sync().code, outcome::DENIED);
+    assert_eq!(server(tid, CapPerms::READ).sync().code, outcome::DENIED, "READ observes, it does not write back");
+    assert_eq!(ENDPOINT_RECORDS.load(Ordering::SeqCst), 2);
+    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "a refused sync syncs nothing");
+
+    let mut rw = server(tid, CapPerms::RW);
+    *ANSWER.lock().unwrap() = SyncAllOut { volumes: 2, failed: 0, timed_out: 0 };
+    assert_eq!(rw.sync(), Out::ok(2));
+    *ANSWER.lock().unwrap() = SyncAllOut { volumes: 2, failed: 1, timed_out: 1 };
+    assert_eq!(rw.sync(), Out::new(outcome::FAULT, 2));
+    assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    crate::file_ops::__file_ops_clear_for_tests();
+}

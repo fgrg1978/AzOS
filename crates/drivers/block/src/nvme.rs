@@ -171,6 +171,9 @@ struct Dev {
     vwc: bool,
     /// The controller implements Dataset Management (`ONCS` bit 2).
     discard: bool,
+    /// RTD3 Entry Latency from Identify (microseconds, 0 = not reported):
+    /// how long [`shutdown`] may wait for `CSTS.SHST`.
+    rtd3e_us: u32,
     /// Sectors one command carries: slot size, MDTS, 65536 (NLB is 16 bits).
     max_sectors: u32,
     /// Admin queue memory: CPU address and device (physical) address.
@@ -196,6 +199,7 @@ const DEV_ZERO: Dev = Dev {
     capacity: 0,
     vwc: false,
     discard: false,
+    rtd3e_us: 0,
     max_sectors: 0,
     asq: 0,
     asq_pa: 0,
@@ -705,6 +709,7 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
     dev.capacity = ns.blocks;
     dev.vwc = ctrl.volatile_write_cache;
     dev.discard = ctrl.dataset_management;
+    dev.rtd3e_us = ctrl.rtd3e_us;
     dev.max_sectors = (SLOT_PAGES * PAGE / SECTOR_SIZE)
         .min(proto::mdts_max_sectors(ctrl.mdts) as usize)
         .min(65536) as u32;
@@ -897,6 +902,37 @@ fn usable() -> bool {
 /// `true` once a controller is up and `blkdev` routes block I/O here.
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Acquire)
+}
+
+/// Orderly power-off or reboot (`blkdev::shutdown`), after the last flush:
+/// stop submitting (`READY` false, so every claim answers `Dead`), ask the
+/// controller for a normal shutdown (`CC.SHN` = 01b, section 7.6.2) and poll
+/// `CSTS.SHST` until it says complete, at most the controller's RTD3E or
+/// `floor_ms`, whichever is longer (`azos_nvme::shutdown_timeout_ms`). A
+/// clean shutdown is what keeps the drive's unsafe-shutdown count still and
+/// its volatile cache written. `None`: no controller is up (never attached,
+/// or latched failed and already disabled); `Some(false)`: the controller
+/// did not confirm in time or reported a fatal status. The power-off goes on
+/// either way.
+pub fn shutdown(floor_ms: u64) -> Option<bool> {
+    if !usable() {
+        return None;
+    }
+    READY.store(false, Ordering::Release);
+    // SAFETY: written once in bring-up, before `bind`.
+    let (bar, rtd3e_us) = unsafe { (DEV.bar, DEV.rtd3e_us) };
+    wr32(bar, proto::REG_CC, proto::cc_shutdown(rd32(bar, proto::REG_CC)));
+    let deadline = deadline_after_us(proto::shutdown_timeout_ms(rtd3e_us, floor_ms).saturating_mul(1000));
+    loop {
+        let csts = rd32(bar, proto::REG_CSTS);
+        if proto::shutdown_complete(csts) {
+            return Some(true);
+        }
+        if csts & proto::CSTS_CFS != 0 || now() >= deadline {
+            return Some(false);
+        }
+        core::hint::spin_loop();
+    }
 }
 
 /// The controller as the request layer drives it.

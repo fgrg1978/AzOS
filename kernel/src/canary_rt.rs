@@ -72,6 +72,10 @@ pub(crate) const NAMES: &[&str] = &[
     // the submitter waiting on the device, and completes in the submit
     // (ktest `ioring_fsync_completes_after_flush`; the K1 "before" number).
     "ioring-fsync-inline",
+    // boot/seams.rs `sync_all`: no volume is synced, by the power service's
+    // `Power::sync` or by the orderly power-off (gate rows `sh: power-off
+    // keeps a written file` and its canary).
+    "power-off-sync-skip",
     // tasks/cam_capture.rs `camera_with_frame`: each consumer of the camera
     // frame ring captures and encodes a frame of its own again, as before
     // B2 (ktest `camera_one_encode_per_frame`).

@@ -540,6 +540,23 @@ mod xhci_host {
         }
     }
 
+    /// Orderly power-off or reboot (`azos_syscall::handlers`, through the
+    /// devices hook): SYNCHRONIZE CACHE on the mass-storage disk, when one is
+    /// ready, through its request queue (the `usb` task moves the transfer).
+    /// Bounded by Kconfig `USB_MSC_TIMEOUT_MS`; nothing when no disk is
+    /// plugged.
+    #[cfg(feature = "usb-storage")]
+    pub(crate) fn storage_shutdown() {
+        let Some(disk) = *DISK.lock_irqsave() else { return };
+        if !disk.ready() {
+            return;
+        }
+        match disk.flush(azos_devif::block::OWNER_KERNEL) {
+            Ok(()) => crate::kprintln!("[ORDERLY] usb disk: synchronize cache ok"),
+            Err(e) => azos_drv_sys::kwarn!("[ORDERLY] usb disk: synchronize cache FAILED ({:?})", e),
+        }
+    }
+
     /// What one turn of the core did to the network and serial functions, for
     /// the code that runs once the host's lock is released (the stack and the
     /// `Uart` table take locks of their own).

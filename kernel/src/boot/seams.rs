@@ -892,6 +892,25 @@ pub(crate) fn install_ring3_seams() {
                 azos_fs::fat32_flush_done(ticket)
                     .map(|r| if r.is_ok() { 0 } else { azos_abi::error::Errno::EIO.to_syscall_ret() })
             }
+            fn sync_all(&self) -> azos_syscall::file_ops::SyncAllOut {
+                // The QEMU row `sh: power-off keeps a written file` must lose
+                // the file with both layers' sync gone (the power service's
+                // `Power::sync` and the orderly path both come here).
+                if canary!("power-off-sync-skip") {
+                    return azos_syscall::file_ops::SyncAllOut::default();
+                }
+                use azos_drv_sys::timebase::{now, TIMER_FREQ};
+                let deadline = now().saturating_add(
+                    azos_limits::POWER_OFF_STEP_TIMEOUT_MS as u64 * TIMER_FREQ / 1000);
+                // A look every millisecond while FAT32's `fs-wb` task flushes;
+                // the waiter sleeps, so the flusher gets the CPU.
+                let pause = || {
+                    let until = now().saturating_add((TIMER_FREQ / 1000).max(1)).min(deadline);
+                    azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+                };
+                let r = azos_fs::vfs_sync_all(&|| now() >= deadline, &pause);
+                azos_syscall::file_ops::SyncAllOut { volumes: r.volumes, failed: r.failed, timed_out: r.timed_out }
+            }
             fn statfs(&self, path: &[u8]) -> Result<azos_syscall::file_ops::StatFsOut, i64> {
                 let st = azos_fs::vfs_statfs(path).map_err(fs_errno)?;
                 Ok(azos_syscall::file_ops::StatFsOut {
@@ -926,6 +945,18 @@ pub(crate) fn install_ring3_seams() {
 
         static KERNEL_FILE_OPS: KernelFileOps = KernelFileOps;
         azos_syscall::file_ops::set_file_ops(&KERNEL_FILE_OPS);
+
+        // The orderly power-off's last steps (`handlers::orderly_storage_down`,
+        // after the filesystems and the boot disk): the devices the kernel
+        // holds. A USB disk first, the TPM last: nothing uses it after its
+        // Shutdown.
+        fn orderly_devices_down() {
+            #[cfg(feature = "usb-storage")]
+            crate::boot::usb::storage_shutdown();
+            #[cfg(feature = "tpm")]
+            crate::boot::tpm::shutdown();
+        }
+        azos_syscall::handlers::set_orderly_devices_hook(orderly_devices_down);
         #[cfg(feature = "lat-fat")]
         FD_TABLE_ADDR.store(&KERNEL_FD_TABLE as *const _ as usize,
             core::sync::atomic::Ordering::Relaxed);

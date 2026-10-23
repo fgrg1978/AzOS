@@ -20008,7 +20008,9 @@ PYEOF
     # line (`-icount shift=0,sleep=off` for a row whose verdict must not
     # depend on the host's load); rows that are about exclusive console input
     # forbid the recovery console's `robot> ` prompt, which only the kernel
-    # shell prints; `USH_DISK=lxabi` boots `build/disk-lxabi.img` /
+    # shell prints; `USH_IMG=<path>` boots that volume, kept after the row (a
+    # pristine copy when it does not exist yet), so a second row boots what
+    # the first left on it; `USH_DISK=lxabi` boots `build/disk-lxabi.img` /
     # `build/disk-aarch64-lxabi.img` (the shell volume plus the static Linux
     # binary `LXHELLO.ELF`) instead; the prompt row then waits past `SH_START_TIMEOUT_S` (10 s)
     # so a recovery console that should not start has had the time to. The QEMU stdin is a fifo held open on fd 8 (fd 9 is the
@@ -20083,8 +20085,8 @@ PYEOF
         local slug log fifo img kimg
         slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
         log="$CI_LOG_DIR/ush-${slug}.log"; fifo="$CI_LOG_DIR/ush-${slug}.fifo"
-        img="$CI_LOG_DIR/ush-${slug}.img"; kimg="$CI_LOG_DIR/ush-${slug}-kernel"
-        mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$fifo" "$img" "$kimg"
+        img="${USH_IMG:-$CI_LOG_DIR/ush-${slug}.img}"; kimg="$CI_LOG_DIR/ush-${slug}-kernel"
+        mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$fifo" "$kimg"; [ -n "${USH_IMG:-}" ] || rm -f "$img"
         local dsk="${USH_DISK:-sh}" vkbd=() vsock="$CI_LOG_DIR/ush-${slug}.mon"
         if [ -n "${USH_VKBD:-}" ]; then
             rm -f "$vsock"
@@ -20095,7 +20097,7 @@ PYEOF
             if [ ! -f "$AZOS_OUT/build/disk-$dsk.img.pristine" ]; then
                 rm -f $AZOS_OUT/build/disk-drvbase.img $AZOS_OUT/build/disk-sh.img "$AZOS_OUT/build/disk-$dsk.img"; make_disk "$AZOS_OUT/build/disk-$dsk.img"
             fi
-            cp "$AZOS_OUT/build/disk-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$KERNEL}" "$kimg"
+            [ -f "$img" ] || cp "$AZOS_OUT/build/disk-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$KERNEL}" "$kimg"
         elif [ "$isa" = x86 ]; then
             local xdef="${USH_X86_DEFCONFIG:-$CI_LOG_DIR/ush-x86-lxrt.defconfig}" xt xvol
             [ -n "${USH_X86_DEFCONFIG:-}" ] || { cat config/defconfigs/${GATE_DEFC_X86}.config; echo "CONFIG_LINUX_RUNTIME=y"; } >"$xdef"
@@ -20111,14 +20113,14 @@ PYEOF
             if [ ! -f "$AZOS_OUT/build/disk-$xvol.img.pristine" ]; then
                 rm -f "$AZOS_OUT/build/disk-$xvol.img"; make_disk "$AZOS_OUT/build/disk-$xvol.img"
             fi
-            cp "$AZOS_OUT/build/disk-$xvol.img.pristine" "$img"
+            [ -f "$img" ] || cp "$AZOS_OUT/build/disk-$xvol.img.pristine" "$img"
         else
             if [ -z "${USH_KERNEL:-}" ] && ! a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats) did not build"; return; fi
             if [ ! -f "$AZOS_OUT/build/disk-aarch64-$dsk.img.pristine" ]; then
                 rm -f $AZOS_OUT/build/disk-aarch64-drvbase.img $AZOS_OUT/build/disk-aarch64-sh.img "$AZOS_OUT/build/disk-aarch64-$dsk.img"
                 make_disk "$AZOS_OUT/build/disk-aarch64-$dsk.img"
             fi
-            cp "$AZOS_OUT/build/disk-aarch64-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$A64_IMG}" "$kimg"
+            [ -f "$img" ] || cp "$AZOS_OUT/build/disk-aarch64-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$A64_IMG}" "$kimg"
         fi
         if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; return; fi
         par_ready   # the wait below happens in the job, not in the gate
@@ -20181,7 +20183,7 @@ PYEOF
         kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
         exec 8>&-
-        rm -f "$fifo" "$img" "$kimg" "$kimg.features" "$vsock"
+        rm -f "$fifo" "$kimg" "$kimg.features" "$vsock"; [ -n "${USH_IMG:-}" ] || rm -f "$img"
         local missing="" m
         for m in "$@"; do grep -aqF -- "$m" "$log" || missing="$missing [$m]"; done
         local forbidden=""
@@ -20515,6 +20517,48 @@ echo after-reboot
 power suspend" 150 \
             "[AUTHORITY] sched_hz set REFUSED" "[AUTHORITY] pm suspend REFUSED" "(recorded)" \
             "power: sched_hz refused" "power: suspend refused"
+        # Owner decision 2026-10-23 (Q1): an orderly power-off or reboot makes
+        # what was written durable on both layers. POWER.ELF asks `Power::sync`
+        # first; the kernel's orderly path then syncs every volume again,
+        # flushes the boot disk and shuts down its controller and the
+        # kernel-held devices (`[ORDERLY]` lines, in that order). The boot is
+        # confirmed first (`Boot marked good`): an unconfirmed boot's OTA void
+        # syncs the volume by itself and would hide a missing sync. The file is
+        # written and the power-off typed at once (`!`: no wait for the
+        # prompt), inside FS_WRITEBACK_MAX_AGE_MS, so only a sync can have made
+        # it durable. Boot 2 (a second QEMU on the same volume) reads it back
+        # (`wc`: the counts are not in the typed line). Canary:
+        # `canary=power-off-sync-skip` (runtime, boot 1 only) skips the sync of
+        # both layers; the file is lost with the RAM, boot 2 does not find it.
+        # The reboot row is the same path through `Power::reboot` on one QEMU.
+        # QEMU's virtio-blk cannot tell the device half (its cache is the
+        # host's page cache, which a power-off keeps): `[ORDERLY] disk:` is
+        # asserted printed, not its effect.
+        ush_poweroff_row() { # ush_poweroff_row <label (isa)> <rv|arm> <features> <PASS|FAIL> <-append text>
+            local label="$1" isa="$2" feats="$3" expect="$4" app="$5"
+            local img="$CI_LOG_DIR/ush-poweroff-$isa-$expect.img"
+            mkdir -p "$CI_LOG_DIR"; rm -f "$img"
+            USH_IMG="$img" USH_QEMU_EXTRA="${app:+-append $app}" USH_FORBID='robot> |\[AUTHORITY\]' \
+                ushell_row "$label, boot 1" "$isa" "$feats" PASS \
+                "#wait \[OTA\] Boot marked good
+!echo durable-ok > /fat/DUR.TXT
+!power shutdown
+#wait \[POWER\] shutdown by" 240 \
+                "[POWER] sync by tid" "[ORDERLY] filesystems: " "[ORDERLY] disk: flush " "[POWER] shutdown by tid"
+            USH_IMG="$img" USH_FORBID='robot> ' ushell_row "$label" "$isa" "$feats" "$expect" \
+                "wc < /fat/DUR.TXT" 120 \
+                "1 1 11"
+            rm -f "$img"
+        }
+        par_row ush_poweroff_row "sh: power-off keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat" PASS ""
+        par_row ush_poweroff_row "sh: power-off keeps a written file canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL "canary=power-off-sync-skip"
+        USH_FORBID='robot> |\[AUTHORITY\]' par_row ushell_row "sh: reboot keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "#wait \[OTA\] Boot marked good
+!echo durable-ok > /fat/DUR.TXT
+power reboot
+wc < /fat/DUR.TXT" 240 \
+            "[POWER] sync by tid" "power: filesystems synced" "[ORDERLY] filesystems: " "[ORDERLY] disk: flush " \
+            "[POWER] reboot by tid" "1 1 11"
         # Wave 12: the other privileged families' tools (`FLIGHT.ELF`,
         # `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`), each through the
         # endpoint its row grants, running the console's

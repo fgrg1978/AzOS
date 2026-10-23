@@ -16,6 +16,7 @@ pub const CC_NV_DEFINE_SPACE: u32 = 0x0000_012A;
 pub const CC_NV_WRITE: u32 = 0x0000_0137;
 pub const CC_NV_WRITE_LOCK: u32 = 0x0000_0138;
 pub const CC_STARTUP: u32 = 0x0000_0144;
+pub const CC_SHUTDOWN: u32 = 0x0000_0145;
 pub const CC_NV_READ: u32 = 0x0000_014E;
 pub const CC_NV_READ_LOCK: u32 = 0x0000_014F;
 pub const CC_NV_READ_PUBLIC: u32 = 0x0000_0169;

@@ -175,6 +175,9 @@ mod crash_dump;
 mod subdirs;
 #[cfg(test)]
 mod envelope_delete;
+// Every mounted volume made durable (orderly power-off, `Power::sync`): `sync_all.rs`.
+#[cfg(test)]
+mod sync_all;
 
 #[cfg(test)]
 mod image {

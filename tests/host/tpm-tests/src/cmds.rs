@@ -27,6 +27,35 @@ fn startup_state_encodes_su_state() {
     }
 }
 
+/// The orderly power-off's last TPM command (owner decision 2026-10-23):
+/// `TPM2_Shutdown` (0x145) with `TPM_SU_STATE`, so the next boot's Startup
+/// does not count an unorderly shutdown. A failure code reaches the caller
+/// (the kernel says it and powers off anyway).
+///
+/// **Canary.** `CC_SHUTDOWN` as 0x144 (Startup), or `shutdown` sending
+/// `TPM_SU_CLEAR`: the expected bytes differ and this row goes red.
+#[test]
+fn shutdown_state_encodes_su_state() {
+    for k in ALL {
+        let (mut t, r) = rig(k, 0);
+        r.dev.borrow_mut().expect(
+            "80 01 00 00 00 0C 00 00 01 45 00 01",
+            "80 01 00 00 00 0A 00 00 00 00",
+        );
+        t.shutdown(StartupType::State).unwrap();
+        r.assert_clean();
+
+        // TPM_RC_FAILURE (0x101): reported, not swallowed.
+        let (mut t, r) = rig(k, 0);
+        r.dev.borrow_mut().expect(
+            "80 01 00 00 00 0C 00 00 01 45 00 01",
+            "80 01 00 00 00 0A 00 00 01 01",
+        );
+        assert_eq!(t.shutdown(StartupType::State), Err(Error::Tpm(0x101)));
+        r.assert_clean();
+    }
+}
+
 #[test]
 fn get_random_small_and_chunked() {
     for k in ALL {

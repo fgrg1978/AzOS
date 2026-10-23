@@ -842,6 +842,12 @@ pub mod shim_fwd {
         })
     }
 
+    /// A test's own stand-in (a `FileOps`, a hook) recording into the same
+    /// ordered log, when armed: what an ordering test compares against.
+    pub fn note(what: &str) {
+        let _ = try_hit(what.into(), |_| ());
+    }
+
     pub(crate) fn hit<R>(what: String, f: impl FnOnce(&Fwd) -> R) -> R {
         let mut g = ARMED.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_mut() {
@@ -869,6 +875,10 @@ pub mod write_observer;
 pub mod blkdev {
     /// The real one runs the kernel's RT_BLOCK_IO_CHECK; the host has no RT task.
     pub fn rt_io_check() {}
+    /// `blkdev::shutdown` (the orderly power-off's disk step): recorded.
+    pub fn shutdown() {
+        crate::shim_fwd::hit("blkdev_shutdown".into(), |_| ())
+    }
     pub fn note_external_write(sector: u64, count: u32) {
         crate::write_observer::notify(sector, count);
     }

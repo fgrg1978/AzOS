@@ -24,8 +24,8 @@
 //! (`#[on_failure]`) and how long it may take (`#[deadline_ns]`,
 //! `#[budget_us]`). A failed power-off or reboot escalates to the safety path;
 //! policy changes and reads degrade (the previous policy stays in force).
-//! `shutdown`, `reboot`, `suspend` and `cpu_online` declare no deadline: the call does not
-//! return, or returns after the resume, so only the CPU budget of the request
+//! `shutdown`, `reboot`, `suspend`, `cpu_online` and `sync` declare no deadline: the call does
+//! not return, or returns after the resume or the disks, so only the CPU budget of the request
 //! is bounded.
 //!
 //! `shutdown` and `reboot` are `#[once_only]`: irreversible, sent once and
@@ -148,6 +148,19 @@ pub trait Power {
     #[on_failure(degrade)]
     #[budget_us = 1_000]
     fn cpu_online(&mut self, cpu: u32, on: u32) -> Out<u32>;
+    /// Make every mounted filesystem durable: the page cache, the block cache
+    /// and the journal written back, then each volume's disk flushed. What the
+    /// power service asks before `shutdown` and `reboot` (owner decision
+    /// 2026-10-23); the kernel's orderly path syncs again after it, for the
+    /// callers that have no service. `OK` with the number of volumes synced;
+    /// `FAULT` with the number that failed, or whose flush had not finished
+    /// in Kconfig `POWER_OFF_STEP_TIMEOUT_MS`. Needs `WRITE`. Waits for the
+    /// disks: no deadline, only the request's CPU budget is bounded, as
+    /// `suspend`.
+    #[idempotent]
+    #[on_failure(degrade)]
+    #[budget_us = 1_000]
+    fn sync(&mut self) -> Out<u32>;
 }
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,42 @@ pub const CC_EN: u32 = 1 << 0;
 pub const CSTS_RDY: u32 = 1 << 0;
 pub const CSTS_CFS: u32 = 1 << 1;
 
+/// `CC.SHN`, shutdown notification (bits 15:14, section 3.1.5).
+pub const CC_SHN_MASK: u32 = 0b11 << 14;
+/// `CC.SHN` = 01b: normal shutdown.
+pub const CC_SHN_NORMAL: u32 = 0b01 << 14;
+/// `CSTS.SHST`, shutdown status (bits 3:2, section 3.1.6).
+pub const CSTS_SHST_MASK: u32 = 0b11 << 2;
+/// `CSTS.SHST` = 10b: shutdown processing complete.
+pub const CSTS_SHST_COMPLETE: u32 = 0b10 << 2;
+
+/// `CC` asking a running controller for a normal shutdown (section 7.6.2):
+/// `cc` with `SHN` = 01b, every other field (`EN` included) as it was.
+pub const fn cc_shutdown(cc: u32) -> u32 {
+    cc & !CC_SHN_MASK | CC_SHN_NORMAL
+}
+
+/// Does `csts` say the shutdown completed (`SHST` = 10b)?
+pub const fn shutdown_complete(csts: u32) -> bool {
+    csts & CSTS_SHST_MASK == CSTS_SHST_COMPLETE
+}
+
+/// Longest shutdown wait a controller's RTD3E can ask for, milliseconds:
+/// Linux's ceiling (`nvme_init_ctrl_finish`), so a nonsense RTD3E (it is 32
+/// bits of microseconds) cannot hold a power-off for an hour.
+pub const RTD3E_CAP_MS: u64 = 60_000;
+
+/// How long to wait for `CSTS.SHST` after `CC.SHN`: the controller's RTD3E
+/// (`rtd3e_us`, microseconds, 0 = not reported) rounded up to milliseconds,
+/// at least `floor_ms`, at most [`RTD3E_CAP_MS`] (or `floor_ms` when that is
+/// longer), as Linux clamps it.
+pub const fn shutdown_timeout_ms(rtd3e_us: u32, floor_ms: u64) -> u64 {
+    let rtd3e_ms = (rtd3e_us as u64).div_ceil(1000);
+    let cap = if floor_ms > RTD3E_CAP_MS { floor_ms } else { RTD3E_CAP_MS };
+    let t = if rtd3e_ms > floor_ms { rtd3e_ms } else { floor_ms };
+    if t > cap { cap } else { t }
+}
+
 /// Size of a submission queue entry (`CC.IOSQES` = 6) and of a completion
 /// queue entry (`CC.IOCQES` = 4), as powers of two.
 pub const SQE_BYTES: usize = 64;
@@ -461,6 +497,9 @@ pub struct Controller {
     /// The controller implements Dataset Management (`ONCS` bit 2), so a
     /// deallocate (TRIM) can be sent.
     pub dataset_management: bool,
+    /// RTD3 Entry Latency (`RTD3E`, bytes 91:88): how long the controller
+    /// expects a shutdown to take, microseconds; 0 = not reported.
+    pub rtd3e_us: u32,
 }
 
 /// Decode a 4096-byte Identify Controller structure.
@@ -470,6 +509,7 @@ pub fn decode_controller(id: &[u8; 4096]) -> Controller {
         mdts: id[77],
         volatile_write_cache: id[525] & 1 != 0,
         dataset_management: id[520] & (1 << 2) != 0,
+        rtd3e_us: u32::from_le_bytes([id[88], id[89], id[90], id[91]]),
     }
 }
 
