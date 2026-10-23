@@ -10733,8 +10733,8 @@ else
     # ever said ok.
     user_stack_images() { # user_stack_images <rv|arm>: the images, built; prints their paths
         local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t="" tb
-        if [ "$1" = rv ]; then dir="$AZOS_OUT/build"; tb="riscv64imac-unknown-none-elf"
-        else dir="$AZOS_OUT/build/aarch64"; tb="aarch64-unknown-none"; fi
+        if [ "$1" = rv ]; then dir="$AZOS_OUT/build"; tb="riscv64imac-unknown-azos"
+        else dir="$AZOS_OUT/build/aarch64"; tb="aarch64-unknown-azos"; fi
         for n in $names; do t="$t $dir/$n.elf"; done
         make -s $t >/dev/null 2>&1 || return 1
         printf '%s\n' $t | sed "s|^$dir/toolbox\.elf\$|$AZOS_OUT/tgt/userspace/services/toolbox/$tb/release/toolbox|"
