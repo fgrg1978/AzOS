@@ -107,7 +107,7 @@ Modules are compiled with `-mcmodel=medany -mno-relax` (riscv64) or the small co
 
 The kernel decides whether bytes may run at all, because this tree's rules forbid the obvious loader: `mmap` refuses `PROT_EXEC`, there is no `mprotect` that adds execute, and every executable is bound to a SHA-256 the build computed.
 
-1. The server reads the module file and hands the file bytes to `DOMAIN_MODULE_VERIFY`. The kernel hashes them and looks the module name up in `MODULE_SHA256`, a table `tools/module_hashes.py` generates into the kernel image (the signed artefact). On a match it grants a one-shot token bound to the caller's thread id and the module's length; otherwise the refusal is recorded (`module_refusals`, a console line).
+1. The server reads the module file and hands the file bytes to `DOMAIN_MODULE_VERIFY`. The kernel hashes them and looks the module name up in `MODULE_SHA256`, a table `tools/module_hashes.py` generates into the kernel image (the signed artefact). On a match it grants a one-shot token bound to the caller's thread id and the module's length; otherwise the refusal is recorded (a count, `REFUSALS` in `module_ops.rs`, and a console line).
 2. The server lays the module out in two anonymous regions (text, data), resolves its imports (the host ABI first, then the exports, `__ksymtab`, of modules loaded earlier) and relocates it.
 3. The server calls `DOMAIN_MODULE_MAP_X` with the token and the text range. The kernel consumes the token, checks the range (at most the verified length rounded up to a page, every page the caller's own private read-write page), and flips it read-write to read-execute one PTE update per page (`vmm::set_user_range_exec`). Data stays read-write and never executable; text is never writable and executable at once.
 4. The server calls the module's init function.
@@ -136,7 +136,7 @@ The Kconfig menu "Linux compatibility" (`config/axes/Kconfig.personality`) defin
 
 `lx/DEVICE_SOURCES` lists the Linux leaf drivers whose ids the hardware bus matches, one `<lxsrv class> <path under third_party/linux>` line each. `tools/lx_device_table.py` reads each file's `MODULE_DEVICE_TABLE`, and `crates/drivers/hwbus/build.rs` turns the ids into the `LINUX` match table (see [drivers.md](drivers.md#match-tables)). The build refuses an id that is also in a native `hwbus.ids`. At bind time the native table is consulted first. A class server (`lxsrv-<class>`) is launched only when one of its ids matched a device the bus admitted (`Bus::linux_class_wanted`; the topology row marks the task as the server of a class).
 
-A leaf-driver server drives devices only through ring-3 capabilities: a mapped register window (`DOMAIN_MMIO_MAP`), interrupt binding with `DEVICE_IRQ_BIND`, and the DMA and IOMMU services described in [drivers.md](drivers.md#dma). Because a bus master can write any physical address on a machine with no IOMMU, a DMA class there is meant to build only with `LX_ACCEPT_UNCONFINED_DMA` set, so the acceptance is a recorded build-time act.
+A leaf-driver server drives devices only through ring-3 capabilities: a mapped register window (`DOMAIN_MMIO_MAP`), interrupt binding with `DEVICE_IRQ_BIND`, and the DMA and IOMMU services described in [drivers.md](drivers.md#dma). Because a bus master can write any physical address on a machine with no IOMMU, `LX_ACCEPT_UNCONFINED_DMA` (which depends on a DMA-capable class option) is the build-time acceptance of that; like the class options, the configuration validator refuses it.
 
 ### Licence boundary
 
@@ -160,7 +160,7 @@ An image that contains a Linux module is distributed as GPL-2.0-only as a whole;
 
 A guest kernel is not a separate component. It is a virtual machine the signed topology declares, hosted by the same hypervisor core as any other guest. Nothing in `crates/core/hv` or `userspace/services/vmmd` is specific to Linux; this section describes the path any unmodified guest kernel takes, and the boundary around it.
 
-Source: `crates/core/hv`, `crates/core/arch-api/src/lib.rs` (the `Hypervisor` trait), `userspace/services/vmmd`, `crates/core/devif/src/vm.rs`, `config/axes/Kconfig.virt`, `config/axes/Kconfig.preset`.
+Source: `crates/core/hv`, `crates/core/arch-api/src/lib.rs` (the `Hypervisor` trait), `userspace/services/vmmd`, `crates/core/devif/src/vm.rs`, `crates/core/devif/src/vmctl.rs`, `config/Kconfig.hv`, `config/Kconfig.preset`.
 
 ### Roles and hardware
 
@@ -181,8 +181,11 @@ The ISA seam is the `Hypervisor` trait (`HvImpl` in each ISA crate's `ext/hv`):
 |---|---|
 | `kind`, `status` | Which extension (`HvKind`: `RiscvH`, `ArmEl2`, `X86Svm`, `X86Vmx`) and whether this boot can host a guest (`HvStatus::Usable` or `Absent(reason)`). |
 | `stage2_create`, `stage2_map`, `stage2_unmap`, `stage2_translate`, `stage2_flush`, `stage2_destroy` | Guest-physical tables, over a `StageTableMem` the kernel supplies. |
+| `gpa_bits` | The width of a guest-physical address. |
 | `decode_exit` | Raw exit state (`RawExit`) to `Exit`. |
 | `can_enter`, `enter` | Whether the ISA's entry primitive runs a guest. A vCPU is refused rather than started where `can_enter` is false. |
+| `hypercall`, `remote_fence` | Serve a guest's call to its firmware interface over a `HypercallHost` (riscv64: SBI; aarch64: PSCI and SMCCC; x86_64 serves none), and carry out a fence another vCPU asked for before this one enters. |
+| `guest_holder_key`, `guest_msi_ids`, `guest_msi_line` | The guest interrupt files of an ISA whose guests have them (riscv64 AIA): who holds a hart's file, and the message-signalled identities it implements. |
 
 ### The hypervisor core
 
@@ -198,6 +201,7 @@ The ISA seam is the `Hypervisor` trait (`HvImpl` in each ISA crate's `ext/hv`):
 | `ring`, `trapwire` | The monitor's end of the trap and completion rings, and their wire form, shared with `VMMD.ELF`. |
 | `stage2` | Guest-physical mapping over the frames of a memory object. |
 | `vlapic`, `vioapic` | The virtual local APIC and IOAPIC of an x86 guest, as pure models. |
+| `vplic` | The virtual PLIC of a riscv64 guest, as a pure model. |
 
 A guest is a `[guest.NAME]` row of the signed topology. It lists its backends in `devices = [...]` (the position is the device index every interface uses), its CPUs, memory, and an `envelope`. Guest RAM is memory-object frames that `VMMD.ELF` creates and charges to its own domain; the kernel pins them and holds a reference until `destroy`. The `mem_pages` of the `VMMD.ELF` row must budget its own frames plus the guests' RAM, and the boot refuses the guests when the row is short. Guests are controlled through the kernel-hosted `vm.<n>` and `vcpu.<n>.<k>` interfaces (`azos_devif::vm`).
 
@@ -207,26 +211,27 @@ A guest is a `[guest.NAME]` row of the signed topology. It lists its backends in
 
 | Exit | Served as |
 |---|---|
+| Decoded MMIO load or store in the VM's interrupt-controller window | Answered in the kernel by the controller's model (`RunHost::intc_mmio`); the vCPUs whose line went up are kicked. |
 | Decoded MMIO load or store in a registered window | A `Trap` posted on the ring; the vCPU waits for its `Completion`. |
 | Decoded MMIO anywhere else | A bus that answers 0 and drops stores. |
 | A store to a window of a backend the envelope forbids | Refused: dropped and recorded as `Rule::GuestEgress`. |
 | `Wait` (`wfi`, `hlt`) | The thread sleeps until a virtual interrupt is raised or a stop is asked. |
 | `HostInterrupt` | The thread gives up the hart and enters again. |
-| Anything else (hypercalls, CPUID, trapped system registers, port I/O, undecoded stage-2 faults) | The vCPU faults: the thread ends and `fault_code` says why. |
+| `Hypercall` | Served by the ISA's `hypercall`: the answer goes back in the guest's registers, a vCPU start or stop is carried out, and a system off or reset ends the guest. An ISA that serves none faults the vCPU. |
+| Anything else (CPUID, trapped system registers, port I/O, undecoded stage-2 faults) | The vCPU faults: the thread ends and `fault_code` says why. |
 
 ### The monitor and its warrants
 
 The kernel owns what only it can: the stage-2 tables and the vCPU threads. Everything a guest does with a device is served by `VMMD.ELF`, a ring-3 program whose topology row is its whole authority. The guest holds no capability; the monitor's backends do. The disk is a file opened through the `Cap<Dir>` of the row, the console is the console the task writes, the NIC is a ring pair. What a guest can cause is what those handles can cause, through the same gate and record as any native task.
 
-`vmmd` runs the device models, which are pure and host-tested (`tests/host/vmmd-tests`): `mmio` (the virtio-mmio transport), `virtq` (the split queue, which trusts nothing the guest wrote), `blk`, `net`, `console`, the trap protocol (`trap`) and the per-VM step (`model`). Its loop:
+`vmmd` runs the device models, which are pure and host-tested (`tests/host/vmmd-tests`): `mmio` (the virtio-mmio transport), `virtq` (the split queue, which trusts nothing the guest wrote), `blk`, `net`, `console`, the trap protocol (`trap`), the per-VM step (`model`), the description of the machine a guest boots into (`dtb`, `pvh`, `loader`, `life`) and the control plane (`ctl`). Its loop:
 
-1. Find `vm.0` and its vCPU endpoints, read `Vm::config` (CPUs, RAM, which backend sits at which device index) and `create` the VM.
-2. Make the guest's RAM, one memory object at a time, map each into the monitor and attach it with `Vm::ram`.
-3. Make the trap page and an event port and attach them with `Vm::traps`.
-4. Register one MMIO window per backend it has a model for (`Vm::window`), and attach the NIC's ring region (`Vm::net`, which the VM's envelope may refuse).
-5. If the volume has a guest image (`/fat/VM/GUEST.BIN`, a flat binary), copy it to the start of RAM and start every vCPU there, vCPU `k` with `k` in its first argument register.
-6. Serve: sleep on the event port, answer each trap on the completion ring, kick the vCPUs answered, and raise the interrupt lines the answers raised (`Vcpu::inject`).
-7. Watch the vCPUs; one that left ends the guest, the others are stopped, the VM is given back and the monitor exits.
+1. Find `vm.0` and its vCPU endpoints and read `Vm::config` (CPUs, RAM, which backend sits at which device index, where RAM starts). A VM left created by a monitor that ended is stopped and given back first.
+2. Serve the `VmCtl` interface (`azos_devif::vmctl`) on `endpoint.vmctl`: a service thread accepts each call and hands it to the loop, which runs it between two passes.
+3. On a `create`: make the VM, its RAM one memory object at a time (each mapped into the monitor and attached with `Vm::ram`), the trap page and an event port (`Vm::traps`), one MMIO window per backend it has a model for (`Vm::window`), and the NIC's ring region (`Vm::net`, which the VM's envelope may refuse).
+4. Load the guest kernel, an ELF64 executable of the host's ISA read beneath `/fat/VM`, and put the description of the machine next to it: a device tree on riscv64 and aarch64 (`dtb`), a PVH start_info on x86_64 (`pvh`), with the command line from `/fat/VM/CMDLINE`. When asked, start vCPU 0 at the kernel's entry with that description's address in the boot register; the other vCPUs wait for the guest to ask for them. At start-up the monitor does the same for `/fat/VM/KERNEL.ELF` if the volume has one. The disk backend is `/fat/VM/DISK.IMG`.
+5. Serve: sleep on the event port, answer each trap on the completion ring, kick the vCPUs answered, and raise the interrupt lines the answers raised (`Vcpu::inject`).
+6. Watch the started vCPUs; one that left ends the guest, the others are stopped and the VM is given back with everything the monitor made for it, so the row is free for the next `create`.
 
 **The trap ring.** A guest access to a registered window is one record on the trap ring, and the vCPU waits for its completion on the completion ring. Both rings are one 4096-byte shared page (`azos_hv::trapwire`, included by both sides so the layout has one source): `vmmd` owns the consuming end of the trap ring and the producing end of the completion ring; the monitor owns the other two. Data moves through the rings; the only call is the sleep on the event port. The page is the other side's to write, so the consumer treats every index and record as untrusted, and a completion for a vCPU that waits for nothing is dropped.
 
