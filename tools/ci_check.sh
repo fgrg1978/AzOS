@@ -10991,7 +10991,7 @@ else
     # kernel reads its own list back as ring 3 would), every view region the
     # embedded topology declares published, and no other `[INSPECT]` line (a
     # region or a view that did not fit its pages, or found no slot in the
-    # MemObj table: MAX_MEMOBJS is 8 on PROFILE_EMBEDDED).
+    # MemObj table: MAX_MEMOBJS is 8 on HWCLASS_EMBEDDED).
     embedded_census_row() { # <label> <log of the 64 MiB boot>
         local label="$1" log="$2"
         printf "  %-26s" "${label}..."

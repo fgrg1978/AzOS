@@ -250,7 +250,7 @@ config TOPOLOGY_FLOOR_SECTOR
 config BOOT_INI_MAX_KB
     int "Largest CONFIG.INI the boot reads (KiB)"
     range 1 64
-    default 2 if PROFILE_EMBEDDED
+    default 2 if HWCLASS_EMBEDDED
     default 4
     help
       The buffer /fat/CONFIG.INI is read into before its CONFIG.SIG is

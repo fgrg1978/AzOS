@@ -34,7 +34,7 @@ BOARD_DEFAULT = {
 }
 # On every preset but MCU and certifiable: the component manager supervises
 # every ring-3 row, and SSHD is on (public keys only) except on the embedded
-# profile (Kconfig SSHD: default n if PROFILE_EMBEDDED, so its image is off too).
+# profile (Kconfig SSHD: default n if HWCLASS_EMBEDDED, so its image is off too).
 ALWAYS = {"COMPMGR", "SSHD"}
 ALWAYS_EMBEDDED = ALWAYS - {"SSHD"}
 FAILS = []
