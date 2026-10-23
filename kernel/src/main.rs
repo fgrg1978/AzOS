@@ -2101,7 +2101,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     boot::klog_region::install();
     // The terminal server's regions: the input event ring (before any input
     // line is enabled) and the console screen (the grid is up now).
-    #[cfg(any(feature = "virtio-input", feature = "ps2", feature = "fb-console"))]
+    #[cfg(any(feature = "virtio-input", feature = "ps2", feature = "usb-hid", feature = "fb-console"))]
     boot::term_regions::install();
     // The energy model, from the topology just installed, else
     // the DTB, else none.

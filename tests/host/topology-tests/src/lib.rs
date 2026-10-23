@@ -4409,6 +4409,20 @@ mod launch_cap_tests {
         );
     }
 
+    /// Every driver that publishes into the input event ring makes the kernel
+    /// build it and the terminal server hold it: the USB HID class driver as
+    /// much as virtio-input and PS/2 (`kernel/src/boot/usb_hid.rs` publishes
+    /// there). **Canary.** Drop `usb_hid` from `term_input_ring`: red on the
+    /// USB-only line.
+    #[test]
+    fn every_input_driver_that_publishes_events_has_the_ring() {
+        use azos_topology::builder::{term_input_ring, TERM_INPUT_RING};
+        assert!(term_input_ring(false, false, true), "a USB keyboard alone");
+        assert!(term_input_ring(true, false, false) && term_input_ring(false, true, false));
+        assert!(!term_input_ring(false, false, false), "no driver, no ring");
+        assert_eq!(TERM_INPUT_RING, term_input_ring(azos_limits::DRV_VIRTIO_INPUT, azos_limits::DRV_PS2, azos_limits::USB_HID));
+    }
+
     /// The monitor's control endpoint (`VmCtl`) has exactly one server and one
     /// holder of the call right, and the tool image reaches it only through the
     /// name server: `VMMD.ELF` holds `READ` on `endpoint.vmctl`, `NAMESD.ELF`

@@ -2855,9 +2855,16 @@ pub const TASK_TERMD_IMAGE: &[u8] = b"TERMD.ELF";
 /// discipline (line, history, type-ahead); it has no heap.
 const TERMD_MEM_PAGES: u32 = 48;
 /// Does the kernel have an input event ring for the terminal server to drain?
-/// It does when a keyboard/mouse driver is configured (`kernel/src/boot/
-/// term_regions.rs` makes the ring then, and only then).
-pub const TERM_INPUT_RING: bool = azos_limits::DRV_VIRTIO_INPUT || azos_limits::DRV_PS2;
+/// It does when a keyboard/mouse driver is configured: virtio-input, PS/2 or
+/// the USB HID class driver, the three that publish into it
+/// (`kernel/src/boot/term_regions.rs` makes the ring on this constant).
+pub const TERM_INPUT_RING: bool = term_input_ring(azos_limits::DRV_VIRTIO_INPUT, azos_limits::DRV_PS2, azos_limits::USB_HID);
+
+/// [`TERM_INPUT_RING`] for a driver set: any driver that publishes events
+/// needs the ring.
+pub const fn term_input_ring(virtio_input: bool, ps2: bool, usb_hid: bool) -> bool {
+    virtio_input || ps2 || usb_hid
+}
 /// Does the kernel have a console screen region (the framebuffer console's
 /// text, scrollback and overlay) for the terminal server to map?
 pub const TERM_SCREEN_REGION: bool = azos_limits::FB_CONSOLE;

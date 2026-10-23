@@ -33,8 +33,8 @@ pub(crate) mod thermal;
 pub(crate) use energy::*;
 // Kconfig INSPECT: the introspection tree (kernel state as read-only MemObjs).
 // The terminal server's two kernel-owned regions: the input event ring and
-// the console screen (Kconfig DRV_VIRTIO_INPUT / DRV_PS2 / FB_CONSOLE).
-#[cfg(any(feature = "virtio-input", feature = "ps2", feature = "fb-console"))]
+// the console screen (Kconfig DRV_VIRTIO_INPUT / DRV_PS2 / USB_HID / FB_CONSOLE).
+#[cfg(any(feature = "virtio-input", feature = "ps2", feature = "usb-hid", feature = "fb-console"))]
 pub(crate) mod term_regions;
 // Kconfig KLOG: the structured kernel log's ring, as a kernel-owned region.
 pub(crate) mod klog_region;

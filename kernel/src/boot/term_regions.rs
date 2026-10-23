@@ -4,7 +4,7 @@
 //! turns into keys and a mouse, as gpm does on a Linux console:
 //!
 //! * **`input.events`** (a keyboard or mouse driver configured: Kconfig
-//!   `DRV_VIRTIO_INPUT`, `DRV_PS2`): the ring of events no driver turned into
+//!   `DRV_VIRTIO_INPUT`, `DRV_PS2`, `USB_HID`): the ring of events no driver turned into
 //!   a console byte (`azos_drv_input::events`). The drivers write it through
 //!   the direct map, the server maps it and moves the tail. With Kconfig
 //!   `INPUTD` it also holds the input server's stream, and the input server's
@@ -43,13 +43,15 @@ pub(crate) fn install() {
     // The one minter of every kernel-owned region (also the introspection
     // ones): installed here and by `install_inspect`, the same function.
     azos_ipc::cap_seed::set_shm_inspect_minter(azos_ipc::kregion::seed_mint_any);
-    #[cfg(any(feature = "virtio-input", feature = "ps2"))]
-    install_input_ring();
+    // On the constant the built-in topology grants the ring on, so a driver
+    // that publishes events never finds no ring while the server holds a grant.
+    if azos_topology::builder::TERM_INPUT_RING {
+        install_input_ring();
+    }
     #[cfg(feature = "fb-console")]
     install_screen();
 }
 
-#[cfg(any(feature = "virtio-input", feature = "ps2"))]
 fn install_input_ring() {
     let Some((obj, base, _)) = region(azos_drv_input::events::RING_BYTES) else {
         azos_drv_sys::kwarn!("[INPUT] no memory for the event ring: keys with no byte and the mouse are not delivered");
