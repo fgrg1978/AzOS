@@ -15102,8 +15102,11 @@ PY
         par_ready
         local poke=""
         if [ "$expect" = PASS ]; then
-            # Once net-poll runs, three datagrams to the guest's port 7777.
-            ( i=0; while [ "$i" -lt 120 ]; do
+            # Once net-poll runs, three datagrams to the guest's port 7777. A log
+            # kept by a failed run would say so at once: it goes first. The sender
+            # waits up to 120 s, x86_qemu's 90 s plus a wait for a QEMU slot.
+            rm -f "$log"
+            ( i=0; while [ "$i" -lt 240 ]; do
                   grep -aqF 'NET-POLL] Phase U1' "$log" 2>/dev/null && break
                   i=$((i + 1)); sleep 0.5
               done
