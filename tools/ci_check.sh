@@ -15066,20 +15066,31 @@ PY
     par "x86_64: TSC watchdog demotes a skewed TSC (q35)" x86_tsc_watchdog_row "x86_64: TSC watchdog demotes a skewed TSC (q35)" FAIL
     # The Intel I225/I226 driver (Kconfig DRV_IGC, crates/drivers/net/src/igc.rs, built
     # into qemu-x86_64-pci.config) on QEMU's `-device igb`: an 82576, the same advanced
-    # descriptors, bound to the same driver by its id (hwbus.ids). The controller is reset,
-    # reads its station address, starts both rings and reports the link; the log names the
-    # model it took and whether the MSI was routed (`mode=irq` or `mode=poll`: both pass,
-    # the line is printed for the reader). Canary: the same kernel with QEMU's `-device
-    # e1000e` (an 82574L, the e1000e driver's id): igc must not bind it, and the e1000e
-    # driver must (so the NIC was present and the PCI stage ran). Not run before the
-    # testing week: the model's register behaviour is from the igb/igc register
-    # documentation, not from a previous run.
+    # descriptors, bound to the same driver by its id (hwbus.ids) but with the 82576's
+    # interrupt registers (0xc0, not the I225's 0x1500) and PHY address (igc.rs `family`).
+    # The controller is reset, its PHY's auto-negotiation restarted, it reads its station
+    # address, starts both rings and reports the link up; microvm routes the MSI
+    # (`mode=irq`), and a host datagram through a UDP hostfwd must then reach the ring and
+    # raise an RX MSI whose cause the driver reads (net-poll's `RX MSI woke this task` or
+    # `RX MSI taken but no ISR wake dispatched`: whether the wake found net-poll asleep is
+    # the scheduler's business, not the NIC's). Interrupt registers at the wrong offsets
+    # leave the mask clear and the cause unread, and neither line comes. Canary: the same
+    # kernel with QEMU's
+    # `-device e1000e` (an 82574L, the e1000e driver's id): igc must not bind it, and the
+    # e1000e driver must (so the NIC was present and the PCI stage ran).
     x86_igc_row() { # x86_igc_row <label> <QEMU NIC device> <PASS|FAIL>
-        local label="$1" nic="$2" expect="$3" why="" w
+        local label="$1" nic="$2" expect="$3" why="" w port=47125 stop='\[NET\] (igc|e1000e): MAC|KERNEL PANIC' fwd=""
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
+        if [ "$expect" = PASS ]; then
+            if lsof -iUDP:"$port" >/dev/null 2>&1; then
+                bad; echo "      host UDP port $port is in use; row not run"; return
+            fi
+            stop='NET-POLL\] RX MSI (woke|taken)|KERNEL PANIC|\[X86-TRAP\]'
+            fwd=",hostfwd=udp:127.0.0.1:${port}-:7777"
+        fi
         rm -f "$kimg" "$kimg.features"
         make x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config \
             X86_64_KCONFIG="$AZOS_OUT/build/x86_64-igc-${tag}.config" \
@@ -15089,10 +15100,22 @@ PY
         fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
             || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; return; }
         par_ready
-        X86_MACHINE=microvm,pcie=on x86_qemu "$kimg" "$log" 60 '\[NET\] (igc|e1000e): MAC|KERNEL PANIC' -smp 1 \
+        local poke=""
+        if [ "$expect" = PASS ]; then
+            # Once net-poll runs, three datagrams to the guest's port 7777.
+            ( i=0; while [ "$i" -lt 120 ]; do
+                  grep -aqF 'NET-POLL] Phase U1' "$log" 2>/dev/null && break
+                  i=$((i + 1)); sleep 0.5
+              done
+              sleep 3
+              for n in 1 2 3; do printf 'igc-%s' "$n" | nc -u -w1 127.0.0.1 "$port" 2>/dev/null; done ) &
+            poke=$!
+        fi
+        X86_MACHINE=microvm,pcie=on x86_qemu "$kimg" "$log" 90 "$stop" -smp 1 \
             -drive "file=$dimg,if=none,format=raw,id=pcinvme0" -device nvme,serial=deadbeef,drive=pcinvme0 \
-            -netdev user,id=igcn0 -device "$nic,netdev=igcn0" \
-            || { rm -f "$kimg" "$kimg.features" "$dimg"; return; }
+            -netdev "user,id=igcn0$fwd" -device "$nic,netdev=igcn0" \
+            || { [ -n "$poke" ] && { kill "$poke" 2>/dev/null; wait "$poke" 2>/dev/null; }; rm -f "$kimg" "$kimg.features" "$dimg"; return; }
+        [ -n "$poke" ] && { kill "$poke" 2>/dev/null; wait "$poke" 2>/dev/null; }
         rm -f "$kimg" "$kimg.features" "$dimg"
         grep -aqF '[PCI] host bridge: ECAM' "$log" || why="no PCI host bridge line: the PCI code did not run"
         if [ "$expect" = FAIL ]; then
@@ -15108,14 +15131,17 @@ PY
             return
         fi
         if [ -z "$why" ]; then
-            for w in ' 8086:10c9 ' '[NET] igc ' ' model=Igb ' '[NET] igc link up ' '[NET] igc: MAC 52:54:00:12:34:56'; do
+            for w in ' 8086:10c9 ' '[NET] igc ' ' mode=irq ' ' model=Igb ' '[NET] igc link up ' '[NET] igc: MAC 52:54:00:12:34:56'; do
                 grep -aqF -- "$w" "$log" || { why="missing: $w"; break; }
             done
         fi
+        [ -z "$why" ] && ! grep -aqE '\[NET-POLL\] RX MSI (woke this task|taken but no ISR wake dispatched): rx [0-9]+ -> [0-9]+' "$log" \
+            && why="no RX MSI from the datagrams: the receive cause was not read"
         [ -z "$why" ] && grep -aqE '\[NET\] igc .* not used' "$log" && why="$(grep -aE '\[NET\] igc .* not used' "$log" | sed -n 1p)"
         grep -aqE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log" | sed -n 1p)"
         if [ -z "$why" ]; then
-            ok; echo "      $(grep -aE '\[NET\] igc .*mode=' "$log" | sed -n 1p)"; rm -f "$log"; return
+            ok; echo "      $(grep -aE '\[NET\] igc .*mode=' "$log" | sed -n 1p)"
+            echo "      $(grep -aE '\[NET-POLL\] RX MSI' "$log" | sed -n 1p)"; rm -f "$log"; return
         fi
         bad; echo "      $why"; echo "      log kept: $log"
     }
