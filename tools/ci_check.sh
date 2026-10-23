@@ -22247,15 +22247,31 @@ tracectl start sched
         # child may create). Skipped, and said so, when the toolchain (zig) or the
         # BusyBox tree (tools/third_party_fetch.sh busybox) is not on this host.
         if lx_busybox_ready && { [ "$ush_isa" != x86 ] || [ "${LX_BUSYBOX_X86:-}" = yes ]; }; then
-            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
-                "busybox sh -c 'echo bb-sh-ok; ls /fat'
+            # x86_64's ring-3 runtime answers no `execve` (59): the applets
+            # standalone `sh` runs by exec of /proc/self/exe (`wc`, `cat`) do
+            # not start there, so its twin pipes and counts with builtins, and
+            # its denied create is not the in-kernel table's recorded line.
+            if [ "$ush_isa" = x86 ]; then
+                bb_sh_script="busybox sh -c 'echo bb-sh-ok; ls /fat'
+busybox sh -c 'x=\$(echo pipe-in); echo pipe-\$x'
+busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
+busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=0; while read l; do n=\$((n+1)); done < /tmp/BBF; echo bbfork-\$n'
+echo after-bb \$?"
+                bb_sh_marks=("hosted by the ring-3 runtime" "pipe-pipe-in")
+                bb_off_script="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=0; while read l; do n=\$((n+1)); done < /tmp/BBF; echo bbfork-\$n'"
+            else
+                bb_sh_script="busybox sh -c 'echo bb-sh-ok; ls /fat'
 busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
 busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
 busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'
-echo after-bb \$?" 240 \
-                "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "wc-out=8" \
-                "openat refused by the capability check: -EACCES (recorded)" "Permission denied" "sub-rc=1" \
-                "bbfork-2" "after-bb 0"
+echo after-bb \$?"
+                bb_sh_marks=("wc-out=8" "openat refused by the capability check: -EACCES (recorded)")
+                bb_off_script="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'"
+            fi
+            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
+                "$bb_sh_script" 240 \
+                "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "${bb_sh_marks[@]}" \
+                "Permission denied" "sub-rc=1" "bbfork-2" "after-bb 0"
             USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
                 "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
                 "Permission denied" "sub-rc=1"
@@ -22264,17 +22280,21 @@ echo after-bb \$?" 240 \
             # `fd-private-offset-busybox-canary` (private offsets): the second
             # subshell overwrites the first's line, one line is left.
             USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
-                "busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'" 150 \
+                "$bb_off_script" 150 \
                 "bbfork-2"
             # Two Linux tasks on one hart: BusyBox sleeping in the background
             # while LXHELLO (which starts with TPIDR_EL0 = 0) runs, then
             # BusyBox forks again. Its thread pointer must be its own when it
             # resumes (LXHELLO sets its own and checks it, too).
+            # x86_64: LXHELLO's stage is `rt` (lxhello_x86_64.c), which sets
+            # its own FS base with arch_prctl, as BusyBox's musl did.
+            bb_lx_stage=""; bb_lx_done="lx: done failures=0"
+            [ "$ush_isa" = x86 ] && { bb_lx_stage=" rt"; bb_lx_done="lx: rt done failures=0"; }
             USH_SMP=1 USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                 "!busybox sh -c 'sleep 2; echo tls-\$(echo kept)' &
-lxhello
+lxhello$bb_lx_stage
 #wait tls-kept" 240 \
-                "lx: done failures=0" "tls-kept"
+                "$bb_lx_done" "tls-kept"
             # A streamed image (BUSYBOX.ELF is larger than the exec bounce
             # buffer) must run only if the bytes copied in hash to the digest
             # it was planned by. `linux-stream-tamper-test` flips one byte of
@@ -22315,44 +22335,59 @@ echo after-tamper \$?" 150 \
 !exit
 #sleep 2
 echo after-bb-int \$?"
-            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
-                "$bb_int_script" 120 \
-                "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
-            # The same on one hart: the echo is written after the line
-            # discipline's lock is dropped, so a full TX ring cannot hold it.
-            # x86_64 boots one CPU: its plain row is already the one-hart case.
-            if [ "$ush_isa" != x86 ]; then
-                USH_SMP=1 USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh, one hart ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
-                    "$bb_int_script" 150 \
+            if [ "$ush_isa" = x86 ]; then
+                # The x86_64 ring-3 runtime delivers no signal (no upcall into
+                # the process): ^C cannot end `sleep`, and every row of this
+                # group reads that.
+                for bb_k in "linux: busybox interactive sh" "linux: console EOF canary" "linux: console ^C canary"; do
+                    printf "  %-26s%s\n" "$bb_k ($ush_isa)..." "SKIP (the x86_64 ring-3 runtime delivers no signal)"
+                done
+            else
+                USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                    "$bb_int_script" 120 \
                     "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
+                # The same on one hart: the echo is written after the line
+                # discipline's lock is dropped, so a full TX ring cannot hold it.
+                # x86_64 boots one CPU: its plain row is already the one-hart case.
+                if [ "$ush_isa" != x86 ]; then
+                    USH_SMP=1 USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh, one hart ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                        "$bb_int_script" 150 \
+                        "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
+                fi
+                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: console EOF canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-console-eof-canary" FAIL \
+                    "$bb_int_script" 90 \
+                    "bb-int-ok" "bb-after-intr-130"
+                USH_DISK=busybox USH_FORBID='robot> |bb-slept' par_row ushell_row "linux: console ^C canary ($ush_isa)" "$ush_isa" "$ush_feat,console-isig-canary" FAIL \
+                    "$bb_int_script" 90 \
+                    "bb-after-intr-130"
             fi
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: console EOF canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-console-eof-canary" FAIL \
-                "$bb_int_script" 90 \
-                "bb-int-ok" "bb-after-intr-130"
-            USH_DISK=busybox USH_FORBID='robot> |bb-slept' par_row ushell_row "linux: console ^C canary ($ush_isa)" "$ush_isa" "$ush_feat,console-isig-canary" FAIL \
-                "$bb_int_script" 90 \
-                "bb-after-intr-130"
-            # Wave 13: `execve` into ANOTHER row. With `linux-exec-row-test`
-            # BUSYBOX.ELF's row holds `/fat` and the grant to exec
-            # LXHELLO.ELF, whose row holds only `/tmp`: BusyBox writes /fat,
-            # then execs LXHELLO, which runs under LXHELLO's row (its /fat
-            # create refused). Without the grant (the plain BusyBox row) the
-            # exec is refused and recorded, and LXHELLO never runs. Canary
-            # `linux-exec-row-canary`: the launch check compiled out, the
-            # exec goes through without the grant.
-            USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
-                "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
+            if [ "$ush_isa" = x86 ]; then
+                for bb_k in "linux: execve into another row" "linux: execve into a row, no grant" "linux: execve launch canary"; do
+                    printf "  %-26s%s\n" "$bb_k ($ush_isa)..." "SKIP (the x86_64 ring-3 runtime answers no execve)"
+                done
+            else
+                # Wave 13: `execve` into ANOTHER row. With `linux-exec-row-test`
+                # BUSYBOX.ELF's row holds `/fat` and the grant to exec
+                # LXHELLO.ELF, whose row holds only `/tmp`: BusyBox writes /fat,
+                # then execs LXHELLO, which runs under LXHELLO's row (its /fat
+                # create refused). Without the grant (the plain BusyBox row) the
+                # exec is refused and recorded, and LXHELLO never runs. Canary
+                # `linux-exec-row-canary`: the launch check compiled out, the
+                # exec goes through without the grant.
+                USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
+                    "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?" 180 \
-                "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
-                "lx: create outside caps refused ok" "lx: done failures=0" "after-x 0"
-            exec_refused_script="busybox sh -c 'exec /fat/LXHELLO.ELF from-bb'
+                    "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
+                    "lx: create outside caps refused ok" "lx: done failures=0" "after-x 0"
+                exec_refused_script="busybox sh -c 'exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?"
-            USH_DISK=busybox USH_FORBID='robot> |lx: hello' par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
-                "$exec_refused_script" 150 \
-                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
-                "$exec_refused_script" 150 \
-                "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
+                USH_DISK=busybox USH_FORBID='robot> |lx: hello' par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                    "$exec_refused_script" 150 \
+                    "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
+                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
+                    "$exec_refused_script" 150 \
+                    "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
+            fi
             # Wave 13: the BusyBox row is a deployment's, not only the gate's.
             # A kernel built from a `.config` with USERSPACE_GPL + BUSYBOX
             # (the one `make busybox` used) and NO test feature carries the

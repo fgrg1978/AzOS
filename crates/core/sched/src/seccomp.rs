@@ -1577,6 +1577,9 @@ pub const THIRDPARTY_PROFILES: &[ImageProfile] = &[
             // `arch_prctl(ARCH_SET_FS)`, answered by a thread started with
             // the base (`azos_linux_rt`'s `resume_with_thread_pointer`).
             SYS_THREAD_CREATE,
+            // x86_64 under the ring-3 runtime: a pipe end blocks on its ring's
+            // futex words (`azos_libsys::pipe`), as `futex` reaches them.
+            SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             // The ring-3 runtime's own calls (`azos_linux_rt::RUNTIME_NATIVE`).
             SYS_FOREIGN_ENTRY, SYS_FOREIGN_RESUME, SYS_GETPID, SYS_CAP_INFO,
         ],
