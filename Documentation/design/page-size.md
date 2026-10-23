@@ -103,8 +103,9 @@ fully populated, never forked.
   contiguous RAM, aligned to the level-1 leaf size, from the allocator once, at
   boot, right after memory admission counted it. A 2 MiB-aligned run is exactly
   what fragmentation makes impossible later, so it is not allocated at run time.
-  The region is keyed by the row and never given back; the row's next instance
-  gets the same frames, zeroed again.
+  The region is keyed by the row and never given back (`huge::release_all`
+  frees them only when the topology they were reserved for is refused before
+  it is installed); the row's next instance gets the same frames, zeroed again.
 - **Admission.** The region counts as locked pages, N x 256 topology pages
   (`crates/core/pkg/src/admit.rs`, `crates/core/topology/src/memory.rs`). A row
   that declares it without `mem = "locked"`, or with more than one instance, is
@@ -150,9 +151,10 @@ scheme of FreeBSD for anonymous memory in ordinary tasks.
   of part of it, a fork, the task's exit, an allocator that runs dry. A promoted
   leaf is split back into 512 4 KiB leaves (`split_user_mega`) before part of it
   is unmapped or re-protected, or the space is forked.
-- **Who never reserves.** A `mem = "locked"` task and a real-time-class task
-  commit at map time and never fault, so they never reserve; `MAP_POPULATE` and
-  `MAP_LOCKED` mappings likewise.
+- **Who never reserves.** A `mem = "locked"` task, and a real-time-class task
+  under Kconfig `MM_PRECOMMIT_RT` (default on), commit at map time and never
+  fault, so they never reserve; `MAP_POPULATE` and `MAP_LOCKED` mappings
+  likewise (`mmap_precommit` in `crates/core/syscall/src/handlers.rs`).
 - **Why it is off by default.** A reservation holds up to 2 MiB of frames that
   no page uses yet, inside a region the task's quota has been charged for whole,
   and the fault that fills the last page pays for the promotion, a latency
@@ -241,7 +243,9 @@ the CPU may raise a TLB conflict abort.
   space takes the table lock first, and `promote_user_block` holds it across
   the window, so the handler runs after the make.
 - **Verification.** QEMU does not model the conflict abort, so the order and the
-  wait are pinned by host tests and the abort itself is a hardware question.
+  wait are pinned by host tests (`tests/host/arch-api-tests` `bbm.rs`,
+  `tests/host/syscall-tests` `thp_vmm.rs`) and the abort itself is a hardware
+  question.
 
 Source: `crates/core/arch-api/src/lib.rs`, `crates/core/arch-aarch64/src/cpu/features.rs`,
 `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-riscv64/src/api_impl.rs`,
@@ -258,7 +262,7 @@ Source: `crates/core/arch-api/src/lib.rs`, `crates/core/arch-aarch64/src/cpu/fea
   block evicted from the first level goes straight back to the walker, so many
   small tasks each holding blocks can thrash rather than help.
 - Superpage reservations trade memory and a latency spike at promotion for TLB
-  reach, which is why a real-time task never reserves.
+  reach, which is why a real-time task (with `MM_PRECOMMIT_RT`) never reserves.
 - QEMU shows the mappings (page-table walks, counts of frames and levels); it
   does not model the TLB, so the effect of any of this on translation misses is
   a question for hardware counters.
