@@ -16,7 +16,7 @@
 	url = https://git.busybox.net/busybox
 	shallow = true
 	update = none
-	tag = 1_37_0
+	tag = 1_36_1
 
 # Limine (BSD-2-Clause), a release's binary branch: BOOTX64.EFI and limine.c
 # for the x86 PC and PXE rows (mk/qemu.mk, tools/netboot/).
