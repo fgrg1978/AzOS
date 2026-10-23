@@ -44,6 +44,11 @@
 #![no_std]
 #![no_main]
 
+// Its per-ISA tables and instructions have a branch for each of these; on any
+// other ISA the build stops here instead of losing one.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("lxsrv: no counter or module ISA for this ISA (riscv64, aarch64, x86_64)");
+
 use core::cell::UnsafeCell;
 use azos_libsys as sys;
 use azos_lx_loader::{admit, Isa, Module};

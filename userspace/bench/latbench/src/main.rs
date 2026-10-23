@@ -35,6 +35,11 @@
 #![no_std]
 #![no_main]
 
+// The counter is read per ISA (`rdtime`, `scale_ticks`); on an ISA with no
+// branch the build stops here instead of timing nothing.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("latbench: no counter for this ISA (riscv64, aarch64, x86_64)");
+
 use azos_libsys as sys;
 use sys::dev::{Ep, MotorCall, MotorClient, Regs, SensorCall, SensorClient};
 
@@ -44,6 +49,7 @@ const N: u64 = 2000;
 
 /// CLINT mtime frequency on QEMU virt (RISC-V; see `scale_ticks` for aarch64
 /// and x86_64).
+// arch-only: riscv64's fixed rate; the other ISAs read theirs (`counter_hz`).
 #[cfg(target_arch = "riscv64")]
 const TIMER_HZ: u64 = 10_000_000;
 
@@ -62,16 +68,23 @@ const TIMER_HZ: u64 = 10_000_000;
 fn scale_ticks(ticks: u64, iters: u64) -> u64 {
     #[cfg(target_arch = "riscv64")]
     { ticks * (1_000_000_000 / TIMER_HZ) / iters }
+    // u128: at 1 GHz, `ticks * 1e9` overflows u64 after ~18 s of ticks.
     #[cfg(not(target_arch = "riscv64"))]
-    {
-        let hz: u64;
-        #[cfg(target_arch = "aarch64")]
-        unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) hz, options(nomem, nostack)) };
-        #[cfg(target_arch = "x86_64")]
-        { hz = sys::vdso_timebase_hz(); }
-        // u128: at 1 GHz, `ticks * 1e9` overflows u64 after ~18 s of ticks.
-        (ticks as u128 * 1_000_000_000 / hz.max(1) as u128 / iters.max(1) as u128) as u64
-    }
+    { (ticks as u128 * 1_000_000_000 / counter_hz().max(1) as u128 / iters.max(1) as u128) as u64 }
+}
+
+/// The rate of the counter `rdtime` reads, where it is read, not assumed.
+// arch-only: riscv64 scales by its fixed TIMER_HZ instead.
+#[cfg(target_arch = "aarch64")]
+fn counter_hz() -> u64 {
+    let hz: u64;
+    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) hz, options(nomem, nostack)) };
+    hz
+}
+// arch-only: riscv64 scales by its fixed TIMER_HZ instead.
+#[cfg(target_arch = "x86_64")]
+fn counter_hz() -> u64 {
+    sys::vdso_timebase_hz()
 }
 
 #[inline(always)]

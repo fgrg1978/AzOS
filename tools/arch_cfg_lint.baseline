@@ -9,9 +9,7 @@
 4	kernel/src/smokes/selftest.rs
 1	kernel/src/smokes/tlb_probe.rs
 2	kernel/src/tasks/system.rs
-2	userspace/bench/latbench/src/main.rs
-8	userspace/services/lxsrv/src/main.rs
-8	userspace/tests/captest/src/main.rs
+2	userspace/tests/captest/src/main.rs
 [facade]
 # Facade bypass: azos_arch::<ISA-specific module> references per file.
 # Counts may only go down. Rewrite with --update (a rename raises them).
