@@ -322,8 +322,15 @@ impl<M: Mmio> VirtioPciDevice<M> {
     }
 
     /// Device status 0: the device stops all DMA and forgets its queues.
+    /// The reset is over once [`Self::status`] reads 0 (virtio 1.2 section
+    /// 2.4.1).
     pub fn reset(&mut self) {
         self.mmio.write8(self.c(common_off::DEVICE_STATUS), 0);
+    }
+
+    /// The device status byte.
+    pub fn status(&self) -> u8 {
+        self.mmio.read8(self.c(common_off::DEVICE_STATUS))
     }
 
     /// Select and size one queue, program its three ring addresses

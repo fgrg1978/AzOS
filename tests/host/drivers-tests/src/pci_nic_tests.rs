@@ -232,3 +232,97 @@ fn igc_interrupt_hook_uses_its_own_icr() {
     static NIC: Nic<IgcWire, N, N> = Nic::new(&MEM);
     irq_scenario(&NIC, &MEM);
 }
+
+// ── A wedged transmit ring (`net-timeout`) ───────────────────────────────
+
+/// The transmit budget of the NICs below: short, the host's time is real.
+const TX_BUDGET_MS: u64 = 30;
+
+/// What `restart` does on real hardware after `C::reset`, done by the test
+/// as the controller: the rings primed again over the same buffers and the
+/// NIC live again (`go_live`). Counts the restarts.
+fn relive<W: Wire>(nic: &Nic<W, N, N>, mem: &'static Mem<N, N>, count: &core::sync::atomic::AtomicU32) -> bool {
+    count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    let dma = Dma::fallback();
+    let rx_buf_bus = dma.map(mem.rx_buf(0) as *const u8, N * BUF, Direction::FromDevice).unwrap();
+    let tx_buf_bus = dma.map(mem.tx_buf(0) as *const u8, N * BUF, Direction::ToDevice).unwrap();
+    nic.prime(&dma, rx_buf_bus);
+    nic.go_live(dma, rx_buf_bus, tx_buf_bus, MAC, 0, None);
+    true
+}
+
+/// Send until the watch fires (the controller never takes a frame): looks
+/// 5 ms apart, well under the stall gap, so the guest is seen running.
+fn send_until_wedged<W: Wire>(nic: &Nic<W, N, N>) -> std::time::Duration {
+    let t0 = std::time::Instant::now();
+    loop {
+        match nic.send(&[0u8; 60]) {
+            Err(NetError::NotReady) => return t0.elapsed(),
+            Ok(_) | Err(NetError::QueueFull) => {}
+            Err(e) => panic!("send answered {e:?}"),
+        }
+        assert!(t0.elapsed().as_secs() < 5, "a ring that never moves was never declared wedged");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// **Discriminates.** Frames the controller takes none of for the budget
+/// make the send that sees it reset the NIC (the restart runs once, the NIC
+/// is live again and sends) and record it (`net-timeout` action 2); a second
+/// wedge finds the reset spent: the NIC is stopped (its engines off, sends
+/// refused) and latched dead, recorded as action 5. A ring the controller
+/// keeps draining never fires. Canary: drop the `expired` check in `send`
+/// (the first loop's 5-second bound fires), or call `restart` again in the
+/// `Latch` arm (the restart count is 2).
+fn tx_timeout_scenario<W: Wire>(nic: &'static Nic<W, N, N>, mem: &'static Mem<N, N>, restart: fn(&Nic<W, N, N>) -> bool, count: &core::sync::atomic::AtomicU32) {
+    use azos_drv_api::recovery::{Action, Class};
+    crate::recovery_records::listen();
+    let rig = bring_up(nic, mem, None);
+    nic.set_restart(restart);
+
+    // A ring the controller drains: no timeout, however long it runs.
+    for i in 0..12 {
+        assert_eq!(nic.send(&[0u8; 60]), Ok(60));
+        // SAFETY: the test is the controller: it marks the frame sent.
+        unsafe { (*mem.tx_desc(i % N)).hi |= (crate::e1000e::TXD_STAT_DD as u64) << 32 };
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(count.load(core::sync::atomic::Ordering::SeqCst), 0, "a moving ring was reset");
+
+    let waited = send_until_wedged(nic);
+    assert!(waited.as_millis() as u64 >= TX_BUDGET_MS - 5, "declared wedged after {waited:?}");
+    assert_eq!(count.load(core::sync::atomic::Ordering::SeqCst), 1);
+    assert!(nic.is_ready() && !nic.is_dead());
+    assert_eq!(nic.resets(), 1);
+    assert_eq!(nic.send(&[0u8; 60]), Ok(60), "the NIC did not carry on after its reset");
+
+    send_until_wedged(nic);
+    assert_eq!(count.load(core::sync::atomic::Ordering::SeqCst), 1, "reset twice");
+    assert!(nic.is_dead() && !nic.is_ready());
+    assert_eq!(nic.send(&[0u8; 60]), Err(NetError::NotReady));
+    assert_eq!(rig.regs.get(crate::e1000e::REG_TCTL), 0, "the transmit engine still runs");
+    let r: Vec<(Class, &str, Action)> = crate::recovery_records::taken().into_iter().map(|(c, d, a, _)| (c, d, a)).collect();
+    assert_eq!(r, vec![(Class::Net, W::NAME, Action::Reset), (Class::Net, W::NAME, Action::Latched)]);
+}
+
+#[test]
+fn e1000e_wedged_transmit_ring_is_reset_once_then_latched() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<E1000eWire, N, N> = Nic::with_tx_budget(&MEM, TX_BUDGET_MS);
+    static COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    fn restart(nic: &Nic<E1000eWire, N, N>) -> bool {
+        relive(nic, &MEM, &COUNT)
+    }
+    tx_timeout_scenario(&NIC, &MEM, restart, &COUNT);
+}
+
+#[test]
+fn igc_wedged_transmit_ring_is_reset_once_then_latched() {
+    static MEM: Mem<N, N> = Mem::new();
+    static NIC: Nic<IgcWire, N, N> = Nic::with_tx_budget(&MEM, TX_BUDGET_MS);
+    static COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    fn restart(nic: &Nic<IgcWire, N, N>) -> bool {
+        relive(nic, &MEM, &COUNT)
+    }
+    tx_timeout_scenario(&NIC, &MEM, restart, &COUNT);
+}

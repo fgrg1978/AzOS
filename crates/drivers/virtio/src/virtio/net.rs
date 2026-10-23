@@ -19,6 +19,12 @@
 ///
 /// Both set up RX queue (0) and TX queue (1). `init_pci` runs first when a
 /// PCI NIC is present; `init` then returns `Ok` without probing MMIO.
+///
+/// A transmit ring whose announced frames the device takes none of for
+/// Kconfig `NET_TX_TIMEOUT_MS` (time the guest ran) is a wedged NIC: the
+/// timeout policy (`azos_drv_api::recovery`) resets the device and programs it
+/// again over the same rings and buffers, once per boot, then stops it for
+/// good ([`tx_timed_out`]); `net-timeout` decision records.
 
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -28,7 +34,7 @@ use super::{
     Dma, VirtioDev, Virtq,
     VIRTIO_DEV_NET,
     VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE,
-    probe, virtq_init_sized,
+    probe, virtq_init_sized, virtq_reprogram,
     virtq_alloc_desc, virtq_free_desc, virtq_poll,
     virtq_publish, virtq_has_used, virtq_set_avail_flags, VIRTQ_AVAIL_F_NO_INTERRUPT,
     virtq_notify_mmio, virtq_notify_pci, virtq_kick_decision, virtq_set_interrupts,
@@ -36,6 +42,7 @@ use super::{
     mmio_read, mmio_write, VIRTIO_MMIO_STATUS, VIRTIO_STATUS_DRIVER_OK,
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
 };
+use azos_drv_api::recovery::{Class, Recovery, StallClock, TxWatch, Verdict, STALL_GAP_US};
 use azos_sync::SpinLock;
 
 // ---- VirtIO Net header (prepended to every packet) ----
@@ -169,7 +176,21 @@ struct NetState {
     /// per re-posted buffer (RX), NO_NOTIFY ignored — the pre-batching cost.
     kick_every_frame: bool,
     stats: NetQueueStats,
+    /// How long the announced TX frames have sat with no progress.
+    watch: TxWatch,
+    /// Feature word 0 the MMIO transport accepted: a reset device must
+    /// accept the same again.
+    accepted: u32,
+    /// RX buffers [`recv_batch`] holds off the ring (bit `b`: buffer `b`):
+    /// a reset gives the device every other one, and these go back when
+    /// the batch re-posts them.
+    rx_lent: [u64; RX_LENT_WORDS],
+    /// The virtio-pci transport, for a reset (`None` on MMIO).
+    #[cfg(all(feature = "pci", target_os = "none"))]
+    pci: Option<super::pci::VirtioPciDevice<super::pci::msix_selftest::KernelBar>>,
 }
+
+const RX_LENT_WORDS: usize = NUM_RX_BUFS.div_ceil(64);
 
 impl NetState {
     const fn zeroed() -> Self {
@@ -193,6 +214,11 @@ impl NetState {
             ei_flags_canary: false,
             kick_every_frame: false,
             stats: NetQueueStats::zeroed(),
+            watch: TxWatch::new(),
+            accepted: 0,
+            rx_lent: [0; RX_LENT_WORDS],
+            #[cfg(all(feature = "pci", target_os = "none"))]
+            pci: None,
         }
     }
 }
@@ -200,6 +226,20 @@ impl NetState {
 unsafe impl Send for NetState {}
 
 static NET: SpinLock<NetState> = SpinLock::new(NetState::zeroed());
+
+/// Live, being reset after a wedged transmit ring, or latched dead (the
+/// timeout policy, Kconfig `DEVICE_TIMEOUT_RESETS`). One for both transports:
+/// the driver serves one interface.
+static RECOVERY: Recovery = Recovery::new(Class::Net, "virtio-net", azos_limits::DEVICE_TIMEOUT_RESETS as u8);
+/// The time the guest did not run while frames sat in the transmit ring.
+static STALL: StallClock = StallClock::new();
+
+/// The stall clock looks at the device now: the tick, and its credit.
+fn look() -> (u64, u64) {
+    let t = azos_drv_sys::timebase::now();
+    STALL.observe(t, STALL_GAP_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000);
+    (t, STALL.credit())
+}
 
 /// The RX buffers, outside `NET` (IO-QUEUES N2 step 2): a frame popped off
 /// the used ring is handed to the stack in place, with no lock held, and
@@ -427,6 +467,7 @@ pub fn init_at(base: usize) -> Result<(), ()> {
         // NET_VIRTIO_EVENT_IDX); the legacy one keeps the flags.
         let want = if EVENT_IDX_WANTED && dev.version != 1 { VIRTIO_F_EVENT_IDX } else { 0 };
         let accepted = unsafe { virtio_init_with(&mut dev, want) }?;
+        net.accepted = accepted;
 
         // The NIC's DMA domain, its buffers mapped through it, then the RX
         // queue (0) and the TX queue (1).
@@ -466,28 +507,8 @@ pub fn init_at(base: usize) -> Result<(), ()> {
         let s = unsafe { mmio_read(dev.base, VIRTIO_MMIO_STATUS) };
         unsafe { mmio_write(dev.base, VIRTIO_MMIO_STATUS, s | VIRTIO_STATUS_DRIVER_OK) };
 
-        // Collect RX buffer pointers before mutably borrowing rxq
-        let mut rx_ptrs = [0u64; NUM_RX_BUFS];
-        for b in 0..NUM_RX_BUFS {
-            rx_ptrs[b] = rx_buf_dma(b);
-            unsafe { dma.sync_for_device(rx_buf_ptr(b), RX_BUF_SIZE, Direction::FromDevice) };
-        }
-
-        // Post every RX buffer, one doorbell for the lot. The free list is
-        // fresh, so descriptor `b` is allocated for buffer `b`: the pairing
-        // `poll_recv` relies on (descriptor index == buffer slot). A device
-        // that granted fewer entries than NUM_RX_BUFS gets `rxq.num`.
-        for b in 0..NUM_RX_BUFS {
-            if let Some(desc_idx) = unsafe { virtq_alloc_desc(&mut net.rxq) } {
-                unsafe {
-                    (*net.rxq.desc.add(desc_idx)).addr  = rx_ptrs[b];
-                    (*net.rxq.desc.add(desc_idx)).len   = RX_BUF_SIZE as u32;
-                    (*net.rxq.desc.add(desc_idx)).flags = VIRTQ_DESC_F_WRITE;
-                    (*net.rxq.desc.add(desc_idx)).next  = 0;
-                    let _ = virtq_publish(&mut net.rxq, desc_idx);
-                }
-            }
-        }
+        // Post every RX buffer, one doorbell for the lot.
+        post_rx_buffers(&mut net);
         unsafe { virtq_notify_mmio(&dev, 0) };
 
         net.dev   = dev;
@@ -562,12 +583,28 @@ pub fn send(data: &[u8]) -> Result<(), ()> {
     if data.is_empty() || data.len() > TX_BUF_SIZE { return Err(()); }
 
     let mut net = NET.lock();
-    if !net.ready { return Err(()); }
+    // Being reset, or stopped for good: the frame is dropped.
+    if !net.ready || !RECOVERY.live() { return Err(()); }
 
     // The only place descriptors come back — which is what makes the early
     // return safe.
+    let mut freed = 0;
     while let Some(done) = unsafe { virtq_poll(&mut net.txq) } {
         unsafe { tx_reclaim_chain(&mut net, done) };
+        freed += 1;
+    }
+    // Frames still in the ring (two descriptors each), less those of an
+    // open batch, which the device was never told about.
+    let held = (net.txq.num - net.txq.free_count) as usize / 2;
+    let (t, credit) = look();
+    let announced = held.saturating_sub(net.tx_pending as usize);
+    net.watch.reclaimed(t, credit, freed, announced);
+    let budget = azos_limits::NET_TX_TIMEOUT_MS as u64 * azos_drv_sys::timebase::TIMER_FREQ / 1000;
+    if net.watch.expired(&STALL, t, budget) {
+        let waited = net.watch.waited(t);
+        drop(net);
+        tx_timed_out(held as u64, waited);
+        return Err(());
     }
     if net.tx_cb_on && net.txq.free_count >= 2 {
         // Room again: back to no TX completion interrupts.
@@ -647,6 +684,10 @@ unsafe fn ring_doorbell(net: &NetState, q: u16) {
 fn tx_kick(net: &mut NetState) {
     if net.tx_pending == 0 { return; }
     net.tx_pending = 0;
+    // Announced: the device owes these frames progress from now (whether or
+    // not NO_NOTIFY spares the doorbell).
+    let (t, credit) = look();
+    net.watch.published(t, credit);
     if net.kick_every_frame || unsafe { virtq_kick_decision(&mut net.txq) } {
         unsafe { ring_doorbell(net, 1) };
         net.stats.tx_doorbells += 1;
@@ -909,7 +950,11 @@ pub fn recv_batch(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
         if !net.ready { return 0; }
         while k < want {
             match rx_pop(&mut net) {
-                Some((slot, len)) => { got[k] = (slot as u16, len as u16); k += 1; }
+                Some((slot, len)) => {
+                    got[k] = (slot as u16, len as u16);
+                    net.rx_lent[slot / 64] |= 1 << (slot % 64);
+                    k += 1;
+                }
                 None => break,
             }
         }
@@ -926,9 +971,187 @@ pub fn recv_batch(max: usize, f: &mut dyn FnMut(&[u8])) -> usize {
     }
     let mut net = NET.lock();
     for &(slot, _) in &got[..k] {
-        rx_repost(&mut net, slot as usize);
+        let slot = slot as usize;
+        net.rx_lent[slot / 64] &= !(1 << (slot % 64));
+        // A NIC stopped for good while the batch ran keeps its buffers.
+        if net.ready {
+            rx_repost(&mut net, slot);
+        }
     }
     k
+}
+
+/// Give the device every RX buffer not lent to a [`recv_batch`] in progress,
+/// on a fresh free list: descriptor `b` is allocated for buffer `b` (the
+/// pairing `poll_recv` relies on: descriptor index == buffer slot), and a
+/// lent buffer's descriptor waits, allocated, for its re-post. A device that
+/// granted fewer entries than NUM_RX_BUFS gets `rxq.num`. The caller rings
+/// the doorbell.
+fn post_rx_buffers(net: &mut NetState) {
+    for b in 0..NUM_RX_BUFS {
+        let Some(desc_idx) = (unsafe { virtq_alloc_desc(&mut net.rxq) }) else { break };
+        if net.rx_lent[b / 64] & (1 << (b % 64)) != 0 {
+            continue;
+        }
+        // SAFETY: a fresh free list hands out descriptors in order, so
+        // `desc_idx == b`; the descriptor is not the device's until published.
+        unsafe {
+            net.dma.sync_for_device(rx_buf_ptr(b), RX_BUF_SIZE, Direction::FromDevice);
+            (*net.rxq.desc.add(desc_idx)).addr  = rx_buf_dma(b);
+            (*net.rxq.desc.add(desc_idx)).len   = RX_BUF_SIZE as u32;
+            (*net.rxq.desc.add(desc_idx)).flags = VIRTQ_DESC_F_WRITE;
+            (*net.rxq.desc.add(desc_idx)).next  = 0;
+            let _ = virtq_publish(&mut net.rxq, desc_idx);
+        }
+    }
+}
+
+/// How long a reset device may take to read back status 0 (virtio 1.2
+/// section 2.4.1).
+const RESET_WAIT_US: u64 = 100_000;
+
+/// Frames sat in the transmit ring past the budget with the device taking
+/// none (`held` of them, for `waited` ticks): the timeout policy resets the
+/// device and programs it again once, then stops it for good. The frames in
+/// the ring are dropped. Called by `send` with `NET` not held.
+#[cold]
+fn tx_timed_out(held: u64, waited: u64) {
+    let ms = waited.saturating_mul(1000) / azos_drv_sys::timebase::TIMER_FREQ.max(1);
+    match RECOVERY.timed_out(held, ms) {
+        Verdict::Reset => {
+            azos_drv_sys::kerr!("[NET] virtio-net: {} frames sat {} ms in the transmit ring: resetting the device", held, ms);
+            let ok = {
+                let mut net = NET.lock();
+                let ok = reset_locked(&mut net);
+                if !ok {
+                    stop_locked(&mut net);
+                }
+                ok
+            };
+            if ok {
+                azos_drv_sys::kprintln!("[NET] virtio-net: device reset and programmed again");
+            } else {
+                azos_drv_sys::kerr!("[NET] virtio-net: the reset did not bring the device back: the NIC is down until reboot");
+            }
+            RECOVERY.reset_done(ok, held, ms);
+        }
+        Verdict::Latch => {
+            stop_locked(&mut NET.lock());
+            azos_drv_sys::kerr!("[NET] virtio-net: transmit ring wedged again with its resets spent: the NIC is down until reboot");
+        }
+        Verdict::Handled => {}
+    }
+}
+
+/// Spin until `cond` holds or `us` microseconds passed.
+fn wait_us(us: u64, mut cond: impl FnMut() -> bool) -> bool {
+    let end = azos_drv_sys::timebase::now().saturating_add(us * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000);
+    while !cond() {
+        if azos_drv_sys::timebase::now() >= end {
+            return cond();
+        }
+        core::hint::spin_loop();
+    }
+    true
+}
+
+/// Reset the device, confirm it stopped (status reads 0: it no longer
+/// touches the rings or buffers), negotiate again, give it both queues over
+/// the memory it had and every RX buffer not lent out, and set DRIVER_OK.
+/// The TX ring's frames are dropped. `false`: the device did not confirm its
+/// reset, or it is not the device that was brought up. Holds `NET` (the
+/// reset of a virtio device is a few register writes).
+fn reset_locked(net: &mut NetState) -> bool {
+    #[cfg(all(feature = "pci", target_os = "none"))]
+    let ok = if net.pci.is_some() { reset_pci(net) } else { reset_mmio(net) };
+    #[cfg(not(all(feature = "pci", target_os = "none")))]
+    let ok = reset_mmio(net);
+    if !ok {
+        return false;
+    }
+    net.tx_pending = 0;
+    net.rx_pending = 0;
+    net.tx_cb_on = false;
+    net.rx_irq_on = true;
+    net.watch.clear();
+    post_rx_buffers(net);
+    // SAFETY: the RX queue was just given to the device again.
+    unsafe { ring_doorbell(net, 0) };
+    // The ring is full of fresh buffers: the next read looks at it.
+    RX_PENDING.store(true, Ordering::Release);
+    true
+}
+
+fn reset_mmio(net: &mut NetState) -> bool {
+    let mut dev = net.dev;
+    let want = if EVENT_IDX_WANTED && dev.version != 1 { VIRTIO_F_EVENT_IDX } else { 0 };
+    // SAFETY: the transport the NIC was brought up on; status 0 resets it.
+    unsafe {
+        mmio_write(dev.base, VIRTIO_MMIO_STATUS, 0);
+        if !wait_us(RESET_WAIT_US, || mmio_read(dev.base, VIRTIO_MMIO_STATUS) == 0) {
+            return false;
+        }
+        match virtio_init_with(&mut dev, want) {
+            Ok(a) if a == net.accepted => {}
+            _ => return false,
+        }
+        if virtq_reprogram(&dev, Q_RX as u32, &mut net.rxq).is_err()
+            || virtq_reprogram(&dev, Q_TX as u32, &mut net.txq).is_err()
+        {
+            return false;
+        }
+        let s = mmio_read(dev.base, VIRTIO_MMIO_STATUS);
+        mmio_write(dev.base, VIRTIO_MMIO_STATUS, s | VIRTIO_STATUS_DRIVER_OK);
+    }
+    true
+}
+
+#[cfg(all(feature = "pci", target_os = "none"))]
+fn reset_pci(net: &mut NetState) -> bool {
+    use super::pci::VIRTIO_PCI_NO_VECTOR;
+    let irq = net.irq;
+    let ei = net.rxq.event_idx;
+    let Some(dev) = net.pci.as_mut() else { return false };
+    dev.reset();
+    if !wait_us(RESET_WAIT_US, || dev.status() == 0) {
+        return false;
+    }
+    let want = VIRTIO_NET_F_MAC | if EVENT_IDX_WANTED { VIRTIO_F_EVENT_IDX } else { 0 };
+    if dev.begin(want, super::pci::VIRTIO_F_ACCESS_PLATFORM_HI_BIT).is_err()
+        || (dev.driver_features_low() & VIRTIO_F_EVENT_IDX != 0) != ei
+    {
+        return false;
+    }
+    dev.set_msix_config_vector(if irq { VEC_CONFIG } else { VIRTIO_PCI_NO_VECTOR });
+    for (qi, vec) in [(Q_RX, VEC_RX), (Q_TX, VEC_TX)] {
+        let vq = if qi == Q_RX { &mut net.rxq } else { &mut net.txq };
+        // SAFETY: the device is reset; the rings are the driver's.
+        unsafe { super::virtq_reset_rings(vq, false) };
+        let [d, a, u] = vq.bus;
+        let v = if irq { vec } else { VIRTIO_PCI_NO_VECTOR };
+        if dev.setup_queue(qi, vq.num, d, a, u, v) != vq.num || (irq && dev.queue_msix_vector(qi) != vec) {
+            return false;
+        }
+    }
+    dev.set_driver_ok();
+    if irq && !TX_IRQ_ALWAYS {
+        irqs(net, Q_TX, false);
+    }
+    true
+}
+
+/// Stop the device for good: reset, and no send or receive from here on (its
+/// buffers stay the driver's, never reused).
+fn stop_locked(net: &mut NetState) {
+    #[cfg(all(feature = "pci", target_os = "none"))]
+    if let Some(dev) = net.pci.as_mut() {
+        dev.reset();
+    }
+    if !net.dev.base.is_null() {
+        // SAFETY: the MMIO transport the NIC was brought up on.
+        unsafe { mmio_write(net.dev.base, VIRTIO_MMIO_STATUS, 0) };
+    }
+    net.ready = false;
 }
 
 /// Hand RX descriptor `desc_idx` (already filled in) back to the device:
@@ -1278,28 +1501,14 @@ where
     dev.set_driver_ok();
 
     // Post every RX buffer, one notify for the lot.
-    let mut rx_ptrs = [0u64; NUM_RX_BUFS];
-    for b in 0..NUM_RX_BUFS {
-        rx_ptrs[b] = rx_buf_dma(b);
-        unsafe { dma.sync_for_device(rx_buf_ptr(b), RX_BUF_SIZE, Direction::FromDevice) };
-    }
-    for b in 0..NUM_RX_BUFS {
-        if let Some(desc_idx) = unsafe { virtq_alloc_desc(&mut net.rxq) } {
-            unsafe {
-                (*net.rxq.desc.add(desc_idx)).addr  = rx_ptrs[b];
-                (*net.rxq.desc.add(desc_idx)).len   = RX_BUF_SIZE as u32;
-                (*net.rxq.desc.add(desc_idx)).flags = VIRTQ_DESC_F_WRITE;
-                (*net.rxq.desc.add(desc_idx)).next  = 0;
-                let _ = virtq_publish(&mut net.rxq, desc_idx);
-            }
-        }
-    }
+    post_rx_buffers(&mut net);
     unsafe { virtq_notify_pci(notify_rx, 0) };
 
     // Modern transport: the 12-byte net header (`net_hdr_size`).
     net.dev = VirtioDev { base: core::ptr::null_mut(), device_id: VIRTIO_DEV_NET, version: 2 };
     net.notify = [notify_rx, notify_tx];
     net.irq = irq;
+    net.pci = Some(dev);
     net.ready = true;
     if irq {
         for v in 0..NUM_VECTORS {

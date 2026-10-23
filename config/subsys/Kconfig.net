@@ -630,6 +630,21 @@ config NET_TX_BATCH_MAX
       trades that per-frame cost for up to this many frames of added
       latency inside one burst.
 
+config NET_TX_TIMEOUT_MS
+    int "NIC transmit ring budget before the device is reset (ms)"
+    range 100 60000
+    default 5000
+    help
+      virtio-net, e1000e and igc (crates/drivers/api/src/recovery.rs,
+      TxWatch): frames that sit in the transmit ring this long with the
+      device taking none of them are a wedged NIC. The driver then resets
+      it and programs it again, DEVICE_TIMEOUT_RESETS times per boot, and
+      latches it dead after that (net-timeout decision record). Measured in
+      time the guest ran: a host that stopped the guest does not count.
+      Linux's netdev watchdog default is the same 5 s.
+
+      Cost: nothing in RAM; a clock read and a compare per send.
+
 config NET_RX_BATCH_MAX
     int "virtio-net RX frames popped per lock and handed up by reference"
     range 1 128

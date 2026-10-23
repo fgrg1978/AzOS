@@ -20,6 +20,17 @@
 //! `tests/host/drivers-tests` runs both drivers' [`Wire`]s through them over
 //! a register file in host memory. The PCI bring-up ([`Nic::init_pci`]) is
 //! behind the `e1000e` / `igc` features, as the drivers' device halves are.
+//!
+//! # A wedged transmit ring (`net-timeout`)
+//!
+//! Frames announced to the controller that it takes none of for Kconfig
+//! `NET_TX_TIMEOUT_MS` (time the guest ran, [`TxWatch`]) are a wedged NIC:
+//! the send that sees it asks the timeout policy (`azos_drv_api::recovery`).
+//! Once per boot (`DEVICE_TIMEOUT_RESETS`) the controller is reset and
+//! brought up again over the same rings and buffers ([`Nic::restart`], the
+//! bring-up's steps), the frames in the ring dropped; after that the NIC is
+//! stopped and latched dead until reboot. Both are `net-timeout` decision
+//! records.
 
 use crate::e1000e::{
     icr_wakes_rx, rx_accept, rx_post, tx_done, tx_doorbell_due, Desc, Link, RxCursor, RxStatus, TxCursor, BUF_SIZE,
@@ -27,6 +38,7 @@ use crate::e1000e::{
 };
 use azos_dma::Direction;
 use azos_drv_api::net::NetError;
+use azos_drv_api::recovery::{Class, Recovery, StallClock, TxWatch, Verdict, STALL_GAP_US};
 use azos_drv_virtio::virtio::Dma;
 use azos_sync::SpinLock;
 use core::cell::UnsafeCell;
@@ -233,6 +245,8 @@ struct TxState {
     depth: u16,
     /// Frames published since the last doorbell.
     pending: u16,
+    /// How long the announced frames have sat with no progress.
+    watch: TxWatch,
 }
 
 // SAFETY: the `Dma` holds a `&'static dyn DmaDomain`, immutable once the
@@ -263,6 +277,18 @@ pub struct Nic<W: Wire, const RX_N: usize, const TX_N: usize> {
     msi_token: AtomicU32,
     /// Receive interrupts taken (`ICR` carried a receive cause).
     rx_irqs: AtomicU32,
+    /// Live, being reset after a wedged transmit ring, or latched dead.
+    recovery: Recovery,
+    /// The transmit ring's budget in time the guest ran (Kconfig
+    /// `NET_TX_TIMEOUT_MS`), and the clock that measures it.
+    tx_budget_ms: u64,
+    stall: StallClock,
+    /// Reset the controller and bring it up again over the same memory
+    /// (`init_pci` installs [`Nic::restart`]); `true` when it came back.
+    restart: SpinLock<Option<fn(&Self) -> bool>>,
+    /// What `init_pci` gave the controller, for [`Nic::restart`].
+    #[cfg(any(feature = "e1000e", feature = "igc"))]
+    saved: SpinLock<Option<bring_up::Saved>>,
     _wire: PhantomData<fn() -> W>,
 }
 
@@ -282,11 +308,24 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
     };
 
     pub const fn new(mem: &'static Mem<RX_N, TX_N>) -> Self {
+        Self::with_tx_budget(mem, azos_limits::NET_TX_TIMEOUT_MS as u64)
+    }
+
+    /// [`Nic::new`] with a transmit budget of `tx_budget_ms` instead of
+    /// Kconfig's (the host tests, whose time is short).
+    pub const fn with_tx_budget(mem: &'static Mem<RX_N, TX_N>, tx_budget_ms: u64) -> Self {
         let () = Self::CHECK;
         Nic {
             mem,
             rx: SpinLock::new(RxState { dma: Dma::fallback(), buf_bus: 0, cur: RxCursor::new() }),
-            tx: SpinLock::new(TxState { dma: Dma::fallback(), buf_bus: 0, cur: TxCursor::new(), depth: 0, pending: 0 }),
+            tx: SpinLock::new(TxState {
+                dma: Dma::fallback(),
+                buf_bus: 0,
+                cur: TxCursor::new(),
+                depth: 0,
+                pending: 0,
+                watch: TxWatch::new(),
+            }),
             bar: AtomicUsize::new(0),
             ready: AtomicBool::new(false),
             mac: AtomicU64::new(0),
@@ -294,8 +333,31 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
             msi_armed: AtomicBool::new(false),
             msi_token: AtomicU32::new(0),
             rx_irqs: AtomicU32::new(0),
+            recovery: Recovery::new(Class::Net, W::NAME, azos_limits::DEVICE_TIMEOUT_RESETS as u8),
+            tx_budget_ms,
+            stall: StallClock::new(),
+            restart: SpinLock::new(None),
+            #[cfg(any(feature = "e1000e", feature = "igc"))]
+            saved: SpinLock::new(None),
             _wire: PhantomData,
         }
+    }
+
+    /// How the controller is reset and brought up again after a wedged
+    /// transmit ring (`init_pci` installs the bring-up's; a host test its
+    /// model's).
+    pub fn set_restart(&self, f: fn(&Self) -> bool) {
+        *self.restart.lock() = Some(f);
+    }
+
+    /// Resets the timeout policy has done since boot.
+    pub fn resets(&self) -> u8 {
+        self.recovery.resets()
+    }
+
+    /// Latched dead until reboot.
+    pub fn is_dead(&self) -> bool {
+        self.recovery.dead()
     }
 
     /// Where BAR 0 is mapped; the registers are reachable from here on.
@@ -341,7 +403,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         }
         {
             let mut tx = self.tx.lock();
-            *tx = TxState { dma, buf_bus: tx_buf_bus, cur: TxCursor::new(), depth: 0, pending: 0 };
+            *tx = TxState { dma, buf_bus: tx_buf_bus, cur: TxCursor::new(), depth: 0, pending: 0, watch: TxWatch::new() };
         }
         io_wmb();
         r.wr(W::RX.tail, rx_cur.rdt(RX_N) as u32);
@@ -431,6 +493,10 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         }
         let mem = self.mem;
         let mut rx = self.rx.lock();
+        if !self.ready.load(Ordering::Acquire) {
+            // Being reset: the ring is the restart's until it is live again.
+            return Err(NetError::NotReady);
+        }
         loop {
             let i = rx.cur.clean as usize;
             // SAFETY: descriptor `i` is in the mapped ring; the controller
@@ -482,10 +548,17 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
 
     // ---- Transmit ----
 
+    /// The stall clock looks at the controller now: the tick, and its credit.
+    fn look(&self) -> (u64, u64) {
+        let t = now();
+        self.stall.observe(t, STALL_GAP_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000);
+        (t, self.stall.credit())
+    }
+
     fn reclaim(&self, tx: &mut TxState) {
         let dma = tx.dma;
         let mem = self.mem;
-        tx.cur.reclaim(TX_N, |i| {
+        let freed = tx.cur.reclaim(TX_N, |i| {
             // SAFETY: descriptor `i` is in the mapped ring; the controller
             // writes DD and then leaves it alone.
             unsafe {
@@ -493,6 +566,11 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
                 tx_done(core::ptr::read_volatile(&(*mem.tx_desc(i as usize)).hi))
             }
         });
+        // Frames announced and not yet taken back (the ones of an open batch
+        // are not the controller's to take).
+        let held = (tx.cur.tail as usize + TX_N - tx.cur.clean as usize) % TX_N;
+        let (t, credit) = self.look();
+        tx.watch.reclaimed(t, credit, freed, held.saturating_sub(tx.pending as usize));
     }
 
     /// Tell the controller about every frame published so far.
@@ -503,6 +581,54 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         io_wmb();
         self.regs().wr(W::TX.tail, tx.cur.tail as u32);
         tx.pending = 0;
+        let (t, credit) = self.look();
+        tx.watch.published(t, credit);
+    }
+
+    /// Frames sat in the transmit ring past the budget with the controller
+    /// taking none (`held` of them, for `waited` ticks): the timeout policy
+    /// resets the controller once, then latches it dead. Called by `send`
+    /// with no lock held.
+    #[cold]
+    fn tx_timed_out(&self, held: u64, waited: u64) {
+        let ms = waited.saturating_mul(1000) / azos_drv_sys::timebase::TIMER_FREQ.max(1);
+        match self.recovery.timed_out(held, ms) {
+            Verdict::Reset => {
+                azos_drv_sys::kerr!("[NET] {}: {} frames sat {} ms in the transmit ring: resetting the controller", W::NAME, held, ms);
+                let f = *self.restart.lock();
+                let ok = f.is_some_and(|f| f(self));
+                if !ok {
+                    self.stop();
+                    azos_drv_sys::kerr!("[NET] {}: the reset did not bring the controller back: the NIC is down until reboot", W::NAME);
+                }
+                self.recovery.reset_done(ok, held, ms);
+            }
+            Verdict::Latch => {
+                self.stop();
+                azos_drv_sys::kerr!("[NET] {}: transmit ring wedged again with its resets spent: the NIC is down until reboot", W::NAME);
+            }
+            Verdict::Handled => {}
+        }
+    }
+
+    /// Stop the controller for good: no send or receive from here on, its
+    /// interrupts masked and both engines off (the buffers stay the
+    /// driver's, never reused).
+    fn stop(&self) {
+        self.ready.store(false, Ordering::Release);
+        self.msi_armed.store(false, Ordering::Release);
+        let r = self.regs();
+        r.wr(W::IMC, !0);
+        r.wr(crate::e1000e::REG_RCTL, 0);
+        r.wr(crate::e1000e::REG_TCTL, 0);
+    }
+
+    /// Wait out every send and receive already inside its lock, once
+    /// `ready` is clear: the next one sees it and leaves the rings alone.
+    fn quiesce_paths(&self) {
+        self.ready.store(false, Ordering::Release);
+        drop(self.tx.lock());
+        drop(self.rx.lock());
     }
 
     /// Queue `frame` for transmission: copied into the staging buffer of the
@@ -527,7 +653,20 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         }
         let mem = self.mem;
         let mut tx = self.tx.lock();
+        if !self.ready.load(Ordering::Acquire) {
+            // Being reset: the ring is the restart's until it is live again.
+            return Err(NetError::NotReady);
+        }
         self.reclaim(&mut tx);
+        let (t, _) = self.look();
+        let budget = self.tx_budget_ms.saturating_mul(azos_drv_sys::timebase::TIMER_FREQ) / 1000;
+        if tx.watch.expired(&self.stall, t, budget) {
+            let held = (tx.cur.tail as usize + TX_N - tx.cur.clean as usize) % TX_N;
+            let waited = tx.watch.waited(t);
+            drop(tx);
+            self.tx_timed_out(held as u64, waited);
+            return Err(NetError::NotReady);
+        }
         let Some(i) = tx.cur.push(TX_N) else {
             // Full: make sure what is queued is on its way, and say so.
             self.ring_doorbell(&mut tx);
@@ -626,6 +765,23 @@ mod bring_up {
         /// `model=Igb`).
         fn detail(model: Self::Model, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result;
     }
+
+    /// What [`Nic::init_pci`] gave the controller: [`Nic::restart`] brings
+    /// it up again with the same function, rings, buffers and interrupt.
+    #[derive(Clone, Copy)]
+    pub struct Saved {
+        info: FunctionInfo,
+        dma: Dma,
+        rx_ring_bus: u64,
+        tx_ring_bus: u64,
+        rx_buf_bus: u64,
+        tx_buf_bus: u64,
+        token: Option<u32>,
+    }
+
+    // SAFETY: as `RxState`: the `Dma` holds a `&'static dyn DmaDomain`,
+    // immutable once the driver is up; the rest is plain data.
+    unsafe impl Send for Saved {}
 
     struct Detail<C: Chip>(C::Model);
 
@@ -794,6 +950,8 @@ mod bring_up {
             dma.enable().map_err(|_| NicError::Dma)?;
 
             C::start_queues(&r, rx_ring_bus, tx_ring_bus, RX_N, TX_N);
+            *self.saved.lock() = Some(Saved { info: *info, dma, rx_ring_bus, tx_ring_bus, rx_buf_bus, tx_buf_bus, token });
+            self.set_restart(Self::restart);
             self.go_live(dma, rx_buf_bus, tx_buf_bus, mac, C::LINK_WAIT_US, token);
 
             let link = C::link(r.rd(REG_STATUS));
@@ -813,6 +971,35 @@ mod bring_up {
                 "[NET] {}: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                 C::NAME, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
             Ok(())
+        }
+
+        /// After a wedged transmit ring (the timeout policy handed out the
+        /// reset): stop every path, reset the controller and bring it up
+        /// again as `bring_up` did, over the same rings and buffers (no
+        /// mapping, no MSI programming: the function's config space is
+        /// untouched by `CTRL.RST`). The frames in the ring are dropped.
+        /// `false`: the controller did not come back, or it is not the same
+        /// one (another station address).
+        fn restart(&self) -> bool {
+            let Some(sv) = *self.saved.lock() else { return false };
+            let Ok(model) = C::identify(&sv.info) else { return false };
+            self.quiesce_paths();
+            let r = self.regs();
+            if C::reset(&r, &sv.info, model).is_err() {
+                return false;
+            }
+            match r.program_mac() {
+                Ok(mac) if mac == self.mac() => {}
+                _ => {
+                    kwarn!("[NET] {} {}: no station address, or another one, after the reset", C::NAME, sv.info.bdf);
+                    return false;
+                }
+            }
+            self.prime(&sv.dma, sv.rx_buf_bus);
+            C::start_queues(&r, sv.rx_ring_bus, sv.tx_ring_bus, RX_N, TX_N);
+            self.go_live(sv.dma, sv.rx_buf_bus, sv.tx_buf_bus, self.mac(), C::LINK_WAIT_US, sv.token);
+            kprintln!("[NET] {} {}: controller reset and brought up again", C::NAME, sv.info.bdf);
+            true
         }
     }
 }
