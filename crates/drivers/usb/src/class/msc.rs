@@ -918,7 +918,7 @@ impl<'q, M: Memory, C: Clock> Msc<'q, M, C> {
         let recoverable = self.state == State::Ready
             && self.run.is_none_or(|r| r.step != Step::Recover)
             && self.io.is_some_and(|io| !io.recovered);
-        if !recoverable {
+        if !recoverable || cfg!(feature = "canary-msc-no-recovery") {
             return self.fail(f);
         }
         self.run = None;

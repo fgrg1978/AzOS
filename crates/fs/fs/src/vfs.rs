@@ -1440,7 +1440,7 @@ pub fn vfs_unmount(path: &[u8], writeback: bool) -> Result<(), ()> {
         let b = fs.mounts[i].fs.ok_or(())?;
         fs.mounts[i].active = false;
         for n in fs.inodes.iter_mut() {
-            if n.backing.fs.is_some_and(|f| same_backend(f, b)) {
+            if n.backing.fs.is_some_and(|f| same_backend(f, b)) && !cfg!(feature = "usb-volume-stale-fd-canary") {
                 n.backing.fs = Some(&GONE_FS);
             }
         }

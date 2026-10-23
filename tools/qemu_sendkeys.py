@@ -3,13 +3,15 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """Type text into a running QEMU through its human monitor (`sendkey`).
 
-    qemu_sendkeys.py [--delay S] [--wait S] [--raw] SOCK TEXT...
+    qemu_sendkeys.py [--delay S] [--wait S] [--raw | --command] SOCK TEXT...
 
 SOCK is the unix socket of a monitor chardev (`-chardev socket,id=mon0,
 path=SOCK,server=on,wait=off -mon chardev=mon0,mode=readline`). Each TEXT
 argument is typed, then Enter. With `--raw` each argument is one QEMU key
 name sent as it is, with no Enter (`f5`, `backspace`, `ctrl-alt-delete`): a
-key press for a task that reads the events and not the typed line. Used by the gate's virtio-input rows: the
+key press for a task that reads the events and not the typed line. With
+`--command` each argument is one monitor command line, sent as it is
+(`device_del stick`: a USB stick pulled out). Used by the gate's virtio-input rows: the
 guest's serial stdin is silent, so every byte the shell reads came from the
 virtio keyboard. Exit 0 once every key was sent, 1 if the monitor never
 answered. `--keys` prints the QEMU key names for the text and sends nothing.
@@ -45,7 +47,7 @@ def key_names(text):
 
 def main(argv):
     args = argv[1:]
-    delay, wait, only_names, raw = 0.15, 10.0, False, False
+    delay, wait, only_names, raw, command = 0.15, 10.0, False, False, False
     while args and args[0].startswith("--"):
         opt = args.pop(0)
         if opt == "--delay":
@@ -56,6 +58,8 @@ def main(argv):
             only_names = True
         elif opt == "--raw":
             raw = True
+        elif opt == "--command":
+            command = True
         else:
             raise SystemExit("unknown option " + opt)
     if only_names:
@@ -87,6 +91,11 @@ def main(argv):
 
     drain()
     for t in texts:
+        if command:
+            s.sendall((t + "\n").encode())
+            time.sleep(delay)
+            drain()
+            continue
         for k in [t] if raw else key_names(t + "\n"):
             s.sendall(("sendkey %s\n" % k).encode())
             time.sleep(delay)

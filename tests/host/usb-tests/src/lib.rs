@@ -21,6 +21,7 @@
 //! | `canary-64k` | a TRB crossing a 64 KiB boundary | `transfer_across_a_64k_boundary_is_split` |
 //! | `canary-route` | route string of a device behind a hub | `route_string_names_the_hub_ports` |
 //! | `canary-unplug` | device kept after the port says gone | `unplug_removes_the_device` |
+//! | `canary-msc-no-recovery` | a mass-storage transport error fails the disk (no Reset Recovery) | `msc::a_phase_error_is_recovered_and_the_command_runs_again` |
 //! | `canary-dr-mode` | a DWC3 in device or otg mode driven as a host | `a_dwc3_is_a_host_only_when_the_device_tree_says_so` |
 //! | `canary-xhci-no-reset` | a command timeout latches the controller, no reset | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
 //! | `canary-xhci-reset-keeps-devices` | the core keeps the devices a reset controller forgot | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |

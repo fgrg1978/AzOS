@@ -67,6 +67,8 @@ canary-xhci-hse-latches = []
 # A reset leaves the event ring's cursor where it was, while the controller
 # starts writing at the first entry: the reset's own command never completes.
 canary-xhci-reset-event-ring = []
+# Mass storage: a transport error fails the disk, no Reset Recovery.
+canary-msc-no-recovery = []
 # A DWC3 whose dr_mode is not `host` is taken for a host anyway.
 canary-dr-mode = []
 # A received NTB's datagram is not checked against the end of the block.

@@ -10584,6 +10584,15 @@ host_job host_canary_row "usb-net: LAN95xx pad canary" usb-cdc-tests canary-smsc
     a_transfer_ending_on_a_packet_boundary_gets_a_byte_of_padding
 host_job host_canary_row "usb-net: LAN95xx rx bounds canary" usb-cdc-tests canary-smsc-rx-bounds \
     the_parser_never_reads_past_the_transfer
+# USB mass storage (azos_usb::class::msc) and its volume (azos_fs::usbvol):
+# without Reset Recovery a phase error fails the disk instead of being
+# recovered (tests/host/usb-tests `msc`); with a pulled stick's inodes left on
+# its backend, a descriptor opened on the first stick reads the next stick's
+# file of the same name (tests/host/fs-tests `usb_volume`).
+host_job host_canary_row "usb-msc: no reset recovery canary" usb-tests canary-msc-no-recovery \
+    a_phase_error_is_recovered_and_the_command_runs_again
+host_job host_canary_row "usb volume: stale descriptor canary" fs-tests usb-volume-stale-fd-canary \
+    a_pulled_stick_fails_its_open_files_and_the_next_stick_is_its_own
 # USB video class (azos_usb::class::uvc) and the isochronous pipes under it:
 # each canary puts one bug back (an isochronous endpoint halting on a bus error,
 # the packets of a burst not counted, a payload's error flag ignored, the frame
@@ -20800,6 +20809,10 @@ PYEOF
         if [ -n "${USH_VKBD:-}" ]; then
             rm -f "$vsock"
             vkbd=(-device virtio-keyboard-device -chardev "socket,id=mon0,path=$vsock,server=on,wait=off" -mon chardev=mon0,mode=readline)
+        elif [ -n "${USH_MON:-}" ]; then
+            # `USH_MON=1`: the monitor alone, for the script's `#mon` lines.
+            rm -f "$vsock"
+            vkbd=(-chardev "socket,id=mon0,path=$vsock,server=on,wait=off" -mon chardev=mon0,mode=readline)
         fi
         if [ "$isa" = rv ]; then
             if [ -z "${USH_KERNEL:-}" ] && ! kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats) did not build"; return; fi
@@ -20876,6 +20889,8 @@ PYEOF
                 # `#key NAME...`: raw key presses through the monitor (USH_VKBD),
                 # for a task that reads the events and not the typed line.
                 if [ "${line#\#key }" != "$line" ]; then python3 tools/qemu_sendkeys.py --raw "$vsock" ${line#\#key }; continue; fi
+                # `#mon COMMAND`: one monitor command (USH_MON or USH_VKBD).
+                if [ "${line#\#mon }" != "$line" ]; then python3 tools/qemu_sendkeys.py --command "$vsock" "${line#\#mon }"; continue; fi
                 if [ "${line#\#sleep }" != "$line" ]; then sleep "${line#\#sleep }"; continue; fi
                 prompts=$(ush_prompts)
                 if [ "$line" = "^C" ]; then printf '\003' >&8
@@ -20979,6 +20994,123 @@ PYEOF
     # earlier run on an older tree was booted as-is (2026-10-03: LXHELLO.ELF
     # "not permitted" after a merge changed the image's rows). Not FATAL here:
     # a volume that does not build is reported by the rows that use it.
+    # USB mass storage with its volume (Kconfig USB_STORAGE_VOLUME): a stick on
+    # QEMU's xHCI (a PCI function: the rows build `pci`), served Bulk-Only by
+    # `usb-storage`. The stick is an image made here: 64 MiB, an MBR with one
+    # FAT32 partition (type 0x0C) at LBA 2048, the given files in its root.
+    # The kernel mounts it at /usb when it is ready (`[USB] volume mounted
+    # at`), the shell's row holds /usb read-write (crash-log export), every
+    # row reads it through its root directory (the package tool), an orderly
+    # power-off ejects it (`[ORDERLY] usb volume:`), a `device_del` on the
+    # monitor pulls it out (`[USB] volume at /usb retired`).
+    usb_stick_image() { # usb_stick_image <img> <file>...
+        local img="$1" f; shift
+        rm -f "$img"
+        python3 - "$img" <<'PY' || return 1
+import sys
+SECT, START, TOTAL = 512, 2048, 64 * 1024 * 1024 // 512
+with open(sys.argv[1], 'wb') as f:
+    f.truncate(TOTAL * SECT)
+    mbr = bytearray(SECT)
+    mbr[446 + 4] = 0x0C
+    mbr[446 + 8:446 + 12] = START.to_bytes(4, 'little')
+    mbr[446 + 12:446 + 16] = (TOTAL - START).to_bytes(4, 'little')
+    mbr[510], mbr[511] = 0x55, 0xAA
+    f.write(mbr)
+PY
+        mkfs.fat -F 32 -s 1 --offset 2048 -n AZSTICK "$img" $((64 * 1024 - 1024)) >/dev/null 2>&1 || return 1
+        for f in "$@"; do mcopy -i "$img@@1M" "$f" :: || return 1; done
+    }
+    usb_stick_args() { # usb_stick_args <img>: the QEMU arguments of the stick
+        printf '%s' "-device qemu-xhci,id=xhci -drive if=none,id=stick,format=raw,file=$1 -device usb-storage,bus=xhci.0,drive=stick,id=stickdev"
+    }
+    # The volume mounts from the stick's partition and reads.
+    usb_mount_row() { # usb_mount_row <label> <rv|arm> <features>
+        local dir="$CI_LOG_DIR/usb-mount-$2" stick
+        rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
+        printf 'stick says hello\n' >"$dir/files/HELLO.TXT"
+        if ! usb_stick_image "$stick" "$dir/files/HELLO.TXT"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
+        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|volume not mounted' \
+            ushell_row "$1" "$2" "$3" PASS \
+            "#wait \[USB\] volume (mounted|not mounted)
+cat /usb/HELLO.TXT" 150 \
+            "[USB] mass storage" "[USB] volume mounted at /usb: FAT32 at LBA 2048 (1 partition(s))" "stick says hello"
+        rm -rf "$dir"
+    }
+    # Crash-log export: the shell copies CRASH.LOG and CRASH.OLD to the stick
+    # through its /usb write tree; the orderly power-off ejects the volume.
+    # Then, on the host: the two files are on the stick with their bytes and
+    # the volume's FAT[1] says it was shut down cleanly. The records are made
+    # with `echo` (a fresh volume has no crash log); the check reads them from
+    # the stick image, not from the guest's output.
+    usb_export_row() { # usb_export_row <label> <check label> <rv|arm> <features>
+        local dir="$CI_LOG_DIR/usb-export-$3" stick got
+        rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
+        printf 'stick says hello\n' >"$dir/files/HELLO.TXT"
+        if ! usb_stick_image "$stick" "$dir/files/HELLO.TXT"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
+        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|eject FAILED|volume not mounted' \
+            ushell_row "$1" "$3" "$4" PASS \
+            "#wait \[USB\] volume (mounted|not mounted)
+echo usb-row-crash-42 > /fat/CRASH.LOG
+echo usb-row-older-54 > /fat/CRASH.OLD
+cat /fat/CRASH.LOG > /usb/CRASH.LOG
+cat /fat/CRASH.OLD > /usb/CRASH.OLD
+!power shutdown
+#wait POWER\] shutdown by" 200 \
+            "[USB] volume mounted at /usb" "[ORDERLY] usb volume: written back, marked clean, synchronize cache ok" \
+            "[POWER] shutdown by tid"
+        printf "  %-26s" "$2..."
+        got="$(mtype -i "$stick@@1M" ::CRASH.LOG 2>&1 | tr -d '\r') / $(mtype -i "$stick@@1M" ::CRASH.OLD 2>&1 | tr -d '\r')"
+        if [ "$got" = "usb-row-crash-42 / usb-row-older-54" ] && python3 - "$stick" <<'PY'
+import sys
+b = open(sys.argv[1], 'rb').read()
+p = 2048 * 512
+rsvd = int.from_bytes(b[p + 14:p + 16], 'little')
+fat1 = int.from_bytes(b[p + rsvd * 512 + 4:p + rsvd * 512 + 8], 'little')
+sys.exit(0 if fat1 & 0x0800_0000 else 1)
+PY
+        then
+            ok; rm -rf "$dir"
+        else
+            bad; echo "      on the stick: ${got:-nothing} (or the volume is not marked clean)"; echo "      stick kept: $stick"
+        fi
+    }
+    # A package on the stick reaches the installer: the package tool opens it
+    # beneath its read-only root and hands it to PKGD.ELF, whose answer comes
+    # back (these bytes are no package: refused). Without the stick the tool
+    # cannot open it, which the row forbids.
+    usb_pkg_row() { # usb_pkg_row <label> <rv|arm> <features>
+        local dir="$CI_LOG_DIR/usb-pkg-$2" stick
+        rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
+        python3 -c "import random; random.seed(0x55534250); open('$dir/files/ACME.PKG', 'wb').write(random.randbytes(4096))"
+        if ! usb_stick_image "$stick" "$dir/files/ACME.PKG"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
+        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|cannot open the package file|volume not mounted' \
+            ushell_row "$1" "$2" "$3" PASS \
+            "#wait \[pkgd\] AzOS package installer
+#wait \[USB\] volume (mounted|not mounted)
+pkg admit /usb/ACME.PKG" 200 \
+            "[USB] volume mounted at /usb" "refused: "
+        rm -rf "$dir"
+    }
+    # Pulled out with a file read from it: the volume is retired, the path
+    # names nothing, the kernel goes on (no fault, the shell answers).
+    usb_unplug_row() { # usb_unplug_row <label> <rv|arm> <features>
+        local dir="$CI_LOG_DIR/usb-unplug-$2" stick
+        rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
+        printf 'stick says hello\n' >"$dir/files/HELLO.TXT"
+        if ! usb_stick_image "$stick" "$dir/files/HELLO.TXT"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
+        USH_MON=1 USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|volume not mounted' \
+            ushell_row "$1" "$2" "$3" PASS \
+            "#wait \[USB\] volume (mounted|not mounted)
+cat /usb/HELLO.TXT
+#mon device_del stickdev
+#wait \[USB\] volume at /usb retired
+cat /usb/HELLO.TXT
+echo after-unplug-ok" 200 \
+            "stick says hello" "[USB] volume at /usb retired: the stick is gone" "/usb/HELLO.TXT: no such file" \
+            "after-unplug-ok"
+        rm -rf "$dir"
+    }
     for ush_vol in sh lxabi aarch64-sh aarch64-lxabi; do
         rm -f "$AZOS_OUT/build/disk-$ush_vol.img" "$AZOS_OUT/build/disk-$ush_vol.img.pristine"
     done
@@ -21046,6 +21178,13 @@ args vk1 'vk 2'" 40 \
             "beep
 #sleep 1" 60 \
             "[VIRTIO-SND] " "beep: 12 of 12 periods played"
+        # USB mass storage with its volume (helpers above `usb_stick_image`).
+        par_row usb_mount_row "usb: stick volume mounted beside /fat ($ush_isa)" "$ush_isa" "$ush_feat,pci"
+        par "usb: crash log exported to the stick ($ush_isa)" usb_export_row \
+            "usb: crash log exported to the stick ($ush_isa)" "usb: exported log on the stick, volume clean ($ush_isa)" \
+            "$ush_isa" "$ush_feat,pci"
+        par_row usb_pkg_row "usb: a package on the stick reaches the installer ($ush_isa)" "$ush_isa" "$ush_feat,pci"
+        par_row usb_unplug_row "usb: pulled stick retires its volume ($ush_isa)" "$ush_isa" "$ush_feat,pci"
         # The input server (Kconfig INPUTD, on in the QEMU defconfigs): `input
         # watch` takes the focus and prints what the virtio keyboard sends, the
         # keys that make console bytes included (`q`, `x`) and the ones that do

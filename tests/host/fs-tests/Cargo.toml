@@ -125,6 +125,8 @@ fat-mutate-spin-canary = []
 # Wave 15 (FM): declared so the cfgs are known. `fat-sector-claim-canary` is
 # the concurrent-mutator test's canary; the other two are kernel-only.
 fat-sector-claim-canary = []
+# A retired mount's inodes left on its backend (see crates/fs/fs).
+usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it
 # on (`fat32_ktest_with_wb_claim`), never this suite.
 ktest = []

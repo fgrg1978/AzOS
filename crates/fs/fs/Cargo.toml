@@ -10,6 +10,10 @@ publish = false
 # (fat32.rs compiled a second time over the stick). Enabled through the
 # kernel's `usb-storage-volume` feature.
 usb-volume = []
+# Gate canary: a retired mount's inodes stay on its backend (`vfs_unmount`):
+# a descriptor opened on one USB stick reads the next stick's file of the
+# same name. The fs-tests `usb_volume` row must turn red. Never in a real build.
+usb-volume-stale-fd-canary = []
 # ktest `fat_claim_waiter_donates_to_owner` (kernel/src/ktest.rs, FX12):
 # `fat32_ktest_with_wb_claim` holds the write-back claim around a closure.
 # Enabled through the kernel's `ktest` feature.
