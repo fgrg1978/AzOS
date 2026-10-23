@@ -4126,10 +4126,12 @@ mod ads1115_pipeline {
 //
 // The controller state machine runs here against a model of the DesignWare
 // APB I2C: TX and RX FIFOs of a given depth, IC_STATUS, the raw interrupt
-// status with thresholds and mask, and one slave (an MPU-6050-like register
-// file). The model counts the two silent failures of the real controller:
-// a DATA_CMD write to a full TX FIFO (dropped) and a read executed with the
-// RX FIFO full (overflow). Board validation of the MMIO glue is pending.
+// status with thresholds and mask, IC_ENABLE / IC_ENABLE_STATUS, and one
+// slave (an MPU-6050-like register file). The model counts the three silent
+// failures of the real controller: a DATA_CMD write to a full TX FIFO
+// (dropped), a read executed with the RX FIFO full (overflow), and an IC_TAR
+// write while the controller is enabled (ignored: the next transaction goes
+// to the previous device). Board validation of the MMIO glue is pending.
 #[allow(dead_code)]
 #[path = "../../../../crates/drivers/bus/src/i2c_txn.rs"]
 mod i2c_txn;
@@ -4167,8 +4169,12 @@ mod i2c_txn_model {
         tx_tl: Cell<u32>,
         stop_det: Cell<bool>,
         abrt: Cell<bool>,
+        /// IC_ENABLE; the model's disable takes effect at once (an idle bus).
+        enabled: Cell<bool>,
         dropped_writes: Cell<u32>,
         rx_overflows: Cell<u32>,
+        /// IC_TAR writes made while enabled: the controller ignores them.
+        tar_ignored: Cell<u32>,
         /// Register reads and writes: what one service step costs.
         accesses: Cell<u32>,
     }
@@ -4194,8 +4200,10 @@ mod i2c_txn_model {
                 tx_tl: Cell::new(0),
                 stop_det: Cell::new(false),
                 abrt: Cell::new(false),
+                enabled: Cell::new(false),
                 dropped_writes: Cell::new(0),
                 rx_overflows: Cell::new(0),
+                tar_ignored: Cell::new(0),
                 accesses: Cell::new(0),
             }
         }
@@ -4263,13 +4271,23 @@ mod i2c_txn_model {
                 IC_CLR_TX_ABRT => { self.abrt.set(false); 0 }
                 IC_CLR_STOP_DET => { self.stop_det.set(false); 0 }
                 IC_INTR_MASK => self.mask.get(),
+                IC_ENABLE_STATUS => self.enabled.get() as u32,
                 _ => 0,
             }
         }
         fn wr(&self, off: usize, val: u32) {
             self.accesses.set(self.accesses.get() + 1);
             match off {
+                IC_TAR if self.enabled.get() => self.tar_ignored.set(self.tar_ignored.get() + 1),
                 IC_TAR => self.tar.set(val),
+                IC_ENABLE => {
+                    // Disabling flushes both FIFOs (DW_apb_i2c databook).
+                    if val & 1 == 0 {
+                        self.tx.borrow_mut().clear();
+                        self.rx.borrow_mut().clear();
+                    }
+                    self.enabled.set(val & 1 != 0);
+                }
                 IC_INTR_MASK => self.mask.set(val),
                 IC_RX_TL => self.rx_tl.set(val),
                 IC_TX_TL => self.tx_tl.set(val),
@@ -4386,6 +4404,41 @@ mod i2c_txn_model {
         assert_eq!(bus.aborts, 1);
         let (c2, _, _) = run_irq(&mut bus, &m, good);
         assert!(c2.ok);
+    }
+
+    /// Each transaction addresses its own device: `IC_TAR` is written while
+    /// the controller is disabled, so a device after another one is not sent
+    /// the first one's transaction. Canary (2026-10-23): the start that wrote
+    /// `IC_TAR` to the enabled controller (before this front) fails here and
+    /// in `a_nack_fails_the_transaction_and_the_queue_moves_on`: the
+    /// model ignores the write, as the controller does, and the device after
+    /// the absent one is NACKed in its place.
+    #[test]
+    fn each_transaction_addresses_its_own_device() {
+        let m = Model::new(8, 8);
+        let mut bus = I2cBus::<4>::new(8);
+        let mut got = Vec::new();
+        for addr in [0x68u8, 0x50, 0x68, 0x50, 0x68] {
+            let t = bus.submit(addr, &[0x75], 1).unwrap();
+            let (c, _, _) = run_irq(&mut bus, &m, t);
+            got.push(c.ok);
+        }
+        assert_eq!(got, [true, false, true, false, true]);
+        assert_eq!(m.tar_ignored.get(), 0, "IC_TAR written to an enabled controller");
+    }
+
+    /// The IP's RX depth replaces the configured one (`set_fifo_depth`, from
+    /// `i2c_dw::init_master`): a 2-deep RX FIFO the bus was built for 8 with
+    /// does not overflow once told.
+    #[test]
+    fn the_reported_rx_depth_bounds_the_reads_in_flight() {
+        let m = Model::new(8, 2);
+        let mut bus = I2cBus::<4>::new(8);
+        bus.set_fifo_depth(2);
+        let t = bus.submit(0x68, &[0x10], 20).unwrap();
+        let (c, _, _) = run_irq(&mut bus, &m, t);
+        assert!(c.ok);
+        assert_eq!(m.rx_overflows.get(), 0);
     }
 
     /// A bus that never moves (the wire stuck): the timeout finishes the

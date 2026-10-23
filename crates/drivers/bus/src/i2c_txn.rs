@@ -5,10 +5,10 @@
 //!
 //! # Why
 //!
-//! The synchronous DesignWare path (`i2c.rs`, `dw_i2c`) polls `IC_STATUS`
-//! for the whole transfer with the bus `SpinLock` held, so preemption is off
-//! for it: ~1.35 ms for the IMU's 14-byte read at 100 kHz, from `imu_task`,
-//! a real-time task, 100 times a second. The owner rule is that a real-time
+//! Before wave 15 the synchronous DesignWare path polled `IC_STATUS` for the
+//! whole transfer with the bus `SpinLock` held, so preemption was off for
+//! it: ~1.35 ms for the IMU's 14-byte read at 100 kHz, from `imu_task`, a
+//! real-time task, 100 times a second. The owner rule is that a real-time
 //! task only enqueues.
 //!
 //! # The shape
@@ -17,7 +17,9 @@
 //!   [`TXN_WR_MAX`] bytes to write, up to [`TXN_RD_MAX`] to read) and gets a
 //!   ticket back, or a refusal (queue full, counted). It never waits.
 //! * [`I2cBus::service`] is one step of the controller: it starts the next
-//!   queued transaction when the bus is idle, moves what the RX FIFO holds
+//!   queued transaction when the bus is idle (disable, `IC_TAR`, enable:
+//!   the controller takes `IC_TAR` only while disabled), moves what the RX
+//!   FIFO holds
 //!   into the transaction, refills the TX FIFO with as many commands as the
 //!   FIFOs have room for, and finishes the transaction on its last byte, on
 //!   an abort (`TX_ABRT`: a NACK) or on the timeout. It reads the RAW
@@ -37,7 +39,8 @@
 //!
 //! ISA-neutral and free of MMIO: the registers come through [`DwRegs`], so
 //! `tests/host/drivers-tests` runs this file against a modelled controller.
-//! Board validation (VisionFive 2) is pending: QEMU has no DesignWare I2C.
+//! The controller's bring-up is `crate::i2c_dw`. Board validation (VisionFive
+//! 2, Raspberry Pi 5, Intel LPSS) is pending: QEMU has no DesignWare I2C.
 
 /// Largest write part of one transaction (a register address and a few
 /// bytes).
@@ -58,6 +61,10 @@ pub const IC_CLR_STOP_DET: usize = 0x60;
 pub const IC_ENABLE: usize = 0x6C;
 pub const IC_STATUS: usize = 0x70;
 pub const IC_RXFLR: usize = 0x78;
+pub const IC_ENABLE_STATUS: usize = 0x9C;
+
+// IC_ENABLE_STATUS bits.
+pub const ENABLE_STATUS_IC_EN: u32 = 1 << 0;
 
 // Interrupt bits (IC_RAW_INTR_STAT / IC_INTR_MASK).
 pub const INTR_RX_FULL: u32 = 1 << 2;
@@ -172,6 +179,9 @@ struct Active {
     got: usize,
     rx: [u8; TXN_RD_MAX],
     started: u64,
+    /// `IC_TAR` written and the controller enabled. Until then the step
+    /// waits for the disable `start` asked for (`IC_ENABLE_STATUS`).
+    armed: bool,
 }
 
 /// One bus: the transaction queue, the transaction on the wire and the
@@ -187,6 +197,7 @@ pub struct I2cBus<const D: usize> {
     next_ticket: u32,
     /// RX FIFO depth of the controller, in entries: reads in flight never
     /// exceed it. (The TX side needs no depth: every push checks TFNF.)
+    /// [`set_fifo_depth`](Self::set_fifo_depth) puts the IP's own there.
     fifo_depth: usize,
     /// Submissions refused because the queue was full.
     pub refused: u32,
@@ -215,6 +226,12 @@ impl<const D: usize> I2cBus<D> {
             timeouts: 0,
             completed: 0,
         }
+    }
+
+    /// The controller's RX FIFO depth as the bring-up read it
+    /// (`i2c_dw::init_master`), at least 2. Set while nothing is on the wire.
+    pub fn set_fifo_depth(&mut self, depth: usize) {
+        self.fifo_depth = depth.max(2);
     }
 
     /// A transaction is on the wire (the bus's `IC_TAR` is taken).
@@ -285,6 +302,14 @@ impl<const D: usize> I2cBus<D> {
             let txn = self.pop_next()?;
             self.start(r, txn, now);
         }
+        if !self.arm(r) {
+            let a = self.active.as_ref()?;
+            if now.saturating_sub(a.started) >= timeout {
+                self.timeouts = self.timeouts.wrapping_add(1);
+                return Some(self.finish(r, false, now));
+            }
+            return None;
+        }
         let raw = r.rd(IC_RAW_INTR_STAT);
         if raw & INTR_TX_ABRT != 0 {
             let _ = r.rd(IC_CLR_TX_ABRT);
@@ -313,17 +338,42 @@ impl<const D: usize> I2cBus<D> {
         None
     }
 
+    /// Take `txn` on: disable the controller, so the next [`arm`](Self::arm)
+    /// may write `IC_TAR`. A DesignWare controller ignores an `IC_TAR` write
+    /// while enabled (unless built with `IC_DYNAMIC_TAR_UPDATE`, which
+    /// nothing here may assume): the second device on a bus would be sent the
+    /// first one's transaction.
     fn start<R: DwRegs + ?Sized>(&mut self, r: &R, txn: BusTxn, now: u64) {
-        r.wr(IC_TAR, txn.addr as u32);
+        r.wr(IC_INTR_MASK, 0);
+        r.wr(IC_ENABLE, 0);
+        self.active = Some(Active { txn, sent: 0, got: 0, rx: [0; TXN_RD_MAX], started: now, armed: false });
+    }
+
+    /// Once the disable `start` asked for has taken effect (an idle
+    /// controller: within a few `ic_clk` cycles, so normally in the same
+    /// step), address the transaction's device and enable. Returns whether
+    /// the transaction is armed; `false`: the controller still reads enabled,
+    /// look again next step (the timeout bounds it).
+    fn arm<R: DwRegs + ?Sized>(&mut self, r: &R) -> bool {
+        let depth = self.fifo_depth;
+        let Some(a) = self.active.as_mut() else { return false };
+        if a.armed {
+            return true;
+        }
+        if r.rd(IC_ENABLE_STATUS) & ENABLE_STATUS_IC_EN != 0 {
+            return false;
+        }
+        r.wr(IC_TAR, a.txn.addr as u32);
         r.wr(IC_ENABLE, 1);
         let _ = r.rd(IC_CLR_INTR);
         // RX_FULL fires once the whole read (or a FIFO's worth) is in;
         // TX_EMPTY at half the FIFO, so the refill overlaps the wire.
-        let rd = (txn.rd_len as usize).clamp(1, self.fifo_depth);
+        let rd = (a.txn.rd_len as usize).clamp(1, depth);
         r.wr(IC_RX_TL, (rd - 1) as u32);
-        r.wr(IC_TX_TL, (self.fifo_depth / 2) as u32);
-        self.active = Some(Active { txn, sent: 0, got: 0, rx: [0; TXN_RD_MAX], started: now });
+        r.wr(IC_TX_TL, (depth / 2) as u32);
+        a.armed = true;
         r.wr(IC_INTR_MASK, INTR_TX_EMPTY | INTR_RX_FULL | INTR_TX_ABRT | INTR_STOP_DET);
+        true
     }
 
     /// Move what the RX FIFO holds into the transaction.
