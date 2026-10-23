@@ -48,8 +48,6 @@ pub const LEN_FIELD_BYTES: usize = 2;
 pub const HEADER_LEN: usize = STREAM_ID_BYTES + LEN_FIELD_BYTES;
 /// Maximum payload bytes per frame (u16::MAX).
 pub const MAX_PAYLOAD_LEN: usize = 65535;
-/// Minimum frame length on the wire (header only, zero-payload is valid).
-pub const MIN_FRAME_LEN: usize = HEADER_LEN;
 
 // ── Stream ID allocations ─────────────────────────────────────────────────────
 
@@ -113,41 +111,14 @@ pub fn wrap(stream_id: u8, inner_bytes: &[u8], out: &mut [u8]) -> Result<usize, 
     Ok(total)
 }
 
-// ── unwrap() ─────────────────────────────────────────────────────────────────
-
-/// Parse a multiplexed frame from `frame`.
-///
-/// # Returns
-/// `Some((stream_id, payload_len, payload_slice))` on success, or `None` if
-/// the frame is malformed:
-/// - `frame.len() < HEADER_LEN` — not even a complete header.
-/// - `LEN` field claims more bytes than `frame[HEADER_LEN..]` contains
-///   (length-extension attack / truncated read).
-///
-/// On success, `payload_slice` has exactly `payload_len` bytes starting at
-/// `frame[HEADER_LEN]`.
-pub fn unwrap(frame: &[u8]) -> Option<(u8, usize, &[u8])> {
-    if frame.len() < HEADER_LEN {
-        return None;
-    }
-    let stream_id = frame[0];
-    let payload_len = u16::from_le_bytes([frame[1], frame[2]]) as usize;
-    let available = frame.len().saturating_sub(HEADER_LEN);
-    if payload_len > available {
-        return None; // length-extension or truncated frame
-    }
-    let payload = &frame[HEADER_LEN..HEADER_LEN + payload_len];
-    Some((stream_id, payload_len, payload))
-}
-
 // ── StreamDemux: the receive side over a byte stream ─────────────────────────
 
 /// Splits a TCP byte stream back into its streams, across reads.
 ///
 /// TCP keeps no `send()` boundary: one `recv()` can hold several frames, or
-/// end inside a header or a payload. [`unwrap`] parses one whole frame from
-/// one buffer; applied to each read it dropped every frame after the first and
-/// every frame torn across two reads. This walks the stream instead and hands
+/// end inside a header or a payload. A parser of one whole frame per buffer,
+/// applied to each read, drops every frame after the first and every frame
+/// torn across two reads. This walks the stream instead and hands
 /// each payload on in the pieces the reads cut it into, tagged with its
 /// stream: a consumer that reassembles its own records (the brain link's
 /// record layer does) needs no frame-sized buffer here, and a frame of a

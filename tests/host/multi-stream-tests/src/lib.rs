@@ -11,7 +11,7 @@
 #[cfg(test)]
 mod tests {
     use azos_multi_stream::{
-        wrap, unwrap, camera_stream_id, is_camera_stream,
+        wrap, camera_stream_id, is_camera_stream, StreamDemux,
         WrapError,
         HEADER_LEN, MAX_PAYLOAD_LEN,
         STREAM_CONTROL, STREAM_CAMERA_BASE, STREAM_CAMERA_LAST,
@@ -20,16 +20,24 @@ mod tests {
 
     // ── Helper ────────────────────────────────────────────────────────────────
 
-    /// Wrap then unwrap and check round-trip equality.
+    /// Wrap, then read the frame back through the receive side
+    /// (`StreamDemux`), and check round-trip equality.
     fn roundtrip(stream_id: u8, payload: &[u8]) {
         let mut buf = vec![0u8; HEADER_LEN + payload.len()];
         let written = wrap(stream_id, payload, &mut buf).expect("wrap should succeed");
         assert_eq!(written, HEADER_LEN + payload.len());
+        assert_eq!(buf[0], stream_id, "the header starts with the stream id");
+        assert_eq!(u16::from_le_bytes([buf[1], buf[2]]) as usize, payload.len(), "LEN");
 
-        let (got_id, got_len, got_payload) = unwrap(&buf[..written]).expect("unwrap should succeed");
-        assert_eq!(got_id, stream_id);
-        assert_eq!(got_len, payload.len());
-        assert_eq!(got_payload, payload);
+        let mut got = Vec::new();
+        StreamDemux::new()
+            .feed(&buf[..written], |sid, piece| -> Result<(), ()> {
+                assert_eq!(sid, stream_id);
+                got.extend_from_slice(piece);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(got, payload);
     }
 
     // ── 1. Round-trip: STREAM_CONTROL ────────────────────────────────────────
@@ -77,41 +85,6 @@ mod tests {
     #[test]
     fn roundtrip_zero_length_payload() {
         roundtrip(STREAM_CONTROL, b"");
-    }
-
-    // ── 7. Length-extension rejection ────────────────────────────────────────
-
-    #[test]
-    fn length_extension_rejected_by_unwrap() {
-        // Build a frame that claims 10 bytes but only has 3 bytes of payload.
-        let mut frame = vec![0u8; HEADER_LEN + 3];
-        frame[0] = STREAM_CONTROL;
-        // LEN field says 10.
-        let len_le = 10u16.to_le_bytes();
-        frame[1] = len_le[0];
-        frame[2] = len_le[1];
-        // Only 3 bytes of payload present — should be rejected.
-        assert!(unwrap(&frame).is_none(), "must reject length-extension frame");
-    }
-
-    // ── 8. Too-short frame (no complete header) ───────────────────────────────
-
-    #[test]
-    fn malformed_frame_shorter_than_header() {
-        assert!(unwrap(&[]).is_none(), "empty slice must be rejected");
-        assert!(unwrap(&[STREAM_CONTROL]).is_none(), "1-byte slice must be rejected");
-        assert!(unwrap(&[STREAM_CONTROL, 0]).is_none(), "2-byte slice must be rejected");
-    }
-
-    // ── 9. Header-only frame (LEN=0) ─────────────────────────────────────────
-
-    #[test]
-    fn header_only_frame_unwraps_to_empty_payload() {
-        let frame = [STREAM_CAMERA_BASE, 0x00, 0x00]; // LEN = 0
-        let (id, len, payload) = unwrap(&frame).expect("valid empty-payload frame");
-        assert_eq!(id, STREAM_CAMERA_BASE);
-        assert_eq!(len, 0);
-        assert!(payload.is_empty());
     }
 
     // ── 10. PayloadTooLarge error from wrap ───────────────────────────────────
@@ -175,7 +148,7 @@ mod tests {
     fn unknown_stream_id_passthrough() {
         // The multiplexer does not validate stream_id values; unknown IDs
         // round-trip unchanged so future streams can be added without
-        // updating the wrap/unwrap code.
+        // updating the wrap/demux code.
         let future_id: u8 = 0xF0;
         let payload = b"future-stream";
         roundtrip(future_id, payload);
@@ -464,7 +437,7 @@ mod demux_tests {
     }
 
     /// Two frames in one read: both reach the consumer. Canary: one frame
-    /// per read (the old per-read `unwrap`) loses the second.
+    /// per read (the old per-read parse) loses the second.
     #[test]
     fn every_frame_of_one_read_is_handed_on() {
         let wire = [frame(STREAM_CONTROL, b"first"), frame(STREAM_CONTROL, b"second")].concat();

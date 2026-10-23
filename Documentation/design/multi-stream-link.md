@@ -22,7 +22,7 @@ Source: `crates/net/multi-stream/src/lib.rs`, `crates/core/config/src/lib.rs`
 
 ## Wire format
 
-Source: `crates/net/multi-stream/src/lib.rs` (`wrap`, `unwrap`,
+Source: `crates/net/multi-stream/src/lib.rs` (`wrap`, `StreamDemux`,
 `HEADER_LEN`, `MAX_PAYLOAD_LEN`).
 
 ```
@@ -36,9 +36,6 @@ Source: `crates/net/multi-stream/src/lib.rs` (`wrap`, `unwrap`,
   `MAX_PAYLOAD_LEN` = 65535 bytes. Overhead is `HEADER_LEN` = 3 bytes per frame.
 - `wrap(stream_id, payload, out)` returns the bytes written, or
   `WrapError::PayloadTooLarge` / `WrapError::OutputTooSmall`.
-- `unwrap(frame)` returns `(stream_id, payload_len, payload)`, or `None` for a
-  frame shorter than the header or one whose `LEN` claims more bytes than the
-  frame holds (a truncated or length-extended frame).
 - `StreamDemux` is the receive side: it walks frames across socket reads
   (TCP cuts and coalesces them) and hands each payload piece to the caller
   tagged with its stream id, so a frame of an ignored stream costs no copy.
@@ -139,4 +136,6 @@ Source: `crates/net/multi-stream/src/lib.rs`, `kernel/src/tasks/behavior.rs`,
   production sender; only `STREAM_CONTROL` is demultiplexed on receive.
 - A header is not authenticated on its own; it travels outside the encrypted
   records, so the receive path must treat an unexpected stream id or length as
-  hostile input (`unwrap` returns `None` rather than reading past the frame).
+  hostile input (`StreamDemux::feed` takes at most the bytes the read holds,
+  so a `LEN` larger than what arrived waits for more bytes rather than reading
+  past the input).
