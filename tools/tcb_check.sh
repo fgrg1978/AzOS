@@ -201,7 +201,7 @@ lx-loader
 # links `fs` and `ota`, so it can never be CORE. A CORE crate that starts to
 # call one of them is a CORE -> SCAFFOLD edge this check will name.
 SCAFFOLD_CRATES="
-fs camera ota msc efi display bench cam-ring telemetry tftp
+fs camera ota efi display bench cam-ring telemetry tftp
 ktest
 fb inspect tpm thermal firmware soc recovery
 usb rtc usb-hid scsi pkg
@@ -209,7 +209,7 @@ usb rtc usb-hid scsi pkg
 
 # `usb-hid` and `scsi` joined SCAFFOLD with the USB host: the HID class driver
 # is linked by the kernel binary only behind the kernel's `usb-hid` feature (it depends on
-# `usb`), and `scsi` is the SCSI-over-bulk-only layer `usb` and `msc` use.
+# `usb`), and `scsi` is the SCSI-over-bulk-only layer `usb` uses.
 # `pkg` is the signed-package container and its admission as a topology delta;
 # only the kernel binary and the ring-3 installer link it, no CORE crate does.
 
