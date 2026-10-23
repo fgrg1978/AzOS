@@ -14568,6 +14568,74 @@ PY
         bad; printf '%s\n' "$why" | sed 's/^/      /'; echo "      log kept: $log"
     }
     par "boot: no self-tests by default (x86)" x86_selftests_off_row
+    # CPU microcode at boot (Kconfig X86_UCODE_LOAD, crates/core/arch-x86_64/src/
+    # cpu/ucode.rs, kernel/src/entry/x86_64/ext/ucode.rs): the signed image
+    # (`make ucode`, mk/firmware.mk, every Intel and AMD file under AZOS_DL) as
+    # the PVH boot module, one kernel embedding the TEST key the image is
+    # signed with, four boots. With the hypervisor bit off the loader runs as on
+    # bare metal; QEMU's TCG reads IA32_PLATFORM_ID as 0 (platform flag 0x1) and
+    # IA32_BIOS_SIGN_ID as revision 1, and ignores the MSR write:
+    #   * Skylake-Server (0x50654): 06-55-04's update lists flag 0x1: chosen,
+    #     checksummed, written, and the revision reads back unchanged;
+    #   * Skylake-Client (0x506e3): 06-5e-03's signature matches, its flags
+    #     (0x36) do not: refused, "no matching patch";
+    #   * the image with one payload byte flipped: the signature refuses it;
+    #   * EPYC-Rome with the hypervisor bit on (QEMU's default): nothing written.
+    # Every boot reaches the shell, the mitigation probe after the [UCODE] line.
+    # (Not a row: AMD with the bit off, because TCG answers `rdpmc` with #UD and
+    # the PMU probe assumes AMD's legacy counters on bare metal; the loader's
+    # line, "patch revision 0x830107c written, not taken", comes before it.)
+    # SKIPPED, not failed, without the downloads.
+    x86_ucode_row() { # x86_ucode_row <label>
+        local label="$1" why="" tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        printf "  %-26s" "${label}..."
+        local dl="${AZOS_DL:-$HOME/azos-dl}"
+        if [ ! -d "$dl/intel-ucode/intel-ucode" ] || [ ! -d "$dl/amd-fw/amd-ucode" ]; then
+            SKIP=$((SKIP + 1)); echo "skipped (no intel-ucode or amd-ucode under $dl)"; return
+        fi
+        mkdir -p "$CI_LOG_DIR"
+        local kimg="$CI_LOG_DIR/kernel-x86-${tag}" full="$CI_LOG_DIR/${tag}-full.bin" bad_img="$CI_LOG_DIR/${tag}-corrupt.bin"
+        PROD_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin" x86_kbuild "" "$kimg" \
+            || { bad; echo "      make x86_64 (TEST key) did not build"; return; }
+        make -s ucode UCODE_BIN="$full" >/dev/null 2>&1 \
+            || { bad; echo "      make ucode did not build the image"; rm -f "$kimg" "$kimg.features"; return; }
+        # One byte of the payload (past the 112-byte RSIG) flipped.
+        python3 -c 'import sys; b = bytearray(open(sys.argv[1], "rb").read()); b[4096] ^= 1; open(sys.argv[2], "wb").write(b)' "$full" "$bad_img"
+        par_ready
+        local case img cpu want log
+        for case in match pf corrupt guest; do
+            img="$full"
+            case "$case" in
+                match) cpu="Skylake-Server-v1,-hypervisor"
+                    want="signature 0x50654 platform flags 0x1 revision 0x1|[UCODE] patch revision 0x2007006 written, not taken: revision 0x1 -> 0x1" ;;
+                pf) cpu="Skylake-Client-v1,-hypervisor"
+                    want="signature 0x506e3 platform flags 0x1 revision 0x1|[UCODE] no matching patch for this CPU: revision 0x1 stays" ;;
+                corrupt) cpu="Skylake-Client-v1,-hypervisor"; img="$bad_img"
+                    want="[UCODE] REFUSED: the image at|does not verify against the update key" ;;
+                guest) cpu="EPYC-Rome-v1"
+                    want="[UCODE] image verified (|under a hypervisor, which owns the microcode: nothing written" ;;
+            esac
+            log="$CI_LOG_DIR/x86-${tag}-${case}.log"
+            X86_CPU="$cpu" x86_qemu "$kimg" "$log" 90 "$X86_SHELL|KERNEL PANIC|\[X86-TRAP\]" -smp 2 -initrd "$img" \
+                || { why="$case: the kernel was refused"; break; }
+            local w IFS='|'
+            for w in $want "$X86_SHELL"; do
+                grep -aqF -- "$w" "$log" || { why="$case: missing: $w"; break; }
+            done
+            unset IFS
+            [ -n "$why" ] && break
+            local u m
+            u="$(grep -anF '[UCODE]' "$log" | sed -n 1p | cut -d: -f1)"
+            m="$(grep -anF '[MITIGATE] cpu ' "$log" | sed -n 1p | cut -d: -f1)"
+            if [ -z "$m" ] || [ "$u" -gt "$m" ]; then why="$case: the mitigation probe did not run after the update"; break; fi
+            if grep -aqE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log"; then why="$case: $(grep -aE 'KERNEL PANIC|\[X86-TRAP\]|FAILED' "$log" | sed -n 1p)"; break; fi
+            rm -f "$log"
+        done
+        rm -f "$kimg" "$kimg.features" "$full" "$bad_img"
+        if [ -z "$why" ]; then ok; return; fi
+        bad; echo "      $why"; echo "      log kept: $log"
+    }
+    par "x86_64: microcode loader" x86_ucode_row "x86_64: microcode loader"
     # virtio-input on x86_64 (Kconfig DRV_VIRTIO_INPUT): the kernel shell reads a
     # `-device virtio-keyboard-device` (a virtio-mmio v1 transport on microvm)
     # with the serial stdin silent. A typist in the background waits for the
