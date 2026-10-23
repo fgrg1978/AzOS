@@ -21,7 +21,7 @@ pub const DEFAULT_PATH: &[u8] = b"/fat";
 
 /// Names `TOOLBOX.ELF` answers to (its `argv[0]` dispatch).
 pub const APPLETS: &[&[u8]] = &[
-    b"args", b"beep", b"cat", b"echo", b"false", b"host", b"input", b"inspect", b"log", b"ls", b"ntp", b"ps", b"sleep", b"spin", b"true", b"vm", b"wc", b"window",
+    b"args", b"beep", b"cat", b"echo", b"false", b"fsck", b"host", b"input", b"inspect", b"log", b"ls", b"ntp", b"ps", b"sleep", b"spin", b"true", b"vm", b"wc", b"window",
     b"yes",
 ];
 

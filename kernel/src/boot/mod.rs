@@ -129,7 +129,7 @@ pub(crate) mod keys;
 // can include that file over its own copy of the engine.
 use azos_fs::azvol as engine;
 mod azvol;
-pub(crate) use azvol::install_azvol;
+pub(crate) use azvol::{fat32_check_report, install_azvol};
 // The key of a sealed volume row, derived from the board's seed.
 mod azvol_key;
 // The boot-time apply of staged packages: the decision (host-tested over the

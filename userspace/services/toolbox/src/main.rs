@@ -15,7 +15,8 @@
 //! `beep` (a short tone: a playback stream of memory-object periods, `sound.rs`,
 //! through the audio server `AUDIOD.ELF` when the row holds its endpoint
 //! (Kconfig AUDIOD), else on the kernel's `sound.0`; Kconfig DRV_VIRTIO_SND),
-//! `cat`, `echo`, `false`, `host` (the addresses of a name, from the stack's
+//! `cat`, `echo`, `false`, `fsck` (the check of a mounted volume, by hand: the
+//! kernel's `volume.<n>` endpoints, `fsck.rs`), `host` (the addresses of a name, from the stack's
 //! resolver), `input` (take the focus from the input server and watch the
 //! events it delivers; Kconfig `INPUTD`), `inspect` (the kernel's introspection tree: all of it, a
 //! subtree such as `metrics`, or `-j` for a Perfetto counter trace), `log`
@@ -40,6 +41,7 @@ use azos_libsys as sys;
 mod wire;
 
 mod beep;
+mod fsck;
 mod host;
 mod input;
 #[path = "log_view.rs"]
@@ -658,6 +660,73 @@ fn host() -> i32 {
     0
 }
 
+/// `fsck [-s] [VOLUME...]`: each volume checked by the kernel, one line
+/// each; the status is the worst (`fsck.rs`).
+fn fsck() -> i32 {
+    use sys::dev::VolumeCall;
+    const VOLUMES: u32 = sys::dev::volume::VOLUMES;
+    let scrub = sys::arg(1) == Some(&b"-s"[..]);
+    let first = if scrub { 2 } else { 1 };
+    let mut asked = [false; VOLUMES as usize];
+    for i in first..sys::argc() {
+        let n = sys::arg(i).and_then(|a| core::str::from_utf8(a).ok()).and_then(|t| t.parse::<u32>().ok());
+        match n {
+            Some(n) if n < VOLUMES => asked[n as usize] = true,
+            _ => {
+                fail(b"fsck", b"usage: fsck [-s] [VOLUME...] (0 the boot volume, P the row on partition P)");
+                return fsck::EXIT_USAGE;
+            }
+        }
+    }
+    let all = !asked.contains(&true);
+    let (mut worst, mut ran) = (fsck::EXIT_CLEAN, 0u32);
+    for n in 0..VOLUMES {
+        if !all && !asked[n as usize] {
+            continue;
+        }
+        let Some(ep) = sys::dev::lookup(sys::dev::key::VOLUME, sys::dev::volume::badge(n)) else {
+            if !all {
+                let _ = put(2, b"fsck: volume ");
+                put_num(2, n as u64);
+                let _ = put(2, b": this image's row does not grant its check\n");
+                worst = worst.max(fsck::EXIT_ERROR);
+            }
+            continue;
+        };
+        ran += 1;
+        let code = match sys::dev::value(sys::dev::VolumeClient::new(sys::dev::Ep(ep)).check(scrub)) {
+            Ok(r) => {
+                let mut l = Line { b: [0; 256], n: 0 };
+                let _ = fsck::write_report(&mut l, n, &r);
+                let _ = put(1, &l.b[..l.n]);
+                fsck::status(&r)
+            }
+            Err(code) => {
+                let why: &[u8] = match code {
+                    sys::dev::outcome::NO_RESOURCE => b"not mounted",
+                    sys::dev::outcome::UNSUPPORTED => b"the kernel has no check",
+                    sys::dev::outcome::BUSY => b"a transaction is open on the volume; try again after its commit",
+                    sys::dev::outcome::DENIED => b"the volume endpoint refused (rights or containment)",
+                    sys::dev::outcome::NO_SERVER => b"the call did not reach the kernel's volume interface",
+                    _ => b"the check could not read the volume",
+                };
+                let _ = put(2, b"fsck: volume ");
+                put_num(2, n as u64);
+                let _ = put(2, b": ");
+                let _ = put(2, why);
+                let _ = put(2, b"\n");
+                fsck::EXIT_ERROR
+            }
+        };
+        worst = worst.max(code);
+    }
+    if all && ran == 0 {
+        fail(b"fsck", b"no volume endpoint: this image's row grants no check");
+        return fsck::EXIT_ERROR;
+    }
+    worst
+}
+
 /// `ntp`: the SNTP client's state and, when the row grants `clock`, the
 /// discipline's.
 fn ntp() -> i32 {
@@ -858,6 +927,7 @@ fn main() -> i32 {
         b"cat" => cat(),
         b"echo" => echo(),
         b"false" => 1,
+        b"fsck" => fsck(),
         b"host" => host(),
         b"input" => input::run(),
         b"inspect" => inspect(),
@@ -873,7 +943,7 @@ fn main() -> i32 {
         b"window" => window::run(),
         b"yes" => yes(),
         _ => {
-            fail(b"toolbox", b"run as one of: args beep cat echo false host input inspect log ls ntp ps sleep spin true vm wc window yes");
+            fail(b"toolbox", b"run as one of: args beep cat echo false fsck host input inspect log ls ntp ps sleep spin true vm wc window yes");
             2
         }
     };

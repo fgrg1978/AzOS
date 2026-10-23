@@ -110,6 +110,9 @@ pub use memctl::{MemCtl, MemCtlCall, MemCtlClient, MemCtlIdl, MEMCTL_ID};
 pub mod keys;
 pub use keys::{Keys, KeysCall, KeysClient, KeysIdl, KEYS_ID};
 
+pub mod volume;
+pub use volume::{Report as VolumeReport, Volume, VolumeCall, VolumeClient, VolumeIdl, VOLUME_ID};
+
 pub mod families;
 pub use families::{
     Behavior, BehaviorCall, BehaviorClient, BehaviorIdl, Config, ConfigCall, ConfigClient, ConfigIdl, Flight,
@@ -209,6 +212,12 @@ fn sound_device(rest: &str) -> Option<u32> {
     index_below(rest, sound::DEVICES).map(sound::device_badge)
 }
 
+/// `<n>`: volume `n`, 0 the boot volume, `p` the `[volume.NAME]` row on
+/// partition `p`; the badge is `n + 1`.
+fn volume_index(rest: &str) -> Option<u32> {
+    index_below(rest, volume::VOLUMES).map(volume::badge)
+}
+
 /// `<n>`: VM `n`, the topology's `[guest.NAME]` row of that position; the
 /// badge is `n + 1`.
 fn vm_index(rest: &str) -> Option<u32> {
@@ -252,6 +261,7 @@ pub mod key {
     pub const KEYS: u16 = 25;
     pub const SOUND: u16 = 26;
     pub const POWER_ASSERT: u16 = 27;
+    pub const VOLUME: u16 = 28;
 }
 
 /// Every interface the kernel can host, by host key (`IFACES[key - 1]`).
@@ -283,6 +293,7 @@ pub const IFACES: &[Iface] = &[
     Iface { name: "keys", id: KEYS_ID, key: key::KEYS, resource: no_resource },
     Iface { name: "sound", id: SOUND_ID, key: key::SOUND, resource: sound_device },
     Iface { name: "powerassert", id: POWER_ASSERT_ID, key: key::POWER_ASSERT, resource: no_resource },
+    Iface { name: "volume", id: VOLUME_ID, key: key::VOLUME, resource: volume_index },
 ];
 
 /// Split a topology target `<iface>[.<resource>]` into its interface and the

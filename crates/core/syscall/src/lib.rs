@@ -49,6 +49,8 @@ pub mod sound_host;
 pub mod memctl;
 /// Keys held for their users, used by handle: the `Keys` interface the kernel hosts.
 pub mod keys;
+/// The check of a mounted volume, run by hand: the `Volume` interface the kernel hosts.
+pub mod volume_host;
 /// D6 part A: the interfaces the kernel hosts, served from endpoints.
 pub mod khost;
 pub mod vdso_notify;

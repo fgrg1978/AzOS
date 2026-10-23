@@ -4332,6 +4332,11 @@ mod launch_cap_tests {
                     assert!(azos_topology::builder::AUDIOD_ROW, "the grant is only there with the server");
                     assert_eq!((c.perms, c.transfer), (CapPerms::WRITE, true), "a caller, not the server");
                 }
+                // `fsck`: the check of a mounted volume, which counts and
+                // writes nothing; `WRITE` is the right to hold the volume.
+                CapKind::Endpoint if c.target == MaybeStr::from_bytes(b"volume.0") => {
+                    assert_eq!((c.perms, c.transfer), (CapPerms::WRITE, false), "the check, not the right to pass it on");
+                }
                 // The resolver and the clock's state: observation only.
                 CapKind::Endpoint => {
                     assert!(c.target == MaybeStr::from_bytes(b"net") || c.target == MaybeStr::from_bytes(b"clock"),

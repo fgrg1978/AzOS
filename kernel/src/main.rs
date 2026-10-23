@@ -1289,13 +1289,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                 // What the mount found on an unclean volume or a pending
                 // journal record, and what it gave back.
                 let r = azos_fs::fat32_mount_report();
-                if r.checked {
-                    kprintln!(
-                        "[FAT32] check: unclean={} complete={} fat_mismatch={} lost={} reclaimed={} cross_linked={} broken={}",
-                        r.unclean, r.complete, r.fat_mismatch, r.lost_clusters,
-                        r.reclaimed, r.cross_linked, r.broken_chains,
-                    );
-                }
+                fat32_check_report(&r);
                 match azos_fs::vfs_mount(b"/fat", azos_fs::FS_TYPE_FAT32) {
                     Ok(())  => {
                         kprintln!("[FS] FAT32 mounted at /fat");
@@ -1320,6 +1314,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                 // before `robot_init()`).
                 install_flight_recorder();
             }
+            // A refusal by the check has its own line and record.
+            Err(()) if azos_fs::fat32_mount_report().refused => fat32_check_report(&azos_fs::fat32_mount_report()),
             Err(()) => azos_drv_sys::kerr!("[FS] FAT32 mount failed (disk not FAT32?)"),
         }
     }

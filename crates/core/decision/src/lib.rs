@@ -430,8 +430,11 @@ pub const RULES: [RuleInfo; 75] = [
         // identity (PCI vendor << 16 | device, the virtio id, the FNV-1a hash
         // of the first `compatible`); `why` 1 the policy has no row for it,
         // 2 a row refuses it. Bus 4 is a `[volume.NAME]` row (the subject and
-        // `id` are its partition): `why` 3 the row is sealed and the system
-        // holds no key for it, 4 the key it holds does not open the volume.
+        // `id` are its partition, 0 the FAT32 boot volume): `why` 3 the row
+        // is sealed and the system holds no key for it, 4 the key it holds
+        // does not open the volume, 5 the check after an unclean mount found
+        // damage and the volume is served read-only, 6 the same and it was
+        // not mounted (Kconfig `FS_CHECK_FAILED`).
         name: "device-admission",
         subject: "device",
         fields: ["bus", "id", "why"],

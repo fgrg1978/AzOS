@@ -228,7 +228,7 @@ The kernel-hosted and driver interfaces are listed in the registry
 `parse_target`, `by_name` and `by_key` look entries up. The registry holds
 `entropy`, `linkkey`, `power`, `flight`, `behavior`, `config`, `ota`, `gpio`,
 `i2c`, `pwm`, `motor`, `sensor`, `time`, `block`, `clock`, `spi`, `can`, `uart`,
-`adc`, `vm`, `vcpu`, `net`, `display`, `memctl`, `keys` and `sound`. Interfaces that are served only by ring-3 services
+`adc`, `vm`, `vcpu`, `net`, `display`, `memctl`, `keys`, `sound` and `volume`. Interfaces that are served only by ring-3 services
 (for example `Decisions`, id `0x4445_4349`, in `userspace/lib/decisions`) declare
 their id with the macro and are not in the registry.
 

@@ -89,11 +89,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use azos_sync::claim::Claim;
 
 use super::azvol::verity::{Hash, OpenError, Record, Tamper, VerityDev};
-use super::azvol::{BlockDev, Error, Kind, MountReport, Volume, VolumeKey, BLOCK_SIZE};
+use super::azvol::{BlockDev, CheckReport, Error, Kind, MountReport, Volume, VolumeKey, BLOCK_SIZE};
 use super::probe::{probe_volume, VolumeKind};
 use crate::vfs::{
-    DirEnt, FileStat, FileSystem, FsErr, InodeKey, SectorRun, StatFs, FS_TYPE_AZVOL, INODE_KEY_LEN, NAME_MAX, S_IFDIR,
-    S_IFREG,
+    DirEnt, FileStat, FileSystem, FsCheck, FsErr, InodeKey, SectorRun, StatFs, FS_TYPE_AZVOL, INODE_KEY_LEN, NAME_MAX,
+    S_IFDIR, S_IFREG,
 };
 
 /// Deepest directory a rename walks (the longest key is
@@ -137,6 +137,9 @@ pub struct AzvolFs<D: BlockDev + Send> {
     read_only: bool,
     env: &'static dyn Env,
     report: MountReport,
+    /// What the check after an unclean mount found, when it found damage (the
+    /// volume is then read-only: [`open_plain`]).
+    damage: Option<Damage>,
     state: Claim<State<D>>,
 }
 
@@ -199,7 +202,13 @@ impl<D: BlockDev + Send> AzvolFs<D> {
         // the effect gate first.
         volume.set_delete_gate(crate::vfs::delete_admitted);
         let report = volume.report();
-        AzvolFs { read_only, env, report, state: Claim::new(State { vol: volume, txn: None }) }
+        AzvolFs { read_only, env, report, damage: None, state: Claim::new(State { vol: volume, txn: None }) }
+    }
+
+    /// The damage the check after an unclean mount found (the volume is then
+    /// served read-only), or `None`.
+    pub fn damage(&self) -> Option<Damage> {
+        self.damage
     }
 
     /// What the mount found (generation, which superblock copy, whether the
@@ -317,14 +326,67 @@ pub enum Why {
     NotAzvol(VolumeKind),
     /// The engine refused the volume.
     Engine(Error),
+    /// The check after an unclean mount found damage, and Kconfig
+    /// `FS_CHECK_FAILED` refuses such a volume.
+    CheckFailed(Damage),
     /// The VFS has no room or the mount point is taken.
     Vfs,
 }
+
+/// What the check after an unclean mount found that it cannot vouch for:
+/// how many problems (`Volume::check`'s list, less the leaked blocks, which are
+/// not damage) and the first of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Damage {
+    pub problems: u32,
+    pub first: &'static str,
+}
+
+/// What a mount does with a volume whose check found damage (Kconfig
+/// `FS_CHECK_FAILED`). A parameter of [`open_plain`] so a test takes either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnDamage {
+    /// Serve it, every change refused.
+    ReadOnly,
+    /// Do not serve it ([`Why::CheckFailed`]).
+    Refuse,
+}
+
+impl OnDamage {
+    /// The member this build's Kconfig chose.
+    pub const CONFIGURED: OnDamage = if azos_limits::FS_CHECK_FAILED_REFUSE { OnDamage::Refuse } else { OnDamage::ReadOnly };
+}
+
+/// Did this mount find the volume unclean? The format has no clean flag (a
+/// committed tree is whole by construction, see `volume.rs`): what a cut or a
+/// bad write leaves is what the mount had to work around, a free-space map
+/// that did not match its trees (rebuilt) or a superblock copy that does not
+/// check out.
+pub fn unclean(r: &MountReport) -> bool {
+    r.bitmap_rebuilt || !r.other_valid
+}
+
+/// The damage in `rep`: every problem but the leaked blocks (marked used,
+/// named by nothing), which cost space and nothing else.
+pub fn damage(rep: &CheckReport) -> Option<Damage> {
+    if cfg!(feature = "azvol-check-never-fails-canary") {
+        return None;
+    }
+    let mut hurt = rep.problems.iter().filter(|p| p.what != LEAKED);
+    let first = hurt.next()?.what;
+    Some(Damage { problems: 1 + hurt.count() as u32, first })
+}
+
+/// `Volume::check`'s words for a leaked block.
+const LEAKED: &str = "block marked used but named by nothing";
 
 /// What mounting one row came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Mounted(MountReport),
+    /// Mounted, and the check after an unclean mount found damage: served
+    /// read-only (Kconfig `FS_CHECK_FAILED_READ_ONLY`).
+    MountedReadOnly(MountReport, Damage),
     Refused(Why),
 }
 
@@ -334,22 +396,41 @@ pub enum Outcome {
 /// ([`mount_volume`] does that). With a `key` the volume is mounted sealed: a
 /// plain volume is then refused by the engine (`Unsupported`), and a wrong key
 /// is `WrongKey` before any data is read.
+///
+/// An [`unclean`] mount is checked (`Volume::check`, no scrub: the trees, the
+/// free-space map, the inode list, the directories). Damage ([`damage`])
+/// makes the volume read-only or refuses it, as `on_damage` says; a check
+/// that cannot run (a read error) refuses it either way.
 pub fn open_plain<D: BlockDev + Send>(
     mut dev: D,
     read_only: bool,
     env: &'static dyn Env,
     key: Option<&VolumeKey>,
+    on_damage: OnDamage,
 ) -> Result<AzvolFs<D>, Why> {
     let kind = probe_volume(&mut |blk, buf| dev.read(blk, buf).is_ok());
     if !matches!(kind, VolumeKind::Azvol { .. }) {
         return Err(Why::NotAzvol(kind));
     }
-    let vol = match key {
+    let mut vol = match key {
         Some(k) => Volume::mount_sealed(dev, k),
         None => Volume::mount(dev),
     }
     .map_err(Why::Engine)?;
-    Ok(AzvolFs::new(vol, read_only, env))
+    let mut found = None;
+    if unclean(&vol.report()) && !cfg!(feature = "azvol-unclean-unchecked-canary") {
+        // Nothing is pending after a mount, so the check's commit writes
+        // nothing: a read-only device (a verity one) is checked the same way.
+        found = damage(&vol.check(false).map_err(Why::Engine)?);
+    }
+    let read_only = match (found, on_damage) {
+        (Some(d), OnDamage::Refuse) => return Err(Why::CheckFailed(d)),
+        (Some(_), OnDamage::ReadOnly) => true,
+        (None, _) => read_only,
+    };
+    let mut fs = AzvolFs::new(vol, read_only, env);
+    fs.damage = found;
+    Ok(fs)
 }
 
 /// Where a verity device's failures go: the system's record
@@ -382,7 +463,7 @@ pub fn open_verity<D: BlockDev + Send>(
 ) -> Result<AzvolFs<VerityDev<D, Watch>>, Why> {
     let seen = Arc::new(AtomicU64::new(0));
     let checked = VerityDev::open(dev, root, Watch { env, seen: seen.clone() }).map_err(Why::Verity)?;
-    let opened = open_plain(checked, true, env, None);
+    let opened = open_plain(checked, true, env, None, OnDamage::CONFIGURED);
     if seen.load(Ordering::Relaxed) != 0 {
         return Err(Why::Tampered);
     }
@@ -391,11 +472,14 @@ pub fn open_verity<D: BlockDev + Send>(
 
 /// Serve `fs` at `at`. The reference lives for the rest of the boot: a volume
 /// is not unmounted yet, and its state is behind its own lock.
-fn serve<D: BlockDev + Send + 'static>(fs: AzvolFs<D>, at: &[u8]) -> Result<MountReport, Why> {
-    let report = fs.report();
+fn serve<D: BlockDev + Send + 'static>(fs: AzvolFs<D>, at: &[u8]) -> Result<Outcome, Why> {
+    let outcome = match fs.damage() {
+        Some(d) => Outcome::MountedReadOnly(fs.report(), d),
+        None => Outcome::Mounted(fs.report()),
+    };
     let fs: &'static AzvolFs<D> = Box::leak(Box::new(fs));
     crate::vfs::vfs_mount_fs(at, fs).map_err(|()| Why::Vfs)?;
-    Ok(report)
+    Ok(outcome)
 }
 
 /// Mount the row's volume at its mount point: through the hash tree when the
@@ -408,7 +492,7 @@ pub fn mount_volume<D: BlockDev + Send + 'static>(
     row: &Row<'_>,
     env: &'static dyn Env,
     key: Option<&VolumeKey>,
-) -> Result<MountReport, Why> {
+) -> Result<Outcome, Why> {
     if row.aead && row.verity_root.is_some() {
         return Err(Why::SealedAndHashed);
     }
@@ -418,7 +502,7 @@ pub fn mount_volume<D: BlockDev + Send + 'static>(
     let key = key.filter(|_| row.aead);
     match &row.verity_root {
         Some(root) => serve(open_verity(dev, root, env)?, row.mount),
-        None => serve(open_plain(dev, row.read_only, env, key)?, row.mount),
+        None => serve(open_plain(dev, row.read_only, env, key, OnDamage::CONFIGURED)?, row.mount),
     }
 }
 
@@ -443,10 +527,7 @@ pub fn mount_rows<'a, D: BlockDev + Send + 'static>(
         } else {
             match open(row.partition) {
                 None => Outcome::Refused(Why::NoDevice),
-                Some(dev) => match mount_volume(dev, &row, env, key.as_ref()) {
-                    Ok(report) => Outcome::Mounted(report),
-                    Err(w) => Outcome::Refused(w),
-                },
+                Some(dev) => mount_volume(dev, &row, env, key.as_ref()).unwrap_or_else(Outcome::Refused),
             }
         };
         done(&row, outcome);
@@ -801,6 +882,28 @@ impl<D: BlockDev + Send> FileSystem for AzvolFs<D> {
             files: 0,
             files_free: 0,
             name_max: NAME_MAX as u32,
+        })
+    }
+
+    /// `Volume::check` under the volume's claim. `Busy` while a transaction
+    /// is open, whoever owns it: the check commits before it walks, and a
+    /// commit is the owner's to make (see the module doc), so with nothing
+    /// open it writes nothing.
+    fn check(&self, scrub: bool) -> Result<FsCheck, FsErr> {
+        let mut g = self.state.acquire();
+        if g.txn.is_some() {
+            return Err(FsErr::Busy);
+        }
+        let rep = g.vol.check(scrub).map_err(fs_err)?;
+        let leaked = rep.problems.iter().filter(|p| p.what == LEAKED).count() as u64;
+        Ok(FsCheck {
+            problems: damage(&rep).map_or(0, |d| d.problems),
+            leaked,
+            mismatched: 0,
+            items: rep.inodes,
+            scrubbed: rep.blocks_scrubbed,
+            complete: true,
+            read_only: self.damage.is_some(),
         })
     }
 

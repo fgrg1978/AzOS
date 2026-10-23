@@ -831,7 +831,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // read-only (its row grants `READ|MAP`). `host` and `ntp` call the kernel's
     // `net` interface (and `ntp` the `clock` one, for the discipline's state)
     // through the endpoints its row grants with `READ`: `SYS_CAP_INFO` finds
-    // them, `SYS_IPC_CALL_V2` calls them. `vm` (Kconfig HV) asks the name
+    // them, `SYS_IPC_CALL_V2` calls them; `fsck` calls the `volume` one the
+    // same way (`WRITE`). `vm` (Kconfig HV) asks the name
     // server for the monitor's endpoint and calls it (`SYS_IPC_CALL_V2`), then
     // maps the console ring the monitor lends (`SYS_MO_MAP`) and sleeps
     // between looks at it. `beep` (Kconfig DRV_VIRTIO_SND) makes the three
@@ -859,7 +860,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE, DOMAIN_UPTIME],
-        ifaces: &[azos_devif::key::NET, azos_devif::key::CLOCK, azos_devif::key::SOUND],
+        ifaces: &[azos_devif::key::NET, azos_devif::key::CLOCK, azos_devif::key::SOUND, azos_devif::key::VOLUME],
     },
     // The shell's power tool, the first privileged family with a
     // ring-3 form. The ONLY profile whose interfaces list `power`;

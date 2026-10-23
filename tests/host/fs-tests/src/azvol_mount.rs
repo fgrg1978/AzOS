@@ -1380,3 +1380,108 @@ fn the_pinned_swap_file_answers_busy_to_every_path_that_would_move_it() {
     vfs::vfs_swapfile_resize(len / 2).unwrap();
     assert_eq!(vfs::vfs_swapfile_runs(len, &mut again), Err(FsErr::Invalid), "past the file");
 }
+
+// ── the check after an unclean mount (fs-check-mount) ─────────────
+
+/// A volume with two files whose root directory names the first file twice
+/// (the second file's record carries the first's inode, the block's checksum
+/// made to match): damage the mount itself does not see and `Volume::check`
+/// does ("inode not named exactly once"). With `unclean`, the free-space map
+/// fails its checksum too, so the mount rebuilds it and the check runs.
+fn misnamed_image(unclean: bool) -> Vec<u8> {
+    use azvol::layout::{self, Geometry};
+    let (dev, _) = formatted(2048);
+    let mut v = Volume::mount(dev.clone()).expect("mount");
+    let root = v.root();
+    let a = v.create(root, b"aaaa", Kind::File, 0o644).unwrap();
+    v.write(a, 0, b"first").unwrap();
+    let b = v.create(root, b"bbbb", Kind::File, 0o644).unwrap();
+    v.write(b, 0, b"second").unwrap();
+    v.commit().unwrap();
+    drop(v);
+    let mut img = dev.image();
+    let g = Geometry::new(2048).unwrap();
+    let hdr = azvol::dir::REC_HDR;
+    let rec = (g.data_start as usize * BLOCK_SIZE..img.len() - 4)
+        .find(|&p| &img[p..p + 4] == b"bbbb" && img[p - hdr..p - hdr + 8] == b.to_le_bytes())
+        .expect("the record of bbbb")
+        - hdr;
+    img[rec..rec + 8].copy_from_slice(&a.to_le_bytes());
+    let blk = (rec / BLOCK_SIZE) as u64;
+    let c = azvol::crc32c::crc32c(&img[blk as usize * BLOCK_SIZE..][..BLOCK_SIZE]);
+    let o = (g.csum_start + blk / layout::CSUMS_PER_BLOCK) as usize * BLOCK_SIZE + (blk % layout::CSUMS_PER_BLOCK) as usize * 4;
+    layout::wr32(&mut img[o..], 0, c);
+    if unclean {
+        img[g.bitmap_start as usize * BLOCK_SIZE + 500] ^= 0xFF;
+    }
+    img
+}
+
+/// **An unclean mount is checked, and damage makes the volume read-only**
+/// (Kconfig `FS_CHECK_FAILED`'s default) or refuses it: the outcome names the
+/// first problem, the served volume refuses every change and still reads.
+///
+/// **Canaries.** `azvol-unclean-unchecked-canary` (the check never runs),
+/// `azvol-check-never-fails-canary` (damage passes).
+#[test]
+fn an_unclean_mount_is_checked_and_damage_makes_the_volume_read_only_or_refused() {
+    let env = TestEnv::leak();
+    let img = misnamed_image(true);
+    let fs = mount::open_plain(Dev::from_image(img.clone()), false, env, None, mount::OnDamage::ReadOnly)
+        .ok()
+        .expect("served read-only");
+    assert!(fs.report().bitmap_rebuilt, "premise: the mount was unclean");
+    let d = fs.damage().expect("the check found the misnamed inode");
+    assert_eq!(d.first, "inode not named exactly once", "{d:?}");
+    assert!(d.problems >= 2, "one inode named twice, one named by nothing: {d:?}");
+    assert!(fs.read_only());
+    assert_eq!(get(fs_ref(&fs), "aaaa").as_deref(), Some(&b"first"[..]), "the volume still reads");
+    let k = key(&fs, "cccc");
+    assert_eq!(fs.create(&k), Err(FsErr::ReadOnly), "and takes no change");
+    let c = fs.check(false).expect("check by hand");
+    assert!(c.problems >= 2 && c.read_only, "{c:?}");
+    match mount::open_plain(Dev::from_image(img), false, env, None, mount::OnDamage::Refuse) {
+        Err(Why::CheckFailed(d)) => assert_eq!(d.first, "inode not named exactly once"),
+        other => panic!("refused, not {:?}", other.map(|f| f.report())),
+    }
+}
+
+fn fs_ref<D: BlockDev + Send>(fs: &AzvolFs<D>) -> &AzvolFs<D> {
+    fs
+}
+
+/// An unclean mount of a sound volume passes its check and is served
+/// read-write; a volume the mount found clean is not checked at all (the
+/// format has no clean flag: only what the mount had to work around asks for
+/// the walk), so its damage waits for the toolbox `fsck`.
+#[test]
+fn a_sound_unclean_volume_is_served_and_a_clean_mount_is_not_checked() {
+    let env = TestEnv::leak();
+    let (dev, mut img) = formatted(2048);
+    drop(dev);
+    let g = azvol::layout::Geometry::new(2048).unwrap();
+    img[g.bitmap_start as usize * BLOCK_SIZE + 500] ^= 0xFF;
+    let fs = mount::open_plain(Dev::from_image(img), false, env, None, mount::OnDamage::Refuse).ok().expect("served");
+    assert!(fs.report().bitmap_rebuilt && fs.damage().is_none() && !fs.read_only());
+    let fs = mount::open_plain(Dev::from_image(misnamed_image(false)), false, env, None, mount::OnDamage::Refuse)
+        .ok()
+        .expect("a clean mount is not checked");
+    assert!(!fs.report().bitmap_rebuilt && fs.damage().is_none() && !fs.read_only());
+    let c = fs.check(false).expect("the check by hand finds it");
+    assert!(c.problems >= 2 && !c.read_only, "{c:?}");
+}
+
+/// The check by hand waits for an open transaction: it would have to commit
+/// it first, and the commit is the owner's.
+#[test]
+fn the_check_by_hand_is_busy_while_a_transaction_is_open() {
+    let env = TestEnv::leak();
+    let (fs, _dev) = fresh_fs(env, false);
+    assert_eq!(fs.check(false).map(|c| c.problems), Ok(0));
+    put(fs, "open", b"pending");
+    assert_eq!(fs.check(false).err(), Some(FsErr::Busy));
+    assert_eq!(fs.sync(), Ok(()));
+    let c = fs.check(true).expect("after the commit");
+    assert_eq!((c.problems, c.items), (0, 2), "{c:?}");
+    assert!(c.scrubbed >= 1, "a scrub reads the data blocks: {c:?}");
+}

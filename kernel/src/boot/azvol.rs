@@ -33,6 +33,17 @@
 //! printed with its receipt. A volume that the key does not open is refused the
 //! same way (why 4) before any of its data is read.
 //!
+//! # A volume that fails its check
+//!
+//! An unclean mount is checked (`azos_fs::azvol_mount::open_plain`); damage
+//! serves the volume read-only or refuses it (Kconfig `FS_CHECK_FAILED`), and
+//! either is a `DeviceAdmission` record (bus 4, why 5 read-only, why 6
+//! refused) with its receipt on the console line. The FAT32 boot volume's
+//! check writes the same record with partition 0, which no row names
+//! ([`fat32_check_report`]). The same walks run by hand, counting only,
+//! through the `Volume` interface (the toolbox's `fsck`), whose hook
+//! [`install_azvol`] installs for every mounted volume, FAT32's included.
+//!
 //! # Partition numbers
 //!
 //! The row spells the partition 1-based (`partition = 1` is the first), the
@@ -221,6 +232,7 @@ impl Env for KernelEnv {
 /// before any task that opens a path under a mount point can run. A row that
 /// is not mounted is printed with the reason and costs nothing else.
 pub(crate) fn install_azvol() {
+    azos_syscall::volume_host::set_check_hook(volume_check);
     let Some(topo) = azos_topology::get() else { return };
     let rows = topo.volumes();
     if rows.is_empty() {
@@ -242,6 +254,8 @@ pub(crate) fn install_azvol() {
         let receipt = match outcome {
             Outcome::Refused(Why::NoKey) => Some(admission_receipt(row.partition, REFUSED_NO_KEY)),
             Outcome::Refused(Why::Engine(Error::WrongKey)) => Some(admission_receipt(row.partition, REFUSED_WRONG_KEY)),
+            Outcome::Refused(Why::CheckFailed(_)) => Some(record_check_failed(row.partition, true)),
+            Outcome::MountedReadOnly(..) => Some(record_check_failed(row.partition, false)),
             _ => None,
         };
         match outcome {
@@ -249,6 +263,11 @@ pub(crate) fn install_azvol() {
                 "[AZVOL] {}: partition {} mounted at {}{} (generation {}{})",
                 name, row.partition, at, if row.read_only { " read-only" } else { "" }, r.generation,
                 if r.bitmap_rebuilt { ", free-space map rebuilt" } else { "" },
+            ),
+            Outcome::MountedReadOnly(r, d) => kwarn!(
+                "[AZVOL] {}: partition {} mounted at {} READ-ONLY (generation {}): the check after an unclean \
+                 mount found {} problem(s), the first: {}{}",
+                name, row.partition, at, r.generation, d.problems, d.first, ReceiptNote(receipt),
             ),
             Outcome::Refused(why) => kprintln!(
                 "[AZVOL] {}: partition {} NOT mounted at {}: {}{}", name, row.partition, at, refusal(why),
@@ -258,12 +277,84 @@ pub(crate) fn install_azvol() {
     });
 }
 
+/// The `Volume` interface's check of volume `n` (`azos_devif::volume`): the
+/// boot volume's backend for 0, the `[volume.NAME]` row on partition `n` at
+/// its mount point otherwise. The counts the caller gets go to the console
+/// too: a check by hand leaves a trace whoever ran it.
+fn volume_check(n: u32, scrub: bool) -> Result<azos_devif::VolumeReport, u32> {
+    use azos_devif::{outcome, volume};
+    use azos_fs::{FileSystem, FsErr};
+    let (name, r) = if n == 0 {
+        ("boot volume", azos_fs::FAT32_FS.check(scrub))
+    } else {
+        let topo = azos_topology::get().ok_or(outcome::NO_RESOURCE)?;
+        let row = topo.volumes().iter().find(|v| u32::from(v.partition) == n).ok_or(outcome::NO_RESOURCE)?;
+        (row.name.as_str(), azos_fs::vfs_check(row.mount.as_bytes(), scrub))
+    };
+    let c = r.map_err(|e| match e {
+        FsErr::NotFound => outcome::NO_RESOURCE,
+        FsErr::Unsupported => outcome::UNSUPPORTED,
+        FsErr::Busy => outcome::BUSY,
+        _ => outcome::FAULT,
+    })?;
+    kprintln!(
+        "[FSCK] volume {} ({}): {} problem(s), {} leaked, {} mismatched, {} item(s), {} block(s) scrubbed{}{}",
+        n, name, c.problems, c.leaked, c.mismatched, c.items, c.scrubbed,
+        if c.complete { "" } else { ", walk incomplete" },
+        if c.read_only { ", served read-only" } else { "" },
+    );
+    let flags = if c.complete { volume::FLAG_COMPLETE } else { 0 } | if c.read_only { volume::FLAG_READ_ONLY } else { 0 };
+    Ok(azos_devif::VolumeReport {
+        problems: c.problems,
+        leaked: c.leaked,
+        mismatched: c.mismatched,
+        items: c.items,
+        scrubbed: c.scrubbed,
+        flags,
+    })
+}
+
 /// `DeviceAdmission` `bus` of a volume row (0 PCI, 1 device tree, 2 virtio-mmio, 3 platform).
 const BUS_VOLUME_ROW: u64 = 4;
 /// `DeviceAdmission` `why` 3: a sealed row, and the system holds no key for it.
 const REFUSED_NO_KEY: u64 = 3;
 /// `DeviceAdmission` `why` 4: a sealed row whose volume the system's key does not open.
 const REFUSED_WRONG_KEY: u64 = 4;
+/// `DeviceAdmission` `why` 5: the check after an unclean mount found damage;
+/// the volume is served read-only (Kconfig `FS_CHECK_FAILED_READ_ONLY`).
+const CHECK_FAILED_READ_ONLY: u64 = 5;
+/// `DeviceAdmission` `why` 6: the same, and the volume was not mounted
+/// (Kconfig `FS_CHECK_FAILED_REFUSE`).
+const CHECK_FAILED_REFUSED: u64 = 6;
+
+/// What the FAT32 boot volume's mount-time check found (`kernel_main`, after
+/// `fat32_mount`): the counts when it ran, and a volume it made read-only or
+/// refused is a warning with its record.
+pub(crate) fn fat32_check_report(r: &azos_fs::MountReport) {
+    if !r.checked {
+        return;
+    }
+    kprintln!(
+        "[FAT32] check: unclean={} hard_error={} complete={} fat_mismatch={} lost={} reclaimed={} cross_linked={} broken={}",
+        r.unclean, r.hard_error, r.complete, r.fat_mismatch, r.lost_clusters, r.reclaimed, r.cross_linked,
+        r.broken_chains,
+    );
+    if r.read_only || r.refused {
+        let receipt = record_check_failed(0, r.refused);
+        kwarn!(
+            "[FAT32] check failed: the boot volume is {}{}",
+            if r.refused { "NOT mounted (Kconfig FS_CHECK_FAILED_REFUSE)" } else { "READ-ONLY for this boot" },
+            ReceiptNote(Some(receipt)),
+        );
+    }
+}
+
+/// The record of a volume whose mount-time check failed: served read-only, or
+/// `refused`. `partition` is the row's (1-based), 0 for the FAT32 boot volume.
+/// Returns the receipt (0: decision records are off in this build).
+fn record_check_failed(partition: u8, refused: bool) -> u64 {
+    admission_receipt(partition, if refused { CHECK_FAILED_REFUSED } else { CHECK_FAILED_READ_ONLY })
+}
 
 /// The record of a sealed row not mounted: the partition as the subject and as
 /// the device's id, and why.
@@ -304,6 +395,7 @@ fn refusal(why: Why) -> &'static str {
         Why::Engine(Error::Unsupported(_)) => "the row is sealed and the volume is not (it will not be served as sealed)",
         Why::Engine(Error::KeyRequired) => "the volume is sealed and the row does not say so",
         Why::Engine(_) => "the volume failed its mount checks",
+        Why::CheckFailed(_) => "the check after an unclean mount found damage (Kconfig FS_CHECK_FAILED_REFUSE)",
         Why::Vfs => "the mount point is taken or the mount table is full",
     }
 }

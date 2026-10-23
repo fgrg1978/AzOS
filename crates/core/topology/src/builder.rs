@@ -3079,6 +3079,9 @@ const PTPD_MEM_PAGES: u32 = 32;
 const RESOURCE_CLOCK: &[u8] = b"clock";
 /// The `net` endpoint (`azos_devif::net`): the stack's resolver and SNTP state.
 const RESOURCE_NET: &[u8] = b"net";
+/// The boot volume's `volume` endpoint (`azos_devif::volume`): the check of
+/// the mounted volume, run by hand.
+const RESOURCE_VOLUME_BOOT: &[u8] = b"volume.0";
 const RESOURCE_SOUND: &[u8] = b"sound.0";
 /// `PTPD.ELF`'s authority: `WRITE` on `clock` (`Clock::sample` moves the wall
 /// clock) and the kernel's view of the `[clock]` row ([`INSPECT_CLOCK_CAP`]:
@@ -3637,6 +3640,16 @@ const TOOLBOX_CLOCK_CAP: CapSpec = CapSpec {
     target: MaybeStr::from_bytes(RESOURCE_CLOCK), transfer: false, ops: 0,
 };
 
+/// `WRITE` on the boot volume's `volume.0` endpoint: `fsck` runs the check
+/// of the mounted volume. It counts and repairs nothing; the right is the
+/// right to hold the volume for the walk. A `[volume.NAME]` row's check
+/// (`volume.<partition>`) is the signed topology's to grant.
+const TOOLBOX_VOLUME_CAP: CapSpec = CapSpec {
+    kind: CapKind::Endpoint,
+    perms: CapPerms::WRITE,
+    target: MaybeStr::from_bytes(RESOURCE_VOLUME_BOOT), transfer: false, ops: 0,
+};
+
 /// `READ|WRITE` on the kernel's `sound.0` endpoint (Kconfig DRV_VIRTIO_SND):
 /// `beep` opens a playback stream, posts periods and drains it. `WRITE` runs a
 /// stream; capture is a different stream whose `open` also needs the `mic`
@@ -3662,13 +3675,14 @@ const TOOLBOX_AUDIO_CAP: CapSpec = CapSpec {
 /// `TOOLBOX.ELF`'s authority outside `CONSOLE_LOCKDOWN`, in order: the full
 /// task view, for `ps`; the introspection regions (Kconfig INSPECT), the admin
 /// one after the task view, whose grant asks the table for it (the admin
-/// warrant); `READ` on the `net` and `clock` endpoints (`host`, `ntp`); the
+/// warrant); `READ` on the `net` and `clock` endpoints (`host`, `ntp`) and
+/// `WRITE` on `volume.0` (`fsck`); the
 /// audio server's endpoint when the build has it (Kconfig AUDIOD), else the
 /// sound endpoint when the build has the device (`beep`); the read-only root
 /// directory ([`ROOT_RO`]); and the call rights on the input server's and the
 /// compositor's endpoints with their rows.
-const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 9], usize) = {
-    let mut caps = [ROOT_RO; 9];
+const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 10], usize) = {
+    let mut caps = [ROOT_RO; 10];
     let mut n = 0;
     caps[n] = TASK_VIEW_CAP;
     n += 1;
@@ -3682,7 +3696,8 @@ const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 9], usize) = {
     }
     caps[n] = TOOLBOX_NET_CAP;
     caps[n + 1] = TOOLBOX_CLOCK_CAP;
-    n += 2;
+    caps[n + 2] = TOOLBOX_VOLUME_CAP;
+    n += 3;
     if AUDIOD_ROW {
         caps[n] = TOOLBOX_AUDIO_CAP;
         n += 1;

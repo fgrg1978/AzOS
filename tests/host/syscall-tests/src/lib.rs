@@ -159,6 +159,9 @@ pub mod memctl;
 // The `Keys` interface (the keystore the kernel hosts).
 #[path = "../../../../crates/core/syscall/src/keys.rs"]
 pub mod keys;
+// The `Volume` interface (the check of a mounted volume, by hand).
+#[path = "../../../../crates/core/syscall/src/volume_host.rs"]
+pub mod volume_host;
 #[path = "../../../../crates/core/syscall/src/power.rs"]
 pub mod power;
 #[path = "../../../../crates/core/syscall/src/power_assert.rs"]
@@ -688,6 +691,12 @@ mod handlers {
     mod memctl_guards {
         use super::*;
         include!("memctl_guards.rs");
+    }
+
+    #[cfg(test)]
+    mod volume_guards {
+        use super::*;
+        include!("volume_guards.rs");
     }
 
     #[cfg(test)]

@@ -233,6 +233,7 @@ pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
         k::DISPLAY => azos_devif::DisplayIdl::dispatch(&mut crate::display::Server(me), req, rep),
         k::MEMCTL => MemCtlIdl::dispatch(&mut crate::memctl::Server(me), req, rep),
         k::KEYS => KeysIdl::dispatch(&mut crate::keys::Server(me), req, rep),
+        k::VOLUME => azos_devif::VolumeIdl::dispatch(&mut crate::volume_host::Server(me), req, rep),
         #[cfg(feature = "virtio-snd")]
         k::SOUND => azos_devif::SoundIdl::dispatch(&mut crate::sound_host::Server(me), req, rep),
         #[cfg(feature = "hv")]
