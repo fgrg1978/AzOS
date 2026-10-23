@@ -749,3 +749,14 @@ config SCHED_SAVING_GATE_CLOCK_EVERY
       read is a device access on some boards, so it is kept out of the
       tight loop. A power of two compiles to a mask. Only the waiting
       path pays it; lower it if the gate's bound must be precise.
+
+config SCHED_REAP_EVENT
+    # cargo-feature: sched-reap-event
+    bool "Event-driven reaper: visit only the slots a waker stamped"
+    default n
+    help
+      The K-C25 reaper (`reap_stamped_sleepers`) visits only the slots a
+      waker stamped while they were still switching away
+      (`scheduler::reap_pending`), not every slot on every tick. With
+      `ipc-census` the sweep still runs behind it and counts what it had
+      to reap that no stamp named. Off: the per-tick sweep of every slot.

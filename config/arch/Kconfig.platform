@@ -393,6 +393,17 @@ config CPU_IDLE_POWERDOWN
       branch on the idle-state choice. n = only standby and retention
       states are entered, as before.
 
+config BOARD_IMAGE
+    # cargo-feature: board-image
+    bool "Board volume image table (the board's own seccomp image hashes)"
+    default n
+    help
+      The seccomp image table the kernel binds is the board volume's
+      (`$AZOS_OUT/build/board/image_hashes.rs`, the named-key ML service's
+      digest), not the QEMU disks' (crates/core/sched/src/seccomp.rs).
+      The board targets (`make vf2`, `make k1`, `make build-fleet`) set it in
+      the configuration they expand; a QEMU image leaves it off.
+
 endmenu # Platform / Board
 
 # ---------------------------------------------------------------------------

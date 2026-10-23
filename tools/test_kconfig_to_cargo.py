@@ -12,6 +12,8 @@ Verifies that tools/kconfig_to_cargo.py:
 
 Run with:
     python3 tools/test_kconfig_to_cargo.py
+    python3 tools/test_kconfig_to_cargo.py --update-golden   (rewrite
+        tools/kconfig_to_cargo.golden: what every defconfig builds)
 
 Or via pytest:
     python3 -m pytest tools/test_kconfig_to_cargo.py -v
@@ -1337,6 +1339,72 @@ def test_base_for_hand_written_targets() -> None:
         assert "use-robot" in r[1].split(",") and "qemu" not in r[1].split(","), r
 
 
+def test_select_applies_a_selection_through_kconfig() -> None:
+    """`--select`: a feature a symbol owns is that symbol set in a copy of the
+    configuration (so the constants agree), a test hook rides along, a Kconfig
+    line sets a symbol another derives from, and anything else is refused."""
+    import tempfile
+
+    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        _expand(["CONFIG_BOARD_QEMU=y", "CONFIG_BUILD_TYPE_DEV=y"], t, "g.config")
+        base = t / "g.config"
+
+        def sel(tokens: str) -> subprocess.CompletedProcess:
+            return subprocess.run([sys.executable, str(script), "--select", tokens,
+                                   "--out", str(t / "s.config"), str(base)],
+                                  capture_output=True, text=True)
+
+        r = sel("qemu,pci,nvme-prp-canary")
+        assert r.returncode == 0, r
+        feats = r.stdout.split("--features ", 1)[1].split()[0].split(",")
+        assert "pci" in feats and feats[-1] == "nvme-prp-canary" and "qemu" in feats, feats
+        assert "CONFIG_DRV_PCI=y" in (t / "s.config").read_text().splitlines()
+        assert "CONFIG_DRV_PCI=y" not in base.read_text().splitlines()
+        # A derived symbol is refused by its feature, and reached by its source line.
+        r = sel("hv")
+        assert r.returncode == 1 and "CONFIG_HV=y does not hold" in r.stderr, r
+        r = sel("CONFIG_VIRT_HOSTED=y")
+        assert r.returncode == 0 and "hv" in r.stdout.split("--features ", 1)[1].split()[0].split(","), r
+        # The board is a choice: naming another one moves the configuration to it.
+        r = sel("vf2")
+        feats = r.stdout.split("--features ", 1)[1].split()[0].split(",")
+        assert r.returncode == 0 and "vf2" in feats and "qemu" not in feats, r
+        r = sel("no-such-feature")
+        assert r.returncode == 1 and "not a feature" in r.stderr, r
+        # Nothing to apply: the configuration's own features, copied unchanged.
+        r = sel("")
+        assert r.returncode == 0 and (t / "s.config").read_text() == base.read_text(), r
+
+
+GOLDEN = TOOLS_DIR / "kconfig_to_cargo.golden"
+
+
+def _golden_lines() -> list[str]:
+    import tempfile
+
+    script = TOOLS_DIR / "kconfig_to_cargo.py"
+    out = []
+    with tempfile.TemporaryDirectory() as td:
+        for d in sorted(DEFCONFIGS_DIR.glob("*.config")):
+            _expand(d.read_text(encoding="utf-8").splitlines(), Path(td), d.name)
+            r = subprocess.run([sys.executable, str(script), str(Path(td) / d.name)],
+                               capture_output=True, text=True, check=True)
+            out.append(f"{d.stem}: {r.stdout.strip()}")
+    return out
+
+
+def test_defconfig_features_match_the_golden_file() -> None:
+    """What each defconfig builds, in one reviewed file: a Kconfig change that
+    moves a defconfig's cargo features shows up as a diff of
+    tools/kconfig_to_cargo.golden (`--update-golden` rewrites it)."""
+    want = GOLDEN.read_text(encoding="utf-8").splitlines()
+    got = _golden_lines()
+    diff = [l for l in got if l not in want] + [f"(gone) {l}" for l in want if l not in got]
+    assert not diff, "tools/kconfig_to_cargo.golden is stale (run tools/test_kconfig_to_cargo.py --update-golden):\n  " + "\n  ".join(diff)
+
+
 # ---------------------------------------------------------------------------
 # Simple self-runner (also works with pytest)
 # ---------------------------------------------------------------------------
@@ -1380,6 +1448,8 @@ def _run_all_tests() -> int:
         test_base_for_hand_written_targets,
         test_scheduler_options_follow_their_symbols,
         test_kaslr_links_position_independent,
+        test_select_applies_a_selection_through_kconfig,
+        test_defconfig_features_match_the_golden_file,
     ]
 
     passed = 0
@@ -1401,4 +1471,8 @@ def _run_all_tests() -> int:
 
 
 if __name__ == "__main__":
+    if "--update-golden" in sys.argv[1:]:
+        GOLDEN.write_text("\n".join(_golden_lines()) + "\n", encoding="utf-8")
+        print(f"wrote {GOLDEN.relative_to(REPO_ROOT)}")
+        sys.exit(0)
     sys.exit(_run_all_tests())

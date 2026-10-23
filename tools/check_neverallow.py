@@ -49,7 +49,6 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from out_dir import out_root  # noqa: E402
 import check_presets  # noqa: E402
-import kconfig_lint  # noqa: E402
 import kconfig_to_cargo as k2c  # noqa: E402
 
 HOST_CRATE = os.path.join(ROOT, "tests", "host", "topology-tests")
@@ -120,7 +119,7 @@ def kernel_table():
     """kernel/Cargo.toml's `[features]`, read once."""
     global _TABLE
     if _TABLE is None:
-        _TABLE = kconfig_lint.cargo_features(k2c.KERNEL_CARGO_TOML)
+        _TABLE = k2c.cargo_features(k2c.KERNEL_CARGO_TOML)
     return _TABLE
 
 

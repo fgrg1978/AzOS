@@ -295,3 +295,14 @@ config TASK_BEHAVIOR_PLACE
       The behavior loop and the tasks that must share its CPU: brain-tx and
       camera-tx (below it, so a send never delays the loop) and ml-infer
       (it runs while the loop sleeps and wakes it). Read only with USE_ROBOT.
+
+config NO_ML
+    # cargo-feature: no-ml
+    bool "Build without the ML inference path"
+    default n
+    help
+      Compiles out the ML service path: the behavior arbiter's ML layer
+      (domains/robot/behavior), the ML supervisor and the recovery shell's
+      ML commands; the boot prints `[ML] Compile-time disabled`. For an
+      image with no ML service and no weights. Off: the ML path is built
+      and the topology decides whether it runs.

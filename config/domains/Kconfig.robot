@@ -434,4 +434,15 @@ config GEOFENCE_MIN_SATELLITES
 
 endmenu # RC input and geofence
 
+config FLIGHT_TOOL_DRIVETRAIN
+    # cargo-feature: flight-tool-drivetrain
+    bool "Gate kernel: the drivetrain belongs to FLIGHT.ELF"
+    depends on BUILD_TYPE_DEV
+    default n
+    help
+      The built-in topology gives the drivetrain (motor.0/motor.1 WRITE) to
+      FLIGHT.ELF instead of the autorun row, so `flight arm` from the user
+      shell can succeed (one writer per motor; the gate's `sh: family
+      tools` rows). Implies the actuation profile. Never in a product.
+
 comment "Fleet OTA has no build-time option: tools/fleet_ota_deploy.py"

@@ -409,3 +409,83 @@ config BOOT_BENCH_PRIORITY
       only time no other task wants (its numbers can include preemption).
       Raise its urgency only to measure on an otherwise loaded system.
       No cost in a build without the `qemu` feature.
+
+# ---------------------------------------------------------------------------
+# Gate and benchmark kernels: switches a row or a benchmark builds
+# ---------------------------------------------------------------------------
+#
+# Each owns a kernel cargo feature whose name is not a test hook's
+# (tools/kconfig_to_cargo.py TEST_HOOK_RE), so a build selection names its
+# symbol (`--select`), never the feature. None is ever in a product build.
+
+config BENCH_MINIMAL
+    # cargo-feature: bench-minimal
+    bool "Benchmark kernel: boot only the idle and autorun tasks (vsbench)"
+    depends on BUILD_TYPE_DEV
+    default n
+    help
+      The kernel the comparative benchmark (tools/vsbench_*.sh) boots: no
+      task but `idle` and `autorun` (crates/core/sched, task_create_affinity),
+      so a lane measures the kernel and not the services. Never in a product.
+
+config SCHED_RT_UTIL_SMOKE
+    # cargo-feature: sched-rt-util
+    bool "Gate kernel: the RT utilisation smoke (sched-rt-util rows)"
+    depends on BUILD_TYPE_DEV
+    default n
+    help
+      Admits reservations near the admission bound (70 % and 93 % per hart,
+      one and two harts), an overrunner, and two reservations at different
+      levels, and prints the `sched-rt-util:` lines the gate reads
+      (kernel/src/rt_util_smoke.rs).
+
+config LAT_FAT_SMOKE
+    # cargo-feature: lat-fat
+    bool "Gate kernel: the latency smoke with its disk load through FAT32"
+    depends on BUILD_TYPE_DEV
+    default n
+    help
+      The latency smoke (`lat-smoke`) whose disk load rewrites a whole file
+      through FAT32 per kick instead of reading raw sectors, and counts the
+      FAT device I/O issued under a held Mutex (`pi_io=` in `[LAT] load`).
+      The gate's `lat: ... FAT writes` rows.
+
+config TLB_LOCAL_ONLY
+    # cargo-feature: tlb-local-only
+    bool "Gate canary: no remote half in a TLB shootdown"
+    depends on BUILD_TYPE_DEV && !SECURE_BOOT_ENFORCED
+    default n
+    help
+      The canary of the TLB shootdown probe (`tlb-smoke`): the remote half
+      of a shootdown is compiled out, so a stale access after a cross-hart
+      unmap does not fault and the probe must print STALE READ. A kernel
+      with it on keeps stale translations on other harts.
+
+config TIMER_SBI_ONLY
+    # cargo-feature: timer-sbi-only
+    bool "Gate kernel: program the timer through SBI even with Sstc (riscv64)"
+    depends on ARCH_RISCV64 && BUILD_TYPE_DEV
+    default n
+    help
+      Arms the timer with SBI `set_timer` on a hart that has Sstc, so the
+      fallback path runs on QEMU's Sstc harts too
+      (kernel/src/entry/riscv64/boot_hooks.rs).
+
+config VDSO_FORCE_SYSCALL
+    # cargo-feature: vdso-force-syscall
+    bool "Gate kernel: the vDSO clock is never readable from user mode"
+    depends on BUILD_TYPE_DEV
+    default n
+    help
+      Leaves the vDSO's counter-readable flag clear, so libsys `uptime()`
+      takes the syscall path (the row that times the trap).
+
+config SPAWN_LOG
+    # cargo-feature: spawn-log
+    bool "Debug output: a line per spawn and per vDSO mapping"
+    default n
+    help
+      Prints a successful spawn's `[SPAWN] tid=...` and `[SPAWN][PRIO]`
+      lines and every exec's `[VDSO] mapped` line (console output only in
+      debug builds, the owner's rule). Refusals, floors, aborts and
+      fallbacks print whatever this says.

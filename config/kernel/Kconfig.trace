@@ -679,3 +679,14 @@ config LOGD_POLL_MS
       append and one `fsync`, never one per line. A burst of more than
       KLOG_ENTRIES lines inside a period loses its oldest lines (counted
       and written as a `lost` record).
+
+config WCET
+    # cargo-feature: wcet
+    bool "Per-function WCET telemetry (#[wcet] sites)"
+    default n
+    help
+      Times every `#[wcet(...)]` function with the cycle counter and
+      reports its worst case (crates/drivers/sys/src/wcet.rs). Meant for
+      real hardware, where the cycle counter is reliable (VF2, K1); on
+      QEMU the numbers are the emulator's. Off: a `#[wcet]` site is the
+      bare function.

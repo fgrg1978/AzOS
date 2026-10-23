@@ -16,6 +16,15 @@ arguments.
 Usage:
     cargo build --release $(python3 tools/kconfig_to_cargo.py)
     cargo build --release $(python3 tools/kconfig_to_cargo.py .config)
+    KCONFIG_CONFIG=sel.config cargo build --release \
+        $(python3 tools/kconfig_to_cargo.py --select pci,nvme-prp-canary --out sel.config .config)
+
+`--select TOKENS --out PATH`: what a gate row or a make target builds beyond
+its configuration (`select` below): Kconfig lines and the features a Kconfig
+symbol owns go into a copy of the configuration at PATH, which the build then
+reads; test hooks are added to its features. Nothing else names a kernel
+feature: tools/feature_source_lint.py fails on a kernel build that carries
+`--features` of its own.
 
 If the .config file is absent the script emits nothing (allows existing manual
 `--features` invocations to keep working untouched during the C1 phase).
@@ -45,6 +54,7 @@ Phase C4 changes vs C1:
 import sys
 import os
 import re
+import subprocess
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -486,6 +496,97 @@ def placement_violations(cfg: dict[str, str]) -> list[str]:
 
 KERNEL_CARGO_TOML = os.path.join(REPO_ROOT, "kernel", "Cargo.toml")
 
+
+def cargo_features(cargo_toml: str) -> dict[str, list[str]]:
+    """name -> list of entries, for the `[features]` table of a Cargo.toml."""
+    text = open(cargo_toml, encoding="utf-8").read()
+    sec = re.search(r"^\[features\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    out = {}
+    for m in re.finditer(r"^([A-Za-z0-9_-]+)\s*=\s*\[(.*?)\]", sec.group(1), re.M | re.S):
+        body = "\n".join(l.split("#", 1)[0] for l in m.group(2).splitlines())
+        out[m.group(1)] = re.findall(r'"([^"]+)"', body)
+    return out
+
+
+# A test hook: a kernel cargo feature that only a gate row, a canary or a
+# benchmark builds (a smoke, a canary, a probe, ...), never a product. The
+# one kind of feature a build selection names directly (`--select`, below);
+# every other feature is a Kconfig symbol's (its `# cargo-feature:` tag).
+TEST_HOOK_RE = re.compile(r"(-smoke|-canary|-probe|-test|-row|-bench|-census|-sim|-freeze|"
+                          r"-window|-spin|-safety|-skip|-keep|-census|-trace|-timing|-sync|"
+                          r"-in-lock|-profile|-hooks)(-\w+)*$")
+
+
+_SELECT_LINE_RE = re.compile(r"^(CONFIG_[A-Z0-9_]+)=(\S+)$")
+
+
+class SelectError(Exception):
+    """A build selection that cannot be built from the configuration."""
+
+
+def select(base: str, tokens: list[str], out: str) -> list[str]:
+    """Write to `out` the configuration a build selection asks for, and return
+    its test hooks.
+
+    A selection is what a gate row or a make target builds beyond its
+    configuration. A token `CONFIG_<SYM>=<value>` is a Kconfig line, for a
+    symbol that owns no feature or one that another symbol derives (HV from
+    VIRT_*, HAS_RVV from RV_V_*). Any other token is a cargo feature name. A feature a Kconfig
+    symbol owns (its `# cargo-feature:` tag) is that symbol set to y in a copy
+    of `base`, expanded by olddefconfig, so the dependencies decide as they do
+    for a defconfig and the constants crates/core/limits generates agree with
+    the features; a symbol the expansion cannot keep at y is an error, never a
+    feature built against a configuration that says otherwise. A test hook
+    (TEST_HOOK_RE) has no symbol: it is returned, for the caller to add to
+    the configuration's own features. Any other name is an error: a policy
+    feature without a Kconfig symbol, or no feature at all.
+    """
+    cfg = read_dot_config(base)
+    if cfg is None:
+        raise SelectError(f"{base}: no such configuration")
+    feats = cargo_features(KERNEL_CARGO_TOML)
+    sym_of = {f: k for k, f in KCONFIG_TO_CARGO_FEATURE.items()}
+    hooks: list[str] = []
+    lines: dict[str, str] = {}
+    for t in tokens:
+        m = _SELECT_LINE_RE.match(t)
+        if m:
+            if cfg.get(m.group(1), "n") != m.group(2):
+                lines[m.group(1)] = m.group(2)
+        elif t in sym_of:
+            if cfg.get(sym_of[t]) != "y":
+                lines[sym_of[t]] = "y"
+        elif t in feats and TEST_HOOK_RE.search(t):
+            if t not in hooks:
+                hooks.append(t)
+        elif t in feats:
+            raise SelectError(f"`{t}` is a policy feature without a Kconfig symbol: "
+                              f"give it one (a `# cargo-feature: {t}` tag), it is not named by hand")
+        else:
+            raise SelectError(f"`{t}` is not a feature of kernel/Cargo.toml")
+    with open(base, encoding="utf-8") as fh:
+        text = fh.read()
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        for k, v in lines.items():
+            fh.write(f"{k}={v}\n" if v != "n" else f"# {k} is not set\n")
+    if lines:
+        env = dict(os.environ, KCONFIG_CONFIG=tmp)
+        r = subprocess.run([sys.executable, "-m", "olddefconfig"], cwd=REPO_ROOT, env=env,
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            os.unlink(tmp)
+            raise SelectError(f"olddefconfig failed on {base} + {' '.join(lines)}: {r.stderr.strip()}")
+        got = read_dot_config(tmp) or {}
+        lost = [f"{k}={v}" for k, v in lines.items() if got.get(k, "n") != v]
+        if lost:
+            os.unlink(tmp)
+            raise SelectError(f"{', '.join(lost)} does not hold on {base} (olddefconfig "
+                              f"drops it: a dependency is not met, or another symbol derives it)")
+    os.replace(tmp, out)
+    return hooks
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -602,9 +703,39 @@ def main() -> int:
     skip_base = "--skip-base" in args
     # `--sdk-env`: the AZOS_* variables of the std port layer, one per line.
     sdk_env_only = "--sdk-env" in args
+    # `--select TOKENS --out PATH`: the build selection TOKENS (comma or space
+    # separated feature names, see `select`) applied to the configuration;
+    # PATH receives the configuration to build with (KCONFIG_CONFIG), and the
+    # output is that configuration's cargo arguments plus the test hooks.
+    sel_tokens: Optional[list[str]] = None
+    sel_out: Optional[str] = None
+    for flag in ("--select", "--out"):
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 >= len(args):
+                print(f"kconfig_to_cargo: {flag} needs a value", file=sys.stderr)
+                return 2
+            val = args[i + 1]
+            del args[i:i + 2]
+            if flag == "--select":
+                sel_tokens = val.replace(",", " ").split()
+            else:
+                sel_out = val
+    if (sel_tokens is None) != (sel_out is None):
+        print("kconfig_to_cargo: --select and --out go together", file=sys.stderr)
+        return 2
     args = [a for a in args if a not in ("--base", "--rustflags", "--user-rustflags",
                                          "--toml", "--target-features", "--skip-base", "--sdk-env")]
     dot_config_path = args[0] if args else DOT_CONFIG_DEFAULT
+
+    hooks: list[str] = []
+    if sel_tokens is not None:
+        try:
+            hooks = select(dot_config_path, sel_tokens, sel_out)
+        except SelectError as e:
+            print(f"kconfig_to_cargo: --select {','.join(sel_tokens)}: {e}", file=sys.stderr)
+            return 1
+        dot_config_path = sel_out
 
     cfg = read_dot_config(dot_config_path)
     if cfg is None:
@@ -648,7 +779,9 @@ def main() -> int:
     parts.append(f"--target {target}")
 
     # --features: the kernel has no `default` list, so this is every feature
+    # (and a selection's test hooks after them)
     feats = enabled_features(cfg)
+    feats += [h for h in hooks if h not in feats]
     if feats:
         parts.append(f"--features {','.join(feats)}")
 
