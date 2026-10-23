@@ -563,8 +563,9 @@ fn amd_bring_up_programs_the_tables_then_enables() {
     // Length code 8 (256 entries) at bits 59:56.
     assert_eq!(mmio.get(amdvi::REG_CMD_BUF), cmd | (8 << 56));
     assert_eq!(mmio.get(amdvi::REG_EVT_LOG), evt | (8 << 56));
-    // Buffers on first, translation on last.
-    assert_eq!(mmio.writes_to(amdvi::REG_CONTROL), vec![0x1004, 0x1005]);
+    // Buffers and translation on in one write (the table blocks every device
+    // already), then the boot invalidation.
+    assert_eq!(mmio.writes_to(amdvi::REG_CONTROL), vec![0x1005]);
     // Boot invalidation is INVALIDATE_IOMMU_ALL, then a completion wait.
     assert_eq!(cmds(cmd, 2)[0], amdvi::cmd_inv_all());
     assert_eq!(unit.pt_format().kind, PtKind::AmdVi);

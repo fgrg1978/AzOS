@@ -235,7 +235,11 @@ impl<M: Mmio> AmdVi<M> {
         mmio.write64(REG_EVT_LOG, (evt & DTE_ROOT_MASK) | (LOG_LEN_CODE << LOG_LEN_SHIFT));
         mmio.write64(REG_EVT_HEAD, 0);
         mmio.write64(REG_EVT_TAIL, 0);
-        mmio.write64(REG_CONTROL, CTRL_CMD_BUF_EN | CTRL_EVT_LOG_EN);
+        // Translation on with the buffers, not after them: a unit may run its
+        // command buffer only while it is enabled (QEMU's model does), and the
+        // table already blocks every device, so nothing passes before the
+        // invalidation below drops what the unit cached from before.
+        mmio.write64(REG_CONTROL, CTRL_CMD_BUF_EN | CTRL_EVT_LOG_EN | CTRL_IOMMU_EN);
         if !wait_for(POLL, || {
             mmio.read64(REG_STATUS) & (STATUS_CMD_BUF_RUN | STATUS_EVT_LOG_RUN) == STATUS_CMD_BUF_RUN | STATUS_EVT_LOG_RUN
         }) {
@@ -257,7 +261,6 @@ impl<M: Mmio> AmdVi<M> {
             tags: Tags::new(DOMAIN_FIRST, TAGS),
         };
         unit.invalidate_all(efr & EFR_IASUP != 0)?;
-        unit.mmio.write64(REG_CONTROL, CTRL_CMD_BUF_EN | CTRL_EVT_LOG_EN | CTRL_IOMMU_EN);
         Ok(unit)
     }
 
