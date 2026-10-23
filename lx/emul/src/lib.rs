@@ -16,11 +16,12 @@
 //!   container is fixed-capacity, sized by const generics, and addressed by
 //!   generation-checked handles instead of pointers. Running out of a
 //!   capacity is an error that is returned and counted, never a panic.
-//! * **One thread, run-to-completion** (see [`sched`]): Linux kernel
-//!   threads, work items and timer callbacks are items of one cooperative
-//!   loop. In L0 there is no stack switching, so anything that would block
-//!   mid-function is reported as `WouldBlock` (a bug in L0; L1 adds
-//!   stackful tasks).
+//! * **One thread, cooperative** (see [`sched`]): Linux kernel threads,
+//!   the workqueue worker and anything they call (probe included) are
+//!   stackful tasks of one loop and give the hart up only at a block point
+//!   (`msleep`, `wait_event`, a contended mutex, ...); timer, RCU and
+//!   interrupt callbacks run to completion in atomic context. The server
+//!   gives the stacks; the per-ISA switch is in `switch/`.
 //! * **No global state**: [`sched::Env`] owns every subsystem and is passed
 //!   explicitly, so tests are independent and the server decides where the
 //!   state lives.
@@ -41,6 +42,7 @@ pub mod printk;
 pub mod rcu;
 pub mod sched;
 pub mod symbols;
+mod switch;
 pub mod timer;
 pub mod workqueue;
 

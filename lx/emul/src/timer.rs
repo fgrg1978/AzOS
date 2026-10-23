@@ -6,7 +6,11 @@
 //! The clock is not a tick counter: lxsrv supplies the AzOS monotonic
 //! nanosecond time each loop iteration ([`Clock::set_now_ns`]) and jiffies
 //! are derived from it. That keeps the server tickless: it sleeps until the
-//! earliest timer deadline instead of waking HZ times a second.
+//! earliest timer deadline instead of waking HZ times a second. A server
+//! can also give the clock a time source ([`Clock::set_source`]): a task
+//! that starts a timed sleep in the middle of a long pass then measures its
+//! timeout from the instant it went to sleep, not from the start of the
+//! pass, so `msleep(10)` after a register write waits 10 ms after the write.
 //!
 //! Timers are slots in a fixed array addressed by generation-checked
 //! handles, so a stale handle (timer freed and its slot reused) is an error,
@@ -88,12 +92,16 @@ pub const fn jiffies_to_msecs(j: Jiffies) -> u64 {
     j.saturating_mul(MSEC_PER_JIFFY)
 }
 
+/// A monotonic nanosecond time source (lxsrv: the vDSO clock).
+pub type TimeSource = fn() -> u64;
+
 /// Jiffies derived from the caller's monotonic nanosecond clock.
 #[derive(Clone, Copy, Debug)]
 pub struct Clock {
     now_ns: u64,
     initial: Jiffies,
     backwards: u32,
+    source: Option<TimeSource>,
 }
 
 impl Default for Clock {
@@ -111,7 +119,20 @@ impl Clock {
     /// Clock whose jiffies start at `initial` (tests use this to sit next to
     /// the 64-bit wrap).
     pub const fn with_initial_jiffies(initial: Jiffies) -> Self {
-        Clock { now_ns: 0, initial, backwards: 0 }
+        Clock { now_ns: 0, initial, backwards: 0, source: None }
+    }
+
+    /// Read the time from `source` at every [`Clock::refresh`], as well as
+    /// from what the loop feeds in.
+    pub fn set_source(&mut self, source: TimeSource) {
+        self.source = Some(source);
+    }
+
+    /// Feed the source's current time, if there is a source.
+    pub fn refresh(&mut self) {
+        if let Some(f) = self.source {
+            self.set_now_ns(f());
+        }
     }
 
     /// Feed the current monotonic time. A value lower than the last one is
@@ -403,6 +424,23 @@ mod tests {
         if let Some(e) = c.rearm {
             c.t.mod_timer(h, e).unwrap();
         }
+    }
+
+    #[test]
+    fn a_time_source_moves_the_clock_forward_only() {
+        fn src() -> u64 {
+            7 * NSEC_PER_JIFFY
+        }
+        let mut c = Clock::new();
+        c.refresh();
+        assert_eq!(c.now_ns(), 0, "no source: refresh changes nothing");
+        c.set_source(src);
+        c.refresh();
+        assert_eq!(c.jiffies(), INITIAL_JIFFIES.wrapping_add(7));
+        c.set_now_ns(10 * NSEC_PER_JIFFY);
+        c.refresh();
+        assert_eq!(c.now_ns(), 10 * NSEC_PER_JIFFY, "an older reading never moves it back");
+        assert_eq!(c.backwards(), 1);
     }
 
     #[test]

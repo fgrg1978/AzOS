@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 
-//! Locks for a single-threaded, run-to-completion server.
+//! Locks and wait objects for a single-threaded, cooperative server.
 //!
 //! lxsrv runs every Linux context (kernel thread, work item, timer callback)
-//! on one AzOS thread on one hart, one item at a time. Mutual exclusion is
-//! therefore already guaranteed by construction, and a lock only has two jobs
-//! left:
+//! on one AzOS thread on one hart. A task gives the hart up only at a block
+//! point (see [`crate::sched`]), so mutual exclusion between two block
+//! points is guaranteed by construction, and a lock has three jobs left:
 //!
 //! * keep the *state* Linux code observes (`spin_is_locked`, the saved
 //!   interrupt flag, the mutex owner) so drivers behave as on Linux;
 //! * detect the cases that would hang or corrupt on Linux: re-taking a held
-//!   spinlock (self-deadlock), unlocking what you do not hold, and any wait
-//!   that would have to block.
-//!
-//! In stage L0 there is no stack switching, so an item cannot be suspended
-//! in the middle of its function. A `mutex_lock` on a contended mutex, a
-//! `down` on a zero semaphore or a `wait_for_completion` on an incomplete
-//! completion therefore returns [`LockError::WouldBlock`]: inside a
-//! run-to-completion item that is a bug to report, not a state to wait in.
-//! Stage L1 adds stackful tasks and turns these into real waits.
+//!   spinlock (self-deadlock), unlocking what you do not hold;
+//! * for the sleeping ones (mutex, semaphore, completion, wait queue), be
+//!   the *channel* a task blocks on. The types here hold only the state;
+//!   blocking and waking go through [`crate::Env`] (`Env::mutex_lock`,
+//!   `Env::complete`, `Env::wait_event`, ...), which suspends the calling
+//!   task on the object's address and wakes its waiters in the order they
+//!   started waiting. That is why the operations that must wake someone
+//!   (`complete`, `mutex unlock`, `up`) are crate-private here.
 //!
 //! All types use `Cell` so they can be shared by `&` like their Linux
 //! counterparts embedded in driver structures; they are `!Sync`, which is
@@ -37,7 +36,9 @@ pub enum LockError {
     /// The lock is already held by the caller: on Linux this spins or
     /// sleeps forever.
     Deadlock,
-    /// Waiting is required, and an L0 run-to-completion item cannot wait.
+    /// Waiting is required and the caller is not a task: the server's own
+    /// code (between loop passes) has no stack to park. On a contended
+    /// [`Mutex::lock`] it only means "held by someone else".
     WouldBlock,
     /// Unlock of a lock that is not held.
     NotHeld,
@@ -47,6 +48,8 @@ pub enum LockError {
     /// interrupts disabled): Linux's "sleeping function called from invalid
     /// context", reported even when the lock happens to be free.
     Atomic,
+    /// The kernel thread named does not exist (never did, or was reaped).
+    NoTask,
 }
 
 /// Saved interrupt state returned by `lock_irqsave`, consumed by
@@ -180,8 +183,9 @@ impl Mutex {
         Mutex { owner: Cell::new(None) }
     }
 
-    /// `mutex_lock` by task `me`. Contended → [`LockError::WouldBlock`]
-    /// (L0 cannot sleep); already owned by `me` → [`LockError::Deadlock`].
+    /// One attempt at `mutex_lock` by task `me`: contended →
+    /// [`LockError::WouldBlock`]; already owned by `me` →
+    /// [`LockError::Deadlock`]. `Env::mutex_lock` sleeps on the first.
     pub fn lock(&self, me: TaskId) -> Result<(), LockError> {
         match self.owner.get() {
             None => {
@@ -202,8 +206,9 @@ impl Mutex {
         true
     }
 
-    /// `mutex_unlock` by task `me`.
-    pub fn unlock(&self, me: TaskId) -> Result<(), LockError> {
+    /// `mutex_unlock` by task `me`, without waking a waiter
+    /// (`Env::mutex_unlock` hands the mutex to the first one).
+    pub(crate) fn unlock(&self, me: TaskId) -> Result<(), LockError> {
         match self.owner.get() {
             None => Err(LockError::NotHeld),
             Some(o) if o != me => Err(LockError::NotOwner),
@@ -222,6 +227,11 @@ impl Mutex {
     /// Current owner.
     pub fn owner(&self) -> Option<TaskId> {
         self.owner.get()
+    }
+
+    /// Hand the mutex to a waiter at unlock time.
+    pub(crate) fn hand_to(&self, id: TaskId) {
+        self.owner.set(Some(id));
     }
 }
 
@@ -248,7 +258,8 @@ impl Completion {
     }
 
     /// `complete`: one waiter's worth. Saturates at [`COMPLETION_ALL`].
-    pub fn complete(&self) {
+    /// `Env::complete` also wakes the first waiter.
+    pub(crate) fn complete(&self) {
         let d = self.done.get();
         if d < COMPLETION_ALL {
             self.done.set(d + 1);
@@ -256,8 +267,8 @@ impl Completion {
     }
 
     /// `complete_all`: release every present and future waiter until
-    /// `reinit`.
-    pub fn complete_all(&self) {
+    /// `reinit`. `Env::complete_all` also wakes them.
+    pub(crate) fn complete_all(&self) {
         self.done.set(COMPLETION_ALL);
     }
 
@@ -274,16 +285,6 @@ impl Completion {
         }
     }
 
-    /// `wait_for_completion`: [`LockError::WouldBlock`] if not done (L0
-    /// cannot sleep; see the module documentation).
-    pub fn wait(&self) -> Result<(), LockError> {
-        if self.try_wait() {
-            Ok(())
-        } else {
-            Err(LockError::WouldBlock)
-        }
-    }
-
     /// `completion_done`: true if a wait would not block.
     pub fn is_done(&self) -> bool {
         self.done.get() != 0
@@ -292,6 +293,30 @@ impl Completion {
     /// Raw `done` count.
     pub fn done(&self) -> u32 {
         self.done.get()
+    }
+}
+
+/// `wait_queue_head_t`: a channel for `Env::wait_event` / `Env::wake_up`.
+/// It holds no waiter list (the waiters are the tasks blocked on its
+/// address), only a count of wake-ups, which tests and diagnostics read.
+#[derive(Debug, Default)]
+pub struct WaitQueueHead {
+    wakes: Cell<u32>,
+}
+
+impl WaitQueueHead {
+    /// `init_waitqueue_head`.
+    pub const fn new() -> Self {
+        WaitQueueHead { wakes: Cell::new(0) }
+    }
+
+    pub(crate) fn note_wake(&self) {
+        self.wakes.set(self.wakes.get().wrapping_add(1));
+    }
+
+    /// `wake_up` calls made on this queue.
+    pub fn wakes(&self) -> u32 {
+        self.wakes.get()
     }
 }
 
@@ -308,7 +333,7 @@ impl Semaphore {
     }
 
     /// `down_trylock`. NOTE the polarity: returns **true when acquired**,
-    /// whereas Linux returns 0 on success. The C shim in L1 inverts it.
+    /// whereas Linux returns 0 on success. The C shim inverts it.
     pub fn down_trylock(&self) -> bool {
         let c = self.count.get();
         if c == 0 {
@@ -318,17 +343,9 @@ impl Semaphore {
         true
     }
 
-    /// `down`: [`LockError::WouldBlock`] if the count is zero.
-    pub fn down(&self) -> Result<(), LockError> {
-        if self.down_trylock() {
-            Ok(())
-        } else {
-            Err(LockError::WouldBlock)
-        }
-    }
-
-    /// `up`. Saturates rather than wrapping.
-    pub fn up(&self) {
+    /// `up` with no waiter to hand the unit to (`Env::up` hands it to the
+    /// first waiter instead). Saturates rather than wrapping.
+    pub(crate) fn up(&self) {
         self.count.set(self.count.get().saturating_add(1));
     }
 
@@ -400,12 +417,12 @@ mod tests {
     #[test]
     fn completion_counts_like_linux() {
         let c = Completion::new();
-        assert_eq!(c.wait(), Err(LockError::WouldBlock));
+        assert!(!c.try_wait());
         c.complete();
         c.complete();
         assert_eq!(c.done(), 2);
         assert!(c.try_wait());
-        assert!(c.wait().is_ok());
+        assert!(c.try_wait());
         assert!(!c.try_wait());
         assert!(!c.is_done());
     }
@@ -437,8 +454,7 @@ mod tests {
     fn semaphore_counts() {
         let s = Semaphore::new(2);
         assert!(s.down_trylock());
-        assert!(s.down().is_ok());
-        assert_eq!(s.down(), Err(LockError::WouldBlock));
+        assert!(s.down_trylock());
         assert!(!s.down_trylock());
         s.up();
         assert_eq!(s.count(), 1);

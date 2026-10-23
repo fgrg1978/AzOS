@@ -11324,12 +11324,13 @@ test_host_features "topology(lx-server)" \
 #   own target dir: a different KCONFIG_CONFIG must not leave a stale
 #   azos_limits in the shared one.
 test_host "lx-emul" "${REPO_ROOT}/lx/emul"
-# The same crate must also build no_std for both server targets (lxsrv links it
-# from stage L1): a host-only dependency on std would surface only then.
+# The same crate must also build no_std for the server targets (lxsrv links it
+# from stage L1): a host-only dependency on std would surface only then. x86_64
+# too: the task switch is per ISA (lx/emul/src/switch/).
 lx_emul_nostd_row() {
-    printf "  %-26s" "lx-emul no_std (rv, arm)..."
+    printf "  %-26s" "lx-emul no_std (rv, arm, x86)..."
     local t out
-    for t in riscv64imac-unknown-none-elf aarch64-unknown-none; do
+    for t in riscv64imac-unknown-none-elf aarch64-unknown-none x86_64-unknown-none; do
         if ! out="$( (cd "${REPO_ROOT}/lx/emul" && CARGO_TARGET_DIR="$AZOS_OUT/tgt/lx/emul/cross" \
                 "$CARGO" +nightly build --release --target "$t" -Zbuild-std=core) 2>&1)" \
            || printf '%s\n' "$out" | qgrep -qE "^warning"; then
@@ -11338,7 +11339,7 @@ lx_emul_nostd_row() {
     done
     ok
 }
-ci_row "lx-emul no_std (rv, arm)" lx_emul_nostd_row
+ci_row "lx-emul no_std (rv, arm, x86)" lx_emul_nostd_row
 if ! ci_wants "lx-loader-tests"; then
     ci_skip_rows "lx-loader-tests"
 elif make lx-modules >/dev/null 2>&1; then

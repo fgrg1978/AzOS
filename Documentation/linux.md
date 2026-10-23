@@ -87,13 +87,19 @@ Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`,
 | Pinned tree | `third_party/linux` (a shallow submodule, `update = none`; its `tag` in `.gitmodules`) | A tag of the kernel.org stable tree; the gitlink is its commit. `tools/third_party_fetch.sh linux` is the one way to fetch it (shallow and sparse). |
 | Glue | `lx/glue/lxbase.c`, `lx/glue/Kbuild` | `lxbase.ko`: the base of the layer, compiled by Linux's own Kbuild against the pinned tree. It exports the Linux symbols the validated modules import and forwards them to the host ABI. GPL-2.0-only. |
 | Host ABI | `lx/HOST_ABI` | Every symbol `lxsrv` exports to modules: `lxh_alloc`, `lxh_free`, `lxh_hwcap`, and the C string and memory functions. Plain scalars and pointers, no Linux type. |
-| Compatibility base | `lx/emul` (`lx_emul`) | A `no_std` Rust crate that re-implements the behaviour of Linux core APIs drivers call (allocation, locks, timers, workqueues, RCU, `printk`, the device model, reference counts, the exported-symbol table) with fixed-capacity containers and generation-checked handles. No Linux source is copied. |
+| Compatibility base | `lx/emul` (`lx_emul`) | A `no_std` Rust crate that re-implements the behaviour of Linux core APIs drivers call (allocation, locks, timers, workqueues, RCU, `printk`, the device model, reference counts, the exported-symbol table) with fixed-capacity containers and generation-checked handles. No Linux source is copied. See [Threads in the server](#threads-in-the-server). |
 | Loader | `crates/core/lx-loader` (`azos_lx_loader`) | Turns a relocatable `.ko` into code and data a ring-3 server can run. |
 | Kernel half of loading | `crates/core/syscall/src/module_ops.rs` | `DOMAIN_MODULE_VERIFY` and `DOMAIN_MODULE_MAP_X`. |
 | Server | `userspace/services/lxsrv` (`LXSRV.ELF`) | Runs the whole module path; its topology row (kernels with the `lx-server` feature) grants one capability, READ on the kernel entropy pool, which keys its allocator. |
 | Module build | `tools/lx_kbuild/`, `make lx-kbuild` | Runs Kbuild for riscv64 and aarch64 in a pinned container with no network and the tree mounted read-only; `make lx-kbuild-repro` rebuilds from scratch and requires identical `.ko` hashes. |
 | Device ids | `lx/DEVICE_SOURCES`, `tools/lx_device_table.py` | See [Leaf drivers](#leaf-drivers-and-the-hardware-bus). |
 | Licence lint | `tools/lx_license_lint.py` | See [Licence boundary](#licence-boundary). |
+
+### Threads in the server
+
+`lx_emul` runs on one AzOS thread. Kernel threads, the workqueue worker and whatever they call (a probe called from a task included) are stackful cooperative tasks (`lx/emul/src/sched.rs`): each has its own stack, given by the server (`Env::add_stack`), and gives the hart up only at a block point: `msleep`, `usleep_range`, `schedule`, `schedule_timeout`, `wait_event`, `wait_event_timeout`, `wait_for_completion[_timeout]`, a contended `mutex_lock`, `down`, `flush_workqueue`, `kthread_stop`. A task blocks on the address of the object it waits for, and wake-ups (`wake_up`, `complete`, `mutex_unlock`, `up`, `wake_up_process`, a timeout) run waiters in the order they started waiting; a mutex or semaphore is handed to the first waiter. Timer, RCU and interrupt callbacks run to completion in atomic context, where a sleeping call is refused and counted. The switch saves the callee-saved registers only, one file per ISA (`lx/emul/src/switch/{riscv64,aarch64,x86_64}.rs`).
+
+The server's loop needs no kernel mechanism of its own: `Env::run_once(now)` runs one pass and returns the next deadline, the server waits in `SYS_PORT_WAIT` until that deadline or a notification, and an interrupt notification is handed to `Env::run_irq`. Work items run in one worker task, so an item that sleeps holds up the items behind it, as on an ordered workqueue.
 
 ### The module path
 
