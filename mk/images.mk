@@ -1223,7 +1223,9 @@ $(MAKE) --no-print-directory aarch64 AARCH64_DEFCONFIG=$(1) AARCH64_KCONFIG=$(AZ
 endef
 
 # The guest kernel's ELF: riscv64's <name>.kernel is it, aarch64's is the Image
-# made from it.
+# made from it. Copied stripped: the release profile keeps debug info (tens of
+# MiB the host volume has no room for), and the monitor reads only the program
+# headers and the segments.
 AZOS_GUEST_ELF_riscv64 := $(AZOS_GUEST_DIR)/guest.kernel
 AZOS_GUEST_ELF_aarch64 := $(OUT_TARGET)/azos-guest-aarch64-guest/$(AARCH64_TARGET)/release/kernel
 
@@ -1236,7 +1238,7 @@ $(AZOS_GUEST_DIR)/host.kernel: $(AZOS_HOST_DEFCONFIG_$(ARCH)) $(AZOS_HASHES_$(AR
 	$(call azos_kernel_$(ARCH),$(AZOS_HOST_DEFCONFIG_$(ARCH)),host)
 
 $(AZOS_GUEST_DIR)/KERNEL.ELF: $(AZOS_GUEST_DIR)/guest.kernel
-	cp $(AZOS_GUEST_ELF_$(ARCH)) $@
+	"$(AARCH64_OBJCOPY)" --strip-all $(AZOS_GUEST_ELF_$(ARCH)) $@
 	@echo "[AZOS-GUEST] $@: $$(wc -c < $@) bytes"
 
 $(AZOS_GUEST_DIR)/DISK.IMG:
