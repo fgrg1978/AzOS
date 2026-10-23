@@ -16,9 +16,9 @@
 /// `seeded` — `azos_crypto::entropy::seeded()` at the moment of
 /// derivation. `enforced` — `azos_crypto::secure_channel::link_provisioning_enforced()`,
 /// the existing compile-time production gate (`link-provisioning-enforced`
-/// cargo feature; `vf2`/`k1` builds already carry it).
+/// cargo feature, from Kconfig LINK_PROVISIONING_ENFORCED: on outside BUILD_TYPE_DEV).
 ///
-/// On a build that does NOT enforce (dev/QEMU today, no prod key rolled
+/// On a build that does NOT enforce (BUILD_TYPE_DEV, or a hand-set n; no prod key rolled
 /// out), an unseeded derivation still proceeds — degraded, not refused —
 /// matching the accepted dev-mode risk documented on
 /// `derive_ephemeral_priv` itself.

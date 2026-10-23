@@ -520,6 +520,67 @@ def test_threat_profile_implies_never_forces() -> None:
         )
 
 
+def test_brain_link_fails_closed_outside_dev() -> None:
+    """Owner decision 2026-10-23: the brain link fails closed. Every shipped
+    robot defconfig that is not BUILD_TYPE_DEV builds `link-provisioning-
+    enforced` (no boot without a link key, the UART bridge down), every
+    BUILD_TYPE_DEV one does not, CERTIFIABLE cannot turn it off, and Kconfig
+    is the only source: no board cargo feature turns it on behind the
+    .config's back (vf2 and k1 did until this decision).
+
+    Canary: `default n` in place of `default y if !BUILD_TYPE_DEV` on
+    LINK_PROVISIONING_ENFORCED fails the release rows; the cargo feature put
+    back into `vf2` fails the Kconfig-only check."""
+    import shutil
+    import tempfile
+
+    feat = "link-provisioning-enforced"
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        release, dev = [], []
+        for d in sorted(DEFCONFIGS_DIR.glob("*.config")):
+            cfg = t / d.name
+            shutil.copyfile(d, cfg)
+            lines = _expand(cfg.read_text(encoding="utf-8").splitlines(), t, d.name)
+            if "CONFIG_USE_ROBOT=y" not in lines:
+                assert not any(l.startswith("CONFIG_LINK_PROVISIONING_ENFORCED") for l in lines), d.name
+                continue
+            feats = _bridge_args(cfg)
+            if "CONFIG_BUILD_TYPE_DEV=y" in lines:
+                dev.append(d.stem)
+                assert "# CONFIG_LINK_PROVISIONING_ENFORCED is not set" in lines, d.name
+                assert feat not in feats, f"{d.name} (BUILD_TYPE_DEV) enforces the link: {feats}"
+            else:
+                release.append(d.stem)
+                assert "CONFIG_LINK_PROVISIONING_ENFORCED=y" in lines, \
+                    f"{d.name} (not BUILD_TYPE_DEV) leaves the brain link fail-open"
+                assert feat in feats, f"{d.name}: no {feat} in {feats}"
+        for want in ("vf2", "k1", "rpi5", "robot-embedded", "robot-fleet"):
+            assert want in release, f"{want} is not a release robot defconfig: {release}"
+        assert "qemu" in dev and "qemu-aarch64" in dev and "qemu-x86_64" in dev, dev
+        # The Kconfig default with nothing else set is a release robot build.
+        r = _expand(["CONFIG_PRESET_ROBOT=y"], t, "r.config")
+        assert "CONFIG_BUILD_TYPE_RELEASE=y" in r and "CONFIG_LINK_PROVISIONING_ENFORCED=y" in r, \
+            "the default robot build does not enforce the brain link"
+        # Certifiable: on, and a hand-set n does not take it off.
+        c = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_BOARD_VF2=y", "CONFIG_BUILD_TYPE_CERTIFIABLE=y",
+                     "# CONFIG_LINK_PROVISIONING_ENFORCED is not set"], t, "c.config")
+        assert "CONFIG_BUILD_TYPE_CERTIFIABLE=y" in c and "CONFIG_LINK_PROVISIONING_ENFORCED=y" in c, \
+            "CERTIFIABLE let the brain link fail open"
+        # A development build may still turn it on by hand (the gate's rows do).
+        h = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_BUILD_TYPE_DEV=y",
+                     "CONFIG_LINK_PROVISIONING_ENFORCED=y"], t, "h.config")
+        assert "CONFIG_LINK_PROVISIONING_ENFORCED=y" in h, "a hand-set y lost on a dev build"
+    # Each `name = [ ... ]` of kernel/Cargo.toml's [features] (no toml module
+    # on the gate's python3): a quoted member equal to the feature.
+    text = KERNEL_CARGO_TOML.read_text(encoding="utf-8")
+    block = re.search(r"^\[features\](.*?)^(?=\[)", text, re.MULTILINE | re.DOTALL).group(1)
+    block = re.sub(r"#[^\n]*", "", block)
+    for name, members in re.findall(r"^([a-zA-Z][\w-]*)\s*=\s*\[(.*?)\]", block, re.MULTILINE | re.DOTALL):
+        if name != feat:
+            assert f'"{feat}"' not in members, f"kernel feature `{name}` turns on {feat}: Kconfig is its only source"
+
+
 def test_driver_switches_follow_their_board() -> None:
     """DRV_PCI / DRV_DISPLAY_* reach --features only on the boards they are for."""
     import tempfile
@@ -1292,6 +1353,7 @@ def _run_all_tests() -> int:
         test_default_target_is_riscv64,
         test_domain_defaults_to_generic_and_robot_type_is_wired,
         test_threat_profile_implies_never_forces,
+        test_brain_link_fails_closed_outside_dev,
         test_driver_switches_follow_their_board,
         test_no_defconfig_enables_unimplemented_options,
         test_page_size_reaches_the_build,

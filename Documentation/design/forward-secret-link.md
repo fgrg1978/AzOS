@@ -153,9 +153,10 @@ operator has on each side is the handshake pattern, and both sides must agree
 on it.
 
 - **No key, no link.** With no valid link key in the reserved sector the brain
-  connection is closed rather than downgraded to anything weaker. The boot
-  goes on, with the link down, unless `LINK_PROVISIONING_ENFORCED` is built in
-  (default `n`; the `vf2` and `k1` board features build it in).
+  connection is closed rather than downgraded to anything weaker, and the
+  refusal is a `login` decision record (method 5, the brain link). A
+  development build (`BUILD_TYPE_DEV`) goes on booting with the link down;
+  every other robot build has `LINK_PROVISIONING_ENFORCED` and halts.
 - **The brain's key is the topology's.** `brain_pinned_key()` reads the
   `noise_pk` of the signed topology's `[peer.brain]` row and selects `IK`;
   with no such row (or a row without a key) the link is `XX`. There is no
@@ -163,7 +164,8 @@ on it.
   authority over who the brain is. The ring-3 link client (`brain_client`)
   reads the same key through the `linkkey` endpoint's `brain_pk` op.
 - **`LINK_PROVISIONING_ENFORCED`** (cargo feature `link-provisioning-enforced`, robot
-  domain, fixed at compile time with no runtime override): boot halts without
+  domain, fixed at compile time with no runtime override; on by default
+  outside `BUILD_TYPE_DEV`, and only Kconfig turns it on): boot halts without
   a valid link key; a handshake is refused while the entropy pool is unseeded;
   and the UART bridge, which carries brain-protocol frames (motion commands
   included) outside any session with no authentication, is down in both

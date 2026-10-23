@@ -82,7 +82,10 @@ ps2 = []
 # CRC-8 -- clear a latched e-stop, and a keyless boot goes on with the TCP link
 # down.
 # Enforced: no link key means no boot, and `bridge_policy_permits()` holds the
-# UART bridge down in both directions. Provision the key per robot.
+# UART bridge down in both directions. Provision the key per robot. The board
+# features do not turn it on: Kconfig LINK_PROVISIONING_ENFORCED does, on every
+# build but BUILD_TYPE_DEV (owner decision 2026-10-23), through
+# tools/kconfig_to_cargo.py like any other symbol.
 # `azos_crypto/no-bitmanip`: the VF2 kernel carries no bit-manipulation
 # instruction, not even behind runtime detection (gate row `vf2: no B
 # extension`); its SHA-256 is the generic one.
@@ -91,8 +94,8 @@ vf2 = [
     "azos_drv_gpio/vf2", "azos_drv_bus/vf2", "azos_drv_virtio/vf2",
     "azos_drv_block/vf2", "azos_drv_net/vf2", "azos_drv_sensor/vf2",
     "azos_drv_actuator/vf2",
-    "azos_robot_drivers?/vf2", "azos_ota/vf2", "link-provisioning-enforced",
-    "azos_crypto/no-bitmanip", "i2c-dw",
+    "azos_robot_drivers?/vf2", "azos_ota/vf2", "azos_crypto/no-bitmanip",
+    "i2c-dw",
 ]
 # Composes `rvv` rather than re-listing its members. It used to hand-copy four
 # of the five (`arch`, `shell`, `ml`, `camera`) and drop two things: the
@@ -114,7 +117,7 @@ k1 = [
     "rvv", "azos_drv_base/k1", "azos_arch/k1", "azos_drv_sys/k1",
     "azos_drv_gpio/k1", "azos_drv_bus/k1", "azos_drv_virtio/k1",
     "azos_drv_block/k1", "azos_drv_sensor/k1", "azos_drv_actuator/k1",
-    "azos_robot_drivers?/k1", "azos_ota/k1", "link-provisioning-enforced",
+    "azos_robot_drivers?/k1", "azos_ota/k1",
 ]
 # Raspberry Pi 5 (BOARD_RPI5): `make rpi5`, kernel8.img for the Pi firmware.
 rpi5 = ["azos_robot_drivers?/rpi5", "i2c-dw"]
@@ -559,7 +562,8 @@ secure-boot-enforced = ["azos_ota/secure-boot-enforced"]
 # refuse a handshake without seeded entropy, hold the UART bridge down (a
 # keyless robot can never talk -- fail at provisioning time, loudly, not in the
 # field). The TCP link itself is always a Noise session, in every build.
-# Compile-time only, by design -- see the gate in kernel/src/main.rs.
+# Compile-time only, by design -- see the gate in kernel/src/main.rs. Emitted
+# from Kconfig LINK_PROVISIONING_ENFORCED (on outside BUILD_TYPE_DEV).
 link-provisioning-enforced = ["azos_behavior?/link-provisioning-enforced"]
 # Drive the ring-3 reflex daemon through a real obstacle decision by moving
 # the simulated rangefinder under it. QEMU-only validation aid.

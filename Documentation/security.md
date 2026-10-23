@@ -845,7 +845,7 @@ Policy symbol:
 
 | Kconfig symbol | Effect |
 |----------------|--------|
-| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`), no runtime override; default `n`, built in by the `vf2` and `k1` board features. Boot halts rather than go on with no valid link key, the handshake is refused while the entropy pool is unseeded, and the UART bridge (brain-protocol frames, motion commands included, with no authentication, outside any session) is down in both directions. The link itself is the same Noise session in every build. |
+| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`, which only Kconfig sets), no runtime override; on by default outside `BUILD_TYPE_DEV` (forced on in `BUILD_TYPE_CERTIFIABLE`). Boot halts rather than go on with no valid link key, the handshake is refused while the entropy pool is unseeded, and the UART bridge (brain-protocol frames, motion commands included, with no authentication, outside any session) is down in both directions. The link itself is the same Noise session in every build. |
 
 **Node-to-node RPC links** (`userspace/lib/rpc`). Every session is
 authenticated. A node dials with `Noise_IK_25519_ChaChaPoly_SHA256`: the dialer

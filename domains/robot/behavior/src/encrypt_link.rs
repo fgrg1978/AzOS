@@ -102,7 +102,7 @@ pub fn pool_fill(out: &mut [u8]) -> bool {
 /// enforced build
 ///
 /// Returns `None`, refusing the handshake outright, when the entropy pool is
-/// unseeded AND this is a `link-provisioning-enforced` build (`vf2`/`k1` today).
+/// unseeded AND this is a `link-provisioning-enforced` build (every non-DEV robot build).
 /// Before this decision the function always returned a key — silently
 /// degraded on the boards, which have no TRNG (see [`refuse_unseeded`] and
 /// `domains/robot/behavior/src/encrypt_link_policy.rs`, the host-testable pure
@@ -114,7 +114,7 @@ pub fn pool_fill(out: &mut [u8]) -> bool {
 /// (`SAFETY_ENTROPY_UNSEEDED_REFUSED`) — the caller only needs to close the
 /// socket and not proceed.
 ///
-/// On a non-enforced build (dev/QEMU today, no prod key rolled out) an
+/// On a non-enforced build (BUILD_TYPE_DEV, or a hand-set n) an
 /// unseeded pool still returns `Some`, degraded — see the forward-secrecy
 /// section below, unchanged from before this decision.
 ///

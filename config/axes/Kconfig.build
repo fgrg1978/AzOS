@@ -32,8 +32,10 @@ choice
       (the `dev-key` fallback in crates/core/topology/build.rs; every
       `make` board target through tools/check_board_keys.py), and the
       image needs the fleet key in TOPOLOGY_PUBKEY_PATH. Secure boot
-      (SECURE_BOOT_ENFORCED) and signed OTA (OTA_SIG_MANDATORY) start on
-      here and can still be turned off by hand; Certifiable forces them.
+      (SECURE_BOOT_ENFORCED), signed OTA (OTA_SIG_MANDATORY) and, in the
+      Robot domain, the brain link's provisioning (LINK_PROVISIONING_ENFORCED:
+      no boot without a link key) start on here and can still be turned off
+      by hand; Certifiable forces them.
 
       Certifiable (never a default; not on the QEMU board, whose kernels
       embed the TEST key through the `qemu` board feature's `dev-key`, the
