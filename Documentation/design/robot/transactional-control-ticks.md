@@ -47,8 +47,8 @@ The task then restarts at its entry. Restarting at a function entry rather than
 mid-tick needs no setjmp/longjmp: the prologue rebuilds the frame and the task
 never returns. The task re-arms on re-entry.
 
-**Stopping.** `motor_cmd_zero` is one atomic store of a timestamp
-(`MOTOR_ZERO_AT`); a command published after it overrides it, and the reader
+**Stopping.** `motor_cmd_zero` is one atomic `fetch_max` of a timestamp
+(`MOTOR_ZERO_AT`, in `domains/robot/robot/src/lib.rs`); a command published after it overrides it, and the reader
 (`motor_cmd_read`) resolves the two. It takes no lock, so it is safe from trap
 context on any hart. The stop takes effect on the next control tick of the
 restarted task. A duty already written to the PWM peripheral by an earlier
@@ -105,6 +105,8 @@ Source: `domains/robot/safety-core/src/txn.rs`, `domains/robot/safety-core/src/r
   real defect is hidden. Illegal instruction and page faults are outside it.
 * Only the motor control task is covered. The flight control task has no
   checkpoint.
+* The checkpoint table has `MAX_TXN_HARTS` (8) slots. On a hart with a higher
+  index `txn_arm` stores nothing and a fault takes the fatal path.
 * The trap-handler hook is permanent surface in the most safety-critical code.
   It is reachable only with the checkpoint armed and a whitelisted cause, and
   with the option off it is compiled out.
