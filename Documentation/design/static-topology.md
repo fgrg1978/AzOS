@@ -10,7 +10,7 @@ that is started later takes its capabilities, class and budgets from it.
 
 The topology is two text files in a restricted TOML subset, `CAPS.TOML` and
 `SCHED.TOML`, parsed by a small allocation-free parser into a fixed-size
-`Topology` value. This note describes the formats the parser accepts today,
+`Topology` value. This note describes the formats the parser accepts,
 how the files are authenticated and installed, and which checks run before a
 topology is published.
 
@@ -75,7 +75,7 @@ them.
 | Element | Accepted form |
 |---------|---------------|
 | Comment | `#` to the end of the line, outside a string. |
-| Section header | `[kind.NAME]`, or one of the bare headers `[sched]`, `[operator]`, `[clock]`, `[energy]`. Nothing but a comment may follow the `]`. |
+| Section header | `[kind.NAME]`, or one of the bare headers `[sched]`, `[operator]`, `[clock]`, `[energy]`, `[mission]`, `[rtc]`. Nothing but a comment may follow the `]`. |
 | Names | After the dot, any text up to the closing bracket, at most `TOPOLOGY_NAME_MAX` bytes. |
 | Integer | Unsigned decimal digits. No sign, no hex, no floats, and no digit separators: a number ends at the first non-digit. |
 | String | `"..."` on one line. No escape sequences: a backslash is refused. |
@@ -92,7 +92,7 @@ Rules that hold everywhere:
   refused, never truncated. (Lines before the first section are the exception:
   an unknown key there is ignored.)
 - Text after a value is refused for the task keys added from format 2 on, for
-  `start`, for every key of the sections added in formats 6 and 7, and for
+  `start`, for every key of the sections added in formats 6, 7 and 8, and for
   the binding keys. Three keys of `SCHED.TOML` also refuse it: `isolcpus`,
   and a class's `envelope` and `principal`. The oldest keys (in `[sched]`
   `partition_window_us`; in `[class.*]` `cpu_budget_min_pct`,
@@ -103,7 +103,8 @@ Rules that hold everywhere:
   `deadline_us`, `cpu_mask`) read the leading value and do not look at what
   follows it, so `period_us = 10_000` is read as 10. Write plain digits.
 - These keys are refused when repeated: `format`, the binding keys, the keys
-  of the format-7 sections and of `[clock]`, `key_id` and a non-empty
+  of the format-7 and format-8 sections and of `[clock]`, a task's
+  `principal`, `key_id` and a non-empty
   `warrants` in `[signer.*]`, `match` in `[device.*]`, and `noise_pk` and
   `measurement` in `[peer.*]` (the last two are format-7 keys of a format-6
   section). For every other key the last occurrence wins.
@@ -269,7 +270,8 @@ reader cannot disagree about what a file means.
 | 4 | Top-level binding keys `device`, `counter`, `sched_sha256`. |
 | 5 | Task keys `imports`, `timer_slack`. |
 | 6 | Sections `[device.NAME]`, `[signer.NAME]`, `[peer.NAME]`; task keys `export`, `place`, `stateless`, `call_budget_us`, `lx_class`. |
-| 7 | Task keys `shadow`, `isolated`, `kmem_kib`; device keys `safe_state`, `commit_ns`, `compensate`; peer keys `noise_pk`, `measurement`; sections `[policy.NAME]`, `[livepatch.NAME]`, `[degrade.NAME]`, `[clock]`, `[swap.NAME]`, `[volume.NAME]`, `[guest.NAME]`, `[route.NAME]`, `[firewall.NAME]`. |
+| 7 | Task keys `shadow`, `isolated`, `kmem_kib`, `principal`; device keys `safe_state`, `commit_ns`, `compensate`; peer keys `noise_pk`, `measurement`; sections `[policy.NAME]`, `[livepatch.NAME]`, `[degrade.NAME]`, `[clock]`, `[swap.NAME]`, `[login.NAME]`, `[volume.NAME]`, `[guest.NAME]`, `[route.NAME]`, `[firewall.NAME]`. |
+| 8 | Task keys `security_boundary`, `partition_id`; guest keys `passthrough`, `static`, `pcpus`, `mem_base`; the sections of "Format 8 rows" below. |
 
 The three binding keys (format 4 or later, each at most once, before the
 first section) sit inside the signed bytes:
@@ -387,7 +389,7 @@ How the kernel mints a grant from `(kind, target, perm)` is
 | `endpoint` | `endpoint.<name>` for a task-hosted endpoint, or `<iface>[.<resource>]` for an interface the kernel hosts (`gpio.17`, `i2c.0.0x68`, `pwm.4`, `entropy`, `power`). |
 | `device` | `irq.<N>`, `msi.<k>`, `mmio.<selector>` (a hardware-bus selector, see `[device.NAME]`), or `drv.<kind as decimal>` (the right to register as that driver). |
 | `node` | An absolute directory path such as `/data`, or an image name such as `TOOLBOX.ELF` with `perm = "x"` (the right to start it). |
-| `memobj` | `inspect.<public|admin>`. |
+| `memobj` | `inspect.<view>` (`public`, `admin`, and the per-service views such as `names`, `logins`, `clock`), or the terminal server's kernel regions `input.events` and `console.screen`. |
 | `domain` | `tasks`, with `perm = "r"`. |
 | `log` | `trace`, with `perm` within `rw`. |
 
@@ -521,7 +523,7 @@ out; no key is all-zero or shared by two nodes. `measurement` (format 7) is
 the image measurement every node of the class must attest; not all-zero.
 Class names are 1 to 24 bytes of `[A-Za-z0-9_-]` and unique, at most
 `TOPOLOGY_MAX_PEERS`. The RPC server's row can only lend an endpoint to a class
-declared here: nothing leaves the node except through an `export` entry.
+declared here, and only an endpoint an `export` entry names.
 
 Source: `crates/core/topology/src/parser.rs` (`PeerStage`),
 `crates/core/topology/src/types.rs` (`PeerSpec`, `ExportSpec`,
@@ -607,9 +609,9 @@ action = "drop"
 | `[volume.NAME]` | `partition` and `mount` (required); `read_only`, `aead` (booleans, default `false`); `verity_root` (64 hex digits). | Partition as for swap. `mount` is absolute, has no trailing slash and no empty, `.` or `..` component, is not `/`, `/fat` or beneath `/fat`, and is unique. `verity_root` only on a read-only volume and never all-zero. |
 | `[guest.NAME]` | `cpus` (1 to 255), `mem_mib` (at least 1) and `envelope` (all required: there is no default for a guest); `devices` (string array of backend names, default none). | Backend names in the endpoint alphabet, none twice. |
 | `[route.NAME]` | `dest` (required, `addr/len`, IPv4 or IPv6) and `dev` (required, an interface name of 1 to 15 bytes of `[A-Za-z0-9_.-]`); `via` (gateway address); `metric` (default 0). | The gateway is of the destination's family and not the unspecified address. No two rows share a destination and metric. A prefix with host bits set is refused. |
-| `[firewall.NAME]` | `dir` (`in`, `out`, `forward`) and `action` (`allow`, `drop`, `reject`), required; `proto` (`any` default, `tcp`, `udp`, `icmp`); `port`, `port_end`; `addr` (a prefix, the remote address). | Rules are tried in file order and the first match decides. A rule that matches exactly what an earlier one matches is refused as unreachable. `port` only with `tcp` or `udp`; `port_end` needs `port` and is not below it; port 0 is spelled by leaving `port` out. |
+| `[firewall.NAME]` | `dir` (`in`, `out`, `forward`) and `action` (`allow`, `drop`, `reject`), required; `proto` (`any` default, `tcp`, `udp`, `icmp`); `port`, `port_end`; `addr` (a prefix, the remote address). | Rules are tried in file order and the first match decides. A rule that matches exactly what an earlier one matches is refused as unreachable; a rule that a broader earlier one covers is accepted. `port` only with `tcp` or `udp`; `port_end` needs `port` and is not below it; port 0 is spelled by leaving `port` out. |
 
-Which of these rows other code reads today:
+Which of these rows other code reads:
 
 | Rows | Read by |
 |------|---------|
@@ -619,9 +621,9 @@ Which of these rows other code reads today:
 | `clock` | `crates/core/syscall/src/clock.rs` (the TAI-UTC table), `kernel/src/boot/inspect_views.rs` (the PTP domain, in the `inspect.clock` view). |
 | `volume` | `kernel/src/boot/azvol.rs`. |
 | `guest` | `kernel/src/boot/hv.rs`, `crates/core/hv/src/admit.rs`. |
-| `route`, `firewall` | `kernel/src/boot/net.rs`. |
-| `login` | `kernel/src/boot/inspect_views.rs` publishes the rows in the `inspect.logins` view (one entry per key, `logins/<n>/{user, key}`); the SSH server (`userspace/services/sshd`) reads it at every connection and the login service (`userspace/services/logind`) whether it is empty. The `login` op of `keys` (`crates/core/syscall/src/keys.rs`) compares a console credential's verifier (`login_enroll`, `tests/host/logind-tests`) with the keys of the row. The row's place in the file plus one is the user's `owner_root`. A key's hex is the 32 bytes of an OpenSSH `ssh-ed25519` public key: `awk '{print $2}' id_ed25519.pub | base64 -d | tail -c 32 | xxd -p -c 64`. |
-| `swap` | Nothing outside the topology crate reads `Topology::swaps` today. The swap partition is claimed through the block layer's partition table (`azos_drv_block::partition::claim_swap`). |
+| `route`, `firewall` | `kernel/src/boot/net.rs` (`install_static_routes`, `install_firewall`). Only the IPv4 rows are installed: a route with an IPv6 destination and a firewall rule with an IPv6 `addr` are admitted, counted on the console and not applied. |
+| `login` | `kernel/src/boot/inspect_views.rs` publishes the rows in the `inspect.logins` view (one entry per key, `logins/<n>/{user, key}`); the SSH server (`userspace/services/sshd`) reads it at every connection and the login service (`userspace/services/logind`) whether it is empty. With the login service's row, at least one row gates the console behind a login (`builder::console_gated`, read by `kernel/src/boot/launch.rs` and `crates/core/syscall/src/spawn.rs`). The `login` op of `keys` (`crates/core/syscall/src/keys.rs`) compares a console credential's verifier (`login_enroll`, `tests/host/logind-tests`) with the keys of the row. The row's place in the file plus one is the user's `owner_root`. A key's hex is the 32 bytes of an OpenSSH `ssh-ed25519` public key: `awk '{print $2}' id_ed25519.pub | base64 -d | tail -c 32 | xxd -p -c 64`. |
+| `swap` | Nothing outside the topology crate reads `Topology::swaps`. The swap partition is claimed through the block layer's partition table (`azos_drv_block::partition::claim_swap`). |
 
 Source: `crates/core/topology/src/parser.rs` (`PolicyStage`, `LivepatchStage`,
 `DegradeStage`, `ClockStage`, `SwapStage`, `VolumeStage`, `GuestStage`,
@@ -631,9 +633,7 @@ Source: `crates/core/topology/src/parser.rs` (`PolicyStage`, `LivepatchStage`,
 
 ### Format 8 rows
 
-Format 8 adds the rows and keys below. They are declared before any code
-reads them (TOPO-ROWS-C), so the fronts that consume them read
-`crates/core/topology/src/types.rs` and edit nothing here. The rules of format
+Format 8 adds the rows and keys below. The rules of format
 7 hold: a section is committed when the next begins, a key appears once, a
 name is 1 to 24 bytes of `[A-Za-z0-9_-]` and unique within its kind, and a
 file that says `format = 7` and uses any of this is refused with
@@ -669,20 +669,20 @@ authorize = "allow"
 
 | Section or key | Keys | What admission checks |
 |----------------|------|-----------------------|
-| `[task.NAME]` | `security_boundary` (boolean, default `false`): the row's Domain is a security boundary; `partition_id` (1 to 65535): the hardware resource partition it runs in. Read by `RowMem::partition_id` into the Domain at spawn and exec (`azos_sched::scheduler::set_task_partition`); a child Domain starts in its creator's. The scheduler makes it the hart's resource tag on every context switch (`azos_sched::qos`; riscv64 Ssqosid `srmcfg`, Kconfig `RV_SSQOSID`). A partition the hardware cannot tag runs in partition 0, said on the console. | A partition id only on a security-boundary row. |
+| `[task.NAME]` | `security_boundary` (boolean, default `false`): the row's Domain is a security boundary (read only by the admission rule beside it: no code carries it into the Domain); `partition_id` (1 to 65535): the hardware resource partition it runs in. Read by `RowMem::partition_id` into the Domain at spawn and exec (`azos_sched::scheduler::set_task_partition`); a child Domain starts in its creator's. The scheduler makes it the hart's resource tag on every context switch (`azos_sched::qos`; riscv64 Ssqosid `srmcfg`, the Kconfig choice `RV_SSQOSID_NEVER` / `_PROBE` / `_REQUIRE`). A partition the hardware cannot tag runs in partition 0, said on the console. | A partition id only on a security-boundary row. |
 | `[guest.NAME]` | `passthrough` (string array of device names, default none); `static` (boolean, default `false`): a static partition; `pcpus` (CPU mask) and `mem_base` (physical address). | Passthrough names in the endpoint alphabet, none twice and none also in `devices`. A static guest has `pcpus` with exactly `cpus` bits set and a page-aligned, non-zero `mem_base`; no other guest has either key. Two static guests share no CPU and no memory. |
 | `[tsn.NAME]` | `dev`, `window_us` (1 to 1000000, the Qbv gate cycle), `link_budget` (1 to 10000000 kbit/s); all required. | One row per device. |
 | `[fieldbus.NAME]` | `kind` (`ethercat`, `canopen`, `modbus`) and `dev` required; `cycle_us`. | One row per device. `cycle_us` exactly for EtherCAT. |
 | `[audio.NAME]` | `dev`, `rate_hz` (8000 to 384000), `channels` (1 to 32) required; `dir` (`playback` default, `capture`, `duplex`). | One row per device. |
 | `[display.NAME]` | `dev`, `width`, `height` required; `rotation` (0, 90, 180, 270; default 0); `primary` (boolean). | One row per device; at most one primary. Sizes of at least 1. |
-| `[user.NAME]` | `root` and `keystore`, both required absolute paths (the rules of a `[volume.NAME]` mount point). | The root is used by one row only; the keystore is not the root. |
+| `[user.NAME]` | `root` and `keystore`, both required absolute paths (the rules of a `[volume.NAME]` mount point). | No two of the roots and keystores, within a row or across rows, are equal or one beneath the other. |
 | `[key.NAME]` | `purpose` (`link`, `sign`, `aead`) and `source` (`dice`, `keystore`, `hardware`) required; `user`. | `user` exactly when the source is `keystore`, and that `[user.NAME]` row must exist. A row holds no key material. |
 | `[mission]` | `reserve_mj` (at least 1, required); `task`. | At most one section. The named task row must exist. |
 | `[boot_chain.NAME]` | `stage` (0 to 255) and `digest` (64 hex digits), both required. | Name and stage unique, digest not all-zero, stages consecutive from 0. |
 | `[island.NAME]` | `image` (a file name), `sha256` (64 hex digits) and `mailbox` (a queue name) required; `wake` (string array of event names, at most `TOPOLOGY_ISLAND_WAKE`). | Image and mailbox unique, digest not all-zero, event names in the endpoint alphabet and unique. |
 | `[activity.NAME]` | `task` and `trigger` (`idle`, `charging`, `timer`) required; `period_ms`. | `period_ms` (at least 1) exactly for `timer`. One activity per task, and the task row must exist. |
 | `[numa.NAME]` | `node` (0 to 63) and `cpus` (CPU mask, not empty), both required. | Node unique; no CPU in two nodes. |
-| `[envelope.NAME]` | `kind` (`config`, `ota`, `egress`, `delete`, `rt_time`, `mic`), `class` and `level` (`full`, `cautious`, `slow`, `contained`), all required. | One row per class and kind. The class must exist. Read today by the `mic` effect of `Sound::open` and, with Kconfig `EFFECT_WRITE_AHEAD`, by the effect gate for `delete` (unlink, rename over a file, cut below a file's size, snapshot drop), `egress` (a Domain's first packet to a destination off the node, by class), `config` (a write of a configuration key, by the key's reach), `ota` (staging an update, switching to it) and `rt_time` (the share of a hart one deadline reservation may take); the levels are ceilings, see [Storage and network envelopes](../effects.md#storage-and-network-envelopes) and [Configuration, update and real-time-time envelopes](../effects.md#configuration-update-and-real-time-time-envelopes). The development topology states all five as `full` for the classes its tasks run in (15 rows). A class with no row is `full`. |
+| `[envelope.NAME]` | `kind` (`config`, `ota`, `egress`, `delete`, `rt_time`, `mic`), `class` and `level` (`full`, `cautious`, `slow`, `contained`), all required. | One row per class and kind. The class must exist. Read by the `mic` effect of `Sound::open` and, with Kconfig `EFFECT_WRITE_AHEAD`, by the effect gate for `delete` (unlink, rename over a file, cut below a file's size, snapshot drop), `egress` (a Domain's first packet to a destination off the node, by class), `config` (a write of a configuration key, by the key's reach), `ota` (staging an update, switching to it) and `rt_time` (the share of a hart one deadline reservation may take); the levels are ceilings, see [Storage and network envelopes](../effects.md#storage-and-network-envelopes) and [Configuration, update and real-time-time envelopes](../effects.md#configuration-update-and-real-time-time-envelopes). The built-in topology states all five as `full` for `soft_rt`, `best_effort` and `session` (15 rows). A class with no row is `full`. |
 | `[rtc]` | `dev` (required); `utc` (boolean, default `true`). | At most one section. |
 | `[nic.NAME]` | `dev` required; `mtu` (576 to 9216, default 1500); `mac` (`aa:bb:cc:dd:ee:ff`). | One row per device. A MAC is unicast, not all-zero, and in no other row. |
 | `[model.NAME]` | `bundle` (64 hex digits, required); `variant` (a name). | Bundle not all-zero and in no other row. |
@@ -690,8 +690,14 @@ authorize = "allow"
 
 `verity_root` is the `[volume.NAME]` key above; format 8 adds no second one.
 
-These rows are read by the fronts named in their `types.rs` doc comments;
-until those land, nothing outside the topology crate reads them.
+Outside the topology crate, code reads `partition_id` and the
+`[envelope.NAME]` rows (`crates/core/syscall/src/topo_sched.rs`,
+`crates/core/actuation/src/envelope.rs`, `crates/core/syscall/src/sound_host.rs`).
+Nothing outside it reads the other format-8 rows and keys (`security_boundary`,
+the guest keys `passthrough`, `static`, `pcpus`, `mem_base`, and the `tsn`,
+`fieldbus`, `audio`, `display`, `user`, `key`, `mission`, `boot_chain`,
+`island`, `activity`, `numa`, `rtc`, `nic`, `model` and `usb` rows): they are
+parsed and admitted, and change nothing at run time.
 
 Source: `crates/core/topology/src/parser.rs` (`Kind8`, `Stage8` and the
 stages beside it, `GuestStage`, `TaskExt`), `crates/core/topology/src/types.rs`
@@ -711,6 +717,12 @@ installs follows the Kconfig choice between `TOPOLOGY_SOURCE_BUILTIN`,
 | Signed if present and valid, else built-in | The signed set when all three files are present and it is accepted; the built-in one when none are present. A set that is present but refused falls back to the built-in topology (`TOPOLOGY_INVALID_FALLBACK`), or halts (`TOPOLOGY_INVALID_HALT`). |
 | Signed required | The signed set or no boot: a missing or refused set halts. |
 
+The default is "signed required" on every board but `BOARD_QEMU`, and "signed
+if present" with `TOPOLOGY_INVALID_FALLBACK` on `BOARD_QEMU`. Under "signed if
+present", whoever can delete the files from the volume, or (with the fallback)
+corrupt them, boots the built-in topology and its grants instead of the signed
+ones.
+
 A missing or refused set writes a safety record (`SAFETY_TOPO_SOURCE`) that
 names the step and the file, and prints a line to the console.
 
@@ -719,17 +731,31 @@ For a signed set the order is fixed:
 1. Read the three files. A partial set is refused (`Incomplete`), as is a file
    larger than its buffer (`TOPOLOGY_CAPS_MAX_KB`, `TOPOLOGY_SCHED_MAX_KB`).
 2. Verify `CAPS.SIG` over the exact bytes of `CAPS.TOM` against the trusted key
-   (`TRUSTED_PUBKEY`). No byte of the file is interpreted before this passes.
+   (`TRUSTED_PUBKEY`). No byte of the file is interpreted before this passes
+   (except in a build with the gate canary feature `topo-verify-skip-canary`,
+   which skips the check and is never part of a shipped build).
 3. Read the top-level binding keys from the verified bytes (`parse_binding`).
 4. Check the binding: `sched_sha256` must match the SHA-256 of `SCHED.TOM`
    (always required, it is what authenticates that file); `device` must match
-   this device's id (required when `TOPOLOGY_BIND_DEVICE` is set, and checked
-   whenever present); `counter` must be at least the floor kept in a reserved
-   sector of the volume (required when `TOPOLOGY_COUNTER_FLOOR` is set). An
-   older, validly signed file put back on the volume is refused as a replay.
+   this device's id (required when `TOPOLOGY_BIND_DEVICE` is set, and then a
+   device with no record refuses the file, `Unprovisioned`; with it unset, a
+   `device` key is checked only when the device has a record); `counter` must be at least
+   the floor kept in a reserved sector past the volume (required when
+   `TOPOLOGY_COUNTER_FLOOR` is set). An older, validly signed file put back on
+   the volume is refused as a replay while the floor record is readable: an
+   unreadable or invalid floor reads as 0, and whoever can rewrite the
+   reserved tail can reset it. Accepting a higher counter raises the floor; a
+   failed write leaves the old one. The canary features `topo-sched-hash-canary`,
+   `topo-device-canary` and `topo-replay-canary` each skip one of these checks.
 5. Parse `SCHED.TOM`, then `CAPS.TOM`.
-6. Run admission on the candidate (next section), before it is published.
-7. Publish it. The slot is written once by the boot CPU; afterwards it is
+6. Merge the staged packages into the candidate (`kernel/src/boot/pkg_boot.rs`):
+   their rows are checked with the rest. A candidate refused with them is tried
+   once more without them; if that passes, the packages caused the refusal and
+   their trial is undone.
+7. Run admission on the candidate (next section), before it is published. A
+   row with `mem_huge_mib` on a kernel without `LOCKED_HUGE_LEAVES` is refused
+   (`HugeLeaves`).
+8. Publish it. The slot is written once by the boot CPU; afterwards it is
    read-only, and a second `init` returns an error.
 
 Parsing happens after verification because the parser is a byte-level state
@@ -738,12 +764,16 @@ keeps it off unsigned input.
 
 The trusted public key is embedded at build time from the file named by
 `TOPOLOGY_PUBKEY_PATH`, or from the test public key in the `keys` directory under `tools` when the `dev-key`
-feature is set. A build with neither fails, and a build configured as a
-release refuses the test key. The same key verifies the signed `CONFIG.INI`.
+feature is set (the kernel's `qemu` feature sets it). A build with neither
+fails, and a bare-metal build from a `.config` with `BUILD_TYPE_RELEASE` or
+`BUILD_TYPE_CERTIFIABLE` refuses the test key, by either route. The key is
+one of the device's one signature algorithm, `SigAlg::CONFIGURED` (Ed25519,
+the only one), and a sidecar that names another is refused. The same key
+verifies the signed `CONFIG.INI`.
 
 Source: `crates/core/topology/src/signed.rs`, `crates/core/topology/src/verify.rs`,
 `crates/core/topology/build.rs`, `crates/core/topology/src/state.rs`,
-`kernel/src/boot/topology.rs`, `config/subsys/Kconfig.topology`.
+`kernel/src/boot/topology.rs`, `kernel/src/boot/pkg_boot.rs`, `config/subsys/Kconfig.topology`.
 
 ## Admission
 
@@ -767,6 +797,7 @@ known.
 | `isolated` rows name the one CPU of `isolcpus` they own; other rows avoid it. | `BadRow(Task)`, `Deadline(IsolatedWithoutCpu)` (no `cpu_mask`) |
 | Every `[policy.NAME]` names an existing row. | `BadRow(Policy)` |
 | A row in the real-time band with a reservation is `mem = "locked"`. | `Deadline(BandNotLocked)` |
+| The format-8 rows name what exists: the `[mission]` and `[activity.NAME]` tasks, a `[key.NAME]`'s user, an `[envelope.NAME]`'s class; the `[boot_chain.NAME]` stages run from 0 with no gap (`format8_admission`). | `BadRow(Mission)`, `BadRow(Activity)`, `BadRow(Key)`, `BadRow(Envelope)`, `BadRow(BootChain)` |
 
 Refused while the rows are read, before `admission_check` runs (the parser
 returns them as `ParseError::Admission`, and the host tools that build a
@@ -815,8 +846,11 @@ Source: `crates/core/topology/src/deadline.rs` (`admit`, `SchedProfile`),
 ### `neverallow`
 
 The rules in `neverallow::RULES` state grants that no topology may make,
-whatever its file says. A rule's exceptions live in the kernel image (in the
-rule table), not in the topology, so a row cannot excuse itself.
+whatever its file says, in a kernel built with `TOPOLOGY_NEVERALLOW` (default
+`y`; with `n`, or with the canary feature `neverallow-canary`, nothing is
+checked). The rules look at the task rows' grants only. A rule's exceptions
+live in the kernel image (in the rule table), not in the topology, so a row
+cannot excuse itself.
 
 | Rule | Forbids |
 |------|---------|
@@ -866,8 +900,9 @@ Source: `crates/core/topology/src/emit.rs`,
 
 `fill_default_minimal` in `builder.rs` builds the topology a kernel installs
 when the policy is built-in, or when a signed set is absent or refused and the
-policy falls back. It declares five classes (`safety_critical`, `hard_rt`,
-`soft_rt`, `best_effort`, `idle`) whose minimum budgets sum to 100 %, the
+policy falls back. It declares six classes: five (`safety_critical`, `hard_rt`,
+`soft_rt`, `best_effort`, `idle`) whose minimum budgets sum to 100 %, and
+`session` (the interactive shell's, principal `user`, no reserved share); the
 kernel task rows, the rows of the images the configuration ships, and the
 hardware bus rows of the board. Features of the topology crate add or remove
 rows, which is how test configurations declare extra rows without widening the
@@ -886,7 +921,7 @@ and `TOPOLOGY_MAX_CLASSES`, `TOPOLOGY_MAX_PIPELINES`,
 `TOPOLOGY_MAX_SIGNERS`, `TOPOLOGY_SIGNER_WARRANTS_TOTAL`, `TOPOLOGY_MAX_PEERS`,
 `TOPOLOGY_PEER_NODES`, `TOPOLOGY_EXPORTS_TOTAL`, `TOPOLOGY_MAX_POLICIES`,
 `TOPOLOGY_MAX_LIVEPATCHES`, `TOPOLOGY_LEAP_ENTRIES`, `TOPOLOGY_MAX_SWAPS`,
-`TOPOLOGY_MAX_VOLUMES`, `TOPOLOGY_MAX_GUESTS`, `TOPOLOGY_GUEST_DEVICES`,
+`TOPOLOGY_MAX_VOLUMES`, `TOPOLOGY_MAX_LOGINS`, `TOPOLOGY_LOGIN_KEYS`, `TOPOLOGY_MAX_GUESTS`, `TOPOLOGY_GUEST_DEVICES`,
 `TOPOLOGY_MAX_ROUTES`, `TOPOLOGY_MAX_FIREWALL_ROWS`, `TOPOLOGY_MAX_TSN`,
 `TOPOLOGY_MAX_FIELDBUS`, `TOPOLOGY_MAX_AUDIO`, `TOPOLOGY_MAX_DISPLAYS`,
 `TOPOLOGY_MAX_USERS`, `TOPOLOGY_MAX_KEYS`, `TOPOLOGY_MAX_BOOT_STAGES`,
@@ -909,15 +944,17 @@ Source: `config/limits/Kconfig.limits`, `config/subsys/Kconfig.topology`.
 - **Verify, then parse, then admit.** Each step only sees the output of the
   one before it. A topology that fails any step is never published.
 - **Fail closed.** Unknown keys, unknown sections, out-of-range values and
-  keys from a later format are errors, so a typo cannot silently grant or
-  withhold authority.
+  keys from a later format are errors. The exceptions are the ones listed
+  under "The accepted syntax": unknown keys before the first section, and the
+  oldest keys, which read a leading number and ignore what follows it.
 - **Names are data, authority is a grant.** An `imports` entry or a signer
-  warrant states what may be asked for; only a grant in a signed row is
-  authority.
+  warrant states what may be asked for; only a grant in a row of the
+  installed topology (the signed set with its merged package rows, or the
+  built-in one) is authority.
 - **One immutable topology per boot.** There is no run-time grant and no
-  in-place update: a different topology means a different signed set and a
-  reboot. This keeps every authority question answerable by reading one
-  file.
+  in-place update: a different topology means a different signed set (or a
+  staged package) and a reboot. This keeps every authority question
+  answerable by reading the installed topology.
 - **All or nothing.** A single error refuses the whole file. The fallback
   and halt policies of the topology source choice decide what the machine
   does then.
