@@ -1013,7 +1013,8 @@ $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/d
 #   make topo-volume TOPO_IMAGE=<img>   bind to <img>'s device, sign, copy on
 #   make build/disk-topo.img            build/disk.img + the riscv64 set
 #   make build/disk-aarch64-topo.img    build/disk-aarch64.img + aarch64's
-#   make topology-files                 both ISAs' files, unbound unless
+#   make build/disk-x86_64-topo.img     build/disk-x86_64.img + x86_64's
+#   make topology-files                 every ISA's files, unbound unless
 #                                       TOPO_DEVICE is given (inspection)
 #
 # The topology depends on the .config (row budgets, limits) and on the
@@ -1028,7 +1029,8 @@ $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/d
 #                          (default `qemu`, the gate's QEMU kernels)
 #   TOPO_KCONFIG_RISCV64   its .config (default $(QEMU_DEV_KCONFIG))
 #   TOPO_KCONFIG_AARCH64   (default $(AARCH64_KCONFIG))
-#   TOPO_ISA               topo-volume's ISA (riscv64 | aarch64)
+#   TOPO_KCONFIG_X86_64    (default $(X86_64_KCONFIG))
+#   TOPO_ISA               topo-volume's ISA (riscv64 | aarch64 | x86_64)
 #   TOPO_COUNTER           the signed counter (default 1: the gate rows pin it)
 #   TOPO_DEVICE            32 hex digits, instead of the image's own id
 #   TOPO_PRIV              topo-volume's signing key (default the TEST key:
@@ -1043,12 +1045,17 @@ $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/d
 TOPO_KERNEL_FEATURES ?= qemu
 TOPO_KCONFIG_RISCV64 ?= $(QEMU_DEV_KCONFIG)
 TOPO_KCONFIG_AARCH64 ?= $(AARCH64_KCONFIG)
+TOPO_KCONFIG_X86_64 ?= $(X86_64_KCONFIG)
 TOPO_ISA ?= riscv64
 TOPO_COUNTER ?= 1
 TOPO_DEVICE ?=
 TOPO_PRIV ?= $(TEST_PRIV_KEY)
 TOPO_DIR_RISCV64 := $(OUT_BUILD)/topo/riscv64
 TOPO_DIR_AARCH64 := $(OUT_BUILD)/topo/aarch64
+TOPO_DIR_X86_64 := $(OUT_BUILD)/topo/x86_64
+# The .config of an ISA's files.
+topo_kconfig = $(TOPO_KCONFIG_$(call topo_isa_var,$(1)))
+topo_isa_var = $(if $(filter aarch64,$(1)),AARCH64,$(if $(filter x86_64,$(1)),X86_64,RISCV64))
 topo_set = $(1)/CAPS.TOM $(1)/CAPS.SIG $(1)/SCHED.TOM
 
 # The azos_topology features a kernel built with features $(1) (a comma list,
@@ -1056,7 +1063,7 @@ topo_set = $(1)/CAPS.TOM $(1)/CAPS.SIG $(1)/SCHED.TOM
 topo_features = $$($(CARGO) tree -q -p azos_kernel --features "$(1)" -e features -i azos_topology --prefix none \
 	| sed -n 's/^azos_topology feature "\(.*\)"$$/azos_topology\/\1/p' | grep -v '/default$$' | sort -u | tr '\n' ' ')
 
-# $(call topo_emit,<riscv64|aarch64>,<.config>,<kernel features>,<out dir>,<extra topo_emit args>)
+# $(call topo_emit,<riscv64|aarch64|x86_64>,<.config>,<kernel features>,<out dir>,<extra topo_emit args>)
 define topo_emit
 	@mkdir -p $(4)
 	feats="emit-target-$(1) $(call topo_features,$(3))"; \
@@ -1079,15 +1086,15 @@ define topo_bind
 endef
 
 .PHONY: topo-volume
-topo-volume: $(TOPO_EMIT_DEPS) $(if $(filter aarch64,$(TOPO_ISA)),$(TOPO_KCONFIG_AARCH64),$(TOPO_KCONFIG_RISCV64)) $(TEST_PRIV_KEY)
+topo-volume: $(TOPO_EMIT_DEPS) $(call topo_kconfig,$(TOPO_ISA)) $(TEST_PRIV_KEY)
 	@[ -n "$(TOPO_IMAGE)" ] && [ -f "$(TOPO_IMAGE)" ] || { echo "[TOPO] topo-volume needs TOPO_IMAGE=<an existing image>"; exit 1; }
-	$(call topo_bind,$(TOPO_ISA),$(if $(filter aarch64,$(TOPO_ISA)),$(TOPO_KCONFIG_AARCH64),$(TOPO_KCONFIG_RISCV64)),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/vol-$(TOPO_ISA),$(TOPO_IMAGE),$(TOPO_PRIV))
+	$(call topo_bind,$(TOPO_ISA),$(call topo_kconfig,$(TOPO_ISA)),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/vol-$(TOPO_ISA),$(TOPO_IMAGE),$(TOPO_PRIV))
 	@echo "[TOPO] $(TOPO_IMAGE): signed topology bound to device $$(cat $(OUT_BUILD)/topo/vol-$(TOPO_ISA).device), counter $(TOPO_COUNTER)"
 
 # What the inspection files were emitted for: rewritten only when it changes.
-$(TOPO_DIR_RISCV64)/inputs $(TOPO_DIR_AARCH64)/inputs: FORCE
+$(TOPO_DIR_RISCV64)/inputs $(TOPO_DIR_AARCH64)/inputs $(TOPO_DIR_X86_64)/inputs: FORCE
 	@mkdir -p $(@D)
-	@printf '%s\n' "$(TOPO_KERNEL_FEATURES) $(TOPO_DEVICE) $(TOPO_COUNTER) $(abspath $(if $(findstring riscv64,$@),$(TOPO_KCONFIG_RISCV64),$(TOPO_KCONFIG_AARCH64)))" > $@.tmp
+	@printf '%s\n' "$(TOPO_KERNEL_FEATURES) $(TOPO_DEVICE) $(TOPO_COUNTER) $(abspath $(call topo_kconfig,$(notdir $(@D))))" > $@.tmp
 	@cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
 
 topo_emit_args = $(if $(TOPO_DEVICE),--device $(TOPO_DEVICE)) --counter $(TOPO_COUNTER)
@@ -1095,18 +1102,23 @@ $(TOPO_DIR_RISCV64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_RISCV64) $(TOPO_D
 	$(call topo_emit,riscv64,$(TOPO_KCONFIG_RISCV64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_RISCV64),$(topo_emit_args))
 $(TOPO_DIR_AARCH64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_AARCH64) $(TOPO_DIR_AARCH64)/inputs
 	$(call topo_emit,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_AARCH64),$(topo_emit_args))
+$(TOPO_DIR_X86_64)/CAPS.TOM: $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_X86_64) $(TOPO_DIR_X86_64)/inputs
+	$(call topo_emit,x86_64,$(TOPO_KCONFIG_X86_64),$(TOPO_KERNEL_FEATURES),$(TOPO_DIR_X86_64),$(topo_emit_args))
 # Written by the same run, after CAPS.TOM.
 $(TOPO_DIR_RISCV64)/SCHED.TOM: $(TOPO_DIR_RISCV64)/CAPS.TOM ; @true
 $(TOPO_DIR_AARCH64)/SCHED.TOM: $(TOPO_DIR_AARCH64)/CAPS.TOM ; @true
+$(TOPO_DIR_X86_64)/SCHED.TOM: $(TOPO_DIR_X86_64)/CAPS.TOM ; @true
 # A bare 64-byte Ed25519 signature over CAPS.TOM (the CAPS.SIG format), TEST
 # key: these are QEMU fixtures.
 $(OUT_BUILD)/topo/riscv64/CAPS.SIG: $(TOPO_DIR_RISCV64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
 	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
 $(OUT_BUILD)/topo/aarch64/CAPS.SIG: $(TOPO_DIR_AARCH64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
 	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
+$(OUT_BUILD)/topo/x86_64/CAPS.SIG: $(TOPO_DIR_X86_64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
+	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
 
 .PHONY: topology-files
-topology-files: $(call topo_set,$(TOPO_DIR_RISCV64)) $(call topo_set,$(TOPO_DIR_AARCH64))
+topology-files: $(call topo_set,$(TOPO_DIR_RISCV64)) $(call topo_set,$(TOPO_DIR_AARCH64)) $(call topo_set,$(TOPO_DIR_X86_64))
 	@ls -l $^
 
 $(OUT_BUILD)/disk-topo.img: $(OUT_BUILD)/disk.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_RISCV64) $(TEST_PRIV_KEY)
@@ -1117,6 +1129,11 @@ $(OUT_BUILD)/disk-topo.img: $(OUT_BUILD)/disk.img $(TOPO_EMIT_DEPS) $(TOPO_KCONF
 $(OUT_BUILD)/disk-aarch64-topo.img: $(OUT_BUILD)/disk-aarch64.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_AARCH64) $(TEST_PRIV_KEY)
 	cp $(OUT_BUILD)/disk-aarch64.img $@
 	$(call topo_bind,aarch64,$(TOPO_KCONFIG_AARCH64),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/img-aarch64,$@,$(TEST_PRIV_KEY))
+	@echo "[DISK] FAT32 image with the signed topology (test key, counter $(TOPO_COUNTER)): $@"
+
+$(OUT_BUILD)/disk-x86_64-topo.img: $(OUT_BUILD)/disk-x86_64.img $(TOPO_EMIT_DEPS) $(TOPO_KCONFIG_X86_64) $(TEST_PRIV_KEY)
+	cp $(OUT_BUILD)/disk-x86_64.img $@
+	$(call topo_bind,x86_64,$(TOPO_KCONFIG_X86_64),$(TOPO_KERNEL_FEATURES),$(OUT_BUILD)/topo/img-x86_64,$@,$(TEST_PRIV_KEY))
 	@echo "[DISK] FAT32 image with the signed topology (test key, counter $(TOPO_COUNTER)): $@"
 
 # The board volumes' sets: each product profile's topology (BOARD_VOL_KCONFIG,

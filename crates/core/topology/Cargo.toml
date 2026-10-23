@@ -65,6 +65,7 @@ topo-device-canary = []
 topo-replay-canary = []
 emit-target-riscv64 = []
 emit-target-aarch64 = []
+emit-target-x86_64 = []
 # Declare `pwm.0` and `gpio.0` — motor 0's duty channel and one of its
 # direction pins — in the default topology, so a ring-3 task HOLDS the
 # capability the kernel's actuation guards must refuse. Without the grant a

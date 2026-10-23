@@ -77,6 +77,7 @@ lx-server = ["azos_topology/lx-server"]
 # topology a kernel of one ISA builds, kernel-only rows included.
 emit-target-riscv64 = ["azos_topology/emit-target-riscv64"]
 emit-target-aarch64 = ["azos_topology/emit-target-aarch64"]
+emit-target-x86_64 = ["azos_topology/emit-target-x86_64"]
 deadline-levels-canary = ["azos_topology/deadline-levels-canary"]
 # The neverallow canaries (`crates/core/topology/Cargo.toml`): the built-in
 # topology declares a row rule 0 forbids; the rules find nothing.

@@ -63,7 +63,8 @@ TARGET_DIR = os.path.join(out_root(), "target", "neverallow-check")
 # cannot be checked is a configuration whose topology could ship unchecked.
 UNBUILDABLE_OK = frozenset()
 
-ISA_FEATURE = {"CONFIG_ARCH_RISCV64": "emit-target-riscv64", "CONFIG_ARCH_AARCH64": "emit-target-aarch64"}
+ISA_FEATURE = {"CONFIG_ARCH_RISCV64": "emit-target-riscv64", "CONFIG_ARCH_AARCH64": "emit-target-aarch64",
+               "CONFIG_ARCH_X86_64": "emit-target-x86_64"}
 
 
 def cargo():

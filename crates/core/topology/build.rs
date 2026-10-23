@@ -144,13 +144,15 @@ fn main() {
 /// kernel (`target_os = "none"`) and differ by ISA. The host emitter
 /// (`tests/host/topology-tests/src/bin/topo_emit.rs`) writes the CAPS.TOM a
 /// kernel of one ISA would build, so it must compile those rows for a target
-/// it is not running on. `emit-target-riscv64` / `emit-target-aarch64` ask for
-/// that shape; without either, the cfgs follow the real target, so a kernel
-/// and the host suites build exactly what they built before.
+/// it is not running on. `emit-target-riscv64` / `emit-target-aarch64` /
+/// `emit-target-x86_64` ask for that shape; without one, the cfgs follow the
+/// real target, so a kernel and the host suites build exactly what they built
+/// before.
 ///
 /// * `topo_bare`: the rows a kernel has and a host build does not;
 /// * `topo_arch_riscv64` / `topo_arch_aarch64`: the ISA's row variants
-///   (each implies `topo_bare`).
+///   (each implies `topo_bare`). x86_64 has no variant cfg: its kernel is
+///   `topo_bare` with neither, and so is its emitter.
 fn emit_target_cfgs() {
     println!("cargo:rustc-check-cfg=cfg(topo_bare)");
     println!("cargo:rustc-check-cfg=cfg(topo_arch_riscv64)");
@@ -159,11 +161,12 @@ fn emit_target_cfgs() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let want_rv = env::var_os("CARGO_FEATURE_EMIT_TARGET_RISCV64").is_some();
     let want_arm = env::var_os("CARGO_FEATURE_EMIT_TARGET_AARCH64").is_some();
-    if want_rv && want_arm {
-        fail("emit-target-riscv64 and emit-target-aarch64 are exclusive: one ISA's topology at a time");
+    let want_x86 = env::var_os("CARGO_FEATURE_EMIT_TARGET_X86_64").is_some();
+    if [want_rv, want_arm, want_x86].iter().filter(|&&w| w).count() > 1 {
+        fail("emit-target-riscv64, emit-target-aarch64 and emit-target-x86_64 are exclusive: one ISA's topology at a time");
     }
-    let bare = os == "none" || os == "azos";
-    let (rv, arm) = if want_rv || want_arm {
+    let bare = os == "none" || os == "azos" || want_x86;
+    let (rv, arm) = if want_rv || want_arm || want_x86 {
         (want_rv, want_arm)
     } else {
         (bare && arch == "riscv64", bare && arch == "aarch64")

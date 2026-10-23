@@ -11,8 +11,9 @@
 //! The topology is `azos_topology::fill_default_minimal`, the one a kernel
 //! builds into its image, so the build must match the kernel's: the same
 //! `KCONFIG_CONFIG` (row budgets and limits come from it) and the topology
-//! features the kernel's own features turn on, plus `emit-target-riscv64` or
-//! `emit-target-aarch64` for the rows only a kernel of that ISA declares.
+//! features the kernel's own features turn on, plus `emit-target-riscv64`,
+//! `emit-target-aarch64` or `emit-target-x86_64` for the rows only a kernel of
+//! that ISA declares.
 //! `make topology-files` / `make topo-volume` pass all three.
 //!
 //! CAPS.TOM is format 4 and always names `sched_sha256`, the SHA-256 of the

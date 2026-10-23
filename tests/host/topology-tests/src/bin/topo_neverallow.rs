@@ -15,8 +15,9 @@
 //! Like `topo_emit`, the built-in topology is
 //! `azos_topology::fill_default_minimal`, so the build must match the kernel's: the same `KCONFIG_CONFIG` (the image's
 //! domain, `USE_DESKTOP`, and the limits come from it), the topology features
-//! the kernel's features turn on, and `emit-target-riscv64` or
-//! `emit-target-aarch64` for the rows only a kernel of that ISA declares.
+//! the kernel's features turn on, and `emit-target-riscv64`,
+//! `emit-target-aarch64` or `emit-target-x86_64` for the rows only a kernel of
+//! that ISA declares.
 //! `tools/check_neverallow.py` (`make check-neverallow`) does that for every
 //! preset. The rules run whatever Kconfig `TOPOLOGY_NEVERALLOW` says: the
 //! option is the kernel's switch, not the checker's.
