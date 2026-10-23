@@ -42,8 +42,29 @@
 #     the native SpacemiT K1 I2C master (crates/drivers/bus/src/i2c_k1.rs).
 #   * The ext4 stage (Kconfig LX_FS_EXT4_RO) adds /fs/Makefile (the same
 #     descent for fs/ext4/ext4.ko and fs/jbd2/jbd2.ko) and /fs/mbcache.c
-#     (EXT4_FS selects FS_MBCACHE). The rest of fs/ is not fetched: which part
-#     of it ext4.ko's imports compile and which are emulated is still open.
+#     (EXT4_FS selects FS_MBCACHE). The rest of fs/ that ext4.ko imports from
+#     (buffer.c, inode.c, dcache.c, ...) is checked out file by file, below.
+#   * The next slices of the layer (Documentation/design/lx-driver-slices.md)
+#     add exact files, 4.0 MiB in all. A sparse set chooses what is checked
+#     out, not what is fetched: the depth-1 fetch of the pinned commit brings
+#     every blob of it, so widening the set downloads nothing, and a tree
+#     fetched earlier only needs this script re-run.
+#     - ext4: the files that export what lx/FS_EXT4_UNRESOLVED lists and are
+#       not in a directory of the set already: 25 top-level files of fs/, four
+#       of fs/iomap, six of block/, init/main.c (system_state), init/version.c
+#       (init_uts_ns), drivers/char/random.c (get_random_*) and, for aarch64,
+#       drivers/clocksource/arm_arch_timer.c (arch_timer_read_counter). The
+#       slice decides which are compiled and which lx/emul re-implements.
+#     - the URB adapter: the HID core (hid-core, hid-input, hid-quirks,
+#       hid-generic and their two local headers), usbhid, the first two quirk
+#       leaves (hid-multitouch, hid-playstation), and the USB-core and
+#       input-core files whose exports they call, which the adapter
+#       re-implements over the native xHCI stack.
+#     - the sensor pilot: imx219 (lx/DEVICE_SOURCES) and the Makefiles that
+#       descend to it, v4l2-core and mc (the subdev, control, fwnode and CCI
+#       helpers it calls), and the I2C-core, regulator, clock and GPIO files
+#       whose exports it calls, which the server provides over its
+#       capabilities.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 gm="$root/.gitmodules"
@@ -77,6 +98,75 @@ Kconfig*
 /drivers/Makefile
 /fs/Makefile
 /fs/mbcache.c
+/fs/buffer.c
+/fs/inode.c
+/fs/dcache.c
+/fs/libfs.c
+/fs/fs_parser.c
+/fs/fs-writeback.c
+/fs/mnt_idmapping.c
+/fs/read_write.c
+/fs/seq_file.c
+/fs/stat.c
+/fs/attr.c
+/fs/bad_inode.c
+/fs/namespace.c
+/fs/open.c
+/fs/super.c
+/fs/filesystems.c
+/fs/ioctl.c
+/fs/sync.c
+/fs/d_path.c
+/fs/file.c
+/fs/file_attr.c
+/fs/file_table.c
+/fs/fserror.c
+/fs/namei.c
+/fs/splice.c
+/fs/iomap/fiemap.c
+/fs/iomap/seek.c
+/fs/iomap/direct-io.c
+/fs/iomap/swapfile.c
+/block/bdev.c
+/block/blk-core.c
+/block/bio.c
+/block/blk-lib.c
+/block/blk-flush.c
+/block/blk-ioc.c
+/init/main.c
+/init/version.c
+/drivers/char/random.c
+/drivers/clocksource/arm_arch_timer.c
+/drivers/hid/Makefile
+/drivers/hid/hid-core.c
+/drivers/hid/hid-input.c
+/drivers/hid/hid-quirks.c
+/drivers/hid/hid-generic.c
+/drivers/hid/hid-ids.h
+/drivers/hid/hid-haptic.h
+/drivers/hid/hid-multitouch.c
+/drivers/hid/hid-playstation.c
+/drivers/hid/usbhid/
+/drivers/usb/core/urb.c
+/drivers/usb/core/message.c
+/drivers/usb/core/driver.c
+/drivers/usb/core/usb.c
+/drivers/usb/core/hub.c
+/drivers/input/input.c
+/drivers/input/input-mt.c
+/drivers/input/ff-core.c
+/drivers/input/ff-memless.c
+/drivers/media/Makefile
+/drivers/media/i2c/Makefile
+/drivers/media/i2c/imx219.c
+/drivers/media/v4l2-core/
+/drivers/media/mc/
+/drivers/i2c/i2c-core-base.c
+/drivers/regulator/core.c
+/drivers/regulator/devres.c
+/drivers/clk/clk.c
+/drivers/gpio/gpiolib.c
+/drivers/gpio/gpiolib-devres.c
 SPARSE
 }
 
