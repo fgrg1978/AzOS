@@ -232,7 +232,7 @@ config DRV_AHCI
       medium (BLK_FUA's fsync commit) is WRITE FPDMA QUEUED with its FUA bit,
       or WRITE DMA FUA EXT without NCQ, where IDENTIFY word 84 says the disk
       has FUA; otherwise the layer orders with a flush. A discard (BLK_DISCARD:
-      FAT32's freed chains, the swap area) is DATA SET
+      FAT32's freed chains, azvol's freed blocks, the swap area) is DATA SET
       MANAGEMENT with the TRIM bit where IDENTIFY word 169 says the disk has
       it, after the queue drained; otherwise the layer refuses it. Completions come by MSI where the machine routes it
       (riscv64 AIA IMSIC, aarch64 GICv3 ITS, x86_64 local APIC) and are

@@ -14,7 +14,11 @@
 //!   write after a snapshot or a change group leaves exactly the old or the
 //!   new state, snapshots included, and the volume checks clean;
 //! * a group is all or nothing, across files and directories, and abort
-//!   gives everything back.
+//!   gives everything back;
+//! * a commit discards (TRIM) the blocks it freed, after its superblock is
+//!   durable, and never a block a snapshot still names. The device zeroes a
+//!   discarded block at once, also in every crash it replays, so a discard
+//!   of a block anything still names shows as damage.
 //!
 //! Wired into the suite by `mod azvol_cow;` in `src/lib.rs`.
 
@@ -37,6 +41,7 @@ const BS: u64 = BLOCK_SIZE as u64;
 enum Op {
     Write { blk: u64, data: Vec<u8> },
     Flush,
+    Discard { runs: Vec<(u64, u32)> },
 }
 
 struct MemDev {
@@ -80,6 +85,17 @@ impl BlockDev for MemDev {
         self.log.push(Op::Flush);
         Ok(())
     }
+    fn discard(&mut self, runs: &[(u64, u32)]) -> Result<(), DevError> {
+        for &(first, n) in runs {
+            let (a, b) = (first as usize * BLOCK_SIZE, (first + n as u64) as usize * BLOCK_SIZE);
+            if n == 0 || b > self.img.len() {
+                return Err(DevError);
+            }
+            self.img[a..b].fill(0);
+        }
+        self.log.push(Op::Discard { runs: runs.to_vec() });
+        Ok(())
+    }
 }
 
 /// How a block written but not yet behind a flush looks after the cut.
@@ -97,6 +113,12 @@ fn crash_image(base: &[u8], log: &[Op], cut: usize, fate: &dyn Fn(usize) -> Fate
     let mut img = base.to_vec();
     let barrier = log[..cut].iter().rposition(|o| matches!(o, Op::Flush)).map_or(0, |i| i + 1);
     for (i, op) in log[..cut].iter().enumerate() {
+        // A discard reaches the medium at once: its blocks read zero.
+        if let Op::Discard { runs } = op {
+            for &(first, n) in runs {
+                img[first as usize * BLOCK_SIZE..(first + n as u64) as usize * BLOCK_SIZE].fill(0);
+            }
+        }
         if let Op::Write { blk, data } = op {
             let dst = &mut img[*blk as usize * BLOCK_SIZE..(*blk as usize + 1) * BLOCK_SIZE];
             if i < barrier {
@@ -309,6 +331,79 @@ fn sweep(base: &[u8], log: &[Op], allowed: &[Full]) -> usize {
     // a delete is one small commit; every other scenario writes much more
     assert!(n >= 7 * 5, "swept only {n} cases");
     n
+}
+
+// ── discard ───────────────────────────────────────────────────────
+
+/// The discards in a device's log: (log index, runs).
+fn discards(log: &[Op]) -> Vec<(usize, Vec<(u64, u32)>)> {
+    log.iter().enumerate().filter_map(|(i, o)| if let Op::Discard { runs } = o { Some((i, runs.clone())) } else { None }).collect()
+}
+
+fn discarded_blocks(log: &[Op]) -> u64 {
+    discards(log).iter().flat_map(|d| d.1.iter()).map(|r| r.1 as u64).sum()
+}
+
+/// **Discriminates.** Rewriting a 41-block file and committing frees the old
+/// copy's blocks, and the commit discards them in one call, after the
+/// superblock's write and the flush behind it. The device zeroes what it is
+/// told to discard, and the volume still reads back and checks clean after
+/// a remount: nothing a tree names was discarded. Canaries: the discard
+/// moved before the superblock write in `commit_inner`; `apply_pending`
+/// returning no runs.
+#[test]
+fn a_commit_discards_the_blocks_it_freed_once_its_superblock_is_durable() {
+    let mut v = fresh(2048);
+    populate(&mut v);
+    v.commit().unwrap();
+    let (mut v, _) = begin_log(v);
+    let ino = ino_of(&mut v, "/big");
+    let new = pattern(7, 40 * BLOCK_SIZE + 123);
+    replace(&mut v, ino, &new);
+    v.commit().unwrap();
+    let before = dump(&mut v);
+    let dev = v.into_device();
+    let d = discards(&dev.log);
+    assert_eq!(d.len(), 1, "one discard for the commit: {d:?}");
+    assert!(discarded_blocks(&dev.log) >= 41, "only {} blocks discarded", discarded_blocks(&dev.log));
+    let sb = dev
+        .log
+        .iter()
+        .rposition(|o| matches!(o, Op::Write { blk, .. } if SB_SLOTS.contains(blk)))
+        .expect("no superblock write");
+    assert!(matches!(dev.log[sb + 1], Op::Flush), "the superblock was not flushed at once");
+    assert!(d[0].0 > sb + 1, "discarded at op {} before the superblock at op {sb} was durable", d[0].0);
+    let mut v = Volume::mount(MemDev::from_image(dev.img)).expect("remount");
+    assert_eq!(dump(&mut v), before);
+    assert_eq!(dump(&mut v)["/big"].as_deref(), Some(&new[..]));
+    assert_clean(&mut v);
+}
+
+/// **Discriminates.** A block a retained snapshot names is not discarded when
+/// the live tree lets it go, only when the last snapshot naming it does: the
+/// snapshot reads its old version though the device zeroes every discarded
+/// block, and deleting the snapshot discards the old version's 32 blocks.
+/// Canary: `apply_pending` also returning the dead list's runs (the
+/// snapshot reads zeros).
+#[test]
+fn a_block_a_snapshot_names_is_discarded_only_when_the_snapshot_goes() {
+    let mut v = fresh(2048);
+    let v0 = pattern(1, 32 * BLOCK_SIZE);
+    let ino = put(&mut v, 1, "f", &v0);
+    v.commit().unwrap();
+    let s = v.snapshot_create(b"s").unwrap();
+    let (mut v, _) = begin_log(v);
+    v.write(ino, 0, &pattern(2, 32 * BLOCK_SIZE)).unwrap();
+    v.commit().unwrap();
+    assert_eq!(dump_snap(&mut v, s)["/f"].as_deref(), Some(&v0[..]), "a discard reached a block the snapshot names");
+    let held = discarded_blocks(&v.device().log);
+    assert!(held < 32, "{held} blocks discarded while the snapshot names the old version");
+    v.snapshot_delete(s).unwrap();
+    let freed = discarded_blocks(&v.device().log) - held;
+    assert!(freed >= 32, "deleting the snapshot discarded {freed} blocks");
+    assert_eq!(dump(&mut v)["/f"].as_deref(), Some(&pattern(2, 32 * BLOCK_SIZE)[..]));
+    let mut v = remount(v);
+    assert_clean(&mut v);
 }
 
 // ── snapshots ─────────────────────────────────────────────────────

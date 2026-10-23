@@ -7763,8 +7763,9 @@ mod fatcache {
     ///   that lock may be faulting on a swapped page, waiting for the mutex;
     /// * `blkdev::discard(` (no notification: it moves no bytes anyone holds)
     ///   only in `fat32.rs`, which discards chains still allocated and
-    ///   unreachable by name, and `kernel/src/boot/swap.rs`, whose partition
-    ///   the cache never holds;
+    ///   unreachable by name, and `kernel/src/boot/swap.rs` and
+    ///   `kernel/src/boot/azvol.rs` (the blocks an azvol commit freed), whose
+    ///   partitions the cache never holds;
     /// * no direct `virtio::blk::write(`: virtio-blk is a hardware queue now,
     ///   written only through the request layer, and the block entry
     ///   (`block_host.rs`'s `block_io`) goes through `blkdev::write_raw`,
@@ -7804,8 +7805,8 @@ mod fatcache {
         mmc.dedup();
         assert_eq!(quiet, ["crates/fs/fs/src/fat32.rs", "kernel/src/boot/swap.rs"],
                    "write_quiet outside FAT32's write path and the swap area");
-        assert_eq!(discard, ["crates/fs/fs/src/fat32.rs", "kernel/src/boot/swap.rs"],
-                   "a discard outside FAT32's released chains and the swap area");
+        assert_eq!(discard, ["crates/fs/fs/src/fat32.rs", "kernel/src/boot/azvol.rs", "kernel/src/boot/swap.rs"],
+                   "a discard outside FAT32's released chains, azvol's freed blocks and the swap area");
         // Both queued devices are driven through the request layer; nothing
         // writes virtio-blk directly any more.
         assert!(virtio.is_empty(), "a direct virtio-blk writer: {virtio:?}");

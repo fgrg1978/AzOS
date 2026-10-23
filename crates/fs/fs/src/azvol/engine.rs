@@ -428,16 +428,26 @@ impl<D: BlockDev> Core<D> {
     }
 
     /// Apply the deferred frees (after the superblock that stops naming
-    /// those blocks is durable).
-    pub fn apply_pending(&mut self) {
-        let p = core::mem::take(&mut self.pending);
-        for (s, n) in p {
+    /// those blocks is durable). Returns them, sorted, adjacent runs merged
+    /// up to `MAX_RUN` blocks: what the commit tells the device to discard.
+    pub fn apply_pending(&mut self) -> Vec<(u64, u32)> {
+        let mut p = core::mem::take(&mut self.pending);
+        for &(s, n) in &p {
             for b in s..s + n as u64 {
                 self.bitmap.clear(b);
             }
             self.used -= n as u64;
         }
         self.pending_total = 0;
+        p.sort_unstable();
+        let mut runs: Vec<(u64, u32)> = Vec::with_capacity(p.len());
+        for (s, n) in p {
+            match runs.last_mut() {
+                Some(r) if r.0 + r.1 as u64 == s && r.1 + n <= MAX_RUN => r.1 += n,
+                _ => runs.push((s, n)),
+            }
+        }
+        runs
     }
 
     // ---- extent tree -----------------------------------------------------

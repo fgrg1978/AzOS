@@ -122,6 +122,17 @@ impl BlockDev for PartDev {
         }
         Some(self.start + block * SECTORS_PER_BLOCK)
     }
+
+    /// One discard of all the runs (Kconfig `BLK_DISCARD`; `blkdev::discard`
+    /// answers at once where it is off or the disk has no discard).
+    fn discard(&mut self, runs: &[(u64, u32)]) -> Result<(), DevError> {
+        let mut sectors = alloc::vec::Vec::with_capacity(runs.len());
+        for &(first, n) in runs {
+            let (sector, count) = self.run(first, n as usize * BLOCK_SIZE).ok_or(DevError)?;
+            sectors.push((sector, u32::try_from(count).map_err(|_| DevError)?));
+        }
+        blkdev::discard(&sectors).map_err(|_| DevError)
+    }
 }
 
 /// The device of the row's partition (`partition` is 1-based, as the row

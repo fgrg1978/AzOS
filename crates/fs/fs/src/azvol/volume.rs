@@ -16,7 +16,8 @@
 //!    the newest generation, then **flush**;
 //! 4. only now are the blocks the old tree gave up freed in the bitmap
 //!    (the ones a retained snapshot still names went to the dead list in 1
-//!    instead, see [`super::snap`]).
+//!    instead, see [`super::snap`]), and the device is told they hold
+//!    nothing ([`BlockDev::discard`], a hint whose answer changes nothing).
 //!
 //! The snapshot table and the dead list are written between 1 and 2, after
 //! the last tree that can add to the dead list. [`super::group`] scopes a
@@ -846,10 +847,14 @@ impl<D: BlockDev> Volume<D> {
         new_sb.encode(&mut buf);
         core.dev.write(SB_SLOTS[(txn & 1) as usize], &buf).map_err(|_| Error::Io)?;
         core.dev.flush().map_err(|_| Error::Io)?;
-        // 4. durable: the old tree's blocks may be reused
+        // 4. durable: the old tree's blocks may be reused, and the device may
+        // deallocate them (nothing is allocated before this returns)
         *sb = new_sb;
         core.gen = txn;
-        core.apply_pending();
+        let freed = core.apply_pending();
+        if !freed.is_empty() {
+            let _ = core.dev.discard(&freed);
+        }
         core.flush_bitmap()?;
         for inode in inodes.values_mut() {
             inode.dirty = false;

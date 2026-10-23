@@ -37,4 +37,15 @@ pub trait BlockDev {
     fn raw_sector(&self, _block: u64) -> Option<u64> {
         None
     }
+
+    /// Tell the device that the blocks of `runs` (`(first block, blocks)`)
+    /// hold nothing worth keeping (TRIM; a hint, Kconfig `BLK_DISCARD`). The
+    /// volume asks only for blocks no tree on the medium names any more,
+    /// after the superblock that stopped naming them is durable and before
+    /// any of them can be allocated again, and it ignores the answer. A
+    /// wrapper that transforms the blocks (the verity tree) keeps this
+    /// default: nothing is discarded.
+    fn discard(&mut self, _runs: &[(u64, u32)]) -> Result<(), DevError> {
+        Ok(())
+    }
 }

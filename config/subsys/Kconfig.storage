@@ -88,8 +88,10 @@ choice
       deallocate, virtio-blk VIRTIO_BLK_T_DISCARD, SATA DATA SET MANAGEMENT
       TRIM), so a flash device can
       erase them ahead of the next write. Used by FAT32 (the chains freed
-      when a file is truncated, replaced or removed) and the swap area (a
-      segment brought back). A device without the command, and a board
+      when a file is truncated, replaced or removed), azvol (the blocks a
+      commit freed, once its superblock is durable; a block a snapshot
+      still names waits for the snapshot) and the swap area (a segment
+      brought back). A device without the command, and a board
       whose disk is not behind the block request layer (SD/eMMC), is
       never asked; the first refusal switches the file system's discard
       off until the next mount.
