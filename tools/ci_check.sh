@@ -10865,11 +10865,14 @@ host_job host_canary_row "memobj: purge of a locked Domain canary" ipc-tests mem
 # Futex words of shm regions (front futex-shm-word). memobj-word-unlocked-canary:
 # the word is used with the region table unlocked, as the futex paths did with the
 # frame memobj_resolve_mapped returned, so a release on another thread frees it
-# under the access (syscall-tests futex_shm_race.rs).
+# under the access (syscall-tests futex_shm_race.rs). memobj-resolve-stale-canary:
+# a new mapping leaves the resolution cache's "no mapping here" answer standing.
 host_job host_canary_row "memobj: futex wait word unlocked canary" syscall-tests memobj-word-unlocked-canary \
     a_futex_wait_keeps_its_shm_frame_until_its_look_ends
 host_job host_canary_row "memobj: PI swap word unlocked canary" syscall-tests memobj-word-unlocked-canary \
     a_pi_swap_keeps_its_shm_frame_until_the_swap_ends
+host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-resolve-stale-canary \
+    the_resolve_cache_answers_what_the_scan_answers
 # Delete is not revoke (20-10): delete-revokes-canary makes a close and an exit
 # revoke the copies of the slot again, as they did before.
 host_job host_canary_row "cap: delete revokes canary" cap-tests delete-revokes-canary \

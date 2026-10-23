@@ -83,7 +83,9 @@ memobj-sweep-every-domain-canary = []
 memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
-# Front futex-shm-word (its test is in syscall-tests' futex_shm_race.rs).
+# Front futex-shm-word: a new mapping leaves the resolution cache's "no
+# mapping" answer standing (the_resolve_cache_answers_what_the_scan_answers).
+memobj-resolve-stale-canary = []
 memobj-word-unlocked-canary = []
 delete-revokes-canary = []
 move-lifts-depth-canary = []

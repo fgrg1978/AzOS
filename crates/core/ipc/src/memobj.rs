@@ -498,7 +498,51 @@ struct MemObjTable {
     /// ordinary release — only by that slot's own targeted wrap sweep. See
     /// `objref`'s module doc ("Per-slot generations...").
     next_gen: [u32; MAX_MEMOBJS],
+    /// What [`memobj_resolve_mapped`] answered last for a few processes, so a
+    /// futex call on the same word (or on any private word) does not scan the
+    /// table: see [`ResolveEntry`].
+    resolved: [ResolveEntry; RESOLVE_WAYS],
+    /// Bumped by every mapping recorded ([`memobj_note_mapping_ref`]): the only
+    /// event that can put a mapping where none was (`note_mapping_locked` is
+    /// the only writer of a nonzero `MemHolder::map_va`; every other holder is
+    /// built from `MemHolder::empty()`). A "no mapping here" entry of
+    /// `resolved` is good only while this has not moved.
+    map_epoch: u64,
 }
+
+/// The entries of [`MemObjTable::resolved`]: a process's entry is
+/// `tid % RESOLVE_WAYS`, so a few processes calling futexes at once keep
+/// theirs; one more only costs the next caller of its slot one scan.
+const RESOLVE_WAYS: usize = 16;
+
+/// One remembered answer of [`memobj_resolve_mapped`] for process `tid` and
+/// the user addresses `[lo, hi)`.
+///
+/// * `hit: Some((region, holder))`: the mapping holder `holder` of region
+///   index `region` records at `lo`. Checked against that holder on every use
+///   (live, still `tid`'s, still at `lo`; span and frame read again), so a
+///   mapping released, moved or revoked by any path stops answering at once
+///   without that path knowing about this cache.
+/// * `hit: None`: no mapping `tid` has recorded meets `[lo, hi)`: the gap
+///   around the address that was asked. Good while
+///   [`MemObjTable::map_epoch`] equals `epoch`, since only a new mapping can
+///   fill a gap. The gap is cut at every mapping range `tid` has recorded in
+///   any slot, live or not, so it is never wider than what the scan would see.
+#[derive(Clone, Copy)]
+struct ResolveEntry {
+    /// The process (0: an empty entry; no task has TID 0).
+    tid: u32,
+    epoch: u64,
+    lo: usize,
+    hi: usize,
+    hit: Option<(u16, u8)>,
+}
+
+impl ResolveEntry {
+    const EMPTY: ResolveEntry = ResolveEntry { tid: 0, epoch: 0, lo: 0, hi: 0, hit: None };
+}
+
+const _: () = assert!(MAX_MEMOBJS <= u16::MAX as usize && MAX_MEMOBJ_HOLDERS <= u8::MAX as usize);
 
 impl core::ops::Deref for MemObjTable {
     type Target = [MemObj; MAX_MEMOBJS];
@@ -516,6 +560,8 @@ impl core::ops::DerefMut for MemObjTable {
 static MEMOBJS: SpinLock<MemObjTable> = SpinLock::new(MemObjTable {
     regions: [EMPTY_MEMOBJ; MAX_MEMOBJS],
     next_gen: [1u32; MAX_MEMOBJS],
+    resolved: [ResolveEntry::EMPTY; RESOLVE_WAYS],
+    map_epoch: 0,
 });
 
 // ---------------------------------------------------------------------------
@@ -1048,7 +1094,11 @@ pub fn memobj_note_mapping_ref(
     if va == 0 || pages == 0 {
         return Ok(false);
     }
-    Ok(note_mapping_locked(&mut regions[i], tid, root, va, pages, access))
+    let noted = note_mapping_locked(&mut regions[i], tid, root, va, pages, access);
+    // The new mapping may cover an address a cached "no mapping" answers for.
+    // Canary `memobj-resolve-stale-canary`: it does not move the epoch.
+    regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
+    Ok(noted)
 }
 
 /// The access a recorded mapping has and the most it may be given back
@@ -1145,6 +1195,11 @@ fn take_mapping_root_locked(region: &mut MemObj, tid: u32) -> Option<(usize, usi
 /// the frame back to the PMM. The futex paths used to load (and the PI ones to
 /// swap) the word through the frame this returned, after that point. The word
 /// is reached with [`memobj_with_mapped_word`], under the lock.
+///
+/// Every futex wait and wake asks, so the answer comes from
+/// [`MemObjTable::resolved`] when this process asked about the same mapping,
+/// or the same gap between its mappings, before; else from one scan of the
+/// table, which fills the entry.
 pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize)> {
     let mut regions = MEMOBJS.lock_irqsave();
     let w = resolve_mapped_locked(&mut regions, tid, va)?;
@@ -1226,17 +1281,59 @@ struct MappedWord {
     phys: usize,
 }
 
-/// [`memobj_resolve_mapped`] under the lock: a scan of every holder of every
-/// region.
+/// [`memobj_resolve_mapped`] under the lock: from `tid`'s cache entry when it
+/// answers for `va`, else by a scan that refills it.
 fn resolve_mapped_locked(t: &mut MemObjTable, tid: u32, va: usize) -> Option<MappedWord> {
-    for (i, region) in t.regions.iter().enumerate() {
-        for h in 0..MAX_MEMOBJ_HOLDERS {
-            if let Ok(Some(w)) = mapped_word_locked(region, i, h, tid, va) {
-                return Some(w);
+    let slot = tid as usize % RESOLVE_WAYS;
+    let e = t.resolved[slot];
+    if e.tid == tid && va >= e.lo && va < e.hi {
+        match e.hit {
+            None if e.epoch == t.map_epoch => return None,
+            None => {}
+            Some((i, h)) => {
+                if let Ok(w) = mapped_word_locked(&t.regions[i as usize], i as usize, h as usize, tid, va) {
+                    return w;
+                }
             }
         }
     }
-    None
+    let page = azos_arch::PAGE_SIZE;
+    // The gap around `va`, cut at every range `tid` has recorded.
+    let (mut lo, mut hi) = (0usize, usize::MAX);
+    let mut found = None;
+    let mut ineligible = false;
+    for (i, region) in t.regions.iter().enumerate() {
+        for (h, hd) in region.holders.iter().enumerate() {
+            if hd.tid != tid || hd.map_va == 0 {
+                continue;
+            }
+            let end = hd.map_va.saturating_add(hd.map_pages.saturating_mul(page));
+            if va < hd.map_va {
+                hi = hi.min(hd.map_va);
+            } else if va >= end {
+                lo = lo.max(end);
+            } else if region.active && hd.refs > 0 && region.attrs & ATTR_NO_KERNEL_MAP == 0 {
+                found = Some((i, h, end));
+            } else {
+                // The word is the kernel's to leave alone: no entry.
+                ineligible = true;
+            }
+        }
+    }
+    let epoch = t.map_epoch;
+    match found {
+        Some((i, h, end)) => {
+            let lo = t.regions[i].holders[h].map_va;
+            t.resolved[slot] = ResolveEntry { tid, epoch, lo, hi: end, hit: Some((i as u16, h as u8)) };
+            mapped_word_locked(&t.regions[i], i, h, tid, va).ok().flatten()
+        }
+        None => {
+            if !ineligible {
+                t.resolved[slot] = ResolveEntry { tid, epoch, lo, hi, hit: None };
+            }
+            None
+        }
+    }
 }
 
 /// The word at `va` through holder `h` of region `region` (index `i`):
@@ -3538,6 +3635,8 @@ pub fn __memobj_reset_for_tests() {
         regions[i] = MemObj::empty();
         regions.next_gen[i] = 1;
     }
+    regions.resolved = [ResolveEntry::EMPTY; RESOLVE_WAYS];
+    regions.map_epoch = 0;
     drop(regions);
     // The windows a MOVE, a revoke or a shrink left for their tasks belong to
     // the table that was just emptied.
@@ -3799,6 +3898,103 @@ mod tests {
             let load = b.find("phys_pages[").expect("phys_pages load");
             assert!(mask < load, "{name} masks after its phys_pages load");
         }
+    }
+
+    /// What `memobj_resolve_mapped` answered before its cache (front
+    /// futex-shm-word): the scan of every holder of every region, kept here as
+    /// the reference the cache is held to.
+    fn resolve_by_scan(tid: u32, va: usize) -> Option<(u32, usize)> {
+        let page = azos_arch::PAGE_SIZE;
+        let regions = MEMOBJS.lock_irqsave();
+        for (i, region) in regions.iter().enumerate() {
+            if !region.active || region.attrs & ATTR_NO_KERNEL_MAP != 0 {
+                continue;
+            }
+            for h in region.holders.iter() {
+                if h.refs == 0 || h.tid != tid || h.map_va == 0 {
+                    continue;
+                }
+                let span = h.map_pages.min(region.page_count) * page;
+                if va >= h.map_va && va - h.map_va < span {
+                    let off = va - h.map_va;
+                    if region.phys_pages[off / page] == 0 {
+                        continue;
+                    }
+                    return Some((LAYOUT.pack(i as u32, region.generation), off));
+                }
+            }
+        }
+        None
+    }
+
+    /// **The resolution cache answers what the scan answers.** Three processes
+    /// (two of them on one cache entry) map, unmap, release and recreate three
+    /// regions at random, and after every step ask about addresses in, between
+    /// and around their mappings; each answer is the uncached scan's
+    /// ([`resolve_by_scan`]). A futex call asks on every wait and wake, so a
+    /// wrong cached answer is a wait keyed where no wake looks, or a wake of
+    /// another region's waiters.
+    ///
+    /// Canary `memobj-resolve-stale-canary`: a new mapping does not move
+    /// `map_epoch`, so a cached gap keeps answering "no mapping" over it: red.
+    #[test]
+    fn the_resolve_cache_answers_what_the_scan_answers() {
+        let _g = setup();
+        let page = azos_arch::PAGE_SIZE;
+        // A's cache entry, another process.
+        const D: u32 = A + RESOLVE_WAYS as u32;
+        let tids = [A, B, D];
+        let base = |k: usize| 0x4000_0000 + k * 16 * page;
+        let make = || {
+            let r = memobj_create_ref(A, 3, MemPerms::ReadWrite).expect("create");
+            for t in [B, D] {
+                memobj_acquire_ref(t, r).expect("acquire");
+            }
+            r
+        };
+        let mut regs = [make(), make(), make()];
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % n as u64) as usize
+        };
+        let (mut hits, mut misses) = (0, 0);
+        for step in 0..4000 {
+            let t = tids[rnd(3)];
+            let k = rnd(3);
+            match rnd(8) {
+                0 | 1 => {
+                    let _ = memobj_note_mapping_ref(t, regs[k], 0x1000, base(k) + rnd(3) * page, 1 + rnd(3), MapAccess::RW);
+                }
+                2 => {
+                    let _ = memobj_take_mapping_ref(t, regs[k]);
+                }
+                3 => {
+                    for t in tids {
+                        let _ = memobj_take_mapping_ref(t, regs[k]);
+                        while memobj_release_ref(t, regs[k]).is_ok() {}
+                    }
+                    regs[k] = make();
+                }
+                _ => {}
+            }
+            for _ in 0..4 {
+                let q = tids[rnd(3)];
+                // Mostly around one region's window (a page each side), else anywhere.
+                let va = if rnd(4) != 0 {
+                    base(rnd(3)) - page + rnd(6 * page / 4) * 4
+                } else {
+                    base(0) - 2 * page + rnd(52 * page / 4) * 4
+                };
+                let want = resolve_by_scan(q, va);
+                assert_eq!(memobj_resolve_mapped(q, va), want, "step {step}: tid {q} at {va:#x}");
+                if want.is_some() { hits += 1 } else { misses += 1 }
+            }
+        }
+        // The walk reaches both answers often (not a vacuous run).
+        assert!(hits > 700 && misses > 7000, "{hits} mapped answers, {misses} unmapped");
     }
 
     /// **A shm word is written only where the user could store.** The Linux PI

@@ -42,6 +42,7 @@ memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
 memobj-word-unlocked-canary = []
+memobj-resolve-stale-canary = []
 delete-revokes-canary = []
 move-lifts-depth-canary = []
 

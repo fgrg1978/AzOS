@@ -60,8 +60,10 @@ memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
 # Front futex-shm-word: a futex's shm word is used with the table unlocked
-# (the frame may change owner under it).
+# (the frame may change owner under it), and a new mapping leaves a cached
+# "no mapping" answer standing.
 memobj-word-unlocked-canary = []
+memobj-resolve-stale-canary = []
 # Delete is not revoke (20-10): a delete revokes the copies of the slot again.
 delete-revokes-canary = []
 # A move of a slot with copies lifts them a level (as a delete does) again.
