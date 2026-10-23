@@ -10873,6 +10873,11 @@ host_job host_canary_row "memobj: PI swap word unlocked canary" syscall-tests me
     a_pi_swap_keeps_its_shm_frame_until_the_swap_ends
 host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-resolve-stale-canary \
     the_resolve_cache_answers_what_the_scan_answers
+# The futex wait's check and filing are one table hold (front futex-single-section).
+# futex-look-unlocked-canary: the wait looks at its word before it locks the table,
+# so a waker's store and wake land between the check and the row (futex_table.rs).
+host_job host_canary_row "futex: look before the lock canary" ipc-tests futex-look-unlocked-canary \
+    a_wake_between_the_check_and_the_filing_still_finds_the_row
 # Delete is not revoke (20-10): delete-revokes-canary makes a close and an exit
 # revoke the copies of the slot again, as they did before.
 host_job host_canary_row "cap: delete revokes canary" cap-tests delete-revokes-canary \

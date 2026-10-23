@@ -314,6 +314,10 @@ memobj: revoke without retain canary	n1	crates/core/ipc/** crates/core/channel/*
 memobj: purge of an object in use canary	n1	crates/core/ipc/** crates/core/channel/** crates/core/rings/** crates/core/mm/** crates/core/percpu/**
 memobj: purge under a kernel pin canary	n1	crates/core/ipc/** crates/core/channel/** crates/core/rings/** crates/core/mm/** crates/core/percpu/**
 memobj: purge of a locked Domain canary	n1	crates/core/ipc/** crates/core/channel/** crates/core/rings/** crates/core/mm/** crates/core/percpu/**
+memobj: futex wait word unlocked canary	n1	crates/core/mm/** crates/core/percpu/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** sdk/targets/**
+memobj: PI swap word unlocked canary	n1	crates/core/sched/** crates/core/percpu/** crates/core/sync/** kernel/src/tasks/** kernel/src/rt_smoke.rs crates/core/mm/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** sdk/targets/**
+memobj: stale resolve cache canary	n1	crates/core/ipc/** crates/core/channel/** crates/core/rings/** crates/core/mm/** crates/core/percpu/**
+futex: look before the lock canary	n1	crates/core/ipc/** crates/core/channel/** crates/core/rings/** userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** sdk/targets/**
 cap: delete revokes canary	n1	crates/core/topology/** crates/core/ota/** crates/core/crypto/** crates/core/config/** crates/core/azos-config/**
 cap: move lifts depth canary	n1	crates/core/topology/** crates/core/ota/** crates/core/crypto/** crates/core/config/** crates/core/azos-config/**
 memobj: delete revokes canary	n1	crates/core/ipc/** crates/core/channel/** crates/core/rings/** crates/core/mm/** crates/core/percpu/** userspace/** sdk/targets/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/**

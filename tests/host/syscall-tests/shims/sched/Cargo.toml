@@ -29,3 +29,8 @@ azos_limits = { path = "../../../../../crates/core/limits" }
 # policy `families::creation_gate` asks), pulled by `#[path]`; it records a
 # refusal as a `subtree-policy` decision.
 azos_decision = { path = "../../../../../crates/core/decision" }
+
+[features]
+# The real futex_table.rs is pulled in by `#[path]`: its canary must be a known
+# feature here (ipc-tests runs it).
+futex-look-unlocked-canary = []

@@ -51,6 +51,16 @@
 //! TID-directed wake goes out after the lock is released, and a waiter that
 //! has not blocked yet is stamped (K-C9), so its block returns at once.
 //!
+//! The check and the filing are one hold, with nothing in between: the look
+//! at the word (for a word of a shm region, `memobj_with_mapped_word` takes
+//! the region table inside this hold: order TABLE, then MEMOBJS), the
+//! comparison with `expected`, and the row. So are a requeue's compare and
+//! move, and each PI step's reads, swap and state change
+//! (`futex::with_pi_key`). The host test
+//! `a_wake_between_the_check_and_the_filing_still_finds_the_row` puts a
+//! waker's store and wake right after the look; canary
+//! `futex-look-unlocked-canary` looks before the lock and loses that wake.
+//!
 //! The lock is only taken with `lock_irqsave`: a kernel producer may wake a
 //! shared key from an interrupt (`vdso_notify::notify_wake_kernel`).
 
@@ -702,8 +712,12 @@ fn wait_as<E: FutexEnv>(
     env: &E, tid: u32, key: Key, rq_to: Option<Key>, read: &dyn Fn() -> Option<u32>, expected: u32, deadline: u64,
 ) -> WaitResult {
     let slot = {
+        // Canary `futex-look-unlocked-canary`: the word is checked before the
+        // table is locked, so a store and its wake can fall between the check
+        // and the filing of the row (the lost wake the one hold rules out).
+        let early = cfg!(feature = "futex-look-unlocked-canary").then(read);
         let mut t = TABLE.lock_irqsave();
-        match read() {
+        match early.unwrap_or_else(read) {
             None => return WaitResult::Fault,
             Some(v) if v != expected => return WaitResult::ValueChanged,
             Some(_) => {}
@@ -1315,6 +1329,71 @@ mod tests {
         }
         let k = s(0xF04, 0);
         assert_eq!(wait_key(&Stop, 500, k, &|| Some(1), 1, u64::MAX), WaitResult::Stopped);
+        assert_eq!(TABLE.lock_irqsave().waiters_on(k), 0);
+    }
+
+    /// The no-lost-wake argument, interleaved: a waker stores the word and
+    /// wakes right after the wait has looked at it. With the look, the check
+    /// and the filing under one hold, the wake cannot get the table before
+    /// the row is filed, so it finds the row and the wait ends woken.
+    ///
+    /// **Divergence:** with `futex-look-unlocked-canary` (the look before the
+    /// lock) the wake runs inside the look's grace, finds no row, and the
+    /// waiter files one for a store it already missed: it sleeps to its
+    /// deadline (`TimedOut`).
+    #[test]
+    fn a_wake_between_the_check_and_the_filing_still_finds_the_row() {
+        use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+        use std::time::{Duration, Instant};
+        /// How long the look gives the waker. A store and a wake of an
+        /// unlocked table take microseconds.
+        const GRACE: Duration = Duration::from_millis(300);
+        static WORD: AtomicU32 = AtomicU32::new(0);
+        /// 1: the wait has looked at the word; 2: the waker's wake returned.
+        static STAGE: AtomicU32 = AtomicU32::new(0);
+        fn until(stage: u32, limit: Duration) -> bool {
+            let t = Instant::now();
+            while STAGE.load(SeqCst) < stage {
+                if t.elapsed() >= limit {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+            true
+        }
+        let k = s(0xF07, 0);
+        let waker = std::thread::spawn(move || {
+            // Bounded: a broken test fails, it does not hang the suite.
+            assert!(until(1, Duration::from_secs(10)), "the wait never looked at its word");
+            WORD.store(1, SeqCst);
+            let woken = wake_key_checked(&Quiet, k, 1);
+            STAGE.store(2, SeqCst);
+            woken
+        });
+        let env = Script {
+            t: Cell::new(0),
+            n: Cell::new(0),
+            // The block lasts until the wake has run, as a real one would.
+            on_block: Box::new(|_| {
+                until(2, Duration::from_secs(10));
+            }),
+        };
+        let look = || {
+            let v = WORD.load(SeqCst);
+            STAGE.store(1, SeqCst);
+            until(2, GRACE);
+            Some(v)
+        };
+        let r = wait_key(&env, 800, k, &look, 0, 100);
+        let woken = waker.join().expect("waker");
+        // Woken by that wake, or (a wait that looks again under the lock)
+        // answered -EAGAIN by the store: either way not asleep past it.
+        assert_ne!(r, WaitResult::TimedOut, "the wait missed the wake of the store it was filed against (woken: {woken:?})");
+        if r == WaitResult::Woken {
+            assert_eq!(woken, Ok(1), "the wait ended woken, but not by that wake");
+        } else {
+            assert_eq!(r, WaitResult::ValueChanged);
+        }
         assert_eq!(TABLE.lock_irqsave().waiters_on(k), 0);
     }
 

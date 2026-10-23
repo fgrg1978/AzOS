@@ -87,6 +87,9 @@ memobj-purge-locked-canary = []
 # mapping" answer standing (the_resolve_cache_answers_what_the_scan_answers).
 memobj-resolve-stale-canary = []
 memobj-word-unlocked-canary = []
+# Front futex-single-section: the wait checks its word before it locks the
+# futex table (a_wake_between_the_check_and_the_filing_still_finds_the_row).
+futex-look-unlocked-canary = []
 delete-revokes-canary = []
 move-lifts-depth-canary = []
 

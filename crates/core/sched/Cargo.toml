@@ -20,6 +20,10 @@ cpuid-probe-canary = ["cpuid-probe"]
 # nobody; a thread exit that never clears its clear-tid word; a new thread
 # that keeps its creator's thread pointer.
 futex-wake-noop-canary = []
+# Host canary (ipc-tests, futex_table.rs): a futex wait checks its word before
+# it locks the table, so a store and its wake can land between the check and the
+# filing. Never in a real build.
+futex-look-unlocked-canary = []
 threads-no-cleartid-canary = []
 threads-tls-canary = []
 # Gate canary, never in a real build: a Linux execve keeps the old image's
