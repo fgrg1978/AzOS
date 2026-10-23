@@ -777,7 +777,7 @@ mod compmgr_contracts {
         for (ep, ops) in crate::contracts::SERVED {
             assert!(!ops.is_empty());
             // Rows exist only under some features (PKGD_ROW, VMMD_ROW, INPUTD_ROW, LOGIND_ROW,
-            // COMPOSITOR_ROW): a table
+            // COMPOSITOR_ROW, AUDIOD_ROW): a table
             // entry without its row is dead only when the row is built.
             let row_built = match *ep {
                 b"endpoint.packages" => azos_topology::builder::PKGD_ROW,
@@ -786,6 +786,7 @@ mod compmgr_contracts {
                 b"endpoint.login" => azos_topology::builder::LOGIND_ROW,
                 b"endpoint.compositor" => azos_topology::builder::COMPOSITOR_ROW,
                 b"endpoint.pm-ina" => azos_topology::builder::INADRV_ROW,
+                b"endpoint.audio" => azos_topology::builder::AUDIOD_ROW,
                 _ => true,
             };
             if row_built {
