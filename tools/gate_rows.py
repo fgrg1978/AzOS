@@ -342,6 +342,10 @@ def features_of(r):
         feats.append(m.group(1))
     for m in re.finditer(r'--features\s+"?([a-z0-9,_-]+)', r["body"]):
         feats.append(m.group(1))
+    # A kernel build's `--select` list (tools/ci_cargo.py) leaves out the board
+    # its QEMU cell already is: it builds what `--features qemu,<list>` did.
+    for m in re.finditer(r'--select\s+"?([a-z0-9,_-]+)', r["body"]):
+        feats.append("qemu," + m.group(1))
     return sorted(set(feats)) or ["qemu"]
 
 

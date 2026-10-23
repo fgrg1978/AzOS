@@ -11,13 +11,16 @@ subtracts from the row's wall time to split build from boot.
 
 The kernel has no cargo `default` features: Kconfig is the only source. So a
 `cargo build|check` of the kernel (the same predicate as the cache's, plus
-`check`) gets `--features <base features of the .config>` appended, from
-`tools/kconfig_to_cargo.py --base` on `KCONFIG_CONFIG` (else the workspace
-`.config`): the application domain, the scheduler options, driver placement.
-A row's own `--features` (board, smoke, canary) are untouched; the injected
-argv is what the cache keys on and `CI_BUILD_ACC` logs.
+`check`) gets `--features <the features of its configuration>` appended, from
+`tools/kconfig_to_cargo.py` on `KCONFIG_CONFIG` (else the workspace `.config`).
+What a row builds beyond its configuration is its selection, `--select
+TOKENS` (this wrapper's flag, never cargo's): Kconfig lines, features a
+Kconfig symbol owns (applied to a copy of the configuration, which
+KCONFIG_CONFIG then names) and test hooks (tools/kconfig_to_cargo.py
+`select`). A kernel call with `--features` of its own is refused. The
+rewritten argv is what the cache keys on and `CI_BUILD_ACC` logs.
 
-A kernel whose requested features close over `use-robot` builds from the
+A kernel whose selection names a feature that closes over `use-robot` builds from the
 robot cell: when `CI_ROBOT_FEATS` (",f1,f2,...,", tools/gate_rows.py
 --robot-features) names one of them and `KCONFIG_CONFIG` is a generic gate
 config listed in `CI_ROBOT_KCONFIG` ("<generic>=<robot>;..."), the call reads
@@ -169,33 +172,13 @@ def cacheable(argv):
     return os.path.join(tdir, triple, "release", BIN)
 
 
-def requested_features(argv):
-    """The features named on a cargo command line (`--features a,b`, `-F a`,
-    `--features=a b`)."""
-    out = []
-    for j, a in enumerate(argv):
-        if a in ("--features", "-F") and j + 1 < len(argv):
-            out += argv[j + 1].replace(",", " ").split()
-        elif a.startswith("--features="):
-            out += a.split("=", 1)[1].replace(",", " ").split()
-    return out
-
-
-def route_robot(argv):
-    """KCONFIG_CONFIG -> the robot cell for a kernel that asks for a robot feature."""
-    robot = set(f for f in os.environ.get("CI_ROBOT_FEATS", "").split(",") if f)
-    pairs = dict(p.split("=", 1) for p in os.environ.get("CI_ROBOT_KCONFIG", "").split(";") if "=" in p)
-    cfg = os.environ.get("KCONFIG_CONFIG")
-    if robot and cfg in pairs and robot & set(requested_features(argv)):
-        os.environ["KCONFIG_CONFIG"] = pairs[cfg]
-
-
-def with_base_features(argv):
-    """argv plus the base features of the .config the kernel build reads."""
+def kernel_call(argv):
+    """True for a `cargo build|check` of the kernel package from the
+    workspace root: the calls whose features come from Kconfig."""
     i = 1 if argv and argv[0].startswith("+") else 0
     args = argv[i:]
     if not args or args[0] not in ("build", "check"):
-        return argv
+        return False
     pkg = None
     for j, a in enumerate(args):
         if a in ("-p", "--package"):
@@ -204,36 +187,89 @@ def with_base_features(argv):
             pkg = a.split("=", 1)[1]
         elif a in ("--bin", "--example", "--lib", "--bins", "--all", "--workspace",
                    "--manifest-path", "--no-default-features"):
-            return argv
+            return False
     if pkg not in (None, "azos_kernel"):
-        return argv
+        return False
     top = git(["rev-parse", "--show-toplevel"], os.getcwd())
-    if top is None or os.path.realpath(os.getcwd()) != os.path.realpath(top.decode().strip()):
-        return argv  # a host crate's own workspace: not the kernel
-    top = top.decode().strip()
+    return top is not None and os.path.realpath(os.getcwd()) == os.path.realpath(top.decode().strip())
+
+
+def take_selection(argv):
+    """(argv without `--select TOKENS`, the tokens): the gate's own flag, the
+    build selection of tools/kconfig_to_cargo.py `select`."""
+    out, toks, j = [], [], 0
+    while j < len(argv):
+        a = argv[j]
+        if a == "--select" and j + 1 < len(argv):
+            toks += argv[j + 1].replace(",", " ").split()
+            j += 2
+            continue
+        if a.startswith("--select="):
+            toks += a.split("=", 1)[1].replace(",", " ").split()
+        else:
+            out.append(a)
+        j += 1
+    return out, toks
+
+
+def route_robot(tokens):
+    """KCONFIG_CONFIG -> the robot cell for a kernel that asks for a robot feature."""
+    robot = set(f for f in os.environ.get("CI_ROBOT_FEATS", "").split(",") if f)
+    pairs = dict(p.split("=", 1) for p in os.environ.get("CI_ROBOT_KCONFIG", "").split(";") if "=" in p)
+    cfg = os.environ.get("KCONFIG_CONFIG")
+    if robot and cfg in pairs and robot & set(tokens):
+        os.environ["KCONFIG_CONFIG"] = pairs[cfg]
+
+
+def with_kconfig_features(argv):
+    """argv with the kernel's features: those of the configuration the build
+    reads (KCONFIG_CONFIG, else the workspace .config), with the row's
+    selection (`--select`) applied to it first (tools/kconfig_to_cargo.py
+    `select`: a copy of the configuration under $AZOS_OUT/build/kselect/,
+    which KCONFIG_CONFIG then names). A kernel call that names `--features`
+    itself is refused: Kconfig is the only source of the kernel's features."""
+    argv, toks = take_selection(argv)
+    if not kernel_call(argv):
+        if toks:
+            sys.stderr.write("ci_cargo: --select is for a kernel build or check: %s\n" % " ".join(argv))
+            sys.exit(2)
+        return argv
+    if any(a in ("--features", "-F") or a.startswith("--features=") for a in argv):
+        sys.stderr.write("ci_cargo: a kernel build names its features through --select "
+                         "(tools/kconfig_to_cargo.py), never --features: %s\n" % " ".join(argv))
+        sys.exit(2)
+    route_robot(toks)
+    top = git(["rev-parse", "--show-toplevel"], os.getcwd()).decode().strip()
     cfg = os.environ.get("KCONFIG_CONFIG") or os.path.join(top, ".config")
     # A kernel built without its Kconfig features does not compile (or, worse,
     # compiles into something nobody asked for), and the row that follows boots
-    # the previous binary. So a config that cannot be read is an error here, not
-    # a build with no base features.
+    # the previous binary. So a config that cannot be read is an error here.
     if not os.path.isfile(cfg):
-        sys.stderr.write("ci_cargo: the kernel's config %s does not exist; no base features can be derived\n" % cfg)
+        sys.stderr.write("ci_cargo: the kernel's config %s does not exist; no features can be derived\n" % cfg)
         sys.exit(2)
+    k2c = [sys.executable, os.path.join(top, "tools", "kconfig_to_cargo.py")]
+    if toks:
+        h = sha_file(cfg)
+        h.update(",".join(toks).encode())
+        sel = os.path.join(out_dir.out_root(top), "build", "kselect", h.hexdigest()[:16] + ".config")
+        os.makedirs(os.path.dirname(sel), exist_ok=True)
+        k2c += ["--select", ",".join(toks), "--out", sel]
     try:
-        out = subprocess.run([sys.executable, os.path.join(top, "tools", "kconfig_to_cargo.py"),
-                              "--base", cfg], capture_output=True, text=True, check=True).stdout.split()
-    except (OSError, subprocess.CalledProcessError) as e:
-        sys.stderr.write("ci_cargo: tools/kconfig_to_cargo.py --base %s failed: %s\n" % (cfg, e))
+        r = subprocess.run(k2c + [cfg], capture_output=True, text=True)
+    except OSError as e:
+        sys.stderr.write("ci_cargo: tools/kconfig_to_cargo.py %s failed: %s\n" % (cfg, e))
         sys.exit(2)
-    if not out:
-        return argv  # a config that implies no base feature
-    if len(out) != 2 or out[0] != "--features":
-        sys.stderr.write("ci_cargo: unexpected output of kconfig_to_cargo.py --base %s: %r\n" % (cfg, out))
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr)
         sys.exit(2)
+    if toks:
+        os.environ["KCONFIG_CONFIG"] = sel
+    out = r.stdout.split()
+    feats = out[out.index("--features"):][:2] if "--features" in out else []
     if "--" in argv:
         at = argv.index("--")
-        return argv[:at] + out + argv[at:]
-    return argv + out
+        return argv[:at] + feats + argv[at:]
+    return argv + feats
 
 
 def tree_env_names(top, state):
@@ -371,8 +407,7 @@ def default_target_dir(argv):
 
 def main():
     default_target_dir(sys.argv[1:])
-    route_robot(sys.argv[1:])
-    argv = with_base_features(sys.argv[1:])
+    argv = with_kconfig_features(sys.argv[1:])
     t0 = time.time()
     artifact = cacheable(argv) if CACHE else None
     key, parts = key_of(argv) if artifact else (None, None)
