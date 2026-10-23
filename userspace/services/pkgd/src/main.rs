@@ -44,6 +44,10 @@
 //! allocator's seed) and its seccomp profile the TCP socket ops; the file
 //! authority is unchanged.
 //!
+//! Each request is served under a system power assertion (`WRITE` on
+//! `powerassert`, [`Awake`]): the machine does not suspend in the middle of
+//! one.
+//!
 //! In a development build (`PKG_FETCH_TFTP`) `SOURCE.CFG` may name a TFTP
 //! server on the development host instead (`tftp.rs`): the same fetch, the same
 //! verification, a different transport, over the UDP ops the profile already
@@ -64,7 +68,7 @@ use azos_packages::{PackagesIdl, PkgMem, Service, VolErr, Work};
 use azos_tls::remote::HttpsRemote;
 use stage::{Files, Paths, Platform, Stage, Unlinked, PATH_MAX};
 use tftp::Sources;
-use sys::dev::OtaCall;
+use sys::dev::{OtaCall, PowerAssertCall};
 use azos_pkg::Device;
 
 #[cfg(target_os = "azos")]
@@ -275,6 +279,36 @@ impl Files for SysFiles {
     }
 }
 
+/// The machine kept out of system suspend while one request is served: a
+/// package staged with its journal record, or an update streamed into the
+/// boot slot, must not be cut in two by a suspend. One system power
+/// assertion per request (`powerassert`, reason `REASON_PACKAGE`, for the
+/// longest the kernel grants, Kconfig `POWER_ASSERTION_TTL_MAX_MS`), given back
+/// when the reply is sent; a request that outlasts it is released by the
+/// kernel, with a record. A row or a build without the endpoint (or without
+/// Kconfig `ENERGY`, which answers `UNSUPPORTED`) serves the request all the
+/// same.
+struct Awake(Option<(sys::dev::PowerAssertClient<sys::dev::Ep>, u32)>);
+
+impl Awake {
+    fn hold() -> Awake {
+        let Some(ep) = sys::dev::lookup(sys::dev::key::POWER_ASSERT, 0) else { return Awake(None) };
+        let mut c = sys::dev::PowerAssertClient::new(sys::dev::Ep(ep));
+        match c.hold(sys::dev::power_assert::REASON_PACKAGE, azos_limits::POWER_ASSERTION_TTL_MAX_MS as u32) {
+            Ok(o) if o.is_ok() => Awake(Some((c, o.value))),
+            _ => Awake(None),
+        }
+    }
+}
+
+impl Drop for Awake {
+    fn drop(&mut self) {
+        if let Some((c, id)) = &mut self.0 {
+            let _ = c.release(*id);
+        }
+    }
+}
+
 /// The request's memory objects, the OTA endpoint and the clock.
 struct SysPlatform;
 
@@ -355,6 +389,7 @@ fn main() -> ExitCode {
             continue;
         }
         let mut rep = sys::MsgDesc::default();
+        let awake = Awake::hold();
         let _ = PackagesIdl::dispatch(&mut svc, &req, &mut rep);
         // A request that carried a memory object the installer did not read (a
         // malformed one, a refused level) leaves it in the table: release what
@@ -364,6 +399,7 @@ fn main() -> ExitCode {
             let _ = sys::shm_release_typed(c.handle);
         }
         let _ = sys::ipc_reply_v2(call as u64, &rep);
+        drop(awake);
         // An install or a removal changes what the next boot applies: keep the
         // restore points to the retention.
         let _ = snap::prune(&mut snaps, snap::KEPT, buf);

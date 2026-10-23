@@ -19,8 +19,9 @@ fn badge(target: &str) -> Option<(u16, u32)> {
 fn the_four_interfaces_are_registered_after_clock() {
     assert_eq!((key::SPI, key::CAN, key::UART, key::ADC), (16, 17, 18, 19));
     assert_eq!((key::BLOCK, key::CLOCK), (14, 15), "the existing keys did not move");
-    // The Vm and Vcpu rows (hv) follow, at keys 20 and 21, Net at 22, Display at 23, MemCtl at 24, Keys at 25 and Sound at 26.
-    assert_eq!(IFACES.len(), 26);
+    // The Vm and Vcpu rows (hv) follow, at keys 20 and 21, Net at 22, Display at 23, MemCtl at 24, Keys at 25, Sound at 26
+    // and PowerAssert at 27.
+    assert_eq!(IFACES.len(), 27);
     for (name, k, id) in [("spi", key::SPI, spi::SPI_ID), ("can", key::CAN, can::CAN_ID), ("uart", key::UART, uart::UART_ID), ("adc", key::ADC, adc::ADC_ID)] {
         let i = by_name(name).unwrap_or_else(|| panic!("no row {name}"));
         assert_eq!((i.key, i.id), (k, id), "{name}");

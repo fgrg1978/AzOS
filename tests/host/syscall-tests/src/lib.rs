@@ -161,6 +161,8 @@ pub mod memctl;
 pub mod keys;
 #[path = "../../../../crates/core/syscall/src/power.rs"]
 pub mod power;
+#[path = "../../../../crates/core/syscall/src/power_assert.rs"]
+pub mod power_assert;
 // Wave 12: the flight/behavior/config/OTA typed calls, the real file.
 #[path = "../../../../crates/core/syscall/src/families.rs"]
 pub mod families;
@@ -640,6 +642,12 @@ mod handlers {
     mod power_guards {
         use super::*;
         include!("power_guards.rs");
+    }
+
+    #[cfg(test)]
+    mod power_assert_guards {
+        use super::*;
+        include!("power_assert_guards.rs");
     }
 
     #[cfg(test)]

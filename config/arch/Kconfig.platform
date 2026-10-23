@@ -296,6 +296,38 @@ config SYSTEM_SUSPEND
       whose firmware lacks the call) refuses with a record saying which.
       Emits the kernel cargo feature `system-suspend`.
 
+      A live system power assertion (the `powerassert` endpoint: a task
+      keeps the machine awake while it works, POWER_ASSERTIONS_PER_TASK)
+      refuses the suspend too, reason `asserted`.
+
+config POWER_ASSERTIONS_PER_TASK
+    int "System power assertions: live at once, per task"
+    range 1 16
+    default 2
+    help
+      How many system power assertions one task may hold at once (the
+      `powerassert` endpoint, crates/core/energy/src/assertion.rs). An
+      assertion keeps the machine out of system suspend until it is released
+      or its timeout passes: the machine-wide form of a device wakelock
+      (DEVICE_WAKELOCKS). Two let a holder renew (take the next one before
+      it gives the last back); a hold past the quota is refused (BUSY) and
+      recorded (`power-assertion`), so one task cannot pin the machine
+      awake. The ledger holds 16 in all. Read only with ENERGY: without it
+      the endpoint answers UNSUPPORTED.
+
+config POWER_ASSERTION_TTL_MAX_MS
+    int "System power assertions: longest timeout (milliseconds)"
+    range 1000 3600000
+    default 600000
+    help
+      The longest timeout the kernel grants a system power assertion. A
+      holder that dies or forgets is released at its timeout, with a
+      `power-assertion` decision record naming it, its reason and the
+      timeout it asked for; a longer timeout is refused (BAD_ARGUMENT). The
+      package installer asks for this long around each request (an update
+      streamed to the boot volume takes minutes on a slow card). Read only
+      with ENERGY.
+
 config CPU_HOTPLUG
     bool "CPU hotplug: take a CPU offline and bring it back at run time"
     default y if USE_GENERIC || USE_DESKTOP || USE_SERVER || USE_GATEWAY || USE_IOT_HMI || USE_WEARABLE

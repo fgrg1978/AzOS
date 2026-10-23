@@ -1095,7 +1095,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_CONNECT,
             NODE_SEND, NODE_SENDTO, NODE_RECV, NODE_RECVFROM, NODE_MCAST_JOIN, NODE_MCAST_LEAVE,
         ],
-        ifaces: &[azos_devif::key::OTA, azos_devif::key::ENTROPY],
+        // `POWER_ASSERT`: one system power assertion per request served.
+        ifaces: &[azos_devif::key::OTA, azos_devif::key::ENTROPY, azos_devif::key::POWER_ASSERT],
     },
     // The package tool: reads the package file it is told to (stat, open,
     // read) into a new memory object (create, map) that goes to the installer

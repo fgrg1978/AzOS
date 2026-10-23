@@ -6,8 +6,8 @@
 //!
 //! ```text
 //!   gates      the build allows it; the firmware has the call and the kernel a
-//!              resume entry for it; one CPU is online; the caller holds a wake
-//!              source
+//!              resume entry for it; no task holds a system power assertion;
+//!              one CPU is online; the caller holds a wake source
 //!   record     Rule::Suspend, Admit, state ENTER
 //!   freeze     user tasks stop being picked (the stop class holds the CPU)
 //!   quiesce    devices go down through runtime PM (DevicePower::suspend)
@@ -70,6 +70,10 @@ pub enum Reason {
     NoFreezer = 11,
     /// Another suspend is running.
     InProgress = 12,
+    /// A task holds a system power assertion (the `powerassert` endpoint,
+    /// `azos_energy::assertion`): it asked for the machine to stay awake while
+    /// it works. The blockers are the live assertions.
+    Asserted = 13,
 }
 
 impl Reason {
@@ -93,6 +97,7 @@ impl Reason {
             10 => Reason::EnterFailed,
             11 => Reason::NoFreezer,
             12 => Reason::InProgress,
+            13 => Reason::Asserted,
             _ => return None,
         })
     }
@@ -112,6 +117,7 @@ impl Reason {
             Reason::EnterFailed => "firmware refused",
             Reason::NoFreezer => "no task freezer",
             Reason::InProgress => "another suspend is running",
+            Reason::Asserted => "a task holds a power assertion",
         }
     }
 }
@@ -194,6 +200,10 @@ pub trait Platform {
 
     /// The firmware has the call and the kernel the entry it needs, else why not.
     fn support(&self) -> Result<(), Reason>;
+
+    /// System power assertions live now (`azos_energy::assertion`): each is a
+    /// task's claim that the machine stays awake.
+    fn assertions(&self) -> u32;
 
     /// CPUs online now, the caller's included.
     fn online_cpus(&self) -> u32;
@@ -278,6 +288,10 @@ pub fn run<P: Platform + ?Sized>(p: &P, caller: u32, subject: u32) -> Outcome {
     }
     if let Err(reason) = p.support() {
         return refuse(p, subject, Refusal::of(reason));
+    }
+    let held = p.assertions();
+    if held > 0 {
+        return refuse(p, subject, Refusal { reason: Reason::Asserted, blockers: held, detail: 0 });
     }
     let others = p.online_cpus().saturating_sub(1);
     if others > 0 {

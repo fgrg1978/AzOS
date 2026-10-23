@@ -1132,6 +1132,7 @@ mod image_profiles {
         ("MEMCTL", azos_devif::key::MEMCTL),
         ("KEYS", azos_devif::key::KEYS),
         ("SOUND", azos_devif::key::SOUND),
+        ("POWER_ASSERT", azos_devif::key::POWER_ASSERT),
     ];
 
     /// The kernel-hosted interfaces the image's sources name (`dev::key::NAME`).

@@ -272,6 +272,10 @@ impl azos_drv_power::pm::suspend::Platform for KernelSuspend {
         }
     }
 
+    fn assertions(&self) -> u32 {
+        azos_sched::energy::assert_live()
+    }
+
     fn online_cpus(&self) -> u32 {
         azos_percpu::online().weight() as u32
     }

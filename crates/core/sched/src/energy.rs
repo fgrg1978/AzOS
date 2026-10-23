@@ -918,3 +918,94 @@ pub fn idle_wait(cpu: usize, enter: impl Fn(u8) -> u64) {
         IDLE_INTERCEPTS.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+// ── System power assertions ─────────────────────────────────────────────────
+//
+// The ledger of `azos_energy::assertion`, one for the machine, reached from
+// the `powerassert` endpoint (`azos_syscall::power_assert`) and read by the
+// suspend sequence's gate (`kernel/src/boot/energy.rs`). Every op reaps
+// first: an assertion past its timeout is released here and recorded
+// (`Rule::PowerAssertion`, `Deny`), so a holder that died or forgot cannot
+// keep the machine awake. Task context only (the endpoint, the suspend
+// gate); the lapses are recorded with the lock released.
+
+pub use azos_energy::assertion::AssertError;
+use azos_energy::assertion::{Assertion, Ledger, Quota, MAX_ASSERTIONS};
+
+static ASSERTIONS: azos_sync::SpinLock<Ledger> = azos_sync::SpinLock::new(Ledger::new(Quota::new(
+    azos_limits::POWER_ASSERTIONS_PER_TASK as u32,
+    azos_limits::POWER_ASSERTION_TTL_MAX_MS as u32,
+)));
+
+fn now_ms() -> u64 {
+    now() / (TIMER_FREQ / 1_000).max(1)
+}
+
+/// Run `f` on the ledger at `now`, after the reap; then record what lapsed.
+fn with_assertions<R>(f: impl FnOnce(&mut Ledger, u64) -> R) -> R {
+    let at = now_ms();
+    let mut lapsed = [None::<Assertion>; MAX_ASSERTIONS];
+    let r = {
+        let mut l = ASSERTIONS.lock();
+        let mut n = 0;
+        l.reap(at, |a| {
+            lapsed[n] = Some(*a);
+            n += 1;
+        });
+        f(&mut l, at)
+    };
+    for a in lapsed.iter().flatten() {
+        azos_drv_sys::kwarn!(
+            "[POWER] assertion {} of tid {} (reason {}) released at its timeout of {} ms (recorded)",
+            a.id, a.owner, a.reason, a.ttl_ms,
+        );
+        azos_decision::record(
+            azos_decision::Rule::PowerAssertion,
+            azos_decision::Verdict::Deny,
+            a.owner,
+            [a.reason as u64, a.ttl_ms as u64, a.id as u64],
+        );
+    }
+    r
+}
+
+/// `owner` asks to keep the machine out of system suspend for `ttl_ms`, for
+/// `reason`: the assertion's id. A refusal is recorded.
+pub fn assert_hold(owner: u32, reason: u32, ttl_ms: u32) -> Result<u32, AssertError> {
+    let r = with_assertions(|l, at| l.hold(owner, reason, ttl_ms, at));
+    if r.is_err() {
+        azos_decision::record(
+            azos_decision::Rule::PowerAssertion,
+            azos_decision::Verdict::Refuse,
+            owner,
+            [reason as u64, ttl_ms as u64, 0],
+        );
+    }
+    r
+}
+
+/// `owner` gives assertion `id` back.
+pub fn assert_release(owner: u32, id: u32) -> Result<(), AssertError> {
+    with_assertions(|l, _| l.release(owner, id).map(|_| ()))
+}
+
+/// The live assertions: what keeps the machine out of system suspend now.
+pub fn assert_live() -> u32 {
+    with_assertions(|l, at| l.live(at))
+}
+
+/// A `PowerAssert::stats` counter (`azos_devif::power_assert::STAT_*`).
+pub fn assert_stat(sel: u32) -> Option<u64> {
+    use azos_devif::power_assert::{STAT_EXPIRED, STAT_GRANTED, STAT_LIVE, STAT_REFUSED, STAT_RELEASED};
+    with_assertions(|l, at| {
+        let c = l.counters;
+        Some(match sel {
+            STAT_LIVE => l.live(at) as u64,
+            STAT_GRANTED => c.granted as u64,
+            STAT_RELEASED => c.released as u64,
+            STAT_EXPIRED => c.expired as u64,
+            STAT_REFUSED => c.refused as u64,
+            _ => return None,
+        })
+    })
+}

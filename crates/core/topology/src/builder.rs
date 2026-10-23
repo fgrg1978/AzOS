@@ -3475,12 +3475,20 @@ const PKG_OTA_STATUS: CapSpec = CapSpec {
 /// its keys from the pool (the std port's random source), and its allocator is
 /// keyed from it. The seccomp row lists the interface.
 const PKG_ENTROPY: CapSpec = CapSpec { kind: CapKind::Endpoint, perms: CapPerms::READ, target: MaybeStr::from_bytes(RESOURCE_ENTROPY), transfer: false, ops: 0 };
+/// WRITE on the kernel's `powerassert` endpoint: the installer keeps the
+/// machine out of system suspend while it serves a request (a package and
+/// its journal record, an update streamed to the boot slot). WRITE there is
+/// only `hold` and `release`: not the `power` endpoint, whose WRITE is the
+/// shutdown. The seccomp row lists the interface.
+const PKG_POWER_ASSERT: CapSpec =
+    CapSpec { kind: CapKind::Endpoint, perms: CapPerms::WRITE, target: MaybeStr::from_bytes(b"powerassert"), transfer: false, ops: 0 };
 /// `PKGD.ELF`'s authority: the right to serve `endpoint.packages`, the
-/// staging tree, to read the boot slots and to draw entropy. It opens the
+/// staging tree, to read the boot slots, to draw entropy and to keep the
+/// machine awake while it works. It opens the
 /// packages by path beneath the read-only root directory ([`ROOT_RO`]); the
 /// staging tree is its write authority. The network it dials for `fetch` is its
 /// seccomp profile's (the socket ops), as for the relay of the QUIC link.
-const PKGD_CAPS: &[CapSpec] = &[PACKAGES_SERVE, PKG_STAGE_TREE, PKG_OTA_STATUS, PKG_ENTROPY, ROOT_RO];
+const PKGD_CAPS: &[CapSpec] = &[PACKAGES_SERVE, PKG_STAGE_TREE, PKG_OTA_STATUS, PKG_ENTROPY, ROOT_RO, PKG_POWER_ASSERT];
 
 /// The package tool's image (`userspace/services/pkg`).
 pub const TASK_PKG_IMAGE: &[u8] = b"PKG.ELF";

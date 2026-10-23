@@ -25,6 +25,8 @@
 //! * [`idle`] — E4: the TEO-like idle state choice (I3).
 //! * [`opp`] — the OPP actuation seam (`OppActuator`), the per-domain
 //!   current-OPP bookkeeping (`Dvfs`) and the governor's apply assertion.
+//! * [`assertion`] — system power assertions: who keeps the machine out of
+//!   system suspend, why, and until when.
 //! * [`thermal`] — thermal zones, trips and cooling by OPP capping, with the
 //!   deadline and safety floors above the cap, degrade levels and a record ring.
 //! * [`policy`] — the run-time policy: limit-checked setters for the governor,
@@ -34,6 +36,7 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod assertion;
 pub mod dt;
 pub mod governor;
 pub mod idle;

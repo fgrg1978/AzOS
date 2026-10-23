@@ -213,6 +213,7 @@ pub fn serve(key: u16, who: &Caller, req: &MsgDesc, rep: &mut MsgDesc) {
         k::ENTROPY => EntropyIdl::dispatch(&mut crate::entropy::Server(me), req, rep),
         k::LINK_KEY => LinkKeyIdl::dispatch(&mut crate::link_key::Server(me), req, rep),
         k::POWER => PowerIdl::dispatch(&mut crate::power::Server(me), req, rep),
+        k::POWER_ASSERT => azos_devif::PowerAssertIdl::dispatch(&mut crate::power_assert::Server(me), req, rep),
         k::FLIGHT => FlightIdl::dispatch(&mut crate::families::FlightServer(me), req, rep),
         k::BEHAVIOR => BehaviorIdl::dispatch(&mut crate::families::BehaviorServer(me), req, rep),
         k::CONFIG => ConfigIdl::dispatch(&mut crate::families::ConfigServer(me), req, rep),

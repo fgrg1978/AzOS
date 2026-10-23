@@ -39,6 +39,9 @@ pub use linkkey::{LinkKey, LinkKeyCall, LinkKeyClient, LinkKeyIdl, LINK_KEY_ID};
 pub mod power;
 pub use power::{Power, PowerCall, PowerClient, PowerIdl, POWER_ID};
 
+pub mod power_assert;
+pub use power_assert::{PowerAssert, PowerAssertCall, PowerAssertClient, PowerAssertIdl, POWER_ASSERT_ID};
+
 pub mod gpio;
 pub use gpio::{Gpio, GpioCall, GpioClient, GpioIdl, GPIO_ID};
 
@@ -248,6 +251,7 @@ pub mod key {
     pub const MEMCTL: u16 = 24;
     pub const KEYS: u16 = 25;
     pub const SOUND: u16 = 26;
+    pub const POWER_ASSERT: u16 = 27;
 }
 
 /// Every interface the kernel can host, by host key (`IFACES[key - 1]`).
@@ -278,6 +282,7 @@ pub const IFACES: &[Iface] = &[
     Iface { name: "memctl", id: MEMCTL_ID, key: key::MEMCTL, resource: no_resource },
     Iface { name: "keys", id: KEYS_ID, key: key::KEYS, resource: no_resource },
     Iface { name: "sound", id: SOUND_ID, key: key::SOUND, resource: sound_device },
+    Iface { name: "powerassert", id: POWER_ASSERT_ID, key: key::POWER_ASSERT, resource: no_resource },
 ];
 
 /// Split a topology target `<iface>[.<resource>]` into its interface and the

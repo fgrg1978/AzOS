@@ -63,6 +63,8 @@ pub mod memory;
 pub mod caps;
 // The power family's typed call (614).
 pub mod power;
+/// System power assertions (the `powerassert` endpoint).
+pub mod power_assert;
 /// D6 part A: the `Gpio`, `I2c` and `Pwm` interfaces the kernel hosts.
 pub mod devices;
 /// Hypervisor step H1 (Kconfig HV): the `Vm` and `Vcpu` interfaces the kernel hosts.

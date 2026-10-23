@@ -1374,6 +1374,8 @@ mod idle_x86;
 mod eas;
 #[cfg(test)]
 mod apply;
+#[cfg(test)]
+mod assertion;
 
 // The x86_64 CPUID decode, included from the arch crate (`#[path]`, as
 // `tests/host/arch-tests` does): `hybrid.rs` names `crate::cpu::features`.

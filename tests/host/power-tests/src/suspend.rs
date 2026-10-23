@@ -34,6 +34,7 @@ struct Script {
     log: Mutex<Vec<String>>,
     enabled: bool,
     support: Result<(), Reason>,
+    assertions: u32,
     cpus: u32,
     wake: u32,
     freeze: Result<(), ()>,
@@ -60,6 +61,7 @@ impl Script {
             log: Mutex::new(Vec::new()),
             enabled: true,
             support: Ok(()),
+            assertions: 0,
             cpus: 1,
             wake: 1,
             freeze: Ok(()),
@@ -97,6 +99,9 @@ impl Platform for Script {
     }
     fn support(&self) -> Result<(), Reason> {
         self.support
+    }
+    fn assertions(&self) -> u32 {
+        self.assertions
     }
     fn online_cpus(&self) -> u32 {
         self.cpus
@@ -320,15 +325,29 @@ mod gates {
         refused(&Script { wake: 0, ..Script::working() }, Reason::NoWakeSource, 1);
     }
 
+    /// A system power assertion is a task's claim that the machine stays
+    /// awake: the suspend is refused before anything is touched, with the
+    /// live assertions as the blockers, and goes ahead once none is live.
+    ///
+    /// **Canary.** Drop the `held > 0` gate in `suspend::run`: red.
+    #[test]
+    fn a_live_power_assertion_refuses_before_anything_is_touched() {
+        refused(&Script { assertions: 1, ..Script::working() }, Reason::Asserted, 1);
+        refused(&Script { assertions: 3, ..Script::working() }, Reason::Asserted, 3);
+        // Before the CPU gate: an assertion is the answer even with other CPUs up.
+        refused(&Script { assertions: 2, cpus: 4, ..Script::working() }, Reason::Asserted, 2);
+        assert!(matches!(run_script(&Script::working()), Outcome::Resumed { .. }));
+    }
+
     #[test]
     fn the_reason_codes_are_the_record_format() {
-        for code in 1..=12u8 {
+        for code in 1..=13u8 {
             let r = Reason::of(code).unwrap_or_else(|| panic!("code {code} has no reason"));
             assert_eq!(r.code(), code as u32);
             assert!(!r.name().is_empty());
         }
         assert_eq!(Reason::of(0), None);
-        assert_eq!(Reason::of(13), None);
+        assert_eq!(Reason::of(14), None);
     }
 }
 
@@ -406,6 +425,9 @@ mod records {
         }
         fn support(&self) -> Result<(), Reason> {
             self.reason.lock().unwrap().map_or(Ok(()), Err)
+        }
+        fn assertions(&self) -> u32 {
+            0
         }
         fn online_cpus(&self) -> u32 {
             1
