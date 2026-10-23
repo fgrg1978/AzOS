@@ -5,13 +5,15 @@
 //! native result (no descriptor, no `errno`).
 //!
 //! What is served: `TcpStream` (IPv4; blocking, read and write timeouts,
-//! nonblocking, `shutdown` of the read side and of both), `UdpSocket` (IPv4:
+//! nonblocking, `shutdown` of the read side and of both), `TcpListener`
+//! (IPv4: bind, a blocking or nonblocking `accept`), `UdpSocket` (IPv4:
 //! bind, connect, send/recv, send_to/recv_from, multicast, the same flags).
 //! Reads and writes that wait are polls with an absolute sleep between looks
 //! (the kernel has no blocking receive), so a timeout is exact to a few ms.
 //!
 //! What is not, and the op the kernel lacks (each answers `Unsupported` naming
-//! it): `TcpListener` (no listen/accept), `shutdown(Write)` (no half-close), a
+//! it): the peer of an accepted stream (`accept` answers `0.0.0.0:0`; the
+//! accept op returns only the handle), `shutdown(Write)` (no half-close), a
 //! TCP socket's own address (the stack picks the source port and does not say
 //! which), name resolution (no resolver op), IPv6 addresses (the stack has TCP
 //! over IPv6, but the socket ops read a 16-byte `sockaddr_in`; the 28-byte form
@@ -48,7 +50,8 @@ fn timeout_dur(ns: Option<u64>) -> Option<Duration> {
 
 pub struct TcpStream {
     sock: rt::Socket,
-    peer: SocketAddr,
+    /// `None` for a stream a listener accepted (the op does not report it).
+    peer: Option<SocketAddr>,
 }
 
 impl TcpStream {
@@ -56,7 +59,7 @@ impl TcpStream {
         each_addr(addr, |a| {
             let sock = rt::Socket::new(a.is_ipv6(), true).map_err(io_err)?;
             sock.connect(&to_addr(a)).map_err(io_err)?;
-            Ok(TcpStream { sock, peer: *a })
+            Ok(TcpStream { sock, peer: Some(*a) })
         })
     }
 
@@ -68,7 +71,7 @@ impl TcpStream {
         let start = Instant::now();
         let sock = rt::Socket::new(addr.is_ipv6(), true).map_err(io_err)?;
         match sock.connect(&to_addr(addr)) {
-            Ok(()) => Ok(TcpStream { sock, peer: *addr }),
+            Ok(()) => Ok(TcpStream { sock, peer: Some(*addr) }),
             Err(_) if start.elapsed() >= timeout => Err(io::Error::from(io::ErrorKind::TimedOut)),
             Err(k) => Err(io_err(k)),
         }
@@ -125,7 +128,7 @@ impl TcpStream {
     }
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.peer)
+        self.peer.ok_or(io::const_error!(io::ErrorKind::Unsupported, "an accepted stream's peer is not reported"))
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
@@ -199,55 +202,81 @@ impl fmt::Debug for TcpStream {
     }
 }
 
-/// The native socket ops have no listen and no accept, so a listener cannot
-/// exist: `bind` answers `Unsupported` and no value of this type is made.
-pub struct TcpListener(!);
+/// A TCP listener (IPv4): `NODE_BIND` and `NODE_LISTEN` on a stream socket,
+/// `NODE_ACCEPT` for each connection. `accept` waits for one unless the
+/// listener is nonblocking (`WouldBlock`).
+pub struct TcpListener {
+    sock: rt::Socket,
+    local: SocketAddr,
+}
+
+/// The address `accept` answers for the peer: the op hands back only the new
+/// handle, and the stack has no op that reports a connection's peer.
+const PEER_UNKNOWN: SocketAddr = SocketAddr::new(crate::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 impl TcpListener {
-    pub fn bind<A: ToSocketAddrs>(_: A) -> io::Result<TcpListener> {
-        Err(io::const_error!(io::ErrorKind::Unsupported, "TcpListener: the native socket ops have no listen/accept"))
+    /// Listen on `addr`'s port (the stack's listener takes every local
+    /// address); port 0 draws one from the ephemeral range.
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
+        each_addr(addr, |a| {
+            if a.is_ipv6() {
+                return Err(io::const_error!(
+                    io::ErrorKind::Unsupported,
+                    "TcpListener: the socket ops read a 16-byte sockaddr_in"
+                ));
+            }
+            let sock = rt::Socket::new(false, true).map_err(io_err)?;
+            let port = sock.listen(&to_addr(a)).map_err(io_err)?;
+            let mut local = *a;
+            local.set_port(port);
+            Ok(TcpListener { sock, local })
+        })
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        self.0
+        Ok(self.local)
     }
 
+    /// The stream, and `0.0.0.0:0` for its peer (the accept op does not report
+    /// it; the stream's `peer_addr` says `Unsupported`).
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        self.0
+        let sock = self.sock.accept().map_err(io_err)?;
+        Ok((TcpStream { sock, peer: None }, PEER_UNKNOWN))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
-        self.0
+        unsupported()
     }
 
     pub fn set_ttl(&self, _: u32) -> io::Result<()> {
-        self.0
+        unsupported()
     }
 
     pub fn ttl(&self) -> io::Result<u32> {
-        self.0
+        unsupported()
     }
 
     pub fn set_only_v6(&self, _: bool) -> io::Result<()> {
-        self.0
+        unsupported()
     }
 
     pub fn only_v6(&self) -> io::Result<bool> {
-        self.0
+        Ok(false)
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        self.0
+        Ok(None)
     }
 
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        self.0
+    pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
+        self.sock.set_nonblocking(on);
+        Ok(())
     }
 }
 
 impl fmt::Debug for TcpListener {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TcpListener").field("addr", &self.local).finish_non_exhaustive()
     }
 }
 

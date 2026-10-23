@@ -314,14 +314,16 @@ fn fs_is_not_provided() -> Result<(), &'static str> {
 /// `std::net` as far as the kernel's socket ops go, with no peer needed: a
 /// bound UDP socket takes a port from the ephemeral range, a receive that finds
 /// nothing is `WouldBlock` (nonblocking at once, with a timeout after it ran
-/// out), a zero timeout is refused, and what the ops lack answers
-/// `Unsupported` (a listener, a name, IPv6 datagrams). Held like
-/// `fs_is_not_provided`: the day the IDL listener or resolver interface exists,
-/// these assertions fail and are replaced by tests of the real thing. The row
-/// that boots this needs the `net` class (see the file header).
+/// out), a zero timeout is refused, a TCP listener takes an ephemeral port,
+/// answers a nonblocking `accept` with nobody waiting `WouldBlock` and holds
+/// its port against a second listener, and what the ops lack answers
+/// `Unsupported` (a name, IPv6 datagrams, an IPv6 listener). Held like
+/// `fs_is_not_provided`: the day the resolver interface exists, these
+/// assertions fail and are replaced by tests of the real thing. The row that
+/// boots this needs the `net` class (see the file header).
 #[azos::test]
 fn net_edges_and_udp_timeouts() -> Result<(), &'static str> {
-    use std::io::ErrorKind::{InvalidInput, Unsupported, WouldBlock};
+    use std::io::ErrorKind::{AddrInUse, InvalidInput, Unsupported, WouldBlock};
     use std::net::{TcpListener, UdpSocket};
 
     let u = UdpSocket::bind("0.0.0.0:0").map_err(|_| "udp bind")?;
@@ -352,8 +354,20 @@ fn net_edges_and_udp_timeouts() -> Result<(), &'static str> {
     if UdpSocket::bind("[::]:0").err().map(|e| e.kind()) != Some(Unsupported) {
         return Err("UDP over IPv6 is offered now: test it");
     }
-    if TcpListener::bind("0.0.0.0:0").err().map(|e| e.kind()) != Some(Unsupported) {
-        return Err("TcpListener is offered now: test it");
+    let l = TcpListener::bind("0.0.0.0:0").map_err(|_| "tcp listen")?;
+    let port = l.local_addr().map_err(|_| "listener local_addr")?.port();
+    if port < 49152 {
+        return Err("listen on port 0 gave a port outside the ephemeral range");
+    }
+    l.set_nonblocking(true).map_err(|_| "listener nonblocking")?;
+    if l.accept().err().map(|e| e.kind()) != Some(WouldBlock) {
+        return Err("a nonblocking accept with nobody waiting is not WouldBlock");
+    }
+    if TcpListener::bind(("0.0.0.0", port)).err().map(|e| e.kind()) != Some(AddrInUse) {
+        return Err("a second listener on a taken port is not AddrInUse");
+    }
+    if TcpListener::bind("[::]:0").err().map(|e| e.kind()) != Some(Unsupported) {
+        return Err("a TCP listener over IPv6 is offered now: test it");
     }
     if std::net::ToSocketAddrs::to_socket_addrs(&("no-such-host.invalid", 80)).err().map(|e| e.kind()) != Some(Unsupported) {
         return Err("name lookup is offered now: test it");

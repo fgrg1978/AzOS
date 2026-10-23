@@ -22,11 +22,17 @@
 //! another shuts the socket down therefore never sends or receives on a handle
 //! the table has handed to something else.
 //!
-//! **What the kernel does not offer yet** (each is named where a caller would
-//! reach it): `listen` and `accept`, a half-close, a socket's own address,
-//! IPv6 `sockaddr` (the kernel reads 16 bytes), UDP over IPv6, and a resolver.
-//! Those are service functions: they come as IDL interfaces on endpoints (a
-//! listener and a resolver), not as more ops on a socket handle.
+//! **A listener** is a stream socket given a port by `NODE_BIND` and opened by
+//! `NODE_LISTEN` ([`Socket::listen`], one call for both: the stack's TCP bind
+//! only records the port, and a taken port shows at the listen). `NODE_ACCEPT`
+//! does not block (`-EAGAIN` is "nobody waiting"), so [`Socket::accept`] polls
+//! as a receive does. The accepted socket's peer is not reported: the op
+//! answers only the new handle.
+//!
+//! **What the kernel does not offer** (each is named where a caller would
+//! reach it): a half-close, a socket's own address, the peer of an accepted
+//! connection, IPv6 `sockaddr` (the kernel reads 16 bytes), UDP over IPv6, and
+//! a resolver.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -74,16 +80,22 @@ impl Socket {
         if h < 0 {
             return Err(netpure::kind_of(h, Op::Socket));
         }
-        Ok(Socket {
-            h: h as u32,
+        Ok(Socket::from_handle(h as u32, stream, false))
+    }
+
+    /// The socket a handle names: a new one (`connected` false), or one
+    /// `NODE_ACCEPT` gave (a stream, connected).
+    fn from_handle(h: u32, stream: bool, connected: bool) -> Socket {
+        Socket {
+            h,
             busy: AtomicU32::new(0),
             stream,
-            connected: AtomicBool::new(false),
+            connected: AtomicBool::new(connected),
             nonblocking: AtomicBool::new(false),
             read_timeout_ns: AtomicU64::new(0),
             write_timeout_ns: AtomicU64::new(0),
             read_shut: AtomicBool::new(false),
-        })
+        }
     }
 
     /// Take the handle for one call, or `None` once the socket is closing.
@@ -122,11 +134,11 @@ impl Socket {
 
     /// Bind to `addr`. Port 0 on a datagram socket draws one from the
     /// ephemeral range (the stack's UDP bind keeps the port it is given); the
-    /// port bound is returned. A stream socket is `Unsupported`: binding one
-    /// only serves a listener, and the kernel has no `listen` or `accept` op.
+    /// port bound is returned. A stream socket binds in [`listen`](Self::listen)
+    /// (`InvalidInput` here): binding one only serves a listener.
     pub fn bind(&self, addr: &Addr) -> Result<u16, Kind> {
         if self.stream {
-            return Err(Kind::Unsupported);
+            return Err(Kind::InvalidInput);
         }
         let held = self.hold().ok_or(Kind::InvalidInput)?;
         let mut raw = [0u8; netpure::SOCKADDR_V6_LEN];
@@ -143,6 +155,55 @@ impl Socket {
             }
         }
         Err(Kind::AddrNotAvailable)
+    }
+
+    /// Listen on `addr`'s port with a stream socket (`NODE_BIND`, then
+    /// `NODE_LISTEN`); the port listened on is returned. Port 0 draws one from
+    /// the ephemeral range, and a draw another listener holds is drawn again.
+    /// A fixed port that is taken is `AddrInUse`.
+    pub fn listen(&self, addr: &Addr) -> Result<u16, Kind> {
+        if !self.stream {
+            return Err(Kind::InvalidInput);
+        }
+        let held = self.hold().ok_or(Kind::InvalidInput)?;
+        let mut raw = [0u8; netpure::SOCKADDR_V6_LEN];
+        let fixed = addr.port() != 0;
+        for _ in 0..if fixed { 1 } else { BIND_TRIES } {
+            let port = if fixed { addr.port() } else { random_ephemeral_port() };
+            let len = addr.with_port(port).encode(&mut raw);
+            let (r, _) = invoke(held.h(), inv::NODE_BIND, [raw.as_ptr() as u64, len as u64, 0, 0]);
+            if r < 0 {
+                return Err(netpure::kind_of(r, Op::Bind));
+            }
+            let (r, _) = invoke(held.h(), inv::NODE_LISTEN, [0; 4]);
+            if r >= 0 {
+                return Ok(port);
+            }
+            if fixed || netpure::kind_of(r, Op::Listen) != Kind::AddrInUse {
+                return Err(netpure::kind_of(r, Op::Listen));
+            }
+        }
+        Err(Kind::AddrInUse)
+    }
+
+    /// Take one connection from a listening socket: a connected stream socket
+    /// the caller owns. Waits for one unless the socket is nonblocking
+    /// (`WouldBlock`); a listener has no timeout.
+    pub fn accept(&self) -> Result<Socket, Kind> {
+        let mut backoff = Backoff::new();
+        loop {
+            let r = {
+                let held = self.hold().ok_or(Kind::InvalidInput)?;
+                invoke(held.h(), inv::NODE_ACCEPT, [0; 4]).0
+            };
+            if r >= 0 {
+                return Ok(Socket::from_handle(r as u32, true, true));
+            }
+            if netpure::kind_of(r, Op::Accept) != Kind::WouldBlock {
+                return Err(netpure::kind_of(r, Op::Accept));
+            }
+            self.wait(&mut backoff, None)?;
+        }
     }
 
     /// Join (`join`) or leave the IPv4 multicast `group` on a datagram socket.

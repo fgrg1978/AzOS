@@ -33,6 +33,8 @@ use azos_stdrt::netpure::{
 const KERNEL_HANDLERS: &str = include_str!("../../../../crates/core/syscall/src/handlers.rs");
 const KERNEL_SOCKET: &str = include_str!("../../../../crates/net/net/src/socket.rs");
 const LIBSYS: &str = include_str!("../../../../crates/core/libsys/src/lib.rs");
+const STDRT_NET: &str = include_str!("../../../../crates/core/stdrt/src/net.rs");
+const STD_NET: &str = include_str!("../../../../sdk/std/sys/net/connection/azos.rs");
 
 fn encoded(a: &Addr) -> Vec<u8> {
     let mut raw = [0u8; SOCKADDR_V6_LEN];
@@ -159,6 +161,7 @@ fn kinds_map_to_io_error_kinds() {
     assert_eq!(k(Kind::InvalidInput), ErrorKind::InvalidInput);
     assert_eq!(k(Kind::PermissionDenied), ErrorKind::PermissionDenied);
     assert_eq!(k(Kind::AddrNotAvailable), ErrorKind::AddrNotAvailable);
+    assert_eq!(k(Kind::AddrInUse), ErrorKind::AddrInUse);
     assert_eq!(k(Kind::HostUnreachable), ErrorKind::HostUnreachable);
     assert_eq!(k(Kind::OutOfMemory), ErrorKind::OutOfMemory);
     assert_eq!(k(Kind::QuotaExceeded), ErrorKind::QuotaExceeded);
@@ -180,8 +183,10 @@ fn native_results_map_per_call() {
     assert_eq!(kind_of(-1, Op::SendDgram), Kind::HostUnreachable);
     assert_eq!(kind_of(-1, Op::RecvDgram), Kind::InvalidInput);
     assert_eq!(kind_of(-1, Op::RecvStream), Kind::NotConnected);
+    assert_eq!(kind_of(-1, Op::Listen), Kind::AddrInUse);
+    assert_eq!(kind_of(-1, Op::Accept), Kind::InvalidInput);
     // The coded results are the same whichever call answered.
-    for op in [Op::Socket, Op::Bind, Op::Connect, Op::SendStream, Op::SendDgram, Op::RecvDgram, Op::RecvStream] {
+    for op in [Op::Socket, Op::Bind, Op::Connect, Op::SendStream, Op::SendDgram, Op::RecvDgram, Op::RecvStream, Op::Listen, Op::Accept] {
         assert_eq!(kind_of(ret(Errno::EAGAIN), op), Kind::WouldBlock);
         assert_eq!(kind_of(ret(Errno::EINTR), op), Kind::Interrupted);
         assert_eq!(kind_of(ret(Errno::EINVAL), op), Kind::InvalidInput);
@@ -220,6 +225,30 @@ fn only_the_eof_code_ends_a_stream() {
     assert_eq!(KERNEL_HANDLERS.matches("socket_stream_ended(fd as i32)").count(), 2);
     assert!(KERNEL_HANDLERS.contains("Errno::EEOF.to_syscall_ret()"));
     assert!(KERNEL_SOCKET.contains("pub fn socket_stream_ended(fd: i32) -> bool"));
+}
+
+/// `std::net::TcpListener` is the native listener, as sshd's is through
+/// libsys: `bind` makes a stream socket and listens (`NODE_BIND`, then
+/// `NODE_LISTEN`), `accept` polls `NODE_ACCEPT`, whose "nobody waiting" is
+/// `-EAGAIN` (`WouldBlock`, so the poll waits or a nonblocking listener
+/// returns), and a taken port is `AddrInUse`. The kernel side is pinned by
+/// source. **Canary:** the old `TcpListener(!)`, whose `bind` answered
+/// `Unsupported`, fails the first two rows.
+#[test]
+fn the_std_listener_listens_and_accepts_through_the_native_ops() {
+    assert!(STD_NET.contains("let port = sock.listen(&to_addr(a)).map_err(io_err)?;"));
+    assert!(STD_NET.contains("let sock = self.sock.accept().map_err(io_err)?;"));
+    assert!(!STD_NET.contains("TcpListener(!)"));
+    assert!(STDRT_NET.contains("invoke(held.h(), inv::NODE_LISTEN, [0; 4])"));
+    assert!(STDRT_NET.contains("invoke(held.h(), inv::NODE_ACCEPT, [0; 4])"));
+    assert_eq!(kind_of(Errno::EAGAIN.to_syscall_ret() as isize, Op::Accept), Kind::WouldBlock);
+    assert_eq!(kind_of(-1, Op::Listen), Kind::AddrInUse);
+    // NODE_ACCEPT with nothing waiting answers -EAGAIN; NODE_LISTEN is the
+    // socket layer's 0 or -1; sshd uses the same two ops through libsys.
+    assert!(KERNEL_HANDLERS.contains("    if conn < 0 {\n        return Errno::EAGAIN.to_syscall_ret();"));
+    assert!(KERNEL_HANDLERS.contains("azos_net::socket_listen_bound(fd as i32) as i64"));
+    assert!(LIBSYS.contains("invoke(cap, invoke_abi::NODE_LISTEN, [0; 4]).0"));
+    assert!(LIBSYS.contains("invoke(cap, invoke_abi::NODE_ACCEPT, [0; 4]).0"));
 }
 
 #[test]

@@ -42,6 +42,7 @@ pub fn io_err(k: Kind) -> io::Error {
         Kind::InvalidInput => E::InvalidInput,
         Kind::PermissionDenied => E::PermissionDenied,
         Kind::AddrNotAvailable => E::AddrNotAvailable,
+        Kind::AddrInUse => E::AddrInUse,
         Kind::HostUnreachable => E::HostUnreachable,
         Kind::OutOfMemory => E::OutOfMemory,
         Kind::QuotaExceeded => E::QuotaExceeded,

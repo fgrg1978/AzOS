@@ -133,6 +133,12 @@ pub enum Op {
     /// ([`is_eof`]), so `-1` is a refusal: a socket that holds no connection or
     /// a buffer the kernel cannot write.
     RecvStream,
+    /// `NODE_LISTEN`: `-1` is the port taken by another listener, or no
+    /// listener slot left (the stack does not tell them apart).
+    Listen,
+    /// `NODE_ACCEPT`: `-1` is a socket that is not listening (`-EAGAIN`, no
+    /// connection waiting, is its own code).
+    Accept,
 }
 
 /// Whether `code`, the result of `NODE_RECV` on a stream, is the end of the
@@ -155,6 +161,7 @@ pub enum Kind {
     InvalidInput,
     PermissionDenied,
     AddrNotAvailable,
+    AddrInUse,
     HostUnreachable,
     OutOfMemory,
     QuotaExceeded,
@@ -180,6 +187,8 @@ pub fn kind_of(code: isize, op: Op) -> Kind {
             Op::SendDgram => Kind::HostUnreachable,
             Op::RecvDgram => Kind::InvalidInput,
             Op::RecvStream => Kind::NotConnected,
+            Op::Listen => Kind::AddrInUse,
+            Op::Accept => Kind::InvalidInput,
         },
         -4 => Kind::Interrupted,
         -9 | -22 | -200 | -202 => Kind::InvalidInput,
