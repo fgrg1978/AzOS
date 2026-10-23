@@ -19,17 +19,19 @@ this note covers only aarch64.
 
 Every path that returns to EL0 masks all four DAIF classes with
 `msr DAIFSet, #0xf` before it writes `ELR_EL1`, `SPSR_EL1`, `SP_EL0` or
-`TTBR0_EL1`. `eret` then restores the mask from the saved `SPSR_EL1` in the same
+`TTBR0_EL1`, and before `PAC_EXIT` loads the process's pointer-authentication
+key. `eret` then restores the mask from the saved `SPSR_EL1` in the same
 instant it restores the program counter, so nothing stays masked past the trap.
 
 The generic syscall flow switches interrupts on for the body of a call
 (`interrupts_on` in `kernel/src/trap/syscall.rs`, implemented in
-`kernel/src/trap/kernel.rs` as `ARCH.enable_all()`, which is `msr DAIFClr, #2`
-in `crates/core/arch-aarch64/src/sysregs.rs`). On the way out the return code is
+`kernel/src/trap/kernel.rs` as `ARCH.enable_all()`, which `api_impl.rs` runs as
+`sysregs::enable_irq`, `msr DAIFClr, #2`, in
+`crates/core/arch-aarch64/src/sysregs.rs`). On the way out the return code is
 responsible for closing them.
 
 Source: `kernel/src/trap/syscall.rs`, `kernel/src/trap/kernel.rs`,
-`crates/core/arch-aarch64/src/sysregs.rs`.
+`crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-aarch64/src/sysregs.rs`.
 
 ## 2. The hazard
 
@@ -78,6 +80,7 @@ the hardware, and user FP state is saved lazily by the context switch.
 |---|---|---|
 | `msr ELR_EL1` | **opens** | A nested exception overwrites it. |
 | `msr SPSR_EL1` | open | Same. |
+| `PAC_EXIT`: the process's `APIAKey*_EL1` (Kconfig `A64_PAUTH_PROC_KEYS`, a return to EL0 only) | open | A nested EL1 exception from EL1 runs with whatever key is loaded, the process's instead of the kernel's. |
 | `msr SP_EL0` | safe | A separate banked register; a nested EL1 exception never touches it. |
 | `TTBR0_EL1` switch, `isb`, `tlbi`, `dsb`, `isb` | not a data hazard | `TTBR0_EL1` survives nesting and kernel text is mapped through `TTBR1`, so a nested handler runs unaffected. It is still inside the masked window, for uniformity. This step runs only when a new table is supplied (an `exec` hand-off, or the first entry of a fresh or forked task); an ordinary return does not write `TTBR0_EL1`. |
 | General-register restore | safe | A nested trap saves and restores the general registers around itself. |
