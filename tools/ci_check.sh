@@ -14521,7 +14521,7 @@ PY
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
         rm -f "$kimg" "$kimg.features"
         # One target directory per feature set: the two PASS rows share theirs.
-        make x86_64 X86_64_DEFCONFIG=config/defconfigs/qemu-x86_64-pci.config X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
+        make x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
             X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-${expect}" X86_64_IMG="$kimg" X86_64_FEATURES="$feats" >/dev/null 2>&1 \
             && builtin printf '%s\n' "$feats" >"$kimg.features" \
             || { bad; echo "      make x86_64 (qemu-x86_64-pci.config, $feats) did not build"; return; }
