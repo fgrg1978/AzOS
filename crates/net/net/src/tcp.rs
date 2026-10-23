@@ -18,6 +18,9 @@
 ///     the blocks the peer sends so a retransmission skips what it holds
 ///   - Timestamps (RFC 7323, Kconfig `TCP_TIMESTAMPS`): RTT measured from every
 ///     ACK of new data, and PAWS against old duplicates
+///   - ECN (RFC 3168, Kconfig `TCP_ECN`): negotiated in the handshake; a mark
+///     is echoed until the sender says it reacted, and the sender halves its
+///     window once per window of data
 ///   - Simultaneous open (RFC 793 §3.4)
 
 use azos_sync::SpinLock;
@@ -228,6 +231,20 @@ const TCP_SYN: u8 = 0x02;
 const TCP_RST: u8 = 0x04;
 const TCP_PSH: u8 = 0x08;
 const TCP_ACK: u8 = 0x10;
+/// ECN-Echo (RFC 3168 §6.1): on a SYN with CWR, "I can do ECN"; on a SYN-ACK
+/// without it, "so can I"; after the handshake, "a packet of yours was marked".
+const TCP_ECE: u8 = 0x40;
+/// Congestion Window Reduced (RFC 3168 §6.1.2): "I reacted to your echo".
+const TCP_CWR: u8 = 0x80;
+
+/// Kconfig `TCP_ECN`: ask for ECN on the connections this node opens, and
+/// agree to it on the ones a peer asks for.
+const TCP_ECN: bool = azos_limits::TCP_ECN;
+
+/// The flags of our first SYN: an ECN-setup SYN (ECE and CWR, RFC 3168
+/// §6.1.1) when the build asks for ECN. A retry is a plain SYN (§6.1.1.1): a
+/// path that drops ECN-setup SYNs gets a connection without it.
+const ECN_SETUP_SYN: u8 = TCP_SYN | if TCP_ECN { TCP_ECE | TCP_CWR } else { 0 };
 
 // ---------------------------------------------------------------------------
 // MSS option
@@ -948,6 +965,20 @@ pub struct TcpConn {
     /// Last.ACK.sent (§4.3): the acknowledgement our latest segment carried.
     ts_last_ack:      u32,
 
+    // --- ECN (RFC 3168) ---
+    /// Both ends agreed in the handshake: our new data leaves ECT(0), and the
+    /// marks and echoes below apply.
+    ecn_ok:           bool,
+    /// A CE-marked segment arrived and the sender has not yet said it reacted
+    /// (CWR): every segment we send carries ECE (§6.1.3).
+    ecn_echo:         bool,
+    /// We reacted to an echo: the next new data segment carries CWR (§6.1.2).
+    ecn_cwr:          bool,
+    /// SND.NXT when we last reacted: echoes for data sent before it belong to
+    /// the same window and are not a second signal (§6.1.2: at most once per
+    /// window of data).
+    ecn_recover:      u32,
+
     // --- Out-of-order reassembly (F01) ---
     ooo_buf:          [OooSegment; OOO_MAX_SEGMENTS],
     /// Sequence of the most recent segment queued out of order. RFC 2018 §4
@@ -1052,6 +1083,11 @@ impl TcpConn {
             ts_off:        0,
             ts_last_ack:   0,
 
+            ecn_ok:        false,
+            ecn_echo:      false,
+            ecn_cwr:       false,
+            ecn_recover:   0,
+
             ooo_buf:       [OooSegment::empty(); OOO_MAX_SEGMENTS],
             ooo_recent:    0,
 
@@ -1118,6 +1154,10 @@ impl TcpConn {
         self.ts_recent_at     = 0;
         self.ts_off           = 0;
         self.ts_last_ack      = 0;
+        self.ecn_ok           = false;
+        self.ecn_echo         = false;
+        self.ecn_cwr          = false;
+        self.ecn_recover      = 0;
         // The out-of-order queue too. It was not cleared here, so a reused
         // slot kept the previous connection's held segments: bytes from one
         // peer that a flush could splice into another's stream if the new
@@ -1147,10 +1187,11 @@ impl TcpConn {
     /// Start the send sequence at `iss`: nothing in flight, and no recovery
     /// point ahead of the first byte.
     fn set_iss(&mut self, iss: u32) {
-        self.seq      = iss;
-        self.snd_una  = iss;
-        self.rtx_next = iss;
-        self.recover  = iss;
+        self.seq         = iss;
+        self.snd_una     = iss;
+        self.rtx_next    = iss;
+        self.recover     = iss;
+        self.ecn_recover = iss;
     }
 
     /// Forget everything in flight: SND.UNA catches up with SND.NXT. For a
@@ -1193,10 +1234,12 @@ impl TcpConn {
     /// The options a segment this connection sends now carries after the
     /// handshake: Timestamps when negotiated (RFC 7323 §3.2: every segment but
     /// a reset), then, with `sack`, the SACK blocks of what is held out of
-    /// order. Records the segment's acknowledgement as Last.ACK.sent: every
-    /// segment built from here carries `self.ack`.
+    /// order; and ECE while a mark is owed its echo. Records the segment's
+    /// acknowledgement as Last.ACK.sent: every segment built from here carries
+    /// `self.ack`.
     fn seg_opts(&mut self, now: u64, sack: bool) -> Opts {
-        let mut o = Opts { b: [0; TCP_OPT_MAX], n: 0 };
+        let ece = if self.ecn_echo { TCP_ECE } else { 0 };
+        let mut o = Opts { b: [0; TCP_OPT_MAX], n: 0, flags: ece };
         if self.ts_ok {
             o.n = put_ts(&mut o.b, self.ts_val(now), self.ts_recent);
             self.ts_last_ack = self.ack;
@@ -1206,6 +1249,12 @@ impl TcpConn {
             o.n += sack_option(self, &mut o.b[o.n..], max);
         }
         o
+    }
+
+    /// Our SYN-ACK's flags: ECE when the SYN asked for ECN and we agreed
+    /// (RFC 3168 §6.1.1: ECE without CWR).
+    fn synack_flags(&self) -> u8 {
+        TCP_SYN | TCP_ACK | if self.ecn_ok { TCP_ECE } else { 0 }
     }
 
     /// What our SYN-ACK carries: what the SYN offered and this build has,
@@ -1313,18 +1362,21 @@ struct AckOut {
 }
 
 fn send_ack(mac: &[u8; 6], a: &AckOut) {
+    let flags = TCP_ACK | a.opts.flags;
     #[cfg(feature = "qemu")]
-    trace_tx(a.sp, &a.dst, a.dp, TCP_ACK, a.seq, a.ack, &[]);
-    send_segment_opts(mac, &a.src, &a.dst, a.sp, a.dp, TCP_ACK, a.seq, a.ack, a.win,
-                      a.opts.get(), &[]);
+    trace_tx(a.sp, &a.dst, a.dp, flags, a.seq, a.ack, &[]);
+    send_segment_opts(mac, &a.src, &a.dst, a.sp, a.dp, flags, a.seq, a.ack, a.win,
+                      a.opts.get(), &[], 0);
 }
 
 /// The options of one segment, built under the lock (`TcpConn::seg_opts`)
-/// and sent after it is dropped.
+/// and sent after it is dropped, and the flags the connection adds to it:
+/// ECE while a congestion mark is owed its echo (RFC 3168 §6.1.3).
 #[derive(Clone, Copy)]
 struct Opts {
     b: [u8; TCP_OPT_MAX],
     n: usize,
+    flags: u8,
 }
 
 impl Opts {
@@ -2041,7 +2093,7 @@ fn connect_h<A: Into<IpAddr>>(dst_ip: A, dst_port: u16, src_port: u16) -> Option
     let tsval = t.conns[idx].ts_val(azos_drv_sys::timebase::now());
 
     // Send SYN with MSS, Window Scale, SACK-Permitted and Timestamps
-    send_syn_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_SYN, seq, 0,
+    send_syn_segment(&mac, &ip, &dst_ip, src_port, dst_port, ECN_SETUP_SYN, seq, 0,
                      SynOffer::all(tsval));
     drop(t);
     // The SYN's retransmission needs `tcp_tick`, and this runs in the
@@ -2276,7 +2328,7 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
     // Reserve the range and copy it into the send ring under ONE lock hold:
     // two senders on one connection (a kernel task and a ring-3 socket on
     // another hart) must not both be handed the same SND.NXT.
-    let (mac, ip, start, n, ack_val, dst_ip, src_port, dst_port, our_win, opts) = {
+    let (mac, ip, start, n, ack_val, dst_ip, src_port, dst_port, our_win, opts, flags, ecn) = {
         let mut t = TCP.lock();
         if !t.live(r) { return -1; }
         let (mac, ip) = (t.our_mac, t.conns[idx].local_ip);
@@ -2346,7 +2398,13 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
         }
         c.last_activity = now;
         let opts = c.seg_opts(now, false);
-        (mac, ip, start, n, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise(), opts)
+        // New data: ECT(0) on an ECN connection (RFC 3168 §6.1.2), and CWR on
+        // the first segment after a reaction to an echo.
+        let flags = TCP_ACK | opts.flags | if c.ecn_cwr { TCP_CWR } else { 0 };
+        c.ecn_cwr = false;
+        let ecn = if c.ecn_ok { ip::ECN_ECT0 } else { 0 };
+        (mac, ip, start, n, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise(), opts,
+         flags, ecn)
     };
     let send_data_slice = &data[..n];
 
@@ -2374,8 +2432,8 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
     // The bytes on the wire are the caller's, which are the ring's: no second
     // copy on the stack.
     let result = send_segment_with_window(&mac, &ip, &dst_ip, src_port, dst_port,
-                                          TCP_ACK, start, ack_val, send_data_slice,
-                                          our_win, opts.get());
+                                          flags, start, ack_val, send_data_slice,
+                                          our_win, opts.get(), ecn);
     if result == 0 {
         return n as i32;
     }
@@ -2393,8 +2451,10 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
     let c = &mut t.conns[idx];
     // `advertise` above counted the ACK this segment carried as sent; it was
     // not. Hold one again (N6), so the end of the pass or the timer sends it
-    // rather than the peer's retransmission timer finding out.
+    // rather than the peer's retransmission timer finding out. The same for
+    // a CWR it carried: the next new segment carries it.
     c.hold_ack(now, false, true);
+    if flags & TCP_CWR != 0 { c.ecn_cwr = true; }
     if c.seq == end && seq_le(c.snd_una, start) {
         c.seq = start;
         if seq_lt(start, c.rtx_next) {
@@ -2675,8 +2735,8 @@ fn send_fin_and_advance(r: Ref) -> bool {
         TcpState::CloseWait   => TcpState::LastAck,
         _ => return false,
     };
-    send_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_FIN | TCP_ACK, seq, ack_val, &[], win,
-                 opts.get());
+    send_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_FIN | TCP_ACK | opts.flags, seq,
+                 ack_val, &[], win, opts.get());
     let mut t = TCP.lock();
     // Freed and re-issued while the FIN was going out (a RST on another
     // hart): the FIN was this connection's last word; the slot's new owner
@@ -2761,7 +2821,14 @@ fn accept_h(local_port: u16, v6: bool) -> Option<TcpHandle> {
 /// Unlike UDP the TCP checksum is mandatory (RFC 793 §3.1): there is no
 /// "sender opted out" encoding, so any mismatch is an unconditional drop.
 pub fn handle_checked(src_ip: &[u8; 4], dst_ip: &[u8; 4], data: &[u8]) {
-    handle_checked_inner(&IpAddr::V4(*src_ip), &IpAddr::V4(*dst_ip), data);
+    handle_checked_ce(src_ip, dst_ip, data, false);
+}
+
+/// [`handle_checked`] for a segment whose IPv4 header said CE when `ce`: a
+/// router on the path marked it instead of dropping it (RFC 3168 §5). Called
+/// from `ip::handle`.
+pub fn handle_checked_ce(src_ip: &[u8; 4], dst_ip: &[u8; 4], data: &[u8], ce: bool) {
+    handle_checked_inner(&IpAddr::V4(*src_ip), &IpAddr::V4(*dst_ip), data, ce);
     // A segment taken outside the net poll task (loopback delivery from a
     // sender's syscall, a `net_poll` from the shell or a boot smoke) may
     // have armed a TCP deadline the sleeping poll task does not know about.
@@ -2770,16 +2837,17 @@ pub fn handle_checked(src_ip: &[u8; 4], dst_ip: &[u8; 4], data: &[u8]) {
 
 /// [`handle_checked`] for a segment that arrived in an IPv6 packet, with the
 /// IPv6 pseudo-header (RFC 8200 §8.1). Called from `ipv6::ipv6_rx` for a
-/// packet addressed to one of our unicast addresses.
-pub fn handle_checked_v6(src_ip: &[u8; 16], dst_ip: &[u8; 16], data: &[u8]) {
-    handle_checked_inner(&IpAddr::V6(*src_ip), &IpAddr::V6(*dst_ip), data);
+/// packet addressed to one of our unicast addresses; `ce`, its Traffic Class
+/// said CE.
+pub fn handle_checked_v6(src_ip: &[u8; 16], dst_ip: &[u8; 16], data: &[u8], ce: bool) {
+    handle_checked_inner(&IpAddr::V6(*src_ip), &IpAddr::V6(*dst_ip), data, ce);
     // A segment taken outside the net poll task (loopback delivery from a
     // sender's syscall, a `net_poll` from the shell or a boot smoke) may
     // have armed a TCP deadline the sleeping poll task does not know about.
     note_all();
 }
 
-fn handle_checked_inner(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
+fn handle_checked_inner(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
     if data.len() < TCP_HDR_MIN { return; }
     // TCP carries no length field of its own — the segment length comes from
     // the IP total length, i.e. exactly what `ip::handle` sliced for us.
@@ -2790,7 +2858,7 @@ fn handle_checked_inner(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
     let pseudo = src_ip.pseudo_sum(dst_ip, tcp_len);
     if tcp_checksum(pseudo, data) != 0 { return; }
 
-    handle(src_ip, dst_ip, data);
+    handle(src_ip, dst_ip, data, ce);
     // N7: whatever this segment changed — a handshake completed, a
     // connection reset, a window opened — the tasks waiting on TCP look
     // again now, not at their next 1 ms poll. No lock is held here.
@@ -2812,7 +2880,7 @@ fn handle_checked_inner(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
 /// FIN costs nothing and touches no state.
 fn process_inbound_payload(
     idx: usize, mac: &[u8; 6], ip: &IpAddr, seq: u32, payload: &[u8],
-    expected_ack: u32, rcv_wnd: u32, fin: bool, psh: bool, now: u64,
+    expected_ack: u32, rcv_wnd: u32, fin: bool, psh: bool, marked: bool, now: u64,
 ) {
     // Every ACK this sends is built from the connection itself (`take_ack`).
     if payload.is_empty() { return; }
@@ -2872,14 +2940,17 @@ fn process_inbound_payload(
         // - the segment filled (part of) a hole (RFC 5681 §4.2: immediately),
         //   or something is still held beyond one (its SACK blocks);
         // - the ring could not take it all, or less than a segment of window
-        //   is left: the sender is about to stall and must learn why.
+        //   is left: the sender is about to stall and must learn why;
+        // - a router marked it (RFC 3168): the sender reacts a round trip
+        //   sooner for an echo that does not wait.
         // A FIN riding along is answered by its own ACK right after this.
         let smss = c.smss();
         let quick = TCP_DELACK_TICKS == 0
             || c.rcv_unacked >= TCP_DELACK_SEGS.saturating_mul(smss)
             || had_ooo
             || (stored as usize) < payload.len()
-            || rx_free_space(c) < smss as usize;
+            || rx_free_space(c) < smss as usize
+            || marked;
         if !quick {
             let pushed = psh || (payload.len() as u32) < smss;
             c.hold_ack(now, pushed, true);
@@ -2923,7 +2994,7 @@ fn process_inbound_payload(
 /// checksum check moves after that call, this claim goes false silently —
 /// re-grep `handle(` in this file before trusting it again, rather than
 /// trusting line numbers, which is exactly what let this go stale once.
-fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
+fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
     if data.len() < TCP_HDR_MIN { return; }
     let hdr = unsafe { &*(data.as_ptr() as *const TcpHdr) };
     let dst_port  = u16::from_be_bytes(hdr.dst_port);
@@ -3137,6 +3208,10 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                         c.ts_recent    = tsval;
                         c.ts_recent_at = now;
                     }
+                    // An ECN-setup SYN-ACK (ECE, no CWR) answering our first
+                    // SYN, the only one that asked (RFC 3168 §6.1.1).
+                    c.ecn_ok = TCP_ECN && c.retx_count == 0
+                        && flags & (TCP_ECE | TCP_CWR) == TCP_ECE;
                     // The window of a SYN-ACK is never scaled (RFC 7323 §2.2).
                     c.remote_window = peer_win as u32;
                     c.last_activity = now;
@@ -3175,16 +3250,19 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                         c.ts_recent    = tsval;
                         c.ts_recent_at = now;
                     }
+                    // Both SYNs ECN-setup ones: ours, if it was the first.
+                    c.ecn_ok = TCP_ECN && c.retx_count == 0
+                        && flags & (TCP_ECE | TCP_CWR) == TCP_ECE | TCP_CWR;
                     // A SYN's window is never scaled (RFC 7323 §2.2).
                     c.remote_window = peer_win as u32;
                     // The SynRcvd retry timer resends the SYN-ACK from here.
                     c.retx_time  = now;
                     c.retx_count = 0;
                     c.last_activity = now;
-                    (c.seq, c.ack, c.synack_offer(now))
+                    (c.seq, c.ack, (c.synack_offer(now), c.synack_flags()))
                 };
                 send_syn_segment(&mac, &ip, src_ip, dst_port, src_port,
-                                 TCP_SYN | TCP_ACK, iss, ack_n, offer);
+                                 offer.1, iss, ack_n, offer.0);
             }
             TcpState::SynRcvd if flags & TCP_ACK != 0 => {
                 // Client's ACK completing the 3-way handshake → Established.
@@ -3327,13 +3405,15 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                 if ack_ok {
                     process_ack(idx, &mac, &ip, ack_num, peer_win,
                                 payload.is_empty() && flags & (TCP_SYN | TCP_FIN) == 0,
-                                &data[TCP_HDR_MIN..off], ts_in.map(|t| t.1), now);
+                                &data[TCP_HDR_MIN..off], ts_in.map(|t| t.1),
+                                flags & TCP_ECE != 0, now);
                 }
 
                 // --- Payload processing with OOO reassembly (F01) ---
+                let marked = ecn_note(idx, flags, ce);
                 process_inbound_payload(idx, &mac, &ip,
                                         seq, payload, expected_ack, rcv_wnd, fin,
-                                        flags & TCP_PSH != 0, now);
+                                        flags & TCP_PSH != 0, marked, now);
 
                 // --- FIN handling ---
                 if flags & TCP_FIN != 0 {
@@ -3383,9 +3463,10 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     let t = TCP.lock();
                     (t.conns[idx].ack, t.conns[idx].rcv_wnd_max())
                 };
+                let marked = ecn_note(idx, flags, ce);
                 process_inbound_payload(idx, &mac, &ip,
                                         seq, payload, expected_ack, rcv_wnd, fin,
-                                        flags & TCP_PSH != 0, now);
+                                        flags & TCP_PSH != 0, marked, now);
                 ack_data_in_fin_state(idx, &mac, &ip, seq, ack_num, flags, peer_win,
                                       payload.len(), expected_ack, rcv_wnd,
                                       &data[TCP_HDR_MIN..off], ts_in.map(|t| t.1), now);
@@ -3452,9 +3533,10 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     let t = TCP.lock();
                     (t.conns[idx].ack, t.conns[idx].rcv_wnd_max())
                 };
+                let marked = ecn_note(idx, flags, ce);
                 process_inbound_payload(idx, &mac, &ip,
                                         seq, payload, expected_ack, rcv_wnd,
-                                        flags & TCP_FIN != 0, flags & TCP_PSH != 0, now);
+                                        flags & TCP_FIN != 0, flags & TCP_PSH != 0, marked, now);
                 if flags & TCP_FIN != 0 {
                     let mut t = TCP.lock();
                     let c = &mut t.conns[idx];
@@ -3668,13 +3750,15 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                         c.ts_recent    = tsval;
                         c.ts_recent_at = now;
                     }
+                    // An ECN-setup SYN carries ECE and CWR (RFC 3168 §6.1.1).
+                    c.ecn_ok = TCP_ECN && flags & (TCP_ECE | TCP_CWR) == TCP_ECE | TCP_CWR;
                     let _ = listen_idx; // keep listener alive
-                    c.synack_offer(now)
+                    (c.synack_offer(now), c.synack_flags())
                 };
                 // Send SYN-ACK with MSS and whatever the SYN offered
                 let ack_n = { TCP.lock().conns[new_idx].ack };
                 send_syn_segment(&mac, &ip, src_ip, dst_port, src_port,
-                             TCP_SYN | TCP_ACK, our_seq, ack_n, offer);
+                             offer.1, our_seq, ack_n, offer.0);
                 // A listener's child left `Listen`/`Closed`: its SYN-ACK
                 // retransmission now needs `tcp_tick`.
                 timer_kick();
@@ -3725,10 +3809,10 @@ enum Resend {
 /// link that talks both ways is ordinary traffic.
 ///
 /// `tsecr`: the segment's Timestamps echo, the RTT sample of a connection that
-/// negotiated them (RFC 7323 §4).
+/// negotiated them (RFC 7323 §4). `ece`: it carried ECN-Echo (RFC 3168).
 fn process_ack(
     idx: usize, mac: &[u8; 6], ip: &IpAddr, ack_num: u32, peer_win: u16,
-    dup_candidate: bool, opts: &[u8], tsecr: Option<u32>, now: u64,
+    dup_candidate: bool, opts: &[u8], tsecr: Option<u32>, ece: bool, now: u64,
 ) {
     let resend = {
         let mut t = TCP.lock();
@@ -3878,6 +3962,20 @@ fn process_ack(
         } else {
             Resend::None
         };
+
+        // RFC 3168 §6.1.2: an echo of a mark on data we sent after the last
+        // reaction (the ACK covers past `ecn_recover`) halves the window, as
+        // a loss would, once per window of data and not again while a loss
+        // recovery has already cut it; CWR on the next new segment tells the
+        // receiver to stop echoing.
+        if ece && c.ecn_ok && seq_lt(c.ecn_recover, ack) {
+            c.ecn_recover = c.seq;
+            c.ecn_cwr     = true;
+            if matches!(c.recovery, Recovery::Open | Recovery::PathMtu) {
+                c.ssthresh = (c.flight() / 2).max(2 * smss);
+                c.cwnd     = c.cwnd.min(c.ssthresh);
+            }
+        }
 
         // RFC 6675 §5, after the cumulative part of the ACK: DupAcks was
         // cleared above if SND.UNA advanced, and an ACK carrying new SACK
@@ -4050,8 +4148,9 @@ fn retransmit(idx: usize, mac: &[u8; 6], ip: &IpAddr, resend: Resend) {
         };
         // Live window, same reason as `send_data`: a retransmission carrying
         // the constant would reopen a window we had already closed.
-        send_segment_with_window(mac, ip, &rip, lp, rp, TCP_ACK, seq, ack, &buf[..len], win,
-                                 opts.get());
+        // Not-ECT: a retransmission is never marked (RFC 3168 §6.1.5).
+        send_segment_with_window(mac, ip, &rip, lp, rp, TCP_ACK | opts.flags, seq, ack,
+                                 &buf[..len], win, opts.get(), 0);
     }
 }
 
@@ -4296,7 +4395,21 @@ fn ack_data_in_fin_state(
     if !segment_acceptable(seq, payload_len + fin as usize, expected_ack, rcv_wnd) { return; }
     if !ack_acceptable(ack_num, snd_una, snd_nxt.wrapping_add(1)) { return; }
     process_ack(idx, mac, ip, ack_num, peer_win,
-                payload_len == 0 && !fin && flags & TCP_SYN == 0, opts, tsecr, now);
+                payload_len == 0 && !fin && flags & TCP_SYN == 0, opts, tsecr,
+                flags & TCP_ECE != 0, now);
+}
+
+/// RFC 3168 §6.1.3, the receiving half, for an acceptable segment: CWR ends
+/// the echo of the marks before it, a CE mark starts one. Whether the segment
+/// was marked on a connection that negotiated ECN: its ACK then leaves at
+/// once.
+fn ecn_note(idx: usize, flags: u8, ce: bool) -> bool {
+    let mut t = TCP.lock();
+    let c = &mut t.conns[idx];
+    if !c.ecn_ok { return false; }
+    if flags & TCP_CWR != 0 { c.ecn_echo = false; }
+    if ce { c.ecn_echo = true; }
+    ce
 }
 
 /// RFC 7323 §5.3 on a segment of a connection that negotiated Timestamps:
@@ -4351,7 +4464,8 @@ fn send_invalid_ack(idx: usize, mac: &[u8; 6], ip: &IpAddr, now: u64) {
     };
     #[cfg(feature = "qemu")]
     trace_tx(lp, &rip, rp, TCP_ACK, seq_n, ack_n, &[]);
-    send_segment_opts(mac, ip, &rip, lp, rp, TCP_ACK, seq_n, ack_n, win, opts.get(), &[]);
+    send_segment_opts(mac, ip, &rip, lp, rp, TCP_ACK | opts.flags, seq_n, ack_n, win,
+                      opts.get(), &[], 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -4551,10 +4665,10 @@ fn sack_option(c: &TcpConn, out: &mut [u8], max_blocks: usize) -> usize {
 fn send_segment_with_window(
     our_mac: &[u8; 6], our_ip: &IpAddr, dst_ip: &IpAddr,
     src_port: u16, dst_port: u16, flags: u8,
-    seq: u32, ack: u32, data: &[u8], window: u16, opts: &[u8],
+    seq: u32, ack: u32, data: &[u8], window: u16, opts: &[u8], ecn: u8,
 ) -> i32 {
     send_segment_opts(our_mac, our_ip, dst_ip, src_port, dst_port,
-                      flags, seq, ack, window, opts, data)
+                      flags, seq, ack, window, opts, data, ecn)
 }
 
 /// Build and send one segment. Every TCP header this stack emits is written
@@ -4564,10 +4678,12 @@ fn send_segment_with_window(
 /// padded to whole 32-bit words: `data_off` counts words, and the receiver
 /// finds the payload by it. A data segment's options are already counted in
 /// the size its caller cut it to (`TcpConn::smss`), so it still fits the MTU.
+/// `ecn` goes into the IP header's ECN field: `ip::ECN_ECT0` for new data of a
+/// connection that negotiated ECN, 0 for everything else (RFC 3168 §6.1.4-6).
 fn send_segment_opts(
     our_mac: &[u8; 6], our_ip: &IpAddr, dst_ip: &IpAddr,
     src_port: u16, dst_port: u16, flags: u8,
-    seq: u32, ack: u32, window: u16, opts: &[u8], data: &[u8],
+    seq: u32, ack: u32, window: u16, opts: &[u8], data: &[u8], ecn: u8,
 ) -> i32 {
     if opts.len() > TCP_OPT_MAX || opts.len() % 4 != 0 { return -1; }
     let hdr_len = TCP_HDR_MIN + opts.len();
@@ -4602,10 +4718,10 @@ fn send_segment_opts(
         // with Fragmentation Needed (`icmp_frag_needed`) or, if it says nothing,
         // shows up as a black hole in `tcp_tick`.
         (IpAddr::V4(src), IpAddr::V4(dst)) =>
-            ip::send(our_mac, src, dst, ip::IP_PROTO_TCP, &buf[..tcp_len]),
+            ip::send_ecn(our_mac, src, dst, ip::IP_PROTO_TCP, &buf[..tcp_len], ecn),
         // IPv6 never fragments in the network; the MSS above already kept the
         // segment inside the MTU.
-        (IpAddr::V6(src), IpAddr::V6(dst)) => ipv6::tcp_send(src, dst, &buf[..tcp_len]),
+        (IpAddr::V6(src), IpAddr::V6(dst)) => ipv6::tcp_send(src, dst, &buf[..tcp_len], ecn),
         _ => -1,
     }
 }
@@ -4865,7 +4981,8 @@ fn tcp_timers() {
                 }
                 // Re-send our SYN (active open) or SYN-ACK (passive open).
                 // `conn_seq` is still the ISS in both states: it is only
-                // advanced on the transition to Established.
+                // advanced on the transition to Established. A SYN retry asks
+                // for no ECN (`ECN_SETUP_SYN`).
                 // The retry repeats the first transmission's options exactly:
                 // a SYN-ACK retransmission that dropped Window Scale would
                 // leave the peer scaling windows we read unscaled.
@@ -4875,7 +4992,7 @@ fn tcp_timers() {
                     if state == TcpState::SynSent {
                         (TCP_SYN, 0, SynOffer::all(c.ts_val(now)))
                     } else {
-                        (TCP_SYN | TCP_ACK, ack_val, c.synack_offer(now))
+                        (c.synack_flags(), ack_val, c.synack_offer(now))
                     }
                 };
                 send_syn_segment(&mac, &lip, &rip, lp, rp, syn_flags, conn_seq, syn_ack, offer);
@@ -4975,8 +5092,9 @@ fn tcp_timers() {
                 // which RFC 793 wants and this stack does not yet do. Using
                 // `fin_seq` is what makes that change safe to land later.
                 let fin_seq = { TCP.lock().conns[idx].fin_seq };
-                send_segment(&mac, &lip, &rip, lp, rp, TCP_FIN | TCP_ACK,
-                             fin_seq, ack_val, &[], our_win, opts().get());
+                let o = opts();
+                send_segment(&mac, &lip, &rip, lp, rp, TCP_FIN | TCP_ACK | o.flags,
+                             fin_seq, ack_val, &[], our_win, o.get());
                 let mut t = TCP.lock();
                 t.conns[idx].retx_time  = now;
                 t.conns[idx].retx_count = t.conns[idx].retx_count.saturating_add(1);
@@ -5035,9 +5153,10 @@ fn tcp_timers() {
                     continue;
                 }
                 let seq_val = { TCP.lock().conns[idx].seq.wrapping_sub(1) };
-                send_segment_with_window(&mac, &lip, &rip, lp, rp, TCP_ACK,
+                let o = opts();
+                send_segment_with_window(&mac, &lip, &rip, lp, rp, TCP_ACK | o.flags,
                                          seq_val, ack_val, &[],
-                                         our_win, opts().get());
+                                         our_win, o.get(), 0);
                 let mut t = TCP.lock();
                 t.conns[idx].persist_time  = now;
                 t.conns[idx].persist_ticks =
@@ -5135,9 +5254,11 @@ fn tcp_timers() {
             };
 
             // Live window, as in `send_data` and the ACK-driven retransmissions.
+            // Not-ECT: a retransmission is never marked (RFC 3168 §6.1.5).
+            let o = opts();
             send_segment_with_window(&mac, &lip, &rip, lp, rp,
-                         TCP_ACK, retx_seq, ack_val, &retx_copy[..retx_len],
-                         our_win, opts().get());
+                         TCP_ACK | o.flags, retx_seq, ack_val, &retx_copy[..retx_len],
+                         our_win, o.get(), 0);
             continue;
         }
 
@@ -5185,8 +5306,9 @@ fn tcp_timers() {
                     let t = TCP.lock();
                     t.conns[idx].seq.wrapping_sub(1)
                 };
-                send_segment(&mac, &lip, &rip, lp, rp, TCP_ACK, seq_val, ack_val, &[], our_win,
-                             opts().get());
+                let o = opts();
+                send_segment(&mac, &lip, &rip, lp, rp, TCP_ACK | o.flags, seq_val, ack_val, &[],
+                             our_win, o.get());
 
                 let mut t = TCP.lock();
                 t.conns[idx].keepalive_probes = t.conns[idx].keepalive_probes.saturating_add(1);
@@ -5226,6 +5348,8 @@ pub struct Negotiated {
     pub sack:   bool,
     /// Both SYNs carried Timestamps.
     pub ts:     bool,
+    /// The SYN asked for ECN and the SYN-ACK agreed (RFC 3168 §6.1.1).
+    pub ecn:    bool,
 }
 
 /// What this connection's handshake negotiated ([`Negotiated`]).
@@ -5237,12 +5361,13 @@ pub struct Negotiated {
 pub(crate) fn conn_negotiated(r: impl Into<Ref>) -> Negotiated {
     let r = r.into();
     let t = TCP.lock();
-    if !t.live(r) { return Negotiated { wscale: None, sack: false, ts: false }; }
+    if !t.live(r) { return Negotiated { wscale: None, sack: false, ts: false, ecn: false }; }
     let c = &t.conns[r.idx];
     Negotiated {
         wscale: if c.wscale_ok { Some((c.snd_wscale, c.rcv_wscale)) } else { None },
         sack:   c.sack_ok,
         ts:     c.ts_ok,
+        ecn:    c.ecn_ok,
     }
 }
 
@@ -5423,7 +5548,7 @@ fn send_syn_segment(
     // RFC 7323 §2.2: the window of a segment carrying SYN is never scaled,
     // whatever shift this same segment offers.
     send_segment_opts(our_mac, our_ip, dst_ip, src_port, dst_port,
-                      flags, seq, ack, TCP_WINDOW_SIZE, &opts[..n], &[])
+                      flags, seq, ack, TCP_WINDOW_SIZE, &opts[..n], &[], 0)
 }
 /// Answer a segment that belongs to no connection, per RFC 793 §3.4.
 ///
@@ -5727,7 +5852,7 @@ fn send_segment(
     trace_tx(src_port, dst_ip, dst_port, flags, seq, ack, data);
 
     send_segment_opts(our_mac, our_ip, dst_ip, src_port, dst_port,
-                      flags, seq, ack, window, opts, data)
+                      flags, seq, ack, window, opts, data, 0)
 }
 
 /// Sensor-pump (#39) trace probe: log an outbound TCP segment.

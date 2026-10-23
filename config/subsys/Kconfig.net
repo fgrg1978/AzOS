@@ -30,9 +30,9 @@ config TCP_BUF_SIZE
 
       Per profile: 131072 (128 KiB) for edge and embedded, 16384 (16 KiB)
       for fleet.  One connection is size_of::<TcpConn>() =
-      2 × TCP_BUF_SIZE + 6,160 B, and the table of TCP_MAX_CONNS of them
-      is static (.bss): 8 × 268,304 B for edge, 4 × 268,304 B for
-      embedded, 1024 × 38,928 B = 38.0 MiB for fleet (262 MiB at 131072).
+      2 × TCP_BUF_SIZE + 6,168 B, and the table of TCP_MAX_CONNS of them
+      is static (.bss): 8 × 268,312 B for edge, 4 × 268,312 B for
+      embedded, 1024 × 38,936 B = 38.0 MiB for fleet (262 MiB at 131072).
       Larger rings improve throughput
       on high-latency links (BDP = RTT × bandwidth).
 
@@ -181,13 +181,35 @@ config TCP_TIMESTAMPS
         in the window after the sequence space wraps (4 GiB of traffic).
       Linux, FreeBSD, Windows and Apple turn it on by default.
 
-      Cost when set: 20 B per connection (.bss); 12 B of every segment of
+      Cost when set: 24 B per connection (.bss); 12 B of every segment of
       a negotiated connection, taken out of its payload (1448 of 1460 B),
       and one option walk per inbound segment. SACK blocks share the 40
       option bytes with it: at most three per ACK instead of four, and the
       out-of-order queue holds at most three segments so that every one is
       reported. Off: no SYN offers it and a SYN that does is answered
       without it. The same on riscv64, aarch64 and x86_64.
+
+config TCP_ECN
+    bool "TCP Explicit Congestion Notification (RFC 3168)"
+    default y
+    help
+      Our SYN asks for ECN (ECE and CWR), a SYN that asks for it is agreed
+      to, and on a connection where both ends did
+      (crates/net/net/src/tcp.rs):
+      - new data leaves ECT(0), so a router may mark it (CE) instead of
+        dropping it; SYNs, pure ACKs, retransmissions and probes leave
+        Not-ECT (RFC 3168 §6.1.4-6.1.6);
+      - a CE mark is echoed (ECE) on every segment until the sender says
+        it reacted (CWR), and its ACK leaves at once;
+      - an echo halves the congestion window, as a loss would, at most once
+        per window of data and not again inside a loss recovery.
+      A SYN retry asks for no ECN, so a path that drops ECN-setup SYNs
+      still connects (§6.1.1.1). Linux answers ECN by default and asks for
+      it where configured; Apple asks.
+
+      Cost when set: 8 B per connection (.bss); a compare per inbound
+      segment. Off: no SYN asks for ECN and none is agreed to. The same on
+      riscv64, aarch64 and x86_64.
 
 config NET_WAIT_SLOTS
     int "Tasks that can wait on one kind of network event at once"

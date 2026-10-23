@@ -135,12 +135,12 @@ pub fn build_header_with_options(
     options:  &[u8],
     data_len: u16,
 ) -> usize {
-    build_header_flags(buf, proto, src, dst, options, data_len, 0)
+    build_header_flags(buf, proto, src, dst, options, data_len, 0, 0)
 }
 
 /// [`build_header_with_options`] with Don't Fragment set when `flags` carries
-/// `IP_FLAG_DF`. Nothing else of `flags` is written: this stack never sends a
-/// fragment, so MF and the offset stay 0.
+/// `IP_FLAG_DF`, and `ecn` in the ECN field. Nothing else of `flags` is
+/// written: this stack never sends a fragment, so MF and the offset stay 0.
 fn build_header_flags(
     buf:      &mut [u8],
     proto:    u8,
@@ -149,6 +149,7 @@ fn build_header_flags(
     options:  &[u8],
     data_len: u16,
     flags:    u16,
+    ecn:      u8,
 ) -> usize {
     if options.len() % 4 != 0 || options.len() > IP_OPTS_MAX { return 0; }
     let hlen = IpHdr::MIN_SIZE + options.len();
@@ -162,7 +163,7 @@ fn build_header_flags(
     let id    = IP_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     buf[0]  = 0x40 | (hlen / 4) as u8;       // version=4, IHL in 32-bit words
-    buf[1]  = 0;
+    buf[1]  = ecn;                           // DSCP 0, ECN field (RFC 3168 §5)
     let tl  = total.to_be_bytes();
     buf[2]  = tl[0];
     buf[3]  = tl[1];
@@ -281,8 +282,30 @@ pub fn send(
     proto:    u8,
     payload:  &[u8],
 ) -> i32 {
+    send_ecn(our_mac, our_ip, dst_ip, proto, payload, 0)
+}
+
+/// ECN field value ECT(0) (RFC 3168 §5): the sender's transport reacts to
+/// congestion marks, so a router may mark this packet instead of dropping it.
+pub const ECN_ECT0: u8 = 0b10;
+/// ECN field value CE: a router marked the packet (RFC 3168 §5).
+pub const ECN_CE: u8 = 0b11;
+/// The ECN field, the low two bits of the old TOS octet.
+pub const ECN_MASK: u8 = 0b11;
+
+/// [`send`] with `ecn` in the header's ECN field (RFC 3168 §5): TCP's
+/// [`ECN_ECT0`] on the data of a connection that negotiated ECN, 0 (Not-ECT)
+/// otherwise. DSCP stays 0.
+pub fn send_ecn(
+    our_mac:  &[u8; 6],
+    our_ip:   &[u8; 4],
+    dst_ip:   &[u8; 4],
+    proto:    u8,
+    payload:  &[u8],
+    ecn:      u8,
+) -> i32 {
     let flags = if proto == IP_PROTO_TCP { IP_FLAG_DF } else { 0 };
-    send_flags(our_mac, our_ip, dst_ip, proto, &[], payload, flags)
+    send_flags(our_mac, our_ip, dst_ip, proto, &[], payload, flags, ecn & ECN_MASK)
 }
 
 /// [`send`] with IPv4 header options, already padded to a 32-bit boundary
@@ -299,7 +322,7 @@ pub fn send_with_options(
     options:  &[u8],
     payload:  &[u8],
 ) -> i32 {
-    send_flags(our_mac, our_ip, dst_ip, proto, options, payload, 0)
+    send_flags(our_mac, our_ip, dst_ip, proto, options, payload, 0, 0)
 }
 
 fn send_flags(
@@ -310,6 +333,7 @@ fn send_flags(
     options:  &[u8],
     payload:  &[u8],
     flags:    u16,
+    ecn:      u8,
 ) -> i32 {
     if options.len() % 4 != 0 || options.len() > IP_OPTS_MAX { return -1; }
     let hdr_len   = IpHdr::MIN_SIZE + options.len();
@@ -332,7 +356,7 @@ fn send_flags(
     if ETH_HDR + total_len > frame.len() { return -1; }
     let ip_payload = &mut frame[ETH_HDR..];
     if build_header_flags(&mut ip_payload[..hdr_len], proto, our_ip, dst_ip,
-                          options, payload.len() as u16, flags) != hdr_len {
+                          options, payload.len() as u16, flags, ecn) != hdr_len {
         return -1;
     }
     ip_payload[hdr_len..total_len].copy_from_slice(payload);
@@ -1320,7 +1344,8 @@ pub fn handle(payload: &[u8], our_mac: &[u8; 6], our_ip: &[u8; 4]) {
         IP_PROTO_ICMP => handle_icmp(&hdr.src, &hdr.dst, data, our_mac, our_ip),
         super::igmp::IP_PROTO_IGMP => super::igmp::handle(data),
         IP_PROTO_UDP  => super::udp::handle_checked(&hdr.src, &hdr.dst, data),
-        IP_PROTO_TCP  => super::tcp::handle_checked(&hdr.src, &hdr.dst, data),
+        IP_PROTO_TCP  => super::tcp::handle_checked_ce(&hdr.src, &hdr.dst, data,
+                                                       hdr.dscp_ecn & ECN_MASK == ECN_CE),
         _             => {}
     }
 }

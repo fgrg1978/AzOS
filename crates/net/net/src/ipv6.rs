@@ -640,7 +640,12 @@ pub fn ipv6_rx(frame: &[u8], frame_len: usize) {
     match next_hdr {
         NEXTHDR_ICMPV6 => { icmpv6_rx(src, dst, payload); }
         NEXTHDR_UDP    => { super::udp::udpv6_rx(src, dst, payload); }
-        NEXTHDR_TCP    => { super::tcp::handle_checked_v6(src, dst, payload); }
+        // The ECN field is the low two bits of the Traffic Class (RFC 3168 §5,
+        // RFC 8200 §7): bits 4..5 of the header's second octet.
+        NEXTHDR_TCP    => {
+            let ce = (frame[1] >> 4) & super::ip::ECN_MASK == super::ip::ECN_CE;
+            super::tcp::handle_checked_v6(src, dst, payload, ce);
+        }
         _ => {}
     }
 }
@@ -902,11 +907,14 @@ pub fn icmpv6_send_error(src: &[u8; 16], dst: &[u8; 16], kind: u8, code: u8, inv
 /// already filled) from `src` to `dst`. `0` when the frame was handed to the
 /// driver, `-1` otherwise — the convention `ip::send` has, which TCP's send
 /// path relies on to know whether the bytes left.
-pub fn tcp_send(src: &[u8; 16], dst: &[u8; 16], segment: &[u8]) -> i32 {
+pub fn tcp_send(src: &[u8; 16], dst: &[u8; 16], segment: &[u8], ecn: u8) -> i32 {
     let frame_len = ETH_HDR_LEN + IPV6_HDR_SIZE + segment.len();
     let mut frame = [0u8; super::ethernet::ETH_FRAME_MAX];
     if frame_len > frame.len() { return -1; }
     ipv6_build_header(&mut frame[ETH_HDR_LEN..], NEXTHDR_TCP, src, dst, segment.len() as u16);
+    // ECN in the Traffic Class's low bits (RFC 3168 §5): `ip::ECN_ECT0` on the
+    // data of a connection that negotiated it.
+    frame[ETH_HDR_LEN + 1] |= (ecn & super::ip::ECN_MASK) << 4;
     frame[ETH_HDR_LEN + IPV6_HDR_SIZE..frame_len].copy_from_slice(segment);
     if emit(&mut frame, frame_len, dst) { 0 } else { -1 }
 }

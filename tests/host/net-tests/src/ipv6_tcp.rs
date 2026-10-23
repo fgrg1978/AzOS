@@ -630,7 +630,7 @@ fn off_link_traffic_goes_to_the_router_and_local_traffic_does_not() {
     assert_eq!(out[0].dst_mac, ROUTER_MAC, "off-link: to the default router");
     assert_eq!(out[0].src, our_global());
     assert_eq!(out[0].dst, far);
-    assert_eq!(out[0].tcp_flags(), SYN);
+    assert_eq!(out[0].tcp_flags() & !(0x40 | 0x80), SYN, "a SYN, ECN-setup or not");
     assert_eq!(out[0].mss(), Some(1440));
     assert_eq!(ref_checksum(&out[0].src, &out[0].dst, 6, &out[0].payload), 0);
 

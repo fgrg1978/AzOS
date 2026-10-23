@@ -1700,17 +1700,17 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
 
         /// One line per side stating what the handshake negotiated, asserted
         /// by `tools/net_pair_smoke.sh`. A 256-byte round trip passes whether
-        /// or not Window Scale, SACK-Permitted and Timestamps were agreed, so
+        /// or not Window Scale, SACK-Permitted, Timestamps and ECN were agreed, so
         /// without this line the negotiation has no QEMU coverage at all.
         fn report_opts(fd: i32) {
             match azos_net::socket_tcp_conn(fd) {
                 Some(h) => {
                     let n = h.negotiated();
                     match n.wscale {
-                        Some((snd, rcv)) => kprintln!("[NETSMOKE] opts wscale={}/{} sack={} ts={}",
-                                                      snd, rcv, n.sack as u8, n.ts as u8),
-                        None => kprintln!("[NETSMOKE] opts wscale=none sack={} ts={}",
-                                          n.sack as u8, n.ts as u8),
+                        Some((snd, rcv)) => kprintln!("[NETSMOKE] opts wscale={}/{} sack={} ts={} ecn={}",
+                                                      snd, rcv, n.sack as u8, n.ts as u8, n.ecn as u8),
+                        None => kprintln!("[NETSMOKE] opts wscale=none sack={} ts={} ecn={}",
+                                          n.sack as u8, n.ts as u8, n.ecn as u8),
                     }
                 }
                 None => kprintln!("[NETSMOKE] opts no-connection"),

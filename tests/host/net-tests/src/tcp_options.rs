@@ -313,7 +313,8 @@ fn an_active_open_offers_both_options_in_a_syn_whose_window_is_not_scaled() {
     wire::clear_sent();
     assert!(tcp::connect(PEER_IP, 7810, 45010) >= 0);
     let syn = last();
-    assert_eq!(syn.flags, SYN, "expected a bare SYN");
+    // ECE and CWR besides (an ECN-setup SYN, `tcp_ecn`), nothing else.
+    assert_eq!(syn.flags & !(0x40 | 0x80), SYN, "expected a SYN without ACK, FIN, RST or PSH");
     assert_eq!(option(&syn.opts, OPT_MSS), Some(1460u16.to_be_bytes().to_vec()));
     assert_eq!(option(&syn.opts, OPT_WSCALE), Some(vec![OUR_WSCALE]),
         "the SYN must offer the shift that covers the {TCP_BUF_SIZE}-byte ring");
@@ -326,15 +327,15 @@ fn an_active_open_offers_both_options_in_a_syn_whose_window_is_not_scaled() {
 /// A connection is its two rings, each `TCP_BUF_SIZE` bytes from `.config`, and
 /// a fixed amount of state, so the static table follows the configured size
 /// byte for byte. `STATE` was measured on 2026-09-14 (6,088 B) and grew by 24 B in wave 15 (delayed-ACK state, N6) and by 24 B for the IPv6
-/// endpoint addresses (`tcp::IpAddr`), and by 24 B for Timestamps (RFC 7323): 268,304 B per connection
-/// at 131072 (edge, embedded) and 38,928 B at 16384 (fleet), the figures
+/// endpoint addresses (`tcp::IpAddr`), by 24 B for Timestamps (RFC 7323) and by 8 B for ECN (RFC 3168): 268,312 B per connection
+/// at 131072 (edge, embedded) and 38,936 B at 16384 (fleet), the figures
 /// `config/limits/Kconfig.limits` quotes. `STATE` is exact on purpose:
 /// whoever adds or resizes a `TcpConn` field updates it here, together with
 /// those figures in `config/limits/Kconfig.limits` (also quoted in
 /// `config/subsys/Kconfig.net`).
 #[test]
 fn a_connection_is_two_rings_of_the_configured_size_plus_fixed_state() {
-    const STATE: usize = 6_160;
+    const STATE: usize = 6_168;
     let one = core::mem::size_of::<tcp::TcpConn>();
     println!(
         "[tcp-size] TCP_BUF_SIZE {TCP_BUF_SIZE} B: size_of::<TcpConn>() = {one} B, \
@@ -362,7 +363,8 @@ fn the_offered_shift_and_the_syn_window_follow_the_configured_ring() {
     wire::clear_sent();
     assert!(tcp::connect(PEER_IP, 7990, 45190) >= 0, "no free connection slot to dial out");
     let syn = last();
-    assert_eq!(syn.flags, SYN, "expected a bare SYN");
+    // ECE and CWR besides (an ECN-setup SYN, `tcp_ecn`), nothing else.
+    assert_eq!(syn.flags & !(0x40 | 0x80), SYN, "expected a SYN without ACK, FIN, RST or PSH");
     assert_eq!(option(&syn.opts, OPT_WSCALE), Some(vec![shift]),
         "a {TCP_BUF_SIZE}-byte ring: the SYN must offer shift {shift}");
     assert_eq!(syn.window, window,

@@ -150,12 +150,13 @@ i=0; while [ $i -lt $((WAIT_SECS * 4)) ]; do
 done
 
 # The handshake options. Only here are both ends this stack: slirp parses the
-# MSS and nothing else, so every other boot runs without Window Scale, SACK and
-# Timestamps and a round trip passes either way. Each side prints what its
+# MSS and nothing else, so every other boot runs without Window Scale, SACK,
+# Timestamps and ECN and a round trip passes either way. Each side prints what its
 # connection agreed. Shift 1 is `RCV_WSCALE` for the 128 KiB receive ring
 # (`crates/net/net/src/tcp.rs`); the value is pinned, not just the option's
-# presence. Timestamps: Kconfig TCP_TIMESTAMPS, on in the image this boots.
-OPTS="NETSMOKE] opts wscale=1/1 sack=1 ts=1"
+# presence. Timestamps and ECN: Kconfig TCP_TIMESTAMPS and TCP_ECN, on in the
+# image this boots.
+OPTS="NETSMOKE] opts wscale=1/1 sack=1 ts=1 ecn=1"
 if [ "$verdict" = "pass" ]; then
     i=0; while [ $i -lt 20 ]; do
         has "$OPTS" "$SRV_LOG" && has "$OPTS" "$CLI_LOG" && break
@@ -173,7 +174,7 @@ echo
 
 case "$verdict" in
     pass)
-        echo "[net-pair] PASS — payload round-tripped intact, Window Scale, SACK and Timestamps negotiated"
+        echo "[net-pair] PASS — payload round-tripped intact, Window Scale, SACK, Timestamps and ECN negotiated"
         exit 0 ;;
     opts)
         echo "[net-pair] FAIL — round trip passed, but a side did not report '$OPTS'" >&2

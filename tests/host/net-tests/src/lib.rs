@@ -567,6 +567,11 @@ mod tcp_options;
 #[cfg(test)]
 mod tcp_timestamps;
 
+/// Explicit Congestion Notification (RFC 3168): the handshake, ECT(0) on new
+/// data, the receiver's echo until CWR, the sender's once-per-window reaction.
+#[cfg(test)]
+mod tcp_ecn;
+
 /// The send window, congestion control and loss recovery, and the RFC 793
 /// replies around a connection; and a simulated link between two endpoints
 /// that measures what the window delivers per round trip.
