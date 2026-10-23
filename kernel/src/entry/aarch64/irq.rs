@@ -145,6 +145,19 @@ pub(crate) fn kernel_line_bottom_half(intid: u32) {
     }
 }
 
+/// What the profiler (Kconfig `PROFILER`) samples of the interrupted code,
+/// for the tick and the PMU's overflow alike. A kernel-mode interrupt's stack
+/// pointer is just above its frame.
+fn interrupted(frame: &TrapFrame) -> crate::prof::Interrupted {
+    let user = frame.came_from_user();
+    crate::prof::Interrupted {
+        pc: frame.elr_el1 as usize,
+        fp: frame.regs[29] as usize,
+        sp: if user { frame.sp_el0 as usize } else { core::ptr::from_ref(frame) as usize + core::mem::size_of::<TrapFrame>() },
+        user,
+    }
+}
+
 /// GICv3 dispatch for a real IRQ (vector `VEC_IRQ_CURRENT_EL_SP0` or
 /// `VEC_IRQ_LOWER_EL`) — tasks 2/3. Runs on this hart's dedicated IRQ
 /// stack: `_trap_common` in `trap_entry.S` switches `sp` before calling
@@ -217,6 +230,18 @@ fn handle_irq(_frame: &mut TrapFrame) {
         return;
     }
 
+    // The PMU's overflow PPI (Kconfig PROFILER_PMU; 0 when the DTB names
+    // none, and no INTID that reaches here is 0): the profiler's sampling
+    // counter. Level on PMOVSSET_EL0 & PMINTENSET_EL1, so `on_overflow`
+    // clears the counter's overflow flag before the EOI, as the timer re-arms
+    // before its own.
+    let pmu = azos_arch::pmu::irq();
+    if intid == pmu && pmu != 0 {
+        crate::prof::on_overflow(|| interrupted(_frame));
+        azos_arch::irq::gic::eoir1(intid);
+        return;
+    }
+
     // A kernel line the IRQ thread serves (Kconfig IRQ_THREADED,
     // `irq_thread::deferred`: the PL011, a virtio device): delivered like a
     // ring-3 SPI, mask-until-ACK. Masked at the distributor, EOId, queued to
@@ -252,17 +277,8 @@ fn handle_irq(_frame: &mut TrapFrame) {
     }
 
     if intid == INTID_EL1_VIRT_TIMER {
-        // The sampling profiler (Kconfig `PROFILER`): the interrupted code. A
-        // kernel-mode interrupt's stack pointer is just above its frame.
-        crate::prof::on_tick(|| {
-            let user = _frame.came_from_user();
-            crate::prof::Interrupted {
-                pc: _frame.elr_el1 as usize,
-                fp: _frame.regs[29] as usize,
-                sp: if user { _frame.sp_el0 as usize } else { core::ptr::from_ref(&*_frame) as usize + core::mem::size_of::<TrapFrame>() },
-                user,
-            }
-        });
+        // The sampling profiler (Kconfig `PROFILER`): the interrupted code.
+        crate::prof::on_tick(|| interrupted(_frame));
         // Re-arm BEFORE EOI, not after. PPI 27 is level-triggered on
         // CNTV_CTL_EL0.ISTATUS, which stays asserted until CNTV_CVAL_EL0
         // moves past CNTVCT_EL0 — EOI only deactivates the GIC's record of

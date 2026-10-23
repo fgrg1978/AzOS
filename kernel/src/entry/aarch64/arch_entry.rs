@@ -130,6 +130,10 @@ impl ArchEntry for Entry {
         let rd_base = azos_arch::smp::secondary_init(crate::MAX_HARTS);
         gic::enable_ppi_at(rd_base, 0);
         gic::enable_ppi_at(rd_base, crate::entry::aarch64::TIMER_PPI_ENABLED);
+        // The PMU's overflow PPI, when the boot CPU found one (`pmu_irq`).
+        if azos_arch::pmu::irq() != 0 {
+            gic::enable_ppi_at(rd_base, azos_arch::pmu::irq());
+        }
         azos_arch::sysregs::enable_el0_cntvct();
         // This PE's own counters (`Pmu`, the tracer's cycle timestamps):
         // PMUv3 state is per PE.

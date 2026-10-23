@@ -2195,6 +2195,14 @@ pub(crate) fn isolated_cpu_mask() -> u64 {
     fairq::isolated_cpus()
 }
 
+/// The profiler (Kconfig `PROFILER_PMU`): is `cpu` a real-time CPU now, one
+/// of `isolcpus` or one holding real-time state ([`cpu_has_rt_state`])? Its
+/// overflow sampling is refused and its tick samples only the PC. Read
+/// unlocked, from the CPU's own tick and PMU interrupt.
+pub fn cpu_is_real_time(cpu: usize) -> bool {
+    (cpu < 64 && isolated_cpu_mask() >> cpu & 1 != 0) || cpu_has_rt_state(cpu)
+}
+
 /// CPU hotplug: move every ready task of `cpu`'s queue to another CPU, so the
 /// CPU can stop. Returns the number moved, or `Err(moved)` when it found a task
 /// pinned there (other than the CPU's own idle task): that task and the ones

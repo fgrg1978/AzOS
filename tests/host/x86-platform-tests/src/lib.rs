@@ -578,6 +578,12 @@ mod tests {
         assert_eq!(encode::tdcr(128), Some(0b1010));
         assert_eq!(encode::tdcr(3), None);
         assert_eq!(encode::svr(0xFF), 0x1FF);
+        // The performance-counter entry: fixed delivery (not NMI, mode 0b100)
+        // of the PMI vector, masked or not; at its own LVT offset.
+        assert_eq!(encode::lvt_perf(encode::PMI_VECTOR, false), 0x0000_00EE);
+        assert_eq!(encode::lvt_perf(encode::PMI_VECTOR, true), 0x0001_00EE);
+        assert_eq!(encode::lvt_perf(encode::PMI_VECTOR, false) & encode::LVT_DM_NMI, 0);
+        assert_eq!(encode::LAPIC_LVT_PERF, 0x340);
     }
 
     #[test]
@@ -602,10 +608,12 @@ mod tests {
         assert_eq!(encode::gsi_vector(base, 176), None); // would be 0xE0
         assert_eq!(encode::vector_gsi(base, 95), Some(47));
         assert_eq!(encode::vector_gsi(base, 47), None);
-        for v in [encode::TIMER_VECTOR, encode::CALL_VECTOR, encode::TLB_VECTOR,
-                  encode::RESCHED_VECTOR, encode::ERROR_VECTOR, encode::SPURIOUS_VECTOR] {
+        let system = [encode::PMI_VECTOR, encode::TIMER_VECTOR, encode::CALL_VECTOR, encode::TLB_VECTOR,
+                      encode::RESCHED_VECTOR, encode::ERROR_VECTOR, encode::SPURIOUS_VECTOR];
+        for (i, &v) in system.iter().enumerate() {
             assert!(v >= encode::SYSTEM_VECTOR_FLOOR);
             assert_eq!(encode::vector_gsi(base, v), None);
+            assert!(!system[..i].contains(&v), "vector {v:#x} is given twice");
         }
         assert_eq!(encode::SPURIOUS_VECTOR & 0xF, 0xF);
     }

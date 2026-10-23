@@ -10,6 +10,7 @@ use crate::*;
 use crate::trap::Kernel;
 #[cfg(feature = "hv")]
 use azos_arch::trap::INT_GUEST_EXTERNAL_S;
+use azos_arch::trap::INT_LCOF_S;
 
 /// Arm the boot hart's interrupt stack (its magic word and its entry in
 /// `AZOS_IRQ_STACK_BASE`).
@@ -329,6 +330,18 @@ pub(crate) fn handle_interrupt(frame: &mut TrapFrame, cause: usize) {
     });
 }
 
+/// What the profiler (Kconfig `PROFILER`) samples of the interrupted code,
+/// for the tick and the counter overflow alike.
+#[cfg(target_arch = "riscv64")]
+fn interrupted(frame: &TrapFrame) -> crate::prof::Interrupted {
+    crate::prof::Interrupted {
+        pc: frame.sepc as usize,
+        fp: frame.regs[8] as usize,
+        sp: frame.regs[2] as usize,
+        user: (frame.sstatus as usize) & cpu::SSTATUS_SPP == 0,
+    }
+}
+
 #[cfg(target_arch = "riscv64")]
 fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
     #[cfg(feature = "ipc-census")]
@@ -336,12 +349,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
     match cause {
         INT_TIMER_S => {
             // The sampling profiler (Kconfig `PROFILER`): the interrupted code.
-            crate::prof::on_tick(|| crate::prof::Interrupted {
-                pc: _frame.sepc as usize,
-                fp: _frame.regs[8] as usize,
-                sp: _frame.regs[2] as usize,
-                user: (_frame.sstatus as usize) & cpu::SSTATUS_SPP == 0,
-            });
+            crate::prof::on_tick(|| interrupted(_frame));
             #[cfg(feature = "console-splice-smoke")]
             console_splice_isr_print();
             // F16.2: measure timer ISR handler latency
@@ -445,6 +453,9 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                 }
             }
         }
+        // Sscofpmf's counter overflow (LCOFI): the profiler's sampling counter
+        // (Kconfig PROFILER_PMU), acknowledged and re-armed by `on_overflow`.
+        INT_LCOF_S => crate::prof::on_overflow(|| interrupted(_frame)),
         // A guest file a waiting vCPU armed has an identity pending: disarm
         // it and wake the thread (it enters the guest, whose `VSEIP` the
         // hardware raises from the file).

@@ -149,6 +149,10 @@ pub struct DtbInfo {
     /// Ssqosid (exact token): the `srmcfg` partition tag (RV_SSQOSID); the
     /// first of the two steps `azos_arch::ext::ssqosid::select` takes.
     pub isa_ssqosid: bool,
+    /// Sscofpmf (exact token): counter overflow and its interrupt
+    /// (RV_SSCOFPMF); the first of the two steps
+    /// `azos_arch::pmu::sscofpmf_select` takes.
+    pub isa_sscofpmf: bool,
     /// Base address of the S-domain APLIC, or 0 if
     /// none was found. `-machine virt,aia=aplic-imsic` has two
     /// `riscv,aplic` nodes: the M-domain root (has `riscv,children`,
@@ -204,6 +208,7 @@ impl DtbInfo {
             isa_d: false,
             isa_h: false,
             isa_ssqosid: false,
+            isa_sscofpmf: false,
             aplic_base: 0,
             aplic_num_sources: 0,
             imsic_base: 0,
@@ -974,6 +979,7 @@ impl Walker {
                 self.info.isa_d |= isa_prop_has_letter(prop, list, b'd');
                 self.info.isa_h |= isa_prop_has_letter(prop, list, b'h');
                 self.info.isa_ssqosid |= isa_prop_has_token(prop, list, b"ssqosid");
+                self.info.isa_sscofpmf |= isa_prop_has_token(prop, list, b"sscofpmf");
                 return true;
             }
 
@@ -1667,6 +1673,85 @@ pub fn decode_gic_spi(cells: Option<[u32; 3]>) -> Option<(u32, bool)> {
         _ => return None,
     };
     Some((32 + num, edge))
+}
+
+/// Decode the first 3-cell GIC specifier of a PMU node's `interrupts` into
+/// its INTID, when it is a PPI (type 1, number 0..=15: INTID `16 + n`). The
+/// PMU's overflow interrupt is per PE; a PMU wired to SPIs (one per CPU,
+/// with `interrupt-affinity`) or to another controller (a 1- or 2-cell
+/// specifier) is not decoded here. `len` is the property's length in bytes.
+pub fn decode_gic_ppi(len: usize, cells: [u32; 3]) -> Option<u32> {
+    let [ty, num, _flags] = cells;
+    if len < 12 || len % 12 != 0 || ty != 1 || num > 15 {
+        return None;
+    }
+    Some(16 + num)
+}
+
+/// The PMU's overflow interrupt (a GIC PPI INTID) from the first enabled
+/// node whose `compatible` names an Arm PMU (`arm,armv8-pmuv3`, or an
+/// `arm,cortex-*-pmu` / `arm,neoverse-*-pmu` core binding), when
+/// [`decode_gic_ppi`] accepts its `interrupts`; `None` otherwise (no such
+/// node, an SPI-wired PMU, a non-GIC parent such as the Raspberry Pi 3's
+/// local interrupt controller).
+///
+/// # Safety
+/// Same precondition as [`dtb_parse`].
+#[cfg(not(target_arch = "riscv64"))]
+pub unsafe fn dtb_pmu_ppi(ptr: *const u8) -> Option<u32> {
+    let mut c = unsafe { TokCursor::new(ptr) }?;
+    // Per open node: names an Arm PMU, disabled, the `interrupts` property.
+    let mut st = [(false, false, 0usize, 0usize); IRQ_SCAN_DEPTH];
+    let mut depth = 0usize;
+    loop {
+        match unsafe { c.next() } {
+            Some(Tok::Begin) => {
+                depth += 1;
+                if depth >= IRQ_SCAN_DEPTH {
+                    return None;
+                }
+                st[depth] = (false, false, 0, 0);
+            }
+            Some(Tok::End) => {
+                if depth == 0 {
+                    return None;
+                }
+                let (pmu, disabled, ioff, ilen) = st[depth];
+                if pmu && !disabled && ilen >= 12 {
+                    let cells = unsafe { [c.be32(ioff, 0), c.be32(ioff, 1), c.be32(ioff, 2)] };
+                    if let Some(intid) = decode_gic_ppi(ilen, cells) {
+                        return Some(intid);
+                    }
+                }
+                depth -= 1;
+            }
+            Some(Tok::Prop(name, off, len)) => {
+                if depth == 0 || depth >= IRQ_SCAN_DEPTH {
+                    continue;
+                }
+                unsafe {
+                    if c.name_is(name, b"compatible") {
+                        st[depth].0 = is_arm_pmu(c.bytes(off, len));
+                    } else if c.name_is(name, b"status") {
+                        st[depth].1 = !compatible_has(c.bytes(off, len), b"okay");
+                    } else if c.name_is(name, b"interrupts") {
+                        st[depth].2 = off;
+                        st[depth].3 = len;
+                    }
+                }
+            }
+            Some(Tok::Nop) => {}
+            None => return None,
+        }
+    }
+}
+
+/// Does a `compatible` list name an Arm PMU binding: `arm,armv8-pmuv3`, or
+/// a vendor-`arm` core's `arm,<core>-pmu`?
+pub fn is_arm_pmu(prop: &[u8]) -> bool {
+    prop.split(|&b| b == 0).any(|s| {
+        s == b"arm,armv8-pmuv3" || (s.starts_with(b"arm,") && s.ends_with(b"-pmu") && s.len() > 8)
+    })
 }
 
 // ---------------------------------------------------------------

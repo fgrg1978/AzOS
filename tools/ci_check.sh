@@ -14533,8 +14533,11 @@ PY
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
         return 0   # only a refused kernel returns 1: its callers stop on it
     }
-    x86_boot_row() { # x86_boot_row <label> <smp> <cpu model> <want lines, |-separated fixed strings> <stop ERE> [features]
-        local label="$1" smp="$2" cpu="$3" want="$4" stop="$5" feats="${6:-}" why="" w
+    x86_boot_row() { # x86_boot_row <label> <smp> <cpu model> <want lines, |-separated fixed strings> <stop ERE> [features] [boots]
+        # `boots`: the model meets the baseline and must boot clean (default:
+        # only `max` does; any other model is a below-baseline canary).
+        local label="$1" smp="$2" cpu="$3" want="$4" stop="$5" feats="${6:-}" boots="${7:-}" why="" w
+        [ -n "$boots" ] || { [ "$cpu" = max ] && boots=1 || boots=0; }
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -14548,11 +14551,11 @@ PY
             grep -aqF -- "$w" "$log" || { why="missing: $w"; break; }
         done
         unset IFS
-        if [ -z "$why" ] && [ "$cpu" = max ]; then
+        if [ -z "$why" ] && [ "$boots" = 1 ]; then
             grep -aqE 'KERNEL PANIC|FAILED|\[X86-TRAP\]' "$log" \
                 && why="$(grep -aE 'KERNEL PANIC|FAILED|\[X86-TRAP\]' "$log" | sed -n 1p)"
         fi
-        if [ -z "$why" ] && [ "$cpu" != max ] && grep -aqF 'AzOS Rust kernel booted' "$log"; then
+        if [ -z "$why" ] && [ "$boots" = 0 ] && grep -aqF 'AzOS Rust kernel booted' "$log"; then
             why="a CPU below the baseline reached Rust"
         fi
         if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
@@ -14653,6 +14656,16 @@ PY
         bad; echo "      $why"; echo "      log kept: $log"
     }
     par "x86_64: microcode loader" x86_ucode_row "x86_64: microcode loader"
+    # An AMD model with the hypervisor bit hidden (`-cpu EPYC,-hypervisor`):
+    # CPUID looks like bare metal, family 0x17 without PerfCtrExtCore. The
+    # PMU probe must name no counter (`azos_arch_api::pmu::amd_decode`'s
+    # family gate) and the liveness check reads counters through their MSRs,
+    # never `rdpmc`, which TCG answers with #UD: the boot reaches the shell
+    # with the TSC standing in for cycles. Canary (by hand, 2026-10-23): the
+    # family gate dropped, the legacy four are assumed and, with `rdpmc` in
+    # the liveness check, the boot traps right after the mitigation line.
+    par "x86_64: PMU probe, EPYC without the hypervisor bit" x86_boot_row "x86_64: PMU probe, EPYC without the hypervisor bit" 1 "EPYC,-hypervisor" \
+        "[PMU] x86_64 cycles=tsc/64 instret=none events=0 user=none sample=none|$X86_SHELL" "AzOS shell|KERNEL PANIC" "" 1
     # virtio-input on x86_64 (Kconfig DRV_VIRTIO_INPUT): the kernel shell reads a
     # `-device virtio-keyboard-device` (a virtio-mmio v1 transport on microvm)
     # with the serial stdin silent. A typist in the background waits for the
@@ -22808,6 +22821,77 @@ power suspend" 150 \
             "[CONSOLE] lockdown: no kernel console task" "locked-ok" \
             "holds no launch grant for FLIGHT.ELF (recorded)" "sh: pm: command not found" \
             "holds no launch grant for POWER.ELF (recorded)" "not permitted"
+    done
+
+    # ── prof: PMU overflow sampling (Kconfig PROFILER_PMU) ─────────────────
+    #
+    # A kernel built from the primary column's config with CONFIG_PROFILER
+    # turned on (PROFILER_PMU follows it, default y), in a target dir of its
+    # own, built the way `make build` / `make aarch64` build it: with the
+    # config's codegen flags (`kconfig_to_cargo.py --rustflags`, which adds
+    # the frame pointers the walk needs). `tracectl profile` over two
+    # CPU-bound jobs must count PMU samples: riscv64 with Sscofpmf
+    # (`-cpu rv64,sscofpmf=on`: QEMU's default CPU has none), aarch64 `virt`
+    # with its PMUv3 and the DTB's PMU PPI. No x86_64 row: TCG has no PMU.
+    # Canary rows: the same kernel on a CPU without the overflow interrupt
+    # (riscv64's default CPU, aarch64 `-cpu max,pmu=off`) falls back to the
+    # tick, so `pmu=0` is printed and the PASS markers are missing.
+    ush_profiler_kernel() { # <rv|arm> -> prints the image path, or nothing
+        local isa="$1" dir="$AZOS_OUT/target/profiler-$1" base tmp cfg elf img rf
+        if [ "$isa" = rv ]; then base="$PRIMARY_CONFIG"; else base="$AARCH64_CONFIG"; fi
+        mkdir -p "$dir"; cfg="$dir/profiler.config"; tmp="$(mktemp -d)"
+        sed 's/^# CONFIG_PROFILER is not set$/CONFIG_PROFILER=y/' "$base" >"$tmp/c.config"
+        if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
+           || ! grep -q '^CONFIG_PROFILER_PMU=y$' "$tmp/c.config" \
+           || ! grep -q '^CONFIG_USER_SHELL=y$' "$tmp/c.config"; then
+            rm -rf "$tmp"; return
+        fi
+        cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
+        rm -rf "$tmp"
+        if [ "$isa" = rv ]; then
+            elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
+            rf="$(cd "$REPO_ROOT" && python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
+            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features qemu \
+                ${rf:+--config "target.riscv64imac-unknown-none-elf.rustflags=[$rf]"} >/dev/null 2>&1
+            img="$elf"
+        else
+            elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
+            rf="$(cd "$REPO_ROOT" && python3 tools/kconfig_to_cargo.py --rustflags "$cfg")"
+            env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
+                RUSTFLAGS="-C link-arg=-Tkernel/linker-aarch64.ld $rf" \
+                "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+                --features qemu >/dev/null 2>&1
+            [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
+                -O binary "$elf" "$img" 2>/dev/null
+        fi
+        [ -f "$img" ] && printf '%s\n' "$img"
+    }
+    for ush_isa in rv arm; do
+        if ! ci_wants "prof: PMU overflow samples ($ush_isa)" && ! ci_wants "prof: no overflow interrupt, tick only ($ush_isa)"; then
+            ci_skip_rows "prof: PMU overflow samples ($ush_isa)" "prof: no overflow interrupt, tick only ($ush_isa)"; continue
+        fi
+        ush_pk="$(ush_profiler_kernel "$ush_isa")"
+        if [ -z "$ush_pk" ]; then
+            printf "  %-26s" "prof: PMU overflow samples ($ush_isa)..."; bad; echo "      the profiler kernel did not build"
+            continue
+        fi
+        if [ "$ush_isa" = rv ]; then
+            ush_pmu_on='-cpu rv64,sscofpmf=on'; ush_pmu_off=''; ush_pmu_mark='sscofpmf=probed-present'
+        else
+            ush_pmu_on=''; ush_pmu_off='-cpu max,pauth=on,pmu=off'; ush_pmu_mark='[PMU] overflow interrupt: DTB PPI INTID'
+        fi
+        USH_KERNEL="$ush_pk" USH_SMP=2 USH_QEMU_EXTRA="$ush_pmu_on" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
+            par_row ushell_row "prof: PMU overflow samples ($ush_isa)" "$ush_isa" qemu PASS \
+            "spin &
+spin &
+tracectl profile -t 4000" 240 \
+            "$ush_pmu_mark" "tracectl: profile read " "tracectl: profile origins: tick=" " rt=0"
+        USH_KERNEL="$ush_pk" USH_SMP=2 USH_QEMU_EXTRA="$ush_pmu_off" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
+            par_row ushell_row "prof: no overflow interrupt, tick only ($ush_isa)" "$ush_isa" qemu FAIL \
+            "spin &
+spin &
+tracectl profile -t 4000" 240 \
+            "tracectl: profile origins: tick="
     done
 
     # ── compositor (Kconfig COMPOSITOR, on in the riscv64 QEMU defconfig) ───

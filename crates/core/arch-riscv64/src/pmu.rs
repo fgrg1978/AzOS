@@ -16,6 +16,16 @@
 //! answers the extension with only cycle, time and instret, or not at all):
 //! `events=0` on the boot line.
 //!
+//! Overflow sampling (the profiler, Kconfig `PROFILER_PMU`) takes a second
+//! `hpmcounterN` the same way, for CPU_CYCLES, and needs Sscofpmf (Kconfig
+//! `RV_SSCOFPMF`): the counter's overflow sets its `scountovf` bit and raises
+//! the local counter-overflow interrupt (LCOFI, `scause` 13, `sie.LCOFIE`).
+//! The probe is cpu@0's `riscv,isa` token, then one trap-safe `scountovf`
+//! read ([`sscofpmf_select`]). The firmware owns the counter's event register
+//! and its OF bit: S-mode loads the counter through `counter_start` (which
+//! clears OF, but only while `sip.LCOFIP` is clear: the interrupt is
+//! acknowledged first). QEMU virt has it with `-cpu rv64,sscofpmf=on`.
+//!
 //! Ring 3 reads what Kconfig `PMU_USER` allows through `scounteren`
 //! (`TM` always, `CY`/`IR` for a live counter); `trap_init` leaves the clock
 //! alone and [`start_this_cpu`], on every hart, writes the rest. Before this
@@ -59,6 +69,21 @@ static SLOTS: [Slot; azos_limits::NR_CPUS] = [const {
     Slot { sel: AtomicU64::new(NO_EVENT), idx: AtomicU8::new(0), csr: AtomicU16::new(0) }
 }; azos_limits::NR_CPUS];
 
+/// Sscofpmf is in use ([`sscofpmf_select`]).
+static SSCOFPMF: AtomicBool = AtomicBool::new(false);
+
+/// Per hart, the overflow-sampling counter: its SBI index (`NO_SAMPLE`:
+/// disarmed) and its width, from `counter_get_info`.
+struct Sampler {
+    idx: AtomicU8,
+    bits: AtomicU8,
+}
+
+const NO_SAMPLE: u8 = u8::MAX;
+static SAMPLERS: [Sampler; azos_limits::NR_CPUS] = [const {
+    Sampler { idx: AtomicU8::new(NO_SAMPLE), bits: AtomicU8::new(0) }
+}; azos_limits::NR_CPUS];
+
 /// Boot, the boot hart, before [`start_this_cpu`]: probe what the firmware
 /// gives, unless Kconfig says `n`. Returns whether a programmable hardware
 /// counter exists (the `[ISA]` line's `pmu` row; `cycle` and `instret` are
@@ -82,6 +107,23 @@ pub fn select() -> bool {
     EVENT_MASK.store(api::rv_programmable_mask(num), Ordering::Relaxed);
     EVENT_BITS.store(first.bits, Ordering::Relaxed);
     true
+}
+
+/// Boot hart, after [`select`] and before [`verify`]: Sscofpmf when Kconfig
+/// `RV_SSCOFPMF` allows it (`allowed`), cpu@0's `riscv,isa` names it
+/// (`claimed`) and a trap-safe read of `scountovf` succeeds (M-mode may
+/// withhold the CSR). `n` executes nothing. Returns the `[ISA]` line's
+/// `sscofpmf` row; sampling also needs the programmable counter [`select`]
+/// found ([`PmuCaps::sample_bits`]).
+pub fn sscofpmf_select(allowed: bool, claimed: bool) -> bool {
+    let on = allowed && claimed && scountovf_probe();
+    SSCOFPMF.store(on, Ordering::Relaxed);
+    on
+}
+
+/// Is Sscofpmf in use ([`sscofpmf_select`])?
+pub fn sscofpmf() -> bool {
+    SSCOFPMF.load(Ordering::Relaxed)
 }
 
 /// The event selector of "mispredicted branches" for [`Pmu::event`](azos_arch_api::Pmu::event)
@@ -142,6 +184,9 @@ pub fn caps() -> PmuCaps {
         event_bits: EVENT_BITS.load(Ordering::Relaxed),
         user_cycles: USER_C.load(Ordering::Relaxed),
         user_instructions: USER_I.load(Ordering::Relaxed),
+        // The first hardware counter's width: the one `sample_arm` is given
+        // is read again there.
+        sample_bits: if sscofpmf() && present() { EVENT_BITS.load(Ordering::Relaxed) } else { 0 },
     }
 }
 
@@ -231,6 +276,82 @@ core::arch::global_asm!(
 #[cfg(target_arch = "riscv64")]
 unsafe extern "C" {
     fn azos_pmu_probe() -> usize;
+    fn azos_scountovf_probe() -> usize;
+}
+
+/// One trap-safe read of `scountovf` (CSR 0xDA0): true when it did not trap.
+fn scountovf_probe() -> bool {
+    #[cfg(target_arch = "riscv64")]
+    {
+        // SAFETY: as `csr_probe`: a private stvec with interrupts off, both
+        // restored; one CSR read; no memory.
+        unsafe { azos_scountovf_probe() != 0 }
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        false
+    }
+}
+
+// `azos_scountovf_probe() -> a0` (1: `scountovf` read). `azos_pmu_probe`'s
+// shape with one access: the handler answers 0 and resumes after it.
+// Clobbers t0-t3.
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    ".pushsection .text.azos_scountovf_probe, \"ax\"",
+    ".globl azos_scountovf_probe",
+    ".p2align 2",
+    "azos_scountovf_probe:",
+    "    csrrci t3, sstatus, 2",
+    "    csrr   t1, stvec",
+    "    la     t0, 1f",
+    "    csrw   stvec, t0",
+    "    li     a0, 1",
+    "    csrr   t2, 0xda0",
+    "    csrw   stvec, t1",
+    "    andi   t3, t3, 2",
+    "    csrs   sstatus, t3",
+    "    ret",
+    ".p2align 2",
+    "1:  li     a0, 0",
+    "    csrr   t0, sepc",
+    "    addi   t0, t0, 4",
+    "    csrw   sepc, t0",
+    "    sret",
+    ".popsection",
+);
+
+/// `scountovf`: bit n set when counter n's OF bit is (Sscofpmf only).
+#[cfg(target_arch = "riscv64")]
+fn read_scountovf() -> usize {
+    let v: usize;
+    // SAFETY: only reached with Sscofpmf in use (`sscofpmf_select` read it
+    // without a trap); no memory.
+    unsafe { core::arch::asm!("csrr {}, 0xda0", out(reg) v, options(nomem, nostack, preserves_flags)) };
+    v
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn read_scountovf() -> usize {
+    0
+}
+
+/// `sip.LCOFIP` cleared: the overflow interrupt acknowledged, so the next
+/// `counter_start` may clear the counter's OF bit.
+#[cfg(target_arch = "riscv64")]
+fn clear_lcofip() {
+    // SAFETY: LCOFIP is S-mode writable under Sscofpmf; no memory.
+    unsafe { core::arch::asm!("csrc sip, {}", in(reg) api::RV_SIE_LCOFIE, options(nomem, nostack)) };
+}
+
+#[cfg(not(target_arch = "riscv64"))]
+fn clear_lcofip() {}
+
+/// Load counter `idx` with the value that wraps after `period` cycles and
+/// start it (`counter_start` with an initial value).
+fn sample_start(idx: u8, bits: u8, period: u64) -> bool {
+    sbi(api::SBI_PMU_COUNTER_START,
+        [idx as usize, 1, api::SBI_PMU_START_SET_INIT_VALUE, api::sample_init(bits, period) as usize, 0, 0]).is_some()
 }
 
 /// `hpmcounter<csr - 0xC00>` by CSR number: a CSR number is an immediate in
@@ -310,5 +431,79 @@ impl azos_arch_api::Pmu for crate::api_impl::Riscv64 {
             }
         }
         Some(read_hpm(slot.csr.load(Ordering::Relaxed)))
+    }
+
+    /// An `hpmcounterN` the firmware allocates for CPU_CYCLES on the first
+    /// arm (kept until a disarming [`sample_ack`](azos_arch_api::Pmu::sample_ack)),
+    /// loaded and started, and `sie.LCOFIE` set on this hart.
+    fn sample_arm(&self, period: u64) -> bool {
+        use azos_arch_api::Cpu as _;
+        let mask = EVENT_MASK.load(Ordering::Relaxed);
+        if !sscofpmf() || mask == 0 {
+            return false;
+        }
+        let Some(s) = SAMPLERS.get(self.hart_id()) else { return false };
+        let mut idx = s.idx.load(Ordering::Relaxed);
+        if idx == NO_SAMPLE {
+            let Some(i) = sbi(api::SBI_PMU_COUNTER_CONFIG_MATCHING,
+                              [0, mask, api::SBI_PMU_CFG_SAMPLE, api::SBI_HW_CPU_CYCLES as usize, 0, 0]) else {
+                return false;
+            };
+            let i = i as usize;
+            let info = sbi(api::SBI_PMU_COUNTER_GET_INFO, [i, 0, 0, 0, 0, 0]).map(|v| v as u64);
+            match info.and_then(|v| api::rv_counter_info(v, 64)) {
+                Some(c) if i < 32 => {
+                    s.bits.store(c.bits, Ordering::Relaxed);
+                    s.idx.store(i as u8, Ordering::Relaxed);
+                    idx = i as u8;
+                }
+                _ => {
+                    // A firmware counter raises no LCOFI: give it back.
+                    let _ = sbi(api::SBI_PMU_COUNTER_STOP, [i & 63, 1, api::SBI_PMU_STOP_RESET, 0, 0, 0]);
+                    return false;
+                }
+            }
+        } else {
+            // A started counter refuses `counter_start`.
+            let _ = sbi(api::SBI_PMU_COUNTER_STOP, [idx as usize, 1, 0, 0, 0, 0]);
+        }
+        let bits = s.bits.load(Ordering::Relaxed);
+        if !api::sample_period_fits(bits, period) || !sample_start(idx, bits, period) {
+            let _ = self.sample_ack(None);
+            return false;
+        }
+        crate::cpu::write_sie(crate::cpu::read_sie() | api::RV_SIE_LCOFIE);
+        true
+    }
+
+    /// LCOFI: this hart's counter's `scountovf` bit, then `sip.LCOFIP`
+    /// cleared and the counter stopped and restarted from the period's
+    /// initial value (which clears its OF bit), or released.
+    fn sample_ack(&self, rearm: Option<u64>) -> bool {
+        use azos_arch_api::Cpu as _;
+        let Some(s) = SAMPLERS.get(self.hart_id()) else { return false };
+        let idx = s.idx.load(Ordering::Relaxed);
+        if idx == NO_SAMPLE {
+            clear_lcofip();
+            return false;
+        }
+        let overflowed = read_scountovf() >> idx & 1 != 0;
+        clear_lcofip();
+        match rearm {
+            Some(period) if overflowed => {
+                let _ = sbi(api::SBI_PMU_COUNTER_STOP, [idx as usize, 1, 0, 0, 0, 0]);
+                if !sample_start(idx, s.bits.load(Ordering::Relaxed), period) {
+                    let _ = self.sample_ack(None);
+                }
+            }
+            // Not this counter's interrupt: it keeps counting.
+            Some(_) => {}
+            None => {
+                let _ = sbi(api::SBI_PMU_COUNTER_STOP, [idx as usize, 1, api::SBI_PMU_STOP_RESET, 0, 0, 0]);
+                s.idx.store(NO_SAMPLE, Ordering::Relaxed);
+                crate::cpu::write_sie(crate::cpu::read_sie() & !api::RV_SIE_LCOFIE);
+            }
+        }
+        overflowed
     }
 }

@@ -239,5 +239,7 @@ impl azos_arch_api::Pmu for HostArch {
     fn cycles(&self) -> u64 { 0 }
     fn instructions(&self) -> u64 { 0 }
     fn event(&self, _sel: u64) -> Option<u64> { None }
+    fn sample_arm(&self, _period: u64) -> bool { false }
+    fn sample_ack(&self, _rearm: Option<u64>) -> bool { false }
 }
 pub use azos_arch_api::Pmu;

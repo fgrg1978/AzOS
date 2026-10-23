@@ -203,6 +203,7 @@ pub mod riscv64 {
     pub const H: ExtPolicy = ext_policy!(RV_H_NEVER, RV_H_REQUIRE);
     pub const SSQOSID: ExtPolicy = ext_policy!(RV_SSQOSID_NEVER, RV_SSQOSID_REQUIRE);
     pub const PMU: ExtPolicy = ext_policy!(RV_PMU_NEVER, RV_PMU_REQUIRE);
+    pub const SSCOFPMF: ExtPolicy = ext_policy!(RV_SSCOFPMF_NEVER, RV_SSCOFPMF_REQUIRE);
 }
 
 /// aarch64 (config/arch/Kconfig.isa-aarch64 `AARCH64_LEVEL`, `A64_*`).

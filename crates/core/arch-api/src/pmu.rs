@@ -26,6 +26,18 @@
 //!   on most cores and tick at the core clock, not the timebase; the rate is
 //!   measured once against the timebase (`azos_drv_sys::wcet::calibrate_cpu_freq`).
 //!
+//! **Overflow sampling** (the profiler, Kconfig `PROFILER_PMU`): one more
+//! counter per CPU counts core cycles from [`sample_init`] and interrupts on
+//! its overflow, [`Pmu::sample_arm`] / [`Pmu::sample_ack`]. It is a counter of
+//! its own, never the cycle counter the readers above share, so arming it
+//! moves no `wcet` or lockdep figure:
+//!
+//! | ISA     | counter                                  | interrupt                         | probe |
+//! |---------|------------------------------------------|-----------------------------------|-------|
+//! | riscv64 | an `hpmcounterN` from SBI `counter_config_matching` (CPU_CYCLES) | LCOFI (Sscofpmf, `scountovf`) | RV_SSCOFPMF: `riscv,isa` token + a trap-safe `scountovf` read |
+//! | aarch64 | the last event counter (`PMCR_EL0.N - 1`, `N >= 3`), CPU_CYCLES | the PMU PPI of the DTB's `pmu` node, `PMOVSSET_EL0` | A64_PMU |
+//! | x86_64  | Intel PMC1 (UNHALTED_CORE_CYCLES), AMD core counter 3 (0x76), `INT` set | the LAPIC LVT performance-counter entry, a fixed vector | X86_PMU |
+//!
 //! The ISA crates read and program the hardware (`pmu.rs` at the same place
 //! in each). What is pure is here, so the host tests drive it with fake
 //! register words: the probes' decode of the identification words, the
@@ -81,6 +93,9 @@ pub struct PmuCaps {
     pub user_cycles: bool,
     /// Ring 3 may read the instruction counter (as `user_cycles`).
     pub user_instructions: bool,
+    /// Width of the overflow-sampling counter in bits; 0: this boot has none
+    /// ([`Pmu::sample_arm`] refuses).
+    pub sample_bits: u8,
 }
 
 impl PmuCaps {
@@ -94,6 +109,7 @@ impl PmuCaps {
         event_bits: 64,
         user_cycles: false,
         user_instructions: false,
+        sample_bits: 0,
     };
 
     /// Does the cycle counter count core cycles (not the TSC, not nothing)?
@@ -104,7 +120,7 @@ impl PmuCaps {
 
 /// The `[PMU]` boot line's tail, the same shape on every ISA
 /// (`kprintln!("[PMU] x86_64 {}", caps)`):
-/// `cycles=pmu/48 instret=pmu/48 events=1/48 user=cycles,instret`.
+/// `cycles=pmu/48 instret=pmu/48 events=1/48 user=cycles,instret sample=48`.
 impl fmt::Display for PmuCaps {
     fn fmt(&self, w: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(w, "cycles={}", self.cycles.name())?;
@@ -121,10 +137,14 @@ impl fmt::Display for PmuCaps {
         }
         write!(w, " user=")?;
         match (self.user_cycles, self.user_instructions) {
-            (true, true) => write!(w, "cycles,instret"),
-            (true, false) => write!(w, "cycles"),
-            (false, true) => write!(w, "instret"),
-            (false, false) => write!(w, "none"),
+            (true, true) => write!(w, "cycles,instret")?,
+            (true, false) => write!(w, "cycles")?,
+            (false, true) => write!(w, "instret")?,
+            (false, false) => write!(w, "none")?,
+        }
+        match self.sample_bits {
+            0 => write!(w, " sample=none"),
+            b => write!(w, " sample={}", b),
         }
     }
 }
@@ -157,6 +177,21 @@ pub trait Pmu: Send + Sync {
     /// CPU: call with preemption off, and let one caller own the counter at
     /// a time (the boot self-test and a bench never overlap).
     fn event(&self, sel: u64) -> Option<u64>;
+
+    /// Arm THIS CPU's overflow-sampling counter: count core cycles from
+    /// [`sample_init`]`(bits, period)` and raise the ISA's PMU interrupt when
+    /// it wraps. False, and nothing armed, when this boot has no sampling
+    /// counter ([`PmuCaps::sample_bits`] 0), its interrupt is not wired, or
+    /// `period` does not fit the counter ([`sample_period_fits`]). Interrupts
+    /// off; the counter is the sampler's alone, so a second arm on an armed
+    /// CPU reloads it.
+    fn sample_arm(&self, period: u64) -> bool;
+
+    /// From THIS CPU's PMU interrupt: did the sampling counter overflow? The
+    /// overflow is acknowledged either way. `Some(period)` reloads the
+    /// counter for the next sample; `None` stops it and turns its interrupt
+    /// off (the CPU is disarmed until the next [`Pmu::sample_arm`]).
+    fn sample_ack(&self, rearm: Option<u64>) -> bool;
 }
 
 // ── Counter math ────────────────────────────────────────────────────────
@@ -196,6 +231,32 @@ pub const fn rate_per_us(cycles: u64, elapsed_us: u64) -> u64 {
     if r == 0 { 1 } else { r }
 }
 
+// ── Overflow sampling ───────────────────────────────────────────────────
+
+/// Can a `bits`-wide counter sample every `period` events? The counter is
+/// loaded with [`sample_init`] and its top bit is the "not yet wrapped" mark
+/// ([`sample_overflowed`]), so the period stays below half the range; a
+/// 32-bit counter (aarch64 before PMUv3p5, an x86 counter written through
+/// its legacy sign-extending MSR) takes at most `2^31 - 1`.
+pub const fn sample_period_fits(bits: u8, period: u64) -> bool {
+    bits >= 2 && period != 0 && period <= mask(bits) / 2
+}
+
+/// The value that makes a `bits`-wide up-counter wrap after `period` more
+/// events: `2^bits - period`.
+pub const fn sample_init(bits: u8, period: u64) -> u64 {
+    mask(bits).wrapping_sub(period).wrapping_add(1) & mask(bits)
+}
+
+/// Has a counter loaded with [`sample_init`] wrapped? Its top bit, set by
+/// the load, is clear once it has (for `period` within
+/// [`sample_period_fits`], and read before it climbs half the range again).
+/// x86_64 reads this where it has no overflow status register (AMD before
+/// PerfMonV2).
+pub const fn sample_overflowed(bits: u8, value: u64) -> bool {
+    bits == 0 || (value >> (bits - 1)) & 1 == 0
+}
+
 // ── x86_64 ──────────────────────────────────────────────────────────────
 
 /// `IA32_PMC0` (the first programmable counter, Intel).
@@ -231,10 +292,23 @@ pub const AMD_EV_CYCLES: u64 = 0x76;
 /// AMD event select: RetiredInstructions.
 pub const AMD_EV_INSTR: u64 = 0xC0;
 
-/// `PERFEVTSEL` control bits: count in ring 3, count in ring 0, enable.
+/// Intel architectural event: UnHalted Core Cycles (0x3C, umask 0), the
+/// sampling counter's event.
+pub const INTEL_EV_CYCLES: u64 = 0x003C;
+
+/// `PERFEVTSEL` control bits: count in ring 3, count in ring 0, interrupt
+/// (APIC LVT performance-counter entry) on overflow, enable.
 pub const X86_EVTSEL_USR: u64 = 1 << 16;
 pub const X86_EVTSEL_OS: u64 = 1 << 17;
+pub const X86_EVTSEL_INT: u64 = 1 << 20;
 pub const X86_EVTSEL_EN: u64 = 1 << 22;
+
+/// `IA32_PERF_GLOBAL_STATUS` (version 2+): the overflow bits, PMC n in bit n.
+pub const X86_MSR_PERF_GLOBAL_STATUS: u32 = 0x38E;
+/// `IA32_PERF_GLOBAL_OVF_CTRL` (version 2+): write 1 to clear a status bit.
+pub const X86_MSR_PERF_GLOBAL_OVF_CTRL: u32 = 0x390;
+/// AMD `PerfCntrGlobalStatusClr` (PerfMonV2): write 1 to clear an overflow bit.
+pub const AMD_MSR_PERF_GLOBAL_STATUS_CLR: u32 = 0xC000_0302;
 
 /// The register value that counts event `sel` in both rings: the event/unit
 /// mask image with USR, OS and EN set, and the control bits of `sel`
@@ -243,6 +317,21 @@ pub const fn x86_evtsel(sel: u64) -> u64 {
     // sel: event [7:0], unit mask [15:8], AMD event high bits [35:32].
     let image = sel & (0xFFFF | (0xF << 32));
     image | X86_EVTSEL_USR | X86_EVTSEL_OS | X86_EVTSEL_EN
+}
+
+/// The sampling counter's register value: [`x86_evtsel`] with `INT`, so the
+/// overflow raises the LAPIC's performance-counter interrupt.
+pub const fn x86_sample_evtsel(sel: u64) -> u64 {
+    x86_evtsel(sel) | X86_EVTSEL_INT
+}
+
+/// What a write of `v` to a counter through its legacy MSR (`IA32_PMCn`,
+/// without `IA32_PERF_CAPABILITIES.FW_WRITE`) leaves in a `bits`-wide
+/// counter: the low 32 bits, sign-extended. The sampling counter is loaded
+/// that way, so [`sample_init`] must survive it: true for every period up to
+/// `2^31`.
+pub const fn x86_legacy_write(bits: u8, v: u64) -> u64 {
+    (v as u32 as i32 as i64 as u64) & mask(bits)
 }
 
 /// `IA32_FIXED_CTR_CTRL` with the fixed counters in `fixed` (bit n: counter
@@ -318,16 +407,31 @@ impl AmdPmu {
     pub const NONE: AmdPmu = AmdPmu { counters: 0, evtsel0: 0, ctr0: 0, stride: 1, global_ctl: false };
 }
 
+/// The display family of `CPUID.1` EAX: the base family (\[11:8\]), plus the
+/// extended family (\[27:20\]) when the base is 0xF.
+pub const fn x86_family(eax: u32) -> u32 {
+    let base = (eax >> 8) & 0xF;
+    if base == 0xF { base + ((eax >> 20) & 0xFF) } else { base }
+}
+
+/// The AMD family from which PerfCtrExtCore is architectural (Bulldozer,
+/// 0x15): a part of this family or later without the bit has no core
+/// counters the kernel may name.
+pub const AMD_FAMILY_EXT_CORE: u32 = 0x15;
+
 /// The AMD counters from CPUID: `ext_core` is `0x80000001` ECX\[23\]
 /// (PerfCtrExtCore), `v2_eax`/`v2_ebx` are `0x80000022` EAX and EBX (0 when
-/// the leaf is absent), `hypervisor` is `CPUID.1` ECX\[31\].
+/// the leaf is absent), `hypervisor` is `CPUID.1` ECX\[31\] and `family`
+/// [`x86_family`] of `CPUID.1` EAX.
 ///
 /// The six extended counters are the answer wherever ExtCore is set
 /// (PerfMonV2 reports the real number, EBX\[3:0\]). The four legacy counters
 /// (AMD families before Bulldozer) have no CPUID bit: they are assumed only
-/// on bare metal, because a hypervisor that does not enumerate a PMU
-/// answers an unknown MSR with #GP.
-pub const fn amd_decode(ext_core: bool, v2_eax: u32, v2_ebx: u32, hypervisor: bool) -> AmdPmu {
+/// on bare metal AND for a family before [`AMD_FAMILY_EXT_CORE`]. A
+/// hypervisor that does not enumerate a PMU answers an unknown MSR with #GP;
+/// an emulator that hides the hypervisor bit (QEMU TCG `-cpu EPYC,-hypervisor`:
+/// family 0x17, no ExtCore) has no counters either, and its `rdpmc` is #UD.
+pub const fn amd_decode(ext_core: bool, v2_eax: u32, v2_ebx: u32, hypervisor: bool, family: u32) -> AmdPmu {
     if ext_core {
         let v2 = v2_eax & 1 != 0;
         let n = if v2 { (v2_ebx & 0xF) as u8 } else { 6 };
@@ -338,7 +442,7 @@ pub const fn amd_decode(ext_core: bool, v2_eax: u32, v2_ebx: u32, hypervisor: bo
             stride: 2,
             global_ctl: v2,
         }
-    } else if !hypervisor {
+    } else if !hypervisor && family < AMD_FAMILY_EXT_CORE {
         AmdPmu { counters: 4, evtsel0: AMD_MSR_LEGACY_EVTSEL0, ctr0: AMD_MSR_LEGACY_CTR0, stride: 1, global_ctl: false }
     } else {
         AmdPmu::NONE
@@ -368,14 +472,19 @@ pub struct X86Plan {
     pub instr_idx: Option<u32>,
     /// Event counter `rdpmc` index.
     pub event_idx: Option<u32>,
-    /// Counter width in bits for the cycle, instruction and event counters.
+    /// The overflow-sampling counter `rdpmc` index (Intel PMC1, AMD 3).
+    pub sample_idx: Option<u32>,
+    /// Counter width in bits for the cycle, instruction, event and sampling
+    /// counters.
     pub cycle_bits: u8,
     pub instr_bits: u8,
     pub event_bits: u8,
+    pub sample_bits: u8,
     /// The fixed counters the plan uses (`IA32_FIXED_CTR_CTRL` mask), Intel.
     pub fixed_mask: u8,
-    /// The programmable counters it programs for cycles/instructions (AMD:
-    /// counters 0 and 1), as a bit mask.
+    /// The programmable counters the plan uses (AMD 0 and 1 for cycles and
+    /// instructions; the event and the sampling counter), as a bit mask: the
+    /// global enable register's bits.
     pub pmc_mask: u8,
     /// AMD: the registers (`Some`); Intel: `None`.
     pub amd: Option<AmdPmu>,
@@ -392,9 +501,11 @@ impl X86Plan {
         cycle_idx: None,
         instr_idx: None,
         event_idx: None,
+        sample_idx: None,
         cycle_bits: 64,
         instr_bits: 64,
         event_bits: 64,
+        sample_bits: 0,
         fixed_mask: 0,
         pmc_mask: 0,
         amd: None,
@@ -404,7 +515,8 @@ impl X86Plan {
 }
 
 /// The Intel plan: fixed counter 0 for instructions and 1 for cycles
-/// (version 2 or later), programmable counter 0 for [`Pmu::event`].
+/// (version 2 or later), programmable counter 0 for [`Pmu::event`] and 1
+/// for overflow sampling.
 pub const fn x86_plan_intel(p: IntelPmu) -> X86Plan {
     let mut plan = X86Plan::NONE;
     if p.version >= 2 && p.fixed >= 1 {
@@ -422,13 +534,18 @@ pub const fn x86_plan_intel(p: IntelPmu) -> X86Plan {
         plan.event_bits = p.gp_bits;
         plan.pmc_mask = 1;
     }
+    if p.version >= 1 && p.gp >= 2 {
+        plan.sample_idx = Some(1);
+        plan.sample_bits = p.gp_bits;
+        plan.pmc_mask |= 2;
+    }
     plan.fixed = true;
     plan.global = p.version >= 2;
     plan
 }
 
 /// The AMD plan: counter 0 counts cycles (event 0x76), 1 instructions
-/// (0xC0), 2 serves [`Pmu::event`]; counters are 48 bits.
+/// (0xC0), 2 serves [`Pmu::event`], 3 samples; counters are 48 bits.
 pub const fn x86_plan_amd(a: AmdPmu) -> X86Plan {
     let mut plan = X86Plan::NONE;
     if a.counters >= 2 {
@@ -442,6 +559,11 @@ pub const fn x86_plan_amd(a: AmdPmu) -> X86Plan {
         plan.event_idx = Some(2);
         plan.event_bits = 48;
         plan.pmc_mask = 0b111;
+    }
+    if a.counters >= 4 {
+        plan.sample_idx = Some(3);
+        plan.sample_bits = 48;
+        plan.pmc_mask |= 0b1000;
     }
     plan.amd = Some(a);
     plan.global = a.global_ctl;
@@ -475,7 +597,8 @@ pub const fn x86_vendor(ebx: u32, ecx: u32, edx: u32) -> X86Vendor {
 /// exist, so a CPU or an emulator without them is never touched.
 pub fn x86_plan(cpuid: impl Fn(u32, u32) -> (u32, u32, u32, u32)) -> X86Plan {
     let (max, ebx, ecx, edx) = cpuid(0, 0);
-    let hypervisor = max >= 1 && cpuid(1, 0).2 >> 31 & 1 != 0;
+    let leaf1 = if max >= 1 { cpuid(1, 0) } else { (0, 0, 0, 0) };
+    let hypervisor = leaf1.2 >> 31 & 1 != 0;
     match x86_vendor(ebx, ecx, edx) {
         X86Vendor::Intel if max >= 0xA => {
             let (eax, _, _, edx) = cpuid(0xA, 0);
@@ -485,9 +608,24 @@ pub fn x86_plan(cpuid: impl Fn(u32, u32) -> (u32, u32, u32, u32)) -> X86Plan {
             let ext_max = cpuid(0x8000_0000, 0).0;
             let ext_core = ext_max >= 0x8000_0001 && cpuid(0x8000_0001, 0).2 >> 23 & 1 != 0;
             let (v2_eax, v2_ebx, _, _) = if ext_max >= 0x8000_0022 { cpuid(0x8000_0022, 0) } else { (0, 0, 0, 0) };
-            x86_plan_amd(amd_decode(ext_core, v2_eax, v2_ebx, hypervisor))
+            x86_plan_amd(amd_decode(ext_core, v2_eax, v2_ebx, hypervisor, x86_family(leaf1.0)))
         }
         _ => X86Plan::NONE,
+    }
+}
+
+/// The MSR that holds the counter `rdpmc` reads at `index` under the plan
+/// (`amd`: the AMD map, `None` for Intel): Intel fixed counter n
+/// (`X86_RDPMC_FIXED | n`) is `IA32_FIXED_CTR0 + n`, programmable counter n
+/// `IA32_PMC0 + n`; AMD counter n its `PerfCtr`. The boot's liveness check
+/// reads the counters through these, so `rdpmc` (#UD on QEMU TCG, which
+/// ignores the MSR writes and reads the MSRs as 0) runs only on a counter that
+/// moved.
+pub const fn x86_counter_msr(index: u32, amd: Option<AmdPmu>) -> u32 {
+    match amd {
+        Some(a) => a.ctr(index as u8),
+        None if index & X86_RDPMC_FIXED != 0 => X86_MSR_FIXED_CTR0 + (index & !X86_RDPMC_FIXED),
+        None => X86_MSR_PMC0 + index,
     }
 }
 
@@ -513,8 +651,22 @@ pub const fn sbi_hw_event(code: u16) -> u64 {
     code as u64
 }
 /// SBI hardware general events.
+pub const SBI_HW_CPU_CYCLES: u64 = sbi_hw_event(1);
 pub const SBI_HW_BRANCH_MISSES: u64 = sbi_hw_event(6);
 pub const SBI_HW_CACHE_MISSES: u64 = sbi_hw_event(4);
+
+/// `counter_config_matching` flags of the sampling counter: clear it, and
+/// do not count in M-mode (the firmware's cycles are not the kernel's to
+/// sample, and its PC is not one the walker can read). Not started: the
+/// start loads [`sample_init`].
+pub const SBI_PMU_CFG_SAMPLE: usize = (1 << 1) | (1 << 7);
+/// `counter_start` flag: load `initial_value` first.
+pub const SBI_PMU_START_SET_INIT_VALUE: usize = 1 << 0;
+/// `counter_stop` flag: release the counter (its event is forgotten).
+pub const SBI_PMU_STOP_RESET: usize = 1 << 0;
+/// `sie.LCOFIE` / `sip.LCOFIP` (Sscofpmf): the local counter-overflow
+/// interrupt, `scause` interrupt code 13.
+pub const RV_SIE_LCOFIE: usize = 1 << 13;
 
 /// A hardware counter `counter_get_info` described.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -586,6 +738,8 @@ pub const A64_PMCR_LP: u64 = 1 << 7;
 pub const A64_PMCNTEN_C: u64 = 1 << 31;
 /// Architected event: instruction architecturally executed.
 pub const A64_EV_INST_RETIRED: u64 = 0x08;
+/// Architected event: cycle (the sampling counter's event).
+pub const A64_EV_CPU_CYCLES: u64 = 0x11;
 /// Architected event: branch mispredicted or not predicted.
 pub const A64_EV_BR_MIS_PRED: u64 = 0x10;
 /// Architected event: level 1 data cache refill.
@@ -631,4 +785,11 @@ pub const fn a64_pmuserenr(user_cycles: bool, user_instructions: bool) -> u64 {
 /// when it has two.
 pub const fn a64_cnten(n: u8) -> u64 {
     A64_PMCNTEN_C | if n >= 1 { 1 } else { 0 } | if n >= 2 { 2 } else { 0 }
+}
+
+/// The event counter that samples on overflow: the last of the `n`
+/// (`PMCR_EL0.N`), when counters 0 (instructions) and 1 ([`Pmu::event`])
+/// leave one over.
+pub const fn a64_sample_counter(n: u8) -> Option<u8> {
+    if n >= 3 { Some(n - 1) } else { None }
 }

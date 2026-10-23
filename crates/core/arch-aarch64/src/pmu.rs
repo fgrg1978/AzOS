@@ -24,12 +24,23 @@
 //! (PMCCFILTR_EL0 = 0), every cycle (PMCR_EL0.D clear), and, as on most
 //! cores, not while the PE sleeps in WFI. The event counters are 32 bits
 //! wide, 64 with PMCR_EL0.LP (PMUVer 6 and later).
+//!
+//! Overflow sampling (the profiler, Kconfig `PROFILER_PMU`) uses the last
+//! event counter (`api::a64_sample_counter`: `N - 1` when `N >= 3`), counting
+//! CPU_CYCLES from `api::sample_init`; its `PMINTENSET_EL1` bit raises the
+//! PMU's PPI on the wrap, `PMOVSSET_EL0` says which counter wrapped and
+//! `PMOVSCLR_EL0` drops the (level) line. The PPI is the DTB `pmu` node's
+//! ([`set_irq`]); without one (a board whose PMU interrupt is not a GIC PPI,
+//! the Raspberry Pi 3's local interrupt controller) nothing is armed. The
+//! counter is reached through `PMSELR_EL0` (its number is not an immediate),
+//! from EL1 with interrupts masked: ring 3's `PMUSERENR_EL0.ER` lets it write
+//! `PMSELR_EL0`, but it never runs in between.
 
 use azos_arch_api::isa::{aarch64 as policy, ExtPolicy};
 // The cross-ISA helpers, under the ISA's own module (`azos_arch::pmu`).
 pub use azos_arch_api::pmu::{advanced, delta, mask, rate_per_us, PmuCaps, Source};
 use azos_arch_api::pmu as api;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 /// The probe's verdict (`probe` only; `n`/`require` never read it).
 static PMU_ON: AtomicBool = AtomicBool::new(false);
@@ -47,6 +58,26 @@ static USER_I: AtomicBool = AtomicBool::new(false);
 /// The event each CPU's counter 1 counts (`u64::MAX`: none programmed).
 const NO_EVENT: u64 = u64::MAX;
 static EVENT_SEL: [AtomicU64; azos_limits::NR_CPUS] = [const { AtomicU64::new(NO_EVENT) }; azos_limits::NR_CPUS];
+
+/// The PMU's overflow interrupt, a GIC PPI INTID (0: none; [`set_irq`]).
+static IRQ: AtomicU32 = AtomicU32::new(0);
+
+/// The PMU overflow interrupt from the DTB (`pmu` node, a PPI), set by the
+/// boot CPU's interrupt-controller bring-up; every PE enables the same PPI.
+pub fn set_irq(intid: u32) {
+    IRQ.store(intid, Ordering::Relaxed);
+}
+
+/// The PMU overflow interrupt's INTID, 0 when none is wired.
+#[inline(always)]
+pub fn irq() -> u32 {
+    IRQ.load(Ordering::Relaxed)
+}
+
+/// The sampling counter, when this boot has one.
+fn sample_counter() -> Option<u8> {
+    if pmu_on() { api::a64_sample_counter(event_counters()) } else { None }
+}
 
 /// The PMU in use on this boot: a constant under `n`/`require`.
 #[inline(always)]
@@ -225,6 +256,7 @@ pub fn caps() -> PmuCaps {
         event_bits: event_bits(),
         user_cycles: USER_C.load(Ordering::Relaxed),
         user_instructions: USER_I.load(Ordering::Relaxed),
+        sample_bits: if sample_counter().is_some() { event_bits() } else { 0 },
     }
 }
 
@@ -279,6 +311,78 @@ impl azos_arch_api::Pmu for crate::api_impl::Aarch64 {
             core::arch::asm!("mrs {}, PMEVCNTR1_EL0", out(reg) v, options(nostack, nomem, preserves_flags));
         }
         Some(v)
+    }
+
+    /// The last event counter, CPU_CYCLES from the period's initial value,
+    /// its overflow interrupt and the counter enabled.
+    fn sample_arm(&self, period: u64) -> bool {
+        let Some(n) = sample_counter() else { return false };
+        if irq() == 0 || !api::sample_period_fits(event_bits(), period) {
+            return false;
+        }
+        let bit = 1u64 << n;
+        // SAFETY: PMUv3 with counter `n` (`a64_sample_counter` keeps it below
+        // N); PMSELR_EL0 selects it for the two indirect writes, with
+        // interrupts masked (the trait's contract) so nothing reselects in
+        // between; no memory.
+        unsafe {
+            core::arch::asm!(
+                "msr PMCNTENCLR_EL0, {bit}",
+                "msr PMSELR_EL0, {n}",
+                "isb",
+                "msr PMXEVTYPER_EL0, {ev}",
+                "msr PMXEVCNTR_EL0, {init}",
+                "msr PMOVSCLR_EL0, {bit}",
+                "msr PMINTENSET_EL1, {bit}",
+                "msr PMCNTENSET_EL0, {bit}",
+                "isb",
+                bit = in(reg) bit,
+                n = in(reg) n as u64,
+                ev = in(reg) api::A64_EV_CPU_CYCLES,
+                init = in(reg) api::sample_init(event_bits(), period),
+                options(nostack, nomem, preserves_flags),
+            );
+        }
+        true
+    }
+
+    /// The PMU PPI: the counter's `PMOVSSET_EL0` bit, cleared (the line
+    /// drops), then the counter reloaded, or its interrupt and count stopped.
+    fn sample_ack(&self, rearm: Option<u64>) -> bool {
+        let Some(n) = sample_counter() else { return false };
+        let bit = 1u64 << n;
+        let ovs: u64;
+        // SAFETY: as `sample_arm`.
+        unsafe {
+            core::arch::asm!("mrs {}, PMOVSSET_EL0", out(reg) ovs, options(nostack, nomem, preserves_flags));
+            core::arch::asm!("msr PMOVSCLR_EL0, {}", "isb", in(reg) bit, options(nostack, nomem, preserves_flags));
+        }
+        let overflowed = ovs & bit != 0;
+        match rearm {
+            // SAFETY: as `sample_arm`.
+            Some(period) if overflowed => unsafe {
+                core::arch::asm!(
+                    "msr PMSELR_EL0, {n}",
+                    "isb",
+                    "msr PMXEVCNTR_EL0, {init}",
+                    n = in(reg) n as u64,
+                    init = in(reg) api::sample_init(event_bits(), period),
+                    options(nostack, nomem, preserves_flags),
+                );
+            },
+            Some(_) => {}
+            // SAFETY: as `sample_arm`.
+            None => unsafe {
+                core::arch::asm!(
+                    "msr PMINTENCLR_EL1, {bit}",
+                    "msr PMCNTENCLR_EL0, {bit}",
+                    "isb",
+                    bit = in(reg) bit,
+                    options(nostack, nomem, preserves_flags),
+                );
+            },
+        }
+        overflowed
     }
 }
 

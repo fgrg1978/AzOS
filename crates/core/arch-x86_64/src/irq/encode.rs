@@ -13,8 +13,8 @@
 //   32..47    the 8259s, remapped there and masked (a spurious IRQ 7/15
 //             lands here, never on an exception)
 //   base..    IOAPIC GSIs: vector = base + GSI (Kconfig X86_IRQ_VECTOR_BASE)
-//   0xE0..    system vectors, highest priority class: timer, IPIs, error,
-//             spurious
+//   0xE0..    system vectors, highest priority class: the profiler's
+//             counter overflow, timer, IPIs, error, spurious
 // The trap path (vector >= 32) hands every one of these to the platform's
 // interrupt dispatch; `TrapContext::irq_number` is `vector - base`.
 
@@ -22,6 +22,10 @@
 pub const PIC_VECTOR_BASE: u8 = 0x20;
 /// The lowest vector of the system block; a GSI vector stays below it.
 pub const SYSTEM_VECTOR_FLOOR: u8 = 0xE0;
+/// The performance-counter overflow (the LVT performance-counter entry):
+/// the profiler's sampling counter (Kconfig `PROFILER_PMU`). A vector, not
+/// NMI: see `crate::pmu`.
+pub const PMI_VECTOR: u8 = 0xEE;
 /// The LAPIC timer (one-shot or TSC-deadline).
 pub const TIMER_VECTOR: u8 = 0xEF;
 /// The function-call IPI (run a queued callback, e.g. an icache sync).
@@ -75,6 +79,7 @@ pub const LAPIC_ESR: u32 = 0x280;
 pub const LAPIC_ICR_LOW: u32 = 0x300;
 pub const LAPIC_ICR_HIGH: u32 = 0x310;
 pub const LAPIC_LVT_TIMER: u32 = 0x320;
+pub const LAPIC_LVT_PERF: u32 = 0x340;
 pub const LAPIC_LVT_LINT0: u32 = 0x350;
 pub const LAPIC_LVT_LINT1: u32 = 0x360;
 pub const LAPIC_LVT_ERROR: u32 = 0x370;
@@ -124,6 +129,14 @@ pub const fn lvt_timer(vector: u8, mode: TimerMode, masked: bool) -> u32 {
         TimerMode::TscDeadline => 2 << 17,
     };
     vector as u32 | m | if masked { LVT_MASKED } else { 0 }
+}
+
+/// The LVT performance-counter word: fixed delivery of `vector`. Intel
+/// cores set the entry's mask bit when they deliver the interrupt (Linux
+/// rewrites the entry on every PMI for the same reason), so the handler
+/// writes the unmasked word back for the next one.
+pub const fn lvt_perf(vector: u8, masked: bool) -> u32 {
+    vector as u32 | if masked { LVT_MASKED } else { 0 }
 }
 
 /// The divide-configuration register's encoding of `divide` (1..=128, a

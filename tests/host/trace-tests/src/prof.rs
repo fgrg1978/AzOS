@@ -221,10 +221,10 @@ fn the_walk_never_reads_outside_the_stack() {
 
 // ── The record format ───────────────────────────────────────────────────────
 
-fn roundtrip(depth: usize, user: bool, stop: Stop) {
+fn roundtrip(depth: usize, user: bool, stop: Stop, origin: Origin) {
     let frames: Vec<u64> = (0..depth as u64).map(|i| 0xffff_ffff_8000_0000 + i * 0x1234).collect();
     let mut recs = Vec::new();
-    encode(7, user, Walk { depth, stop }, &frames, |ev, a| recs.push((ev, a)));
+    encode(7, user, origin, Walk { depth, stop }, &frames, |ev, a| recs.push((ev, a)));
     assert_eq!(recs.len(), 1 + frame_records(depth), "depth {depth}");
     let mut asm = Assembler::new();
     let mut done = Vec::new();
@@ -235,7 +235,7 @@ fn roundtrip(depth: usize, user: bool, stop: Stop) {
     }
     assert_eq!(done.len(), 1, "depth {depth}: one sample, complete after the last record");
     let s = done[0];
-    assert_eq!((s.ts, s.tid, s.user, s.stop, s.depth), (100, 7, user, stop, depth));
+    assert_eq!((s.ts, s.tid, s.user, s.stop, s.origin, s.depth), (100, 7, user, stop, origin, depth));
     assert_eq!(s.frames(), &frames[..]);
     assert_eq!((asm.torn, asm.samples), (0, 1));
 }
@@ -243,8 +243,9 @@ fn roundtrip(depth: usize, user: bool, stop: Stop) {
 #[test]
 fn a_sample_survives_the_ring() {
     for depth in [1, 2, 3, 4, 15, 16, 17, 31, 32] {
-        for (user, stop) in [(false, Stop::End), (true, Stop::Depth), (false, Stop::NoStack), (true, Stop::ReadFault)] {
-            roundtrip(depth, user, stop);
+        for (user, stop, origin) in [(false, Stop::End, Origin::Tick), (true, Stop::Depth, Origin::Pmu),
+                                     (false, Stop::NoStack, Origin::RtTick), (true, Stop::ReadFault, Origin::Pmu)] {
+            roundtrip(depth, user, stop, origin);
         }
     }
 }
@@ -265,18 +266,41 @@ fn every_stop_reason_fits_its_bits() {
     for b in 0..8u32 {
         let s = Stop::from_bits(b);
         assert_eq!(s as u32, b);
-        assert_eq!(Stop::from_bits(meta(5, false, s) >> 9), s);
+        assert_eq!(Stop::from_bits(meta(5, false, s, Origin::Pmu) >> 9), s);
         assert_ne!(s.name(), "");
     }
-    let m = meta(32, true, Stop::NoStack);
+    let m = meta(32, true, Stop::NoStack, Origin::Tick);
     assert_eq!((m & 0xff, m >> 8 & 1, m >> 9), (32, 1, 7));
+}
+
+/// The origin rides in bits 12..=13 next to the stop reason, which keeps
+/// its 3 bits: a stop of 7 does not read as an origin, nor an origin as a
+/// stop. Canary: shift the origin by 11 and `NoStack` (7) reads as `Pmu`.
+#[test]
+fn every_origin_fits_its_bits() {
+    for o in [Origin::Tick, Origin::Pmu, Origin::RtTick] {
+        let m = meta(3, true, Stop::NoStack, o);
+        assert_eq!(Origin::from_bits(m >> 12), Some(o));
+        assert_eq!(Stop::from_bits(m >> 9), Stop::NoStack);
+        assert_eq!(m & 0xff, 3);
+    }
+    assert_eq!(Origin::from_bits(3), None, "the unused value");
+}
+
+/// A header whose origin is the unused value is torn, never a sample.
+#[test]
+fn an_unknown_origin_is_torn() {
+    let mut asm = Assembler::new();
+    let a = [1, meta(1, false, Stop::End, Origin::Tick) | 3 << 12, 0x1000, 0];
+    assert!(asm.feed(0, azos_abi::trace::TRACE_EV_PROF_SAMPLE, a).is_none());
+    assert_eq!((asm.torn, asm.samples), (1, 0));
 }
 
 #[test]
 fn a_torn_sample_is_counted_and_never_reported() {
     let frames: Vec<u64> = (1..=6).map(|i| 0x8000_0000 + i * 16).collect();
     let mut recs = Vec::new();
-    encode(1, false, Walk { depth: 6, stop: Stop::End }, &frames, |ev, a| recs.push((ev, a)));
+    encode(1, false, Origin::Tick, Walk { depth: 6, stop: Stop::End }, &frames, |ev, a| recs.push((ev, a)));
     assert_eq!(recs.len(), 4);
 
     // The ring overwrote the head: frame records with no header.

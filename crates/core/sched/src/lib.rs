@@ -93,6 +93,7 @@ pub use scheduler::{
     set_task_syscall_filter, task_create_filtered,
     nearest_timer_deadline,
     rebalance_from_offline_cpus,
+    cpu_is_real_time,
 };
 
 /// Wave 11 SCHED-RT: run-time admission of EDF + CBS reservations

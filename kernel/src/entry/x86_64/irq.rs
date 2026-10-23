@@ -59,17 +59,27 @@ pub fn arm_periodic_timer(period: u64) {
 #[inline(never)]
 pub(super) fn irq_arm(frame: &mut TrapFrame) {
     crate::trap::irq::arm::<Kernel, TrapFrame>(frame, |frame| {
+        // The sampling profiler (Kconfig `PROFILER`): the interrupted code, on
+        // the tick, or on the sampling counter's overflow (Kconfig
+        // PROFILER_PMU), which `on_overflow` acknowledges and re-arms;
+        // `dispatch` sends the EOI of both.
         if frame.vector == encode::TIMER_VECTOR as u64 {
-            // The sampling profiler (Kconfig `PROFILER`): the interrupted code.
-            crate::prof::on_tick(|| crate::prof::Interrupted {
-                pc: frame.rip as usize,
-                fp: frame.regs[super::gpr::RBP] as usize,
-                sp: frame.rsp as usize,
-                user: frame.came_from_user(),
-            });
+            crate::prof::on_tick(|| interrupted(frame));
+        } else if frame.vector == encode::PMI_VECTOR as u64 {
+            crate::prof::on_overflow(|| interrupted(frame));
         }
         handle_irq(frame.vector as usize);
     });
+}
+
+/// What the profiler samples of the interrupted code.
+fn interrupted(frame: &TrapFrame) -> crate::prof::Interrupted {
+    crate::prof::Interrupted {
+        pc: frame.rip as usize,
+        fp: frame.regs[super::gpr::RBP] as usize,
+        sp: frame.rsp as usize,
+        user: frame.came_from_user(),
+    }
 }
 
 /// The preemption point `trap_entry.S` calls after an interrupt, back on the
@@ -102,6 +112,11 @@ pub fn dispatch(vector: u8) -> bool {
             apic::eoi();
             timer_tick();
             true
+        }
+        // The profiler's counter overflow: sampled in `irq_arm`.
+        encode::PMI_VECTOR => {
+            apic::eoi();
+            false
         }
         encode::RESCHED_VECTOR => {
             // The panic handler's stop IPI (Kconfig PANIC_QUIESCE) is this

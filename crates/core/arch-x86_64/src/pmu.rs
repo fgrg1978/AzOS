@@ -11,11 +11,29 @@
 //! file reads CPUID once and programs the MSRs the plan names, so a CPU or an
 //! emulator without a PMU (QEMU TCG) is never asked for one. A counter that
 //! does not move after the enable (a hypervisor that ignores the MSR write)
-//! is dropped by [`verify`].
+//! is dropped by [`verify`], which reads the counters through their MSRs:
+//! `rdpmc` runs only on a counter that moved there.
 //!
 //! Without a cycle counter `Pmu::cycles` is the time-stamp counter, as
 //! `wcet::read_cycles` always was on this ISA (the rate is measured against
 //! the timebase at boot); `Pmu::instructions` is 0.
+//!
+//! Overflow sampling (the profiler, Kconfig `PROFILER_PMU`) takes one more
+//! programmable counter (Intel PMC1, AMD core counter 3: the plan's
+//! `sample_idx`), counting core cycles with the `INT` bit from
+//! `api::sample_init`; the wrap raises the LAPIC's LVT performance-counter
+//! entry, which delivers [`crate::irq::encode::PMI_VECTOR`] as an ordinary
+//! fixed-mode vector, NOT as an NMI. The sample is written into this CPU's
+//! trace ring, whose producer is safe against everything but a re-entrant
+//! producer on the same CPU: `azos_trace::record` masks interrupts, which an
+//! NMI ignores, so an NMI landing inside a tick's sample (or any trace
+//! record) would interleave two records' halves; and this kernel has no IST
+//! stack or nested-NMI entry for one. The price is Linux's: code that runs
+//! with interrupts masked is sampled where it unmasks them, the limitation
+//! the tick-driven profiler already has and the one riscv64 (LCOFI) and
+//! aarch64 (a GIC PPI) share. The counter is loaded through its legacy MSR
+//! (32 bits, sign-extended: `api::x86_legacy_write`), so the period stays
+//! below `2^31`. QEMU TCG has no PMU: none of this runs there.
 //!
 //! Counters are read with `rdpmc`. Ring 3 may use it with `CR4.PCE`, which
 //! Kconfig `PMU_USER` sets on every CPU for a live counter and which opens
@@ -34,6 +52,9 @@ const NONE: u32 = u32::MAX;
 static CYC_IDX: AtomicU32 = AtomicU32::new(NONE);
 static INS_IDX: AtomicU32 = AtomicU32::new(NONE);
 static EVT_IDX: AtomicU32 = AtomicU32::new(NONE);
+/// The overflow-sampling counter's index and width.
+static SMP_IDX: AtomicU32 = AtomicU32::new(NONE);
+static SMP_BITS: AtomicU8 = AtomicU8::new(0);
 /// Widths (cycle | instruction << 8 | event << 16), and the fixed and
 /// programmable counters the plan enables.
 static BITS: AtomicU32 = AtomicU32::new(0x40_40_40);
@@ -83,6 +104,8 @@ pub fn adopt(plan: X86Plan) -> bool {
     CYC_IDX.store(idx(plan.cycle_idx), Ordering::Relaxed);
     INS_IDX.store(idx(plan.instr_idx), Ordering::Relaxed);
     EVT_IDX.store(idx(plan.event_idx), Ordering::Relaxed);
+    SMP_IDX.store(idx(plan.sample_idx), Ordering::Relaxed);
+    SMP_BITS.store(plan.sample_bits, Ordering::Relaxed);
     BITS.store(plan.cycle_bits as u32 | (plan.instr_bits as u32) << 8 | (plan.event_bits as u32) << 16, Ordering::Relaxed);
     FIXED_MASK.store(plan.fixed_mask, Ordering::Relaxed);
     PMC_MASK.store(plan.pmc_mask, Ordering::Relaxed);
@@ -191,7 +214,11 @@ pub fn start_this_cpu() {}
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub fn verify() -> PmuCaps {
     let (cyc, ins) = (CYC_IDX.load(Ordering::Relaxed), INS_IDX.load(Ordering::Relaxed));
-    let read = |i: u32| if i == NONE { 0 } else { rdpmc(i) };
+    // Through the counters' MSRs, not `rdpmc`: QEMU TCG raises #UD on
+    // `rdpmc` and reads these MSRs as 0, so an emulated part whose CPUID
+    // names counters is dropped here instead of trapping the boot.
+    let map = if FIXED.load(Ordering::Relaxed) { None } else { Some(amd()) };
+    let read = |i: u32| if i == NONE { 0 } else { crate::cpu::rdmsr(api::x86_counter_msr(i, map)) };
     let (c0, i0) = (read(cyc), read(ins));
     for _ in 0..4096 {
         core::hint::spin_loop();
@@ -227,7 +254,41 @@ pub fn caps() -> PmuCaps {
         event_bits: ((bits >> 16) & 0xFF) as u8,
         user_cycles: live(&USER_C),
         user_instructions: live(&USER_I),
+        sample_bits: if SMP_IDX.load(Ordering::Relaxed) != NONE && (live(&CYC_OK) || live(&INS_OK)) {
+            SMP_BITS.load(Ordering::Relaxed)
+        } else {
+            0
+        },
     }
+}
+
+/// The sampling counter's `(PerfEvtSel, counter)` MSRs and its width, when
+/// the plan has one and the PMU is live.
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+fn sample_msrs() -> Option<(u32, u32, u8)> {
+    let bits = caps().sample_bits;
+    let index = SMP_IDX.load(Ordering::Relaxed);
+    if bits == 0 {
+        return None;
+    }
+    Some(if FIXED.load(Ordering::Relaxed) {
+        (api::X86_MSR_PERFEVTSEL0 + index, api::X86_MSR_PMC0 + index, bits)
+    } else {
+        let a = amd();
+        (a.evtsel(index as u8), a.ctr(index as u8), bits)
+    })
+}
+
+/// Clear the sampling counter's bit in the global overflow status, where the
+/// CPU has one (Intel version 2+, AMD PerfMonV2).
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+fn clear_overflow_status() {
+    if !GLOBAL.load(Ordering::Relaxed) {
+        return;
+    }
+    let bit = 1u64 << SMP_IDX.load(Ordering::Relaxed);
+    let msr = if FIXED.load(Ordering::Relaxed) { api::X86_MSR_PERF_GLOBAL_OVF_CTRL } else { api::AMD_MSR_PERF_GLOBAL_STATUS_CLR };
+    crate::cpu::wrmsr(msr, bit);
 }
 
 /// The event selector of "mispredicted branches" for [`Pmu::event`](azos_arch_api::Pmu::event)
@@ -312,6 +373,67 @@ impl azos_arch_api::Pmu for crate::X86_64 {
         {
             let _ = (sel, &EVENT_SEL);
             None
+        }
+    }
+
+    /// The sampling counter: stopped, loaded, started with `INT` on core
+    /// cycles, and this CPU's LVT performance-counter entry unmasked on
+    /// [`PMI_VECTOR`](crate::irq::encode::PMI_VECTOR).
+    fn sample_arm(&self, period: u64) -> bool {
+        #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+        {
+            use crate::irq::{apic, encode};
+            let Some((evtsel, ctr, bits)) = sample_msrs() else { return false };
+            let intel = FIXED.load(Ordering::Relaxed);
+            let init = api::sample_init(bits, period);
+            // Intel's legacy counter MSR keeps 32 bits and sign-extends them.
+            if !api::sample_period_fits(bits, period) || (intel && api::x86_legacy_write(bits, init) != init) {
+                return false;
+            }
+            let ev = if intel { api::INTEL_EV_CYCLES } else { api::AMD_EV_CYCLES };
+            crate::cpu::wrmsr(evtsel, 0);
+            crate::cpu::wrmsr(ctr, init);
+            clear_overflow_status();
+            apic::write(encode::LAPIC_LVT_PERF, encode::lvt_perf(encode::PMI_VECTOR, false));
+            crate::cpu::wrmsr(evtsel, api::x86_sample_evtsel(ev));
+            true
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+        {
+            let _ = (period, &SMP_IDX, &SMP_BITS);
+            false
+        }
+    }
+
+    /// [`PMI_VECTOR`](crate::irq::encode::PMI_VECTOR): the counter's top bit
+    /// (clear once it wrapped, `api::sample_overflowed`), the overflow
+    /// status cleared, then the counter reloaded and the LVT entry unmasked
+    /// again, or the counter stopped and the entry left masked.
+    fn sample_ack(&self, rearm: Option<u64>) -> bool {
+        #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+        {
+            use crate::irq::{apic, encode};
+            let Some((evtsel, ctr, bits)) = sample_msrs() else { return false };
+            let overflowed = api::sample_overflowed(bits, rdpmc(SMP_IDX.load(Ordering::Relaxed)));
+            clear_overflow_status();
+            match rearm {
+                Some(period) => {
+                    if overflowed {
+                        crate::cpu::wrmsr(ctr, api::sample_init(bits, period));
+                    }
+                    apic::write(encode::LAPIC_LVT_PERF, encode::lvt_perf(encode::PMI_VECTOR, false));
+                }
+                None => {
+                    crate::cpu::wrmsr(evtsel, 0);
+                    apic::write(encode::LAPIC_LVT_PERF, encode::lvt_perf(encode::PMI_VECTOR, true));
+                }
+            }
+            overflowed
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+        {
+            let _ = rearm;
+            false
         }
     }
 }

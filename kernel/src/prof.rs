@@ -21,6 +21,28 @@
 //! missing page ([`azos_mm::vmm::translate_user_readable_nofault`]) rather
 //! than through `copy_from_user`.
 //!
+//! # The PMU's sampling counter
+//!
+//! With Kconfig `PROFILER_PMU` a CPU whose PMU can interrupt on an overflow
+//! ([`azos_arch_api::Pmu::sample_arm`]) samples every `PROFILER_PMU_PERIOD`
+//! core cycles instead: its tick arms the counter the first time it sees the
+//! class on and takes no sample of its own from then on, and the PMU
+//! interrupt ([`on_overflow`]) samples exactly as the tick does, without
+//! `PROFILER_TICK_DIV`, and re-arms. Once the class is off, the next overflow
+//! disarms the counter, so a profiler that is off arms nothing. The PMU
+//! interrupt is maskable on every ISA (x86_64 included, see
+//! `azos_arch::pmu`), so the trace ring sees the tick's discipline.
+//!
+//! # Real-time CPUs
+//!
+//! A real-time CPU ([`azos_sched::cpu_is_real_time`]: `isolcpus`, a band
+//! task or an admitted reservation) is never armed, and a counter whose CPU
+//! became one disarms at its next overflow: the interrupt and its walk are
+//! jitter the CPU's reservations did not budget for. Its tick, which runs
+//! anyway, records the interrupted PC only ([`Origin::RtTick`], no walk), so
+//! `tracectl profile` shows where the CPU was and that its samples were
+//! refused.
+//!
 //! # Which stack
 //!
 //! A kernel-mode sample is bounded by the stack it was taken on: the
@@ -40,13 +62,18 @@
 //! `elr` / `rip` the handler already prints. The addresses are for
 //! `addr2line -f -e <kernel ELF>`.
 
-use azos_trace::prof::{self, Layout, Stop, Walk, MAX_DEPTH};
-use core::sync::atomic::{AtomicU32, Ordering};
+use azos_arch::Pmu as _;
+use azos_trace::prof::{self, Layout, Origin, Stop, Walk, MAX_DEPTH};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 /// Frames a sample holds, the PC included (Kconfig `PROFILER_DEPTH`).
 const DEPTH: usize = azos_limits::PROFILER_DEPTH as usize;
 /// Sample every this many ticks on a CPU (Kconfig `PROFILER_TICK_DIV`).
 const DIV: u32 = azos_limits::PROFILER_TICK_DIV as u32;
+/// Sample on the PMU's sampling counter where a CPU has one (Kconfig
+/// `PROFILER_PMU`), every this many core cycles (`PROFILER_PMU_PERIOD`).
+const PMU: bool = azos_limits::PROFILER_PMU;
+const PERIOD: u64 = azos_limits::PROFILER_PMU_PERIOD as u64;
 const _: () = assert!(DEPTH >= 2 && DEPTH <= MAX_DEPTH, "PROFILER_DEPTH is 2..=32");
 const _: () = assert!(DIV >= 1);
 
@@ -75,18 +102,42 @@ pub(crate) struct Interrupted {
 /// own CPU's tick only.
 static TICKS: [AtomicU32; azos_sched::MAX_CPUS] = [const { AtomicU32::new(0) }; azos_sched::MAX_CPUS];
 
+/// Per CPU, its PMU sampling counter: [`IDLE`], [`ARMED`], or [`REFUSED`]
+/// (the arm failed: no counter, no interrupt, a period it does not take;
+/// the tick samples for the rest of the boot and never asks again, which on
+/// riscv64 would be an SBI call per tick). Written by the CPU's own tick and
+/// PMU interrupt only.
+static COUNTER: [AtomicU8; azos_sched::MAX_CPUS] = [const { AtomicU8::new(IDLE) }; azos_sched::MAX_CPUS];
+const IDLE: u8 = 0;
+const ARMED: u8 = 1;
+const REFUSED: u8 = 2;
+
 /// The scheduler tick's hook: sample the interrupted code if the class is on.
 /// `what` is only called then, so the caller's frame is not read otherwise.
 #[inline(always)]
 pub(crate) fn on_tick(what: impl FnOnce() -> Interrupted) {
     if azos_trace::prof_on() {
-        sample(what());
+        tick(what);
     }
 }
 
 #[inline(never)]
-fn sample(i: Interrupted) {
+fn tick(what: impl FnOnce() -> Interrupted) {
     let cpu = azos_sched::smp::current_cpu_id();
+    let Some(counter) = COUNTER.get(cpu) else { return };
+    let rt = azos_sched::cpu_is_real_time(cpu);
+    if PMU && !rt {
+        // The counter samples this CPU; the first tick with the class on arms it.
+        match counter.load(Ordering::Relaxed) {
+            ARMED => return,
+            IDLE if azos_arch::ARCH.sample_arm(PERIOD) => {
+                counter.store(ARMED, Ordering::Relaxed);
+                return;
+            }
+            IDLE => counter.store(REFUSED, Ordering::Relaxed),
+            _ => {}
+        }
+    }
     if DIV > 1 {
         let Some(t) = TICKS.get(cpu) else { return };
         let n = t.load(Ordering::Relaxed);
@@ -95,9 +146,40 @@ fn sample(i: Interrupted) {
             return;
         }
     }
+    sample(what(), cpu, if rt { Origin::RtTick } else { Origin::Tick });
+}
+
+/// The PMU interrupt's hook (Kconfig `PROFILER_PMU`): acknowledge the
+/// sampling counter and, while the class is on and the CPU is not real-time,
+/// re-arm it and sample the interrupted code; otherwise disarm it. `what` is
+/// only called for a sample.
+#[inline(never)]
+pub(crate) fn on_overflow(what: impl FnOnce() -> Interrupted) {
+    let cpu = azos_sched::smp::current_cpu_id();
+    let keep = PMU && azos_trace::prof_on() && !azos_sched::cpu_is_real_time(cpu);
+    let overflowed = azos_arch::ARCH.sample_ack(keep.then_some(PERIOD));
+    if !keep {
+        if let Some(c) = COUNTER.get(cpu) {
+            c.store(IDLE, Ordering::Relaxed);
+        }
+    } else if overflowed {
+        sample(what(), cpu, Origin::Pmu);
+    }
+}
+
+/// One sample of the interrupted code into this CPU's ring: the walked
+/// frame-pointer chain, or the PC alone on a real-time CPU.
+fn sample(i: Interrupted, cpu: usize, origin: Origin) {
     let mut frames = [0u64; DEPTH];
-    let w = if i.user { walk_user(&i, &mut frames) } else { walk_kernel(&i, cpu, &mut frames) };
-    prof::encode(azos_sched::current_task_tid(), i.user, w, &frames, |ev, a| {
+    let w = if origin == Origin::RtTick {
+        frames[0] = i.pc as u64;
+        Walk { depth: 1, stop: Stop::Depth }
+    } else if i.user {
+        walk_user(&i, &mut frames)
+    } else {
+        walk_kernel(&i, cpu, &mut frames)
+    };
+    prof::encode(azos_sched::current_task_tid(), i.user, origin, w, &frames, |ev, a| {
         azos_trace::record(ev, a[0], a[1], a[2], a[3]);
     });
 }

@@ -33,7 +33,8 @@ static DT_ISA: AtomicU32 = AtomicU32::new(0);
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum Dt { Zicboz = 1, Sstc = 2, Svpbmt = 4, Zba = 8, Zbb = 16, Zbs = 32, V = 64, Aia = 128, F = 256, D = 512,
-         Zawrs = 1024, Zacas = 2048, Zihintpause = 4096, H = 8192, Svnapot = 16384, Svadu = 32768, Ssqosid = 65536 }
+         Zawrs = 1024, Zacas = 2048, Zihintpause = 4096, H = 8192, Svnapot = 16384, Svadu = 32768, Ssqosid = 65536,
+         Sscofpmf = 131072 }
 
 /// Kconfig RV_V, except that a build given `--features rvv` by hand (`make
 /// build-rvv`, `qemu-rvv`, the `k1` feature's edge) on a config whose RV_V
@@ -177,7 +178,7 @@ pub fn cpu_features(fw: &Firmware) {
                       (info.isa_zawrs, Dt::Zawrs), (info.isa_zacas, Dt::Zacas),
                       (info.isa_zihintpause, Dt::Zihintpause), (info.isa_h, Dt::H),
                       (info.isa_svnapot, Dt::Svnapot), (info.isa_svadu, Dt::Svadu),
-                      (info.isa_ssqosid, Dt::Ssqosid)] {
+                      (info.isa_ssqosid, Dt::Ssqosid), (info.isa_sscofpmf, Dt::Sscofpmf)] {
         if on {
             dt |= bit as u32;
         }
@@ -197,6 +198,10 @@ pub fn cpu_features(fw: &Firmware) {
     // extension for a programmable counter; ring 3's `scounteren` follows.
     // The `[ISA]` line's `pmu` row (`present`) is the programmable counter.
     azos_arch::pmu::select();
+    // Sscofpmf (Kconfig RV_SSCOFPMF): cpu@0's `sscofpmf`, then one trap-safe
+    // `scountovf` read; the profiler's overflow sampling (`sample=` on the
+    // `[PMU]` line) needs it and the programmable counter above.
+    azos_arch::pmu::sscofpmf_select(policy::SSCOFPMF.allowed(), dt_has(Dt::Sscofpmf));
     crate::boot::pmu_report("riscv64", azos_arch::pmu::verify());
     // Kconfig n hides Zbb / V from the kernel's own users and from the vDSO hwcap.
     crate::boot::note_dtb_isa(policy::ZBB.gate(info.isa_zbb), info.isa_zbc, info.isa_zknh,
@@ -350,6 +355,7 @@ fn isa_report(zicboz_on: bool, zicbom_on: bool, sstc_on: bool, svpbmt_on: bool, 
         e("h", "RV_H", policy::H, crate::entry::riscv64::ext::hv::present()),
         e("ssqosid", "RV_SSQOSID", policy::SSQOSID, azos_arch::ext::ssqosid::available()),
         e("pmu", "RV_PMU", policy::PMU, azos_arch::pmu::present()),
+        e("sscofpmf", "RV_SSCOFPMF", policy::SSCOFPMF, azos_arch::pmu::sscofpmf()),
     ]);
 }
 

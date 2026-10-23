@@ -406,9 +406,10 @@ config PROFILER
       backtrace in the panic path, and the code is unchanged. Needs KTRACE.
 
       The sampling rate is the scheduler tick (SCHED_HZ) divided by
-      PROFILER_TICK_DIV: a dedicated high-rate profiling timer is a
-      follow-up. The rate is exact only to the tick: code that runs with
-      interrupts masked is sampled at the instruction that unmasks them.
+      PROFILER_TICK_DIV, or, with PROFILER_PMU on a CPU whose PMU can
+      interrupt, one sample per PROFILER_PMU_PERIOD core cycles. Either way
+      code that runs with interrupts masked is sampled at the instruction
+      that unmasks them.
 
 config PROFILER_DEPTH
     int "Profiler: frames per sample (the PC included)"

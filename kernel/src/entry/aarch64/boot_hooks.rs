@@ -662,7 +662,7 @@ pub fn timebase_hz() -> u64 {
 /// table went live and are in the device-only TTBR0, so no mapping is
 /// written into a live table here (the reason a TLB flush once followed it).
 #[inline(always)]
-pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
+pub fn irqchip_init(_hart_id: usize, dtb_ptr: usize) {
     kprintln!();
 
     // Per-CPU IRQ stack: magic word + published [base, top), BEFORE
@@ -695,6 +695,7 @@ pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
         gic::enable_ppi(0, 0);
         kprintln!("[GIC] GICv2 distributor + CPU interface initialized, PPI {} + SGI 0 enabled",
             crate::entry::aarch64::TIMER_PPI_ENABLED);
+        pmu_irq(dtb_ptr);
         return;
     }
 
@@ -717,6 +718,7 @@ pub fn irqchip_init(_hart_id: usize, _dtb_ptr: usize) {
     gic::enable_ppi(0, 0);
     kprintln!("[GIC] distributor + redistributor(0) + CPU interface \
                initialized, PPI {} + SGI 0 enabled", crate::entry::aarch64::TIMER_PPI_ENABLED);
+    pmu_irq(dtb_ptr);
 }
 
 /// Nothing yet: `timer_init` unmasks IRQs once the tick is armed.
@@ -738,6 +740,32 @@ pub fn virtio_mmio_line(slot: usize, _base: usize) -> Option<u32> {
 pub fn net_mmio_unmask(_hart: usize, line: u32) {
     let mpidr = azos_arch::cpu::read_mpidr().raw;
     gic::route_spi(line, mpidr, true);
+}
+
+/// The PMU's overflow interrupt (Kconfig `PROFILER_PMU`): the DTB `pmu`
+/// node's PPI, published for `handle_irq` and each secondary's
+/// `secondary_irq_init`, and enabled on this PE. The PMU raises it only
+/// while the profiler has a counter's `PMINTENSET_EL1` bit set. Without
+/// one the profiler samples on the tick.
+fn pmu_irq(dtb_ptr: usize) {
+    if !azos_limits::PROFILER_PMU {
+        return;
+    }
+    let found = if dtb_ptr != 0 {
+        // SAFETY: the firmware's DTB, mapped at its linear-map address (as
+        // `console_irq` reads it).
+        unsafe { azos_dtb::dtb_pmu_ppi(azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8) }
+    } else {
+        None
+    };
+    match found {
+        Some(intid) => {
+            azos_arch::pmu::set_irq(intid);
+            gic::enable_ppi(0, intid);
+            kprintln!("[PMU] overflow interrupt: DTB PPI INTID {} (profiler sampling)", intid);
+        }
+        None => kprintln!("[PMU] overflow interrupt: none in the DTB (the profiler samples on the tick)"),
+    }
 }
 
 /// The PL011's receive/transmit interrupt.

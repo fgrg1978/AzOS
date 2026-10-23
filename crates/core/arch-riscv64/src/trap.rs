@@ -39,6 +39,8 @@ pub const INT_TIMER_S: usize = 5;
 pub const INT_EXTERNAL_S: usize = 9;
 /// H: a guest interrupt file has an identity pending (`hgeip & hgeie`).
 pub const INT_GUEST_EXTERNAL_S: usize = 12;
+/// Sscofpmf: a counter's overflow (LCOFI), the profiler's sampling counter.
+pub const INT_LCOF_S: usize = 13;
 
 /// Trap frame layout — must match `trap_entry*.S` exactly.
 ///

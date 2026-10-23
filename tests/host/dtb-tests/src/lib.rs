@@ -231,7 +231,7 @@ mod tests {
             mem_base: 0, mem_size: 0, timer_freq: 0,
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [0u8; 64], isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         assert_eq!(dtb_compatible_str(&info), b"");
     }
@@ -242,7 +242,7 @@ mod tests {
             mem_base: 0, mem_size: 0, timer_freq: 0,
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [0u8; 64], isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         let want = b"riscv-virtio";
         info.compatible[..want.len()].copy_from_slice(want);
@@ -258,7 +258,7 @@ mod tests {
             uart_base: 0, plic_base: 0, num_cpus: 0,
             compatible: [b'A'; 64], // no NUL anywhere
             isa_sstc: false,
-            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
+            isa_zicboz: false, cboz_block_size: 0, isa_zicbom: false, cbom_block_size: 0, isa_zbb: false, isa_zbc: false, isa_zknh: false, isa_v: false, isa_zba: false, isa_zbs: false, isa_svpbmt: false, isa_svnapot: false, isa_svadu: false, isa_zawrs: false, isa_zacas: false, isa_zihintpause: false, isa_zkr: false, isa_f: false, isa_d: false, isa_h: false, isa_ssqosid: false, isa_sscofpmf: false, aplic_base: 0, aplic_num_sources: 0, imsic_base: 0, imsic_num_ids: 0, imsic_guest_index_bits: 0,
         };
         let out = dtb_compatible_str(&info);
         assert_eq!(out.len(), 64);
@@ -368,6 +368,20 @@ mod tests {
         let mut v = cstr("rv64imac");
         v.extend_from_slice(b"_sstc\0");
         assert!(!sstc_of(&cpu0_with("riscv,isa", &v)));
+    }
+
+    /// Sscofpmf (RV_SSCOFPMF) reaches `isa_sscofpmf` from both property
+    /// forms, as QEMU writes them with `-cpu rv64,sscofpmf=on`; its default
+    /// CPU (no `sscofpmf`) leaves it clear. Canary: drop the field's token
+    /// line from the parser and the first two fail.
+    #[test]
+    fn sscofpmf_reaches_its_field() {
+        let of = |b: &[u8]| unsafe { dtb_parse(b.as_ptr()) }.expect("well-formed blob").isa_sscofpmf;
+        let list: Vec<u8> = ["i", "m", "a", "sscofpmf", "sstc"].iter().flat_map(|e| cstr(e)).collect();
+        assert!(of(&cpu0_with("riscv,isa-extensions", &list)));
+        assert!(of(&cpu0_with("riscv,isa", &cstr("rv64imafdch_zicsr_sscofpmf_sstc"))));
+        assert!(!of(&cpu0_with("riscv,isa", &cstr("rv64imafdch_zicsr_sstc_ssu64xl"))));
+        assert!(!of(&cpu0_with("riscv,isa", &cstr("rv64imac_sscofpmfx"))), "an exact token");
     }
 
     #[test]
@@ -1168,6 +1182,56 @@ mod tests {
             .end()
             .end().blob();
         assert_eq!(unsafe { azos_dtb::dtb_pl011_irq(blob.as_ptr()) }, None);
+    }
+
+    // ── dtb_pmu_ppi: the PMU's overflow interrupt (PROFILER_PMU) ─────────
+
+    /// `/ { gic; <pmu node> }` with the PMU's properties in QEMU's order
+    /// (`interrupts` before `compatible`).
+    fn with_pmu(compat_list: &[&str], interrupts: &[u8], status: Option<&str>) -> Vec<u8> {
+        let mut f = Fdt::new();
+        f.begin("")
+            .begin("intc@8000000").prop("compatible", &compat(&["arm,gic-v3"])).end()
+            .begin("pmu").prop("interrupts", interrupts).prop("compatible", &compat(compat_list));
+        if let Some(st) = status {
+            f.prop("status", &cstr(st));
+        }
+        f.end().end().blob()
+    }
+
+    /// QEMU `virt` (11.0, `-cpu max`): `pmu { interrupts = <1 7 4>;
+    /// compatible = "arm,armv8-pmuv3"; }`, PPI 7, INTID 23; a core binding
+    /// names its PMU the same way.
+    #[test]
+    fn the_pmu_ppi_is_16_plus_its_number() {
+        let virt = with_pmu(&["arm,armv8-pmuv3"], &cells3(1, 7, 4), None);
+        assert_eq!(unsafe { azos_dtb::dtb_pmu_ppi(virt.as_ptr()) }, Some(23));
+        let a76 = with_pmu(&["arm,cortex-a76-pmu"], &cells3(1, 7, 0xf04), Some("okay"));
+        assert_eq!(unsafe { azos_dtb::dtb_pmu_ppi(a76.as_ptr()) }, Some(23), "a CPU mask in the flags");
+    }
+
+    /// An SPI-wired PMU (one line per CPU), a non-GIC parent's 2-cell
+    /// specifier (the Raspberry Pi 3's local controller), a disabled node and
+    /// a node that is not a PMU give nothing: the profiler samples on the
+    /// tick. Canary: accept type 0 in `decode_gic_ppi` and the SPI case
+    /// answers 19.
+    #[test]
+    fn the_pmu_ppi_refuses_what_is_not_one() {
+        let spis = [cells3(0, 3, 4), cells3(0, 4, 4)].concat();
+        for (compat_list, irqs, status) in [
+            (&["arm,cortex-a72-pmu"][..], spis, None),
+            (&["arm,cortex-a53-pmu"][..], [9u32.to_be_bytes(), 4u32.to_be_bytes()].concat(), None),
+            (&["arm,armv8-pmuv3"][..], cells3(1, 7, 4), Some("disabled")),
+            (&["arm,armv8-timer"][..], cells3(1, 7, 4), None),
+            (&["arm,armv8-pmuv3"][..], cells3(1, 16, 4), None),
+        ] {
+            let blob = with_pmu(compat_list, &irqs, status);
+            assert_eq!(unsafe { azos_dtb::dtb_pmu_ppi(blob.as_ptr()) }, None, "{compat_list:?} {irqs:?} {status:?}");
+        }
+        assert_eq!(azos_dtb::decode_gic_ppi(12, [1, 15, 4]), Some(31));
+        assert_eq!(azos_dtb::decode_gic_ppi(8, [1, 7, 4]), None, "a short property");
+        assert!(azos_dtb::is_arm_pmu(b"arm,cortex-a53-pmu\0arm,armv8-pmuv3\0"));
+        assert!(!azos_dtb::is_arm_pmu(b"arm,-pmu\0") && !azos_dtb::is_arm_pmu(b"vendor,x-pmu\0"));
     }
 
     // ── PLIC vs AIA: `plic_base` only from a PLIC-compatible node ────────

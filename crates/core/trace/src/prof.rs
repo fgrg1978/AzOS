@@ -8,8 +8,9 @@
 //! `core` and the event ids of `azos_abi::trace`:
 //!
 //! * the kernel (`kernel/src/prof.rs`) walks the interrupted stack in the
-//!   scheduler tick ([`walk`]) and writes the sample into the CPU's trace
-//!   ring ([`encode`]);
+//!   scheduler tick, or in the PMU sampling counter's overflow interrupt
+//!   ([`walk`]), and writes the sample into the CPU's trace ring
+//!   ([`encode`]), marked with its [`Origin`];
 //! * `tracectl profile` reads the rings back ([`Assembler`]), aggregates
 //!   ([`StackTable`], [`SampleLog`]), symbolizes from ELF files ([`Resolver`])
 //!   and writes folded stacks ([`write_folded`]) and a Perfetto trace
@@ -195,10 +196,36 @@ pub fn walk(
 /// ceiling.
 pub const MAX_DEPTH: usize = 32;
 
+/// What took a sample. The values are the record format's (2 bits).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Origin {
+    /// The scheduler tick (every `PROFILER_TICK_DIV`-th).
+    Tick = 0,
+    /// The overflow of the CPU's PMU sampling counter (Kconfig
+    /// `PROFILER_PMU`).
+    Pmu = 1,
+    /// The tick of a real-time CPU, whose PMU sampling is refused: the
+    /// interrupted PC only, no walk.
+    RtTick = 2,
+}
+
+impl Origin {
+    /// From the 2 bits of a record's `meta`; `None` for the unused value.
+    pub const fn from_bits(b: u32) -> Option<Origin> {
+        match b & 3 {
+            0 => Some(Origin::Tick),
+            1 => Some(Origin::Pmu),
+            2 => Some(Origin::RtTick),
+            _ => None,
+        }
+    }
+}
+
 /// `meta` of a sample header: frames (bits 0..=7), user mode (bit 8), the
-/// stop reason (bits 9..=11).
-pub const fn meta(depth: usize, user: bool, stop: Stop) -> u32 {
-    (depth as u32 & 0xff) | (user as u32) << 8 | (stop as u32) << 9
+/// stop reason (bits 9..=11), the origin (bits 12..=13).
+pub const fn meta(depth: usize, user: bool, stop: Stop, origin: Origin) -> u32 {
+    (depth as u32 & 0xff) | (user as u32) << 8 | (stop as u32) << 9 | (origin as u32) << 12
 }
 
 /// Records after the header for a sample of `depth` frames (two frames a
@@ -209,12 +236,12 @@ pub const fn frame_records(depth: usize) -> usize {
 
 /// Turn a walk into trace records: the header, then the frames two a
 /// record. `emit` gets `(event, args)` in ring order.
-pub fn encode(tid: u32, user: bool, w: Walk, frames: &[u64], mut emit: impl FnMut(u16, [u32; 4])) {
+pub fn encode(tid: u32, user: bool, origin: Origin, w: Walk, frames: &[u64], mut emit: impl FnMut(u16, [u32; 4])) {
     let depth = w.depth.min(frames.len()).min(MAX_DEPTH);
     if depth == 0 {
         return;
     }
-    emit(TRACE_EV_PROF_SAMPLE, [tid, meta(depth, user, w.stop), frames[0] as u32, (frames[0] >> 32) as u32]);
+    emit(TRACE_EV_PROF_SAMPLE, [tid, meta(depth, user, w.stop, origin), frames[0] as u32, (frames[0] >> 32) as u32]);
     for pair in frames[1..depth].chunks(2) {
         let b = pair.get(1).copied().unwrap_or(0);
         emit(TRACE_EV_PROF_FRAMES, [pair[0] as u32, (pair[0] >> 32) as u32, b as u32, (b >> 32) as u32]);
@@ -229,6 +256,7 @@ pub struct Sample {
     pub tid: u32,
     pub user: bool,
     pub stop: Stop,
+    pub origin: Origin,
     pub depth: usize,
     pub frames: [u64; MAX_DEPTH],
 }
@@ -259,7 +287,7 @@ pub struct Assembler {
 impl Assembler {
     pub const fn new() -> Assembler {
         Assembler {
-            cur: Sample { ts: 0, tid: 0, user: false, stop: Stop::End, depth: 0, frames: [0; MAX_DEPTH] },
+            cur: Sample { ts: 0, tid: 0, user: false, stop: Stop::End, origin: Origin::Tick, depth: 0, frames: [0; MAX_DEPTH] },
             missing: 0,
             got: 0,
             torn: 0,
@@ -277,14 +305,16 @@ impl Assembler {
                     self.missing = 0;
                 }
                 let depth = (a[1] & 0xff) as usize;
-                if depth == 0 || depth > MAX_DEPTH {
+                let origin = Origin::from_bits(a[1] >> 12);
+                let Some(origin) = origin.filter(|_| depth != 0 && depth <= MAX_DEPTH) else {
                     self.torn += 1;
                     return None;
-                }
+                };
                 self.cur.ts = ts;
                 self.cur.tid = a[0];
                 self.cur.user = a[1] >> 8 & 1 != 0;
                 self.cur.stop = Stop::from_bits(a[1] >> 9);
+                self.cur.origin = origin;
                 self.cur.depth = depth;
                 self.cur.frames[0] = a[2] as u64 | (a[3] as u64) << 32;
                 self.got = 1;

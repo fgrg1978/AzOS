@@ -451,8 +451,8 @@ choice
       one programmable `hpmcounterN` for `Pmu::event`, allocated through the
       SBI PMU extension (EID "PMU": the probe is the Base extension's
       `probe_extension`, then `num_counters` and `counter_get_info` find a
-      hardware counter outside cycle/time/instret). QEMU virt has cycle and
-      instret only: the boot line says `events=0`.
+      hardware counter outside cycle/time/instret). QEMU virt gives the
+      `hpmcounter3..` its `riscv,pmu` node maps.
       probe: the counters the boot finds; a firmware without the PMU
       extension keeps cycle and instret. n: no counter is read; `Pmu` answers
       0 (WCET figures in raw timer ticks). require: a firmware without a
@@ -463,6 +463,28 @@ choice
     config RV_PMU_PROBE
         bool "probe: use it when the boot finds it, fall back otherwise"
     config RV_PMU_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
+    prompt "Sscofpmf (counter-overflow interrupt)"
+    default RV_SSCOFPMF_PROBE
+    help
+      The overflow bit of an `hpmcounterN`, the `scountovf` CSR that shows it
+      to S-mode and the local counter-overflow interrupt (LCOFI, `sie`/`sip`
+      bit 13): what the profiler's PMU sampling (PROFILER_PMU) is
+      interrupted by (crates/core/arch-riscv64/src/pmu.rs). It also needs a
+      programmable counter from RV_PMU. probe: used when cpu@0's
+      `riscv,isa` names `sscofpmf` and one `scountovf` read under a private
+      trap vector does not trap; tick sampling otherwise. QEMU virt has it
+      with `-cpu rv64,sscofpmf=on` (or `max`), not with its default CPU.
+      n: the CSR is never read. require: refuse to boot without it.
+
+    config RV_SSCOFPMF_NEVER
+        bool "n: never use it"
+    config RV_SSCOFPMF_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SSCOFPMF_REQUIRE
         bool "require: baseline; refuse to boot without it"
 endchoice
 

@@ -26,6 +26,10 @@
 //! `addr2line -f -e FILE` resolves on the host. A file without a symbol
 //! table (stripped) is reported and treated as absent.
 //!
+//! The summary counts the samples by origin: `tick` (the scheduler tick),
+//! `pmu` (the PMU sampling counter's overflow, Kconfig `PROFILER_PMU`) and
+//! `rt` (a real-time CPU's tick: its PMU sampling refused, the PC only).
+//!
 //! Exit 0 on success, 1 when the kernel refused or the profiler is compiled
 //! out, 2 on a usage error.
 
@@ -35,7 +39,7 @@ use super::*;
 #[path = "../../../../crates/core/trace/src/prof.rs"]
 mod prof;
 
-use prof::{Assembler, ElfError, Names, ReadAt, Resolver, SampleLog, StackTable, Stop, MAX_DEPTH};
+use prof::{Assembler, ElfError, Names, Origin, ReadAt, Resolver, SampleLog, StackTable, Stop, MAX_DEPTH};
 
 /// Distinct stacks kept, and samples logged for the Perfetto export.
 const MAX_STACKS: usize = 128;
@@ -312,6 +316,8 @@ struct Run {
     drops: u64,
     elapsed_ms: u64,
     stops: [u64; 8],
+    /// Samples by [`Origin`]: tick, pmu, rt.
+    origins: [u64; 3],
 }
 
 pub(crate) fn run() -> i32 {
@@ -397,6 +403,7 @@ fn drain(opts: &Opts, st: &mut State, log_wanted: bool) -> Result<Run, i32> {
     let deadline = t0 + opts.ms * 1_000_000;
     let (mut records, mut lost) = (0u64, 0u64);
     let mut stops = [0u64; 8];
+    let mut origins = [0u64; 3];
     loop {
         let mut any = false;
         for cpu in 0..ncpu {
@@ -407,7 +414,11 @@ fn drain(opts: &Opts, st: &mut State, log_wanted: bool) -> Result<Run, i32> {
                         any = true;
                         records += 1;
                         if let Some(s) = st.asm[cpu].feed(r.ts, r.event, r.args) {
-                            stops[s.stop as usize] += 1;
+                            origins[s.origin as usize] += 1;
+                            // A real-time CPU's PC-only sample walked nothing.
+                            if s.origin != Origin::RtTick {
+                                stops[s.stop as usize] += 1;
+                            }
                             if let Some(i) = st.table.add(s.tid, s.user, s.frames()) {
                                 if log_wanted {
                                     st.log.push(ns_of(s.ts, g.ts_hz), cpu as u16, i);
@@ -434,7 +445,7 @@ fn drain(opts: &Opts, st: &mut State, log_wanted: bool) -> Result<Run, i32> {
     for cpu in 0..ncpu {
         drops += cons[cpu].as_ref().unwrap().drops().wrapping_sub(drops0[cpu]) as u64;
     }
-    Ok(Run { ncpu, records, lost, drops, elapsed_ms, stops })
+    Ok(Run { ncpu, records, lost, drops, elapsed_ms, stops, origins })
 }
 
 /// Name the addresses, write the outputs and the summary.
@@ -481,6 +492,10 @@ fn report(opts: &Opts, st: &mut State, root: u32, folded: Option<u32>, perfetto:
     s.kv(b"torn", torn);
     s.kv(b"drops", r.drops);
     s.kv(b"lost", r.lost);
+    s.s(b"\ntracectl: profile origins:");
+    s.kv(b"tick", r.origins[Origin::Tick as usize]);
+    s.kv(b"pmu", r.origins[Origin::Pmu as usize]);
+    s.kv(b"rt", r.origins[Origin::RtTick as usize]);
     s.s(b"\ntracectl: profile walks ended:");
     for (i, n) in r.stops.iter().enumerate() {
         if *n != 0 {

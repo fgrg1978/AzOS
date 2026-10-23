@@ -9,7 +9,11 @@
 //! every decode test below feeds a word whose NEIGHBOURING fields are set,
 //! so a decoder reading the wrong bit range fails; the `delta` cases cross
 //! the wrap, so a plain subtraction fails; `advanced` is fed a stuck and a
-//! backwards counter, so a check that only compares `!=` fails.
+//! backwards counter, so a check that only compares `!=` fails. The
+//! overflow-sampling cases load a counter with `sample_init` and count it
+//! forward `period` events: an initial value off by one wraps one event early
+//! or late and fails, and a period at the half-range edge is checked on both
+//! sides.
 
 use azos_arch_api::pmu::*;
 
@@ -62,7 +66,8 @@ fn the_intel_plan_uses_fixed_counters_and_one_pmc() {
     assert_eq!(full.instr_idx, Some(X86_RDPMC_FIXED));
     assert_eq!(full.cycle_idx, Some(X86_RDPMC_FIXED | 1));
     assert_eq!((full.cycle_bits, full.instr_bits, full.event_bits), (48, 48, 48));
-    assert_eq!((full.fixed_mask, full.pmc_mask, full.event_idx), (0b11, 1, Some(0)));
+    assert_eq!((full.fixed_mask, full.pmc_mask, full.event_idx), (0b11, 0b11, Some(0)));
+    assert_eq!((full.sample_idx, full.sample_bits), (Some(1), 48), "PMC1 samples");
     assert!(full.fixed && full.amd.is_none() && full.global);
     // One fixed counter: instructions only, the cycle counter is the TSC.
     let one = x86_plan_intel(intel_decode(2 | (2 << 8) | (48 << 16), 1 | (40 << 5)));
@@ -75,31 +80,45 @@ fn the_intel_plan_uses_fixed_counters_and_one_pmc() {
     // None at all.
     let none = x86_plan_intel(intel_decode(0, 0));
     assert_eq!((none.instr_idx, none.cycle_idx, none.event_idx), (None, None, None));
+    // One general counter: Pmu::event keeps it, nothing samples.
+    let gp1 = x86_plan_intel(intel_decode(2 | (1 << 8) | (48 << 16), 3 | (48 << 5)));
+    assert_eq!((gp1.event_idx, gp1.sample_idx, gp1.sample_bits, gp1.pmc_mask), (Some(0), None, 0, 1));
+    assert_eq!(none.sample_idx, None);
 }
 
 #[test]
 fn amd_counters_follow_extcore_perfmonv2_and_the_hypervisor() {
-    let ext = amd_decode(true, 0, 0, false);
+    let ext = amd_decode(true, 0, 0, false, 0x17);
     assert_eq!((ext.counters, ext.evtsel0, ext.ctr0, ext.stride, ext.global_ctl), (6, 0xC001_0200, 0xC001_0201, 2, false));
     assert_eq!((ext.evtsel(0), ext.ctr(0), ext.evtsel(2), ext.ctr(2)), (0xC001_0200, 0xC001_0201, 0xC001_0204, 0xC001_0205));
-    let v2 = amd_decode(true, 1, 6, false);
+    let v2 = amd_decode(true, 1, 6, false, 0x19);
     assert!(v2.global_ctl);
     assert_eq!(v2.counters, 6);
-    assert_eq!(amd_decode(true, 1, 4, false).counters, 4, "PerfMonV2 reports the real count");
-    assert_eq!(amd_decode(true, 0, 3, false).counters, 6, "EBX counts only with PerfMonV2");
-    let legacy = amd_decode(false, 0, 0, false);
+    assert_eq!(amd_decode(true, 1, 4, false, 0x19).counters, 4, "PerfMonV2 reports the real count");
+    assert_eq!(amd_decode(true, 0, 3, false, 0x17).counters, 6, "EBX counts only with PerfMonV2");
+    let legacy = amd_decode(false, 0, 0, false, 0x10);
     assert_eq!((legacy.counters, legacy.evtsel(1), legacy.ctr(1)), (4, 0xC001_0001, 0xC001_0005));
-    assert_eq!(amd_decode(false, 0, 0, true), AmdPmu::NONE, "no legacy MSRs behind a hypervisor");
-    assert_eq!(amd_decode(true, 0, 0, true).counters, 6, "a hypervisor that enumerates ExtCore has a PMU");
+    assert_eq!(amd_decode(false, 0, 0, true, 0x10), AmdPmu::NONE, "no legacy MSRs behind a hypervisor");
+    // Bulldozer and later have ExtCore: one without it (an emulator with
+    // the hypervisor bit hidden) is assumed to have nothing. Canary: drop
+    // the family gate and this is 4 legacy counters, whose `rdpmc` is #UD
+    // under TCG.
+    assert_eq!(amd_decode(false, 0, 0, false, 0x17), AmdPmu::NONE, "a Zen part without ExtCore");
+    assert_eq!(amd_decode(false, 0, 0, false, 0x15), AmdPmu::NONE, "the first ExtCore family");
+    assert_eq!(amd_decode(false, 0, 0, false, 0x14).counters, 4, "Bobcat: the legacy four");
+    assert_eq!(amd_decode(true, 0, 0, true, 0x17).counters, 6, "a hypervisor that enumerates ExtCore has a PMU");
 }
 
 #[test]
 fn the_amd_plan_puts_cycles_on_0_and_instructions_on_1() {
-    let p = x86_plan_amd(amd_decode(true, 0, 0, false));
+    let p = x86_plan_amd(amd_decode(true, 0, 0, false, 0x17));
     assert_eq!((p.cycle_idx, p.instr_idx, p.event_idx), (Some(0), Some(1), Some(2)));
-    assert_eq!((p.cycle_bits, p.pmc_mask, p.fixed, p.global), (48, 0b111, false, false));
-    let two = x86_plan_amd(AmdPmu { counters: 2, ..amd_decode(true, 0, 0, false) });
-    assert_eq!((two.event_idx, two.pmc_mask), (None, 0b11));
+    assert_eq!((p.cycle_bits, p.pmc_mask, p.fixed, p.global), (48, 0b1111, false, false));
+    assert_eq!((p.sample_idx, p.sample_bits), (Some(3), 48), "counter 3 samples");
+    let two = x86_plan_amd(AmdPmu { counters: 2, ..amd_decode(true, 0, 0, false, 0x17) });
+    assert_eq!((two.event_idx, two.pmc_mask, two.sample_idx), (None, 0b11, None));
+    let three = x86_plan_amd(AmdPmu { counters: 3, ..amd_decode(true, 0, 0, false, 0x17) });
+    assert_eq!((three.event_idx, three.sample_idx, three.pmc_mask), (Some(2), None, 0b111));
     let none = x86_plan_amd(AmdPmu::NONE);
     assert_eq!((none.cycle_idx, none.instr_idx, none.event_idx), (None, None, None));
 }
@@ -173,14 +192,14 @@ fn aarch64_pmcr_and_user_access() {
 
 #[test]
 fn the_boot_line_names_what_was_found() {
-    assert_eq!(format!("{}", PmuCaps::NONE), "cycles=none instret=none events=0 user=none");
+    assert_eq!(format!("{}", PmuCaps::NONE), "cycles=none instret=none events=0 user=none sample=none");
     let c = PmuCaps {
         cycles: Source::Pmu, instructions: Source::Pmu, cycle_bits: 48, instr_bits: 48,
-        events: 1, event_bits: 48, user_cycles: true, user_instructions: true,
+        events: 1, event_bits: 48, user_cycles: true, user_instructions: true, sample_bits: 48,
     };
-    assert_eq!(format!("{c}"), "cycles=pmu/48 instret=pmu/48 events=1/48 user=cycles,instret");
-    let tsc = PmuCaps { cycles: Source::Timebase, instructions: Source::None, events: 0, user_cycles: false, user_instructions: true, ..c };
-    assert_eq!(format!("{tsc}"), "cycles=tsc/48 instret=none events=0 user=instret");
+    assert_eq!(format!("{c}"), "cycles=pmu/48 instret=pmu/48 events=1/48 user=cycles,instret sample=48");
+    let tsc = PmuCaps { cycles: Source::Timebase, instructions: Source::None, events: 0, user_cycles: false, user_instructions: true, sample_bits: 0, ..c };
+    assert_eq!(format!("{tsc}"), "cycles=tsc/48 instret=none events=0 user=instret sample=none");
     assert!(c.core_cycles() && !tsc.core_cycles() && !PmuCaps::NONE.core_cycles());
     assert!(PmuCaps { cycles: Source::Isa, ..c }.core_cycles());
 }
@@ -256,13 +275,24 @@ fn an_emulator_or_a_hypervisor_without_a_pmu_gets_nothing() {
     ];
     assert_eq!(x86_plan(cpuid_of(&QEMU64)), X86Plan { amd: Some(AmdPmu::NONE), ..X86Plan::NONE },
                "no legacy MSRs behind a hypervisor");
-    // The same CPU on bare metal does have the legacy four (families before Zen).
-    static OLD_AMD: [(u32, u32, [u32; 4]); 3] = [
+    // A K10 (family 0x10) on bare metal does have the legacy four.
+    static OLD_AMD: [(u32, u32, [u32; 4]); 4] = [
         (0, 0, [0xD, AUTHENTIC_AMD[0], AUTHENTIC_AMD[1], AUTHENTIC_AMD[2]]),
+        (1, 0, [(0x1 << 20) | (0xF << 8), 0, 0, 0]),
         (0x8000_0000, 0, [0x8000_000A, 0, 0, 0]),
         (0x8000_0001, 0, [0, 0, 0, 0]),
     ];
     assert_eq!(x86_plan(cpuid_of(&OLD_AMD)).amd.unwrap().counters, 4);
+    // QEMU TCG `-cpu EPYC,-hypervisor`: family 0x17, the hypervisor bit
+    // hidden, no ExtCore. Nothing is named (the boot trapped on `rdpmc` when
+    // the legacy four were assumed here).
+    static EPYC_NO_HV: [(u32, u32, [u32; 4]); 4] = [
+        (0, 0, [0xD, AUTHENTIC_AMD[0], AUTHENTIC_AMD[1], AUTHENTIC_AMD[2]]),
+        (1, 0, [(0x8 << 20) | (0xF << 8) | 0x12, 0, 0, 0]),
+        (0x8000_0000, 0, [0x8000_001F, 0, 0, 0]),
+        (0x8000_0001, 0, [0, 0, 0, 0]),
+    ];
+    assert_eq!(x86_plan(cpuid_of(&EPYC_NO_HV)), X86Plan { amd: Some(AmdPmu::NONE), ..X86Plan::NONE });
     // Intel TCG-style: leaf 0xA says version 0.
     static NO_PMU: [(u32, u32, [u32; 4]); 3] = [
         (0, 0, [0xD, GENUINE_INTEL[0], GENUINE_INTEL[1], GENUINE_INTEL[2]]),
@@ -297,4 +327,99 @@ fn the_first_sbi_hardware_counter_skips_firmware_ones() {
     assert_eq!(rv_first_hw_counter(3, info), None, "cycle, time and instret only");
     assert_eq!(rv_first_hw_counter(4, info), None, "the one extra counter is firmware");
     assert_eq!(rv_first_hw_counter(8, |_| 1 << 63), None);
+}
+
+/// Count a `bits`-wide counter `n` events forward.
+fn tick(bits: u8, v: u64, n: u64) -> u64 {
+    v.wrapping_add(n) & mask(bits)
+}
+
+#[test]
+fn a_sampling_counter_wraps_after_exactly_its_period() {
+    for (bits, period) in [(32u8, 1_000_000u64), (48, 1_000_000), (64, 1_000_000), (32, (1 << 31) - 1), (48, 3)] {
+        let init = sample_init(bits, period);
+        assert!(!sample_overflowed(bits, init), "{bits}/{period}: armed, not wrapped");
+        assert!(!sample_overflowed(bits, tick(bits, init, period - 1)), "{bits}/{period}: one event short");
+        assert_eq!(tick(bits, init, period), 0, "{bits}/{period}: the wrap is the period's last event");
+        assert!(sample_overflowed(bits, tick(bits, init, period)), "{bits}/{period}: wrapped");
+        assert!(sample_overflowed(bits, tick(bits, init, period + 7)), "{bits}/{period}: read a little late");
+    }
+}
+
+#[test]
+fn a_period_fits_below_half_the_counter() {
+    assert!(sample_period_fits(32, (1 << 31) - 1));
+    assert!(!sample_period_fits(32, 1 << 31), "the top bit would start clear");
+    assert!(!sample_period_fits(48, 0), "a zero period never arms");
+    assert!(sample_period_fits(48, 1 << 46) && sample_period_fits(64, u64::MAX / 2));
+    assert!(!sample_period_fits(0, 1) && !sample_period_fits(1, 1), "a counter too narrow to mark");
+    // Every Kconfig PROFILER_PMU_PERIOD (1000..=2^31-1) fits every counter
+    // this kernel samples on (32, 48, 64 bits).
+    for bits in [32u8, 48, 64] {
+        assert!(sample_period_fits(bits, 1000) && sample_period_fits(bits, (1 << 31) - 1));
+    }
+}
+
+#[test]
+fn intel_legacy_counter_writes_keep_the_initial_value() {
+    // IA32_PMCn keeps the low 32 bits and sign-extends bit 31.
+    for period in [1000u64, 1_000_000, (1 << 31) - 1] {
+        let init = sample_init(48, period);
+        assert_eq!(x86_legacy_write(48, init), init, "period {period}");
+    }
+    // 2^31 is the last period bit 31 still carries; one more loads a
+    // positive counter that would not wrap for 2^47 events: refused.
+    let edge = sample_init(48, 1 << 31);
+    assert_eq!(x86_legacy_write(48, edge), edge);
+    let init = sample_init(48, (1 << 31) + 1);
+    assert_ne!(x86_legacy_write(48, init), init);
+    assert_eq!(x86_legacy_write(48, 0x7FFF_FFFF), 0x7FFF_FFFF, "bit 31 clear: zero-extended");
+}
+
+#[test]
+fn x86_sampling_event_select_interrupts() {
+    let v = x86_sample_evtsel(INTEL_EV_CYCLES);
+    assert_eq!(v, 0x3C | X86_EVTSEL_USR | X86_EVTSEL_OS | X86_EVTSEL_INT | X86_EVTSEL_EN);
+    assert_eq!(X86_EVTSEL_INT, 1 << 20);
+    assert_eq!(x86_evtsel(AMD_EV_CYCLES) & X86_EVTSEL_INT, 0, "Pmu::event's counter never interrupts");
+    assert_eq!((X86_MSR_PERF_GLOBAL_STATUS, X86_MSR_PERF_GLOBAL_OVF_CTRL, AMD_MSR_PERF_GLOBAL_STATUS_CLR),
+               (0x38E, 0x390, 0xC000_0302));
+}
+
+#[test]
+fn aarch64_samples_on_the_last_counter_when_three_exist() {
+    assert_eq!(a64_sample_counter(6), Some(5));
+    assert_eq!(a64_sample_counter(3), Some(2));
+    assert_eq!(a64_sample_counter(2), None, "counters 0 and 1 are taken");
+    assert_eq!(a64_sample_counter(0), None);
+    // The sampling counter is never one `a64_cnten` starts for the readers.
+    for n in 3..=31u8 {
+        assert_eq!(a64_cnten(n) & (1 << a64_sample_counter(n).unwrap()), 0, "N={n}");
+    }
+    assert_eq!(A64_EV_CPU_CYCLES, 0x11);
+}
+
+#[test]
+fn riscv64_sampling_flags() {
+    assert_eq!(SBI_HW_CPU_CYCLES, 1);
+    // counter_config_matching: CLEAR_VALUE and SET_MINH, never AUTO_START
+    // (the start loads the initial value) nor SKIP_MATCH.
+    assert_eq!(SBI_PMU_CFG_SAMPLE & (1 << 1), 1 << 1);
+    assert_eq!(SBI_PMU_CFG_SAMPLE & (1 << 7), 1 << 7);
+    assert_eq!(SBI_PMU_CFG_SAMPLE & ((1 << 0) | (1 << 2)), 0);
+    assert_eq!((SBI_PMU_START_SET_INIT_VALUE, SBI_PMU_STOP_RESET), (1, 1));
+    assert_eq!(RV_SIE_LCOFIE, 1 << 13, "LCOFI is interrupt 13");
+}
+
+#[test]
+fn the_family_and_the_counter_msrs() {
+    assert_eq!(x86_family((0x8 << 20) | (0xF << 8)), 0x17, "Zen: 0xF + 8");
+    assert_eq!(x86_family((0xA << 20) | (0xF << 8)), 0x19);
+    assert_eq!(x86_family(6 << 8 | 0xFF << 20), 6, "the extended family counts only under 0xF");
+    // Intel: fixed counter 1 and PMC1; AMD ExtCore counter 3 and legacy 1.
+    assert_eq!(x86_counter_msr(X86_RDPMC_FIXED | 1, None), 0x30A);
+    assert_eq!(x86_counter_msr(1, None), 0xC2);
+    let ext = amd_decode(true, 0, 0, false, 0x17);
+    assert_eq!(x86_counter_msr(3, Some(ext)), 0xC001_0207);
+    assert_eq!(x86_counter_msr(1, Some(amd_decode(false, 0, 0, false, 0x10))), 0xC001_0005);
 }

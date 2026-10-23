@@ -57,6 +57,46 @@ choice
 
 endchoice
 
+config PROFILER_PMU
+    bool "Profiler: sample on a PMU cycle-counter overflow"
+    depends on PROFILER
+    default y
+    help
+      Tick sampling hides a hot path shorter than a tick and is in phase
+      with everything the tick wakes. With this, a CPU whose PMU can
+      interrupt on a counter overflow samples every PROFILER_PMU_PERIOD
+      core cycles instead, and its tick takes no sample: riscv64 an
+      `hpmcounterN` from the SBI PMU extension with Sscofpmf (RV_PMU and
+      RV_SSCOFPMF, the overflow interrupt LCOFI), aarch64 the last PMUv3
+      event counter with the PMU's PPI from the device tree (A64_PMU),
+      x86_64 a programmable counter with the LAPIC's performance-counter
+      interrupt, an ordinary vector rather than an NMI (X86_PMU). The
+      counter is armed by the CPU's own tick once the `prof` class is on and
+      disarms itself at its next overflow once it is off: with the class
+      off nothing is armed and nothing interrupts. A CPU without such a
+      counter (the boot line's `[PMU] ... sample=none`; QEMU TCG x86_64,
+      riscv64 without Sscofpmf) keeps tick sampling. A real-time CPU (an
+      `isolcpus` CPU, or one running a band task or an admitted
+      reservation) is never armed, and one that becomes real-time disarms
+      at its next overflow; its tick records the interrupted PC only (no
+      stack walk), marked `rt` in `tracectl profile`. Each sample is the PC,
+      the task and the frame-pointer chain, in the CPU's own trace ring,
+      marked `pmu`.
+
+config PROFILER_PMU_PERIOD
+    int "Profiler: core cycles between PMU samples"
+    range 1000 2147483647
+    default 1000000
+    help
+      Read only with PROFILER_PMU. The sampling counter wraps after this many core cycles: about 1 kHz
+      on a busy 1 GHz core, several times the scheduler tick (SCHED_HZ),
+      and not in phase with it. At most
+      2^31 - 1, which the narrowest counter (aarch64 before PMUv3p5, an x86
+      counter loaded through its 32-bit MSR) still takes; a counter it does
+      not fit is not armed and the CPU keeps tick sampling. Lower periods
+      cost an interrupt and a stack walk each, and fill the trace ring
+      faster than `tracectl profile` drains it.
+
 config SWITCH_CENSUS
     # cargo-feature: switch-census
     bool "Census of the yield-and-switch path, phase by phase"

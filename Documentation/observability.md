@@ -473,8 +473,9 @@ Source: `kernel/src/panic.rs`, `crates/fs/fs/src/crash_log.rs`,
 ## Sampling profiler
 
 Source: `kernel/src/prof.rs`, `crates/core/trace/src/prof.rs`,
-`userspace/services/tracectl/src/profile.rs`, Kconfig `PROFILER`,
-`PROFILER_DEPTH`, `PROFILER_TICK_DIV`.
+`userspace/services/tracectl/src/profile.rs`, the ISA crates' `pmu.rs`,
+Kconfig `PROFILER`, `PROFILER_DEPTH`, `PROFILER_TICK_DIV`, `PROFILER_PMU`,
+`PROFILER_PMU_PERIOD`, `RV_SSCOFPMF`.
 
 The profiler is the trace class `prof` (bit 7 of the runtime mask). It needs
 `KTRACE`. The scheduler tick of each ISA calls `on_tick` with the PC, frame
@@ -500,6 +501,33 @@ function of the kernel and user images (`-C force-frame-pointers=yes`,
 `tools/kconfig_to_cargo.py`). The sampling rate is the
 scheduler tick divided by `PROFILER_TICK_DIV`, exact only to the tick: code
 running with interrupts masked is sampled at the instruction that unmasks them.
+
+**PMU sampling** (`PROFILER_PMU`, default on with `PROFILER`). A tick-driven
+sample cannot see a hot path shorter than a tick, and it is in phase with the
+work the tick itself wakes. Where the CPU's PMU can interrupt on an overflow,
+a counter of its own (never the cycle counter `Pmu::cycles` readers share)
+counts core cycles and interrupts every `PROFILER_PMU_PERIOD` of them; that
+interrupt takes the sample, the same walk and record, and the CPU's tick takes
+none. The CPU's own tick arms it once the class is on; once the class is off,
+the next overflow disarms it, so with the profiler off nothing is armed. The
+counter count and widths are the boot probe's (`[PMU] ... sample=<bits>` or
+`sample=none`):
+
+| ISA | Counter | Interrupt | Probe |
+|-----|---------|-----------|-------|
+| riscv64 | an `hpmcounterN` from SBI `counter_config_matching` (CPU_CYCLES), loaded by `counter_start` | LCOFI (`scause` 13), `scountovf` names the counter | `RV_SSCOFPMF`: the `riscv,isa` token, then a trap-safe `scountovf` read; also `RV_PMU`'s programmable counter |
+| aarch64 | the last PMUv3 event counter (`PMCR_EL0.N - 1`, `N >= 3`), CPU_CYCLES | the DTB `pmu` node's PPI; `PMOVSSET_EL0` / `PMOVSCLR_EL0` | `A64_PMU` and the DTB |
+| x86_64 | Intel PMC1 (UnHalted Core Cycles), AMD core counter 3 (0x76), `INT` set | the LAPIC LVT performance-counter entry, vector 0xEE | `X86_PMU` (CPUID leaf 0xA / AMD leaves) |
+
+The x86_64 interrupt is an ordinary vector, not an NMI: the per-CPU trace ring
+is safe against every producer but a re-entrant one, which an NMI landing
+inside another record would be, and the kernel has no NMI stack. The price is
+the tick's: interrupts-masked code is sampled where it unmasks. A real-time CPU
+(`isolcpus`, a band task, an admitted reservation) is never armed and disarms at
+its next overflow; its tick records the PC only. QEMU: riscv64 needs
+`-cpu rv64,sscofpmf=on`; aarch64 `virt` has the PMU and its PPI; x86_64 TCG has
+no PMU, so there the profiler samples on the tick. The summary line
+`tracectl: profile origins: tick=N pmu=N rt=N` counts the samples by origin.
 
 **Reading it.** `tracectl profile [-t MS] [-p MS] [-k KERNEL_ELF] [-u USER_ELF]
 [-o FOLDED] [-j PERFETTO]` switches the class on, drains every CPU's ring, puts
