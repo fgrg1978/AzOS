@@ -960,6 +960,8 @@ pub const RULES: [RuleInfo; 69] = [
         fields: ["from", "to", "flush"],
         rejected_if_yes: "-",
         rejected_if_no: "claim the floor raised: the device cannot confirm the write survives a power cut, so an older signed file could come back unannounced",
+    },
+    RuleInfo {
         // The subject is the NIC (its topology row id). `pending` is the frames the transmit ring held,
         // `waited_ms` how long it held them with no progress, `action` 2 reset the device (back in service),
         // 5 latched it dead with its resets spent, 6 the reset did not bring it back
