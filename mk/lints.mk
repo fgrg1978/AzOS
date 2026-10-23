@@ -82,14 +82,14 @@ unsafe-budget:
 
 # The size budget (tools/size_budget.py, baseline tools/size_budget.tsv): the
 # .text/.rodata/.data/.bss of the kernel `make build` makes, built from
-# config/defconfigs/qemu.config as shipped (neither the developer's .config nor
+# config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config as shipped (neither the developer's .config nor
 # qemu-dev.config's log level) and from no caller RUSTFLAGS, into a target dir
 # of its own so it never invalidates the development build. The config is
 # rewritten only when its text changes: a fresh mtime would rebuild every
 # crate behind azos_limits. Build only; nothing boots.
 # `make size-update REASON=".."` moves the baseline (in the commit that grows
 # or shrinks the image).
-SIZE_DEFCONFIG  := config/defconfigs/qemu.config
+SIZE_DEFCONFIG  := config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config
 SIZE_KCONFIG    := $(OUT_BUILD)/size-riscv64.config
 SIZE_TARGET_DIR := $(AZOS_OUT)/target/size
 SIZE_ELF        := $(SIZE_TARGET_DIR)/$(TARGET)/release/kernel

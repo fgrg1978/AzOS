@@ -19967,7 +19967,7 @@ PYEOF
             cp "$AZOS_OUT/build/disk-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$KERNEL}" "$kimg"
         elif [ "$isa" = x86 ]; then
             local xdef="${USH_X86_DEFCONFIG:-$CI_LOG_DIR/ush-x86-lxrt.defconfig}" xt xvol
-            [ -n "${USH_X86_DEFCONFIG:-}" ] || { cat config/defconfigs/qemu-x86_64.config; echo "CONFIG_LINUX_RUNTIME=y"; } >"$xdef"
+            [ -n "${USH_X86_DEFCONFIG:-}" ] || { cat config/defconfigs/${GATE_DEFC_X86}.config; echo "CONFIG_LINUX_RUNTIME=y"; } >"$xdef"
             xt="$(basename "$xdef" .defconfig)"
             if [ -n "${USH_KERNEL:-}" ]; then cp "$USH_KERNEL" "$kimg"
             elif ! X86_KBUILD_OUT="$AZOS_OUT/build/kernel-x86_64-$xt.elf" \
@@ -20997,7 +20997,7 @@ echo after-x \$?"
             # (ushell_row's USH_X86_DEFCONFIG), the gate's .config stays.
             case "$ush_isa" in rv) bb_cfg="$bb_cfg_rv" ;; arm) bb_cfg="$bb_cfg_arm" ;; *) bb_cfg="$PRIMARY_CONFIG" ;; esac
             bb_x86_def="$CI_LOG_DIR/ush-x86-busybox.defconfig"
-            { cat config/defconfigs/qemu-x86_64.config; printf 'CONFIG_LINUX_RUNTIME=y\nCONFIG_USERSPACE_GPL=y\nCONFIG_BUSYBOX=y\n'; } >"$bb_x86_def"
+            { cat config/defconfigs/${GATE_DEFC_X86}.config; printf 'CONFIG_LINUX_RUNTIME=y\nCONFIG_USERSPACE_GPL=y\nCONFIG_BUSYBOX=y\n'; } >"$bb_x86_def"
             USH_X86_DEFCONFIG="$bb_x86_def" KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT' par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
                 "busybox sh -c 'x=prod; echo bb-\$x-ok'
 echo after-prod \$?" 150 \
@@ -21170,7 +21170,7 @@ input watch -n 100 &
     con_kernel() { # con_kernel <rv|arm|x86> <tag> <features> [CONFIG_X=v...] -> prints the image path
         local isa="$1" tag="$2" feats="$3"; shift 3
         local dir="$AZOS_OUT/target/con-$tag-$isa" base tmp cfg elf img l k
-        case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/qemu-x86_64.config" ;; esac
+        case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/${GATE_DEFC_X86}.config" ;; esac
         mkdir -p "$dir"; cfg="$dir/con.config"; tmp="$(mktemp -d)"
         cp "$base" "$tmp/c.config"
         [ "$isa" = x86 ] && set -- CONFIG_LINUX_RUNTIME=y "$@"

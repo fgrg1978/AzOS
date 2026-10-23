@@ -8,7 +8,8 @@ Each group is the sum of the ELF's output sections whose name starts with it
 (`.text` holds .text.boot, .text and .text.patch_pool; `.data` holds
 .data.ro_after_init and .data), plus riscv's small-data twins (.srodata,
 .sdata, .sbss), as `llvm-size -A` reports them. The ELF is a build of a
-pinned configuration (`make size-check` builds config/defconfigs/qemu.config,
+pinned configuration (`make size-check` builds the robot gate cell
+config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config,
 never the developer's .config), so the number does not depend on who runs it.
 
 tools/size_budget.tsv: `label<TAB>group<TAB>bytes` lines and one

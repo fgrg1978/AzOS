@@ -64,7 +64,7 @@ VF2_EXTRA_dev    := CONFIG_BUILD_TYPE_DEV=y
 VF2_EXTRA_ktest  := CONFIG_BUILD_TYPE_DEV=y CONFIG_KTEST=y CONFIG_TOPOLOGY_SOURCE_BUILTIN=y CONFIG_LOCKDEP_HOLD_ENFORCE=y
 VF2_EXTRA_pstore := CONFIG_BUILD_TYPE_DEV=y CONFIG_PSTORE_SIZE_KB=4
 VF2_KCONFIG_DEPS := config/defconfigs/robot-sbc-riscv64+vf2.config \
-		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
+		$(KCONFIG_FILES)
 
 # What a variant adds is a stamp its config depends on (rewritten only when the
 # text changes): a config built before the variant's lines changed is rebuilt,
@@ -158,13 +158,13 @@ K1_KCONFIG := $(OUT_BUILD)/k1.config
 # into the workspace .config (`defconfig-generic-server-riscv64+board-generic`); its volume's topology is
 # emitted from this copy, which the same defconfig yields.
 $(OUT_BUILD)/fleet.config: config/defconfigs/generic-server-riscv64+board-generic.config \
-		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
+		$(KCONFIG_FILES)
 	@mkdir -p $(OUT_BUILD)
 	cp config/defconfigs/generic-server-riscv64+board-generic.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
 
 $(K1_KCONFIG): config/defconfigs/robot-sbc-riscv64+k1.config \
-		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
+		$(KCONFIG_FILES)
 	@mkdir -p $(OUT_BUILD)
 	cp config/defconfigs/robot-sbc-riscv64+k1.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
@@ -316,7 +316,7 @@ x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 # defined earlier in this file (`$(VF2_KCONFIG)`/`$(K1_KCONFIG)`) does not
 # depend on a `:=` assignment that has not been parsed yet.
 $(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) \
-		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
+		$(KCONFIG_FILES)
 	@mkdir -p $(dir $@)
 	cp $(AARCH64_DEFCONFIG) $@
 	$(if $(AARCH64_PG_SUFFIX),echo "CONFIG_AARCH64_PAGE_$(subst -,,$(subst k,K,$(AARCH64_PG_SUFFIX)))=y" >> $@)
@@ -356,7 +356,7 @@ aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 RPI5_KCONFIG := $(OUT_BUILD)/rpi5.config
 .PHONY: rpi5 rpi5-key
 $(RPI5_KCONFIG): config/defconfigs/robot-sbc-aarch64+rpi5.config \
-		$(shell find . config -maxdepth 1 -name 'Kconfig*' -not -name '* [0-9]*')
+		$(KCONFIG_FILES)
 	@mkdir -p $(OUT_BUILD)
 	cp config/defconfigs/robot-sbc-aarch64+rpi5.config $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
