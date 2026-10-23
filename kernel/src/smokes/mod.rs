@@ -31,9 +31,9 @@ pub(crate) use storage::*;
 mod net;
 #[cfg(feature = "dhcp-smoke")]
 pub(crate) use net::*;
-#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke"))]
+#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke"))]
 mod ota;
-#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke"))]
+#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke"))]
 pub(crate) use ota::*;
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke", feature = "geofence-smoke",
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",

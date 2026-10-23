@@ -2765,6 +2765,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     #[cfg(feature = "safe-mode-smoke")]
     azos_sched::task_create_affinity("safe-mode-probe", safe_mode_probe_task, 0,
                                          azos_sched::DEFAULT_PRIORITY, 1);
+    #[cfg(feature = "power-off-durability-smoke")]
+    azos_sched::task_create_affinity("durable-smoke", power_off_durability_smoke_task, 0,
+                                         azos_sched::DEFAULT_PRIORITY, 1);
 
     // DRV1: the buzzer and INA219 functional test. Hart 1, default priority,
     // like `gpio-aq3-smoke`: it only waits and reads.

@@ -30,6 +30,34 @@ pub(crate) fn orderly_reboot_smoke_task(_: usize) {
     azos_syscall::handlers::reboot_orderly();
 }
 
+/// Gate rows `power-off: the kernel's sync keeps a written file` (owner
+/// decision 2026-10-23, Q1). Waits past sys-wdt's boot-good mark (an
+/// unconfirmed boot's OTA void syncs the volume by itself and would hide a
+/// missing sync), writes `/fat/DURSMOKE.TXT` through the VFS (a close only
+/// queues it in the write-back cache), and calls `power_off_orderly` at once:
+/// microseconds, not `FS_WRITEBACK_MAX_AGE_MS`, so only the orderly path's
+/// own sync can put the file on the medium. The host reads the volume back.
+#[cfg(feature = "power-off-durability-smoke")]
+pub(crate) fn power_off_durability_smoke_task(_: usize) {
+    use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    const BODY: &[u8] = b"durable-ok\n";
+    let past = (u64::from(azos_ota::OTA_BOOT_GOOD_DELAY_S) + 5) * TIMER_FREQ;
+    while now() < past {
+        azos_sched::task_block(azos_sched::WaitReason::Timer(past));
+    }
+    let mut t = azos_fs::ScratchFds::new();
+    let fd = azos_fs::vfs_open(&mut t, b"/fat/DURSMOKE.TXT", azos_fs::O_WRONLY | azos_fs::O_CREAT | azos_fs::O_TRUNC);
+    let wrote = fd >= 0 && azos_fs::vfs_write(&mut t, fd, BODY.as_ptr(), BODY.len()) == BODY.len() as i32;
+    let closed = fd >= 0 && azos_fs::vfs_close(&mut t, fd) == 0;
+    if !(wrote && closed) {
+        kprintln!("[ORDERLY] FAIL smoke: /fat/DURSMOKE.TXT not written (fd {})", fd);
+        return;
+    }
+    let (dirty, _) = azos_fs::fat32_writeback_dirty();
+    kprintln!("[ORDERLY] smoke: /fat/DURSMOKE.TXT written ({} dirty cache lines), power-off now", dirty);
+    azos_syscall::handlers::power_off_orderly();
+}
+
 /// Gate row `safe mode: attempts exhausted`, on the boot that entered safe
 /// mode (every other boot of `safe-mode-smoke` crashed on purpose in
 /// `boot_count_loaded`). Asks the actuators to move and checks they did not,

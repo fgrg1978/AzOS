@@ -8845,6 +8845,81 @@ orderly_reboot_row() {
 par "boot count: orderly reboot" orderly_reboot_row
 kbuild "qemu"
 
+# ── power-off: the kernel's own sync keeps a written file (owner decision
+#    2026-10-23, Q1) ──────────────────────────────────────────────────────
+#
+# Whoever asks for an orderly power-off (here a kernel task, as the thermal
+# critical trip does: no power service in front), the kernel syncs every
+# volume, flushes the disk and shuts the devices down before the firmware
+# call. `power-off-durability-smoke` waits past the boot-good mark (an
+# unconfirmed boot's OTA void would sync by itself), writes /fat/DURSMOKE.TXT
+# (a close only queues it: the line names the dirty cache lines, which must be
+# more than 0) and powers off at once, microseconds later, far inside
+# FS_WRITEBACK_MAX_AGE_MS. The host reads the volume back (mtype): what the
+# next boot would read. Canary: `canary=power-off-sync-skip` (runtime), the
+# file is lost with the RAM.
+power_off_durable_row() { # power_off_durable_row <riscv64|aarch64> <pass|canary>
+    local isa="$1" want="$2" label="$1: power-off keeps a written file" app=""
+    [ "$want" = canary ] && { label="$label canary"; app="canary=power-off-sync-skip"; }
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/durable-$isa-$want.log" disk="$CI_LOG_DIR/durable-$isa-$want.img" dsrc kimg
+    rm -f "$log" "$disk"
+    if [ "$isa" = riscv64 ]; then
+        kbuild "qemu,power-off-durability-smoke" || { bad; echo "      the riscv64 smoke kernel did not build"; return; }
+        dsrc=$AZOS_OUT/build/disk.img; kimg="$CI_LOG_DIR/durable-$isa-$want.kernel"; cp "$KERNEL" "$kimg"
+    else
+        a64_kbuild "qemu,power-off-durability-smoke" || { bad; echo "      the aarch64 smoke kernel did not build"; return; }
+        dsrc=$AZOS_OUT/build/disk-aarch64.img; kimg="$CI_LOG_DIR/durable-$isa-$want.kernel"; cp "$A64_IMG" "$kimg"
+    fi
+    rm -f "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    if [ "$isa" = riscv64 ]; then
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -no-reboot -smp 2 \
+            -global virtio-mmio.force-legacy=false ${app:+-append "$app"} \
+            -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
+            -device virtio-rng-device </dev/null >"$log" 2>&1 &
+    else
+        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic -no-reboot \
+            -kernel "$kimg" -global virtio-mmio.force-legacy=false ${app:+-append "$app"} \
+            -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
+            -device virtio-rng-device </dev/null >"$log" 2>&1 &
+    fi
+    local pid=$! i=0 exited=no body
+    while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
+        grep -aqE "!!! KERNEL PANIC !!!|ORDERLY\] FAIL|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -0 "$pid" 2>/dev/null || exited=yes
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kimg"
+    body="$(mtype -i "$disk" ::DURSMOKE.TXT 2>/dev/null | tr -d '\r')"
+    if [ "$exited" != yes ] || ! grep -aqF "[OTA] Boot marked good" "$log" \
+       || ! grep -aqE "\[ORDERLY\] smoke: /fat/DURSMOKE.TXT written \([1-9][0-9]* dirty" "$log" \
+       || ! grep -aqF "[ORDERLY] disk: flush " "$log"; then
+        bad; echo "      the guest did not reach the power-off with the file unwritten (exited: $exited):"
+        grep -a "ORDERLY\]\|OTA\] Boot\|PANIC" "$log" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log (disk: $disk)"; return
+    fi
+    if [ "$want" = pass ] && [ "$body" = durable-ok ] \
+       && grep -aqE "\[ORDERLY\] filesystems: [1-9][0-9]* volume\(s\) synced, 0 failed, 0 timed out" "$log"; then
+        ok; rm -f "$log" "$disk"; return
+    fi
+    if [ "$want" = canary ] && [ -z "$body" ] && grep -aqF "[ORDERLY] filesystems: 0 volume(s) synced" "$log"; then
+        ok; echo "      canary failed as it must: the file is not on the volume"; rm -f "$log" "$disk"; return
+    fi
+    bad; echo "      the volume holds '${body:-<no file>}' after the power-off (want: $want):"
+    grep -a "ORDERLY\]" "$log" | tr -d '\r' | sed 's/^/        /'
+    echo "      log kept: $log (disk: $disk)"
+}
+par "riscv64: power-off keeps a written file" power_off_durable_row riscv64 pass
+par "riscv64: power-off keeps a written file canary" power_off_durable_row riscv64 canary
+par "aarch64: power-off keeps a written file" power_off_durable_row aarch64 pass
+par "aarch64: power-off keeps a written file canary" power_off_durable_row aarch64 canary
+kbuild "qemu"
+a64_kbuild "qemu" >/dev/null
+
 # ── pstore: a panic with the FS lock held reaches the next boot ────────────
 #
 # `write_crash_log` skips /fat/CRASH.LOG when the VFS or FAT32 lock is held,
@@ -20521,40 +20596,37 @@ power suspend" 150 \
         # what was written durable on both layers. POWER.ELF asks `Power::sync`
         # first; the kernel's orderly path then syncs every volume again,
         # flushes the boot disk and shuts down its controller and the
-        # kernel-held devices (`[ORDERLY]` lines, in that order). The boot is
-        # confirmed first (`Boot marked good`): an unconfirmed boot's OTA void
-        # syncs the volume by itself and would hide a missing sync. The file is
-        # written and the power-off typed at once (`!`: no wait for the
-        # prompt), inside FS_WRITEBACK_MAX_AGE_MS, so only a sync can have made
-        # it durable. Boot 2 (a second QEMU on the same volume) reads it back
-        # (`wc`: the counts are not in the typed line). Canary:
-        # `canary=power-off-sync-skip` (runtime, boot 1 only) skips the sync of
-        # both layers; the file is lost with the RAM, boot 2 does not find it.
-        # The reboot row is the same path through `Power::reboot` on one QEMU.
+        # kernel-held devices (`[ORDERLY]` lines, in that order). The file is
+        # written, the machine powered off through the service, and boot 2 (a
+        # second QEMU on the same volume) reads it back (`wc`: the counts are
+        # not in the typed line). The reboot row is the same path through
+        # `Power::reboot` on one QEMU. No canary here: the time the shell takes
+        # to start POWER.ELF is longer than FS_WRITEBACK_MAX_AGE_MS on a loaded
+        # host, so `fs-wb` may write the file first (measured 2026-10-23: the
+        # sync-skip canary kept the file). The deterministic canary is the
+        # kernel smoke's (`power-off: the kernel's sync keeps a written file`).
         # QEMU's virtio-blk cannot tell the device half (its cache is the
         # host's page cache, which a power-off keeps): `[ORDERLY] disk:` is
         # asserted printed, not its effect.
-        ush_poweroff_row() { # ush_poweroff_row <label (isa)> <rv|arm> <features> <PASS|FAIL> <-append text>
-            local label="$1" isa="$2" feats="$3" expect="$4" app="$5"
-            local img="$CI_LOG_DIR/ush-poweroff-$isa-$expect.img"
+        ush_poweroff_row() { # ush_poweroff_row <label (isa)> <rv|arm> <features>
+            local label="$1" isa="$2" feats="$3"
+            local img="$CI_LOG_DIR/ush-poweroff-$isa.img"
             mkdir -p "$CI_LOG_DIR"; rm -f "$img"
-            USH_IMG="$img" USH_QEMU_EXTRA="${app:+-append $app}" USH_FORBID='robot> |\[AUTHORITY\]' \
+            USH_IMG="$img" USH_FORBID='robot> |\[AUTHORITY\]' \
                 ushell_row "$label, boot 1" "$isa" "$feats" PASS \
                 "#wait \[OTA\] Boot marked good
 !echo durable-ok > /fat/DUR.TXT
 !power shutdown
 #wait \[POWER\] shutdown by" 240 \
                 "[POWER] sync by tid" "[ORDERLY] filesystems: " "[ORDERLY] disk: flush " "[POWER] shutdown by tid"
-            USH_IMG="$img" USH_FORBID='robot> ' ushell_row "$label" "$isa" "$feats" "$expect" \
+            USH_IMG="$img" USH_FORBID='robot> ' ushell_row "$label" "$isa" "$feats" PASS \
                 "wc < /fat/DUR.TXT" 120 \
                 "1 1 11"
             rm -f "$img"
         }
-        par_row ush_poweroff_row "sh: power-off keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat" PASS ""
-        par_row ush_poweroff_row "sh: power-off keeps a written file canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL "canary=power-off-sync-skip"
+        par_row ush_poweroff_row "sh: power-off keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat"
         USH_FORBID='robot> |\[AUTHORITY\]' par_row ushell_row "sh: reboot keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
-            "#wait \[OTA\] Boot marked good
-!echo durable-ok > /fat/DUR.TXT
+            "echo durable-ok > /fat/DUR.TXT
 power reboot
 wc < /fat/DUR.TXT" 240 \
             "[POWER] sync by tid" "power: filesystems synced" "[ORDERLY] filesystems: " "[ORDERLY] disk: flush " \

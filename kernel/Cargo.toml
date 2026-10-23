@@ -635,6 +635,12 @@ safe-mode-smoke = ["qemu", "use-robot"]
 # canary` must see it.
 safe-mode-launch-canary = []
 orderly-reboot-smoke = ["qemu"]
+# Gate rows `power-off: the kernel's sync keeps a written file` (owner decision
+# 2026-10-23, Q1): once the boot is confirmed, write a file through the VFS and
+# call the orderly power-off at once, so only the kernel's own sync can make it
+# durable (no power service in front). The host reads the volume back; the
+# runtime canary `power-off-sync-skip` must lose the file.
+power-off-durability-smoke = ["qemu"]
 # Host-suite canary only (`tests/host/pkg-tests`, compiled over `boot/pkg_apply.rs`):
 # the apply leaves out the launch grants of the package rows that start.
 pkg-launch-grant-canary = []
