@@ -359,6 +359,98 @@ pub const fn clock_plan(allowed: bool, required: bool, invariant: bool) -> Clock
     }
 }
 
+/// The counter the clock (`timer::now_ticks`) reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Clocksource {
+    Tsc = 0,
+    /// The HPET main counter (MMIO).
+    Hpet = 1,
+    /// The ACPI PM timer (port I/O).
+    PmTimer = 2,
+}
+
+impl Clocksource {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Clocksource::Tsc => "TSC",
+            Clocksource::Hpet => "HPET",
+            Clocksource::PmTimer => "ACPI PM timer",
+        }
+    }
+    pub const fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Clocksource::Hpet,
+            2 => Clocksource::PmTimer,
+            _ => Clocksource::Tsc,
+        }
+    }
+}
+
+/// Is the TSC the clock at boot? Kconfig `X86_TSC_CLOCK_ALWAYS` says yes,
+/// invariant or not (Linux's choice: the watchdog is the guard); otherwise
+/// only an invariant TSC is (`ClockPlan::Stated`, so `X86_INVARIANT_TSC=n`
+/// never is), and a TSC that is not stays the clock only when the board
+/// has no counter to take its place.
+pub const fn tsc_is_clock(always: bool, plan: ClockPlan, have_reference: bool) -> bool {
+    always || !have_reference || matches!(plan, ClockPlan::Stated)
+}
+
+/// `delta` counts of a `hz` counter in nanoseconds (saturating).
+pub const fn count_ns(delta: u64, hz: u64) -> u64 {
+    if hz == 0 {
+        return 0;
+    }
+    let ns = delta as u128 * 1_000_000_000 / hz as u128;
+    if ns > u64::MAX as u128 { u64::MAX } else { ns as u64 }
+}
+
+/// The longest interval a counter of `mask` bits at `hz` measures with no
+/// doubt about a wrap: half its period (nanoseconds).
+pub const fn wrap_span_ns(mask: u64, hz: u64) -> u64 {
+    count_ns(mask / 2, hz)
+}
+
+/// A counter of `mask` bits extended to 64: `last` is the newest extended
+/// value any CPU published, `raw` a read taken after loading it. `None`
+/// when `raw` is behind `last` (another CPU published a later read): `last`
+/// is the answer then. Exact while some CPU reads the counter at least once
+/// per half period ([`wrap_span_ns`]).
+pub const fn extend(last: u64, raw: u64, mask: u64) -> Option<u64> {
+    let d = raw.wrapping_sub(last) & mask;
+    if d > mask / 2 { None } else { Some(last.wrapping_add(d)) }
+}
+
+/// One TSC watchdog interval's verdict.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Watch {
+    /// The TSC and the reference agree within the bound.
+    Agree,
+    /// Nothing to compare: the interval was empty or longer than the
+    /// reference measures without a wrap. The next interval starts here.
+    Rebase,
+    /// The TSC ran this many parts per million fast (positive) or slow.
+    Skewed(i64),
+}
+
+/// Compare one interval as the TSC (`tsc_ns`) and the reference (`ref_ns`)
+/// measured it, as Linux's `watchdog_check_freq` does: they agree when they
+/// differ by less than `ppm` of the longer plus `window_ns`, the time the
+/// reference reads around the TSC read took (their uncertainty). `span_ns`
+/// is the reference's [`wrap_span_ns`].
+pub const fn watch(tsc_ns: u64, ref_ns: u64, window_ns: u64, span_ns: u64, ppm: u64) -> Watch {
+    let longer = if tsc_ns > ref_ns { tsc_ns } else { ref_ns };
+    if ref_ns == 0 || longer > span_ns {
+        return Watch::Rebase;
+    }
+    let bound = (longer as u128 * ppm as u128 / 1_000_000) as u64 + window_ns;
+    if tsc_ns.abs_diff(ref_ns) < bound {
+        return Watch::Agree;
+    }
+    let p = (tsc_ns as i128 - ref_ns as i128) * 1_000_000 / ref_ns as i128;
+    Watch::Skewed(if p > i64::MAX as i128 { i64::MAX } else if p < i64::MIN as i128 { i64::MIN } else { p as i64 })
+}
+
 /// The TSC rate from CPUID leaf 0x15 (EAX denominator, EBX numerator, ECX
 /// crystal Hz): exact when all three are reported, `None` otherwise.
 pub const fn tsc_hz_from_leaf15(eax: u32, ebx: u32, ecx: u32) -> Option<u64> {

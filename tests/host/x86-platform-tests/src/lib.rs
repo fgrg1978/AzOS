@@ -681,4 +681,58 @@ mod tests {
         assert!(Refused.label().contains("REFUSED"));
         assert_ne!(Stated.label(), Measured.label());
     }
+
+    #[test]
+    fn tsc_is_the_clock_only_when_invariant() {
+        use encode::{tsc_is_clock as clock, ClockPlan::*};
+        // (always, plan, have a reference)
+        assert!(clock(false, Stated, true)); // invariant: the TSC
+        assert!(!clock(false, Measured, true)); // not invariant (or n): the reference
+        assert!(clock(false, Measured, false)); // nothing else to read
+        assert!(clock(true, Measured, true)); // X86_TSC_CLOCK_ALWAYS
+    }
+
+    #[test]
+    fn counter_extension_across_wraps() {
+        use encode::extend;
+        let m24 = 0x00FF_FFFFu64;
+        // Forward within a period, and across one wrap of the 24-bit PM timer.
+        assert_eq!(extend(0x10, 0x20, m24), Some(0x20));
+        assert_eq!(extend(0x00FF_FFF0, 0x10, m24), Some(0x0100_0010));
+        assert_eq!(extend(0x0300_0005, 0x08, m24), Some(0x0300_0008));
+        // A read behind the published one (another CPU got there first) is
+        // not a wrap: time does not jump a whole period.
+        assert_eq!(extend(0x0100_0010, 0x0F, m24), None);
+        // The full-width HPET wraps like a u64.
+        assert_eq!(extend(u64::MAX - 1, 1, u64::MAX), Some(1));
+        // A counter read every 0x10000 counts, extended from its 24-bit
+        // value, gives the exact running count across 3900 wraps.
+        let (mut last, mut real) = (0u64, 0u64);
+        for _ in 0..1_000_000 {
+            real += 0x1_0000;
+            last = extend(last, real & m24, m24).unwrap();
+            assert_eq!(last, real);
+        }
+        assert_eq!(encode::wrap_span_ns(m24, encode::PMTMR_HZ), 2_343_484_157);
+    }
+
+    #[test]
+    fn watchdog_verdicts() {
+        use encode::{watch, Watch::*};
+        let span = 2_000_000_000; // 2 s
+        // 500 ms, agreeing to 100 ppm under a 500 ppm bound.
+        assert_eq!(watch(500_050_000, 500_000_000, 10_000, span, 500), Agree);
+        // 1000 ppm fast and slow, beyond it.
+        assert_eq!(watch(500_500_000, 500_000_000, 10_000, span, 500), Skewed(1000));
+        assert_eq!(watch(499_500_000, 500_000_000, 10_000, span, 500), Skewed(-1000));
+        // The read window widens the bound (Linux adds `wd_seq`).
+        assert_eq!(watch(500_300_000, 500_000_000, 100_000, span, 500), Agree);
+        assert_eq!(watch(500_300_000, 500_000_000, 10_000, span, 500), Skewed(600));
+        // A TSC that stopped (halted in a C-state) is as skewed as it gets.
+        assert_eq!(watch(0, 500_000_000, 10_000, span, 500), Skewed(-1_000_000));
+        // Longer than the reference measures without a wrap, or empty: rebase.
+        assert_eq!(watch(3_000_000_000, 3_000_000_000, 0, span, 500), Rebase);
+        assert_eq!(watch(5, 0, 0, span, 500), Rebase);
+        assert_eq!(encode::count_ns(3_579_545, encode::PMTMR_HZ), 1_000_000_000);
+    }
 }
