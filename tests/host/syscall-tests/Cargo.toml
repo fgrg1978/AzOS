@@ -60,6 +60,9 @@ move-lifts-depth-canary = ["azos_ipc/move-lifts-depth-canary"]
 # SUBTREE-POLICY: mirrors azos_syscall's gate canary in the pulled-in
 # families.rs. Off: the real behaviour.
 subtree-gate-canary = []
+# Mirrors azos_syscall's deadline admission canary in the pulled-in
+# ipc_deadline.rs: every call is admitted. Off: the real behaviour.
+ipc-admit-canary = []
 # Wave 15: mirrors azos_syscall's canary of the same name (the pulled-in
 # module_tokens.rs): a dead task's module tokens are kept.
 module-token-leak-canary = []

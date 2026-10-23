@@ -171,6 +171,15 @@ pub enum Errno {
     /// written anywhere); the owner makes a new object. Linux has no
     /// equivalent (`MADV_FREE` pages read back as zeros).
     EPURGED = 219,
+    /// A v2 call's server could not admit the call's remaining deadline
+    /// against its scheduling context (its reservation's relative deadline is
+    /// longer than the time left, or its per-call budget does not fit the
+    /// time or the budget the caller lends): the call was refused before it
+    /// was queued, nothing moved, and the kernel wrote the counter-offer (the
+    /// refusal's receipt and the nearest admissible deadline or budget) into
+    /// the caller's descriptor. Linux has no equivalent (`sched_setattr`
+    /// answers `EBUSY` with no alternative).
+    EADMIT = 220,
 }
 
 impl Errno {
@@ -236,6 +245,7 @@ impl Errno {
             217 => Some(Errno::ERTPROXY),
             218 => Some(Errno::EEOF),
             219 => Some(Errno::EPURGED),
+            220 => Some(Errno::EADMIT),
             _ => None,
         }
     }
@@ -289,6 +299,7 @@ impl fmt::Display for Errno {
             Errno::ERTPROXY => "a real-time task may not call a remote endpoint",
             Errno::EEOF => "end of stream",
             Errno::EPURGED => "volatile memory object was purged",
+            Errno::EADMIT => "the server cannot meet the call's deadline",
         };
         f.write_str(s)
     }
@@ -321,6 +332,7 @@ mod tests {
             Errno::ERTPROXY,
             Errno::EEOF,
             Errno::EPURGED,
+            Errno::EADMIT,
         ];
         for e in cases {
             let ret = e.to_syscall_ret();

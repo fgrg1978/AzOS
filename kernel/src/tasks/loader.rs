@@ -492,6 +492,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
                     None => priority,
                 };
                 topo_sched::apply_timer_slack(tid, row);
+                topo_sched::apply_call_budget(tid, row);
                 topo_sched::apply_principal(tid, row, None);
                 let was = azos_sched::set_current_sched_params(priority, class as u8);
                 kprintln!("[AUTORUN][PRIO] tid={} {} row={} class={} declared={} applied={} (was {}){}",

@@ -197,7 +197,10 @@ pub const NO_CPU: u16 = u16::MAX;
 /// named gives it one, without moving it.
 #[repr(C)]
 pub struct SchedContext {
-    /// Budget per period (DL runtime, RT band share; 0 = none).
+    /// Budget per period (DL runtime, RT band share; 0 = none). With no
+    /// period: a passive server's budget per call (its topology row's
+    /// `call_budget_us`, [`SchedContext::set_call_budget`]), what a call with
+    /// a deadline is admitted against (`azos_syscall::ipc_deadline`).
     pub budget_us: AtomicUsize,
     /// Replenishment period (0 = none).
     pub period_us: AtomicUsize,
@@ -338,6 +341,26 @@ impl SchedContext {
         self.budget_us.store(word_us(budget_us), Ordering::Relaxed);
         self.period_us.store(word_us(period_us), Ordering::Relaxed);
         self.deadline_us.store(word_us(deadline_us), Ordering::Relaxed);
+    }
+
+    /// Record a passive server's budget per call (the row's
+    /// `call_budget_us`): the budget with no period. Nothing for an SC that
+    /// holds a reservation (its times are the reservation's).
+    pub fn set_call_budget(&self, call_budget_us: u64) {
+        if self.class() == Class::Dl || self.period_us() != 0 {
+            return;
+        }
+        self.set_times(call_budget_us, 0, 0);
+    }
+
+    /// A passive server's budget per call, microseconds: the budget of an SC
+    /// with no period and no reservation (0 = none declared).
+    #[inline]
+    pub fn call_budget_us(&self) -> u64 {
+        if self.class() == Class::Dl || self.period_us() != 0 {
+            return 0;
+        }
+        self.budget_us()
     }
 
     /// The interrupt lines this SC serves.

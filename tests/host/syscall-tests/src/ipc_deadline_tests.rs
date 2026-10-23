@@ -9,7 +9,10 @@
 // tid no other test uses, so a concurrent test's records cannot satisfy it.
 
 use super::harness::serial;
-use crate::ipc_deadline::{check, check_caps, check_proxy, DENIAL_REALTIME_ON_PROXY};
+use crate::ipc_deadline::{
+    admit, admit_rule, check, check_caps, check_proxy, refused_desc, Alt, Lent, Refused, ServerSc, ALT_BUDGET,
+    ALT_DEADLINE, DENIAL_REALTIME_ON_PROXY, REFUSED_WORDS,
+};
 use azos_abi::error::Errno;
 use azos_abi::ipc_msg::{CapDesc, MsgDesc, CAP_MODE_DUP, MSG_VERSION};
 use azos_abi::time::ClockId;
@@ -170,4 +173,124 @@ fn a_realtime_caller_is_refused_on_a_proxy_endpoint() {
     // Nobody is refused on an ordinary endpoint.
     assert_eq!(check_proxy(false, || panic!("the class of a caller of an ordinary endpoint is not read"), tid), Ok(()));
     assert_eq!(denials_for(tid).len(), 3, "an admitted call leaves no record");
+}
+
+// ── Rule 4: the server's scheduling context admits the time left ───────────
+
+const MS: u64 = 1_000_000;
+
+/// Records of the call-admission rule written for `tid`.
+fn admissions_for(tid: u32) -> Vec<azos_decision::Record> {
+    let mut v = Vec::new();
+    azos_decision::for_each(|r| {
+        if r.rule == Rule::CallAdmission as u8 && r.subject == tid {
+            v.push(*r);
+        }
+    });
+    v
+}
+
+/// **A two-hop call is refused, with a counter-offer receipt, at the hop
+/// that cannot finish in the time left.**
+///
+/// A (a deadline task, 2 ms of budget left in a server period that ends at
+/// 5 ms) calls B with a deadline of 10 ms. B is a passive server (no
+/// reservation, 1 ms per call): it runs on A's reservation, which has the
+/// budget and ends before the call's deadline, so hop 1 is admitted. B works
+/// 3 ms (on A's budget, 1 ms of it, and on its own priority after) and calls
+/// C with the deadline it was given. C is an active server: its own
+/// reservation serves a call within 8 ms of a release, more than the 7 ms
+/// left. Hop 2 is refused: `Refused { receipt, alt: Deadline(3 + 8 ms) }`,
+/// the record the receipt names says the same, and the descriptor B reads
+/// back carries the offer.
+///
+/// **Canary** `ipc-admit-canary` (`cargo test --features ipc-admit-canary`):
+/// every call is admitted and this test goes red at hop 2. The other canaries:
+/// compare `d < left` (a deadline that just fits, `exactly_fitting_*`, goes
+/// red); drop the record (the ring assertions go red).
+#[test]
+fn a_two_hop_call_is_refused_at_the_hop_that_cannot_finish() {
+    let _g = serial();
+    let (a, b, c) = (0xD2_0001u32, 0xD2_0002u32, 0xD2_0003u32);
+    let t0 = 100 * MS;
+    let deadline = t0 + 10 * MS;
+    let lent_by_a = Lent { budget: 2 * MS, deadline: t0 + 5 * MS };
+    let passive_b = ServerSc::Passive { call_budget: MS };
+    let active_c = ServerSc::Reserved { budget: 2 * MS, deadline: 8 * MS };
+
+    // Hop 1: A -> B, admitted, nothing written.
+    assert_eq!(admit(t0, deadline, passive_b, Some(lent_by_a), a, b), Ok(()));
+    assert!(admissions_for(a).is_empty(), "an admitted call writes no record");
+
+    // Hop 2: B -> C at t0 + 3 ms, B still on A's reservation (1 ms left).
+    let t1 = t0 + 3 * MS;
+    let lent_on_b = Lent { budget: MS, deadline: lent_by_a.deadline };
+    let r = admit(t1, deadline, active_c, Some(lent_on_b), b, c);
+    let Err(Refused { receipt, alt }) = r else { panic!("hop 2 admitted: {r:?}") };
+    assert_eq!(alt, Alt::Deadline(t1 + 8 * MS), "the nearest deadline C admits");
+    assert_ne!(receipt, 0, "a refusal hands back a receipt");
+    let rec = azos_decision::get(receipt).expect("the receipt names a record in the ring");
+    assert_eq!((rec.rule, rec.verdict, rec.subject), (Rule::CallAdmission as u8, Verdict::Refuse as u8, b));
+    assert_eq!(rec.n, [deadline, t1 + 8 * MS, ALT_DEADLINE << 32 | c as u64]);
+    assert_eq!(rec.rule_info().map(|i| i.name), Some("call-admission"));
+    assert_eq!(admissions_for(b).len(), 1, "one record per refusal");
+
+    // What B reads back: the receipt and the offer, the offered deadline in
+    // the descriptor's own field, no capability.
+    let req = desc(deadline, ClockId::MONO);
+    let out = refused_desc(&req, Refused { receipt, alt });
+    assert_eq!((out.n_words, out.n_caps), (REFUSED_WORDS, 0));
+    assert_eq!(&out.words[..3], &[receipt, ALT_DEADLINE, t1 + 8 * MS]);
+    assert_eq!(out.deadline, t1 + 8 * MS);
+
+    // B accepts the offer for its own answer: a deadline that late is
+    // admitted by C (and is then A's to accept or refuse, at hop 1).
+    assert_eq!(admit_rule(t1, t1 + 8 * MS, active_c, Some(lent_on_b)), Ok(()));
+}
+
+#[test]
+fn exactly_fitting_deadlines_and_budgets_are_admitted() {
+    let _g = serial();
+    let now = 10 * MS;
+    assert_eq!(admit_rule(now, now + 8 * MS, ServerSc::Reserved { budget: MS, deadline: 8 * MS }, None), Ok(()));
+    let l = Lent { budget: MS, deadline: now + 4 * MS };
+    assert_eq!(admit_rule(now, now + 4 * MS, ServerSc::Passive { call_budget: MS }, Some(l)), Ok(()));
+}
+
+/// **A passive server is refused what the lent reservation cannot carry.**
+/// Each refusal names the alternative that would be admitted.
+#[test]
+fn a_passive_server_is_admitted_against_the_lent_reservation() {
+    let _g = serial();
+    let now = 10 * MS;
+    let p = ServerSc::Passive { call_budget: 2 * MS };
+    // Not enough budget left: the offer is the budget the call needs.
+    let thin = Lent { budget: MS, deadline: now + 4 * MS };
+    assert_eq!(admit_rule(now, now + 9 * MS, p, Some(thin)), Err(Alt::Budget(2 * MS)));
+    let tid = 0xD2_0010;
+    let Err(r) = admit(now, now + 9 * MS, p, Some(thin), tid, 7) else { panic!("admitted") };
+    let out = refused_desc(&desc(now + 9 * MS, ClockId::MONO), r);
+    assert_eq!(&out.words[1..3], &[ALT_BUDGET, 2_000], "a budget offer is in microseconds");
+    assert_eq!(out.deadline, now + 9 * MS, "a budget offer keeps the call's deadline");
+    // The reservation's period ends after the call's deadline: its budget is
+    // promised only by then, so that is the offer.
+    let late = Lent { budget: 3 * MS, deadline: now + 12 * MS };
+    assert_eq!(admit_rule(now, now + 9 * MS, p, Some(late)), Err(Alt::Deadline(now + 12 * MS)));
+    // The work does not fit the time left at all.
+    assert_eq!(admit_rule(now, now + MS, p, None), Err(Alt::Deadline(now + 2 * MS)));
+    // A caller with no reservation lends nothing: only the time is checked.
+    assert_eq!(admit_rule(now, now + 9 * MS, p, None), Ok(()));
+    assert_eq!(admissions_for(tid).len(), 1);
+}
+
+/// No deadline, or a server that promises nothing: never refused, never
+/// recorded (the call path does not even ask without a deadline).
+#[test]
+fn no_deadline_or_no_promise_is_admitted_without_a_record() {
+    let _g = serial();
+    let tid = 0xD2_0020;
+    let tight = ServerSc::Reserved { budget: MS, deadline: 50 * MS };
+    assert_eq!(admit(10 * MS, 0, tight, None, tid, 1), Ok(()));
+    assert_eq!(admit(10 * MS, 11 * MS, ServerSc::None, None, tid, 1), Ok(()));
+    assert!(admissions_for(tid).is_empty());
 }

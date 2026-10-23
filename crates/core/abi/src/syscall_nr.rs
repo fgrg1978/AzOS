@@ -699,7 +699,16 @@ pub const SYS_IPC_FAST_REPLY_ACCEPT: u64 = 17;
 /// (absolute ns on `MONO`, 0 = none) is at or before now: refused before the
 /// call is queued, nothing moved, one `deadline-expired` decision record; the
 /// server reads the same `deadline` and `clock_id` in the descriptor it
-/// accepts; `-ERTPROXY` when the caller is a real-time task and the endpoint a
+/// accepts; `-EADMIT` when the deadline is one the server's scheduling context
+/// cannot meet (its reservation's relative deadline is longer than the time
+/// left, or its per-call budget does not fit the time or the budget the
+/// caller's own reservation has left): refused before the call is queued,
+/// nothing moved, one `call-admission` record, and `*a1` holds the
+/// counter-offer (`words[0]` the record's id, the receipt; `words[1]` 1 for a
+/// deadline, 2 for a budget; `words[2]` the offered deadline in ns or budget
+/// in us; `deadline` the offered deadline); a call with a deadline lends the
+/// caller to its server (a passive server runs on the caller's reservation);
+/// `-ERTPROXY` when the caller is a real-time task and the endpoint a
 /// proxy (the topology names it `endpoint.rpc-<service>`: a service on another
 /// node), refused before the call is queued, one `cap-denial` record;
 /// `-EFAULT`; -1 (`E_PERM`)

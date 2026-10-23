@@ -445,6 +445,7 @@ pub fn spawn_path_ex(
     match sched {
         crate::topo_sched::TopoSched::Apply { priority, class, declared, floored, .. } => {
             crate::topo_sched::apply_timer_slack(tid, plan.topology_key);
+            crate::topo_sched::apply_call_budget(tid, plan.topology_key);
             crate::topo_sched::apply_principal(tid, plan.topology_key, Some(azos_sched::current_task_tid()));
             if floored {
                 crate::topo_sched::record_refusal(crate::topo_sched::SITE_SPAWN_FLOOR, tid);

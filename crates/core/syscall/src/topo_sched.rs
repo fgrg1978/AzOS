@@ -200,6 +200,25 @@ pub fn apply_timer_slack(tid: u32, row: &str) {
     }
 }
 
+/// A passive server's budget per call: record on task `tid`'s scheduling
+/// context the `call_budget_us` of its row (`row`, as for
+/// [`apply_timer_slack`]), the budget a call with a deadline is admitted
+/// against when the task holds no reservation of its own
+/// (`ipc_deadline::admit`). No topology, no row, no budget declared, or no
+/// such task: nothing recorded (a slot's reuse clears it).
+pub fn apply_call_budget(tid: u32, row: &str) {
+    let Some(us) = azos_topology::get()
+        .and_then(|t| t.row_place(row.as_bytes()))
+        .map(|p| p.call_budget_us)
+        .filter(|&us| us != 0)
+    else {
+        return;
+    };
+    if let Some(sc) = azos_sched::idx_for_tid(tid).and_then(azos_sched::classes::sc_of) {
+        sc.set_call_budget(us as u64);
+    }
+}
+
 /// Innovation B4: give task `tid` its principal kind and publish the envelope
 /// each kind is held to, once per spawn where the row is applied. The kind is,
 /// in order: the one the row declares for itself (`principal = ...` in its

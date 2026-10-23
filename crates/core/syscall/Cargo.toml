@@ -101,6 +101,10 @@ mmap-prot-canary = []
 # Domain's endpoint, port and MemObj limits are never enforced. The host rows
 # of `tests/host/syscall-tests/src/subtree_policy.rs` must go red.
 subtree-gate-canary = []
+# Deadline admission canary, never in a real build: `ipc_deadline::admit_rule`
+# admits every call, so no server's scheduling context is asked. The host test
+# `a_two_hop_call_is_refused_at_the_hop_that_cannot_finish` must go red.
+ipc-admit-canary = []
 # Wave 15 (plan 4a) gate canary, never in a real build: a port a thread
 # creates is booked to the thread instead of its process, so the thread's
 # exit frees it under its siblings.

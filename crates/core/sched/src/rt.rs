@@ -1179,6 +1179,29 @@ pub fn task_reservation(idx: usize) -> Option<(u32, bool, u64)> {
     None
 }
 
+/// The reservation the task in slot `idx` runs on, if it is the task running
+/// on this hart and it runs on one: `(budget left, absolute deadline)` of its
+/// current server period, counter ticks (a throttled reservation has none
+/// left). What a call with a deadline lends its server
+/// (`azos_syscall::ipc_deadline::Lent`). Owner state, read on this hart with
+/// interrupts off.
+pub fn running_reservation(idx: usize) -> Option<(u64, u64)> {
+    use azos_arch::Interrupts as _;
+    let s = azos_arch::ARCH.disable_all();
+    let cpu = crate::smp::current_cpu_id();
+    let mut out = None;
+    if idx < MAX_TASKS && cpu < ncpu() && FLAGS[cpu].load(Ordering::Relaxed) & F_RESV != 0 {
+        let o = unsafe { &*owner_of(cpu) };
+        if o.cur == idx {
+            let r = unsafe { res(cpu, o.cur_slot) };
+            let left = if r.throttled { 0 } else { r.budget.saturating_sub(now().saturating_sub(o.cur_since)) };
+            out = Some((left, r.deadline));
+        }
+    }
+    azos_arch::ARCH.restore(s);
+    out
+}
+
 /// Dry run of [`reserve`] for a task that does not exist yet (`SYS_SPAWN_EX`
 /// decides before it creates the child): the hart `r` would be placed on, or
 /// why it would be refused. Nothing is booked; the caller reserves for real

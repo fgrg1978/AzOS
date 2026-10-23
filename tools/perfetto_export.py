@@ -70,7 +70,8 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
          "deferred-activity", "time-protection", "attest", "boot-chain",
          "ras", "fieldbus", "audio-capture", "focus",
          "usb-authorize", "block-timeout", "clock-set", "estop-release",
-         "thermal", "durability", "net-timeout", "usb-host-fault"]
+         "thermal", "durability", "net-timeout", "usb-host-fault",
+         "call-admission"]
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
@@ -153,6 +154,7 @@ FIELDS = {
     "durability": (["from", "to", "flush"], None),
     "net-timeout": (["pending", "waited_ms", "action"], None),
     "usb-host-fault": (["cause_trb", "waited_ms", "action"], None),
+    "call-admission": (["deadline_ns", "alt", "kind<<32+server"], None),
 }
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",

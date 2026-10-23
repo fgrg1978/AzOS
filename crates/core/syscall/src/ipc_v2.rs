@@ -190,15 +190,23 @@ pub fn sys_ipc_call_v2(ep_raw: u64, msg_ptr: u64) -> i64 {
     let mut out = MsgDesc::default();
     match call_v2(ep_raw, &d, &mut out) {
         0 => if write_desc(msg_ptr, &out) { 0 } else { efault() },
+        // The counter-offer of a refused admission goes back the same way.
+        e if e == EADMIT => if write_desc(msg_ptr, &out) { e } else { efault() },
         e => e,
     }
 }
+
+/// `-EADMIT`: the server cannot meet the call's deadline (`ipc_deadline`
+/// rule 4); the descriptor holds the counter-offer.
+const EADMIT: i64 = Errno::EADMIT.to_syscall_ret();
 
 /// The call of `SYS_IPC_CALL_V2` on a request in kernel memory: the middle of
 /// the syscall, which only reads `d` from and writes `out` to the caller's
 /// memory around it (`sys_ipc_call_v2`), and the one body the kernel's own
 /// calls to a task-served endpoint use (`crate::kcall`). 0 when answered, with
-/// the answer in `*out`; else the call's negative code, `*out` untouched.
+/// the answer in `*out`; else the call's negative code, `*out` untouched
+/// except for `-EADMIT`, where it holds the counter-offer
+/// (`ipc_deadline::refused_desc`).
 ///
 /// The caller is the running task, whatever its ring: it needs a `WRITE`
 /// capability on the endpoint in its own table, blocks until the server
@@ -234,6 +242,16 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
     // warrant if it carries one: the message goes out with the warranted
     // bits taken off its label (`Rule::Declassify`). The warrant is spent by
     // the call that presents it, whether or not the call is then queued.
+    // A deadline the server's scheduling context cannot meet is refused
+    // with a counter-offer before anything moves (`ipc_deadline` rule 4). Only
+    // a call that carries a deadline is asked, and only of a task-served
+    // endpoint (a kernel-hosted interface runs on the caller's own stack).
+    if d.deadline != 0 && azos_ipc::endpoint::host_key(dest.owner).is_none() {
+        if let Err(r) = admit_call(now, d.deadline, caller_idx, caller_tid, dest.owner) {
+            *out = crate::ipc_deadline::refused_desc(d, r);
+            return EADMIT;
+        }
+    }
     let label = azos_ipc::endpoint::label::outgoing(caller_tid, d.label);
     let (badge, label) = cap_store::with_table(caller_tid, |t| {
         let h = CapHandle(ep_raw as u32);
@@ -337,6 +355,28 @@ pub(crate) fn call_v2(ep_raw: u64, d: &MsgDesc, out: &mut MsgDesc) -> i64 {
         }
     }
     result
+}
+
+/// `ipc_deadline` rule 4 for the call `caller_tid` (slot `caller_idx`, the
+/// running task) makes with absolute `deadline` at `now` to the task `server`:
+/// what the server's SC promises, and the reservation the caller runs on (its
+/// own, or the one it serves a call on as a passive server: a chain of calls
+/// is admitted hop by hop on the budget its first caller lent). Out of line:
+/// a call without a deadline never comes here.
+#[inline(never)]
+fn admit_call(now: u64, deadline: u64, caller_idx: usize, caller_tid: u32, server: u32) -> Result<(), crate::ipc_deadline::Refused> {
+    use crate::ipc_deadline::{Lent, ServerSc};
+    let ns = |t: u64| azos_abi::time::ticks_to_ns(t, azos_drv_sys::timebase::TIMER_FREQ);
+    let us = |u: u64| u.saturating_mul(1_000);
+    let sc = match azos_sched::idx_for_tid(server).and_then(azos_sched::classes::sc_of) {
+        Some(sc) if sc.class() == azos_sched::sc::Class::Dl => {
+            ServerSc::Reserved { budget: us(sc.budget_us()), deadline: us(sc.deadline_us()) }
+        }
+        Some(sc) if sc.call_budget_us() != 0 => ServerSc::Passive { call_budget: us(sc.call_budget_us()) },
+        _ => ServerSc::None,
+    };
+    let lent = azos_sched::rt::running_reservation(caller_idx).map(|(b, dl)| Lent { budget: ns(b), deadline: ns(dl) });
+    crate::ipc_deadline::admit(now, deadline, sc, lent, caller_tid, server)
 }
 
 /// A v2 call to an endpoint the kernel hosts (`crate::khost`): decode, run the

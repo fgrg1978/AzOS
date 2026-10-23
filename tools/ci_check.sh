@@ -10810,6 +10810,10 @@ host_job host_canary_row "usb-uvc: setting choice canary" usb-uvc-tests canary-u
 # and MemObj handlers ignore the limits of the Domain and of its ancestors.
 host_job host_canary_row "subtree: creation gate canary" syscall-tests subtree-gate-canary \
     the_creation_handlers_refuse_what_the_policy_forbids
+# Deadline admission (`ipc_deadline::admit_rule`): every call is admitted, so a
+# two-hop call whose second server cannot finish in the time left is queued.
+host_job host_canary_row "ipc: deadline admission canary" syscall-tests ipc-admit-canary \
+    a_two_hop_call_is_refused_at_the_hop_that_cannot_finish
 # D4/L6 (MemObj): each canary puts one hole of the MemObj operations back and
 # requires exactly its test to fail. The tests are in crates/core/ipc/src/memobj.rs
 # (ipc-tests) and carry the property in their doc. memobj-no-kernel-map-canary:

@@ -406,8 +406,19 @@ and label bits.
 **Deadline.** A call whose `deadline` is at or before the kernel's clock is
 refused with `-EDEADLINE` before it is queued and nothing moves. The server
 reads the same `deadline` and `clock_id` in the descriptor it accepts, so it
-can bound its own work by the caller's deadline. The register-only fast path
-carries no deadline.
+can bound its own work by the caller's deadline. Before the call is queued the
+server's scheduling context admits the time left: a server with its own
+reservation must serve within the time left (its relative deadline), a passive
+server (no reservation, its row's `call_budget_us`) must fit its per-call budget
+in the time left and in the budget the caller's reservation lends it. A refusal
+is `-EADMIT` with a counter-offer written back: `words[0]` the receipt (the id of
+the `call-admission` decision record), `words[1]` 1 (deadline) or 2 (budget),
+`words[2]` the offered deadline (ns) or budget (us), and `deadline` the offered
+deadline. A call with a deadline lends the caller to its server: a passive
+server runs on the caller's reservation, in its deadline order and on its
+budget (seL4 MCS style), and gets a `PORT_EVENT_CALL_NOTICE` when that budget
+runs out (`ETIMEDOUT`) or the caller withdraws (`ECANCELED`). The register-only
+fast path carries no deadline and pays for none of this.
 
 **Label.** `label` is a set of principal kinds the data has passed through,
 one bit per kind: `LABEL_SYSTEM` 1, `LABEL_SERVICE` 2, `LABEL_USER` 4,
@@ -433,7 +444,7 @@ returns `None` for a non-negative value or a number it does not know.
 | Authorization | `ENOTOWNER` 99: not the object's owner, or not otherwise authorized, for checks that are not a capability-table lookup |
 | Capabilities | `ECAPKIND` 200 (wrong kind), `ECAPPERMS` 201 (missing right), `ECAPSTALE` 202 (generation stale: revoked or freed) |
 | Policy | `ETOPOLOGY` 203 (not allowed by the signed topology), `ESAFETY` 204 (safety policy), `EAUTH` 205, `EREPLAY` 206, `EOTASIG` 207, `EROLLBACK` 208, `EQUOTA` 209, `EABIVERSION` 210 |
-| IPC | `EPEERDIED` 211 (the serving task died with the call queued or in service), `EREVOKED` 212 (the endpoint was destroyed), `ENOSENDERS` 213 (no sender left on the endpoint), `EV1ACCEPT` 215 (a v2 call taken by the fast accept), `EDEADLINE` 216 (deadline already passed), `ERTPROXY` 217 (a real-time task called a proxy endpoint), `EEOF` 218 (end of a stream) |
+| IPC | `EPEERDIED` 211 (the serving task died with the call queued or in service), `EREVOKED` 212 (the endpoint was destroyed), `ENOSENDERS` 213 (no sender left on the endpoint), `EV1ACCEPT` 215 (a v2 call taken by the fast accept), `EDEADLINE` 216 (deadline already passed), `ERTPROXY` 217 (a real-time task called a proxy endpoint), `EEOF` 218 (end of a stream), `EADMIT` 220 (the server cannot meet the call's remaining deadline: the descriptor carries the counter-offer) |
 | Memory | `EPURGED` 219 (a volatile memory object lost its frames to memory pressure: the map or clone has nothing to use) |
 
 `EAGAIN` is also what a write-class op answers while containment is armed.

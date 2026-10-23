@@ -156,6 +156,7 @@ what `RuleInfo::fields` names.
 | 66 | `durability` | record | from, to, flush | A record that must survive a power cut (1 the topology counter floor, 2 the CONFIG.SIG floor) written to a device that cannot confirm the flush (`flush` 1: `Unsupported`): refused, the floor stays the old one this boot |
 | 67 | `net-timeout` | device | pending, waited_ms, action | A NIC's transmit ring wedged and the action taken (2 device reset, 5 latched with its resets spent, 6 the reset did not bring it back) |
 | 68 | `usb-host-fault` | device | cause_trb, waited_ms, action | A USB host controller left a command unanswered or reported a host system / host controller error (`cause_trb`: cause 1 timeout, 2 HSE, 3 HCE in its second byte, the unanswered command's TRB type in its first), and the action taken (2 controller reset and its devices enumerated again, 5 latched with its resets spent, 6 the reset did not bring it back) |
+| 69 | `call-admission` | tid | deadline_ns, alt, kind<<32+server | A v2 call refused because its server's scheduling context cannot meet the remaining deadline; `alt` is the counter-offer (kind 1: a deadline in ns, 2: a budget in us) |
 
 **Reading them.**
 

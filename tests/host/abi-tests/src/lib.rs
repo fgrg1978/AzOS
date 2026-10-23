@@ -310,6 +310,7 @@ mod error_tests {
             Errno::ERTPROXY,
             Errno::EEOF,
             Errno::EPURGED,
+            Errno::EADMIT,
             Errno::EINTR,
             Errno::EPIPE,
         ];

@@ -286,6 +286,10 @@ pub enum Rule {
     /// driver reset the controller or latched it dead
     /// (`azos_drv_api::recovery`).
     UsbHostFault = 68,
+    /// A v2 IPC call's remaining deadline was admitted against, or refused
+    /// by, its server's scheduling context; a refusal carries the nearest
+    /// admissible deadline or budget (`azos_syscall::ipc_deadline::admit`).
+    CallAdmission = 69,
 }
 
 /// The verdict of a record.
@@ -313,7 +317,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 69] = [
+pub const RULES: [RuleInfo; 70] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, 0)
         // and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
@@ -986,6 +990,15 @@ pub const RULES: [RuleInfo; 69] = [
         fields: ["cause_trb", "waited_ms", "action"],
         rejected_if_yes: "keep the controller: it stopped answering or reported an error, and every device behind it is unreachable until it is reset",
         rejected_if_no: "reset again: the controller faulted once more after a clean reset, and a host that keeps half-working loses its devices at random",
+        // Only refusals are written: the admitted call is the common case and
+        // its record would be one per call. `alt` is the counter-offer: an
+        // absolute deadline in ns when `kind` is 1, a budget in us when 2;
+        // `kind<<32+server` also names the serving task.
+        name: "call-admission",
+        subject: "tid",
+        fields: ["deadline_ns", "alt", "kind<<32+server"],
+        rejected_if_yes: "refuse the call: the server's reservation or the budget the caller lends finishes it by its deadline",
+        rejected_if_no: "queue the call and let the server miss the deadline: its scheduling context cannot finish it in the time left",
     },
 ];
 
