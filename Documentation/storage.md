@@ -26,15 +26,24 @@ through the `BlockDevice` trait (`crates/drivers/api/src/block.rs`):
 | Backend | Where | Notes |
 |---------|-------|-------|
 | `Queued` | `blkdev::Queued`, over `crates/drivers/block/src/queue.rs` | Default backend: the device bound to the block request layer. Every method is a request for the caller's Domain that waits for its outcome. |
-| virtio-blk | `crates/drivers/virtio/src/virtio/blk.rs` | A hardware queue (`HwQueue`, `crates/drivers/api/src/block.rs`) the layer is bound to when no NVMe controller was attached. |
+| virtio-blk | `crates/drivers/virtio/src/virtio/blk.rs` | A hardware queue (`HwQueue`, `crates/drivers/api/src/block.rs`) the layer is bound to when no NVMe controller or AHCI disk was attached. |
 | NVMe | `crates/drivers/block/src/nvme.rs` | Cargo feature `nvme` (Kconfig `DRV_NVME`), a hardware queue too; bound first when a controller was attached before `blkdev::init`. |
-| AHCI | `crates/drivers/block/src/ahci.rs` | Cargo feature `ahci` (Kconfig `DRV_AHCI`), a hardware queue too: a SATA disk behind an AHCI 1.3 host (PCI class 01:06:01). Bound when no NVMe controller was attached first. One command in the device at a time (NCQ off), READ/WRITE DMA EXT through a PRDT over `AHCI_XFER_KB` of staging pages, FLUSH CACHE EXT, no FUA (SATA has it only inside NCQ), no discard. Completes by MSI, polled without a route. |
+| AHCI | `crates/drivers/block/src/ahci.rs` | Cargo feature `ahci` (Kconfig `DRV_AHCI`), a hardware queue too: a SATA disk behind an AHCI 1.3 host (PCI class 01:06:01). Bound when no NVMe controller was attached first. One command in the device at a time (NCQ off), READ/WRITE DMA EXT through a PRDT over `AHCI_XFER_KB` of staging pages, FLUSH CACHE EXT (a disk whose IDENTIFY lacks it, or that aborts it, answers a flush `Unsupported`), no FUA (SATA has it only inside NCQ), no discard. Completes by MSI, polled without a route. |
 | `Mmc` | `crates/drivers/block/src/mmc.rs`, `blkdev::Mmc` | SDHCI SD/eMMC controller driver (the SpacemiT K1, feature `k1`; QEMU's `sdhci-pci` under `mmc-pci`). Data moves by ADMA2 (one descriptor per bounce page, up to 128 sectors per command) and completes by the controller's interrupt through the `irq-thread`; until the line is routed it polls. |
 | `DwMshc` | `crates/drivers/block/src/dwmshc.rs`, `blkdev::DwMshc` | Synopsys DesignWare MSHC SD driver (the VisionFive 2's microSD socket, `starfive,jh7110-mmc`, feature `vf2`), bound from the device-tree node by the hardware bus (`dw-mshc`). Data moves by the controller's IDMAC over a chain of descriptors (one per bounce page, up to 128 sectors per command; the bounce pages and the chain sit below 4 GiB and are bracketed with the DMA domain's cache maintenance); multi-block transfers are closed with an explicit CMD12. The card is identified at 400 kHz, takes 4-bit mode and 25 MHz, then high speed (50 MHz) when CMD6 says it has it; its capacity is read from the CSD. Completion is by the controller's interrupt (the waiter lists itself in a `DeviceWait`, looks again, then sleeps for at most one slice); until the line is routed it polls. Not driven: the eMMC (`non-removable`), UHS modes, tuning. |
 
 `BlockDevice::flush` makes every completed write durable. The default is
 `Err(FlushError::Unsupported)`, never `Ok`: a backend that cannot confirm
 durability must say so, and a caller that claims durability passes that on.
+
+A USB mass-storage disk (Kconfig `USB_STORAGE`, `crates/drivers/block/src/usb_msc.rs`)
+is a hardware queue of the request layer too, but never a `blkdev` backend: it
+keeps a request queue of its own, so a stick that comes and goes cannot take the
+boot disk's place, and the kernel only reads its sector 0 when it becomes ready
+(`kernel/src/boot/usb.rs`). One command at a time (Bulk-Only Transport has no
+tags), `fua` false, no discard; a flush is SYNCHRONIZE CACHE(10), and a device
+that answers it INVALID COMMAND OPERATION CODE reports the flush `Unsupported`.
+The class driver is in [drivers.md](drivers.md).
 
 ### `blkdev` entry points
 
@@ -43,24 +52,28 @@ durability must say so, and a caller that claims durability passes that on.
 | `read`, `write` | Run the real-time check, then the device. `read` first calls the read observer, so a write-back cache owner flushes dirty sectors in the range before the read. `read_would_wait` asks the observer's probe whether that flush has anything to write, for a caller that must not wait for the device (the io_ring submit). `write` calls the write observer afterwards, whether or not the write succeeded (a failed multi-sector write may have landed in part). |
 | `read_quiet`, `write_quiet` | The same without the observers. For the cache owner itself, and for the swap area. |
 | `read_raw`, `write_raw` | Straight to the backend: no fault injection, no real-time check, no observers. For the ring-3 block entry, which calls `note_external_read` / `note_external_write` itself. |
+| `submit_raw`, `wait_raw`, `raw_max_sectors` | The queued form of a raw transfer, for the io_ring block entries (Kconfig `IORING_ASYNC`): `submit_raw` puts a request in the request layer and returns at once, `wait_raw` runs the device and collects it. `raw_max_sectors` is `None` on a board whose disk is not behind the layer (SD/eMMC), where the entry falls back to `read_raw` / `write_raw`. |
+| `write_run`, `fua_commit` | The write-back cache owner's write with `PREFLUSH` and/or `FUA` (below); `fua_commit` says whether a commit may use FUA: Kconfig `BLK_FUA` on and a bound device with a native FUA. |
 | `flush` | `BlockDevice::flush` after the real-time check. |
 | `set_read_observer`, `set_write_observer` | Install the single `fn(u64, u32)` observer of each kind (`write_observer.rs`). The FAT32 block cache registers both. |
 | `write_observer::set_account` | The write ledger: a `fn(u32, u64)` called once per write request the device completed (the request layer's completion, and the SD/eMMC backend's write), with the owner Domain and the bytes. The kernel registers `azos_sched::domain::add_written`; the per-Domain and total counters are published under `metrics/storage`. A failed write, a flush and a discard count nothing. |
 | `set_rt_io_check` | Kconfig `RT_BLOCK_IO_CHECK`: a hook run at every entry; the kernel's check panics, naming the task, when a real-time task reaches the block layer. |
 | `io_errors` | Count of failed reads and writes, injected ones included (only with fault injection built in). |
 
-Every entry also calls `lockdep::might_wait_device`, so entering the block
+Every entry that runs the real-time check also calls `lockdep::might_wait_device`, so entering the block
 layer with a spinlock held, with interrupts off, or from interrupt context is
 reported when lockdep is on.
 
 ### Discard and force-unit-access
 
-Both are flags of the request (`azos_devif::block`: `REQ_DISCARD`, `FLAG_FUA`,
-`FLAG_PREFLUSH`) that the layer checks against what the device says in
+Both are marked on the request (`azos_devif::block`: the op `REQ_DISCARD`, the
+flags `FLAG_FUA` and `FLAG_PREFLUSH`) and the layer checks them against what the device says in
 `HwCaps`: `max_discard_sectors` (0: no command, the request is refused) and
 `fua` (native only: NVMe has it, virtio-blk does not and a request that asks is
 refused rather than faked with a flush). A discard is cut at the device's
-largest discard, which is not its largest transfer.
+largest discard, which is not its largest transfer. A `PREFLUSH` the device
+answers `Unsupported` (no volatile cache) counts as done: there is nothing to
+order; an explicit flush so answered is `Err(FlushError::Unsupported)`.
 
 * **`BLK_DISCARD`** (`off`, `online`, `batched`). `blkdev::discard(runs)` waits
   for every run: `online` one request at a time, `batched` all the runs in the
@@ -87,12 +100,13 @@ largest discard, which is not its largest transfer.
 
 ### Queues: no lock across a device wait
 
-One rule runs through all three drivers: no mutex or spinlock is held while
+One rule runs through every driver: no mutex or spinlock is held while
 waiting for the device. A request is submitted under a short lock and then
 waited for without it.
 
 * **`DevQueue`** (`crates/drivers/block/src/dev_queue.rs`) fronts a controller
-  that runs one command at a time (the SD/eMMC driver). `submit()` takes a
+  that runs one command at a time (the SD/eMMC drivers, `mmc.rs` and
+  `dwmshc.rs`). `submit()` takes a
   ticket under a mutex held only for the ticket; waiters sleep on a
   `WaitQueue` until `serving == ticket`, so requests are served FIFO. The
   returned `Turn` has `program(f)`, which runs register writes with the
@@ -111,7 +125,7 @@ waited for without it.
   interrupt line, one reaper. A command that misses its deadline resets the
   device and programs it again over the same rings, once per boot; the next
   one latches the driver failed until reboot (see "A device that stops
-  answering").
+  answering"). A completion naming no slot in flight latches it at once.
 * **AHCI** has one slot: the HBA's other 31 are never used, because NCQ is
   off and the commands used are not queued. `claim` answers `Busy` while the
   slot is held and the layer keeps the rest queued. The slot owns
@@ -133,8 +147,8 @@ waited for without it.
   split and several chunks go out together before the first wait. Completion
   is by MSI-X where a route exists: queue `q`'s vector is delivered to CPU
   `q` (each hart's IMSIC file on riscv64, which that hart enables when it
-  comes up; each CPU's local APIC on x86_64; aarch64's ITS has only the boot
-  CPU's collection for now), and the one reaper sleeps until any of them
+  comes up; each CPU's local APIC on x86_64; aarch64's ITS maps one
+  collection, bound to the boot CPU, so every vector goes there), and the one reaper sleeps until any of them
   wakes it, then drains every queue. A queue whose CPU is not running (never
   started, or offline) raises no interrupt: its slots are taken last, and a
   command on it is noticed by the reap that ends the reaper's 1 ms slice.
@@ -158,13 +172,20 @@ request is started next:
 | `mq-deadline` | The earliest deadline, then the oldest; no deadline sorts last. |
 | `rt-deadline` (default) | As `mq-deadline`, with the real-time **request class** first, and one slot of every hart's queue kept for that class. |
 
+Behind the request picked, requests of the same owner and operation that are
+adjacent on the medium, queued by any hart, go to the device as one command:
+up to Kconfig `BLK_MERGE_MAX` requests (default 8, 4 embedded; 1 turns merging
+off) and up to the device's largest command.
+
 The class belongs to the request. A request is real-time when it serves a
 durable flight-recorder record that waits for the medium (an e-stop, the
 release nonce floor, a decision refusal: pushed by a `*_durable` call and not
-yet covered by an `Ok` fsync). Two sources answer, both registered by the
-kernel (`queue::set_rt_class_source`): the flush that carries the record
+yet covered by an `Ok` fsync). The kernel registers one source
+(`queue::set_rt_class_source`, `block_request_serves_record` in
+`kernel/src/boot/sched.rs`) that answers for two cases: the flush that carries the record
 (`logger::rt_request_class_now`: the log flusher's pass, or a non-real-time
-`*_durable` caller's own flush, in whatever Domain's context) and a write-back
+`*_durable` caller's own flush, in whatever Domain's context) and, while such a
+record is pending, a write-back
 pass of the FAT32 cache (`fat32_wb_pass_here`: the `fs-wb` task, or an fsync
 that runs a pass meanwhile), since a pass writes the dirty lines oldest epoch
 first and the record's lines go out with it. Such a request never sleeps for a
@@ -172,7 +193,8 @@ free slot behind bulk traffic, is started before every other, and is not
 merged with ordinary ones; the same task's next request is ordinary once the
 record is durable. Hardware command slots are not reserved, so it waits for at
 most the earliest command in flight. A real-time task is not let in by this:
-`blkdev` runs the real-time check before a request exists, and a real-time
+`blkdev` runs the real-time check before a request exists (it panics only with
+Kconfig `RT_BLOCK_IO_CHECK`, a development-build option), and a real-time
 task's record still reaches the medium through the ring and the log flusher.
 
 ### A device that stops answering
@@ -206,12 +228,13 @@ is still queued (`Outcome::Deadline`) and never recalls a started command.
 The record is ring-only (`Deny`): a durable receipt would be a block write on
 the device that just died.
 
-**A command's budget is time the guest ran.** The budget (500 ms; 2 s for a
-flush or a discard) is wall-clock, and a host that stops the guest for a second
+**A command's budget is time the guest ran.** The budget (NVMe and virtio-blk
+500 ms, 2 s for a flush and for a virtio-blk discard; AHCI 5 s, 20 s for a
+flush) is wall-clock, and a host that stops the guest for a second
 (QEMU paused with `SIGSTOP`, an overloaded or suspended host) leaves it with
 every command in flight out of budget and a device that never had a chance to
-answer; the driver then reset it and latched it dead until reboot. Each driver
-now tells an `azos_drv_api::block::StallClock` whenever it looks at the device
+answer; the driver then reset it and latched it dead until reboot. Each of
+these drivers tells an `azos_drv_api::block::StallClock` whenever it looks at the device
 (a submit, a reap). Two looks more than `STALL_GAP_US` (50 ms) apart are time
 the device was not asked and could not be heard: the gap is credited, and a
 command is out of budget only when its deadline plus the credit gained since
@@ -221,8 +244,10 @@ a device that really died is found at its budget plus the time the guest did
 not run. The driver prints `guest did not run for N ms` when it credits.
 Decision: this, and not "retry once before latching" (a second budget after
 the first expiry): that forgives one stall of any length but only one, and a
-guest stopped twice during one command still lost its disk. NVMe and virtio-blk
-do it; the SD/eMMC and USB paths time their commands per call and do not latch.
+guest stopped twice during one command still lost its disk. NVMe, AHCI and
+virtio-blk do it; the SD/eMMC drivers time their commands per call and do not
+latch, and the USB disk, whose budget is Kconfig `USB_MSC_TIMEOUT_MS` with no
+stall credit, is failed until it is unplugged when a command outlives it.
 Gate rows `blk: guest stop survives` (both ISAs) pause QEMU during the boot's
 disk I/O and must finish; `blk: guest stop canary` (feature
 `blk-stall-canary`, no credit) must see a command time out. On that same
@@ -232,7 +257,7 @@ resets once` must see one reset and the disk serve the rest of the boot,
 
 **No wait in the request layer is unbounded.** A submitter that waits for its
 request or for a free slot registers its TID on a small list and sleeps on a
-timer for at most a slice (`WAIT_SLICE_US`, 1 ms; 10 slices for a free slot), through the same
+timer for at most a slice (Kconfig `WAIT_SLICE_US`, default 1 ms; 10 slices for a free slot), through the same
 `block_until` / TID wake pair the completion interrupt uses
 (`queue::set_sleep_hooks`). The completing task bumps an epoch and wakes the
 list; a sleeper registers first and reads the epoch second, so one of the two
@@ -272,14 +297,14 @@ could sleep through an event:
   completion queue with no full fence between: on a weakly ordered core (or
   with a store buffer) the interrupt handler can read "nobody listed" while the
   sleeper reads "nothing posted", and the sleeper sleeps to its deadline with the
-  completion posted. All three now share `azos_drv_api::block::DeviceWait`
+  completion posted. All three, and AHCI and the DW MSHC driver, share `azos_drv_api::block::DeviceWait`
   (list, fence, re-check; and the waker's event, fence, look), with a host litmus
   test of the pair.
 
 Both are bounded by the slice (a delay, not a hang) and neither is shown to be
 the 20-10 hang. A reaper that dies holding the reaper role would leave every
 other waiter polling at one slice instead of sleeping in the device; nothing
-makes a task die there today.
+makes a task die there.
 
 The other `WaitQueue` users are sorted in `waitqueue.rs` ("Two kinds of sleep"):
 the FAT claims, the pager, `Claim`, `dev_queue` and `ads1115` sleep through
@@ -321,8 +346,11 @@ on the endpoint `block.part.<n>` (`crates/core/syscall/src/block_host.rs`). The
 endpoint badge is `n + 1`; `READ` reads and `WRITE` writes; sector numbers are
 relative to the partition, so a sector outside it cannot be spelled, and a run
 past its end or one that overflows is refused and recorded. The data moves
-through the io_ring ops `OP_BLOCK_READ` and `OP_BLOCK_WRITE`. No capability
-names the whole medium.
+through the io_ring ops `OP_BLOCK_READ` and `OP_BLOCK_WRITE` (with Kconfig
+`IORING_ASYNC`, queued requests of the layer, see [ipc.md](ipc.md)); a write
+completes `CQE_F_QUEUED`, done by the device with no flush behind it, and is
+durable only after a later flush (an `OP_FSYNC` on the mounted volume). No
+capability names the whole medium: badge 0 names no partition.
 
 Source: `crates/drivers/api/src/block.rs`,
 `crates/drivers/block/src/blkdev.rs`,
@@ -331,6 +359,8 @@ Source: `crates/drivers/api/src/block.rs`,
 `crates/drivers/block/src/write_observer.rs`,
 `crates/drivers/block/src/partition.rs`,
 `crates/drivers/block/src/nvme.rs`,
+`crates/drivers/block/src/ahci.rs`,
+`crates/drivers/block/src/usb_msc.rs`,
 `crates/drivers/virtio/src/virtio/blk.rs`,
 `crates/core/syscall/src/block_host.rs`.
 
@@ -357,7 +387,7 @@ offset it concerns.
 | Operation | Written by | Recovery at mount |
 |-----------|-----------|-------------------|
 | `JOURNAL_OP_WRITE_DIR` (3) | Creating a file | PENDING is discarded: nothing names the chain yet. |
-| `JOURNAL_OP_UNLINK` (4) | Removing a root entry | PENDING is discarded. |
+| `JOURNAL_OP_UNLINK` (4) | Removing a file's directory entry (any directory) | PENDING is discarded. |
 | `JOURNAL_OP_OVERWRITE` (5) | Overwriting a file: one record for new chain and old dirent | PENDING is replayed (dirent pointed at the new chain, old chain freed), after checking that the dirent it names currently shows the old or the new first cluster; otherwise discarded. |
 | `JOURNAL_OP_RENAME` (6) | Rename over an existing file | PENDING is replayed whole (`journal_replay_rename`); discarded if the dirents do not hold what it says. |
 | 1 and 2 | Reserved, never written | Reserved numbers are never reassigned. |
@@ -394,8 +424,18 @@ before its clusters can be handed out again.
 epoch boundary (below). It fails closed: anything but a confirmed flush fails
 the operation, including `FsError::Unsupported` (the fat32 layer's form of `FlushError::Unsupported`), because a device that
 cannot flush gives no ordering and the journal's guarantees would not hold.
-`fat32_write_file` ends with one more `device_flush` so the caller is told
-"written" only once it is durable.
+The other ordering barriers (a directory extension, `mkdir`, a truncate or a
+free made at once, and the first flush of `fat32_fsync`) let `Unsupported`
+pass: a device that cannot flush orders nothing, and an I/O error still fails
+them. `fat32_write_file` ends with one more `device_flush` so the caller is
+told "written" only once the device confirmed it, or answered `Unsupported`
+(only an empty-file create reaches that point on such a device; every other
+path crossed a `journal_barrier`). `fat32_fsync` and `fat32_sync_checked` are
+the calls that claim durability: `Ok` only after a confirmed flush.
+The VFS backend's whole-file writes (`write_all`, `create`, a `truncate`
+that rewrites the file) use `fat32_write_file_queued`, which under write-back skips that final flush:
+the steps are ordered by epochs, and which of the old and new file a cut
+leaves is settled only by the next `fsync`, `sync` or `fs-wb` pass.
 
 A cut at any point leaves a valid volume. What it can leave is *space*:
 clusters allocated by a write whose directory entry never landed, a chain
@@ -425,7 +465,10 @@ order:
 3. Mark the volume **dirty for this mount, durably, before the first write**:
    `mark_volume_dirty` flushes the cache, writes the state straight to the
    device (`write_sector_direct`), and flushes again so the flag reaches the
-   medium ahead of every later write.
+   medium ahead of every later write. That second flush's answer is not
+   checked: a device that cannot flush orders nothing, and one whose flush
+   fails refuses every later journal barrier, so the first structural write
+   of the mount fails.
 
 `fat32_unmount` closes open files, syncs (writing the page cache's dirty pages
 back first), flushes once more if anything is dirty, and only if every step
@@ -478,8 +521,8 @@ Source: `crates/fs/fs/src/fat32.rs`, `crates/fs/fs/src/bcache.rs`,
 ## The page-cache path
 
 File data of a filesystem whose `FileSystem::page_cached()` is true goes
-through the unified page cache. FAT32 and tmpfs return true; azvol does
-not. A backend must also be `streaming()`.
+through the unified page cache. FAT32 and tmpfs return true (the kernel does
+not mount tmpfs: `/tmp` is a ramfs directory); azvol does not. A backend must also be `streaming()`.
 
 The cache is the one `mmap` maps (see [memory.md](memory.md#page-cache-as-a-paged-memobj)):
 one `MemKind::Paged` MemObj per aligned 64-page window of a file, filled and
@@ -558,7 +601,7 @@ Blocks are 4096 bytes and all fields are little-endian.
 | Blocks | Contents |
 |--------|----------|
 | 0 and 64 | Superblock copies A and B |
-| 1..127 | Reserved (zero); `RESERVED_BLOCKS` = 128 |
+| 1..127 except 64 | Reserved (zero); `RESERVED_BLOCKS` = 128 |
 | from 128 | Free-space bitmap (one bit per volume block, with a crc32c trailer), then the per-block checksum table |
 | `data_start`.. | File data, directory blocks, tree nodes, the inode table's own data |
 
@@ -606,7 +649,9 @@ used that nothing names; the next mount sees the bitmap's population count
 differ from the superblock's `used_blocks` and rebuilds the map from the trees
 (`MountReport::bitmap_rebuilt`). A failed commit poisons the handle
 (`Error::Poisoned`); remount to continue. The ordering argument rests on
-`BlockDev::flush` being a barrier.
+`BlockDev::flush` being a barrier; the kernel's `BlockDev`
+(`kernel/src/boot/azvol.rs`) maps every `blkdev::flush` error, `Unsupported`
+included, to a failed flush, so a device that cannot flush fails the commit.
 
 ### Change groups
 
@@ -658,7 +703,10 @@ sealed; they hold geometry, allocation state and tags.
   drop). The block key is `HKDF-SHA256(salt = uuid, ikm = master)`. The
   superblock's `key_id` is a second, independent derivation, compared first so a
   wrong key is `Error::WrongKey` before any data is touched. `wrapped_key` stays
-  zero.
+  zero. In the kernel the master key of a sealed `[volume.NAME]` row is
+  `HKDF-SHA256(salt = row name, ikm = device seed, info = "azos-azvol volume
+  key v1")` (`kernel/src/boot/azvol_key.rs`), the seed being the one the
+  `LinkKey` endpoint keeps in its reserved sector; it is never handed to ring 3.
 * **Not covered: freshness.** Whoever can write the medium can put back an old
   block together with its old table entry and the volume will take it for the
   block it was.
@@ -708,19 +756,22 @@ tree is a wrapper device, `VerityDev`, between the engine and the partition.
 
 ### Mounting into the VFS
 
-Each `[volume.NAME]` row of the topology (`VolumeSpec`: `partition`, `mount`,
+Each `[volume.NAME]` row of the topology (`VolumeSpec`: `name`, `partition`, `mount`,
 `read_only`, `aead`, `verity_root`) names a partition and a mount point.
 `kernel/src/boot/azvol.rs` supplies the partition as a `BlockDev` (azvol blocks
 mapped to sectors through `blkdev`, partition-relative) and the system around
 the mount (`Env`: the clock, the calling task, whether a task is alive), then
 calls `azvol_mount::mount_rows`. For each row, in order:
 
-* A row with `aead = true` is refused (`Why::Aead`): the mount does not use
-  the sealing layer, and a volume declared sealed is never served as a plain
-  one. The sealing layer is used by `Volume::format_sealed` and
-  `Volume::mount_sealed`, not by `mount_rows`.
+* A row with `aead = true` is mounted with `Volume::mount_sealed` and the
+  row's key (see "Keys" above). A board with no device seed has no key: the
+  row is refused (`Why::NoKey`), and so is a volume the key does not open
+  (`Error::WrongKey`), each with a `Rule::DeviceAdmission` receipt (why 3,
+  why 4); a sealed volume is never served as a plain one, and a sealed volume
+  under a row without `aead` is refused (`Error::KeyRequired`). `aead`
+  together with `verity_root` is refused (`Why::SealedAndHashed`).
 * A row with `verity_root` set is opened through the hash tree it names
-  (see "Verity" below) and served read-only, whatever its `read_only` says. A
+  (see "Verity" above) and served read-only, whatever its `read_only` says. A
   partition that does not open as the volume of that root is refused
   (`Why::Verity`), and so is a volume from which the mount itself reads a
   block that does not hash into the root (`Why::Tampered`).
@@ -754,7 +805,7 @@ Source: `crates/fs/fs/src/azvol/mod.rs`, `crates/fs/fs/src/azvol/layout.rs`,
 `crates/fs/fs/src/azvol/seal.rs`, `crates/fs/fs/src/azvol/check.rs`,
 `crates/fs/fs/src/azvol/mount.rs`, `crates/fs/fs/src/azvol/dev.rs`,
 `crates/fs/fs/src/azvol/verity.rs`,
-`crates/fs/fs/src/probe.rs`, `kernel/src/boot/azvol.rs`,
+`crates/fs/fs/src/probe.rs`, `kernel/src/boot/azvol.rs`, `kernel/src/boot/azvol_key.rs`,
 `crates/core/topology/src/types.rs`, `tools/mkazvol.py`.
 
 ## Directory capabilities and `Cap<Dir>` namespaces
@@ -773,8 +824,9 @@ descriptor's resource is always below `MAX_FDS_PER_PROC`, and the two ranges
 cannot meet (checked at compile time); every place that turns a `Cap<File>`
 into a descriptor refuses a tree resource as the wrong kind of object.
 
-* **The only minter is the topology.** A `cap_seed` entry of kind `"file"`
-  whose target is the absolute path of the tree's root. Targets are refused if
+* **The only minter is the topology.** A `cap_seed` entry of kind `"node"`
+  whose target is the absolute path of the tree's root (a `node` target
+  without a leading `/` is an image name to launch, not a tree). Targets are refused if
   relative, if they contain a `.` or `..` component, if longer than
   `TREE_PATH_MAX` bytes, or if they ask for more than read and/or write. A tree
   grant carries no `DUP`, so it cannot be handed on. At most `MAX_TREES` (16)
@@ -786,7 +838,7 @@ into a descriptor refuses a tree resource as the wrong kind of object.
   bound everything it can open.
 * **Rights.** `READ` on a directory is the right to look names up beneath it.
   Naming and writing are separate: an open that changes the tree
-  (`O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`) needs a held tree
+  (`O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`) needs a held tree
   with `WRITE` that covers the resulting path (`write_tree_covers_open`). A row
   that grants `/` read-only therefore reads anywhere and writes only under the
   write trees it also holds. The calls that change the tree check the held
@@ -839,8 +891,11 @@ Source: `crates/core/ipc/src/file_cap.rs`, `crates/core/common/src/path.rs`,
 ## ext4 and the Linux module set
 
 The ext4 module set is the unmodified Linux `fs/ext4` code, built as
-relocatable modules and checked and mapped by the kernel. The Kconfig symbols
-`LX_FS_EXT4_RO` and `LX_FS_EXT4_RW` are declared in `config/axes/Kconfig.personality`.
+relocatable modules that the module loader lays out and relocates. The Kconfig symbols
+`LX_FS_EXT4_RO` and `LX_FS_EXT4_RW` are declared in `config/axes/Kconfig.personality`;
+setting either fails the build (`crates/core/limits/build.rs`), and nothing
+loads the modules or mounts an ext4 volume: the imports listed below and the
+ring-3 filesystem server are not there.
 
 The tree contains:
 
