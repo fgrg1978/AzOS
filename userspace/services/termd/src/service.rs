@@ -512,7 +512,7 @@ impl<C: Console, G: Gate> Service<C, G> {
         match rc {
             status::STARTED => {
                 // A new user, a new terminal: not the last one's history, size or mode.
-                self.d = Discipline::new();
+                self.d.reset();
                 self.mode = Mode::Session;
                 self.say(b"\n");
                 true

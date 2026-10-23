@@ -55,6 +55,16 @@ impl History {
         Self { lines: [[0; LINE_MAX]; HIST_N], lens: [0; HIST_N], n: 0, next: 0 }
     }
 
+    /// Forget every line, its bytes too.
+    pub fn clear(&mut self) {
+        for l in &mut self.lines {
+            l.fill(0);
+        }
+        self.lens = [0; HIST_N];
+        self.n = 0;
+        self.next = 0;
+    }
+
     /// Lines stored.
     pub fn len(&self) -> usize {
         self.n

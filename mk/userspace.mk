@@ -266,7 +266,7 @@ $(COMPMGR_ELF): $(COMPMGR_SRC) $(COMPMGR_DIR)/user.ld $(LIBSYS_SRC)
 $(TOOLBOX_ELF): $(TOOLBOX_SRC) $(TOOLBOX_DIR)/user.ld $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
 	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)" && $(USPACE_BUILD)
-	cp $(TOOLBOX_BUILT) $@
+	$(AARCH64_OBJCOPY) --strip-all $(TOOLBOX_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(POWER_ELF): $(POWER_SRC) $(POWER_DIR)/user.ld $(LIBSYS_SRC)
@@ -854,7 +854,7 @@ $(SH_ELF_AARCH64): $(SH_SRC) $(SH_DIR)/user_aarch64.ld $(LIBSYS_SRC)
 $(TOOLBOX_ELF_AARCH64): $(TOOLBOX_SRC) $(TOOLBOX_DIR)/user_aarch64.ld $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
 	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_PG_FLAGS) --target $(TARGET_AARCH64)
-	cp $(OUT_TGT)/$(TOOLBOX_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/toolbox $@
+	$(AARCH64_OBJCOPY) --strip-all $(OUT_TGT)/$(TOOLBOX_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/toolbox $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(POWER_ELF_AARCH64): $(POWER_SRC) $(POWER_DIR)/user_aarch64.ld $(LIBSYS_SRC)
@@ -1186,7 +1186,7 @@ $(SH_ELF_X86_64): $(SH_SRC) $(SH_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCON
 $(TOOLBOX_ELF_X86_64): $(TOOLBOX_SRC) $(TOOLBOX_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(TOOLBOX_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
-	cp $(OUT_TGT)/$(TOOLBOX_DIR)/$(X86_64_UBUILT)/toolbox $@
+	$(AARCH64_OBJCOPY) --strip-all $(OUT_TGT)/$(TOOLBOX_DIR)/$(X86_64_UBUILT)/toolbox $@
 
 $(POWER_ELF_X86_64): $(POWER_SRC) $(POWER_DIR)/user_x86_64.ld $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)

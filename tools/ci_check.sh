@@ -10711,14 +10711,17 @@ else
     # deepest static call chain (tools/stack_chain.py, plus 25% for what a static
     # chain does not see) and fails when the chain does not fit. The images that
     # carry no symbols (the relibc programs) are reported, not checked. The
-    # canary asks for 16 KiB of everything: the two images that need more must
-    # be named, or the row only ever said ok.
+    # volume's TOOLBOX.ELF is stripped (its file limit), so the row reads the
+    # cargo output it was stripped from. The canary asks for 16 KiB of
+    # everything: the two images that need more must be named, or the row only
+    # ever said ok.
     user_stack_images() { # user_stack_images <rv|arm>: the images, built; prints their paths
-        local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t=""
-        if [ "$1" = rv ]; then dir="$AZOS_OUT/build"; else dir="$AZOS_OUT/build/aarch64"; fi
+        local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t="" tb
+        if [ "$1" = rv ]; then dir="$AZOS_OUT/build"; tb="riscv64imac-unknown-none-elf"
+        else dir="$AZOS_OUT/build/aarch64"; tb="aarch64-unknown-none"; fi
         for n in $names; do t="$t $dir/$n.elf"; done
         make -s $t >/dev/null 2>&1 || return 1
-        printf '%s\n' $t
+        printf '%s\n' $t | sed "s|^$dir/toolbox\.elf\$|$AZOS_OUT/tgt/userspace/services/toolbox/$tb/release/toolbox|"
     }
     user_stacks_row() { # user_stacks_row <label> <rv|arm>
         printf "  %-26s" "${1}..."
@@ -10739,7 +10742,7 @@ else
         if ! imgs="$(user_stack_images rv)"; then bad; echo "      the ring-3 images did not build"; return; fi
         out="$(python3 "${REPO_ROOT}/tools/user_stacks.py" --config "$PRIMARY_CONFIG" --stack-kb 16 $imgs 2>&1)"
         if [ $? -ne 0 ] && printf '%s\n' "$out" | grep -aq '^OVER mlsrv.elf' \
-           && printf '%s\n' "$out" | grep -aq '^OVER toolbox.elf'; then
+           && printf '%s\n' "$out" | grep -aq '^OVER toolbox[.: ]'; then
             ok
         else
             bad; echo "      a 16 KiB stack for every image did not fail MLSRV.ELF and TOOLBOX.ELF:"
@@ -17603,12 +17606,14 @@ PYEOF
     # entries send through their IPC branch (Chain E cut 7): filtered, the
     # kernel records the denial and kills it; unfiltered, its null capability
     # is refused and it prints `FAILED:`, which QEMU_FAIL_RE reports. The
-    # marker is the kill line for that number.
+    # marker is the kill line for that number, read from the ABI (it was a
+    # literal, and went stale when the call was renumbered).
     # The host half — every shipped binary has a row, each row equals what its
     # source issues, everything else is refused — is `tests/host/seccomp-tests`.
     rm -f $AZOS_OUT/build/disk-uhello.img
     make_disk $AZOS_OUT/build/disk-uhello.img
-    par_row qemu_run "userspace: minimal Rust ELF" "killed: syscall 582 not in its profile" 120 \
+    uhello_nr="$(sed -n 's/^pub const SYS_IPC_FAST_CALL_EP: u64 = \([0-9][0-9]*\);.*/\1/p' "${REPO_ROOT}/crates/core/abi/src/syscall_nr.rs")"
+    par_row qemu_run "userspace: minimal Rust ELF" "killed: syscall ${uhello_nr:-SYS_IPC_FAST_CALL_EP-not-found} not in its profile" 120 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0

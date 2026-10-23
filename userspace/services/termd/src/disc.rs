@@ -90,6 +90,27 @@ impl Discipline {
         }
     }
 
+    /// Back to what [`Discipline::new`] makes, in place: the next user gets
+    /// none of the last one's history, size or mode (`Service::submit`).
+    /// Assigning `Discipline::new()` built the whole value (about 10 KiB, the
+    /// history) on the caller's stack first, which took the login path past
+    /// termd's 16 KiB stack. Every field is named, so a new one cannot be
+    /// left out.
+    pub fn reset(&mut self) {
+        let Self { ed, hist, raw_mode, echo, cols, rows, fg, held, head, held_n, intr, line, line_len, raw, out, out_len } =
+            self;
+        *ed = Editor::new();
+        hist.clear();
+        (*raw_mode, *echo, *cols, *rows, *fg) = (false, true, 80, 24, 0);
+        held.fill(0);
+        (*head, *held_n, *intr) = (0, 0, 0);
+        line.fill(0);
+        *line_len = 0;
+        raw.fill(0);
+        out.fill(0);
+        *out_len = 0;
+    }
+
     // ── state ───────────────────────────────────────────────────────────────
 
     pub fn size(&self) -> (u16, u16) {

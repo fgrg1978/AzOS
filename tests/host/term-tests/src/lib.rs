@@ -444,6 +444,26 @@ mod discipline {
         assert_eq!(got, vec![b'a'; HELD_MAX]);
     }
 
+    /// A login resets the discipline in place (`Service::submit`): the next
+    /// user starts where `Discipline::new` does, with none of the last one's
+    /// lines, size, mode, focus or held input.
+    #[test]
+    fn a_reset_discipline_is_a_new_one() {
+        let mut d = cooked();
+        run(&mut d, b"secret-command\rother\r");
+        d.set_size(132, 50);
+        d.set_echo(false);
+        d.set_foreground(7);
+        d.push(b"typed ahead");
+        d.set_raw(true);
+        d.reset();
+        let fresh = Discipline::new();
+        assert_eq!(d.history(0), None, "the last user's history survived the reset");
+        assert_eq!((d.size(), d.is_raw(), d.echo(), d.foreground(), d.held()),
+                   (fresh.size(), fresh.is_raw(), fresh.echo(), fresh.foreground(), fresh.held()));
+        assert!(d.line().is_empty() && d.raw() == fresh.raw());
+    }
+
     #[test]
     fn lines_enter_the_history_newest_first() {
         let mut d = cooked();
