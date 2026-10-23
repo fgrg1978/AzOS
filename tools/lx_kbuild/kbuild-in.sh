@@ -180,6 +180,62 @@ strip_opt_alts() { # <ko>
 if [ "$arch" = arm64 ]; then
     for m in "$@"; do strip_opt_alts "$o/${m#*=}"; done
 fi
+# x86_64: the same rule. A module's `.altinstructions` (struct alt_instr:
+# s32 instr, s32 repl, u16 cpuid, u16 flags, u8 instrlen, u8 replacementlen;
+# 14 bytes) is dropped, with its `.altinstr_replacement`, only when every
+# entry leaves a correct baseline in place:
+#   * an entry whose original site is the 5-byte `jmp` into `.altinstr_aux`
+#     that `static_cpu_has()` emits (its X86_FEATURE_ALWAYS entry and its
+#     feature entry): unpatched, that jump runs the run-time `testb` of the
+#     capability bit in boot_cpu_data, which is the answer patching would
+#     have hard-wired. `.altinstr_aux` stays, and the loader places it;
+#   * X86_FEATURE_3DNOWPREFETCH, `prefetchw()` over BASE_PREFETCH: a hint.
+# Any other capability, or any entry with flags (ALT_FLAG_NOT, the direct-call
+# form), fails the build. The capability numbers come from the pinned tree's
+# arch/x86/include/asm/cpufeatures.h.
+strip_x86_alts() { # <ko>
+    ko="$1"
+    "${cross}objdump" -h "$ko" | grep -q ' \.altinstructions ' || return 0
+    feat() { # <name>: the number of X86_FEATURE_<name>, from "( w*32+ b)"
+        v="$(sed -n "s/^#define X86_FEATURE_$1[[:space:]]*( *\([0-9]*\) *\* *32 *+ *\([0-9]*\)).*/\1 \2/p" "$src/arch/x86/include/asm/cpufeatures.h")"
+        [ -n "$v" ] || { echo "kbuild-in: X86_FEATURE_$1 not found in cpufeatures.h" >&2; exit 1; }
+        set -- $v; echo $(( $1 * 32 + $2 ))
+    }
+    prefetchw="$(feat 3DNOWPREFETCH)"
+    [ -n "$prefetchw" ] || exit 1
+    "${cross}objcopy" --dump-section .altinstructions=/work/alt.bin "$ko" /work/alt.ko
+    # Sites (offsets in .text) whose instruction is a jmp relocated against
+    # .altinstr_aux: the relocation is at site + 1.
+    aux="$("${cross}objdump" -r -j .text "$ko" | awk '
+        function hex(s,  i, v) { v = 0; s = tolower(s); for (i = 1; i <= length(s); i++) v = v * 16 + index("0123456789abcdef", substr(s, i, 1)) - 1; return v }
+        $2 == "R_X86_64_PC32" && $3 ~ /^\.altinstr_aux([-+]|$)/ { printf "%d ", hex($1) - 1 }')"
+    # Each entry's original site: the .text addend of the PC32 at 14 * i.
+    sites="$("${cross}objdump" -r -j .altinstructions "$ko" | awk '
+        function hex(s,  i, v) { v = 0; s = tolower(s); for (i = 1; i <= length(s); i++) v = v * 16 + index("0123456789abcdef", substr(s, i, 1)) - 1; return v }
+        $2 == "R_X86_64_PC32" && hex($1) % 14 == 0 {
+            if ($3 !~ /^\.text\+0x/) { printf "%d:? ", int(hex($1) / 14); next }
+            printf "%d:%d ", int(hex($1) / 14), hex(substr($3, 9)) }')"
+    bad="$(od -An -v -tu1 -w14 /work/alt.bin | awk -v aux="$aux" -v sites="$sites" -v pf="$prefetchw" '
+        BEGIN { n = split(aux, a, " "); for (i = 1; i <= n; i++) isaux[a[i]] = 1
+                n = split(sites, a, " "); for (i = 1; i <= n; i++) { split(a[i], kv, ":"); site[kv[1]] = kv[2] } }
+        { i = NR - 1; cpuid = $9 + 256 * $10; flags = $11 + 256 * $12; ilen = $13
+          if (flags != 0) { print "flags:" flags "/" cpuid; next }
+          if (cpuid == pf) next
+          if ((i in site) && site[i] != "?" && (site[i] in isaux) && ilen == 5) next
+          print cpuid }' | sort -u | tr '\n' ' ')"
+    if [ -n "$bad" ]; then
+        echo "kbuild-in: $ko: .altinstructions carries entries ($bad) that are not static_cpu_has() sites or prefetchw" >&2
+        exit 1
+    fi
+    "${cross}objcopy" --remove-section .altinstructions --remove-section .altinstr_replacement "$ko" /work/alt.ko
+    if "${cross}objdump" -h /work/alt.ko | grep -qE ' \.altinstr(uctions|_replacement) '; then
+        echo "kbuild-in: $ko: objcopy left a patch table behind" >&2; exit 1
+    fi
+    mv /work/alt.ko "$ko"
+}
+if [ "$arch" = x86_64 ]; then
+    for m in "$@"; do strip_x86_alts "$o/${m#*=}"; done
+fi
 mkdir -p "/out/$arch/fs"
 cp "/work/glue-$arch/lxbase.ko" "/out/$arch/"
 for m in "$@"; do

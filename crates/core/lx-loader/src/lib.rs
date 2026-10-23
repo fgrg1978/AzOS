@@ -102,6 +102,13 @@ const UNPLACED: &[&[u8]] = &[b".modinfo", b"__versions"];
 /// the server cannot provide.
 const REFUSED_PREFIXES: &[&[u8]] = &[b".altinstr", b".alternative"];
 
+/// The one `.altinstr` section that is placed: x86's `.altinstr_aux` is no
+/// patch table but the code an unpatched `static_cpu_has()` jumps to (a
+/// run-time test of the capability bit in `boot_cpu_data`). Kbuild leaves it
+/// in after tools/lx_kbuild drops the patch tables, which keeps that
+/// unpatched path.
+const PLACED_ALTINSTR: &[u8] = b".altinstr_aux";
+
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 /// Why a module was refused. Every variant names what the caller would need
@@ -534,7 +541,7 @@ impl<'a> Module<'a> {
             return Ok(None);
         }
         let name = self.section_name(i)?;
-        if s.flags & SHF_TLS != 0 || REFUSED_PREFIXES.iter().any(|p| name.starts_with(p)) {
+        if s.flags & SHF_TLS != 0 || (name != PLACED_ALTINSTR && REFUSED_PREFIXES.iter().any(|p| name.starts_with(p))) {
             return Err(Error::RefusedSection(name));
         }
         // Notes (`.note.gnu.build-id`, `.note.Linux`) are metadata Kbuild
