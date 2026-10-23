@@ -77,6 +77,16 @@ Drivers bind in stages, because they depend on each other's order (entropy befor
 
 Source: `crates/drivers/hwbus/src/{lib,bus,device,pattern,policy,tables}.rs`, `crates/drivers/hwbus/build.rs`, `crates/drivers/bus/src/hwbus.rs`, `kernel/src/boot/hwbus.rs`, `config/subsys/Kconfig.drivers`.
 
+### Ring-3 access to I/O ports (x86_64)
+
+A PC's legacy devices sit at I/O ports the architecture fixed, with no bus to enumerate them by, so their capability names the ports: `ty::IOPORT`, granted by a topology row as `ioport.<first>.<count>` (decimal, `READ|WRITE` only, refused past the port space). `DEVICE_IOPORT_ENABLE` on it opens the range to the calling thread, as Linux's `ioperm`: per thread, not inherited by a thread created later or a forked child. The kernel loads the thread's ranges into the CPU's TSS I/O permission bitmap; `in`/`out` on them then run in ring 3, and on any other port they fault with #GP, which kills the task (`KILLED_SEGV`). The bitmap covers ports `0..X86_IOPORT_BITMAP_PORTS` (Kconfig, 1024 by default, 129 bytes per CPU); a thread holds up to `X86_IOPORT_RANGES` ranges.
+
+A switch between threads that hold no port costs two loads and a test (`trap::iomap` in `crates/core/arch-x86_64`); one to a thread that holds ports rewrites the bitmap only when this CPU's TSS holds another thread's set, each set being named by a key that is never reused. riscv64 and aarch64 have no port space: the build refuses a non-zero bitmap there, the minter grants nothing and the op answers `-ENODEV` through the same code (`azos_arch_api::ioport`).
+
+The topology is the only gate on which ports a row gets: nothing refuses a range the kernel drives itself (COM1, the CMOS index pair, the 8042, `0xCF8`/`0xCFC`), and a row that names one breaks the kernel's driver of it. The first user is the buzzer's ring-3 host (`userspace/drivers/buzz_drv`), which drives the PC speaker (`crates/drivers/pcspk`: PIT channel 2, ports `0x42`/`0x43`, and port `0x61`) where its row grants those ports and a silent check sees the counter tick.
+
+Source: `crates/core/arch-api/src/ioport.rs`, `crates/core/arch-x86_64/src/trap/{gdt,iomap}.rs`, `crates/core/sched/src/ioport.rs`, `crates/core/ipc/src/ioport_cap.rs`, `crates/core/syscall/src/ioport.rs`, `crates/drivers/pcspk/`.
+
 ## Discovery: PCI and PCIe
 
 `azos_pci` is pure logic over an injected `ConfigSpace` trait (no raw pointers, no target assembly, no `unsafe`), so the same code runs under host tests against a fake configuration space. The virtio-pci transport (`crates/drivers/virtio/src/virtio/pci.rs`) is built against the same types.

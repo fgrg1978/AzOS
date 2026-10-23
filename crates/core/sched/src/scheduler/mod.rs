@@ -704,6 +704,9 @@ unsafe fn set_current_task(cpu: usize, next_idx: usize) {
         // for why a native task needs it too).
         #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
         crate::fp::switch_fs_base(cpu, next_idx);
+        // The incoming thread's open I/O ports (nothing where the ISA has no
+        // port space; two loads and a test between port-less tasks).
+        crate::ioport::switch(cpu, next_idx);
         if azos_limits::LINUX_ABI && (slow || PER_CPU[cpu].cur_slow.load(Ordering::Relaxed)) {
             crate::fp::switch_slow(PER_CPU[cpu].current_idx.load(Ordering::Relaxed), next_idx);
         }

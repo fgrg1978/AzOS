@@ -13,7 +13,7 @@
 //! | 0x10 | kernel data          | `syscall` SS = STAR[47:32] + 8           |
 //! | 0x1b | user data (DPL 3)    | `sysretq` SS = STAR[63:48] + 8, RPL 3    |
 //! | 0x23 | user code, 64-bit    | `sysretq` CS = STAR[63:48] + 16, RPL 3   |
-//! | 0x28 | TSS (16 bytes)       | `ltr`: RSP0 and the IST stacks           |
+//! | 0x28 | TSS (16 bytes)       | `ltr`: RSP0, the IST stacks, the I/O map |
 //!
 //! There is no 32-bit user code segment: compat mode is not offered, so
 //! STAR[63:48] (the `sysret` base) points one slot below user data and the
@@ -99,9 +99,31 @@ pub const fn table(tss_base: u64) -> [u64; GDT_ENTRIES] {
 /// means "no stack switch").
 pub const IST_SLOTS: usize = 7;
 
-/// The 64-bit Task State Segment. Only RSP0 (the ring-3 -> ring-0 stack)
-/// and the IST stacks matter; the I/O bitmap offset points past the limit,
-/// so every port access from ring 3 faults (#GP).
+/// Ports the I/O permission bitmap covers (Kconfig `X86_IOPORT_BITMAP_PORTS`,
+/// a multiple of 8): ports 0..this-1 can be opened to a ring-3 thread
+/// (`trap::iomap`); any other is past the TSS limit and faults for every task.
+pub const IO_BITMAP_PORTS: usize = azos_arch_api::ioport::PORTS as usize;
+/// Bytes of the bitmap: one bit per port, a set bit refuses the port.
+pub const IO_BITMAP_BYTES: usize = IO_BITMAP_PORTS / 8;
+/// The bitmap's bytes in the TSS: [`IO_BITMAP_BYTES`] and, with any, the
+/// all-ones byte the SDM asks after the last (the CPU reads two bytes for
+/// every access, Vol. 1 19.5.2), then all-ones up to the TSS's 4-byte
+/// alignment: the limit is the struct's size, so no byte inside it may be
+/// padding a port could read as open. None without a bitmap.
+pub const IO_BITMAP_TSS_BYTES: usize =
+    if IO_BITMAP_BYTES == 0 { 0 } else { (IO_BITMAP_BYTES + 1).next_multiple_of(4) };
+
+/// Offset of the bitmap from the TSS base, where `iomap_base` points while
+/// the running task has ports open.
+pub const IO_BITMAP_OFFSET: u16 = 104;
+/// `iomap_base` while it has none: past the TSS limit, so every port access
+/// from ring 3 faults (#GP), whatever the bitmap holds.
+pub const IO_BITMAP_OFF: u16 = core::mem::size_of::<Tss>() as u16;
+
+/// The 64-bit Task State Segment. RSP0 (the ring-3 -> ring-0 stack), the IST
+/// stacks and the I/O permission bitmap. `iomap_base` points past the limit
+/// ([`IO_BITMAP_OFF`]) unless the running thread has ports open, so with no
+/// port open every port access from ring 3 faults (#GP).
 #[repr(C, packed(4))]
 #[derive(Clone, Copy, Debug)]
 pub struct Tss {
@@ -115,19 +137,25 @@ pub struct Tss {
     _reserved3: u16,
     /// Offset of the I/O permission bitmap from the TSS base.
     pub iomap_base: u16,
+    /// The I/O permission bitmap and its closing all-ones bytes: bit `p` of
+    /// byte `p / 8` clear opens port `p`. All ones until a thread's ports
+    /// are loaded (`trap::iomap`), and all ones past the bytes they used.
+    pub io_bitmap: [u8; IO_BITMAP_TSS_BYTES],
 }
 
-const _: () = assert!(core::mem::size_of::<Tss>() == 104);
+const _: () = assert!(core::mem::size_of::<Tss>() == 104 + IO_BITMAP_TSS_BYTES);
 const _: () = assert!(core::mem::offset_of!(Tss, rsp) == 4);
 const _: () = assert!(core::mem::offset_of!(Tss, ist) == 36);
 const _: () = assert!(core::mem::offset_of!(Tss, iomap_base) == 102);
+const _: () = assert!(core::mem::offset_of!(Tss, io_bitmap) == IO_BITMAP_OFFSET as usize);
+const _: () = assert!(IO_BITMAP_PORTS % 8 == 0 && IO_BITMAP_PORTS <= 0x1_0000);
 
 /// Byte offset of RSP0 inside the TSS (`trap_entry.S` writes it on every
 /// return to ring 3).
 pub const TSS_RSP0: usize = core::mem::offset_of!(Tss, rsp);
 
 impl Tss {
-    /// All stacks zero, no I/O bitmap.
+    /// All stacks zero, no port open.
     pub const fn new() -> Self {
         Tss {
             _reserved0: 0,
@@ -136,7 +164,8 @@ impl Tss {
             ist: [0; IST_SLOTS],
             _reserved2: 0,
             _reserved3: 0,
-            iomap_base: core::mem::size_of::<Tss>() as u16,
+            iomap_base: IO_BITMAP_OFF,
+            io_bitmap: [0xFF; IO_BITMAP_TSS_BYTES],
         }
     }
 }

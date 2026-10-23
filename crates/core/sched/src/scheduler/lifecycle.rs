@@ -625,6 +625,8 @@ pub fn try_task_create_init(
                         .unwrap_or(crate::task::DEFAULT_SCHED_CLASS_RAW);
                     classes::on_row_class(idx, task.sched_class_raw);
                     crate::fp::reset(idx);
+                    // The next task in this slot starts with no I/O port open.
+                    crate::ioport::reset(idx);
                     // A stale set of PAC keys must not reach the next task in this slot.
                     crate::pac::clear(idx);
                     // Native unless the creator asked for the Linux

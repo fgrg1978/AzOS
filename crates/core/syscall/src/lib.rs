@@ -19,6 +19,7 @@ pub mod fastpath;
 #[cfg(feature = "kheap-census")]
 pub mod kheap_census;
 pub mod mmio;
+pub mod ioport;
 pub mod sleep;
 pub mod spawn;
 /// Wave 14 (SPAWNCACHE): the verified-image digest cache.

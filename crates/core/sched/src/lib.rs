@@ -50,6 +50,8 @@ pub mod futex_table;
 pub mod spawn;
 // The riscv64 F/D state of Linux tasks.
 pub mod fp;
+/// Ring-3 port I/O: each thread's open ports, loaded on every switch.
+pub mod ioport;
 // Per-process PAC keys (aarch64, Kconfig A64_PAUTH_PROC_KEYS).
 pub mod pac;
 pub mod foreign;

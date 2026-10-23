@@ -448,7 +448,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // `argv[1]`, so the row is the union of the modes. Its topology row
     // (`ipc-endpoint-canary` builds) holds only the right to start itself, which
     // `SYS_SPAWN_EX` checks: a process tree needs it, and no other native image
-    // but the shell and `vsbench` lists the call.
+    // but the shell and `vsbench` lists the call; and, on x86_64, the POST port
+    // its `ioport` mode opens (`DEVICE_IOPORT_ENABLE`).
     ImageProfile {
         image: "ABICHILD.ELF",
         syscalls: sys_nrs![
@@ -462,7 +463,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_FOREIGN_ENTRY, SYS_FOREIGN_RESUME,
         ],
         audit: false,
-        ops: inv_ops![MEMOBJ_ACQUIRE, NODE_OPENAT, NODE_READ, DOMAIN_SUBREAPER, DOMAIN_SOCKET, NODE_RECVFROM, NODE_SENDTO, DOMAIN_WAIT],
+        ops: inv_ops![MEMOBJ_ACQUIRE, NODE_OPENAT, NODE_READ, DOMAIN_SUBREAPER, DOMAIN_SOCKET, NODE_RECVFROM, NODE_SENDTO, DOMAIN_WAIT, DEVICE_IOPORT_ENABLE],
         ifaces: NO_IFACES,
     },
     // The benchmark's server, `endpoint.bench`.
@@ -705,7 +706,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_STAT, DEVICE_IOPORT_ENABLE],
         ifaces: &[azos_devif::key::PWM],
     },
     // Wave 9 (DRV1): the ring-3 INA219 driver. The same loop (its park timed

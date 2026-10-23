@@ -591,6 +591,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch",
+ "azos_arch_api",
  "azos_bytepipe",
  "azos_chaos",
  "azos_common",

@@ -135,6 +135,10 @@ mod bbm;
 #[cfg(test)]
 mod pmu;
 
+// Ring-3 port I/O: a thread's open ports and their keys (`ioport.rs`).
+#[cfg(test)]
+mod ioport;
+
 // System suspend on aarch64 (PSCI SYSTEM_SUSPEND): when the kernel may call it.
 #[cfg(test)]
 mod suspend;

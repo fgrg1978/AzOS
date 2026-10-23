@@ -69,7 +69,7 @@ authority to name a device, a file or a socket by number.
 | `Port` | An event port |
 | `Domain` | `TASK`: the right to see every task (not authority over one) |
 | `Node` | `FILE` (a file or directory tree), `LAUNCH` (start one image), `SOCKET` |
-| `Device` | `IRQ`, `MMIO`, `DRIVER_REGISTRY` (a driver slot for one driver kind) |
+| `Device` | `IRQ`, `MMIO`, `DRIVER_REGISTRY` (a driver slot for one driver kind), `IOPORT` (a range of x86_64 I/O ports) |
 | `Log` | `TRACE` (the kernel tracer), `CONSOLE` |
 
 A pin, a wheel, a sensor or a partition is not a kind of its own: it is the

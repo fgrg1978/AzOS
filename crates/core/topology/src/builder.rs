@@ -1874,6 +1874,20 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             ][..if azos_limits::INSPECT && azos_limits::INSPECT_ADMIN_PAGES != 0 { 5 } else { 2 }],
         )
         .expect("default_minimal_topology: ABICHILD.ELF push failed");
+        // Ring-3 port I/O (`abitest`'s `check_ioports`): one port, the POST
+        // port 0x80 (nothing behind it on QEMU), where the build has a port
+        // space that holds it; behind the refusal canaries' feature, so a
+        // board topology grants no port to a test image.
+        if cfg!(feature = "cap-refusal-canary") && azos_limits::X86_IOPORT_BITMAP_PORTS > 0x80 {
+            assert!(
+                topo.extend_task_caps(&MaybeStr::from_bytes(TASK_ABICHILD_IMAGE), &[CapSpec {
+                    kind: CapKind::Device,
+                    perms: CapPerms::RW,
+                    target: MaybeStr::from_bytes(b"ioport.128.1"), transfer: false, ops: 0,
+                }]),
+                "default_minimal_topology: ABICHILD.ELF port 0x80"
+            );
+        }
         topo.set_last_task_mem_pages(ABICHILD_MEM_PAGES);
         topo.set_last_task_instances(ABICHILD_INSTANCES);
     }

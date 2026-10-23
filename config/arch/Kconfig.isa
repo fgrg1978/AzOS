@@ -238,3 +238,40 @@ config PAGE_SHIFT
     help
       log2 of the base page size, derived from the choice above (12 on
       riscv64). Exported as azos_limits::PAGE_SHIFT.
+
+# ---------------------------------------------------------------------------
+# Ring-3 port I/O (crates/core/arch-api ioport.rs, every ISA: 0 ports off
+# x86_64, which the build checks, so shared code needs no cfg)
+# ---------------------------------------------------------------------------
+
+config X86_IOPORT_BITMAP_PORTS
+    int "Ring-3 port I/O: ports the TSS I/O permission bitmap covers (0: none)"
+    range 0 65536
+    default 1024 if ARCH_X86_64
+    default 0
+    help
+      Ports 0..this-1 can be opened to a ring-3 thread that holds a
+      `Device` capability naming them (ty::IOPORT, `DEVICE_IOPORT_ENABLE`);
+      a port at or above it is past the TSS limit and faults (#GP) for
+      every task, as every port does with 0.  A multiple of 8 (one bitmap
+      bit per port).  Each CPU's TSS carries this / 8 + 1 bytes of bitmap
+      (.data, NR_CPUS of them): 129 bytes at the default, which covers the
+      PC's legacy ISA ports (0x000..0x3FF: the PIT, the speaker, COM2-4);
+      65536 (8 KiB per CPU, Linux's IO_BITMAP_BITS) reaches the I/O BARs
+      PCI firmware assigns above 0x1000.  Only x86_64 has a port space: on
+      riscv64 and aarch64 this must stay 0, and the op answers -ENODEV
+      there.  A switch between tasks that hold no port costs one load and
+      one test; a switch to one that does copies only its bitmap bytes, and
+      only when this CPU's TSS holds another task's.
+
+config X86_IOPORT_RANGES
+    int "Ring-3 port I/O: port ranges one thread can have open"
+    range 1 16
+    default 4
+    help
+      The ranges (one per `DEVICE_IOPORT_ENABLE`) a thread can hold open at
+      once; the next is refused with -EMFILE.  Each task slot keeps them
+      (4 bytes each, plus 8) when X86_IOPORT_BITMAP_PORTS is not 0, and
+      nothing otherwise.  A PC-speaker driver opens two (PIT channel 2 and
+      its command port, then port 0x61).
+

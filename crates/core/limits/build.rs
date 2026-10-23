@@ -354,6 +354,26 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
+    // Ring-3 port I/O: one bitmap bit per port, and only x86_64 has ports.
+    // Absent (an old .config): skipped, the Rust side fails on the const.
+    // -----------------------------------------------------------------------
+    if let Some(ports) = get_u64(cfg, "X86_IOPORT_BITMAP_PORTS") {
+        if ports % 8 != 0 || ports > 65536 {
+            panic!(
+                "validation FAIL: X86_IOPORT_BITMAP_PORTS ({ports}) is not a multiple of 8 \
+                 in 0..=65536: the TSS I/O bitmap holds one bit per port, whole bytes. \
+                 Fix: pick a multiple of 8 in .config."
+            );
+        }
+        if ports != 0 && !get_bool(cfg, "ARCH_X86_64") {
+            panic!(
+                "validation FAIL: X86_IOPORT_BITMAP_PORTS ({ports}) is not 0 on an ISA \
+                 with no port space. Fix: set it to 0 (only ARCH_X86_64 has I/O ports)."
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Network socket capacity
     //
     // The original design note said +16; config/limits/Kconfig.limits help text says +4.

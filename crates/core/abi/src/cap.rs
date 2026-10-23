@@ -368,8 +368,9 @@ pub enum CapKind {
     /// (`SOCKET`) or the right to start one image (`LAUNCH`).
     Node = 6,
     /// A piece of hardware or its driver slot: an interrupt line (`IRQ`), an
-    /// MMIO region of the board's table (`MMIO`) or the right to register as
-    /// the driver for one `DRV_KIND_*` (`DRVSLOT`).
+    /// MMIO region of the board's table (`MMIO`), the right to register as
+    /// the driver for one `DRV_KIND_*` (`DRVSLOT`) or a range of I/O ports
+    /// (`IOPORT`).
     Device = 7,
     /// A log: the kernel tracer (class `TRACE`) or the console (class `CONSOLE`).
     Log = 8,
@@ -521,6 +522,12 @@ pub mod ty {
     pub const MMIO: CapType = CapType::new(CapKind::Device, 1);
     /// The right to register as the driver for one `DRV_KIND_*` (the resource).
     pub const DRIVER_REGISTRY: CapType = CapType::new(CapKind::Device, 2);
+    /// A range of I/O ports (x86_64's port space), opened to the calling
+    /// thread by `DEVICE_IOPORT_ENABLE`. The resource is the range,
+    /// [`super::ioport_range`] packs it. Granted by a topology row
+    /// `ioport.<first>.<count>` (decimal), `READ|WRITE` only: the CPU's
+    /// permission bitmap cannot open a port for `in` and not for `out`.
+    pub const IOPORT: CapType = CapType::new(CapKind::Device, 3);
     /// The kernel tracer (wave 15, the `LOG_TRACE_*` ops): `READ` maps the
     /// per-CPU rings and reads the class mask, `WRITE` changes it.
     pub const TRACE: CapType = CapType::new(CapKind::Log, 0);
@@ -531,6 +538,26 @@ pub mod ty {
     /// its raw value stays below 32 (the micro kernel returns handles as
     /// positive results).
     pub const CONSOLE: CapType = CapType::new(CapKind::Log, 1);
+}
+
+/// The resource of a [`ty::IOPORT`] capability: the first port in bits 0..16,
+/// the last (inclusive) in bits 16..32. `None` for an empty range or one
+/// that runs past port 0xFFFF.
+pub const fn ioport_range(first: u32, count: u32) -> Option<u32> {
+    if count == 0 || first > 0xFFFF || count > 0x1_0000 - first {
+        return None;
+    }
+    Some(first | ((first + count - 1) << 16))
+}
+
+/// The `(first, last)` ports (inclusive) of an [`ioport_range`] resource;
+/// `None` for a word no range packs to (last below first).
+pub const fn ioport_bounds(resource: u32) -> Option<(u16, u16)> {
+    let (first, last) = ((resource & 0xFFFF) as u16, (resource >> 16) as u16);
+    if last < first {
+        return None;
+    }
+    Some((first, last))
 }
 
 /// Permission bits packed into a capability handle.

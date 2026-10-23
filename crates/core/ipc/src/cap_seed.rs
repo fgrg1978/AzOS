@@ -87,6 +87,8 @@ use crate::cap::{CapHandle, CapKind, CapPerms};
 ///   - `Device` (MMIO): `"mmio.<selector>"` (e.g. `"mmio.dt:google,goldfish-rtc"`,
 ///     `"mmio.pci:1af4:1041"`, `"mmio.virtio:2#1"`) — the device of the
 ///     hardware bus (`azos_drv_bus::hwbus`) the selector names
+///   - `Device` (I/O ports): `"ioport.<first>.<count>"` (e.g. `"ioport.97.1"`,
+///     port 0x61) — the ports themselves, decimal
 ///   - `Endpoint`: `"endpoint.<name>"` for a task-hosted endpoint, or a
 ///     kernel-hosted interface of `azos_devif`, `"<iface>[.<resource>]"`
 ///     (`"entropy"`, `"power"`, `"gpio.20"`, `"i2c.0.0x68"`, `"pwm.4"`,
@@ -292,8 +294,11 @@ pub fn seed_one_cap_ops(
 /// `"mmio.<selector>"`
 /// (the register window of the hardware-bus device the selector
 /// names; refused for a device that is not there, one a kernel driver owns
-/// and a permission no mapping could honour) or `"drv.<DRV_KIND_* as
-/// decimal>"` (the right to register as that driver). Anything else is refused.
+/// and a permission no mapping could honour), `"ioport.<first>.<count>"`
+/// (a range of I/O ports; refused past the ISA's port space, so everywhere
+/// on riscv64 and aarch64, and for any permission but `READ|WRITE`) or
+/// `"drv.<DRV_KIND_* as decimal>"` (the right to register as that driver).
+/// Anything else is refused.
 fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     if let Some(n) = parse_dotted(target, "irq") {
         return crate::irq_bind::irq_grant_cap(tid, n, perms).map(|c| c.raw());
@@ -303,6 +308,9 @@ fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     }
     if let Some(selector) = target.strip_prefix("mmio.") {
         return crate::mmio_cap::mmio_grant_cap(tid, selector, perms).map(|c| c.raw());
+    }
+    if let Some(spec) = target.strip_prefix("ioport.") {
+        return crate::ioport_cap::ioport_grant_cap(tid, spec, perms).map(|c| c.raw());
     }
     if let Some(k) = parse_dotted(target, "drv") {
         return crate::drvreg_cap::drvreg_grant_cap(tid, k, perms).map(|c| c.raw());

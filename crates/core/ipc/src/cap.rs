@@ -236,6 +236,7 @@ pub mod targets {
     target!(Port,       PORT,       "Event port.");
     target!(Irq,        IRQ,        "Hardware IRQ binding.");
     target!(MmioRegion, MMIO, "A hardware-bus device's register window.");
+    target!(IoPorts,    IOPORT,     "A range of I/O ports.");
     target!(IoRing,     IORING,     "IO ring.");
     target!(File,       FILE,       "File descriptor.");
     target!(Socket,     SOCKET,     "Socket descriptor.");

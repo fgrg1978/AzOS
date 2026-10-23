@@ -187,6 +187,7 @@ fn abitest_main() -> ! {
     check_wait_status_reports_the_exit_code();
     check_waitpid_targets_one_child();
     check_fault_kills_only_the_child();
+    check_ioports();
     check_exit_gives_memory_back();
     check_exit_storm();
     check_unreaped_children_are_kept();
@@ -1700,6 +1701,53 @@ fn check_fault_kills_only_the_child() {
         let (reaped, status) = reap(pid);
         expect_eq(b"fault: NULL-write child reaped", reaped, pid);
         expect_eq(b"fault: NULL-write status is 128+SIGSEGV", status as isize, 139);
+    }
+}
+
+/// **Ring-3 port I/O** (`DEVICE_IOPORT_ENABLE`). On every ISA, the op on a
+/// port-range handle this task does not hold answers by the ISA's port space:
+/// `-ENODEV` where there is none (riscv64, aarch64: the seam answers before
+/// it looks at the handle), the handle's refusal where there is one. x86_64:
+/// a child whose row grants the POST port 0x80 (`ioport.128.1`) reads it in
+/// ring 3 (exit 0); a read of 0x84, which no range opens, kills it with #GP as
+/// its own fault (128+SIGSEGV); so does a read of 0x80 by a child that never
+/// opened it. This task's row grants no port: `ioport_open` finds nothing.
+///
+/// **Canary.** Clear the bitmap's bits where `trap::iomap::fill` sets them
+/// (the polarity): `stray` reads 0x84 and exits 3.
+fn check_ioports() {
+    const E_NOENT: isize = -2;
+    const E_NODEV: isize = -19;
+    const E_CAPSTALE: isize = -202;
+    let forged = azos_abi::cap::CapHandle::pack(sys::ty::IOPORT, azos_abi::cap::CapPerms::RW, 0x3F, 0x1FF).as_raw();
+    let has_ports = cfg!(target_arch = "x86_64");
+    expect_eq(b"ioport: enable on a forged port handle [ENODEV without a port space]",
+              sys::ioport_enable(forged).err().unwrap_or(0), if has_ports { E_CAPSTALE } else { E_NODEV });
+    expect_eq(b"ioport: open a range this row does not grant",
+              sys::ioport_open(0x80, 1).err().unwrap_or(0), E_NOENT);
+    if !has_ports {
+        return;
+    }
+    for (mode, want, what) in [
+        (&b"granted"[..], 0isize, &b"ioport: a granted port reads in ring 3"[..]),
+        (b"stray", 139, b"ioport: a port outside the grant faults, the child's fault (128+SIGSEGV)"),
+        (b"closed", 139, b"ioport: a granted port never opened faults (128+SIGSEGV)"),
+    ] {
+        let pid = spawn_child(&[b"ioport", mode]);
+        if pid <= 0 {
+            expect_true(b"ioport: spawn the port child", false);
+            continue;
+        }
+        let mut status: i32 = -12345;
+        let mut got = -1isize;
+        let mut deadline = Deadline::in_ms(20_000);
+        while !deadline.expired() {
+            got = sys::waitpid(pid as u32, &mut status as *mut i32);
+            if got > 0 { break; }
+            sys::sleep(1);
+        }
+        expect_eq(b"ioport: port child reaped", got, pid);
+        expect_eq(what, status as isize, want);
     }
 }
 

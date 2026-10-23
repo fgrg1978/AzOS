@@ -107,6 +107,10 @@ mod port {
 #[path = "../../../../crates/core/ipc/src/mmio_cap.rs"]
 pub mod mmio_cap;
 
+// `cap_seed`'s `Device` arm mints a range of I/O ports through this.
+#[path = "../../../../crates/core/ipc/src/ioport_cap.rs"]
+pub mod ioport_cap;
+
 // Wave 10: `cap_seed`'s `File` arm mints a directory-tree capability through
 // this.
 #[path = "../../../../crates/core/ipc/src/file_cap.rs"]
@@ -2973,6 +2977,63 @@ pub(crate) mod host_machine {
 // nothing drives, a UART the kernel drives (bound to its boot driver), two
 // twin devices to tell `#N` apart, a PCI function with no BAR, and a virtio
 // disk the kernel's driver owns.
+
+#[cfg(test)]
+mod ioport_cap_tests {
+    use crate::cap::CapPerms;
+    use crate::cap_seed::seed_one_cap;
+    use crate::ioport_cap::ioport_resolve;
+    use azos_abi::cap::{ioport_bounds, ioport_range, CapKind};
+
+    use super::cap_seed_bridge_tests::fresh_tid;
+
+    /// `ioport.<first>.<count>`: the range, packed first | last << 16.
+    #[test]
+    fn a_target_resolves_to_its_range() {
+        assert_eq!(ioport_resolve("66.2", CapPerms::RW, 1024), Some(0x42 | 0x43 << 16));
+        assert_eq!(ioport_resolve("97.1", CapPerms::RW, 1024), Some(0x61 | 0x61 << 16));
+        assert_eq!(ioport_resolve("1016.8", CapPerms::RW, 1024), Some(1016 | 1023 << 16), "up to the last port");
+        assert_eq!(ioport_bounds(0x42 | 0x43 << 16), Some((0x42, 0x43)));
+        assert_eq!(ioport_bounds(0x43 | 0x42 << 16), None, "last below first");
+        assert_eq!(ioport_range(0xFFFF, 1), Some(0xFFFF_FFFF));
+        assert_eq!(ioport_range(0xFFFF, 2), None);
+        assert_eq!(ioport_range(5, 0), None);
+    }
+
+    /// Past the port space, empty, or not decimal: nothing. A port space of
+    /// 0 (riscv64, aarch64) refuses every range.
+    ///
+    /// **Canary.** Drop the `count > ports - first` test: "1020.8" resolves.
+    #[test]
+    fn a_range_past_the_space_resolves_to_nothing() {
+        for (spec, ports) in [("1020.8", 1024), ("1024.1", 1024), ("0.1025", 1024), ("5.0", 1024),
+                              ("0.1", 0), ("97.1", 0), ("0x61.1", 1024), ("97", 1024), ("97.1.1", 1024),
+                              ("-1.1", 1024), ("", 1024)] {
+            assert_eq!(ioport_resolve(spec, CapPerms::RW, ports), None, "{spec} in {ports} ports");
+        }
+    }
+
+    /// The bitmap opens a port for `in` and `out` together: READ alone,
+    /// WRITE alone, or any right beyond the two cannot be honoured.
+    #[test]
+    fn only_read_write_resolves() {
+        for perms in [CapPerms::READ, CapPerms::WRITE, CapPerms::NONE, CapPerms::ALL, CapPerms::RW_DELEGATE] {
+            assert_eq!(ioport_resolve("97.1", perms, 1024), None, "{:#x}", perms.bits());
+        }
+        assert!(ioport_resolve("97.1", CapPerms::RW, 1024).is_some(), "positive control");
+    }
+
+    /// The seed arm reaches the minter: on this build's port space (the
+    /// host suite's .config, 0 off x86_64) a grant mints exactly when the
+    /// space holds the range.
+    #[test]
+    fn the_seed_arm_follows_the_port_space() {
+        let tid = fresh_tid();
+        let got = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "ioport.97.1");
+        assert_eq!(got.is_some(), azos_arch_api::ioport::PORTS > 0x61, "{got:?}");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "ioport.65535.2").is_none());
+    }
+}
 
 #[cfg(test)]
 mod mmio_cap_tests {

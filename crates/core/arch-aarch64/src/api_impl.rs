@@ -597,3 +597,10 @@ impl Vector for Aarch64 {
         crate::fp::dot_f32_scalar(a, b)
     }
 }
+
+// ── Ring-3 port I/O ─────────────────────────────────────────────────────────
+//
+// No port space: devices are memory-mapped, and ring 3 reaches them through
+// `DOMAIN_MMIO_MAP`. The defaults load nothing, and the op that opens ports
+// answers -ENODEV before it looks at a handle (`azos_arch_api::ioport`).
+impl azos_arch_api::IoPorts for Aarch64 {}

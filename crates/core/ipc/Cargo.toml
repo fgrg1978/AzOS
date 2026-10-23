@@ -85,6 +85,8 @@ azos_drv_block    = { workspace = true }
 azos_drv_sensor   = { workspace = true }
 azos_drv_actuator = { workspace = true }
 azos_arch = { workspace = true }
+# `ioport_cap`: the ISA's port space (`azos_arch_api::ioport::PORTS`).
+azos_arch_api = { workspace = true }
 azos_limits = { workspace = true }
 azos_chaos = { workspace = true }
 azos_rings = { workspace = true }

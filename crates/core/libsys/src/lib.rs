@@ -2196,6 +2196,84 @@ pub fn irq_ack(line: u32) -> isize {
     invoke(line, invoke_abi::DEVICE_IRQ_ACK, [0; 4]).0
 }
 
+// ---- I/O ports (x86_64's port space) ----
+
+/// The I/O ports of one `ty::IOPORT` capability, open to the calling thread
+/// ([`ioport_open`]). `in`/`out` on them run in ring 3; on any port no open
+/// range holds they fault (#GP), and the task is killed (`KILLED_SEGV`).
+#[derive(Clone, Copy, Debug)]
+pub struct IoPorts {
+    first: u16,
+    last: u16,
+}
+
+/// Open the `count` ports from `first` to the calling thread: the capability
+/// this task holds for exactly that range (`ioport.<first>.<count>` in its
+/// topology row), then `DEVICE_IOPORT_ENABLE` on it. Per thread: a second
+/// thread opens them for itself. `Err` is the errno: `-ENOENT` (no such
+/// capability), `-ENODEV` (the ISA has no port space: riscv64, aarch64),
+/// `-EMFILE` (the thread has Kconfig `X86_IOPORT_RANGES` ranges open
+/// already), or the capability's refusal.
+pub fn ioport_open(first: u16, count: u16) -> Result<IoPorts, isize> {
+    const EINVAL: isize = -22;
+    let range = azos_abi::cap::ioport_range(first as u32, count as u32).ok_or(EINVAL)?;
+    let h = cap_lookup(ty::IOPORT.raw(), range);
+    if h < 0 {
+        return Err(h);
+    }
+    ioport_enable(h as u32)?;
+    Ok(IoPorts { first, last: first + (count - 1) })
+}
+
+/// `DEVICE_IOPORT_ENABLE` on the `ty::IOPORT` handle `h`: 0, or the errno.
+pub fn ioport_enable(h: u32) -> Result<(), isize> {
+    match invoke(h, invoke_abi::DEVICE_IOPORT_ENABLE, [0; 4]).0 {
+        rc if rc < 0 => Err(rc),
+        _ => Ok(()),
+    }
+}
+
+impl IoPorts {
+    /// The first and last port of the range.
+    pub fn bounds(&self) -> (u16, u16) {
+        (self.first, self.last)
+    }
+
+    /// `in al, dx`: a byte from `port`. A port outside every open range
+    /// faults: that is the hardware's check, not this function's.
+    #[inline]
+    pub fn inb(&self, port: u16) -> u8 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let v: u8;
+            // SAFETY: a port read; the kernel opened the range (or the CPU
+            // refuses the port with #GP, the task's fault).
+            unsafe { asm!("in al, dx", in("dx") port, out("al") v, options(nomem, nostack, preserves_flags)) };
+            v
+        }
+        // No port space: `ioport_open` never succeeds here (the kernel
+        // answers -ENODEV), so no `IoPorts` exists to call this on.
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = port;
+            0xFF
+        }
+    }
+
+    /// `out dx, al`: a byte to `port`. As [`inb`](Self::inb).
+    #[inline]
+    pub fn outb(&self, port: u16, v: u8) {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: a port write; as `inb`.
+        unsafe {
+            asm!("out dx, al", in("dx") port, in("al") v, options(nomem, nostack, preserves_flags))
+        };
+        // No port space: as `inb`.
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = (port, v);
+    }
+}
+
 // ---- Driver server: serve a driver `kind` from userspace (E11.AQ3) ----
 
 /// Find the handle of a capability this task already holds.

@@ -60,11 +60,127 @@ fn star_names_the_table_selectors() {
 
 #[test]
 fn tss_layout_is_the_sdms() {
-    assert_eq!(core::mem::size_of::<gdt::Tss>(), 104);
+    let bitmap = if gdt::IO_BITMAP_BYTES == 0 { 0 } else { (gdt::IO_BITMAP_BYTES + 1).next_multiple_of(4) };
+    assert_eq!(gdt::IO_BITMAP_TSS_BYTES, bitmap);
+    assert_eq!(core::mem::size_of::<gdt::Tss>(), 104 + bitmap, "no padding: every byte below the limit is the bitmap's");
     assert_eq!(gdt::TSS_RSP0, 4);
+    assert_eq!(gdt::IO_BITMAP_OFFSET, 104, "the bitmap follows the 104-byte hardware TSS");
     let t = gdt::Tss::new();
     let iomap = t.iomap_base;
-    assert_eq!(iomap, 104, "I/O bitmap past the limit: every ring-3 port access faults");
+    // The descriptor's limit is size - 1 (`gdt::table`): a base at the size
+    // is past it, so every ring-3 port access faults until a thread's ports
+    // are loaded.
+    assert_eq!(iomap as usize, core::mem::size_of::<gdt::Tss>());
+    assert_eq!(iomap, gdt::IO_BITMAP_OFF);
+    let bits = t.io_bitmap;
+    assert!(bits.iter().all(|&b| b == 0xFF), "every port refused, and the closing bytes all ones");
+}
+
+/// The limit `table` writes covers the bitmap and its closing byte, and no more.
+#[test]
+fn tss_limit_covers_the_io_bitmap() {
+    let t = gdt::table(0x1234_5000);
+    let low = t[(gdt::TSS_SEL >> 3) as usize];
+    let limit = (low & 0xFFFF) | ((low >> 48) & 0xF) << 16;
+    assert_eq!(limit as usize, core::mem::size_of::<gdt::Tss>() - 1);
+    assert_eq!(limit as usize, 103 + gdt::IO_BITMAP_TSS_BYTES);
+}
+
+// ── I/O permission bitmap (trap::iomap) ────────────────────────────────────
+
+use azos_arch::trap::iomap::{fill, step, Step};
+
+/// Is `port` open in `bitmap` (a clear bit), as the CPU reads it?
+fn open(bitmap: &[u8], port: usize) -> bool {
+    bitmap.get(port / 8).is_some_and(|b| b & (1 << (port % 8)) == 0)
+}
+
+/// Polarity: a clear bit opens a port. The ranges' ports, and only those.
+#[test]
+fn fill_opens_exactly_the_ranges() {
+    let mut bm = [0xFFu8; 128];
+    let dirty = fill(&mut bm, 0, &[(0x42, 0x43), (0x61, 0x61)]);
+    for p in 0..1024 {
+        assert_eq!(open(&bm, p), p == 0x42 || p == 0x43 || p == 0x61, "port {p:#x}");
+    }
+    assert_eq!(dirty, 0x61 / 8 + 1, "bytes touched: up to the last port's");
+}
+
+/// A second set on the same CPU: the first set's ports close again, even
+/// where the new set touches fewer bytes.
+#[test]
+fn fill_closes_the_previous_set() {
+    let mut bm = [0xFFu8; 128];
+    let d = fill(&mut bm, 0, &[(0x3F8, 0x3FF)]);
+    let d = fill(&mut bm, d, &[(0x80, 0x80)]);
+    for p in 0..1024 {
+        assert_eq!(open(&bm, p), p == 0x80, "port {p:#x}");
+    }
+    assert_eq!(d, 0x80 / 8 + 1);
+    let d = fill(&mut bm, d, &[]);
+    assert!(bm.iter().all(|&b| b == 0xFF));
+    assert_eq!(d, 0);
+}
+
+/// A range past the bitmap writes nothing beyond it: those ports stay past
+/// the TSS limit, refused.
+#[test]
+fn fill_stops_at_the_bitmap() {
+    let mut bm = [0xFFu8; 4];
+    let d = fill(&mut bm, 0, &[(30, 40)]);
+    assert_eq!(d, 4);
+    assert_eq!(bm, [0xFF, 0xFF, 0xFF, 0x3F]);
+}
+
+#[test]
+fn step_table() {
+    // Neither side has a port: the switch every port-less task pays.
+    assert_eq!(step(0, false, 0), Step::Keep);
+    assert_eq!(step(7, false, 0), Step::Keep);
+    assert_eq!(step(7, true, 0), Step::Off);
+    assert_eq!(step(7, false, 7), Step::On);
+    assert_eq!(step(7, true, 7), Step::Keep);
+    assert_eq!(step(7, true, 8), Step::Load);
+    assert_eq!(step(0, false, 8), Step::Load);
+}
+
+/// A model CPU switching between tasks: the bitmap is written only when the
+/// incoming set is not the one it holds. Port-less tasks never cause a
+/// write, and a port task that comes back to the same CPU costs none.
+#[test]
+fn switches_write_the_bitmap_only_for_a_new_set() {
+    struct Cpu { key: u64, on: bool, dirty: usize, bm: [u8; 128], writes: u32 }
+    let mut c = Cpu { key: 0, on: false, dirty: 0, bm: [0xFF; 128], writes: 0 };
+    let sets: [(u64, &[(u16, u16)]); 3] = [(0, &[]), (5, &[(0x42, 0x43)]), (6, &[(0x80, 0x80)])];
+    let mut run = |c: &mut Cpu, i: usize| {
+        let (key, ranges) = sets[i];
+        match step(c.key, c.on, key) {
+            Step::Keep => {}
+            Step::Off => c.on = false,
+            Step::On => c.on = true,
+            Step::Load => {
+                c.dirty = fill(&mut c.bm, c.dirty, ranges);
+                c.key = key;
+                c.on = true;
+                c.writes += 1;
+            }
+        }
+    };
+    for _ in 0..100 {
+        run(&mut c, 0);
+    }
+    assert_eq!((c.writes, c.on), (0, false), "port-less switches write nothing");
+    run(&mut c, 1);
+    assert_eq!((c.writes, c.on), (1, true));
+    for _ in 0..10 {
+        run(&mut c, 0);
+        assert!(!c.on, "a port-less task sees no port");
+        run(&mut c, 1);
+    }
+    assert_eq!(c.writes, 1, "back and forth with one port task: one bitmap write");
+    run(&mut c, 2);
+    assert_eq!(c.writes, 2);
+    assert!(open(&c.bm, 0x80) && !open(&c.bm, 0x42), "the other task's ports are closed");
 }
 
 // ── IDT ────────────────────────────────────────────────────────────────────

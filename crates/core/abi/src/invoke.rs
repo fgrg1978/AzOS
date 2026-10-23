@@ -462,6 +462,17 @@ pub const DEVICE_IRQ_BIND: u16 = op(CapKind::Device, CLASS_DRIVER, 1);
 /// handler's budget is spent and the line stays masked until the
 /// reservation is replenished, `-ENOENT` when nobody binds the line.
 pub const DEVICE_IRQ_ACK: u16 = op(CapKind::Device, CLASS_DRIVER, 2);
+/// Open the I/O ports of the range the handle names (`ty::IOPORT`) to the
+/// calling thread: from the return on, `in` and `out` on them run in ring 3,
+/// and on any other port they fault (#GP, the task's fault). Register form,
+/// every word 0; needs `READ|WRITE`. Per thread, as Linux's `ioperm`: a thread
+/// the caller creates later, a forked child and the next task in the slot
+/// start with no port open. Returns 0, or `-ECAPSTALE` / `-ECAPKIND` /
+/// `-ECAPPERMS` (the handle), `-EINVAL` (a word not 0), `-EMFILE` (the
+/// thread already holds Kconfig `X86_IOPORT_RANGES` ranges), `-ENODEV` (the
+/// ISA has no port space: riscv64, aarch64, or Kconfig
+/// `X86_IOPORT_BITMAP_PORTS` 0; answered before the handle is looked at).
+pub const DEVICE_IOPORT_ENABLE: u16 = op(CapKind::Device, CLASS_DRIVER, 3);
 
 // ── Endpoint: an endpoint the caller holds ──────────────────────────────────
 

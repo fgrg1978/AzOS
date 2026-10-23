@@ -34,6 +34,8 @@ pub mod endpoint;
 // cycle; `ipc → drivers` already exists.
 pub mod drvreg_cap;
 pub mod mmio_cap;
+// `Cap<Device>` over a range of I/O ports (x86_64's port space).
+pub mod ioport_cap;
 // Wave 10: `Cap<File>` naming a directory tree, the authority for the calls
 // that change the tree (mkdir, unlink, rmdir, rename, truncate).
 pub mod file_cap;

@@ -1414,6 +1414,10 @@ pub mod entropy;
 pub mod pmu;
 pub use pmu::{Pmu, PmuCaps};
 
+/// Ring-3 port I/O: a thread's open ports and the ISA seam that loads them.
+pub mod ioport;
+pub use ioport::{IoPorts, PortGrant};
+
 /// Virtual KASLR (the Kconfig choice `KASLR_NEVER` / `KASLR_PROBE` /
 /// `KASLR_REQUIRE`): policy, slide choice, relocation walk and
 /// device-tree seed, the parts every ISA shares.
