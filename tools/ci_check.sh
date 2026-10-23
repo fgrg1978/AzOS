@@ -20380,13 +20380,13 @@ echo piped-ok | cat" 150 \
         # canary kernel maps the default stack whatever the image asks
         # (`user-stack-request-canary`): MLSRV.ELF dies again, never serves,
         # and the row must not see its line. The static half is `ring-3 stacks`.
-        USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat,use-robot" PASS \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 240 \
             "[ML] ring-3 ML service /fat/MLSRV.ELF started" "[infsrv] serving the Infer interface on endpoint.infer" \
             "  TID  PPID PRI S NAME" " S MLSRV.ELF" " TOOLBOX.ELF"
-        USH_FORBID='robot> ' par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,user-stack-request-canary" FAIL \
+        USH_FORBID='robot> ' par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 120 \
@@ -20491,7 +20491,7 @@ power suspend" 150 \
         # `flight-tool-drivetrain`
         # gives the drivetrain to FLIGHT.ELF (the default topology gives it to
         # the autorun row: one writer per motor).
-        USH_FORBID='robot> |REFUSED|command not found' par_row ushell_row "sh: family tools ($ush_isa)" "$ush_isa" "$ush_feat,flight-tool-drivetrain" PASS \
+        USH_FORBID='robot> |REFUSED|command not found' par_row ushell_row "sh: family tools ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,flight-tool-drivetrain" PASS \
             "flight arm
 flight disarm
 behavior disable 2
@@ -20510,7 +20510,7 @@ ps" 240 \
         # Canary half (`family-cap-canary` leaves each tool's endpoint READ only):
         # every operation refused by the missing right, recorded (the `[AUTHORITY]`
         # line prints only when the record reached the recorder), not run.
-        USH_FORBID='robot> |FLIGHT\] ARMED|CFG\] set by|behavior: L2|ota: active' par_row ushell_row "sh: family tools refused without their capability ($ush_isa)" "$ush_isa" "$ush_feat,family-cap-canary" PASS \
+        USH_FORBID='robot> |FLIGHT\] ARMED|CFG\] set by|behavior: L2|ota: active' par_row ushell_row "sh: family tools refused without their capability ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,family-cap-canary" PASS \
             "flight arm
 behavior disable 2
 config set log_level 2
