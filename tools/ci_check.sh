@@ -13853,8 +13853,10 @@ PY
     # +1 txn_rolls_back_an_el1_alignment_fault (aarch64 only: I-13 takes an
     # EL1 Alignment fault of the control task; canary
     # `txn-align-route-canary`, a fatal kernel page fault) -> arm 123.
+    # +1 lx_class_server_keeps_tpidr_el0 (aarch64 only: a Linux class
+    # server's TPIDR_EL0 is kept per task; canary `lx-tpidr-canary`) -> arm 124.
     KTEST_N_RV=122
-    KTEST_N_ARM=123
+    KTEST_N_ARM=124
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14067,6 +14069,9 @@ PY
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
     par "ktest kcall atomic canary (arm)" ktest_row "ktest kcall atomic canary (arm)" arm ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
+    # lx-tpidr-el0: only a Linux task's TPIDR_EL0 is kept, not a Linux class
+    # server's (aarch64 only; riscv64 and x86_64 keep nothing for one).
+    par "ktest lx tpidr canary (arm)" ktest_row "ktest lx tpidr canary (arm)" arm ",lx-tpidr-canary" "lx_class_server_keeps_tpidr_el0"
     par "ktest slab canary (rv)" ktest_row "ktest slab canary (rv)" rv ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest slab canary (arm)" ktest_row "ktest slab canary (arm)" arm ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest zone canary (rv)" ktest_row "ktest zone canary (rv)" rv ",zone-share-canary" "mm_zone_no_cross_type_reuse"

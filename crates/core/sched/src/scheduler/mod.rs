@@ -691,15 +691,19 @@ unsafe fn set_current_task(cpu: usize, next_idx: usize) {
                     SLOW_SWITCH[next_idx].load(Ordering::Relaxed),
                 )
             } else {
-                (core::ptr::addr_of!(TASKS[next_idx].syscall_filter) as usize, false)
+                (
+                    core::ptr::addr_of!(TASKS[next_idx].syscall_filter) as usize,
+                    crate::fp::SWITCH_STATE && SLOW_SWITCH[next_idx].load(Ordering::Relaxed),
+                )
             }
         } else {
             (0, false)
         };
         // A foreign task's per-task CPU state (riscv64 F/D
-        // file, aarch64 TPIDR_EL0) follows it, whichever mode it is in. Only
-        // a switch from or to such a task takes the out-of-line path; a
-        // native switch pays two loads and two tests.
+        // file, aarch64 TPIDR_EL0) follows it, whichever mode it is in, and
+        // so does a Linux class server's (aarch64 TPIDR_EL0). Only a switch
+        // from or to such a task takes the out-of-line path; a native switch
+        // pays two loads and two tests.
         // x86_64 alone puts EVERY task's FS base back (see `fp::switch_fs_base`
         // for why a native task needs it too).
         #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
@@ -707,7 +711,7 @@ unsafe fn set_current_task(cpu: usize, next_idx: usize) {
         // The incoming thread's open I/O ports (nothing where the ISA has no
         // port space; two loads and a test between port-less tasks).
         crate::ioport::switch(cpu, next_idx);
-        if azos_limits::LINUX_ABI && (slow || PER_CPU[cpu].cur_slow.load(Ordering::Relaxed)) {
+        if crate::fp::SWITCH_STATE && (slow || PER_CPU[cpu].cur_slow.load(Ordering::Relaxed)) {
             crate::fp::switch_slow(PER_CPU[cpu].current_idx.load(Ordering::Relaxed), next_idx);
         }
         // N7b: the SC's `on_cpu` follows the switch (WAIT_GRAPH only; n
@@ -794,7 +798,8 @@ static FILTER_WORD: [AtomicUsize; MAX_TASKS] = [const { AtomicUsize::new(0) }; M
 
 /// Per slot: does the task carry per-thread CPU state a context switch must
 /// move (`fp::switch_slow`)? True for every task whose `abi` is not native,
-/// in either mode. Written with [`FILTER_WORD`].
+/// in either mode, and for a Linux class server's tasks
+/// (`fp::slot_is_lx_class`). Written with [`FILTER_WORD`].
 static SLOW_SWITCH: [core::sync::atomic::AtomicBool; MAX_TASKS] =
     [const { core::sync::atomic::AtomicBool::new(false) }; MAX_TASKS];
 
@@ -817,7 +822,7 @@ fn publish_filter_word(idx: usize) {
         } else {
             core::ptr::addr_of!(TASKS[idx].syscall_filter) as usize
         };
-        (w, abi != crate::task::ABI_NATIVE)
+        (w, abi != crate::task::ABI_NATIVE || crate::fp::slot_is_lx_class(idx))
     };
     FILTER_WORD[idx].store(word, Ordering::Relaxed);
     SLOW_SWITCH[idx].store(slow, Ordering::Relaxed);

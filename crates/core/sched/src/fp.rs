@@ -18,7 +18,10 @@
 //!   starts clean ([`exec_reset`]).
 //!
 //! aarch64 needs none of this: its kernel saves the FP/SIMD file of every
-//! task already.
+//! task already. What it keeps here is the EL0 thread pointer `TPIDR_EL0`
+//! of the tasks that use it: a Linux task's (musl's TLS) and a Linux class
+//! server's (the ring-3 loader maps a module's `current`, `mrs xN, SP_EL0`,
+//! to it).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::task::MAX_TASKS;
@@ -35,10 +38,23 @@ pub const SSTATUS_FS_CLEAN: usize = 2 << 13;
 /// The `sstatus.FS` field.
 pub const SSTATUS_FS_MASK: usize = 3 << 13;
 
-/// A new task in slot `idx` has not used the FP file.
-pub fn reset(idx: usize) {
+/// Does this build have tasks whose per-thread CPU state a switch moves
+/// ([`switch_slow`])? Linux tasks (Kconfig `LINUX_ABI`) and Linux class
+/// servers (Kconfig `LINUX_DRIVERS`). Without either, `set_current_task`
+/// compiles none of it.
+pub const SWITCH_STATE: bool = azos_limits::LINUX_ABI || azos_limits::LINUX_DRIVERS;
+
+/// Per slot: the task belongs to a Linux class server, whose topology row
+/// names an `lx_class` (`TaskInit::lx_class`). Written by [`reset`] at slot
+/// creation, before the slot's switch flag is published.
+static LX_CLASS: [AtomicBool; MAX_TASKS] = [const { AtomicBool::new(false) }; MAX_TASKS];
+
+/// A new task in slot `idx` has not used the FP file. `lx_class`: it belongs
+/// to a Linux class server ([`slot_is_lx_class`]).
+pub fn reset(idx: usize, lx_class: bool) {
     if idx < MAX_TASKS {
         USED[idx].store(false, Ordering::Relaxed);
+        LX_CLASS[idx].store(lx_class, Ordering::Relaxed);
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         TLS[idx].store(0, Ordering::Relaxed);
         // x86_64: a new task has no thread pointer (FS base 0).
@@ -47,9 +63,22 @@ pub fn reset(idx: usize) {
     }
 }
 
-/// aarch64: each Linux task's `TPIDR_EL0` (musl's thread pointer). EL1 never
-/// writes it and a native image never uses it, but a spawned task's entry
-/// writes it (0), so a Linux task's value is kept per slot across switches.
+/// Does slot `idx` belong to a Linux class server? Its switches take
+/// [`switch_slow`] (`scheduler::publish_filter_word`).
+pub fn slot_is_lx_class(idx: usize) -> bool {
+    idx < MAX_TASKS && LX_CLASS[idx].load(Ordering::Relaxed)
+}
+
+/// Does the current task belong to a Linux class server? A thread or a fork
+/// child it creates belongs to the same server.
+pub fn current_is_lx_class() -> bool {
+    crate::scheduler::current_slot().is_some_and(slot_is_lx_class)
+}
+
+/// aarch64: each Linux task's and Linux class server task's `TPIDR_EL0`
+/// (musl's thread pointer; a server's Linux `current`). EL1 never writes it
+/// and a native image never uses it, but a spawned task's entry writes it
+/// (0), so the value of such a task is kept per slot across switches.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
@@ -63,10 +92,10 @@ static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
 
 /// Save `prev`'s file and load `next`'s, for the slots that use it. Called by
 /// `set_current_task` on the switching hart before the switch, and only when
-/// `prev` or `next` is a Linux task (its filter word is 0); the kernel itself
-/// never touches the FP file in between. On aarch64 it carries a Linux
-/// task's `TPIDR_EL0` instead (the FP/SIMD file is the kernel's own lazy
-/// switch there). Out of line on purpose: its two 32-register blocks inlined
+/// `prev` or `next` is a Linux task or a Linux class server's (its slot's
+/// switch flag is set); the kernel itself never touches the FP file in
+/// between. On aarch64 it carries such a task's `TPIDR_EL0` instead (the
+/// FP/SIMD file is the kernel's own lazy switch there). Out of line on purpose: its two 32-register blocks inlined
 /// into `do_schedule` cost every native switch (+90 on `switch-loaded`).
 #[inline(never)]
 pub fn switch_slow(prev: usize, next: usize) {
@@ -75,17 +104,23 @@ pub fn switch_slow(prev: usize, next: usize) {
         return;
     }
     // arch-only: aarch64 keeps the EL0 thread pointer in TPIDR_EL0 and this
-    // saves it across a switch; x86_64 does the same for FS base in its own
-    // switch path, riscv64 keeps it in `tp` (a general register).
+    // saves it across a switch, for a Linux task and for a Linux class
+    // server's tasks. x86_64 does the same for FS base in its own switch
+    // path, for every task; a Linux class server needs no GS base there,
+    // because it runs its Linux code on one thread, whose `%gs:sym` reads
+    // `sym` with the user GS base 0 that every task has (CR4.FSGSBASE off).
+    // riscv64 keeps the thread pointer in `tp`, a general register that every
+    // trap frame saves and every syscall preserves
+    // (`azos_abi::syscall_nr`), so nothing is kept for it here.
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    if azos_limits::LINUX_ABI && prev != next {
-        if prev < MAX_TASKS && crate::scheduler::slot_is_foreign(prev) {
+    if SWITCH_STATE && prev != next {
+        if prev < MAX_TASKS && keeps_tpidr(prev) {
             let v: u64;
             // SAFETY: reading this hart's EL0 thread pointer.
             unsafe { core::arch::asm!("mrs {0}, TPIDR_EL0", out(reg) v) };
             TLS[prev].store(v, Ordering::Relaxed);
         }
-        if next < MAX_TASKS && crate::scheduler::slot_is_foreign(next) {
+        if next < MAX_TASKS && keeps_tpidr(next) {
             let v = TLS[next].load(Ordering::Relaxed);
             // SAFETY: EL1 writes the incoming task's EL0 thread pointer; the
             // kernel itself does not use TPIDR_EL0.
@@ -104,6 +139,16 @@ pub fn switch_slow(prev: usize, next: usize) {
         // SAFETY: the incoming slot's area, saved when it last left a hart.
         unsafe { load(core::ptr::addr_of!(AREA[next]) as *const u64) }
     }
+}
+
+/// aarch64: does slot `idx` keep its own `TPIDR_EL0` ([`TLS`])? A Linux
+/// task does, and so does a Linux class server's. Gate canary
+/// `lx-tpidr-canary`: only a Linux task does (ktest
+/// `lx_class_server_keeps_tpidr_el0` is `not ok`).
+// arch-only: only aarch64 keeps a thread pointer here (see `switch_slow`).
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+fn keeps_tpidr(idx: usize) -> bool {
+    crate::scheduler::slot_is_foreign(idx) || (!cfg!(feature = "lx-tpidr-canary") && slot_is_lx_class(idx))
 }
 
 /// An illegal-instruction trap from user mode with `FS = Off` in `sstatus`

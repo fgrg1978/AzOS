@@ -137,6 +137,10 @@ linux-abi-tag-canary = []
 # Canary: a Linux task's riscv64 FP file and aarch64
 # TPIDR_EL0 are not switched with it. The FP and BusyBox fork rows must fail.
 linux-abi-fp-canary = []
+# Canary: a Linux class server's aarch64 TPIDR_EL0 is not kept per task, only
+# a Linux task's (fp::switch_slow). ktest `lx_class_server_keeps_tpidr_el0`
+# must be `not ok`. Never in a real build.
+lx-tpidr-canary = []
 # Wave 13 canary: a child's exit posts no SIGCHLD to its Linux parent. Never
 # in a real build.
 linux-sigchld-canary = []

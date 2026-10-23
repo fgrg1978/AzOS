@@ -2566,6 +2566,7 @@ fn fork_hooked_inner(
             // Wave 13: a fork from a thread is its process's child.
             parent: crate::scheduler::current_proc_tid(),
             abi: crate::scheduler::current_abi(),
+            lx_class: crate::fp::current_is_lx_class(),
             ..crate::filter::TaskInit::default()
         },
     ) {
@@ -2733,6 +2734,7 @@ pub fn thread_create_impl(
             // A thread is nobody's child: its exit posts no notice.
             parent: 0,
             abi: crate::scheduler::current_abi(),
+            lx_class: crate::fp::current_is_lx_class(),
             syscall_filter: Some(crate::scheduler::current_syscall_filter()),
             // D2: a thread joins its creator's domain, and with it the
             // capability table and the frame budget. Gate canary only

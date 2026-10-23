@@ -1084,6 +1084,77 @@ mod percpu_accessor_ktests {
     }
 }
 
+// lx-tpidr-el0: a Linux class server's aarch64 `TPIDR_EL0` is its own across
+// a switch (the ring-3 loader maps a module's `current`, `mrs xN, SP_EL0`, to
+// it). Late: two kernel tasks pinned to one CPU. The first, created as a
+// Linux class server's (`TaskInit::lx_class`), writes its value and sleeps;
+// the second, native, then writes another; the first must read its own back.
+// riscv64 (`tp`, a general register) and x86_64 (a one-thread server, user GS
+// base 0) keep nothing for it (`fp::switch_slow`). Canary cargo feature
+// `lx-tpidr-canary` (only a Linux task's is kept): `not ok`.
+// arch-only: TPIDR_EL0 is aarch64's; the other ISAs keep nothing for a Linux
+// class server, so there is nothing to test there.
+#[cfg(all(feature = "ktest", target_arch = "aarch64"))]
+mod lx_tpidr_ktests {
+    use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+
+    const SERVER: u64 = 0x1c5e_0000_0000_5e01;
+    const NATIVE: u64 = 0x1c5e_0000_0000_0a02;
+    /// 1: the server wrote its value; 2: the native task wrote its own;
+    /// 3: the server read its value back into `SEEN`.
+    static STEP: AtomicU8 = AtomicU8::new(0);
+    static SEEN: AtomicU64 = AtomicU64::new(0);
+
+    /// This CPU's `TPIDR_EL0` becomes `v`; returns what it held.
+    fn swap_tpidr_el0(v: u64) -> u64 {
+        let old: u64;
+        // SAFETY: the kernel never uses TPIDR_EL0; these test tasks own it
+        // while they run.
+        unsafe { core::arch::asm!("mrs {0}, TPIDR_EL0", "msr TPIDR_EL0, {1}", out(reg) old, in(reg) v) };
+        old
+    }
+
+    fn server(_: usize) {
+        swap_tpidr_el0(SERVER);
+        STEP.store(1, Ordering::Release);
+        // Asleep, the native task runs on this CPU and writes its value.
+        let _ = crate::ktest::wait("", || STEP.load(Ordering::Acquire) >= 2);
+        SEEN.store(swap_tpidr_el0(SERVER), Ordering::Relaxed);
+        STEP.store(3, Ordering::Release);
+    }
+
+    fn native(_: usize) {
+        let _ = crate::ktest::wait("", || STEP.load(Ordering::Acquire) >= 1);
+        swap_tpidr_el0(NATIVE);
+        STEP.store(2, Ordering::Release);
+    }
+
+    azos_ktest::ktest_late! {
+        fn lx_class_server_keeps_tpidr_el0() {
+            if !azos_sched::fp::SWITCH_STATE {
+                // Neither LINUX_ABI nor LINUX_DRIVERS: no task keeps one.
+                return Ok(());
+            }
+            let cpu = (azos_percpu::nr_cpu_ids() - 1) as i8;
+            STEP.store(0, Ordering::Relaxed);
+            SEEN.store(0, Ordering::Relaxed);
+            let lx = azos_sched::filter::TaskInit { lx_class: true, ..Default::default() };
+            azos_sched::try_task_create_init("ktest-lx-tp", server, 0, azos_sched::DEFAULT_PRIORITY, cpu, lx)
+                .ok_or("no slot for the Linux class task")?;
+            azos_sched::try_task_create_init("ktest-native-tp", native, 0, azos_sched::DEFAULT_PRIORITY, cpu,
+                azos_sched::filter::TaskInit::default())
+                .ok_or("no slot for the native task")?;
+            crate::ktest::wait("the two tasks did not finish within KTEST_LATE_TIMEOUT_MS",
+                || STEP.load(Ordering::Acquire) == 3)?;
+            match SEEN.load(Ordering::Relaxed) {
+                SERVER => Ok(()),
+                NATIVE => Err("the Linux class task read the native task's TPIDR_EL0"),
+                _ => Err("the Linux class task read a TPIDR_EL0 neither task wrote"),
+            }
+        }
+    }
+}
+
 // N6: the dispatch-class model. Early: the precedence walk takes stop > DL >
 // RT > fair > idle, a compiled-out class is skipped, preemption across
 // classes follows precedence. Late: the running task's SC holds the class its
