@@ -561,10 +561,9 @@ pub fn issue<R>(e: &Effect, t: &Timing, op: impl FnOnce() -> (R, bool)) -> Resul
                 if !matches!(logger::commit_effect_record(payload, false), EffectCommit::Committed(_)) {
                     unrecorded(e);
                 }
-                // A stop that lands releases a held device in the device layer
-                // (for the motor, `azos_robot`'s stop listener, installed by
-                // `gate::install`), so it does for a stop from ANY path, not
-                // only this gate's.
+                // A stop never lifts a held device (`safe_state`): only the
+                // operator's release does, in this gate and in the device
+                // layer, where a stop at the held value passes.
                 let (r, _) = op();
                 Ok(r)
             }
