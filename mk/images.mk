@@ -442,7 +442,11 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 	$(call topo_bind,riscv64,$(BOARD_VOL_KCONFIG),$(call board_topo_features,$(BOARD_VOL_KCONFIG)),$(BOARD_DIR)/topo-$(basename $(notdir $@)),$@,$(BOARD_SIGN_PRIV))
 	# The topology's images plus the ones this volume's .config selects
 	# under "Userspace programs" (`make config`).
-	python3 tools/gen_board_manifest.py $(OUT_BUILD)/board_elfs.list --config $(BOARD_VOL_KCONFIG) $(IMAGE_ELFS_BOARD) > $@.manifest
+	# The images this volume's topology declares, from its own .config (the
+	# shared board_elfs.list is the workspace config's: the gate's generic one
+	# has the input server and the compositor, a board's may not).
+	cd tests/host/topology-tests && KCONFIG_CONFIG="$(BOARD_VOL_KCONFIG)" CARGO_TARGET_DIR="$(OUT_TGT)/tests/host/topology-tests-board" $(CARGO) run -q --bin board_elfs > "$@.elfs"
+	python3 tools/gen_board_manifest.py $@.elfs --config $(BOARD_VOL_KCONFIG) $(IMAGE_ELFS_BOARD) > $@.manifest
 	# The package installer stages under /fat/PKG: its tree grant cannot create
 	# the directory it is rooted at, so the volume carries it.
 	mmd -i $@ ::PKG

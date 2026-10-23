@@ -9553,7 +9553,7 @@ board_volume_row() {
     local label="board: volume = topology"
     printf "  %-26s" "${label}..."
     local out
-    rm -f $AZOS_OUT/build/disk-board.img $AZOS_OUT/build/board_manifest.txt $AZOS_OUT/build/board_elfs.list
+    rm -f $AZOS_OUT/build/disk-board.img $AZOS_OUT/build/disk-board.img.manifest $AZOS_OUT/build/board_manifest.txt $AZOS_OUT/build/board_elfs.list
     # A board volume never carries the test key (wave 11 BOARDIMG): the board
     # builds its own ML service from a NAMED key. Two refusals first (no key;
     # the test key named by path), each bound to the line only the refusal
@@ -9587,8 +9587,11 @@ board_volume_row() {
         printf '%s\n' "$out" | grep -aE "ORPHAN|disagree|Error|error|check_board_keys" | sed 's|^|        |'
         return
     fi
-    if [ ! -s $AZOS_OUT/build/board_manifest.txt ] || ! grep -aq "\.ELF" $AZOS_OUT/build/board_manifest.txt; then
-        bad; echo "      $AZOS_OUT/build/board_manifest.txt is empty — the topology declares no board service"
+    # The volume's own manifest (its .config's topology), not the workspace
+    # config's board_manifest.txt.
+    local vman=$AZOS_OUT/build/disk-board.img.manifest
+    if [ ! -s $vman ] || ! grep -aq "\.ELF" $vman; then
+        bad; echo "      $vman is empty — the topology declares no board service"
         return
     fi
     # Manifest lines are `NAME.ELF=build/path.elf`; mdir prints the 8.3 stem
@@ -9600,7 +9603,7 @@ board_volume_row() {
         if ! mdir -i $AZOS_OUT/build/disk-board.img ::/ 2>/dev/null | qgrep -aqi "$stem"; then
             missing="$missing $name"
         fi
-    done < $AZOS_OUT/build/board_manifest.txt
+    done < $vman
     if [ -n "$missing" ]; then
         bad; echo "      manifest entries not on the built image:$missing"
         return
