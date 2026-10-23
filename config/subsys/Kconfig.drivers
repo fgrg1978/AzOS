@@ -897,67 +897,99 @@ config DMA_NONCOHERENT
       read. x86_64 DMA is coherent and has no switch. n: the devices are
       coherent (QEMU; no cache maintenance, no cost).
 
+# The IOMMU is on wherever the machine has one: each flavour below is built
+# into every kernel of its ISA that has PCI, and finds its unit at boot (a PCI
+# function, the device tree, the ACPI tables). Nothing is hardcoded: a machine
+# whose firmware describes no unit runs without one and says so. IOMMU_BYPASS
+# is the one opt-out from confinement.
+
 config IOMMU_RISCV
-    # cargo-feature: iommu-riscv
-    bool "RISC-V IOMMU (riscv-iommu-pci): translate virtio-pci DMA"
-    default n
+    # cargo-feature: iommu-riscv base
+    bool "RISC-V IOMMU (riscv-iommu-pci): confine PCI DMA"
+    default y
     depends on DRV_PCI && ARCH_RISCV64
     help
       Kernel feature `iommu-riscv` (crates/drivers/iommu/src/riscv.rs).
-      Finds a PCI function of class 0x0806 on bus 0 (QEMU
+      Finds the PCI function of class 0x0806 the hardware bus lists
+      (`riscv-iommu`, crates/drivers/iommu/hwbus.ids; QEMU
       `-device riscv-iommu-pci`), assigns its BAR, brings it up with a
-      two-level device directory and polled command and fault queues, puts
-      every function in pass-through and every function whose driver maps
-      its DMA (virtio-net-pci) in a domain of its own: from then on a DMA to
-      a page the driver did not map is refused and the fault is logged
-      (`[IOMMU]`). The NVMe controller and the other functions stay in
-      pass-through. n: no IOMMU is driven.
+      two-level device directory and polled command and fault queues, and
+      puts each PCI function in the domain its driver needs
+      (kernel/src/boot/dma.rs): a translating domain of its own when its
+      driver maps its DMA, pass-through when its driver does not (NVMe,
+      AHCI), blocked when no kernel driver binds it. From then on a DMA to a
+      page the driver did not map is refused and the fault is logged
+      (`[IOMMU]`). A machine without the function runs without an IOMMU.
+      n: no IOMMU is driven.
 
 config IOMMU_SMMUV3
-    # cargo-feature: iommu-smmuv3
-    bool "Arm SMMUv3 (QEMU virt iommu=smmuv3): translate virtio-pci DMA"
-    default n
+    # cargo-feature: iommu-smmuv3 base
+    bool "Arm SMMUv3 (QEMU virt iommu=smmuv3): confine PCI DMA"
+    default y
     depends on DRV_PCI && ARCH_AARCH64
     help
       Kernel feature `iommu-smmuv3` (crates/drivers/iommu/src/smmuv3.rs).
-      Brings up the SMMU at IOMMU_SMMUV3_BASE with a linear stream table and
-      polled command and event queues, the same way as IOMMU_RISCV. The
-      stream id is the PCI requester id (QEMU `virt` maps them one to one).
-      n: no IOMMU is driven.
-
-config IOMMU_SMMUV3_BASE
-    hex "SMMUv3 register base (IOMMU_SMMUV3)"
-    default 0x09050000
-    help
-      Used with IOMMU_SMMUV3. QEMU `virt` (iommu=smmuv3) puts the SMMU at
-      0x09050000, 128 KiB. A board with an SMMU elsewhere sets its address
-      here.
+      Finds the SMMU in the device tree (`arm,smmu-v3`, its `reg` window;
+      crates/drivers/iommu/hwbus.ids) and brings it up with a linear stream
+      table and polled command and event queues; the functions get their
+      domains as with IOMMU_RISCV. The stream id is the PCI requester id
+      (QEMU `virt` maps them one to one). A tree without the node runs
+      without an IOMMU. n: no IOMMU is driven.
 
 config IOMMU_VTD
-    # cargo-feature: iommu-vtd
-    bool "Intel VT-d (QEMU q35 intel-iommu): translate virtio-pci DMA"
-    default n
+    # cargo-feature: iommu-vtd base
+    bool "Intel VT-d (QEMU q35 intel-iommu): confine PCI DMA"
+    default y
     depends on DRV_PCI && ARCH_X86_64
     help
       Kernel feature `iommu-vtd` (crates/drivers/iommu/src/vtd.rs). The
       remapping unit's registers are found in the ACPI DMAR table (the first
       DRHD that covers PCI segment 0), brought up in legacy mode with
-      register-based invalidation and polled fault recording, the same way
-      as IOMMU_RISCV. n: no VT-d unit is driven.
+      register-based invalidation and polled fault recording; the functions
+      get their domains as with IOMMU_RISCV. Without a DMAR the kernel runs
+      without it (and tries IOMMU_AMDVI). n: no VT-d unit is driven.
 
 config IOMMU_AMDVI
-    # cargo-feature: iommu-amdvi
-    bool "AMD-Vi: translate virtio-pci DMA"
-    default n
+    # cargo-feature: iommu-amdvi base
+    bool "AMD-Vi: confine PCI DMA"
+    default y
     depends on DRV_PCI && ARCH_X86_64
     help
       Kernel feature `iommu-amdvi` (crates/drivers/iommu/src/amdvi.rs). The
       unit's registers are found in the ACPI IVRS table (the first IVHD
-      block), brought up with a flat device table and polled command buffer
-      and event log, the same way as IOMMU_RISCV. There is no QEMU row for
-      it: QEMU's amd-iommu model is built for interrupt remapping and its
-      DMA page walk is unexercised here, so this unit is tested on the host
-      and waits for real AMD hardware. n: no AMD-Vi unit is driven.
+      block), brought up with a flat device table, every entry of which
+      blocks until its function is placed, and polled command buffer and
+      event log; the functions get their domains as with IOMMU_RISCV. QEMU
+      q35 with `-device amd-iommu,dma-remap=on` models the DMA page walk.
+      Without an IVRS the kernel runs without it. n: no AMD-Vi unit is
+      driven.
+
+config IOMMU_BYPASS
+    bool "IOMMU in pass-through: do NOT confine any device's DMA"
+    default n
+    depends on IOMMU_RISCV || IOMMU_SMMUV3 || IOMMU_VTD || IOMMU_AMDVI
+    help
+      The unit is still found and brought up, but every PCI function is put
+      in pass-through: no translating domain, no blocked function, and a
+      device can read and write all of memory, the kernel's included (what
+      Linux `iommu.passthrough=1` does). The boot log says so per function.
+      For measuring what confinement costs, or for a device a driver cannot
+      yet map through its domain. n (the default): every function is
+      confined as IOMMU_RISCV describes.
+
+config IOMMU_DOMAINS
+    int "Translating PCI functions at once (with an IOMMU_* unit)"
+    range 1 16
+    default 8
+    help
+      With an IOMMU_* unit, each PCI function whose driver maps its DMA
+      through its domain (virtio-net/gpu/snd over PCI, e1000e, igc, xHCI)
+      gets a translating domain of its own, up to this many; a function past
+      the last one stays in pass-through and the boot log says so. At most 16:
+      the domain registry (azos_dma::registry::MAX_BOUND) and the units' tag
+      allocators hold 16. Cost: one DMA_MAP_ENTRIES record table (about 32
+      bytes per record) of .bss per domain, and a page-table root page per
+      translating function at boot.
 
 config IOMMU_FAULT_POLL_MS
     int "IOMMU fault log poll interval (ms; with an IOMMU_* unit)"

@@ -12,16 +12,23 @@
 //! machine without it corrupts data silently). virtio-mmio devices and every
 //! PCI function without a domain of their own use the default.
 //!
-//! With an `iommu-*` feature, [`iommu_init`] runs in the PCI bring-up, after
-//! enumeration and before any PCI driver: it finds the IOMMU (a PCI function
-//! on riscv64, the Kconfig base on aarch64, the ACPI table on x86_64), brings
-//! it up, puts EVERY enumerated function in pass-through (a function the
-//! unit has no entry for is refused all DMA), and gives each function whose
-//! driver maps its DMA (the virtio-net NIC) a translating domain of its own:
-//! the driver maps its buffers, then `Dma::enable` points the unit at the
-//! domain's page table, and from then on a DMA to a page nobody mapped is
-//! refused and logged by the fault task. The NVMe controller's driver does
-//! not use domains and stays in pass-through.
+//! With an `iommu-*` feature (Kconfig IOMMU_*, on by default), [`iommu_init`]
+//! runs in the PCI bring-up, after enumeration and before any PCI driver: it
+//! finds the IOMMU (the hardware bus's `riscv-iommu` PCI function on riscv64,
+//! its `smmuv3` device-tree node on aarch64, the ACPI DMAR / IVRS on x86_64;
+//! none: no IOMMU, said once), brings it up and places every enumerated
+//! function by what its driver can take (`hw::Placement`):
+//!
+//! - a driver that maps every DMA through its domain gets a translating
+//!   domain of its own: the driver maps its buffers, then `Dma::enable`
+//!   points the unit at the domain's page table, and from then on a DMA to a
+//!   page nobody mapped is refused and logged by the fault task;
+//! - a driver that hands its device physical addresses (NVMe, AHCI) leaves
+//!   the function in pass-through, said per function;
+//! - a function no kernel driver binds is blocked: ring 3 has no DMA path
+//!   yet, so nothing it drives can need one.
+//!
+//! IOMMU_BYPASS puts every function in pass-through instead.
 
 use azos_dma::{AddrRange, DmaAddr, DmaDomain, DmaError, Direction, DomainKind, DomainOps, IdentityDomain, SoftState, FULL_RANGE};
 use azos_sync::SpinLock;
@@ -327,9 +334,45 @@ mod hw {
     #[cfg(feature = "iommu-amdvi")]
     static AMDVI: Shared<azos_iommu::amdvi::AmdVi<KMmio>> = Shared::empty();
 
-    /// The NIC's translating domain: the one driver that maps its DMA per PCI
-    /// function (`azos_drv_virtio::virtio::net::init_pci`).
-    static NIC: Locked<IoDomain<ENTRIES>> = Locked::empty();
+    /// The translating domains, one per function whose driver maps its DMA
+    /// (Kconfig `IOMMU_DOMAINS`).
+    const DOMAINS: usize = azos_limits::IOMMU_DOMAINS as usize;
+    static POOL: [Locked<IoDomain<ENTRIES>>; DOMAINS] = [const { Locked::empty() }; DOMAINS];
+
+    /// The drivers that map every DMA of their function through its domain
+    /// (`azos_dma::registry::domain_for`) and call `enable` once their
+    /// buffers are mapped: the functions they bind get a translating domain.
+    /// The other kernel drivers of PCI functions (NVMe, AHCI) hand their
+    /// device physical addresses.
+    const MAPS_ITS_DMA: [&str; 6] = ["virtio-net-pci", "virtio-gpu-pci", "virtio-snd-pci", "e1000e", "igc", "xhci"];
+
+    /// Where a function's DMA goes.
+    enum Placement {
+        /// A translating domain of its own; pass-through until its driver
+        /// calls `enable` (the MSI-X self-tests drive the NIC with physical
+        /// addresses before its driver runs).
+        Translate(&'static str),
+        /// Untranslated, and why.
+        Bypass(&'static str),
+        /// Every DMA refused.
+        Block,
+    }
+
+    /// Where function `rid`, which the native table gives `driver`, goes.
+    fn placement(rid: u32, driver: Option<&'static str>, own: Option<u32>) -> Placement {
+        if azos_limits::IOMMU_BYPASS {
+            return Placement::Bypass("IOMMU_BYPASS");
+        }
+        if own == Some(rid) {
+            // Its own table walks are not translated by itself.
+            return Placement::Bypass("the IOMMU itself");
+        }
+        match driver {
+            Some(d) if MAPS_ITS_DMA.contains(&d) => Placement::Translate(d),
+            Some(_) => Placement::Bypass("its driver hands the device physical addresses"),
+            None => Placement::Block,
+        }
+    }
 
     /// The unit the fault task drains.
     static FAULTS: SpinLock<Option<&'static dyn UnitHandle>> = SpinLock::new(None);
@@ -347,6 +390,8 @@ mod hw {
         flavour: Flavour,
         fmt: PtFormat,
         coherent: bool,
+        /// The unit's own requester id, when it is a PCI function.
+        own: Option<u32>,
     }
 
     /// Put a freshly built unit in its static and describe it.
@@ -354,12 +399,13 @@ mod hw {
         slot: &'static Shared<U>,
         unit: U,
         base: usize,
+        own: Option<u32>,
     ) -> Found {
         let (flavour, fmt) = (unit.flavour(), unit.pt_format());
         *slot.0.lock() = Some(unit);
         kprintln!("[IOMMU] {} at {:#x}: {:?} page tables, {} levels", flavour.name(), base, fmt.kind, fmt.levels);
         // The page-table walker snoops the CPU's caches when the devices do.
-        Found { unit: slot, flavour, fmt, coherent: COHERENT }
+        Found { unit: slot, flavour, fmt, coherent: COHERENT, own }
     }
 
     // A flavour's feature is for its own ISA (Kconfig `depends on`).
@@ -370,15 +416,18 @@ mod hw {
     ))]
     compile_error!("an iommu-* feature of another ISA is enabled");
 
-    /// RISC-V IOMMU: a PCI function of class 0x0806 (system IOMMU) whose BAR 0
-    /// holds the registers.
+    /// RISC-V IOMMU: the PCI function the hardware bus gives `riscv-iommu`
+    /// (class 0x0806, crates/drivers/iommu/hwbus.ids), BAR 0 the registers.
     #[cfg(feature = "iommu-riscv")]
     fn bring_up<C: azos_pci::ConfigSpace>(
         cfg: &mut C,
         funcs: &[Option<azos_pci::FunctionInfo>],
         window: &mut azos_pci::BarWindow,
     ) -> Option<Found> {
-        let info = funcs.iter().flatten().find(|f| cfg.read32(f.bdf, 8) >> 16 == 0x0806)?;
+        let Some(info) = crate::boot::hwbus::function_for("riscv-iommu", funcs) else {
+            kprintln!("[IOMMU] no riscv-iommu PCI function: PCI DMA is not confined");
+            return None;
+        };
         let bars = match azos_drv_virtio::virtio::pci::msix_selftest::map_bars(cfg, info, window) {
             Ok(b) => b,
             Err(e) => {
@@ -392,7 +441,7 @@ mod hw {
             return None;
         }
         match azos_iommu::riscv::RiscvIommu::new(KMmio { base }, &MEM) {
-            Ok(u) => Some(found(&RISCV, u, base)),
+            Ok(u) => Some(found(&RISCV, u, base, Some(info.bdf.requester_id()))),
             Err(e) => {
                 kprintln!("[IOMMU] riscv-iommu at {:#x} not used: {:?}", base, e);
                 None
@@ -400,22 +449,29 @@ mod hw {
         }
     }
 
-    /// SMMUv3: platform registers at the Kconfig base (128 KiB: two 64 KiB
-    /// register pages).
+    /// SMMUv3: the device-tree node the hardware bus gives `smmuv3`
+    /// (`arm,smmu-v3`, crates/drivers/iommu/hwbus.ids), its `reg` window the
+    /// registers (two 64 KiB register pages and more).
     #[cfg(feature = "iommu-smmuv3")]
     fn bring_up<C: azos_pci::ConfigSpace>(
         _cfg: &mut C,
         funcs: &[Option<azos_pci::FunctionInfo>],
         _window: &mut azos_pci::BarWindow,
     ) -> Option<Found> {
-        let base = azos_limits::IOMMU_SMMUV3_BASE as usize;
-        if !crate::boot::map_mmio_region(base, 0x2_0000) {
+        let Some((base, size)) = crate::boot::hwbus::window_for("smmuv3") else {
+            kprintln!("[IOMMU] no arm,smmu-v3 node in the device tree: PCI DMA is not confined");
+            return None;
+        };
+        let base = base as usize;
+        // Page 1 holds the event queue's index registers.
+        if (size as usize) < 0x2_0000 || !crate::boot::map_mmio_region(base, size as usize) {
+            kprintln!("[IOMMU] smmuv3 at {:#x}: window {:#x} not usable", base, size);
             return None;
         }
         // The highest requester id the stream table must hold (bus 0 only today).
         let max_dev = funcs.iter().flatten().map(|f| f.bdf.requester_id()).max().unwrap_or(0);
         match azos_iommu::smmuv3::Smmuv3::new(KMmio { base }, &MEM, max_dev) {
-            Ok(u) => Some(found(&SMMUV3, u, base)),
+            Ok(u) => Some(found(&SMMUV3, u, base, None)),
             Err(e) => {
                 kprintln!("[IOMMU] smmuv3 at {:#x} not used: {:?}", base, e);
                 None
@@ -438,7 +494,7 @@ mod hw {
                 return None;
             }
             return match azos_iommu::vtd::Vtd::new(KMmio { base }, &MEM) {
-                Ok(u) => Some(found(&VTD, u, base)),
+                Ok(u) => Some(found(&VTD, u, base, None)),
                 Err(e) => {
                     kprintln!("[IOMMU] vt-d at {:#x} not used: {:?}", base, e);
                     None
@@ -452,7 +508,7 @@ mod hw {
             }
             let max_dev = funcs.iter().flatten().map(|f| f.bdf.requester_id()).max().unwrap_or(0);
             return match azos_iommu::amdvi::AmdVi::new(KMmio { base }, &MEM, max_dev) {
-                Ok(u) => Some(found(&AMDVI, u, base)),
+                Ok(u) => Some(found(&AMDVI, u, base, None)),
                 Err(e) => {
                     kprintln!("[IOMMU] amd-vi at {:#x} not used: {:?}", base, e);
                     None
@@ -463,9 +519,10 @@ mod hw {
         None
     }
 
-    /// Bring up the IOMMU, sweep the functions into pass-through and install
-    /// the NIC's domain. A refusal anywhere is a line and the machine runs on
-    /// with the default domain.
+    /// Bring up the IOMMU and place every function ([`Placement`]). A refusal
+    /// is a line: a function whose entry the unit refused stays as a fresh
+    /// unit has every function, blocked; one whose domain could not be built
+    /// stays in pass-through.
     pub(crate) fn iommu_init<C: azos_pci::ConfigSpace>(
         cfg: &mut C,
         funcs: &[Option<azos_pci::FunctionInfo>],
@@ -473,52 +530,57 @@ mod hw {
     ) {
         let Some(f) = bring_up(cfg, funcs, window) else { return };
 
-        // Every function the unit has no entry for is refused all DMA: put
-        // them all in pass-through first (the IOMMU's own function included
-        // is harmless; its DMA is not translated).
-        let mut swept = 0;
+        let mut pool = POOL.iter();
+        let (mut translated, mut passed, mut blocked) = (0, 0, 0);
         for info in funcs.iter().flatten() {
             let rid = info.bdf.requester_id();
-            match f.unit.attach(rid, DomainMode::Bypass) {
-                Ok(()) => swept += 1,
-                Err(e) => kprintln!("[IOMMU] {}: pass-through refused: {:?}", info.bdf, e),
+            let place = placement(rid, crate::boot::hwbus::driver_of(info), f.own);
+            let mode = if matches!(place, Placement::Block) { DomainMode::Block } else { DomainMode::Bypass };
+            if let Err(e) = f.unit.attach(rid, mode) {
+                azos_drv_sys::kerr!("[IOMMU] {}: {:?} refused: {:?}", info.bdf, mode, e);
+                continue;
             }
-        }
-        kprintln!("[IOMMU] {} function(s) in pass-through", swept);
-
-        // The NIC: a domain of its own. Its driver maps its buffers and calls
-        // `enable`, which attaches the domain's table.
-        let mut translated = None;
-        if let Some(nic) = crate::boot::hwbus::function_for("virtio-net-pci", funcs) {
-            let rid = nic.bdf.requester_id();
-            match IoDomain::<ENTRIES>::new(rid, f.flavour, f.fmt, f.unit, &MEM, f.coherent) {
-                Ok(d) => {
-                    NIC.set(d);
-                    match azos_dma::registry::install_for(rid, &NIC) {
-                        Ok(()) => {
-                            translated = Some(rid);
-                            kprintln!("[IOMMU] virtio-net {}: translating domain installed", nic.bdf)
-                        }
-                        Err(e) => azos_drv_sys::kerr!("[IOMMU] virtio-net {}: domain not installed: {:?}", nic.bdf, e),
+            match place {
+                Placement::Translate(driver) => match install(&f, rid, pool.next()) {
+                    Ok(()) => {
+                        translated += 1;
+                        kprintln!("[IOMMU] {} {}: translating domain installed", info.bdf, driver);
                     }
+                    Err(why) => {
+                        passed += 1;
+                        azos_drv_sys::kwarn!("[IOMMU] {} {}: DMA NOT translated (pass-through): {}",
+                                             info.bdf, driver, why);
+                    }
+                },
+                // Said per function, so the summary is not read as protection.
+                Placement::Bypass(why) => {
+                    passed += 1;
+                    azos_drv_sys::kwarn!("[IOMMU] {}: DMA NOT translated (pass-through): {}", info.bdf, why);
                 }
-                Err(e) => azos_drv_sys::kerr!("[IOMMU] virtio-net {}: no domain: {:?}", nic.bdf, e),
+                Placement::Block => {
+                    blocked += 1;
+                    kprintln!("[IOMMU] {}: DMA blocked (no kernel driver)", info.bdf);
+                }
             }
         }
-        // Every other function stays in pass-through (audit K2-M8): the unit
-        // confines none of their DMA, a storage, USB or Ethernet controller's
-        // included. Said per function, so the line above is not read as
-        // protection. A domain per kernel-driven function, and unknown
-        // functions blocked rather than passed through, are still to come.
-        for info in funcs.iter().flatten() {
-            if Some(info.bdf.requester_id()) != translated {
-                azos_drv_sys::kwarn!("[IOMMU] {}: DMA NOT translated (pass-through): the IOMMU does not \
-                                      confine this function", info.bdf);
-            }
-        }
+        kprintln!("[IOMMU] {} function(s) translating, {} in pass-through, {} blocked", translated, passed, blocked);
 
         *FAULTS.lock() = Some(f.unit);
         UP.store(true, Ordering::Release);
+    }
+
+    /// Give function `rid` the translating domain in `slot` and install it
+    /// for its driver to find.
+    fn install(
+        f: &Found,
+        rid: u32,
+        slot: Option<&'static Locked<IoDomain<ENTRIES>>>,
+    ) -> Result<(), &'static str> {
+        let slot = slot.ok_or("no translating domain left (IOMMU_DOMAINS)")?;
+        let d = IoDomain::<ENTRIES>::new(rid, f.flavour, f.fmt, f.unit, &MEM, f.coherent)
+            .map_err(|_| "no memory for its page table")?;
+        slot.set(d);
+        azos_dma::registry::install_for(rid, slot).map_err(|_| "the domain registry is full or taken")
     }
 
     /// Drain the unit's fault log every `IOMMU_FAULT_POLL_MS` and print what

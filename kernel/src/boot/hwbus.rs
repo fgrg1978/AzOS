@@ -80,7 +80,8 @@ use crate::kprintln;
 
 /// Drivers the kernel brought up before the bus, or without asking it: the
 /// binding only records that the device is the kernel's.
-const RECORD_ONLY: [&str; 7] = ["uart", "intc", "pci-host", "ramfb", "fb-simple", "soc", "ccache"];
+const RECORD_ONLY: [&str; 9] =
+    ["uart", "intc", "pci-host", "ramfb", "fb-simple", "soc", "ccache", "riscv-iommu", "smmuv3"];
 
 /// Drivers whose node is hardware the SoC frameworks themselves drive, so the
 /// bus does not ask them for the node's resources again: on the VisionFive 2
@@ -644,25 +645,44 @@ pub(crate) fn add_pci(funcs: &[Option<azos_pci::FunctionInfo>], window: &azos_pc
     }
 }
 
-/// The first function of `funcs` the native table gives to `driver`: the one
-/// place PCI ids are written is `crates/drivers/*/hwbus.ids`, so the
-/// diagnostics and the IOMMU setup that need "the NIC" ask the table rather
-/// than repeat `0x1af4:0x1041`.
+/// The driver the native table gives PCI function `f`, if any: the one place
+/// PCI ids are written is `crates/drivers/*/hwbus.ids`, so the diagnostics
+/// and the IOMMU setup that need "the NIC" or "a function with no driver"
+/// ask the table rather than repeat `0x1af4:0x1041`.
+#[cfg(feature = "pci")]
+pub(crate) fn driver_of(f: &azos_pci::FunctionInfo) -> Option<&'static str> {
+    let d = Device::pci(hwbus::PciId {
+        bus: f.bdf.bus,
+        device: f.bdf.device,
+        function: f.bdf.function,
+        vendor: f.vendor,
+        device_id: f.device,
+        class: f.class,
+    });
+    match hwbus::natural(&d, NATIVE, &[]) {
+        Some(Choice::Native(n)) => Some(n),
+        _ => None,
+    }
+}
+
+/// The first function of `funcs` the native table gives to `driver`.
 #[cfg(feature = "pci")]
 pub(crate) fn function_for<'a>(
     driver: &str,
     funcs: &'a [Option<azos_pci::FunctionInfo>],
 ) -> Option<&'a azos_pci::FunctionInfo> {
-    funcs.iter().flatten().find(|f| {
-        let d = Device::pci(hwbus::PciId {
-            bus: f.bdf.bus,
-            device: f.bdf.device,
-            function: f.bdf.function,
-            vendor: f.vendor,
-            device_id: f.device,
-            class: f.class,
-        });
-        matches!(hwbus::natural(&d, NATIVE, &[]), Some(Choice::Native(n)) if n == driver)
+    funcs.iter().flatten().find(|f| driver_of(f) == Some(driver))
+}
+
+/// The register window (base, size) of the first device-tree device the
+/// native table gives to `driver`: hardware a boot step drives outside the
+/// bus (the SMMU) is found through its id line, not a second `compatible`.
+#[cfg(feature = "iommu-smmuv3")]
+pub(crate) fn window_for(driver: &str) -> Option<(u64, u64)> {
+    hwbus::with(|bus| {
+        bus.iter()
+            .find(|(_, s)| matches!(hwbus::natural(&s.dev, NATIVE, &[]), Some(Choice::Native(n)) if n == driver))
+            .map(|(_, s)| (s.dev.base, s.dev.size))
     })
 }
 

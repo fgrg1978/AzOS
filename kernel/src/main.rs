@@ -926,8 +926,9 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         }
 
         // Kconfig IOMMU_*: bring the IOMMU up before any PCI driver touches
-        // its device (every function is put in pass-through, the NIC gets a
-        // translating domain its driver enables).
+        // its device (a function whose driver maps its DMA gets a translating
+        // domain its driver enables, one whose driver does not stays in
+        // pass-through, one no kernel driver binds is blocked).
         #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
         boot::iommu_init(&mut cfg, &funcs[..pci_n], &mut window);
 

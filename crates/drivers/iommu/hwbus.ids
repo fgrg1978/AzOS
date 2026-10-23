@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+#
+# The ids this crate answers to, for the hardware bus (crates/drivers/hwbus;
+# see crates/drivers/sys/hwbus.ids for the format).
+# The IOMMU units the kernel drives from the PCI bring-up (kernel/src/boot/dma.rs),
+# outside the bus: `boot` binds them to a driver that only records the fact,
+# so ring 3 is never handed the registers of the unit that confines its DMA.
+# The boot finds the unit through these lines (`hwbus::driver_of`,
+# `hwbus::window_for`), not through a second copy of the ids.
+
+# RISC-V IOMMU as a PCI function: class 0x0806 (system peripheral, IOMMU),
+# any programming interface (QEMU `-device riscv-iommu-pci`).
+riscv-iommu      pciclass:080600:ffff00   boot   if=IOMMU_RISCV
+# Arm SMMUv3 in the device tree (QEMU `virt,iommu=smmuv3`: `smmuv3@9050000`).
+smmuv3           dt:arm,smmu-v3           boot   if=IOMMU_SMMUV3
