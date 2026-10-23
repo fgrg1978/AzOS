@@ -15,8 +15,12 @@ config OTA_SIG_MANDATORY
     default n
     help
       Default: y on every build except BUILD_TYPE_DEV (release-safe),
-      whatever the SECURITY posture. When y, the OTA subsystem rejects any firmware image that does
-      not carry a valid Ed25519 signature file (KERN_*.SIG on FAT).
+      whatever the SECURITY posture. When y, the kernel image receive
+      (crates/core/recovery: `ota recv` and the auto-receive task) refuses a
+      staged image without a valid
+      Ed25519 signature file (KERN_*.SIG on FAT) before it replaces the slot;
+      a signed update set (crates/core/ota/src/update.rs) is verified whatever
+      this says.
       Recommended: set to y whenever SECURE_BOOT_ENFORCED = y so
       the signing chain is unbroken end-to-end.  A BUILD_TYPE_DEV build
       starts on only for the SECURITY postures but general; a

@@ -67,6 +67,20 @@ mod tests {
     // OT01.A — Header roundtrip + brain-side encode/kernel-side decode sync
     // ──────────────────────────────────────────────────────────────────────
 
+
+    /// A staged image whose signature is present and wrong is refused in
+    /// every build; one with no usable signature only where a signature is
+    /// required (`secure-boot-enforced`, Kconfig `OTA_SIG_MANDATORY`); a
+    /// verified one never. **Canary:** ignoring `sig_required` (the state
+    /// before OTA_SIG_MANDATORY had a reader) fails the second row.
+    #[test]
+    fn an_unsigned_install_is_refused_where_a_signature_is_required() {
+        assert!(ota_install_refused_pure(false, true, false), "present and wrong");
+        assert!(ota_install_refused_pure(false, false, true), "absent, required");
+        assert!(!ota_install_refused_pure(false, false, false), "absent, not required");
+        assert!(!ota_install_refused_pure(true, false, true), "verified");
+    }
+
     #[test]
     fn header_roundtrip_preserves_all_fields() {
         let h = good_header();

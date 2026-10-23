@@ -809,6 +809,10 @@ fn cmd_ota_recv(port: u16) {
     let (trust, trust_reason, auth_fw_version) =
         azos_ota::secure_boot_verify_staged_detailed(target_slot);
     let enforced = azos_ota::secure_boot_enforced_at_compile_time();
+    // Kconfig OTA_SIG_MANDATORY: an unsigned image is refused here even where
+    // the boot gate would run it (the build validation keeps it on whenever
+    // `secure-boot-enforced` is).
+    let required = enforced || azos_limits::OTA_SIG_MANDATORY;
 
     if trust != azos_ota::BootTrust::Verified {
         // `Failed` means a `.SIG` IS present and does not verify (wrong key,
@@ -819,7 +823,7 @@ fn cmd_ota_recv(port: u16) {
         // on a dev build — with the all-zero `SECURE_BOOT_PUBKEY` the
         // verifier short-circuits to `Unverified`/`NoTrustedKey` before
         // ever reading a `.SIG`.
-        if enforced || trust == azos_ota::BootTrust::Failed {
+        if azos_ota::ota_install_refused_pure(false, trust == azos_ota::BootTrust::Failed, required) {
             azos_drv_sys::kconsoleln!(
                 "[OTA] REFUSED: staged image for slot {} is {} ({}) — \
                  {}; live slot left untouched, deleting .TMP",
@@ -827,6 +831,8 @@ fn cmd_ota_recv(port: u16) {
                 trust.as_str(), trust_reason.as_str(),
                 if enforced {
                     "secure-boot-enforced is compiled in, refusing to install"
+                } else if required {
+                    "Kconfig OTA_SIG_MANDATORY refuses an image without a valid signature"
                 } else {
                     "a present-but-invalid or unverifiable signature is never installed"
                 });
@@ -841,7 +847,7 @@ fn cmd_ota_recv(port: u16) {
             continue 'session;
         }
 
-        // Not enforced, and no usable signature was found at all. Install —
+        // Not required, and no usable signature was found at all. Install —
         // this is the dev/QEMU path and the pre-key-rollout path — but say so
         // unmistakably. "CRC OK" must never be mistaken for "authenticated".
         azos_drv_sys::kconsoleln!(

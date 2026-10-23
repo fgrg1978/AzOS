@@ -396,6 +396,16 @@ impl BootMeta {
     }
 }
 
+/// Is a staged kernel image refused for its signature before it replaces
+/// anything? A signature that is present and does not verify (`failed`)
+/// always is. An image with no usable signature (not `verified`, not
+/// `failed`) is when the build requires one (`sig_required`: the
+/// `secure-boot-enforced` feature, or Kconfig `OTA_SIG_MANDATORY`).
+#[must_use]
+pub const fn ota_install_refused_pure(verified: bool, failed: bool, sig_required: bool) -> bool {
+    !verified && (failed || sig_required)
+}
+
 /// Compute which slot we'd write a new image to (the inactive one).
 #[must_use]
 pub fn ota_inactive_slot_pure(active: u8) -> u8 {

@@ -117,7 +117,7 @@ pub mod update;
 // Re-export all pure constants, types, and functions for backwards compat.
 pub use pure::{
     BootMeta, BootMetaRecord, BootValidateOutcome, Crc32State, OtaHeader,
-    StagedSet, SwitchRefusal, ota_kernel_install_pure, ota_switch_pure, ota_update_allowed_pure,
+    StagedSet, SwitchRefusal, ota_install_refused_pure, ota_kernel_install_pure, ota_switch_pure, ota_update_allowed_pure,
     OTA_FLAG_COMPRESSED, OTA_HEADER_SIZE, OTA_HEADER_VERSION, OTA_MAGIC,
     OTA_PLATFORM_K1, OTA_PLATFORM_QEMU, OTA_PLATFORM_VF2,
     SLOT_A, SLOT_B, SLOT_R,
