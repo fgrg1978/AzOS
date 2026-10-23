@@ -685,8 +685,15 @@ $(OUT_BUILD)/disk-aarch64-recovery.img: $(OUT_BUILD)/disk-aarch64.img $(OUT_BUIL
 # Gate row (wave 9): the captest volume inside partition 0 of an
 # MBR medium, with a 64-sector raw partition 1 after it for `block.part.1`.
 # See tools/make_parted_disk.py for the layout.
-$(OUT_BUILD)/disk-parted.img: $(OUT_BUILD)/disk-captest.img tools/make_parted_disk.py
+$(OUT_BUILD)/disk-parted.img: $(OUT_BUILD)/disk-captest.img tools/make_parted_disk.py tools/azos_records.py
 	python3 tools/make_parted_disk.py $(OUT_BUILD)/disk-captest.img $@
+
+# Gate row `riscv64: GPT records partition`: disk.img's FAT32 volume inside
+# partition 0 of a GPT medium laid out to its end, disk.img's reserved tail
+# (the device record) in the AzOS records partition. See
+# tools/make_parted_disk.py for the layout.
+$(OUT_BUILD)/disk-gpt.img: $(OUT_BUILD)/disk.img tools/make_parted_disk.py tools/azos_records.py
+	python3 tools/make_parted_disk.py --gpt $(OUT_BUILD)/disk.img $@
 
 $(OUT_BUILD)/disk-seccomp-renamed.img: $(OUT_BUILD)/disk-abitest.img $(UHELLO_ELF)
 	cp $(OUT_BUILD)/disk-abitest.img $@

@@ -7,7 +7,8 @@ The kernel binds a signed CONFIG.INI to ONE device and refuses an older one
 (CONFIG.SIG format v2, `crates/core/topology/src/verify.rs`). Both facts live
 in a reserved sector past the end of the FAT32 volume
 (`kernel/src/reserved_tail.rs`: the last TAIL_SECTORS = 8 sectors of
-the medium; `DEVICE` = 2 is the sector this tool touches),
+the medium, or the AzOS records partition of a GPT medium,
+`tools/azos_records.py`; `DEVICE` = 2 is the sector this tool touches),
 which the USB mass-storage export cannot address:
 
     tools/device_provision.py $AZOS_OUT/build/disk.img                     # random id, floor 0
@@ -34,8 +35,9 @@ a CONFIG.INI whose signed counter is above it. Re-provisioning a device
 (a new record, floor 0) is the operator's way back from a lost config key; it
 needs the card, not the USB port.
 
-Only an image FILE is handled (the size comes from the file), and only one
-whose FAT32 volume stops short of the tail, as `seed_provision.py` requires.
+Only an image FILE is handled (the size comes from the file), and only a GPT
+one with a records partition or one whose FAT32 volume stops short of the
+tail, as `seed_provision.py` requires.
 """
 import argparse
 import hashlib
@@ -43,8 +45,8 @@ import os
 import struct
 import sys
 
-SECTOR = 512
-TAIL_SECTORS = 8
+from azos_records import SECTOR, records_start
+
 DEVICE_SECTOR = 2
 MAGIC = b"KDEV"
 VERSION = 1
@@ -67,19 +69,10 @@ def decode(sector: bytes):
     return body[5:5 + ID_BYTES], struct.unpack_from("<Q", body, 5 + ID_BYTES)[0]
 
 
-def tail_offset(image: str):
-    size = os.path.getsize(image)
-    if size % SECTOR or size // SECTOR <= TAIL_SECTORS:
-        raise SystemExit(f"{image}: size {size} is not a whole number of sectors past the tail")
-    tail_start = size // SECTOR - TAIL_SECTORS
-    return tail_start, (tail_start + DEVICE_SECTOR) * SECTOR
-
-
 def read_record(image: str):
     """The `(device_id, floor)` on `image`, or None. For gen_config_sig.py."""
-    _, off = tail_offset(image)
     with open(image, "rb") as f:
-        f.seek(off)
+        f.seek((records_start(image) + DEVICE_SECTOR) * SECTOR)
         return decode(f.read(SECTOR))
 
 
@@ -90,9 +83,8 @@ TOPO_RECORD_BYTES = 4 + 1 + 8 + 4
 def read_topo_floor(image: str, sector: int = 3):
     """The topology counter floor on `image` (`device_record.rs`
     `topo_floor_decode`), or None for no valid record."""
-    tail_start, _ = tail_offset(image)
     with open(image, "rb") as f:
-        f.seek((tail_start + sector) * SECTOR)
+        f.seek((records_start(image) + sector) * SECTOR)
         s = f.read(SECTOR)
     if len(s) < TOPO_RECORD_BYTES or s[:4] != TOPO_MAGIC or s[4] != 1:
         return None
@@ -112,7 +104,6 @@ def main() -> int:
     ap.add_argument("--topo-sector", type=int, default=3, help="its tail sector (Kconfig TOPOLOGY_FLOOR_SECTOR)")
     a = ap.parse_args()
 
-    tail_start, off = tail_offset(a.image)
     if a.show and a.topo_floor:
         f = read_topo_floor(a.image, a.topo_sector)
         print("absent" if f is None else f"topo-floor {f}")
@@ -137,20 +128,11 @@ def main() -> int:
         if len(dev) != ID_BYTES:
             print(f"--device-id must be {2 * ID_BYTES} hex digits", file=sys.stderr)
             return 2
+    lba = records_start(a.image, check_fat=True) + DEVICE_SECTOR
     with open(a.image, "r+b") as f:
-        f.seek(0)
-        s0 = f.read(SECTOR)
-        if s0[510:512] != b"\x55\xaa" or struct.unpack_from("<H", s0, 19)[0] != 0:
-            print("sector 0 is not a FAT32 boot sector: cannot tell where the filesystem ends", file=sys.stderr)
-            return 2
-        tot32 = struct.unpack_from("<I", s0, 32)[0]
-        if tot32 > tail_start:
-            print(f"the FAT32 volume ({tot32} sectors) reaches the tail (starts at {tail_start}); "
-                  "build the image with headroom first", file=sys.stderr)
-            return 2
-        f.seek(off)
+        f.seek(lba * SECTOR)
         f.write(record(dev, 0).ljust(SECTOR, b"\0"))
-    print(f"{a.image}: device {dev.hex()} provisioned at sector {tail_start + DEVICE_SECTOR} (floor 0)")
+    print(f"{a.image}: device {dev.hex()} provisioned at sector {lba} (floor 0)")
     return 0
 
 

@@ -5,8 +5,9 @@
 
 The kernel reads the brain-link key, which is also the board's device seed, from
 a reserved sector past the end of the FAT32 volume (`kernel/src/reserved_tail.rs`:
-the last TAIL_SECTORS = 8 sectors of the medium; `LINK_KEY` = 0 is the sector
-this tool touches), which the USB mass-storage export cannot address:
+the last TAIL_SECTORS = 8 sectors of the medium, or the AzOS records partition
+of a GPT medium, `tools/azos_records.py`; `LINK_KEY` = 0 is the sector this
+tool touches), which the USB mass-storage export cannot address:
 
     tools/link_key_provision.py $AZOS_OUT/build/disk.img KEYFILE
 
@@ -27,11 +28,10 @@ write, filesystem data) and leaves the link down. Only an image FILE is handled
 """
 import argparse
 import hashlib
-import os
 import sys
 
-SECTOR = 512
-TAIL_SECTORS = 8
+from azos_records import SECTOR, records_start
+
 LINK_KEY_SECTOR = 0
 MAGIC = b"KLNK"
 VERSION = 1
@@ -55,13 +55,9 @@ def main() -> int:
     if len(key) != KEY_BYTES or key == bytes(KEY_BYTES):
         print(f"{a.keyfile}: want {KEY_BYTES} bytes, not all zero (got {len(key)})", file=sys.stderr)
         return 2
-    size = os.path.getsize(a.image)
-    if size % SECTOR or size // SECTOR <= TAIL_SECTORS:
-        print(f"{a.image}: size {size} is not a whole number of sectors past the tail", file=sys.stderr)
-        return 2
-    tail_start = size // SECTOR - TAIL_SECTORS
+    lba = records_start(a.image) + LINK_KEY_SECTOR
     with open(a.image, "r+b") as f:
-        f.seek((tail_start + LINK_KEY_SECTOR) * SECTOR)
+        f.seek(lba * SECTOR)
         f.write(record(key).ljust(SECTOR, b"\0"))
     return 0
 
