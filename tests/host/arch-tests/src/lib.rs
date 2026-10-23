@@ -294,6 +294,49 @@ mod tlb_hw;
 #[path = "../../../../crates/core/arch-aarch64/src/mmu/mod.rs"]
 mod aarch64_mmu;
 
+/// The bootstrap identity map on a board whose RAM is not QEMU `virt`'s: the
+/// Device gigabyte follows the DRAM base, and the DRAM window's tail past the
+/// end of RAM (a Raspberry Pi 3's peripherals) is what turns Device.
+#[cfg(test)]
+mod aarch64_boot_window {
+    use super::aarch64_mmu::{boot_device_window, boot_tail_blocks, GRANULE_16K, GRANULE_4K, GRANULE_64K};
+
+    const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+
+    /// Canary: with the old fixed choice (`0`, whatever the RAM base) a Pi's
+    /// device gigabyte is its own RAM gigabyte.
+    #[test]
+    fn the_device_gigabyte_is_never_the_ram_one() {
+        assert_eq!(boot_device_window(GIB), 0, "QEMU virt: RAM at 1 GiB, devices below it");
+        assert_eq!(boot_device_window(2 * GIB), 0);
+        assert_eq!(boot_device_window(0), GIB, "Raspberry Pi 3: RAM at 0, its local intc at 1 GiB");
+        for base in [0, GIB, 2 * GIB, 8 * GIB] {
+            let dev = boot_device_window(base);
+            assert!(dev + GIB <= base || dev >= base + GIB, "base {base:#x}: device window {dev:#x} overlaps RAM");
+        }
+    }
+
+    #[test]
+    fn the_tail_past_ram_is_whole_blocks_above_the_end() {
+        // QEMU raspi3b: /memory = 0..0x3C00_0000, 2 MiB blocks at 4 KiB.
+        assert_eq!(boot_tail_blocks(GRANULE_4K, 0, 0x3C00_0000), (480, 32));
+        // QEMU virt, 128 MiB at 1 GiB: block indices are within the gigabyte's L2.
+        assert_eq!(boot_tail_blocks(GRANULE_4K, GIB, GIB + 128 * MIB), (64, 448));
+        // A block that holds the end of RAM stays RAM.
+        assert_eq!(boot_tail_blocks(GRANULE_4K, 0, 0x3C00_0001), (481, 31));
+        // RAM fills the window, or the end is outside it: nothing.
+        assert_eq!(boot_tail_blocks(GRANULE_4K, 0, GIB).1, 0);
+        assert_eq!(boot_tail_blocks(GRANULE_4K, GIB, GIB).1, 0);
+        // Never the first block (the image's, under the level-3 table).
+        assert_eq!(boot_tail_blocks(GRANULE_4K, 0, 4096), (1, 511));
+        // 16 KiB: 32 MiB blocks, in root slot 0 with the device gigabyte.
+        assert_eq!(boot_tail_blocks(GRANULE_16K, 0, 0x3C00_0000), (30, 2));
+        // 64 KiB: a 512 MiB block holds the end of RAM, nothing is left over.
+        assert_eq!(boot_tail_blocks(GRANULE_64K, 0, 0x3C00_0000).1, 0);
+    }
+}
+
 #[cfg(test)]
 mod sv39 {
     use super::mmu::*;

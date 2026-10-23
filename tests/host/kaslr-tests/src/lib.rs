@@ -661,6 +661,40 @@ mod aarch64_layout {
         assert_eq!(a64::kva_to_pa_for(GRANULE_4K, a64::IMAGE_REGION_BASE, a64::IMAGE_REGION_BASE - 0x4008_0000), 0x4008_0000);
     }
 
+    /// The image loaded where it was not linked (a Raspberry Pi 3: RAM at 0,
+    /// the firmware's kernel8.img at 0x80000; linked for QEMU virt's
+    /// 0x4008_0000). Unslid, it runs in the linear map of where it is, and the
+    /// relocation distance is the move from the link VA. Canary: planning
+    /// from the link VA (the old `link_va = OFFSET | img`) puts an unslid
+    /// image at the link address, i.e. at PA 0x4008_0000, which is not RAM.
+    #[test]
+    fn an_image_loaded_away_from_its_link_address_runs_where_it_is() {
+        let off = crate::aarch64_mmu::KERNEL_VA_OFFSET;
+        let link_va = off | 0x4008_0000;
+        let bytes = 12 * MIB;
+        let (plan, delta) = a64::run_plan(link_va, 0x8_0000, bytes, None);
+        if let Ok(p) = plan {
+            if p.bits == 0 {
+                assert_eq!(p.image_va, off | 0x8_0000, "unslid: the linear map of the load address");
+            }
+            assert_eq!(p.image_va.wrapping_sub(0x8_0000) & (a64::LAYOUT.align - 1), off & (a64::LAYOUT.align - 1));
+            assert_eq!(link_va.wrapping_add(delta), p.image_va, "the relocation moves the link VA to the run VA");
+        } else {
+            // `require` without entropy: the refusal still prints from the home.
+            assert_eq!(link_va.wrapping_add(delta), off | 0x8_0000);
+        }
+        // Loaded at the link address, the distance is the plan's own.
+        let (plan, delta) = a64::run_plan(link_va, 0x4008_0000, bytes, Some(0x1234_5678_9abc_def0));
+        if let Ok(p) = plan {
+            assert_eq!(delta, p.delta);
+            assert_eq!(link_va.wrapping_add(delta), p.image_va);
+        }
+        // With a seed, a slid image still keeps the load address's phase.
+        if let (Ok(p), _) = a64::run_plan(link_va, 0x8_0000, bytes, Some(0x1234_5678_9abc_def0)) {
+            assert_eq!(p.image_va % a64::LAYOUT.align, 0x8_0000 % a64::LAYOUT.align);
+        }
+    }
+
     #[test]
     fn a_build_with_the_policy_n_has_no_image_window() {
         // The layer is present exactly when the host .config allows a slide

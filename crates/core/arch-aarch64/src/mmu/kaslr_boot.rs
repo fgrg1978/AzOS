@@ -24,7 +24,7 @@
 
 use azos_arch_api::kaslr::{self as shared, Failure, SEED_DT, SEED_HW};
 
-use super::kaslr::{set_image_bias, LAYOUT};
+use super::kaslr::{run_plan, set_image_bias};
 use super::KERNEL_VA_OFFSET;
 
 /// `ID_AA64ISAR0_EL1.RNDR` (bits 63:60): FEAT_RNG.
@@ -99,9 +99,17 @@ unsafe fn seed(dtb: u64, dtb_bytes: usize, img: u64, img_end: u64) -> (Option<u6
 /// Choose the image base, apply the relocations and record the result.
 ///
 /// `img`/`img_end` are the physical addresses of `_start` and `_kernel_end`
-/// (the image as the loader placed it, at its link-time physical address),
-/// `rela`/`rela_end` those of the relocation table inside it, `dtb` the
-/// device tree and `dtb_bytes` how much of it the identity map covers.
+/// (the image as the loader placed it), `rela`/`rela_end` those of the
+/// relocation table inside it, `link_pa` the physical address the image was
+/// linked to load at, `dtb` the device tree and `dtb_bytes` how much of it the
+/// identity map covers.
+///
+/// The loader need not have put the image at `link_pa`: a Raspberry Pi 3's
+/// RAM starts at 0 and its firmware loads the image at 0x80000, while the link
+/// assumes QEMU `virt`'s 0x4008_0000. The image's home is then the linear
+/// map's alias of where it actually is (`KERNEL_VA_OFFSET | img`), the slide
+/// is chosen from there, and the relocation moves every pointer from the link
+/// VA to the run VA in the same walk (`kaslr::run_plan`).
 ///
 /// # Safety
 /// Boot CPU, EL1, identity map live, the arguments as above, before any
@@ -113,20 +121,20 @@ pub unsafe fn boot(
     img_end: u64,
     rela: u64,
     rela_end: u64,
+    link_pa: u64,
 ) -> Result<(), Failure> {
     // SAFETY: the caller's contract.
     let (entropy, sources) = unsafe { seed(dtb, dtb_bytes, img, img_end) };
     let bytes = img_end.wrapping_sub(img);
-    // The link-time VA of the image's first byte: the image runs at its link
-    // physical address, and the link offset is the linear map's.
-    let link_va = KERNEL_VA_OFFSET | img;
-    let plan = shared::plan(&LAYOUT, link_va, img, bytes, entropy);
+    // The link-time VA of the image's first byte: the link offset is the
+    // linear map's, over the link physical address.
+    let link_va = KERNEL_VA_OFFSET | link_pa;
+    let (plan, delta) = run_plan(link_va, img, bytes, entropy);
     // Even with delta 0 the walk runs: the linker leaves a RELA target zero,
     // and the word must hold its link-time value. It runs before a `require`
     // refusal is reported too, so the message's own pointers are valid when it
     // is printed. Every target, and the table itself, is checked against
     // `[img, img_end)` first.
-    let delta = match &plan { Ok(p) => p.delta, Err(_) => 0 };
     // SAFETY: `rela..rela_end` lies inside the image (checked), which the
     // identity map maps writable and the caller owns; nothing else runs.
     let applied = unsafe {

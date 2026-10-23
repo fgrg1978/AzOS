@@ -73,7 +73,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     // (`boot_hw_id`: riscv64's `mhartid`, 0 on the other ISAs): the hooks
     // below that name a CPU take the logical id.
     let hart_id = crate::boot::BOOT_CPU;
-    a.pre_console();
+    a.pre_console(fw_table);
 
     // Which device is the console, chosen here rather than hardcoded at every
     // call site. `sys_write` to fd 1/2 goes through `uart::console_write`,
@@ -304,7 +304,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
         {
             use azos_drv_base::platform::hw;
             if <crate::arch_entry::Entry as ArchEntry>::CONSOLE_MMIO {
-                let _ = super::map_mmio_region(hw::UART_BASE, 0x1000);
+                let _ = super::map_mmio_region(azos_drv_sys::uart::mmio_base(), 0x1000);
             }
             for (base, bytes) in a.kernel_mmio_windows() {
                 let _ = super::map_mmio_region(base, bytes);

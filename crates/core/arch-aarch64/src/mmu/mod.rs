@@ -205,6 +205,46 @@ impl Granule {
 
 /// The granule this build was configured for.
 pub const GRANULE: Granule = Granule::for_page_shift(PAGE_SHIFT);
+
+/// The bootstrap identity map's DRAM window: one gigabyte
+/// (`mmu::setup::enable_identity_map`).
+pub const BOOT_WINDOW: u64 = 1 << 30;
+
+/// The gigabyte the bootstrap map makes Device, for a DRAM window at
+/// `base_pa`: the one at PA 0 when DRAM starts at or above 1 GiB (QEMU
+/// `virt`: the GIC, the PL011 and virtio-mmio sit below its RAM at 1 GiB),
+/// else the one right after the DRAM window (a board whose RAM starts at 0,
+/// the Raspberry Pi 3: its ARM-local interrupt controller is at 1 GiB). A
+/// board's devices inside the DRAM gigabyte itself (the Pi's peripherals at
+/// 0x3F00_0000, above the end of RAM) are made Device later, from the device
+/// tree's `/memory` ([`boot_tail_blocks`]).
+pub const fn boot_device_window(base_pa: u64) -> u64 {
+    if base_pa >= BOOT_WINDOW { 0 } else { base_pa + BOOT_WINDOW }
+}
+
+/// The level-2 entries of the bootstrap map's DRAM window at `base_pa` (granule
+/// `g`) that lie wholly in `[ram_end, base_pa + 1 GiB)`: the window's tail
+/// past the end of RAM, which a board may use for devices. `(first index,
+/// count)`, count 0 when RAM fills the window or a block is too large to
+/// leave RAM out (64 KiB: 512 MiB blocks). A block that holds the end of RAM
+/// stays Normal, and so does the first block (the level-3 table's: the image
+/// is in it).
+pub const fn boot_tail_blocks(g: Granule, base_pa: u64, ram_end: u64) -> (usize, usize) {
+    let block = g.level_size(1) as u64;
+    let blocks = (BOOT_WINDOW / block) as usize;
+    let first = g.vpn(base_pa as usize, 1);
+    if ram_end <= base_pa || ram_end >= base_pa + BOOT_WINDOW {
+        return (first, 0);
+    }
+    let mut start = ((ram_end - base_pa + block - 1) / block) as usize;
+    if start == 0 {
+        start = 1;
+    }
+    if start >= blocks {
+        return (first, 0);
+    }
+    (first + start, blocks - start)
+}
 const _: () = assert!(GRANULE.page_size() == PAGE_SIZE);
 
 /// Pages in one contiguous-hint run at this build's granule.

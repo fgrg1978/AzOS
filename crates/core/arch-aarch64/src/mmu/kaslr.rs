@@ -66,6 +66,21 @@ pub const IMAGE_REGION_BASE: u64 = LAYOUT.window_start;
 pub const LINEAR_MAP_BYTES: u64 = LAYOUT.window_bytes;
 const _: () = assert!(IMAGE_REGION_BASE == KERNEL_VA_OFFSET + LINEAR_MAP_BYTES);
 
+/// The plan for an image linked at `link_va` and loaded at `img_pa`, and the
+/// distance its relocations move every pointer: the plan is made from the
+/// image's home (`KERNEL_VA_OFFSET | img_pa`, the linear map's alias of where
+/// it is), so an unslid image runs there and a slid one keeps its phase; the
+/// distance is from the link VA to the chosen run VA. Equal to the plan's own
+/// `delta` when the image was loaded at its link address. With a refused
+/// `require` the distance is still the move to the home, so the refusal's
+/// message prints from relocated pointers.
+pub const fn run_plan(link_va: u64, img_pa: u64, bytes: u64, entropy: Option<u64>) -> (Result<azos_arch_api::kaslr::Plan, azos_arch_api::kaslr::Cause>, u64) {
+    let home_va = KERNEL_VA_OFFSET | img_pa;
+    let plan = azos_arch_api::kaslr::plan(&LAYOUT, home_va, img_pa, bytes, entropy);
+    let run_va = match &plan { Ok(p) => p.image_va, Err(_) => home_va };
+    (plan, run_va.wrapping_sub(link_va))
+}
+
 /// Run VA minus PA of the image: `KERNEL_VA_OFFSET` when it runs inside the
 /// linear map (the link-time layout), `image_va - image_pa` once slid.
 /// Written by the boot CPU before the first MMU-on instruction past the

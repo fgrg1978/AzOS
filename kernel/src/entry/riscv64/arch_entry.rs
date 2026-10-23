@@ -19,7 +19,7 @@ impl ArchEntry for Entry {
     const PAGE_TABLES: &'static str = "Sv39 page tables";
 
     #[inline(always)]
-    fn pre_console(&self) { crate::boot_hooks::pre_console() }
+    fn pre_console(&self, fw_table: usize) { crate::boot_hooks::pre_console(fw_table) }
     #[inline(always)]
     fn trap_init(&self) { crate::boot_hooks::trap_init() }
     #[inline(always)]

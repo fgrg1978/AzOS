@@ -87,8 +87,8 @@ const PAGE_SIZE: u64 = 1 << PAGE_SHIFT;
 const ENTRIES: usize = G.entries();
 const L2_BLOCK_SIZE: u64 = G.level_size(1) as u64;
 const L3_INDEX_MASK: u64 = (ENTRIES - 1) as u64;
-/// Bytes of DRAM, and of device space at PA 0, the bootstrap maps.
-const WINDOW: u64 = 1 << 30;
+/// Bytes of DRAM, and of device space (`mmu::boot_device_window`), the bootstrap maps.
+const WINDOW: u64 = crate::mmu::BOOT_WINDOW;
 /// L2 blocks per [`WINDOW`].
 const WINDOW_BLOCKS: usize = (WINDOW / L2_BLOCK_SIZE) as usize;
 const _: () = assert!(WINDOW_BLOCKS >= 1 && WINDOW % L2_BLOCK_SIZE == 0);
@@ -217,6 +217,41 @@ fn fill_dram_window(
     }
 }
 
+/// Remap the bootstrap map's DRAM-window blocks past `ram_end`
+/// ([`crate::mmu::boot_tail_blocks`])
+/// as Device memory, break-before-make: each entry is invalidated, the TLB
+/// flushed, then the Device block written. Called once, by the boot CPU,
+/// while the bootstrap map is still live in `TTBR0_EL1` and before anything
+/// touches an address in that range (the console it is about to drive may be
+/// there). Returns the number of blocks remapped.
+///
+/// # Safety
+/// `l2` must be the bootstrap map's L2 table that [`enable_identity_map`]
+/// built for `base_pa`, and no access to the affected range may be in flight.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn identity_map_devices_above(l2: *mut PageTable, base_pa: u64, ram_end: u64) -> usize {
+    let (first, count) = crate::mmu::boot_tail_blocks(G, base_pa, ram_end);
+    if count == 0 {
+        return 0;
+    }
+    unsafe {
+        let l2 = &mut *l2;
+        for i in first..first + count {
+            core::ptr::write_volatile(&mut l2.0[i], 0);
+        }
+        core::arch::asm!("dsb ishst", options(nostack, preserves_flags));
+        sysregs::tlbi_vmalle1is();
+        let device = attr_idx(MAIR_IDX_DEVICE);
+        let window_first = G.vpn(base_pa as usize, 1);
+        for i in first..first + count {
+            let pa = base_pa + ((i - window_first) as u64) * L2_BLOCK_SIZE;
+            core::ptr::write_volatile(&mut l2.0[i], pa | BLOCK_BASE | device | UXN | PXN);
+        }
+        core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
+    }
+    count
+}
+
 /// Caller-provided configuration for [`enable_identity_map`].
 ///
 /// `l1`/`l2`/`l3` are kept as raw pointers (not `&mut`) because
@@ -230,7 +265,8 @@ pub struct IdentityMapConfig {
     pub l2: *mut PageTable,
     pub l3: *mut PageTable,
     /// Base physical address of DRAM. The 1 GiB starting at this
-    /// PA is mapped Normal WB through L1[1] → L2 → L3.
+    /// PA is mapped Normal WB through its root slot → L2 → L3, and the
+    /// gigabyte `mmu::boot_device_window` names is mapped Device.
     pub base_pa: u64,
     /// If `Some(pa)`, the L3 entry covering `pa` gets AP=01 (EL0
     /// + EL1 RW + executable). Must lie in `[base_pa, base_pa + 2 MiB)`.
@@ -252,8 +288,8 @@ pub struct IdentityMapConfig {
 /// - Caller must be at EL1.
 /// - The three `PageTable` pointers must each be exclusive and
 ///   live for the lifetime of the program.
-/// - `base_pa` should match where the binary is loaded (typically
-///   0x40000000 on QEMU virt / cortex-a72).
+/// - `base_pa` must be the 1 GiB-aligned DRAM base the image was loaded
+///   into (0x4000_0000 on QEMU virt, 0 on a Raspberry Pi 3).
 /// - `user_code_pa` / `user_stack_pa` (when `Some`) must be in
 ///   the first 2 MiB above `base_pa` — otherwise they fall outside
 ///   the L3 window and are silently ignored.
@@ -294,18 +330,21 @@ pub unsafe fn enable_identity_map(cfg: IdentityMapConfig) {
             }
         }, normal);
 
-        // L1: the Device gigabyte at PA 0, and the table → L2. At 4 KiB they
-        // are two root slots (L1[0] a 1 GiB block, L1[1] → L2). At 16/64 KiB
-        // both gigabytes sit in root slot 0, so the device gigabyte is L2
-        // blocks in the same L2 the DRAM window uses.
+        // L1: the Device gigabyte (`mmu::boot_device_window`) and the table → L2.
+        // At 4 KiB they are two root slots (a 1 GiB block, and the table).
+        // At 16/64 KiB both gigabytes sit in root slot 0, so the device
+        // gigabyte is L2 blocks in the same L2 the DRAM window uses.
         let l1 = &mut *cfg.l1;
         let device = attr_idx(MAIR_IDX_DEVICE);
         let ram_root = G.vpn(cfg.base_pa as usize, 2);
-        if ram_root != 0 {
-            l1.0[0] = 0x0000_0000 | BLOCK_BASE | device;
+        let dev_pa = crate::mmu::boot_device_window(cfg.base_pa);
+        let dev_root = G.vpn(dev_pa as usize, 2);
+        if dev_root != ram_root {
+            l1.0[dev_root] = dev_pa | BLOCK_BASE | device;
         } else {
+            let first = G.vpn(dev_pa as usize, 1);
             for i in 0..WINDOW_BLOCKS {
-                l2.0[i] = (i as u64) * L2_BLOCK_SIZE | BLOCK_BASE | device;
+                l2.0[first + i] = (dev_pa + (i as u64) * L2_BLOCK_SIZE) | BLOCK_BASE | device;
             }
         }
         l1.0[ram_root] = (cfg.l2 as u64) | TABLE_DESC;

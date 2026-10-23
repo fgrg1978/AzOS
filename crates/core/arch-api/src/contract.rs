@@ -186,16 +186,18 @@ pub trait ArchEntry {
     const PAGE_TABLES: &'static str;
 
     /// The console UART is a memory-mapped window at
-    /// `platform::hw::UART_BASE`, which `early_main` maps with the device
-    /// windows. `false` where it is port I/O (x86_64's COM1 at 0x3F8): a
+    /// `azos_drv_sys::uart::mmio_base()` (`platform::hw::UART_BASE`, or on
+    /// aarch64 the UART the device tree names), which `early_main` maps with
+    /// the device windows. `false` where it is port I/O (x86_64's COM1 at 0x3F8): a
     /// "window" there would map physical page 0 and the RAM page after it
     /// into the low half.
     const CONSOLE_MMIO: bool = true;
 
     /// Before the console exists: state that must be read before the first
     /// lock is taken (aarch64: `SCTLR_EL1`, proof the MMU is on before the
-    /// first atomic).
-    fn pre_console(&self);
+    /// first atomic), and which device the console is where the firmware
+    /// table says (aarch64: the device tree's `stdout-path`).
+    fn pre_console(&self, fw_table: usize);
 
     /// The trap vector and the interrupt stacks it runs on, before any code
     /// that can fault (riscv64: `stvec`; aarch64 and x86_64 install theirs

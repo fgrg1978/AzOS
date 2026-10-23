@@ -57,8 +57,9 @@ fn entered_at_el2() -> bool {
 /// `aarch64_early_mmu_init` call exists to satisfy: the MMU is ON before
 /// that first atomic runs. Printed by `boot_banner`.
 #[inline(always)]
-pub fn pre_console() {
+pub fn pre_console(dtb_ptr: usize) {
     SCTLR_BEFORE_FIRST_LOCK.store(azos_arch::sysregs::read_sctlr_el1(), Ordering::Relaxed);
+    console_from_dt(dtb_ptr);
     // The baseline level (Kconfig AARCH64_LEVEL), before the first lock:
     // a level's codegen (`+lse` from 8.1, `+rcpc` from 8.3) would fault on
     // an older core at its first atomic, so this is the last point where a
@@ -71,6 +72,61 @@ pub fn pre_console() {
     // `A64_PAN=probe`: every UserAccess window keys on this answer, the one
     // boot.S already acted on for PSTATE.PAN. Before the first task exists.
     azos_arch::sysregs::pan_init(regs.pan());
+}
+
+/// What [`console_from_dt`] found, for `boot_banner`: the console's window
+/// (0: the tree named none, the PL011 at `platform::hw::UART_BASE` stays), its
+/// kind, and how many blocks of the bootstrap map past the end of RAM it made
+/// Device.
+static DT_CONSOLE: AtomicU64 = AtomicU64::new(0);
+static DT_CONSOLE_AUX: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static DT_DEVICE_BLOCKS: AtomicU64 = AtomicU64::new(0);
+
+/// The console the device tree names, chosen before the first byte is
+/// printed: `/chosen/stdout-path`'s node, a PL011 (`arm,pl011`) or the
+/// BCM2835 mini UART (`brcm,bcm2835-aux-uart`), at its `reg` translated
+/// through the buses' `ranges` (a Raspberry Pi 3's 0x7e215040 is the CPU's
+/// 0x3f215040). First the bootstrap identity map's DRAM gigabyte above the
+/// end of RAM (`/memory`) becomes Device: on that board the console is
+/// there. With no tree, no `stdout-path`, or a UART this kernel has no
+/// driver for, the console stays the PL011 at QEMU `virt`'s address.
+///
+/// The tree is read at its physical address: the bootstrap map still holds
+/// the low half, and covers it (`aarch64_early_kaslr` read it already).
+fn console_from_dt(dtb_ptr: usize) {
+    if dtb_ptr == 0 {
+        return;
+    }
+    let p = dtb_ptr as *const u8;
+    // SAFETY: the loader's tree, readable through the bootstrap map.
+    if let Some(i) = unsafe { azos_dtb::dtb_parse(p) } {
+        if i.mem_size != 0 {
+            let n = crate::entry::aarch64::early_map_devices((i.mem_base + i.mem_size) as u64);
+            DT_DEVICE_BLOCKS.store(n as u64, Ordering::Relaxed);
+        }
+    }
+    // SAFETY: as above.
+    let Some(node) = (unsafe { azos_dtb::dtb_stdout_node(p) }) else { return };
+    let mut found = None;
+    // SAFETY: as above.
+    unsafe {
+        azos_dtb::dtb_devices(p, &mut |d| {
+            if d.dt_node != node {
+                return;
+            }
+            let lists = |name: &[u8]| d.compatible.split(|&b| b == 0).any(|c| c == name);
+            if lists(b"arm,pl011") {
+                found = Some((d.base as usize, azos_drv_sys::uart::ConsoleUart::Pl011));
+            } else if lists(b"brcm,bcm2835-aux-uart") {
+                found = Some((d.base as usize, azos_drv_sys::uart::ConsoleUart::Bcm2835Aux));
+            }
+        });
+    }
+    if let Some((base, kind)) = found {
+        azos_drv_sys::uart::select_console(base, kind);
+        DT_CONSOLE.store(base as u64, Ordering::Relaxed);
+        DT_CONSOLE_AUX.store(kind == azos_drv_sys::uart::ConsoleUart::Bcm2835Aux, Ordering::Relaxed);
+    }
 }
 
 /// Nothing: boot.S sets `VBAR_EL1` before any Rust runs.
@@ -94,6 +150,12 @@ pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
     kprintln!("[BOOT] Entered at: EL{} ({})", if entry_el_2 { 2 } else { 1 },
         if entry_el_2 { "dropped to EL1 via _azos_drop_to_el1" } else { "QEMU started us at EL1 directly" });
     crate::entry::aarch64::ext::hv_vectors::report();
+    match DT_CONSOLE.load(Ordering::Relaxed) {
+        0 => kprintln!("[BOOT] Console:    PL011 at {:#x} (no stdout-path UART in the device tree)", hw::UART_BASE),
+        base => kprintln!("[BOOT] Console:    {} at {:#x} (device tree stdout-path); {} block(s) past RAM mapped Device",
+            if DT_CONSOLE_AUX.load(Ordering::Relaxed) { "BCM2835 mini UART" } else { "PL011" },
+            base, DT_DEVICE_BLOCKS.load(Ordering::Relaxed)),
+    }
     kprintln!();
 
     // MARKER, asserted by the gate: proves `aarch64_early_mmu_init` ran,
@@ -170,7 +232,7 @@ pub fn firmware_table(_hart_id: usize, dtb_ptr: usize, dt: Option<azos_dtb::DtbI
         return Firmware { info: None, cpus, gic: None };
     }
     match &dt {
-        Some(info) if info.mem_base != 0 && info.mem_size != 0 => {
+        Some(info) if info.mem_size != 0 => {
             kprintln!("[DTB] Parsed FDT — mem={:#x}+{:#x} ({} CPUs)",
                 info.mem_base, info.mem_size, info.num_cpus);
         }
@@ -366,7 +428,9 @@ fn mitigations() {
 #[inline(always)]
 pub fn firmware_memory(fw: &Firmware) -> FirmwareMemory {
     let (mem_start, mem_size, from_firmware) = match &fw.info {
-        Some(i) if i.mem_base != 0 && i.mem_size != 0 => (i.mem_base, i.mem_size, true),
+        // RAM may start at 0 (a Raspberry Pi 3): only the size says the
+        // node was read.
+        Some(i) if i.mem_size != 0 => (i.mem_base, i.mem_size, true),
         _ => (hw::RAM_BASE, crate::FALLBACK_MEM_SIZE, false),
     };
     // Kconfig KASLR: the linear map reaches `LINEAR_MAP_BYTES` of physical

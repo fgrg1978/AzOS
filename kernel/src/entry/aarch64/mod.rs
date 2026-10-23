@@ -36,8 +36,8 @@ pub(crate) mod trap;
 /// kernel_main` — see that file's comment on why it must run there and
 /// not inside `kernel_main`.
 ///
-/// Builds a temporary identity map (RAM Normal cacheable, low-GiB MMIO
-/// Device) and turns the MMU on via
+/// Builds a temporary identity map (RAM Normal cacheable, a device
+/// gigabyte Device) and turns the MMU on via
 /// `azos_arch_aarch64::mmu::setup::enable_identity_map` (single source
 /// for the MAIR/TCR encoding; nothing here re-derives it). This is deliberately a BOOTSTRAP mapping, not the
 /// kernel's real page tables: `kernel_main` later builds those properly
@@ -53,30 +53,18 @@ pub(crate) mod trap;
 /// anything else can reach them) and CPU system-register writes — safe
 /// to run this early.
 ///
-/// `base_pa` is `azos_drv_base::platform::hw::RAM_BASE` (0x4000_0000
-/// on QEMU `virt`), written as a literal rather than imported: this
-/// function is reached from `boot.S` before `kernel_main` does its own
-/// platform setup, and duplicating one already-`pub const` platform fact
-/// as a literal (with the cross-check below) is preferable to growing
-/// this leaf's dependency surface for one constant this early in boot.
+/// `dram_base` is the 1 GiB-aligned base of the RAM the loader put the image
+/// in (`boot.S`: the image's physical address minus its header's
+/// `text_offset`): 0x4000_0000 on QEMU `virt`, 0 on a Raspberry Pi 3. The
+/// primary and every secondary pass the same value.
 #[unsafe(no_mangle)]
-pub extern "C" fn aarch64_early_mmu_init() {
+pub extern "C" fn aarch64_early_mmu_init(dram_base: u64) {
     // Through the `azos_arch` facade, not `azos_arch_aarch64`
     // directly: the kernel crate depends on the facade (it is already
     // built for both ISAs through it), and the facade re-exports this
     // module verbatim (`pub use azos_arch_aarch64::*` in
     // `crates/core/arch/src/lib.rs`) when `target_arch = "aarch64"`.
-    use azos_arch::mmu::setup::{enable_identity_map, IdentityMapConfig, PageTable};
-
-    const RAM_BASE: u64 = 0x4000_0000;
-    const _: () = assert!(
-        RAM_BASE as usize == azos_drv_base::platform::hw::RAM_BASE,
-        "aarch64_early_mmu_init's RAM_BASE literal drifted from platform::hw::RAM_BASE",
-    );
-
-    static mut L1: PageTable = PageTable::zero();
-    static mut L2: PageTable = PageTable::zero();
-    static mut L3: PageTable = PageTable::zero();
+    use azos_arch::mmu::setup::{enable_identity_map, IdentityMapConfig};
 
     // config/arch/Kconfig.isa AARCH64_PAGE_*: a PE that does not implement the
     // granule this kernel was built for never translates once the MMU is on,
@@ -89,14 +77,15 @@ granule the kernel was built for (ID_AA64MMFR0_EL1.TGran); halting\r\n");
 
     unsafe {
         enable_identity_map(IdentityMapConfig {
-            l1: &raw mut L1,
-            l2: &raw mut L2,
-            l3: &raw mut L3,
-            base_pa: RAM_BASE,
+            l1: &raw mut BOOT_ID_L1,
+            l2: &raw mut BOOT_ID_L2,
+            l3: &raw mut BOOT_ID_L3,
+            base_pa: dram_base,
             user_code_pa: None,
             user_stack_pa: None,
         });
     }
+    BOOT_DRAM_BASE.store(dram_base, Ordering::Relaxed);
     // `enable_identity_map` grants EL0 FP (`FPEN = 0b11`); put this hart in
     // the lazy-FP resting state (`fp`'s module doc). Runs on every hart:
     // boot.S calls this function on the primary and on each secondary.
@@ -106,6 +95,32 @@ granule the kernel was built for (ID_AA64MMFR0_EL1.TGran); halting\r\n");
         slot.store(cpacr, Ordering::Release);
     }
 }
+
+/// The bootstrap identity map's tables ([`aarch64_early_mmu_init`]), and the
+/// DRAM base it was built for. The boot CPU rewrites the DRAM window's tail
+/// past the end of RAM as Device once it has read the device tree
+/// ([`early_map_devices`]).
+static mut BOOT_ID_L1: azos_arch::mmu::setup::PageTable = azos_arch::mmu::setup::PageTable::zero();
+static mut BOOT_ID_L2: azos_arch::mmu::setup::PageTable = azos_arch::mmu::setup::PageTable::zero();
+static mut BOOT_ID_L3: azos_arch::mmu::setup::PageTable = azos_arch::mmu::setup::PageTable::zero();
+
+/// The bootstrap map's DRAM window covers `[dram_base, dram_base + 1 GiB)`;
+/// a board's devices may sit in that gigabyte above its RAM (the Raspberry Pi
+/// 3: RAM ends at 0x3C00_0000 in QEMU, the peripherals start at 0x3F00_0000).
+/// Map the tail past `ram_end` (the device tree's `/memory`) Device before
+/// the console, which may be there, is touched. Boot CPU, once, with the
+/// bootstrap map still in `TTBR0_EL1`. Returns the blocks remapped.
+pub(crate) fn early_map_devices(ram_end: u64) -> usize {
+    let dram_base = BOOT_DRAM_BASE.load(Ordering::Relaxed);
+    // SAFETY: the bootstrap map's own L2 for `dram_base`; nothing has
+    // touched an address past the end of RAM yet (the console is chosen
+    // after this).
+    unsafe { azos_arch::mmu::setup::identity_map_devices_above(&raw mut BOOT_ID_L2, dram_base, ram_end) }
+}
+
+/// The DRAM base `boot.S` handed [`aarch64_early_mmu_init`] (the same on every
+/// PE). Stored with the MMU on, so a later cacheable read sees it.
+static BOOT_DRAM_BASE: AtomicU64 = AtomicU64::new(0);
 
 /// Print `msg` on the PL011 with the MMU still off, then park this PE. For
 /// the one failure that happens before any console exists.
@@ -141,17 +156,27 @@ pub static CORE_CPACR: [AtomicU64; crate::MAX_HARTS] =
 /// Runs before the relocations are applied, so it reads no pointer-bearing
 /// word: see `azos_arch::mmu::kaslr_boot`.
 #[unsafe(no_mangle)]
-pub extern "C" fn aarch64_early_kaslr(dtb: u64, img: u64, img_end: u64, rela: u64, rela_end: u64) {
+pub extern "C" fn aarch64_early_kaslr(dtb: u64, img: u64, img_end: u64, rela: u64, rela_end: u64, link_pa: u64, dram_base: u64) {
     /// The DRAM gigabyte the early identity map covers (`aarch64_early_mmu_init`):
     /// the device tree is read only if it lies inside.
-    const RAM_BASE: u64 = 0x4000_0000;
     const WINDOW: u64 = 1 << 30;
-    let dtb_bytes = if dtb >= RAM_BASE && dtb < RAM_BASE + WINDOW { (RAM_BASE + WINDOW - dtb) as usize } else { 0 };
+    let dtb_bytes = if dtb >= dram_base && dtb < dram_base + WINDOW { (dram_base + WINDOW - dtb) as usize } else { 0 };
     // SAFETY: boot CPU, EL1, identity map live, before any relocation and the
     // jump to the upper half (this function's only caller, `boot.S`).
-    if let Err(f) = unsafe { azos_arch::mmu::kaslr_boot::boot(dtb, dtb_bytes, img, img_end, rela, rela_end) } {
+    if let Err(f) = unsafe { azos_arch::mmu::kaslr_boot::boot(dtb, dtb_bytes, img, img_end, rela, rela_end, link_pa) } {
         early_halt(f.text());
     }
+}
+
+/// Kconfig `KASLR` = n and the loader did not put the image at its link
+/// address (`boot.S` compares the two): the link is not position-independent,
+/// so nothing past this point could run. Said on the PL011 at QEMU `virt`'s
+/// address, the only console known this early, and the PE parks. Referenced
+/// by `boot.S` only in a build without KASLR.
+#[unsafe(no_mangle)]
+pub extern "C" fn aarch64_early_misplaced() -> ! {
+    early_halt(b"\r\n[AARCH64-LOAD] FATAL: the image is not at its link address and Kconfig KASLR = n \
+(not position-independent); build with KASLR probe or require; halting\r\n")
 }
 
 /// Called from `boot.S`, once, right after `aarch64_early_mmu_init` — the
@@ -171,11 +196,9 @@ pub extern "C" fn aarch64_early_kaslr(dtb: u64, img: u64, img_end: u64, rela: u6
 /// `aarch64_early_mmu_init`; this runs a few instructions after it, still
 /// well before `kernel_main`'s first `kprintln!`.
 #[unsafe(no_mangle)]
-pub extern "C" fn aarch64_early_ttbr1_alias(img: u64, img_end: u64) {
+pub extern "C" fn aarch64_early_ttbr1_alias(img: u64, img_end: u64, dram_base: u64) {
     use azos_arch::mmu::kaslr;
     use azos_arch::mmu::setup::{enable_ttbr1_alias, ImageAlias, PageTable, Ttbr1AliasConfig};
-
-    const RAM_BASE: u64 = 0x4000_0000;
 
     static mut L1: PageTable = PageTable::zero();
     static mut L2: PageTable = PageTable::zero();
@@ -200,7 +223,7 @@ pub extern "C" fn aarch64_early_ttbr1_alias(img: u64, img_end: u64) {
             l1: &raw mut L1,
             l2: &raw mut L2,
             l3: &raw mut L3,
-            base_pa: RAM_BASE,
+            base_pa: dram_base,
             image,
         });
     }

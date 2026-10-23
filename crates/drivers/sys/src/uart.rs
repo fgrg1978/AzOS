@@ -562,12 +562,12 @@ mod pl011 {
 
     #[inline(always)]
     fn read_reg(reg: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((UART_BASE + reg) as *const u32) }
+        unsafe { core::ptr::read_volatile((super::mmio_base() + reg) as *const u32) }
     }
 
     #[inline(always)]
     fn write_reg(reg: usize, val: u32) {
-        unsafe { core::ptr::write_volatile((UART_BASE + reg) as *mut u32, val) }
+        unsafe { core::ptr::write_volatile((super::mmio_base() + reg) as *mut u32, val) }
     }
 
     /// Baud-rate divisor (`IBRD`/`FBRD`) is deliberately left unprogrammed:
@@ -683,13 +683,215 @@ mod pl011 {
         while read_reg(REG_FR) & FR_BUSY != 0 {}
     }
 
+}
+
+/// The BCM2835 auxiliary ("mini") UART (`brcm,bcm2835-aux-uart`): the
+/// Raspberry Pi 3's console on GPIO 14/15, the one its firmware names in
+/// `stdout-path` (the PL011 drives the Bluetooth chip there). A 16550-shaped
+/// register file on a 4-byte stride with 32-bit accesses (BCM2835 ARM
+/// Peripherals §2.2; Linux drives it with 8250_bcm2835aux, `reg-shift = 2`),
+/// an 8-byte FIFO each way and the 16550's IER/LSR bit positions.
+///
+/// The block's enable bit (`AUX_ENABLES`, in the parent `brcm,bcm2835-aux`
+/// node) and the baud divisor are the firmware's: it sets both when it hands
+/// the board over with this UART as the console (`enable_uart=1`), as it
+/// leaves the PL011's divisor, which this driver does not program either.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+mod bcm2835_aux {
+    use super::*;
+
+    const REG_IO:   usize = 0x00; // data (RX/TX)
+    const REG_IER:  usize = 0x04; // interrupt enable
+    const REG_IIR:  usize = 0x08; // interrupt identify / FIFO clear
+    const REG_LCR:  usize = 0x0C; // line control
+    const REG_MCR:  usize = 0x10; // modem control
+    const REG_LSR:  usize = 0x14; // line status
+    const REG_CNTL: usize = 0x20; // extra control: RX/TX enable
+
+    const IER_RX: u32 = 1 << 0;
+    const IER_TX: u32 = 1 << 1;
+    const IIR_CLEAR_FIFOS: u32 = 0b11 << 1;
+    const LCR_8BIT: u32 = 0b11;
+    const CNTL_RX_TX: u32 = 0b11;
+    const LSR_DR: u32 = 1 << 0;   // a byte waits in the RX FIFO
+    const LSR_TXE: u32 = 1 << 5;  // the TX FIFO takes at least one more byte
+    const LSR_IDLE: u32 = 1 << 6; // TX FIFO empty and the shifter idle
+
+    /// TX FIFO depth.
+    const TX_FIFO_DEPTH: usize = 8;
+
+    #[inline(always)]
+    fn read_reg(reg: usize) -> u32 {
+        unsafe { core::ptr::read_volatile((super::mmio_base() + reg) as *const u32) }
+    }
+
+    #[inline(always)]
+    fn write_reg(reg: usize, val: u32) {
+        unsafe { core::ptr::write_volatile((super::mmio_base() + reg) as *mut u32, val) }
+    }
+
+    pub fn init() {
+        write_reg(REG_CNTL, 0);
+        write_reg(REG_IER, 0);
+        write_reg(REG_LCR, LCR_8BIT);
+        write_reg(REG_MCR, 0);
+        write_reg(REG_IIR, IIR_CLEAR_FIFOS);
+        write_reg(REG_CNTL, CNTL_RX_TX);
+    }
+
+    #[inline]
+    pub fn can_write() -> bool {
+        read_reg(REG_LSR) & LSR_TXE != 0
+    }
+
+    #[inline]
+    pub fn can_read_hw() -> bool {
+        read_reg(REG_LSR) & LSR_DR != 0
+    }
+
+    pub fn putc_raw(c: u8) {
+        while !can_write() {}
+        write_reg(REG_IO, c as u32);
+    }
+
+    /// One `LSR_TXE` test per byte: the register says "one more fits", not
+    /// how many, so there is no batch of eight.
+    pub fn write_bytes(bytes: &[u8]) {
+        for &b in bytes {
+            putc_raw(b);
+        }
+    }
+
+    pub fn getc_raw() -> u8 {
+        while !can_read_hw() {}
+        read_reg(REG_IO) as u8
+    }
+
+    pub fn enable_irq() {
+        IRQ_MODE.store(true, Ordering::Release);
+        write_reg(REG_IER, read_reg(REG_IER) | IER_RX);
+    }
+
+    /// RX half of the interrupt: drain the FIFO into the ring. The RX
+    /// interrupt is level and clears as the FIFO empties.
+    pub fn irq_handler() -> bool {
+        if !IRQ_MODE.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut any = false;
+        while read_reg(REG_LSR) & LSR_DR != 0 {
+            let c = read_reg(REG_IO) as u8;
+            any = true;
+            if super::rx_intercept(c) {
+                continue;
+            }
+            super::rx_ring_push(c);
+        }
+        any
+    }
+
+    /// Up to [`TX_FIFO_DEPTH`] bytes from `src`, never waiting.
+    pub fn tx_fill(src: &[u8]) -> usize {
+        let mut n = 0;
+        while n < src.len() && n < TX_FIFO_DEPTH && read_reg(REG_LSR) & LSR_TXE != 0 {
+            write_reg(REG_IO, src[n] as u32);
+            n += 1;
+        }
+        n
+    }
+
+    /// Unmask/mask the TX-empty interrupt.
+    pub fn tx_irq_set(on: bool) {
+        let ier = read_reg(REG_IER);
+        write_reg(REG_IER, if on { ier | IER_TX } else { ier & !IER_TX });
+    }
+
+    /// Wait until the last byte has left the shift register.
+    pub fn tx_wait_idle() {
+        while read_reg(REG_LSR) & LSR_IDLE == 0 {}
+    }
+}
+
+/// The aarch64 console UART: a PL011 at QEMU `virt`'s fixed address until the
+/// boot reads the device tree, then whichever UART its `stdout-path` names
+/// ([`select_console`]). One relaxed load picks the back end on each call.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+mod arm_uart {
+    use super::{bcm2835_aux as aux, pl011};
+
+    #[inline(always)]
+    fn aux() -> bool {
+        super::CONSOLE_KIND.load(core::sync::atomic::Ordering::Relaxed) == super::ConsoleUart::Bcm2835Aux as u8
+    }
+
+    pub fn init() { if aux() { aux::init() } else { pl011::init() } }
+    #[inline] pub fn can_write() -> bool { if aux() { aux::can_write() } else { pl011::can_write() } }
+    #[inline] pub fn can_read_hw() -> bool { if aux() { aux::can_read_hw() } else { pl011::can_read_hw() } }
+    pub fn putc_raw(c: u8) { if aux() { aux::putc_raw(c) } else { pl011::putc_raw(c) } }
+    pub fn write_bytes(bytes: &[u8]) { if aux() { aux::write_bytes(bytes) } else { pl011::write_bytes(bytes) } }
+    pub fn getc_raw() -> u8 { if aux() { aux::getc_raw() } else { pl011::getc_raw() } }
+    pub fn enable_irq() { if aux() { aux::enable_irq() } else { pl011::enable_irq() } }
+    pub fn irq_handler() -> bool { if aux() { aux::irq_handler() } else { pl011::irq_handler() } }
+    pub fn tx_fill(src: &[u8]) -> usize { if aux() { aux::tx_fill(src) } else { pl011::tx_fill(src) } }
+    pub fn tx_irq_set(on: bool) { if aux() { aux::tx_irq_set(on) } else { pl011::tx_irq_set(on) } }
+    pub fn tx_wait_idle() { if aux() { aux::tx_wait_idle() } else { pl011::tx_wait_idle() } }
+
     /// Zero-sized [`super::Console`] adapter over the free functions above —
     /// same pattern as `Ns16550aConsole`.
-    pub struct Pl011Console;
+    pub struct ArmConsole;
 
-    impl super::Console for Pl011Console {
+    impl super::Console for ArmConsole {
         #[inline] fn write_bytes(&self, bytes: &[u8]) { super::tx_write_wait(bytes, false) }
     }
+}
+
+/// Which UART register file the aarch64 console is ([`select_console`]).
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ConsoleUart {
+    /// ARM PrimeCell PL011 (`arm,pl011`): QEMU `virt`, and the Raspberry Pi's
+    /// UART0.
+    Pl011 = 0,
+    /// The BCM2835 mini UART (`brcm,bcm2835-aux-uart`).
+    Bcm2835Aux = 1,
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+static CONSOLE_BASE: AtomicUsize = AtomicUsize::new(UART_BASE);
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+static CONSOLE_KIND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(ConsoleUart::Pl011 as u8);
+
+/// Make the UART at `base` (a physical address, identity-mapped as Device by
+/// the boot) of kind `kind` the console. Boot CPU only, before [`init`]: the
+/// device tree's `stdout-path` decides (`entry::aarch64::boot_hooks::
+/// pre_console`); without one the console stays the PL011 at
+/// `platform::hw::UART_BASE`.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub fn select_console(base: usize, kind: ConsoleUart) {
+    CONSOLE_BASE.store(base, Ordering::Relaxed);
+    CONSOLE_KIND.store(kind as u8, Ordering::Relaxed);
+}
+
+/// The console UART's register window (its physical address): what the boot
+/// maps as a device window. aarch64: the UART [`select_console`] chose.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[inline(always)]
+pub fn mmio_base() -> usize {
+    CONSOLE_BASE.load(Ordering::Relaxed)
+}
+/// The console UART's register window: the platform's fixed UART.
+#[cfg(target_arch = "riscv64")]
+#[inline(always)]
+pub fn mmio_base() -> usize {
+    UART_BASE
+}
+/// COM1's port number: x86_64's console is port I/O, never mapped
+/// (`ArchEntry::CONSOLE_MMIO` is false there).
+#[cfg(all(target_os = "none", target_arch = "x86_64"))]
+#[inline(always)]
+pub fn mmio_base() -> usize {
+    azos_drv_base::platform::hw::UART_BASE
 }
 
 // ============================================================
@@ -838,7 +1040,7 @@ mod com16550_pio {
 #[cfg(target_arch = "riscv64")]
 use ns16550a as hw;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-use pl011 as hw;
+use arm_uart as hw;
 #[cfg(all(target_os = "none", target_arch = "x86_64"))]
 use com16550_pio as hw;
 
@@ -857,7 +1059,7 @@ use com16550_pio as hw;
 #[cfg(target_arch = "riscv64")]
 pub static CONSOLE: ns16550a::Ns16550aConsole = ns16550a::Ns16550aConsole;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-pub static CONSOLE: pl011::Pl011Console = pl011::Pl011Console;
+pub static CONSOLE: arm_uart::ArmConsole = arm_uart::ArmConsole;
 #[cfg(all(target_os = "none", target_arch = "x86_64"))]
 pub static CONSOLE: com16550_pio::Com16550Console = com16550_pio::Com16550Console;
 

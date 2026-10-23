@@ -59,7 +59,7 @@ pub struct Firmware {
 
 /// Nothing to read before the console on riscv64.
 #[inline(always)]
-pub fn pre_console() {}
+pub fn pre_console(_fw_table: usize) {}
 
 /// The trap vector, installed before any code that could fault: until
 /// `stvec` is set, an exception jumps to address 0. `trap_init` needs only

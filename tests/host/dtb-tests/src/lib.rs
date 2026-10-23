@@ -1475,6 +1475,75 @@ mod tests {
         assert_eq!(h.io.map(|w| w.cpu_base), Some(0x3eff_0000));
     }
 
+    /// The device `stdout-path` names, among `dtb_devices`' (the console the
+    /// aarch64 boot drives, `boot_hooks::console_from_dt`).
+    fn stdout_device(b: &[u8]) -> Option<(Vec<u8>, u64)> {
+        let node = unsafe { azos_dtb::dtb_stdout_node(b.as_ptr()) }?;
+        let mut found = None;
+        unsafe {
+            azos_dtb::dtb_devices(b.as_ptr(), &mut |d| {
+                if d.dt_node == node {
+                    found = Some((d.compatible.split(|&c| c == 0).next().unwrap().to_vec(), d.base));
+                }
+            })
+        };
+        found
+    }
+
+    /// QEMU `virt` names its PL011 by path (`/pl011@9000000`).
+    #[test]
+    fn qemu_aarch64_virt_stdout_is_the_pl011() {
+        let b = fixture(include_bytes!("../fixtures/qemu-aarch64-virt.dtb"));
+        assert_eq!(stdout_device(&b), Some((b"arm,pl011".to_vec(), 0x900_0000)));
+    }
+
+    /// QEMU raspi3b with the Raspberry Pi 3 B tree (Linux's
+    /// bcm2837-rpi-3-b.dts, as U-Boot 2025.07 carries it, dumped after QEMU
+    /// patched `/memory`): `stdout-path = "serial1:115200n8"`, an alias, and
+    /// `serial1` the mini UART on the VideoCore bus, whose `reg` 0x7e215040 is
+    /// the CPU's 0x3f215040 through `/soc`'s `ranges`. Canary: a lookup that
+    /// takes the alias name for a path (or keeps the `:115200n8`) finds no
+    /// node; the first PL011 of the tree (0x3f201000, the Bluetooth UART on
+    /// this board) is the wrong answer.
+    #[test]
+    fn qemu_raspi3b_stdout_is_the_mini_uart_through_an_alias() {
+        let b = fixture(include_bytes!("../fixtures/qemu-raspi3b.dtb"));
+        assert_eq!(stdout_device(&b), Some((b"brcm,bcm2835-aux-uart".to_vec(), 0x3f21_5040)));
+        let info = unsafe { dtb_parse(b.as_ptr()) }.expect("raspi3b blob parses");
+        assert_eq!((info.mem_base, info.mem_size), (0, 0x3c00_0000), "QEMU's /memory: RAM at 0, VC RAM out");
+    }
+
+    fn cells(v: &[u32]) -> Vec<u8> { v.iter().flat_map(|c| c.to_be_bytes()).collect() }
+
+    /// A `stdout-path` that names nothing resolves to nothing, not to some
+    /// other node.
+    #[test]
+    fn stdout_path_without_a_node_is_none() {
+        let mut t = Fdt::new();
+        t.begin("").prop("#address-cells", &cells(&[1])).prop("#size-cells", &cells(&[1]));
+        t.begin("chosen").prop("stdout-path", b"serial7:115200n8\0").end();
+        t.begin("aliases").prop("serial0", b"/uart@1000\0").end();
+        t.begin("uart@1000").prop("compatible", b"arm,pl011\0").prop("reg", &cells(&[0x1000, 0x100])).end();
+        t.end();
+        let b = t.blob();
+        assert_eq!(unsafe { azos_dtb::dtb_stdout_node(b.as_ptr()) }, None, "an alias /aliases lacks");
+        let mut t = Fdt::new();
+        t.begin("").prop("#address-cells", &cells(&[1])).prop("#size-cells", &cells(&[1]));
+        t.begin("chosen").prop("stdout-path", b"/soc/uart@1000\0").end();
+        t.begin("uart@1000").prop("compatible", b"arm,pl011\0").prop("reg", &cells(&[0x1000, 0x100])).end();
+        t.end();
+        let b = t.blob();
+        assert_eq!(unsafe { azos_dtb::dtb_stdout_node(b.as_ptr()) }, None, "a path no node has");
+        let mut t = Fdt::new();
+        t.begin("").prop("#address-cells", &cells(&[1])).prop("#size-cells", &cells(&[1]));
+        t.begin("chosen").prop("stdout-path", b"serial0\0").end();
+        t.begin("aliases").prop("serial0", b"/uart@1000\0").end();
+        t.begin("uart@1000").prop("compatible", b"arm,pl011\0").prop("reg", &cells(&[0x1000, 0x100])).end();
+        t.end();
+        let b = t.blob();
+        assert_eq!(stdout_device(&b), Some((b"arm,pl011".to_vec(), 0x1000)), "an alias without options");
+    }
+
     // ── dtb_irq_triggers: trigger type per line (wave 9 IRQ4 item 3) ─────
     //
     // Shapes from QEMU 11.0's own dumps (`dumpdtb=`): aarch64 `virt` puts

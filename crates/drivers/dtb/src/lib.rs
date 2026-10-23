@@ -2389,6 +2389,183 @@ pub unsafe fn dtb_bootargs(ptr: *const u8, out: &mut [u8]) -> Option<usize> {
     }
 }
 
+/// The value of property `prop` of the child of the root named `node`
+/// (`chosen`, `aliases`), as `(offset, length)` into the blob, the trailing
+/// NULs cut. `None` for a malformed blob or no such property.
+///
+/// # Safety
+/// Same precondition as [`dtb_parse`].
+unsafe fn root_child_prop(ptr: *const u8, node: &[u8], prop: &[u8]) -> Option<(usize, usize)> {
+    let hdr = unsafe { parse_header(ptr) }?;
+    if hdr.magic != FDT_MAGIC || hdr.version < 16 {
+        return None;
+    }
+    let end = hdr.totalsize as usize;
+    if end < FDT_HEADER_SIZE || end > MAX_DTB_SIZE {
+        return None;
+    }
+    let mut off = hdr.off_dt_struct as usize;
+    let strings_off = hdr.off_dt_strings as usize;
+    let strings_end = strings_off.checked_add(hdr.size_dt_strings as usize)?;
+    if off >= end || strings_end > end {
+        return None;
+    }
+    let (mut depth, mut inside) = (0usize, false);
+    loop {
+        if off.checked_add(4)? > end {
+            return None;
+        }
+        let tok = unsafe { read_be32(ptr, off) };
+        off += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                let n = unsafe { strlen_bounded(ptr, off, end) }?;
+                depth += 1;
+                inside = depth == 2 && unsafe { streq(ptr, off, end, node) };
+                off = align4_checked(off + n + 1)?;
+            }
+            FDT_END_NODE => {
+                if depth == 2 {
+                    inside = false;
+                }
+                depth = depth.checked_sub(1)?;
+            }
+            FDT_PROP => {
+                if off.checked_add(8)? > end {
+                    return None;
+                }
+                let len = unsafe { read_be32(ptr, off) } as usize;
+                let name = strings_off.checked_add(unsafe { read_be32(ptr, off + 4) } as usize)?;
+                off += 8;
+                if off.checked_add(len)? > end {
+                    return None;
+                }
+                if inside && name < strings_end && unsafe { streq(ptr, name, strings_end, prop) } {
+                    let mut n = len;
+                    while n > 0 && unsafe { *ptr.add(off + n - 1) } == 0 {
+                        n -= 1;
+                    }
+                    return Some((off, n));
+                }
+                off = align4_checked(off + len)?;
+            }
+            FDT_NOP => {}
+            _ => return None,
+        }
+    }
+}
+
+/// The node `/chosen/stdout-path` names: the console the firmware chose.
+/// Returns the node's offset in the structure block, the number
+/// [`DtDevice::dt_node`] carries, so the caller finds the device among
+/// [`dtb_devices`]'s.
+///
+/// The property is a full path (`/soc/serial@7e215040`) or the name of an
+/// `/aliases` property holding one (`serial1`), either followed by `:` and
+/// the line settings (`115200n8`), which are not read. `None` for a malformed
+/// blob, no `stdout-path`, an alias `/aliases` does not define, or a path no
+/// node of the tree has.
+///
+/// # Safety
+/// Same precondition as [`dtb_parse`].
+pub unsafe fn dtb_stdout_node(ptr: *const u8) -> Option<u32> {
+    if ptr.is_null() {
+        return None;
+    }
+    let (off, len) = unsafe { root_child_prop(ptr, b"chosen", b"stdout-path") }?;
+    // SAFETY: `root_child_prop` bounds-checked `off..off + len` against the blob.
+    let value = unsafe { core::slice::from_raw_parts(ptr.add(off), len) };
+    let spec = value.split(|&b| b == b':').next()?;
+    let path = if spec.first() == Some(&b'/') {
+        spec
+    } else {
+        // An alias: `/aliases` holds the path under the alias's name. The
+        // name is compared NUL-terminated, so it is copied out with one.
+        let mut name = [0u8; 32];
+        if spec.is_empty() || spec.len() >= name.len() {
+            return None;
+        }
+        name[..spec.len()].copy_from_slice(spec);
+        let (aoff, alen) = unsafe { root_child_prop(ptr, b"aliases", &name[..spec.len()]) }?;
+        // SAFETY: as above.
+        unsafe { core::slice::from_raw_parts(ptr.add(aoff), alen) }
+    };
+    unsafe { node_at_path(ptr, path) }
+}
+
+/// The structure-block offset of the node at `path` (`/a/b@1`), `None` when
+/// the tree has none.
+///
+/// # Safety
+/// Same precondition as [`dtb_parse`].
+unsafe fn node_at_path(ptr: *const u8, path: &[u8]) -> Option<u32> {
+    let hdr = unsafe { parse_header(ptr) }?;
+    let end = hdr.totalsize as usize;
+    if end < FDT_HEADER_SIZE || end > MAX_DTB_SIZE {
+        return None;
+    }
+    let base = hdr.off_dt_struct as usize;
+    let mut off = base;
+    let want: &[u8] = path.strip_prefix(b"/")?;
+    // `matched` is how many leading components of `want` the open nodes
+    // name: a node at depth d + 1 (the root is depth 1) is a match when the
+    // d - 1 nodes above it were, and its name is the next component.
+    let (mut depth, mut matched, mut rest) = (0usize, 0usize, want);
+    let mut stack: [&[u8]; 16] = [&[]; 16];
+    loop {
+        if off.checked_add(4)? > end {
+            return None;
+        }
+        let tok = unsafe { read_be32(ptr, off) };
+        off += 4;
+        match tok {
+            FDT_BEGIN_NODE => {
+                let n = unsafe { strlen_bounded(ptr, off, end) }?;
+                // SAFETY: `off..off + n` was bounds-checked against the blob.
+                let name = unsafe { core::slice::from_raw_parts(ptr.add(off), n) };
+                let at = (off - 4 - base) as u32;
+                depth += 1;
+                if depth == 1 {
+                    // The root: the path `/` itself.
+                    if want.is_empty() {
+                        return Some(at);
+                    }
+                } else if matched == depth - 2 && depth - 2 < stack.len() {
+                    let (head, tail) = match rest.iter().position(|&b| b == b'/') {
+                        Some(i) => (&rest[..i], &rest[i + 1..]),
+                        None => (rest, &[][..]),
+                    };
+                    if name == head {
+                        stack[matched] = rest;
+                        matched += 1;
+                        rest = tail;
+                        if rest.is_empty() {
+                            return Some(at);
+                        }
+                    }
+                }
+                off = align4_checked(off + n + 1)?;
+            }
+            FDT_END_NODE => {
+                if depth >= 2 && matched == depth - 1 {
+                    matched -= 1;
+                    rest = stack[matched];
+                }
+                depth = depth.checked_sub(1)?;
+            }
+            FDT_PROP => {
+                if off.checked_add(8)? > end {
+                    return None;
+                }
+                let len = unsafe { read_be32(ptr, off) } as usize;
+                off = align4_checked(off.checked_add(8)?.checked_add(len)?)?;
+            }
+            FDT_NOP => {}
+            _ => return None,
+        }
+    }
+}
+
 /// Read just the FDT header's `magic` and `totalsize`, with none of
 /// [`dtb_parse`]'s structure-block walk.
 ///

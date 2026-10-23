@@ -6,10 +6,11 @@
 // Image header (see below) so this is loaded as an Image, not a plain ELF
 // — the gate builds an ELF and `llvm-objcopy -O binary`'s it into a
 // `.img`, and boots THAT. Either loader (QEMU's `-kernel`, or U-Boot
-// `booti`) recognises the header's magic and places this binary at
-// `_dram_base + _text_offset` = 0x4008_0000 (linker-aarch64.ld's ORIGIN,
-// unchanged from the plain-ELF milestone this supersedes) — no firmware
-// in front of us either way.
+// `booti`) recognises the header's magic and places this binary
+// `_text_offset` above the base of its DRAM: 0x4008_0000 on QEMU `virt`
+// (linker-aarch64.ld's ORIGIN, the link address), 0x8_0000 on a Raspberry
+// Pi 3, whose RAM starts at 0. The image runs wherever it lands (KASLR's
+// relocation walk moves it from the link address; see "Where RAM is").
 //
 // Boot-time register state (measured under QEMU, not assumed):
 //   x0        = FDT pointer when loaded as an Image (the case this file
@@ -80,6 +81,21 @@ _entry_after_header:
     // is documented to clobber x10 only, but x19 makes that irrelevant —
     // correct regardless of what that trampoline does or later changes to.
     mov     x19, x0
+
+    // ── Where RAM is: the image's physical address minus its header's
+    //    text_offset ───────────────────────────────────────────────────
+    //
+    // The boot protocol places the image `text_offset` (header word 0x08)
+    // above the 2 MiB-aligned base of DRAM, so the base comes from the PC
+    // and the header alone, before any device tree is read: 0x4000_0000 on
+    // QEMU `virt`, 0 on a Raspberry Pi 3 (the firmware's kernel8.img at
+    // 0x80000). The header word is a link-time constant (`_text_offset` is an
+    // absolute symbol), never relocated. x23 (callee-saved) carries it to
+    // the early MMU, KASLR and TTBR1 calls below; x22 is the image's PA.
+    adrp    x22, _start
+    add     x22, x22, :lo12:_start
+    ldr     x9, [x22, #8]
+    sub     x23, x22, x9
 
     // ── The boot CPU: whichever PE the loader started (K1 M5) ──────────
     //
@@ -276,6 +292,7 @@ clear_bss_done:
     // to run before any lock exists. x19 (dtb ptr) / x20 (hart id) are
     // callee-saved across the `bl` per AAPCS64, same guarantee this file
     // already leans on for `_azos_drop_to_el1` above.
+    mov     x0, x23                  // DRAM base
     bl      aarch64_early_mmu_init
 
 .if {kaslr}
@@ -300,7 +317,17 @@ clear_bss_done:
     add     x3, x3, :lo12:__rela_start
     adrp    x4, __rela_end
     add     x4, x4, :lo12:__rela_end
+    ldr     x5, _kernel_link_pa_word // where the image was linked to load
+    mov     x6, x23                  // DRAM base
     bl      aarch64_early_kaslr
+.else
+    // Without KASLR the link is not position-independent: the image runs only
+    // where it was linked to load. A loader that put it elsewhere (a board
+    // whose RAM is not QEMU `virt`'s) is refused on the PL011, not left to
+    // run into the first absolute address.
+    ldr     x9, _kernel_link_pa_word
+    cmp     x9, x22
+    b.ne    aarch64_early_misplaced
 .endif
 
     // ── TTBR1 alias — aarch64 parity program, "move the kernel into
@@ -320,6 +347,7 @@ clear_bss_done:
     add     x0, x0, :lo12:_start
     adrp    x1, _kernel_end
     add     x1, x1, :lo12:_kernel_end
+    mov     x2, x23                  // DRAM base
     bl      aarch64_early_ttbr1_alias
 
     // ── Move the PC into the upper half (TTBR1) ─────────────────────────
@@ -395,6 +423,15 @@ halt:
 _secondary_park:
     wfe
     b       _secondary_park
+
+// The physical address the image was linked to load at (linker-aarch64.ld's
+// `_kernel_link_pa`, an absolute symbol, so no relocation touches the word).
+// `aarch64_early_kaslr` relocates the image from there to wherever the loader
+// actually put it (`_start`'s `adrp`), which is not the same place on a board
+// whose RAM is not where QEMU `virt`'s is.
+.balign 8
+_kernel_link_pa_word:
+    .quad   _kernel_link_pa
 
 .size _start, . - _start
 
@@ -515,6 +552,11 @@ _aarch64_secondary_entry:
     // identity map lets this core run with the MMU on while its PC is still
     // low, TTBR1 (banked per PE) makes the high half exist for it at all, and
     // only after the jump may TTBR0 move to the real kernel table.
+    // DRAM base, the primary's own derivation (see `_start`).
+    adrp    x0, _start
+    add     x0, x0, :lo12:_start
+    ldr     x9, [x0, #8]
+    sub     x0, x0, x9
     bl      aarch64_early_mmu_init
     bl      aarch64_secondary_ttbr1_attach
     cbz     x0, _secondary_park           // no TTBR1 to attach: never run on the boot alias (K1 L9)
@@ -594,6 +636,8 @@ boot_entry_el:
 .extern aarch64_early_ttbr1_alias
 .if {kaslr}
 .extern aarch64_early_kaslr
+.else
+.extern aarch64_early_misplaced
 .extern AZOS_IMAGE_BIAS
 .extern __rela_start
 .extern __rela_end

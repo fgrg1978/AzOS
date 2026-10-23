@@ -422,4 +422,8 @@ ASSERT(_azos_page_size_check == AZOS_PAGE_SIZE,
  */
 _dram_base = 0x40000000;
 _text_offset = LOADADDR(.text.boot) - _dram_base;
+/* The image's link-time physical address, for `aarch64_early_kaslr`, which
+ * relocates the image from here to wherever the loader put it (a Raspberry
+ * Pi 3's firmware puts it at 0x80000: its RAM starts at 0). */
+_kernel_link_pa = LOADADDR(.text.boot);
 _image_size = _kernel_end - _start;
