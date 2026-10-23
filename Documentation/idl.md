@@ -228,7 +228,7 @@ The kernel-hosted and driver interfaces are listed in the registry
 `parse_target`, `by_name` and `by_key` look entries up. The registry holds
 `entropy`, `linkkey`, `power`, `flight`, `behavior`, `config`, `ota`, `gpio`,
 `i2c`, `pwm`, `motor`, `sensor`, `time`, `block`, `clock`, `spi`, `can`, `uart`,
-`adc`, `vm`, `vcpu`, `net`, `display`, `memctl` and `keys`. Interfaces that are served only by ring-3 services
+`adc`, `vm`, `vcpu`, `net`, `display`, `memctl`, `keys` and `sound`. Interfaces that are served only by ring-3 services
 (for example `Decisions`, id `0x4445_4349`, in `userspace/lib/decisions`) declare
 their id with the macro and are not in the registry.
 
@@ -278,7 +278,7 @@ differs only in the offending item.
 
 | # | Refused | Why | Use instead |
 |---:|---|---|---|
-| 1 | a parameter whose name has a segment `fd`, `fds` or `fildes` and whose type is an integer (`i8`..`i64`, `u8`..`u64`, `isize`, `usize`, `c_int`, `RawFd`, or an array of them); an fd-named method returning an integer; the types `RawFd` or `Fd` | an integer into a global table is ambient authority | `Cap<T>` (a `Cap<T>` named `fd` passes) |
+| 1 | a parameter whose name has a segment `fd`, `fds` or `fildes` and whose type is an integer (`i8`..`i64`, `u8`..`u64`, `isize`, `usize`, `c_int`, `c_uint`, `c_long`, `c_ulong`, `RawFd`, or an array of them); an fd-named method returning an integer; the types `RawFd` or `Fd` | an integer into a global table is ambient authority | `Cap<T>` (a `Cap<T>` named `fd` passes) |
 | 2 | a method, parameter or type named `errno`/`Errno`; any `Result<..>` return type | errno is a global side channel | a typed value; `IdlError` is the transport's failure |
 | 3 | `str`, `String`, `Path`, `PathBuf`, `OsStr`, `OsString`, `CStr`, `CString` anywhere in a type; any reference or raw pointer; a parameter with a segment `path`, `paths`, `pathname`, `filename`, `fname` or `dirname` unless it is a float or an array of floats | a name is not authority; nothing crosses a call by address | `Cap<T>` |
 | 4 | a method named `ioctl` or `fcntl` | magic-number control | one typed method per operation |
