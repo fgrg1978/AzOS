@@ -197,7 +197,7 @@ pub trait ArchEntry {
     /// lock is taken (aarch64: `SCTLR_EL1`, proof the MMU is on before the
     /// first atomic), and which device the console is where the firmware
     /// table says (aarch64: the device tree's `stdout-path`).
-    fn pre_console(&self, fw_table: usize);
+    fn pre_console(&self, fw_table: usize, dt: Option<&Self::DeviceTree>);
 
     /// The trap vector and the interrupt stacks it runs on, before any code
     /// that can fault (riscv64: `stvec`; aarch64 and x86_64 install theirs

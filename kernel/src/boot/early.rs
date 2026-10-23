@@ -73,7 +73,17 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     // (`boot_hw_id`: riscv64's `mhartid`, 0 on the other ISAs): the hooks
     // below that name a CPU take the logical id.
     let hart_id = crate::boot::BOOT_CPU;
-    a.pre_console(fw_table);
+    // The device tree, when the firmware handed one (`dtb_parse` checks the
+    // FDT magic first, so a non-FDT table such as x86_64's PVH start_info
+    // parses to `None`). Read before the console: it may say which device the
+    // console is and what memory is RAM (aarch64's `pre_console`). The walk
+    // takes no lock.
+    let dt = if fw_table != 0 {
+        unsafe { azos_dtb::dtb_parse(fw_table as *const u8) }
+    } else {
+        None
+    };
+    a.pre_console(fw_table, dt.as_ref());
 
     // Which device is the console, chosen here rather than hardcoded at every
     // call site. `sys_write` to fd 1/2 goes through `uart::console_write`,
@@ -94,16 +104,9 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     a.boot_banner(boot_hw_id, fw_table);
 
     // ---- Firmware table: interrupt controller, timer and CPU extensions are
-    // chosen from it BEFORE `pmm::init` (the page allocator's zero-fill
-    // consults the CPU-extension choice on its very first call).
-    // The device tree, when the firmware handed one (`dtb_parse` checks the
-    // FDT magic first, so a non-FDT table such as x86_64's PVH start_info
-    // parses to `None`).
-    let dt = if fw_table != 0 {
-        unsafe { azos_dtb::dtb_parse(fw_table as *const u8) }
-    } else {
-        None
-    };
+    // chosen from it (`dt`, parsed above) BEFORE `pmm::init` (the page
+    // allocator's zero-fill consults the CPU-extension choice on its very
+    // first call).
     // Kconfig CANARY_RUNTIME: `canary=` on the command line, before the
     // first `canary!` site (the stack guards below).
     crate::canary_rt::arm_from_cmdline(|out| a.kernel_cmdline(fw_table, out));

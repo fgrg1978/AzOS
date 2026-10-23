@@ -20,7 +20,7 @@ impl ArchEntry for Entry {
     const PAGE_TABLES: &'static str = "aarch64 3-level page tables";
 
     #[inline(always)]
-    fn pre_console(&self, fw_table: usize) { crate::boot_hooks::pre_console(fw_table) }
+    fn pre_console(&self, fw_table: usize, dt: Option<&azos_dtb::DtbInfo>) { crate::boot_hooks::pre_console(fw_table, dt) }
     #[inline(always)]
     fn trap_init(&self) { crate::boot_hooks::trap_init() }
     #[inline(always)]

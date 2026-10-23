@@ -24,7 +24,7 @@ fn source_name(s: Source) -> &'static str {
 }
 
 /// Nothing to read before the console.
-pub fn pre_console(_fw_table: usize) {}
+pub fn pre_console(_fw_table: usize, _dt: Option<&azos_dtb::DtbInfo>) {}
 
 /// The boot CPU's GDT + TSS (IST stacks), the 256-vector IDT, the
 /// `syscall` MSRs and ring 3's FP state (`entry::x86_64::ext::cpu_init`).

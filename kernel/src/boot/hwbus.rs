@@ -701,6 +701,44 @@ fn add(dev: Device) {
     let _ = hwbus::Locked.add(dev, &mut Console);
 }
 
+/// Does the machine have QEMU `virt`'s virtio-mmio windows? Yes when the
+/// device tree names a `virtio,mmio` node, or there is no tree (an ELF boot,
+/// x86_64's PVH start): `false` only for a tree that describes a machine
+/// without them (a Raspberry Pi 3 has RAM where QEMU `virt` puts them).
+/// Set by [`note_firmware_virtio`] before the windows are mapped.
+#[cfg(not(any(feature = "vf2", feature = "k1")))]
+pub(crate) fn virtio_mmio_windows_exist() -> bool {
+    VIRTIO_IN_TREE.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(not(any(feature = "vf2", feature = "k1")))]
+static VIRTIO_IN_TREE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// Record from the tree at `dtb_ptr` (a physical address; 0: none) whether it
+/// names a `virtio,mmio` node ([`virtio_mmio_windows_exist`]). Once, before the
+/// late windows are mapped.
+#[cfg(not(any(feature = "vf2", feature = "k1")))]
+pub(crate) fn note_firmware_virtio(dtb_ptr: usize) {
+    // arch-only: x86_64's firmware table is no device tree.
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    let _ = dtb_ptr;
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+    if dtb_ptr != 0 {
+        let mut named = false;
+        let blob = azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8;
+        // SAFETY: the firmware's tree, which `early_main` parsed; every read is
+        // bounded by its header.
+        let walked = unsafe {
+            azos_dtb::dtb_devices(blob, &mut |d: &azos_dtb::DtDevice<'_>| {
+                named |= d.compatible.split(|&b| b == 0).any(|c| c == b"virtio,mmio");
+            })
+        };
+        if walked.is_some() {
+            VIRTIO_IN_TREE.store(named, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 /// Enumerate what the firmware describes: the device tree's nodes (riscv64,
 /// aarch64) and the populated virtio-mmio windows, then bind the kernel's own
 /// hardware among them. Call after the late MMIO windows are mapped.
@@ -755,7 +793,9 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
         use azos_drv_virtio::virtio::{
             probe, VirtioDev, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_STRIDE,
         };
-        for slot in 0..VIRTIO_MMIO_COUNT {
+        // A tree that names no virtio-mmio node has no such window to read.
+        let slots = if virtio_mmio_windows_exist() { VIRTIO_MMIO_COUNT } else { 0 };
+        for slot in 0..slots {
             let base = VIRTIO_MMIO_BASE + slot * VIRTIO_MMIO_STRIDE;
             let mut v = VirtioDev::zeroed();
             // SAFETY: the window is mapped (`map_late_mmio`) and reading the

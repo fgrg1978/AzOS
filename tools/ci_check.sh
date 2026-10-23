@@ -3518,6 +3518,144 @@ par "aarch64 boots (ARMv8.0)" aarch64_kernel_row "aarch64 boots (ARMv8.0)" "" 1 
 par "aarch64 boots (ARMv8.5)" aarch64_kernel_row "aarch64 boots (ARMv8.5)" ",mte=on" 1 2 "max,pauth=on" "pauth=probed-present bti=probed-present mte=probed-present"
 par "aarch64 shell answers help" shell_help_row "aarch64 shell answers help" arm
 
+# ── aarch64 on QEMU raspi3b: the same kernel on a Raspberry Pi 3 B ───────────
+#
+# BCM2837 (four Cortex-A53, Armv8.0), RAM at 0, no GIC, no PSCI: the board the
+# owner tests on. The image is the `virt` rows' kernel from the same profile
+# with one difference, Kconfig WDT_BCM2835_PM_ARM = n: QEMU's PM model resets
+# the machine on the arming write itself (no countdown), so an armed PM
+# watchdog would reboot it at the scheduler's start; the block stays the
+# reset handler. Every board fact comes from the device tree the firmware
+# would pass: tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb, Linux's
+# bcm2837-rpi-3-b.dts (U-Boot 2025.07's dts/upstream) compiled and dumped by
+# QEMU (`dumpdtb=`; QEMU patches `/memory` to the same 0x3c000000 again).
+# What each part proves, by its marker:
+#   - the load address: the firmware's 0x80000 with RAM at 0, the image linked
+#     for 0x4008_0000 (boot.S "Where RAM is", KASLR relocating from the link
+#     PA): the banner at all;
+#   - the console from /chosen/stdout-path (`serial1`, the mini UART): QEMU's
+#     second serial is stdio (`-serial null -serial stdio`);
+#   - the BCM2836 local controller + armctrl backend: the tick (CNTV through
+#     the local block) and `[SGI] sent by hart 0, received by hart 1` (mailbox
+#     0 of core 1);
+#   - spin-table SMP: three CPUs released into the kernel's pen, all online;
+#   - no PSCI: the conduit is None, so no SMC reaches an EL3 with nothing there.
+# Mode `usb` adds a CDC-ECM `usb-net` on the DWC2 root port (QEMU has no
+# smsc95xx): the firmware powers the USB domain (SET_POWER_STATE, the
+# mailbox), the DMA domain moves every address by the VideoCore's 0xc0000000
+# (`dma-ranges`), and the device enumerates. Mode `reboot` types `reboot`:
+# with no /psci the PM block resets the SoC, so the banner comes twice.
+# Canaries (by hand, each turns its row red): boot.S without the DRAM-base
+# derivation (`mov x23, #0x40000000`: the bootstrap map covers no RAM, an
+# empty log); `bcm2836::iar` returning 1023 for a mailbox (no SGI); the spin
+# table release skipped (harts 1..3 never online); `MmioView::bus_of` without
+# the offset (the DWC2 DMA lands in the wrong place: no `attached`).
+raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
+    local label="$1" mode="$2"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log fifo kimg cfg dtb="$REPO_ROOT/tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb"
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; fifo="$CI_LOG_DIR/${slug}.fifo"; kimg="$CI_LOG_DIR/${slug}.img"
+    cfg="$CI_LOG_DIR/${slug}.config"
+    rm -f "$log" "$fifo" "$kimg" "$cfg"
+    if [ ! -f "$dtb" ]; then bad; echo "      no device tree: $dtb"; return; fi
+    # The aarch64 profile with the PM watchdog left unarmed (see above).
+    sed 's/^CONFIG_WDT_BCM2835_PM_ARM=y$/# CONFIG_WDT_BCM2835_PM_ARM is not set/' "$AARCH64_CONFIG" >"$cfg"
+    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+        || { bad; echo "      olddefconfig failed on $cfg"; return; }
+    if ! grep -q '^CONFIG_WDT_BCM2835_PM=y$' "$cfg" || grep -q '^CONFIG_WDT_BCM2835_PM_ARM=y$' "$cfg" \
+       || ! grep -q '^CONFIG_RPI_FIRMWARE=y$' "$cfg"; then
+        bad; echo "      $cfg: want WDT_BCM2835_PM=y, WDT_BCM2835_PM_ARM unset, RPI_FIRMWARE=y"; return
+    fi
+    if ! AARCH64_CONFIG="$cfg" a64_kbuild "qemu"; then
+        bad; echo "      aarch64 kernel ($cfg) did not build"; return
+    fi
+    cp "$A64_IMG" "$kimg"
+    if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; rm -f "$kimg"; return; fi
+    local usb=()
+    [ "$mode" = usb ] && usb=(-device usb-net,netdev=n0 -netdev user,id=n0)
+    par_ready
+    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    qemu-system-aarch64 -M raspi3b -dtb "$dtb" -kernel "$kimg" -nographic -monitor none \
+        -serial null -serial stdio "${usb[@]}" <"$fifo" >"$log" 2>&1 &
+    local pid=$! i=0 sent=0 done=""
+    exec 9>"$fifo"
+    while [ "$i" -lt 240 ]; do
+        grep -aqiE "KERNEL PANIC|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        case "$mode" in
+            shell) grep -aqF "help              - this message" "$log" 2>/dev/null && { done=1; break; } ;;
+            usb) grep -aqE '\[USB\] slot [0-9]+ on root port [0-9]+: 0525:a4a2 class 02:00:00 attached' "$log" 2>/dev/null \
+                     && { done=1; break; } ;;
+            reboot) [ "$(grep -acF 'AzOS Rust kernel booted! (aarch64)' "$log")" -ge 2 ] && { done=1; break; } ;;
+        esac
+        if [ "$sent" -eq 0 ] && grep -aqF "robot> " "$log" 2>/dev/null; then
+            local cmd=help
+            [ "$mode" = reboot ] && cmd=reboot
+            if [ "$mode" != usb ]; then
+                ( printf '%s' "$cmd" | while IFS= read -r -n1 b; do printf '%s' "$b"; sleep 0.05; done; printf '\r' ) >&9 2>/dev/null
+            fi
+            sent=1
+        fi
+        i=$((i + 1)); sleep 0.5
+    done
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    exec 9>&-
+    rm -f "$fifo" "$kimg"
+    if grep -aqiE "KERNEL PANIC|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel crashed:"
+        grep -a -m3 -iE "KERNEL PANIC|AARCH64-TRAP|  at " "$log" | tr -d '\r' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aqF "FAILED:" "$log" 2>/dev/null; then
+        bad; echo "      the boot log reported a failure:"
+        grep -a "FAILED:" "$log" | tr -d '\r' | head -5 | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    local missing="" m
+    for m in "AzOS Rust kernel booted! (aarch64)" \
+             "[BOOT] Entered at: EL2" \
+             "[BOOT] Console:    BCM2835 mini UART at 0x3f215040 (device tree stdout-path)" \
+             "[DTB] Parsed FDT — mem=0x0+0x3c000000 (4 CPUs)" \
+             "[MM] RAM detected via DTB: 0x0 - 0x3c000000" \
+             "[SMP] spin table: 3 CPU(s) released into the kernel's pen" \
+             "[IRQ] device tree names no GIC but the BCM2836 pair: local=0x40000000" \
+             "[IRQ] BCM2836 local=0x40000000 + armctrl=0x3f00b200 initialized" \
+             "[SMP] PSCI conduit: None (from FDT: no /psci node)" \
+             "[SMP] hart 1 online" "[SMP] hart 2 online" "[SMP] hart 3 online" \
+             "[SMP] hart 3 took" \
+             "[SGI] sent by hart 0, received by hart 1: count=" \
+             "[HWBUS] watchdog@7e100000 dt:brcm,bcm2835-pm base=0x3f100000" \
+             "robot> "; do
+        grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"
+    done
+    grep -aqE "\[TIMER\] ticks: 5 in [0-9]+ ms" "$log" 2>/dev/null || missing="$missing\n        [TIMER] ticks: 5 in N ms"
+    case "$mode" in
+        shell) grep -aqF "help              - this message" "$log" || missing="$missing\n        the help table (typed help)" ;;
+        usb)
+            for m in "[DMA] devices at 0x3f003000..=0x40000000: bus address = CPU address + 0xc0000000" \
+                     "[USB] usb@7e980000: firmware power domain 6 (device 3) on" \
+                     "[USB] DWC2 usb@7e980000: 1 port"; do
+                grep -aqF "$m" "$log" || missing="$missing\n        $m"
+            done
+            grep -aqE '\[USB\] slot [0-9]+ on root port [0-9]+: 0525:a4a2 class 02:00:00 attached' "$log" \
+                || missing="$missing\n        [USB] ... 0525:a4a2 class 02:00:00 attached (usb-net)" ;;
+        reboot)
+            grep -aqF "[RECOVERY] System reboot..." "$log" || missing="$missing\n        [RECOVERY] System reboot..."
+            [ "$(grep -acF 'AzOS Rust kernel booted! (aarch64)' "$log")" -ge 2 ] \
+                || missing="$missing\n        a second banner (the PM block's reset)" ;;
+    esac
+    if [ -n "$missing" ] || [ -z "$done" ]; then
+        bad; echo "      the raspi3b boot did not reach:"; printf "%b\n" "${missing:-        (its end marker: timeout)}"
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$cfg"
+}
+par "aarch64 raspi3b boots to the shell" raspi3b_row "aarch64 raspi3b boots to the shell" shell
+par "aarch64 raspi3b USB via DWC2" raspi3b_row "aarch64 raspi3b USB via DWC2" usb
+par "aarch64 raspi3b reboots via the PM block" raspi3b_row "aarch64 raspi3b reboots via the PM block" reboot
+
 # ── aarch64: PL011 console RX on interrupts (wave 7) ─────────────────────────
 #
 # riscv64's UART RX has been interrupt-driven (PLIC/APLIC -> `uart::irq_handler`

@@ -21,6 +21,9 @@ aarch64 kernel boots on cortex-a53 (8.0, EL2)	n2	crates/core/arch-aarch64/** ker
 aarch64 boots (ARMv8.0)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs kernel/src/boot/isa.rs crates/core/arch-api/src/isa.rs
 aarch64 boots (ARMv8.5)	n2	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs kernel/src/boot/isa.rs crates/core/arch-api/src/isa.rs
 aarch64 shell answers help	n1	userspace/** sdk/targets/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
+aarch64 raspi3b boots to the shell	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+aarch64 raspi3b USB via DWC2	n1	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+aarch64 raspi3b reboots via the PM block	n1	crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 aarch64 pl011 rx irq count	n2	crates/drivers/** kernel/src/drv_supervisor.rs kernel/src/console_mode.rs kernel/src/boot/launch.rs crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 userspace	n1	userspace/** sdk/targets/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs
 aarch64 network: NIC found + MAC	n1	crates/net/** crates/drivers/net/** crates/drivers/virtio/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/** kernel/src/boot/early.rs

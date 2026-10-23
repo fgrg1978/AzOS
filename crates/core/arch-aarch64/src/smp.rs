@@ -32,8 +32,21 @@ pub use firmware::CpuOnOutcome;
 /// Thin wrapper over [`firmware::cpu_on_checked`] — kept here so SMP bring-up
 /// code has one module to import for the whole sequence
 /// (`start_core` on the primary → ... → `secondary_init` on the new PE).
+///
+/// A CPU the firmware held in a spin table waits in the kernel's pen instead
+/// ([`spin_table_release`]): it is let out ([`spin_table_start`]) to the same
+/// entry with the same x0, which is why the kernel's `context_id` (its
+/// logical CPU id) is also the pen slot the CPU was released into, and
+/// `entry_pa` is not read (the pen has one exit, `_aarch64_secondary_entry`).
 #[cfg(target_arch = "aarch64")]
 pub fn start_core(target_mpidr_packed: u64, entry_pa: u64, context_id: u64) -> CpuOnOutcome {
+    let hart = context_id as usize;
+    if spin_table_parked(hart) {
+        // The PSCI packing keeps Aff0..Aff2 where MPIDR_EL1 has them and Aff3
+        // at [39:32]: the affinity key of the raw-MPIDR shape.
+        let key = cpu::mpidr_affinity_key(target_mpidr_packed);
+        return if spin_table_start(hart, key) { CpuOnOutcome::Success } else { CpuOnOutcome::InvalidParams };
+    }
     firmware::cpu_on_checked(target_mpidr_packed, entry_pa, context_id)
 }
 

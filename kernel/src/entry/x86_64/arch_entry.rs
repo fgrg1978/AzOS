@@ -18,7 +18,7 @@ impl ArchEntry for Entry {
     /// COM1 is port I/O.
     const CONSOLE_MMIO: bool = false;
 
-    fn pre_console(&self, fw_table: usize) { crate::boot_hooks::pre_console(fw_table) }
+    fn pre_console(&self, fw_table: usize, dt: Option<&azos_dtb::DtbInfo>) { crate::boot_hooks::pre_console(fw_table, dt) }
     fn trap_init(&self) { crate::boot_hooks::trap_init() }
     fn boot_banner(&self, hart_id: usize, fw_table: usize) { crate::boot_hooks::boot_banner(hart_id, fw_table) }
     fn firmware_table(&self, hart_id: usize, fw_table: usize, dt: Option<azos_dtb::DtbInfo>)

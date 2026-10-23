@@ -741,6 +741,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // ── Entropy: virtio-rng seeds the kernel pool ────────────────────────────
     // Shared with aarch64's kernel_main — see `install_entropy`'s own doc
     // for the full reasoning and the ordering constraint.
+    #[cfg(not(any(feature = "vf2", feature = "k1")))]
+    boot::hwbus::note_firmware_virtio(dtb_ptr);
     ARCH_ENTRY.map_late_mmio();
     // The hardware bus: the device tree's nodes and the populated virtio-mmio
     // windows become device objects, and the kernel's own hardware among them

@@ -14,7 +14,7 @@
 crates/core/abi	0	0	0	0	1	0
 crates/core/actuation	2	0	0	0	0	46
 crates/core/arch	0	0	0	0	1	0
-crates/core/arch-aarch64	187	44	1	1	0	75
+crates/core/arch-aarch64	199	48	1	2	0	77
 crates/core/arch-api	27	10	0	0	0	30
 crates/core/arch-riscv64	151	42	0	3	0	91
 crates/core/arch-x86_64	146	17	4	11	0	57
@@ -63,10 +63,10 @@ crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	7	0	3	0	0	80
 crates/drivers/camera	0	0	0	0	1	0
 crates/drivers/display	11	0	0	0	0	100
-crates/drivers/dma	18	12	2	0	0	50
+crates/drivers/dma	18	12	2	0	0	54
 crates/drivers/dmac	8	0	0	0	0	99
 crates/drivers/driver_server	0	0	0	0	1	0
-crates/drivers/dtb	65	36	0	0	0	100
+crates/drivers/dtb	92	40	0	0	0	100
 crates/drivers/fb	10	2	2	0	0	39
 crates/drivers/firmware	2	1	0	0	0	100
 crates/drivers/gpio	4	0	0	0	0	59
@@ -87,10 +87,10 @@ crates/drivers/rtc	0	0	0	0	1	0
 crates/drivers/scsi	0	0	0	0	1	0
 crates/drivers/sensor	2	2	0	0	0	15
 crates/drivers/soc	0	0	0	0	1	0
-crates/drivers/sys	60	9	4	0	0	55
+crates/drivers/sys	62	9	4	0	0	56
 crates/drivers/thermal	0	0	0	0	1	0
 crates/drivers/tpm	0	0	0	0	1	0
-crates/drivers/usb	19	1	1	0	0	37
+crates/drivers/usb	19	1	1	0	0	34
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	145	42	8	0	0	90
 crates/fs/fs	46	8	4	0	0	58
@@ -109,7 +109,7 @@ domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0
 domains/robot/telemetry	1	0	0	0	0	100
-kernel	324	14	12	50	0	60
+kernel	331	14	12	51	0	60
 lx/emul	8	0	0	0	0	-
 micro	20	4	0	0	0	68
 tools/linux_seccomp_launch	11	2	0	2	0	-
@@ -166,4 +166,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	522
+@unsafe-share	523

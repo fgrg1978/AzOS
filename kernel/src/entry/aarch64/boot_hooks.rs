@@ -57,9 +57,9 @@ fn entered_at_el2() -> bool {
 /// `aarch64_early_mmu_init` call exists to satisfy: the MMU is ON before
 /// that first atomic runs. Printed by `boot_banner`.
 #[inline(always)]
-pub fn pre_console(dtb_ptr: usize) {
+pub fn pre_console(dtb_ptr: usize, dt: Option<&azos_dtb::DtbInfo>) {
     SCTLR_BEFORE_FIRST_LOCK.store(azos_arch::sysregs::read_sctlr_el1(), Ordering::Relaxed);
-    console_from_dt(dtb_ptr);
+    console_from_dt(dtb_ptr, dt);
     // The baseline level (Kconfig AARCH64_LEVEL), before the first lock:
     // a level's codegen (`+lse` from 8.1, `+rcpc` from 8.3) would fault on
     // an older core at its first atomic, so this is the last point where a
@@ -91,21 +91,18 @@ static DT_DEVICE_BLOCKS: AtomicU64 = AtomicU64::new(0);
 /// there. With no tree, no `stdout-path`, or a UART this kernel has no
 /// driver for, the console stays the PL011 at QEMU `virt`'s address.
 ///
-/// The tree is read at its physical address: the bootstrap map still holds
-/// the low half, and covers it (`aarch64_early_kaslr` read it already).
-fn console_from_dt(dtb_ptr: usize) {
-    if dtb_ptr == 0 {
-        return;
-    }
+/// `dt` is the tree `early_main` parsed; it is read again at its physical
+/// address `dtb_ptr`: the bootstrap map still holds the low half, and covers
+/// it (`aarch64_early_kaslr` read it already).
+fn console_from_dt(dtb_ptr: usize, dt: Option<&azos_dtb::DtbInfo>) {
+    let Some(i) = dt else { return };
     let p = dtb_ptr as *const u8;
-    // SAFETY: the loader's tree, readable through the bootstrap map.
-    if let Some(i) = unsafe { azos_dtb::dtb_parse(p) } {
-        if i.mem_size != 0 {
-            let n = crate::entry::aarch64::early_map_devices((i.mem_base + i.mem_size) as u64);
-            DT_DEVICE_BLOCKS.store(n as u64, Ordering::Relaxed);
-        }
+    if i.mem_size != 0 {
+        let n = crate::entry::aarch64::early_map_devices((i.mem_base + i.mem_size) as u64);
+        DT_DEVICE_BLOCKS.store(n as u64, Ordering::Relaxed);
     }
-    // SAFETY: as above.
+    // SAFETY: the loader's tree (`early_main` parsed it), readable through
+    // the bootstrap map.
     let Some(node) = (unsafe { azos_dtb::dtb_stdout_node(p) }) else { return };
     let mut found = None;
     // SAFETY: as above.
@@ -973,8 +970,16 @@ pub fn timer_init() {
 /// `install_entropy()` needs it. No-op on riscv64, which already mapped
 /// this window during its own early VMM bring-up — see
 /// `entry::riscv64::boot_hooks::arch_map_late_mmio`.
+///
+/// Only where the windows exist: a device tree that names no `virtio,mmio`
+/// node (a Raspberry Pi 3, whose RAM is where QEMU `virt` has them) gets no
+/// mapping, which would alias RAM as Device memory; no tree at all (an ELF
+/// boot on QEMU `virt`) keeps the fixed window.
 pub fn arch_map_late_mmio() {
     use azos_drv_base::platform::hw;
+    if !crate::boot::hwbus::virtio_mmio_windows_exist() {
+        return;
+    }
     let len = hw::VIRTIO_MMIO_STRIDE * hw::VIRTIO_MMIO_COUNT;
     // Unmapped, the first virtio probe takes a kernel data abort (the fatal
     // path) with nothing to say why: name it here (K1 L8).
