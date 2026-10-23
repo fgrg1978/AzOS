@@ -99,6 +99,11 @@ mod chaos_ktests {
                 let p = azos_chaos::POINTS[i];
                 (azos_chaos::pending(p), azos_chaos::pending_times(p))
             });
+            // From nothing armed: a soak boot's own chaos= (spurious-irq:4)
+            // would otherwise read as what this line set.
+            for p in azos_chaos::POINTS {
+                azos_chaos::set_pending(p, 0, 0);
+            }
             let (mut bad, mut heap, mut bad_seed) = (0, 0, 0);
             let n = azos_chaos::parse_cmdline(
                 b"x=1 chaos=ipc-send:3,heap-alloc:2,nope:1,disk-io:x,timer-wake:0,xhci-command-drop:1:2,spurious-irq:1:0 chaos_seed=42",
