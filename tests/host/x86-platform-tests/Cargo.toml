@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the pure parts of the x86_64 platform (crates/core/arch-x86_64: firmware/{acpi,bootinfo,limine}.rs, irq/encode.rs): ACPI table walking on synthetic tables, the PVH memory map and command line, APIC/IOAPIC register words, clock scaling. Excluded from workspace."
+description = "Host-side tests for the pure parts of the x86_64 platform (crates/core/arch-x86_64: firmware/{acpi,bootinfo,limine}.rs, irq/encode.rs): ACPI table walking on synthetic tables, the microcode loader's choice on synthetic Intel and AMD containers (cpu/ucode.rs), the PVH memory map and command line, APIC/IOAPIC register words, clock scaling. Excluded from workspace."
+
+[features]
+# cpu/ucode.rs does not compute an Intel update's checksum:
+# `ucode_tests::a_corrupted_update_is_refused` must fail.
+x86-ucode-canary = []
+# cpu/features.rs (pulled in for the vendor) reads it; its tests are in
+# tests/host/arch-tests.
+x86-cpuid-canary = []
 
 [dependencies]

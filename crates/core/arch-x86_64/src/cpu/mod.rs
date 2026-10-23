@@ -39,6 +39,10 @@ pub mod cfi;
 /// probe behind the thermal framework's level request and meter.
 pub mod pstate;
 
+/// CPU microcode updates (Kconfig `X86_UCODE_LOAD`): the Intel and AMD
+/// containers, the patch for this CPU, the MSR writes that load it.
+pub mod ucode;
+
 use crate::trap::gdt::{Tss, GDT_ENTRIES};
 
 /// One CPU's GS-relative area.

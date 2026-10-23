@@ -13,6 +13,9 @@ name = "azos_arch_x86_64"
 # Host-test canary (tests/host/arch-tests): cpu/features.rs forgets the XCR0
 # YMM state check, so `the_vector_extensions_need_their_xsave_state` fails.
 x86-cpuid-canary = []
+# Host-test canary (tests/host/x86-platform-tests): cpu/ucode.rs does not
+# compute an Intel update's checksum, so `a_corrupted_update_is_refused` fails.
+x86-ucode-canary = []
 # Gate canary (ktest `tlb_shootdown_cross_cpu`): the shootdown computes its
 # remote mask and sends no IPI, so a CPU keeps a stale translation.
 tlb-local-only = []

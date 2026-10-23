@@ -29,8 +29,23 @@ mod encode;
 #[path = "../../../../crates/core/arch-x86_64/src/firmware/limine.rs"]
 mod limine;
 
+// The microcode loader's choice: `cpu/ucode.rs` names `crate::cpu::features`
+// (the vendor), so both come in under the arch crate's own module names.
+#[allow(dead_code)]
+#[path = "../../../../crates/core/arch-x86_64/src/cpu/features.rs"]
+mod x86_features;
+#[allow(dead_code)]
+#[path = "../../../../crates/core/arch-x86_64/src/cpu/ucode.rs"]
+mod ucode;
+mod cpu {
+    pub(crate) use super::x86_features as features;
+}
+
 #[cfg(test)]
 mod limine_tests;
+
+#[cfg(test)]
+mod ucode_tests;
 
 #[cfg(test)]
 mod acpi_tests;
