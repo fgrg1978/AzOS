@@ -33,7 +33,8 @@ stamp="$out/u-boot-qemu-riscv64.stamp"
 [ -f "$tarball" ] || { echo "uboot_build: no U-Boot tarball at $tarball (set U_BOOT_TARBALL)" >&2; exit 1; }
 have="$(shasum -a 256 "$tarball" | awk '{print $1}')"
 [ "$have" = "$sha256_want" ] || { echo "uboot_build: $tarball is $have, expected $sha256_want" >&2; exit 1; }
-want_stamp="$sha256_want $(shasum -a 256 "$frag" | awk '{print $1}')"
+# The stamp names this script too: a U-Boot an older recipe built is rebuilt.
+want_stamp="$sha256_want $(shasum -a 256 "$frag" "$0" | awk '{print $1}' | tr '\n' ' ')"
 mkdir -p "$out"
 if [ -f "$bin" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$want_stamp" ]; then echo "$bin"; exit 0; fi
 
@@ -54,6 +55,12 @@ src="$out/u-boot-src" bld="$out/u-boot-build"
 rm -rf "$src" "$bld"; mkdir -p "$src"
 tar -xjf "$tarball" -C "$src" --strip-components=1
 export CROSS_COMPILE=riscv64-unknown-elf-
+# U-Boot's Kconfig honours KCONFIG_CONFIG as this tree's does. Inherited from
+# the gate (tools/ci_check.sh exports the primary column's), it made U-Boot
+# configure, and rewrite, that file instead of $bld/.config, so the fragment
+# appended there was never read: a U-Boot with its own defaults (distro boot,
+# the EFI loader) that fetched the image by DHCP and asked for dtb/.
+unset KCONFIG_CONFIG
 jobs="${CARGO_BUILD_JOBS:-2}"
 (
     cd "$src"
@@ -68,6 +75,9 @@ jobs="${CARGO_BUILD_JOBS:-2}"
     grep -q '^CONFIG_BOOTCOMMAND="source ${scriptaddr}"$' "$bld/.config" || { echo "uboot_build: CONFIG_BOOTCOMMAND was dropped" >&2; exit 1; }
     "$gmake" O="$bld" -j"$jobs" LD="$lld" HOSTCFLAGS="$hostcflags" HOSTLDFLAGS="$hostldflags" >&2
 )
+# The binary's default environment is the proof the fragment was built in.
+grep -aqF 'bootcmd=source ${scriptaddr}' "$bld/u-boot.bin" \
+    || { echo "uboot_build: u-boot.bin does not run the netboot script (bootcmd)" >&2; exit 1; }
 cp "$bld/u-boot.bin" "$bin"
 printf '%s\n' "$want_stamp" >"$stamp"
 rm -rf "$src" "$bld"
