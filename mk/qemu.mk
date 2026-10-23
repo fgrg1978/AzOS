@@ -135,8 +135,14 @@ qemu-net-pair: $(QEMU_DEV_KCONFIG)
 	QEMU=$(QEMU) bash tools/net_pair_smoke.sh
 
 QEMU_X86_64_DISK ?=
-qemu-x86_64: x86_64 $(QEMU_X86_64_DISK)
+# The signed microcode image as the PVH boot module (`make ucode`,
+# mk/firmware.mk; Kconfig X86_UCODE_LOAD). QEMU ignores the MSR write: the
+# boot log shows the image verified, the patch chosen and the revision read
+# back unchanged.
+QEMU_X86_64_UCODE ?=
+qemu-x86_64: x86_64 $(QEMU_X86_64_DISK) $(QEMU_X86_64_UCODE)
 	qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(X86_64_IMG) \
+	    $(if $(QEMU_X86_64_UCODE),-initrd $(QEMU_X86_64_UCODE)) \
 	    $(if $(QEMU_X86_64_DISK),-drive file=$(QEMU_X86_64_DISK)$(comma)if=none$(comma)format=raw$(comma)id=d0 -device virtio-blk-device$(comma)drive=d0)
 
 # PCI on x86_64: the same kernel with Kconfig DRV_PCI and DRV_NVME, in its own
@@ -214,14 +220,18 @@ x86-pc-prereq:
 	if [ -n "$$missing" ]; then printf "[X86-PC] cannot boot, missing:$$missing\n"; exit 1; fi
 
 # The ESP directory (Limine, its configuration, the kernel) and the OVMF
-# variable store, for one boot.
-x86-pc-esp: x86_64-limine x86-pc-prereq
+# variable store, for one boot. X86_PC_UCODE: the signed microcode image
+# (`make ucode`) as /UCODE.BIN, a boot module Limine loads (Kconfig
+# X86_UCODE_LOAD).
+X86_PC_UCODE ?=
+x86-pc-esp: x86_64-limine x86-pc-prereq $(X86_PC_UCODE)
 	rm -rf $(X86_PC_ESP)
 	mkdir -p $(X86_PC_ESP)/EFI/BOOT $(X86_PC_ESP)/boot
 	cp "$(LIMINE_DIR)/BOOTX64.EFI" $(X86_PC_ESP)/EFI/BOOT/BOOTX64.EFI
 	cp $(X86_64_LIMINE_IMG) $(X86_PC_ESP)/boot/kernel.elf
-	printf 'timeout: 0\nserial: yes\n\n/AzOS\n    protocol: limine\n    path: boot():/boot/kernel.elf\n' > $(X86_PC_ESP)/limine.conf
-	printf 'TIMEOUT=0\nSERIAL=yes\n\n:AzOS\n    PROTOCOL=limine\n    KERNEL_PATH=boot:///boot/kernel.elf\n' > $(X86_PC_ESP)/limine.cfg
+	$(if $(X86_PC_UCODE),cp $(X86_PC_UCODE) $(X86_PC_ESP)/UCODE.BIN)
+	printf 'timeout: 0\nserial: yes\n\n/AzOS\n    protocol: limine\n    path: boot():/boot/kernel.elf\n$(if $(X86_PC_UCODE),    module_path: boot():/UCODE.BIN\n)' > $(X86_PC_ESP)/limine.conf
+	printf 'TIMEOUT=0\nSERIAL=yes\n\n:AzOS\n    PROTOCOL=limine\n    KERNEL_PATH=boot:///boot/kernel.elf\n$(if $(X86_PC_UCODE),    MODULE_PATH=boot:///UCODE.BIN\n)' > $(X86_PC_ESP)/limine.cfg
 	cp "$(OVMF_VARS)" $(X86_PC_VARS)
 
 x86-pc-qemu-args:
