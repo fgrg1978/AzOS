@@ -16,7 +16,7 @@ Contents:
 
 - [Entering the kernel](#entering-the-kernel)
 - [The syscall table](#the-syscall-table)
-- [Cases and per-Domain entry counters](#cases-and-per-domain-entry-counters)
+- [Cases, entry counters and the pledge](#cases-entry-counters-and-the-pledge)
 - [Handles](#handles)
 - [SYS_INVOKE](#sys_invoke)
 - [The message descriptor](#the-message-descriptor)
@@ -24,6 +24,7 @@ Contents:
 - [Clocks](#clocks)
 - [The vDSO](#the-vdso)
 - [ABI version](#abi-version)
+- [Other shared definitions](#other-shared-definitions)
 
 ## Entering the kernel
 
@@ -62,13 +63,17 @@ return address and the flags). A ring-3 stub declares them clobbered.
 
 With Kconfig `SYSCALL_LEAN_ENTRY` (default `y`) a native syscall takes a trap
 path that does not store the clobbered registers and returns them zeroed,
-never with a kernel value in them. A trap that is not a syscall saves and
-restores everything. A call that writes extra outputs must write all of them
+never with a kernel value in them: riscv64 `t0`..`t6` and `a7`, aarch64
+`x10`..`x17` (`x7`..`x9` are stored with the registers they pair with and come
+back as they were), and x86_64 `rcx` and `r11` as `sysret` defines them (the
+return address and the flags). A trap that is not a syscall, and every syscall
+of a Linux-personality task, saves and restores everything. A call that writes extra outputs must write all of them
 on every path, success and failure, because a caller that declares them
 write-only may assume the trap overwrites them.
 
 A successful exec does not return; the new image starts with every
-general-purpose register zero except its stack pointer.
+general-purpose register zero except its stack pointer (and, on x86_64,
+`rcx` and `r11` as `sysret` defines them).
 
 Source: `crates/core/abi/src/syscall_nr.rs` (module documentation, `REG_*`
 constants), `config/kernel/Kconfig.ipc` (`SYSCALL_LEAN_ENTRY`).
@@ -83,7 +88,7 @@ use the Linux numbers, which are translated; they are not in this table.
 
 Case: **A** is authority/protection (the handle table, the page tables and
 protection domains are kernel state), **B** is block/wake (the call hands the
-hart to another task). See [Cases](#cases-and-per-domain-entry-counters).
+hart to another task). See [Cases](#cases-entry-counters-and-the-pledge).
 
 | Nr | Name | Family | Case | Summary |
 |---:|---|---|:-:|---|
@@ -91,7 +96,7 @@ hart to another task). See [Cases](#cases-and-per-domain-entry-counters).
 | 2 | `SYS_CAP_CLOSE` | handles | A | Delete a handle and release what it names, by type. Only the caller's own slot goes: copies made from it stay alive (`SYS_CAP_REVOKE` takes them back). A second close is `-ECAPSTALE`. |
 | 3 | `SYS_CAP_DERIVE` | handles | A | From an endpoint handle with `DUP`: mint a child with a subset of the rights, a non-zero badge and an expiry. A kernel-hosted endpoint refuses. |
 | 4 | `SYS_CAP_REVOKE` | handles | A | Revoke everything derived from a handle and keep it; returns the replacement handle (the old value is stale). |
-| 5 | `SYS_SPAWN_EX` | domain | A | Start the image at a path under the profile and topology row bound to its digest. Optional `SpawnReq` block: argv, environment, working directory, a move list of up to 8 file handles, `SPAWN_F_DIE_WITH_PARENT`. Returns the child's TID. |
+| 5 | `SYS_SPAWN_EX` | domain | A | Start the image at a path under the profile and topology row bound to its digest. Needs a `ty::LAUNCH` capability with `EXEC` for the image. Optional `SpawnReq` block (`crates/core/abi/src/ushell.rs`): argv, environment, working directory, a move list of up to 8 file handles, and the flags `SPAWN_F_DIE_WITH_PARENT`, `SPAWN_F_CONSOLE_IN` (lend console input to a Linux child) and `SPAWN_F_USER` (the child is a logged-in user's session; spends the caller's login grant). Returns the child's TID. |
 | 6 | `SYS_THREAD_CREATE` | domain | A | New thread of the calling process: entry, stack top, argument, clear-tid word address, thread pointer. At most `GROUP_THREADS_MAX` (16) threads per process and `GROUPS_MAX` (8) multi-thread processes. |
 | 7 | `SYS_THREAD_EXIT` | domain | A | End only the calling thread. Does not return. |
 | 8 | `SYS_EXIT` | domain | A | End the whole process with the code in `a0`. Does not return. |
@@ -136,7 +141,7 @@ per-kind mask of op classes (`ops` in `crates/core/sched/src/filter.rs`).
 Source: `crates/core/abi/src/syscall_nr.rs`, `crates/core/syscall/src/dispatch.rs`
 (`SYSCALL_TABLE`), `crates/core/sched/src/seccomp.rs`.
 
-## Cases and per-Domain entry counters
+## Cases, entry counters and the pledge
 
 A call is a syscall because one of two things cannot be done in ring 3:
 change authority or protection, or block and wake. The `SYSCALL_CASE` table
@@ -151,14 +156,27 @@ The trap prologue (`kernel/src/trap/syscall.rs`) calls
 `azos_sched::domain::count_entry` for each native entry, passing the case
 (0 for a Linux-personality call). Each Domain keeps `ENTRY_SLOTS` (`CASES + 1`)
 relaxed counters, slot 0 for the calls with no case; `entries()` reads them.
-The counters exist with Kconfig `DOMAIN_ENTRY_COUNTERS`. There is no per-case
-refusal: a task that must not make a call is refused by its seccomp filter or
-by holding no handle for it.
+The counters exist with Kconfig `DOMAIN_ENTRY_COUNTERS`.
+
+The same prologue judges the call against the Domain's pledge mask, which a
+program narrows, one way, with `DOMAIN_PLEDGE`. The mask has one bit per case
+(bits 0..=`CASES`, bit 0 for a call with no case and for every call of a Linux
+task), one bit per op class of `SYS_INVOKE` (bits 8..24, `pledge_class`), and
+`PLEDGE_ALWAYS` (bit 24) for `SYS_EXIT` and `SYS_THREAD_EXIT`, which no mask
+loses. `SYS_INVOKE` is judged by its op's class bit, every other call by its
+case bit (`pledge_bit`). A call outside the mask does not run: it returns
+`-EACCES` and leaves a `pledge` decision record. A Domain created by a member
+(spawn, fork) starts with its creator's mask, and exec keeps it. The pledge is
+the second filter: the task's seccomp filter judges the call first. An io_ring
+entry is judged by the ring owner's mask for the call it stands for, after the
+owner's seccomp profile.
 
 `tools/trap_lint.py` fails when a `SYS_*` number has no row in `SYSCALL_CASE`.
 
-Source: `crates/core/abi/src/syscall_nr.rs`, `crates/core/sched/src/domain.rs`,
-`kernel/src/trap/syscall.rs`, `tools/trap_lint.py`.
+Source: `crates/core/abi/src/syscall_nr.rs`, `crates/core/abi/src/invoke.rs`
+(`pledge_bit`, `PLEDGE_*`), `crates/core/sched/src/domain.rs`,
+`kernel/src/trap/syscall.rs`, `crates/core/ipc/src/io_ring.rs`,
+`tools/trap_lint.py`.
 
 ## Handles
 
@@ -201,15 +219,20 @@ The op is read in the namespace of the handle's type. A handle is the only
 address: there is no path, task id or integer descriptor in the call. The
 kernel resolves the handle in the caller's table, checks the right the op
 needs, then runs the op. An unknown op is `-EINVAL`; a handle of a type with
-no ops is `-ECAPKIND`. A bit of the op word other than the op and `INVOKE_REGS`
-(`INVOKE_FLAGS_KNOWN`) is `-EINVAL`.
+no ops is `-ECAPKIND`, and an op whose kind field is not the handle's kind is
+`-EINVAL`. A bit of the op word other than the op and `INVOKE_REGS`
+(`INVOKE_FLAGS_KNOWN`) is `-EINVAL`. An op whose class the image profile does
+not grant is handled like an unlisted syscall number: the task is killed, or
+the use is recorded in audit mode.
 
 **Register form.** The op's words travel in `a2..a5` (`INVOKE_REG_WORDS` = 4)
 and its replies come back in `a1..a4`; the kernel reads no user memory for the
 call itself. A pointer is a scalar. **Descriptor form.** `a2` points at a
 [`MsgDesc`](#the-message-descriptor): the words are `words[..n_words]` and the
-replies are written back into `words` and `n_words`. An op that needs more
-than four words is descriptor-only.
+replies are written back into `words` and `n_words`. In this form `a3`..`a5`
+must be 0 and the descriptor carries words only: `n_caps` other than 0 is
+`-EINVAL`, and so is a `label` when Kconfig `IPC_LABELS` is off. An op that
+needs more than four words is descriptor-only.
 
 **Self handle.** `DOMAIN_SELF` names the calling domain (kind `Domain`, class
 1, every right, generation 0). It is always valid, never stored and not
@@ -324,6 +347,8 @@ where the source states them.
 | `NODE_RECVFROM` | 0x6809 | NET | Receive with the sender's sockaddr, non-blocking. |
 | `NODE_MCAST_JOIN` | 0x680A | NET | Join an IPv4 multicast group on a UDP socket. |
 | `NODE_MCAST_LEAVE` | 0x680B | NET | Leave a multicast group. |
+| `NODE_LISTEN` | 0x680E | NET | Listen on a TCP socket at the port a `NODE_BIND` gave it; `-EAGAIN` while containment is armed. Needs `WRITE`. |
+| `NODE_ACCEPT` | 0x680F | NET | Take one established connection as a new `ty::SOCKET` handle (`READ\|WRITE`); `-EAGAIN` when none waits. Non-blocking. Needs `READ`. |
 | `NODE_OPENAT` | 0x650C | FS_OPEN | Open a name beneath a held directory handle; absolute names and `..` above the directory are refused. A write-mode open also needs a held tree with `WRITE` that covers the result. |
 | `NODE_MMAP` | 0x630D | CTL | Map a file (shared or private) from the page cache; `PROT_EXEC` is never allowed. |
 
@@ -356,8 +381,8 @@ struct. Size 224 bytes, alignment 8, asserted at compile time.
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
 | 0 | 2 | `version` | `MSG_VERSION` (1); a version the kernel does not know is refused. |
-| 2 | 1 | `n_words` | Inline words used, at most `MSG_WORDS_MAX` (8) and the kernel's Kconfig `IPC_MSG_INLINE_WORDS` (default 8; 6 on x86_64). |
-| 3 | 1 | `n_caps` | Capability entries used, at most `MSG_CAPS_MAX` (8) and Kconfig `IPC_MSG_MAX_CAPS`. |
+| 2 | 1 | `n_words` | Inline words used, at most `MSG_WORDS_MAX` (8) and the kernel's Kconfig `IPC_MSG_INLINE_WORDS` (4 to 8, default 8 on every ISA). |
+| 3 | 1 | `n_caps` | Capability entries used, at most `MSG_CAPS_MAX` (8) and Kconfig `IPC_MSG_MAX_CAPS` (default 4, 2 with `PROFILE_EMBEDDED`). |
 | 4 | 4 | `flags` | `MSG_KEEP` (bit 0) on send; `MSG_BADGED` (bit 31) set by the kernel on receive. |
 | 8 | 8 | `badge` | Set by the kernel on receive: the badge of the endpoint capability the call came through. Not written by a caller. |
 | 16 | 64 | `words` | Eight inline `u64` words. |
@@ -459,8 +484,8 @@ A `ClockId` is a `u32`: kind in bits 31..24, index in bits 23..0
 | 1 | `ClockId::REAL` | yes | wall clock (UTC, Unix epoch) |
 | 2 | `ClockId::TSC_RAW` | no | raw hardware counter |
 | 3 | `KIND_PTP` (`ClockId::ptp(n)`) | no | PTP hardware clock `n` |
-| 4 | `KIND_TSN_DOMAIN` | no | time-sensitive-networking domain `n` |
-| 5 | `KIND_VCPU` | no | virtual time of vCPU `n` |
+| 4 | `KIND_TSN_DOMAIN` (`ClockId::tsn_domain(n)`) | no | time-sensitive-networking domain `n` |
+| 5 | `KIND_VCPU` (`ClockId::vcpu(n)`) | no | virtual time of vCPU `n` |
 | 6 | `ClockId::TAI` | yes | International Atomic Time, Unix epoch, no leap seconds |
 | 7 | `ClockId::BOOT` | yes | monotonic clock plus time spent suspended |
 
@@ -518,8 +543,10 @@ counter scale) and converts with the published frequency.
 product) where the counter ring 3 reads does not run at the clock's rate; all
 three words are 0 where the counter is the clock, or where ring 3 does not read
 it. `azos_libsys::vdso_now_ns()` returns monotonic
-nanoseconds this way, falling back to a syscall where `flags` bit 0 is clear
-on riscv64; `azos_libsys::clock_now(ClockId)` adds the offset of `REAL`, `TAI`
+nanoseconds this way; on riscv64 and x86_64 it falls back to a syscall where
+`flags` bit 0 is clear (aarch64 reads `cntvct_el0` unconditionally, and the
+kernel sets the bit only for the riscv64 QEMU build and for x86_64 with a
+published counter scale); `azos_libsys::clock_now(ClockId)` adds the offset of `REAL`, `TAI`
 or `BOOT`.
 
 **Clock words.** `ClockWords` has its own seqlock generation, separate from
@@ -623,3 +650,24 @@ The vDSO page has its own `layout_version` (`VDSO_LAYOUT_VERSION`), separate
 from `ABI_VERSION`.
 
 Source: `crates/core/abi/src/lib.rs`, `crates/core/abi/src/vdso.rs`.
+
+## Other shared definitions
+
+The rest of `azos_abi` holds layouts and selectors that one subsystem and its
+ring-3 users share:
+
+| Module | What it defines |
+|---|---|
+| `ushell` | The `SYS_SPAWN_EX` request block (`SpawnReq`, 184 bytes, `SPAWN_F_*`, the move list), the `StartupBlock` (120 bytes) a spawned child receives in `a1`, and the flag values of `LOG_CONSOLE_WAIT` and `SYS_ALERT` (`KILL_*`). |
+| `io_ring` | The io_ring page as ring 3 sees it: offsets, ring sizes, opcodes and flags; the kernel's `IoRing` asserts its layout against them. |
+| `foreign` | `ForeignFrame`, its alignment and red zone, the user flags mask, and the window the ring-3 runtime is mapped in (`RUNTIME_BASE`..`RUNTIME_LIMIT`, above the vDSO). |
+| `drv_kind` | The `DRV_KIND_*` device-kind numbers the driver ops of the Domain take. |
+| `exit_status` | The exit statuses the kernel assigns when it kills a task (128 + the signal number). |
+| `trace` | The tracer's event classes and event ids, used with the `LOG_TRACE_*` ops. |
+| `families` | The operation selectors of the kernel-served `flight`, `behavior`, `config` and `ota` interfaces. |
+| `power` | The limits and policy words of the `Power` interface. |
+| `rt_levels` | The cross-level admission rule for EDF + CBS reservations, shared by the topology's boot check and the scheduler. |
+| `sensor_sample` | The acquisition stamp of a sensor sample. |
+| `types` | The robot-facing `repr(C)` records `SensorState`, `MotorOutput`, `RobotInfo` and `SafetyProfile`, with their sizes asserted in tests. |
+
+Source: `crates/core/abi/src/lib.rs` and the module files beside it.
