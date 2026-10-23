@@ -931,19 +931,26 @@ $(THIRDPARTY_HASHES_X86_64): userspace/image_hashes.py $(wildcard $(BUSYBOX_ELF_
 $(OUT_BUILD)/disk-x86_64.img:         AUTORUN_ELF_X86_64 :=
 $(OUT_BUILD)/disk-x86_64-abitest.img: AUTORUN_ELF_X86_64 := /fat/ABITEST.ELF
 $(OUT_BUILD)/disk-x86_64-ipctest.img: AUTORUN_ELF_X86_64 := /fat/IPCTEST.ELF
+$(OUT_BUILD)/disk-x86_64-systest.img: AUTORUN_ELF_X86_64 := /fat/SYSTEST.ELF
+$(OUT_BUILD)/disk-x86_64-captest.img: AUTORUN_ELF_X86_64 := /fat/CAPTEST.ELF
+$(OUT_BUILD)/disk-x86_64-latbench.img: AUTORUN_ELF_X86_64 := /fat/LATBENCH.ELF
 # vsbench (tools/vsbench_x86_64.sh); its `spawn+wait` lane starts TOOLBOX.ELF,
 # which every x86_64 image carries.
 $(OUT_BUILD)/disk-x86_64-vsbench.img: AUTORUN_ELF_X86_64 := /fat/VSBENCH.ELF
-$(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/disk-x86_64-ipctest.img $(OUT_BUILD)/disk-x86_64-vsbench.img: \
+$(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/disk-x86_64-ipctest.img $(OUT_BUILD)/disk-x86_64-vsbench.img \
+$(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_BUILD)/disk-x86_64-latbench.img: \
 		$(IMAGE_ELF_PATHS_X86_64) $(OUT_BUILD)/policy.gguf $(OUT_BUILD)/policy.sig $(OUT_BUILD)/behavior.mbl \
 		tools/keys/test_priv.bin $(CONFIG_SIG_TOOLS)
 	@mkdir -p $(OUT_BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=32
 	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
 	mkfs.fat -F 32 -n "ROBTOS" $@ 32768
+	@printf "Hello from AzOS FAT32!\n" > $@.tmp_hello.txt
 	@printf "net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nautorun=$(AUTORUN_ELF_X86_64)\n" > $@.tmp_config.ini
 	@printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" > $@.tmp_bootmeta
+	mcopy -i $@ $@.tmp_hello.txt ::HELLO.TXT
 	mcopy -i $@ $(HELLO_ELF_X86_64) ::HELLO.ELF
+	mcopy -i $@ $(SYSTEST_ELF_X86_64) ::SYSTEST.ELF
 	mcopy -i $@ $(UHELLO_ELF_X86_64) ::UHELLO.ELF
 	mcopy -i $@ $(EPSRV_ELF_X86_64) ::EPSRV.ELF
 	mcopy -i $@ $(ABICHILD_ELF_X86_64) ::ABICHILD.ELF
@@ -951,6 +958,8 @@ $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/d
 	mcopy -i $@ $(BRAINCLI_ELF_X86_64) ::BRAINCLI.ELF
 	mcopy -i $@ $(ABITEST_ELF_X86_64) ::ABITEST.ELF
 	mcopy -i $@ $(IPCTEST_ELF_X86_64) ::IPCTEST.ELF
+	mcopy -i $@ $(CAPTEST_ELF_X86_64) ::CAPTEST.ELF
+	mcopy -i $@ $(LATBENCH_ELF_X86_64) ::LATBENCH.ELF
 	mcopy -i $@ $(GPIO_DRV_ELF_X86_64) ::GPIODRV.ELF
 	mcopy -i $@ $(BUZZ_DRV_ELF_X86_64) ::BUZZDRV.ELF
 	mcopy -i $@ $(INA_DRV_ELF_X86_64) ::INADRV.ELF
@@ -985,6 +994,7 @@ $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/d
 	mcopy -i $@ $(OTA_ELF_X86_64) ::OTA.ELF
 	mcopy -i $@ $(VSBENCH_ELF_X86_64) ::VSBENCH.ELF
 	mcopy -i $@ $(VSSRV_ELF_X86_64) ::VSSRV.ELF
+	mcopy -i $@ $(LXSRV_ELF_X86_64) ::LXSRV.ELF
 	mcopy -i $@ $(LXHELLO_ELF_X86_64) ::LXHELLO.ELF
 	mcopy -i $@ $(OUT_BUILD)/behavior.mbl ::BEHAVIOR.MBL
 	mcopy -i $@ $(OUT_BUILD)/policy.gguf ::POLICY.GGF
@@ -993,7 +1003,7 @@ $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/d
 	mcopy -i $@ $@.tmp_config.ini ::CONFIG.INI
 	mcopy -i $@ $@.tmp_config.sig ::CONFIG.SIG
 	mcopy -i $@ $@.tmp_bootmeta ::BOOTMETA
-	@rm -f $@.tmp_config.ini $@.tmp_config.sig $@.tmp_bootmeta
+	@rm -f $@.tmp_hello.txt $@.tmp_config.ini $@.tmp_config.sig $@.tmp_bootmeta
 	@echo "[DISK] x86_64 FAT32 image: $@ (autorun=$(AUTORUN_ELF_X86_64))"
 
 # ── Signed capability topology files (wave 15 TOPOSIGN) ─────────────────────

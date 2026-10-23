@@ -26,7 +26,9 @@
 #![no_std]
 #![no_main]
 
+#[cfg(not(target_arch = "x86_64"))]
 use azos_abi::cap::CapPerms;
+#[cfg(not(target_arch = "x86_64"))]
 use azos_inspect_lib::{str_in, Inspector, Source};
 use azos_libsys as sys;
 use sys::dev::{Bytes, BlockCall, BlockClient, Ep, GpioCall, GpioClient, I2cCall, I2cClient, MotorCall, MotorClient, PwmCall, PwmClient, Regs};
@@ -72,6 +74,18 @@ unsafe fn raw_syscall3(nr: u64, a0: u64, a1: u64, a2: u64) -> isize {
             lateout("x7") _, lateout("x8") _, lateout("x9") _, lateout("x10") _,
             lateout("x11") _, lateout("x12") _, lateout("x13") _, lateout("x14") _,
             lateout("x15") _, lateout("x16") _, lateout("x17") _,
+            options(nostack),
+        );
+        // x86_64: rax/rdi rsi rdx mirror a7/a0..a2; `syscall` writes rcx and
+        // r11, the contract's only clobbers.
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") nr as isize => ret,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            lateout("rcx") _, lateout("r11") _,
             options(nostack),
         );
     }
@@ -991,6 +1005,15 @@ pub extern "C" fn _start() -> ! {
         (b"munmap(GICR) is refused", 0x080A_0000u64),
         (b"munmap(UART) is refused", 0x0900_0000u64),
     ];
+    // x86_64 (QEMU microvm): the local APIC (`arch-x86_64`'s `lapic_pa`), the
+    // I/O APIC and the first virtio-mmio slot, where the boot volume is. The
+    // console is port I/O: there is no UART page to unmap.
+    #[cfg(target_arch = "x86_64")]
+    let kernel_critical: [(&[u8], u64); 3] = [
+        (b"munmap(LAPIC) is refused", 0xFEE0_0000u64),
+        (b"munmap(IOAPIC) is refused", 0xFEC0_0000u64),
+        (b"munmap(virtio-mmio) is refused", 0xFEB0_0000u64),
+    ];
     for (name, addr) in kernel_critical {
         let rc = sys::munmap(addr, 4096);
         report(name, rc < 0, rc);
@@ -1018,8 +1041,8 @@ pub extern "C" fn _start() -> ! {
         report(b"mmap for the own-page check", false, p);
     }
 
-    // Both ISAs: a ring-3 interrupt, delivered mask-until-ACK. Before the
-    // MMIO section, whose refusals must stay last (bounded denial records).
+    // A ring-3 interrupt, delivered mask-until-ACK. Before the MMIO section,
+    // whose refusals must stay last (bounded denial records).
     irq_section();
 
     // ── MMIO by device handle ────────────────────────────────
@@ -1036,6 +1059,13 @@ pub extern "C" fn _start() -> ! {
     //
     // Last on purpose: the refusals are capability denials, and denial
     // records are bounded per task.
+    //
+    // x86_64: no device of the hardware bus is granted (the port's topology
+    // rows do not exist yet, `crates/core/topology`'s builder: its
+    // `mmio.dt:` placeholders name riscv64 devices), so the section says so.
+    #[cfg(target_arch = "x86_64")]
+    sys::println(b"[CAPTEST] skip: mmio by device handle (x86_64: no device of the hardware bus granted)");
+    #[cfg(not(target_arch = "x86_64"))]
     {
         const ACCESS_READ: u64 = CapPerms::READ.bits() as u64;
         const ACCESS_RW: u64 = CapPerms::RW.bits() as u64;
@@ -1224,6 +1254,7 @@ const IRQ_KEY: u64 = 0x1_2034;
 /// `(source type, source id, key)`, or `None` if nothing arrived.
 /// `port_wait_typed` is not the timeout: its own give-up is eight empty
 /// blocks, not a clock this test controls.
+#[cfg(not(target_arch = "x86_64"))]
 fn poll_event(port: u32, ms: u64) -> Option<(u8, u32, u64)> {
     let mut ev = [0u8; sys::PORT_EVENT_BYTES];
     let mut waited = 0;
@@ -1244,6 +1275,7 @@ fn poll_event(port: u32, ms: u64) -> Option<(u8, u32, u64)> {
 /// The first device of the introspection tree's `devices/` (the public region
 /// this program's row grants) whose identity and state satisfy `want`: its
 /// handle, the directory's name.
+#[cfg(not(target_arch = "x86_64"))]
 fn find_device(want: &dyn Fn(&[u8], &[u8]) -> bool) -> Option<u64> {
     struct Cell(core::cell::UnsafeCell<Option<Inspector<'static>>>);
     // SAFETY: the test's main thread alone reads the tree.
@@ -1279,19 +1311,36 @@ fn find_device(want: &dyn Fn(&[u8], &[u8]) -> bool) -> Option<u64> {
 
 /// The handle of the first device whose identity is `identity`
 /// (`dt:google,goldfish-rtc`).
+#[cfg(not(target_arch = "x86_64"))]
 fn device_handle(identity: &[u8]) -> Option<u64> {
     find_device(&|id, _| id == identity)
 }
 
 /// A device nothing owns (unmatched) that is none of `except`.
+#[cfg(not(target_arch = "x86_64"))]
 fn device_handle_not(except: &[&[u8]]) -> Option<u64> {
     find_device(&|id, st| st == b"unmatched" && !except.contains(&id))
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 fn print_line_msg(msg: &[u8]) {
     Line::new().s(b"[CAPTEST] irq: line ").i(rtc::LINE as isize).s(msg).flush();
 }
 
+/// x86_64: no topology row grants a device ring 3 can make interrupt (the
+/// CMOS RTC is port I/O, not a device of the hardware bus, and the port's
+/// topology rows do not exist yet), so only the absent line is checked.
+#[cfg(target_arch = "x86_64")]
+fn irq_section() {
+    sys::println(b"[CAPTEST] skip: irq delivery (x86_64: no interrupting device granted)");
+    let port = sys::port_create_typed();
+    report(b"irq: port_create_typed", port > 0, port);
+    if port > 0 {
+        absent_line(port as u32);
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 fn irq_section() {
     const ACCESS_RW: u64 = CapPerms::RW.bits() as u64;
     /// `PortEvent::source_type` of an IRQ.
@@ -1372,11 +1421,16 @@ fn irq_section() {
     rtc::quiet(va);
     let _ = sys::irq_ack(irq_cap as u32);
 
-    // 6. Wave 10 IRQ5: a line the capability range admits and the interrupt
-    //    controller does not implement (`ABSENT_IRQ`, granted by the qemu
-    //    topology). The bind must answer -ENODEV — it used to answer 0 with a
-    //    binding no interrupt could reach — and the kernel prints how many
-    //    bindings of the line are left after its undo (the row wants 0).
+    // 6. The absent line.
+    absent_line(port);
+}
+
+/// Wave 10 IRQ5: a line the capability range admits and the interrupt
+/// controller does not implement (`ABSENT_IRQ`, granted by the qemu
+/// topology). The bind must answer -ENODEV — it used to answer 0 with a
+/// binding no interrupt could reach — and the kernel prints how many
+/// bindings of the line are left after its undo (the row wants 0).
+fn absent_line(port: u32) {
     const E_NODEV: isize = -19;
     let absent_cap = sys::cap_lookup(sys::ty::IRQ.raw(), ABSENT_IRQ);
     report(b"irq: cap_lookup(Irq, absent line) [granted]", absent_cap > 0, absent_cap);
@@ -1393,6 +1447,9 @@ fn irq_section() {
 const ABSENT_IRQ: u32 = 100;
 /// SPI 1000: past the GICv3 distributor's `ITLinesNumber`.
 #[cfg(target_arch = "aarch64")]
+const ABSENT_IRQ: u32 = 1000;
+/// GSI 1000: an I/O APIC has 24 inputs (the topology's x86_64 placeholder).
+#[cfg(target_arch = "x86_64")]
 const ABSENT_IRQ: u32 = 1000;
 
 #[panic_handler]

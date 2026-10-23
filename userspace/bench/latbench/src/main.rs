@@ -42,8 +42,9 @@ use sys::dev::{Ep, MotorCall, MotorClient, Regs, SensorCall, SensorClient};
 /// noise against the total, small enough to finish promptly under TCG.
 const N: u64 = 2000;
 
-/// CLINT mtime frequency on QEMU virt (RISC-V; see `scale_ticks` for aarch64).
-#[cfg(not(target_arch = "aarch64"))]
+/// CLINT mtime frequency on QEMU virt (RISC-V; see `scale_ticks` for aarch64
+/// and x86_64).
+#[cfg(target_arch = "riscv64")]
 const TIMER_HZ: u64 = 10_000_000;
 
 /// Counter ticks → nanoseconds, integer-only: `ticks * 1e9 / hz / iters`.
@@ -55,14 +56,19 @@ const TIMER_HZ: u64 = 10_000_000;
 /// read 100x too high (a 41,300-"instruction" syscall floor on 2026-09-22).
 /// `CNTFRQ_EL0` is readable at EL0 whenever `cntvct_el0` is, which this
 /// binary already relies on. RISC-V keeps its original expression unchanged.
+/// x86_64 has no architectural TSC rate ring 3 can read: its ticks are the
+/// kernel clock's (see `rdtime`), at the rate the vDSO publishes.
 #[inline(always)]
 fn scale_ticks(ticks: u64, iters: u64) -> u64 {
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "riscv64")]
     { ticks * (1_000_000_000 / TIMER_HZ) / iters }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(not(target_arch = "riscv64"))]
     {
         let hz: u64;
+        #[cfg(target_arch = "aarch64")]
         unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) hz, options(nomem, nostack)) };
+        #[cfg(target_arch = "x86_64")]
+        { hz = sys::vdso_timebase_hz(); }
         // u128: at 1 GHz, `ticks * 1e9` overflows u64 after ~18 s of ticks.
         (ticks as u128 * 1_000_000_000 / hz.max(1) as u128 / iters.max(1) as u128) as u64
     }
@@ -78,6 +84,11 @@ fn rdtime() -> u64 {
     unsafe { core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack)) };
     #[cfg(target_arch = "aarch64")]
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack)) };
+    // x86_64: the TSC turned into the kernel clock's ticks with the
+    // conversion the vDSO publishes, which libsys's `uptime` reads in ring 3
+    // (no trap while the vDSO says the counter is native).
+    #[cfg(target_arch = "x86_64")]
+    { t = sys::uptime() as u64; }
     t
 }
 

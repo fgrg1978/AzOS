@@ -227,6 +227,10 @@ const LX_RELEASE: &[u8] = match option_env!("LX_LINUX_RELEASE") {
 const LX_ARCH: &[u8] = b"riscv";
 #[cfg(target_arch = "aarch64")]
 const LX_ARCH: &[u8] = b"aarch64";
+/// x86_64 defines no `MODULE_ARCH_VERMAGIC` (`arch/x86/include/asm/module.h`),
+/// so `include/linux/vermagic.h`'s default, empty, ends its string.
+#[cfg(target_arch = "x86_64")]
+const LX_ARCH: &[u8] = b"";
 
 /// The server's allocator (`azos_ualloc`, Kconfig `USER_ALLOC_*`): size-class
 /// blocks, checksummed chunk headers, guard pages and, per the SECURITY
@@ -325,6 +329,10 @@ fn counter() -> u64 {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: reads the virtual counter, readable at EL0 on AzOS.
     unsafe { core::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack)) };
+    // x86_64: the TSC in the kernel clock's ticks, the conversion the vDSO
+    // publishes (libsys `uptime`, read in ring 3).
+    #[cfg(target_arch = "x86_64")]
+    { t = sys::uptime() as u64; }
     t
 }
 
@@ -339,6 +347,9 @@ fn calibrate() -> u64 {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a register-only loop.
     unsafe { core::arch::asm!("movz {n}, #0x3d, lsl #16", "movk {n}, #0x0900", "2:", "subs {n}, {n}, #1", "b.ne 2b", n = out(reg) _, options(nomem, nostack)) };
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: a register-only loop.
+    unsafe { core::arch::asm!("mov {n:e}, 4000000", "2:", "dec {n}", "jnz 2b", n = out(reg) _, options(nomem, nostack)) };
     counter() - t0
 }
 
@@ -354,6 +365,9 @@ fn counter_hz() -> u64 {
         unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) f, options(nomem, nostack)) };
         f
     }
+    // x86_64: the kernel clock's rate, which `counter` counts in.
+    #[cfg(target_arch = "x86_64")]
+    return sys::vdso_timebase_hz();
 }
 
 /// A Linux module loaded and mapped: the object (for its tables) and its

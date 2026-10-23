@@ -1,22 +1,50 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! aarch64 counterpart of `test.S` (phase 6 prep, aarch64 parity).
+//! aarch64 and x86_64 counterpart of `test.S` (phase 6 prep, aarch64 parity).
 //!
 //! Same checks as the RISC-V original, in the same order: `SYS_GETPID`,
 //! the console `WRITE` (banner), `SYS_MO_MAP` (one anonymous page), a store
-//! and a load through that page, the console `WRITE` (verdict). Raw `svc #0` —
+//! and a load through that page, the console `WRITE` (verdict). Raw traps —
 //! no `libsys` — matching `test.S`'s own character.
 //!
 //! ABI (`crates/core/abi/src/syscall_nr.rs`, "Register convention"):
-//!   x8 = syscall number, x0..x5 = arguments, svc #0, x0 = return value.
+//!   aarch64: x8 = syscall number, x0..x5 = arguments, svc #0, x0 = return value;
+//!   x86_64: rax = syscall number, rdi rsi rdx r10 r8 r9 = arguments, syscall,
+//!   rax = return value.
 //!
-//! **No aarch64 kernel exists to exec this yet** — see `userspace/tests/hello`'s
-//! module doc for why this crate exists at all (no aarch64 GNU
-//! cross-assembler on this host) and what it proves (the toolchain path),
-//! not what it measures (nothing does, yet).
+//! See `userspace/tests/hello`'s module doc for why this crate exists at all
+//! (no aarch64 GNU cross-assembler on this host).
 
 #![no_std]
 #![no_main]
+
+// Each syscall below selects its trap instruction per ISA; on an ISA with no
+// branch the build stops here instead of losing the trap.
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("syscall_test: no syscall instruction for this ISA (aarch64, x86_64; riscv64 has test.S)");
+
+// The process entry, `_azos_entry`, as `userspace/tests/hello` defines it
+// (this crate links no libsys): aarch64 a jump to `_start`; x86_64 realigns
+// rsp for a System V call and calls `_start`, never returning.
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".globl _azos_entry",
+    ".type _azos_entry, %function",
+    "_azos_entry:",
+    "    b _start",
+    ".size _azos_entry, . - _azos_entry",
+);
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".globl _azos_entry",
+    ".type _azos_entry, @function",
+    "_azos_entry:",
+    "    xor ebp, ebp",
+    "    and rsp, -16",
+    "    call _start",
+    "    ud2",
+    ".size _azos_entry, . - _azos_entry",
+);
 
 use azos_abi::cap::ty;
 use azos_abi::invoke::{INVOKE_REGS, LOG_CONSOLE_WRITE};
@@ -31,15 +59,23 @@ const MSG_FAIL: &[u8; 26] = b"[SYSCALL_TEST] FAILED!\n\0\0\0";
 unsafe fn syscall0(nr: u64) -> i64 {
     let ret: i64;
     unsafe {
+        // The native syscall contract's clobbers (crates/core/abi/src/
+        // syscall_nr.rs, "Register contract"): aarch64 x7-x17; x86_64 rcx
+        // and r11, which `syscall` itself writes.
+        #[cfg(target_arch = "aarch64")]
         core::arch::asm!(
             "svc #0", in("x8") nr, lateout("x0") ret,
-            // The native syscall contract's clobbers (crates/core/abi/src/
-            // syscall_nr.rs, "Register contract"): x7-x17 and x30.
             lateout("x7") _, lateout("x8") _, lateout("x9") _, lateout("x10") _,
             lateout("x11") _, lateout("x12") _, lateout("x13") _, lateout("x14") _,
             lateout("x15") _, lateout("x16") _, lateout("x17") _,
             options(nostack),
-        )
+        );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall", inlateout("rax") nr as i64 => ret,
+            lateout("rcx") _, lateout("r11") _,
+            options(nostack),
+        );
     };
     ret
 }
@@ -48,15 +84,20 @@ unsafe fn syscall0(nr: u64) -> i64 {
 unsafe fn syscall1(nr: u64, x0: u64) -> i64 {
     let ret: i64;
     unsafe {
+        #[cfg(target_arch = "aarch64")]
         core::arch::asm!(
             "svc #0", in("x8") nr, inlateout("x0") x0 as i64 => ret,
-            // The native syscall contract's clobbers (crates/core/abi/src/
-            // syscall_nr.rs, "Register contract"): x7-x17 and x30.
             lateout("x7") _, lateout("x8") _, lateout("x9") _, lateout("x10") _,
             lateout("x11") _, lateout("x12") _, lateout("x13") _, lateout("x14") _,
             lateout("x15") _, lateout("x16") _, lateout("x17") _,
             options(nostack),
-        )
+        );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall", inlateout("rax") nr as i64 => ret, in("rdi") x0,
+            lateout("rcx") _, lateout("r11") _,
+            options(nostack),
+        );
     };
     ret
 }
@@ -77,6 +118,7 @@ unsafe fn console_write(msg: &[u8]) -> i64 {
 unsafe fn syscall4(nr: u64, x0: u64, x1: u64, x2: u64, x3: u64) -> i64 {
     let ret: i64;
     unsafe {
+        #[cfg(target_arch = "aarch64")]
         core::arch::asm!(
             "svc #0", in("x8") nr, inlateout("x0") x0 as i64 => ret,
             in("x1") x1, in("x2") x2, in("x3") x3,
@@ -84,7 +126,14 @@ unsafe fn syscall4(nr: u64, x0: u64, x1: u64, x2: u64, x3: u64) -> i64 {
             lateout("x11") _, lateout("x12") _, lateout("x13") _, lateout("x14") _,
             lateout("x15") _, lateout("x16") _, lateout("x17") _,
             options(nostack),
-        )
+        );
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "syscall", inlateout("rax") nr as i64 => ret,
+            in("rdi") x0, in("rsi") x1, in("rdx") x2, in("r10") x3,
+            lateout("rcx") _, lateout("r11") _,
+            options(nostack),
+        );
     };
     ret
 }
@@ -104,9 +153,9 @@ fn fail() -> ! {
     loop {}
 }
 
-/// The process entry the target spec names (`-e _azos_entry`, sdk/targets).
+/// The program, called by `_azos_entry` above.
 #[unsafe(no_mangle)]
-pub extern "C" fn _azos_entry() -> ! {
+pub extern "C" fn _start() -> ! {
     unsafe {
         // Test 1: SYS_GETPID.
         let _tid = syscall0(SYS_GETPID);

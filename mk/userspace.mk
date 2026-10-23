@@ -1172,6 +1172,28 @@ $(IPCTEST_ELF_X86_64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml \
 	cd $(IPCTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(IPCTEST_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(IPCTEST_DIR)/$(X86_64_UBUILT)/ipctest $@
 
+$(SYSTEST_ELF_X86_64): $(SYSTEST_DIR)/src/main.rs $(SYSTEST_DIR)/Cargo.toml $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(SYSTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(SYSTEST_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(OUT_TGT)/$(SYSTEST_DIR)/$(X86_64_UBUILT)/syscall_test_aarch64 $@
+
+$(CAPTEST_ELF_X86_64): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/src/abi_cases.rs $(CAPTEST_DIR)/Cargo.toml \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(CAPTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(CAPTEST_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(OUT_TGT)/$(CAPTEST_DIR)/$(X86_64_UBUILT)/captest $@
+
+$(LATBENCH_ELF_X86_64): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(LATBENCH_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LATBENCH_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(OUT_TGT)/$(LATBENCH_DIR)/$(X86_64_UBUILT)/latbench $@
+
+$(LXSRV_ELF_X86_64): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LXSRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(OUT_TGT)/$(LXSRV_DIR)/$(X86_64_UBUILT)/lxsrv $@
+
 $(GPIO_DRV_ELF_X86_64): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)

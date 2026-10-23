@@ -15363,17 +15363,34 @@ PY
                      stop='ABITEST\] [0-9]+ check\(s\) run' ;;
             foreigncanary) label="x86_64 abitest foreign regs canary"; disk_t=$AZOS_OUT/build/disk-x86_64-abitest.img
                      stop='ABITEST\] [0-9]+ check\(s\) run' ;;
+            # The riscv64 "userspace: syscall ABI" / "userspace: syscall
+            # latency" / "userspace: capabilities" twins. captest runs on its
+            # own hard-reservation row (`captest-row`, CPU 3: four CPUs), the
+            # one the IRQ bind needs under IRQ_THREADED; its canary boots the
+            # plain kernel, whose generic autorun row has none, so the bind of
+            # the absent line is refused -EPERM instead of -ENODEV.
+            systest) label="x86_64 syscall ABI"; disk_t=$AZOS_OUT/build/disk-x86_64-systest.img
+                     stop='SYSCALL_TEST\] (ALL PASSED|FAILED)' ;;
+            latbench) label="x86_64 syscall latency"; disk_t=$AZOS_OUT/build/disk-x86_64-latbench.img
+                     stop='LATBENCH\] (DONE|FATAL|PANIC)' ;;
+            captest) label="x86_64 captest"; disk_t=$AZOS_OUT/build/disk-x86_64-captest.img
+                     stop='CAPTEST\] (ALL PASSED|FAILED)' ;;
+            captestcanary) label="x86_64 captest canary, no hard reservation"; disk_t=$AZOS_OUT/build/disk-x86_64-captest.img
+                     stop='CAPTEST\] (ALL PASSED|FAILED)' ;;
         esac
         local -a app=()
         # The later `-cpu` wins over x86_qemu's `-cpu max`: the same CPU
         # without SHA-NI, so the vDSO bit must follow CPUID, not a constant.
         [ "$which" = hwcapcanary ] && app=(-cpu max,-sha-ni)
+        # The later `-smp` wins too: captest's row is pinned to CPU 3.
+        case "$which" in captest|captestcanary) app=(-smp 4) ;; esac
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" disk="$CI_LOG_DIR/disk-x86-${tag}.img"
         local kfeat=""; [ "$which" = sysabicanary ] && kfeat=syscall-abi-canary
         [ "$which" = foreigncanary ] && kfeat=foreign-regs-canary
+        [ "$which" = captest ] && kfeat=captest-row
         x86_disk_prep "$disk_t" "$kimg" "$disk" "$kfeat" || return
         if [ "$which" = canary ]; then
             local elf="$CI_LOG_DIR/x86-${tag}-ABITEST.ELF"
@@ -15394,6 +15411,31 @@ PY
             canary)
                 if ! grep -aqF "[AUTORUN] REFUSED: /fat/ABITEST.ELF" "$log"; then why="autorun did not refuse the altered ABITEST.ELF"
                 elif grep -aqF "[ABITEST]" "$log"; then why="the altered ABITEST.ELF ran"
+                fi ;;
+            systest)
+                if ! grep -aqF "[SYSCALL_TEST] ALL PASSED!" "$log"; then why="syscall_test did not print ALL PASSED"
+                elif grep -aqF "[SYSCALL_TEST] FAILED!" "$log"; then why="syscall_test printed FAILED"
+                fi ;;
+            latbench)
+                if grep -aqE "LATBENCH\] (FATAL|PANIC)" "$log"; then why="$(grep -aE 'LATBENCH\] (FATAL|PANIC)' "$log" | sed -n 1p)"
+                elif ! grep -aqF "[LATBENCH] DONE" "$log"; then why="latbench never printed DONE"
+                fi ;;
+            captest|captestcanary)
+                fail_lines="$(grep -a "\[CAPTEST\]  FAIL  " "$log" | sed "s/^\[CAPTEST\]  FAIL  //")"
+                fails="$(printf '%s\n' "$fail_lines" | grep -c .)"
+                if [ "$which" = captestcanary ]; then
+                    # The bind is refused for the missing reservation, and
+                    # only that: the canary proves the row reads the IRQ case.
+                    if ! printf '%s\n' "$fail_lines" | grep -qF "irq: irq_bind(absent line) -> -ENODEV rc=-1"; then
+                        why="the absent line's bind was not refused -EPERM without the row's reservation: $(printf '%s\n' "$fail_lines" | sed -n 1,3p | tr '\n' ';')"
+                    elif [ "$fails" -ne 1 ]; then why="captest failed $fails checks, the canary expects only the bind: $(printf '%s\n' "$fail_lines" | sed -n 1,4p | tr '\n' ';')"
+                    else ok; echo "      canary failed as it must: [irq_bind(absent line) rc=-1]"; rm -f "$log"; return
+                    fi
+                elif [ "$fails" -gt 0 ]; then why="captest reported $fails failure(s): $(printf '%s\n' "$fail_lines" | sed -n 1,4p | tr '\n' ';')"
+                elif ! grep -aqF "[CAPTEST] ALL PASSED" "$log"; then why="captest never printed ALL PASSED"
+                elif ! grep -aqF "[IRQ] ring-3 line 1000 refused by the interrupt controller" "$log" \
+                     || ! grep -aqE "\[IRQ\] ring-3 line 1000 refused .*bindings left on the line: 0" "$log"; then
+                    why="the kernel did not refuse the absent line 1000 with no binding left"
                 fi ;;
             *)
                 local tagw; tagw="$(printf '%s' "$which" | tr 'a-z' 'A-Z')"
@@ -15445,6 +15487,10 @@ PY
     par "x86_64 abitest hwcap canary, -sha-ni" x86_autorun_row hwcapcanary
     par "x86_64 abitest sysabi canary" x86_autorun_row sysabicanary
     par "x86_64 abitest foreign regs canary" x86_autorun_row foreigncanary
+    par "x86_64 syscall ABI" x86_autorun_row systest
+    par "x86_64 syscall latency" x86_autorun_row latbench
+    par "x86_64 captest" x86_autorun_row captest
+    par "x86_64 captest canary, no hard reservation" x86_autorun_row captestcanary
 
     # ── Wave 15 (GR5): the panic report is not spliced (see the rv/arm rows,
     # `panic_splice_row`, for the property and the read). Same smoke and

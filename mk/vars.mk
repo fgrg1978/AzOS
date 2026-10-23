@@ -850,6 +850,7 @@ X86_64_UFLAGS  = --target $(USER_SPECS)/$(TARGET_X86_64).json \
 	--config 'target.$(TARGET_X86_64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)",'"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
 X86_64_UBUILT := $(TARGET_X86_64)/release
 HELLO_ELF_X86_64     := $(X86_64_DIR)/hello.elf
+SYSTEST_ELF_X86_64   := $(X86_64_DIR)/syscall_test.elf
 UHELLO_ELF_X86_64    := $(X86_64_DIR)/uhello.elf
 EPSRV_ELF_X86_64     := $(X86_64_DIR)/epsrv.elf
 ABICHILD_ELF_X86_64  := $(X86_64_DIR)/abichild.elf
@@ -857,6 +858,8 @@ REFLEX_ELF_X86_64    := $(X86_64_DIR)/reflex.elf
 BRAINCLI_ELF_X86_64  := $(X86_64_DIR)/brain_client.elf
 ABITEST_ELF_X86_64   := $(X86_64_DIR)/abitest.elf
 IPCTEST_ELF_X86_64   := $(X86_64_DIR)/ipctest.elf
+CAPTEST_ELF_X86_64   := $(X86_64_DIR)/captest.elf
+LATBENCH_ELF_X86_64  := $(X86_64_DIR)/latbench.elf
 GPIO_DRV_ELF_X86_64  := $(X86_64_DIR)/gpio_drv.elf
 BUZZ_DRV_ELF_X86_64  := $(X86_64_DIR)/buzz_drv.elf
 INA_DRV_ELF_X86_64   := $(X86_64_DIR)/ina_drv.elf
@@ -890,6 +893,7 @@ CONFIG_ELF_X86_64    := $(X86_64_DIR)/config.elf
 OTA_ELF_X86_64       := $(X86_64_DIR)/ota.elf
 VSBENCH_ELF_X86_64   := $(X86_64_DIR)/vsbench.elf
 VSSRV_ELF_X86_64     := $(X86_64_DIR)/vssrv.elf
+LXSRV_ELF_X86_64     := $(X86_64_DIR)/lxsrv.elf
 LXHELLO_ELF_X86_64   := $(X86_64_DIR)/lxhello.elf
 # The Linux runtime the x86_64 kernel embeds (Kconfig LINUX_RUNTIME), as
 # LXRT_ELF is for riscv64: a prerequisite of the image-hash table, not a disk
@@ -897,9 +901,10 @@ LXHELLO_ELF_X86_64   := $(X86_64_DIR)/lxhello.elf
 # configuration may not exist yet when this is read: its defconfig counts too).
 LXRT_ELF_X86_64      := $(X86_64_DIR)/linux_rt.elf
 LXRT_NEED_X86_64      = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(X86_64_KCONFIG) $(X86_64_DEFCONFIG) </dev/null && echo yes)
-IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) UHELLO.ELF=$(UHELLO_ELF_X86_64) EPSRV.ELF=$(EPSRV_ELF_X86_64) ABICHILD.ELF=$(ABICHILD_ELF_X86_64) \
+IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) SYSTEST.ELF=$(SYSTEST_ELF_X86_64) UHELLO.ELF=$(UHELLO_ELF_X86_64) EPSRV.ELF=$(EPSRV_ELF_X86_64) ABICHILD.ELF=$(ABICHILD_ELF_X86_64) \
               REFLEX.ELF=$(REFLEX_ELF_X86_64) BRAINCLI.ELF=$(BRAINCLI_ELF_X86_64) \
               ABITEST.ELF=$(ABITEST_ELF_X86_64) IPCTEST.ELF=$(IPCTEST_ELF_X86_64) \
+              CAPTEST.ELF=$(CAPTEST_ELF_X86_64) LATBENCH.ELF=$(LATBENCH_ELF_X86_64) \
               GPIODRV.ELF=$(GPIO_DRV_ELF_X86_64) BUZZDRV.ELF=$(BUZZ_DRV_ELF_X86_64) INADRV.ELF=$(INA_DRV_ELF_X86_64) \
               MLSRV.ELF=$(MLSRV_ELF_X86_64) \
               SH.ELF=$(SH_ELF_X86_64) TERMD.ELF=$(TERMD_ELF_X86_64) NAMESD.ELF=$(NAMESD_ELF_X86_64) COMPMGR.ELF=$(COMPMGR_ELF_X86_64) TOOLBOX.ELF=$(TOOLBOX_ELF_X86_64) POWER.ELF=$(POWER_ELF_X86_64) \
@@ -908,6 +913,7 @@ IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) UHELLO.ELF=$(UHELLO_ELF_X86_6
               FLIGHT.ELF=$(FLIGHT_ELF_X86_64) BEHAVIOR.ELF=$(BEHAVIOR_ELF_X86_64) \
               CONFIG.ELF=$(CONFIG_ELF_X86_64) OTA.ELF=$(OTA_ELF_X86_64) \
               VSBENCH.ELF=$(VSBENCH_ELF_X86_64) VSSRV.ELF=$(VSSRV_ELF_X86_64) \
+              LXSRV.ELF=$(LXSRV_ELF_X86_64) \
               LXHELLO.ELF=$(LXHELLO_ELF_X86_64)
 IMAGE_ELF_PATHS_X86_64 := $(foreach e,$(IMAGE_ELFS_X86_64),$(lastword $(subst =, ,$(e))))
 IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs
