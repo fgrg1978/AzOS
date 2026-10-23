@@ -150,6 +150,56 @@ pub(crate) fn wait_for(tries: u32, mut cond: impl FnMut() -> bool) -> bool {
 /// Polls a handshake bit waits before it calls the unit dead.
 pub(crate) const POLL: u32 = 2_000_000;
 
+/// Translating devices a unit holds at once.
+pub(crate) const TAGS: usize = 16;
+
+/// The cache tag of each translating device: the ASID (SMMUv3), PSCID
+/// (RISC-V) or domain id (VT-d, AMD-Vi) the unit tags every translation it
+/// caches with. A device's domain is its own page table (`domain::IoDomain`),
+/// so each translating device gets a tag of its own: a device never hits a
+/// translation cached for another one's table, and a flush names one
+/// device's tag only. Tags are `first..first + len`; a device keeps its tag
+/// while it translates and gives it back when it stops, once the unit has
+/// dropped what it cached under it.
+pub(crate) struct Tags {
+    first: u16,
+    len: usize,
+    /// The device holding tag `first + i`; `FREE` for none.
+    owners: [u32; TAGS],
+}
+
+const FREE: u32 = u32::MAX;
+
+impl Tags {
+    /// Tags `first..first + len`, at most [`TAGS`] of them.
+    pub(crate) const fn new(first: u16, len: usize) -> Self {
+        Tags { first, len: if len < TAGS { len } else { TAGS }, owners: [FREE; TAGS] }
+    }
+
+    /// The tag device `dev` holds, if it translates.
+    pub(crate) fn of(&self, dev: u32) -> Option<u16> {
+        self.owners[..self.len].iter().position(|&d| d == dev).map(|i| self.first + i as u16)
+    }
+
+    /// The tag of device `dev`, taking a free one when it holds none; `None`
+    /// when every tag is held.
+    pub(crate) fn take(&mut self, dev: u32) -> Option<u16> {
+        if let Some(tag) = self.of(dev) {
+            return Some(tag);
+        }
+        let i = self.owners[..self.len].iter().position(|&d| d == FREE)?;
+        self.owners[i] = dev;
+        Some(self.first + i as u16)
+    }
+
+    /// Device `dev` stopped translating: its tag is free for another device.
+    pub(crate) fn release(&mut self, dev: u32) {
+        if let Some(d) = self.owners[..self.len].iter_mut().find(|d| **d == dev) {
+            *d = FREE;
+        }
+    }
+}
+
 /// A DMA fault, flavour-independent: the durable record the kernel keeps is
 /// built from this, not from the unit's raw record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -22,7 +22,8 @@ use core::sync::atomic::{fence, Ordering};
 
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
-    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, POLL,
+    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, POLL,
+    TAGS,
 };
 
 // ---- registers ----
@@ -47,9 +48,8 @@ pub const STATUS_EVT_OVERFLOW: u64 = 1 << 0;
 pub const STATUS_EVT_LOG_RUN: u64 = 1 << 3;
 pub const STATUS_CMD_BUF_RUN: u64 = 1 << 4;
 
-/// Translating devices at once; their domain ids are `DOMAIN_FIRST..`
-/// (id 1 is the pass-through domain, 0 is left alone).
-const DOMAIN_SLOTS: usize = 16;
+/// The first domain id of a translating device (id 1 is the pass-through
+/// domain, 0 is left alone).
 const DOMAIN_FIRST: u16 = 2;
 /// Commands issued between two completion waits when the bring-up
 /// invalidates entry by entry (the command buffer holds 256).
@@ -186,9 +186,8 @@ pub struct AmdVi<M: Mmio> {
     evt_head: u64,
     sem: u64,
     sem_seq: u64,
-    /// The device each translating domain id belongs to (id =
-    /// `DOMAIN_FIRST + slot`); `u32::MAX` is a free id.
-    domains: [u32; DOMAIN_SLOTS],
+    /// The domain id of each translating device.
+    tags: Tags,
 }
 
 impl<M: Mmio> AmdVi<M> {
@@ -238,7 +237,7 @@ impl<M: Mmio> AmdVi<M> {
             evt_head: 0,
             sem,
             sem_seq: 0,
-            domains: [u32::MAX; DOMAIN_SLOTS],
+            tags: Tags::new(DOMAIN_FIRST, TAGS),
         };
         unit.invalidate_all(efr & EFR_IASUP != 0)?;
         unit.mmio.write64(REG_CONTROL, CTRL_CMD_BUF_EN | CTRL_EVT_LOG_EN | CTRL_IOMMU_EN);
@@ -266,7 +265,7 @@ impl<M: Mmio> AmdVi<M> {
             return self.wait_complete();
         }
         let mut batch = 0;
-        let pages = (1..DOMAIN_FIRST + DOMAIN_SLOTS as u16).map(cmd_inv_pages_all);
+        let pages = (1..DOMAIN_FIRST + TAGS as u16).map(cmd_inv_pages_all);
         let devs = (0..=self.max_dev).map(cmd_inv_dev_entry);
         for cmd in devs.chain(pages) {
             self.command(cmd)?;
@@ -295,33 +294,15 @@ impl<M: Mmio> AmdVi<M> {
         Ok(())
     }
 
-    /// The domain id of translating device `dev`: one per device, kept while
-    /// the device translates.
-    fn domain_of(&mut self, dev: u32) -> Result<u16, IommuError> {
-        let slot = match self.domains.iter().position(|&d| d == dev) {
-            Some(slot) => slot,
-            None => {
-                let slot = self
-                    .domains
-                    .iter()
-                    .position(|&d| d == u32::MAX)
-                    .ok_or(IommuError::Unsupported("amd-vi: out of domains"))?;
-                self.domains[slot] = dev;
-                slot
-            }
-        };
-        Ok(DOMAIN_FIRST + slot as u16)
-    }
-
     /// Device `dev` stopped translating: drop what the unit cached for its
     /// domain id and free the id for another device.
     fn release_domain(&mut self, dev: u32) -> Result<(), IommuError> {
-        let Some(slot) = self.domains.iter().position(|&d| d == dev) else {
+        let Some(did) = self.tags.of(dev) else {
             return Ok(());
         };
-        self.command(cmd_inv_pages_all(DOMAIN_FIRST + slot as u16))?;
+        self.command(cmd_inv_pages_all(did))?;
         self.wait_complete()?;
-        self.domains[slot] = u32::MAX;
+        self.tags.release(dev);
         Ok(())
     }
 }
@@ -340,7 +321,9 @@ impl<M: Mmio + Send> IommuUnit for AmdVi<M> {
             return Err(IommuError::DeviceOutOfRange);
         }
         let did = match mode {
-            DomainMode::Translate { .. } => self.domain_of(dev)?,
+            DomainMode::Translate { .. } => {
+                self.tags.take(dev).ok_or(IommuError::Unsupported("amd-vi: out of domains"))?
+            }
             _ => 1,
         };
         let dte = encode_dte(mode, self.pt.levels, did);
@@ -364,10 +347,10 @@ impl<M: Mmio + Send> IommuUnit for AmdVi<M> {
 
     fn flush(&mut self, dev: u32) -> Result<(), IommuError> {
         // Only a translating device has a domain of its own to flush.
-        let Some(slot) = self.domains.iter().position(|&d| d == dev) else {
+        let Some(did) = self.tags.of(dev) else {
             return Ok(());
         };
-        self.command(cmd_inv_pages_all(DOMAIN_FIRST + slot as u16))?;
+        self.command(cmd_inv_pages_all(did))?;
         self.wait_complete()
     }
 

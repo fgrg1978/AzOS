@@ -21,7 +21,7 @@ use core::sync::atomic::{fence, Ordering};
 
 use crate::pgtable::{PtFormat, PtKind};
 use crate::{
-    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, POLL,
+    rd64, wait_for, wr64, DmaFault, DomainMode, FaultKind, Flavour, IommuError, IommuUnit, Mmio, TableMem, Tags, POLL,
 };
 
 // ---- registers ----
@@ -169,9 +169,8 @@ pub fn classify(r: &FaultRecord) -> DmaFault {
 
 /// Domain id of every pass-through device (the IOTLB is not used for them).
 const DID_BYPASS: u16 = 1;
-/// Translating devices at once; their domain ids are `DID_FIRST + slot`
-/// (0 is reserved in caching mode, 1 is `DID_BYPASS`).
-const DOMAIN_SLOTS: usize = 16;
+/// The first domain id of a translating device (0 is reserved in caching
+/// mode, 1 is `DID_BYPASS`).
 const DID_FIRST: u16 = 2;
 
 /// One VT-d remapping unit in legacy mode.
@@ -184,10 +183,8 @@ pub struct Vtd<M: Mmio> {
     aw: u8,
     root: u64,
     gcmd: u32,
-    /// The device each translating domain id belongs to; `u32::MAX` is a
-    /// free id. Only the first `slots` entries are ids the unit has.
-    domains: [u32; DOMAIN_SLOTS],
-    slots: usize,
+    /// The domain id of each translating device.
+    tags: Tags,
 }
 
 impl<M: Mmio> Vtd<M> {
@@ -212,7 +209,7 @@ impl<M: Mmio> Vtd<M> {
         mmio.write32(REG_FECTL, FECTL_IM);
 
         // `CAP.ND` domain ids, less the two this crate keeps for itself.
-        let slots = (ndoms(cap) as usize - DID_FIRST as usize).min(DOMAIN_SLOTS);
+        let slots = ndoms(cap) as usize - DID_FIRST as usize;
         let mut unit = Vtd {
             mmio,
             mem,
@@ -222,8 +219,7 @@ impl<M: Mmio> Vtd<M> {
             aw,
             root,
             gcmd: 0,
-            domains: [u32::MAX; DOMAIN_SLOTS],
-            slots,
+            tags: Tags::new(DID_FIRST, slots),
         };
         unit.write_buffer_flush()?;
         // Root table pointer, legacy mode (TTM = 0).
@@ -290,24 +286,6 @@ impl<M: Mmio> Vtd<M> {
         };
         Ok(ctx + devfn * 16)
     }
-
-    /// The domain id of translating device `dev`: one per device, kept while
-    /// the device translates.
-    fn domain_of(&mut self, dev: u32) -> Result<u16, IommuError> {
-        let slots = &mut self.domains[..self.slots];
-        let slot = match slots.iter().position(|&d| d == dev) {
-            Some(slot) => slot,
-            None => {
-                let slot = slots
-                    .iter()
-                    .position(|&d| d == u32::MAX)
-                    .ok_or(IommuError::Unsupported("vt-d: out of domain ids"))?;
-                slots[slot] = dev;
-                slot
-            }
-        };
-        Ok(DID_FIRST + slot as u16)
-    }
 }
 
 impl<M: Mmio + Send> IommuUnit for Vtd<M> {
@@ -322,7 +300,9 @@ impl<M: Mmio + Send> IommuUnit for Vtd<M> {
     fn attach(&mut self, dev: u32, mode: DomainMode) -> Result<(), IommuError> {
         let slot = self.context_slot(dev)?;
         let did = match mode {
-            DomainMode::Translate { .. } => self.domain_of(dev)?,
+            DomainMode::Translate { .. } => {
+                self.tags.take(dev).ok_or(IommuError::Unsupported("vt-d: out of domain ids"))?
+            }
             _ => DID_BYPASS,
         };
         let e = context_entry(mode, self.aw, did);
@@ -338,9 +318,7 @@ impl<M: Mmio + Send> IommuUnit for Vtd<M> {
         // device gives up, so the id is free for another device.
         self.invalidate_all()?;
         if !matches!(mode, DomainMode::Translate { .. }) {
-            if let Some(d) = self.domains.iter_mut().find(|d| **d == dev) {
-                *d = u32::MAX;
-            }
+            self.tags.release(dev);
         }
         Ok(())
     }
