@@ -2,9 +2,14 @@
 name = "azos_drv_power"
 version = "0.1.0"
 edition = "2021"
-description = "Power management: system suspend (the sequence, and the platform the kernel installs for it)."
+description = "Power management: system suspend (the sequence, and the platform the kernel installs for it), and the BCM2835 PM block (the Raspberry Pi watchdog, reboot and power-off)."
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
+
+[features]
+# Host canary only (tests/host/power-tests, `pm_wdt`): the boot partition of a
+# PM reset is written unspread, so a power-off boots again. Never in a build.
+pm-partition-canary = []
 
 [dependencies]
 azos_decision = { workspace = true }

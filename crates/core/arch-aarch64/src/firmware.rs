@@ -812,9 +812,47 @@ pub fn cpu_on_checked(target_cpu: u64, entry_point_phys: u64, context_id: u64) -
     decode_cpu_on(cpu_on(target_cpu, entry_point_phys, context_id) as i64)
 }
 
-/// `PSCI_SYSTEM_OFF`: shut the system down. Does not return.
+// ── Platform reset (firmware without PSCI) ──────────────────────────────
+//
+// A board whose firmware has no PSCI (the Raspberry Pis below the Pi 4 boot
+// through the VideoCore's spin table, and their tree has no `/psci` node)
+// resets through a device instead: the kernel installs that device's handler
+// here when the hardware bus binds it (the BCM2835 PM watchdog,
+// `azos_drv_sys::wdt::pm_reset`). [`system_reset`] and [`system_off`] call it
+// only when the tree named no PSCI conduit: where the firmware has PSCI, PSCI
+// answers, as on Linux, whose PSCI restart handler outranks the watchdog's.
+
+azos_common::ro_hook! {
+    /// The reset handler of a board without PSCI: `true` powers off, `false`
+    /// reboots. Returns only if the reset did not happen.
+    static PLATFORM_RESET: fn(bool);
+}
+
+/// Did the device tree's `/psci` node name the conduit
+/// ([`select_conduit_from_fdt`])?
+static PSCI_NAMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Install the reset handler of a board without PSCI. Once, at boot.
+pub fn set_platform_reset(f: fn(bool)) {
+    PLATFORM_RESET.set(f);
+}
+
+/// The platform reset handler, if the boot installed one and the tree named
+/// no PSCI conduit.
+fn platform_reset() -> Option<fn(bool)> {
+    if PSCI_NAMED.load(core::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    PLATFORM_RESET.get()
+}
+
+/// `PSCI_SYSTEM_OFF`: shut the system down. Does not return. A board without
+/// PSCI powers off through its platform reset handler first.
 #[cfg(target_arch = "aarch64")]
 pub fn system_off() -> ! {
+    if let Some(f) = platform_reset() {
+        f(true);
+    }
     let _ = psci_call(PSCI_SYSTEM_OFF, 0, 0, 0);
     // PSCI promises SYSTEM_OFF never returns. If it does (broken
     // firmware) we park forever.
@@ -825,9 +863,13 @@ pub fn system_off() -> ! {
     }
 }
 
-/// `PSCI_SYSTEM_RESET`: warm reboot. Does not return.
+/// `PSCI_SYSTEM_RESET`: warm reboot. Does not return. A board without PSCI
+/// reboots through its platform reset handler first.
 #[cfg(target_arch = "aarch64")]
 pub fn system_reset() -> ! {
+    if let Some(f) = platform_reset() {
+        f(false);
+    }
     let _ = psci_call(PSCI_SYSTEM_RESET, 0, 0, 0);
     loop {
         unsafe {
@@ -1044,6 +1086,7 @@ pub unsafe fn select_conduit_from_fdt(fdt_ptr: u64) -> bool {
     match find_method(struct_block, strings, off_dt_struct) {
         Some(c) => {
             set_conduit(c);
+            PSCI_NAMED.store(true, core::sync::atomic::Ordering::Release);
             true
         }
         None => false,

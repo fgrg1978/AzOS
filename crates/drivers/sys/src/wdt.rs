@@ -10,11 +10,17 @@
 //! | VF2 (JH7110) | `starfive,jh7110-wdt` (WDT-L, NOT DesignWare) | the node's `reg` (`0x1307_0000` on the stock tree), handed over by [`wdt_attach`] | unlock → `INTCLR=1` → lock |
 //! | K1 (SpacemiT) | **none** — no watchdog node anywhere in mainline `k1.dtsi` | — | [`wdt_has_hardware`] is `false` |
 //! | Arm SBSA/BSA machines | the Generic Watchdog, `arm,sbsa-gwdt` (Kconfig `WDT_SBSA`) | the node's two `reg` frames, handed over by [`sbsa_attach`] | write `WRR` (`wdt_sbsa`) |
+//! | Raspberry Pi (BCM2835/6/7) | the PM block, `brcm,bcm2835-pm` / `brcm,bcm2835-pm-wdt` (Kconfig `WDT_BCM2835_PM`) | the node's first `reg`, handed over by [`pm_attach`] | `WDOG` rewritten, `RSTC.WRCFG` = full reset (`azos_drv_power::bcm2835_pm`) |
 //! | AMD Zen (FCH) | the FCH watchdog ("SP5100 TCO"), found by its SMBus function `1022:790b` (Kconfig `WDT_SP5100_TCO`) | the FCH's own window, decoded by [`sp5100_decode`], handed over by [`sp5100_attach`] | `CONTROL.trigger` (`wdt_sp5100`) |
 //!
-//! The SBSA and FCH watchdogs are [`Found`] backends: the bus finds at most
-//! one, and the public calls below drive it besides the VF2's own path. No
-//! board selects one: the device tree or the PCI bus says which is there.
+//! The SBSA, FCH and Raspberry Pi PM watchdogs are [`Found`] backends: the
+//! bus finds at most one, and the public calls below drive it besides the
+//! VF2's own path. No board selects one: the device tree or the PCI bus says
+//! which is there.
+//!
+//! The PM block is also how a Pi reboots and powers off: its firmware has no
+//! PSCI, so [`pm_reset`] is the reset handler the kernel installs for the arch
+//! layer when the bus binds the node (`kernel/src/boot/hwbus.rs`).
 //!
 //! The window is the hardware bus's: the kernel binds the `wdt` driver to the
 //! `starfive,jh7110-wdt` node right after the SoC frameworks (so its clocks
@@ -156,6 +162,8 @@ static BACKENDS: &[&Found] = &[
     &sbsa::FOUND,
     #[cfg(feature = "wdt-sp5100")]
     &sp5100::FOUND,
+    #[cfg(feature = "bcm2835-pm")]
+    &pm::FOUND,
 ];
 
 static FOUND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
@@ -171,7 +179,7 @@ pub fn found() -> Option<&'static Found> {
 
 /// Make `w` the hardware watchdog. Refused when one is already installed:
 /// the bus found a second.
-#[cfg(any(feature = "wdt-sbsa", feature = "wdt-sp5100"))]
+#[cfg(any(feature = "wdt-sbsa", feature = "wdt-sp5100", feature = "bcm2835-pm"))]
 fn install(w: &'static Found) -> Result<(), azos_drv_base::window::Taken> {
     let i = BACKENDS.iter().position(|b| core::ptr::eq(*b, w)).ok_or(azos_drv_base::window::Taken)? + 1;
     FOUND.compare_exchange(0, i as u8, Ordering::AcqRel, Ordering::Acquire)
@@ -336,6 +344,94 @@ pub fn sp5100_attach(pm: usize, wdt: usize) -> Result<bool, crate::wdt_sp5100::R
     sp5100::WINDOW.attach(wdt).map_err(|_| Refused::Busy)?;
     install(&sp5100::FOUND).map_err(|_| Refused::Busy)?;
     Ok(fired)
+}
+
+// ── BCM2835 PM block (the Raspberry Pis, Kconfig WDT_BCM2835_PM) ────────────
+
+/// The PM block (`azos_drv_power::bcm2835_pm`): its window, and the countdown
+/// [`wdt_init`] armed, in watchdog ticks (every kick reloads it).
+#[cfg(feature = "bcm2835-pm")]
+mod pm {
+    use super::{AtomicU32, Ordering};
+    use azos_drv_base::window::Window;
+    use azos_drv_power::bcm2835_pm as pm;
+
+    /// The `brcm,bcm2835-pm` window, attached when the hardware bus binds the
+    /// node ([`super::pm_attach`]). Unbound: no PM block, nothing is written.
+    pub(super) static WINDOW: Window = Window::new();
+    static TICKS: AtomicU32 = AtomicU32::new(0);
+
+    /// The bound PM block's registers.
+    pub(super) struct Mmio(pub(super) usize);
+
+    impl pm::PmRegs for Mmio {
+        fn read32(&self, off: usize) -> u32 {
+            // SAFETY: `self.0` is the window the bus mapped for the node
+            // (`pm_attach`); `off` is one of the block's registers, inside
+            // `bcm2835_pm::MIN_WINDOW`, which the probe checked.
+            unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+        }
+        fn write32(&self, off: usize, val: u32) {
+            // SAFETY: as for `read32`.
+            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
+        }
+    }
+
+    /// Arm for `ms` (clamped to the 16 s the counter holds); the timeout armed.
+    fn arm(ms: u32) -> u32 {
+        let Some(base) = WINDOW.base() else { return 0 };
+        let ms = ms.min(pm::MAX_TIMEOUT_MS);
+        let ticks = pm::ticks_for_ms(ms);
+        TICKS.store(ticks, Ordering::Relaxed);
+        pm::arm(&Mmio(base), ticks);
+        ms
+    }
+
+    /// The timer interrupt calls this: a watchdog `wdt_init` never armed is a
+    /// plain return.
+    fn kick() {
+        if let (Some(base), t @ 1..) = (WINDOW.base(), TICKS.load(Ordering::Relaxed)) {
+            pm::arm(&Mmio(base), t);
+        }
+    }
+
+    fn disarm() {
+        if let Some(base) = WINDOW.base() {
+            TICKS.store(0, Ordering::Relaxed);
+            pm::disarm(&Mmio(base));
+        }
+    }
+
+    pub(super) static FOUND: super::Found = super::Found { name: "bcm2835-pm", arm, kick, disarm };
+}
+
+/// Hand the driver the PM block the hardware bus bound at `base`. Nothing is
+/// written: the watchdog stays as the firmware left it until [`wdt_init`] arms
+/// it. `Err` when a block is already attached or another watchdog was found.
+#[cfg(feature = "bcm2835-pm")]
+pub fn pm_attach(base: usize) -> Result<(), azos_drv_base::window::Taken> {
+    if found().is_some() {
+        return Err(azos_drv_base::window::Taken);
+    }
+    pm::WINDOW.attach(base)?;
+    install(&pm::FOUND)
+}
+
+/// Reset the SoC through the PM block: `halt` false reboots, true leaves the
+/// firmware halted (boot partition 63), which is a Pi's power-off. The reset
+/// comes about 150 us after the write; the call waits a millisecond for it
+/// and returns only when no block is bound or the reset did not come, so the
+/// caller can try the next way.
+#[cfg(feature = "bcm2835-pm")]
+pub fn pm_reset(halt: bool) {
+    use azos_drv_power::bcm2835_pm as p;
+    let Some(base) = pm::WINDOW.base() else { return };
+    p::restart(&pm::Mmio(base), if halt { p::PARTITION_HALT } else { 0 });
+    let start = crate::timebase::now();
+    let wait = crate::timebase::freq() / 1000;
+    while crate::timebase::now().wrapping_sub(start) < wait {
+        core::hint::spin_loop();
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

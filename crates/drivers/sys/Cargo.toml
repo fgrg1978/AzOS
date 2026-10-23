@@ -28,6 +28,9 @@ wdt-sim = []
 # FCH watchdog as the hardware watchdog the bus finds (`wdt::found`).
 wdt-sbsa = []
 wdt-sp5100 = []
+# Kconfig WDT_BCM2835_PM: the Raspberry Pi's PM block as the hardware
+# watchdog and the reset handler (`wdt::pm_attach`).
+bcm2835-pm = ["dep:azos_drv_power"]
 # Wave 13 canary: `^C` on a console lent to a Linux job is queued as a byte,
 # not turned into SIGINT. Never in a real build.
 console-isig-canary = []
@@ -61,6 +64,7 @@ azos_limits        = { workspace = true }
 azos_driver_server = { workspace = true }
 azos_drv_api       = { workspace = true }
 azos_drv_base      = { workspace = true }
+azos_drv_power     = { workspace = true, optional = true }
 
 [build-dependencies]
 # No external deps — build.rs uses only std (fs, env, path).

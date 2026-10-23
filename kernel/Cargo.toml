@@ -421,6 +421,10 @@ e1000e = ["pci", "azos_drv_net/e1000e"]
 igc = ["pci", "azos_drv_net/igc"]
 # Gate canary only: the PRP list pointer is wrong; `[NVME] prp selftest` must say FAIL.
 nvme-prp-canary = ["nvme", "azos_drv_block/nvme-prp-canary"]
+# Kconfig WDT_BCM2835_PM: the Raspberry Pi's PM block as the hardware watchdog
+# and the reset handler of a Pi without PSCI (`azos_drv_sys::wdt::pm_attach`,
+# kernel/src/boot/hwbus.rs).
+wdt-bcm2835-pm = ["azos_drv_sys/bcm2835-pm"]
 # Kconfig USB_HOST: the native USB host core (crates/drivers/usb): device
 # enumeration, hubs, pipes, the class-driver interface, the `usb` task.
 usb-host = ["dep:azos_usb"]

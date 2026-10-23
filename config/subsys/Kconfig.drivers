@@ -290,6 +290,30 @@ config WDT_SP5100_TCO
       (index/data ports) are not driven. QEMU models no FCH. n: such a
       machine has the software watchdog only.
 
+config WDT_BCM2835_PM
+    # cargo-feature: wdt-bcm2835-pm
+    bool "Raspberry Pi PM block: hardware watchdog, reboot and power-off (BCM2835/6/7)"
+    default y if ARCH_AARCH64 && !HWCLASS_EMBEDDED
+    default n
+    depends on ARCH_AARCH64
+    help
+      Kernel feature `wdt-bcm2835-pm` (crates/drivers/power/src/bcm2835_pm.rs,
+      crates/drivers/sys/src/wdt.rs). The power-management block of the
+      32-bit-bus Raspberry Pis (the Pi 3 B's BCM2837 among them), found by
+      the hardware bus as a device-tree node `brcm,bcm2835-pm` or
+      `brcm,bcm2835-pm-wdt` (its first `reg`): its watchdog becomes the
+      hardware watchdog sys-wdt arms and the RT tick kicks (16 s at most;
+      a longer timeout is armed as 16 s), and it is how such a Pi reboots
+      and powers off. Their firmware has no PSCI, so with the node bound and
+      no `/psci` node in the tree, a reboot (the power service, the shell,
+      a panic, OTA) resets the SoC through the watchdog, and a power-off
+      resets it into boot partition 63, where the firmware halts (the board
+      stays powered with everything stopped, as on Linux). A tree that names
+      a PSCI conduit keeps PSCI. QEMU `-M raspi3b` models the block (a
+      reboot resets the machine; its power-off resets it too, QEMU has no
+      halt). n: a Pi has no hardware watchdog and its reboot and power-off
+      call a PSCI that is not there.
+
 config DRV_IGC
     # cargo-feature: igc
     bool "Intel I225/I226 2.5 GbE Ethernet (igc) over PCIe"

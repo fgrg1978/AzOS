@@ -31,6 +31,11 @@ mod power_ring3;
 #[cfg(test)]
 mod suspend;
 
+// The Raspberry Pi PM block: watchdog, reboot and power-off sequences against
+// a fake block.
+#[cfg(test)]
+mod pm_wdt;
+
 /// A kernel with the real limits behind the `PowerPolicy` trait.
 #[cfg(test)]
 mod kern {

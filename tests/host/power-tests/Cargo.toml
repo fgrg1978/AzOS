@@ -23,6 +23,10 @@ pw-monitor-canary = []
 # The levels: pw-levels, every level asks the same 50 % whatever the rows and
 # the reserve say (the `levels_` tests of power_ring3).
 pw-levels-canary = []
+# The Raspberry Pi PM block (crates/drivers/power/src/bcm2835_pm.rs, pulled in
+# by path): the boot partition is not spread over the even bits, so a
+# power-off boots again (the `pm_wdt` halt tests must FAIL).
+pm-partition-canary = []
 
 [dependencies]
 azos_idl = { path = "../../../crates/core/idl" }

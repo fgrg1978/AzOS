@@ -109,13 +109,14 @@ fn wants_resources(driver: &str) -> bool {
 /// node without a window is not a controller). A window in the 2 MiB slot of
 /// the vDSO page is refused: the board's fixed windows were checked against it
 /// at build time (`platform.rs`), a tree's are checked here.
-// arch-only: the Raspberry Pi mailbox (aarch64) is the only caller that is neither a vf2 nor a K1.
+// arch-only: the Raspberry Pi mailbox and PM block (aarch64) are the only callers that are neither a vf2 nor a K1.
 #[cfg(any(
     feature = "vf2",
     feature = "k1",
     feature = "wdt-sbsa",
     all(feature = "soc-k1", feature = "thermal"),
-    all(feature = "thermal", target_arch = "aarch64")
+    all(feature = "thermal", target_arch = "aarch64"),
+    all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
 fn map_window(dev: &Device) -> Result<usize, ProbeError> {
     map_reg(dev, dev.base, dev.size)
@@ -128,7 +129,8 @@ fn map_window(dev: &Device) -> Result<usize, ProbeError> {
     feature = "k1",
     feature = "wdt-sbsa",
     all(feature = "soc-k1", feature = "thermal"),
-    all(feature = "thermal", target_arch = "aarch64")
+    all(feature = "thermal", target_arch = "aarch64"),
+    all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
 fn map_reg(dev: &Device, base: u64, size: u64) -> Result<usize, ProbeError> {
     let (base, size) = (base as usize, size as usize);
@@ -468,6 +470,14 @@ impl Drivers for KernelDrivers<'_> {
                 },
                 _ => attach_wdt(dev),
             },
+            // arch-only: the BCM2835 PM block is the Raspberry Pis', and the Pis are aarch64.
+            #[cfg(all(feature = "wdt-bcm2835-pm", target_arch = "aarch64"))]
+            "pm-wdt" => {
+                if dev.size < azos_drv_power::bcm2835_pm::MIN_WINDOW {
+                    return Err(ProbeError::Failed);
+                }
+                crate::entry::aarch64::ext::rpi_pm::attach(map_window(dev)?).map_err(|_| ProbeError::Busy)
+            }
             #[cfg(feature = "vf2")]
             "dmac" => azos_drv_dmac::dma::dma_attach(map_window(dev)?).map_err(|_| ProbeError::Busy),
             #[cfg(feature = "vf2")]
@@ -865,7 +875,7 @@ pub(crate) fn bind(drivers: &[&str]) {
 /// refused boot: a bench board without a robot is legitimate, but the line
 /// names what it is running without, and `[HW]` repeats it later.
 pub(crate) fn bind_safety() {
-    bind(&["gpio", "wdt"]);
+    bind(&["gpio", "wdt", "pm-wdt"]);
     // The K1 has no watchdog node in its tree (`wdt_has_hardware()` is false
     // there), so the second line is the truth at every K1 boot.
     #[cfg(any(feature = "vf2", feature = "k1"))]

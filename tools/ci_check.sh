@@ -10392,6 +10392,11 @@ host_job host_canary_row "usb: reset event ring canary" usb-tests canary-xhci-re
     a_command_timeout_resets_the_controller_and_the_device_comes_back
 host_job host_canary_row "usb: HSE latches canary" usb-tests canary-xhci-hse-latches \
     a_host_system_error_resets_the_controller_and_a_second_latches_it
+# The Raspberry Pi PM block (crates/drivers/power/src/bcm2835_pm.rs): the boot
+# partition written unspread, so a power-off boots again (tests/host/power-tests,
+# `pm_wdt`).
+host_job host_canary_row "power: PM halt partition canary" power-tests pm-partition-canary \
+    a_power_off_resets_into_the_halt_partition
 # USB HID (azos_usb_hid): each canary puts one report-decoding or authorization
 # bug back (a phantom report taken for keys, a report ID not skipped, an unsigned
 # axis, modifiers after their report's keys, a hub tier not compared, a keyboard

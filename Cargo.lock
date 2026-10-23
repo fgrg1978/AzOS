@@ -412,6 +412,7 @@ dependencies = [
  "azos_driver_server",
  "azos_drv_api",
  "azos_drv_base",
+ "azos_drv_power",
  "azos_limits",
  "azos_rings",
  "azos_sync",

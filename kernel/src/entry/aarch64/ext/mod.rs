@@ -8,4 +8,6 @@ pub(crate) mod its_route;
 pub(crate) mod pan_patch;
 #[cfg(feature = "thermal")]
 pub(crate) mod rpi_mbox;
+#[cfg(feature = "wdt-bcm2835-pm")]
+pub(crate) mod rpi_pm;
 pub(crate) mod selftests;
