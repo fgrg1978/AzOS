@@ -13,3 +13,4 @@ pm-partition-canary = []
 
 [dependencies]
 azos_decision = { workspace = true }
+azos_sync = { workspace = true }

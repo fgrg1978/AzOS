@@ -10,7 +10,7 @@
 #[path = "pm/suspend.rs"]
 pub mod suspend;
 
-use core::cell::UnsafeCell;
+use azos_sync::SpinLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 use suspend::Platform;
 
@@ -19,28 +19,15 @@ use suspend::Platform;
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// The installed platform: written once at boot, before any ring-3 task runs.
-struct Slot {
-    ready: AtomicBool,
-    platform: UnsafeCell<Option<&'static (dyn Platform + Sync)>>,
-}
-
-// SAFETY: `platform` is written once, before `ready` is published, and only
-// read after `ready` was seen set.
-unsafe impl Sync for Slot {}
-
-static SLOT: Slot = Slot { ready: AtomicBool::new(false), platform: UnsafeCell::new(None) };
+/// The lock is held only to store or copy the reference, never across a
+/// suspend.
+static SLOT: SpinLock<Option<&'static (dyn Platform + Sync)>> = SpinLock::new(None);
 
 /// Install the platform system suspend runs on (the kernel, at boot, once).
 /// A build without Kconfig `SYSTEM_SUSPEND` installs none. A second call is
 /// ignored.
 pub fn install(p: &'static (dyn Platform + Sync)) {
-    if SLOT.ready.load(Ordering::Acquire) {
-        return;
-    }
-    // SAFETY: boot is single-threaded and `ready` is still clear, so nothing
-    // reads the cell.
-    unsafe { *SLOT.platform.get() = Some(p) };
-    SLOT.ready.store(true, Ordering::Release);
+    SLOT.lock().get_or_insert(p);
 }
 
 /// Write a `Rule::Suspend` record: `subject` is the domain it is about, the
@@ -66,9 +53,7 @@ pub fn pm_suspend(caller: u32, subject: u32) -> u32 {
         });
         reason.code()
     };
-    // SAFETY: `ready` is read before the cell, and the cell is written once,
-    // before `ready` is set.
-    let platform = if SLOT.ready.load(Ordering::Acquire) { unsafe { *SLOT.platform.get() } } else { None };
+    let platform = *SLOT.lock();
     // No platform: the build does not have system suspend (Kconfig
     // `SYSTEM_SUSPEND` is off, as it is on every robot, industrial and
     // automotive image).

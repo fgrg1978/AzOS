@@ -4,6 +4,7 @@
 //! watchdog, reboot and power-off).
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod bcm2835_pm;
 pub mod pm;

@@ -82,7 +82,7 @@ crates/drivers/net	32	4	6	0	0	65
 crates/drivers/npu	10	2	0	0	0	99
 crates/drivers/nvme	0	0	0	0	1	0
 crates/drivers/pci	0	0	0	0	1	0
-crates/drivers/power	2	0	1	0	0	16
+crates/drivers/power	0	0	0	0	1	0
 crates/drivers/rtc	0	0	0	0	1	0
 crates/drivers/scsi	0	0	0	0	1	0
 crates/drivers/sensor	2	2	0	0	0	15

@@ -37,6 +37,8 @@ azos_energy = { path = "../../../crates/core/energy" }
 azos_limits = { path = "../../../crates/core/limits" }
 # `suspend.rs`: the Rule::Suspend records, read back from the real ring.
 azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
+# `pm.rs` keeps the installed platform under a SpinLock; the host shim (std).
+azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 
 [profile.release]
 overflow-checks = true
