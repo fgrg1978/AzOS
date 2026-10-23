@@ -75,6 +75,20 @@ const NCPU: usize = azos_limits::NR_CPUS;
 
 static SEQ: [Seq; NCPU] = [const { Seq(AtomicU64::new(0)) }; NCPU];
 
+/// The word of CPU `cpu`. The dense logical id is below NR_CPUS (the bound
+/// `pmm`'s per-CPU caches and `isr_depth::MAX_HARTS` rest on too), so a
+/// power-of-two NR_CPUS (the defconfigs') masks the id instead of
+/// bounds-checking it: the same word for every valid id, two instructions
+/// fewer on every section.
+#[inline(always)]
+fn slot(cpu: usize) -> usize {
+    if NCPU.is_power_of_two() {
+        cpu & (NCPU - 1)
+    } else {
+        cpu
+    }
+}
+
 #[cfg(target_os = "none")]
 use crate::kheap::{irq_off, irq_restore};
 
@@ -150,7 +164,7 @@ pub struct Section {
 #[inline(always)]
 pub fn enter() -> Section {
     let irq = irq_off();
-    let word = &SEQ[this_cpu()].0;
+    let word = &SEQ[slot(this_cpu())].0;
     let odd = word.load(Ordering::Relaxed) | 1;
     word.store(odd, Ordering::Relaxed);
     // The odd store before the walk's loads (the writer's fence pairs).
@@ -162,7 +176,7 @@ impl Drop for Section {
     #[inline(always)]
     fn drop(&mut self) {
         // Every access of the section before the even store.
-        self.word.store(self.odd + 1, Ordering::Release);
+        self.word.store(self.odd.wrapping_add(1), Ordering::Release);
         irq_restore(self.irq);
     }
 }
