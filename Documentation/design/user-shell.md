@@ -16,11 +16,12 @@ kernel, and each one's row is its whole authority.
 
 | Image | Role | Authority (default topology) |
 |---|---|---|
-| `TERMD.ELF` | The terminal server. Owns console input, runs the line discipline (editing, echo, history, type-ahead) and serves the `Terminal` object. It is the *console program*. | Serves `endpoint.term`; claims console input. |
+| `TERMD.ELF` | The terminal server. Owns console input, runs the line discipline (editing, echo, history, type-ahead) and serves the `Terminal` object. It is the *console program*. | Serves `endpoint.term`; claims console input; maps the kernel's input event ring (`input.events`, with a keyboard or mouse driver) and console screen (`console.screen`, with `FB_CONSOLE`); with the login service, the call right on `endpoint.login`. |
 | `NAMESD.ELF` | The name server. Lends the shell an attenuated capability on `endpoint.term`. | Serves `endpoint.names`; may lend `endpoint.term`. |
 | `SH.ELF` | The shell: parses a line, starts programs, owns the job table, builtins and environment. | The right to start a fixed list of images, the `/fat` and `/tmp` trees, a read-only root directory. No hardware. |
-| `TOOLBOX.ELF` | One multicall image for the file and text tools. | Read-only root directory, the task view. |
-| `POWER.ELF`, `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | One image per privileged family. | Their own family endpoint with read and write rights (`POWER.ELF` also reads one sensor endpoint). |
+| `TOOLBOX.ELF` | One multicall image for the file, text and device tools. | Read-only root directory, the task view, the introspection regions (Kconfig `INSPECT`), `READ` on `net` and `clock`, the audio server's endpoint or `sound.0`, the call rights on the input server and the compositor where their rows exist, and `imports = ["vmctl"]` where the monitor's row exists. |
+| `POWER.ELF`, `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | One image per privileged family. | Their own family endpoint with read and write rights (`POWER.ELF` also reads one sensor endpoint and calls the `DevicePower` endpoints of the devices it manages). |
+| `LOGIND.ELF` (Kconfig `CONSOLE_LOGIN`) | The login service (section 13). | Serves `endpoint.login`; the `login` op of `keys`; the right to start `SH.ELF`; the `inspect.logins` view. |
 | `TRACECTL.ELF`, `WHY.ELF`, optional `PKG.ELF` and `BUSYBOX.ELF` | Tracer reader, decision query, package tool, BusyBox. | Their own rows. |
 
 Beside the session sits the **recovery console**: a small kernel task that
@@ -112,7 +113,7 @@ child is not released.
 Before the child runs, the kernel writes a `StartupBlock` and the argument,
 environment and directory strings at the top of its user stack, and passes the
 block's address in the **second argument register** (`a1` on riscv64, `x1` on
-aarch64); the first register is zeroed by the spawn hand-off. The block is 120
+aarch64, `rsi` on x86_64); the first register is zeroed by the spawn hand-off. The block is 120
 bytes, begins with the magic `"KSB1"` and describes each of the eight child
 fds as closed, the console, or a handle in the child's own table.
 `azos_libsys::startup_init` validates it and builds the process state behind
@@ -248,8 +249,9 @@ mode, echo, prompt, foreground job); input is a stream of typed events:
 | `Timeout` | Nothing arrived within the timeout. |
 
 The line discipline lives in the server: printable insert, backspace and
-delete, `^A`/`^E` and Home/End, left and right, `^U`, `^W`, up and down through
-a 32-line history, `^L` redraw. A focus rule keeps a running job's typing out of
+Delete (`^D` on a non-empty line), `^A`/`^E` and Home/End, left and right (and
+`^B`/`^F`), `^U`, `^W`, `^K` (kill to the end), up and down (and `^P`/`^N`)
+through a 32-line history, `^L` redraw. A focus rule keeps a running job's typing out of
 the shell: while a job holds the focus the server delivers only interrupts and
 holds other bytes (256 of them) as type-ahead for the next line. The key `^C`
 is an event in both modes; **nothing is signalled**, the client decides what an
@@ -268,6 +270,18 @@ transport asks again when a call is refused for a lapsed capability.
 **Terminal size** comes from the server (`size`, default 80 by 24) and the shell
 exports it as `COLUMNS` and `LINES`. There is no terminal-size syscall.
 
+**Keys and the mouse.** Keys with no console byte (arrows, Home/End, Page
+Up/Down, Insert/Delete, F1-F12, with their modifiers) and mouse events arrive
+from the PS/2 and virtio-input drivers on the kernel's input event ring, which
+the server maps (`MemObj input.events`). It turns keys into the xterm CSI/SS3
+sequences the editor and a raw-mode client read. With a framebuffer console it
+also maps the screen region (`MemObj console.screen`) and, as gpm does on a
+Linux console, gives the mouse a pointer cell, selection (drag, double click
+for a word, triple click for a row), paste with the middle button and
+scrollback with the wheel; a program that asked for mouse reporting
+(`ESC [ ? 1000 h`, `1002 h`, `1003 h`) gets X10 or SGR reports instead. The
+console wait serves both the typed bytes and the ring; no timer polls it.
+
 The Linux personality's terminal (`/dev/ptmx`, termios) is not mapped onto this
 object. A foreground Linux job reads the console through the kernel's own
 discipline while the owner lends it input (section 3.5).
@@ -276,7 +290,8 @@ Source: `crates/drivers/sys/src/console_rx.rs` (`RxOwner`),
 `crates/core/syscall/src/ushell.rs` (`sys_console_wait`),
 `crates/core/abi/src/invoke.rs` (`LOG_CONSOLE_WRITE`, `LOG_CONSOLE_WAIT`),
 `userspace/lib/term/src/lib.rs`, `userspace/services/termd/src/disc.rs`,
-`userspace/services/termd/src/edit.rs`, `userspace/lib/names/src/lib.rs`,
+`userspace/services/termd/src/edit.rs`, `userspace/services/termd/src/{input,keys,mouse}.rs`,
+`userspace/lib/names/src/lib.rs`,
 `userspace/services/namesd`, `crates/core/topology/src/builder.rs` (`SH_IMPORTS`).
 
 ## 7. Stopping a job: `SYS_ALERT`
@@ -333,7 +348,7 @@ redirect := '<' word | '>' word | '>>' word | '2>' word | '2>>' word | '2>&1'
 
 Single quotes quote everything; inside double quotes `\"`, `\\` and `\$` escape
 and `$NAME`, `${NAME}` and `$?` expand. An unset variable expands to nothing.
-`;`, `&&`, `||` and `$(` are refused, not guessed at. The limits are four
+`;`, `&&`, `||`, `$(` and backquotes are refused, not guessed at. The limits are four
 stages per pipeline, sixteen words per command and 1024 bytes of expanded words
 per line.
 
@@ -354,8 +369,8 @@ image's row whatever `argv[0]` says.
 **Builtins:** `help echo cd pwd exit export unset env jobs wait kill history
 true false ls cat mkdir rm uptime type`.
 
-**Applets of `TOOLBOX.ELF`:** `args cat echo false host inspect log ls ntp ps sleep
-spin true vm wc yes`.
+**Applets of `TOOLBOX.ELF`:** `args beep cat echo false host input inspect log ls
+ntp ps sleep spin true vm wc window yes`.
 
 **Privileged tools**, each its own image and row: `power`, `flight`,
 `behavior`, `config`, `ota`, plus `tracectl` and `why`. They run only if the
@@ -435,9 +450,11 @@ Source: `crates/core/topology/src/builder.rs` (`SH_CAPS`, `SH_CAPS_LOCKDOWN`,
 **Choosing the console program.** The Kconfig choice `CONSOLE_PROGRAM` names
 what the kernel starts on the console: the native shell session (the default
 on the edge and fleet profiles), BusyBox `sh` under the Linux personality, any
-included image, a custom image, or none. With secure boot off, `init=/fat/NAME.ELF`
-on the kernel command line replaces it for one boot, provided the image has a
-row; with secure boot on, `init=` is ignored and the boot log says so.
+included image, a custom image, or none. With secure boot off and
+`KERNEL_CMDLINE_INIT` (default `y`), `init=/fat/NAME.ELF` on the kernel command
+line replaces it for one boot, provided the image has a row that says
+`start = true`; with secure boot on (`SECURE_BOOT_ENFORCED`) or
+`KERNEL_CMDLINE_INIT=n`, `init=` is ignored and the boot log says so.
 
 **Order.** The launcher starts every other `start = true` row first, then the
 console program, then the shell as the session's follower. The shell is started
@@ -476,7 +493,7 @@ There is no physical-console takeover from a wedged but live shell.
 needs to be diagnosed and repaired: status (`help`, `mem`, `uptime`, `drvls`,
 `security`, `estop`), file and diagnosis commands (`ls`, `cat`, `crash`, `why`),
 repair (`ota`, `config`, `ifconfig`, `dhcp`), the live update of a supervised
-server (`swap`), and the two exits `reboot` and `shutdown`, which are checked
+server (`swap`), measurement (`wcet`, `bench`), and the two exits `reboot` and `shutdown`, which are checked
 against the `power` endpoint's write right. Its prompt differs from the user
 shell's, so the two are never confused.
 
@@ -486,8 +503,8 @@ the console if ring 3 fails). `CONSOLE_LOCKDOWN` forces it off, in safe mode
 too. The per-command authority table that the recovery console and the typed
 calls of the privileged tools share is `AUTHORITY_TABLE`.
 
-Source: `kernel/src/console_mode.rs`, `kernel/src/tasks/loader.rs`
-(`ring3_driver_launch_task`, `for_each_launch_row`), `kernel/src/tasks/system.rs`
+Source: `kernel/src/console_mode.rs`, `kernel/src/boot/launch.rs`
+(`boot_launch_task`, `for_each_launch_row`), `kernel/src/tasks/system.rs`
 (`recovery_task`), `kernel/src/main.rs`, `crates/core/recovery/src/lib.rs`,
 `crates/core/ipc/src/authority_policy.rs` (`AUTHORITY_TABLE`),
 `tools/gen_userspace_kconfig.py` (`CONSOLE_PROGRAM`),
@@ -501,7 +518,7 @@ Source: `kernel/src/console_mode.rs`, `kernel/src/tasks/loader.rs`
 | The shell exits non-zero (`exit 1`) | The shell hangs the terminal server up with its status and the server ends with it, so both fail together. The component manager reaps both ends before it starts anything, then restarts the server and the shell behind it (the shell's `imports` make the server and the name server its dependencies: the manager's plan spells them `endpoint.term`, `endpoint.names`), each within its own restart burst; the server's named endpoint is kept for its successor, so the name server's right to lend `term` stays valid. The shell's jobs die with it (`SPAWN_F_DIE_WITH_PARENT`); descriptors and pipe ends are released by the normal exit path. |
 | The shell faults | The manager restarts the shell within the burst; the terminal server stays up, and the new shell puts the terminal back into cooked mode with echo and the shell in focus. |
 | The terminal server is gone | Console input is released. The manager restarts the server and stops and restarts the shell behind it (a forced stop spends none of the shell's burst). |
-| The restart burst is exhausted | When the shell and the terminal server fail together, the manager gives up on the terminal server (the console program) and the shell is given up on or blocked behind it, whichever end it reaps first. The server's death released console input; nothing takes it within `SH_START_TIMEOUT_S`, and the recovery console takes over (not under lockdown). A shell that alone exhausts its burst while the server lives leaves the server holding console input: the manager has no way to tell the kernel (open item). |
+| The restart burst is exhausted | When the shell and the terminal server fail together, the manager gives up on the terminal server (the console program) and the shell is given up on or blocked behind it, whichever end it reaps first. The server's death released console input; nothing takes it within `SH_START_TIMEOUT_S`, and the recovery console takes over (not under lockdown). A shell that alone exhausts its burst while the server lives leaves the server holding console input: the manager does not tell the kernel, so the recovery console does not take over. |
 | The shell image is replaced by one whose digest is unbound | `-EACCES`, recorded; the recovery console takes over. |
 | A job blocked in a pipe read | A stop request wakes it with `-EINTR`; force also wakes it and ends it at the wake. |
 | A job that never blocks | Only force stops it, after the grace. |
@@ -537,7 +554,8 @@ Source: `crates/core/abi/src/ushell.rs` (`SPAWN_F_MAP_TASK_PAGE`),
 
 ## 13. Console login
 
-With Kconfig `CONSOLE_LOGIN` and a user enrolled in the signed topology, `SH.ELF` is not started
+With Kconfig `CONSOLE_LOGIN`, the login service's image on the volume (`USERSPACE_LOGIND`) and a
+user enrolled in the signed topology (a `[login.NAME]` row), `SH.ELF` is not started
 by the component manager: `LOGIND.ELF` starts it as the session of a user after a
 secure-attention login (`SPAWN_F_USER`, section 3.5). The chain, the credential and the grant
 are in [security.md](../security.md#console-login). The shell sees `USER=<name>` in its
