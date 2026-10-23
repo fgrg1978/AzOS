@@ -129,7 +129,7 @@ impl Holder {
         let tid = NEXT_TID.fetch_add(1, Ordering::SeqCst);
         let dom = azos_sched::domain::create().expect("a free Domain slot");
         azos_sched::domain::set_measurement(dom, image);
-        azos_sched::domain::set_identity(dom, owner, 0, 0);
+        azos_sched::domain::set_owner_root(dom, owner);
         azos_sched::shim_bind_domain(tid, dom);
         ipc_task_pool::shim_bind(tid, slot);
         azos_ipc::cap_store::reset(tid);

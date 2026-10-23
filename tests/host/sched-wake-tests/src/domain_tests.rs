@@ -93,7 +93,8 @@ fn a_new_domain_starts_from_nothing() {
     let a = domain::create().unwrap();
     domain::set_limit(a, 50);
     domain::set_mem_locked(a, true);
-    domain::set_identity(a, 7, 2, 3);
+    domain::set_owner_root(a, 7);
+    domain::set_partition(a, 3);
     domain::set_measurement(a, [0xAB; 32]);
     assert_eq!(domain::charge(a, 10), Some(10));
     domain::discharge(a, 4);
@@ -105,8 +106,8 @@ fn a_new_domain_starts_from_nothing() {
     assert!(!domain::mem_locked(b), "no memory policy inherited");
     let i = domain::info(b).unwrap();
     assert_eq!(
-        (i.live, i.owner_root, i.security_boundary, i.partition_id, i.vm, i.measurement),
-        (1, 0, 0, 0, None, [0; 32]),
+        (i.live, i.owner_root, i.partition_id, i.vm, i.measurement),
+        (1, 0, 0, None, [0; 32]),
         "no identity inherited"
     );
     assert_eq!(domain::charge(b, 1), Some(1), "nothing of the old domain is carried into the new one");
@@ -117,10 +118,11 @@ fn a_new_domain_starts_from_nothing() {
 fn the_hook_fields_are_kept() {
     let _s = serial();
     let k = domain::create().unwrap();
-    domain::set_identity(k, 0xD10, 3, 9);
+    domain::set_owner_root(k, 0xD10);
+    domain::set_partition(k, 9);
     domain::set_measurement(k, [7; 32]);
     let i = domain::info(k).unwrap();
-    assert_eq!((i.owner_root, i.security_boundary, i.partition_id), (0xD10, 3, 9));
+    assert_eq!((i.owner_root, i.partition_id), (0xD10, 9));
     assert_eq!(i.measurement, [7; 32]);
     assert_eq!(i.vm, None);
     free_all(k);
@@ -223,16 +225,6 @@ fn the_partition_is_read_by_key_and_inherited_by_a_child() {
     let again = domain::create().unwrap();
     assert_eq!(domain::partition_of(again), 0, "a reused slot is not in the old occupant's partition");
     free_all(again);
-}
-
-/// `set_identity` carries the row's partition too (its only other writer).
-#[test]
-fn set_identity_sets_the_partition() {
-    let _s = serial();
-    let k = domain::create().unwrap();
-    domain::set_identity(k, 1, 1, 4);
-    assert_eq!(domain::partition_of(k), 4);
-    free_all(k);
 }
 
 #[test]

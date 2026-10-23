@@ -43,8 +43,7 @@
 //!   child Domain, 0 (the default partition) otherwise. Atomic, not in
 //!   [`State`]: the switch path of any hart reads it;
 //! * hooks with no logic yet, each named for the decision that fills it:
-//!   `owner_root` (D10, the user root warrant id; 0 for the system),
-//!   `security_boundary` (the L4 warrant tree hangs off the domain), `vm`
+//!   `owner_root` (D10, the user root warrant id; 0 for the system), `vm`
 //!   (reserved), `measurement` (DICE);
 //! * the parent link and the subtree policy (below).
 //!
@@ -314,8 +313,6 @@ struct State {
     /// it lapses at)`. Spent by the next `SPAWN_F_USER` spawn
     /// ([`take_login_grant`]); a slot reused by another Domain starts without.
     login_grant: Option<(u32, u64)>,
-    /// L4: the security boundary this domain sits in.
-    security_boundary: u8,
     /// Reserved: the virtual-machine context, when a domain is a guest.
     vm: Option<u32>,
     /// DICE: the measurement of the image the domain started from.
@@ -328,7 +325,6 @@ impl State {
             mem_policy: 0,
             owner_root: 0,
             login_grant: None,
-            security_boundary: 0,
             vm: None,
             measurement: [0; 32],
         }
@@ -1057,7 +1053,6 @@ pub struct Info {
     /// Levels below its root, at most [`WALK_MAX`].
     pub depth: u8,
     pub owner_root: u32,
-    pub security_boundary: u8,
     pub partition_id: u16,
     pub vm: Option<u32>,
     pub measurement: [u8; 32],
@@ -1070,7 +1065,6 @@ pub fn info(key: Key) -> Option<Info> {
         parent: d.parent.load(Ordering::Acquire),
         depth: d.depth.load(Ordering::Acquire),
         owner_root: s.owner_root,
-        security_boundary: s.security_boundary,
         partition_id: d.partition.load(Ordering::Relaxed),
         vm: s.vm,
         measurement: s.measurement,
@@ -1101,15 +1095,6 @@ pub fn arm_login_grant(key: Key, owner_root: u32, until_s: u64) -> bool {
 /// either way (a lapsed one is not kept for a later look).
 pub fn take_login_grant(key: Key, now_s: u64) -> Option<u32> {
     with(key, |_, s| s.login_grant.take()).flatten().filter(|&(_, until)| now_s <= until).map(|(root, _)| root)
-}
-
-/// Set the D10 owner root and the L4 boundary and partition of a domain.
-pub fn set_identity(key: Key, owner_root: u32, security_boundary: u8, partition_id: u16) {
-    let _ = with(key, |_, s| {
-        s.owner_root = owner_root;
-        s.security_boundary = security_boundary;
-    });
-    set_partition(key, partition_id);
 }
 
 /// Put the domain `key` names in resource partition `partition` (0: the
