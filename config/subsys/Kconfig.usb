@@ -11,7 +11,7 @@ config USB_POLL_MS
       (events, port changes, enumeration, pipe submissions and completions)
       this often while the controller is polled (no MSI-X route yet). A
       device is noticed within one period of a plug; a transfer a class
-      driver queued starts within one period. Only with USB_XHCI.
+      driver queued starts within one period. Only with USB_XHCI or USB_DWC2.
 
 config USB_HID_REPEAT_DELAY_MS
     int "USB keyboard: milliseconds a key is held before it repeats"
@@ -86,12 +86,36 @@ config USB_XHCI
       is a test-week item. QEMU: `-device qemu-xhci`.
       n: no controller is driven and the USB core has nothing to run on.
 
+config USB_DWC2
+    # cargo-feature: usb-dwc2
+    bool "DesignWare USB 2.0 OTG core as a host (Raspberry Pi; device tree)"
+    default y if ARCH_AARCH64 && !HWCLASS_EMBEDDED
+    default n
+    depends on USB_HOST
+    help
+      Kernel feature `usb-dwc2` (crates/drivers/usb/src/dwc2.rs). The
+      Synopsys DesignWare USB 2.0 OTG core in host mode, under the same USB
+      core, class drivers and `usb` task as the xHCI: the Raspberry Pi's
+      controller (the Pi 3 B's only USB, with its LAN9514 hub and Ethernet
+      behind it). Found by the hardware bus as a device-tree node
+      `brcm,bcm2835-usb`, `brcm,bcm2708-usb` (the Pi firmware's tree) or
+      `snps,dwc2`; a node whose `dr_mode` is `peripheral` is a gadget port
+      and is left alone, any other is forced into host mode. Buffer DMA,
+      polled (USB_POLL_MS) like the xHCI. Control, bulk and interrupt
+      transfers on high-, full- and low-speed devices on the root port, and
+      high-speed devices behind a high-speed hub. Not driven: split
+      transactions (a full- or low-speed device behind a high-speed hub,
+      such as a keyboard on a Pi 3 B's ports, is refused at its address),
+      isochronous endpoints, high-bandwidth interrupt endpoints, OTG role
+      switching, the device mode. QEMU: `-M raspi3b` models the core.
+      n: a Pi has no USB.
+
 config USB_HID
     # cargo-feature: usb-hid
     bool "USB HID class driver (keyboards and mice)"
     default n if USE_ROBOT || USE_INDUSTRIAL
     default y
-    depends on USB_XHCI
+    depends on USB_XHCI || USB_DWC2
     help
       Kernel feature `usb-hid` (crates/drivers/usb-hid, wired by
       kernel/src/boot/usb_hid.rs). A class driver of the USB host for the
@@ -148,9 +172,9 @@ config USB_HID_REFUSE_COMPOSITE
 config USB_STORAGE
     # cargo-feature: usb-storage
     bool "USB mass storage (bulk-only sticks and disks) as a block device"
-    default y if USB_XHCI
+    default y if USB_XHCI || USB_DWC2
     default n
-    depends on USB_XHCI
+    depends on USB_XHCI || USB_DWC2
     help
       Kernel feature `usb-storage` (crates/drivers/usb/src/class/msc.rs, the
       adapter crates/drivers/block/src/usb_msc.rs, kernel/src/boot/usb.rs).
@@ -171,9 +195,9 @@ config USB_STORAGE
 config USB_CDC
     # cargo-feature: usb-cdc
     bool "USB CDC devices: network adapters (ECM, NCM) as NICs, serial devices (ACM) as Uart ports"
-    default y if USB_XHCI
+    default y if USB_XHCI || USB_DWC2
     default n
-    depends on USB_XHCI
+    depends on USB_XHCI || USB_DWC2
     help
       Kernel feature `usb-cdc` (crates/drivers/usb/src/class/cdc.rs, the
       adapter crates/drivers/net/src/usb_cdc.rs, kernel/src/boot/usb.rs and
@@ -250,9 +274,9 @@ config USB_CDC_CONSOLE_BAUD
 config USB_UVC
     # cargo-feature: usb-uvc
     bool "USB video class (UVC webcams) as the perception camera"
-    default y if USB_XHCI && USE_ROBOT
+    default y if (USB_XHCI || USB_DWC2) && USE_ROBOT
     default n
-    depends on USB_XHCI && USE_ROBOT
+    depends on (USB_XHCI || USB_DWC2) && USE_ROBOT
     help
       Kernel feature `usb-uvc` (crates/drivers/usb/src/class/uvc.rs, the
       frame ring of kernel/src/tasks/cam_capture.rs, kernel/src/boot/usb.rs).

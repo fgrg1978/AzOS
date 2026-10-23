@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The USB core: the device table, enumeration, hubs, pipes, claims.
 //!
-//! [`Usb`] owns a controller ([`crate::xhci::Xhci`]) and everything above it.
+//! [`Usb`] owns a controller ([`hc::Hc`]: an xHCI, or a DesignWare USB 2.0
+//! core) and everything above it.
 //! It is driven by one call, [`Usb::service`], made from a kernel task (or from
 //! an interrupt handler's deferred half): it drains the controller's events,
 //! enumerates what appeared on a port, removes what left, offers new devices
@@ -40,6 +41,7 @@
 
 pub mod desc;
 mod enumerate;
+pub mod hc;
 mod hub;
 pub mod pipe;
 
@@ -52,6 +54,7 @@ use crate::event::{EventKind, UsbEvent, EVENT_DEPTH};
 use crate::hw::{Clock, DmaBuf, Memory, Regs, PAGE};
 use crate::xhci::trb::cc;
 use crate::xhci::{self, Done, EpSpec, HcEvent, Owner, Speed, TdKind, TdSpec, Xhci};
+use hc::Hc;
 use crate::{MAX_DEVICES, MAX_PIPES, PIPE_DEPTH};
 use desc::{
     Bos, ConfigDesc, DescError, DeviceDesc, HubDesc, Setup, MAX_IFACES, RT_RECIP_ENDPOINT, RT_RECIP_INTERFACE,
@@ -228,7 +231,7 @@ pub struct Stats {
 const NO_EVENT: Option<UsbEvent> = None;
 
 pub struct Usb<'q, R: Regs, M: Memory, C: Clock> {
-    pub(crate) hc: Xhci<R, M, C>,
+    pub(crate) hc: Hc<R, M, C>,
     pub(crate) devices: [Option<Device>; MAX_DEVICES],
     generations: [u16; MAX_DEVICES],
     pipes: [Pipe<'q>; MAX_PIPES],
@@ -282,7 +285,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         events: Producer<'q, UsbEvent, EVENT_DEPTH>,
     ) -> Result<&'a mut Self, UsbError> {
         // SAFETY: a valid, aligned slot for the one field.
-        unsafe { core::ptr::addr_of_mut!((*slot.as_mut_ptr()).hc).write(hc) };
+        unsafe { core::ptr::addr_of_mut!((*slot.as_mut_ptr()).hc).write(Hc::from_xhci(hc)) };
         Self::init_rest(slot, rings, events)
     }
 
@@ -301,13 +304,31 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         rings: &'q [PipeRings; MAX_PIPES],
         events: Producer<'q, UsbEvent, EVENT_DEPTH>,
     ) -> Result<&'a mut Self, UsbError> {
-        // SAFETY: `hc` is the first thing `init_rest` assumes written; this
-        // is the same place, as a `MaybeUninit` (same layout as the value).
-        let hc_slot = unsafe {
-            &mut *core::ptr::addr_of_mut!((*slot.as_mut_ptr()).hc).cast::<core::mem::MaybeUninit<Xhci<R, M, C>>>()
-        };
-        Xhci::init(hc_slot, regs, mem, clock, dma_mask, irq)?;
+        Hc::init_xhci(Self::hc_slot(slot), regs, mem, clock, dma_mask, irq)?;
         Self::init_rest(slot, rings, events)
+    }
+
+    /// [`Usb::init_controller`] for a DesignWare USB 2.0 core
+    /// ([`crate::dwc2::Dwc2::init`], in place too).
+    #[cfg(feature = "dwc2")]
+    pub fn init_dwc2<'a>(
+        slot: &'a mut core::mem::MaybeUninit<Self>,
+        regs: R,
+        mem: M,
+        clock: C,
+        dma_mask: u64,
+        rings: &'q [PipeRings; MAX_PIPES],
+        events: Producer<'q, UsbEvent, EVENT_DEPTH>,
+    ) -> Result<&'a mut Self, UsbError> {
+        Hc::init_dwc2(Self::hc_slot(slot), regs, mem, clock, dma_mask)?;
+        Self::init_rest(slot, rings, events)
+    }
+
+    /// The place of the `hc` field in `slot`, as a `MaybeUninit`.
+    fn hc_slot(slot: &mut core::mem::MaybeUninit<Self>) -> &mut core::mem::MaybeUninit<Hc<R, M, C>> {
+        // SAFETY: `hc` is the first thing `init_rest` assumes written; this is
+        // its place, as a `MaybeUninit` (same layout as the value).
+        unsafe { &mut *core::ptr::addr_of_mut!((*slot.as_mut_ptr()).hc).cast::<core::mem::MaybeUninit<Hc<R, M, C>>>() }
     }
 
     /// Everything after `hc` is in `slot`.
@@ -361,12 +382,12 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         }
         // Power-good: a port the controller powered just now needs its
         // device to come up before the first look.
-        if self.hc.caps().ppc {
+        if self.hc.port_power_switched() {
             self.hc.clock().delay_us(100_000);
         }
     }
 
-    pub fn controller(&self) -> &Xhci<R, M, C> {
+    pub fn controller(&self) -> &Hc<R, M, C> {
         &self.hc
     }
     pub fn stats(&self) -> Stats {

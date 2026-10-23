@@ -10392,6 +10392,17 @@ host_job host_canary_row "usb: reset event ring canary" usb-tests canary-xhci-re
     a_command_timeout_resets_the_controller_and_the_device_comes_back
 host_job host_canary_row "usb: HSE latches canary" usb-tests canary-xhci-hse-latches \
     a_host_system_error_resets_the_controller_and_a_second_latches_it
+# The DWC2 host driver under the same core (tests/host/usb-tests, `dwc2`, over a
+# register-level DWC2 mock): HPRT0 written back as read, the data toggle never
+# read back, an IN tail received in place, a split skipped.
+host_job host_canary_row "usb: DWC2 HPRT0 W1C canary" usb-tests canary-dwc2-hprt-w1c \
+    a_full_speed_device_on_the_root_port_is_addressed_and_configured
+host_job host_canary_row "usb: DWC2 toggle canary" usb-tests canary-dwc2-toggle \
+    consecutive_bulk_transfers_keep_the_data_toggle
+host_job host_canary_row "usb: DWC2 IN bounce canary" usb-tests canary-dwc2-no-bounce \
+    an_in_shorter_than_a_packet_is_bounced_and_never_overruns
+host_job host_canary_row "usb: DWC2 split canary" usb-tests canary-dwc2-split \
+    a_full_speed_device_behind_a_high_speed_hub_is_refused_without_a_split
 # The Raspberry Pi PM block (crates/drivers/power/src/bcm2835_pm.rs): the boot
 # partition written unspread, so a power-off boots again (tests/host/power-tests,
 # `pm_wdt`).

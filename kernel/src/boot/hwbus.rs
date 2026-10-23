@@ -542,6 +542,9 @@ impl Drivers for KernelDrivers<'_> {
                 },
                 _ => Err(ProbeError::NoSuchDriver),
             },
+            // A DesignWare USB 2.0 core (the Raspberry Pi's): device tree only.
+            #[cfg(feature = "usb-dwc2")]
+            "dwc2" => super::usb::attach_dwc2(dev),
             _ => Err(ProbeError::NoSuchDriver),
         }
     }
@@ -702,8 +705,8 @@ fn add(dev: Device) {
 /// aarch64) and the populated virtio-mmio windows, then bind the kernel's own
 /// hardware among them. Call after the late MMIO windows are mapped.
 pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
-    // The xHCI probe reads `dr_mode` of a DWC3 node from the tree.
-    #[cfg(feature = "usb-xhci")]
+    // The USB probes read `dr_mode` of a DWC3 or DWC2 node from the tree.
+    #[cfg(feature = "usb-hc")]
     super::usb::note_dtb(dtb_ptr);
     // The virtio-mmio windows the device tree declared DMA-coherent: the
     // window enumerator below builds those devices, not this walk.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! USB host wiring (Kconfig `USB_HOST`, `USB_XHCI`).
+//! USB host wiring (Kconfig `USB_HOST`, `USB_XHCI`, `USB_DWC2`).
 //!
 //! The host itself is `azos_usb` (crates/drivers/usb), pure and host-tested
 //! against a register-level xHCI mock. This file is what only the kernel can
@@ -13,7 +13,8 @@
 //! - the probe the hardware bus calls for a controller it bound to the `xhci`
 //!   driver: [`attach_pci`] (a function of PCI class 0C0330, from the PCI
 //!   bring-up that owns the configuration space and the BAR window) and
-//!   [`attach_dt`] (a `generic-xhci` node, or a `snps,dwc3` one whose `dr_mode` is `host`);
+//!   [`attach_dt`] (a `generic-xhci` node, or a `snps,dwc3` one whose `dr_mode` is `host`),
+//!   and for a DesignWare USB 2.0 core (the Raspberry Pi's) [`attach_dwc2`];
 //! - the `usb` task, which calls the core's `service` every `USB_POLL_MS` (the
 //!   controller is polled: an MSI-X route is a test-week item) and prints
 //!   the hot-plug events;
@@ -48,8 +49,8 @@
 //! with a line (the pipe rings and the device table are the host's, not
 //! per controller yet).
 
-#[cfg(feature = "usb-xhci")]
-pub(crate) use xhci_host::*;
+#[cfg(feature = "usb-hc")]
+pub(crate) use host::*;
 
 /// The serial function as a `Uart` port (Kconfig `USB_CDC`).
 #[cfg(feature = "usb-cdc")]
@@ -61,14 +62,14 @@ mod console;
 
 /// The lister's rows, behind a spinlock held only for an attach, a detach or
 /// a read.
-#[cfg(any(feature = "usb-xhci", feature = "inspect"))]
+#[cfg(any(feature = "usb-hc", feature = "inspect"))]
 static LISTER: azos_sync::SpinLock<azos_usb::listing::Lister> =
     azos_sync::SpinLock::new(azos_usb::listing::Lister::new());
 
 /// The controller: the traits, the probe, the `usb` task.
-#[cfg(feature = "usb-xhci")]
-mod xhci_host {
-    use azos_dma::{Direction, DmaDomain};
+#[cfg(feature = "usb-hc")]
+mod host {
+    use azos_dma::{Direction, DmaDomain, DomainKind};
     use azos_rings::{Consumer, Full, Queue};
     use azos_sync::kmutex::Mutex;
     use azos_usb::class::{Registry, UsbClass, UsbClassDirect};
@@ -184,6 +185,21 @@ mod xhci_host {
         fn from_device(&self, cpu: *const u8, len: usize) {
             // SAFETY: as for `to_device`.
             unsafe { azos_dma::cache::sync_for_cpu(self.domain, cpu as usize, len, Direction::Bidirectional) }
+        }
+
+        /// The direct map of a class driver's buffer, where the bus address
+        /// is the physical one (a domain that translates nothing) and names
+        /// RAM the kernel manages: what a DWC2 copies the partial last packet
+        /// of an IN through (`azos_usb::dwc2`). An IOMMU domain: `None`.
+        fn cpu_of(&self, bus: u64, len: usize) -> Option<*mut u8> {
+            if len == 0 || !matches!(self.domain.kind(), DomainKind::Identity | DomainKind::Soft) {
+                return None;
+            }
+            let start = usize::try_from(bus).ok()?;
+            let end = start.checked_add(len - 1)?;
+            azos_mm::pmm::frame_index(start)?;
+            azos_mm::pmm::frame_index(end)?;
+            Some(azos_mm::addr::phys_to_virt(start) as *mut u8)
         }
     }
 
@@ -304,8 +320,17 @@ mod xhci_host {
         }
     }
 
+    /// Which controller a window holds.
+    #[derive(Clone, Copy)]
+    enum Kind {
+        #[cfg(feature = "usb-xhci")]
+        Xhci,
+        #[cfg(feature = "usb-dwc2")]
+        Dwc2,
+    }
+
     /// Start the controller whose registers are at `base` and publish the host.
-    fn bring_up(base: usize, domain: &'static dyn DmaDomain, dma_mask: u64, what: impl core::fmt::Display) -> Result<(), ()> {
+    fn bring_up(base: usize, domain: &'static dyn DmaDomain, dma_mask: u64, what: impl core::fmt::Display, kind: Kind) -> Result<(), ()> {
         if STATE.lock().is_some() {
             kprintln!("[USB] {}: a controller is driven already; this one is left alone", what);
             return Err(());
@@ -315,34 +340,50 @@ mod xhci_host {
         // with the controller is tens of KB, and `tools/stack_frames.py` holds
         // every function that is not boot-only to 8 KiB on fleet.
         let mut slot = alloc::boxed::Box::<Host>::new_uninit();
-        let usb = match Usb::init_controller(&mut slot, KRegs { base }, KMem { domain }, KClock, dma_mask, false, &RINGS, producer) {
+        let (regs, mem) = (KRegs { base }, KMem { domain });
+        let started = match kind {
+            #[cfg(feature = "usb-xhci")]
+            Kind::Xhci => Usb::init_controller(&mut slot, regs, mem, KClock, dma_mask, false, &RINGS, producer),
+            #[cfg(feature = "usb-dwc2")]
+            Kind::Dwc2 => Usb::init_dwc2(&mut slot, regs, mem, KClock, dma_mask, &RINGS, producer),
+        };
+        let usb = match started {
             Ok(u) => u,
             Err(e) => {
-                azos_drv_sys::kwarn!("[USB] {}: the xHCI controller did not start: {:?}", what, e);
+                azos_drv_sys::kwarn!("[USB] {}: the controller did not start: {:?}", what, e);
                 return Err(());
             }
         };
-        let (ports, slots, ac64, csz) = {
-            let hc = usb.controller();
-            (hc.ports(), hc.max_slots(), hc.caps().ac64, hc.caps().ctx_size())
-        };
-        kprintln!(
-            "[USB] xHCI {}: {} ports, {} slots, {} DMA, {}-byte contexts; polled every {} ms",
-            what, ports, slots, if ac64 { "64-bit" } else { "32-bit" }, csz, azos_limits::USB_POLL_MS);
-        // SAFETY: `init_controller` returned `Ok`: every field is written.
+        let hc = usb.controller();
+        if let Some(x) = hc.as_xhci() {
+            kprintln!(
+                "[USB] xHCI {}: {} ports, {} slots, {} DMA, {}-byte contexts; polled every {} ms",
+                what, x.ports(), x.max_slots(), if x.caps().ac64 { "64-bit" } else { "32-bit" },
+                x.caps().ctx_size(), azos_limits::USB_POLL_MS);
+        }
+        #[cfg(feature = "usb-dwc2")]
+        if let Some(d) = hc.as_dwc2() {
+            kprintln!("[USB] DWC2 {}: 1 port, {} host channels, 32-bit DMA; polled every {} ms",
+                what, d.channels(), azos_limits::USB_POLL_MS);
+        }
+        // The class drivers' buffers go under what the controller reaches,
+        // which may be less than the bus allows (an xHCI without AC64, a DWC2).
+        #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
+        let reach = hc.dma_mask();
+        // SAFETY: the controller started: every field is written.
         let usb = unsafe { slot.assume_init() };
         *STATE.lock() = Some(State {
             usb,
             events,
             #[cfg(any(feature = "usb-storage", feature = "usb-cdc", feature = "usb-uvc"))]
-            dma: (domain, dma_mask),
+            dma: (domain, reach),
         });
         Ok(())
     }
 
     /// Attach the xHCI function `f` the PCI bring-up found. `dma_mask` is the
     /// hardware bus's record of how high the host bridge lets it DMA.
-    #[cfg(feature = "pci")]
+    #[cfg(all(feature = "pci", feature = "usb-xhci"))]
     pub(crate) fn attach_pci<C: azos_pci::ConfigSpace>(
         cfg: &mut C,
         f: &azos_pci::FunctionInfo,
@@ -358,11 +399,11 @@ mod xhci_host {
         }
         let rid = (f.bdf.bus as u32) << 8 | (f.bdf.device as u32) << 3 | f.bdf.function as u32;
         let domain = azos_dma::registry::domain_for(Some(rid));
-        bring_up(bars[0], domain, dma_mask, f.bdf)
+        bring_up(bars[0], domain, dma_mask, f.bdf, Kind::Xhci)
     }
 
     /// The device tree the firmware handed the kernel (physical address; 0:
-    /// none), kept for the one property the probe reads from it.
+    /// none), kept for the one property the probes read from it.
     static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
     /// The largest device tree the kernel reads (`azos_dtb`'s own bound).
@@ -373,13 +414,13 @@ mod xhci_host {
         DTB.store(dtb_ptr, core::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Does the device-tree node at `node` say `dr_mode = "host"`? False for
-    /// any other value, for a node without the property and for a tree that
-    /// cannot be read.
-    fn dt_dr_mode_is_host(node: u32) -> bool {
+    /// What `f` makes of the `dr_mode` property of the device-tree node at
+    /// `node` (`None` when the node has none); `None` for a tree that cannot
+    /// be read.
+    fn dt_dr_mode<T>(node: u32, f: impl FnOnce(Option<&[u8]>) -> T) -> Option<T> {
         let ptr = DTB.load(core::sync::atomic::Ordering::Relaxed);
         if ptr == 0 {
-            return false;
+            return None;
         }
         let base = azos_mm::addr::phys_to_virt(ptr) as *const u8;
         // SAFETY: the firmware handed the kernel this pointer and `early_main`
@@ -387,12 +428,23 @@ mod xhci_host {
         let total = unsafe { core::slice::from_raw_parts(base.add(4), 4) };
         let total = u32::from_be_bytes([total[0], total[1], total[2], total[3]]) as usize;
         if !(40..=MAX_DTB).contains(&total) {
-            return false;
+            return None;
         }
         // SAFETY: `total` bytes from the header's own size field.
         let blob = unsafe { core::slice::from_raw_parts(base, total) };
-        let Some(fdt) = azos_soc::Fdt::parse(blob) else { return false };
-        azos_usb::dwc3::is_host_only(fdt.prop(azos_soc::NodeId(node), "dr_mode"))
+        let fdt = azos_soc::Fdt::parse(blob)?;
+        Some(f(fdt.prop(azos_soc::NodeId(node), "dr_mode")))
+    }
+
+    /// Map a device-tree controller's window: `false` when it has none or the
+    /// mapping failed.
+    fn map_dt_window(dev: &azos_drv_bus::hwbus::Device) -> bool {
+        if dev.size == 0 || !crate::boot::map_mmio_region(dev.base as usize, dev.size as usize) {
+            return false;
+        }
+        use azos_arch::Mmu;
+        azos_arch::ARCH.flush_tlb_all();
+        true
     }
 
     /// Attach a device-tree xHCI: a `generic-xhci` node, or a `snps,dwc3` node
@@ -401,11 +453,13 @@ mod xhci_host {
     /// gadget stack. The DWC3's PHY, clocks and resets are the board glue's
     /// (SOC_FRAMEWORKS has no consumer yet): a controller the firmware did not
     /// bring up fails to start here and is reported.
+    #[cfg(feature = "usb-xhci")]
     pub(crate) fn attach_dt(dev: &azos_drv_bus::hwbus::Device) -> Result<(), azos_drv_bus::hwbus::ProbeError> {
         use azos_drv_bus::hwbus::ProbeError;
         let dwc3 = dev.compatible().any(|c| c == "snps,dwc3");
         if dwc3 {
-            if !dev.dt_node.is_some_and(dt_dr_mode_is_host) {
+            let host = dev.dt_node.and_then(|n| dt_dr_mode(n, azos_usb::dwc3::is_host_only)).unwrap_or(false);
+            if !host {
                 kprintln!("[USB] {}: snps,dwc3 without dr_mode = \"host\": not driven as a host", dev.name.as_str());
                 return Err(ProbeError::Failed);
             }
@@ -414,18 +468,39 @@ mod xhci_host {
                 return Err(ProbeError::Failed);
             }
         }
-        if dev.size == 0 || !crate::boot::map_mmio_region(dev.base as usize, dev.size as usize) {
+        if !map_dt_window(dev) {
             return Err(ProbeError::Failed);
-        }
-        {
-            use azos_arch::Mmu;
-            azos_arch::ARCH.flush_tlb_all();
         }
         if dwc3 {
             azos_usb::dwc3::set_host_mode(&KRegs { base: dev.base as usize });
         }
         let domain = azos_dma::registry::domain_for_mmio(dev.base);
-        bring_up(dev.base as usize, domain, dev.dma_mask, dev.name.as_str()).map_err(|_| ProbeError::Failed)
+        bring_up(dev.base as usize, domain, dev.dma_mask, dev.name.as_str(), Kind::Xhci).map_err(|_| ProbeError::Failed)
+    }
+
+    /// Attach a DesignWare USB 2.0 core (`brcm,bcm2835-usb`, the Raspberry
+    /// Pi's; `brcm,bcm2708-usb`, the same core in the Pi firmware's own tree;
+    /// `snps,dwc2`) as a host, unless its `dr_mode` makes it a gadget port
+    /// (`azos_usb::dwc2::may_host`). Its PHY and clocks are the firmware's on
+    /// a Pi, which leaves them running.
+    #[cfg(feature = "usb-dwc2")]
+    pub(crate) fn attach_dwc2(dev: &azos_drv_bus::hwbus::Device) -> Result<(), azos_drv_bus::hwbus::ProbeError> {
+        use azos_drv_bus::hwbus::ProbeError;
+        // A tree that cannot be read names no gadget port.
+        let host = dev.dt_node.and_then(|n| dt_dr_mode(n, azos_usb::dwc2::may_host)).unwrap_or(true);
+        if !host {
+            kprintln!("[USB] {}: DWC2 with dr_mode = \"peripheral\": not driven as a host", dev.name.as_str());
+            return Err(ProbeError::Failed);
+        }
+        if dev.size < azos_usb::dwc2::MIN_WINDOW {
+            azos_drv_sys::kwarn!("[USB] {}: the DWC2 window is too small for its host registers", dev.name.as_str());
+            return Err(ProbeError::Failed);
+        }
+        if !map_dt_window(dev) {
+            return Err(ProbeError::Failed);
+        }
+        let domain = azos_dma::registry::domain_for_mmio(dev.base);
+        bring_up(dev.base as usize, domain, dev.dma_mask, dev.name.as_str(), Kind::Dwc2).map_err(|_| ProbeError::Failed)
     }
 
     /// Start the `usb` task, once the scheduler exists. A no-op without a

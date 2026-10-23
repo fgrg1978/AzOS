@@ -258,6 +258,10 @@ usb: 64 KiB boundary canary	n1	crates/drivers/usb/** tests/host/usb-tests/** cra
 usb: route string canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/**
 usb: unplug canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/**
 usb: DWC3 dr_mode canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/**
+usb: DWC2 HPRT0 W1C canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/**
+usb: DWC2 toggle canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/**
+usb: DWC2 IN bounce canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/**
+usb: DWC2 split canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/**
 power: PM halt partition canary	n1	crates/drivers/power/** tests/host/power-tests/**
 usb: no reset canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/** crates/drivers/api/**
 usb: reset keeps devices canary	n1	crates/drivers/usb/** tests/host/usb-tests/** crates/core/rings/** crates/core/idl/** crates/core/devif/** crates/drivers/dma/** crates/drivers/api/**

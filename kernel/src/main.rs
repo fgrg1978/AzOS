@@ -2318,8 +2318,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Kconfig DRV_AHCI: the AHCI driver's waiters sleep too.
     #[cfg(feature = "ahci")]
     wire_ahci_irq();
-    // Kconfig USB_XHCI: the `usb` task drains the controller the bus bound.
-    #[cfg(feature = "usb-xhci")]
+    // Kconfig USB_XHCI / USB_DWC2: the `usb` task drains the controller the bus bound.
+    #[cfg(feature = "usb-hc")]
     boot::usb::start_usb_task();
     // Keyboards and mice on virtio-input (Kconfig `DRV_VIRTIO_INPUT`).
     #[cfg(feature = "virtio-input")]

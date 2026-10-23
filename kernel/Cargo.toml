@@ -428,28 +428,34 @@ wdt-bcm2835-pm = ["azos_drv_sys/bcm2835-pm"]
 # Kconfig USB_HOST: the native USB host core (crates/drivers/usb): device
 # enumeration, hubs, pipes, the class-driver interface, the `usb` task.
 usb-host = ["dep:azos_usb"]
+# A controller under the USB host core, either kind (derived: USB_XHCI or
+# USB_DWC2 turns it on; azos_soc is the device tree reader the probes read
+# `dr_mode` with, not the SOC_FRAMEWORKS feature).
+usb-hc = ["usb-host", "dep:azos_soc"]
 # Kconfig USB_XHCI: the xHCI controller the hardware bus binds (PCI class
-# 0C0330, a device-tree `generic-xhci` node, or `snps,dwc3` with dr_mode host;
-# azos_soc is the device tree reader, not the SOC_FRAMEWORKS feature).
-usb-xhci = ["usb-host", "dep:azos_soc"]
+# 0C0330, a device-tree `generic-xhci` node, or `snps,dwc3` with dr_mode host).
+usb-xhci = ["usb-hc"]
+# Kconfig USB_DWC2: the DesignWare USB 2.0 core in host mode (the Raspberry
+# Pi's `brcm,bcm2835-usb`, `snps,dwc2`), under the same core.
+usb-dwc2 = ["usb-hc", "azos_usb/dwc2"]
 # Kconfig USB_HID: the HID class driver of the USB host (crates/drivers/usb-hid):
 # keyboards and mice into the console's input ring and the terminal server's
 # event ring (kernel/src/boot/usb_hid.rs).
-usb-hid = ["usb-xhci", "dep:azos_usb_hid"]
+usb-hid = ["usb-hc", "dep:azos_usb_hid"]
 # Kconfig USB_STORAGE: the mass-storage class driver, as a disk behind its own
 # request queue (crates/drivers/block/src/usb_msc.rs).
-usb-storage = ["usb-xhci", "azos_drv_block/usb-msc"]
+usb-storage = ["usb-hc", "azos_drv_block/usb-msc"]
 # Kconfig USB_CDC: the CDC class driver: ECM/NCM as a NIC of the network device
 # table (crates/drivers/net/src/usb_cdc.rs), ACM as a `Uart` port
 # (kernel/src/boot/usb/serial.rs).
-usb-cdc = ["usb-xhci", "azos_drv_net/usb-cdc"]
+usb-cdc = ["usb-hc", "azos_drv_net/usb-cdc"]
 # Kconfig USB_CDC_CONSOLE: the console over the CDC-ACM function
 # (kernel/src/boot/usb/console.rs); taps the console through the drv_sys hook.
 usb-cdc-console = ["usb-cdc", "azos_drv_sys/console-mirror"]
 # Kconfig USB_UVC: the USB video class driver (crates/drivers/usb/src/class/uvc.rs)
 # as a producer of the camera frame ring of the camera pipeline
 # (kernel/src/tasks/cam_capture.rs, which `use-robot` compiles).
-usb-uvc = ["usb-xhci", "use-robot"]
+usb-uvc = ["usb-hc", "use-robot"]
 # An IOMMU in front of the PCI functions, one feature per
 # flavour (Kconfig IOMMU_*): the RISC-V IOMMU (QEMU riscv64 `virt` with
 # `-device riscv-iommu-pci`), Arm SMMUv3 (aarch64 `virt` with

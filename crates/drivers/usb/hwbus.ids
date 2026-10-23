@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
-# The ids the native xHCI driver answers to, for the hardware bus
+# The ids the native USB host drivers (xHCI, DWC2) answer to, for the hardware bus
 # (crates/drivers/hwbus; build.rs turns every crates/drivers/*/hwbus.ids into
 # the native match table). Format: see crates/drivers/block/hwbus.ids.
 
@@ -15,3 +15,10 @@ xhci             pciclass:0c0330:ffffff   if=USB_XHCI
 # clocks is the board's, SOC_FRAMEWORKS.
 xhci             dt:generic-xhci          if=USB_XHCI
 xhci             dt:snps,dwc3             if=USB_XHCI
+# DesignWare USB 2.0 OTG core (Kconfig USB_DWC2): the Raspberry Pi's, in the
+# mainline tree's name and in the Pi firmware's, and the generic binding. The
+# probe (kernel/src/boot/usb.rs, azos_usb::dwc2::may_host) leaves a node whose
+# dr_mode is `peripheral` to the gadget stack.
+dwc2             dt:brcm,bcm2835-usb      if=USB_DWC2
+dwc2             dt:brcm,bcm2708-usb      if=USB_DWC2
+dwc2             dt:snps,dwc2             if=USB_DWC2

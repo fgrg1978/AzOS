@@ -7,6 +7,9 @@
 //!   hardware only through [`hw::Regs`], [`hw::Memory`] and [`hw::Clock`].
 //! - [`dwc3`]: the dual-role Synopsys core's side of an xHCI node: the
 //!   `dr_mode` check and `GCTL.PRTCAPDIR`.
+//! - [`dwc2`] (Kconfig `USB_DWC2`): the DesignWare USB 2.0 OTG core in host
+//!   mode (the Raspberry Pi's), which presents the xHCI driver's model to the
+//!   core in software ([`usbcore::hc`] holds either controller).
 //! - [`usbcore`]: the USB core on top of it: device enumeration, descriptor
 //!   parsing ([`usbcore::desc`]), hubs, pipes (a pair of `Queue` rings over
 //!   driver-owned DMA buffers), hot-plug events ([`event`]).
@@ -24,11 +27,14 @@
 //!
 //! No allocation, no locks, no I/O of its own: tests/host/usb-tests runs the
 //! whole flow, enumeration of a device and of a hub, port changes, unplug and
-//! transfer errors, against a register-level xHCI mock. The kernel half is
+//! transfer errors, against a register-level xHCI mock, and against a
+//! register-level DWC2 mock (`dwc2` there). The kernel half is
 //! kernel/src/boot/usb.rs.
 #![no_std]
 
 pub mod class;
+#[cfg(feature = "dwc2")]
+pub mod dwc2;
 pub mod dwc3;
 pub mod usbcore;
 pub mod event;

@@ -151,6 +151,13 @@ pub trait Memory {
     /// The device wrote `[cpu, cpu + len)` and the CPU is about to read it:
     /// drop the stale cache lines. A coherent device makes this a no-op.
     fn from_device(&self, cpu: *const u8, len: usize);
+    /// Where the CPU reaches the `len` bytes at bus address `bus` of a buffer
+    /// the device was handed (a class driver's), if the platform can say:
+    /// what a controller that bounces part of a transfer copies through
+    /// (`crate::dwc2`). `None`: it cannot, and such a transfer is refused.
+    fn cpu_of(&self, _bus: u64, _len: usize) -> Option<*mut u8> {
+        None
+    }
 }
 
 /// Bytes of one arena page: the xHCI minimum page size, and what every

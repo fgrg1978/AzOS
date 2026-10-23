@@ -6,7 +6,8 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 description = """
 The native USB host: the xHCI controller driver (registers, command, event and
-transfer rings, scratchpads, contexts), the USB core (enumeration, descriptor
+transfer rings, scratchpads, contexts), the DesignWare USB 2.0 (DWC2) host
+driver, the USB core (enumeration, descriptor
 parsing, control/bulk/interrupt pipes as Queue rings over driver-owned DMA
 buffers, isochronous IN pipes, hubs, hot-plug events) and the class-driver interface (IDL). Pure
 no_std with no allocation: the hardware is reached through three traits
@@ -31,6 +32,8 @@ azos_chaos = { workspace = true }
 [features]
 # The introspection listing (`usb/devN` nodes): needs azos_inspect.
 inspect = ["dep:azos_inspect"]
+# Kconfig USB_DWC2: the DesignWare USB 2.0 OTG core in host mode (src/dwc2.rs).
+dwc2 = []
 
 # Gate/host canaries only. Each one puts a specific xHCI bug back; the host
 # test that guards the property must go red with it on. Never enabled in a
@@ -87,6 +90,20 @@ canary-isoch-halt = []
 # The packets of the last burst of an isochronous interval are not counted in
 # its TRB (TLBPC stays 0).
 canary-isoch-burst = []
+
+# The DWC2 host driver (tests/host/usb-tests, `dwc2`).
+#
+# HPRT0 is written back as read: the port enable bit (write 1 to clear) goes
+# with it, and the port is disabled under the device.
+canary-dwc2-hprt-w1c = []
+# The data toggle is never read back from HCTSIZ: every packet goes as DATA0.
+canary-dwc2-toggle = []
+# The partial last packet of an IN is received in place as a whole packet, so
+# a device that sends more than asked writes past the buffer.
+canary-dwc2-no-bounce = []
+# A full- or low-speed device behind a high-speed hub is addressed without a
+# split transaction.
+canary-dwc2-split = []
 
 # The USB video class driver (tests/host/usb-uvc-tests).
 #

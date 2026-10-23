@@ -4,7 +4,8 @@
 //!
 //! The driver is built exactly as the kernel builds it, over the three traits
 //! of `azos_usb::hw`; behind them is a register-level xHCI controller and a
-//! tree of fake devices and hubs ([`mock`], [`devices`]). [`harness::Rig`]
+//! tree of fake devices and hubs ([`mock`], [`devices`]), or a register-level
+//! DWC2 core over the same devices ([`dwc2_mock`]; its suite is `dwc2`). [`harness::Rig`]
 //! wires the pieces; the suites are in `tests`.
 //!
 //! Every behaviour that has a canary (a feature of this crate that puts the
@@ -25,13 +26,21 @@
 //! | `canary-xhci-reset-keeps-devices` | the core keeps the devices a reset controller forgot | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
 //! | `canary-xhci-reset-event-ring` | a reset keeps the event ring's old cursor | `a_command_timeout_resets_the_controller_and_the_device_comes_back` |
 //! | `canary-xhci-hse-latches` | a host system error latches the controller, no reset | `a_host_system_error_resets_the_controller_and_a_second_latches_it` |
+//! | `canary-dwc2-hprt-w1c` | HPRT0 written back as read (the port disabled) | `dwc2::a_full_speed_device_on_the_root_port_is_addressed_and_configured` |
+//! | `canary-dwc2-toggle` | the data toggle never read back | `dwc2::consecutive_bulk_transfers_keep_the_data_toggle` |
+//! | `canary-dwc2-no-bounce` | an IN tail received in place | `dwc2::an_in_shorter_than_a_packet_is_bounced_and_never_overruns` |
+//! | `canary-dwc2-split` | a full-speed device behind a high-speed hub reached without a split | `dwc2::a_full_speed_device_behind_a_high_speed_hub_is_refused_without_a_split` |
 //!
 //! `tests/chaos.rs` drives the kernel's injection point (`azos_chaos`,
 //! `xhci-command-drop`) instead of the mock, in a process of its own.
 
 pub mod devices;
+pub mod dwc2_mock;
 pub mod harness;
 pub mod mock;
+
+#[cfg(test)]
+mod dwc2;
 
 #[cfg(test)]
 mod msc;
