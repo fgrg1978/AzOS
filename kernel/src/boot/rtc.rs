@@ -17,8 +17,11 @@
 //!   so it stays mappable by a task that holds its capability (the alarm and
 //!   interrupt registers are not ours; this file reads the time and loads it,
 //!   nothing else).
-//! * x86_64: the CMOS clock on ports 0x70/0x71. A machine without one leaves
-//!   the ports floating and the driver says "no device" on its first read.
+//! * x86_64: the CMOS clock on ports 0x70/0x71, unless the FADT says the
+//!   machine has none (IAPC_BOOT_ARCH bit 5). Its century register is the one
+//!   the FADT's CENTURY names, none when it names none. A machine without the
+//!   chip whose firmware does not say so leaves the ports floating, and the
+//!   driver says "no device" on its first read.
 //! * boards (Kconfig `DRV_RTC_PCF8563`): a PCF8563 on I2C bus
 //!   `RTC_PCF8563_I2C_BUS`, looked for by [`install_i2c`] once the I2C
 //!   controllers are up.
@@ -222,15 +225,21 @@ fn probe() -> Option<(Chip, &'static str)> {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        // No ACPI flag is consulted: a machine without a CMOS clock leaves
-        // the ports floating, and the driver tells that bus from a chip on
-        // its first read (status D reads 0xff where no chip does). The pair
-        // is the kernel's either way (the index port's bit 7 also masks the
+        // The FADT says whether there is a chip and where its century is.
+        // Without a FADT (no ACPI) the ports are tried: a machine without a
+        // CMOS clock leaves them floating, and the driver tells that bus from
+        // a chip on its first read (status D reads 0xff where no chip does).
+        let fadt = azos_arch::platform_impl::platform().acpi.fadt;
+        if fadt.is_some_and(|f| f.no_cmos_rtc()) {
+            kprintln!("[RTC] the FADT says there is no CMOS RTC (IAPC_BOOT_ARCH bit 5)");
+            return None;
+        }
+        // The pair is the kernel's (the index port's bit 7 also masks the
         // NMI): no ring-3 grant may open it.
         azos_arch::ioport::reserve(azos_rtc::mc146818::PORT_INDEX, azos_rtc::mc146818::PORT_DATA);
         let c = azos_rtc::mc146818::Mc146818::new(
             PcPorts,
-            Some(azos_rtc::mc146818::CENTURY_DEFAULT),
+            fadt.and_then(|f| f.century_register()),
             azos_limits::RTC_UIP_POLLS as u32,
         );
         Some((Chip::Cmos(c), "ports 0x70/0x71"))

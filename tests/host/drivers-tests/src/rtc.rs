@@ -428,6 +428,43 @@ fn cmos_floating_bus_is_no_device() {
     assert_eq!(Mc146818::new(Floating, Some(CENTURY), 1000).read(), Err(Error::NoDevice));
 }
 
+/// Only `VRT` counts in status D: bits 5..0 are the date alarm on the PC
+/// chipsets, so a chip whose firmware set one is read, not called absent.
+/// **Canary:** the old `d & 0x7f != 0` test: the read is `NoDevice`.
+#[test]
+fn cmos_status_d_date_alarm_bits_are_not_a_fault() {
+    struct Alarm(Cmos);
+    impl Ports for Alarm {
+        fn inb(&mut self, p: u16) -> u8 {
+            let v = self.0.inb(p);
+            if self.0 .0.borrow().index == 0x0d { v | 0x1f } else { v }
+        }
+        fn outb(&mut self, p: u16, v: u8) {
+            self.0.outb(p, v)
+        }
+    }
+    let m = Rc::new(RefCell::new(CmosModel::new(T2026, false, true)));
+    assert_eq!(Mc146818::new(Alarm(Cmos(m.clone())), Some(CENTURY), 1000).read(), Ok(T2026));
+    m.borrow_mut().vrt = false;
+    assert_eq!(Mc146818::new(Alarm(Cmos(m)), Some(CENTURY), 1000).read(), Err(Error::Lost), "VRT still counts");
+}
+
+/// A chip whose FADT names no century register: the read is 20xx and a set
+/// writes no century anywhere (0x32 is then the firmware's CMOS RAM).
+/// **Canary:** a set that falls back to 0x32: the log shows the write.
+#[test]
+fn cmos_without_a_century_register_never_writes_one() {
+    let m = Rc::new(RefCell::new(CmosModel::new(T2026, false, true)));
+    let mut c = Mc146818::new(Cmos(m.clone()), None, 1000);
+    assert_eq!(c.read(), Ok(T2026));
+    // The model counts from the staged century: stage it as 20 by hand, as
+    // the chip's RAM would hold whatever it held.
+    m.borrow_mut().staged[CENTURY as usize] = 0x20;
+    c.set(T2026 + 86_400).unwrap();
+    assert_eq!(m.borrow().secs, T2026 + 86_400);
+    assert!(m.borrow().log.iter().all(|&(r, _)| r <= 0x0d), "only clock registers written: {:?}", m.borrow().log);
+}
+
 /// Registers that are not a date (a glitch: month 0) are `Lost`, not a wrong
 /// time.
 #[test]

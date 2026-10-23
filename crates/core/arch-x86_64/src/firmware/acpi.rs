@@ -361,6 +361,9 @@ pub struct Fadt {
     /// IAPC_BOOT_ARCH: bit 0 legacy devices, bit 1 8042, bit 5 no CMOS RTC.
     /// 0 when the table is too old (revision < 2) or too short to carry it.
     pub iapc_boot_arch: u16,
+    /// CENTURY: the CMOS RAM index of the RTC's century register, 0 = the
+    /// RTC has none.
+    pub century: u8,
     /// Fixed feature flags: bit 10 RESET_REG_SUP, bit 20 HW_REDUCED_ACPI.
     pub flags: u32,
     /// RESET_REG and the value written to it.
@@ -394,7 +397,26 @@ impl Fadt {
         }
         self.revision < 2 || self.iapc_boot_arch & 0b10 != 0
     }
+
+    /// Does the firmware say there is no CMOS RTC at ports 0x70/0x71?
+    /// IAPC_BOOT_ARCH bit 5 (ACPI 5.0A), the one flag Linux reads for it.
+    pub const fn no_cmos_rtc(&self) -> bool {
+        self.iapc_boot_arch & FADT_BOOT_NO_CMOS_RTC != 0
+    }
+
+    /// The century register, when CENTURY names one the index port reaches:
+    /// past the clock and status registers (0x00..=0x0D) and below 0x80
+    /// (index bit 7 is the NMI mask). Anything else is no century register.
+    pub const fn century_register(&self) -> Option<u8> {
+        match self.century {
+            c @ 0x0E..=0x7F => Some(c),
+            _ => None,
+        }
+    }
 }
+
+/// IAPC_BOOT_ARCH bit 5: CMOS RTC Not Present.
+pub const FADT_BOOT_NO_CMOS_RTC: u16 = 1 << 5;
 
 /// FADT flag RESET_REG_SUP: RESET_REG is implemented.
 pub const FADT_RESET_REG_SUP: u32 = 1 << 10;
@@ -415,6 +437,8 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
         flags: le32(t, 112),
         ..Fadt::default()
     };
+    // CENTURY @108 is an ACPI 1.0 field: 0 where there is none.
+    f.century = t[108];
     if f.revision >= 2 && t.len() >= 111 {
         f.iapc_boot_arch = le16(t, 109);
     }

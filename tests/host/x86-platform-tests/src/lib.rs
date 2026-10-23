@@ -288,6 +288,28 @@ mod tests {
         assert_eq!(acpi::parse_fadt(&fadt(3, 0b11, 0)).unwrap().revision, 3);
     }
 
+    /// CENTURY (byte 108) names the RTC's century register; 0, a clock or
+    /// status register, or an index past the NMI bit is none. IAPC_BOOT_ARCH
+    /// bit 5 says there is no CMOS RTC at all.
+    /// **Canary:** read CENTURY at 109 (IAPC_BOOT_ARCH's low byte): q35's 0x32
+    /// reads as 0x03 and the register is a status register, `None`.
+    #[test]
+    fn fadt_names_the_rtc_century_register_and_its_absence() {
+        let with = |century: u8, iapc: u16| {
+            let mut t = fadt(3, iapc, 0);
+            t[108] = century;
+            acpi::parse_fadt(&t).unwrap()
+        };
+        assert_eq!(with(0x32, 0b11).century_register(), Some(0x32), "q35/pc");
+        assert_eq!(with(0, 0b11).century_register(), None, "no century register");
+        assert_eq!(with(0x0d, 0b11).century_register(), None, "status D is no century");
+        assert_eq!(with(0x80, 0b11).century_register(), None, "past the index port's reach");
+        assert_eq!(with(0x7f, 0b11).century_register(), Some(0x7f));
+        assert!(!with(0x32, 0b11).no_cmos_rtc());
+        assert!(with(0, 0b10_0011).no_cmos_rtc(), "IAPC_BOOT_ARCH bit 5");
+        assert!(!with(0, 0b1_0011).no_cmos_rtc(), "bit 4 (no MSI) is another flag");
+    }
+
     #[test]
     fn xsdt_machine_parses_every_table() {
         let info = parse(&machine(true)).unwrap();

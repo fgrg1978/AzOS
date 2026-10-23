@@ -15,10 +15,15 @@
 //! or 12-hour (`24H`); firmware chooses and a read follows. A set writes in the
 //! chip's number format and in 24-hour time, and turns the oscillator on
 //! (status A, divider 010) in case a board left it off. The century is the
-//! register the FADT names, 0x32 where it does not; a value that is not 19, 20
-//! or 21 is read as 20.
+//! register the FADT's CENTURY field names; where it names none the chip has
+//! no century register: a read assumes 20xx and a set writes no century (the
+//! byte at 0x32 is then the firmware's CMOS RAM, not ours). A century value
+//! that is not 19, 20 or 21 is read as 20.
 //!
-//! `VRT` (status D, bit 7) is 0 when the battery died: [`Error::Lost`].
+//! `VRT` (status D, bit 7) is 0 when the battery died: [`Error::Lost`]. It is
+//! the only bit of status D read: bits 5..0 are the date alarm on the PC
+//! chipsets (Intel PCH, AMD FCH), so a value there is no fault. A byte of all
+//! ones is a bus that floats (no chip): [`Error::NoDevice`].
 //! The chip also keeps two-digit years, so a set outside 2000..=2099 is
 //! [`Error::Range`].
 
@@ -29,8 +34,6 @@ use crate::{Error, Ports, Rtc};
 pub const PORT_INDEX: u16 = 0x70;
 /// Data port.
 pub const PORT_DATA: u16 = 0x71;
-/// The century register where the FADT does not name one.
-pub const CENTURY_DEFAULT: u8 = 0x32;
 
 const SEC: u8 = 0x00;
 const MIN: u8 = 0x02;
@@ -126,9 +129,9 @@ impl<P: Ports> Rtc for Mc146818<P> {
 
     fn read(&mut self) -> Result<u64, Error> {
         let d = self.rd(STATUS_D);
-        // Bits 6..0 of status D read 0 on a chip: a bus that floats high
-        // (no CMOS) answers 0xff.
-        if d & 0x7f != 0 {
+        // A bus that floats high (no CMOS) answers 0xff. A chip never does:
+        // bit 6 is reserved 0. The other bits are the date alarm.
+        if d == 0xff {
             return Err(Error::NoDevice);
         }
         if d & D_VRT == 0 {
