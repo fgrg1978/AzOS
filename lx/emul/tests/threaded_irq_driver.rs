@@ -102,8 +102,10 @@ fn i2c_xfer(env: &mut Env) {
 /// `i2c_hid_irq` → `i2c_hid_get_input`: read the report; the device then
 /// releases the line.
 fn i2c_hid_irq(env: &mut Env, irq: u32, dev_id: usize) -> IrqReturn {
-    assert_eq!((irq, dev_id), (IRQ, IHID));
-    assert!(!env.in_atomic(), "the thread function runs in a task");
+    // Recorded, not asserted: a panic on a task's stack aborts the test.
+    if (irq, dev_id) != (IRQ, IHID) || env.in_atomic() {
+        event("thread function in the wrong context");
+    }
     i2c_xfer(env);
     let Some(r) = w().report.take() else { return IrqReturn::None };
     w().asserted.set(false);

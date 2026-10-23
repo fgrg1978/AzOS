@@ -598,11 +598,11 @@ mod tests {
         log("hard");
         IrqReturn::WakeThread
     }
+    /// Logs instead of asserting: a panic on a task's stack aborts the
+    /// whole test binary.
     fn sleeping_thread(e: &mut Env, _: u32, _: usize) -> IrqReturn {
-        assert!(!e.in_atomic());
         log("thread");
-        e.msleep(2).unwrap();
-        log("thread done");
+        log(if !e.in_atomic() && e.msleep(2).is_ok() { "thread done" } else { "thread could not sleep" });
         IrqReturn::Handled
     }
 
@@ -732,8 +732,10 @@ mod tests {
             e.disable_irq_nosync(irq);
             IrqReturn::Handled
         }
+        // Checked on the test's stack: a panic on a task's stack aborts the
+        // whole test binary.
         fn thread_syncs(e: &mut Env, irq: u32, _: usize) -> IrqReturn {
-            assert_eq!(e.synchronize_irq(irq), Err(LockError::Deadlock));
+            log(if e.synchronize_irq(irq) == Err(LockError::Deadlock) { "deadlock refused" } else { "waited for itself" });
             IrqReturn::Handled
         }
         let mut e = env(2);
@@ -746,6 +748,7 @@ mod tests {
         e.deliver_irq(61);
         e.run_once(0);
         assert_eq!(e.irqs.stats().threads_run, 1);
+        assert_eq!(take_log(), vec!["ack", "deadlock refused", "ack"]);
     }
 
     #[test]
