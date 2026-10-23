@@ -79,7 +79,7 @@ pub(crate) fn install_energy(num_cpus: usize, dtb_ptr: usize) {
 /// thermal runtime needs the probe either way, and `resolve` takes the model
 /// only when nothing before it in the order declared one.
 // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
-#[cfg(all(target_arch = "aarch64", feature = "thermal", not(feature = "thermal-smoke")))]
+#[cfg(all(target_arch = "aarch64", feature = "thermal", feature = "rpi-firmware", not(feature = "thermal-smoke")))]
 fn firmware_model(
     dtb_ptr: usize,
     num_cpus: usize,
@@ -89,7 +89,7 @@ fn firmware_model(
 
 /// No other board reports a clock range to build a model from.
 // arch-only: as the aarch64 one.
-#[cfg(not(all(target_arch = "aarch64", feature = "thermal", not(feature = "thermal-smoke"))))]
+#[cfg(not(all(target_arch = "aarch64", feature = "thermal", feature = "rpi-firmware", not(feature = "thermal-smoke"))))]
 fn firmware_model(_dtb_ptr: usize, _num_cpus: usize) -> Option<Result<azos_energy::EnergyModel, azos_energy::ModelFault>> {
     None
 }

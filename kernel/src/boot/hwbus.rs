@@ -115,7 +115,7 @@ fn wants_resources(driver: &str) -> bool {
     feature = "k1",
     feature = "wdt-sbsa",
     all(feature = "soc-k1", feature = "thermal"),
-    all(feature = "thermal", target_arch = "aarch64"),
+    all(feature = "rpi-firmware", target_arch = "aarch64"),
     all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
 fn map_window(dev: &Device) -> Result<usize, ProbeError> {
@@ -129,7 +129,7 @@ fn map_window(dev: &Device) -> Result<usize, ProbeError> {
     feature = "k1",
     feature = "wdt-sbsa",
     all(feature = "soc-k1", feature = "thermal"),
-    all(feature = "thermal", target_arch = "aarch64"),
+    all(feature = "rpi-firmware", target_arch = "aarch64"),
     all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
 fn map_reg(dev: &Device, base: u64, size: u64) -> Result<usize, ProbeError> {
