@@ -209,6 +209,13 @@ impl BytesProducer {
     /// The ring this producer writes.
     pub fn ring(&self) -> &SpscBytes { &self.ring }
 
+    /// Point the producer at its ring where the region is mapped now, keeping
+    /// the geometry, the head and the counts: a kernel producer that holds no
+    /// address between steps (it asks the region table for one at every push,
+    /// so a region freed meanwhile is a refused step and never a stray write)
+    /// rebases before each push.
+    pub fn rebase(&mut self, base: usize) { self.ring.base = base; }
+
     /// Items dropped so far (the value stored at [`RING_DROPS`]).
     pub fn drops(&self) -> u32 { self.drops }
 

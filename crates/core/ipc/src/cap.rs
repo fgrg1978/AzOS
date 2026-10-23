@@ -245,6 +245,9 @@ pub mod targets {
     // parameterised by, not a grant.
     target!(DriverRegistry, DRIVER_REGISTRY,
             "The right to register as the driver for one `DRV_KIND_*`.");
+    // Seeded from the topology word `"nicq.eth<N>.<queue>"` (`cap_seed`); the
+    // resource is `azos_abi::nic_queue::resource`.
+    target!(NicQueue,   NIC_QUEUE,  "One queue of a NIC the kernel drives, to run from ring 3 on a pair of rings.");
     // Unlike the five above, this one is minted
     // from the start (`crate::endpoint`): an endpoint capability that nothing
     // can hold would close no hole, and a kind declared but never minted is

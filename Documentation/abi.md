@@ -195,7 +195,7 @@ table and refuses a generation that does not match (`-ECAPSTALE`).
 Kinds (`CapKind`): `Endpoint` 1, `MemObj` 2, `Queue` 3, `Port` 4, `Domain` 5,
 `Node` 6, `Device` 7, `Log` 8. Named types (`ty::*`): `ENDPOINT`, `PORT`,
 `SHM`, `IORING`, `TASK`, `FILE`, `LAUNCH`, `SOCKET`, `IRQ`, `MMIO`,
-`DRIVER_REGISTRY`, `IOPORT`, `TRACE`, `CONSOLE`.
+`DRIVER_REGISTRY`, `IOPORT`, `NIC_QUEUE`, `TRACE`, `CONSOLE`.
 
 Permissions (`CapPerms`): `READ` 0x01, `WRITE` 0x02, `EXEC` 0x04, `DUP` 0x08
 (make a copy), `TRANSFER` 0x10 (move or send the capability to another
@@ -362,6 +362,9 @@ where the source states them.
 | `DEVICE_IRQ_BIND` | 0x7901 | DRIVER | Bind an interrupt line to an event port with a key and a CPU (`DEVICE_IRQ_CPU_ANY`). A message-signalled slot also returns address, data and vector in `a1`..`a3`. |
 | `DEVICE_IRQ_ACK` | 0x7902 | DRIVER | Unmask the line after the device was quietened; returns 0, or 1 if the handler's budget is spent. |
 | `DEVICE_IOPORT_ENABLE` | 0x7906 | DRIVER | Open the I/O ports of a `ty::IOPORT` capability to the calling thread (x86_64); needs `READ\|WRITE`, every word 0. `-ENODEV` on an ISA without a port space. |
+| `DEVICE_NICQ_ATTACH` | 0x7903 | DRIVER | Take the NIC queue a `NicQueue` handle names from the stack and run it on two rings the caller made (`a2` receive, `a3` transmit); replies the MAC, the longest frame and the stamp kind. See [network.md](network.md#nic-queues-in-ring-3). |
+| `DEVICE_NICQ_KICK` | 0x7804 | NET | Send what the caller pushed on the transmit ring; returns the frames sent. |
+| `DEVICE_NICQ_DETACH` | 0x7905 | DRIVER | Give the queue back to the stack. |
 
 **Endpoint** (kind 1)
 

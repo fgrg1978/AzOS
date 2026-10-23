@@ -474,6 +474,48 @@ pub const DEVICE_IRQ_ACK: u16 = op(CapKind::Device, CLASS_DRIVER, 2);
 /// `X86_IOPORT_BITMAP_PORTS` 0; answered before the handle is looked at).
 pub const DEVICE_IOPORT_ENABLE: u16 = op(CapKind::Device, CLASS_DRIVER, 6);
 
+// ── Device: a NIC queue the caller holds (`ty::NIC_QUEUE`) ──────────────────
+
+/// Take the NIC queue the handle names from the kernel's stack and run it on
+/// a pair of rings the caller made (`crate::nic_queue`): `w0` the `Cap<Shm>`
+/// of the receive ring (`WRITE`: the kernel fills it), `w1` the one of the
+/// transmit ring (`READ`: the kernel drains it). Each region is zero-filled,
+/// read-write and physically contiguous (`SHM_KIND_CONTIG`); the kernel lays
+/// out an `azos_rings::region::SpscBytes` ring of `nic_queue::SLOT_PAYLOAD`
+/// byte slots in each and writes the geometry into its header, so the caller
+/// builds both views from the mapping. Needs `READ` and `WRITE` on the queue.
+///
+/// From the attach on, the stack does not see the queue: what arrives on it is
+/// pushed on the receive ring (`nic_queue::DESC_RX`, with its stamp), nothing
+/// the stack sends leaves by it, and the caller's frames leave by
+/// [`DEVICE_NICQ_KICK`]. The attachment ends with [`DEVICE_NICQ_DETACH`], the
+/// caller's exit, or either region going away.
+///
+/// The register form replies `a1` the interface's MAC (`nic_queue::mac_word`),
+/// `a2` the longest frame a slot carries and `a3` the stamp the receive
+/// descriptors carry (`nic_queue::STAMP_HW` or `STAMP_SW`).
+///
+/// Returns 0, or `-ECAPSTALE` / `-ECAPKIND` / `-ECAPPERMS` (the queue or a
+/// region), `-EINVAL` (a region too small for two slots, read-only, shared
+/// with a clone or not contiguous), `-ENODEV` (no NIC on the interface, or no
+/// such queue on it), `-EBUSY` (the queue is attached already), `-EPERM` (the
+/// queue carries the node's own stack or the path the e-stop and the link
+/// arrive by: refused and recorded, `Rule::NicQueue`), `-ENOSYS` (Kconfig
+/// `NET_NIC_QUEUES` off).
+pub const DEVICE_NICQ_ATTACH: u16 = op(CapKind::Device, CLASS_DRIVER, 3);
+/// Send what the caller pushed on the transmit ring of its attached queue,
+/// now (the AF_XDP `sendto` kick): every slot is popped, checked (a frame of
+/// at least an Ethernet header, at most a slot, whose source is the
+/// interface's MAC) and handed to the NIC, and a slot that asked for it
+/// (`nic_queue::TX_STAMP`) gets a `DESC_TX_DONE` on the receive ring with its
+/// departure stamp. Needs `WRITE`. Returns the frames sent, `-ENOENT` when the
+/// caller has no attachment on the queue, `-EBUSY` when another thread of it
+/// is draining the ring.
+pub const DEVICE_NICQ_KICK: u16 = op(CapKind::Device, CLASS_NET, 4);
+/// Give the queue back to the stack and let go of both rings. Needs `WRITE`.
+/// 0, or `-ENOENT` when the caller has no attachment on the queue.
+pub const DEVICE_NICQ_DETACH: u16 = op(CapKind::Device, CLASS_DRIVER, 5);
+
 // ── Endpoint: an endpoint the caller holds ──────────────────────────────────
 
 /// The most caveats [`ENDPOINT_DERIVE`] adds (`azos_ipc::cap::CAVEATS_MAX`).

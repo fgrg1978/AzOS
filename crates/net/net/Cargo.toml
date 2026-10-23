@@ -28,6 +28,10 @@ envelope-egress-canary = []
 # at both hooks, as it did before the filter covered IPv6, so a refusing
 # policy lets IPv6 through. Never in a real build.
 fw-ipv6-canary = []
+# Gate canary (host suite `net-tests`): the receive pass ignores that a ring-3
+# program took a NIC queue, so the stack keeps handling the queue's frames
+# (`nic_queue::pass`). Never in a real build.
+nic-queue-blind-canary = []
 # Enables `[TCP-RX]` / `[TCP-TX]` per-segment trace probes in `tcp.rs`.
 # Propagated from the kernel's `qemu` feature.  Free in production builds.
 qemu = []

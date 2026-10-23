@@ -173,6 +173,7 @@ fn dispatch(c: &mut Call) -> i64 {
         t if t == ty::PORT => port_op(c),
         t if t == ty::IRQ => irq_op(c),
         t if t == ty::IOPORT => crate::ioport::ioport_op(c),
+        t if t == ty::NIC_QUEUE => crate::nicq::nicq_op(c),
         t if t == ty::ENDPOINT => endpoint_op(c),
         t if t == ty::FILE || t == ty::SOCKET => node_op(c),
         t if t == ty::SHM => memobj_op(c),

@@ -618,6 +618,8 @@ fn task_release_all_resources(tid: u32) {
     // The queues the dying task attached to a `Uart` port or an `Adc` channel
     // end with it (`azos_syscall::devices`).
     azos_syscall::devices::release_all(tid);
+    // The NIC queues it took from the stack go back to it.
+    azos_syscall::nicq::release_all(tid);
     // The display server's claim on the screen ends with it: the text console
     // draws again and the surfaces it attached are let go (`azos_syscall::display`).
     azos_syscall::display::release_all(tid);

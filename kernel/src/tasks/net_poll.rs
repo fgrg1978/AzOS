@@ -218,6 +218,24 @@ pub(crate) fn net_msi_wake() -> bool {
 pub(crate) fn install_net_hooks() {
     azos_net::wait::set_hooks(azos_sched::current_task_tid, net_wait_block, net_wait_wake);
     azos_net::tcp::set_timer_kick(net_timer_kick);
+    // A NIC queue a ring-3 program took (`DEVICE_NICQ_ATTACH`): its frames go
+    // to the program's ring, and the queue the link peer's route leaves by is
+    // never handed over.
+    azos_net::nic_queue::set_hooks(azos_syscall::nicq::rx_sink, azos_syscall::nicq::rx_end, link_peer);
+}
+
+/// The node's link peer, for `azos_net::nic_queue`: the brain the behavior
+/// task dials while the remote link is enabled. The e-stop arrives on that
+/// connection, so the interface its route leaves by is not given to ring 3.
+fn link_peer() -> Option<[u8; 4]> {
+    #[cfg(feature = "use-robot")]
+    {
+        azos_behavior::remote_is_enabled().then(azos_behavior::remote_server_ip)
+    }
+    #[cfg(not(feature = "use-robot"))]
+    {
+        None
+    }
 }
 
 /// Registered with `tcp::set_timer_kick`: a TCP deadline earlier than this

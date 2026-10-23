@@ -69,6 +69,8 @@ pub mod power;
 pub mod power_assert;
 /// D6 part A: the `Gpio`, `I2c` and `Pwm` interfaces the kernel hosts.
 pub mod devices;
+// The `DEVICE_NICQ_*` ops: a NIC queue run from ring 3 on a pair of rings.
+pub mod nicq;
 /// Hypervisor step H1 (Kconfig HV): the `Vm` and `Vcpu` interfaces the kernel hosts.
 #[cfg(feature = "hv")]
 pub mod vm;

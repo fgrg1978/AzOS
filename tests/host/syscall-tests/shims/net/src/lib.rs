@@ -38,9 +38,36 @@ mod arp;
 #[path = "../../../../../../crates/net/net/src/igmp.rs"]
 mod igmp;
 
+// `pub`: the NIC-queue tests attach interfaces to the real registry.
 #[allow(dead_code)]
 #[path = "../../../../../../crates/net/net/src/ip.rs"]
-mod ip;
+pub mod ip;
+
+pub use ip::{IfIndex, MAX_IFS};
+
+/// The real rules of who may take a NIC queue and of the receive pass's turn
+/// (`syscall/src/nicq.rs` takes and gives back through it).
+#[allow(dead_code)]
+#[path = "../../../../../../crates/net/net/src/nic_queue.rs"]
+pub mod nic_queue;
+
+/// `crate::nic_queue_send` (`lib.rs`), with the NIC replaced by a record of
+/// what was sent: the real refusal of a queue that is not taken, then the
+/// frame kept for the test.
+pub fn nic_queue_send(ifindex: IfIndex, frame: &[u8]) -> bool {
+    if !nic_queue::taken(ifindex) {
+        return false;
+    }
+    NICQ_SENT.lock().unwrap_or_else(|e| e.into_inner()).push((ifindex, frame.to_vec()));
+    true
+}
+
+static NICQ_SENT: std::sync::Mutex<Vec<(IfIndex, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Test-only: the frames [`nic_queue_send`] put on a NIC since the last call.
+pub fn shim_take_nicq_sent() -> Vec<(IfIndex, Vec<u8>)> {
+    std::mem::take(&mut *NICQ_SENT.lock().unwrap_or_else(|e| e.into_inner()))
+}
 
 // `ip.rs` calls the packet-filter hooks.
 #[allow(dead_code)]

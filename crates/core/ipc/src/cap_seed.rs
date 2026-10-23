@@ -296,9 +296,10 @@ pub fn seed_one_cap_ops(
 /// names; refused for a device that is not there, one a kernel driver owns
 /// and a permission no mapping could honour), `"ioport.<first>.<count>"`
 /// (a range of I/O ports; refused past the ISA's port space, so everywhere
-/// on riscv64 and aarch64, and for any permission but `READ|WRITE`) or
-/// `"drv.<DRV_KIND_* as decimal>"` (the right to register as that driver).
-/// Anything else is refused.
+/// on riscv64 and aarch64, and for any permission but `READ|WRITE`),
+/// `"drv.<DRV_KIND_* as decimal>"` (the right to register as that driver) or
+/// `"nicq.eth<N>.<queue>"` (a queue of a NIC the kernel drives,
+/// [`nicq_grant_cap`]). Anything else is refused.
 fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     if let Some(n) = parse_dotted(target, "irq") {
         return crate::irq_bind::irq_grant_cap(tid, n, perms).map(|c| c.raw());
@@ -315,7 +316,44 @@ fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
     if let Some(k) = parse_dotted(target, "drv") {
         return crate::drvreg_cap::drvreg_grant_cap(tid, k, perms).map(|c| c.raw());
     }
+    if let Some(spec) = target.strip_prefix("nicq.") {
+        return nicq_grant_cap(tid, spec, perms).map(|c| c.raw());
+    }
     None
+}
+
+/// A `Device` row `"nicq.eth<N>.<queue>"`: queue `<queue>` of the interface
+/// `eth<N>` (interface index `N + 1`, within Kconfig `NET_MAX_INTERFACES`),
+/// with exactly `READ|WRITE`, the rights its attach needs (a queue is taken
+/// to be received from and sent on, or not at all). The interface is named,
+/// not the NIC: a row says which link it runs, the machine's probe order
+/// says which NIC that is. Whether the interface has a NIC and the queue
+/// exists, and whether taking it would cut the node off, are the attach's
+/// questions (`DEVICE_NICQ_ATTACH`): a NIC can come and go after the seed.
+/// `None` for anything else, a number written with a leading zero included.
+fn nicq_grant_cap(tid: u32, spec: &str, perms: CapPerms) -> Option<crate::cap::Cap<crate::cap::targets::NicQueue>> {
+    if perms != CapPerms::RW {
+        return None;
+    }
+    let (ifname, queue) = spec.split_once('.')?;
+    let n = parse_plain_u8(ifname.strip_prefix("eth")?)?;
+    let queue = parse_plain_u8(queue)?;
+    let ifindex = n.checked_add(1)?;
+    if usize::from(ifindex) > azos_limits::NET_MAX_INTERFACES {
+        return None;
+    }
+    crate::cap_store::grant::<crate::cap::targets::NicQueue>(
+        tid, perms, azos_abi::nic_queue::resource(ifindex, queue),
+    )
+}
+
+/// A decimal `u8` with no sign and no leading zero (`"0"` is the one number
+/// that starts with one).
+fn parse_plain_u8(s: &str) -> Option<u8> {
+    if s.is_empty() || (s.len() > 1 && s.starts_with('0')) || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
 }
 
 /// What [`set_shm_inspect_minter`] installs.
@@ -726,6 +764,33 @@ mod tests {
             "past MAX_IRQS"
         );
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq").is_none(), "malformed target");
+    }
+
+    /// A `nicq.eth<N>.<queue>` row mints a `Cap<NicQueue>` whose resource is
+    /// the interface (`eth1` is index 2) and the queue, with exactly
+    /// `READ|WRITE`; an interface past Kconfig `NET_MAX_INTERFACES`, a spelling
+    /// that is not `eth<N>.<queue>`, a leading zero and any other rights are
+    /// refused. **Discriminates**: drop the `nicq.` arm of `device_seed` and
+    /// the first assertion fails (no minter); drop the rights check and the
+    /// `READ`-only row mints.
+    #[test]
+    fn a_nic_queue_row_mints_its_interface_and_queue_and_nothing_else() {
+        use crate::cap::{targets, Cap};
+        let tid = tests_support::fresh_tid();
+        let h = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "nicq.eth1.0").expect("eth1 queue 0 mints");
+        assert_eq!(
+            crate::cap_store::get(tid, Cap::<targets::NicQueue>::from_raw(h), CapPerms::RW),
+            Ok(azos_abi::nic_queue::resource(2, 0))
+        );
+        let last = azos_limits::NET_MAX_INTERFACES - 1;
+        let past = format!("nicq.eth{}.0", last + 1);
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, &past).is_none(), "past NET_MAX_INTERFACES");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, &format!("nicq.eth{last}.0")).is_some(), "the last interface");
+        for bad in ["nicq.eth1", "nicq.wlan0.0", "nicq.eth01.0", "nicq.eth1.00", "nicq.eth1.-1", "nicq.eth1.256", "nicq..0"] {
+            assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, bad).is_none(), "{bad}");
+        }
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::READ, "nicq.eth1.0").is_none(), "READ alone takes no queue");
+        assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW.union(CapPerms::DUP), "nicq.eth1.0").is_none(), "no DUP");
     }
 
     /// An `msi.<k>` target is read as a message-signalled slot, and refused where

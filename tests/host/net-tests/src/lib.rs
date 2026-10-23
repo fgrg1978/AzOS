@@ -476,6 +476,12 @@ mod checksum_sum {
 #[path = "../../../../crates/net/net/src/rx_owner.rs"]
 mod rx_owner;
 
+/// The interfaces whose NIC queue a ring-3 program took (`ty::NIC_QUEUE`).
+#[path = "../../../../crates/net/net/src/nic_queue.rs"]
+mod nic_queue;
+#[cfg(test)]
+mod nic_queue_tests;
+
 #[cfg(test)]
 mod rx_owner_tests {
     use super::rx_owner::PassOwner;

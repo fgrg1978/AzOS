@@ -50,6 +50,7 @@ pub mod exit_status;
 pub mod invoke;
 pub mod io_ring;
 pub mod ipc_msg;
+pub mod nic_queue;
 pub mod power;
 /// Wave 15: the cross-level admission rule boot and run-time admission share.
 pub mod rt_levels;

@@ -512,7 +512,50 @@ field (0 means every interface).
   A packet socket is not a way to speak as someone else's MAC.
 - **Only kernel context may create one** (`create_packet` requires
   `SOCK_OWNER_KERNEL`). A socket that can put any frame on the wire can forge
-  any peer at layer 2; ring 3 has no capability for it.
+  any peer at layer 2; ring 3 has no capability for it. What ring 3 gets at
+  layer 2 is a whole NIC queue, taken from the stack (next section).
+
+## NIC queues in ring 3
+
+Source: `crates/net/net/src/nic_queue.rs`, `crates/core/syscall/src/nicq.rs`,
+`crates/core/abi/src/nic_queue.rs`.
+
+A program whose topology row holds a NIC queue (`{ kind = "device", target =
+"nicq.eth1.0", perm = "rw" }`, a `Cap<NicQueue>`: kind `Device`, class 3) may
+take it from the stack and run it on a pair of rings, in the netmap and AF_XDP
+shape (Kconfig `NET_NIC_QUEUES`):
+
+- **The rings** are two regions the program made (read-write, physically
+  contiguous, `SHM_KIND_CONTIG`) and hands to `DEVICE_NICQ_ATTACH`. The kernel
+  lays an `azos_rings::region::SpscBytes` ring of 1,544-byte slots into each
+  and writes the geometry into its header. Every slot carries an 8-byte
+  descriptor (`nic_queue::Desc`) and a frame of at most 1,518 bytes.
+- **Receive needs no call per frame.** The receive pass pushes every frame of
+  the taken queue on the receive ring with its stamp, instead of handing it to
+  the packet sockets, ARP and IP. The reader sleeps on the ring's head word
+  and is woken once per pass when it said it may be asleep. A full ring drops
+  the newest frame and counts it.
+- **Transmit is a kick** (`DEVICE_NICQ_KICK`, the AF_XDP `sendto`): the kernel
+  pops the transmit ring, checks every frame (an Ethernet header at least, a
+  slot at most, the interface's own MAC as source) and hands it to the NIC. A
+  slot that asks for it (`TX_STAMP`) is answered on the receive ring by a
+  `DESC_TX_DONE` with its departure stamp, or `TX_REFUSED`.
+- **Stamps.** A descriptor says whose stamp the slot carries: `STAMP_HW` for
+  the NIC's own, `STAMP_SW` for the kernel's, read at the driver boundary (the
+  frame taken off the NIC's receive ring, or just before it is handed to the
+  transmit ring), in nanoseconds of the monotonic clock. No NIC driver in the
+  tree reads hardware stamps yet, so every queue reports `STAMP_SW`.
+- **The stack does not see a taken queue.** Nothing the stack builds leaves by
+  it (`net_raw_send` refuses), and none of its frames reach a socket. The
+  interface keeps its address and routes. Every NIC the stack drives has one
+  queue, so taking queue 0 takes the NIC.
+- **What is never handed over.** The primary interface, which every kernel
+  service runs on, and the interface the route to the link peer (the brain the
+  behavior task dials, which carries the e-stop) leaves by. The attach is then
+  refused with `-EPERM` and recorded (`Rule::NicQueue`). These checks run at
+  the attach, not at the seed: a NIC can come and go, and a route can change.
+- **The attachment ends** with `DEVICE_NICQ_DETACH`, the owner's exit, or a
+  ring's region going away, and the queue goes back to the stack.
 
 ## TLS and QUIC in ring 3
 

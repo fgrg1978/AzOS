@@ -340,6 +340,9 @@ pub mod ushell {
 #[path = "../../../../crates/core/syscall/src/invoke.rs"]
 #[allow(dead_code)]
 pub mod invoke;
+// The `DEVICE_NICQ_*` ops `invoke` dispatches a `ty::NIC_QUEUE` handle to.
+#[path = "../../../../crates/core/syscall/src/nicq.rs"]
+pub mod nicq;
 
 // `handlers.rs`'s `sys_fork` names `crate::natfork` (wave 13). The real file
 // needs the topology and the cap store; the sched shim's
@@ -549,6 +552,12 @@ mod handlers {
     mod h3_hosts {
         use super::*;
         include!("h3_hosts.rs");
+    }
+
+    #[cfg(test)]
+    mod nicq_tests {
+        use super::*;
+        include!("nicq_tests.rs");
     }
 
     #[cfg(test)]

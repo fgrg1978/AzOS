@@ -455,6 +455,35 @@ fn slots_for<const W: usize>(bytes: usize) -> Option<u32> {
     Some(n.min(SLOTS_MAX) as u32)
 }
 
+/// Why a handle a client hands the kernel as a ring is not one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RegionRefusal {
+    /// Not a region the caller holds (or it is gone).
+    NotARegion,
+    /// The capability lacks the right asked for (recorded under the region's
+    /// kind).
+    Denied,
+}
+
+/// The region the handle `raw` in `tid`'s table names, and its size in bytes,
+/// when the capability carries `need` (`WRITE` for a ring the kernel fills,
+/// `READ` for one it drains): the check every queue a client makes goes
+/// through, here and for the NIC queues (`crate::nicq`). The kernel keeps the
+/// packed reference only, never an address.
+pub(crate) fn ring_region(tid: u32, raw: u32, need: CapPerms) -> Result<(u32, usize), RegionRefusal> {
+    let named = azos_ipc::cap_store::read_table(tid, |t| t.peek_raw(CapHandle(raw))).flatten();
+    let Some((ty, rights, region)) = named else { return Err(RegionRefusal::NotARegion) };
+    if ty != azos_abi::cap::ty::SHM {
+        return Err(RegionRefusal::NotARegion);
+    }
+    if !rights.contains(need) {
+        crate::handlers::note_typed_denial_for(tid, ty, azos_ipc::cap::CapError::MissingPerms);
+        return Err(RegionRefusal::Denied);
+    }
+    let desc = azos_ipc::memobj::memobj_describe_ref(region).map_err(|_| RegionRefusal::NotARegion)?;
+    Ok((region, desc.page_count * azos_arch::PAGE_SIZE))
+}
+
 /// The kernel's end of one queue: the region and the slot count the region's
 /// size implies. Holds no address (module doc, "Queues").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -473,17 +502,11 @@ impl QueueEnd {
     /// (read-only, shared with a clone, hidden from the kernel, or not
     /// physically contiguous).
     pub(crate) fn resolve<const W: usize>(who: &Caller, raw: u32, need: CapPerms) -> Result<QueueEnd, u32> {
-        let named = azos_ipc::cap_store::read_table(who.tid, |t| t.peek_raw(CapHandle(raw))).flatten();
-        let Some((ty, rights, region)) = named else { return Err(outcome::BAD_ARGUMENT) };
-        if ty != azos_abi::cap::ty::SHM {
-            return Err(outcome::BAD_ARGUMENT);
-        }
-        if !rights.contains(need) {
-            crate::handlers::note_typed_denial_for(who.tid, ty, azos_ipc::cap::CapError::MissingPerms);
-            return Err(outcome::DENIED);
-        }
-        let desc = azos_ipc::memobj::memobj_describe_ref(region).map_err(|_| outcome::BAD_ARGUMENT)?;
-        let Some(slots) = slots_for::<W>(desc.page_count * azos_arch::PAGE_SIZE) else {
+        let (region, bytes) = ring_region(who.tid, raw, need).map_err(|e| match e {
+            RegionRefusal::NotARegion => outcome::BAD_ARGUMENT,
+            RegionRefusal::Denied => outcome::DENIED,
+        })?;
+        let Some(slots) = slots_for::<W>(bytes) else {
             return Err(outcome::BAD_ARGUMENT);
         };
         let end = QueueEnd { region, slots };

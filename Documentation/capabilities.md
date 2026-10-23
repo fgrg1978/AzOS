@@ -136,6 +136,7 @@ it (`azos_devif`).
 | `Domain`  | 5     | `ty::TASK` (0): the right to see every task (resource 0, `READ`)                       |
 | `Node`    | 6     | `ty::FILE` (0): a file or directory tree; `ty::LAUNCH` (1): the right to start one image; `ty::SOCKET` (2): a socket |
 | `Device`  | 7     | `ty::IRQ` (0): an interrupt line; `ty::MMIO` (1): a device's register window; `ty::DRIVER_REGISTRY` (2): the right to register as the driver for one `DRV_KIND_*`; `ty::IOPORT` (3): a range of I/O ports (x86_64) |
+| `Device`  | 7     | `ty::IRQ` (0): an interrupt line; `ty::MMIO` (1): a device's register window; `ty::DRIVER_REGISTRY` (2): the right to register as the driver for one `DRV_KIND_*`; `ty::NIC_QUEUE` (3): a queue of a NIC the kernel drives, to run from ring 3 (`nicq.eth<N>.<queue>`) |
 | `Log`     | 8     | `ty::TRACE` (0): the kernel tracer; `ty::CONSOLE` (1): the console                     |
 
 Kind tags 9 and above are not kinds: `CapKind::from_raw` returns `None` for

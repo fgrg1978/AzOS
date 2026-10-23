@@ -21,6 +21,8 @@ pub mod tcp;
 pub mod wait;
 // N8: one receive pass at a time (`net_poll`'s owner bit).
 pub mod rx_owner;
+// Interfaces whose NIC queue a ring-3 program took (`ty::NIC_QUEUE`).
+pub mod nic_queue;
 pub mod socket;
 #[allow(dead_code)]
 pub mod dhcp;
@@ -109,16 +111,19 @@ pub const DEFAULT_MASK:    [u8; 4] = [255, 255, 255, 0];
 /// every frame builder in the stack writes. A frame whose source is no
 /// interface's (nothing builds one) leaves by the primary interface, as every
 /// frame did when there was only one.
-fn tx_link(frame: &[u8]) -> Option<Iface> {
+fn tx_link(frame: &[u8]) -> Option<(IfIndex, Iface)> {
     let mac = frame.get(6..12).and_then(|m| <&[u8; 6]>::try_from(m).ok());
-    mac.and_then(ip::iface_by_mac)
-        .and_then(ip::iface_get)
-        .or_else(|| ip::iface_get(PRIMARY_IF))
+    let ifindex = mac.and_then(ip::iface_by_mac).unwrap_or(PRIMARY_IF);
+    ip::iface_get(ifindex).map(|i| (ifindex, i))
 }
 
-/// Send a raw Ethernet frame via the NIC of the interface it names.
+/// Send a raw Ethernet frame via the NIC of the interface it names. Refused
+/// while a ring-3 program holds that interface's queue (`nic_queue`).
 pub fn net_raw_send(frame: &[u8]) -> i32 {
-    let Some(link) = tx_link(frame) else { return -1 };
+    let Some((ifindex, link)) = tx_link(frame) else { return -1 };
+    if !nic_queue::stack_may_send(ifindex) {
+        return -1;
+    }
     match azos_drv_net::net_device::send(link.nic as usize, frame) {
         Ok(n) => {
             // The frame may have started the ring's budget clock: the poller
@@ -130,6 +135,17 @@ pub fn net_raw_send(frame: &[u8]) -> i32 {
     }
 }
 
+/// Send `frame` by the NIC of `ifindex`, whose queue a ring-3 program took
+/// (`nic_queue`): the taker's own path, the one `net_raw_send` refuses the
+/// stack. `false` when the queue is not taken (any more), the interface has
+/// no NIC or the NIC refused the frame.
+pub fn nic_queue_send(ifindex: IfIndex, frame: &[u8]) -> bool {
+    if !nic_queue::taken(ifindex) {
+        return false;
+    }
+    let Some(link) = ip::iface_get(ifindex).filter(|i| i.attached()) else { return false };
+    azos_drv_net::net_device::send(link.nic as usize, frame).is_ok()
+}
 
 /// Receive a raw Ethernet frame from NIC `nic`.
 /// Returns the number of bytes received, or 0 if none available.
@@ -302,6 +318,14 @@ fn net_poll_pass() -> bool {
     for ifindex in 1..=MAX_IFS as IfIndex {
         let Some(link) = ip::iface_get(ifindex).filter(|i| i.attached()) else { continue };
         let (mac, addr, nic) = (link.mac, link.ip, link.nic as usize);
+        // A queue a ring-3 program took: its frames go to the program's ring,
+        // stamped at the driver boundary, and the stack sees none of them.
+        let mut recv = |max: usize, f: &mut dyn FnMut(&[u8])| azos_drv_net::net_device::recv_batch(nic, max, f);
+        if let Some(taken) = nic_queue::pass(ifindex, MAX_DRAIN_PER_CALL, &mut recv) {
+            drained += taken;
+            budget_hit |= taken == MAX_DRAIN_PER_CALL;
+            continue;
+        }
         let mut handle = |frame: &[u8]| {
             socket::packet_rx(ifindex, frame);
             if let Some((hdr, payload)) = ethernet::parse(frame) {

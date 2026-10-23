@@ -369,8 +369,8 @@ pub enum CapKind {
     Node = 6,
     /// A piece of hardware or its driver slot: an interrupt line (`IRQ`), an
     /// MMIO region of the board's table (`MMIO`), the right to register as
-    /// the driver for one `DRV_KIND_*` (`DRVSLOT`) or a range of I/O ports
-    /// (`IOPORT`).
+    /// the driver for one `DRV_KIND_*` (`DRVSLOT`), a range of I/O ports
+    /// (`IOPORT`) or one queue of a NIC the kernel drives (`NIC_QUEUE`).
     Device = 7,
     /// A log: the kernel tracer (class `TRACE`) or the console (class `CONSOLE`).
     Log = 8,
@@ -528,6 +528,12 @@ pub mod ty {
     /// `ioport.<first>.<count>` (decimal), `READ|WRITE` only: the CPU's
     /// permission bitmap cannot open a port for `in` and not for `out`.
     pub const IOPORT: CapType = CapType::new(CapKind::Device, 3);
+    /// One receive/transmit queue of a NIC the kernel drives: the right to take
+    /// it from the kernel's stack and run it from ring 3 over a pair of rings
+    /// (the `DEVICE_NICQ_*` ops, [`crate::nic_queue`]). The resource is
+    /// [`crate::nic_queue::resource`]; the topology grants it by interface
+    /// name and queue (`nicq.eth1.0`).
+    pub const NIC_QUEUE: CapType = CapType::new(CapKind::Device, 3);
     /// The kernel tracer (wave 15, the `LOG_TRACE_*` ops): `READ` maps the
     /// per-CPU rings and reads the class mask, `WRITE` changes it.
     pub const TRACE: CapType = CapType::new(CapKind::Log, 0);

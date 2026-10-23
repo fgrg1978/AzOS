@@ -13,6 +13,8 @@ description = "Host-side tests for crates/net/net: TCP, UDP, IP, ARP, IGMP, DHCP
 envelope-egress-canary = []
 # Gate canary (crates/net/net): IPv6 skips the packet filter at both hooks.
 fw-ipv6-canary = []
+# Gate canary (crates/net/net): the receive pass ignores a taken NIC queue.
+nic-queue-blind-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
