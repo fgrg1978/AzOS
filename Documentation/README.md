@@ -25,10 +25,10 @@ is a one-file map that links into the pages below.
 
 | Document | What it covers |
 |---|---|
-| [scheduler.md](scheduler.md) | Dispatch classes, EEVDF, EDF with CBS, admission, locks and wait queues. |
-| [time.md](time.md) | Clocks, timers, deadlines, the vDSO clock. |
-| [energy.md](energy.md) | Utilisation tracking, the energy model, governors and idle states. |
-| [memory.md](memory.md) | Frames, the allocators, mappings, copy-on-write, paging, W^X. |
+| [scheduler.md](scheduler.md) | Dispatch classes, EEVDF, EDF with CBS, admission, wake placement, priority donation and the wait graph, balancing, core scheduling, tickless CPUs. |
+| [time.md](time.md) | The counter per ISA, timer programming, clocks, the vDSO clock, SNTP and PTP, deadlines. |
+| [energy.md](energy.md) | Utilisation tracking, the energy model, governors, idle states, thermal, runtime power, hotplug, suspend, battery. |
+| [memory.md](memory.md) | Frames, memory objects, the page cache and mmap, the kernel heap, W^X, reclaim, marker PTEs, TLB invalidation. |
 | [storage.md](storage.md) | The VFS, file systems, caches, block devices, the volume format. |
 | [network.md](network.md) | The network stack, link layers and ring-3 protocol libraries. |
 
@@ -36,7 +36,7 @@ is a one-file map that links into the pages below.
 
 | Document | What it covers |
 |---|---|
-| [hal.md](hal.md) | The arch trait surface and the shared hardware-abstraction crates. |
+| [hal.md](hal.md) | The arch trait surface, the facade, the ISA extension model, the per-ISA layout and the generic trap layer. |
 | [drivers.md](drivers.md) | The driver framework, the two placements, the driver crates. |
 
 ## Compatibility, virtualization and updates
@@ -63,7 +63,7 @@ is a one-file map that links into the pages below.
 ## Design notes
 
 Each note describes one mechanism in depth: what it is, the invariants it keeps
-and its current limits. Authors start from the two templates.
+and its limits. Authors start from the two templates.
 
 | Document | What it covers |
 |---|---|
