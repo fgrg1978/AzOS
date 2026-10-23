@@ -618,26 +618,19 @@ config X86_TSC_WATCHDOG_MS
       the CPU more often.
 
 config X86_TSC_WATCHDOG_PPM
-    int "TSC watchdog bound, rate measured at boot (ppm)"
-    range 50 100000
-    default 500
-    help
-      The drift beyond which the watchdog demotes the TSC, in parts per
-      million of the interval, when its rate was measured against the
-      HPET, the PM timer or the PIT (the [TIMER] line's "from"). Linux
-      uses 500 when both counters are calibrated. The time the reference
-      reads around the TSC read took is added to the bound; a check
-      whose reads took more than a quarter of it is retried, three times,
-      then skipped.
-
-config X86_TSC_WATCHDOG_PPM_STATED
-    int "TSC watchdog bound, rate stated by CPUID (ppm)"
+    int "TSC watchdog bound (ppm)"
     range 50 100000
     default 4000
     help
-      The same bound when the TSC rate came from CPUID 15H/16H or the
-      hypervisor leaf, which can be off by more than a measurement
-      (Linux: 4000 for an uncalibrated counter).
+      The drift beyond which the watchdog demotes the TSC, in parts per
+      million of the interval. The TSC's rate is the boot's: measured over
+      X86_TSC_CALIBRATE_MS or stated by CPUID, never refined afterwards,
+      so the bound must hold that rate's error too (QEMU q35 measures
+      1000-1800 ppm off over 20 ms). Linux uses 4000 for such a counter
+      and 500 once both are calibrated. The time the reference reads
+      around the TSC read took is added to the bound; a check whose reads
+      took more than a quarter of the bound over the interval is retried,
+      three times, then skipped.
 
 config X86_TSC_WATCHDOG_PRIORITY
     int "TSC watchdog task priority (outside the RT band: 12..30)"

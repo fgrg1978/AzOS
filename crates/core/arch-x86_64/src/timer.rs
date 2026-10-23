@@ -510,14 +510,9 @@ impl Default for Watchdog {
     }
 }
 
-/// The drift bound in ppm (Kconfig `X86_TSC_WATCHDOG_PPM` for a TSC rate
-/// measured against a counter at boot, `X86_TSC_WATCHDOG_PPM_STATED` for one
-/// CPUID or the hypervisor stated).
-pub fn watch_bound_ppm() -> u64 {
-    match source() {
-        TscSource::Hpet | TscSource::PmTimer | TscSource::Pit => azos_limits::X86_TSC_WATCHDOG_PPM as u64,
-        _ => azos_limits::X86_TSC_WATCHDOG_PPM_STATED as u64,
-    }
+/// The drift bound in ppm (Kconfig `X86_TSC_WATCHDOG_PPM`).
+pub const fn watch_bound_ppm() -> u64 {
+    azos_limits::X86_TSC_WATCHDOG_PPM as u64
 }
 
 /// One watchdog check (Linux's `watchdog_check_freq`): the reference read

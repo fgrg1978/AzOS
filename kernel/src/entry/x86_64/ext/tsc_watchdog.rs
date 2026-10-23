@@ -32,8 +32,9 @@ fn record(verdict: Verdict, clock: Clocksource, reason: u64, drift_ppm: u64, lim
 }
 
 /// The boot's clocksource line and record, then the task on the lowest CPU
-/// outside the real-time ones (as the thermal task is placed). `kernel_main`,
-/// after the topology published its real-time CPUs and the decision sink.
+/// outside the real-time ones (as the thermal task is placed).
+/// `arch_enter_scheduler`, after the topology published its real-time CPUs
+/// and the decision sink was installed.
 pub(crate) fn start() {
     let clock = timer::clock();
     let reference = timer::reference();
@@ -73,12 +74,19 @@ fn task(_: usize) {
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
     let inject = if canary!("x86-tsc-skew") { 4 * timer::watch_bound_ppm() } else { 0 };
     let mut w = timer::Watchdog::new();
+    // The clock when the TSC was demoted: the next wake says how far the new
+    // clock went in one interval, so a demotion is seen to keep time going.
+    let mut demoted_at = None;
     loop {
         let end = azos_drv_sys::timebase::now() + azos_limits::X86_TSC_WATCHDOG_MS as u64 * per_ms;
         while azos_drv_sys::timebase::now() < end {
             azos_sched::task_block(azos_sched::WaitReason::Timer(end));
         }
         if timer::clock() != Clocksource::Tsc {
+            if let Some(at) = demoted_at.take() {
+                kprintln!("[TIMER] the {} clock runs: {} ms over one {} ms interval",
+                    timer::clock().name(), (azos_drv_sys::timebase::now() - at) / per_ms, azos_limits::X86_TSC_WATCHDOG_MS);
+            }
             // The reference is the clock: the reads above extended its count.
             if !timer::reference_wraps() {
                 return;
@@ -86,18 +94,21 @@ fn task(_: usize) {
             continue;
         }
         if let Watch::Skewed(ppm) = timer::watch(&mut w, inject) {
-            demote(ppm);
+            if demote(ppm) {
+                demoted_at = Some(azos_drv_sys::timebase::now());
+            }
         }
     }
 }
 
-fn demote(ppm: i64) {
+fn demote(ppm: i64) -> bool {
     let Some(clock) = timer::demote() else {
-        return;
+        return false;
     };
     azos_mm::vdso::vdso_clear_flags(azos_mm::vdso::VDSO_FLAG_RDTIME_NATIVE);
     let bound = timer::watch_bound_ppm();
     azos_drv_sys::kwarn!("[TIMER] TSC demoted: it ran {:+} ppm from the {} (bound {} ppm); the clock is the {} from now on",
         ppm, clock.name(), bound, clock.name());
     record(Verdict::Refuse, clock, if ppm > 0 { RAN_FAST } else { RAN_SLOW }, ppm.unsigned_abs(), bound);
+    true
 }

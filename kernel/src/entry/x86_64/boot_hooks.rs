@@ -1202,6 +1202,9 @@ pub fn arch_wake_secondaries(num_cpus: usize) {
 /// first task, whose context enables them (the window aarch64's K-A12 note
 /// describes).
 pub fn arch_enter_scheduler(_hart_id: usize) -> ! {
+    // The clocksource's record and the TSC watchdog task (Kconfig
+    // X86_TSC_WATCHDOG): the topology has named the real-time CPUs it stays off.
+    crate::entry::x86_64::ext::tsc_watchdog::start();
     // C1: by now the boot output since `console_irq` went out through the TX
     // ring, a FIFO load per THR-empty interrupt (interrupts are on since
     // `timer_init`). The x86 boot row reads this line; `console-tx-sync`
