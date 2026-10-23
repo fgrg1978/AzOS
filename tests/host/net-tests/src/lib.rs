@@ -562,6 +562,11 @@ mod rx_owner_tests {
 #[cfg(test)]
 mod tcp_options;
 
+/// TCP Timestamps (RFC 7323): negotiation, the option on every segment, RTT
+/// measurement from the echo, PAWS, and the SACK room the option leaves.
+#[cfg(test)]
+mod tcp_timestamps;
+
 /// The send window, congestion control and loss recovery, and the RFC 793
 /// replies around a connection; and a simulated link between two endpoints
 /// that measures what the window delivers per round trip.

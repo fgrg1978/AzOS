@@ -30,9 +30,9 @@ config TCP_BUF_SIZE
 
       Per profile: 131072 (128 KiB) for edge and embedded, 16384 (16 KiB)
       for fleet.  One connection is size_of::<TcpConn>() =
-      2 × TCP_BUF_SIZE + 6,136 B, and the table of TCP_MAX_CONNS of them
-      is static (.bss): 8 × 268,280 B for edge, 4 × 268,280 B for
-      embedded, 1024 × 38,904 B = 38.0 MiB for fleet (262 MiB at 131072).
+      2 × TCP_BUF_SIZE + 6,160 B, and the table of TCP_MAX_CONNS of them
+      is static (.bss): 8 × 268,304 B for edge, 4 × 268,304 B for
+      embedded, 1024 × 38,928 B = 38.0 MiB for fleet (262 MiB at 131072).
       Larger rings improve throughput
       on high-latency links (BDP = RTT × bandwidth).
 
@@ -163,6 +163,31 @@ config TCP_WINDOW_UPDATE_SHIFT
 
       Cost: none in RAM; one compare per recv() that returns data. The
       same on riscv64, aarch64 and x86_64.
+
+config TCP_TIMESTAMPS
+    bool "TCP timestamps (RFC 7323): RTT measurement and PAWS"
+    default y
+    help
+      Every SYN this node sends offers the Timestamps option, and a SYN
+      that offers it is answered with it. Once both SYNs carried it, every
+      segment of the connection carries the sender's clock (milliseconds
+      plus a per-connection offset, RFC 7323 §7.1) and echoes the peer's
+      (crates/net/net/src/tcp.rs, TcpConn::seg_opts):
+      - RTTM: every ACK of new data is an RTT sample, retransmissions
+        included (the echo says which transmission it answers, so Karn's
+        rule is not needed);
+      - PAWS: a segment whose clock is behind the newest one taken is
+        refused (answered with an ACK), so an old duplicate cannot land
+        in the window after the sequence space wraps (4 GiB of traffic).
+      Linux, FreeBSD, Windows and Apple turn it on by default.
+
+      Cost when set: 20 B per connection (.bss); 12 B of every segment of
+      a negotiated connection, taken out of its payload (1448 of 1460 B),
+      and one option walk per inbound segment. SACK blocks share the 40
+      option bytes with it: at most three per ACK instead of four, and the
+      out-of-order queue holds at most three segments so that every one is
+      reported. Off: no SYN offers it and a SYN that does is answered
+      without it. The same on riscv64, aarch64 and x86_64.
 
 config NET_WAIT_SLOTS
     int "Tasks that can wait on one kind of network event at once"

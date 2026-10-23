@@ -16,6 +16,8 @@
 ///   - Window scaling (RFC 7323), only when both SYNs carry the option
 ///   - SACK (RFC 2018): blocks for the out-of-order queue, and a scoreboard of
 ///     the blocks the peer sends so a retransmission skips what it holds
+///   - Timestamps (RFC 7323, Kconfig `TCP_TIMESTAMPS`): RTT measured from every
+///     ACK of new data, and PAWS against old duplicates
 ///   - Simultaneous open (RFC 793 §3.4)
 
 use azos_sync::SpinLock;
@@ -262,6 +264,22 @@ const TCP_OPT_SACK: u8 = 5;
 /// holds more than `OOO_MAX_SEGMENTS` = 4 disjoint ranges anyway.
 const SACK_MAX_BLOCKS: usize = 4;
 
+/// TCP option kind: Timestamps (RFC 7323 §3.2), length 10: TSval, TSecr.
+const TCP_OPT_TS: u8 = 8;
+const TCP_OPT_TS_LEN: u8 = 10;
+
+/// NOP NOP + Timestamps: what the option takes of every segment of a
+/// connection that negotiated it, payload included (RFC 6691: the MSS does not
+/// count options, so the sender cuts its segments shorter by this much).
+const TS_OPT_SPACE: usize = 12;
+
+/// SACK blocks that fit beside Timestamps: 40 - 12 - 4 = 24 option bytes,
+/// three blocks (RFC 2018 §3).
+const SACK_MAX_BLOCKS_TS: usize = 3;
+
+/// Kconfig `TCP_TIMESTAMPS`: offer and accept the Timestamps option.
+const TCP_TIMESTAMPS: bool = azos_limits::TCP_TIMESTAMPS;
+
 // ---------------------------------------------------------------------------
 // ISN generation (RFC 6528)
 // ---------------------------------------------------------------------------
@@ -474,6 +492,17 @@ const FIN_WAIT2_TIMEOUT_MS: u64 = 60_000;
 /// not.
 const TICKS_PER_MS: u64 = azos_drv_sys::timebase::TIMER_FREQ / 1_000;
 
+/// The Timestamps clock: milliseconds since boot (RFC 7323 §5.4 asks for a
+/// tick between 1 ms and 1 s). Each connection adds its own offset
+/// (`TcpConn::ts_off`).
+fn ts_clock(now: u64) -> u32 {
+    (now / TICKS_PER_MS) as u32
+}
+
+/// RFC 7323 §5.5: a TS.Recent taken this long ago, 24 days, is no longer
+/// compared against: the peer's clock may have wrapped past it meanwhile.
+const PAWS_IDLE_TICKS: u64 = 24 * 86_400 * azos_drv_sys::timebase::TIMER_FREQ;
+
 // ---------------------------------------------------------------------------
 // Delayed acknowledgements (RFC 1122 §4.2.3.2, RFC 5681 §4.2)
 // ---------------------------------------------------------------------------
@@ -620,8 +649,9 @@ const INVALID_ACK_INTERVAL_MS: u64 = 500;
 /// would let one packet cut the robot's segments to a few octets each.
 const PMTU_FLOOR: u16 = 576;
 
-/// IPv4 plus TCP header octets in a data segment. This stack puts TCP options
-/// only on segments without payload, so a full data segment carries none.
+/// IPv4 plus TCP header octets in a data segment, options not counted: what a
+/// segment carries in options (Timestamps) comes out of its payload
+/// (`TcpConn::smss`), so MTU - 40 is the MSS that fits whatever it carries.
 const PMTU_HDR_OCTETS: u16 = 40;
 
 /// The MSS that fits `PMTU_FLOOR`: 536, RFC 879's default MSS. Also the floor
@@ -901,6 +931,23 @@ pub struct TcpConn {
     /// Both SYNs carried SACK-Permitted, so our ACKs may carry SACK blocks.
     sack_ok:          bool,
 
+    // --- Timestamps (RFC 7323) ---
+    /// Both SYNs carried the Timestamps option: every segment after the
+    /// handshake carries it too (§3.2), PAWS applies (§5) and every ACK of
+    /// new data is an RTT sample (§4).
+    ts_ok:            bool,
+    /// TS.Recent: the peer's clock, from the newest segment that started at
+    /// or before what we last acknowledged (§4.3). Echoed in TSecr.
+    ts_recent:        u32,
+    /// When `ts_recent` was taken (tick), for PAWS's 24-day validity (§5.5).
+    ts_recent_at:     u64,
+    /// Added to `ts_clock` in our TSval: per connection, from the ISN's keyed
+    /// hash (§7.1), so the value says nothing about our uptime or about our
+    /// other connections.
+    ts_off:           u32,
+    /// Last.ACK.sent (§4.3): the acknowledgement our latest segment carried.
+    ts_last_ack:      u32,
+
     // --- Out-of-order reassembly (F01) ---
     ooo_buf:          [OooSegment; OOO_MAX_SEGMENTS],
     /// Sequence of the most recent segment queued out of order. RFC 2018 §4
@@ -999,6 +1046,12 @@ impl TcpConn {
             rcv_wscale:    0,
             sack_ok:       false,
 
+            ts_ok:         false,
+            ts_recent:     0,
+            ts_recent_at:  0,
+            ts_off:        0,
+            ts_last_ack:   0,
+
             ooo_buf:       [OooSegment::empty(); OOO_MAX_SEGMENTS],
             ooo_recent:    0,
 
@@ -1060,6 +1113,11 @@ impl TcpConn {
         self.snd_wscale       = 0;
         self.rcv_wscale       = 0;
         self.sack_ok          = false;
+        self.ts_ok            = false;
+        self.ts_recent        = 0;
+        self.ts_recent_at     = 0;
+        self.ts_off           = 0;
+        self.ts_last_ack      = 0;
         // The out-of-order queue too. It was not cleared here, so a reused
         // slot kept the previous connection's held segments: bytes from one
         // peer that a flush could splice into another's stream if the new
@@ -1112,12 +1170,55 @@ impl TcpConn {
         self.seq.wrapping_sub(self.snd_una)
     }
 
-    /// The largest segment this connection sends (RFC 5681 SMSS): the peer's
-    /// MSS, ours, and the path's once it has been lowered.
-    fn smss(&self) -> u32 {
+    /// The MSS this connection may use, options not counted (RFC 6691): the
+    /// peer's, ours, and the path's once it has been lowered. What a path MTU
+    /// is compared with.
+    fn mss_limit(&self) -> u32 {
         let ours = mss_for(&self.remote_ip) as u32;
         let path = if self.pmtu_mss == 0 { ours } else { self.pmtu_mss as u32 };
         (self.remote_mss as u32).min(ours).min(path)
+    }
+
+    /// The most payload one segment carries (RFC 5681 SMSS): `mss_limit`
+    /// less the options every segment carries, Timestamps when negotiated.
+    fn smss(&self) -> u32 {
+        self.mss_limit() - if self.ts_ok { TS_OPT_SPACE as u32 } else { 0 }
+    }
+
+    /// Our TSval now.
+    fn ts_val(&self, now: u64) -> u32 {
+        ts_clock(now).wrapping_add(self.ts_off)
+    }
+
+    /// The options a segment this connection sends now carries after the
+    /// handshake: Timestamps when negotiated (RFC 7323 §3.2: every segment but
+    /// a reset), then, with `sack`, the SACK blocks of what is held out of
+    /// order. Records the segment's acknowledgement as Last.ACK.sent: every
+    /// segment built from here carries `self.ack`.
+    fn seg_opts(&mut self, now: u64, sack: bool) -> Opts {
+        let mut o = Opts { b: [0; TCP_OPT_MAX], n: 0 };
+        if self.ts_ok {
+            o.n = put_ts(&mut o.b, self.ts_val(now), self.ts_recent);
+            self.ts_last_ack = self.ack;
+        }
+        if sack {
+            let max = if self.ts_ok { SACK_MAX_BLOCKS_TS } else { SACK_MAX_BLOCKS };
+            o.n += sack_option(self, &mut o.b[o.n..], max);
+        }
+        o
+    }
+
+    /// What our SYN-ACK carries: what the SYN offered and this build has,
+    /// decided when the SYN arrived. A retransmission repeats exactly these
+    /// options, with the clock moved on.
+    fn synack_offer(&mut self, now: u64) -> SynOffer {
+        let ts = if self.ts_ok {
+            self.ts_last_ack = self.ack;
+            Some((self.ts_val(now), self.ts_recent))
+        } else {
+            None
+        };
+        SynOffer { wscale: self.wscale_ok, sack: self.sack_ok, ts }
     }
 
     /// Start the congestion window as the handshake completes (RFC 6928 §2).
@@ -1180,14 +1281,13 @@ impl TcpConn {
     }
 
     /// The pure ACK this connection would send now, recorded as sent.
-    fn take_ack(&mut self) -> AckOut {
+    fn take_ack(&mut self, now: u64) -> AckOut {
         let win = self.adv_window();
-        let mut opts = [0u8; TCP_OPT_MAX];
-        let opts_len = sack_option(self, &mut opts);
+        let opts = self.seg_opts(now, true);
         self.note_ack_sent(win);
         AckOut {
             src: self.local_ip, dst: self.remote_ip, sp: self.local_port, dp: self.remote_port,
-            seq: self.seq, ack: self.ack, win, opts, opts_len,
+            seq: self.seq, ack: self.ack, win, opts,
         }
     }
 
@@ -1209,12 +1309,34 @@ impl TcpConn {
 /// A pure ACK snapshotted under the TCP lock, sent after it is dropped.
 struct AckOut {
     src: IpAddr, dst: IpAddr, sp: u16, dp: u16, seq: u32, ack: u32, win: u16,
-    opts: [u8; TCP_OPT_MAX], opts_len: usize,
+    opts: Opts,
 }
 
 fn send_ack(mac: &[u8; 6], a: &AckOut) {
+    #[cfg(feature = "qemu")]
+    trace_tx(a.sp, &a.dst, a.dp, TCP_ACK, a.seq, a.ack, &[]);
     send_segment_opts(mac, &a.src, &a.dst, a.sp, a.dp, TCP_ACK, a.seq, a.ack, a.win,
-                      &a.opts[..a.opts_len], &[]);
+                      a.opts.get(), &[]);
+}
+
+/// The options of one segment, built under the lock (`TcpConn::seg_opts`)
+/// and sent after it is dropped.
+#[derive(Clone, Copy)]
+struct Opts {
+    b: [u8; TCP_OPT_MAX],
+    n: usize,
+}
+
+impl Opts {
+    fn get(&self) -> &[u8] { &self.b[..self.n] }
+}
+
+/// Write NOP NOP + Timestamps at the start of `out`; the octets written.
+fn put_ts(out: &mut [u8], tsval: u32, tsecr: u32) -> usize {
+    out[..4].copy_from_slice(&[TCP_OPT_NOP, TCP_OPT_NOP, TCP_OPT_TS, TCP_OPT_TS_LEN]);
+    out[4..8].copy_from_slice(&tsval.to_be_bytes());
+    out[8..12].copy_from_slice(&tsecr.to_be_bytes());
+    TS_OPT_SPACE
 }
 
 /// Send the ACKs connections hold: at the end of a poll pass
@@ -1250,7 +1372,7 @@ pub fn flush_held_acks(due_only: bool) -> usize {
                     continue;
                 }
                 if due_only { timer_fired(c.ack_due, now); }
-                out[n] = Some(c.take_ack());
+                out[n] = Some(c.take_ack(now));
                 n += 1;
             }
             mac
@@ -1488,7 +1610,11 @@ static TCP: SpinLock<TcpLayer> = SpinLock::new(TcpLayer::new());
 /// just another hash computation. HMAC-SHA256 has no such inversion: only
 /// the low 32 bits of the 256-bit MAC are used, and a preimage attack on
 /// those is the same cost as guessing them outright.
-fn generate_isn(src_ip: &IpAddr, dst_ip: &IpAddr, src_port: u16, dst_port: u16) -> u32 {
+///
+/// The next 32 bits are the connection's Timestamps offset (RFC 7323 §7.1),
+/// returned second: one keyed hash gives both, and neither says anything
+/// about the other.
+fn generate_isn(src_ip: &IpAddr, dst_ip: &IpAddr, src_port: u16, dst_port: u16) -> (u32, u32) {
     let sp = src_port.to_be_bytes();
     let dp = dst_port.to_be_bytes();
     let secret = *ISN_SECRET.lock();
@@ -1497,11 +1623,12 @@ fn generate_isn(src_ip: &IpAddr, dst_ip: &IpAddr, src_port: u16, dst_port: u16) 
         &[src_ip.octets(), &sp[..], dst_ip.octets(), &dp[..]],
     );
     let h = u32::from_le_bytes([mac[0], mac[1], mac[2], mac[3]]);
+    let ts_off = u32::from_le_bytes([mac[4], mac[5], mac[6], mac[7]]);
 
     // Add time component for uniqueness across reboots and so an ISN never
     // repeats for the same 4-tuple within one boot even if F() ever did.
     let ticks = azos_drv_sys::timebase::now();
-    h.wrapping_add(ticks as u32)
+    (h.wrapping_add(ticks as u32), ts_off)
 }
 
 // ---------------------------------------------------------------------------
@@ -1517,6 +1644,8 @@ struct SynOptions {
     wscale:  Option<u8>,
     /// SACK-Permitted was present.
     sack_ok: bool,
+    /// The Timestamps option's TSval; `None` if absent.
+    ts:      Option<u32>,
 }
 
 /// Which options a SYN or SYN-ACK we send carries, beyond the MSS every one of
@@ -1525,11 +1654,17 @@ struct SynOptions {
 struct SynOffer {
     wscale: bool,
     sack:   bool,
+    /// Timestamps, with this TSval and TSecr.
+    ts:     Option<(u32, u32)>,
 }
 
 impl SynOffer {
-    /// An active open offers everything; the SYN-ACK decides what sticks.
-    const ALL: SynOffer = SynOffer { wscale: true, sack: true };
+    /// An active open offers everything this build has; the SYN-ACK decides
+    /// what sticks. `tsval`: our clock for the SYN, offered when
+    /// `TCP_TIMESTAMPS` is set.
+    const fn all(tsval: u32) -> SynOffer {
+        SynOffer { wscale: true, sack: true, ts: if TCP_TIMESTAMPS { Some((tsval, 0)) } else { None } }
+    }
 }
 
 /// Walk the options of a SYN or SYN-ACK.
@@ -1541,7 +1676,7 @@ impl SynOffer {
 /// discipline — a malformed instance stops the walk, so a truncated or
 /// mis-sized option can never switch scaling on.
 fn parse_syn_options(data: &[u8], hdr_len: usize) -> SynOptions {
-    let mut out = SynOptions { mss: TCP_DEFAULT_REMOTE_MSS, wscale: None, sack_ok: false };
+    let mut out = SynOptions { mss: TCP_DEFAULT_REMOTE_MSS, wscale: None, sack_ok: false, ts: None };
     if hdr_len <= TCP_HDR_MIN || data.len() < hdr_len {
         return out;
     }
@@ -1591,6 +1726,17 @@ fn parse_syn_options(data: &[u8], hdr_len: usize) -> SynOptions {
                 }
                 break;
             }
+            TCP_OPT_TS if out.ts.is_none() => {
+                if i + (TCP_OPT_TS_LEN as usize) <= opts.len()
+                    && opts[i + 1] == TCP_OPT_TS_LEN
+                {
+                    out.ts = Some(u32::from_be_bytes([opts[i + 2], opts[i + 3],
+                                                      opts[i + 4], opts[i + 5]]));
+                    i += TCP_OPT_TS_LEN as usize;
+                    continue;
+                }
+                break;
+            }
             _ => {
                 // Unknown option, or a repeat of one already taken — skip
                 // using length byte
@@ -1603,6 +1749,34 @@ fn parse_syn_options(data: &[u8], hdr_len: usize) -> SynOptions {
         }
     }
     out
+}
+
+/// The value of the first option of `kind` in `opts` (a segment's option
+/// bytes), without its kind and length octets. The walk stops at EOL or at the
+/// first malformed length, and then nothing past it is believed.
+fn find_option(opts: &[u8], kind: u8) -> Option<&[u8]> {
+    let mut i = 0;
+    while i < opts.len() {
+        match opts[i] {
+            TCP_OPT_EOL => return None,
+            TCP_OPT_NOP => { i += 1; continue; }
+            _ => {}
+        }
+        if i + 1 >= opts.len() { return None; }
+        let len = opts[i + 1] as usize;
+        if len < 2 || i + len > opts.len() { return None; }
+        if opts[i] == kind { return Some(&opts[i + 2..i + len]); }
+        i += len;
+    }
+    None
+}
+
+/// A segment's Timestamps option: (TSval, TSecr), or `None` when it carries
+/// none or a malformed one.
+fn parse_ts(opts: &[u8]) -> Option<(u32, u32)> {
+    let v = find_option(opts, TCP_OPT_TS)?;
+    if v.len() != TCP_OPT_TS_LEN as usize - 2 { return None; }
+    Some((u32::from_be_bytes([v[0], v[1], v[2], v[3]]), u32::from_be_bytes([v[4], v[5], v[6], v[7]])))
 }
 
 // ---------------------------------------------------------------------------
@@ -1849,7 +2023,7 @@ fn connect_h<A: Into<IpAddr>>(dst_ip: A, dst_port: u16, src_port: u16) -> Option
 
     let idx = t.alloc()?;
     let h = t.handle(idx);
-    let mut seq = generate_isn(&ip, &dst_ip, src_port, dst_port);
+    let (mut seq, ts_off) = generate_isn(&ip, &dst_ip, src_port, dst_port);
     if let Some(floor) = iss_floor {
         if !seq_lt(floor, seq) {
             seq = floor.wrapping_add(1);
@@ -1863,9 +2037,12 @@ fn connect_h<A: Into<IpAddr>>(dst_ip: A, dst_port: u16, src_port: u16) -> Option
     t.conns[idx].ack         = 0;
     t.conns[idx].reset_conn_state();
     t.conns[idx].set_iss(seq);
+    t.conns[idx].ts_off = ts_off;
+    let tsval = t.conns[idx].ts_val(azos_drv_sys::timebase::now());
 
-    // Send SYN with MSS, Window Scale and SACK-Permitted
-    send_syn_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_SYN, seq, 0, SynOffer::ALL);
+    // Send SYN with MSS, Window Scale, SACK-Permitted and Timestamps
+    send_syn_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_SYN, seq, 0,
+                     SynOffer::all(tsval));
     drop(t);
     // The SYN's retransmission needs `tcp_tick`, and this runs in the
     // caller's context, not the poller's: tell the poller.
@@ -2099,7 +2276,7 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
     // Reserve the range and copy it into the send ring under ONE lock hold:
     // two senders on one connection (a kernel task and a ring-3 socket on
     // another hart) must not both be handed the same SND.NXT.
-    let (mac, ip, start, n, ack_val, dst_ip, src_port, dst_port, our_win) = {
+    let (mac, ip, start, n, ack_val, dst_ip, src_port, dst_port, our_win, opts) = {
         let mut t = TCP.lock();
         if !t.live(r) { return -1; }
         let (mac, ip) = (t.our_mac, t.conns[idx].local_ip);
@@ -2160,13 +2337,16 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
             c.retx_time  = now;
             c.retx_count = 0;
         }
-        if !c.rtt_on {
+        // With Timestamps every ACK of new data is a sample (`process_ack`):
+        // nothing needs timing.
+        if !c.rtt_on && !c.ts_ok {
             c.rtt_on   = true;
             c.rtt_seq  = c.seq;
             c.rtt_time = now;
         }
         c.last_activity = now;
-        (mac, ip, start, n, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise())
+        let opts = c.seg_opts(now, false);
+        (mac, ip, start, n, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise(), opts)
     };
     let send_data_slice = &data[..n];
 
@@ -2195,7 +2375,7 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
     // copy on the stack.
     let result = send_segment_with_window(&mac, &ip, &dst_ip, src_port, dst_port,
                                           TCP_ACK, start, ack_val, send_data_slice,
-                                          our_win);
+                                          our_win, opts.get());
     if result == 0 {
         return n as i32;
     }
@@ -2414,7 +2594,7 @@ fn recv_inner(r: Ref, buf: &mut [u8]) -> i32 {
             || (n > 0 && c.ack_pending && c.ack_pushed && c.rx_available() == 0);
         let mut kick = false;
         let params   = if urgent {
-            let a = c.take_ack();
+            let a = c.take_ack(azos_drv_sys::timebase::now());
             Some((t.our_mac, a))
         } else {
             if opened {
@@ -2466,7 +2646,7 @@ pub(crate) fn abort(r: impl Into<Ref>) {
     if state == TcpState::Closed || state == TcpState::Listen { return; }
 
     // A RST's window is ignored by its receiver; the constant is as good as any.
-    let _ = send_segment(&mac, &ip, &rip, lp, rp, TCP_RST, seq, 0, &[], TCP_WINDOW_SIZE);
+    let _ = send_segment(&mac, &ip, &rip, lp, rp, TCP_RST, seq, 0, &[], TCP_WINDOW_SIZE, &[]);
 
     let mut t = TCP.lock();
     if !t.live(r) { return; }
@@ -2481,20 +2661,22 @@ pub(crate) fn abort(r: impl Into<Ref>) {
 /// the two callers below disagree on purpose about what to do when it is not.
 fn send_fin_and_advance(r: Ref) -> bool {
     let idx = r.idx;
-    let (mac, ip, state, seq, ack_val, dst_ip, src_port, dst_port, win) = {
+    let (mac, ip, state, seq, ack_val, dst_ip, src_port, dst_port, win, opts) = {
         let mut t = TCP.lock();
         if !t.live(r) { return false; }
         let mac = t.our_mac;
         let c = &mut t.conns[idx];
+        let opts = c.seg_opts(azos_drv_sys::timebase::now(), false);
         (mac, c.local_ip, c.state, c.seq, c.ack, c.remote_ip, c.local_port, c.remote_port,
-         c.advertise())
+         c.advertise(), opts)
     };
     let next_state = match state {
         TcpState::Established => TcpState::FinWait1,
         TcpState::CloseWait   => TcpState::LastAck,
         _ => return false,
     };
-    send_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_FIN | TCP_ACK, seq, ack_val, &[], win);
+    send_segment(&mac, &ip, &dst_ip, src_port, dst_port, TCP_FIN | TCP_ACK, seq, ack_val, &[], win,
+                 opts.get());
     let mut t = TCP.lock();
     // Freed and re-issued while the FIN was going out (a RST on another
     // hart): the FIN was this connection's last word; the slot's new owner
@@ -2629,13 +2811,10 @@ fn handle_checked_inner(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
 /// A no-op when `payload` is empty, so calling it for a pure ACK or a bare
 /// FIN costs nothing and touches no state.
 fn process_inbound_payload(
-    idx: usize, mac: &[u8; 6], ip: &IpAddr, src_ip: &IpAddr,
-    dst_port: u16, src_port: u16, seq: u32, payload: &[u8],
+    idx: usize, mac: &[u8; 6], ip: &IpAddr, seq: u32, payload: &[u8],
     expected_ack: u32, rcv_wnd: u32, fin: bool, psh: bool, now: u64,
 ) {
-    // Every ACK this sends is built from the connection itself (`take_ack`);
-    // the segment's addressing is only read by the `qemu` trace.
-    let _ = (src_ip, dst_port, src_port, fin);
+    // Every ACK this sends is built from the connection itself (`take_ack`).
     if payload.is_empty() { return; }
     // A segment that starts behind RCV.NXT. Peers retransmit whole segments,
     // so one that overlaps what already arrived is ordinary, and matching on
@@ -2708,7 +2887,7 @@ fn process_inbound_payload(
         }
         // Send ACK with actual free window (flow control — F01), and SACK
         // blocks for whatever is still held beyond a remaining hole.
-        let a = c.take_ack();
+        let a = c.take_ack(now);
         drop(t);
         send_ack(mac, &a);
         ack_count(ACKS_NOW);
@@ -2722,10 +2901,8 @@ fn process_inbound_payload(
         // Send duplicate ACK (signals missing data to sender). With SACK it
         // also says exactly what did arrive, so the sender need not resend it.
         // Never held (RFC 5681 §4.2: out-of-order data is ACKed at once).
-        let a = c.take_ack();
+        let a = c.take_ack(now);
         drop(t);
-        #[cfg(feature = "qemu")]
-        trace_tx(dst_port, src_ip, src_port, TCP_ACK, a.seq, a.ack, &[]);
         send_ack(mac, &a);
         ack_count(ACKS_NOW);
     }
@@ -2781,6 +2958,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
     // from a header that claims bytes the segment doesn't contain.
     if off < TCP_HDR_MIN || off > data.len() { return; }
     let payload   = &data[off..];
+    // RFC 7323 §3.2: (TSval, TSecr), read on every segment; it means
+    // something only on a connection that negotiated it.
+    let ts_in     = parse_ts(&data[TCP_HDR_MIN..off]);
 
     // The address this segment was sent to is the one we answer from. For an
     // IPv4 segment that is our configured address, not `dst_ip`: a segment
@@ -2879,6 +3059,12 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
             c.was_accepted   = false;
             return;
         }
+        // RFC 7323 §5.3 R1: PAWS. Before the state's own checks, after the
+        // reset's (a reset is never refused for its timestamp).
+        let seg_len = payload.len() + (flags & (TCP_SYN | TCP_FIN) != 0) as usize;
+        if !paws_admits(idx, &mac, &ip, seq, seg_len, ts_in, now) {
+            return;
+        }
         let state = { TCP.lock().conns[idx].state };
         match state {
             TcpState::SynSent if flags & TCP_ACK != 0 => {
@@ -2945,6 +3131,12 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                         c.rcv_wscale = RCV_WSCALE;
                     }
                     c.sack_ok       = peer_opts.sack_ok;
+                    // Our SYN offered Timestamps exactly when the build has them.
+                    if let (true, Some(tsval)) = (TCP_TIMESTAMPS, peer_opts.ts) {
+                        c.ts_ok        = true;
+                        c.ts_recent    = tsval;
+                        c.ts_recent_at = now;
+                    }
                     // The window of a SYN-ACK is never scaled (RFC 7323 §2.2).
                     c.remote_window = peer_win as u32;
                     c.last_activity = now;
@@ -2952,12 +3144,8 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     c.open_window();
                 }
                 // The first segment without SYN: its window is scaled.
-                let (seq_n, ack_n, win) = {
-                    let mut t = TCP.lock();
-                    let c = &mut t.conns[idx];
-                    (c.seq, c.ack, c.advertise())
-                };
-                send_segment(&mac, &ip, src_ip, dst_port, src_port, TCP_ACK, seq_n, ack_n, &[], win);
+                let a = { TCP.lock().conns[idx].take_ack(now) };
+                send_ack(&mac, &a);
             }
             // Simultaneous open (RFC 793 §3.4, figure 8): our SYN crossed the
             // peer's. It is answered with a SYN-ACK from our own ISS, and the
@@ -2982,13 +3170,18 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                         c.rcv_wscale = RCV_WSCALE;
                     }
                     c.sack_ok = peer_opts.sack_ok;
+                    if let (true, Some(tsval)) = (TCP_TIMESTAMPS, peer_opts.ts) {
+                        c.ts_ok        = true;
+                        c.ts_recent    = tsval;
+                        c.ts_recent_at = now;
+                    }
                     // A SYN's window is never scaled (RFC 7323 §2.2).
                     c.remote_window = peer_win as u32;
                     // The SynRcvd retry timer resends the SYN-ACK from here.
                     c.retx_time  = now;
                     c.retx_count = 0;
                     c.last_activity = now;
-                    (c.seq, c.ack, SynOffer { wscale: c.wscale_ok, sack: c.sack_ok })
+                    (c.seq, c.ack, c.synack_offer(now))
                 };
                 send_syn_segment(&mac, &ip, src_ip, dst_port, src_port,
                                  TCP_SYN | TCP_ACK, iss, ack_n, offer);
@@ -3032,10 +3225,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     c.last_activity = now;
                     c.keepalive_probes = 0;
                     c.open_window();
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
+                    let a = c.take_ack(now);
                     drop(t);
-                    send_segment(&mac, &ip, src_ip, dst_port, src_port,
-                                 TCP_ACK, seq_n, ack_n, &[], win);
+                    send_ack(&mac, &a);
                     return;
                 }
                 c.seq   = c.seq.wrapping_add(1);
@@ -3135,11 +3327,11 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                 if ack_ok {
                     process_ack(idx, &mac, &ip, ack_num, peer_win,
                                 payload.is_empty() && flags & (TCP_SYN | TCP_FIN) == 0,
-                                &data[TCP_HDR_MIN..off], now);
+                                &data[TCP_HDR_MIN..off], ts_in.map(|t| t.1), now);
                 }
 
                 // --- Payload processing with OOO reassembly (F01) ---
-                process_inbound_payload(idx, &mac, &ip, src_ip, dst_port, src_port,
+                process_inbound_payload(idx, &mac, &ip,
                                         seq, payload, expected_ack, rcv_wnd, fin,
                                         flags & TCP_PSH != 0, now);
 
@@ -3172,11 +3364,10 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     c.ack = c.ack.wrapping_add(1); // FIN consumes one sequence number
                     c.state = TcpState::CloseWait;
                     c.last_activity = now;
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
+                    let a = c.take_ack(now);
                     drop(t);
                     // ACK the FIN
-                    send_segment(&mac, &ip, src_ip, dst_port, src_port,
-                                 TCP_ACK, seq_n, ack_n, &[], win);
+                    send_ack(&mac, &a);
                 }
             }
             // --- FIN state machine states (F01) ---
@@ -3192,12 +3383,12 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     let t = TCP.lock();
                     (t.conns[idx].ack, t.conns[idx].rcv_wnd_max())
                 };
-                process_inbound_payload(idx, &mac, &ip, src_ip, dst_port, src_port,
+                process_inbound_payload(idx, &mac, &ip,
                                         seq, payload, expected_ack, rcv_wnd, fin,
                                         flags & TCP_PSH != 0, now);
                 ack_data_in_fin_state(idx, &mac, &ip, seq, ack_num, flags, peer_win,
                                       payload.len(), expected_ack, rcv_wnd,
-                                      &data[TCP_HDR_MIN..off], now);
+                                      &data[TCP_HDR_MIN..off], ts_in.map(|t| t.1), now);
                 if flags & TCP_ACK != 0 {
                     let mut t = TCP.lock();
                     let c = &mut t.conns[idx];
@@ -3228,10 +3419,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                             c.ack = fin_next_ack(seq, payload.len());
                             c.state = TcpState::TimeWait;
                             c.time_wait_start = now;
-                            let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
+                            let a = c.take_ack(now);
                             drop(t);
-                            send_segment(&mac, &ip, src_ip, dst_port, src_port,
-                                         TCP_ACK, seq_n, ack_n, &[], win);
+                            send_ack(&mac, &a);
                         } else {
                             c.state = TcpState::FinWait2;
                             // Stamp the entry: the FinWait2 bound in `tcp_tick`
@@ -3252,10 +3442,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     c.ack = fin_next_ack(seq, payload.len());
                     c.state = TcpState::TimeWait;
                     c.time_wait_start = now;
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
+                    let a = c.take_ack(now);
                     drop(t);
-                    send_segment(&mac, &ip, src_ip, dst_port, src_port,
-                                 TCP_ACK, seq_n, ack_n, &[], win);
+                    send_ack(&mac, &a);
                 }
             }
             TcpState::FinWait2 => {
@@ -3263,7 +3452,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     let t = TCP.lock();
                     (t.conns[idx].ack, t.conns[idx].rcv_wnd_max())
                 };
-                process_inbound_payload(idx, &mac, &ip, src_ip, dst_port, src_port,
+                process_inbound_payload(idx, &mac, &ip,
                                         seq, payload, expected_ack, rcv_wnd,
                                         flags & TCP_FIN != 0, flags & TCP_PSH != 0, now);
                 if flags & TCP_FIN != 0 {
@@ -3280,10 +3469,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     c.ack = fin_next_ack(seq, payload.len());
                     c.state = TcpState::TimeWait;
                     c.time_wait_start = now;
-                    let (seq_n, ack_n, win) = (c.seq, c.ack, c.advertise());
+                    let a = c.take_ack(now);
                     drop(t);
-                    send_segment(&mac, &ip, src_ip, dst_port, src_port,
-                                 TCP_ACK, seq_n, ack_n, &[], win);
+                    send_ack(&mac, &a);
                 }
             }
             TcpState::LastAck => {
@@ -3295,7 +3483,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                     };
                     ack_data_in_fin_state(idx, &mac, &ip, seq, ack_num, flags, peer_win,
                                           payload.len(), expected_ack, rcv_wnd,
-                                          &data[TCP_HDR_MIN..off], now);
+                                          &data[TCP_HDR_MIN..off], ts_in.map(|t| t.1), now);
                     let mut t = TCP.lock();
                     let c = &mut t.conns[idx];
                     // Only the ACK of OUR FIN closes the connection
@@ -3328,14 +3516,13 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                 // Only for a FIN. A stray ACK or data segment here gets
                 // nothing, or two stacks in TIME-WAIT would answer each other.
                 if flags & TCP_FIN != 0 {
-                    let (seq_n, ack_n, win) = {
+                    let a = {
                         let mut t = TCP.lock();
                         let c = &mut t.conns[idx];
                         c.time_wait_start = now;
-                        (c.seq, c.ack, c.advertise())
+                        c.take_ack(now)
                     };
-                    send_segment(&mac, &ip, src_ip, dst_port, src_port,
-                                 TCP_ACK, seq_n, ack_n, &[], win);
+                    send_ack(&mac, &a);
                 }
             }
             _ => {}
@@ -3436,16 +3623,12 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
             // Accept: create new connection for this peer
             let new_idx_opt = { TCP.lock().alloc() };
             if let Some(mut new_idx) = new_idx_opt {
-                let our_seq = generate_isn(&ip, src_ip, dst_port, src_port);
+                let (our_seq, ts_off) = generate_isn(&ip, src_ip, dst_port, src_port);
                 let peer_opts = parse_syn_options(data, off);
                 // Echo only what the SYN offered: a SYN-ACK may carry Window
                 // Scale only if the SYN did (RFC 7323 §2.2), and an option one
                 // side never offered is an option the other cannot honour.
-                let offer = SynOffer {
-                    wscale: peer_opts.wscale.is_some(),
-                    sack:   peer_opts.sack_ok,
-                };
-                {
+                let offer = {
                     let mut t = TCP.lock();
                     // The slot was free when the lock was dropped above; a
                     // `connect` on another hart may have taken it since.
@@ -3479,8 +3662,15 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8]) {
                         c.rcv_wscale = RCV_WSCALE;
                     }
                     c.sack_ok = peer_opts.sack_ok;
+                    c.ts_off  = ts_off;
+                    if let (true, Some(tsval)) = (TCP_TIMESTAMPS, peer_opts.ts) {
+                        c.ts_ok        = true;
+                        c.ts_recent    = tsval;
+                        c.ts_recent_at = now;
+                    }
                     let _ = listen_idx; // keep listener alive
-                }
+                    c.synack_offer(now)
+                };
                 // Send SYN-ACK with MSS and whatever the SYN offered
                 let ack_n = { TCP.lock().conns[new_idx].ack };
                 send_syn_segment(&mac, &ip, src_ip, dst_port, src_port,
@@ -3533,9 +3723,12 @@ enum Resend {
 /// a loss, halving the window and resending a segment nobody lost. So did
 /// three data segments from a peer with nothing new to acknowledge, which on a
 /// link that talks both ways is ordinary traffic.
+///
+/// `tsecr`: the segment's Timestamps echo, the RTT sample of a connection that
+/// negotiated them (RFC 7323 §4).
 fn process_ack(
     idx: usize, mac: &[u8; 6], ip: &IpAddr, ack_num: u32, peer_win: u16,
-    dup_candidate: bool, opts: &[u8], now: u64,
+    dup_candidate: bool, opts: &[u8], tsecr: Option<u32>, now: u64,
 ) {
     let resend = {
         let mut t = TCP.lock();
@@ -3572,7 +3765,19 @@ fn process_ack(
                 c.rtx_next = ack;
             }
             sack_prune(c);
-            if c.rtt_on && seq_le(c.rtt_seq, ack) {
+            if c.ts_ok {
+                // RFC 7323 §4.2: an ACK of new data echoes the clock of the
+                // segment it answers, a retransmission's included, so it is a
+                // sample with no Karn rule. 0 is no echo (a peer that sends
+                // one has not taken our clock yet); an echo from the future,
+                // or from longer ago than any RTO, is not ours.
+                if let Some(e) = tsecr.filter(|&e| e != 0) {
+                    let ms = c.ts_val(now).wrapping_sub(e);
+                    if (ms as u64) <= RTO_MAX_MS {
+                        update_rtt(c, ms as u64 * TICKS_PER_MS);
+                    }
+                }
+            } else if c.rtt_on && seq_le(c.rtt_seq, ack) {
                 let sample = now.saturating_sub(c.rtt_time);
                 update_rtt(c, sample);
                 c.rtt_on = false;
@@ -3775,7 +3980,7 @@ fn retransmit(idx: usize, mac: &[u8; 6], ip: &IpAddr, resend: Resend) {
     };
     let mut buf = [0u8; TCP_MSS];
     for i in 0..max {
-        let (seq, len, ack, rip, lp, rp, win) = {
+        let (seq, len, ack, rip, lp, rp, win, opts) = {
             let mut t = TCP.lock();
             let c = &mut t.conns[idx];
             let from = if seq_lt(c.rtx_next, c.snd_una) { c.snd_una } else { c.rtx_next };
@@ -3840,11 +4045,13 @@ fn retransmit(idx: usize, mac: &[u8; 6], ip: &IpAddr, resend: Resend) {
                 }
             }
             c.rtt_on = false;
-            (s, len, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise())
+            let opts = c.seg_opts(azos_drv_sys::timebase::now(), false);
+            (s, len, c.ack, c.remote_ip, c.local_port, c.remote_port, c.advertise(), opts)
         };
         // Live window, same reason as `send_data`: a retransmission carrying
         // the constant would reopen a window we had already closed.
-        send_segment_with_window(mac, ip, &rip, lp, rp, TCP_ACK, seq, ack, &buf[..len], win);
+        send_segment_with_window(mac, ip, &rip, lp, rp, TCP_ACK, seq, ack, &buf[..len], win,
+                                 opts.get());
     }
 }
 
@@ -3995,30 +4202,18 @@ fn sack_next_seg(c: &TcpConn, smss: u32, beyond_lost: bool) -> Option<(u32, usiz
 /// acknowledging those bytes outright.
 fn sack_learn(c: &mut TcpConn, opts: &[u8], ack: u32) -> bool {
     let mut new = false;
-    let mut i = 0;
-    while i < opts.len() {
-        match opts[i] {
-            TCP_OPT_EOL => break,
-            TCP_OPT_NOP => { i += 1; continue; }
-            _ => {}
-        }
-        if i + 1 >= opts.len() { break; }
-        let len = opts[i + 1] as usize;
-        if len < 2 || i + len > opts.len() { break; }
-        if opts[i] == TCP_OPT_SACK && len >= 10 && (len - 2) % 8 == 0 {
-            for b in opts[i + 2..i + len].chunks_exact(8) {
-                let l = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
-                let r = u32::from_be_bytes([b[4], b[5], b[6], b[7]]);
-                if seq_lt(c.snd_una, l) && seq_lt(l, r) && seq_le(r, c.seq) {
-                    let above = if seq_lt(l, ack) { ack } else { l };
-                    if seq_lt(above, r) && !sack_holds(c, above, r) {
-                        new = true;
-                    }
-                    sack_insert(c, l, r);
-                }
+    let Some(v) = find_option(opts, TCP_OPT_SACK) else { return false };
+    if v.is_empty() || v.len() % 8 != 0 { return false; }
+    for b in v.chunks_exact(8) {
+        let l = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+        let r = u32::from_be_bytes([b[4], b[5], b[6], b[7]]);
+        if seq_lt(c.snd_una, l) && seq_lt(l, r) && seq_le(r, c.seq) {
+            let above = if seq_lt(l, ack) { ack } else { l };
+            if seq_lt(above, r) && !sack_holds(c, above, r) {
+                new = true;
             }
+            sack_insert(c, l, r);
         }
-        i += len;
     }
     new
 }
@@ -4089,7 +4284,7 @@ fn sack_prune(c: &mut TcpConn) {
 fn ack_data_in_fin_state(
     idx: usize, mac: &[u8; 6], ip: &IpAddr, seq: u32, ack_num: u32, flags: u8,
     peer_win: u16, payload_len: usize, expected_ack: u32, rcv_wnd: u32,
-    opts: &[u8], now: u64,
+    opts: &[u8], tsecr: Option<u32>, now: u64,
 ) {
     if flags & TCP_ACK == 0 { return; }
     let (snd_una, snd_nxt) = {
@@ -4101,13 +4296,47 @@ fn ack_data_in_fin_state(
     if !segment_acceptable(seq, payload_len + fin as usize, expected_ack, rcv_wnd) { return; }
     if !ack_acceptable(ack_num, snd_una, snd_nxt.wrapping_add(1)) { return; }
     process_ack(idx, mac, ip, ack_num, peer_win,
-                payload_len == 0 && !fin && flags & TCP_SYN == 0, opts, now);
+                payload_len == 0 && !fin && flags & TCP_SYN == 0, opts, tsecr, now);
+}
+
+/// RFC 7323 §5.3 on a segment of a connection that negotiated Timestamps:
+/// `false` when PAWS refuses it (R1: its TSval is behind TS.Recent, which is
+/// at most 24 days old), after answering it with an ACK as any unacceptable
+/// segment is (R2); otherwise TS.Recent moves up to its TSval when it is in
+/// the window and starts at or before what we last acknowledged (R3, §4.3),
+/// so the echo answers the oldest segment an ACK covers. A segment that
+/// carries no Timestamps is let through without either: RFC 7323 §3.2 lets a
+/// receiver drop it, Linux takes it, and so does this stack.
+fn paws_admits(
+    idx: usize, mac: &[u8; 6], ip: &IpAddr, seq: u32, seg_len: usize,
+    ts: Option<(u32, u32)>, now: u64,
+) -> bool {
+    let Some((tsval, _)) = ts else { return true };
+    {
+        let mut t = TCP.lock();
+        let c = &mut t.conns[idx];
+        if !c.ts_ok || matches!(c.state, TcpState::Closed | TcpState::Listen | TcpState::SynSent) {
+            return true;
+        }
+        let behind = (tsval.wrapping_sub(c.ts_recent) as i32) < 0;
+        if !behind || now.wrapping_sub(c.ts_recent_at) >= PAWS_IDLE_TICKS {
+            if segment_acceptable(seq, seg_len, c.ack, c.rcv_wnd_max())
+                && seq_le(seq, c.ts_last_ack)
+            {
+                c.ts_recent    = tsval;
+                c.ts_recent_at = now;
+            }
+            return true;
+        }
+    }
+    send_invalid_ack(idx, mac, ip, now);
+    false
 }
 
 /// Answer an unacceptable segment with an ACK of where we are (RFC 793 §3.9),
 /// at most once per `INVALID_ACK_INTERVAL_MS` per connection.
 fn send_invalid_ack(idx: usize, mac: &[u8; 6], ip: &IpAddr, now: u64) {
-    let (rip, lp, rp, seq_n, ack_n, win, opts, opts_len) = {
+    let (rip, lp, rp, seq_n, ack_n, win, opts) = {
         let mut t = TCP.lock();
         let c = &mut t.conns[idx];
         if c.last_invalid_ack != 0
@@ -4117,13 +4346,12 @@ fn send_invalid_ack(idx: usize, mac: &[u8; 6], ip: &IpAddr, now: u64) {
         }
         c.last_invalid_ack = now.max(1);
         // An ACK like any other, so it repeats what is held out of order.
-        let mut opts = [0u8; TCP_OPT_MAX];
-        let opts_len = sack_option(c, &mut opts);
-        (c.remote_ip, c.local_port, c.remote_port, c.seq, c.ack, c.advertise(), opts, opts_len)
+        let opts = c.seg_opts(now, true);
+        (c.remote_ip, c.local_port, c.remote_port, c.seq, c.ack, c.advertise(), opts)
     };
     #[cfg(feature = "qemu")]
     trace_tx(lp, &rip, rp, TCP_ACK, seq_n, ack_n, &[]);
-    send_segment_opts(mac, ip, &rip, lp, rp, TCP_ACK, seq_n, ack_n, win, &opts[..opts_len], &[]);
+    send_segment_opts(mac, ip, &rip, lp, rp, TCP_ACK, seq_n, ack_n, win, opts.get(), &[]);
 }
 
 // ---------------------------------------------------------------------------
@@ -4131,8 +4359,9 @@ fn send_invalid_ack(idx: usize, mac: &[u8; 6], ip: &IpAddr, now: u64) {
 // ---------------------------------------------------------------------------
 
 /// Every held entry fits in one SACK option, so every one is reported: what
-/// `store_ooo_segment` relies on when it refuses to evict.
-const _: () = assert!(OOO_MAX_SEGMENTS <= SACK_MAX_BLOCKS);
+/// `store_ooo_segment` relies on when it refuses to evict. Beside Timestamps,
+/// three fit, and it holds three.
+const _: () = assert!(OOO_MAX_SEGMENTS <= SACK_MAX_BLOCKS && SACK_MAX_BLOCKS_TS <= OOO_MAX_SEGMENTS);
 
 /// Store an out-of-order segment in the connection's OOO buffer, or drop it
 /// when no slot is free.
@@ -4168,7 +4397,11 @@ fn store_ooo_segment(c: &mut TcpConn, seg_seq: u32, data: &[u8]) {
     // sender scoreboard of 128,480 B against 5,840 B held, and timeouts that
     // backed off to 3.5 s (`tcp_throughput`, 2026-09-14). A dropped arrival
     // was never acknowledged or reported, so the peer sends it again.
-    let Some(s) = (0..OOO_MAX_SEGMENTS).find(|&i| !c.ooo_buf[i].valid) else { return };
+    // Beside Timestamps a SACK option has room for three blocks, so a
+    // connection that negotiated both holds three entries: a fourth could
+    // not be reported.
+    let cap = if c.sack_ok && c.ts_ok { SACK_MAX_BLOCKS_TS } else { OOO_MAX_SEGMENTS };
+    let Some(s) = (0..cap).find(|&i| !c.ooo_buf[i].valid) else { return };
     c.ooo_buf[s].seq = seg_seq;
     c.ooo_buf[s].len = copy_len as u16;
     c.ooo_buf[s].data[..copy_len].copy_from_slice(&data[..copy_len]);
@@ -4241,8 +4474,8 @@ fn rx_free_space(c: &TcpConn) -> usize {
 }
 
 /// Build the SACK option (RFC 2018 §3) describing `c`'s out-of-order queue into
-/// `out`, and return its length — 0 when SACK was not negotiated or nothing is
-/// held beyond RCV.NXT.
+/// `out`, at most `max_blocks` blocks, and return its length — 0 when SACK was
+/// not negotiated or nothing is held beyond RCV.NXT.
 ///
 /// **Every block is a range actually STORED**, not a range received: a held
 /// segment is truncated to `OOO_SEGMENT_MAX_LEN`, and a block covering the
@@ -4254,7 +4487,7 @@ fn rx_free_space(c: &TcpConn) -> usize {
 /// recent arrival goes first (§4). Evicting a reported entry later is reneging,
 /// which §8 permits: the sender keeps SACKed data until it is cumulatively
 /// ACKed, so the cost is a retransmission, never a hole.
-fn sack_option(c: &TcpConn, out: &mut [u8; TCP_OPT_MAX]) -> usize {
+fn sack_option(c: &TcpConn, out: &mut [u8], max_blocks: usize) -> usize {
     if !c.sack_ok { return 0; }
     let wnd = c.rcv_wnd_max();
 
@@ -4296,7 +4529,7 @@ fn sack_option(c: &TcpConn, out: &mut [u8; TCP_OPT_MAX]) -> usize {
         blocks[0] = first;
     }
 
-    let m = m.min(SACK_MAX_BLOCKS);
+    let m = m.min(max_blocks);
     out[0] = TCP_OPT_NOP;
     out[1] = TCP_OPT_NOP;
     out[2] = TCP_OPT_SACK;
@@ -4313,14 +4546,15 @@ fn sack_option(c: &TcpConn, out: &mut [u8; TCP_OPT_MAX]) -> usize {
 // send_segment with custom window (F01 flow control)
 // ---------------------------------------------------------------------------
 
-/// Like send_segment but with a custom advertised window (for flow control).
+/// [`send_segment`] without its `qemu` trace: for data segments and probes,
+/// which would flood it.
 fn send_segment_with_window(
     our_mac: &[u8; 6], our_ip: &IpAddr, dst_ip: &IpAddr,
     src_port: u16, dst_port: u16, flags: u8,
-    seq: u32, ack: u32, data: &[u8], window: u16,
+    seq: u32, ack: u32, data: &[u8], window: u16, opts: &[u8],
 ) -> i32 {
     send_segment_opts(our_mac, our_ip, dst_ip, src_port, dst_port,
-                      flags, seq, ack, window, &[], data)
+                      flags, seq, ack, window, opts, data)
 }
 
 /// Build and send one segment. Every TCP header this stack emits is written
@@ -4328,8 +4562,8 @@ fn send_segment_with_window(
 ///
 /// `opts` sits between the fixed header and the payload and must already be
 /// padded to whole 32-bit words: `data_off` counts words, and the receiver
-/// finds the payload by it. Callers put options only on payload-free segments
-/// — a full MSS plus options would exceed the MTU.
+/// finds the payload by it. A data segment's options are already counted in
+/// the size its caller cut it to (`TcpConn::smss`), so it still fits the MTU.
 fn send_segment_opts(
     our_mac: &[u8; 6], our_ip: &IpAddr, dst_ip: &IpAddr,
     src_port: u16, dst_port: u16, flags: u8,
@@ -4581,16 +4815,19 @@ fn tcp_timers() {
 
     for idx in 0..TCP_MAX_CONNS {
         let (state, outstanding, retx_time, rto, retx_count, last_act, ka_probes,
-             conn_seq, ack_val, lp, rp, rip, lip, our_win, synack_offer,
+             conn_seq, ack_val, lp, rp, rip, lip, our_win,
              remote_win, persist_time, persist_ticks, persist_probes) = {
             let t = TCP.lock();
             let c = &t.conns[idx];
             (c.state, c.flight() != 0, c.retx_time, c.rto_ticks, c.retx_count,
              c.last_activity, c.keepalive_probes,
              c.seq, c.ack, c.local_port, c.remote_port, c.remote_ip, c.local_ip,
-             c.adv_window(), SynOffer { wscale: c.wscale_ok, sack: c.sack_ok },
+             c.adv_window(),
              c.remote_window, c.persist_time, c.persist_ticks, c.persist_probes)
         };
+        // The options of a segment this tick sends, taken only when one is:
+        // building them records Last.ACK.sent (RFC 7323 §4.3).
+        let opts = || TCP.lock().conns[idx].seg_opts(now, false);
 
         if state == TcpState::Closed || state == TcpState::Listen {
             continue;
@@ -4632,10 +4869,14 @@ fn tcp_timers() {
                 // The retry repeats the first transmission's options exactly:
                 // a SYN-ACK retransmission that dropped Window Scale would
                 // leave the peer scaling windows we read unscaled.
-                let (syn_flags, syn_ack, offer) = if state == TcpState::SynSent {
-                    (TCP_SYN, 0, SynOffer::ALL)
-                } else {
-                    (TCP_SYN | TCP_ACK, ack_val, synack_offer)
+                let (syn_flags, syn_ack, offer) = {
+                    let mut t = TCP.lock();
+                    let c = &mut t.conns[idx];
+                    if state == TcpState::SynSent {
+                        (TCP_SYN, 0, SynOffer::all(c.ts_val(now)))
+                    } else {
+                        (TCP_SYN | TCP_ACK, ack_val, c.synack_offer(now))
+                    }
                 };
                 send_syn_segment(&mac, &lip, &rip, lp, rp, syn_flags, conn_seq, syn_ack, offer);
 
@@ -4735,7 +4976,7 @@ fn tcp_timers() {
                 // `fin_seq` is what makes that change safe to land later.
                 let fin_seq = { TCP.lock().conns[idx].fin_seq };
                 send_segment(&mac, &lip, &rip, lp, rp, TCP_FIN | TCP_ACK,
-                             fin_seq, ack_val, &[], our_win);
+                             fin_seq, ack_val, &[], our_win, opts().get());
                 let mut t = TCP.lock();
                 t.conns[idx].retx_time  = now;
                 t.conns[idx].retx_count = t.conns[idx].retx_count.saturating_add(1);
@@ -4796,7 +5037,7 @@ fn tcp_timers() {
                 let seq_val = { TCP.lock().conns[idx].seq.wrapping_sub(1) };
                 send_segment_with_window(&mac, &lip, &rip, lp, rp, TCP_ACK,
                                          seq_val, ack_val, &[],
-                                         our_win);
+                                         our_win, opts().get());
                 let mut t = TCP.lock();
                 t.conns[idx].persist_time  = now;
                 t.conns[idx].persist_ticks =
@@ -4848,9 +5089,9 @@ fn tcp_timers() {
                 // segment until the connection dies.
                 if c.retx_count.saturating_add(1) >= PMTU_BLACKHOLE_RTOS
                     && c.flight() >= c.smss()
-                    && c.smss() > PMTU_MSS_FLOOR as u32
+                    && c.mss_limit() > PMTU_MSS_FLOOR as u32
                 {
-                    c.pmtu_mss = (c.smss() / 2).max(PMTU_MSS_FLOOR as u32) as u16;
+                    c.pmtu_mss = (c.mss_limit() / 2).max(PMTU_MSS_FLOOR as u32) as u16;
                     PMTU_STATS.blackhole.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 }
                 let smss   = c.smss();
@@ -4896,7 +5137,7 @@ fn tcp_timers() {
             // Live window, as in `send_data` and the ACK-driven retransmissions.
             send_segment_with_window(&mac, &lip, &rip, lp, rp,
                          TCP_ACK, retx_seq, ack_val, &retx_copy[..retx_len],
-                         our_win);
+                         our_win, opts().get());
             continue;
         }
 
@@ -4944,7 +5185,8 @@ fn tcp_timers() {
                     let t = TCP.lock();
                     t.conns[idx].seq.wrapping_sub(1)
                 };
-                send_segment(&mac, &lip, &rip, lp, rp, TCP_ACK, seq_val, ack_val, &[], our_win);
+                send_segment(&mac, &lip, &rip, lp, rp, TCP_ACK, seq_val, ack_val, &[], our_win,
+                             opts().get());
 
                 let mut t = TCP.lock();
                 t.conns[idx].keepalive_probes = t.conns[idx].keepalive_probes.saturating_add(1);
@@ -4975,20 +5217,33 @@ pub(crate) fn conn_remote_mss(r: impl Into<Ref>) -> u16 {
     t.conns[r.idx].remote_mss
 }
 
-/// What this connection's handshake negotiated: the Window Scale shifts
-/// `(send, receive)` when both SYNs carried the option, and whether both
-/// carried SACK-Permitted.
+/// What a connection's handshake negotiated.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Negotiated {
+    /// The Window Scale shifts `(send, receive)`, when both SYNs carried it.
+    pub wscale: Option<(u8, u8)>,
+    /// Both SYNs carried SACK-Permitted.
+    pub sack:   bool,
+    /// Both SYNs carried Timestamps.
+    pub ts:     bool,
+}
+
+/// What this connection's handshake negotiated ([`Negotiated`]).
 ///
 /// Exposed for the two-node boot smoke, which is the only QEMU path where both
 /// ends are this stack. User-mode networking (slirp) parses nothing but the
 /// MSS, so every other boot runs the unscaled, SACK-less path and would pass
 /// the same way if the options were never offered.
-pub(crate) fn conn_negotiated(r: impl Into<Ref>) -> (Option<(u8, u8)>, bool) {
+pub(crate) fn conn_negotiated(r: impl Into<Ref>) -> Negotiated {
     let r = r.into();
     let t = TCP.lock();
-    if !t.live(r) { return (None, false); }
+    if !t.live(r) { return Negotiated { wscale: None, sack: false, ts: false }; }
     let c = &t.conns[r.idx];
-    (if c.wscale_ok { Some((c.snd_wscale, c.rcv_wscale)) } else { None }, c.sack_ok)
+    Negotiated {
+        wscale: if c.wscale_ok { Some((c.snd_wscale, c.rcv_wscale)) } else { None },
+        sack:   c.sack_ok,
+        ts:     c.ts_ok,
+    }
 }
 
 /// A connection's retransmission-timer estimate, as `update_rtt` left it.
@@ -5117,7 +5372,7 @@ impl TcpHandle {
     /// See `conn_remote_mss`; 0 when the handle is stale.
     pub fn remote_mss(self) -> u16 { conn_remote_mss(self) }
     /// See `conn_negotiated`; `(None, false)` when the handle is stale.
-    pub fn negotiated(self) -> (Option<(u8, u8)>, bool) { conn_negotiated(self) }
+    pub fn negotiated(self) -> Negotiated { conn_negotiated(self) }
     /// See `conn_rtt`; `None` when the handle is stale.
     pub fn rtt(self) -> Option<RttEstimate> { conn_rtt(self) }
 }
@@ -5128,8 +5383,9 @@ impl TcpHandle {
 
 /// Build and send a SYN or SYN-ACK: MSS always, plus the options in `offer`.
 ///
-/// Layout is Linux's without timestamps — MSS, then NOP + Window Scale, then
-/// NOP NOP + SACK-Permitted — each padded to a word so `data_off` is exact.
+/// Layout is Linux's — MSS, SACK-Permitted + Timestamps, NOP + Window Scale —
+/// with NOPs where an option is left out, each padded to a word so `data_off`
+/// is exact: 20 octets with everything offered.
 fn send_syn_segment(
     our_mac:  &[u8; 6],
     our_ip:   &IpAddr,
@@ -5141,18 +5397,27 @@ fn send_syn_segment(
     ack:      u32,
     offer:    SynOffer,
 ) -> i32 {
-    let mut opts = [0u8; 12];
+    let mut opts = [0u8; 20];
     let mss = (mss_for(dst_ip) as u16).to_be_bytes();
     opts[..4].copy_from_slice(&[TCP_OPT_MSS, TCP_OPT_MSS_LEN, mss[0], mss[1]]);
     let mut n = 4;
+    match (offer.sack, offer.ts) {
+        (true, Some((tsval, tsecr))) => {
+            // SACK-Permitted in the two octets Timestamps' NOPs would take.
+            n += put_ts(&mut opts[n..], tsval, tsecr);
+            opts[4..6].copy_from_slice(&[TCP_OPT_SACK_PERM, TCP_OPT_SACK_PERM_LEN]);
+        }
+        (false, Some((tsval, tsecr))) => n += put_ts(&mut opts[n..], tsval, tsecr),
+        (true, None) => {
+            opts[n..n + 4].copy_from_slice(
+                &[TCP_OPT_NOP, TCP_OPT_NOP, TCP_OPT_SACK_PERM, TCP_OPT_SACK_PERM_LEN]);
+            n += 4;
+        }
+        (false, None) => {}
+    }
     if offer.wscale {
         opts[n..n + 4].copy_from_slice(
             &[TCP_OPT_NOP, TCP_OPT_WSCALE, TCP_OPT_WSCALE_LEN, RCV_WSCALE]);
-        n += 4;
-    }
-    if offer.sack {
-        opts[n..n + 4].copy_from_slice(
-            &[TCP_OPT_NOP, TCP_OPT_NOP, TCP_OPT_SACK_PERM, TCP_OPT_SACK_PERM_LEN]);
         n += 4;
     }
     // RFC 7323 §2.2: the window of a segment carrying SYN is never scaled,
@@ -5207,7 +5472,7 @@ fn send_rst(
         (TCP_RST | TCP_ACK, 0, in_seq.wrapping_add(seg_len))
     };
     let _ = send_segment(our_mac, our_ip, dst_ip, src_port, dst_port, flags, seq, ack, &[],
-                         TCP_WINDOW_SIZE);
+                         TCP_WINDOW_SIZE, &[]);
 }
 
 
@@ -5412,7 +5677,7 @@ pub fn icmp_frag_needed(msg: &[u8], our_ip: &[u8; 4]) {
             s.out_of_window.fetch_add(1, Relaxed);
             return;
         }
-        if mss as u32 >= c.smss() {
+        if mss as u32 >= c.mss_limit() {
             s.not_lower.fetch_add(1, Relaxed);
             return;
         }
@@ -5453,15 +5718,16 @@ fn send_segment(
     ack:      u32,
     data:     &[u8],
     window:   u16,
+    opts:     &[u8],
 ) -> i32 {
-    let tcp_len = TCP_HDR_MIN + data.len();
+    let tcp_len = TCP_HDR_MIN + opts.len() + data.len();
     if tcp_len > TCP_SEGMENT_BUF_SIZE { return -1; }
 
     #[cfg(feature = "qemu")]
     trace_tx(src_port, dst_ip, dst_port, flags, seq, ack, data);
 
     send_segment_opts(our_mac, our_ip, dst_ip, src_port, dst_port,
-                      flags, seq, ack, window, &[], data)
+                      flags, seq, ack, window, opts, data)
 }
 
 /// Sensor-pump (#39) trace probe: log an outbound TCP segment.

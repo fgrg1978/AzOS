@@ -341,7 +341,10 @@ fn a_v6_connection_opens_carries_data_both_ways_and_closes() {
         );
         biggest = biggest.max(f.tcp_payload_len());
     }
-    assert_eq!(biggest, 1440, "full segments carry the IPv6 MSS, 1440");
+    // Both ends are this stack, so Timestamps are on when the build has them,
+    // and their 12 octets come out of every segment's payload.
+    let full = if azos_limits::TCP_TIMESTAMPS { 1440 - 12 } else { 1440 };
+    assert_eq!(biggest, full, "full segments carry the IPv6 MSS, 1440, less the options");
     let syns: Vec<_> = frames.iter().filter(|f| f.tcp_flags() & SYN != 0).collect();
     assert_eq!(syns.len(), 2, "a SYN and a SYN-ACK");
     for f in syns {

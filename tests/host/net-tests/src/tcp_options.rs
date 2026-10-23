@@ -60,16 +60,16 @@ const SCALED_WND: u32 = {
 /// near miss.
 const PEER_WSCALE: u8 = 7;
 
-fn mss(v: u16) -> [u8; 4] {
+pub(crate) fn mss(v: u16) -> [u8; 4] {
     let b = v.to_be_bytes();
     [OPT_MSS, 4, b[0], b[1]]
 }
 
 /// NOP + Window Scale, padded to a word the way Linux sends it.
-const WSCALE: [u8; 4] = [1, OPT_WSCALE, 3, PEER_WSCALE];
+pub(crate) const WSCALE: [u8; 4] = [1, OPT_WSCALE, 3, PEER_WSCALE];
 
 /// NOP NOP + SACK-Permitted.
-const SACK_PERM: [u8; 4] = [1, 1, OPT_SACK_PERM, 2];
+pub(crate) const SACK_PERM: [u8; 4] = [1, 1, OPT_SACK_PERM, 2];
 
 /// What a Linux SYN offers, less timestamps.
 fn all_options() -> Vec<u8> {
@@ -78,7 +78,7 @@ fn all_options() -> Vec<u8> {
 
 /// `tcp_rx::segment`, with TCP options. That builder hardcodes a 20-byte
 /// header, which is why nothing else in the suite can negotiate.
-fn seg(
+pub(crate) fn seg(
     src_port: u16, dst_port: u16, seq: u32, ack: u32,
     flags: u8, window: u16, opts: &[u8], payload: &[u8],
 ) -> Vec<u8> {
@@ -103,16 +103,16 @@ fn seg(
 
 /// A segment the stack put on the wire, options included.
 #[derive(Debug, Clone)]
-struct Seg {
-    seq: u32,
-    ack: u32,
-    flags: u8,
-    window: u16,
-    opts: Vec<u8>,
-    payload_len: usize,
+pub(crate) struct Seg {
+    pub(crate) seq: u32,
+    pub(crate) ack: u32,
+    pub(crate) flags: u8,
+    pub(crate) window: u16,
+    pub(crate) opts: Vec<u8>,
+    pub(crate) payload_len: usize,
 }
 
-fn sent() -> Vec<Seg> {
+pub(crate) fn sent() -> Vec<Seg> {
     wire::sent()
         .iter()
         .filter(|s| s.proto == wire::IP_PROTO_TCP)
@@ -131,12 +131,12 @@ fn sent() -> Vec<Seg> {
         .collect()
 }
 
-fn last() -> Seg {
+pub(crate) fn last() -> Seg {
     sent().pop().expect("a segment should have been sent")
 }
 
 /// The value bytes of the first option of `kind`, walking NOPs and lengths.
-fn option(opts: &[u8], kind: u8) -> Option<Vec<u8>> {
+pub(crate) fn option(opts: &[u8], kind: u8) -> Option<Vec<u8>> {
     let mut i = 0;
     while i < opts.len() {
         match opts[i] {
@@ -158,7 +158,7 @@ fn option(opts: &[u8], kind: u8) -> Option<Vec<u8>> {
 }
 
 /// The SACK blocks a segment carries, in the order it carries them.
-fn sack_blocks(s: &Seg) -> Vec<(u32, u32)> {
+pub(crate) fn sack_blocks(s: &Seg) -> Vec<(u32, u32)> {
     option(&s.opts, OPT_SACK)
         .map(|v| {
             v.chunks(8)
@@ -174,7 +174,7 @@ fn sack_blocks(s: &Seg) -> Vec<(u32, u32)> {
 /// Complete a passive open on a port that is already listening: a SYN carrying
 /// `syn_opts`, then a third leg advertising `ack_window`.
 /// Returns (idx, our snd.nxt, the peer's next sequence, the SYN-ACK).
-fn handshake(
+pub(crate) fn handshake(
     port: u16, peer_port: u16, peer_isn: u32, syn_opts: &[u8], ack_window: u16,
 ) -> (usize, u32, u32, Seg) {
     wire::clear_sent();
@@ -194,7 +194,7 @@ fn handshake(
     (idx, ours, theirs, synack)
 }
 
-fn establish_with(
+pub(crate) fn establish_with(
     port: u16, peer_port: u16, peer_isn: u32, syn_opts: &[u8], ack_window: u16,
 ) -> (usize, u32, u32, Seg) {
     assert!(tcp::listen(port) >= 0, "no free connection slot for the listener");
@@ -203,7 +203,7 @@ fn establish_with(
 
 /// Dial out, and answer our SYN with a SYN-ACK carrying `opts` and `window`.
 /// Returns (idx, our snd.nxt, the peer's next sequence).
-fn open_active(
+pub(crate) fn open_active(
     local_port: u16, peer_port: u16, peer_isn: u32, opts: &[u8], window: u16,
 ) -> (usize, u32, u32) {
     wire::clear_sent();
@@ -326,15 +326,15 @@ fn an_active_open_offers_both_options_in_a_syn_whose_window_is_not_scaled() {
 /// A connection is its two rings, each `TCP_BUF_SIZE` bytes from `.config`, and
 /// a fixed amount of state, so the static table follows the configured size
 /// byte for byte. `STATE` was measured on 2026-09-14 (6,088 B) and grew by 24 B in wave 15 (delayed-ACK state, N6) and by 24 B for the IPv6
-/// endpoint addresses (`tcp::IpAddr`): 268,280 B per connection
-/// at 131072 (edge, embedded) and 38,904 B at 16384 (fleet), the figures
+/// endpoint addresses (`tcp::IpAddr`), and by 24 B for Timestamps (RFC 7323): 268,304 B per connection
+/// at 131072 (edge, embedded) and 38,928 B at 16384 (fleet), the figures
 /// `config/limits/Kconfig.limits` quotes. `STATE` is exact on purpose:
 /// whoever adds or resizes a `TcpConn` field updates it here, together with
 /// those figures in `config/limits/Kconfig.limits` (also quoted in
-/// `config/subsys/Kconfig.net` and `config/defconfigs/generic-server-riscv64+board-generic.config`).
+/// `config/subsys/Kconfig.net`).
 #[test]
 fn a_connection_is_two_rings_of_the_configured_size_plus_fixed_state() {
-    const STATE: usize = 6_136;
+    const STATE: usize = 6_160;
     let one = core::mem::size_of::<tcp::TcpConn>();
     println!(
         "[tcp-size] TCP_BUF_SIZE {TCP_BUF_SIZE} B: size_of::<TcpConn>() = {one} B, \

@@ -20615,7 +20615,7 @@ PYEOF
     par -s "bench: receipts cost canary" receipts_cost_canary_row
 
     # Besides the round trip, the script requires both ends to report
-    # `opts wscale=1/1 sack=1`: this is the only boot where both SYNs come
+    # `opts wscale=1/1 sack=1 ts=1`: this is the only boot where both SYNs come
     # from this stack, since slirp parses nothing but the MSS.
     net_pair_row() {
         printf "  %-26s" "network: two-node TCP..."

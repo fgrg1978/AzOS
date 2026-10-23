@@ -69,8 +69,8 @@ config USE_GATEWAY
       deployment profile it changes the network defaults (each can be
       set by hand under "Resource Limits" / "Network"):
         TCP_MAX_CONNS 8 -> 64, TCP_BUF_SIZE 131072 -> 16384:
-          64 x 38,904 B = 2,489,856 B of TCP tables, against
-          8 x 268,280 B = 2,146,240 B on Edge (+343,616 B);
+          64 x 38,928 B = 2,491,392 B of TCP tables, against
+          8 x 268,304 B = 2,146,432 B on Edge (+344,960 B);
         MAX_SOCKETS 16 -> 128 (+112 UDP-sized slots);
         ARP_CACHE_SIZE 16 -> 64, ARP_PENDING_SIZE 8 -> 16,
         DNS_CACHE_SIZE 4 -> 16, UDP_RX_SLOTS 4 -> 16.
