@@ -17401,17 +17401,30 @@ PYEOF
         # for why. This is where that false green was measured: without the
         # latch the wheel stayed at 80 and the change-only marker said nothing,
         # so counting non-zero lines after the press returned 0 and passed.
-        local last_l last_r
-        last_l=$(grep -an "ACTSMOKE] kernel motor id=0 duty=" "$log" 2>/dev/null | sed -n '$p')
-        last_r=$(grep -an "ACTSMOKE] kernel motor id=1 duty=" "$log" 2>/dev/null | sed -n '$p')
-        for w in "$last_l" "$last_r"; do
-            local ln val
-            ln=${w%%:*}; val=${w##*duty=}
-            if [ -z "$w" ] || [ "$val" != "0" ] || [ "$ln" -lt "$press_line" ]; then
-                bad; echo "      THE KILL SWITCH DID NOT HOLD. Each wheel's last applied"
-                echo "      duty must be 0 and must come after the press; got:"
-                echo "        left : ${last_l:-<none>}"
-                echo "        right: ${last_r:-<none>}   (press at line $press_line, record at $wdt_line)"
+        #
+        # Three facts per wheel: its last applied duty is 0, no non-zero duty
+        # was applied after the press, and the stop wrote it (`ACTREC`, every
+        # write, not change-only) after the press. The last `ACTSMOKE` line
+        # itself may come BEFORE the press: the wheels here toggle 80/0 with
+        # the peer's command age, and since the edge interrupt (2026-10-23)
+        # the latch lands within a millisecond of the press, often while the
+        # wheel already reads 0, so the change-only marker has nothing new to
+        # print. It came after the press under the 500 ms poll by accident.
+        local wheel
+        for wheel in 0 1; do
+            local last ln val after_nz stop_rec
+            last=$(grep -an "ACTSMOKE] kernel motor id=$wheel duty=" "$log" 2>/dev/null | tr -d '\r' | sed -n '$p')
+            ln=${last%%:*}; val=${last##*duty=}
+            after_nz=$(grep -an "ACTSMOKE] kernel motor id=$wheel duty=" "$log" 2>/dev/null | tr -d '\r' \
+                       | grep -v "duty=0$" | awk -F: -v n="$press_line" '$1 > n' | grep -c .)
+            stop_rec=$(grep -an "ACTREC] motor id=$wheel .*duty=0 " "$log" 2>/dev/null \
+                       | awk -F: -v n="$press_line" '$1 > n' | grep -c .)
+            if [ -z "$last" ] || [ "$val" != "0" ] || [ "$after_nz" -ne 0 ] || [ "$stop_rec" -lt 1 ]; then
+                bad; echo "      THE KILL SWITCH DID NOT HOLD (wheel $wheel). Its last applied"
+                echo "      duty must be 0, nothing non-zero may follow the press, and the"
+                echo "      stop must write it after the press; got last=${last:-<none>},"
+                echo "      non-zero after=$after_nz, stop writes after=$stop_rec"
+                echo "      (press at line $press_line, record at $wdt_line)"
                 echo "      logs kept: $log $blog"; return
             fi
         done
