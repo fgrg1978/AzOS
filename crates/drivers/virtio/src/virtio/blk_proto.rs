@@ -21,8 +21,9 @@ pub const OP_DISCARD: u8 = 2;
 /// **A wall-clock budget, not a spin count.** 500 ms is deliberately
 /// generous: a virtio-blk request completes in microseconds here and in low
 /// milliseconds on real storage. The budget exists to bound a *dead* device,
-/// not to police a slow one: a timeout latches the driver dead until reboot,
-/// and being late is survivable where being wrong is not.
+/// not to police a slow one: a timeout resets the device (once per boot,
+/// `azos_drv_api::recovery`) and the next one latches the driver dead until
+/// reboot, and being late is survivable where being wrong is not.
 pub const BLK_TIMEOUT_US: u64 = 500_000;
 
 /// Budget for a command whose completion time scales with device state
@@ -57,6 +58,12 @@ pub const S_OK: u8 = 0;
 pub const S_UNSUPP: u8 = 2;
 /// The status byte before the device writes it.
 pub const S_PENDING: u8 = 0xFF;
+/// Driver-side only, never written by a device: the command's budget ran out
+/// and the device was reset or latched dead for it.
+pub const S_TIMEOUT: u8 = 0xFE;
+/// Driver-side only: the device was reset with the command in it (another
+/// command's budget ran out).
+pub const S_RESET: u8 = 0xFD;
 
 // ── Feature bits (word 0) ───────────────────────────────────────────────
 
@@ -144,11 +151,14 @@ pub fn max_discard(offered: bool, max_sectors: u32, max_segments: u32) -> u32 {
 
 /// What a status byte means for a request. `data`: a read or a write, for
 /// which `S_UNSUPP` is a failure; for a flush or a discard it is the device
-/// saying it has no such command.
+/// saying it has no such command. `S_TIMEOUT` and `S_RESET` are the driver's
+/// own marks for a command a timeout ended.
 pub fn status_of(data: bool, status: u8) -> HwStatus {
     match status {
         S_OK => HwStatus::Ok,
         S_UNSUPP if !data => HwStatus::Unsupported,
+        S_TIMEOUT => HwStatus::Timeout,
+        S_RESET => HwStatus::Reset,
         _ => HwStatus::Io,
     }
 }

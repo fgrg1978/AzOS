@@ -57,13 +57,18 @@
 //!   [`msi_irq`], bounded by a slice. Without a route, or before the scheduler
 //!   exists, the layer spins and `reap` polls the completion queues' phase
 //!   tags. Whoever reaps does so under the queue's lock.
-//! * **Dead means dead.** A command that misses its deadline, or a
-//!   completion naming no command in flight on its queue, resets the
-//!   controller (`CC.EN = 0`, which stops its DMA on every queue) and latches
-//!   the driver failed until reboot, as `virtio::blk` does: no disk beats
-//!   silently wrong disk. `reap` then reports every command still in the
-//!   device as failed, without copying anything, and their slots are never
-//!   reused.
+//! * **A timeout resets the controller once.** A command that misses its
+//!   deadline disables the controller (`CC.EN = 0`, which stops its DMA on
+//!   every queue), waits for `CSTS.RDY` to drop, and brings it up again over
+//!   the same pages: the admin queue, the queue count, every I/O queue pair
+//!   (`azos_drv_api::recovery`, Kconfig `DEVICE_TIMEOUT_RESETS`). The late
+//!   command ends `Timeout`, the others the controller held `Reset`, and
+//!   their slots are reused. The next timeout, a controller that does not
+//!   come back, or a completion naming no command in flight on its queue
+//!   latches the driver failed until reboot, as `virtio::blk` does: no disk
+//!   beats silently wrong disk. `reap` then reports every command still in
+//!   the device as failed, without copying anything, and their slots are
+//!   never reused.
 //! * **FUA, Flush, Dataset Management.** Force Unit Access is a bit of the
 //!   Write command, so it is native. A Flush the controller answers
 //!   `Invalid Opcode` (no volatile cache) is reported `Unsupported`, which the
@@ -77,6 +82,7 @@
 
 use crate::queue::{Claim, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, HW_TAGS_MAX};
 use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US};
+use azos_drv_api::recovery::{Class, Recovery, Verdict};
 use azos_drv_sys::kprintln;
 use azos_drv_virtio::virtio::blk_proto::queue_of;
 use azos_drv_virtio::virtio::pci::msix_selftest::{map_bars, KernelBar, MsiRoute, SelftestError};
@@ -162,7 +168,9 @@ pub enum NvmeError {
 
 /// One controller: what bring-up decides and nothing after it changes (the
 /// queues' moving parts are [`Queue`], behind [`QLOCK`]; whether the driver is
-/// up is [`READY`] and [`FAILED`]).
+/// up is [`READY`] and [`RECOVERY`]). The admin cursors are used by bring-up
+/// and by a reset, each on its own copy.
+#[derive(Clone, Copy)]
 struct Dev {
     /// CPU address of BAR 0 (the registers).
     bar: usize,
@@ -191,6 +199,8 @@ struct Dev {
     /// Queue `q`'s vector lands on CPU `q` (`QueueRoute::per_cpu`), so it is
     /// raised only while that CPU runs.
     per_cpu: bool,
+    /// `CAP.TO`: how long `CSTS.RDY` may take to follow `CC.EN`.
+    ready_ms: u64,
 }
 
 const DEV_ZERO: Dev = Dev {
@@ -211,6 +221,7 @@ const DEV_ZERO: Dev = Dev {
     queues: 1,
     irq: false,
     per_cpu: false,
+    ready_ms: 0,
 };
 
 static mut DEV: Dev = DEV_ZERO;
@@ -218,9 +229,11 @@ static mut DEV: Dev = DEV_ZERO;
 /// One I/O queue pair. Its fields change at runtime and are behind the
 /// pair's [`QLOCK`].
 struct Queue {
-    /// CPU addresses of the submission and completion queue pages.
+    /// CPU and device addresses of the submission and completion queue pages.
     sq: usize,
     cq: usize,
+    sq_pa: u64,
+    cq_pa: u64,
     /// Next free entry of the submission queue.
     tail: u16,
     /// The controller's submission head, from the last completion.
@@ -228,7 +241,7 @@ struct Queue {
     cur: proto::CqCursor,
 }
 
-const QUEUE_ZERO: Queue = Queue { sq: 0, cq: 0, tail: 0, sq_head: 0, cur: proto::CqCursor::new() };
+const QUEUE_ZERO: Queue = Queue { sq: 0, cq: 0, sq_pa: 0, cq_pa: 0, tail: 0, sq_head: 0, cur: proto::CqCursor::new() };
 
 static mut QUEUES: [Queue; MAXQ] = [QUEUE_ZERO; MAXQ];
 
@@ -241,8 +254,9 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The controller is enabled and accepts commands (set at the end of
 /// bring-up, cleared by a failed bring-up or by [`latch_dead`]).
 static READY: AtomicBool = AtomicBool::new(false);
-/// The driver is latched dead until reboot ([`latch_dead`]).
-static FAILED: AtomicBool = AtomicBool::new(false);
+/// Live, being reset after a timeout, or latched dead until reboot (the
+/// timeout policy, Kconfig `DEVICE_TIMEOUT_RESETS`; [`latch_dead`]).
+static RECOVERY: Recovery = Recovery::new(Class::Block, "nvme", azos_limits::DEVICE_TIMEOUT_RESETS as u8);
 
 // ---- Staging slots ----
 
@@ -262,6 +276,8 @@ static SLOT_DONE: [AtomicBool; SLOTS] = [const { AtomicBool::new(false) }; SLOTS
 /// Slot `i`'s completion (or death) was handed to the request layer.
 static SLOT_REPORTED: [AtomicBool; SLOTS] = [const { AtomicBool::new(false) }; SLOTS];
 static SLOT_STATUS: [AtomicU16; SLOTS] = [const { AtomicU16::new(0) }; SLOTS];
+/// Slot `i`'s first sector (for the timeout record).
+static SLOT_LBA: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 /// What slot `i` runs: [`OP_DATA`], [`OP_FLUSH`] or [`OP_DISCARD`].
 static SLOT_OP: [AtomicU8; SLOTS] = [const { AtomicU8::new(0) }; SLOTS];
 /// Timebase tick by which slot `i`'s command must have completed.
@@ -276,6 +292,12 @@ static STALL: StallClock = StallClock::new();
 const OP_DATA: u8 = 0;
 const OP_FLUSH: u8 = 1;
 const OP_DISCARD: u8 = 2;
+
+/// Driver-side marks in [`SLOT_STATUS`], outside the 11 bits a completion's
+/// status has: the command's budget ran out, or the controller was reset
+/// with it in (another command's budget ran out).
+const ST_TIMEOUT: u16 = 0xFFFF;
+const ST_RESET: u16 = 0xFFFE;
 
 /// Bit `i` set while a command owns slot `i`; claimed with `fetch_or`.
 static SLOT_BUSY: AtomicU32 = AtomicU32::new(0);
@@ -624,10 +646,9 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
     // SAFETY: bring-up is single-threaded and runs before any user of `DEV`
     // and `QUEUES`.
     let dev = unsafe { &mut *(&raw mut DEV) };
-    *dev = Dev { bar, dstrd: cap.dstrd, irq, per_cpu: route.per_cpu(), ..DEV_ZERO };
+    *dev = Dev { bar, dstrd: cap.dstrd, irq, per_cpu: route.per_cpu(), ready_ms: cap.ready_timeout_ms, ..DEV_ZERO };
     // SAFETY: as above.
     unsafe { *(&raw mut QUEUES) = [QUEUE_ZERO; MAXQ] };
-    FAILED.store(false, Ordering::Relaxed);
     READY.store(false, Ordering::Relaxed);
 
     // Reset: disable and wait for RDY to drop (section 7.6.1).
@@ -700,7 +721,7 @@ fn attach_inner<C: ConfigSpace, R: QueueRoute>(
         let (sq, sq_pa) = alloc_page(dma_mask)?;
         let (cq, cq_pa) = alloc_page(dma_mask)?;
         // SAFETY: single-threaded bring-up.
-        unsafe { (*(&raw mut QUEUES))[q] = Queue { sq, cq, ..QUEUE_ZERO } };
+        unsafe { (*(&raw mut QUEUES))[q] = Queue { sq, cq, sq_pa, cq_pa, ..QUEUE_ZERO } };
         let qid = qid_of(q);
         dev.admin(|cid| proto::create_io_cq(cid, qid, IO_DEPTH, cq_pa, qid, irq), "create io cq")?;
         dev.admin(|cid| proto::create_io_sq(cid, qid, IO_DEPTH, sq_pa, qid), "create io sq")?;
@@ -817,7 +838,7 @@ fn drain(dev: &Dev, qi: usize, q: &mut Queue) {
         let Some(slot) = route_math::completion_slot(qi, dev.queues, e.sq_id(), e.cid(), SLOTS)
             .filter(|&s| SLOT_INFLIGHT[s].load(Ordering::Relaxed) && !SLOT_DONE[s].load(Ordering::Relaxed))
         else {
-            latch_dead(dev, "foreign completion");
+            latch_dead(dev, "foreign completion", false);
             return;
         };
         SLOT_STATUS[slot].store(e.status(), Ordering::Relaxed);
@@ -833,9 +854,10 @@ fn drain(dev: &Dev, qi: usize, q: &mut Queue) {
 /// the driver dead. The staging pages stay owned by the driver and are never
 /// reused: a command still in the controller may DMA into them until the reset
 /// lands, and nothing submits again afterwards. Takes no lock, so any queue's
-/// holder may call it; the first call does the work.
-fn latch_dead(dev: &Dev, reason: &str) {
-    if FAILED.swap(true, Ordering::SeqCst) {
+/// holder may call it; the first call does the work. `latched`: the policy
+/// already says dead (a timeout with the resets spent).
+fn latch_dead(dev: &Dev, reason: &str, latched: bool) {
+    if !latched && !RECOVERY.latch() {
         return;
     }
     wr32(dev.bar, proto::REG_CC, 0);
@@ -843,16 +865,130 @@ fn latch_dead(dev: &Dev, reason: &str) {
     azos_drv_sys::kerr!("[NVME] Error: {} - controller reset, block I/O disabled", reason);
 }
 
+/// Commands in `late` (a slot bitmap, every one in the controller) ran out of
+/// their budget at tick `t`. The timeout policy decides: reset the controller
+/// and bring it up again over the same pages, or, with the resets spent,
+/// latch it dead. The late commands end `Timeout`; a reset ends the others
+/// the controller held `Reset`. Called by `reap` with no queue lock held.
+fn timed_out(dev: &Dev, late: u32, t: u64) {
+    let first = late.trailing_zeros() as usize;
+    let sector = SLOT_LBA[first].load(Ordering::Relaxed);
+    let budget = if SLOT_OP[first].load(Ordering::Relaxed) == OP_FLUSH { FLUSH_TIMEOUT_US } else { IO_TIMEOUT_US };
+    let waited_ms = budget / 1000
+        + t.saturating_sub(SLOT_DEADLINE[first].load(Ordering::Relaxed)) * 1000 / azos_drv_sys::timebase::TIMER_FREQ;
+    match RECOVERY.timed_out(sector, waited_ms) {
+        Verdict::Reset => {
+            azos_drv_sys::kerr!("[NVME] command timeout at sector {}: resetting the controller", sector);
+            // Disable: the controller stops its DMA on every queue once
+            // `CSTS.RDY` drops (section 7.6.1).
+            wr32(dev.bar, proto::REG_CC, 0);
+            let stopped = wait_ready(dev.bar, false, dev.ready_ms).is_ok();
+            let ok = stopped && bring_up_again(dev, late).is_ok();
+            if ok {
+                kprintln!("[NVME] controller reset and brought up again: block I/O resumed");
+            } else {
+                wr32(dev.bar, proto::REG_CC, 0);
+                READY.store(false, Ordering::Release);
+                azos_drv_sys::kerr!("[NVME] Error: {} - block I/O disabled",
+                    if stopped { "the reset controller did not come back" } else { "the controller did not confirm its reset" });
+            }
+            RECOVERY.reset_done(ok, sector, waited_ms);
+            if !ok {
+                mark_late(late);
+            }
+        }
+        Verdict::Latch => {
+            latch_dead(dev, "command timeout, resets spent", true);
+            mark_late(late);
+        }
+        Verdict::Handled => {}
+    }
+}
+
+/// The commands in `late` end `Timeout`: their slots stay taken while the
+/// driver is dead (`release`).
+fn mark_late(late: u32) {
+    for slot in (0..SLOTS).filter(|s| late & (1 << s) != 0) {
+        SLOT_STATUS[slot].store(ST_TIMEOUT, Ordering::Relaxed);
+        SLOT_DONE[slot].store(true, Ordering::Release);
+    }
+}
+
+/// The controller is disabled and `CSTS.RDY` is 0 (it no longer touches any
+/// queue or staging page): bring it up again over the pages it had, as
+/// bring-up did (admin queue, enable, queue count, the I/O queue pairs), and
+/// end the commands it held (`late` ones `Timeout`, the others `Reset`). Each
+/// I/O queue is emptied and its commands ended under its lock, so a `submit`
+/// either published before (and its command is ended here) or finds the
+/// controller being reset. Namespace 1 is not identified again: a controller
+/// reset does not change it, and the staging pages that bring-up identified
+/// into may hold a finished read the layer has not copied out yet.
+fn bring_up_again(dev: &Dev, late: u32) -> Result<(), NvmeError> {
+    // The admin queue's cursors are this copy's: nothing else issues admin
+    // commands after bring-up.
+    let mut a = *dev;
+    a.a_tail = 0;
+    a.a_cq = proto::CqCursor::new();
+    // SAFETY: the controller is disabled; the admin pages are the driver's.
+    unsafe {
+        core::ptr::write_bytes(a.asq as *mut u8, 0, PAGE);
+        core::ptr::write_bytes(a.acq as *mut u8, 0, PAGE);
+    }
+    wr32(a.bar, proto::REG_AQA, proto::aqa(ADMIN_DEPTH as u32, ADMIN_DEPTH as u32));
+    wr64(a.bar, proto::REG_ASQ, a.asq_pa);
+    wr64(a.bar, proto::REG_ACQ, a.acq_pa);
+    io_wmb();
+    wr32(a.bar, proto::REG_CC, proto::cc_enable());
+    wait_ready(a.bar, true, a.ready_ms)?;
+    let queues = dev.queues;
+    let e = a.admin(|cid| proto::set_number_of_queues(cid, queues as u16, queues as u16), "set number of queues")?;
+    let (nsq, ncq) = proto::granted_queues(e.dw0);
+    if route_math::queues_granted(queues, nsq, ncq) < queues {
+        return Err(NvmeError::Admin("set number of queues"));
+    }
+    for qi in 0..queues {
+        let _g = QLOCK[qi].lock();
+        // SAFETY: queue `qi` is under its lock; the controller has no I/O
+        // queue yet, so it touches neither page.
+        let q = unsafe { &mut (*(&raw mut QUEUES))[qi] };
+        // SAFETY: as above.
+        unsafe {
+            core::ptr::write_bytes(q.sq as *mut u8, 0, PAGE);
+            core::ptr::write_bytes(q.cq as *mut u8, 0, PAGE);
+        }
+        *q = Queue { sq: q.sq, cq: q.cq, sq_pa: q.sq_pa, cq_pa: q.cq_pa, ..QUEUE_ZERO };
+        let (qid, cq_pa, sq_pa, irq) = (qid_of(qi), q.cq_pa, q.sq_pa, dev.irq);
+        a.admin(|cid| proto::create_io_cq(cid, qid, IO_DEPTH, cq_pa, qid, irq), "create io cq")?;
+        a.admin(|cid| proto::create_io_sq(cid, qid, IO_DEPTH, sq_pa, qid), "create io sq")?;
+        for slot in (qi..SLOTS).step_by(queues) {
+            if SLOT_INFLIGHT[slot].load(Ordering::Acquire) && !SLOT_DONE[slot].load(Ordering::Acquire) {
+                SLOT_STATUS[slot].store(if late & (1 << slot) != 0 { ST_TIMEOUT } else { ST_RESET }, Ordering::Relaxed);
+                SLOT_DONE[slot].store(true, Ordering::Release);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Publish `sqe` on I/O queue `qi` and ring its doorbell. Caller holds
 /// [`QLOCK`]`[qi]`; `slot` is on that queue.
 fn submit(dev: &Dev, qi: usize, q: &mut Queue, slot: usize, sqe: &proto::Sqe) -> Result<(), ()> {
+    if RECOVERY.resetting() {
+        // Claimed before the reset began: the controller is being brought up
+        // again, so the command ends at once as one the reset abandoned.
+        SLOT_STATUS[slot].store(ST_RESET, Ordering::Relaxed);
+        SLOT_REPORTED[slot].store(false, Ordering::Relaxed);
+        SLOT_DONE[slot].store(true, Ordering::Relaxed);
+        SLOT_INFLIGHT[slot].store(true, Ordering::Release);
+        return Ok(());
+    }
     drain(dev, qi, q);
-    if FAILED.load(Ordering::Relaxed) || proto::sq_full(q.sq_head, q.tail, IO_DEPTH) {
+    if !RECOVERY.live() || proto::sq_full(q.sq_head, q.tail, IO_DEPTH) {
         return Err(());
     }
     SLOT_DONE[slot].store(false, Ordering::Relaxed);
     SLOT_REPORTED[slot].store(false, Ordering::Relaxed);
-    SLOT_INFLIGHT[slot].store(true, Ordering::Relaxed);
+    SLOT_INFLIGHT[slot].store(true, Ordering::Release);
     sqe_write(q.sq, q.tail, sqe);
     q.tail = proto::ring_next(q.tail, IO_DEPTH);
     io_wmb();
@@ -903,7 +1039,7 @@ fn dev() -> &'static Dev {
 
 /// `true` while the driver may submit.
 fn usable() -> bool {
-    READY.load(Ordering::Acquire) && !FAILED.load(Ordering::Acquire)
+    READY.load(Ordering::Acquire) && RECOVERY.live()
 }
 
 // ---- Public API ----
@@ -955,6 +1091,8 @@ fn hw_status(op: u8, st: u16) -> HwStatus {
     match st {
         0 => HwStatus::Ok,
         0x001 if op != OP_DATA => HwStatus::Unsupported,
+        ST_TIMEOUT => HwStatus::Timeout,
+        ST_RESET => HwStatus::Reset,
         _ => {
             azos_drv_sys::kerr!("[NVME] command failed: status type {} code {:#x}",
                 proto::status_type(st), proto::status_code(st));
@@ -979,6 +1117,9 @@ impl HwQueue for Nvme {
     }
 
     fn claim(&self) -> Claim {
+        if RECOVERY.resetting() {
+            return Claim::Busy;
+        }
         if !usable() {
             return Claim::Dead;
         }
@@ -1023,6 +1164,7 @@ impl HwQueue for Nvme {
             }
         };
         SLOT_OP[slot].store(op, Ordering::Relaxed);
+        SLOT_LBA[slot].store(cmd.lba, Ordering::Relaxed);
         // The look before the credit is read: the slot's baseline already
         // holds any stall that ended just now.
         watch();
@@ -1038,30 +1180,41 @@ impl HwQueue for Nvme {
 
     fn reap(&self, out: &mut [HwDone; HW_TAGS_MAX]) -> usize {
         let dev = dev();
-        let mut n = 0;
+        // Every queue's completions first, each under its lock.
         for qi in 0..dev.queues {
-            // One queue at a time: its completions, then the slots on it.
             let _g = QLOCK[qi].lock();
             // SAFETY: queue `qi` is under its lock.
             let q = unsafe { &mut (*(&raw mut QUEUES))[qi] };
             drain(dev, qi, q);
-            let t = watch();
+        }
+        // Out of budget next, with no lock held (a reset waits for the
+        // controller): it ends every command the controller held, and the
+        // loop below reports them.
+        let t = watch();
+        if RECOVERY.live() {
+            let late = (0..SLOTS)
+                .filter(|&s| {
+                    SLOT_INFLIGHT[s].load(Ordering::Acquire)
+                        && !SLOT_DONE[s].load(Ordering::Acquire)
+                        && STALL.expired(t, SLOT_DEADLINE[s].load(Ordering::Relaxed), SLOT_CREDIT[s].load(Ordering::Relaxed))
+                })
+                .fold(0u32, |m, s| m | 1 << s);
+            if late != 0 {
+                timed_out(dev, late, t);
+            }
+        }
+        let dead = RECOVERY.dead();
+        let mut n = 0;
+        for qi in 0..dev.queues {
+            // One queue at a time, under its lock: a slot is reported once.
+            let _g = QLOCK[qi].lock();
             for slot in (qi..SLOTS).step_by(dev.queues) {
-                if !SLOT_INFLIGHT[slot].load(Ordering::Relaxed) || SLOT_REPORTED[slot].load(Ordering::Relaxed) {
+                if !SLOT_INFLIGHT[slot].load(Ordering::Acquire) || SLOT_REPORTED[slot].load(Ordering::Relaxed) {
                     continue;
                 }
-                let done = SLOT_DONE[slot].load(Ordering::Acquire);
-                // Out of budget: this command is the one that timed out, even if
-                // another slot's expiry already latched the controller dead.
-                let late = !done && STALL.expired(t, SLOT_DEADLINE[slot].load(Ordering::Relaxed), SLOT_CREDIT[slot].load(Ordering::Relaxed));
-                if late && !FAILED.load(Ordering::Relaxed) {
-                    latch_dead(dev, "command timeout");
-                }
-                let status = if done {
+                let status = if SLOT_DONE[slot].load(Ordering::Acquire) {
                     hw_status(SLOT_OP[slot].load(Ordering::Relaxed), SLOT_STATUS[slot].load(Ordering::Relaxed))
-                } else if late {
-                    HwStatus::Timeout
-                } else if FAILED.load(Ordering::Relaxed) {
+                } else if dead {
                     // The device died with this command in it: no data to trust.
                     HwStatus::Io
                 } else {
@@ -1094,12 +1247,14 @@ impl HwQueue for Nvme {
 
     fn release(&self, tag: u8) {
         let slot = tag as usize;
-        if !usable() {
+        if RECOVERY.dead() {
             // The controller is dead: a command it could not recall may still
             // be writing to this slot's pages. The slot stays taken for good.
+            // (A reset that brought it back confirmed its stop first: the
+            // slots of the commands it ended are free again.)
             return;
         }
-        SLOT_INFLIGHT[slot].store(false, Ordering::Relaxed);
+        SLOT_INFLIGHT[slot].store(false, Ordering::Release);
         slot_give(slot);
     }
 
@@ -1118,7 +1273,7 @@ impl HwQueue for Nvme {
         WAITER.park(
             tid,
             || {
-                FAILED.load(Ordering::Acquire)
+                !RECOVERY.live()
                     || (0..queues).any(|qi| {
                         let _g = QLOCK[qi].lock();
                         // SAFETY: queue `qi` is under its lock.

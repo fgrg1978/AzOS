@@ -320,6 +320,34 @@ mod ahci;
 #[cfg(test)]
 mod ahci_tests;
 
+/// What the device timeout policy (`azos_drv_api::recovery`) reported, per
+/// test thread: one sink for every driver under test here (the hook is one
+/// per process), each test reading the records its own thread made.
+#[cfg(test)]
+mod recovery_records {
+    use azos_drv_api::recovery::{Action, Class};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static RECORDS: RefCell<Vec<(Class, &'static str, Action, u64)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn sink(class: Class, device: &'static str, action: Action, detail: u64, _waited_ms: u64) {
+        RECORDS.with(|r| r.borrow_mut().push((class, device, action, detail)));
+    }
+
+    /// Route the policy's records here, and forget this thread's earlier ones.
+    pub fn listen() {
+        azos_drv_api::recovery::set_sink(sink);
+        RECORDS.with(|r| r.borrow_mut().clear());
+    }
+
+    /// This thread's records, oldest first.
+    pub fn taken() -> Vec<(Class, &'static str, Action, u64)> {
+        RECORDS.with(|r| r.borrow().clone())
+    }
+}
+
 // `blkdev::write` reports to the block layer's write observer (wave 14), a
 // sibling module of `blkdev.rs` in its crate, so it comes along too.
 #[allow(dead_code)]

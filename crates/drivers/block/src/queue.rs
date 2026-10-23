@@ -59,15 +59,17 @@
 //! completes is the device's to declare dead (and fail), not the waiter's to
 //! abandon. The budget of a *started* command belongs to the device (the
 //! driver times each command it holds, resets the controller when one runs out
-//! and answers [`HwStatus::Timeout`] for it, [`HwStatus::Io`] for the others it
-//! held); a request's own deadline ([`BlockRequest::deadline_ns`]) is a
-//! **start-by** time and ends a request that is still queued (`Outcome::Deadline`),
+//! and answers [`HwStatus::Timeout`] for it, [`HwStatus::Reset`] for the others
+//! it held, or [`HwStatus::Io`] for them once its resets are spent and it
+//! latched dead: `azos_drv_api::recovery`); a request's own deadline
+//! ([`BlockRequest::deadline_ns`]) is a **start-by** time and ends a request that is still queued (`Outcome::Deadline`),
 //! which is this layer's whole cancel: a started request is never recalled.
 //!
 //! # A device that stops answering
 //!
-//! The layer fails the request (`Outcome::Io`, the caller sees an error and
-//! nothing hangs) and tells the kernel through the sink it registers
+//! The layer fails the request (`Outcome::Io`, or `Outcome::Reset` for one a
+//! reset abandoned; the caller sees an error and nothing hangs) and tells the
+//! kernel through the sink it registers
 //! ([`set_timeout_sink`]) when
 //!
 //! * a command is reported [`HwStatus::Timeout`]: [`TimeoutAction::Failed`],
@@ -226,8 +228,9 @@ azos_common::ro_hook! {
 
 /// What the layer did about a device that stopped answering; the values are
 /// the `action` field of the `block-timeout` decision record
-/// (`azos_decision::Rule::BlockTimeout`; 1 retried and 2 reset the device are
-/// the driver's, not this layer's).
+/// (`azos_decision::Rule::BlockTimeout`; 2 reset the device, 5 latched it
+/// dead with its resets spent and 6 the reset did not bring it back are the
+/// driver's, `azos_drv_api::recovery::Action`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TimeoutAction {
@@ -350,6 +353,10 @@ pub enum Outcome {
     Ok,
     /// The device failed the request, or died.
     Io,
+    /// The device was reset with the request in it ([`HwStatus::Reset`]):
+    /// not done, and a write may or may not have reached the medium. Not
+    /// retried here; the caller sees an error like `Io`.
+    Reset,
     /// The device does not implement it (see [`HwStatus::Unsupported`]).
     Unsupported,
     /// The request's deadline passed before it was started.
@@ -361,7 +368,7 @@ impl Outcome {
     pub const fn code(self) -> u32 {
         match self {
             Outcome::Ok => outcome::OK,
-            Outcome::Io => outcome::FAULT,
+            Outcome::Io | Outcome::Reset => outcome::FAULT,
             Outcome::Unsupported => outcome::UNSUPPORTED,
             Outcome::Deadline => outcome::BUSY,
         }
@@ -826,6 +833,7 @@ impl ReqQueue {
             HwStatus::Ok => Outcome::Ok,
             HwStatus::Unsupported => Outcome::Unsupported,
             HwStatus::Io | HwStatus::Timeout => Outcome::Io,
+            HwStatus::Reset => Outcome::Reset,
         };
         match g.kind {
             Kind::Read if status == HwStatus::Ok => {
@@ -848,7 +856,11 @@ impl ReqQueue {
                 self.preflush_busy.store(false, Ordering::SeqCst);
                 // A device that has nothing to flush (`Unsupported`) has
                 // nothing to order either.
-                self.cover(before, if matches!(status, HwStatus::Io | HwStatus::Timeout) { Outcome::Io } else { Outcome::Ok });
+                self.cover(before, match status {
+                    HwStatus::Io | HwStatus::Timeout => Outcome::Io,
+                    HwStatus::Reset => Outcome::Reset,
+                    HwStatus::Ok | HwStatus::Unsupported => Outcome::Ok,
+                });
             }
             _ => {
                 hw.release(tag);

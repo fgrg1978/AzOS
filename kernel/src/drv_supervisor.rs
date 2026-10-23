@@ -736,8 +736,9 @@ const SUCCESSOR_LOAD_FAILED: i32 = 1;
 
 // ── Block devices that stop answering ───────────────────────────────────────
 
-/// `Rule::BlockTimeout` subject when no `[device.*]` row names the block device
-/// (a board's SD card or a USB disk, whose rows are not the QEMU names).
+/// `Rule::BlockTimeout` / `Rule::NetTimeout` subject when no `[device.*]` row
+/// names the device (a board's SD card or a USB disk, whose rows are not the
+/// QEMU names).
 const BLOCK_NO_ROW: u32 = u32::MAX;
 
 /// The topology row of the boot block device: the `[device.*]` row the QEMU
@@ -752,17 +753,17 @@ fn block_device_row() -> u32 {
 /// time and a device it found dead (`azos_drv_block::queue::set_timeout_sink`,
 /// registered by [`register_block_sink`]): the `Rule::BlockTimeout` decision
 /// record (`sector`, `waited_ms`, `action` 3 failed the request / 4 took the
-/// device offline; the device driver itself reset the controller, 2) and a
-/// line on the console.
+/// device offline; the driver's own reset and latch are 2, 5 and 6,
+/// [`device_timeout_sink`]) and a line on the console.
 ///
 /// The verdict is `Deny`, the ring only: a `Refuse` is a durable receipt, and
 /// the durable sink is a block write on the device that just stopped
 /// answering, from inside the request layer's own reap. The supervisor task
 /// is not asked to act: every block device is kernel-placed today and its
-/// driver has already reset the controller and latched itself dead, and no
-/// ring-3 block driver exists whose restart this could request
-/// (`driver_request_stop` of a supervised block host would, the day one is
-/// added).
+/// driver has already reset the controller (or latched itself dead, its
+/// resets spent), and no ring-3 block driver exists whose restart this could
+/// request (`driver_request_stop` of a supervised block host would, the day
+/// one is added).
 pub(crate) fn block_timeout_sink(action: azos_drv_block::queue::TimeoutAction, sector: u64, waited_ms: u64) {
     azos_decision::record(
         azos_decision::Rule::BlockTimeout,
@@ -780,10 +781,59 @@ pub(crate) fn block_timeout_sink(action: azos_drv_block::queue::TimeoutAction, s
     }
 }
 
-/// Route the block layer's timeout reports to [`block_timeout_sink`]. Called
-/// once at boot, on every boot (the supervisor task is not).
+/// The topology row of the device a driver names (`[device.<name>]`), or
+/// [`BLOCK_NO_ROW`] when the image has none (a board whose rows are not the
+/// QEMU names).
+fn device_row(name: &str) -> u32 {
+    azos_topology::get()
+        .and_then(|t| t.devices().iter().position(|d| d.name.as_bytes() == name.as_bytes()))
+        .map_or(BLOCK_NO_ROW, |i| i as u32)
+}
+
+/// Where a kernel-placed block or network driver reports what the device
+/// timeout policy did (`azos_drv_api::recovery::set_sink`): reset the device
+/// (action 2), latched it dead with its resets spent (5), or found the reset
+/// did not bring it back (6). The `Rule::BlockTimeout` record (`sector`,
+/// `waited_ms`, `action`) or the `Rule::NetTimeout` one (`pending`,
+/// `waited_ms`, `action`), subject the device's topology row, and a console
+/// line. `Deny`, the ring only, for the reason [`block_timeout_sink`] gives:
+/// the durable sink may be the very disk that just timed out.
+pub(crate) fn device_timeout_sink(
+    class: azos_drv_api::recovery::Class,
+    device: &'static str,
+    action: azos_drv_api::recovery::Action,
+    detail: u64,
+    waited_ms: u64,
+) {
+    use azos_drv_api::recovery::{Action, Class};
+    let rule = match class {
+        Class::Block => azos_decision::Rule::BlockTimeout,
+        Class::Net => azos_decision::Rule::NetTimeout,
+    };
+    azos_decision::record(rule, azos_decision::Verdict::Deny, device_row(device), [detail, waited_ms, action as u64]);
+    let tag = match class {
+        Class::Block => "BLK",
+        Class::Net => "NET",
+    };
+    match action {
+        Action::Reset => {
+            azos_drv_sys::kerr!("[{}] {} timed out after {} ms: device reset, back in service", tag, device, waited_ms)
+        }
+        Action::Latched => {
+            azos_drv_sys::kerr!("[{}] {} timed out again after {} ms with its resets spent: latched dead until reboot", tag, device, waited_ms)
+        }
+        Action::ResetFailed => {
+            azos_drv_sys::kerr!("[{}] {}: the reset after a timeout did not bring it back: latched dead until reboot", tag, device)
+        }
+    }
+}
+
+/// Route the block layer's timeout reports to [`block_timeout_sink`], and the
+/// device timeout policy's to [`device_timeout_sink`]. Called once at boot, on
+/// every boot (the supervisor task is not).
 pub(crate) fn register_block_sink() {
     azos_drv_block::queue::set_timeout_sink(block_timeout_sink);
+    azos_drv_api::recovery::set_sink(device_timeout_sink);
 }
 
 fn record(action: u8, kind: u32, count: u8) {

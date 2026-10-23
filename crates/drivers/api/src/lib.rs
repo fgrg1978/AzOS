@@ -25,7 +25,8 @@
 //! # Class traits
 //!
 //! One module per driver class that has a trait today: [`block`],
-//! [`console`], [`net`]. The other classes (sensors, actuators,
+//! [`console`], [`net`]; [`recovery`] is what the block and network drivers
+//! do when their device stops answering. The other classes (sensors, actuators,
 //! buses, timers, interrupt controllers) have no class trait; their drivers
 //! register through [`Driver`] where they register at all.
 
@@ -35,6 +36,7 @@
 pub mod block;
 pub mod console;
 pub mod net;
+pub mod recovery;
 
 use azos_abi::cap::CapPerms;
 

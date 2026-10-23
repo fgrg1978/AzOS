@@ -71,6 +71,9 @@ struct Fake {
     stuck: Mutex<Vec<(u8, std::time::Instant)>>,
     /// The next write command fails.
     fail_write: AtomicBool,
+    /// The next command is abandoned by a reset of the device (another
+    /// command's budget ran out): `HwStatus::Reset`, the device alive.
+    abandon: AtomicBool,
     /// Flush answers.
     flush_status: Mutex<HwStatus>,
     /// Discard answers.
@@ -105,6 +108,7 @@ impl Fake {
             stall: AtomicBool::new(false),
             stuck: Mutex::new(Vec::new()),
             fail_write: AtomicBool::new(false),
+            abandon: AtomicBool::new(false),
             flush_status: Mutex::new(HwStatus::Ok),
             discard_status: Mutex::new(HwStatus::Ok),
             starts: AtomicUsize::new(0),
@@ -229,6 +233,9 @@ impl HwQueue for Fake {
                     }
                 }
             }
+        }
+        if self.abandon.swap(false, Ordering::SeqCst) {
+            status = HwStatus::Reset;
         }
         let busy = g.slots.iter().filter(|s| s.is_some()).count();
         g.in_flight_max = g.in_flight_max.max(busy);
@@ -1072,6 +1079,26 @@ fn a_command_that_times_out_fails_its_request_and_is_reported_once() {
     assert_eq!((r[0].0, r[0].1), (TimeoutAction::Failed, 400));
     assert!(r[0].2 >= STALL_BUDGET_MS, "waited {} ms: the time in the device, not zero", r[0].2);
     assert_eq!(r[1], (TimeoutAction::Offline, 440, 0));
+}
+
+/// **Discriminates.** A command the device's reset abandoned
+/// (`HwStatus::Reset`: another command timed out and the driver reset the
+/// controller with this one in it) ends its request with the typed
+/// `Outcome::Reset`, not retried and not reported as a timeout, and the
+/// device carries on. Canary: map `HwStatus::Reset` to `Outcome::Ok` in
+/// `complete` (the write "succeeds" with nothing on the medium).
+#[test]
+fn a_command_a_reset_abandoned_ends_its_request_with_a_typed_error() {
+    set_timeout_sink(capture);
+    let (q, hw) = (queue(), Fake::new(1024, 8, 2));
+    hw.abandon.store(true, Ordering::SeqCst);
+    assert_eq!(write(q, &hw, 700, 4, 0, 1), Err(Failure::Ended(Outcome::Reset)));
+    assert_eq!(hw.count(HwOp::Write), 1, "the layer retried the abandoned write");
+    hw.abandon.store(true, Ordering::SeqCst);
+    assert_eq!(read(q, &hw, 700, 4).unwrap_err(), Failure::Ended(Outcome::Reset));
+    assert_eq!(write(q, &hw, 740, 4, 0, 1), Ok(()), "the device is alive after its reset");
+    assert!(reported_for(&[700, 740]).is_empty(), "an abandoned command is not a timeout");
+    assert_eq!(Outcome::Reset.code(), azos_devif::outcome::FAULT);
 }
 
 #[test]

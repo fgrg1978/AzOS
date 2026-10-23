@@ -92,6 +92,11 @@ fn the_status_byte_of_a_command_maps_to_what_the_layer_is_told() {
     assert_eq!(status_of(true, S_UNSUPP), HwStatus::Io);
     assert_eq!(status_of(true, 1), HwStatus::Io);
     assert_eq!(status_of(false, S_PENDING), HwStatus::Io, "the sentinel is never a success");
+    // The driver's own marks after a timeout: the command whose budget ran
+    // out, and the ones its reset abandoned (typed, never a success).
+    assert_eq!(status_of(true, S_TIMEOUT), HwStatus::Timeout);
+    assert_eq!(status_of(false, S_RESET), HwStatus::Reset);
+    assert!(![S_OK, 1, S_UNSUPP, S_PENDING].contains(&S_TIMEOUT) && ![S_OK, 1, S_UNSUPP, S_PENDING, S_TIMEOUT].contains(&S_RESET));
 }
 
 #[test]

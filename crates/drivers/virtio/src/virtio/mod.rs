@@ -196,6 +196,11 @@ pub struct Virtq {
     /// `None`: every access to a ring then goes through cache maintenance
     /// (`clean` what the device reads, `flush` what it writes).
     nc: Option<&'static dyn DmaDomain>,
+    /// The bus addresses the device was given for the descriptor table, the
+    /// driver area and the device area (a legacy queue's one block: the
+    /// first, the others 0). Kept so a reset device is programmed again over
+    /// the same memory ([`virtq_reprogram`], [`virtq_reset_rings`]).
+    pub bus: [u64; 3],
 }
 
 impl Virtq {
@@ -213,6 +218,7 @@ impl Virtq {
             event_idx:     false,
             kick_idx:      0,
             nc:            None,
+            bus:           [0; 3],
         }
     }
 
@@ -511,12 +517,8 @@ pub unsafe fn virtq_init_sized(
         // Legacy mode: contiguous memory block
         // Layout: [desc_table | avail_ring | padding_to_page | used_ring]
         // For 16 entries: total ~4230 bytes = 2 pages; for 256, 3 pages.
-        let desc_size  = 16 * queue_size as usize;
-        let avail_size = 6 + 2 * queue_size as usize;
-        let page_sz    = azos_arch::PAGE_SIZE;
-        let used_offset = ((desc_size + avail_size + page_sz - 1) / page_sz) * page_sz;
-        let used_size  = 6 + 8 * queue_size as usize;
-        let total_size = used_offset + used_size;
+        let (desc_size, used_offset, total_size) = legacy_layout(queue_size);
+        let page_sz = azos_arch::PAGE_SIZE;
         let pages_needed = (total_size + page_sz - 1) / page_sz;
 
         // One physically contiguous block: the device is told only the first
@@ -536,48 +538,89 @@ pub unsafe fn virtq_init_sized(
         vq.desc  = queue_mem as *mut VirtqDesc;
         vq.avail = queue_mem.add(desc_size) as *mut VirtqAvail;
         vq.used  = queue_mem.add(used_offset) as *mut VirtqUsed;
-
-        init_free_list(vq, queue_size);
-        // A non-coherent device reads the zeroed rings from RAM: write them
-        // back, then drop the used ring's lines so the device's entries show.
-        vq.clean(queue_mem, total_size);
-        vq.refresh(vq.used, used_size);
-
-        // Tell device: queue num, alignment, PFN
-        mmio_write(dev.base, VIRTIO_MMIO_QUEUE_NUM,   queue_size as u32);
-        mmio_write(dev.base, VIRTIO_MMIO_QUEUE_ALIGN,  page_sz as u32);
-        mmio_write(dev.base, VIRTIO_MMIO_QUEUE_PFN,   (bus / page_sz as u64) as u32);
+        vq.bus   = [bus, 0, 0];
     } else {
         // Modern mode: separate pages for desc, avail, used
         let desc_page  = pmm::alloc_page().map_err(|_| ())?.0;
         let avail_page = pmm::alloc_page().map_err(|_| ())?.0;
         let used_page  = pmm::alloc_page().map_err(|_| ())?.0;
         // PAs from the allocator: the CPU needs its own view of them.
-        let desc_va  = dma_page_ptr(desc_page);
-        let avail_va = dma_page_ptr(avail_page);
-        let used_va  = dma_page_ptr(used_page);
-
-        core::ptr::write_bytes(desc_va  as *mut u8, 0, azos_arch::PAGE_SIZE);
-        core::ptr::write_bytes(avail_va as *mut u8, 0, azos_arch::PAGE_SIZE);
-        core::ptr::write_bytes(used_va  as *mut u8, 0, azos_arch::PAGE_SIZE);
-
-        vq.desc  = desc_va  as *mut VirtqDesc;
-        vq.avail = avail_va as *mut VirtqAvail;
-        vq.used  = used_va  as *mut VirtqUsed;
-
-        init_free_list(vq, queue_size);
-        vq.clean(vq.desc, azos_arch::PAGE_SIZE);
-        vq.clean(vq.avail, azos_arch::PAGE_SIZE);
-        vq.refresh(vq.used, azos_arch::PAGE_SIZE);
-
-        mmio_write(dev.base, VIRTIO_MMIO_QUEUE_NUM, queue_size as u32);
+        vq.desc  = dma_page_ptr(desc_page)  as *mut VirtqDesc;
+        vq.avail = dma_page_ptr(avail_page) as *mut VirtqAvail;
+        vq.used  = dma_page_ptr(used_page)  as *mut VirtqUsed;
 
         // The device's view: the bus address of each ring page.
         let page = azos_arch::PAGE_SIZE;
-        let desc_addr  = dma.map_phys(desc_page  as u64, page, Direction::Bidirectional)?;
-        let avail_addr = dma.map_phys(avail_page as u64, page, Direction::Bidirectional)?;
-        let used_addr  = dma.map_phys(used_page  as u64, page, Direction::Bidirectional)?;
+        vq.bus = [
+            dma.map_phys(desc_page  as u64, page, Direction::Bidirectional)?,
+            dma.map_phys(avail_page as u64, page, Direction::Bidirectional)?,
+            dma.map_phys(used_page  as u64, page, Direction::Bidirectional)?,
+        ];
+    }
+    virtq_reprogram(dev, queue_idx, vq)
+}
 
+/// `(descriptor table bytes, offset of the used ring, total bytes)` of a
+/// legacy queue of `num` entries: one block, the used ring page-aligned.
+fn legacy_layout(num: u16) -> (usize, usize, usize) {
+    let desc_size  = 16 * num as usize;
+    let avail_size = 6 + 2 * num as usize;
+    let page_sz    = azos_arch::PAGE_SIZE;
+    let used_offset = ((desc_size + avail_size + page_sz - 1) / page_sz) * page_sz;
+    let used_size  = 6 + 8 * num as usize;
+    (desc_size, used_offset, used_offset + used_size)
+}
+
+/// Make the rings of `vq` empty again over the memory they already have:
+/// zeroed, every descriptor free, the cursors at 0. After a device reset
+/// (status 0 read back: the device no longer touches them), before the queue
+/// is given to the device again.
+pub unsafe fn virtq_reset_rings(vq: &mut Virtq, legacy: bool) {
+    let page = azos_arch::PAGE_SIZE;
+    let (_, used_offset, total) = legacy_layout(vq.num);
+    if legacy {
+        core::ptr::write_bytes(vq.desc as *mut u8, 0, total);
+    } else {
+        core::ptr::write_bytes(vq.desc  as *mut u8, 0, page);
+        core::ptr::write_bytes(vq.avail as *mut u8, 0, page);
+        core::ptr::write_bytes(vq.used  as *mut u8, 0, page);
+    }
+    init_free_list(vq, vq.num);
+    // A non-coherent device reads the zeroed rings from RAM: write them
+    // back, then drop the used ring's lines so the device's entries show.
+    if legacy {
+        vq.clean(vq.desc, total);
+        vq.refresh(vq.used, total - used_offset);
+    } else {
+        vq.clean(vq.desc, page);
+        vq.clean(vq.avail, page);
+        vq.refresh(vq.used, page);
+    }
+    vq.kick_idx = 0;
+}
+
+/// Give the virtio-mmio device queue `queue_idx` over `vq`'s memory, the
+/// rings emptied first ([`virtq_reset_rings`]): bring-up ([`virtq_init_sized`])
+/// and the re-programming of a device that was reset after a timeout
+/// (`azos_drv_api::recovery`), which must not allocate or map again.
+pub unsafe fn virtq_reprogram(dev: &VirtioDev, queue_idx: u32, vq: &mut Virtq) -> Result<(), ()> {
+    if vq.desc.is_null() || vq.num == 0 {
+        return Err(());
+    }
+    mmio_write(dev.base, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
+    // A reset device that now offers a smaller queue cannot take this one.
+    if mmio_read(dev.base, VIRTIO_MMIO_QUEUE_NUM_MAX) < vq.num as u32 {
+        return Err(());
+    }
+    virtq_reset_rings(vq, dev.version == 1);
+    mmio_write(dev.base, VIRTIO_MMIO_QUEUE_NUM, vq.num as u32);
+    if dev.version == 1 {
+        // Tell device: queue num, alignment, PFN
+        let page_sz = azos_arch::PAGE_SIZE;
+        mmio_write(dev.base, VIRTIO_MMIO_QUEUE_ALIGN,  page_sz as u32);
+        mmio_write(dev.base, VIRTIO_MMIO_QUEUE_PFN,   (vq.bus[0] / page_sz as u64) as u32);
+    } else {
+        let [desc_addr, avail_addr, used_addr] = vq.bus;
         mmio_write(dev.base, VIRTIO_MMIO_QUEUE_DESC_LOW,  desc_addr  as u32);
         mmio_write(dev.base, VIRTIO_MMIO_QUEUE_DESC_HIGH, (desc_addr  >> 32) as u32);
         mmio_write(dev.base, VIRTIO_MMIO_QUEUE_AVAIL_LOW, avail_addr as u32);
@@ -587,7 +630,6 @@ pub unsafe fn virtq_init_sized(
 
         mmio_write(dev.base, VIRTIO_MMIO_QUEUE_READY, 1);
     }
-
     Ok(())
 }
 
@@ -696,8 +738,9 @@ pub unsafe fn virtq_publish(vq: &mut Virtq, desc_head: usize) -> bool {
 /// entries (`1..=VIRTQ_CAPACITY`), mapped through `dma`. Returns the rings'
 /// BUS addresses `(desc, avail, used)` — the device's view.
 ///
-/// The MMIO transport does the same inside [`virtq_init`], interleaved
-/// with its register writes; this is the allocation half alone.
+/// The MMIO transport does the same inside [`virtq_init`], then gives the
+/// rings to the device with [`virtq_reprogram`]; this is the allocation half
+/// alone. The bus addresses are kept in [`Virtq::bus`] as well.
 pub unsafe fn virtq_alloc_rings(vq: &mut Virtq, queue_size: u16, dma: &Dma) -> Result<(u64, u64, u64), ()> {
     use azos_mm::pmm;
     if queue_size == 0 || queue_size as usize > VIRTQ_CAPACITY {
@@ -722,11 +765,12 @@ pub unsafe fn virtq_alloc_rings(vq: &mut Virtq, queue_size: u16, dma: &Dma) -> R
     vq.clean(vq.desc, page);
     vq.clean(vq.avail, page);
     vq.refresh(vq.used, page);
-    Ok((
+    vq.bus = [
         dma.map_phys(desc_page as u64, page, Direction::Bidirectional)?,
         dma.map_phys(avail_page as u64, page, Direction::Bidirectional)?,
         dma.map_phys(used_page as u64, page, Direction::Bidirectional)?,
-    ))
+    ];
+    Ok((vq.bus[0], vq.bus[1], vq.bus[2]))
 }
 
 /// Re-thread the free list for a smaller size than [`virtq_alloc_rings`]

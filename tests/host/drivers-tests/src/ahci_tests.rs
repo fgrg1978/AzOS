@@ -28,6 +28,7 @@
 
 use super::ahci::*;
 use super::queue::{Claim, HwCmd, HwDone, HwOp, HwQueue, HwStatus, ReqQueue, HW_TAGS_MAX};
+use azos_drv_api::recovery::{Action, Class};
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
 
@@ -81,6 +82,7 @@ const BUDGETS: Budgets = Budgets {
     identify_us: 200_000,
     io_us: 40_000,
     flush_us: 40_000,
+    resets: 1,
 };
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1116,26 +1118,102 @@ fn a_port_error_fails_the_command_and_the_port_is_restarted() {
     expect(&m, 0);
 }
 
-/// **Discriminates.** A command that does not complete within its budget is
-/// `Timeout`, the driver resets the HBA (which stops its DMA), latches dead,
-/// refuses every later claim. Canary: drop the `expired` check in `outcome`
-/// (the command never ends: the test's own 5-second bound fires); or drop
-/// the `failed` check in `claim` (the claim then answers a tag).
+fn records() -> Vec<(Class, Action, u64)> {
+    crate::recovery_records::taken()
+        .into_iter()
+        .map(|(c, device, a, d)| {
+            assert_eq!(device, "ahci", "the record names another device");
+            (c, a, d)
+        })
+        .collect()
+}
+
+/// **Discriminates.** A command past its budget (the disk never answers it)
+/// ends `Timeout`; the driver resets the HBA (which stops its DMA), brings
+/// the port up again over the same memory, checks it is the same disk, and
+/// carries on: the next read returns the disk, and the reset is recorded
+/// (`block-timeout` action 2, the command's sector). Canary: build the
+/// driver with no reset left (`resets: 0`, Kconfig
+/// `DEVICE_TIMEOUT_RESETS=0`: the next test runs it) or drop the
+/// `reset_after_timeout` call (the claim then answers `Busy` or the read
+/// finds the engine stopped).
 #[test]
-fn a_command_past_its_budget_resets_the_hba_and_the_driver_stays_dead() {
+fn a_command_past_its_budget_resets_the_hba_once_and_the_disk_carries_on() {
+    crate::recovery_records::listen();
     let m = Mock::new(1, 0, 64);
     let hw = new_ahci(&m, false);
     m.with(|m| m.fault = Fault::Hang);
-    let (st, _) = read(&hw, 0, 1);
+    let (st, _) = read(&hw, 5, 1);
     assert_eq!(st, HwStatus::Timeout);
-    assert!(hw.is_dead());
+    assert!(!hw.is_dead(), "one timeout latched the disk dead");
+    assert_eq!(hw.resets(), 1);
     m.with(|m| {
-        assert_eq!(m.resets, 2, "bring-up reset, then the dead-device reset");
+        assert_eq!(m.resets, 2, "bring-up reset, then the timeout's reset");
+        assert!(m.ports[0].running, "the port's engine was not started again");
+    });
+    let (st, data) = read(&hw, 3, 2);
+    assert_eq!(st, HwStatus::Ok, "the disk did not carry on after the reset");
+    assert_eq!(data, m.disk(3, 2));
+    assert_eq!(records(), vec![(Class::Block, Action::Reset, 5)]);
+    expect(&m, 0);
+}
+
+/// **Discriminates.** A second timeout finds the reset spent: the driver
+/// resets the HBA and latches dead, refuses every later claim, and records
+/// the latch (`block-timeout` action 5). With no reset to give (`resets: 0`)
+/// the first timeout does the same: the policy's budget is what a board
+/// configures. Canary: make `Recovery::timed_out` reset forever (drop the
+/// `spent` test), or drop the `dead` check in `claim`.
+#[test]
+fn a_second_timeout_latches_the_driver_dead_and_says_so() {
+    crate::recovery_records::listen();
+    let m = Mock::new(1, 0, 64);
+    let hw = new_ahci(&m, false);
+    m.with(|m| m.fault = Fault::Hang);
+    assert_eq!(read(&hw, 1, 1).0, HwStatus::Timeout);
+    assert!(!hw.is_dead());
+    m.with(|m| m.fault = Fault::Hang);
+    assert_eq!(read(&hw, 7, 1).0, HwStatus::Timeout);
+    assert!(hw.is_dead(), "a second timeout was reset again");
+    m.with(|m| {
+        assert_eq!(m.resets, 3, "bring-up, the first timeout's reset, the latch's reset");
         assert!(!m.ports[0].running, "the HBA still runs its engine");
     });
     assert!(matches!(hw.claim(), Claim::Dead));
     assert!(hw.start(0, &data_cmd(HwOp::Read, 0, 1, &[])).is_err());
+    assert_eq!(records(), vec![(Class::Block, Action::Reset, 1), (Class::Block, Action::Latched, 7)]);
     expect(&m, 0);
+
+    crate::recovery_records::listen();
+    let m = Mock::new(1, 0, 64);
+    let hw = Ahci::attach(m.clone(), u64::MAX, false, Budgets { resets: 0, ..BUDGETS }).expect("attach");
+    m.with(|m| m.fault = Fault::Hang);
+    assert_eq!(read(&hw, 2, 1).0, HwStatus::Timeout);
+    assert!(hw.is_dead(), "with no reset to give, the first timeout must latch");
+    assert_eq!(hw.resets(), 0);
+    assert!(matches!(hw.claim(), Claim::Dead));
+    assert_eq!(records(), vec![(Class::Block, Action::Latched, 2)]);
+    expect(&m, 0);
+}
+
+/// **Discriminates.** A reset that finds a different disk behind the port
+/// (another size) does not bring it back: the driver latches dead and records
+/// `ResetFailed` (action 6), rather than serve a disk the layer sized for
+/// another one. Canary: drop the `id.sectors == self.sectors` check in
+/// `reset_after_timeout`.
+#[test]
+fn a_reset_that_finds_another_disk_latches_dead() {
+    crate::recovery_records::listen();
+    let m = Mock::new(1, 0, 64);
+    let hw = new_ahci(&m, false);
+    m.with(|m| {
+        m.fault = Fault::Hang;
+        m.disk.truncate(32 * SECTOR);
+    });
+    assert_eq!(read(&hw, 4, 1).0, HwStatus::Timeout);
+    assert!(hw.is_dead());
+    assert!(matches!(hw.claim(), Claim::Dead));
+    assert_eq!(records(), vec![(Class::Block, Action::ResetFailed, 4)]);
 }
 
 /// **Discriminates.** A transfer that moved fewer bytes than the PRDT named

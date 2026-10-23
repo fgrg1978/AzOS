@@ -1510,6 +1510,31 @@ config VIRTIO_BLK_QUEUES
       Cost: only for the queues the device offers: three PMM pages of rings
       and about 0.2 KiB of .bss per queue.
 
+config DEVICE_TIMEOUT_RESETS
+    int "Resets a block or network controller gets after a timeout (0-3)"
+    range 0 3
+    default 1
+    help
+      crates/drivers/api/src/recovery.rs, the one policy every kernel-placed
+      block (virtio-blk, NVMe, AHCI) and network (virtio-net, e1000e, igc)
+      driver follows when its device stops answering: a command or a
+      transmit ring past its budget makes the driver stop the device,
+      confirm the stop, fail what the device held (block: the command that
+      timed out ends Timeout, the others Reset; no request is retried; NIC:
+      the frames in its ring are dropped), program it again over the same
+      memory and carry on. This many times per boot; the next timeout
+      latches the device dead until reboot. Each reset and each latch is a
+      block-timeout / net-timeout decision record (action 2 reset, 5
+      latched with its resets spent, 6 the reset did not bring it back).
+
+      1 = the owner's policy (2026-10-23): one reset, then dead. 0 = dead
+      at the first timeout, as every driver was before it.
+
+      Cost: nothing in RAM or on the hot path; a reset blocks the task that
+      found the timeout for the stop and the re-programming (microseconds
+      on virtio, up to the controller's own ready timeout on NVMe and
+      AHCI).
+
 config NVME_INFLIGHT
     int "NVMe commands in flight at once (1-8)"
     range 1 8

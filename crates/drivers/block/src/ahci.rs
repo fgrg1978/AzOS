@@ -48,10 +48,15 @@
 //!   section 6.2.2.1: stop, clear `PxSERR` and `PxIS`, start), which abandons
 //!   the commands the HBA held; the disk stays usable. An aborted FLUSH CACHE
 //!   EXT is "this disk has no flush" ([`HwStatus::Unsupported`]), as for NVMe.
-//!   A command that misses its budget, or a port that will not restart,
-//!   resets the HBA and latches the driver dead until reboot: no disk beats
-//!   silently wrong disk. The staging pages are then never reused (a command
-//!   the HBA could not recall may still be writing to them).
+//!   A command that misses its budget resets the HBA (`GHC.HR`, which stops
+//!   its DMA on every port) and brings the port up again, once per boot
+//!   (Kconfig `DEVICE_TIMEOUT_RESETS`, `azos_drv_api::recovery`): the command
+//!   ends [`HwStatus::Timeout`] and the disk carries on, if the same disk
+//!   answers IDENTIFY again. A second timeout, a reset that does not bring it
+//!   back, or a port that will not restart latches the driver dead until
+//!   reboot: no disk beats silently wrong disk. The staging pages are then
+//!   never reused (a command the HBA could not recall may still be writing
+//!   to them).
 //! * **Budgets** are time the guest ran ([`StallClock`]): a guest the host
 //!   stopped for a second does not find its disk dead.
 //! * **No FUA, no discard.** SATA has Force Unit Access only inside NCQ, so
@@ -62,6 +67,7 @@
 
 use crate::queue::{Claim, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, HW_TAGS_MAX};
 use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US};
+use azos_drv_api::recovery::{Class, Recovery, Verdict};
 use azos_sync::kmutex::Mutex;
 use core::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
@@ -454,6 +460,9 @@ pub struct Budgets {
     pub io_us: u64,
     /// A flush writes the whole volatile cache back.
     pub flush_us: u64,
+    /// Resets after a command timeout before the driver latches dead
+    /// (Kconfig `DEVICE_TIMEOUT_RESETS`).
+    pub resets: u8,
 }
 
 impl Budgets {
@@ -467,6 +476,7 @@ impl Budgets {
         identify_us: 2_000_000,
         io_us: 5_000_000,
         flush_us: 20_000_000,
+        resets: azos_limits::DEVICE_TIMEOUT_RESETS as u8,
     };
 }
 
@@ -550,12 +560,15 @@ pub struct Ahci<R: Regs> {
     op: AtomicU8,
     /// Bytes the HBA must report moved (`PRDBC`) for the command to be whole.
     bytes: AtomicU32,
-    /// Timebase tick by which the command must have completed, and the stall
-    /// credit when it was submitted.
+    /// Timebase tick by which the command must have completed, the stall
+    /// credit when it was submitted; when it was started and its first
+    /// sector (for the record).
     deadline: AtomicU64,
     credit: AtomicU64,
-    /// Latched dead until reboot ([`Ahci::latch_dead`]).
-    failed: AtomicBool,
+    started: AtomicU64,
+    lba: AtomicU64,
+    /// Live, being reset, or latched dead until reboot (the timeout policy).
+    recovery: Recovery,
     /// `PxIS` bits read and cleared, not yet looked at by the reaper.
     events: AtomicU32,
     stall: StallClock,
@@ -649,7 +662,9 @@ impl<R: Regs> Ahci<R> {
             bytes: AtomicU32::new(0),
             deadline: AtomicU64::new(0),
             credit: AtomicU64::new(0),
-            failed: AtomicBool::new(false),
+            started: AtomicU64::new(0),
+            lba: AtomicU64::new(0),
+            recovery: Recovery::new(Class::Block, "ahci", b.resets),
             events: AtomicU32::new(0),
             stall: StallClock::new(),
             waiter: DeviceWait::new(),
@@ -657,16 +672,23 @@ impl<R: Regs> Ahci<R> {
             taken: AtomicU32::new(0),
             slept: AtomicU32::new(0),
         };
-        if let Err(e) = me.bring_up_port() {
-            me.teardown();
-            return Err(e);
+        match me.start_port() {
+            Ok(id) => {
+                me.sectors = id.sectors;
+                me.flush_ext = id.flush_ext;
+                Ok(me)
+            }
+            Err(e) => {
+                me.teardown();
+                Err(e)
+            }
         }
-        Ok(me)
     }
 
     /// Start the probed port (its command list and FIS area are in place),
-    /// identify the disk, and turn the interrupts on.
-    fn bring_up_port(&mut self) -> Result<(), AhciError> {
+    /// identify the disk, and turn the interrupts on. Bring-up, and the
+    /// reset after a timeout.
+    fn start_port(&self) -> Result<Ident, AhciError> {
         let p = self.port_regs();
         p.wr(P_SERR, 0xFFFF_FFFF);
         p.wr(P_IS, 0xFFFF_FFFF);
@@ -686,8 +708,6 @@ impl<R: Regs> Ahci<R> {
             }
         }
         let id = decode_identify(&words)?;
-        self.sectors = id.sectors;
-        self.flush_ext = id.flush_ext;
 
         let mut model = [0u8; 40];
         let n = model_string(&words, &mut model);
@@ -695,10 +715,10 @@ impl<R: Regs> Ahci<R> {
             "[AHCI] port {} {}: {} sectors mode={} xfer={} KiB flush={}",
             self.port,
             core::str::from_utf8(&model[..n]).unwrap_or("?"),
-            self.sectors,
+            id.sectors,
             if self.irq { "irq" } else { "poll" },
             XFER_SECTORS * SECTOR_SIZE / 1024,
-            if self.flush_ext { "y" } else { "n" }
+            if id.flush_ext { "y" } else { "n" }
         );
 
         // Interrupts last: nothing was left pending by the polled commands.
@@ -709,7 +729,7 @@ impl<R: Regs> Ahci<R> {
             p.wr(P_IE, IE_MASK);
             self.r.wr32(REG_GHC, GHC_AE | GHC_IE);
         }
-        Ok(())
+        Ok(id)
     }
 
     /// A failed bring-up: stop the port and the HBA's DMA, give the pages back.
@@ -847,7 +867,12 @@ impl<R: Regs> Ahci<R> {
 
     /// The driver is latched dead.
     pub fn is_dead(&self) -> bool {
-        self.failed.load(Ordering::Acquire)
+        self.recovery.dead()
+    }
+
+    /// Resets the timeout policy has done since bring-up.
+    pub fn resets(&self) -> u8 {
+        self.recovery.resets()
     }
 
     /// Tell [`StallClock`] the guest is looking at the HBA now; says so once
@@ -866,18 +891,54 @@ impl<R: Regs> Ahci<R> {
 
     // ---- Failure ----
 
-    /// Reset the HBA (which stops its DMA on every port) and latch the driver
-    /// dead. The staging pages stay owned by the driver and are never reused.
-    /// The first call does the work.
-    fn latch_dead(&self, reason: &str) {
-        if self.failed.swap(true, Ordering::SeqCst) {
-            return;
-        }
+    /// Reset the HBA: stop the port's engines and set `GHC.HR`, which stops
+    /// its DMA on every port. `true` once the HBA says the reset is over.
+    fn reset_hba(&self) -> bool {
         let p = self.port_regs();
         p.wr(P_CMD, p.rd(P_CMD) & !(CMD_ST | CMD_FRE));
         self.r.wr32(REG_GHC, GHC_AE | GHC_HR);
-        let _ = wait_for(self.b.reset_us, || self.r.rd32(REG_GHC) & GHC_HR == 0);
+        wait_for(self.b.reset_us, || self.r.rd32(REG_GHC) & GHC_HR == 0)
+    }
+
+    /// Reset the HBA and latch the driver dead. The staging pages stay owned
+    /// by the driver and are never reused. `latched`: the caller already
+    /// moved the policy to dead (a timeout with the resets spent).
+    fn latch_dead(&self, reason: &str, latched: bool) {
+        if !latched && !self.recovery.latch() {
+            return;
+        }
+        let _ = self.reset_hba();
         azos_drv_sys::kerr!("[AHCI] Error: {} - controller reset, block I/O disabled", reason);
+    }
+
+    /// The command ran out of its budget and the policy handed this caller
+    /// the reset: reset the HBA, bring the port up again over the same
+    /// memory, and check it is the same disk. The command is over (the reset
+    /// stopped the engine): the caller answers `Timeout` for it.
+    fn reset_after_timeout(&self) -> bool {
+        azos_drv_sys::kerr!("[AHCI] port {}: command timed out: resetting the HBA", self.port);
+        if !self.reset_hba() {
+            azos_drv_sys::kerr!("[AHCI] the HBA reset did not complete");
+            return false;
+        }
+        self.r.wr32(REG_GHC, GHC_AE);
+        if !probe_port(&self.port_regs(), self.cl_pa, &self.b) {
+            azos_drv_sys::kerr!("[AHCI] port {}: no disk after the reset", self.port);
+            return false;
+        }
+        match self.start_port() {
+            Ok(id) if id.sectors == self.sectors && id.flush_ext == self.flush_ext => {
+                self.events.store(0, Ordering::Release);
+                azos_drv_sys::kprintln!("[AHCI] port {}: reset done, the disk is back", self.port);
+                true
+            }
+            Ok(id) => {
+                azos_drv_sys::kerr!("[AHCI] port {}: a different disk after the reset ({} sectors, was {})",
+                    self.port, id.sectors, self.sectors);
+                false
+            }
+            Err(_) => false,
+        }
     }
 
     /// After a fatal port error (AHCI 1.3 section 6.2.2.1): stop the command
@@ -903,7 +964,7 @@ impl<R: Regs> Ahci<R> {
         }
         let ev = self.take_events();
         let t = self.watch();
-        if self.failed.load(Ordering::Acquire) {
+        if !self.recovery.live() {
             // The device died with this command in it: no data to trust.
             return Some(HwStatus::Io);
         }
@@ -917,7 +978,7 @@ impl<R: Regs> Ahci<R> {
                     self.port, ev & IS_FATAL, tfd & 0xFFFF);
             }
             if !self.restart_port() {
-                self.latch_dead("port restart failed");
+                self.latch_dead("port restart failed", false);
             }
             return Some(if aborted { HwStatus::Unsupported } else { HwStatus::Io });
         }
@@ -935,10 +996,32 @@ impl<R: Regs> Ahci<R> {
             return Some(HwStatus::Ok);
         }
         if self.stall.expired(t, self.deadline.load(Ordering::Relaxed), self.credit.load(Ordering::Relaxed)) {
-            self.latch_dead("command timeout");
             return Some(HwStatus::Timeout);
         }
         None
+    }
+
+    /// The command in slot 0 ran out of its budget (`waited`: ticks since it
+    /// was started): the timeout policy resets the HBA once, then latches it
+    /// dead. Runs with `lock` NOT held (the reset spins), after the outcome
+    /// was marked reported, so no other reaper looks at the slot meanwhile.
+    fn timed_out(&self, waited: u64) {
+        let ms = waited.saturating_mul(1000) / azos_drv_sys::timebase::TIMER_FREQ.max(1);
+        let lba = self.lba.load(Ordering::Relaxed);
+        match self.recovery.timed_out(lba, ms) {
+            Verdict::Reset => {
+                let ok = self.reset_after_timeout();
+                if !ok {
+                    // The engine is stopped or the HBA is held in reset; the
+                    // pages stay quarantined all the same.
+                    let _ = self.reset_hba();
+                    azos_drv_sys::kerr!("[AHCI] Error: reset did not bring the disk back - block I/O disabled");
+                }
+                self.recovery.reset_done(ok, lba, ms);
+            }
+            Verdict::Latch => self.latch_dead("command timeout, resets spent", true),
+            Verdict::Handled => {}
+        }
     }
 }
 
@@ -1023,8 +1106,11 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
     }
 
     fn claim(&self) -> Claim {
-        if self.failed.load(Ordering::Acquire) {
+        if self.recovery.dead() {
             return Claim::Dead;
+        }
+        if self.recovery.resetting() {
+            return Claim::Busy;
         }
         if self.busy.swap(true, Ordering::AcqRel) {
             Claim::Busy
@@ -1034,7 +1120,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
     }
 
     fn start(&self, tag: u8, cmd: &HwCmd<'_>) -> Result<(), ()> {
-        if tag != 0 || self.failed.load(Ordering::Acquire) {
+        if tag != 0 || !self.recovery.live() {
             return Err(());
         }
         let (fis, write, bytes, op, budget) = match cmd.op {
@@ -1070,8 +1156,10 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         self.watch();
         self.credit.store(self.stall.credit(), Ordering::Relaxed);
         self.deadline.store(deadline_after_us(budget), Ordering::Relaxed);
+        self.lba.store(cmd.lba, Ordering::Relaxed);
+        self.started.store(now(), Ordering::Relaxed);
         let _g = self.lock.lock();
-        if self.failed.load(Ordering::Acquire) {
+        if !self.recovery.live() {
             return Err(());
         }
         // Whatever the port said before this command is not about it.
@@ -1091,18 +1179,22 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         if !self.inflight.load(Ordering::Acquire) || self.reported.load(Ordering::Acquire) {
             return 0;
         }
-        let _g = self.lock.lock();
+        let g = self.lock.lock();
         if !self.inflight.load(Ordering::Relaxed) || self.reported.load(Ordering::Relaxed) {
             return 0;
         }
-        match self.outcome(self.op.load(Ordering::Relaxed)) {
-            Some(status) => {
-                self.reported.store(true, Ordering::Release);
-                out[0] = HwDone { tag: 0, status };
-                1
-            }
-            None => 0,
+        let Some(status) = self.outcome(self.op.load(Ordering::Relaxed)) else {
+            return 0;
+        };
+        self.reported.store(true, Ordering::Release);
+        drop(g);
+        if status == HwStatus::Timeout {
+            // Reset (or latch) before the layer hears of it: the slot it is
+            // about to release must not be claimed while the HBA is reset.
+            self.timed_out(now().saturating_sub(self.started.load(Ordering::Relaxed)));
         }
+        out[0] = HwDone { tag: 0, status };
+        1
     }
 
     fn copy_out(&self, tag: u8, mut off: usize, dst: &mut [u8]) {
@@ -1126,7 +1218,8 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
         self.inflight.store(false, Ordering::Release);
         // A dead driver answers `Dead` to every claim, so the slot is not
         // reused (a command the HBA could not recall may still be writing to
-        // the staging pages).
+        // the staging pages). After a reset that brought the disk back the
+        // HBA's engine was stopped, so it writes to none of them.
         self.busy.store(false, Ordering::Release);
     }
 
@@ -1145,7 +1238,7 @@ impl<R: Regs + Sync> HwQueue for Ahci<R> {
             tid,
             || {
                 let p = self.port_regs();
-                self.failed.load(Ordering::Acquire)
+                !self.recovery.live()
                     || self.events.load(Ordering::Acquire) != 0
                     || p.rd(P_IS) != 0
                     || (self.inflight.load(Ordering::Acquire) && p.rd(P_CI) & 1 == 0)

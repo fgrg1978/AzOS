@@ -277,6 +277,10 @@ pub enum Rule {
     /// written, but the device has no cache control, so the kernel does not
     /// claim it durable (owner decision 2026-10-23, Q2).
     Durability = 66,
+    /// A NIC's transmit ring held frames past its budget with the device
+    /// taking none, and the driver reset the device or latched it dead
+    /// (`azos_drv_api::recovery`, Kconfig `NET_TX_TIMEOUT_MS`).
+    NetTimeout = 67,
 }
 
 /// The verdict of a record.
@@ -304,7 +308,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 67] = [
+pub const RULES: [RuleInfo; 68] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, 0)
         // and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
@@ -894,8 +898,10 @@ pub const RULES: [RuleInfo; 67] = [
     },
     RuleInfo {
         // The subject is the block device (its topology row id). `sector` is the request's first sector,
-        // `waited_ms` how long it waited, `action` 1 retried, 2 reset the device, 3 failed the request, 4 took
-        // the device offline.
+        // `waited_ms` how long it waited, `action` 1 retried, 2 reset the device (back in service), 3 failed
+        // the request, 4 took the device offline, 5 latched it dead with its resets spent, 6 the reset did not
+        // bring it back. 2, 5 and 6 are the driver's (`azos_drv_api::recovery`), 3 and 4 the request
+        // layer's; a latch is then also 4 when a request finds the device dead.
         name: "block-timeout",
         subject: "device",
         fields: ["sector", "waited_ms", "action"],
@@ -949,6 +955,16 @@ pub const RULES: [RuleInfo; 67] = [
         fields: ["from", "to", "flush"],
         rejected_if_yes: "-",
         rejected_if_no: "claim the floor raised: the device cannot confirm the write survives a power cut, so an older signed file could come back unannounced",
+        // The subject is the NIC (its topology row id). `pending` is the frames the transmit ring held,
+        // `waited_ms` how long it held them with no progress, `action` 2 reset the device (back in service),
+        // 5 latched it dead with its resets spent, 6 the reset did not bring it back
+        // (`azos_drv_api::recovery::Action`). There is no request layer above a NIC: the driver's latch is the
+        // only record of it.
+        name: "net-timeout",
+        subject: "device",
+        fields: ["pending", "waited_ms", "action"],
+        rejected_if_yes: "keep the device: frames sat in its ring and it took none of them",
+        rejected_if_no: "reset again: the device wedged once more after a clean reset, and a NIC that keeps half-working is worse than one that is plainly gone",
     },
 ];
 

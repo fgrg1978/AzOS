@@ -108,14 +108,17 @@ waited for without it.
   `num-queues=N`) and Kconfig `VIRTIO_BLK_QUEUES` above one, slot `t` is on
   request queue `t mod queues` and a CPU is given the slots of its own queue
   first, each queue with its own lock and used ring; the device has one
-  interrupt line, one reaper. A command that misses its deadline latches the
-  driver failed until reboot.
+  interrupt line, one reaper. A command that misses its deadline resets the
+  device and programs it again over the same rings, once per boot; the next
+  one latches the driver failed until reboot (see "A device that stops
+  answering").
 * **AHCI** has one slot: the HBA's other 31 are never used, because NCQ is
   off and the commands used are not queued. `claim` answers `Busy` while the
   slot is held and the layer keeps the rest queued. The slot owns
   `AHCI_XFER_KB` of bounce pages named by the command table's PRDT. A fatal
   port error fails the command and restarts the port; a command past its
-  budget resets the HBA and latches the driver dead.
+  budget resets the HBA and brings the port up again (the same disk, by
+  IDENTIFY), once per boot; the next one latches the driver dead.
 * **NVMe** creates an I/O queue pair per CPU, up to `NVME_QUEUES`, the
   command slots (`NVME_INFLIGHT`), the pairs the controller grants and the
   MSI-X vectors the machine can route (one for the admin queue, one per
@@ -135,9 +138,12 @@ waited for without it.
   wakes it, then drains every queue. A queue whose CPU is not running (never
   started, or offline) raises no interrupt: its slots are taken last, and a
   command on it is noticed by the reap that ends the reaper's 1 ms slice.
-  Without a route the waiter polls the completion queues' phase tags. A command that misses its deadline, or a
-  completion naming no command in flight on its queue, resets the controller
-  (which stops the DMA of every queue) and latches the driver failed.
+  Without a route the waiter polls the completion queues' phase tags. A
+  command that misses its deadline disables the controller (which stops the
+  DMA of every queue), waits for `CSTS.RDY` to drop and brings it up again
+  over the same pages (admin queue, queue count, every I/O pair), once per
+  boot; the next one, or a completion naming no command in flight on its
+  queue, latches the driver failed.
 
 ### The request layer's scheduler (`BLK_IOSCHED`)
 
@@ -173,8 +179,22 @@ task's record still reaches the medium through the ring and the log flusher.
 
 A started command is timed by its device driver, not by the request layer: NVMe,
 AHCI and virtio-blk give each command a budget, and when one runs out the driver
-resets the controller, latches itself dead and reports that command
-`HwStatus::Timeout` (the other commands the dead device held, `Io`). The layer
+follows one policy (`azos_drv_api::recovery`, owner decision 2026-10-23): it
+stops the controller, confirms the stop (virtio status reads 0, `CSTS.RDY`
+drops, `GHC.HR` clears), programs it again over the same memory and carries on,
+`DEVICE_TIMEOUT_RESETS` times per boot (default 1); the next timeout latches the
+driver dead until reboot, as the first one did before. A stop that is not
+confirmed, or a controller that will not program again (other features, another
+size), latches at once. The command that timed out is reported
+`HwStatus::Timeout`; the others a reset abandoned `HwStatus::Reset`
+(`Outcome::Reset`: failed, a write may or may not be on the medium, not
+retried: a started request is never recalled, and merged groups make a retry
+here unsafe to reason about); the others a dead device held `Io`. While the
+controller is reset, `claim` answers `Busy`, never `Dead` (the layer takes a
+device offline for good on the first `Dead`). Each reset and each latch the
+policy decides is a `Rule::BlockTimeout` record from the driver
+(`drv_supervisor::device_timeout_sink`): `action` 2 reset and back in service,
+5 latched with its resets spent, 6 the reset did not bring it back. The layer
 fails the request (`Outcome::Io`: the caller gets an error, nothing hangs) and
 reports it through the sink the kernel registers
 (`queue::set_timeout_sink`, `drv_supervisor::block_timeout_sink`) as a
@@ -205,7 +225,10 @@ guest stopped twice during one command still lost its disk. NVMe and virtio-blk
 do it; the SD/eMMC and USB paths time their commands per call and do not latch.
 Gate rows `blk: guest stop survives` (both ISAs) pause QEMU during the boot's
 disk I/O and must finish; `blk: guest stop canary` (feature
-`blk-stall-canary`, no credit) must see the disk latched dead.
+`blk-stall-canary`, no credit) must see a command time out. On that same
+kernel the stops are the fault injection of the reset policy: `blk: timeout
+resets once` must see one reset and the disk serve the rest of the boot,
+`blk: second timeout latches` exactly one reset and then the latch.
 
 **No wait in the request layer is unbounded.** A submitter that waits for its
 request or for a free slot registers its TID on a small list and sleeps on a

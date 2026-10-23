@@ -391,7 +391,8 @@ pub(crate) fn install_sched_hooks() {
     // Kconfig BLK_IOSCHED_RT_DEADLINE: which block requests are of the
     // real-time class.
     azos_drv_block::queue::set_rt_class_source(block_request_serves_record);
-    // A command that times out, and a device found dead, are decision records.
+    // A command that times out, a device found dead, and what the device
+    // timeout policy did (reset, latched) are decision records.
     crate::drv_supervisor::register_block_sink();
     // Kconfig DECISION_REFUSALS_DURABLE: a refusal that goes through
     // `azos_decision::record` also becomes a flight-recorder record. The

@@ -119,11 +119,17 @@ pub enum HwStatus {
     /// The command failed, or the device is dead.
     Io,
     /// The command did not complete within the driver's budget for it (the
-    /// driver then reset the device and latched it dead). Only the commands
-    /// whose own budget ran out say this; the others the dead device held
-    /// are [`HwStatus::Io`]. The request layer fails the request like `Io`
-    /// and reports the timeout (`azos_drv_block::queue::set_timeout_sink`).
+    /// driver then reset the device, or latched it dead once its resets were
+    /// spent: [`crate::recovery`]). Only the commands whose own budget ran
+    /// out say this; the others a reset abandoned are [`HwStatus::Reset`],
+    /// those a dead device held [`HwStatus::Io`]. The request layer fails
+    /// the request like `Io` and reports the timeout
+    /// (`azos_drv_block::queue::set_timeout_sink`).
     Timeout,
+    /// The device was reset (another command's budget ran out) with this
+    /// command in it: not done, and whether a write reached the medium is
+    /// unknown. Not retried: the request layer fails the request like `Io`.
+    Reset,
 }
 
 /// One finished command.
@@ -139,7 +145,8 @@ pub enum Claim {
     /// A free command slot, `< HW_TAGS_MAX`; the claimer must `start` it or
     /// `release` it.
     Tag(u8),
-    /// Every slot is in use: try again after a completion.
+    /// Every slot is in use, or the device is being reset: try again after
+    /// a completion.
     Busy,
     /// The device is gone for good: nothing will ever be started.
     Dead,
@@ -175,7 +182,11 @@ pub struct HwCaps {
 /// [`HwStatus::Io`] (or [`HwStatus::Timeout`], for one whose budget ran out)
 /// from `reap` (without touching their data), answers
 /// [`Claim::Dead`], and keeps the staging memory of those commands for good:
-/// a command it could not recall may still be writing to it.
+/// a command it could not recall may still be writing to it. A device being
+/// reset ([`crate::recovery`]) answers [`Claim::Busy`], never `Dead`; once
+/// its stop is confirmed it reports the commands it held as
+/// [`HwStatus::Reset`] (the one whose budget ran out as `Timeout`), and their
+/// slots are reused: the stopped device writes to none of them.
 pub trait HwQueue: Sync {
     fn caps(&self) -> HwCaps;
     /// Which per-hart queue the calling task submits to (its CPU).
@@ -216,7 +227,7 @@ pub const STALL_GAP_US: u64 = 50_000;
 /// is wall-clock, and it exists to catch a DEAD device. A guest whose host
 /// stopped it for a second wakes up with the clock a second ahead and every
 /// command in flight out of budget, though the device never had a chance to
-/// answer: the driver then reset it and latched it dead for good.
+/// answer: the driver then reset it, or latched it dead for good.
 ///
 /// So the driver tells this clock each time it looks at the device (a submit,
 /// a reap). A gap between two looks above [`STALL_GAP_US`] is time the device

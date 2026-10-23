@@ -36,8 +36,9 @@
 //!   so and the layer refuses a request that asks. `WRITE_ZEROES` is not
 //!   negotiated: nothing in the kernel asks for it.
 //!
-//! A command that does not complete within its budget latches the driver dead
-//! (the device is reset); see [`latch_dead`].
+//! A command that does not complete within its budget resets the device and
+//! programs it again over the same rings, once per boot; the next one latches
+//! the driver dead: see [`timed_out`] and `azos_drv_api::recovery`.
 //!
 //! Observed on QEMU 11.0 (blklogwrites log of a boot): while FLUSH is NOT
 //! negotiated QEMU runs its cache writethrough and follows every write with a
@@ -58,11 +59,12 @@ use super::{
     VIRTIO_MMIO_INTERRUPT_STATUS, VIRTIO_MMIO_INTERRUPT_ACK,
     VIRTIO_QUEUE_SIZE,
 };
-use super::{mmio_read, mmio_write, probe, virtq_init,
+use super::{mmio_read, mmio_write, probe, virtq_init, virtq_reprogram,
             virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
             read_config32, read_config64};
 use azos_dma::Direction;
 use azos_drv_api::block::{Claim, DeviceWait, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, StallClock, HW_TAGS_MAX, STALL_GAP_US};
+use azos_drv_api::recovery::{Class, Recovery, Verdict};
 use azos_drv_sys::kprintln;
 use azos_sync::kmutex::Mutex;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -126,6 +128,9 @@ struct BlkDev {
     /// Request queues in use, and slots usable (`<= SLOTS`).
     queues:    usize,
     slots:     usize,
+    /// Feature word 0 the driver accepted: a reset device must accept the
+    /// same again ([`reprogram`]).
+    accepted:  u32,
 }
 
 static mut BLK_DEV: BlkDev = BlkDev {
@@ -140,12 +145,14 @@ static mut BLK_DEV: BlkDev = BlkDev {
     discard_max: 0,
     queues:     1,
     slots:      1,
+    accepted:   0,
 };
 
 /// `init_at` completed; the queues are usable.
 static READY: AtomicBool = AtomicBool::new(false);
-/// Latched dead after a timeout or a protocol violation: never cleared.
-static FAILED: AtomicBool = AtomicBool::new(false);
+/// Live, being reset after a timeout, or latched dead (resets spent, or a
+/// protocol violation): the timeout policy, Kconfig `DEVICE_TIMEOUT_RESETS`.
+static RECOVERY: Recovery = Recovery::new(Class::Block, "virtio-blk", azos_limits::DEVICE_TIMEOUT_RESETS as u8);
 
 /// Serialises bring-up and the reads of the device's identity.
 static BLK_LOCK: Mutex<()> = Mutex::new(());
@@ -212,7 +219,7 @@ static SLOT_DONE: [AtomicBool; SLOTS] = [const { AtomicBool::new(false) }; SLOTS
 static SLOT_REPORTED: [AtomicBool; SLOTS] = [const { AtomicBool::new(false) }; SLOTS];
 static SLOT_STATUS: [AtomicU8; SLOTS] = [const { AtomicU8::new(proto::S_PENDING) }; SLOTS];
 static SLOT_OP: [AtomicU8; SLOTS] = [const { AtomicU8::new(OP_DATA) }; SLOTS];
-/// Timebase tick at which a command not done latches the driver dead.
+/// Timebase tick at which a command not done is out of its budget.
 static SLOT_DEADLINE: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 /// The stall credit when each slot's command was submitted.
 static SLOT_CREDIT: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
@@ -476,11 +483,10 @@ unsafe fn negotiate(dev: &mut VirtioDev) -> Result<(u32, u32), ()> {
 pub fn init_at(base: usize) -> Result<(), ()> {
     let _guard = BLK_LOCK.lock();
 
-    // After a timeout the driver is latched dead: the device misbehaved once
-    // and its descriptors are quarantined. Re-running init would re-arm that
-    // same device (DRIVER_OK) while `FAILED` still blocks all I/O -- an
-    // inconsistent half-alive state. Refuse instead.
-    if FAILED.load(Ordering::Acquire) {
+    // A driver latched dead keeps its descriptors quarantined. Re-running
+    // init would re-arm that same device (DRIVER_OK) while the latch still
+    // blocks all I/O -- an inconsistent half-alive state. Refuse instead.
+    if RECOVERY.dead() {
         azos_drv_sys::kerr!("[VIRTIO-BLK] init refused: driver latched dead after timeout");
         return Err(());
     }
@@ -522,6 +528,7 @@ pub fn init_at(base: usize) -> Result<(), ()> {
 
         // Read capacity from device config (offset 0 = uint64 capacity in sectors)
         dev.capacity = read_config64(&dev.vdev, 0);
+        dev.accepted = accepted;
         dev.readonly = accepted & proto::F_RO != 0;
         dev.flush    = accepted & proto::F_FLUSH != 0;
         // Two distinct lines so a log tells "the device offered no flush"
@@ -601,21 +608,22 @@ pub fn init() -> Result<(), ()> {
     if READY.load(Ordering::Acquire) { Ok(()) } else { Err(()) }
 }
 
-/// True while the driver may submit commands. False before `init_at` and
-/// forever after a timeout.
+/// True while the driver may submit commands. False before `init_at`, while
+/// the device is reset, and forever once it is latched dead.
 fn usable() -> bool {
-    READY.load(Ordering::Acquire) && !FAILED.load(Ordering::Acquire)
+    READY.load(Ordering::Acquire) && RECOVERY.live()
 }
 
 // ---- The request queues ----
 
-/// Reset the device and latch the driver dead after a command failed to
-/// complete (or a completion arrived that was never submitted).
+/// Reset the device and latch the driver dead: the command timed out with
+/// the device's resets spent (`latched`: the policy already says dead), or a
+/// completion arrived that was never submitted.
 ///
-/// The command is still owned by the device. VirtIO has no cancel: the chain
-/// stays in the ring and the device may post it, and DMA into the header, the
-/// staging buffer and the status byte, at any point in the future. Three
-/// properties make that late write inert:
+/// A command may still be owned by the device. VirtIO has no cancel: the
+/// chain stays in the ring and the device may post it, and DMA into the
+/// header, the staging buffer and the status byte, at any point in the
+/// future. Three properties make that late write inert:
 ///
 /// 1. Every buffer in a chain is driver-owned `static` storage, never a
 ///    caller's memory. A late DMA cannot reach a popped stack frame.
@@ -627,14 +635,127 @@ fn usable() -> bool {
 ///    submits again.
 ///
 /// Reset first (stops the device touching guest memory per spec), then
-/// latch. The cost is that one timeout disables block I/O until reboot: on a
+/// latch. The cost is that block I/O is disabled until reboot: on a
 /// safety-critical target, no disk beats silently wrong disk.
-fn latch_dead(reason: &str) {
+fn latch_dead(reason: &str, latched: bool) {
+    if !latched && !RECOVERY.latch() {
+        return;
+    }
     // SAFETY: the transport base was set in bring-up, before `READY`.
     unsafe { mmio_write((*(&raw const BLK_DEV)).vdev.base, VIRTIO_MMIO_STATUS, 0) };
-    FAILED.store(true, Ordering::Release);
     READY.store(false, Ordering::Release);
     azos_drv_sys::kerr!("[VIRTIO-BLK] Error: {} - device reset, block I/O disabled", reason);
+}
+
+/// How long a reset device may take to read back status 0 (virtio 1.2
+/// section 2.4.1: the driver waits for it before it touches the queues).
+const RESET_WAIT_US: u64 = 100_000;
+
+/// Commands in `late` (a slot bitmap, every one in the device) ran out of
+/// their budget at tick `now`. The timeout policy decides: reset the device
+/// and program it again over the same rings, or, with the resets spent,
+/// latch it dead. The late commands end `Timeout`; a reset ends the others
+/// the device held `Reset`. Called by `reap` with no queue lock held.
+fn timed_out(late: u32, now: u64) {
+    // SAFETY: written once in bring-up.
+    let dev = unsafe { &*(&raw const BLK_DEV) };
+    let first = late.trailing_zeros() as usize;
+    // SAFETY: the slot's command is in the device; its header was written at
+    // start and is not written again until the slot is released.
+    let sector = unsafe { core::ptr::read_volatile(&raw const BLK_REQ_HDR[first].0.sector) };
+    let budget = proto::budget_us(SLOT_OP[first].load(Ordering::Relaxed));
+    let waited_ms = budget / 1000 + now.saturating_sub(SLOT_DEADLINE[first].load(Ordering::Relaxed))
+        * 1000 / azos_drv_sys::timebase::TIMER_FREQ;
+    match RECOVERY.timed_out(sector, waited_ms) {
+        Verdict::Reset => {
+            azos_drv_sys::kerr!("[VIRTIO-BLK] request timeout at sector {}: resetting the device", sector);
+            // SAFETY: the transport base was set in bring-up.
+            let base = unsafe { (*(&raw const BLK_DEV)).vdev.base };
+            // SAFETY: as above; status 0 resets the device.
+            unsafe { mmio_write(base, VIRTIO_MMIO_STATUS, 0) };
+            let stopped = wait_us(RESET_WAIT_US, || unsafe { mmio_read(base, VIRTIO_MMIO_STATUS) } == 0);
+            let ok = stopped && reprogram(dev, late);
+            if !ok {
+                // SAFETY: as above.
+                unsafe { mmio_write(base, VIRTIO_MMIO_STATUS, 0) };
+                READY.store(false, Ordering::Release);
+                azos_drv_sys::kerr!("[VIRTIO-BLK] Error: {} - block I/O disabled",
+                    if stopped { "the reset device would not program again" } else { "the device did not confirm its reset" });
+            } else {
+                azos_drv_sys::kprintln!("[VIRTIO-BLK] device reset and programmed again: block I/O resumed");
+            }
+            RECOVERY.reset_done(ok, sector, waited_ms);
+            if !ok {
+                mark_late(dev, late);
+            }
+        }
+        Verdict::Latch => {
+            latch_dead("request timeout, resets spent", true);
+            mark_late(dev, late);
+        }
+        Verdict::Handled => {}
+    }
+}
+
+/// The commands in `late` end `Timeout`: their slots stay taken while the
+/// driver is dead (`release`).
+fn mark_late(dev: &BlkDev, late: u32) {
+    for t in 0..dev.slots {
+        if late & (1 << t) != 0 {
+            SLOT_STATUS[t].store(proto::S_TIMEOUT, Ordering::Relaxed);
+            SLOT_DONE[t].store(true, Ordering::Release);
+        }
+    }
+}
+
+/// Spin until `cond` holds or `us` microseconds passed; `cond` is asked once
+/// more at the end.
+fn wait_us(us: u64, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = deadline_after_us(us);
+    while !cond() {
+        if azos_drv_sys::timebase::now() >= deadline {
+            return cond();
+        }
+        core::hint::spin_loop();
+    }
+    true
+}
+
+/// The device read back status 0 (it no longer touches the rings or the
+/// staging buffers): negotiate again, check it is the same device, give it
+/// every request queue over the memory it had, end the commands it held
+/// (`late` ones `Timeout`, the others `Reset`), and set DRIVER_OK. Each queue
+/// is emptied and its commands ended under its lock, so a `start` either
+/// submitted before (and its command is ended here) or finds the device being
+/// reset. `false`: the device is not the one that was brought up, or a queue
+/// did not program.
+fn reprogram(dev: &BlkDev, late: u32) -> bool {
+    let mut vdev = dev.vdev;
+    // SAFETY: the device is reset and nothing submits to it (the policy says
+    // it is being reset; `start` checks that under the queue lock).
+    unsafe {
+        let Ok((_, accepted)) = negotiate(&mut vdev) else { return false };
+        if accepted != dev.accepted || read_config64(&vdev, 0) != dev.capacity {
+            azos_drv_sys::kerr!("[VIRTIO-BLK] the reset device offers other features or another size");
+            return false;
+        }
+        for q in 0..dev.queues {
+            let _g = QLOCK[q].lock();
+            if virtq_reprogram(&vdev, q as u32, &mut (*(&raw mut VQS))[q]).is_err() {
+                return false;
+            }
+            for t in (0..dev.slots).filter(|&t| proto::queue_of(t, dev.queues) == q) {
+                if SLOT_INFLIGHT[t].load(Ordering::Acquire) && !SLOT_DONE[t].load(Ordering::Acquire) {
+                    let st = if late & (1 << t) != 0 { proto::S_TIMEOUT } else { proto::S_RESET };
+                    SLOT_STATUS[t].store(st, Ordering::Relaxed);
+                    SLOT_DONE[t].store(true, Ordering::Release);
+                }
+            }
+        }
+        let s = mmio_read(vdev.base, VIRTIO_MMIO_STATUS);
+        mmio_write(vdev.base, VIRTIO_MMIO_STATUS, s | VIRTIO_STATUS_DRIVER_OK);
+    }
+    true
 }
 
 /// Take every completion queue `q` has posted: free the finished chain's
@@ -653,7 +774,7 @@ unsafe fn drain(q: usize) {
                 && (*(&raw const CHAINS))[t].head == id
         });
         let Some(t) = found else {
-            latch_dead("foreign completion id");
+            latch_dead("foreign completion id", false);
             return;
         };
         let ch = (*(&raw const CHAINS))[t];
@@ -722,6 +843,9 @@ impl HwQueue for VirtioBlk {
     }
 
     fn claim(&self) -> Claim {
+        if RECOVERY.resetting() {
+            return Claim::Busy;
+        }
         if !usable() {
             return Claim::Dead;
         }
@@ -738,7 +862,7 @@ impl HwQueue for VirtioBlk {
         // SAFETY: written once in bring-up.
         let dev = unsafe { &*(&raw const BLK_DEV) };
         // No FUA on this device: the layer does not send it (`HwCaps::fua`).
-        if t >= dev.slots || !usable() || cmd.fua {
+        if t >= dev.slots || !READY.load(Ordering::Acquire) || RECOVERY.dead() || cmd.fua {
             return Err(());
         }
         // The request type, what the slot runs, the header's sector, the data
@@ -815,14 +939,25 @@ impl HwQueue for VirtioBlk {
             let vq = &mut (*(&raw mut VQS))[q];
             // A queue that was never set up would be a null deref below, and
             // `virtq_submit` divides by `vq.num`.
-            if !usable() || vq.desc.is_null() || vq.num == 0 {
+            if !READY.load(Ordering::Acquire) || RECOVERY.dead() || vq.desc.is_null() || vq.num == 0 {
                 return Err(());
+            }
+            if RECOVERY.resetting() {
+                // Claimed before the reset began: the device is being reset
+                // and programmed again, so the command ends at once as one
+                // the reset abandoned.
+                SLOT_OP[t].store(op, Ordering::Relaxed);
+                SLOT_STATUS[t].store(proto::S_RESET, Ordering::Relaxed);
+                SLOT_REPORTED[t].store(false, Ordering::Relaxed);
+                SLOT_DONE[t].store(true, Ordering::Relaxed);
+                SLOT_INFLIGHT[t].store(true, Ordering::Release);
+                return Ok(());
             }
             // Anything the device posted is taken first: a completion naming no
             // command in flight latches the driver dead here, before this one
             // could be mistaken for complete.
             drain(q);
-            if FAILED.load(Ordering::Acquire) {
+            if !RECOVERY.live() {
                 return Err(());
             }
 
@@ -913,23 +1048,29 @@ impl HwQueue for VirtioBlk {
             unsafe { drain(q) };
         }
         let now = watch();
+        // Out of budget first: a reset then ends every command the device
+        // held, and the loop below reports them.
+        if RECOVERY.live() {
+            let late = (0..dev.slots)
+                .filter(|&t| {
+                    SLOT_INFLIGHT[t].load(Ordering::Acquire)
+                        && !SLOT_DONE[t].load(Ordering::Acquire)
+                        && STALL.expired(now, SLOT_DEADLINE[t].load(Ordering::Relaxed), SLOT_CREDIT[t].load(Ordering::Relaxed))
+                })
+                .fold(0u32, |m, t| m | 1 << t);
+            if late != 0 {
+                timed_out(late, now);
+            }
+        }
+        let dead = RECOVERY.dead();
         let mut n = 0;
         for t in 0..dev.slots {
             if !SLOT_INFLIGHT[t].load(Ordering::Acquire) || SLOT_REPORTED[t].load(Ordering::Relaxed) {
                 continue;
             }
-            let done = SLOT_DONE[t].load(Ordering::Acquire);
-            // Out of budget: this command is the one that timed out, even if
-            // another slot's expiry already latched the driver dead.
-            let late = !done && STALL.expired(now, SLOT_DEADLINE[t].load(Ordering::Relaxed), SLOT_CREDIT[t].load(Ordering::Relaxed));
-            if late && !FAILED.load(Ordering::Acquire) {
-                latch_dead("request timeout");
-            }
-            let status = if done {
+            let status = if SLOT_DONE[t].load(Ordering::Acquire) {
                 hw_status(SLOT_OP[t].load(Ordering::Relaxed), SLOT_STATUS[t].load(Ordering::Relaxed))
-            } else if late {
-                HwStatus::Timeout
-            } else if FAILED.load(Ordering::Acquire) {
+            } else if dead {
                 // The device died with this command in it: no data to trust.
                 HwStatus::Io
             } else {
@@ -958,9 +1099,11 @@ impl HwQueue for VirtioBlk {
 
     fn release(&self, tag: u8) {
         let t = tag as usize;
-        if !usable() {
+        if RECOVERY.dead() {
             // The device is dead: a command it could not recall may still be
             // writing to this slot's buffers. The slot stays taken for good.
+            // (A reset that brought it back confirmed its stop first: the
+            // slots of the commands it ended are free again.)
             return;
         }
         SLOT_INFLIGHT[t].store(false, Ordering::Release);
@@ -993,7 +1136,7 @@ impl HwQueue for VirtioBlk {
         // listing raised its interrupt before anyone could be woken.
         let slept = WAITER.park(
             tid,
-            || FAILED.load(Ordering::Acquire) || completions_pending(canary.is_some()),
+            || !RECOVERY.live() || completions_pending(canary.is_some()),
             || {
                 let s = f(ns_to_ticks(until_ns));
                 if s {
