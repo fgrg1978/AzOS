@@ -10070,9 +10070,9 @@ selftests_off_check() { # selftests_off_check <boot log> <elf>; prints why, or n
 selftests_off_row() { # selftests_off_row <rv|arm>
     local isa="$1" label defc triple tdir cfg log kimg elf why i=0 pid
     if [ "$isa" = rv ]; then
-        label="boot: no self-tests by default (rv)"; defc=qemu; triple=riscv64imac-unknown-none-elf
+        label="boot: no self-tests by default (rv)"; defc="$GATE_DEFC_RV"; triple=riscv64imac-unknown-none-elf
     else
-        label="boot: no self-tests by default (arm)"; defc=qemu-aarch64; triple=aarch64-unknown-none-softfloat
+        label="boot: no self-tests by default (arm)"; defc="$GATE_DEFC_A64"; triple=aarch64-unknown-none-softfloat
     fi
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
@@ -18259,10 +18259,10 @@ PYEOF
         local isa="$1" kimg="$2" log="$3" disk="$4" append=() in="${6:-/dev/null}"
         [ -n "${5:-}" ] && append=(-append "$5")
         if [ "$isa" = riscv64 ]; then
-            "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel "$kimg" "${append[@]}" \
+            "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel "$kimg" ${append[@]+"${append[@]}"} \
                 -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv <"$in" >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 256M -nographic -kernel "$kimg" "${append[@]}" \
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 256M -nographic -kernel "$kimg" ${append[@]+"${append[@]}"} \
                 -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv <"$in" >"$log" 2>&1 &
         fi
     }
