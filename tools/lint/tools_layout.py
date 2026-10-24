@@ -11,7 +11,7 @@
   tools_layout.py --callers    print each tool and what calls it
   tools_layout.py --self-test  canaries for the rewrite rules and the checks
 
-ROLES below is the layout: every file under tools/ belongs to one entry of one
+ROLES below is the layout (INCOMING places what other branches are adding): every file under tools/ belongs to one entry of one
 role (an entry is a file, or a directory moved whole). tools/keys/ is not part
 of it: it holds the key files, outside git, at a path other checkouts and the
 owner use.
@@ -29,7 +29,10 @@ file or directory ROLES does not place. The rewrite rules:
     the new one (`$(dirname "$0")/..` becomes `$(dirname "$0")/../..`);
   * in a moved Python file, the same for
     `os.path.join(os.path.dirname(os.path.abspath(__file__)), "<path>")`
-    (the azos_tools bootstrap, tools/lib/azos_tools.py, is one);
+    (the azos_tools bootstrap, tools/lib/azos_tools.py, is one); a file
+    written before azos_tools gets its own-directory sys.path entry turned
+    into that bootstrap and its dirname(dirname(__file__)) root into that form
+    first (what other branches add keeps working once moved);
   * in a moved Rust file, `include!`/`include_str!`/`include_bytes!` and
     `#[path = ..]` literals, and `path = ".."` in a moved Cargo.toml.
 
@@ -109,6 +112,16 @@ ROLES = {
     "lib": ["azos_tools.py", "out_dir.py"],
 }
 
+# Entries in flight on other branches (2026-10-23): placed here so that --apply
+# on a tree where they have landed moves them too. An absent one is no finding.
+INCOMING = {
+    "build": ["gen_defconfigs.py", "kconfig_to_cargo.golden"],
+    "gate": ["azos_sim/", "ipv6_fw_row.sh"],
+    "lint": ["compile_time_hooks.tsv", "dead_code_lint.py", "feature_source_lint.py", "isa_neutral_names.py",
+             "task_place_lint.baseline", "task_place_lint.py"],
+    "image": ["azos_records.py", "fat_damage_image.py", "mk_ucode.py"],
+}
+
 # Entries nothing in the tree runs (only their own text, comments or docs name
 # them). Listed, not deleted: the owner decides (tools/ restructure, 2026-10-23).
 NO_CALLER = {
@@ -142,11 +155,11 @@ NO_CALLER = {
 SKIP_TEXT = ("third_party/",)
 
 
-def entries():
+def entries(incoming=True):
     """[(old, new, is_dir)] repository-relative, no trailing slash."""
     out = []
-    for role, names in ROLES.items():
-        for n in names:
+    for role in ROLES:
+        for n in ROLES[role] + (INCOMING.get(role, []) if incoming else []):
             d = n.endswith("/")
             n = n.rstrip("/")
             out.append(("tools/" + n, "tools/%s/%s" % (role, n), d))
@@ -215,9 +228,35 @@ RS_LITERAL = re.compile(r'((?:include|include_str|include_bytes)!\(\s*"|#\[path\
 TOML_PATH = re.compile(r'(\bpath\s*=\s*")(\.\.?/[^"]*)"')
 
 
+LEGACY_SYSPATH = re.compile(r"^([ \t]*)sys\.path\.insert\(0, (?:os\.path\.dirname\(os\.path\.abspath\(__file__\)\)"
+                            r"|str\(Path\(__file__\)\.parent\))\)[ \t]*$", re.M)
+LEGACY_ROOT = re.compile(r"os\.path\.dirname\(os\.path\.dirname\(os\.path\.(abs|real)path\(__file__\)\)\)")
+
+
+def legacy_py(text, od):
+    """A moved Python file written before azos_tools: its two common __file__
+    idioms, put in the forms the anchor rule respells."""
+    lib = os.path.relpath("tools/lib", od)
+
+    def boot(m):
+        out = '%ssys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "%s"))\n' % (m.group(1), lib)
+        return out + "%simport azos_tools  # noqa: E402,F401  (every tools/ module directory on sys.path)" % m.group(1)
+    text, n = LEGACY_SYSPATH.subn(boot, text)
+    if n and not re.search(r"^import os\b|^import .*\bos\b", text, re.M):
+        text = "import os  # noqa: E402 (tools_layout.py)\n" + text if not text.startswith("#!") else \
+            text.replace("\n", "\nimport os  # noqa: E402 (tools_layout.py)\n", 1)
+
+    def root(m):
+        r = 'os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))'
+        return r if m.group(1) == "abs" else "os.path.realpath(%s)" % r
+    return LEGACY_ROOT.sub(root, text)
+
+
 def rewrite_anchors(text, path, old, new, ents):
     """Rules 2-4 for one moved file: `path` its new repository path, `old` its old one."""
     od, nd = os.path.dirname(old), os.path.dirname(new)
+    if path.endswith(".py"):
+        text = legacy_py(text, od)
     if path.endswith(".sh") or text.startswith("#!/usr/bin/env bash") or text.startswith("#!/bin/sh"):
         text = SH_ANCHOR.sub(
             lambda m: '$(dirname "$0")' + ("/" + r if (r := respell(m.group(1).lstrip("/"), od, nd, ents)) else ""),
@@ -310,6 +349,10 @@ FORBIDDEN_PY = [
     (re.compile(r"sys\.path\.insert\(\d, os\.path\.dirname\(os\.path\.abspath\(__file__\)\)\)"),
      "imports a sibling by its own directory: use the azos_tools bootstrap"),
     (re.compile(r"os\.path\.join\(os\.path\.dirname\(__file__\)"), "use the canonical __file__ form"),
+    (re.compile(r'sys\.path\.insert\(\d, os\.path\.join\(\w+, "tools"\)\)'),
+     "puts tools/ itself on sys.path, where no module lives: use the azos_tools bootstrap"),
+    (re.compile(r'os\.path\.join\([^)]*"tools", "'),
+     'names a tool by path parts, which the move cannot rewrite: write "tools/<role>/<name>"'),
 ]
 
 # Where a caller can be: what make, a build script, a host test or a tool runs.
@@ -387,10 +430,11 @@ def check(root=ROOT):
     for p in tracked(root):
         parts = p.split("/")
         if len(parts) > 2 and parts[0] == "tools" and parts[1] in ROLES:
-            if not ({parts[2], parts[2] + "/"} & set(ROLES[parts[1]])):
+            if not ({parts[2], parts[2] + "/"} & set(ROLES[parts[1]] + INCOMING.get(parts[1], []))):
                 errs.append("%s: not an entry of ROLES[%r]" % (p, parts[1]))
+    optional = {"tools/%s/%s" % (r, x.rstrip("/")) for r, xs in INCOMING.items() for x in xs}
     for o, n, d in ents:
-        if not os.path.lexists(os.path.join(root, n)):
+        if not os.path.lexists(os.path.join(root, n)) and n not in optional:
             errs.append("%s: listed in ROLES, missing" % n)
         if os.path.lexists(os.path.join(root, o)):
             errs.append("%s: still at its old place (tools_layout.py --apply)" % o)
@@ -434,6 +478,8 @@ def check(root=ROOT):
     nocall = {"tools/%s/%s" % (r, n.rstrip("/")) for r, ns in ROLES.items() for n in ns if n in NO_CALLER}
     nested = {k for k in NO_CALLER if "/" in k.rstrip("/")}
     for n, who in callers(root).items():
+        if n in optional and not os.path.lexists(os.path.join(root, n)):
+            continue
         if not who and n not in nocall:
             errs.append("%s: nothing calls it (add a caller, or list it in NO_CALLER)" % n)
         if who and n in nocall:
@@ -488,6 +534,17 @@ def self_test():
        rewrite_anchors('os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../Brain")', "tools/build/a.py",
                        "tools/a.py", "tools/build/a.py", ents),
        'os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../Brain")')
+    leg = ('import os, sys\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n'
+           'ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n')
+    eq("legacy python", rewrite_anchors(leg, "tools/build/a.py", "tools/a.py", "tools/build/a.py", ents),
+       'import os, sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))\n'
+       'import azos_tools  # noqa: E402,F401  (every tools/ module directory on sys.path)\n'
+       'ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))\n')
+    eq("legacy Path import", rewrite_anchors("import sys\nsys.path.insert(0, str(Path(__file__).parent))\n",
+                                             "tools/build/a.py", "tools/a.py", "tools/build/a.py", ents),
+       'import os  # noqa: E402 (tools_layout.py)\nimport sys\n'
+       'sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))\n'
+       'import azos_tools  # noqa: E402,F401  (every tools/ module directory on sys.path)\n')
     eq("rust include", rewrite_anchors('include_str!("../../../x/y.rs") include!("src/z.rs")',
                                        "tools/dev/farm/t/src/lib.rs", "tools/farm/t/src/lib.rs",
                                        "tools/dev/farm/t/src/lib.rs", ents),
