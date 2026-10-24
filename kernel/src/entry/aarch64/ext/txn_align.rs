@@ -17,10 +17,13 @@
 
 use azos_safety_core::txn::{txn_counts, txn_inject_once};
 
-/// Thirty-two bytes, 16-aligned; the injected load reads 8 at offset 12.
-#[repr(align(16))]
-struct Aligned([u8; 32]);
-static TARGET: Aligned = Aligned([0; 32]);
+/// Thirty-two bytes, 16-aligned; the injected load reads 8 at offset 12
+/// (by address: no Rust code reads the bytes).
+#[repr(C, align(16))]
+struct Aligned {
+    _bytes: [u8; 32],
+}
+static TARGET: Aligned = Aligned { _bytes: [0; 32] };
 
 /// The control task's injected fault. Never returns when the rollback takes
 /// it: the task restarts at its entry.
