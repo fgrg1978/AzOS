@@ -75,7 +75,7 @@
 //!   remove it: the cleanest post-fix batch still had a 1.05x-1.13x median.
 //! * The crypto lane IS trustworthy at the few-percent level, because a
 //!   ~850k-cycle operation swamps both the instrument and a stray preemption.
-//! * `emitted=49` is what the gate asserts, and that is the right thing for it
+//! * `emitted=41` is what the gate asserts, and that is the right thing for it
 //!   to assert: the values are not stable enough to gate on, and the failure
 //!   that actually happens silently is a subsystem ceasing to measure at all.
 //!

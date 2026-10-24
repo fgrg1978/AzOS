@@ -19706,11 +19706,11 @@ PYEOF
         -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # ── The 49 measurements nobody was reading ─────────────────────────
+    # ── The 41 measurements nobody was reading ─────────────────────────
     #
-    # `domains/robot/bench` (1332 lines, 11 subsystems) runs on **every** boot and
-    # emits 49 `[BENCH-RES]` lines: ipc, mm, sched, net, fs, crypto, auth, cap,
-    # ota, protocol, asyncrt. The gate looked at none of them. A subsystem
+    # `domains/robot/bench` (10 subsystems) runs on **every** boot and emits 41
+    # `[BENCH-RES]` lines: ipc, mm, sched, net, fs, crypto, cap, ota, protocol,
+    # asyncrt. The gate looked at none of them. A subsystem
     # whose benchmark stopped emitting -- because it panicked, was cfg'd out,
     # or was quietly deleted -- would take its measurement with it and the gate
     # would stay green.
@@ -19724,14 +19724,19 @@ PYEOF
     #
     # 49 verified stable across five runs from different builds. If a
     # subsystem is legitimately added or removed, this number changes with it
-    # -- deliberately, so the change has to be noticed.
+    # -- deliberately, so the change has to be noticed. 49 -> 41 (2026-10-24),
+    # each with the code it measured: ipc.signal_send/_pending (ipc::signal and
+    # its retired syscalls deleted), ipc.channel_send_recv/_full_send/
+    # _create_destroy (the v1 message channel deleted), ipc.lease_active_count
+    # (the IPC lease table deleted), auth.envelope_wrap/_unwrap (the brain
+    # link's HMAC envelope deleted: Noise only).
     #
     # Not covered, and it is worth knowing why: `tools/bench_e2e.sh` (468
     # lines) drives the throughput and latency scenarios end to end, but needs
     # a live brain server on the host. That is why nobody runs it, and why it
     # is not gated here.
     fresh_disk $AZOS_OUT/build/disk-uhello.img
-    par_row qemu_run "bench: all 49 measurements" "run_all done emitted=49" 180 \
+    par_row qemu_run "bench: all 41 measurements" "run_all done emitted=41 " 180 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-uhello.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
@@ -19922,7 +19927,7 @@ PYEOF
     # Each seccomp image profile is bound to the SHA-256 of the exact ELF the
     # build ships (crates/core/sched/src/seccomp.rs, build/image_hashes.rs), never to
     # the name it is opened under (owner decision 2026-09-14). Two images from
-    # the Makefile, both after `bench: all 49 measurements` so no scenario above
+    # the Makefile, both after `bench: all 41 measurements` so no scenario above
     # inherits the cap-deny-smoke kernel the second one builds. The host half,
     # every binary renamed and replaced, is tests/host/seccomp-tests.
     #
