@@ -378,8 +378,10 @@ fn the_x86_shootdown_flushes_and_reads_its_cpu_in_one_window() {
         &["disable_all()", "percpu_id()", "do_local", "restore(", "mark_space_stale(", "remote("],
     );
     in_order(&body(&s, "pub fn shootdown_kernel("), &["disable_all()", "percpu_id()", "do_local(", "restore(", "remote("]);
-    // The ack loop serves the CPU it runs on, read per iteration under a mask.
-    in_order(&body(&s, "fn remote("), &["disable_all()", "percpu_id()", "serve(here)", "restore("]);
+    // The request lock's wait serves the CPU it runs on (`serve_waiting`, the
+    // lock waiters' hook too), read per call under a mask (`serve_here`).
+    in_order(&body(&s, "fn remote("), &["serve_waiting()", "post(", "send(mask)"]);
+    in_order(&body(&s, "fn serve_here("), &["disable_all()", "percpu_id()", "serve_with(here", "restore("]);
     let l = read("crates/core/arch-x86_64/src/lib.rs");
     in_order(&body(&l, "fn flush_tlb_all("), &["disable_all()", "flush_all()", "mark_all_stale(self.hart_id())", "restore("]);
     in_order(
