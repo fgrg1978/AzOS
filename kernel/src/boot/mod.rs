@@ -72,6 +72,9 @@ pub(crate) fn inspect_num(n: u64) -> inspect_metrics::Num {
 }
 mod sched;
 pub(crate) use sched::*;
+// kernel_main's Phase 5: the topology and what it declares, then the scheduler.
+mod sched_init;
+pub(crate) use sched_init::init_scheduler;
 // The boot launcher: the component manager and the rows that move between hosts.
 mod launch;
 pub(crate) use launch::*;
