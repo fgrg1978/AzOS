@@ -14,10 +14,10 @@
 crates/core/abi	0	0	0	0	1	0
 crates/core/actuation	0	0	0	0	1	0
 crates/core/arch	0	0	0	0	1	0
-crates/core/arch-aarch64	202	48	1	2	0	76
+crates/core/arch-aarch64	202	48	1	2	0	77
 crates/core/arch-api	27	10	0	0	0	28
-crates/core/arch-riscv64	156	42	0	3	0	91
-crates/core/arch-x86_64	155	18	4	11	0	58
+crates/core/arch-riscv64	160	42	0	3	0	91
+crates/core/arch-x86_64	157	18	4	11	0	59
 crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0
@@ -25,7 +25,7 @@ crates/core/chaos	0	0	0	0	1	0
 crates/core/common	4	0	0	0	0	40
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	16	2	1	0	0	26
-crates/core/decision	2	0	2	0	0	61
+crates/core/decision	2	0	2	0	0	60
 crates/core/devif	0	0	0	0	1	0
 crates/core/energy	0	0	0	0	1	0
 crates/core/hv	3	1	0	0	0	5
@@ -106,7 +106,7 @@ domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0
 domains/robot/telemetry	0	0	0	0	1	0
-kernel	342	14	12	52	0	63
+kernel	347	14	12	52	0	63
 lx/emul	18	12	0	6	0	-
 micro	20	4	0	0	0	68
 tools/linux_seccomp_launch	11	2	0	2	0	-
@@ -160,4 +160,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	506
