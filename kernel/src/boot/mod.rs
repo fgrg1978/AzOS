@@ -21,6 +21,9 @@ pub(crate) use early::early_main;
 // kernel_main's Phase 6: the bus, entropy, PCI, the block device and the mounts.
 mod devices;
 pub(crate) use devices::bring_up_devices;
+// kernel_main's Phase G2: CONFIG.INI, the OTA slots, the link and operator keys.
+mod persist;
+pub(crate) use persist::recover_persistent_state;
 mod entropy;
 pub(crate) use entropy::*;
 // Kconfig TPM: the TPM 2.0 as an entropy source, the boot measurements and the OTA floor.
