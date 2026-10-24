@@ -11637,8 +11637,10 @@ lx_kbuild_row() { # <label> <mode: modules|repro|canary>
             || ! grep -q ' x86_64/fs/ext4.ko$' "$dir/SHA256SUMS"; then
             bad; echo "      no filesystem set in $dir: the modules row did not run before this one"; return
         fi
+        # Nine tests name the set: the three above, lx-tpidr-insn's ring-3
+        # rewrite checks (five) and the module window's relocation (one).
         out="$( (cd "${REPO_ROOT}/tests/host/lx-loader-tests" && LX_REQUIRE_FS=1 "$CARGO" test --release fs_ 2>&1) )"
-        if echo "$out" | qgrep -q "test result: ok. 3 passed" && ! echo "$out" | qgrep -qE "SKIP|FAILED|^warning: .*generated"; then
+        if echo "$out" | qgrep -q "test result: ok. 9 passed" && ! echo "$out" | qgrep -qE "SKIP|FAILED|^warning: .*generated"; then
             ok
         else
             bad; echo "$out" | grep -m4 -E "^error|SKIP|test result|panicked at" | sed 's/^/      /'
