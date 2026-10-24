@@ -157,6 +157,10 @@ what `RuleInfo::fields` names.
 | 67 | `net-timeout` | device | pending, waited_ms, action | A NIC's transmit ring wedged and the action taken (2 device reset, 5 latched with its resets spent, 6 the reset did not bring it back) |
 | 68 | `usb-host-fault` | device | cause_trb, waited_ms, action | A USB host controller left a command unanswered or reported a host system / host controller error (`cause_trb`: cause 1 timeout, 2 HSE, 3 HCE in its second byte, the unanswered command's TRB type in its first), and the action taken (2 controller reset and its devices enumerated again, 5 latched with its resets spent, 6 the reset did not bring it back) |
 | 69 | `call-admission` | tid | deadline_ns, alt, kind<<32+server | A v2 call refused because its server's scheduling context cannot meet the remaining deadline; `alt` is the counter-offer (kind 1: a deadline in ns, 2: a budget in us) |
+| 70 | `opp-apply` | domain | choice, target, outcome | The energy governor's OPP choice stopped reaching the clock (the actuator refused it: refuse; no apply step answered it by `ENERGY_APPLY_DEADLINE_MS`: deny, `outcome` 6) or reaches it again (admit); `target` 255: no apply step answered |
+| 71 | `power-assertion` | task | reason, ttl_ms, id | A system power assertion (keep the machine out of system suspend) refused by its quota, or released by the kernel at its timeout with the holder silent; a grant is not recorded |
+| 72 | `nic-queue` | tid | ifindex, queue, why | A program refused a NIC queue that carries the node's own stack (1) or the route to its link peer, the e-stop's path (2) |
+| 73 | `clocksource` | clock | reason, drift_ppm, limit_ppm | x86_64: the TSC refused as the clock at boot (not invariant) or demoted by the watchdog (it drifted from the HPET or the PM timer) (refuse), or kept though not invariant because nothing else can be read (admit) |
 
 **Reading them.**
 

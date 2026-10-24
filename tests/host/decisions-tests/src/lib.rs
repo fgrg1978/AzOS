@@ -492,6 +492,10 @@ mod tests {
             (Rule::NetTimeout, 67, "net-timeout"),
             (Rule::UsbHostFault, 68, "usb-host-fault"),
             (Rule::CallAdmission, 69, "call-admission"),
+            (Rule::OppApply, 70, "opp-apply"),
+            (Rule::PowerAssertion, 71, "power-assertion"),
+            (Rule::NicQueue, 72, "nic-queue"),
+            (Rule::Clocksource, 73, "clocksource"),
         ];
         assert_eq!(azos_decision::RULES.len(), all.len(), "a rule without a name, or a name without a rule");
         for &(rule, num, name) in all {

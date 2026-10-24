@@ -290,6 +290,24 @@ pub enum Rule {
     /// by, its server's scheduling context; a refusal carries the nearest
     /// admissible deadline or budget (`azos_syscall::ipc_deadline::admit`).
     CallAdmission = 69,
+    /// The energy governor's choice of an OPP stopped reaching the clock (the
+    /// actuator refused it, or no apply step answered it by the deadline), or
+    /// reaches it again (`azos_sched::energy`, Kconfig `ENERGY`).
+    OppApply = 70,
+    /// A system power assertion (keep the machine out of system suspend) was
+    /// refused by its quota, or released by the kernel because its timeout
+    /// passed (`azos_energy::assertion`, Kconfig `ENERGY`).
+    PowerAssertion = 71,
+    /// A program asked to take a NIC queue from the kernel's stack and run it
+    /// from ring 3 (`QUEUE_NICQ_ATTACH`), and was refused: the queue carries
+    /// the node's own stack, or the path its e-stop and its link arrive by
+    /// (`azos_net::nic_queue`, Kconfig `NET_NIC_QUEUES`).
+    NicQueue = 72,
+    /// x86_64: the TSC was refused as the clock, at boot (not invariant) or
+    /// by the watchdog (it drifted from the HPET or the PM timer), or kept
+    /// although not invariant because nothing else can be read
+    /// (`azos_arch::timer`, Kconfig `X86_TSC_CLOCK`, `X86_TSC_WATCHDOG`).
+    Clocksource = 73,
 }
 
 /// The verdict of a record.
@@ -317,7 +335,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 70] = [
+pub const RULES: [RuleInfo; 74] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, 0)
         // and the run-time `rt::reserve` refusal (subject = tid; runtime_us,
@@ -1001,6 +1019,54 @@ pub const RULES: [RuleInfo; 70] = [
         fields: ["deadline_ns", "alt", "kind<<32+server"],
         rejected_if_yes: "refuse the call: the server's reservation or the budget the caller lends finishes it by its deadline",
         rejected_if_no: "queue the call and let the server miss the deadline: its scheduling context cannot finish it in the time left",
+    },
+    RuleInfo {
+        // Subject: the performance domain. `choice` is the governor's OPP,
+        // `target` the one the apply step asked of the actuator (255: no
+        // apply step answered), `outcome` `azos_energy::opp::GovApply::code`
+        // (6: overdue). Refuse: the actuator refused; Deny: overdue (written
+        // from the tick, so it stays in the ring); Admit: reached again.
+        name: "opp-apply",
+        subject: "domain",
+        fields: ["choice", "target", "outcome"],
+        rejected_if_yes: "keep counting the choice as lost: the clock is at it again",
+        rejected_if_no: "count the choice as applied: the clock did not move, so the governor's decision would be a number nobody acted on",
+    },
+    RuleInfo {
+        // Subject: the task that holds or asked for the assertion. `reason`
+        // is its reason code (`azos_devif::power_assert::REASON_*`), `ttl_ms`
+        // the timeout it asked for, `id` the assertion (0 for a refusal).
+        // Refuse: refused (reason, timeout, quota, full); Deny: released by
+        // the kernel at its timeout, the holder silent. A grant is not
+        // recorded (the counters of `PowerAssert::stats` keep it).
+        name: "power-assertion",
+        subject: "task",
+        fields: ["reason", "ttl_ms", "id"],
+        rejected_if_yes: "refuse the assertion: the machine could suspend in the middle of the holder's work",
+        rejected_if_no: "grant it, or keep it past its timeout: one task could keep the machine awake for ever",
+    },
+    RuleInfo {
+        // The subject is the task that asked. `ifindex` is the interface (`eth0` is 1), `queue` its queue,
+        // `why` the refusal (`azos_net::nic_queue::Refusal::code`: 1 the primary interface, 2 the route to the
+        // link peer leaves by it).
+        name: "nic-queue",
+        subject: "tid",
+        fields: ["ifindex", "queue", "why"],
+        rejected_if_yes: "-",
+        rejected_if_no: "hand the queue over: the stack, or the e-stop and the link with it, would go deaf on that interface while the program holds it",
+    },
+    RuleInfo {
+        // The subject is the clock in force after the decision (0 TSC, 1 HPET,
+        // 2 ACPI PM timer: `azos_arch::timer::Clocksource`). `reason` 1 the
+        // TSC is not invariant (boot), 2 it ran fast, 3 it ran slow (the
+        // watchdog), 4 it is not invariant and stays, nothing else to read;
+        // `drift_ppm` the drift the watchdog measured (0 at boot), `limit_ppm`
+        // its bound. `refuse` for 1-3, `admit` for 4.
+        name: "clocksource",
+        subject: "clock",
+        fields: ["reason", "drift_ppm", "limit_ppm"],
+        rejected_if_yes: "refuse the TSC: it is the only counter the board has, so the clock keeps it and says it is not invariant",
+        rejected_if_no: "keep the TSC as the clock: its rate is not constant (not invariant) or it left the reference by more than the bound, so every timeout would drift with it",
     },
 ];
 
