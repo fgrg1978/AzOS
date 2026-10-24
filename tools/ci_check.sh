@@ -21482,26 +21482,29 @@ PYEOF
 
     # ── Multi-source port wait (wave 11, PORTWAIT) ────────────────────────
     #
-    # ipctest's phase P on both ISAs: a waiter binds a channel and a timer to
-    # one port, moves the `Cap<Channel>` to its server and sleeps in
-    # `SYS_PORT_WAIT`; the server's send 30 ms later must
-    # wake it with the channel's key; the timer, re-armed 100 ms ahead, must
-    # be the next event and not before its deadline; a wait with nothing
-    # armed must answer 0 at its deadline; an io_ring completion must be an
-    # event; a remove by key must find the channel. The row requires the nine
-    # `ok   P/` verdicts and no `FAIL  P/` line; the rest of ipctest is
-    # judged by the ipctest rows above.
+    # ipctest's phase P on both ISAs: a waiter binds a far timer to a port;
+    # the timer, re-armed 100 ms ahead, must be the next event of
+    # `SYS_PORT_WAIT` and not before its deadline; a wait with nothing armed
+    # must answer 0 at its deadline; an io_ring completion must be an event;
+    # a remove by key must find the ring and a second one nothing. The row
+    # requires the five `ok   P/` verdicts (`P_VERDICTS`) and no `FAIL  P/`
+    # line; the rest of ipctest is judged by the ipctest rows above. The
+    # phase had nine verdicts while it also bound a `Cap<Channel>` (three of
+    # them the relay's); the v1 channel and its port source are gone
+    # (2026-10-13), and so are those four.
     #
     # Canary (`portwait-timer-canary`): a timer bind answers 0 and arms
     # nothing. The row must then read `FAIL  P/the timer source fired`
     # (printed only by the failure path), after the 5 s outer deadline of the
-    # timer wait, while the channel verdict stays `ok` (the phase ran).
-    # Measured when this landed (wave 11): riscv64 waited_us=30441 for the
-    # channel, the timer 1.0 ms late, the timeout 0.9 ms late; aarch64
-    # 31476 / 1.1 ms / 1.9 ms; the canary's timer wait answered 0 after
-    # 5.00 s on both. Compile-error bucket: a build failure is its own FAIL.
+    # timer wait, while the io_ring verdict, which follows that wait, stays
+    # `ok` (the phase ran past it). Measured when this landed (wave 11): the
+    # timer 1.0 ms late, the timeout 0.9 ms late on riscv64, 1.1 / 1.9 ms on
+    # aarch64; the canary's timer wait answered 0 after 5.00 s on both
+    # (2026-10-24, main ac10a4be: 1.95 / 1.29 ms and 1.29 / 1.10 ms, the
+    # canary 5.002 s and 5.003 s). Compile-error bucket: a build failure is
+    # its own FAIL.
     portwait_row() { # portwait_row <label> <isa: rv|arm> <features> <expect: PASS|CANARY>
-        local label="$1" isa="$2" feats="$3" expect="$4"
+        local label="$1" isa="$2" feats="$3" expect="$4" P_VERDICTS=5
         if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -21554,20 +21557,21 @@ PYEOF
         oks="$(grep -ac '^\[IPCTEST\]   ok   P/' "$clean")"
         fails="$(grep -a '^\[IPCTEST\]  FAIL  P/' "$clean")"
         if [ "$expect" = PASS ]; then
-            if [ "$oks" = 9 ] && [ -z "$fails" ]; then
-                ok; grep -a '^\[IPCTEST\] P: \(channel\|timer\|timeout\) wait' "$clean" | sed 's/^\[IPCTEST\] /      /'
+            if [ "$oks" = "$P_VERDICTS" ] && [ -z "$fails" ]; then
+                ok; grep -a '^\[IPCTEST\] P: \(timer\|timeout\) wait' "$clean" | sed 's/^\[IPCTEST\] /      /'
                 rm -f "$log" "$clean"
             else
-                bad; echo "      phase P: ${oks} of 9 verdicts ok"
+                bad; echo "      phase P: ${oks} of ${P_VERDICTS} verdicts ok"
                 printf '%s\n' "$fails" | sed '/^$/d; s/^/      /'
                 grep -a '^\[IPCTEST\] P: ' "$clean" | sed 's/^/      /'
                 echo "      log kept: $log"
             fi
             return
         fi
-        # CANARY: the timer verdict fails, and the phase ran (the channel's is ok).
-        if ! grep -aq '^\[IPCTEST\]   ok   P/the channel source woke the waiter' "$clean"; then
-            bad; echo "      the canary run did not reach phase P's channel wait — log kept: $log"; return
+        # CANARY: the timer verdict fails, and the phase ran past the timer
+        # wait (the io_ring verdict, judged after it, is ok).
+        if ! grep -aq '^\[IPCTEST\]   ok   P/an io_ring completion is an event' "$clean"; then
+            bad; echo "      the canary run did not reach phase P's io_ring wait — log kept: $log"; return
         fi
         if grep -aq '^\[IPCTEST\]  FAIL  P/the timer source fired' "$clean"; then
             ok; grep -a '^\[IPCTEST\] P: timer wait' "$clean" | sed 's/^\[IPCTEST\] /      /'
