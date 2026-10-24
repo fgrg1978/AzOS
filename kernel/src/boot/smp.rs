@@ -10,8 +10,12 @@
 //! * the "not a possible CPU" park ran on riscv64 only; it now runs on both
 //!   (aarch64's boot.S parks a PE with no stack, but a PE inside the stack
 //!   table and outside the possible mask reached the scheduler);
-//! * riscv64 notes the hart in the TLB shootdown's scan set, aarch64 does
-//!   not (broadcast `TLBI ...IS`): [`ArchEntry::secondary_tlb_online`];
+//! * riscv64 notes the hart in the TLB shootdown's scan set, x86_64 also
+//!   publishes the CR3 it runs on (a CPU that only runs kernel tasks never
+//!   writes CR3, and a kernel-wide shootdown must still name it), aarch64
+//!   does nothing (broadcast `TLBI ...IS`): [`ArchEntry::secondary_tlb_online`],
+//!   after the interrupt controller's step, so a shootdown that names the CPU
+//!   from then on is taken when it unmasks;
 //! * riscv64 rewrites `tp` on every idle iteration, aarch64 did not: both do
 //!   now (`set_percpu_base`, one register write per wake of a loop that only
 //!   runs until the first dispatch);
@@ -73,16 +77,16 @@ pub extern "C" fn secondary_main(hart_id: usize) -> ! {
     }
 }
 
-/// The per-CPU hardware steps of a CPU that comes up: the TLB shootdown scan,
-/// the interrupt controller's per-CPU state, the first tick, and the online
-/// publication. The cold start (`secondary_main`) and a CPU that comes back
+/// The per-CPU hardware steps of a CPU that comes up: the interrupt
+/// controller's per-CPU state, the TLB shootdown scan, the first tick, and the
+/// online publication. The cold start (`secondary_main`) and a CPU that comes back
 /// through the saved-context path (`entry/<isa>/resume.rs`: a hotplug stop, a
 /// power-down idle state) both run them: that path keeps the registers and
 /// the stack, not what the controller and the timer held.
 pub(crate) fn secondary_hw_init(hart_id: usize) {
     ARCH.set_percpu_base(hart_id);
-    ARCH_ENTRY.secondary_tlb_online(hart_id);
     ARCH_ENTRY.secondary_irq_init(hart_id);
+    ARCH_ENTRY.secondary_tlb_online(hart_id);
     ARCH_ENTRY.secondary_timer_init(hart_id);
     ARCH_ENTRY.secondary_publish_online(hart_id);
 }

@@ -82,9 +82,14 @@ impl ArchEntry for Entry {
         crate::boot_hooks::arch_enter_scheduler(hart_id)
     }
 
-    /// Join the shootdown IPI set (x86 has no broadcast TLB invalidate).
+    /// Join the shootdown IPI set (x86 has no broadcast TLB invalidate):
+    /// the scan bound and this CPU's live CR3 (`tlb::join`), so a CPU that
+    /// only ever runs kernel tasks, whose CR3 the context switch never
+    /// writes, is a target of every kernel-wide shootdown and of
+    /// `icache_sync_all`. After `secondary_irq_init` (the LAPIC takes the
+    /// vector), before interrupts are unmasked.
     fn secondary_tlb_online(&self, cpu: usize) {
-        azos_arch::tlb::note_hart_online(cpu);
+        azos_arch::tlb::join(cpu);
     }
 
     /// This CPU's LAPIC in the boot CPU's mode (x2APIC or xAPIC): spurious

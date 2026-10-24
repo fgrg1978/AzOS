@@ -382,8 +382,9 @@ impl ArchPlatform for X86_64 {
     fn icache_needs_dcache_clean(&self) -> bool { false }
     unsafe fn dcache_clean(&self, _va: usize, _len: usize) {}
     /// A serializing instruction on every CPU: `cpuid` here, and on every
-    /// other CPU that has published a root the shootdown IPI with an empty
-    /// range (its `iretq` serializes), waited for as a shootdown is.
+    /// other online CPU (each publishes its root when it joins, `tlb::join`)
+    /// the shootdown IPI with an empty range (its `iretq` serializes),
+    /// waited for as a shootdown is.
     fn icache_sync_all(&self) {
         on_x86!({
             let _ = platform_impl::cpuid(0, 0);

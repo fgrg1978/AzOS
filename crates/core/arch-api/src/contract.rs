@@ -349,7 +349,10 @@ pub trait ArchEntry {
     // up the tracer; before it unmasks interrupts.
 
     /// Join whatever set a TLB shootdown scans (riscv64: the SBI remote-fence
-    /// hart set; nothing where invalidation is a hardware broadcast).
+    /// hart set; x86_64: the IPI targets, this CPU's live root published;
+    /// nothing where invalidation is a hardware broadcast). Called after
+    /// [`Self::secondary_irq_init`]: from here a shootdown may wait for this
+    /// CPU's acknowledgement, which needs the controller to accept the IPI.
     fn secondary_tlb_online(&self, cpu: usize);
 
     /// This CPU's interrupt controller state and the sources it takes: the

@@ -12,6 +12,10 @@
 //! **Which CPUs can hold one.** The CPUs whose CR3 names the root now: each
 //! CPU publishes that word in [`AZOS_HART_CR3`] before it writes CR3
 //! ([`switch_root`], `context_switch.S`), and those are the CPUs signalled.
+//! A CPU also publishes the CR3 it runs on when it comes online ([`join`]):
+//! one that only ever runs kernel tasks never writes CR3 (the trampoline
+//! loaded the kernel root, every kernel task's word), and a kernel-wide
+//! request ([`shootdown_kernel`]) must still reach it.
 //! With Kconfig `TLB_RETAIN` the context switch sets the CR3 no-flush bit,
 //! so a CPU that ran the space earlier keeps its entries under that PCID:
 //! [`shootdown`] marks every CPU stale (`azos_arch_api::tlb_gen`), and each
@@ -100,8 +104,10 @@ pub const FLUSH_CEILING_PAGES: usize = azos_limits::TLB_FLUSH_CEILING_PAGES as u
 const ANY_ROOT: usize = usize::MAX;
 
 /// The CR3 word each CPU has installed, or is about to install. Written by
-/// the owning CPU only ([`publish`]); read by any CPU. Zero means "never
-/// published" and matches no user root.
+/// the owning CPU only ([`publish`]); read by any CPU. Zero means "not
+/// online" (never started, or stopped: `azos_sched::smp`'s `tlb_leave`) and
+/// matches no root, the kernel's included: every online CPU has published
+/// since it joined ([`join`]).
 #[no_mangle]
 pub static AZOS_HART_CR3: [AtomicUsize; TLB_MAX_HARTS] =
     [const { AtomicUsize::new(0) }; TLB_MAX_HARTS];
@@ -129,8 +135,11 @@ pub fn hart_bound() -> usize {
 /// `root_phys`, as a bit mask. Pure: `published(c)` is CPU `c`'s word. The
 /// PCID bits are ignored: only the root identifies an address space.
 /// `root_phys == ANY_ROOT` selects every other CPU that has published a
-/// root (one that has not cannot hold a translation yet, and may not be
-/// taking interrupts to acknowledge one).
+/// root, which is every other online CPU: each publishes the CR3 it runs on
+/// when it joins ([`join`]), a CPU that has only run kernel tasks included,
+/// and it may hold global kernel entries from its first walk on. A zero word
+/// is a CPU that is not online (not started yet, or stopped), which takes no
+/// interrupt to acknowledge a request and drops what it cached when it joins.
 pub fn remote_mask(
     published: impl Fn(usize) -> usize,
     cpus: usize,
@@ -163,6 +172,25 @@ pub fn holders(root_phys: usize) -> usize {
     // loads of the published roots.
     fence(Ordering::SeqCst);
     remote_mask(|c| AZOS_HART_CR3[c].load(Ordering::Relaxed), hart_bound(), usize::MAX, root_phys)
+}
+
+/// Join the shootdown's targets as `cpu` comes online (`ArchEntry::
+/// secondary_tlb_online`: an AP's first start, a CPU back from a hotplug
+/// stop): raise the scan bound, publish the live CR3, then drop everything
+/// this CPU cached before, global entries included. The caller runs it with
+/// interrupts masked, once the LAPIC accepts the shootdown vector and before
+/// it unmasks: a request posted from here on latches in the IRR and is taken
+/// at the unmask (or served by a lock wait), so a shooter waits a bounded
+/// time; one posted before could be refused by a software-disabled LAPIC and
+/// waited for forever. The CPU has cached kernel translations since the
+/// trampoline turned paging on; the flush after the publication closes that
+/// window as the switch path's fence pair does: either a shooter loads the
+/// publication, or its PTE store is visible to this CPU's walks after the flush.
+#[cfg(target_arch = "x86_64")]
+pub fn join(cpu: usize) {
+    note_hart_online(cpu);
+    publish(cpu, mmu::cpu::read_cr3() as usize);
+    mmu::cpu::flush_all();
 }
 
 /// Publish `cr3` as `cpu`'s translation root. Called before the CR3 write.

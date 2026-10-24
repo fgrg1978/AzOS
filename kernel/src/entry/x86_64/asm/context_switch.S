@@ -24,7 +24,10 @@
 //      live CR3 (bit 63 ignored: a read never returns it); task_satp 0 keeps
 //      the live root (no kernel root is published yet). Published in
 //      AZOS_HART_CR3[cpu] for the TLB shootdown scan, before the write. The kernel half is in every
-//      PML4, so this code keeps running across the write.
+//      PML4, so this code keeps running across the write. A skip leaves
+//      the published word as it is, which already names the live CR3: the
+//      CPU published it when it came online (`tlb::join`), so one that only
+//      runs kernel tasks (the kernel root since the trampoline) is named too.
 //   5. Resume at the incoming PC: a jump, or a `ret` onto it when the kernel
 //      has ENDBR64 pads (Kconfig X86_CET_IBT; the reasoning is at the end).
 //
