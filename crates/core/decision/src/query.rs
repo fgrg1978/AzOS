@@ -217,7 +217,7 @@ mod tests {
     /// The journal keeps the last `JOURNAL_ENTRIES`: the oldest is gone, the
     /// newest is not. Not a canary for the slot policy: every id is durable
     /// here, so keyed by id or by place the slots are the same (decisions-tests
-    /// `a_durable_record_outlives_the_ids_the_ring_claims`, with the ring).
+    /// `journal_a_durable_record_outlives_the_ids_the_ring_claims`, with the ring).
     #[test]
     fn the_journal_forgets_the_oldest() {
         let _g = GUARD.lock().unwrap();
