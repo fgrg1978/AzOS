@@ -56,6 +56,7 @@ body, so it is never also valid as a kernel signature or a package signature.
 
 import argparse
 import hashlib
+import os
 import re
 import struct
 import sys

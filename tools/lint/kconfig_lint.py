@@ -314,7 +314,7 @@ def self_test():
         ct = os.path.join(d, "Cargo.toml")
         open(ct, "w").write('[features]\ndefault = ["fa"]\nfa = []\npolicy-x = []\nx-canary = []\n'
                             'y-smoke = []\n[dependencies]\n')
-        os.makedirs(os.path.join(d, "tools"))
+        os.makedirs(os.path.dirname(os.path.join(d, HOOKS_FILE)))
         open(os.path.join(d, HOOKS_FILE), "w").write("x-canary\tpending\t\ngone-canary\thot\tx\n")
         errors, _ = lint(d, ct, generate=False, kconfig=False)
         want = ["owned by 2 symbols", "not a feature", "outside a config block",

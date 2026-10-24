@@ -35,7 +35,7 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+ROOT = os.path.normpath(os.path.join(HERE, "../.."))
 
 # The files the rule covers, relative to the root: the Makefile, mk/*.mk, and
 # every shell and Python script under tools/ and tests/.
