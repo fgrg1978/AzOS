@@ -6,6 +6,11 @@
 //! compiled as an empty file with an unused import), and a new item behind a
 //! new feature must add that feature here or its call site fails to resolve. Everything is re-exported
 //! so `kernel_main` and the trap handlers name each entry point directly.
+//! The spawn sequences at the end are stretches of `kernel_main`, in its order.
+
+// Read by the feature-gated spawns below only: unused in a default image.
+#[allow(unused_imports)]
+use crate::*;
 
 #[cfg(any(feature = "boot-selftests", all(feature = "rvv", feature = "rvv-isolation-probe")))]
 mod selftest;
@@ -175,3 +180,68 @@ pub(crate) mod console_wait;
 // K1: an io_ring fsync completes after the flush, posted by the flush path.
 #[cfg(feature = "ktest")]
 pub(crate) mod ioring_k1;
+
+/// `kernel_main`'s scheduler and real-time smokes, in its order: TLB
+/// shootdown, wake-up latency, fast-IPC priority inversion, the RT band and
+/// admission, the panic policy and splice, driver containment, the timer
+/// heap, preemption accounting, tail latency, energy and thermal. Each is
+/// feature-gated; a default image spawns none. Inlined, as every boot phase
+/// (see `boot`'s module doc).
+#[inline(always)]
+#[cfg_attr(not(any(all(feature = "tlb-smoke", not(feature = "ktest")), feature = "lat-smoke")),
+           allow(unused_variables))]
+pub(crate) fn spawn_sched_smokes(num_cpus: usize) {
+    // Wave 8: cross-hart TLB shootdown, observed (see `tlb_probe`). Runner on
+    // hart 1, toucher on hart 2 (hart 3 is net-poll's); needs >= 3 harts.
+    #[cfg(all(feature = "tlb-smoke", not(feature = "ktest")))]
+    {
+        if num_cpus >= 3 {
+            azos_sched::task_create_affinity("tlb-probe", tlb_probe::runner, 2,
+                                                 tlb_probe::PROBE_PRIO, 1);
+            kprintln!("[SCHED] Created tlb-probe task (wave 8 shootdown) [harts 1,2]");
+        } else {
+            kprintln!("[TLB-SMOKE] SKIP: needs -smp >= 3, have {}", num_cpus);
+        }
+    }
+
+    // Wave 11 (LAT): worst-case wake-up latency under load, see `lat_smoke`.
+    #[cfg(feature = "lat-smoke")]
+    lat_smoke::spawn(num_cpus);
+
+    // Wave 11 (PIFAST): priority inversion through fast IPC, see the module.
+    #[cfg(feature = "pifast-smoke")]
+    smokes::pifast_smoke::spawn();
+    // Wave 11 (SCHED-RT): band budget, EDF + CBS, admission, see `rt_smoke`.
+    #[cfg(feature = "sched-rt-smoke")]
+    rt_smoke::spawn();
+    // Wave 15: admitted deadlines near the admission bound, see `rt_util_smoke`.
+    #[cfg(feature = "sched-rt-util")]
+    rt_util_smoke::spawn();
+    // RT7: panic policy by profile, see `smokes::rt_panic_smoke`.
+    #[cfg(feature = "rt-panic-canary")]
+    smokes::rt_panic_smoke::spawn();
+    // Wave 15 GR5: a panic while another CPU floods the console, see
+    // `smokes::panic_splice_smoke`.
+    #[cfg(feature = "panic-splice-smoke")]
+    smokes::panic_splice_smoke::spawn();
+    // RT7 (wave 13): a contained panic in a kernel-placed driver's host, and
+    // its restart, see `smokes::drv_contain_smoke`.
+    #[cfg(feature = "drv-contain-smoke")]
+    smokes::drv_contain_smoke::spawn();
+    // RT7 P2 (wave 13): timer sleepers racing early wakes on every hart, see
+    // `smokes::timer_heap_smoke`.
+    #[cfg(feature = "timer-heap-smoke")]
+    smokes::timer_heap_smoke::spawn();
+    // RT7 (wave 13): a tick deferred by a SpinLock counts as a preemption.
+    #[cfg(all(feature = "preempt-account-smoke", not(feature = "ktest")))]
+    smokes::preempt_account_smoke::spawn();
+    // RT7 (wave 13): periodic-wake tail latency under ping-pong contention.
+    #[cfg(feature = "tail-smoke")]
+    smokes::tail_smoke::spawn();
+    // The energy model and the utilisation signals.
+    #[cfg(feature = "energy-smoke")]
+    smokes::energy_smoke::spawn();
+    // The thermal row: a scripted temperature through the real runtime.
+    #[cfg(feature = "thermal-smoke")]
+    smokes::thermal_smoke::spawn();
+}

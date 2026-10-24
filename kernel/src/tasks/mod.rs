@@ -5,6 +5,9 @@
 
 // The placement class of each kernel task (Kconfig `TASK_*_PLACE`).
 pub(crate) mod place;
+// The tasks kernel_main creates before the secondaries run, in its order.
+mod create;
+pub(crate) use create::*;
 mod system;
 pub(crate) use system::*;
 mod net_poll;
