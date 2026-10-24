@@ -10386,7 +10386,9 @@ linkrel_config() {
     local tmp rc
     mkdir -p "$LINKREL_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    grep -v "BUILD_TYPE_" "$ROBOT_PRIMARY_CONFIG" >"$tmp/link-release.config" \
+    # The expanded cell says `LINK_PROVISIONING_ENFORCED is not set` (its dev
+    # default): dropped with the build type, so the release default decides.
+    grep -vE "BUILD_TYPE_|LINK_PROVISIONING_ENFORCED" "$ROBOT_PRIMARY_CONFIG" >"$tmp/link-release.config" \
       && echo "CONFIG_BUILD_TYPE_RELEASE=y" >>"$tmp/link-release.config" \
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/link-release.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/link-release.config" \
