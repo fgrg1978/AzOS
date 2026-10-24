@@ -816,7 +816,11 @@ X86_64_ELF     := $(X86_64_TARGET_DIR)/x86_64-unknown-none/release/kernel
 X86_64_IMG     := $(OUT_BUILD)/kernel-x86_64.elf
 X86_64_LINKER  := kernel/linker-x86_64.ld
 # curve25519-dalek picks its AVX2 "simd" backend on x86_64; the kernel is
-# soft-float (no SSE/AVX state at CPL0), so it takes the portable one.
+# soft-float (no SSE/AVX state at CPL0), so it takes the portable one. So do
+# the ring-3 images (X86_64_UFLAGS), as on riscv64 and aarch64: the AVX2
+# double-base multiply of a signature check reserves 3,696 B realigned to 32
+# bytes, and put sshd's deepest chain at 17,000 B of its 16 KiB stack
+# (tools/stack_frames.py reads realigned frames since 2026-10-24).
 X86_64_DALEK   := --cfg curve25519_dalek_backend=\"serial\"
 # -cpu max: the default model (qemu64) is below the x86-64-v2 baseline, and the
 # kernel refuses it (the canary: `make qemu-x86_64 QEMU_X86_64_CPU=qemu64`).
@@ -849,7 +853,7 @@ QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-r
 TARGET_X86_64 := x86_64-unknown-azos
 X86_64_DIR    := $(OUT_BUILD)/x86_64
 X86_64_UFLAGS  = --target $(USER_SPECS)/$(TARGET_X86_64).json \
-	--config 'target.$(TARGET_X86_64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)",'"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
+	--config 'target.$(TARGET_X86_64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)","--cfg=curve25519_dalek_backend=\"serial\"",'"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
 X86_64_UBUILT := $(TARGET_X86_64)/release
 HELLO_ELF_X86_64     := $(X86_64_DIR)/hello.elf
 SYSTEST_ELF_X86_64   := $(X86_64_DIR)/syscall_test.elf
