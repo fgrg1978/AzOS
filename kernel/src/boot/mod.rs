@@ -18,6 +18,9 @@ pub(crate) mod spin_patch;
 mod livepatch;
 pub(crate) use livepatch::install_livepatch;
 pub(crate) use early::early_main;
+// kernel_main's Phase 6: the bus, entropy, PCI, the block device and the mounts.
+mod devices;
+pub(crate) use devices::bring_up_devices;
 mod entropy;
 pub(crate) use entropy::*;
 // Kconfig TPM: the TPM 2.0 as an entropy source, the boot measurements and the OTA floor.
