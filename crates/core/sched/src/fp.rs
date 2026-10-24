@@ -172,6 +172,10 @@ pub fn frame_load(a: &[u64; 33]) {
 /// x86_64: the FS base. The kernel writes the MSR, so as `prev` leaves it
 /// holds `prev`'s slot value, or 0 if ring 3 zeroed it with a selector load
 /// (a CPU that ran no task holds 0, `enable_syscall`); nothing is read back.
+/// `prev`'s slot value cannot change under the switch: only the task itself
+/// writes it ([`set_fs_base`]), and a slot is reset ([`reset`]) only when it
+/// is claimed again, which for an exited task is after the switch away from
+/// it (`finish_switch` frees a Zombie's slot on the next task's stack).
 /// The MSR is written unless both are 0 (`azos_arch::cpu::fs_base_to_load`):
 /// a native task without a thread pointer, the common case, pays two loads
 /// and a test. The FS and GS selectors ring 3 may have loaded do not follow
