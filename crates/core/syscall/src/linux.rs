@@ -481,6 +481,13 @@ pub fn dispatch(
 
 /// Everything but the identity calls. `#[inline(never)]` is structural: see
 /// [`dispatch`].
+///
+/// So is it on the handlers that hold a buffer of 2 KiB or more (`sys_write`,
+/// `sys_read` and `sys_rwv`: an `IO_MAX` bounce; `sys_getdents64`; the image
+/// half of `execve`, [`exec_image`]): each has this one caller, and inlined
+/// here their buffers were in this frame for every Linux call, 5.2 KiB. The
+/// deepest kernel chain was a `close` that touches none of them: `sys_close`,
+/// a TCP FIN, an ICMPv6 error, the NIC.
 #[inline(never)]
 fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
     match num {
@@ -607,6 +614,7 @@ fn unanswered(num: u64) -> i64 {
 
 // ── I/O ─────────────────────────────────────────────────────────────────────
 
+#[inline(never)]
 fn sys_write(fd: u64, buf: u64, count: u64) -> i64 {
     let e = match fd_get(fd) {
         Ok(e) => e,
@@ -632,6 +640,7 @@ fn sys_write(fd: u64, buf: u64, count: u64) -> i64 {
     }
 }
 
+#[inline(never)]
 fn sys_read(fd: u64, buf: u64, count: u64) -> i64 {
     let e = match fd_get(fd) {
         Ok(e) => e,
@@ -829,6 +838,7 @@ impl lx::iov::IovMem for UserIov {
 /// description's position lock. So no other writer of the same description
 /// lands between two segments. `readv` makes one read and scatters it.
 /// The walk itself, and its checks, are `azos_linux_abi::iov`.
+#[inline(never)]
 fn sys_rwv(fd: u64, iov: u64, cnt: u64, write: bool) -> i64 {
     let e = match fd_get(fd) {
         Ok(e) => e,
@@ -1237,6 +1247,7 @@ fn sys_lseek(fd: u64, off: u64, whence: u64) -> i64 {
     }
 }
 
+#[inline(never)]
 fn sys_getdents64(fd: u64, buf: u64, count: u64) -> i64 {
     let e = match fd_get(fd) {
         Ok(e) => e,
@@ -2666,37 +2677,55 @@ fn user_strv(ptr: u64, out: &mut [u8]) -> Result<(usize, usize), i64> {
 /// profile. Refused without the grant (recorded, `-EACCES`); entered, it is
 /// said on the console.
 fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
+    // The descriptors close from this frame, after the image's buffers are
+    // gone: closing a socket sends (a TCP FIN, the NIC), the deepest chain a
+    // Linux call has, and it does not need 3 KiB of path and strings under it.
+    let closing = match exec_image(path_ptr, argv_ptr, envp_ptr) {
+        Ok(c) => c,
+        Err(e) => return e,
+    };
+    for &i in closing.iter().filter(|&&i| i != usize::MAX) {
+        let _ = sys_close(i as u64);
+    }
+    0
+}
+
+/// [`sys_execve`] up to the descriptors: the new image entered, its path,
+/// actions and mask set; the close-on-exec descriptors to close (`usize::MAX`
+/// in the slots that stay), or the errno.
+#[inline(never)]
+fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS], i64> {
     let mut raw = [0u8; PATH_MAX];
     let n = match user_path(path_ptr, &mut raw) {
         Ok(n) => n,
-        Err(e) => return e,
+        Err(e) => return Err(e),
     };
     let mut path = [0u8; PATH_MAX];
     let plen = match resolve(lx::AT_FDCWD, &raw[..n], &mut path) {
         Ok(l) => l,
-        Err(e) => return e,
+        Err(e) => return Err(e),
     };
     let mut strs = [0u8; EXEC_STRINGS_MAX];
     let (al, argc) = match user_strv(argv_ptr, &mut strs) {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return Err(e),
     };
     let (el, envc) = match user_strv(envp_ptr, &mut strs[al..]) {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return Err(e),
     };
-    let Some(ops) = file_ops() else { return neg(le::EIO) };
-    let Some((row, row_len)) = with_me(|p| (p.row, p.row_len)) else { return neg(le::EFAULT) };
+    let Some(ops) = file_ops() else { return Err(neg(le::EIO)) };
+    let Some((row, row_len)) = with_me(|p| (p.row, p.row_len)) else { return Err(neg(le::EFAULT)) };
     reach(k::SYS_INVOKE);
     let random = random16();
     let mut buf = crate::handlers::EXEC_BOUNCE.acquire();
     let img = match crate::spawn::read_image(ops, &path[..plen], &mut buf[..]) {
         Ok(i) => i,
-        Err(e) => return lx::errno_from_native(e, le::ENOENT),
+        Err(e) => return Err(lx::errno_from_native(e, le::ENOENT)),
     };
     let Some(profile) = azos_sched::seccomp::image_for_digest(&img.digest) else {
         let _ = crate::handlers::exec_image_is_bound_by_digest(&img.digest);
-        return neg(le::EACCES);
+        return Err(neg(le::EACCES));
     };
     let me = azos_sched::current_task_tid();
     let own = core::str::from_utf8(&row[..row_len as usize]).unwrap_or("?");
@@ -2707,7 +2736,7 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
         );
         let head = u32::from_be_bytes([img.digest[0], img.digest[1], img.digest[2], img.digest[3]]);
         crate::handlers::record_exec_refused(crate::ushell::SPAWN_REFUSED_ACTION_NO_LAUNCH, head);
-        return neg(le::EACCES);
+        return Err(neg(le::EACCES));
     }
     if cross && !cfg!(feature = "linux-exec-row-canary") {
         use azos_abi::cap::{CapPerms};
@@ -2727,7 +2756,7 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
                 "[LINUX] tid={} execve REFUSED: row {} holds no launch grant for {}{}",
                 me, own, profile.image, if recorded { " (recorded)" } else { "" },
             );
-            return neg(le::EACCES);
+            return Err(neg(le::EACCES));
         }
     }
     let mem = if cross { Some(crate::topo_sched::resolve_mem(profile.image, None).0) } else { None };
@@ -2740,14 +2769,14 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
         })
     });
     drop(buf);
-    let Some(prepared) = prepared else { return neg(le::ENOMEM) };
+    let Some(prepared) = prepared else { return Err(neg(le::ENOMEM)) };
     // Wave 15 (plan 4a): every check has passed and the new image is built;
     // only now do the other threads end (`handlers::exec_end_other_threads`:
     // a refused execve leaves them running; before, they ran on across it).
     // A thread that was not the leader holds the process's TID after it.
     if crate::handlers::exec_end_other_threads().is_err() {
         azos_sched::process::exec_abort(prepared);
-        return neg(le::EINTR);
+        return Err(neg(le::EINTR));
     }
     let _ = azos_sched::process::exec_commit(prepared);
     crate::handlers::exec_forget_resolves();
@@ -2780,10 +2809,7 @@ fn sys_execve(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> i64 {
         }
         sigst::set_current_ignored(ignored_of(&p.act));
     });
-    for &i in closing.iter().filter(|&&i| i != usize::MAX) {
-        let _ = sys_close(i as u64);
-    }
-    0
+    Ok(closing)
 }
 
 /// Wave 13: the current task (`me`, a Linux task that has just exec'd an
