@@ -116,7 +116,7 @@ fn wants_resources(driver: &str) -> bool {
     feature = "wdt-sbsa",
     feature = "i2c-dw",
     all(feature = "soc-k1", feature = "thermal"),
-    all(any(feature = "rpi-firmware", feature = "energy"), target_arch = "aarch64"),
+    all(feature = "rpi-firmware", target_arch = "aarch64"),
     all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
 fn map_window(dev: &Device) -> Result<usize, ProbeError> {
@@ -130,7 +130,7 @@ fn map_window(dev: &Device) -> Result<usize, ProbeError> {
     feature = "k1",
     feature = "wdt-sbsa",
     all(feature = "soc-k1", feature = "thermal"),
-    all(any(feature = "rpi-firmware", feature = "energy"), target_arch = "aarch64"),
+    all(feature = "rpi-firmware", target_arch = "aarch64"),
     all(feature = "wdt-bcm2835-pm", target_arch = "aarch64")
 ))]
 fn map_reg(dev: &Device, base: u64, size: u64) -> Result<usize, ProbeError> {
@@ -646,7 +646,7 @@ impl Drivers for KernelDrivers<'_> {
                 Ok(())
             }
             // arch-only: the Raspberry Pi boards are aarch64; no other ISA has this firmware.
-            #[cfg(all(any(feature = "rpi-firmware", feature = "energy"), target_arch = "aarch64"))]
+            #[cfg(all(feature = "rpi-firmware", target_arch = "aarch64"))]
             "rpi-mbox" => {
                 crate::entry::aarch64::ext::rpi_mbox::attach(map_window(dev)?);
                 Ok(())

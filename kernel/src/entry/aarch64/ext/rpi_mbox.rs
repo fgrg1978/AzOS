@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The Raspberry Pi VideoCore mailbox (kernel feature `rpi-firmware`, or
-//! `energy`): the power of the SoC's blocks goes through it ([`power_on`], the
-//! USB host's before its probe), and with `energy` it is the board object of
-//! the energy apply step and the thermal task: the temperature of the SoC and
-//! the ARM clock (`azos_thermal::rpi`).
+//! The Raspberry Pi VideoCore mailbox (kernel feature `rpi-firmware`): the
+//! power of the SoC's blocks goes through it ([`power_on`], the USB host's
+//! before its probe), and with `energy` it is the board object of the energy
+//! apply step and the thermal task: the temperature of the SoC and the ARM
+//! clock (`azos_thermal::rpi`).
 //! aarch64-only: the Pi boards are the only ones with this firmware, and the
 //! cache maintenance of the message buffer is the ISA's.
 //!
