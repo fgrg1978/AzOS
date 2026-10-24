@@ -33,7 +33,6 @@ choice
         # cargo-feature: vf2
         bool "StarFive VisionFive 2 (JH7110, RISC-V)"
         depends on ARCH_RISCV64
-        select I2C_DESIGNWARE
         help
           StarFive VisionFive 2 SBC with JH7110 SoC.
           4-core rv64gc @ 1.5 GHz, 8 GiB LPDDR4.
@@ -51,7 +50,6 @@ choice
         # cargo-feature: rpi5
         bool "Raspberry Pi 5 (BCM2712, aarch64)"
         depends on ARCH_AARCH64
-        select I2C_DESIGNWARE
         help
           Raspberry Pi 5 Model B: BCM2712, 4x Cortex-A76 (ARMv8.2-A: LSE;
           no PAuth, BTI, MTE or SVE). `make rpi5` builds kernel8.img for

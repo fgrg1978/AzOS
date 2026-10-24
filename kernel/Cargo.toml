@@ -121,7 +121,7 @@ k1 = [
 rpi5 = ["azos_robot_drivers?/rpi5", "i2c-dw"]
 # Kconfig I2C_DESIGNWARE: the Synopsys DesignWare I2C controllers (the JH7110's,
 # the RP1's, Intel LPSS) instead of the QEMU simulation. The two boards whose
-# I2C is this IP select it (Kconfig.platform), and their features imply it, so
+# I2C is this IP default it on (config/subsys/Kconfig.drivers), and their features imply it, so
 # a board build never runs the simulated sensors.
 i2c-dw = ["azos_drv_bus/i2c-dw"]
 rvv  = ["azos_arch/rvv", "azos_camera?/rvv"]

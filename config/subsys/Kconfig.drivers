@@ -835,6 +835,7 @@ config I2C_DESIGNWARE
     # cargo-feature: i2c-dw
     bool "I2C: Synopsys DesignWare controllers (VisionFive 2, Raspberry Pi 5 RP1, Intel LPSS)"
     depends on !BOARD_K1
+    default y if BOARD_VF2 || BOARD_RPI5
     default n
     help
       Kernel feature `i2c-dw` (crates/drivers/bus/src/i2c_dw.rs and
