@@ -8,6 +8,7 @@
 
 #![cfg(target_arch = "riscv64")]
 
+mod asm;
 pub(crate) mod board_map;
 pub(crate) mod ext;
 pub(crate) mod irq;

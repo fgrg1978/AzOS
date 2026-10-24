@@ -21,6 +21,7 @@
 
 #![cfg(target_arch = "x86_64")]
 
+mod asm;
 /// x86_64-only boot extras with no counterpart on the other ISAs.
 pub(crate) mod ext;
 pub(crate) mod fp;
