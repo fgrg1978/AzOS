@@ -618,7 +618,15 @@ fn rp_client_next(_: usize, rc: i64, _: [u64; 7], at: bool) {
     if rc == 0x601 {
         RP_RIGHT.fetch_add(1, Ordering::AcqRel);
     }
-    // The server is parked with a point: this call finishes its accept.
+    // The server is parked with a point: this call finishes its accept. The
+    // reply woke this task before the server's REPLY_ACCEPT parked it, so wait
+    // for that park as the first call did: a call that finds the server not
+    // parked yet queues and leaves no point (it lost that race on the generic
+    // gate kernel, -smp 1 -icount, every boot).
+    let (slot, tid) = (RP_SRV_SLOT.load(Ordering::Acquire), RP_SRV_TID.load(Ordering::Acquire));
+    azos_syscall::sleep::wait_until_ms(PARK_MS, 1, || {
+        azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
+    });
     let cap = RP_CAP.load(Ordering::Acquire) as u64;
     if call(SYS_IPC_FAST_CALL_EP, [cap, 0x602, 0, 0, 0, 0]).0 == 0x603 {
         RP_RIGHT.fetch_add(1, Ordering::AcqRel);
