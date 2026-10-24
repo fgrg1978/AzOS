@@ -845,6 +845,9 @@ arp-timing = ["qemu", "azos_net/arp-timing"]
 # Gate row and canary (wave 15): see crates/net/net/Cargo.toml.
 loopback-preempt-probe = ["qemu", "azos_net/loopback-preempt-probe"]
 loopback-guard-canary = ["qemu", "azos_net/loopback-guard-canary"]
+# Gate canary (`riscv64: net-poll idle canary`): the net-poll task keeps the
+# poll mode's period in IRQ mode, the timer re-arm the idle row must catch.
+netpoll-idle-timer-canary = ["qemu"]
 ipc-trace = ["azos_syscall/ipc-trace"]
 # The vsbench SQPOLL lane: the autorun row may start an io_ring SQ poller.
 # Never part of a board or default build; see crates/core/topology/Cargo.toml.

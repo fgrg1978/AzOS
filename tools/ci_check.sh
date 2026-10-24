@@ -20085,27 +20085,45 @@ PYEOF
     # plus a 60 s self-heal ceiling. Before that it woke 10 times a second
     # (300 in 30 s, measured wave 8); a 1 ms poll-mode timer is ~600/s.
     #
-    # The number is read back like the tickless row's: `NET_POLL_ITERS` (one
-    # increment per loop iteration) via the ELF's symbol table and a live GDB
-    # attach. The window starts 2 s after the task's own first line and lasts
-    # 30 s, so it ends before the 60 s ceiling can fire: the expected delta
-    # is exactly 0. Positive anchors first — IRQ mode's own NIC line and the
-    # task's start — because a boot with NO NIC also reads 0 (the no-NIC mode
-    # has no timer either) and must not pass this row.
-    netpoll_irq_idle_row() {
-        local label="riscv64: net-poll idle (irq)"
+    # The numbers are read back like the tickless row's, via the ELF's symbol
+    # table and a live GDB attach: `NET_POLL_ITERS` (one increment per loop
+    # iteration), `NET_MSI_WAKES` (every RX MSI's wake, dispatched or stamped)
+    # and `NET_TIMER_KICKS` (a TCP deadline armed elsewhere). The window
+    # starts 2 s after the task's own first line and lasts 30 s, so it ends
+    # before the 60 s ceiling can fire. An iteration an RX MSI or a kick
+    # explains is work, not a timer: the boot's own SNTP client (Kconfig
+    # NTP_CLIENT, the net-clients task, 2026-10-17) resolves its server and
+    # asks it the time in the window, and slirp's two answers woke the poller
+    # twice (main ac10a4be: 2 iterations, read as a timer by the old
+    # `delta == 0`). The verdict is the rest — iterations minus MSI wakes
+    # minus kicks — and it must be 0 or less (an MSI landing while the
+    # poller runs is counted and folded into the iteration it is already
+    # in). Positive anchors first — IRQ mode's own NIC line and the task's
+    # start — because a boot with NO NIC also reads 0 (the no-NIC mode has
+    # no timer either) and must not pass this row.
+    #
+    # Canary (`netpoll-idle-timer-canary`): the IRQ mode keeps the poll
+    # mode's period, the leftover re-arm this row is for; the row must read
+    # hundreds of unexplained iterations and fail. Measured 2026-10-24 (load
+    # 20-24): the row 4 iterations, 2 MSI wakes, 2 kicks, 0 on a timer; the
+    # canary 14 790 iterations, 14 788 on a timer. Compile-error bucket: a
+    # build failure is its own FAIL.
+    netpoll_irq_idle_row() { # netpoll_irq_idle_row <features> <pass|canary>
+        local feats="$1" want="$2" label="riscv64: net-poll idle (irq)"
+        [ "$want" = canary ] && label="riscv64: net-poll idle canary"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         if ! command -v riscv64-elf-gdb >/dev/null 2>&1; then
             bad; echo "      riscv64-elf-gdb not installed — the row cannot read NET_POLL_ITERS back"; return
         fi
-        kbuild "qemu,pci" || return
-        local addr port="${NETPOLL_GDB_PORT:-1234}"
-        addr=$(nm "$KERNEL" 2>/dev/null | grep "net_poll14NET_POLL_ITERS" | sed -n '1{s/ .*//p;}' | sed 's/^0*//')
-        if [ -z "$addr" ]; then
-            bad; echo "      NET_POLL_ITERS symbol not found in $KERNEL"; return
+        kbuild "$feats" || return
+        local addr msi kick port="${NETPOLL_GDB_PORT:-1234}"
+        netpoll_sym() { nm "$KERNEL" 2>/dev/null | grep "net_poll$1" | sed -n '1{s/ .*//p;}' | sed 's/^0*//'; }
+        addr=$(netpoll_sym 14NET_POLL_ITERS); msi=$(netpoll_sym 13NET_MSI_WAKES); kick=$(netpoll_sym 15NET_TIMER_KICKS)
+        if [ -z "$addr" ] || [ -z "$msi" ] || [ -z "$kick" ]; then
+            bad; echo "      NET_POLL_ITERS / NET_MSI_WAKES / NET_TIMER_KICKS not all found in $KERNEL"; return
         fi
-        local log="$CI_LOG_DIR/netpoll-irq-idle.log"
+        local log="$CI_LOG_DIR/netpoll-irq-idle-$want.log"
         rm -f "$log"
         "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -kernel "$KERNEL" \
             -smp 1 -m 128M -gdb "tcp::${port}" \
@@ -20128,41 +20146,53 @@ PYEOF
             echo "      log kept: $log"; return
         fi
         sleep 2
-        read_iters() {
+        # One attach, the three counters: prints `iters msi_stamped
+        # msi_dispatched kicks` (gdb's hex), or nothing when a read failed.
+        read_counts() {
             riscv64-elf-gdb -q -batch -ex "target remote localhost:${port}" \
-                -ex "x/1xg 0x${addr}" -ex "detach" 2>/dev/null \
-                | grep "0x${addr}:" | grep -o "0x[0-9a-f]*$"
+                -ex "x/1xg 0x${addr}" -ex "x/2xw 0x${msi}" -ex "x/1xw 0x${kick}" -ex "detach" 2>/dev/null \
+                | tr '\t' ' ' | awk -v a="0x${addr}:" -v m="0x${msi}:" -v k="0x${kick}:" '
+                    $1 == a { i = $2 } $1 == m { s = $2; d = $3 } $1 == k { c = $2 }
+                    END { if (i != "" && s != "" && d != "" && c != "") print i, s, d, c }'
         }
-        local t0_hex t1_hex
-        t0_hex=$(read_iters)
-        if [ -z "$t0_hex" ]; then
+        local c0 c1
+        c0=$(read_counts)
+        if [ -z "$c0" ]; then
             kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
-            bad; echo "      first GDB read of NET_POLL_ITERS (0x$addr) came back empty — log kept: $log"; return
+            bad; echo "      first GDB read of the net-poll counters came back empty — log kept: $log"; return
         fi
         sleep 30
         if ! kill -0 "$qpid" 2>/dev/null; then
             bad; echo "      qemu exited mid-window — log kept: $log"; return
         fi
-        t1_hex=$(read_iters)
+        c1=$(read_counts)
         kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
-        if [ -z "$t1_hex" ]; then
-            bad; echo "      second GDB read of NET_POLL_ITERS (0x$addr) came back empty — log kept: $log"; return
+        if [ -z "$c1" ]; then
+            bad; echo "      second GDB read of the net-poll counters came back empty — log kept: $log"; return
         fi
-        # The task has run its first iteration (the counter is live), and
-        # none since.
-        if [ $(( t0_hex )) -lt 1 ]; then
-            bad; echo "      NET_POLL_ITERS read $t0_hex at the window start: the counter never moved — log kept: $log"; return
+        local i0 s0 d0 k0 i1 s1 d1 k1
+        read -r i0 s0 d0 k0 <<<"$c0"
+        read -r i1 s1 d1 k1 <<<"$c1"
+        # The task has run its first iteration (the counter is live).
+        if [ $(( i0 )) -lt 1 ]; then
+            bad; echo "      NET_POLL_ITERS read $(( i0 )) at the window start: the counter never moved — log kept: $log"; return
         fi
-        local delta=$(( t1_hex - t0_hex ))
-        if [ "$delta" -eq 0 ]; then
-            ok; echo "      net-poll iterations in 30 s idle = 0 (count stayed at $(( t0_hex )))"
-            rm -f "$log"
-        else
-            bad; echo "      net-poll iterations in 30 s idle = $delta ($t0_hex -> $t1_hex), expected 0:"
+        local iters=$(( i1 - i0 )) msis=$(( s1 - s0 + d1 - d0 )) kicks=$(( k1 - k0 ))
+        local timer=$(( iters - msis - kicks ))
+        local line="net-poll in 30 s idle: $iters iteration(s), $msis RX MSI wake(s), $kicks kick(s): $timer on a timer"
+        if [ "$want" = pass ] && [ "$timer" -le 0 ]; then
+            ok; echo "      $line"; rm -f "$log"
+        elif [ "$want" = canary ] && [ "$timer" -gt 0 ]; then
+            ok; echo "      $line"; rm -f "$log"
+        elif [ "$want" = pass ]; then
+            bad; echo "      $line, expected 0:"
             echo "      the poller is waking on a timer in IRQ mode — log kept: $log"
+        else
+            bad; echo "      $line: the canary's poll-period timer did not show — log kept: $log"
         fi
     }
-    par -s "riscv64: net-poll idle (irq)" netpoll_irq_idle_row   # gdb port, wall clock
+    par -s "riscv64: net-poll idle (irq)" netpoll_irq_idle_row qemu,pci pass   # gdb port, wall clock
+    par -s "riscv64: net-poll idle canary" netpoll_irq_idle_row qemu,pci,netpoll-idle-timer-canary canary
 
     # ── RVV: the build that was compiled and never run ─────────────────
     #

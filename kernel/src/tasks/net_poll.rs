@@ -95,8 +95,9 @@ pub(crate) fn net_poll_task(_: usize) {
     let irq_mode = azos_drv_net::net_device::irq_driven();
     let no_nic = !azos_drv_net::net_device::is_ready();
     // Arm the timer only while `tcp_tick` has a deadline: in IRQ mode an RX
-    // MSI brings frames, and with no NIC no frame can arrive at all.
-    let tick_on_demand = irq_mode || no_nic;
+    // MSI brings frames, and with no NIC no frame can arrive at all. The
+    // gate canary `netpoll-idle-timer-canary` keeps the poll period anyway.
+    let tick_on_demand = (irq_mode || no_nic) && !cfg!(feature = "netpoll-idle-timer-canary");
     if no_nic {
         kprintln!("[NET-POLL] no NIC ready: no poll timer, tcp_tick only while a connection needs it");
     }
