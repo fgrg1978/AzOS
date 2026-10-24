@@ -14447,7 +14447,8 @@ PY
     # with enforcement the test does not check its own histogram, so only
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
-    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner"
+    # The tests that need a second CPU answer `not ok` at -smp 1 (they say so).
+    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
