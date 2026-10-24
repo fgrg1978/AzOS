@@ -15076,6 +15076,19 @@ PY
     par "stack chain: x86_64" x86_stack_row "stack chain: x86_64" chain ""
     par "stack frames: x86_64 robot" x86_stack_row "stack frames: x86_64 robot" frames use-robot
     par "stack chain: x86_64 robot" x86_stack_row "stack chain: x86_64 robot" chain use-robot
+    # The same two on the gate's aarch64 kernel (the generic cell's), with its
+    # 304-byte trap frame (`TrapFrame`'s size assert, kernel/src/entry/aarch64/
+    # mod.rs). Until 2026-10-24 only riscv64 and x86_64 kernels had them.
+    a64_stack_row() { # a64_stack_row <label> <frames|chain>
+        if ! a64_kbuild ""; then
+            printf "  %-26s" "${1}..."; bad; echo "      the aarch64 kernel did not build"; return
+        fi
+        par_ready
+        if [ "$2" = frames ]; then frame_row "$1" "$A64_KERNEL" 8192
+        else chain_row "$1" "$A64_KERNEL" "$AARCH64_CONFIG" 304; fi
+    }
+    par "stack frames: aarch64" a64_stack_row "stack frames: aarch64" frames
+    par "stack chain: aarch64" a64_stack_row "stack chain: aarch64" chain
     # virtio-input on x86_64 (Kconfig DRV_VIRTIO_INPUT): the kernel shell reads a
     # `-device virtio-keyboard-device` (a virtio-mmio v1 transport on microvm)
     # with the serial stdin silent. A typist in the background waits for the
