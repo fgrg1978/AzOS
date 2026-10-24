@@ -2439,11 +2439,12 @@ mod cap_seed_bridge_tests {
     /// 32, not the 8 it was: `cap_seed` grew to 12 TIDs and the ranges met
     /// again (4 in 30 under `cap-refusal-canary`). `cap_seed`'s counter now
     /// asserts it stays below this.
-    /// 24, not 32: with the canary features on (`cap-refusal-canary` and the
+    /// 22, not 32: with the canary features on (`cap-refusal-canary` and the
     /// profile ones) the bridge suite mints more TIDs than the 32 slots left
-    /// of `MAX_TASKS` = 64 (the sensor-endpoint tests ran out of pool);
-    /// `cap_seed` uses 8..20, so 24 splits the pool without the two meeting.
-    const FIRST_TID: u32 = 24;
+    /// of `MAX_TASKS` = 64 (the sensor-endpoint tests ran out of pool, and at
+    /// 24 again once the NIC-queue, I/O-port and volume rows added theirs);
+    /// `cap_seed` uses 5..22, so 22 splits the pool without the two meeting.
+    const FIRST_TID: u32 = 22;
 
     static NEXT_ID: AtomicU32 = AtomicU32::new(FIRST_TID);
 
@@ -3106,17 +3107,13 @@ mod ioport_cap_tests {
         assert!(ioport_grant_in(tid, "1016.1", CapPerms::READ, 1024, reserved).is_none());
         assert!(ioport_grant_in(tid, "1020.8", CapPerms::RW, 1024, reserved).is_none());
         assert_eq!(records(tid), all, "no record but the kernel-port refusals");
-    }
-
-    /// The seed arm reaches the minter: on this build's port space (the
-    /// host suite's .config, 0 off x86_64) a grant mints exactly when the
-    /// space holds the range.
-    #[test]
-    fn the_seed_arm_follows_the_port_space() {
-        let tid = fresh_tid();
+        // The seed arm reaches the minter (the same task: the pool is small):
+        // on this build's port space (the host suite's .config, 0 off x86_64)
+        // a grant mints exactly when the space holds the range.
         let got = seed_one_cap(tid, CapKind::Device, CapPerms::RW, "ioport.97.1");
         assert_eq!(got.is_some(), azos_arch_api::ioport::PORTS > 0x61, "{got:?}");
         assert!(seed_one_cap(tid, CapKind::Device, CapPerms::RW, "ioport.65535.2").is_none());
+        assert_eq!(records(tid), all, "the seed arm wrote no kernel-port record");
     }
 }
 

@@ -794,20 +794,20 @@ mod tests {
     /// scheduler shim, so `cap_store::slot_for` can resolve it.
     mod tests_support {
         use std::sync::atomic::{AtomicU32, Ordering};
-        /// From 8, not 1: `endpoint.rs`'s suite, mounted beside this one,
+        /// From 5, not 1: `endpoint.rs`'s suite, mounted beside this one,
         /// uses the fixed TIDs 1..=4 and wipes their tables in its `setup()`,
         /// which would empty a table a test here is still reading.
-        static NEXT_ID: AtomicU32 = AtomicU32::new(8);
+        static NEXT_ID: AtomicU32 = AtomicU32::new(5);
 
         pub fn fresh_tid() -> u32 {
             let tid = NEXT_ID.fetch_add(1, Ordering::SeqCst);
             let slot = tid as usize;
             // `tests/host/topology-tests` mounts this module beside its own
-            // counter, which starts at 24 (its `FIRST_TID`): stay below it,
+            // counter, which starts at 22 (its `FIRST_TID`): stay below it,
             // or the two suites share a slot's table.
             assert!(
-                tid < 24,
-                "cap_seed tests reached the topology bridge's TID range (24..)"
+                tid < 22,
+                "cap_seed tests reached the topology bridge's TID range (22..)"
             );
             azos_sched::shim_bind(tid, slot);
             tid
