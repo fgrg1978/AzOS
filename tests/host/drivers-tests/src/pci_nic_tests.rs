@@ -292,7 +292,7 @@ fn send_until_wedged<W: Wire>(nic: &Nic<W, N, N>) -> std::time::Duration {
 fn tx_timeout_scenario<W: Wire>(nic: &'static Nic<W, N, N>, mem: &'static Mem<N, N>, restart: fn(&Nic<W, N, N>) -> bool, count: &core::sync::atomic::AtomicU32) {
     use azos_drv_api::recovery::{Action, Class};
     crate::recovery_records::listen();
-    let rig = bring_up(nic, mem, None);
+    let rig = bring_up(nic, mem, None, W::IRQ);
     nic.set_restart(restart);
 
     // A ring the controller drains: no timeout, however long it runs.
@@ -359,7 +359,7 @@ fn e1000e_a_seldom_sender_is_found_wedged_by_the_poller() {
         relive(nic, &MEM, &COUNT)
     }
     crate::recovery_records::listen();
-    let _rig = bring_up(&NIC, &MEM, None);
+    let _rig = bring_up(&NIC, &MEM, None, E1000eWire::IRQ);
     NIC.set_restart(restart);
     assert_eq!(NIC.send(&[0u8; 60]), Ok(60));
     assert!(NIC.tx_watch().is_some(), "a ring holding a frame asks for no look");

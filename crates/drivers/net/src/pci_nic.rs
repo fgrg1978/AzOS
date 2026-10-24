@@ -701,7 +701,7 @@ impl<W: Wire, const RX_N: usize, const TX_N: usize> Nic<W, RX_N, TX_N> {
         self.ready.store(false, Ordering::Release);
         self.msi_armed.store(false, Ordering::Release);
         let r = self.regs();
-        r.wr(W::IMC, !0);
+        r.irq_mask_all();
         r.wr(crate::e1000e::REG_RCTL, 0);
         r.wr(crate::e1000e::REG_TCTL, 0);
     }
