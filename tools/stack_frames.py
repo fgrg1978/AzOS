@@ -802,9 +802,11 @@ def analyze(text, owner, isa, starts=frozenset(), labels=None):
                if fl[0] == "ret" and fl[3]}
 
     def pops(t):
-        if t in where:
-            return next((d[1][3] for ins, d in more(t) if d[1][0] == "ret"), 0)
-        return popping.get(t, 0)
+        if t not in where:
+            return popping.get(t, 0)
+        # The routine's straight-line code up to its first way out.
+        fl = next((d[1] for ins, d in more(t) if d[1][0] in ("jump", "ret", "end")), END)
+        return fl[3] if fl[0] == "ret" else 0
 
     noreturn = never_return(bodies)
     frames, unbounded, sites, seeded = {}, {}, collections.defaultdict(list), 0

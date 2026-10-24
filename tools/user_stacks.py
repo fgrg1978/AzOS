@@ -433,6 +433,35 @@ def self_test():
     # 8 return address, 16 pushes, 56 at most to a 64-byte boundary from a
     # sp 24 below a 16-aligned one, 128 reserved.
     expect("x86_64 shrink-wrapped", (an.frames.get("sw"), an.unbounded), (8 + 16 + 56 + 0x80, {}))
+    # The probe loop of a frame too big to unroll, as LLVM writes it on
+    # riscv64 and aarch64 (x86_64's is above): sp steps down a page at a
+    # time until it equals the bound register; the loop is bounded by that
+    # compare, and the frame is the bound plus what follows it.
+    text = "\n".join([
+        "0000000000060000 <rvprobe>:",
+        "   60000: lui t1, 0x10",
+        "   60004: sub t1, sp, t1",
+        "   60008: lui t2, 0x1",
+        "   6000c: sub sp, sp, t2",
+        "   60010: sd zero, 0x0(sp)",
+        "   60014: bne sp, t1, 0x60008 <rvprobe+0x8>",
+        "   60018: addi sp, sp, -0x30",
+        "   6001c: ret",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0x60000, 0x20, "rvprobe")]), "riscv64")
+    expect("riscv64 probe loop", (an.frames.get("rvprobe"), an.unbounded), (0x10000 + 0x30, {}))
+    text = "\n".join([
+        "0000000000061000 <a64probe>:",
+        "   61000: sub x9, sp, #0x10, lsl #12",
+        "   61004: sub sp, sp, #0x1, lsl #12",
+        "   61008: cmp sp, x9",
+        "   6100c: str xzr, [sp]",
+        "   61010: b.ne 0x61004 <a64probe+0x4>",
+        "   61014: sub sp, sp, #0x30",
+        "   61018: ret",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0x61000, 0x20, "a64probe")]), "aarch64")
+    expect("aarch64 probe loop", (an.frames.get("a64probe"), an.unbounded), (0x10000 + 0x30, {}))
     # A call that never returns (a panic) ends its path: what follows it is
     # another block, reached at its own depth. Falling through from the
     # `pushq` that aligned the panic call into the loop below made the loop
