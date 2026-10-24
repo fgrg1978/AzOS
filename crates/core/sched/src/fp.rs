@@ -194,7 +194,8 @@ pub fn switch_thread_pointer(cpu: usize, _prev: usize, next: usize) {
 /// aarch64: `TPIDR_EL0`. EL0 writes it without a call (relibc's
 /// `activate_tls`, a thread's start shim, musl), so unlike x86_64's FS base
 /// it is read back from the register as `prev` leaves (`mrs`, a store) and
-/// `next`'s is written (a load, `msr`): four instructions on every switch.
+/// `next`'s is written (a load, `msr`): four instructions and two slot
+/// bounds tests on every switch.
 /// The kernel itself never uses `TPIDR_EL0` (its hart id is `TPIDR_EL1`).
 /// Gate canaries: `tpidr-foreign-only-canary` keeps it only for a Linux
 /// task, the old rule (ktests `native_tasks_keep_tpidr_el0` and
