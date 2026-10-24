@@ -3071,10 +3071,10 @@ pub const TASK_PTPD_IMAGE: &[u8] = b"PTPD.ELF";
 /// Does the built-in topology carry the daemon's row (Kconfig `PTPD`)? It
 /// starts at boot with the row.
 pub const PTPD_ROW: bool = azos_limits::PTPD;
-/// Frame budget of `PTPD.ELF`: image, stack, page tables and the receive
-/// buffers on its stack (it has no heap), and the two rings of its NIC queue
-/// when the row grants one ([`PTPD_RING_UNITS`]).
-const PTPD_MEM_PAGES: u32 = 32 + if PTPD_NIC_QUEUE == 0 { 0 } else { PTPD_RING_UNITS };
+/// Frame budget of `PTPD.ELF`: image, stack (20 KiB, its build.rs), page
+/// tables and the receive buffers on its stack (it has no heap), and the two
+/// rings of its NIC queue when the row grants one ([`PTPD_RING_UNITS`]).
+const PTPD_MEM_PAGES: u32 = 33 + if PTPD_NIC_QUEUE == 0 { 0 } else { PTPD_RING_UNITS };
 /// The interface whose queue 0 the row grants (Kconfig `PTPD_NIC_QUEUE`, `ethN`;
 /// 0: none, the daemon runs over UDP).
 const PTPD_NIC_QUEUE: u8 = azos_limits::PTPD_NIC_QUEUE as u8;

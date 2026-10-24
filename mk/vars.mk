@@ -180,7 +180,7 @@ ZENOHD_SRC    := $(wildcard $(ZENOHD_DIR)/src/*.rs) $(ZENOHD_DIR)/Cargo.toml $(Z
 PTPD_DIR    := userspace/services/ptpd
 PTPD_BUILT  := $(OUT_TGT)/$(PTPD_DIR)/$(TARGET_RISCV64_USER)/release/ptpd
 PTPD_ELF    := $(OUT_BUILD)/ptpd.elf
-PTPD_SRC     := $(wildcard $(PTPD_DIR)/src/*.rs) $(PTPD_DIR)/Cargo.toml
+PTPD_SRC     := $(wildcard $(PTPD_DIR)/src/*.rs) $(PTPD_DIR)/Cargo.toml $(PTPD_DIR)/build.rs
 
 # The audio server (Kconfig AUDIOD).
 AUDIOD_DIR   := userspace/services/audiod
