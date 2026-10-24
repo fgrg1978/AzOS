@@ -1086,6 +1086,11 @@ fn rewrite_text_follows_lengths_and_ignores_a_short_tail() {
     let mut n = Rewrites::default();
     rewrite_text(Isa::Aarch64, &mut a, &mut n).expect("rewrite");
     assert_eq!((u32le(&a, 0), n.current), (0xd53b_d041, 1));
+    // x86_64: left as it is, privileged or not (cli; pushf; mov %gs:0, %rax).
+    let x = [0xfa, 0x9c, 0x65, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0];
+    let (mut y, mut n) = (x, Rewrites::default());
+    assert_eq!(rewrite_text(Isa::X86_64, &mut y, &mut n), Ok(()));
+    assert_eq!((y, n), (x, Rewrites::default()));
 }
 
 /// A Kbuild module of the set (`make lx-kbuild`), or `None` with a SKIP; with
@@ -1152,6 +1157,7 @@ fn still_privileged(isa: Isa, code: &[u8]) -> Vec<(usize, u32)> {
                     || (w >> 24 == 0xd4 && w & 0xffe0_001f != 0xd420_0000)
                     || w & 0xffdf_f000 == 0xd69f_0000
             }
+            Isa::X86_64 => unreachable!("x86_64 text is not rewritten (rewrite_text)"),
         };
         if bad {
             out.push((at, w));

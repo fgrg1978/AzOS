@@ -1082,13 +1082,17 @@ impl Rewrites {
 /// bytes); a tail shorter than one instruction is not code (aarch64's
 /// one-byte `.plt` and `.text.ftrace_trampoline` placeholders).
 /// `Err((offset, encoding))` at the first instruction refused, or at a
-/// riscv64 encoding longer than 32 bits.
+/// riscv64 encoding longer than 32 bits. x86_64 text is left as it is: the
+/// module set has no inline `cli`/`sti`/`pushf` and reaches per-CPU data and
+/// `current` through `%gs`-relative operands, and a privileged instruction
+/// that is there faults at CPL 3 (`#GP`) instead of running.
 pub fn rewrite_text(isa: Isa, code: &mut [u8], counts: &mut Rewrites) -> Result<(), (u64, u32)> {
     let mut at = 0usize;
     while let Some(lo) = rd_u16(code, at) {
         let n = match isa {
             Isa::Riscv64 => rewrite::riscv64::len(lo),
             Isa::Aarch64 => 4,
+            Isa::X86_64 => return Ok(()),
         };
         if n == 0 {
             return Err((at as u64, lo as u32));
@@ -1101,6 +1105,7 @@ pub fn rewrite_text(isa: Isa, code: &mut [u8], counts: &mut Rewrites) -> Result<
         let verdict = match isa {
             Isa::Riscv64 => rewrite::riscv64::classify(insn),
             Isa::Aarch64 => rewrite::aarch64::classify(insn),
+            Isa::X86_64 => Insn::Keep,
         };
         match verdict {
             Insn::Keep => {}
