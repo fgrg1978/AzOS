@@ -156,7 +156,7 @@ config ZENOH_DECISION_TOPIC
 # PTP daemon (userspace/services/ptpd)
 # ---------------------------------------------------------------------------
 config PTPD
-    bool "PTP daemon (PTPD.ELF): IEEE 1588 slave over UDP steering the wall clock"
+    bool "PTP daemon (PTPD.ELF): IEEE 1588 slave over UDP or Ethernet steering the wall clock"
     default n
     help
       The built-in topology carries a row for PTPD.ELF and the kernel starts it
@@ -171,12 +171,46 @@ config PTPD
       (the `inspect.clock` view); a node whose row declares none takes no
       part. The master's
       time is on the TAI timescale, so a master that does not state a valid UTC
-      offset gives no sample. Software timestamps are taken in ring 3 after the
-      datagram is dequeued: the accuracy is the poll period of the daemon (1 ms)
-      plus the receive path, not the sub-microsecond of hardware timestamps.
+      offset gives no sample. Over UDP the timestamps are taken in ring 3 after
+      the datagram is dequeued: the accuracy is the poll period of the daemon
+      (1 ms) plus the receive path, not the sub-microsecond of hardware
+      timestamps. On a NIC queue (PTPD_NIC_QUEUE) the daemon speaks IEEE 1588
+      over Ethernet (Annex F, EtherType 0x88F7) and every timestamp is the
+      queue's, read at the driver boundary (or the NIC's, where the driver
+      reads it).
       Cost when set: one task of 32 pages (PTPD_MEM_PAGES in the topology
-      builder) and two sockets. 802.1AS over raw Ethernet is not offered: it
-      needs a packet socket, which the kernel keeps to itself.
+      builder, plus the two rings of PTPD_RING_SLOTS on a NIC queue) and two
+      sockets.
+
+config PTPD_NIC_QUEUE
+    int "Interface whose NIC queue PTPD.ELF runs on (0: none, IEEE 1588 over UDP)"
+    range 0 7
+    default 0
+    help
+      N: the built-in topology grants PTPD.ELF queue 0 of interface ethN
+      (`nicq.ethN.0`, Kconfig NET_NIC_QUEUES), and the daemon runs IEEE 1588
+      over Ethernet on it, with the queue's timestamps, instead of over UDP.
+      The stack loses that interface while the daemon holds it. 0 grants
+      nothing: eth0 is the primary interface, which is never handed over. A
+      queue the kernel refuses (no NIC there, or the route to the link peer
+      leaves by it) leaves the daemon on UDP, and it says so. A signed
+      topology grants its own.
+
+config PTPD_RING_SLOTS
+    int "Frames each of PTPD.ELF's two NIC-queue rings holds"
+    range 2 64
+    default 4
+    help
+      The receive and transmit rings the daemon makes for its NIC queue
+      (PTPD_NIC_QUEUE), in frames of 1,518 bytes; the kernel rounds down to a
+      power of two of what the region holds. A received frame the ring has no
+      room for is dropped and counted. PTP sends one event message per Sync
+      interval and the daemon drains every millisecond, so 4 is several
+      intervals of slack.
+
+      Cost: two regions of 256 B + PTPD_RING_SLOTS x 1,544 B each, rounded up
+      to whole pages, added to the daemon's row: 4 pages at the default with
+      4 KiB pages, the same on riscv64, aarch64 and x86_64.
 
 config PTPD_DOMAIN
     int "PTP domain of the built-in topology's [clock] row"
