@@ -2192,7 +2192,11 @@ mod image_profiles {
                     return None;
                 }
                 let (_, name) = t.rsplit_once("::")?;
-                name.ends_with(".ELF").then(|| name.to_string())
+                // A file under a directory of the volume is data a service
+                // reads, not an image the kernel starts: `make azos-guest`
+                // copies the guest kernel to VM/KERNEL.ELF, which VMMD.ELF
+                // loads into guest RAM. The same holds in the two lists below.
+                (name.ends_with(".ELF") && !name.contains('/')).then(|| name.to_string())
             })
             .collect();
         assert!(set.len() >= 11, "found only {set:?} in the Makefile's image recipe");
@@ -2935,7 +2939,7 @@ mod image_profiles {
             .filter_map(|l| {
                 let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
                 (var.starts_with("$(") && !var.contains("_AARCH64") && !var.contains("_X86_64")
-                    && name.ends_with(".ELF"))
+                    && name.ends_with(".ELF") && !name.contains('/'))
                     .then(|| (name.to_string(), var.to_string()))
             })
             .filter(|p| seen.insert(p.clone()))
@@ -2988,7 +2992,7 @@ mod image_profiles {
             .lines()
             .filter_map(|l| {
                 let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
-                (var.starts_with("$(") && var.contains("_AARCH64") && name.ends_with(".ELF"))
+                (var.starts_with("$(") && var.contains("_AARCH64") && name.ends_with(".ELF") && !name.contains('/'))
                     .then(|| (name.to_string(), var.to_string()))
             })
             .filter(|p| seen.insert(p.clone()))
