@@ -21728,7 +21728,13 @@ PYEOF
     # udp-roundtrip number. Canary: `loopback-guard-canary` puts the old
     # global flag back without the guard, and the lane must report the lost
     # round trip (only the failure prints `udp-rt: ...`). Compile-error
-    # bucket: a build failure is its own FAIL.
+    # bucket: a build failure is its own FAIL. 2026-10-24: both rv rows hung
+    # in boot — the probe's reschedule inside the boot network self-test
+    # (Kconfig BOOT_SELFTESTS, which the gate turns on) switched away from
+    # `kernel_main`, so `arch_enter_scheduler` never set `sie.STIE`; the
+    # deferred-preemption callback now waits for the scheduler's gate
+    # (`boot::sched::preempt_deferred`). A red row says when the
+    # "Starting scheduler" line is missing.
     loopback_preempt_row() { # loopback_preempt_row <rv|arm> <features> <pass|canary>
         local isa="$1" feats="$2" want="$3"
         local label="net: loopback preempted ($isa)"
@@ -21784,6 +21790,8 @@ PYEOF
             ok; rm -f "$log"; return
         fi
         bad; grep -aE 'udp|VSBENCH\] side|PANIC|FATAL' "$log" | sed -n '1,6p' | sed 's/^/      /'
+        grep -aqF '[SCHED] Starting scheduler' "$log" \
+            || echo "      no \"[SCHED] Starting scheduler\": kernel_main was switched away from before its end"
         echo "      log kept: $log"
     }
     par -s "net: loopback preempted (rv)" loopback_preempt_row rv qemu,loopback-preempt-probe pass

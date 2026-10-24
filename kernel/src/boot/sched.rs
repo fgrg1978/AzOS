@@ -75,10 +75,27 @@ fn wq_wake_timed(tid: u32) {
 /// `install_robot_hw`'s own doc gives for its own former gate — and lost
 /// that `#[cfg]` in the same change that added this function, since it is
 /// now called from both `kernel_main`s.
+/// The deferred-preemption callback: [`azos_sched::task_preempt_deferred`]
+/// once the boot CPU has entered the scheduler (`trap::RESCHED`'s gate),
+/// nothing before. `kernel_main` is no task: a switch away from it saves
+/// nothing, so the rest of it never runs, `arch_enter_scheduler` included
+/// (riscv64: `sie.STIE` never set, every task asleep on a timer that cannot
+/// fire). The boot network self-test's loopback deliveries under
+/// `loopback-preempt-probe` did exactly that (`net: loopback preempted (rv)`
+/// hung with `sie=0x202`, `sip.STIP` pending, no "[SCHED] Starting
+/// scheduler"); a wake that outranks the current slot during boot sets the
+/// same debt. The debt is already cleared when this runs, and dropping it is
+/// right: before the gate there is nothing to preempt.
+fn preempt_deferred() {
+    if crate::trap::RESCHED.is_live() {
+        azos_sched::task_preempt_deferred();
+    }
+}
+
 #[inline(always)]
 pub(crate) fn install_sched_hooks() {
     // A deferred TICK preemption, paid at the guard drop: counted as one.
-    azos_sync::preempt::set_resched_callback(azos_sched::task_preempt_deferred);
+    azos_sync::preempt::set_resched_callback(preempt_deferred);
     // FX12: a FAT32 claim waiter (log-flush in fat32_fsync) lends its
     // priority to the claim's owner (fs-wb), so prio 13..19 load cannot
     // starve the owner while the waiter waits.
