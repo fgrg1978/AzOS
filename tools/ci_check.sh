@@ -2779,9 +2779,16 @@ else
 fi
 
 # Every row's key has a line in tools/gate_rows.tsv (its tier and the paths it
-# depends on, for `make check1`), and no line names a row that is gone.
+# depends on, for `make check1`), and no line names a row that is gone. A
+# row's deps cover what it demonstrably reads (gate_rows.py --check-deps: its
+# host suite and that suite's crates, the scripts and fixtures it names, the
+# programs of the image it boots, the optional crates and test-hook files of
+# its features, the files that print its markers): a row whose deps missed
+# its source was never picked for a change to it (the bench row and
+# domains/robot/bench). The row runs the tool's canaries first.
 printf "  %-26s" "gate rows manifest..."
-if grm_out="$(python3 "${REPO_ROOT}/tools/gate_rows.py" --check 2>&1)"; then
+if grm_out="$(python3 "${REPO_ROOT}/tools/gate_rows.py" --self-test 2>&1)" \
+   && grm_out="$(python3 "${REPO_ROOT}/tools/gate_rows.py" --check 2>&1)"; then
     ok
 else
     bad; printf '%s\n' "$grm_out" | sed -n 1,10p | sed 's/^/      /'

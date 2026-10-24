@@ -10,11 +10,18 @@ that keep it out of a shared boot (a peer or fixed host port, a disk, a
 network, fault injection, wall-clock judgement, more than one boot).
 
   gate_rows.py --write   regenerate tools/gate_rows.tsv (tier + deps per row),
-                         keeping the tier and deps of rows already listed
-  gate_rows.py --check   the manifest names exactly the gate's row keys, and
+                         keeping the tier and deps of rows already listed and
+                         adding the sources each row demonstrably reads
+                         (required_deps: its suite, scripts, fixtures, image,
+                         features, markers)
+  gate_rows.py --check   the manifest names exactly the gate's row keys,
                          every QEMU row whose deps name the robot domain
                          builds a robot kernel (its features close over
-                         `use-robot`)
+                         `use-robot`), and every row's deps cover what it
+                         demonstrably reads (--check-deps)
+  gate_rows.py --check-deps
+                         that last check alone: one line per row and source
+                         its deps miss, with the rule that found it
   gate_rows.py --robot-features
                          the kernel features whose closure in kernel/Cargo.toml
                          names `use-robot`: the gate builds a kernel that asks
@@ -36,7 +43,8 @@ network, fault injection, wall-clock judgement, more than one boot).
                          the rows the gate would run, as a KTAP plan; runs
                          nothing and starts no QEMU
   gate_rows.py --self-test
-                         canaries for the two modes above
+                         canaries for the two modes above and for each
+                         required-deps rule
 
 Result protocol (KTAP, as the Linux kernel's kselftest prints it): a
 `KTAP version 1` line, the plan `1..N`, then one line per row,
@@ -404,7 +412,8 @@ def read_manifest():
     return m
 
 
-HEADER = """# Gate rows: key, tier, deps (tools/gate_rows.py --write keeps listed rows).
+HEADER = """# Gate rows: key, tier, deps (tools/gate_rows.py --write keeps listed rows, and
+# adds the sources a row demonstrably reads: gate_rows.py required_deps).
 # tier n1: `make check1` may run the row when the diff touches one of its deps.
 # tier n2: only the full gate (`make ci`) runs it. deps: space-separated globs.
 """
@@ -418,7 +427,13 @@ def write_manifest():
             continue
         seen.add(r["key"])
         tier, deps = old.get(r["key"], (tier_of(r), deps_of(r)))
-        lines.append("%s\t%s\t%s\n" % (r["key"], tier, deps))
+        # A listed row keeps its globs, hand-written ones included; what the
+        # row demonstrably reads and they miss is added after them (and its
+        # markers' files, see required_deps).
+        globs = deps.split()
+        globs += sorted(g for g, (cause, _) in required_deps(r).items()
+                        if g not in globs and (cause == "marker" or not glob_covered(g, globs)))
+        lines.append("%s\t%s\t%s\n" % (r["key"], tier, " ".join(globs)))
     with open(MANIFEST, "w") as f:
         f.write(HEADER)
         f.writelines(lines)
@@ -554,6 +569,515 @@ def check_robot_rows(rs=None, man=None, robot=None):
     for k in bad:
         print("gate_rows: row '%s' depends on the robot domain but builds no robot kernel "
               "(add `use-robot` to its features)" % k)
+    return 1 if bad else 0
+
+
+# ── Required deps: the sources a row demonstrably reads ──────────────────────
+#
+# The SUBSYS tags above are a guess from a row's name. These rules are read
+# from what the row runs, and `--check` fails when a row's manifest deps miss
+# one (`--write` adds them, and keeps every hand-written glob):
+#   crate    a host suite the row runs (host_canary_row's suite, a crate dir
+#            the row names): the suite and every crate it reaches through
+#            `path =` and `workspace = true` dependencies, and the files its
+#            sources pull in with `#[path]` / `include!`;
+#   script   a tools/ file the row runs, and the tools/ modules a Python one
+#            imports;
+#   fixture  any other repository path the row names;
+#   image    the disk image the row boots: the ring-3 programs the image's own
+#            rule adds (its autorun ELF, the ELFs it lists, those of the image
+#            it copies), with their userspace/ libraries. Not their kernel-side
+#            crates (abi, libsys, rings): every boot reads those, and the
+#            subsystem tags already name them;
+#   feature  a kernel feature the row builds, beyond the base (`qemu`) every
+#            gate kernel builds: the optional crates it turns on (`dep:x`, or
+#            `x/f` for an optional `x`) and, for a test hook (a feature named
+#            `*-smoke`, `*-canary`, `*-test` or `ktest`), the files whose cfg
+#            names it, but not a registry file (main.rs, smokes/mod.rs) whose
+#            cfg names HUB_FEATURES hooks or more;
+#   marker   a quoted string the row waits for or greps (in its call, or in
+#            the body of a function at most MARKER_FN_ROWS rows run), printed
+#            by at most MARKER_MAX_SOURCES source files: those files. `--write`
+#            names them even under a dir glob that already covers them:
+#            tools/rows_for_diff.py ranks a row by its most specific glob, so
+#            the row that reads a file's output outranks the rows that only
+#            build its crate (the bench row and domains/robot/bench).
+# A path the row only names as the prefix of a shell expansion
+# (`config/defconfigs/$cell.config`) is no dependency. Comment lines are not
+# read. A function at least SHARED_FN_ROWS rows reach (kbuild, make_disk, ...)
+# is the gate's infrastructure, not one row's: its paths are not counted.
+SHARED_FN_ROWS = 100
+MARKER_FN_ROWS = 3
+MARKER_MAX_SOURCES = 3
+HUB_FEATURES = 8
+TEST_HOOK_RE = re.compile(r"(-smoke|-canary|-test)$|^ktest$")
+SRC_ROOTS = ("kernel/", "crates/", "domains/", "userspace/", "lx/", "micro/", "sdk/")
+PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|crates|domains|kernel|config|lx"
+                     r"|sdk|micro|formal|Documentation)/[\w.+-]+(?:/[\w.+-]+)*)")
+IMG_RE = re.compile(r"\b(disk[\w-]*)\.img\b")
+STR_RE = re.compile(r'"((?:[^"\\$`]|\\.)*)"|\'([^\']*)\'')
+WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
+DEP_SEC_RE = re.compile(r"^\[(?:target\.[^\]]*\.)?(?:dev-|build-)?dependencies(?:\.([\w-]+))?\]$")
+INCLUDE_RE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]|include(?:_str|_bytes)?!\(\s*"([^"]+)"')
+
+_REPO = {}
+
+
+def _cached(name, build):
+    if name not in _REPO:
+        _REPO[name] = build()
+    return _REPO[name]
+
+
+def _read(rel):
+    try:
+        with open(os.path.join(ROOT, rel), encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def repo_files():
+    """Tracked and untracked (not ignored) files, third_party/ left out."""
+    def build():
+        import subprocess
+        out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"], cwd=ROOT,
+                             capture_output=True, text=True).stdout.splitlines()
+        if not out:
+            for d, subs, fs in os.walk(ROOT):
+                subs[:] = [s for s in subs if not s.startswith(".") and s not in ("target", "third_party")]
+                out += [os.path.relpath(os.path.join(d, f), ROOT) for f in fs]
+        files = sorted(f for f in out if f and not f.startswith("third_party/"))
+        dirs = set()
+        for f in files:
+            d = os.path.dirname(f)
+            while d and d not in dirs:
+                dirs.add(d)
+                d = os.path.dirname(d)
+        crates = {os.path.dirname(f) for f in files if os.path.basename(f) == "Cargo.toml"} - {""}
+        return files, set(files), dirs, crates
+    return _cached("files", build)
+
+
+def owning_crate(path):
+    crates = repo_files()[3]
+    d = os.path.dirname(path)
+    while d and d not in crates:
+        d = os.path.dirname(d)
+    return d or None
+
+
+def toml_deps(path):
+    """[name, path or None, workspace?, optional?] per dependency of a
+    Cargo.toml, every dependency table included (dev, build, target)."""
+    out, sec, table = [], False, None
+    for line in _read(path).splitlines():
+        s = line.split("#", 1)[0].strip()
+        if s.startswith("["):
+            m = DEP_SEC_RE.match(s)
+            sec, table = bool(m), (m.group(1) if m else None)
+            if table:
+                out.append([table, None, False, False])
+            continue
+        if not sec or not s:
+            continue
+        if table:
+            p = re.match(r'path\s*=\s*"([^"]+)"', s)
+            if p:
+                out[-1][1] = p.group(1)
+            out[-1][2] |= bool(re.match(r"workspace\s*=\s*true", s))
+            out[-1][3] |= bool(re.match(r"optional\s*=\s*true", s))
+            continue
+        m = re.match(r'^"?([\w-]+)"?(\.workspace)?\s*=\s*(.*)$', s)
+        if m:
+            rest = m.group(3)
+            p = re.search(r'path\s*=\s*"([^"]+)"', rest)
+            out.append([m.group(1), p.group(1) if p else None,
+                        bool(m.group(2)) or bool(re.search(r"workspace\s*=\s*true", rest)),
+                        bool(re.search(r"optional\s*=\s*true", rest))])
+    return out
+
+
+def _workspace_paths():
+    def build():
+        t, sec = {}, False
+        for line in _read("Cargo.toml").splitlines():
+            s = line.split("#", 1)[0].strip()
+            if s.startswith("["):
+                sec = s == "[workspace.dependencies]"
+            elif sec:
+                m = re.match(r'^"?([\w-]+)"?\s*=\s*\{.*\bpath\s*=\s*"([^"]+)"', s)
+                if m:
+                    t[m.group(1)] = os.path.normpath(m.group(2))
+        return t
+    return _cached("ws", build)
+
+
+def dep_dir(crate, name, path, ws):
+    """The repository dir of one dependency of `crate`, or None (crates.io,
+    vendored, outside the tree)."""
+    if path:
+        q = os.path.normpath(os.path.join(crate, path))
+    elif ws:
+        q = _workspace_paths().get(name)
+    else:
+        return None
+    if not q or q.startswith("..") or q.startswith("third_party"):
+        return None
+    return q
+
+
+def crate_graph():
+    """crate dir -> the crate dirs it depends on, and `file:<path>` for a
+    file its sources pull in from outside it (`#[path]`, `include!`)."""
+    def build():
+        files, fileset, _, crates = repo_files()
+        by_crate = {}
+        for f in files:
+            if f.endswith(".rs"):
+                by_crate.setdefault(owning_crate(f), []).append(f)
+        graph = {}
+        for c in sorted(crates):
+            deps = {d for d in (dep_dir(c, n, p, w) for n, p, w, _ in toml_deps(c + "/Cargo.toml")) if d}
+            for f in by_crate.get(c, ()):
+                for m in INCLUDE_RE.finditer(_read(f)):
+                    q = os.path.normpath(os.path.join(os.path.dirname(f), m.group(1) or m.group(2)))
+                    if q in fileset and not q.startswith(c + "/"):
+                        deps.add("file:" + q)
+            graph[c] = deps
+        return graph
+    return _cached("graph", build)
+
+
+def crate_closure(crate):
+    return _cached("closure:" + crate, lambda: _closure(crate))
+
+
+def _closure(crate):
+    graph, out, todo = crate_graph(), set(), [crate]
+    while todo:
+        x = todo.pop()
+        if x not in out:
+            out.add(x)
+            if not x.startswith("file:"):
+                todo.extend(graph.get(x, ()))
+    return out
+
+
+def _closure_globs(crate, only=None):
+    return [x[5:] if x.startswith("file:") else x + "/**" for x in sorted(crate_closure(crate))
+            if only is None or x.replace("file:", "").startswith(only)]
+
+
+def image_programs():
+    """disk image stem (`disk-uhello`) -> the ring-3 program dirs its own
+    rule in mk/images.mk adds, and the image stems it is copied from."""
+    def build():
+        images = _read("mk/images.mk").replace("$(AARCH64_PG_SUFFIX)", "")
+        dirs = dict(re.findall(r"^(\w+)_DIR\s*:=\s*(\S+)", _read("mk/vars.mk"), re.M))
+        on_disk = {}
+        for v, name in re.findall(r"\$\((\w+?)_ELF(?:_AARCH64|_X86_64|_BOARD)?\)\s+::(\w+)\.ELF", images):
+            on_disk.setdefault(name, v)
+
+        def var_dir(v):
+            return dirs.get(re.sub(r"_ELFS?(?:_AARCH64|_X86_64|_BOARD|_RISCV64)?$", "", v))
+        progs, bases = {}, {}
+        for stem, elf in re.findall(r"^\$\(OUT_BUILD\)/(disk[\w-]*)\.img:\s+AUTORUN_ELF\w*\s*:=\s*/fat/(\w+)\.ELF",
+                                    images, re.M):
+            d = var_dir(on_disk[elf]) if elf in on_disk else None
+            if d:
+                progs.setdefault(stem, set()).add(d)
+        for _, line in joined_lines(images):
+            m = re.match(r"^\$\(OUT_BUILD\)/(disk[\w-]*)\.img:([^=]*)$", line)
+            if m:
+                for v in re.findall(r"\$\((\w+_ELFS?(?:_AARCH64|_X86_64)?)\)", m.group(2)):
+                    if var_dir(v):
+                        progs.setdefault(m.group(1), set()).add(var_dir(v))
+                bases.setdefault(m.group(1), set()).update(
+                    re.findall(r"\$\(OUT_BUILD\)/(disk[\w-]*)\.img", m.group(2)))
+        return progs, bases
+    return _cached("images", build)
+
+
+def image_dirs(stem, seen=()):
+    progs, bases = image_programs()
+    out = set(progs.get(stem, ()))
+    for b in bases.get(stem, ()):
+        if b not in seen and b != stem:
+            out |= image_dirs(b, seen + (stem,))
+    return out
+
+
+def _sources():
+    """Product sources (path -> text) and a word index over them, for markers
+    and cfg(feature) lookups."""
+    def build():
+        src = {}
+        for f in repo_files()[0]:
+            if f.startswith(SRC_ROOTS) and f.endswith((".rs", ".c", ".h", ".S")):
+                src[f] = _read(f)
+        index = {}
+        for f, t in src.items():
+            for w in set(WORD_RE.findall(t)):
+                index.setdefault(w, set()).add(f)
+        feat_files = {}
+        for f, t in src.items():
+            if 'feature' in t:
+                c = owning_crate(f)
+                for feat in set(re.findall(r'feature\s*=\s*"([\w-]+)"', t)):
+                    feat_files.setdefault((c, feat), set()).add(f)
+        return src, index, feat_files
+    return _cached("src", build)
+
+
+def producers(marker):
+    """The source files that hold a marker's longest literal run (10 chars or
+    more; a regex's specials, digits and shell expansions split it), or
+    None when more than MARKER_MAX_SOURCES do (a common string marks no
+    one source)."""
+    frag = max(re.split(r"\$\{[^}]*\}|\$\w+|\\.|[\[\](){}|*+?^$.0-9\"']", marker), key=len, default="").strip()
+    return _cached("marker:" + frag, lambda: _producers(frag)), frag
+
+
+def _producers(frag):
+    words = WORD_RE.findall(frag)
+    if len(frag) < 10 or not words:
+        return []
+    src, index, _ = _sources()
+    cand = None
+    for w in sorted(words, key=lambda w: len(index.get(w, ()))):
+        cand = index.get(w, set()) if cand is None else cand & index.get(w, set())
+        if len(cand) <= 2 * MARKER_MAX_SOURCES:
+            break
+    hits = []
+    for f in sorted(cand):
+        if frag in src[f]:
+            hits.append(f)
+            if len(hits) > MARKER_MAX_SOURCES:
+                return None
+    return hits
+
+
+def _kernel():
+    def build():
+        feats = cargo_features(CARGO_TOML)
+        deps, optional = {}, set()
+        for n, p, w, opt in toml_deps("kernel/Cargo.toml"):
+            d = dep_dir("kernel", n, p, w)
+            if d:
+                deps[n] = d
+                if opt:
+                    optional.add(n)
+        base, todo = set(), ["qemu"]
+        while todo:
+            f = todo.pop()
+            if f in feats and f not in base:
+                base.add(f)
+                todo += [e for e in feats[f] if "/" not in e and not e.startswith("dep:")]
+        return feats, deps, optional, base
+    return _cached("kernel", build)
+
+
+def feature_deps(features):
+    """{glob: why} for the kernel features a row builds (see above)."""
+    feats, deps, optional, base = _kernel()
+    feat_files = _sources()[2]
+
+    def count_hooks():
+        n = {}
+        for (_, f), files in feat_files.items():
+            if TEST_HOOK_RE.search(f):
+                for x in files:
+                    n[x] = n.get(x, 0) + 1
+        return n
+    hooks_of = _cached("hooks", count_hooks)
+    out, seen = {}, set()
+
+    def hook_files(crate, f, why):
+        if TEST_HOOK_RE.search(f):
+            for x in sorted(feat_files.get((crate, f), ())):
+                if hooks_of.get(x, 0) < HUB_FEATURES:
+                    out.setdefault(x, why)
+
+    todo = [f for f in features if f in feats and f not in base]
+    while todo:
+        f = todo.pop(0)
+        if f in seen:
+            continue
+        seen.add(f)
+        hook_files("kernel", f, "feature " + f)
+        for e in feats[f]:
+            if e.startswith("dep:"):
+                if e[4:] in deps:
+                    out.setdefault(deps[e[4:]] + "/**", "feature %s turns on %s" % (f, e[4:]))
+            elif "/" in e:
+                name, sub = e.split("/", 1)
+                weak = name.endswith("?")
+                name = name.rstrip("?")
+                if name not in deps:
+                    continue
+                if name in optional and not weak:
+                    out.setdefault(deps[name] + "/**", "feature %s turns on %s" % (f, name))
+                hook_files(deps[name], sub, "feature %s (%s)" % (f, e))
+            elif e in feats:
+                if e not in base:
+                    todo.append(e)
+            elif e in optional:  # an optional dependency's implicit feature
+                out.setdefault(deps[e] + "/**", "feature %s turns on %s" % (f, e))
+    return out
+
+
+def _fn_fan():
+    """gate function -> how many rows reach it (their own function included)."""
+    def build():
+        text = _gate_text()
+        fns = functions(text)
+        reach = {}
+        call_re = re.compile(r"(?:^|[;&|(]|\bthen|\bdo|\belse)\s*([A-Za-z_]\w*)\b", re.M)
+        for name, (_, _, body) in fns.items():
+            seen, todo = [], [name]
+            while todo:
+                for c in call_re.findall(_code(fns[todo.pop()][2])):
+                    if c in fns and c not in seen and c != name:
+                        seen.append(c)
+                        todo.append(c)
+            reach[name] = seen
+        fan = {}
+        for r in rows(text):
+            for f in set(reach.get(r["fn"], [])) | {r["fn"]}:
+                fan[f] = fan.get(f, 0) + 1
+        return fns, reach, fan
+    return _cached("fan", build)
+
+
+def _strip_comment(line):
+    """A shell line without its comment (a `#` that starts a word outside
+    quotes)."""
+    quote, prev = None, " "
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote and (quote == "'" or prev != "\\"):
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and prev in " \t;":
+            return line[:i]
+        prev = ch
+    return line
+
+
+def _code(text):
+    return "\n".join(_strip_comment(l) for l in text.splitlines() if not l.lstrip().startswith("#"))
+
+
+def call_text(line):
+    """The whole `par`/`par_row` call that starts at gate line `line`, its
+    multi-line quoted arguments (a shell script, markers) included."""
+    lines = _cached("gate_lines", lambda: _gate_text().splitlines())
+    buf = ""
+    for i in range(line - 1, min(line + 400, len(lines))):
+        buf += lines[i] + "\n"
+        if lines[i].endswith("\\"):
+            continue
+        try:
+            shlex.split(buf.replace("\\\n", " "))
+            return _code(buf)
+        except ValueError:
+            continue
+    return lines[line - 1]
+
+
+def _script_imports(path):
+    out = []
+    for m in re.finditer(r"^\s*(?:from\s+(\w+)\s+import|import\s+(\w+))", _read(path), re.M):
+        mod = "tools/%s.py" % (m.group(1) or m.group(2))
+        if mod in repo_files()[1] and mod != path:
+            out.append(mod)
+    return out
+
+
+def _path_globs(p):
+    """The globs a repository path the row names stands for: a crate, its
+    closure; a Python tool, itself and the tools/ modules it imports."""
+    _, fileset, dirs, crates = repo_files()
+    if p in crates:
+        return _closure_globs(p)
+    if p in fileset:
+        return [p] + (_script_imports(p) if p.startswith("tools/") and p.endswith(".py") else [])
+    if p in dirs:
+        return [p + "/**"]
+    return []
+
+
+def required_deps(r):
+    """{glob: (cause, why)}: the sources the row demonstrably reads (the rules
+    above), whatever its manifest line says."""
+    fns, reach, fan = _fn_fan()
+    call = r["call"] if "call" in r else call_text(r["line"])
+    own = _code(r["body"] or "")
+    called = "\n".join(_code(fns[f][2]) for f in reach.get(r["fn"], [])
+                       if f in fns and fan.get(f, 0) < SHARED_FN_ROWS)
+    text = "\n".join((call, own, called))
+    req = {}
+
+    def add(globs, cause, why):
+        for x in globs:
+            req.setdefault(x, (cause, why))
+    if r["fn"] == "host_canary_row" and len(r["args"]) > 1:
+        suite = r["args"][1] if "/" in r["args"][1] else "tests/host/" + r["args"][1]
+        add(_path_globs(suite), "crate", "suite " + suite)
+    for m in PATH_RE.finditer(text):
+        p, nxt = m.group(1), text[m.end():m.end() + 2]
+        if nxt[:1] in ("$", "{") or nxt == "/$":
+            continue  # the prefix of a shell expansion
+        p = p.rstrip(".")
+        cause = "crate" if p in repo_files()[3] else "script" if p.startswith("tools/") else "fixture"
+        add(_path_globs(p), cause, p)
+    for stem in IMG_RE.findall(text):
+        for d in sorted(image_dirs(stem)):
+            add(_closure_globs(d, only="userspace/"), "image", stem + ".img")
+    for x, why in feature_deps(sorted(row_features(r))).items():
+        add([x], "feature", why)
+    lits = [a or b for a, b in STR_RE.findall(call)]
+    if r["fn"] in fns and fan.get(r["fn"], 0) <= MARKER_FN_ROWS:
+        lits += [a or b for a, b in STR_RE.findall(own)]
+    for s in lits:
+        hits, frag = producers(s)
+        if hits:
+            add(hits, "marker", "'%s'" % frag)
+    return req
+
+
+def glob_covered(glob, deps):
+    """A required glob is covered when a manifest glob matches it: a dir glob
+    (`a/b/**`) by itself or a dir glob above it, a file by any glob that
+    matches the file (tools/rows_for_diff.py's rule)."""
+    if glob.endswith("/**"):
+        d = glob[:-3]
+        return any(x.endswith("/**") and (d == x[:-3] or d.startswith(x[:-3] + "/")) for x in deps)
+    import fnmatch
+    return any(fnmatch.fnmatch(glob, x) or (x.endswith("/**") and glob.startswith(x[:-2])) for x in deps)
+
+
+def missing_deps(r, deps):
+    return {g: v for g, v in required_deps(r).items() if not glob_covered(g, deps)}
+
+
+def check_deps(rs=None, man=None, quiet=False):
+    """Every row's manifest deps cover the sources it demonstrably reads."""
+    rs = rs if rs is not None else rows()
+    man = man if man is not None else read_manifest()
+    bad, seen = 0, set()
+    for r in rs:
+        if r["key"] in seen:
+            continue
+        seen.add(r["key"])
+        miss = missing_deps(r, man.get(r["key"], ("n2", ""))[1].split())
+        for g, (cause, why) in sorted(miss.items()):
+            if not quiet:
+                print("gate_rows: row '%s' reads %s (%s: %s), not in its deps "
+                      "(tools/gate_rows.py --write adds it)" % (r["key"], g, cause, why))
+        bad |= bool(miss)
     return 1 if bad else 0
 
 
@@ -820,6 +1344,37 @@ def self_test():
                check_robot_rows([row], man, ["a", "use-robot"]) == 1)
         expect("a robot-domain row with a robot kernel fails",
                check_robot_rows([dict(row, body='kbuild "qemu,a"')], man, ["a", "use-robot"]) == 0)
+    # Required deps: one synthetic row per rule. A row whose manifest line
+    # misses what it reads fails the check; with the globs written, it passes.
+    syn = dict(key="syn", fn="syn_row", args=["syn"], body="", prior=None, flags=[], boots="", call="")
+    fixture = "tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb"
+    cases = [
+        ("fixture", dict(syn, body='dtb="${REPO_ROOT}/%s"' % fixture), fixture),
+        ("script", dict(syn, body="python3 tools/fake_brain.py --serve"), "tools/fake_brain.py"),
+        ("suite", dict(syn, fn="host_canary_row", args=["syn", "tls-tests", "canary-no-pin", "t"]),
+         "tests/host/tls-tests/**"),
+        ("suite closure", dict(syn, fn="host_canary_row", args=["syn", "tls-tests", "canary-no-pin", "t"]),
+         "userspace/lib/tls/**"),
+        ("image", dict(syn, body="fresh_disk $AZOS_OUT/build/disk-uhello.img"), "userspace/tests/uhello/**"),
+        ("feature dep", dict(syn, body='kbuild "qemu,use-robot"'), "domains/robot/bench/**"),
+        ("marker", dict(syn, call='par_row qemu_run "syn" "run_all done emitted=49" 180'),
+         "domains/robot/bench/src/lib.rs"),
+    ]
+    with contextlib.redirect_stdout(io.StringIO()):
+        for what, r, want in cases:
+            req = required_deps(r)
+            expect("%s rule: %s not required (got %r)" % (what, want, sorted(req)[:6]), want in req)
+            expect("canary: a %s row missing %s passes the check" % (what, want),
+                   check_deps([r], {"syn": ("n1", " ".join(g for g in req if g != want))}) == 1)
+            expect("a %s row with its deps fails the check" % what,
+                   check_deps([r], {"syn": ("n1", " ".join(req))}) == 0)
+        expect("a dir glob above the required ones does not cover them",
+               check_deps([cases[2][1]], {"syn": ("n1", "tests/** crates/** userspace/**")}) == 0)
+        prefix = dict(syn, body='cp "${REPO_ROOT}/config/defconfigs/$cell.config" x; d=tests/host/${suite}')
+        expect("canary: the prefix of a shell expansion is a dep: %r" % sorted(required_deps(prefix)),
+               not required_deps(prefix))
+        expect("canary: a commented path is a dep",
+               not required_deps(dict(syn, body="  # python3 tools/fake_brain.py\n  true # tools/fake_brain.py")))
     for b in bad:
         print("gate_rows self-test: FAIL " + b)
     if not bad:
@@ -847,8 +1402,10 @@ def main(argv):
     if "--write" in argv:
         print("gate_rows: %d rows written to %s" % (write_manifest(), MANIFEST))
         return 0
+    if "--check-deps" in argv:
+        return check_deps()
     if "--check" in argv:
-        return check_manifest() | check_needs() | check_robot_rows()
+        return check_manifest() | check_needs() | check_robot_rows() | check_deps()
     if "--robot-features" in argv:
         print("\n".join(robot_features()))
         return 0
