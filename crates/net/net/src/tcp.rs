@@ -5027,18 +5027,24 @@ pub fn set_tx_watch_due(due: Option<u64>) {
 }
 
 /// The earliest tick at which [`tcp_tick`] has work on any connection, or
-/// the transmit rings must be looked at ([`set_tx_watch_due`]), or `None`
-/// when no clock can give the poller any. The net poll task sleeps until
-/// this (bounded by its ceiling), on the kernel's timer: no periodic tick.
+/// the transmit rings must be looked at ([`set_tx_watch_due`]), or IPv6
+/// address autoconfiguration ends a Duplicate Address Detection wait
+/// (`ipv6::ipv6_tick`), or `None` when no clock can give the poller any. The
+/// net poll task sleeps until this (bounded by its ceiling), on the kernel's
+/// timer: no periodic tick.
 pub fn next_deadline() -> Option<u64> {
     let tcp = {
         let t = TCP.lock();
         t.conns.iter().filter_map(conn_deadline).min()
     };
-    match (tcp, TX_WATCH_DUE.load(core::sync::atomic::Ordering::Relaxed)) {
+    let d = match (tcp, TX_WATCH_DUE.load(core::sync::atomic::Ordering::Relaxed)) {
         (d, 0) => d,
         (Some(a), b) => Some(a.min(b)),
         (None, b) => Some(b),
+    };
+    match (d, super::ipv6::next_deadline()) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }
 
@@ -5072,8 +5078,9 @@ pub fn poll_sleep_until(dl: u64) -> bool {
     }
 }
 
-/// Kick the poll task if `d` falls before its next wake.
-fn note_deadline(d: Option<u64>) {
+/// Kick the poll task if `d` falls before its next wake (also `ipv6.rs`,
+/// when an advertisement starts a Duplicate Address Detection wait).
+pub(super) fn note_deadline(d: Option<u64>) {
     let Some(d) = d else { return };
     let w = POLL_WAKE_AT.load(core::sync::atomic::Ordering::SeqCst);
     if w != 0 && d < w {

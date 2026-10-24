@@ -10730,6 +10730,11 @@ host_job host_canary_row "envelope: connect canary" net-tests envelope-egress-ca
 # canary makes the receive pass ignore the take, and the named test, alone,
 # must go red (the stack would get the queue's frames).
 host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-canary a_taken_queue_goes_to_the_sink_and_the_stack_sees_none_of_it
+# SLAAC (crates/net/net/src/ipv6.rs, RFC 4862): Duplicate Address Detection
+# and the valid-lifetime rule of §5.5.3 (e); each canary takes one out.
+host_job host_canary_row "ipv6: no DAD canary" net-tests slaac-no-dad-canary the_advertisement_slirp_sends_forms_its_address_through_duplicate_address_detection
+host_job host_canary_row "ipv6: claim ignored canary" net-tests slaac-no-dad-canary a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned
+host_job host_canary_row "ipv6: two hours canary" net-tests slaac-two-hours-canary a_refresh_over_two_hours_is_taken_as_it_is_even_when_it_lowers_what_remains
 host_job host_canary_row "envelope: delete row canary" actuation-tests envelope-row-canary a_contained_delete_row_refuses_every_delete_with_a_receipt
 host_job host_canary_row "envelope: egress row canary" actuation-tests envelope-row-canary an_egress_row_holds_a_domain_to_the_classes_its_level_reaches
 # The config, ota and rt_time kinds of the same gate (Documentation/effects.md,
@@ -12305,11 +12310,11 @@ else
     par "network: DHCP lease" kq "qemu,dhcp-smoke" "network: DHCP lease" "DHCPSMOKE] PASS" 90 \
         -netdev user,id=net0 -device virtio-net-device,netdev=net0
     # IPv6 on the wire: Router Solicitation, the Router Advertisement slirp
-    # answers with, and the SLAAC address the guest then uses as a source,
+    # answers with, the Duplicate Address Detection probe for the address the
+    # guest forms from it, and that address as a source once the probe's wait
+    # is over (the guest's unsolicited Neighbour Advertisement to the routers),
     # judged on a frame capture (tools/ipv6_tcp_row.sh). The TCP leg needs an
-    # IPv6 peer and a guest dialer and is off here (TCP6_PEER unset). The
-    # script has not been booted yet: its slirp assumptions are marked
-    # UNVERIFIED in its header, and the first run may need them corrected.
+    # IPv6 peer and a guest dialer and is off here (TCP6_PEER unset).
     ipv6_tcp_row() {
         local label="network: IPv6 SLAAC on the wire"
         printf "  %-26s" "${label}..."

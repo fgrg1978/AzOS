@@ -119,6 +119,9 @@ pub(crate) fn net_poll_task(_: usize) {
         // One TX batch: the retransmissions it sends share doorbells.
         azos_net::net_tx_batch_begin();
         azos_net::tcp::tcp_tick();
+        // IPv6 address autoconfiguration: a Duplicate Address Detection wait
+        // that ended (its deadline is in `tcp::next_deadline`).
+        azos_net::ipv6::ipv6_tick();
         azos_net::net_tx_batch_end();
         if more {
             // The pass stopped at NET_RX_DRAIN_PER_POLL with frames possibly still

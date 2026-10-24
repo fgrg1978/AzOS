@@ -32,6 +32,14 @@ fw-ipv6-canary = []
 # program took a NIC queue, so the stack keeps handling the queue's frames
 # (`nic_queue::pass`). Never in a real build.
 nic-queue-blind-canary = []
+# Canary (host suite `net-tests`): a SLAAC address is assigned the moment an
+# advertisement forms it, with no Duplicate Address Detection probe or wait.
+# Never in a real build.
+slaac-no-dad-canary = []
+# Canary (host suite `net-tests`): a refresh's valid lifetime over two hours
+# but under what remains is lowered to two hours (RFC 4862 §5.5.3 (e) read
+# wrong). Never in a real build.
+slaac-two-hours-canary = []
 # Enables `[TCP-RX]` / `[TCP-TX]` per-segment trace probes in `tcp.rs`.
 # Propagated from the kernel's `qemu` feature.  Free in production builds.
 qemu = []

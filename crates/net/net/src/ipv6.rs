@@ -21,9 +21,12 @@
 //! | Router Solicitation (TX)    | ✓ (once, at init) |
 //! | Router Advertisement (RX)   | ✓ (SLAAC prefix, default router MAC) |
 //! | SLAAC global address        | ✓ (one /64, EUI-64 interface id) |
+//! | DAD of the SLAAC address    | ✓ (one probe, RFC 4862 §5.4) |
+//! | Unsolicited NA on assignment | ✓ (to the routers, RFC 9131) |
 //! | TCP over IPv6 (TX/RX frame) | ✓      |
 //! | Packet filter (ingress, egress) | ✓ (`filter.rs`, the IPv4 path's) |
-//! | DAD, neighbour cache        | ✗ (future)     |
+//! | DAD of the link-local address | ✗ (future)   |
+//! | Neighbour cache             | ✗ (future)     |
 //! | DHCPv6                      | ✗ (future)     |
 //!
 //! ## Address plan
@@ -42,7 +45,7 @@
 //! the built-in firewall's inbound default lets Neighbour Discovery through
 //! (`filter::ND_TYPES`).
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use azos_sync::SpinLock;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -141,16 +144,47 @@ struct Slaac {
     /// Address option); `router_expiry == 0` when there is none.
     router_mac:    [u8; 6],
     router_expiry: u64,
+    /// Where Duplicate Address Detection of `global` stands.
+    dad:           Dad,
+}
+
+/// Duplicate Address Detection of the global address (RFC 4862 §5.4), one
+/// probe (`DupAddrDetectTransmits` 1, the RFC's default and Linux's).
+#[derive(Clone, Copy)]
+enum Dad {
+    /// The probe is out; the address is tentative until this tick: neither a
+    /// source nor a destination, and a solicitation for it draws no answer.
+    Tentative(u64),
+    /// No other node claimed it in time: the address is ours.
+    Assigned,
+    /// Another node holds it (§5.4.5): never used, and an advertisement that
+    /// refreshes it does not try again; it goes when its valid lifetime ends.
+    Duplicate,
 }
 
 impl Slaac {
     const fn new() -> Self {
         Slaac { global: [0; 16], global_expiry: 0, onlink: false,
-                router_mac: [0; 6], router_expiry: 0 }
+                router_mac: [0; 6], router_expiry: 0, dad: Dad::Assigned }
+    }
+
+    /// `addr` is our global address and still tentative at `now`.
+    fn tentative(&self, addr: &[u8; 16], now: u64) -> bool {
+        self.global == *addr && *addr != [0u8; 16]
+            && matches!(self.dad, Dad::Tentative(until) if now < until)
     }
 }
 
 static SLAAC: SpinLock<Slaac> = SpinLock::new(Slaac::new());
+
+/// The tick the pending Duplicate Address Detection wait ends, 0 when none:
+/// [`ipv6_tick`]'s work, read without the lock by the poller's
+/// [`next_deadline`] on every pass.
+static DAD_DUE: AtomicU64 = AtomicU64::new(0);
+
+/// `RetransTimer` when a Router Advertisement leaves it unspecified (RFC 4861
+/// §10, `RETRANS_TIMER`): how long a Duplicate Address Detection probe waits.
+const RETRANS_TIMER_MS: u32 = 1000;
 
 /// RFC 4862 §5.5.3 (e): a refresh may not shorten the remaining valid
 /// lifetime below two hours, or an off-path forged RA could expire the
@@ -223,6 +257,7 @@ pub fn ipv6_init(mac: &[u8; 6]) {
     let ll = eui64_link_local(mac);
     unsafe { LINK_LOCAL_ADDR = ll; }
     *SLAAC.lock() = Slaac::new();
+    DAD_DUE.store(0, Ordering::Release);
     IPV6_READY.store(true, Ordering::Release);
     // Ask for a Router Advertisement now rather than wait for the router's
     // next unsolicited one (RFC 4861 §6.3.7). Once: a lost solicitation
@@ -240,12 +275,20 @@ pub fn ipv6_link_local() -> [u8; 16] {
 #[inline]
 pub fn ipv6_ready() -> bool { IPV6_READY.load(Ordering::Acquire) }
 
-/// Our SLAAC global address, while it is valid.
+/// Our SLAAC global address, while it is valid and Duplicate Address
+/// Detection has not found it tentative or taken (RFC 4862 §5.4: a tentative
+/// address is not assigned to the interface). Past the probe's wait the
+/// address is ours whether or not [`ipv6_tick`] has run yet.
 pub fn ipv6_global() -> Option<[u8; 16]> {
     let s = SLAAC.lock();
     if s.global == [0u8; 16] { return None; }
-    if azos_drv_sys::timebase::now() >= s.global_expiry { return None; }
-    Some(s.global)
+    let now = azos_drv_sys::timebase::now();
+    if now >= s.global_expiry { return None; }
+    match s.dad {
+        Dad::Duplicate => None,
+        Dad::Tentative(until) if now < until => None,
+        _ => Some(s.global),
+    }
 }
 
 /// Check if `addr` is one of our unicast addresses: link-local or global.
@@ -440,19 +483,49 @@ pub fn icmpv6_rx(src: &[u8; 16], dst: &[u8; 16], payload: &[u8]) -> bool {
             // for it), and a source that is a unicast address — the
             // unspecified source is Duplicate Address Detection, which carries
             // no link-layer option and is never answered here.
-            if payload.len() >= ICMPV6_NS_SIZE && payload[1] == 0
-                && !is_unspecified(src) && !is_multicast(src)
-            {
+            if payload.len() >= ICMPV6_NS_SIZE && payload[1] == 0 {
                 let target: [u8; 16] = payload[8..24].try_into().unwrap_or([0u8; 16]);
-                if is_our_addr(&target)
+                // Our own address still under Duplicate Address Detection (RFC
+                // 4862 §5.4.3): never answered. A probe for it from another
+                // node — the unspecified source, to the target's solicited-node
+                // group, with no link-layer option — means that node wants it
+                // too, and neither may have it.
+                if dad_tentative(&target) {
+                    if is_unspecified(src) && *dst == solicited_node(&target)
+                        && nd_options(&payload[ICMPV6_NS_SIZE..]) == Some(None)
+                    {
+                        dad_duplicate(&target);
+                    }
+                    return true;
+                }
+                if !is_unspecified(src) && !is_multicast(src) && is_our_addr(&target)
                     && (*dst == target || *dst == solicited_node(&target))
                 {
                     if let Some(mac) = nd_source_lla(&payload[ICMPV6_NS_SIZE..]) {
-                        icmpv6_neighbor_advertisement(src, &mac, &target);
+                        icmpv6_neighbor_advertisement(src, Some(&mac), &target,
+                            NA_FLAG_SOLICITED | NA_FLAG_OVERRIDE);
                         return true;
                     }
                 }
             }
+        }
+        ICMPV6_NA => {
+            // No neighbour cache takes advertisements; Duplicate Address
+            // Detection does (RFC 4862 §5.4.4): one for our tentative address
+            // says another node already holds it. RFC 4861 §7.1.2 first: code
+            // 0, a target that is not a group, and the Solicited flag clear on
+            // one sent to a group.
+            if payload.len() >= ICMPV6_NA_SIZE && payload[1] == 0 {
+                let target: [u8; 16] = payload[8..24].try_into().unwrap_or([0u8; 16]);
+                let solicited = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]])
+                    & NA_FLAG_SOLICITED != 0;
+                if !is_multicast(&target) && !(is_multicast(dst) && solicited)
+                    && dad_tentative(&target)
+                {
+                    dad_duplicate(&target);
+                }
+            }
+            return true;
         }
         ICMPV6_RA => {
             // The hop limit (255) was checked by `ipv6_rx`, which still has
@@ -500,16 +573,26 @@ fn icmpv6_echo_reply(local: &[u8; 16], dst: &[u8; 16], request: &[u8]) {
 /// option, or `None` if the solicitation must draw no reply.
 ///
 /// `options` is everything after the 24-byte fixed part. `None` when:
-/// - an option has length 0, which RFC 4861 §4.6 says discards the whole
-///   packet — and which would otherwise never advance the walk;
-/// - an option runs past the end of the message;
+/// - the options do not walk ([`nd_options`]);
 /// - there is no Source Link-Layer Address option;
 /// - the address in it is a group address (broadcast or multicast): replying
 ///   there is the broadcast this path exists to avoid.
+pub fn nd_source_lla(options: &[u8]) -> Option<[u8; 6]> {
+    let mac = nd_options(options)??;
+    // Group bit set (broadcast, 33:33:… multicast) or all-zero: no reply.
+    if mac[0] & 0x01 != 0 || mac == [0u8; 6] { return None; }
+    Some(mac)
+}
+
+/// Walk a Neighbour Discovery message's `options`: `None` when the message
+/// must be discarded — an option of length 0, which RFC 4861 §4.6 says
+/// discards the whole packet and which would otherwise never advance the
+/// walk, or one that runs past the end — else the address in the first
+/// Source Link-Layer Address option, if there is one.
 ///
 /// Every option is walked, not just up to the first match, so a malformed
 /// option after a good one still discards the packet.
-pub fn nd_source_lla(options: &[u8]) -> Option<[u8; 6]> {
+fn nd_options(options: &[u8]) -> Option<Option<[u8; 6]>> {
     let mut found: Option<[u8; 6]> = None;
     let mut i = 0usize;
     while i < options.len() {
@@ -527,20 +610,19 @@ pub fn nd_source_lla(options: &[u8]) -> Option<[u8; 6]> {
         }
         i += octets;
     }
-    let mac = found?;
-    // Group bit set (broadcast, 33:33:… multicast) or all-zero: no reply.
-    if mac[0] & 0x01 != 0 || mac == [0u8; 6] { return None; }
-    Some(mac)
+    Some(found)
 }
 
-/// Send a Neighbor Advertisement in response to a Neighbor Solicitation.
+/// Send a Neighbor Advertisement for `target` with `flags`.
 ///
-/// `dst` is the solicitor's IPv6 source and `dst_mac` the link-layer address
-/// its Source Link-Layer Address option named. The advertisement carries our
-/// own MAC in a Target Link-Layer Address option: RFC 4861 §7.2.4 requires it
-/// when the solicitation was sent to a multicast group, which is how a
-/// solicitation for an unresolved neighbour arrives, and it is sent always.
-fn icmpv6_neighbor_advertisement(dst: &[u8; 16], dst_mac: &[u8; 6], target: &[u8; 16]) {
+/// In response to a Neighbor Solicitation, `dst` is the solicitor's IPv6
+/// source and `dst_mac` the link-layer address its Source Link-Layer Address
+/// option named; unsolicited ([`ipv6_tick`]) `dst` is a group and `dst_mac`
+/// `None`, its group MAC. The advertisement carries our own MAC in a Target
+/// Link-Layer Address option: RFC 4861 §7.2.4 requires it when the
+/// solicitation was sent to a multicast group, which is how a solicitation
+/// for an unresolved neighbour arrives, and it is sent always.
+fn icmpv6_neighbor_advertisement(dst: &[u8; 16], dst_mac: Option<&[u8; 6]>, target: &[u8; 16], flags: u32) {
     // Advertised from the address that was solicited: link-local or global.
     let src = *target;
     let payload_len = ICMPV6_NA_SIZE + ND_OPT_LLA_SIZE;
@@ -557,8 +639,6 @@ fn icmpv6_neighbor_advertisement(dst: &[u8; 16], dst_mac: &[u8; 6], target: &[u8
     na[0] = ICMPV6_NA;
     na[1] = 0;
     na[2] = 0; na[3] = 0; // checksum (computed below)
-    // Flags: Solicited | Override
-    let flags = NA_FLAG_SOLICITED | NA_FLAG_OVERRIDE;
     na[4] = (flags >> 24) as u8;
     na[5] = (flags >> 16) as u8;
     na[6] = (flags >> 8)  as u8;
@@ -574,7 +654,7 @@ fn icmpv6_neighbor_advertisement(dst: &[u8; 16], dst_mac: &[u8; 6], target: &[u8
     na[2] = (csum >> 8) as u8;
     na[3] = csum as u8;
 
-    emit_to(&mut frame, frame_len, dst, Some(dst_mac));
+    emit_to(&mut frame, frame_len, dst, dst_mac);
 }
 
 // ── IPv6 receive dispatcher ───────────────────────────────────────────────────
@@ -755,6 +835,12 @@ fn ra_process(src: &[u8; 16], ra: &[u8]) {
     if !ipv6_ready() || !is_link_local(src) { return; }
     if ra.len() < ICMPV6_RA_SIZE || ra[1] != 0 { return; }
     let router_lifetime = u16::from_be_bytes([ra[6], ra[7]]) as u32;
+    // Retrans Timer (RFC 4861 §6.3.4): 0 leaves the default. It is the
+    // Duplicate Address Detection wait for an address this advertisement forms.
+    let retrans_ms = match u32::from_be_bytes([ra[12], ra[13], ra[14], ra[15]]) {
+        0 => RETRANS_TIMER_MS,
+        ms => ms,
+    };
     let opts = &ra[ICMPV6_RA_SIZE..];
 
     // One walk validates every option and keeps what is wanted.
@@ -808,17 +894,35 @@ fn ra_process(src: &[u8; 16], ra: &[u8]) {
     addr[8..].copy_from_slice(&ipv6_link_local()[8..]);
 
     let held = st.global != [0u8; 16] && now < st.global_expiry;
+    let mut probe = false;
     if !held {
         st.global = addr;
         st.global_expiry = secs_to_expiry(now, valid);
+        // §5.4: the new address is tentative until Duplicate Address
+        // Detection has waited one RetransTimer for a claim to it. Canary
+        // (host suite `net-tests`): it is ours at once, with no probe.
+        if cfg!(feature = "slaac-no-dad-canary") {
+            st.dad = Dad::Assigned;
+        } else {
+            let until = now.saturating_add(
+                retrans_ms as u64 * azos_drv_sys::timebase::TIMER_FREQ / 1000).max(now + 1);
+            st.dad = Dad::Tentative(until);
+            DAD_DUE.store(until, Ordering::Release);
+            probe = true;
+        }
     } else if st.global == addr {
-        // §5.5.3 (e): a refresh raises the lifetime freely, but may lower it
-        // only to two hours or more, so a forged advertisement cannot expire
-        // an address that is in use.
+        // §5.5.3 (e): a refresh takes a valid lifetime over two hours, or
+        // over what remains, as it is; a shorter one may lower what remains
+        // only to two hours, so a forged advertisement cannot expire an
+        // address that is in use, and is ignored when two hours or less
+        // remain. Canary (host suite `net-tests`): any valid lifetime up to
+        // what remains is lowered to two hours, a three-hour one included.
         let remaining_s = if st.global_expiry == u64::MAX { u64::MAX } else {
             (st.global_expiry - now) / azos_drv_sys::timebase::TIMER_FREQ
         };
-        if valid == LIFETIME_INFINITE || valid as u64 > remaining_s {
+        let over_two_hours = valid as u64 > SLAAC_TWO_HOURS_S
+            && !cfg!(feature = "slaac-two-hours-canary");
+        if valid == LIFETIME_INFINITE || over_two_hours || valid as u64 > remaining_s {
             st.global_expiry = secs_to_expiry(now, valid);
         } else if remaining_s > SLAAC_TWO_HOURS_S {
             st.global_expiry = secs_to_expiry(now, SLAAC_TWO_HOURS_S as u32);
@@ -828,6 +932,97 @@ fn ra_process(src: &[u8; 16], ra: &[u8]) {
         return;
     }
     st.onlink = p[3] & PIO_FLAG_ONLINK != 0;
+    drop(st);
+    if probe {
+        dad_probe(&addr);
+        // An advertisement taken outside the poller (an inline `net_poll`)
+        // must wake it for the end of the wait.
+        super::tcp::note_deadline(next_deadline());
+    }
+}
+
+/// Send the Duplicate Address Detection probe for `target` (RFC 4862
+/// §5.4.2): a Neighbour Solicitation from the unspecified address to the
+/// target's solicited-node group, hop limit 255, with no Source Link-Layer
+/// Address option (RFC 4861 §4.3 forbids one from `::`).
+fn dad_probe(target: &[u8; 16]) {
+    let dst = solicited_node(target);
+    let frame_len = ETH_HDR_LEN + IPV6_HDR_SIZE + ICMPV6_NS_SIZE;
+    let mut frame = [0u8; ETH_HDR_LEN + IPV6_HDR_SIZE + ICMPV6_NS_SIZE];
+    ipv6_build_header(&mut frame[ETH_HDR_LEN..], NEXTHDR_ICMPV6, &[0u8; 16], &dst,
+        ICMPV6_NS_SIZE as u16);
+    frame[ETH_HDR_LEN + 7] = ND_HOP_LIMIT;
+    let ns = &mut frame[ETH_HDR_LEN + IPV6_HDR_SIZE..];
+    ns[0] = ICMPV6_NS;
+    // ns[1..8]: code, checksum (below), reserved.
+    ns[8..24].copy_from_slice(target);
+    let csum = pseudo_checksum(&[0u8; 16], &dst, NEXTHDR_ICMPV6, ns);
+    ns[2..4].copy_from_slice(&csum.to_be_bytes());
+    emit(&mut frame, frame_len, &dst);
+}
+
+/// `addr` is our global address and still tentative.
+fn dad_tentative(addr: &[u8; 16]) -> bool {
+    SLAAC.lock().tentative(addr, azos_drv_sys::timebase::now())
+}
+
+/// Another node claimed `addr` while it was tentative (RFC 4862 §5.4.5): it
+/// is not assigned, and the console says so (the RFC's "log a system
+/// management error").
+fn dad_duplicate(addr: &[u8; 16]) {
+    {
+        let mut st = SLAAC.lock();
+        if !st.tentative(addr, azos_drv_sys::timebase::now()) { return; }
+        st.dad = Dad::Duplicate;
+        DAD_DUE.store(0, Ordering::Release);
+    }
+    azos_drv_sys::kprintln!(
+        "[NET] IPv6 SLAAC: {:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:\
+         {:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x} is in use on the link (DAD): not assigned",
+        addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
+        addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15]
+    );
+}
+
+/// When [`ipv6_tick`] next has work: the end of a Duplicate Address
+/// Detection wait. Folded into the poller's deadline (`tcp::next_deadline`).
+pub fn next_deadline() -> Option<u64> {
+    match DAD_DUE.load(Ordering::Acquire) {
+        0 => None,
+        d => Some(d),
+    }
+}
+
+/// The IPv6 timers, run by the net poll task next to `tcp::tcp_tick`: a
+/// Duplicate Address Detection wait that ended with no claim assigns the
+/// address. The console says so, and the routers on the link are told with
+/// one unsolicited Neighbour Advertisement to all-routers (RFC 9131 §4.1),
+/// so the first packet a router forwards to the new address does not wait
+/// on, or get dropped behind, its own address resolution. Solicited and
+/// Override clear: it creates a router's entry, never replaces one.
+pub fn ipv6_tick() {
+    let due = DAD_DUE.load(Ordering::Acquire);
+    if due == 0 { return; }
+    let now = azos_drv_sys::timebase::now();
+    if now < due { return; }
+    let addr = {
+        let mut st = SLAAC.lock();
+        DAD_DUE.store(0, Ordering::Release);
+        match st.dad {
+            Dad::Tentative(until) if now >= until && st.global != [0u8; 16] => {
+                st.dad = Dad::Assigned;
+                st.global
+            }
+            _ => return,
+        }
+    };
+    azos_drv_sys::kprintln!(
+        "[NET] IPv6 SLAAC: {:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:\
+         {:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x}:{:02x}{:02x} assigned",
+        addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
+        addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15]
+    );
+    icmpv6_neighbor_advertisement(&MCAST_ALL_ROUTERS, None, &addr, 0);
 }
 
 /// The link-layer address for a unicast `dst` when it is not on this link's

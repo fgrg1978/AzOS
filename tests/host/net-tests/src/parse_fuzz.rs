@@ -1281,6 +1281,16 @@ mod nd {
         g
     }
 
+    /// The address an advertisement formed, read off the wire: the target of
+    /// the Duplicate Address Detection probe it set off (a solicitation from
+    /// `::`, RFC 4862 §5.4.2), which leaves while the address is tentative and
+    /// so before `ipv6_global` names it.
+    fn formed() -> Option<[u8; 16]> {
+        raw::all().iter()
+            .find(|f| f.len() >= 78 && f[12..14] == [0x86, 0xDD] && f[54] == 135 && f[22..38] == [0u8; 16])
+            .map(|f| f[62..78].try_into().unwrap())
+    }
+
     #[test]
     fn a_router_advertisement_configures_an_address_only_when_every_check_passes() {
         let _g = begin();
@@ -1289,7 +1299,7 @@ mod nd {
             ipv6::ipv6_init(&MAC6); // SLAAC state back to nothing
             raw::reset();
             deliver_ra(hop, src, m);
-            ipv6::ipv6_global()
+            formed()
         };
 
         assert_eq!(try_ra(255, PEER6, &ra(PEER6, 0, &good_pio)), Some(our_global()), "control");
@@ -1360,7 +1370,7 @@ mod nd {
             if it % 2 == 0 { sign(PEER6, ipv6::MCAST_ALL_NODES, &mut m); }
             let hop = if it % 7 == 0 { r.next() as u8 } else { 255 };
             deliver_ra(hop, PEER6, &m);
-            if let Some(g) = ipv6::ipv6_global() {
+            if let Some(g) = formed() {
                 assert_eq!(&g[8..], &ll()[8..], "iteration {it}: interface id");
                 assert!(g[0] != 0x00 && g[0] != 0xFF && !(g[0] == 0xFE && g[1] & 0xC0 == 0x80),
                         "iteration {it}: prefix {:02x?}", &g[..8]);

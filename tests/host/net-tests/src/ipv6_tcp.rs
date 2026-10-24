@@ -470,6 +470,56 @@ fn ra_with_prefix(valid: u32, preferred: u32) -> Vec<u8> {
     ra_frame(FE80_ROUTER, 255, 1800, &o)
 }
 
+/// Let a Duplicate Address Detection wait run out with no claim, as on a link
+/// where nobody else holds the address (the default RetransTimer, 1 s), and
+/// run the IPv6 timers as the poller does at that deadline.
+fn dad_passes() {
+    let t = azos_drv_sys::timebase::now();
+    azos_drv_irqchip::clint::set_test_time(t + TICKS_PER_S + 1);
+    ipv6::ipv6_tick();
+}
+
+/// Take `ra` and let Duplicate Address Detection of what it forms pass.
+fn slaac_up(ra: Vec<u8>) {
+    inbound::push_frame(ra);
+    super::net_poll();
+    dad_passes();
+}
+
+/// The Duplicate Address Detection probe for `target` in `out`, checked byte
+/// by byte (RFC 4862 §5.4.2, RFC 4861 §4.3): from `::` to the target's
+/// solicited-node group and its multicast MAC, hop limit 255, no option.
+fn assert_dad_probe(out: &[Sent], target: [u8; 16]) {
+    let ns: Vec<&Sent> = out.iter().filter(|f| f.next == 58 && f.payload[0] == 135).collect();
+    assert_eq!(ns.len(), 1, "one Duplicate Address Detection probe");
+    let f = ns[0];
+    assert_eq!(f.src, [0u8; 16], "from the unspecified address");
+    assert_eq!(f.dst, ipv6::solicited_node(&target), "to the target's solicited-node group");
+    assert_eq!(f.dst_mac, [0x33, 0x33, 0xFF, target[13], target[14], target[15]]);
+    assert_eq!(f.hop, 255);
+    assert_eq!(f.payload.len(), 24, "no option: a source link-layer option is forbidden from ::");
+    assert_eq!(f.payload[1], 0);
+    assert_eq!(&f.payload[8..24], &target);
+    assert_eq!(ref_checksum(&f.src, &f.dst, 58, &f.payload), 0);
+}
+
+/// The unsolicited Neighbour Advertisement for `addr` in `out` (RFC 9131):
+/// from it, to all-routers and its multicast MAC, hop limit 255, Solicited
+/// and Override clear, our MAC as the target link-layer option.
+fn assert_unsolicited_na(out: &[Sent], addr: [u8; 16]) {
+    let na: Vec<&Sent> = out.iter().filter(|f| f.next == 58 && f.payload[0] == 136).collect();
+    assert_eq!(na.len(), 1, "one unsolicited Neighbour Advertisement");
+    let f = na[0];
+    assert_eq!(f.src, addr, "from the address just assigned");
+    assert_eq!(f.dst, ipv6::MCAST_ALL_ROUTERS);
+    assert_eq!(f.dst_mac, [0x33, 0x33, 0, 0, 0, 0x02]);
+    assert_eq!(f.hop, 255);
+    assert_eq!(&f.payload[4..8], &[0, 0, 0, 0], "Router, Solicited and Override clear");
+    assert_eq!(&f.payload[8..24], &addr);
+    assert_eq!(&f.payload[24..32], &[&[2u8, 1][..], &OUR_MAC[..]].concat()[..]);
+    assert_eq!(ref_checksum(&f.src, &f.dst, 58, &f.payload), 0);
+}
+
 #[test]
 fn init_solicits_routers_and_an_advertisement_configures_a_global_address() {
     let _g = v4_begin();
@@ -500,8 +550,7 @@ fn init_solicits_routers_and_an_advertisement_configures_a_global_address() {
     let before = ipv6::eui64_link_local(&OUR_MAC);
     assert!(!ipv6::is_our_addr(&our_global()));
 
-    inbound::push_frame(ra_with_prefix(3600, 1800));
-    super::net_poll();
+    slaac_up(ra_with_prefix(3600, 1800));
     assert_eq!(ipv6::ipv6_global(), Some(our_global()), "prefix + our interface id");
     assert_eq!(&our_global()[..8], &GLOBAL_PREFIX);
     assert_eq!(&our_global()[8..], &before[8..]);
@@ -554,11 +603,15 @@ fn an_advertisement_that_could_not_come_from_this_link_changes_nothing() {
     inbound::push_frame(badsum);
 
     super::net_poll();
+    // Past any Duplicate Address Detection wait, so a tentative address one of
+    // them formed would show.
+    dad_passes();
     assert_eq!(ipv6::ipv6_global(), None, "none of these may configure an address");
+    assert!(raw::all().iter().filter_map(|f| Sent::parse(f)).all(|f| f.payload[0] != 135),
+        "nor set off a probe for one");
 
     // And the canary: the well-formed one does.
-    inbound::push_frame(ra_with_prefix(3600, 1800));
-    super::net_poll();
+    slaac_up(ra_with_prefix(3600, 1800));
     assert_eq!(ipv6::ipv6_global(), Some(our_global()));
 }
 
@@ -567,8 +620,7 @@ fn the_global_address_answers_ping_and_neighbour_solicitation_from_itself() {
     let _g = v4_begin();
     inbound::reset();
     ipv6::ipv6_init(&OUR_MAC);
-    inbound::push_frame(ra_with_prefix(3600, 1800));
-    super::net_poll();
+    slaac_up(ra_with_prefix(3600, 1800));
     let g = our_global();
 
     // Echo request to the global address: the reply comes from it.
@@ -602,6 +654,7 @@ fn a_refresh_cannot_shorten_a_long_lifetime_below_two_hours() {
     inbound::push_frame(ra_with_prefix(100_000, 50_000));
     let t0 = azos_drv_sys::timebase::now();
     super::net_poll();
+    dad_passes();
     assert_eq!(ipv6::ipv6_global(), Some(our_global()));
     // A forged refresh of the same prefix with a valid lifetime of 10 s.
     inbound::push_frame(ra_with_prefix(10, 5));
@@ -614,11 +667,179 @@ fn a_refresh_cannot_shorten_a_long_lifetime_below_two_hours() {
 }
 
 #[test]
+fn a_refresh_over_two_hours_is_taken_as_it_is_even_when_it_lowers_what_remains() {
+    let _g = begin();
+    azos_drv_irqchip::clint::set_test_time(20_000);
+    let t0 = azos_drv_sys::timebase::now();
+    slaac_up(ra_with_prefix(100_000, 50_000));
+    assert_eq!(ipv6::ipv6_global(), Some(our_global()));
+    // RFC 4862 §5.5.3 (e): a valid lifetime over two hours is taken as it
+    // is, though it lowers the 27 h that remain; only one of two hours or
+    // less is held at two hours.
+    inbound::push_frame(ra_with_prefix(3 * 3600, 3600));
+    super::net_poll();
+    azos_drv_irqchip::clint::set_test_time(t0 + (2 * 3600 + 1800) * TICKS_PER_S);
+    assert_eq!(ipv6::ipv6_global(), Some(our_global()),
+        "valid two and a half hours later: the router said three hours, not two");
+    azos_drv_irqchip::clint::set_test_time(t0 + (3 * 3600 + 60) * TICKS_PER_S);
+    assert_eq!(ipv6::ipv6_global(), None, "and gone after three, as it said, not kept for 27");
+    azos_drv_irqchip::clint::set_test_time(t0 + 1000);
+}
+
+// ── Duplicate Address Detection (RFC 4862 §5.4) ─────────────────────────────
+
+/// The Router Advertisement QEMU's user-mode network (libslirp) sends, byte
+/// for byte off the frame capture of the gate row "network: IPv6 SLAAC on the
+/// wire": from `fe80::2` to all-nodes, hop limit 255, checksum 0xadec. Current
+/// hop limit 64, no flags, router lifetime 1800 s, reachable time and
+/// retransmit timer 0. Options: the router's MAC 52:56:00:00:00:02; the prefix
+/// `fec0::/64` with L and A, valid 86 400 s, preferred 14 400 s; a Recursive
+/// DNS Server option (RFC 8106, type 25) naming `fec0::3`, which nothing here
+/// takes (Linux's kernel does not either: it hands it to user space).
+const SLIRP_RA: [u8; 80] = [
+    0x86, 0x00, 0xad, 0xec, 0x40, 0x00, 0x07, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x01, 0x52, 0x56, 0x00, 0x00, 0x00, 0x02, 0x03, 0x04, 0x40, 0xc0, 0x00, 0x01, 0x51, 0x80,
+    0x00, 0x00, 0x38, 0x40, 0x00, 0x00, 0x00, 0x00, 0xfe, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x19, 0x03, 0x00, 0x00, 0x00, 0x12, 0x4f, 0x80,
+    0xfe, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+];
+const SLIRP_ROUTER: [u8; 16] = addr(0xFE80, 0, 0, 0, 0, 0, 0, 2);
+const SLIRP_ROUTER_MAC: [u8; 6] = [0x52, 0x56, 0, 0, 0, 0x02];
+
+fn tlla(mac: [u8; 6]) -> Vec<u8> {
+    let mut o = vec![2, 1];
+    o.extend_from_slice(&mac);
+    o
+}
+
+/// A Neighbour Solicitation for `target` from `src` to `dst` (its group MAC
+/// when `dst` is a group), carrying `opts`.
+fn ns_frame(src: [u8; 16], dst: [u8; 16], target: [u8; 16], opts: &[u8]) -> Vec<u8> {
+    let mut ns = vec![135, 0, 0, 0, 0, 0, 0, 0];
+    ns.extend_from_slice(&target);
+    ns.extend_from_slice(opts);
+    let mac = if dst[0] == 0xFF { [0x33, 0x33, dst[12], dst[13], dst[14], dst[15]] } else { OUR_MAC };
+    frame6(mac, src, dst, 58, 255, ns, 2)
+}
+
+/// A Neighbour Advertisement for `target` from a peer to all-nodes, with
+/// `flags` (Router 0x80, Solicited 0x40, Override 0x20 in the first octet).
+fn na_frame(target: [u8; 16], flags: u8) -> Vec<u8> {
+    let mut na = vec![136, 0, 0, 0, flags, 0, 0, 0];
+    na.extend_from_slice(&target);
+    na.extend(tlla(PEER_MAC));
+    frame6([0x33, 0x33, 0, 0, 0, 1], FE80_PEER, ipv6::MCAST_ALL_NODES, 58, 255, na, 2)
+}
+
+fn sent() -> Vec<Sent> {
+    raw::all().iter().filter_map(|f| Sent::parse(f)).collect()
+}
+
+#[test]
+fn the_advertisement_slirp_sends_forms_its_address_through_duplicate_address_detection() {
+    let _g = begin();
+    assert_eq!(ref_checksum(&SLIRP_ROUTER, &ipv6::MCAST_ALL_NODES, 58, &SLIRP_RA), 0,
+        "the bytes are slirp's, its checksum included");
+    let mut f = vec![0x33, 0x33, 0, 0, 0, 1];
+    f.extend_from_slice(&SLIRP_ROUTER_MAC);
+    f.extend_from_slice(&[0x86, 0xDD, 0x60, 0, 0, 0]);
+    f.extend_from_slice(&(SLIRP_RA.len() as u16).to_be_bytes());
+    f.extend_from_slice(&[58, 255]);
+    f.extend_from_slice(&SLIRP_ROUTER);
+    f.extend_from_slice(&ipv6::MCAST_ALL_NODES);
+    f.extend_from_slice(&SLIRP_RA);
+    let mut want = [0u8; 16];
+    want[..2].copy_from_slice(&[0xFE, 0xC0]);
+    want[8..].copy_from_slice(&ipv6::eui64_link_local(&OUR_MAC)[8..]);
+
+    let out = inject(f);
+    assert_eq!(out.len(), 1, "the advertisement draws the probe and nothing else");
+    assert_dad_probe(&out, want);
+    // Tentative (RFC 4862 §5.4): neither ours nor a source yet.
+    assert_eq!(ipv6::ipv6_global(), None, "tentative until the probe's wait ends");
+    assert!(!ipv6::is_our_addr(&want));
+    let far = addr(0x2001, 0xdb8, 0xffff, 0, 0, 0, 0, 9);
+    assert_eq!(ipv6::ipv6_source_for(&far), None, "a tentative address is no source");
+    let due = ipv6::next_deadline().expect("the poller is woken at the end of the wait");
+    assert!(tcp::next_deadline().is_some_and(|d| d <= due), "it is in the poller's deadline");
+
+    raw::reset();
+    dad_passes();
+    assert_eq!(ipv6::ipv6_global(), Some(want), "fec0::/64 + our interface id");
+    assert_unsolicited_na(&sent(), want);
+    assert_eq!(raw::count(), 1);
+    assert_eq!(ipv6::next_deadline(), None, "nothing left to wait for");
+    raw::reset();
+    ipv6::ipv6_tick();
+    assert_eq!(raw::count(), 0, "announced once");
+
+    // In use: an off-link SYN leaves from it, to slirp's MAC.
+    let _ = tcp::TcpHandle::connect(far, 80, 0).expect("connect");
+    let out = sent();
+    assert_eq!(out.len(), 1, "the SYN");
+    assert_eq!(out[0].src, want);
+    assert_eq!(out[0].dst_mac, SLIRP_ROUTER_MAC, "the advertisement's router");
+}
+
+#[test]
+fn a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned() {
+    let _g = begin();
+    let g = our_global();
+    let out = inject(ra_with_prefix(3600, 1800));
+    assert_dad_probe(&out, g);
+
+    // While tentative: a packet to it is not taken, and a solicitation for it
+    // from a unicast source is not answered (§5.4.3).
+    let echo = vec![128, 0, 0, 0, 0x12, 0x34, 0, 1];
+    assert!(inject(frame6(OUR_MAC, FE80_PEER, g, 58, 64, echo.clone(), 2)).is_empty(),
+        "no echo reply from a tentative address");
+    assert!(inject(ns_frame(FE80_PEER, ipv6::solicited_node(&g), g, &slla(PEER_MAC))).is_empty(),
+        "a solicitation for a tentative address is not answered");
+    // An advertisement that fails RFC 4861 §7.1.2 is no claim: Solicited set
+    // on one sent to a group.
+    assert!(inject(na_frame(g, 0x40)).is_empty());
+    assert!(ipv6::next_deadline().is_some(), "still tentative");
+
+    // Another node advertises it (§5.4.4): a duplicate.
+    assert!(inject(na_frame(g, 0x20)).is_empty());
+    assert_eq!(ipv6::next_deadline(), None, "no wait left to end");
+    raw::reset();
+    dad_passes();
+    assert_eq!(ipv6::ipv6_global(), None, "never assigned");
+    assert_eq!(raw::count(), 0, "nor announced");
+    // A refresh does not try again (§5.4.5), and the address stays unused.
+    assert!(inject(ra_with_prefix(3600, 1800)).is_empty(), "no new probe for a duplicate");
+    dad_passes();
+    assert_eq!(ipv6::ipv6_global(), None);
+    assert!(inject(frame6(OUR_MAC, FE80_PEER, g, 58, 64, echo, 2)).is_empty());
+}
+
+#[test]
+fn another_nodes_probe_for_the_address_makes_it_a_duplicate_and_a_malformed_one_does_not() {
+    let _g = begin();
+    let g = our_global();
+    let group = ipv6::solicited_node(&g);
+    assert_dad_probe(&inject(ra_with_prefix(3600, 1800)), g);
+    // Not probes (RFC 4861 §7.1.1): a source link-layer option from `::`; a
+    // probe to all-nodes rather than the target's group.
+    assert!(inject(ns_frame([0; 16], group, g, &slla(PEER_MAC))).is_empty());
+    assert!(inject(ns_frame([0; 16], ipv6::MCAST_ALL_NODES, g, &[])).is_empty());
+    dad_passes();
+    assert_eq!(ipv6::ipv6_global(), Some(g), "control: those were no claim");
+
+    // Again from nothing, and this time another node probes for it too.
+    ipv6::ipv6_init(&OUR_MAC);
+    assert_dad_probe(&inject(ra_with_prefix(3600, 1800)), g);
+    assert!(inject(ns_frame([0; 16], group, g, &[])).is_empty(), "a probe is never answered");
+    dad_passes();
+    assert_eq!(ipv6::ipv6_global(), None, "both wanted it: neither may have it");
+}
+
+#[test]
 fn off_link_traffic_goes_to_the_router_and_local_traffic_does_not() {
     let _g = begin();
     // Router known, prefix on-link.
-    inbound::push_frame(ra_with_prefix(3600, 1800));
-    super::net_poll();
+    slaac_up(ra_with_prefix(3600, 1800));
     raw::reset();
 
     // Off-link destination, from the global address, to the router's MAC.
@@ -967,8 +1188,12 @@ fn a_gateway_drops_v6_echo_and_syn_while_slaac_and_neighbour_discovery_still_wor
     let before = azos_decision::total() + 1;
     let refused = filter::stats().refused;
 
-    // SLAAC under the inbound default: the advertisement is taken...
-    assert!(inject(ra_with_prefix(3600, 1800)).is_empty());
+    // SLAAC under the inbound default: the advertisement is taken (its only
+    // answer is the Duplicate Address Detection probe)...
+    let out = inject(ra_with_prefix(3600, 1800));
+    assert_eq!(out.len(), 1);
+    assert_dad_probe(&out, our_global());
+    dad_passes();
     assert_eq!(ipv6::ipv6_global(), Some(our_global()), "the Router Advertisement passed");
     // ...and a solicitation for the new address is answered.
     let out = inject(ns_for(our_global()));
