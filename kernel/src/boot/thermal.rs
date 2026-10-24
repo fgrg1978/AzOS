@@ -381,11 +381,17 @@ fn zones_of(_dtb_ptr: usize) -> Option<azos_dtb::DtThermal> {
 /// The runtime over the zones of `dt`, or with no zone when there is none;
 /// each domain's boot OPP from `boot_khz`. The report says what the tree had
 /// that could not be used (`None`: no tree was read).
-// arch-only: every aarch64 and x86_64 build has a board that can call it (the
-// Pi, the PC); a riscv64 build only with the VisionFive 2 or the K1.
+// arch-only: every x86_64 build has a board that can call it (the PC); an
+// aarch64 build with the Raspberry Pi firmware, a riscv64 build with the
+// VisionFive 2 or the K1.
 #[cfg(all(
     not(feature = "thermal-smoke"),
-    any(target_arch = "aarch64", target_arch = "x86_64", all(feature = "vf2", feature = "soc"), all(feature = "soc-k1", feature = "k1"))
+    any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", feature = "rpi-firmware"),
+        all(feature = "vf2", feature = "soc"),
+        all(feature = "soc-k1", feature = "k1")
+    )
 ))]
 fn runtime(
     dt: Option<&azos_dtb::DtThermal>,
