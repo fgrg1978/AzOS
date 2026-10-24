@@ -2,6 +2,12 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Boot-time install steps that `kernel_main` runs in order, one module per
 //! subsystem. Everything is re-exported so `kernel_main` calls them by name.
+//!
+//! `kernel_main`'s boot phases are functions here and in `tasks` and `smokes`,
+//! each a stretch of its sequence, called in the order the stretches had in
+//! its one body. Each is `#[inline(always)]`: the boot still runs in one frame
+//! on the boot stack, the frame the boot-stack line (`boot_stack_report`) and
+//! the frame row (`stack_frames.py --boot kernel_main`) read.
 
 mod early;
 // The `[ISA]` boot line and the baseline/`require` refusals.
