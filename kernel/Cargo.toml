@@ -242,6 +242,9 @@ exec-regs-canary = ["azos_sched/exec-regs-canary"]
 # row that declares none of them. The `inspect: views need their grant` rows
 # go red with it. Never in a real build.
 inspect-view-canary = ["azos_ipc/inspect-view-canary"]
+# The `scale` vsbench lanes' canary (crates/core/ipc/Cargo.toml): the futex
+# lookups hold the region table longer. Never in a real build.
+memobj-hold-canary = ["azos_ipc/memobj-hold-canary"]
 # Gate canary of the admin task list (`kernel/src/boot/inspect_tasks.rs`): a
 # change in a task slot is written by the next refresh instead of where it
 # happens, as before the list was written on change. The `inspect: views`

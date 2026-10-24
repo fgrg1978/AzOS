@@ -1225,6 +1225,7 @@ fn take_mapping_root_locked(region: &mut MemObj, tid: u32) -> Option<(usize, usi
 /// table, which fills the entry.
 pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize)> {
     let mut regions = MEMOBJS.lock();
+    hold_canary();
     let w = resolve_mapped_locked(&mut regions, tid, va)?;
     Some((LAYOUT.pack(w.idx as u32, regions[w.idx].generation), w.off))
 }
@@ -1254,6 +1255,7 @@ pub fn memobj_with_mapped_word<R>(
         return None;
     }
     let mut regions = MEMOBJS.lock();
+    hold_canary();
     let w = resolve_mapped_locked(&mut regions, tid, va)?;
     let region = &regions[w.idx];
     if write
@@ -1286,6 +1288,18 @@ pub fn memobj_with_mapped_word<R>(
     let out = f(packed, w.off, word);
     drop(held);
     Some(out)
+}
+
+/// Canary `memobj-hold-canary` (the `scale` vsbench lanes): the futex
+/// lookups hold the table a few thousand spins longer, so futex calls on
+/// several harts queue on it. Nothing without the feature.
+#[inline(always)]
+fn hold_canary() {
+    if cfg!(feature = "memobj-hold-canary") {
+        for i in 0..4000u32 {
+            core::hint::black_box(i);
+        }
+    }
 }
 
 /// Host suites only: called with the frame address between the lookup of a
