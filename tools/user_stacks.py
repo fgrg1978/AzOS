@@ -231,6 +231,14 @@ def self_test():
     depth, path_, _, _, panic = stack_chain.chain(g, fr, "root")
     expect("panic chain", (path_, panic), (["root", "g0", "pbc"], (500 + 119 + 48, [h, "g19", "pbc"])))
     expect("panic depth", depth, 16 + 100 + 48 + 500 + 119 + 48)
+    # A knot past the DP's size is walked, not charged whole: a hub and 20
+    # spokes that call it back are one component, and no simple path holds
+    # two spokes.
+    g = {"root": {"hub"}, "hub": {f"s{i}" for i in range(20)}}
+    g.update({f"s{i}": {"hub", "leaf"} if i == 3 else {"hub"} for i in range(20)})
+    fr = {"root": 16, "hub": 200, "leaf": 1000, **{f"s{i}": 100 + i for i in range(20)}}
+    depth, path_, _, _, panic = stack_chain.chain(g, fr, "root")
+    expect("walked knot", (depth, path_, panic), (16 + 200 + 103 + 1000, ["root", "hub", "s3", "leaf"], None))
     if failures:
         print("\n".join(failures))
         sys.exit(1)

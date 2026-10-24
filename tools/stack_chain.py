@@ -157,7 +157,7 @@ def chain(graph, frames, root):
     THE PANIC HANDLER IS ITS OWN ROOT. Anything that can panic calls it, and
     it calls the heap, the console and the file system (the crash log), which
     can all panic: through it, 155 functions of the 2026-10-24 qemu kernel are
-    one recursive component, charged whole (14.7 KiB).
+    one recursive component, too big to walk and charged whole (14.7 KiB).
     So the calls into the handler are cut, its chain is measured from it over
     the cut graph, and that depth is added to the deepest chain once, as if
     the deepest frame panicked. A panic inside the handler is not followed:
@@ -246,9 +246,15 @@ def longest(graph, frames, root):
     # wherever it ends. Charging the whole component's sum instead -- one
     # pass around the knot -- overstated the embedded image by 4 KiB, because
     # the 14 mutually recursive functions of the TCP/IP send path cannot all
-    # be on one path. A component too big for the DP is charged that sum and
-    # said so, since an exponential lint is no lint either.
+    # be on one path. A component too big for the DP (2^k masks) is walked
+    # instead: every simple path inside it, depth first, with the best exit
+    # at each step -- the same quantity. The TCP/IP knot is 25 functions, and
+    # charged whole it was 13.4 KiB of a 25.4 KiB chain where its deepest
+    # simple path is 10.9 KiB; its walk is ~3,000 steps. Only past
+    # WALK_MAX steps is a component charged its sum, since an exponential
+    # lint is no lint either.
     DP_MAX = 18
+    WALK_MAX = 1_000_000
     succ_comp = [set() for _ in comps]
     for f, cs in order.items():
         for c in cs:
@@ -257,7 +263,26 @@ def longest(graph, frames, root):
 
     best_node = {}          # function -> deepest chain starting at it
     next_of = {}            # function -> the function it continues into
-    approximated = []
+
+    def walk(members, inside, out):
+        """Per member, the deepest chain from it: `(depth, the members it
+        runs through)`; None past WALK_MAX steps."""
+        best, steps = {}, 0
+        for start in members:
+            top, top_path = -1, None
+            work = [(start, frames.get(start, 0), (start,))]
+            while work:
+                v, acc, path = work.pop()
+                steps += 1
+                if steps > WALK_MAX:
+                    return None
+                if acc + out[v][0] > top:
+                    top, top_path = acc + out[v][0], path
+                for w in reversed(order.get(v, ())):
+                    if w in inside and w not in path:
+                        work.append((w, acc + frames.get(w, 0), path + (w,)))
+            best[start] = (top, list(top_path))
+        return best
     for ci, members in enumerate(comps):
         inside = {f: i for i, f in enumerate(members)}
         # Best way OUT of each member: into another component, already settled.
@@ -274,7 +299,12 @@ def longest(graph, frames, root):
             next_of[f] = out[f][1]
             continue
         if len(members) > DP_MAX:
-            approximated.append(members)
+            walked = walk(members, inside, out)
+            if walked is not None:
+                for f, (d, p) in walked.items():
+                    best_node[f] = d
+                    next_of[f] = ("walked", p, out[p[-1]][1])
+                continue
             total = sum(frames.get(f, 0) for f in members)
             b, n = max((out[f] for f in members), key=lambda t: t[0])
             for f in members:
@@ -311,7 +341,10 @@ def longest(graph, frames, root):
         total, path, cur = best_node.get(root, 0), [], root
         while cur is not None:
             n = next_of.get(cur)
-            if isinstance(n, tuple) and n[0] == "in-component":
+            if isinstance(n, tuple) and n[0] == "walked":
+                path.extend(n[1])
+                cur = n[2]
+            elif isinstance(n, tuple) and n[0] == "in-component":
                 members, dp, step, full, out = n[1]
                 mask, v = full, n[2]
                 while v is not None:
