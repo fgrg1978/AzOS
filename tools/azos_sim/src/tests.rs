@@ -50,7 +50,7 @@ fn two_cpus_place_both_rows_and_one_refuses() {
     assert_eq!(d.placed.iter().map(|p| (p.row, p.cpu, p.density_ppm)).collect::<Vec<_>>(), [(0, 0, 600_000), (1, 1, 600_000)]);
 
     let d = dry_boot_files(caps("NOSUCH.ELF").as_bytes(), SCHED, 1);
-    assert_eq!(d.receipts, [rc(Rule::DeadlineAdmission, Verdict::Refuse, 1, [0, 3, 0])]);
+    assert_eq!(d.receipts, [rc(Rule::DeadlineAdmission, Verdict::Refuse, 1, [0, 3, 2])]);
     assert!(!d.boots());
 }
 

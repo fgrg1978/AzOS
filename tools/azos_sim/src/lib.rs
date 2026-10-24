@@ -253,7 +253,7 @@ pub fn read_boot_log(log: &str, cpus: usize) -> Result<BootLog, String> {
         if n != cpus.to_string() {
             return Err(format!("the boot refused on {n} CPU(s), not the {cpus} it was given"));
         }
-        let r = Receipt { rule: Rule::DeadlineAdmission, verdict: Verdict::Refuse, subject, numbers: [0, rows, 0] };
+        let r = Receipt { rule: Rule::DeadlineAdmission, verdict: Verdict::Refuse, subject, numbers: [0, rows, refused_row(why)] };
         return Ok(BootLog::Admission { receipts: vec![r], refusal: Some(why.trim_end_matches(HALT).to_string()) });
     }
     let placed: u64 = match after(log, "[TOPO] Deadline admission: ") {
@@ -264,9 +264,19 @@ pub fn read_boot_log(log: &str, cpus: usize) -> Result<BootLog, String> {
     let band = after(log, "[TOPO] Deadline admission REFUSED: ").map(|e| e.split(" — the band's").next().unwrap_or(e).to_string());
     if placed > 0 {
         let verdict = if band.is_some() { Verdict::Refuse } else { Verdict::Admit };
-        receipts.push(Receipt { rule: Rule::RtBandCap, verdict, subject, numbers: [placed, azos_limits::RT_BAND_CAP_PCT as u64, 0] });
+        let row = band.as_deref().map_or(0, refused_row);
+        receipts.push(Receipt { rule: Rule::RtBandCap, verdict, subject, numbers: [placed, azos_limits::RT_BAND_CAP_PCT as u64, row] });
     }
     Ok(BootLog::Admission { receipts, refusal: band })
+}
+
+/// The third number of a refusal record (`DeadlineRefusal::record_row`: the
+/// first row refused plus one, 0 for none) from the refusal as the console
+/// prints it (`{:?}`, `... { task: <row> }`).
+fn refused_row(why: &str) -> u64 {
+    why.split_once("task: ")
+        .and_then(|(_, t)| t.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok())
+        .map_or(0, |t| t + 1)
 }
 
 /// Hold a dry boot to a real boot's console: the same install verdict, the
