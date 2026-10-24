@@ -677,7 +677,11 @@ fn the_installers_row_budgets_its_working_set() {
     let row = topo.find_task(&azos_topology::MaybeStr::from_bytes(b"PKGD.ELF")).expect("the installer's row");
     assert_eq!(row.mem_pages, azos_topology::builder::PKGD_MEM_PAGES);
     let caps = topo.caps_of(row);
-    assert_eq!(caps.len(), 5, "the endpoint, the staging tree, the boot slots (read), the entropy pool (read; TLS keys) and the root directory (read), nothing else");
+    assert_eq!(caps.len(), 6, "the endpoint, the staging tree, the boot slots (read), the entropy pool (read; TLS keys), the root directory (read) and the power assertion, nothing else");
+    // Kept awake while it serves: `hold`/`release` on `powerassert`, never
+    // the `power` endpoint's WRITE (the shutdown).
+    assert!(caps.iter().any(|c| c.target.as_bytes() == b"powerassert" && c.perms == azos_abi::cap::CapPerms::WRITE));
+    assert!(!caps.iter().any(|c| c.target.as_bytes() == b"power"), "the installer never holds the shutdown right");
     assert!(caps.iter().any(|c| c.target.as_bytes() == b"entropy" && c.perms == azos_abi::cap::CapPerms::READ));
     assert!(caps.iter().any(|c| c.target.as_bytes() == b"/" && c.kind == azos_abi::cap::CapKind::Node
         && c.perms == azos_abi::cap::CapPerms::READ), "a package is opened by path beneath the read-only root");

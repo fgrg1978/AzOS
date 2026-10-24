@@ -27,6 +27,7 @@
 //! is red.
 
 use azos_topology::builder::{default_minimal, SH_PRIORITY, TASK_SH_IMAGE};
+use azos_topology::deadline::LevelOrder;
 use azos_topology::{ring3_priority, MaybeStr, RowSched, ServiceEdge, Topology};
 
 /// The ring-3 floor and ceiling `topo_sched` applies
@@ -174,7 +175,7 @@ fn the_ina219_driver_holds_an_admitted_reservation() {
     assert_eq!(prio(&t, TASK_INADRV_IMAGE), INADRV_PRIORITY);
     assert_eq!(ring3_priority(INADRV_PRIORITY as u32, 0, CEIL), (INADRV_PRIORITY as u32, false));
     for cpus in [1, 2, 4] {
-        let r = t.deadline_admission(cpus).unwrap_or_else(|e| panic!("{cpus} CPU(s): {e:?}"));
+        let r = t.deadline_admission(cpus, LevelOrder::Edf).unwrap_or_else(|e| panic!("{cpus} CPU(s): {e:?}"));
         assert!(r.cpu_of(ti as u16).is_some(), "{cpus} CPU(s): INADRV.ELF not placed");
     }
     // The period is the chip's sample period, and the deadline is the period.
