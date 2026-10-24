@@ -189,9 +189,12 @@ fn site_text(site: usize, buf: &mut [u8; SITE_MAX]) -> &str {
     core::str::from_utf8(&buf[..n]).unwrap_or("?")
 }
 
+/// Every site a track keeps: [`print_summary`]'s `top` for the whole table.
+pub const SITES: usize = lat::SITES;
+
 /// Console summary: per kind, every hart that closed a window, then the
-/// `top` worst opening sites over all harts (at most the [`lat::SITES`] a
-/// track keeps). Lines start `[LATTRACE]`.
+/// `top` worst opening sites over all harts (at most the [`SITES`] a track
+/// keeps). Lines start `[LATTRACE]`.
 pub fn print_summary(tag: &str, top: usize) {
     for kind in [Kind::Irq, Kind::Preempt] {
         let name = kind_name(kind);

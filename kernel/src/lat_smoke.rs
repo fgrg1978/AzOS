@@ -397,7 +397,7 @@ fn rt_task(num_cpus: usize) {
     // Every site the tracks kept, not the worst five: a row reads one site's
     // window (the console's, `console: masked window`) wherever it ranks.
     #[cfg(feature = "lat-trace")]
-    crate::lat_trace::print_summary("run", azos_arch::lat_hook::lat::SITES);
+    crate::lat_trace::print_summary("run", crate::lat_trace::SITES);
     // The introspection tree's read-out, refreshed now and read back as a
     // ring-3 reader reads it.
     #[cfg(all(feature = "lat-trace", feature = "inspect"))]
