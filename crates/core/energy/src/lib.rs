@@ -17,7 +17,7 @@
 //! * [`dt`] — the DTB source: `operating-points-v2` and `idle-states` tables
 //!   read by `azos_dtb::dtb_energy`, turned into a model.
 //! * [`seams`] — `Placement`, `Governor`, `IdleGovernor`: enum-dispatched, no
-//!   `dyn`. Today's behaviour (`Legacy`, `Fixed`, `WfiOnly`) unless the
+//!   `dyn`. Today's behaviour (`Legacy`, `Fixed`, `ShallowOnly`) unless the
 //!   signed topology's mode opts in (`balanced`/`endurance` with a model).
 //! * [`governor`] — E3: schedutil, the deadline floor (I1), the WCET floor
 //!   (I6). Decisions are recorded in the tick; the board's apply step moves

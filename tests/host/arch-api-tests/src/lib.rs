@@ -378,7 +378,7 @@ mod tests {
 
     impl Cpu for Stub {
         fn hart_id(&self) -> usize { 0 }
-        fn wfi(&self) {}
+        fn wait_for_interrupt(&self) {}
         // The stub's deeper states "sleep" one microsecond more per depth
         // step, so a test can tell the depth reached the implementation.
         fn cpu_idle(&self, depth: u8) -> u64 { 1 + depth as u64 }
@@ -617,7 +617,7 @@ mod tests {
     fn stub_cpu_hart_id() {
         let s = Stub;
         assert_eq!(s.hart_id(), 0);
-        s.wfi(); // no-op; just confirm it's callable
+        s.wait_for_interrupt(); // no-op; just confirm it's callable
     }
 
     #[test]

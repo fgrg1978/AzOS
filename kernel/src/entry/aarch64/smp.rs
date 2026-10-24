@@ -70,7 +70,7 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
                                (CORE_ONLINE timed out)", hart);
                     break;
                 }
-                ARCH.wfi();
+                ARCH.wait_for_interrupt();
             }
             if crate::entry::aarch64::CORE_ONLINE[hart].load(Ordering::Acquire) {
                 let mpidr = crate::entry::aarch64::CORE_MPIDR[hart].load(Ordering::Acquire);
@@ -125,7 +125,7 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
                     if ARCH.now_ticks() >= tick_deadline {
                         break;
                     }
-                    ARCH.wfi();
+                    ARCH.wait_for_interrupt();
                 }
                 let ticks = crate::entry::aarch64::TICK_PER_HART[hart].load(Ordering::Acquire);
                 if ticks < MIN_TICKS {
@@ -174,7 +174,7 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
                            ({} == {})", target_hart, now_count, before);
                 break;
             }
-            ARCH.wfi();
+            ARCH.wait_for_interrupt();
         }
         let after = crate::entry::aarch64::SGI_RECEIVED[target_hart].load(Ordering::Acquire);
         if after > before {

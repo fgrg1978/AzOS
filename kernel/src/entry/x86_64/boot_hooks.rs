@@ -1083,7 +1083,7 @@ fn interrupt_selftests() {
     let start = ARCH.now_ticks();
     let deadline = start.wrapping_add(hz.saturating_mul(2));
     while tick.load(Ordering::Acquire) < before + TICK_TARGET && ARCH.now_ticks() < deadline {
-        ARCH.wfi();
+        ARCH.wait_for_interrupt();
     }
     let got = tick.load(Ordering::Acquire) - before;
     let ms = ARCH.now_ticks().wrapping_sub(start) / (hz / 1000).max(1);

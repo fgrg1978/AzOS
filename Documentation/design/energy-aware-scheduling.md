@@ -24,7 +24,7 @@ integer arithmetic. The kernel half (gathering inputs, applying answers) is `cra
 
 The default selection (`Seams::TODAY` in `seams.rs`) is
 `Placement::Legacy`, `Governor::Fixed` (no request, the clock stays where the platform left it) and
-`IdleGovernor::WfiOnly`. `Seams::select` chooses anything else only when an
+`IdleGovernor::ShallowOnly`. `Seams::select` chooses anything else only when an
 energy model is present **and** the signed topology's mode is `balanced` or
 `endurance`.
 
@@ -305,7 +305,7 @@ Source: `crates/core/energy/src/governor.rs`, `crates/core/energy/src/idle.rs`,
   slack to the nearest real-time deadline armed on that CPU. A live counter of
   violations is kept and must stay zero.
 - **I4** With no model, or in `performance` mode, behaviour is the default
-  one: the seams are `Legacy`, `Fixed` and `WfiOnly`.
+  one: the seams are `Legacy`, `Fixed` and `ShallowOnly`.
 - **I5** The energy mode comes from the signed topology only. No Kconfig symbol
   and no configuration key sets it.
 - **I6** No governor selects an OPP below the one at which the safety path's

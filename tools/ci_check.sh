@@ -24213,7 +24213,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # verdict line per check, FAIL only from the failure path:
     #   model  — boot resolved the topology's model with exactly the declared
     #            shape (2 domains, 3 + 4 OPPs, 2 + 1 idle states), mode
-    #            performance, and the seams are still Legacy/Fixed/WfiOnly.
+    #            performance, and the seams are still Legacy/Fixed/ShallowOnly.
     #   refuse — the same model with one power figure wrong, through the
     #            SCHED.TOML parser and `resolve`: PowerNotIncreasing at domain 1
     #            OPP 2, no model.

@@ -119,10 +119,10 @@ impl Cpu for X86_64 {
     }
     /// `hlt`, with interrupts in the state the caller left them: with them
     /// masked nothing but an NMI ends it, the panic path's final stop.
-    fn wfi(&self) {
+    fn wait_for_interrupt(&self) {
         on_x86!(cpu::hlt(), "x86_64: wfi: hlt (mwait where the idle governor allows)")
     }
-    /// Depth 0 is [`Self::wfi`] (`hlt`); depth `d` is the `d`-th state of
+    /// Depth 0 is [`Self::wait_for_interrupt`] (`hlt`); depth `d` is the `d`-th state of
     /// `cpu::idle::ladder()` entered by `mwait` (`mwaitx` on AMD), and a depth
     /// past the ladder, or past the cap the boot set from the model's latencies, is
     /// the deepest state allowed, never a deeper one. No
@@ -140,7 +140,7 @@ impl Cpu for X86_64 {
                     // percpu-hint: the idle task is pinned to its CPU
                     cpu::idle::enter(ladder.wait(), s.hint, cpu::percpu_area(cpu::percpu_id()) as *const u8)
                 }
-                _ => self.wfi(),
+                _ => self.wait_for_interrupt(),
             }
             azos_arch_api::ticks_to_us(timer::now_ticks().wrapping_sub(t0), timer::TICK_HZ)
         }, "x86_64: cpu_idle: hlt, or mwait at the depth the idle governor picked")

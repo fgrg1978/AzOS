@@ -24,7 +24,7 @@ use crate::{EarlyBoot, ARCH_ENTRY};
 /// can run without what just failed.
 fn halt() -> ! {
     loop {
-        azos_arch::ARCH.wfi();
+        azos_arch::ARCH.wait_for_interrupt();
     }
 }
 

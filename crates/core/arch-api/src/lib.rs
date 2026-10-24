@@ -77,9 +77,10 @@ pub trait Cpu: Send + Sync {
     /// where it is the second.
     fn hart_id(&self) -> usize;
 
-    /// Wait For Interrupt — low-power idle. Returns when any
-    /// pending interrupt is delivered to this hart.
-    fn wfi(&self);
+    /// Wait for an interrupt (riscv64 and aarch64 `wfi`, x86_64 `hlt`):
+    /// low-power idle. Returns when any pending interrupt is delivered to
+    /// this hart.
+    fn wait_for_interrupt(&self);
 
     /// Idle the calling hart in the idle state of index `depth` and return
     /// how long it slept, in microseconds, measured from entry to the
@@ -87,7 +88,7 @@ pub trait Cpu: Send + Sync {
     ///
     /// The one idle seam: the idle task asks the energy governor for a depth
     /// (`azos_energy::IdleChoice`), the kernel passes it here. `depth` 0 is
-    /// [`Self::wfi`]; a depth `d >= 1` is the `d`-th state of the platform's
+    /// [`Self::wait_for_interrupt`]; a depth `d >= 1` is the `d`-th state of the platform's
     /// idle-state table, shallowest first. aarch64 and riscv64 take the table
     /// from the device tree's `cpu-idle-states` and enter a state with PSCI
     /// `CPU_SUSPEND` / SBI HSM `hart_suspend`: a standby or retention state
@@ -109,7 +110,7 @@ pub trait Cpu: Send + Sync {
     /// power-down state with no resume entry set) is entered as the deepest
     /// one below it, else as the shallow wait (`wfi` / `hlt`). The return
     /// value is what the governor learns from, so it is measured whatever the
-    /// depth. Like `wfi`, it returns when any interrupt is pending.
+    /// depth. Like [`Self::wait_for_interrupt`], it returns when any interrupt is pending.
     fn cpu_idle(&self, depth: u8) -> u64;
 
     /// Park this hart forever (used in panic-handler paths). Does

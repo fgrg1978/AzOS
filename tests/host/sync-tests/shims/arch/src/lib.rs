@@ -215,7 +215,7 @@ impl Interrupts for HostArch {
 /// the read hook exactly as `cpu::hart_id()` does); nothing else is reached.
 impl azos_arch_api::Cpu for HostArch {
     fn hart_id(&self) -> usize { cpu::hart_id() }
-    fn wfi(&self) { unimplemented!("sync-tests never idles") }
+    fn wait_for_interrupt(&self) { unimplemented!("sync-tests never idles") }
     fn cpu_idle(&self, _depth: u8) -> u64 { unimplemented!("sync-tests never idles") }
     fn halt(&self) -> ! { unimplemented!("sync-tests never halts") }
     fn now_ticks(&self) -> u64 { unimplemented!("sync-tests has no timer") }

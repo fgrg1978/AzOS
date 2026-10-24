@@ -87,7 +87,7 @@ impl Cpu for Riscv64 {
     }
 
     #[inline]
-    fn wfi(&self) {
+    fn wait_for_interrupt(&self) {
         crate::cpu::wfi();
     }
 

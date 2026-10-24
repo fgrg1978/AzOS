@@ -116,7 +116,7 @@ fn install_builtin(num_cpus: usize) {
             record_isolated_without_cpu(a, num_cpus);
         }
         azos_drv_sys::kerr!("[TOPO] Topology install FAILED: {:?} — halting", e);
-        loop { azos_arch::ARCH.wfi(); }
+        loop { azos_arch::ARCH.wait_for_interrupt(); }
     }
 }
 
@@ -154,7 +154,7 @@ fn record_isolated_without_cpu(e: &azos_topology::AdmissionError, num_cpus: usiz
 /// ever created. The `SAFETY_TOPO_SOURCE` record was written before this.
 fn halt_without_topology() -> ! {
     azos_drv_sys::kerr!("[TOPO] HALTED: no capability topology installed — the boot stops here");
-    loop { azos_arch::ARCH.wfi(); }
+    loop { azos_arch::ARCH.wait_for_interrupt(); }
 }
 
 // ── The signed topology on the volume (Kconfig TOPOLOGY_SOURCE) ─────────────
@@ -426,7 +426,7 @@ fn signed_candidate(
         }
         Err(TryInitError::AlreadyInit) => {
             azos_drv_sys::kerr!("[TOPO] Topology install FAILED: the slot was already taken — halting");
-            loop { azos_arch::ARCH.wfi(); }
+            loop { azos_arch::ARCH.wait_for_interrupt(); }
         }
     };
     (candidate, caps_len, sched_len, counter)
@@ -659,7 +659,7 @@ mod dma_contig_canary {
 /// A refusal of the topology that will run: the board stops here.
 fn halt_refused(what: core::fmt::Arguments<'_>) -> ! {
     azos_drv_sys::kerr!("{} — halting", what);
-    loop { azos_arch::ARCH.wfi(); }
+    loop { azos_arch::ARCH.wait_for_interrupt(); }
 }
 
 /// `DMA_POOL_FLOOR_KB` in topology pages.

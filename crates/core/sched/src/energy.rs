@@ -861,7 +861,7 @@ pub fn idle_wait(cpu: usize, enter: impl Fn(u8) -> u64) {
     if GOV_ON.load(Ordering::Relaxed) {
         let _ = gov_maybe(cpu, at);
     }
-    if seams().idle == IdleGovernor::WfiOnly || cpu >= MAX_CPUS {
+    if seams().idle == IdleGovernor::ShallowOnly || cpu >= MAX_CPUS {
         enter(0);
         return;
     }

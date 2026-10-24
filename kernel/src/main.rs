@@ -1588,7 +1588,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
                                link-provisioning-enforced is compiled in, refusing to boot \
                                (decision {})",
                         link_key_reason, receipt);
-                    loop { azos_arch::Cpu::wfi(&azos_arch::ARCH); }
+                    loop { azos_arch::Cpu::wait_for_interrupt(&azos_arch::ARCH); }
                 }
                 azos_drv_sys::kwarn!("[SECCHAN] WARNING: brain link has no key — {} \
                            (link-provisioning-enforced not compiled in — booting anyway, \
@@ -1925,7 +1925,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         azos_bench::run_all_quiescent(BENCH_BOOT_ITERS);
         kprintln!("[BENCH-RES] ── boot-bench complete, halting ──");
         loop {
-            azos_arch::Cpu::wfi(&azos_arch::ARCH);
+            azos_arch::Cpu::wait_for_interrupt(&azos_arch::ARCH);
         }
     }
 

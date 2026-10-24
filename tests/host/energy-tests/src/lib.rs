@@ -413,9 +413,9 @@ mod seams {
         }
         assert_eq!(
             Seams::TODAY,
-            Seams { placement: Placement::Legacy, governor: Governor::Fixed, idle: IdleGovernor::WfiOnly }
+            Seams { placement: Placement::Legacy, governor: Governor::Fixed, idle: IdleGovernor::ShallowOnly }
         );
-        assert_eq!((PLACEMENT, GOVERNOR, IDLE_GOVERNOR), (Placement::Legacy, Governor::Fixed, IdleGovernor::WfiOnly));
+        assert_eq!((PLACEMENT, GOVERNOR, IDLE_GOVERNOR), (Placement::Legacy, Governor::Fixed, IdleGovernor::ShallowOnly));
     }
 
     /// `performance` with a model is today's seams; `balanced` and
@@ -436,21 +436,21 @@ mod seams {
 
     #[test]
     fn idle_choice_depth_is_the_state_index() {
-        assert_eq!(IdleChoice::Wfi.depth(), 0);
+        assert_eq!(IdleChoice::Shallow.depth(), 0);
         assert_eq!(IdleChoice::Deep(1).depth(), 1);
         assert_eq!(IdleChoice::Deep(3).depth(), 3);
     }
 
-    /// `WfiOnly` answers `wfi` without computing its inputs: the kernel's idle
+    /// `ShallowOnly` answers `Shallow` without computing its inputs: the kernel's idle
     /// loops pass the CPU-id read and the timer query lazily, and the default
-    /// image's code is the bare `wfi` only because neither is called.
+    /// image's code is the bare wait only because neither is called.
     #[test]
-    fn wfi_only_never_asks_for_its_inputs() {
-        let c = IdleGovernor::WfiOnly.select_state(
+    fn shallow_only_never_asks_for_its_inputs() {
+        let c = IdleGovernor::ShallowOnly.select_state(
             || -> usize { panic!("cpu id asked for") },
             || -> Option<u64> { panic!("next timer asked for") },
         );
-        assert_eq!(c, IdleChoice::Wfi);
+        assert_eq!(c, IdleChoice::Shallow);
     }
 
     #[test]

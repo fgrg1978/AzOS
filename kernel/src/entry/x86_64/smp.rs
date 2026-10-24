@@ -162,7 +162,7 @@ fn wait_until(deadline: u64, done: impl Fn() -> bool) -> bool {
         if ARCH.now_ticks() >= deadline {
             return false;
         }
-        ARCH.wfi();
+        ARCH.wait_for_interrupt();
     }
     true
 }

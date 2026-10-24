@@ -8,7 +8,7 @@ use azos_arch::{ArchEntry as _, Cpu as _};
 use crate::*;
 
 /// One idle wait of the calling hart, through the `IdleGovernor`
-/// seam (`WfiOnly`, a `const`, so this folds to the bare `wfi` the
+/// seam (`ShallowOnly`, a `const`, so this folds to the bare wait the
 /// idle task executed before the seam existed: no clock read, as the
 /// default build's `.text` is held unchanged, I4). The next armed timer is
 /// asked for lazily: only a governor that needs it will compute it.
@@ -18,7 +18,7 @@ fn idle_wait() {
     match azos_energy::seams::IDLE_GOVERNOR
         .select_state(azos_sched::smp::current_cpu_id, azos_sched::nearest_timer_deadline)
     {
-        azos_energy::IdleChoice::Wfi => azos_arch::ARCH.wfi(),
+        azos_energy::IdleChoice::Shallow => azos_arch::ARCH.wait_for_interrupt(),
         deep @ azos_energy::IdleChoice::Deep(_) => {
             azos_arch::ARCH.cpu_idle(deep.depth());
         }

@@ -331,7 +331,7 @@ fn finish(delay_ms: u32) -> ! {
     }
 
     loop {
-        azos_arch::ARCH.wfi();
+        azos_arch::ARCH.wait_for_interrupt();
     }
 }
 
@@ -377,7 +377,7 @@ fn nested(info: &PanicInfo, hart: usize) -> ! {
             azos_arch::ARCH.disable_all()
         };
         loop {
-            azos_arch::ARCH.wfi();
+            azos_arch::ARCH.wait_for_interrupt();
         }
     }
     freeze();

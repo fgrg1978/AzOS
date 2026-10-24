@@ -1640,7 +1640,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
     do_schedule(SwitchReason::Voluntary);
     loop {
         azos_arch::ARCH.enable_all();
-        azos_arch::Cpu::wfi(&azos_arch::ARCH);
+        azos_arch::Cpu::wait_for_interrupt(&azos_arch::ARCH);
     }
 }
 
@@ -1811,7 +1811,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
     // No tasks remaining — idle until timer brings more work.
     loop {
         azos_arch::ARCH.enable_all();
-        azos_arch::Cpu::wfi(&azos_arch::ARCH);
+        azos_arch::Cpu::wait_for_interrupt(&azos_arch::ARCH);
         // Timer interrupt → schedule() → do_schedule() → may context-switch away.
         // If not, we just loop again.
     }

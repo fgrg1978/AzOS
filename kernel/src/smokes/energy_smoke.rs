@@ -8,7 +8,7 @@
 //! * **model** — boot resolved the topology's model (not the DTB's, not none),
 //!   with exactly the declared shape: domains `cpus = 0x1 / 0x2`, 3 + 4 OPPs,
 //!   2 + 1 idle states, top capacity 1024; mode `performance`; and the seams
-//!   are still today's (`Legacy`/`Fixed`/`WfiOnly`, invariant I4 holds with a
+//!   are still today's (`Legacy`/`Fixed`/`ShallowOnly`, invariant I4 holds with a
 //!   model present in E0–E2). Canary `energy-model-canary` (boot does not read
 //!   the topology's model): FAIL.
 //! * **refuse** — the same text with one power figure wrong (the big domain's

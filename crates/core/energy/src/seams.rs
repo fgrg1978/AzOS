@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | [`Placement`] | `Legacy` | `wake_target_cpu`: the pinned hart, else `find_best_cpu` (IPC co-location under `sched-ipc-affinity`) |
 //! | [`Governor`] | `Fixed` | no OPP request: the CPUs stay at the frequency firmware left them |
-//! | [`IdleGovernor`] | `WfiOnly` | `wfi` in the idle task (depth 0 of the arch idle seam) |
+//! | [`IdleGovernor`] | `ShallowOnly` | `wait_for_interrupt` in the idle task (depth 0 of the arch idle seam) |
 //!
 //! The selections below are `const`s, so in the default build each seam's
 //! `match` has one arm and folds to the code it replaced: the kernel's `.text`
@@ -84,8 +84,8 @@ impl Governor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdleChoice {
     /// Wait for an interrupt (`wfi` / `hlt`): depth 0.
-    Wfi,
-    /// The domain's idle state of this index (1 and up; 0 is `Wfi`). Entered
+    Shallow,
+    /// The domain's idle state of this index (1 and up; 0 is `Shallow`). Entered
     /// through the arch idle seam, `Cpu::cpu_idle(depth)`; an ISA with no
     /// way to enter that state (no suspend parameter, `local-timer-stop`, or a
     /// power-down state without the kernel's resume entry) enters it as the
@@ -96,12 +96,12 @@ pub enum IdleChoice {
 }
 
 impl IdleChoice {
-    /// The depth to hand `Cpu::cpu_idle`: 0 for `Wfi`, the state index for
+    /// The depth to hand `Cpu::cpu_idle`: 0 for `Shallow`, the state index for
     /// `Deep`.
     #[inline(always)]
     pub const fn depth(self) -> u8 {
         match self {
-            Self::Wfi => 0,
+            Self::Shallow => 0,
             Self::Deep(d) => d,
         }
     }
@@ -110,17 +110,17 @@ impl IdleChoice {
 /// How deep an idle CPU sleeps (`select_state(cpu, next_timer) -> state`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdleGovernor {
-    /// Today: always `wfi`.
-    WfiOnly,
+    /// Today: always the shallow wait (`Cpu::wait_for_interrupt`).
+    ShallowOnly,
     /// Stage E4: TEO-like ([`crate::idle`]). Needs per-CPU history, which
     /// the kernel keeps (`azos_sched::energy::idle_wait`); the stateless
-    /// [`IdleGovernor::select_state`] answers `Wfi` for it.
+    /// [`IdleGovernor::select_state`] answers `Shallow` for it.
     Teo,
 }
 
 impl IdleGovernor {
     /// The state the calling CPU enters now. Both inputs are asked for
-    /// lazily, and only by a governor that needs them, so `WfiOnly` costs
+    /// lazily, and only by a governor that needs them, so `ShallowOnly` costs
     /// nothing to ask: `cpu` yields the CPU's index (a register read the
     /// compiler may not drop on its own), `next_timer` the next armed timer
     /// deadline in timebase ticks, `None` if none is armed.
@@ -132,7 +132,7 @@ impl IdleGovernor {
     {
         let _ = (cpu, next_timer);
         match self {
-            Self::WfiOnly | Self::Teo => IdleChoice::Wfi,
+            Self::ShallowOnly | Self::Teo => IdleChoice::Shallow,
         }
     }
 }
@@ -153,7 +153,7 @@ impl Seams {
     pub const TODAY: Self = Self {
         placement: Placement::Legacy,
         governor: Governor::Fixed,
-        idle: IdleGovernor::WfiOnly,
+        idle: IdleGovernor::ShallowOnly,
     };
 
     /// The seams for a machine with `model` in `mode`. Invariant I4: with no

@@ -81,7 +81,7 @@ fn interrupt_selftests() {
         let now_count = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
         if now_count >= target { break; }
         if ARCH.now_ticks() >= deadline_cntvct { break; }
-        ARCH.wfi();
+        ARCH.wait_for_interrupt();
     }
     let ticks_after = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
     let elapsed_cntvct = ARCH.now_ticks().wrapping_sub(start_cntvct);

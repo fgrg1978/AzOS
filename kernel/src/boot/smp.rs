@@ -60,7 +60,7 @@ pub extern "C" fn secondary_main(hart_id: usize) -> ! {
     if !azos_percpu::cpu_possible(hart_id) {
         kprintln!("[SMP] hart {} is not a possible CPU (nr_cpu_ids {}) — parking (no per-CPU area)",
                   hart_id, azos_percpu::nr_cpu_ids());
-        loop { ARCH.wfi(); }
+        loop { ARCH.wait_for_interrupt(); }
     }
     secondary_hw_init(hart_id);
 
@@ -73,7 +73,7 @@ pub extern "C" fn secondary_main(hart_id: usize) -> ! {
     // `current_cpu_id()`.
     loop {
         ARCH.set_percpu_base(hart_id);
-        ARCH.wfi();
+        ARCH.wait_for_interrupt();
     }
 }
 

@@ -63,7 +63,7 @@ Three decisions go through closed enums, dispatched by `match` rather than `dyn`
 |---|---|---|
 | `Placement` | `Legacy` | the pinned CPU, else `find_best_cpu` ([scheduler.md](scheduler.md)) |
 | `Governor` | `Fixed`, `Schedutil`, `DeadlineFloor` | `Fixed`: no frequency request |
-| `IdleGovernor` | `WfiOnly`, `Teo` | `WfiOnly`: `wfi` (depth 0) |
+| `IdleGovernor` | `ShallowOnly`, `Teo` | `ShallowOnly`: `wait_for_interrupt` (depth 0) |
 
 `Seams::select(model, mode)` picks them at boot: with no model, or in `Performance` mode, the result is `Seams::TODAY`; in `Balanced` and `Endurance` it is `DeadlineFloor` and `Teo` (placement stays `Legacy`; the two modes select the same seams). The `const`s `PLACEMENT`, `GOVERNOR` and `IDLE_GOVERNOR` stay `TODAY`: they are what a kernel built without `ENERGY` runs. `Governor::Schedutil` alone is never selected, because it reads no reservation and cannot honour the deadline floor. `energy::install` stores the model, mode and seams once at boot.
 
