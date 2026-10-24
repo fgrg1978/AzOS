@@ -784,9 +784,11 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
         rt_core::StopPick::Pass => {}
     }
 
-    // The best eligible queued reservation (its holder, or its proxy).
+    // The best eligible queued reservation (its holder, or its proxy), and
+    // the level it is queued at.
     let mut best = usize::MAX;
     let (mut bp, mut bd) = (u32::MAX, u64::MAX);
+    let mut best_level = 0u32;
     for (k, holder) in set_iter(cpu) {
         let r = unsafe { res(cpu, k) };
         if r.throttled {
@@ -798,11 +800,13 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
         if rt_core::band_throttled(p, RT_PRIORITY_THRESHOLD, exempt(idx), skip_band) {
             continue;
         }
+        let level = p;
         let p = rt_core::dl_rank(classes, p);
         if best == usize::MAX || rt_core::edf_before(p, r.deadline, bp, bd) {
             best = idx;
             bp = p;
             bd = r.deadline;
+            best_level = level;
         }
     }
 
@@ -828,17 +832,21 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
     loop {
         let l = if levels != 0 { levels.trailing_zeros() } else { u32::MAX };
         if let Some((kp, kd)) = keep {
-            let wins = best == usize::MAX || !rt_core::edf_before(bp, bd, kp, kd);
+            // Canary: no deadline order, so a running reservation keeps the
+            // hart against a queued one of its rank.
+            let wins = best == usize::MAX
+                || if EDF_ON { !rt_core::edf_before(bp, bd, kp, kd) } else { kp <= bp };
             if wins && kp <= l {
                 return Pick::Keep;
             }
         }
         if best != usize::MAX && bp <= l {
-            let idx = if EDF_ON || bp < l {
+            let idx = if EDF_ON {
                 best
             } else {
-                // Canary: FIFO among the level's eligible entries.
-                unsafe { ring_first_eligible(cpu, l as usize, resv) }.unwrap_or(best)
+                // Canary: FIFO among the eligible entries of the best's level
+                // (its rank is 0 under the default order, not its level).
+                unsafe { ring_first_eligible(cpu, best_level as usize, resv) }.unwrap_or(best)
             };
             if unsafe { cpu_remove(cpu, idx) } {
                 // The reservation may sit at a worse level
