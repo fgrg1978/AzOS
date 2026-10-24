@@ -11839,7 +11839,14 @@ else
     #
     # The budget, per image, from its own KERNEL_STACK_SIZE_KB:
     #   usable        = stack - 4096            (the guard page)
-    #   minus   288   the trap frame the chain starts under
+    #   minus   the trap frame the chain starts under: 288 bytes on riscv64,
+    #           192 on x86_64 (`TrapFrame`'s size assert,
+    #           kernel/src/entry/x86_64/mod.rs)
+    #
+    # The roots are every Rust function the ISA's trap entry calls on the
+    # task's stack (tools/stack_chain.py `ROOTS`): the trap dispatch, the lean
+    # native-syscall entries that skip it, and the reschedule after an
+    # interrupt.
     #
     # An interrupt taken on top of the deepest syscall used to cost another
     # ~2.8 KiB here -- 288 for its frame, 240 for trap_handler and 2160 for
@@ -11847,12 +11854,12 @@ else
     # runs on the hart's own interrupt stack and only the frame lands on the
     # task's, so the reserve is gone. `irq: handlers on their own stack`
     # below is the row that keeps that true.
-    chain_row() { # chain_row <label> <elf> <config-with-CONFIG_KERNEL_STACK_SIZE_KB>
+    chain_row() { # chain_row <label> <elf> <config-with-CONFIG_KERNEL_STACK_SIZE_KB> <trap frame bytes>
         printf "  %-26s" "${1}..."
         local kb limit out
         kb="$(sed -n 's/^CONFIG_KERNEL_STACK_SIZE_KB=//p' "$3" 2>/dev/null)"
         if [ -z "$kb" ]; then bad; echo "      no CONFIG_KERNEL_STACK_SIZE_KB in $3"; return 1; fi
-        limit=$(( kb * 1024 - 4096 - 288 ))
+        limit=$(( kb * 1024 - 4096 - $4 ))
         if out="$(python3 "${REPO_ROOT}/tools/stack_chain.py" "$2" --limit "$limit" --frames 8 2>&1)"; then
             ok
         else
@@ -11870,10 +11877,10 @@ else
     # export above), not the workspace `.config` — reading CONFIG_KERNEL_STACK_
     # SIZE_KB from `.config` would be the exact config/binary split this whole
     # change exists to close, reintroduced in one row.
-    ci_row "stack chain: qemu" chain_row "stack chain: qemu" "$KERNEL" "$PRIMARY_CONFIG"
-    if [ "$FLEET_BUILT" = "1" ]; then ci_row "stack chain: fleet" chain_row "stack chain: fleet" "$FLEET_KERNEL" "$FLEET_CONFIG"
+    ci_row "stack chain: qemu" chain_row "stack chain: qemu" "$KERNEL" "$PRIMARY_CONFIG" 288
+    if [ "$FLEET_BUILT" = "1" ]; then ci_row "stack chain: fleet" chain_row "stack chain: fleet" "$FLEET_KERNEL" "$FLEET_CONFIG" 288
     else ci_skip_rows "stack chain: fleet"; fi
-    if [ "$EMBEDDED_BUILT" = "1" ]; then ci_row "stack chain: embedded" chain_row "stack chain: embedded" "$EMBEDDED_KERNEL" "$EMBEDDED_CONFIG"
+    if [ "$EMBEDDED_BUILT" = "1" ]; then ci_row "stack chain: embedded" chain_row "stack chain: embedded" "$EMBEDDED_KERNEL" "$EMBEDDED_CONFIG" 288
     else ci_skip_rows "stack chain: embedded"; fi
     # Ring-3 images against the stacks they ask for. A user stack is not grown:
     # the loader maps what the image's PT_GNU_STACK asks for (Kconfig
@@ -15010,6 +15017,25 @@ PY
     # the liveness check, the boot traps right after the mitigation line.
     par "x86_64: PMU probe, EPYC without the hypervisor bit" x86_boot_row "x86_64: PMU probe, EPYC without the hypervisor bit" 1 "EPYC,-hypervisor" \
         "[PMU] x86_64 cycles=tsc/64 instret=none events=0 user=none sample=none|$X86_SHELL" "AzOS shell|KERNEL PANIC" "" 1
+    # Stack frames and the deepest trap chain (`frame_row`, `chain_row`, beside
+    # the riscv64 kernels' rows) on the gate's two x86_64 kernels, the generic
+    # cell's and the robot cell's. Every indirect call goes through a retpoline
+    # thunk on x86_64; tools/stack_chain.py reads the thunk's target from the
+    # instruction stream where it is static (`x86_64_edges`).
+    x86_stack_row() { # x86_stack_row <label> <frames|chain> <features or "">
+        local kimg="$CI_LOG_DIR/kernel-x86-stack-$2-${3:-generic}"
+        mkdir -p "$CI_LOG_DIR"
+        if ! x86_kbuild "$3" "$kimg"; then
+            printf "  %-26s" "${1}..."; bad; echo "      make x86_64 X86_64_FEATURES=$3 did not build"; return
+        fi
+        if [ "$2" = frames ]; then frame_row "$1" "$kimg" 8192
+        else chain_row "$1" "$kimg" "$AZOS_OUT/build/x86_64-$(gate_defc x86 "$3").config" 192; fi
+        rm -f "$kimg" "$kimg.features"
+    }
+    par "stack frames: x86_64" x86_stack_row "stack frames: x86_64" frames ""
+    par "stack chain: x86_64" x86_stack_row "stack chain: x86_64" chain ""
+    par "stack frames: x86_64 robot" x86_stack_row "stack frames: x86_64 robot" frames use-robot
+    par "stack chain: x86_64 robot" x86_stack_row "stack chain: x86_64 robot" chain use-robot
     # virtio-input on x86_64 (Kconfig DRV_VIRTIO_INPUT): the kernel shell reads a
     # `-device virtio-keyboard-device` (a virtio-mmio v1 transport on microvm)
     # with the serial stdin silent. A typist in the background waits for the

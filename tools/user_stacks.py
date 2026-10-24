@@ -21,10 +21,10 @@ reserved inside a callee is only seen through its prologue -- so the margin is
 what stands for them (default 25%). It also fails when the request is over
 `USER_STACK_MAX_KB`, which the loader would refuse.
 
-A stripped image has no symbols to read a chain from, and an x86_64 image is not
-read by the chain tool: both are reported and only their request is checked
-against the ceiling (the relibc programs are the first). A thread that runs on a stack of its own is a
-second root, named in THREADS below with the symbol that is its stack.
+A stripped image has no symbols to read a chain from: it is reported and only
+its request is checked against the ceiling (the relibc programs are the
+first). A thread that runs on a stack of its own is a second root, named in
+THREADS below with the symbol that is its stack.
 
 `--stack-kb` replaces every request: the canary of the gate row, which must
 fail for the images that need more than that.
@@ -41,10 +41,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stack_chain  # noqa: E402
 import stack_frames  # noqa: E402
-from stack_frames import aarch64_frames  # noqa: E402
+from stack_frames import aarch64_frames, x86_64_frames  # noqa: E402
 
 PT_GNU_STACK = 0x6474E551
-EM_RISCV, EM_AARCH64 = 243, 183
+EM_RISCV, EM_AARCH64, EM_X86_64 = 243, 183, 62
 
 # image -> [(root function, symbol whose size is the stack that thread runs on)]
 # None today: `MLSRV.ELF` served its endpoint on a thread of its own (a 44 KiB
@@ -100,8 +100,8 @@ def check(path, args, default_kb, max_kb):
     if request > max_kb * 1024:
         print(f"OVER {name}: asks {request // 1024} KiB, USER_STACK_MAX_KB is {max_kb}")
         return False
-    if machine not in (EM_RISCV, EM_AARCH64):
-        print(f"{name}: chain not read for e_machine {machine} (RISC-V and aarch64 only); asks {request // 1024} KiB, {kind}")
+    if machine not in (EM_RISCV, EM_AARCH64, EM_X86_64):
+        print(f"{name}: chain not read for e_machine {machine}; asks {request // 1024} KiB, {kind}")
         return True
     syms = symbols(path)
     root = next((n for n, (a, _) in syms.items() if a == entry and not n.startswith(".L")), None)
@@ -117,18 +117,18 @@ def check(path, args, default_kb, max_kb):
         runs.append((fn, syms[sym][1], f"thread on {sym}"))
     for fn, stack, what in runs:
         try:
-            depth, path_, _, _, _ = stack_chain.analyze(path, fn)
+            c = stack_chain.analyze(path, fn)
         except KeyError as e:
             print(f"{name}: {e.args[0]}")
             return False
-        need = depth * (100 + args.margin) // 100
+        need = c.depth * (100 + args.margin) // 100
         verdict = "ok"
         if need > stack:
             verdict = "OVER"
             ok = False
-        print(f"{verdict:4} {name}: {what}: chain {depth} B (+{args.margin}% = {need} B) of {stack} B"
+        print(f"{verdict:4} {name}: {what}: chain {c.depth} B (+{args.margin}% = {need} B) of {stack} B"
               f" ({kind if what == 'main thread' else 'static'}); deepest: "
-              + " > ".join(n.split("::")[-1][:28] for n in path_[:4]))
+              + " > ".join(n.split("::")[-1][:28] for n in c.path[:4]))
     return ok
 
 
@@ -228,17 +228,102 @@ def self_test():
     g = {"root": {"g0"}, "pbc": {h}, h: {f"g{i}" for i in range(20)}}
     g.update({f"g{i}": {"pbc"} for i in range(20)})
     fr = {"root": 16, "pbc": 48, h: 500, **{f"g{i}": 100 + i for i in range(20)}}
-    depth, path_, _, _, panic = stack_chain.chain(g, fr, "root")
-    expect("panic chain", (path_, panic), (["root", "g0", "pbc"], (500 + 119 + 48, [h, "g19", "pbc"])))
-    expect("panic depth", depth, 16 + 100 + 48 + 500 + 119 + 48)
+    c = stack_chain.chain(g, fr, "root")
+    expect("panic chain", (c.path, c.panic), (["root", "g0", "pbc"], (500 + 119 + 48, [h, "g19", "pbc"])))
+    expect("panic depth", c.depth, 16 + 100 + 48 + 500 + 119 + 48)
     # A knot past the DP's size is walked, not charged whole: a hub and 20
     # spokes that call it back are one component, and no simple path holds
     # two spokes.
     g = {"root": {"hub"}, "hub": {f"s{i}" for i in range(20)}}
     g.update({f"s{i}": {"hub", "leaf"} if i == 3 else {"hub"} for i in range(20)})
     fr = {"root": 16, "hub": 200, "leaf": 1000, **{f"s{i}": 100 + i for i in range(20)}}
-    depth, path_, _, _, panic = stack_chain.chain(g, fr, "root")
-    expect("walked knot", (depth, path_, panic), (16 + 200 + 103 + 1000, ["root", "hub", "s3", "leaf"], None))
+    c = stack_chain.chain(g, fr, "root")
+    expect("walked knot", (c.depth, c.path, c.panic), (16 + 200 + 103 + 1000, ["root", "hub", "s3", "leaf"], None))
+    # x86_64 prologues: the return address, pushes, 4 KiB steps with the
+    # probe between them, `addq $-0x80` and the probe loop of a frame too big
+    # to unroll; a push after the prologue is not the frame's.
+    text = "\n".join([
+        "ffffffff80001000 <big>:",
+        "ffffffff80001000:  endbr64",
+        "ffffffff80001004:  pushq %rbp",
+        "ffffffff80001005:  pushq %rbx",
+        "ffffffff80001006:  subq $0x1000, %rsp   # imm = 0x1000",
+        "ffffffff8000100d:  movq $0x0, (%rsp)",
+        "ffffffff80001015:  subq $0x18, %rsp",
+        "ffffffff80001019:  movq %rdi, %rbx",
+        "ffffffff8000101c:  pushfq",
+        "ffffffff80001100 <looped>:",
+        "ffffffff80001100:  movq %rsp, %r11",
+        "ffffffff80001103:  subq $0x10000, %r11   # imm = 0x10000",
+        "ffffffff8000110a:  subq $0x1000, %rsp   # imm = 0x1000",
+        "ffffffff80001111:  movq $0x0, (%rsp)",
+        "ffffffff80001119:  cmpq %r11, %rsp",
+        "ffffffff8000111c:  jne 0xffffffff8000110a <looped+0xa>",
+        "ffffffff8000111e:  subq $0x20, %rsp",
+        "ffffffff80001122:  movq %rdi, %rax",
+        "ffffffff80001200 <red>:",
+        "ffffffff80001200:  addq $-0x80, %rsp",
+        "ffffffff80001204:  retq",
+        "ffffffff80001300 <leaf>:",
+        "ffffffff80001300:  retq",
+    ])
+    spans = [(0xffffffff80001000, 0x100, "big"), (0xffffffff80001100, 0x100, "looped"),
+             (0xffffffff80001200, 0x100, "red"), (0xffffffff80001300, 0x10, "leaf")]
+
+    def owner(addr):
+        return next((n for a, z, n in spans if a <= addr < a + z), None)
+
+    got = x86_64_frames(text, owner)
+    expect("x86_64 big", got.get("big"), 8 + 16 + 0x1000 + 0x18)
+    expect("x86_64 probe loop", got.get("looped"), 8 + 0x10000 + 0x20)
+    expect("x86_64 addq", got.get("red"), 8 + 0x80)
+    expect("x86_64 leaf", got.get("leaf"), 8)
+    # x86_64 thunk calls: the target from a RIP-relative `leaq` (argument
+    # set-up between), through a callee-saved copy, and as a tail jump where
+    # both paths agree; none from a memory load, from two paths that
+    # disagree, or across a call (which clobbers %r11).
+    t = "callq 0xffffffff80009000 <__x86_indirect_thunk_r11>"
+    text = "\n".join([
+        "ffffffff80002000 <a>:",
+        "ffffffff80002000:  leaq 0x100(%rip), %r11 # 0xffffffff80003000 <callee>",
+        "ffffffff80002007:  movl $0x1, %esi",
+        "ffffffff8000200c:  " + t,
+        "ffffffff8000200f:  leaq 0x100(%rip), %r11 # 0xffffffff80003300 <vt>",
+        "ffffffff80002011:  movq 0x10(%rax), %r11",
+        "ffffffff80002015:  " + t,
+        "ffffffff8000201a:  leaq 0x100(%rip), %r12 # 0xffffffff80003100 <other>",
+        "ffffffff80002021:  movq %r12, %r11",
+        "ffffffff80002024:  " + t,
+        "ffffffff80002029:  callq 0xffffffff80003200 <direct>",
+        "ffffffff8000202e:  jmp 0xffffffff80002000 <a>",
+        "ffffffff80002100 <b>:",
+        "ffffffff80002100:  leaq 0x100(%rip), %r11 # 0xffffffff80003000 <callee>",
+        "ffffffff80002107:  testq %rdi, %rdi",
+        "ffffffff8000210a:  je 0xffffffff80002113 <b+0x13>",
+        "ffffffff8000210c:  leaq 0x100(%rip), %r11 # 0xffffffff80003100 <other>",
+        "ffffffff80002113:  " + t,
+        "ffffffff80002118:  retq",
+        "ffffffff80002200 <c>:",
+        "ffffffff80002200:  leaq 0x100(%rip), %r11 # 0xffffffff80003000 <callee>",
+        "ffffffff80002207:  testq %rdi, %rdi",
+        "ffffffff8000220a:  je 0xffffffff80002211 <c+0x11>",
+        "ffffffff8000220c:  movl $0x2, %esi",
+        "ffffffff80002211:  jmp 0xffffffff80009000 <__x86_indirect_thunk_r11>",
+        "ffffffff80002300 <d>:",
+        "ffffffff80002300:  leaq 0x100(%rip), %r11 # 0xffffffff80003000 <callee>",
+        "ffffffff80002307:  callq 0xffffffff80003200 <direct>",
+        "ffffffff8000230c:  " + t,
+        "ffffffff80002311:  retq",
+    ])
+    spans = [(0xffffffff80002000, 0x100, "a"), (0xffffffff80002100, 0x100, "b"),
+             (0xffffffff80002200, 0x100, "c"), (0xffffffff80002300, 0x100, "d"),
+             (0xffffffff80003000, 0x10, "callee"), (0xffffffff80003100, 0x10, "other"),
+             (0xffffffff80003200, 0x10, "direct"), (0xffffffff80003300, 0x10, "vt"), (0xffffffff80009000, 0x20, "__x86_indirect_thunk_r11")]
+    stats = {}
+    got = stack_chain.x86_64_edges(text, owner, stats)
+    expect("x86_64 thunk edges", {f: sorted(cs) for f, cs in got.items()},
+           {"a": ["callee", "direct", "other"], "c": ["callee"], "d": ["direct"]})
+    expect("x86_64 thunk counts", (stats.get("thunk"), stats.get("indirect")), (6, 3))
     if failures:
         print("\n".join(failures))
         sys.exit(1)

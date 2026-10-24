@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Largest stack frame per function in a RISC-V or aarch64 image, against a limit.
+"""Largest stack frame per function in a RISC-V, aarch64 or x86_64 image, against a limit.
 
     stack_frames.py <elf> --limit BYTES [--boot-limit BYTES] [--boot FUNCTION ...] [--top N]
 
 A frame is read from the function's prologue: `addi sp, sp, -N`, or
 `sub sp, sp, rX` with rX loaded by `lui`/`addi`/`li` just before. Each
 instruction is attributed through the symbol table, never through objdump's
-own headers, which split a body at every local label.
+own headers, which split a body at every local label. aarch64 and x86_64
+prologues have their own readers (`aarch64_frames`, `x86_64_frames`); an
+x86_64 frame also counts the return address its caller's `call` pushed, which
+riscv64 and aarch64 keep inside the frame they reserve.
 
 Why the gate needs this: a table sized by a Kconfig limit and declared as a
 local lives on whichever stack runs the function. Kernel task stacks are
@@ -69,6 +72,8 @@ def frames(elf, tools):
 
     if "elf64-littleaarch64" in dis.stdout[:400]:
         return aarch64_frames(dis.stdout, owner)
+    if "elf64-x86-64" in dis.stdout[:400]:
+        return x86_64_frames(dis.stdout, owner)
 
     # A frame is often reserved in more than one step: LLVM saves the callee-
     # saved registers after a first `addi sp`, then lowers sp again for the
@@ -155,6 +160,62 @@ def aarch64_frames(text, owner):
         if step > 0:
             total += step
             out[f] = max(out.get(f, 0), total)
+    return out
+
+
+# What may stand in an x86_64 prologue besides the steps that lower %rsp: the
+# CET landing pad, the frame pointer, and the probe stores LLVM puts between
+# the 4 KiB steps of a big frame (`subq $0x1000, %rsp; movq $0x0, (%rsp)`).
+X86_PROLOGUE_KEEP = {("endbr64", ""), ("movq", "%rsp,%rbp"), ("movq", "$0x0,(%rsp)")}
+X86_IMM = r"\$(0x[0-9a-f]+|\d+)"
+
+
+def x86_64_frames(text, owner):
+    """The same sum for an x86_64 image (AT&T syntax). Every function costs
+    the 8 bytes of return address its caller's `call` pushed, a function
+    without a prologue too; a step is a push (`pushq`, `pushfq`: LLVM saves
+    the callee-saved registers one push each and realigns with `pushq %rax`)
+    or `subq $N, %rsp` (`addq $-N, %rsp` for N = 128). A frame too big for
+    unrolled probes is reserved by a loop: `movq %rsp, %r11; subq $N, %r11`,
+    then 4 KiB steps until %rsp reaches %r11 -- N is the step, and the loop's
+    own `subq`, probe, `cmpq` and `jne` are not counted again."""
+    out, cur, total, in_prologue, probe_loop = {}, None, 0, False, False
+    for line in text.splitlines():
+        m = re.match(r"^\s*([0-9a-f]+):\s+(\w+)\s*(.*)$", line)
+        if not m:
+            continue
+        addr, op = int(m.group(1), 16), m.group(2)
+        a = re.sub(r"\s*#.*$", "", m.group(3)).replace(" ", "")
+        f = owner(addr)
+        if f != cur:
+            cur, total, in_prologue, probe_loop = f, 8, True, False
+            out[f] = max(out.get(f, 0), 8)
+        if not in_prologue:
+            continue
+        step = 0
+        if probe_loop:
+            if op == "jne":
+                probe_loop = False
+            elif not ((op == "subq" and a.endswith(",%rsp")) or (op, a) in X86_PROLOGUE_KEEP
+                      or (op, a) == ("cmpq", "%r11,%rsp")):
+                in_prologue = False
+            continue
+        if op in ("pushq", "pushfq"):
+            step = 8
+        elif op == "subq" and re.fullmatch(X86_IMM + ",%rsp", a):
+            step = int(re.fullmatch(X86_IMM + ",%rsp", a).group(1), 0)
+        elif op == "addq" and re.fullmatch(r"\$-(0x[0-9a-f]+|\d+),%rsp", a):
+            step = int(re.fullmatch(r"\$-(0x[0-9a-f]+|\d+),%rsp", a).group(1), 0)
+        elif op == "movq" and a == "%rsp,%r11":
+            pass
+        elif op == "subq" and re.fullmatch(X86_IMM + ",%r11", a):
+            step, probe_loop = int(re.fullmatch(X86_IMM + ",%r11", a).group(1), 0), True
+        elif (op, a) not in X86_PROLOGUE_KEEP:
+            in_prologue = False
+            continue
+        if step > 0:
+            total += step
+            out[f] = max(out[f], total)
     return out
 
 
