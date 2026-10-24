@@ -195,6 +195,42 @@ impl super::bench_core::Threads for LinuxAbi {
     fn thread_yield() { unsafe { core::hint::black_box(syscall0(SYS_SCHED_YIELD)); } }
 }
 
+/// `FUTEX_WAIT` / `FUTEX_WAKE` without `FUTEX_PRIVATE_FLAG`: the shared key
+/// (the `scale` lanes' shared words, on a `MAP_SHARED` page).
+const FUTEX_WAIT_SHARED: usize = 0;
+const FUTEX_WAKE_SHARED: usize = 1;
+
+impl super::bench_core::Scale for LinuxAbi {
+    fn shared_page() -> Result<usize, i64> {
+        let va = unsafe {
+            syscall6(SYS_MMAP, 0, super::bench_core::PAGE as usize, PROT_READ_WRITE, MAP_SHARED_ANONYMOUS, usize::MAX, 0)
+        };
+        if va < 0 { return Err(va as i64); }
+        // SAFETY: the first word of the page just mapped read-write; the store
+        // gives it its shmem page, as AzOS's region has its frame from creation.
+        unsafe { core::ptr::write_volatile(va as *mut u32, 0) };
+        Ok(va as usize)
+    }
+    fn shared_wake(w: &core::sync::atomic::AtomicU32, n: u32) -> i64 {
+        unsafe { syscall3(SYS_FUTEX, w.as_ptr() as usize, FUTEX_WAKE_SHARED, n as usize) as i64 }
+    }
+    fn shared_wait(w: &core::sync::atomic::AtomicU32, val: u32) -> i64 {
+        unsafe { syscall4(SYS_FUTEX, w.as_ptr() as usize, FUTEX_WAIT_SHARED, val as usize, 0) as i64 }
+    }
+    fn map_cycle() -> i64 {
+        let va = unsafe {
+            syscall6(SYS_MMAP, 0, super::bench_core::PAGE as usize, PROT_READ_WRITE, MAP_SHARED_ANONYMOUS, usize::MAX, 0)
+        };
+        if va < 0 { return va as i64; }
+        // SAFETY: as in `shared_page`.
+        unsafe { core::ptr::write_volatile(va as *mut u32, 1) };
+        let r = unsafe { syscall2(SYS_MUNMAP, va as usize, super::bench_core::PAGE as usize) };
+        if r < 0 { r as i64 } else { 0 }
+    }
+    fn cpu_now() -> Option<u64> { LinuxAbi.current_cpu() }
+    fn floor_call() { LinuxAbi.null_syscall() }
+}
+
 /// `fcntl`, generic ABI 25 (x86-64 72); `F_GETFD` 1.
 pub const SYS_FCNTL: usize = nr(25, 72);
 const F_GETFD: usize = 1;

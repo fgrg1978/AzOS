@@ -28,6 +28,35 @@ impl super::bench_core::Threads for AzosAbi {
     fn thread_yield() { core::hint::black_box(sys::yield_now()); }
 }
 
+impl super::bench_core::Scale for AzosAbi {
+    fn shared_page() -> Result<usize, i64> {
+        let cap = sys::shm_create_typed(1, sys::SHM_RW);
+        if cap <= 0 { return Err(cap as i64); }
+        match sys::shm_map_typed(cap as u32) {
+            va if va <= 0 => Err(va as i64),
+            va => Ok(va as usize),
+        }
+    }
+    /// The native call on a word of a mapped shm region IS the shared futex
+    /// (the kernel keys it by the mapping it resolves).
+    fn shared_wake(w: &core::sync::atomic::AtomicU32, n: u32) -> i64 { sys::futex_wake(w, n) as i64 }
+    fn shared_wait(w: &core::sync::atomic::AtomicU32, val: u32) -> i64 { sys::futex_wait(w, val, 0) as i64 }
+    fn map_cycle() -> i64 {
+        let cap = sys::shm_create_typed(1, sys::SHM_RW);
+        if cap <= 0 { return if cap == 0 { -1 } else { cap as i64 }; }
+        let va = sys::shm_map_typed(cap as u32);
+        if va > 0 {
+            // SAFETY: the first word of the page just mapped read-write.
+            unsafe { core::ptr::write_volatile(va as *mut u32, 1) };
+        }
+        let rel = sys::shm_release_typed(cap as u32);
+        if va <= 0 { return if va == 0 { -1 } else { va as i64 }; }
+        if rel < 0 { rel as i64 } else { 0 }
+    }
+    fn cpu_now() -> Option<u64> { AzosAbi.current_cpu() }
+    fn floor_call() { AzosAbi.null_syscall() }
+}
+
 impl super::bench_core::Handles for AzosAbi {
     /// Nothing to acquire: the bench endpoint capability is in this task's
     /// table from boot (`spawn_peer` resolves the same one).

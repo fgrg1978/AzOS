@@ -338,7 +338,9 @@ pub trait Abi {
 /// (nic-egress, udp-roundtrip), `tcp` (tcp-bulk-tx, tcp-bulk-rx: only with a
 /// host peer, see [`Net::tcp_peer_port`]), `switch` (switch-loaded,
 /// yield-switch), `disk` (file-write, file-wr+fsync; wave 15), `uaccess`
-/// (the kernel's user-memory accesses, [`Uaccess`]).
+/// (the kernel's user-memory accesses, [`Uaccess`]), `scale` (futex calls
+/// on several harts at once, [`Scale`]; run only when named, never by an
+/// empty filter).
 /// AzOS reads it from `/fat/VSBLANES.TXT`, Linux from its environment;
 /// `tools/vsbench_compare.sh` puts it in both.
 pub struct Lanes {
@@ -624,7 +626,8 @@ impl Tail {
         (1u64 << e) * (4 + m) / 4
     }
 
-    fn record(&mut self, d: u64) {
+    /// Count one latency of `d` ticks.
+    pub fn record(&mut self, d: u64) {
         self.n += 1;
         if d < self.min { self.min = d; }
         if d > self.max { self.max = d; }
@@ -645,6 +648,17 @@ impl Tail {
             if seen >= target { return Self::edge_of(k); }
         }
         self.max
+    }
+
+    /// Fold `o`'s samples into this histogram (the `scale` lanes merge one
+    /// histogram per thread).
+    pub fn absorb(&mut self, o: &Tail) {
+        for (a, b) in self.buckets.iter_mut().zip(o.buckets.iter()) {
+            *a += *b;
+        }
+        self.min = self.min.min(o.min);
+        self.max = self.max.max(o.max);
+        self.n += o.n;
     }
 }
 
@@ -840,6 +854,35 @@ pub trait Threads {
     /// Give up the CPU from a thread body (`sched_yield` / AzOS yield): the
     /// same call as [`Abi::yield_now`], callable without the ABI value.
     fn thread_yield();
+}
+
+/// Front memobj-multihart: what the `scale` lanes need beyond [`Threads`],
+/// as associated functions because their thread bodies have no ABI value.
+pub trait Scale {
+    /// One page every thread of this process maps, on whose words a futex is
+    /// keyed by the object and not by the address: AzOS a shm region
+    /// (`SYS_MO_CREATE` + `SYS_MO_MAP`, keyed `(region, offset)` through the
+    /// region table, `MEMOBJS`), Linux `MAP_SHARED | MAP_ANONYMOUS` with the
+    /// futex calls WITHOUT `FUTEX_PRIVATE_FLAG` (keyed by the shmem page).
+    /// Its address, touched.
+    fn shared_page() -> Result<usize, i64>;
+    /// Wake at most `n` waiters on a word of [`Scale::shared_page`].
+    fn shared_wake(w: &core::sync::atomic::AtomicU32, n: u32) -> i64;
+    /// Wait while a word of [`Scale::shared_page`] holds `val` (no timeout).
+    fn shared_wait(w: &core::sync::atomic::AtomicU32, val: u32) -> i64;
+    /// One map cycle: a one-page shared object created, mapped, written once
+    /// and unmapped. AzOS: `SYS_MO_CREATE`, `SYS_MO_MAP`, a store,
+    /// `SYS_MO_UNMAP` (each takes `MEMOBJS`; the map moves its epoch). Linux:
+    /// `mmap(MAP_SHARED | MAP_ANONYMOUS)`, a store (the shmem page), `munmap`.
+    /// 0, or the first negative return.
+    fn map_cycle() -> i64;
+    /// The CPU the calling thread runs on ([`Abi::current_cpu`] without the
+    /// ABI value); a system call, so only ever outside a timed span.
+    fn cpu_now() -> Option<u64>;
+    /// The cheapest system call ([`Abi::null_syscall`] without the ABI
+    /// value): the `scale floor` control, which takes no lock that the
+    /// threads of a process share.
+    fn floor_call();
 }
 
 /// N0 (wave 15): resolve a handle this task already holds, in its own table.

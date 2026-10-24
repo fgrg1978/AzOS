@@ -31,7 +31,7 @@ mod bench_core;
 mod ipc_proto;
 use bench_core::{
     batch, batch_tail, ns_per_op, rel_x100, ticks_to_ns, Abi, Handles, Ipc, Mem, Net, Proc, Role, Shell, Tail,
-    Threads, N_THR, Uaccess, N_UA, UA_FILE_BYTES,
+    Threads, N_THR, Uaccess, N_UA, UA_FILE_BYTES, Scale, rdtime,
     Vdso, N_DUP, N_FILE, N_PIPE, N_PIPE_OPEN, N_SPAWN, PIPE_MSG, N_DISK, DISK_WRITE_BYTES,
     IPC_RENDEZVOUS_TRIES, IPC_RETRY_BUDGET, IPC_SENTINEL, N,
     N_BRK, N_FAULT_PAGES, N_IPC, N_IPC_TOTAL, N_IPC_WARM, N_MEM, N_MEM_ROUNDS, N_PROC,
@@ -360,9 +360,11 @@ fn report_tail(abi: &impl Abi, label: &[u8], t: &Tail) {
 
 #[repr(C, align(16))]
 struct ThrStack([u8; 16 * 1024]);
-static mut THR_STACKS: [ThrStack; 2] = [const { ThrStack([0; 16 * 1024]) }; 2];
-static THR_CTID: [core::sync::atomic::AtomicU32; 2] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; 2];
+/// Slots 0 and 1 for the thread lanes; the `scale` lanes spawn up to
+/// `SC_MAX - 1` = 3 (slots 1..=3).
+static mut THR_STACKS: [ThrStack; 4] = [const { ThrStack([0; 16 * 1024]) }; 4];
+static THR_CTID: [core::sync::atomic::AtomicU32; 4] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 4];
 /// The ping-pong word: the main thread writes odd values, the partner the
 /// next even one; `u32::MAX` ends the partner.
 static PP_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -609,6 +611,565 @@ fn lock_contended_lane<A: Abi + Threads>(abi: &A, floor_ns: u64) {
         fail_line(abi, b"lock-contended was never contended", 0);
     } else {
         report(abi, b"lock-contended", t, n, floor_ns);
+    }
+}
+
+// ── Front memobj-multihart: futex calls on several harts at once ────────────
+//
+// The question: does a lock every futex call takes limit how futex calls
+// scale across harts? On AzOS a futex wake takes the region table lock
+// (`MEMOBJS`, `memobj_resolve_mapped`) and then the futex table lock; a wait
+// whose word matches takes the futex table and, inside it, `MEMOBJS`
+// (`futex_look`); `SYS_MO_MAP` / `SYS_MO_UNMAP` take `MEMOBJS` too, and a map
+// moves the epoch that every cached "no mapping here" answer of
+// `memobj_resolve_mapped` depends on. Every other lane runs its threads one
+// after the other, so none can see a lock that serialises harts.
+//
+// # The work
+//
+// A run is `h` threads of this process, released together by one start gate.
+// Each reads its CPU after the gate and after its window (both outside it).
+// Each WORKER makes [`SC_ITERS`] iterations of four calls, fixed work
+// whatever the others do. The kinds of run:
+//
+// * `scale futex h=1..4`: four futex calls on the thread's own words: a wake
+//   of its private word (no waiter: the empty wake, a key lookup and the
+//   table's bucket), a wait on it with a stale value (`EAGAIN`), and a wake
+//   and a stale wait on its word of one shared page ([`Scale`]: on AzOS a
+//   mapped shm region, keyed by the region; on Linux `MAP_SHARED` with the
+//   shared futex calls, keyed by the shmem page). The words are the
+//   thread's own (one cache line each), so only the kernels' own state
+//   couples the threads. The stale wait is what a waiter that lost the race
+//   pays; on AzOS it is answered by one user read before any lock
+//   (`futex_precheck`), on Linux under the hash bucket's lock: each kernel's
+//   own path, measured as it is.
+// * `scale futex+map h=2,4`: h - 1 futex workers and one MAPPER, which runs
+//   [`Scale::map_cycle`] (create, map, store, unmap a one-page shared
+//   object) until the futex workers are done.
+// * `scale floor h=1,2,4`: the CONTROL. Four [`Scale::floor_call`]s (the
+//   cheapest system call, which takes no lock either kernel shares between
+//   threads), so its `x1` is what the emulator and the host let h harts do
+//   at once. A futex `x1` is only evidence against a kernel lock where the
+//   floor's `x1` at the same h is near 1.
+// * `scale map alone`: the map cycle on one thread, the mapper's own cost.
+//
+// Every configuration runs `SC_REPS` times in one boot, interleaved (rep 0 of
+// every configuration, then rep 1, ...), so a slow stretch of the host lands
+// on all of them rather than on one. The tail samples one iteration in
+// [`SC_TAIL_EVERY`]; a window takes two clock reads.
+//
+// # What is reported, and why ratios
+//
+// Per run: the cost of a call on a worker (its window over its calls,
+// averaged over the workers), the aggregate (the whole window over every
+// call), and `x1`, the cost of a call against the SAME rep's h=1 run of its
+// kind: 1.00 is perfect scaling, h is fully serialised. `agg x1` is the
+// aggregate against the same rep's h=1 aggregate, over the reps whose threads
+// sat on h harts and stayed there (no overlap asked): the number to read
+// under -icount (below; a mixed run's window carries the mapper's turns as
+// well, so its `agg x1` reads above 1 on any kernel). The mixed runs also
+// give their cost against the same rep's pure run with as many futex workers
+// (`vs h-1`: what the mapper does to the others) and the mapper's cycle
+// against `map alone`. Per configuration, over the valid reps: the median
+// rep's cost as the lane's ns/op line (the comparison column), `x1` as
+// median, min and max (the spread), `over floor` (the futex `x1` divided by
+// the floor's at the same h, same rep), and the tail of the sampled calls.
+//
+// The ratios are the result, not the nanoseconds. A multi-hart QEMU is not
+// deterministic, and its two modes distort different things:
+//
+// * without `-icount` (MTTCG: one host thread per hart) the harts really run
+//   at once and a lock is really contended, but every number moves with the
+//   host's load, and the emulator has serialising points of its own (the
+//   floor shows them): run it on a quiet host, and read the spread;
+// * with `-icount` QEMU runs every hart on ONE host thread in turn, and the
+//   guest clock counts the instructions of all of them. Two harts never
+//   execute at the same moment: a worker's window spans the others' turns,
+//   so a per-worker `x1` of h is the ideal there, and `agg x1` = 1.00 says
+//   no hart spent an instruction more per call than alone. A lock is
+//   contended only when a hart's turn ends inside a critical section; on
+//   riscv64 (rv64imac: no pause hint) its waiters then spin for their whole
+//   turn, so every COLLISION on a shared lock costs a turn and shows: `agg x1`
+//   far above 1 says the calls collide on a lock, its size says nothing
+//   about real hardware. On aarch64 a waiter's spin hands the turn over, so
+//   collisions cost little there and the mode is blind to them.
+//
+// A rep is VALID only when its h threads ran on h distinct harts, none
+// changed CPU across its window, and the workers' windows overlapped by at
+// least [`SC_MIN_OVERLAP`]% of a window. AzOS cannot pin a thread and places
+// a new one by load; the placement is printed (as `switch-loaded` prints its
+// k), and a rep that is not valid is left out.
+//
+// # Decision rule (written before the data, amended by the canary)
+//
+// A kernel lock limits futex scaling on AzOS when AzOS's futex `over floor`
+// at h=4 exceeds Linux's, in the same QEMU mode, by more than the larger of
+// the two spreads, on at least two ISAs; the mixed case's `vs h-1`, by the
+// same margin, says whether the region table is the lock. A smaller
+// difference is no evidence for a narrower lock.
+//
+// Amendment: a mode counts only where kernel canary `memobj-hold-canary`
+// (the futex lookups hold `MEMOBJS` a few thousand spins longer) moves the
+// number it is read by. Without -icount on a shared 10-core host it did not:
+// `over floor` at h=4 read 1.22 (rv) and 0.90 (arm) with the canary against
+// 0.75-0.92 and 0.58-0.63 without, because the floor itself collapsed 2.5-8x
+// at h=4 and buried it. So the timing numbers of that mode decide nothing
+// here; the collision test (riscv64 -icount `agg x1`, AzOS against Linux,
+// and against a kernel with the region table taken out of the futex path)
+// is what attributes a lock.
+
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+/// Threads of the widest configuration (the main thread is slot 0).
+const SC_MAX: usize = 4;
+/// Iterations per worker and run (four calls each).
+const SC_ITERS: u64 = 2000;
+/// Calls per iteration.
+const SC_CALLS: u64 = 4;
+/// Repetitions of every configuration in one boot: AzOS places a new
+/// thread by load and cannot pin it, so some reps share a hart (left out).
+const SC_REPS: usize = 11;
+/// The tail samples one iteration in this many (each of its four calls
+/// timed): a clock read is an exit into the emulator on some ISAs (QEMU's
+/// aarch64 counter is an I/O register), so the windows carry two per worker
+/// and the tail one in eight iterations, not one around every call.
+const SC_TAIL_EVERY: u64 = 8;
+/// Map cycles of the `scale map alone` batch.
+const SC_MAP_ALONE: u64 = 200;
+/// The least overlap of the workers' windows, in percent of a mean window:
+/// at least half of each worker's calls ran while every other worker ran.
+/// (Without -icount the host deschedules a vCPU now and then, so a start or
+/// an end can lag by milliseconds.)
+const SC_MIN_OVERLAP: u64 = 50;
+
+/// What a run's workers do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScKind {
+    /// Four [`Scale::floor_call`]s an iteration: the control.
+    Floor,
+    /// Four futex calls an iteration.
+    Futex,
+    /// [`ScKind::Futex`] workers and one mapper (the last thread).
+    FutexMap,
+}
+
+/// The configurations: (kind, threads).
+const SC_CONFIGS: [(ScKind, usize); 9] = [
+    (ScKind::Floor, 1), (ScKind::Floor, 2), (ScKind::Floor, 4),
+    (ScKind::Futex, 1), (ScKind::Futex, 2), (ScKind::Futex, 3), (ScKind::Futex, 4),
+    (ScKind::FutexMap, 2), (ScKind::FutexMap, 4),
+];
+
+/// The index of configuration `c` in [`SC_CONFIGS`].
+fn sc_index(c: (ScKind, usize)) -> usize {
+    SC_CONFIGS.iter().position(|&x| x == c).unwrap_or(0)
+}
+
+#[repr(C, align(64))]
+struct ScWord(AtomicU32);
+/// Each thread's private futex word, on its own cache line; always 0.
+static SC_PRIV: [ScWord; SC_MAX] = [const { ScWord(AtomicU32::new(0)) }; SC_MAX];
+/// The shared page ([`Scale::shared_page`]); slot `i`'s word is at `64 * i`.
+static SC_SHARED: AtomicUsize = AtomicUsize::new(0);
+/// The run's kind (`ScKind as u32`) and its workers.
+static SC_KIND: AtomicU32 = AtomicU32::new(0);
+static SC_WORKERS: AtomicU32 = AtomicU32::new(0);
+/// The mapper's slot (`usize::MAX`: none).
+static SC_MAPPER: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// The next slot a spawned thread takes.
+static SC_NEXT: AtomicUsize = AtomicUsize::new(1);
+/// Spawned threads at the gate, the gate (1 open, 2 abandoned), workers done.
+static SC_READY: AtomicU32 = AtomicU32::new(0);
+static SC_GO: AtomicU32 = AtomicU32::new(0);
+static SC_DONE: AtomicU32 = AtomicU32::new(0);
+/// Per slot: the window (ticks) and the CPU before and after it.
+static SC_T0: [AtomicU64; SC_MAX] = [const { AtomicU64::new(0) }; SC_MAX];
+static SC_T1: [AtomicU64; SC_MAX] = [const { AtomicU64::new(0) }; SC_MAX];
+static SC_CPU0: [AtomicU64; SC_MAX] = [const { AtomicU64::new(0) }; SC_MAX];
+static SC_CPU1: [AtomicU64; SC_MAX] = [const { AtomicU64::new(0) }; SC_MAX];
+/// The first unexpected return of the run (0: none).
+static SC_ERR: AtomicI64 = AtomicI64::new(0);
+/// Map cycles the mapper completed in its window.
+static SC_MAPS: AtomicU64 = AtomicU64::new(0);
+/// Per slot: the sampled calls of the run. Each thread writes its own slot
+/// only; the main thread reads them after the joins.
+static mut SC_TAIL: [Tail; SC_MAX] = [const { Tail::new() }; SC_MAX];
+/// Per configuration: the sampled calls of its valid reps.
+static mut SC_CFG_TAIL: [Tail; SC_CONFIGS.len()] = [const { Tail::new() }; SC_CONFIGS.len()];
+
+fn sc_err(rc: i64) {
+    let _ = SC_ERR.compare_exchange(0, rc, Ordering::AcqRel, Ordering::Relaxed);
+}
+
+/// One iteration's four calls on slot `me`'s words (`p` private, `s` on the
+/// shared page), timed into `tail` when `timed`. The first unexpected return,
+/// or 0.
+#[inline(always)]
+fn sc_iter<A: Threads + Scale>(floor: bool, p: &AtomicU32, s: &AtomicU32, timed: bool, tail: &mut Tail) -> i64 {
+    let mut t = [0u64; 5];
+    let mut r = [0i64; 4];
+    let want: [i64; 4] = if floor { [0; 4] } else { [0, -11, 0, -11] };
+    for (i, ri) in r.iter_mut().enumerate() {
+        if timed { t[i] = rdtime(); }
+        *ri = match (floor, i) {
+            (true, _) => { A::floor_call(); 0 }
+            (false, 0) => A::futex_wake(p, 1),
+            (false, 1) => A::futex_wait(p, 1),
+            (false, 2) => A::shared_wake(s, 1),
+            _ => A::shared_wait(s, 1),
+        };
+    }
+    if timed {
+        t[4] = rdtime();
+        for i in 0..4 { tail.record(t[i + 1].wrapping_sub(t[i])); }
+    }
+    // Nobody waits (0 woken); the words hold 0, never 1 (-EAGAIN).
+    for i in 0..4 {
+        if r[i] != want[i] { return if r[i] == 0 { i64::MIN } else { r[i] }; }
+    }
+    0
+}
+
+/// A worker's fixed work on slot `me`'s words.
+fn sc_work<A: Threads + Scale>(me: usize) {
+    let floor = SC_KIND.load(Ordering::Relaxed) == ScKind::Floor as u32;
+    let p = &SC_PRIV[me].0;
+    // SAFETY: a word inside the shared page (64 * SC_MAX < 4 KiB), mapped for
+    // the whole boot.
+    let s = unsafe { &*((SC_SHARED.load(Ordering::Relaxed) + 64 * me) as *const AtomicU32) };
+    // SAFETY: slot `me` is this thread's alone until the main thread joins it.
+    let tail = unsafe { &mut *core::ptr::addr_of_mut!(SC_TAIL[me]) };
+    *tail = Tail::new();
+    let mut bad = 0i64;
+    let t0 = rdtime();
+    for i in 0..SC_ITERS {
+        let r = sc_iter::<A>(floor, p, s, i % SC_TAIL_EVERY == 0, tail);
+        if r != 0 && bad == 0 { bad = r; }
+    }
+    let t1 = rdtime();
+    SC_T0[me].store(t0, Ordering::Relaxed);
+    SC_T1[me].store(t1, Ordering::Relaxed);
+    if bad != 0 { sc_err(bad); }
+    SC_DONE.fetch_add(1, Ordering::Release);
+}
+
+/// The mapper's work: map cycles until every worker is done.
+fn sc_map_work<A: Scale>(me: usize) {
+    let nw = SC_WORKERS.load(Ordering::Relaxed);
+    let mut n = 0u64;
+    let t0 = rdtime();
+    while SC_DONE.load(Ordering::Acquire) < nw {
+        let r = A::map_cycle();
+        if r < 0 { sc_err(r); break; }
+        n += 1;
+    }
+    let t1 = rdtime();
+    SC_T0[me].store(t0, Ordering::Relaxed);
+    SC_T1[me].store(t1, Ordering::Relaxed);
+    SC_MAPS.store(n, Ordering::Relaxed);
+}
+
+/// A run's thread: gate (spawned threads), CPU, work, CPU.
+fn sc_body<A: Threads + Scale>(me: usize) {
+    if me != 0 {
+        SC_READY.fetch_add(1, Ordering::Release);
+        while SC_GO.load(Ordering::Acquire) == 0 { A::thread_yield(); }
+        if SC_GO.load(Ordering::Acquire) != 1 { return; }
+    }
+    SC_CPU0[me].store(A::cpu_now().unwrap_or(u64::MAX), Ordering::Relaxed);
+    if SC_MAPPER.load(Ordering::Relaxed) == me { sc_map_work::<A>(me) } else { sc_work::<A>(me) }
+    SC_CPU1[me].store(A::cpu_now().unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
+extern "C" fn sc_thread<A: Threads + Scale>() -> ! {
+    sc_body::<A>(SC_NEXT.fetch_add(1, Ordering::AcqRel));
+    A::thread_exit()
+}
+
+/// What one run measured.
+#[derive(Clone, Copy, Default)]
+struct ScRun {
+    /// Sum over the workers of their windows, and their calls.
+    cost: u64,
+    calls: u64,
+    /// First worker start to last worker end; latest start to earliest end.
+    window: u64,
+    overlap: u64,
+    /// Distinct CPUs of the run's threads (0: unknown); a thread changed CPU.
+    harts: u32,
+    moved: bool,
+    /// The mapper's cycles and window.
+    maps: u64,
+    map_ticks: u64,
+}
+
+impl ScRun {
+    /// A worker's mean window.
+    fn per_worker(&self) -> u64 {
+        self.cost / (self.calls / (SC_ITERS * SC_CALLS)).max(1)
+    }
+    /// The overlap of the workers' windows, in percent of a mean window.
+    fn overlap_pct(&self) -> u64 {
+        self.overlap.saturating_mul(100) / self.per_worker().max(1)
+    }
+    /// Placed: `h` threads on `h` distinct harts, none moved.
+    fn placed(&self, h: usize) -> bool {
+        self.harts as usize == h && !self.moved
+    }
+    /// Valid: placed, and the workers' windows overlapped.
+    fn valid(&self, h: usize) -> bool {
+        self.placed(h) && (h == 1 || self.overlap_pct() >= SC_MIN_OVERLAP)
+    }
+}
+
+/// One run of configuration `(kind, h)`.
+fn sc_run<A: Threads + Scale>(kind: ScKind, h: usize) -> Result<ScRun, i64> {
+    let mapper = kind == ScKind::FutexMap;
+    let nw = if mapper { h - 1 } else { h };
+    SC_KIND.store(kind as u32, Ordering::Relaxed);
+    SC_WORKERS.store(nw as u32, Ordering::Relaxed);
+    SC_MAPPER.store(if mapper { h - 1 } else { usize::MAX }, Ordering::Relaxed);
+    SC_NEXT.store(1, Ordering::Relaxed);
+    SC_READY.store(0, Ordering::Relaxed);
+    SC_DONE.store(0, Ordering::Relaxed);
+    SC_ERR.store(0, Ordering::Relaxed);
+    SC_MAPS.store(0, Ordering::Relaxed);
+    SC_GO.store(0, Ordering::Release);
+    let mut spawned = 0;
+    for i in 1..h {
+        let r = A::thread_spawn(sc_thread::<A>, thr_stack_top(i), &THR_CTID[i]);
+        if r <= 0 {
+            sc_err(if r == 0 { -1 } else { r });
+            break;
+        }
+        spawned += 1;
+    }
+    if spawned + 1 == h {
+        while (SC_READY.load(Ordering::Acquire) as usize) < spawned { A::thread_yield(); }
+        SC_GO.store(1, Ordering::Release);
+        sc_body::<A>(0);
+    } else {
+        SC_GO.store(2, Ordering::Release);
+    }
+    for i in 1..=spawned { thr_join::<A>(i); }
+    let err = SC_ERR.load(Ordering::Acquire);
+    if err != 0 { return Err(err); }
+    let mut r = ScRun { calls: nw as u64 * SC_ITERS * SC_CALLS, ..ScRun::default() };
+    let (mut first, mut last, mut late, mut early) = (u64::MAX, 0u64, 0u64, u64::MAX);
+    let mut cpus = [u64::MAX; SC_MAX];
+    let mut unknown = false;
+    for me in 0..h {
+        let (t0, t1) = (SC_T0[me].load(Ordering::Relaxed), SC_T1[me].load(Ordering::Relaxed));
+        let (c0, c1) = (SC_CPU0[me].load(Ordering::Relaxed), SC_CPU1[me].load(Ordering::Relaxed));
+        unknown |= c0 == u64::MAX || c1 == u64::MAX;
+        r.moved |= c0 != c1;
+        cpus[me] = c0;
+        if SC_MAPPER.load(Ordering::Relaxed) == me {
+            r.maps = SC_MAPS.load(Ordering::Relaxed);
+            r.map_ticks = t1.wrapping_sub(t0);
+            continue;
+        }
+        r.cost += t1.wrapping_sub(t0);
+        first = first.min(t0);
+        last = last.max(t1);
+        late = late.max(t0);
+        early = early.min(t1);
+    }
+    r.window = last.wrapping_sub(first);
+    r.overlap = early.saturating_sub(late);
+    r.harts = if unknown { 0 } else { (0..h).filter(|&i| !cpus[..i].contains(&cpus[i])).count() as u32 };
+    Ok(r)
+}
+
+/// `n` hundredths as `<n/100>.<nn>`.
+fn put_x100(abi: &impl Abi, n: u64) {
+    put_u(abi, n / 100);
+    abi.write(if n % 100 < 10 { b".0" as &[u8] } else { b"." });
+    put_u(abi, n % 100);
+}
+
+/// The cost of a call of `a` against one of `b`, in hundredths.
+fn sc_ratio(a: &ScRun, b: &ScRun) -> u64 {
+    if a.calls == 0 || b.cost == 0 { return 0; }
+    ((a.cost as u128 * b.calls as u128 * 100) / (a.calls as u128 * b.cost as u128)) as u64
+}
+
+/// The aggregate of `a` (its whole window over its calls) against `b`'s, in
+/// hundredths.
+fn sc_agg_ratio(a: &ScRun, b: &ScRun) -> u64 {
+    if a.calls == 0 || b.window == 0 { return 0; }
+    ((a.window as u128 * b.calls as u128 * 100) / (a.calls as u128 * b.window as u128)) as u64
+}
+
+/// The label of configuration `(kind, h)`: `scale <kind> h=<h>`.
+fn sc_label(kind: ScKind, h: usize) -> ([u8; 32], usize) {
+    let mut buf = [0u8; 32];
+    let head: &[u8] = match kind {
+        ScKind::Floor => b"scale floor h=",
+        ScKind::Futex => b"scale futex h=",
+        ScKind::FutexMap => b"scale futex+map h=",
+    };
+    buf[..head.len()].copy_from_slice(head);
+    buf[head.len()] = b'0' + h as u8;
+    (buf, head.len() + 1)
+}
+
+/// Median, min and max of the first `n` of `v` (sorted in place).
+fn sc_spread(v: &mut [u64], n: usize) -> (u64, u64, u64) {
+    let v = &mut v[..n];
+    v.sort_unstable();
+    (v[n / 2], v[0], v[n - 1])
+}
+
+fn sc_spread_line(abi: &impl Abi, label: &[u8], what: &[u8], v: &mut [u64], n: usize) {
+    let (med, min, max) = sc_spread(v, n);
+    abi.write(b"[VSBENCH] ");
+    abi.write(SIDE);
+    abi.write(b" ");
+    abi.write(label);
+    abi.write(what);
+    abi.write(b": median=");
+    put_x100(abi, med);
+    abi.write(b" min=");
+    put_x100(abi, min);
+    abi.write(b" max=");
+    put_x100(abi, max);
+    abi.write(b" over ");
+    put_u(abi, n as u64);
+    abi.write(b" valid reps\n");
+}
+
+/// One rep's line, outside every window.
+fn sc_rep_line(abi: &impl Abi, label: &[u8], rep: usize, h: usize, r: &ScRun, base: &ScRun, mapper: bool) {
+    abi.write(b"[VSBENCH] ");
+    abi.write(SIDE);
+    abi.write(b" ");
+    abi.write(label);
+    abi.write(b" rep=");
+    put_u(abi, rep as u64);
+    abi.write(b": harts=");
+    put_u(abi, r.harts as u64);
+    abi.write(if r.moved { b" moved" as &[u8] } else { b" stayed" });
+    abi.write(b" overlap=");
+    put_u(abi, r.overlap_pct());
+    abi.write(b"% per-call=");
+    put_u(abi, ns_per_op(r.cost, r.calls));
+    abi.write(b" ns/call aggregate=");
+    put_u(abi, ns_per_op(r.window, r.calls));
+    abi.write(b" ns/call x1=");
+    put_x100(abi, sc_ratio(r, base));
+    if mapper {
+        abi.write(b" maps=");
+        put_u(abi, r.maps);
+        abi.write(b" at ");
+        put_u(abi, ns_per_op(r.map_ticks, r.maps.max(1)));
+        abi.write(b" ns/cycle");
+    }
+    abi.write(if r.valid(h) { b" valid\n" as &[u8] } else { b" NOT VALID\n" });
+}
+
+/// The `scale` lanes (see the section comment above).
+fn scale_lanes<A: Abi + Threads + Scale>(abi: &A, floor_ns: u64) {
+    match A::shared_page() {
+        Ok(va) => SC_SHARED.store(va, Ordering::Relaxed),
+        Err(e) => return fail_line(abi, b"scale shared page", e),
+    }
+    let mut err = 0i64;
+    let t_map = batch(SC_MAP_ALONE, || {
+        let r = A::map_cycle();
+        if r < 0 && err == 0 { err = r; }
+    });
+    if err != 0 { return fail_line(abi, b"scale map alone", err); }
+    report(abi, b"scale map alone", t_map, SC_MAP_ALONE, floor_ns);
+    let map_alone_ns = ns_per_op(t_map, SC_MAP_ALONE);
+
+    const K: usize = SC_CONFIGS.len();
+    let mut runs = [[ScRun::default(); SC_REPS]; K];
+    // The h=1 run each configuration's `x1` is against.
+    let base_of = |kind: ScKind| sc_index((if kind == ScKind::Floor { ScKind::Floor } else { ScKind::Futex }, 1));
+    for rep in 0..SC_REPS {
+        for (k, &(kind, h)) in SC_CONFIGS.iter().enumerate() {
+            let (l, n) = sc_label(kind, h);
+            let r = match sc_run::<A>(kind, h) {
+                Ok(r) => r,
+                Err(e) => return fail_line(abi, &l[..n], e),
+            };
+            runs[k][rep] = r;
+            sc_rep_line(abi, &l[..n], rep, h, &r, &runs[base_of(kind)][rep], kind == ScKind::FutexMap);
+            if r.valid(h) {
+                // SAFETY: every thread of the run has been joined.
+                unsafe {
+                    let src = &*core::ptr::addr_of!(SC_TAIL);
+                    let dst = &mut *core::ptr::addr_of_mut!(SC_CFG_TAIL[k]);
+                    for (me, t) in src.iter().enumerate().take(h) {
+                        if SC_MAPPER.load(Ordering::Relaxed) != me { dst.absorb(t); }
+                    }
+                }
+            }
+        }
+    }
+
+    for (k, &(kind, h)) in SC_CONFIGS.iter().enumerate() {
+        let (l, n) = sc_label(kind, h);
+        let label = &l[..n];
+        let base = base_of(kind);
+        // The pure run with as many futex workers (the mixed runs' `vs h-1`)
+        // and the floor at the same h (the futex runs' `over floor`).
+        let pure = sc_index((ScKind::Futex, if kind == ScKind::FutexMap { h - 1 } else { h }));
+        let floor = SC_CONFIGS.iter().position(|&c| c == (ScKind::Floor, h));
+        let (mut x1, mut vs, mut over, mut cyc, mut cost) =
+            ([0u64; SC_REPS], [0u64; SC_REPS], [0u64; SC_REPS], [0u64; SC_REPS], [0u64; SC_REPS]);
+        let (mut agg, mut ma) = ([0u64; SC_REPS], 0);
+        for rep in 0..SC_REPS {
+            if runs[k][rep].placed(h) && runs[base][rep].placed(1) {
+                agg[ma] = sc_agg_ratio(&runs[k][rep], &runs[base][rep]);
+                ma += 1;
+            }
+        }
+        if ma > 0 && h > 1 { sc_spread_line(abi, label, b" agg x1", &mut agg, ma); }
+        let (mut m, mut mo) = (0, 0);
+        for rep in 0..SC_REPS {
+            let r = &runs[k][rep];
+            if !r.valid(h) || !runs[base][rep].valid(1) { continue; }
+            x1[m] = sc_ratio(r, &runs[base][rep]);
+            cost[m] = ns_per_op(r.cost, r.calls);
+            if kind == ScKind::FutexMap {
+                vs[m] = sc_ratio(r, &runs[pure][rep]);
+                cyc[m] = ns_per_op(r.map_ticks, r.maps.max(1)) * 100 / map_alone_ns.max(1);
+                // Only where the pure run is valid too.
+                if !runs[pure][rep].valid(SC_CONFIGS[pure].1) { continue; }
+            }
+            if let (ScKind::Futex, Some(f)) = (kind, floor) {
+                let (fr, fb) = (&runs[f][rep], &runs[sc_index((ScKind::Floor, 1))][rep]);
+                if fr.valid(h) && fb.valid(1) {
+                    over[mo] = x1[m] * 100 / sc_ratio(fr, fb).max(1);
+                    mo += 1;
+                }
+            }
+            m += 1;
+        }
+        if m == 0 {
+            abi.write(b"[VSBENCH] ");
+            abi.write(SIDE);
+            abi.write(b" ");
+            abi.write(label);
+            abi.write(b": REFUSED (no valid rep: see the rep lines)\n");
+            continue;
+        }
+        // The lane's number: the median valid rep's cost of a call.
+        let med = sc_spread(&mut cost, m).0;
+        let pick = (0..SC_REPS)
+            .find(|&rep| runs[k][rep].valid(h) && ns_per_op(runs[k][rep].cost, runs[k][rep].calls) == med)
+            .unwrap_or(0);
+        report(abi, label, runs[k][pick].cost, runs[k][pick].calls, floor_ns);
+        sc_spread_line(abi, label, b" x1", &mut x1, m);
+        if mo > 0 && h > 1 { sc_spread_line(abi, label, b" over floor", &mut over, mo); }
+        if kind == ScKind::FutexMap {
+            sc_spread_line(abi, label, b" vs h-1", &mut vs, m);
+            sc_spread_line(abi, label, b" mapper vs alone", &mut cyc, m);
+        }
+        // SAFETY: no thread of this lane is left.
+        report_tail(abi, label, unsafe { &*core::ptr::addr_of!(SC_CFG_TAIL[k]) });
     }
 }
 
@@ -2857,7 +3418,7 @@ fn sqpoll_lanes(abi: &impl Abi, floor_ns: u64) {
     }
 }
 
-fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uaccess>(abi: &A) {
+fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uaccess + Scale>(abi: &A) {
     abi.write(b"[VSBENCH] side=");
     abi.write(SIDE);
     abi.write(b" start\n");
@@ -2941,6 +3502,11 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
     if lanes.on(b"uaccess") { uaccess_lanes(abi, floor_ns); }
     // 4b'. Wave 13: threads of one process, both sides.
     if lanes.on(b"thread") { thread_lanes::<A>(abi, floor_ns); }
+    // 4b''. Front memobj-multihart: futex calls on several harts at once.
+    //      Only when named: it means something only in its own pass at
+    //      `-smp 4` (see `scale_lanes`), and an unfiltered boot is the
+    //      deterministic `-smp 1` comparison.
+    if !lanes.is_all() && lanes.on(b"scale") { scale_lanes::<A>(abi, floor_ns); }
 
     // 4c. The only lane that measures the cost of NOT entering the kernel.
     if lanes.on(b"vdso") { vdso_lanes(abi, floor_ns); }

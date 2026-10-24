@@ -116,7 +116,8 @@
 # QEMU_AARCH64 (default: qemu-system-aarch64), CARGO (default: cargo),
 # WAIT_SECS (default: 90, per boot), VSBENCH_SMP (default: 1 — see the
 # determinism note above; only change this to deliberately reproduce the
-# cross-hart jitter it exists to avoid).
+# cross-hart jitter it exists to avoid, or for the `scale` lanes),
+# VSBENCH_ICOUNT (default: 1; 0 drops -icount, see below).
 
 set -u
 # Outputs live under $AZOS_OUT (tools/out_dir.py), never in the checkout.
@@ -128,7 +129,13 @@ QEMU_RISCV64="${QEMU_RISCV64:-/opt/homebrew/bin/qemu-system-riscv64}"
 QEMU_AARCH64="${QEMU_AARCH64:-qemu-system-aarch64}"
 WAIT_SECS="${WAIT_SECS:-90}"
 VSBENCH_SMP="${VSBENCH_SMP:-1}"
+# VSBENCH_ICOUNT=0 (front memobj-multihart): no -icount, so each vCPU runs on
+# its own host thread. For the `scale` lanes at VSBENCH_SMP=4: under -icount
+# QEMU runs every vCPU on one host thread in turn, so no two harts ever run at
+# once (see `scale_lanes` in userspace/bench/vsbench/src/main.rs).
+VSBENCH_ICOUNT="${VSBENCH_ICOUNT:-1}"
 ICOUNT_ARGS="-icount shift=0,sleep=off"
+[ "$VSBENCH_ICOUNT" = "1" ] || ICOUNT_ARGS=""
 
 # NOT under $REPO_ROOT root, not under the default `target/.../release` — a
 # scratch directory per the task's own environment rule ("scratch builds
@@ -379,7 +386,11 @@ cell() { awk -F '\t' -v l="$2" '$1 == l { print $2; exit }' "$1" 2>/dev/null; }
 sort -u "$WORK/riscv64.tsv" "$WORK/aarch64.tsv" | cut -f1 | sort -u >"$WORK/lanes"
 
 echo ""
-echo "  vsbench, -smp $VSBENCH_SMP -icount shift=0,sleep=off (deterministic instruction counts)."
+if [ "$VSBENCH_ICOUNT" = "1" ]; then
+    echo "  vsbench, -smp $VSBENCH_SMP -icount shift=0,sleep=off (deterministic instruction counts)."
+else
+    echo "  vsbench, -smp $VSBENCH_SMP, no -icount (host-timed nanoseconds: read the ratios and their spread)."
+fi
 echo "  Same bench-minimal build+boot, both ISAs, this run. switch-loaded is a AzOS-only"
 echo "  measure (see vsbench_compare.sh) and is not comparable across anything, ISA included,"
 echo "  in the same way the other lanes are not."

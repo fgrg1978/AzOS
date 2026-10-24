@@ -363,8 +363,11 @@ VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
 #
 # A comma list of section keys (see `Lanes` in
 # userspace/bench/vsbench/src/bench_core.rs): ipc, mem, proc, thread, vdso,
-# ioring, shell, timer, net, tcp, switch. `tcp` selects only the TCP pass
-# (VSBENCH_TCP below); the other keys filter the main boots. The floors and the unloaded yield always
+# ioring, shell, timer, net, tcp, switch, disk, uaccess, scale. `tcp` selects
+# only the TCP pass (VSBENCH_TCP below); `scale` (futex calls on several harts
+# at once, front memobj-multihart) runs ONLY when named, and means something
+# only at VSBENCH_SMP=4, the default here (see `scale_lanes` in main.rs for
+# what -icount does to it); the other keys filter the main boots. The floors and the unloaded yield always
 # run. Unset (the default) changes nothing: no file is added to the AzOS disk
 # and no word to the Linux command line. Set, AzOS reads it from
 # /fat/VSBLANES.TXT in its own disk copy and Linux from init's environment.
@@ -410,8 +413,8 @@ if [ "$VSBENCH_GATE_ONLY" = "1" ]; then
     VSBENCH_TCP=0
 fi
 if [ -n "$VSBENCH_LANES" ]; then
-    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk|uaccess)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk|uaccess))*$' \
-        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,tcp,switch,disk,uaccess" >&2; exit 1; }
+    printf '%s' "$VSBENCH_LANES" | grep -qE '^(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk|uaccess|scale)(,(ipc|mem|proc|thread|vdso|ioring|shell|timer|net|tcp|switch|disk|uaccess|scale))*$' \
+        || { echo "vsbench: VSBENCH_LANES=$VSBENCH_LANES: want a comma list of ipc,mem,proc,thread,vdso,ioring,shell,timer,net,tcp,switch,disk,uaccess,scale" >&2; exit 1; }
     [ "$VSBENCH_SECCOMP" = "1" ] && { echo "vsbench: VSBENCH_LANES and VSBENCH_SECCOMP=1 do not mix" >&2; exit 1; }
     echo "vsbench: lanes filtered to: $VSBENCH_LANES" >&2
 fi

@@ -46,7 +46,14 @@ CARGO="${CARGO:-cargo}"
 QEMU_X86_64="${QEMU_X86_64:-qemu-system-x86_64}"
 WAIT_SECS="${WAIT_SECS:-90}"
 VSBENCH_SMP="${VSBENCH_SMP:-1}"
+# VSBENCH_ICOUNT=0 (front memobj-multihart): no -icount, and one host thread
+# per vCPU, which an x86 guest on a weaker-ordered host only gets when asked
+# (`thread=multi`; QEMU then fences for the guest's order). For the `scale`
+# lanes at VSBENCH_SMP=4: under -icount QEMU runs every vCPU on one host
+# thread in turn, so no two harts ever run at once (see `scale_lanes`).
+VSBENCH_ICOUNT="${VSBENCH_ICOUNT:-1}"
 ICOUNT_ARGS="-icount shift=0,sleep=off"
+[ "$VSBENCH_ICOUNT" = "1" ] || ICOUNT_ARGS="-accel tcg,thread=multi"
 # tools/check_fast.sh's x86_64 line, with x2APIC withheld from BOTH kernels.
 # Under -icount, QEMU 11.0 TCG aborts with "Bad icount read" once AzOS
 # (X86_X2APIC=probe) drives its local APIC through the x2APIC MSRs (measured
@@ -216,7 +223,11 @@ fi
 cell() { awk -F '\t' -v l="$2" '$1 == l { print $2; exit }' "$1" 2>/dev/null; }
 sort -u "$WORK/x86_64.tsv" "$WORK/linux-x86_64.tsv" | cut -f1 | sort -u >"$WORK/lanes"
 echo ""
-echo "  vsbench x86_64, microvm, -smp $VSBENCH_SMP -icount shift=0,sleep=off (instruction counts)."
+if [ "$VSBENCH_ICOUNT" = "1" ]; then
+    echo "  vsbench x86_64, microvm, -smp $VSBENCH_SMP -icount shift=0,sleep=off (instruction counts)."
+else
+    echo "  vsbench x86_64, microvm, -smp $VSBENCH_SMP $ICOUNT_ARGS (host-timed nanoseconds: read the ratios and their spread)."
+fi
 echo "  Sections run: $VSBENCH_LANES"
 printf "    %-18s %14s %14s %8s\n" "lane" "azos-x86_64" "linux-x86_64" "az/lx"
 L_MISSING=""
