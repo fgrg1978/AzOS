@@ -110,9 +110,10 @@ fn run(badge: u32, write: bool, sector: u64, sectors: usize) -> Result<i32, i32>
 /// reaches the device. "One sector before the start" can no longer be spelled:
 /// a relative sector is unsigned.
 ///
-/// **Canary.** Make `partition::resolve` accept every run: the refusal lines
-/// read `Ok`. Delete the `record_cap_denial` call in `block_io`: `seen()` stays
-/// empty.
+/// **Canary.** Make `partition::resolve` accept every run, or build with
+/// `block-scope-canary` (a gate row: `scope` drops the end check): the refusal
+/// lines read `Ok`. Delete the `record_cap_denial` call in `block_io`: `seen()`
+/// stays empty.
 #[test]
 fn a_partition_endpoint_writing_one_sector_outside_is_refused_and_recorded() {
     let _g = serial();

@@ -90,7 +90,13 @@ pub(crate) fn scope(badge: u32, write: bool, sector: u64, len: usize) -> Result<
     if len == 0 || len % SECTOR_BYTES != 0 {
         return Err(Errno::EINVAL.to_syscall_ret() as i32);
     }
-    let Some(lba) = azos_drv_block::partition::resolve(part, sector, count) else {
+    let resolved = if cfg!(feature = "block-scope-canary") {
+        // CANARY, never in a real build: the start is added, the end is not checked.
+        azos_drv_block::partition::partition(part).map(|(start, _)| start.wrapping_add(sector))
+    } else {
+        azos_drv_block::partition::resolve(part, sector, count)
+    };
+    let Some(lba) = resolved else {
         let prior = BLOCK_SCOPE_REFUSALS.fetch_add(1, Ordering::Relaxed);
         crate::handlers::record_cap_denial(ty::ENDPOINT, badge, write);
         if prior < 8 {

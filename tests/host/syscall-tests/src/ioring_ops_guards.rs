@@ -1517,9 +1517,13 @@ mod queued_blocks {
     }
 
     /// A run outside the partition is refused and recorded as the synchronous
-    /// path refuses it, and never reaches the layer. A run the layer cannot take
+    /// path refuses it, and never reaches the layer: a write one past the end,
+    /// a read crossing it, a read past it. A run the layer cannot take
     /// (no queue on this board, a queue that takes nothing, more sectors than
     /// one command) is `Unqueueable`, and costs no slot.
+    ///
+    /// **Canary** (`block-scope-canary`, a gate row): `scope` drops the end
+    /// check, and the first refusal reads `Queued`.
     #[test]
     fn a_run_outside_the_partition_is_refused_and_an_unqueueable_one_falls_back() {
         if !azos_limits::IORING_ASYNC { return; }
@@ -1527,8 +1531,11 @@ mod queued_blocks {
         scene();
         let before = crate::block_host::BLOCK_SCOPE_REFUSALS.load(Ordering::SeqCst);
         let buf = vec![0u8; 512];
-        assert_eq!(start(true, 4096, &buf), BlockStart::Refused(azos_ipc::io_ring::IO_ERR_PERM));
-        assert_eq!(crate::block_host::BLOCK_SCOPE_REFUSALS.load(Ordering::SeqCst), before + 1);
+        let perm = BlockStart::Refused(azos_ipc::io_ring::IO_ERR_PERM);
+        assert_eq!(start(true, 4096, &buf), perm, "a write one past the end");
+        assert_eq!(start(false, 4095, &vec![0u8; 1024]), perm, "a read crossing the end");
+        assert_eq!(start(false, u64::MAX, &buf), perm, "a read past the end");
+        assert_eq!(crate::block_host::BLOCK_SCOPE_REFUSALS.load(Ordering::SeqCst), before + 3);
         assert!(raw_queued().is_empty());
         assert_eq!(start(true, 0, &vec![0u8; 100]), BlockStart::Refused(Errno::EINVAL.to_syscall_ret() as i32), "not whole sectors");
 

@@ -75,6 +75,9 @@ subtree-gate-canary = []
 # Mirrors azos_syscall's deadline admission canary in the pulled-in
 # ipc_deadline.rs: every call is admitted. Off: the real behaviour.
 ipc-admit-canary = []
+# Mirrors azos_syscall's partition scope canary in the pulled-in
+# block_host.rs: the end of the partition is not checked. Off: the real behaviour.
+block-scope-canary = []
 # Wave 15: mirrors azos_syscall's canary of the same name (the pulled-in
 # module_tokens.rs): a dead task's module tokens are kept.
 module-token-leak-canary = []

@@ -369,7 +369,12 @@ fn stamped_fail(name: &[u8], what: &[u8], rc: isize) {
 struct BlockRing {
     cap: u32,
     ring: sys::ioring::Ring,
+    /// The `user_data` of the last entry pushed: each entry's own tag.
+    tag: core::cell::Cell<u64>,
 }
+
+/// How long [`BlockRing::io`] waits for an entry's completion.
+const BLOCK_WAIT_MS: u64 = 2_000;
 
 impl BlockRing {
     fn open() -> Option<BlockRing> {
@@ -379,7 +384,7 @@ impl BlockRing {
             return None;
         }
         match sys::ioring::Ring::open(cap as u32, out) {
-            Ok(ring) => Some(BlockRing { cap: cap as u32, ring }),
+            Ok(ring) => Some(BlockRing { cap: cap as u32, ring, tag: core::cell::Cell::new(0) }),
             Err(_) => {
                 sys::ioring_destroy_typed(cap as u32);
                 None
@@ -390,7 +395,16 @@ impl BlockRing {
     /// One entry: `len` bytes (whole sectors) of the partition the badge
     /// names, at the partition-relative `sector`, through the ring's data
     /// buffer. `0` when every byte moved, else the completion's refusal (a
-    /// negative errno) or what the submit answered.
+    /// negative errno), a negative submit, `-3` when no completion came within
+    /// [`BLOCK_WAIT_MS`] or `-4` for a completion of another entry.
+    ///
+    /// The answer is the completion THIS entry posted, found by its tag, never
+    /// whatever the CQ holds. Under Kconfig `IORING_ASYNC` a block entry the
+    /// kernel admits PARKS: the submit answers 0 (no completion yet) and the
+    /// io_ring worker posts it when the device is done, while a refused one
+    /// completes in the submit. Taking the submit's count as the verdict made
+    /// an admitted entry "pass" before it ran, and the next pop then read the
+    /// previous entry's completion: a refusal read as that entry's 512.
     fn io(&self, write: bool, badge: u32, sector: u32, buf: &mut [u8]) -> isize {
         let len = buf.len();
         if write {
@@ -398,14 +412,28 @@ impl BlockRing {
             // that (the callers pass one or two sectors).
             unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), self.ring.data(), len) };
         }
-        if !self.ring.push_block(write, badge, 0, len as u32, sector, 1) {
+        let tag = self.tag.get() + 1;
+        self.tag.set(tag);
+        if !self.ring.push_block(write, badge, 0, len as u32, sector, tag) {
             return -1;
         }
         let n = sys::ioring_submit_typed(self.cap);
-        if n != 1 {
+        if n < 0 {
             return n;
         }
-        let Some((_, result, _)) = self.ring.pop() else { return -3 };
+        let mut waited = 0;
+        let result = loop {
+            match self.ring.pop() {
+                Some((t, result, _)) if t == tag => break result,
+                // One entry is in flight at a time: any other is a stray.
+                Some(_) => return -4,
+                None if waited >= BLOCK_WAIT_MS => return -3,
+                None => {
+                    sys::sleep(1);
+                    waited += 1;
+                }
+            }
+        };
         if result as isize != len as isize {
             return result as isize;
         }

@@ -118,6 +118,14 @@ subtree-gate-canary = []
 # admits every call, so no server's scheduling context is asked. The host test
 # `a_two_hop_call_is_refused_at_the_hop_that_cannot_finish` must go red.
 ipc-admit-canary = []
+# Partition scope canary, never in a real build: `block_host::scope` adds the
+# partition's start but drops the end check, so a `block` endpoint reaches
+# every sector past its partition. The host tests
+# `a_partition_endpoint_writing_one_sector_outside_is_refused_and_recorded`
+# (synchronous entry) and
+# `a_run_outside_the_partition_is_refused_and_an_unqueueable_one_falls_back`
+# (queued entry) must go red.
+block-scope-canary = []
 # Wave 15 (plan 4a) gate canary, never in a real build: a port a thread
 # creates is booked to the thread instead of its process, so the thread's
 # exit frees it under its siblings.

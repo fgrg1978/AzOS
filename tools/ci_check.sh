@@ -11020,6 +11020,13 @@ host_job host_canary_row "subtree: creation gate canary" syscall-tests subtree-g
 # two-hop call whose second server cannot finish in the time left is queued.
 host_job host_canary_row "ipc: deadline admission canary" syscall-tests ipc-admit-canary \
     a_two_hop_call_is_refused_at_the_hop_that_cannot_finish
+# The partition-scoped `block` endpoint (`block_host::scope`): the partition's
+# start is added and its end is not checked, so a ring-3 holder reaches every
+# sector past its partition, by the synchronous entry and by the queued one.
+host_job host_canary_row "block: partition scope canary" syscall-tests block-scope-canary \
+    a_partition_endpoint_writing_one_sector_outside_is_refused_and_recorded
+host_job host_canary_row "block: queued scope canary" syscall-tests block-scope-canary \
+    a_run_outside_the_partition_is_refused_and_an_unqueueable_one_falls_back
 # D4/L6 (MemObj): each canary puts one hole of the MemObj operations back and
 # requires exactly its test to fail. The tests are in crates/core/ipc/src/memobj.rs
 # (ipc-tests) and carry the property in their doc. memobj-no-kernel-map-canary:
