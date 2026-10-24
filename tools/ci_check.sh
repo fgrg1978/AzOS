@@ -7913,7 +7913,10 @@ ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
         a64_kbuild "qemu,use-robot" || { bad; echo "      aarch64 kernel (qemu,use-robot) did not build"; return; }
         kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
     fi
-    [ -f "$disk.pristine" ] || make_disk "$disk"
+    # This run's snapshot, made by this run (`fresh_disk`): a `.pristine` left
+    # in a reused out dir by an earlier run holds images whose digests the
+    # kernel built now does not list, and every spawn on it is refused.
+    fresh_disk "$disk" || { bad; echo "      $disk: no snapshot of this run"; return; }
     cp "$disk.pristine" "$img"
     local f
     case "$mode" in
