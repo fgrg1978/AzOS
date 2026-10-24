@@ -23,7 +23,7 @@
 //! which makes it the topology parser's fuzz entry too.
 
 use azos_topology::boot_admission::{self as ba, DeadlineOutcome, Receipt};
-use azos_topology::deadline::profile_density;
+use azos_topology::deadline::{profile_density, LevelOrder};
 use azos_topology::{AdmissionError, ParseError, Topology};
 use std::fmt::{self, Write};
 
@@ -130,7 +130,9 @@ pub fn dry_boot(topo: &Topology<'_>, cpus: usize) -> DryBoot {
     }
     let tasks = topo.tasks();
     d.rows = tasks.len();
-    let step = ba::deadline_step(topo, ncpus);
+    // The kernel's order (`classes::level_order`) is `Edf` unless the
+    // `sched-dl-in-level` canary is armed, which a dry boot never is.
+    let step = ba::deadline_step(topo, ncpus, LevelOrder::Edf);
     d.receipts.extend(step.receipts().copied());
     d.deadline = Some(step.outcome);
     if let DeadlineOutcome::Admitted(r) | DeadlineOutcome::BandRefused(r, _) = step.outcome {

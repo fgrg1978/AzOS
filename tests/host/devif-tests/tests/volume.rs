@@ -7,7 +7,7 @@ use azos_devif::volume::{badge, FLAG_COMPLETE, FLAG_READ_ONLY, VOLUMES, VOLUME_I
 use azos_devif::{block, by_key, by_name, key, outcome, parse_target, Out, VolumeIdl, VolumeReport};
 use azos_idl::{MsgDesc, Reader, Wire, Writer, MSG_VERSION};
 
-/// The row: key 27, after `sound`, the id "VOLU".
+/// The row: key 28, after `sound` and `powerassert`, the id "VOLU".
 ///
 /// **Canary.** Move the key: red.
 #[test]

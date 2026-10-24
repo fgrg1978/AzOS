@@ -13,6 +13,7 @@
 
 use azos_decision::{Rule, Verdict};
 use azos_topology::boot_admission::{deadline_step, isolated_without_cpu_receipt, neverallow_receipt, DeadlineOutcome, Receipt};
+use azos_topology::deadline::LevelOrder;
 use azos_topology::{parse_caps, parse_sched, AdmissionError, DeadlineRefusal, Topology};
 
 /// One class that may take a whole CPU, under admission control, whose
@@ -48,7 +49,7 @@ fn plain(name: &str) -> String {
 }
 
 fn receipts(t: &Topology<'_>, ncpus: usize) -> Vec<Receipt> {
-    deadline_step(t, ncpus).receipts().copied().collect()
+    deadline_step(t, ncpus, LevelOrder::Edf).receipts().copied().collect()
 }
 
 fn rc(rule: Rule, verdict: Verdict, subject: u32, numbers: [u64; 3]) -> Receipt {
@@ -65,16 +66,17 @@ fn an_admitted_set_writes_placed_rows_then_the_band() {
         rc(Rule::DeadlineAdmission, Verdict::Admit, 2, [2, 3, 0]),
         rc(Rule::RtBandCap, Verdict::Admit, 2, [2, cap, 0]),
     ]);
-    assert!(matches!(deadline_step(&t, 2).outcome, DeadlineOutcome::Admitted(r) if r.placed == 2));
+    assert!(matches!(deadline_step(&t, 2, LevelOrder::Edf).outcome, DeadlineOutcome::Admitted(r) if r.placed == 2));
 }
 
-/// The same set on one CPU: refused, `placed` 0, and no band record.
+/// The same set on one CPU: refused, `placed` 0, the first row refused
+/// (`record_row`: row 1 plus one) as the third number, and no band record.
 #[test]
 fn a_refused_set_writes_one_record_with_nothing_placed() {
     let t = topo(row("a", 6000, 3) + &row("b", 6000, 3) + &plain("c"));
-    assert_eq!(receipts(&t, 1), [rc(Rule::DeadlineAdmission, Verdict::Refuse, 1, [0, 3, 0])]);
+    assert_eq!(receipts(&t, 1), [rc(Rule::DeadlineAdmission, Verdict::Refuse, 1, [0, 3, 2])]);
     assert!(matches!(
-        deadline_step(&t, 1).outcome,
+        deadline_step(&t, 1, LevelOrder::Edf).outcome,
         DeadlineOutcome::Refused(AdmissionError::Deadline(DeadlineRefusal::NoCpuFits { task: 1 }))
     ));
 }
@@ -87,7 +89,8 @@ fn nothing_profiled_writes_no_band_record() {
 }
 
 /// A row that fits its CPU's density bound but not the band cap: the
-/// deadline record admits, the band record refuses.
+/// deadline record admits, the band record refuses and names the row (row 0
+/// plus one).
 #[test]
 fn a_row_over_the_band_cap_is_admitted_by_deadline_and_refused_by_the_band() {
     let cap = azos_limits::RT_BAND_CAP_PCT as u32;
@@ -97,9 +100,9 @@ fn a_row_over_the_band_cap_is_admitted_by_deadline_and_refused_by_the_band() {
     let t = topo(row("a", (cap + 1) * 100, 1));
     assert_eq!(receipts(&t, 1), [
         rc(Rule::DeadlineAdmission, Verdict::Admit, 1, [1, 1, 0]),
-        rc(Rule::RtBandCap, Verdict::Refuse, 1, [1, cap as u64, 0]),
+        rc(Rule::RtBandCap, Verdict::Refuse, 1, [1, cap as u64, 1]),
     ]);
-    assert!(matches!(deadline_step(&t, 1).outcome, DeadlineOutcome::BandRefused(_, DeadlineRefusal::BandCap { task: 0 })));
+    assert!(matches!(deadline_step(&t, 1, LevelOrder::Edf).outcome, DeadlineOutcome::BandRefused(_, DeadlineRefusal::BandCap { task: 0 })));
 }
 
 /// The install-time records: a `neverallow` refusal names the row, rule, kind
@@ -126,9 +129,12 @@ fn dry_boot_of_the_builtin_topology() {
     let rows = t.tasks().len() as u64;
     for ncpus in [1usize, 2, 4] {
         let got = receipts(&t, ncpus);
-        let first = match t.deadline_admission(ncpus) {
+        let first = match t.deadline_admission(ncpus, LevelOrder::Edf) {
             Ok(r) => rc(Rule::DeadlineAdmission, Verdict::Admit, ncpus as u32, [r.placed as u64, rows, 0]),
-            Err(_) => rc(Rule::DeadlineAdmission, Verdict::Refuse, ncpus as u32, [0, rows, 0]),
+            Err(e) => {
+                let row = if let AdmissionError::Deadline(d) = &e { d.record_row() } else { 0 };
+                rc(Rule::DeadlineAdmission, Verdict::Refuse, ncpus as u32, [0, rows, row])
+            }
         };
         assert_eq!(got[0], first, "{ncpus} CPU(s)");
         for (i, r) in got.iter().enumerate() {
