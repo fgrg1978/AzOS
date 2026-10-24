@@ -1021,6 +1021,47 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
     );
 }
 
+/// **Through `SYS_INVOKE`, a tracer op reaches the capability check only on a
+/// handle of the tracer's type.** TRACECTL.ELF without its grant asks with a
+/// tracer handle no slot holds (generation 0, which no slot is granted with):
+/// the table refuses it, `-ECAPSTALE`, and one record names the tracer, for
+/// the read (`info`) and the write (`start`) alike. The null handle is refused
+/// by the call's shape before any table is read (`-EINVAL`: its type has no
+/// tracer ops) and leaves no record. That is what tracectl presented until
+/// 2026-10-24, and why the gate row `trace: refused without Cap<Trace>` saw
+/// no refusal: the test above calls `trace_op` directly, past the dispatch.
+///
+/// **Canary.** Present the null handle in the loop: the read is `-EINVAL`,
+/// with no record.
+#[test]
+fn a_tracer_op_without_its_grant_is_refused_by_the_table_through_invoke() {
+    use azos_abi::invoke::{INVOKE_REGS, LOG_TRACE_INFO, LOG_TRACE_SET_MASK};
+    let _g = serial();
+    let tid = fresh_tid();
+    let _s = ring3_with_table(tid);
+    azos_sched::scheduler::set_current_syscall_filter(azos_sched::filter::SyscallFilter::disabled());
+    __cap_deny_limiter_clear_for_tests();
+    set_cap_deny_recorder(untyped_hook);
+    set_cap_deny_typed_recorder(typed_hook);
+    let invoke = |handle: u32, op: u16| {
+        let mut out = crate::dispatch::SyscallOut::new();
+        crate::invoke::sys_invoke(handle as u64, INVOKE_REGS | op as u64, 0, 0, 0, 0, &mut out)
+    };
+    let no_slot = azos_abi::cap::CapHandle::pack(ty::TRACE, CapPerms::NONE, 0, 0).as_raw();
+    for op in [LOG_TRACE_INFO, LOG_TRACE_SET_MASK] {
+        SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        assert_eq!(invoke(no_slot, op), Errno::ECAPSTALE.to_syscall_ret(), "op {op:#06x}: not the table's refusal");
+        assert_eq!(
+            seen(),
+            vec![Seen::Typed { tid, kind: ty::TRACE.denial_code(), reason: CapError::Stale.code() }],
+            "op {op:#06x}: one refusal, recorded under the tracer"
+        );
+    }
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    assert_eq!(invoke(0, LOG_TRACE_INFO), Errno::EINVAL.to_syscall_ret());
+    assert_eq!(seen(), vec![], "the null handle is refused by the call's shape, unrecorded");
+}
+
 /// **Before the kernel installs the bound, nothing is suppressed.** A missing
 /// hook costs the old flood, never silence.
 #[test]

@@ -4,7 +4,7 @@
 //! laid out like a kernel ring buffer dump.
 //!
 //! ```text
-//! [    1.234567] W ipc::trace: [TRACE] op 4 REFUSED
+//! [    1.234567] W ipc::trace: [TRACE] op 0x8407 REFUSED
 //! ```
 //!
 //! Pure (no system call): the files are read by `main.rs`, the line grammar is

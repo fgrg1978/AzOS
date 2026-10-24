@@ -23032,7 +23032,12 @@ echo after-lx" 150 \
         # advances its index): a reader sees one record per ring and the
         # 20000 never arrive, so the row's FAIL build passes. Negative row:
         # TRACECTL.ELF without its Cap<Trace> (`trace-cap-canary`) is refused
-        # by the capability, recorded, and maps nothing.
+        # by the capability, recorded, and maps nothing: `info` and `stream`
+        # ask LOG_TRACE_INFO (READ, op 0x8003), `start` LOG_TRACE_SET_MASK
+        # (WRITE, op 0x8407), each answered -ECAPSTALE (202) by the table, not
+        # -EINVAL by the call's shape (what tracectl's old null handle got,
+        # with nothing recorded). Without the canary feature tracectl reads
+        # the tracer and the forbidden `tracectl: cpus=` lines appear.
         USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID='robot> |ms, drops=[1-9]|drops=[0-9]+ lost=[1-9]|classes sched=0 | irq=0 syscall=|REFUSED|Killing user task' par_row ushell_row "trace: tracectl reads live, -smp 4 ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "spin &
 spin &
@@ -23049,8 +23054,9 @@ tracectl stream -n 20000 -t 30000 -q" 180 \
             "tracectl info
 tracectl start
 tracectl stream -n 10" 150 \
-            "[TRACE] op 1 REFUSED" "lacks Cap<Trace> READ (recorded)" "[TRACE] op 4 REFUSED" \
-            "tracectl: info refused" "tracectl: start refused"
+            "[TRACE] op 0x8003 REFUSED" "lacks Cap<Trace> READ (recorded)" \
+            "[TRACE] op 0x8407 REFUSED" "lacks Cap<Trace> WRITE (recorded)" \
+            "tracectl: info refused:  rc=-202" "tracectl: start refused:  rc=-202"
         # Static keys (`KTRACE_STATIC_KEYS`): a class switched on and off while
         # tracectl streams. Every masked site is a nop (boot readback: 0
         # refused, text RX at every site, the alias unmapped); `tracectl

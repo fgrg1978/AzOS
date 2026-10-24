@@ -57,7 +57,7 @@ pub fn trace_op(cap_raw: u64, op: u16, arg: u64) -> i64 {
     if let Err(e) = azos_ipc::cap_store::read_table(tid, |t| t.get_op(cap, perms, op)).unwrap_or(Err(azos_ipc::cap::CapError::Stale)) {
         if crate::handlers::note_typed_denial_recorded(tid, ty::TRACE, e) {
             azos_drv_sys::kwarn!(
-                "[TRACE] op {} REFUSED: tid {} (ring 3) lacks Cap<Trace> {} (recorded)",
+                "[TRACE] op {:#06x} REFUSED: tid {} (ring 3) lacks Cap<Trace> {} (recorded)",
                 op, tid, if perms == CapPerms::READ { "READ" } else if perms == CapPerms::WRITE { "WRITE" } else { "READ|WRITE" });
         }
         return errno_for(e);

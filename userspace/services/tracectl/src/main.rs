@@ -5,7 +5,11 @@
 //! Its topology row is the whole of its authority: `Cap<Trace>` (found with
 //! `SYS_CAP_INFO`, presented to the tracer's ops on every call) and
 //! `/fat` read-write for a trace file. Without the capability it still asks,
-//! with handle 0, so the refusal is the kernel's and is recorded.
+//! with a handle of the tracer's type that names no capability (generation 0,
+//! which no slot is granted with), so the refusal is the kernel's
+//! capability check and is recorded. The null handle would not do:
+//! `SYS_INVOKE` reads an op in the namespace of the handle's type, and a null
+//! handle's type has no tracer ops (`-EINVAL`, before any table is read).
 //!
 //! The kernel writes one ring per CPU in one shared region
 //! (`azos_rings::region::trace`); this program maps it, is the single consumer of
@@ -266,12 +270,13 @@ fn usage() -> i32 {
 // ── The tracer ──────────────────────────────────────────────────────────────
 
 fn cap() -> u32 {
-    // Handle 0 when the row grants none: the kernel refuses and records it.
+    // When the row grants none, a tracer handle no slot holds: the kernel's
+    // capability check refuses it and records the refusal.
     let found = sys::cap_lookup(sys::ty::TRACE.raw(), 0);
     if found >= 0 {
         found as u32
     } else {
-        0
+        azos_abi::cap::CapHandle::pack(sys::ty::TRACE, azos_abi::cap::CapPerms::NONE, 0, 0).as_raw()
     }
 }
 
