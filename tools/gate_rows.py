@@ -1277,6 +1277,14 @@ def dry_run(tier=None, match=None):
     return res, ktap_lines(res, ["# would boot QEMU in %d of %d rows (this run boots none)" % (qemu, len(res))])
 
 
+def tier_lints_check(text=None):
+    """tools/gate_tier.sh's lints (`make check0`, and so the full gate's "n0
+    lints" row) run this tool's --check after its --self-test."""
+    text = _read("tools/gate_tier.sh") if text is None else text
+    units = re.findall(r'^\[ "\$lints" = 1 \] &&.*$|^if \[ "\$lints" = 1 \]; then\n(?:.*\n)*?fi$', text, re.M)
+    return any(re.search(r"gate_rows\.py --self-test.*gate_rows\.py --check\b", u, re.S) for u in units)
+
+
 def self_test():
     bad = []
 
@@ -1379,6 +1387,18 @@ def self_test():
                not required_deps(prefix))
         expect("canary: a commented path is a dep",
                not required_deps(dict(syn, body="  # python3 tools/fake_brain.py\n  true # tools/fake_brain.py")))
+    # The lints tier runs --check: without it `make check0` passed a manifest
+    # whose deps miss what a row reads.
+    tier = _read("tools/gate_tier.sh")
+    expect("tools/gate_tier.sh lints does not run gate_rows.py --check", tier_lints_check(tier))
+    expect("canary: a lints tier without the gate rows line passes",
+           not tier_lints_check("\n".join(l for l in tier.splitlines() if "gate_rows.py --check" not in l)))
+    expect("canary: --check under the n0 tier alone counts as a lint",
+           not tier_lints_check('if [ "$tier" = n0 ]; then\n  python3 tools/gate_rows.py --self-test'
+                                ' && python3 tools/gate_rows.py --check\nfi'))
+    expect("an if-block lint is not read",
+           tier_lints_check('if [ "$lints" = 1 ]; then\n  python3 tools/gate_rows.py --self-test\n'
+                            '  python3 tools/gate_rows.py --check\nfi'))
     for b in bad:
         print("gate_rows self-test: FAIL " + b)
     if not bad:

@@ -4,7 +4,8 @@
 # The gate's short tiers (wave 15). `make ci` is the full gate (N2).
 #
 #   tools/gate_tier.sh n0   `make check` for riscv64, aarch64 and x86_64 (generic and robot), the
-#                           output-dir lint (tools/out_dir_lint.py), the
+#                           output-dir lint (tools/out_dir_lint.py), the gate
+#                           rows manifest (tools/gate_rows.py --check), the
 #                           unsafe and size budgets (`make size-check`), plus
 #                           cargo-deny (licences, bans, sources; offline), plus
 #                           the host suites the diff reaches (`make check0`)
@@ -124,6 +125,9 @@ fi
 [ "$lints" = 1 ] && { printf "  %-26s" "user image layout lint..."; if out="$(python3 tools/user_entry_lint.py --self-test 2>&1 && python3 tools/user_entry_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "doc lint..."; if out="$(python3 tools/doc_lint.py --self-test 2>&1 && python3 tools/doc_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "req trace lint..."; if out="$(python3 tools/req_trace.py --self-test 2>&1 && python3 tools/req_trace.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+# The gate's row manifest (tools/gate_rows.py --check: every row listed, its deps cover what it
+# reads) and the diff-to-rows map that reads it (tools/rows_for_diff.py), after their canaries.
+[ "$lints" = 1 ] && { printf "  %-26s" "gate rows manifest..."; if out="$(python3 tools/rows_for_diff.py --self-test 2>&1 && python3 tools/gate_rows.py --self-test 2>&1 && python3 tools/gate_rows.py --check 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -v ': ok' | sed -n 1,5p | sed 's/^/      /'; fi; }
 # The board image's ELF list (tools/test_board_manifest.py): an orphan service (declared, not built
 # or not shipped) and an orphan ELF (on the disk, not declared); "board: volume = topology" boots only the good case.
 [ "$lints" = 1 ] && { printf "  %-26s" "board manifest..."; if out="$(python3 tools/test_board_manifest.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^(FAIL|ERROR)|Error' | sed -n 1,5p | sed 's/^/      /'; fi; }
