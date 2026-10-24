@@ -21862,6 +21862,24 @@ PYEOF
     }
     par -s "bench: receipts cost canary" receipts_cost_canary_row
 
+    # vsbench on x86_64 (tools/bench/vsbench_x86_64.sh): the same ring-3 work on
+    # AzOS and on Linux 6.12, both on `-M microvm` under -icount at one CPU, as
+    # the riscv64 row above runs it with vsbench_compare.sh. It asserts the
+    # AzOS half: the bench-minimal kernel reaches its last lane, no lane fails,
+    # and its log shows the bench-minimal banner. Unlike the riscv64 row, an
+    # absent Linux/x86_64 image (tools/bench/vsbench_linux.conf) skips that
+    # column and says so instead of failing. `net` and `tcp` do not run: the
+    # microvm line has no NIC.
+    vsbench_x86_row() {
+        printf "  %-26s" "bench: vsbench x86_64..."
+        if WAIT_SECS=90 bash "${REPO_ROOT}/tools/bench/vsbench_x86_64.sh"; then
+            ok
+        else
+            bad; echo "      logs in $AZOS_OUT/build/vsbench-x86_64-compare/"
+        fi
+    }
+    par -s "bench: vsbench x86_64" vsbench_x86_row   # one QEMU at a time, two kernels
+
     # Besides the round trip, the script requires both ends to report
     # `opts wscale=1/1 sack=1 ts=1 ecn=1`: this is the only boot where both SYNs come
     # from this stack, since slirp parses nothing but the MSS.
@@ -25093,6 +25111,46 @@ else
     fi
 fi
 fi; ci_row_end
+
+# Supply chain (Documentation/design/supply-chain-tools.md), full gate only.
+# The SBOM (tools/gate/sbom.sh, offline `cargo metadata`): a CycloneDX
+# document that lists the kernel crate. The reproducible build
+# (tools/gate/repro_check.sh): the kernel and the ring-3 ELFs built twice,
+# from this checkout and from a copy of it, each in clean target directories
+# under $AZOS_OUT/build, must be byte-identical. Last and alone (-s): its two
+# full release builds compete for CPU and disk with anything beside them.
+sbom_row() {
+    printf "  %-26s" "supply chain: SBOM..."
+    local out doc="$AZOS_OUT/build/sbom.cdx.json"
+    if out="$(bash "${REPO_ROOT}/tools/gate/sbom.sh" "$doc" 2>&1)" \
+       && out="$(python3 - "$doc" 2>&1 <<'SBOMPY'
+import json, sys
+bom = json.load(open(sys.argv[1]))
+names = {c.get("name") for c in bom.get("components", [])}
+assert bom.get("bomFormat") == "CycloneDX", "not a CycloneDX document"
+assert "azos_kernel" in names, "the kernel crate is not listed"
+print("%d components" % len(names))
+SBOMPY
+)"; then
+        ok; echo "      $out"
+    else
+        bad; printf '%s\n' "$out" | grep -E 'ERROR|Error|error' | sed -n 1,5p | sed 's/^/      /'
+    fi
+}
+par -s -h "supply chain: SBOM" sbom_row
+repro_row() {
+    printf "  %-26s" "supply chain: reproducible build..."
+    local out
+    if ! make -s "$AZOS_OUT/build/image_hashes.rs" >/dev/null 2>&1; then
+        bad; echo "      could not make $AZOS_OUT/build/image_hashes.rs"; return
+    fi
+    if out="$(TMPDIR="$AZOS_OUT/build" bash "${REPO_ROOT}/tools/gate/repro_check.sh" 2>&1)"; then
+        ok; echo "      $(printf '%s\n' "$out" | grep -c ' MATCH ') artefacts byte-identical"
+    else
+        bad; printf '%s\n' "$out" | grep -E ' (DIFFER|ERROR) |^error|repro_check' | sed -n 1,10p | sed 's/^/      /'
+    fi
+}
+par -s -h "supply chain: reproducible build" repro_row
 
 par_drain
 if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then

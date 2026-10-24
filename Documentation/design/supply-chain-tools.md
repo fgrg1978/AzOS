@@ -14,8 +14,10 @@ status.
 | `third_party/vendor` with `third_party/VENDOR_PIN` | Is the vendored registry tree exactly the one that was reviewed? | No |
 | `REUSE.toml` with `tools/lint/spdx_headers.py` | Does every file state its licence? | No |
 
-`tools/gate/sbom.sh` and `tools/gate/repro_check.sh` are not invoked by any other script
-or make target; they are run by hand. The `cargo-deny` run, the vendor check and
+`tools/gate/sbom.sh` and `tools/gate/repro_check.sh` are rows of the full gate
+(`make ci`, `tools/gate/ci_check.sh`: "supply chain: SBOM", which also checks the
+document lists the kernel crate, and "supply chain: reproducible build", the last
+row, run alone); both also run by hand. The `cargo-deny` run, the vendor check and
 the licence-header check are rows of the project's verification gate (`tools/gate/gate_tier.sh`,
 `tools/gate/ci_check.sh`).
 
@@ -76,7 +78,8 @@ programs the Makefile builds, and two assembler test programs.
 How the two builds differ and what is held equal:
 
 - **Different directories.** Build A uses the checkout. Build B uses a copy made
-  with `rsync` (without `.git` and agent state) under its own temporary root.
+  with `rsync` (without `.git`, agent state and the private key files) under
+  its own temporary root.
   A result that depends on where the tree sits is a difference.
 - **Clean target directories.** Each artefact has its own `CARGO_TARGET_DIR`
   under that run's temporary root, so neither run reuses a warm cache and the

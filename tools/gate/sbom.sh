@@ -9,9 +9,9 @@
 # dependencies too. Fully offline: `cargo metadata --offline --locked`
 # reads Cargo.lock without touching the network, and no crate is built.
 #
-# This is a hand-run tool, not a CI job — the project runs no CI
-# automation by owner decision. Run it
-# whenever a dependency change should be reflected in the SBOM.
+# The full gate runs it (tools/gate/ci_check.sh, "supply chain: SBOM") and
+# checks the document lists the kernel crate; by hand, run it whenever a
+# dependency change should be reflected in the SBOM.
 #
 # Usage:
 #   tools/gate/sbom.sh [output-path]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# tools/gate/repro_check.sh — local, hand-run reproducible-build check.
+# tools/gate/repro_check.sh — reproducible-build check.
 #
 # Builds the kernel release image and every ring-3 userspace ELF TWICE,
 # each time from a clean cargo target directory under a fresh temp root,
@@ -15,8 +15,8 @@
 # the script could not see that class: userspace ELF bytes depended on the
 # checkout path, and gate 40 refused a brain_client rebuilt in its snapshot.)
 #
-# This is a hand-run tool, not a CI job — the project runs no CI
-# automation by owner decision. Two clean
+# The full gate runs it, last and alone (tools/gate/ci_check.sh, "supply
+# chain: reproducible build"); by hand it needs nothing else. Two clean
 # CARGO_TARGET_DIRs are used (instead of the shared target/ tree) so
 # this can run alongside other work on the main tree without racing it
 # or reusing a warm/dirty cache that would hide non-determinism.
@@ -181,8 +181,9 @@ short_digest() {
 #   name  kind(cargo|asm)  build_dir(relative to the source root)  config_toml(relative to build_dir; - for a ring-3 image: its target spec)  rel_bin(under CARGO_TARGET_DIR)  extra_cargo_args  nightly(0|1)
 # Matches Makefile's `userspace:` target and its $(KERNEL_ELF) build.
 # ---------------------------------------------------------------------
-# The kernel has no cargo `default`: its features come from the .config.
-KERNEL_ARGS="$(python3 "$REPO_ROOT/tools/build/kconfig_to_cargo.py" "$REPO_ROOT/.config" | sed 's/^--target [^ ]* //')"
+# The kernel has no cargo `default`: its features come from the .config the
+# build reads ($KCONFIG_CONFIG, as the Makefile and the gate set it).
+KERNEL_ARGS="$(python3 "$REPO_ROOT/tools/build/kconfig_to_cargo.py" "${KCONFIG_CONFIG:-$REPO_ROOT/.config}" | sed 's/^--target [^ ]* //')"
 ARTIFACTS=(
     "kernel|cargo|.|.cargo/config.toml|${TARGET_TRIPLE}/release/kernel|${KERNEL_ARGS}|0"
     "uhello|cargo|userspace/tests/uhello|-|${USER_TRIPLE}/release/uhello||1"
@@ -290,12 +291,14 @@ build_asm_artifact() {
     "${ld_cmd[@]}"
 }
 
-# Copy the source tree to $1 for run B. Excluded: VCS and agent state. Outputs
-# are not in the tree; both runs read image_hashes.rs from $AZOS_OUT/build.
+# Copy the source tree to $1 for run B. Excluded: VCS and agent state, and the
+# private keys (no build reads them; the public ones it embeds are copied).
+# Outputs are not in the tree; both runs read image_hashes.rs from $AZOS_OUT/build.
 copy_source_tree() {
     local dst="$1"
     local -a cmd=(rsync -a
         --exclude '/.git' --exclude '/.claude' --exclude '/.codex'
+        --exclude '/tools/keys/*priv*'
         "$REPO_ROOT/" "$dst/")
     if [[ "$DRY_RUN" -eq 1 ]]; then
         printf '  %s\n' "${cmd[*]}"
