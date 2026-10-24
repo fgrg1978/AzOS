@@ -85,7 +85,7 @@ const fn v(nr: u32, x86_64: u32, name: &'static str) -> Syscall {
 /// Ascending by number. The BPF program compares in this order, which is the
 /// same linear, ascending shape as the AzOS image profile scan
 /// (`SyscallFilter::is_allowed` in `crates/core/sched/src/filter.rs`).
-pub const ALLOWED: [Syscall; 33] = [
+pub const ALLOWED: [Syscall; 34] = [
     v(23, 32, "SYS_DUP"),
     // N0 (wave 15): `cap-lookup`'s Linux twin, `fcntl(fd, F_GETFD)`.
     v(25, 72, "SYS_FCNTL"),
@@ -98,6 +98,8 @@ pub const ALLOWED: [Syscall; 33] = [
     v(59, 293, "SYS_PIPE2"),
     v(63, 0, "SYS_READ"),
     v(64, 1, "SYS_WRITE"),
+    // uaccess lanes (`stat`: the kernel copies the path string in).
+    v(79, 262, "SYS_NEWFSTATAT"),
     v(82, 74, "SYS_FSYNC"),
     v(93, 60, "SYS_EXIT"),
     v(98, 202, "SYS_FUTEX"),
