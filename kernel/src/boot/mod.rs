@@ -134,6 +134,9 @@ pub(crate) mod soc;
 mod net;
 #[cfg(feature = "net")]
 pub(crate) use net::*;
+// kernel_main's network bring-up after the NIC probe (`install_net`).
+mod network;
+pub(crate) use network::start_network;
 // The keystore's roots (the TPM's secret, the volume's), read before the first task.
 pub(crate) mod keys;
 // L15: the topology's `[volume.NAME]` rows, mounted.
