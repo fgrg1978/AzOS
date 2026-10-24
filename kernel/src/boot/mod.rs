@@ -137,6 +137,9 @@ pub(crate) use net::*;
 // kernel_main's network bring-up after the NIC probe (`install_net`).
 mod network;
 pub(crate) use network::start_network;
+// kernel_main's Phases D and 16: crash counter, PMP policy, stack canary.
+mod security;
+pub(crate) use security::report_security;
 // The keystore's roots (the TPM's secret, the volume's), read before the first task.
 pub(crate) mod keys;
 // L15: the topology's `[volume.NAME]` rows, mounted.
