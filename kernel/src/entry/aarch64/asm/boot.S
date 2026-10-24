@@ -190,10 +190,10 @@ _entry_after_header:
     // Same bug class as CPACR_EL1 above, found the same way (this task's
     // own pan-probe feature, run against a scratch USER-tagged page):
     // `crates/core/arch-aarch64::mmu::boot::_azos_drop_to_el1`'s `SPSR_EL2` write
-    // sets PAN too, but that trampoline runs ONLY when entered at EL2, and
-    // even then only takes effect from the ERET onward — SCTLR_EL1.SPAN=0
-    // (same file) only sets PAN on a LATER EL0->EL1 exception, which has
-    // not happened yet this early. Entered at EL1 directly (how QEMU
+    // once set PAN too, but that trampoline runs ONLY when entered at EL2
+    // (it now leaves PAN and SPAN to this block) — SCTLR_EL1.SPAN=0 (below)
+    // only sets PAN on a LATER EL0->EL1 exception, which has not happened
+    // yet this early. Entered at EL1 directly (how QEMU
     // `virt` starts us without `virtualization=on`, and how the gate
     // runs — see the CPACR_EL1 comment above), NEITHER path ever ran, and
     // PAN kept whatever its architectural reset state is (measured:
@@ -208,15 +208,33 @@ _entry_after_header:
     // `require`d PAN on a core without it must reach the [ISA] refusal
     // instead of dying here. `pan_unprobed` is the canary
     // (`a64-pan-unprobed-canary`): the instruction back without the probe.
+    //
+    // ── SCTLR_EL1, on BOTH entry paths (el0-state-audit) ─────────────────
+    //
+    // The whole word (`sysregs::SCTLR_EL1_BOOT`), with SPAN cleared under the
+    // same probe as PAN, so every exception from EL0 sets PSTATE.PAN. Same bug
+    // class again: entered at EL1, nothing wrote SCTLR_EL1 but the MMU enable,
+    // which ORs M, C and I into the firmware's word, so its EL0 controls (UMA,
+    // UCT, DZE, UCI, TSCXT) and SPAN rode through. QEMU's EL1 reset has SPAN
+    // 1: after the first eret to EL0 (SPSR 0) the kernel ran with PAN 0 on
+    // every exception from ring 3. The canary (`el0-state-canary`) skips the
+    // write, the old path.
+    movz    x9, #{sctlr_lo}
+    movk    x9, #{sctlr_hi}, lsl #16
 .if {pan_allowed}
 .if {pan_unprobed} == 0
-    mrs     x9, ID_AA64MMFR1_EL1
-    ubfx    x9, x9, #20, #4
-    cbz     x9, 1f
+    mrs     x10, ID_AA64MMFR1_EL1
+    ubfx    x10, x10, #20, #4
+    cbz     x10, 1f
 .endif
     .arch_extension pan
     msr     PAN, #1
+    bic     x9, x9, #(1 << 23)       // SCTLR_EL1.SPAN = 0
 1:
+.endif
+.if {sctlr_canary} == 0
+    msr     SCTLR_EL1, x9
+    isb
 .endif
 
     // ── Install the exception vector table ──────────────────────────────
@@ -509,17 +527,25 @@ _aarch64_secondary_entry:
     msr     CPACR_EL1, x9
     isb
 
-    // PAN is ALSO banked per-PE (O3.2) — same reason as CPACR_EL1 above,
-    // and probed the same way as the primary's (Armv8.0 has no FEAT_PAN).
+    // PAN and SCTLR_EL1 are ALSO banked per-PE (O3.2) — same reason as
+    // CPACR_EL1 above, and probed the same way as the primary's (Armv8.0 has
+    // no FEAT_PAN): the boot word, SPAN cleared where PAN is in use.
+    movz    x9, #{sctlr_lo}
+    movk    x9, #{sctlr_hi}, lsl #16
 .if {pan_allowed}
 .if {pan_unprobed} == 0
-    mrs     x9, ID_AA64MMFR1_EL1
-    ubfx    x9, x9, #20, #4
-    cbz     x9, 1f
+    mrs     x10, ID_AA64MMFR1_EL1
+    ubfx    x10, x10, #20, #4
+    cbz     x10, 1f
 .endif
     .arch_extension pan
     msr     PAN, #1
+    bic     x9, x9, #(1 << 23)       // SCTLR_EL1.SPAN = 0
 1:
+.endif
+.if {sctlr_canary} == 0
+    msr     SCTLR_EL1, x9
+    isb
 .endif
 
     // ── Install the exception vector table ──────────────────────────────

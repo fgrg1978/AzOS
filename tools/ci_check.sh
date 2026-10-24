@@ -14475,7 +14475,11 @@ PY
     par "ktest sched tpidr canary (arm)" ktest_row "ktest sched tpidr canary (arm)" arm ",tpidr-foreign-only-canary" "native_tasks_keep_tpidr_el0 new_task_starts_with_tpidr_el0_zero"
     # tls-hygiene: CNTKCTL_EL1's EL0 bits kept and a non-zero TPIDRRO_EL0,
     # standing for their UNKNOWN reset values (QEMU resets both to 0).
-    par "ktest el0 state canary (arm)" ktest_row "ktest el0 state canary (arm)" arm ",el0-state-canary" "user_visible_state_is_set_on_every_cpu"
+    # el0-state-audit: SCTLR_EL1 and MDSCR_EL1 left at the firmware's (QEMU's
+    # EL1 reset: SPAN 1, TSCXT 0, TDCC 0). The summary line must name all
+    # four, so each register's check is seen to fire.
+    par "ktest el0 state canary (arm)" ktest_row "ktest el0 state canary (arm)" arm ",el0-state-canary" "user_visible_state_is_set_on_every_cpu" \
+        "" "left unset: TPIDRRO_EL0 CNTKCTL_EL1 SCTLR_EL1 MDSCR_EL1"
     par "ktest slab canary (rv)" ktest_row "ktest slab canary (rv)" rv ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest slab canary (arm)" ktest_row "ktest slab canary (arm)" arm ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest zone canary (rv)" ktest_row "ktest zone canary (rv)" rv ",zone-share-canary" "mm_zone_no_cross_type_reuse"

@@ -291,6 +291,11 @@ global_asm!(
     // register says the core has it). The canary drops that probe.
     pan_allowed = const azos_arch_api::isa::aarch64::PAN.allowed() as u8,
     pan_unprobed = const cfg!(feature = "a64-pan-unprobed-canary") as u8,
+    // The SCTLR_EL1 word both entry paths write (SPAN set; boot.S clears it
+    // where PAN is in use). The canary skips the write: the firmware's word.
+    sctlr_lo = const (azos_arch::sysregs::SCTLR_EL1_BOOT & 0xFFFF) as u16,
+    sctlr_hi = const ((azos_arch::sysregs::SCTLR_EL1_BOOT >> 16) & 0xFFFF) as u16,
+    sctlr_canary = const cfg!(feature = "el0-state-canary") as u8,
     // Kconfig `KASLR` not `n`: the image is linked position-independent, and
     // boot.S picks its base and applies its relocations before the jump to the
     // upper half (`aarch64_early_kaslr`).

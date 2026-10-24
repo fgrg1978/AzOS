@@ -306,8 +306,10 @@ pub const MDCR_GUEST: u64 = (1 << 6) | (1 << 5);
 pub const PSTATE_EL1H_MASKED: u64 = 0x3C5;
 
 /// `SCTLR_EL1` of a vCPU that has not run: the architecture's RES1 and
-/// reserved bits, MMU and caches off (what the boot trampoline gives the host).
-pub const SCTLR_EL1_RESET: u64 = 0x30C5_0838;
+/// reserved bits, MMU and caches off, EL0 given nothing it could keep across
+/// tasks: the host's boot word (`sysregs::SCTLR_EL1_BOOT`, which asserts the
+/// two agree; a literal here because the host tests include this file alone).
+pub const SCTLR_EL1_RESET: u64 = 0x30D5_0838;
 
 /// `CPACR_EL1` of a vCPU that has not run: FP and SIMD usable at EL1 and EL0.
 pub const CPACR_EL1_RESET: u64 = 0x30_0000;

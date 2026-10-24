@@ -1254,19 +1254,33 @@ pub fn install_resume() {
     crate::entry::x86_64::resume::install();
 }
 
-/// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): what
-/// this CPU holds that ring 3 can read and no task was given, or `None`.
-/// x86_64: no LDT, null FS and GS selectors, and a zero FS base in a task
-/// with no thread pointer (`cpu::load_gdt_and_tss`, `cpu::enable_syscall`,
-/// `azos_sched::fp::switch_thread_pointer`).
+/// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): the
+/// state [`user_visible_state_wrong`] reads, by its `bad` index.
 #[cfg(feature = "ktest")]
-pub(crate) fn user_visible_state_wrong() -> Option<u64> {
+pub(crate) const USER_STATE: &[&str] = &["LDTR", "FS/GS selectors", "IA32_FS_BASE"];
+
+/// ktest `user_visible_state_is_set_on_every_cpu`: `bad(i, value)` for each
+/// item of [`USER_STATE`] CPU `cpu` holds at a value ring 3 can reach and no
+/// task was given. x86_64: no LDT, null FS and GS selectors, a zero FS base
+/// in a task with no thread pointer (`cpu::load_gdt_and_tss`,
+/// `cpu::enable_syscall`, `azos_sched::fp::switch_thread_pointer`).
+#[cfg(feature = "ktest")]
+pub(crate) fn user_visible_state_wrong(_cpu: usize, bad: &mut dyn FnMut(usize, u64)) {
+    use azos_arch::cpu::{rdmsr, user_selectors, IA32_FS_BASE};
     let ldtr: u16;
     // SAFETY: reading the LDT selector at CPL0.
     unsafe { core::arch::asm!("sldt {0:x}", out(reg) ldtr, options(nomem, nostack, preserves_flags)) };
-    let sel = azos_arch::cpu::user_selectors();
-    let fs = azos_arch::cpu::rdmsr(azos_arch::cpu::IA32_FS_BASE);
-    if ldtr != 0 { Some(ldtr as u64) } else if sel != 0 { Some(sel as u64) } else if fs != 0 { Some(fs) } else { None }
+    if ldtr != 0 {
+        bad(0, ldtr as u64);
+    }
+    let sel = user_selectors();
+    if sel != 0 {
+        bad(1, sel as u64);
+    }
+    let fs = rdmsr(IA32_FS_BASE);
+    if fs != 0 {
+        bad(2, fs);
+    }
 }
 
 // tls-hygiene: ring 3 can ZERO its own x86_64 FS base with a selector load

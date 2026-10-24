@@ -82,6 +82,27 @@ fn aarch64_boot_takes_no_mpidr_gate_and_publishes_cpu_0_at_el1() {
     assert!(drop < tpidr, "TPIDR_EL1 is written at EL2, before the drop");
 }
 
+/// **el0-state-audit: every aarch64 PE writes the whole `SCTLR_EL1` word**,
+/// on both entry paths, before any compiled code (the first `bl`): entered at
+/// EL1, nothing else defines it, and the firmware's SPAN and EL0 controls rode
+/// through the MMU enable's read-OR. The EL2 drop defines `MDCR_EL2` and
+/// `CPTR_EL2` before its `eret`.
+#[test]
+fn aarch64_entry_paths_write_sctlr_and_the_drop_defines_the_el2_traps() {
+    let asm = code("kernel/src/entry/aarch64/asm/boot.S", "//");
+    for (from, to) in [("_entry_after_header:", "bl      kernel_main"), ("_aarch64_secondary_entry:", "bl      secondary_main")] {
+        let path = span(&asm, from, to);
+        let w = path.iter().position(|l| l == "msr     SCTLR_EL1, x9").unwrap_or_else(|| panic!("{from}: no SCTLR_EL1 write"));
+        let rust = path.iter().position(|l| l.starts_with("bl      aarch64_")).expect("the first call into Rust");
+        assert!(w < rust, "{from}: SCTLR_EL1 is written after compiled code runs");
+        assert!(path[..w].iter().any(|l| l == "movk    x9, #{sctlr_hi}, lsl #16"), "{from}: not the boot word");
+    }
+    let drop = between("crates/core/arch-aarch64/src/mmu/boot.rs", "//", "_azos_drop_to_el1:", "eret");
+    for reg in ["CPTR_EL2", "MDCR_EL2", "SCTLR_EL1"] {
+        assert!(drop.iter().any(|l| l.ends_with(&format!("msr     {reg}, x10"))), "the drop does not write {reg}");
+    }
+}
+
 /// **M3: an aarch64 IRQ/FIQ never decodes the stale `ESR_EL1`**: `class()`
 /// and the FP first-use arm both ask the vector first.
 #[test]

@@ -1078,19 +1078,46 @@ pub fn install_resume() {
     crate::entry::aarch64::resume::install();
 }
 
-/// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): what
-/// this CPU holds that ring 3 can read and no task was given, or `None`.
-/// aarch64: `TPIDRRO_EL0` is 0 and, of `CNTKCTL_EL1`'s EL0 bits, only
-/// EL0VCTEN is set (`azos_arch::sysregs::init_el0_state`).
+/// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): the
+/// registers [`user_visible_state_wrong`] reads, by its `bad` index.
 #[cfg(feature = "ktest")]
-pub(crate) fn user_visible_state_wrong() -> Option<u64> {
-    use azos_arch::sysregs::{CNTKCTL_EL0PCTEN, CNTKCTL_EL0PTEN, CNTKCTL_EL0VCTEN, CNTKCTL_EL0VTEN};
-    let (ro, ctl): (u64, u64);
-    // SAFETY: EL1 reads of two system registers.
+pub(crate) const USER_STATE: &[&str] = &["TPIDRRO_EL0", "CNTKCTL_EL1", "SCTLR_EL1", "MDSCR_EL1", "AMUSERENR_EL0"];
+
+/// ktest `user_visible_state_is_set_on_every_cpu`: `bad(i, value)` for each
+/// register of [`USER_STATE`] this CPU holds at a value ring 3 can reach and
+/// no task was given. aarch64: `TPIDRRO_EL0` is 0; of `CNTKCTL_EL1`'s EL0
+/// bits only EL0VCTEN is set; `SCTLR_EL1`'s EL0 controls and SPAN are the
+/// boot word's (`sysregs::SCTLR_EL1_BOOT`, SPAN by the PAN policy);
+/// `MDSCR_EL1` traps the debug channel with no debug event on; and
+/// `AMUSERENR_EL0` is 0 where the AMU is (`sysregs::init_el0_state`).
+#[cfg(feature = "ktest")]
+pub(crate) fn user_visible_state_wrong(_cpu: usize, bad: &mut dyn FnMut(usize, u64)) {
+    use azos_arch::sysregs::*;
+    let (ro, ctl, sctlr, mdscr): (u64, u64, u64, u64);
+    // SAFETY: EL1 reads of four system registers.
     unsafe {
-        core::arch::asm!("mrs {0}, TPIDRRO_EL0", "mrs {1}, CNTKCTL_EL1", out(reg) ro, out(reg) ctl,
-            options(nomem, nostack, preserves_flags))
+        core::arch::asm!("mrs {0}, TPIDRRO_EL0", "mrs {1}, CNTKCTL_EL1", "mrs {2}, SCTLR_EL1", "mrs {3}, MDSCR_EL1",
+            out(reg) ro, out(reg) ctl, out(reg) sctlr, out(reg) mdscr, options(nomem, nostack, preserves_flags))
     };
     let el0 = CNTKCTL_EL0PCTEN | CNTKCTL_EL0VCTEN | CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN;
-    if ro != 0 { Some(ro) } else if ctl & el0 != CNTKCTL_EL0VCTEN { Some(ctl) } else { None }
+    if ro != 0 {
+        bad(0, ro);
+    }
+    if ctl & el0 != CNTKCTL_EL0VCTEN {
+        bad(1, ctl);
+    }
+    if sctlr & SCTLR_EL1_EL0 != sctlr_el1_boot(pan_in_use()) & SCTLR_EL1_EL0 {
+        bad(2, sctlr);
+    }
+    if mdscr & (MDSCR_EL1_SS | MDSCR_EL1_TDCC | MDSCR_EL1_KDE | MDSCR_EL1_MDE) != MDSCR_EL1_BOOT {
+        bad(3, mdscr);
+    }
+    if amu_present(azos_arch::cpu::features::read_id_regs().pfr0) {
+        let v: u64;
+        // SAFETY: AMUSERENR_EL0 (by its encoding) exists: the AMU is present.
+        unsafe { core::arch::asm!("mrs {0}, S3_3_C13_C2_3", out(reg) v, options(nomem, nostack, preserves_flags)) };
+        if v != 0 {
+            bad(4, v);
+        }
+    }
 }

@@ -656,7 +656,44 @@ mod a64_el0_state_tests {
         assert_eq!(cntkctl_el0_access(0xfc) & 0xfc, 0xfc);
         assert_eq!(cntkctl_el0_access(0) & 0xfc, 0);
     }
+
+    /// el0-state-audit: the SCTLR_EL1 word both entry paths write. Of what
+    /// EL0 may reach, only WFI/WFE without a trap; SCXTNUM_EL0 trapped; the
+    /// Armv8.0 RES1 bits set; MMU, caches, alignment checks and big-endian
+    /// off; SPAN cleared only where PAN is in use.
+    /// **Canary.** The old trampoline word (0x30C5_0838, TSCXT clear) goes red.
+    #[test]
+    fn the_boot_sctlr_word_gives_el0_nothing_it_could_keep() {
+        let w = SCTLR_EL1_BOOT;
+        assert_eq!(w & SCTLR_EL1_EL0, SCTLR_EL1_NTWI | SCTLR_EL1_NTWE | SCTLR_EL1_TSCXT | SCTLR_EL1_SPAN, "{w:#x}");
+        for res1 in [11, 20, 22, 23, 28, 29] {
+            assert_ne!(w & 1 << res1, 0, "RES1 bit {res1} clear in {w:#x}");
+        }
+        // M, A, C, I, WXN, E0E, EE.
+        for off in [0, 1, 2, 12, 19, 24, 25] {
+            assert_eq!(w & 1 << off, 0, "bit {off} set in {w:#x}");
+        }
+        // SA, SA0: the stack-alignment checks.
+        assert_eq!(w & 0b11000, 0b11000);
+        assert_eq!(sctlr_el1_boot(false), w);
+        assert_eq!(sctlr_el1_boot(true), w & !SCTLR_EL1_SPAN);
+        assert_eq!(w >> 32, 0, "boot.S builds it from two halves");
+    }
+
+    /// el0-state-audit: MDSCR_EL1 closes the debug channel to EL0 and enables
+    /// no debug event; AMUSERENR_EL0 is written only where ID_AA64PFR0_EL1
+    /// reports the AMU (bits 47:44).
+    #[test]
+    fn mdscr_closes_the_debug_channel_and_the_amu_probe_reads_its_field() {
+        assert_eq!(MDSCR_EL1_BOOT, 1 << 12);
+        assert_eq!(MDSCR_EL1_BOOT & (MDSCR_EL1_SS | MDSCR_EL1_KDE | MDSCR_EL1_MDE), 0);
+        assert!(!amu_present(0));
+        assert!(amu_present(1 << 44), "AMUv1");
+        assert!(amu_present(2 << 44), "AMUv1p1");
+        assert!(!amu_present(0xF << 40 | 0xF << 48), "the neighbouring fields");
+    }
 }
+
 
 // x86_64: which FS base a context switch writes, and which values a task may
 // be given (`wrmsr` of a non-canonical one is a #GP in the kernel): `cpu`'s

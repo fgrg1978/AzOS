@@ -1213,25 +1213,44 @@ mod tpidr_ktests {
     }
 }
 
-// tls-hygiene: the user-visible per-CPU state no task owns is set on every
-// CPU before ring 3 runs there, never left at its reset value (UNKNOWN on
-// silicon; QEMU resets it to 0, so only the canary shows the check can fail).
-// Late: a probe pinned to each CPU in turn asks its ISA's reader
-// (`boot_hooks::user_visible_state_wrong`, one per ISA). Canary cargo
-// feature `el0-state-canary` (aarch64: stand-ins for the reset values):
-// `not ok`.
+// tls-hygiene, el0-state-audit: the user-visible per-CPU state no task owns
+// is set on every CPU before ring 3 runs there, never left at its reset value
+// (UNKNOWN on silicon). Late: a probe pinned to each CPU in turn asks its
+// ISA's reader (`boot_hooks::user_visible_state_wrong`, one per ISA, which
+// names each register in `boot_hooks::USER_STATE`). Canary cargo feature
+// `el0-state-canary` (each ISA leaves its registers at a stand-in for the
+// reset value): `not ok`, and the summary line names every register the
+// canary left (the gate row matches it, so each register's check is seen to
+// fire). Where QEMU resets a register to the right value only the canary
+// shows its check can fail: aarch64 TPIDRRO_EL0, CNTKCTL_EL1. Where it does
+// not, this test is red without the fix: aarch64 SCTLR_EL1 (SPAN, TSCXT) and
+// MDSCR_EL1 (TDCC) on a boot at EL1.
 #[cfg(feature = "ktest")]
 mod user_state_ktests {
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicU32, Ordering};
 
-    /// The first CPU whose state was wrong, plus 1 (0: none).
-    static BAD: AtomicU64 = AtomicU64::new(0);
+    /// Bit i: some CPU held `USER_STATE[i]` wrong.
+    static BAD: AtomicU32 = AtomicU32::new(0);
 
     fn check(cpu: usize) {
-        if let Some(v) = crate::boot_hooks::user_visible_state_wrong() {
-            if BAD.compare_exchange(0, cpu as u64 + 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
-                azos_drv_sys::kprintln!("# cpu {} holds {:#x}", cpu, v);
+        crate::boot_hooks::user_visible_state_wrong(cpu, &mut |i, v| {
+            if BAD.fetch_or(1 << i, Ordering::Relaxed) & (1 << i) == 0 {
+                azos_drv_sys::kprintln!("# cpu {} holds {} = {:#x}", cpu, crate::boot_hooks::USER_STATE[i], v);
             }
+        });
+    }
+
+    /// The registers of `bad`, in `USER_STATE` order.
+    struct Names(u32);
+
+    impl core::fmt::Display for Names {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            for (i, name) in crate::boot_hooks::USER_STATE.iter().enumerate() {
+                if self.0 & (1 << i) != 0 {
+                    write!(f, " {}", name)?;
+                }
+            }
+            Ok(())
         }
     }
 
@@ -1243,7 +1262,10 @@ mod user_state_ktests {
             }
             match BAD.load(Ordering::Relaxed) {
                 0 => Ok(()),
-                _ => Err("a CPU holds user-visible state no task was given"),
+                bad => {
+                    azos_drv_sys::kprintln!("# user-visible state left unset:{}", Names(bad));
+                    Err("a CPU holds user-visible state no task was given")
+                }
             }
         }
     }

@@ -48,11 +48,14 @@ use core::arch::global_asm;
 //                              kernel does not depend on it (it reads
 //                              CNTVCT_EL0, as ring 3 does); only the
 //                              `cntvoff-canary` feature sets it nonzero
+//   MDCR_EL2 = HPMN            EL1 sees every PMU counter, no debug or PMU
+//                              access trapped to EL2 (Linux's __init_el2_debug)
 //   ICC_SRE_EL2 SRE+Enable=1   EL1 may use GICv3 sysregs (only where
 //                              ID_AA64PFR0_EL1.GIC says they exist)
-//   SCTLR_EL1 = 0x30450838     reserved-bits mask, MMU off, SPAN=0 (O3.2)
+//   SCTLR_EL1 = SCTLR_EL1_BOOT the boot word (sysregs), MMU off; boot.S
+//                              writes it again, with SPAN, on both paths
 //   CPACR_EL1.FPEN = 0b11      EL0/EL1 may use FP/SIMD/NEON
-//   SPSR_EL2 = 0x3C5           EL1h, DAIF masked
+//   SPSR_EL2 = 0x3C5           EL1h, DAIF masked (boot.S sets PAN)
 //   ELR_EL2 = LR               return into caller at EL1
 //   eret
 /// `CNTVOFF_EL2` as `_azos_drop_to_el1` leaves it: 0 — and a large nonzero
@@ -138,6 +141,23 @@ _azos_drop_to_el1:
     movz    x10, #0x22FF
     msr     CPTR_EL2, x10
 
+    // MDCR_EL2 resets UNKNOWN but for HPMN: TDE would route EL1's debug
+    // exceptions to an EL2 with no handler for them, TDA/TDOSA trap the
+    // debug registers (`MDSCR_EL1`, written per PE by `init_el0_state`), TPM
+    // and TPMCR the PMU (`pmu::start_this_cpu`), and a small HPMN hides
+    // counters from EL1. So, as Linux's `__init_el2_debug`: HPMN =
+    // PMCR_EL0.N, every trap and every other field 0. PMCR_EL0 exists only
+    // with PMUv3: ID_AA64DFR0_EL1.PMUVer [11:8] read signed, so 0 (none)
+    // and 0xF (IMPLEMENTATION DEFINED) both skip the read and leave HPMN 0.
+    mov     x10, #0
+    mrs     x11, ID_AA64DFR0_EL1
+    sbfx    x11, x11, #8, #4
+    cmp     x11, #0
+    b.le    2f
+    mrs     x10, PMCR_EL0
+    ubfx    x10, x10, #11, #5       // PMCR_EL0.N
+2:  msr     MDCR_EL2, x10
+
     mrs     x10, CNTHCTL_EL2
     orr     x10, x10, #3            // EL1PCTEN | EL1PCEN
     msr     CNTHCTL_EL2, x10
@@ -160,28 +180,12 @@ _azos_drop_to_el1:
     isb
 1:
 
-    // O3.2 (owner decision, PAN): SPAN (bit 23) cleared — 0x30C5 -> 0x3045
-    // — so PSTATE.PAN is SET automatically on every EL0->EL1 exception,
-    // matching riscv64's SUM starting clear. See sysregs::SCTLR_EL1_SPAN
-    // and sysregs::UserAccess for the read/write side of this.
-    //
-    // Only when PAN is in use: Kconfig `A64_PAN` not `n` and the core has
-    // FEAT_PAN (ID_AA64MMFR1_EL1.PAN != 0). Otherwise SPAN stays 1 (it is
-    // RES1 on an Armv8.0 core, and under `n` a cleared SPAN would set PAN on
-    // every exception with no UserAccess window ever clearing it) and the
-    // SPSR_EL2.PAN bit below stays 0 (RES0 without FEAT_PAN). x11 carries
-    // the decision to that write.
-    mov     x10, #0x0838            // SCTLR_EL1 reserved-bits mask
-    movk    x10, #0x30C5, lsl #16   // SPAN=1
-    mov     x11, #0
-.if {pan_allowed}
-    mrs     x12, ID_AA64MMFR1_EL1
-    ubfx    x12, x12, #20, #4
-    cbz     x12, 1f
-    bic     x10, x10, #(1 << 23)    // SPAN=0
-    mov     x11, #(1 << 22)         // SPSR_EL2.PAN=1
-1:
-.endif
+    // SCTLR_EL1 before the eret: its reset value is UNKNOWN, and an M or A
+    // bit set in it would fault the first instruction at EL1. The boot word
+    // (sysregs::SCTLR_EL1_BOOT, SPAN 1); boot.S writes it again on both entry
+    // paths, with SPAN cleared where PAN is in use, before any compiled code.
+    movz    x10, #{sctlr_lo}
+    movk    x10, #{sctlr_hi}, lsl #16
     msr     SCTLR_EL1, x10
 
     // CPACR_EL1.FPEN = 0b11 (bits [21:20]). Explicit movz with
@@ -190,14 +194,9 @@ _azos_drop_to_el1:
     movz    x10, #0x30, lsl #16     // 0x30 << 16 = 0x300000 = 0b11 << 20
     msr     CPACR_EL1, x10
 
-    // O3.2: PAN (bit 22) set too, so PAN is ACTIVE from the very first
-    // instruction at EL1 — SPAN=0 above only sets PAN on a LATER EL0->EL1
-    // exception, which does not help before the first one has ever
-    // happened (measured: the pan-probe feature run during early boot,
-    // before any task exists, did NOT fault without this — PSTATE.PAN's
-    // reset value is not "protected" on its own).
+    // PSTATE.PAN is set by boot.S after the eret, on both entry paths, under
+    // the same probe as SPAN (O3.2).
     mov     x10, #0x3C5             // SPSR_EL2 = EL1h, DAIF masked
-    orr     x10, x10, x11           // + PAN=1 when PAN is in use (above)
     msr     SPSR_EL2, x10
 
     msr     ELR_EL2, lr
@@ -206,7 +205,8 @@ _azos_drop_to_el1:
     off0 = const (CNTVOFF_INIT & 0xFFFF) as u16,
     off1 = const ((CNTVOFF_INIT >> 16) & 0xFFFF) as u16,
     off2 = const ((CNTVOFF_INIT >> 32) & 0xFFFF) as u16,
-    pan_allowed = const azos_arch_api::isa::aarch64::PAN.allowed() as u8,
+    sctlr_lo = const (crate::sysregs::SCTLR_EL1_BOOT & 0xFFFF) as u16,
+    sctlr_hi = const ((crate::sysregs::SCTLR_EL1_BOOT >> 16) & 0xFFFF) as u16,
     hv = const cfg!(all(feature = "hv", target_os = "none")) as u8,
 );
 

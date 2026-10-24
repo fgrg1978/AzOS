@@ -157,18 +157,30 @@ pub const fn cntkctl_el0_access(v: u64) -> u64 {
 /// - `TPIDRRO_EL0` = 0: EL0 reads it, nothing in this kernel writes it
 ///   (no task has a value), so it held whatever firmware left.
 ///   (`TPIDR_EL0` is per task, `azos_sched::fp::switch_thread_pointer`.)
+/// - `MDSCR_EL1` = [`MDSCR_EL1_BOOT`]: TDCC traps EL0's access to the debug
+///   communications channel (`MDCCSR_EL0`, `DBGDTR*_EL0`), a register pair
+///   no task owns; single step and the debug exceptions off (Linux's
+///   `__cpu_setup` writes the same word). QEMU resets it to 0, EL0 open.
+/// - `AMUSERENR_EL0` = 0 where FEAT_AMUv1 is ([`amu_present`]; the register
+///   is UNDEFINED without it): EL0 does not read or write the activity
+///   monitors (Linux's `reset_amuserenr_el0`). The write needs
+///   `CPTR_EL2.TAM` clear, which `_azos_drop_to_el1` leaves; entered at EL1,
+///   the boot protocol's EL2 does (as for Linux).
 ///
-/// Gate canary `el0-state-canary`: the reset value is kept, and a non-zero
-/// `TPIDRRO_EL0` and the EL0 timer bits stand for firmware's (ktest
-/// `user_visible_state_is_set_on_every_cpu` is `not ok`).
+/// Gate canary `el0-state-canary`: the reset values are kept, and a non-zero
+/// `TPIDRRO_EL0` and the EL0 timer bits stand for firmware's; `MDSCR_EL1`
+/// keeps its reset value (ktest `user_visible_state_is_set_on_every_cpu`
+/// is `not ok`, with each register named).
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn init_el0_state() {
-    // SAFETY: EL1 writes EL0-access controls and an EL0-read-only register;
-    // neither touches memory.
+    // SAFETY: EL1 writes EL0-access controls, an EL0-read-only register and
+    // the debug control word; none touches memory. AMUSERENR_EL0 is written
+    // only where ID_AA64PFR0_EL1 reports the AMU.
     unsafe {
-        let mut v: u64;
-        core::arch::asm!("mrs {0}, CNTKCTL_EL1", out(reg) v, options(nomem, nostack, preserves_flags));
+        let (mut v, pfr0): (u64, u64);
+        core::arch::asm!("mrs {0}, CNTKCTL_EL1", "mrs {1}, ID_AA64PFR0_EL1", out(reg) v, out(reg) pfr0,
+            options(nomem, nostack, preserves_flags));
         if cfg!(feature = "el0-state-canary") {
             v |= CNTKCTL_EL0PCTEN | CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN;
         }
@@ -176,12 +188,38 @@ pub fn init_el0_state() {
         core::arch::asm!(
             "msr CNTKCTL_EL1, {0}",
             "msr TPIDRRO_EL0, {1}",
-            "isb",
             in(reg) cntkctl_el0_access(v),
             in(reg) ro,
             options(nomem, nostack, preserves_flags),
         );
+        if !cfg!(feature = "el0-state-canary") {
+            core::arch::asm!("msr MDSCR_EL1, {0}", in(reg) MDSCR_EL1_BOOT, options(nomem, nostack, preserves_flags));
+        }
+        if amu_present(pfr0) {
+            // AMUSERENR_EL0 by its encoding (an Armv8.4 name).
+            core::arch::asm!("msr S3_3_C13_C2_3, xzr", options(nomem, nostack, preserves_flags));
+        }
+        core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
     }
+}
+
+/// `MDSCR_EL1.SS` (bit 0): software step.
+pub const MDSCR_EL1_SS: u64 = 1 << 0;
+/// `MDSCR_EL1.TDCC` (bit 12): EL0 access to the debug communications
+/// channel traps (to EL1).
+pub const MDSCR_EL1_TDCC: u64 = 1 << 12;
+/// `MDSCR_EL1.KDE` (bit 13): debug exceptions taken at the EL they target.
+pub const MDSCR_EL1_KDE: u64 = 1 << 13;
+/// `MDSCR_EL1.MDE` (bit 15): breakpoint and watchpoint debug exceptions.
+pub const MDSCR_EL1_MDE: u64 = 1 << 15;
+/// The `MDSCR_EL1` every PE runs with ([`init_el0_state`]): the channel
+/// closed to EL0, no debug event enabled (nothing in this kernel uses
+/// hardware breakpoints or software step).
+pub const MDSCR_EL1_BOOT: u64 = MDSCR_EL1_TDCC;
+
+/// FEAT_AMUv1 from `ID_AA64PFR0_EL1` (AMU, bits 47:44, non-zero).
+pub const fn amu_present(pfr0: u64) -> bool {
+    (pfr0 >> 44) & 0xF != 0
 }
 
 /// Write `CNTV_CVAL_EL0` — set the next virtual-timer comparator value.
@@ -518,6 +556,69 @@ pub const SCTLR_EL1_ATA0: u64 = 1 << 42;
 /// SUM` starting clear (U07-7): EL1 cannot read/write an EL0-taggeed page
 /// by accident, only inside an explicit [`UserAccess`] window.
 pub const SCTLR_EL1_SPAN: u64 = 1 << 23;
+/// `SCTLR_EL1.UMA` (bit 9): EL0 may read and write `DAIF`.
+pub const SCTLR_EL1_UMA: u64 = 1 << 9;
+/// `SCTLR_EL1.EnRCTX` (bit 10, FEAT_SPECRES): EL0 may run the
+/// prediction-restriction instructions (`cfp`/`dvp`/`cpp RCTX`).
+pub const SCTLR_EL1_ENRCTX: u64 = 1 << 10;
+/// `SCTLR_EL1.DZE` (bit 14): EL0 may run `DC ZVA` (and `DCZID_EL0.DZP` says so).
+pub const SCTLR_EL1_DZE: u64 = 1 << 14;
+/// `SCTLR_EL1.UCT` (bit 15): EL0 may read `CTR_EL0`.
+pub const SCTLR_EL1_UCT: u64 = 1 << 15;
+/// `SCTLR_EL1.nTWI` (bit 16): EL0's `WFI` does not trap.
+pub const SCTLR_EL1_NTWI: u64 = 1 << 16;
+/// `SCTLR_EL1.nTWE` (bit 18): EL0's `WFE` does not trap.
+pub const SCTLR_EL1_NTWE: u64 = 1 << 18;
+/// `SCTLR_EL1.TSCXT` (bit 20): EL0's access to `SCXTNUM_EL0` traps
+/// (FEAT_CSV2_2 / CSV2_1p2; RES1 on a core without it).
+pub const SCTLR_EL1_TSCXT: u64 = 1 << 20;
+/// `SCTLR_EL1.E0E` (bit 24): EL0's data accesses are big-endian.
+pub const SCTLR_EL1_E0E: u64 = 1 << 24;
+/// `SCTLR_EL1.UCI` (bit 26): EL0 may run the cache maintenance
+/// instructions (`DC CVAU/CVAC/CVAP/CIVAC`, `IC IVAU`).
+pub const SCTLR_EL1_UCI: u64 = 1 << 26;
+/// `SCTLR_EL1.EnTP2` (bit 60, FEAT_SME): EL0 may use `TPIDR2_EL0`.
+pub const SCTLR_EL1_ENTP2: u64 = 1 << 60;
+
+/// The `SCTLR_EL1` word every PE starts from, on both entry paths (boot.S
+/// writes it before any compiled code runs; `_azos_drop_to_el1` before its
+/// `eret`): MMU, caches and alignment checks off; little-endian at EL1 and
+/// EL0; the stack-alignment checks on; exception entry and return context
+/// synchronising; the RES1 bits of Armv8.0 (11, 20, 22, 23, 28, 29) set. Of
+/// what EL0 may reach ([`SCTLR_EL1_EL0`]), only `WFI`/`WFE` without a trap:
+/// no `DAIF`, `CTR_EL0`, `DC ZVA`, cache maintenance, `SCXTNUM_EL0` or
+/// `TPIDR2_EL0`. Nothing in ring 3 uses those (relibc, stdrt and the Linux
+/// servers read none; glibc and musl read `DCZID_EL0.DZP` before `DC ZVA`),
+/// so they stay closed where Linux opens UCT, DZE and UCI. `SCXTNUM_EL0`
+/// is closed because no task's value is switched (Linux sets TSCXT too).
+/// SPAN is 1 here; boot.S clears it where PAN is in use
+/// ([`sctlr_el1_boot`]). Later writers set named bits only: the MMU and
+/// cache enables (`mmu::setup`), the pointer-authentication keys
+/// (`cpu::cfi`), DSSBS (`ext::mitigations`).
+///
+/// Before this, a kernel entered at EL1 directly (QEMU without
+/// `virtualization=on`: the gate) ran on the firmware's word, read-OR'd with
+/// M, C and I: QEMU's reset leaves SPAN 1, so an exception from EL0 kept the
+/// PSTATE.PAN of EL0 (0) and the kernel ran without PAN until its first
+/// [`UserAccess`] window closed; and TSCXT 0, so ring 3 read and wrote
+/// `SCXTNUM_EL0`, which follows no task.
+pub const SCTLR_EL1_BOOT: u64 = 0x30D5_0838;
+const _: () = assert!(SCTLR_EL1_BOOT >> 32 == 0, "boot.S builds the word with movz/movk of two halves");
+#[cfg(target_os = "none")]
+const _: () = assert!(crate::ext::hv::world::SCTLR_EL1_RESET == SCTLR_EL1_BOOT, "a guest starts from the host's word");
+
+/// The `SCTLR_EL1` bits that decide what EL0 may do, and SPAN, which decides
+/// the PSTATE.PAN the kernel runs with after an exception from EL0: the
+/// ktest `user_visible_state_is_set_on_every_cpu` reads them on every PE.
+pub const SCTLR_EL1_EL0: u64 = SCTLR_EL1_UMA | SCTLR_EL1_ENRCTX | SCTLR_EL1_DZE | SCTLR_EL1_UCT
+    | SCTLR_EL1_NTWI | SCTLR_EL1_NTWE | SCTLR_EL1_TSCXT | SCTLR_EL1_SPAN | SCTLR_EL1_E0E
+    | SCTLR_EL1_UCI | SCTLR_EL1_ENTP2;
+
+/// [`SCTLR_EL1_BOOT`] on a PE where PAN is in use (`pan`): SPAN clear, so
+/// every exception to EL1 sets PSTATE.PAN.
+pub const fn sctlr_el1_boot(pan: bool) -> u64 {
+    if pan { SCTLR_EL1_BOOT & !SCTLR_EL1_SPAN } else { SCTLR_EL1_BOOT }
+}
 
 /// `ESR_EL1.EC` of a Data Abort taken without a change in Exception level:
 /// an EL1 access faulted.
