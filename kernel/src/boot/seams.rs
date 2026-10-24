@@ -923,8 +923,11 @@ pub(crate) fn install_ring3_seams() {
             }
             fn clean_unmount(&self) -> bool {
                 // Canary (QEMU row `boot count: orderly reboot`): the boot
-                // volume left mounted, so the next boot checks it.
-                if canary!("power-off-unmount-skip") {
+                // volume left mounted, so the next boot checks it. The unmount
+                // writes the cache back too, so `power-off-sync-skip` (the
+                // row `power-off keeps a written file canary`: every
+                // write-back gone) skips it as well.
+                if canary!("power-off-unmount-skip") || canary!("power-off-sync-skip") {
                     return false;
                 }
                 azos_fs::fat32_unmount(azos_fs::Volume::assume_mounted()).is_ok()
