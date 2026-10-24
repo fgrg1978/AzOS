@@ -105,7 +105,7 @@ ROLES = {
         "vsbench_tcp_pcap.py", "vsbench_tcp_peer.py", "vsbench_x86_64.sh",
     ],
     "dev": [
-        "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/", "fleet_ota_deploy.py",
+        "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
         "ota_send.py", "perfetto_export.py", "qemu.sh", "run_guest.sh",
         "test_farm.py", "tftp_serve.py", "worktree_seed.py",
     ],
@@ -132,7 +132,6 @@ NO_CALLER = {
     "dev_uart.py": "UART relay daemon by hand (PENDING R280: keep or delete)",
     "esp32_bridge/": "ESP32 sketch; nothing names it",
     "export_kernel_consts.py": "Kconfig constants for the brain; only its own text names it",
-    "fleet_ota_deploy.py": "fleet OTA by hand; only config/Kconfig.robot's help names it",
     "gen_prod_key.py": "production key generation by hand (on purpose: never automated)",
     "repro_check.sh": "reproducible-build check by hand (plan: wire it into the gate)",
     "sbom.sh": "CycloneDX SBOM by hand",

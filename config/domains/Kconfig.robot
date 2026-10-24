@@ -434,4 +434,4 @@ config GEOFENCE_MIN_SATELLITES
 
 endmenu # RC input and geofence
 
-comment "Fleet OTA has no build-time option: tools/dev/fleet_ota_deploy.py"
+comment "Fleet OTA has no build-time option: tools/dev/ota_send.py --inventory"

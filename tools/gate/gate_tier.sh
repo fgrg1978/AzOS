@@ -125,6 +125,8 @@ fi
 [ "$lints" = 1 ] && { printf "  %-26s" "user image layout lint..."; if out="$(python3 tools/lint/user_entry_lint.py --self-test 2>&1 && python3 tools/lint/user_entry_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "doc lint..."; if out="$(python3 tools/lint/doc_lint.py --self-test 2>&1 && python3 tools/lint/doc_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "tools layout lint..."; if out="$(python3 tools/lint/tools_layout.py --self-test 2>&1 && python3 tools/lint/tools_layout.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+# The OTA sender (tools/dev/ota_send.py) against a localhost receiver: one robot, a fleet, a sick canary.
+[ "$lints" = 1 ] && { printf "  %-26s" "ota sender self-test..."; if out="$(python3 tools/dev/ota_send.py --self-test 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "req trace lint..."; if out="$(python3 tools/lint/req_trace.py --self-test 2>&1 && python3 tools/lint/req_trace.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 # The gate's row manifest (tools/gate/gate_rows.py --check: every row listed, its deps cover what it
 # reads) and the diff-to-rows map that reads it (tools/gate/rows_for_diff.py), after their canaries.

@@ -71,7 +71,8 @@ and receives a 24-byte `ROTA` header (magic, header version, size, CRC-32,
 firmware version, platform id, flags) followed by the raw kernel, at most
 `OTA_MAX_IMAGE_SIZE_MB`. The header is never stored and is not signed: its
 version is checked against `min_fw_version` only as an early, advisory refusal.
-`tools/dev/ota_send.py` is the sender and `tools/sign/sign_ota.py` makes the signature
+`tools/dev/ota_send.py` is the sender (to one robot, or with
+`--inventory` to a fleet in health-checked stages) and `tools/sign/sign_ota.py` makes the signature
 sidecar. The image is written to `KERN_<slot>.TMP` and verified
 (`secure_boot_verify_staged_detailed`) before it replaces the slot: a present
 signature that fails is refused on every build, an image with no usable
