@@ -555,9 +555,11 @@ def test_brain_link_fails_closed_outside_dev() -> None:
                 assert "CONFIG_LINK_PROVISIONING_ENFORCED=y" in lines, \
                     f"{d.name} (not BUILD_TYPE_DEV) leaves the brain link fail-open"
                 assert feat in feats, f"{d.name}: no {feat} in {feats}"
-        for want in ("vf2", "k1", "rpi5", "robot-embedded", "robot-fleet"):
-            assert want in release, f"{want} is not a release robot defconfig: {release}"
-        assert "qemu" in dev and "qemu-aarch64" in dev and "qemu-x86_64" in dev, dev
+        # The generated cell names (F4): robot-<form>-<arch>[-dev][+<axis>...].
+        for want in ("+vf2", "+k1", "+rpi5", "robot-embedded-", "robot-server-"):
+            assert any(want in r for r in release), f"no release robot defconfig names {want}: {release}"
+        for arch in ("riscv64", "aarch64", "x86_64"):
+            assert any(f"-{arch}-dev+qemu" in d for d in dev), f"no {arch} QEMU dev robot cell: {dev}"
         # The Kconfig default with nothing else set is a release robot build.
         r = _expand(["CONFIG_PRESET_ROBOT=y"], t, "r.config")
         assert "CONFIG_BUILD_TYPE_RELEASE=y" in r and "CONFIG_LINK_PROVISIONING_ENFORCED=y" in r, \
