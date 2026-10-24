@@ -39,7 +39,7 @@ import re
 import sys
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
-GATE = os.path.join(ROOT, "tools", "ci_check.sh")
+GATE = os.path.join(ROOT, "tools/gate/ci_check.sh")
 KCONFIG_LIMITS = os.path.join(ROOT, "config", "limits", "Kconfig.limits")
 # Bytes of the kernel's command-line buffer (Kconfig KERNEL_CMDLINE_MAX) the
 # canary list must leave free for other boot arguments. The kernel cuts a

@@ -204,7 +204,7 @@ def gen_userspace(root):
 # enforced one, where the runtime canaries are compiled out by design),
 # `host-shared` (a host-test crate compiles the same source with the same
 # feature). `pending`: not moved yet.
-HOOKS_FILE = os.path.join("tools", "compile_time_hooks.tsv")
+HOOKS_FILE = "tools/lint/compile_time_hooks.tsv"
 HOOK_CLASSES = ("hot", "const", "secure-boot", "host-shared", "pending")
 
 

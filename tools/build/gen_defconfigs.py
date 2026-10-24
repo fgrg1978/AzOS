@@ -140,7 +140,6 @@ def committed():
 def expanded_axes_ok(names):
     """Each committed defconfig, expanded by Kconfig, keeps its name's axes and
     loads without a warning (an assignment Kconfig drops warns)."""
-    sys.path.insert(0, os.path.join(REPO, "tools"))
     import kconfiglib
     old = os.getcwd()
     os.chdir(REPO)

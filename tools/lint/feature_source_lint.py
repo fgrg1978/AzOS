@@ -52,7 +52,7 @@ def scanned(root=ROOT):
 
 
 # The one file `--fix` rewrites: the gate, whose `$CARGO` is tools/gate/ci_cargo.py.
-FIX_FILE = os.path.join("tools", "ci_check.sh")
+FIX_FILE = "tools/gate/ci_check.sh"
 
 CARGO_RE = re.compile(r'(?:\bcargo|\$\(CARGO\)|"?\$\{?(?:CARGO|cargo)\}?"?)'
                       r'(?:\s+\+\S+)?\s+(build|check|rustc)\b')

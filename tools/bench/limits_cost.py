@@ -159,7 +159,7 @@ def build(arch, cfg_path, linker=None):
     env = dict(os.environ)
     env["KCONFIG_CONFIG"] = cfg_path
     # The kernel has no cargo `default`: the .config's features.
-    out = subprocess.run([sys.executable, os.path.join(REPO, "tools", "kconfig_to_cargo.py"),
+    out = subprocess.run([sys.executable, os.path.join(REPO, "tools/build/kconfig_to_cargo.py"),
                           cfg_path], capture_output=True, text=True, check=True).stdout.split()
     feats = out[out.index("--features"):][:2] if "--features" in out else []
     if arch == "riscv64":

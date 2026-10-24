@@ -133,7 +133,6 @@ NO_CALLER = {
     "esp32_bridge/": "ESP32 sketch; nothing names it",
     "export_kernel_consts.py": "Kconfig constants for the brain; only its own text names it",
     "fleet_ota_deploy.py": "fleet OTA by hand; only config/Kconfig.robot's help names it",
-    "gen_config_index.py": "regenerates Documentation/config.md's index by hand",
     "gen_prod_key.py": "production key generation by hand (on purpose: never automated)",
     "ground_station.py": "robot ground station by hand",
     "arch_stub_check.py": "x86 porting checklist by hand; only docs and a comment name it",

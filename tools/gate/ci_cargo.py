@@ -264,7 +264,7 @@ def with_kconfig_features(argv):
     if not os.path.isfile(cfg):
         sys.stderr.write("ci_cargo: the kernel's config %s does not exist; no features can be derived\n" % cfg)
         sys.exit(2)
-    k2c = [sys.executable, os.path.join(top, "tools", "kconfig_to_cargo.py")]
+    k2c = [sys.executable, os.path.join(top, "tools/build/kconfig_to_cargo.py")]
     if toks:
         h = sha_file(cfg)
         h.update(",".join(toks).encode())
