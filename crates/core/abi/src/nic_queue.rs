@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Ring-3 packet rings on a NIC queue: what a `ty::NIC_QUEUE` capability
 //! names and the slot format of the two rings its attach
-//! (`invoke::DEVICE_NICQ_ATTACH`) runs the queue on.
+//! (`invoke::QUEUE_NICQ_ATTACH`) runs the queue on.
 //!
 //! The shape is netmap's and AF_XDP's: one pair of rings per NIC queue, in
 //! memory the program and the kernel both map, and no call per frame on

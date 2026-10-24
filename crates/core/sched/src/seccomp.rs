@@ -1204,7 +1204,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![MEMOBJ_ACQUIRE, 
             LOG_CONSOLE_WRITE, DOMAIN_UPTIME, DOMAIN_PLEDGE,
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_MCAST_JOIN, NODE_SENDTO, NODE_RECVFROM,
-            DEVICE_NICQ_ATTACH, DEVICE_NICQ_KICK,
+            QUEUE_NICQ_ATTACH, QUEUE_NICQ_KICK,
         ],
         ifaces: &[azos_devif::key::CLOCK],
     },

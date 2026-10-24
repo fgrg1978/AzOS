@@ -372,7 +372,7 @@ config NET_PACKET_RX_SLOTS
       NET_PACKET_SOCKETS.
 
 config NET_NIC_QUEUES
-    bool "Ring-3 packet rings on a NIC queue (Cap<NicQueue>, DEVICE_NICQ_*)"
+    bool "Ring-3 packet rings on a NIC queue (Cap<NicQueue>, QUEUE_NICQ_*)"
     default y
     help
       crates/net/net/src/nic_queue.rs, crates/core/syscall/src/nicq.rs: a
@@ -380,7 +380,7 @@ config NET_NIC_QUEUES
       it from the kernel's stack and run it on a pair of rings it made, in
       the netmap and AF_XDP shape: what arrives on the queue is pushed on
       its receive ring with a timestamp, what it pushes on its transmit ring
-      leaves on a kick (DEVICE_NICQ_KICK). The stack sees nothing of a taken
+      leaves on a kick (QUEUE_NICQ_KICK). The stack sees nothing of a taken
       queue. The primary interface and the interface the route to the link
       peer (the brain, which carries the e-stop) leaves by are never handed
       over: the attach is refused and recorded (Rule::NicQueue). Every NIC

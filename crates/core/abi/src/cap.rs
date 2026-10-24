@@ -357,7 +357,8 @@ pub enum CapKind {
     Endpoint = 1,
     /// A memory object: shared memory (class `SHM`, a region two tasks map).
     MemObj = 2,
-    /// A queue of requests: an io_ring (class `IORING`).
+    /// A queue: an io_ring (class `IORING`), or a queue of a NIC the kernel
+    /// drives, taken to run from ring 3 (class `NIC_QUEUE`).
     Queue = 3,
     /// An event port.
     Port = 4,
@@ -369,8 +370,8 @@ pub enum CapKind {
     Node = 6,
     /// A piece of hardware or its driver slot: an interrupt line (`IRQ`), an
     /// MMIO region of the board's table (`MMIO`), the right to register as
-    /// the driver for one `DRV_KIND_*` (`DRVSLOT`), a range of I/O ports
-    /// (`IOPORT`) or one queue of a NIC the kernel drives (`NIC_QUEUE`).
+    /// the driver for one `DRV_KIND_*` (`DRVSLOT`) or a range of I/O ports
+    /// (`IOPORT`).
     Device = 7,
     /// A log: the kernel tracer (class `TRACE`) or the console (class `CONSOLE`).
     Log = 8,
@@ -530,10 +531,10 @@ pub mod ty {
     pub const IOPORT: CapType = CapType::new(CapKind::Device, 3);
     /// One receive/transmit queue of a NIC the kernel drives: the right to take
     /// it from the kernel's stack and run it from ring 3 over a pair of rings
-    /// (the `DEVICE_NICQ_*` ops, [`crate::nic_queue`]). The resource is
+    /// (the `QUEUE_NICQ_*` ops, [`crate::nic_queue`]). The resource is
     /// [`crate::nic_queue::resource`]; the topology grants it by interface
     /// name and queue (`nicq.eth1.0`).
-    pub const NIC_QUEUE: CapType = CapType::new(CapKind::Device, 3);
+    pub const NIC_QUEUE: CapType = CapType::new(CapKind::Queue, 1);
     /// The kernel tracer (wave 15, the `LOG_TRACE_*` ops): `READ` maps the
     /// per-CPU rings and reads the class mask, `WRITE` changes it.
     pub const TRACE: CapType = CapType::new(CapKind::Log, 0);

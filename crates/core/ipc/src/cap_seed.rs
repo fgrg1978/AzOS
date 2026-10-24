@@ -329,7 +329,7 @@ fn device_seed(tid: u32, perms: CapPerms, target: &str) -> Option<CapHandle> {
 /// not the NIC: a row says which link it runs, the machine's probe order
 /// says which NIC that is. Whether the interface has a NIC and the queue
 /// exists, and whether taking it would cut the node off, are the attach's
-/// questions (`DEVICE_NICQ_ATTACH`): a NIC can come and go after the seed.
+/// questions (`QUEUE_NICQ_ATTACH`): a NIC can come and go after the seed.
 /// `None` for anything else, a number written with a leading zero included.
 fn nicq_grant_cap(tid: u32, spec: &str, perms: CapPerms) -> Option<crate::cap::Cap<crate::cap::targets::NicQueue>> {
     if perms != CapPerms::RW {

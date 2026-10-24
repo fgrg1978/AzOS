@@ -355,6 +355,14 @@ where the source states them.
 `ROOT_DIR_RESOURCE` is the `ty::FILE` resource of the directory on `/`, which
 `SYS_CAP_INFO` looks up to find the task's root directory handle.
 
+**Queue** (kind 3): a NIC queue (`ty::NIC_QUEUE`)
+
+| Op | Value | Class | Summary |
+|---|---|---|---|
+| `QUEUE_NICQ_ATTACH` | 0x3903 | DRIVER | Take the NIC queue a `NicQueue` handle names from the stack and run it on two rings the caller made (`a2` receive, `a3` transmit); replies the MAC, the longest frame and the stamp kind. See [network.md](network.md#nic-queues-in-ring-3). |
+| `QUEUE_NICQ_KICK` | 0x3804 | NET | Send what the caller pushed on the transmit ring; returns the frames sent. |
+| `QUEUE_NICQ_DETACH` | 0x3905 | DRIVER | Give the queue back to the stack. |
+
 **Device** (kind 7)
 
 | Op | Value | Class | Summary |
@@ -362,9 +370,6 @@ where the source states them.
 | `DEVICE_IRQ_BIND` | 0x7901 | DRIVER | Bind an interrupt line to an event port with a key and a CPU (`DEVICE_IRQ_CPU_ANY`). A message-signalled slot also returns address, data and vector in `a1`..`a3`. |
 | `DEVICE_IRQ_ACK` | 0x7902 | DRIVER | Unmask the line after the device was quietened; returns 0, or 1 if the handler's budget is spent. |
 | `DEVICE_IOPORT_ENABLE` | 0x7906 | DRIVER | Open the I/O ports of a `ty::IOPORT` capability to the calling thread (x86_64); needs `READ\|WRITE`, every word 0. `-ENODEV` on an ISA without a port space. |
-| `DEVICE_NICQ_ATTACH` | 0x7903 | DRIVER | Take the NIC queue a `NicQueue` handle names from the stack and run it on two rings the caller made (`a2` receive, `a3` transmit); replies the MAC, the longest frame and the stamp kind. See [network.md](network.md#nic-queues-in-ring-3). |
-| `DEVICE_NICQ_KICK` | 0x7804 | NET | Send what the caller pushed on the transmit ring; returns the frames sent. |
-| `DEVICE_NICQ_DETACH` | 0x7905 | DRIVER | Give the queue back to the stack. |
 
 **Endpoint** (kind 1)
 

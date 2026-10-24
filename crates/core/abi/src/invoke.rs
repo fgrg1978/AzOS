@@ -474,7 +474,7 @@ pub const DEVICE_IRQ_ACK: u16 = op(CapKind::Device, CLASS_DRIVER, 2);
 /// `X86_IOPORT_BITMAP_PORTS` 0; answered before the handle is looked at).
 pub const DEVICE_IOPORT_ENABLE: u16 = op(CapKind::Device, CLASS_DRIVER, 6);
 
-// ── Device: a NIC queue the caller holds (`ty::NIC_QUEUE`) ──────────────────
+// ── Queue: a NIC queue the caller holds (`ty::NIC_QUEUE`) ──────────────────
 
 /// Take the NIC queue the handle names from the kernel's stack and run it on
 /// a pair of rings the caller made (`crate::nic_queue`): `w0` the `Cap<Shm>`
@@ -488,7 +488,7 @@ pub const DEVICE_IOPORT_ENABLE: u16 = op(CapKind::Device, CLASS_DRIVER, 6);
 /// From the attach on, the stack does not see the queue: what arrives on it is
 /// pushed on the receive ring (`nic_queue::DESC_RX`, with its stamp), nothing
 /// the stack sends leaves by it, and the caller's frames leave by
-/// [`DEVICE_NICQ_KICK`]. The attachment ends with [`DEVICE_NICQ_DETACH`], the
+/// [`QUEUE_NICQ_KICK`]. The attachment ends with [`QUEUE_NICQ_DETACH`], the
 /// caller's exit, or either region going away.
 ///
 /// The register form replies `a1` the interface's MAC (`nic_queue::mac_word`),
@@ -502,7 +502,7 @@ pub const DEVICE_IOPORT_ENABLE: u16 = op(CapKind::Device, CLASS_DRIVER, 6);
 /// queue carries the node's own stack or the path the e-stop and the link
 /// arrive by: refused and recorded, `Rule::NicQueue`), `-ENOSYS` (Kconfig
 /// `NET_NIC_QUEUES` off).
-pub const DEVICE_NICQ_ATTACH: u16 = op(CapKind::Device, CLASS_DRIVER, 3);
+pub const QUEUE_NICQ_ATTACH: u16 = op(CapKind::Queue, CLASS_DRIVER, 3);
 /// Send what the caller pushed on the transmit ring of its attached queue,
 /// now (the AF_XDP `sendto` kick): every slot is popped, checked (a frame of
 /// at least an Ethernet header, at most a slot, whose source is the
@@ -511,10 +511,10 @@ pub const DEVICE_NICQ_ATTACH: u16 = op(CapKind::Device, CLASS_DRIVER, 3);
 /// departure stamp. Needs `WRITE`. Returns the frames sent, `-ENOENT` when the
 /// caller has no attachment on the queue, `-EBUSY` when another thread of it
 /// is draining the ring.
-pub const DEVICE_NICQ_KICK: u16 = op(CapKind::Device, CLASS_NET, 4);
+pub const QUEUE_NICQ_KICK: u16 = op(CapKind::Queue, CLASS_NET, 4);
 /// Give the queue back to the stack and let go of both rings. Needs `WRITE`.
 /// 0, or `-ENOENT` when the caller has no attachment on the queue.
-pub const DEVICE_NICQ_DETACH: u16 = op(CapKind::Device, CLASS_DRIVER, 5);
+pub const QUEUE_NICQ_DETACH: u16 = op(CapKind::Queue, CLASS_DRIVER, 5);
 
 // ── Endpoint: an endpoint the caller holds ──────────────────────────────────
 

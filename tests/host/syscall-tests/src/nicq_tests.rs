@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// Host tests for the `DEVICE_NICQ_*` ops (`crates/core/syscall/src/nicq.rs`):
+// Host tests for the `QUEUE_NICQ_*` ops (`crates/core/syscall/src/nicq.rs`):
 // a NIC queue taken from the stack and run on two rings the program made.
 //
 // **What is real here.** The entry (`invoke::sys_invoke`) and its dispatch,
@@ -16,7 +16,7 @@
 use super::harness::serial;
 use azos_abi::cap::{CapPerms, CapHandle};
 use azos_abi::error::Errno;
-use azos_abi::invoke::{DEVICE_NICQ_ATTACH, DEVICE_NICQ_DETACH, DEVICE_NICQ_KICK, INVOKE_REGS};
+use azos_abi::invoke::{QUEUE_NICQ_ATTACH, QUEUE_NICQ_DETACH, QUEUE_NICQ_KICK, INVOKE_REGS};
 use azos_abi::nic_queue::{self as nq, Desc};
 use azos_ipc::cap::targets::NicQueue;
 use azos_ipc::memobj::{memobj_create_cap, memobj_page_phys_ref, memobj_release_cap, MemPerms, MemSpec};
@@ -104,7 +104,7 @@ const PAGES: usize = 2;
 fn attach(s: &Scene) -> Attached {
     let q = queue_cap(s, 2, 0, CapPerms::RW);
     let (rx, tx) = (region(s, PAGES), region(s, PAGES));
-    let (rc, rep) = invoke(q, DEVICE_NICQ_ATTACH, rx.0, tx.0);
+    let (rc, rep) = invoke(q, QUEUE_NICQ_ATTACH, rx.0, tx.0);
     assert_eq!(rc, 0, "eth1's queue attaches");
     assert_eq!(nq::mac_of_word(rep[0]), MAC_B, "the reply names the interface's MAC");
     assert_eq!((rep[1], rep[2]), (nq::FRAME_MAX as u64, nq::STAMP_SW as u64));
@@ -190,7 +190,7 @@ fn a_kick_sends_the_interfaces_frames_and_refuses_the_others() {
         prod.push(0, &tx_item(nq::TX_STAMP, &foreign));
         prod.push(0, &tx_item(0, &short));
     }
-    let (rc, _) = invoke(a.q, DEVICE_NICQ_KICK, 0, 0);
+    let (rc, _) = invoke(a.q, QUEUE_NICQ_KICK, 0, 0);
     assert_eq!(rc, 1, "one frame left");
     let sent = azos_net::shim_take_nicq_sent();
     assert_eq!(sent, vec![(2, good.clone())], "only the interface's own frame, by eth1");
@@ -203,7 +203,7 @@ fn a_kick_sends_the_interfaces_frames_and_refuses_the_others() {
         assert_eq!((d.kind, d.flags, d.tx_seq), (nq::DESC_TX_DONE, nq::TX_REFUSED, 1));
     }
     assert!(pop(&rx).is_none(), "the short frame asked for no completion");
-    let (rc, _) = invoke(a.q, DEVICE_NICQ_KICK, 0, 0);
+    let (rc, _) = invoke(a.q, QUEUE_NICQ_KICK, 0, 0);
     assert_eq!(rc, 0, "an empty ring sends nothing");
 }
 
@@ -218,7 +218,7 @@ fn the_attach_refuses_the_primary_interface_and_every_malformed_request() {
     let s = scene();
     let (rx, tx) = (region(&s, PAGES), region(&s, PAGES));
     let try_attach = |ifx: u8, q: u8, perms: CapPerms, rx: u64, tx: u64| {
-        invoke(queue_cap(&s, ifx, q, perms), DEVICE_NICQ_ATTACH, rx, tx).0
+        invoke(queue_cap(&s, ifx, q, perms), QUEUE_NICQ_ATTACH, rx, tx).0
     };
     assert_eq!(try_attach(1, 0, CapPerms::RW, rx.0, tx.0), Errno::EPERM.to_syscall_ret(), "the primary interface");
     assert!(!azos_net::nic_queue::taken(1));
@@ -244,9 +244,9 @@ fn the_attach_refuses_the_primary_interface_and_every_malformed_request() {
 fn the_queue_goes_back_to_the_stack_on_detach_exit_and_a_lost_region() {
     let s = scene();
     let a = attach(&s);
-    assert_eq!(invoke(a.q, DEVICE_NICQ_DETACH, 0, 0).0, 0);
+    assert_eq!(invoke(a.q, QUEUE_NICQ_DETACH, 0, 0).0, 0);
     assert!(!azos_net::nic_queue::taken(2), "detached");
-    assert_eq!(invoke(a.q, DEVICE_NICQ_KICK, 0, 0).0, Errno::ENOENT.to_syscall_ret(), "nothing to kick");
+    assert_eq!(invoke(a.q, QUEUE_NICQ_KICK, 0, 0).0, Errno::ENOENT.to_syscall_ret(), "nothing to kick");
 
     let b = attach(&s);
     crate::nicq::release_all(s.tid);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The `DEVICE_NICQ_*` ops (`azos_abi::invoke`): a NIC queue taken from the
+//! The `QUEUE_NICQ_*` ops (`azos_abi::invoke`): a NIC queue taken from the
 //! kernel's stack and run from ring 3 on a pair of rings the program made
 //! (`azos_abi::nic_queue`, the netmap and AF_XDP shape).
 //!
@@ -23,7 +23,7 @@
 //!   descriptor. A full ring drops the newest frame and counts it (the
 //!   producer never waits for ring 3). The reader is rung once per pass, at
 //!   [`rx_end`], when it said it may be asleep.
-//! * **Transmit** (program producer): [`DEVICE_NICQ_KICK`] pops every slot,
+//! * **Transmit** (program producer): [`QUEUE_NICQ_KICK`] pops every slot,
 //!   checks it and sends it; a slot that asked for it gets a `DESC_TX_DONE` on
 //!   the receive ring with the departure stamp.
 //!
@@ -49,7 +49,7 @@
 
 use azos_abi::cap::{ty, CapHandle, CapPerms};
 use azos_abi::error::Errno;
-use azos_abi::invoke::{DEVICE_NICQ_ATTACH, DEVICE_NICQ_DETACH, DEVICE_NICQ_KICK};
+use azos_abi::invoke::{QUEUE_NICQ_ATTACH, QUEUE_NICQ_DETACH, QUEUE_NICQ_KICK};
 use azos_abi::nic_queue::{self as nq, Desc};
 use azos_ipc::cap::{targets, Cap, CapError};
 use azos_net::nic_queue::{self as taken, Refusal};
@@ -204,10 +204,10 @@ fn index(ifindex: IfIndex) -> Option<usize> {
 /// The ops on a `ty::NIC_QUEUE` handle.
 pub(crate) fn nicq_op(c: &mut Call) -> i64 {
     let (need, contained_ok) = match c.op {
-        DEVICE_NICQ_ATTACH => (CapPerms::RW, false),
-        DEVICE_NICQ_KICK => (CapPerms::WRITE, false),
+        QUEUE_NICQ_ATTACH => (CapPerms::RW, false),
+        QUEUE_NICQ_KICK => (CapPerms::WRITE, false),
         // Letting go is never an effect outside: a contained program may.
-        DEVICE_NICQ_DETACH => (CapPerms::WRITE, true),
+        QUEUE_NICQ_DETACH => (CapPerms::WRITE, true),
         _ => return Errno::EINVAL.to_syscall_ret(),
     };
     let cap: Cap<targets::NicQueue> = Cap::from_raw(CapHandle::from_raw(c.handle));
@@ -226,7 +226,7 @@ pub(crate) fn nicq_op(c: &mut Call) -> i64 {
     }
     let (ifindex, queue) = (nq::ifindex_of(resource), nq::queue_of(resource));
     match c.op {
-        DEVICE_NICQ_ATTACH => match attach(c.tid, ifindex, queue, c.w[0], c.w[1]) {
+        QUEUE_NICQ_ATTACH => match attach(c.tid, ifindex, queue, c.w[0], c.w[1]) {
             Ok(mac) => {
                 c.rep[..3].copy_from_slice(&[nq::mac_word(mac), nq::FRAME_MAX as u64, nq::STAMP_SW as u64]);
                 c.nrep = 3;
@@ -234,7 +234,7 @@ pub(crate) fn nicq_op(c: &mut Call) -> i64 {
             }
             Err(e) => e,
         },
-        DEVICE_NICQ_KICK => kick(c.tid, ifindex),
+        QUEUE_NICQ_KICK => kick(c.tid, ifindex),
         _ => detach(c.tid, ifindex),
     }
 }
@@ -256,7 +256,7 @@ fn errno_refusal(e: Refusal) -> i64 {
     }
 }
 
-/// [`DEVICE_NICQ_ATTACH`]: the interface's MAC, or the errno.
+/// [`QUEUE_NICQ_ATTACH`]: the interface's MAC, or the errno.
 fn attach(tid: u32, ifindex: IfIndex, queue: u8, rx_raw: u64, tx_raw: u64) -> Result<[u8; 6], i64> {
     let Some(i) = index(ifindex) else { return Err(Errno::ENODEV.to_syscall_ret()) };
     let (Ok(rx_raw), Ok(tx_raw)) = (u32::try_from(rx_raw), u32::try_from(tx_raw)) else {
@@ -348,7 +348,7 @@ pub fn rx_end(ifindex: IfIndex) {
     }
 }
 
-/// [`DEVICE_NICQ_KICK`]: drain the transmit ring of `tid`'s attachment on
+/// [`QUEUE_NICQ_KICK`]: drain the transmit ring of `tid`'s attachment on
 /// `ifindex` into the NIC.
 fn kick(tid: u32, ifindex: IfIndex) -> i64 {
     let Some(i) = index(ifindex) else { return Errno::ENOENT.to_syscall_ret() };
@@ -421,7 +421,7 @@ fn kick(tid: u32, ifindex: IfIndex) -> i64 {
     sent
 }
 
-/// [`DEVICE_NICQ_DETACH`]: give `tid`'s attachment on `ifindex` back.
+/// [`QUEUE_NICQ_DETACH`]: give `tid`'s attachment on `ifindex` back.
 fn detach(tid: u32, ifindex: IfIndex) -> i64 {
     let Some(i) = index(ifindex) else { return Errno::ENOENT.to_syscall_ret() };
     let gen = match ATTACHED.lock()[i].0.as_ref() {

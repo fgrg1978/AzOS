@@ -521,12 +521,12 @@ Source: `crates/net/net/src/nic_queue.rs`, `crates/core/syscall/src/nicq.rs`,
 `crates/core/abi/src/nic_queue.rs`.
 
 A program whose topology row holds a NIC queue (`{ kind = "device", target =
-"nicq.eth1.0", perm = "rw" }`, a `Cap<NicQueue>`: kind `Device`, class 3) may
+"nicq.eth1.0", perm = "rw" }`, a `Cap<NicQueue>`: kind `Queue`, class 1) may
 take it from the stack and run it on a pair of rings, in the netmap and AF_XDP
 shape (Kconfig `NET_NIC_QUEUES`):
 
 - **The rings** are two regions the program made (read-write, physically
-  contiguous, `SHM_KIND_CONTIG`) and hands to `DEVICE_NICQ_ATTACH`. The kernel
+  contiguous, `SHM_KIND_CONTIG`) and hands to `QUEUE_NICQ_ATTACH`. The kernel
   lays an `azos_rings::region::SpscBytes` ring of 1,544-byte slots into each
   and writes the geometry into its header. Every slot carries an 8-byte
   descriptor (`nic_queue::Desc`) and a frame of at most 1,518 bytes.
@@ -535,7 +535,7 @@ shape (Kconfig `NET_NIC_QUEUES`):
   the packet sockets, ARP and IP. The reader sleeps on the ring's head word
   and is woken once per pass when it said it may be asleep. A full ring drops
   the newest frame and counts it.
-- **Transmit is a kick** (`DEVICE_NICQ_KICK`, the AF_XDP `sendto`): the kernel
+- **Transmit is a kick** (`QUEUE_NICQ_KICK`, the AF_XDP `sendto`): the kernel
   pops the transmit ring, checks every frame (an Ethernet header at least, a
   slot at most, the interface's own MAC as source) and hands it to the NIC. A
   slot that asks for it (`TX_STAMP`) is answered on the receive ring by a
@@ -554,7 +554,7 @@ shape (Kconfig `NET_NIC_QUEUES`):
   behavior task dials, which carries the e-stop) leaves by. The attach is then
   refused with `-EPERM` and recorded (`Rule::NicQueue`). These checks run at
   the attach, not at the seed: a NIC can come and go, and a route can change.
-- **The attachment ends** with `DEVICE_NICQ_DETACH`, the owner's exit, or a
+- **The attachment ends** with `QUEUE_NICQ_DETACH`, the owner's exit, or a
   ring's region going away, and the queue goes back to the stack.
 - **Who uses it.** The PTP daemon (`PTPD.ELF`, Kconfig `PTPD_NIC_QUEUE`):
   IEEE 1588 over Ethernet (Annex F, EtherType 0x88F7) on the queue, every
