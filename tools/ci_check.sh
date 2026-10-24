@@ -14839,6 +14839,9 @@ PY
     #   ktest percpu accessor canary (x86)  the accessors of the running task
     #                               take no mask: percpu_accessors_read_masked
     #                               alone not ok
+    #   ktest sched tls canary (x86)  the old FS-base rule: an equal base is not
+    #                               rewritten and a loaded FS selector stays;
+    #                               the two fs_* tests not ok
     #   ktest fork FP runtime canary (x86)  canary=x86-fork-fp-skip: a forked
     #                               child starts from the initial FP image;
     #                               x86_ring3_syscall_fork_fp alone not ok
@@ -14912,7 +14915,10 @@ PY
     # +1 shootdown_reaches_a_masked_lock_waiter, as on rv and arm -> 125.
     # +1 rt_motor_coasts_a_held_wheel, as on rv and arm -> 126.
     # +1 tlb_kernel_shootdown_names_every_online_cpu (x86_64 only) -> 127.
-    KTEST_N_X86=127
+    # +2 fs_selector_load_keeps_the_next_task_s_fs_base and
+    # fs_gs_selectors_do_not_follow_a_task (tls-hygiene, x86_64 only; canary
+    # `fs-base-cache-canary`) -> 129.
+    KTEST_N_X86=129
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -15879,6 +15885,9 @@ PY
     par "ktest tlb join canary (x86)" x86_ktest_row "ktest tlb join canary (x86)" "" \
         "tlb_kernel_shootdown_names_every_online_cpu" "canary=x86-tlb-join-skip"
     par "ktest percpu accessor canary (x86)" x86_ktest_row "ktest percpu accessor canary (x86)" ",percpu-accessor-race-canary" "percpu_accessors_read_masked"
+    # tls-hygiene: the old FS-base rule (an equal base is not rewritten, the
+    # FS/GS selectors ring 3 loaded stay).
+    par "ktest sched tls canary (x86)" x86_ktest_row "ktest sched tls canary (x86)" ",fs-base-cache-canary" "fs_selector_load_keeps_the_next_task_s_fs_base fs_gs_selectors_do_not_follow_a_task"
     # The same boot carries K1's `ioring-fsync-inline` (an io_ring OP_FSYNC
     # completes in the submit): `ioring_fsync_completes_after_flush`.
     par "ktest fork FP runtime canary (x86)" x86_ktest_row "ktest fork FP runtime canary (x86)" "" \

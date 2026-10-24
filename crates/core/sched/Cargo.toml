@@ -141,6 +141,12 @@ linux-abi-fp-canary = []
 # rule (fp::switch_thread_pointer). ktests `native_tasks_keep_tpidr_el0` and
 # `new_task_starts_with_tpidr_el0_zero` must be `not ok`. Never in a real build.
 tpidr-foreign-only-canary = []
+# tls-hygiene canary, x86_64: the old FS-base rule (a switch between two
+# tasks with the same base writes nothing, so a base ring 3 zeroed with a
+# selector load reaches the next one; FS/GS selectors are left as ring 3
+# loaded them). ktests `fs_selector_load_keeps_the_next_task_s_fs_base` and
+# `fs_gs_selectors_do_not_follow_a_task` must be `not ok`. Never in a real build.
+fs-base-cache-canary = []
 # Wave 13 canary: a child's exit posts no SIGCHLD to its Linux parent. Never
 # in a real build.
 linux-sigchld-canary = []

@@ -1110,7 +1110,8 @@ mod percpu_accessor_ktests {
 // take turns, sleeping while the other runs; each must read its own back
 // every turn. (2) A task writes a value and ends; a new task on the same CPU
 // must read 0. riscv64 (`tp`, in every trap frame) and x86_64 (FS base, which
-// ring 3 cannot write) have no EL0-written register to test this way. Canary
+// ring 3 can only zero: `fs_base_ktests` in `entry/x86_64/boot_hooks.rs`) have no EL0-written register
+// to test this way. Canary
 // cargo feature `tpidr-foreign-only-canary` (only a Linux task's is kept, the
 // old rule): both `not ok`.
 // arch-only: TPIDR_EL0 is aarch64's EL0-writable thread pointer (see above).

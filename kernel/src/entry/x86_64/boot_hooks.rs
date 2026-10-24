@@ -1253,3 +1253,100 @@ pub fn arch_enter_scheduler(_hart_id: usize) -> ! {
 pub fn install_resume() {
     crate::entry::x86_64::resume::install();
 }
+
+// tls-hygiene: ring 3 can ZERO its own x86_64 FS base with a selector load
+// (`mov %fs, sel` loads the base of the descriptor it names, 0 for every
+// segment ring 3 may load), and the kernel did not know: a switch between
+// two tasks with the same base wrote nothing (`fs_base_to_load`), so the
+// second ran with 0, and the selector stayed loaded for it. Late: two kernel
+// tasks pinned to one CPU are given the same FS base (`fp::set_fs_base`);
+// the first loads USER_DS into FS (allowed at CPL0 for a DPL-3 data segment:
+// the same base load ring 3 gets, on every vendor; a null selector zeroes
+// the base on Intel and QEMU only) and both yield in turn, so the second
+// follows the first with no task between. The second must read its own base
+// and a null FS selector. Canary cargo feature `fs-base-cache-canary` (the
+// old rule): both `not ok`.
+#[cfg(feature = "ktest")]
+mod fs_base_ktests {
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    const BASE: u64 = 0x7d1d_0000_0f50_0000;
+    static READY: AtomicBool = AtomicBool::new(false);
+    static LOADED: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicUsize = AtomicUsize::new(0);
+    /// What the second task read: its FS base, and the FS/GS selectors.
+    static GOT_BASE: AtomicU64 = AtomicU64::new(0);
+    static GOT_SEL: AtomicU64 = AtomicU64::new(0);
+
+    fn load_fs(sel: u16) {
+        // SAFETY: a DPL-3 data selector or null; the kernel does not use FS.
+        unsafe { core::arch::asm!("mov fs, {0:x}", in(reg) sel as u64, options(nomem, nostack, preserves_flags)) };
+    }
+
+    fn loader(_: usize) {
+        azos_sched::fp::set_fs_base(BASE);
+        while !READY.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+        load_fs(azos_arch::trap::gdt::USER_DS);
+        LOADED.store(true, Ordering::Release);
+        while DONE.load(Ordering::Acquire) == 0 {
+            azos_sched::task_yield();
+        }
+        // Null again, so a canary run leaves nothing for the next test.
+        load_fs(0);
+        DONE.fetch_add(1, Ordering::Release);
+    }
+
+    fn reader(_: usize) {
+        azos_sched::fp::set_fs_base(BASE);
+        READY.store(true, Ordering::Release);
+        while !LOADED.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+        GOT_BASE.store(azos_arch::cpu::rdmsr(azos_arch::cpu::IA32_FS_BASE), Ordering::Relaxed);
+        GOT_SEL.store(azos_arch::cpu::user_selectors() as u64, Ordering::Relaxed);
+        DONE.fetch_add(1, Ordering::Release);
+    }
+
+    fn spawn(name: &str, entry: fn(usize), cpu: i8) -> Result<(), &'static str> {
+        azos_sched::try_task_create_init(name, entry, 0, azos_sched::DEFAULT_PRIORITY, cpu,
+            azos_sched::filter::TaskInit::default())
+            .map(|_| ())
+            .ok_or("no slot for a test task")
+    }
+
+    /// Run the two tasks; what the second read.
+    fn run() -> Result<(u64, u64), &'static str> {
+        let cpu = (azos_percpu::nr_cpu_ids() - 1) as i8;
+        READY.store(false, Ordering::Relaxed);
+        LOADED.store(false, Ordering::Relaxed);
+        DONE.store(0, Ordering::Relaxed);
+        GOT_BASE.store(u64::MAX, Ordering::Relaxed);
+        GOT_SEL.store(u64::MAX, Ordering::Relaxed);
+        spawn("ktest-fs-reader", reader, cpu)?;
+        spawn("ktest-fs-loader", loader, cpu)?;
+        crate::ktest::wait("the two tasks did not finish within KTEST_LATE_TIMEOUT_MS",
+            || DONE.load(Ordering::Acquire) == 2)?;
+        Ok((GOT_BASE.load(Ordering::Relaxed), GOT_SEL.load(Ordering::Relaxed)))
+    }
+
+    azos_ktest::ktest_late! {
+        fn fs_selector_load_keeps_the_next_task_s_fs_base() {
+            match run()?.0 {
+                BASE => Ok(()),
+                0 => Err("the next task ran with the FS base the previous one zeroed"),
+                _ => Err("the next task ran with an FS base nobody gave it"),
+            }
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn fs_gs_selectors_do_not_follow_a_task() {
+            match run()?.1 {
+                0 => Ok(()),
+                _ => Err("the next task found the FS selector the previous one loaded"),
+            }
+        }
+    }
+}

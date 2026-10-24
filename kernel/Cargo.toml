@@ -267,6 +267,7 @@ linux-abi-fp-canary = ["azos_sched/linux-abi-fp-canary", "azos_topology/linux-ab
 # Linux task, not a native one; ktests `native_tasks_keep_tpidr_el0` and
 # `new_task_starts_with_tpidr_el0_zero` are `not ok`.
 tpidr-foreign-only-canary = ["azos_sched/tpidr-foreign-only-canary"]
+fs-base-cache-canary = ["azos_sched/fs-base-cache-canary"]
 linux-busybox-fork-canary = ["linux-busybox-test", "azos_syscall/linux-abi-fork-canary"]
 # Wave 13 (SIGNALS): signal delivery, console input and execve across rows.
 # `linux-exec-row-test` gives BUSYBOX.ELF's row `/fat` and the grant to exec

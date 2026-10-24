@@ -646,12 +646,16 @@ mod pmp_encoding {
 mod x86_64_tls_tests {
     use super::cpu::{fs_base_to_load, is_user_tls_base};
 
-    /// **Canary.** Make `fs_base_to_load` always `Some`: the equal case goes
-    /// red. Make it always `None`: the differing cases go red.
+    /// Only a zero base is known to be in the MSR still: ring 3 can zero a
+    /// non-zero one with a selector load (tls-hygiene).
+    /// **Canary.** The old rule (`None` when `prev == next`): the equal
+    /// non-zero case goes red. Always `Some`: the zero case goes red.
     #[test]
-    fn a_switch_writes_the_fs_base_only_when_it_differs() {
+    fn a_switch_skips_the_fs_base_write_only_between_zero_bases() {
         assert_eq!(fs_base_to_load(0, 0), None);
-        assert_eq!(fs_base_to_load(0x7000_1000, 0x7000_1000), None);
+        // Two tasks with the same base (two copies of one static image): the
+        // first may have zeroed it with `mov %fs, sel`, so it is written.
+        assert_eq!(fs_base_to_load(0x7000_1000, 0x7000_1000), Some(0x7000_1000));
         assert_eq!(fs_base_to_load(0, 0x7000_1000), Some(0x7000_1000));
         // Back to a task without a thread pointer: the base is cleared, not
         // left at the previous task's.

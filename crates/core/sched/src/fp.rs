@@ -64,9 +64,9 @@ pub fn reset(idx: usize) {
 static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
 /// x86_64: each task's FS base (its thread pointer: musl's TLS for a Linux
-/// task, `SYS_THREAD_CREATE`'s `tls` for a native thread), kept per slot.
-/// Only the kernel writes the MSR (see [`set_fs_base`]), so this is the value
-/// a task has whenever it is switched away.
+/// task, `SYS_THREAD_CREATE`'s `tls` for a native thread), kept per slot:
+/// the value the kernel last gave it ([`set_fs_base`]). Ring 3 can only zero
+/// its own (`azos_arch::cpu::fs_base_to_load`), which the next switch undoes.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 static TLS: [core::sync::atomic::AtomicU64; MAX_TASKS] =
     [const { core::sync::atomic::AtomicU64::new(0) }; MAX_TASKS];
@@ -162,10 +162,6 @@ pub fn frame_load(a: &[u64; 33]) {
     }
 }
 
-#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
-static CUR_FS: [core::sync::atomic::AtomicU64; crate::MAX_CPUS] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; crate::MAX_CPUS];
-
 /// CPU `cpu` stops running slot `prev` and starts `next`: the thread pointer
 /// becomes `next`'s. Called by `set_current_task` for EVERY switch, native or
 /// Linux, kernel task or not, because every task can have one (relibc's and
@@ -173,22 +169,40 @@ static CUR_FS: [core::sync::atomic::AtomicU64; crate::MAX_CPUS] =
 /// `current`). A new slot's is 0 ([`reset`]), so no task starts with the
 /// one its hart's previous task left. The caller has interrupts off.
 ///
-/// x86_64: the FS base. Ring 3 cannot change it (CR4.FSGSBASE is off and no
-/// call sets it), so nothing is read back from the MSR: the per-slot value
-/// is the task's, and `CUR_FS` is what this CPU's MSR holds. The MSR is
-/// written only when the two differ (`azos_arch::cpu::fs_base_to_load`).
-/// The user GS base is 0 for every task (`x86_64_enter_user`, and a fork
-/// child takes its parent's), so nothing is kept for it.
+/// x86_64: the FS base. The kernel writes the MSR, so as `prev` leaves it
+/// holds `prev`'s slot value, or 0 if ring 3 zeroed it with a selector load
+/// (a CPU that ran no task holds 0, `enable_syscall`); nothing is read back.
+/// The MSR is written unless both are 0 (`azos_arch::cpu::fs_base_to_load`):
+/// a native task without a thread pointer, the common case, pays two loads
+/// and a test. The FS and GS selectors ring 3 may have loaded do not follow
+/// it either: they go back to null (two selector reads per switch, the load
+/// out of line). The user GS base is 0 for every task (`x86_64_enter_user`,
+/// and a fork child takes its parent's), so nothing is kept for it.
+/// Gate canary `fs-base-cache-canary`: the old rule (an equal base is not
+/// rewritten, selectors are left) — ktests `fs_selector_load_keeps_the_next_task_s_fs_base`
+/// and `fs_gs_selectors_do_not_follow_a_task` are `not ok`.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 #[inline]
-pub fn switch_thread_pointer(cpu: usize, _prev: usize, next: usize) {
-    if next >= MAX_TASKS || cpu >= crate::MAX_CPUS {
-        return;
+pub fn switch_thread_pointer(_cpu: usize, prev: usize, next: usize) {
+    let canary = cfg!(feature = "fs-base-cache-canary");
+    if !canary {
+        forget_user_selectors();
     }
-    let want = TLS[next].load(Ordering::Relaxed);
-    if let Some(b) = azos_arch::cpu::fs_base_to_load(CUR_FS[cpu].load(Ordering::Relaxed), want) {
+    let base = |idx: usize| if idx < MAX_TASKS { TLS[idx].load(Ordering::Relaxed) } else { 0 };
+    let (have, want) = (base(prev), base(next));
+    let load = if canary && have == want { None } else { azos_arch::cpu::fs_base_to_load(have, want) };
+    if let Some(b) = load {
         azos_arch::cpu::wrmsr(azos_arch::cpu::IA32_FS_BASE, b);
-        CUR_FS[cpu].store(b, Ordering::Relaxed);
+    }
+}
+
+/// x86_64: null FS and GS selectors, if ring 3 loaded others (a switch,
+/// [`set_fs_base`]). Interrupts off (`azos_arch::cpu::null_user_selectors`).
+#[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
+#[inline(always)]
+fn forget_user_selectors() {
+    if azos_arch::cpu::user_selectors() != 0 {
+        azos_arch::cpu::null_user_selectors();
     }
 }
 /// aarch64: `TPIDR_EL0`. EL0 writes it without a call (relibc's
@@ -237,27 +251,30 @@ pub fn switch_thread_pointer(_cpu: usize, prev: usize, next: usize) {
 pub fn switch_thread_pointer(_cpu: usize, _prev: usize, _next: usize) {}
 
 /// x86_64: the current task's FS base becomes `base` now (the one writer of
-/// the MSR besides [`switch_thread_pointer`]): a task's first entry to ring 3 and an
-/// exec. The slot's value, this CPU's cache and the MSR change together with
-/// interrupts off, so no switch sees them apart.
+/// the MSR besides [`switch_thread_pointer`]), with null FS and GS
+/// selectors: a task's first entry to ring 3 and an exec (whose old image
+/// may have loaded a selector). The slot's value and the MSR change together
+/// with interrupts off, so no switch sees them apart.
 #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
 pub fn set_fs_base(base: u64) {
     use azos_arch::Interrupts;
     let irq = azos_arch::ARCH.disable_all();
+    if !cfg!(feature = "fs-base-cache-canary") {
+        forget_user_selectors();
+    }
     if let Some(me) = crate::scheduler::current_slot() {
         TLS[me].store(base, Ordering::Relaxed);
     }
     azos_arch::cpu::wrmsr(azos_arch::cpu::IA32_FS_BASE, base);
-    CUR_FS[crate::smp::current_cpu_id()].store(base, Ordering::Relaxed);
     azos_arch::ARCH.restore(irq);
 }
 
 /// The current task execs a new image: it starts without FP state, and
-/// (aarch64 `TPIDR_EL0`, x86_64 FS base) without a thread pointer, as Linux
-/// starts it (arm64 `tls_thread_flush`, x86_64 `start_thread_common`). The
-/// old image's pointer used to ride into the new one. riscv64's is `tp`, a
-/// general-purpose register the exec hand-off zeroes with the rest. Gate
-/// canary `exec-regs-canary`: the pointer is kept.
+/// (aarch64 `TPIDR_EL0`, x86_64 FS base and null FS/GS selectors) without a
+/// thread pointer, as Linux starts it (arm64 `tls_thread_flush`, x86_64
+/// `start_thread_common`). The old image's pointer used to ride into the
+/// new one. riscv64's is `tp`, a general-purpose register the exec hand-off
+/// zeroes with the rest. Gate canary `exec-regs-canary`: the pointer is kept.
 pub fn exec_reset() {
     if let Some(me) = crate::scheduler::current_slot() {
         USED[me].store(false, Ordering::Relaxed);

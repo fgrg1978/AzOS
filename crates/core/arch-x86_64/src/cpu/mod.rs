@@ -188,9 +188,12 @@ pub fn set_percpu(id: usize) {
     wrmsr(IA32_GS_BASE, area as u64);
 }
 
-/// `lgdt` this table, reload CS (far return) and the data selectors, then
-/// `ltr`. FS and GS are not reloaded: a selector load would reset their
-/// bases (vendor-dependent), and boot.S left both null.
+/// `lgdt` this table, reload CS (far return) and the data selectors, `ltr`,
+/// then `lldt` with the null selector: firmware may leave an LDT loaded, and
+/// with none every selector ring 3 can load into FS or GS names a GDT
+/// segment with base 0 (see the FS base notes below). FS and GS are not
+/// reloaded: a selector load would reset their bases (vendor-dependent), and
+/// boot.S left both null.
 ///
 /// # Safety
 /// `gdt` must stay mapped and unchanged for as long as the CPU runs, and
@@ -213,7 +216,9 @@ pub unsafe fn load_gdt_and_tss(gdt: *const [u64; GDT_ENTRIES]) {
             "mov es, {ds:x}",
             "mov ss, {ds:x}",
             "ltr {tss:x}",
+            "lldt {null:x}",
             ptr = in(reg) &ptr,
+            null = in(reg) 0u64,
             cs = in(reg) KERNEL_CS as u64,
             ds = in(reg) KERNEL_DS as u64,
             tss = in(reg) TSS_SEL as u64,
@@ -237,13 +242,16 @@ pub unsafe fn load_idt(idt: *const [[u64; 2]; crate::trap::idt::VECTORS]) {
 }
 
 /// Arm `syscall`: EFER.SCE, the selectors (STAR), the entry (LSTAR), the
-/// RFLAGS mask (FMASK), and a zero user GS base for the first `swapgs`.
+/// RFLAGS mask (FMASK), a zero user GS base for the first `swapgs`, and a
+/// zero FS base: firmware's value is nobody's, and the context switch takes
+/// a CPU that has run no task to hold 0 (`azos_sched::fp::switch_thread_pointer`).
 #[cfg(target_arch = "x86_64")]
 pub fn enable_syscall(entry: u64) {
     wrmsr(IA32_STAR, crate::trap::gdt::STAR);
     wrmsr(IA32_LSTAR, entry);
     wrmsr(IA32_FMASK, SYSCALL_RFLAGS_MASK);
     wrmsr(IA32_KERNEL_GS_BASE, 0);
+    wrmsr(IA32_FS_BASE, 0);
     wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SCE);
 }
 
@@ -421,19 +429,60 @@ pub fn triple_fault() -> ! {
 //
 // Pure, so the host tests run it (`tests/host/arch-tests`).
 //
-// Ring 3 cannot change its own FS base: CR4.FSGSBASE is off (`wrfsbase`
-// is #UD) and no call sets it after the task starts. It is written by the
-// kernel only: at a task's first entry (`SYS_THREAD_CREATE`'s `tls`, a
-// Linux `clone` with `CLONE_SETTLS`, a fork's copy of its parent's), and
-// cleared by exec. The scheduler keeps it per task slot and puts it back
-// at a switch.
+// The kernel writes a task's FS base: at its first entry (`SYS_THREAD_CREATE`'s
+// `tls`, a Linux `clone` with `CLONE_SETTLS`, a fork's copy of its parent's),
+// at exec (0) and at a switch. Ring 3 cannot SET it (CR4.FSGSBASE is off, so
+// `wrfsbase` is #UD, and no call sets it), but it can ZERO it: `mov %fs, sel`
+// loads the base of the descriptor `sel` names, and every descriptor ring 3
+// may load (user data 0x1b, user code 0x23; the GDT has no other DPL-3 entry
+// and `load_gdt_and_tss` leaves no LDT) has base 0, while a null selector
+// zeroes the base on Intel (and QEMU) and leaves it on AMD (Linux's
+// X86_BUG_NULL_SEG). So when a task leaves a CPU the MSR holds the base the
+// kernel last gave it, or 0. A selector is no state of its own here: there
+// is no segment with a base to keep, so the switch puts back null
+// selectors (`null_user_selectors`) rather than keeping one per task.
+// When FSGSBASE is wired, ring 3 can set any base and the switch must read
+// it back (`rdfsbase`) as it leaves.
 
 /// The FS base a switch from a task whose base is `prev` to one whose base
-/// is `next` has to write, or `None` when the MSR already holds it: an MSR
-/// write costs far more than the compare, and most switches are between
-/// tasks with the same (usually zero) base.
+/// is `next` has to write, or `None` when the MSR already holds it. Only a 0
+/// is known to be there still (the one value ring 3 can reach, above): a
+/// non-zero `prev` may have been zeroed under it, so a task with a base
+/// always gets its own written, even after one with the same base (two
+/// copies of one static image). Linux's legacy path (`load_seg_legacy`)
+/// likewise skips the write only when both are zero.
 pub const fn fs_base_to_load(prev: u64, next: u64) -> Option<u64> {
-    if prev == next { None } else { Some(next) }
+    if prev == 0 && next == 0 { None } else { Some(next) }
+}
+
+/// The FS (bits 15:0) and GS (bits 31:16) selectors this CPU holds: 0 unless
+/// ring 3 loaded one (the kernel never does, boot.S left both null). Two
+/// register reads.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub fn user_selectors() -> u32 {
+    let (fs, gs): (u16, u16);
+    // SAFETY: reading segment selectors has no side effect.
+    unsafe { core::arch::asm!("mov {0:x}, fs", "mov {1:x}, gs", out(reg) fs, out(reg) gs, options(nomem, nostack, preserves_flags)) };
+    fs as u32 | (gs as u32) << 16
+}
+
+/// Put back the null FS and GS selectors ring 3 replaced. The FS base may be
+/// zeroed with it (Intel), which a switch's next write covers
+/// ([`fs_base_to_load`]); the user GS base is 0 for every task. Interrupts
+/// must be off: GS is loaded between two `swapgs`, so the base a null load
+/// clears is the user's, not the kernel's per-CPU one; an NMI or #MC in
+/// that window takes the paranoid entry, which sets its own GS base
+/// (`trap_entry.S` `ist_common`). A null selector load never faults.
+#[cfg(target_arch = "x86_64")]
+#[cold]
+#[inline(never)]
+pub fn null_user_selectors() {
+    // SAFETY: per the doc; the caller has interrupts off.
+    unsafe {
+        core::arch::asm!("mov fs, {0:x}", "swapgs", "mov gs, {0:x}", "swapgs",
+            in(reg) 0u64, options(nomem, nostack, preserves_flags))
+    };
 }
 
 /// Is `base` a thread pointer a task may be given: a canonical address in the
