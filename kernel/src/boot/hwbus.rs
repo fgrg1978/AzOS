@@ -1004,8 +1004,9 @@ pub(crate) fn driver_of(f: &azos_pci::FunctionInfo) -> Option<&'static str> {
     }
 }
 
-/// The first function of `funcs` the native table gives to `driver`.
-#[cfg(feature = "pci")]
+/// The first function of `funcs` the native table gives to `driver`: for the
+/// boot self-tests' NIC and the RISC-V IOMMU's probe, its only callers.
+#[cfg(all(feature = "pci", any(feature = "boot-selftests", feature = "iommu-riscv")))]
 pub(crate) fn function_for<'a>(
     driver: &str,
     funcs: &'a [Option<azos_pci::FunctionInfo>],

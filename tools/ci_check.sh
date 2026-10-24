@@ -381,12 +381,17 @@ build() {
 # would then be checking something nobody flashes; crates/core/limits/build.rs
 # also refuses a kernel build whose target features disagree with its Kconfig.
 # (The expanded K1 config is only the source of those flags; `board_config` expands
-# its own copy for the build row.)
-K1_ISA_KCONFIG="$AZOS_OUT/target/ci-k1-isa.config"
-mkdir -p "$AZOS_OUT/target"
-K1_ISA="$(cp "$REPO_ROOT/config/defconfigs/robot-sbc-riscv64+k1.config" "$K1_ISA_KCONFIG" \
-    && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$K1_ISA_KCONFIG" python3 -m olddefconfig >/dev/null 2>&1) \
-    && python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --rustflags "$K1_ISA_KCONFIG")"
+# its own copy for the build row.) The Raspberry Pi 5's likewise: the A76's
+# LSE and the other ARMv8.2 features its level requires.
+board_isa() { # board_isa <defconfig name> <tag>: the ISA rustflags its expanded config gives
+    local kc="$AZOS_OUT/target/ci-$2-isa.config"
+    mkdir -p "$AZOS_OUT/target"
+    cp "$REPO_ROOT/config/defconfigs/$1.config" "$kc" \
+        && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$kc" python3 -m olddefconfig >/dev/null 2>&1) \
+        && python3 "$REPO_ROOT/tools/kconfig_to_cargo.py" --rustflags "$kc"
+}
+K1_ISA="$(board_isa robot-sbc-riscv64+k1 k1)"
+RPI5_ISA="$(board_isa robot-sbc-aarch64+rpi5 rpi5)"
 case "$K1_ISA" in
   *zba*zbb*zbs*) ;;
   *) echo "FATAL: the K1 config no longer yields its Zba/Zbb/Zbs flags (got '$K1_ISA')," >&2
@@ -10340,7 +10345,7 @@ isa_guard   "k1: B extension" some
 # The Raspberry Pi 5 (aarch64, BCM2712): the release kernel `make rpi5` builds,
 # from config/defconfigs/robot-sbc-aarch64+rpi5.config and the aarch64 linker script. Until the
 # port it was a compile_error!; nothing boots it here (QEMU has no raspi5).
-build_board "rpi5 (+linker)"      rpi5 "" aarch64-unknown-none-softfloat aarch64
+build_board "rpi5 (+linker)"      rpi5 "$RPI5_ISA" aarch64-unknown-none-softfloat aarch64
 # The fleet profile: 1024 TCP connections, a 1022 MiB linker region. See
 # `fleet_config` for why it does not use `make build-fleet`.
 if fleet_config; then
