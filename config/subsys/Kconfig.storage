@@ -143,6 +143,45 @@ config FS_DISCARD_RUNS
 
       Cost: FS_DISCARD_RUNS * 16 B of stack on the freeing path.
 
+choice FS_CHECK_FAILED
+    prompt "A volume that fails its mount-time check"
+    default FS_CHECK_FAILED_READ_ONLY
+    help
+      What the mount does with a volume whose mount-time check found damage
+      it cannot vouch for. The check runs on a volume that was not shut down
+      cleanly: FAT32 (crates/fs/fs/src/fat32.rs) when the FAT[1] clean bit
+      is clear, the boot sector's dirty bit set, the FAT[1] hard-error bit
+      clear, or the journal held a record; an azvol volume
+      (crates/fs/fs/src/azvol/mount.rs) when the mount had to rebuild its
+      free-space map or found one superblock copy damaged. "Damage" is a
+      chain or tree that leaves the volume, two owners of one block, or a
+      scan that could not read what it walks; leaked space (clusters or
+      blocks nothing names) and FAT copies that differ are not damage (the
+      FAT32 mount gives the first back and makes the copies agree). Either
+      way the outcome is a decision record (device-admission, bus 4, why 5
+      or 6) and a console line. The toolbox `fsck` runs the same checks by
+      hand, counting only.
+
+config FS_CHECK_FAILED_READ_ONLY
+    bool "read-only: serve the volume, refuse every write"
+    help
+      The volume is mounted and readable; every write is refused for this
+      mount, so nothing is built on the damage, and the volume stays marked
+      unclean so the next mount checks it again. For the boot volume this
+      keeps the signed images, the boot records and the logs readable (the
+      writes that fail are reported where they are made).
+
+config FS_CHECK_FAILED_REFUSE
+    bool "refuse: do not mount the volume"
+    help
+      The volume is not mounted. For the FAT32 boot volume that means no
+      /fat for this boot: no signed images read from it, no boot count, no
+      crash log; choose it only where the system has another source for
+      those, or where serving damaged data is worse than not booting the
+      services that need it.
+
+endchoice
+
 choice BLK_IOSCHED
     prompt "Block I/O scheduler"
     default BLK_IOSCHED_RT_DEADLINE

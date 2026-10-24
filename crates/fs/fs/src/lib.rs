@@ -45,7 +45,7 @@ pub use probe::inode_leak_probe;
 #[cfg(feature = "ktest")]
 pub use fat32::fat32_ktest_with_wb_claim;
 pub use fat32::{
-    fat32_mount, fat32_mount_report, MountReport, fat32_lookup_root, fat32_read_chain, fat32_mounted, fat32_ls_root,
+    fat32_mount, fat32_mount_report, MountReport, fat32_check, fat32_read_only, fat32_lookup_root, fat32_read_chain, fat32_mounted, fat32_ls_root,
     fat32_write_file, fat32_unlink_root, fat32_unlink_path, fat32_rename,
     fat32_alloc_cluster, fat32_free_chain, fat32_sync,
     fat32_journal_idle, fat32_check_root_chain,
@@ -102,6 +102,8 @@ pub use vfs::{
     vfs_truncate, vfs_fsync,
     // Every mounted volume made durable: the orderly power-off and `Power::sync`.
     SyncAll, sync_volumes, vfs_sync_all,
+    // The check of a mounted volume (the `Volume` interface, the toolbox `fsck`).
+    FsCheck, vfs_check,
     // `storage_delete` of the effect gate: asked before a delete takes effect.
     DeleteGate, DeleteOp, set_delete_gate, delete_admitted,
     INODE_KEY_LEN, ZEROED_KEY, NO_BACKING, FAT32_FS,

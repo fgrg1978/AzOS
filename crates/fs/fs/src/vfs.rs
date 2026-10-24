@@ -213,6 +213,31 @@ pub struct StatFs {
     pub name_max:    u32,
 }
 
+/// What [`FileSystem::check`] found, in the terms every backend shares (the
+/// `Volume` interface's answer, `azos_devif::volume::Report`).
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub struct FsCheck {
+    /// Damage: a chain or tree that leaves the volume, two owners of one
+    /// block, a record that names what is not there, a scan stopped by a read
+    /// error. 0 on a sound volume.
+    pub problems: u32,
+    /// Allocated space nothing names: leaked, not damage. FAT32 counts its
+    /// lost clusters; azvol only knows there are some (1).
+    pub leaked: u64,
+    /// Redundant copies that differ (FAT32's FAT copies): the next unclean
+    /// mount makes them agree.
+    pub mismatched: u32,
+    /// Files and directories the walk accounted for (0: the backend does not
+    /// count them).
+    pub items: u64,
+    /// Data blocks read against their checksum (a scrub).
+    pub scrubbed: u64,
+    /// The walk reached the whole volume.
+    pub complete: bool,
+    /// The volume is served read-only because its mount-time check failed.
+    pub read_only: bool,
+}
+
 /// One entry [`FileSystem::readdir`] yields.
 #[derive(Copy, Clone)]
 pub struct DirEnt {
@@ -453,6 +478,12 @@ pub trait FileSystem: Sync {
 
     /// Capacity and free space of the volume.
     fn statfs(&self) -> Result<StatFs, FsErr> { Err(FsErr::Unsupported) }
+
+    /// Check the volume while it is mounted, counting only: nothing is
+    /// repaired or written. `scrub` also reads every data block against its
+    /// checksum, where the format has them. `Busy` while the volume holds
+    /// work the check would have to commit first.
+    fn check(&self, _scrub: bool) -> Result<FsCheck, FsErr> { Err(FsErr::Unsupported) }
 
     /// The first entry of directory `dir` (relative to the mount point, `""`
     /// for its root) at or after position `cookie`, written to `out`.
@@ -2843,6 +2874,16 @@ pub fn vfs_statfs(path: &[u8]) -> Result<StatFs, FsErr> {
         files: MAX_FILES as u64, files_free: (MAX_FILES as u64).saturating_sub(used),
         name_max: NAME_MAX as u32,
     })
+}
+
+/// Check the volume mounted at `path` ([`FileSystem::check`]). `path` names
+/// the mount point itself: a path inside a volume, or one that names no
+/// mounted backend, is `NotFound`.
+pub fn vfs_check(path: &[u8], scrub: bool) -> Result<FsCheck, FsErr> {
+    match backend_for_path(path) {
+        Some((backend, b"")) => backend.check(scrub),
+        _ => Err(FsErr::NotFound),
+    }
 }
 
 /// The entry of directory `path` at or after `cookie`; see

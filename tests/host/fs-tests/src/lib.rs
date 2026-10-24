@@ -4305,6 +4305,161 @@ mod power_cut {
         assert!(!is_dirty(&disk_durable_image()), "the flag was never written, so nothing to clear");
     }
 
+    // ── The check's verdict (fs-check-mount) ─────────────────────────────
+    //
+    // Canaries: `fat-check-never-fails-canary` (damage passes, the volume is
+    // served read-write), `fat-hard-error-ignored-canary` (a recorded hard
+    // error asks for no check).
+
+    const HARD_ERROR_CLEAR: u32 = 0x0400_0000;
+
+    /// `FAT[1]` of every copy with `bits` cleared.
+    fn clear_fat1_bits(img: &mut [u8], bits: u32) {
+        let g = Geom::default();
+        for copy in 0..g.num_fats as usize {
+            let off = (g.rsvd as usize + copy * g.fat_sz32 as usize) * SECTOR + 4;
+            let v = fat1(img, copy) & !bits;
+            img[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+
+    /// **A recorded hard error asks for the check**, whatever the clean bit
+    /// says, and the clean unmount after a check that passed answers it.
+    ///
+    /// **Canary.** `fat-hard-error-ignored-canary`.
+    #[test]
+    fn s3_a_clear_hard_error_bit_asks_for_the_check_and_a_clean_unmount_answers_it() {
+        let _g = serial();
+        let mut img = fresh_image();
+        clear_fat1_bits(&mut img, HARD_ERROR_CLEAR);
+        assert!(!is_dirty(&img), "premise: the clean bit is set, only the hard-error bit is clear");
+        remount(img);
+        let r = mount_report();
+        assert!(r.hard_error && !r.unclean && r.checked && r.complete && !r.read_only, "{r:?}");
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
+        let after = disk_durable_image();
+        assert!(fat1(&after, 0) & HARD_ERROR_CLEAR != 0 && fat1(&after, 1) & HARD_ERROR_CLEAR != 0,
+            "the clean mark sets the hard-error bit again: {:#x}", fat1(&after, 0));
+        remount(after);
+        assert!(!mount_report().checked, "{:?}", mount_report());
+    }
+
+    /// A dirty volume whose file `A.DAT` has its chain cut: its second
+    /// cluster is FREE in the FAT, so the chain runs through a free cluster
+    /// and its third cluster is reached by nothing.
+    fn dirty_volume_with_a_broken_chain() -> Vec<u8> {
+        let (mut img, _, _) = dirty_volume_with_leaks();
+        let a = chain(&img, &name(b"A", b"DAT")).expect("premise: A.DAT is sound");
+        assert_eq!(a.len(), 3);
+        set_fat_all(&mut img, a[1], 0);
+        img
+    }
+
+    /// **Damage makes the volume read-only** (Kconfig `FS_CHECK_FAILED`'s
+    /// default): a broken chain fails the check, the mount still serves the
+    /// volume's other files, every write is refused before it reaches the
+    /// medium, and the volume stays dirty for the next mount to check again.
+    /// The lost clusters are counted.
+    ///
+    /// **Canary.** `fat-check-never-fails-canary`.
+    #[test]
+    fn s3_a_broken_chain_fails_the_check_and_the_volume_is_served_read_only() {
+        let _g = serial();
+        remount(dirty_volume_with_a_broken_chain());
+        let r = mount_report();
+        assert!(r.checked && r.broken_chains >= 1 && r.failed(), "{r:?}");
+        assert!(r.lost_clusters >= 4 && r.reclaimed == 0, "the three leaks and A.DAT's cut-off tail, counted: {r:?}");
+        assert!(r.read_only && !r.refused && !r.marked_dirty && fat32::fat32_read_only(), "{r:?}");
+        let before = disk_durable_image();
+        let h = fat32::fat32_open(fat32::Volume::assume_mounted(), b"/D1/F.DAT", fat32::open_flags::READ).expect("open");
+        let mut got = vec![0u8; 700];
+        assert_eq!(fat32::fat32_read(h, &mut got), Ok(700), "a sound file still reads");
+        let _ = fat32::fat32_close(h);
+        assert!(fat32::fat32_write_file(&name(b"NEW", b"DAT"), &pattern(600, 3)).is_err(), "a write is refused");
+        assert!(fat32::fat32_mkdir(fat32::Volume::assume_mounted(), b"/D2").is_err());
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
+        let after = disk_durable_image();
+        assert!(after == before, "nothing reached the medium after the verdict");
+        assert!(is_dirty(&after), "the volume stays unclean for the next mount");
+        remount(after);
+        let r = mount_report();
+        assert!(r.checked && r.read_only, "checked again: {r:?}");
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
+    }
+
+    /// The root directory's own chain is the first one walked: a root whose
+    /// cluster the FAT calls free fails the check.
+    #[test]
+    fn s3_a_root_chain_through_a_free_cluster_fails_the_check() {
+        let _g = serial();
+        let (mut img, _, _) = dirty_volume_with_leaks();
+        set_fat_all(&mut img, Geom::default().root_clus, 0);
+        remount(img);
+        let r = mount_report();
+        assert!(r.checked && r.broken_chains >= 1 && r.failed() && r.read_only, "{r:?}");
+        assert_eq!((r.lost_clusters, r.reclaimed), (3, 0), "a damaged volume's leaks are counted, not given back: {r:?}");
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
+    }
+
+    /// What a failed check leads to under either member of the policy, and
+    /// what is not a failure: leaked clusters, FAT copies that differ, and a
+    /// scan stopped at the check's own limit.
+    #[test]
+    fn the_check_verdict_follows_the_policy() {
+        use fat32::{check_verdict, CheckVerdict};
+        let _g = serial();
+        remount(dirty_volume_with_a_broken_chain());
+        let broken = mount_report();
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
+        assert_eq!(check_verdict(&broken, false), CheckVerdict::ReadOnly);
+        assert_eq!(check_verdict(&broken, true), CheckVerdict::Refuse);
+        let (img, _, _) = dirty_volume_with_leaks();
+        remount(img);
+        let leaky = mount_report();
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
+        assert!(leaky.lost_clusters == 3 && !leaky.failed(), "{leaky:?}");
+        assert_eq!(check_verdict(&leaky, true), CheckVerdict::Serve);
+        let limited = fat32::MountReport { complete: false, limited: true, ..leaky };
+        assert_eq!(check_verdict(&limited, true), CheckVerdict::Serve, "a limit of the check is not damage");
+        let stopped = fat32::MountReport { complete: false, limited: false, ..leaky };
+        assert_eq!(check_verdict(&stopped, true), CheckVerdict::Refuse, "a scan stopped by a read error is");
+        let unchecked = fat32::MountReport { checked: false, ..broken };
+        assert_eq!(check_verdict(&unchecked, true), CheckVerdict::Serve);
+    }
+
+    /// **The check by hand counts and writes nothing** (the toolbox `fsck`,
+    /// through `vfs_check`): on a mounted volume that read clean, so its
+    /// leaks were left alone, it finds them and a FAT copy that differs, and
+    /// the medium is byte for byte what it was.
+    #[test]
+    fn the_check_by_hand_counts_lost_clusters_and_writes_nothing() {
+        let _g = serial();
+        let g = Geom::default();
+        let (mut img, _, _) = dirty_volume_with_leaks();
+        img[0x41] &= !1;
+        for copy in 0..2 {
+            let off = (g.rsvd as usize + copy * g.fat_sz32 as usize) * SECTOR + 4;
+            let v = fat1(&img, copy) | CLEAN_BIT;
+            img[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        // FAT sector 3 of copy 1 differs from copy 0's.
+        img[(g.rsvd as usize + g.fat_sz32 as usize + 3) * SECTOR + 8] ^= 0x01;
+        remount(img);
+        assert!(!mount_report().checked, "premise: a clean volume is not checked at mount");
+        super::vfs_open_close::vfs_once();
+        assert_eq!(fat32::fat32_writeback_now(), Ok(()));
+        let before = disk_durable_image();
+        let r = fat32::fat32_check().expect("mounted");
+        assert_eq!((r.lost_clusters, r.reclaimed, r.fat_mismatch, r.broken_chains, r.cross_linked), (3, 0, 1, 0, 0), "{r:?}");
+        assert!(r.complete && !r.failed(), "{r:?}");
+        let c = super::vfs::vfs_check(b"/fat", false).expect("the mount point");
+        assert_eq!((c.problems, c.leaked, c.mismatched, c.complete, c.read_only), (0, 3, 1, true, false), "{c:?}");
+        assert_eq!(super::vfs::vfs_check(b"/fat/A.DAT", false).err(), Some(super::vfs::FsErr::NotFound),
+            "a path inside the volume is not a volume");
+        assert_eq!(fat32::fat32_writeback_now(), Ok(()));
+        assert!(disk_durable_image() == before, "the check by hand wrote to the medium");
+    }
+
     /// The directory entry follows the new directory's cluster. A cut that
     /// keeps the entry but not the cluster lists a directory over whatever
     /// the cluster held.
@@ -7202,6 +7357,23 @@ mod fuzz_regressions {
 
     const EOC: u32 = 0x0FFF_FFFF;
 
+    /// Mark a fuzzer's volume shut down cleanly (FAT[1] clean and hard-error
+    /// bits set in every copy, the boot sector's dirty bit clear), so the
+    /// mount runs no check. These volumes pin the WRITE paths over a hostile
+    /// root chain; dirty, their chain fails the mount-time check and they are
+    /// served read-only (`s3_a_root_chain_through_a_free_cluster_fails_the_check`).
+    fn mark_clean(v: &mut [u8]) {
+        let rsvd = u16::from_le_bytes([v[14], v[15]]) as usize;
+        let fats = v[16] as usize;
+        let fsz = u32::from_le_bytes([v[36], v[37], v[38], v[39]]) as usize;
+        v[0x41] &= !1;
+        for k in 0..fats {
+            let o = (rsvd + k * fsz) * SECTOR + 4;
+            let e = u32::from_le_bytes([v[o], v[o + 1], v[o + 2], v[o + 3]]) | 0x0C00_0000;
+            v[o..o + 4].copy_from_slice(&e.to_le_bytes());
+        }
+    }
+
     fn free() -> u64 {
         fat32::FAT32_FS.statfs().expect("statfs on a mounted volume").blocks_free
     }
@@ -7310,6 +7482,7 @@ mod fuzz_regressions {
         let img = include_bytes!("../../../fuzz/fs-fuzz/regressions/fat32_image/root-fat-entry-reserved");
         let mut v = img.to_vec();
         v.resize(256 * SECTOR, 0);
+        mark_clean(&mut v);
         super::swap_medium(v);
         assert_eq!(fat32::fat32_mount(), Ok(()), "the fuzzer's volume mounts");
         let before = free();
@@ -7341,6 +7514,7 @@ mod fuzz_regressions {
         let img = include_bytes!("../../../fuzz/fs-fuzz/regressions/fat32_image/root-chain-through-free-entry");
         let mut v = img.to_vec();
         v.resize(256 * SECTOR, 0);
+        mark_clean(&mut v);
         super::swap_medium(v);
         for s in 0..256 { fat32::fat32_cache_invalidate(s); }
         assert_eq!(fat32::fat32_mount(), Ok(()), "the fuzzer's volume mounts");

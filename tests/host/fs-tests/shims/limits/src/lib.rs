@@ -58,6 +58,12 @@ pub const BLK_DISCARD_ONLINE: bool = false;
 pub const BLK_DISCARD_BATCHED: bool = true;
 pub const BLK_FUA: bool = true;
 pub const FS_DISCARD_RUNS: usize = 16;
+/// Kconfig `FS_CHECK_FAILED` (a volume that fails its mount-time check):
+/// the shipped default, read-only. The refuse member is decided by the pure
+/// verdicts (`fat32::check_verdict`, `azvol_mount::CheckPolicy`), which the
+/// tests drive with either member.
+pub const FS_CHECK_FAILED_READ_ONLY: bool = true;
+pub const FS_CHECK_FAILED_REFUSE: bool = false;
 /// Kconfig `FAT32_SECTOR_CLAIM_SLOTS` (fat32.rs's FAT-sector claims): the
 /// shipped default on every profile.
 pub const FAT32_SECTOR_CLAIM_SLOTS: usize = 64;

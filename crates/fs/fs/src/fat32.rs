@@ -742,6 +742,14 @@ pub struct Vol {
     /// This mount wrote the dirty flag, so the unmount owes the clear.
     volume_marked_dirty: core::sync::atomic::AtomicBool,
     mount_report: SpinLock<MountReport>,
+    /// This mount's check found damage and Kconfig `FS_CHECK_FAILED` is
+    /// read-only: every write is refused ([`write_sector_in`],
+    /// [`write_sector_direct`], the swap file's sector runs) until the next
+    /// mount.
+    read_only: core::sync::atomic::AtomicBool,
+    /// The check refused the volume (Kconfig `FS_CHECK_FAILED_REFUSE`): a
+    /// mount answers `Err` without reading it again until an unmount.
+    check_refused: core::sync::atomic::AtomicBool,
     /// `fat32_read_range`'s geometry, published by `fat32_mount`: sectors per
     /// cluster and data start (A), FAT start and the chain-walk bound (B). A
     /// stream reads it without taking `FAT32`; 0 before the first mount.
@@ -800,6 +808,8 @@ impl Vol {
             vol_sectors: core::sync::atomic::AtomicU64::new(u64::MAX),
             volume_marked_dirty: core::sync::atomic::AtomicBool::new(false),
             mount_report: SpinLock::new(MountReport::new()),
+            read_only: core::sync::atomic::AtomicBool::new(false),
+            check_refused: core::sync::atomic::AtomicBool::new(false),
             stream_geom_a: core::sync::atomic::AtomicU64::new(0),
             stream_geom_b: core::sync::atomic::AtomicU64::new(0),
             dcache: SpinLock::new([NO_DENTRY; DCACHE_SLOTS]),
@@ -2460,6 +2470,13 @@ pub fn fat32_mount_on(v: &'static Vol) -> Result<(), ()> {
     if v.fat32.lock().mounted {
         return Ok(());
     }
+    // A volume this mount's check refused stays refused until an unmount (a
+    // media change): the callers that mount on demand (the logger, the
+    // secure-boot reads) must not re-run the check on every call.
+    if v.check_refused.load(core::sync::atomic::Ordering::Relaxed) {
+        return Err(());
+    }
+    v.read_only.store(false, core::sync::atomic::Ordering::Relaxed);
 
     // U09-6: this IS a real mount attempt past the early-out above — drop
     // every cached sector before reading anything. Without this, a remount
@@ -2597,11 +2614,31 @@ pub fn fat32_mount_on(v: &'static Vol) -> Result<(), ()> {
     // mount. Best effort throughout: a medium that cannot be repaired or
     // flagged (read-only, a failing sector) still mounts, as it always did.
     let mut rep = MountReport::new();
-    rep.unclean = !volume_is_clean(v);
-    if rep.unclean || journal_busy {
-        check_volume(v, &mut rep);
+    (rep.unclean, rep.hard_error) = volume_state(v);
+    if rep.unclean || rep.hard_error || journal_busy {
+        check_volume(v, &mut rep, true);
         if v.knobs.writeback && v.sector_cache.lock().dirty_count() != 0 {
             let _ = device_flush(v);
+        }
+    }
+    // A check that found damage: served read-only or not at all (Kconfig
+    // `FS_CHECK_FAILED`). Either way the volume is not marked dirty here, so
+    // it stays unclean and the next mount checks it again.
+    match check_verdict(&rep, CHECK_FAILED_REFUSE) {
+        CheckVerdict::Serve => {}
+        CheckVerdict::ReadOnly => {
+            rep.read_only = true;
+            v.read_only.store(true, core::sync::atomic::Ordering::Relaxed);
+            v.volume_marked_dirty.store(false, core::sync::atomic::Ordering::Relaxed);
+            *v.mount_report.lock() = rep;
+            return Ok(());
+        }
+        CheckVerdict::Refuse => {
+            rep.refused = true;
+            v.check_refused.store(true, core::sync::atomic::Ordering::Relaxed);
+            v.fat32.lock().mounted = false;
+            *v.mount_report.lock() = rep;
+            return Err(());
         }
     }
     rep.marked_dirty = mark_volume_dirty(v);
@@ -2635,6 +2672,13 @@ pub fn fat32_mount_on(v: &'static Vol) -> Result<(), ()> {
 
 /// `FAT[1]` bit 27: the volume was shut down cleanly.
 const FAT_STATE_CLEAN: u32 = 0x0800_0000;
+/// `FAT[1]` bit 26 (`HrdErrBitMask`): set = no disk I/O error was met. A clear
+/// bit asks for the check like a clear clean bit; a clean unmount after a
+/// check that passed sets it again (what `chkdsk` does).
+const FAT_STATE_NO_HARD_ERROR: u32 = 0x0400_0000;
+/// Kconfig `FS_CHECK_FAILED`: refuse (rather than serve read-only) a volume
+/// whose check found damage.
+const CHECK_FAILED_REFUSE: bool = azos_limits::FS_CHECK_FAILED_REFUSE;
 /// Boot sector byte `BS_Reserved1` of a FAT32 volume (offset 0x41), bit 0: dirty.
 const BS_STATE_OFF: usize = 0x41;
 const BS_STATE_DIRTY: u8 = 0x01;
@@ -2675,6 +2719,17 @@ pub struct MountReport {
     pub broken_chains: u32,
     /// This mount set the volume's dirty flag (it will clear it on unmount).
     pub marked_dirty: bool,
+    /// The `FAT[1]` hard-error bit was clear: an earlier mount met an I/O
+    /// error (the check runs whatever the clean bit says).
+    pub hard_error: bool,
+    /// The scan stopped at a limit of its own (a reachability map past
+    /// `CHECK_BITMAP_MAX_BYTES` or the heap, a full directory stack), not at
+    /// damage: an incomplete scan that is not a failure.
+    pub limited: bool,
+    /// The check failed and the volume is served read-only.
+    pub read_only: bool,
+    /// The check failed and the volume was not mounted.
+    pub refused: bool,
 }
 
 impl MountReport {
@@ -2682,8 +2737,40 @@ impl MountReport {
         MountReport {
             unclean: false, checked: false, complete: false, fat_mismatch: 0,
             lost_clusters: 0, reclaimed: 0, cross_linked: 0, broken_chains: 0,
-            marked_dirty: false,
+            marked_dirty: false, hard_error: false, limited: false, read_only: false, refused: false,
         }
+    }
+
+    /// The check found damage it cannot vouch for: a chain that leaves the
+    /// data region or runs through a free cluster, two chains on one cluster,
+    /// or a scan that stopped at a read error or a damaged directory. Leaked
+    /// clusters and FAT copies that differ are not damage (the mount gives
+    /// the first back and makes the copies agree), nor is a scan stopped at
+    /// its own limit.
+    pub fn failed(&self) -> bool {
+        if cfg!(feature = "fat-check-never-fails-canary") { return false; }
+        self.checked && (self.cross_linked != 0 || self.broken_chains != 0 || (!self.complete && !self.limited))
+    }
+}
+
+/// What a mount does with the volume after its check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckVerdict {
+    /// No check, or one that passed: mounted read-write.
+    Serve,
+    /// The check failed: mounted, every write refused.
+    ReadOnly,
+    /// The check failed: not mounted.
+    Refuse,
+}
+
+/// The verdict for `rep` under the policy (`refuse`: Kconfig
+/// `FS_CHECK_FAILED_REFUSE`). Pure, so a test decides it under either member.
+pub fn check_verdict(rep: &MountReport, refuse: bool) -> CheckVerdict {
+    match (rep.failed(), refuse) {
+        (false, _) => CheckVerdict::Serve,
+        (true, false) => CheckVerdict::ReadOnly,
+        (true, true) => CheckVerdict::Refuse,
     }
 }
 
@@ -2698,17 +2785,54 @@ pub fn fat32_mount_report_on(v: &'static Vol) -> MountReport {
     *v.mount_report.lock()
 }
 
-/// Whether the medium says "shut down cleanly": the FAT[1] bit set and the
-/// boot sector bit clear. An unreadable sector reads as not clean.
-fn volume_is_clean(v: &'static Vol) -> bool {
+/// [`fat32_read_only_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_read_only() -> bool {
+    fat32_read_only_on(&BOOT)
+}
+
+/// Is this mount of `v` read-only because its check found damage?
+pub fn fat32_read_only_on(v: &'static Vol) -> bool {
+    v.read_only.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`fat32_check_on`] on the boot volume ([`BOOT`]).
+#[inline]
+pub fn fat32_check() -> Option<MountReport> {
+    fat32_check_on(&BOOT)
+}
+
+/// The check, run by hand on the mounted volume (the toolbox `fsck`, through
+/// the `Volume` interface): FAT copy agreement, the root's chain and every
+/// chain the directories reach, the lost clusters. It counts and writes
+/// nothing, so it is safe beside the volume's users; a write in flight while
+/// it scans (a chain allocated whose entry is not written yet) counts as a
+/// lost cluster. `None` when the volume is not mounted.
+pub fn fat32_check_on(v: &'static Vol) -> Option<MountReport> {
+    if !v.fat32.lock().mounted { return None; }
+    let mut rep = MountReport::new();
+    // A mounted volume reads unclean (its own mount marked it): only the
+    // hard-error bit says anything here.
+    rep.hard_error = volume_state(v).1;
+    check_volume(v, &mut rep, false);
+    rep.read_only = fat32_read_only_on(v);
+    Some(rep)
+}
+
+/// What the medium says: (not shut down cleanly: the FAT[1] clean bit clear
+/// or the boot sector's dirty bit set; a hard error recorded: the FAT[1]
+/// hard-error bit clear). An unreadable sector reads as unclean.
+fn volume_state(v: &'static Vol) -> (bool, bool) {
     let fat_start = v.fat32.lock().fat_start;
     let mut boot = [0u8; SECTOR_SIZE];
     let mut fat0 = [0u8; SECTOR_SIZE];
     if read_sector(v, 0, &mut boot).is_err() || read_sector(v, fat_start, &mut fat0).is_err() {
-        return false;
+        return (true, false);
     }
     let e = u32::from_le_bytes(fat0[FAT_STATE_ENTRY_OFF..FAT_STATE_ENTRY_OFF + 4].try_into().unwrap());
-    e & FAT_STATE_CLEAN != 0 && boot[BS_STATE_OFF] & BS_STATE_DIRTY == 0
+    let unclean = e & FAT_STATE_CLEAN == 0 || boot[BS_STATE_OFF] & BS_STATE_DIRTY != 0;
+    let hard = e & FAT_STATE_NO_HARD_ERROR == 0 && !cfg!(feature = "fat-hard-error-ignored-canary");
+    (unclean, hard)
 }
 
 /// Write the clean/dirty state: `FAT[1]` bit 27 in every FAT copy (a
@@ -2728,7 +2852,10 @@ fn volume_set_clean(v: &'static Vol, clean: bool) -> Result<(), ()> {
         read_sector(v, fat_start, &mut buf)?;
         let o = FAT_STATE_ENTRY_OFF;
         let cur = u32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
-        let new = if clean { cur | FAT_STATE_CLEAN } else { cur & !FAT_STATE_CLEAN };
+        // Clean: the mount that marked the volume dirty passed its check (a
+        // failed one never marks it), so a hard error recorded before it is
+        // answered.
+        let new = if clean { cur | FAT_STATE_CLEAN | FAT_STATE_NO_HARD_ERROR } else { cur & !FAT_STATE_CLEAN };
         if new != cur {
             buf[o..o + 4].copy_from_slice(&new.to_le_bytes());
             for i in 0..num_fats {
@@ -2886,8 +3013,11 @@ fn check_scan_dir(
                     check_mark_chain(v, c, marks, rep)?
                 };
                 if is_dir {
-                    if !fresh || stack.len() >= CHECK_DIR_STACK_MAX { return Err(()); }
-                    stack.try_reserve(1).map_err(|_| ())?;
+                    if !fresh { return Err(()); }
+                    if stack.len() >= CHECK_DIR_STACK_MAX || stack.try_reserve(1).is_err() {
+                        rep.limited = true;
+                        return Err(());
+                    }
                     stack.push(c);
                 }
             }
@@ -2917,8 +3047,9 @@ fn check_scratch<'a>(
 /// FAT copies against copy 0, sector by sector: a differing copy is
 /// overwritten with copy 0 (every walk and every allocation reads copy 0, so
 /// that is the volume as the driver sees it; a cut between the copies' writes
-/// leaves exactly this). Counts into `rep.fat_mismatch`.
-fn check_fat_copies(v: &'static Vol, rep: &mut MountReport) -> Result<(), ()> {
+/// leaves exactly this). Counts into `rep.fat_mismatch`; only counts when
+/// `repair` is false.
+fn check_fat_copies(v: &'static Vol, rep: &mut MountReport, repair: bool) -> Result<(), ()> {
     let (fat_start, fat_sz32, num_fats) = {
         let fv = v.fat32.lock();
         (fv.fat_start, fv.fat_sz32, fv.num_fats as u32)
@@ -2940,7 +3071,7 @@ fn check_fat_copies(v: &'static Vol, rep: &mut MountReport) -> Result<(), ()> {
                 let (x, y) = (&a[i * SECTOR_SIZE..][..SECTOR_SIZE], &b[i * SECTOR_SIZE..][..SECTOR_SIZE]);
                 if x == y { continue; }
                 rep.fat_mismatch += 1;
-                if cfg!(feature = "fat-no-repair-canary") { continue; }
+                if !repair || cfg!(feature = "fat-no-repair-canary") { continue; }
                 write_sector(v, base + i as u32, x.try_into().unwrap())?;
             }
         }
@@ -3001,23 +3132,28 @@ fn check_reclaim_lost(v: &'static Vol, marks: &Marks, reclaim: bool, rep: &mut M
     Ok(())
 }
 
-/// The mount-time check of an unclean volume, after journal recovery: FAT
-/// copy agreement, then the lost clusters (allocated, reached by no entry).
-fn check_volume(v: &'static Vol, rep: &mut MountReport) {
+/// The check of a volume: FAT copy agreement, then the lost clusters
+/// (allocated, reached by no entry). `repair` (the mount-time check of an
+/// unclean volume, after journal recovery): copy 0 is written over a copy
+/// that differs and lost clusters are given back when the scan completed;
+/// without it ([`fat32_check_on`]) everything is counted and nothing written.
+/// A volume with a broken or cross-linked chain is never reclaimed.
+fn check_volume(v: &'static Vol, rep: &mut MountReport, repair: bool) {
     rep.checked = true;
-    if check_fat_copies(v, rep).is_err() {
+    if check_fat_copies(v, rep, repair).is_err() {
         azos_drv_sys::kprintln!("[FAT32] check: FAT copy comparison or repair failed (read error, or a medium that refuses writes)");
     }
     let clusters = v.fat32.lock().data_clusters;
     let Some(mut marks) = Marks::new(clusters) else {
         azos_drv_sys::kprintln!("[FAT32] check: volume too large or heap short, lost clusters not scanned");
+        rep.limited = true;
         return;
     };
     let mut stack = alloc::vec::Vec::new();
     let root = v.fat32.lock().root_cluster;
     let scanned = (|| -> Result<(), ()> {
         if !check_mark_chain(v, root, &mut marks, rep)? { return Err(()); }
-        stack.try_reserve(1).map_err(|_| ())?;
+        stack.try_reserve(1).map_err(|_| rep.limited = true)?;
         stack.push(root);
         while let Some(dir) = stack.pop() {
             check_scan_dir(v, dir, &mut marks, &mut stack, rep)?;
@@ -3028,7 +3164,10 @@ fn check_volume(v: &'static Vol, rep: &mut MountReport) {
     if !rep.complete {
         azos_drv_sys::kprintln!("[FAT32] check: directory scan incomplete, nothing reclaimed");
     }
-    let reclaim = rep.complete && !cfg!(feature = "fat-no-repair-canary");
+    // Only a sound volume's leaks are given back: past a broken or
+    // cross-linked chain, a "lost" cluster may be the tail of a live file.
+    let sound = rep.cross_linked == 0 && rep.broken_chains == 0;
+    let reclaim = repair && rep.complete && sound && !cfg!(feature = "fat-no-repair-canary");
     if check_reclaim_lost(v, &marks, reclaim, rep).is_err() {
         azos_drv_sys::kprintln!("[FAT32] check: FAT pass failed");
     }
@@ -3639,6 +3778,8 @@ fn write_sector_ahead(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE]) -> 
 }
 
 fn write_sector_in(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE], ahead: bool) -> Result<(), ()> {
+    // A volume whose check failed takes no write, cached or not.
+    if fat32_read_only_on(v) { return Err(()); }
     if v.knobs.writeback {
         loop {
             let r = if ahead {
@@ -3676,6 +3817,7 @@ fn write_sector_in(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE], ahead:
 /// the volume's clean/dirty flag. The caller has no dirty lines pending, or
 /// this write would carry their sector's newer bytes ahead of their epoch.
 fn write_sector_direct(v: &'static Vol, sector: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), ()> {
+    if fat32_read_only_on(v) { return Err(()); }
     write_sector_device(v, sector, buf)
 }
 
@@ -5644,8 +5786,10 @@ pub fn fat32_unmount_on(v: &'static Vol, _vol: Volume) -> Result<(), FsError> {
             let _ = device_flush_raw(v);
         }
     }
-    // Mark volume unmounted.
+    // Mark volume unmounted. A refused volume may be another medium at the
+    // next mount: that one is read and checked afresh.
     v.fat32.lock().mounted = false;
+    v.check_refused.store(false, core::sync::atomic::Ordering::Relaxed);
     // U09-6: drop every cached sector on unmount too, not just on the next
     // mount. Between this unmount and a future mount, the medium may be
     // physically swapped (an SD card) with the cache never told;
@@ -7383,6 +7527,9 @@ impl crate::vfs::FileSystem for Fat32Fs {
     ) -> Result<usize, crate::vfs::FsErr> {
         let v = self.vol;
         use crate::vfs::{FsErr, SectorRun};
+        // The swap layer writes these sectors itself: none on a volume whose
+        // check failed.
+        if fat32_read_only_on(v) { return Err(FsErr::ReadOnly); }
         let f = FName::of_key(v, key).map_err(fs_err)?;
         let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
         if e.attr & ATTR_DIRECTORY != 0 || len > e.size as u64 { return Err(FsErr::Invalid); }
@@ -7442,6 +7589,21 @@ impl crate::vfs::FileSystem for Fat32Fs {
             fs_type: crate::vfs::FS_TYPE_FAT32, block_size: bpc,
             blocks: clusters as u64, blocks_free: free,
             files: 0, files_free: 0, name_max: 12,
+        })
+    }
+
+    /// [`fat32_check_on`]: FAT32 has no checksums, so `scrub` adds nothing.
+    fn check(&self, _scrub: bool) -> Result<crate::vfs::FsCheck, crate::vfs::FsErr> {
+        let r = fat32_check_on(self.vol).ok_or(crate::vfs::FsErr::NotFound)?;
+        let stopped = !r.complete && !r.limited;
+        Ok(crate::vfs::FsCheck {
+            problems: r.cross_linked + r.broken_chains + stopped as u32,
+            leaked: r.lost_clusters as u64,
+            mismatched: r.fat_mismatch,
+            items: 0,
+            scrubbed: 0,
+            complete: r.complete,
+            read_only: r.read_only,
         })
     }
 

@@ -157,6 +157,18 @@ mkdir-unordered-canary = []
 replace-in-place-canary = []
 replace-no-fsync-canary = []
 
+# Mount-time check (fs-check-mount) canaries, each must turn a fs-tests test red.
+#   fat-check-never-fails-canary:   a FAT32 check that found damage passes
+#                                   (the damaged volume is served read-write)
+#   fat-hard-error-ignored-canary:  a clear FAT[1] hard-error bit asks for no
+#                                   check
+#   azvol-check-never-fails-canary: an azvol check that found damage passes
+#   azvol-unclean-unchecked-canary: an unclean azvol mount is not checked
+fat-check-never-fails-canary = []
+fat-hard-error-ignored-canary = []
+azvol-check-never-fails-canary = []
+azvol-unclean-unchecked-canary = []
+
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
 # (off on the host: the `on` feature is not enabled).

@@ -184,6 +184,18 @@ mkdir-unordered-canary = []
 replace-in-place-canary = []
 replace-no-fsync-canary = []
 
+# Mount-time check (fs-check-mount) canaries, each must turn a fs-tests test red.
+#   fat-check-never-fails-canary:   a FAT32 check that found damage passes
+#                                   (the damaged volume is served read-write)
+#   fat-hard-error-ignored-canary:  a clear FAT[1] hard-error bit asks for no
+#                                   check
+#   azvol-check-never-fails-canary: an azvol check that found damage passes
+#   azvol-unclean-unchecked-canary: an unclean azvol mount is not checked
+fat-check-never-fails-canary = []
+fat-hard-error-ignored-canary = []
+azvol-check-never-fails-canary = []
+azvol-unclean-unchecked-canary = []
+
 # Gate canary (host suite `fs-tests`): the delete gate is never asked, so an
 # unlink, a rename over a file, a cut below a file's size and a snapshot drop
 # go through whatever the Domain's `delete` envelope row says. Never in a real
