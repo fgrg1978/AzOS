@@ -15949,8 +15949,8 @@ PY
             # latency" / "userspace: capabilities" twins. captest runs on its
             # own hard-reservation row (`captest-row`, CPU 3: four CPUs), the
             # one the IRQ bind needs under IRQ_THREADED; its canary boots the
-            # plain kernel, whose generic autorun row has none, so the bind of
-            # the absent line is refused -EPERM instead of -ENODEV.
+            # robot kernel without that row, whose autorun row has none, so the
+            # bind of the absent line is refused -EPERM instead of -ENODEV.
             systest) label="x86_64 syscall ABI"; disk_t=$AZOS_OUT/build/disk-x86_64-systest.img
                      stop='SYSCALL_TEST\] (ALL PASSED|FAILED)' ;;
             latbench) label="x86_64 syscall latency"; disk_t=$AZOS_OUT/build/disk-x86_64-latbench.img
@@ -15973,6 +15973,10 @@ PY
         local kfeat=""; [ "$which" = sysabicanary ] && kfeat=syscall-abi-canary
         [ "$which" = foreigncanary ] && kfeat=foreign-regs-canary
         [ "$which" = captest ] && kfeat=captest-row
+        # The robot kernel without the row: the sensors and motors captest
+        # reads are there, the hard reservation is not (the generic kernel
+        # failed every robot check, and its bind passed as -ENODEV).
+        [ "$which" = captestcanary ] && kfeat=use-robot
         x86_disk_prep "$disk_t" "$kimg" "$disk" "$kfeat" || return
         if [ "$which" = canary ]; then
             local elf="$CI_LOG_DIR/x86-${tag}-ABITEST.ELF"
