@@ -202,27 +202,37 @@ fn notes_of_one_slot_from_two_threads_leave_its_last_state() {
 /// The admin tree's whole shape (the task rows, the default wake ring and the
 /// decision records, as `install_inspect` builds it) fits Kconfig's default
 /// INSPECT_ADMIN_PAGES (16), for the default MAX_TASKS and the embedded
-/// profile's (32).
+/// profile's (32), with the configured DECISION_VIEW_ROWS and the top of its
+/// range (config/kernel/Kconfig.decisions).
 #[test]
 fn the_admin_tree_fits_its_region_on_every_profile() {
     const ADMIN_PAGES: usize = 16;
     const WAKE_RING_ENTRIES: usize = 32;
-    const DECISION_ROWS: usize = 24;
-    for max_tasks in [32, 256, 4096] {
-        let a = words(ADMIN_PAGES);
-        let w = Writer::init(Region::from_atomics(&a), Class::Admin).unwrap();
-        let mut shape = Shape::EMPTY;
-        let r = w.rebuild(|b| {
-            kt::build(b, max_tasks, &mut shape)?;
-            crate::metrics::km::build_admin_wake(b, WAKE_RING_ENTRIES)?;
-            let dec = b.dir(azos_inspect::NodeId::ROOT, "decisions")?;
-            let dir = b.dir(dec, "records")?;
-            for k in 0..DECISION_ROWS {
-                b.bytes(dir, &k.to_string(), azos_decision::PROVENANCE_SIZE, &[])?;
-            }
-            Ok(())
-        });
-        assert!(r.is_ok(), "MAX_TASKS {max_tasks}: {r:?}");
-        assert_eq!(shape.rows(), max_tasks.min(ROWS));
+    let kconfig = include_str!("../../../../config/kernel/Kconfig.decisions");
+    let block = &kconfig[kconfig.find("config DECISION_VIEW_ROWS").expect("DECISION_VIEW_ROWS is declared")..];
+    let range_top: usize = block
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("range "))
+        .and_then(|r| r.split_whitespace().nth(1))
+        .and_then(|t| t.parse().ok())
+        .expect("DECISION_VIEW_ROWS has a range");
+    for decision_rows in [azos_decision::VIEW_ROWS, range_top] {
+        for max_tasks in [32, 256, 4096] {
+            let a = words(ADMIN_PAGES);
+            let w = Writer::init(Region::from_atomics(&a), Class::Admin).unwrap();
+            let mut shape = Shape::EMPTY;
+            let r = w.rebuild(|b| {
+                kt::build(b, max_tasks, &mut shape)?;
+                crate::metrics::km::build_admin_wake(b, WAKE_RING_ENTRIES)?;
+                let dec = b.dir(azos_inspect::NodeId::ROOT, "decisions")?;
+                let dir = b.dir(dec, "records")?;
+                for k in 0..decision_rows {
+                    b.bytes(dir, &k.to_string(), azos_decision::PROVENANCE_SIZE, &[])?;
+                }
+                Ok(())
+            });
+            assert!(r.is_ok(), "MAX_TASKS {max_tasks}, DECISION_VIEW_ROWS {decision_rows}: {r:?}");
+            assert_eq!(shape.rows(), max_tasks.min(ROWS));
+        }
     }
 }

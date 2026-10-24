@@ -13,8 +13,8 @@ config DECISION_RECORDS_DEV
       one, and typed capability denials each write one record naming the
       rule, the verdict, the subject, the numbers the rule compared and the
       alternative it rejected (crates/core/decision). The introspection
-      tree's admin region holds the newest 24 (`decisions/records/<n>`);
-      `why list` prints them.
+      tree's admin region holds the newest DECISION_VIEW_ROWS
+      (`decisions/records/<n>`); `why list` prints them.
 
       On by default in every preset except on a small board
       (HWCLASS_EMBEDDED, whose defconfig names it to have it), and in every
@@ -118,3 +118,22 @@ config DECISION_JOURNAL_ENTRIES
       only with DECISION_REFUSALS_DURABLE. A capability-denial storm (bounded by
       DECISION_DENY_DURABLE_PER_SEC per task) can push an old refusal out
       of a small journal; the receipt on the medium is not affected.
+
+config DECISION_VIEW_ROWS
+    int "Explainable decision records: records the admin view publishes"
+    range 8 48
+    default 24
+    help
+      Decision records the kernel publishes in the introspection tree's
+      admin region (`decisions/records/<n>`, kernel/src/boot/inspect_views.rs)
+      and the decision server (userspace/services/decisd) decodes and serves
+      to `why`: one number for both sides (azos_decision::VIEW_ROWS). With the
+      ring and the durable path both built, the durable records keep half of
+      them. Read only with DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE.
+
+      Each costs 104 bytes in the admin region (the range keeps the admin
+      tree inside the default INSPECT_ADMIN_PAGES, tests/host/inspect-tests)
+      and 208 bytes of decisd's memory (its table and the copy it reads
+      into; its frame budget follows this number). Raise it to keep more
+      decisions listable from ring 3; `why <id>` in the recovery console and
+      the kernel's query read the ring and the journal, not this view.

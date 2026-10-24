@@ -77,9 +77,10 @@ const ENDPOINTS: usize = 64;
 const COMPONENTS: usize = 24;
 /// Pages a view region may take, at most.
 const VIEW_PAGES_MAX: usize = 16;
-/// Decision records the admin view holds (`decisd`'s table).
+/// Decision records the admin view holds (`decisd`'s table): Kconfig
+/// `DECISION_VIEW_ROWS`.
 #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
-pub(crate) const DECISION_ROWS: usize = 24;
+pub(crate) const DECISION_ROWS: usize = azos_decision::VIEW_ROWS;
 
 type EpName = [u8; azos_ipc::endpoint::ENDPOINT_NAME_MAX];
 

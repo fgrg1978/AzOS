@@ -584,6 +584,36 @@ mod tests {
     }
     // ── the kernel's view of the records ────────────────────────────────
 
+    /// **The kernel's view and decisd's table are one Kconfig number.** The
+    /// records the admin region publishes (`DECISION_ROWS`,
+    /// `kernel/src/boot/inspect_views.rs`) and the records decisd decodes
+    /// (`bin::MAX`) are both `azos_decision::VIEW_ROWS`, Kconfig
+    /// `DECISION_VIEW_ROWS`: read here from the `.config` the build read
+    /// (`KCONFIG_CONFIG`, else the checkout's), and the kernel's constant
+    /// named in its source, which this suite cannot link.
+    ///
+    /// **Canary.** `MAX = 24` in decisd's `bin.rs`, built with a `.config`
+    /// whose DECISION_VIEW_ROWS is not 24: red; `DECISION_ROWS = 24` in the
+    /// kernel: red.
+    #[test]
+    fn the_view_and_the_server_take_the_kconfig_row_count() {
+        let path = std::env::var("KCONFIG_CONFIG").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../../.config").to_string());
+        let cfg = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let rows: usize = cfg
+            .lines()
+            .find_map(|l| l.strip_prefix("CONFIG_DECISION_VIEW_ROWS="))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{path} sets no DECISION_VIEW_ROWS"));
+        assert_eq!(azos_decision::VIEW_ROWS, rows, "the decision crate reads the Kconfig value");
+        assert_eq!(MAX, rows, "decisd's table holds as many records as the Kconfig value");
+        let kernel = include_str!("../../../../kernel/src/boot/inspect_views.rs");
+        assert!(
+            kernel.contains("pub(crate) const DECISION_ROWS: usize = azos_decision::VIEW_ROWS;"),
+            "the kernel's view takes its row count from azos_decision::VIEW_ROWS"
+        );
+    }
+
+
     /// The admin region's record slots as the kernel fills them
     /// (`kernel/src/boot/inspect_views.rs`: `azos_decision::view_slot`, the
     /// newest id per slot), for the records `rs` in order; `durable` says

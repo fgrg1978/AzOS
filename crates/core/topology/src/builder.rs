@@ -3258,9 +3258,11 @@ const DECISIONS_SERVE: CapSpec = CapSpec {
 
 /// The decision server's image (`userspace/services/decisd`).
 pub const TASK_DECISD_IMAGE: &[u8] = b"DECISD.ELF";
-/// Frame budget of `DECISD.ELF`: image, stack, page tables and its static
-/// table of decoded records (24 x 104 bytes) and their copy; no heap.
-const DECISD_MEM_PAGES: u32 = 48;
+/// Frame budget of `DECISD.ELF`: image, stack and page tables (46 pages), and
+/// its static table of decoded records and the copy it reads them into
+/// (each Kconfig `DECISION_VIEW_ROWS` records); no heap.
+const DECISD_MEM_PAGES: u32 =
+    46 + 2 * (azos_decision::VIEW_ROWS * azos_decision::PROVENANCE_SIZE).div_ceil(4096) as u32;
 /// `DECISD.ELF`'s authority: the right to serve `endpoint.decisions`, and the
 /// records it serves: the introspection tree's admin region (a record's
 /// subject may be a task), granted against the task view, which the row lists

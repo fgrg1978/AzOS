@@ -98,6 +98,11 @@ const _: () = assert!(ENTRIES >= 8);
 pub const JOURNAL_ENTRIES: usize = azos_limits::DECISION_JOURNAL_ENTRIES as usize;
 const _: () = assert!(JOURNAL_ENTRIES >= 8);
 
+/// Records the admin introspection view publishes (the kernel,
+/// `decisions/records/<n>`) and the decision server decodes (`decisd`'s
+/// table): Kconfig `DECISION_VIEW_ROWS`, one number for both sides.
+pub const VIEW_ROWS: usize = azos_limits::DECISION_VIEW_ROWS as usize;
+
 /// Names of the reasons a run-time reservation is refused for, by code
 /// (`azos_sched::rt_core::Refusal::code`, 0 = none; a host test in
 /// `sched-policy-tests` holds the two tables together). The third number of

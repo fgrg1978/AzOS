@@ -40,7 +40,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub use azos_decision::{Filter, ProvenanceRecord, PROVENANCE_SIZE, PROVENANCE_WORDS, RULES, VERDICTS};
+pub use azos_decision::{Filter, ProvenanceRecord, PROVENANCE_SIZE, PROVENANCE_WORDS, RULES, VERDICTS, VIEW_ROWS};
 pub use azos_idl::{IdlError, MsgDesc, Transport};
 use azos_idl::azos_interface;
 

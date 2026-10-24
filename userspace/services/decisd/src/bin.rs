@@ -4,16 +4,16 @@
 //!
 //! The kernel publishes the decisions it still holds as
 //! [`PROVENANCE_SIZE`]-byte `ProvenanceRecord::to_bytes` records, oldest
-//! first, the newest 24 (`decisions/records/<n>` of the admin introspection
+//! first, the newest `DECISION_VIEW_ROWS` (`decisions/records/<n>` of the admin introspection
 //! region); `main.rs` copies them back to back and [`BinSource::load`] decodes
 //! them into a fixed table; nothing here reads the tree, so the host
 //! suite (`tests/host/decisions-tests`) pulls this file in with `#[path]` and
 //! drives it through the generated stubs.
 use azos_decisions::{Filter, ProvenanceRecord, Source, PROVENANCE_SIZE};
 
-/// Records the table holds: the kernel publishes as many
-/// (`DECISION_ROWS`, `kernel/src/boot/inspect_views.rs`).
-pub const MAX: usize = 24;
+/// Records the table holds: the kernel publishes as many (Kconfig
+/// `DECISION_VIEW_ROWS`, `kernel/src/boot/inspect_views.rs`).
+pub const MAX: usize = azos_decisions::VIEW_ROWS;
 
 /// The decoded snapshot, oldest first.
 pub struct BinSource {
