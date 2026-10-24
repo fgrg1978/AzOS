@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2483308
-riscv64-qemu	.rodata	368432
-riscv64-qemu	.data	3129504
-riscv64-qemu	.bss	4417376
-riscv64-qemu	reason	int26: tcp-correctness, io-barriers, kernel-tasks-kconfig, kernel-dead-code, unsafe-trim, boot-selftests-off, docs-code-followups, gpt-azos-partition, ipc-deadline-budget, ahci-ncq-fua-trim, x86-kernel-tools
+riscv64-qemu	.text	2494924
+riscv64-qemu	.rodata	368704
+riscv64-qemu	.data	3130144
+riscv64-qemu	.bss	4421472
+riscv64-qemu	reason	prep-uaccess: uaccess-pin (access sections, scalar/word/shifted copies, word-at-a-time string scan, typed user pointers), futex-shm-word (locked shm word access, per-process resolve cache), futex-single-section (one look under the table lock, futex_precheck), uaccess-mmio-buffer (device-window refusal) (+11.3 KiB .text)
