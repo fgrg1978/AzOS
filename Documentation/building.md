@@ -177,7 +177,9 @@ cd tests/host/<suite> && CARGO_TARGET_DIR=$AZOS_OUT/tgt/tests/host/<suite> cargo
 ```
 
 `tools/rows_for_diff.py --host` prints the suites that a diff reaches: a suite is selected
-when a changed path is in it or in a crate it depends on through `path =` dependencies.
+when a changed path is in it, in a crate it reaches through `path =` or `workspace = true`
+dependencies, or in the directory of a file it (or such a crate) pulls in with `#[path]` or
+`include!` (`tools/gate_rows.py`'s crate graph, which the row deps below also use).
 `tests/fuzz/` holds the `cargo-fuzz` targets, run by `tools/fuzz.sh`.
 
 ## ktest
@@ -217,8 +219,21 @@ Source: `mk/lints.mk`, `tools/gate_tier.sh`, `tools/ci_check.sh`, `tools/check_f
 | Topology rules | `make check-neverallow` | No preset's, defconfig's or the MCU kernel's topology breaks a `neverallow` rule |
 
 `tools/gate_rows.tsv` lists every gate row with its tier (`n1` rows may run in the change
-check; `n2` rows run only in the full gate) and the path globs that select it. The diff is
-the working tree against `GATE_BASE` (default `HEAD`); `GATE_DRY=1` prints what would run.
+check; `n2` rows run only in the full gate) and the path globs that select it. A row's globs
+must cover what it demonstrably reads (`tools/gate_rows.py` `required_deps`): its host suite
+and that suite's crate closure, the scripts and fixtures its call and functions name, the
+programs of the disk image it boots, the optional crates and test-hook files of its features,
+and the files that print the markers it waits for. `python3 tools/gate_rows.py --check-deps`
+names each row and source a manifest line misses, `--check` runs it with the other manifest
+checks, and `--write` adds the missing globs and keeps every existing one; a source edit that
+moves a marker or a hook turns the check red until `--write` runs.
+
+`tools/rows_for_diff.py --rows` maps a diff to rows: the per-ISA smoke boots first, then the
+rows whose globs name a changed file itself or whose gate code changed (the row with the
+fewest globs first), then the representative rows of a core change (build graph, config,
+boot, trap, `kernel/src/smokes/`), then the other glob hits; at most `GATE_N1_MAX_ROWS`
+(default 16) run, and the rest are named for `make ci`. The diff is the working tree against
+`GATE_BASE` (default `HEAD`); `GATE_DRY=1` prints what would run.
 Knobs of the full gate: `CI_TIER=fast` (every build, host and lint row, one QEMU row per
 subsystem per ISA) or `CI_TIER=rows` with `CI_ROWS` (the rows named); `CI_JOBS` or
 `GATE_JOBS` (jobs at once, default 4); `CI_SKIP_QEMU=1`; `CI_SKIP_FUZZ=1`; `CI_INJECT_FAIL=<row>` (a
@@ -244,6 +259,7 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | Make help | `bash tools/check_make_help.sh` | `make help` names no target the Makefile lacks |
 | Documentation | `python3 tools/doc_lint.py` | every path and relative link in the public docs exists; `Documentation/README.md` links every file |
 | Requirement trace | `python3 tools/req_trace.py` | the `// REQ-nnn` tags in the code agree with `formal/INVARIANTS.md` |
+| Gate rows manifest | `python3 tools/gate_rows.py --check` | `tools/gate_rows.tsv` names exactly the gate's rows, and each row's globs cover what it reads; `tools/rows_for_diff.py --self-test` runs first |
 | SPDX headers | `python3 tools/spdx_headers.py --check` | every tracked source file carries its licence header |
 | Conflict markers | `git grep` | no tracked file outside `third_party/` holds a merge-conflict marker line |
 | Supply chain | `cargo deny check licenses bans sources` | licences, bans and sources of the registry crates (`deny.toml`) |
