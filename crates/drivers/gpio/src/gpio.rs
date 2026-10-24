@@ -355,7 +355,7 @@ mod mmio {
     use crate::hold::PinHold;
     use azos_drv_base::window::{Taken, Window};
     use azos_sync::SpinLock;
-    use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     /// Register offsets in the pad controller's window (`pinctrl-starfive-
     /// jh7110-sys.c`: `JH7110_SYS_DOEN`, `JH7110_SYS_DOUT`, `JH7110_SYS_GPIOIN`).

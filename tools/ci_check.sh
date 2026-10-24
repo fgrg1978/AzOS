@@ -399,7 +399,7 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if ! board_config "$feat"; then
-        bad; echo "      could not expand config/defconfigs/robot-sbc-riscv64+${feat}.config with python3 -m olddefconfig"
+        bad; echo "      could not expand config/defconfigs/robot-sbc-<arch>+${feat}.config (one, with CONFIG_BOARD_${feat}) with python3 -m olddefconfig"
         return
     fi
     local out rc kfeat
@@ -731,7 +731,11 @@ board_config() { # board_config <feat>
     marker="$(printf 'CONFIG_BOARD_%s' "$feat" | tr '[:lower:]' '[:upper:]')=y"
     mkdir -p "$dir" || return 1
     tmp="$(mktemp -d)" || return 1
-    cp "${REPO_ROOT}/config/defconfigs/robot-sbc-riscv64+${feat}.config" "$tmp/${feat}.config" \
+    # The board's own cell, whatever its ISA (robot-sbc-<arch>+<board>):
+    # exactly one defconfig names the board.
+    set -- "${REPO_ROOT}"/config/defconfigs/robot-sbc-*+"${feat}".config
+    [ "$#" -eq 1 ] && [ -f "$1" ] || { rm -rf "$tmp"; return 1; }
+    cp "$1" "$tmp/${feat}.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/${feat}.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q "^${marker}$" "$tmp/${feat}.config" \
       && { cmp -s "$tmp/${feat}.config" "$cfg" || cp "$tmp/${feat}.config" "$cfg"; }
