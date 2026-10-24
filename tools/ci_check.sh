@@ -309,7 +309,7 @@ kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     # `ci_kernel_check`.
     [ -z "$PAR_JOB" ] && [ -z "${CI_KFLUSHING:-}" ] && [ $# -eq 0 ] && unset CI_KPEND_RV
     rm -f "${KERNEL}.features"
-    if "$CARGO" build --release --features "$feats" "$@" >/dev/null 2>&1; then
+    if "$CARGO" build --release --select "$feats" "$@" >/dev/null 2>&1; then
         [ $# -eq 0 ] && [ -z "${CARGO_TARGET_DIR:-}" ] && builtin printf '%s\n' "$feats" >"${KERNEL}.features"
         return 0
     fi
@@ -423,7 +423,7 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
         tflags=(--target "$target" -p azos_kernel); tenv=("CARGO_TARGET_DIR=$AZOS_OUT/target/board-${feat}")
     fi
     out="$(env ${tenv[@]+"${tenv[@]}"} TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$AZOS_OUT/target/board-${feat}/${feat}.config" \
-           RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release ${tflags[@]+"${tflags[@]}"} --features "${kfeat:-$feat}" \
+           RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release ${tflags[@]+"${tflags[@]}"} --select "${kfeat:-$feat}" \
            --config "build.rustflags=['-C','link-arg=-T$ld']" 2>&1)"; rc=$?
     # The exit status counts here too, as in `build`. Warnings do too, as of
     # U12-5: this used to check `^error` only, so vf2/k1 — the only two rows
@@ -2914,80 +2914,80 @@ fi; ci_row_end
 # it: plant the const, build twice, and the second build must still warn.
 
 build       "default (QEMU)"      --release
-build       "qemu"                --release --features qemu
-build       "no-ml"               --release --features no-ml
-build       "rvv"                 --release --features rvv
-build       "net-smoke"           --release --features qemu,net-smoke
-build       "dhcp-smoke"          --release --features qemu,dhcp-smoke
+build       "qemu"                --release
+build       "no-ml"               --release --select no-ml
+build       "rvv"                 --release --select rvv
+build       "net-smoke"           --release --select net-smoke
+build       "dhcp-smoke"          --release --select dhcp-smoke
 # Secure-boot policy is fixed at compile time, so if this feature
 # is not built in CI it can break with nobody noticing — exactly the way
 # esp32c3 rotted.
-build       "secure-boot-enforced" --release --features qemu,secure-boot-enforced
-build       "link-provisioning-enforced" --release --features qemu,link-provisioning-enforced
-build       "reflex-smoke"        --release --features qemu,reflex-smoke
-build       "envelope-smoke"      --release --features qemu,envelope-smoke
-build       "geofence-smoke"      --release --features qemu,geofence-smoke
-build       "console-splice-smoke" --release --features qemu,console-splice-smoke
+build       "secure-boot-enforced" --release --select secure-boot-enforced
+build       "link-provisioning-enforced" --release --select link-provisioning-enforced
+build       "reflex-smoke"        --release --select reflex-smoke
+build       "envelope-smoke"      --release --select envelope-smoke
+build       "geofence-smoke"      --release --select geofence-smoke
+build       "console-splice-smoke" --release --select console-splice-smoke
 # The refusal canary is its own feature (never part of `qemu`), so it has to be
 # built here or it rots unseen: see the "topology: infeasible deadlines" row.
-build       "deadline-refusal-canary" --release --features qemu,deadline-refusal-canary
+build       "deadline-refusal-canary" --release --select deadline-refusal-canary
 # Same reason as the row above: a canary feature that is never BUILT here rots
 # unseen, and this one is the only thing in the gate that observes the frame
 # budget refusing anything.
-build       "mem-quota-canary"  --release --features qemu,mem-quota-canary
-build       "mem-locked-smoke"  --release --features qemu,mem-locked-smoke
-build       "mem-locked-canary" --release --features qemu,mem-locked-canary
-build       "user-stack-request-canary" --release --features qemu,user-stack-request-canary
-build       "mem-locked-refusal-canary" --release --features qemu,mem-locked-refusal-canary
-build       "mem-admission-canary" --release --features qemu,mem-admission-canary
-build       "disk-part-row"     --release --features qemu,disk-part-row
-build       "deadline-hart-canary" --release --features qemu,deadline-hart-canary
-build       "dma-contig-canary"   --release --features qemu,dma-contig-canary
-build       "brain-lies-smoke"    --release --features qemu,brain-lies-smoke
-build       "actuation-smoke"     --release --features qemu,actuation-smoke
-build       "reflex+actuation"    --release --features qemu,reflex-smoke,actuation-smoke
+build       "mem-quota-canary"  --release --select mem-quota-canary
+build       "mem-locked-smoke"  --release --select mem-locked-smoke
+build       "mem-locked-canary" --release --select mem-locked-canary
+build       "user-stack-request-canary" --release --select user-stack-request-canary
+build       "mem-locked-refusal-canary" --release --select mem-locked-refusal-canary
+build       "mem-admission-canary" --release --select mem-admission-canary
+build       "disk-part-row"     --release --select disk-part-row
+build       "deadline-hart-canary" --release --select deadline-hart-canary
+build       "dma-contig-canary"   --release --select dma-contig-canary
+build       "brain-lies-smoke"    --release --select brain-lies-smoke
+build       "actuation-smoke"     --release --select actuation-smoke
+build       "reflex+actuation"    --release --select reflex-smoke,actuation-smoke
 # Wave 8 TLB shootdown probe and its canary (see the "tlb: stale access" rows).
-build       "tlb-smoke"           --release --features qemu,tlb-smoke
-build       "tlb-local-only"      --release --features qemu,tlb-smoke,tlb-local-only
-build       "tlb-bound-canary"    --release --features qemu,tlb-smoke,tlb-bound-canary
+build       "tlb-smoke"           --release --select tlb-smoke
+build       "tlb-local-only"      --release --select tlb-smoke,tlb-local-only
+build       "tlb-bound-canary"    --release --select tlb-smoke,tlb-bound-canary
 # The page-table free check's canary (see the "mm: canary" row).
-build       "exit-satp-canary"    --release --features qemu,exit-satp-canary
-build       "proxy-pi-smoke"      --release --features qemu,proxy-pi-smoke
+build       "exit-satp-canary"    --release --select exit-satp-canary
+build       "proxy-pi-smoke"      --release --select proxy-pi-smoke
 # The donation canary for the row that boots proxy-pi-smoke: built here so it
 # cannot rot; booted by hand (it must fail on `[PROXYPI] FAIL TIMEOUT`).
-build       "proxy-donation-canary" --release --features qemu,proxy-donation-canary
-build       "sup-smoke"           --release --features qemu,sup-smoke
+build       "proxy-donation-canary" --release --select proxy-donation-canary
+build       "sup-smoke"           --release --select sup-smoke
 # The supervisor canary: built here so it cannot rot; booted by
 # hand (the restart row must fail on `[SUP] FAIL not restarted after kill 1`).
-build       "sup-canary"          --release --features qemu,sup-canary
+build       "sup-canary"          --release --select sup-canary
 
 # Wave 9: the ring-3 donation floor's canary, booted by hand (it must fail on
 # `[PROXYPI] FAIL floor: gpio_drv was lent 8, below the ring-3 floor 12`).
-build       "donation-floor-canary" --release --features qemu,donation-floor-canary
+build       "donation-floor-canary" --release --select donation-floor-canary
 # ipc-census is load-bearing diagnostics: the userspace-IPC scenario's
 # comment prescribes it as the wedge-reproduction recipe (K-C25), so it must
 # stay inside the cold-cache warnings gate or it rots silently.
-build       "ipc-census"          --release --features qemu,ipc-census
+build       "ipc-census"          --release --select ipc-census
 # Wave 14: the motor-command watchdog record row (`rt_watchdog_record_row`)
 # and its canary.
-build       "rtwd-window-smoke"   --release --features qemu,rtwd-window-smoke
-build       "rtwd-record-canary"  --release --features qemu,rtwd-window-smoke,rtwd-record-canary
+build       "rtwd-window-smoke"   --release --select rtwd-window-smoke
+build       "rtwd-record-canary"  --release --select rtwd-window-smoke,rtwd-record-canary
 # Wave 11: the supervisor over what the topology starts (`supall_row`) and its
 # canary.
-build       "supall-smoke"        --release --features qemu,supall-smoke
-build       "supall-canary"       --release --features qemu,supall-smoke,supall-canary
+build       "supall-smoke"        --release --select supall-smoke
+build       "supall-canary"       --release --select supall-smoke,supall-canary
 # Wave 10: the "behavior ARP sleeps" rows boot `arp-timing` on both ISAs.
-build       "arp-timing"          --release --features qemu,arp-timing
+build       "arp-timing"          --release --select arp-timing
 # Wave 11: the display features `make config` offers (DRV_DISPLAY_RAMFB,
 # DRV_DISPLAY_HDMI in config/subsys/Kconfig.display). No row boots either; building
 # them here is what keeps the options from rotting unseen.
-build       "ramfb"               --release --features qemu,ramfb,fb-console,fb-panic-screen
-build       "hdmi"                --release --features vf2,hdmi
+build       "ramfb"               --release --select ramfb,fb-console,fb-panic-screen
+build       "hdmi"                --release --select vf2,hdmi
 # Wave 11 (SENSORTS): the acquisition-stamp smoke and its frozen-stamp canary
 # (the ktest `sensors_imu_stamped_at_acquisition` boots both, on both ISAs:
 # rows `ktest (rv|arm)` and `ktest IMU frozen-stamp canary (rv|arm)`).
-build       "sensor-ts-smoke"     --release --features qemu,sensor-ts-smoke
-build       "sensor-ts-freeze"    --release --features qemu,sensor-ts-freeze
+build       "sensor-ts-smoke"     --release --select sensor-ts-smoke
+build       "sensor-ts-freeze"    --release --select sensor-ts-freeze
 # ── Per-board ISA extensions, and the guard that keeps them on their board ──
 #
 # The K1 (SpacemiT X60, RVA22) has Zba/Zbb/Zbs, so its build lets the compiler
@@ -3092,7 +3092,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     # at all), so `azos_limits` built ARCH_RISCV64's constants for an
     # ARCH_AARCH64 kernel.
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
-            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --select "$feats" \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; then
         printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
         return 1
@@ -4091,7 +4091,7 @@ aarch64_dhcp_row() {
     rm -f "$dhcp_kernel" "$dhcp_img"
     local build_out
     if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
-            --target aarch64-unknown-none-softfloat -p azos_kernel --features qemu,dhcp-smoke \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --select dhcp-smoke \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
        || [ ! -f "$dhcp_kernel" ]; then
@@ -4221,7 +4221,7 @@ aarch64_flight_recorder_row() {
     local build_out
     if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$ROBOT_AARCH64_CONFIG" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --features qemu,use-robot,estop-latch-smoke \
+            --select use-robot,estop-latch-smoke \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
        || [ ! -f "$fr_kernel" ]; then
@@ -5997,7 +5997,7 @@ drvplace_build_canary_row() { # <label> <isa: rv|arm|x86>
     local text="DRV_INA219_PLACEMENT: the drivers crate and the topology disagree"
     printf "  %-26s" "${label}..."
     if [ "$isa" = "rv" ]; then
-        out="$("$CARGO" build --release --features "qemu,$feat" 2>&1)"
+        out="$("$CARGO" build --release --select "$feat" 2>&1)"
     elif [ "$isa" = "x86" ]; then
         # The x86_64 kernel's own build (`make x86_64`): its features come
         # from the Kconfig expansion, the canary's on top.
@@ -6005,7 +6005,7 @@ drvplace_build_canary_row() { # <label> <isa: rv|arm|x86>
     else
         out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build \
             --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --features "qemu,$feat" \
+            --select "$feat" \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"
     fi
     if printf '%s\n' "$out" | qgrep -qF "$text"; then
@@ -8853,7 +8853,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
     rm -f "$kelf"
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
             "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --features "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+            --select "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE"; then
         bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
     fi
@@ -8915,7 +8915,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
         nofeat="$(printf '%s' "$feats" | tr ',' '\n' | grep -v "^page-" | paste -sd, -)"
         mm="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/aarch64-granule-mismatch" \
             "$CARGO" check --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --features "$nofeat" 2>&1)"
+            --select "$nofeat" 2>&1)"
         if ! printf '%s\n' "$mm" | qgrep -q "page size mismatch"; then
             bad; echo "      a 16 KiB .config built WITHOUT page-16k was not refused (no 'page size mismatch'):"
             printf '%s\n' "$mm" | grep -E "^error" | head -3 | sed 's|^|        |'
@@ -10197,13 +10197,13 @@ nrcpus_row() { # nrcpus_row <isa: rv|arm> <NR_CPUS> <smp> <features> <expect: PA
         || { bad; echo "      could not derive a configuration with NR_CPUS=$nr"; return; }
     cmp -s "$cfg.new" "$cfg" && rm -f "$cfg.new" || mv "$cfg.new" "$cfg"
     if [ "$isa" = rv ]; then
-        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release --features "$feats" >"$log.build" 2>&1 \
+        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release --select "$feats" >"$log.build" 2>&1 \
             || { bad; echo "      riscv64 --features $feats (NR_CPUS $nr) did not build: $log.build"; return; }
         elf="$tdir/riscv64imac-unknown-none-elf/release/kernel"
         cp "$elf" "$kimg"
     else
         env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
-            --target aarch64-unknown-none-softfloat -p azos_kernel --features "$feats" \
+            --target aarch64-unknown-none-softfloat -p azos_kernel --select "$feats" \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >"$log.build" 2>&1 \
             || { bad; echo "      aarch64 --features $feats (NR_CPUS $nr) did not build: $log.build"; return; }
         elf="$tdir/aarch64-unknown-none-softfloat/release/kernel"
@@ -10319,12 +10319,12 @@ selftests_off_row() { # selftests_off_row <rv|arm>
         || { bad; echo "      could not expand ${defc}.config without BOOT_SELFTESTS"; rm -f "$cfg.new"; return; }
     cmp -s "$cfg.new" "$cfg" && rm -f "$cfg.new" || mv "$cfg.new" "$cfg"
     if [ "$isa" = rv ]; then
-        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release --features qemu >"$log.build" 2>&1 \
+        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release >"$log.build" 2>&1 \
             || { bad; echo "      riscv64 ${defc}.config did not build: $log.build"; return; }
         elf="$tdir/${triple}/release/kernel"; cp "$elf" "$kimg"
     else
         env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
-            --target "$triple" -p azos_kernel --features qemu \
+            --target "$triple" -p azos_kernel \
             --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >"$log.build" 2>&1 \
             || { bad; echo "      aarch64 ${defc}.config did not build: $log.build"; return; }
         elf="$tdir/${triple}/release/kernel"
@@ -13981,7 +13981,7 @@ PY
         ci_skip_rows "mem: locked region, 0 faults"
     elif grep -q '^CONFIG_LOCKED_HUGE_LEAVES=y$' "$huge_cfg" \
        && KCONFIG_CONFIG="$huge_cfg" CARGO_TARGET_DIR=$AZOS_OUT/target/riscv-huge \
-            "$CARGO" build --release --features qemu,huge-leaves-smoke >/dev/null 2>&1; then
+            "$CARGO" build --release --select huge-leaves-smoke >/dev/null 2>&1; then
         rm -f $AZOS_OUT/build/disk-uhello.img
         make_disk $AZOS_OUT/build/disk-uhello.img
         # The boot, and the row that reads its log: one job.
@@ -19484,7 +19484,7 @@ PYEOF
             grep -a "FAIL\|Error" "$blog" | sed -n "1,3p" | sed "s|^|      |"
             echo "      log kept: $blog"; return
         fi
-        if ! "$CARGO" build --release --features qemu,actuation-smoke,link-rekey-smoke \
+        if ! "$CARGO" build --release --select actuation-smoke,link-rekey-smoke \
                 >/dev/null 2>&1; then
             bad; echo "      kernel build with link-rekey-smoke failed; not booting the"
             echo "      previous binary in its place."; return
@@ -23419,13 +23419,13 @@ echo after-prod \$?" 150 \
         rm -rf "$tmp"
         if [ "$isa" = rv ]; then
             elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
-            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features qemu >/dev/null 2>&1
+            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release >/dev/null 2>&1
             img="$elf"
         else
             elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
             env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
                 "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-                --features qemu --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
+                --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
             [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
                 -O binary "$elf" "$img" 2>/dev/null
         fi
@@ -23482,7 +23482,7 @@ power suspend" 150 \
         if [ "$isa" = rv ]; then
             elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
             rf="$(cd "$REPO_ROOT" && python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
-            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features qemu \
+            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release \
                 ${rf:+--config "target.riscv64imac-unknown-none-elf.rustflags=[$rf]"} >/dev/null 2>&1
             img="$elf"
         else
@@ -23491,7 +23491,7 @@ power suspend" 150 \
             env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
                 RUSTFLAGS="-C link-arg=-Tkernel/linker-aarch64.ld $rf" \
                 "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-                --features qemu >/dev/null 2>&1
+                >/dev/null 2>&1
             [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
                 -O binary "$elf" "$img" 2>/dev/null
         fi
@@ -23560,7 +23560,7 @@ tracectl profile -t 4000" 240 \
         cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
         rm -rf "$tmp"
         elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
-        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features qemu,ramfb >/dev/null 2>&1
+        KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --select ramfb >/dev/null 2>&1
         [ -f "$elf" ] && printf '%s\n' "$elf"
     }
     if ci_wants "compositor: window, damage, trusted path (rv)"; then
@@ -23639,13 +23639,13 @@ input watch -n 100 &
                 X86_64_IMG="$img" X86_64_FEATURES="$feats" >/dev/null 2>&1
         elif [ "$isa" = rv ]; then
             elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
-            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --features "$feats" >/dev/null 2>&1
+            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --select "$feats" >/dev/null 2>&1
             img="$elf"
         else
             elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
             env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
                 "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-                --features "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
+                --select "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
             [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
                 -O binary "$elf" "$img" 2>/dev/null
         fi
