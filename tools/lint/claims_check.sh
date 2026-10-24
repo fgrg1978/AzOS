@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# Absolute-claim scanner — a REVIEW AID, NOT A GATE. It always exits 0.
+# Absolute-claim scanner — a REVIEW AID, NOT A GATE: a scan always exits 0.
+# The lint tier (tools/gate/gate_tier.sh lints) runs its --self-test, which
+# fails only when the scanner itself is broken, never on what the tree holds
+# (a scan of the whole tree takes minutes: by hand).
 #
 # ── Why this exists ─────────────────────────────────────────────────────────
 #
@@ -95,11 +98,47 @@
 # matches the pattern `all sites`, and `is_complete` matches `complete`.
 #
 # Usage: ./tools/lint/claims_check.sh          (no arguments, run from anywhere)
+#        ./tools/lint/claims_check.sh --summary  the totals only; exit 1 when
+#                                                no file was scanned
+#        ./tools/lint/claims_check.sh --self-test a planted tree: one sentence
+#                                                per class is found, code, a
+#                                                Rust attribute and a word that
+#                                                only contains a phrase are not
 
 set -uo pipefail
 
+MODE="${1:-}"
+case "$MODE" in ""|--summary|--self-test) ;; *) echo "usage: $0 [--summary|--self-test]" >&2; exit 2 ;; esac
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$REPO_ROOT" || exit 0
+SELF="$REPO_ROOT/tools/lint/claims_check.sh"
+
+if [ "$MODE" = --self-test ]; then
+    t="$(mktemp -d "${TMPDIR:-/tmp}/claims_selftest.XXXXXX")" || exit 1
+    trap 'rm -rf "$t"' EXIT
+    mkdir -p "$t/src" "$t/target"
+    cat >"$t/src/a.rs" <<'EOF'
+// This can never happen.
+// The table is the single source of truth.
+// The check cannot be bypassed.
+// The match handles every case.
+#[non_exhaustive]
+let never_type = is_complete();
+let why = "it can never fail";
+// We recall callers later.
+EOF
+    echo "// This can never happen." >"$t/target/b.rs"
+    out="$(CLAIMS_ROOT="$t" bash "$SELF" --summary)" || { echo "claims_check self-test FAILED: --summary on the planted tree failed"; exit 1; }
+    want="1 1 1 1 4 1"
+    got="$(printf '%s\n' "$out" | awk '/^ +[0-9]+  (ABSOLUTES|AUTHORITY|IMPOSSIBILITY|COMPLETENESS)/ { printf "%s ", $1 }
+        /distinct source lines/ { printf "%s ", $1 } /distinct files/ { printf "%s", $1 }')"
+    if [ "$got" = "$want" ]; then echo "claims_check self-test ok"; exit 0; fi
+    echo "claims_check self-test FAILED: per class, lines, files: got '$got', want '$want'"
+    printf '%s\n' "$out" | sed 's/^/  /'
+    exit 1
+fi
+
+ROOT="${CLAIMS_ROOT:-$REPO_ROOT}"
+cd "$ROOT" || exit 0
 
 # Pin the real grep. In an interactive shell on this machine `grep` is a
 # function that runs `ugrep`; both engines handle these patterns, but a
@@ -241,6 +280,7 @@ report() { # report <index> <title> <regex>
     n="$(wc -l < "$out" | tr -d ' ')"
     COUNTS[$idx]="$n"
     TITLES[$idx]="$title"
+    [ "$MODE" = --summary ] && return
 
     echo ""
     echo "════════════════════════════════════════════════════════════════════"
@@ -261,8 +301,8 @@ report() { # report <index> <title> <regex>
 declare -a COUNTS TITLES
 
 echo "AzOS absolute-claim scan"
-echo "  root:  $REPO_ROOT"
-echo "  note:  REVIEW AID, NOT A GATE. This script always exits 0."
+echo "  root:  $ROOT"
+echo "  note:  REVIEW AID, NOT A GATE. A scan always exits 0."
 echo "         A hit is a sentence to re-check against the code, not a defect."
 echo "         It cannot tell a true claim from a false one — only a human can."
 
@@ -280,6 +320,16 @@ TOTAL=0
 for i in 1 2 3 4; do TOTAL=$((TOTAL + ${COUNTS[$i]})); done
 
 FILES_HIT="$(awk -F: '{print $1}' "$TMP/all_unique" | sort -u | wc -l | tr -d ' ')"
+
+if [ "$MODE" = --summary ]; then
+    for i in 1 2 3 4; do printf '  %5d  %s\n' "${COUNTS[$i]}" "${TITLES[$i]}"; done
+    printf '  %5d  distinct source lines\n' "$UNIQUE"
+    printf '  %5d  distinct files\n' "$FILES_HIT"
+    scanned="$("$GREP" -rlI -e '' "${grep_args[@]}" . 2>/dev/null | wc -l | tr -d ' ')"
+    printf '  %5d  files scanned\n' "$scanned"
+    [ "$scanned" -gt 0 ] || { echo "claims_check: no file was scanned under $ROOT" >&2; exit 1; }
+    exit 0
+fi
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════"

@@ -11280,7 +11280,8 @@ if us_out="$(python3 "${REPO_ROOT}/tools/build/test_gen_userspace_kconfig.py" 2>
 else bad; printf '%s\n' "$us_out" | grep -E "^FAIL|Error" | sed 's/^/      /'; fi
 fi; ci_row_end
 # The n0 tier's lints (tools/gate/gate_tier.sh lints: output dir, boot sequence,
-# facade, trap layer, arch layout, docs, requirement trace, gate rows manifest,
+# facade, trap layer, arch layout, docs, tools layout, OTA sender, requirement
+# trace, config index, Zbc CRC constants, claims scanner, gate rows manifest,
 # board manifest, Kconfig, unsafe budget, presets, conflict markers, SPDX,
 # feature matrix, `make help`, cargo deny), from the one list `make check0`
 # runs, so the full gate cannot pass a tree n0 refuses.

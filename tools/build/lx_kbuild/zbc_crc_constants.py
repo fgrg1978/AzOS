@@ -6,13 +6,23 @@
 Computes z^64 mod P, z^96 mod P, floor(z^64 / P) and P bit-reversed in 64
 bits, prints them, and checks the folding algorithm (a model of `clmulr`)
 against the table CRC on random data. Exit 1 on any mismatch, or when the
-constants differ from the ones in lxbase.c.
+constants differ from the ones in lxbase.c. The lint tier
+(tools/gate/gate_tier.sh lints) runs it, after its --self-test.
+
+  zbc_crc_constants.py [LXBASE_C]   check (default: lx/glue/lxbase.c)
+  zbc_crc_constants.py --self-test  a planted wrong or missing constant fails
 """
 import os
 import random
 import re
 import struct
 import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../lib"))
+import azos_tools  # noqa: E402
+
+LXBASE = os.path.join(azos_tools.ROOT, "lx/glue/lxbase.c")
 
 M = (1 << 64) - 1
 P = 0x104C11DB7
@@ -92,9 +102,21 @@ def crc_fold(crc, data):
     return (y ^ clmulr(q, PR)) >> 32
 
 
-def main():
-    consts = {"ZBC_K64R": K64R, "ZBC_K96R": K96R, "ZBC_MUR": MUR, "ZBC_PR": PR, "ZBC_C128": C128, "ZBC_C192": C192}
-    for k, v in consts.items():
+CONSTS = {"ZBC_K64R": K64R, "ZBC_K96R": K96R, "ZBC_MUR": MUR, "ZBC_PR": PR, "ZBC_C128": C128, "ZBC_C192": C192}
+
+
+def source_mismatches(src):
+    """The constants a C source spells differently from the derived ones."""
+    out = []
+    for k, v in CONSTS.items():
+        m = re.search(r"#define\s+" + k + r"\s+(0x[0-9a-fA-F]+)ULL", src)
+        if not m or int(m.group(1), 16) != v:
+            out.append(f"{k} is {m.group(1) if m else 'missing'}, want {v:#018x}")
+    return out
+
+
+def check(path):
+    for k, v in CONSTS.items():
         print(f"{k} = {v:#018x}")
     bad = 0
     rnd = random.Random(13)
@@ -102,14 +124,48 @@ def main():
         crc = rnd.getrandbits(32)
         data = bytes(rnd.getrandbits(8) for _ in range(8 * rnd.randint(1, 24)))
         bad += crc_fold(crc, data) != crc_table(crc, data)
-    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../lx/glue/lxbase.c")).read()
-    for k, v in consts.items():
-        m = re.search(r"#define\s+" + k + r"\s+(0x[0-9a-fA-F]+)ULL", src)
-        if not m or int(m.group(1), 16) != v:
-            print(f"lxbase.c: {k} is {m.group(1) if m else 'missing'}, want {v:#018x}")
+    with open(path, encoding="utf-8") as f:
+        for m in source_mismatches(f.read()):
+            print(f"{os.path.basename(path)}: {m}")
             bad += 1
     print("zbc_crc_constants:", "FAIL" if bad else "500 random messages equal to the table CRC; lxbase.c agrees")
     return 1 if bad else 0
+
+
+def self_test():
+    with open(LXBASE, encoding="utf-8") as f:
+        good = f.read()
+    fails = []
+    if source_mismatches(good):
+        fails.append("lxbase.c as committed does not agree")
+    wrong = good.replace(f"{MUR:#018x}ULL", f"{MUR ^ 1:#018x}ULL", 1)
+    gone = re.sub(r"#define\s+ZBC_C192\b", "#define ZBC_C192_OLD", good, count=1)
+    for name, text, want in (("a wrong constant", wrong, ["ZBC_MUR"]), ("a missing constant", gone, ["ZBC_C192"])):
+        got = [m.split()[0] for m in source_mismatches(text)]
+        if text == good or got != want:
+            fails.append(f"{name}: flagged {got}, want {want}")
+        with tempfile.NamedTemporaryFile("w", suffix=".c", delete=False) as f:
+            f.write(text)
+        try:
+            old, sys.stdout = sys.stdout, open(os.devnull, "w")
+            rc = check(f.name)
+        finally:
+            sys.stdout.close()
+            sys.stdout = old
+            os.unlink(f.name)
+        if rc != 1:
+            fails.append(f"{name}: check exit {rc}, want 1")
+    if fails:
+        print("zbc_crc_constants self-test FAILED:\n  " + "\n  ".join(fails))
+        return 1
+    print("zbc_crc_constants self-test ok")
+    return 0
+
+
+def main():
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    return check(sys.argv[1] if len(sys.argv) > 1 else LXBASE)
 
 
 if __name__ == "__main__":

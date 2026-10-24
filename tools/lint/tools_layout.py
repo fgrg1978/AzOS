@@ -126,7 +126,6 @@ INCOMING = {
 # them). Listed, not deleted: the owner decides (tools/ restructure, 2026-10-23).
 NO_CALLER = {
     "check_prod_key.sh": "hand check of a production public key; only its own usage names it",
-    "claims_check.sh": "review aid, 'not a gate' by its own header; nothing runs it",
     "coverage.sh": "host-suite region coverage by hand; nothing names it",
     "dev_dfu_recovery.sh": "USB DFU recovery of a VF2/K1 by hand",
     "dev_uart.py": "UART relay daemon by hand (PENDING R280: keep or delete)",
@@ -135,7 +134,6 @@ NO_CALLER = {
     "gen_prod_key.py": "production key generation by hand (on purpose: never automated)",
     "repro_check.sh": "reproducible-build check by hand (plan: wire it into the gate)",
     "sbom.sh": "CycloneDX SBOM by hand",
-    "lx_kbuild/zbc_crc_constants.py": "prints the CRC fold constants lxbase.c carries, by hand",
     "text_equiv.py": "compares two kernels' .text by hand; the gate's comments name it",
     "lat_linux/": "the Linux half of the tail-latency smoke, run by hand",
     "vsbench_x86_64.sh": "vsbench on x86_64 by hand (the riscv64 and aarch64 scripts are the gate's)",

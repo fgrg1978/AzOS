@@ -131,6 +131,14 @@ fi
 # The gate's row manifest (tools/gate/gate_rows.py --check: every row listed, its deps cover what it
 # reads) and the diff-to-rows map that reads it (tools/gate/rows_for_diff.py), after their canaries.
 [ "$lints" = 1 ] && { printf "  %-26s" "gate rows manifest..."; if out="$(python3 tools/gate/rows_for_diff.py --self-test 2>&1 && python3 tools/gate/gate_rows.py --self-test 2>&1 && python3 tools/gate/gate_rows.py --check 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -v ': ok' | sed -n 1,5p | sed 's/^/      /'; fi; }
+
+# The Kconfig option index (tools/build/gen_config_index.py --check: Documentation/config.md's table
+# is what the Kconfig tree declares; regenerate with it when a symbol changes), the Zbc CRC fold constants lx/glue/lxbase.c carries
+# (tools/build/lx_kbuild/zbc_crc_constants.py), and the absolute-claim scanner (tools/lint/claims_check.sh,
+# a review aid: its self-test only, the scan of the tree is by hand).
+[ "$lints" = 1 ] && { printf "  %-26s" "config index..."; if out="$(python3 tools/build/gen_config_index.py --self-test 2>&1 && python3 tools/build/gen_config_index.py --check 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "zbc crc constants..."; if out="$(python3 tools/build/lx_kbuild/zbc_crc_constants.py --self-test 2>&1 && python3 tools/build/lx_kbuild/zbc_crc_constants.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -v '^ZBC_' | sed -n 1,5p | sed 's/^/      /'; fi; }
+[ "$lints" = 1 ] && { printf "  %-26s" "claims scanner..."; if out="$(bash tools/lint/claims_check.sh --self-test 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 # The board image's ELF list (tools/image/test_board_manifest.py): an orphan service (declared, not built
 # or not shipped) and an orphan ELF (on the disk, not declared); "board: volume = topology" boots only the good case.
 [ "$lints" = 1 ] && { printf "  %-26s" "board manifest..."; if out="$(python3 tools/image/test_board_manifest.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^(FAIL|ERROR)|Error' | sed -n 1,5p | sed 's/^/      /'; fi; }
@@ -232,17 +240,6 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
-# The option index of Documentation/config.md is what the Kconfig tree declares
-# (tools/build/gen_config_index.py; regenerate with it when a symbol changes).
-if [ "$tier" = n0 ]; then
-    printf "  %-26s" "config option index..."
-    if out="$(python3 tools/build/gen_config_index.py --check 2>&1)"; then
-        echo ok
-    else
-        echo FAIL; fail=1
-        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
-    fi
-fi
 
 # The committed defconfigs are what their fragments assemble, and each keeps
 # the axes its name gives (tools/build/gen_defconfigs.py; `make defconfigs` rewrites them).
