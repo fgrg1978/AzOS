@@ -503,6 +503,17 @@ pub fn try_task_create_init(
         // --- Allocate and initialize task under pool lock ---
         let alloc = {
             let _pool = PoolGuard::acquire();
+            // Gate canary `pool-lock-spin-canary` (the `lat: <isa> irq-off
+            // canary` rows): this step, interrupts masked, held twice the RT
+            // contract's bound (Kconfig LOCK_MAX_HOLD_US). Never in a real build.
+            #[cfg(feature = "pool-lock-spin-canary")]
+            {
+                use azos_drv_sys::timebase::{now, TIMER_FREQ};
+                let end = now() + TIMER_FREQ * 2 * azos_limits::LOCK_MAX_HOLD_US / 1_000_000;
+                while now() < end {
+                    core::hint::spin_loop();
+                }
+            }
 
             // Wave 12 (EXIT2): a child whose exit will be reported needs room
             // for its notice — see `exit_note::admits`. One atomic load when

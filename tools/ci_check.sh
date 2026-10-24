@@ -20954,8 +20954,25 @@ PYEOF
     # worst five: since other sites passed 7 us (2026-10) a 2 us console
     # window ranks below the fifth and a top-5 read could not see it, so the
     # row waits for the smoke's verdict line, which follows the summary.
-    console_window_row() { # console_window_row <label> <isa: rv|arm> <features>
-        local label="$1" isa="$2" feats="$3"
+    #
+    # The run's interrupts-masked windows against the RT contract (front
+    # irq-windows, 2026-10-24): every window the tracer closed while the smoke
+    # measured, on every site, is at most Kconfig LOCK_MAX_HOLD_US (100 us on
+    # the gate's cells, 50 us HWCLASS_EMBEDDED: the bound the lockdep hold
+    # rows enforce, read by the kernel from its own .config). The kernel
+    # prints the verdict, `[LATTRACE] run irqsoff PASS|FAIL max_ns= hart=
+    # site= end= bound_ns=` (kernel/src/lat_trace.rs); the row requires PASS
+    # and prints the three longest sites. Measured after the front, -icount
+    # (3 boots each, longest window): riscv64 9,100-10,900 ns, aarch64
+    # 6,933-7,707, both the interrupt path to the next task (the trap entry,
+    # the timer ISR, do_schedule's EEVDF pick and the switch); before it
+    # memobj.rs's release, 14,100 / 13,058 (64 frames freed under MEMOBJS,
+    # irqsave), and task creation, 9,700 / 8,564 (masked whole). Canary
+    # `lat-irqsoff-canary`: task creation's POOL_LOCK step, masked, spins
+    # twice the bound; the verdict must be FAIL with a window of at least
+    # that at that step (scheduler/mod.rs, PoolGuard): 202,500 ns riscv64.
+    masked_window_row() { # masked_window_row <label> <isa: rv|arm> <features> <check: console|irqsoff|irqsoff-canary>
+        local label="$1" isa="$2" feats="$3" check="$4"
         if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -20995,11 +21012,39 @@ PYEOF
         done
         kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         rm -f "$disk" "$kimg"
-        local clean="$log.txt" sites worst
+        local clean="$log.txt" sites worst verdict bound
         tr -d '\r' <"$log" >"$clean"
         sites="$(grep -a '^\[LATTRACE\] run irq top' "$clean")"
         if [ -z "$sites" ]; then
             bad; echo "      no [LATTRACE] run irq lines — log kept: $log"; return
+        fi
+        if [ "$check" != console ]; then
+            verdict="$(grep -a '^\[LATTRACE\] run irqsoff ' "$clean" | sed -n 1p)"
+            worst="$(printf '%s\n' "$verdict" | sed -n 's/^\[LATTRACE\] run irqsoff [A-Z]* max_ns=\([0-9][0-9]*\) hart=[0-9][0-9]* site=[^ ][^ ]* end=[^ ][^ ]* bound_ns=[1-9][0-9]*$/\1/p')"
+            bound="$(printf '%s\n' "$verdict" | sed -n 's/^.* bound_ns=\([1-9][0-9]*\)$/\1/p')"
+            if [ -z "$worst" ] || [ -z "$bound" ]; then
+                bad; echo "      no well-formed [LATTRACE] run irqsoff line: ${verdict:-none}"; echo "      log kept: $log"; return
+            fi
+            if [ "$check" = irqsoff ]; then
+                if printf '%s\n' "$verdict" | qgrep -q '^\[LATTRACE\] run irqsoff PASS ' && [ "$worst" -le "$bound" ]; then
+                    ok; echo "      ${verdict#\[LATTRACE\] run irqsoff }"
+                    printf '%s\n' "$sites" | sed -n 1,3p | sed 's/^\[LATTRACE\] run irq /      /'
+                    rm -f "$log" "$clean"
+                else
+                    bad; echo "      a masked window past the contract's bound: ${verdict#\[LATTRACE\] run irqsoff }"
+                    printf '%s\n' "$sites" | sed -n 1,5p | sed 's/^/      /'; echo "      log kept: $log"
+                fi
+                return
+            fi
+            # irqsoff-canary: FAIL, at the canary's step, at least as long as its spin.
+            if printf '%s\n' "$verdict" | qgrep -qE '^\[LATTRACE\] run irqsoff FAIL .* site=crates/core/sched/src/scheduler/mod\.rs:[0-9]+ ' \
+               && [ "$worst" -ge $((2 * bound)) ]; then
+                ok; echo "      canary: ${verdict#\[LATTRACE\] run irqsoff }"; rm -f "$log" "$clean"
+            else
+                bad; echo "      the POOL_LOCK spin did not fail the verdict at its step: ${verdict#\[LATTRACE\] run irqsoff }"
+                echo "      log kept: $log"
+            fi
+            return
         fi
         if ! printf '%s\n' "$sites" | qgrep -q 'site=crates/drivers/sys/src/uart.rs:'; then
             bad; echo "      no console window among the $(printf '%s\n' "$sites" | wc -l | tr -d ' ') traced sites (did the load print?); the worst five:"
@@ -21013,8 +21058,12 @@ PYEOF
         fi
         ok; echo "      console masked window max ${worst} ns"; rm -f "$log" "$clean"
     }
-    par_row -s console_window_row "console: masked window rv" rv "qemu,lat-smoke,lat-trace"
-    par_row -s console_window_row "console: masked window arm" arm "qemu,lat-smoke,lat-trace"
+    par_row -s masked_window_row "console: masked window rv" rv "qemu,lat-smoke,lat-trace" console
+    par_row -s masked_window_row "console: masked window arm" arm "qemu,lat-smoke,lat-trace" console
+    par_row -s masked_window_row "lat: riscv64 irq-off windows" rv "qemu,lat-smoke,lat-trace" irqsoff
+    par_row -s masked_window_row "lat: aarch64 irq-off windows" arm "qemu,lat-smoke,lat-trace" irqsoff
+    par_row -s masked_window_row "lat: riscv64 irq-off canary" rv "qemu,lat-irqsoff-canary" irqsoff-canary
+    par_row -s masked_window_row "lat: aarch64 irq-off canary" arm "qemu,lat-irqsoff-canary" irqsoff-canary
 
     # ── Wake-up latency under FAT32 writes (wave 15, VF) ──────────────────
     #

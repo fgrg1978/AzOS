@@ -192,6 +192,25 @@ fn site_text(site: usize, buf: &mut [u8; SITE_MAX]) -> &str {
 /// Every site a track keeps: [`print_summary`]'s `top` for the whole table.
 pub const SITES: usize = lat::SITES;
 
+/// The RT contract's bound on one interrupts-masked window, in nanoseconds:
+/// Kconfig `LOCK_MAX_HOLD_US`, the longest a SpinLock (and with
+/// `lock_irqsave` the interrupts-masked section around it) may be held, the
+/// bound the lockdep hold rows enforce in instruction time.
+pub const IRQSOFF_BOUND_NS: u64 = azos_limits::LOCK_MAX_HOLD_US * 1_000;
+
+/// The verdict on the longest interrupts-masked window since the last
+/// [`lat::reset`] against [`IRQSOFF_BOUND_NS`], on every hart:
+/// `[LATTRACE] <tag> irqsoff PASS|FAIL max_ns= hart= site= end= bound_ns=`
+/// (`FAIL` only when a window passed the bound), with the sites that opened
+/// and closed it.
+pub fn print_irqsoff_verdict(tag: &str) {
+    let (hart, s) = worst(Kind::Irq);
+    let ns = ticks_to_ns(s.max);
+    kprintln!("[LATTRACE] {} irqsoff {} max_ns={} hart={} site={} end={} bound_ns={}",
+              tag, if ns <= IRQSOFF_BOUND_NS { "PASS" } else { "FAIL" }, ns, hart,
+              Site(s.max_start), Site(s.max_end), IRQSOFF_BOUND_NS);
+}
+
 /// Console summary: per kind, every hart that closed a window, then the
 /// `top` worst opening sites over all harts (at most the [`SITES`] a track
 /// keeps). Lines start `[LATTRACE]`.

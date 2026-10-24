@@ -191,6 +191,10 @@ bench-minimal = []
 # rows' worst wake-up returns to about one scheduler period and must fail.
 # Never in a real build.
 oneshot-canary = []
+# Gate canary of the `lat: <isa> irq-off canary` rows: task creation's
+# POOL_LOCK step (interrupts masked) spins twice Kconfig LOCK_MAX_HOLD_US, so
+# the lat smoke's irqsoff verdict must fail at that site. Never in a real build.
+pool-lock-spin-canary = []
 # Cross-class wake-up preemption gate canary: a preempting wake does not ask
 # the waking CPU to reschedule, so the host row
 # `a_preempting_wake_on_the_same_cpu_sets_need_resched` and the ktest

@@ -1138,6 +1138,10 @@ lat-smoke = ["qemu"]
 # Its canary: a task on the same hart masks interrupts for 20 ms three times.
 # The tracer must name that site and the latency row must print `[LAT] FAIL`.
 lat-canary = ["lat-smoke", "lat-trace"]
+# Gate canary (`lat: <isa> irq-off canary`): task creation's masked POOL_LOCK
+# step held twice Kconfig LOCK_MAX_HOLD_US; the smoke's irqsoff verdict must
+# FAIL at that site (kernel/src/lat_smoke.rs).
+lat-irqsoff-canary = ["lat-smoke", "lat-trace", "azos_sched/pool-lock-spin-canary"]
 # Wave 15 (VF): the lat smoke's disk load writes through FAT32 (a whole-file
 # rewrite per kick: chain allocation, free, journal barriers) instead of
 # reading raw sectors. The `lat: ... FAT writes` rows.

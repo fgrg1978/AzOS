@@ -45,8 +45,10 @@
 //!
 //! Verdict: `[LAT] PASS` when the maximum is at most [`BOUND_NS`] for this
 //! ISA, `[LAT] FAIL` otherwise (a line only that path prints). With
-//! `lat-trace` the run also ends with the tracer's per-hart maxima and the
-//! five worst sites (`[LATTRACE] run ...`) and the introspection tree's
+//! `lat-trace` the run also ends with the tracer's per-hart maxima, every
+//! site the tracks kept (`[LATTRACE] run ...`), the longest masked window
+//! against the RT contract's bound, Kconfig `LOCK_MAX_HOLD_US`
+//! (`[LATTRACE] run irqsoff PASS|FAIL`), and the introspection tree's
 //! `latency/irqsoff` read-back (`[LATTRACE] inspect ...`);
 //! the plain row builds without it, so its number is the kernel's alone.
 //!
@@ -54,6 +56,11 @@
 //! interrupts for [`CANARY_MASK_US`] [`CANARY_SHOTS`] times during the run,
 //! announcing its site. The tracer must name that site as the worst, and the
 //! verdict must be FAIL.
+//!
+//! `lat-irqsoff-canary` (implies `lat-trace`): task creation's slot step
+//! (`POOL_LOCK`, interrupts masked) is held twice `LOCK_MAX_HOLD_US` again,
+//! as long as a masked step of the kernel's own may not be. The irqsoff
+//! verdict must be FAIL at that site.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -397,7 +404,12 @@ fn rt_task(num_cpus: usize) {
     // Every site the tracks kept, not the worst five: a row reads one site's
     // window (the console's, `console: masked window`) wherever it ranks.
     #[cfg(feature = "lat-trace")]
-    crate::lat_trace::print_summary("run", crate::lat_trace::SITES);
+    {
+        crate::lat_trace::print_summary("run", crate::lat_trace::SITES);
+        // The run's longest masked window against the RT contract's bound
+        // (the `lat: <isa> irq-off windows` rows).
+        crate::lat_trace::print_irqsoff_verdict("run");
+    }
     // The introspection tree's read-out, refreshed now and read back as a
     // ring-3 reader reads it.
     #[cfg(all(feature = "lat-trace", feature = "inspect"))]
