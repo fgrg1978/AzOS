@@ -209,14 +209,15 @@ def self_test():
     man["tree"] = ("n1", "kernel/src/smokes/**")
     man["named"] = ("n1", "kernel/src/smokes/x.rs crates/core/x/**")
     man["wide"] = ("n1", "kernel/src/smokes/x.rs " + " ".join("crates/w%d/**" % i for i in range(9)))
+    man["fast 3"] = ("n1", "kernel/** kernel/src/smokes/x.rs crates/a/**")  # core and direct
     n1, _, why = rank_rows(["kernel/src/smokes/x.rs"], set(), man, rs, {}, fast)
     expect("smoke boots not first: %r" % n1[:2], n1[:2] == SMOKES)
     expect("canary: the row naming the changed smoke file misses the cap of 16: %r" % n1[:16],
            "named" in n1[:16])
-    expect("the narrower direct row does not rank first: %r" % n1[2:4], n1[2:4] == ["named", "wide"])
+    expect("the narrower direct row does not rank first: %r" % n1[2:5], n1[2:5] == ["named", "fast 3", "wide"])
     expect("a core row ranks above a direct one", n1.index("fast 0") > n1.index("wide"))
-    expect("reason does not follow the winning rank: %r" % why.get("named"),
-           why.get("named") == "names: kernel/src/smokes/x.rs")
+    expect("canary: a core row that names the file explains itself as core: %r" % why.get("fast 3"),
+           why.get("fast 3") == "names: kernel/src/smokes/x.rs")
     expect("canary: a dir glob counts as naming the file: %r" % n1, n1.index("tree") > n1.index("fast 19"))
     # On the real manifest: every n1 row that names a smoke file makes the
     # cap when there is room for it.
