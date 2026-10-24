@@ -25,6 +25,8 @@ a64clk-cntvoff-canary	pending
 a64clk-ppi-canary	const	kernel/src/entry/aarch64/mod.rs: the const TIMER_PPI_ENABLED
 actuation-smoke	pending	
 arp-timing	pending	
+blk-discard-smoke	pending	
+blk-discard-unmap-canary	pending	
 blk-lock-wait-canary	pending	
 blk-poll-canary	pending	
 blk-stall-canary	pending	
@@ -54,6 +56,7 @@ disk-part-row	pending	adds rows to the built-in topology (crates/core/topology/s
 dma-contig-canary	pending	
 donation-floor-canary	pending	
 drv-contain-smoke	pending	
+el0-state-canary	pending	
 elf-mixed-page-canary	pending	
 energy-gov-smoke	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 energy-i1-canary	pending	
@@ -89,12 +92,14 @@ fork-commit-race-canary	pending
 fork-demand-canary	hot	crates/core/mm/src/cow.rs: the copy-on-write fault
 fork-profile	pending	
 fork-refusal-probe	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
+fs-base-cache-canary	pending	
 futex-wake-noop-canary	pending	
 fw-chain-walk-canary	pending	
 fw-entry-per-write-canary	pending	
 fw-free-one-held-canary	pending	
 gate-skip-smoke	pending	
 geofence-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
+gpio-aq3-smoke	pending	
 guard-fault-probe-null	pending	
 guard-fault-probe-stack	pending	
 hosted-startup-canary	pending	
@@ -105,6 +110,7 @@ ina219-placement-build-canary	pending	adds rows to the built-in topology (crates
 ina219-placement-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 infer-model-canary	pending	
 infer-refusal-canary	pending	
+inspect-view-canary	pending	
 iommu-tx-canary	pending	
 ipc-census	hot	a site on crates/core/sched/src/scheduler/wake.rs, crates/core/syscall/src/dispatch.rs, crates/core/syscall/src/fastpath.rs, kernel/src/entry/riscv64/irq.rs
 ipc-trace	hot	a site on crates/core/syscall/src/dispatch.rs, crates/core/syscall/src/fastpath.rs
@@ -122,6 +128,7 @@ kheap-census	hot	a site on crates/core/mm/src/kheap.rs, crates/core/syscall/src/
 kill-reblock-canary	pending	
 kill-wake-timer-only-canary	pending	
 lat-canary	pending	
+lat-irqsoff-canary	pending	
 lat-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 leader-cleartid-canary	pending	
 link-rekey-smoke	pending	
@@ -153,6 +160,7 @@ mem-locked-canary	pending
 mem-locked-refusal-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 mem-locked-smoke	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 mem-quota-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
+memobj-hold-canary	pending	
 mmap-prot-canary	pending	
 mmc-flush-canary	pending	
 mmc-flush-smoke	hot	a site on kernel/src/entry/riscv64/irq.rs
@@ -163,7 +171,9 @@ natfork-template-tamper-canary	pending
 native-fork-copy-canary	pending	
 native-fork-no-inherit-canary	pending	
 net-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
+netpoll-idle-timer-canary	pending	
 neverallow-row-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
+nicq-cost-probe	pending	
 nr-cpus-clamp-canary	pending	
 nvme-prp-canary	pending	
 oneshot-canary	hot	a site on crates/core/sched/src/scheduler/wake.rs, kernel/src/entry/aarch64/irq.rs
@@ -182,8 +192,8 @@ pl011-rx-irq-canary	pending
 placement-norecord-canary	pending	
 portwait-timer-canary	pending	
 power-cap-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
+power-off-durability-smoke	pending	
 preempt-account-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
-proc-hidepid-canary	pending	
 proxy-donation-canary	pending	
 proxy-pi-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 pstore-corrupt-smoke	pending	
@@ -191,6 +201,7 @@ pstore-smoke	pending
 qos-armed-at-canary	hot	crates/core/sched/src/timer_sleepers.rs: every timed sleep
 qos-fire-canary	hot	crates/core/sched/src/timer_sleepers.rs: every timed sleep
 qos-rt-slack-canary	hot	crates/core/sched/src/sc.rs: the dispatch-class decision
+ramfb-va-canary	pending	
 rc-failsafe-canary	pending	
 rc-failsafe-smoke	pending	
 rc-stick-canary	pending	
@@ -212,7 +223,6 @@ rt-io-canary	pending
 rt-panic-canary	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 rt-panic-canary-safety	pending	
 rt-panic-canary-spin	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
-rt-util-admit-canary	pending	
 rt-util-cbs-canary	pending	
 rt-util-wake-canary	pending	
 rtwd-record-canary	pending	
@@ -227,6 +237,7 @@ sensor-ts-freeze	pending
 sensor-ts-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 slab-freelist-canary	hot	crates/core/mm/src/slab.rs: the slab allocator
 spawn-census	pending	
+spin-service-canary	pending	
 sqpoll-bench	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 subreaper-mark-canary	pending	
 sup-canary	pending	
@@ -236,11 +247,13 @@ supall-canary	pending
 supall-smoke	pending	
 syscall-abi-canary	const	kernel/src/main.rs: a `const` operand of the trap-entry asm (syscall_abi_canary)
 tail-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
+task-view-stale-canary	pending	
 thermal-floor-canary	pending	
 thermal-smoke	hot	a site on kernel/src/entry/x86_64/irq.rs
 thermal-tick-canary	pending	
 thread-objects-canary	pending	
 thread-regs-canary	pending	
+thread-tls-zero-canary	pending	
 threads-late-start-canary	pending	
 threads-no-cleartid-canary	pending	
 threads-private-table-canary	pending	
@@ -252,10 +265,14 @@ topo-device-canary	pending
 topo-replay-canary	pending	
 topo-sched-hash-canary	pending	
 topo-verify-skip-canary	pending	
+tpidr-foreign-only-canary	pending	
+tpm-crb-canary	pending	
 trace-cap-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 trace-cost-probe	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 trace-producer-canary	pending	
 trace-wx-canary	pending	
+txn-align-route-canary	pending	
+uaccess-mmio-canary	pending	
 user-stack-request-canary	pending	
 vdso-write-canary	hot	crates/core/mm/src/vmm.rs: the page-table walk
 vdso-write-window	pending	

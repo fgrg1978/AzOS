@@ -126,6 +126,16 @@ config USB_DWC2
       switching, the device mode. QEMU: `-M raspi3b` models the core.
       n: a Pi has no USB.
 
+config USB_HC
+    # cargo-feature: usb-hc
+    bool
+    default y if USB_XHCI || USB_DWC2
+    help
+      Derived: a controller under the USB host core, either kind (USB_XHCI
+      or USB_DWC2 on). Kernel feature `usb-hc`, which the class drivers'
+      features also turn on; with it, azos_soc's device-tree reader the
+      probes read `dr_mode` with.
+
 config USB_HID
     # cargo-feature: usb-hid
     bool "USB HID class driver (keyboards and mice)"
@@ -298,6 +308,15 @@ config USB_SMSC95XX
       tests/host/usb-cdc-tests (`smsc`) against a fake chip, and on a
       Raspberry Pi 3 B. USB_CDC_BUFS sizes its buffers too.
       n: a Pi 3 B has no Ethernet.
+
+config USB_NET
+    # cargo-feature: usb-net
+    bool
+    default y if USB_CDC || USB_SMSC95XX
+    help
+      Derived: a USB network function as a NIC (USB_CDC or USB_SMSC95XX
+      on). Kernel feature `usb-net`, azos_drv_net's adapter
+      (crates/drivers/net/src/usb_net.rs).
 
 config USB_CDC_CONSOLE
     # cargo-feature: usb-cdc-console
