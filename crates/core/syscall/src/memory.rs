@@ -38,8 +38,9 @@ fn target(handle: u64) -> Target {
 ///   protection (`PROT_READ|PROT_WRITE`; executable is refused), `a4` the flags
 ///   (`MAP_POPULATE`, `MAP_LOCKED`, `MAP_FIXED_NOREPLACE`: Linux's values).
 ///   Returns the address. Placed by `handlers::mmap_place`: at the break for a
-///   native task (the hint unread, `MAP_FIXED_NOREPLACE` `-EINVAL`); that bit
-///   is the hook a native exact placement (`lxsrv`'s module window) takes.
+///   native task (the hint unread; its `MAP_FIXED_NOREPLACE` is `lxsrv`'s
+///   module window, `crate::module_window`), in its mmap area for a Linux
+///   task.
 /// * A region: `a1` 0 to map it (or the protect form: see
 ///   `sys_shm_map_typed`). Returns the address.
 ///

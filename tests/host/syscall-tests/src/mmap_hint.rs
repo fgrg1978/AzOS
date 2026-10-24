@@ -43,6 +43,7 @@ const OVER: usize = 2 * SLAB - PAGE_SIZE;
 const EEXIST: i64 = -17;
 const ENOMEM: i64 = -12;
 const EINVAL: i64 = -22;
+const EPERM: i64 = -1;
 
 /// A fresh, empty address space of a Linux task with no budget, its break at
 /// [`BRK`] and its mmap cursor where a new address space has it (nothing
@@ -172,9 +173,10 @@ fn noreplace_places_exactly_or_answers_eexist() {
     assert_eq!(map_at(floor - PAGE_SIZE, 2, RW, nr), ENOMEM, "into the break's zone");
     assert_eq!(map_at(ceiling - PAGE_SIZE, 2, RW, nr), ENOMEM, "across the ceiling");
     assert_eq!(map_at(ceiling, 1, RW, nr), ENOMEM, "the vDSO page");
-    // A native task has no exact placement yet: the hook answers EINVAL.
+    // A native task's exact placement is the module window
+    // (module_window_tests.rs): without a live module token, EPERM.
     azos_sched::shim_set_linux(false);
-    assert_eq!(map_at(at - 64 * PAGE_SIZE, 1, RW, nr), EINVAL);
+    assert_eq!(map_at(at - 64 * PAGE_SIZE, 1, RW, nr), EPERM);
 }
 
 #[test]

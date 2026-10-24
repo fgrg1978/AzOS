@@ -3030,8 +3030,10 @@ pub const MMAP_MAP_LOCKED: u64 = 0x2000;
 /// `flags` bit `sys_mmap` honours for a Linux task, Linux's value: place the
 /// mapping exactly at `addr`, or answer `-EEXIST` and leave everything as it
 /// was. Never over another mapping. Plain `MAP_FIXED`, which replaces what
-/// the range holds, has no bit here: the personalities refuse it.
-pub const MMAP_MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
+/// the range holds, has no bit here: the personalities refuse it. A native
+/// task's is its module window's (`crate::module_window`). The ABI's one
+/// constant.
+pub use azos_abi::syscall_nr::MMAP_MAP_FIXED_NOREPLACE;
 /// Highest real-time `SchedClass` discriminant (SafetyCritical 0, HardRT 1,
 /// SoftRT 2).
 pub(crate) const RT_CLASS_MAX: u8 = 2;
@@ -3055,9 +3057,11 @@ fn mmap_precommit(flags: u64) -> bool {
 ///
 /// * **A native task** (and a task the ring-3 Linux runtime hosts): at its
 ///   break, which the mapping then moves past, as always. `ualloc`'s guard
-///   pages count on that bump. The hint is not consulted, and
-///   `MAP_FIXED_NOREPLACE` is `-EINVAL`: no native caller places a mapping
-///   yet (`lxsrv`'s module window is the one that will; it needs no other bit).
+///   pages count on that bump. The hint is not consulted. Its
+///   `MAP_FIXED_NOREPLACE` is the module window of a Linux driver server
+///   (`crate::module_window`), which `sys_mmap` hands the request to before
+///   any placement: exact and committed there, the break untouched, so it
+///   never reaches this arm.
 /// * **A Linux task**: in its mmap area (`azos_sched::user_mmap_area`),
 ///   top-down from the cursor (`azos_sched::update_user_mmap_low`, the lowest
 ///   address handed out), as Linux places mappings below its mmap base. The
@@ -3074,10 +3078,7 @@ fn mmap_precommit(flags: u64) -> bool {
 pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> Result<usize, i64> {
     use azos_abi::error::Errno;
     let page = azos_arch::PAGE_SIZE;
-    if !azos_sched::scheduler::current_is_linux() || cfg!(feature = "mmap-brk-apart-canary") {
-        if flags & MMAP_MAP_FIXED_NOREPLACE != 0 {
-            return Err(Errno::EINVAL.to_syscall_ret());
-        }
+    if mmap_at_break() {
         // **WHY the brk itself has to be checked (null-guard follow-up).**
         // A task whose brk was never initialised reports **0** (`scheduler.rs`
         // zeroes `user_brk` at task creation). The range was then reserved
@@ -3143,10 +3144,16 @@ pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> 
     Err(-1)
 }
 
+/// Does the calling task's mmap go at its break (a native or hosted task),
+/// not in a Linux task's mmap area? [`mmap_place`]'s two arms.
+fn mmap_at_break() -> bool {
+    !azos_sched::scheduler::current_is_linux() || cfg!(feature = "mmap-brk-apart-canary")
+}
+
 /// Record a mapping [`mmap_place`] placed at `[start, end)`: a native task's
 /// break moves past it, a Linux task's cursor down to it.
 pub(crate) fn mmap_placed(start: usize, end: usize) {
-    if !azos_sched::scheduler::current_is_linux() || cfg!(feature = "mmap-brk-apart-canary") {
+    if mmap_at_break() {
         azos_sched::update_user_brk(end as u64);
         return;
     }
@@ -3220,9 +3227,10 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     // `sys_alloc_demand` already enforces, so the two allocators agree on how
     // much one call may claim.
     if len > azos_mm::demand::MAX_DEMAND_ALLOC_BYTES { return -1; }
-    // A Linux driver server's module memory: an exact address inside its
-    // module window, the break untouched (module_window.rs).
-    if flags & crate::module_window::MMAP_MAP_FIXED_NOREPLACE != 0 {
+    // A native task's `MAP_FIXED_NOREPLACE`: a Linux driver server's module
+    // memory, an exact address inside its module window, the break untouched
+    // (module_window.rs). A Linux task's is placed in its mmap area below.
+    if flags & MMAP_MAP_FIXED_NOREPLACE != 0 && mmap_at_break() {
         return crate::module_window::map_fixed(user_pt, addr, len, prot, crate::module_window::caller_may_place());
     }
 

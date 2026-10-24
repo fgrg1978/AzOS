@@ -533,15 +533,18 @@ pub const SYS_MO_CREATE: u64 = 14;
 /// until the caller exits).
 /// With [`SHM_MAP_OP_PROTECT`] in `a1`: the protect form.
 ///
-/// **Anonymous memory** (`a0` 0): `a1` the address hint (ignored: the range is
-/// placed at the break), `a2` the length (capped at
+/// **Anonymous memory** (`a0` 0): `a1` the address hint (ignored for a native
+/// task: the range is placed at the break; a Linux task's mmap honours it in
+/// its mmap area), `a2` the length (capped at
 /// `azos_mm::demand::MAX_DEMAND_ALLOC_BYTES`), `a3` the protection
 /// (`PROT_READ` 1, `PROT_WRITE` 2, 0 reserves the range and maps nothing;
 /// `PROT_EXEC` is refused with `-EINVAL`: W^X holds for ring 3 by
 /// construction), `a4` the flags (`MAP_POPULATE`/`MAP_LOCKED` commit now;
 /// [`MMAP_MAP_FIXED_NOREPLACE`] below). Returns the address, or `-1`.
 ///
-/// With [`MMAP_MAP_FIXED_NOREPLACE`]: exactly at `a1`, inside the module
+/// With [`MMAP_MAP_FIXED_NOREPLACE`], for a Linux task: exactly at `a1` in its
+/// mmap area, or `-EEXIST` over a mapping, `-ENOMEM` outside the area,
+/// `-EINVAL` unaligned. For a native task: exactly at `a1`, inside the module
 /// window of a Linux driver server (Kconfig `LX_MODULE_WINDOW_*`), for a task
 /// that holds a live module token; `-EPERM` without one, `-EINVAL` outside
 /// the window, unaligned, `PROT_NONE` or over a page the kernel maps,
