@@ -190,7 +190,8 @@ fn site_text(site: usize, buf: &mut [u8; SITE_MAX]) -> &str {
 }
 
 /// Console summary: per kind, every hart that closed a window, then the
-/// `top` worst opening sites over all harts. Lines start `[LATTRACE]`.
+/// `top` worst opening sites over all harts (at most the [`lat::SITES`] a
+/// track keeps). Lines start `[LATTRACE]`.
 pub fn print_summary(tag: &str, top: usize) {
     for kind in [Kind::Irq, Kind::Preempt] {
         let name = kind_name(kind);
@@ -203,7 +204,7 @@ pub fn print_summary(tag: &str, top: usize) {
                       tag, name, h, ticks_to_ns(s.max), s.windows, s.unpaired, s.sites_full,
                       Site(s.max_start), Site(s.max_end));
         }
-        let mut recs = [SiteRecord::default(); 16];
+        let mut recs = [SiteRecord::default(); lat::SITES];
         let n = lat::top_sites(kind, &mut recs);
         for (i, r) in recs.iter().take(n.min(top)).enumerate() {
             kprintln!("[LATTRACE] {} {} top{} max_ns={} count={} site={} end={}",

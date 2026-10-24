@@ -394,8 +394,10 @@ fn rt_task(num_cpus: usize) {
         let (waits, locked) = azos_drv_virtio::virtio::blk::wait_probe_counts();
         kprintln!("[LAT] blk waits={} waits_locked={}", waits, locked);
     }
+    // Every site the tracks kept, not the worst five: a row reads one site's
+    // window (the console's, `console: masked window`) wherever it ranks.
     #[cfg(feature = "lat-trace")]
-    crate::lat_trace::print_summary("run", 5);
+    crate::lat_trace::print_summary("run", azos_arch::lat_hook::lat::SITES);
     // The introspection tree's read-out, refreshed now and read back as a
     // ring-3 reader reads it.
     #[cfg(all(feature = "lat-trace", feature = "inspect"))]

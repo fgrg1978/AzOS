@@ -20891,7 +20891,11 @@ PYEOF
     # in 5 runs each. Before, one line's hold was 9.7 us (formatting under
     # the lock), longer than the timer-ISR entry. Canary (by hand,
     # 2026-10-04): `console-format-in-lock` -> 14,800 ns riscv64, 8,774 ns
-    # aarch64, red. Compile errors: the build's own FAIL line.
+    # aarch64, red. Compile errors: the build's own FAIL line. The smoke
+    # prints every site the run's tracks kept (the 64 longest), not the
+    # worst five: since other sites passed 7 us (2026-10) a 2 us console
+    # window ranks below the fifth and a top-5 read could not see it, so the
+    # row waits for the smoke's verdict line, which follows the summary.
     console_window_row() { # console_window_row <label> <isa: rv|arm> <features>
         local label="$1" isa="$2" feats="$3"
         if [ "$isa" = rv ]; then kbuild "$feats" || return; fi
@@ -20926,7 +20930,7 @@ PYEOF
         fi
         local pid=$! i=0
         while [ "$i" -lt 480 ]; do
-            grep -aq '^\[LATTRACE\] run irq top' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aqE '^\[LAT\] (PASS|FAIL) ' "$log" 2>/dev/null && break
             grep -aqiE 'panic|\[FATAL\]|AARCH64-TRAP\] unhandled' "$log" 2>/dev/null && break
             kill -0 "$pid" 2>/dev/null || break
             i=$((i + 1)); sleep 0.5
@@ -20940,8 +20944,8 @@ PYEOF
             bad; echo "      no [LATTRACE] run irq lines — log kept: $log"; return
         fi
         if ! printf '%s\n' "$sites" | qgrep -q 'site=crates/drivers/sys/src/uart.rs:'; then
-            bad; echo "      no console window among the traced sites (did the load print?):"
-            printf '%s\n' "$sites" | sed 's/^/      /'; echo "      log kept: $log"; return
+            bad; echo "      no console window among the $(printf '%s\n' "$sites" | wc -l | tr -d ' ') traced sites (did the load print?); the worst five:"
+            printf '%s\n' "$sites" | sed -n 1,5p | sed 's/^/      /'; echo "      log kept: $log"; return
         fi
         worst="$(printf '%s\n' "$sites" | grep 'site=crates/drivers/sys/src/uart.rs:' \
             | sed -n 's/.* max_ns=\([0-9]*\) .*/\1/p' | sort -n | sed -n '$p')"
