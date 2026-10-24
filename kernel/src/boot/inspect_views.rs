@@ -82,7 +82,6 @@ pub(crate) const DECISION_ROWS: usize = 24;
 
 type EpName = [u8; azos_ipc::endpoint::ENDPOINT_NAME_MAX];
 
-#[derive(Clone, Copy)]
 struct Endpoint {
     name: EpName,
     len: usize,
@@ -108,15 +107,17 @@ struct Ids {
 /// Set by `build` at boot; read by the refresh (task context).
 static IDS: Mutex<Option<Ids>> = Mutex::new(None);
 
-/// A view's nodes its writers write.
-#[derive(Clone, Copy)]
+/// A view's nodes its writers write. On the heap: at their limits the lists
+/// are 4 KiB a view, and a frame that held every view's (the boxed [`Views`]
+/// is built on the stack first) took 47 KiB of the boot stack.
+#[derive(Default)]
 struct ViewIds {
-    endpoints: [Option<Endpoint>; ENDPOINTS],
-    /// Each component's `start` and its topology row number.
-    starts: [Option<(NodeId, usize)>; COMPONENTS],
+    /// At most [`ENDPOINTS`].
+    endpoints: alloc::vec::Vec<Endpoint>,
+    /// Each component's `start` and its topology row number, at most
+    /// [`COMPONENTS`].
+    starts: alloc::vec::Vec<(NodeId, usize)>,
 }
-
-const NO_VIEW_IDS: ViewIds = ViewIds { endpoints: [None; ENDPOINTS], starts: [None; COMPONENTS] };
 
 /// Every view built, by [`ViewKind`].
 struct Views([Option<(Writer<'static>, ViewIds)>; ViewKind::ALL.len()]);
@@ -267,20 +268,18 @@ fn declares(topo: &azos_topology::Topology<'_>, row: &azos_topology::TaskSpec<'_
 }
 
 /// The named endpoints the rows declaring `v` hold that the view lists, each
-/// once, into `out`; how many.
-fn view_endpoints(topo: &azos_topology::Topology<'_>, v: ViewKind, out: &mut [(EpName, usize); ENDPOINTS]) -> usize {
-    let mut n = 0;
+/// once, appended to `out`, at most [`ENDPOINTS`].
+fn view_endpoints(topo: &azos_topology::Topology<'_>, v: ViewKind, out: &mut alloc::vec::Vec<(EpName, usize)>) {
     let mut add = |name: &[u8]| {
-        if name.is_empty() || name.len() > azos_ipc::endpoint::ENDPOINT_NAME_MAX || n == ENDPOINTS {
+        if name.is_empty() || name.len() > azos_ipc::endpoint::ENDPOINT_NAME_MAX || out.len() == ENDPOINTS {
             return;
         }
-        if out[..n].iter().any(|(e, l)| &e[..*l] == name) {
+        if out.iter().any(|(e, l)| &e[..*l] == name) {
             return;
         }
-        out[n].0 = [0; azos_ipc::endpoint::ENDPOINT_NAME_MAX];
-        out[n].0[..name.len()].copy_from_slice(name);
-        out[n].1 = name.len();
-        n += 1;
+        let mut e = [0; azos_ipc::endpoint::ENDPOINT_NAME_MAX];
+        e[..name.len()].copy_from_slice(name);
+        out.push((e, name.len()));
     };
     for row in topo.tasks().iter().filter(|r| declares(topo, r, v)) {
         for c in topo.caps_of(row) {
@@ -302,7 +301,6 @@ fn view_endpoints(topo: &azos_topology::Topology<'_>, v: ViewKind, out: &mut [(E
             }
         }
     }
-    n
 }
 
 /// Build the view `v` of `topo` under the root of `b`.
@@ -312,17 +310,18 @@ fn build_view(
     v: ViewKind,
     ids: &mut ViewIds,
 ) -> Result<(), Error> {
-    *ids = NO_VIEW_IDS;
+    ids.endpoints.clear();
+    ids.starts.clear();
     let root = NodeId::ROOT;
     if matches!(v, ViewKind::Names | ViewKind::Rpc | ViewKind::Mcp) {
-        let mut eps = [([0u8; azos_ipc::endpoint::ENDPOINT_NAME_MAX], 0usize); ENDPOINTS];
-        let n = view_endpoints(topo, v, &mut eps);
+        let mut eps = alloc::vec::Vec::new();
+        view_endpoints(topo, v, &mut eps);
         let dir = b.dir(root, "endpoints")?;
-        for (slot, (name, len)) in ids.endpoints.iter_mut().zip(&eps[..n]) {
-            let d = b.dir(dir, core::str::from_utf8(&name[..*len]).map_err(|_| Error::BadName)?)?;
-            *slot = Some(Endpoint {
-                name: *name,
-                len: *len,
+        for (name, len) in eps {
+            let d = b.dir(dir, core::str::from_utf8(&name[..len]).map_err(|_| Error::BadName)?)?;
+            ids.endpoints.push(Endpoint {
+                name,
+                len,
                 index: b.u64(d, "index", NO_INDEX)?,
                 server: b.string(d, "server", 16, "")?,
             });
@@ -403,7 +402,7 @@ fn build_peers(
     let mut n = 0u64;
     for task in topo.tasks() {
         for e in topo.exports_of(task) {
-            let held = ids.endpoints.iter().flatten().any(|x| &x.name[..x.len] == e.endpoint.as_bytes());
+            let held = ids.endpoints.iter().any(|x| &x.name[..x.len] == e.endpoint.as_bytes());
             if !held {
                 continue;
             }
@@ -453,7 +452,7 @@ fn build_components(
                 .and_then(|d| core::str::from_utf8(d).ok())
                 .unwrap_or("");
             text(b, d, "dir", dir_s)?;
-            ids.starts[n] = Some((b.u64(d, "start", super::row_startable(i) as u64)?, i));
+            ids.starts.push((b.u64(d, "start", super::row_startable(i) as u64)?, i));
             n += 1;
             Ok(())
         })();
@@ -483,7 +482,7 @@ fn fits(topo: &azos_topology::Topology<'_>, v: ViewKind, pages: usize) -> bool {
     let words: alloc::vec::Vec<core::sync::atomic::AtomicU64> =
         (0..pages * azos_arch::PAGE_SIZE / 8).map(|_| core::sync::atomic::AtomicU64::new(0)).collect();
     let Ok(w) = Writer::init(Region::from_atomics(&words), Class::Public) else { return false };
-    let mut ids = NO_VIEW_IDS;
+    let mut ids = ViewIds::default();
     w.rebuild(|b| build_view(b, topo, v, &mut ids)).is_ok()
 }
 
@@ -513,7 +512,7 @@ pub(crate) fn install_views() {
         // atomic word (this writer, and the readers' loads).
         let Ok(region) = (unsafe { Region::from_raw(base, pages * azos_arch::PAGE_SIZE) }) else { continue };
         let Ok(w) = Writer::init(region, Class::Public) else { continue };
-        let mut ids = NO_VIEW_IDS;
+        let mut ids = ViewIds::default();
         if w.rebuild(|b| build_view(b, topo, v, &mut ids)).is_err()
             || azos_inspect::Reader::open(region, Class::Public).is_err()
         {
@@ -553,7 +552,7 @@ fn endpoint_changed(name: &[u8], index: Option<u32>, owner: u32) {
     let row = served.then(|| azos_sched::task_row(owner)).flatten();
     let server = row.as_ref().map_or("", |r| padded(&r.name));
     for (w, ids) in all.0.iter().flatten() {
-        for e in ids.endpoints.iter().flatten().filter(|e| &e.name[..e.len] == name) {
+        for e in ids.endpoints.iter().filter(|e| &e.name[..e.len] == name) {
             let _ = w.set_u64(e.index, index.map_or(NO_INDEX, u64::from));
             let _ = w.set_str(e.server, server);
         }
@@ -565,7 +564,7 @@ fn endpoint_changed(name: &[u8], index: Option<u32>, owner: u32) {
 pub(crate) fn component_unstartable(row: usize) {
     let Some(all) = views() else { return };
     let Some((w, ids)) = &all.0[ViewKind::Components as usize] else { return };
-    for (id, _) in ids.starts.iter().flatten().filter(|(_, r)| *r == row) {
+    for (id, _) in ids.starts.iter().filter(|(_, r)| *r == row) {
         let _ = w.set_u64(*id, 0);
     }
 }
