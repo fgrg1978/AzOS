@@ -19746,10 +19746,9 @@ PYEOF
     # (the IPC lease table deleted), auth.envelope_wrap/_unwrap (the brain
     # link's HMAC envelope deleted: Noise only).
     #
-    # Not covered, and it is worth knowing why: `tools/bench/bench_e2e.sh` (468
-    # lines) drives the throughput and latency scenarios end to end, but needs
-    # a live brain server on the host. That is why nobody runs it, and why it
-    # is not gated here.
+    # Not covered: the throughput and latency scenarios end to end, which need
+    # a live brain server on the host (their console harness had no
+    # caller and was deleted on 2026-10-24).
     fresh_disk $AZOS_OUT/build/disk-uhello.img
     par_row qemu_run "bench: all 41 measurements" "run_all done emitted=41 " 180 \
         -smp 4 -global virtio-mmio.force-legacy=false \

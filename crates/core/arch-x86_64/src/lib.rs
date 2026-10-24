@@ -17,7 +17,7 @@
 //! with riscv64's/aarch64's but not their functions). So `cargo check` of a shared crate against it (the facade's
 //! `stub` feature, or a bare-metal `x86_64` target) fails exactly where that
 //! crate still reaches past the contract into an ISA module, and that error
-//! list is what a port must add (`tools/lint/arch_stub_check.py`).
+//! list is what a port must add.
 //!
 //! The same crate is the facade's host-side fake ISA (`azos_arch/stub`):
 //! the method list is one list, so the port and the stub cannot drift.

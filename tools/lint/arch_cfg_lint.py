@@ -105,7 +105,7 @@ SKIP_DIRS = {"target", "build", ".git", "target 2", "build 2", "third_party"}
 ENTRY_DIR = "kernel/src/entry/"
 
 
-# ── source scanning (shared with tools/lint/arch_coupling.py) ────────────────────
+# ── source scanning ───────────────────────────────────────────────────────────
 
 def strip_rust(src):
     """Blank comments and string/char literal contents, keeping offsets/lines."""
@@ -461,8 +461,7 @@ def scan_text(text):
 def isa_owned(rel):
     """A file that only ever builds for one ISA (`kernel/src/entry/<isa>*`,
     `.../<isa>_*.rs`): it is that port's own code, so a `target_arch` guard
-    in it has nothing to vanish from. Exempt from the lint, still counted by
-    tools/lint/arch_coupling.py."""
+    in it has nothing to vanish from. Exempt from the lint."""
     parts = rel.split("/")
     return any(p in ISAS or p in tuple(i + ".rs" for i in ISAS) or
                p.startswith(tuple(i + "_" for i in ISAS)) for p in parts)

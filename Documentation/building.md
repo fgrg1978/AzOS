@@ -264,7 +264,7 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | Conflict markers | `git grep` | no tracked file outside `third_party/` holds a merge-conflict marker line |
 | Supply chain | `cargo deny check licenses bans sources` | licences, bans and sources of the registry crates (`deny.toml`) |
 
-Other checks live in `tools/`: `tools/lint/arch_stub_check.py`, `tools/lint/aarch64_fp_free_check.sh`
+Other checks live in `tools/`: `tools/lint/aarch64_fp_free_check.sh`
 (the kernel names no FP register outside the lazy user-FP save and restore),
 and `tools/lint/lx_license_lint.py` (the licences of the Linux driver layer).
 

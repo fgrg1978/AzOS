@@ -35,7 +35,7 @@ azos_ipc       = { workspace = true }
 azos_abi       = { workspace = true }
 # `CONSOLE_LOCKDOWN` (config/axes/Kconfig.security), read by `authority.rs`.
 azos_limits    = { workspace = true }
-# `wcet`/`bench` (tools/bench/bench_e2e.sh).
+# `wcet`/`bench`, typed by hand on the console.
 azos_bench     = { path = "../../../domains/robot/bench", features = ["all"], optional = true }
 azos_actuation = { workspace = true }
 # `why`: the decision query.

@@ -17,8 +17,8 @@
 //! * `swap <image>`: the live update of a supervised server (handover Level 1);
 //! * `reboot`, `shutdown`: the two exits, both checked against WRITE on the `power` endpoint.
 //!
-//! Marked **(c), not recovery**: `wcet` and `bench`, kept only because
-//! `tools/bench/bench_e2e.sh` drives them over this console.
+//! Marked **(c), not recovery**: `wcet` and `bench`, typed by hand on this
+//! console (no script drives them since the end-to-end harness went, 2026-10-24).
 //!
 //! Besides the console loop the crate holds two things ring 3 and the boot
 //! also use: the family bodies behind the typed syscalls (`families`) and the
@@ -1356,8 +1356,8 @@ fn cmd_dhcp() {
 
 // ── (c) Not recovery: bench tooling ───────────────────────────────────────────
 //
-// `tools/bench/bench_e2e.sh` types `wcet`, `wcet jitter` and `bench all 1000` here.
-// No gate row drives them; they stay until the bench harness has a ring-3 home.
+// `wcet`, `wcet jitter` and `bench all 1000`, typed by hand. No gate row and no
+// script drives them; they stay until the bench harness has a ring-3 home.
 
 fn cmd_wcet(args: &[&[u8]; MAX_ARGS], argc: usize) {
     if argc >= 2 && args[1] == b"reset" {
