@@ -24437,9 +24437,14 @@ PY
             # (0x1), so the row reaches the check that matters: which CRC path
             # lxbase took.
             [ "$mode" = hwcap-canary ] && { [ "$isa" = rv ] && want="0x1" || want="0x1e"; }
-            local hex; hex="$(printf '0x%016x' "$want")"
-            if ! grep -aqE "\[VDSO\] hwcap=$want:" "$log"; then
-                why="the kernel's hwcap word is not $want ($(grep -aoE '\[VDSO\] hwcap=[^ ]*' "$log" | sed -n 1p))"
+            # The bits above are judged, the rest of the word is what the
+            # model and the build add (the PMU counters ring 3 may read,
+            # PMU_USER; aarch64 PAUTH): lxsrv must read the whole word.
+            local mask=0x1f got hex; [ "$isa" = rv ] && mask=0xf
+            got="$(grep -aoE '\[VDSO\] hwcap=0x[0-9a-f]+' "$log" | sed -n '1s/.*=//p')"
+            hex="$(printf '0x%016x' "${got:-0}")"
+            if [ -z "$got" ] || [ "$(( got & mask ))" -ne "$(( want ))" ]; then
+                why="the kernel's hwcap word does not carry $want under $mask ($(grep -aoE '\[VDSO\] hwcap=[^ ]*' "$log" | sed -n 1p))"
             elif ! grep -aqF "[LX] vdso hwcap $hex; lxbase crc32_le: $crc" "$log"; then
                 why="lxsrv did not read $hex from the vDSO, or lxbase did not pick '$crc' ($(grep -aoE 'lxbase crc32_le: .*' "$log" | sed -n 1p | tr -d '\r'))"
             elif ! grep -aqF "[CRYPTO] sha256 blocks: $sha" "$log"; then
