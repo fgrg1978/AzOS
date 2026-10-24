@@ -531,6 +531,68 @@ mod tests {
         assert_eq!(cli::rule_by_name(b"no-such-rule"), None);
         assert!(azos_decision::RULES.get(all.len()).is_none());
     }
+    // ── the kernel's view of the records ────────────────────────────────
+
+    /// The admin region's record slots as the kernel fills them
+    /// (`kernel/src/boot/inspect_views.rs`: `azos_decision::view_slot`, the
+    /// newest id per slot), for the records `rs` in order; `durable` says
+    /// which went down the durable path.
+    fn view(rs: &[(ProvenanceRecord, bool)], split: bool) -> Vec<ProvenanceRecord> {
+        let mut slots: Vec<Option<ProvenanceRecord>> = vec![None; MAX];
+        let mut nth = 0u64;
+        for &(p, durable) in rs {
+            let n = durable.then(|| {
+                nth += 1;
+                nth - 1
+            });
+            let k = azos_decision::view_slot(MAX, split, p.seq, n);
+            if slots[k].map_or(true, |q| q.seq < p.seq) {
+                slots[k] = Some(p);
+            }
+        }
+        slots.into_iter().flatten().collect()
+    }
+
+    /// **A login stays in the view however many wake placements follow it.**
+    /// The ring (DECISION_RECORDS_DEV) records a placement on every
+    /// migrating wake; keyed by id alone, 24 of them push a login out of the
+    /// admin region's records, and `why list -r login` shows none though the
+    /// journal still holds it. With both kinds built, the durable records
+    /// keep half the slots, so the logins (always durable) and the refusals
+    /// are listed while the newest placements share the rest.
+    ///
+    /// **Canary.** The view not split (`split` false, every record by id):
+    /// no login is listed.
+    #[test]
+    fn a_login_outlasts_a_flood_of_wake_placements_in_the_view() {
+        let mut rs = Vec::new();
+        let mut seq = 0;
+        let mut push = |rs: &mut Vec<_>, rule, verdict, n, durable| {
+            seq += 1;
+            rs.push((rec(seq, rule, verdict, 0, n), durable));
+        };
+        for _ in 0..40 {
+            push(&mut rs, Rule::WakePlacement, Verdict::Place, [1, 0, 7], false);
+        }
+        push(&mut rs, Rule::Login, Verdict::Refuse, [4, 1, 1], true);
+        push(&mut rs, Rule::Login, Verdict::Admit, [4, 1, 0], true);
+        for _ in 0..200 {
+            push(&mut rs, Rule::WakePlacement, Verdict::Place, [2, 1, 7], false);
+        }
+        let logins = |split| {
+            let s = served(&view(&rs, split));
+            let c = DecisionsClient::new(Loop(&s));
+            let mut ids = [0u64; MAX];
+            let f = Filter { rule: Some(Rule::Login as u8), ..Filter::ANY };
+            let (n, total) = list(&c, &f, &mut ids).unwrap();
+            (ids[..n].to_vec(), total)
+        };
+        let (ids, total) = logins(true);
+        assert_eq!(ids, vec![41, 42], "both logins listed, oldest first");
+        assert_eq!(total, 242, "the newest placement is in the view");
+        assert_eq!(view(&rs, true).len(), MAX / 2 + 2, "the placements fill their half, the logins two of theirs");
+        assert!(logins(false).0.is_empty(), "keyed by id alone, the placements pushed the logins out");
+    }
 }
 
 /// The text the console-login gate rows (`login: console`, tools/ci_check.sh)
@@ -563,4 +625,5 @@ mod login_lines {
         assert!(line(Verdict::Refuse, 0, [4, 0, 4]).contains("reason=4"));
         assert!(line(Verdict::Refuse, 0, [4, 0, 5]).contains("reason=5"));
     }
+
 }

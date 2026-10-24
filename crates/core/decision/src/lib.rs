@@ -1265,22 +1265,52 @@ fn deny_admit(subject: u32) -> Option<u64> {
 
 azos_common::ro_hook! {
     /// Called with a record's id once it is stored (in the ring or the
-    /// journal), where it was recorded: the kernel's introspection tree
-    /// writes it into the admin region's records. Any context (some records
-    /// are made on the wake path): the hook takes no lock. Unset: none.
-    static VIEW: fn(u64);
+    /// journal), and whether it went down the durable path, where it was
+    /// recorded: the kernel's introspection tree writes it into the admin
+    /// region's records ([`view_slot`]). Any context (some records are made
+    /// on the wake path): the hook takes no lock. Unset: none.
+    static VIEW: fn(u64, bool);
 }
 
 /// Install the [`VIEW`] hook (the kernel, at boot).
-pub fn set_view_sink(f: fn(u64)) {
+pub fn set_view_sink(f: fn(u64, bool)) {
     VIEW.set(f);
 }
 
 #[inline(never)]
-fn view(seq: u64) {
+fn view(seq: u64, durable: bool) {
     if let Some(f) = VIEW.get() {
-        f(seq);
+        f(seq, durable);
     }
+}
+
+/// The slot of a view of `rows` slots (the admin region's records) that
+/// record `seq` takes. `durable_nth`: how many durable records came before
+/// it, for one that went down the durable path; `None` for the others.
+///
+/// `split` (the ring and the durable path both built): the durable records
+/// (refusals, logins, a driver's move, the denials the bucket let through)
+/// keep the first half to themselves, by their own count, and the ring's
+/// other records share the second half by id. Keyed by id alone, the wake
+/// path, which records a placement on every migrating wake, pushed an audit
+/// record out of the view within seconds, though the journal still held it
+/// (the gate's `login:` rows found no login decision). Not split, every
+/// record is of one kind and takes slot `seq % rows`.
+pub const fn view_slot(rows: usize, split: bool, seq: u64, durable_nth: Option<u64>) -> usize {
+    let half = rows / 2;
+    if !split || half == 0 {
+        return (seq % rows as u64) as usize;
+    }
+    match durable_nth {
+        Some(n) => (n % half as u64) as usize,
+        None => half + (seq % (rows - half) as u64) as usize,
+    }
+}
+
+/// Is record `id` held as a durable one (in the journal)? For a view that
+/// fills its slots after the fact ([`view_slot`]).
+pub fn durable_held(id: u64) -> bool {
+    DURABLE && journal::get(id).is_some()
 }
 
 /// Install the durable refusal sink (the kernel, at boot, once the flight
@@ -1377,7 +1407,7 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
         durable(rule, verdict, subject, n, seq, origin);
     }
     if seq != 0 {
-        view(seq);
+        view(seq, to_sink);
     }
     seq
 }

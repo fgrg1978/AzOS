@@ -43,10 +43,11 @@
 //! created.
 //!
 //! Admin tree: `decisions/records/<n>`, the newest [`DECISION_ROWS`] stored
-//! decisions as `ProvenanceRecord::to_bytes` records, record `id` in slot
-//! `id % DECISION_ROWS` (empty until one is stored there), Kconfig
-//! DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE: a record's subject may
-//! be a task.
+//! decisions as `ProvenanceRecord::to_bytes` records, in the slot
+//! `azos_decision::view_slot` gives (empty until one is stored there: with
+//! both kinds built, the durable records keep half the slots to themselves),
+//! Kconfig DECISION_RECORDS_DEV or DECISION_REFUSALS_DURABLE: a record's
+//! subject may be a task.
 //!
 //! Shapes are built once, at `install_inspect`, from the topology installed by
 //! then, and never rebuilt. What a reader acts on is written where it changes,
@@ -592,6 +593,8 @@ struct Records {
     seq: [core::sync::atomic::AtomicU64; DECISION_ROWS],
     /// Per slot: `inspect_tasks::coalesce`'s flag.
     busy: [core::sync::atomic::AtomicU8; DECISION_ROWS],
+    /// Durable records written so far (`azos_decision::view_slot`'s count).
+    durable: core::sync::atomic::AtomicU64,
 }
 
 #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
@@ -607,14 +610,23 @@ pub(crate) fn install_records(w: Writer<'static>, rows: [NodeId; DECISION_ROWS])
         rows,
         seq: [const { core::sync::atomic::AtomicU64::new(0) }; DECISION_ROWS],
         busy: [const { core::sync::atomic::AtomicU8::new(0) }; DECISION_ROWS],
+        durable: core::sync::atomic::AtomicU64::new(0),
     });
     RECORDS.store(alloc::boxed::Box::leak(r), Ordering::Release);
     azos_decision::set_view_sink(decision_stored);
+    // Every record still held, oldest first: the durable half takes the
+    // journal's, which may be older than the ring's newest.
     let mut ids = [0u64; DECISION_ROWS];
-    let after = azos_decision::total().saturating_sub(DECISION_ROWS as u64);
-    let n = azos_decision::query(&azos_decision::Filter { after, ..azos_decision::Filter::ANY }, &mut ids);
-    for &id in &ids[..n] {
-        decision_stored(id);
+    let mut f = azos_decision::Filter::ANY;
+    loop {
+        let n = azos_decision::query(&f, &mut ids);
+        if n == 0 {
+            break;
+        }
+        for &id in &ids[..n] {
+            decision_stored(id, azos_decision::durable_held(id));
+        }
+        f.after = ids[n - 1];
     }
 }
 
@@ -623,10 +635,11 @@ pub(crate) fn install_records(w: Writer<'static>, rows: [NodeId; DECISION_ROWS])
 /// another caller is written once more by it ([`super::inspect_tasks::coalesce`]),
 /// with the newest id for the slot.
 #[cfg(any(feature = "decisions", feature = "decisions-durable"))]
-fn decision_stored(seq: u64) {
+fn decision_stored(seq: u64, durable: bool) {
     // SAFETY: set once, to a leaked allocation that lives for good.
     let Some(r) = (unsafe { RECORDS.load(Ordering::Acquire).as_ref() }) else { return };
-    let k = (seq % DECISION_ROWS as u64) as usize;
+    let nth = durable.then(|| r.durable.fetch_add(1, Ordering::Relaxed));
+    let k = azos_decision::view_slot(DECISION_ROWS, azos_decision::ON && azos_decision::DURABLE, seq, nth);
     r.seq[k].fetch_max(seq, Ordering::AcqRel);
     super::inspect_tasks::coalesce(&r.busy[k], || {
         if let Some(p) = azos_decision::lookup(r.seq[k].load(Ordering::Acquire)) {

@@ -9,7 +9,8 @@
 //! decisions the kernel keeps and publishes as binary records in its
 //! introspection tree's admin region (`decisions/records/<n>`: the ring when
 //! `DECISION_RECORDS_DEV` is on, the journal of durable decisions with
-//! `DECISION_REFUSALS_DURABLE`). A record's subject may be a task, hence the
+//! `DECISION_REFUSALS_DURABLE`; with both, the durable ones keep half the
+//! records). A record's subject may be a task, hence the
 //! admin region, and the task view its row holds to be granted it.
 //!
 //! Request-driven, like `termd`: accept, read the records again (the kernel

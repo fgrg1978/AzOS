@@ -23778,9 +23778,12 @@ x=con; echo bb\$x-ok
     # her shell (`alice@azos$ `); `exit` logs her out and the console waits for the
     # key again; a wrong passphrase prints `Login incorrect` and starts nothing;
     # `why list -r login` shows an `admit` of session 1 (the second login: one wrong
-    # secret came before it) and a `refuse` (reason 1). The server reads the newest
-    # records the admin introspection region holds, so the row's kernel has no
-    # decision ring.
+    # secret came before it) and a `refuse` (reason 1). The server reads the
+    # records the admin introspection region holds; with the decision ring on
+    # (the gate's dev config: a wake placement on every migrating wake) the
+    # durable records, every login among them, keep half its slots
+    # (`azos_decision::view_slot`): keyed by id alone the placements pushed the
+    # logins out within seconds and `why list -r login` listed none.
     # FAIL mode (canary): the "right" passphrase is a wrong one; the row passes only
     # because the shell never came.
     #
