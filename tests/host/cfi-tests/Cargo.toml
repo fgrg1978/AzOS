@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the hardware control-flow-integrity layer (plan item I4): the Kconfig to compiler-flag mapping of tools/kconfig_to_cargo.py for the three ISAs, a landing pad at every global assembly entry, and the pure parts of the aarch64 pointer-authentication key and the x86_64 CET setup. Excluded from the workspace like the other *-tests crates."
+description = "Host-side tests for the hardware control-flow-integrity layer (plan item I4): the Kconfig to compiler-flag mapping of tools/build/kconfig_to_cargo.py for the three ISAs, a landing pad at every global assembly entry, and the pure parts of the aarch64 pointer-authentication key and the x86_64 CET setup. Excluded from the workspace like the other *-tests crates."
 
 # Run with:  cd tests/host/cfi-tests && cargo test
 #            cargo test --features pad-canary   (the pad rows must FAIL)

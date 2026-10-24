@@ -89,7 +89,7 @@ pub enum SignedRefusal {
         missing: u8,
     },
     /// The policy binds the topology to this device, and the device has no
-    /// record (`tools/device_provision.py`) to compare with.
+    /// record (`tools/sign/device_provision.py`) to compare with.
     Unprovisioned,
 }
 

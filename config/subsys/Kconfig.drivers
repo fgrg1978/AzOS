@@ -379,7 +379,7 @@ config WDT_BCM2835_PM_ARM
       software watchdog still runs). QEMU `-M raspi3b` needs n: its PM model
       resets the machine on the arming write itself (it has no countdown),
       so an armed watchdog reboots it at the scheduler's start, as the
-      gate's raspi3b rows build (tools/ci_check.sh); a real Pi keeps y.
+      gate's raspi3b rows build (tools/gate/ci_check.sh); a real Pi keeps y.
 
 config DRV_IGC
     # cargo-feature: igc
@@ -612,7 +612,7 @@ config RTC_PCF8563_I2C_BUS
 # flight control, e-stop pin), rc (flight failsafe), i2c with the IMU
 # (attitude, imu_valid), rangefinder (obstacle check), ads1115 (battery
 # check), uart (console, panic path), virtio-blk/mmc (e-stop latch replay,
-# crash log). tools/kconfig_to_cargo.py refuses a .config that places any
+# crash log). tools/build/kconfig_to_cargo.py refuses a .config that places any
 # of them in ring 3. Drivers of Linux origin always run in ring 3 (none is
 # in the tree yet).
 

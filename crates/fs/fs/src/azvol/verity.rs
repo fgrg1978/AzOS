@@ -35,7 +35,7 @@
 //! The **verity root** is the SHA-256 of the header block: it commits to `N`,
 //! the shape and the top, and through them to every block. It is the trust
 //! anchor and it is not stored on the volume: the topology row carries it
-//! (`verity_root`), and `tools/mkazvol.py create --verity` prints it.
+//! (`verity_root`), and `tools/image/mkazvol.py create --verity` prints it.
 //!
 //! **Open.** The header's place depends on `N`, which only the superblock
 //! says, and the superblock is not yet trusted. The superblock's block count
@@ -339,7 +339,7 @@ impl<D: BlockDev, R: Record> BlockDev for VerityDev<D, R> {
 }
 
 /// Building an image's tree in Rust: only the host tests do (the tool that
-/// builds the real ones is `tools/mkazvol.py`, a second implementation of this
+/// builds the real ones is `tools/image/mkazvol.py`, a second implementation of this
 /// layout; the suite compares the two roots).
 #[cfg(test)]
 pub mod build {

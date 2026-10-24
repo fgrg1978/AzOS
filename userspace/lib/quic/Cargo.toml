@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "QUIC in ring 3 for the transparent RPC link: quinn-proto (the state machine, no crypto feature) driven over std::net::UdpSocket, the crypto adaptor it needs over rustls' quic module and the rustls-rustcrypto provider (RFC 7250 raw public keys, no certificates, no clock), and the relay loop (`relay`) that carries each sealed RPC frame of rpcsrv on its own unidirectional QUIC stream; the program around it is userspace/services/rpcquic. A std crate: built for *-unknown-azos through tools/sdk_cargo.py --vendored, tested on the host (tests/host/quic-tests). Excluded from workspace."
+description = "QUIC in ring 3 for the transparent RPC link: quinn-proto (the state machine, no crypto feature) driven over std::net::UdpSocket, the crypto adaptor it needs over rustls' quic module and the rustls-rustcrypto provider (RFC 7250 raw public keys, no certificates, no clock), and the relay loop (`relay`) that carries each sealed RPC frame of rpcsrv on its own unidirectional QUIC stream; the program around it is userspace/services/rpcquic. A std crate: built for *-unknown-azos through tools/build/sdk_cargo.py --vendored, tested on the host (tests/host/quic-tests). Excluded from workspace."
 
 [lib]
 name = "azos_quic"

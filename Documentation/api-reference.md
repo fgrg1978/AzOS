@@ -17,18 +17,18 @@ make doc ARCH=x86_64     # the x86_64 build of the same crates
 | Item | Value |
 |------|-------|
 | Output | `$AZOS_OUT/doc`, replaced on every run |
-| Output root | `$AZOS_OUT`, printed by `python3 tools/out_dir.py` |
+| Output root | `$AZOS_OUT`, printed by `python3 tools/lib/out_dir.py` |
 | Cargo target dir | `$AZOS_OUT/tgt/doc-<arch>` |
 | Toolchain | the pinned nightly of `rust-toolchain.toml`, with `rust-src` |
-| Target | the triple `tools/kconfig_to_cargo.py` derives from the `ARCH` defconfig |
-| Rustdoc flags | `-D warnings`, plus the ISA's baseline codegen flags from `tools/kconfig_to_cargo.py --rustflags` |
+| Target | the triple `tools/build/kconfig_to_cargo.py` derives from the `ARCH` defconfig |
+| Rustdoc flags | `-D warnings`, plus the ISA's baseline codegen flags from `tools/build/kconfig_to_cargo.py --rustflags` |
 
 The target builds `core` and `alloc` from source (`build-std` in `.cargo/config.toml`), so no
 cross target has to be installed. Each ISA documents the items compiled for
 that ISA: `azos_libsys`, for one, selects its trap instruction with
 `#[cfg(target_arch = ...)]`.
 
-Source: `mk/host.mk`, `tools/out_dir.py`, `tools/kconfig_to_cargo.py`,
+Source: `mk/host.mk`, `tools/lib/out_dir.py`, `tools/build/kconfig_to_cargo.py`,
 `rust-toolchain.toml`, `.cargo/config.toml`.
 
 ## Browse
@@ -270,7 +270,7 @@ Source: `crates/core/arch-api/src/lib.rs`, `contract.rs`, `isa.rs`, `spin.rs`,
 The functions that `library/std/src/sys/*/azos.rs` calls: traps, handles, the
 vDSO clock, threads over `thread_create`, futexes, the hardened allocator, the
 console and the startup block, with no `errno` and no POSIX. It is linked into
-`std` through its `rustc-dep-of-std` feature (`tools/sdk_std.py`) and is not used
+`std` through its `rustc-dep-of-std` feature (`tools/build/sdk_std.py`) and is not used
 by a program directly.
 
 | Module | Contents | Rendered by `make doc` |
@@ -282,4 +282,4 @@ The modules in the second row exist only on `target_os = "azos"`, which `make
 doc` does not build for; read their module documentation in
 `crates/core/stdrt/src/<module>.rs`. The `std` overlay itself is in `sdk/std`.
 
-Source: `crates/core/stdrt/src/lib.rs`, `sdk/std`, `tools/sdk_std.py`.
+Source: `crates/core/stdrt/src/lib.rs`, `sdk/std`, `tools/build/sdk_std.py`.

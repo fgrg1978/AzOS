@@ -179,7 +179,7 @@ it or when the extra crossings buy no isolation.
   program that serves the same interface on an endpoint
   (`crates/drivers/buzzer`, `crates/drivers/ina219`, `userspace/drivers/`).
   Their build scripts hash their own `src/` into a marker that both hosts
-  carry, and `tools/chip_source_check.py` requires every host binary to carry
+  carry, and `tools/lint/chip_source_check.py` requires every host binary to carry
   the marker of the source in the tree (`crates/drivers/chip_source.rs`).
 - **Placement is a topology row.** `place = "kernel" | "ring3"`,
   `stateless = true` (the driver keeps nothing a restart cannot rebuild) and
@@ -212,8 +212,8 @@ sources the fragments in `config/`, and `.config` is generated output.
 
 - **Cargo features come from Kconfig.** `kernel/Cargo.toml` has an empty
   `default` list; each build's features come from the expanded `.config`
-  through `tools/kconfig_to_cargo.py`, using `# cargo-feature:` tags in
-  `config/Kconfig.*`. `tools/kconfig_lint.py` checks the tags against the
+  through `tools/build/kconfig_to_cargo.py`, using `# cargo-feature:` tags in
+  `config/Kconfig.*`. `tools/lint/kconfig_lint.py` checks the tags against the
   feature table.
 - **Constants come from Kconfig.** `crates/core/limits` generates compile-time
   constants from `.config` with `crates/core/azos-config` in its build script.
@@ -221,15 +221,15 @@ sources the fragments in `config/`, and `.config` is generated output.
   class, use, structure, real-time class, security, build type, virtualization
   role). A value set by hand wins over the preset; presets never `select`.
   Defconfigs are in `config/defconfigs/`.
-- **Userspace programs are generated into the menu.** `tools/gen_userspace_kconfig.py`
+- **Userspace programs are generated into the menu.** `tools/build/gen_userspace_kconfig.py`
   runs at every parse, so a program directory added to `userspace/` shows up at
   the next configuration.
 - **Outputs stay out of the checkout.** Build products go under `$AZOS_OUT`
-  (`mk/vars.mk`, `tools/out_dir.py`).
+  (`mk/vars.mk`, `tools/lib/out_dir.py`).
 
 Source: `Kconfig`, `config/axes/Kconfig.preset`, `config/axes/Kconfig.use`,
 `kernel/Cargo.toml`, `crates/core/azos-config/src/lib.rs`,
-`crates/core/limits`, `tools/kconfig_to_cargo.py`, `mk/vars.mk`.
+`crates/core/limits`, `tools/build/kconfig_to_cargo.py`, `mk/vars.mk`.
 Next: [config.md](config.md), [building.md](building.md).
 
 ## One source, three ISAs
@@ -253,7 +253,7 @@ The same kernel crate builds for riscv64, aarch64 and x86_64.
   and interrupt bracket once; each ISA supplies its frame, trap entry asm and
   interrupt controller under `kernel/src/entry/<isa>/`.
 - **One layout.** The three ISAs share a file layout, with ISA-only code under
-  `ext/`. `tools/arch_layout_lint.py` enforces it. See
+  `ext/`. `tools/lint/arch_layout_lint.py` enforces it. See
   [structure.md](structure.md).
 - **One ABI shape.** The syscall numbers are the same on every ISA; only the
   registers differ (`a7`/`a0..a5` on riscv64, `x8`/`x0..x5` on aarch64,
@@ -261,7 +261,7 @@ The same kernel crate builds for riscv64, aarch64 and x86_64.
 
 Source: `crates/core/arch-api/src/contract.rs`, `crates/core/arch/src/lib.rs`,
 `kernel/src/boot/early.rs`, `kernel/src/trap/mod.rs`,
-`crates/core/abi/src/syscall_nr.rs`, `tools/arch_layout_lint.py`.
+`crates/core/abi/src/syscall_nr.rs`, `tools/lint/arch_layout_lint.py`.
 Next: [hal.md](hal.md).
 
 ## Scope and non-goals

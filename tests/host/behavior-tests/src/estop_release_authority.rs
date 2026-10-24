@@ -36,7 +36,7 @@ use ed25519_dalek::{Signer, SigningKey};
 /// A deterministic test keypair from a fixed 32-byte seed — reproducible
 /// across runs (unlike `SigningKey::generate`, which needs `rand_core` and
 /// would make a failing assertion non-reproducible), and distinct from the
-/// secure-boot test key (`tools/gen_test_key.py`) so a bug that confused the
+/// secure-boot test key (`tools/sign/gen_test_key.py`) so a bug that confused the
 /// two authorities would show up as a mismatch here rather than an accidental
 /// pass.
 fn operator_keypair() -> (SigningKey, [u8; 32]) {

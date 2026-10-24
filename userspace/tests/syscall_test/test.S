@@ -18,7 +18,7 @@
 #   a0 = return value
 #
 # The numbers are not restated here: the Makefile assembles this file with
-# `tools/syscall_defs.py`, which reads them from crates/core/abi.
+# `tools/build/syscall_defs.py`, which reads them from crates/core/abi.
 
 .option arch, +m, +a, +c, +zicsr, +zifencei
 

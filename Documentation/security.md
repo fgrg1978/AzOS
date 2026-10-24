@@ -206,7 +206,7 @@ run.
 ## Control-flow integrity
 
 Source: `crates/core/arch-aarch64/src/cpu/cfi.rs`,
-`crates/core/arch-x86_64/src/cpu/cfi.rs`, `tools/kconfig_to_cargo.py`
+`crates/core/arch-x86_64/src/cpu/cfi.rs`, `tools/build/kconfig_to_cargo.py`
 (`cfi_rustflags`), `config/subsys/Kconfig.topology` (section "Hardware control-flow
 integrity"), `config/arch/Kconfig.isa`.
 
@@ -294,8 +294,8 @@ speculation barrier on syscall entry.
 Source: `crates/core/arch-api/src/kaslr.rs`,
 `crates/core/arch-{aarch64,riscv64,x86_64}/src/mmu/kaslr.rs` and
 `kaslr_boot.rs`, `kernel/linker-*.ld`, `kernel/build.rs` (the `-pie` link),
-`config/kernel/Kconfig.hardening` (the `KASLR` choice), `tools/kaslr_image.sh`,
-`tools/kaslr_boot_row.sh`.
+`config/kernel/Kconfig.hardening` (the `KASLR` choice), `tools/image/kaslr_image.sh`,
+`tools/gate/kaslr_boot_row.sh`.
 
 Kconfig `KASLR` is `n` / `probe` / `require` (default `probe` on every build
 type, development included, so a layout bug shows where it is written; `require`
@@ -327,7 +327,7 @@ executable. The direct-map base is not randomized: it would turn every
 x86_64 Limine image. A development image prints the base on the `[KASLR]` line;
 other builds print only the entropy bits. Gate rows: `kaslr: slid` and
 `kaslr: plain` per ISA, with a canary; the `plain` rows set `n` by hand
-(`tools/kaslr_image.sh`), as no defconfig does. `kaslr: gate ktest kernel
+(`tools/image/kaslr_image.sh`), as no defconfig does. `kaslr: gate ktest kernel
 (rv|arm)` takes the kernel the ktest rows boot, as the gate builds it: its ELF
 must carry the relative relocations, and two boots must slide it and reach the
 test plan. `make check-fast` wants the `[KASLR] image slid` line on every boot
@@ -407,8 +407,8 @@ Source: `crates/core/ota/src/secure_boot.rs`, `crates/core/ota/build.rs`,
 `crates/core/ota/src/update.rs`, `crates/core/topology/build.rs`,
 `crates/core/topology/src/verify.rs`, `crates/core/topology/src/signed.rs`,
 `kernel/src/boot/ota.rs`, `kernel/src/boot/config_auth.rs`,
-`crates/core/pkg/src`, `crates/core/crypto/src/sig.rs`, `tools/sign_ota.py`,
-`tools/sigalg.py`.
+`crates/core/pkg/src`, `crates/core/crypto/src/sig.rs`, `tools/sign/sign_ota.py`,
+`tools/sign/sigalg.py`.
 
 Every artefact below carries a signature, verified before its bytes are
 interpreted, with three build-time exceptions: the kernel image is verified by
@@ -603,13 +603,13 @@ medium laid out to its end has its backup table there instead, so on GPT the
 store is the AzOS records partition, GPT type GUID
 `653ED7AA-51CA-43D8-9AF7-54775962C612` (generated once for AzOS;
 `GPT_RECORDS_GUID` in `crates/drivers/block/src/partition.rs`,
-`tools/azos_records.py`), of at least 8 sectors. The partition table publishes
+`tools/image/azos_records.py`), of at least 8 sectors. The partition table publishes
 it but never hands it out: no capability is minted for it, no disk syscall
 names it and no filesystem scan mounts it. A table with two such partitions is
 refused whole. The records are read or written only after the backup GPT
 header on the last sector, and its entry array, are found equal to the
 primary ones; a mismatch leaves the board without them for the boot (no seed,
-unprovisioned, no floor), as a missing tail does. `tools/make_parted_disk.py
+unprovisioned, no floor), as a missing tail does. `tools/image/make_parted_disk.py
 --gpt` builds such an image, and the provisioning tools find the partition on
 their own.
 
@@ -791,7 +791,7 @@ There are two kinds of authenticated link.
 
 **Brain link** (robot domain). A 32-byte pre-shared key is provisioned into
 reserved tail sector 0 of the boot medium, as a record with a magic, a version
-and an integrity tag (`tools/link_key_provision.py`). That sector is outside
+and an integrity tag (`tools/sign/link_key_provision.py`). That sector is outside
 the FAT volume and the USB mass-storage export never reports it, so a USB host
 cannot address it. The kernel reads it only when no partition and no FAT32
 volume reaches the tail, and refuses a sector that holds no valid record (a raw

@@ -12,7 +12,7 @@ The system-wide list of guarantees, with the code that enforces each one and
 the test or proof that checks it, is `formal/INVARIANTS.md`.
 
 Source: `formal/tla/`, `crates/core/ipc/src/cap.rs`, `crates/core/ipc/src/objref.rs`,
-`tools/ci_check.sh`.
+`tools/gate/ci_check.sh`.
 
 ## Kani harnesses
 
@@ -38,9 +38,9 @@ by host tests, listed in `formal/INVARIANTS.md`.
 
 ### How Kani runs
 
-Source: `tools/ci_check.sh` (row `formal: Kani harnesses`), `tests/host/cap-tests/Cargo.toml`.
+Source: `tools/gate/ci_check.sh` (row `formal: Kani harnesses`), `tests/host/cap-tests/Cargo.toml`.
 
-`tools/ci_check.sh` has a row named `formal: Kani harnesses`. It
+`tools/gate/ci_check.sh` has a row named `formal: Kani harnesses`. It
 
 - skips (printing `SKIP`, counted neither as pass nor fail) when
   `cargo kani` is not installed;

@@ -33,7 +33,7 @@ The boot volume holds two kernel slots and one recovery slot:
 | `KERN_A.SIG`, `KERN_B.SIG` | Their `RSIG` signature sidecars ([security.md](security.md)) |
 | `KERN_R.BIN`, `KERN_R.SIG` | The recovery slot R. OTA never writes it; `ota_inactive_slot_pure` never returns it. In a `SECURE_BOOT_ENFORCED` build, boot steering selects it when the running slot fails secure-boot verification and R's own signature verifies. |
 | `BOOTMETA.A`, `BOOTMETA.B` | The boot record, two files |
-| `BOOTMETA` | The same record as plain INI with no sequence number or CRC, rewritten after every record write for U-Boot (`tools/boot.cmd`, `env import -t`), which picks the slot it loads from this file |
+| `BOOTMETA` | The same record as plain INI with no sequence number or CRC, rewritten after every record write for U-Boot (`tools/image/boot.cmd`, `env import -t`), which picks the slot it loads from this file |
 
 **The boot record** (`BootMeta`) is INI text: `active_slot` (`a`, `b` or `r`),
 `boot_count`, `last_good`, per-slot firmware version, image size and CRC-32,
@@ -66,12 +66,12 @@ is not authenticated, and warns once that its floor is not to be trusted.
   verification.
 
 **Kernel-only install.** `ota recv <port>` (recovery console) listens on the
-given TCP port (`tools/ota_send.py` sends to `OTA_DEFAULT_PORT`, 8080, by default)
+given TCP port (`tools/dev/ota_send.py` sends to `OTA_DEFAULT_PORT`, 8080, by default)
 and receives a 24-byte `ROTA` header (magic, header version, size, CRC-32,
 firmware version, platform id, flags) followed by the raw kernel, at most
 `OTA_MAX_IMAGE_SIZE_MB`. The header is never stored and is not signed: its
 version is checked against `min_fw_version` only as an early, advisory refusal.
-`tools/ota_send.py` is the sender and `tools/sign_ota.py` makes the signature
+`tools/dev/ota_send.py` is the sender and `tools/sign/sign_ota.py` makes the signature
 sidecar. The image is written to `KERN_<slot>.TMP` and verified
 (`secure_boot_verify_staged_detailed`) before it replaces the slot: a present
 signature that fails is refused on every build, an image with no usable
@@ -93,7 +93,7 @@ named. See "Secure boot and signed artefacts" in [security.md](security.md).
 
 Source: `crates/core/ota/src/update.rs`, `crates/core/ota/src/pure.rs`,
 `crates/core/ota/src/lib.rs` (`ota_update_switch`, `ota_install_boot_set`),
-`userspace/services/pkgd`, `userspace/lib/packages`, `tools/sign_ota.py`,
+`userspace/services/pkgd`, `userspace/lib/packages`, `tools/sign/sign_ota.py`,
 `kernel/src/boot/ota.rs`.
 
 A kernel does not run alone. The unit of installation is the slot: one signed
@@ -149,7 +149,7 @@ names are inside the signature, so a part cannot be staged under another name.
 The directory must hold the manifest and its parts and nothing else.
 
 **Wire form** (little endian; the bundle is the manifest followed by each part's
-bytes in table order, built by `tools/sign_ota.py bundle`):
+bytes in table order, built by `tools/sign/sign_ota.py bundle`):
 
 | Offset | Size | Field |
 |--------|------|-------|
@@ -170,7 +170,7 @@ ring-3 installer and the host test suite include it by path.
 ## Delta updates
 
 Source: `crates/core/ota/src/pure.rs` (section "Delta updates"),
-`tools/ota_delta.py`, `tools/ota_send.py`.
+`tools/image/ota_delta.py`, `tools/dev/ota_send.py`.
 
 A whole-system bundle can be sent as a patch against the bundle the running slot
 was staged from: the slot's set directory holds exactly that bundle's bytes (the
@@ -202,16 +202,16 @@ length or reach outside the base, or a result whose SHA-256 differs from the
 head's. That last check reads the whole patch and the base once, writing nothing,
 so a damaged patch is found while the inactive slot is untouched.
 
-`tools/ota_delta.py` has `make`, `apply` and `info`; `make` checks its own output
+`tools/image/ota_delta.py` has `make`, `apply` and `info`; `make` checks its own output
 by applying it. Its matcher prefers sources at or after the previous copy, since
-the device reads the base as a sequential stream. `tools/ota_send.py
+the device reads the base as a sequential stream. `tools/dev/ota_send.py
 --delta-from` produces the patch from two bundles.
 
 ## Signed livepatch
 
 Source: `kernel/src/boot/livepatch.rs`, `crates/core/mm/src/livepatch_fmt.rs`,
 `crates/core/mm/src/text_poke.rs`, `crates/core/topology/src/types.rs`
-(`LivepatchSpec`), `tools/check_livepatch_layout.py`, Kconfig `LIVEPATCH`.
+(`LivepatchSpec`), `tools/lint/check_livepatch_layout.py`, Kconfig `LIVEPATCH`.
 
 A livepatch replaces the body of individual kernel functions in a running
 kernel. It is compiled in only with Kconfig `LIVEPATCH` (which needs
@@ -339,7 +339,7 @@ between servers is not transferred: the successor starts from its image.
 Source: `crates/core/pkg/src`, `userspace/services/pkgd`, `userspace/services/pkg`,
 `kernel/src/boot/pkg_apply.rs`, `config/subsys/Kconfig.packages`.
 
-A package (`.azpkg`, built by `tools/azpkg.py`) is images plus the topology rows
+A package (`.azpkg`, built by `tools/image/azpkg.py`) is images plus the topology rows
 they ask for, signed by a signer the signed topology names. `pkg install FILE`
 (or `pkg fetch`) has `PKGD.ELF` verify and admit it and stage it as
 `XXXXXXXX.PKG` on its native volume with a journal record; nothing it decides is

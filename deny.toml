@@ -1,6 +1,6 @@
 # cargo-deny configuration — supply-chain policy gates.
 #
-# Run (what the gate's n0 tier does, tools/gate_tier.sh; no network):
+# Run (what the gate's n0 tier does, tools/gate/gate_tier.sh; no network):
 #   cargo metadata --offline --locked --format-version 1 > md.json
 #   cargo deny check --metadata-path md.json --disable-fetch licenses bans sources
 # The metadata comes from cargo directly because cargo-deny's own `cargo fetch`
@@ -50,7 +50,7 @@ yanked  = "deny"
 #    and Ed25519 (`azos_tls::NoRsaKeys`, one implementation both use, so the provider's RSA signer is
 #    unreachable from them), and `tests/host/tls-tests/tests/rsa.rs` and `tests/host/quic-tests/src/rsa.rs` fail
 #    if a configuration takes an RSA key or the crate's sources name an RSA key path (each has a canary row in
-#    tools/ci_check.sh). If this ignore ever has to cover an RSA private-key operation, remove it and fix the
+#    tools/gate/ci_check.sh). If this ignore ever has to cover an RSA private-key operation, remove it and fix the
 #    code instead.
 #  * RUSTSEC-2024-0436, `paste` 1.0.15, unmaintained. It is a proc-macro crate: it runs at build time on the
 #    provider's macros and puts nothing of its own into any binary.

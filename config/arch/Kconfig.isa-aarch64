@@ -10,7 +10,7 @@ choice
     default AARCH64_LEVEL_8_0
     help
       The Armv8.x level the kernel and its user images assume. Codegen
-      gets that level's mandatory features (tools/kconfig_to_cargo.py:
+      gets that level's mandatory features (tools/build/kconfig_to_cargo.py:
       the kernel, soft-float, only those that need no FP/SIMD registers,
       e.g. +lse,+rcpc; the user images the whole list). The boot reads
       the ID registers before anything else and refuses a CPU below the

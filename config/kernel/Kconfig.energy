@@ -32,7 +32,7 @@ config ENERGY
     default y if PRESET_WEARABLE || PRESET_IOT_HMI || PRESET_DESKTOP || PRESET_SERVER
     help
       Energy-aware scheduling. Emits the kernel cargo feature `energy`
-      (tools/kconfig_to_cargo.py).
+      (tools/build/kconfig_to_cargo.py).
 
       The seams themselves (Placement, Governor, IdleGovernor in
       crates/core/energy) are in every build with today's behaviour only:
@@ -95,7 +95,7 @@ config THERMAL
     depends on RPI_FIRMWARE || !ARCH_AARCH64
     default y if ENERGY && !HWCLASS_EMBEDDED && (PRESET_ROBOT || PRESET_IOT_HMI || PRESET_GATEWAY || PRESET_DESKTOP || PRESET_SERVER)
     help
-      Emits the kernel cargo feature `thermal` (tools/kconfig_to_cargo.py).
+      Emits the kernel cargo feature `thermal` (tools/build/kconfig_to_cargo.py).
       crates/core/energy (thermal, opp) decides, crates/drivers/thermal
       reads the sensors and moves the clocks: the DTB's `thermal-zones`
       become zones with trips; a hot trip caps the performance domain by OPP

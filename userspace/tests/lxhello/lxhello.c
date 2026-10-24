@@ -11,7 +11,7 @@
 // Linux-targeting C compiler and no sysroot (`make $AZOS_OUT/build/lxhello.elf`).
 //
 // Each check prints `lx: <what> ok` or `lx: <what> FAIL ...`; the last line
-// is `lx: done failures=N`. The gate rows (`tools/ci_check.sh`, "linux:")
+// is `lx: done failures=N`. The gate rows (`tools/gate/ci_check.sh`, "linux:")
 // run it from the user shell and read those lines.
 //
 // Calls go through lx_sc*(NR_<name>, ...): `tests/host/seccomp-tests`

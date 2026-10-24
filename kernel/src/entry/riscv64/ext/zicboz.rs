@@ -40,7 +40,7 @@ pub(crate) fn selfcheck() {
             Some(same_page && all_zero)
         })().unwrap_or(false);
         // The bad path says `FAILED:` on purpose: `QEMU_FAIL_RE` in
-        // tools/ci_check.sh matches it, so a broken zero-fill turns EVERY
+        // tools/gate/ci_check.sh matches it, so a broken zero-fill turns EVERY
         // QEMU scenario red, not just a dedicated row.
         if ok {
             kprintln!("[MM] Zicboz zero-fill self-check: PASS");

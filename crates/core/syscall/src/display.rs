@@ -9,7 +9,7 @@
 //!   ([`set_scanout`]): the generic framebuffer (`azos_fb::scanout`: ramfb,
 //!   Limine, `simple-framebuffer`, virtio-gpu), or a display controller's own
 //!   driver. The syscall crate knows only the trait: the framebuffer crate is
-//!   scaffolding, and a core crate does not depend on that (`tools/tcb_check.sh`).
+//!   scaffolding, and a core crate does not depend on that (`tools/lint/tcb_check.sh`).
 //!   It runs one mode; its mode list is that mode first, then what the display's
 //!   EDID offers (`azos_fb::scanout::publish_edid`).
 //! * **Claim.** [`claim`](azos_devif::Display::claim) retires the kernel's text

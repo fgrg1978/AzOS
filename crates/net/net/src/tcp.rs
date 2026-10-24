@@ -2958,7 +2958,7 @@ fn accept_h(local_port: u16, v6: bool) -> Option<TcpHandle> {
     for i in 0..TCP_MAX_CONNS {
         let c = &mut t.conns[i];
         // `CloseWait` too: a peer that sends everything and half-closes
-        // (`tools/ota_send.py` does exactly that) can finish between two
+        // (`tools/dev/ota_send.py` does exactly that) can finish between two
         // polls of the accepting task, and its data is still in `rx_buf`,
         // readable until EOF. Accepting only `Established` left such a
         // connection unaccepted for good — an OTA push lost with no line on

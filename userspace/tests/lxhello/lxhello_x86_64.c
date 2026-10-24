@@ -11,7 +11,7 @@
 // static x86-64 musl binary issues, so it reads the runtime's x86-64 face
 // (`azos_linux_abi::x86_64`) the way a real program does. It runs the same two
 // stages as `lxhello rt` and `lxhello spawn`, with the same `lx: ...` lines the
-// gate row reads (`tools/ci_check.sh`, "x86_64 linux: hosted by the ring-3
+// gate row reads (`tools/gate/ci_check.sh`, "x86_64 linux: hosted by the ring-3
 // runtime"), and ends with `lx: rt done failures=N`.
 //
 // Only what the runtime answers is called, plus the call it must refuse

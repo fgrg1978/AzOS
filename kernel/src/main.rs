@@ -56,12 +56,12 @@ mod behavior_ml;
 // The Robot application domain (wave 11, DOMAIN): a .config that selects
 // USE_ROBOT must be built with the `use-robot` feature, or the image
 // would silently lack the robot it was configured for. Build through
-// tools/kconfig_to_cargo.py, which emits the feature from the .config. The
+// tools/build/kconfig_to_cargo.py, which emits the feature from the .config. The
 // converse (the feature on, another domain in .config) is allowed.
 const _: () = assert!(
     !azos_limits::USE_ROBOT || cfg!(feature = "use-robot"),
     "the .config selects USE_ROBOT but the kernel was built without the \
-     `use-robot` feature: build with $(python3 tools/kconfig_to_cargo.py <config>)",
+     `use-robot` feature: build with $(python3 tools/build/kconfig_to_cargo.py <config>)",
 );
 // Wave 15: the same rule for the two robot subsystems the .config can turn
 // off (config/domains/Kconfig.robot RC_INPUT, GEOFENCE). On means compiled in.
@@ -260,7 +260,7 @@ global_asm!(
 //
 // config/arch/Kconfig.isa's AARCH64_PAGE_* choice reaches `azos_limits` as
 // PAGE_SHIFT (from `.config`) and `azos_arch_api` as the cargo feature
-// `page-16k`/`page-64k` (tools/kconfig_to_cargo.py). Every page-table walk
+// `page-16k`/`page-64k` (tools/build/kconfig_to_cargo.py). Every page-table walk
 // uses the second; budgets and Kconfig checks use the first. A build that
 // passed `--features qemu` with a 16 KiB `.config`, or the reverse, stops
 // here instead of booting with two page sizes.
@@ -268,7 +268,7 @@ const _: () = assert!(
     azos_arch_api::PAGE_SHIFT == azos_limits::PAGE_SHIFT,
     "page size mismatch: .config (azos_limits::PAGE_SHIFT) and the cargo features \
      (page-16k / page-64k -> azos_arch_api::PAGE_SHIFT) disagree; build with the \
-     features tools/kconfig_to_cargo.py prints for this .config",
+     features tools/build/kconfig_to_cargo.py prints for this .config",
 );
 
 // ── aarch64 boot + trap asm — Item 2 Stage 5 ────────────────────────────
@@ -472,7 +472,7 @@ global_asm!(
     context_saving_off = const core::mem::offset_of!(azos_sched::task::Task, context_saving),
     pc_fp_live = const azos_arch::cpu::PERCPU_FP_LIVE,
     // 1 when the kernel is built with the external indirect-branch thunk
-    // (tools/kconfig_to_cargo.py: X86_MIT_SPECTRE_V2 = probe).
+    // (tools/build/kconfig_to_cargo.py: X86_MIT_SPECTRE_V2 = probe).
     mit_thunk = const matches!(azos_arch_api::isa::x86_64::MIT_SPECTRE_V2, azos_arch_api::isa::ExtPolicy::Probe) as u32,
     // 1 when the kernel is built with ENDBR64 pads (Kconfig X86_CET_IBT not n):
     // the resume may not be an indirect jump then.
@@ -1740,7 +1740,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         fn pat(i: usize) -> u8 { (i as u8).wrapping_mul(31).wrapping_add(7) }
 
         /// One line per side stating what the handshake negotiated, asserted
-        /// by `tools/net_pair_smoke.sh`. A 256-byte round trip passes whether
+        /// by `tools/gate/net_pair_smoke.sh`. A 256-byte round trip passes whether
         /// or not Window Scale, SACK-Permitted, Timestamps and ECN were agreed, so
         /// without this line the negotiation has no QEMU coverage at all.
         fn report_opts(fd: i32) {

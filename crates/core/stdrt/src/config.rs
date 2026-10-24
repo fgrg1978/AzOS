@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The knobs of this layer. Kconfig is their only source: `make sdk` exports
-//! them as `AZOS_<SYMBOL>` through `tools/kconfig_to_cargo.py --sdk-env`, and
+//! them as `AZOS_<SYMBOL>` through `tools/build/kconfig_to_cargo.py --sdk-env`, and
 //! there is no default here, so a build outside `make sdk` does not compile.
 
 const fn num(s: &str) -> usize {

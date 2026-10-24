@@ -676,7 +676,7 @@ mod tests {
     }
 }
 
-/// The text the console-login gate rows (`login: console`, tools/ci_check.sh)
+/// The text the console-login gate rows (`login: console`, tools/gate/ci_check.sh)
 /// match in `why list -r login`: the line of an admitted session and of a
 /// refused attempt, as `ProvenanceRecord::write_line` renders them.
 ///

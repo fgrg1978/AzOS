@@ -10,7 +10,7 @@ index of every option. Build commands are in [building.md](building.md).
 
 ## Layout
 
-Source: `Kconfig`, `config/Kconfig`, `config/*/Kconfig.*`, `tools/kconfig_lint.py`.
+Source: `Kconfig`, `config/Kconfig`, `config/*/Kconfig.*`, `tools/lint/kconfig_lint.py`.
 
 The root `Kconfig` sources `config/Kconfig`, which declares the menus and sources one topic
 file per subject. A topic file holds only its symbols (and its own sub-menus); `.config` is
@@ -24,7 +24,7 @@ generated and ignored by git.
 | `config/subsys/` | Subsystems and drivers: storage, file systems, network, RPC, network services, the signed topology, secure boot, entropy and TPM, the keystore, packages, drivers, USB, display and input, console and login, audio, OTA. |
 | `config/domains/` | Application domains, shown only for their `USE`: the robot domain and its brain link. |
 | `config/limits/` | The resource cap table: the integers that bound a static table, with defaults per hardware class. |
-| config/Kconfig.userspace | Generated at every parse by `tools/gen_userspace_kconfig.py` from the directories under `userspace/`; never committed. |
+| config/Kconfig.userspace | Generated at every parse by `tools/build/gen_userspace_kconfig.py` from the directories under `userspace/`; never committed. |
 | `config/fragments/`, `config/defconfigs/` | The defconfig matrix (below). |
 
 The topic files, in menu order:
@@ -77,7 +77,7 @@ The topic files, in menu order:
 | `config/kernel/Kconfig.decisions` | Decision records |
 | `config/kernel/Kconfig.micro` | AzOS-micro, the MCU kernel |
 
-`tools/kconfig_lint.py` enforces the single-source rules: every `# cargo-feature:` tag
+`tools/lint/kconfig_lint.py` enforces the single-source rules: every `# cargo-feature:` tag
 names a feature of `kernel/Cargo.toml` and sits in a `config` block of an existing symbol,
 each feature has exactly one owning symbol, no `select` forces a visible symbol,
 `kernel/Cargo.toml` has no `default` features, every symbol has a reader (code, the build
@@ -86,7 +86,7 @@ value.
 
 ## Axes and presets
 
-Source: `config/axes/`, `tools/check_presets.py`.
+Source: `config/axes/`, `tools/lint/check_presets.py`.
 
 One `PRESET` choice sets the defaults of every axis, and through them the options the axes
 own. A preset works through `default ... if PRESET_*` lines and `imply`; it never `select`s,
@@ -117,7 +117,7 @@ so a value set by hand wins. A hard incompatibility is a `depends on`.
 | Server | server | none | hardened | Hardware class server; `VIRT` hosted on x86_64, split on aarch64. |
 
 `make check-presets` expands every preset on every ISA and hands the result to
-`tools/kconfig_to_cargo.py`; it fails when an expansion warns, the preset is not the one
+`tools/build/kconfig_to_cargo.py`; it fails when an expansion warns, the preset is not the one
 that came out, or a small board enables a Linux adapter layer or a driver its topology
 does not name.
 
@@ -143,7 +143,7 @@ the table, and they are changed differently:
 
 ### Hardware support model
 
-Source: `config/arch/`, `tools/kconfig_to_cargo.py`, `crates/core/limits/build.rs`.
+Source: `config/arch/`, `tools/build/kconfig_to_cargo.py`, `crates/core/limits/build.rs`.
 
 Every ISA is configured the same way. Each ISA has a baseline level (`RISCV64_LEVEL`,
 `AARCH64_LEVEL`, `X86_64_LEVEL`) that is the only thing codegen assumes for the whole kernel
@@ -157,11 +157,11 @@ and its user images, and is checked at boot. Each optional extension is a three-
 
 `crates/core/limits/build.rs` refuses a `.config` whose level and extensions disagree (an
 extension the level includes must be `require`), and checks the kernel's target features
-against the ones `tools/kconfig_to_cargo.py --target-features` derives.
+against the ones `tools/build/kconfig_to_cargo.py --target-features` derives.
 
 ## Defconfigs
 
-Source: `config/fragments/`, `config/defconfigs/`, `tools/gen_defconfigs.py`.
+Source: `config/fragments/`, `config/defconfigs/`, `tools/build/gen_defconfigs.py`.
 
 A defconfig is assembled from fragments, and its name says which:
 
@@ -198,8 +198,8 @@ that wait for the device tree or ACPI (a RAM size, a PCI configuration window, a
 driver set) say so in their fragment.
 
 `config/defconfigs/` holds the assembled files of the cells something builds, and nothing
-else. `python3 tools/gen_defconfigs.py` (`make defconfigs`) rewrites them;
-`python3 tools/gen_defconfigs.py --check`, run by `make check0`, fails when one is not what
+else. `python3 tools/build/gen_defconfigs.py` (`make defconfigs`) rewrites them;
+`python3 tools/build/gen_defconfigs.py --check`, run by `make check0`, fails when one is not what
 its fragments assemble or does not keep the axes its name gives once Kconfig has expanded
 it. `make defconfig-<name>` loads a committed defconfig into `.config` and runs
 `olddefconfig`; any other name is assembled on the fly
@@ -222,9 +222,9 @@ it. `make defconfig-<name>` loads a committed defconfig into `.config` and runs
 
 ## From Kconfig to the build
 
-Source: `tools/kconfig_to_cargo.py`, `crates/core/azos-config/src/lib.rs`,
+Source: `tools/build/kconfig_to_cargo.py`, `crates/core/azos-config/src/lib.rs`,
 `crates/core/limits/build.rs`, `crates/core/limits/src/lib.rs`,
-`tools/gen_userspace_kconfig.py`, `tools/out_dir.py`.
+`tools/build/gen_userspace_kconfig.py`, `tools/lib/out_dir.py`.
 
 A Kconfig symbol reaches the build in one of two ways.
 
@@ -249,12 +249,12 @@ level that disagrees with its extensions, or a console program path that is not 
 directly under `/fat`.
 
 **As a cargo feature.** A symbol that owns a kernel cargo feature says so inside its own
-block with a tag (below). `tools/kconfig_to_cargo.py` reads the tags from the Kconfig files
+block with a tag (below). `tools/build/kconfig_to_cargo.py` reads the tags from the Kconfig files
 and turns a `.config` into cargo arguments:
 
 | Invocation | Output |
 |---|---|
-| `python3 tools/kconfig_to_cargo.py [.config]` | `--target <triple>` and `--features a,b,...` for the kernel build |
+| `python3 tools/build/kconfig_to_cargo.py [.config]` | `--target <triple>` and `--features a,b,...` for the kernel build |
 | `--select TOKENS --out PATH [.config]` | a build selection applied to a copy of the configuration at `PATH` (the build then reads `KCONFIG_CONFIG=PATH`), and that copy's cargo arguments; see below |
 | `--rustflags` / `--user-rustflags` | the ISA baseline codegen flags of the kernel / of the ring-3 images; add `--toml` for the inside of a TOML array |
 | `--target-features` | the feature lists `crates/core/limits/build.rs` checks the kernel build against |
@@ -272,9 +272,9 @@ is that symbol set to `y`, and a test hook (a feature named as a smoke, canary, 
 ... that no symbol owns) is added to the features. The copy is expanded by olddefconfig,
 so a dependency that is not met is an error, not a kernel built against a configuration
 that says otherwise. Any other name is refused. `make build-pci`, `make x86_64
-X86_64_SELECT=...`, `make check CHECK_SELECT=...` and the gate (`tools/ci_cargo.py
---select`) work this way; `tools/feature_source_lint.py` fails on a kernel build that
-names `--features` itself, and `tools/compile_time_hooks.tsv` lists the test hooks that
+X86_64_SELECT=...`, `make check CHECK_SELECT=...` and the gate (`tools/gate/ci_cargo.py
+--select`) work this way; `tools/lint/feature_source_lint.py` fails on a kernel build that
+names `--features` itself, and `tools/lint/compile_time_hooks.tsv` lists the test hooks that
 are still compile-time and why (the rest are runtime `canary=` names,
 `kernel/src/canary_rt.rs`).
 
@@ -284,7 +284,7 @@ help says when it is one of them.
 
 ## Adding an option
 
-Source: `tools/kconfig_to_cargo.py`, `tools/kconfig_lint.py`, `crates/core/limits/build.rs`.
+Source: `tools/build/kconfig_to_cargo.py`, `tools/lint/kconfig_lint.py`, `crates/core/limits/build.rs`.
 
 1. **Declare it** in the topic file that owns its subject (a table bound in
    `config/limits/Kconfig.limits`, a switch or tunable next to its subsystem), with a type,
@@ -301,33 +301,33 @@ Source: `tools/kconfig_to_cargo.py`, `tools/kconfig_lint.py`, `crates/core/limit
          What the table holds, and the cost in RAM per entry.
    ```
    Presets and axes set defaults through `default ... if` and `imply`. Do not `select` a
-   symbol that has a prompt (`tools/kconfig_lint.py` refuses it); use `depends on`. A new
+   symbol that has a prompt (`tools/lint/kconfig_lint.py` refuses it); use `depends on`. A new
    subject gets its own topic file, sourced from `config/Kconfig` inside its menu.
 2. **Use it.** For a size or a switch, import it: `azos_limits::MY_TABLE_ENTRIES`. A new
-   symbol needs a real consumer (`tools/kconfig_lint.py` refuses a symbol nothing reads,
+   symbol needs a real consumer (`tools/lint/kconfig_lint.py` refuses a symbol nothing reads,
    a symbol defined twice, and a symbol whose defaults all give one value).
 3. **If it selects code**, give the symbol a cargo feature: add `# cargo-feature: my-feature`
    as the first line of its block, and declare `my-feature` in `kernel/Cargo.toml`. One
    symbol owns one feature, and the tag must sit inside a `config` block. A kernel
-   feature that no symbol owns must be a test hook by name (`tools/kconfig_lint.py`).
+   feature that no symbol owns must be a test hook by name (`tools/lint/kconfig_lint.py`).
 4. **If it is a program under `userspace/`,** do not write Kconfig by hand: add
    `[package.metadata.azos]` to the crate's `Cargo.toml` (`images`, `topology`, `default`,
-   `start`); `tools/gen_userspace_kconfig.py` generates the options.
+   `start`); `tools/build/gen_userspace_kconfig.py` generates the options.
 5. **If a defconfig needs a non-default value**, set it in the fragment that owns the
    reason (an overlay for a board or a test image, never a generated defconfig), then run
-   `python3 tools/gen_defconfigs.py`.
+   `python3 tools/build/gen_defconfigs.py`.
 6. **Refresh and check.**
    ```sh
    make olddefconfig         # update .config with the new symbol's default
    make check-presets        # every preset still expands on every ISA
-   python3 tools/kconfig_lint.py
-   python3 tools/gen_feature_matrix.py   # regenerate Documentation/os-feature-matrix.md
-   python3 tools/gen_config_index.py     # regenerate the option index below
+   python3 tools/lint/kconfig_lint.py
+   python3 tools/build/gen_feature_matrix.py   # regenerate Documentation/os-feature-matrix.md
+   python3 tools/build/gen_config_index.py     # regenerate the option index below
    make check0               # type-check the three ISAs and run the host suites the diff reaches
    ```
 
 [os-feature-matrix.md](os-feature-matrix.md) lists every switch and choice with its value in
-each defconfig. It is generated by `tools/gen_feature_matrix.py`, and `make check0` fails
+each defconfig. It is generated by `tools/build/gen_feature_matrix.py`, and `make check0` fails
 when it, the defconfigs or the index below are stale.
 
 A value is changed with `make config` (menuconfig), `make nconfig`, `make oldconfig`
@@ -335,7 +335,7 @@ A value is changed with `make config` (menuconfig), `make nconfig`, `make oldcon
 
 ## Option index
 
-Generated by `python3 tools/gen_config_index.py` from the Kconfig tree: one row per declared
+Generated by `python3 tools/build/gen_config_index.py` from the Kconfig tree: one row per declared
 symbol, the topic file that declares it, and its prompt.
 The index lists every declared option: 1274.
 
@@ -481,61 +481,61 @@ The index lists every declared option: 1274.
 | `COMPOSITOR_BANNER_MS` | `config/subsys/Kconfig.display` | Compositor: milliseconds the trusted-path banner holds the focus gate after the Secure Attention Key |
 | `COMPOSITOR_FRAME_MS` | `config/subsys/Kconfig.display` | Compositor: milliseconds between two looks at the clients' damage and the trusted page |
 | `COMPOSITOR_SURFACE_PAGES` | `config/subsys/Kconfig.display` | Compositor: 4 KiB pages of the screen's surface the server's row may hold |
-| `CONSOLE_ARGS` | `tools/gen_userspace_kconfig.py` | (no prompt — internal/derived) |
+| `CONSOLE_ARGS` | `tools/build/gen_userspace_kconfig.py` | (no prompt — internal/derived) |
 | `CONSOLE_DEFER_BYTES` | `config/subsys/Kconfig.console` | Console deferred-line buffer (bytes) |
 | `CONSOLE_LOCKDOWN` | `config/axes/Kconfig.security` | Production console lockdown: no kernel console, unprivileged user shell |
 | `CONSOLE_LOGIN` | `config/subsys/Kconfig.console` | Console login: the native shell starts only after a secure-attention login |
-| `CONSOLE_PATH` | `tools/gen_userspace_kconfig.py` | (no prompt — internal/derived) |
-| `CONSOLE_PROGRAM_ABICHILD` | `tools/gen_userspace_kconfig.py` | ABICHILD.ELF (userspace/tests/abichild) |
-| `CONSOLE_PROGRAM_ABITEST` | `tools/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
-| `CONSOLE_PROGRAM_AUDIOD` | `tools/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
-| `CONSOLE_PROGRAM_BEHAVIOR` | `tools/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_BRAINCLI` | `tools/gen_userspace_kconfig.py` | BRAINCLI.ELF (userspace/services/brain_client) |
-| `CONSOLE_PROGRAM_BUSYBOX_SH` | `tools/gen_userspace_kconfig.py` | BusyBox sh (BUSYBOX.ELF, Linux personality, GPL-2.0-only) |
-| `CONSOLE_PROGRAM_BUZZDRV` | `tools/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
-| `CONSOLE_PROGRAM_CAPTEST` | `tools/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
-| `CONSOLE_PROGRAM_COMPMGR` | `tools/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |
-| `CONSOLE_PROGRAM_COMPSRV` | `tools/gen_userspace_kconfig.py` | COMPSRV.ELF (userspace/services/compositor) |
-| `CONSOLE_PROGRAM_CONFIG` | `tools/gen_userspace_kconfig.py` | CONFIG.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_CUSTOM` | `tools/gen_userspace_kconfig.py` | Custom image and arguments |
-| `CONSOLE_PROGRAM_CUSTOM_ARGS` | `tools/gen_userspace_kconfig.py` | Custom console program: argv (space-separated, argv[0] first) |
-| `CONSOLE_PROGRAM_CUSTOM_PATH` | `tools/gen_userspace_kconfig.py` | Custom console program: image path (/fat/NAME.ELF) |
-| `CONSOLE_PROGRAM_DECISD` | `tools/gen_userspace_kconfig.py` | DECISD.ELF (userspace/services/decisd) |
-| `CONSOLE_PROGRAM_EPSRV` | `tools/gen_userspace_kconfig.py` | EPSRV.ELF (userspace/tests/epsrv) |
-| `CONSOLE_PROGRAM_FLIGHT` | `tools/gen_userspace_kconfig.py` | FLIGHT.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_GPIODRV` | `tools/gen_userspace_kconfig.py` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
-| `CONSOLE_PROGRAM_HELLO` | `tools/gen_userspace_kconfig.py` | HELLO.ELF (userspace/tests/hello) |
-| `CONSOLE_PROGRAM_INADRV` | `tools/gen_userspace_kconfig.py` | INADRV.ELF (userspace/drivers/ina_drv) |
-| `CONSOLE_PROGRAM_INPUTD` | `tools/gen_userspace_kconfig.py` | INPUTD.ELF (userspace/services/inputd) |
-| `CONSOLE_PROGRAM_IPCTEST` | `tools/gen_userspace_kconfig.py` | IPCTEST.ELF (userspace/tests/ipctest) |
-| `CONSOLE_PROGRAM_LATBENCH` | `tools/gen_userspace_kconfig.py` | LATBENCH.ELF (userspace/bench/latbench) |
-| `CONSOLE_PROGRAM_LOGD` | `tools/gen_userspace_kconfig.py` | LOGD.ELF (userspace/services/logd) |
-| `CONSOLE_PROGRAM_LOGIND` | `tools/gen_userspace_kconfig.py` | LOGIND.ELF (userspace/services/logind) |
-| `CONSOLE_PROGRAM_LXHELLO` | `tools/gen_userspace_kconfig.py` | LXHELLO.ELF (userspace/tests/lxhello) |
-| `CONSOLE_PROGRAM_LXSRV` | `tools/gen_userspace_kconfig.py` | LXSRV.ELF (userspace/services/lxsrv) |
-| `CONSOLE_PROGRAM_LXTHR` | `tools/gen_userspace_kconfig.py` | LXTHR.ELF (userspace/tests/lxthreads) |
-| `CONSOLE_PROGRAM_MCPD` | `tools/gen_userspace_kconfig.py` | MCPD.ELF (userspace/services/mcpd) |
-| `CONSOLE_PROGRAM_MLSRV` | `tools/gen_userspace_kconfig.py` | MLSRV.ELF (userspace/services/infsrv) |
-| `CONSOLE_PROGRAM_NONE` | `tools/gen_userspace_kconfig.py` | None (the in-kernel shell has the console) |
-| `CONSOLE_PROGRAM_OTA` | `tools/gen_userspace_kconfig.py` | OTA.ELF (userspace/services/famtools) |
-| `CONSOLE_PROGRAM_PKG` | `tools/gen_userspace_kconfig.py` | PKG.ELF (userspace/services/pkg) |
-| `CONSOLE_PROGRAM_PKGD` | `tools/gen_userspace_kconfig.py` | PKGD.ELF (userspace/services/pkgd) |
-| `CONSOLE_PROGRAM_POWER` | `tools/gen_userspace_kconfig.py` | POWER.ELF (userspace/services/power) |
-| `CONSOLE_PROGRAM_PTPD` | `tools/gen_userspace_kconfig.py` | PTPD.ELF (userspace/services/ptpd) |
-| `CONSOLE_PROGRAM_REFLEX` | `tools/gen_userspace_kconfig.py` | REFLEX.ELF (userspace/services/reflex) |
-| `CONSOLE_PROGRAM_RPCQUIC` | `tools/gen_userspace_kconfig.py` | RPCQUIC.ELF (userspace/services/rpcquic) |
-| `CONSOLE_PROGRAM_RPCSRV` | `tools/gen_userspace_kconfig.py` | RPCSRV.ELF (userspace/services/rpcsrv) |
-| `CONSOLE_PROGRAM_SH` | `tools/gen_userspace_kconfig.py` | Native shell (SH.ELF, served by TERMD.ELF, named by NAMESD.ELF) |
-| `CONSOLE_PROGRAM_SSHD` | `tools/gen_userspace_kconfig.py` | SSHD.ELF (userspace/services/sshd) |
-| `CONSOLE_PROGRAM_SYSTEST` | `tools/gen_userspace_kconfig.py` | SYSTEST.ELF (userspace/tests/syscall_test) |
-| `CONSOLE_PROGRAM_TOOLBOX` | `tools/gen_userspace_kconfig.py` | TOOLBOX.ELF (userspace/services/toolbox) |
-| `CONSOLE_PROGRAM_TRACECTL` | `tools/gen_userspace_kconfig.py` | TRACECTL.ELF (userspace/services/tracectl) |
-| `CONSOLE_PROGRAM_UHELLO` | `tools/gen_userspace_kconfig.py` | UHELLO.ELF (userspace/tests/uhello) |
-| `CONSOLE_PROGRAM_VMMD` | `tools/gen_userspace_kconfig.py` | VMMD.ELF (userspace/services/vmmd) |
-| `CONSOLE_PROGRAM_VSBENCH` | `tools/gen_userspace_kconfig.py` | VSBENCH.ELF (userspace/bench/vsbench) |
-| `CONSOLE_PROGRAM_VSSRV` | `tools/gen_userspace_kconfig.py` | VSSRV.ELF (userspace/bench/vssrv) |
-| `CONSOLE_PROGRAM_WHY` | `tools/gen_userspace_kconfig.py` | WHY.ELF (userspace/services/why) |
-| `CONSOLE_PROGRAM_ZENOHD` | `tools/gen_userspace_kconfig.py` | ZENOHD.ELF (userspace/services/zenohd) |
+| `CONSOLE_PATH` | `tools/build/gen_userspace_kconfig.py` | (no prompt — internal/derived) |
+| `CONSOLE_PROGRAM_ABICHILD` | `tools/build/gen_userspace_kconfig.py` | ABICHILD.ELF (userspace/tests/abichild) |
+| `CONSOLE_PROGRAM_ABITEST` | `tools/build/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
+| `CONSOLE_PROGRAM_AUDIOD` | `tools/build/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
+| `CONSOLE_PROGRAM_BEHAVIOR` | `tools/build/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_BRAINCLI` | `tools/build/gen_userspace_kconfig.py` | BRAINCLI.ELF (userspace/services/brain_client) |
+| `CONSOLE_PROGRAM_BUSYBOX_SH` | `tools/build/gen_userspace_kconfig.py` | BusyBox sh (BUSYBOX.ELF, Linux personality, GPL-2.0-only) |
+| `CONSOLE_PROGRAM_BUZZDRV` | `tools/build/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
+| `CONSOLE_PROGRAM_CAPTEST` | `tools/build/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
+| `CONSOLE_PROGRAM_COMPMGR` | `tools/build/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |
+| `CONSOLE_PROGRAM_COMPSRV` | `tools/build/gen_userspace_kconfig.py` | COMPSRV.ELF (userspace/services/compositor) |
+| `CONSOLE_PROGRAM_CONFIG` | `tools/build/gen_userspace_kconfig.py` | CONFIG.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_CUSTOM` | `tools/build/gen_userspace_kconfig.py` | Custom image and arguments |
+| `CONSOLE_PROGRAM_CUSTOM_ARGS` | `tools/build/gen_userspace_kconfig.py` | Custom console program: argv (space-separated, argv[0] first) |
+| `CONSOLE_PROGRAM_CUSTOM_PATH` | `tools/build/gen_userspace_kconfig.py` | Custom console program: image path (/fat/NAME.ELF) |
+| `CONSOLE_PROGRAM_DECISD` | `tools/build/gen_userspace_kconfig.py` | DECISD.ELF (userspace/services/decisd) |
+| `CONSOLE_PROGRAM_EPSRV` | `tools/build/gen_userspace_kconfig.py` | EPSRV.ELF (userspace/tests/epsrv) |
+| `CONSOLE_PROGRAM_FLIGHT` | `tools/build/gen_userspace_kconfig.py` | FLIGHT.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_GPIODRV` | `tools/build/gen_userspace_kconfig.py` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
+| `CONSOLE_PROGRAM_HELLO` | `tools/build/gen_userspace_kconfig.py` | HELLO.ELF (userspace/tests/hello) |
+| `CONSOLE_PROGRAM_INADRV` | `tools/build/gen_userspace_kconfig.py` | INADRV.ELF (userspace/drivers/ina_drv) |
+| `CONSOLE_PROGRAM_INPUTD` | `tools/build/gen_userspace_kconfig.py` | INPUTD.ELF (userspace/services/inputd) |
+| `CONSOLE_PROGRAM_IPCTEST` | `tools/build/gen_userspace_kconfig.py` | IPCTEST.ELF (userspace/tests/ipctest) |
+| `CONSOLE_PROGRAM_LATBENCH` | `tools/build/gen_userspace_kconfig.py` | LATBENCH.ELF (userspace/bench/latbench) |
+| `CONSOLE_PROGRAM_LOGD` | `tools/build/gen_userspace_kconfig.py` | LOGD.ELF (userspace/services/logd) |
+| `CONSOLE_PROGRAM_LOGIND` | `tools/build/gen_userspace_kconfig.py` | LOGIND.ELF (userspace/services/logind) |
+| `CONSOLE_PROGRAM_LXHELLO` | `tools/build/gen_userspace_kconfig.py` | LXHELLO.ELF (userspace/tests/lxhello) |
+| `CONSOLE_PROGRAM_LXSRV` | `tools/build/gen_userspace_kconfig.py` | LXSRV.ELF (userspace/services/lxsrv) |
+| `CONSOLE_PROGRAM_LXTHR` | `tools/build/gen_userspace_kconfig.py` | LXTHR.ELF (userspace/tests/lxthreads) |
+| `CONSOLE_PROGRAM_MCPD` | `tools/build/gen_userspace_kconfig.py` | MCPD.ELF (userspace/services/mcpd) |
+| `CONSOLE_PROGRAM_MLSRV` | `tools/build/gen_userspace_kconfig.py` | MLSRV.ELF (userspace/services/infsrv) |
+| `CONSOLE_PROGRAM_NONE` | `tools/build/gen_userspace_kconfig.py` | None (the in-kernel shell has the console) |
+| `CONSOLE_PROGRAM_OTA` | `tools/build/gen_userspace_kconfig.py` | OTA.ELF (userspace/services/famtools) |
+| `CONSOLE_PROGRAM_PKG` | `tools/build/gen_userspace_kconfig.py` | PKG.ELF (userspace/services/pkg) |
+| `CONSOLE_PROGRAM_PKGD` | `tools/build/gen_userspace_kconfig.py` | PKGD.ELF (userspace/services/pkgd) |
+| `CONSOLE_PROGRAM_POWER` | `tools/build/gen_userspace_kconfig.py` | POWER.ELF (userspace/services/power) |
+| `CONSOLE_PROGRAM_PTPD` | `tools/build/gen_userspace_kconfig.py` | PTPD.ELF (userspace/services/ptpd) |
+| `CONSOLE_PROGRAM_REFLEX` | `tools/build/gen_userspace_kconfig.py` | REFLEX.ELF (userspace/services/reflex) |
+| `CONSOLE_PROGRAM_RPCQUIC` | `tools/build/gen_userspace_kconfig.py` | RPCQUIC.ELF (userspace/services/rpcquic) |
+| `CONSOLE_PROGRAM_RPCSRV` | `tools/build/gen_userspace_kconfig.py` | RPCSRV.ELF (userspace/services/rpcsrv) |
+| `CONSOLE_PROGRAM_SH` | `tools/build/gen_userspace_kconfig.py` | Native shell (SH.ELF, served by TERMD.ELF, named by NAMESD.ELF) |
+| `CONSOLE_PROGRAM_SSHD` | `tools/build/gen_userspace_kconfig.py` | SSHD.ELF (userspace/services/sshd) |
+| `CONSOLE_PROGRAM_SYSTEST` | `tools/build/gen_userspace_kconfig.py` | SYSTEST.ELF (userspace/tests/syscall_test) |
+| `CONSOLE_PROGRAM_TOOLBOX` | `tools/build/gen_userspace_kconfig.py` | TOOLBOX.ELF (userspace/services/toolbox) |
+| `CONSOLE_PROGRAM_TRACECTL` | `tools/build/gen_userspace_kconfig.py` | TRACECTL.ELF (userspace/services/tracectl) |
+| `CONSOLE_PROGRAM_UHELLO` | `tools/build/gen_userspace_kconfig.py` | UHELLO.ELF (userspace/tests/uhello) |
+| `CONSOLE_PROGRAM_VMMD` | `tools/build/gen_userspace_kconfig.py` | VMMD.ELF (userspace/services/vmmd) |
+| `CONSOLE_PROGRAM_VSBENCH` | `tools/build/gen_userspace_kconfig.py` | VSBENCH.ELF (userspace/bench/vsbench) |
+| `CONSOLE_PROGRAM_VSSRV` | `tools/build/gen_userspace_kconfig.py` | VSSRV.ELF (userspace/bench/vssrv) |
+| `CONSOLE_PROGRAM_WHY` | `tools/build/gen_userspace_kconfig.py` | WHY.ELF (userspace/services/why) |
+| `CONSOLE_PROGRAM_ZENOHD` | `tools/build/gen_userspace_kconfig.py` | ZENOHD.ELF (userspace/services/zenohd) |
 | `CONSOLE_RT_APPEND_ONLY` | `config/kernel/Kconfig.trace` | Real-time callers of the kernel log only append to the console |
 | `CONSOLE_TX_IRQ_BUDGET` | `config/subsys/Kconfig.console` | Console: most bytes one TX interrupt moves to the UART |
 | `CONSOLE_TX_RING_BYTES` | `config/subsys/Kconfig.console` | Console UART transmit ring (bytes) |
@@ -1318,54 +1318,54 @@ The index lists every declared option: 1274.
 | `USB_UVC` | `config/subsys/Kconfig.usb` | USB video class (UVC webcams) as the perception camera |
 | `USB_VOLUME_CACHE_KB` | `config/subsys/Kconfig.usb` | USB stick volume: sector cache (KiB, 0 or a power of two from 4) |
 | `USB_XHCI` | `config/subsys/Kconfig.usb` | xHCI host controller (USB 3.x/2.0/1.1, PCI class 0C0330 and device tree) |
-| `USERSPACE_ABICHILD` | `tools/gen_userspace_kconfig.py` | ABICHILD.ELF (userspace/tests/abichild) |
-| `USERSPACE_ABITEST` | `tools/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
-| `USERSPACE_AUDIOD` | `tools/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
-| `USERSPACE_BEHAVIOR` | `tools/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
-| `USERSPACE_BRAINCLI` | `tools/gen_userspace_kconfig.py` | BRAINCLI.ELF (userspace/services/brain_client) |
-| `USERSPACE_BUZZDRV` | `tools/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
-| `USERSPACE_CAPTEST` | `tools/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
-| `USERSPACE_COMPMGR` | `tools/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |
-| `USERSPACE_COMPSRV` | `tools/gen_userspace_kconfig.py` | COMPSRV.ELF (userspace/services/compositor) |
-| `USERSPACE_CONFIG` | `tools/gen_userspace_kconfig.py` | CONFIG.ELF (userspace/services/famtools) |
-| `USERSPACE_DECISD` | `tools/gen_userspace_kconfig.py` | DECISD.ELF (userspace/services/decisd) |
-| `USERSPACE_EPSRV` | `tools/gen_userspace_kconfig.py` | EPSRV.ELF (userspace/tests/epsrv) |
-| `USERSPACE_FLIGHT` | `tools/gen_userspace_kconfig.py` | FLIGHT.ELF (userspace/services/famtools) |
-| `USERSPACE_GPIODRV` | `tools/gen_userspace_kconfig.py` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
+| `USERSPACE_ABICHILD` | `tools/build/gen_userspace_kconfig.py` | ABICHILD.ELF (userspace/tests/abichild) |
+| `USERSPACE_ABITEST` | `tools/build/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
+| `USERSPACE_AUDIOD` | `tools/build/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
+| `USERSPACE_BEHAVIOR` | `tools/build/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
+| `USERSPACE_BRAINCLI` | `tools/build/gen_userspace_kconfig.py` | BRAINCLI.ELF (userspace/services/brain_client) |
+| `USERSPACE_BUZZDRV` | `tools/build/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
+| `USERSPACE_CAPTEST` | `tools/build/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
+| `USERSPACE_COMPMGR` | `tools/build/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |
+| `USERSPACE_COMPSRV` | `tools/build/gen_userspace_kconfig.py` | COMPSRV.ELF (userspace/services/compositor) |
+| `USERSPACE_CONFIG` | `tools/build/gen_userspace_kconfig.py` | CONFIG.ELF (userspace/services/famtools) |
+| `USERSPACE_DECISD` | `tools/build/gen_userspace_kconfig.py` | DECISD.ELF (userspace/services/decisd) |
+| `USERSPACE_EPSRV` | `tools/build/gen_userspace_kconfig.py` | EPSRV.ELF (userspace/tests/epsrv) |
+| `USERSPACE_FLIGHT` | `tools/build/gen_userspace_kconfig.py` | FLIGHT.ELF (userspace/services/famtools) |
+| `USERSPACE_GPIODRV` | `tools/build/gen_userspace_kconfig.py` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
 | `USERSPACE_GPL` | `config/axes/Kconfig.personality` | Allow third-party GPL userspace programs (e.g. BusyBox) |
-| `USERSPACE_HELLO` | `tools/gen_userspace_kconfig.py` | HELLO.ELF (userspace/tests/hello) |
-| `USERSPACE_INADRV` | `tools/gen_userspace_kconfig.py` | INADRV.ELF (userspace/drivers/ina_drv) |
-| `USERSPACE_INPUTD` | `tools/gen_userspace_kconfig.py` | INPUTD.ELF (userspace/services/inputd) |
-| `USERSPACE_IPCTEST` | `tools/gen_userspace_kconfig.py` | IPCTEST.ELF (userspace/tests/ipctest) |
-| `USERSPACE_LATBENCH` | `tools/gen_userspace_kconfig.py` | LATBENCH.ELF (userspace/bench/latbench) |
-| `USERSPACE_LOGD` | `tools/gen_userspace_kconfig.py` | LOGD.ELF (userspace/services/logd) |
-| `USERSPACE_LOGIND` | `tools/gen_userspace_kconfig.py` | LOGIND.ELF (userspace/services/logind) |
-| `USERSPACE_LXHELLO` | `tools/gen_userspace_kconfig.py` | LXHELLO.ELF (userspace/tests/lxhello) |
-| `USERSPACE_LXSRV` | `tools/gen_userspace_kconfig.py` | LXSRV.ELF (userspace/services/lxsrv) |
-| `USERSPACE_LXTHR` | `tools/gen_userspace_kconfig.py` | LXTHR.ELF (userspace/tests/lxthreads) |
-| `USERSPACE_MCPD` | `tools/gen_userspace_kconfig.py` | MCPD.ELF (userspace/services/mcpd) |
-| `USERSPACE_MLSRV` | `tools/gen_userspace_kconfig.py` | MLSRV.ELF (userspace/services/infsrv) |
-| `USERSPACE_NAMESD` | `tools/gen_userspace_kconfig.py` | NAMESD.ELF (userspace/services/namesd) |
-| `USERSPACE_OTA` | `tools/gen_userspace_kconfig.py` | OTA.ELF (userspace/services/famtools) |
-| `USERSPACE_PKG` | `tools/gen_userspace_kconfig.py` | PKG.ELF (userspace/services/pkg) |
-| `USERSPACE_PKGD` | `tools/gen_userspace_kconfig.py` | PKGD.ELF (userspace/services/pkgd) |
-| `USERSPACE_POWER` | `tools/gen_userspace_kconfig.py` | POWER.ELF (userspace/services/power) |
-| `USERSPACE_PTPD` | `tools/gen_userspace_kconfig.py` | PTPD.ELF (userspace/services/ptpd) |
-| `USERSPACE_REFLEX` | `tools/gen_userspace_kconfig.py` | REFLEX.ELF (userspace/services/reflex) |
-| `USERSPACE_RPCQUIC` | `tools/gen_userspace_kconfig.py` | RPCQUIC.ELF (userspace/services/rpcquic) |
-| `USERSPACE_RPCSRV` | `tools/gen_userspace_kconfig.py` | RPCSRV.ELF (userspace/services/rpcsrv) |
-| `USERSPACE_SH` | `tools/gen_userspace_kconfig.py` | SH.ELF (userspace/services/sh) |
-| `USERSPACE_SSHD` | `tools/gen_userspace_kconfig.py` | SSHD.ELF (userspace/services/sshd) |
-| `USERSPACE_SYSTEST` | `tools/gen_userspace_kconfig.py` | SYSTEST.ELF (userspace/tests/syscall_test) |
-| `USERSPACE_TERMD` | `tools/gen_userspace_kconfig.py` | TERMD.ELF (userspace/services/termd) |
-| `USERSPACE_TOOLBOX` | `tools/gen_userspace_kconfig.py` | TOOLBOX.ELF (userspace/services/toolbox) |
-| `USERSPACE_TRACECTL` | `tools/gen_userspace_kconfig.py` | TRACECTL.ELF (userspace/services/tracectl) |
-| `USERSPACE_UHELLO` | `tools/gen_userspace_kconfig.py` | UHELLO.ELF (userspace/tests/uhello) |
-| `USERSPACE_VMMD` | `tools/gen_userspace_kconfig.py` | VMMD.ELF (userspace/services/vmmd) |
-| `USERSPACE_VSBENCH` | `tools/gen_userspace_kconfig.py` | VSBENCH.ELF (userspace/bench/vsbench) |
-| `USERSPACE_VSSRV` | `tools/gen_userspace_kconfig.py` | VSSRV.ELF (userspace/bench/vssrv) |
-| `USERSPACE_WHY` | `tools/gen_userspace_kconfig.py` | WHY.ELF (userspace/services/why) |
-| `USERSPACE_ZENOHD` | `tools/gen_userspace_kconfig.py` | ZENOHD.ELF (userspace/services/zenohd) |
+| `USERSPACE_HELLO` | `tools/build/gen_userspace_kconfig.py` | HELLO.ELF (userspace/tests/hello) |
+| `USERSPACE_INADRV` | `tools/build/gen_userspace_kconfig.py` | INADRV.ELF (userspace/drivers/ina_drv) |
+| `USERSPACE_INPUTD` | `tools/build/gen_userspace_kconfig.py` | INPUTD.ELF (userspace/services/inputd) |
+| `USERSPACE_IPCTEST` | `tools/build/gen_userspace_kconfig.py` | IPCTEST.ELF (userspace/tests/ipctest) |
+| `USERSPACE_LATBENCH` | `tools/build/gen_userspace_kconfig.py` | LATBENCH.ELF (userspace/bench/latbench) |
+| `USERSPACE_LOGD` | `tools/build/gen_userspace_kconfig.py` | LOGD.ELF (userspace/services/logd) |
+| `USERSPACE_LOGIND` | `tools/build/gen_userspace_kconfig.py` | LOGIND.ELF (userspace/services/logind) |
+| `USERSPACE_LXHELLO` | `tools/build/gen_userspace_kconfig.py` | LXHELLO.ELF (userspace/tests/lxhello) |
+| `USERSPACE_LXSRV` | `tools/build/gen_userspace_kconfig.py` | LXSRV.ELF (userspace/services/lxsrv) |
+| `USERSPACE_LXTHR` | `tools/build/gen_userspace_kconfig.py` | LXTHR.ELF (userspace/tests/lxthreads) |
+| `USERSPACE_MCPD` | `tools/build/gen_userspace_kconfig.py` | MCPD.ELF (userspace/services/mcpd) |
+| `USERSPACE_MLSRV` | `tools/build/gen_userspace_kconfig.py` | MLSRV.ELF (userspace/services/infsrv) |
+| `USERSPACE_NAMESD` | `tools/build/gen_userspace_kconfig.py` | NAMESD.ELF (userspace/services/namesd) |
+| `USERSPACE_OTA` | `tools/build/gen_userspace_kconfig.py` | OTA.ELF (userspace/services/famtools) |
+| `USERSPACE_PKG` | `tools/build/gen_userspace_kconfig.py` | PKG.ELF (userspace/services/pkg) |
+| `USERSPACE_PKGD` | `tools/build/gen_userspace_kconfig.py` | PKGD.ELF (userspace/services/pkgd) |
+| `USERSPACE_POWER` | `tools/build/gen_userspace_kconfig.py` | POWER.ELF (userspace/services/power) |
+| `USERSPACE_PTPD` | `tools/build/gen_userspace_kconfig.py` | PTPD.ELF (userspace/services/ptpd) |
+| `USERSPACE_REFLEX` | `tools/build/gen_userspace_kconfig.py` | REFLEX.ELF (userspace/services/reflex) |
+| `USERSPACE_RPCQUIC` | `tools/build/gen_userspace_kconfig.py` | RPCQUIC.ELF (userspace/services/rpcquic) |
+| `USERSPACE_RPCSRV` | `tools/build/gen_userspace_kconfig.py` | RPCSRV.ELF (userspace/services/rpcsrv) |
+| `USERSPACE_SH` | `tools/build/gen_userspace_kconfig.py` | SH.ELF (userspace/services/sh) |
+| `USERSPACE_SSHD` | `tools/build/gen_userspace_kconfig.py` | SSHD.ELF (userspace/services/sshd) |
+| `USERSPACE_SYSTEST` | `tools/build/gen_userspace_kconfig.py` | SYSTEST.ELF (userspace/tests/syscall_test) |
+| `USERSPACE_TERMD` | `tools/build/gen_userspace_kconfig.py` | TERMD.ELF (userspace/services/termd) |
+| `USERSPACE_TOOLBOX` | `tools/build/gen_userspace_kconfig.py` | TOOLBOX.ELF (userspace/services/toolbox) |
+| `USERSPACE_TRACECTL` | `tools/build/gen_userspace_kconfig.py` | TRACECTL.ELF (userspace/services/tracectl) |
+| `USERSPACE_UHELLO` | `tools/build/gen_userspace_kconfig.py` | UHELLO.ELF (userspace/tests/uhello) |
+| `USERSPACE_VMMD` | `tools/build/gen_userspace_kconfig.py` | VMMD.ELF (userspace/services/vmmd) |
+| `USERSPACE_VSBENCH` | `tools/build/gen_userspace_kconfig.py` | VSBENCH.ELF (userspace/bench/vsbench) |
+| `USERSPACE_VSSRV` | `tools/build/gen_userspace_kconfig.py` | VSSRV.ELF (userspace/bench/vssrv) |
+| `USERSPACE_WHY` | `tools/build/gen_userspace_kconfig.py` | WHY.ELF (userspace/services/why) |
+| `USERSPACE_ZENOHD` | `tools/build/gen_userspace_kconfig.py` | ZENOHD.ELF (userspace/services/zenohd) |
 | `USER_ALLOC_BLOCK_KB` | `config/kernel/Kconfig.hardening` | Ring-3 allocator: size-class block, KiB |
 | `USER_ALLOC_GUARD_PAGES` | `config/kernel/Kconfig.hardening` | Ring-3 allocator: guard pages around blocks and large allocations |
 | `USER_ALLOC_MAX_MAPS` | `config/kernel/Kconfig.hardening` | Ring-3 allocator: live mappings (blocks + large allocations) |

@@ -30,7 +30,7 @@
 //!   the switch changes the boot record, which the installer holds no authority
 //!   over, and the system confirms or rolls back as one slot. See
 //!   `crates/core/ota/src/update.rs`.
-//!   The bundle may be a **delta** (`tools/ota_delta.py`; it starts with
+//!   The bundle may be a **delta** (`tools/image/ota_delta.py`; it starts with
 //!   `AZDL`): a patch against the set the running slot was staged from. The
 //!   installer reads that set as the base, checks the patch against it before
 //!   writing a byte, and stages the bundle it makes exactly as a whole one;

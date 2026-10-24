@@ -894,7 +894,7 @@ mod kernel {
         wide: Widen<WIDE>,
         /// The tally of every task slot: 24 B x `MAX_TASKS`, 98 KB on fleet.
         /// In a static of its own: held by value here it was built on the
-        /// stack of `build` (`tools/stack_frames.py`, fleet).
+        /// stack of `build` (`tools/lint/stack_frames.py`, fleet).
         switches: &'static mut SwitchTally<{ azos_sched::MAX_TASKS }>,
         rules: RuleTally,
         groups: DomainGroups,

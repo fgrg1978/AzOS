@@ -507,7 +507,7 @@ Source: `kernel/src/console_mode.rs`, `kernel/src/boot/launch.rs`
 (`boot_launch_task`, `for_each_launch_row`), `kernel/src/tasks/system.rs`
 (`recovery_task`), `kernel/src/main.rs`, `crates/core/recovery/src/lib.rs`,
 `crates/core/ipc/src/authority_policy.rs` (`AUTHORITY_TABLE`),
-`tools/gen_userspace_kconfig.py` (`CONSOLE_PROGRAM`),
+`tools/build/gen_userspace_kconfig.py` (`CONSOLE_PROGRAM`),
 `config/subsys/Kconfig.console` (`USER_SHELL`, `SH_START_TIMEOUT_S`, `RECOVERY_CONSOLE`,
 `KERNEL_CMDLINE_INIT`).
 

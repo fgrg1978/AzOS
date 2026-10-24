@@ -466,7 +466,7 @@ fn admit(
     use azos_topology::{AdmissionError, MemoryRefusal};
 
     // 1. Deadlines and the band: decided and recorded by the step the host
-    // dry boot (`tools/azos_sim`) replays too.
+    // dry boot (`tools/gate/azos_sim`) replays too.
     use azos_decision::{record, Rule, Verdict};
     use azos_topology::boot_admission::{self as ba, DeadlineOutcome};
     let rows = topo.tasks().len() as u64;

@@ -2788,7 +2788,7 @@ pub unsafe fn dtb_spin_table(ptr: *const u8, out: &mut [SpinCpu]) -> Option<usiz
 /// Added as a new function rather than a new [`DtbInfo`] field so the
 /// RISC-V boot path — which never calls this — has zero code-generation
 /// delta from its addition (see this crate's `riscv64-unknown-elf-objdump`
-/// discipline in the workspace's `tools/ci_check.sh` header comments).
+/// discipline in the workspace's `tools/gate/ci_check.sh` header comments).
 ///
 /// Returns `None` if `ptr` is null or the magic does not match; the same
 /// one precondition [`dtb_parse`] documents applies here (`ptr` must have

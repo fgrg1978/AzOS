@@ -38,7 +38,7 @@ Run by hand; there is no hosted CI. Every build output goes to `$AZOS_OUT`
 |---|---|
 | `make check0` | `cargo check` for riscv64, aarch64 and x86_64, the output-directory lint, `cargo deny`, and the host suites the diff reaches |
 | `make check1` | `check0`, then smoke boots and the QEMU scenarios the diff maps to |
-| `make ci` | The full gate (`tools/ci_check.sh`): every feature combination, the host suites and the QEMU scenarios |
+| `make ci` | The full gate (`tools/gate/ci_check.sh`): every feature combination, the host suites and the QEMU scenarios |
 
 A change is expected to leave the gate green. **Warnings count as failures.**
 `make help` lists the other targets.
@@ -64,7 +64,7 @@ A change is expected to leave the gate green. **Warnings count as failures.**
   reverting the fix, the test does not prove the fix.
 - Host-side tests are the crates under `tests/host/`; in-kernel tests use the
   `ktest!` macro (`crates/core/ktest`); QEMU scenarios are rows of
-  `tools/ci_check.sh`, mapped to paths in `tools/gate_rows.tsv`.
+  `tools/gate/ci_check.sh`, mapped to paths in `tools/gate/gate_rows.tsv`.
 - Say what a test does **not** cover. A green result proves only what its
   assertions look at.
 

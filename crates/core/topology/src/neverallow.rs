@@ -13,7 +13,7 @@
 //!   kernel falls back to the built-in one or halts as Kconfig
 //!   `TOPOLOGY_SOURCE` says), the built-in topology (the board halts), the
 //!   host emitter `topo_emit` and `load_signed`;
-//! * by `make check-neverallow` (`tools/check_neverallow.py`), which builds
+//! * by `make check-neverallow` (`tools/lint/check_neverallow.py`), which builds
 //!   the topology of every preset and runs [`check`] on it with the option
 //!   forced on.
 //!
@@ -113,7 +113,7 @@ impl Exception {
 
 /// One neverallow rule.
 pub struct Rule {
-    /// The rule's name, as `tools/check_neverallow.py` and the logs print it.
+    /// The rule's name, as `tools/lint/check_neverallow.py` and the logs print it.
     pub id: &'static str,
     /// The assertion, in English.
     pub text: &'static str,

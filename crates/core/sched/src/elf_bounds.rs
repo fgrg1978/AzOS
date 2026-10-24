@@ -146,7 +146,7 @@ pub fn check_page_sharing(
 /// (a streamed exec never sees the section headers), and this is the
 /// signature they carry; a `.rodata` placed inside the text segment by a
 /// script that keeps the headers out is named at build time instead
-/// (tools/elf_page_perms.py). lld's default layout (every native image's)
+/// (tools/lint/elf_page_perms.py). lld's default layout (every native image's)
 /// and GNU ld with `-z separate-code` keep the headers in a read-only
 /// segment or in none. Kconfig ELF_REFUSE_EXEC_HEADERS decides whether the loader
 /// asks.

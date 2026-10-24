@@ -33,7 +33,7 @@ pub(crate) fn ina219_host_task(_: usize) {
     use azos_drv_sys::timebase::now;
     let tid = azos_sched::current_task_tid();
     let mut host = KernelHost::new();
-    // The chip-logic source this host runs (`tools/chip_source_check.py`).
+    // The chip-logic source this host runs (`tools/lint/chip_source_check.py`).
     kprintln!("[INA219] kernel host tid={}: {}", tid,
               core::str::from_utf8(azos_drv_sensor::ina219::SOURCE_MARKER).unwrap_or("?"));
     if host.sample(now(), tid) {

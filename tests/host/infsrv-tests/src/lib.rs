@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Fixtures of the inference service's host suite: real signed bundles (the
-//! writer is `tools/make_mbl.py`, the key a throwaway one), a GGUF model
+//! writer is `tools/image/make_mbl.py`, the key a throwaway one), a GGUF model
 //! with a known answer, and a [`Platform`] made of host memory with a clock
 //! the tests move. The tests are `tests/*.rs`.
 
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
-pub const TOOL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/make_mbl.py");
+pub const TOOL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/image/make_mbl.py");
 
 // ── a model ──────────────────────────────────────────────────────────────
 
@@ -121,7 +121,7 @@ impl Drop for Tmp {
 }
 
 fn python(args: &[&str]) -> String {
-    let out = Command::new("python3").args(args).output().expect("python3 is required (tools/make_mbl.py)");
+    let out = Command::new("python3").args(args).output().expect("python3 is required (tools/image/make_mbl.py)");
     assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8(out.stdout).unwrap()
 }

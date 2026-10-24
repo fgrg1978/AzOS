@@ -365,7 +365,7 @@ fn freeze() {
 /// allocation, no lock, no formatting — and the policy's last step
 /// ([`finish`]). No quiesce, crash record, crash counter, crash log or trace
 /// dump. A panic in here parks the hart at once, so a panic costs at most
-/// two handler entries past the first (what `tools/stack_chain.py` charges).
+/// two handler entries past the first (what `tools/lint/stack_chain.py` charges).
 #[cold]
 #[inline(never)]
 fn nested(info: &PanicInfo, hart: usize) -> ! {

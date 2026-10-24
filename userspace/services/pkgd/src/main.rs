@@ -36,7 +36,7 @@
 //! (`userspace/lib/tls`: rustls with the rustls-rustcrypto provider) needs the
 //! std port, so `pkgd` is built like `rpcquic` is: `-Zbuild-std` for
 //! `<isa>-unknown-azos`, the crates.io tree `third_party/vendor`
-//! (`tools/sdk_cargo.py --vendored`). Its loop and its files are still the
+//! (`tools/build/sdk_cargo.py --vendored`). Its loop and its files are still the
 //! native calls of `azos_libsys`; `std` is what the dial and the handshake run
 //! on (`std::net`, the clock, the heap). The package source decides nothing: a
 //! fetched package is verified, admitted and staged exactly as one a client
@@ -88,7 +88,7 @@ mod azos_random {
 /// The key the signed topology is checked with, as one 32-byte object in the
 /// image. Passed straight to `Service::new` the constant is split by the
 /// compiler into the immediates of the code that builds the argument, and
-/// `tools/check_board_keys.py elf` (a board image embeds its own key and not the
+/// `tools/sign/check_board_keys.py elf` (a board image embeds its own key and not the
 /// test one) cannot find the key's 32 bytes in the ELF; a read through
 /// `black_box` of this `#[used]` static cannot be folded away.
 #[used]

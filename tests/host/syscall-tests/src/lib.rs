@@ -268,7 +268,7 @@ mod module_table_tests {
 
     const A: [u8; 32] = [0xa1; 32];
     const B: [u8; 32] = [0xb2; 32];
-    /// The shape `tools/module_hashes.py` writes: `(8.3 name, SHA-256)`.
+    /// The shape `tools/build/module_hashes.py` writes: `(8.3 name, SHA-256)`.
     const TABLE: &[(&str, [u8; 32])] = &[("LXBASE.KO", A), ("XZ_DEC.KO", B)];
 
     /// A module outside the build-time table is refused, whatever its bytes:

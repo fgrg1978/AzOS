@@ -27,7 +27,7 @@ name = "azos_arch_aarch64"
 #   rustup target add aarch64-unknown-none
 #   cargo build --release --target aarch64-unknown-none -p azos_arch_aarch64
 #
-# `tools/ci_check.sh` does both, so this cannot rot the way the parked copy did.
+# `tools/gate/ci_check.sh` does both, so this cannot rot the way the parked copy did.
 
 [dependencies]
 azos_common = { workspace = true }
@@ -41,7 +41,7 @@ bitflags          = { workspace = true }
 # Wave-4 canary hook for the ITS acceptance test (see
 # `crates/core/arch-aarch64/src/irq/its.rs`'s `ItsDriver::map_vector`): skips the
 # `MAPTI` command a real mapping would issue, so a PCI device's MSI-X
-# vector is never actually wired to an LPI. `tools/ci_check.sh`'s negative
+# vector is never actually wired to an LPI. `tools/gate/ci_check.sh`'s negative
 # row builds with this on and asserts the per-vector LPI count stays 0 —
 # proving the positive row's count-moved assertion actually discriminates,
 # not just "the kernel booted". `kernel/Cargo.toml` needs to forward this

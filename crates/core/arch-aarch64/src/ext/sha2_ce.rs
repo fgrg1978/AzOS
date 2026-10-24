@@ -8,7 +8,7 @@
 //! so it is plain assembly (no Rust code runs in it) and the caller must own
 //! the registers: the kernel calls it only through
 //! `fp::with_kernel_simd`, which saves a live user FP state first, and
-//! `tools/aarch64_fp_free_check.sh` names this symbol as allowed. It touches
+//! `tools/lint/aarch64_fp_free_check.sh` names this symbol as allowed. It touches
 //! only caller-saved registers (v0-v7, v16-v31; never v8-v15).
 //!
 //! Registers: v0 = abcd, v1 = efgh (the running state), v2/v3 = the state at

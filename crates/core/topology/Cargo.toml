@@ -50,7 +50,7 @@ energy-fake-balanced = ["energy-fake-model"]
 # crates and the QEMU build of the ML service turn it on themselves.
 dev-key = []
 # The host emitter (`tests/host/topology-tests/src/bin/topo_emit.rs`) writes,
-# and the host dry boot (`tools/azos_sim`) admits, the topology a kernel of ONE
+# and the host dry boot (`tools/gate/azos_sim`) admits, the topology a kernel of ONE
 # ISA builds: these select the rows `builder.rs` compiles only into a kernel
 # (`topo_bare`, `topo_arch_*` in `build.rs`; x86_64 has only the bare rows).
 # Never set by a kernel build, which gets the same cfgs from its target.
@@ -140,7 +140,7 @@ deadline-refusal-canary = []
 # actuation row holding a PWM channel with write access. `admission_check`
 # must refuse it (`neverallow` rule 0): the kernel halts at "Topology install
 # FAILED: Neverallow(..)" with a `neverallow` decision record, and
-# `tools/check_neverallow.py --canary` sees the host checker refuse it. Never
+# `tools/lint/check_neverallow.py --canary` sees the host checker refuse it. Never
 # in a real build; `kernel/Cargo.toml` wires it to a feature of its own.
 neverallow-row-canary = []
 # `neverallow::check` finds nothing, so a topology that breaks a rule is

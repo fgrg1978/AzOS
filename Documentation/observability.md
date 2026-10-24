@@ -5,7 +5,7 @@ mechanisms, from "why was this refused" to "what was every CPU doing":
 
 | Mechanism | Answers | Read with |
 |-----------|---------|-----------|
-| Decision records | Why did the kernel refuse, deny, admit or place this? | `why`, `tools/perfetto_export.py` |
+| Decision records | Why did the kernel refuse, deny, admit or place this? | `why`, `tools/dev/perfetto_export.py` |
 | Inspect tree and metrics | What are the kernel's current numbers? Why did that task wake? | `toolbox inspect`, `why woke` |
 | Crash dumps | What state was a task in when a fault killed it? | `why crash` |
 | Panic record | What happened when the kernel itself stopped? | `/fat/CRASH.LOG` |
@@ -498,7 +498,7 @@ by the interrupted stack pointer and the top of the running task's kernel stack
 (or this CPU's interrupt stack); a user sample by the user stack pointer and
 the stack's size. With `PROFILER` on, the build keeps a frame pointer in every
 function of the kernel and user images (`-C force-frame-pointers=yes`,
-`tools/kconfig_to_cargo.py`). The sampling rate is the
+`tools/build/kconfig_to_cargo.py`). The sampling rate is the
 scheduler tick divided by `PROFILER_TICK_DIV`, exact only to the tick: code
 running with interrupts masked is sampled at the instruction that unmasks them.
 
@@ -541,7 +541,7 @@ ELF files given. Without them, or for an address no symbol covers, the output is
 
 Source: `crates/core/trace/src/lib.rs`, `crates/core/abi/src/trace.rs`,
 `crates/core/syscall/src/trace_ctl.rs`, `userspace/services/tracectl`,
-`tools/perfetto_export.py`, Kconfig `KTRACE`.
+`tools/dev/perfetto_export.py`, Kconfig `KTRACE`.
 
 The kernel event tracer keeps one lock-free single-producer, single-consumer
 ring per CPU in one kernel-owned shared-memory region, mapped read-only for a
@@ -607,7 +607,7 @@ sites) and the sites with the longest windows are published in the introspection
 tree's `latency/`, and a new longest window is a `lat`-class
 trace record.
 
-**Perfetto.** `tools/perfetto_export.py` merges the flight recorder, the decision
+**Perfetto.** `tools/dev/perfetto_export.py` merges the flight recorder, the decision
 records and a kernel trace into one Chrome trace-event JSON that Perfetto loads, so
 "what did the machine decide, and what was it doing at that moment" is one
 timeline.

@@ -72,7 +72,7 @@ Bounds that Kconfig sets: `LINUX_ROBUST_LIST_LIMIT` (robust futex list entries w
 
 ### Third-party Linux programs
 
-`USERSPACE_GPL` is the switch without which no third-party GPL program is built or placed in an image. `BUSYBOX` (requires `USERSPACE_GPL` and `LINUX_ABI`) builds the pinned BusyBox release (the gitlink `third_party/busybox`, fetched by `tools/third_party_fetch.sh busybox`) static with `zig cc` for riscv64, aarch64 and x86_64; it runs as `BUSYBOX.ELF` under its own row with `abi = "linux"`. The `make busybox` target refuses, naming what is missing, without `zig` or without a clean checkout at the gitlink. `make busybox-source-offer` writes the source offer.
+`USERSPACE_GPL` is the switch without which no third-party GPL program is built or placed in an image. `BUSYBOX` (requires `USERSPACE_GPL` and `LINUX_ABI`) builds the pinned BusyBox release (the gitlink `third_party/busybox`, fetched by `tools/build/third_party_fetch.sh busybox`) static with `zig cc` for riscv64, aarch64 and x86_64; it runs as `BUSYBOX.ELF` under its own row with `abi = "linux"`. The `make busybox` target refuses, naming what is missing, without `zig` or without a clean checkout at the gitlink. `make busybox-source-offer` writes the source offer.
 
 ## Path 2: the Linux kernel driver slice (`lx/`)
 
@@ -84,16 +84,16 @@ Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`,
 
 | Piece | Path | Role |
 |---|---|---|
-| Pinned tree | `third_party/linux` (a shallow submodule, `update = none`; its `tag` in `.gitmodules`) | A tag of the kernel.org stable tree; the gitlink is its commit. `tools/third_party_fetch.sh linux` is the one way to fetch it (shallow and sparse). |
+| Pinned tree | `third_party/linux` (a shallow submodule, `update = none`; its `tag` in `.gitmodules`) | A tag of the kernel.org stable tree; the gitlink is its commit. `tools/build/third_party_fetch.sh linux` is the one way to fetch it (shallow and sparse). |
 | Glue | `lx/glue/lxbase.c`, `lx/glue/Kbuild` | `lxbase.ko`: the base of the layer, compiled by Linux's own Kbuild against the pinned tree. It exports the Linux symbols the validated modules import and forwards them to the host ABI. GPL-2.0-only. |
 | Host ABI | `lx/HOST_ABI` | Every symbol `lxsrv` exports to modules: `lxh_alloc`, `lxh_free`, `lxh_hwcap`, and the C string and memory functions. Plain scalars and pointers, no Linux type. |
 | Compatibility base | `lx/emul` (`lx_emul`) | A `no_std` Rust crate that re-implements the behaviour of Linux core APIs drivers call (allocation, locks, timers, workqueues, RCU, `printk`, the device model, reference counts, the exported-symbol table) with fixed-capacity containers and generation-checked handles. No Linux source is copied. See [Threads in the server](#threads-in-the-server). |
 | Loader | `crates/core/lx-loader` (`azos_lx_loader`) | Turns a relocatable `.ko` into code and data a ring-3 server can run. |
 | Kernel half of loading | `crates/core/syscall/src/module_ops.rs` | `DOMAIN_MODULE_VERIFY` and `DOMAIN_MODULE_MAP_X`. |
 | Server | `userspace/services/lxsrv` (`LXSRV.ELF`) | Runs the whole module path; its topology row (kernels with the `lx-server` feature) grants one capability, READ on the kernel entropy pool, which keys its allocator. |
-| Module build | `tools/lx_kbuild/`, `make lx-kbuild` | Runs Kbuild for riscv64 and aarch64 in a pinned container with no network and the tree mounted read-only; `make lx-kbuild-repro` rebuilds from scratch and requires identical `.ko` hashes. |
-| Device ids | `lx/DEVICE_SOURCES`, `tools/lx_device_table.py` | See [Leaf drivers](#leaf-drivers-and-the-hardware-bus). |
-| Licence lint | `tools/lx_license_lint.py` | See [Licensing of the driver layer](#licensing-of-the-driver-layer). |
+| Module build | `tools/build/lx_kbuild/`, `make lx-kbuild` | Runs Kbuild for riscv64 and aarch64 in a pinned container with no network and the tree mounted read-only; `make lx-kbuild-repro` rebuilds from scratch and requires identical `.ko` hashes. |
+| Device ids | `lx/DEVICE_SOURCES`, `tools/build/lx_device_table.py` | See [Leaf drivers](#leaf-drivers-and-the-hardware-bus). |
+| Licence lint | `tools/lint/lx_license_lint.py` | See [Licensing of the driver layer](#licensing-of-the-driver-layer). |
 
 ### Threads in the server
 
@@ -117,7 +117,7 @@ Modules are compiled with `-mcmodel=medany -mno-relax` (riscv64) or the small co
 
 The kernel decides whether bytes may run at all, because this tree's rules forbid the obvious loader: `mmap` refuses `PROT_EXEC`, there is no `mprotect` that adds execute, and every executable is bound to a SHA-256 the build computed.
 
-1. The server reads the module file and hands the file bytes to `DOMAIN_MODULE_VERIFY`. The kernel hashes them and looks the module name up in `MODULE_SHA256`, a table `tools/module_hashes.py` generates into the kernel image (the signed artefact). On a match it grants a one-shot token bound to the caller's thread id and the module's length; otherwise the refusal is recorded (a count, `REFUSALS` in `module_ops.rs`, and a console line).
+1. The server reads the module file and hands the file bytes to `DOMAIN_MODULE_VERIFY`. The kernel hashes them and looks the module name up in `MODULE_SHA256`, a table `tools/build/module_hashes.py` generates into the kernel image (the signed artefact). On a match it grants a one-shot token bound to the caller's thread id and the module's length; otherwise the refusal is recorded (a count, `REFUSALS` in `module_ops.rs`, and a console line).
 2. The server lays the module out in two anonymous regions (text, data) at the addresses its module window gives them (Kconfig `LX_MODULE_WINDOW_BASE`, `LX_MODULE_WINDOW_SIZE`; `azos_lx_loader::Window`: text, data from the next page, one guard page), mapped exactly there with `SYS_MO_MAP` and `MAP_FIXED_NOREPLACE`, which the kernel honours only inside the window and only while the caller holds a live token. It then resolves the module's imports (the host ABI first, then the exports, `__ksymtab`, of modules loaded earlier) and relocates it. The build checks that the window is clear of the break and the vDSO and ends within an aarch64 direct branch (128 MiB) of the lowest user address, so every relocation reaches on all three ISAs.
 3. The server calls `DOMAIN_MODULE_MAP_X` with the token and the text range. The kernel consumes the token, checks the range (inside the module window, at most the verified length rounded up to a page, every page the caller's own private read-write page), and flips it read-write to read-execute one PTE update per page (`vmm::set_user_range_exec`). Data stays read-write and never executable; text is never writable and executable at once.
 4. The server calls the module's init function.
@@ -128,7 +128,7 @@ The digest covers the input bytes, not the relocated text. A server that is alre
 
 ### Only the build-time table admits a module
 
-A `.ko` loads only if the signed build-time table lists it. There is no second root of trust for module code: no manifest, signing key or runtime list that the kernel consults besides `MODULE_SHA256`. Anonymous memory becomes executable only through `DOMAIN_MODULE_MAP_X`, and `exec` maps only images whose SHA-256 the build computed. The kernel looks the name up exactly (no prefix or case folding) and compares the digest with that row's only (`azos_syscall::module_tokens::verdict`), so a module outside the table is refused even when its bytes equal a listed module's. `tools/module_hashes.py` writes the table only from the `NAME=path` pairs the Makefile passes for the modules the build produced, refuses a name listed twice, and leaves out a module that was not built (`--skip-missing`), so a kernel built without it refuses it too. Adding, removing or changing a module is a kernel rebuild and an update of the signed image ([update.md](update.md)).
+A `.ko` loads only if the signed build-time table lists it. There is no second root of trust for module code: no manifest, signing key or runtime list that the kernel consults besides `MODULE_SHA256`. Anonymous memory becomes executable only through `DOMAIN_MODULE_MAP_X`, and `exec` maps only images whose SHA-256 the build computed. The kernel looks the name up exactly (no prefix or case folding) and compares the digest with that row's only (`azos_syscall::module_tokens::verdict`), so a module outside the table is refused even when its bytes equal a listed module's. `tools/build/module_hashes.py` writes the table only from the `NAME=path` pairs the Makefile passes for the modules the build produced, refuses a name listed twice, and leaves out a module that was not built (`--skip-missing`), so a kernel built without it refuses it too. Adding, removing or changing a module is a kernel rebuild and an update of the signed image ([update.md](update.md)).
 
 The cost is that every new or changed `.ko` needs a kernel rebuild and an image update. The rejected alternative was a module manifest signed with the topology key and checked by the kernel, which would let a module ship without a kernel rebuild. It would make that key a second root of trust for executable code, and the manifest's parser and its rollback rules a second admission path to audit. Linux's equivalent (`CONFIG_MODULE_SIG` with keys on the builtin trusted keyring) admits any module signed by a trusted key; this layer admits only the exact bytes the build hashed.
 
@@ -136,7 +136,7 @@ The cost is that every new or changed `.ko` needs a kernel rebuild and an image 
 
 ### Module set and symbol discipline
 
-`lxbase.ko` is built first and every other module after it. The rules, in `tools/lx_license_lint.py --ko DIR` over the Kbuild output:
+`lxbase.ko` is built first and every other module after it. The rules, in `tools/lint/lx_license_lint.py --ko DIR` over the Kbuild output:
 
 | Rule | Checks |
 |---|---|
@@ -152,7 +152,7 @@ The Kconfig menu "Linux compatibility" (`config/axes/Kconfig.personality`) defin
 
 ### Leaf drivers and the hardware bus
 
-`lx/DEVICE_SOURCES` lists the Linux leaf drivers whose ids the hardware bus matches, one `<lxsrv class> <path under third_party/linux>` line each. `tools/lx_device_table.py` reads each file's `MODULE_DEVICE_TABLE`, and `crates/drivers/hwbus/build.rs` turns the ids into the `LINUX` match table (see [drivers.md](drivers.md#match-tables)). The build refuses an id that is also in a native `hwbus.ids`. The first listed leaf is the sensor pilot, `drivers/media/i2c/imx219.c` (class `media`, selector `dt:sony,imx219`); the slices that follow, and the Linux sources each needs, are in [design/lx-driver-slices.md](design/lx-driver-slices.md). At bind time the native table is consulted first. A class server (`lxsrv-<class>`) is launched only when one of its ids matched a device the bus admitted (`Bus::linux_class_wanted`; the topology row marks the task as the server of a class).
+`lx/DEVICE_SOURCES` lists the Linux leaf drivers whose ids the hardware bus matches, one `<lxsrv class> <path under third_party/linux>` line each. `tools/build/lx_device_table.py` reads each file's `MODULE_DEVICE_TABLE`, and `crates/drivers/hwbus/build.rs` turns the ids into the `LINUX` match table (see [drivers.md](drivers.md#match-tables)). The build refuses an id that is also in a native `hwbus.ids`. The first listed leaf is the sensor pilot, `drivers/media/i2c/imx219.c` (class `media`, selector `dt:sony,imx219`); the slices that follow, and the Linux sources each needs, are in [design/lx-driver-slices.md](design/lx-driver-slices.md). At bind time the native table is consulted first. A class server (`lxsrv-<class>`) is launched only when one of its ids matched a device the bus admitted (`Bus::linux_class_wanted`; the topology row marks the task as the server of a class).
 
 A leaf-driver server drives devices only through ring-3 capabilities: a mapped register window (`DOMAIN_MMIO_MAP`), interrupt binding with `DEVICE_IRQ_BIND`, and the DMA and IOMMU services described in [drivers.md](drivers.md#dma). Because a bus master can write any physical address on a machine with no IOMMU, `LX_ACCEPT_UNCONFINED_DMA` (which depends on a DMA-capable class option) is the build-time acceptance of that; like the class options, the configuration validator refuses it.
 
@@ -169,7 +169,7 @@ The project is `Apache-2.0 OR GPL-2.0-only`. Code that includes a Linux kernel h
 | `LXTEST.KO` (`userspace/tests/lxmod/lxtest.c`) | `Apache-2.0 OR GPL-2.0-only`, module tag `Dual Apache/GPL` | This project's C, built with no Linux header |
 | The kernel image | `Apache-2.0 OR GPL-2.0-only` | It never links a Linux object: no GPL code runs in ring 0 |
 
-A server process that loads a Linux module runs GPL-2.0-only code as part of one program, and is distributed under GPL-2.0-only as a whole. The rule `tools/lx_license_lint.py` enforces is: no GPL-only source, symbol or object outside `lx/glue/` and `third_party/`. Its `--self-test` plants one violation per rule and requires each rule to report it.
+A server process that loads a Linux module runs GPL-2.0-only code as part of one program, and is distributed under GPL-2.0-only as a whole. The rule `tools/lint/lx_license_lint.py` enforces is: no GPL-only source, symbol or object outside `lx/glue/` and `third_party/`. Its `--self-test` plants one violation per rule and requires each rule to report it.
 
 | Rule | Checks (over `git ls-files`) |
 |---|---|

@@ -387,8 +387,8 @@ deterministic where a grown one is not.
 How an image asks: its crate's `build.rs` passes the linker `-z stack-size`
 (e.g. `userspace/services/toolbox/build.rs`), which lld writes as the
 `PT_GNU_STACK` header's `p_memsz`, on every ISA. The
-size is read off the program, not guessed: `tools/user_stacks.py` takes the
-deepest static call chain of each image (`tools/stack_chain.py`), adds 25% for
+size is read off the program, not guessed: `tools/lint/user_stacks.py` takes the
+deepest static call chain of each image (`tools/lint/stack_chain.py`), adds 25% for
 what a static chain does not see (indirect calls), and the gate rows
 `ring-3 stacks` (riscv64 and aarch64 images) fail an image whose request is
 smaller. The header sits in the
@@ -396,7 +396,7 @@ program header table, inside the first `STREAM_HDR_BYTES` of a streamed image,
 which an ELF note in the middle of the file would not.
 
 Source: `crates/core/sched/src/process.rs`, `crates/core/sched/src/elf_bounds.rs`,
-`tools/user_stacks.py`, `config/limits/Kconfig.limits`.
+`tools/lint/user_stacks.py`, `config/limits/Kconfig.limits`.
 
 ## Kept image frames
 

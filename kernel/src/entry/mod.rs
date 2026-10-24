@@ -10,7 +10,7 @@
 //! What the kernel *does* with a trap (the syscall flow and its prologue, the
 //! page-fault and exception policy, the fatal tail, the interrupt bracket, the
 //! tick and the reschedule point) is `crate::trap`, written once and generic
-//! over the frame; `tools/trap_lint.py` keeps it out of this directory.
+//! over the frame; `tools/lint/trap_lint.py` keeps it out of this directory.
 
 pub mod aarch64;
 pub mod riscv64;

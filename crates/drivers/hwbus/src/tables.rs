@@ -7,7 +7,7 @@
 //!   [boot] [if=<KCONFIG_SYMBOL>]`). A line whose Kconfig symbol is off is left
 //!   out, so a driver the image does not compile has no entry and its
 //!   devices are not claimed on its behalf.
-//! - [`LINUX`]: from `tools/lx_device_table.py`, which reads the
+//! - [`LINUX`]: from `tools/build/lx_device_table.py`, which reads the
 //!   `MODULE_DEVICE_TABLE` of the Linux leaf drivers listed in
 //!   `lx/DEVICE_SOURCES` out of the pinned Linux checkout. Empty while that tree
 //!   or that list is.

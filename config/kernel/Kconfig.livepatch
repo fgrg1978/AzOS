@@ -20,7 +20,7 @@ config LIVEPATCH
       `verify_no_exec_outside_image` is unchanged. A blob is applied only
       when: its RSIG signature (the update key) verifies, a row names its
       SHA-256, it is built for this ISA and this kernel's build-id
-      (`[PATCH] build=` on the boot line, tools/check_livepatch_layout.py),
+      (`[PATCH] build=` on the boot line, tools/lint/check_livepatch_layout.py),
       its `sec_epoch` is not below the OTA floor, and every function is in
       the image's allowlist (non-sleeping, `#[inline(never)]` entry points
       with an entry slot in `.azos_patch`). One bounded QSBR grace follows
@@ -100,7 +100,7 @@ config LIVEPATCH_POOL_KIB
       function body is loaded into later. 0 (default) = absent: the section is
       empty and costs no byte. Zero-filled, so a stray jump into it traps.
       Reaches the linker as `--defsym=__patch_pool_bytes` through
-      tools/kconfig_to_cargo.py --rustflags; the `[PATCH]` boot line reports
+      tools/build/kconfig_to_cargo.py --rustflags; the `[PATCH]` boot line reports
       the size the linker actually laid out. Cost: this many KiB of image.
 
 config LIVEPATCH_ENTRY_NOPS

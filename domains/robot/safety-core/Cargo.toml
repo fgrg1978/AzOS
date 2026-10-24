@@ -7,7 +7,7 @@ publish = false
 
 # The robot's part of the safety path that ran inside
 # kernel/src/main.rs (motor gate and envelope wiring, rt-motor, flight control,
-# I-13 rollback). Profile crate (tools/tcb_check.sh, wave 11): the part every
+# I-13 rollback). Profile crate (tools/lint/tcb_check.sh, wave 11): the part every
 # domain shares moved to crates/core/actuation, which this crate registers
 # its stop work into.
 

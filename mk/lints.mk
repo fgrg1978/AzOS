@@ -7,7 +7,7 @@
 # Type-check the kernel for one ISA without linking (config/arch/Kconfig.isa
 # ARCH_RISCV64 / ARCH_AARCH64 / ARCH_X86_64). The target triple
 # and the baseline codegen flags (`--rustflags`: x86_64's X86_64_LEVEL) come
-# from the expanded defconfig through tools/kconfig_to_cargo.py, and
+# from the expanded defconfig through tools/build/kconfig_to_cargo.py, and
 # `-Zbuild-std` (.cargo/config.toml) builds core/alloc from rust-src, so no
 # target has to be installed. RUSTFLAGS is set only when the ISA has baseline
 # flags: an empty one would override riscv64's build.rustflags.
@@ -28,7 +28,7 @@ CHECK_TABLE_x86_64  := $(OUT_BUILD)/image_hashes_x86_64.rs $(THIRDPARTY_HASHES_X
 
 .PHONY: check
 # CHECK_SELECT is a selection on the cell (`make check CHECK_SELECT=ktest`,
-# tools/kconfig_to_cargo.py --select): a ktest-only file is otherwise never compiled.
+# tools/build/kconfig_to_cargo.py --select): a ktest-only file is otherwise never compiled.
 CHECK_SELECT ?=
 check: | $(CHECK_TABLE_$(ARCH))
 	@test -n "$(CHECK_DEFCONFIG_$(ARCH))" || { echo "[CHECK] unknown ARCH=$(ARCH) (riscv64, aarch64, x86_64)"; exit 1; }
@@ -36,49 +36,49 @@ check: | $(CHECK_TABLE_$(ARCH))
 	cp "$(CHECK_DEFCONFIG_$(ARCH))" "$(CHECK_KCONFIG)"
 	KCONFIG_CONFIG="$(CHECK_KCONFIG)" $(PYTHON) -m olddefconfig
 	$(call kernel_select,$(CHECK_KCONFIG),$(CHECK_SELECT),$(CHECK_KCONFIG:.config=-sel.config)); \
-	rf="$$(python3 tools/kconfig_to_cargo.py --rustflags "$(CHECK_KCONFIG)")"; \
+	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags "$(CHECK_KCONFIG)")"; \
 	if [ -n "$$rf" ]; then export RUSTFLAGS="$$rf"; else unset RUSTFLAGS; fi; \
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(CHECK_KCONFIG:.config=-sel.config)" \
 	    $(CARGO) check --release -p azos_kernel $$args
 
 # ── CI: build all feature combinations (0 errors, 0 warnings). ───────────────
 ci:
-	@env -u CARGO_TARGET_DIR bash tools/ci_check.sh
+	@env -u CARGO_TARGET_DIR bash tools/gate/ci_check.sh
 
-# The short tiers (tools/gate_tier.sh): N0 the edit loop (`cargo check` per
+# The short tiers (tools/gate/gate_tier.sh): N0 the edit loop (`cargo check` per
 # ISA + the host suites the diff reaches), N1 the front check (N0's suites,
 # then the per-ISA smoke boots and the gate rows the diff maps to,
-# tools/rows_for_diff.py). GATE_BASE=<rev> diffs against a revision, not HEAD.
-# N0 also runs the output-dir lint (tools/out_dir_lint.py): nothing may write
+# tools/gate/rows_for_diff.py). GATE_BASE=<rev> diffs against a revision, not HEAD.
+# N0 also runs the output-dir lint (tools/lint/out_dir_lint.py): nothing may write
 # into the checkout.
 check0:
-	@env -u CARGO_TARGET_DIR bash tools/gate_tier.sh n0
+	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh n0
 
 check1:
-	@env -u CARGO_TARGET_DIR bash tools/gate_tier.sh n1
+	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh n1
 
 # Every preset (config/axes/Kconfig.preset) expands on every ISA and the cargo
-# bridge accepts it (tools/check_presets.py). No kernel is built.
+# bridge accepts it (tools/lint/check_presets.py). No kernel is built.
 check-presets:
-	@$(PYTHON) tools/check_presets.py
+	@$(PYTHON) tools/lint/check_presets.py
 
-# No preset's topology breaks a neverallow rule (tools/check_neverallow.py):
+# No preset's topology breaks a neverallow rule (tools/lint/check_neverallow.py):
 # the built-in topology of every preset on every ISA, of every defconfig, and
 # the micro kernel's, against crates/core/topology/src/neverallow.rs. Host
 # builds only; no kernel is built and nothing boots.
 check-neverallow:
-	@$(PYTHON) tools/check_neverallow.py
+	@$(PYTHON) tools/lint/check_neverallow.py
 
-# The two `unsafe` ratchets (tools/unsafe_budget.py, baseline
-# tools/unsafe_budget.tsv): per crate the unsafe count and whether it forbids
+# The two `unsafe` ratchets (tools/lint/unsafe_budget.py, baseline
+# tools/lint/unsafe_budget.tsv): per crate the unsafe count and whether it forbids
 # unsafe code, per kernel crate and in total the share of code lines in files
-# with unsafe. The gate's n0 tier and tools/ci_check.sh run it too.
+# with unsafe. The gate's n0 tier and tools/gate/ci_check.sh run it too.
 .PHONY: unsafe-budget
 unsafe-budget:
-	@$(PYTHON) tools/unsafe_budget.py --self-test
-	@$(PYTHON) tools/unsafe_budget.py
+	@$(PYTHON) tools/lint/unsafe_budget.py --self-test
+	@$(PYTHON) tools/lint/unsafe_budget.py
 
-# The size budget (tools/size_budget.py, baseline tools/size_budget.tsv): the
+# The size budget (tools/lint/size_budget.py, baseline tools/lint/size_budget.tsv): the
 # .text/.rodata/.data/.bss of the kernel `make build` makes, built from
 # config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config as shipped (neither the developer's .config nor
 # qemu-dev.config's log level) and from no caller RUSTFLAGS, into a target dir
@@ -100,29 +100,29 @@ $(SIZE_KCONFIG): $(SIZE_DEFCONFIG) FORCE
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
 
 size-kernel: $(SIZE_KCONFIG) | $(IMAGE_HASHES)
-	rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base $(SIZE_KCONFIG))"; \
+	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(SIZE_KCONFIG))"; \
 	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]"; \
 	env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(SIZE_KCONFIG)" \
 	    $(CARGO) build --release --target-dir $(SIZE_TARGET_DIR) -p azos_kernel \
-	    $${isa:+--config "$$isa"} $$(python3 tools/kconfig_to_cargo.py $(SIZE_KCONFIG))
+	    $${isa:+--config "$$isa"} $$(python3 tools/build/kconfig_to_cargo.py $(SIZE_KCONFIG))
 	@$(MAKE) --no-print-directory prune
 
 size-check: size-kernel
-	@$(PYTHON) tools/size_budget.py --self-test
-	@$(PYTHON) tools/size_budget.py $(SIZE_LABEL)=$(SIZE_ELF)
+	@$(PYTHON) tools/lint/size_budget.py --self-test
+	@$(PYTHON) tools/lint/size_budget.py $(SIZE_LABEL)=$(SIZE_ELF)
 
 size-update: size-kernel
 	@test -n "$(REASON)" || { echo 'make size-update REASON="why the image moved"'; exit 1; }
-	@$(PYTHON) tools/size_budget.py --report $(SIZE_LABEL)=$(SIZE_ELF)
-	@$(PYTHON) tools/size_budget.py --update --reason "$(REASON)" $(SIZE_LABEL)=$(SIZE_ELF)
+	@$(PYTHON) tools/lint/size_budget.py --report $(SIZE_LABEL)=$(SIZE_ELF)
+	@$(PYTHON) tools/lint/size_budget.py --update --reason "$(REASON)" $(SIZE_LABEL)=$(SIZE_ELF)
 
-# The fronts' check (tools/check_fast.sh): per ISA one ktest boot, one boot
+# The fronts' check (tools/gate/check_fast.sh): per ISA one ktest boot, one boot
 # of the same kernel with every composable runtime canary armed, one
-# userspace (abitest) boot, judged by tools/check_fast.py. CI_JOBS ISAs at once.
+# userspace (abitest) boot, judged by tools/gate/check_fast.py. CI_JOBS ISAs at once.
 check-fast:
-	@env -u CARGO_TARGET_DIR bash tools/check_fast.sh
+	@env -u CARGO_TARGET_DIR bash tools/gate/check_fast.sh
 
 # Full CI: azos builds + AzOSRobotBrain tests + protocol sync.
 ci-full:
-	@bash tools/ci_full.sh
+	@bash tools/gate/ci_full.sh
 

@@ -8187,7 +8187,7 @@ mod tcp_tick_needed {
 /// `tcp::accept` hands out a connection whose peer already sent its data and
 /// its FIN before the accepting task polled (`CloseWait`): the data is still
 /// buffered and must reach the application, then EOF. Only `Established` was
-/// accepted, so a short push that half-closed quickly — `tools/ota_send.py`
+/// accepted, so a short push that half-closed quickly — `tools/dev/ota_send.py`
 /// does exactly that — was never accepted at all.
 ///
 /// **Canary**: accept `Established` only: `socket_accept_owned` answers -1.

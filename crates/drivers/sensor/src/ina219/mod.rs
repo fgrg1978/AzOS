@@ -51,7 +51,7 @@ pub use kernel_host::{
 };
 
 /// The chip-logic source (`AZOS-CHIP-SRC ina219 <hex>`), which the kernel
-/// host prints at start (`tools/chip_source_check.py`).
+/// host prints at start (`tools/lint/chip_source_check.py`).
 pub const SOURCE_MARKER: &[u8] = &azos_ina219::SOURCE_MARKER;
 
 /// Where the INA219 runs in this build, for the log and the gate rows.

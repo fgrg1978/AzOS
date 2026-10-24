@@ -225,7 +225,7 @@ fn the_walk_rejects_another_isas_relocation_type() {
 
 /// The real kernel, when the gate (or a developer) names it:
 /// `AZOS_KASLR_ELF=<elf> AZOS_KASLR_ISA=<aarch64|riscv64|x86_64>` (default
-/// aarch64), e.g. an image `tools/kaslr_image.sh <isa> slid` built.
+/// aarch64), e.g. an image `tools/image/kaslr_image.sh <isa> slid` built.
 /// A position-independent kernel link must hold nothing but the ISA's
 /// `R_*_RELATIVE`, every entry inside the image, and every relocated pointer
 /// must land inside the slid image. Skipped (and says so) when unset; fails

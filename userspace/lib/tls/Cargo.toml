@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "TLS in ring 3 over the std port's sockets: a pinned client (the server's SPKI hash must be one of the configured pins, no system CA store), a server, a minimal HTTPS GET, and the package source of the installer (userspace/lib/packages). rustls with the rustls-rustcrypto provider from third_party/vendor (no aws-lc-rs, no ring). Excluded from workspace; built standalone through tools/sdk_cargo.py --vendored, tested on the host by tests/host/tls-tests."
+description = "TLS in ring 3 over the std port's sockets: a pinned client (the server's SPKI hash must be one of the configured pins, no system CA store), a server, a minimal HTTPS GET, and the package source of the installer (userspace/lib/packages). rustls with the rustls-rustcrypto provider from third_party/vendor (no aws-lc-rs, no ring). Excluded from workspace; built standalone through tools/build/sdk_cargo.py --vendored, tested on the host by tests/host/tls-tests."
 
 [lib]
 name = "azos_tls"

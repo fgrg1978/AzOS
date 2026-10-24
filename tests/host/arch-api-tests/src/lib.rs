@@ -2353,13 +2353,13 @@ mod livepatch_tests {
     }
 
     /// Every linker script (derived: kernel/linker*.ld but the common include) carries the pool, the site table and their symbols
-    /// (tools/check_livepatch_layout.py scripts). A script that loses one is
+    /// (tools/lint/check_livepatch_layout.py scripts). A script that loses one is
     /// a kernel whose `[PATCH]` line reads zero while the Kconfig says 64.
     #[test]
     fn every_linker_script_carries_the_pool_and_the_site_table() {
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../..");
         let out = std::process::Command::new("python3")
-            .arg(format!("{root}/tools/check_livepatch_layout.py"))
+            .arg(format!("{root}/tools/lint/check_livepatch_layout.py"))
             .arg("scripts")
             .output()
             .expect("python3");

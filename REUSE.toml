@@ -28,7 +28,7 @@ SPDX-License-Identifier = "GPL-2.0-only"
 # lines of the MIT tree it patches, so it is MIT, with relibc's copyright. The
 # overlay beside it (userspace/lib/relibc-azos/overlay) is our own code and
 # falls under the catch-all above. The relibc tree itself is not stored in
-# this repository (a gitlink, tools/third_party_fetch.sh).
+# this repository (a gitlink, tools/build/third_party_fetch.sh).
 [[annotations]]
 path = "userspace/lib/relibc-azos/patches/**"
 precedence = "closest"

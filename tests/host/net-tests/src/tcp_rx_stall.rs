@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! A bulk TRANSFER INTO this stack by a BSD-style sender (the shape of QEMU's
-//! SLIRP, which is what `tools/ota_send.py` reaches the guest through) while
+//! SLIRP, which is what `tools/dev/ota_send.py` reaches the guest through) while
 //! the application reads slowly, or stops reading for a while and then
 //! catches up: does the receive window reopen by itself when the reader
 //! consumes?

@@ -19,7 +19,7 @@
  * .bss plus the boot stack and its red zone. It does NOT include the kernel
  * heap (KERNEL_HEAP_SIZE), which the kernel reserves at boot right after
  * _kernel_end, nor the page-table pages and task frames the PMM hands out.
- * Those must fit in the rest of the 14 MiB region; `tools/size_report.sh`
+ * Those must fit in the rest of the 14 MiB region; `tools/bench/size_report.sh`
  * prints both numbers per profile.
  */
 
@@ -32,7 +32,7 @@ ENTRY(_start)
 INCLUDE kernel/linker-common.ld
 
 /* The image budget: see the header. The measured image is printed by
- * tools/size_report.sh. */
+ * tools/bench/size_report.sh. */
 EMBEDDED_IMAGE_BUDGET = 8M;
 
 MEMORY
@@ -59,7 +59,7 @@ SECTIONS
     /* Live-update patch pool (Kconfig LIVEPATCH_POOL_KIB, config/kernel/Kconfig.livepatch):
      * RX room inside the image's text range, so the W^X and no-exec-outside-
      * the-image checks (_text_start.._text_end) cover it. The size reaches
-     * the linker as --defsym=__patch_pool_bytes (tools/kconfig_to_cargo.py
+     * the linker as --defsym=__patch_pool_bytes (tools/build/kconfig_to_cargo.py
      * --rustflags); 0 or absent = an empty section, no byte. Zero-filled:
      * a stray jump into it traps. */
     .text.patch_pool : ALIGN(4K)

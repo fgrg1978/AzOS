@@ -3,7 +3,7 @@ name = "azos_brain_link_fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "cargo-fuzz (libFuzzer) targets for the brain link's Noise handshake and frame decoder (azos_crypto::secure_channel). Its own workspace; run with tools/fuzz.sh."
+description = "cargo-fuzz (libFuzzer) targets for the brain link's Noise handshake and frame decoder (azos_crypto::secure_channel). Its own workspace; run with tools/gate/fuzz.sh."
 
 [package.metadata]
 cargo-fuzz = true

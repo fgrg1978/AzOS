@@ -1098,7 +1098,7 @@ pub const SYS_NR_RESERVED_UPPER: u64 = 34;
 // (`kernel/src/trap`) can count entries by case per Domain without parsing a
 // doc comment. It is a table by number, not bits of the number: the dispatch
 // table, the filter bitmap and the lean entries' IPC range test all index by
-// the number. `tools/trap_lint.py` refuses a `SYS_*` number that has no row
+// the number. `tools/lint/trap_lint.py` refuses a `SYS_*` number that has no row
 // below.
 
 /// Case 1: authority or protection.

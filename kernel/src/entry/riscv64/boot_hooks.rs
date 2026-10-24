@@ -9,7 +9,7 @@
 //! PLIC/AIA choice and its init, Sstc vs SBI `set_timer`, Zicboz, the QEMU
 //! and board MMIO windows, the PMP audit log, the `sie` enables. The common
 //! steps (console, memory map, page tables, W^X/NX, guards, heap) are in
-//! `early_main` (`tools/boot_seq_lint.py` keeps them there).
+//! `early_main` (`tools/lint/boot_seq_lint.py` keeps them there).
 
 use azos_drv_sys::kprintln;
 use azos_arch::cpu;

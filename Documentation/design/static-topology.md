@@ -871,7 +871,7 @@ defconfig, with no kernel build.
 Source: `crates/core/topology/src/types.rs` (`Topology::admission_check`,
 `isolation_admission`, `deadline_admission`), `crates/core/topology/src/deadline.rs`,
 `crates/core/topology/src/memory.rs`, `crates/core/topology/src/neverallow.rs`,
-`tools/check_neverallow.py`, `mk/lints.mk`.
+`tools/lint/check_neverallow.py`, `mk/lints.mk`.
 
 ## Producing the files
 
@@ -891,14 +891,14 @@ with an error unless the result equals the built-in topology field by field.
 | `make topology-files` | Both ISAs' files under the build output root, unbound unless `TOPO_DEVICE` is given, signed with the test key (a fixture). |
 | `make topo-volume TOPO_IMAGE=<img>` | Emits bound to the image's own device id and `TOPO_COUNTER`, signs `CAPS.TOM` with `TOPO_PRIV`, and copies the three files onto the image. The image must already carry its device record. |
 
-`tools/gen_config_sig.py` writes the signature; `tools/device_provision.py`
+`tools/sign/gen_config_sig.py` writes the signature; `tools/sign/device_provision.py`
 writes the device record and the counter floor sector that the binding keys
 are checked against.
 
 ### The host dry boot
 
 `make sim SIM_DEFCONFIG=<defconfig> [SIM_TOPOLOGY=builtin|<dir>] [SIM_CPUS=<n>]`
-builds `tools/azos_sim` the way the emitter is built (the expanded defconfig,
+builds `tools/gate/azos_sim` the way the emitter is built (the expanded defconfig,
 the topology features of that defconfig's kernel, the ISA's `emit-target-*`)
 and replays the boot admission of the built-in topology, or of a
 `CAPS.TOM`/`SCHED.TOM` pair, on `<n>` CPUs. It calls the functions the kernel
@@ -914,7 +914,7 @@ the same configuration to its console (`azos_sim --check-log`).
 
 Source: `crates/core/topology/src/emit.rs`,
 `tests/host/topology-tests/src/bin/topo_emit.rs`, `mk/images.mk`,
-`tools/gen_config_sig.py`, `tools/device_provision.py`.
+`tools/sign/gen_config_sig.py`, `tools/sign/device_provision.py`.
 
 ## The built-in topology
 

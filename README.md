@@ -126,7 +126,7 @@ make help          # every target
 
 Every output (kernels, images, ELFs, cargo target directories) goes to
 `$AZOS_OUT`, by default `~/azos-out/<checkout name>-<hash>`
-(`python3 tools/out_dir.py` prints it), never into the checkout. To run a bare
+(`python3 tools/lib/out_dir.py` prints it), never into the checkout. To run a bare
 `cargo`, export `AZOS_OUT` and point `CARGO_TARGET_DIR` under it. The Makefile
 is split by concern under `mk/` (`vars.mk`, `userspace.mk`, `images.mk`,
 `kernel.mk`, `host.mk`, `qemu.mk`, `lints.mk`).

@@ -4,7 +4,7 @@
 # (Kconfig X86_UCODE_LOAD, crates/core/arch-x86_64/src/cpu/ucode.rs).
 #
 # `make ucode` writes $(UCODE_BIN): the published Intel and AMD files,
-# concatenated per vendor and signed with the update key (tools/mk_ucode.py),
+# concatenated per vendor and signed with the update key (tools/image/mk_ucode.py),
 # the image the kernel takes as a boot module and verifies before it parses a
 # byte. The vendors' files are NOT in the tree and are not downloaded here:
 # they are read from $(AZOS_DL) (default ~/azos-dl), where intel-ucode
@@ -35,9 +35,9 @@ UCODE_BIN   ?= $(OUT_BUILD)/UCODE.BIN
 .PHONY: ucode
 ucode: $(UCODE_BIN)
 
-$(UCODE_BIN): tools/mk_ucode.py tools/sigalg.py $(UCODE_INTEL) $(UCODE_AMD) $(UCODE_PRIV)
+$(UCODE_BIN): tools/image/mk_ucode.py tools/sign/sigalg.py $(UCODE_INTEL) $(UCODE_AMD) $(UCODE_PRIV)
 	@test -n "$(strip $(UCODE_INTEL) $(UCODE_AMD))" || { \
 	    echo "[UCODE] no Intel or AMD microcode file under $(AZOS_DL) (intel-ucode/intel-ucode/, amd-fw/amd-ucode/): set AZOS_DL, UCODE_INTEL or UCODE_AMD"; exit 1; }
 	@mkdir -p $(dir $@)
-	@python3 tools/mk_ucode.py --out $@ --priv $(UCODE_PRIV) \
+	@python3 tools/image/mk_ucode.py --out $@ --priv $(UCODE_PRIV) \
 	    $(if $(strip $(UCODE_INTEL)),--intel $(UCODE_INTEL)) $(if $(strip $(UCODE_AMD)),--amd $(UCODE_AMD))

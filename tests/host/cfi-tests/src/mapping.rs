@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Kconfig choices -> compiler flags, through the real Kconfig tree and
-//! `tools/kconfig_to_cargo.py` (the one place that turns Kconfig into rustc
+//! `tools/build/kconfig_to_cargo.py` (the one place that turns Kconfig into rustc
 //! flags: kernel `--rustflags`, user images `--user-rustflags`).
 
 use std::path::PathBuf;
@@ -29,7 +29,7 @@ pub(crate) fn expand(name: &str, lines: &[&str]) -> PathBuf {
 
 fn flags(cfg: &PathBuf, which: &str) -> String {
     let out = Command::new("python3")
-        .arg(crate::repo().join("tools/kconfig_to_cargo.py"))
+        .arg(crate::repo().join("tools/build/kconfig_to_cargo.py"))
         .args([which, cfg.to_str().unwrap()])
         .current_dir(crate::repo())
         .output()

@@ -10,7 +10,7 @@
 #   a0 = return value
 #
 # The numbers are not restated here: the Makefile assembles this file with
-# `tools/syscall_defs.py`, which reads them from crates/core/abi.
+# `tools/build/syscall_defs.py`, which reads them from crates/core/abi.
 #
 #   SYS_CAP_INFO   (a0 = 0, a1 = CAP_INFO_LOOKUP, a2 = CONSOLE_TYPE, a3 = 0) -> a0 = the console handle
 #   SYS_INVOKE     (a0 = handle, a1 = INVOKE_CONSOLE_WRITE, a2 = buf, a3 = len)

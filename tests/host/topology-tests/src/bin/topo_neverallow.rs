@@ -10,7 +10,7 @@
 //!
 //! The pair is parsed as the loader parses it (signature and binding are not
 //! looked at: `topo_emit` and the gate cover those). The micro kernel's
-//! topology (`tools/micro_topology.py`) is checked this way.
+//! topology (`tools/build/micro_topology.py`) is checked this way.
 //!
 //! Like `topo_emit`, the built-in topology is
 //! `azos_topology::fill_default_minimal`, so the build must match the kernel's: the same `KCONFIG_CONFIG` (the image's
@@ -18,7 +18,7 @@
 //! the kernel's features turn on, and `emit-target-riscv64`,
 //! `emit-target-aarch64` or `emit-target-x86_64` for the rows only a kernel of
 //! that ISA declares.
-//! `tools/check_neverallow.py` (`make check-neverallow`) does that for every
+//! `tools/lint/check_neverallow.py` (`make check-neverallow`) does that for every
 //! preset. The rules run whatever Kconfig `TOPOLOGY_NEVERALLOW` says: the
 //! option is the kernel's switch, not the checker's.
 //!

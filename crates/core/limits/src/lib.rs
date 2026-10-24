@@ -27,7 +27,7 @@
 //! not. V2.6 (this same commit) deleted those 78 from Kconfig outright
 //! and wired the two whose fix was a one-line change
 //! (`crates/drivers/base/src/platform.rs`, `crates/drivers/actuator/src/motor_pid.rs`);
-//! `python3 tools/gen_config_index.py` lists the surviving 78 declared
+//! `python3 tools/build/gen_config_index.py` lists the surviving 78 declared
 //! symbols and is the place to check whether a given option is one of
 //! them, not this comment. A future symbol added here without a real
 //! `azos_limits::NAME` import anywhere reopens exactly this gap —

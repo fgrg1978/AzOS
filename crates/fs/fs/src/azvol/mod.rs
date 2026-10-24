@@ -5,7 +5,7 @@
 //! Self-contained: `core` and `alloc` only, a [`BlockDev`] trait for the
 //! medium, no global state, so the same source runs in the kernel, in the
 //! host test suite (`tests/host/fs-tests/src/azvol_format.rs`) and is
-//! mirrored by `tools/mkazvol.py`, which builds plain (unsealed) images. This
+//! mirrored by `tools/image/mkazvol.py`, which builds plain (unsealed) images. This
 //! module is the format and its host-testable read/write engine, with
 //! snapshots ([`snap`]), change groups ([`group`]) and per-block
 //! ChaCha20-Poly1305 at rest ([`seal`]). The kernel mounts it into the VFS in

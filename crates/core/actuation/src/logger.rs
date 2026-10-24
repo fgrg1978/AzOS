@@ -35,7 +35,7 @@ use azos_sync::SpinLock;
 // scaffolding (FAT32 is the only filesystem this OS has, but nothing in it
 // can move or stop a motor). This module used to call `fat32_mount_volume`/
 // `mkdir`/`open`/`write`/`fsync`/`close`/`file_stat` directly, which put a
-// hard dependency edge from core onto scaffolding (`tools/tcb_check.sh`).
+// hard dependency edge from core onto scaffolding (`tools/lint/tcb_check.sh`).
 //
 // That turned out to be seven calls, not "the full FAT32 API": the recorder
 // never reads, seeks, lists a directory, or looks a path back up —

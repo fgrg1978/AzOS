@@ -385,7 +385,7 @@ mod class_name_tests {
 /// Wave 11 SCHED-RT: the arithmetic `scheduler::rt` applies per hart and per
 /// reservation (`crates/core/sched/src/rt_core.rs`). The kernel side only stores
 /// these values and calls them at the dispatch, tick and switch points; the
-/// QEMU rows (`sched-rt:` in `tools/ci_check.sh`) prove the wiring.
+/// QEMU rows (`sched-rt:` in `tools/gate/ci_check.sh`) prove the wiring.
 #[cfg(test)]
 mod rt_core_tests {
     use super::rt_core::*;

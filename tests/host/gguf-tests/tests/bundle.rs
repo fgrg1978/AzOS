@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The signed model bundle (`.MBL`, `azos_ml::bundle`): the writer
-//! (`tools/make_mbl.py`) and the reader agree on the bytes, a bundle opens only
+//! (`tools/image/make_mbl.py`) and the reader agree on the bytes, a bundle opens only
 //! under its signature, every signed field is checked after the signature and
 //! before use, the blobs are authenticated by the digests in the manifest, and
 //! the variant choice walks the signed fallback list against what the machine
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-const TOOL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/make_mbl.py");
+const TOOL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/image/make_mbl.py");
 
 /// The bytes that stand for the three blobs: distinct, odd lengths, so the
 /// 8-byte alignment padding between them is exercised.
@@ -45,7 +45,7 @@ impl Drop for Tmp {
 }
 
 fn python(args: &[&str]) -> String {
-    let out = Command::new("python3").args(args).output().expect("python3 is required (tools/make_mbl.py)");
+    let out = Command::new("python3").args(args).output().expect("python3 is required (tools/image/make_mbl.py)");
     assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8(out.stdout).unwrap()
 }

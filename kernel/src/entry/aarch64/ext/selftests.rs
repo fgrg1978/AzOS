@@ -245,7 +245,7 @@ fn translation_readbacks() {
 ///
 /// Boot-only (called from `kernel_main`'s early self-check, before any user
 /// task exists), so clobbering d0/d1 cannot destroy anyone's FP state. Named
-/// in `tools/aarch64_fp_free_check.sh`'s allowed list — the one place kernel
+/// in `tools/lint/aarch64_fp_free_check.sh`'s allowed list — the one place kernel
 /// code outside the user-FP save/restore executes an FP instruction.
 #[inline(never)]
 pub(crate) fn fp_self_check(a_bits: u64, b_bits: u64) -> u64 {

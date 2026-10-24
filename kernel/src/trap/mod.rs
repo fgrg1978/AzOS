@@ -16,7 +16,7 @@
 //! landing pads included), the register-frame decode (`impl Frame` and
 //! `impl ArchFrame` for its `TrapFrame`, in `trap.rs`), the cause decode that
 //! classifies a trap, and the controller (`irq.rs`: claim, EOI, the line
-//! ladder). `tools/trap_lint.py` fails the build when dispatch logic (a
+//! ladder). `tools/lint/trap_lint.py` fails the build when dispatch logic (a
 //! `match` on syscall numbers, the page-fault policy, the fatal tail) shows up
 //! there again.
 //!

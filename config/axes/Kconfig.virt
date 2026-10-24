@@ -126,7 +126,7 @@ config HV_EXAMPLE_GUEST
       HV_EXAMPLE_GUEST_MEM_MIB of RAM, the virtio-console, virtio-blk and
       virtio-net backends and the `cautious` envelope, and the VMMD.ELF row
       budgets the guest's frames (`vmmd_pages`). It is the host half of
-      `make azos-guest` (AzOS inside AzOS, tools/run_guest.sh): the guest
+      `make azos-guest` (AzOS inside AzOS, tools/dev/run_guest.sh): the guest
       kernel and its disk are files of the volume (`/fat/VM/KERNEL.ELF`,
       the ELF the monitor starts at boot, and `/fat/VM/DISK.IMG`). Only the
       qemu-hv-guest and qemu-aarch64-hv-guest defconfigs set it; the other
@@ -153,7 +153,7 @@ config HV_EXAMPLE_GUEST_MEM_MIB
       page (24 at aarch64's 16 KiB granule), so the qemu-*-hv defconfigs'
       MAX_MEMOBJS of 256 holds it, and the build refuses a size that would
       not fit (crates/core/ipc/src/memobj.rs). The gate has no row that
-      boots the guest yet (tools/ci_check.sh, hv_guest_judge, says why).
+      boots the guest yet (tools/gate/ci_check.sh, hv_guest_judge, says why).
       x86_64 has no guest entry (mk/images.mk).
 
       Cost: none until the guest starts; then this much RAM.

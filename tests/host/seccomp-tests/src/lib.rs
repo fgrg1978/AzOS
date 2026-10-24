@@ -1963,7 +1963,7 @@ mod image_profiles {
                 }
                 assert!(!out.is_empty(), "{path}: no `li a7, N` found");
                 // The console write is assembled in as a defsym
-                // (`tools/syscall_defs.py`): `INVOKE_CONSOLE_WRITE`.
+                // (`tools/build/syscall_defs.py`): `INVOKE_CONSOLE_WRITE`.
                 if src.contains("INVOKE_CONSOLE_WRITE") {
                     ops_out.insert(opn["LOG_CONSOLE_WRITE"]);
                 }
@@ -3290,7 +3290,7 @@ mod image_profiles {
     /// brain_client sources built in two directories differed in `.strtab`, and
     /// stripped, in 2975 bytes of `.text` (gate 40 refused one rebuilt in its
     /// snapshot). Through the wrapper the two directories give identical ELFs. A
-    /// two-directory build belongs in `tools/repro_check.sh`; this is the check
+    /// two-directory build belongs in `tools/gate/repro_check.sh`; this is the check
     /// that costs nothing.
     ///
     /// **Canary.** Drop `RUSTC_WRAPPER=...` from `USPACE_BUILD`: the definition
@@ -3355,7 +3355,7 @@ mod image_profiles {
             .filter(|l| l.contains("&& $(USPACE_BUILD)") || WRAPPED.iter().any(|w| l.contains(w)))
             .count();
         // The std programs (`Lang::RustStd`, the SDK) are built by
-        // tools/sdk_cargo.py, which sets the same wrapper and the same
+        // tools/build/sdk_cargo.py, which sets the same wrapper and the same
         // metadata tag itself (held below): their recipes are `$(SDK_BUILD_<isa>)`.
         let sdk_recipes = MAKEFILE.lines().filter(|l| l.starts_with('\t') && l.contains("$(SDK_BUILD_")).count();
         let rust_images = SOURCES.iter().filter(|s| s.1 == Lang::Rust).count();
@@ -3391,7 +3391,7 @@ mod image_profiles {
         // +1 on each of riscv64, aarch64 and x86_64 with the PTP daemon (PTPD.ELF).
         // +1 on each of riscv64, aarch64 and x86_64 with the audio server (AUDIOD.ELF).
         // +0: the relay of the QUIC link (RPCQUIC.ELF) is a std program on the vendored
-        // tree, built by tools/sdk_cargo.py like the TLS probe, not by `$(USPACE_BUILD)`.
+        // tree, built by tools/build/sdk_cargo.py like the TLS probe, not by `$(USPACE_BUILD)`.
         // +1 on each of riscv64, aarch64 and x86_64 with the MCP bridge (MCPD.ELF).
         // +1 on each of riscv64, aarch64 and x86_64 with the SSH server (SSHD.ELF).
         // +1 on each of riscv64, aarch64 and x86_64 with the login service (LOGIND.ELF).
@@ -3404,7 +3404,7 @@ mod image_profiles {
         // -1 on each of riscv64, aarch64 and x86_64 when WHY.ELF moved to `std`
         // (the SDK): its three recipes are `$(SDK_BUILD_<isa>)` now.
         // -1 on each of riscv64, aarch64 and x86_64 and on the board volume when PKGD.ELF
-        // moved to `std` (it fetches over TLS): built by tools/sdk_cargo.py like
+        // moved to `std` (it fetches over TLS): built by tools/build/sdk_cargo.py like
         // RPCQUIC.ELF, on the vendored tree.
         // +1 on each of aarch64 and x86_64 with the kernel log's sink (LOGD.ELF;
         // riscv64's is in `rust_images`).
@@ -3420,13 +3420,13 @@ mod image_profiles {
         // The SDK's recipes: WHY.ELF on three ISAs and the SDK's own test, sdktest,
         // on three.
         assert_eq!(sdk_recipes, 3 + 3, "expected 3 WHY.ELF and 3 sdktest $(SDK_BUILD_<isa>) recipes");
-        const SDK_CARGO: &str = include_str!("../../../../tools/sdk_cargo.py");
+        const SDK_CARGO: &str = include_str!("../../../../tools/build/sdk_cargo.py");
         assert!(
             SDK_CARGO.contains(r#"env["RUSTC_WRAPPER"] = wrapper"#)
                 && SDK_CARGO.contains(r#"wrapper = os.path.join(ROOT, "userspace", "rustc_stable_metadata.py")"#)
                 && SDK_CARGO.contains(r#"flags = ["--cfg=azos_stable_metadata_" + tag,"#)
                 && SDK_CARGO.contains("hashlib.sha256(f.read()).hexdigest()[:12]"),
-            "tools/sdk_cargo.py no longer builds through the metadata wrapper with its digest as the cfg",
+            "tools/build/sdk_cargo.py no longer builds through the metadata wrapper with its digest as the cfg",
         );
 
         let key = WRAPPER

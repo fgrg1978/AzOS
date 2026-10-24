@@ -521,7 +521,7 @@ fn hb_hold() -> Option<sys::FastRequest> {
 /// deterministically (5/5 hand runs, 2026-09-25) and every later `wait_tag` in
 /// the same phase passed: by the time those ran, the mailbox already held the
 /// answer (`mbox_get` is checked before blocking), so their own shrunk budget
-/// never mattered. **Not a lost cross-hart wake** — `tools/ci_check.sh`'s
+/// never mattered. **Not a lost cross-hart wake** — `tools/gate/ci_check.sh`'s
 /// `aarch64_ipctest_row` comment and this project's own standing lesson ["a
 /// tick count is a per-board number"] both already said so; this was the one
 /// place in this binary that still baked one in as if it were a global
@@ -855,7 +855,7 @@ fn fork_reg_canary() {
 // this phase proves nothing. Ring 3 has no way to read the hart count — there
 // is no syscall for it (`sys_taskinfo` is `0`, `SYS_PLATFORM_INFO` is a stub)
 // — so the requirement is stated in the log and enforced by the `-smp 4` on
-// the QEMU command line in `tools/ci_check.sh`. Naming the gap is the honest
+// the QEMU command line in `tools/gate/ci_check.sh`. Naming the gap is the honest
 // option; asserting something ring 3 cannot observe is not.
 //
 // The server reads the request now (`SYS_IPC_FAST_ACCEPT` delivers the caller
@@ -1287,7 +1287,7 @@ fn phase_b_client(_immediate_parent: u32) -> ! {
     // **Send order here does not matter — see `phase_b`'s wait order for the
     // interaction that does.** There is a pre-existing, documented,
     // under-investigation aarch64 cross-hart wake gap
-    // (`tools/ci_check.sh`'s `aarch64_ipctest_row`, tolerated as exactly one
+    // (`tools/gate/ci_check.sh`'s `aarch64_ipctest_row`, tolerated as exactly one
     // failure named `B/client reported at all`). This relay adds two more
     // round trips where there used to be none, giving that gap more
     // surface. Reordering these three posts did NOT change which check it

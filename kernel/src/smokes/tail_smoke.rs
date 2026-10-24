@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Wave 13 (RT7): periodic-wake TAIL latency under contention
 //! (`tail-smoke`), the AzOS half of a cyclictest + hackbench comparison;
-//! the Linux half is `tools/lat_linux/tail.c`, run the same way.
+//! the Linux half is `tools/bench/lat_linux/tail.c`, run the same way.
 //!
 //! On hart [`HART`], [`PAIRS`] ping-pong pairs at `DEFAULT_PRIORITY` keep the
 //! hart saturated with short slices: each side copies a 100-byte message,

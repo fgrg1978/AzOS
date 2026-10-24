@@ -67,7 +67,7 @@ config OTA_MAX_IMAGE_SIZE_MB
       Images larger than this are rejected before writing to FAT.
       This is the ONLY size ceiling in the OTA path (crates/core/ota's
       `OTA_MAX_IMAGE_SIZE` reads this symbol via azos_limits, and
-      `tools/ota_send.py` reads the same `.config` this expands to, so
+      `tools/dev/ota_send.py` reads the same `.config` this expands to, so
       neither can drift from it). Secure boot verification used to carry
       a second, smaller, disconnected ceiling (a 2 MiB `.bss` buffer to
       hold a whole image); that buffer is gone as of 2026-09-26 (U09-14)

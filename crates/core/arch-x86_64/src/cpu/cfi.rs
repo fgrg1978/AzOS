@@ -3,7 +3,7 @@
 //! Hardware control-flow integrity on x86_64: CET indirect-branch tracking
 //! for the kernel's own code (Kconfig `X86_CET_IBT`; plan item I4).
 //!
-//! The compiler half is `-Z cf-protection=branch` (tools/kconfig_to_cargo.py,
+//! The compiler half is `-Z cf-protection=branch` (tools/build/kconfig_to_cargo.py,
 //! `cfi_rustflags`): an `endbr64` at every function entry, a multi-byte NOP on
 //! a CPU without CET. The hand-written entry points carry theirs too
 //! (kernel/src/entry/x86_64/asm: every vector stub, `syscall_entry`, the

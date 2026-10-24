@@ -20,7 +20,7 @@
 //!    `azos_arch_api::kaslr` has the same rule.
 //!
 //! The code is position-independent (`-C relocation-model=pie`: RIP-relative
-//! addressing, `kaslr_rustflags` in tools/kconfig_to_cargo.py), so it runs at
+//! addressing, `kaslr_rustflags` in tools/build/kconfig_to_cargo.py), so it runs at
 //! the low address it was linked for.
 
 use azos_arch_api::kaslr::{self as shared, Failure, SEED_HW};

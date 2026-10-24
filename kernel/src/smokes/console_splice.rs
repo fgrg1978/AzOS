@@ -21,7 +21,7 @@ use crate::*;
 // so no new ELF, seccomp row or topology entry is needed. Every writer line is
 // `[SPLICEU] n=NNNN <62 fixed bytes> END` (84 bytes with its newline); the
 // host counts how many came out exactly that. See
-// tools/console_splice_count.sh.
+// tools/gate/console_splice_count.sh.
 #[cfg(feature = "console-splice-smoke")]
 static SPLICE_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 

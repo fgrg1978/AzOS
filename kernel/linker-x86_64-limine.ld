@@ -72,7 +72,7 @@ SECTIONS
     /* Live-update patch pool (Kconfig LIVEPATCH_POOL_KIB, config/kernel/Kconfig.livepatch):
      * RX room inside the image's text range, so the W^X and no-exec-outside-
      * the-image checks (_text_start.._text_end) cover it. The size reaches
-     * the linker as --defsym=__patch_pool_bytes (tools/kconfig_to_cargo.py
+     * the linker as --defsym=__patch_pool_bytes (tools/build/kconfig_to_cargo.py
      * --rustflags); 0 or absent = an empty section, no byte. Zero-filled:
      * a stray jump into it traps. */
     . = ALIGN(4K);

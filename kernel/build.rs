@@ -72,7 +72,7 @@ fn main() {
 /// `--no-dynamic-linker` keeps lld from wanting an interpreter, `-z notext`
 /// lets read-only tables carry relocations (the boot applies them before the
 /// pages are made read-only), `-z norelro` drops the RELRO segment nothing
-/// would apply. The codegen half stays in tools/kconfig_to_cargo.py
+/// would apply. The codegen half stays in tools/build/kconfig_to_cargo.py
 /// (kaslr_rustflags): x86_64 needs `-C relocation-model=pie`, which only
 /// RUSTFLAGS can set; a build without it fails to link here (`R_X86_64_32S`
 /// in a `-pie` link) instead of producing an image the boot cannot slide.

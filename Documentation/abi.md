@@ -171,12 +171,12 @@ the second filter: the task's seccomp filter judges the call first. An io_ring
 entry is judged by the ring owner's mask for the call it stands for, after the
 owner's seccomp profile.
 
-`tools/trap_lint.py` fails when a `SYS_*` number has no row in `SYSCALL_CASE`.
+`tools/lint/trap_lint.py` fails when a `SYS_*` number has no row in `SYSCALL_CASE`.
 
 Source: `crates/core/abi/src/syscall_nr.rs`, `crates/core/abi/src/invoke.rs`
 (`pledge_bit`, `PLEDGE_*`), `crates/core/sched/src/domain.rs`,
 `kernel/src/trap/syscall.rs`, `crates/core/ipc/src/io_ring.rs`,
-`tools/trap_lint.py`.
+`tools/lint/trap_lint.py`.
 
 ## Handles
 

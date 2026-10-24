@@ -15,7 +15,7 @@ azos = ["azos_libsys"]
 # `RingSleep`, `RingStats`): the Linux `ring-*` lanes run the same ring code
 # as AzOS and issue their own `futex` where AzOS issues notify. No libsys
 # syscall wrapper is called from the Linux build — `abi_linux.rs` holds every
-# `ecall` it makes, and `tools/linux_seccomp_launch/src/allow.rs` lists them.
+# `ecall` it makes, and `tools/bench/linux_seccomp_launch/src/allow.rs` lists them.
 linux = ["azos_libsys"]
 # Opt-in only, never part of `azos`/`linux` or the default `run()` path: an
 # extra pass, after every reported lane, that forks without reaping until the
@@ -23,7 +23,7 @@ linux = ["azos_libsys"]
 # refusal (`ForkRefusalSite::PoolExhausted`, `crates/core/sched/src/process.rs`) so
 # it can be observed in a QEMU log instead of only trusted to exist. Gated
 # behind its own feature, not a default lane, so `syscall-floor` / `fork+exit`
-# / `fork+exit+wait` — the numbers `tools/vsbench_aarch64.sh` compares run to
+# / `fork+exit+wait` — the numbers `tools/bench/vsbench_aarch64.sh` compares run to
 # run — are measured by a binary that does not even link this code path.
 fork-bomb = []
 # Canaries for `switch-loaded`'s instrument (wave 15), never in a real run.

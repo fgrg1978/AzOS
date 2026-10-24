@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# tools/lint/boot_seq_lint.py ratchet: unjustified common-step calls per
+# boot_hooks.rs. Counts may only go down. Regenerate with --update-baseline.

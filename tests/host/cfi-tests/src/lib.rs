@@ -6,7 +6,7 @@
 //!   entry sources and the arch crates' `global_asm!`, with the exemptions
 //!   written down and justified.
 //! * `mapping`: the Kconfig choices -> compiler flags of
-//!   `tools/kconfig_to_cargo.py`, expanded with the real Kconfig tree, for the
+//!   `tools/build/kconfig_to_cargo.py`, expanded with the real Kconfig tree, for the
 //!   kernel and the user images of all three ISAs.
 //! * `keys`: the pure parts of `cpu/cfi.rs` on aarch64 (the key mix) and
 //!   x86_64 (the `IA32_S_CET` word), included from the crates that own them.

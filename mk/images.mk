@@ -85,7 +85,7 @@ $(OUT_BUILD)/disk-braincli.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 # carries a key (`disk-braincli-linkkey.img`) — both dial 10.0.2.2:9000, and
 # SLIRP hides which is which. With both answered, the host peer would hand its
 # script, e-stop included, to the kernel's link as well, and the ring-3 rows'
-# ordering assertions would race it. `tools/fake_brain.py --serve` recognises
+# ordering assertions would race it. `tools/gate/fake_brain.py --serve` recognises
 # the kernel's session by its first message (PKT_STATUS; brain_client opens
 # with PKT_SENSOR) and only drains it.
 # `brain_client_rekey_secs=10` shortens brain_client's wall-clock rekey so one
@@ -158,11 +158,11 @@ $(OUT_BUILD)/disk-lxbench-base.img: AUTORUN_ELF := /fat/LXSRV.ELF
 # board volume passes BOARD_SIGN_PRIV).
 # CONFIG.SIG v2 (wave 11): a signed CONFIG.INI names ONE
 # device and a counter. Each image gets a fresh random device id in its
-# reserved tail (`tools/device_provision.py`, sector 2, floor 0) and its
+# reserved tail (`tools/sign/device_provision.py`, sector 2, floor 0) and its
 # CONFIG.INI is signed for that id at counter 1. Usage, in a recipe whose image
 # is already formatted: $(call provision_and_sign_config,<ini>,<sig-out>)
-CONFIG_SIG_TOOLS := tools/gen_config_sig.py tools/device_provision.py
-LINK_KEY_TOOL := tools/link_key_provision.py
+CONFIG_SIG_TOOLS := tools/sign/gen_config_sig.py tools/sign/device_provision.py
+LINK_KEY_TOOL := tools/sign/link_key_provision.py
 
 # The behavior loop's model bundle (see its rule, below).
 BEHAVIOR_MBL_SRC  := kernel/src/behavior_ml.rs
@@ -172,19 +172,19 @@ BEHAVIOR_MBL_ARGS := --name behavior-mlp --in-bytes 16 --out-bytes 12 \
 
 # Images whose kernel brain link must come up (the link is always a Noise
 # session, so it needs the link key): a random 32-byte key, as a link-key
-# record (`tools/link_key_provision.py`), in the reserved tail sector 0 the
+# record (`tools/sign/link_key_provision.py`), in the reserved tail sector 0 the
 # kernel reads (`reserved_tail::LINK_KEY`, unaddressable over the USB export),
 # and the raw key in ::LINK.KEY for the host
-# peers (`tools/fake_brain.py --image`, `tools/link_peer.py --image`). Same
+# peers (`tools/gate/fake_brain.py --image`, `tools/gate/link_peer.py --image`). Same
 # mechanism as `build/disk-linkkey.img` below.
 KEYED_DISKS := $(OUT_BUILD)/disk-brainlies.img $(OUT_BUILD)/disk-brainrec.img \
 	$(OUT_BUILD)/disk-brainestop.img $(OUT_BUILD)/disk-estopgpio.img
 provision_link_key = dd if=/dev/urandom of=$@.tmp_linkkey bs=32 count=1 2>/dev/null && \
 	mcopy -i $@ $@.tmp_linkkey ::LINK.KEY && \
-	python3 tools/link_key_provision.py $@ $@.tmp_linkkey && \
+	python3 tools/sign/link_key_provision.py $@ $@.tmp_linkkey && \
 	rm -f $@.tmp_linkkey
-provision_and_sign_config = python3 tools/device_provision.py $@ >/dev/null && \
-	python3 tools/gen_config_sig.py $(1) --config-v2 --counter 1 --image $@ --priv $(or $(3),$(TEST_PRIV_KEY)) --out $(2)
+provision_and_sign_config = python3 tools/sign/device_provision.py $@ >/dev/null && \
+	python3 tools/sign/gen_config_sig.py $(1) --config-v2 --counter 1 --image $@ --priv $(or $(3),$(TEST_PRIV_KEY)) --out $(2)
 
 # Temporaries live next to their target (`$@.tmp_*`), not in fixed /tmp paths:
 # two disk builds at once (parallel fronts in separate worktrees, or `make -j`)
@@ -341,7 +341,7 @@ $(OUT_BUILD)/disk-lxabi.img: $(OUT_BUILD)/disk-sh.img $(LXHELLO_ELF)
 # The rule now: an ELF ships on a BOARD's FAT32 volume iff the topology
 # declares a service that ELF provides. Nothing above this comment changes —
 # every disk-*.img target keeps shipping the full IMAGE_ELFS set, unchanged,
-# because those are gate scenarios (`tools/ci_check.sh`), not deployments.
+# because those are gate scenarios (`tools/gate/ci_check.sh`), not deployments.
 # `build/disk-board.img` below is the actual board artifact: no existing
 # target here plays that role today (`vf2`/`k1`/`flash-vf2`/`flash-k1`,
 # further down, build and flash `kernel.bin` only — no FAT32 data volume at
@@ -354,10 +354,10 @@ $(OUT_BUILD)/disk-lxabi.img: $(OUT_BUILD)/disk-sh.img $(LXHELLO_ELF)
 # topology feature on — a board build turns on none of
 # `cap-refusal-canary`/`ipc-endpoint-canary`/`profile-actuation` (see that
 # crate's own Cargo.toml), so the crate's default feature set already IS a
-# board build. `tools/gen_board_manifest.py` then resolves each declared
+# board build. `tools/image/gen_board_manifest.py` then resolves each declared
 # name to the build path IMAGE_ELFS already knows (failing loudly — ORPHAN
 # SERVICE — if the topology names an ELF nothing here builds), and
-# `tools/check_board_disk.py` reads the FINISHED image back with `mdir` and
+# `tools/image/check_board_disk.py` reads the FINISHED image back with `mdir` and
 # fails — ORPHAN ELF / ORPHAN SERVICE — if what actually landed on the FAT32
 # volume and what the topology declared disagree. Two independent checks,
 # pre- and post-build, so drift cannot survive either a bad generator run or
@@ -371,22 +371,22 @@ $(OUT_BUILD)/board_elfs.list: tests/host/topology-tests/src/bin/board_elfs.rs \
 	cd tests/host/topology-tests && CARGO_TARGET_DIR="$(OUT_TGT)/tests/host/topology-tests" $(CARGO) run -q --bin board_elfs > "$(OUT_BUILD)/board_elfs.list.tmp"
 	mv $(OUT_BUILD)/board_elfs.list.tmp $@
 
-$(OUT_BUILD)/board_manifest.txt: $(OUT_BUILD)/board_elfs.list tools/gen_board_manifest.py $(MLSRV_ELF_BOARD) $(PKGD_ELF_BOARD)
+$(OUT_BUILD)/board_manifest.txt: $(OUT_BUILD)/board_elfs.list tools/image/gen_board_manifest.py $(MLSRV_ELF_BOARD) $(PKGD_ELF_BOARD)
 	@mkdir -p $(OUT_BUILD)
-	python3 tools/gen_board_manifest.py $(OUT_BUILD)/board_elfs.list $(IMAGE_ELFS_BOARD) > $@
+	python3 tools/image/gen_board_manifest.py $(OUT_BUILD)/board_elfs.list $(IMAGE_ELFS_BOARD) > $@
 
 # The inference service's model files for the board volume: the same bytes as
 # the QEMU disks' BEHAVIOR.MBL and POLICY.GGF, signed with the board key (never
 # the test key).
-$(BOARD_DIR)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/make_mbl.py tools/sigalg.py $(BEHAVIOR_MBL_SRC) $(BOARD_PRIV_STAMP)
+$(BOARD_DIR)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BEHAVIOR_MBL_SRC) $(BOARD_PRIV_STAMP)
 	$(call require_board_priv,BOARD-SIG)
 	@mkdir -p $(BOARD_DIR)
-	python3 tools/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv "$(BOARD_SIGN_PRIV)" --out $@
+	python3 tools/image/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv "$(BOARD_SIGN_PRIV)" --out $@
 
-$(BOARD_DIR)/policy.sig: $(OUT_BUILD)/policy.gguf tools/gen_config_sig.py $(BOARD_PRIV_STAMP)
+$(BOARD_DIR)/policy.sig: $(OUT_BUILD)/policy.gguf tools/sign/gen_config_sig.py $(BOARD_PRIV_STAMP)
 	$(call require_board_priv,BOARD-SIG)
 	@mkdir -p $(BOARD_DIR)
-	python3 tools/gen_config_sig.py $(OUT_BUILD)/policy.gguf --priv "$(BOARD_SIGN_PRIV)" --out $@
+	python3 tools/sign/gen_config_sig.py $(OUT_BUILD)/policy.gguf --priv "$(BOARD_SIGN_PRIV)" --out $@
 
 # Wave 15 (TOPOSIGN follow-up, owner round 73): every product image path ships
 # its FAT volume, because a product kernel defaults to
@@ -404,8 +404,8 @@ $(OUT_BUILD)/disk-board-k1.img:    BOARD_VOL_KCONFIG := $(OUT_BUILD)/k1.config
 $(OUT_BUILD)/disk-board-fleet.img: BOARD_VOL_KCONFIG := $(OUT_BUILD)/fleet.config
 $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: AUTORUN_ELF := /fat/GPIODRV.ELF
 $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
-		$(OUT_BUILD)/board_manifest.txt tools/check_board_disk.py \
-		tools/check_board_keys.py $(IMAGE_HASHES_BOARD) $(BOARD_DIR)/behavior.mbl $(BOARD_DIR)/policy.sig \
+		$(OUT_BUILD)/board_manifest.txt tools/image/check_board_disk.py \
+		tools/sign/check_board_keys.py $(IMAGE_HASHES_BOARD) $(BOARD_DIR)/behavior.mbl $(BOARD_DIR)/policy.sig \
 		$(BOARD_PRIV_STAMP) \
 		$(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF_BOARD) $(PKGD_ELF_BOARD) $(PKG_ELF) $(UHELLO_ELF) \
 		$(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) \
@@ -446,7 +446,7 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 	# shared board_elfs.list is the workspace config's: the gate's generic one
 	# has the input server and the compositor, a board's may not).
 	cd tests/host/topology-tests && KCONFIG_CONFIG="$(BOARD_VOL_KCONFIG)" CARGO_TARGET_DIR="$(OUT_TGT)/tests/host/topology-tests-board" $(CARGO) run -q --bin board_elfs > "$@.elfs"
-	python3 tools/gen_board_manifest.py $@.elfs --config $(BOARD_VOL_KCONFIG) $(IMAGE_ELFS_BOARD) > $@.manifest
+	python3 tools/image/gen_board_manifest.py $@.elfs --config $(BOARD_VOL_KCONFIG) $(IMAGE_ELFS_BOARD) > $@.manifest
 	# The package installer stages under /fat/PKG: its tree grant cannot create
 	# the directory it is rooted at, so the volume carries it.
 	mmd -i $@ ::PKG
@@ -455,10 +455,10 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 		mcopy -i $@ "$$path" "::$$name" || exit 1; \
 	done < $@.manifest
 	@rm -f $@.tmp_board_config.ini $@.tmp_board_bootmeta
-	python3 tools/check_board_disk.py $@ $@.manifest
+	python3 tools/image/check_board_disk.py $@ $@.manifest
 	$(BOARD_KEYCHECK) disk $@ $(IMAGE_HASHES_BOARD) $(MLSRV_ELF) tools/keys/test_pub.bin
 	$(BOARD_KEYCHECK) disk $@ $(IMAGE_HASHES_BOARD) $(PKGD_ELF) tools/keys/test_pub.bin PKGD.ELF
-	python3 tools/check_board_keys.py sigs $@ "$(BOARD_TOPOLOGY_KEY)"
+	python3 tools/sign/check_board_keys.py sigs $@ "$(BOARD_TOPOLOGY_KEY)"
 	@echo "[DISK] Board FAT32 image (topology-derived, signed topology for $(BOARD_VOL_KCONFIG)): $@ (autorun=$(AUTORUN_ELF))"
 
 .PHONY: board-elfs
@@ -495,7 +495,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img:  AUTORUN_ELF_AARCH64 :
 # without a `behavior` task, which `kernel_main` does not create here), so
 # they are written for every aarch64 image rather than carrying a second
 # CONFIG.INI recipe for one name. Same host peer as riscv64's own
-# `disk-braincli.img`: `tools/fake_brain.py` on 10.0.2.2:9000 (QEMU SLIRP's
+# `disk-braincli.img`: `tools/gate/fake_brain.py` on 10.0.2.2:9000 (QEMU SLIRP's
 # gateway address maps to the host).
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-braincli.img: AUTORUN_ELF_AARCH64 := /fat/BRAINCLI.ELF
 # Wave 9 (DRV1): the base of `build/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img`; see `build/disk-drv.img`.
@@ -684,16 +684,16 @@ $(OUT_BUILD)/disk-aarch64-recovery.img: $(OUT_BUILD)/disk-aarch64.img $(OUT_BUIL
 # under ABITEST.ELF's wider row, which allows getpid.
 # Gate row (wave 9): the captest volume inside partition 0 of an
 # MBR medium, with a 64-sector raw partition 1 after it for `block.part.1`.
-# See tools/make_parted_disk.py for the layout.
-$(OUT_BUILD)/disk-parted.img: $(OUT_BUILD)/disk-captest.img tools/make_parted_disk.py tools/azos_records.py
-	python3 tools/make_parted_disk.py $(OUT_BUILD)/disk-captest.img $@
+# See tools/image/make_parted_disk.py for the layout.
+$(OUT_BUILD)/disk-parted.img: $(OUT_BUILD)/disk-captest.img tools/image/make_parted_disk.py tools/image/azos_records.py
+	python3 tools/image/make_parted_disk.py $(OUT_BUILD)/disk-captest.img $@
 
 # Gate row `riscv64: GPT records partition`: disk.img's FAT32 volume inside
 # partition 0 of a GPT medium laid out to its end, disk.img's reserved tail
 # (the device record) in the AzOS records partition. See
-# tools/make_parted_disk.py for the layout.
-$(OUT_BUILD)/disk-gpt.img: $(OUT_BUILD)/disk.img tools/make_parted_disk.py tools/azos_records.py
-	python3 tools/make_parted_disk.py --gpt $(OUT_BUILD)/disk.img $@
+# tools/image/make_parted_disk.py for the layout.
+$(OUT_BUILD)/disk-gpt.img: $(OUT_BUILD)/disk.img tools/image/make_parted_disk.py tools/image/azos_records.py
+	python3 tools/image/make_parted_disk.py --gpt $(OUT_BUILD)/disk.img $@
 
 $(OUT_BUILD)/disk-seccomp-renamed.img: $(OUT_BUILD)/disk-abitest.img $(UHELLO_ELF)
 	cp $(OUT_BUILD)/disk-abitest.img $@
@@ -721,10 +721,10 @@ $(OUT_BUILD)/disk-linkkey.img: $(OUT_BUILD)/disk.img $(LINK_KEY_TOOL)
 	# reserved tail sector 0 (`reserved_tail::LINK_KEY`, LBA =
 	# image sectors - TAIL_SECTORS), as a link-key record, which the USB MSC export
 	# cannot address. The FAT copy above stays for the PEER tools
-	# (`tools/link_peer.py --image`, mtools): the same 32 bytes, raw.
+	# (`tools/gate/link_peer.py --image`, mtools): the same 32 bytes, raw.
 	# Gate 182e: without this line every kernel-link row booted
 	# "key sector absent/unprovisioned".
-	python3 tools/link_key_provision.py $@ $@.tmp_linkkey
+	python3 tools/sign/link_key_provision.py $@ $@.tmp_linkkey
 	@rm -f $@.tmp_linkkey
 	@echo "[DISK] FAT32 image with LINK.KEY: $@"
 
@@ -757,7 +757,7 @@ $(OUT_BUILD)/disk-configtamper.img: $(OUT_BUILD)/disk.img
 $(OUT_BUILD)/disk-braincli-linkkey.img: $(OUT_BUILD)/disk-braincli.img $(LINK_KEY_TOOL)
 	@cp $< $@
 	@dd if=/dev/urandom of=$(OUT_BUILD)/braincli_linkkey.bin bs=32 count=1 2>/dev/null
-	python3 tools/link_key_provision.py $@ $(OUT_BUILD)/braincli_linkkey.bin
+	python3 tools/sign/link_key_provision.py $@ $(OUT_BUILD)/braincli_linkkey.bin
 	@echo "[DISK] FAT32 image with BRAINCLI autorun + reserved-sector link key: $@"
 
 # ── Secure-boot fixtures (Ed25519 accept / reject) ───────────────────────────
@@ -772,7 +772,7 @@ $(OUT_BUILD)/disk-braincli-linkkey.img: $(OUT_BUILD)/disk-braincli.img $(LINK_KE
 # indistinguishable from a gate wired to always refuse.
 #
 # The signing key is a TEST pair generated on demand into tools/keys/ and
-# never committed — see tools/gen_test_key.py for why generating beats
+# never committed — see tools/sign/gen_test_key.py for why generating beats
 # shipping a fixed pair. `tools/keys/.gitignore` already excludes both halves.
 TEST_PRIV_KEY := tools/keys/test_priv.bin
 TEST_PUB_KEY  := tools/keys/test_pub.bin
@@ -780,26 +780,26 @@ TEST_PUB_KEY  := tools/keys/test_pub.bin
 # One recipe, two outputs. gen_test_key.py is idempotent (keeps an intact
 # private key, always re-derives the public half), so make invoking it once per
 # target is harmless.
-$(TEST_PRIV_KEY) $(TEST_PUB_KEY): tools/gen_test_key.py
-	python3 tools/gen_test_key.py
+$(TEST_PRIV_KEY) $(TEST_PUB_KEY): tools/sign/gen_test_key.py
+	python3 tools/sign/gen_test_key.py
 
 # The GGUF policy file's Ed25519 sidecar: a bare 64-byte signature over the
 # exact bytes, the CONFIG.SIG format and key (`gen_config_sig.py`), which the
 # inference service verifies before its start-up self-test parses the file
 # (Kconfig INFER_MODEL_SIG_REQUIRED). 8.3 name on the volume: POLICY.SIG.
-$(OUT_BUILD)/policy.sig: $(OUT_BUILD)/policy.gguf tools/gen_config_sig.py $(TEST_PRIV_KEY)
-	python3 tools/gen_config_sig.py $(OUT_BUILD)/policy.gguf --priv $(TEST_PRIV_KEY) --out $@
+$(OUT_BUILD)/policy.sig: $(OUT_BUILD)/policy.gguf tools/sign/gen_config_sig.py $(TEST_PRIV_KEY)
+	python3 tools/sign/gen_config_sig.py $(OUT_BUILD)/policy.gguf --priv $(TEST_PRIV_KEY) --out $@
 
 # The behavior loop's model: the MLP of policy.gguf as a signed `.MBL` bundle,
-# one `gguf` variant (`tools/make_mbl.py`). The kernel's behavior task calls it
+# one `gguf` variant (`tools/image/make_mbl.py`). The kernel's behavior task calls it
 # through the Infer interface of the inference service (`kernel/src/behavior_ml.rs`),
 # naming it by its model reference, which the build checks against the
 # kernel's constant (`--expect-ref-from`). 16 bytes in (4 x f32), 12 out
 # (3 x f32); the cost table is the figures the broker admits a call on: a run
 # measured in tens of microseconds is signed at 1 ms, inside the 10 ms the loop
 # gives a call. The file is found by its extension, so the name is free.
-$(OUT_BUILD)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/make_mbl.py tools/sigalg.py $(BEHAVIOR_MBL_SRC) $(TEST_PRIV_KEY)
-	python3 tools/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv $(TEST_PRIV_KEY) --out $@
+$(OUT_BUILD)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BEHAVIOR_MBL_SRC) $(TEST_PRIV_KEY)
+	python3 tools/image/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv $(TEST_PRIV_KEY) --out $@
 
 # The signed slot payload. Content is arbitrary as far as Ed25519 cares, so it
 # is generated rather than pulled from a build artifact: no dependency on
@@ -818,17 +818,17 @@ $(OUT_BUILD)/KERN_A.BIN:
 	@echo "[SECBOOT] slot payload: $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(OUT_BUILD)/KERN_A.SIG: $(OUT_BUILD)/KERN_A.BIN $(TEST_PRIV_KEY)
-	python3 tools/sign_ota.py $(OUT_BUILD)/KERN_A.BIN --fw-version 1 --priv $(TEST_PRIV_KEY) --out $@
+	python3 tools/sign/sign_ota.py $(OUT_BUILD)/KERN_A.BIN --fw-version 1 --priv $(TEST_PRIV_KEY) --out $@
 
 # Bad signature: well-formed RSIG header, trusted public key, wrong scalar.
 # Anything cruder (missing file, broken magic, foreign key) is rejected before
-# sig_verify is ever called. See tools/corrupt_sig.py.
-$(OUT_BUILD)/KERN_BAD.SIG: $(OUT_BUILD)/KERN_A.SIG tools/corrupt_sig.py
-	python3 tools/corrupt_sig.py $(OUT_BUILD)/KERN_A.SIG $@
+# sig_verify is ever called. See tools/sign/corrupt_sig.py.
+$(OUT_BUILD)/KERN_BAD.SIG: $(OUT_BUILD)/KERN_A.SIG tools/sign/corrupt_sig.py
+	python3 tools/sign/corrupt_sig.py $(OUT_BUILD)/KERN_A.SIG $@
 
 # ACCEPT fixture: image + matching signature at the FAT volume ROOT. Root, not
 # a /fat subdirectory — `secure_boot.rs` reaches the FAT32 driver directly
-# rather than through the VFS mount point, and U-Boot's `fatload` (tools/boot.cmd)
+# rather than through the VFS mount point, and U-Boot's `fatload` (tools/image/boot.cmd)
 # can only produce the root layout anyway.
 $(OUT_BUILD)/disk-signed.img: $(OUT_BUILD)/disk.img $(OUT_BUILD)/KERN_A.BIN $(OUT_BUILD)/KERN_A.SIG
 	cp $(OUT_BUILD)/disk.img $@
@@ -870,7 +870,7 @@ $(OUT_BUILD)/KERN_R.BIN:
 	@echo "[SECBOOT] recovery payload: $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(OUT_BUILD)/KERN_R.SIG: $(OUT_BUILD)/KERN_R.BIN $(TEST_PRIV_KEY)
-	python3 tools/sign_ota.py $(OUT_BUILD)/KERN_R.BIN --fw-version 1 --priv $(TEST_PRIV_KEY) --out $@
+	python3 tools/sign/sign_ota.py $(OUT_BUILD)/KERN_R.BIN --fw-version 1 --priv $(TEST_PRIV_KEY) --out $@
 
 # UNFIT-SLOT fixture (owner decision 2026-09-19): slot A signed and bootable,
 # slot B present with a mathematically wrong signature.
@@ -889,10 +889,10 @@ $(OUT_BUILD)/KERN_B.BIN:
 	@echo "[SECBOOT] slot B payload: $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(OUT_BUILD)/KERN_B.SIG: $(OUT_BUILD)/KERN_B.BIN $(TEST_PRIV_KEY)
-	python3 tools/sign_ota.py $(OUT_BUILD)/KERN_B.BIN --fw-version 1 --priv $(TEST_PRIV_KEY) --out $@
+	python3 tools/sign/sign_ota.py $(OUT_BUILD)/KERN_B.BIN --fw-version 1 --priv $(TEST_PRIV_KEY) --out $@
 
-$(OUT_BUILD)/KERN_B_BAD.SIG: $(OUT_BUILD)/KERN_B.SIG tools/corrupt_sig.py
-	python3 tools/corrupt_sig.py $(OUT_BUILD)/KERN_B.SIG $@
+$(OUT_BUILD)/KERN_B_BAD.SIG: $(OUT_BUILD)/KERN_B.SIG tools/sign/corrupt_sig.py
+	python3 tools/sign/corrupt_sig.py $(OUT_BUILD)/KERN_B.SIG $@
 
 $(OUT_BUILD)/disk-badslotb.img: $(OUT_BUILD)/disk-signed.img $(OUT_BUILD)/KERN_B.BIN $(OUT_BUILD)/KERN_B_BAD.SIG
 	cp $(OUT_BUILD)/disk-signed.img $@
@@ -913,7 +913,7 @@ $(OUT_BUILD)/disk-recovery.img: $(OUT_BUILD)/disk.img $(OUT_BUILD)/KERN_R.BIN $(
 $(IMAGE_HASHES_X86_64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_X86_64) \
                $(if $(LXRT_NEED_X86_64),$(LXRT_ELF_X86_64)) $(THIRDPARTY_HASHES_X86_64)
 	@mkdir -p $(OUT_BUILD)
-	python3 tools/user_entry_lint.py --image $(filter-out $(LXHELLO_ELF_X86_64),$(IMAGE_ELF_PATHS_X86_64))
+	python3 tools/lint/user_entry_lint.py --image $(filter-out $(LXHELLO_ELF_X86_64),$(IMAGE_ELF_PATHS_X86_64))
 	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_X86_64)
 
 $(THIRDPARTY_HASHES_X86_64): userspace/image_hashes.py $(wildcard $(BUSYBOX_ELF_X86_64))
@@ -934,7 +934,7 @@ $(OUT_BUILD)/disk-x86_64-ipctest.img: AUTORUN_ELF_X86_64 := /fat/IPCTEST.ELF
 $(OUT_BUILD)/disk-x86_64-systest.img: AUTORUN_ELF_X86_64 := /fat/SYSTEST.ELF
 $(OUT_BUILD)/disk-x86_64-captest.img: AUTORUN_ELF_X86_64 := /fat/CAPTEST.ELF
 $(OUT_BUILD)/disk-x86_64-latbench.img: AUTORUN_ELF_X86_64 := /fat/LATBENCH.ELF
-# vsbench (tools/vsbench_x86_64.sh); its `spawn+wait` lane starts TOOLBOX.ELF,
+# vsbench (tools/bench/vsbench_x86_64.sh); its `spawn+wait` lane starts TOOLBOX.ELF,
 # which every x86_64 image carries.
 $(OUT_BUILD)/disk-x86_64-vsbench.img: AUTORUN_ELF_X86_64 := /fat/VSBENCH.ELF
 $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/disk-x86_64-ipctest.img $(OUT_BUILD)/disk-x86_64-vsbench.img \
@@ -1036,7 +1036,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 # 1 unless the result equals the built-in topology field by field.
 #
 #   TOPO_SELECT            the selection the kernel that boots the files was
-#                          built with beyond its .config (tools/kconfig_to_cargo.py
+#                          built with beyond its .config (tools/build/kconfig_to_cargo.py
 #                          --select; default none)
 #   TOPO_KCONFIG_RISCV64   its .config (default $(QEMU_DEV_KCONFIG))
 #   TOPO_KCONFIG_AARCH64   (default $(AARCH64_KCONFIG))
@@ -1073,7 +1073,7 @@ topo_set = $(1)/CAPS.TOM $(1)/CAPS.SIG $(1)/SCHED.TOM
 # $(2) turns on, as `--features` arguments: the kernel's features are the
 # configuration's with the selection applied (copy $(3)), as its build has them.
 topo_features = $$($(CARGO) tree -q -p azos_kernel -e features -i azos_topology --prefix none \
-	--features "$$(python3 tools/kconfig_to_cargo.py --select '$(2)' --out '$(3)' '$(1)' | sed -n 's/.*--features //p')" \
+	--features "$$(python3 tools/build/kconfig_to_cargo.py --select '$(2)' --out '$(3)' '$(1)' | sed -n 's/.*--features //p')" \
 	| sed -n 's/^azos_topology feature "\(.*\)"$$/azos_topology\/\1/p' | grep -v '/default$$' | sort -u | tr '\n' ' ')
 
 # $(call topo_emit,<riscv64|aarch64|x86_64>,<.config>,<kernel selection>,<out dir>,<extra topo_emit args>)
@@ -1089,11 +1089,11 @@ endef
 # CAPS.TOM with <priv key>, put the three files on <image> (and drop a stale
 # SCHED.SIG). The image must already carry its device record.
 define topo_bind
-	@mkdir -p $(dir $(4)); dev="$(or $(TOPO_DEVICE),$$(python3 tools/device_provision.py --show --id-only $(5)))"; \
-	case "$$dev" in [0-9a-f][0-9a-f]*) ;; *) echo "[TOPO] $(5): no device record (tools/device_provision.py) to bind the topology to"; exit 1;; esac; \
+	@mkdir -p $(dir $(4)); dev="$(or $(TOPO_DEVICE),$$(python3 tools/sign/device_provision.py --show --id-only $(5)))"; \
+	case "$$dev" in [0-9a-f][0-9a-f]*) ;; *) echo "[TOPO] $(5): no device record (tools/sign/device_provision.py) to bind the topology to"; exit 1;; esac; \
 	echo "$$dev" > $(4).device
 	$(call topo_emit,$(1),$(2),$(3),$(4),--device $$(cat "$(4).device") --counter $(TOPO_COUNTER))
-	python3 tools/gen_config_sig.py $(4)/CAPS.TOM --priv "$(6)" --out $(4)/CAPS.SIG
+	python3 tools/sign/gen_config_sig.py $(4)/CAPS.TOM --priv "$(6)" --out $(4)/CAPS.SIG
 	for f in CAPS.TOM CAPS.SIG SCHED.TOM; do mcopy -o -i $(5) $(4)/$$f ::$$f || exit 1; done
 	@mdel -i $(5) ::SCHED.SIG >/dev/null 2>&1 || true
 endef
@@ -1123,12 +1123,12 @@ $(TOPO_DIR_AARCH64)/SCHED.TOM: $(TOPO_DIR_AARCH64)/CAPS.TOM ; @true
 $(TOPO_DIR_X86_64)/SCHED.TOM: $(TOPO_DIR_X86_64)/CAPS.TOM ; @true
 # A bare 64-byte Ed25519 signature over CAPS.TOM (the CAPS.SIG format), TEST
 # key: these are QEMU fixtures.
-$(OUT_BUILD)/topo/riscv64/CAPS.SIG: $(TOPO_DIR_RISCV64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
-	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
-$(OUT_BUILD)/topo/aarch64/CAPS.SIG: $(TOPO_DIR_AARCH64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
-	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
-$(OUT_BUILD)/topo/x86_64/CAPS.SIG: $(TOPO_DIR_X86_64)/CAPS.TOM $(TEST_PRIV_KEY) tools/gen_config_sig.py
-	python3 tools/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
+$(OUT_BUILD)/topo/riscv64/CAPS.SIG: $(TOPO_DIR_RISCV64)/CAPS.TOM $(TEST_PRIV_KEY) tools/sign/gen_config_sig.py
+	python3 tools/sign/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
+$(OUT_BUILD)/topo/aarch64/CAPS.SIG: $(TOPO_DIR_AARCH64)/CAPS.TOM $(TEST_PRIV_KEY) tools/sign/gen_config_sig.py
+	python3 tools/sign/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
+$(OUT_BUILD)/topo/x86_64/CAPS.SIG: $(TOPO_DIR_X86_64)/CAPS.TOM $(TEST_PRIV_KEY) tools/sign/gen_config_sig.py
+	python3 tools/sign/gen_config_sig.py $< --priv $(TEST_PRIV_KEY) --out $@
 
 .PHONY: topology-files
 topology-files: $(call topo_set,$(TOPO_DIR_RISCV64)) $(call topo_set,$(TOPO_DIR_AARCH64)) $(call topo_set,$(TOPO_DIR_X86_64))
@@ -1174,7 +1174,7 @@ $(OUT_BUILD)/disk-x86_64-topo.img: $(OUT_BUILD)/disk-x86_64.img $(TOPO_EMIT_DEPS
 #   host-volume.img  the host's shell volume (build/disk*-sh.img: it carries
 #                 VMMD.ELF) with VM/KERNEL.ELF and VM/DISK.IMG added (VMMD.ELF's
 #                 `/fat/VM` tree).
-# All of it under $(OUT_BUILD)/azos-guest/<isa>/. `tools/run_guest.sh <isa>` runs
+# All of it under $(OUT_BUILD)/azos-guest/<isa>/. `tools/dev/run_guest.sh <isa>` runs
 # it under QEMU with nested virtualisation and waits for the guest's banner.
 # The userspace images of the volume are built from the workspace .config, as
 # every image of the tree is.
@@ -1203,17 +1203,17 @@ AZOS_HASHES_aarch64          := $(IMAGE_HASHES_AARCH64)
 # directory of its own and leaves what QEMU loads in <name>.kernel (the ELF on
 # riscv64, the arm64 Image on aarch64).
 # The cargo features are the whole list the expanded config derives
-# (tools/kconfig_to_cargo.py, as the aarch64 build does): `make build`'s `--base`
+# (tools/build/kconfig_to_cargo.py, as the aarch64 build does): `make build`'s `--base`
 # subset leaves out `hv`.
 define azos_kernel_riscv64
 @mkdir -p $(AZOS_GUEST_DIR)
 cp $(1) $(AZOS_GUEST_DIR)/$(2).config
 KCONFIG_CONFIG=$(AZOS_GUEST_DIR)/$(2).config $(PYTHON) -m olddefconfig
-rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base $(AZOS_GUEST_DIR)/$(2).config)"; \
+rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(AZOS_GUEST_DIR)/$(2).config)"; \
 	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]"; \
 	env KCONFIG_CONFIG=$(AZOS_GUEST_DIR)/$(2).config CARGO_TARGET_DIR=$(OUT_TARGET)/azos-guest-$(ARCH)-$(2) \
 	    $(CARGO) build --release -p azos_kernel $${isa:+--config "$$isa"} \
-	    $$(python3 tools/kconfig_to_cargo.py $(AZOS_GUEST_DIR)/$(2).config | tr -s ' ')
+	    $$(python3 tools/build/kconfig_to_cargo.py $(AZOS_GUEST_DIR)/$(2).config | tr -s ' ')
 cp $(OUT_TARGET)/azos-guest-$(ARCH)-$(2)/$(TARGET)/release/kernel $(AZOS_GUEST_DIR)/$(2).kernel
 endef
 
@@ -1256,4 +1256,4 @@ $(AZOS_GUEST_DIR)/host-volume.img: $(AZOS_HOST_VOLUME_$(ARCH)) $(AZOS_GUEST_DIR)
 
 .PHONY: azos-guest
 azos-guest: $(AZOS_GUEST_DIR)/host.kernel $(AZOS_GUEST_DIR)/host-volume.img
-	@echo "[AZOS-GUEST] $(ARCH): host kernel $(AZOS_GUEST_DIR)/host.kernel, volume $(AZOS_GUEST_DIR)/host-volume.img; boot with tools/run_guest.sh $(ARCH)"
+	@echo "[AZOS-GUEST] $(ARCH): host kernel $(AZOS_GUEST_DIR)/host.kernel, volume $(AZOS_GUEST_DIR)/host-volume.img; boot with tools/dev/run_guest.sh $(ARCH)"

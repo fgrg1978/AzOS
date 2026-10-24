@@ -12,17 +12,17 @@ Nothing of relibc is stored in this repository except what AzOS adds to it:
 | Path | What |
 |---|---|
 | `third_party/relibc` | a gitlink (`.gitmodules`, `update = none`): the upstream commit |
-| `tools/third_party_fetch.sh relibc` | shallow-fetches that commit into `third_party/relibc` (`$RELIBC_SRC` overrides the tree the build reads), in a checkout outside iCloud Drive |
+| `tools/build/third_party_fetch.sh relibc` | shallow-fetches that commit into `third_party/relibc` (`$RELIBC_SRC` overrides the tree the build reads), in a checkout outside iCloud Drive |
 | `userspace/lib/relibc-azos/patches/` | the changes to upstream files (MIT, like the tree they patch) |
-| `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module (Apache-2.0 OR GPL-2.0-only); the Rust targets are the native specs (`sdk/targets`) and a C program is linked with their layout (`tools/user_link_args.py --driver`), no linker script |
-| `tools/relibc_build.sh` | copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs |
+| `userspace/lib/relibc-azos/overlay/` | our own files: the `azos` platform module (Apache-2.0 OR GPL-2.0-only); the Rust targets are the native specs (`sdk/targets`) and a C program is linked with their layout (`tools/build/user_link_args.py --driver`), no linker script |
+| `tools/build/relibc_build.sh` | copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs |
 | `config/axes/Kconfig.libc` | `CONFIG_RELIBC`: the switch, read from each ISA's own configuration |
 | `make relibc` | all of it, for every ISA whose configuration sets `CONFIG_RELIBC=y` (the QEMU defconfigs do) |
 
-`tools/lx_license_lint.py` accepts MIT only in `patches/` (rule T6) and checks the
+`tools/lint/lx_license_lint.py` accepts MIT only in `patches/` (rule T6) and checks the
 pin with every other third-party tree (`--pin`).
 
-Source: `tools/third_party_fetch.sh`, `tools/relibc_build.sh`, `config/axes/Kconfig.libc`,
+Source: `tools/build/third_party_fetch.sh`, `tools/build/relibc_build.sh`, `config/axes/Kconfig.libc`,
 `.gitmodules`.
 
 ## The platform layer (`overlay/src/platform/azos`)
@@ -66,22 +66,22 @@ Source: `userspace/lib/relibc-azos/overlay/src/platform/azos/` (`mod.rs`,
 ## Building a C program
 
 ```
-tools/third_party_fetch.sh relibc && make relibc   # needs zig; CONFIG_RELIBC=y: $AZOS_OUT/build/relibc/<isa>/{hello,tinybox}.elf
+tools/build/third_party_fetch.sh relibc && make relibc   # needs zig; CONFIG_RELIBC=y: $AZOS_OUT/build/relibc/<isa>/{hello,tinybox}.elf
 ```
 
-Link with `tools/relibc_build.sh cc <isa> OUT.elf SRC.c..`: `-D__azos__`, the relibc
+Link with `tools/build/relibc_build.sh cc <isa> OUT.elf SRC.c..`: `-D__azos__`, the relibc
 headers (`$AZOS_OUT/build/relibc/include`), `-nostdlib -static`, the layout of the ISA's
-target spec (`tools/user_link_args.py --driver`: a static executable at its image base
+target spec (`tools/build/user_link_args.py --driver`: a static executable at its image base
 and entry) and `libc.a`.
 
 The programs: `userspace/tests/relibc/hello.c` (the startup), `tinybox.c` (cat, wc,
 ls, mkdir, rm, run, threads, sleep, ...).
 
-Source: `tools/relibc_build.sh`, `userspace/tests/relibc/`.
+Source: `tools/build/relibc_build.sh`, `userspace/tests/relibc/`.
 
 ## Moving the pin
 
 Change the gitlink (`git update-index --cacheinfo 160000,<commit>,third_party/relibc`),
-run `tools/third_party_fetch.sh relibc`, then re-apply the
-patches (`tools/relibc_build.sh prepare` fails on a hunk that does not apply;
-`tools/relibc_build.sh diff` prints the patch a repaired work tree amounts to).
+run `tools/build/third_party_fetch.sh relibc`, then re-apply the
+patches (`tools/build/relibc_build.sh prepare` fails on a hunk that does not apply;
+`tools/build/relibc_build.sh diff` prints the patch a repaired work tree amounts to).

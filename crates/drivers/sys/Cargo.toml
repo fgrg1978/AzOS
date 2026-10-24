@@ -19,7 +19,7 @@ qemu    = []
 # annotations cost nothing in production builds. Enable on real hardware
 # (VF2/K1) bring-up where rdcycle is trustworthy: `--features wcet`.
 wcet    = []
-# Gate row only (`tools/ci_check.sh`, "idle keepalive (simulated WDT)"):
+# Gate row only (`tools/gate/ci_check.sh`, "idle keepalive (simulated WDT)"):
 # `wdt_init` records its timeout as armed on a machine with no watchdog, so
 # hart 0's idle keepalive runs at the derived period under QEMU. The kick is
 # still a no-op. Never in a board build.

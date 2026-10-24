@@ -9,7 +9,7 @@ list. Configuration is in [config.md](config.md); writing programs is in [sdk.md
 ## Toolchains
 
 Source: `rust-toolchain.toml`, `.cargo/config.toml`, `Makefile`, `mk/vars.mk`,
-`tools/relibc_build.sh`, `deny.toml`.
+`tools/build/relibc_build.sh`, `deny.toml`.
 
 | Tool | Used for |
 |---|---|
@@ -25,19 +25,19 @@ The ISA targets are `riscv64imac-unknown-none-elf`, `aarch64-unknown-none-softfl
 kernel) and `x86_64-unknown-none`. Every ring-3 image, `std` or not, is built for the one
 target spec of its ISA, `sdk/targets/<isa>-unknown-azos.json` (see [sdk.md](sdk.md)), which
 carries the image layout as well: no image has a linker script or a cargo configuration of
-its own (`userspace/.cargo/config.toml` is the one; `tools/user_entry_lint.py`). The one
+its own (`userspace/.cargo/config.toml` is the one; `tools/lint/user_entry_lint.py`). The one
 exception is the Linux runtime (`userspace/services/lxrt`) on aarch64 and x86_64, built for
 rustc's soft-float targets because it shares the Linux program's FP registers. The target and the codegen flags of every
-build come from the expanded Kconfig through `tools/kconfig_to_cargo.py`.
+build come from the expanded Kconfig through `tools/build/kconfig_to_cargo.py`.
 
 ## Where outputs go
 
-Source: `tools/out_dir.py`, `mk/vars.mk`, `tools/out_dir_lint.py`.
+Source: `tools/lib/out_dir.py`, `mk/vars.mk`, `tools/lint/out_dir_lint.py`.
 
 Every output (kernels, images, ELFs, cargo target directories) lives under `AZOS_OUT`,
 never in the checkout. The default is `$HOME/azos-out/<checkout name>-<8 hex digits of its
 real path>`: one root per checkout, so two worktrees never share outputs. `python3
-tools/out_dir.py` prints it; the `AZOS_OUT` environment variable overrides it.
+tools/lib/out_dir.py` prints it; the `AZOS_OUT` environment variable overrides it.
 
 | Path | Holds |
 |---|---|
@@ -47,17 +47,17 @@ tools/out_dir.py` prints it; the `AZOS_OUT` environment variable overrides it.
 
 Rust sources `include!` generated tables from `$AZOS_OUT/build`, so `AZOS_OUT` is exported
 to every command. To run a bare `cargo` command, export `AZOS_OUT` and point
-`CARGO_TARGET_DIR` under it. `python3 tools/out_dir_lint.py` fails when a tool writes into
+`CARGO_TARGET_DIR` under it. `python3 tools/lint/out_dir_lint.py` fails when a tool writes into
 the checkout. `make clean` removes `$AZOS_OUT`; `make prune` deletes stale build variants.
 
 Keys: a development build embeds the test signing key (the pair is generated in
-the `keys` directory beside `tools/gen_test_key.py` and is not committed; the `dev-key` feature). A release build refuses
+the `keys` directory beside `tools/sign/gen_test_key.py` and is not committed; the `dev-key` feature). A release build refuses
 that key and needs `TOPOLOGY_PUBKEY_PATH` to name the fleet public key.
 
 ## Targets per ISA
 
 Source: `Makefile`, `mk/kernel.mk`, `mk/userspace.mk`, `mk/qemu.mk`, `mk/lints.mk`,
-`tools/make_help.txt`.
+`tools/build/make_help.txt`.
 
 | | riscv64 | aarch64 | x86_64 |
 |---|---|---|---|
@@ -68,7 +68,7 @@ Source: `Makefile`, `mk/kernel.mk`, `mk/userspace.mk`, `mk/qemu.mk`, `mk/lints.m
 | Default configuration | `config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config` | `config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config` | `config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config` |
 
 Each kernel target expands its defconfig with `olddefconfig` into a file under
-`$AZOS_OUT/build/`, builds with the target and `--features` that `tools/kconfig_to_cargo.py`
+`$AZOS_OUT/build/`, builds with the target and `--features` that `tools/build/kconfig_to_cargo.py`
 prints, and embeds the table of image hashes the seccomp profiles are bound to. Variables:
 
 | Variable | Meaning |
@@ -76,7 +76,7 @@ prints, and embeds the table of image hashes the seccomp profiles are bound to. 
 | `ARCH=riscv64\|aarch64\|x86_64` | The ISA of `make check` and `make azos-guest` |
 | `AARCH64_PAGE_SIZE=4096\|16384\|65536` | The aarch64 translation granule of the kernel and the programs |
 | `QEMU_LOG_LEVEL=err\|warn\|info\|debug` | Log level of the QEMU kernels (default `debug`) |
-| `CHECK_SELECT=...` | A selection on the cell `make check` type-checks (`tools/kconfig_to_cargo.py --select`), for example `ktest` |
+| `CHECK_SELECT=...` | A selection on the cell `make check` type-checks (`tools/build/kconfig_to_cargo.py --select`), for example `ktest` |
 | `CHECK_DEFCONFIG_<isa>=...` | A different defconfig for `make check` |
 | `TOPOLOGY_PUBKEY_PATH=<file>` | The topology public key a release build embeds; `vf2`, `k1`, `rpi5` and `build-fleet` refuse to build without it |
 | `BUILD_TYPE=DEV` | `vf2` only: a development image (the test key allowed, `KTEST` possible); unset is the product build |
@@ -88,12 +88,12 @@ Other targets:
 | Target | What |
 |---|---|
 | `make sdk`, `make sdk-check` | The std programs for the three ISAs; the port layer's checks ([sdk.md](sdk.md)) |
-| `make relibc`, `make busybox` | C programs against relibc; BusyBox for the three ISAs (needs `zig` and the fetched tree, `tools/third_party_fetch.sh busybox`) |
+| `make relibc`, `make busybox` | C programs against relibc; BusyBox for the three ISAs (needs `zig` and the fetched tree, `tools/build/third_party_fetch.sh busybox`) |
 | `make micro-config`, `micro-topology`, `micro-check`, `micro`, `micro-test`, `micro-qemu` | The MCU kernel (`micro/`): riscv32imac, M-mode, PMP |
-| `make vf2`, `flash-vf2`, `vf2-console`, `vf2-ktest`, `vf2-pstore` | The VisionFive 2 image, writing it to an SD card (`VF2_SD`), its serial console (`VF2_SERIAL`), and the board-farm rows (`tools/farm/README.md`) |
+| `make vf2`, `flash-vf2`, `vf2-console`, `vf2-ktest`, `vf2-pstore` | The VisionFive 2 image, writing it to an SD card (`VF2_SD`), its serial console (`VF2_SERIAL`), and the board-farm rows (`tools/dev/farm/README.md`) |
 | `make k1`, `flash-k1`, `k1-console` | The same for the SpacemiT K1 (`K1_SD`, `K1_SERIAL`) |
 | `make build-fleet` | The Fleet-profile kernel and its board volume |
-| `make azos-guest ARCH=riscv64\|aarch64` | The hypervisor kernel, a guest kernel and the host volume that carries it; `tools/run_guest.sh <isa>` boots it |
+| `make azos-guest ARCH=riscv64\|aarch64` | The hypervisor kernel, a guest kernel and the host volume that carries it; `tools/dev/run_guest.sh <isa>` boots it |
 | `make topology-files` | The signed capability topology files for both ISAs |
 | `make sim SIM_DEFCONFIG=<defconfig> SIM_CPUS=<n>` | The host dry boot of a topology: the records its boot admission would write, without a QEMU ([static-topology.md](design/static-topology.md)) |
 | `make make-gguf` | The policy file |
@@ -105,12 +105,12 @@ Other targets:
 
 The hypervisor kernels use the `*-hv` defconfigs and QEMU CPU options that expose the
 extension (`-cpu rv64,h=true` on riscv64, `virtualization=on` on aarch64, `-cpu max,svm=on`
-on x86_64); `tools/qemu.sh` lists the modes. See [virtualization.md](virtualization.md).
+on x86_64); `tools/dev/qemu.sh` lists the modes. See [virtualization.md](virtualization.md).
 
 ## Network boot
 
-Source: `tools/netboot/`, `mk/qemu.mk` (`netboot-row`, `netboot-uboot`), the `netboot ...` rows of
-`tools/ci_check.sh`.
+Source: `tools/gate/netboot/`, `mk/qemu.mk` (`netboot-row`, `netboot-uboot`), the `netboot ...` rows of
+`tools/gate/ci_check.sh`.
 
 A machine with nothing on a disk fetches AzOS over the network. The rows boot QEMU with no drive
 (only the firmware's flash banks and a NIC) and judge the console; each path has canaries that
@@ -128,7 +128,7 @@ make netboot-row NETBOOT_CASE=x86-pxe        # builds the kernel image, boots th
 make netboot-uboot                           # the riscv64 U-Boot, built under $AZOS_OUT/netboot
 ```
 
-`tools/netboot/row.sh` lists the cases. Each path has a canary for a bootfile the server does not
+`tools/gate/netboot/row.sh` lists the cases. Each path has a canary for a bootfile the server does not
 have; the Limine paths one for a changed kernel byte (`-badkernel`) and one for a changed configuration
 (`x86-pxe-badconfig`); the U-Boot path one for a changed kernel (`-badkernel`) and one for an image signed
 by a key the device tree does not hold (`-badkey`).
@@ -153,19 +153,19 @@ embedded (dev build))`, which the rows do not judge). So:
 The keys are throwaway test keys made per run; no release key is read.
 
 Needs: QEMU's edk2 images (`OVMF_CODE`), Limine 10.x binaries (`LIMINE_DIR`, default
-`third_party/limine`, fetched by `tools/third_party_fetch.sh limine`), `mkfs.fat` and mtools, `mkimage` and `dtc`, `openssl`, and for U-Boot a riscv64 GCC
+`third_party/limine`, fetched by `tools/build/third_party_fetch.sh limine`), `mkfs.fat` and mtools, `mkimage` and `dtc`, `openssl`, and for U-Boot a riscv64 GCC
 (`riscv64-unknown-elf-gcc`), GNU make and an `ld.lld` (rustc's own is used): the bare-metal GNU linker
 cannot make U-Boot's `-pie` image. U-Boot is built from the pinned tree (`third_party/u-boot`,
-`tools/third_party_fetch.sh u-boot`) out of tree in `$AZOS_OUT/netboot`; the checkout is never
+`tools/build/third_party_fetch.sh u-boot`) out of tree in `$AZOS_OUT/netboot`; the checkout is never
 written. A row exits "skipped" when one of these is absent.
 
 The riscv64 row boots a FIT with `bootm` rather than `booti` on the flat `kernel.bin`: a signature cannot
 ride on a flat binary. (`booti` would take it: `_start` opens with the Linux RISC-V Image header,
-checked by `tools/image_header.py`, and `tools/boot.cmd` and `tools/farm/boot.cmd` boot it that way.)
+checked by `tools/gate/image_header.py`, and `tools/image/boot.cmd` and `tools/dev/farm/boot.cmd` boot it that way.)
 
 ## Host tests
 
-Source: `tests/host/`, `tools/rows_for_diff.py`.
+Source: `tests/host/`, `tools/gate/rows_for_diff.py`.
 
 Logic that does not need a kernel runs on the host. Each directory under `tests/host/` is a
 standalone crate that pulls the shipped source in by path (for example `libsys-tests`
@@ -176,11 +176,11 @@ shipped code and not a copy. Run one suite with its own target directory:
 cd tests/host/<suite> && CARGO_TARGET_DIR=$AZOS_OUT/tgt/tests/host/<suite> cargo test --release
 ```
 
-`tools/rows_for_diff.py --host` prints the suites that a diff reaches: a suite is selected
+`tools/gate/rows_for_diff.py --host` prints the suites that a diff reaches: a suite is selected
 when a changed path is in it, in a crate it reaches through `path =` or `workspace = true`
 dependencies, or in the directory of a file it (or such a crate) pulls in with `#[path]` or
-`include!` (`tools/gate_rows.py`'s crate graph, which the row deps below also use).
-`tests/fuzz/` holds the `cargo-fuzz` targets, run by `tools/fuzz.sh`.
+`include!` (`tools/gate/gate_rows.py`'s crate graph, which the row deps below also use).
+`tests/fuzz/` holds the `cargo-fuzz` targets, run by `tools/gate/fuzz.sh`.
 
 ## ktest
 
@@ -205,30 +205,30 @@ same registry serves ring 3 through `#[azos::test]` ([sdk.md](sdk.md)).
 
 ## Check tiers
 
-Source: `mk/lints.mk`, `tools/gate_tier.sh`, `tools/ci_check.sh`, `tools/check_fast.sh`,
-`tools/gate_rows.tsv`, `tools/rows_for_diff.py`.
+Source: `mk/lints.mk`, `tools/gate/gate_tier.sh`, `tools/gate/ci_check.sh`, `tools/gate/check_fast.sh`,
+`tools/gate/gate_rows.tsv`, `tools/gate/rows_for_diff.py`.
 
 | Tier | Command | What it runs |
 |---|---|---|
 | N0, the edit loop | `make check0` | `make ARCH=<isa> check` for the three ISAs, the lints below, `cargo deny`, and the host suites the diff reaches |
 | N1, the change check | `make check1` | N0's suites, then the per-ISA smoke boots and the QEMU gate rows that the diff maps to |
 | Fronts' check | `make check-fast` | Per ISA: one ktest boot, one boot of the same kernel with every composable runtime canary armed, and one userspace boot (the ABI conformance checks) |
-| Full | `make ci` | `tools/ci_check.sh`: every feature combination built with zero warnings, every host suite, every lint, and every QEMU scenario |
-| Full, with the brain | `make ci-full` | `make ci`, then the AzOSRobotBrain tests and the protocol sync check (`tools/ci_full.sh`) |
+| Full | `make ci` | `tools/gate/ci_check.sh`: every feature combination built with zero warnings, every host suite, every lint, and every QEMU scenario |
+| Full, with the brain | `make ci-full` | `make ci`, then the AzOSRobotBrain tests and the protocol sync check (`tools/gate/ci_full.sh`) |
 | Presets | `make check-presets` | Every preset expands on every ISA ([config.md](config.md)) |
 | Topology rules | `make check-neverallow` | No preset's, defconfig's or the MCU kernel's topology breaks a `neverallow` rule |
 
-`tools/gate_rows.tsv` lists every gate row with its tier (`n1` rows may run in the change
+`tools/gate/gate_rows.tsv` lists every gate row with its tier (`n1` rows may run in the change
 check; `n2` rows run only in the full gate) and the path globs that select it. A row's globs
-must cover what it demonstrably reads (`tools/gate_rows.py` `required_deps`): its host suite
+must cover what it demonstrably reads (`tools/gate/gate_rows.py` `required_deps`): its host suite
 and that suite's crate closure, the scripts and fixtures its call and functions name, the
 programs of the disk image it boots, the optional crates and test-hook files of its features,
-and the files that print the markers it waits for. `python3 tools/gate_rows.py --check-deps`
+and the files that print the markers it waits for. `python3 tools/gate/gate_rows.py --check-deps`
 names each row and source a manifest line misses, `--check` runs it with the other manifest
 checks, and `--write` adds the missing globs and keeps every existing one; a source edit that
 moves a marker or a hook turns the check red until `--write` runs.
 
-`tools/rows_for_diff.py --rows` maps a diff to rows: the per-ISA smoke boots first, then the
+`tools/gate/rows_for_diff.py --rows` maps a diff to rows: the per-ISA smoke boots first, then the
 rows whose globs name a changed file itself or whose gate code changed (the row with the
 fewest globs first), then the representative rows of a core change (build graph, config,
 boot, trap, `kernel/src/smokes/`), then the other glob hits; at most `GATE_N1_MAX_ROWS`
@@ -246,27 +246,27 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 
 | Lint | Command | Rule |
 |---|---|---|
-| Output directory | `python3 tools/out_dir_lint.py` | nothing writes into the checkout |
-| Boot sequence | `python3 tools/boot_seq_lint.py` | the order of boot steps |
-| Facade bypass | `python3 tools/arch_cfg_lint.py --facade` | shared code does not reach ISA-specific modules; per-file counts are ratcheted in `tools/arch_cfg_lint.baseline` |
-| Trap layer | `python3 tools/trap_lint.py` | the trap layer is written once: no dispatch logic in `entry/<isa>/`, a case for every system-call number |
-| Arch layout | `python3 tools/arch_layout_lint.py` | the three ISAs share one file layout; ISA-only code is under `ext/` |
-| Kconfig | `python3 tools/kconfig_lint.py` | Kconfig is the only source of the feature set ([config.md](config.md)) |
-| Unsafe budget | `make unsafe-budget` (`python3 tools/unsafe_budget.py`) | a crate carries no more `unsafe` than `tools/unsafe_budget.tsv` says, keeps its `#![forbid(unsafe_code)]`, and a kernel crate's share of code lines in files with `unsafe` (and the kernel's total) does not rise; `--report` prints the shares |
-| Size budget | `make size-check` | the riscv64 QEMU defconfig kernel's `.text`/`.rodata`/`.data`/`.bss` stay within 0.25% of `tools/size_budget.tsv`; `make size-update REASON=".."` moves it in the commit that changes the image |
-| Presets | `python3 tools/check_presets.py` | every preset expands on every ISA |
-| Feature matrix | `python3 tools/gen_feature_matrix.py --check` | `Documentation/os-feature-matrix.md` is what the Kconfig tree and the defconfigs yield |
-| Make help | `bash tools/check_make_help.sh` | `make help` names no target the Makefile lacks |
-| Documentation | `python3 tools/doc_lint.py` | every path and relative link in the public docs exists; `Documentation/README.md` links every file |
-| Requirement trace | `python3 tools/req_trace.py` | the `// REQ-nnn` tags in the code agree with `formal/INVARIANTS.md` |
-| Gate rows manifest | `python3 tools/gate_rows.py --check` | `tools/gate_rows.tsv` names exactly the gate's rows, and each row's globs cover what it reads; `tools/rows_for_diff.py --self-test` runs first |
-| SPDX headers | `python3 tools/spdx_headers.py --check` | every tracked source file carries its licence header |
+| Output directory | `python3 tools/lint/out_dir_lint.py` | nothing writes into the checkout |
+| Boot sequence | `python3 tools/lint/boot_seq_lint.py` | the order of boot steps |
+| Facade bypass | `python3 tools/lint/arch_cfg_lint.py --facade` | shared code does not reach ISA-specific modules; per-file counts are ratcheted in `tools/lint/arch_cfg_lint.baseline` |
+| Trap layer | `python3 tools/lint/trap_lint.py` | the trap layer is written once: no dispatch logic in `entry/<isa>/`, a case for every system-call number |
+| Arch layout | `python3 tools/lint/arch_layout_lint.py` | the three ISAs share one file layout; ISA-only code is under `ext/` |
+| Kconfig | `python3 tools/lint/kconfig_lint.py` | Kconfig is the only source of the feature set ([config.md](config.md)) |
+| Unsafe budget | `make unsafe-budget` (`python3 tools/lint/unsafe_budget.py`) | a crate carries no more `unsafe` than `tools/lint/unsafe_budget.tsv` says, keeps its `#![forbid(unsafe_code)]`, and a kernel crate's share of code lines in files with `unsafe` (and the kernel's total) does not rise; `--report` prints the shares |
+| Size budget | `make size-check` | the riscv64 QEMU defconfig kernel's `.text`/`.rodata`/`.data`/`.bss` stay within 0.25% of `tools/lint/size_budget.tsv`; `make size-update REASON=".."` moves it in the commit that changes the image |
+| Presets | `python3 tools/lint/check_presets.py` | every preset expands on every ISA |
+| Feature matrix | `python3 tools/build/gen_feature_matrix.py --check` | `Documentation/os-feature-matrix.md` is what the Kconfig tree and the defconfigs yield |
+| Make help | `bash tools/lint/check_make_help.sh` | `make help` names no target the Makefile lacks |
+| Documentation | `python3 tools/lint/doc_lint.py` | every path and relative link in the public docs exists; `Documentation/README.md` links every file |
+| Requirement trace | `python3 tools/lint/req_trace.py` | the `// REQ-nnn` tags in the code agree with `formal/INVARIANTS.md` |
+| Gate rows manifest | `python3 tools/gate/gate_rows.py --check` | `tools/gate/gate_rows.tsv` names exactly the gate's rows, and each row's globs cover what it reads; `tools/gate/rows_for_diff.py --self-test` runs first |
+| SPDX headers | `python3 tools/lint/spdx_headers.py --check` | every tracked source file carries its licence header |
 | Conflict markers | `git grep` | no tracked file outside `third_party/` holds a merge-conflict marker line |
 | Supply chain | `cargo deny check licenses bans sources` | licences, bans and sources of the registry crates (`deny.toml`) |
 
-Other checks live in `tools/`: `tools/arch_stub_check.py`, `tools/aarch64_fp_free_check.sh`
+Other checks live in `tools/`: `tools/lint/arch_stub_check.py`, `tools/lint/aarch64_fp_free_check.sh`
 (the kernel names no FP register outside the lazy user-FP save and restore),
-and `tools/lx_license_lint.py` (the licences of the Linux driver layer).
+and `tools/lint/lx_license_lint.py` (the licences of the Linux driver layer).
 
 ## A usual order
 

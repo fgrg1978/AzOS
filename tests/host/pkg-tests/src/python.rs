@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! A package built and signed by `tools/azpkg.py`, verified by this crate: the
+//! A package built and signed by `tools/image/azpkg.py`, verified by this crate: the
 //! two implementations of the container, the signed message and the metadata
 //! agree byte for byte. Skipped (and says so) where `python3` or its
 //! `cryptography` package is not there.
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn azpkg() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/azpkg.py")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/image/azpkg.py")
 }
 
 /// The interpreter that can run the tool: `$PYTHON` (as the Makefile has it),

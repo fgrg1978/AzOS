@@ -6,7 +6,7 @@
 //! One sector in the reserved tail past the FAT32 volume
 //! (`kernel/src/reserved_tail.rs` `DEVICE`), which the USB
 //! mass-storage export cannot address. Written from the host by
-//! `tools/device_provision.py` (floor 0) and by the kernel each time it accepts
+//! `tools/sign/device_provision.py` (floor 0) and by the kernel each time it accepts
 //! a `CONFIG.INI` whose signed counter is above the floor.
 //!
 //! ```text

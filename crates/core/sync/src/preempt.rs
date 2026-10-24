@@ -24,7 +24,7 @@
 //! real, reachable by inspection, and the fix is cheap. It makes the *causal
 //! link to K-C26* unsupported. K-C27 (yield-polling daemons fixed at the
 //! workload) and K-C28 (the `sepc`/`sstatus` window) are the untested
-//! candidates; see the K-C26 block in `tools/ci_check.sh`.
+//! candidates; see the K-C26 block in `tools/gate/ci_check.sh`.
 //!
 //! **Step 2 has landed, and the paragraph that stood here said it had not.**
 //! It read "Nothing takes a guard yet. Making `SpinLockGuard` carry a

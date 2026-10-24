@@ -13,8 +13,8 @@ publish = false
 [features]
 # No `default` list: Kconfig is the only source of the feature set.
 # Every build gets its features from the expanded .config through
-# tools/kconfig_to_cargo.py (`# cargo-feature:` tags in config/Kconfig.*;
-# tools/kconfig_lint.py checks them against this table). The robot domain,
+# tools/build/kconfig_to_cargo.py (`# cargo-feature:` tags in config/Kconfig.*;
+# tools/lint/kconfig_lint.py checks them against this table). The robot domain,
 # the scheduler options and the rest of the old default list are the `base`
 # tags there.
 default = []
@@ -28,7 +28,7 @@ default = []
 # actuation authority (crates/core/actuation: e-stop latch, flight recorder,
 # sys-wdt), and none of those crates.
 #
-# Owned by USE_ROBOT (its tag): tools/kconfig_to_cargo.py emits it for every
+# Owned by USE_ROBOT (its tag): tools/build/kconfig_to_cargo.py emits it for every
 # .config that selects the Robot domain; no build names it by hand.
 # kernel/src/main.rs refuses (compile error) a .config that selects
 # USE_ROBOT without this feature.
@@ -55,7 +55,7 @@ geofence = ["use-robot", "azos_behavior?/geofence"]
 # kernel/src/boot/input_irq.rs). The driver is always compiled (as the
 # entropy source is); the feature is the boot wiring and the interrupt arms.
 # In `default` so a build naming its features by hand has it, and dropped by
-# tools/kconfig_to_cargo.py when the symbol is n. With no such device on the
+# tools/build/kconfig_to_cargo.py when the symbol is n. With no such device on the
 # machine it prints nothing and costs one slot scan at boot.
 virtio-input = []
 # The virtio-sound device (config/subsys/Kconfig.drivers DRV_VIRTIO_SND;
@@ -72,7 +72,7 @@ virtio-input-canary = ["virtio-input", "azos_drv_virtio/input-rx-canary"]
 # kernel/src/entry/x86_64/irq.rs). The driver is always compiled (it lives in
 # `azos_drv_input` beside the keymap virtio-input shares); the feature is the
 # boot wiring and the interrupt arm. A `base` tag, as `virtio-input`:
-# tools/kconfig_to_cargo.py drops it when the symbol is n, and Kconfig keeps
+# tools/build/kconfig_to_cargo.py drops it when the symbol is n, and Kconfig keeps
 # the symbol n off x86_64.
 ps2 = []
 # Board builds REQUIRE the authenticated brain link (owner decision 2026-09-13).
@@ -84,7 +84,7 @@ ps2 = []
 # UART bridge down in both directions. Provision the key per robot. The board
 # features do not turn it on: Kconfig LINK_PROVISIONING_ENFORCED does, on every
 # build but BUILD_TYPE_DEV (owner decision 2026-10-23), through
-# tools/kconfig_to_cargo.py like any other symbol.
+# tools/build/kconfig_to_cargo.py like any other symbol.
 # `azos_crypto/no-bitmanip`: the VF2 kernel carries no bit-manipulation
 # instruction, not even behind runtime detection (gate row `vf2: no B
 # extension`); its SHA-256 is the generic one.
@@ -516,7 +516,7 @@ rvv-isolation-probe = []
 # expected to die in `entry::aarch64::handle_page_fault`'s existing EL1-fault
 # path, naming the SAME address the probe printed just before touching it.
 # Opt-in only — a normal/board/CI build must never carry either of these;
-# see `tools/ci_check.sh`'s "aarch64 guard: ... probe faults" rows, the only
+# see `tools/gate/ci_check.sh`'s "aarch64 guard: ... probe faults" rows, the only
 # callers.
 guard-fault-probe-stack = []
 guard-fault-probe-null  = []
@@ -778,7 +778,7 @@ sensor-ts-freeze = ["sensor-ts-smoke", "azos_imu/freeze-acq-stamp"]
 brain-lies-smoke = ["qemu", "use-robot"]
 # The brain link's wall-clock rekey interval drops from 3600 s to 5 s
 # (`BRAIN_LINK_REKEY_SECS` in kernel/src/tasks/brain_link.rs), so one QEMU boot sees the
-# kernel send REKEY records to `tools/link_peer.py`. The crate constant is
+# kernel send REKEY records to `tools/gate/link_peer.py`. The crate constant is
 # unchanged; every other build rekeys hourly.
 link-rekey-smoke = ["qemu", "use-robot"]
 # Reads captest's forged-handle refusal (`SAFETY_CAP_DENIED_TYPED`, GPIO) back
@@ -871,7 +871,7 @@ hwcap-clear-canary = []
 # never by a QEMU or bare-`cargo` build. See crates/core/sched/Cargo.toml.
 board-image = ["azos_sched/board-image"]
 # Translation granule (config/arch/Kconfig.isa AARCH64_PAGE_*; aarch64 only, and
-# tools/kconfig_to_cargo.py emits the token). Neither = 4 KiB. The kernel
+# tools/build/kconfig_to_cargo.py emits the token). Neither = 4 KiB. The kernel
 # asserts at compile time that the granule these select equals
 # azos_limits::PAGE_SHIFT from `.config`, so the two cannot disagree;
 # kernel/build.rs derives the linker-script page alignment from them.
@@ -999,7 +999,7 @@ fb-generic = ["azos_fb"]
 fb-console = ["fb-generic", "azos_fb/console", "azos_drv_sys/console-mirror"]
 fb-panic-screen = ["fb-generic", "azos_fb/panic-screen"]
 # Wave 11 (LAT): masked-window tracer, Kconfig `LAT_TRACE` (config/kernel/Kconfig.trace,
-# mapped by tools/kconfig_to_cargo.py). Records per hart the longest
+# mapped by tools/build/kconfig_to_cargo.py). Records per hart the longest
 # interrupts-masked and preemption-disabled windows and their call sites,
 # read out in the introspection tree's `latency/`. Off: no hook, no table, no node.
 lat-trace = ["azos_arch/lat-trace", "azos_sync/lat-trace", "azos_mm/lat-trace"]
@@ -1197,7 +1197,7 @@ pifast-smoke = ["qemu"]
 # Its canary: the call never donates (`azos_syscall/pifast-donation-canary`),
 # so the row must print `[PIFAST] FAIL`.
 pifast-donation-canary = ["pifast-smoke", "azos_syscall/pifast-donation-canary"]
-# Wave 11 SCHED-RT rows (`sched-rt:` in tools/ci_check.sh): the RT band budget,
+# Wave 11 SCHED-RT rows (`sched-rt:` in tools/gate/ci_check.sh): the RT band budget,
 # EDF + CBS and run-time admission measured on hart 0 under `-icount`, see
 # kernel/src/rt_smoke.rs. The topology gains the two profiled rows the EDF
 # check attaches to.
@@ -1241,7 +1241,7 @@ rt-panic-canary-safety = ["rt-panic-canary", "azos_safety_core?/rt-panic-canary-
 # PANIC_QUIESCE). Rows `panic: report not spliced by a console flood`; see
 # kernel/src/smokes/panic_splice_smoke.rs. No `qemu`: x86_64 builds it too.
 panic-splice-smoke = []
-# The motor-command watchdog record row (`tools/ci_check.sh`,
+# The motor-command watchdog record row (`tools/gate/ci_check.sh`,
 # `rt_watchdog_record_row`): a 5 s report window instead of 60 s, so a short
 # boot closes one. Never in a default build.
 rtwd-window-smoke = ["qemu", "use-robot", "azos_safety_core?/rtwd-window-smoke"]
@@ -1268,7 +1268,7 @@ preempt-account-smoke = ["qemu"]
 # Periodic-wake tail latency (mean/p99/p99.9/max over 10k wakes) against
 # ping-pong pairs on the same hart, waker in the RT band with a CBS
 # reservation and then best-effort: kernel/src/smokes/tail_smoke.rs. Linux
-# counterpart: tools/lat_linux/tail.c.
+# counterpart: tools/bench/lat_linux/tail.c.
 tail-smoke = ["qemu"]
 # Gate row only: the vDSO write window held open (crates/core/mm vdso.rs);
 # abitest must still finish (no ring-3 reader may spin on an odd seq).

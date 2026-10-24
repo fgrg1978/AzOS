@@ -1569,7 +1569,7 @@ fn vdso_lanes(abi: &(impl Abi + Vdso), floor_ns: u64) {
 // `MAP_SHARED` page and `futex`, `taskinfo [call]` against `getrusage`.
 // `sensor-read-*` and `taskinfo [vdso]` have no Linux object to measure (no
 // sensor syscall, no per-task vDSO counters): they print on the `azos` side
-// only, and `tools/vsbench_compare.sh` carries a one-line justification for
+// only, and `tools/bench/vsbench_compare.sh` carries a one-line justification for
 // each — a missing number, not an invented one.
 
 /// One failure line the gate's `FAIL rc=` grep catches. Printed ONLY on the
@@ -2277,7 +2277,7 @@ fn frame_lanes(abi: &(impl Abi + Ipc), peer: u64, floor_ns: u64) {
 ///
 /// Never inside a measured batch (the peers print after their own loop), and
 /// deliberately without `ns/op` or the `<side> <lane> =` shape, so
-/// `tools/vsbench_compare.sh` does not read it as a lane. Built into one buffer
+/// `tools/bench/vsbench_compare.sh` does not read it as a lane. Built into one buffer
 /// and written once: peers print from other harts at the same time, and a line
 /// assembled from several writes interleaves.
 fn report_hart(abi: &impl Abi, who: &[u8], first: Option<u64>, last: Option<u64>) {
@@ -2752,7 +2752,7 @@ fn net_lane(abi: &(impl Abi + Net + Proc), floor_ns: u64) {
 /// (wave 15): `tcp-bulk-tx` (the guest sends [`TCP_BULK_BYTES`]) and
 /// `tcp-bulk-rx` (the guest receives them). One op is one KiB, so ns/op is
 /// guest nanoseconds per KiB, and under `-icount shift=0` (the TCP pass of
-/// `tools/vsbench_compare.sh` always runs so) instructions per KiB: the
+/// `tools/bench/vsbench_compare.sh` always runs so) instructions per KiB: the
 /// whole guest, kernel and application, at one hart.
 ///
 /// **One algorithm on both kernels**, as `udp-roundtrip`: non-blocking calls
@@ -2770,7 +2770,7 @@ fn net_lane(abi: &(impl Abi + Net + Proc), floor_ns: u64) {
 fn tcp_bulk_lanes(abi: &(impl Abi + Net), floor_ns: u64) {
     let Some(port) = abi.tcp_peer_port() else {
         abi.write(b"[VSBENCH] tcp-bulk: no host peer on this boot (the TCP pass \
-of tools/vsbench_compare.sh brings one), no number\n");
+of tools/bench/vsbench_compare.sh brings one), no number\n");
         return;
     };
     tcp_bulk_one(abi, port, true, floor_ns);
@@ -2968,7 +2968,7 @@ fn tcp_bulk_one(abi: &(impl Abi + Net), port: u16, tx: bool, floor_ns: u64) {
 ///
 /// Feature-gated (`fork-bomb`) and called only from a `#[cfg]`'d call site
 /// below: this is not part of the default `run()` any build under
-/// `tools/vsbench_aarch64.sh` or the main gate links.
+/// `tools/bench/vsbench_aarch64.sh` or the main gate links.
 #[cfg(feature = "fork-bomb")]
 fn fork_bomb_probe(abi: &(impl Abi + Proc)) {
     const ATTEMPTS: u32 = 96; // > MAX_TASKS=64 with room for background tasks
@@ -3025,7 +3025,7 @@ fn label_n(prefix: &[u8], n: u32) -> ([u8; 32], usize) {
 ///
 /// Every completion is checked after the batch that produced it — result and
 /// refusal flag — and a wrong one prints `FAIL rc=`, which
-/// `tools/vsbench_aarch64.sh` refuses. A number from a ring whose entries were
+/// `tools/bench/vsbench_aarch64.sh` refuses. A number from a ring whose entries were
 /// refused (a seccomp row without the typed call) would be the cost of a
 /// refusal.
 ///
@@ -3142,13 +3142,13 @@ const RECV_LANE_PORT: u16 = 7110;
 ///    (`SQE_F_FIXED`): no user range validated and no bounce buffer, which is
 ///    what registering it once paid for. Linux has no registered-buffer
 ///    receive on a socket, so this lane is AzOS only
-///    (`LANES_NOT_COMPARABLE` in `tools/vsbench_compare.sh`).
+///    (`LANES_NOT_COMPARABLE` in `tools/bench/vsbench_compare.sh`).
 ///
 /// `brain_client`'s own change is `recv-call` against `ioring-rfix x1`, one
 /// receive per submit; run with the ring pass (`-icount shift=0`) the figures
 /// are instructions per receive. Every completion is checked, result and
 /// refusal flag, and a wrong one prints `FAIL rc=`, which
-/// `tools/vsbench_aarch64.sh` refuses. The Linux twin of the first two is
+/// `tools/bench/vsbench_aarch64.sh` refuses. The Linux twin of the first two is
 /// `abi_linux::ioring_recv_lanes`.
 #[cfg(feature = "azos")]
 fn ioring_recv_lanes(abi: &(impl Abi + Net), floor_ns: u64) {
@@ -3564,7 +3564,7 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
         net_lane(abi, floor_ns);
     }
     // 6b. Wave 15: TCP bulk against a host peer. Only a boot with a NIC and
-    //     a peer measures it (the TCP pass of tools/vsbench_compare.sh);
+    //     a peer measures it (the TCP pass of tools/bench/vsbench_compare.sh);
     //     every other boot prints one line and moves on.
     if lanes.on(b"tcp") { tcp_bulk_lanes(abi, floor_ns); }
 

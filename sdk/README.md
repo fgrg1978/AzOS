@@ -14,18 +14,18 @@ ISAs and runs its host tests.
 | `sdk/targets/*.json` | The one target spec per ISA (`os = "azos"`), of every native image, `std` or not: it carries the layout too (image base, page size, entry `_azos_entry`, a static PIE), so no image has a linker script. The ISA baseline beyond them comes from Kconfig. |
 | `sdk/std/sys/**` | The files of the port, copied into `library/std/src/sys/` of the library source. Each is thin: a call into `azos_stdrt`. |
 | `crates/core/stdrt` | The port layer: traps, startup block, vDSO clock, threads, futexes, the hardened allocator, console, entropy. |
-| `tools/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src` plus `std/sys` and the dispatch edits. |
-| `tools/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment from the expanded Kconfig. |
+| `tools/build/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src` plus `std/sys` and the dispatch edits. |
+| `tools/build/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment from the expanded Kconfig. |
 | `crates/core/libsys-macros` | `#[main]` and `#[test]`, re-exported by `azos_libsys`. |
 
-`tools/sdk_cargo.py` points cargo at the assembled tree with
+`tools/build/sdk_cargo.py` points cargo at the assembled tree with
 `__CARGO_TESTS_ONLY_SRC_ROOT`, an internal cargo hook used by cargo's own tests,
 not a supported interface. The assembly is tied to the pinned nightly: each edit of the
 library is an exact one-time replacement and the tool refuses when the text
-moved (`python3 tools/sdk_std.py --check`), so a toolchain bump is the moment to
+moved (`python3 tools/build/sdk_std.py --check`), so a toolchain bump is the moment to
 re-check them. The assembled tree is a build product and is never committed.
 
-Source: `sdk/`, `tools/sdk_std.py`, `tools/sdk_cargo.py`.
+Source: `sdk/`, `tools/build/sdk_std.py`, `tools/build/sdk_cargo.py`.
 
 ## What the port maps to
 

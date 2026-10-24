@@ -5,7 +5,7 @@
 //!
 //! The kernel installs the key only from a valid record: a raw key, a torn
 //! write or filesystem data in that sector is refused, never taken as the
-//! key. The reference record is the one `tools/link_key_provision.py` writes
+//! key. The reference record is the one `tools/sign/link_key_provision.py` writes
 //! for the key 01..20, so the host writer and the kernel's reader are held to
 //! the same bytes.
 
@@ -13,7 +13,7 @@ use azos_crypto::secure_channel::{
     link_key_record_decode, LinkKeyFault, LINK_KEY_RECORD_BYTES, PSK_BYTES,
 };
 
-/// `tools/link_key_provision.py`'s record for the key 01 02 .. 20.
+/// `tools/sign/link_key_provision.py`'s record for the key 01 02 .. 20.
 const REFERENCE: &str =
     "4b4c4e4b010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200701978c";
 

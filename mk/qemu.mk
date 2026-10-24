@@ -137,7 +137,7 @@ qemu-gdb: build
 qemu-net-pair: $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),net-smoke,$(OUT_BUILD)/qemu-dev-net-smoke.config); \
 	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-net-smoke.config" $(CARGO) build --release -p azos_kernel $$args
-	QEMU=$(QEMU) bash tools/net_pair_smoke.sh
+	QEMU=$(QEMU) bash tools/gate/net_pair_smoke.sh
 
 QEMU_X86_64_DISK ?=
 # The signed microcode image as the PVH boot module (`make ucode`,
@@ -177,7 +177,7 @@ qemu-pci-x86_64: x86_64-pci $(QEMU_X86_64_PCI_DISK)
 # untouched. `make run-x86-pc` stages an EFI system partition (Limine's
 # BOOTX64.EFI, limine.conf, the kernel) and boots it on QEMU q35 under OVMF.
 # Limine is the gitlink third_party/limine (a release's `vX.Y-binary` tag,
-# .gitmodules), fetched by `tools/third_party_fetch.sh limine`; make never
+# .gitmodules), fetched by `tools/build/third_party_fetch.sh limine`; make never
 # downloads it. LIMINE_DIR points at another Limine binary release.
 # Boot-tested with v10.x-binary (base revision 3); the userspace images of
 # the x86_64 build read the workspace `.config`, so a fresh tree needs one
@@ -207,7 +207,7 @@ QEMU_X86_PC_FLAGS := -M q35 -cpu $(QEMU_X86_64_CPU) -m 256M -display none -no-re
 
 # The QEMU command line of the PC (everything after the program name), with
 # the ESP, the OVMF vars copy and the CPU model it was asked for: `run-x86-pc`
-# runs it, and the gate's q35 CPU-model rows (tools/ci_check.sh `x86_pc_row`)
+# runs it, and the gate's q35 CPU-model rows (tools/gate/ci_check.sh `x86_pc_row`)
 # print it with `make -s x86-pc-qemu-args QEMU_X86_64_CPU=<model>`.
 X86_PC_QEMU_ARGS = $(QEMU_X86_PC_FLAGS) \
 	-drive if=pflash,format=raw,unit=0,readonly=on,file=$(OVMF_CODE) \
@@ -219,7 +219,7 @@ X86_PC_QEMU_ARGS = $(QEMU_X86_PC_FLAGS) \
 # Limine (when not fetched) and the UEFI firmware: say which is missing.
 x86-pc-prereq:
 	@missing=""; \
-	test -n "$(LIMINE_DIR)" -a -f "$(LIMINE_DIR)/BOOTX64.EFI" || missing="$$missing\n  \$$(LIMINE_DIR)/BOOTX64.EFI   (tools/third_party_fetch.sh limine, or set LIMINE_DIR to a Limine release; BIOS boot is not used here)"; \
+	test -n "$(LIMINE_DIR)" -a -f "$(LIMINE_DIR)/BOOTX64.EFI" || missing="$$missing\n  \$$(LIMINE_DIR)/BOOTX64.EFI   (tools/build/third_party_fetch.sh limine, or set LIMINE_DIR to a Limine release; BIOS boot is not used here)"; \
 	test -n "$(OVMF_CODE)" -a -f "$(OVMF_CODE)" || missing="$$missing\n  OVMF_CODE (edk2-x86_64-code.fd from QEMU's share directory, or OVMF_CODE.fd)"; \
 	test -n "$(OVMF_VARS)" -a -f "$(OVMF_VARS)" || missing="$$missing\n  OVMF_VARS (edk2-i386-vars.fd, or OVMF_VARS.fd, next to the code file)"; \
 	if [ -n "$$missing" ]; then printf "[X86-PC] cannot boot, missing:$$missing\n"; exit 1; fi
@@ -255,11 +255,11 @@ qemu-aarch64-el2: aarch64
 	qemu-system-aarch64 -M virt,gic-version=3,virtualization=on $(QEMU_AARCH64_KERNEL_FLAGS) -kernel $(AARCH64_IMG)
 
 
-# ── Network boot: nothing on a disk (tools/netboot, Documentation/building.md) ─
+# ── Network boot: nothing on a disk (tools/gate/netboot, Documentation/building.md) ─
 # `make netboot-row NETBOOT_CASE=<case>` builds the kernel image the case's ISA
-# fetches (tools/netboot/kernel_image.sh) and boots QEMU with no disk, the
+# fetches (tools/gate/netboot/kernel_image.sh) and boots QEMU with no disk, the
 # firmware fetching AzOS over the network; the exit status is the verdict. The
-# cases and what each judges are listed at the top of tools/netboot/row.sh
+# cases and what each judges are listed at the top of tools/gate/netboot/row.sh
 # (`x86-pxe`, `x86-http`, `riscv64-tftp`, and for each a canary that
 # sabotages the fetch and must be refused). `make netboot-uboot` builds the
 # U-Boot the riscv64 cases boot, from the owner-approved tarball, under
@@ -268,11 +268,11 @@ NETBOOT_CASE ?= x86-pxe
 
 .PHONY: netboot-uboot netboot-row
 netboot-uboot:
-	@bash tools/netboot/uboot_build.sh
+	@bash tools/gate/netboot/uboot_build.sh
 
 netboot-row:
 	@case "$(NETBOOT_CASE)" in \
 	    x86-*) isa=x86_64 ;; riscv64-*) isa=riscv64 ;; \
-	    *) echo "[NETBOOT] NETBOOT_CASE=$(NETBOOT_CASE): see the case list in tools/netboot/row.sh"; exit 2 ;; \
+	    *) echo "[NETBOOT] NETBOOT_CASE=$(NETBOOT_CASE): see the case list in tools/gate/netboot/row.sh"; exit 2 ;; \
 	esac; \
-	img="$$(bash tools/netboot/kernel_image.sh $$isa)" && bash tools/netboot/row.sh "$(NETBOOT_CASE)" "$$img"
+	img="$$(bash tools/gate/netboot/kernel_image.sh $$isa)" && bash tools/gate/netboot/row.sh "$(NETBOOT_CASE)" "$$img"

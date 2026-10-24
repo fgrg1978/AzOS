@@ -48,7 +48,7 @@
 //! seed, the device record, the topology counter floor: `kernel/src/
 //! reserved_tail.rs`) live in a small partition of type
 //! [`GPT_RECORDS_GUID`], 653ED7AA-51CA-43D8-9AF7-54775962C612 (generated once,
-//! at random, for AzOS; `tools/azos_records.py` carries the same bytes). A
+//! at random, for AzOS; `tools/image/azos_records.py` carries the same bytes). A
 //! GPT laid out to its end keeps its backup table where an MBR medium keeps
 //! the reserved tail, so the tail cannot be used there (audit K2-M1). The
 //! partition is the kernel's from the moment the table is published:

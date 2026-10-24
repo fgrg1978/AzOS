@@ -157,7 +157,7 @@ pub fn pstore_smoke_panic_holding_fs_lock() -> ! {
 // third name in the block above.
 
 /// `vfs::vfs_mount`, wrapped in an opt-in end-to-end proof for
-/// `/fat/CRASH.LOG` rotation. `tools/ci_check.sh`'s crash-log gate row is
+/// `/fat/CRASH.LOG` rotation. `tools/gate/ci_check.sh`'s crash-log gate row is
 /// the only caller of this feature.
 ///
 /// **Why the trigger lives here and nowhere else.** `vfs.rs`, `fat32.rs` and

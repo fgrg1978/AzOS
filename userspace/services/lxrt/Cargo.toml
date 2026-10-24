@@ -26,6 +26,6 @@ panic = "abort"
 [workspace]
 
 # No FAT32 image: the kernel embeds this ELF (Kconfig LINUX_RUNTIME), so the
-# board volume neither carries nor lists it (tools/gen_userspace_kconfig.py).
+# board volume neither carries nor lists it (tools/build/gen_userspace_kconfig.py).
 [package.metadata.azos]
 images = []

@@ -4,7 +4,7 @@
 //!
 //! A child of `update_tests`, which owns the fixtures: the volume with a
 //! power-loss switch, the signed bundles and the stage/switch helpers. The
-//! deltas the tests apply are made by the real generator (`tools/ota_delta.py`,
+//! deltas the tests apply are made by the real generator (`tools/image/ota_delta.py`,
 //! run as a subprocess), so the Rust applier and the Python generator are
 //! checked against each other; the refusals are checked on bytes this file
 //! builds itself.
@@ -63,7 +63,7 @@ fn scratch(what: &str) -> std::path::PathBuf {
 }
 
 fn tool() -> String {
-    format!("{}/../../../tools/ota_delta.py", env!("CARGO_MANIFEST_DIR"))
+    format!("{}/../../../tools/image/ota_delta.py", env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Run the generator on two bundles.

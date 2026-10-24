@@ -229,7 +229,7 @@ pub fn brain_static_key(psk: &[u8; PSK_BYTES]) -> [u8; DH_LEN] {
 //   4       1     version (1)
 //   5       32    key
 //   37      4     integrity tag (first 4 bytes of SHA-256(bytes 0..37))
-// Written from the host only (`tools/link_key_provision.py`); the kernel
+// Written from the host only (`tools/sign/link_key_provision.py`); the kernel
 // never writes it. A raw key, a torn write or filesystem data in that sector
 // is not a key.
 

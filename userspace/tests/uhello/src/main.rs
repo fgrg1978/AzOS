@@ -17,7 +17,7 @@
 //! `FAILED:` and exits 1. The native syscall entries send the two IPC fast
 //! calls through a branch of their own (Chain E cut 7), so this is also the
 //! runtime proof that the filter stands in front of that branch. The
-//! `userspace: minimal Rust ELF` scenario in `tools/ci_check.sh` asserts the
+//! `userspace: minimal Rust ELF` scenario in `tools/gate/ci_check.sh` asserts the
 //! kill line, and abitest's `check_spawn` (every ISA) the exit status.
 
 #![no_std]

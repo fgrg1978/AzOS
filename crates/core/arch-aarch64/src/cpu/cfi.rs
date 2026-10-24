@@ -5,7 +5,7 @@
 //! (FEAT_BTI, `A64_BTI`); plan item I4.
 //!
 //! The compiler half is `-Z branch-protection=bti,pac-ret`
-//! (tools/kconfig_to_cargo.py, `cfi_rustflags`), kernel and user images: a
+//! (tools/build/kconfig_to_cargo.py, `cfi_rustflags`), kernel and user images: a
 //! `paciasp` in the prologue and an `autiasp` before the return of every
 //! non-leaf function, and a `bti` pad where one is needed. All of them are
 //! HINT encodings, no-ops on a core without the extension, and `paciasp` /

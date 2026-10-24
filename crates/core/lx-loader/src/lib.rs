@@ -128,7 +128,7 @@ const REFUSED_PREFIXES: &[&[u8]] = &[b".altinstr", b".alternative"];
 /// The one `.altinstr` section that is placed: x86's `.altinstr_aux` is no
 /// patch table but the code an unpatched `static_cpu_has()` jumps to (a
 /// run-time test of the capability bit in `boot_cpu_data`). Kbuild leaves it
-/// in after tools/lx_kbuild drops the patch tables, which keeps that
+/// in after tools/build/lx_kbuild drops the patch tables, which keeps that
 /// unpatched path.
 const PLACED_ALTINSTR: &[u8] = b".altinstr_aux";
 

@@ -2425,7 +2425,7 @@ mod flight_recorder_format {
     /// this exact byte layout. Tested directly against `make_log_path`
     /// rather than through a mock's recorded path: a `LogStorage`
     /// implementation is free to lay out paths/volumes/directories however
-    /// it needs to (see `tools/tcb_check.sh` — that used to be FAT32's `mkdir`
+    /// it needs to (see `tools/lint/tcb_check.sh` — that used to be FAT32's `mkdir`
     /// plumbing, now the implementation's own business), so the mock has
     /// nothing meaningful to assert about directory creation any more. What
     /// stays load-bearing across every implementation is the naming scheme
@@ -2796,14 +2796,14 @@ mod semantic_level_records {
 }
 
 // ---------------------------------------------------------------------------
-// Golden wire vectors, shared with `tools/fake_brain.py`.
+// Golden wire vectors, shared with `tools/gate/fake_brain.py`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod wire_golden {
     use super::brain_protocol::{build_packet, PKT_SEMANTIC_LEVEL, PKT_DEGRADE};
 
-    /// The exact bytes `tools/fake_brain.py` puts on the wire.
+    /// The exact bytes `tools/gate/fake_brain.py` puts on the wire.
     ///
     /// That script transcribes CRC-8/MAXIM into Python so a QEMU scenario can
     /// send a frame this kernel must refuse. A transcription that drifted would
@@ -2824,7 +2824,7 @@ mod wire_golden {
         // handler exists for. Six bytes, length zero, CRC over the header.
         let n = build_packet(PKT_SEMANTIC_LEVEL, &[], &mut out);
         assert_eq!(&out[..n], &[0x42, 0x52, 0x8B, 0x00, 0x00, 0xC4],
-            "the empty SEMANTIC_LEVEL frame changed; tools/fake_brain.py sends \
+            "the empty SEMANTIC_LEVEL frame changed; tools/gate/fake_brain.py sends \
              the old bytes and its frames will now be dropped at the CRC check \
              rather than reaching the dispatch");
 

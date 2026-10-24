@@ -13,11 +13,11 @@ build: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
 # Cargo never deletes an artifact: every feature set leaves another copy of
 # every crate in deps/. `prune` drops crates this tree no longer has and build
 # variants not among the newest 8 per crate AND older than 7 days
-# (tools/prune_build.py; PRUNE_ARGS="--dry-run" to only report). Every build
+# (tools/build/prune_build.py; PRUNE_ARGS="--dry-run" to only report). Every build
 # target runs it; the gate runs it at start.
 PRUNE_ARGS ?= --quiet
 prune:
-	@python3 tools/prune_build.py $(PRUNE_ARGS)
+	@python3 tools/build/prune_build.py $(PRUNE_ARGS)
 
 # Build kernel with RVV 1.0 support (requires QEMU with -cpu rv64,v=true):
 # the development configuration with the vector extension probed (RV_V_PROBE).
@@ -37,7 +37,7 @@ build-fleet: $(IMAGE_HASHES_BOARD) $(OUT_BUILD)/disk-board-fleet.img
 	@$(MAKE) defconfig-generic-server-riscv64+board-generic
 	$(call kernel_select,.config,board-image,$(OUT_BUILD)/fleet-image.config); \
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" KCONFIG_CONFIG="$(OUT_BUILD)/fleet-image.config" \
-	RUSTFLAGS="$(FLEET_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags .config)" \
+	RUSTFLAGS="$(FLEET_RUSTFLAGS) $$(python3 tools/build/kconfig_to_cargo.py --rustflags .config)" \
 	$(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 	@echo "[FLEET] kernel built, volume $(OUT_BUILD)/disk-board-fleet.img (signed topology) — use a gateway board with >= 1 GiB RAM"
 	@$(MAKE) --no-print-directory prune
@@ -96,7 +96,7 @@ $(VF2_VARIANT_CONFIGS): $(OUT_BUILD)/vf2-%.config: $(VF2_KCONFIG_DEPS) $(OUT_BUI
 VF2_SELECT := board-image$(if $(filter pstore,$(VF2_TEST)),$(comma)pstore-smoke)
 
 # Build kernel for VisionFive 2 (JH7110). --target/--features come from the
-# expanded profile through tools/kconfig_to_cargo.py, as `make aarch64` does;
+# expanded profile through tools/build/kconfig_to_cargo.py, as `make aarch64` does;
 # the linker script stays on the command line (RUSTFLAGS + --config), since
 # the bridge only derives target/features, never link args.
 # `make vf2 BUILD_TYPE=DEV` is the development image (see BUILD_TYPE above).
@@ -106,7 +106,7 @@ vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG) $(VF2_DISK)
 	$(call kernel_select,$(VF2_KCONFIG),$(VF2_SELECT),$(VF2_KCONFIG:.config=-image.config)); \
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
 	KCONFIG_CONFIG="$(VF2_KCONFIG:.config=-image.config)" \
-	RUSTFLAGS="$(VF2_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags $(VF2_KCONFIG))" \
+	RUSTFLAGS="$(VF2_RUSTFLAGS) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(VF2_KCONFIG))" \
 	$(CARGO) build --release --target-dir $(VF2_TARGET_DIR) -p azos_kernel $$args \
 		--config "build.rustflags=['-C','link-arg=-T$(VF2_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
@@ -130,11 +130,11 @@ flash-vf2: vf2
 		echo "[VF2] $(VF2_SD)1 not found — copy $(VF2_BIN) manually to the SD FAT32 partition"; \
 	fi
 
-# The farm's runs (tools/farm/README.md): build the development image, stage
+# The farm's runs (tools/dev/farm/README.md): build the development image, stage
 # it on the board's TFTP root, power-cycle the board, judge its console. The
 # farm check comes first: no board configured on this host is exit 3 before a
 # build is spent on it.
-FARM := python3 tools/farm/farm.py
+FARM := python3 tools/dev/farm/farm.py
 FARM_TARGET_DIR := $(OUT_TARGET)/farm
 vf2-ktest:
 	@$(FARM) check
@@ -175,7 +175,7 @@ $(K1_KCONFIG): config/defconfigs/robot-sbc-riscv64+k1.config \
 
 # Build kernel for K1 (RV64GCVB + native RVV 1.0, VLEN=256).
 # The k1 feature automatically enables RVV code paths (kernel/Cargo.toml
-# `k1 = ["rvv", ...]`); tools/kconfig_to_cargo.py additionally emits `rvv`
+# `k1 = ["rvv", ...]`); tools/build/kconfig_to_cargo.py additionally emits `rvv`
 # explicitly for CONFIG_BOARD_K1, which is redundant with that feature edge,
 # not in conflict with it.
 k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG) $(OUT_BUILD)/disk-board-k1.img
@@ -184,7 +184,7 @@ k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG) $(OUT_BUILD)/disk-board-k1.img
 	$(call kernel_select,$(K1_KCONFIG),board-image,$(K1_KCONFIG:.config=-image.config)); \
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" \
 	KCONFIG_CONFIG="$(K1_KCONFIG:.config=-image.config)" \
-	RUSTFLAGS="$(K1_RUSTFLAGS) $$(python3 tools/kconfig_to_cargo.py --rustflags $(K1_KCONFIG))" \
+	RUSTFLAGS="$(K1_RUSTFLAGS) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(K1_KCONFIG))" \
 	$(CARGO) build --release -p azos_kernel $$args \
 		--config "build.rustflags=['-C','link-arg=-T$(K1_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
@@ -257,11 +257,11 @@ olddefconfig:
 	$(PYTHON) -m olddefconfig
 
 # A committed config/defconfigs/NAME.config, else NAME assembled from the
-# fragments under config/fragments/ (tools/gen_defconfigs.py: the name is
+# fragments under config/fragments/ (tools/build/gen_defconfigs.py: the name is
 # <preset>-<hwclass>-<arch>[-<build>][+<overlay>...]).
 defconfig-%:
 	@if [ -f $(KCONFIG_DEFCONFIG_DIR)/$*.config ]; then cp $(KCONFIG_DEFCONFIG_DIR)/$*.config $(KCONFIG_CONFIG); \
-	else $(PYTHON) tools/gen_defconfigs.py --print '$*' >$(KCONFIG_CONFIG).new && mv $(KCONFIG_CONFIG).new $(KCONFIG_CONFIG); fi
+	else $(PYTHON) tools/build/gen_defconfigs.py --print '$*' >$(KCONFIG_CONFIG).new && mv $(KCONFIG_CONFIG).new $(KCONFIG_CONFIG); fi
 	@KCONFIG_CONFIG=$(KCONFIG_CONFIG) $(PYTHON) -m olddefconfig
 	@echo "[CONFIG] active = $*"
 
@@ -269,7 +269,7 @@ defconfig-%:
 # checks them with --check).
 .PHONY: defconfigs
 defconfigs:
-	$(PYTHON) tools/gen_defconfigs.py
+	$(PYTHON) tools/build/gen_defconfigs.py
 
 .PHONY: savedefconfig
 savedefconfig:
@@ -305,7 +305,7 @@ $(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(KCONFIG_FILES)
 x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 	$(call kernel_select,$(X86_64_KCONFIG),$(X86_64_SELECT),$(X86_64_KCONFIG:.config=-sel.config)); \
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(X86_64_KCONFIG:.config=-sel.config)" CARGO_TARGET_DIR="$(X86_64_TARGET_DIR)" \
-	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
+	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel $$args
 	@mkdir -p $(OUT_BUILD)
 	cp $(X86_64_ELF) $(X86_64_IMG)
@@ -328,7 +328,7 @@ $(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) \
 		|| { echo "[AARCH64] $@ does not carry the $(AARCH64_PAGE_SIZE)-byte granule"; exit 1; }
 
 # --target and --features come from the expanded profile through
-# tools/kconfig_to_cargo.py, as `make build-fleet` does; the rule above has
+# tools/build/kconfig_to_cargo.py, as `make build-fleet` does; the rule above has
 # already checked CONFIG_ARCH_AARCH64=y, which that script maps to
 # $(AARCH64_TARGET), so $(AARCH64_ELF) is the file cargo writes.
 #
@@ -338,9 +338,9 @@ $(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) \
 # caller's shell would silently drop it.
 aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(AARCH64_KCONFIG)" $(AARCH64_KTARGET_ENV) \
-	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/kconfig_to_cargo.py --rustflags $(AARCH64_KCONFIG))" \
+	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(AARCH64_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel \
-	    $$(python3 tools/kconfig_to_cargo.py $(AARCH64_KCONFIG) | tr -s ' ')
+	    $$(python3 tools/build/kconfig_to_cargo.py $(AARCH64_KCONFIG) | tr -s ' ')
 	@mkdir -p $(OUT_BUILD)
 	"$(AARCH64_OBJCOPY)" -O binary $(AARCH64_ELF) $(AARCH64_IMG)
 	@echo "[AARCH64] Built $(AARCH64_IMG)"
@@ -386,9 +386,9 @@ rpi5-key:
 
 rpi5: rpi5-key $(KCONFIG_CONFIG) $(RPI5_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(RPI5_KCONFIG)" $(AARCH64_KTARGET_ENV) \
-	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/kconfig_to_cargo.py --rustflags $(RPI5_KCONFIG))" \
+	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(RPI5_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel \
-	    $$(python3 tools/kconfig_to_cargo.py $(RPI5_KCONFIG) | tr -s ' ')
+	    $$(python3 tools/build/kconfig_to_cargo.py $(RPI5_KCONFIG) | tr -s ' ')
 	@mkdir -p $(dir $(RPI5_IMG))
 	"$(AARCH64_OBJCOPY)" -O binary $(AARCH64_ELF) $(RPI5_IMG)
 	@echo "[RPI5] Built $(RPI5_IMG)"
@@ -436,8 +436,8 @@ $(MICRO_CONFIG): config/defconfigs/generic-embedded-riscv64-dev+board-generic+mi
 	@echo "[CONFIG] micro = config/defconfigs/generic-embedded-riscv64-dev+board-generic+micro.config"
 
 micro-topology: $(MICRO_TOPO_DIR)/CAPS.SIG
-$(MICRO_TOPO_DIR)/CAPS.SIG: micro/topology/CAPS.in micro/topology/SCHED.TOM tools/micro_topology.py tools/gen_config_sig.py $(MICRO_PRIV)
-	python3 tools/micro_topology.py $(MICRO_TOPO_DIR) --priv $(MICRO_PRIV)
+$(MICRO_TOPO_DIR)/CAPS.SIG: micro/topology/CAPS.in micro/topology/SCHED.TOM tools/build/micro_topology.py tools/sign/gen_config_sig.py $(MICRO_PRIV)
+	python3 tools/build/micro_topology.py $(MICRO_TOPO_DIR) --priv $(MICRO_PRIV)
 
 micro-check: $(MICRO_CONFIG) $(MICRO_TOPO_DIR)/CAPS.SIG
 	cd micro && CARGO_TARGET_DIR="$(OUT_TGT)/micro" $(MICRO_ENV) $(CARGO) check --release --features "$(MICRO_FEATURES)" --lib --bins

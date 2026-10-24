@@ -852,7 +852,7 @@ pub const fn tcr_as(tcr: u64) -> u64 {
 // EXACTLY why `tests/host/arch-tests` exists (see its own module doc): excluded
 // from the workspace, its own `.cargo/config.toml` sets `build-std = []`,
 // and it `#[path]`-pulls this file in as `aarch64_mmu` specifically so
-// these tests run for real, under `tools/ci_check.sh`'s host-test stage
+// these tests run for real, under `tools/gate/ci_check.sh`'s host-test stage
 // (`test_host "arch-tests" ...`). Run directly with
 // `cd tests/host/arch-tests && cargo test --release aarch64_mmu::tests`.
 #[cfg(test)]

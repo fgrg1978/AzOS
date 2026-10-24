@@ -30,7 +30,7 @@ choice
       options are forced off (a `ktest` or `chaos` cargo feature on a
       release .config does not compile), the build refuses the TEST key
       (the `dev-key` fallback in crates/core/topology/build.rs; every
-      `make` board target through tools/check_board_keys.py), and the
+      `make` board target through tools/sign/check_board_keys.py), and the
       image needs the fleet key in TOPOLOGY_PUBKEY_PATH. Secure boot
       (SECURE_BOOT_ENFORCED), signed OTA (OTA_SIG_MANDATORY) and, in the
       Robot domain, the brain link's provisioning (LINK_PROVISIONING_ENFORCED:
@@ -119,7 +119,7 @@ config SWITCH_CENSUS
       instructions per phase boundary (eight per switch) and 800 bytes of
       counters.
       Maps to the kernel cargo feature `switch-census`
-      (tools/kconfig_to_cargo.py).
+      (tools/build/kconfig_to_cargo.py).
 
 config SWITCH_CENSUS_DUMP_MIN
     int "Fewest switches that make a census dump worth printing"
@@ -166,8 +166,8 @@ config BOOT_SELFTESTS
       SATA boot disk). Each prints its verdict, and the gate's rows read them.
       Off (default in every mode): a boot starts only the tasks the system
       needs, and none of that code is compiled. The gate's expanded
-      configurations turn it on (tools/ci_check.sh `primary_config` and
-      `aarch64_config`, tools/check_fast.sh), so its rows boot the kernels
+      configurations turn it on (tools/gate/ci_check.sh `primary_config` and
+      `aarch64_config`, tools/gate/check_fast.sh), so its rows boot the kernels
       they booted before; the row `boot: no self-tests by default` boots
       each ISA with it off. Development builds only (BUILD_TYPE).
 
@@ -198,7 +198,7 @@ config KTEST
       boot: it is a test kernel, built for the gate's `ktest` rows. On: the
       tests' code and 32 bytes of `.rodata` per test, one more kernel task
       when a late test exists, and the boot stops after the run. Maps to
-      the kernel cargo feature `ktest` (tools/kconfig_to_cargo.py).
+      the kernel cargo feature `ktest` (tools/build/kconfig_to_cargo.py).
       Development builds only (BUILD_TYPE): the `ktest` feature on a release
       .config does not compile.
 
@@ -415,7 +415,7 @@ config BOOT_BENCH_PRIORITY
 # ---------------------------------------------------------------------------
 #
 # Each owns a kernel cargo feature whose name is not a test hook's
-# (tools/kconfig_to_cargo.py TEST_HOOK_RE), so a build selection names its
+# (tools/build/kconfig_to_cargo.py TEST_HOOK_RE), so a build selection names its
 # symbol (`--select`), never the feature. None is ever in a product build.
 
 config BENCH_MINIMAL

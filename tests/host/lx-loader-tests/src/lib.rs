@@ -811,7 +811,7 @@ fn fs_chain(isa: Isa, fallback: &dyn Fn(&str) -> bool) -> Option<FsLoaded> {
         match std::fs::read(&path) {
             Ok(b) => objs.push((n, b)),
             Err(_) => {
-                // The gate row (tools/ci_check.sh) sets LX_REQUIRE_FS: a set it
+                // The gate row (tools/gate/ci_check.sh) sets LX_REQUIRE_FS: a set it
                 // has just built must be there, and a missing module is a failure.
                 assert!(std::env::var_os("LX_REQUIRE_FS").is_none(), "{path} not built, but LX_REQUIRE_FS is set");
                 eprintln!("SKIP: {path} not built (make lx-kbuild)");

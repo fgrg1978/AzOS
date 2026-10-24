@@ -36,7 +36,7 @@
 //! caller's: the service passes `azos_topology::verify_signature` (which takes
 //! the `DSIG` as it is) over the trusted key and `azos_crypto::sha256`. All integers are little-endian.
 //!
-//! The writer is `tools/make_mbl.py`; the one reader is the inference service
+//! The writer is `tools/image/make_mbl.py`; the one reader is the inference service
 //! (`azos_devif::infer`).
 
 /// The magic: the first four bytes of the manifest.

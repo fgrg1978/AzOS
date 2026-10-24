@@ -19,7 +19,7 @@ pub use chip::{Bus, Ina219, INA219_ADDR, INA219_BUS, INA219_POLL_HZ, POWER_DATA_
 
 // `SOURCE_HASH` / `SOURCE_MARKER`: the fingerprint of this crate's source
 // that each host prints at start (`crates/drivers/chip_source.rs`,
-// `tools/chip_source_check.py`).
+// `tools/lint/chip_source_check.py`).
 include!(concat!(env!("OUT_DIR"), "/chip_source.rs"));
 
 use azos_abi::drv_kind::power_op;

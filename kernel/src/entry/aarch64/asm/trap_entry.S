@@ -260,7 +260,7 @@ _trap_common:
     // ── No FP/SIMD save ──────────────────────────────────────────────
     //
     // The kernel is soft-float (`aarch64-unknown-none-softfloat`) and
-    // `tools/aarch64_fp_free_check.sh` proves no code reached from here
+    // `tools/lint/aarch64_fp_free_check.sh` proves no code reached from here
     // names a V register, so the interrupted code's V0-V31/FPSR/FPCR are
     // still in the hardware when this trap returns. User FP state is saved
     // lazily, by `context_switch` and only for a task that used FP since it

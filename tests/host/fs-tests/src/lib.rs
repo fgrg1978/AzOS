@@ -5453,7 +5453,7 @@ mod partition_tests {
 
 // ── The AzOS records partition (GPT) ──────────────────────────────
 //
-// A whole GPT medium built here the way `tools/make_parted_disk.py --gpt`
+// A whole GPT medium built here the way `tools/image/make_parted_disk.py --gpt`
 // builds the gate's: protective MBR, primary header and 128 x 128 B array,
 // a FAT partition at 2048 + 100, the records partition (8 sectors) right
 // after it, the backup array and header in the last 33 sectors.
@@ -5545,7 +5545,7 @@ mod records_partition_tests {
 
     /// **The type GUID is the documented one, in entry byte order.** The
     /// first three fields of 653ED7AA-51CA-43D8-9AF7-54775962C612 are
-    /// little-endian on disk; `tools/azos_records.py`, which the image build
+    /// little-endian on disk; `tools/image/azos_records.py`, which the image build
     /// and the provisioning tools use, names the same text.
     #[test]
     fn the_records_guid_is_653ed7aa_in_entry_byte_order() {
@@ -5559,9 +5559,9 @@ mod records_partition_tests {
         le[6..8].copy_from_slice(&[hex[7], hex[6]]);
         le[8..16].copy_from_slice(&hex[8..16]);
         assert_eq!(GPT_RECORDS_GUID, le);
-        let tool = include_str!("../../../../tools/azos_records.py");
+        let tool = include_str!("../../../../tools/image/azos_records.py");
         assert!(tool.contains(&format!("RECORDS_GUID_TEXT = \"{text}\"")),
-                "tools/azos_records.py names another records GUID");
+                "tools/image/azos_records.py names another records GUID");
     }
 
     /// **The records partition is found, verified, and never handed out.**

@@ -6,7 +6,7 @@
 //! [`Error::Corrupt`] instead of trusting a field.
 //!
 //! The byte-level description lives in the module doc of [`super`]; the
-//! offsets here and in `tools/mkazvol.py` are the two implementations that
+//! offsets here and in `tools/image/mkazvol.py` are the two implementations that
 //! must agree (`tests/host/fs-tests/src/azvol_format.rs` cross-checks them).
 
 use super::crc32c::crc32c_update;

@@ -299,7 +299,7 @@ topology rows, and a restarted driver re-claims its endpoints.
 ### Config
 
 Kconfig is the single source. A preset sets the profile axes, `.config` is
-expanded into cargo features (`tools/kconfig_to_cargo.py`) and constants
+expanded into cargo features (`tools/build/kconfig_to_cargo.py`) and constants
 (`crates/core/limits`), and a runtime `KEY=VALUE` store (`CONFIG.INI`, under a
 signature check at boot) covers what is decided per device.
 
@@ -313,8 +313,8 @@ signature check at boot) covers what is decided per device.
 userspace builds, image creation, QEMU runs, checks and lints. Outputs go to
 `$AZOS_OUT`, never into the checkout.
 
-- Source: `Makefile`, `mk/*.mk`, `tools/make_help.txt`, `tools/out_dir.py`,
-  `tools/ci_check.sh`.
+- Source: `Makefile`, `mk/*.mk`, `tools/build/make_help.txt`, `tools/lib/out_dir.py`,
+  `tools/gate/ci_check.sh`.
 - Doc: [building.md](Documentation/building.md).
 
 ### Virtualization
@@ -373,9 +373,9 @@ An ISA is three pieces, and the layout lint reports which files are missing.
    script (`kernel/linker-*.ld`), the ring-3 target spec (`sdk/targets/`, which
    carries the user image layout too) and a Kconfig ISA symbol (`config/arch/Kconfig.isa`).
 
-Check with `python3 tools/arch_layout_lint.py`. See
+Check with `python3 tools/lint/arch_layout_lint.py`. See
 [Documentation/structure.md](Documentation/structure.md#per-isa-layout) for the
 full layout.
 
-Source: `tools/arch_layout_lint.py`, `crates/core/arch/src/lib.rs`,
+Source: `tools/lint/arch_layout_lint.py`, `crates/core/arch/src/lib.rs`,
 `kernel/src/entry/`, `crates/core/arch-api/src/contract.rs`.

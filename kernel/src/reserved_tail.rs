@@ -49,7 +49,7 @@ pub const TAIL_SECTORS: u32 = 8;
 ///
 /// The brain-link key, which is also the board's device seed (DICE, the
 /// keystore, the volume keys): `azos_crypto::secure_channel`'s link-key
-/// record, written from the host by `tools/link_key_provision.py`, never by
+/// record, written from the host by `tools/sign/link_key_provision.py`, never by
 /// the kernel.
 pub const LINK_KEY: u32 = 0;
 /// U09-8 — the persisted entropy seed (owner decision 2026-09-26, V1.2):
@@ -70,12 +70,12 @@ pub const LINK_KEY: u32 = 0;
 /// seed does not stay valid and a seed is never used twice. It is replaced
 /// again at an orderly power-off or reboot, best-effort: a robot's power can
 /// also just go away. A first seed for a board with no entropy device is
-/// written from the host with `tools/seed_provision.py`.
+/// written from the host with `tools/sign/seed_provision.py`.
 pub const ENTROPY_SEED: u32 = 1;
 /// Wave 11 — the device record: this device's id, which
 /// a `CONFIG.SIG` v2 must name, and the lowest `CONFIG.SIG` counter still
 /// accepted. Format: `azos_topology::device_record::DeviceRecord` (37
-/// bytes meaningful). Written from the host by `tools/device_provision.py`
+/// bytes meaningful). Written from the host by `tools/sign/device_provision.py`
 /// (floor 0) and by the kernel when it accepts a higher counter
 /// (`boot::config_auth`). A USB host cannot address it; a card reader can
 /// (only a hardware counter closes that).

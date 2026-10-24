@@ -20,7 +20,7 @@ rvv = []
 vf2 = []
 k1  = []
 # Gate canary for the TLB shootdown (`src/tlb.rs`): skip the remote fence.
-# Never part of a real build; see the `tlb-smoke` rows in tools/ci_check.sh.
+# Never part of a real build; see the `tlb-smoke` rows in tools/gate/ci_check.sh.
 tlb-local-only = []
 # Canary for the scan bound (`tlb::note_hart_online` records nothing).
 tlb-bound-canary = []

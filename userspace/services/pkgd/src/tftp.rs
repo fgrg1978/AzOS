@@ -7,7 +7,7 @@
 //! [`Remote`]. In a production build that is HTTPS to a pinned server
 //! (`azos_tls::remote`). In a development build (Kconfig `PKG_FETCH_TFTP`, which
 //! needs `BUILD_TYPE_DEV`) the same file may instead name a TFTP server, which
-//! is what a developer has running on the host (`tools/tftp_serve.py`, QEMU's
+//! is what a developer has running on the host (`tools/dev/tftp_serve.py`, QEMU's
 //! `-netdev user,tftp=DIR` at 10.0.2.2):
 //!
 //! ```text

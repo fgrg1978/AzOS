@@ -4,7 +4,7 @@
 #
 # A kernel task is pinned by a placement CLASS, never by a CPU number: the
 # class is resolved at boot against the CPUs the firmware's CPU map names
-# (`nr_cpu_ids`), by azos_percpu::place. tools/task_place_lint.py fails a
+# (`nr_cpu_ids`), by azos_percpu::place. tools/lint/task_place_lint.py fails a
 # new `task_create_affinity` whose CPU argument is a literal.
 #
 # The classes (the value of every TASK_*_PLACE below):

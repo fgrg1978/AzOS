@@ -17,7 +17,7 @@
 //! file (the call the ring-3 inference service makes), both against
 //! `TRUSTED_PUBKEY`, which is whatever key this binary was BUILT with:
 //! `TOPOLOGY_PUBKEY_PATH=<fleet key> cargo run --bin verify_board_volume`.
-//! Used by `tools/check_board_keys.py sigs` (wave 11 BOARDIMG). Exit 1 when any
+//! Used by `tools/sign/check_board_keys.py sigs` (wave 11 BOARDIMG). Exit 1 when any
 //! signature does not verify.
 
 use azos_topology::{verify_config_sig_v2, verify_signature, TRUSTED_PUBKEY};

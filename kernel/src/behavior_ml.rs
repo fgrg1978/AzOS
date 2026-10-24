@@ -65,7 +65,7 @@ const BEHAVIOR_BADGE: u32 = 1;
 
 /// The model the loop runs: the first eight bytes of the SHA-256 of the
 /// manifest of `/fat/BEHAVIOR.MBL` (`azos_devif::infer::model_ref`), little-endian.
-/// The build checks it (`tools/make_mbl.py --expect-ref-from`, `mk/images.mk`), so
+/// The build checks it (`tools/image/make_mbl.py --expect-ref-from`, `mk/images.mk`), so
 /// a bundle built from other weights, another cost table or another name fails
 /// the build until this line says what it is.
 pub const BEHAVIOR_MODEL_REF: u64 = 0xb51c47d0518116ac;

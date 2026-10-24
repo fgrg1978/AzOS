@@ -1,0 +1,37 @@
+# Copy to tools/dev/farm/boards.ini (not tracked) and fill in. One section per board.
+# See tools/dev/farm/README.md. Everything here is about THIS host's wiring.
+[vf2]
+isa = riscv64
+
+# The board's console: the UART on the 40-pin header through a USB-serial adapter.
+serial = /dev/cu.usbserial-0001
+baud = 115200
+
+# Power. A relay in the board's supply, driven by two commands run without a
+# shell (usbrelay, uhubctl, a smart-plug CLI, anything that exits 0 when done).
+# `dry-run` records the actions and touches nothing (to rehearse a run).
+relay = exec
+relay_on = usbrelay HW348_1=1
+relay_off = usbrelay HW348_1=0
+# How long the board stays without power in a cycle.
+power_off_s = 3
+
+# The network between the host and the board (tools/dev/farm/farm.py net-config
+# writes the dnsmasq configuration for it).
+mac = 6c:cf:39:00:00:01
+board_ip = 192.168.50.20
+server_ip = 192.168.50.1
+netmask = 255.255.255.0
+interface = en7
+tftp_root = /private/tftpboot
+tftp_port = 69
+# The name tools/dev/farm/boot.cmd asks for (`kernel_name`).
+kernel_name = kernel.bin
+# Fetch the staged kernel back over TFTP before the power cycle.
+verify_tftp = yes
+
+# Deadlines, seconds: from the power-on to the first TAP line; for the whole
+# ktest run after it; for the pstore capture (two boots).
+boot_deadline_s = 180
+ktest_deadline_s = 600
+pstore_deadline_s = 300

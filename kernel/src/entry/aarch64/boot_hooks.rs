@@ -12,7 +12,7 @@
 //! virtual timer and the boot self-tests that need interrupts (svc, ticks,
 //! FP across an interrupt, IRQ stack, TTBR1 alias, granule, TCR). The common
 //! steps (console, memory map, page tables, W^X/NX, guards, heap) are in
-//! `early_main` (`tools/boot_seq_lint.py` keeps them there).
+//! `early_main` (`tools/lint/boot_seq_lint.py` keeps them there).
 
 use azos_arch_api::isa::aarch64 as policy;
 use core::sync::atomic::{AtomicU64, Ordering};

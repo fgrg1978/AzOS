@@ -20,7 +20,7 @@ config DECISION_RECORDS_DEV
       (HWCLASS_EMBEDDED, whose defconfig names it to have it), and in every
       KTEST kernel (owner, 2026-10-22: the receipts ship on), on the
       condition that the gate row `bench: receipts cost <= 1%`
-      (tools/vsbench_cost.sh: the ipc and shell vsbench lanes, this symbol
+      (tools/bench/vsbench_cost.sh: the ipc and shell vsbench lanes, this symbol
       off against on, -icount at one hart) holds. Off: every record site
       compiles out. On: a migrating wake pays about 40 instructions and six
       stores (the last is the clock stamp), the admission and denial paths

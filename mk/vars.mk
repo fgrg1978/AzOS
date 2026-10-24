@@ -8,7 +8,7 @@
 
 
 # Output root. Every build output and every image QEMU loads lives under it,
-# never in the checkout (tools/out_dir.py computes the default, once, for the
+# never in the checkout (tools/lib/out_dir.py computes the default, once, for the
 # Makefile and the shell/Python tools alike): one root per checkout, so two
 # worktrees never share outputs. Rust sources `include!` their tables from
 # `$AZOS_OUT/build` (env!("AZOS_OUT")), so it is exported to every command.
@@ -16,7 +16,7 @@
 #   OUT_TARGET  the root cargo workspace's target dir (also CARGO_TARGET_DIR)
 #   OUT_TGT     one target dir per standalone crate: $(OUT_TGT)/<repo-relative dir>
 # In comments below, `build/` and `target/` mean $(OUT_BUILD)/ and $(OUT_TARGET)/.
-AZOS_OUT ?= $(shell python3 "$(CURDIR)/tools/out_dir.py")
+AZOS_OUT ?= $(shell python3 "$(CURDIR)/tools/lib/out_dir.py")
 AZOS_OUT := $(AZOS_OUT)
 export AZOS_OUT
 OUT_BUILD  := $(AZOS_OUT)/build
@@ -44,7 +44,7 @@ KERNEL_ELF := $(TARGET_DIR)/kernel
 # The ring-3 images' target on each ISA: the one spec per ISA in sdk/targets,
 # no_std and std alike. It carries the whole layout (image base, page size,
 # entry, a static position-independent executable): no image has a linker
-# script (tools/user_entry_lint.py). Cargo names the output directory after it.
+# script (tools/lint/user_entry_lint.py). Cargo names the output directory after it.
 USER_SPECS          := $(CURDIR)/sdk/targets
 TARGET_RISCV64_USER := riscv64imac-unknown-azos
 
@@ -346,12 +346,12 @@ AARCH64_PAGE_SIZE ?= 4096
 # ── aarch64 baseline of the user images ─────────────────────────────────────
 # The Kconfig level and `require`d extensions (config/arch/Kconfig.isa-aarch64
 # AARCH64_LEVEL, A64_*) as user codegen flags, from the expanded config the
-# kernel is built from (tools/kconfig_to_cargo.py --user-rustflags). Armv8.0
+# kernel is built from (tools/build/kconfig_to_cargo.py --user-rustflags). Armv8.0
 # with nothing required (QEMU's default) emits nothing, so the default images
 # and their digests are what this Makefile always built. A board's images:
 #   make AARCH64_USER_KCONFIG=build/rpi5.config userspace-aarch64
 AARCH64_USER_KCONFIG ?= $(OUT_BUILD)/aarch64$(if $(filter 16384,$(AARCH64_PAGE_SIZE)),-16k,$(if $(filter 65536,$(AARCH64_PAGE_SIZE)),-64k)).config
-AARCH64_USER_ISA := $(if $(wildcard $(AARCH64_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml $(AARCH64_USER_KCONFIG)))
+AARCH64_USER_ISA := $(if $(wildcard $(AARCH64_USER_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml $(AARCH64_USER_KCONFIG)))
 ifeq ($(AARCH64_PAGE_SIZE),4096)
 AARCH64_PG_SUFFIX :=
 AARCH64_PG_LINK   :=
@@ -474,7 +474,7 @@ USPACE_METADATA_TAG := $(shell python3 -c 'import hashlib; print(hashlib.sha256(
 # QEMU's default, so the default images and digests do not move). A board's
 # images: `make RV_USER_KCONFIG=build/k1.config userspace`.
 RV_USER_KCONFIG ?= $(OUT_BUILD)/qemu-dev.config
-RV_USER_ISA := $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
+RV_USER_ISA := $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
 # Cargo hashes the target spec's contents into every artifact's fingerprint,
 # so an edit of sdk/targets/*.json relinks every image; a crate's build.rs (the
 # stack an image asks for, `-z stack-size`) is tracked by cargo itself.
@@ -488,8 +488,8 @@ RV_UFLAGS := --target $(USER_SPECS)/$(TARGET_RISCV64_USER).json \
 # ── The native SDK (plan phase 6, item 2) ───────────────────────────────────
 # A Rust `std` program for `<isa>-unknown-azos` (sdk/targets): `std` is built
 # from the pinned toolchain's library source plus the port in sdk/std, which
-# calls crates/core/stdrt (tools/sdk_std.py assembles that tree). The program
-# is built by tools/sdk_cargo.py, which takes the ISA baseline and the runtime's
+# calls crates/core/stdrt (tools/build/sdk_std.py assembles that tree). The program
+# is built by tools/build/sdk_cargo.py, which takes the ISA baseline and the runtime's
 # knobs (the ring-3 allocator, the default thread stack) from the expanded
 # Kconfig named here and nothing else, and goes through the metadata wrapper
 # above like every ring-3 ELF. One target directory per ISA (and granule) holds
@@ -497,15 +497,15 @@ RV_UFLAGS := --target $(USER_SPECS)/$(TARGET_RISCV64_USER).json \
 #   make sdk                    every SDK program, on the three ISAs
 #   make sdk-check              stdrt type-checks on the three ISAs; its host tests
 SDK_TARGET_DIR := $(OUT_BUILD)/sdk/target
-SDK_SRC := $(shell find sdk -type f -not -name '* [0-9]*') tools/sdk_std.py tools/sdk_cargo.py \
+SDK_SRC := $(shell find sdk -type f -not -name '* [0-9]*') tools/build/sdk_std.py tools/build/sdk_cargo.py \
            crates/core/stdrt/Cargo.toml $(shell find crates/core/stdrt/src -name '*.rs' -not -name '* [0-9]*') \
            crates/core/libsys/src/pure.rs crates/core/abi/Cargo.toml \
            $(shell find crates/core/abi/src -name '*.rs' -not -name '* [0-9]*') \
            userspace/lib/ualloc/Cargo.toml $(shell find userspace/lib/ualloc/src -name '*.rs' -not -name '* [0-9]*') \
            userspace/rustc_stable_metadata.py
-SDK_BUILD_riscv64 = $(PYTHON) tools/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
-SDK_BUILD_aarch64 = $(PYTHON) tools/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX) -- build --release
-SDK_BUILD_x86_64  = $(PYTHON) tools/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
+SDK_BUILD_riscv64 = $(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
+SDK_BUILD_aarch64 = $(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX) -- build --release
+SDK_BUILD_x86_64  = $(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
 SDK_OUT_riscv64   = $(SDK_TARGET_DIR)/riscv64imac-unknown-azos/release
 SDK_OUT_aarch64   = $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release
 SDK_OUT_x86_64    = $(SDK_TARGET_DIR)/x86_64-unknown-azos/release
@@ -549,7 +549,7 @@ K1_LINKER   := kernel/linker-k1.ld
 # **Only the K1.** The VF2's JH7110 is rv64gc (SiFive U74, `config/defconfigs/robot-sbc-riscv64+vf2.config`):
 # it has none of these, and a binary carrying them dies with an illegal
 # instruction on its first one. Both binaries are called `kernel`, so nothing but
-# a check stops one reaching the wrong board — `tools/ci_check.sh` disassembles
+# a check stops one reaching the wrong board — `tools/gate/ci_check.sh` disassembles
 # the VF2 and QEMU kernels and fails if any of these instructions is present.
 #
 # NOT the way to reach an extension that only SOME target has: that is a runtime
@@ -557,7 +557,7 @@ K1_LINKER   := kernel/linker-k1.ld
 # is for extensions the board is known to have at build time.
 #
 # The flags come from the Kconfig (config/arch/Kconfig.isa-riscv64: the K1's RV_ZBA/ZBB/ZBS
-# default to `require`) through tools/kconfig_to_cargo.py --rustflags, the one
+# default to `require`) through tools/build/kconfig_to_cargo.py --rustflags, the one
 # emitter every kernel rule uses; crates/core/limits/build.rs refuses a kernel
 # build whose target features disagree with its Kconfig.
 K1_RUSTFLAGS := -C link-arg=-T$(K1_LINKER)
@@ -620,11 +620,11 @@ IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
 
 # The .config decides the kernel's features (wave 11, F5): Kconfig is the
 # only source. A kernel recipe builds `-p azos_kernel` with what
-# tools/kconfig_to_cargo.py prints for its configuration; what a target builds
+# tools/build/kconfig_to_cargo.py prints for its configuration; what a target builds
 # beyond it (a smoke, a driver) is a selection, `--select` (`kernel_select`
 # below), applied to a copy of the configuration that the build then reads, so
 # the constants azos_limits generates agree with the features. No recipe names
-# a feature itself (tools/feature_source_lint.py). `-p azos_kernel`, here and
+# a feature itself (tools/lint/feature_source_lint.py). `-p azos_kernel`, here and
 # in every kernel recipe below: without it cargo builds every workspace
 # member, and a Generic build then compiled the robot crates anyway
 # (domains/robot/*, as members), with none of the features the kernel would
@@ -638,16 +638,16 @@ IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
 # its profile's level, warn. `make qemu QEMU_LOG_LEVEL=warn` boots what ships.
 QEMU_DEV_KCONFIG := $(OUT_BUILD)/qemu-dev.config
 QEMU_DEV_ENV      = KCONFIG_CONFIG="$(QEMU_DEV_KCONFIG)"
-QEMU_DEV_ARGS     = $$(python3 tools/kconfig_to_cargo.py $(QEMU_DEV_KCONFIG))
+QEMU_DEV_ARGS     = $$(python3 tools/build/kconfig_to_cargo.py $(QEMU_DEV_KCONFIG))
 # `$(call kernel_select,<config>,<selection>,<copy>)`: a recipe line that
 # writes <copy> (<config> with the selection applied) and leaves its cargo
 # arguments in `$$args`; the build that follows reads KCONFIG_CONFIG=<copy>.
-kernel_select = args="$$(python3 tools/kconfig_to_cargo.py --select '$(2)' --out '$(3)' '$(1)')" || exit 1
+kernel_select = args="$$(python3 tools/build/kconfig_to_cargo.py --select '$(2)' --out '$(3)' '$(1)')" || exit 1
 #
 # `QEMU_DEV_ISA`: the Kconfig's riscv64 codegen beyond .cargo/config.toml's
 # baseline (RV_ZBA/ZBB/ZBS set to `require`), merged into the target's
 # rustflags; empty on the default config.
-QEMU_DEV_ISA = rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --skip-base $(QEMU_DEV_KCONFIG))"; \
+QEMU_DEV_ISA = rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(QEMU_DEV_KCONFIG))"; \
 	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]";
 # BUILD_TYPE for the vf2 targets (the farm's board image): `make vf2
 # BUILD_TYPE=DEV` is a development image. Unset or RELEASE is the product
@@ -655,7 +655,7 @@ QEMU_DEV_ISA = rf="$$(python3 tools/kconfig_to_cargo.py --rustflags --toml --ski
 # DEV builds from a vf2 config with CONFIG_BUILD_TYPE_DEV=y (Kconfig BUILD_TYPE:
 # crates/core/topology/build.rs then accepts the TEST key, and KTEST may be
 # on), signs the board volume with the TEST pair unless TOPOLOGY_PUBKEY_PATH /
-# TOPOLOGY_PRIVKEY_PATH name another, and tools/check_board_keys.py runs with
+# TOPOLOGY_PRIVKEY_PATH name another, and tools/sign/check_board_keys.py runs with
 # --allow-test. Nothing else changes: the TEST key is a build-type decision,
 # never a fallback. DEV is refused for every goal but the vf2 ones and `rpi5`
 # (`make rpi5 BUILD_TYPE=DEV`: the bring-up image, see mk/kernel.mk).
@@ -690,7 +690,7 @@ VF2_VARIANT := $(if $(BOARD_DEV),$(or $(VF2_TEST),dev))
 VF2_SUFFIX := $(if $(VF2_VARIANT),-$(VF2_VARIANT))
 VF2_KCONFIG := $(OUT_BUILD)/vf2$(VF2_SUFFIX).config
 VF2_DISK := $(OUT_BUILD)/disk-board$(VF2_SUFFIX).img
-BOARD_KEYCHECK := python3 tools/check_board_keys.py$(if $(BOARD_DEV), --allow-test)
+BOARD_KEYCHECK := python3 tools/sign/check_board_keys.py$(if $(BOARD_DEV), --allow-test)
 
 # A board image names its topology/config key: `vf2`/`k1`/`build-fleet` and
 # `build/disk-board.img` refuse without TOPOLOGY_PUBKEY_PATH (the fleet's
@@ -763,7 +763,7 @@ IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
 #
 #  * Its own Kconfig profile. config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config is minimal, so it
 #    is expanded by olddefconfig into build/aarch64.config — the same expansion
-#    tools/ci_check.sh does for the fleet profile — and handed to the build via
+#    tools/gate/ci_check.sh does for the fleet profile — and handed to the build via
 #    KCONFIG_CONFIG. The workspace .config (the RISC-V edge profile) is not
 #    touched, so `make build` is unaffected.
 #  * The linker script goes on the command line, as `make vf2` / `make k1` do,
@@ -777,7 +777,7 @@ IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
 #    also the protocol U-Boot `booti` uses on real boards.
 #  * Soft-float target: the kernel names no FP/SIMD register outside the
 #    lazy user-FP save/restore (kernel/src/entry/aarch64/fp_lazy.rs,
-#    tools/aarch64_fp_free_check.sh). Userspace stays `aarch64-unknown-none`
+#    tools/lint/aarch64_fp_free_check.sh). Userspace stays `aarch64-unknown-none`
 #    (TARGET_AARCH64 above).
 AARCH64_TARGET   := aarch64-unknown-none-softfloat
 AARCH64_LINKER   := kernel/linker-aarch64.ld
@@ -808,7 +808,7 @@ QEMU_AARCH64_KERNEL_FLAGS := -cpu max,pauth=on -smp 2 -nographic
 # virtio-mmio window and the console program runs in ring 3; without one it
 # stops at the kernel shell. Same Kconfig expansion as `check`.
 # X86_64_SELECT is a selection on the configuration (`make x86_64
-# X86_64_SELECT=ktest`, tools/kconfig_to_cargo.py --select).
+# X86_64_SELECT=ktest`, tools/build/kconfig_to_cargo.py --select).
 # X86_64_DEFCONFIG / X86_64_KCONFIG (a path relative to the tree) build from
 # another configuration into its own expanded file, so the default one never
 # goes stale under it (a build from a configuration of its own).
@@ -826,7 +826,7 @@ X86_64_LINKER  := kernel/linker-x86_64.ld
 # the ring-3 images (X86_64_UFLAGS), as on riscv64 and aarch64: the AVX2
 # double-base multiply of a signature check reserves 3,696 B realigned to 32
 # bytes, and put sshd's deepest chain at 17,000 B of its 16 KiB stack
-# (tools/stack_frames.py reads realigned frames since 2026-10-24).
+# (tools/lint/stack_frames.py reads realigned frames since 2026-10-24).
 X86_64_DALEK   := --cfg curve25519_dalek_backend=\"serial\"
 # -cpu max: the default model (qemu64) is below the x86-64-v2 baseline, and the
 # kernel refuses it (the canary: `make qemu-x86_64 QEMU_X86_64_CPU=qemu64`).
@@ -859,7 +859,7 @@ QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-r
 TARGET_X86_64 := x86_64-unknown-azos
 X86_64_DIR    := $(OUT_BUILD)/x86_64
 X86_64_UFLAGS  = --target $(USER_SPECS)/$(TARGET_X86_64).json \
-	--config 'target.$(TARGET_X86_64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)","--cfg=curve25519_dalek_backend=\"serial\"",'"$$(python3 $(CURDIR)/tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
+	--config 'target.$(TARGET_X86_64).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)","--cfg=curve25519_dalek_backend=\"serial\"",'"$$(python3 $(CURDIR)/tools/build/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG))"']'
 X86_64_UBUILT := $(TARGET_X86_64)/release
 HELLO_ELF_X86_64     := $(X86_64_DIR)/hello.elf
 SYSTEST_ELF_X86_64   := $(X86_64_DIR)/syscall_test.elf

@@ -147,7 +147,7 @@ pub fn pool_fill(out: &mut [u8]) -> bool {
 /// `kernel/src/reserved_tail.rs::ENTROPY_SEED`), which
 /// `install_entropy_seed` in `kernel/src/boot/entropy.rs` mixes in at boot and
 /// replaces before anything draws from the pool. The seed has to be
-/// provisioned once on a board with no entropy device (`tools/seed_provision.py`);
+/// provisioned once on a board with no entropy device (`tools/sign/seed_provision.py`);
 /// a board that has never been provisioned still refuses every handshake, by
 /// design, rather than running one with the weak key this section describes.
 ///

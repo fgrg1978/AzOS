@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The whole-system update through the installer (`Packages::update`): the
 //! service over an in-memory volume, the `pkg update` command line, and a bundle
-//! built by `tools/sign_ota.py` fed to the same code.
+//! built by `tools/sign/sign_ota.py` fed to the same code.
 //!
 //! The update's own rules (the manifest, the stager, the switch, the floors,
 //! power loss) are tested where the code lives, in `tests/host/ota-tests`. What
@@ -272,7 +272,7 @@ fn every_update_refusal_prints_the_name_of_its_step() {
 
 // ── A delta update ──────────────────────────────────────────────────────────
 
-/// The generator's patch from `old` to `new` (`tools/ota_delta.py`, the real
+/// The generator's patch from `old` to `new` (`tools/image/ota_delta.py`, the real
 /// one, so the installer and the tool are checked against each other).
 fn make_delta(old: &[u8], new: &[u8]) -> Vec<u8> {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -285,7 +285,7 @@ fn make_delta(old: &[u8], new: &[u8]) -> Vec<u8> {
     let (o, n, d) = (dir.join("old"), dir.join("new"), dir.join("delta"));
     std::fs::write(&o, old).unwrap();
     std::fs::write(&n, new).unwrap();
-    let tool = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/ota_delta.py");
+    let tool = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/image/ota_delta.py");
     let out = Command::new("python3").arg(tool).arg("make").arg(&o).arg(&n).arg("-o").arg(&d).output().expect("python3");
     assert!(out.status.success(), "ota_delta.py make: {}", String::from_utf8_lossy(&out.stderr));
     let delta = std::fs::read(&d).unwrap();
@@ -488,10 +488,10 @@ fn pkg_update_stages_and_says_where() {
     assert_eq!(cli::run(&cli::Cmd::Update(b"/fat/NOPE.AZU"), &mut c, &mut files, &mut out), Err(Fail::Open));
 }
 
-// ── tools/sign_ota.py ───────────────────────────────────────────────────────
+// ── tools/sign/sign_ota.py ───────────────────────────────────────────────────────
 
 fn tool() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/sign_ota.py")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/sign/sign_ota.py")
 }
 
 fn python() -> Option<String> {
@@ -544,7 +544,7 @@ fn the_bundle_the_tool_makes_is_the_bundle_the_installer_reads() {
         eprintln!("skipped: no python3 with `cryptography`");
         return;
     };
-    assert_eq!(made, bundle(11, 4, 0, &ps, &owner()), "tools/sign_ota.py and the suite disagree on the wire form");
+    assert_eq!(made, bundle(11, 4, 0, &ps, &owner()), "tools/sign/sign_ota.py and the suite disagree on the wire form");
     let mut r = rig();
     let (cap, len) = r.put(1, &made);
     let reply = r.service().update(cap, len);

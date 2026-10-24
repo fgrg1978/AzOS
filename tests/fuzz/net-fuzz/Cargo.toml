@@ -3,7 +3,7 @@ name = "azos_net_fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "cargo-fuzz (libFuzzer) targets for the network stack's receive path (crates/net/net: Ethernet, ARP, IPv4, ICMP, IGMP, UDP, TCP, IPv6) and the DHCP/DNS payload parsers. Its own workspace; run with tools/fuzz.sh."
+description = "cargo-fuzz (libFuzzer) targets for the network stack's receive path (crates/net/net: Ethernet, ARP, IPv4, ICMP, IGMP, UDP, TCP, IPv6) and the DHCP/DNS payload parsers. Its own workspace; run with tools/gate/fuzz.sh."
 
 [package.metadata]
 cargo-fuzz = true

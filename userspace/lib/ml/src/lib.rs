@@ -12,7 +12,7 @@
 //! - `bundle`    — the signed `.MBL` model bundle the inference service reads
 //!
 //! The behavior loop's 4→8→3 obstacle-avoidance MLP is a GGUF file
-//! (`tools/make_gguf.py`) wrapped in a bundle (`tools/make_mbl.py`); its
+//! (`tools/image/make_gguf.py`) wrapped in a bundle (`tools/image/make_mbl.py`); its
 //! analytically derived weights are documented there. The network takes
 //! `[dist_front, dist_right, velocity, battery]` (normalised 0..1) and answers
 //! three raw logits, `[go_forward, turn_right, stop]`.

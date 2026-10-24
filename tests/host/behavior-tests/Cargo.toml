@@ -65,7 +65,7 @@ azos_robot = { path = "shims/robot", package = "beh_test_robot" }
 azos_limits = { path = "shims/limits", package = "beh_test_limits" }
 # The flight recorder's `LogStorage` seam is a trait `logger.rs` defines
 # itself now (domains/robot/behavior no longer depends on azos_fs at all -- see
-# tools/tcb_check.sh), so the fault-injecting stand-in that used to impersonate
+# tools/lint/tcb_check.sh), so the fault-injecting stand-in that used to impersonate
 # azos_fs's whole API lives directly in this crate as `log_storage_mock`
 # (src/lib.rs) instead of a separate aliased shim crate.
 #

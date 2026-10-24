@@ -4,17 +4,17 @@
 # Included by the top-level Makefile; the order of the includes there is part of the contract.
 
 # A fresh worktree's first build, from another worktree's cargo target dirs
-# (tools/worktree_seed.py): APFS clones, keeping only the units that cannot
+# (tools/dev/worktree_seed.py): APFS clones, keeping only the units that cannot
 # depend on the tree's path (build-std, crates.io); every path package is
 # rebuilt here. `make worktree-seed FROM=~/azos-wt/<other>`.
 .PHONY: worktree-seed
 worktree-seed:
 	@test -n "$(FROM)" || { echo "usage: make worktree-seed FROM=<another worktree>"; exit 2; }
-	@python3 tools/worktree_seed.py $(SEED_ARGS) "$(FROM)"
+	@python3 tools/dev/worktree_seed.py $(SEED_ARGS) "$(FROM)"
 
-make-gguf $(OUT_BUILD)/policy.gguf: tools/make_gguf.py
+make-gguf $(OUT_BUILD)/policy.gguf: tools/image/make_gguf.py
 	@mkdir -p $(OUT_BUILD)
-	python3 tools/make_gguf.py
+	python3 tools/image/make_gguf.py
 
 # Every output of this checkout lives under $(AZOS_OUT); nothing else to clean.
 clean:
@@ -36,13 +36,13 @@ $(OTA_BIN): build
 	@echo "[OTA] Raw binary: $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 ota-send: $(OTA_BIN)
-	python3 tools/ota_send.py $(OTA_BIN) $(ROBOT) \
+	python3 tools/dev/ota_send.py $(OTA_BIN) $(ROBOT) \
 		--port $(PORT) --platform $(PLATFORM) --version $(FW_VER)
 
 # Generate U-Boot boot script for A/B OTA slot selection (VF2/K1).
-boot-scr: tools/boot.cmd
+boot-scr: tools/image/boot.cmd
 	@mkdir -p $(OUT_BUILD)
-	mkimage -C none -A riscv -T script -d tools/boot.cmd $(OUT_BUILD)/boot.scr
+	mkimage -C none -A riscv -T script -d tools/image/boot.cmd $(OUT_BUILD)/boot.scr
 	@echo "[OTA] boot.scr generated"
 
 # DEV01 — TFTP fast-iteration netboot for the freshly-built kernel.
@@ -51,7 +51,7 @@ boot-scr: tools/boot.cmd
 # you run as root.
 TFTP_PORT ?= 6969
 tftp-serve: $(OTA_BIN)
-	python3 tools/tftp_serve.py $(OTA_BIN) --port $(TFTP_PORT)
+	python3 tools/dev/tftp_serve.py $(OTA_BIN) --port $(TFTP_PORT)
 
 
 # ── make doc: rustdoc of the public crates ──────────────────────────────────
@@ -78,9 +78,9 @@ doc:
 	cp "$(CHECK_DEFCONFIG_$(ARCH))" "$(OUT_BUILD)/doc-$(ARCH).config"
 	KCONFIG_CONFIG="$(OUT_BUILD)/doc-$(ARCH).config" $(PYTHON) -m olddefconfig
 	set -e; kc="$(OUT_BUILD)/doc-$(ARCH).config"; \
-	triple="$$(python3 tools/kconfig_to_cargo.py "$$kc" | tr -s ' ' '\n' | sed -n '/^--target$$/{n;p;}')"; \
+	triple="$$(python3 tools/build/kconfig_to_cargo.py "$$kc" | tr -s ' ' '\n' | sed -n '/^--target$$/{n;p;}')"; \
 	test -n "$$triple" || { echo "[DOC] no target for ARCH=$(ARCH)"; exit 1; }; \
-	rf="$$(python3 tools/kconfig_to_cargo.py --rustflags "$$kc")"; \
+	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags "$$kc")"; \
 	if [ -n "$$rf" ]; then export RUSTFLAGS="$$rf"; else unset RUSTFLAGS; fi; \
 	export CARGO_TARGET_DIR="$(DOC_TARGET_DIR)" KCONFIG_CONFIG="$$kc" RUSTDOCFLAGS="-D warnings $$rf"; \
 	unset CARGO_BUILD_RUSTFLAGS; \
@@ -92,7 +92,7 @@ doc:
 	cp -R "$(DOC_TARGET_DIR)/$$triple/doc" "$(AZOS_OUT)/doc"; \
 	echo "[DOC] $(AZOS_OUT)/doc/azos_abi/index.html"
 
-# ── Host dry boot of a topology (tools/azos_sim) ────────────────────────────
+# ── Host dry boot of a topology (tools/gate/azos_sim) ────────────────────────────
 #
 #   make sim SIM_DEFCONFIG=config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config SIM_CPUS=4
 #   make sim SIM_DEFCONFIG=... SIM_TOPOLOGY=$(AZOS_OUT)/build/topo/riscv64
@@ -109,7 +109,7 @@ doc:
 #   SIM_TOPOLOGY   `builtin` (default) or a directory with CAPS.TOM + SCHED.TOM
 #   SIM_CPUS       the board's CPU count or QEMU's -smp (default NR_CPUS, a ceiling)
 #   SIM_SELECT     the selection the kernel was built with beyond its
-#                  defconfig (tools/kconfig_to_cargo.py --select; default none)
+#                  defconfig (tools/build/kconfig_to_cargo.py --select; default none)
 #   SIM_EXTRA_FEATURES  azos_sim's own cargo features (the gate canary
 #                  `sim-cpu-canary`)
 #   SIM_ARGS       more azos_sim arguments (`--check-log <boot log>`: hold the
@@ -129,5 +129,5 @@ sim: | $(IMAGE_HASHES)
 	test -n "$$isa" || { echo "[SIM] $(SIM_KCONFIG): no CONFIG_ARCH_*"; exit 2; }; \
 	feats="azos_topology/emit-target-$$isa $(call topo_features,$(SIM_KCONFIG),$(SIM_SELECT),$(SIM_KCONFIG:.config=-sel.config)) $(SIM_EXTRA_FEATURES)"; \
 	echo "[SIM] $(SIM_DEFCONFIG) ($$isa), selection '$(SIM_SELECT)'"; \
-	cd tools/azos_sim && KCONFIG_CONFIG="$(abspath $(SIM_KCONFIG))" CARGO_TARGET_DIR="$(OUT_TGT)/tools/azos_sim" \
+	cd tools/gate/azos_sim && KCONFIG_CONFIG="$(abspath $(SIM_KCONFIG))" CARGO_TARGET_DIR="$(OUT_TGT)/tools/gate/azos_sim" \
 		$(CARGO) run -q --release --features "$$feats" -- $(if $(SIM_CPUS),--cpus $(SIM_CPUS)) $(SIM_ARGS) "$(SIM_TOPOLOGY)"

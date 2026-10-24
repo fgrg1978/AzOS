@@ -7,14 +7,14 @@ publish = false
 description = "The hardened allocator of native ring-3 programs (plan phase 5, item 6): size-class blocks, randomized chunk placement from the kernel entropy pool, checksummed chunk headers, a quarantine of freed chunks and guard pages. no_std; the engine is generic over a small `Sys` trait so the host tests (tests/host/ualloc-tests) run it over a model of mmap/munmap; the AzOS side (`UserAlloc`, a `GlobalAlloc`) is built only for the ring-3 targets. Standalone, not a member of the root workspace."
 
 [dependencies]
-# What a crate inside the std build graph (azos_stdrt, tools/sdk_std.py) names
+# What a crate inside the std build graph (azos_stdrt, tools/build/sdk_std.py) names
 # core by; unused everywhere else.
 core = { version = "1.0.0", optional = true, package = "rustc-std-workspace-core" }
 
 [features]
 rustc-dep-of-std = ["core"]
 
-# Not inside a `std` build (`--cfg azos_std`, tools/sdk_cargo.py): there
+# Not inside a `std` build (`--cfg azos_std`, tools/build/sdk_cargo.py): there
 # `azos_stdrt` drives the engine itself.
 [target.'cfg(all(target_os = "azos", not(azos_std)))'.dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }

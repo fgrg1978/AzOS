@@ -4,7 +4,7 @@
 //! config/kernel/Kconfig.tasks), read at compile time: a value that is not a class
 //! does not build. [`pin`] resolves a class against this boot's CPUs
 //! (`azos_percpu::place`); every `task_create_affinity` of a kernel task
-//! takes its CPU from there, never from a literal (tools/task_place_lint.py).
+//! takes its CPU from there, never from a literal (tools/lint/task_place_lint.py).
 
 use azos_percpu::place::Place;
 pub(crate) use azos_percpu::place::pin;

@@ -124,7 +124,7 @@ config TOPOLOGY_BIND_DEVICE
     help
       CAPS.TOM (format 4) must carry `device = "<32 hex>"` equal to this
       device's id: the device record in reserved tail sector 2
-      (tools/device_provision.py), the id CONFIG.SIG v2 is bound to. A file
+      (tools/sign/device_provision.py), the id CONFIG.SIG v2 is bound to. A file
       signed for another device is refused (SAFETY_TOPO_SOURCE detail step
       8), a file with no `device` key too (step 10), and so is any file on a
       device with no record (step 11). With n, `device` is optional, and
@@ -165,7 +165,7 @@ config TOPOLOGY_FLOOR_SECTOR
       (crates/core/topology/src/device_record.rs). 0 is the link key, 1 the
       entropy seed, 2 the device record; 3..7 are free. Change it only to
       move it off a sector another feature of your build claims, and give
-      tools/device_provision.py --topo-sector the same value.
+      tools/sign/device_provision.py --topo-sector the same value.
 
 config BOOT_INI_MAX_KB
     int "Largest CONFIG.INI the boot reads (KiB)"
@@ -180,7 +180,7 @@ config BOOT_INI_MAX_KB
       never verified over its first bytes, which would fail as a bad
       signature and read as tampering. On a provisioned device it latches
       the e-stop as any other loss of config authority does.
-      tools/gen_config_sig.py refuses to sign a file over the same limit.
+      tools/sign/gen_config_sig.py refuses to sign a file over the same limit.
 
       Cost: this many KiB of .bss. The store holds at most 32 entries of a
       24-byte key and a 48-byte value (crates/core/config), about 2.4 KB

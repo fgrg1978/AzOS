@@ -1279,10 +1279,10 @@ fn corrupted_images_never_panic() {
     assert!(mounted > 50 && refused > 5, "mounted {mounted} refused {refused}");
 }
 
-// ── tools/mkazvol.py ───────────────────────────────────────────────
+// ── tools/image/mkazvol.py ───────────────────────────────────────────────
 
 fn tool() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/mkazvol.py")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/image/mkazvol.py")
 }
 
 struct TempDir(std::path::PathBuf);

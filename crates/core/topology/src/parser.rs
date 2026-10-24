@@ -3875,7 +3875,7 @@ mod tests {
     //
     // Mirrors `builder.rs`'s existing `autorun_task_declares_both_
     // drivetrain_motor_grants` test, which already runs this same file
-    // twice under CI (`tools/ci_check.sh`'s "topology-tests" row with no
+    // twice under CI (`tools/gate/ci_check.sh`'s "topology-tests" row with no
     // features, and its "topology(cap-canary)" row with
     // `cap-refusal-canary,profile-actuation`) — one test body, two
     // opposite assertions selected by the SAME cfg the parser itself uses.

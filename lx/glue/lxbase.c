@@ -15,7 +15,7 @@
  * forwards them to the host ABI below, which the Linux driver server
  * (userspace/services/lxsrv, Apache-2.0 OR GPL-2.0-only, no Linux header)
  * provides. The host ABI is plain scalars and pointers, no Linux type, and
- * is listed in lx/HOST_ABI, which tools/lx_license_lint.py
+ * is listed in lx/HOST_ABI, which tools/lint/lx_license_lint.py
  * enforces against every .ko's imports.
  */
 #include <linux/crc32.h>
@@ -175,7 +175,7 @@ static u32 crc32_le_arm64(u32 crc, const u8 *b, size_t len)
  * the end reduces to 32 bits: (a * z^32) mod P by folding the high half
  * with z^64 mod P and a Barrett step with MU = floor(z^64 / P). Constants
  * are z^64 mod P, z^96 mod P, MU and P, bit-reversed in 64 bits; derived
- * and checked against the table CRC by tools/lx_kbuild/zbc_crc_constants.py,
+ * and checked against the table CRC by tools/build/lx_kbuild/zbc_crc_constants.py,
  * and checked again by lxbase_init on the running hart before use.
  */
 static inline u64 clmulr(u64 a, u64 b)

@@ -381,7 +381,7 @@ mod host {
         }
         let (Some(producer), Some(events)) = (EVENTS.producer(), EVENTS.consumer()) else { return Err(()) };
         // Built in the box, the controller too (`Usb::init_controller`): the core
-        // with the controller is tens of KB, and `tools/stack_frames.py` holds
+        // with the controller is tens of KB, and `tools/lint/stack_frames.py` holds
         // every function that is not boot-only to 8 KiB on fleet.
         let mut slot = alloc::boxed::Box::<Host>::new_uninit();
         let (regs, mem) = (KRegs { base }, KMem { domain });
@@ -627,7 +627,7 @@ mod host {
         {
             let msc = Msc::new(KMem { domain }, KClock, mask, &RINGS[..]);
             // Built in the box: the disk's request queue is too big for a frame
-            // (`tools/stack_frames.py`, fleet).
+            // (`tools/lint/stack_frames.py`, fleet).
             let mut slot = alloc::boxed::Box::<Disk>::new_uninit();
             Disk::init(&mut slot, msc);
             // SAFETY: `init` wrote every field.

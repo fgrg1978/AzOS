@@ -67,7 +67,7 @@ panic = "abort"
 [workspace]
 
 # The FAT32 image(s) this crate builds and their board-volume defaults
-# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+# (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 # The image keeps the name MLSRV.ELF: the topology row, the seccomp profile and
 # the disk-image recipes still name it, and are renamed together by whoever
 # owns them (this crate replaced `mlsrv`, it did not change who starts it).

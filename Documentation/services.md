@@ -11,7 +11,7 @@ program see [sdk.md](sdk.md); for the options that include or start a service se
 ## How a service gets its authority
 
 Source: `crates/core/topology/src/builder.rs`, `crates/core/sched/src/seccomp.rs`,
-`tools/gen_userspace_kconfig.py`.
+`tools/build/gen_userspace_kconfig.py`.
 
 - **A row, named after the image.** The kernel seeds a spawned image's capabilities from
   the topology row named after it (an upper-case 8.3 name such as `NAMESD.ELF`).
@@ -38,7 +38,7 @@ Source: `crates/core/topology/src/builder.rs`, `crates/core/sched/src/seccomp.rs
   kernel's placement controller only routes calls between that host and the kernel one.
   Which rows exist and which start depends on Kconfig (the third column below).
 - **Image options.** A crate declares the images it builds in `[package.metadata.azos]` of
-  its `Cargo.toml`; `tools/gen_userspace_kconfig.py` turns them into `make config`
+  its `Cargo.toml`; `tools/build/gen_userspace_kconfig.py` turns them into `make config`
   options.
 
 Rights in the table: `R` read, `W` write, `X` exec, `RW`, and `+transfer` for a grant
@@ -538,7 +538,7 @@ receipt past the budget of the row that bounds it, so no fixed buffer grows with
 `SOURCE.CFG` may instead hold two rows, `tftp=ADDR[:PORT]` (IPv4, port 69 by default)
 and `file=NAME`, and `pkg fetch` reads the file from that TFTP server with the
 `azos_tftp` client (`crates/net/tftp`) over a UDP socket of its own: on the development
-host, `python3 tools/tftp_serve.py --dir DIR --port 6969`, or QEMU's
+host, `python3 tools/dev/tftp_serve.py --dir DIR --port 6969`, or QEMU's
 `-netdev user,tftp=DIR` (the server is 10.0.2.2). A package built and signed on the host
 reaches the device without a disk cycle or a TLS server. TFTP authenticates nothing and
 the installer asks it for nothing: it only delivers bytes, and the package is installed
@@ -801,7 +801,7 @@ more interfaces beside it that the header of each request tells apart: `Decision
 back the receipts, and `InferLog`, which lends the verdict log. A client reads the receipts of its
 own badge only, and the log it is lent is an object of its own context: neither shows another
 context's refusals or energy use. Models are the signed `.MBL`
-bundles (`tools/make_mbl.py`) on the FAT volume: every `/fat/*.MBL`, up to `INFSRV_MODELS`. A
+bundles (`tools/image/make_mbl.py`) on the FAT volume: every `/fat/*.MBL`, up to `INFSRV_MODELS`. A
 bundle's manifest is verified with the topology key before any field of it is read (a bundle
 carries the cost table the admission believes, so there is no switch to turn that off); a
 variant's blob is kept only if the machine has its backend, it fits the blob arena
@@ -849,7 +849,7 @@ real-time reader polls it with no call (`infsrv::verdict::LogReader`).
 **The behavior loop is a client like any other.** The kernel's behavior task starts the service
 (supervised) and calls its `Infer` interface once per cycle, on `endpoint.infer`, through a
 capability the kernel mints for it with the badge of its own context: the model is the signed bundle
-`/fat/BEHAVIOR.MBL` (`tools/make_mbl.py` from `policy.gguf`; the kernel names it by its model
+`/fat/BEHAVIOR.MBL` (`tools/image/make_mbl.py` from `policy.gguf`; the kernel names it by its model
 reference, which the build checks), the input is `[front / 1000, right / 1000, 0.5, 0.9]` as `f32` in a
 memory object, the output the three logits in another, lent to the service for the call (so the
 loop keeps them and reads the answer after the reply), and the deadline is

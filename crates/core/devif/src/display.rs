@@ -441,7 +441,7 @@ impl Claim {
 /// it with the server (`azos_syscall::display::set_scanout`) when a scanout
 /// exists. The seam is a trait so that the syscall crate, which is part of the
 /// certified partition, does not depend on the framebuffer crate, which is
-/// scaffolding (`tools/tcb_check.sh`); a board whose display controller is a
+/// scaffolding (`tools/lint/tcb_check.sh`); a board whose display controller is a
 /// driver of its own implements it the same way.
 pub trait Scanout: Sync {
     /// The connector as the scanout runs it: geometry, stride, pixel format,

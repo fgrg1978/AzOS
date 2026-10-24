@@ -86,7 +86,7 @@ in the panic handler (`kernel/src/panic.rs`), not in unwinding.
 
 ## SC-4: no recursion
 
-Source: this page; `tools/stack_chain.py`.
+Source: this page; `tools/lint/stack_chain.py`.
 
 **Rule.** No recursive functions and no recursive types in safety crates.
 Traverse trees with an explicit fixed-size stack.
@@ -95,14 +95,14 @@ Traverse trees with an explicit fixed-size stack.
 are small and fixed.
 
 **State.** No tool refuses recursion. The gate's `stack chain` rows
-(`tools/stack_chain.py`, on the riscv64 kernel images) check the deepest static
+(`tools/lint/stack_chain.py`, on the riscv64 kernel images) check the deepest static
 call chain against the task stack; a recursive cycle is cut at its first repeat
 and counted, not measured.
 
 ## SC-5: every `unsafe` has a `// SAFETY:` comment
 
 Source: `crates/core/ota/src/lib.rs`, `crates/core/abi/src/lib.rs`,
-`tools/unsafe_budget.py`.
+`tools/lint/unsafe_budget.py`.
 
 **Rule.** Every `unsafe` block and every `unsafe fn` body carries a
 `// SAFETY:` comment immediately before it, stating the contract that makes
@@ -121,9 +121,9 @@ and `clippy::missing_safety_doc` (at `warn`) together with `clippy::pedantic`,
 safety crate enables a clippy lint, and neither the gate nor `make check0`
 runs clippy, so the comment is a review rule everywhere. `crates/core/abi`
 is `#![forbid(unsafe_code)]`, which the compiler enforces. The amount of
-`unsafe` is held by the unsafe budget (`tools/unsafe_budget.py`, a row of the
+`unsafe` is held by the unsafe budget (`tools/lint/unsafe_budget.py`, a row of the
 gate and of `make check0`): a crate whose count of unsafe blocks, functions,
-impls and attributes differs from `tools/unsafe_budget.tsv` fails until the
+impls and attributes differs from `tools/lint/unsafe_budget.tsv` fails until the
 baseline is updated in the same change. It does not look at the comment.
 `CONTRIBUTING.md` asks for the comment on every new `unsafe` block anywhere
 in the tree.
@@ -202,7 +202,7 @@ Where a harness does need a loop, add `#[kani::unwind(N)]` with the bound.
 
 ## SC-10: traceability
 
-Source: `formal/INVARIANTS.md`, `tools/req_trace.py`.
+Source: `formal/INVARIANTS.md`, `tools/lint/req_trace.py`.
 
 **Rule.** Every safety property is traceable from the property to the code
 that maintains it and to the test, harness or spec that checks it, and the
@@ -216,7 +216,7 @@ same change.
 
 ## What checks each rule
 
-Source: `tools/ci_check.sh`, `tools/gate_tier.sh`, the crates named in each row.
+Source: `tools/gate/ci_check.sh`, `tools/gate/gate_tier.sh`, the crates named in each row.
 
 | Rule | Checked by |
 |---|---|
@@ -229,4 +229,4 @@ Source: `tools/ci_check.sh`, `tools/gate_tier.sh`, the crates named in each row.
 | SC-7 | `overflow-checks = true` in the release profile; review for the explicit form. |
 | SC-8 | Review. No `f32` or `f64` appears in `sched`, `ipc` or `topology`. |
 | SC-9 | The gate's `formal: Kani harnesses` row runs every harness of `cap.rs` and `objref.rs` and passes only if all are verified; it reports SKIP, with nothing verified, where `cargo kani` is not installed. |
-| SC-10 | `formal/INVARIANTS.md`, kept in step with the code by `tools/req_trace.py`, a row of `make check0` (names, tags and tests exist; whether a check is the right one is review). |
+| SC-10 | `formal/INVARIANTS.md`, kept in step with the code by `tools/lint/req_trace.py`, a row of `make check0` (names, tags and tests exist; whether a check is the right one is review). |

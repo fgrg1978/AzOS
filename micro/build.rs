@@ -20,8 +20,8 @@ fn num(cfg: &azos_config::ConfigMap, key: &str) -> u64 {
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    // Outputs live under $AZOS_OUT (tools/out_dir.py), never in the checkout.
-    let out = PathBuf::from(std::env::var("AZOS_OUT").expect("azos_micro: AZOS_OUT is not set (see tools/out_dir.py)"));
+    // Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
+    let out = PathBuf::from(std::env::var("AZOS_OUT").expect("azos_micro: AZOS_OUT is not set (see tools/lib/out_dir.py)"));
     println!("cargo:rerun-if-env-changed=AZOS_OUT");
     let config = std::env::var("KCONFIG_CONFIG")
         .map(PathBuf::from)

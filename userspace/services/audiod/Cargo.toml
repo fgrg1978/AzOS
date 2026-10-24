@@ -24,7 +24,7 @@ panic = "abort"
 [workspace]
 
 # The FAT32 image(s) this crate builds and their board-volume defaults
-# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs"). The
+# (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs"). The
 # built-in topology has a row for it, and the kernel starts it at boot, only
 # when Kconfig AUDIOD is on.
 [package.metadata.azos]

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! A package builder: the Rust mirror of `tools/azpkg.py build` + `sign`.
+//! A package builder: the Rust mirror of `tools/image/azpkg.py build` + `sign`.
 
 use azos_crypto::sha256::sha256;
 use azos_pkg::container::{message, HEADER_LEN, MAGIC};

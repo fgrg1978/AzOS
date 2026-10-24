@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 /*
- * /init of the Linux comparison initramfs (tools/lx_kbuild/run.sh
+ * /init of the Linux comparison initramfs (tools/build/lx_kbuild/run.sh
  * linux). Static, no C library, no Linux header: raw syscalls of the generic
  * table riscv64 and aarch64 share. It times `init_module` of the same
  * xz_dec.ko the AzOS server loads (file already in memory on both sides),

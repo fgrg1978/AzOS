@@ -612,7 +612,7 @@ Source: `crates/fs/fs/src/vfs.rs`, `crates/fs/fs/src/pagecache.rs`,
 `azvol` is the project's own volume format. The engine
 (`crates/fs/fs/src/azvol/`) uses only `core` and `alloc`, talks to the medium
 through a `BlockDev` trait, and holds no global state; the same source runs in
-the kernel and in the host tools. `tools/mkazvol.py` is a second implementation
+the kernel and in the host tools. `tools/image/mkazvol.py` is a second implementation
 that builds plain (unsealed) images. `AzvolFs`
 (`crates/fs/fs/src/azvol/mount.rs`) is the adapter that mounts it into the VFS.
 
@@ -756,7 +756,7 @@ tree is a wrapper device, `VerityDev`, between the engine and the partition.
   unchecked and no range needs a rule.
 * **The root** is the SHA-256 of the header block. It commits to `N`, the shape
   and the top, hence to every block. It is not stored on the volume: it is the
-  topology row's `verity_root`, and `tools/mkazvol.py create --verity` prints it
+  topology row's `verity_root`, and `tools/image/mkazvol.py create --verity` prints it
   (`verity_root HEX`). `--size` stays the size of the volume; the image file is
   longer by the tree.
 * **Open.** The superblock's block count is only a hint where the header is;
@@ -828,7 +828,7 @@ Source: `crates/fs/fs/src/azvol/mod.rs`, `crates/fs/fs/src/azvol/layout.rs`,
 `crates/fs/fs/src/azvol/mount.rs`, `crates/fs/fs/src/azvol/dev.rs`,
 `crates/fs/fs/src/azvol/verity.rs`,
 `crates/fs/fs/src/probe.rs`, `kernel/src/boot/azvol.rs`, `kernel/src/boot/azvol_key.rs`,
-`crates/core/topology/src/types.rs`, `tools/mkazvol.py`.
+`crates/core/topology/src/types.rs`, `tools/image/mkazvol.py`.
 
 ## Directory capabilities and `Cap<Dir>` namespaces
 
@@ -923,7 +923,7 @@ The tree contains:
 
 | Item | Where |
 |------|-------|
-| The build of the unmodified `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c` of the pinned Linux tag, for both ISAs, into `<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko`, in load order | `make lx-kbuild`, `tools/lx_kbuild/run.sh` (`fs_modules`), pinned by the `third_party/linux` gitlink |
+| The build of the unmodified `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c` of the pinned Linux tag, for both ISAs, into `<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko`, in load order | `make lx-kbuild`, `tools/build/lx_kbuild/run.sh` (`fs_modules`), pinned by the `third_party/linux` gitlink |
 | The relocatable-module loader: parses an `ET_REL` object, lays out text and data regions, resolves symbols through a caller-supplied table and applies relocations | `crates/core/lx-loader/src/lib.rs` |
 | The kernel half of loading: a module's file bytes are checked against a digest table built into the kernel image before they run, and text is flipped to read-execute after loading | invoke ops `DOMAIN_MODULE_VERIFY` and `DOMAIN_MODULE_MAP_X` (`crates/core/abi/src/invoke.rs`) |
 | The base of the compatibility layer a ring-3 server would run modules on (memory, locks, timers, workqueues, RCU, printk, device model, reference counts, exported-symbol table) | `lx/emul` |
@@ -938,6 +938,6 @@ and `FileSystem::readdir` takes a cookie rather than an index because a hashed
 directory cannot be addressed by position. An image that contains a Linux
 module is GPL-2.0-only as a whole (`config/axes/Kconfig.personality`).
 
-Source: `config/axes/Kconfig.personality`, `tools/lx_kbuild/run.sh`, `crates/core/lx-loader/src/lib.rs`,
+Source: `config/axes/Kconfig.personality`, `tools/build/lx_kbuild/run.sh`, `crates/core/lx-loader/src/lib.rs`,
 `lx/FS_EXT4_UNRESOLVED`, `.gitmodules`, `lx/emul/src/lib.rs`,
 `crates/fs/fs/src/bcache.rs`, `crates/fs/fs/src/vfs.rs`.

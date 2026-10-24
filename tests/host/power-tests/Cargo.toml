@@ -10,7 +10,7 @@ description = "Host-side tests for the power policy: the PowerPolicy interface a
 
 [features]
 # Canaries: each removes one decision of the server, and exactly its tests
-# must fail (tools/ci_check.sh, row power-tests).
+# must fail (tools/gate/ci_check.sh, row power-tests).
 pw-fallback-canary = []
 pw-stop-canary = []
 pw-nomodel-canary = []

@@ -29,7 +29,7 @@ On aarch64 the whole system, kernel and every user image, uses the one granule.
 The choice reaches the build twice and the kernel refuses to compile if the
 two disagree:
 - as the cargo feature `page-16k` or `page-64k` (emitted by
-  `tools/kconfig_to_cargo.py`), which sets `azos_arch_api::PAGE_SHIFT` and
+  `tools/build/kconfig_to_cargo.py`), which sets `azos_arch_api::PAGE_SHIFT` and
   `PAGE_SIZE`;
 - as `azos_limits::PAGE_SHIFT`, derived from `.config`, which `kernel/src/main.rs`
   asserts equal to the first.

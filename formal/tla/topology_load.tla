@@ -29,7 +29,7 @@ test module, not from boot. `book/src/02-architecture/topology.md`
 says this spec "proves this end-to-end"; it proves TL-1..TL-3 of the
 states below, which the running kernel does not visibly go through. No
 TLC run against this file is recorded past 2026-05-14, and
-`tools/ci_check.sh` does not invoke TLC.
+`tools/gate/ci_check.sh` does not invoke TLC.
 *)
 
 EXTENDS Naturals, TLC

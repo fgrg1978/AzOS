@@ -14,8 +14,8 @@ set -e
 
 OS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$OS_DIR"
-# Outputs live under $AZOS_OUT (tools/out_dir.py), never in the checkout.
-AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../tools/out_dir.py")}"; export AZOS_OUT
+# Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
+AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../tools/lib/out_dir.py")}"; export AZOS_OUT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$AZOS_OUT/target}"
 
 GREEN='\033[0;32m'
@@ -37,12 +37,12 @@ echo "╚═══════════════════════�
 # ── 1. Build all 4 kernel configs ──
 section "Build: 4 kernel configs"
 
-# The .config's kernel and three selections on it (tools/kconfig_to_cargo.py
+# The .config's kernel and three selections on it (tools/build/kconfig_to_cargo.py
 # --select: a copy of the .config the build reads).
-sel_dir="$(python3 tools/out_dir.py)/build"; mkdir -p "$sel_dir"
+sel_dir="$(python3 tools/lib/out_dir.py)/build"; mkdir -p "$sel_dir"
 for sel in "" vf2 k1 no-ml; do
     name=${sel:-"QEMU (default)"}
-    if args="$(python3 tools/kconfig_to_cargo.py --select "$sel" --out "$sel_dir/run-all-$name.config" .config)" \
+    if args="$(python3 tools/build/kconfig_to_cargo.py --select "$sel" --out "$sel_dir/run-all-$name.config" .config)" \
        && KCONFIG_CONFIG="$sel_dir/run-all-$name.config" cargo build --release -p azos_kernel $args 2>&1 | grep -q "Finished"; then
         pass_section "Build $name"
     else

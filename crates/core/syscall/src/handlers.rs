@@ -720,7 +720,7 @@ pub(crate) fn seccomp_deny_kill(num: u64) -> ! {
     // `getpid` returned and printed the refusal itself. It cannot do that
     // anymore — the syscall that would have told it never returns — so the
     // console line moves here, the one place on this path that still runs.
-    // `tools/ci_check.sh`'s three seccomp rows key on `uhello`'s old line
+    // `tools/gate/ci_check.sh`'s three seccomp rows key on `uhello`'s old line
     // and need a new one to grep; this is the replacement (see the report
     // for the exact rows and why this line's shape was chosen to be
     // greppable per-row: tid identifies WHICH task, `num` WHICH syscall).
@@ -2662,7 +2662,7 @@ pub fn sys_recvfrom_syscall(fd: u64, buf_ptr: u64, len: u64, addr_ptr: u64) -> i
 /// function entry, not at the declaration: the `addr_ptr == 0` branch above
 /// therefore called `sys_recv_syscall` -- which has a 4 KiB bounce of its own
 /// -- from underneath 4 KiB that the call could never use. 8.3 KiB of the
-/// deepest chain in the image, for one `recvfrom` (tools/stack_chain.py,
+/// deepest chain in the image, for one `recvfrom` (tools/lint/stack_chain.py,
 /// 2026-09-16). Same shape as [`recv_bounced`], same `inline(never)` for the
 /// same reason: inlined, the buffer is back in the caller's frame.
 #[inline(never)]

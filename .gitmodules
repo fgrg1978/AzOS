@@ -1,9 +1,9 @@
 # Every third-party source tree the build uses, one model: a gitlink pinned to
 # an upstream commit (the index entry IS the pin), shallow, `update = none` so
 # that no clone or `git submodule update` pulls it by accident.
-# tools/third_party_fetch.sh is the one way in: it checks the tree out at its
+# tools/build/third_party_fetch.sh is the one way in: it checks the tree out at its
 # path (never inside iCloud Drive), at the gitlink, and verifies it; the gate
-# row `third_party: submodule == pin` (tools/lx_license_lint.py --pin) holds
+# row `third_party: submodule == pin` (tools/lint/lx_license_lint.py --pin) holds
 # every entry here to its gitlink and checkout. `tag` is the upstream tag the
 # commit carries (fetched by name, verified to peel to the gitlink); a tree
 # pinned to a commit of a branch has none.
@@ -19,7 +19,7 @@
 	tag = 1_36_1
 
 # Limine (BSD-2-Clause), a release's binary branch: BOOTX64.EFI and limine.c
-# for the x86 PC and PXE rows (mk/qemu.mk, tools/netboot/).
+# for the x86 PC and PXE rows (mk/qemu.mk, tools/gate/netboot/).
 [submodule "third_party/limine"]
 	path = third_party/limine
 	url = https://github.com/limine-bootloader/limine.git
@@ -49,7 +49,7 @@
 	update = none
 
 # U-Boot (GPL-2.0+): the S-mode U-Boot of the riscv64 netboot row
-# (tools/netboot/uboot_build.sh). The GitHub mirror of source.denx.de.
+# (tools/gate/netboot/uboot_build.sh). The GitHub mirror of source.denx.de.
 [submodule "third_party/u-boot"]
 	path = third_party/u-boot
 	url = https://github.com/u-boot/u-boot.git

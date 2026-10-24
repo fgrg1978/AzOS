@@ -139,7 +139,7 @@ pub(crate) fn patch_pool() -> (usize, usize) {
 pub(crate) fn patch_sites() -> &'static [u64] {
     let (s, e) = (&raw const __azos_patch_start as usize, &raw const __azos_patch_end as usize);
     // SAFETY: the linker script aligns the section to 8 and fills it with
-    // whole 8-byte entries (`tools/check_livepatch_layout.py` checks both);
+    // whole 8-byte entries (`tools/lint/check_livepatch_layout.py` checks both);
     // it is read-only data for the life of the kernel.
     unsafe { core::slice::from_raw_parts(s as *const u64, (e - s) / azos_arch_api::isa::PATCH_SITE_BYTES) }
 }
@@ -149,7 +149,7 @@ pub(crate) fn patch_sites() -> &'static [u64] {
 static BUILD_ID: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 /// The kernel build-id: SHA-256 of `[_text_start, _text_end)` as linked
-/// (`tools/check_livepatch_layout.py elf` computes the same from the ELF).
+/// (`tools/lint/check_livepatch_layout.py elf` computes the same from the ELF).
 /// The text is hashed in `report`, before the first boot-time rewrite
 /// (the PAN and spin sites, the static keys), so what is hashed is what the
 /// linker wrote, whatever the CPU and the mask. `None` without `LIVEPATCH`.

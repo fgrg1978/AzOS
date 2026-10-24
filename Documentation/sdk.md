@@ -19,7 +19,7 @@ filter bound to its image (see [services.md](services.md)). Build commands are i
 ## The std target
 
 Source: `sdk/README.md`, `sdk/targets/`, `sdk/std/sys/`,
-`crates/core/stdrt/src/lib.rs`, `tools/sdk_std.py`, `tools/sdk_cargo.py`.
+`crates/core/stdrt/src/lib.rs`, `tools/build/sdk_std.py`, `tools/build/sdk_cargo.py`.
 
 A Rust `std` target for each ISA: `riscv64imac-unknown-azos`,
 `aarch64-unknown-azos` and `x86_64-unknown-azos` (`os = "azos"`, panic strategy
@@ -35,14 +35,14 @@ tests.
 | `sdk/targets/*.json` | The one target spec per ISA, of every native image (`std` or not): codegen baseline and the image layout (image base, page size, entry `_azos_entry`, a static PIE). No image has a linker script. The ISA baseline beyond them comes from Kconfig. |
 | `sdk/std/sys/**` | The files of the port, copied into `library/std/src/sys/` of the library source. Each is thin: a call into `azos_stdrt`. |
 | `crates/core/stdrt` | The port layer (`azos_stdrt`): traps, startup block, vDSO clock, threads, futexes, the hardened allocator, console, entropy, sockets. |
-| `tools/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src`, `sdk/std/sys` and the dispatch edits to `std`. |
-| `tools/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment taken from the expanded Kconfig. |
+| `tools/build/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src`, `sdk/std/sys` and the dispatch edits to `std`. |
+| `tools/build/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment taken from the expanded Kconfig. |
 | `crates/core/libsys-macros` | `#[main]` and `#[test]`, re-exported by `azos_libsys`. |
 
-`tools/sdk_std.py` points cargo at the assembled tree with
+`tools/build/sdk_std.py` points cargo at the assembled tree with
 `__CARGO_TESTS_ONLY_SRC_ROOT`, an internal cargo hook, not a supported cargo
 interface. The tool applies each edit of the library as one exact replacement and
-refuses when the text has moved (`python3 tools/sdk_std.py --check`), so a
+refuses when the text has moved (`python3 tools/build/sdk_std.py --check`), so a
 toolchain change is the moment to re-check them. The assembled tree is a build
 product and is not committed.
 
@@ -108,10 +108,10 @@ strip = "symbols"    # the loader reads a bounded amount of the file
 
 `fn main` is the entry. `userspace/services/why/Cargo.toml` is a complete example
 of a std program, and `tests/sdk/sdktest/src/main.rs` exercises the port. Build with
-`tools/sdk_cargo.py`:
+`tools/build/sdk_cargo.py`:
 
 ```sh
-python3 tools/sdk_cargo.py --isa riscv64 --kconfig <expanded .config> -- build --release --manifest-path userspace/services/why/Cargo.toml
+python3 tools/build/sdk_cargo.py --isa riscv64 --kconfig <expanded .config> -- build --release --manifest-path userspace/services/why/Cargo.toml
 ```
 
 A std program needs the `entropy` capability in its topology row (the allocator
@@ -180,7 +180,7 @@ can derive the exact system-call profile of an image from its sources.
 ## relibc
 
 Source: `userspace/lib/relibc-azos/README.md`, `config/axes/Kconfig.libc`,
-`tools/third_party_fetch.sh`, `tools/relibc_build.sh`, `.gitmodules`.
+`tools/build/third_party_fetch.sh`, `tools/build/relibc_build.sh`, `.gitmodules`.
 
 relibc is Redox's C library, written in Rust (MIT). It is the porting layer for C
 code. POSIX is a personality here, not the native model: native programs use the
@@ -192,10 +192,10 @@ Nothing of relibc is stored in the repository except what AzOS adds to it:
 | Path | What |
 |---|---|
 | `third_party/relibc` | A gitlink (`.gitmodules`, `update = none`): the upstream commit. |
-| `tools/third_party_fetch.sh relibc` | Shallow-fetches that commit (and its `dlmalloc-rs` submodule) into `third_party/relibc`, in a checkout outside iCloud Drive. |
+| `tools/build/third_party_fetch.sh relibc` | Shallow-fetches that commit (and its `dlmalloc-rs` submodule) into `third_party/relibc`, in a checkout outside iCloud Drive. |
 | `userspace/lib/relibc-azos/patches/` | The changes to upstream files. |
 | `userspace/lib/relibc-azos/overlay/` | AzOS's own files: the `azos` platform module, three target specs, three linker scripts. |
-| `tools/relibc_build.sh` | Copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs. |
+| `tools/build/relibc_build.sh` | Copies the checkout, applies the patches and the overlay, builds `libc.a` and C programs. |
 | `config/axes/Kconfig.libc` | `CONFIG_RELIBC`, the switch, read from each ISA's configuration. |
 
 The platform layer (`userspace/lib/relibc-azos/overlay/src/platform/azos/`) implements relibc's `Pal` over
@@ -214,19 +214,19 @@ The platform layer (`userspace/lib/relibc-azos/overlay/src/platform/azos/`) impl
 Build a C program:
 
 ```sh
-tools/third_party_fetch.sh relibc && make relibc     # for each ISA whose configuration sets CONFIG_RELIBC=y
-tools/relibc_build.sh cc <isa> OUT.elf SRC.c...
+tools/build/third_party_fetch.sh relibc && make relibc     # for each ISA whose configuration sets CONFIG_RELIBC=y
+tools/build/relibc_build.sh cc <isa> OUT.elf SRC.c...
 ```
 
 `make relibc` builds `hello.elf` and `tinybox.elf` from
 `userspace/tests/relibc/hello.c` and `userspace/tests/relibc/tinybox.c` under
 `$AZOS_OUT/build/relibc/<isa>/`. `cc` compiles with `-D__azos__`, the relibc headers,
-`-nostdlib -static`, the layout of the ISA's target spec (`tools/user_link_args.py
+`-nostdlib -static`, the layout of the ISA's target spec (`tools/build/user_link_args.py
 --driver`: a static executable at the same image base and entry, no linker script) and
 `libc.a`. It needs `zig` and
 `cbindgen` (see [building.md](building.md)). To move the pin, change
 the gitlink (`git update-index --cacheinfo 160000,<commit>,third_party/relibc`), run
-`tools/third_party_fetch.sh relibc`, then `tools/relibc_build.sh prepare`, which fails
+`tools/build/third_party_fetch.sh relibc`, then `tools/build/relibc_build.sh prepare`, which fails
 on a patch hunk that no longer applies.
 
 ## A minimal native program
@@ -268,7 +268,7 @@ its own. The macro names `::azos_libsys`, so the dependency must be declared in
 Nothing else: the target spec of each ISA (`sdk/targets`) carries the layout, and
 `userspace/.cargo/config.toml` (the one cargo configuration of every image) the
 default target and `build-std`. A crate with a linker script or a cargo
-configuration of its own is refused by `tools/user_entry_lint.py` (gate tier n0).
+configuration of its own is refused by `tools/lint/user_entry_lint.py` (gate tier n0).
 An image that asks for a stack other than Kconfig `USER_STACK_SIZE_KB` says so in
 a `build.rs` (`cargo:rustc-link-arg-bins=-zstack-size=N`, e.g.
 `userspace/services/toolbox/build.rs`).
@@ -279,7 +279,7 @@ the image's digest (`crates/core/sched/src/seccomp.rs`). A program that is not
 declared in the topology has no row to take capabilities from. A crate declares the
 FAT32 images it builds, whether the built-in topology has a row for it, and when the
 topology starts it, in `[package.metadata.azos]` of its `Cargo.toml`
-(`tools/gen_userspace_kconfig.py` turns those into `make config` options).
+(`tools/build/gen_userspace_kconfig.py` turns those into `make config` options).
 
 ## A native driver
 

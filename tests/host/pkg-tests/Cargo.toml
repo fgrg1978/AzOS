@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for signed application packages (crates/core/pkg): the container, the metadata, verification against the signers of a signed topology, admission as a topology delta (neverallow included) and the install receipt, plus a package built and signed by tools/azpkg.py. Excluded from workspace."
+description = "Host-side tests for signed application packages (crates/core/pkg): the container, the metadata, verification against the signers of a signed topology, admission as a topology delta (neverallow included) and the install receipt, plus a package built and signed by tools/image/azpkg.py. Excluded from workspace."
 
 # Run with:  cd tests/host/pkg-tests && cargo test --offline
 #

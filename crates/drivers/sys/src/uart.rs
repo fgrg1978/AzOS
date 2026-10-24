@@ -1103,7 +1103,7 @@ pub struct CanaryConsole;
 /// trailing `\n` leaves this `false`; the NEXT write through this console —
 /// from any task — starts unprefixed until a real newline sets it back to
 /// `true`. Harmless for what this console exists to prove (gate-only, one
-/// probe program, `tools/ci_check.sh`'s `console-route-canary` row), but not
+/// probe program, `tools/gate/ci_check.sh`'s `console-route-canary` row), but not
 /// a general per-line guarantee across multiple ring-3 writers.
 #[cfg(feature = "console-route-canary")]
 static CANARY_AT_LINE_START: AtomicBool = AtomicBool::new(true);

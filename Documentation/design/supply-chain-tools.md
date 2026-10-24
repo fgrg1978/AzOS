@@ -8,29 +8,29 @@ status.
 
 | Mechanism | Question it answers | Network |
 |-----------|---------------------|---------|
-| `tools/sbom.sh` | Which packages, at which versions and licences, make up the kernel workspace? | No |
-| `tools/repro_check.sh` | Does building the same sources twice, in different directories, give byte-identical binaries? | No |
+| `tools/gate/sbom.sh` | Which packages, at which versions and licences, make up the kernel workspace? | No |
+| `tools/gate/repro_check.sh` | Does building the same sources twice, in different directories, give byte-identical binaries? | No |
 | `deny.toml` with `cargo-deny` | Do the dependencies obey the licence, ban and source policy? | Only for the advisory database |
 | `third_party/vendor` with `third_party/VENDOR_PIN` | Is the vendored registry tree exactly the one that was reviewed? | No |
-| `REUSE.toml` with `tools/spdx_headers.py` | Does every file state its licence? | No |
+| `REUSE.toml` with `tools/lint/spdx_headers.py` | Does every file state its licence? | No |
 
-`tools/sbom.sh` and `tools/repro_check.sh` are not invoked by any other script
+`tools/gate/sbom.sh` and `tools/gate/repro_check.sh` are not invoked by any other script
 or make target; they are run by hand. The `cargo-deny` run, the vendor check and
-the licence-header check are rows of the project's verification gate (`tools/gate_tier.sh`,
-`tools/ci_check.sh`).
+the licence-header check are rows of the project's verification gate (`tools/gate/gate_tier.sh`,
+`tools/gate/ci_check.sh`).
 
-Source: `tools/sbom.sh`, `tools/repro_check.sh`, `deny.toml`,
-`third_party/VENDOR_PIN`, `tools/gate_tier.sh`, `tools/ci_check.sh`.
+Source: `tools/gate/sbom.sh`, `tools/gate/repro_check.sh`, `deny.toml`,
+`third_party/VENDOR_PIN`, `tools/gate/gate_tier.sh`, `tools/gate/ci_check.sh`.
 
-## SBOM: `tools/sbom.sh`
+## SBOM: `tools/gate/sbom.sh`
 
 ```text
-tools/sbom.sh [output-path]
+tools/gate/sbom.sh [output-path]
 ```
 
 The script writes an offline CycloneDX 1.5 JSON document. The default output
 is `build/sbom.cdx.json` under the build output root (`AZOS_OUT`, resolved by
-`tools/out_dir.py`); a relative path argument is taken from the repository root.
+`tools/lib/out_dir.py`); a relative path argument is taken from the repository root.
 
 What it does:
 
@@ -60,12 +60,12 @@ What it covers and what it does not:
   The script does not guess a resolved version. Python components carry no
   licence.
 
-Source: `tools/sbom.sh`, `tools/out_dir.py`, `Cargo.toml` (`exclude`).
+Source: `tools/gate/sbom.sh`, `tools/lib/out_dir.py`, `Cargo.toml` (`exclude`).
 
-## Reproducibility check: `tools/repro_check.sh`
+## Reproducibility check: `tools/gate/repro_check.sh`
 
 ```text
-tools/repro_check.sh [--dry-run] [--keep]
+tools/gate/repro_check.sh [--dry-run] [--keep]
 ```
 
 The script builds a fixed set of artefacts twice and compares the SHA-256 of
@@ -111,7 +111,7 @@ Options: `--dry-run` prints every command, with the full rustflags, for both
 builds and builds nothing; `--keep` keeps the two temporary roots so a `DIFFER`
 can be inspected. The environment can set `CARGO`, `RISCV_AS` and
 `SOURCE_DATE_EPOCH`; `hello.S` and `test.S` are linked by rust-lld with the
-riscv64 target spec's flags (`tools/user_link_args.py`).
+riscv64 target spec's flags (`tools/build/user_link_args.py`).
 
 Requirements and cost: the `rsync` command, the nightly toolchain the userspace
 builds use, the RISC-V assembler and linker for the two assembler programs,
@@ -122,7 +122,7 @@ builds everything twice, so it is slow and competes for CPU and disk with other
 work. Run it after a dependency or toolchain change, or when reproducibility
 needs re-checking.
 
-Source: `tools/repro_check.sh`, `userspace/rustc_stable_metadata.py`,
+Source: `tools/gate/repro_check.sh`, `userspace/rustc_stable_metadata.py`,
 `Cargo.toml` (`[profile.release]`), `crates/core/limits/src/lib.rs`,
 `crates/core/ota/src/secure_boot.rs`, `crates/drivers/sys/src/wcet.rs`.
 
@@ -166,7 +166,7 @@ otherwise prints a note that they were not checked. `ring` stays banned there:
 the vendored lockfile contains it through a WebAssembly-only edge of
 `quinn-proto`, and the graph above has no WebAssembly target.
 
-Source: `deny.toml`, `tools/gate_tier.sh`, `userspace/lib/tls-probe/vendor.py`
+Source: `deny.toml`, `tools/gate/gate_tier.sh`, `userspace/lib/tls-probe/vendor.py`
 (`deny`).
 
 ## Vendored registry tree: `third_party/vendor` and `VENDOR_PIN`
@@ -180,7 +180,7 @@ own `std` workspace, because `-Zbuild-std` resolves them through the same
 replacement. The second half moves with `rust-toolchain.toml`: a toolchain
 change means regenerating the tree.
 
-How it is used: `tools/sdk_cargo.py --vendored` replaces crates.io by this
+How it is used: `tools/build/sdk_cargo.py --vendored` replaces crates.io by this
 directory for that one cargo invocation (`--offline --locked`); the kernel
 workspace's cargo config never sees it. The host test crates that need the same
 crates (`tests/host/tls-tests`, `tests/host/quic-tests`) point their own
@@ -220,26 +220,26 @@ runs `cargo metadata --offline --locked` over the probe's manifest with the
 vendor source configured and runs `cargo deny` with `licenses`, `bans` and
 `sources` (and `advisories` when the database is present).
 
-The gate runs `check` and `--self-test` as two rows of `tools/ci_check.sh`,
+The gate runs `check` and `--self-test` as two rows of `tools/gate/ci_check.sh`,
 named `vendor: tree == pin` and `vendor: canary`.
 
 Source: `third_party/VENDOR_PIN`, `userspace/lib/tls-probe/vendor.py`
-(`tree_errors`, `check`, `self_test`, `prune`), `tools/sdk_cargo.py`,
-`tools/ci_check.sh`, `tests/host/tls-tests/.cargo/config.toml`,
+(`tree_errors`, `check`, `self_test`, `prune`), `tools/build/sdk_cargo.py`,
+`tools/gate/ci_check.sh`, `tests/host/tls-tests/.cargo/config.toml`,
 `tests/host/quic-tests/.cargo/config.toml`, `mk/userspace.mk`.
 
-## Licence headers: `REUSE.toml` and `tools/spdx_headers.py`
+## Licence headers: `REUSE.toml` and `tools/lint/spdx_headers.py`
 
 Every tracked source file (`.rs`, `.S`, `.ld`, `.py`, `.sh`, `.mk`, `Makefile`)
 outside `third_party/` and `lx/glue/` carries an `SPDX-License-Identifier` and `SPDX-FileCopyrightText` header.
-`tools/spdx_headers.py` adds a missing one; with `--check` it writes nothing,
+`tools/lint/spdx_headers.py` adds a missing one; with `--check` it writes nothing,
 lists the files that lack one and exits 1, which is a row of the gate's first
 tier. Files that cannot take a comment (documentation, data, images, keys, lock
 files) are covered by `REUSE.toml`: a catch-all annotation gives every path the
 project licence unless the file has its own header, `lx/glue/**` is
 GPL-2.0-only and the relibc patches under `userspace/lib/relibc-azos/patches/`
 are MIT. That no GPL-only source or symbol leaves `lx/glue/` and
-`third_party/` is checked by `tools/lx_license_lint.py` ([linux.md](../linux.md)).
+`third_party/` is checked by `tools/lint/lx_license_lint.py` ([linux.md](../linux.md)).
 
-Source: `REUSE.toml`, `tools/spdx_headers.py`, `tools/gate_tier.sh`,
-`tools/lx_license_lint.py`.
+Source: `REUSE.toml`, `tools/lint/spdx_headers.py`, `tools/gate/gate_tier.sh`,
+`tools/lint/lx_license_lint.py`.

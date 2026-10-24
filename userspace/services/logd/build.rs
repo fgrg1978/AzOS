@@ -6,7 +6,7 @@
 //! lld writes it as the `p_memsz` of the image's `PT_GNU_STACK` header, which
 //! the loader reads (crates/core/sched/src/process.rs, `elf_bounds::stack_bytes`):
 //! no file bytes, no PT_LOAD. An image without one gets Kconfig
-//! `USER_STACK_SIZE_KB`. tools/user_stacks.py checks the figure against the
+//! `USER_STACK_SIZE_KB`. tools/lint/user_stacks.py checks the figure against the
 //! image's deepest static call chain.
 
 fn main() {

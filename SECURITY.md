@@ -80,6 +80,6 @@ having no trusted key.
   `third_party/vendor`.
 - **Policy.** `deny.toml` holds the licence, ban and source policy for
   `cargo deny`.
-- **SBOM.** `tools/sbom.sh` writes a CycloneDX software bill of materials.
+- **SBOM.** `tools/gate/sbom.sh` writes a CycloneDX software bill of materials.
 - **Toolchain.** `rust-toolchain.toml` pins the compiler.
 - **Automation.** None of these runs automatically; each is run by hand.

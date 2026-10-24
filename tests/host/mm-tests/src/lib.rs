@@ -1022,7 +1022,7 @@ mod cow_table_tests {
 /// **WHY THIS CLOSES THE OPEN FINDING.** Scan unit 3 finding 3 (owner decision
 /// 102) shipped with the positive half proven in `tests/host/syscall-tests`
 /// (`mmap_guards.rs`) and the refusal proven at the QEMU gate
-/// (`mem-quota-canary`, `tools/ci_check.sh`) — but neither exercises the REAL
+/// (`mem-quota-canary`, `tools/gate/ci_check.sh`) — but neither exercises the REAL
 /// `mm_charge`/`mm_discharge` in `scheduler.rs`. `syscall-tests`' own shim says
 /// so explicitly: it is "State, not behaviour... SEMANTICS are copied
 /// deliberately", proving the WIRING in `handlers.rs`, not this decision. The
@@ -1079,7 +1079,7 @@ mod budget_tests {
     /// one page at a time (`sys_brk_impl`'s shape) is granted pages up to
     /// EXACTLY the budget and refused — with NOTHING charged — the moment it
     /// would go over. This is the host-level twin of the QEMU
-    /// `mem-quota-canary` row (`tools/ci_check.sh`, budget dropped to 16,
+    /// `mem-quota-canary` row (`tools/gate/ci_check.sh`, budget dropped to 16,
     /// `abitest` asks for 256 and is granted 16): same ceiling, same
     /// one-page-at-a-time shape, no QEMU boot needed to see it fail. A quota
     /// wired to refuse everything fails the first assertion; one wired to

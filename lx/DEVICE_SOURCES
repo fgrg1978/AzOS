@@ -5,11 +5,11 @@
 #
 #   <lxsrv class> <path under third_party/linux>
 #
-# tools/lx_device_table.py reads each file's MODULE_DEVICE_TABLE and
+# tools/build/lx_device_table.py reads each file's MODULE_DEVICE_TABLE and
 # crates/drivers/hwbus/build.rs turns the ids into the Linux match table. A
 # class server (lxsrv-<class>) is launched only when one of its ids matched a
 # device the bus admitted. Every listed file must be in the sparse set of
-# tools/third_party_fetch.sh (linux): in a checked-out tree a missing one fails the build.
+# tools/build/third_party_fetch.sh (linux): in a checked-out tree a missing one fails the build.
 #
 # Only a leaf the bus matches belongs here. Of the slices that follow
 # (Documentation/design/lx-driver-slices.md): the ext4 slice is chosen by

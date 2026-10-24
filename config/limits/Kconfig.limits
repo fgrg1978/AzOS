@@ -42,7 +42,7 @@ config MAX_TASKS
       At the default, riscv64 / aarch64: edge (64 tasks) 2.35 / 2.43 MiB;
       embedded (32 tasks, 32 caps per task) 1.12 / 1.16 MiB; fleet (4096 tasks,
       512 caps per task) 158.7 / 163.3 MiB.  Measured with
-      tools/limits_cost.py; the costs of the options that size a table per task
+      tools/bench/limits_cost.py; the costs of the options that size a table per task
       are in their own help.  The TID map is next_power_of_two(MAX_TASKS) x 8 B,
       so 64 -> 65 adds 512 B at once.
 
@@ -564,7 +564,7 @@ config KERNEL_HEAP_SIZE
       share the board's RAM above the firmware.
       Edge default: 32 MiB.  Embedded: 512 KiB.  Fleet: 256 MiB.
       Embedded figures (image, what is left on 16 and 64 MiB boards)
-      are printed by tools/size_report.sh.
+      are printed by tools/bench/size_report.sh.
 
       Cost: no static RAM (the image does not grow: +0 B measured for 32768 ->
       32769 and -> 65536 KiB, both ISAs).  The heap is taken from the page
@@ -1029,7 +1029,7 @@ config USER_STACK_MAX_KB
       image over it is refused at exec/spawn (`[LOAD] REFUSED: the image
       asks for a N KiB stack`).  There is no growth and no demand paging
       of the stack: a stack that is too small faults, so a request is
-      sized from the program (tools/stack_chain.py reads the deepest static
+      sized from the program (tools/lint/stack_chain.py reads the deepest static
       chain of an ELF; the gate row `ring-3 stacks` checks each image's
       request against it) and the ceiling only bounds a bad ELF.  The
       window below the stack (USER_MMIO_LIMIT) starts here, so the
@@ -1061,7 +1061,7 @@ config KERNEL_STACK_SIZE_KB
       syscall chain and the 288-byte trap frame, and no longer has to leave
       room for a handler on top of it.  The frame itself still lands here.
 
-      MEASURED, not chosen (tools/stack_chain.py, 2026-09-16).  The deepest
+      MEASURED, not chosen (tools/lint/stack_chain.py, 2026-09-16).  The deepest
       chain from trap_handler is 18.6 KiB on the qemu and embedded images and
       20.6 KiB on fleet, whose trap_handler frame alone is 2.2 KiB:
 
@@ -1108,7 +1108,7 @@ config INTERRUPT_STACK_SIZE_KB
       the outer one.  The 288-byte trap frame stays on the interrupted stack,
       because trap_return computes the next trap's sscratch from it.
 
-      MEASURED (tools/stack_chain.py, 2026-09-16).  The whole interrupt half
+      MEASURED (tools/lint/stack_chain.py, 2026-09-16).  The whole interrupt half
       needs 2,400 bytes: 240 for trap_handler's own frame plus 2,160 for the
       deepest chain from the interrupt callees -- irq_dispatch through the
       port queue into wake_task_by_tid, including its panic tail.  Add a
@@ -1973,7 +1973,7 @@ config KERNEL_CMDLINE_MAX
       readers, one after another; the boot stack is 256 KiB). 2048 with
       CANARY_RUNTIME: `make check-fast` arms every composable runtime
       canary in one boot, and a cut list disarms the canaries past the
-      cut. `tools/check_fast.py cmdline <isa>` prints that line: 854 bytes
+      cut. `tools/gate/check_fast.py cmdline <isa>` prints that line: 854 bytes
       on riscv64, 849 on aarch64, 762 on x86_64, which a 1024 buffer no
       longer holds with room for the other boot arguments. check_fast
       refuses a list longer than this less 128 bytes.
@@ -2038,7 +2038,7 @@ config INFSRV_CONTEXTS
       another's account by flooding it.
 
 # ── Native SDK runtime (sdk/, crates/core/stdrt) ─────────────────────────────
-# A plain integer read by `make sdk` (tools/kconfig_to_cargo.py --sdk-env), like
+# A plain integer read by `make sdk` (tools/build/kconfig_to_cargo.py --sdk-env), like
 # the allocator knobs above, whose engine `std::alloc::System` shares.
 
 config SDK_THREAD_STACK_KB

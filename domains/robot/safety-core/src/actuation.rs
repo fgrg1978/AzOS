@@ -164,7 +164,7 @@ pub fn install() {
     #[allow(dead_code)]
     fn actuation_gate(_id: u32, speed_pct: u32) -> u32 {
         // A marker was tried here on 2026-09-07 and REMOVED, because it
-        // did not discriminate. See the note in `tools/ci_check.sh` above
+        // did not discriminate. See the note in `tools/gate/ci_check.sh` above
         // the `userspace: reflex reacts` scenario: `rt_motor_task` writes
         // the motors every control tick, so a print at this hook fires
         // ~2300 times per boot whether or not any ring-3 program commanded

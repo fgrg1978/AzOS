@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The boot admission's pure half (`azos_topology::boot_admission`): the step
 //! `kernel/src/boot/topology.rs` `admit` runs first and the records it
-//! writes, which the host dry boot (`tools/azos_sim`, `make sim`) replays.
+//! writes, which the host dry boot (`tools/gate/azos_sim`, `make sim`) replays.
 //!
 //! The records are pinned field by field to what the kernel wrote before the
 //! step moved out of it: `DeadlineAdmission` with subject = CPUs and

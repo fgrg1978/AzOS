@@ -36,7 +36,7 @@
 //! `__ksymtab`, as the Linux loader resolves against exports), each through
 //! the same verify/map-X path, and makes `xz_dec` decompress `XZTEST.XZ`.
 //! This image still links no Linux object: the GPL code exists only inside
-//! those `.ko` files, mapped at run time (`tools/lx_license_lint.py`).
+//! those `.ko` files, mapped at run time (`tools/lint/lx_license_lint.py`).
 //!
 //! Its topology row (`lx-server` kernels only) grants one capability, READ on
 //! the kernel entropy pool, which keys and randomizes its allocator
@@ -250,7 +250,7 @@ fn read_module(buf: &mut [u8]) -> Option<usize> {
 
 /// The Linux release the modules must be built from: the Linux tree's pinned
 /// tag (.gitmodules), passed by the Makefile. The rest of `vermagic` is fixed by
-/// `tools/lx_kbuild/common.config` (`SMP`, the default preemption model) and
+/// `tools/build/lx_kbuild/common.config` (`SMP`, the default preemption model) and
 /// the ISA, so a module built from another tree or config is refused.
 const LX_RELEASE: &[u8] = match option_env!("LX_LINUX_RELEASE") {
     Some(v) => v.as_bytes(),
@@ -522,7 +522,7 @@ fn lx_load(path: &[u8], name: &[u8], resolve: &mut dyn FnMut(&[u8]) -> Option<u6
 }
 
 /// The plaintext of `XZTEST.XZ`, regenerated here independently of the
-/// build (`tools/lx_kbuild/xz_fixture.py` is the other copy): words picked
+/// build (`tools/build/lx_kbuild/xz_fixture.py` is the other copy): words picked
 /// by xorshift64, each followed by a newline or a space.
 const XZ_PATTERN_SIZE: usize = 49152;
 const XZ_WORDS: [&[u8]; 16] = [b"azos", b"linux", b"module", b"driver", b"server", b"ring", b"three", b"xz",

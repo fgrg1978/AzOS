@@ -1487,7 +1487,7 @@ mod tests {
     }
 
     /// QEMU's tree puts no `dma-ranges` on the PCI host; the gate's DMA-limit
-    /// row (`tools/nvme_dma_mask_row.sh`) adds one. `fixtures/
+    /// row (`tools/gate/nvme_dma_mask_row.sh`) adds one. `fixtures/
     /// qemu-riscv64-virt-dma-2g.dtb` is that edit made by the script's own
     /// `awk` + `dtc` (`dma-ranges = <0 0 0 0 0 0 0x80000000>` after the
     /// bridge's `compatible`).

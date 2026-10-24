@@ -34,7 +34,7 @@ azos_gps = { workspace = true, optional = true }
 azos_common = { workspace = true }
 azos_driver_server = { workspace = true }
 # `SYS_SPAWN_EX` seeds the child's capabilities from the topology task named after
-# its image. Core to core (tools/tcb_check.sh), and topology depends on no
+# its image. Core to core (tools/lint/tcb_check.sh), and topology depends on no
 # azos crate that depends on this one.
 azos_topology = { workspace = true }
 # `nospec` (Spectre v1 index masking, Kconfig MITIGATION_SPECTRE_V1_INDEX).

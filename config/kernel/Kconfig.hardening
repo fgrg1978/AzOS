@@ -129,7 +129,7 @@ config USER_ALLOC_GUARD_PAGES
 #   riscv64  none yet (Zicfilp, below)
 #
 # Any policy but `n` makes the kernel AND the user images compile with the
-# pads (tools/kconfig_to_cargo.py, cfi_rustflags: the pads are architectural
+# pads (tools/build/kconfig_to_cargo.py, cfi_rustflags: the pads are architectural
 # no-ops on a CPU without the extension); the boot then uses the extension
 # when the CPU has it (probe) or refuses the CPU (require). Kconfig is the
 # only source: there is no second switch. The aarch64 signed returns are a
@@ -153,7 +153,7 @@ config USER_ALLOC_GUARD_PAGES
 #     boot can use it. The compiler half exists (`-Z cf-protection=branch`
 #     plus the LLVM feature `experimental-zicfilp`), but the pinned compiler
 #     (rustc 1.95 nightly of 2026-02-21, LLVM 22.1) lists the feature as
-#     unknown and unstable and warns once per crate, which tools/ci_check.sh
+#     unknown and unstable and warns once per crate, which tools/gate/ci_check.sh
 #     fails on; and nothing in the tree could enforce or refuse it: a hart
 #     declares `zicfilp` in the device tree, but the S-mode enable belongs to
 #     M-mode (menvcfg.LPE; SBI FWFT feature LANDING_PAD), so it needs the
@@ -247,7 +247,7 @@ choice
     help
       Where the kernel image sits in virtual memory. Any policy but n
       links the kernel position-independent (a `-pie` link, kernel/build.rs,
-      with the code PC-relative, tools/kconfig_to_cargo.py kaslr_rustflags;
+      with the code PC-relative, tools/build/kconfig_to_cargo.py kaslr_rustflags;
       a boot that finds no relocation table refuses to slide): the boot
       picks a random base for the image inside the ISA's image window
       (crates/core/arch-*/src/mmu/kaslr.rs), maps the image there and applies
@@ -303,7 +303,7 @@ choice
       BUILD_TYPE_DEV included: a development image slides like a release one,
       so a layout bug shows up where it is written, not on the first release
       build. A debugger or a trace that needs fixed addresses sets n by hand
-      (the gate's `plain` KASLR rows do, tools/kaslr_image.sh). The slide
+      (the gate's `plain` KASLR rows do, tools/image/kaslr_image.sh). The slide
       itself is printed only on a BUILD_TYPE_DEV image; other builds print that
       the image is slid and by how many bits.
 

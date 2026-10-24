@@ -24,13 +24,13 @@ panic = "abort"
 # The loader reads and hashes at most 128 KiB of file (EXEC_MAX_BYTES), and the
 # unstripped file had outgrown the limit: the build strips the copy it puts on the
 # volume (mk/userspace.mk), so the cargo output keeps the symbols the gate's
-# ring-3 stacks rows read (tools/user_stacks.py; a stripped image is not checked).
+# ring-3 stacks rows read (tools/lint/user_stacks.py; a stripped image is not checked).
 
 # Prevents Cargo from merging this crate into the workspace above (see
 # userspace/services/reflex/Cargo.toml).
 [workspace]
 
 # The FAT32 image(s) this crate builds and their board-volume defaults
-# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+# (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
 topology = true

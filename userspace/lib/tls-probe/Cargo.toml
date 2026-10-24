@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Vendoring probe: links rustls (the rustls-rustcrypto provider, no aws-lc-rs, no ring) and quinn-proto (no crypto feature) into a std program for *-unknown-azos on the three ISAs, so a toolchain, std port or vendor bump that breaks either shows up in `make sdk`; the same code runs a loopback TLS handshake under `vendor.py test` on the host. Excluded from workspace; built standalone through tools/sdk_cargo.py --vendored."
+description = "Vendoring probe: links rustls (the rustls-rustcrypto provider, no aws-lc-rs, no ring) and quinn-proto (no crypto feature) into a std program for *-unknown-azos on the three ISAs, so a toolchain, std port or vendor bump that breaks either shows up in `make sdk`; the same code runs a loopback TLS handshake under `vendor.py test` on the host. Excluded from workspace; built standalone through tools/build/sdk_cargo.py --vendored."
 
 [lib]
 name = "tls_probe"
@@ -20,7 +20,7 @@ rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, feature
 # rand_core 0.6 (the provider's OsRng) draws through getrandom 0.2, which has no backend for target_os = "azos";
 # its `custom` hook is how the std port's random source (the kernel pool) reaches it.
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
-# rand 0.10 (quinn-proto) draws through getrandom 0.4: the `custom` backend, which tools/sdk_cargo.py --vendored selects.
+# rand 0.10 (quinn-proto) draws through getrandom 0.4: the `custom` backend, which tools/build/sdk_cargo.py --vendored selects.
 getrandom04 = { package = "getrandom", version = "0.4", default-features = false }
 quinn-proto = { version = "0.11", default-features = false }
 

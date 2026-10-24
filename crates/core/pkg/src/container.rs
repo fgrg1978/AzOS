@@ -185,7 +185,7 @@ impl<'a> Package<'a> {
 }
 
 /// The message an author signs: [`DOMAIN`], the algorithm id (2 bytes LE),
-/// `sha256(meta)`, `sha256(rows)`. `tools/azpkg.py` builds the same bytes.
+/// `sha256(meta)`, `sha256(rows)`. `tools/image/azpkg.py` builds the same bytes.
 pub fn message(alg_id: u16, meta: &[u8], rows: &[u8]) -> [u8; MESSAGE_LEN] {
     let mut m = [0u8; MESSAGE_LEN];
     m[..12].copy_from_slice(&DOMAIN);

@@ -27,7 +27,7 @@
 //!   replaced by an all-zero key;
 //! * the `dev-key` feature (the kernel's `qemu` feature enables it, and so do
 //!   the host test crates): `tools/keys/test_pub.bin`, the key
-//!   `tools/gen_test_key.py` generates on demand, or an all-zero key if it has
+//!   `tools/sign/gen_test_key.py` generates on demand, or an all-zero key if it has
 //!   not been generated (every signature check then fails closed);
 //! * neither: the build FAILS, with one line saying which two to choose from.
 //!
@@ -37,7 +37,7 @@
 //! fallback and also when `TOPOLOGY_PUBKEY_PATH` names it (compared by bytes
 //! against `tools/keys/test_pub.bin`, so a copy under another name is refused
 //! too). The `make` board targets refuse the same key earlier, with
-//! `tools/check_board_keys.py`.
+//! `tools/sign/check_board_keys.py`.
 //!
 //! An empty `TOPOLOGY_PUBKEY_PATH` counts as unset (a Makefile `export` of an
 //! unset variable passes an empty one).
@@ -68,7 +68,7 @@ fn main() {
     // Kconfig BUILD_TYPE_RELEASE and BUILD_TYPE_CERTIFIABLE: a bare-metal image built from a release
     // .config never embeds the TEST key through the `dev-key` fallback
     // (the `make` board targets refuse an explicit TEST key path with
-    // tools/check_board_keys.py). Host builds (the test crates) are not
+    // tools/sign/check_board_keys.py). Host builds (the test crates) are not
     // images and keep the fallback.
     let bare = env::var("CARGO_CFG_TARGET_OS").map(|o| o == "none" || o == "azos").unwrap_or(false);
     let release = bare && release_config();
@@ -113,7 +113,7 @@ fn main() {
         (None, true) => {
             println!("cargo:rerun-if-changed={}", default_path.display());
             // Quiet fallback when the file is absent — a fresh clone before
-            // `tools/gen_test_key.py` has run. No key is an empty slice, which
+            // `tools/sign/gen_test_key.py` has run. No key is an empty slice, which
             // `key_array` turns into an all-zero key: every signature check
             // fails closed, an unprovisioned dev build trusts nothing.
             fs::read(&default_path).unwrap_or_default()

@@ -250,7 +250,7 @@ exclude = [
     # Run with:  cd crates/core/libsys-macros && cargo test --offline
     "crates/core/libsys-macros",
     # stdrt — the std port layer of the native SDK (*-unknown-azos), built into
-    # `std` by tools/sdk_std.py; host tests in tests/host/stdrt-tests.
+    # `std` by tools/build/sdk_std.py; host tests in tests/host/stdrt-tests.
     "crates/core/stdrt",
     # ── Host suites for the IPC subsystem (audit 2026-08-22) ──
     # Same pattern as cap-tests: the whole `azos_ipc` crate does not build
@@ -313,7 +313,7 @@ exclude = [
     # Run with:  cd tests/host/stdrt-tests && cargo test --release
     "tests/host/stdrt-tests",
     # sdktest: the SDK's own test, a std program for *-unknown-azos; built by
-    # `make sdk` (tools/sdk_cargo.py), never by the root workspace.
+    # `make sdk` (tools/build/sdk_cargo.py), never by the root workspace.
     "tests/sdk/sdktest",
     # energy-tests — crates/core/energy, the SCHED.TOML energy sections and
     # the DTB energy tables. Run with:  cd tests/host/energy-tests && cargo test --release
@@ -334,7 +334,7 @@ exclude = [
     "userspace/services/audiod",
     "tests/host/audiod-tests",
     # quic / rpcquic: QUIC in ring 3 for the RPC link (std crates, built through
-    # tools/sdk_cargo.py); quic-tests is the host suite.
+    # tools/build/sdk_cargo.py); quic-tests is the host suite.
     "userspace/lib/quic",
     "userspace/services/rpcquic",
     "tests/host/quic-tests",
@@ -475,7 +475,7 @@ members = [
     # the per-ISA crates (arch-riscv64, arch-aarch64).
     "crates/core/arch-riscv64",
     # aarch64 (baseline: Kconfig AARCH64_LEVEL). Compiles to near-nothing on
-    # riscv64; `tools/ci_check.sh` builds and tests it for aarch64 so it cannot
+    # riscv64; `tools/gate/ci_check.sh` builds and tests it for aarch64 so it cannot
     # rot unnoticed the way the parked copy did for a month.
     "crates/core/arch-aarch64",
     # S1/S6 — lock-free SPSC camera frame ring for zero-copy pipelines.

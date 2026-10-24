@@ -19,7 +19,7 @@ usb-volume-stale-fd-canary = []
 # Enabled through the kernel's `ktest` feature.
 ktest = []
 # Opt-in end-to-end proof of `/fat/CRASH.LOG` rotation
-# (`crates/fs/fs/src/crash_log.rs`). `tools/ci_check.sh`'s crash-log gate row is
+# (`crates/fs/fs/src/crash_log.rs`). `tools/gate/ci_check.sh`'s crash-log gate row is
 # the only caller — enabled via `--features azos_fs/crash-log-smoke`, not
 # through `azos_kernel`'s own `[features]` (this crate's file-ownership
 # boundary for this task does not extend to `kernel/Cargo.toml`). See the
@@ -35,7 +35,7 @@ fd-private-offset-canary = []
 # caller is a one-line hook in `kernel/src/main.rs`'s boot path (delivered
 # as a diff — outside this front's file ownership).
 fs-inode-probe = []
-# Gate rows `pstore: ...` (tools/ci_check.sh): `pstore_smoke_panic_holding_fs_lock`
+# Gate rows `pstore: ...` (tools/gate/ci_check.sh): `pstore_smoke_panic_holding_fs_lock`
 # in `lib.rs`. Enabled through the kernel's `pstore-smoke` feature.
 pstore-smoke = []
 # Wave 14 canary: `fat32_read_chain` reads every sector through the sector

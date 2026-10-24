@@ -157,7 +157,7 @@ Source: `crates/core/arch-api/src/isa.rs`, `crates/core/arch-api/src/spin.rs`, `
 
 ## Per-ISA layout
 
-`tools/arch_layout_lint.py` holds a required set of top-level modules for three directories. A module outside that set must sit under `ext/` (ISA-only code goes there). Where an ISA does not have a required module, or keeps an extra module outside `ext/`, the lint lists the exception with its reason; the tables below give the required set and then those exceptions.
+`tools/lint/arch_layout_lint.py` holds a required set of top-level modules for three directories. A module outside that set must sit under `ext/` (ISA-only code goes there). Where an ISA does not have a required module, or keeps an extra module outside `ext/`, the lint lists the exception with its reason; the tables below give the required set and then those exceptions.
 
 | Directory | Required modules |
 |---|---|
@@ -200,7 +200,7 @@ ISA-only modules otherwise sit in each ISA's `ext/`:
 
 Each ISA crate's `lib.rs` also re-exports the contract (`pub use azos_arch_api::{...}`), so a caller written against `azos_arch` sees the same names on every ISA. On x86_64 the hypervisor module is declared as `hv` at the crate root with `#[path = "ext/hv/mod.rs"]` and re-exported as `azos_arch::HvImpl`, because it builds on the crate's `mmu` module.
 
-Source: `crates/core/arch-*/src/lib.rs`, `crates/core/arch-*/src/ext/mod.rs`, `kernel/src/entry/*/ext/mod.rs`, `tools/arch_layout_lint.py`.
+Source: `crates/core/arch-*/src/lib.rs`, `crates/core/arch-*/src/ext/mod.rs`, `kernel/src/entry/*/ext/mod.rs`, `tools/lint/arch_layout_lint.py`.
 
 ## Generic trap layer
 
@@ -233,9 +233,9 @@ Three scripts under `tools/` keep the structure above from eroding. Each has a `
 
 | Script | What it checks |
 |---|---|
-| `tools/arch_cfg_lint.py` | Shared code must neither vanish on a new ISA nor reach past the facade. Two ratchets. |
-| `tools/arch_layout_lint.py` | The three ISAs expose the same module set (table above). |
-| `tools/trap_lint.py` | Dispatch logic stays in `kernel/src/trap/`, out of `kernel/src/entry/<isa>/`. |
+| `tools/lint/arch_cfg_lint.py` | Shared code must neither vanish on a new ISA nor reach past the facade. Two ratchets. |
+| `tools/lint/arch_layout_lint.py` | The three ISAs expose the same module set (table above). |
+| `tools/lint/trap_lint.py` | Dispatch logic stays in `kernel/src/trap/`, out of `kernel/src/entry/<isa>/`. |
 
 ### `arch_cfg_lint.py`
 
@@ -251,11 +251,11 @@ A `riscv64` / `aarch64` pair is not a complement: it vanishes on x86_64. `cfg_at
 
 **Part 2: facade bypass.** A facade reference is a path `azos_arch::<module>...` whose module is not present on all three ISA crates (`csr`, `sbi`, `rvv`, `sysregs`, `gic`, `mpidr`, `fp_state`, `fpu`, `hw`, `cbo` and so on), or `irq::<chip>` (`irq::plic`, `irq::gic`, `irq::apic`), or anything under `ext::`. The module sets are read by name from each arch crate's `lib.rs` and `irq/mod.rs`, so a rename inside an arch crate moves nothing. `use azos_arch::{..}` groups count one per leaf, and `use azos_arch::csr;` counts the import and each later use.
 
-**Ratchet.** `tools/arch_cfg_lint.baseline` lists per-file counts for each part (the `[facade]` section holds part 2). A file above its count, or a file not listed with any violation, fails. A file below its count passes and is reported. `--update-baseline` lowers the cfg counts and refuses to raise any; `--update` rewrites the facade section and may raise a count, as the explicit step after a rename.
+**Ratchet.** `tools/lint/arch_cfg_lint.baseline` lists per-file counts for each part (the `[facade]` section holds part 2). A file above its count, or a file not listed with any violation, fails. A file below its count passes and is reported. `--update-baseline` lowers the cfg counts and refuses to raise any; `--update` rewrites the facade section and may raise a count, as the explicit step after a rename.
 
 | Invocation | Effect |
 |---|---|
-| `python3 tools/arch_cfg_lint.py` | Both ratchets |
+| `python3 tools/lint/arch_cfg_lint.py` | Both ratchets |
 | `... --facade` | Facade ratchet only |
 | `... --list [PATH]`, `--list-facade [PATH]` | Every violation or facade reference, with line |
 | `... --update-baseline`, `--update` | Rewrite the cfg part (lower only) or the facade part |
@@ -284,4 +284,4 @@ Fails when:
 
 Comments and string literals are not scanned. A line meant to break a rule anyway carries `trap-lint: ok` in a trailing comment.
 
-Source: `tools/arch_cfg_lint.py`, `tools/arch_cfg_lint.baseline`, `tools/arch_layout_lint.py`, `tools/trap_lint.py`, `tools/ci_check.sh`.
+Source: `tools/lint/arch_cfg_lint.py`, `tools/lint/arch_cfg_lint.baseline`, `tools/lint/arch_layout_lint.py`, `tools/lint/trap_lint.py`, `tools/gate/ci_check.sh`.

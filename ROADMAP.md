@@ -24,6 +24,6 @@ covers and leaves out.
 Dependencies come first, then measured value. A step is finished when it has:
 
 - a test that fails when the property is broken, or a benchmark path compared
-  against Linux on the same harness (`tools/vsbench_compare.sh`),
+  against Linux on the same harness (`tools/bench/vsbench_compare.sh`),
 - a canary that shows the check can fail,
 - a pass of the full check, `make ci`.

@@ -309,7 +309,7 @@ pub extern "C" fn _start() -> ! {
         sys::exit(1);
     }
     sys::println(b"[inadrv] registered DRV_KIND_POWER_MON via Cap<DriverRegistry>, serving");
-    // The chip-logic source this host runs (`tools/chip_source_check.py`).
+    // The chip-logic source this host runs (`tools/lint/chip_source_check.py`).
     sys::print(b"[inadrv] ");
     sys::println(&SOURCE_MARKER);
 

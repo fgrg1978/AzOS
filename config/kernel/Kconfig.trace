@@ -83,7 +83,7 @@ config LAT_TRACE
 
       Off (default): the hooks, the tables and the `latency/` nodes are not
       compiled at all. Maps to the kernel cargo feature `lat-trace`
-      (tools/kconfig_to_cargo.py). On: every interrupt mask/unmask through
+      (tools/build/kconfig_to_cargo.py). On: every interrupt mask/unmask through
       the arch-api `Interrupts` trait, every preemption-counter 0<->1
       transition and every trap entry/exit reads the counter once.
 

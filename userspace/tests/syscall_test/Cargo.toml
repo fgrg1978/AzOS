@@ -11,7 +11,7 @@ name = "syscall_test_aarch64"
 path = "src/main.rs"
 
 [dependencies]
-# The numbers come from the one definition (tools/ci_check.sh lints for
+# The numbers come from the one definition (tools/gate/ci_check.sh lints for
 # restated ones); azos_abi has no dependencies of its own.
 azos_abi = { path = "../../../crates/core/abi" }
 
@@ -23,6 +23,6 @@ panic = "abort"
 [workspace]
 
 # The FAT32 image(s) this crate builds and their board-volume defaults
-# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+# (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
 images = ["SYSTEST.ELF"]

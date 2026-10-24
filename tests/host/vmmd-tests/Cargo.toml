@@ -10,7 +10,7 @@ description = "Host-side tests for the virtual-machine monitor's device models (
 
 [features]
 # Canaries: each removes one check of the monitor, and exactly its tests must
-# fail (tools/ci_check.sh, row vmmd-tests).
+# fail (tools/gate/ci_check.sh, row vmmd-tests).
 canary-vq-no-bounds = []
 canary-blk-no-capacity-check = []
 canary-blk-ro-ignored = []

@@ -8,12 +8,12 @@ strong as its last column: the gate runs the Kani harnesses (see
 Each row carries two stable names, `INV-n` and a requirement tag `REQ-nnn`.
 The code carries the tag: a `// REQ-nnn` comment line above each item a row
 names as its enforcer and above each test or harness it names as its check.
-`tools/req_trace.py` (gate tier n0) fails when the ledger and the code
-disagree, and `python3 tools/req_trace.py --csv` prints the trace for an
+`tools/lint/req_trace.py` (gate tier n0) fails when the ledger and the code
+disagree, and `python3 tools/lint/req_trace.py --csv` prints the trace for an
 auditor.
 
-Source: the files named in each row; `formal/README.md`; `tools/ci_check.sh`;
-`tools/req_trace.py`.
+Source: the files named in each row; `formal/README.md`; `tools/gate/ci_check.sh`;
+`tools/lint/req_trace.py`.
 
 ## Capabilities
 
@@ -86,4 +86,4 @@ Source: `formal/README.md`.
 4. Add the row in the same change as the code, test or proof.
 5. Give the row a `REQ-nnn` tag in its ID cell (`INV-20 (REQ-020)`) and put
    `// REQ-nnn` above the enforcing item and above each named test; run
-   `python3 tools/req_trace.py`.
+   `python3 tools/lint/req_trace.py`.

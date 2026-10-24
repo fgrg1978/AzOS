@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The Rust std port layer of the native SDK (*-unknown-azos): what library/std/src/sys/*/azos.rs calls. Traps, handles, the vDSO clock, threads over thread_create, futexes, the hardened allocator, the console and the startup block, with no errno and no POSIX. no_std, zero dependencies beyond azos_abi and azos_ualloc's engine; linked into std through the rustc-dep-of-std feature (tools/sdk_std.py), never used by a program directly."
+description = "The Rust std port layer of the native SDK (*-unknown-azos): what library/std/src/sys/*/azos.rs calls. Traps, handles, the vDSO clock, threads over thread_create, futexes, the hardened allocator, the console and the startup block, with no errno and no POSIX. no_std, zero dependencies beyond azos_abi and azos_ualloc's engine; linked into std through the rustc-dep-of-std feature (tools/build/sdk_std.py), never used by a program directly."
 
 [dependencies]
 azos_abi = { path = "../abi" }

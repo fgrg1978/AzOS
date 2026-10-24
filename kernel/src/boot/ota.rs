@@ -297,7 +297,7 @@ pub(crate) fn boot_validate_and_verify_slots() {
             // the board. Before the fail-closed halt, try the one thing
             // that can still recover it unattended: point the NEXT boot at
             // the immutable recovery slot and reset, so U-Boot's
-            // `active_slot = r` branch (tools/boot.cmd:32) loads
+            // `active_slot = r` branch (tools/image/boot.cmd:32) loads
             // KERN_R.BIN.
             //
             // The halt below is NOT removed — it is what happens when the

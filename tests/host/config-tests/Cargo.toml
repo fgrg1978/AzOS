@@ -10,7 +10,7 @@ description = "Host-side tests for azos_config (INI parser + getters/setters). T
 
 [dependencies]
 azos_config = { path = "../../../crates/core/config" }
-# W2-B5: signed_tests.rs proves `tools/gen_config_sig.py`'s output verifies
+# W2-B5: signed_tests.rs proves `tools/sign/gen_config_sig.py`'s output verifies
 # against the same `TRUSTED_PUBKEY` CAPS.TOML/SCHED.TOML use.
 # `azos_config` itself takes no dependency on this crate — see
 # `crates/core/config/src/signed.rs`'s module doc for why.

@@ -47,7 +47,7 @@ endchoice
 # ---------------------------------------------------------------------------
 # 1. A BASELINE level per ISA (RISCV64_LEVEL, AARCH64_LEVEL, X86_64_LEVEL):
 #    the only thing codegen assumes for the whole kernel and its user
-#    images (tools/kconfig_to_cargo.py --rustflags / --user-rustflags), and
+#    images (tools/build/kconfig_to_cargo.py --rustflags / --user-rustflags), and
 #    checked at boot: a CPU below it is refused with a message.
 # 2. Every OPTIONAL extension is a three-way choice:
 #      n        never used, even when the CPU has it (its path is compiled
@@ -185,7 +185,7 @@ endchoice
 # aarch64: VMSAv8-64 has three translation granules and the whole system
 # (kernel and every user image) uses the one chosen here. It reaches the
 # build twice and the kernel refuses to compile if the two disagree: as the
-# cargo feature `page-16k` / `page-64k` (tools/kconfig_to_cargo.py emits it)
+# cargo feature `page-16k` / `page-64k` (tools/build/kconfig_to_cargo.py emits it)
 # that sets azos_arch_api::PAGE_SIZE, and as azos_limits::PAGE_SHIFT
 # from this file. User images must be linked for the same granule
 # (`make AARCH64_PAGE_SIZE=16384 ...`, see the Makefile).

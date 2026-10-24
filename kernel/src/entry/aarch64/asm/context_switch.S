@@ -23,7 +23,7 @@
 // task context. The kernel is built for `aarch64-unknown-none-softfloat`
 // ("the Linux way"), so no kernel code ever holds a value in d8-d15 across
 // a call — there is nothing of the kernel's own to preserve, and
-// `tools/aarch64_fp_free_check.sh` proves it on the linked ELF. The one FP
+// `tools/lint/aarch64_fp_free_check.sh` proves it on the linked ELF. The one FP
 // thing this file does is the lazy-FP block at the top of `context_switch`:
 // the outgoing task's USER FP state, saved into its per-task area
 // (`kernel/src/entry/aarch64/fp.rs`) only if it is live on this hart.

@@ -10,7 +10,7 @@
 //! network of the behavior loop's bundle (`BEHAVIOR.MBL`), so the test says,
 //! before the first call, whether the engine this image runs it on agrees with
 //! the reference outputs. The lines keep the `[GGUF]` tag the gate rows
-//! (`tools/ci_check.sh`) read; the broker's own lines are `[infsrv]`.
+//! (`tools/gate/ci_check.sh`) read; the broker's own lines are `[infsrv]`.
 
 use crate::out::{read_file, Line};
 use crate::volume::{POLICY_PATH, POLICY_SIG_PATH};

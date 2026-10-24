@@ -20,7 +20,7 @@
 e1000e           pci:8086:10d3   if=DRV_E1000E
 # The PCH LAN generations (I217, I218, I219) from the Linux e1000e PCI table.
 # NOT checked against the pinned Linux tree: its sparse checkout
-# (tools/third_party_fetch.sh linux) does not carry drivers/net/ethernet/intel/e1000e.
+# (tools/build/third_party_fetch.sh linux) does not carry drivers/net/ethernet/intel/e1000e.
 # Verify each id against e1000_pci_tbl before a board relies on it.
 e1000e           pci:8086:153a   if=DRV_E1000E
 e1000e           pci:8086:153b   if=DRV_E1000E
@@ -46,7 +46,7 @@ e1000e           pci:8086:15e3   if=DRV_E1000E
 
 # Intel igc (crates/drivers/net/src/igc.rs). Vendor 8086. The I220/I221/I225/
 # I226 ids are the IGC_DEV_ID_* of the Linux igc_hw.h; the pinned checkout
-# (tools/third_party_fetch.sh linux) carries drivers/net/ethernet/intel/igc and igb, and
+# (tools/build/third_party_fetch.sh linux) carries drivers/net/ethernet/intel/igc and igb, and
 # the igc.rs host test device_ids_are_igc_hw_h pins each one by its Linux name.
 # The blank-NVM ids (125f, 15fd) are left out: a part with no station address
 # would only be refused.

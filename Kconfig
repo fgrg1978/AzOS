@@ -6,7 +6,7 @@
 # config/{axes,arch,kernel,subsys,domains,limits}/, one topic per file.
 # Run `make menuconfig` to edit interactively.
 # Run `make defconfig-<name>` to load a defconfig (config/defconfigs/, assembled
-# from config/fragments/ by tools/gen_defconfigs.py).
+# from config/fragments/ by tools/build/gen_defconfigs.py).
 #
 # GENERATED OUTPUT: .config (gitignored)
 # SOURCE OF TRUTH:  the Kconfig topic files under config/

@@ -6,13 +6,13 @@
 // twice: in ring 3 and in the kernel. Its build script hashes its own `src/`
 // and generates `SOURCE_MARKER`, the bytes `AZOS-CHIP-SRC <name> <hex>`;
 // each host prints them at start, which keeps them in the binary, and
-// tools/chip_source_check.py requires every host binary to carry the marker
+// tools/lint/chip_source_check.py requires every host binary to carry the marker
 // of the source in the tree. A host that stops linking the crate (a copy of
 // the logic, a fork of it) carries no marker, or a stale one, and fails.
 //
 // FNV-1a, 64 bit, over every regular file under `src/` in byte order of the
 // path relative to `src/` (`/`-separated): the path, a 0 byte, the contents,
-// a 0 byte. tools/chip_source_check.py computes the same value.
+// a 0 byte. tools/lint/chip_source_check.py computes the same value.
 
 fn chip_source_fingerprint(name: &str) {
     use std::path::{Path, PathBuf};

@@ -38,7 +38,7 @@ starts at `SPLIT`; everything else is `NONE`.
 | `HV` | Derived: the hypervisor core is built (kernel feature `hv`). |
 | `HV_REQUIRE` | Refuse to boot when the CPU cannot host the guests. Default on for `STATIC`; otherwise the boot prints why and goes on without guests. |
 | `HV_MAX_VCPUS` | The vCPU pool, 1 to 64 over all guests (default 8, 4 on embedded); 32 bytes of RAM per vCPU, and on aarch64 about 3 KiB more of static RAM per vCPU (the world-switch block and the list-register queue). The built-in row of `VMMD.ELF` is granted an endpoint for each of the first 16. |
-| `HV_EXAMPLE_GUEST`, `HV_EXAMPLE_GUEST_MEM_MIB` | The built-in topology declares one `[guest.azos]` row (one vCPU, 1 to 32 MiB, default 24; `virtio-console`, `virtio-blk`, `virtio-net`; envelope `cautious`), and `VMMD.ELF`'s row budgets its frames. Default `n`; only the `qemu-hv-guest` and `qemu-aarch64-hv-guest` defconfigs set it. `make azos-guest` (`tools/run_guest.sh`) builds that host with a volume carrying `/fat/VM/DISK.IMG` and a flat image `/fat/VM/GUEST.BIN`; the monitor loads ELF64 images, and the one it asks for at start-up is `/fat/VM/KERNEL.ELF` (below). |
+| `HV_EXAMPLE_GUEST`, `HV_EXAMPLE_GUEST_MEM_MIB` | The built-in topology declares one `[guest.azos]` row (one vCPU, 1 to 32 MiB, default 24; `virtio-console`, `virtio-blk`, `virtio-net`; envelope `cautious`), and `VMMD.ELF`'s row budgets its frames. Default `n`; only the `qemu-hv-guest` and `qemu-aarch64-hv-guest` defconfigs set it. `make azos-guest` (`tools/dev/run_guest.sh`) builds that host with a volume carrying `/fat/VM/DISK.IMG` and a flat image `/fat/VM/GUEST.BIN`; the monitor loads ELF64 images, and the one it asks for at start-up is `/fat/VM/KERNEL.ELF` (below). |
 | `RV_H`, `X86_SVM`, `X86_VMX` | The CPU extension, each `n` / `probe` / `require` (see [config.md](config.md)). On aarch64 the boot trampoline keeps EL2 when it was entered there. |
 | `TOPOLOGY_MAX_GUESTS`, `TOPOLOGY_GUEST_DEVICES` | Guest rows and device entries per row the topology holds (`config/subsys/Kconfig.topology`). |
 | `MAX_MEMOBJS` | A guest's RAM is memory-object frames, so the rows' `mem_mib` add up to at most half the table of memory objects (`config/limits/Kconfig.limits`). |
@@ -48,7 +48,7 @@ boot line, never a boot failure (`HV_REQUIRE` refuses before that). The `qemu-hv
 `qemu-x86_64-hv` defconfigs set `HOSTED`, `qemu-aarch64-hv` sets `SPLIT`, each with
 `MAX_MEMOBJS=256`; the `qemu-hv-guest` and `qemu-aarch64-hv-guest` defconfigs add the example
 guest. QEMU needs the extension turned
-on (`-cpu rv64,h=true`, `virtualization=on`, `-cpu max,svm=on`; `tools/qemu.sh` lists the
+on (`-cpu rv64,h=true`, `virtualization=on`, `-cpu max,svm=on`; `tools/dev/qemu.sh` lists the
 modes). Build commands are in [building.md](building.md).
 
 ## The hypervisor core

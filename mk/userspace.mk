@@ -49,7 +49,7 @@ $(LXTEST_KO_X86_64): $(LXMOD_SRC)
 # pinned tree inside a pinned container (owner decision, round 49: podman on
 # this Mac). `make lx-kbuild-image` builds the image (the one step that uses
 # the network: the base pull and apt) and records it in
-# tools/lx_kbuild/IMAGE; `make lx-kbuild` runs Kbuild for both ISAs with no
+# tools/build/lx_kbuild/IMAGE; `make lx-kbuild` runs Kbuild for both ISAs with no
 # network and the tree mounted read-only, writes $(LX_KBUILD_DIR), and runs
 # the licence lint over the .ko set. Without podman, a running podman
 # machine, the image or a fetched tree it prints `SKIP: <reason>` and the
@@ -71,29 +71,29 @@ LX_XZTEST := $(wildcard $(LX_KBUILD_DIR)/XZTEST.XZ)
 
 .PHONY: lx-kbuild-image lx-kbuild lx-kbuild-repro lx-compare
 # AzOS vs Linux, same QEMU, same .ko, instruction counts (-icount): see
-# tools/lx_kbuild/compare.sh. Rebuilds the kernels with bench-minimal.
+# tools/build/lx_kbuild/compare.sh. Rebuilds the kernels with bench-minimal.
 lx-compare:
-	@bash tools/lx_kbuild/compare.sh
+	@bash tools/build/lx_kbuild/compare.sh
 lx-kbuild-image:
-	tools/lx_kbuild/run.sh image
+	tools/build/lx_kbuild/run.sh image
 
 lx-kbuild:
-	@rc=0; tools/lx_kbuild/run.sh build $(LX_KBUILD_DIR) || rc=$$?; \
+	@rc=0; tools/build/lx_kbuild/run.sh build $(LX_KBUILD_DIR) || rc=$$?; \
 	if [ $$rc -eq 3 ]; then exit 0; elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
-	python3 tools/lx_license_lint.py --ko $(LX_KBUILD_DIR)
+	python3 tools/lint/lx_license_lint.py --ko $(LX_KBUILD_DIR)
 
 lx-kbuild-repro:
-	@rc=0; tools/lx_kbuild/run.sh build $(OUT_BUILD)/lx/kbuild-repro > /dev/null || rc=$$?; \
-	if [ $$rc -eq 3 ]; then tools/lx_kbuild/run.sh check; exit 0; elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
+	@rc=0; tools/build/lx_kbuild/run.sh build $(OUT_BUILD)/lx/kbuild-repro > /dev/null || rc=$$?; \
+	if [ $$rc -eq 3 ]; then tools/build/lx_kbuild/run.sh check; exit 0; elif [ $$rc -ne 0 ]; then exit $$rc; fi; \
 	diff $(LX_KBUILD_DIR)/SHA256SUMS $(OUT_BUILD)/lx/kbuild-repro/SHA256SUMS && \
 	echo "lx-kbuild-repro: two clean builds, identical .ko and fixture hashes"
 
-$(MODULE_HASHES): tools/module_hashes.py $(LXTEST_KO) $(LX_KO_RV)
-	python3 tools/module_hashes.py $@ LXTEST.KO=$(LXTEST_KO) --skip-missing \
+$(MODULE_HASHES): tools/build/module_hashes.py $(LXTEST_KO) $(LX_KO_RV)
+	python3 tools/build/module_hashes.py $@ LXTEST.KO=$(LXTEST_KO) --skip-missing \
 		LXBASE.KO=$(LX_KBUILD_DIR)/riscv64/lxbase.ko XZ_DEC.KO=$(LX_KBUILD_DIR)/riscv64/xz_dec.ko
 
-$(MODULE_HASHES_AARCH64): tools/module_hashes.py $(LXTEST_KO_AARCH64) $(LX_KO_A64)
-	python3 tools/module_hashes.py $@ LXTEST.KO=$(LXTEST_KO_AARCH64) --skip-missing \
+$(MODULE_HASHES_AARCH64): tools/build/module_hashes.py $(LXTEST_KO_AARCH64) $(LX_KO_A64)
+	python3 tools/build/module_hashes.py $@ LXTEST.KO=$(LXTEST_KO_AARCH64) --skip-missing \
 		LXBASE.KO=$(LX_KBUILD_DIR)/aarch64/lxbase.ko XZ_DEC.KO=$(LX_KBUILD_DIR)/aarch64/xz_dec.ko
 
 .PHONY: lx-modules
@@ -190,7 +190,7 @@ $(MLSRV_ELF): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP)
 # two builds: the QEMU one with `dev-key`, the board one with the named key
 # (`build/board/pkgd.elf`, hashed into the board's image table). It is a std
 # program (it fetches over TLS, userspace/lib/tls): built like the relay of the
-# QUIC link below, by tools/sdk_cargo.py on the vendored tree, in the same target
+# QUIC link below, by tools/build/sdk_cargo.py on the vendored tree, in the same target
 # directory as the probe. The key choice reaches build.rs through the
 # environment as for the ML service: the QEMU build must not see
 # TOPOLOGY_PUBKEY_PATH, the board build exactly the named key.
@@ -201,14 +201,14 @@ PKGD_DEPS := $(wildcard $(PKGD_DIR)/src/*.rs) $(PKGD_DIR)/Cargo.toml $(PKGD_DIR)
 PKGD_CARGO = --vendored -- build --release --manifest-path $(PKGD_DIR)/Cargo.toml
 $(PKGD_ELF): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(RV_USER_KCONFIG)
 	@mkdir -p $(OUT_BUILD)
-	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
+	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(PKGD_ELF_BOARD): $(PKGD_DEPS) $(BOARD_KEY_STAMP) $(RV_USER_KCONFIG)
 	$(call require_board_key,BOARD-PKGD)
 	@mkdir -p $(BOARD_DIR)
-	env TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" $(PYTHON) tools/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO)
+	env TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" $(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/pkgd $@
 	$(BOARD_KEYCHECK) elf "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_pub.bin $@
 
@@ -226,9 +226,9 @@ $(MLSRV_ELF_BOARD): $(MLSRV_DEPS) $(BOARD_KEY_STAMP)
 # logic is a crate (crates/drivers/buzzer, crates/drivers/ina219) the
 # in-kernel placement compiles too, so its files are prerequisites of the
 # image, and the built ELF must carry that source's marker
-# (tools/chip_source_check.py, wave 12): a host that stopped linking the
+# (tools/lint/chip_source_check.py, wave 12): a host that stopped linking the
 # crate does not build.
-CHIP_SRC_COMMON := crates/drivers/chip_source.rs tools/chip_source_check.py
+CHIP_SRC_COMMON := crates/drivers/chip_source.rs tools/lint/chip_source_check.py
 INA219_CHIP_SRC := $(wildcard crates/drivers/ina219/src/*.rs) crates/drivers/ina219/Cargo.toml \
                    crates/drivers/ina219/build.rs $(CHIP_SRC_COMMON)
 BUZZER_CHIP_SRC := $(wildcard crates/drivers/buzzer/src/*.rs) crates/drivers/buzzer/Cargo.toml \
@@ -237,7 +237,7 @@ $(BUZZ_DRV_ELF): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DRV_DIR)/
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
 	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
-	python3 tools/chip_source_check.py buzzer $(BUZZ_DRV_BUILT)
+	python3 tools/lint/chip_source_check.py buzzer $(BUZZ_DRV_BUILT)
 	cp $(BUZZ_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -245,7 +245,7 @@ $(INA_DRV_ELF): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Car
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
 	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
-	python3 tools/chip_source_check.py ina219 $(INA_DRV_BUILT)
+	python3 tools/lint/chip_source_check.py ina219 $(INA_DRV_BUILT)
 	cp $(INA_DRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -468,7 +468,7 @@ $(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml \
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 # Extra vsbench cargo features (wave 15: its canaries, e.g.
-# `VSBENCH_FEATURES=switch-peer-canary`; tools/vsbench_compare.sh passes its
+# `VSBENCH_FEATURES=switch-peer-canary`; tools/bench/vsbench_compare.sh passes its
 # VSBENCH_BENCH_FEATURES here). The stamp holds the set the ELFs were built
 # with and changes only when the set does, so a canary ELF can never be
 # reused by a later default build.
@@ -528,7 +528,7 @@ LX_CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin -fno
 # `-z max-page-size` (same file offset, no padding), so no page is shared and
 # `.rodata` is not executable. `--no-rosegment`, used above 4 KiB before,
 # folded the headers and `.rodata` into the RX segment (the loader now
-# refuses that, Kconfig ELF_REFUSE_EXEC_HEADERS; tools/elf_page_perms.py).
+# refuses that, Kconfig ELF_REFUSE_EXEC_HEADERS; tools/lint/elf_page_perms.py).
 
 $(LXHELLO_ELF): $(LXHELLO_DIR)/lxhello.c
 	@mkdir -p $(OUT_BUILD)
@@ -566,9 +566,9 @@ $(LXHELLO_ELF_X86_64): $(LXHELLO_DIR)/lxhello_x86_64.c
 # CONFIG_USERSPACE_GPL and CONFIG_LINUX_ABI); never part of the base image,
 # never committed, never fetched by make. The source is the gitlink
 # third_party/busybox (.gitmodules: its upstream tag), checked out by
-# `tools/third_party_fetch.sh busybox`; each ISA builds from a copy of it
+# `tools/build/third_party_fetch.sh busybox`; each ISA builds from a copy of it
 # (the checkout stays pristine) under BUSYBOX_WORK (outside the repository),
-# with `zig cc` (musl and the Linux uapi headers bundled; tools/busybox_cc.sh),
+# with `zig cc` (musl and the Linux uapi headers bundled; tools/build/busybox_cc.sh),
 # host tools with the system clang, from allnoconfig plus
 # userspace/thirdparty/busybox.fragment, static. All three ISAs; riscv64 is
 # rv64gc/lp64d (the kernel keeps a Linux task's F/D state). The digests go to
@@ -611,11 +611,11 @@ busybox-check:
 	@[ -n "$(BUSYBOX_COMMIT)" ] || { echo "busybox: $(BUSYBOX_SRC) is not a gitlink"; exit 1; }
 	@[ -e $(BUSYBOX_SRC)/.git ] && [ "$$(git -C $(BUSYBOX_SRC) rev-parse HEAD)" = "$(BUSYBOX_COMMIT)" ] \
 	  && [ -z "$$(git -C $(BUSYBOX_SRC) status --porcelain --untracked-files=no)" ] || { \
-	  echo "busybox: $(BUSYBOX_SRC) is not a clean checkout of $(BUSYBOX_COMMIT): run tools/third_party_fetch.sh busybox (make never downloads)"; exit 1; }
+	  echo "busybox: $(BUSYBOX_SRC) is not a clean checkout of $(BUSYBOX_COMMIT): run tools/build/third_party_fetch.sh busybox (make never downloads)"; exit 1; }
 
 $(BUSYBOX_INPUTS_STAMP): FORCE
 	@mkdir -p $(BUSYBOX_WORK)
-	@{ echo '$(BUSYBOX_COMMIT)'; shasum -a 256 $(BUSYBOX_FRAGMENT) tools/busybox_cc.sh | cut -c1-64; } >$@.$$$$ \
+	@{ echo '$(BUSYBOX_COMMIT)'; shasum -a 256 $(BUSYBOX_FRAGMENT) tools/build/busybox_cc.sh | cut -c1-64; } >$@.$$$$ \
 	  && { cmp -s $@.$$$$ $@ && rm -f $@.$$$$ || mv -f $@.$$$$ $@; }
 
 # One ISA: busybox-one ISA=<riscv64|aarch64|x86_64>.
@@ -629,7 +629,7 @@ busybox-one:
 	  sed -i '' -e "/^# $$k is not set$$/d" -e "/^$$k=/d" .config; echo "$$l" >> .config; done
 	yes "" | $(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) oldconfig >/dev/null
 	BUSYBOX_ZIG=$(BUSYBOX_ZIG) BUSYBOX_ZIG_TARGET=$(ISA)-linux-musl \
-	  $(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) CC="$(CURDIR)/tools/busybox_cc.sh" \
+	  $(MAKE) -s -C $(BUSYBOX_WORK)/$(ISA)/src HOSTCC=$(BUSYBOX_HOSTCC) CC="$(CURDIR)/tools/build/busybox_cc.sh" \
 	  AR="$(BUSYBOX_ZIG) ar" STRIP=$(dir $(LX_CC))llvm-strip NM=$(dir $(LX_CC))llvm-nm \
 	  OBJCOPY=$(dir $(LX_CC))llvm-objcopy busybox
 	cp $(BUSYBOX_WORK)/$(ISA)/src/busybox $(BUSYBOX_WORK)/busybox-$(ISA).elf
@@ -699,18 +699,18 @@ lxthreads: $(LXTHR_ELF_RISCV64) $(LXTHR_ELF_AARCH64)
 # relibc is the porting layer for C code, not the native model: POSIX is a
 # personality here (userspace/lib/relibc-azos). `make relibc` builds the pinned
 # relibc (the gitlink third_party/relibc, checked out by
-# `tools/third_party_fetch.sh relibc`; make never downloads) with the patch and
+# `tools/build/third_party_fetch.sh relibc`; make never downloads) with the patch and
 # the `azos` platform module of userspace/lib/relibc-azos, then the C programs
 # of userspace/tests/relibc (every .c there) against it with `zig cc`, into
 # build/relibc/<isa>/. Kconfig RELIBC (config/axes/Kconfig.libc) decides it per ISA:
 # each ISA is built only when ITS configuration (RELIBC_KCONFIG_<isa>, the one
 # its userspace is built from) sets CONFIG_RELIBC=y. The codegen baseline of each
-# ISA is the one its userspace images use (Kconfig, tools/kconfig_to_cargo.py
+# ISA is the one its userspace images use (Kconfig, tools/build/kconfig_to_cargo.py
 # --user-rustflags). The ELFs are checked for the loader's page rules
-# (tools/elf_page_perms.py); they are not in an image or a topology yet: the
+# (tools/lint/elf_page_perms.py); they are not in an image or a topology yet: the
 # kernel runs an image only when a seccomp row binds its digest. The build is the
 # only compile check of the platform layer. Needs zig and cbindgen
-# (tools/relibc_build.sh).
+# (tools/build/relibc_build.sh).
 RELIBC_SRC   ?= $(CURDIR)/third_party/relibc
 RELIBC_ZIG   ?= $(BUSYBOX_ZIG)
 RELIBC_ISAS  := riscv64 aarch64 x86_64
@@ -718,21 +718,21 @@ RELIBC_PROGS := $(basename $(notdir $(wildcard userspace/tests/relibc/*.c)))
 RELIBC_KCONFIG_riscv64 = $(RV_USER_KCONFIG)
 RELIBC_KCONFIG_aarch64 = $(AARCH64_USER_KCONFIG)
 RELIBC_KCONFIG_x86_64  = $(X86_64_KCONFIG)
-RELIBC_TOML_riscv64 = $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
+RELIBC_TOML_riscv64 = $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
 RELIBC_TOML_aarch64 = $(AARCH64_USER_ISA)
-RELIBC_TOML_x86_64  = $(if $(wildcard $(X86_64_KCONFIG)),$(shell python3 tools/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG)))
+RELIBC_TOML_x86_64  = $(if $(wildcard $(X86_64_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG)))
 # An aarch64 image of another granule (AARCH64_PAGE_SIZE) goes to its own directory.
 RELIBC_OUT_riscv64 := $(OUT_BUILD)/relibc
 RELIBC_OUT_x86_64  := $(OUT_BUILD)/relibc
 RELIBC_OUT_aarch64 := $(OUT_BUILD)/relibc$(AARCH64_PG_SUFFIX)
-RELIBC_RUN = RELIBC_SRC='$(RELIBC_SRC)' RELIBC_ZIG='$(RELIBC_ZIG)' RELIBC_OUT='$(RELIBC_OUT_$(ISA))' bash tools/relibc_build.sh
+RELIBC_RUN = RELIBC_SRC='$(RELIBC_SRC)' RELIBC_ZIG='$(RELIBC_ZIG)' RELIBC_OUT='$(RELIBC_OUT_$(ISA))' bash tools/build/relibc_build.sh
 
 .PHONY: relibc relibc-check relibc-one
 relibc-check:
 	@command -v $(RELIBC_ZIG) >/dev/null 2>&1 || { \
 	  echo "relibc: no zig ($(RELIBC_ZIG)): install zig (Homebrew: zig) or set LX_ZIG=<path>"; exit 1; }
 	@[ -e '$(RELIBC_SRC)/.git' ] || { \
-	  echo "relibc: no checkout at $(RELIBC_SRC): run tools/third_party_fetch.sh relibc (make never downloads)"; exit 1; }
+	  echo "relibc: no checkout at $(RELIBC_SRC): run tools/build/third_party_fetch.sh relibc (make never downloads)"; exit 1; }
 
 # One ISA: relibc-one ISA=<riscv64|aarch64|x86_64>, when its configuration asks.
 relibc-one:
@@ -748,7 +748,7 @@ relibc-one:
 	  for p in $(RELIBC_PROGS); do \
 	    $(RELIBC_RUN) cc $(ISA) $(RELIBC_OUT_$(ISA))/$(ISA)/$$p.elf userspace/tests/relibc/$$p.c || exit 1; \
 	  done && \
-	  python3 tools/elf_page_perms.py $(if $(filter aarch64,$(ISA)),--page $(AARCH64_PAGE_SIZE)) $(foreach p,$(RELIBC_PROGS),$(RELIBC_OUT_$(ISA))/$(ISA)/$(p).elf) && \
+	  python3 tools/lint/elf_page_perms.py $(if $(filter aarch64,$(ISA)),--page $(AARCH64_PAGE_SIZE)) $(foreach p,$(RELIBC_PROGS),$(RELIBC_OUT_$(ISA))/$(ISA)/$(p).elf) && \
 	  echo "[RELIBC] $(ISA): $(foreach p,$(RELIBC_PROGS),$(RELIBC_OUT_$(ISA))/$(ISA)/$(p).elf)"
 
 # Every ISA whose configuration sets CONFIG_RELIBC; none is an error.
@@ -780,21 +780,21 @@ busybox-source-offer:
 	@echo "[BUSYBOX] wrote $(BUSYBOX_OFFER)"
 
 # The two hand-assembled riscv64 tests are linked by rust-lld with the flags
-# the target spec gives every native image (tools/user_link_args.py): no
+# the target spec gives every native image (tools/build/user_link_args.py): no
 # linker script, the same layout and entry (`_azos_entry`).
-USER_LD_RISCV64 = $(LX_LLD) -flavor gnu $(shell python3 tools/user_link_args.py riscv64)
-$(HELLO_ELF): $(HELLO_DIR)/hello.S $(USER_SPECS)/$(TARGET_RISCV64_USER).json tools/user_link_args.py tools/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
+USER_LD_RISCV64 = $(LX_LLD) -flavor gnu $(shell python3 tools/build/user_link_args.py riscv64)
+$(HELLO_ELF): $(HELLO_DIR)/hello.S $(USER_SPECS)/$(TARGET_RISCV64_USER).json tools/build/user_link_args.py tools/build/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
 	@mkdir -p $(OUT_BUILD)
-	$(RISCV_AS) -march=rv64imac -mabi=lp64 $(shell python3 tools/syscall_defs.py SYS_EXIT SYS_INVOKE SYS_CAP_INFO INVOKE_CONSOLE_WRITE CONSOLE_TYPE) -o $(OUT_BUILD)/hello.o $(HELLO_DIR)/hello.S
+	$(RISCV_AS) -march=rv64imac -mabi=lp64 $(shell python3 tools/build/syscall_defs.py SYS_EXIT SYS_INVOKE SYS_CAP_INFO INVOKE_CONSOLE_WRITE CONSOLE_TYPE) -o $(OUT_BUILD)/hello.o $(HELLO_DIR)/hello.S
 	$(USER_LD_RISCV64) -o $@ $(OUT_BUILD)/hello.o
 	@echo "[USPACE] Built $@"
 
 # Build the syscall test user-space binary (Phase G3).
 syscall-test: $(SYSTEST_ELF)
 
-$(SYSTEST_ELF): $(SYSTEST_DIR)/test.S $(USER_SPECS)/$(TARGET_RISCV64_USER).json tools/user_link_args.py tools/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
+$(SYSTEST_ELF): $(SYSTEST_DIR)/test.S $(USER_SPECS)/$(TARGET_RISCV64_USER).json tools/build/user_link_args.py tools/build/syscall_defs.py crates/core/abi/src/syscall_nr.rs crates/core/abi/src/invoke.rs
 	@mkdir -p $(OUT_BUILD)
-	$(RISCV_AS) -march=rv64imac -mabi=lp64 $(shell python3 tools/syscall_defs.py SYS_EXIT SYS_GETPID SYS_INVOKE SYS_CAP_INFO SYS_MO_MAP INVOKE_CONSOLE_WRITE CONSOLE_TYPE) -o $(OUT_BUILD)/syscall_test.o $(SYSTEST_DIR)/test.S
+	$(RISCV_AS) -march=rv64imac -mabi=lp64 $(shell python3 tools/build/syscall_defs.py SYS_EXIT SYS_GETPID SYS_INVOKE SYS_CAP_INFO SYS_MO_MAP INVOKE_CONSOLE_WRITE CONSOLE_TYPE) -o $(OUT_BUILD)/syscall_test.o $(SYSTEST_DIR)/test.S
 	$(USER_LD_RISCV64) -o $@ $(OUT_BUILD)/syscall_test.o
 	@echo "[USPACE] Built $@"
 
@@ -849,7 +849,7 @@ $(BUZZ_DRV_ELF_AARCH64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_D
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
 	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
-	python3 tools/chip_source_check.py buzzer $(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/buzz_drv
+	python3 tools/lint/chip_source_check.py buzzer $(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/buzz_drv
 	cp $(OUT_TGT)/$(BUZZ_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/buzz_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -857,7 +857,7 @@ $(INA_DRV_ELF_AARCH64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
 	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
-	python3 tools/chip_source_check.py ina219 $(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ina_drv
+	python3 tools/lint/chip_source_check.py ina219 $(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ina_drv
 	cp $(OUT_TGT)/$(INA_DRV_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ina_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -935,7 +935,7 @@ $(WHY_ELF_AARCH64): $(WHY_SRC) $(SDK_SRC) $(LIBSYS_SRC) $(AARCH64_USER_KCONFIG)
 
 $(PKGD_ELF_AARCH64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(AARCH64_USER_KCONFIG)
 	@mkdir -p $(AARCH64_DIR)
-	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
+	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
 	cp $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1204,14 +1204,14 @@ $(BUZZ_DRV_ELF_X86_64): $(BUZZ_DRV_DIR)/src/main.rs $(BUZZER_CHIP_SRC) $(BUZZ_DR
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(BUZZ_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(BUZZ_DRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
-	python3 tools/chip_source_check.py buzzer $(OUT_TGT)/$(BUZZ_DRV_DIR)/$(X86_64_UBUILT)/buzz_drv
+	python3 tools/lint/chip_source_check.py buzzer $(OUT_TGT)/$(BUZZ_DRV_DIR)/$(X86_64_UBUILT)/buzz_drv
 	cp $(OUT_TGT)/$(BUZZ_DRV_DIR)/$(X86_64_UBUILT)/buzz_drv $@
 
 $(INA_DRV_ELF_X86_64): $(INA_DRV_DIR)/src/main.rs $(INA219_CHIP_SRC) $(INA_DRV_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(INA_DRV_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(INA_DRV_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
-	python3 tools/chip_source_check.py ina219 $(OUT_TGT)/$(INA_DRV_DIR)/$(X86_64_UBUILT)/ina_drv
+	python3 tools/lint/chip_source_check.py ina219 $(OUT_TGT)/$(INA_DRV_DIR)/$(X86_64_UBUILT)/ina_drv
 	cp $(OUT_TGT)/$(INA_DRV_DIR)/$(X86_64_UBUILT)/ina_drv $@
 
 $(MLSRV_ELF_X86_64): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
@@ -1295,19 +1295,19 @@ TLSPROBE_CARGO    = --vendored -- build --release --manifest-path $(TLSPROBE_DIR
 
 $(TLSPROBE_ELF): $(TLSPROBE_SRC) $(RV_USER_KCONFIG)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
+	$(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/tls-probe $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(TLSPROBE_ELF_AARCH64): $(TLSPROBE_SRC) $(AARCH64_USER_KCONFIG)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(TLSPROBE_CARGO)
+	$(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(TLSPROBE_CARGO)
 	cp $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release/tls-probe $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(TLSPROBE_ELF_X86_64): $(TLSPROBE_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
+	$(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/tls-probe $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1323,19 +1323,19 @@ RPCQUIC_CARGO     = --vendored -- build --release --manifest-path $(RPCQUIC_DIR)
 
 $(RPCQUIC_ELF): $(RPCQUIC_SRC) $(RV_USER_KCONFIG)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
+	$(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(RPCQUIC_ELF_AARCH64): $(RPCQUIC_SRC) $(AARCH64_USER_KCONFIG)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(RPCQUIC_CARGO)
+	$(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(RPCQUIC_CARGO)
 	cp $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
+	$(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1359,9 +1359,9 @@ sdk: $(SDK_ELFS)
 # The std port layer type-checks alone on the three ISAs (the pinned toolchain's
 # stock library, no std), and its host tests run.
 sdk-check: $(RV_USER_KCONFIG) $(AARCH64_USER_KCONFIG) $(X86_64_KCONFIG)
-	$(PYTHON) tools/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --build-std core --target-dir $(SDK_TARGET_DIR)/check -- check --release --manifest-path crates/core/stdrt/Cargo.toml
-	$(PYTHON) tools/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --build-std core --target-dir $(SDK_TARGET_DIR)/check$(AARCH64_PG_SUFFIX) -- check --release --manifest-path crates/core/stdrt/Cargo.toml
-	$(PYTHON) tools/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --build-std core --target-dir $(SDK_TARGET_DIR)/check -- check --release --manifest-path crates/core/stdrt/Cargo.toml
+	$(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --build-std core --target-dir $(SDK_TARGET_DIR)/check -- check --release --manifest-path crates/core/stdrt/Cargo.toml
+	$(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --build-std core --target-dir $(SDK_TARGET_DIR)/check$(AARCH64_PG_SUFFIX) -- check --release --manifest-path crates/core/stdrt/Cargo.toml
+	$(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --build-std core --target-dir $(SDK_TARGET_DIR)/check -- check --release --manifest-path crates/core/stdrt/Cargo.toml
 	cd tests/host/stdrt-tests && CARGO_TARGET_DIR="$(OUT_TGT)/tests/host/stdrt-tests" $(CARGO) test --release
 	cd crates/core/libsys-macros && CARGO_TARGET_DIR="$(OUT_TGT)/crates/core/libsys-macros" $(CARGO) test --offline
 
@@ -1385,7 +1385,7 @@ $(SDKTEST_ELF_X86_64): $(SDKTEST_SRC) $(X86_64_KCONFIG)
 
 $(PKGD_ELF_X86_64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
-	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
+	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 

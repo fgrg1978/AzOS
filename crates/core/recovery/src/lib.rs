@@ -18,7 +18,7 @@
 //! * `reboot`, `shutdown`: the two exits, both checked against WRITE on the `power` endpoint.
 //!
 //! Marked **(c), not recovery**: `wcet` and `bench`, kept only because
-//! `tools/bench_e2e.sh` drives them over this console.
+//! `tools/bench/bench_e2e.sh` drives them over this console.
 //!
 //! Besides the console loop the crate holds two things ring 3 and the boot
 //! also use: the family bodies behind the typed syscalls (`families`) and the
@@ -842,7 +842,7 @@ fn cmd_ota_recv(port: u16) {
             // slice: `secure_boot_sig_path` returns `&[u8]`, which `{:?}`
             // renders as a list of decimal byte values — useless in a log.
             azos_drv_sys::kconsoleln!(
-                "[OTA] REFUSED: sign the image with tools/sign_ota.py --fw-version <N> \
+                "[OTA] REFUSED: sign the image with tools/sign/sign_ota.py --fw-version <N> \
                  and place the sidecar at /KERN_{}.SIG (FAT32 volume root) before retrying",
                 if target_slot == azos_ota::SLOT_A { 'A' } else { 'B' });
             let _ = azos_fs::fat32_unlink_path(target_path);
@@ -863,7 +863,7 @@ fn cmd_ota_recv(port: u16) {
              this TCP port can install code that runs as this robot's kernel.");
         azos_drv_sys::kconsoleln!(
             "[OTA] ##### Do NOT ship a build in this state: install a prod key \
-             (tools/gen_prod_key.py) and build --features secure-boot-enforced.");
+             (tools/sign/gen_prod_key.py) and build --features secure-boot-enforced.");
     } else {
         // U09-4 — the AUTHORITATIVE anti-rollback check. The one in the
         // accept loop above is advisory (it reads the unsigned wire
@@ -1356,7 +1356,7 @@ fn cmd_dhcp() {
 
 // ── (c) Not recovery: bench tooling ───────────────────────────────────────────
 //
-// `tools/bench_e2e.sh` types `wcet`, `wcet jitter` and `bench all 1000` here.
+// `tools/bench/bench_e2e.sh` types `wcet`, `wcet jitter` and `bench all 1000` here.
 // No gate row drives them; they stay until the bench harness has a ring-3 home.
 
 fn cmd_wcet(args: &[&[u8]; MAX_ARGS], argc: usize) {

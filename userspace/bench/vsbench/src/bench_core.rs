@@ -342,7 +342,7 @@ pub trait Abi {
 /// on several harts at once, [`Scale`]; run only when named, never by an
 /// empty filter).
 /// AzOS reads it from `/fat/VSBLANES.TXT`, Linux from its environment;
-/// `tools/vsbench_compare.sh` puts it in both.
+/// `tools/bench/vsbench_compare.sh` puts it in both.
 pub struct Lanes {
     buf: [u8; LANES_MAX],
     len: usize,
@@ -1141,8 +1141,8 @@ pub trait Net {
     fn egress_send(&self) -> bool { false }
 
     /// TCP bulk lanes (wave 15): the TCP port of the host peer
-    /// (`tools/vsbench_tcp_peer.py`), reached at [`TCP_HOST_IP`] through QEMU
-    /// user networking. Only the TCP pass of `tools/vsbench_compare.sh` boots
+    /// (`tools/bench/vsbench_tcp_peer.py`), reached at [`TCP_HOST_IP`] through QEMU
+    /// user networking. Only the TCP pass of `tools/bench/vsbench_compare.sh` boots
     /// with a NIC and hands one over (AzOS: `/fat/VSBTCP.TXT`, Linux:
     /// `VSBENCH_TCP_PORT=` in init's environment); `None` everywhere else,
     /// and then the lanes print why they have no number.

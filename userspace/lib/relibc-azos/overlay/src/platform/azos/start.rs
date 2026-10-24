@@ -46,7 +46,7 @@ unsafe extern "C" {
 }
 
 // The image's entry, `_azos_entry` (the one the target spec names; libsys's is
-// compiled out, `--cfg azos_std` in tools/relibc_build.sh). One per ISA: pass
+// compiled out, `--cfg azos_std` in tools/build/relibc_build.sh). One per ISA: pass
 // the startup block (the second argument register) as the first argument and
 // align the stack.
 #[cfg(target_arch = "riscv64")]

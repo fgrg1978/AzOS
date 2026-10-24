@@ -183,5 +183,5 @@ impl Buzzer for KernelBuzzer {
     fn startup(&mut self) -> Out<()> { call(|d| d.startup()) }
 }
 
-/// The chip-logic source this host runs (`tools/chip_source_check.py`).
+/// The chip-logic source this host runs (`tools/lint/chip_source_check.py`).
 pub const SOURCE_MARKER: &[u8] = &azos_buzzer::SOURCE_MARKER;

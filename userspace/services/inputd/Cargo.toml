@@ -25,7 +25,7 @@ panic = "abort"
 [workspace]
 
 # The FAT32 image(s) this crate builds and their board-volume defaults
-# (tools/gen_userspace_kconfig.py -> make config, "Userspace programs").
+# (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
 # On wherever the input drivers write the server's stream (Kconfig `INPUTD`,
 # the `INPUTD_ROW` of crates/core/topology/src/builder.rs), and started there.

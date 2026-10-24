@@ -269,7 +269,7 @@ pub extern "C" fn _start() -> ! {
         sys::exit(1);
     }
     sys::println(b"[buzzdrv] serving the Buzzer interface on endpoint.buzzer");
-    // The chip-logic source this host runs (`tools/chip_source_check.py`).
+    // The chip-logic source this host runs (`tools/lint/chip_source_check.py`).
     sys::print(b"[buzzdrv] ");
     sys::println(&SOURCE_MARKER);
 

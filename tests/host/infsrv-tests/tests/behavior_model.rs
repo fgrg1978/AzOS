@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The behavior loop's model, end to end through the service: the bundle the
-//! build ships as `BEHAVIOR.MBL` (`mk/images.mk`: `tools/make_gguf.py`'s policy
-//! wrapped by `tools/make_mbl.py` with the same name, tensor sizes and cost row),
+//! build ships as `BEHAVIOR.MBL` (`mk/images.mk`: `tools/image/make_gguf.py`'s policy
+//! wrapped by `tools/image/make_mbl.py` with the same name, tensor sizes and cost row),
 //! loaded by the real loader, called through the real dispatcher with the input
 //! the kernel's client builds, and answered with the class the policy gives.
 //!
@@ -25,7 +25,7 @@ const DEADLINE_NS: u64 = 10_000_000;
 /// The policy file as the build writes it.
 fn policy_gguf() -> Vec<u8> {
     let d = Tmp::new("policy");
-    let tool = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/make_gguf.py");
+    let tool = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/image/make_gguf.py");
     let out = Command::new("python3").arg(tool).env("AZOS_OUT", &d.0).output().expect("python3");
     assert!(out.status.success(), "make_gguf.py: {}", String::from_utf8_lossy(&out.stderr));
     std::fs::read(d.0.join("build").join("policy.gguf")).unwrap()
@@ -53,11 +53,11 @@ fn the_kernels_model_reference_is_the_bundles() {
         azos_devif::infer::model_ref(&d),
         pinned_ref(),
         "kernel/src/behavior_ml.rs BEHAVIOR_MODEL_REF is not the model_ref of the bundle the build ships \
-         (the build says the right value: tools/make_mbl.py --expect-ref-from)"
+         (the build says the right value: tools/image/make_mbl.py --expect-ref-from)"
     );
 }
 
-/// The three scenarios of `tools/make_gguf.py` and of the start-up self-test,
+/// The three scenarios of `tools/image/make_gguf.py` and of the start-up self-test,
 /// through the service, inside the loop's deadline: the class, the model that
 /// ran and a cost the broker admitted.
 #[test]

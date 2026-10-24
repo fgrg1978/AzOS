@@ -442,7 +442,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
     // below. The filter is on this task's slot, which `exec_user` keeps, and
     // every child the program forks copies it.
     // An audit-mode profile enforces nothing, and a filter already in force
-    // is not this image's: both are warnings. tools/vsbench_compare.sh reads
+    // is not this image's: both are warnings. tools/bench/vsbench_compare.sh reads
     // their absence on a warn-level kernel as "ran under its own profile".
     match azos_sched::seccomp::install_image_profile(profile) {
         0 if profile.audit => azos_drv_sys::kwarn!("[AUTORUN] seccomp: {} runs under the {} profile (audit mode)",

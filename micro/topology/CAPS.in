@@ -1,5 +1,5 @@
 # CAPS.TOML of the micro kernel's QEMU image, without its header:
-# tools/micro_topology.py adds `format` and the hash of SCHED.TOM and signs it.
+# tools/build/micro_topology.py adds `format` and the hash of SCHED.TOM and signs it.
 #
 # Rows are the tasks of the image (micro/src/tasks). A row whose name is an
 # image and which says `start = true` runs at boot; the others are started by

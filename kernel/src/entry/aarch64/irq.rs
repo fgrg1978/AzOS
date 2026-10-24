@@ -63,7 +63,7 @@ pub fn arm_periodic_timer(period_ticks: u64) {
 /// Returns `(v8.d[0], v8.d[1], final tick count)`. Pass = both lanes still
 /// equal `FP_PROBE_PATTERN`.
 #[cfg(feature = "boot-selftests")]
-#[inline(never)] // its own symbol: `tools/aarch64_fp_free_check.sh` allows it by name
+#[inline(never)] // its own symbol: `tools/lint/aarch64_fp_free_check.sh` allows it by name
 pub fn fp_survives_interrupt_probe(target_ticks: u64, deadline_cntvct: u64) -> (u64, u64, u64) {
     let tick_ptr = &TICK_COUNT as *const AtomicU64 as *const u64;
     let out_lo: u64;

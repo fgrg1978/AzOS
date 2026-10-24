@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The indirect-branch thunk of a kernel built with Kconfig
 //! `X86_MIT_SPECTRE_V2` = probe: `-Zretpoline -Zretpoline-external-thunk`
-//! (tools/kconfig_to_cargo.py) makes every indirect call and jump in the
+//! (tools/build/kconfig_to_cargo.py) makes every indirect call and jump in the
 //! kernel, `core` and `alloc` included, go through `__x86_indirect_thunk_r11`
 //! (the kernel code model reaches only through r11), which this file defines.
 //!

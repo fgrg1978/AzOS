@@ -22,7 +22,7 @@
 //! non-zero exit (a `cargo` failure: this crate did not build) as fatal,
 //! same as any other build step — no silent empty list.
 //!
-//! `tools/gen_board_manifest.py` consumes this binary's stdout.
+//! `tools/image/gen_board_manifest.py` consumes this binary's stdout.
 
 fn main() {
     let topo = azos_topology::default_minimal();

@@ -22,7 +22,7 @@ fn public() -> [u8; KEY_LEN] {
     signing_key().verifying_key().to_bytes()
 }
 
-/// An `RSIG` over `payload`, built the way `tools/sigalg.py` builds it.
+/// An `RSIG` over `payload`, built the way `tools/sign/sigalg.py` builds it.
 fn rsig_file(alg_id: u16, sig_len_field: u16, fw_version: u32, payload: &[u8]) -> Vec<u8> {
     let digest = sha256(payload);
     let msg = manifest_message(SigAlg::Ed25519, fw_version, payload.len() as u32, &digest);
@@ -246,7 +246,7 @@ fn a_dsig_is_exactly_its_header_and_the_signature_of_the_algorithm() {
 
 // ── The build tools write what the device reads ─────────────────────────────
 
-/// `tools/sigalg.py` signs the same bytes the Rust side builds (Ed25519 is
+/// `tools/sign/sigalg.py` signs the same bytes the Rust side builds (Ed25519 is
 /// deterministic), so the two halves of every format are checked against each
 /// other, not each against its own idea of the layout. Skipped, and says so,
 /// where python3 or its `cryptography` package is missing.
@@ -254,7 +254,7 @@ fn a_dsig_is_exactly_its_header_and_the_signature_of_the_algorithm() {
 fn tools_sigalg_py_writes_byte_for_byte_what_this_side_builds() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let script = "import os, sys, hashlib, tempfile, pathlib\n\
-        sys.path.insert(0, os.path.dirname(sys.argv[1] + '/tools/sigalg.py'))\n\
+        sys.path.insert(0, os.path.dirname(sys.argv[1] + '/tools/sign/sigalg.py'))\n\
         import sigalg\n\
         d = pathlib.Path(tempfile.mkdtemp()); k = d / 'k'; k.write_bytes(bytes([0x42]) * 32)\n\
         s = sigalg.signer(k)\n\

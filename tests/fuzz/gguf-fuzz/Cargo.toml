@@ -3,7 +3,7 @@ name = "azos_gguf_fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "cargo-fuzz (libFuzzer) targets for the GGUF model parser (userspace/lib/ml/src/gguf.rs) and the MLP that consumes it. Its own workspace; run with tools/fuzz.sh."
+description = "cargo-fuzz (libFuzzer) targets for the GGUF model parser (userspace/lib/ml/src/gguf.rs) and the MLP that consumes it. Its own workspace; run with tools/gate/fuzz.sh."
 
 [package.metadata]
 cargo-fuzz = true

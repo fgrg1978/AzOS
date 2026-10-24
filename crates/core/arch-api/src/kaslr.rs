@@ -6,7 +6,7 @@
 //!
 //! **What is randomized.** The kernel image's virtual base, on all three ISAs.
 //! The image is linked position-independent (a `-pie` link, kernel/build.rs;
-//! the code is PC-relative, `tools/kconfig_to_cargo.py` `kaslr_rustflags`), the boot
+//! the code is PC-relative, `tools/build/kconfig_to_cargo.py` `kaslr_rustflags`), the boot
 //! picks a random, block-aligned virtual base inside the ISA's image window,
 //! maps the image there and applies the image's relative relocations
 //! (`R_*_RELATIVE`) with the difference between that base and the link
@@ -55,7 +55,7 @@ pub const SEED_DT: u64 = 2;
 // with the retpoline thunks), `movq f@GOTPCREL(%rip), %r11; call
 // __x86_indirect_thunk_r11`: a load from a GOT slot that holds zero until the
 // walk this module implements has run. The build asks the linker to relax such
-// loads (`-Z relax-elf-relocations`, tools/kconfig_to_cargo.py); inlined into
+// loads (`-Z relax-elf-relocations`, tools/build/kconfig_to_cargo.py); inlined into
 // the arch crate's boot function, the arithmetic is code in one place and
 // calls nothing, whatever the linker does.
 

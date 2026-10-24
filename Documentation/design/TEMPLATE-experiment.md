@@ -78,7 +78,7 @@ comparable.
   instruction count under `-icount`) where the lane supports it, and report the
   spread otherwise.
 - For a claim against another system, the same work measured on that system
-  under the same conditions, for example with `tools/vsbench_compare.sh`, which
+  under the same conditions, for example with `tools/bench/vsbench_compare.sh`, which
   runs the same ring-3 workload on AzOS and on Linux under one QEMU and
   compares what was measured.
 

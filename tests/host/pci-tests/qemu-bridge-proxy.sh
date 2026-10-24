@@ -7,7 +7,7 @@
 # behind it whose BAR4 is a 64-bit prefetchable memory BAR. Real boards put
 # devices behind bridges and give them a 64-bit window; this boots the kernel
 # on exactly that. NOT run by any gate yet: wire it as a row of
-# tools/ci_check.sh in the testing week (`kbuild "qemu,pci"` first), or run
+# tools/gate/ci_check.sh in the testing week (`kbuild "qemu,pci"` first), or run
 # it by hand:
 #
 #   ISA=riscv64 KERNEL=<kernel ELF built with --features qemu,pci> \

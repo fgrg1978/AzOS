@@ -39,7 +39,7 @@ view of a saved frame, and shared by riscv64, aarch64 and x86_64.
 - Generics, not trait objects: a build has one frame type and one services
   type, so there is one instantiation of each function and no virtual call on
   the trap path.
-- `tools/trap_lint.py`, a row of `make check0` (`tools/gate_tier.sh n0`),
+- `tools/lint/trap_lint.py`, a row of `make check0` (`tools/gate/gate_tier.sh n0`),
   fails if dispatch logic (a syscall number, the page-fault policy, the fatal
   tail) reappears under `kernel/src/entry/`, or if one of the four policy files
   names a kernel crate.
@@ -81,7 +81,7 @@ handler marked it written.
 Source: `kernel/src/trap/mod.rs`, `kernel/src/trap/frame.rs`,
 `kernel/src/trap/syscall.rs`, `kernel/src/trap/kernel.rs`,
 `crates/core/syscall/src/dispatch.rs`, `crates/core/syscall/src/syscall_out.rs`,
-`tools/trap_lint.py`, `tests/host/trap-tests`.
+`tools/lint/trap_lint.py`, `tests/host/trap-tests`.
 
 ## 2. Per-ISA entry
 

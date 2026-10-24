@@ -13,7 +13,7 @@ What is vendored: everything in tls-probe's lockfile (rustls, the
 rustls-rustcrypto provider, quinn-proto and their dependencies) plus the
 dependencies of the toolchain's own std workspace (`cargo vendor --sync`),
 because -Zbuild-std resolves them through the same source replacement
-(tools/sdk_cargo.py --vendored). That second half moves with rust-toolchain.toml:
+(tools/build/sdk_cargo.py --vendored). That second half moves with rust-toolchain.toml:
 a toolchain bump is a `regen`.
 
 Pruning: cargo vendors every platform, and the windows-* crates are most of the
@@ -54,7 +54,7 @@ HEADER = """# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # crates.io publishes it (the Cargo.lock checksum), and `pruned` when the sources
 # were replaced by a compile_error! stub (userspace/lib/tls-probe/vendor.py).
 #
-# Written by `vendor.py regen`, verified by `vendor.py check` (tools/ci_check.sh).
+# Written by `vendor.py regen`, verified by `vendor.py check` (tools/gate/ci_check.sh).
 # Cargo.lock of userspace/lib/tls-probe is the other half of the pin.
 """
 
@@ -307,7 +307,7 @@ def host_test():
     entropy and clock. The stable toolchain (the pinned nightly would build the kernel's `build-std` into a host
     test), the host triple (the root cargo config sets a bare-metal target), the vendor tree and nothing else, offline
     and locked; the target directory is under $AZOS_OUT like every build output."""
-    sys.path.insert(0, os.path.dirname(os.path.join(ROOT, "tools/out_dir.py")))
+    sys.path.insert(0, os.path.dirname(os.path.join(ROOT, "tools/lib/out_dir.py")))
     from out_dir import out_root  # noqa: E402
     host = next(l.split(": ", 1)[1] for l in subprocess.run(["rustc", "+stable", "-vV"], capture_output=True, text=True, check=True).stdout.splitlines() if l.startswith("host: "))
     cmd = ["cargo", "+stable", "test", "--release", "--offline", "--locked", "--manifest-path", os.path.join(PROBE, "Cargo.toml"),

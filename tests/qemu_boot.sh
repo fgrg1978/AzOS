@@ -12,7 +12,7 @@
 set -e
 
 OS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-AZOS_OUT="${AZOS_OUT:-$(python3 "$OS_DIR/tools/out_dir.py")}"
+AZOS_OUT="${AZOS_OUT:-$(python3 "$OS_DIR/tools/lib/out_dir.py")}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$AZOS_OUT/target}"
 KERNEL_ELF="$AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel"
 TIMEOUT_S=45

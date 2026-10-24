@@ -33,4 +33,4 @@ include mk/qemu.mk
 include mk/lints.mk
 
 help:
-	@cat "$(CURDIR)/tools/make_help.txt"
+	@cat "$(CURDIR)/tools/build/make_help.txt"

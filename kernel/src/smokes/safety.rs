@@ -551,11 +551,11 @@ azos_ktest::ktest_late! {
 ///
 /// The action byte is matched too, not just the violation code: the record
 /// carries the packet type there (`0x7F`, `PKT_UNKNOWN_PROBE` in
-/// `tools/fake_brain.py`), so a match on the code alone would pass on a
+/// `tools/gate/fake_brain.py`), so a match on the code alone would pass on a
 /// record about some other frame.
 #[cfg(feature = "brain-lies-smoke")]
 pub(crate) fn brain_lies_smoke_task(_arg: usize) {
-    /// `PKT_UNKNOWN_PROBE` in `tools/fake_brain.py`. Deliberately not a type
+    /// `PKT_UNKNOWN_PROBE` in `tools/gate/fake_brain.py`. Deliberately not a type
     /// the kernel handles — if a future build starts acting on 0x7F this
     /// scenario must fail rather than quietly test nothing, and it will,
     /// because the record would stop being written.

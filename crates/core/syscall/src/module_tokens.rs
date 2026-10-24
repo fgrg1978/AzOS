@@ -9,7 +9,7 @@
 //! The token table is sized by Kconfig `LX_MODULE_TOKENS`.
 
 /// What the digest table (`MODULE_SHA256`, generated into the kernel image
-/// by `tools/module_hashes.py`) says about a module the server hands in.
+/// by `tools/build/module_hashes.py`) says about a module the server hands in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// The name has a row and the bytes hash to that row's digest.

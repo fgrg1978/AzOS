@@ -1,5 +1,5 @@
 # The one cargo configuration of the ring-3 images (no image has its own, and
-# none has a linker script: tools/user_entry_lint.py). The target spec of each
+# none has a linker script: tools/lint/user_entry_lint.py). The target spec of each
 # ISA (sdk/targets) carries the codegen baseline and the whole layout; the
 # Makefile passes `--target` and the Kconfig flags (mk/vars.mk RV_UFLAGS,
 # AARCH64_UFLAGS, X86_64_UFLAGS). A plain `cargo build` in an image's directory

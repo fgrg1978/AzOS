@@ -108,7 +108,7 @@ config PKG_FETCH_TFTP
       pinned HTTPS server. With this on, the
       same file may instead name a TFTP server on the development host
       (`tftp=10.0.2.2`, `file=NAME.PKG`: QEMU's `-netdev user,tftp=DIR`
-      gateway, or tools/tftp_serve.py), so a package built on the host goes to
+      gateway, or tools/dev/tftp_serve.py), so a package built on the host goes to
       the device without a disk cycle or a TLS server.
 
       TFTP carries no authentication and the installer asks for none: it only

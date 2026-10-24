@@ -9,9 +9,9 @@
 # visible as overrides. A preset gets a USE_* symbol only when something reads
 # it (a default, an `imply`, a cargo feature or the code):
 # PRESET_FIRMWARE has none, as nothing depends on it
-# (tools/kconfig_lint.py: every symbol has a reader). AZOS is a general-purpose hybrid kernel; a robot is one worked
+# (tools/lint/kconfig_lint.py: every symbol has a reader). AZOS is a general-purpose hybrid kernel; a robot is one worked
 # example. USE decides which crates are linked (USE_ROBOT -> kernel feature
-# `use-robot`, emitted by tools/kconfig_to_cargo.py), which menus `make
+# `use-robot`, emitted by tools/build/kconfig_to_cargo.py), which menus `make
 # config` shows, and, through `imply` and conditional defaults, the starting
 # value of other options. It never forces one: every implied option can be
 # changed by hand (wave 11).
@@ -32,7 +32,7 @@ config USE_GENERIC
       actuation authority (e-stop latch, flight recorder, sys-wdt).
       No robot crate is linked and no robot task is started: built
       with `--no-default-features` plus the rest of the kernel's
-      default features (tools/kconfig_to_cargo.py).
+      default features (tools/build/kconfig_to_cargo.py).
 
 config USE_ROBOT
     # cargo-feature: use-robot

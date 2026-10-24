@@ -1,0 +1,22 @@
+# The licences an AzOS application package may carry (tools/image/azpkg.py lint).
+#
+# One SPDX identifier per line. An expression passes when every AND operand and
+# at least one OR operand is listed here; `X WITH exception` counts as X.
+# The list is permissive licences plus MPL-2.0 (file-level copyleft that does
+# not reach the rest of an image). Copyleft that would bind a whole image (the
+# GPL family, AGPL, LGPL linked statically, as every Rust program here is) is
+# not on it: an author who has such a component under an OR choice lists it
+# in the expression, and one who has it alone gets a refusal at build time and
+# can ask for an addition here by a reviewed change, or pass `--allow ID` to
+# azpkg for a private build that no device policy has to accept.
+Apache-2.0
+MIT
+BSD-2-Clause
+BSD-3-Clause
+ISC
+MPL-2.0
+Zlib
+0BSD
+Unlicense
+CC0-1.0
+BSL-1.0

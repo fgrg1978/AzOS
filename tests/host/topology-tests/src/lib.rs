@@ -1894,7 +1894,7 @@ mod builder_tests {
     /// real board programs get their own topology row, unconditionally (no
     /// feature gate), each carrying zero capabilities — the grant still
     /// flows through the generic `autorun` row until the kernel-side P1
-    /// name→spawn wiring lands. This is the row `tools/gen_board_manifest.py`
+    /// name→spawn wiring lands. This is the row `tools/image/gen_board_manifest.py`
     /// (via the `board_elfs` binary in this crate) reads to build the
     /// board's FAT32 ELF list: every `.ELF`-named row, present in EVERY
     /// feature combination (unlike `EPSRV.ELF`/`VSSRV.ELF`, which only exist
@@ -4157,7 +4157,7 @@ mod file_tree_cap_tests {
 // Fixtures produced by the host tools, so the tests prove the WIRE FORMAT the
 // tools and the kernel agree on:
 //   printf 'sched_hz=42\nlink_encrypt=1\n' > fx.ini
-//   python3 tools/gen_config_sig.py fx.ini --config-v2 --counter 3 \
+//   python3 tools/sign/gen_config_sig.py fx.ini --config-v2 --counter 3 \
 //       --device-id 00112233445566778899aabbccddeeff --out fx.sig
 //   python3 -c "import device_provision as d; \
 //       print(d.record(bytes.fromhex('00112233445566778899aabbccddeeff'), 7).hex())"
@@ -6676,7 +6676,7 @@ mod mcp_row_tests {
         assert!(!caps.iter().any(|c| c.perms.contains(CapPerms::WRITE)), "nothing it can write");
     }
 
-    /// **The gate's enrolment is a text append.** `tools/ci_check.sh` (the
+    /// **The gate's enrolment is a text append.** `tools/gate/ci_check.sh` (the
     /// `login: console` rows) takes the CAPS.TOM the emitter wrote for a volume,
     /// appends a `[login.alice]` row and signs it again; the kernel reads that
     /// file. The result must parse, enrol exactly that user and leave the rows

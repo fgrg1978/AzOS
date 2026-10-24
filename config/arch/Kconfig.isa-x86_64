@@ -13,7 +13,7 @@
 #      inside gated asm unless set to `require`;
 #   3. each extension a three-way choice X86_* (n / probe / require, the
 #      model above); per-board defaults say what a board has. `require`
-#      adds the extension's target feature (tools/kconfig_to_cargo.py): the
+#      adds the extension's target feature (tools/build/kconfig_to_cargo.py): the
 #      integer ones to the kernel and the user images, the SIMD ones to the
 #      user images only (the kernel is soft-float). A level that contains
 #      an extension offers only `require` for it, and an extension whose
@@ -28,7 +28,7 @@ choice
     default X86_64_LEVEL_V2
     help
       The psABI level codegen assumes for the whole kernel and the user
-      images (`-C target-cpu=x86-64[-vN]`, tools/kconfig_to_cargo.py). Anything
+      images (`-C target-cpu=x86-64[-vN]`, tools/build/kconfig_to_cargo.py). Anything
       above it is an optional extension (X86_* below). The boot CPU
       checks the level's CPUID bits before anything else and refuses to
       boot below it. Higher levels let the compiler use wider instructions

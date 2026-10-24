@@ -397,7 +397,7 @@ mod invoke_abi {
     use azos_abi::cap::ty;
     use azos_abi::invoke::*;
 
-    /// `tools/syscall_defs.py` hands the hand-assembled test programs the raw
+    /// `tools/build/syscall_defs.py` hands the hand-assembled test programs the raw
     /// type of the console (`CONSOLE_TYPE`); the micro kernel returns handles
     /// as positive results on rv32, so every type stays below 32.
     #[test]
@@ -455,7 +455,7 @@ mod invoke_abi {
         assert!(!is_domain_self(0));
     }
 
-    /// `tools/syscall_defs.py` gives the hand-assembled programs the self
+    /// `tools/build/syscall_defs.py` gives the hand-assembled programs the self
     /// handle as a literal: type 21 (`Domain`, class 1) in the top 6 bits,
     /// every right, no generation, no slot.
     #[test]

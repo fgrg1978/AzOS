@@ -1030,7 +1030,7 @@ pub(crate) fn install_ring3_seams() {
     azos_actuation::gate::install();
     // The storage-delete kind of the effect gate (Kconfig EFFECT_WRITE_AHEAD).
     // Installed here rather than by `azos_actuation`: `fs` is scaffolding,
-    // and a core crate may not depend on it (tools/tcb_check.sh).
+    // and a core crate may not depend on it (tools/lint/tcb_check.sh).
     #[cfg(feature = "effect-gate")]
     azos_fs::set_delete_gate(azos_actuation::delete_gate);
     // After the actuation hooks: an io_ring motor or PWM entry goes through the

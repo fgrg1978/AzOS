@@ -5,7 +5,7 @@
 //! topology on `ncpus` CPUs and the decision records it writes for that,
 //! before it reserves a frame.
 //!
-//! The kernel and the host dry boot (`tools/azos_sim`, `make sim`) call these
+//! The kernel and the host dry boot (`tools/gate/azos_sim`, `make sim`) call these
 //! same functions, so a topology mistake the kernel would refuse is answered
 //! on the host first, with the records the boot would write. What needs the
 //! machine (the DMA pool and the 2 MiB regions reserved from the page

@@ -3,7 +3,7 @@
 //! Lazy user FP/SIMD state on aarch64.
 //!
 //! The kernel is built for `aarch64-unknown-none-softfloat` and never holds
-//! a value in V0-V31/FPSR/FPCR (`tools/aarch64_fp_free_check.sh` proves it
+//! a value in V0-V31/FPSR/FPCR (`tools/lint/aarch64_fp_free_check.sh` proves it
 //! on the linked ELF). So the trap path does not save or restore the user's
 //! FP registers at all; they stay in the hardware across every syscall and
 //! interrupt, and move only when a different task needs them:

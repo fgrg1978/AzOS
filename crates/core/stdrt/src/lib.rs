@@ -3,7 +3,7 @@
 //! `azos_stdrt`: the layer under Rust's `std` on `*-unknown-azos`.
 //!
 //! `library/std/src/sys/*/azos.rs` (the overlay in `sdk/std`, applied by
-//! `tools/sdk_std.py`) is thin: each function there is one call into this
+//! `tools/build/sdk_std.py`) is thin: each function there is one call into this
 //! crate. What this crate calls is the native ABI and nothing else, with no
 //! file descriptor numbering, no `errno` and no signal anywhere:
 //!

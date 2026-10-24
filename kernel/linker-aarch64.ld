@@ -33,7 +33,7 @@
  * link.
  *
  * `env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS` matters for the same reason
- * documented next to the "aarch64 kernel (build)" row in tools/ci_check.sh: an exported
+ * documented next to the "aarch64 kernel (build)" row in tools/gate/ci_check.sh: an exported
  * `RUSTFLAGS=""` from the caller's shell OVERRIDES `build.rustflags` from
  * `--config` instead of adding to it, and the link then fails with
  * `undefined symbol: _stack_end` — a harness defect that reads like a
@@ -148,7 +148,7 @@ SECTIONS
     /* Live-update patch pool (Kconfig LIVEPATCH_POOL_KIB, config/kernel/Kconfig.livepatch):
      * RX room inside the image's text range, so the W^X and no-exec-outside-
      * the-image checks (_text_start.._text_end) cover it. The size reaches
-     * the linker as --defsym=__patch_pool_bytes (tools/kconfig_to_cargo.py
+     * the linker as --defsym=__patch_pool_bytes (tools/build/kconfig_to_cargo.py
      * --rustflags); 0 or absent = an empty section, no byte. Zero-filled:
      * a stray jump into it traps. */
     .text.patch_pool : ALIGN(AZOS_PAGE_SIZE)
@@ -335,7 +335,7 @@ SECTIONS
          * `llvm-objcopy -O binary` pass lays the flat image out by LMA, so
          * a high-LMA orphan would make it seek to a file offset near 2^64
          * before this DISCARD existed. `--orphan-handling=error`
-         * (Makefile's and `tools/ci_check.sh`'s aarch64 kernel RUSTFLAGS)
+         * (Makefile's and `tools/gate/ci_check.sh`'s aarch64 kernel RUSTFLAGS)
          * turns every OTHER orphan into a build failure instead of a
          * repeat of this same silent trap; this one is named explicitly
          * because unwind tables are expected to appear.

@@ -30,7 +30,7 @@ every capability of that kind across every task's table at once. That
 pool-wide behaviour has no counterpart here and would need a second
 model. No TLC run against this file is recorded past 2026-05-14 (any
 older recorded result describes the OLD, wrapping version of this spec);
-check the gate row in `tools/ci_check.sh` before trusting any run date.
+check the gate row in `tools/gate/ci_check.sh` before trusting any run date.
 *)
 
 EXTENDS Naturals, Sequences, FiniteSets, TLC

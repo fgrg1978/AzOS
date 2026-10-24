@@ -7,7 +7,7 @@
 //! - The OTA header layout is unchanged — we keep CRC-32 there so old
 //!   images still boot, and store signatures as a separate
 //!   sidecar file per slot (`/KERN_A.SIG` and `/KERN_B.SIG`, at the FAT32
-//!   volume root — same convention `tools/boot.cmd` uses for `KERN_A.BIN`).
+//!   volume root — same convention `tools/image/boot.cmd` uses for `KERN_A.BIN`).
 //! - The signature file is the `RSIG` container of `azos_crypto::sig`
 //!   ([`Rsig`]): magic, the algorithm id, the signature's length, the id of
 //!   the signing key, the signed payload size and version, then the
@@ -25,8 +25,8 @@
 //! - Dev key is embedded at `SECURE_BOOT_PUBKEY` in this file (ALL ZEROS
 //!   by default). A production build replaces it via linker override or
 //!   an eFuse/OTP read at boot (not implemented here).
-//! - Sign images with `tools/sign_ota.py` using the matching private key
-//!   (see `tools/gen_dev_key.py`).
+//! - Sign images with `tools/sign/sign_ota.py` using the matching private key
+//!   (see `tools/sign/gen_dev_key.py`).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use azos_crypto::sha256::Sha256;
@@ -62,7 +62,7 @@ pub const SECURE_BOOT_PUBKEY_LEN: usize = KEY_LEN;
 /// against the mounted volume — a leading `/fat/` there would be looked
 /// up as a literal subdirectory named "fat", which doesn't exist. Real
 /// hardware confirms the root-relative convention is correct: `boot.cmd`
-/// (`tools/boot.cmd`) loads `BOOTMETA`/`KERN_A.BIN` via `fatload mmc 0:1`
+/// (`tools/image/boot.cmd`) loads `BOOTMETA`/`KERN_A.BIN` via `fatload mmc 0:1`
 /// with no subdirectory either. Found and fixed 2026-08 by actually
 /// booting a signed image in QEMU (D2) instead of trusting this by
 /// inspection — with the old `/fat/...` paths, `secure-boot-enforced`
@@ -154,12 +154,12 @@ pub const SECURE_BOOT_READ_CHUNK_SIZE: usize = 4096;
 // no prod key file is present, the array is all zeros and the kernel treats
 // every signature as Unverified (dev default). To rotate to a real key:
 //
-//   1. python3 tools/gen_prod_key.py        # writes prod_priv.bin + prod_pub.bin
+//   1. python3 tools/sign/gen_prod_key.py        # writes prod_priv.bin + prod_pub.bin
 //   2. cargo clean -p azos_ota          # force build.rs to re-run
 //   3. cargo build --release --features qemu
 //
 // The kernel binary now embeds the real pubkey; signed firmware images
-// produced by `tools/sign_ota.py --priv tools/keys/prod_priv.bin` will
+// produced by `tools/sign/sign_ota.py --priv tools/keys/prod_priv.bin` will
 // verify, all others will fail with BootTrust::Failed.
 // ───────────────────────────────────────────────────────────────────────────
 

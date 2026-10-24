@@ -79,7 +79,7 @@ config LX_FS_EXT4_RO
       What exists: `make lx-kbuild` builds the unmodified fs/ext4,
       fs/jbd2, fs/mbcache.c and lib/crc/crc16.c of the pinned tree for
       both ISAs (<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko, fetched by
-      tools/third_party_fetch.sh linux), and the module loader admits, lays out
+      tools/build/third_party_fetch.sh linux), and the module loader admits, lays out
       and relocates all of them (tests/host/lx-loader-tests).
       What is missing: the 400 or so Linux symbols they import and
       nothing provides yet (lx/FS_EXT4_UNRESOLVED; the VFS, page cache,

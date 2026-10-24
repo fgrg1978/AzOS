@@ -12,7 +12,7 @@
 //! zero-sized type: no `dyn`, no table, the call is the hook body.
 //!
 //! Linux splits the same way: `start_kernel` (generic) and `setup_arch`
-//! plus its `*_init` callbacks (per ISA). `tools/boot_seq_lint.py` keeps the
+//! plus its `*_init` callbacks (per ISA). `tools/lint/boot_seq_lint.py` keeps the
 //! common steps here, in one order for every ISA.
 
 use azos_arch::{ArchEntry, Cpu, PAGE_SIZE};

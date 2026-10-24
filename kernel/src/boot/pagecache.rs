@@ -116,7 +116,7 @@ static HOOKS: PageCacheHooks = PageCacheHooks {
 /// mounted. Every ISA.
 pub(crate) fn install_page_cache() {
     azos_fs::vfs_page_cache_hooks(Some(&HOOKS));
-    // The boot canary (`tools/ci_check.sh`, the "disk: partition cap refused from ring 3" row): the line below
+    // The boot canary (`tools/gate/ci_check.sh`, the "disk: partition cap refused from ring 3" row): the line below
     // is printed only when the file layer says the table is in place, and
     // carries the budget of the kernel's own Domain, which runs the
     // `limit == 0` arm of `domain_budget` that `fs-wb` takes every pass.

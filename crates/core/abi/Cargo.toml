@@ -11,7 +11,7 @@ repository = "https://github.com/azos-project/azos"
 name = "azos_abi"
 
 [dependencies]
-# What a crate inside the std build graph (azos_stdrt, tools/sdk_std.py) names
+# What a crate inside the std build graph (azos_stdrt, tools/build/sdk_std.py) names
 # core by; unused everywhere else.
 core = { version = "1.0.0", optional = true, package = "rustc-std-workspace-core" }
 

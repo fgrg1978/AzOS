@@ -16,7 +16,7 @@
 //! `stateless` row can move between them while the system runs.
 //!
 //! No syscalls, no statics: the same bytes are compiled into both hosts, and
-//! each carries [`SOURCE_MARKER`] to prove it (`tools/chip_source_check.py`).
+//! each carries [`SOURCE_MARKER`] to prove it (`tools/lint/chip_source_check.py`).
 
 #![no_std]
 #![forbid(unsafe_code)]

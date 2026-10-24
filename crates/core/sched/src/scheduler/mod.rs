@@ -860,7 +860,7 @@ pub(crate) fn set_current_foreign_mode(foreign: bool) {
 static mut PER_CPU: [PerCpuSched; MAX_CPUS] = [const { EMPTY_CPU }; MAX_CPUS];
 
 /// The ready queues, split out of `PerCpuSched` (2026-09-16; measured with
-/// `tools/vsbench_compare.sh VSBENCH_ICOUNT=1`).
+/// `tools/bench/vsbench_compare.sh VSBENCH_ICOUNT=1`).
 ///
 /// `current_idx` is read on every syscall (`current_syscall_verdict`, the
 /// seccomp check) and every wake. While `ready_queues` lived next to it,

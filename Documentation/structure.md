@@ -22,13 +22,13 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `sdk/` | The native `std` SDK: target specs, linker scripts, the `std` overlay. |
 | `micro/` | AzOS-micro, the MMU-less MCU kernel (riscv32imac, M-mode, PMP region domains, static tasks from the signed topology in `micro/topology/`). It is its own workspace and links the main kernel's pure crates; `make micro` builds it. |
 | `lx/` | The Linux driver compatibility layer: `emul/` (Rust base), `glue/` (C module built against a pinned Linux tree), and the lists it is checked against: `LINUX_PIN` (the Linux stable tag), `HOST_ABI` (every symbol the Linux driver server exports to modules), `DEVICE_SOURCES` (the Linux leaf drivers whose ids the hardware bus matches), `FS_EXT4_UNRESOLVED` (the imports of the ext4 module set). |
-| `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. One fragment, `Kconfig.userspace` (the programs under `userspace/`), is generated at every parse by `tools/gen_userspace_kconfig.py` and is not committed. |
+| `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. One fragment, `Kconfig.userspace` (the programs under `userspace/`), is generated at every parse by `tools/build/gen_userspace_kconfig.py` and is not committed. |
 | `mk/` | Makefile fragments included by the top-level `Makefile`: `vars.mk`, `kernel.mk`, `userspace.mk`, `images.mk`, `host.mk`, `qemu.mk`, `lints.mk`. |
 | `tools/` | Build, check, signing, image-making and analysis scripts (Python and shell); `boot.cmd`, the U-Boot script that boots slots A/B/R from the SD card. |
 | `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), `sdk/` (SDK test program), plus the emulator runner scripts `qemu_boot.sh` and `run_all.sh`. |
 | `formal/` | `tla/` (TLA+ models `cap_table` and `topology_load`, each with its `.cfg`), `INVARIANTS.md` and `README.md`. |
 | `boot/` | `boot.scr.cmd`, a U-Boot boot script. |
-| `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/third_party_fetch.sh`); `patches/`. |
+| `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/build/third_party_fetch.sh`); `patches/`. |
 | `LICENSES/` | Licence texts: Apache-2.0, GPL-2.0-only, MIT. |
 
 Top-level files: `Cargo.toml` (workspace) and `Cargo.lock`, `Kconfig`, `Makefile`,
@@ -159,7 +159,7 @@ Source: `domains/robot/*/Cargo.toml`, `config/axes/Kconfig.use`.
 
 ## Per-ISA layout
 
-The three ports share one file layout, checked by `tools/arch_layout_lint.py`.
+The three ports share one file layout, checked by `tools/lint/arch_layout_lint.py`.
 A module is a top-level name in a directory: a `.rs` file, a `.S` file or a
 directory of that name.
 ISA-only code goes under `ext/`; every arch crate and every entry directory has
@@ -228,7 +228,7 @@ Extra asm files outside the shared set: `kernel/src/entry/riscv64/asm/context_sw
 vector-extension variant) and `kernel/src/entry/x86_64/asm/ap_entry.S` (the application-processor
 long-mode entry).
 
-Source: `tools/arch_layout_lint.py` (`REQUIRED`), `crates/core/arch-*/src/`,
+Source: `tools/lint/arch_layout_lint.py` (`REQUIRED`), `crates/core/arch-*/src/`,
 `kernel/src/entry/*/`.
 
 ## kernel/
@@ -274,7 +274,7 @@ Source: `userspace/*/`, the header of each program's `main.rs`.
 | `tests/fuzz/` | Fuzz targets for parsers and decoders: config, dtb, elf, brain-link, fs, gguf, net, sh, topology. |
 | `tests/qemu_boot.sh`, `tests/run_all.sh` | The emulator scenario runners. |
 | `tests/sdk/` | `sdktest`, the SDK's own test program. |
-| `tools/` | See `tools/make_help.txt` for the Make targets; `ci_check.sh` runs the checks by hand, `kconfig_*.py` handle configuration, `sign_ota.py` and `gen_*_key.py` handle signing, `*_lint.py` are structural linters. |
-| `tools/farm/` | Host-side scripts that run a test kernel on an attached device and read the result from its console; `boot.cmd`, the board's U-Boot script that boots it over TFTP. |
+| `tools/` | See `tools/build/make_help.txt` for the Make targets; `ci_check.sh` runs the checks by hand, `kconfig_*.py` handle configuration, `sign_ota.py` and `gen_*_key.py` handle signing, `*_lint.py` are structural linters. |
+| `tools/dev/farm/` | Host-side scripts that run a test kernel on an attached device and read the result from its console; `boot.cmd`, the board's U-Boot script that boots it over TFTP. |
 
 Source: `tests/`, `tools/`.

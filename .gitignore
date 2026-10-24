@@ -4,7 +4,7 @@
 .config.old
 # iCloud / Finder duplicates (".config 2", ".config 3.old", etc.) — same role.
 .config[ .]*
-# Build outputs live under $AZOS_OUT (tools/out_dir.py), outside the checkout.
+# Build outputs live under $AZOS_OUT (tools/lib/out_dir.py), outside the checkout.
 # A bare `cargo` run in the root or in a crate directory still writes a
 # `target/` there; keep it out of a commit.
 **/target/
@@ -51,7 +51,7 @@ rfcs/
 docs/
 
 # Generated at every Kconfig parse from the directories under userspace/
-# (tools/gen_userspace_kconfig.py, run by config/Kconfig): not committed.
+# (tools/build/gen_userspace_kconfig.py, run by config/Kconfig): not committed.
 config/Kconfig.userspace
 config/Kconfig.userspace.tmp.*
-/tools/farm/boards.ini
+/tools/dev/farm/boards.ini

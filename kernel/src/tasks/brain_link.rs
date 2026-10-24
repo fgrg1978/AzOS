@@ -185,7 +185,7 @@ static BRAIN_SESSION_ID_CACHE: azos_sync::SpinLock<
 /// Wall-clock rekey interval of the brain link, in seconds. The crate's
 /// `REKEY_INTERVAL_SECS` everywhere except under `link-rekey-smoke`, where it
 /// is short enough for one QEMU boot to see the kernel send rekey messages
-/// (`link: encrypted end to end` in `tools/ci_check.sh`).
+/// (`link: encrypted end to end` in `tools/gate/ci_check.sh`).
 #[cfg(not(feature = "link-rekey-smoke"))]
 pub(crate) const BRAIN_LINK_REKEY_SECS: u64 = azos_behavior::encrypt_link::REKEY_INTERVAL_SECS;
 #[cfg(feature = "link-rekey-smoke")]

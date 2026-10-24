@@ -162,7 +162,7 @@ pub(crate) fn load_signed_config() {
         }
         None => {
             kprintln!("[CFG] no device record in the reserved tail — device not provisioned, \
-                       no CONFIG.INI can be trusted (tools/device_provision.py)");
+                       no CONFIG.INI can be trusted (tools/sign/device_provision.py)");
             DeviceFloor::Unprovisioned
         }
     };

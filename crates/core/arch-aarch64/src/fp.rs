@@ -64,7 +64,7 @@ impl Default for FpState {
 /// `area` must be writable; the 16-byte alignment from
 /// `repr(align(16))` covers `stp` alignment requirements.
 #[cfg(target_arch = "aarch64")]
-#[inline(never)] // its own symbol: `tools/aarch64_fp_free_check.sh` allows it by name
+#[inline(never)] // its own symbol: `tools/lint/aarch64_fp_free_check.sh` allows it by name
 pub unsafe fn save_fp_state(area: &mut FpState) {
     unsafe {
         core::arch::asm!(
@@ -108,7 +108,7 @@ pub unsafe fn save_fp_state(area: &mut FpState) {
 /// `area` must be 16-byte aligned (`repr(align(16))` ensures
 /// it) and hold a valid snapshot.
 #[cfg(target_arch = "aarch64")]
-#[inline(never)] // its own symbol: `tools/aarch64_fp_free_check.sh` allows it by name
+#[inline(never)] // its own symbol: `tools/lint/aarch64_fp_free_check.sh` allows it by name
 pub unsafe fn restore_fp_state(area: &FpState) {
     unsafe {
         core::arch::asm!(

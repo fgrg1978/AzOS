@@ -8,7 +8,7 @@
 //! `azos_robot_drivers::rc::rc_feed_byte` (SBUS frames built with
 //! `sbus_encode`) and `azos_gps::gps_feed_byte` (an NMEA GGA sentence). Every
 //! verdict line is `[RCSMOKE] PASS|FAIL <property>: ...`; the gate rows
-//! (`tools/ci_check.sh`, "RC input and geofence") anchor on them and on the
+//! (`tools/gate/ci_check.sh`, "RC input and geofence") anchor on them and on the
 //! kernel's own lines (`[RC] ...`, `[ENVELOPE] refused: ...`, `[SAFETY]
 //! geofence breach`).
 
