@@ -7075,10 +7075,13 @@ par_row elfperm_row "elf: .rodata not executable"         rv  qemu ok
 par_row elfperm_row "aarch64 elf: .rodata not executable" arm qemu ok
 par_row elfperm_row "elf: rodata-exec canary"             rv  qemu,rodata-exec-canary canary
 par_row elfperm_row "aarch64 elf: rodata-exec canary"     arm qemu,rodata-exec-canary canary
+# User images only: a kernel ELF the x86_64 rows copy into build/
+# (kernel-x86_64*.elf) is a PIE whose .dynamic sits in the read-only range by
+# design (kernel/linker-x86_64.ld; the boot's W^X pass seals it).
 if ci_row_begin "elf: user images, one mapping per page"; then
     printf "  %-26s" "elf: user images, one mapping per page..."
     if epp_out="$(python3 "${REPO_ROOT}/tools/elf_page_perms.py" --self-test 2>&1)" \
-       && epp_out="$(python3 "${REPO_ROOT}/tools/elf_page_perms.py" $AZOS_OUT/build/*.elf $AZOS_OUT/build/aarch64/*.elf 2>&1)"; then
+       && epp_out="$(python3 "${REPO_ROOT}/tools/elf_page_perms.py" $(ls $AZOS_OUT/build/*.elf $AZOS_OUT/build/aarch64/*.elf | grep -v '/kernel-[^/]*\.elf$') 2>&1)"; then
         ok
     else
         bad; printf '%s\n' "$epp_out" | sed -n 1,8p | sed 's/^/      /'
@@ -7094,13 +7097,15 @@ fi
 # first aligned SSE store, `x86_64: first user task` red with a trap report.
 # tools/user_entry_lint.py reads the sources (no per-crate linker script or cargo
 # config, one target spec per ISA naming `_azos_entry`) and the built images;
-# its self-test is the canary (each check finds its crafted failure).
+# its self-test is the canary (each check finds its crafted failure). Not
+# native images: lxhello (a Linux binary) and linux_rt.elf (the Linux runtime
+# the kernel embeds and maps into a Linux process; its own `_start`).
 if ci_row_begin "x86_64: user images enter at _azos_entry"; then
     printf "  %-26s" "x86_64: user images enter at _azos_entry..."
     if uel_out="$(python3 "${REPO_ROOT}/tools/user_entry_lint.py" --self-test 2>&1)" \
        && uel_out="$(python3 "${REPO_ROOT}/tools/user_entry_lint.py" 2>&1)" \
        && make userspace-x86_64 >/dev/null 2>&1 \
-       && uel_out="$(python3 "${REPO_ROOT}/tools/user_entry_lint.py" --image $(ls $AZOS_OUT/build/x86_64/*.elf | grep -v '/lxhello.elf$') 2>&1)"; then
+       && uel_out="$(python3 "${REPO_ROOT}/tools/user_entry_lint.py" --image $(ls $AZOS_OUT/build/x86_64/*.elf | grep -vE '/(lxhello|linux_rt)\.elf$') 2>&1)"; then
         ok
     else
         bad; printf '%s\n' "$uel_out" | sed -n 1,8p | sed 's/^/      /'
