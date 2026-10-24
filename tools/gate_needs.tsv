@@ -11,6 +11,8 @@ stack frames: embedded	embedded (+linker); embedded config applied
 stack chain: embedded	embedded (+linker); embedded config applied
 embedded: boots in 64 MiB	embedded (+linker); embedded config applied
 embedded: boots in 16 MiB	embedded (+linker); embedded config applied
+link: release build refuses a keyless boot	link release (qemu)
+link: release build boots with a key	link release (qemu)
 generic: riscv64 boots, abitest	generic: riscv64 builds, no robot crate
 generic: aarch64 boots, abitest	generic: aarch64 builds, no robot crate
 vf2: no B extension	vf2 (+linker)

@@ -473,6 +473,7 @@ fleet_config() {
     cp "${REPO_ROOT}/config/defconfigs/robot-server-riscv64+board-generic.config" "$tmp/fleet.config" \
       && echo "CONFIG_LOG_LEVEL_DEBUG=y" >>"$tmp/fleet.config" \
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/fleet.config" \
+      && echo "# CONFIG_LINK_PROVISIONING_ENFORCED is not set" >>"$tmp/fleet.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/fleet.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/fleet.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q '^CONFIG_HWCLASS_SERVER=y$' "$tmp/fleet.config" \
@@ -522,7 +523,11 @@ EMBEDDED_BUILT=0
 # with no signed topology on QEMU, which an enforced build halts on ("no trusted
 # signing key embedded", "TOPOLOGY_SOURCE_SIGNED_REQUIRED"). The
 # enforced path has its own rows (secure boot ..., aarch64 secboot ...), and the
-# board rows (vf2) keep the profile default.
+# board rows (vf2) keep the profile default. The same holds for the brain
+# link (LINK_PROVISIONING_ENFORCED, `default y if !BUILD_TYPE_DEV`): on QEMU
+# these profiles bind no disk (HWBUS_AUTOBIND_TOPOLOGY, no `qemu-devices`
+# rows), so no link key can reach them and an enforced build halts at the key
+# gate; its rows are `link: release build ...`, on the QEMU board.
 embedded_config() {
     local tmp rc
     mkdir -p "$EMBEDDED_DIR" || return 1
@@ -530,6 +535,7 @@ embedded_config() {
     cp "${REPO_ROOT}/config/defconfigs/robot-embedded-riscv64+board-generic.config" "$tmp/embedded.config" \
       && echo "CONFIG_LOG_LEVEL_DEBUG=y" >>"$tmp/embedded.config" \
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/embedded.config" \
+      && echo "# CONFIG_LINK_PROVISIONING_ENFORCED is not set" >>"$tmp/embedded.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/embedded.config" \
       && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/embedded.config" python3 -m olddefconfig >/dev/null 2>&1) \
       && grep -q '^CONFIG_HWCLASS_EMBEDDED=y$' "$tmp/embedded.config" \
@@ -10281,6 +10287,44 @@ else
     bad; echo "      could not expand config/defconfigs/robot-embedded-riscv64+board-generic.config with python3 -m olddefconfig"
 fi
 
+# The brain link fails CLOSED outside BUILD_TYPE_DEV (owner 2026-10-23). Its
+# rows boot a kernel of the QEMU board built as a release image: the gate's
+# primary config with BUILD_TYPE_RELEASE, so LINK_PROVISIONING_ENFORCED comes
+# from the Kconfig default alone (no cargo feature names it), and the `qemu`
+# board feature, whose `dev-key` the release build carries (with the gate's
+# release key named, as the fleet and embedded builds): a gate that let a
+# dev-key build through turns the keyless row green no more. Secure boot off
+# and the built-in topology allowed, as `embedded_config` says. Its own target
+# dir; qemu.config's debug log level, like every kernel the gate boots.
+LINKREL_DIR="${LINKREL_DIR:-$AZOS_OUT/target/link-release}"
+LINKREL_CONFIG="${LINKREL_DIR}/link-release.config"
+LINKREL_KERNEL="${LINKREL_DIR}/riscv64imac-unknown-none-elf/release/kernel"
+LINKREL_BUILT=0
+linkrel_config() {
+    local tmp rc
+    mkdir -p "$LINKREL_DIR" || return 1
+    tmp="$(mktemp -d)" || return 1
+    grep -v "BUILD_TYPE_" "${REPO_ROOT}/config/defconfigs/qemu.config" >"$tmp/link-release.config" \
+      && echo "CONFIG_BUILD_TYPE_RELEASE=y" >>"$tmp/link-release.config" \
+      && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/link-release.config" \
+      && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/link-release.config" \
+      && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/link-release.config" python3 -m olddefconfig >/dev/null 2>&1) \
+      && grep -q '^CONFIG_BUILD_TYPE_RELEASE=y$' "$tmp/link-release.config" \
+      && grep -q '^CONFIG_LINK_PROVISIONING_ENFORCED=y$' "$tmp/link-release.config" \
+      && { cmp -s "$tmp/link-release.config" "$LINKREL_CONFIG" || cp "$tmp/link-release.config" "$LINKREL_CONFIG"; }
+    rc=$?; rm -rf "$tmp"; return $rc
+}
+if linkrel_config; then
+    fail_before=$FAIL
+    # shellcheck disable=SC2046
+    TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$LINKREL_CONFIG" CARGO_TARGET_DIR="$LINKREL_DIR" \
+        build "link release (qemu)" --release $(python3 "${REPO_ROOT}/tools/kconfig_to_cargo.py" "$LINKREL_CONFIG")
+    if [ "$FAIL" -eq "$fail_before" ] && ci_wants "link release (qemu)"; then LINKREL_BUILT=1; fi
+else
+    printf "  %-26s" "link release (qemu)..."
+    bad; echo "      config/defconfigs/qemu.config as BUILD_TYPE_RELEASE did not expand with LINK_PROVISIONING_ENFORCED=y"
+fi
+
 # ── Topology/config key: a production build names its key (wave 11) ──────
 #
 # `crates/core/topology/build.rs` used to embed
@@ -11900,15 +11944,27 @@ else
     # and the volume's CAPS.SIG and CONFIG.SIG are signed with its private
     # half. One image per boot: the boot writes the counter floor and the
     # flight recorder.
-    product_gatekey_disk() { # <.config> <out image>
-        local img="$2" ini="$2.tmp_config.ini" sig="$2.tmp_config.sig" rc
+    #
+    # A release robot kernel enforces the brain link (Kconfig
+    # LINK_PROVISIONING_ENFORCED, on outside BUILD_TYPE_DEV, owner 2026-10-23):
+    # it halts without a link key. So the volume gets a throwaway one in the
+    # reserved tail (tools/link_key_provision.py, a fresh random key per image,
+    # never a key from tools/keys), unless the third argument is `keyless`:
+    # the row that proves the keyless boot is refused. (The fleet and embedded
+    # kernels bind no disk on QEMU and build with the switch off, see
+    # `embedded_config`; the key reaches the `link: release build` kernel.)
+    product_gatekey_disk() { # <.config> <out image> [keyless]
+        local img="$2" ini="$2.tmp_config.ini" sig="$2.tmp_config.sig" lk="$2.tmp_linkkey" rc
         cp $AZOS_OUT/build/disk.img "$img" \
           && make topo-volume TOPO_IMAGE="$img" TOPO_ISA=riscv64 TOPO_KCONFIG_RISCV64="$1" TOPO_PRIV="$GATE_RELEASE_PRIV" \
                 TOPO_KERNEL_FEATURES="$(python3 tools/kconfig_to_cargo.py "$1" | sed -n 's/.*--features //p')" >/dev/null 2>&1 \
           && mcopy -n -i "$img" ::CONFIG.INI "$ini" \
           && python3 tools/gen_config_sig.py "$ini" --config-v2 --counter 1 --image "$img" --priv "$GATE_RELEASE_PRIV" --out "$sig" >/dev/null \
-          && mcopy -o -i "$img" "$sig" ::CONFIG.SIG
-        rc=$?; rm -f "$ini" "$sig"; return $rc
+          && mcopy -o -i "$img" "$sig" ::CONFIG.SIG \
+          && { [ "${3:-}" = keyless ] \
+               || { dd if=/dev/urandom of="$lk" bs=32 count=1 2>/dev/null \
+                    && python3 tools/link_key_provision.py "$img" "$lk" >/dev/null; }; }
+        rc=$?; rm -f "$ini" "$sig" "$lk"; return $rc
     }
     # The embedded image (config/defconfigs/robot-embedded-riscv64+board-generic.config, kernel/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
@@ -11962,6 +12018,33 @@ else
     else
         for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB" "embedded: census and task view"; do
             printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass, or its gate-key topology volume was not built; not booted"; done
+    fi
+    # The brain link fails CLOSED outside BUILD_TYPE_DEV, BOTH halves, on the
+    # release build of the QEMU board (`linkrel_config`). Without a link key it
+    # must halt at the key gate, and the refusal must be a decision record: the
+    # FATAL line names a receipt (`decision N`, N >= 1; a refusal stored
+    # nowhere prints 0, which the marker does not take). With a key the same
+    # kernel loads it and reaches the scheduler: a gate wired to always refuse
+    # fails that row. Canary (2026-10-23, run by hand): a dev-key bypass of the
+    # gate in kernel/src/main.rs (`&& !cfg!(feature = "qemu")`, the feature
+    # that carries `dev-key`) boots the keyless kernel past it, "booting
+    # anyway", and this row goes red; so does `default n` on the symbol.
+    if ! ci_wants "link: release build refuses a keyless boot" "link: release build boots with a key"; then
+        ci_skip_rows "link: release build refuses a keyless boot" "link: release build boots with a key"
+    elif [ "$LINKREL_BUILT" = "1" ] && make_disk $AZOS_OUT/build/disk.img \
+       && product_gatekey_disk "$LINKREL_CONFIG" $AZOS_OUT/build/disk-linkrel-keyless.img keyless \
+       && product_gatekey_disk "$LINKREL_CONFIG" $AZOS_OUT/build/disk-linkrel-keyed.img; then
+        KERNEL="$LINKREL_KERNEL" par_row qemu_run "link: release build refuses a keyless boot" \
+            "SECCHAN] FATAL: brain link has no key .* refusing to boot (decision [1-9]" 120 -smp 4 \
+            -global virtio-mmio.force-legacy=false -drive file=$AZOS_OUT/build/disk-linkrel-keyless.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+        KERNEL="$LINKREL_KERNEL" par_row qemu_run "link: release build boots with a key" \
+            "Starting scheduler on boot CPU" 120 -smp 4 \
+            -global virtio-mmio.force-legacy=false -drive file=$AZOS_OUT/build/disk-linkrel-keyed.img,if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0
+    else
+        for row in "link: release build refuses a keyless boot" "link: release build boots with a key"; do
+            printf "  %-26s" "${row}..."; bad; echo "      the release QEMU kernel did not build, or its gate-key volumes were not built; not booted"; done
     fi
     # The fleet image (config/defconfigs/robot-server-riscv64+board-generic.config, kernel/linker-fleet.ld), whose
     # tables are sized for 4096 tasks. Its first boots found three faults the
