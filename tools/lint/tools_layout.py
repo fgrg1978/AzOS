@@ -130,7 +130,6 @@ NO_CALLER = {
     "dev_dfu_recovery.sh": "USB DFU recovery of a VF2/K1 by hand",
     "dev_uart.py": "UART relay daemon by hand (PENDING R280: keep or delete)",
     "esp32_bridge/": "ESP32 sketch; nothing names it",
-    "export_kernel_consts.py": "Kconfig constants for the brain; only its own text names it",
     "gen_prod_key.py": "production key generation by hand (on purpose: never automated)",
     "repro_check.sh": "reproducible-build check by hand (plan: wire it into the gate)",
     "sbom.sh": "CycloneDX SBOM by hand",

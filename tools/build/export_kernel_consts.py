@@ -19,27 +19,32 @@ Run after every Kconfig change:
     make defconfig-generic-sbc-riscv64-dev          # or any defconfig
     python3 tools/build/export_kernel_consts.py
 
-Or wire into the Makefile as a post-defconfig hook.
-
 The output file is regenerated; manual edits are lost.  Brain code that
 needs a value imports it:
 
     from protocol_consts import KERNEL_TCP_MAX_CONNS
 
-Drift detection: the brain's pytest includes a smoke test that loads
-`protocol_consts.py` and checks key invariants (e.g. its
-`KERNEL_TCP_MAX_CONNS` matches what the brain assumes for connection
-pool sizing).  If the kernel-side value changes without a brain update,
-the smoke fails.
+Drift detection, both sides:
+  * `--check` (the protocol-sync step of tools/gate/ci_full.sh, `make ci-full`)
+    exits 1 when the brain's file holds other values than this `.config`
+    gives (its header, which names the source, is not compared), or when an
+    EXPORTED symbol is not declared in the Kconfig tree any more;
+  * the brain's pytest loads `protocol_consts.py` and checks the invariants
+    the brain relies on (e.g. `KERNEL_TCP_MAX_CONNS` against its connection
+    pool sizing).
+`--self-test` runs the check against a planted drift.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-import time
+import tempfile
 from pathlib import Path
 from typing import Optional
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+import azos_tools  # noqa: E402
 
 # ── The brain-relevant subset of Kconfig options ─────────────────────────
 #
@@ -70,21 +75,8 @@ EXPORTED: list[tuple[str, str, str]] = [
     ("TCP_MAX_CONNS",        "KERNEL_TCP_MAX_CONNS",        "int"),
     ("MAX_SOCKETS",          "KERNEL_MAX_SOCKETS",          "int"),
 
-    # ── Network framing (brain TCP buffer sizing matches kernel)
-    ("ETH_MTU",              "KERNEL_ETH_MTU",              "int"),
-    ("TCP_MSS",              "KERNEL_TCP_MSS",              "int"),
+    # ── Network buffers (brain TCP buffer sizing matches kernel)
     ("TCP_BUF_SIZE",         "KERNEL_TCP_BUF_SIZE",         "int"),
-    ("TCP_WINDOW_SIZE",      "KERNEL_TCP_WINDOW_SIZE",      "int"),
-
-    # ── Brain-link defaults (brain uses these as fall-back if env vars unset)
-    ("BRAIN_SERVER_IP_DEFAULT",   "KERNEL_BRAIN_SERVER_IP_DEFAULT",   "str"),
-    ("BRAIN_SERVER_PORT_DEFAULT", "KERNEL_BRAIN_SERVER_PORT_DEFAULT", "int"),
-    ("AUTO_RECONNECT",            "KERNEL_AUTO_RECONNECT",            "bool"),
-
-    # ── Subsumption layers (brain mirrors which layers the kernel accepts)
-    ("BRAIN_L1_ENABLED",     "KERNEL_BRAIN_L1_ENABLED",     "bool"),
-    ("BRAIN_L2_ENABLED",     "KERNEL_BRAIN_L2_ENABLED",     "bool"),
-    ("BRAIN_L3_ENABLED",     "KERNEL_BRAIN_L3_ENABLED",     "bool"),
 
     # ── Security (the brain mirrors the kernel boot policy)
     ("SECURE_BOOT_ENFORCED", "KERNEL_SECURE_BOOT_ENFORCED", "bool"),
@@ -135,7 +127,6 @@ def parse_config(path: Path) -> dict[str, str]:
 
 def render_python(cfg: dict[str, str], sha12: Optional[str]) -> str:
     """Emit the brain-side Python module."""
-    now = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     lines: list[str] = [
         '"""GENERATED — kernel ↔ brain compile-time constant bridge.',
         "",
@@ -148,7 +139,6 @@ def render_python(cfg: dict[str, str], sha12: Optional[str]) -> str:
     if sha12:
         lines.append(f"Config SHA-256 prefix: {sha12}")
     lines += [
-        f"Generated: {now}",
         '"""',
         "from __future__ import annotations",
         "",
@@ -200,7 +190,85 @@ def render_python(cfg: dict[str, str], sha12: Optional[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def body(text: str) -> str:
+    """The module without its docstring header (source path, config SHA)."""
+    head, sep, rest = text.partition('\n"""\n')
+    return rest if sep else text
+
+
+def undeclared() -> list[str]:
+    """EXPORTED symbols the Kconfig tree does not declare."""
+    import kconfiglib
+    old = os.getcwd()
+    os.chdir(azos_tools.ROOT)
+    try:
+        kconf = kconfiglib.Kconfig("Kconfig", warn=False)
+    finally:
+        os.chdir(old)
+    return [n for k, _, _ in EXPORTED for n in k.split("|")
+            if n not in kconf.syms or not kconf.syms[n].nodes]
+
+
+def check(out_path: Path, text: str) -> int:
+    gone = undeclared()
+    if gone:
+        print(f"[CHECK] EXPORTED names symbols Kconfig no longer declares: {' '.join(gone)}", file=sys.stderr)
+        return 1
+    if not out_path.exists():
+        print(f"[CHECK] {out_path} does not exist — would create.", file=sys.stderr)
+        return 1
+    have = {l for l in body(out_path.read_text()).splitlines() if l.startswith("KERNEL_")}
+    want = {l for l in body(text).splitlines() if l.startswith("KERNEL_")}
+    if body(out_path.read_text()) != body(text):
+        print(f"[CHECK] {out_path} is out-of-date.  Run without --check to regen.", file=sys.stderr)
+        for l in sorted(want - have):
+            print(f"  kernel: {l}", file=sys.stderr)
+        for l in sorted(have - want):
+            print(f"  brain:  {l}", file=sys.stderr)
+        return 1
+    print(f"[CHECK] {out_path} is up-to-date.")
+    return 0
+
+
+def self_test() -> int:
+    fails = []
+    gone = undeclared()
+    if gone:
+        fails.append(f"EXPORTED names undeclared symbols: {gone}")
+    cfg = {"ARCH_RISCV64": "y", "BOARD_QEMU": "y", "HWCLASS_SBC": "y", "TCP_MAX_CONNS": "8", "MAX_SOCKETS": "16",
+           "TCP_BUF_SIZE": "4096", "OTA_MAX_IMAGE_SIZE_MB": "8", "MAX_TASKS": "64"}
+    text = render_python(cfg, "000000000000")
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "protocol_consts.py"
+        old, sys.stderr = sys.stderr, open(os.devnull, "w")
+        old_out, sys.stdout = sys.stdout, sys.stderr
+        try:
+            cases = []
+            cases.append(("absent", check(out, text), 1))
+            out.write_text(text)
+            cases.append(("same", check(out, text), 0))
+            out.write_text(render_python(cfg, "111111111111").replace("Source: azos/.config", "Source: x"))
+            cases.append(("only the header differs", check(out, text), 0))
+            out.write_text(render_python(dict(cfg, TCP_MAX_CONNS="16"), "000000000000"))
+            cases.append(("a value drifted", check(out, text), 1))
+            out.write_text(text.replace("KERNEL_MAX_TASKS: int = 64\n", ""))
+            cases.append(("a constant missing", check(out, text), 1))
+        finally:
+            sys.stderr.close()
+            sys.stderr, sys.stdout = old, old_out
+    for name, got, want in cases:
+        if got != want:
+            fails.append(f"{name}: check exit {got}, want {want}")
+    if fails:
+        print("export_kernel_consts self-test FAILED:\n  " + "\n  ".join(fails))
+        return 1
+    print("export_kernel_consts self-test ok")
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
     p = argparse.ArgumentParser(description="Export kernel Kconfig → brain Python")
     p.add_argument(
         "--config",
@@ -235,14 +303,7 @@ def main() -> int:
         out_path = (Path(args.config).resolve().parent / args.out).resolve()
 
     if args.check:
-        if not out_path.exists():
-            print(f"[CHECK] {out_path} does not exist — would create.", file=sys.stderr)
-            return 1
-        if out_path.read_text() != text:
-            print(f"[CHECK] {out_path} is out-of-date.  Run without --check to regen.", file=sys.stderr)
-            return 1
-        print(f"[CHECK] {out_path} is up-to-date.")
-        return 0
+        return check(out_path, text)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text)

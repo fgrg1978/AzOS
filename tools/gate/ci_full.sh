@@ -6,7 +6,9 @@
 # Validates:
 #   1. azos: all 5 feature combos build clean
 #   2. AzOSRobotBrain: pytest suite passes
-#   3. Protocol sync: brain_protocol.rs matches protocol.py
+#   3. Protocol sync: brain_protocol.rs matches protocol.py, and the brain's
+#      protocol_consts.py holds the values this .config gives
+#      (tools/build/export_kernel_consts.py --check)
 #
 # Usage: bash tools/gate/ci_full.sh
 
@@ -152,6 +154,25 @@ if [ -f "$RUST_PROTO" ] && [ -f "$PY_PROTO" ]; then
     fi
 else
     echo "  SKIP — protocol files not found"
+    WARN=$((WARN + 1))
+fi
+
+# The kernel constants the brain mirrors (TCP caps, OTA size, task ceiling,
+# board and limits tier): its protocol_consts.py against this checkout's
+# .config. A drift warns, as the packet check above does: the mirror follows
+# one chosen .config, and the brain's own pytest asserts what it relies on.
+PY_CONSTS="$BRAIN_DIR/protocol_consts.py"
+if [ -d "$BRAIN_DIR" ] && [ -f "$OS_DIR/.config" ]; then
+    if CONSTS_OUT="$(python3 "$OS_DIR/tools/build/export_kernel_consts.py" --config "$OS_DIR/.config" --out "$PY_CONSTS" --check 2>&1)"; then
+        echo "  Kernel constants:             PASS"
+        PASS=$((PASS + 1))
+    else
+        echo "  Kernel constants:             WARN (regenerate: python3 tools/build/export_kernel_consts.py)"
+        printf '%s\n' "$CONSTS_OUT" | sed -n 1,8p | sed 's/^/    /'
+        WARN=$((WARN + 1))
+    fi
+else
+    echo "  SKIP — no $BRAIN_DIR or no .config"
     WARN=$((WARN + 1))
 fi
 
