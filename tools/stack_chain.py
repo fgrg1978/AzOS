@@ -13,11 +13,13 @@ limit: ten small and medium frames in one chain summed past the 12 KiB a
 actually matters -- how deep can one trap go -- and it found that the embedded
 profile still did not fit its own deepest syscall chain after that night's fix.
 
-HOW IT WORKS. Frames come from stack_frames.frames(), which sums a whole
-prologue. Edges come from every call and tail jump llvm-objdump annotates,
-resolved by the address they reach (`edges`), so an `auipc`+`jalr` long call
-is resolved exactly like a `jal`; on x86_64 the retpoline thunk's target is
-read from the instruction stream (`x86_64_edges`). The deepest chain is the
+HOW IT WORKS. Frames and call sites come from one pass of the frame
+dataflow (stack_frames.analyze): a frame is the deepest sp gets on any path
+through its function. Edges come from every call and jump out of a function,
+resolved by the address they reach (`edges`); the dataflow's register state
+gives the address of a call through a register, so an `auipc`+`jalr` long
+call is resolved exactly like a `jal`, and on x86_64 the retpoline thunk's
+target is read from the instruction stream. The deepest chain is the
 maximum sum over paths from each root, plus the panic handler's own chain
 once (`chain`). The roots are the Rust functions each ISA's trap entry
 (`kernel/src/entry/<isa>/asm/trap_entry.S`) calls on the task's stack
@@ -25,9 +27,11 @@ once (`chain`). The roots are the Rust functions each ISA's trap entry
 
 WHAT IT DOES NOT SEE, and therefore why this is a LOWER bound:
   * Indirect calls through a function pointer or a vtable are not followed:
-    on riscv64 and aarch64 a `jalr`/`blr` through a register no `auipc` just
-    set, on x86_64 a thunk call whose register was loaded from memory. x86_64
-    prints how many thunk calls that leaves.
+    a `jalr`/`blr` or an x86_64 thunk call through a register loaded from
+    memory. Their count is printed.
+  * A function whose sp the dataflow cannot bound (stack_frames.py) is
+    charged the part it can; the chain fails through one unless
+    stack_frames.UNBOUNDED_ALLOWED gives its reason.
   * Recursion is cut at the first repeat; a recursive cycle's true depth is
     a run-time property this cannot know. Cuts are counted and printed.
   * Inlined code has no symbol: its locals are already inside its caller's
@@ -47,70 +51,27 @@ Exit 1 when the chain is over the limit, or when a recursive block too big to
 walk decides the verdict (see `longest`); 2 when the image cannot be read.
 """
 import argparse
-import bisect
 import collections
 import os
-import re
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stack_frames
 
-CALL = ("jal", "jalr", "j", "tail", "c.j", "c.jal", "c.jalr", "c.jr", "jr", "bl", "b")
-
-
-# The Rust functions each ISA's trap entry calls on the task's stack, by the
-# format llvm-objdump names: the exception and interrupt dispatch, the lean
-# native-syscall entries that skip it (Chain E cut 7), and the reschedule
-# after an interrupt.
+# The Rust functions each ISA's trap entry calls on the task's stack: the
+# exception and interrupt dispatch, the lean native-syscall entries that skip
+# it (Chain E cut 7), and the reschedule after an interrupt.
 ROOTS = {
-    "elf64-littleriscv": ("riscv64_trap_handler", "riscv64_native_syscall", "riscv64_fast_ipc_syscall",
-                          "trap_resched"),
-    "elf64-littleaarch64": ("aarch64_trap_entry", "aarch64_trap_resched"),
-    "elf64-x86-64": ("x86_64_trap_entry", "x86_64_native_syscall", "x86_64_fast_ipc_syscall",
-                     "x86_64_trap_resched"),
+    "riscv64": ("riscv64_trap_handler", "riscv64_native_syscall", "riscv64_fast_ipc_syscall", "trap_resched"),
+    "aarch64": ("aarch64_trap_entry", "aarch64_trap_resched"),
+    "x86_64": ("x86_64_trap_entry", "x86_64_native_syscall", "x86_64_fast_ipc_syscall", "x86_64_trap_resched"),
 }
 
 
-def call_graph(elf, tools, stats=None):
-    """`(graph, names, format)`: the image's call graph, its function names and
-    the file format llvm-objdump read (a key of `ROOTS`). `stats` (a dict)
-    gets the x86_64 thunk counts."""
-    nm = subprocess.run([os.path.join(tools, "llvm-nm"), "-S", "-C", "--defined-only", elf],
-                        capture_output=True, text=True)
-    dis = subprocess.run([os.path.join(tools, "llvm-objdump"), "-d", "-C", "--no-show-raw-insn", elf],
-                         capture_output=True, text=True)
-    if nm.returncode or dis.returncode:
-        sys.stderr.write(nm.stderr + dis.stderr)
-        sys.exit(2)
-    syms = []
-    for line in nm.stdout.splitlines():
-        p = line.split(None, 3)
-        if len(p) == 4 and p[2] in "tTwW" and int(p[1], 16):
-            syms.append((int(p[0], 16), int(p[1], 16), p[3]))
-    syms.sort()
-    starts = [s[0] for s in syms]
-
-    def owner(addr):
-        i = bisect.bisect_right(starts, addr) - 1
-        return syms[i][2] if i >= 0 and addr < syms[i][0] + syms[i][1] else None
-
-    fmt = next((f for f in ROOTS if f in dis.stdout[:400]), "")
-    graph = x86_64_edges(dis.stdout, owner, stats) if fmt == "elf64-x86-64" else edges(dis.stdout, owner)
-    return graph, {s[2] for s in syms}, fmt
-
-
-# `jal`/`j`/`bl`/`b` print their target address; `jalr`/`jr` print an offset
-# from a register an `auipc` just before set.
-AUIPC = re.compile(r"^(\w+),(-?0x[0-9a-f]+|-?\d+)$")
-JALR = re.compile(r"^(?:\w+,)?(-?0x[0-9a-f]+|-?\d+)\((\w+)\)$")
-
-
-def edges(text, owner):
-    """The call graph of an objdump listing: function -> the functions it
-    calls or tail-jumps to, each resolved through `owner` (address -> the
-    function holding it).
+def edges(an, owner, stats=None):
+    """The call graph of a [`stack_frames.Analysis`]: function -> the
+    functions it calls or tail-jumps to, each resolved through `owner`
+    (address -> the function holding it).
 
     A call is resolved by the ADDRESS it reaches, not by the name objdump
     annotates it with. Images keep the assembler's local labels
@@ -120,192 +81,37 @@ def edges(text, owner):
     the last of them: `ip::iface_get`'s jump to its own exit "called"
     `waitgraph::effective`, and edges like it knotted 331 functions into one
     recursive component that the chain charged whole (32 KiB of a 54 KiB
-    chain). A symbol annotation (`<memcpy>`) is unique and used as given."""
+    chain).
+
+    A call through a register reaches the value the frame dataflow
+    (`stack_frames.flow`) holds for that register at the call: an
+    `auipc`+`jalr` long call, an `adrp`+`blr`, and the x86_64 retpoline
+    thunk. Every call the x86_64 compiler could not make direct goes through
+    one (`callq __x86_indirect_thunk_r11`, the target in %r11), so a call
+    graph read off the call instructions alone has no edges at all: 19 of
+    every 20 calls in the 2026-10-24 x86_64 qemu kernel are thunk calls, and
+    most of them are static -- LLVM materialises the callee's address and
+    calls through the thunk because the build asks for retpolines, not
+    because the callee is unknown. A register loaded from memory (a vtable, a
+    spilled pointer, a function pointer argument) holds no known value: that
+    call is truly indirect and not followed. A call into hand-written
+    assembly that has no symbol size (`aarch64_ret_to_user`, the riscv64
+    feature probes) reaches no function either: it is not followed, and
+    counted apart. `stats` (a dict) counts the thunk calls and the calls not
+    followed."""
     graph = collections.defaultdict(set)
-    hi = {}  # register -> the address its `auipc` made, in the current function
-    cur = None
-    for line in text.splitlines():
-        m = re.match(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$", line)
-        if not m:
-            continue
-        addr, op, rest = int(m.group(1), 16), m.group(2), m.group(3)
-        f = owner(addr)
-        if f != cur:
-            cur, hi = f, {}
-        args = re.sub(r"\s*<.*$", "", rest).replace(" ", "")
-        if op == "auipc":
-            a = AUIPC.match(args)
-            if a:
-                imm = int(a.group(2), 0) & 0xFFFFF
-                hi[a.group(1)] = addr + ((imm ^ 0x80000) - 0x80000 << 12)
-            continue
-        if op not in CALL:
-            continue
-        ann = re.search(r"<(.+?)(\+0x[0-9a-f]+)?>\s*$", rest)
-        if not (f and ann):
-            continue
-        target = ann.group(1)
-        if target.startswith(".L"):
-            to = re.search(r"(?:^|,)(0x[0-9a-f]+)$", args)
-            j = JALR.match(args)
-            if to:
-                target = owner(int(to.group(1), 16))
-            elif j and j.group(2) in hi:
-                target = owner(hi[j.group(2)] + int(j.group(1), 0))
-            else:
-                continue
-        if target and target != f:
-            graph[f].add(target)
-    return graph
-
-
-# x86_64 (AT&T syntax). The 16 general registers by every name a write can
-# give them (`%r11d` writes %r11, `%eax` and `%al` write %rax).
-X86_REGS = {}
-for _r in ("ax", "bx", "cx", "dx", "si", "di", "bp", "sp"):
-    for _n in ("r" + _r, "e" + _r, _r):
-        X86_REGS[_n] = "r" + _r
-for _r in ("a", "b", "c", "d"):
-    X86_REGS[_r + "l"] = X86_REGS[_r + "h"] = "r" + _r + "x"
-for _r in ("si", "di", "bp", "sp"):
-    X86_REGS[_r + "l"] = "r" + _r
-for _i in range(8, 16):
-    for _s in ("", "d", "w", "b"):
-        X86_REGS[f"r{_i}{_s}"] = f"r{_i}"
-# What a call does not preserve (SysV): %r11 is among them, so a thunk
-# target never survives a call.
-X86_CALLER_SAVED = {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"}
-# Writes no operand names. Only these can hide a write to a register the
-# model tracks; every other instruction is taken to write each register its
-# operands name, which can lose a target but never invents one.
-X86_IMPLICIT = {
-    "cpuid": {"rax", "rbx", "rcx", "rdx"}, "syscall": {"rcx", "r11"}, "sysretq": {"rcx", "r11"},
-    "rdtsc": {"rax", "rdx"}, "rdtscp": {"rax", "rcx", "rdx"}, "rdmsr": {"rax", "rdx"},
-    "xgetbv": {"rax", "rdx"}, "rdpkru": {"rax", "rdx"}, "leave": {"rbp"}, "leaveq": {"rbp"},
-    "rep": {"rax", "rcx", "rsi", "rdi"}, "repe": {"rax", "rcx", "rsi", "rdi"},
-    "repne": {"rax", "rcx", "rsi", "rdi"}, "loop": {"rcx"},
-    "cqto": {"rdx"}, "cltd": {"rdx"}, "cltq": {"rax"}, "cwtl": {"rax"},
-    **{op + w: {"rax", "rsi", "rdi"} for op in ("movs", "stos", "lods", "cmps", "scas") for w in "bwlq"},
-    **{op + w: {"rax", "rdx"} for op in ("mul", "div", "idiv", "cmpxchg") for w in ("", "b", "w", "l", "q")},
-    "cmpxchg8b": {"rax", "rdx"}, "cmpxchg16b": {"rax", "rdx"},
-}
-# Ops that only read their operands (and %rsp, which nothing tracks).
-X86_READS = re.compile(r"^(cmp[bwlq]?|test[bwlq]?|push(q|w|fq)?|bt[bwlq]?|nop[wlq]?|prefetch\w*|u?comis[sd])$")
-X86_ENDS = ("jmp", "jmpq", "retq", "ret", "ud2", "iretq", "sysretq", "lretq")
-X86_THUNK = re.compile(r"^__x86_indirect_thunk_(\w+)$")
-
-
-def x86_regs(args):
-    """The registers an AT&T operand list names, by their 64-bit name."""
-    return {X86_REGS[r] for r in re.findall(r"%(\w+)", args) if r in X86_REGS}
-
-
-def x86_64_edges(text, owner, stats=None):
-    """[`edges`] for an x86_64 listing. Every call the compiler could not make
-    direct goes through a retpoline thunk (`callq __x86_indirect_thunk_r11`,
-    the target in %r11), so a call graph read off the call instructions alone
-    has no edges at all: 19 of every 20 calls in the 2026-10-24 x86_64 qemu
-    kernel are thunk calls, and most of them are static -- LLVM materialises
-    the callee's address and calls through the thunk because the build asks
-    for retpolines, not because the callee is unknown.
-
-    So the thunk register is tracked forward through each function's control
-    flow (fall-through and the branches inside it), as the address it holds
-    at each instruction: a RIP-relative `leaq` (objdump prints the address it
-    makes) or an immediate sets it, a register move copies it, a call kills
-    every caller-saved register, and any other write -- a load from memory, an
-    arithmetic op, an implicit write (`X86_IMPLICIT`) -- kills it. Two paths
-    that meet keep an address only when both hold the same one. A thunk call
-    or tail jump whose register holds a known address at that point is an
-    edge to the function at that address, exactly like a direct call; one
-    whose register was loaded from memory (a vtable, a spilled pointer, a
-    function pointer argument) is a truly indirect call and, as on riscv64
-    and aarch64, not followed. `stats` (a dict) counts both."""
-    graph = collections.defaultdict(set)
-    funcs = {}   # function -> [(addr, op, args, branch target, annotation, address made)]
-    for line in text.splitlines():
-        m = re.match(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$", line)
-        if not m:
-            continue
-        addr, op, rest = int(m.group(1), 16), m.group(2), m.group(3)
-        f = owner(addr)
-        if not f:
-            continue
-        comment = re.search(r"#\s*(0x[0-9a-f]+)", rest)
-        args = re.sub(r"\s*#.*$", "", rest)
-        ann = re.search(r"<(.+?)(\+0x[0-9a-f]+)?>\s*$", args)
-        args = re.sub(r"\s*<.*$", "", args).replace(" ", "")
-        to = None
-        if op.startswith("j") or op.startswith("call"):
-            t = re.fullmatch(r"(0x[0-9a-f]+)", args)
-            to = int(t.group(1), 16) if t else None
-        funcs.setdefault(f, []).append((addr, op, args, to, ann.group(1) if ann else None,
-                                        int(comment.group(1), 16) if comment else None))
     counts = collections.Counter()
-    for f, body in funcs.items():
-        at = {ins[0]: i for i, ins in enumerate(body)}
-        state = [None] * len(body)   # per instruction: {register: address} on entry
-        state[0] = {}
-        work = [0]
-        while work:
-            i = work.pop()
-            addr, op, args, to, ann, made = body[i]
-            regs = dict(state[i])
-            for r in X86_IMPLICIT.get(op, ()):
-                regs.pop(r, None)
-            if op.startswith("call"):
-                for r in X86_CALLER_SAVED:
-                    regs.pop(r, None)
-            elif op == "leaq" and "(%rip)," in args and made is not None:
-                regs[X86_REGS[args.rsplit(",%", 1)[1]]] = made
-            elif op in ("movq", "movabsq") and "," in args and args.split(",")[-1].startswith("%"):
-                src, dst = args.rsplit(",", 1)
-                d = X86_REGS.get(dst[1:])
-                imm = re.fullmatch(r"\$(-?0x[0-9a-f]+|-?\d+)", src)
-                if imm:
-                    regs[d] = int(imm.group(1), 0) & (1 << 64) - 1
-                elif src.startswith("%") and X86_REGS.get(src[1:]) in regs:
-                    regs[d] = regs[X86_REGS[src[1:]]]
-                else:
-                    regs.pop(d, None)
-            elif not (op.startswith("j") or X86_READS.match(op)
-                      or (op.startswith("mov") and not args.split(",")[-1].startswith("%"))):
-                for r in x86_regs(args):
-                    regs.pop(r, None)
-            nxt = []
-            if to is not None and op.startswith("j") and to in at:
-                nxt.append(at[to])
-            if op not in X86_ENDS and i + 1 < len(body):
-                nxt.append(i + 1)
-            for j in nxt:
-                if state[j] is None:
-                    state[j] = regs
-                    work.append(j)
-                else:
-                    merged = {r: v for r, v in state[j].items() if regs.get(r) == v}
-                    if merged != state[j]:
-                        state[j] = merged
-                        work.append(j)
-        for i, (addr, op, args, to, ann, made) in enumerate(body):
-            if not (op.startswith("call") or op.startswith("j")):
+    for f, sites in an.sites.items():
+        for kind, target, thunk in sites:
+            counts["thunk"] += thunk
+            counts["thunk static"] += thunk and target is not None
+            if target is None:
+                counts["indirect"] += kind == "call" or thunk
                 continue
-            thunk = X86_THUNK.match(ann or "")
-            if thunk:
-                counts["thunk"] += 1
-                target = (state[i] or {}).get(X86_REGS.get(thunk.group(1)))
-                if target is None or owner(target) is None:
-                    counts["indirect"] += 1
-                    continue
-                target = owner(target)
-            elif args.startswith("*"):
-                counts["indirect"] += 1
-                continue
-            elif to is not None:
-                target = owner(to)
-            else:
-                continue
-            if target and target != f:
-                graph[f].add(target)
+            to = owner(target)
+            counts["unsized"] += to is None and kind == "call"
+            if to and to != f:
+                graph[f].add(to)
     if stats is not None:
         stats.update(counts)
     return graph
@@ -319,24 +125,29 @@ PANIC_NESTED = "kernel::panic::nested"
 # walk before it is charged the sum of its frames instead.
 WALK_MAX = 1_000_000
 
-Chain = collections.namedtuple("Chain", "depth path frames knots panic fallbacks")
+Chain = collections.namedtuple("Chain", "depth path frames knots panic fallbacks unbounded")
 
 
 def load(elf, stats=None):
-    """`(graph, frames, names, format)` of `elf`: see [`call_graph`]."""
-    tools = stack_frames.llvm_bin()
-    frames = stack_frames.frames(elf, tools)
-    graph, names, fmt = call_graph(elf, tools, stats)
-    return graph, frames, names, fmt
+    """`(graph, analysis, names, isa)` of `elf`: its call graph ([`edges`]),
+    its [`stack_frames.Analysis`] (`frames`: each function's frame), its
+    function names and its ISA (a key of `ROOTS`). `stats` (a dict) gets the
+    call counts of [`edges`]."""
+    text, owner, names, isa, starts = stack_frames.disassemble(elf, stack_frames.llvm_bin())
+    if not isa:
+        sys.stderr.write(f"{elf}: not a riscv64, aarch64 or x86_64 image\n")
+        sys.exit(2)
+    an = stack_frames.analyze(text, owner, isa, starts)
+    return edges(an, owner, stats), an, names, isa
 
 
 def analyze(elf, root):
     """The [`Chain`] of `root` in `elf` (a function of it): see [`chain`].
     `KeyError` when `root` is no symbol of the image."""
-    graph, frames, names, _ = load(elf)
+    graph, an, names, _ = load(elf)
     if root not in names:
         raise KeyError(f"no symbol {root} in {elf}")
-    return chain(graph, frames, root)
+    return chain(graph, an.frames, root, an.unbounded)
 
 
 def fallback_notes(c):
@@ -352,13 +163,17 @@ def fallback_notes(c):
     return lines, any(f in on for m in c.fallbacks for f in m)
 
 
-def chain(graph, frames, root):
+def chain(graph, frames, root, unbounded=None):
     """The [`Chain`] of `root` over `graph` (function -> callees) with
     `frames`: `depth`, the deepest chain from `root`, the panic handler's
     charge included; `path`, the functions on it; `frames`; `knots`, the
     mutually recursive components; `panic`, the handler's own chain
     `(depth, path)` (None when `root` cannot reach it); `fallbacks`, the
-    recursive blocks charged their sum (`longest`).
+    recursive blocks charged their sum (`longest`); `unbounded`, the
+    `(refused, excused)` lines of the functions `root` reaches whose frame
+    the dataflow cannot bound (`stack_frames.unbounded_verdicts` over
+    `unbounded`, an [`stack_frames.Analysis`]'s): the depth is a lower bound
+    through them.
 
     THE PANIC HANDLER IS ITS OWN ROOT. Anything that can panic calls it, and
     it calls the heap, the console and the file system (the crash log), which
@@ -395,7 +210,8 @@ def chain(graph, frames, root):
             pdepth += 2 * frames.get(handler, 0) + ndepth + frames.get(PANIC_NESTED, 0)
         panic = (pdepth, ppath)
         total += pdepth
-    return Chain(total, path, frames, knots, panic, fallbacks)
+    return Chain(total, path, frames, knots, panic, fallbacks,
+                 stack_frames.unbounded_verdicts(unbounded or {}, reach))
 
 
 def longest(graph, frames, root):
@@ -607,13 +423,14 @@ def main():
         sys.stderr.write(f"no image at {a.elf}\n")
         sys.exit(2)
     stats = {}
-    graph, frames, names, fmt = load(a.elf, stats)
-    roots = a.root or ROOTS.get(fmt, ())
+    graph, an, names, isa = load(a.elf, stats)
+    frames = an.frames
+    roots = a.root or ROOTS.get(isa, ())
     missing = [r for r in roots if r not in names]
     if not roots or missing:
-        sys.stderr.write(f"no symbol {', '.join(missing) or '(no root for ' + repr(fmt) + ')'} in {a.elf}\n")
+        sys.stderr.write(f"no symbol {', '.join(missing) or '(no root for ' + repr(isa) + ')'} in {a.elf}\n")
         sys.exit(2)
-    chains = {r: chain(graph, frames, r) for r in roots}
+    chains = {r: chain(graph, frames, r, an.unbounded) for r in roots}
     root = max(roots, key=lambda r: chains[r].depth)
     c = chains[root]
     over = c.depth > a.limit
@@ -631,14 +448,19 @@ def main():
               f"their longest simple path: {len(c.knots)} in the image "
               f"(largest {max(len(k) for k in c.knots)} functions)")
     if stats.get("thunk"):
-        print(f"           x86_64 thunk calls: {stats['thunk']}, "
-              f"{stats['thunk'] - stats.get('indirect', 0)} with a static target; "
-              f"{stats.get('indirect', 0)} indirect calls not followed")
-    seen = []
+        print(f"           x86_64 thunk calls: {stats['thunk']}, {stats['thunk static']} with a static target")
+    print(f"           {stats.get('indirect', 0)} indirect calls not followed, and {stats.get('unsized', 0)} "
+          f"calls into assembly with no symbol size")
+    seen, refused, excused = [], [], []
     for r in roots:
         seen += [w for w in fallback_notes(chains[r])[0] if w not in seen]
+        refused += [w for w in chains[r].unbounded[0] if w not in refused]
+        excused += [w for w in chains[r].unbounded[1] if w not in excused]
     for w in seen:
         print(w)
+    if excused:
+        print(f"           unbounded sp allowed by stack_frames.UNBOUNDED_ALLOWED in {len(excused)} "
+              f"reached function(s)")
     for r in roots:
         if chains[r].depth <= a.limit:
             continue
@@ -647,7 +469,9 @@ def main():
                   f"charged its sum, which the walk might not reach; raise WALK_MAX to decide it")
         else:
             print(f"OVER {chains[r].depth} > {a.limit}: chain from {r}")
-    sys.exit(1 if over else 0)
+    for w in refused:
+        print(w)
+    sys.exit(1 if over or refused else 0)
 
 
 if __name__ == "__main__":

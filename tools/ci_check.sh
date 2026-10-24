@@ -11322,9 +11322,10 @@ if n0l_out="$(bash "${REPO_ROOT}/tools/gate_tier.sh" lints 2>&1)"; then ok
 else bad; printf '%s\n' "$n0l_out" | grep -E 'FAIL$|^      ' | sed 's/^/    /'; fi
 fi; ci_row_end
 
-# The readers of tools/user_stacks.py (the stack an ELF asks for, the aarch64
-# frames of tools/stack_frames.py): a header read wrong, or a frame summed wrong,
-# would pass every image against a figure that is not theirs.
+# The readers of tools/user_stacks.py (the stack an ELF asks for) and of
+# tools/stack_frames.py and stack_chain.py (each ISA's frames, shrink-wrapped
+# ones included, the unbounded ones, the call edges): a header read wrong, or a
+# frame summed wrong, would pass every image against a figure that is not theirs.
 if ci_row_begin "user_stacks self-test"; then
 printf "  %-26s" "user_stacks self-test..."
 if us_out="$(python3 "${REPO_ROOT}/tools/user_stacks.py" --self-test 2>&1)"; then ok
@@ -11820,10 +11821,15 @@ else
     # buffer, net_poll, a TCP ACK and an MTU-sized packet. kernel_main alone
     # runs on the 256 KiB boot stack.
     #
-    # This row reads each frame from the WHOLE prologue. Until 2026-09-16 it
-    # took the largest single `addi sp`, and LLVM reserves a big frame in two
-    # or three steps: `ip::send_flags` measured 2032 of its 3136 bytes, and
-    # the syscall bounce buffers 2048 of ~4.1 KiB.
+    # This row reads each frame as the deepest sp gets on any path through the
+    # function (a dataflow over its control flow, tools/stack_frames.py). Until
+    # 2026-09-16 it took the largest single `addi sp`, and LLVM reserves a big
+    # frame in two or three steps: `ip::send_flags` measured 2032 of its 3136
+    # bytes. Until 2026-10-24 it read the prologue only, and LLVM shrink-wraps
+    # (tests for an early return, then reserves): 1,482 of 5,048 x86_64 frames
+    # were short, the trap dispatch's 2,784 B read as 56. A function whose sp
+    # the dataflow cannot bound (an alloca, a stack switch) is UNBOUNDED and
+    # fails the row unless stack_frames.UNBOUNDED_ALLOWED gives its reason.
     frame_row() { # frame_row <label> <elf> <limit-bytes>
         printf "  %-26s" "${1}..."
         local out
@@ -11847,7 +11853,7 @@ else
                 --boot '<azos_fs::azvol::volume::Volume<*kernel::boot::azvol::PartDev*>>::mount_inner*' 2>&1)"; then
             ok
         else
-            bad; echo "$out" | grep -a "OVER\|no image\|rror" | sed 's/^/      /'
+            bad; echo "$out" | grep -a "OVER\|UNBOUNDED\|no image\|rror" | sed 's/^/      /'
         fi
     }
     # The frame lint above asks whether any ONE function is too big. That is
@@ -11945,7 +11951,7 @@ else
         if out="$(python3 "${REPO_ROOT}/tools/user_stacks.py" --config "$cfg" $imgs 2>&1)"; then
             ok
         else
-            bad; echo "$out" | grep -a "^OVER\|rror\|rac" | sed 's/^/      /'
+            bad; echo "$out" | grep -a "^OVER\|UNBOUNDED\|rror\|rac" | sed 's/^/      /'
         fi
     }
     user_stacks_canary_row() { # the same check with every request 16 KiB: it must name both
@@ -15054,7 +15060,7 @@ PY
     # the riscv64 kernels' rows) on the gate's two x86_64 kernels, the generic
     # cell's and the robot cell's. Every indirect call goes through a retpoline
     # thunk on x86_64; tools/stack_chain.py reads the thunk's target from the
-    # instruction stream where it is static (`x86_64_edges`).
+    # instruction stream where it is static (`edges`).
     x86_stack_row() { # x86_stack_row <label> <frames|chain> <features or "">
         local kimg="$CI_LOG_DIR/kernel-x86-stack-$2-${3:-generic}"
         mkdir -p "$CI_LOG_DIR"

@@ -16,9 +16,10 @@ killed by a write fault at an address that means nothing to its author:
 For each image this reads that request and the deepest static call chain from
 its entry (`tools/stack_chain.py`: every frame summed, calls resolved through
 the symbol table), and fails when the chain plus a margin is over the request.
-The chain is a LOWER bound -- indirect calls are not followed, and a frame
-reserved inside a callee is only seen through its prologue -- so the margin is
-what stands for them (default 25%). It also fails when the request is over
+The chain is a LOWER bound -- indirect calls are not followed -- so the
+margin is what stands for them (default 25%). A function it reaches whose
+stack pointer the frame dataflow cannot bound (`stack_frames.UNBOUNDED_ALLOWED`
+names the ones that may) fails the image. It also fails when the request is over
 `USER_STACK_MAX_KB`, which the loader would refuse.
 
 A stripped image has no symbols to read a chain from: it is reported and only
@@ -41,7 +42,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stack_chain  # noqa: E402
 import stack_frames  # noqa: E402
-from stack_frames import aarch64_frames, x86_64_frames  # noqa: E402
 
 PT_GNU_STACK = 0x6474E551
 EM_RISCV, EM_AARCH64, EM_X86_64 = 243, 183, 62
@@ -129,6 +129,9 @@ def check(path, args, default_kb, max_kb):
             ok = False
         for w in warnings:
             print(f"{name}: {w}")
+        for w in c.unbounded[0]:
+            print(f"{name}: {w}")
+            ok = False
         print(f"{verdict:4} {name}: {what}: chain {c.depth} B (+{args.margin}% = {need} B) of {stack} B"
               f" ({kind if what == 'main thread' else 'static'}); deepest: "
               + " > ".join(n.split("::")[-1][:28] for n in c.path[:4]))
@@ -173,8 +176,10 @@ def self_test():
         expect("config_kb set", config_kb(cfg, "USER_STACK_SIZE_KB", 1), 16)
         expect("config_kb absent", config_kb(cfg, "USER_STACK_MAX_KB", 256), 256)
         expect("config_kb no file", config_kb(os.path.join(d, "missing"), "USER_STACK_SIZE_KB", 7), 7)
-    # aarch64 prologues as LLVM writes them: pre-indexed saves and `sub sp`
-    # in one or two steps, a `lsl #12` immediate, and a leaf that reserves none.
+    # aarch64 frames as LLVM writes them: pre-indexed saves and `sub sp` in
+    # one or two steps, a `lsl #12` immediate, a reservation after a call
+    # (the frame is the deepest point, not the prologue), and a leaf that
+    # reserves none.
     text = "\n".join([
         "0000000000010000 <big>:",
         "   10000: stp x29, x30, [sp, #-0x60]!",
@@ -187,6 +192,7 @@ def self_test():
         "   10100: str x30, [sp, #-0x10]!",
         "   10104: stp x20, x19, [sp, #0x20]",
         "   10108: ldr x0, [x0]",
+        "   1010c: ret",
         "0000000000010200 <leaf>:",
         "   10200: add x0, x0, #0x1",
         "   10204: ret",
@@ -194,10 +200,10 @@ def self_test():
     spans = [(0x10000, 0x100, "big"), (0x10100, 0x100, "callee"), (0x10200, 0x10, "leaf")]
 
     def owner(addr):
-        return next((n for a, z, n in spans if a <= addr < a + z), "?")
+        return next((n for a, z, n in spans if a <= addr < a + z), None)
 
-    got = aarch64_frames(text, owner)
-    expect("aarch64 big", got.get("big"), 0x60 + 0x3000 + 0x20)
+    got = stack_frames.analyze(text, owner, "aarch64").frames
+    expect("aarch64 big", got.get("big"), 0x60 + 0x3000 + 0x20 + 0x999)
     expect("aarch64 callee", got.get("callee"), 0x10)
     expect("aarch64 leaf", got.get("leaf"), None)
     # Call edges by the address reached: `.Lpcrel_hi1` is defined in `a` and
@@ -222,8 +228,8 @@ def self_test():
         "   21304: jalr -0x100(t1) <.Lpcrel_hi1>",
     ])
     spans = [(0x20000, 0x14, "a"), (0x20100, 4, "callee"), (0x20200, 0x10, "b"), (0x21300, 8, "c")]
-    expect("call edges", {f: sorted(cs) for f, cs in stack_chain.edges(text, owner).items()},
-           {"a": ["callee"], "c": ["b"]})
+    got = stack_chain.edges(stack_frames.analyze(text, owner, "riscv64"), owner)
+    expect("call edges", {f: sorted(cs) for f, cs in got.items()}, {"a": ["callee"], "c": ["b"]})
     # The panic handler is its own root: 20 functions that can panic, all
     # called by the handler, are one knot through it. The chain is the
     # trap's own down to the panic call, plus the handler's own once.
@@ -263,9 +269,10 @@ def self_test():
     expect("fallback charge", c.depth, 16 + 200 + sum(100 + i for i in range(20)) + 1000)
     expect("fallback named", (len(c.fallbacks), len(warnings), on_path), (1, 1, True))
     expect("fallback warning", warnings[0][:40] if warnings else None, "WARNING: a recursive block of 21 functio")
-    # x86_64 prologues: the return address, pushes, 4 KiB steps with the
-    # probe between them, `addq $-0x80` and the probe loop of a frame too big
-    # to unroll; a push after the prologue is not the frame's.
+    # x86_64 frames: the return address, pushes, 4 KiB steps with the probe
+    # between them, `addq $-0x80`, the probe loop of a frame too big to unroll
+    # (bounded by its compare with %r11, the probes not counted again), and a
+    # push after the prologue, which is the frame's too.
     text = "\n".join([
         "ffffffff80001000 <big>:",
         "ffffffff80001000:  endbr64",
@@ -297,8 +304,8 @@ def self_test():
     def owner(addr):
         return next((n for a, z, n in spans if a <= addr < a + z), None)
 
-    got = x86_64_frames(text, owner)
-    expect("x86_64 big", got.get("big"), 8 + 16 + 0x1000 + 0x18)
+    got = stack_frames.analyze(text, owner, "x86_64").frames
+    expect("x86_64 big", got.get("big"), 8 + 16 + 0x1000 + 0x18 + 8)
     expect("x86_64 probe loop", got.get("looped"), 8 + 0x10000 + 0x20)
     expect("x86_64 addq", got.get("red"), 8 + 0x80)
     expect("x86_64 leaf", got.get("leaf"), 8)
@@ -344,10 +351,143 @@ def self_test():
              (0xffffffff80003000, 0x10, "callee"), (0xffffffff80003100, 0x10, "other"),
              (0xffffffff80003200, 0x10, "direct"), (0xffffffff80003300, 0x10, "vt"), (0xffffffff80009000, 0x20, "__x86_indirect_thunk_r11")]
     stats = {}
-    got = stack_chain.x86_64_edges(text, owner, stats)
+    got = stack_chain.edges(stack_frames.analyze(text, owner, "x86_64"), owner, stats)
     expect("x86_64 thunk edges", {f: sorted(cs) for f, cs in got.items()},
            {"a": ["callee", "direct", "other"], "c": ["callee"], "d": ["direct"]})
     expect("x86_64 thunk counts", (stats.get("thunk"), stats.get("indirect")), (6, 3))
+    # Shrink-wrapped frames: LLVM tests for an early return before it
+    # reserves, so a reader that stops at the prologue's first other
+    # instruction sees none of the frame. One fixture per ISA, each with the
+    # early exit first: riscv64 with a frame too big for one `addi` (`lui` +
+    # `sub sp`); aarch64 with a reservation in an arm only its jump table
+    # reaches (`br` through a loaded offset); x86_64 with the frame realigned
+    # to 64 bytes and given back through the frame pointer.
+    def owner_of(spans):
+        return lambda addr: next((n for a, z, n in spans if a <= addr < a + z), None)
+
+    text = "\n".join([
+        "0000000000030000 <sw>:",
+        "   30000: beqz a0, 0x3002c <sw+0x2c>",
+        "   30004: addi sp, sp, -0x30",
+        "   30008: sd ra, 0x28(sp)",
+        "   3000c: lui a1, 0x1",
+        "   30010: sub sp, sp, a1",
+        "   30014: jal 0x30100 <callee>",
+        "   30018: lui a1, 0x1",
+        "   3001c: add sp, sp, a1",
+        "   30020: ld ra, 0x28(sp)",
+        "   30024: addi sp, sp, 0x30",
+        "   30028: ret",
+        "   3002c: ret",
+        "0000000000030100 <callee>:",
+        "   30100: ret",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0x30000, 0x30, "sw"), (0x30100, 4, "callee")]), "riscv64")
+    expect("riscv64 shrink-wrapped", (an.frames.get("sw"), an.unbounded), (0x30 + 0x1000, {}))
+    text = "\n".join([
+        "0000000000040000 <sw>:",
+        "   40000: cbz x0, 0x40048 <sw+0x48>",
+        "   40004: stp x29, x30, [sp, #-0x20]!",
+        "   40008: mov x29, sp",
+        "   4000c: sub sp, sp, #0x200",
+        "   40010: adr x8, 0x40024 <sw+0x24>",
+        "   40014: ldrb w9, [x8, x1]",
+        "   40018: add x8, x8, x9, lsl #2",
+        "   4001c: br x8",
+        "   40020: b 0x4003c <sw+0x3c>",
+        "   40024: sub sp, sp, #0x400",
+        "   40028: bl 0x40100 <callee>",
+        "   4002c: add sp, sp, #0x400",
+        "   40030: b 0x4003c <sw+0x3c>",
+        "   40034: nop",
+        "   40038: nop",
+        "   4003c: mov sp, x29",
+        "   40040: ldp x29, x30, [sp], #0x20",
+        "   40044: ret",
+        "   40048: ret",
+        "0000000000040100 <callee>:",
+        "   40100: ret",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0x40000, 0x4c, "sw"), (0x40100, 4, "callee")]), "aarch64")
+    expect("aarch64 shrink-wrapped", (an.frames.get("sw"), an.unbounded, an.seeded), (0x20 + 0x200 + 0x400, {}, 1))
+    text = "\n".join([
+        "ffffffff80004000 <sw>:",
+        "ffffffff80004000:  testq %rdi, %rdi",
+        "ffffffff80004003:  je 0xffffffff80004022 <sw+0x22>",
+        "ffffffff80004005:  pushq %rbp",
+        "ffffffff80004006:  movq %rsp, %rbp",
+        "ffffffff80004009:  pushq %rbx",
+        "ffffffff8000400a:  andq $-0x40, %rsp",
+        "ffffffff8000400e:  subq $0x80, %rsp",
+        "ffffffff80004015:  callq 0xffffffff80004100 <callee>",
+        "ffffffff8000401a:  leaq -0x8(%rbp), %rsp",
+        "ffffffff8000401e:  popq %rbx",
+        "ffffffff8000401f:  popq %rbp",
+        "ffffffff80004020:  retq",
+        "ffffffff80004022:  retq",
+        "ffffffff80004100 <callee>:",
+        "ffffffff80004100:  retq",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0xffffffff80004000, 0x30, "sw"),
+                                              (0xffffffff80004100, 1, "callee")]), "x86_64")
+    # 8 return address, 16 pushes, 56 at most to a 64-byte boundary from a
+    # sp 24 below a 16-aligned one, 128 reserved.
+    expect("x86_64 shrink-wrapped", (an.frames.get("sw"), an.unbounded), (8 + 16 + 56 + 0x80, {}))
+    # A call that never returns (a panic) ends its path: what follows it is
+    # another block, reached at its own depth. Falling through from the
+    # `pushq` that aligned the panic call into the loop below made the loop
+    # look as if it lowered sp on every pass (`parse_unsigned_int`, x86_64).
+    text = "\n".join([
+        "ffffffff80005000 <scan>:",
+        "ffffffff80005000:  cmpq %rsi, %rdi",
+        "ffffffff80005003:  jae 0xffffffff8000500b <scan+0xb>",
+        "ffffffff80005005:  pushq %rax",
+        "ffffffff80005006:  callq 0xffffffff80005100 <fail>",
+        "ffffffff8000500b:  incq %rdi",
+        "ffffffff8000500e:  jmp 0xffffffff80005000 <scan>",
+        "ffffffff80005100 <fail>:",
+        "ffffffff80005100:  callq 0xffffffff80005200 <halt>",
+        "ffffffff80005105:  ud2",
+        "ffffffff80005200 <halt>:",
+        "ffffffff80005200:  hlt",
+        "ffffffff80005201:  jmp 0xffffffff80005200 <halt>",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0xffffffff80005000, 0x10, "scan"), (0xffffffff80005100, 8, "fail"),
+                                              (0xffffffff80005200, 3, "halt")]), "x86_64")
+    expect("x86_64 no return", (an.frames.get("scan"), an.unbounded), (16, {}))
+    # Unbounded: sp lowered by a loaded value (an alloca), sp lowered on every
+    # pass of a loop, sp set from memory (a stack switch). Each is named, and
+    # refused unless UNBOUNDED_ALLOWED gives a reason; the frame is the part
+    # that can be bounded.
+    text = "\n".join([
+        "0000000000050000 <alloca>:",
+        "   50000: addi sp, sp, -0x10",
+        "   50004: ld a1, 0x0(a0)",
+        "   50008: sub sp, sp, a1",
+        "   5000c: ret",
+        "0000000000050100 <switch>:",
+        "   50100: addi sp, sp, -0x20",
+        "   50104: ld sp, 0x8(a1)",
+        "   50108: ret",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0x50000, 0x10, "alloca"), (0x50100, 0x10, "switch")]), "riscv64")
+    expect("unbounded alloca", (an.frames.get("alloca"), an.unbounded.get("alloca")),
+           (0x10, [(0x50008, "adjusts sp by a value it cannot bound: sub sp,sp,a1")]))
+    expect("unbounded switch", (an.frames.get("switch"), an.unbounded.get("switch")),
+           (0x20, [(0x50104, "sets sp from a value it does not derive from sp: ld sp,0x8(a1)")]))
+    expect("unbounded refused", stack_frames.unbounded_verdicts(an.unbounded, {"alloca"}, {"sw*": "a switch"}),
+           (["UNBOUNDED alloca: adjusts sp by a value it cannot bound: sub sp,sp,a1 at 0x50008"], []))
+    expect("unbounded allowed", stack_frames.unbounded_verdicts(an.unbounded, None, {"sw*": "a switch"})[1],
+           ["unbounded, allowed: switch: a switch"])
+    text = "\n".join([
+        "ffffffff80006000 <grow>:",
+        "ffffffff80006000:  pushq %rax",
+        "ffffffff80006001:  decq %rdi",
+        "ffffffff80006004:  jne 0xffffffff80006000 <grow>",
+        "ffffffff80006006:  retq",
+    ])
+    an = stack_frames.analyze(text, owner_of([(0xffffffff80006000, 8, "grow")]), "x86_64")
+    expect("unbounded loop", an.unbounded.get("grow"), [(0xffffffff80006000, "lowers sp on every pass of a loop")])
     if failures:
         print("\n".join(failures))
         sys.exit(1)
