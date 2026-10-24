@@ -191,10 +191,13 @@ replace-no-fsync-canary = []
 #                                   check
 #   azvol-check-never-fails-canary: an azvol check that found damage passes
 #   azvol-unclean-unchecked-canary: an unclean azvol mount is not checked
+#   ro-open-canary:                 the VFS opens a read-only volume's file for
+#                                   writing (a page-cached write is lost)
 fat-check-never-fails-canary = []
 fat-hard-error-ignored-canary = []
 azvol-check-never-fails-canary = []
 azvol-unclean-unchecked-canary = []
+ro-open-canary = []
 
 # Gate canary (host suite `fs-tests`): the delete gate is never asked, so an
 # unlink, a rename over a file, a cut below a file's size and a snapshot drop

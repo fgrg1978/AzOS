@@ -4377,6 +4377,17 @@ mod power_cut {
         let _ = fat32::fat32_close(h);
         assert!(fat32::fat32_write_file(&name(b"NEW", b"DAT"), &pattern(600, 3)).is_err(), "a write is refused");
         assert!(fat32::fat32_mkdir(fat32::Volume::assume_mounted(), b"/D2").is_err());
+        // Through the VFS: refused at the open, so no page-cached write is
+        // ever told it landed.
+        super::vfs_open_close::vfs_once();
+        let mut t = super::vfs::ScratchFds::new();
+        for flags in [super::vfs::O_WRONLY, super::vfs::O_RDWR, super::vfs::O_WRONLY | super::vfs::O_CREAT] {
+            let fd = super::vfs::vfs_open(&mut t, b"/fat/D1/F.DAT", flags);
+            assert!(fd < 0, "a write-intent open of a read-only volume is refused ({flags:#x}): fd {fd}");
+        }
+        let fd = super::vfs::vfs_open(&mut t, b"/fat/D1/F.DAT", super::vfs::O_RDONLY);
+        assert!(fd >= 0, "a read-only open still works");
+        assert_eq!(super::vfs::vfs_close(&mut t, fd), 0);
         assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
         let after = disk_durable_image();
         assert!(after == before, "nothing reached the medium after the verdict");

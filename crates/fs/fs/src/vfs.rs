@@ -479,6 +479,13 @@ pub trait FileSystem: Sync {
     /// Capacity and free space of the volume.
     fn statfs(&self) -> Result<StatFs, FsErr> { Err(FsErr::Unsupported) }
 
+    /// Is the volume refusing every write for this mount (FAT32 whose
+    /// mount-time check failed)? The VFS then refuses a write-intent open,
+    /// before a page-cached write could be told it landed and be dropped at
+    /// write-back. A backend that refuses each change as it is made (azvol's
+    /// read-only rows) keeps the default.
+    fn read_only(&self) -> bool { false }
+
     /// Check the volume while it is mounted, counting only: nothing is
     /// repaired or written. `scrub` also reads every data block against its
     /// checksum, where the format has them. `Busy` while the volume holds
@@ -2379,6 +2386,7 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
     // The swap file is the kernel's: no descriptor names it.
     if let Some((b, sub)) = mounted {
         if swapfile_guard_path(b, sub, false).is_err() { return -1; }
+        if writes && b.read_only() && !cfg!(feature = "ro-open-canary") { return -1; }
     }
     let mut inode_idx = if mounted.is_some() { NO_IDX } else { path_lookup(path) };
     crate::census::add(crate::census::PATH, t_path, crate::census::now());

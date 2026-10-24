@@ -164,10 +164,13 @@ replace-no-fsync-canary = []
 #                                   check
 #   azvol-check-never-fails-canary: an azvol check that found damage passes
 #   azvol-unclean-unchecked-canary: an unclean azvol mount is not checked
+#   ro-open-canary:                 the VFS opens a read-only volume's file for
+#                                   writing (a page-cached write is lost)
 fat-check-never-fails-canary = []
 fat-hard-error-ignored-canary = []
 azvol-check-never-fails-canary = []
 azvol-unclean-unchecked-canary = []
+ro-open-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources

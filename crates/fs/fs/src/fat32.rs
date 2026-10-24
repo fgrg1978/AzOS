@@ -7592,6 +7592,9 @@ impl crate::vfs::FileSystem for Fat32Fs {
         })
     }
 
+    /// The mount-time check failed (Kconfig `FS_CHECK_FAILED_READ_ONLY`).
+    fn read_only(&self) -> bool { fat32_read_only_on(self.vol) }
+
     /// [`fat32_check_on`]: FAT32 has no checksums, so `scrub` adds nothing.
     fn check(&self, _scrub: bool) -> Result<crate::vfs::FsCheck, crate::vfs::FsErr> {
         let r = fat32_check_on(self.vol).ok_or(crate::vfs::FsErr::NotFound)?;
