@@ -12,8 +12,6 @@ use crate::*;
 // any code compiled for that level runs.
 // arch-only: x86_64's own asm files and level; each ISA includes its own.
 #[cfg(target_arch = "x86_64")]
-const X86_64_LEVEL: u32 = azos_arch_api::isa::x86_64::LEVEL_NUM as u32;
-#[cfg(target_arch = "x86_64")]
 global_asm!(
     include_str!("asm/boot.S"),
     x86_level = const X86_64_LEVEL,

@@ -151,6 +151,13 @@ const IPC_FAST_ENTRY: bool = azos_syscall::fastpath::ENABLED;
 const IPC_FAST_LO: u64 = azos_abi::syscall_nr::SYS_IPC_FAST_REPLY_ACCEPT;
 const _: () = assert!(azos_abi::syscall_nr::SYS_IPC_FAST_CALL_EP == azos_abi::syscall_nr::SYS_IPC_FAST_REPLY_ACCEPT + 2);
 
+/// Kconfig X86_64_LEVEL: the baseline x86_64's `boot.S` checks by CPUID before
+/// any code compiled for it runs (`x86_level`, entry/x86_64/asm.rs), and the
+/// level its boot line prints (`boot_hooks`).
+// arch-only: x86_64's own baseline level; each ISA has its own.
+#[cfg(target_arch = "x86_64")]
+const X86_64_LEVEL: u32 = azos_arch_api::isa::x86_64::LEVEL_NUM as u32;
+
 // ── Page size: one Kconfig choice, two routes into the build ────────────
 //
 // config/arch/Kconfig.isa's AARCH64_PAGE_* choice reaches `azos_limits` as
