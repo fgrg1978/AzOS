@@ -1158,7 +1158,6 @@ static TREE: azos_sync::SpinLock<[Option<(u32, azos_inspect::NodeId, azos_inspec
 
 /// Text of up to 48 bytes, made in place.
 #[cfg(feature = "inspect")]
-#[derive(Clone, Copy)]
 struct Short {
     b: [u8; 48],
     n: usize,
@@ -1201,72 +1200,62 @@ pub(crate) fn inspect_build(
     root: azos_inspect::NodeId,
 ) -> Result<(), azos_inspect::Error> {
     struct Dev {
-        h: u32,
         name: Short,
         ident: Short,
         base: u64,
         size: u64,
         irq: u32,
     }
-    // Copied out under the bus lock (a short hold), built after.
-    let mut devs: [Option<Dev>; hwbus::MAX_DEVICES] = [const { None }; hwbus::MAX_DEVICES];
-    hwbus::with(|bus| {
-        for ((h, s), slot) in bus.iter().zip(devs.iter_mut()) {
-            *slot = Some(Dev {
-                h: h.0,
+    // One device at a time: copied out under the bus lock (a short hold),
+    // built after, its nodes stored straight into the table. A copy of every
+    // device and of the table, the way this was written first, put
+    // HWBUS_MAX_DEVICES of each on the stack: 41 KiB on fleet.
+    TREE.lock_irqsave().fill(None);
+    let dir = b.dir(root, "devices")?;
+    let mut n = 0;
+    for h in 0..hwbus::MAX_DEVICES as u32 {
+        let Some(d) = hwbus::with(|bus| {
+            bus.get(hwbus::Handle(h)).map(|s| Dev {
                 name: Short::of(s.dev.name.as_str()),
                 ident: Short::of(Ident(&s.dev)),
                 base: s.dev.base,
                 size: s.dev.size,
                 irq: s.dev.irq,
-            });
-        }
-    });
-    let dir = b.dir(root, "devices")?;
-    let mut ids = [None; hwbus::MAX_DEVICES];
-    let mut r = Ok(());
-    for (d, slot) in devs.iter().flatten().zip(ids.iter_mut()) {
-        let one = |b: &mut azos_inspect::Builder<'_, '_>| {
-            let n = b.dir(dir, Short::of(d.h).as_str())?;
-            b.string(n, "name", d.name.n.max(1), d.name.as_str())?;
-            b.string(n, "identity", d.ident.n.max(1), d.ident.as_str())?;
-            let state = b.string(n, "state", 12, "")?;
-            let driver = b.string(n, "driver", 24, "")?;
-            b.u64(n, "base", d.base)?;
-            b.u64(n, "size", d.size)?;
-            b.u64(n, "irq", d.irq as u64)?;
-            Ok((d.h, state, driver))
+            })
+        }) else {
+            continue;
         };
-        match one(b) {
-            Ok(v) => *slot = Some(v),
-            Err(e) => {
-                r = Err(e);
-                break;
-            }
-        }
+        let node = b.dir(dir, Short::of(h).as_str())?;
+        b.string(node, "name", d.name.n.max(1), d.name.as_str())?;
+        b.string(node, "identity", d.ident.n.max(1), d.ident.as_str())?;
+        let state = b.string(node, "state", 12, "")?;
+        let driver = b.string(node, "driver", 24, "")?;
+        b.u64(node, "base", d.base)?;
+        b.u64(node, "size", d.size)?;
+        b.u64(node, "irq", d.irq as u64)?;
+        TREE.lock_irqsave()[n] = Some((h, state, driver));
+        n += 1;
     }
-    *TREE.lock_irqsave() = ids;
-    r
+    Ok(())
 }
 
 /// Rewrite each listed device's `state` and `driver`; the values that were
 /// not published.
 #[cfg(feature = "inspect")]
 pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
-    let ids = *TREE.lock_irqsave();
-    let mut now = [None; hwbus::MAX_DEVICES];
-    hwbus::with(|bus| {
-        for (h, s) in bus.iter() {
-            if let Some(i) = ids.iter().position(|x| x.is_some_and(|(k, ..)| k == h.0)) {
-                now[i] = Some((state_name(s.state), Short::of(binding_name(&s.binding))));
-            }
-        }
-    });
+    // One device at a time, as the tree was built: the listed ones are a
+    // prefix of the table, a handle is its device's slot, and each lock is
+    // held for one entry.
     let mut bad = 0;
-    for (id, cur) in ids.iter().zip(now.iter()) {
-        let (Some((_, state, driver)), Some((st, drv))) = (id, cur) else { continue };
-        bad += w.set_str(*state, st).is_err() as u32;
-        bad += w.set_str(*driver, drv.as_str()).is_err() as u32;
+    for i in 0..hwbus::MAX_DEVICES {
+        let Some((h, state, driver)) = TREE.lock_irqsave()[i] else { break };
+        let Some((st, drv)) =
+            hwbus::with(|bus| bus.get(hwbus::Handle(h)).map(|s| (state_name(s.state), Short::of(binding_name(&s.binding)))))
+        else {
+            continue;
+        };
+        bad += w.set_str(state, st).is_err() as u32;
+        bad += w.set_str(driver, drv.as_str()).is_err() as u32;
     }
     bad
 }
