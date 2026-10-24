@@ -366,7 +366,9 @@ def memory_report(label, elf, cfg, top, big_kib):
     if cfg and os.path.isfile(cfg):
         with open(cfg, "rb") as f:
             sha = hashlib.sha256(f.read()).hexdigest()[:12]
-        for g in sorted(glob.glob(os.path.join(os.path.dirname(elf), "build/azos_limits-*/out/generated.rs"))):
+        # cargo's build-script outputs beside the ELF, in its target directory
+        gens = glob.glob(os.path.join(os.path.dirname(elf), "build", "azos_limits-*", "out", "generated.rs"))  # out-dir-lint: ok
+        for g in sorted(gens):
             with open(g, encoding="utf-8", errors="replace") as f:
                 text = f.read()
             if f"Config SHA-256 prefix: {sha} " in text:
