@@ -21872,7 +21872,7 @@ PYEOF
     # microvm line has no NIC.
     vsbench_x86_row() {
         printf "  %-26s" "bench: vsbench x86_64..."
-        if WAIT_SECS=90 bash "${REPO_ROOT}/tools/bench/vsbench_x86_64.sh"; then
+        if QEMU_X86_64=qemu-system-x86_64 WAIT_SECS=90 bash "${REPO_ROOT}/tools/bench/vsbench_x86_64.sh"; then
             ok
         else
             bad; echo "      logs in $AZOS_OUT/build/vsbench-x86_64-compare/"
