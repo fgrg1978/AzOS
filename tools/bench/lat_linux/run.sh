@@ -13,7 +13,9 @@
 # Prints the guest's `[LATLX]` lines. Exit 0 when they came, 1 otherwise.
 # `PROG=tail` runs tail.c instead (the periodic-wake tail under ping-pong
 # contention, kernel/src/smokes/tail_smoke.rs's counterpart): `[TAIL]` lines.
-# Not a gate row: the Linux image is an environment choice, as vsbench's.
+# tools/bench/vsbench_compare.sh runs it for riscv64 (both PROGs) after its own
+# boots, with its Linux image (VSBENCH_LAT); aarch64 by hand. Never a row of
+# its own: the Linux image is an environment choice, as vsbench's.
 set -euo pipefail
 isa="${1:?isa}"; image="${2:?linux Image}"; disk="${3:?disk}"; out="${4:?outdir}"
 here="$(cd "$(dirname "$0")" && pwd)"

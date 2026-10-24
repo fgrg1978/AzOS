@@ -306,6 +306,20 @@ VSBENCH_RING_DET="${VSBENCH_RING_DET:-1}"
 RING_DET_ARGS="-accel tcg,thread=single -icount shift=0,sleep=off"
 RING_LANES_RE='^(ring-|ioring-|drvring-|drv-call|frame-stream)'
 
+# ── VSBENCH_LAT: the Linux half of the gate's `lat:` and tail rows ─────────
+#
+# The gate's `lat: riscv64 wake-up under load` row (kernel/src/lat_smoke.rs)
+# and the periodic-wake tail smoke (kernel/src/smokes/tail_smoke.rs) measure
+# AzOS's wake-up latency in the kernel, under -smp 1 -icount shift=0,sleep=off.
+# Their Linux counterparts are tools/bench/lat_linux/{lat,tail}.c, booted as
+# /init of the same Linux image this script compares against, on a copy of
+# disk-vsbench.img, by tools/bench/lat_linux/run.sh. This pass prints their
+# `[LATLX]` and `[TAIL]` lines after the tables. Not counted: no assertion
+# reads them, a failed or skipped pass (no clang at LX_CC) is reported and
+# does not change the exit status. It runs with the Linux half and the full
+# lane set only; `VSBENCH_LAT=0` skips it.
+VSBENCH_LAT="${VSBENCH_LAT:-1}"
+
 # ── VSBENCH_TCP: TCP bulk to a host peer, both kernels (wave 15) ───────────
 #
 # `tcp-bulk-tx` and `tcp-bulk-rx` move TCP_BULK_BYTES (4 MiB) one way each
@@ -819,6 +833,21 @@ if [ "$VSBENCH_TCP" = "1" ] && { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBE
     TCP_RAN=1
 fi
 
+# ── The Linux lat/tail pass (see VSBENCH_LAT) ────────────────────────────
+LAT_OUT=""
+if [ "$VSBENCH_LAT" = "1" ] && [ -n "$L_LOG" ] && [ -z "$VSBENCH_LANES" ]; then
+    for prog in lat tail; do
+        if out="$(PROG="$prog" bash "$REPO_ROOT/tools/bench/lat_linux/run.sh" rv "$LINUX_IMAGE" \
+                  "$AZOS_OUT/build/disk-vsbench.img" "$WORK/lat-linux-$prog" 2>&1)"; then
+            LAT_OUT="$LAT_OUT$out
+"
+        else
+            LAT_OUT="$LAT_OUT(not counted) the Linux $prog pass gave no result: $(printf '%s\n' "$out" | sed -n '$p')
+"
+        fi
+    done
+fi
+
 # ── Verdict ───────────────────────────────────────────────────────────────
 rc=0
 
@@ -1302,6 +1331,13 @@ if [ "$TCP_RAN" = "1" ]; then
     done
     # One machine-readable line per row, for scripts that collect several runs.
     sed 's/^/vsbench-tcp: /' "$WORK/tcp-azos.rows" "$WORK/tcp-linux.rows"
+    echo ""
+fi
+
+# ── Linux lat/tail pass: printed, not counted ─────────────────────────────
+if [ -n "$LAT_OUT" ]; then
+    echo "  Linux halves of the lat: and tail rows (tools/bench/lat_linux, -smp 1 -icount; not counted):"
+    printf '%s' "$LAT_OUT" | sed 's/^/    /'
     echo ""
 fi
 

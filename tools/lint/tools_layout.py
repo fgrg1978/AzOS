@@ -134,7 +134,6 @@ NO_CALLER = {
     "repro_check.sh": "reproducible-build check by hand (plan: wire it into the gate)",
     "sbom.sh": "CycloneDX SBOM by hand",
     "text_equiv.py": "compares two kernels' .text by hand; the gate's comments name it",
-    "lat_linux/": "the Linux half of the tail-latency smoke, run by hand",
     "vsbench_x86_64.sh": "vsbench on x86_64 by hand (the riscv64 and aarch64 scripts are the gate's)",
     "qemu.sh": "QEMU launcher by hand; the hv defconfigs' comments name it",
     "limits_cost.py": "RAM cost of a sizing option by hand; Kconfig.limits' help names it",
