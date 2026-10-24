@@ -112,7 +112,7 @@ micro	20	4	0	0	0	68
 tools/linux_seccomp_launch	11	2	0	2	0	-
 tools/linux_seccomp_launch/host-tests	0	0	0	0	1	-
 userspace/bench/latbench	3	0	0	0	0	-
-userspace/bench/vsbench	193	12	8	3	0	-
+userspace/bench/vsbench	205	12	8	3	0	-
 userspace/lib/compose	0	0	0	0	1	-
 userspace/lib/compositor	1	0	0	0	0	-
 userspace/lib/decisions	0	0	0	0	1	-
