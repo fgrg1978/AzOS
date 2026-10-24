@@ -219,7 +219,7 @@ def generate(root: Path) -> list[str]:
             # A tree fetched before the file joined the sparse set: the blob is
             # already in its pack, so a re-run checks it out without a download.
             raise TableError(f"lx/DEVICE_SOURCES names {rel}, not in third_party/linux "
-                             "(re-run tools/lx_fetch_linux.sh to apply the sparse set)")
+                             "(re-run tools/third_party_fetch.sh linux to apply the sparse set)")
         module = f.stem
         for sel in ids_of_source(f.read_text(errors="replace"), h):
             lines.append(f"{cls} {sel} module={module}")

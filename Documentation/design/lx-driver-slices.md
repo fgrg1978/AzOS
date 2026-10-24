@@ -8,7 +8,7 @@
 
 The next three slices of the Linux driver layer ([linux.md](../linux.md#path-2-the-linux-kernel-driver-slice-lx)) are ext4 (Kconfig `LX_FS_EXT4_RO`, then `LX_FS_EXT4_RW`), the URB adapter for the HID quirk drivers, and the IMX219 sensor pilot. This note lists the Linux sources each one needs at the pinned tag, and specifies what running the ext4 module set in a ring-3 server needs on all three ISAs, with no GPL code in ring 0: a fixed low window for module memory, a virtual interrupt flag, and per-CPU state and `current` without privileged registers. On the module set as built, interrupt state needs no kernel mechanism on any ISA, and per-CPU state needs none on riscv64 and x86_64 while a server runs its Linux code on one thread. The kernel side is the window, the aarch64 thread pointer kept per task for a Linux class server, and a per-thread base register once a server runs more than one thread.
 
-Source: `lx/FS_EXT4_UNRESOLVED`, `lx/DEVICE_SOURCES`, `tools/lx_fetch_linux.sh`, `tools/lx_kbuild/`.
+Source: `lx/FS_EXT4_UNRESOLVED`, `lx/DEVICE_SOURCES`, `tools/third_party_fetch.sh linux`, `tools/lx_kbuild/`.
 
 ## Motivation
 
@@ -20,7 +20,7 @@ Source: `lx/FS_EXT4_UNRESOLVED`, `crates/core/lx-loader/src/lib.rs`.
 
 ### Sources each slice needs
 
-Every file below is part of the pinned commit, and `tools/lx_fetch_linux.sh` checks each one out. The sparse set controls what is checked out, not what is fetched: the depth-1 fetch brings every blob of the commit. Adding a file to the set therefore downloads nothing.
+Every file below is part of the pinned commit, and `tools/third_party_fetch.sh linux` checks each one out. The sparse set controls what is checked out, not what is fetched: the depth-1 fetch brings every blob of the commit. Adding a file to the set therefore downloads nothing.
 
 | Slice | Compiled by Kbuild | Read, or re-implemented in `lx/emul` | How its server is chosen |
 |---|---|---|---|
@@ -32,7 +32,7 @@ For ext4, each symbol in `lx/FS_EXT4_UNRESOLVED` was mapped to the file that hol
 
 For the two leaves, the list holds the files that export the symbols their sources call by name. The exact import set is the one `tools/lx_license_lint.py --ko` computes over the first Kbuild of each leaf. Each slice records that set the way the ext4 set is recorded.
 
-Source: `tools/lx_fetch_linux.sh`, `lx/DEVICE_SOURCES`, `tools/lx_device_table.py`.
+Source: `tools/third_party_fetch.sh linux`, `lx/DEVICE_SOURCES`, `tools/lx_device_table.py`.
 
 ### What the ext4 module set executes
 
