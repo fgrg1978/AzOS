@@ -30,9 +30,15 @@
 //! kernel page fault's `[FATAL]` halt is judged (rows `fatal: report not
 //! spliced by a console flood`). That path takes the same quiesce
 //! (`panic::halt_begin`) on every ISA.
+//!
+//! `canary=panic-nested` is a mode too: the handler panics once more inside
+//! its report, after the hart/task line ([`panic_in_report`]), so the nested
+//! path (`panic::nested`: one line, no second report) is judged (rows
+//! `panic: a panic inside the handler prints one line`). With
+//! `panic-nested-report` the handler runs the report a second time instead.
 
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
@@ -159,5 +165,15 @@ fn culprit_task(_: usize) {
     }
     if *g == 0 {
         panic!("panic-splice-smoke: deliberate panic while another CPU floods the console");
+    }
+}
+
+/// Called by the panic handler inside its report (kernel/src/panic.rs): under
+/// `canary=panic-nested`, panic there, once. Once, so that the
+/// `panic-nested-report` canary's second report runs to its end.
+pub fn panic_in_report() {
+    static FIRED: AtomicBool = AtomicBool::new(false);
+    if canary!("panic-nested") && !FIRED.swap(true, Ordering::AcqRel) {
+        panic!("panic-splice-smoke: a panic inside the panic handler's report");
     }
 }

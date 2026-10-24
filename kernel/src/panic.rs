@@ -30,6 +30,11 @@
 /// free — see `write_crash_log()`.
 /// Then optionally reboots after a configurable delay.
 ///
+/// **A panic inside this handler** (owner decision 2026-10-24) prints one
+/// line and reboots or halts as the policy says, without the report again
+/// ([`nested`]): the handler marks the hart first thing, before any call that
+/// could panic.
+///
 /// **Panic policy (RT7).** Before any of the above, the handler
 /// captures the containment predicate's inputs (interrupts still as the
 /// panic found them) and asks `azos_common::panic_policy::decide`. Under
@@ -39,7 +44,7 @@
 /// the reset path described above, which first prints the verdict and why.
 use core::panic::PanicInfo;
 use azos_arch::Cpu as _;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use azos_common::panic_policy::{self, Culprit, PanicContext, Policy, Verdict};
 
@@ -58,16 +63,25 @@ const POLICY: Policy = if azos_limits::PANIC_POLICY_CONTAIN {
     Policy::Reset
 };
 
-/// Per-hart "inside the panic handler" (predicate check 5): the TID being
-/// handled plus one, 0 = not in the handler. Set on entry, cleared only by
-/// [`contain`] right before it parks the culprit; the reset path never
-/// returns, so it never clears it. Holding the TID, not a flag, also catches
-/// a contained task that migrated to another hart and panicked again there.
+/// Per-hart "inside the panic handler": the TID being handled plus one,
+/// [`ENTERING`] before the handler has read it (and on a `[FATAL]` halt,
+/// [`halt_begin`]), 0 = not in the handler. Set first thing on entry
+/// ([`enter`]), cleared only by [`contain`] right before it parks the
+/// culprit; the reset path never returns, so it never clears it. Holding the
+/// TID, not a flag, also catches a contained task that migrated to another
+/// hart and panicked again there.
 static IN_PANIC: [AtomicU32; azos_sched::MAX_CPUS] =
     [const { AtomicU32::new(0) }; azos_sched::MAX_CPUS];
 
+/// [`IN_PANIC`] of a hart in the handler that has not read the running task.
+const ENTERING: u32 = u32::MAX;
+
+/// Per-hart: inside [`nested`]. A panic there parks the hart at once.
+static NESTED: [AtomicBool; azos_sched::MAX_CPUS] =
+    [const { AtomicBool::new(false) }; azos_sched::MAX_CPUS];
+
 /// Mark the task in pool slot `idx` (as `task_create*` returns it) a safety
-/// task: a panic in it is never contained (`panic_policy`, check 7). Says so
+/// task: a panic in it is never contained (`panic_policy`, check 6). Says so
 /// on the console either way; a refusal leaves that task containable, which
 /// the line makes visible.
 ///
@@ -86,21 +100,31 @@ pub fn register_safety_task(idx: usize, name: &str) {
     }
 }
 
-/// Capture what the containment predicate reads. Runs first in the handler,
-/// before anything masks interrupts or takes a lock.
-fn capture(hart: usize, tid: u32) -> PanicContext {
-    // A hart index past the table cannot be tracked: count it as a second
-    // panic, which only ever selects the reset path.
+/// The handler's first step: mark this hart inside it. True when it already
+/// was -- a panic inside this handler, or inside a `[FATAL]` halt's report --
+/// or when the hart is past the table and cannot be tracked. One atomic swap:
+/// nothing before it can panic again.
+#[inline(always)]
+fn enter(hart: usize) -> bool {
+    IN_PANIC.get(hart).is_none_or(|f| f.swap(ENTERING, Ordering::AcqRel) != 0)
+}
+
+/// Put the running task's TID in this hart's mark. True when another hart is
+/// handling a panic of the same task: a contained task that migrated in the
+/// middle of [`contain`] and panicked again.
+fn mark(hart: usize, tid: u32) -> bool {
     let mark = tid.wrapping_add(1);
-    let second_panic = match IN_PANIC.get(hart) {
-        Some(f) => {
-            f.swap(mark, Ordering::AcqRel) != 0
-                || (tid != 0
-                    && IN_PANIC.iter().enumerate()
-                        .any(|(h, o)| h != hart && o.load(Ordering::Acquire) == mark))
-        }
-        None => true,
-    };
+    if let Some(f) = IN_PANIC.get(hart) {
+        f.store(mark, Ordering::Release);
+    }
+    tid != 0
+        && IN_PANIC.iter().enumerate()
+            .any(|(h, o)| h != hart && o.load(Ordering::Acquire) == mark)
+}
+
+/// Capture what the containment predicate reads, before anything masks
+/// interrupts or takes a lock.
+fn capture(hart: usize, tid: u32) -> PanicContext {
     let culprit = if tid == 0 {
         Culprit::NoTask
     } else if azos_sched::current_task_name() == "idle" {
@@ -124,7 +148,6 @@ fn capture(hart: usize, tid: u32) -> PanicContext {
         mutex_held: azos_sync::held::held_by(tid)
             .saturating_add(azos_fs::fat32::fat32_claims_held_by(tid))
             .saturating_add(azos_sync::claim::held_by(tid)),
-        second_panic,
         already_panicked: azos_common::is_panicked(),
         culprit,
     }
@@ -141,39 +164,27 @@ fn out(s: &str) {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // ── Panic policy: decide before masking anything ────────────────────
+    // ── A panic inside this handler: one line, no second report ─────────
+    // Before anything else, the task lookup included: whatever below
+    // panicked would panic again on a second pass.
     let hart = azos_arch::ARCH.hart_id();
+    if enter(hart) && !canary!("panic-nested-report") {
+        nested(info, hart);
+    }
     let tid = azos_sched::current_task_tid();
+    if mark(hart, tid) && !canary!("panic-nested-report") {
+        nested(info, hart);
+    }
+
+    // ── Panic policy: decide before masking anything ────────────────────
     let verdict = panic_policy::decide(POLICY, &capture(hart, tid));
     let reason = match verdict {
         Verdict::Contain => contain(info, hart, tid),
         Verdict::Reset(reason) => reason,
     };
 
-    // ── Freeze this hart and flag the panic globally ────────────────────
-    // Clear SSTATUS.SIE so a timer tick cannot re-enter the scheduler and
-    // resume normal execution on this hart, and publish the panic flag so
-    // the other harts halt on their next tick (see the timer ISR) and no
-    // control path re-commands the motors after the stop below.
-    // The token is dropped: a panic handler does not return, so there is
-    // nothing to restore to.
-    let _ = {
-        use azos_arch::Interrupts;
-        azos_arch::ARCH.disable_all()
-    };
-    azos_common::set_panicked();
-
-    // ── Stop all actuators IMMEDIATELY ──────────────────────────────────
-    // Uses the lock-free `_panic` variants, not `motor_stop`/`esc_disarm`:
-    // those take the `MOTORS`/`GPIO`/`PWM` and UART spinlocks respectively,
-    // so a hart holding any of them at panic time would wedge this call
-    // before any UART output ever went out. The `_panic` variants bypass
-    // those locks on purpose — see the module doc comment above and the
-    // doc comments on `motor_stop_panic`/`esc_disarm_panic` themselves.
-    // The actuators belong to a domain, which registered their lock-free
-    // stop at boot (robot: motors 0 and 1, then the ESC — the three calls
-    // that were here). Wave 11: `azos_actuation::gate`.
-    azos_actuation::gate::run_panic_stop_hooks();
+    // ── Freeze this hart, flag the panic, stop the actuators ────────────
+    freeze();
 
     // ── Stop the other CPUs and own the console (Kconfig PANIC_QUIESCE) ──
     // Before the first byte of the report: another CPU printing meanwhile
@@ -228,6 +239,9 @@ fn panic(info: &PanicInfo) -> ! {
     if let Some(stop) = stop {
         stop.report();
     }
+    // `canary=panic-nested`: a panic here, inside the report.
+    #[cfg(feature = "panic-splice-smoke")]
+    crate::smokes::panic_splice_smoke::panic_in_report();
 
     // ── RAM record first (pstore): lock-free, survives a warm reboot ─────
     // Written before anything below that takes a lock, so a panic inside
@@ -284,7 +298,14 @@ fn panic(info: &PanicInfo) -> ! {
         let mut dbuf = [0u8; 10];
         azos_drv_sys::uart::puts(fmt_u32(delay_ms, &mut dbuf));
         azos_drv_sys::uart::puts(" ms...\n");
+    }
+    finish(delay_ms)
+}
 
+/// The panic's last step: reboot after `delay_ms` (`CFG_PANIC_REBOOT_DELAY_MS`,
+/// runtime config `panic_reboot_ms`), or halt this hart when it is 0.
+fn finish(delay_ms: u32) -> ! {
+    if delay_ms > 0 {
         // Busy-wait delay (no scheduler available during panic)
         let start = azos_drv_sys::timebase::now();
         let ticks_per_ms = azos_drv_sys::timebase::freq() / 1000;
@@ -310,6 +331,71 @@ fn panic(info: &PanicInfo) -> ! {
     }
 }
 
+/// The reset path's first step, and every halt's: mask interrupts so a tick
+/// cannot re-enter the scheduler and resume normal execution on this hart;
+/// publish the panic flag so the other harts halt on their next tick (see
+/// the timer ISR) and no control path re-commands the actuators; then stop
+/// them. The interrupt token is dropped: nothing here returns to restore it.
+///
+/// The actuators stop through the lock-free hooks their domain registered at
+/// boot (robot: motors 0 and 1, then the ESC; `azos_actuation::gate`, wave
+/// 11), not `motor_stop`/`esc_disarm`: those take the `MOTORS`/`GPIO`/`PWM`
+/// and UART spinlocks, so a hart holding any of them at panic time would
+/// wedge this call before any UART output ever went out — see the module
+/// doc comment above and the doc comments on `motor_stop_panic`/
+/// `esc_disarm_panic`.
+fn freeze() {
+    let _ = {
+        use azos_arch::Interrupts;
+        azos_arch::ARCH.disable_all()
+    };
+    azos_common::set_panicked();
+    azos_actuation::gate::run_panic_stop_hooks();
+}
+
+/// A panic inside this handler, or inside a `[FATAL]` halt's report: the
+/// report is what panicked, and running it again ran into the same fault
+/// with a whole handler stacked on the last each time, with nothing to stop
+/// it short of the stack's end. So: [`freeze`] (again, if the first pass got
+/// that far: it is idempotent), one line by the lock-free direct path — no
+/// allocation, no lock, no formatting — and the policy's last step
+/// ([`finish`]). No quiesce, crash record, crash counter, crash log or trace
+/// dump. A panic in here parks the hart at once, so a panic costs at most
+/// two handler entries past the first (what `tools/stack_chain.py` charges).
+#[cold]
+#[inline(never)]
+fn nested(info: &PanicInfo, hart: usize) -> ! {
+    // A hart past the table shares the last slot: the slot only parks a
+    // third panic, on whichever hart.
+    if NESTED[hart.min(NESTED.len() - 1)].swap(true, Ordering::AcqRel) {
+        let _ = {
+            use azos_arch::Interrupts;
+            azos_arch::ARCH.disable_all()
+        };
+        loop {
+            azos_arch::ARCH.wfi();
+        }
+    }
+    freeze();
+    let delay_ms = azos_config::CFG_PANIC_REBOOT_DELAY_MS.load(Ordering::Relaxed);
+    let mut buf = [0u8; 10];
+    azos_drv_sys::uart::puts("\n[PANIC] panic inside the panic handler");
+    if let Some(loc) = info.location() {
+        azos_drv_sys::uart::puts(" at ");
+        azos_drv_sys::uart::puts(loc.file());
+        azos_drv_sys::uart::puts(":");
+        azos_drv_sys::uart::puts(fmt_u32(loc.line(), &mut buf));
+    }
+    if delay_ms > 0 {
+        azos_drv_sys::uart::puts(": no second report; rebooting in ");
+        azos_drv_sys::uart::puts(fmt_u32(delay_ms, &mut buf));
+        azos_drv_sys::uart::puts(" ms\n");
+    } else {
+        azos_drv_sys::uart::puts(": no second report; halted\n");
+    }
+    finish(delay_ms)
+}
+
 /// The first call of every `[FATAL]` and unhandled-trap halt, on every ISA
 /// (riscv64 `entry/riscv64/trap.rs` and `entry/riscv64/irq.rs`, aarch64 and x86_64
 /// `entry/*.rs`): the reset path's steps before it prints, in its order.
@@ -324,15 +410,17 @@ fn panic(info: &PanicInfo) -> ! {
 /// Out of line and not `#[cold]`, with no return value: some callers are
 /// inlined into a trap entry every syscall takes (a cold callee reshapes
 /// the hot caller). What it stopped waits in [`HALT_STOP`].
+///
+/// It marks the hart inside the panic handler ([`IN_PANIC`]): a panic in the
+/// halt's report is a second fault, and takes [`nested`]'s one line.
 #[inline(never)]
 pub(crate) fn halt_begin() {
-    let _ = {
-        use azos_arch::Interrupts;
-        azos_arch::ARCH.disable_all()
-    };
-    azos_common::set_panicked();
-    azos_actuation::gate::run_panic_stop_hooks();
-    if let Some(stop) = quiesce(azos_arch::ARCH.hart_id()) {
+    let hart = azos_arch::ARCH.hart_id();
+    if let Some(f) = IN_PANIC.get(hart) {
+        f.store(ENTERING, Ordering::Release);
+    }
+    freeze();
+    if let Some(stop) = quiesce(hart) {
         HALT_STOP[0].store(stop.want, Ordering::Relaxed);
         HALT_STOP[1].store(stop.parked, Ordering::Relaxed);
         HALT_STOP[2].store(1, Ordering::Release);

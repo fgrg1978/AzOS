@@ -313,6 +313,8 @@ def x86_64_edges(text, owner, stats=None):
 
 # The `#[panic_handler]`, by the name each toolchain gives it.
 PANIC_HANDLERS = ("__rustc::rust_begin_unwind", "rust_begin_unwind")
+# Its path for a panic inside it (kernel/src/panic.rs `nested`).
+PANIC_NESTED = "kernel::panic::nested"
 # Steps a recursive block too big for the exact DP may take in `longest`'s
 # walk before it is charged the sum of its frames instead.
 WALK_MAX = 1_000_000
@@ -364,10 +366,16 @@ def chain(graph, frames, root):
     one recursive component, too big to walk and charged whole (14.7 KiB).
     So the calls into the handler are cut, its chain is measured from it over
     the cut graph, and that depth is added to the deepest chain once, as if
-    the deepest frame panicked. A panic inside the handler is not followed:
-    a second one takes the reset path and runs the report again
-    (kernel/src/panic.rs), which no static bound sees -- the component was
-    charged one pass before, and this is the same single pass."""
+    the deepest frame panicked.
+
+    A PANIC INSIDE THE HANDLER is bounded since 2026-10-24
+    (kernel/src/panic.rs `nested`): it enters the handler again, which marks
+    the hart and goes straight to `nested` -- one line, then reboot or halt --
+    and a panic inside `nested` enters once more and parks the hart at
+    `nested`'s first test. Before, each one ran the whole report again, which
+    no static bound sees. So the handler's charge is its own chain, plus a
+    second entry (its frame and `nested`'s chain) on top of the first's
+    deepest point, plus a third (its frame and `nested`'s) on top of that."""
     reach, todo = {root}, [root]
     while todo:
         for c in graph.get(todo.pop(), ()):
@@ -382,6 +390,9 @@ def chain(graph, frames, root):
     if handler is not None and handler != root:
         pdepth, ppath, _, pfall = longest(graph, frames, handler)
         fallbacks += [m for m in pfall if m not in fallbacks]
+        if PANIC_NESTED in graph.get(handler, ()):
+            ndepth, _, _, _ = longest(graph, frames, PANIC_NESTED)
+            pdepth += 2 * frames.get(handler, 0) + ndepth + frames.get(PANIC_NESTED, 0)
         panic = (pdepth, ppath)
         total += pdepth
     return Chain(total, path, frames, knots, panic, fallbacks)

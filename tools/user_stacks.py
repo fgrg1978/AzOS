@@ -234,6 +234,15 @@ def self_test():
     c = stack_chain.chain(g, fr, "root")
     expect("panic chain", (c.path, c.panic), (["root", "g0", "pbc"], (500 + 119 + 48, [h, "g19", "pbc"])))
     expect("panic depth", c.depth, 16 + 100 + 48 + 500 + 119 + 48)
+    # A panic inside the handler (kernel/src/panic.rs `nested`) enters it
+    # twice more: its frame and `nested`'s chain on top of the deepest point,
+    # then its frame and `nested`'s frame. A handler without `nested` (a
+    # ring-3 image's) is charged its own chain alone, as above.
+    n = stack_chain.PANIC_NESTED
+    g = {"root": {h}, h: {"report", n}, n: {"freeze"}, "report": {"fs"}}
+    fr = {"root": 16, h: 300, "report": 400, "fs": 2000, n: 64, "freeze": 32}
+    c = stack_chain.chain(g, fr, "root")
+    expect("nested panic charge", c.depth, 16 + (300 + 400 + 2000) + 300 + (64 + 32) + 300 + 64)
     # A knot past the DP's size is walked, not charged whole: a hub and 20
     # spokes that call it back are one component, and no simple path holds
     # two spokes.

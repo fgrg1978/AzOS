@@ -22,7 +22,6 @@ mod tests {
             preempt_depth: 0,
             irqs_were_enabled: true,
             mutex_held: 0,
-            second_panic: false,
             already_panicked: false,
             culprit: Culprit::Kernel,
         }
@@ -48,12 +47,11 @@ mod tests {
     #[test]
     fn each_check_alone_selects_the_reset_path_with_its_reason() {
         type Mutate = fn(&mut PanicContext);
-        let cases: [(Mutate, Reason); 10] = [
+        let cases: [(Mutate, Reason); 9] = [
             (|c| c.in_isr = true, Reason::InIsr),
             (|c| c.preempt_depth = 1, Reason::SpinLockHeld),
             (|c| c.irqs_were_enabled = false, Reason::IrqsOff),
             (|c| c.mutex_held = 1, Reason::MutexHeld),
-            (|c| c.second_panic = true, Reason::SecondPanic),
             (|c| c.already_panicked = true, Reason::AlreadyPanicked),
             (|c| c.culprit = Culprit::NoTask, Reason::NoTask),
             (|c| c.culprit = Culprit::Idle, Reason::IdleTask),
@@ -81,7 +79,7 @@ mod tests {
     }
 
     /// Several failing checks: the first in predicate order names the reason
-    /// (second panic and an already-halting machine come first: nothing else
+    /// (an already-halting machine comes first: nothing else
     /// about the context can be trusted then).
     #[test]
     fn the_first_failing_check_names_the_reason() {
@@ -94,8 +92,6 @@ mod tests {
         assert_eq!(decide(Policy::Contain, &c), Verdict::Reset(Reason::InIsr));
         c.already_panicked = true;
         assert_eq!(decide(Policy::Contain, &c), Verdict::Reset(Reason::AlreadyPanicked));
-        c.second_panic = true;
-        assert_eq!(decide(Policy::Contain, &c), Verdict::Reset(Reason::SecondPanic));
     }
 
     /// Exhaustive over the boolean inputs and every culprit kind: `Contain`
@@ -105,19 +101,18 @@ mod tests {
     fn contain_iff_every_check_passes_exhaustively() {
         let culprits = [Culprit::NoTask, Culprit::Idle, Culprit::User,
                         Culprit::Safety, Culprit::Kernel];
-        for bits in 0u32..64 {
+        for bits in 0u32..32 {
             for &culprit in &culprits {
                 let c = PanicContext {
                     in_isr: bits & 1 != 0,
                     preempt_depth: (bits >> 1) & 1,
                     irqs_were_enabled: bits & 4 != 0,
                     mutex_held: (bits >> 3) & 1,
-                    second_panic: bits & 16 != 0,
-                    already_panicked: bits & 32 != 0,
+                    already_panicked: bits & 16 != 0,
                     culprit,
                 };
                 let all_pass = !c.in_isr && c.preempt_depth == 0 && c.irqs_were_enabled
-                    && c.mutex_held == 0 && !c.second_panic && !c.already_panicked
+                    && c.mutex_held == 0 && !c.already_panicked
                     && culprit == Culprit::Kernel;
                 let v = decide(Policy::Contain, &c);
                 assert_eq!(v == Verdict::Contain, all_pass, "context {:?} -> {:?}", c, v);

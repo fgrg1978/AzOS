@@ -156,6 +156,15 @@ pub(crate) const NAMES: &[&str] = &[
     // (`panic::halt_begin`) is the one judged (rows `fatal: ...`). With
     // `panic-quiesce-skip` too, that report must splice.
     "panic-splice-fatal",
+    // Not a canary either: the `panic-splice-smoke` kernel's handler panics
+    // once more inside its report (`panic_splice_smoke::panic_in_report`), so
+    // the nested path (`panic::nested`) is the one judged (rows `panic: a
+    // panic inside the handler ...`).
+    "panic-nested",
+    // kernel/src/panic.rs `panic`: a panic inside the handler runs the whole
+    // report again, as before 2026-10-24, instead of `nested`'s one line
+    // (rows `panic: ... second report canary` must see a second banner).
+    "panic-nested-report",
     // crates/core/ipc/src/ep_queue.rs `drain`: a server's death leaves its
     // accepted calls in service, so their callers are never completed
     // (ktest `ipc_server_death_completes_call_peer_died`).

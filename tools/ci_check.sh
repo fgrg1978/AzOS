@@ -7860,6 +7860,8 @@ panic_splice_verdict() {
         splice) case "$got" in "spliced "*" live") ;; *) echo "want spliced live (canary), got: $got" ;; esac ;;
         fatal)  [ "$got" = "whole 1/2:2 live" ] || echo "want whole 1/2:2 live, got: $got" ;;
         fatalskip) case "$got" in "whole none live"|"spliced none live") ;; *) echo "want none live (canary), got: $got" ;; esac ;;
+        nested) [ "$got" = "1 1 0" ] || echo "want 1 1 0 (one banner, the nested line, no crash counter), got: $got" ;;
+        rereport) [ "$got" = "2 0 1" ] || echo "want 2 0 1 (canary: the report again), got: $got" ;;
     esac
 }
 # Wave 15 (GR6): the `[FATAL]` halt paths (a kernel page fault, an
@@ -7890,14 +7892,27 @@ fatal_splice_judge() { # fatal_splice_judge <log, \r stripped>: "<whole|spliced|
     fi
     echo "$rep $pk $fl"
 }
+# Owner decision 2026-10-24: a panic inside the panic handler prints one line
+# and reboots or halts (kernel/src/panic.rs `nested`). It used to run the
+# whole report again, each pass one handler deeper on the stack, with nothing
+# to stop it. The same smoke in its `canary=panic-nested` mode panics once
+# more inside the report, after the hart/task line. Read by `nested_judge`:
+# "<banners> <nested lines> <crash counter lines>".
+#   want nested    1 1 0: one report, cut where it panicked, then the line
+#   want rereport  with canary panic-nested-report the report runs again to
+#                  its end, as before: 2 0 1
+nested_judge() { # nested_judge <log, \r stripped>
+    echo "$(grep -acxF '!!! KERNEL PANIC !!!' "$1") $(grep -acxE '\[PANIC\] panic inside the panic handler at kernel/src/smokes/panic_splice_smoke\.rs:[0-9]+: no second report; (halted|rebooting in [0-9]+ ms)' "$1") $(grep -ac 'Crash counter = ' "$1")"
+}
 # splice_judge_for <want> <log>: the judge a want reads with.
 splice_judge_for() {
     case "$1" in
         fatal*) fatal_splice_judge "$2" ;;
+        nested|rereport) nested_judge "$2" ;;
         *)      panic_splice_judge "$2" ;;
     esac
 }
-panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|splice|fatal|fatalskip> [kernel command line]
+panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|splice|fatal|fatalskip|nested|rereport> [kernel command line]
     local label="$1" isa="$2" want="$3" app="${4:-}" why="" try=1 tries=1 pid i v
     printf "  %-26s" "${label}..."
     local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -7911,7 +7926,7 @@ panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|s
         kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
     fi
     par_ready
-    case "$want" in pass|fatal) ;; *) tries=$PANIC_SPLICE_TRIES ;; esac
+    case "$want" in pass|fatal|nested|rereport) ;; *) tries=$PANIC_SPLICE_TRIES ;; esac
     while [ "$try" -le "$tries" ]; do
         rm -f "$log"; : >"$log"
         if [ "$isa" = rv ]; then
@@ -7923,7 +7938,7 @@ panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|s
         fi
         pid=$!; i=0
         while [ "$i" -lt 120 ]; do
-            grep -aq 'Crash counter = \|\[TRACE\] cpu0' "$log" 2>/dev/null && { sleep 1; break; }
+            grep -aq 'Crash counter = \|\[TRACE\] cpu0\|no second report; ' "$log" 2>/dev/null && { sleep 1; break; }
             kill -0 "$pid" 2>/dev/null || break
             i=$((i + 1)); sleep 0.5
         done
@@ -7953,6 +7968,10 @@ par_row panic_splice_row "fatal: report not spliced by a console flood (rv)"  rv
 par_row panic_splice_row "fatal: report not spliced by a console flood (arm)" arm fatal     "canary=panic-splice-fatal"
 par_row panic_splice_row "fatal: no quiesce, quiesce canary (rv)"             rv  fatalskip "canary=panic-splice-fatal,panic-quiesce-skip"
 par_row panic_splice_row "fatal: no quiesce, quiesce canary (arm)"            arm fatalskip "canary=panic-splice-fatal,panic-quiesce-skip"
+par_row panic_splice_row "panic: a panic inside the handler prints one line (rv)"  rv  nested   "canary=panic-nested"
+par_row panic_splice_row "panic: a panic inside the handler prints one line (arm)" arm nested   "canary=panic-nested"
+par_row panic_splice_row "panic: nested, second report canary (rv)"               rv  rereport "canary=panic-nested,panic-nested-report"
+par_row panic_splice_row "panic: nested, second report canary (arm)"              arm rereport "canary=panic-nested,panic-nested-report"
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
@@ -16200,7 +16219,7 @@ PY
     # ── Wave 15 (GR5): the panic report is not spliced (see the rv/arm rows,
     # `panic_splice_row`, for the property and the read). Same smoke and
     # canaries on x86_64, -smp 2; judged by `panic_splice_judge`.
-    x86_panic_splice_row() { # x86_panic_splice_row <label> <want: pass|stop|splice|fatal|fatalskip> [kernel command line]
+    x86_panic_splice_row() { # x86_panic_splice_row <label> <want: pass|stop|splice|fatal|fatalskip|nested|rereport> [kernel command line]
         local label="$1" want="$2" app="${3:-}" why="" try=1 tries=1 v
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -16209,9 +16228,9 @@ PY
         x86_kbuild "use-robot,panic-splice-smoke" "$kimg" || { bad; echo "      make x86_64 (panic-splice-smoke) did not build"; return; }
         par_ready
         local -a ap=(); [ -n "$app" ] && ap=(-append "$app")
-        case "$want" in pass|fatal) ;; *) tries=$PANIC_SPLICE_TRIES ;; esac
+        case "$want" in pass|fatal|nested|rereport) ;; *) tries=$PANIC_SPLICE_TRIES ;; esac
         while [ "$try" -le "$tries" ]; do
-            x86_qemu "$kimg" "$log" 60 'Crash counter = |\[TRACE\] cpu0' -smp 3 ${ap[@]+"${ap[@]}"} || { rm -f "$kimg" "$kimg.features"; return; }
+            x86_qemu "$kimg" "$log" 60 'Crash counter = |\[TRACE\] cpu0|no second report; (halted|rebooting in [0-9]+ ms)' -smp 3 ${ap[@]+"${ap[@]}"} || { rm -f "$kimg" "$kimg.features"; return; }
             v="$(splice_judge_for "$want" "$log")"
             why="$(panic_splice_verdict "$want" "$v")"
             [ -z "$why" ] && break
@@ -16236,6 +16255,10 @@ PY
         "fatal: report not spliced by a console flood (x86)" fatal "canary=panic-splice-fatal"
     par "fatal: no quiesce, quiesce canary (x86)" x86_panic_splice_row \
         "fatal: no quiesce, quiesce canary (x86)" fatalskip "canary=panic-splice-fatal,panic-quiesce-skip"
+    par "panic: a panic inside the handler prints one line (x86)" x86_panic_splice_row \
+        "panic: a panic inside the handler prints one line (x86)" nested "canary=panic-nested"
+    par "panic: nested, second report canary (x86)" x86_panic_splice_row \
+        "panic: nested, second report canary (x86)" rereport "canary=panic-nested,panic-nested-report"
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #

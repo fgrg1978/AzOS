@@ -32,9 +32,8 @@
 //! 3. interrupts were enabled on entry (not inside an IRQ-save section or a
 //!    trap handler that runs with them masked);
 //! 4. the culprit holds no `Mutex` (`held::held_by`);
-//! 5. this is not a second panic on this hart (a panic while handling one);
-//! 6. no hart has taken the reset path already (the global flag is clear);
-//! 7. the culprit is a kernel task that is neither an idle task, nor a ring-3
+//! 5. no hart has taken the reset path already (the global flag is clear);
+//! 6. the culprit is a kernel task that is neither an idle task, nor a ring-3
 //!    task inside a system call, nor a registered safety task (the control
 //!    loops: when one of them faults there is nothing left in the kernel to
 //!    keep flying, and the external ESC/FC failsafe is the backstop — the
@@ -42,6 +41,10 @@
 //!
 //! The order of the checks is the order of [`Reason`]: the first failing
 //! check names the reason the reset path prints.
+//!
+//! A panic inside the panic handler never reaches the predicate: the handler
+//! marks the hart before anything else and halts such a panic with one line
+//! (kernel/src/panic.rs `nested`, owner decision 2026-10-24).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -80,8 +83,6 @@ pub struct PanicContext {
     pub irqs_were_enabled: bool,
     /// `Mutex` acquisitions the culprit has not released.
     pub mutex_held: u32,
-    /// This hart was already inside the panic handler.
-    pub second_panic: bool,
     /// Some hart already took the reset path (the global panic flag).
     pub already_panicked: bool,
     /// The running task.
@@ -94,9 +95,7 @@ pub struct PanicContext {
 pub enum Reason {
     /// The build's policy is `Reset`.
     PolicyReset,
-    /// A panic while this hart was handling one.
-    SecondPanic,
-    /// Another hart already took the reset path.
+    /// Check 5: another hart already took the reset path.
     AlreadyPanicked,
     /// Check 1.
     InIsr,
@@ -106,13 +105,13 @@ pub enum Reason {
     IrqsOff,
     /// Check 4.
     MutexHeld,
-    /// Check 7: no task.
+    /// Check 6: no task.
     NoTask,
-    /// Check 7: an idle task.
+    /// Check 6: an idle task.
     IdleTask,
-    /// Check 7: a ring-3 task in a system call.
+    /// Check 6: a ring-3 task in a system call.
     UserTask,
-    /// Check 7: a safety task (the control loop itself).
+    /// Check 6: a safety task (the control loop itself).
     SafetyTask,
 }
 
@@ -121,7 +120,6 @@ impl Reason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Reason::PolicyReset => "policy-reset",
-            Reason::SecondPanic => "second-panic",
             Reason::AlreadyPanicked => "already-panicked",
             Reason::InIsr => "in-isr",
             Reason::SpinLockHeld => "spinlock-held",
@@ -150,9 +148,6 @@ pub enum Verdict {
 pub const fn decide(policy: Policy, ctx: &PanicContext) -> Verdict {
     if let Policy::Reset = policy {
         return Verdict::Reset(Reason::PolicyReset);
-    }
-    if ctx.second_panic {
-        return Verdict::Reset(Reason::SecondPanic);
     }
     if ctx.already_panicked {
         return Verdict::Reset(Reason::AlreadyPanicked);
