@@ -17,7 +17,7 @@ HOW IT WORKS. Frames come from stack_frames.frames(), which sums a whole
 prologue. Edges come from every call and tail jump llvm-objdump annotates,
 resolved by the address they reach (`edges`), so an `auipc`+`jalr` long call
 is resolved exactly like a `jal`. The deepest chain is the maximum sum over
-paths from `--root`.
+paths from `--root`, plus the panic handler's own chain once (`chain`).
 
 WHAT IT DOES NOT SEE, and therefore why this is a LOWER bound:
   * Indirect calls through a function pointer or a vtable are not followed.
@@ -132,18 +132,59 @@ def edges(text, owner):
     return graph
 
 
+# The `#[panic_handler]`, by the name each toolchain gives it.
+PANIC_HANDLERS = ("__rustc::rust_begin_unwind", "rust_begin_unwind")
+
 
 def analyze(elf, root):
-    """`(depth, path, frames, knots)`: the deepest chain from `root` in `elf`
-    (a function of it), the functions on it, every function's frame, and the
-    mutually recursive components. `KeyError` when `root` is no symbol of the
-    image."""
+    """`(depth, path, frames, knots, panic)` for `root` in `elf` (a function of
+    it): see [`chain`]. `KeyError` when `root` is no symbol of the image."""
     tools = stack_frames.llvm_bin()
     frames = stack_frames.frames(elf, tools)
     graph, names = call_graph(elf, tools)
     if root not in names:
         raise KeyError(f"no symbol {root} in {elf}")
+    return chain(graph, frames, root)
 
+
+def chain(graph, frames, root):
+    """`(depth, path, frames, knots, panic)`: the deepest chain from `root`
+    over `graph` (function -> callees) with `frames`, the functions on it,
+    `frames`, the mutually recursive components, and the panic handler's own
+    chain `(depth, path)` (None when `root` cannot reach it). `depth` includes
+    the handler's.
+
+    THE PANIC HANDLER IS ITS OWN ROOT. Anything that can panic calls it, and
+    it calls the heap, the console and the file system (the crash log), which
+    can all panic: through it, 155 functions of the 2026-10-24 qemu kernel are
+    one recursive component, charged whole (14.7 KiB).
+    So the calls into the handler are cut, its chain is measured from it over
+    the cut graph, and that depth is added to the deepest chain once, as if
+    the deepest frame panicked. A panic inside the handler is not followed:
+    a second one takes the reset path and runs the report again
+    (kernel/src/panic.rs), which no static bound sees -- the component was
+    charged one pass before, and this is the same single pass."""
+    reach, todo = {root}, [root]
+    while todo:
+        for c in graph.get(todo.pop(), ()):
+            if c not in reach:
+                reach.add(c)
+                todo.append(c)
+    handler = next((h for h in PANIC_HANDLERS if h in reach), None)
+    if handler is not None:
+        graph = {f: {c for c in cs if c != handler} for f, cs in graph.items()}
+    total, path, knots = longest(graph, frames, root)
+    panic = None
+    if handler is not None and handler != root:
+        pdepth, ppath, _ = longest(graph, frames, handler)
+        panic = (pdepth, ppath)
+        total += pdepth
+    return total, path, frames, knots, panic
+
+
+def longest(graph, frames, root):
+    """`(depth, path, knots)`: the deepest chain from `root` over `graph`, the
+    functions on it, and the mutually recursive components."""
     # Recursion makes "the deepest chain" ill-defined, and a depth-first walk
     # that just cuts a cycle and memoises what it found gives a DIFFERENT
     # answer depending on which callee it happened to visit first -- two runs
@@ -291,7 +332,7 @@ def analyze(elf, root):
     knots = [m for m in comps if len(m) > 1]
 
     total, path = chain_from(root)
-    return total, path, frames, knots
+    return total, path, knots
 
 
 def main():
@@ -310,7 +351,7 @@ def main():
         sys.stderr.write(f"no image at {a.elf}\n")
         sys.exit(2)
     try:
-        total, path, frames, knots = analyze(a.elf, a.root)
+        total, path, frames, knots, panic = analyze(a.elf, a.root)
     except KeyError as e:
         sys.stderr.write(f"{e.args[0]}\n")
         sys.exit(2)
@@ -320,6 +361,8 @@ def main():
         print(f"{frames.get(f, 0):9d}  {f}")
     if len(path) > a.frames:
         print(f"           ... {len(path) - a.frames} more frames")
+    if panic:
+        print(f"{panic[0]:9d}  + the panic handler's own chain: " + " > ".join(panic[1][:6]))
     if knots:
         print(f"           mutually recursive components on the path are charged "
               f"their longest simple path: {len(knots)} in the image "

@@ -117,7 +117,7 @@ def check(path, args, default_kb, max_kb):
         runs.append((fn, syms[sym][1], f"thread on {sym}"))
     for fn, stack, what in runs:
         try:
-            depth, path_, _, _ = stack_chain.analyze(path, fn)
+            depth, path_, _, _, _ = stack_chain.analyze(path, fn)
         except KeyError as e:
             print(f"{name}: {e.args[0]}")
             return False
@@ -221,6 +221,16 @@ def self_test():
     spans = [(0x20000, 0x14, "a"), (0x20100, 4, "callee"), (0x20200, 0x10, "b"), (0x21300, 8, "c")]
     expect("call edges", {f: sorted(cs) for f, cs in stack_chain.edges(text, owner).items()},
            {"a": ["callee"], "c": ["b"]})
+    # The panic handler is its own root: 20 functions that can panic, all
+    # called by the handler, are one knot through it. The chain is the
+    # trap's own down to the panic call, plus the handler's own once.
+    h = stack_chain.PANIC_HANDLERS[0]
+    g = {"root": {"g0"}, "pbc": {h}, h: {f"g{i}" for i in range(20)}}
+    g.update({f"g{i}": {"pbc"} for i in range(20)})
+    fr = {"root": 16, "pbc": 48, h: 500, **{f"g{i}": 100 + i for i in range(20)}}
+    depth, path_, _, _, panic = stack_chain.chain(g, fr, "root")
+    expect("panic chain", (path_, panic), (["root", "g0", "pbc"], (500 + 119 + 48, [h, "g19", "pbc"])))
+    expect("panic depth", depth, 16 + 100 + 48 + 500 + 119 + 48)
     if failures:
         print("\n".join(failures))
         sys.exit(1)
