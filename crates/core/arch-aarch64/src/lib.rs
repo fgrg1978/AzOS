@@ -42,6 +42,11 @@
 //! blocks themselves are cfg-gated).
 
 #![no_std]
+// On the workspace target (riscv64) the crate compiles essentially empty, as
+// the section above says: the items its aarch64-only code uses (the PSCI
+// conduit flag, the GIC register offsets) have no user there. A workspace
+// build (the gate's NR_CPUS rows) compiles it with warnings denied.
+#![cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 
 pub use azos_arch_api::{
     Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu, MmuError,
