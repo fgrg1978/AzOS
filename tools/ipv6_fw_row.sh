@@ -149,6 +149,8 @@ ra += bytes([1, 1]) + PEER_MAC
 ra += bytes([3, 4, 64, 0xC0]) + struct.pack(">II", 3600, 1800) + bytes(4) + PREFIX + bytes(8)
 ns = bytes([135, 0, 0, 0, 0, 0, 0, 0]) + GUEST_GLOBAL + bytes([1, 1]) + PEER_MAC
 na = False
+# The guest's address is tentative for its Duplicate Address Detection wait
+# (1 s): the first solicitations draw nothing, so they are repeated.
 for _ in range(10):
     s.sendto(frame(b"\x33\x33\x00\x00\x00\x01", PEER_LL, bytes.fromhex("ff020000000000000000000000000001"), 58, 255, ra, 2), guest)
     s.sendto(frame(b"\x33\x33\xff" + IID[5:8], PEER_LL, SOLICITED, 58, 255, ns, 2), guest)
