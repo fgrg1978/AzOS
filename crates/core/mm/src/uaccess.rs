@@ -54,12 +54,16 @@
 //! out): a section is about 22 instructions on riscv64, 16 on aarch64 and
 //! 21 on x86_64 (interrupts off and on, two stores and a fence), so the
 //! small lanes pay the most. `uaccess-get-u32` (a futex wait whose word
-//! differs) is one section since the futex table answers it from its
-//! unlocked read (`futex_table` `wait_as`): +1.3% on riscv64 (1,647 ->
-//! 1,669), +1.0% on aarch64 (1,583 -> 1,599), +1.2% on x86_64 (1,792 ->
-//! 1,813). It read the word twice before, two sections: +2.3% on riscv64
-//! (1,920 -> 1,964). No lane is above +1.3% on any ISA (the most: x86_64
-//! `uaccess-cstr-7`). The alternative the brief named,
+//! differs) is one section: the syscall edge answers it from one read
+//! before the futex table or the region table is taken
+//! (`vdso_notify::futex_precheck`). Measured when a read before the table
+//! lock did the same inside `futex_table`, that one section was +1.3% on
+//! riscv64 (1,647 -> 1,669), +1.0% on aarch64 (1,583 -> 1,599) and +1.2%
+//! on x86_64 (1,792 -> 1,813), and no lane was above +1.3% on any ISA (the
+//! most: x86_64 `uaccess-cstr-7`); the word read twice, two sections, was
+//! +2.3% on riscv64 (1,920 -> 1,964). The edge read takes that lane to
+//! about 530 instructions, so its one section is a larger share of it (not
+//! measured again). The alternative the brief named,
 //! pinning the frame through its share count, cost 2,222 on that lane
 //! (`cow_table`: two compare-and-swap loops on the frame's descriptor and a
 //! second walk to re-check the leaf per page; and that count is the
