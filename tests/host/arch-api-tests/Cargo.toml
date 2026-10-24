@@ -25,5 +25,7 @@ azos_crypto = { path = "../../../crates/core/crypto" }
 its-skip-mapti = []
 # Same for `sysregs.rs` (pulled for `cpu.rs`): the gate's IRQ-order canary.
 irq-nomem-canary = []
+# Same for `sysregs.rs`: the gate's EL0-state canary (el0-state-audit).
+el0-state-canary = []
 # Same for `cpu/features.rs` (pulled with `cpu/mod.rs`): the gate's ID-register canary.
 a64-id-canary = []
