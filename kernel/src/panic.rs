@@ -100,13 +100,16 @@ pub fn register_safety_task(idx: usize, name: &str) {
     }
 }
 
-/// The handler's first step: mark this hart inside it. True when it already
-/// was -- a panic inside this handler, or inside a `[FATAL]` halt's report --
-/// or when the hart is past the table and cannot be tracked. One atomic swap:
-/// nothing before it can panic again.
+/// The handler's first step: mark this hart inside it, and return the mark it
+/// held. [`ENTERING`] is a panic inside this handler before it read the task,
+/// or inside a `[FATAL]` halt's report, or a hart past the table, which cannot
+/// be tracked; the TID-plus-one of the running task is a panic inside its own
+/// handler. Another task's mark is not: under `PANIC_POLICY_CONTAIN` a task in
+/// [`contain`] may have moved to another hart, leaving its mark here. One
+/// atomic swap: nothing before it can panic again.
 #[inline(always)]
-fn enter(hart: usize) -> bool {
-    IN_PANIC.get(hart).is_none_or(|f| f.swap(ENTERING, Ordering::AcqRel) != 0)
+fn enter(hart: usize) -> u32 {
+    IN_PANIC.get(hart).map_or(ENTERING, |f| f.swap(ENTERING, Ordering::AcqRel))
 }
 
 /// Put the running task's TID in this hart's mark. True when another hart is
@@ -168,11 +171,12 @@ fn panic(info: &PanicInfo) -> ! {
     // Before anything else, the task lookup included: whatever below
     // panicked would panic again on a second pass.
     let hart = azos_arch::ARCH.hart_id();
-    if enter(hart) && !canary!("panic-nested-report") {
+    let held = enter(hart);
+    if held == ENTERING && !canary!("panic-nested-report") {
         nested(info, hart);
     }
     let tid = azos_sched::current_task_tid();
-    if mark(hart, tid) && !canary!("panic-nested-report") {
+    if (held == tid.wrapping_add(1) || mark(hart, tid)) && !canary!("panic-nested-report") {
         nested(info, hart);
     }
 
@@ -583,9 +587,11 @@ fn contain(info: &PanicInfo, hart: usize, tid: u32) -> ! {
         panic_policy::CONTAINED_EXIT_STATUS, isolations);
 
     // Leaving the handler: a later panic on this hart is a first panic again.
-    // Cleared last, so a panic anywhere above is still a second one.
+    // Cleared last, so a panic anywhere above is still a second one; only if
+    // it is still this task's mark, since the task may have moved and another
+    // task's panic on that hart replaced it.
     if let Some(f) = IN_PANIC.get(hart) {
-        f.store(0, Ordering::Release);
+        let _ = f.compare_exchange(tid.wrapping_add(1), 0, Ordering::AcqRel, Ordering::Relaxed);
     }
     azos_sched::task_exit_with_code(panic_policy::CONTAINED_EXIT_STATUS)
 }

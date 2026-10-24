@@ -11882,7 +11882,7 @@ else
         if [ -z "$kb" ]; then bad; echo "      no CONFIG_KERNEL_STACK_SIZE_KB in $3"; return 1; fi
         limit=$(( kb * 1024 - 4096 - $4 ))
         if out="$(python3 "${REPO_ROOT}/tools/stack_chain.py" "$2" --limit "$limit" --frames 8 2>&1)"; then
-            ok; printf '%s\n' "$out" | grep -a '^WARNING' | sed 's/^/      /'
+            ok; printf '%s\n' "$out" | sed -n 's/^WARNING/      WARNING/p'
         else
             bad; echo "$out" | sed 's/^/      /'
         fi
@@ -15060,6 +15060,7 @@ PY
         if ! x86_kbuild "$3" "$kimg"; then
             printf "  %-26s" "${1}..."; bad; echo "      make x86_64 X86_64_FEATURES=$3 did not build"; return
         fi
+        par_ready
         if [ "$2" = frames ]; then frame_row "$1" "$kimg" 8192
         else chain_row "$1" "$kimg" "$AZOS_OUT/build/x86_64-$(gate_defc x86 "$3").config" 192; fi
         rm -f "$kimg" "$kimg.features"
