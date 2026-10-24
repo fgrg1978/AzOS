@@ -11918,19 +11918,29 @@ else
     # cargo output it was stripped from. The canary asks for 16 KiB of
     # everything: the two images that need more must be named, or the row only
     # ever said ok.
-    user_stack_images() { # user_stack_images <rv|arm>: the images, built; prints their paths
+    user_stack_images() { # user_stack_images <rv|arm|x86>: the images, built; prints their paths
         local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t="" tb
-        if [ "$1" = rv ]; then dir="$AZOS_OUT/build"; tb="riscv64imac-unknown-azos"
-        else dir="$AZOS_OUT/build/aarch64"; tb="aarch64-unknown-azos"; fi
+        case "$1" in
+            rv)  dir="$AZOS_OUT/build"; tb="riscv64imac-unknown-azos" ;;
+            arm) dir="$AZOS_OUT/build/aarch64"; tb="aarch64-unknown-azos" ;;
+            x86) dir="$AZOS_OUT/build/x86_64"; tb="x86_64-unknown-azos" ;;
+        esac
         for n in $names; do t="$t $dir/$n.elf"; done
         make -s $t >/dev/null 2>&1 || return 1
         printf '%s\n' $t | sed "s|^$dir/toolbox\.elf\$|$AZOS_OUT/tgt/userspace/services/toolbox/$tb/release/toolbox|"
     }
-    user_stacks_row() { # user_stacks_row <label> <rv|arm>
+    user_stacks_row() { # user_stacks_row <label> <rv|arm|x86>
         printf "  %-26s" "${1}..."
         par_shared "user_stacks $2" || return 1
         local imgs cfg out
-        if [ "$2" = rv ]; then cfg="$PRIMARY_CONFIG"; else cfg="$AARCH64_CONFIG"; fi
+        case "$2" in
+            rv)  cfg="$PRIMARY_CONFIG" ;;
+            arm) cfg="$AARCH64_CONFIG" ;;
+            # The generic cell's x86_64 configuration, as `x86_kbuild` expands it.
+            x86) cfg="$AZOS_OUT/build/x86_64-$GATE_DEFC_X86.config"
+                 make -s X86_64_DEFCONFIG="config/defconfigs/$GATE_DEFC_X86.config" X86_64_KCONFIG="$cfg" "$cfg" >/dev/null 2>&1 \
+                     || { bad; echo "      no x86_64 configuration ($cfg)"; return; } ;;
+        esac
         if ! imgs="$(user_stack_images "$2")"; then bad; echo "      the ring-3 images did not build (make $2 images)"; return; fi
         if out="$(python3 "${REPO_ROOT}/tools/user_stacks.py" --config "$cfg" $imgs 2>&1)"; then
             ok
@@ -11954,6 +11964,7 @@ else
     }
     ci_row "ring-3 stacks: riscv64" user_stacks_row "ring-3 stacks: riscv64" rv
     ci_row "ring-3 stacks: aarch64" user_stacks_row "ring-3 stacks: aarch64" arm
+    ci_row "ring-3 stacks: x86_64" user_stacks_row "ring-3 stacks: x86_64" x86
     ci_row "ring-3 stacks: canary" user_stacks_canary_row "ring-3 stacks: canary"
     # The trap-path size pins (`trap_size_row`, defined beside the aarch64
     # kernel rows): the riscv64 qemu kernel just built.
