@@ -253,7 +253,7 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | Arch layout | `python3 tools/lint/arch_layout_lint.py` | the three ISAs share one file layout; ISA-only code is under `ext/` |
 | Kconfig | `python3 tools/lint/kconfig_lint.py` | Kconfig is the only source of the feature set ([config.md](config.md)) |
 | Unsafe budget | `make unsafe-budget` (`python3 tools/lint/unsafe_budget.py`) | a crate carries no more `unsafe` than `tools/lint/unsafe_budget.tsv` says, keeps its `#![forbid(unsafe_code)]`, and a kernel crate's share of code lines in files with `unsafe` (and the kernel's total) does not rise; `--report` prints the shares |
-| Size budget | `make size-check` | the riscv64 QEMU defconfig kernel's `.text`/`.rodata`/`.data`/`.bss` stay within 0.25% of `tools/lint/size_budget.tsv`; `make size-update REASON=".."` moves it in the commit that changes the image |
+| Size budget | `make size-check` | the riscv64 QEMU defconfig kernel's `.text`/`.rodata`/`.data`/`.bss` stay within 0.25% of `tools/lint/size_budget.tsv`; `make size-update REASON=".."` moves it in the commit that changes the image; `python3 tools/lint/size_budget.py --memory [LABEL=ELF[,CONFIG]]` prints an ELF's static memory (sections, per crate, large buffers, board fit) |
 | Presets | `python3 tools/lint/check_presets.py` | every preset expands on every ISA |
 | Feature matrix | `python3 tools/build/gen_feature_matrix.py --check` | `Documentation/os-feature-matrix.md` is what the Kconfig tree and the defconfigs yield |
 | Make help | `bash tools/lint/check_make_help.sh` | `make help` names no target the Makefile lacks |
@@ -262,6 +262,11 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | Gate rows manifest | `python3 tools/gate/gate_rows.py --check` | `tools/gate/gate_rows.tsv` names exactly the gate's rows, and each row's globs cover what it reads; `tools/gate/rows_for_diff.py --self-test` runs first |
 | SPDX headers | `python3 tools/lint/spdx_headers.py --check` | every tracked source file carries its licence header |
 | Conflict markers | `git grep` | no tracked file outside `third_party/` holds a merge-conflict marker line |
+| Config index | `python3 tools/build/gen_config_index.py --check` | `Documentation/config.md`'s option index is what the Kconfig tree declares; `--self-test` runs first |
+| Kernel constants | `python3 tools/build/export_kernel_consts.py --self-test` | every Kconfig symbol the brain's constant mirror exports is declared (`make ci-full` compares the mirror itself) |
+| Zbc CRC constants | `python3 tools/build/lx_kbuild/zbc_crc_constants.py` | the CRC-32 fold constants `lx/glue/lxbase.c` carries are the derived ones |
+| OTA sender | `python3 tools/dev/ota_send.py --self-test` | the sender's header and its single and fleet sends, against a localhost receiver |
+| Claims scanner | `bash tools/lint/claims_check.sh --self-test` | the absolute-claim scanner still finds what it looks for; the scan of the tree (a review aid that always passes) is by hand |
 | Supply chain | `cargo deny check licenses bans sources` | licences, bans and sources of the registry crates (`deny.toml`) |
 
 Other checks live in `tools/`: `tools/lint/aarch64_fp_free_check.sh`
