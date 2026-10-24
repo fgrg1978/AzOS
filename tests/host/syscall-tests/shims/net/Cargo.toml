@@ -24,7 +24,7 @@ azos_rings = { path = "../../../../../crates/core/rings" }
 azos_decision = { path = "../../../../../crates/core/decision" }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))', 'cfg(feature, values("loopback-preempt-probe"))', 'cfg(feature, values("loopback-guard-canary"))', 'cfg(feature, values("tcp-handle-gen-canary"))', 'cfg(feature, values("tcp-ephemeral-port-canary"))', 'cfg(feature, values("envelope-egress-canary"))', 'cfg(feature, values("fw-ipv6-canary"))', 'cfg(feature, values("nic-queue-blind-canary"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))', 'cfg(feature, values("loopback-preempt-probe"))', 'cfg(feature, values("loopback-guard-canary"))', 'cfg(feature, values("tcp-handle-gen-canary"))', 'cfg(feature, values("tcp-ephemeral-port-canary"))', 'cfg(feature, values("envelope-egress-canary"))', 'cfg(feature, values("fw-ipv6-canary"))', 'cfg(feature, values("nic-queue-blind-canary"))', 'cfg(feature, values("slaac-no-dad-canary"))', 'cfg(feature, values("slaac-two-hours-canary"))'] }
 
 [features]
 # `tcp.rs` gates its ARP timing prints on this. Declared, not silenced.
