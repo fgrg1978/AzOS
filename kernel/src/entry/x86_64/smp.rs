@@ -234,3 +234,45 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
         }
     }
 }
+
+// Every online CPU is a target of a kernel-wide shootdown and of
+// `icache_sync_all`'s serialising IPI, a CPU that has only run kernel tasks
+// too: the context switch never writes its CR3 (every kernel task's word is
+// the kernel root the trampoline loaded), so only the online step
+// (`ArchEntry::secondary_tlb_online`, `tlb::join`) publishes it. The late
+// runner finds every other online CPU's word published, then posts
+// `icache_sync_all`'s empty kernel request and requires it to have named every
+// other online CPU: `shootdown_kernel` returns only once each named CPU has
+// cleared its PENDING bit. The empty request is always the IPI, INVLPGB or not.
+// Runtime canary `x86-tlb-join-skip`: the APs publish nothing when they come
+// online, so one that has not run a ring-3 task yet keeps 0 and this test
+// alone goes not ok, before any request is posted (nothing waits on it).
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn tlb_kernel_shootdown_names_every_online_cpu() {
+        use azos_arch::{tlb, Cpu as _, ARCH};
+        let n = azos_percpu::nr_cpu_ids();
+        if n < 2 {
+            return Err("needs 2 CPUs (the shooter and a target)");
+        }
+        let me = ARCH.hart_id();
+        let (mut want, mut missing) = (0usize, 0usize);
+        for c in (0..n).filter(|&c| c != me && azos_percpu::cpu_online(c)) {
+            want |= 1 << c;
+            if c >= tlb::hart_bound() || tlb::AZOS_HART_CR3[c].load(Ordering::Relaxed) == 0 {
+                missing |= 1 << c;
+            }
+        }
+        if missing != 0 {
+            kprintln!("# tlb: online CPUs {:#x} published no CR3 (online mask {:#x}, CPU {} runs the test)",
+                      missing, want, me);
+            return Err("an online CPU published no CR3: a kernel-wide shootdown would not name it");
+        }
+        let named = tlb::shootdown_kernel(0, 0);
+        if named != want {
+            kprintln!("# tlb: the empty kernel request named {:#x}, online CPUs {:#x}", named, want);
+            return Err("the kernel-wide request did not name every online CPU");
+        }
+        Ok(())
+    }
+}

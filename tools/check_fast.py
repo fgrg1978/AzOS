@@ -88,6 +88,7 @@ SETS = {
             ("irq-storm", "irq_storm_is_contained"),
             ("console-drop", "console_task_line_waits_never_drops"),
             ("copyout-raw-kernel-ctx", "copyout_refused_in_kernel_context"),
+            ("x86-tlb-join-skip", "tlb_kernel_shootdown_names_every_online_cpu"),
             "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", _WG],
 }
 CLEAN_STATUS = {"rv": "0", "arm": "0", "x86": "1"}

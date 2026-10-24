@@ -89,6 +89,12 @@ impl ArchEntry for Entry {
     /// `icache_sync_all`. After `secondary_irq_init` (the LAPIC takes the
     /// vector), before interrupts are unmasked.
     fn secondary_tlb_online(&self, cpu: usize) {
+        // Runtime canary `x86-tlb-join-skip`: the scan bound only, as before
+        // the online publication.
+        if canary!("x86-tlb-join-skip") {
+            azos_arch::tlb::note_hart_online(cpu);
+            return;
+        }
         azos_arch::tlb::join(cpu);
     }
 

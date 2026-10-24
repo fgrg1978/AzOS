@@ -328,6 +328,12 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/early.rs: the device tree blob is not taken out of the page
     // allocator (ktest `mm_fdt_reserved`, riscv64 and aarch64).
     "fdt-reserve-skip",
+    // entry/x86_64/arch_entry.rs `secondary_tlb_online`: an AP raises the
+    // shootdown's scan bound but publishes no CR3, so a CPU that has only run
+    // kernel tasks is no target of a kernel-wide shootdown or of
+    // `icache_sync_all` (ktest `tlb_kernel_shootdown_names_every_online_cpu`,
+    // x86_64 only).
+    "x86-tlb-join-skip",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 

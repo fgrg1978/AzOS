@@ -14879,7 +14879,8 @@ PY
     # +1 uaccess_refuses_a_user_device_window, as on rv and arm -> 124.
     # +1 shootdown_reaches_a_masked_lock_waiter, as on rv and arm -> 125.
     # +1 rt_motor_coasts_a_held_wheel, as on rv and arm -> 126.
-    KTEST_N_X86=126
+    # +1 tlb_kernel_shootdown_names_every_online_cpu (x86_64 only) -> 127.
+    KTEST_N_X86=127
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -15828,6 +15829,10 @@ PY
     }
     par "ktest why durable-off canary (x86)" x86_ktest_row_nodur "ktest why durable-off canary (x86)" "" "why_resolves_a_refused_reservation"
     par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
+    # An AP that publishes no CR3 when it comes online (the old step): a CPU
+    # that has only run kernel tasks is no target of a kernel-wide shootdown.
+    par "ktest tlb join canary (x86)" x86_ktest_row "ktest tlb join canary (x86)" "" \
+        "tlb_kernel_shootdown_names_every_online_cpu" "canary=x86-tlb-join-skip"
     par "ktest percpu accessor canary (x86)" x86_ktest_row "ktest percpu accessor canary (x86)" ",percpu-accessor-race-canary" "percpu_accessors_read_masked"
     # The same boot carries K1's `ioring-fsync-inline` (an io_ring OP_FSYNC
     # completes in the submit): `ioring_fsync_completes_after_flush`.
