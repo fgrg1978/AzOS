@@ -446,61 +446,8 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // Phases D and 16: the crash counter, the PMP policy (riscv64), the stack canary.
     boot::report_security(&early);
 
-    // ---- Phase 17: Robot Physical Integration ----
-
-    #[cfg(feature = "use-robot")]
-    kprintln!("========================================");
-    #[cfg(feature = "use-robot")]
-    kprintln!(" Phase 17: Robot Physical Integration");
-    #[cfg(feature = "use-robot")]
-    kprintln!("========================================");
-    #[cfg(feature = "use-robot")]
-    kprintln!("[ROBOT] Encoder sim: ticks in rt_motor_task → speed × iteration");
-    #[cfg(feature = "use-robot")]
-    kprintln!("[ROBOT] Odometry:    dead reckoning (dist_mm, heading_cdeg)");
-    #[cfg(feature = "use-robot")]
-    kprintln!("[ROBOT] Trajectory:  ring buffer ({} pts) + FAT32 CSV flush",
-        azos_robot::TRAJ_CAP);
-    #[cfg(feature = "use-robot")]
-    kprintln!("[ROBOT] OTA:         A/B firmware slots (recovery console: ota recv/status/verify)");
-    #[cfg(feature = "use-robot")]
-    kprintln!();
-
-    // Shared with aarch64's kernel_main — see `install_robot_hw`'s own doc
-    // for why `robot_init()` (inside the next helper) stays a separate call
-    // rather than living inside `install_robot_hw` itself (this ISA's own
-    // `payload_init` interleave).
-    install_robot_hw();
-    // A board's PCF8563 needs the I2C controllers `install_robot_hw` brought up.
-    #[cfg(feature = "rtc-pcf8563")]
-    boot::rtc::install_i2c();
-    // Payload + drivers + full sensor suite — see
-    // `install_robot_payload_and_sensors`'s own doc for the merge-task
-    // finding (this was riscv64-only; now shared) and the ordering
-    // constraint (must follow network bring-up).
-    install_robot_payload_and_sensors();
-    // On a robot image, the camera's capture task.
-    #[cfg(feature = "use-robot")]
-    camera_capture_init();
-
-    // ---- Phase G1: Subsumption Behavior Engine + VLA Protocol ----
-
-    #[cfg(feature = "use-robot")]
-    kprintln!("========================================");
-    #[cfg(feature = "use-robot")]
-    kprintln!(" [BEHAVIOR] Phase G1: Subsumption Engine");
-    #[cfg(feature = "use-robot")]
-    kprintln!("   L0: emergency-stop  (IMU)");
-    #[cfg(all(feature = "use-robot", not(feature = "no-ml")))]
-    kprintln!("   L1: avoid-obstacle  (MLP)");
-    #[cfg(feature = "use-robot")]
-    kprintln!("   L2: remote-vla      (TCP)");
-    #[cfg(feature = "use-robot")]
-    kprintln!("   L3: explore         (wander)");
-    #[cfg(feature = "use-robot")]
-    kprintln!("========================================");
-    #[cfg(feature = "use-robot")]
-    kprintln!();
+    // Phases 17 and G1: the robot hardware, payload and sensors, the behavior banner.
+    boot::bring_up_robot();
 
     // ---- Phase 5: SMP + Scheduler ----
 
