@@ -428,6 +428,57 @@ mod tests {
         assert_eq!(azos_decision::total(), id, "an admit claims no id: nothing stores it");
     }
 
+    /// **The journal keeps the last N durable records, however many ids the
+    /// ring's records claim in between.** With the ring built (the gate's dev
+    /// cell; this suite's `ring` feature, its own gate row) every verdict
+    /// claims an id, so a refusal after every `JOURNAL_ENTRIES - 1` wake
+    /// placements gets an id `JOURNAL_ENTRIES` past the one before: keyed by
+    /// id, every one of them took the same slot and only the newest was held.
+    /// Each is held by id (`lookup`, `durable_held`: the ring has long
+    /// overwritten them), and a query lists all of them though they are older
+    /// than the ids the ring spans; one durable record more, and exactly the
+    /// oldest is gone. Without the ring the ids are dense and it passes
+    /// either way.
+    ///
+    /// **Canary.** Take the journal slot by the id again (`p.seq %
+    /// JOURNAL_ENTRIES` in `journal::store`, and `get` reading that slot): only
+    /// the newest refusal is held, red.
+    #[test]
+    fn journal_a_durable_record_outlives_the_ids_the_ring_claims() {
+        use azos_decision::{durable_held, lookup, query, record, total, Filter, JOURNAL_ENTRIES, ON};
+        let _g = GUARD.lock().unwrap();
+        let n = JOURNAL_ENTRIES as u64;
+        let refuse = |subject| {
+            record(Rule::DeadlineAdmission, Verdict::Refuse, subject, [1, 2, 0]);
+            total()
+        };
+        let t0 = total();
+        let mut ids = Vec::new();
+        for k in 0..n {
+            ids.push(refuse(7700));
+            for _ in 1..n {
+                record(Rule::WakePlacement, Verdict::Place, k as u32, [1, 0, 7]);
+            }
+        }
+        if ON {
+            assert!(ids.windows(2).all(|w| w[1] - w[0] == n), "the refusals' ids collide modulo the journal's depth");
+            assert!(total() - ids[0] >= azos_decision::ENTRIES as u64, "the ring no longer holds the oldest");
+        }
+        for &id in &ids {
+            assert!(durable_held(id), "refusal {id} is held in the journal");
+            assert_eq!(lookup(id).map(|p| (p.seq, p.subject)), Some((id, 7700)), "refusal {id} resolves");
+        }
+        let mut got = vec![0u64; ids.len() + 1];
+        let f = Filter { subject: Some(7700), verdict: Some(Verdict::Refuse as u8), after: t0, ..Filter::ANY };
+        let k = query(&f, &mut got);
+        assert_eq!(got[..k], ids[..], "the query lists every one, oldest first");
+        let mut page = [0u64; 3];
+        let k = query(&Filter { after: ids[4], ..f }, &mut page);
+        assert_eq!(page[..k], ids[5..8], "and pages by id");
+        let newest = refuse(7701);
+        assert!(!durable_held(ids[0]) && durable_held(ids[1]) && durable_held(newest), "the oldest of N + 1 is gone, the rest held");
+    }
+
     /// Every rule has a stable number and a name, and the two map both ways:
     /// the number indexes `RULES`, the name finds the number back (the
     /// `why -r` flag). The numbers are written down here, so renumbering a

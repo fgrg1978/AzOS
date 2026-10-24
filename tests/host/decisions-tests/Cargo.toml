@@ -14,6 +14,12 @@ azos_decisions = { path = "../../../userspace/lib/decisions" }
 # `durable`: the refusals under test go down the durable path, as in every preset.
 azos_decision = { path = "../../../crates/core/decision", features = ["durable"] }
 
+[features]
+# The ring too (Kconfig DECISION_RECORDS_DEV, the gate's dev cell): the gate
+# row `decisions(ring)` runs the `journal_` tests with it, where the ring's
+# records make the durable ids sparse.
+ring = ["azos_decision/on"]
+
 [profile.release]
 overflow-checks = true
 

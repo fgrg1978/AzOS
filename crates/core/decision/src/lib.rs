@@ -78,7 +78,7 @@ pub use prov::{
     compact_base, compact_ext, warrant_ref, ProvError, ProvenanceRecord, COMPACT_BASE_CODE, COMPACT_BYTES,
     COMPACT_EXT_CODE, SIZE as PROVENANCE_SIZE, WORDS as PROVENANCE_WORDS,
 };
-pub use query::{lookup, query, Filter};
+pub use query::{for_each_held, lookup, query, Filter};
 
 use crate::a64::AtomicU64;
 use core::sync::atomic::{fence, AtomicBool, Ordering};

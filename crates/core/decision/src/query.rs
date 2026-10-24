@@ -7,8 +7,11 @@
 //!
 //! Sources, in order: the ring (Kconfig `DECISION_RECORDS_DEV`, every verdict,
 //! widened with [`ProvenanceRecord::from_record`]) and the journal (`journal`,
-//! the durable ones, whole). A record in both is the same decision.
-use crate::{journal, ProvenanceRecord, DURABLE, ENTRIES, JOURNAL_ENTRIES, ON};
+//! the durable ones, whole). A record in both is the same decision. The
+//! journal holds the last `DECISION_JOURNAL_ENTRIES` durable records however
+//! many ids the ring's records claimed in between, so a query reads it
+//! whole, not only the ids the ring still spans.
+use crate::{journal, ProvenanceRecord, DURABLE, ENTRIES, ON};
 
 /// What a [`query`] selects. Unset fields match everything; `after` is
 /// exclusive (0: from the oldest still held).
@@ -85,27 +88,59 @@ pub fn lookup(id: u64) -> Option<ProvenanceRecord> {
     None
 }
 
+/// Every record still held after id `after`, to `f`: first the journal's
+/// older than the ring's oldest, in their journal places (two made at once
+/// may hold them in the other order than their ids), each one whatever `f`
+/// returns; then the ring's, in id order, until `f` returns false.
+fn walk(after: u64, mut f: impl FnMut(&ProvenanceRecord) -> bool) {
+    let last = crate::total();
+    // The ring's oldest id; with no ring, every record is the journal's.
+    let ring_first = if ON { last.saturating_sub(ENTRIES as u64 - 1).max(1) } else { u64::MAX };
+    if DURABLE {
+        journal::for_each(|p| {
+            if p.seq > after && p.seq < ring_first && p.seq <= last {
+                f(p);
+            }
+        });
+    }
+    if ON {
+        for id in after.saturating_add(1).max(ring_first)..=last {
+            if let Some(p) = lookup(id) {
+                if !f(&p) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Every record still held, the oldest roughly first (see [`walk`]).
+pub fn for_each_held(mut f: impl FnMut(&ProvenanceRecord)) {
+    walk(0, |p| {
+        f(p);
+        true
+    });
+}
+
 /// The ids of the stored decisions that pass `f`, oldest first, after
 /// `f.after`, into `out`; how many. A caller with more to read asks again
 /// with `after` set to the last id it got.
 pub fn query(f: &Filter, out: &mut [u64]) -> usize {
-    let span = (if ON { ENTRIES } else { 0 }).max(if DURABLE { JOURNAL_ENTRIES } else { 0 }) as u64;
-    if span == 0 || out.is_empty() {
+    let mut n = 0;
+    if out.is_empty() {
         return 0;
     }
-    let last = crate::total();
-    let first = f.after.saturating_add(1).max(last.saturating_sub(span - 1)).max(1);
-    let mut n = 0;
-    let mut id = first;
-    while id <= last && n < out.len() {
-        if let Some(p) = lookup(id) {
-            if f.matches(&p) {
-                out[n] = id;
-                n += 1;
-            }
+    walk(f.after, |p| {
+        let id = p.seq;
+        // Kept in id order: the journal's come in place order.
+        if f.matches(p) && (n < out.len() || id < out[n - 1]) {
+            let at = out[..n].partition_point(|&q| q < id);
+            n = (n + 1).min(out.len());
+            out.copy_within(at..n - 1, at + 1);
+            out[at] = id;
         }
-        id += 1;
-    }
+        n < out.len()
+    });
     n
 }
 
@@ -113,7 +148,7 @@ pub fn query(f: &Filter, out: &mut [u64]) -> usize {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::{record, Rule, Verdict};
+    use crate::{record, Rule, Verdict, JOURNAL_ENTRIES};
     use std::sync::Mutex;
     use std::vec::Vec;
 
@@ -180,8 +215,9 @@ mod tests {
     }
 
     /// The journal keeps the last `JOURNAL_ENTRIES`: the oldest is gone, the
-    /// newest is not. **Canary.** Index the slot by `seq % (N - 1)`: the
-    /// first lookup after the wrap fails.
+    /// newest is not. Not a canary for the slot policy: every id is durable
+    /// here, so keyed by id or by place the slots are the same (decisions-tests
+    /// `a_durable_record_outlives_the_ids_the_ring_claims`, with the ring).
     #[test]
     fn the_journal_forgets_the_oldest() {
         let _g = GUARD.lock().unwrap();

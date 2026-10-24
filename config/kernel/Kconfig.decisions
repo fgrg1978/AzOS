@@ -113,7 +113,8 @@ config DECISION_JOURNAL_ENTRIES
       `journal`). The flight recorder keeps a 20-byte receipt on the medium;
       this is what `why <id>` (the recovery console, the Decisions
       interface) and the decision query read it back from, with the ring off.
-      The oldest is overwritten. 112 bytes each of .bss, only with
-      DECISION_REFUSALS_DURABLE. A capability-denial storm (bounded by
+      The oldest durable record is overwritten, however many records the
+      ring (DECISION_RECORDS_DEV) keeps in between. 112 bytes each of .bss,
+      only with DECISION_REFUSALS_DURABLE. A capability-denial storm (bounded by
       DECISION_DENY_DURABLE_PER_SEC per task) can push an old refusal out
       of a small journal; the receipt on the medium is not affected.

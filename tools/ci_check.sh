@@ -11448,6 +11448,22 @@ for en_c in "i1:governor::deadline_floor_covers_admitted_density_with_margin gov
     ci_row_end
 done
 
+# The decision journal with the ring built (decisions-tests `ring`, the gate's
+# dev cell: DECISION_RECORDS_DEV and DECISION_REFUSALS_DURABLE both on). The
+# ring's records claim ids between the durable ones, so a journal keyed by id
+# lost a refusal to the next one N ids on; the `journal_` tests pin that the
+# last N durable records are held, by id and by query. The suite's own row
+# builds `durable` only, where the ids are dense and the keying cannot show.
+if ci_row_begin "decisions(ring)"; then
+printf "  %-26s" "decisions(ring)..."
+if dr_out=$( (cd "${REPO_ROOT}/tests/host/decisions-tests" && CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-tests" "$CARGO" test --release --features ring journal_ 2>&1) ) \
+   && echo "$dr_out" | qgrep -qE "^test result: ok\. [1-9][0-9]* passed"; then
+    ok
+else
+    bad; echo "$dr_out" | grep -m5 -E "^error|panicked at|FAILED|^test result" | sed 's/^/      /'; ci_debug_dump "decisions-ring" "$dr_out"
+fi
+fi; ci_row_end
+
 # Thermal framework: heat never lowers a clock below the real-time deadline
 # floor or the WCET safety floor (`Thermal::limit`). The canary removes the
 # floor from the result and exactly the floor tests must fail. Same three

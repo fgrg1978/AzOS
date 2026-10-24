@@ -222,26 +222,34 @@ fn write_tree(tid: u32, out: &mut [u8; TREE_PATH_MAX]) -> Option<usize> {
 /// many. Only a record whose subject is a TID (`RuleInfo::subject` "tid")
 /// naming this thread or its process: the dump is written into the task's own
 /// tree, and the kernel-wide last N it used to carry disclosed other Domains'
-/// refusals (subject, rule, verdict) to it (K1 L5). Scans back through every
-/// record still held, as `azos_decision::query` does, not only the last N.
+/// refusals (subject, rule, verdict) to it (K1 L5). Reads every record still
+/// held (`azos_decision::for_each_held`): with the ring on, a durable record
+/// the journal keeps may be older than the ids the ring spans.
 fn own_decisions(tid: u32, out: &mut [cd::Decision; DECISIONS]) -> usize {
     use azos_decision as d;
-    let span = (if d::ON { d::ENTRIES } else { 0 }).max(if d::DURABLE { d::JOURNAL_ENTRIES } else { 0 }) as u64;
-    let proc = azos_sched::current_proc_tid();
-    let last = d::total();
-    let mut n = 0;
-    let mut id = last;
-    while n < DECISIONS && id > 0 && last - id < span {
-        if let Some(p) = d::lookup(id) {
-            let by_tid = d::RULES.get(p.rule as usize).is_some_and(|r| r.subject == "tid");
-            if by_tid && (p.subject == tid || p.subject == proc) {
-                out[n] = cd::Decision { seq: id, rule: p.rule, verdict: p.verdict, subject: p.subject, n: p.n, ts: p.clock_ns };
-                n += 1;
-            }
-        }
-        id -= 1;
+    if DECISIONS == 0 {
+        return 0;
     }
-    out[..n].reverse();
+    let proc = azos_sched::current_proc_tid();
+    let mut n = 0;
+    d::for_each_held(|p| {
+        let by_tid = d::RULES.get(p.rule as usize).is_some_and(|r| r.subject == "tid");
+        if !(by_tid && (p.subject == tid || p.subject == proc)) || (n == DECISIONS && out.first().is_some_and(|o| p.seq < o.seq)) {
+            return;
+        }
+        // The newest `DECISIONS` by id, in id order (the journal's come in
+        // their places, see `for_each_held`).
+        let at = out[..n].partition_point(|q| q.seq < p.seq);
+        let rec = cd::Decision { seq: p.seq, rule: p.rule, verdict: p.verdict, subject: p.subject, n: p.n, ts: p.clock_ns };
+        if n < DECISIONS {
+            out.copy_within(at..n, at + 1);
+            out[at] = rec;
+            n += 1;
+        } else {
+            out.copy_within(1..at, 0);
+            out[at - 1] = rec;
+        }
+    });
     n
 }
 
