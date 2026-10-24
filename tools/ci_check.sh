@@ -22339,7 +22339,10 @@ power suspend" 150 \
 !power shutdown
 #wait \[POWER\] shutdown by" 240 \
                 "[POWER] sync by tid" "[ORDERLY] filesystems: " "[ORDERLY] disk: flush " "[POWER] shutdown by tid"
-            USH_IMG="$img" USH_FORBID='robot> ' ushell_row "$label" "$isa" "$feats" PASS \
+            # Boot 2 boots the kernel boot 1 was built and cloned for: after
+            # its par_ready a parallel job may not build (`par_shared`).
+            local k2="$KERNEL"; [ "$isa" = rv ] || k2="$A64_IMG"
+            USH_KERNEL="$k2" USH_IMG="$img" USH_FORBID='robot> ' ushell_row "$label" "$isa" "$feats" PASS \
                 "wc < /fat/DUR.TXT" 120 \
                 "1 1 11"
             rm -f "$img"
