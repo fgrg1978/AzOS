@@ -1558,7 +1558,9 @@ pub fn memobj_release(tid: u32, shm_id: u32) -> bool {
     if !region.active {
         return false;
     }
-    release_locked(region, tid)
+    let freed = release_locked(region, tid);
+    drop(regions);
+    freed.map(Reclaim::free).is_some()
 }
 
 /// [`memobj_release`] through a packed reference: `Stale` if the region at its
@@ -1566,33 +1568,28 @@ pub fn memobj_release(tid: u32, shm_id: u32) -> bool {
 pub fn memobj_release_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
     let mut regions = MEMOBJS.lock_irqsave();
     let i = live_index(&regions, r)?;
-    if release_locked(&mut regions[i], tid) {
-        Ok(())
-    } else {
-        Err(MemObjError::Closed)
-    }
+    let freed = release_locked(&mut regions[i], tid);
+    drop(regions);
+    freed.map(Reclaim::free).ok_or(MemObjError::Closed)
 }
 
-/// The release body, on an active region with the table lock held.
-fn release_locked(region: &mut MemObj, tid: u32) -> bool {
+/// The release body, on an active region with the table lock held: `None` if
+/// no reference was dropped, else the frames to give back after the lock
+/// ([`Reclaim`]).
+fn release_locked(region: &mut MemObj, tid: u32) -> Option<Reclaim> {
     let mut found: Option<usize> = None;
     for i in 0..MAX_MEMOBJ_HOLDERS {
         let h = &region.holders[i];
         if h.refs > 0 && h.tid == tid {
             // Refuse while this holder still has PTEs into the region.
             if h.map_va != 0 {
-                return false;
+                return None;
             }
             found = Some(i);
             break;
         }
     }
-    let idx = match found {
-        Some(i) => i,
-        None => return false,
-    };
-    drop_refs_locked(region, idx, 1);
-    true
+    Some(drop_refs_locked(region, found?, 1))
 }
 
 /// Give back every reference `tid` holds on the region a packed reference
@@ -1614,39 +1611,35 @@ fn release_locked(region: &mut MemObj, tid: u32) -> bool {
 pub fn memobj_release_holder_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
     let mut regions = MEMOBJS.lock_irqsave();
     let i = live_index(&regions, r)?;
-    if release_holder_locked(&mut regions[i], tid) {
-        Ok(())
-    } else {
-        Err(MemObjError::Closed)
-    }
+    let freed = release_holder_locked(&mut regions[i], tid);
+    drop(regions);
+    freed.map(Reclaim::free).ok_or(MemObjError::Closed)
 }
 
 /// The [`memobj_release_holder_ref`] body, on an active region with the table
-/// lock held.
-fn release_holder_locked(region: &mut MemObj, tid: u32) -> bool {
-    let Some(idx) = (0..MAX_MEMOBJ_HOLDERS).find(|&i| region.holders[i].refs > 0 && region.holders[i].tid == tid)
-    else {
-        return false;
-    };
+/// lock held: `None` if nothing was given back, as [`release_locked`].
+fn release_holder_locked(region: &mut MemObj, tid: u32) -> Option<Reclaim> {
+    let idx = (0..MAX_MEMOBJ_HOLDERS).find(|&i| region.holders[i].refs > 0 && region.holders[i].tid == tid)?;
     let holder = region.holders[idx];
     // Refuse while this holder still has PTEs into the region, as
     // `release_locked` does.
     if holder.map_va != 0 {
-        return false;
+        return None;
     }
     // `refs > 0` is established above, so neither form underflows.
     let n = if holder.pinned { holder.refs - 1 } else { holder.refs };
     if n == 0 {
-        return false;
+        return None;
     }
-    drop_refs_locked(region, idx, n);
-    true
+    Some(drop_refs_locked(region, idx, n))
 }
 
 /// Take `n` references off holder `idx`, with the table lock held and `n` no
 /// more than the holder's `refs`. When no holder has a reference left
-/// ([`total_refs`]) the frames go back to the PMM and the slot is cleared.
-fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) {
+/// ([`total_refs`]) the slot is cleared and its frames are the answer, for the
+/// caller to give back to the PMM once it has dropped the lock.
+fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) -> Reclaim {
+    let mut freed = Reclaim::new();
     // `saturating_sub` rather than `-`: the callers bound `n` by the holder's
     // `refs`, but with `overflow-checks = true` an underflow here would abort
     // the board.
@@ -1665,7 +1658,7 @@ fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) {
         // A frame a clone still shares (`cow_shared`) goes back only when the
         // last sharer lets go of it.
         for i in 0..region.page_count {
-            release_frame(region, i);
+            freed.take(region, i);
         }
         // Given back to the Domain that holds the charge, from whichever task
         // drops the last reference (the budget is atomic).
@@ -1677,22 +1670,66 @@ fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) {
         }
         *region = MemObj::empty();
     }
+    freed
 }
 
-/// Let go of page `i`'s frame: it stops naming this object, and goes back to the
-/// allocator unless a clone still shares it (the last sharer frees it). The page
-/// slot is cleared. Table lock held.
-fn release_frame(region: &mut MemObj, i: usize) {
-    let p = region.phys_pages[i];
-    if p == 0 {
-        return;
+/// Frames a section of the table took out of its objects, given back to the
+/// allocator by [`Reclaim::free`] once the table lock is dropped.
+///
+/// **WHY after the lock.** Giving the frames back (`pmm::free_page`, and
+/// `cow::page_decref` first for a frame a clone shares) is most of a release:
+/// the last release of an object held `MEMOBJS`, interrupts masked on that
+/// hart, for 13 to 14 us of `-icount` time on riscv64 and aarch64 (the lat
+/// smoke's `memobj_release_holder_ref`, 2026-10-24), about 0.2 us a frame.
+/// A frame taken here is named by no object any more (its page slot is
+/// cleared under the lock) and every path that takes one has removed the
+/// PTEs to it first, so nothing reaches it between the unlock and the free.
+/// At most one object's pages ([`MAX_MEMOBJ_PAGES`]) per value: a section
+/// that frees more frames (the page-cache reclaim) frees in rounds.
+#[must_use = "the frames go back to the allocator only through Reclaim::free, after the table lock"]
+struct Reclaim {
+    frames: [usize; MAX_MEMOBJ_PAGES],
+    /// Bit `k`: `frames[k]` is shared with a clone (`cow_shared`); the last
+    /// sharer frees it.
+    shared: u64,
+    n: usize,
+}
+
+impl Reclaim {
+    const fn new() -> Self {
+        Self { frames: [0; MAX_MEMOBJ_PAGES], shared: 0, n: 0 }
     }
-    let shared = region.cow_shared & (1u64 << i) != 0;
-    if !shared || azos_mm::cow::page_decref(p) {
-        let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(p));
+
+    fn is_full(&self) -> bool {
+        self.n == MAX_MEMOBJ_PAGES
     }
-    region.phys_pages[i] = 0;
-    region.cow_shared &= !(1u64 << i);
+
+    /// Take page `i`'s frame out of `region` (table lock held): the page slot
+    /// is cleared, the frame is this value's. A page with no frame is skipped.
+    fn take(&mut self, region: &mut MemObj, i: usize) {
+        let p = region.phys_pages[i];
+        if p == 0 {
+            return;
+        }
+        assert!(!self.is_full(), "memobj: reclaim batch overrun");
+        if region.cow_shared & (1u64 << i) != 0 {
+            self.shared |= 1u64 << self.n;
+        }
+        self.frames[self.n] = p;
+        self.n += 1;
+        region.phys_pages[i] = 0;
+        region.cow_shared &= !(1u64 << i);
+    }
+
+    /// Give every frame back to the allocator, unless a clone still shares
+    /// it. With the table lock dropped.
+    fn free(self) {
+        for (k, &p) in self.frames[..self.n].iter().enumerate() {
+            if self.shared & (1u64 << k) == 0 || azos_mm::cow::page_decref(p) {
+                let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(p));
+            }
+        }
+    }
 }
 
 /// Drop every reference `tid` holds across all regions — called from the
@@ -2093,10 +2130,13 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
     // have had none before (then its holder entry goes with it) or others.
     {
         let mut regions = MEMOBJS.lock_irqsave();
-        if let Ok(i) = live_index(&regions, src) {
-            if let Some(idx) = (0..MAX_MEMOBJ_HOLDERS).find(|&k| regions[i].holders[k].refs > 0 && regions[i].holders[k].tid == tid) {
-                drop_refs_locked(&mut regions[i], idx, 1);
-            }
+        let freed = live_index(&regions, src).ok().and_then(|i| {
+            let idx = (0..MAX_MEMOBJ_HOLDERS).find(|&k| regions[i].holders[k].refs > 0 && regions[i].holders[k].tid == tid)?;
+            Some(drop_refs_locked(&mut regions[i], idx, 1))
+        });
+        drop(regions);
+        if let Some(f) = freed {
+            f.free();
         }
     }
     if result.is_err() {
@@ -2190,7 +2230,9 @@ fn memobj_revoke_holder_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
     let h = region.holders[hi];
     let n = if h.pinned { h.refs - 1 } else { h.refs };
     if n > 0 {
-        drop_refs_locked(region, hi, n);
+        let freed = drop_refs_locked(region, hi, n);
+        drop(regions);
+        freed.free();
     }
     Ok(())
 }
@@ -2648,8 +2690,10 @@ pub fn memobj_frames_pin(r: u32, out: &mut [usize]) -> Result<usize, MemObjError
 /// Give back the reference [`memobj_frames_pin`] took on `r`.
 pub fn memobj_frames_unpin(r: u32) {
     let mut regions = MEMOBJS.lock_irqsave();
-    if let Ok(i) = live_index(&regions, r) {
-        let _ = release_locked(&mut regions[i], MEMOBJ_KERNEL_OWNER);
+    let freed = live_index(&regions, r).ok().and_then(|i| release_locked(&mut regions[i], MEMOBJ_KERNEL_OWNER));
+    drop(regions);
+    if let Some(f) = freed {
+        f.free();
     }
 }
 
@@ -3101,30 +3145,37 @@ pub fn memobj_paged_writeback_ref(r: u32) -> Result<usize, PagedError> {
 /// use reads the page from the file again. Dirty pages stay: write them back
 /// first ([`memobj_paged_writeback_ref`]).
 pub fn memobj_paged_drop_clean(max_pages: usize) -> usize {
-    let mut regions = MEMOBJS.lock_irqsave();
     let mut dropped = 0usize;
-    for i in 0..MAX_MEMOBJS {
-        if dropped >= max_pages {
-            break;
-        }
-        let o = &mut regions[i];
-        if !o.active || o.kind != MemKind::Paged || any_pinned(o) {
-            continue;
-        }
-        for idx in 0..o.page_count {
-            if dropped >= max_pages {
-                break;
-            }
-            let flushing = o.paged.is_some_and(|st| st.flushing & (1u64 << idx) != 0);
-            if o.phys_pages[idx] == 0 || flushing || must_flush(o, idx) {
+    // In rounds of at most one batch of frames ([`Reclaim`]), each given back
+    // with the table unlocked; a round resumes at the object it stopped in.
+    let mut from = 0usize;
+    while dropped < max_pages && from < MAX_MEMOBJS {
+        let mut freed = Reclaim::new();
+        let mut regions = MEMOBJS.lock_irqsave();
+        'objects: for i in from..MAX_MEMOBJS {
+            from = i;
+            let o = &mut regions[i];
+            if !o.active || o.kind != MemKind::Paged || any_pinned(o) {
+                from = i + 1;
                 continue;
             }
-            unmap_frame_in(o, idx);
-            release_frame(o, idx);
-            dropped += 1;
+            for idx in 0..o.page_count {
+                if dropped >= max_pages || freed.is_full() {
+                    break 'objects;
+                }
+                let flushing = o.paged.is_some_and(|st| st.flushing & (1u64 << idx) != 0);
+                if o.phys_pages[idx] == 0 || flushing || must_flush(o, idx) {
+                    continue;
+                }
+                unmap_frame_in(o, idx);
+                freed.take(o, idx);
+                dropped += 1;
+            }
+            from = i + 1;
         }
+        drop(regions);
+        freed.free();
     }
-    drop(regions);
     record_purge(0, PURGE_PAGE_CACHE, dropped);
     dropped
 }
@@ -3202,9 +3253,10 @@ pub fn memobj_paged_info_ref(r: u32) -> Result<PagedInfo, MemObjError> {
 /// Their dirty bits go with them. `Busy`, with nothing dropped, while a holder
 /// is pinned (the mapping list could miss a PTE) or a page of the range is
 /// being written back (the write reads its frame without the lock).
-fn paged_forget_locked(o: &mut MemObj, from_idx: usize) -> Result<(), MemObjError> {
+fn paged_forget_locked(o: &mut MemObj, from_idx: usize) -> Result<Reclaim, MemObjError> {
+    let mut freed = Reclaim::new();
     if from_idx >= o.page_count {
-        return Ok(());
+        return Ok(freed);
     }
     let flushing = o.paged.map_or(0, |st| st.flushing);
     if any_pinned(o) || (from_idx..o.page_count).any(|idx| flushing & (1u64 << idx) != 0) {
@@ -3213,13 +3265,13 @@ fn paged_forget_locked(o: &mut MemObj, from_idx: usize) -> Result<(), MemObjErro
     for idx in from_idx..o.page_count {
         if o.phys_pages[idx] != 0 {
             unmap_frame_in(o, idx);
-            release_frame(o, idx);
+            freed.take(o, idx);
         }
         if let Some(st) = o.paged.as_mut() {
             st.dirty &= !(1u64 << idx);
         }
     }
-    Ok(())
+    Ok(freed)
 }
 
 /// Index in the object of the page that holds file byte `byte`, or past the
@@ -3243,7 +3295,10 @@ pub fn memobj_paged_forget_ref(r: u32, from: u64) -> Result<(), PagedError> {
     let Some(st) = o.paged else { return Err(MemObjError::BadArg.into()) };
     // A byte inside page `p` keeps the pages before `p` only.
     let idx = paged_page_of(o, &st, from);
-    paged_forget_locked(o, idx).map_err(PagedError::from)
+    let freed = paged_forget_locked(o, idx)?;
+    drop(regions);
+    freed.free();
+    Ok(())
 }
 
 /// Attach the Paged object `r` names to a file of `new_size` bytes: the cache's
@@ -3284,10 +3339,12 @@ pub fn memobj_paged_set_size_ref(r: u32, new_size: u64) -> Result<(), PagedError
         if (from..o.page_count).any(|idx| st.dirty & (1u64 << idx) != 0) {
             continue;
         }
-        paged_forget_locked(o, from)?;
+        let freed = paged_forget_locked(o, from)?;
         if let Some(st) = o.paged.as_mut() {
             st.size = new_size;
         }
+        drop(regions);
+        freed.free();
         return Ok(());
     }
     Err(MemObjError::Busy.into())
@@ -3315,7 +3372,9 @@ pub fn memobj_paged_close_ref(r: u32) -> Result<(), PagedError> {
         if busy {
             continue; // written again since the pass: flush that too
         }
-        return if release_locked(o, MEMOBJ_KERNEL_OWNER) { Ok(()) } else { Err(MemObjError::Busy.into()) };
+        let freed = release_locked(o, MEMOBJ_KERNEL_OWNER);
+        drop(regions);
+        return freed.map(Reclaim::free).ok_or(MemObjError::Busy.into());
     }
     Err(MemObjError::Busy.into())
 }
@@ -3415,10 +3474,11 @@ fn purgeable(o: &MemObj, mem_locked: fn(u32) -> bool) -> bool {
         && !locked
 }
 
-/// Take the frames of volatile object `o`: unmap it from every holder, free the
-/// frames, give the charge back. Table lock held. The Domain that was charged
-/// and the pages freed.
-fn purge_locked(o: &mut MemObj) -> (u32, usize) {
+/// Take the frames of volatile object `o`: unmap it from every holder, take the
+/// frames out, give the charge back. Table lock held. The Domain that was
+/// charged, the pages taken, and their frames to free after the lock.
+fn purge_locked(o: &mut MemObj) -> (u32, usize, Reclaim) {
+    let mut freed = Reclaim::new();
     for hi in 0..MAX_MEMOBJ_HOLDERS {
         let h = &mut o.holders[hi];
         if h.is_mapped() {
@@ -3433,7 +3493,7 @@ fn purge_locked(o: &mut MemObj) -> (u32, usize) {
     }
     let pages = o.page_count;
     for idx in 0..pages {
-        release_frame(o, idx);
+        freed.take(o, idx);
     }
     // The frames are not the Domain's any more; zeroed so the last release does
     // not give them back a second time. The metadata's charge (`meta_key`)
@@ -3444,7 +3504,7 @@ fn purge_locked(o: &mut MemObj) -> (u32, usize) {
         o.charge_key = 0;
     }
     o.purge = PurgeState::Purged;
-    (key, pages)
+    (key, pages, freed)
 }
 
 /// Drop the frames of volatile objects until `max_pages` pages are free again
@@ -3462,8 +3522,9 @@ pub fn memobj_purge_volatile(max_pages: usize, mem_locked: fn(u32) -> bool) -> u
         let mut regions = MEMOBJS.lock_irqsave();
         let Some(i) = (from..MAX_MEMOBJS).find(|&i| purgeable(&regions[i], mem_locked)) else { break };
         from = i + 1;
-        let (key, pages) = purge_locked(&mut regions[i]);
+        let (key, pages, frames) = purge_locked(&mut regions[i]);
         drop(regions);
+        frames.free();
         record_purge(key, PURGE_ANON, pages);
         freed += pages;
     }
