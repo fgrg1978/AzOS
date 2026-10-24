@@ -14266,7 +14266,9 @@ PY
     par "ktest disk RT-inline canary (arm)" ktest_row "ktest disk RT-inline canary (arm)" arm "" \
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" $AZOS_OUT/build/disk-aarch64.img
     KTEST_CANARIES=",wx-skip-canary,nx-skip-canary,ro-seal-skip-canary,percpu-oor-canary,commander-exit-nostop-canary"
-    KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels"
+    # `commander-exit-nostop-canary` leaves the dead commander's wheel driven,
+    # so the held-wheel test after it sees its free wheel's write changed too.
+    KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels rt_motor_coasts_a_held_wheel"
     # Both ISAs (N2b): `wx-skip-canary` leaves the kernel text writable, so
     # the one text-write path (`text_poke`, W^X kept) refuses NotRx and the
     # SpinWait probe sites stay linked to their fallback
