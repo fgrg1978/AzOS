@@ -202,6 +202,7 @@ pub mod riscv64 {
     pub const ZKR: ExtPolicy = ext_policy!(RV_ZKR_NEVER, RV_ZKR_REQUIRE);
     pub const H: ExtPolicy = ext_policy!(RV_H_NEVER, RV_H_REQUIRE);
     pub const SSQOSID: ExtPolicy = ext_policy!(RV_SSQOSID_NEVER, RV_SSQOSID_REQUIRE);
+    pub const SENVCFG: ExtPolicy = ext_policy!(RV_SENVCFG_NEVER, RV_SENVCFG_REQUIRE);
     pub const PMU: ExtPolicy = ext_policy!(RV_PMU_NEVER, RV_PMU_REQUIRE);
     pub const SSCOFPMF: ExtPolicy = ext_policy!(RV_SSCOFPMF_NEVER, RV_SSCOFPMF_REQUIRE);
 }

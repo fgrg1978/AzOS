@@ -140,6 +140,8 @@ impl ArchEntry for Entry {
         azos_drv_irqchip::user_irq::hart_ready(cpu as u32);
         // This hart's `scounteren`: the clock, and the counters ring 3 may read.
         azos_arch::pmu::start_this_cpu();
+        // This hart's `senvcfg`: U-mode's environment (`azos_arch::ext::senvcfg`).
+        azos_arch::ext::senvcfg::init_this_hart();
     }
 
     /// The first tick for this hart (SBI `set_timer` / `stimecmp`).

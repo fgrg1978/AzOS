@@ -313,6 +313,10 @@ pub fn firmware_done(_dtb_ptr: usize, num_cpus: usize) {
         kprintln!("[QOS] Ssqosid srmcfg: partitions 1..={} (RCID = MCID = partition id)",
             azos_arch::ext::ssqosid::max_partition());
     }
+    // senvcfg (Kconfig RV_SENVCFG): one trap-safe read (a hart before Priv 1.12
+    // has none); `n` executes nothing. This hart's U-mode environment is
+    // written here, each secondary's in `secondary_irq_init`.
+    azos_arch::ext::senvcfg::select(policy::SENVCFG.allowed(), azos_arch::ext::senvcfg::trap_probe);
     // What the guest entry builds on (Sstc, Smstateen, the IMSIC's guest files).
     #[cfg(feature = "hv")]
     crate::entry::riscv64::ext::hv::wire(sstc_on);
@@ -354,6 +358,7 @@ fn isa_report(zicboz_on: bool, zicbom_on: bool, sstc_on: bool, svpbmt_on: bool, 
         e("zkr", "RV_ZKR", policy::ZKR, azos_arch::seed::available()),
         e("h", "RV_H", policy::H, crate::entry::riscv64::ext::hv::present()),
         e("ssqosid", "RV_SSQOSID", policy::SSQOSID, azos_arch::ext::ssqosid::available()),
+        e("senvcfg", "RV_SENVCFG", policy::SENVCFG, azos_arch::ext::senvcfg::available()),
         e("pmu", "RV_PMU", policy::PMU, azos_arch::pmu::present()),
         e("sscofpmf", "RV_SSCOFPMF", policy::SSCOFPMF, azos_arch::pmu::sscofpmf()),
     ]);
@@ -600,13 +605,14 @@ pub fn install_resume() {
 /// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): the
 /// registers [`user_visible_state_wrong`] reads, by its `bad` index.
 #[cfg(feature = "ktest")]
-pub(crate) const USER_STATE: &[&str] = &["scounteren"];
+pub(crate) const USER_STATE: &[&str] = &["scounteren", "senvcfg"];
 
 /// ktest `user_visible_state_is_set_on_every_cpu`: `bad(i, value)` for each
 /// register of [`USER_STATE`] this hart holds at a value ring 3 can reach and
 /// no task was given. riscv64: `scounteren` opens the clock and at most the
 /// cycle and instret counters, never an `hpmcounter`
-/// (`azos_arch::pmu::start_this_cpu`).
+/// (`azos_arch::pmu::start_this_cpu`); `senvcfg` is the kernel's U-mode
+/// environment where the boot found the CSR (`azos_arch::ext::senvcfg`).
 #[cfg(feature = "ktest")]
 pub(crate) fn user_visible_state_wrong(_cpu: usize, bad: &mut dyn FnMut(usize, u64)) {
     let en: u64;
@@ -615,5 +621,9 @@ pub(crate) fn user_visible_state_wrong(_cpu: usize, bad: &mut dyn FnMut(usize, u
     // CY (bit 0), TM (1), IR (2): TM always, nothing above IR.
     if en & !0b111 != 0 || en & 0b010 == 0 {
         bad(0, en);
+    }
+    match azos_arch::ext::senvcfg::read() {
+        Some(v) if v != azos_arch::ext::senvcfg::USER_ENV => bad(1, v as u64),
+        _ => {}
     }
 }

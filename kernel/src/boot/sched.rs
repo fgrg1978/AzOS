@@ -1222,9 +1222,9 @@ mod tpidr_ktests {
 // reset value): `not ok`, and the summary line names every register the
 // canary left (the gate row matches it, so each register's check is seen to
 // fire). Where QEMU resets a register to the right value only the canary
-// shows its check can fail: aarch64 TPIDRRO_EL0, CNTKCTL_EL1. Where it does
-// not, this test is red without the fix: aarch64 SCTLR_EL1 (SPAN, TSCXT) and
-// MDSCR_EL1 (TDCC) on a boot at EL1.
+// shows its check can fail: aarch64 TPIDRRO_EL0, CNTKCTL_EL1, riscv64
+// senvcfg. Where it does not, this test is red without the fix: aarch64
+// SCTLR_EL1 (SPAN, TSCXT) and MDSCR_EL1 (TDCC) on a boot at EL1.
 #[cfg(feature = "ktest")]
 mod user_state_ktests {
     use core::sync::atomic::{AtomicU32, Ordering};

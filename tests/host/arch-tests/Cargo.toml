@@ -36,8 +36,8 @@ pac-canary = []
 # `SpinWait::wait_service`; `a_masked_lock_waiter_acks_the_holders_shootdown`
 # must fail.
 spin-service-canary = ["azos_arch_api/spin-service-canary"]
-# `crates/core/arch-aarch64/src/sysregs.rs` (pulled in by path) reads the
-# kernel's gate canary; nothing here turns it on.
+# `crates/core/arch-aarch64/src/sysregs.rs` and `arch-riscv64/src/ext/senvcfg.rs`
+# (pulled in by path) read the kernel's gate canary; nothing here turns it on.
 el0-state-canary = []
 
 [dependencies]

@@ -442,6 +442,32 @@ choice
 endchoice
 
 choice
+    prompt "senvcfg (U-mode environment: cbo.*, pointer masking; Priv 1.12)"
+    default RV_SENVCFG_PROBE
+    help
+      The `senvcfg` CSR (0x10A, privileged spec 1.12) decides what U-mode may
+      do of the environment the hart offers: the cache-block instructions
+      (`cbo.zero` CBZE, `cbo.clean`/`cbo.flush` CBCFE, `cbo.inval` CBIE),
+      pointer masking (PMM, Ssnpm), the U-mode landing-pad and shadow-stack
+      enables (LPE, SSE) and FIOM. Its reset value is not defined, and ring
+      3 cannot read it, only use what it opens. Every hart writes 0
+      (crates/core/arch-riscv64/src/ext/senvcfg.rs): no ring-3 program uses
+      a cache-block instruction or pointer masking, so U-mode gets none
+      (Linux opens CBZE where Zicboz is, for user space's `cbo.zero`).
+      probe: the boot hart reads the CSR once under a private stvec; a hart
+      before Priv 1.12 (the JH7110's U74 is 1.11) has none, the read traps,
+      and nothing is written. n: the CSR is never touched (U-mode keeps what
+      the reset left). require: a hart without it is refused.
+
+    config RV_SENVCFG_NEVER
+        bool "n: never use it"
+    config RV_SENVCFG_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+    config RV_SENVCFG_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+endchoice
+
+choice
     prompt "Performance counters (SBI PMU, Zicntr cycle and instret)"
     default RV_PMU_PROBE
     help

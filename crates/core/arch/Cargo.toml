@@ -24,9 +24,10 @@ tlb-local-only = ["azos_arch_riscv64/tlb-local-only", "azos_arch_aarch64/tlb-loc
 tlb-bound-canary = ["azos_arch_riscv64/tlb-bound-canary"]
 # One-clock canary: CNTVOFF_EL2 left nonzero at the EL2 drop (aarch64 only).
 cntvoff-canary = ["azos_arch_aarch64/cntvoff-canary"]
-# tls-hygiene / el0-state-audit canary: the EL0-visible per-PE state keeps a
-# stand-in for its UNKNOWN reset value (aarch64 only, `sysregs::init_el0_state`).
-el0-state-canary = ["azos_arch_aarch64/el0-state-canary"]
+# tls-hygiene / el0-state-audit canary: the ring-3-visible per-CPU state keeps
+# a stand-in for its UNKNOWN reset value (aarch64 `sysregs::init_el0_state`,
+# riscv64 `ext::senvcfg`).
+el0-state-canary = ["azos_arch_riscv64/el0-state-canary", "azos_arch_aarch64/el0-state-canary"]
 # Kconfig HV: keep EL2 at the boot drop and run guests (aarch64 only; the
 # dependency is target-specific, so the other ISAs never see it).
 hv = ["azos_arch_aarch64/hv"]

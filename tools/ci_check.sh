@@ -14480,6 +14480,10 @@ PY
     # four, so each register's check is seen to fire.
     par "ktest el0 state canary (arm)" ktest_row "ktest el0 state canary (arm)" arm ",el0-state-canary" "user_visible_state_is_set_on_every_cpu" \
         "" "left unset: TPIDRRO_EL0 CNTKCTL_EL1 SCTLR_EL1 MDSCR_EL1"
+    # el0-state-audit: senvcfg written with a stand-in that opens U-mode's
+    # cache-block instructions (QEMU resets it to 0, the kernel's value).
+    par "ktest el0 state canary (rv)" ktest_row "ktest el0 state canary (rv)" rv ",el0-state-canary" "user_visible_state_is_set_on_every_cpu" \
+        "" "left unset: senvcfg"
     par "ktest slab canary (rv)" ktest_row "ktest slab canary (rv)" rv ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest slab canary (arm)" ktest_row "ktest slab canary (arm)" arm ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest zone canary (rv)" ktest_row "ktest zone canary (rv)" rv ",zone-share-canary" "mm_zone_no_cross_type_reuse"

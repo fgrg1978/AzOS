@@ -695,6 +695,44 @@ mod a64_el0_state_tests {
 }
 
 
+// riscv64 `senvcfg` (Kconfig `RV_SENVCFG`): the real module, pulled in by path
+// (its asm is riscv64-only and compiles out here).
+#[allow(dead_code)]
+#[path = "../../../../crates/core/arch-riscv64/src/ext/senvcfg.rs"]
+mod senvcfg;
+
+/// el0-state-audit: U-mode gets no cache-block instruction, no pointer
+/// masking and no FIOM; the probe runs only when the policy allows it, and a
+/// trapped probe leaves the CSR untouched on every hart.
+#[cfg(test)]
+mod senvcfg_tests {
+    use super::senvcfg::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn the_csr_and_the_word() {
+        assert_eq!(SENVCFG, 0x10A);
+        assert_eq!(USER_ENV, 0);
+        assert_eq!((CBZE, CBCFE, CBIE_FLUSH, FIOM), (1 << 7, 1 << 6, 1 << 4, 1));
+    }
+
+    /// One process-wide flag: one test body, in order.
+    #[test]
+    fn selection_probes_only_when_the_policy_allows() {
+        let ran = Cell::new(0);
+        let probe = |v: bool| { ran.set(ran.get() + 1); v };
+        assert!(!select(false, || probe(true)));
+        assert_eq!(ran.get(), 0, "n: no probe run");
+        assert!(!available() && read().is_none());
+        assert!(!select(true, || probe(false)));
+        assert_eq!(ran.get(), 1);
+        assert!(!available(), "the read trapped: absent");
+        assert!(select(true, || probe(true)));
+        assert!(available());
+        select(false, || false);
+    }
+}
+
 // x86_64: which FS base a context switch writes, and which values a task may
 // be given (`wrmsr` of a non-canonical one is a #GP in the kernel): `cpu`'s
 // pure functions, included above.

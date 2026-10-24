@@ -137,7 +137,7 @@ The per-ISA tables live in `azos_arch_api::isa::{riscv64, aarch64, x86_64}` as `
 
 | ISA | Baseline levels | Extension policies (names in `isa.rs`) |
 |---|---|---|
-| riscv64 | `rv64imac`, `rv64gc`, `rv64gcv` | `ZICBOZ`, `ZICBOM`, `SSTC`, `SVPBMT`, `SVNAPOT`, `SVADU`, `SVINVAL`, `ZBA`, `ZBB`, `ZBS`, `V`, `AIA`, `ZAWRS`, `ZACAS`, `ZIHINTPAUSE`, `ZKR`, `H`, `SSQOSID`, `PMU` |
+| riscv64 | `rv64imac`, `rv64gc`, `rv64gcv` | `ZICBOZ`, `ZICBOM`, `SSTC`, `SVPBMT`, `SVNAPOT`, `SVADU`, `SVINVAL`, `ZBA`, `ZBB`, `ZBS`, `V`, `AIA`, `ZAWRS`, `ZACAS`, `ZIHINTPAUSE`, `ZKR`, `H`, `SSQOSID`, `SENVCFG`, `PMU` |
 | aarch64 | `armv8.0` to `armv8.5` | `LSE`, `PAN`, `CRC32`, `PAUTH`, `BTI`, `MTE`, `SVE`, `AES`, `PMULL`, `SHA2`, `RNG`, `E0PD`, `WFXT`, `TLBIRANGE`, `HAFDBS`, `PMU`, and the speculation mitigations `MIT_SPECTRE_V2`, `MIT_SSB`, `MIT_BHB` |
 | x86_64 | `x86-64`, `x86-64-v2`, `x86-64-v3`, `x86-64-v4` | `SSE4_2`, `POPCNT`, `XSAVE`, `AVX`, `AVX2`, `BMI1`, `BMI2`, `FMA`, `MOVBE`, `AVX512F`, `AVX512BW`, `AVX512CD`, `AVX512DQ`, `AVX512VL`, `AES`, `PCLMULQDQ`, `SHA_NI`, `RDRAND`, `RDSEED`, `ADX`, `FSGSBASE`, `PCID`, `INVPCID`, `INVLPGB`, `SMEP`, `SMAP`, `UMIP`, `PKU`, `LA57`, `CET_IBT`, `CET_SHSTK`, `XSAVEOPT`, `XSAVES`, `X2APIC`, `TSC_DEADLINE`, `INVARIANT_TSC`, `GBPAGES`, `WAITPKG`, `SPLIT_LOCK`, `SVM`, `VMX`, `PMU`, and the mitigations `MIT_MELTDOWN`, `MIT_L1TF`, `MIT_MDS_TAA`, `MIT_RFDS`, `MIT_GDS`, `MIT_SPECTRE_V2`, `MIT_BHI`, `MIT_RETBLEED`, `MIT_SRSO`, `MIT_ZENBLEED` |
 
