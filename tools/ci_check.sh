@@ -22843,43 +22843,39 @@ tracectl start sched
         # child may create). Skipped, and said so, when the toolchain (zig) or the
         # BusyBox tree (tools/third_party_fetch.sh busybox) is not on this host.
         if lx_busybox_ready && { [ "$ush_isa" != x86 ] || [ "${LX_BUSYBOX_X86:-}" = yes ]; }; then
-            # x86_64's ring-3 runtime answers no `execve` (59): the applets
-            # standalone `sh` runs by exec of /proc/self/exe (`wc`, `cat`) do
-            # not start there, so its twin pipes and counts with builtins, and
-            # its denied create is not the in-kernel table's recorded line.
-            # The count is a string's length: the fragment builds ash without
-            # arithmetic (FEATURE_SH_MATH off), so `$((n+1))` is a syntax error.
+            # x86_64's ring-3 runtime answers no `poll` (7) yet: ash's `read`
+            # builtin waits in it, and the main row counts its subshells' lines
+            # with `read` (no `wc` or `cat` there: no `execve` (59) either), so
+            # that row and its two canaries are skipped and say so (owner
+            # 2026-10-24; poll is a front of its own). The fork canary would not
+            # discriminate there anyway: its plant is the in-kernel
+            # personality's fork_child_setup, which the runtime's fork does not
+            # take.
             if [ "$ush_isa" = x86 ]; then
-                bb_sh_script="busybox sh -c 'echo bb-sh-ok; ls /fat'
-busybox sh -c 'x=\$(echo pipe-in); echo pipe-\$x'
-busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
-busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=; while read l; do n=x\$n; done < /tmp/BBF; echo bbfork-\${#n}'
-echo after-bb \$?"
-                bb_sh_marks=("hosted by the ring-3 runtime" "pipe-pipe-in")
-                bb_off_script="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=; while read l; do n=x\$n; done < /tmp/BBF; echo bbfork-\${#n}'"
+                for bb_k in "linux: busybox sh" "linux: busybox fork canary" "linux: busybox shared offset canary"; do
+                    printf "  %-26s%s\n" "$bb_k ($ush_isa)..." "SKIP (the x86_64 ring-3 runtime answers no poll: ash's read builtin waits in it)"
+                done
             else
-                bb_sh_script="busybox sh -c 'echo bb-sh-ok; ls /fat'
+                USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
+                    "busybox sh -c 'echo bb-sh-ok; ls /fat'
 busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
 busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
 busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'
-echo after-bb \$?"
-                bb_sh_marks=("wc-out=8" "openat refused by the capability check: -EACCES (recorded)")
-                bb_off_script="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'"
+echo after-bb \$?" 240 \
+                    "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "wc-out=8" \
+                    "openat refused by the capability check: -EACCES (recorded)" \
+                    "Permission denied" "sub-rc=1" "bbfork-2" "after-bb 0"
+                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
+                    "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
+                    "Permission denied" "sub-rc=1"
+                # Two subshells write one inherited descriptor in turn (the main
+                # row's `bbfork-2`: two lines). Canary
+                # `fd-private-offset-busybox-canary` (private offsets): the second
+                # subshell overwrites the first's line, one line is left.
+                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
+                    "busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'" 150 \
+                    "bbfork-2"
             fi
-            USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
-                "$bb_sh_script" 240 \
-                "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "${bb_sh_marks[@]}" \
-                "Permission denied" "sub-rc=1" "bbfork-2" "after-bb 0"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
-                "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
-                "Permission denied" "sub-rc=1"
-            # Two subshells write one inherited descriptor in turn (the main
-            # row's `bbfork-2`: two lines). Canary
-            # `fd-private-offset-busybox-canary` (private offsets): the second
-            # subshell overwrites the first's line, one line is left.
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
-                "$bb_off_script" 150 \
-                "bbfork-2"
             # Two Linux tasks on one hart: BusyBox sleeping in the background
             # while LXHELLO (which starts with TPIDR_EL0 = 0) runs, then
             # BusyBox forks again. Its thread pointer must be its own when it
@@ -23388,10 +23384,16 @@ x=con; echo bb\$x-ok
             fi
             continue
         fi
+        # x86_64's ring-3 runtime answers no `poll` (7) yet, and ash's
+        # interactive line editor waits in it: the shell reads EOF and exits,
+        # and the console falls back (owner 2026-10-24: skipped until poll).
+        if [ "$con_isa" = x86 ]; then
+            printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (the x86_64 ring-3 runtime answers no poll: ash's line editor waits in it)"
+            continue
+        fi
         case "$con_isa" in
             rv) con_disk=$AZOS_OUT/build/disk-busybox.img; con_feat=qemu ;;
-            arm) con_disk=$AZOS_OUT/build/disk-aarch64-busybox.img; con_feat=qemu ;;
-            *) con_disk=$AZOS_OUT/build/disk-x86_64-busybox.img; con_feat="" ;;
+            *) con_disk=$AZOS_OUT/build/disk-aarch64-busybox.img; con_feat=qemu ;;
         esac
         con_k=""; con_wanted "console: busybox sh ($con_isa)" \
             && con_k="$(con_kernel "$con_isa" bbsh "$con_feat" CONFIG_USERSPACE_GPL=y CONFIG_LINUX_ABI=y CONFIG_BUSYBOX=y CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y 'CONFIG_CONSOLE_PATH="/fat/BUSYBOX.ELF"')"
