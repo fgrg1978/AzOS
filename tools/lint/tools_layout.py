@@ -122,18 +122,19 @@ INCOMING = {
     "image": ["azos_records.py", "fat_damage_image.py", "mk_ucode.py"],
 }
 
-# Entries nothing in the tree runs (only their own text, comments or docs name
-# them). Listed, not deleted: the owner decides (tools/ restructure, 2026-10-23).
+# The tools a person runs by hand, on purpose: nothing in the tree calls them,
+# and each line says why it stays manual (owner batch IV, 2026-10-24; the other
+# tools that had no caller were wired, merged, moved out or deleted).
 NO_CALLER = {
-    "check_prod_key.sh": "hand check of a production public key; only its own usage names it",
-    "coverage.sh": "host-suite region coverage by hand; nothing names it",
-    "dev_dfu_recovery.sh": "USB DFU recovery of a VF2/K1 by hand",
-    "dev_uart.py": "UART relay daemon by hand (PENDING R280: keep or delete)",
-    "esp32_bridge/": "ESP32 sketch; nothing names it",
-    "gen_prod_key.py": "production key generation by hand (on purpose: never automated)",
-    "text_equiv.py": "compares two kernels' .text by hand; the gate's comments name it",
-    "qemu.sh": "QEMU launcher by hand; the hv defconfigs' comments name it",
-    "limits_cost.py": "RAM cost of a sizing option by hand; Kconfig.limits' help names it",
+    "check_prod_key.sh": "checks the production public key before a release build: only on the machine that holds it",
+    "coverage.sh": "host-suite region coverage: an occasional measurement, minutes of instrumented builds",
+    "dev_dfu_recovery.sh": "USB DFU recovery of a VF2/K1 held in its boot ROM: needs the board (kept until it)",
+    "dev_uart.py": "relays a board's serial console to a person: needs the board (kept until it)",
+    "esp32_bridge/": "ESP32 sketch, flashed with the Arduino tools: needs the board (kept until it)",
+    "gen_prod_key.py": "generates the production signing key: never automated, on purpose",
+    "text_equiv.py": "compares two kernels' .text: an A/B a person picks the two builds for",
+    "qemu.sh": "interactive QEMU launcher (console, gdb): a person at the terminal",
+    "limits_cost.py": "RAM cost of a sizing option: two builds per option a person chooses to price",
 }
 
 # Files that are data or a self-contained unit's own parts: called through the
