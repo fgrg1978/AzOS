@@ -19,8 +19,8 @@
  * .bss plus the boot stack and its red zone. It does NOT include the kernel
  * heap (KERNEL_HEAP_SIZE), which the kernel reserves at boot right after
  * _kernel_end, nor the page-table pages and task frames the PMM hands out.
- * Those must fit in the rest of the 14 MiB region; `tools/bench/size_report.sh`
- * prints both numbers per profile.
+ * Those must fit in the rest of the 14 MiB region; `tools/lint/size_budget.py
+ * --memory` prints both numbers per profile.
  */
 
 OUTPUT_ARCH(riscv)
@@ -32,7 +32,7 @@ ENTRY(_start)
 INCLUDE kernel/linker-common.ld
 
 /* The image budget: see the header. The measured image is printed by
- * tools/bench/size_report.sh. */
+ * tools/lint/size_budget.py --memory. */
 EMBEDDED_IMAGE_BUDGET = 8M;
 
 MEMORY

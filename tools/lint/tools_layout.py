@@ -100,7 +100,7 @@ ROLES = {
         "seed_provision.py", "sigalg.py", "sign_ota.py",
     ],
     "bench": [
-        "lat_linux/", "limits_cost.py", "linux_seccomp_launch/", "size_report.sh",
+        "lat_linux/", "limits_cost.py", "linux_seccomp_launch/",
         "vsbench_aarch64.sh", "vsbench_compare.sh", "vsbench_cost.sh", "vsbench_linux.conf",
         "vsbench_tcp_pcap.py", "vsbench_tcp_peer.py", "vsbench_x86_64.sh",
     ],
@@ -141,7 +141,6 @@ NO_CALLER = {
     "vsbench_x86_64.sh": "vsbench on x86_64 by hand (the riscv64 and aarch64 scripts are the gate's)",
     "qemu.sh": "QEMU launcher by hand; the hv defconfigs' comments name it",
     "limits_cost.py": "RAM cost of a sizing option by hand; Kconfig.limits' help names it",
-    "size_report.sh": "static memory of kernel ELFs by hand; defconfig comments name it",
 }
 
 # Files that are data or a self-contained unit's own parts: called through the

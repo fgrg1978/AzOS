@@ -564,7 +564,7 @@ config KERNEL_HEAP_SIZE
       share the board's RAM above the firmware.
       Edge default: 32 MiB.  Embedded: 512 KiB.  Fleet: 256 MiB.
       Embedded figures (image, what is left on 16 and 64 MiB boards)
-      are printed by tools/bench/size_report.sh.
+      are printed by tools/lint/size_budget.py --memory.
 
       Cost: no static RAM (the image does not grow: +0 B measured for 32768 ->
       32769 and -> 65536 KiB, both ISAs).  The heap is taken from the page
