@@ -220,9 +220,12 @@ usb rtc usb-hid scsi pkg
 # a new crate cannot appear unclassified.
 # `ethercat` is the EtherCAT master's wire codec: its user is the ring-3
 # fieldbus master (`ecatd`), so it links into a userspace ELF, never the kernel.
+# `pcspk` is the PC speaker's PIT/port logic: its user is the ring-3 buzzer
+# driver (BUZZDRV.ELF, through ring-3 port I/O), never the kernel.
 OFF_IMAGE_CRATES="
 libsys libsys-macros stdrt idl-macros azos-config wcet-macro
 ethercat
+pcspk
 "
 
 # ── Known violations ────────────────────────────────────────────────────────
