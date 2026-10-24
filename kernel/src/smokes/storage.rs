@@ -170,10 +170,19 @@ pub(crate) fn mmc_flush_smoke<C: azos_pci::ConfigSpace>(
 /// The interrupt half of the MMC row, once the scheduler exists
 /// (`wire_mmc_irq` has routed the function's INTx source by then): a task
 /// writes 24 sectors (a three-descriptor ADMA2 table), flushes, reads them
-/// back and compares, and the driver must have taken interrupts and put the
-/// task to sleep for them. Prints `[MMCSMOKE] IRQ PASS taken=.. slept=..` or
-/// one `[MMCSMOKE] IRQ FAIL <why>` line. With `mmc-poll-canary` the driver
-/// stays polled and the `completions were polled` line is the one printed.
+/// back and compares, and the controller's interrupt must have reached the
+/// driver's handler (one per command: the write, the CMD13, the read). Prints
+/// `[MMCSMOKE] IRQ PASS taken=.. slept=..` or one `[MMCSMOKE] IRQ FAIL <why>`
+/// line. With `mmc-poll-canary` the driver stays polled, takes no interrupt,
+/// and the `completions were polled` line is the one printed.
+///
+/// `slept` is reported, not required. QEMU's `sdhci-pci` completes a command
+/// inside the MMIO write that issues it (and, for a table this short, runs
+/// the ADMA2 transfer there too), so the handler has harvested the events before the
+/// waiter first looks and no wait ever has to sleep. That the waiter sleeps
+/// for an event that is not there yet, and the handler wakes it by TID, is
+/// `tests/host/drivers-tests` (`mmc_tests.rs`), over a controller model that
+/// only progresses while the driver sleeps.
 #[cfg(feature = "mmc-flush-smoke")]
 pub(crate) fn mmc_irq_smoke_spawn() {
     azos_sched::task_create("mmc-irq-smoke", mmc_irq_smoke_task, 0, azos_sched::DEFAULT_PRIORITY);
@@ -207,7 +216,7 @@ fn mmc_irq_smoke_task(_arg: usize) {
     }
     let (taken1, slept1) = mmc::mmc_irq_counts(SLOT);
     let (taken, slept) = (taken1 - taken0, slept1 - slept0);
-    if taken == 0 || slept == 0 {
+    if taken == 0 {
         kprintln!("[MMCSMOKE] IRQ FAIL completions were polled (taken {} slept {})", taken, slept);
         return;
     }

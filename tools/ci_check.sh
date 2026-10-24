@@ -18858,10 +18858,13 @@ PYEOF
     # Data moves by ADMA2 and completes by the function's INTx interrupt:
     # `mmc_irq_smoke_task` (once the scheduler runs) writes 24 sectors
     # (a three-descriptor table), flushes, reads back, and requires that the
-    # driver took interrupts and slept for them; the row passes on its
-    # `IRQ PASS` line, which only prints after the polled half passed. The
-    # poll canary (`mmc-poll-canary`: the driver stays polled) must print the
-    # `completions were polled` FAIL.
+    # driver's handler took the controller's interrupts; the row passes on its
+    # `IRQ PASS` line, which only prints after the polled half passed. QEMU's
+    # sdhci completes a command inside the MMIO write that issues it, so no
+    # wait has to sleep here (`slept` is printed, not required); the sleep and
+    # the wake by TID are drivers-tests' (mmc_tests.rs). The poll canary
+    # (`mmc-poll-canary`: the driver stays polled, no interrupt is taken) must
+    # print the `completions were polled` FAIL.
     mmc_sd_img="$CI_LOG_DIR/mmc-sd.img"
     mkdir -p "$CI_LOG_DIR"
     if kbuild "qemu,mmc-flush-smoke"; then
