@@ -19125,9 +19125,12 @@ PYEOF
         echo "      info: ${result#\[LAT\] }"; echo "      info: preempt-off max ${max:-?} ns at ${top##* site=}"
         rm -f "$log" "$clean"
     }
-    par_row -s lat_wake_row "lat: riscv64 wake-up, FAT writes" rv "qemu,lat-fat" PASS
+    # lat-fat counts PI across I/O for every task: the exec bounce buffer and
+    # KERNEL_FD_TABLE are taken by the behavior loop's MLSRV spawn and opens,
+    # robot programs, so these rows boot the robot cell.
+    par_row -s lat_wake_row "lat: riscv64 wake-up, FAT writes" rv "qemu,use-robot,lat-fat" PASS
     par_row -s fat_lat_canary_row "lat: riscv64 FAT spinlock canary" rv "qemu,fat-mutate-spin-canary"
-    par_row -s lat_wake_row "lat: aarch64 wake-up, FAT writes" arm "qemu,lat-fat" PASS
+    par_row -s lat_wake_row "lat: aarch64 wake-up, FAT writes" arm "qemu,use-robot,lat-fat" PASS
     par_row -s fat_lat_canary_row "lat: aarch64 FAT spinlock canary" arm "qemu,fat-mutate-spin-canary"
     # Wave 15 (FM), owner rule F1: `FAT_MUTATE` (a Mutex held across the
     # FAT update's virtio-blk I/O) is gone; FAT-sector claims (fat32.rs
@@ -19146,10 +19149,10 @@ PYEOF
     # buffer is a claim (no Mutex held across its read) and KERNEL_FD_TABLE is never held across
     # a descriptor's device I/O. The PASS rows above require `pi_io_all=0`;
     # each canary puts one of them back and the site must name it.
-    par_row -s lat_wake_row "lat: riscv64 EXEC_BOUNCE PI-across-I/O canary" rv "qemu,lat-fat,exec-bounce-pi-canary" PISITE:EXEC_BOUNCE
-    par_row -s lat_wake_row "lat: aarch64 EXEC_BOUNCE PI-across-I/O canary" arm "qemu,lat-fat,exec-bounce-pi-canary" PISITE:EXEC_BOUNCE
-    par_row -s lat_wake_row "lat: riscv64 KERNEL_FD_TABLE PI-across-I/O canary" rv "qemu,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
-    par_row -s lat_wake_row "lat: aarch64 KERNEL_FD_TABLE PI-across-I/O canary" arm "qemu,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
+    par_row -s lat_wake_row "lat: riscv64 EXEC_BOUNCE PI-across-I/O canary" rv "qemu,use-robot,lat-fat,exec-bounce-pi-canary" PISITE:EXEC_BOUNCE
+    par_row -s lat_wake_row "lat: aarch64 EXEC_BOUNCE PI-across-I/O canary" arm "qemu,use-robot,lat-fat,exec-bounce-pi-canary" PISITE:EXEC_BOUNCE
+    par_row -s lat_wake_row "lat: riscv64 KERNEL_FD_TABLE PI-across-I/O canary" rv "qemu,use-robot,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
+    par_row -s lat_wake_row "lat: aarch64 KERNEL_FD_TABLE PI-across-I/O canary" arm "qemu,use-robot,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
 
     # ── aarch64: idle wakeups/s (tickless), wave 11 ONESHOT ─────────────────
     #
