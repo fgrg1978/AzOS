@@ -1269,8 +1269,9 @@ azos_ktest::ktest_late! {
 //
 // The runner (CPU 0) holds a SpinLock with interrupts masked and shoots a
 // kernel page down on every CPU while a task on CPU 1 waits for the same lock
-// in `lock_irqsave`: the production shape of a MemObj revoke (MEMOBJS held
-// across `unmap_range`'s shootdown) against a futex on another CPU. On x86_64
+// in `lock_irqsave`: the shape of any shootdown issued under an irqsave lock
+// (text_poke's, a page-table lock's; a MemObj revoke's while MEMOBJS was one,
+// before it became a preempt-off lock) against a waiter on another CPU. On x86_64
 // without INVLPGB the shootdown is an IPI the runner waits for, the waiter
 // cannot take it, and only the lock's wait loop answering it
 // (`SpinWait::wait_service`) lets the flush return. riscv64's SBI fences and

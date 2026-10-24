@@ -479,11 +479,21 @@ const _: () = assert!(MAX_MEMOBJ_PAGES <= 64, "MemObj::cow_shared is one bit per
 /// `shm_page_phys`/`memobj_release`/`memobj_info`) touching it under an `unsafe`
 /// block with zero synchronization — reachable concurrently from any hart
 /// via the syscall dispatch table, so e.g. two harts racing `memobj_create`
-/// could both find the same "free" slot and both write into it. Uses
-/// `lock_irqsave()` (not plain `lock()`) for the same reason `PORTS` does:
-/// keeping every accessor on the same IRQ-safe discipline is what makes it
-/// safe to add an IRQ-context caller later without silently reopening a
-/// same-hart deadlock.
+/// could both find the same "free" slot and both write into it.
+///
+/// **Plain `lock()`: preemption off, interrupts ON.** No interrupt handler
+/// takes this lock: every accessor runs in task context (syscalls, the exit
+/// hooks, the reclaim task, boot) or in an exception (a page-cache fault),
+/// never from the timer, a device or an IPI handler. It was `lock_irqsave()`
+/// "so that an IRQ-context caller could be added later"; that bought nothing
+/// today and masked interrupts across every table section, the longest of
+/// them 14 us of `-icount` time (a release that freed 64 frames, since moved
+/// out, see [`Reclaim`]) and the futex resolve's table scan. An IRQ-context
+/// caller added later is the case lockdep's interrupt-safety inference
+/// (Kconfig `LOCKDEP_IRQ_INFERENCE`) reports: a class taken in an interrupt
+/// handler and with interrupts on in task context. On x86_64 a CPU waiting
+/// for the lock also takes a TLB shootdown IPI as it arrives (the holder's
+/// unmap shoots the range down with the lock held).
 const EMPTY_MEMOBJ: MemObj = MemObj::empty();
 
 /// The region table plus its per-slot generation sources,
@@ -754,7 +764,7 @@ fn create_core(
     if spec.attrs & !ATTRS_KNOWN != 0 || (spec.attrs & ATTR_VOLATILE != 0 && spec.kind != MemKind::Anon) {
         return Err(MemObjError::BadArg);
     }
-    if !has_room(&MEMOBJS.lock_irqsave(), owner_task) {
+    if !has_room(&MEMOBJS.lock(), owner_task) {
         return Err(MemObjError::NoMem);
     }
 
@@ -832,7 +842,7 @@ pub fn memobj_create_kernel(page_count: usize, spec: &MemSpec) -> Option<(u32, u
     let r = create_core(MEMOBJ_KERNEL_OWNER, page_count, spec).ok()?;
     // The object is new and only the kernel's reference exists: its first
     // page is its base.
-    let base = MEMOBJS.lock_irqsave()[LAYOUT.idx(r) as usize].phys_pages[0];
+    let base = MEMOBJS.lock()[LAYOUT.idx(r) as usize].phys_pages[0];
     Some((r, base))
 }
 
@@ -880,7 +890,7 @@ fn claim_slot_cow(
     // Two passes at most: the second runs only after this call's own
     // per-slot wrap sweep finishes.
     for _ in 0..2 {
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
 
         // Find and claim a free slot. Marking `active` before releasing the
         // lock (we hold it for the whole function) is what stops two harts
@@ -898,7 +908,7 @@ fn claim_slot_cow(
                 regions.next_gen[slot] = 0;
                 drop(regions);
                 objref::sweep_index(ty::SHM, slot as u32);
-                regions = MEMOBJS.lock_irqsave();
+                regions = MEMOBJS.lock();
                 regions.next_gen[slot] = 1;
                 continue;
             }
@@ -942,7 +952,7 @@ pub fn memobj_owner(shm_id: u32) -> Option<u32> {
     if shm_id as usize >= MAX_MEMOBJS {
         return None;
     }
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let region = &regions[shm_id as usize];
     if region.active { Some(region.owner_task) } else { None }
 }
@@ -953,7 +963,7 @@ pub fn memobj_ref(shm_id: u32) -> Option<u32> {
     if shm_id as usize >= MAX_MEMOBJS {
         return None;
     }
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let region = &regions[shm_id as usize];
     if region.active { Some(LAYOUT.pack(shm_id, region.generation)) } else { None }
 }
@@ -998,7 +1008,7 @@ fn holder_slot(region: &MemObj, tid: u32) -> Option<(usize, bool)> {
 /// the kernel-internal callers — the typed `Cap<Shm>` path — stay explicit
 /// about whose reference they are taking.
 pub fn memobj_acquire_ref(tid: u32, r: u32) -> Result<(usize, MemPerms), MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     acquire_locked(&mut regions[i], tid).ok_or(MemObjError::Closed)
 }
@@ -1050,7 +1060,7 @@ pub fn memobj_has_mapping(tid: u32, shm_id: u32) -> bool {
     if shm_id as usize >= MAX_MEMOBJS {
         return false;
     }
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let region = &regions[shm_id as usize];
     if !region.active {
         return false;
@@ -1060,7 +1070,7 @@ pub fn memobj_has_mapping(tid: u32, shm_id: u32) -> bool {
 
 /// [`memobj_has_mapping`] through a packed reference.
 pub fn memobj_has_mapping_ref(tid: u32, r: u32) -> Result<bool, MemObjError> {
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     Ok(has_mapping_locked(&regions[i], tid))
 }
@@ -1079,7 +1089,7 @@ fn has_mapping_locked(region: &MemObj, tid: u32) -> bool {
 /// `(va, pages)`, without clearing it (a fork asks whether the parent maps a
 /// `Cap<Shm>` it hands the child, and where).
 pub fn memobj_mapping_of_ref(tid: u32, r: u32) -> Result<Option<(usize, usize)>, MemObjError> {
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     Ok(regions[i].holders.iter()
         .find(|h| h.refs > 0 && h.tid == tid && h.map_va != 0)
@@ -1102,7 +1112,7 @@ pub fn memobj_note_mapping_ref(
     pages: usize,
     access: MapAccess,
 ) -> Result<bool, MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     if va == 0 || pages == 0 {
         return Ok(false);
@@ -1158,7 +1168,7 @@ pub fn memobj_take_mapping(tid: u32, shm_id: u32) -> Option<(usize, usize)> {
     if shm_id as usize >= MAX_MEMOBJS {
         return None;
     }
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let region = &mut regions[shm_id as usize];
     if !region.active {
         return None;
@@ -1168,7 +1178,7 @@ pub fn memobj_take_mapping(tid: u32, shm_id: u32) -> Option<(usize, usize)> {
 
 /// [`memobj_take_mapping`] through a packed reference.
 pub fn memobj_take_mapping_ref(tid: u32, r: u32) -> Result<Option<(usize, usize)>, MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     Ok(take_mapping_locked(&mut regions[i], tid))
 }
@@ -1214,7 +1224,7 @@ fn take_mapping_root_locked(region: &mut MemObj, tid: u32) -> Option<(usize, usi
 /// or the same gap between its mappings, before; else from one scan of the
 /// table, which fills the entry.
 pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize)> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let w = resolve_mapped_locked(&mut regions, tid, va)?;
     Some((LAYOUT.pack(w.idx as u32, regions[w.idx].generation), w.off))
 }
@@ -1243,7 +1253,7 @@ pub fn memobj_with_mapped_word<R>(
     if va % 4 != 0 {
         return None;
     }
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let w = resolve_mapped_locked(&mut regions, tid, va)?;
     let region = &regions[w.idx];
     if write
@@ -1390,7 +1400,7 @@ fn mapped_word_locked(region: &MemObj, i: usize, h: usize, tid: u32, va: usize) 
 /// object that is not in the cache (it has no frame: a map must not install
 /// address 0; [`memobj_paged_frame_ref`] brings it in).
 pub fn memobj_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usize>, MemObjError> {
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
     Ok(if page_idx < region.page_count { Some(region.phys_pages[page_idx]).filter(|&p| p != 0) } else { None })
@@ -1401,7 +1411,7 @@ pub fn memobj_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usize>, Me
 /// object and for an object with [`ATTR_NO_KERNEL_MAP`], whose frames only a
 /// user mapping may reach.
 pub fn memobj_kernel_page_phys_ref(r: u32, page_idx: usize) -> Result<Option<usize>, MemObjError> {
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
     Ok(if page_idx < region.page_count && region.attrs & ATTR_NO_KERNEL_MAP == 0 && region.phys_pages[page_idx] != 0 {
@@ -1436,7 +1446,7 @@ pub fn memobj_with_word_ref<R>(
     f: impl FnOnce(&AtomicU32) -> R,
 ) -> Result<Option<R>, MemObjError> {
     let page_size = azos_arch::PAGE_SIZE;
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
     let page = offset / page_size;
@@ -1482,7 +1492,7 @@ pub fn memobj_with_word_ref<R>(
 /// not take this lock.
 pub fn memobj_with_span_ref<R>(r: u32, bytes: usize, f: impl FnOnce(usize) -> R) -> Result<Option<R>, MemObjError> {
     let page = azos_arch::PAGE_SIZE;
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &regions[i];
     let pages = bytes.div_ceil(page);
@@ -1520,7 +1530,7 @@ pub fn __memobj_table_unlocked_for_tests() -> bool {
 /// typed release keeps one of `tid`'s references; the exit gives it back.
 /// `Ok(false)` if `tid` holds no reference; `Stale` as the other forms.
 pub fn memobj_pin_ref(tid: u32, r: u32) -> Result<bool, MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     match regions[i].holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
         Some(h) => {
@@ -1553,7 +1563,7 @@ pub fn memobj_release(tid: u32, shm_id: u32) -> bool {
     if shm_id as usize >= MAX_MEMOBJS {
         return false;
     }
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let region = &mut regions[shm_id as usize];
     if !region.active {
         return false;
@@ -1566,7 +1576,7 @@ pub fn memobj_release(tid: u32, shm_id: u32) -> bool {
 /// [`memobj_release`] through a packed reference: `Stale` if the region at its
 /// index is not the one it names, `Closed` if no reference was dropped.
 pub fn memobj_release_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let freed = release_locked(&mut regions[i], tid);
     drop(regions);
@@ -1609,7 +1619,7 @@ fn release_locked(region: &mut MemObj, tid: u32) -> Option<Reclaim> {
 /// Other holders' references are untouched, so the region, its generation and
 /// their capabilities stay live until the last of them goes.
 pub fn memobj_release_holder_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let freed = release_holder_locked(&mut regions[i], tid);
     drop(regions);
@@ -1763,7 +1773,7 @@ pub fn memobj_release_all(tid: u32) {
     // not this exiting task's.
     let mut live = [false; MAX_MEMOBJS];
     {
-        let regions = MEMOBJS.lock_irqsave();
+        let regions = MEMOBJS.lock();
         for (l, r) in live.iter_mut().zip(regions.iter()) {
             *l = r.active;
         }
@@ -1790,7 +1800,7 @@ pub fn memobj_release_all(tid: u32) {
 /// ran afterwards would otherwise edit a freed page table. Must run before the
 /// old root is freed.
 pub fn memobj_exec(tid: u32) {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     for region in regions.regions.iter_mut().filter(|r| r.active) {
         let _ = take_mapping_locked(region, tid);
     }
@@ -1807,7 +1817,7 @@ pub fn memobj_info(shm_id: u32) -> Option<(usize, u32, MemPerms)> {
     if shm_id as usize >= MAX_MEMOBJS {
         return None;
     }
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let region = &regions[shm_id as usize];
     if !region.active {
         return None;
@@ -1842,7 +1852,7 @@ pub struct MemDesc {
 
 /// [`MemDesc`] of the object a packed reference names, or `Stale`.
 pub fn memobj_describe_ref(r: u32) -> Result<MemDesc, MemObjError> {
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let o = &regions[i];
     Ok(MemDesc {
@@ -1909,7 +1919,7 @@ pub fn memobj_resolve_map(
 /// write the other object's memory. `Closed` when `tid` has no mapping of it.
 /// This is `SYS_MO_MAP` with its second argument set.
 pub fn memobj_protect_ref(tid: u32, r: u32, write: bool) -> Result<(), MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &mut regions[i];
     reclaim_sole_frames(region);
@@ -1956,7 +1966,7 @@ fn reclaim_sole_frames(region: &mut MemObj) {
 /// would leave them reading it. Alloc and copy happen outside the table lock.
 pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     let (old, key) = {
-        let regions = MEMOBJS.lock_irqsave();
+        let regions = MEMOBJS.lock();
         let i = live_index(&regions, r)?;
         let o = &regions[i];
         if page >= o.page_count {
@@ -1975,7 +1985,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
     // count is dropped back to "one holder" with the compare-and-swap that tells
     // a clone taken in the meantime (it would be above one) from a sole owner.
     if azos_mm::cow::page_is_sole(old) && azos_mm::cow::page_forget_if_sole(old) {
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         if let Ok(i) = live_index(&regions, r) {
             if regions[i].generation == key && regions[i].phys_pages[page] == old {
                 regions[i].cow_shared &= !(1u64 << page);
@@ -1997,7 +2007,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
             azos_arch::PAGE_SIZE,
         );
     }
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let still = live_index(&regions, r).ok().filter(|&i| {
         let o = &regions[i];
         o.generation == key
@@ -2058,7 +2068,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
     if d.purge == PurgeState::Purged {
         return Err(MemObjError::Purged);
     }
-    if !has_room(&MEMOBJS.lock_irqsave(), owner_task) {
+    if !has_room(&MEMOBJS.lock(), owner_task) {
         return Err(MemObjError::NoMem);
     }
     let n = d.page_count;
@@ -2071,7 +2081,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
     let mut pages = [0usize; MAX_MEMOBJ_PAGES];
     // One hold: a reference for `tid`, the decision, and the share.
     let lazy = {
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let i = match live_index(&regions, src) {
             Ok(i) => i,
             Err(e) => {
@@ -2129,7 +2139,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
     // The temporary reference goes back whichever way it ended. `tid` may
     // have had none before (then its holder entry goes with it) or others.
     {
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let freed = live_index(&regions, src).ok().and_then(|i| {
             let idx = (0..MAX_MEMOBJ_HOLDERS).find(|&k| regions[i].holders[k].refs > 0 && regions[i].holders[k].tid == tid)?;
             Some(drop_refs_locked(&mut regions[i], idx, 1))
@@ -2216,7 +2226,7 @@ fn any_pinned(region: &MemObj) -> bool {
 /// are untouched: the object lives for as long as one reference does.
 fn memobj_revoke_holder_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
     memobj_pipe_drop_all_ref(tid, r);
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &mut regions[i];
     let hi = holder_index(region, tid).ok_or(MemObjError::Closed)?;
@@ -2258,7 +2268,7 @@ pub fn memobj_warrant_swept(resource: u32, owner: u32) {
     let mut tids = [0u32; MAX_MEMOBJ_HOLDERS];
     let mut n = 0;
     {
-        let regions = MEMOBJS.lock_irqsave();
+        let regions = MEMOBJS.lock();
         let Ok(i) = live_index(&regions, resource) else { return };
         for h in regions[i].holders.iter().filter(|h| h.refs > 0) {
             tids[n] = h.tid;
@@ -2376,7 +2386,7 @@ pub fn memobj_move(from: u32, to: u32, r: u32) -> Result<Moved, MemObjError> {
     if from == to || to == MEMOBJ_KERNEL_OWNER {
         return Err(MemObjError::BadArg);
     }
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     // The cache is the kernel's, charged to no Domain: there is no charge to move.
     if regions[i].kind == MemKind::Paged {
@@ -2592,7 +2602,7 @@ fn ends_merge_locked(region: &mut MemObj, from: u8, ti: usize) {
 /// Nothing is counted: `BytePipe::init` writes the creator's one reader and
 /// one writer itself.
 fn pipe_creator_ends(tid: u32, r: u32) {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     if let Ok(i) = live_index(&regions, r) {
         if let Some(hi) = holder_index(&regions[i], tid) {
             regions[i].holders[hi].ends = PIPE_END_READ | PIPE_END_WRITE;
@@ -2605,7 +2615,7 @@ fn pipe_creator_ends(tid: u32, r: u32) {
 /// not hold are counted. `Closed` if `tid` holds no reference, `Full` if a
 /// count has no room. A region that is no pipe is left alone.
 pub fn memobj_pipe_hold(tid: u32, r: u32, ends: u8) -> Result<(), MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let hi = holder_index(&regions[i], tid).ok_or(MemObjError::Closed)?;
     hold_bits_locked(&mut regions[i], hi, ends & (PIPE_END_READ | PIPE_END_WRITE))
@@ -2613,7 +2623,7 @@ pub fn memobj_pipe_hold(tid: u32, r: u32, ends: u8) -> Result<(), MemObjError> {
 
 /// [`memobj_pipe_hold`] for a fork: `child` holds the ends `parent` holds.
 pub fn memobj_pipe_inherit(parent: u32, child: u32, r: u32) -> Result<(), MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let pi = holder_index(&regions[i], parent).ok_or(MemObjError::Closed)?;
     let ci = holder_index(&regions[i], child).ok_or(MemObjError::Closed)?;
@@ -2627,7 +2637,7 @@ pub fn memobj_pipe_inherit(parent: u32, child: u32, r: u32) -> Result<(), MemObj
 pub fn memobj_pipe_drop(tid: u32, r: u32, ends: u8) -> Result<(), MemObjError> {
     let mut wakes = PipeWakes::new();
     {
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let i = live_index(&regions, r)?;
         let hi = holder_index(&regions[i], tid).ok_or(MemObjError::Closed)?;
         let bits = ends & (PIPE_END_READ | PIPE_END_WRITE);
@@ -2645,7 +2655,7 @@ pub fn memobj_pipe_drop(tid: u32, r: u32, ends: u8) -> Result<(), MemObjError> {
 pub fn memobj_pipe_drop_all_ref(tid: u32, r: u32) {
     let mut wakes = PipeWakes::new();
     {
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let Ok(i) = live_index(&regions, r) else { return };
         let Some(hi) = holder_index(&regions[i], tid) else { return };
         let held = regions[i].holders[hi].ends;
@@ -2667,7 +2677,7 @@ pub fn memobj_pipe_drop_all_ref(tid: u32, r: u32) {
 /// outlive a holder that lets go of the region during the call;
 /// [`memobj_frames_unpin`] gives it back.
 pub fn memobj_frames_pin(r: u32, out: &mut [usize]) -> Result<usize, MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let region = &mut regions[i];
     if region.attrs & ATTR_NO_KERNEL_MAP != 0
@@ -2689,7 +2699,7 @@ pub fn memobj_frames_pin(r: u32, out: &mut [usize]) -> Result<usize, MemObjError
 
 /// Give back the reference [`memobj_frames_pin`] took on `r`.
 pub fn memobj_frames_unpin(r: u32) {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let freed = live_index(&regions, r).ok().and_then(|i| release_locked(&mut regions[i], MEMOBJ_KERNEL_OWNER));
     drop(regions);
     if let Some(f) = freed {
@@ -2708,7 +2718,7 @@ fn pipe_drop_all(tid: u32) {
     while next < MAX_MEMOBJS {
         let mut wakes = PipeWakes::new();
         {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             while next < MAX_MEMOBJS && wakes.n + 4 <= wakes.at.len() {
                 let i = next;
                 next += 1;
@@ -2910,7 +2920,7 @@ pub fn memobj_create_paged(
 /// one's goes back).
 fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
     let (backing, key, off, size) = {
-        let regions = MEMOBJS.lock_irqsave();
+        let regions = MEMOBJS.lock();
         let i = paged_slot(&regions, r)?;
         let o = &regions[i];
         if idx >= o.page_count {
@@ -2929,7 +2939,7 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
         let _ = azos_mm::pmm::free_page(frame);
         return Err(PagedError::Io(e));
     }
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     match paged_slot(&regions, r) {
         Ok(i) if regions[i].phys_pages[idx] == 0 => {
             regions[i].phys_pages[idx] = frame.as_usize();
@@ -2964,14 +2974,14 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
 pub fn memobj_paged_frame_ref(r: u32, idx: usize, write: bool) -> Result<usize, PagedError> {
     for _ in 0..PAGED_TRIES {
         if write {
-            let regions = MEMOBJS.lock_irqsave();
+            let regions = MEMOBJS.lock();
             let i = paged_slot(&regions, r)?;
             if regions[i].perms != MemPerms::ReadWrite {
                 return Err(MemObjError::Cap(CapError::MissingPerms).into());
             }
         }
         paged_page_in(r, idx)?;
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let i = paged_slot(&regions, r)?;
         let o = &mut regions[i];
         let phys = o.phys_pages[idx];
@@ -3001,7 +3011,7 @@ fn paged_io(r: u32, off: usize, mut io: PagedIo<'_>) -> Result<(usize, usize), P
         PagedIo::Write(b) => b.len(),
     };
     if let PagedIo::Write(_) = io {
-        let regions = MEMOBJS.lock_irqsave();
+        let regions = MEMOBJS.lock();
         let i = paged_slot(&regions, r)?;
         if regions[i].perms != MemPerms::ReadWrite {
             return Err(MemObjError::Cap(CapError::MissingPerms).into());
@@ -3012,7 +3022,7 @@ fn paged_io(r: u32, off: usize, mut io: PagedIo<'_>) -> Result<(usize, usize), P
     let mut misses = 0usize;
     while done < len {
         let step: Result<Option<usize>, PagedError> = {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = paged_slot(&regions, r)?;
             let o = &mut regions[i];
             let Some(st) = o.paged else { return Err(MemObjError::BadArg.into()) };
@@ -3096,14 +3106,14 @@ pub fn memobj_paged_write_ref(r: u32, off: usize, src: &[u8]) -> Result<(usize, 
 /// object freed under the call would take the frame with it.
 pub fn memobj_paged_writeback_ref(r: u32) -> Result<usize, PagedError> {
     let pages = {
-        let regions = MEMOBJS.lock_irqsave();
+        let regions = MEMOBJS.lock();
         regions[paged_slot(&regions, r)?].page_count
     };
     let mut written = 0usize;
     for idx in 0..pages {
         let bit = 1u64 << idx;
         let (backing, key, off, size, phys) = {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = paged_slot(&regions, r)?;
             let o = &mut regions[i];
             let phys = o.phys_pages[idx];
@@ -3120,7 +3130,7 @@ pub fn memobj_paged_writeback_ref(r: u32) -> Result<usize, PagedError> {
         let src = unsafe { frame_bytes(phys) };
         let res = azos_mm::pager::write_back_page(backing, &key, off, size, src);
         {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = paged_slot(&regions, r)?;
             if let Some(st) = regions[i].paged.as_mut() {
                 st.flushing &= !bit;
@@ -3151,7 +3161,7 @@ pub fn memobj_paged_drop_clean(max_pages: usize) -> usize {
     let mut from = 0usize;
     while dropped < max_pages && from < MAX_MEMOBJS {
         let mut freed = Reclaim::new();
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         'objects: for i in from..MAX_MEMOBJS {
             from = i;
             let o = &mut regions[i];
@@ -3196,7 +3206,7 @@ pub struct PagedReclaim {
 /// slot `from`: the walk of [`memobj_paged_reclaim`]'s write-back, one object
 /// per lock hold.
 fn paged_object_from(from: usize) -> Option<(usize, u32)> {
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     (from..MAX_MEMOBJS).find(|&i| regions[i].active && regions[i].kind == MemKind::Paged).map(|i| (i, regions[i].ident))
 }
 
@@ -3232,7 +3242,7 @@ pub fn memobj_paged_reclaim(max_pages: usize) -> PagedReclaim {
 
 /// What the cache holds of the Paged object `r` names.
 pub fn memobj_paged_info_ref(r: u32) -> Result<PagedInfo, MemObjError> {
-    let regions = MEMOBJS.lock_irqsave();
+    let regions = MEMOBJS.lock();
     let i = paged_slot(&regions, r)?;
     let o = &regions[i];
     let Some(st) = o.paged else { return Err(MemObjError::BadArg) };
@@ -3289,7 +3299,7 @@ fn paged_page_of(o: &MemObj, st: &PagedState, byte: u64) -> usize {
 /// forgets all of it. `Obj(Busy)` while a page of the range is being written
 /// back or a holder is pinned: nothing was forgotten, the caller tries again.
 pub fn memobj_paged_forget_ref(r: u32, from: u64) -> Result<(), PagedError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = paged_slot(&regions, r)?;
     let o = &mut regions[i];
     let Some(st) = o.paged else { return Err(MemObjError::BadArg.into()) };
@@ -3319,7 +3329,7 @@ pub fn memobj_paged_forget_ref(r: u32, from: u64) -> Result<(), PagedError> {
 pub fn memobj_paged_set_size_ref(r: u32, new_size: u64) -> Result<(), PagedError> {
     for _ in 0..PAGED_TRIES {
         let old = {
-            let regions = MEMOBJS.lock_irqsave();
+            let regions = MEMOBJS.lock();
             let i = paged_slot(&regions, r)?;
             regions[i].paged.map_or(0, |st| st.size)
         };
@@ -3327,7 +3337,7 @@ pub fn memobj_paged_set_size_ref(r: u32, new_size: u64) -> Result<(), PagedError
             return Ok(());
         }
         memobj_paged_writeback_ref(r)?;
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let i = paged_slot(&regions, r)?;
         let o = &mut regions[i];
         let Some(st) = o.paged else { return Err(MemObjError::BadArg.into()) };
@@ -3359,7 +3369,7 @@ pub fn memobj_paged_set_size_ref(r: u32, new_size: u64) -> Result<(), PagedError
 pub fn memobj_paged_close_ref(r: u32) -> Result<(), PagedError> {
     for _ in 0..PAGED_TRIES {
         memobj_paged_writeback_ref(r)?;
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let i = paged_slot(&regions, r)?;
         let o = &mut regions[i];
         if total_refs(o) != 1 {
@@ -3413,7 +3423,7 @@ fn record_purge(key: u32, what: u64, pages: usize) {
 /// holder that only shares the object must not make it droppable under the
 /// others.
 pub fn memobj_set_volatile_ref(tid: u32, r: u32, volatile: bool) -> Result<bool, MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let o = &mut regions[i];
     if o.attrs & ATTR_VOLATILE == 0 {
@@ -3439,7 +3449,7 @@ pub fn memobj_set_volatile_ref(tid: u32, r: u32, volatile: bool) -> Result<bool,
 /// to give back), `Purged` for one already purged (nothing to map), `Closed`
 /// when the holder table is full.
 pub fn memobj_pin_for_map(r: u32) -> Result<bool, MemObjError> {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let o = &mut regions[i];
     if o.attrs & ATTR_VOLATILE == 0 {
@@ -3519,7 +3529,7 @@ pub fn memobj_purge_volatile(max_pages: usize, mem_locked: fn(u32) -> bool) -> u
     let mut freed = 0usize;
     let mut from = 0usize;
     while freed < max_pages {
-        let mut regions = MEMOBJS.lock_irqsave();
+        let mut regions = MEMOBJS.lock();
         let Some(i) = (from..MAX_MEMOBJS).find(|&i| purgeable(&regions[i], mem_locked)) else { break };
         from = i + 1;
         let (key, pages, frames) = purge_locked(&mut regions[i]);
@@ -3711,7 +3721,7 @@ pub fn memobj_release_cap_op(
 /// the kernel.
 #[cfg(test)]
 pub fn __memobj_reset_for_tests() {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     for i in 0..MAX_MEMOBJS {
         regions[i] = MemObj::empty();
         regions.next_gen[i] = 1;
@@ -3730,7 +3740,7 @@ pub fn __memobj_reset_for_tests() {
 /// wrap without `LAYOUT.gen_max()` create/release cycles at that index.
 #[cfg(test)]
 pub fn __memobj_set_next_gen_for_tests(i: usize, next_gen: u32) {
-    MEMOBJS.lock_irqsave().next_gen[i] = next_gen;
+    MEMOBJS.lock().next_gen[i] = next_gen;
 }
 
 /// Set the references `tid` holds on slot `shm_id` to `refs`, taking a free
@@ -3738,7 +3748,7 @@ pub fn __memobj_set_next_gen_for_tests(i: usize, next_gen: u32) {
 /// without four billion acquires.
 #[cfg(test)]
 pub fn __memobj_set_refs_for_tests(shm_id: u32, tid: u32, refs: u32) {
-    let mut regions = MEMOBJS.lock_irqsave();
+    let mut regions = MEMOBJS.lock();
     let region = &mut regions[shm_id as usize];
     let (idx, _) = holder_slot(region, tid).expect("a holder slot");
     region.holders[idx] = MemHolder { tid, refs, ..MemHolder::empty() };
@@ -3747,7 +3757,7 @@ pub fn __memobj_set_refs_for_tests(shm_id: u32, tid: u32, refs: u32) {
 /// The generation stamped in slot `shm_id` (host tests).
 #[cfg(test)]
 pub fn __memobj_generation_for_tests(shm_id: u32) -> u32 {
-    MEMOBJS.lock_irqsave()[shm_id as usize].generation
+    MEMOBJS.lock()[shm_id as usize].generation
 }
 
 #[cfg(test)]
@@ -3866,7 +3876,7 @@ mod tests {
         assert_eq!(memobj_with_span_ref(r, 0, |_| ()), Ok(None), "an empty span names nothing");
 
         let set = |f: &dyn Fn(&mut MemObj)| {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r).unwrap();
             f(&mut regions[i]);
         };
@@ -3885,14 +3895,14 @@ mod tests {
         let two = memobj_create_cap(A, 2, &MemSpec::anon(MemPerms::ReadWrite)).expect("two pages");
         let r2 = cap_store::get(A, two, CapPerms::READ).expect("resolves");
         let fix = |delta: usize| {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r2).unwrap();
             regions[i].phys_pages[1] = regions[i].phys_pages[0] + page + delta;
         };
         fix(0);
         assert!(memobj_with_span_ref(r2, 2 * page, |_| ()).unwrap().is_some(), "contiguous frames");
         let kept = {
-            let regions = MEMOBJS.lock_irqsave();
+            let regions = MEMOBJS.lock();
             regions[live_index(&regions, r2).unwrap()].phys_pages[1]
         };
         fix(page);
@@ -3900,7 +3910,7 @@ mod tests {
         assert!(memobj_with_span_ref(r2, page, |_| ()).unwrap().is_some(), "the first page alone still is");
         {
             // Put the real frame back so the release frees what was allocated.
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r2).unwrap();
             regions[i].phys_pages[1] = kept;
         }
@@ -3986,7 +3996,7 @@ mod tests {
     /// the reference the cache is held to.
     fn resolve_by_scan(tid: u32, va: usize) -> Option<(u32, usize)> {
         let page = azos_arch::PAGE_SIZE;
-        let regions = MEMOBJS.lock_irqsave();
+        let regions = MEMOBJS.lock();
         for (i, region) in regions.iter().enumerate() {
             if !region.active || region.attrs & ATTR_NO_KERNEL_MAP != 0 {
                 continue;
@@ -4089,7 +4099,7 @@ mod tests {
         let ways = azos_limits::MEMOBJ_RESOLVE_WAYS as u32;
         // Outside every mapping: each answer fills its process's entry.
         const VA: usize = 0x4000_0000;
-        let kept = |t: u32| MEMOBJS.lock_irqsave().resolved.iter().any(|e| e.tid == t);
+        let kept = |t: u32| MEMOBJS.lock().resolved.iter().any(|e| e.tid == t);
         for t in A..A + ways {
             assert_eq!(memobj_resolve_mapped(t, VA), None);
         }
@@ -6018,7 +6028,7 @@ mod tests {
         let _ = memobj_describe_ref(r);
         // (`cow_shared` clears when the sharer is gone and the object is next written or protected.)
         {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r).unwrap();
             reclaim_sole_frames(&mut regions[i]);
         }
@@ -6027,7 +6037,7 @@ mod tests {
         assert_eq!(memobj_pin_ref(A, r), Ok(true));
         assert_eq!(memobj_purge_volatile(8, nobody_is_locked), 0, "an object with a pinned holder was purged");
         {
-            let mut regions = MEMOBJS.lock_irqsave();
+            let mut regions = MEMOBJS.lock();
             let i = live_index(&regions, r).unwrap();
             for h in regions[i].holders.iter_mut() {
                 h.pinned = false;
