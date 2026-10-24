@@ -339,35 +339,15 @@ static int exec_entry_dirty(void)
 // runtime answers these too: `lxhello rt` runs them.)
 static void stage_fork(void)
 {
-    // Fork: the child holds its own FP pattern while the parent holds
-    // another, tries a create its row does not allow, and exits with a code
-    // that says what it saw.
-    i64 pid = lx_sc6(NR_clone, 17 /* SIGCHLD */, 0, 0, 0, 0, 0);
-    if (pid == 0) {
-        int code = fp_hold(0x1111000000000000UL) << 2;
-        i64 r = lx_sc4(NR_openat, AT_FDCWD, "/fat/LXDENY2.TXT", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (r != -EACCES) code |= 2;
-        lx_sc1(NR_exit_group, 40 + code);
-    }
-    int held = fp_hold(0x2222000000000000UL);
-    int st = 0;
-    i64 w = lx_sc4(NR_wait4, pid, &st, 0, 0);
-    put("lx: fork child status "); putn((st >> 8) & 0xff); flush();
-    check("fork+wait4", pid > 0 && w == pid && (st & 0x7f) == 0, "pid", pid);
-    int cst = (st >> 8) & 0xff;
-    check("fp state kept across switches", (held & 1) == 0 && ((cst - 40) & 4) == 0, "child status", cst);
-    check("thread pointer kept across switches", (held & 2) == 0 && ((cst - 40) & 8) == 0, "child status", cst);
-    check("fork child holds only its row", cst >= 40 && ((cst - 40) & 2) == 0, "child status", cst);
-
     // Round 48: an inherited descriptor shares its open file description
     // (one offset) with the parent, as in Linux. The child writes "a", the
     // parent then writes "b": the file is "ab", not "b".
     i64 sf = lx_sc4(NR_openat, AT_FDCWD, "/tmp/LXFORK", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    pid = sf >= 0 ? lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0) : -1;
+    i64 pid = sf >= 0 ? lx_sc6(NR_clone, 17, 0, 0, 0, 0, 0) : -1;
     if (pid == 0) {
         lx_sc1(NR_exit_group, lx_sc3(NR_write, sf, "a", 1) == 1 ? 0 : 1);
     }
-    st = 0;
+    int st = 0;
     if (pid > 0) lx_sc4(NR_wait4, pid, &st, 0, 0);
     i64 wb = sf >= 0 ? lx_sc3(NR_write, sf, "b", 1) : -1;
     if (sf >= 0) lx_sc1(NR_close, sf);
@@ -377,6 +357,29 @@ static void stage_fork(void)
     big[rn > 0 ? rn : 0] = 0;
     put("lx: inherited file reads ["); put(big); put("]"); flush();
     check("fork shares the file offset", sf >= 0 && pid > 0 && wb == 1 && rn == 2 && mem_eq(big, "ab", 2), "bytes", rn);
+
+    // Fork, second: under the ring-3 runtime the first fork of a row seeds
+    // its child through the row's minters and records the row's template
+    // (`natfork`); this child is seeded from that template, so its authority
+    // check is the template's. It holds its own FP pattern while the parent
+    // holds another, tries a create its row does not allow, and exits with a
+    // code that says what it saw.
+    pid = lx_sc6(NR_clone, 17 /* SIGCHLD */, 0, 0, 0, 0, 0);
+    if (pid == 0) {
+        int code = fp_hold(0x1111000000000000UL) << 2;
+        i64 r = lx_sc4(NR_openat, AT_FDCWD, "/fat/LXDENY2.TXT", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (r != -EACCES) code |= 2;
+        lx_sc1(NR_exit_group, 40 + code);
+    }
+    int held = fp_hold(0x2222000000000000UL);
+    st = 0;
+    i64 w = lx_sc4(NR_wait4, pid, &st, 0, 0);
+    put("lx: fork child status "); putn((st >> 8) & 0xff); flush();
+    check("fork+wait4", pid > 0 && w == pid && (st & 0x7f) == 0, "pid", pid);
+    int cst = (st >> 8) & 0xff;
+    check("fp state kept across switches", (held & 1) == 0 && ((cst - 40) & 4) == 0, "child status", cst);
+    check("thread pointer kept across switches", (held & 2) == 0 && ((cst - 40) & 8) == 0, "child status", cst);
+    check("fork child holds only its row", cst >= 40 && ((cst - 40) & 2) == 0, "child status", cst);
 }
 
 static void stage3(void)

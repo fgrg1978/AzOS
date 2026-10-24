@@ -22542,11 +22542,15 @@ cat /fat/RTOUT.TXT"
             # (`lx: fork shares the file offset ok`, `lx: fork child holds
             # only its row ok`). Canaries: `native-fork-no-inherit-canary` (no
             # descriptor inherited) and `native-fork-copy-canary` (the parent's
-            # handles kept) and, for the per-row seed template, an entry edited
-            # after it was sealed: `natfork-template-noseal-canary` serves the
-            # edited entry (the row-capability check fails),
-            # `natfork-template-tamper-canary` has the seal refuse it (dropped,
-            # minted again, said once: the run is green and the line is there).
+            # handles kept) and, for the per-row seed template, an entry that
+            # gains WRITE after it was sealed (LXHELLO's read-only root). The
+            # first fork of the row records the template and the second,
+            # lxhello's authority fork, is seeded from it:
+            # `natfork-template-noseal-canary` serves the edited entry (that
+            # child's create under /fat is not refused with EACCES: `lx: fork
+            # child holds only its row FAIL`), `natfork-template-tamper-canary`
+            # has the seal refuse it (dropped, minted again, said once: the run
+            # is green and the line is there).
             for nfc in native-fork-no-inherit-canary native-fork-copy-canary natfork-template-noseal-canary natfork-template-tamper-canary; do
                 lx_rt_kn="$CI_LOG_DIR/kernel-lxrt-${nfc}-${ush_isa}"
                 if [ "$ush_isa" = rv ]; then
@@ -22557,6 +22561,10 @@ cat /fat/RTOUT.TXT"
                 if [ "$nfc" = natfork-template-tamper-canary ]; then
                     USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL|SECCOMP' par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" PASS \
                         "$lx_rt_script" 150 "${lx_rt_markers[@]}" "capability template failed its seal: dropped, minted again"
+                elif [ "$nfc" = natfork-template-noseal-canary ]; then
+                    # Red for its own reason: the template-seeded child's check.
+                    USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID='robot> |SECCOMP' par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" PASS \
+                        "$lx_rt_script" 150 "hosted by the ring-3 runtime" "lx: fork shares the file offset ok" "lx: fork child holds only its row FAIL"
                 else
                     USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" FAIL \
                         "$lx_rt_script" 150 "${lx_rt_markers[@]}"

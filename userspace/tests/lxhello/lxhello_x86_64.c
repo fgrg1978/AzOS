@@ -217,32 +217,14 @@ static void stage_stack(i64 *sp)
 // open file offset; the parent reaps it with the Linux wait status.
 static void stage_fork(void)
 {
-    i64 ppid = xsc0(XNR_getpid);
-    i64 pid = xsc0(XNR_fork);
-    if (pid == 0) {
-        int code = 0;
-        if (xsc0(XNR_getppid) != ppid) code |= 1;
-        if (xsc0(XNR_getpid) == ppid) code |= 4;
-        i64 r = xsc4(XNR_openat, AT_FDCWD, "/fat/LXDENY2.TXT", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (r != -EACCES) code |= 2;
-        xsc1(XNR_exit_group, 40 + code);
-    }
-    int st = 0;
-    i64 w = xsc4(XNR_wait4, pid, &st, 0, 0);
-    put("lx: fork child status "); putn((st >> 8) & 0xff); flush();
-    int cst = (st >> 8) & 0xff;
-    check("fork+wait4", pid > 0 && w == pid && (st & 0x7f) == 0, "pid", pid);
-    check("fork child ids", cst >= 40 && ((cst - 40) & 5) == 0, "child status", cst);
-    check("fork child holds only its row", cst >= 40 && ((cst - 40) & 2) == 0, "child status", cst);
-
     // An inherited descriptor shares its open file description (one offset):
     // the child writes "a", the parent then writes "b", the file reads "ab".
     i64 sf = xsc4(XNR_open, (i64)"/tmp/LXFORK", O_WRONLY | O_CREAT | O_TRUNC, 0644, 0);
-    pid = sf >= 0 ? xsc0(XNR_fork) : -1;
+    i64 pid = sf >= 0 ? xsc0(XNR_fork) : -1;
     if (pid == 0) {
         xsc1(XNR_exit_group, xsc3(XNR_write, sf, "a", 1) == 1 ? 0 : 1);
     }
-    st = 0;
+    int st = 0;
     if (pid > 0) xsc4(XNR_wait4, pid, &st, 0, 0);
     i64 wb = sf >= 0 ? xsc3(XNR_write, sf, "b", 1) : -1;
     if (sf >= 0) xsc1(XNR_close, sf);
@@ -252,6 +234,28 @@ static void stage_fork(void)
     big[rn > 0 ? rn : 0] = 0;
     put("lx: inherited file reads ["); put(big); put("]"); flush();
     check("fork shares the file offset", sf >= 0 && pid > 0 && wb == 1 && rn == 2 && mem_eq(big, "ab", 2), "bytes", rn);
+
+    // Fork, second: under the ring-3 runtime the first fork of a row seeds
+    // its child through the row's minters and records the row's template
+    // (`natfork`); this child is seeded from that template, so its authority
+    // check is the template's.
+    i64 ppid = xsc0(XNR_getpid);
+    pid = xsc0(XNR_fork);
+    if (pid == 0) {
+        int code = 0;
+        if (xsc0(XNR_getppid) != ppid) code |= 1;
+        if (xsc0(XNR_getpid) == ppid) code |= 4;
+        i64 r = xsc4(XNR_openat, AT_FDCWD, "/fat/LXDENY2.TXT", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (r != -EACCES) code |= 2;
+        xsc1(XNR_exit_group, 40 + code);
+    }
+    st = 0;
+    i64 w = xsc4(XNR_wait4, pid, &st, 0, 0);
+    put("lx: fork child status "); putn((st >> 8) & 0xff); flush();
+    int cst = (st >> 8) & 0xff;
+    check("fork+wait4", pid > 0 && w == pid && (st & 0x7f) == 0, "pid", pid);
+    check("fork child ids", cst >= 40 && ((cst - 40) & 5) == 0, "child status", cst);
+    check("fork child holds only its row", cst >= 40 && ((cst - 40) & 2) == 0, "child status", cst);
 }
 
 // `lxhello rt`: the calls the ring-3 runtime answers over the native ABI.

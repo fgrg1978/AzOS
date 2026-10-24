@@ -130,10 +130,11 @@ block-scope-canary = []
 # creates is booked to the thread instead of its process, so the thread's
 # exit frees it under its siblings.
 thread-objects-canary = []
-# Wave 13 canaries for the per-row seed template (`natfork`): an entry is
-# edited after the template is sealed (the seal must refuse it: dropped and
+# Wave 13 canaries for the per-row seed template (`natfork`): an entry gains
+# WRITE after the template is sealed (the seal must refuse it: dropped and
 # minted again), and the same with the seal check compiled out (the edited
-# entry is served: the abitest row-capability check fails).
+# entry is served: lxhello's second fork child under the hosted runtime fails
+# `fork child holds only its row`).
 natfork-template-tamper-canary = []
 natfork-template-noseal-canary = ["natfork-template-tamper-canary"]
 # Canaries: a streamed image's copy differs by one byte from

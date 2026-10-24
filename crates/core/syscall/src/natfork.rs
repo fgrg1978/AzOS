@@ -468,9 +468,11 @@ fn template_put(row: usize, n: usize, ents: &[TEnt; TMAX]) {
     t.seal = seal_of(t.row, t.n, &t.ents[..n]);
     #[cfg(feature = "natfork-template-tamper-canary")]
     {
-        // Gate canary: the first endpoint entry gains WRITE after the seal.
+        // Gate canary: the first recorded entry without WRITE gains it after
+        // the seal (a template holds only kinds that name no live object, so
+        // an endpoint is never one; LXHELLO's is its read-only root).
         if let Some(e) = t.ents[..n].iter_mut().find(|e| {
-            e.state == T_MINTED && e.kind == ty::ENDPOINT.raw()
+            e.state == T_MINTED && e.perms & CapPerms::WRITE.bits() == 0
         }) {
             e.perms |= CapPerms::WRITE.bits();
         }
