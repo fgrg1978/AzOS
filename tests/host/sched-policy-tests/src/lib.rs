@@ -929,13 +929,13 @@ mod rt_exemption {
     /// handler, spawn path or topology code calls the setter.
     #[test]
     fn only_the_kernel_safety_loops_are_exempted() {
-        const MAIN: &str = include_str!("../../../../kernel/src/main.rs");
+        const TASKS: &str = include_str!("../../../../kernel/src/tasks/create.rs");
         const BOOT_SCHED: &str = include_str!("../../../../kernel/src/boot/sched.rs");
         let calls = |src: &str| src.matches("rt::exempt_from_band_cap(").count();
-        assert_eq!(calls(MAIN), 3, "rt-motor, imu, flight-ctrl");
+        assert_eq!(calls(TASKS), 3, "rt-motor, imu, flight-ctrl");
         for name in ["\"rt-motor\"", "\"imu\"", "\"flight-ctrl\""] {
-            let at = MAIN.find(name).unwrap_or_else(|| panic!("{name} not created in main.rs"));
-            let next = &MAIN[at..(at + 400).min(MAIN.len())];
+            let at = TASKS.find(name).unwrap_or_else(|| panic!("{name} not created in tasks/create.rs"));
+            let next = &TASKS[at..(at + 400).min(TASKS.len())];
             assert!(next.contains("rt::exempt_from_band_cap("), "{name} is not exempted right after creation");
         }
         // sys-wdt, and the kill switch (gpio-edge-irq: the e-stop's GPIO edge
