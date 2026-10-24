@@ -120,6 +120,9 @@ dependencies = [
 [[package]]
 name = "cap_test_sync"
 version = "0.1.0"
+dependencies = [
+ "azos_limits",
+]
 
 [[package]]
 name = "cc"
