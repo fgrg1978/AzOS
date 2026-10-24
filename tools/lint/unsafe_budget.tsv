@@ -106,7 +106,7 @@ domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0
 domains/robot/telemetry	0	0	0	0	1	0
-kernel	347	14	12	52	0	63
+kernel	347	14	12	52	0	62
 lx/emul	18	12	0	6	0	-
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
@@ -160,4 +160,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	506
+@unsafe-share	503

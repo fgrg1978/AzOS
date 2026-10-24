@@ -2,12 +2,15 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # tools/lint/arch_cfg_lint.py ratchet: uncovered cfg(target_arch) sites per file.
 # Counts may only go down. Regenerate with --update-baseline.
+1	kernel/src/boot/pci.rs
 4	kernel/src/boot/seams.rs
+3	kernel/src/boot/security.rs
 2	kernel/src/boot/stacks.rs
-14	kernel/src/main.rs
+4	kernel/src/main.rs
 2	kernel/src/smokes/mod.rs
 4	kernel/src/smokes/selftest.rs
 1	kernel/src/smokes/tlb_probe.rs
+4	kernel/src/tasks/create.rs
 2	kernel/src/tasks/system.rs
 2	userspace/tests/captest/src/main.rs
 [facade]
@@ -33,11 +36,12 @@
 3	kernel/src/boot/ps2_irq.rs
 1	kernel/src/boot/rtc.rs
 4	kernel/src/boot/seams.rs
+3	kernel/src/boot/security.rs
 1	kernel/src/boot/tpm.rs
 3	kernel/src/ktest.rs
 1	kernel/src/lat_smoke.rs
 4	kernel/src/lat_trace.rs
-28	kernel/src/main.rs
+5	kernel/src/main.rs
 1	kernel/src/pstore.rs
 1	kernel/src/smokes/aarch64_sched.rs
 1	kernel/src/smokes/asid_rollover.rs

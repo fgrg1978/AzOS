@@ -20,7 +20,7 @@
 # `hot` line here.
 #
 # feature<TAB>class<TAB>why
-a64-pan-unprobed-canary	const	kernel/src/main.rs: a `const` operand of the entry asm (pan_unprobed)
+a64-pan-unprobed-canary	const	kernel/src/entry/aarch64/asm.rs: a `const` operand of the entry asm (pan_unprobed)
 a64clk-cntvoff-canary	pending	
 a64clk-ppi-canary	const	kernel/src/entry/aarch64/mod.rs: the const TIMER_PPI_ENABLED
 actuation-smoke	pending	
@@ -245,7 +245,7 @@ sup-smoke	pending
 sup-window-smoke	pending	
 supall-canary	pending	
 supall-smoke	pending	
-syscall-abi-canary	const	kernel/src/main.rs: a `const` operand of the trap-entry asm (syscall_abi_canary)
+syscall-abi-canary	const	kernel/src/entry/<isa>/asm.rs: a `const` operand of the trap-entry asm (syscall_abi_canary)
 tail-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 task-view-stale-canary	pending	
 thermal-floor-canary	pending	

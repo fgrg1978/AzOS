@@ -49,6 +49,7 @@ SMOKES = ["boot + SMP scheduling", "aarch64 kernel boots (EL1, -smp 4)"]
 CORE = ["Cargo.toml", "Cargo.lock", "kernel/Cargo.toml", "kernel/build.rs", "Kconfig",
         "config/**", "crates/core/limits/**", "crates/core/arch-api/**", "kernel/src/main.rs",
         "kernel/src/boot/**", "kernel/src/entry/riscv64/irq.rs", "kernel/src/entry/riscv64/trap.rs", "kernel/src/smokes/**",
+        "kernel/src/entry/*/asm.rs", "kernel/src/tasks/create.rs",
         "kernel/linker*.ld", ".cargo/**", "rust-toolchain.toml", "Makefile",
         "tools/gate/gate_pgroup.sh"]
 # The gate's shared helpers: a change there can move any row.

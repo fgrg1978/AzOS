@@ -629,6 +629,11 @@ mod soc {
     }
 }
 
+// The bring-up below names each ISA's MSI route (and its self-test): an ISA
+// without one stops here, as `kernel_main`'s file did for the same lines.
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+compile_error!("boot::pci::bring_up: no MSI route for this target_arch");
+
 /// The PCI bring-up of `kernel_main`'s Phase 6, before the block device (the
 /// call site says why there): the host bridge and its windows, the tree
 /// enumerated, the BARs placed behind the bridges, the IOMMU, the MSI-X boot

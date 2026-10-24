@@ -6104,7 +6104,7 @@ kbuild "qemu"
 # wired**, and a FEATURE no scenario runs is the `rvv` trap all over again, so
 # these two rows make site 1 fire and read the result back.
 #
-# The probe (`kernel/src/main.rs`, `--features fork-refusal-probe`) calls fork
+# The probe (`kernel/src/smokes/mod.rs`, `--features fork-refusal-probe`) calls fork
 # from kernel context just before the scheduler starts, where
 # `current_user_pt()` is 0 — site 1's exact test. It allocates nothing and
 # cannot reach the five later sites; see the probe's own comment.
@@ -12253,7 +12253,7 @@ else
     # nowhere prints 0, which the marker does not take). With a key the same
     # kernel loads it and reaches the scheduler: a gate wired to always refuse
     # fails that row. Canary (2026-10-23, run by hand): a dev-key bypass of the
-    # gate in kernel/src/main.rs (`&& !cfg!(feature = "qemu")`, the feature
+    # gate in kernel/src/boot/persist.rs (`&& !cfg!(feature = "qemu")`, the feature
     # that carries `dev-key`) boots the keyless kernel past it, "booting
     # anyway", and this row goes red; so does `default n` on the symbol.
     if ! ci_wants "link: release build refuses a keyless boot" "link: release build boots with a key"; then
@@ -17642,7 +17642,7 @@ PY
         if ! grep -aq "NET-POLL" "$log" 2>/dev/null; then
             bad; echo "      net-poll never started — a task on hart 3 starved"
             echo "      it, so the RX ring was never drained (see the"
-            echo "      AUTORUN_PRIORITY block in kernel/src/main.rs)"
+            echo "      AUTORUN_PRIORITY block in kernel/src/tasks/create.rs)"
             echo "      logs kept: $log $blog"; return
         fi
         ok; mv -f "$log" "$log.green"; mv -f "$blog" "$blog.green"   # the last green pair, to diff a red one against

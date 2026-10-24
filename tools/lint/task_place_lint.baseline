@@ -7,12 +7,12 @@
 3	kernel/src/drv_supervisor.rs
 8	kernel/src/ktest.rs
 5	kernel/src/lat_smoke.rs
-14	kernel/src/main.rs
 8	kernel/src/rt_smoke.rs
 5	kernel/src/rt_util_smoke.rs
 1	kernel/src/smokes/commander_exit.rs
 4	kernel/src/smokes/energy_smoke.rs
 14	kernel/src/smokes/ipc_fastpath.rs
+10	kernel/src/smokes/mod.rs
 3	kernel/src/smokes/panic_splice_smoke.rs
 3	kernel/src/smokes/pifast_smoke.rs
 2	kernel/src/smokes/preempt_account_smoke.rs
@@ -20,3 +20,4 @@
 4	kernel/src/smokes/sched_hooks_smoke.rs
 2	kernel/src/smokes/tail_smoke.rs
 3	kernel/src/smokes/thermal_smoke.rs
+4	kernel/src/tasks/create.rs

@@ -235,12 +235,12 @@ Source: `tools/lint/arch_layout_lint.py` (`REQUIRED`), `crates/core/arch-*/src/`
 
 | Path | Contents |
 |---|---|
-| `kernel/src/main.rs` | `kernel_main`, the one entry for all ISAs. |
-| `kernel/src/boot/` | Boot install steps run in order, one module per subsystem; `early.rs` holds `early_main`. |
-| `kernel/src/entry/` | Per-ISA entry code (above). |
+| `kernel/src/main.rs` | `kernel_main`, the one entry for all ISAs: its boot sequence, each phase a call into `boot/`, `tasks/` or `smokes/`; the constants and statics the entry asm and the linker scripts share. |
+| `kernel/src/boot/` | Boot install steps run in order, one module per subsystem; `early.rs` holds `early_main`; `kernel_main`'s phases are `devices.rs` (Phase 6, with `pci.rs`'s `bring_up`), `persist.rs` (G2), `network.rs`, `security.rs` (D and 16), `robot.rs`'s `bring_up_robot` (17 and G1) and `sched_init.rs` (5). |
+| `kernel/src/entry/` | Per-ISA entry code (above); `entry/<isa>/asm.rs` assembles that ISA's asm files. |
 | `kernel/src/trap/` | The generic trap layer: `syscall.rs`, `fault.rs`, `irq.rs`, `kernel.rs`, `frame.rs`, `crash.rs`. |
-| `kernel/src/tasks/` | Kernel tasks created by `kernel_main`, grouped by subsystem. |
-| `kernel/src/smokes/` | Boot self-tests and feature-gated boot smokes. |
+| `kernel/src/tasks/` | Kernel tasks created by `kernel_main`, grouped by subsystem; `create.rs` creates them in its order. |
+| `kernel/src/smokes/` | Boot self-tests and feature-gated boot smokes; `mod.rs` spawns them in `kernel_main`'s order. |
 | `kernel/src/*.rs` | Single-purpose modules: `panic.rs`, `pstore.rs`, `ktest.rs`, `drv_supervisor.rs`, `irq_thread.rs`, `console_mode.rs`, and others. |
 | `kernel/linker*.ld` | Linker scripts, one per image family and ISA, each including `linker-common.ld` (the shared boot-stack sizing). Three fragments are `INCLUDE`d at the end: `image-header-riscv64.ld` (the Linux RISC-V Image header fields), `reloc-riscv64.ld` (the KASLR relocation table of the riscv64 MMU images) and `boot-pa-x86_64.ld` (the physical addresses the x86_64 32-bit boot stage names). |
 | `kernel/build.rs` | Linker-script parameters for the translation granule. |
