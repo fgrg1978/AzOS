@@ -11844,11 +11844,15 @@ else
         # `install_topology` and the azvol mount (`install_azvol` ->
         # `mount_rows` -> `Volume::mount_inner`) also run only from
         # kernel_main, before the scheduler: the kernel calls `Volume::mount`
-        # nowhere else (kernel/src/boot/azvol.rs).
+        # nowhere else (kernel/src/boot/azvol.rs). `install_inspect` likewise:
+        # its one call is kernel_main's, before the secondary harts and the
+        # first task (kernel/src/boot/inspect.rs); the sp dataflow reads its
+        # x86_64 generic frame at 9,000 B.
         if out="$(python3 "${REPO_ROOT}/tools/stack_frames.py" "$2" --limit "$3" \
                 --boot-limit 65536 --boot kernel_main \
                 --boot azos_topology::parser::parse_caps \
                 --boot kernel::boot::topology::install_topology \
+                --boot kernel::boot::inspect::install_inspect \
                 --boot 'azos_fs::azvol_mount::mount_rows::<kernel::boot::azvol::PartDev*' \
                 --boot '<azos_fs::azvol::volume::Volume<*kernel::boot::azvol::PartDev*>>::mount_inner*' 2>&1)"; then
             ok
