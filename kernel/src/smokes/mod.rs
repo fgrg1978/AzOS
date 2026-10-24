@@ -36,9 +36,9 @@ pub(crate) use ipc_census::*;
 mod storage;
 #[cfg(any(feature = "fat-barrier-smoke", feature = "mmc-flush-smoke", feature = "disk-part-row", feature = "blk-discard-smoke"))]
 pub(crate) use storage::*;
-#[cfg(feature = "dhcp-smoke")]
+#[cfg(any(feature = "dhcp-smoke", feature = "net-smoke"))]
 mod net;
-#[cfg(feature = "dhcp-smoke")]
+#[cfg(any(feature = "dhcp-smoke", feature = "net-smoke"))]
 pub(crate) use net::*;
 #[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke"))]
 mod ota;
