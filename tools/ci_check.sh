@@ -417,8 +417,10 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
     # A board of another ISA (`<target>`) builds in its own target dir, so it
     # neither rebuilds nor overwrites the shared triple the QEMU rows boot.
     local tflags=() tenv=()
+    # `-p azos_kernel` as `make rpi5` and a64_kbuild: the workspace's other
+    # ISA crates do not build for it.
     if [ -n "$target" ]; then
-        tflags=(--target "$target"); tenv=("CARGO_TARGET_DIR=$AZOS_OUT/target/board-${feat}")
+        tflags=(--target "$target" -p azos_kernel); tenv=("CARGO_TARGET_DIR=$AZOS_OUT/target/board-${feat}")
     fi
     out="$(env ${tenv[@]+"${tenv[@]}"} TOPOLOGY_PUBKEY_PATH="$GATE_RELEASE_PUB" KCONFIG_CONFIG="$AZOS_OUT/target/board-${feat}/${feat}.config" \
            RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release ${tflags[@]+"${tflags[@]}"} --features "${kfeat:-$feat}" \
@@ -430,11 +432,13 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
     if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | qgrep -qE "^error"; then
         bad; printf '%s\n' "$out" | grep -E "^error" | head -5
         if [ "$rc" -ne 0 ]; then echo "      cargo exited $rc"; fi
+    # The aarch64 softfloat target's cargo notice for `core` alone is noise
+    # (A64_KNOWN_NOISE), as in every aarch64 kernel build.
     elif printf '%s\n' "$out" | grep -E "^warning:" \
-         | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]"; then
+         | qgrep -qvE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust: core v0\.0\.0 \([^,]*\)$"; then
         bad
         printf '%s\n' "$out" | grep -E "^warning:" \
-          | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]" | head -5
+          | grep -vE "^warning: [A-Za-z0-9_-]+@[0-9]|future version of Rust: core v0\.0\.0 \([^,]*\)$" | head -5
     else
         ok; BOARD_BUILT="$feat"
     fi
