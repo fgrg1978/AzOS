@@ -106,7 +106,7 @@ ROLES = {
     ],
     "dev": [
         "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/", "fleet_ota_deploy.py",
-        "ground_station.py", "ota_send.py", "perfetto_export.py", "qemu.sh", "run_guest.sh",
+        "ota_send.py", "perfetto_export.py", "qemu.sh", "run_guest.sh",
         "test_farm.py", "tftp_serve.py", "worktree_seed.py",
     ],
     "lib": ["azos_tools.py", "out_dir.py"],
@@ -134,7 +134,6 @@ NO_CALLER = {
     "export_kernel_consts.py": "Kconfig constants for the brain; only its own text names it",
     "fleet_ota_deploy.py": "fleet OTA by hand; only config/Kconfig.robot's help names it",
     "gen_prod_key.py": "production key generation by hand (on purpose: never automated)",
-    "ground_station.py": "robot ground station by hand",
     "repro_check.sh": "reproducible-build check by hand (plan: wire it into the gate)",
     "sbom.sh": "CycloneDX SBOM by hand",
     "lx_kbuild/zbc_crc_constants.py": "prints the CRC fold constants lxbase.c carries, by hand",

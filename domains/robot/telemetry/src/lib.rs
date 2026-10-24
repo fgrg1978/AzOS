@@ -6,7 +6,8 @@
 //! Telemetry protocol — binary robot↔server communication (Phase L).
 //!
 //! Defines packet types for bidirectional communication between the
-//! robot (RISC-V) and the ground station server.
+//! robot (RISC-V) and the ground station server (AzOSRobotBrain's
+//! `tools/ground_station.py`).
 //!
 //! # Protocol
 //!
