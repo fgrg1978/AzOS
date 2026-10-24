@@ -93,9 +93,11 @@ linux-exec-row-canary = []
 # its thread); a Linux wait4 reports a signalled child as exited 128 + n.
 linux-tkill-process-canary = []
 linux-wait-exited-canary = []
-# Wave 13 (NATFORK) canaries: a native fork child inherits no descriptor (the
-# abitest "ab" rows go red), or keeps every parent handle the way the reverted
-# 2026-09-21 copy did (the row-only authority rows go red). Never in a real build.
+# Wave 13 (NATFORK) canaries: a fork child (`SYS_FOREIGN_FORK`) inherits no
+# descriptor (the hosted runtime's fork rows go red), or keeps every parent
+# handle the way the reverted 2026-09-21 copy did (ipctest phase C's forked
+# stranger resolves its parent's port, region and ring: the `fork: parent's
+# runtime handles stale in the child canary` rows go red). Never in a real build.
 native-fork-no-inherit-canary = []
 native-fork-copy-canary = []
 # Wave 13 (security) canary: native and Linux `mmap` map read-write whatever

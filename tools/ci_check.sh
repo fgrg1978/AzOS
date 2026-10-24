@@ -6465,6 +6465,78 @@ dead_client_row() { # <label> <isa: rv|arm>
 par "kill: dead client released" dead_client_row "kill: dead client released" rv
 par "aarch64 dead client"        dead_client_row "aarch64 dead client"        arm
 
+# ── fork: a parent's runtime handles are stale in its child, BOTH ISAs ──────
+#
+# A fork child (`SYS_FOREIGN_FORK`, `crates/core/syscall/src/natfork.rs`)
+# inherits its parent's descriptors and is seeded from its own row; every
+# other parent handle (a port, an unmapped region, an io_ring) is installed as
+# a placeholder while the table is built and removed at the end, so it is
+# stale in the child. ipctest's phase C forks a stranger that sweeps the
+# parent's own port, region and ring handles and must get `-ECAPSTALE` from
+# each (the pass half is `userspace: IPC` and `aarch64 ipctest`). Canary
+# `native-fork-copy-canary` keeps the placeholders, as the reverted
+# 2026-09-21 copy kept the parent's table: the stranger resolves them, and
+# this row requires ipctest's own failure line for it. (The hosted runtime's
+# lxhello cannot see this: its parent holds only its row and descriptors, so
+# no placeholder is left to keep.)
+fork_stale_canary_row() { # <label> <isa: rv|arm>
+    local label="$1" isa="$2"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local slug log kcopy dcopy
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+    log="$CI_LOG_DIR/${slug}.log"; kcopy="$CI_LOG_DIR/${slug}-kernel"; dcopy="$CI_LOG_DIR/${slug}-disk.img"
+    rm -f "$log" "$kcopy" "$dcopy"
+    if [ "$isa" = rv ]; then
+        if ! kbuild "qemu,native-fork-copy-canary"; then bad; echo "      riscv64 kernel (native-fork-copy-canary) did not build"; return; fi
+        rm -f $AZOS_OUT/build/disk-ipctest.img
+        make_disk $AZOS_OUT/build/disk-ipctest.img
+        cp "$KERNEL" "$kcopy"; cp $AZOS_OUT/build/disk-ipctest.img "$dcopy"
+        par_ready
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 \
+            -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    else
+        if ! a64_kbuild "qemu,native-fork-copy-canary"; then bad; echo "      aarch64 kernel (native-fork-copy-canary) did not build"; return; fi
+        if ! make $AZOS_OUT/build/disk-aarch64-ipctest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-ipctest.img"; return
+        fi
+        cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$dcopy"
+        par_ready
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
+            -drive file="$dcopy",if=none,format=raw,id=hd0 \
+            -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    fi
+    # The sweep's verdicts come after the guesser posts (or after ipctest
+    # stops waiting for it: a wait on a resolved port can block), then the
+    # owner's checks; the row stops at the owner's first one.
+    local pid=$! i=0 want='\[IPCTEST\]  FAIL  C/(stranger resolved no|guesser reported) '
+    while [ "$i" -lt 240 ]; do
+        grep -aqF "C/owner port_poll_typed still resolves" "$log" 2>/dev/null && break
+        grep -aqE "IPCTEST\] (ALL PASSED|FAILED)" "$log" 2>/dev/null && break
+        grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 1
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$kcopy" "$dcopy"
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        bad; echo "      the kernel faulted:"
+        grep -aiE -m3 "panic|\[FATAL\]|AARCH64-TRAP" "$log" | tr -d '\r' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    if grep -aqE "$want" "$log" 2>/dev/null; then
+        ok; rm -f "$log"; return
+    fi
+    bad; echo "      the stranger resolved none of its parent's handles: the row does not discriminate"
+    grep -aE "C/(stranger|guesser)" "$log" | tr -d '\r' | sed -n '1,3p' | sed 's|^|        |'
+    echo "      log kept: $log"
+}
+par "fork: stale parent handles canary (rv)"  fork_stale_canary_row "fork: stale parent handles canary (rv)"  rv
+par "fork: stale parent handles canary (arm)" fork_stale_canary_row "fork: stale parent handles canary (arm)" arm
+
 # ── inspect: a view region needs its grant, BOTH ISAs ───────────────────────
 #
 # The kernel keeps no /proc: the topology wiring a service reads is in a view
@@ -22541,17 +22613,19 @@ cat /fat/RTOUT.TXT"
             # of its OWN row, never a copy of the parent's table
             # (`lx: fork shares the file offset ok`, `lx: fork child holds
             # only its row ok`). Canaries: `native-fork-no-inherit-canary` (no
-            # descriptor inherited) and `native-fork-copy-canary` (the parent's
-            # handles kept) and, for the per-row seed template, an entry that
-            # gains WRITE after it was sealed (LXHELLO's read-only root). The
-            # first fork of the row records the template and the second,
+            # descriptor inherited) and, for the per-row seed template, an entry
+            # that gains WRITE after it was sealed (LXHELLO's read-only root).
+            # The first fork of the row records the template and the second,
             # lxhello's authority fork, is seeded from it:
             # `natfork-template-noseal-canary` serves the edited entry (that
             # child's create under /fat is not refused with EACCES: `lx: fork
             # child holds only its row FAIL`), `natfork-template-tamper-canary`
             # has the seal refuse it (dropped, minted again, said once: the run
-            # is green and the line is there).
-            for nfc in native-fork-no-inherit-canary native-fork-copy-canary natfork-template-noseal-canary natfork-template-tamper-canary; do
+            # is green and the line is there). `native-fork-copy-canary` (the
+            # parent's other handles kept) is the ipctest row `fork: stale
+            # parent handles canary`: lxhello's parent holds nothing a
+            # placeholder would keep.
+            for nfc in native-fork-no-inherit-canary natfork-template-noseal-canary natfork-template-tamper-canary; do
                 lx_rt_kn="$CI_LOG_DIR/kernel-lxrt-${nfc}-${ush_isa}"
                 if [ "$ush_isa" = rv ]; then
                     KCONFIG_CONFIG="$lx_rt_cfg" kbuild "$ush_feat,linux-abi-test,spawn-log,$nfc" && cp "$KERNEL" "$lx_rt_kn"
