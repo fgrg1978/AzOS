@@ -593,8 +593,11 @@ def check_robot_rows(rs=None, man=None, robot=None):
 #            gate kernel builds: the optional crates it turns on (`dep:x`, or
 #            `x/f` for an optional `x`) and, for a test hook (a feature named
 #            `*-smoke`, `*-canary`, `*-test` or `ktest`), the files whose cfg
-#            names it, but not a registry file (main.rs, smokes/mod.rs) whose
-#            cfg names HUB_FEATURES hooks or more;
+#            names it, but not a registry (a main.rs, mod.rs or lib.rs whose
+#            cfg names HUB_FEATURES hooks or more: kernel/src/main.rs and
+#            kernel/src/smokes/mod.rs dispatch the smokes, the code is
+#            elsewhere). A canary's plant in shared code (fat32.rs, 40 hooks)
+#            is the canary, and counts;
 #   marker   a quoted string the row waits for or greps (in its call, or in
 #            the body of a function at most MARKER_FN_ROWS rows run), printed
 #            by at most MARKER_MAX_SOURCES source files: those files. `--write`
@@ -610,6 +613,7 @@ SHARED_FN_ROWS = 100
 MARKER_FN_ROWS = 3
 MARKER_MAX_SOURCES = 3
 HUB_FEATURES = 8
+REGISTRY_FILES = ("main.rs", "mod.rs", "lib.rs")
 TEST_HOOK_RE = re.compile(r"(-smoke|-canary|-test)$|^ktest$")
 SRC_ROOTS = ("kernel/", "crates/", "domains/", "userspace/", "lx/", "micro/", "sdk/")
 PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|crates|domains|kernel|config|lx"
@@ -896,7 +900,7 @@ def feature_deps(features):
     def hook_files(crate, f, why):
         if TEST_HOOK_RE.search(f):
             for x in sorted(feat_files.get((crate, f), ())):
-                if hooks_of.get(x, 0) < HUB_FEATURES:
+                if hooks_of.get(x, 0) < HUB_FEATURES or os.path.basename(x) not in REGISTRY_FILES:
                     out.setdefault(x, why)
 
     todo = [f for f in features if f in feats and f not in base]
