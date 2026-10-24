@@ -22819,14 +22819,16 @@ tracectl start sched
             # standalone `sh` runs by exec of /proc/self/exe (`wc`, `cat`) do
             # not start there, so its twin pipes and counts with builtins, and
             # its denied create is not the in-kernel table's recorded line.
+            # The count is a string's length: the fragment builds ash without
+            # arithmetic (FEATURE_SH_MATH off), so `$((n+1))` is a syntax error.
             if [ "$ush_isa" = x86 ]; then
                 bb_sh_script="busybox sh -c 'echo bb-sh-ok; ls /fat'
 busybox sh -c 'x=\$(echo pipe-in); echo pipe-\$x'
 busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
-busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=0; while read l; do n=\$((n+1)); done < /tmp/BBF; echo bbfork-\$n'
+busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=; while read l; do n=x\$n; done < /tmp/BBF; echo bbfork-\${#n}'
 echo after-bb \$?"
                 bb_sh_marks=("hosted by the ring-3 runtime" "pipe-pipe-in")
-                bb_off_script="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=0; while read l; do n=\$((n+1)); done < /tmp/BBF; echo bbfork-\$n'"
+                bb_off_script="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; n=; while read l; do n=x\$n; done < /tmp/BBF; echo bbfork-\${#n}'"
             else
                 bb_sh_script="busybox sh -c 'echo bb-sh-ok; ls /fat'
 busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
@@ -22857,8 +22859,11 @@ echo after-bb \$?"
             # x86_64: LXHELLO's stage is `rt` (lxhello_x86_64.c), which sets
             # its own FS base with arch_prctl, as BusyBox's musl did.
             bb_lx_stage=""; bb_lx_done="lx: done failures=0"
-            [ "$ush_isa" = x86 ] && { bb_lx_stage=" rt"; bb_lx_done="lx: rt done failures=0"; }
-            USH_SMP=1 USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+            # The rt stage faults on purpose nowhere; the full run's three
+            # deliberate faults (the fault-kill stages) are rv and arm's.
+            bb_lx_faults=3
+            [ "$ush_isa" = x86 ] && { bb_lx_stage=" rt"; bb_lx_done="lx: rt done failures=0"; bb_lx_faults=0; }
+            USH_SMP=1 USH_DISK=busybox USH_FAULTS=$bb_lx_faults USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                 "!busybox sh -c 'sleep 2; echo tls-\$(echo kept)' &
 lxhello$bb_lx_stage
 #wait tls-kept" 240 \
