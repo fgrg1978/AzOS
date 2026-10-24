@@ -20098,7 +20098,10 @@ PYEOF
     # `delta == 0`). The verdict is the rest — iterations minus MSI wakes
     # minus kicks — and it must be 0 or less (an MSI landing while the
     # poller runs is counted and folded into the iteration it is already
-    # in). Positive anchors first — IRQ mode's own NIC line and the task's
+    # in). A wake neither explains is a timer, and none is tolerated: the
+    # netdev runs with `ipv6=off`, so no RA reaches the guest and no SLAAC
+    # address (nor its DAD timer, folded into `tcp::next_deadline`) is formed
+    # in the window. Positive anchors first — IRQ mode's own NIC line and the task's
     # start — because a boot with NO NIC also reads 0 (the no-NIC mode has
     # no timer either) and must not pass this row.
     #
