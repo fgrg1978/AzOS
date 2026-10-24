@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2561408
-riscv64-qemu	.rodata	373016
-riscv64-qemu	.data	3131040
-riscv64-qemu	.bss	4429664
-riscv64-qemu	reason	int28 g2: stack-depth moves the view and hwbus tables to the heap (-4 KiB riscv64 .rodata)
+riscv64-qemu	.text	2749464
+riscv64-qemu	.rodata	484328
+riscv64-qemu	.data	3257632
+riscv64-qemu	.bss	5797728
+riscv64-qemu	reason	kconfig-f5f6: the riscv64 gate kernel builds every feature its cell sets (tpm, usb-host/xhci/hid/storage/cdc, ramfb, fb-generic), where --base left them out
