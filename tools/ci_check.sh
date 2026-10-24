@@ -10359,12 +10359,13 @@ fi
 # The brain link fails CLOSED outside BUILD_TYPE_DEV (owner 2026-10-23). Its
 # rows boot a kernel of the QEMU board built as a release image: the gate's
 # primary config with BUILD_TYPE_RELEASE, so LINK_PROVISIONING_ENFORCED comes
-# from the Kconfig default alone (no cargo feature names it), and the `qemu`
+# from the Kconfig default alone (no cargo feature names it; the symbol is
+# robot-only, so the primary is the robot cell's, `ROBOT_PRIMARY_CONFIG`), and the `qemu`
 # board feature, whose `dev-key` the release build carries (with the gate's
 # release key named, as the fleet and embedded builds): a gate that let a
 # dev-key build through turns the keyless row green no more. Secure boot off
 # and the built-in topology allowed, as `embedded_config` says. Its own target
-# dir; qemu.config's debug log level, like every kernel the gate boots.
+# dir; the cell's debug log level, like every kernel the gate boots.
 LINKREL_DIR="${LINKREL_DIR:-$AZOS_OUT/target/link-release}"
 LINKREL_CONFIG="${LINKREL_DIR}/link-release.config"
 LINKREL_KERNEL="${LINKREL_DIR}/riscv64imac-unknown-none-elf/release/kernel"
@@ -10373,7 +10374,7 @@ linkrel_config() {
     local tmp rc
     mkdir -p "$LINKREL_DIR" || return 1
     tmp="$(mktemp -d)" || return 1
-    grep -v "BUILD_TYPE_" "${REPO_ROOT}/config/defconfigs/qemu.config" >"$tmp/link-release.config" \
+    grep -v "BUILD_TYPE_" "$ROBOT_PRIMARY_CONFIG" >"$tmp/link-release.config" \
       && echo "CONFIG_BUILD_TYPE_RELEASE=y" >>"$tmp/link-release.config" \
       && echo "# CONFIG_SECURE_BOOT_ENFORCED is not set" >>"$tmp/link-release.config" \
       && echo "CONFIG_TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN=y" >>"$tmp/link-release.config" \
@@ -10391,7 +10392,7 @@ if linkrel_config; then
     if [ "$FAIL" -eq "$fail_before" ] && ci_wants "link release (qemu)"; then LINKREL_BUILT=1; fi
 else
     printf "  %-26s" "link release (qemu)..."
-    bad; echo "      config/defconfigs/qemu.config as BUILD_TYPE_RELEASE did not expand with LINK_PROVISIONING_ENFORCED=y"
+    bad; echo "      $GATE_ROBOT_DEFC_RV as BUILD_TYPE_RELEASE did not expand with LINK_PROVISIONING_ENFORCED=y"
 fi
 
 # ── Topology/config key: a production build names its key (wave 11) ──────

@@ -94,7 +94,7 @@ doc:
 
 # ── Host dry boot of a topology (tools/azos_sim) ────────────────────────────
 #
-#   make sim SIM_DEFCONFIG=config/defconfigs/robot-edge.config SIM_CPUS=4
+#   make sim SIM_DEFCONFIG=config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config SIM_CPUS=4
 #   make sim SIM_DEFCONFIG=... SIM_TOPOLOGY=$(AZOS_OUT)/build/topo/riscv64
 #
 # Replays the kernel's boot admission of a topology on the host, through the
@@ -105,7 +105,7 @@ doc:
 # azos_topology features the kernel's features turn on, plus the ISA's
 # `emit-target-*`.
 #
-#   SIM_DEFCONFIG  the defconfig (default config/defconfigs/qemu.config)
+#   SIM_DEFCONFIG  the defconfig (default the gate's riscv64 cell, generic-sbc-riscv64-dev+qemu+linux+gui)
 #   SIM_TOPOLOGY   `builtin` (default) or a directory with CAPS.TOM + SCHED.TOM
 #   SIM_CPUS       the board's CPU count or QEMU's -smp (default NR_CPUS, a ceiling)
 #   SIM_FEATURES   the kernel's features (default: those `make` builds that
@@ -114,7 +114,7 @@ doc:
 #                  `sim-cpu-canary`)
 #   SIM_ARGS       more azos_sim arguments (`--check-log <boot log>`: hold the
 #                  dry boot to a real boot's console, SIM_CPUS = its -smp)
-SIM_DEFCONFIG ?= config/defconfigs/qemu.config
+SIM_DEFCONFIG ?= config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config
 SIM_TOPOLOGY ?= builtin
 SIM_CPUS ?=
 SIM_ARGS ?=
