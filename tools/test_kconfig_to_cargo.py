@@ -872,12 +872,14 @@ def test_page_size_reaches_the_build() -> None:
 # Application domains (wave 11, DOMAIN)
 # ---------------------------------------------------------------------------
 
-# The features no domain turns off: the scheduler options and the refusal
-# receipts (`base` tags on symbols that default y everywhere).
+# The features no domain turns off: the scheduler options, the refusal
+# receipts, the introspection tree, the network bring-up and the autorun task
+# (`base` tags on symbols that default y everywhere; INSPECT is y on embedded
+# too since the tree replaced procfs: the native services have no other view).
 ALWAYS_BASE = ("sched-o1-placement", "sched-ipc-affinity", "sched-timer-heap", "decisions-durable",
-               "virtio-input", "virtio-snd", "rtc")
+               "inspect", "net", "autorun", "virtio-input", "virtio-snd", "rtc")
 # Base features of every hardware class but embedded (`default n if HWCLASS_EMBEDDED`).
-FULL_PROFILE_BASE = ("crashdump", "inspect", "decisions")
+FULL_PROFILE_BASE = ("crashdump", "decisions")
 
 
 def _bridge_args(cfg: Path) -> list[str]:
