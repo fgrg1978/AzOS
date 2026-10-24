@@ -43,7 +43,8 @@ x86_64: the gate's `chain_row`). An interrupt taken on top costs only that
 frame since 2026-09-16: its handler runs on the hart's own interrupt stack
 (kernel/src/entry/<isa>/asm/trap_entry.S).
 
-Exit 1 when the chain is over the limit, 2 when the image cannot be read.
+Exit 1 when the chain is over the limit, or when a recursive block too big to
+walk decides the verdict (see `longest`); 2 when the image cannot be read.
 """
 import argparse
 import bisect
@@ -312,8 +313,11 @@ def x86_64_edges(text, owner, stats=None):
 
 # The `#[panic_handler]`, by the name each toolchain gives it.
 PANIC_HANDLERS = ("__rustc::rust_begin_unwind", "rust_begin_unwind")
+# Steps a recursive block too big for the exact DP may take in `longest`'s
+# walk before it is charged the sum of its frames instead.
+WALK_MAX = 1_000_000
 
-Chain = collections.namedtuple("Chain", "depth path frames knots panic")
+Chain = collections.namedtuple("Chain", "depth path frames knots panic fallbacks")
 
 
 def load(elf, stats=None):
@@ -333,12 +337,26 @@ def analyze(elf, root):
     return chain(graph, frames, root)
 
 
+def fallback_notes(c):
+    """`(warnings, on_path)` for a [`Chain`]: one line per recursive block
+    charged its sum (`longest`), and whether one of them is on the deepest
+    chain or the panic handler's, so that the verdict rests on that charge."""
+    lines, on = [], set(c.path) | set(c.panic[1] if c.panic else ())
+    for members in c.fallbacks:
+        lines.append(f"WARNING: a recursive block of {len(members)} functions passed {WALK_MAX:,} walk "
+                     f"steps and is charged the sum of its frames, "
+                     f"{sum(c.frames.get(f, 0) for f in members)} B: " + ", ".join(sorted(members)[:4])
+                     + (", ..." if len(members) > 4 else ""))
+    return lines, any(f in on for m in c.fallbacks for f in m)
+
+
 def chain(graph, frames, root):
     """The [`Chain`] of `root` over `graph` (function -> callees) with
     `frames`: `depth`, the deepest chain from `root`, the panic handler's
     charge included; `path`, the functions on it; `frames`; `knots`, the
     mutually recursive components; `panic`, the handler's own chain
-    `(depth, path)` (None when `root` cannot reach it).
+    `(depth, path)` (None when `root` cannot reach it); `fallbacks`, the
+    recursive blocks charged their sum (`longest`).
 
     THE PANIC HANDLER IS ITS OWN ROOT. Anything that can panic calls it, and
     it calls the heap, the console and the file system (the crash log), which
@@ -359,18 +377,20 @@ def chain(graph, frames, root):
     handler = next((h for h in PANIC_HANDLERS if h in reach), None)
     if handler is not None:
         graph = {f: {c for c in cs if c != handler} for f, cs in graph.items()}
-    total, path, knots = longest(graph, frames, root)
+    total, path, knots, fallbacks = longest(graph, frames, root)
     panic = None
     if handler is not None and handler != root:
-        pdepth, ppath, _ = longest(graph, frames, handler)
+        pdepth, ppath, _, pfall = longest(graph, frames, handler)
+        fallbacks += [m for m in pfall if m not in fallbacks]
         panic = (pdepth, ppath)
         total += pdepth
-    return Chain(total, path, frames, knots, panic)
+    return Chain(total, path, frames, knots, panic, fallbacks)
 
 
 def longest(graph, frames, root):
-    """`(depth, path, knots)`: the deepest chain from `root` over `graph`, the
-    functions on it, and the mutually recursive components."""
+    """`(depth, path, knots, fallbacks)`: the deepest chain from `root` over
+    `graph`, the functions on it, the mutually recursive components, and the
+    ones past `WALK_MAX` charged their sum."""
     # Recursion makes "the deepest chain" ill-defined, and a depth-first walk
     # that just cuts a cycle and memoises what it found gives a DIFFERENT
     # answer depending on which callee it happened to visit first -- two runs
@@ -438,9 +458,13 @@ def longest(graph, frames, root):
     # charged whole it was 13.4 KiB of a 25.4 KiB chain where its deepest
     # simple path is 10.9 KiB; its walk is ~3,000 steps. Only past
     # WALK_MAX steps is a component charged its sum, since an exponential
-    # lint is no lint either.
+    # lint is no lint either. The sum of a component's frames is at least any
+    # simple path through it, so that charge can fail a chain the walk would
+    # pass and never the other way round: it is returned (`fallbacks`), the
+    # tool names the block, and a chain over its limit through one is not a
+    # measured overflow but an undecided verdict (`main`).
     DP_MAX = 18
-    WALK_MAX = 1_000_000
+    fallbacks = []
     succ_comp = [set() for _ in comps]
     for f, cs in order.items():
         for c in cs:
@@ -491,6 +515,7 @@ def longest(graph, frames, root):
                     best_node[f] = d
                     next_of[f] = ("walked", p, out[p[-1]][1])
                 continue
+            fallbacks.append(members)
             total = sum(frames.get(f, 0) for f in members)
             b, n = max((out[f] for f in members), key=lambda t: t[0])
             for f in members:
@@ -551,7 +576,7 @@ def longest(graph, frames, root):
     knots = [m for m in comps if len(m) > 1]
 
     total, path = chain_from(root)
-    return total, path, knots
+    return total, path, knots, fallbacks
 
 
 def main():
@@ -598,8 +623,18 @@ def main():
         print(f"           x86_64 thunk calls: {stats['thunk']}, "
               f"{stats['thunk'] - stats.get('indirect', 0)} with a static target; "
               f"{stats.get('indirect', 0)} indirect calls not followed")
+    seen = []
     for r in roots:
-        if chains[r].depth > a.limit:
+        seen += [w for w in fallback_notes(chains[r])[0] if w not in seen]
+    for w in seen:
+        print(w)
+    for r in roots:
+        if chains[r].depth <= a.limit:
+            continue
+        if fallback_notes(chains[r])[1]:
+            print(f"UNDECIDED {chains[r].depth} > {a.limit}: the chain from {r} runs through a block "
+                  f"charged its sum, which the walk might not reach; raise WALK_MAX to decide it")
+        else:
             print(f"OVER {chains[r].depth} > {a.limit}: chain from {r}")
     sys.exit(1 if over else 0)
 

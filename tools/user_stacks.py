@@ -122,10 +122,13 @@ def check(path, args, default_kb, max_kb):
             print(f"{name}: {e.args[0]}")
             return False
         need = c.depth * (100 + args.margin) // 100
+        warnings, on_path = stack_chain.fallback_notes(c)
         verdict = "ok"
         if need > stack:
-            verdict = "OVER"
+            verdict = "UNDECIDED" if on_path else "OVER"
             ok = False
+        for w in warnings:
+            print(f"{name}: {w}")
         print(f"{verdict:4} {name}: {what}: chain {c.depth} B (+{args.margin}% = {need} B) of {stack} B"
               f" ({kind if what == 'main thread' else 'static'}); deepest: "
               + " > ".join(n.split("::")[-1][:28] for n in c.path[:4]))
@@ -238,7 +241,19 @@ def self_test():
     g.update({f"s{i}": {"hub", "leaf"} if i == 3 else {"hub"} for i in range(20)})
     fr = {"root": 16, "hub": 200, "leaf": 1000, **{f"s{i}": 100 + i for i in range(20)}}
     c = stack_chain.chain(g, fr, "root")
-    expect("walked knot", (c.depth, c.path, c.panic), (16 + 200 + 103 + 1000, ["root", "hub", "s3", "leaf"], None))
+    expect("walked knot", (c.depth, c.path, c.panic, c.fallbacks),
+           (16 + 200 + 103 + 1000, ["root", "hub", "s3", "leaf"], None, []))
+    # The same knot past a 10-step walk: charged its sum, and said so, with
+    # the block on the chain (the verdict rests on it).
+    walk_max, stack_chain.WALK_MAX = stack_chain.WALK_MAX, 10
+    try:
+        c = stack_chain.chain(g, fr, "root")
+    finally:
+        stack_chain.WALK_MAX = walk_max
+    warnings, on_path = stack_chain.fallback_notes(c)
+    expect("fallback charge", c.depth, 16 + 200 + sum(100 + i for i in range(20)) + 1000)
+    expect("fallback named", (len(c.fallbacks), len(warnings), on_path), (1, 1, True))
+    expect("fallback warning", warnings[0][:40] if warnings else None, "WARNING: a recursive block of 21 functio")
     # x86_64 prologues: the return address, pushes, 4 KiB steps with the
     # probe between them, `addq $-0x80` and the probe loop of a frame too big
     # to unroll; a push after the prologue is not the frame's.

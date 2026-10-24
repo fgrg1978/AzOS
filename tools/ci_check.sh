@@ -11846,7 +11846,9 @@ else
     # The roots are every Rust function the ISA's trap entry calls on the
     # task's stack (tools/stack_chain.py `ROOTS`): the trap dispatch, the lean
     # native-syscall entries that skip it, and the reschedule after an
-    # interrupt.
+    # interrupt. A recursive block too big to walk is charged its sum and
+    # named (`WARNING:`, printed on a pass too); a chain over the limit
+    # through one is UNDECIDED, and fails.
     #
     # An interrupt taken on top of the deepest syscall used to cost another
     # ~2.8 KiB here -- 288 for its frame, 240 for trap_handler and 2160 for
@@ -11861,7 +11863,7 @@ else
         if [ -z "$kb" ]; then bad; echo "      no CONFIG_KERNEL_STACK_SIZE_KB in $3"; return 1; fi
         limit=$(( kb * 1024 - 4096 - $4 ))
         if out="$(python3 "${REPO_ROOT}/tools/stack_chain.py" "$2" --limit "$limit" --frames 8 2>&1)"; then
-            ok
+            ok; printf '%s\n' "$out" | grep -a '^WARNING' | sed 's/^/      /'
         else
             bad; echo "$out" | sed 's/^/      /'
         fi
