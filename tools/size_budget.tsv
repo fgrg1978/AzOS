@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2494924
-riscv64-qemu	.rodata	368704
-riscv64-qemu	.data	3130144
-riscv64-qemu	.bss	4421472
-riscv64-qemu	reason	prep-uaccess: uaccess-pin (access sections, scalar/word/shifted copies, word-at-a-time string scan, typed user pointers), futex-shm-word (locked shm word access, per-process resolve cache), futex-single-section (one look under the table lock, futex_precheck), uaccess-mmio-buffer (device-window refusal) (+11.3 KiB .text)
+riscv64-qemu	.text	2557812
+riscv64-qemu	.rodata	377112
+riscv64-qemu	.data	3130912
+riscv64-qemu	.bss	4429664
+riscv64-qemu	reason	int27: prep-hw + prep-lx-misc on the uaccess stack (+61.4 KiB riscv64 .text, +8.2 KiB .rodata: the hw stack 7.0 KiB, the lx-misc stack 50.7 KiB with lx-stackful, the module window, NIC queues, fs check; the union seams)
