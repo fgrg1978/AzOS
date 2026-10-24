@@ -103,7 +103,7 @@ pub(crate) unsafe fn rlct_clone(stack: *mut usize) -> Result<OsTid> {
 /// The thread pointer the kernel installs before the thread's first instruction.
 /// On x86_64 ring 3 cannot set its own FS base, so the TCB's TLS end (its first
 /// field) goes with the create call; on the other ISAs the thread's shim sets
-/// `tp` / `TPIDR_EL0` itself (0 here: the creator's).
+/// `tp` / `TPIDR_EL0` itself (0 here: the thread starts with 0 until then).
 unsafe fn thread_pointer_for(stack: *mut usize) -> u64 {
     if cfg!(target_arch = "x86_64") {
         // words[3] is the new TCB; `Tcb` is `repr(C)` with `tls_end` first.

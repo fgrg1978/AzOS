@@ -80,6 +80,10 @@ kcall-atomic-canary = []
 # wait takes its key from a lookup before the table's section and its value from
 # the look inside it, and a PI step uses its shm word whatever region it now is.
 futex-key-outside-canary = []
+# tls-hygiene canary, never in a real build: `SYS_THREAD_CREATE` with tls = 0
+# keeps the creator's thread pointer (the old riscv64 rule). abitest's
+# `threads: tls = 0 starts with 0` line goes red on riscv64.
+thread-tls-zero-canary = []
 # Wave 13 gate canaries, never in a real build: no signal is ever delivered
 # (`linux-signal-canary`); a broken pipe raises no SIGPIPE
 # (`linux-sigpipe-canary`); a Linux console read is end of file again

@@ -20,7 +20,13 @@ pub fn sys_thread_create(
     if stack == 0 || stack & 15 != 0 || ctid & 3 != 0 {
         return -1;
     }
-    let tls = (tls != 0).then_some(tls);
+    // The thread starts with exactly `tls`, 0 included, on every ISA: a 0
+    // is a thread with no thread pointer, never the creator's (riscv64 used
+    // to copy the creator's `tp` from its frame; aarch64 and x86_64 gave 0).
+    // Every native caller that passes 0 sets the register itself (relibc's
+    // thread shim) or has no use for it (azos_stdrt, libsys threads). Gate
+    // canary `thread-tls-zero-canary`: the old rule, 0 keeps the creator's.
+    let tls = if cfg!(feature = "thread-tls-zero-canary") { (tls != 0).then_some(tls) } else { Some(tls) };
     azos_sched::process::thread_create_impl(entry, stack, tls, ctid, regs, Some(arg), &mut |_| true)
 }
 

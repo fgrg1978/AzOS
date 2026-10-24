@@ -2702,8 +2702,11 @@ fn fork_hooked_inner(
 /// and frame budget), shares the descriptor table through the group leader
 /// (`group`), and starts at `entry` with the
 /// creator's registers at the call except: the stack pointer `stack`, the
-/// thread pointer `tls` (riscv64 `tp`, aarch64 `TPIDR_EL0`) when given, and
-/// the return register 0. `ctid` (0: none) is the word its exit clears and
+/// thread pointer `tls` (riscv64 `tp`, aarch64 `TPIDR_EL0`, x86_64 FS base)
+/// when given, and the return register 0. `tls = None` keeps the thread
+/// pointer of `regs`: the creator's for a Linux `clone` without
+/// `CLONE_SETTLS` (its snapshot has it on every ISA); the native call always
+/// gives one (`SYS_THREAD_CREATE`'s 0 is a zero thread pointer). `ctid` (0: none) is the word its exit clears and
 /// wakes. `before_release(child)` runs before it can run (the Linux clone's
 /// `CLONE_PARENT_SETTID` store); `false` stops it at birth.
 ///

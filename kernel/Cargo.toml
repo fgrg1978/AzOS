@@ -324,6 +324,7 @@ threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
 leader-cleartid-canary = ["azos_sched/leader-cleartid-canary"]
 commander-exit-nostop-canary = ["azos_syscall/commander-exit-nostop-canary"]
 threads-tls-canary = ["azos_sched/threads-tls-canary"]
+thread-tls-zero-canary = ["azos_syscall/thread-tls-zero-canary"]
 # Wave 15 canaries, see `crates/core/sched/Cargo.toml`.
 robust-list-canary = ["azos_sched/robust-list-canary", "linux-abi-test"]
 elf-mixed-page-canary = ["azos_sched/elf-mixed-page-canary"]

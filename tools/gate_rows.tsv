@@ -83,6 +83,7 @@ aarch64 thread objects	n1	crates/core/arch-aarch64/** kernel/linker-aarch64.ld k
 thread objects canary	n1	userspace/** sdk/targets/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
 aarch64 thread objects canary	n1	userspace/** sdk/targets/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 aarch64 thread args: regs canary	n1	userspace/** sdk/targets/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/recovery/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
+threads: tls zero canary	n1	userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** crates/core/shell/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
 wx: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**
 aarch64 wx: store to code faults	n1	crates/core/mm/** crates/core/percpu/** crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**
 elf: .rodata not executable	n1	crates/core/sched/** userspace/** sdk/targets/** crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**

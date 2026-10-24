@@ -314,7 +314,9 @@ pub const SYS_SPAWN_EX: u64 = 5;
 /// task's process. `a0` = user entry PC, `a1` = its stack pointer (16-byte
 /// aligned top), `a2` = an argument, `a3` = the address of a 32-bit word its
 /// exit clears and futex-wakes (0: none; what a join waits on), `a4` = its
-/// thread pointer (`tp` / `TPIDR_EL0`; 0: the creator's).
+/// thread pointer (`tp` / `TPIDR_EL0` / the FS base), installed before its
+/// first instruction: 0 is a thread that starts with a zero thread pointer
+/// on every ISA, not the creator's.
 ///
 /// The thread shares the caller's address space, capability table and
 /// descriptor table; it is created in the caller's class at its base

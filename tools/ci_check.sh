@@ -6925,12 +6925,16 @@ par_row threads_row "aarch64 threads: reap window canary"    arm qemu,reap-windo
 
 # ── what a thread creates (wave 15, 4a) ─────────────────────────────────────
 #
-# abitest's `check_thread_objects` prints two checks: a port a thread made and
-# then exited is still the process's (it was freed with the thread), and a new
-# thread receives its argument. Canaries: `thread-objects-canary` (the port is
-# booked to the thread) and, aarch64 only, `thread-regs-canary` (a new thread
-# starts with zeroed registers: its argument reads 0).
-thread_objects_row() { # <label> <isa: rv|arm> <features> <ok|objects|regs>
+# abitest's `check_thread_objects` prints four checks: a port a thread made and
+# then exited is still the process's (it was freed with the thread), a thread
+# starts with exactly the thread pointer it was given, 0 included (two `tls:`
+# lines, tls-hygiene), and a new thread receives its argument. Canaries:
+# `thread-objects-canary` (the port is booked to the thread), riscv64 only,
+# `thread-tls-zero-canary` (tls = 0 keeps the creator's `tp`, the old riscv64
+# rule; aarch64 and x86_64 always gave 0) and, aarch64 only,
+# `thread-regs-canary` (a new thread starts with zeroed registers: its
+# argument reads 0).
+thread_objects_row() { # <label> <isa: rv|arm> <features> <ok|objects|regs|tls>
     local label="$1" isa="$2" feats="$3" want="$4"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
@@ -6970,22 +6974,23 @@ thread_objects_row() { # <label> <isa: rv|arm> <features> <ok|objects|regs>
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     rm -f "$kcopy" "$dcopy"
     local oks fails need
-    oks="$(grep -aE '\[ABITEST\]   ok   (proc objects|args): ' "$log" | wc -l | tr -d ' ')"
-    fails="$(grep -aE '\[ABITEST\]  FAIL  (proc objects|args): ' "$log" | tr -d '\r')"
+    oks="$(grep -aE '\[ABITEST\]   ok   (proc objects|tls|args): ' "$log" | wc -l | tr -d ' ')"
+    fails="$(grep -aE '\[ABITEST\]  FAIL  (proc objects|tls|args): ' "$log" | tr -d '\r')"
     case "$want" in
     ok)
         if grep -aqiE "$fault" "$log" 2>/dev/null; then
             bad; echo "      the kernel faulted:"
             grep -aiE -m3 "$fault" "$log" | tr -d '\r' | sed 's|^|        |'
-        elif [ "$oks" = 2 ] && [ -z "$fails" ]; then
+        elif [ "$oks" = 4 ] && [ -z "$fails" ]; then
             ok; rm -f "$log"; return
         else
-            bad; echo "      want 2 ok and no FAIL; read $oks ok:"
+            bad; echo "      want 4 ok and no FAIL; read $oks ok:"
         fi ;;
-    objects|regs)
+    objects|regs|tls)
         case "$want" in
         objects) need="proc objects: a port a thread made outlives the thread" ;;
         regs)    need="args: a new thread receives its argument" ;;
+        tls)     need="tls: a thread made with tls = 0 starts with 0" ;;
         esac
         if printf '%s\n' "$fails" | qgrep -qF "$need"; then
             ok; rm -f "$log"; return
@@ -7000,6 +7005,7 @@ par_row thread_objects_row "aarch64 thread objects"              arm qemu ok
 par_row thread_objects_row "thread objects canary"               rv  qemu,thread-objects-canary objects
 par_row thread_objects_row "aarch64 thread objects canary"       arm qemu,thread-objects-canary objects
 par_row thread_objects_row "aarch64 thread args: regs canary"    arm qemu,thread-regs-canary regs
+par_row thread_objects_row "threads: tls zero canary"            rv  qemu,thread-tls-zero-canary tls
 
 # ── W^X: a process's code and read-only data are not writable (wave 13) ────
 #

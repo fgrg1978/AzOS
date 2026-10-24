@@ -2413,6 +2413,7 @@ fn check_thread_objects() {
     report(b"proc objects: a port a thread made outlives the thread (poll -> EAGAIN)",
            made && rc == E_EAGAIN, rc);
     if made { let _ = sys::port_destroy_typed(port); }
+    check_thread_pointer();
     // A new thread receives the argument `thread_create` was given (wave 15:
     // aarch64 started every thread with its registers zeroed, so it read 0;
     // canary `thread-regs-canary`).
@@ -2422,6 +2423,74 @@ fn check_thread_objects() {
     let joined = t > 0 && t_join(0);
     let got = X_ARG.load(AO::Acquire) as i64 as isize;
     report(b"args: a new thread receives its argument (0x77)", joined && got == 0x77, got);
+}
+
+/// The thread pointer [`check_thread_pointer`]'s first thread is given: 8 is
+/// a user address on every ISA, and x86_64 tells it from 0 by [`TP_WORDS`].
+const TP_A: u64 = 8;
+/// x86_64 has no ring-3 read of the FS base (CR4.FSGSBASE is off): an
+/// FS-relative load of `TP_WORDS[0]`'s address reads `TP_WORDS[0]` with
+/// base 0 and `TP_WORDS[1]` with base [`TP_A`].
+// arch-only: the other ISAs read their thread pointer register directly.
+#[cfg(target_arch = "x86_64")]
+static TP_WORDS: [u64; 2] = [0x7470_7a65_726f_0000, 0x7470_7a65_726f_0008];
+/// What [`thread_pointer`] answered in the first thread (given [`TP_A`]) and
+/// in the thread it made with 0.
+static TP_SEEN: [AtomicU64; 2] = [const { AtomicU64::new(u64::MAX) }; 2];
+
+/// The calling thread's thread pointer (x86_64: 0 or [`TP_A`], else
+/// `u64::MAX - 1`).
+fn thread_pointer() -> u64 {
+    let tp: u64;
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: a register read.
+    unsafe { core::arch::asm!("mv {0}, tp", out(reg) tp, options(nomem, nostack, preserves_flags)) };
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: a register EL0 reads.
+    unsafe { core::arch::asm!("mrs {0}, TPIDR_EL0", out(reg) tp, options(nomem, nostack, preserves_flags)) };
+    #[cfg(target_arch = "x86_64")]
+    {
+        let w: u64;
+        // SAFETY: with base 0 or TP_A the load reads one of the two words.
+        unsafe {
+            core::arch::asm!("mov {0}, qword ptr fs:[{1}]", out(reg) w, in(reg) TP_WORDS.as_ptr(),
+                options(readonly, nostack, preserves_flags))
+        };
+        tp = if w == TP_WORDS[0] { 0 } else if w == TP_WORDS[1] { TP_A } else { u64::MAX - 1 };
+    }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+    compile_error!("abitest: no thread-pointer read for this ISA");
+    tp
+}
+
+/// Given [`TP_A`]: records its own pointer, makes a thread with 0 and joins it.
+extern "C" fn x_tp_given(_z: u64, _stack: u64, _arg: u64) -> ! {
+    TP_SEEN[0].store(thread_pointer(), AO::Release);
+    T_CTID[2].store(u32::MAX, AO::Release);
+    if sys::thread_create(x_tp_zero, t_stack_top(2), 0, T_CTID[2].as_ptr()) > 0 {
+        let _ = t_join(2);
+    }
+    sys::thread_exit(0)
+}
+
+/// Made with 0: records its own pointer.
+extern "C" fn x_tp_zero(_z: u64, _stack: u64, _arg: u64) -> ! {
+    TP_SEEN[1].store(thread_pointer(), AO::Release);
+    sys::thread_exit(0)
+}
+
+/// tls-hygiene: `SYS_THREAD_CREATE`'s thread pointer is exactly the one it
+/// was given, on every ISA: a thread made with [`TP_A`] reads [`TP_A`], and
+/// the thread IT makes with 0 reads 0, not its creator's [`TP_A`] (riscv64
+/// used to copy the creator's `tp`; aarch64 and x86_64 gave 0). Canary
+/// `thread-tls-zero-canary` (the old rule): the second line fails on riscv64.
+fn check_thread_pointer() {
+    T_CTID[1].store(u32::MAX, AO::Release);
+    let t = sys::thread_create_with_tls(x_tp_given, t_stack_top(1), 0, T_CTID[1].as_ptr(), TP_A);
+    let joined = t > 0 && t_join(1);
+    let (a, b) = (TP_SEEN[0].load(AO::Acquire), TP_SEEN[1].load(AO::Acquire));
+    report(b"tls: a thread made with tls = 8 starts with 8", joined && a == TP_A, a as i64 as isize);
+    report(b"tls: a thread made with tls = 0 starts with 0, not its creator's", joined && b == 0, b as i64 as isize);
 }
 
 /// Code an orphan exits with when it saw itself adopted (`abichild`).

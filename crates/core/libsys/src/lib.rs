@@ -1374,7 +1374,7 @@ pub fn thread_create(entry: ThreadEntry, stack_top: usize, arg: u64, ctid: *mut 
 }
 
 /// [`thread_create`] with the new thread's thread pointer (`tp` / `TPIDR_EL0` /
-/// the FS base; 0: the creator's). It is installed before the thread's first
+/// the FS base; 0: it starts with 0, as [`thread_create`]'s does). It is installed before the thread's first
 /// instruction, which is the only way to give one to a thread on x86_64, where
 /// ring 3 cannot write its own FS base (`arch-x86_64/src/tls.rs`): a C library
 /// whose TLS is addressed through it (relibc) creates every thread, the first
