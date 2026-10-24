@@ -44,7 +44,7 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use azos_buzzer::{Driver, Pwm, BUZZER_PWM_CHANNEL, SOURCE_MARKER};
 use azos_devif::{BuzzerIdl, MsgDesc};
