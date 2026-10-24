@@ -137,6 +137,8 @@ fi
 # (tools/build/lx_kbuild/zbc_crc_constants.py), and the absolute-claim scanner (tools/lint/claims_check.sh,
 # a review aid: its self-test only, the scan of the tree is by hand).
 [ "$lints" = 1 ] && { printf "  %-26s" "config index..."; if out="$(python3 tools/build/gen_config_index.py --self-test 2>&1 && python3 tools/build/gen_config_index.py --check 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+# The brain's constant mirror (tools/build/export_kernel_consts.py): every symbol it exports is still declared.
+[ "$lints" = 1 ] && { printf "  %-26s" "kernel consts export..."; if out="$(python3 tools/build/export_kernel_consts.py --self-test 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "zbc crc constants..."; if out="$(python3 tools/build/lx_kbuild/zbc_crc_constants.py --self-test 2>&1 && python3 tools/build/lx_kbuild/zbc_crc_constants.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -v '^ZBC_' | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "claims scanner..."; if out="$(bash tools/lint/claims_check.sh --self-test 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 # The board image's ELF list (tools/image/test_board_manifest.py): an orphan service (declared, not built

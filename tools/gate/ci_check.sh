@@ -11281,10 +11281,10 @@ else bad; printf '%s\n' "$us_out" | grep -E "^FAIL|Error" | sed 's/^/      /'; f
 fi; ci_row_end
 # The n0 tier's lints (tools/gate/gate_tier.sh lints: output dir, boot sequence,
 # facade, trap layer, arch layout, docs, tools layout, OTA sender, requirement
-# trace, config index, Zbc CRC constants, claims scanner, gate rows manifest,
-# board manifest, Kconfig, unsafe budget, presets, conflict markers, SPDX,
-# feature matrix, `make help`, cargo deny), from the one list `make check0`
-# runs, so the full gate cannot pass a tree n0 refuses.
+# trace, config index, kernel consts export, Zbc CRC constants, claims
+# scanner, gate rows manifest, board manifest, Kconfig, unsafe budget, presets,
+# conflict markers, SPDX, feature matrix, `make help`, cargo deny), from the one
+# list `make check0` runs, so the full gate cannot pass a tree n0 refuses.
 if ci_row_begin "n0 lints"; then
 printf "  %-26s" "n0 lints..."
 if n0l_out="$(bash "${REPO_ROOT}/tools/gate/gate_tier.sh" lints 2>&1)"; then ok
