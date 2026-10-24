@@ -1257,16 +1257,17 @@ pub fn install_resume() {
 /// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): the
 /// state [`user_visible_state_wrong`] reads, by its `bad` index.
 #[cfg(feature = "ktest")]
-pub(crate) const USER_STATE: &[&str] = &["LDTR", "FS/GS selectors", "IA32_FS_BASE"];
+pub(crate) const USER_STATE: &[&str] = &["LDTR", "FS/GS selectors", "IA32_FS_BASE", "IA32_TSC_AUX"];
 
 /// ktest `user_visible_state_is_set_on_every_cpu`: `bad(i, value)` for each
 /// item of [`USER_STATE`] CPU `cpu` holds at a value ring 3 can reach and no
 /// task was given. x86_64: no LDT, null FS and GS selectors, a zero FS base
 /// in a task with no thread pointer (`cpu::load_gdt_and_tss`,
-/// `cpu::enable_syscall`, `azos_sched::fp::switch_thread_pointer`).
+/// `cpu::enable_syscall`, `azos_sched::fp::switch_thread_pointer`), and
+/// `IA32_TSC_AUX` this CPU's number where it exists (`cpu::init_tsc_aux`).
 #[cfg(feature = "ktest")]
-pub(crate) fn user_visible_state_wrong(_cpu: usize, bad: &mut dyn FnMut(usize, u64)) {
-    use azos_arch::cpu::{rdmsr, user_selectors, IA32_FS_BASE};
+pub(crate) fn user_visible_state_wrong(cpu: usize, bad: &mut dyn FnMut(usize, u64)) {
+    use azos_arch::cpu::{rdmsr, tsc_aux_value, user_selectors, IA32_FS_BASE, IA32_TSC_AUX};
     let ldtr: u16;
     // SAFETY: reading the LDT selector at CPL0.
     unsafe { core::arch::asm!("sldt {0:x}", out(reg) ldtr, options(nomem, nostack, preserves_flags)) };
@@ -1280,6 +1281,12 @@ pub(crate) fn user_visible_state_wrong(_cpu: usize, bad: &mut dyn FnMut(usize, u
     let fs = rdmsr(IA32_FS_BASE);
     if fs != 0 {
         bad(2, fs);
+    }
+    if azos_arch::cpu::features::detect().tsc_aux {
+        let aux = rdmsr(IA32_TSC_AUX);
+        if aux != tsc_aux_value(cpu) {
+            bad(3, aux);
+        }
     }
 }
 

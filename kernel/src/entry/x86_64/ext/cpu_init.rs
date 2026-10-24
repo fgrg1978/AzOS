@@ -95,8 +95,8 @@ fn build_idt() {
 }
 
 /// Bring up CPU `cpu`'s tables: GS base, GDT + TSS (RSP0 later, IST now),
-/// the IDT (built by CPU 0), the `syscall` MSRs, and the FP/SIMD state
-/// ring 3 will use. `AZOS_IRQ_STACK_BASE[cpu]` must be armed.
+/// the IDT (built by CPU 0), the `syscall` MSRs, `IA32_TSC_AUX`, and the
+/// FP/SIMD state ring 3 will use. `AZOS_IRQ_STACK_BASE[cpu]` must be armed.
 pub fn init_cpu(cpu: usize) {
     assert!(cpu < MAX_HARTS, "x86_64: CPU {cpu} >= NR_CPUS");
     // GS first (K1 L2): everything after may read `%gs:0`, the panic path of
@@ -138,6 +138,11 @@ pub fn init_cpu(cpu: usize) {
     // trap entry depends on it from the first interrupt on.
     cpu::set_percpu(cpu);
     cpu::enable_syscall(syscall_entry as *const () as u64);
+    // IA32_TSC_AUX, which ring 3 reads with `rdtscp` and `rdpid`: this CPU's
+    // number (`cpu::tsc_aux_value`). Gate canary `el0-state-canary`: not
+    // written, the firmware's value (QEMU's 0) stays, and the ktest
+    // `user_visible_state_is_set_on_every_cpu` sees it on every CPU but 0.
+    cpu::init_tsc_aux(cpu, !cfg!(feature = "el0-state-canary") && azos_arch::cpu::features::detect().tsc_aux);
     crate::entry::x86_64::fp::init_cpu(cpu);
 }
 

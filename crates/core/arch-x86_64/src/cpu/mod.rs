@@ -110,6 +110,9 @@ pub const IA32_LSTAR: u32 = 0xC000_0082;
 pub const IA32_FMASK: u32 = 0xC000_0084;
 pub const IA32_FS_BASE: u32 = 0xC000_0100;
 pub const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
+/// What `rdtscp` (in ECX) and `rdpid` give ring 3; present with either
+/// instruction (`features::X86Features::tsc_aux`), a #GP otherwise.
+pub const IA32_TSC_AUX: u32 = 0xC000_0103;
 
 /// EFER.SCE: `syscall`/`sysret` enabled.
 pub const EFER_SCE: u64 = 1 << 0;
@@ -253,6 +256,28 @@ pub fn enable_syscall(entry: u64) {
     wrmsr(IA32_KERNEL_GS_BASE, 0);
     wrmsr(IA32_FS_BASE, 0);
     wrmsr(IA32_EFER, rdmsr(IA32_EFER) | EFER_SCE);
+}
+
+/// The `IA32_TSC_AUX` of logical CPU `cpu`: its number. Ring 3 reads the MSR
+/// with `rdtscp` and `rdpid` (CR4.TSD is clear), so it is written on every CPU
+/// where it exists (`cpu_init`, a CPU back from hotplug included), never left
+/// at the firmware's value. Nothing reads it today (no vDSO `getcpu`: vsbench
+/// reports the lane absent); the CPU number is the value such a reader wants
+/// with one `rdpid`, and Linux's low 12 bits. Linux puts the NUMA node above
+/// them; this kernel keeps no node per CPU, so the field is not filled
+/// rather than filled with a guess.
+pub const fn tsc_aux_value(cpu: usize) -> u64 {
+    cpu as u64
+}
+const _: () = assert!(azos_limits::NR_CPUS <= 1 << 12, "a CPU number must fit Linux's 12-bit TSC_AUX field");
+
+/// Write this CPU's [`tsc_aux_value`] when the MSR exists (`present`, from
+/// CPUID).
+#[cfg(target_arch = "x86_64")]
+pub fn init_tsc_aux(cpu: usize, present: bool) {
+    if present {
+        wrmsr(IA32_TSC_AUX, tsc_aux_value(cpu));
+    }
 }
 
 /// CR3: the live root word (PML4 address | PCID).

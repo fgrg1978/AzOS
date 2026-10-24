@@ -14856,6 +14856,9 @@ PY
     #   ktest sched tls canary (x86)  the old FS-base rule: an equal base is not
     #                               rewritten and a loaded FS selector stays;
     #                               the two fs_* tests not ok
+    #   ktest el0 state canary (x86)  IA32_TSC_AUX not written (QEMU's 0 on
+    #                               CPUs 1-3): user_visible_state_is_set_on_every_cpu
+    #                               alone not ok
     #   ktest fork FP runtime canary (x86)  canary=x86-fork-fp-skip: a forked
     #                               child starts from the initial FP image;
     #                               x86_ring3_syscall_fork_fp alone not ok
@@ -15904,6 +15907,7 @@ PY
     # tls-hygiene: the old FS-base rule (an equal base is not rewritten, the
     # FS/GS selectors ring 3 loaded stay).
     par "ktest sched tls canary (x86)" x86_ktest_row "ktest sched tls canary (x86)" ",fs-base-cache-canary" "fs_selector_load_keeps_the_next_task_s_fs_base fs_gs_selectors_do_not_follow_a_task"
+    par "ktest el0 state canary (x86)" x86_ktest_row "ktest el0 state canary (x86)" ",el0-state-canary" "user_visible_state_is_set_on_every_cpu"
     # The same boot carries K1's `ioring-fsync-inline` (an io_ring OP_FSYNC
     # completes in the submit): `ioring_fsync_completes_after_flush`.
     par "ktest fork FP runtime canary (x86)" x86_ktest_row "ktest fork FP runtime canary (x86)" "" \

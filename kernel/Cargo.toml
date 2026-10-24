@@ -1186,7 +1186,8 @@ a64clk-ppi-canary = ["qemu"]
 a64clk-cntvoff-canary = ["qemu", "azos_arch/cntvoff-canary"]
 # tls-hygiene / el0-state-audit canary: the ring-3-visible per-CPU state no
 # task owns keeps a stand-in for its reset value (aarch64: boot.S's SCTLR_EL1
-# write skipped, `sysregs::init_el0_state`; riscv64: `ext::senvcfg`). ktest
+# write skipped, `sysregs::init_el0_state`; riscv64: `ext::senvcfg`; x86_64:
+# IA32_TSC_AUX not written, `cpu_init`). ktest
 # `user_visible_state_is_set_on_every_cpu` must go red, naming each register.
 el0-state-canary = ["azos_arch/el0-state-canary"]
 # Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never

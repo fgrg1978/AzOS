@@ -26,7 +26,7 @@ tlb-bound-canary = ["azos_arch_riscv64/tlb-bound-canary"]
 cntvoff-canary = ["azos_arch_aarch64/cntvoff-canary"]
 # tls-hygiene / el0-state-audit canary: the ring-3-visible per-CPU state keeps
 # a stand-in for its UNKNOWN reset value (aarch64 `sysregs::init_el0_state`,
-# riscv64 `ext::senvcfg`).
+# riscv64 `ext::senvcfg`; x86_64's is in the kernel's `cpu_init`).
 el0-state-canary = ["azos_arch_riscv64/el0-state-canary", "azos_arch_aarch64/el0-state-canary"]
 # Kconfig HV: keep EL2 at the boot drop and run guests (aarch64 only; the
 # dependency is target-specific, so the other ISAs never see it).

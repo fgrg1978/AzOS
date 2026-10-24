@@ -128,6 +128,7 @@ mod bit {
     pub const WAITPKG: u32 = 5;
     pub const CET_SS: u32 = 7;
     pub const LA57: u32 = 16;
+    pub const RDPID: u32 = 22;
     // CPUID.(7,0):EDX
     pub const CET_IBT: u32 = 20;
     pub const CORE_CAPABILITIES: u32 = 30;
@@ -139,6 +140,7 @@ mod bit {
     pub const LZCNT: u32 = 5;
     // CPUID.0x80000001:EDX
     pub const PDPE1GB: u32 = 26;
+    pub const RDTSCP: u32 = 27;
     // CPUID.0x80000007:EDX
     pub const INVARIANT_TSC: u32 = 8;
     // CPUID.0x80000008:EBX (AMD APM Vol. 3, Appendix E; Linux word 13 bit 3)
@@ -299,6 +301,10 @@ pub struct X86Features {
     pub x2apic: bool,
     /// CPUID.1:ECX[24]. Clear: LAPIC one-shot count.
     pub tsc_deadline: bool,
+    /// CPUID.0x80000001:EDX[27] (RDTSCP) or CPUID.(7,0):ECX[22] (RDPID):
+    /// IA32_TSC_AUX exists, and ring 3 reads it with either instruction.
+    /// Clear: the MSR is a #GP.
+    pub tsc_aux: bool,
     /// CPUID.0x80000007:EDX[8]. Clear: the TSC may stop or change rate in
     /// deep C/P-states; the clock source must be recalibrated (HPET).
     pub invariant_tsc: bool,
@@ -367,6 +373,7 @@ pub const fn decode(r: &CpuidLeaves) -> X86Features {
         xsaves: xsave && has(r.ld1_eax, bit::XSAVES),
         x2apic: has(c1, bit::X2APIC),
         tsc_deadline: has(c1, bit::TSC_DEADLINE),
+        tsc_aux: has(r.e1_edx, bit::RDTSCP) || has(c7, bit::RDPID),
         invariant_tsc: has(r.e7_edx, bit::INVARIANT_TSC),
         invlpgb,
         invlpgb_max_pages: if invlpgb { (r.e8_edx & 0xFFFF) + 1 } else { 0 },
@@ -647,7 +654,7 @@ mod tests {
          f.avx512bw, f.avx512cd, f.avx512dq, f.avx512vl, f.aes, f.pclmulqdq, f.sha_ni,
          f.rdrand, f.rdseed, f.adx, f.fsgsbase, f.pcid, f.invpcid, f.smep, f.smap, f.umip,
          f.pku, f.la57, f.waitpkg, f.gbpages, f.cet_ibt, f.cet_shstk, f.xsave, f.xsaveopt, f.xsaves, f.x2apic,
-         f.tsc_deadline, f.invariant_tsc, f.invlpgb].iter().filter(|&&b| b).count()
+         f.tsc_deadline, f.tsc_aux, f.invariant_tsc, f.invlpgb].iter().filter(|&&b| b).count()
     }
 
     #[test]
@@ -690,6 +697,8 @@ mod tests {
         one(|r| r.l1_ecx = 1 << 24, |f| f.tsc_deadline, "tsc-deadline");
         one(|r| r.e7_edx = 1 << 8, |f| f.invariant_tsc, "invariant-tsc");
         one(|r| r.e8_ebx = 1 << 3, |f| f.invlpgb, "invlpgb");
+        one(|r| r.e1_edx = 1 << 27, |f| f.tsc_aux, "rdtscp");
+        one(|r| r.l7_ecx = 1 << 22, |f| f.tsc_aux, "rdpid");
     }
 
     /// INVLPGB is CPUID.0x80000008:EBX[3]. EDX[15:0] is the page-count limit

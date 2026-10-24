@@ -1224,7 +1224,8 @@ mod tpidr_ktests {
 // fire). Where QEMU resets a register to the right value only the canary
 // shows its check can fail: aarch64 TPIDRRO_EL0, CNTKCTL_EL1, riscv64
 // senvcfg. Where it does not, this test is red without the fix: aarch64
-// SCTLR_EL1 (SPAN, TSCXT) and MDSCR_EL1 (TDCC) on a boot at EL1.
+// SCTLR_EL1 (SPAN, TSCXT) and MDSCR_EL1 (TDCC) on a boot at EL1, x86_64
+// IA32_TSC_AUX on every CPU but 0.
 #[cfg(feature = "ktest")]
 mod user_state_ktests {
     use core::sync::atomic::{AtomicU32, Ordering};

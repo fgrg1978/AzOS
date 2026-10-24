@@ -694,7 +694,6 @@ mod a64_el0_state_tests {
     }
 }
 
-
 // riscv64 `senvcfg` (Kconfig `RV_SENVCFG`): the real module, pulled in by path
 // (its asm is riscv64-only and compiles out here).
 #[allow(dead_code)]
@@ -737,6 +736,20 @@ mod senvcfg_tests {
 // be given (`wrmsr` of a non-canonical one is a #GP in the kernel): `cpu`'s
 // pure functions, included above.
 
+
+/// el0-state-audit: IA32_TSC_AUX holds the logical CPU's number.
+#[cfg(test)]
+mod x86_64_tsc_aux_tests {
+    use super::cpu::{tsc_aux_value, IA32_TSC_AUX};
+
+    #[test]
+    fn tsc_aux_is_the_cpu_number() {
+        assert_eq!(IA32_TSC_AUX, 0xC000_0103);
+        for cpu in [0, 1, 7, azos_limits::NR_CPUS - 1] {
+            assert_eq!(tsc_aux_value(cpu), cpu as u64);
+        }
+    }
+}
 
 #[cfg(test)]
 mod x86_64_tls_tests {
