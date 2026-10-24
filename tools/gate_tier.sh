@@ -269,6 +269,8 @@ fi
 
 # micro/build.rs reads $AZOS_OUT/build/micro.config, which ci_check.sh makes; do it here too.
 case " $suites " in *micro-tests*) make -s micro-config </dev/null >/dev/null 2>&1 ;; esac
+# lx-loader-tests reads the lxtest modules from $AZOS_OUT/build/lx (`make lx-modules`), as its gate row builds them.
+case " $suites " in *lx-loader-tests*) make -s lx-modules </dev/null >/dev/null 2>&1 ;; esac
 for s in $suites; do
     printf "  %-26s" "host ${s#tests/host/}..."
     kc=""; case "$s" in *micro-tests) kc="$AZOS_OUT/build/micro.config" ;; esac
