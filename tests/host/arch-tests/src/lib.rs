@@ -637,6 +637,27 @@ mod pmp_encoding {
     }
 }
 
+// aarch64: the CNTKCTL_EL1 each PE runs with (`sysregs::init_el0_state`),
+// whatever its UNKNOWN reset value held.
+#[cfg(test)]
+mod a64_el0_state_tests {
+    use super::sysregs::*;
+
+    /// **Canary.** The old read-OR-write (`v | EL0VCTEN`): the dirty reset
+    /// value keeps EL0's timer access and the test goes red.
+    #[test]
+    fn el0_reads_the_virtual_counter_and_nothing_else_of_the_timer() {
+        let el0 = CNTKCTL_EL0PCTEN | CNTKCTL_EL0VCTEN | CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN;
+        for reset in [0, el0, u64::MAX, CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN] {
+            assert_eq!(cntkctl_el0_access(reset) & el0, CNTKCTL_EL0VCTEN, "reset {reset:#x}");
+        }
+        // The event stream (bits 7:2: EVNTEN, EVNTDIR, EVNTI) is the
+        // kernel's and is left as it is.
+        assert_eq!(cntkctl_el0_access(0xfc) & 0xfc, 0xfc);
+        assert_eq!(cntkctl_el0_access(0) & 0xfc, 0);
+    }
+}
+
 // x86_64: which FS base a context switch writes, and which values a task may
 // be given (`wrmsr` of a non-canonical one is a #GP in the kernel): `cpu`'s
 // pure functions, included above.

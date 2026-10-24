@@ -596,3 +596,16 @@ pub fn arch_enter_scheduler(hart_id: usize) -> ! {
 pub fn install_resume() {
     crate::entry::riscv64::resume::install();
 }
+
+/// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): what
+/// this CPU holds that ring 3 can read and no task was given, or `None`.
+/// riscv64: `scounteren` opens the clock and at most the cycle and instret
+/// counters, never an `hpmcounter` (`azos_arch::pmu::start_this_cpu`).
+#[cfg(feature = "ktest")]
+pub(crate) fn user_visible_state_wrong() -> Option<u64> {
+    let en: u64;
+    // SAFETY: an S-mode CSR read.
+    unsafe { core::arch::asm!("csrr {0}, scounteren", out(reg) en, options(nomem, nostack, preserves_flags)) };
+    // CY (bit 0), TM (1), IR (2): TM always, nothing above IR.
+    if en & !0b111 != 0 || en & 0b010 == 0 { Some(en) } else { None }
+}

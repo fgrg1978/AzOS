@@ -1213,6 +1213,42 @@ mod tpidr_ktests {
     }
 }
 
+// tls-hygiene: the user-visible per-CPU state no task owns is set on every
+// CPU before ring 3 runs there, never left at its reset value (UNKNOWN on
+// silicon; QEMU resets it to 0, so only the canary shows the check can fail).
+// Late: a probe pinned to each CPU in turn asks its ISA's reader
+// (`boot_hooks::user_visible_state_wrong`, one per ISA). Canary cargo
+// feature `el0-state-canary` (aarch64: stand-ins for the reset values):
+// `not ok`.
+#[cfg(feature = "ktest")]
+mod user_state_ktests {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// The first CPU whose state was wrong, plus 1 (0: none).
+    static BAD: AtomicU64 = AtomicU64::new(0);
+
+    fn check(cpu: usize) {
+        if let Some(v) = crate::boot_hooks::user_visible_state_wrong() {
+            if BAD.compare_exchange(0, cpu as u64 + 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                azos_drv_sys::kprintln!("# cpu {} holds {:#x}", cpu, v);
+            }
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn user_visible_state_is_set_on_every_cpu() {
+            BAD.store(0, Ordering::Relaxed);
+            for cpu in 0..azos_percpu::nr_cpu_ids() {
+                crate::ktest::probe("ktest-user-state", check, cpu, azos_sched::DEFAULT_PRIORITY, cpu as i8)?;
+            }
+            match BAD.load(Ordering::Relaxed) {
+                0 => Ok(()),
+                _ => Err("a CPU holds user-visible state no task was given"),
+            }
+        }
+    }
+}
+
 // N6: the dispatch-class model. Early: the precedence walk takes stop > DL >
 // RT > fair > idle, a compiled-out class is skipped, preemption across
 // classes follows precedence. Late: the running task's SC holds the class its

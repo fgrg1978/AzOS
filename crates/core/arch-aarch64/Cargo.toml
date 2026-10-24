@@ -81,3 +81,8 @@ irq-nomem-canary = []
 # so only a kernel whose stamps, deadlines and ring 3's vDSO all read the
 # VIRTUAL counter still agrees with itself (needs a boot at EL2).
 cntvoff-canary = []
+# tls-hygiene gate canary, never in a real build: `sysregs::init_el0_state`
+# keeps CNTKCTL_EL1's EL0 bits and writes a non-zero TPIDRRO_EL0, standing for
+# the UNKNOWN reset values on silicon. The ktest
+# `user_visible_state_is_set_on_every_cpu` must go red.
+el0-state-canary = []

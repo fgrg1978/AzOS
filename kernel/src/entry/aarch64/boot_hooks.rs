@@ -985,12 +985,12 @@ pub fn timer_init() {
     // `VDSO_TIMEBASE_HZ`'s own doc. Must happen before IRQs are
     // unmasked below, so the first tick never reads a stale 0.
     crate::entry::aarch64::VDSO_TIMEBASE_HZ.store(live_hz, AOrdering::Release);
-    // Lets ring 3 read CNTVCT_EL0 directly (`libsys::vdso_now_ns`'s
-    // parity path) instead of trapping — see
-    // `sysregs::enable_el0_cntvct`'s own doc. Hart 0 only here;
-    // `secondary_main` below does the same for every
-    // secondary, since this is a per-PE register.
-    azos_arch::sysregs::enable_el0_cntvct();
+    // This PE's EL0-visible state (`CNTVCT_EL0` readable by ring 3, the
+    // other EL0 timer controls off, `TPIDRRO_EL0` zero) — see
+    // `sysregs::init_el0_state`'s own doc. Hart 0 only here;
+    // `secondary_irq_init` does the same for every secondary, since these
+    // are per-PE registers.
+    azos_arch::sysregs::init_el0_state();
     let period_ticks = if live_hz == 0 { 1 } else { core::cmp::max(1, live_hz / AARCH64_SCHED_HZ) };
     crate::entry::aarch64::irq::arm_periodic_timer(period_ticks);
     kprintln!("[TIMER] periodic tick armed: period={} ticks (~{} Hz)", period_ticks, AARCH64_SCHED_HZ);
@@ -1076,4 +1076,21 @@ pub fn its_ready() -> bool {
 /// and so before any CPU can use the path.
 pub fn install_resume() {
     crate::entry::aarch64::resume::install();
+}
+
+/// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): what
+/// this CPU holds that ring 3 can read and no task was given, or `None`.
+/// aarch64: `TPIDRRO_EL0` is 0 and, of `CNTKCTL_EL1`'s EL0 bits, only
+/// EL0VCTEN is set (`azos_arch::sysregs::init_el0_state`).
+#[cfg(feature = "ktest")]
+pub(crate) fn user_visible_state_wrong() -> Option<u64> {
+    use azos_arch::sysregs::{CNTKCTL_EL0PCTEN, CNTKCTL_EL0PTEN, CNTKCTL_EL0VCTEN, CNTKCTL_EL0VTEN};
+    let (ro, ctl): (u64, u64);
+    // SAFETY: EL1 reads of two system registers.
+    unsafe {
+        core::arch::asm!("mrs {0}, TPIDRRO_EL0", "mrs {1}, CNTKCTL_EL1", out(reg) ro, out(reg) ctl,
+            options(nomem, nostack, preserves_flags))
+    };
+    let el0 = CNTKCTL_EL0PCTEN | CNTKCTL_EL0VCTEN | CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN;
+    if ro != 0 { Some(ro) } else if ctl & el0 != CNTKCTL_EL0VCTEN { Some(ctl) } else { None }
 }

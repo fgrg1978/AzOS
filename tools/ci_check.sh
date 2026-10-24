@@ -14252,8 +14252,11 @@ PY
     # TPIDR_EL0 is kept per task; canary `tpidr-foreign-only-canary`) -> arm 125.
     # +1 rt_motor_coasts_a_held_wheel (B2: the control loop coasts a wheel the
     # kernel holds in its safe state) -> rv 123, arm 126.
-    KTEST_N_RV=123
-    KTEST_N_ARM=126
+    # +1 user_visible_state_is_set_on_every_cpu (tls-hygiene: the per-CPU
+    # state ring 3 can read is set on every CPU; canary `el0-state-canary`,
+    # aarch64) -> 124, arm 127.
+    KTEST_N_RV=124
+    KTEST_N_ARM=127
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14470,6 +14473,9 @@ PY
     # native task's, the old rule (aarch64 only; riscv64's `tp` is in the trap
     # frame, x86_64's FS base is not EL0-writable).
     par "ktest sched tpidr canary (arm)" ktest_row "ktest sched tpidr canary (arm)" arm ",tpidr-foreign-only-canary" "native_tasks_keep_tpidr_el0 new_task_starts_with_tpidr_el0_zero"
+    # tls-hygiene: CNTKCTL_EL1's EL0 bits kept and a non-zero TPIDRRO_EL0,
+    # standing for their UNKNOWN reset values (QEMU resets both to 0).
+    par "ktest el0 state canary (arm)" ktest_row "ktest el0 state canary (arm)" arm ",el0-state-canary" "user_visible_state_is_set_on_every_cpu"
     par "ktest slab canary (rv)" ktest_row "ktest slab canary (rv)" rv ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest slab canary (arm)" ktest_row "ktest slab canary (arm)" arm ",slab-freelist-canary" "kheap_slab_selftest"
     par "ktest zone canary (rv)" ktest_row "ktest zone canary (rv)" rv ",zone-share-canary" "mm_zone_no_cross_type_reuse"
@@ -14918,7 +14924,9 @@ PY
     # +2 fs_selector_load_keeps_the_next_task_s_fs_base and
     # fs_gs_selectors_do_not_follow_a_task (tls-hygiene, x86_64 only; canary
     # `fs-base-cache-canary`) -> 129.
-    KTEST_N_X86=129
+    # +1 user_visible_state_is_set_on_every_cpu (tls-hygiene), as on rv and
+    # arm -> 130.
+    KTEST_N_X86=130
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

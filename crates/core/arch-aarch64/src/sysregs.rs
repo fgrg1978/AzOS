@@ -122,30 +122,63 @@ pub fn read_cntvct_el0() -> u64 {
     v
 }
 
-/// Set `CNTKCTL_EL1.EL0VCTEN` (bit 1) so EL0 can read `CNTVCT_EL0` (the
-/// virtual counter) without trapping — the aarch64 analogue of RISC-V's
-/// `scounteren.TM`. Without this, `crates/core/libsys::read_time_csr`'s `mrs
-/// cntvct_el0` (used by `vdso_now_ns`, ring 3's zero-ecall exact-time
-/// path, the aarch64 counterpart of the riscv64 `rdtime` path) takes an
-/// EC=0x18 "trapped system instruction" exception the first time any user task calls it.
-/// Per-PE register: must be called on every hart that will run ring 3,
-/// not just the primary.
+/// `CNTKCTL_EL1.EL0PCTEN`: EL0 reads the physical counter.
+pub const CNTKCTL_EL0PCTEN: u64 = 1 << 0;
+/// `CNTKCTL_EL1.EL0VCTEN`: EL0 reads the virtual counter.
+pub const CNTKCTL_EL0VCTEN: u64 = 1 << 1;
+/// `CNTKCTL_EL1.EL0VTEN`: EL0 reads and writes the virtual timer.
+pub const CNTKCTL_EL0VTEN: u64 = 1 << 8;
+/// `CNTKCTL_EL1.EL0PTEN`: EL0 reads and writes the physical timer.
+pub const CNTKCTL_EL0PTEN: u64 = 1 << 9;
+
+/// The `CNTKCTL_EL1` this kernel runs with, from the value `v` the PE holds:
+/// of the generic timer, EL0 reads the virtual counter and nothing else.
+/// The four EL0 bits reset to UNKNOWN, and with `EL0VTEN` set ring 3 could
+/// rewrite `CNTV_CTL_EL0` / `CNTV_CVAL_EL0`, the kernel's own tick (Linux's
+/// `arch_counter_set_user_access` clears the same bits). The event-stream
+/// fields (bits 7:2) are left as they are.
+pub const fn cntkctl_el0_access(v: u64) -> u64 {
+    if cfg!(feature = "el0-state-canary") {
+        // Gate canary: the old read-OR-write, which kept the reset value.
+        return v | CNTKCTL_EL0VCTEN;
+    }
+    (v & !(CNTKCTL_EL0PCTEN | CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN)) | CNTKCTL_EL0VCTEN
+}
+
+/// This PE's EL0-visible state that belongs to no task, set before ring 3
+/// first runs here. Per PE: the boot CPU calls it before its tick is armed
+/// (`boot_hooks`), each secondary from `secondary_irq_init`. Every value below
+/// resets to UNKNOWN on silicon (QEMU resets them to 0):
+/// - `CNTKCTL_EL1` ([`cntkctl_el0_access`]): `CNTVCT_EL0` reads without a
+///   trap — `crates/core/libsys::read_time_csr`'s `mrs cntvct_el0`
+///   (`vdso_now_ns`, ring 3's zero-call clock, the aarch64 counterpart of the
+///   riscv64 `rdtime` path) took EC=0x18 without it — and no other EL0 timer
+///   access.
+/// - `TPIDRRO_EL0` = 0: EL0 reads it, nothing in this kernel writes it
+///   (no task has a value), so it held whatever firmware left.
+///   (`TPIDR_EL0` is per task, `azos_sched::fp::switch_thread_pointer`.)
+///
+/// Gate canary `el0-state-canary`: the reset value is kept, and a non-zero
+/// `TPIDRRO_EL0` and the EL0 timer bits stand for firmware's (ktest
+/// `user_visible_state_is_set_on_every_cpu` is `not ok`).
 #[cfg(target_arch = "aarch64")]
 #[inline]
-pub fn enable_el0_cntvct() {
-    const EL0VCTEN: u64 = 1 << 1;
+pub fn init_el0_state() {
+    // SAFETY: EL1 writes EL0-access controls and an EL0-read-only register;
+    // neither touches memory.
     unsafe {
         let mut v: u64;
-        core::arch::asm!(
-            "mrs {0}, CNTKCTL_EL1",
-            out(reg) v,
-            options(nomem, nostack, preserves_flags),
-        );
-        v |= EL0VCTEN;
+        core::arch::asm!("mrs {0}, CNTKCTL_EL1", out(reg) v, options(nomem, nostack, preserves_flags));
+        if cfg!(feature = "el0-state-canary") {
+            v |= CNTKCTL_EL0PCTEN | CNTKCTL_EL0VTEN | CNTKCTL_EL0PTEN;
+        }
+        let ro: u64 = if cfg!(feature = "el0-state-canary") { 0x5a5a_0000_0000_0e10 } else { 0 };
         core::arch::asm!(
             "msr CNTKCTL_EL1, {0}",
+            "msr TPIDRRO_EL0, {1}",
             "isb",
-            in(reg) v,
+            in(reg) cntkctl_el0_access(v),
+            in(reg) ro,
             options(nomem, nostack, preserves_flags),
         );
     }

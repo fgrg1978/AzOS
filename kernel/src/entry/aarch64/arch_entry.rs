@@ -122,9 +122,10 @@ impl ArchEntry for Entry {
     /// registers are this PE's own (`secondary_init` returns 0, which
     /// `enable_ppi_at` does not read).
     ///
-    /// Then `CNTKCTL_EL1`, which is per-PE: the boot CPU's own
-    /// `enable_el0_cntvct` does not cover this core, and a ring-3 task
-    /// migrated here would trap on its first `CNTVCT_EL0` read.
+    /// Then this PE's EL0-visible state (`sysregs::init_el0_state`:
+    /// `CNTKCTL_EL1`, `TPIDRRO_EL0`), which is per PE: the boot CPU's own
+    /// call does not cover this core; a ring-3 task migrated here would trap
+    /// on its first `CNTVCT_EL0` read and read firmware's `TPIDRRO_EL0`.
     #[inline(always)]
     fn secondary_irq_init(&self, _cpu: usize) {
         let rd_base = azos_arch::smp::secondary_init(crate::MAX_HARTS);
@@ -134,7 +135,7 @@ impl ArchEntry for Entry {
         if azos_arch::pmu::irq() != 0 {
             gic::enable_ppi_at(rd_base, azos_arch::pmu::irq());
         }
-        azos_arch::sysregs::enable_el0_cntvct();
+        azos_arch::sysregs::init_el0_state();
         // This PE's own counters (`Pmu`, the tracer's cycle timestamps):
         // PMUv3 state is per PE.
         azos_arch::pmu::start_this_cpu();

@@ -1254,6 +1254,21 @@ pub fn install_resume() {
     crate::entry::x86_64::resume::install();
 }
 
+/// ktest `user_visible_state_is_set_on_every_cpu` (`boot/sched.rs`): what
+/// this CPU holds that ring 3 can read and no task was given, or `None`.
+/// x86_64: no LDT, null FS and GS selectors, and a zero FS base in a task
+/// with no thread pointer (`cpu::load_gdt_and_tss`, `cpu::enable_syscall`,
+/// `azos_sched::fp::switch_thread_pointer`).
+#[cfg(feature = "ktest")]
+pub(crate) fn user_visible_state_wrong() -> Option<u64> {
+    let ldtr: u16;
+    // SAFETY: reading the LDT selector at CPL0.
+    unsafe { core::arch::asm!("sldt {0:x}", out(reg) ldtr, options(nomem, nostack, preserves_flags)) };
+    let sel = azos_arch::cpu::user_selectors();
+    let fs = azos_arch::cpu::rdmsr(azos_arch::cpu::IA32_FS_BASE);
+    if ldtr != 0 { Some(ldtr as u64) } else if sel != 0 { Some(sel as u64) } else if fs != 0 { Some(fs) } else { None }
+}
+
 // tls-hygiene: ring 3 can ZERO its own x86_64 FS base with a selector load
 // (`mov %fs, sel` loads the base of the descriptor it names, 0 for every
 // segment ring 3 may load), and the kernel did not know: a switch between

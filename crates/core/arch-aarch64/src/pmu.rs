@@ -44,6 +44,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 /// The probe's verdict (`probe` only; `n`/`require` never read it).
 static PMU_ON: AtomicBool = AtomicBool::new(false);
+/// PMUv3 is implemented, used or not: `PMUSERENR_EL0` exists.
+static PRESENT: AtomicBool = AtomicBool::new(false);
 /// `PMCR_EL0.N`: event counters this PE has.
 static EVENT_N: AtomicU8 = AtomicU8::new(0);
 /// `ID_AA64DFR0_EL1.PMUVer`.
@@ -94,6 +96,7 @@ pub fn pmu_on() -> bool {
 /// what the counter paths use.
 pub fn select(present: bool, pmuver: u8) -> bool {
     PMU_ON.store(policy::PMU.gate(present), Ordering::Relaxed);
+    PRESENT.store(present, Ordering::Relaxed);
     PMUVER.store(pmuver, Ordering::Relaxed);
     pmu_on()
 }
@@ -110,6 +113,12 @@ fn event_counters() -> u8 {
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub fn start_this_cpu() {
     if !pmu_on() {
+        // A PMU this kernel does not use is still one ring 3 could reach:
+        // PMUSERENR_EL0 resets to UNKNOWN (EN would let EL0 write PMCR_EL0),
+        // so it is closed here (both flags are false: no access).
+        if PRESENT.load(Ordering::Relaxed) {
+            write_user_access();
+        }
         return;
     }
     // PMCR_EL0.N is read once here, on every PE, before any event counter is touched.

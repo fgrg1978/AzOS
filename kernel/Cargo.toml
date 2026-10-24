@@ -1184,6 +1184,7 @@ oneshot-canary = ["lat-smoke", "azos_sched/oneshot-canary"]
 # read the physical counter would stamp 2 ms (2_000_000 ticks) off the vDSO.
 a64clk-ppi-canary = ["qemu"]
 a64clk-cntvoff-canary = ["qemu", "azos_arch/cntvoff-canary"]
+el0-state-canary = ["azos_arch/el0-state-canary"]
 # Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never
 # armed; ipctest's phase P must then fail its timer check (gate rows
 # `portwait: ring-3 multi-source wait`, riscv64 and aarch64).
