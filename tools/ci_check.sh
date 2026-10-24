@@ -15277,8 +15277,13 @@ PY
             if grep -aqF '[TPM] TPM 2.0 vendor' "$log"; then
                 bad; echo "      the canary kernel (CTRL_START never written) started the TPM: the row does not discriminate"
                 echo "      log kept: $log"
-            elif ! grep -aqF 'acpi TPM2, CRB: Startup failed (Timeout(Start))' "$log"; then
-                bad; echo "      no CRB Startup timeout: the canary did not reach the CRB path, it proves nothing"
+            # QEMU's tpm-crb never sets CTRL_START itself, so the wait for it
+            # to clear returns at once and the driver reads its own command
+            # back from the shared buffer as the reply: Startup's command
+            # code (0x144) as the response code. A real CRB that latched a
+            # stale START would time out instead; both prove the CRB path.
+            elif ! grep -aqE 'acpi TPM2, CRB: Startup failed \((Timeout\(Start\)|Tpm\(324\))\)' "$log"; then
+                bad; echo "      no CRB Startup failure: the canary did not reach the CRB path, it proves nothing"
                 echo "      log kept: $log"
             else
                 ok; echo "      canary failed as it must: without CTRL_START the CRB runs no command"; rm -f "$log"
