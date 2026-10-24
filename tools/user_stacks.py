@@ -455,6 +455,34 @@ def self_test():
     an = stack_frames.analyze(text, owner_of([(0xffffffff80005000, 0x10, "scan"), (0xffffffff80005100, 8, "fail"),
                                               (0xffffffff80005200, 3, "halt")]), "x86_64")
     expect("x86_64 no return", (an.frames.get("scan"), an.unbounded), (16, {}))
+    # Code outside every sized symbol: a spinlock's slow path, which inline
+    # assembly places after its function, pushes an argument and calls a
+    # trampoline that has a zero-size symbol and pops that argument as it
+    # returns (`retq $8`). The function's flow follows its jump into the slow
+    # path; the trampoline is measured from the call, and is an edge.
+    text = "\n".join([
+        "ffffffff80007000 <lock>:",
+        "ffffffff80007000:  pushq %rbx",
+        "ffffffff80007001:  movl $0x1, %eax",
+        "ffffffff80007006:  testl %eax, %eax",
+        "ffffffff80007008:  jne 0xffffffff80007100 <lock+0x100>",
+        "ffffffff8000700a:  popq %rbx",
+        "ffffffff8000700b:  retq",
+        "ffffffff80007100:  pushq %rdi",
+        "ffffffff80007101:  callq 0xffffffff80007200 <tramp>",
+        "ffffffff80007106:  jmp 0xffffffff80007006 <lock+0x6>",
+        "ffffffff80007200 <tramp>:",
+        "ffffffff80007200:  pushq %rax",
+        "ffffffff80007201:  pushq %rcx",
+        "ffffffff80007202:  popq %rcx",
+        "ffffffff80007203:  popq %rax",
+        "ffffffff80007204:  retq $0x8",
+    ])
+    own = owner_of([(0xffffffff80007000, 0xc, "lock")])
+    an = stack_frames.analyze(text, own, "x86_64", labels={0xffffffff80007200: "tramp"})
+    expect("x86_64 out-of-line slow path", (an.frames.get("lock"), an.frames.get("tramp"), an.unbounded),
+           (8 + 8 + 8, 8 + 16, {}))
+    expect("routine edge", {f: sorted(cs) for f, cs in stack_chain.edges(an, own).items()}, {"lock": ["tramp"]})
     # Unbounded: sp lowered by a loaded value (an alloca), sp lowered on every
     # pass of a loop, sp set from memory (a stack switch). Each is named, and
     # refused unless UNBOUNDED_ALLOWED gives a reason; the frame is the part

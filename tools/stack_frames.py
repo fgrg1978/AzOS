@@ -71,6 +71,10 @@ UNBOUNDED_ALLOWED = {
     "context_switch": "loads the next task's saved sp (kernel/src/entry/<isa>/asm/context_switch.S)",
     "azos_sched::process::sret_to_user": "never returns: loads the user sp and enters user mode",
     "azos_sched::process::sret_to_user_forked": "never returns: loads the user sp and enters user mode",
+    "aarch64_ret_to_user*": "never returns: sp becomes the trap frame it erets from (aarch64 trap_entry.S)",
+    "x86_64_ret_to_user": "never returns: sp becomes the trap frame it returns to ring 3 from (x86_64 trap_entry.S)",
+    "x86_64_ipc_resume_stub": "a resume point: leaves through the syscall return, which loads the user sp",
+    "azos_cpu_resume_restore": "resume from suspend: loads the sp azos_cpu_save_run saved (entry/<isa>/resume.rs)",
 }
 
 
@@ -86,11 +90,15 @@ def llvm_bin():
 FORMATS = {"elf64-littleriscv": "riscv64", "elf64-littleaarch64": "aarch64", "elf64-x86-64": "x86_64"}
 
 
+# What `disassemble` reads: the listing, address -> the sized function
+# holding it (None outside every one), every defined symbol's name, the ISA
+# (a value of `FORMATS`, "" when none fits), the sized functions' addresses,
+# and the zero-size code symbols' names by address (hand-written assembly).
+Image = collections.namedtuple("Image", "text owner names isa starts labels")
+
+
 def disassemble(elf, tools):
-    """`(listing, owner, names, isa, starts)` of `elf`: llvm-objdump's text
-    (names demangled), address -> the sized function holding it (None
-    outside every one), every defined symbol's name, the ISA (a value of
-    `FORMATS`, "" when none fits), and the sized functions' addresses."""
+    """The [`Image`] of `elf`: llvm-objdump's text, names demangled."""
     nm = subprocess.run([os.path.join(tools, "llvm-nm"), "-S", "-C", "--defined-only", elf],
                         capture_output=True, text=True)
     dis = subprocess.run([os.path.join(tools, "llvm-objdump"), "-d", "-C", "--no-show-raw-insn", elf],
@@ -98,13 +106,15 @@ def disassemble(elf, tools):
     if nm.returncode or dis.returncode:
         sys.stderr.write(nm.stderr + dis.stderr)
         sys.exit(2)
-    syms, names = [], set()
+    syms, names, labels = [], set(), {}
     for line in nm.stdout.splitlines():
         p = line.split(None, 3)
         if len(p) == 4:
             names.add(p[3])
             if p[2] in "tTwW" and int(p[1], 16):
                 syms.append((int(p[0], 16), int(p[1], 16), p[3]))
+            elif p[2] in "tT" and not p[3].startswith((".L", "$")):
+                labels[int(p[0], 16)] = p[3]
     syms.sort()
     starts = [s[0] for s in syms]
 
@@ -114,7 +124,7 @@ def disassemble(elf, tools):
 
     head = dis.stdout[:400]
     isa = next((i for f, i in FORMATS.items() if f in head), "")
-    return dis.stdout, owner, names, isa, frozenset(starts)
+    return Image(dis.stdout, owner, names, isa, frozenset(starts), labels)
 
 
 # ---------------------------------------------------------------- listing --
@@ -132,20 +142,21 @@ MASK64 = (1 << 64) - 1
 
 
 def listing(text, owner, isa, starts=frozenset()):
-    """`[(function, [Insn])]` of an objdump listing, one entry per body in
-    address order: a body starts where the owner changes or at one of
-    `starts` (local symbols of one name are separate bodies). Code
-    outside every sized symbol (the zero-size labels of hand-written
-    assembly) belongs to no function and is left out."""
-    funcs, prev = [], None
+    """`(bodies, runs)` of an objdump listing. `bodies`, `[(function,
+    [Insn])]`, one per body in address order: a body starts where the owner
+    changes or at one of `starts` (local symbols of one name are separate
+    bodies). `runs`, `[[Insn]]`: the stretches of code outside every sized
+    symbol -- hand-written assembly behind zero-size labels, and the slow
+    paths inline assembly places after its function (a spinlock's call to
+    `azos_spin_tas_tramp32`). A function's flow follows its jumps into them
+    (`flow`), and a call into one is measured from there (`analyze`)."""
+    funcs, runs, prev = [], [], None
     for line in text.splitlines():
         m = LINE.match(line)
         if not m:
             continue
         addr = int(m.group(1), 16)
         f = owner(addr)
-        if f is None:
-            continue
         op, rest, ann, made = m.group(2), m.group(3), None, None
         if op in X86_PREFIXES and rest:
             op, _, rest = rest.partition(" ")
@@ -159,11 +170,20 @@ def listing(text, owner, isa, starts=frozenset()):
             rest = rest.split("#", 1)[0]
         elif isa == "aarch64":
             rest = rest.split("//", 1)[0]
+        ins = Insn(addr, op, rest.replace(" ", "").replace("\t", ""), ann, made)
+        if f is None:
+            if prev is not None:
+                runs.append([])
+                prev = None
+            if not runs:
+                runs.append([])
+            runs[-1].append(ins)
+            continue
         if f != prev or addr in starts:
             funcs.append((f, []))
             prev = f
-        funcs[-1][1].append(Insn(addr, op, rest.replace(" ", "").replace("\t", ""), ann, made))
-    return funcs
+        funcs[-1][1].append(ins)
+    return funcs, runs
 
 
 def split_ops(args):
@@ -216,8 +236,9 @@ def sext32(x):
 #   ("flags",)                    flags clobbered
 # A control-flow tuple is (kind, target, reg, off, cc, thunk): kind "next",
 # "call" (falls through when the callee returns), "jump", "cond" (falls
-# through), "ret" or "end" (a trap: `ud2`, `unimp`, `brk`); the target
-# address, or the register (plus `off`) that holds it; cc "eq"/"ne" when the
+# through), "ret" (`off`: the bytes x86_64's `retq $N` pops for its caller)
+# or "end" (a trap: `ud2`, `unimp`, `brk`); the target address, or the
+# register (plus `off`) that holds it; cc "eq"/"ne" when the
 # branch is taken exactly when the compared registers are equal/differ; thunk
 # when the call or jump goes through an x86_64 retpoline thunk (the target in
 # `reg`).
@@ -338,11 +359,16 @@ def _refine(st, cc):
     return None if st["sp"] == bound else st
 
 
-def flow(body, decoded, entry, noreturn=frozenset()):
+def flow(body, decoded, entry, noreturn=frozenset(), more=None, start=None, pops=None):
     """The [`Frame`] of one function: `body` its instructions, `decoded` the
     `(effects, control flow)` of each, `entry` sp's offset at entry (minus
     the return address on x86_64), `noreturn` the addresses of the functions
-    that never return.
+    that never return, `more` address -> the `(Insn, decoded)` of the code
+    outside every sized symbol from there on (see `listing`), `start` the
+    address to begin at when `body` is empty (a routine in that code), and
+    `pops` address -> the bytes the function there pops off its caller's
+    stack as it returns (the spinlock trampoline's `retq $8` takes the word
+    its caller pushed).
 
     `depth` is the deepest sp gets below the caller's on any path; `events`
     the `(address, what)` of each unbounded write; `sites` per call or jump,
@@ -350,23 +376,48 @@ def flow(body, decoded, entry, noreturn=frozenset()):
     register's state where it is one; `seeded` whether jump-table arms had
     to be reached from the indirect jumps' state.
 
-    The flow follows fall-through and the branches inside the function. A
-    path ends at a return, a jump out of the function (a tail call), a call
-    that does not return (a panic: what follows it is another block, often
-    at another depth) or an unbounded write. Where paths meet, sp is the deeper of theirs. An
+    The flow follows fall-through and the branches inside the function, and
+    its jumps into code no sized symbol holds. A path ends at a return, a
+    jump into another function (a tail call), a call that does not return (a
+    panic: what follows it is another block, often at another depth) or an
+    unbounded write. Where paths meet, sp is the deeper of theirs. An
     indirect jump (a jump table) has no known target, so its arms are never
     reached: once the rest is settled, every unreached instruction that
     nothing falls into starts from the indirect jumps' state, until none is
     left."""
-    n = len(body)
+    body, decoded = list(body), list(decoded)
     at = {ins.addr: i for i, ins in enumerate(body)}
-    state = [None] * n
-    raised = [0] * n
-    deepest = entry
+    fall = [i + 1 for i in range(len(body) - 1)] + [None] * bool(body)
+    state, raised = [None] * len(body), [0] * len(body)
     events, sites, indirect, stopped = [], {}, [], set()
-    state[0] = {"sp": ("S", entry)}
-    work = [0]
-    seeded = False
+    deepest, seeded = entry, False
+
+    def index(t):
+        """The index of the instruction at `t`, the code outside every sized
+        symbol from `t` appended first when it is that (None otherwise)."""
+        if t in at:
+            return at[t]
+        first = prev = None
+        for ins, d in (more(t) if more else ()):
+            if ins.addr in at:
+                if prev is not None:
+                    fall[prev] = at[ins.addr]
+                break
+            j = len(body)
+            body.append(ins)
+            decoded.append(d)
+            at[ins.addr] = j
+            fall.append(None)
+            state.append(None)
+            raised.append(0)
+            if prev is None:
+                first = j
+            else:
+                fall[prev] = j
+            prev = j
+            if d[1][0] in ("jump", "ret", "end"):
+                break
+        return first
 
     def target(st, fl):
         if fl[1] is not None or fl[2] is None:
@@ -375,7 +426,7 @@ def flow(body, decoded, entry, noreturn=frozenset()):
         return (v[1] + fl[3]) & MASK64 if v and v[0] == "C" else None
 
     def push(j, st):
-        if j >= n or j in stopped or st is None:
+        if j is None or j in stopped or st is None:
             return
         old = state[j]
         if old is None:
@@ -393,6 +444,8 @@ def flow(body, decoded, entry, noreturn=frozenset()):
                     return
         work.append(j)
 
+    work = []
+    push(0 if start is None else index(start), {"sp": ("S", entry)})
     while True:
         while work:
             i = work.pop()
@@ -409,27 +462,30 @@ def flow(body, decoded, entry, noreturn=frozenset()):
                 stopped.add(i)
                 continue
             deepest = min(deepest, out["sp"][1])
-            if kind == "next" or kind == "call" and sites[i][1] not in noreturn:
-                push(i + 1, out)
+            if kind == "call" and sites[i][1] not in noreturn:
+                popped = pops(sites[i][1]) if pops and sites[i][1] is not None else 0
+                push(fall[i], dict(out, sp=("S", out["sp"][1] + popped)) if popped else out)
+            elif kind == "next":
+                push(fall[i], out)
             elif kind in ("jump", "cond"):
                 t = sites[i][1]
                 if kind == "cond":
-                    push(i + 1, _refine(out, NEG[fl[4]]))
+                    push(fall[i], _refine(out, NEG[fl[4]]))
                 if t is None:
                     indirect.append(out)
-                elif t in at:
-                    push(at[t], _refine(out, fl[4]))
-        seeds = [i for i in range(1, n) if state[i] is None and i not in stopped
-                 and (decoded[i - 1][1][0] in ("jump", "ret", "end")
-                      or i - 1 in sites and sites[i - 1][0] == "call" and sites[i - 1][1] in noreturn)]
+                else:
+                    push(index(t), _refine(out, fl[4]))
+        falls_in = {fall[i] for i, (effects, fl) in enumerate(decoded)
+                    if fl[0] in ("next", "cond") or fl[0] == "call" and sites.get(i, fl)[1] not in noreturn}
+        seeds = [i for i in range(len(body)) if state[i] is None and i not in stopped and i not in falls_in]
         if not indirect or not seeds:
             break
         seeded = True
-        start = indirect[0]
-        for s in indirect[1:]:
-            start = _join(start, s)
+        begin = indirect[0]
+        for o in indirect[1:]:
+            begin = _join(begin, o)
         for i in seeds:
-            push(i, start)
+            push(i, begin)
     for i, (effects, fl) in enumerate(decoded):
         if fl[0] in ("call", "jump", "cond") and i not in sites:
             sites[i] = (fl[0], fl[1], fl[5])
@@ -638,7 +694,7 @@ def _x86_reg(s):
 def decode_x86_64(ins):
     op, a = ins.op, split_ops(ins.args)
     if op in X86_RETS:
-        return (), RET
+        return (), ("ret", None, None, num(a[0]), None, False) if a else RET
     if op in X86_TRAPS:
         return (), END
     if op.startswith("call") or op.startswith("j"):
@@ -706,41 +762,73 @@ DECODERS = {"riscv64": (decode_riscv64, 0), "aarch64": (decode_aarch64, 0), "x86
 # Mnemonics whose decoding depends on the instruction's own address.
 PC_RELATIVE = {"auipc"}
 
-Analysis = collections.namedtuple("Analysis", "frames unbounded sites seeded")
+Analysis = collections.namedtuple("Analysis", "frames unbounded sites seeded routines")
 
 
-def analyze(text, owner, isa, starts=frozenset()):
-    """The [`Analysis`] of an objdump listing for `isa`: `frames`, function
-    -> its frame in bytes (functions that reserve none are left out on
-    riscv64 and aarch64); `unbounded`, function -> its unbounded writes
-    `[(address, what)]`; `sites`, function -> its calls and jumps (see
-    [`flow`]); `seeded`, how many functions needed their jump-table arms
-    seeded."""
+def analyze(text, owner, isa, starts=frozenset(), labels=None):
+    """The [`Analysis`] of an objdump listing for `isa` (`owner`, `starts`
+    and `labels` as an [`Image`]'s): `frames`, function -> its frame in bytes
+    (functions that reserve none are left out on riscv64 and aarch64);
+    `unbounded`, function -> its unbounded writes `[(address, what)]`;
+    `sites`, function -> its calls and jumps (see [`flow`]); `seeded`, how
+    many functions needed their jump-table arms seeded; `routines`, address
+    -> name of each routine outside every sized symbol that a call reaches,
+    measured like a function from there (`labels` names it; `asm@<address>`
+    when nothing does)."""
     decode, entry = DECODERS[isa]
     cache, bodies = {}, []
-    for f, body in listing(text, owner, isa, starts):
-        decoded = []
-        for ins in body:
-            if ins.op in PC_RELATIVE:
-                decoded.append(decode(ins))
-                continue
-            key = (ins.op, ins.args, ins.ann, ins.made)
-            d = cache.get(key)
-            if d is None:
-                d = cache[key] = decode(ins)
-            decoded.append(d)
-        bodies.append((f, body, decoded))
+
+    def dec(ins):
+        if ins.op in PC_RELATIVE:
+            return decode(ins)
+        key = (ins.op, ins.args, ins.ann, ins.made)
+        d = cache.get(key)
+        if d is None:
+            d = cache[key] = decode(ins)
+        return d
+
+    funcs, runs = listing(text, owner, isa, starts)
+    for f, body in funcs:
+        bodies.append((f, body, [dec(ins) for ins in body]))
+    where = {ins.addr: (r, k) for r, run in enumerate(runs) for k, ins in enumerate(run)}
+
+    def more(t):
+        if t in where:
+            r, k = where[t]
+            for ins in runs[r][k:]:
+                yield ins, dec(ins)
+
+    popping = {body[0].addr: fl[3] for f, body, decoded in bodies for effects, fl in decoded
+               if fl[0] == "ret" and fl[3]}
+
+    def pops(t):
+        if t in where:
+            return next((d[1][3] for ins, d in more(t) if d[1][0] == "ret"), 0)
+        return popping.get(t, 0)
+
     noreturn = never_return(bodies)
     frames, unbounded, sites, seeded = {}, {}, collections.defaultdict(list), 0
-    for f, body, decoded in bodies:
-        fr = flow(body, decoded, entry, noreturn)
+    routines, todo = {}, []
+
+    def record(f, fr):
+        nonlocal seeded
         if fr.depth > frames.get(f, 0):
             frames[f] = fr.depth
         if fr.events:
             unbounded.setdefault(f, []).extend(fr.events)
         sites[f] += fr.sites
         seeded += fr.seeded
-    return Analysis(frames, unbounded, sites, seeded)
+        for kind, t, _ in fr.sites:
+            if kind == "call" and t in where and t not in routines:
+                routines[t] = (labels or {}).get(t, f"asm@{t:#x}")
+                todo.append(t)
+
+    for f, body, decoded in bodies:
+        record(f, flow(body, decoded, entry, noreturn, more, pops=pops))
+    while todo:
+        t = todo.pop()
+        record(routines[t], flow([], [], entry, noreturn, more, t, pops))
+    return Analysis(frames, unbounded, sites, seeded, routines)
 
 
 def never_return(bodies):
@@ -772,11 +860,11 @@ def never_return(bodies):
 
 def frames(elf, tools):
     """The [`Analysis`] of `elf`."""
-    text, owner, _, isa, starts = disassemble(elf, tools)
-    if not isa:
+    im = disassemble(elf, tools)
+    if not im.isa:
         sys.stderr.write(f"{elf}: not a riscv64, aarch64 or x86_64 image\n")
         sys.exit(2)
-    return analyze(text, owner, isa, starts)
+    return analyze(im.text, im.owner, im.isa, im.starts, im.labels)
 
 
 def unbounded_verdicts(unbounded, functions=None, allowed=None):

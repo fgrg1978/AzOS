@@ -95,10 +95,10 @@ def edges(an, owner, stats=None):
     because the callee is unknown. A register loaded from memory (a vtable, a
     spilled pointer, a function pointer argument) holds no known value: that
     call is truly indirect and not followed. A call into hand-written
-    assembly that has no symbol size (`aarch64_ret_to_user`, the riscv64
-    feature probes) reaches no function either: it is not followed, and
-    counted apart. `stats` (a dict) counts the thunk calls and the calls not
-    followed."""
+    assembly that no sized symbol holds (`azos_spin_tas_tramp32`, the
+    riscv64 feature probes) reaches the routine the frame dataflow measured
+    there (`stack_frames.analyze`'s `routines`). `stats` (a dict) counts the
+    thunk calls and the calls not followed."""
     graph = collections.defaultdict(set)
     counts = collections.Counter()
     for f, sites in an.sites.items():
@@ -108,8 +108,7 @@ def edges(an, owner, stats=None):
             if target is None:
                 counts["indirect"] += kind == "call" or thunk
                 continue
-            to = owner(target)
-            counts["unsized"] += to is None and kind == "call"
+            to = owner(target) or an.routines.get(target)
             if to and to != f:
                 graph[f].add(to)
     if stats is not None:
@@ -133,12 +132,12 @@ def load(elf, stats=None):
     its [`stack_frames.Analysis`] (`frames`: each function's frame), its
     function names and its ISA (a key of `ROOTS`). `stats` (a dict) gets the
     call counts of [`edges`]."""
-    text, owner, names, isa, starts = stack_frames.disassemble(elf, stack_frames.llvm_bin())
-    if not isa:
+    im = stack_frames.disassemble(elf, stack_frames.llvm_bin())
+    if not im.isa:
         sys.stderr.write(f"{elf}: not a riscv64, aarch64 or x86_64 image\n")
         sys.exit(2)
-    an = stack_frames.analyze(text, owner, isa, starts)
-    return edges(an, owner, stats), an, names, isa
+    an = stack_frames.analyze(im.text, im.owner, im.isa, im.starts, im.labels)
+    return edges(an, im.owner, stats), an, im.names, im.isa
 
 
 def analyze(elf, root):
@@ -449,8 +448,7 @@ def main():
               f"(largest {max(len(k) for k in c.knots)} functions)")
     if stats.get("thunk"):
         print(f"           x86_64 thunk calls: {stats['thunk']}, {stats['thunk static']} with a static target")
-    print(f"           {stats.get('indirect', 0)} indirect calls not followed, and {stats.get('unsized', 0)} "
-          f"calls into assembly with no symbol size")
+    print(f"           {stats.get('indirect', 0)} indirect calls not followed")
     seen, refused, excused = [], [], []
     for r in roots:
         seen += [w for w in fallback_notes(chains[r])[0] if w not in seen]
