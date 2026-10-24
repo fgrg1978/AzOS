@@ -10885,6 +10885,15 @@ host_job host_canary_row "futex: key before the look canary" syscall-tests futex
     a_wait_is_filed_under_the_key_of_the_word_it_checked
 host_job host_canary_row "futex: PI word not its key canary" syscall-tests futex-key-outside-canary \
     a_pi_step_never_touches_a_word_mapped_since_its_key_was_taken
+# A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,
+# syscall-tests uaccess_race.rs). uaccess-race-canary: a user-leaf shootdown
+# returns without waiting for the access sections, as before the module.
+host_job host_canary_row "uaccess: munmap under a copy canary" syscall-tests uaccess-race-canary \
+    copy_to_user_keeps_its_frame_until_the_copy_ends
+# The user walk refuses a user device window (syscall-tests uaccess_mmio.rs).
+# uaccess-mmio-canary: the walk checks the leaf's USER and R/W bits only.
+host_job host_canary_row "uaccess: device window buffer canary" syscall-tests uaccess-mmio-canary \
+    a_device_window_outside_ram_is_refused
 # Delete is not revoke (20-10): delete-revokes-canary makes a close and an exit
 # revoke the copies of the slot again, as they did before.
 host_job host_canary_row "cap: delete revokes canary" cap-tests delete-revokes-canary \
