@@ -427,6 +427,11 @@ const _: () = assert!(
      and a misaligned SP faults with EC=0x26 inside the trap entry itself",
 );
 
+/// boot.S's `SCTLR_EL1` word (`azos_arch::sysregs::SCTLR_EL1_BOOT`) in the
+/// two halves its `movz`/`movk` take (`kernel/src/main.rs` passes them in).
+pub(crate) const SCTLR_BOOT_LO: u16 = (azos_arch::sysregs::SCTLR_EL1_BOOT & 0xFFFF) as u16;
+pub(crate) const SCTLR_BOOT_HI: u16 = ((azos_arch::sysregs::SCTLR_EL1_BOOT >> 16) & 0xFFFF) as u16;
+
 /// The frame tag of a native task ([`TrapFrame::syscall_tag`]): `ESR_EL1.EC`
 /// of an `svc` from AArch64 state, so only a native task's syscall matches.
 pub const SYSCALL_TAG_NATIVE: u64 = 0x15;
