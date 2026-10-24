@@ -316,8 +316,8 @@ RING_LANES_RE='^(ring-|ioring-|drvring-|drv-call|frame-stream)'
 # disk-vsbench.img, by tools/bench/lat_linux/run.sh. This pass prints their
 # `[LATLX]` and `[TAIL]` lines after the tables. Not counted: no assertion
 # reads them, a failed or skipped pass (no clang at LX_CC) is reported and
-# does not change the exit status. It runs with the Linux half and the full
-# lane set only; `VSBENCH_LAT=0` skips it.
+# does not change the exit status; each boot waits at most 2 x WAIT_SECS. It
+# runs with the Linux half and the full lane set only; `VSBENCH_LAT=0` skips it.
 VSBENCH_LAT="${VSBENCH_LAT:-1}"
 
 # ── VSBENCH_TCP: TCP bulk to a host peer, both kernels (wave 15) ───────────
@@ -837,7 +837,7 @@ fi
 LAT_OUT=""
 if [ "$VSBENCH_LAT" = "1" ] && [ -n "$L_LOG" ] && [ -z "$VSBENCH_LANES" ]; then
     for prog in lat tail; do
-        if out="$(PROG="$prog" bash "$REPO_ROOT/tools/bench/lat_linux/run.sh" rv "$LINUX_IMAGE" \
+        if out="$(PROG="$prog" LAT_WAIT=$((WAIT_SECS * 2)) bash "$REPO_ROOT/tools/bench/lat_linux/run.sh" rv "$LINUX_IMAGE" \
                   "$AZOS_OUT/build/disk-vsbench.img" "$WORK/lat-linux-$prog" 2>&1)"; then
             LAT_OUT="$LAT_OUT$out
 "

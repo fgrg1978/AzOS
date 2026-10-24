@@ -11,6 +11,7 @@
 #   tools/bench/lat_linux/run.sh <rv|arm> <linux Image> <disk image> <outdir>
 #
 # Prints the guest's `[LATLX]` lines. Exit 0 when they came, 1 otherwise.
+# LAT_WAIT (seconds, default 600) bounds the wait for them.
 # `PROG=tail` runs tail.c instead (the periodic-wake tail under ping-pong
 # contention, kernel/src/smokes/tail_smoke.rs's counterpart): `[TAIL]` lines.
 # tools/bench/vsbench_compare.sh runs it for riscv64 (both PROGs) after its own
@@ -47,12 +48,15 @@ else
         </dev/null >"$log" 2>&1 &
 fi
 pid=$!
-for _ in $(seq 1 1200); do
+for _ in $(seq 1 $((2 * ${LAT_WAIT:-600}))); do
     grep -aq "^\[\(LATLX\|TAIL\)\] done" "$log" 2>/dev/null && break
     grep -aq "Kernel panic" "$log" 2>/dev/null && break
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.5
 done
-kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+# QEMU under -icount can ignore SIGTERM: KILL it if it is still there.
+kill "$pid" 2>/dev/null || true; sleep 2
+kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+wait "$pid" 2>/dev/null || true
 rm -f "$out/disk.img"
 tr -d '\r' < "$log" | grep -a "^\[\(LATLX\|TAIL\)\] \(isa\|load\)" || { echo "lat_linux: no result line, log: $log" >&2; exit 1; }
