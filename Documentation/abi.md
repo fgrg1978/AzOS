@@ -361,7 +361,7 @@ where the source states them.
 |---|---|---|---|
 | `DEVICE_IRQ_BIND` | 0x7901 | DRIVER | Bind an interrupt line to an event port with a key and a CPU (`DEVICE_IRQ_CPU_ANY`). A message-signalled slot also returns address, data and vector in `a1`..`a3`. |
 | `DEVICE_IRQ_ACK` | 0x7902 | DRIVER | Unmask the line after the device was quietened; returns 0, or 1 if the handler's budget is spent. |
-| `DEVICE_IOPORT_ENABLE` | 0x7903 | DRIVER | Open the I/O ports of a `ty::IOPORT` capability to the calling thread (x86_64); needs `READ\|WRITE`, every word 0. `-ENODEV` on an ISA without a port space. |
+| `DEVICE_IOPORT_ENABLE` | 0x7906 | DRIVER | Open the I/O ports of a `ty::IOPORT` capability to the calling thread (x86_64); needs `READ\|WRITE`, every word 0. `-ENODEV` on an ISA without a port space. |
 
 **Endpoint** (kind 1)
 

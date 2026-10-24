@@ -472,7 +472,7 @@ pub const DEVICE_IRQ_ACK: u16 = op(CapKind::Device, CLASS_DRIVER, 2);
 /// thread already holds Kconfig `X86_IOPORT_RANGES` ranges), `-ENODEV` (the
 /// ISA has no port space: riscv64, aarch64, or Kconfig
 /// `X86_IOPORT_BITMAP_PORTS` 0; answered before the handle is looked at).
-pub const DEVICE_IOPORT_ENABLE: u16 = op(CapKind::Device, CLASS_DRIVER, 3);
+pub const DEVICE_IOPORT_ENABLE: u16 = op(CapKind::Device, CLASS_DRIVER, 6);
 
 // ── Endpoint: an endpoint the caller holds ──────────────────────────────────
 
