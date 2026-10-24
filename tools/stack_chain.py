@@ -14,9 +14,10 @@ actually matters -- how deep can one trap go -- and it found that the embedded
 profile still did not fit its own deepest syscall chain after that night's fix.
 
 HOW IT WORKS. Frames come from stack_frames.frames(), which sums a whole
-prologue. Edges come from llvm-objdump's own `<symbol>` annotation on every
-call instruction, so an `auipc`+`jalr` long call is resolved exactly like a
-`jal`. The deepest chain is the maximum sum over paths from `--root`.
+prologue. Edges come from every call and tail jump llvm-objdump annotates,
+resolved by the address they reach (`edges`), so an `auipc`+`jalr` long call
+is resolved exactly like a `jal`. The deepest chain is the maximum sum over
+paths from `--root`.
 
 WHAT IT DOES NOT SEE, and therefore why this is a LOWER bound:
   * Indirect calls through a function pointer or a vtable are not followed.
@@ -70,33 +71,66 @@ def call_graph(elf, tools):
         i = bisect.bisect_right(starts, addr) - 1
         return syms[i][2] if i >= 0 and addr < syms[i][0] + syms[i][1] else None
 
-    # A user image keeps the assembler's `.Lpcrel_hiN` labels in its symbol
-    # table (the kernel's are gone), and objdump names a call's target by the
-    # nearest one when the target is where a function starts with its own
-    # `auipc`. Such an annotation is resolved by address -- the label's own
-    # line gives it -- to the function that owns it.
-    labels = {}
-    for line in dis.stdout.splitlines():
-        m = re.match(r"^([0-9a-f]+) <(\.L[^>]+)>:$", line)
-        if m:
-            labels[m.group(2)] = int(m.group(1), 16)
+    return edges(dis.stdout, owner), {s[2] for s in syms}
+
+
+# `jal`/`j`/`bl`/`b` print their target address; `jalr`/`jr` print an offset
+# from a register an `auipc` just before set.
+AUIPC = re.compile(r"^(\w+),(-?0x[0-9a-f]+|-?\d+)$")
+JALR = re.compile(r"^(?:\w+,)?(-?0x[0-9a-f]+|-?\d+)\((\w+)\)$")
+
+
+def edges(text, owner):
+    """The call graph of an objdump listing: function -> the functions it
+    calls or tail-jumps to, each resolved through `owner` (address -> the
+    function holding it).
+
+    A call is resolved by the ADDRESS it reaches, not by the name objdump
+    annotates it with. Images keep the assembler's local labels
+    (`.Lpcrel_hiN`, one set per compilation unit) and objdump names a target
+    by the nearest one, `<.Lpcrel_hi164+0x1a>`, a name 57 functions of the
+    2026-10-24 qemu kernel define. Looking the name up resolved a branch to
+    the last of them: `ip::iface_get`'s jump to its own exit "called"
+    `waitgraph::effective`, and edges like it knotted 331 functions into one
+    recursive component that the chain charged whole (32 KiB of a 54 KiB
+    chain). A symbol annotation (`<memcpy>`) is unique and used as given."""
     graph = collections.defaultdict(set)
-    for line in dis.stdout.splitlines():
+    hi = {}  # register -> the address its `auipc` made, in the current function
+    cur = None
+    for line in text.splitlines():
         m = re.match(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$", line)
-        if not m or m.group(2) not in CALL:
+        if not m:
             continue
-        f = owner(int(m.group(1), 16))
-        ann = re.search(r"<(.+?)(\+0x[0-9a-f]+)?>\s*$", m.group(3))
+        addr, op, rest = int(m.group(1), 16), m.group(2), m.group(3)
+        f = owner(addr)
+        if f != cur:
+            cur, hi = f, {}
+        args = re.sub(r"\s*<.*$", "", rest).replace(" ", "")
+        if op == "auipc":
+            a = AUIPC.match(args)
+            if a:
+                imm = int(a.group(2), 0) & 0xFFFFF
+                hi[a.group(1)] = addr + ((imm ^ 0x80000) - 0x80000 << 12)
+            continue
+        if op not in CALL:
+            continue
+        ann = re.search(r"<(.+?)(\+0x[0-9a-f]+)?>\s*$", rest)
         if not (f and ann):
             continue
         target = ann.group(1)
         if target.startswith(".L"):
-            if target not in labels:
+            to = re.search(r"(?:^|,)(0x[0-9a-f]+)$", args)
+            j = JALR.match(args)
+            if to:
+                target = owner(int(to.group(1), 16))
+            elif j and j.group(2) in hi:
+                target = owner(hi[j.group(2)] + int(j.group(1), 0))
+            else:
                 continue
-            target = owner(labels[target] + int(ann.group(2) or "+0x0", 16))
         if target and target != f:
             graph[f].add(target)
-    return graph, {s[2] for s in syms}
+    return graph
+
 
 
 def analyze(elf, root):

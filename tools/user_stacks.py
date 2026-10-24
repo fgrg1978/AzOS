@@ -197,6 +197,30 @@ def self_test():
     expect("aarch64 big", got.get("big"), 0x60 + 0x3000 + 0x20)
     expect("aarch64 callee", got.get("callee"), 0x10)
     expect("aarch64 leaf", got.get("leaf"), None)
+    # Call edges by the address reached: `.Lpcrel_hi1` is defined in `a` and
+    # again in `b` (one set of local labels per compilation unit), `a`'s jump
+    # to its own label is no call, and `c` reaches `b` by `auipc` (a negative
+    # immediate) + `jalr`. Looking the label up by name made `a` call `b`.
+    text = "\n".join([
+        "0000000000020000 <a>:",
+        "   20000: auipc ra, 0x0",
+        "   20004: jalr 0x100(ra) <callee>",
+        "0000000000020008 <.Lpcrel_hi1>:",
+        "   20008: j 0x20010 <.Lpcrel_hi1+0x8>",
+        "   2000c: nop",
+        "   20010: ret",
+        "0000000000020100 <callee>:",
+        "   20100: ret",
+        "0000000000020200 <b>:",
+        "0000000000020200 <.Lpcrel_hi1>:",
+        "   20200: ret",
+        "0000000000021300 <c>:",
+        "   21300: auipc t1, 0xfffff",
+        "   21304: jalr -0x100(t1) <.Lpcrel_hi1>",
+    ])
+    spans = [(0x20000, 0x14, "a"), (0x20100, 4, "callee"), (0x20200, 0x10, "b"), (0x21300, 8, "c")]
+    expect("call edges", {f: sorted(cs) for f, cs in stack_chain.edges(text, owner).items()},
+           {"a": ["callee"], "c": ["b"]})
     if failures:
         print("\n".join(failures))
         sys.exit(1)
