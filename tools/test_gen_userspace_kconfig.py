@@ -5,7 +5,7 @@
 of the Kconfig tree and of the program metadata under userspace/:
 
   1. the real tree: the images the board volume carries by default are the
-     ones the topology declares (the 14 of `make board-elfs`), the console
+     ones the topology declares (those of `make board-elfs`), the console
      program is the native shell on edge and none on embedded; a small board
      (HWCLASS_EMBEDDED) builds only the images its topology starts (DECISD
      with the decision records) and the ones its config names;
@@ -30,8 +30,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOARD_DEFAULT = {
     "BUZZDRV", "GPIODRV", "INADRV", "BRAINCLI", "FLIGHT", "BEHAVIOR", "CONFIG", "OTA",
     "MLSRV", "NAMESD", "POWER", "REFLEX", "SH", "TERMD", "TOOLBOX", "TRACECTL", "DECISD", "LOGD", "WHY", "PKGD", "PKG", "RPCSRV",
-    "COMPMGR", "SSHD",
+    "COMPMGR", "SSHD", "AUDIOD",
 }
+# AUDIOD: the audio server's row is in the topology where Kconfig AUDIOD is y
+# (needs DRV_VIRTIO_SND; n on embedded, robot and industrial), and its image
+# default is that symbol (`default = "AUDIOD"` in its metadata).
 # On every preset but MCU and certifiable: the component manager supervises
 # every ring-3 row, and SSHD is on (public keys only) except on the embedded
 # profile (Kconfig SSHD: default n if HWCLASS_EMBEDDED, so its image is off too).
