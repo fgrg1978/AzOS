@@ -1384,9 +1384,10 @@ pub fn task_exit(t: TaskId) {
 
 /// [`task_exit`] for a slot being reused: the same cleanup, but an object
 /// still owned is only detached (counted in [`WalkStats::orphaned`]), never
-/// handed to an [`OwnerDiedHook`]: the caller holds the scheduler's pool
-/// lock, which a hook (client lock, wake) must not run under. Normally a
-/// no-op for the owner role, as the exit path's `task_exit` drained it.
+/// handed to an [`OwnerDiedHook`]: the slot's new task is not running yet,
+/// and waking the waiters for an owner that died is the exit path's.
+/// Normally a no-op for the owner role, as the exit path's `task_exit`
+/// drained it. Task context, no SpinLock held.
 pub fn task_reset(t: TaskId) {
     GRAPH.task_reset(t)
 }

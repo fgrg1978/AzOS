@@ -250,15 +250,20 @@ pub(super) fn on_slot_reset(idx: usize, prio: u32) {
     }
     // And its EEVDF numbers: the new task joins the fair queue at the mean.
     fairq::reset(idx);
-    // N7: nothing of the previous occupant's graph state survives (its
-    // effective attribute, its boost floor). Under POOL_LOCK; the graph
-    // lock is a leaf below it.
+    on_base_priority(idx, prio);
+}
+
+/// N7: a slot is (re)used: nothing of the previous occupant's graph state
+/// survives (its effective attribute, its boost floor). Task creation, after
+/// the slot is claimed and before the task is enqueued, no lock held and
+/// interrupts on: the graph's lock is taken here, as in [`on_task_exit`].
+pub(super) fn on_slot_graph_reset(idx: usize) {
     if waitgraph::ENABLED && idx < MAX_TASKS {
         PI_PRIO[idx].store(u32::MAX, Ordering::Relaxed);
-        // Detach only: no OwnerDiedHook under POOL_LOCK (N7c).
+        // Detach only: the new task is not running, and an owner-died hook
+        // (client lock, wake) is the exit path's (N7c).
         waitgraph::task_reset(idx as TaskId);
     }
-    on_base_priority(idx, prio);
 }
 
 /// N7b: `idx` is exiting (both exit paths, before the slot turns Zombie

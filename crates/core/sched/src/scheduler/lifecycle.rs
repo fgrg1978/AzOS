@@ -466,8 +466,30 @@ pub fn try_task_create_init(
     affinity: i8,
     init: TaskInit,
 ) -> Option<usize> {
-    // Disable interrupts during task creation to prevent races on NEXT_TID.
-    let sstatus = azos_arch::ARCH.disable_all();
+    // D2: every task has a domain. A thread joins its creator's, any other
+    // task gets a fresh one: a task made by another task (a spawn, a fork) is
+    // a child of its creator's Domain, so the subtree policy follows it; a
+    // kernel task has no creator and is a root. Taken before interrupts go
+    // off, under the Domain table's own lock only: a fresh Domain is a scan
+    // of the table and a reset of its entries, 2.3 us of the 9.7 us this
+    // function held interrupts masked (riscv64 `-icount`, lat smoke,
+    // 2026-10-24). A creation refused below gives it back after interrupts
+    // are on again (`refused_dom`).
+    let dom = if let Some(k) = init.domain {
+        crate::domain::join(k).then_some(k)
+    } else {
+        crate::domain::create_child(idx_for_tid(init.parent).map_or(crate::domain::NONE, task_domain))
+    };
+    let mut refused_dom = None;
+
+    // Three bounded steps, each with interrupts masked only by its own lock:
+    // the slot under POOL_LOCK (`PoolGuard`), the wait-graph reset of the
+    // slot (the graph's lock), the enqueue under the target CPU's lock. The
+    // whole function ran masked (once for a NEXT_TID race; the TID is
+    // allocated under POOL_LOCK): 9.7 us of `-icount` time on riscv64 and
+    // 8.6 us on aarch64 in the lat smoke. Between the steps the slot holds a
+    // Ready task in no queue that nothing has a TID for yet: a creator
+    // preempted there only starts it later.
 
     // K-C22(B): address spaces the claimed slot's PREVIOUS occupant left
     // behind, captured under POOL_LOCK and destroyed after interrupts are
@@ -493,24 +515,9 @@ pub fn try_task_create_init(
                 EXIT_NOTICE_REFUSALS.fetch_add(1, Ordering::Relaxed);
             }
 
-            // D2: every task has a domain. A thread joins its creator's, any
-            // other task gets a fresh one. Taken before the slot, so a
-            // refusal leaves nothing to undo but the domain itself.
-            let dom = if !admitted {
-                None
-            } else if let Some(k) = init.domain {
-                crate::domain::join(k).then_some(k)
-            } else {
-                // A task made by another task (a spawn, a fork) is a child of
-                // its creator's Domain: the subtree policy follows it. A
-                // kernel task has no creator and is a root.
-                crate::domain::create_child(idx_for_tid(init.parent).map_or(crate::domain::NONE, task_domain))
-            };
-            match if dom.is_some() { alloc_slot() } else { None } {
+            match if admitted && dom.is_some() { alloc_slot() } else { None } {
                 None => {
-                    if let Some(k) = dom {
-                        crate::domain::leave(k);
-                    }
+                    refused_dom = dom;
                     None
                 }
                 Some(idx) => {
@@ -761,12 +768,14 @@ pub fn try_task_create_init(
                 // of returning a task index for something that is in no ready
                 // queue and will never run: `fork()` reports -1, which its
                 // caller already handles, and the pool slot goes back.
+                // N7: nothing of the previous occupant's wait-graph state
+                // survives (its effective attribute, its boost floor, an
+                // object that still names the slot as owner). Before the
+                // enqueue, outside POOL_LOCK: a graph reset takes the graph
+                // lock three times and looks at every lazy edge (4.6 us of
+                // the masked window above, riscv64 `-icount`).
+                classes::on_slot_graph_reset(idx);
                 if !cpu_enqueue_locked(target_cpu, idx) {
-                    // Inner scope on purpose: `PoolGuard::drop` re-applies the
-                    // SIE bit it captured (interrupts already off here), so it
-                    // MUST run before the caller's `sstatus` is restored —
-                    // otherwise the guard drops last and leaves this hart with
-                    // interrupts disabled all the way back up the stack.
                     {
                         let _pool = PoolGuard::acquire();
                         TASK_VALID[idx].store(false, Ordering::Relaxed);
@@ -779,7 +788,6 @@ pub fn try_task_create_init(
                         core::sync::atomic::fence(Ordering::Release);
                         TASKS[idx].tid = 0;
                     }
-                    azos_arch::ARCH.restore(sstatus);
                     // K-C22(B): the claim already zeroed the slot's `user_pt`
                     // — the captured stale address spaces must be destroyed
                     // on THIS exit too, or they become unreachable forever.
@@ -795,8 +803,9 @@ pub fn try_task_create_init(
         }
     };
 
-    // Restore interrupts.
-    azos_arch::ARCH.restore(sstatus);
+    if let Some(k) = refused_dom {
+        crate::domain::leave(k);
+    }
     // The task list shows the task before its creator learns its TID.
     if let Some(idx) = result {
         view_note(idx);
