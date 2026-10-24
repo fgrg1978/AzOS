@@ -284,12 +284,14 @@ fn every_rule_name_fits_a_node_name() {
 
 #[test]
 fn the_subtree_fits_the_default_region_next_to_the_base_tree() {
-    // INSPECT_PUBLIC_PAGES defaults to 12. The base tree is about 40 nodes
-    // plus two per CPU (kernel/src/boot/inspect.rs); stand-ins for it come first;
-    // the by-rule nodes are the whole decision table's, as in the kernel, and
-    // the wake ring is the default's.
+    // INSPECT_PUBLIC_PAGES defaults to 24 (config/kernel/Kconfig.trace; 12
+    // when this test was written, which 16 CPUs and the 75 rules of the table
+    // now overflow by a few nodes). The base tree is about 40 nodes plus two
+    // per CPU (kernel/src/boot/inspect.rs); stand-ins for it come first; the
+    // by-rule nodes are the whole decision table's, as in the kernel, and the
+    // wake ring is the default's.
     for cpus in [1, 4, 8, 16] {
-        let v = words(12);
+        let v = words(24);
         let w = Writer::init(Region::from_atomics(&v), Class::Public).unwrap();
         let r = w.rebuild(|b| {
             for i in 0..40 + 2 * cpus {
