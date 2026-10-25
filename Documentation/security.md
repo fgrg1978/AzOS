@@ -40,6 +40,42 @@ Kconfig `CANARY_RUNTIME` a `canary=` kernel argument) switch single checks off
 on purpose, `topo-verify-skip-canary` the topology signature among them; no
 build script refuses a canary feature in a release build.
 
+## Isolation model
+
+This section states what a compromised program can and cannot reach, and where
+that boundary depends on the kernel. The sections after it describe each
+mechanism.
+
+**A ring-3 program holds only what its topology row grants.**
+- **Grants at spawn:** the kernel looks up the topology row bound to the SHA-256 of the program's ELF. The row lists the capabilities the program receives (files, endpoints, devices, sockets) and the system-call filter it runs under. Both come from the signed topology.
+- **Nothing implicit is inherited:** a child gets its own row's grants, plus at most the file handles its creator moves to it explicitly (`SYS_SPAWN_EX`, a move list of up to 8).
+- **No ambient authority:** a path, a device number or a socket address grants nothing; only a held handle does. A handle carries a generation, so a revoked handle cannot be replayed.
+- **No privileged identity to escalate to:** the native ABI has no uid, no root and no setuid. A program that takes over another program gains that program's grants, not more. The Linux personality answers `getuid` and similar calls itself; the kernel keeps no Linux identity.
+- **Narrow system-call surface:** a call the program's filter does not list is refused before its handler runs, and the refusal is recorded.
+- **Ring-3 drivers and services are programs too:** each runs under its own row, so taking over one does not reach another's devices or data.
+
+**What this does and does not cover.** The kernel enforces the boundary between programs, so a defect in ring 3 stays inside the grants of the program that has it. A defect in ring 0 code is outside this boundary, as on any kernel. What reduces that risk:
+- The kernel is written in Rust. `unsafe` blocks are counted per crate, and the gate refuses a count that grows without a baseline change (`tools/lint/unsafe_budget.py`).
+- The placement rule puts parsers of untrusted input in ring 3. Some still run in the kernel (see the limits below).
+- The hardware protections below are set on every CPU at boot, not left to firmware: SMEP/SMAP on x86_64, PAN on aarch64, W^X for kernel and user mappings, per-process pointer-authentication keys on aarch64, and the user-visible system registers.
+
+**Compared with a typical Linux system.**
+
+| Aspect | Linux system | AzOS |
+|--------|--------------|------|
+| Starting authority of a program | Everything its uid can reach, unless a sandbox (namespaces, seccomp, LSM) is set up for it | Only the grants of its signed row |
+| Privilege escalation target | uid 0, setuid binaries, privileged daemons | None in the native ABI |
+| System-call filter | Optional, chosen by the program or its launcher | Always on, bound to the image digest |
+| Inheritance across fork/exec | File descriptors, environment and credentials by default | Row grants plus an explicit move list |
+| Drivers and most services | In the kernel, or root-owned daemons | Many drivers and services in ring 3 under their own rows |
+
+**Known limits of the current tree.**
+- **Large subsystems still run in ring 0:** the network stack, the FAT32 file system, the in-kernel Linux personality, the robot brain link and behaviour tasks, and many drivers. A defect there is a kernel defect.
+- **DMA without an IOMMU:** a ring-3 driver for a DMA-capable device is only as contained as the platform's DMA isolation. On boards without an IOMMU (VF2, K1), such a driver can reach physical memory through its device ([DMA](#dma)).
+- **Partial CFI:** control-flow integrity coverage is incomplete; see [Control-flow integrity](#control-flow-integrity).
+- **Advisory Linux-level seccomp:** a filter a Linux program installs inside the hosted runtime is not enforced. Only the native per-image filter is.
+- **No external review yet:** the tree has had no external security audit, and fuzzing covers only parts of the ABI and the parsers.
+
 ## Authority model
 
 Source: `crates/core/abi/src/cap.rs`, `crates/core/ipc/src/cap.rs`,

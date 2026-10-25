@@ -162,6 +162,16 @@ the work. Change history starts at [`CHANGELOG.md`](CHANGELOG.md); the ABI
 crate keeps its own in
 [`crates/core/abi/CHANGELOG.md`](crates/core/abi/CHANGELOG.md).
 
+## Isolation
+
+A ring-3 program holds only the capabilities its signed topology row grants. It
+runs under a system-call filter bound to its image digest and inherits nothing
+else from its creator. The native ABI has no uid, root or setuid, so a
+compromised program has no privileged identity to escalate to.
+[`Documentation/security.md`, Isolation model](Documentation/security.md#isolation-model)
+states what this boundary covers, how it compares with a Linux system, and its
+current limits.
+
 ## License, contributing and security
 
 Dual-licensed under `Apache-2.0 OR GPL-2.0-only`, at your option: see
