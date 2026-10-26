@@ -19,13 +19,13 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `crates/` | Kernel libraries, in four groups: `core/`, `drivers/`, `fs/`, `net/`. |
 | `domains/robot/` | The optional robot application domain (linked only when the image selects it). |
 | `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
-| `sdk/` | The native `std` SDK: target specs, linker scripts, the `std` overlay. |
+| `sdk/` | The native `std` SDK: target specs, linker scripts, the `std` overlay, and `sdktest`, the SDK's own test program. |
 | `micro/` | AzOS-micro, the MMU-less MCU kernel (riscv32imac, M-mode, PMP region domains, static tasks from the signed topology in `micro/topology/`). It is its own workspace and links the main kernel's pure crates; `make micro` builds it. |
 | `lx/` | The Linux driver compatibility layer: `emul/` (Rust base), `glue/` (C module built against a pinned Linux tree), and the lists it is checked against: `LINUX_PIN` (the Linux stable tag), `HOST_ABI` (every symbol the Linux driver server exports to modules), `DEVICE_SOURCES` (the Linux leaf drivers whose ids the hardware bus matches), `FS_EXT4_UNRESOLVED` (the imports of the ext4 module set). |
 | `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. One fragment, `Kconfig.userspace` (the programs under `userspace/`), is generated at every parse by `tools/build/gen_userspace_kconfig.py` and is not committed. |
 | `mk/` | Makefile fragments included by the top-level `Makefile`: `vars.mk`, `kernel.mk`, `userspace.mk`, `images.mk`, `host.mk`, `qemu.mk`, `lints.mk`. |
 | `tools/` | The host tools (Python and shell), one directory per role (see [Tests and tools](#tests-and-tools)); `tools/image/boot.cmd` is the U-Boot script that boots slots A/B/R from the SD card. |
-| `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), `sdk/` (SDK test program), plus the emulator runner scripts `qemu_boot.sh` and `run_all.sh`. |
+| `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), plus the emulator runner scripts `qemu_boot.sh` and `run_all.sh`. |
 | `formal/` | `tla/` (TLA+ models `cap_table` and `topology_load`, each with its `.cfg`), `INVARIANTS.md` and `README.md`. |
 | `boot/` | `boot.scr.cmd`, a U-Boot boot script. |
 | `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/build/third_party_fetch.sh`); `busybox.fragment` (the BusyBox configuration `make busybox` adds to allnoconfig); `patches/`. |
@@ -272,7 +272,6 @@ Source: `userspace/*/`, the header of each program's `main.rs`.
 | `tests/host/` (one `<name>-tests` crate per area, plus `flight-sim`) | One host-side (`std`) crate per area, built with the host toolchain. Most build the real pure modules of a kernel crate with `#[path]` or link the crate itself, against small shims for the target-specific parts. |
 | `tests/fuzz/` | Fuzz targets for parsers and decoders: config, dtb, elf, brain-link, fs, gguf, net, sh, topology. |
 | `tests/qemu_boot.sh`, `tests/run_all.sh` | The emulator scenario runners. |
-| `tests/sdk/` | `sdktest`, the SDK's own test program. |
 | `tools/build/` | What `make` runs while it builds: the Kconfig bridge (`kconfig_to_cargo.py`, `gen_userspace_kconfig.py`), the SDK and user-link helpers, the third-party fetch and builds; `make_help.txt` is `make help`. |
 | `tools/gate/` | The gate: `ci_check.sh` (`make ci`), its short tiers `gate_tier.sh` (`make check0`, `make check1`), its row table `gate_rows.tsv` and the helpers its rows run. |
 | `tools/lint/` | Checks of the tree and of built images (`make lint`); `tools_layout.py` holds this layout and checks it. |

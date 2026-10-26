@@ -7,7 +7,7 @@ publish = false
 description = "The SDK's own test: a std program for *-unknown-azos that runs the user-code harness (#[azos::test], TAP on the console) over what the std port provides: the allocator, threads, thread-locals, locks, channels, the clock, the environment, stdio. Built by `make sdk` on the three ISAs; run it from an image whose topology row grants the entropy capability. Excluded from workspace; built standalone."
 
 [dependencies]
-azos_libsys = { path = "../../../crates/core/libsys" }
+azos_libsys = { path = "../../crates/core/libsys" }
 
 [profile.release]
 opt-level = "s"

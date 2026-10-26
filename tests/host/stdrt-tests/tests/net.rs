@@ -4,7 +4,7 @@
 //! address wire layout, the conversions between `std`'s address types and it,
 //! the native result code to error kind mapping, and the blocking wait's
 //! back-off. The calls themselves (`azos_stdrt::net`) are covered from ring 3
-//! (`tests/sdk/sdktest`).
+//! (`sdk/sdktest`).
 //!
 //! The conversions are `sdk/std/sys/net/connection/azos/addr.rs` itself, built
 //! here against the host's `std` (it names `std` only through `crate::net` and

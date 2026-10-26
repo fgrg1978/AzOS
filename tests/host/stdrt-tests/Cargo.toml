@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for azos_stdrt, the std port layer of the native SDK: the entropy call against the generated Entropy dispatcher, and the trap wrappers against libsys's. The modules that issue a trap are covered from ring 3 (userspace/tests/sdktest). Excluded from workspace."
+description = "Host-side tests for azos_stdrt, the std port layer of the native SDK: the entropy call against the generated Entropy dispatcher, and the trap wrappers against libsys's. The modules that issue a trap are covered from ring 3 (sdk/sdktest). Excluded from workspace."
 
 # Run with:  cd tests/host/stdrt-tests && cargo test --release
 

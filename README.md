@@ -141,13 +141,13 @@ crates/      core (abi, arch-*, sched, mm, ipc, syscall, topology, idl, ...),
 domains/     use-specific crates (robot)
 userspace/   ring-3 services, drivers, libraries (relibc port, names, rpc, ...),
              tests and benchmark programs
-sdk/         the std target for AzOS
+sdk/         the std target for AzOS and its own test program
 micro/       AzOS-micro, a separate kernel for parts without an MMU
 lx/          glue for running Linux driver modules in ring-3 servers
 config/      Kconfig fragments and defconfigs
 mk/          the Makefile, split by concern
 tools/       build, check, signing, packaging and analysis tools
-tests/       host test crates, fuzz targets, SDK tests, QEMU smoke test
+tests/       host test crates, fuzz targets, QEMU smoke test
 formal/      TLA+ models
 boot/        U-Boot boot script source
 third_party/ vendored crates and pinned external trees

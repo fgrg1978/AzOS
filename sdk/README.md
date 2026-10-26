@@ -4,7 +4,7 @@ A Rust `std` target for AzOS, `riscv64imac-unknown-azos`, `aarch64-unknown-azos`
 and `x86_64-unknown-azos`, built with `-Zbuild-std` from the toolchain pinned in
 `rust-toolchain.toml`. `make sdk` builds every std program on the three ISAs
 (`WHY.ELF`, `PKGD.ELF`, `RPCQUIC.ELF`, the TLS probe and the SDK's own test,
-`tests/sdk/sdktest`); `make sdk-check` type-checks the port layer on the three
+`sdk/sdktest`); `make sdk-check` type-checks the port layer on the three
 ISAs and runs its host tests.
 
 ## What is where
@@ -78,7 +78,7 @@ of its own, and `sdktest` holds the edge (`fs_is_not_provided`). What of
 `std::net` the socket ops cannot serve is listed under Sockets above, and
 `sdktest` holds that edge too (`net_edges_and_udp_timeouts`).
 
-Source: `tests/sdk/sdktest/src/main.rs`.
+Source: `sdk/sdktest/src/main.rs`.
 
 ## Writing a program
 

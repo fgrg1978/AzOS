@@ -26,7 +26,7 @@ A Rust `std` target for each ISA: `riscv64imac-unknown-azos`,
 `abort`). `std` is built with `-Zbuild-std` from the toolchain pinned in
 `rust-toolchain.toml`. `make sdk` builds every std program for the three ISAs
 (the list is `SDK_ELFS` in `mk/userspace.mk`: `userspace/services/why`,
-`userspace/services/pkgd`, `userspace/services/rpcquic`, `tests/sdk/sdktest` and `userspace/lib/tls-probe`);
+`userspace/services/pkgd`, `userspace/services/rpcquic`, `sdk/sdktest` and `userspace/lib/tls-probe`);
 `make sdk-check` type-checks the port layer on the three ISAs and runs its host
 tests.
 
@@ -107,7 +107,7 @@ strip = "symbols"    # the loader reads a bounded amount of the file
 ```
 
 `fn main` is the entry. `userspace/services/why/Cargo.toml` is a complete example
-of a std program, and `tests/sdk/sdktest/src/main.rs` exercises the port. Build with
+of a std program, and `sdk/sdktest/src/main.rs` exercises the port. Build with
 `tools/build/sdk_cargo.py`:
 
 ```sh

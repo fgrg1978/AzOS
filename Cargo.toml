@@ -314,7 +314,7 @@ exclude = [
     "tests/host/stdrt-tests",
     # sdktest: the SDK's own test, a std program for *-unknown-azos; built by
     # `make sdk` (tools/build/sdk_cargo.py), never by the root workspace.
-    "tests/sdk/sdktest",
+    "sdk/sdktest",
     # energy-tests — crates/core/energy, the SCHED.TOML energy sections and
     # the DTB energy tables. Run with:  cd tests/host/energy-tests && cargo test --release
     "tests/host/energy-tests",

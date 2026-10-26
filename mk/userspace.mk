@@ -1339,11 +1339,11 @@ $(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-# The SDK's own test (tests/sdk/sdktest): a std program that runs the user-code
+# The SDK's own test (sdk/sdktest): a std program that runs the user-code
 # harness over the port. Built here; booting it needs an image whose topology
 # row grants it the entropy capability and the `net` op class (nothing ships it
 # yet).
-SDKTEST_DIR      := tests/sdk/sdktest
+SDKTEST_DIR      := sdk/sdktest
 SDKTEST_SRC       = $(SDKTEST_DIR)/src/main.rs $(SDKTEST_DIR)/Cargo.toml $(SDK_SRC) $(LIBSYS_SRC)
 SDKTEST_ELF      := $(OUT_BUILD)/sdktest.elf
 SDKTEST_ELF_AARCH64 := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX)/sdktest.elf
