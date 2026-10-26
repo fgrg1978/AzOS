@@ -809,34 +809,6 @@ Options and choices: 876. Defconfigs: 21.
 | `HV_EXAMPLE_GUEST` | Declare an example guest in the built-in topology | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | y | n | n | n | n |
 | `HV_REQUIRE` | Refuse to boot when the CPU cannot host the guests | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 
-## config/subsys/Kconfig.robot
-
-### Robot
-
-| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `ROBOT_ACKERMANN` | Ackermann (car-like, 2-channel: throttle + steering) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ROBOT_DRONE` | Drone (4-channel quadrotor PWM) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ROBOT_HUMANOID` | Humanoid (N-channel joint angles) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ROBOT_NONE` | None (no platform chosen at build time) | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| `ROBOT_WHEELED` | Wheeled (2-channel differential drive) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| choice | Robot type | n | n | n | n | n | n | n | n | n | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE |
-
-### Robot / RC input and geofence
-
-| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `GEOFENCE` | On-board geofence armed at the home fix | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| `RC_FAILSAFE_ESTOP` | RC link loss latches the e-stop | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
-| `RC_INPUT` | RC receiver feeds the safety path | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
-
-### Robot / Safety layer and motor control
-
-| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `EFFECT_WRITE_AHEAD` | Write-ahead receipts: record a ring-3 motor op before it reaches the wheel | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| `MOTOR_COMMANDER_EXIT_STOP` | A dead motor commander's wheels go to a safe stop | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
-
 ## config/kernel/Kconfig.decisions
 
 ### Decision records
@@ -1227,6 +1199,34 @@ Options and choices: 876. Defconfigs: 21.
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `PKG_FETCH_TFTP` | Installer may fetch a package from a TFTP server (development builds) | n | n | y | y | y | y | y | y | n | n | n | y | y | n | n | y | y | y | y | y | n |
+
+## config/subsys/Kconfig.robot
+
+### Robot
+
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ROBOT_ACKERMANN` | Ackermann (car-like, 2-channel: throttle + steering) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `ROBOT_DRONE` | Drone (4-channel quadrotor PWM) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `ROBOT_HUMANOID` | Humanoid (N-channel joint angles) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `ROBOT_NONE` | None (no platform chosen at build time) | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| `ROBOT_WHEELED` | Wheeled (2-channel differential drive) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| choice | Robot type | n | n | n | n | n | n | n | n | n | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE |
+
+### Robot / RC input and geofence
+
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `GEOFENCE` | On-board geofence armed at the home fix | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| `RC_FAILSAFE_ESTOP` | RC link loss latches the e-stop | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
+| `RC_INPUT` | RC receiver feeds the safety path | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+
+### Robot / Safety layer and motor control
+
+| Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `EFFECT_WRITE_AHEAD` | Write-ahead receipts: record a ring-3 motor op before it reaches the wheel | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| `MOTOR_COMMANDER_EXIT_STOP` | A dead motor commander's wheels go to a safe stop | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
 
 ## config/subsys/Kconfig.rpc
 
