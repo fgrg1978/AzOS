@@ -71,7 +71,7 @@ prints where they are:
 | Kernel | `$AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel` | `$AZOS_OUT/build/kernel-aarch64.img`, the arm64 Image (`-16k`/`-64k` with another granule) | `$AZOS_OUT/build/kernel-x86_64.elf` |
 | System volume | `$AZOS_OUT/build/disk-sh.img` | `$AZOS_OUT/build/disk-aarch64-sh.img` | `$AZOS_OUT/build/disk-x86_64.img` |
 | SDK target | `sdk/targets/riscv64imac-unknown-azos.json` | `sdk/targets/aarch64-unknown-azos.json` | `sdk/targets/x86_64-unknown-azos.json` |
-| `make qemu` | QEMU `virt` | QEMU `virt`, GICv3, entered at EL1 (`qemu-aarch64-el2`: at EL2) | QEMU `microvm`, PVH entry |
+| `make qemu` (a copy of the system volume on virtio-blk, `-m` from Kconfig `RAM_SIZE`) | QEMU `virt` | QEMU `virt`, GICv3, entered at EL1 (`qemu-aarch64-el2`: at EL2) | QEMU `microvm`, PVH entry |
 | Variants | `build-rvv`, `build-pci`, `qemu-smp`, `qemu-full-smp`, `qemu-rvv`, `qemu-full-smp-rvv`, `qemu-pci`, `qemu-gdb` | | `qemu-pci-x86_64`, `run-x86-pc` (each from its own defconfig; q35 with OVMF, booted by Limine; needs `LIMINE_DIR`, `OVMF_CODE`, `OVMF_VARS`) |
 | Type-check only | `make ARCH=riscv64 check` | `make ARCH=aarch64 check` | `make ARCH=x86_64 check` |
 

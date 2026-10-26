@@ -4,9 +4,10 @@
 # and PC boots, and the smoke runs.
 # Included by the top-level Makefile; the order of the includes there is part of the contract.
 
-# The system `make build` built, for the ISA $(KCONFIG_CONFIG) selects
-# (mk/vars.mk, "The configured system").
+# The system `make build` built, for the ISA $(KCONFIG_CONFIG) selects, with
+# its system volume (mk/vars.mk, "The configured system").
 qemu: build
+	cp $(SYSTEM_VOLUME) $(QEMU_VOLUME)
 	$(QEMU_SYSTEM_$(KCONFIG_ISA))
 
 # Gate 4: native PCI enumeration on QEMU `virt`.
@@ -162,7 +163,7 @@ x86_64-pci:
 
 QEMU_X86_64_PCI_DISK ?= $(OUT_BUILD)/disk-x86_64.img
 qemu-pci-x86_64: x86_64-pci $(QEMU_X86_64_PCI_DISK)
-	qemu-system-x86_64 $(subst microvm,microvm$(comma)pcie=on,$(QEMU_X86_64_FLAGS)) -kernel $(X86_64_PCI_IMG) \
+	qemu-system-x86_64 $(subst microvm,microvm$(comma)pcie=on,$(QEMU_X86_64_FLAGS)) -m 128M -kernel $(X86_64_PCI_IMG) \
 	    -drive file=$(QEMU_X86_64_PCI_DISK)$(comma)if=none$(comma)format=raw$(comma)id=pcinvme0 \
 	    -device nvme$(comma)serial=deadbeef$(comma)drive=pcinvme0 \
 	    -device virtio-net-pci$(comma)disable-legacy=on$(comma)netdev=pcinet0 -netdev user$(comma)id=pcinet0

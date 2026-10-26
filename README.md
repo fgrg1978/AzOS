@@ -116,7 +116,7 @@ Host: macOS or Linux, the nightly Rust toolchain pinned by
 ```bash
 make config        # pick the ISA, a preset and options (or make defconfig-<name>)
 make build         # build what .config selects: kernel, images, system volume
-make qemu          # boot what make build built
+make qemu          # boot what make build built, with its system volume
 make sdk           # the Rust std target for AzOS, on the three ISAs
 make check0        # cargo check per ISA + the host suites the diff reaches
 make ci            # the full gate: builds, host suites and QEMU scenarios

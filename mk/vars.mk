@@ -851,7 +851,7 @@ X86_64_DALEK   := --cfg curve25519_dalek_backend=\"serial\"
 # -cpu max: the default model (qemu64) is below the x86-64-v2 baseline, and the
 # kernel refuses it (the canary: `make qemu QEMU_X86_64_CPU=qemu64`, x86_64 configured).
 QEMU_X86_64_CPU ?= max
-QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-reboot \
+QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -nographic -no-reboot \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
 # ── x86_64 userspace ────────────────────────────────────────────────────────
@@ -994,12 +994,21 @@ KERNEL_IMAGE   := $(KERNEL_IMAGE_$(KCONFIG_ISA))
 SDK_BUILD       = $(SDK_BUILD_$(KCONFIG_ISA))
 
 # `make qemu`: the machine of each ISA, the gate's (tools/gate/ci_check.sh
-# `ushell_row`). TCG on every host, Apple silicon included. QEMU_AARCH64_MACHINE
+# `ushell_row`), with the RAM the configuration expects (Kconfig RAM_SIZE) and
+# the system volume on virtio-blk, so boot ends in the console program, not in
+# the recovery console. It boots a copy of the volume (QEMU_VOLUME): a boot
+# writes to it (BOOTMETA, logs), and each `make qemu` starts from what `make
+# build` made. TCG on every host, Apple silicon included. QEMU_AARCH64_MACHINE
 # with `virtualization=on` enters the kernel at EL2 (`make qemu-aarch64-el2`).
 QEMU_AARCH64_MACHINE ?= virt,gic-version=3
-QEMU_SYSTEM_riscv64 = $(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_IMAGE)
-QEMU_SYSTEM_aarch64 = qemu-system-aarch64 -M $(QEMU_AARCH64_MACHINE) $(QEMU_AARCH64_KERNEL_FLAGS) -kernel $(KERNEL_IMAGE)
-QEMU_SYSTEM_x86_64  = qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(KERNEL_IMAGE) \
+QEMU_VOLUME := $(OUT_BUILD)/qemu-$(KCONFIG_ISA).img
+QEMU_RAM     = $(shell sed -n 's/^CONFIG_RAM_SIZE=//p' '$(SYSTEM_KCONFIG)')M
+QEMU_BLK     = -drive file=$(QEMU_VOLUME),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0
+QEMU_SYSTEM_riscv64 = $(QEMU) $(QEMU_FLAGS) -smp 4 -m $(QEMU_RAM) -global virtio-mmio.force-legacy=false \
+	$(QEMU_BLK) -device virtio-rng-device -kernel $(KERNEL_IMAGE)
+QEMU_SYSTEM_aarch64 = qemu-system-aarch64 -M $(QEMU_AARCH64_MACHINE) $(QEMU_AARCH64_KERNEL_FLAGS) -m $(QEMU_RAM) \
+	-global virtio-mmio.force-legacy=false $(QEMU_BLK) -device virtio-rng-device -kernel $(KERNEL_IMAGE)
+QEMU_SYSTEM_x86_64  = qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -m $(QEMU_RAM) $(QEMU_BLK) -kernel $(KERNEL_IMAGE) \
 	$(if $(QEMU_X86_64_UCODE),-initrd $(QEMU_X86_64_UCODE))
 
 # The goals that build or boot the riscv64 kernel only (the variants of
