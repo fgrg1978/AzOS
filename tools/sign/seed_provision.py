@@ -34,7 +34,9 @@ import hashlib
 import os
 import sys
 
-from azos_records import SECTOR, records_start
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+import azos_tools  # noqa: E402,F401  (every tools/ module directory on sys.path)
+from azos_records import SECTOR, records_start  # noqa: E402
 
 SEED_SECTOR = 1
 MAGIC = b"SEED"
