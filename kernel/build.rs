@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Linker-script parameters for the translation granule.
 //!
-//! `kernel/linker-aarch64.ld` aligns every output section to a page (W^X
+//! `arch/aarch64/boot/linker-aarch64.ld` aligns every output section to a page (W^X
 //! remaps whole pages, so `.text` and `.rodata` must not share one) and
 //! links the kernel `KERNEL_VA_OFFSET` above its load address. Both depend
 //! on the granule the cargo features `page-16k` / `page-64k` select

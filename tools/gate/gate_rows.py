@@ -115,8 +115,8 @@ SUBSYS = [
      "userspace/** crates/core/abi/** crates/core/libsys/** crates/core/topology/**"),
 ]
 ARCH_DEPS = {
-    "rv": "arch/riscv64/** kernel/linker.ld kernel/src/entry/**",
-    "arm": "arch/aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**",
+    "rv": "arch/riscv64/** arch/riscv64/boot/linker.ld kernel/src/entry/**",
+    "arm": "arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/**",
 }
 # Classes that keep a row out of a shared boot, and the evidence for each.
 HAZARDS = [

@@ -120,7 +120,7 @@ case "$isa" in
     aarch64)
         # shellcheck disable=SC2046
         env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
-            RUSTFLAGS="-C link-arg=-Tkernel/linker-aarch64.ld $(python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")" \
+            RUSTFLAGS="-C link-arg=-Tarch/aarch64/boot/linker-aarch64.ld $(python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")" \
             "$cargo" build --release -p azos_kernel $(python3 tools/build/kconfig_to_cargo.py "$cfg" | tr -s ' ') >&2
         reloc_lint "$tdir/aarch64-unknown-none-softfloat/release/kernel" R_AARCH64_RELATIVE
         objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
@@ -130,7 +130,7 @@ case "$isa" in
     x86_64)
         # shellcheck disable=SC2046
         env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
-            RUSTFLAGS="-C link-arg=-Tkernel/linker-x86_64.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")" \
+            RUSTFLAGS="-C link-arg=-Tarch/x86_64/boot/linker-x86_64.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")" \
             "$cargo" build --release -p azos_kernel $(python3 tools/build/kconfig_to_cargo.py "$cfg" | tr -s ' ') >&2
         reloc_lint "$tdir/x86_64-unknown-none/release/kernel" R_X86_64_RELATIVE
         echo "$tdir/x86_64-unknown-none/release/kernel"

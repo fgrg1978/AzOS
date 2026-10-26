@@ -5,7 +5,7 @@
 # definition, because the device tree the key is added to has to describe the
 # machine the row boots, and the two used to be two lists.
 #
-# RV_LOAD    where the kernel is linked (kernel/linker.ld) and U-Boot loads it
+# RV_LOAD    where the kernel is linked (arch/riscv64/boot/linker.ld) and U-Boot loads it
 # RV_SCRIPT  U-Boot's ${scriptaddr} (include/configs/qemu-riscv.h): where its
 #            boot.scr is read to
 RV_LOAD=0x80200000

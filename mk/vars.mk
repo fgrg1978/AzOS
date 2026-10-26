@@ -519,7 +519,7 @@ VF2_SD      ?= /dev/sdb       # SD card device on Linux; use diskN on macOS
 VF2_BAUD    ?= 115200
 
 # VF2 kernel ELF (built with vf2 feature + vf2 linker script)
-VF2_LINKER   := kernel/linker-vf2.ld
+VF2_LINKER   := arch/riscv64/boot/linker-vf2.ld
 VF2_RUSTFLAGS := -C link-arg=-T$(VF2_LINKER)
 VF2_ELF      := $(OUT_TARGET)/$(TARGET)/release/kernel-vf2
 VF2_BIN      = $(OUT_BUILD)/kernel-vf2$(VF2_SUFFIX).bin
@@ -538,7 +538,7 @@ K1_BAUD    ?= 115200
 
 # K1 kernel ELF (built with k1 feature + k1 linker script)
 # K1 has native RVV 1.0 (VLEN=256) — k1 feature enables RVV code paths.
-K1_LINKER   := kernel/linker-k1.ld
+K1_LINKER   := arch/riscv64/boot/linker-k1.ld
 # ISA extensions the K1 has and the VF2 does not.
 #
 # The SpacemiT X60 is an RVA22 part (`config/defconfigs/robot-sbc-riscv64+k1.config`: rv64gcv), and RVA22
@@ -571,7 +571,7 @@ QEMU_RVV_CPU := rv64,v=true,vlen=128,vext_spec=v1.0
 # Fleet profile: gateway boards with ≥ 1 GiB RAM.
 # Static tables + 256 MiB heap don't fit the default 8 MiB linker.
 # linker-fleet.ld carves a 1022 MiB RAM region above OpenSBI.
-FLEET_LINKER   := kernel/linker-fleet.ld
+FLEET_LINKER   := arch/riscv64/boot/linker-fleet.ld
 FLEET_RUSTFLAGS := -C link-arg=-T$(FLEET_LINKER)
 
 # The SHA-256 of every ELF the disk image ships, keyed by the name it is copied
@@ -780,7 +780,7 @@ IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
 #    tools/lint/aarch64_fp_free_check.sh). Userspace stays `aarch64-unknown-none`
 #    (TARGET_AARCH64 above).
 AARCH64_TARGET   := aarch64-unknown-none-softfloat
-AARCH64_LINKER   := kernel/linker-aarch64.ld
+AARCH64_LINKER   := arch/aarch64/boot/linker-aarch64.ld
 AARCH64_KCONFIG  := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX).config
 # `make aarch64 AARCH64_DEFCONFIG=<file> AARCH64_KCONFIG=<expanded> AARCH64_IMG=<image> ...` builds another
 # configuration beside the default one (`make azos-guest`, the x86_64 `X86_64_DEFCONFIG` shape).
@@ -820,7 +820,7 @@ X86_64_KCONFIG ?= $(OUT_BUILD)/x86_64.config
 X86_64_TARGET_DIR ?= $(OUT_TARGET)
 X86_64_ELF     := $(X86_64_TARGET_DIR)/x86_64-unknown-none/release/kernel
 X86_64_IMG     := $(OUT_BUILD)/kernel-x86_64.elf
-X86_64_LINKER  := kernel/linker-x86_64.ld
+X86_64_LINKER  := arch/x86_64/boot/linker-x86_64.ld
 # curve25519-dalek picks its AVX2 "simd" backend on x86_64; the kernel is
 # soft-float (no SSE/AVX state at CPL0), so it takes the portable one. So do
 # the ring-3 images (X86_64_UFLAGS), as on riscv64 and aarch64: the AVX2

@@ -1,57 +1,36 @@
 /* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
 /*
- * Linker script for AZOS embedded-profile builds (config/defconfigs/generic-embedded-riscv64+board-generic.config).
+ * Linker script for AzOS — StarFive VisionFive 2 (JH7110)
  *
- * Target: rv64 boards with 16-64 MiB of RAM. The layout is kernel/linker.ld's
- * (same symbols, same `.stack` section with its red zone below _kernel_end);
- * what differs is the size of the RAM region and a named budget on the image.
- *
- * Memory layout (OpenSBI base, as on QEMU virt):
- *   0x80000000 - 0x801FFFFF : OpenSBI firmware (2 MiB)
- *   0x80200000 - 0x80FFFFFF : kernel region on a 16 MiB board (14 MiB)
- *
- * The RAM region is sized for the smallest board the profile targets, 16 MiB,
- * so one binary links for both 16 and 64 MiB: the PMM takes the RAM size from
- * the device tree at boot, and `RAM_SIZE` only bounds the heap at build time.
- *
- * EMBEDDED_IMAGE_BUDGET bounds [0x80200000, _kernel_end): .text through
- * .bss plus the boot stack and its red zone. It does NOT include the kernel
- * heap (KERNEL_HEAP_SIZE), which the kernel reserves at boot right after
- * _kernel_end, nor the page-table pages and task frames the PMM hands out.
- * Those must fit in the rest of the 14 MiB region; `tools/lint/size_budget.py
- * --memory` prints both numbers per profile.
+ * JH7110 memory layout with U-Boot + OpenSBI:
+ *   0x40000000 - 0x401FFFFF : OpenSBI firmware (2 MiB, reserved)
+ *   0x40200000 - ...        : Kernel (loaded here by U-Boot)
+ *   DDR size: 4 GiB (0x40000000 .. 0x140000000) on 4 GB board
  */
 
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
 /* BOOT_STACK_SIZE / BOOT_STACK_REDZONE (B1-01): single source, see
- * kernel/linker-common.ld — same sizes as kernel/linker.ld, so
- * `boot_stack_report` reads the same red zone. */
+ * kernel/linker-common.ld. */
 INCLUDE kernel/linker-common.ld
-
-/* The image budget: see the header. The measured image is printed by
- * tools/lint/size_budget.py --memory. */
-EMBEDDED_IMAGE_BUDGET = 8M;
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = 14M
+    RAM (rwx) : ORIGIN = 0x40200000, LENGTH = 128M
 }
 
 SECTIONS
 {
-    . = 0x80200000;
+    . = 0x40200000;
 
-    /* Boot code first */
     _text_start = .;
     .text.boot : ALIGN(4K)
     {
         *(.text.boot)
     } > RAM
 
-    /* All other code */
     .text : ALIGN(4K)
     {
         *(.text .text.*)
@@ -72,7 +51,6 @@ SECTIONS
     } > RAM
     _text_end = .;
 
-    /* Read-only data */
     _rodata_start = .;
     .rodata : ALIGN(4K)
     {
@@ -110,9 +88,10 @@ SECTIONS
         KEEP(*(__patchable_function_entries))
         __azos_patch_end = .;
     } > RAM
+    /* Virtual KASLR: the relocation table (Kconfig KASLR); empty otherwise. */
+    INCLUDE arch/riscv64/boot/reloc-riscv64.ld
     _rodata_end = .;
 
-    /* Initialized data */
     _data_start = .;
     /* Set-once function-pointer hooks and the x86 IDT (azos_common::hook,
      * security audit 2026-10-17 finding D). First in the data range so the
@@ -134,18 +113,17 @@ SECTIONS
     } > RAM
     _data_end = .;
 
-    /* Uninitialized data (BSS) */
     .bss : ALIGN(4K)
     {
         _bss_start = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
         *(COMMON)
-        . = ALIGN(8);           /* ensure _bss_end is 8-byte aligned for sd-based clear */
+        . = ALIGN(8);
         _bss_end = .;
     } > RAM
 
-    /* Boot stack inside the image, below _kernel_end: see kernel/linker.ld. */
+    /* Boot stack inside the image, below _kernel_end: see arch/riscv64/boot/linker.ld. */
     .stack (NOLOAD) : ALIGN(4K)
     {
         _stack_redzone = .;
@@ -170,8 +148,6 @@ ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")
 ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
        "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")
 
-/* The start of RAM (as kernel/linker.ld), below OpenSBI: the Image header's text_offset. */
-_dram_base = 0x80000000;
-INCLUDE kernel/image-header-riscv64.ld
-ASSERT(_kernel_end - 0x80200000 <= EMBEDDED_IMAGE_BUDGET,
-       "embedded image exceeds EMBEDDED_IMAGE_BUDGET (kernel/linker-embedded.ld)")
+/* The start of RAM (JH7110), below OpenSBI: the Image header's text_offset. */
+_dram_base = 0x40000000;
+INCLUDE arch/riscv64/boot/image-header-riscv64.ld

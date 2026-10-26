@@ -212,7 +212,7 @@ A_CONFIG="$WORK/qemu-aarch64.config"
     KCONFIG_CONFIG="$A_CONFIG.sel" \
     CARGO_TARGET_DIR="$BENCH_TARGET/azos-aarch64" \
     $CARGO build --release -p azos_kernel $args \
-    --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' \
+    --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' \
     >"$WORK/build-aarch64.log" 2>&1 ) \
     || die "could not build the aarch64 AzOS kernel (selection $K_FEATURES) — see $WORK/build-aarch64.log"
 [ -f "$A_ELF" ] || die "no kernel at $A_ELF"

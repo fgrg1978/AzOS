@@ -426,7 +426,7 @@ choice
         bool "PVH (QEMU microvm -kernel, Xen PVH)"
         help
           A 32-bit entry named by an ELF note, loaded at 1 MiB by QEMU's
-          `-kernel` (kernel/linker-x86_64.ld). The boot information is
+          `-kernel` (arch/x86_64/boot/linker-x86_64.ld). The boot information is
           the PVH hvm_start_info (memory map, command line, RSDP).
 
     config X86_BOOT_LIMINE
@@ -434,7 +434,7 @@ choice
         bool "Limine boot protocol (a PC: UEFI or BIOS through Limine)"
         help
           A 64-bit entry reached from the Limine bootloader
-          (kernel/linker-x86_64-limine.ld, a higher-half ELF with the
+          (arch/x86_64/boot/linker-x86_64-limine.ld, a higher-half ELF with the
           request structs in `.limine_requests`). Limine hands over the
           memory map, the ACPI RSDP, SMBIOS, the SMP list and a
           framebuffer (the future framebuffer console); they are copied

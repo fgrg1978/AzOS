@@ -2656,7 +2656,7 @@ fn for_each_leaf_outside_image(
 /// mitigation that was missing rather than a hole that was being used.
 ///
 /// Verified before doing it that nothing executes outside `.text`:
-/// `kernel/linker.ld` has the sections in order with `_kernel_end` after
+/// `arch/riscv64/boot/linker.ld` has the sections in order with `_kernel_end` after
 /// `.bss`, the tree's only `#[link_section]` is the secure-boot public key,
 /// and the vDSO page holds atomics, not code.
 ///

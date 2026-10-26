@@ -473,7 +473,7 @@ pub mod hw {
     pub const NUM_CPUS:    usize = 4;
     /// Physical RAM base — `hw/arm/virt.c`'s `VIRT_MEM` MemMapEntry.
     pub const RAM_BASE:    usize = 0x4000_0000;
-    /// Kernel load address: `kernel/linker-aarch64.ld` loads the image at
+    /// Kernel load address: `arch/aarch64/boot/linker-aarch64.ld` loads the image at
     /// this address, matching QEMU's `-kernel` mini-loader
     /// convention for `virt` (32 KiB reserved below it for the FDT/boot
     /// data QEMU places there before jumping in).

@@ -50,7 +50,7 @@ CORE = ["Cargo.toml", "Cargo.lock", "kernel/Cargo.toml", "kernel/build.rs", "Kco
         "config/**", "crates/core/limits/**", "arch/api/**", "kernel/src/main.rs",
         "kernel/src/boot/**", "kernel/src/entry/riscv64/irq.rs", "kernel/src/entry/riscv64/trap.rs", "kernel/src/smokes/**",
         "kernel/src/entry/*/asm.rs", "kernel/src/tasks/create.rs",
-        "kernel/linker*.ld", ".cargo/**", "rust-toolchain.toml", "Makefile",
+        "arch/*/boot/*.ld", "kernel/linker-common.ld", ".cargo/**", "rust-toolchain.toml", "Makefile",
         "tools/gate/gate_pgroup.sh"]
 # The gate's shared helpers: a change there can move any row.
 GATE_HELPERS = ["qemu_run", "kq", "kbuild", "a64_kbuild", "a64_kbuild_out", "par",
@@ -245,7 +245,7 @@ def self_test():
     expect("canary: %s does not reach arch-api-tests through a workspace dep" % lim,
            "tests/host/arch-api-tests" in host_suites([lim]))
     toy = {"tests/host/zz-tests": {"file:crates/core/sched/src/scheduler/wake.rs"},
-           "tests/host/ld-tests": {"file:kernel/linker-x86_64-limine.ld"},
+           "tests/host/ld-tests": {"file:arch/x86_64/boot/linker-x86_64-limine.ld"},
            "kernel": {"crates/core/limits"}}
     expect("canary: a module beside an included file reaches no suite",
            host_suites(["crates/core/sched/src/scheduler/wake/preempt.rs"], toy) == ["tests/host/zz-tests"])

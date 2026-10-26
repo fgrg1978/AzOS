@@ -33,7 +33,7 @@
 //!
 //! What an x86_64 port adds beyond these methods: `kernel/src/entry/x86_64/`
 //! (boot hooks, `ArchEntry`, `TrapContext`, `boot.S`/`trap_entry.S`/
-//! `context_switch.S`), `kernel/linker-x86_64.ld`, ACPI MADT next to the DTB
+//! `context_switch.S`), `arch/x86_64/boot/linker-x86_64.ld`, ACPI MADT next to the DTB
 //! for CPU discovery, LAPIC/IOAPIC in `crates/drivers/irqchip`, and the
 //! `compile_error!("x86_64: ...")` branches the shared crates carry.
 

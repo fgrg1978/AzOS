@@ -97,30 +97,32 @@ fn a_hook_is_small() {
 /// rules: `linker.ld` riscv64 QEMU, `-vf2`/`-k1`/`-fleet`/`-embedded` the
 /// riscv64 boards and profiles, `-aarch64`, `-x86_64` and its Limine twin).
 const SCRIPTS: [(&str, &str); 8] = [
-    ("linker.ld", include_str!("../../../../kernel/linker.ld")),
-    ("linker-vf2.ld", include_str!("../../../../kernel/linker-vf2.ld")),
-    ("linker-k1.ld", include_str!("../../../../kernel/linker-k1.ld")),
-    ("linker-fleet.ld", include_str!("../../../../kernel/linker-fleet.ld")),
-    ("linker-embedded.ld", include_str!("../../../../kernel/linker-embedded.ld")),
-    ("linker-aarch64.ld", include_str!("../../../../kernel/linker-aarch64.ld")),
-    ("linker-x86_64.ld", include_str!("../../../../kernel/linker-x86_64.ld")),
-    ("linker-x86_64-limine.ld", include_str!("../../../../kernel/linker-x86_64-limine.ld")),
+    ("linker.ld", include_str!("../../../../arch/riscv64/boot/linker.ld")),
+    ("linker-vf2.ld", include_str!("../../../../arch/riscv64/boot/linker-vf2.ld")),
+    ("linker-k1.ld", include_str!("../../../../arch/riscv64/boot/linker-k1.ld")),
+    ("linker-fleet.ld", include_str!("../../../../arch/riscv64/boot/linker-fleet.ld")),
+    ("linker-embedded.ld", include_str!("../../../../arch/riscv64/boot/linker-embedded.ld")),
+    ("linker-aarch64.ld", include_str!("../../../../arch/aarch64/boot/linker-aarch64.ld")),
+    ("linker-x86_64.ld", include_str!("../../../../arch/x86_64/boot/linker-x86_64.ld")),
+    ("linker-x86_64-limine.ld", include_str!("../../../../arch/x86_64/boot/linker-x86_64-limine.ld")),
 ];
 
 /// The scripts on disk are all of them: a ninth kernel script added without
 /// the section fails here instead of linking an unprotected kernel.
 #[test]
 fn every_kernel_linker_script_is_covered() {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../kernel");
-    let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+    let arch = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../arch");
+    let mut on_disk: Vec<String> = std::fs::read_dir(arch)
         .unwrap()
+        .filter_map(|isa| std::fs::read_dir(isa.unwrap().path().join("boot")).ok())
+        .flatten()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .filter(|n| n.starts_with("linker") && n.ends_with(".ld") && n != "linker-common.ld")
+        .filter(|n| n.starts_with("linker") && n.ends_with(".ld"))
         .collect();
     on_disk.sort();
     let mut listed: Vec<String> = SCRIPTS.iter().map(|(n, _)| n.to_string()).collect();
     listed.sort();
-    assert_eq!(on_disk, listed, "kernel/linker*.ld and SCRIPTS disagree");
+    assert_eq!(on_disk, listed, "arch/*/boot/linker*.ld and SCRIPTS disagree");
 }
 
 #[test]

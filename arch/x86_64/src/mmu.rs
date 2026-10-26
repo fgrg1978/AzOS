@@ -170,7 +170,7 @@ pub const fn user_top(levels: usize) -> usize {
 }
 
 /// The kernel IMAGE's base: the image links at `KERNEL_VA_OFFSET` plus a
-/// fixed offset (`kernel/linker-x86_64.ld`, `-limine.ld`). The top 2 GiB: the
+/// fixed offset (`arch/x86_64/boot/linker-x86_64.ld`, `-limine.ld`). The top 2 GiB: the
 /// `x86_64-unknown-none` target compiles with `-mcmodel=kernel`, whose
 /// absolute symbol references are sign-extended 32-bit, so the image must
 /// sit there (Linux's `__START_KERNEL_map`). PML4 slot 511 (PML5 slot 511,

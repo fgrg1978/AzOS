@@ -23,7 +23,7 @@
 // 2 GiB) above the physical address PVH loaded it at (linker-x86_64.ld), and
 // the 32-bit stage runs with paging off: every symbol it names is written
 // `<sym>_pa`, its physical address, an absolute symbol the linker script
-// defines (kernel/boot-pa-x86_64.ld: `sym - KVA` would be an absolute
+// defines (arch/x86_64/boot/boot-pa-x86_64.ld: `sym - KVA` would be an absolute
 // relocation a position-independent link, Kconfig KASLR, refuses).
 //
 // Boot CPU, in order:

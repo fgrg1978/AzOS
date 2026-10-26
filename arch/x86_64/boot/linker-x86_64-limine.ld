@@ -3,7 +3,7 @@
 /*
  * Linker script for the x86_64 kernel booted through the Limine protocol
  * (`make x86_64-limine`, Kconfig X86_BOOT_LIMINE). It is
- * kernel/linker-x86_64.ld with these differences, and must be kept in step
+ * arch/x86_64/boot/linker-x86_64.ld with these differences, and must be kept in step
  * with it otherwise:
  *   - ENTRY(_limine_start), the 64-bit entry at the end of boot.S, not the
  *     PVH note's `_start`; the `.note.Xen` section is discarded;
@@ -180,7 +180,7 @@ SECTIONS
     _kernel_end = .;
 
     /* boot.S's 32-bit stage (never run under Limine) names these. */
-    INCLUDE kernel/boot-pa-x86_64.ld
+    INCLUDE arch/x86_64/boot/boot-pa-x86_64.ld
 }
 
 /* The offset above is Rust's `azos_arch::mmu::KERNEL_VA_OFFSET` (boot.S's

@@ -4,7 +4,7 @@
  * Linker script for the x86_64 kernel (`make ARCH=x86_64`): a PVH ELF
  * QEMU `-M microvm -kernel` loads at its PHYSICAL addresses (PT_LOAD
  * p_paddr). It names the sections and symbols the shared code reads,
- * matched to kernel/linker.ld and kernel/linker-aarch64.ld.
+ * matched to arch/riscv64/boot/linker.ld and arch/aarch64/boot/linker-aarch64.ld.
  *
  * Layout (the aarch64 TTBR1 model, one offset):
  *   - load address (LMA): KERNEL_PHYS, 1 MiB physical;
@@ -169,7 +169,7 @@ SECTIONS
     _kernel_end = .;
 
     /* The physical addresses boot.S's 32-bit stage names (`<sym>_pa`). */
-    INCLUDE kernel/boot-pa-x86_64.ld
+    INCLUDE arch/x86_64/boot/boot-pa-x86_64.ld
 }
 
 /* The offset above is Rust's `azos_arch::mmu::KERNEL_VA_OFFSET` (boot.S's

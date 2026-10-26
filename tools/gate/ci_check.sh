@@ -365,7 +365,7 @@ case "$K1_ISA" in
 esac
 
 build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
-    local label="$1" feat="$2" ld="kernel/linker-${5:-$2}.ld" isa="${3:-}" target="${4:-}"
+    local label="$1" feat="$2" ld="arch/${5:-riscv64}/boot/linker-${5:-$2}.ld" isa="${3:-}" target="${4:-}"
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     if ! board_config "$feat"; then
@@ -429,7 +429,7 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
 # robot-fleet.config / robot-embedded.config (same profile, USE_ROBOT).
 FLEET_DIR="${FLEET_DIR:-$AZOS_OUT/target/fleet}"
 FLEET_CONFIG="${FLEET_DIR}/fleet.config"
-FLEET_RUSTFLAGS="-C link-arg=-Tkernel/linker-fleet.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
+FLEET_RUSTFLAGS="-C link-arg=-Tarch/riscv64/boot/linker-fleet.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
 FLEET_KERNEL="${FLEET_DIR}/riscv64imac-unknown-none-elf/release/kernel"
 FLEET_BUILT=0
 
@@ -485,7 +485,7 @@ fleet_config_applied() {
 EMBEDDED_DIR="${EMBEDDED_DIR:-$AZOS_OUT/target/embedded}"
 EMBEDDED_CONFIG="${EMBEDDED_DIR}/embedded.config"
 EMBEDDED_KERNEL="${EMBEDDED_DIR}/riscv64imac-unknown-none-elf/release/kernel"
-EMBEDDED_RUSTFLAGS="-C link-arg=-Tkernel/linker-embedded.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
+EMBEDDED_RUSTFLAGS="-C link-arg=-Tarch/riscv64/boot/linker-embedded.ld -C code-model=medium -C target-feature=+zaamo,+zalrsc"
 EMBEDDED_BUILT=0
 # Debug log level in the gate, as `fleet_config` says. The gate also builds these
 # release profiles with SECURE_BOOT_ENFORCED off (`default y if !BUILD_TYPE_DEV`
@@ -3054,7 +3054,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     # ARCH_AARCH64 kernel.
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel --select "$feats" \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; then
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)"; then
         printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
         return 1
     fi
@@ -3112,7 +3112,7 @@ printf "  %-26s" "aarch64 kernel (build)..."
 # link fails on `undefined symbol: _stack_end`. (Written that way first, 21 Sep.)
 if a64k_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release --target aarch64-unknown-none-softfloat \
         -p azos_kernel \
-        --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+        --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)" \
    && ! printf '%s\n' "$a64k_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
    && [ -f "$A64_KERNEL" ]; then
     # ── ELF → arm64 Image (task 1) ──────────────────────────────────────────
@@ -4049,7 +4049,7 @@ aarch64_dhcp_row() {
     local build_out
     if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel --select dhcp-smoke \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
        || [ ! -f "$dhcp_kernel" ]; then
         bad; echo "      dhcp-smoke aarch64 kernel did NOT build:"
@@ -4179,7 +4179,7 @@ aarch64_flight_recorder_row() {
     if ! build_out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$ROBOT_AARCH64_CONFIG" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel \
             --select use-robot,estop-latch-smoke \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$build_out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE" \
        || [ ! -f "$fr_kernel" ]; then
         bad; echo "      estop-latch-smoke aarch64 kernel did NOT build:"
@@ -5963,7 +5963,7 @@ drvplace_build_canary_row() { # <label> <isa: rv|arm|x86>
         out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build \
             --release --target aarch64-unknown-none-softfloat -p azos_kernel \
             --select "$feat" \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)"
     fi
     if printf '%s\n' "$out" | qgrep -qF "$text"; then
         ok
@@ -7132,7 +7132,7 @@ par_row elfperm_row "elf: rodata-exec canary"             rv  qemu,rodata-exec-c
 par_row elfperm_row "aarch64 elf: rodata-exec canary"     arm qemu,rodata-exec-canary canary
 # User images only: a kernel ELF the x86_64 rows copy into build/
 # (kernel-x86_64*.elf) is a PIE whose .dynamic sits in the read-only range by
-# design (kernel/linker-x86_64.ld; the boot's W^X pass seals it).
+# design (arch/x86_64/boot/linker-x86_64.ld; the boot's W^X pass seals it).
 if ci_row_begin "elf: user images, one mapping per page"; then
     printf "  %-26s" "elf: user images, one mapping per page..."
     if epp_out="$(python3 "${REPO_ROOT}/tools/lint/elf_page_perms.py" --self-test 2>&1)" \
@@ -8810,7 +8810,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
     rm -f "$kelf"
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
             "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)" \
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)" \
        || printf '%s\n' "$out" | grep -E "^(error|warning)" | qgrep -vqE "$A64_KNOWN_NOISE"; then
         bad; printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5; return
     fi
@@ -10161,7 +10161,7 @@ nrcpus_row() { # nrcpus_row <isa: rv|arm> <NR_CPUS> <smp> <features> <expect: PA
     else
         env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel --select "$feats" \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >"$log.build" 2>&1 \
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' >"$log.build" 2>&1 \
             || { bad; echo "      aarch64 --features $feats (NR_CPUS $nr) did not build: $log.build"; return; }
         elf="$tdir/aarch64-unknown-none-softfloat/release/kernel"
         "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" -O binary "$elf" "$kimg" \
@@ -10282,7 +10282,7 @@ selftests_off_row() { # selftests_off_row <rv|arm>
     else
         env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release \
             --target "$triple" -p azos_kernel \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >"$log.build" 2>&1 \
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' >"$log.build" 2>&1 \
             || { bad; echo "      aarch64 ${defc}.config did not build: $log.build"; return; }
         elf="$tdir/${triple}/release/kernel"
         "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" -O binary "$elf" "$kimg" \
@@ -12193,7 +12193,7 @@ else
                     && python3 tools/sign/link_key_provision.py "$img" "$lk" >/dev/null; }; }
         rc=$?; rm -f "$ini" "$sig" "$lk"; return $rc
     }
-    # The embedded image (config/defconfigs/robot-embedded-riscv64+board-generic.config, kernel/linker-embedded.ld)
+    # The embedded image (config/defconfigs/robot-embedded-riscv64+board-generic.config, arch/riscv64/boot/linker-embedded.ld)
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
     # from the device tree.
     #
@@ -12273,7 +12273,7 @@ else
         for row in "link: release build refuses a keyless boot" "link: release build boots with a key"; do
             printf "  %-26s" "${row}..."; bad; echo "      the release QEMU kernel did not build, or its gate-key volumes were not built; not booted"; done
     fi
-    # The fleet image (config/defconfigs/robot-server-riscv64+board-generic.config, kernel/linker-fleet.ld), whose
+    # The fleet image (config/defconfigs/robot-server-riscv64+board-generic.config, arch/riscv64/boot/linker-fleet.ld), whose
     # tables are sized for 4096 tasks. Its first boots found three faults the
     # marker alone would not have caught:
     #   * RAM_SIZE 256 left no room for the 256 MiB heap after a ~134 MiB image
@@ -23400,7 +23400,7 @@ echo after-prod \$?" 150 \
             elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
             env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
                 "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-                --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
+                --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' >/dev/null 2>&1
             [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
                 -O binary "$elf" "$img" 2>/dev/null
         fi
@@ -23464,7 +23464,7 @@ power suspend" 150 \
             elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
             rf="$(cd "$REPO_ROOT" && python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")"
             env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
-                RUSTFLAGS="-C link-arg=-Tkernel/linker-aarch64.ld $rf" \
+                RUSTFLAGS="-C link-arg=-Tarch/aarch64/boot/linker-aarch64.ld $rf" \
                 "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
                 >/dev/null 2>&1
             [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
@@ -23620,7 +23620,7 @@ input watch -n 100 &
             elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
             env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
                 "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-                --select "$feats" --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >/dev/null 2>&1
+                --select "$feats" --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' >/dev/null 2>&1
             [ -f "$elf" ] && "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy" \
                 -O binary "$elf" "$img" 2>/dev/null
         fi
@@ -24100,7 +24100,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             # shellcheck disable=SC2086
             out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" \
                 CARGO_TARGET_DIR="$GENERIC_DIR" "$CARGO" build --release -p azos_kernel $tgt \
-                --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; rc=$?
+                --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)"; rc=$?
         fi
         printf '%s\n' "$out" >"$log"
         if [ "$rc" -ne 0 ]; then
@@ -25018,7 +25018,7 @@ rcfence_off_row() { # rcfence_off_row <label> <rv|arm>
         # shellcheck disable=SC2086
         out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" \
             CARGO_TARGET_DIR="$dir" "$CARGO" build --release -p azos_kernel $tgt \
-            --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' 2>&1)"; rc=$?
+            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)"; rc=$?
     fi
     printf '%s\n' "$out" >"$log"
     if [ "$rc" -ne 0 ]; then

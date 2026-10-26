@@ -1027,7 +1027,7 @@ switch-census = ["azos_sched/switch-census"]
 # x86_64 boot through the Limine protocol instead of PVH (Kconfig
 # X86_BOOT_LIMINE): the 64-bit entry, the request structs in
 # `.limine_requests` and the code that reads the responses
-# (kernel/src/entry/x86_64/limine.rs). Needs kernel/linker-x86_64-limine.ld
+# (kernel/src/entry/x86_64/limine.rs). Needs arch/x86_64/boot/linker-x86_64-limine.ld
 # (`make x86_64-limine`); with the PVH linker script it has no entry.
 x86-limine = []
 # Kconfig KTEST (wave 15): the in-kernel test registry's runner

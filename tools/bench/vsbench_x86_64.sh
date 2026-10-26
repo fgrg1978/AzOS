@@ -111,7 +111,7 @@ X_ELF="$BENCH_TARGET/azos-x86_64/x86_64-unknown-none/release/kernel"
         --select "bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}")" \
     && env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$X_CONFIG.sel" \
     CARGO_TARGET_DIR="$BENCH_TARGET/azos-x86_64" \
-    RUSTFLAGS="-C link-arg=-Tkernel/linker-x86_64.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/build/kconfig_to_cargo.py --rustflags "$X_CONFIG")" \
+    RUSTFLAGS="-C link-arg=-Tarch/x86_64/boot/linker-x86_64.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/build/kconfig_to_cargo.py --rustflags "$X_CONFIG")" \
     $CARGO build --release -p azos_kernel $args \
     >"$WORK/build-x86_64.log" 2>&1 ) \
     || die "could not build the x86_64 AzOS kernel (bench-minimal) — see $WORK/build-x86_64.log"

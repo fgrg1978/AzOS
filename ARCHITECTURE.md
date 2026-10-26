@@ -370,7 +370,7 @@ An ISA is three pieces, and the layout lint reports which files are missing.
    (`boot.S`, `context_switch.S`, `trap_entry.S`), `trap.rs`, `irq.rs`, `smp.rs`,
    `resume.rs` and `ext/`.
 3. A branch in the facade (`arch/facade/src/lib.rs`), a kernel linker
-   script (`kernel/linker-*.ld`), the ring-3 target spec (`sdk/targets/`, which
+   script (`arch/<isa>/boot/linker-*.ld`), the ring-3 target spec (`sdk/targets/`, which
    carries the user image layout too) and a Kconfig ISA symbol (`config/arch/Kconfig.isa`).
 
 Check with `python3 tools/lint/arch_layout_lint.py`. See

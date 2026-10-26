@@ -39,7 +39,7 @@ _start:
     # past the other 60 bytes (norvc, so it is 4 bytes whatever +c says). A
     # loader that enters `_start` directly (OpenSBI's jump address, an ELF
     # load) runs the same jump. `_text_offset`/`_image_size` are ABSOLUTE
-    # symbols of kernel/image-header-riscv64.ld, as linker-aarch64.ld makes
+    # symbols of arch/riscv64/boot/image-header-riscv64.ld, as linker-aarch64.ld makes
     # arm64's.
     .option push
     .option norvc
@@ -99,7 +99,7 @@ paint_stack_done:
     # unaligned _bss_end safe. Each `sd` writes 8 bytes, so a last write that
     # starts below _bss_end could still land up to 7 bytes past it. What
     # actually makes this safe is `. = ALIGN(8)` right before `_bss_end` in
-    # all five linker scripts (kernel/linker*.ld) — _bss_end is always
+    # all five linker scripts (arch/riscv64/boot/linker*.ld) — _bss_end is always
     # 8-byte aligned, so the last `sd` lands exactly on it, never past. The
     # stack-paint loop above relies on the same guarantee for `_stack_end`
     # (`.stack` sections are 4K-aligned).

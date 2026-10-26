@@ -117,7 +117,7 @@ SECTIONS
         __azos_patch_end = .;
     } > RAM
     /* Virtual KASLR: the relocation table (Kconfig KASLR); empty otherwise. */
-    INCLUDE kernel/reloc-riscv64.ld
+    INCLUDE arch/riscv64/boot/reloc-riscv64.ld
     _rodata_end = .;
 
     /* Initialized data */
@@ -153,7 +153,7 @@ SECTIONS
         _bss_end = .;
     } > RAM
 
-    /* Boot stack inside the image, below _kernel_end: see kernel/linker.ld. */
+    /* Boot stack inside the image, below _kernel_end: see arch/riscv64/boot/linker.ld. */
     .stack (NOLOAD) : ALIGN(4K)
     {
         _stack_redzone = .;
@@ -178,6 +178,6 @@ ASSERT(_stack_end <= _kernel_end, "Boot stack must lie inside the kernel image")
 ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && SECURE_BOOT_PUBKEY < _rodata_end),
        "SECURE_BOOT_PUBKEY must lie inside [_rodata_start, _rodata_end), which W^X maps read-only")
 
-/* The start of RAM (as kernel/linker.ld), below OpenSBI: the Image header's text_offset. */
+/* The start of RAM (as arch/riscv64/boot/linker.ld), below OpenSBI: the Image header's text_offset. */
 _dram_base = 0x80000000;
-INCLUDE kernel/image-header-riscv64.ld
+INCLUDE arch/riscv64/boot/image-header-riscv64.ld

@@ -727,7 +727,7 @@ pub fn demand_perms(word: u64) -> PagePerms {
 pub const KERNEL_VA_OFFSET: u64 = GRANULE.kernel_va_offset();
 const _: () = assert!(
     PAGE_SHIFT != 12 || KERNEL_VA_OFFSET == 0xFFFF_FF80_0000_0000,
-    "the 4 KiB build's upper half must stay where kernel/linker-aarch64.ld links it",
+    "the 4 KiB build's upper half must stay where arch/aarch64/boot/linker-aarch64.ld links it",
 );
 
 /// `TCR_EL1.T1SZ` field position — mirrors `T0SZ` at bits `[5:0]`.

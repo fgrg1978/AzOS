@@ -76,7 +76,7 @@ build_arm() {
     args="$(python3 "$REPO/tools/build/kconfig_to_cargo.py" --select "$1" --out "$ARM_CFG.sel" "$ARM_CFG")" || return 1
     # shellcheck disable=SC2086
     env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$ARM_CFG.sel" cargo build --release -p azos_kernel $args \
-        --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]' >>"$OUT/build-arm.log" 2>&1 \
+        --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' >>"$OUT/build-arm.log" 2>&1 \
         && "$OBJCOPY" -O binary $AZOS_OUT/target/aarch64-unknown-none-softfloat/release/kernel "$2"
 }
 build_x86() { # X86_64_SELECT is the selection on the x86_64 cell

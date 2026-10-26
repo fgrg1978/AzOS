@@ -329,7 +329,7 @@ speculation barrier on syscall entry.
 
 Source: `arch/api/src/kaslr.rs`,
 `arch/{aarch64,riscv64,x86_64}/src/mmu/kaslr.rs` and
-`kaslr_boot.rs`, `kernel/linker-*.ld`, `kernel/build.rs` (the `-pie` link),
+`kaslr_boot.rs`, `arch/*/boot/linker*.ld`, `kernel/build.rs` (the `-pie` link),
 `config/kernel/Kconfig.hardening` (the `KASLR` choice), `tools/image/kaslr_image.sh`,
 `tools/gate/kaslr_boot_row.sh`.
 

@@ -3,7 +3,7 @@
 /*
  * Shared boot-stack sizing for every AzOS linker script (B1-01).
  *
- * Was five copies of the same two lines (kernel/linker.ld, linker-vf2.ld,
+ * Was five copies of the same two lines (arch/riscv64/boot/linker.ld, linker-vf2.ld,
  * linker-k1.ld, linker-fleet.ld, linker-embedded.ld) — the class of constant
  * that drifts silently: change one to grow the boot stack and the other four
  * still ship the old value. INCLUDEd, not copied.

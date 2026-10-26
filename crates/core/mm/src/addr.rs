@@ -17,7 +17,7 @@ use azos_arch::{PAGE_SIZE, PAGE_SHIFT};
 //
 // **The flip has happened (2026-09-24).** On an aarch64 KERNEL build
 // `KERNEL_PHYS_TO_VIRT_OFFSET` is `KERNEL_VA_OFFSET`, not `0`:
-// `kernel/linker-aarch64.ld` links the kernel in the upper half with a
+// `arch/aarch64/boot/linker-aarch64.ld` links the kernel in the upper half with a
 // VMA/LMA split, `boot.S` jumps the PC there, and `TTBR0_EL1` keeps only
 // device windows. So on that build `phys_to_virt(pa) != pa`, and a site
 // that still writes `pa as *mut T` dereferences an address the kernel no

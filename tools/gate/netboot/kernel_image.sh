@@ -58,7 +58,7 @@ case "$isa" in
         make "$AZOS_OUT/build/image_hashes_x86_64.rs" >&2
         # shellcheck disable=SC2046
         env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
-            RUSTFLAGS="-C link-arg=-Tkernel/linker-x86_64-limine.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")" \
+            RUSTFLAGS="-C link-arg=-Tarch/x86_64/boot/linker-x86_64-limine.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")" \
             "$cargo" build --release -p azos_kernel $(python3 tools/build/kconfig_to_cargo.py "$cfg" | tr -s ' ') >&2
         "$objcopy" --strip-debug "$tdir/x86_64-unknown-none/release/kernel" "$out/kernel-x86_64-limine.elf"
         echo "$out/kernel-x86_64-limine.elf"

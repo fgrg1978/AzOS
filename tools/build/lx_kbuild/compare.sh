@@ -39,7 +39,7 @@ KCONFIG_CONFIG="$rv_cfg.lxbench" cargo build -q --release -p azos_kernel $args
 args="$(python3 tools/build/kconfig_to_cargo.py --select "$sel" --out "$arm_cfg.lxbench" "$arm_cfg")" || exit 1
 # shellcheck disable=SC2086
 env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$arm_cfg.lxbench" \
-    cargo build -q --release -p azos_kernel $args --config 'build.rustflags=["-C","link-arg=-Tkernel/linker-aarch64.ld"]'
+    cargo build -q --release -p azos_kernel $args --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]'
 make -s $AZOS_OUT/build/disk-lxbench.img $AZOS_OUT/build/disk-aarch64-lxbench.img >/dev/null
 oc="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
 cp $AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel "$out/kos-rv.kernel"

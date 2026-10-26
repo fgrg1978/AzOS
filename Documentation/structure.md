@@ -15,8 +15,8 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 
 | Path | Contents |
 |---|---|
-| `kernel/` | The kernel image: `kernel_main`, boot steps, per-ISA entry code, kernel tasks, panic handler, linker scripts. |
-| `arch/` | The architecture crates: `api/` (`azos_arch_api`, the cross-ISA contract), `facade/` (`azos_arch`, re-exports the build's ISA crate), and one crate per ISA, `riscv64/`, `aarch64/`, `x86_64/`. |
+| `kernel/` | The kernel image: `kernel_main`, boot steps, per-ISA entry code, kernel tasks, panic handler, the linker scripts' shared include. |
+| `arch/` | The architecture crates: `api/` (`azos_arch_api`, the cross-ISA contract), `facade/` (`azos_arch`, re-exports the build's ISA crate), and one crate per ISA, `riscv64/`, `aarch64/`, `x86_64/`, each with its kernel linker scripts in `boot/`. |
 | `crates/` | Kernel libraries, in four groups: `core/`, `drivers/`, `fs/`, `net/`. |
 | `domains/robot/` | The optional robot application domain (linked only when the image selects it). |
 | `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
@@ -243,7 +243,7 @@ Source: `tools/lint/arch_layout_lint.py` (`REQUIRED`), `arch/*/src/`,
 | `kernel/src/tasks/` | Kernel tasks created by `kernel_main`, grouped by subsystem; `create.rs` creates them in its order. |
 | `kernel/src/smokes/` | Boot self-tests and feature-gated boot smokes; `mod.rs` spawns them in `kernel_main`'s order. |
 | `kernel/src/*.rs` | Single-purpose modules: `panic.rs`, `pstore.rs`, `ktest.rs`, `drv_supervisor.rs`, `irq_thread.rs`, `console_mode.rs`, and others. |
-| `kernel/linker*.ld` | Linker scripts, one per image family and ISA, each including `linker-common.ld` (the shared boot-stack sizing). Three fragments are `INCLUDE`d at the end: `image-header-riscv64.ld` (the Linux RISC-V Image header fields), `reloc-riscv64.ld` (the KASLR relocation table of the riscv64 MMU images) and `boot-pa-x86_64.ld` (the physical addresses the x86_64 32-bit boot stage names). |
+| `kernel/linker-common.ld` | The shared boot-stack sizing, `INCLUDE`d by every kernel linker script. The scripts, one per image family and ISA, are `arch/<isa>/boot/linker*.ld`. Three fragments there are `INCLUDE`d at the end: `image-header-riscv64.ld` (the Linux RISC-V Image header fields), `reloc-riscv64.ld` (the KASLR relocation table of the riscv64 MMU images) and `boot-pa-x86_64.ld` (the physical addresses the x86_64 32-bit boot stage names). |
 | `kernel/build.rs` | Linker-script parameters for the translation granule. |
 | `kernel/Cargo.toml` | The feature table. Its `default` list is empty: Kconfig supplies the features. |
 

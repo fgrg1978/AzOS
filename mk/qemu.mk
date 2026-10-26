@@ -172,7 +172,7 @@ qemu-pci-x86_64: x86_64-pci $(QEMU_X86_64_PCI_DISK)
 
 # ── x86_64 PC: the Limine boot protocol (Kconfig X86_BOOT_LIMINE) ───────────
 # `make x86_64-limine` builds the same kernel with the 64-bit Limine entry and
-# kernel/linker-x86_64-limine.ld (a higher-half ELF with `.limine_requests`):
+# arch/x86_64/boot/linker-x86_64-limine.ld (a higher-half ELF with `.limine_requests`):
 # its own Kconfig expansion, cargo target directory and image, the PVH build
 # untouched. `make run-x86-pc` stages an EFI system partition (Limine's
 # BOOTX64.EFI, limine.conf, the kernel) and boots it on QEMU q35 under OVMF.
@@ -189,7 +189,7 @@ X86_64_LIMINE_IMG := $(OUT_BUILD)/kernel-x86_64-limine.elf
 x86_64-limine:
 	$(MAKE) x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+limine.config \
 	    X86_64_KCONFIG=$(OUT_BUILD)/x86_64-limine.config \
-	    X86_64_LINKER=kernel/linker-x86_64-limine.ld \
+	    X86_64_LINKER=arch/x86_64/boot/linker-x86_64-limine.ld \
 	    X86_64_TARGET_DIR=$(OUT_TARGET)/x86_64-limine \
 	    X86_64_IMG=$(X86_64_LIMINE_IMG)
 

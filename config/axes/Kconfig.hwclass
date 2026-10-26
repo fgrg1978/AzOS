@@ -22,7 +22,7 @@ choice
         bool "Embedded (small boards, 16-64 MiB of RAM)"
         help
           Small boards running one device's workload, linked into the 14 MiB
-          above the firmware (kernel/linker-embedded.ld). The smallest tables.
+          above the firmware (arch/riscv64/boot/linker-embedded.ld). The smallest tables.
 
     config HWCLASS_SBC
         bool "Single-board computer (VF2, K1, Raspberry Pi 5, RK3588)"

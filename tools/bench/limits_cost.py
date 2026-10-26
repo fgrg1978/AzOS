@@ -141,12 +141,12 @@ def target_dir():
 def big_linker(arch):
     """Linker script with a RAM region big enough for a fleet-sized image.
 
-    riscv64 has kernel/linker-fleet.ld (1022 MiB).  aarch64 has none: a copy of
+    riscv64 has arch/riscv64/boot/linker-fleet.ld (1022 MiB).  aarch64 has none: a copy of
     its script with the two 128 MiB regions widened is written under target/.
     """
     if arch == "riscv64":
-        return os.path.join(REPO, "kernel", "linker-fleet.ld")
-    src = read_config(os.path.join(REPO, "kernel", "linker-aarch64.ld"))
+        return os.path.join(REPO, "arch", "riscv64", "boot", "linker-fleet.ld")
+    src = read_config(os.path.join(REPO, "arch", "aarch64", "boot", "linker-aarch64.ld"))
     dst = os.path.join(OUT, "target", "limits_cost", "linker-aarch64-1022M.ld")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, "w", encoding="utf-8") as f:
@@ -174,7 +174,7 @@ def build(arch, cfg_path, linker=None):
         cmd = ["cargo", "build", "--release", "--target", "aarch64-unknown-none-softfloat",
                "-p", "azos_kernel", *feats,
                "--config",
-               'build.rustflags=["-C","link-arg=-T%s"]' % (linker or "kernel/linker-aarch64.ld")]
+               'build.rustflags=["-C","link-arg=-T%s"]' % (linker or "arch/aarch64/boot/linker-aarch64.ld")]
         elf = os.path.join(target_dir(), "aarch64-unknown-none-softfloat", "release", "kernel")
     if os.path.exists(elf):
         os.remove(elf)  # never read a stale ELF after a failed build

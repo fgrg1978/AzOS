@@ -96,7 +96,7 @@ SECTIONS
         __azos_patch_end = .;
     } > RAM
     /* Virtual KASLR: the relocation table (Kconfig KASLR); empty otherwise. */
-    INCLUDE kernel/reloc-riscv64.ld
+    INCLUDE arch/riscv64/boot/reloc-riscv64.ld
     _rodata_end = .;
 
     /* Initialized data */
@@ -166,4 +166,4 @@ ASSERT(!DEFINED(SECURE_BOOT_PUBKEY) || (SECURE_BOOT_PUBKEY >= _rodata_start && S
 
 /* The start of RAM (QEMU virt), below OpenSBI: the Image header's text_offset. */
 _dram_base = 0x80000000;
-INCLUDE kernel/image-header-riscv64.ld
+INCLUDE arch/riscv64/boot/image-header-riscv64.ld
