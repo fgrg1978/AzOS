@@ -91,7 +91,7 @@ mkdir -p "$AZOS_OUT/build/gate-keys"
 python3 - "$REPO_ROOT" "$GATE_RELEASE_PRIV" "$GATE_RELEASE_PUB" <<'PYEOF' || { echo "FATAL: could not make the gate's release key pair" >&2; exit 1; }
 import os, sys
 root, priv_path, pub_path = sys.argv[1:4]
-sys.path.insert(0, os.path.join(root, "tools"))
+sys.path.insert(0, os.path.join(root, "tools", "sign"))
 import check_board_keys as c
 test_pub = c.read_optional(os.path.join(root, "tools", "keys", "test_pub.bin"))
 seed = c.read_optional(priv_path) or b""
@@ -10334,7 +10334,7 @@ board_volume_row() {
     # A throwaway pair, not the test key: the board volume is signed with it and
     # `check_board_keys.py sigs` re-verifies every signature with the kernel's
     # own verifier built for the public half.
-    python3 -c 'import os, sys; sys.path.insert(0, "tools"); import check_board_keys as c; b = os.path.join(os.environ["AZOS_OUT"], "build", "board"); s = os.urandom(32); open(os.path.join(b, "gate_priv.bin"), "wb").write(s); open(os.path.join(b, "gate_pub.bin"), "wb").write(c.derive_public(s))'
+    python3 -c 'import os, sys; sys.path.insert(0, "tools/sign"); import check_board_keys as c; b = os.path.join(os.environ["AZOS_OUT"], "build", "board"); s = os.urandom(32); open(os.path.join(b, "gate_priv.bin"), "wb").write(s); open(os.path.join(b, "gate_pub.bin"), "wb").write(c.derive_public(s))'
     local gate_keys="TOPOLOGY_PUBKEY_PATH=$AZOS_OUT/build/board/gate_pub.bin TOPOLOGY_PRIVKEY_PATH=$AZOS_OUT/build/board/gate_priv.bin"
     # The gate exports the test key for every other build (line ~39): the
     # no-key case must not inherit it.
