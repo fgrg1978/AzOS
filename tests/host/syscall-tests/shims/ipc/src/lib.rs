@@ -116,7 +116,7 @@ pub mod launch_cap;
 // The real `trace_event` (`crates/core/ipc/src/trace.rs`) reads
 // `azos_arch::cpu::hart_id()` and `azos_drv_sys::timebase::now()`;
 // the former resolves to nothing on this host target at all
-// (`crates/core/arch/src/lib.rs`'s own `target_os = "none"` guard — see that
+// (`arch/facade/src/lib.rs`'s own `target_os = "none"` guard — see that
 // file's doc for why calling the real thing here would either fail to link
 // or execute a privileged instruction). This records category and the four
 // data words only, in call order, which is exactly what

@@ -48,7 +48,7 @@ azos_arch_riscv64 = { workspace = true }
 azos_arch_aarch64 = { workspace = true }
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "none"))'.dependencies]
-azos_arch_x86_64 = { path = "../arch-x86_64" }
+azos_arch_x86_64 = { path = "../x86_64" }
 
 [dependencies]
-azos_arch_x86_64 = { path = "../arch-x86_64", optional = true }
+azos_arch_x86_64 = { path = "../x86_64", optional = true }

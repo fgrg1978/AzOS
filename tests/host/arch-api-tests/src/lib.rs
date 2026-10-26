@@ -19,19 +19,19 @@
 //!   unintentionally-required `Self: Sized` or duplicated methods).
 //!
 //! `aarch64_mmu` below pulls in the REAL VMSAv8-64 encoding module,
-//! `crates/core/arch-aarch64/src/mmu/mod.rs` — it is pure arithmetic (no asm, no
+//! `arch/aarch64/src/mmu/mod.rs` — it is pure arithmetic (no asm, no
 //! `#[cfg(target_arch = ...)]` gate), so unlike `api_impl.rs` it is safe
 //! to link on the host and exercises the actual bit-level encoding the
 //! aarch64 port builds page tables with, not a copy that can drift.
 //!
-//! `aarch64_fp` below pulls in `crates/core/arch-aarch64/src/fp.rs` the same
+//! `aarch64_fp` below pulls in `arch/aarch64/src/fp.rs` the same
 //! way, for its scalar `dot_f32`. Nothing here may execute an EL1-only
 //! register read: EL0 on macOS does not emulate ID-register reads the way
 //! Linux does (a probe reading `ID_AA64PFR0_EL1` via `mrs` from this host
 //! process takes SIGILL, checked 2026-09-22), so such a call would crash the
 //! test binary, not fail an assertion.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/mmu/mod.rs"]
+#[path = "../../../../arch/aarch64/src/mmu/mod.rs"]
 mod aarch64_mmu;
 
 // Phase 4 PREP (SMP building blocks) — three more arch-aarch64 files pulled
@@ -55,32 +55,32 @@ mod aarch64_mmu;
 // `find_redistributor`, `send_sgi`, `cpu_on`, or anything else that
 // touches real hardware.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/cpu/mod.rs"]
+#[path = "../../../../arch/aarch64/src/cpu/mod.rs"]
 mod aarch64_cpu;
 
 // `cpu.rs` reads the generic timer through `crate::sysregs`: the real file is
 // pulled (its asm bodies compile here; nothing below calls one) and aliased
 // to where `cpu.rs` looks for it.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/sysregs.rs"]
+#[path = "../../../../arch/aarch64/src/sysregs.rs"]
 mod aarch64_sysregs;
 #[allow(dead_code)]
 use crate::aarch64_sysregs as sysregs;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/irq/gic.rs"]
+#[path = "../../../../arch/aarch64/src/irq/gic.rs"]
 mod aarch64_gic;
 
 // `gic.rs` hands over to `gicv2.rs` (`super::gicv2`), which reads `super::gic`
 // and `crate::cpu`: the same pulled-sibling arrangement as `its.rs` below.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/irq/gicv2.rs"]
+#[path = "../../../../arch/aarch64/src/irq/gicv2.rs"]
 mod aarch64_gicv2;
 #[allow(dead_code)]
 use crate::aarch64_gicv2 as gicv2;
 // The BCM2836 pair (a Raspberry Pi 2/3), the third backend `gic.rs` hands to.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/irq/bcm2836.rs"]
+#[path = "../../../../arch/aarch64/src/irq/bcm2836.rs"]
 mod aarch64_bcm2836;
 #[allow(dead_code)]
 use crate::aarch64_bcm2836 as bcm2836;
@@ -103,15 +103,15 @@ use crate::aarch64_gic as gic;
 use crate::aarch64_mmu as mmu;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/irq/its.rs"]
+#[path = "../../../../arch/aarch64/src/irq/its.rs"]
 mod aarch64_its;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/firmware.rs"]
+#[path = "../../../../arch/aarch64/src/firmware.rs"]
 mod aarch64_firmware;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/fp.rs"]
+#[path = "../../../../arch/aarch64/src/fp.rs"]
 mod aarch64_fp;
 
 // Deep idle (PSCI CPU_SUSPEND): the parameter decode and the depth ladder.
@@ -755,7 +755,7 @@ mod tests {
 }
 
 /// Host tests for the real VMSAv8-64 encoding in `crate::aarch64_mmu`
-/// (pulled from `crates/core/arch-aarch64/src/mmu/mod.rs` — see the module doc at
+/// (pulled from `arch/aarch64/src/mmu/mod.rs` — see the module doc at
 /// the top of this file). These exercise the actual bit patterns the
 /// aarch64 port writes into a page table: the level-dependent table/leaf
 /// distinction, the AP/PXN/UXN permission encoding, and the software
@@ -1069,7 +1069,7 @@ mod aarch64_encoding_tests {
 }
 
 /// Host tests for aarch64's `Vector::dot_f32` (`crate::aarch64_fp`, pulled
-/// from `crates/core/arch-aarch64/src/fp.rs`): the kernel is soft-float, so it
+/// from `arch/aarch64/src/fp.rs`): the kernel is soft-float, so it
 /// is the scalar loop, and these pin what it computes.
 #[cfg(test)]
 mod aarch64_fp_tests {
@@ -1095,7 +1095,7 @@ mod aarch64_fp_tests {
 }
 
 /// Host tests for `cpu::affinity_key`/`mpidr_affinity_key` — pure MPIDR
-/// affinity-byte packing (`crates/core/arch-aarch64/src/cpu/mod.rs`, pulled above
+/// affinity-byte packing (`arch/aarch64/src/cpu/mod.rs`, pulled above
 /// as `aarch64_cpu`). Never calls `read_mpidr` (real `MPIDR_EL1` read —
 /// see this file's header comment on why that would crash here).
 #[cfg(test)]

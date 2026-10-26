@@ -5,11 +5,11 @@
 use azos_arch_api::Hypervisor;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/ext/hv/mod.rs"]
+#[path = "../../../../arch/riscv64/src/ext/hv/mod.rs"]
 pub mod rv;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/ext/hv/mod.rs"]
+#[path = "../../../../arch/aarch64/src/ext/hv/mod.rs"]
 pub mod arm;
 
 pub use azos_arch_x86_64::hv as x86;

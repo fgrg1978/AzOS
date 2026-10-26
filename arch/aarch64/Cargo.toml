@@ -39,7 +39,7 @@ bitflags          = { workspace = true }
 
 [features]
 # Wave-4 canary hook for the ITS acceptance test (see
-# `crates/core/arch-aarch64/src/irq/its.rs`'s `ItsDriver::map_vector`): skips the
+# `arch/aarch64/src/irq/its.rs`'s `ItsDriver::map_vector`): skips the
 # `MAPTI` command a real mapping would issue, so a PCI device's MSI-X
 # vector is never actually wired to an LPI. `tools/gate/ci_check.sh`'s negative
 # row builds with this on and asserts the per-vector LPI count stays 0 —

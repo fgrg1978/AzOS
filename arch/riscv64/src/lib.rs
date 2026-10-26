@@ -6,7 +6,7 @@
 // `arch-aarch64` does it. Without this the traits are only reachable by
 // naming `azos_arch_api` directly, which every consuming crate would
 // then need as a dependency just to have `Interrupts` in scope — and the
-// facade in `crates/core/arch` could not offer an ISA-neutral surface at all.
+// facade in `arch/facade` could not offer an ISA-neutral surface at all.
 pub use azos_arch_api::{
     Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu, MmuError,
     PagePerms, Vector,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! x86_64 CPU features, in riscv64's three tiers
-//! (`crates/core/arch-riscv64/src/cache.rs`):
+//! (`arch/riscv64/src/cache.rs`):
 //!
 //! 1. **Baseline** — Kconfig `X86_64_LEVEL` (`-C target-cpu=x86-64[-vN]`),
 //!    the only thing codegen assumes. `boot.S` checks the level's CPUID bits

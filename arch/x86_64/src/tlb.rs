@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Cross-CPU TLB shootdown for x86_64, in riscv64's shape
-//! (`crates/core/arch-riscv64/src/tlb.rs`): the same publication of each
+//! (`arch/riscv64/src/tlb.rs`): the same publication of each
 //! CPU's root, the same pure [`remote_mask`], the same guarantee.
 //!
 //! **What it guarantees.** When [`shootdown`] returns, no CPU can use a

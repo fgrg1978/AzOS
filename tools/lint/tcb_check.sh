@@ -80,9 +80,11 @@ CRATES_DIR="$REPO_ROOT/crates"
 # or is a group of its own (crates/fs). A bare name is searched group by
 # group; a name that is ambiguous across groups is listed group-qualified,
 # `<group>/<name>`, and resolves under crates/ or domains/ directly (w14).
+# The ISA crates under arch/ are keyed by their path (`arch/<name>`).
 crate_dir() {
     local g
     case "$1" in
+        arch/*) printf '%s' "$REPO_ROOT/$1"; return 0 ;;
         */*)
             for g in crates domains; do
                 if [ -f "$REPO_ROOT/$g/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/$g/$1"; return 0; fi
@@ -105,7 +107,7 @@ crate_dir() {
 # `azos_robot_drivers`.
 
 CORE_CRATES="
-abi arch arch-api arch-riscv64 arch-aarch64 arch-x86_64 common sync mm limits
+abi arch/facade arch/api arch/riscv64 arch/aarch64 arch/x86_64 common sync mm limits
 api base irqchip sys gpio bus virtio block net sensor actuator power
 driver_server ina219 buzzer rings pci dma iommu
 ipc sched syscall stack energy
@@ -141,7 +143,7 @@ hwbus input nvme bytepipe devif idl
 # reason. Re-run this script after that wiring lands to confirm the
 # decision instead of trusting this comment.
 
-# `arch-x86_64` is the third ISA crate behind the `arch` facade, CORE like its
+# `arch/x86_64` is the third ISA crate behind the `arch/facade`, CORE like its
 # two siblings. `idl` is the IDL runtime (Transport, Wire, Cap<T>) that
 # `syscall`, `devif` and `libsys` build their interfaces on, so by dependency
 # direction it can only be CORE.
@@ -416,15 +418,18 @@ workspace_member_dirs() {
         esac
         if [ "$in_members" = 1 ]; then
             case "$line" in
-                *'"crates/'*|*'"domains/'*)
+                *'"crates/'*|*'"domains/'*|*'"arch/'*)
                     rest="${line#*\"}"
                     path="${rest%%\"*}"
                     name="${path##*/}"
                     # The key the lists use: the bare name when it resolves
                     # back to this member, else group-qualified (`<group>/<name>`).
-                    if [ "$(crate_dir "$name")" != "$REPO_ROOT/$path" ]; then
-                        name="${path#*/}"
-                    fi
+                    case "$path" in
+                        arch/*) name="$path" ;;
+                        *) if [ "$(crate_dir "$name")" != "$REPO_ROOT/$path" ]; then
+                               name="${path#*/}"
+                           fi ;;
+                    esac
                     printf '%s\n' "$name"
                     ;;
             esac
@@ -445,16 +450,19 @@ workspace_member_dirs() {
 tree_crate_keys() {
     local toml dir name
     for toml in "$REPO_ROOT"/crates/*/Cargo.toml "$REPO_ROOT"/crates/*/*/Cargo.toml \
-                "$REPO_ROOT"/domains/*/*/Cargo.toml; do
+                "$REPO_ROOT"/domains/*/*/Cargo.toml "$REPO_ROOT"/arch/*/Cargo.toml; do
         [ -f "$toml" ] || continue
         dir="${toml%/Cargo.toml}"
         name="${dir##*/}"
         # The key the lists use: the bare name when it resolves back to this
         # crate, else group-qualified (`<group>/<name>`).
-        if [ "$(crate_dir "$name")" != "$dir" ]; then
-            name="${dir#"$REPO_ROOT"/}"
-            name="${name#*/}"
-        fi
+        case "$dir" in
+            "$REPO_ROOT"/arch/*) name="arch/$name" ;;
+            *) if [ "$(crate_dir "$name")" != "$dir" ]; then
+                   name="${dir#"$REPO_ROOT"/}"
+                   name="${name#*/}"
+               fi ;;
+        esac
         printf '%s\n' "$name"
     done
 }

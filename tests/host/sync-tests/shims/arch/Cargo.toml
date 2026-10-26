@@ -11,4 +11,4 @@ description = "Host stand-in for azos_arch, used only by tests/host/sync-tests. 
 # host-portable (`tests/host/arch-api-tests` already runs it here). The shim has
 # to provide `Interrupts` + `ARCH` because `spinlock.rs` and `preempt.rs`
 # reach interrupt state through them since 2026-09-21, not through `cpu::`.
-azos_arch_api = { path = "../../../../../crates/core/arch-api" }
+azos_arch_api = { path = "../../../../../arch/api" }

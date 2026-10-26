@@ -10,7 +10,7 @@ covers and leaves out.
 
 | Area | Direction | Where it lives |
 |---|---|---|
-| One feature set on every ISA | Every feature lands on riscv64, aarch64 and x86_64 together, under the same hardware-support model: a compile-time baseline per ISA, and each extension above it probed at boot with a fallback. | `crates/core/arch-api/src/isa.rs`, `config/arch/Kconfig.isa` |
+| One feature set on every ISA | Every feature lands on riscv64, aarch64 and x86_64 together, under the same hardware-support model: a compile-time baseline per ISA, and each extension above it probed at boot with a fallback. | `arch/api/src/isa.rs`, `config/arch/Kconfig.isa` |
 | Memory | Reclaim and memory-pressure policy, file-backed paging through the page cache, and larger pages. | `crates/core/mm`, `config/limits/Kconfig.limits` |
 | Real time | Admission and budgets for every kind of time a task consumes, including interrupt handlers and time spent in servers on a client's behalf. | `crates/core/sched`, `config/kernel/Kconfig.sched` |
 | Driver placement | Drivers that run in ring 3 or move between ring 3 and the kernel, and Linux driver modules running in ring-3 servers under DMA and capability limits. | `crates/core/topology/src/placement.rs`, `lx/`, `config/axes/Kconfig.personality` |

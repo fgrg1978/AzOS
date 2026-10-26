@@ -980,7 +980,7 @@ azos_ktest::ktest_late! {
 
 // ── Spin-wait and CAS (wave 15, N2) ─────────────────────────────────────────
 //
-// `SpinWait` (crates/core/arch-api spin.rs) on the path this boot selected:
+// `SpinWait` (arch/api spin.rs) on the path this boot selected:
 // the extension (Zacas/Zawrs, LSE, WAITPKG) or the fallback, whichever the
 // `[SPIN]` boot line names. The same tests pass on both.
 

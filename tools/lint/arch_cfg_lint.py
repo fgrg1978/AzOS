@@ -90,13 +90,13 @@ REPO = azos_tools.ROOT
 BASELINE = os.path.join(REPO, "tools/lint/arch_cfg_lint.baseline")
 
 # Shared code lives here; the arch crates are where per-ISA code belongs.
-SCAN_ROOTS = ("crates", "kernel", "domains", "lx", "userspace")
+SCAN_ROOTS = ("arch", "crates", "kernel", "domains", "lx", "userspace")
 ARCH_CRATES = (
-    "crates/core/arch/",
-    "crates/core/arch-api/",
-    "crates/core/arch-riscv64/",
-    "crates/core/arch-aarch64/",
-    "crates/core/arch-x86_64/",
+    "arch/facade/",
+    "arch/api/",
+    "arch/riscv64/",
+    "arch/aarch64/",
+    "arch/x86_64/",
 )
 # The ISAs with a directory under kernel/src/entry/ (x86_64: a skeleton).
 ISAS = ("riscv64", "aarch64", "x86_64")
@@ -552,10 +552,10 @@ def arch_modules(root=REPO):
     crate changes nothing."""
     per_isa, chips = [], set()
     for isa in ISAS:
-        src = os.path.join(root, "crates", "core", "arch-" + isa, "src")
+        src = os.path.join(root, "arch", isa, "src")
         mods = set(pub_mods(os.path.join(src, "lib.rs")))
         if not mods:
-            raise ValueError(f"no `pub mod` in crates/core/arch-{isa}/src/lib.rs: "
+            raise ValueError(f"no `pub mod` in arch/{isa}/src/lib.rs: "
                              "the facade lint cannot tell which modules are ISA-specific")
         per_isa.append(mods)
         for irq in (os.path.join(src, "irq", "mod.rs"), os.path.join(src, "irq.rs")):
@@ -776,10 +776,10 @@ def facade_self_test():
 
     def build_arch(root, rv_mods="cpu csr sbi cbo irq ext"):
         for isa, mods in (("riscv64", rv_mods), ("aarch64", "cpu sysregs cbo irq ext"), ("x86_64", "cpu hw irq ext")):
-            put(root, f"crates/core/arch-{isa}/src/lib.rs", "".join(f"pub mod {m};\n" for m in mods.split()))
-        put(root, "crates/core/arch-riscv64/src/irq/mod.rs", "pub mod plic;\npub mod clint;\n")
-        put(root, "crates/core/arch-aarch64/src/irq.rs", "pub mod gic;\n")
-        put(root, "crates/core/arch-x86_64/src/irq/mod.rs", "pub mod apic;\n")
+            put(root, f"arch/{isa}/src/lib.rs", "".join(f"pub mod {m};\n" for m in mods.split()))
+        put(root, "arch/riscv64/src/irq/mod.rs", "pub mod plic;\npub mod clint;\n")
+        put(root, "arch/aarch64/src/irq.rs", "pub mod gic;\n")
+        put(root, "arch/x86_64/src/irq/mod.rs", "pub mod apic;\n")
 
     spec, chips = {"csr", "sbi", "sysregs", "cbo", "hw"}, {"plic", "gic", "apic", "clint"}
     cases = [
@@ -811,7 +811,7 @@ def facade_self_test():
                got == ({"csr", "sbi", "sysregs", "cbo", "hw"}, {"plic", "clint", "gic", "apic"}))
         put(td, "kernel/src/a.rs", "fn f() { azos_arch::csr::read(); }\n")
         put(td, "kernel/src/entry/riscv64.rs", "fn f() { azos_arch::csr::read(); azos_arch::sbi::x(); }\n")
-        put(td, "crates/core/arch-riscv64/src/trap.rs", "fn f() { azos_arch::csr::read(); }\n")
+        put(td, "arch/riscv64/src/trap.rs", "fn f() { azos_arch::csr::read(); }\n")
         bl = os.path.join(td, "baseline")
         write_baselines(bl, {"cfg": {}, "facade": {r: len(v) for r, v in facade(td).items()}})
         report("scope: arch crates and kernel/src/entry/ are not counted",
@@ -835,11 +835,11 @@ def facade_self_test():
         e, _ = check_facade(facade(td), base())
         report("facade --update: rewriting the baseline accepts +1", not e)
         # a renamed module is picked up by name, a file move changes nothing
-        put(td, "crates/core/arch-riscv64/src/lib.rs", "pub mod cpu;\npub mod cbo;\npub mod irq;\npub mod csr2;\n")
+        put(td, "arch/riscv64/src/lib.rs", "pub mod cpu;\npub mod cbo;\npub mod irq;\npub mod csr2;\n")
         put(td, "kernel/src/c.rs", "fn f() { azos_arch::csr2::read(); }\n")
         e, _ = check_facade(facade(td), base())
         report("facade ratchet: a module new to the arch crate is counted", len(e) == 1 and "c.rs" in e[0])
-        put(td, "crates/core/arch-riscv64/src/lib.rs", "// no modules\n")
+        put(td, "arch/riscv64/src/lib.rs", "// no modules\n")
         try:
             facade(td)
             report("facade: an arch crate with no modules is an error", False)

@@ -506,7 +506,7 @@ fn hb_hold() -> Option<sys::FastRequest> {
 /// CLINT, which really is a fixed 10 MHz
 /// (`crates/drivers/sys/src/timebase.rs`: `TIMER_FREQ`), and silently wrong for
 /// aarch64.** `sys::uptime()` there is `CNTVCT_EL0`
-/// (`crates/core/arch-aarch64/src/timer.rs::now_ticks`), ticking at whatever
+/// (`arch/aarch64/src/timer.rs::now_ticks`), ticking at whatever
 /// `CNTFRQ_EL0` reads LIVE at boot
 /// (`kernel/src/entry/aarch64/boot_hooks.rs`, `arch_timer::freq_hz()`) — on
 /// this QEMU build measured at 1 GHz (`[TIMER] CNTFRQ_EL0: 1000000000 Hz`),

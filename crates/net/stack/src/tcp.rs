@@ -505,7 +505,7 @@ const FIN_WAIT2_TIMEOUT_MS: u64 = 60_000;
 /// 10 MHz — the failure only exists on hardware, which is precisely the class
 /// of bug a bring-up gate is supposed to be for.
 ///
-/// `crates/core/arch-riscv64/src/irq/clint.rs` already had the right pattern
+/// `arch/riscv64/src/irq/clint.rs` already had the right pattern
 /// (`TIMER_FREQ = platform::hw::TIMER_FREQ`, ticks computed from it) and
 /// `motor_pid`, `wcet` and `bench` already used it. All of `crates/net/stack` did
 /// not.

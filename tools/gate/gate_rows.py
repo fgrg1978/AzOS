@@ -115,8 +115,8 @@ SUBSYS = [
      "userspace/** crates/core/abi/** crates/core/libsys/** crates/core/topology/**"),
 ]
 ARCH_DEPS = {
-    "rv": "crates/core/arch-riscv64/** kernel/linker.ld kernel/src/entry/**",
-    "arm": "crates/core/arch-aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**",
+    "rv": "arch/riscv64/** kernel/linker.ld kernel/src/entry/**",
+    "arm": "arch/aarch64/** kernel/linker-aarch64.ld kernel/src/entry/**",
 }
 # Classes that keep a row out of a shared boot, and the evidence for each.
 HAZARDS = [
@@ -624,8 +624,8 @@ MARKER_MAX_SOURCES = 3
 HUB_FEATURES = 8
 REGISTRY_FILES = ("main.rs", "mod.rs", "lib.rs")
 TEST_HOOK_RE = re.compile(r"(-smoke|-canary|-test)$|^ktest$")
-SRC_ROOTS = ("kernel/", "crates/", "domains/", "userspace/", "lx/", "micro/", "sdk/")
-PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|crates|domains|kernel|config|lx"
+SRC_ROOTS = ("kernel/", "arch/", "crates/", "domains/", "userspace/", "lx/", "micro/", "sdk/")
+PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|arch|crates|domains|kernel|config|lx"
                      r"|sdk|micro|formal|Documentation)/[\w.+-]+(?:/[\w.+-]+)*)")
 IMG_RE = re.compile(r"\b(disk[\w-]*)\.img\b")
 STR_RE = re.compile(r'"((?:[^"\\$`]|\\.)*)"|\'([^\']*)\'')

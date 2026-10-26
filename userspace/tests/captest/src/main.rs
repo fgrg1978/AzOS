@@ -1017,7 +1017,7 @@ pub extern "C" fn _start() -> ! {
     // interrupt controller is the GICv3 distributor + redistributor. Each
     // side's literals match the SAME addresses `kernel/src/main.rs` maps with
     // `map_mmio_region` on that ISA (`crates/drivers/base/src/platform.rs`'s
-    // `hw::UART_BASE`, `crates/core/arch-aarch64/src/gic.rs`'s `GICD_BASE`/
+    // `hw::UART_BASE`, `arch/aarch64/src/gic.rs`'s `GICD_BASE`/
     // `GICR_BASE`, and riscv64's own CLINT/PLIC literals) — restated here
     // rather than imported, the same tradeoff `platform.rs`'s own vDSO
     // const-check makes: this crate is `no_std`/`no_main` userspace and does

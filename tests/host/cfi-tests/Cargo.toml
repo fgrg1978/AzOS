@@ -16,15 +16,15 @@ description = "Host-side tests for the hardware control-flow-integrity layer (pl
 pad-canary = []
 # `derive_key` ignores the counter: `every_key_source_moves_both_words` must fail.
 key-canary = []
-# `crates/core/arch-aarch64/src/sysregs.rs` is file-included and names this
+# `arch/aarch64/src/sysregs.rs` is file-included and names this
 # gate canary; it stays off here.
 irq-nomem-canary = []
 # And the EL0-state canary (el0-state-audit), off here too.
 el0-state-canary = []
 
 [dependencies]
-# `crates/core/arch-aarch64/src/sysregs.rs` (file-included) names it.
-azos_arch_api = { path = "../../../crates/core/arch-api" }
+# `arch/aarch64/src/sysregs.rs` (file-included) names it.
+azos_arch_api = { path = "../../../arch/api" }
 
 [profile.release]
 overflow-checks = true

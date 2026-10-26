@@ -22,16 +22,16 @@ global_asm!(
     max_harts = const MAX_HARTS,
     // Kconfig `KASLR` not `n`: the image is linked position-independent, and
     // boot.S picks its base, applies its relocations and jumps to it
-    // (`riscv64_early_kaslr`, crates/core/arch-riscv64/src/mmu/kaslr_boot.rs).
+    // (`riscv64_early_kaslr`, arch/riscv64/src/mmu/kaslr_boot.rs).
     kaslr = const azos_arch::mmu::kaslr::ENABLED as u8,
 );
 
 // Include trap entry assembly.
 // B2-01: the six TrapFrame layout constants (TRAP_FRAME_SIZE, TF_SEPC,
 // TF_SSTATUS, TF_SCAUSE, TF_STVAL, TF_SP) used to be `.equ`-hand-written in
-// trap_entry.S with a comment claiming they matched "crates/core/arch/src/
+// trap_entry.S with a comment claiming they matched "arch/facade/src/
 // trap.rs" — a facade that only re-exports; the struct lives in
-// crates/core/arch-riscv64/src/trap.rs and had no compile-time link to that
+// arch/riscv64/src/trap.rs and had no compile-time link to that
 // comment at all. Injected here the same way task_satp_off/context_saving_off
 // are below: size_of!/offset_of! read the real struct, so a field added
 // before `sepc` moves every one of these automatically instead of silently

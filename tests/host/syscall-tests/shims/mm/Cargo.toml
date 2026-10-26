@@ -15,7 +15,7 @@ azos_arch = { path = "../arch", package = "syscall_test_arch" }
 # Real crate: `vmm.rs`/`cow.rs`/`demand.rs`/`wx.rs` (pulled by path below)
 # type against `azos_arch_api::{Mmu, PagePerms, PAGE_SIZE}` directly
 # since the page-table abstraction (B2); pure no_std, host-clean.
-azos_arch_api = { path = "../../../../../crates/core/arch-api" }
+azos_arch_api = { path = "../../../../../arch/api" }
 # Real crates, not shims — same set `tests/host/mm-tests` already builds the real
 # `pmm.rs` against on a host target. `azos_limits` is generated from
 # `.config`, so `MAX_PAGES` cannot drift from the kernel's.

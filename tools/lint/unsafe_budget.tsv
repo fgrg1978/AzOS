@@ -13,11 +13,11 @@
 .	5	10	1	0	0	-
 crates/core/abi	0	0	0	0	1	0
 crates/core/actuation	0	0	0	0	1	0
-crates/core/arch	0	0	0	0	1	0
-crates/core/arch-aarch64	202	48	1	2	0	77
-crates/core/arch-api	27	10	0	0	0	28
-crates/core/arch-riscv64	160	42	0	3	0	91
-crates/core/arch-x86_64	157	18	4	11	0	59
+arch/facade	0	0	0	0	1	0
+arch/aarch64	202	48	1	2	0	77
+arch/api	27	10	0	0	0	28
+arch/riscv64	160	42	0	3	0	91
+arch/x86_64	157	18	4	11	0	59
 crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0

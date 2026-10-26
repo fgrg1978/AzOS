@@ -74,7 +74,7 @@ through to the device tree: the signed file named a model, and substituting
 one its signer never saw would be a decision nobody made. On x86_64 there
 is no device-tree `idle-states`; a domain the topology declares without an
 `idle` table gets its idle list from the `mwait` ladder in
-`crates/core/arch-x86_64/src/cpu/idle.rs`, and a declared list is checked
+`arch/x86_64/src/cpu/idle.rs`, and a declared list is checked
 against it.
 
 ## Utilisation tracking
@@ -150,7 +150,7 @@ and counted.
 ## Idle governor
 
 Source: `crates/core/energy/src/idle.rs`, `crates/core/sched/src/energy.rs`
-(`idle_wait`), `crates/core/arch-api/src/lib.rs` (`Cpu::cpu_idle`),
+(`idle_wait`), `arch/api/src/lib.rs` (`Cpu::cpu_idle`),
 `kernel/src/boot/energy.rs` (`install_idle_states`).
 
 `IdleGovernor::Teo` is a timer-events-oriented governor in the style of

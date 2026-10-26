@@ -80,6 +80,6 @@ fn the_x86_s_cet_word_is_the_documented_bits() {
 
 #[test]
 fn the_cr4_cet_bit_is_the_one_the_hwcap_reads() {
-    let mmu = std::fs::read_to_string(crate::repo().join("crates/core/arch-x86_64/src/mmu.rs")).unwrap();
+    let mmu = std::fs::read_to_string(crate::repo().join("arch/x86_64/src/mmu.rs")).unwrap();
     assert!(mmu.contains("pub const CR4_CET: u64 = 1 << 23;"), "mmu.rs and cpu/cfi.rs disagree on CR4.CET");
 }

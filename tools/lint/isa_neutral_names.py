@@ -6,7 +6,7 @@
 `wfi` is riscv64's and aarch64's mnemonic; x86_64 waits with `hlt`. The
 shared code names what the seam does (owner, 2026-10-21):
 
-    Cpu::wfi                 -> Cpu::wait_for_interrupt   (crates/core/arch-api, each ISA's impl, callers)
+    Cpu::wfi                 -> Cpu::wait_for_interrupt   (arch/api, each ISA's impl, callers)
     IdleChoice::Wfi          -> IdleChoice::Shallow       (crates/core/energy)
     IdleGovernor::WfiOnly    -> IdleGovernor::ShallowOnly
 
@@ -48,13 +48,13 @@ RULES = [
 # Prose that named the generic seam by the mnemonic: exact text, per file.
 # Applied once by --fix (a line that no longer reads so is left alone).
 PROSE = [
-    ("crates/core/arch-api/src/lib.rs",
+    ("arch/api/src/lib.rs",
      "    /// Wait For Interrupt — low-power idle. Returns when any\n"
      "    /// pending interrupt is delivered to this hart.\n",
      "    /// Wait for an interrupt (riscv64 and aarch64 `wfi`, x86_64 `hlt`):\n"
      "    /// low-power idle. Returns when any pending interrupt is delivered to\n"
      "    /// this hart.\n"),
-    ("crates/core/arch-api/src/lib.rs",
+    ("arch/api/src/lib.rs",
      "depth. Like `wfi`, it returns when any interrupt is pending.",
      "depth. Like [`Self::wait_for_interrupt`], it returns when any interrupt is pending."),
     ("crates/core/energy/src/seams.rs",

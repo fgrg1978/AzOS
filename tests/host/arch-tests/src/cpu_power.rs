@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! riscv64 saved context (`crates/core/arch-riscv64/src/firmware.rs`, Kconfig
+//! riscv64 saved context (`arch/riscv64/src/firmware.rs`, Kconfig
 //! `CPU_IDLE_POWERDOWN` and `CPU_HOTPLUG`): the layout the resume asm reads, the slot
 //! that is taken once, and what the idle ladder does with a non-retentive state before and after the
 //! kernel has a resume entry.
@@ -19,7 +19,7 @@
 //! hart to save, which the asm path replaces; booting is the testing week.
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/firmware.rs"]
+#[path = "../../../../arch/riscv64/src/firmware.rs"]
 mod firmware;
 
 use core::mem::{align_of, offset_of, size_of};

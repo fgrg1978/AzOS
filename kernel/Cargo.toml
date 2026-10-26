@@ -130,7 +130,7 @@ rvv  = ["azos_arch/rvv", "azos_camera?/rvv"]
 # public wake row. Declared for the lint and the compiler's cfg check; only
 # `tests/host/inspect-tests` enables it (its own feature of the same name).
 wake-public-tid-canary = []
-# GICv3 ITS canary (aarch64): see crates/core/arch-aarch64/Cargo.toml.
+# GICv3 ITS canary (aarch64): see arch/aarch64/Cargo.toml.
 its-skip-mapti = ["azos_arch/its-skip-mapti"]
 # Relaxed timing bounds for QEMU emulation (timer ISR ~100x slower than hardware).
 # `cap-refusal-canary`: the default topology declares `pwm.0`/`gpio.0` only
@@ -508,7 +508,7 @@ dhcp-smoke = ["net"]
 # Two riscv64 kernel tasks pinned to the SAME hart each fill v0-v31 with a
 # distinct pattern, yield to each other, then verify their own pattern
 # survived — a canary for the rvv_ctx_save/restore TID-vs-offset-120 bug
-# (crates/core/arch-riscv64/src/fp.rs). QEMU only, requires `rvv`.
+# (arch/riscv64/src/fp.rs). QEMU only, requires `rvv`.
 rvv-isolation-probe = []
 # aarch64 parity program, task 1 — guard-page fault proof. Each of these
 # deliberately touches ONE of the two guard pages `aarch64::kernel_main`

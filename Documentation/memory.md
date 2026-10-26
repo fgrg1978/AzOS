@@ -9,7 +9,7 @@ filesystem side in [storage.md](storage.md).
 Most of the code lives in the `azos_mm` crate (`crates/core/mm`). The object
 table lives in `azos_ipc` (`crates/core/ipc/src/memobj.rs`) because it is also
 a capability type. Page-table words are built by the per-ISA crates behind the
-`Mmu` trait (`crates/core/arch-api/src/lib.rs`).
+`Mmu` trait (`arch/api/src/lib.rs`).
 
 Contents:
 
@@ -356,10 +356,10 @@ anything. Teardown skips these leaves.
 
 Source: `crates/core/mm/src/resv.rs`, `crates/core/mm/src/huge.rs`,
 `crates/core/mm/src/vmm.rs`, `crates/core/mm/src/pager.rs`,
-`crates/core/arch-api/src/lib.rs`, `crates/core/arch-api/src/contig.rs`,
-`crates/core/arch-aarch64/src/cpu/features.rs`,
-`crates/core/arch-aarch64/src/mmu/mod.rs`,
-`crates/core/arch-riscv64/src/ext/napot.rs`,
+`arch/api/src/lib.rs`, `arch/api/src/contig.rs`,
+`arch/aarch64/src/cpu/features.rs`,
+`arch/aarch64/src/mmu/mod.rs`,
+`arch/riscv64/src/ext/napot.rs`,
 `config/limits/Kconfig.limits`, `config/arch/Kconfig.isa`.
 
 ## User stacks
@@ -751,15 +751,15 @@ drops the entries; a fork gives the child a marker and a pool entry sharing the
 parent's blob for each page the parent has out, after waiting for stores in
 flight.
 
-Source: `crates/core/arch-api/src/lib.rs`,
-`crates/core/arch-riscv64/src/mmu.rs`,
-`crates/core/arch-aarch64/src/mmu/mod.rs`,
-`crates/core/arch-x86_64/src/mmu.rs`, `crates/core/mm/src/demand.rs`,
+Source: `arch/api/src/lib.rs`,
+`arch/riscv64/src/mmu.rs`,
+`arch/aarch64/src/mmu/mod.rs`,
+`arch/x86_64/src/mmu.rs`, `crates/core/mm/src/demand.rs`,
 `crates/core/mm/src/pager.rs`.
 
 ## TLB invalidation per ISA
 
-The cross-ISA contract is in `Mmu` (`crates/core/arch-api/src/lib.rs`):
+The cross-ISA contract is in `Mmu` (`arch/api/src/lib.rs`):
 
 | Function | Contract |
 |----------|----------|
@@ -800,10 +800,10 @@ lets a shootdown invalidate only the target space's ASID instead of every
 space's. An MMU whose ASID width probes as 0 flushes on every switch whatever
 `TLB_RETAIN` says.
 
-Source: `crates/core/arch-api/src/lib.rs`,
-`crates/core/arch-api/src/tlb_gen.rs`,
-`crates/core/arch-riscv64/src/api_impl.rs`,
-`crates/core/arch-riscv64/src/tlb.rs`,
-`crates/core/arch-aarch64/src/api_impl.rs`,
-`crates/core/arch-x86_64/src/lib.rs`,
-`crates/core/arch-x86_64/src/tlb.rs`, `config/arch/Kconfig.isa`.
+Source: `arch/api/src/lib.rs`,
+`arch/api/src/tlb_gen.rs`,
+`arch/riscv64/src/api_impl.rs`,
+`arch/riscv64/src/tlb.rs`,
+`arch/aarch64/src/api_impl.rs`,
+`arch/x86_64/src/lib.rs`,
+`arch/x86_64/src/tlb.rs`, `config/arch/Kconfig.isa`.

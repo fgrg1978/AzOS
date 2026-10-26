@@ -64,19 +64,19 @@ const DIRS: &[&str] = &[
     "crates/core/actuation/src",
     "crates/drivers/sys/src",
     "crates/drivers/irqchip/src",
-    "crates/core/arch-x86_64/src",
-    "crates/core/arch-x86_64/src/ext/hv",
+    "arch/x86_64/src",
+    "arch/x86_64/src/ext/hv",
 ];
 
 /// Single files of the ISA crates whose other files are boot or hypervisor code.
 const FILES: &[&str] = &[
-    "crates/core/arch-riscv64/src/tlb.rs",
-    "crates/core/arch-riscv64/src/api_impl.rs",
-    "crates/core/arch-riscv64/src/platform_impl.rs",
-    "crates/core/arch-riscv64/src/cpu.rs",
-    "crates/core/arch-aarch64/src/api_impl.rs",
-    "crates/core/arch-aarch64/src/platform_impl.rs",
-    "crates/core/arch-aarch64/src/cpu/mod.rs",
+    "arch/riscv64/src/tlb.rs",
+    "arch/riscv64/src/api_impl.rs",
+    "arch/riscv64/src/platform_impl.rs",
+    "arch/riscv64/src/cpu.rs",
+    "arch/aarch64/src/api_impl.rs",
+    "arch/aarch64/src/platform_impl.rs",
+    "arch/aarch64/src/cpu/mod.rs",
 ];
 
 /// A function that IS the accessor (its callers are the sites).
@@ -359,12 +359,12 @@ fn irq_enable_tests_the_hart_and_writes_its_file_under_a_mask() {
 
 #[test]
 fn the_riscv_shootdown_flushes_and_reads_its_hart_in_one_window() {
-    let s = read("crates/core/arch-riscv64/src/tlb.rs");
+    let s = read("arch/riscv64/src/tlb.rs");
     in_order(
         &body(&s, "pub fn shootdown("),
         &["disable_all()", "read_satp()", "sfence_vma", "hart_id()", "restore(", "mark_space_stale(", "remote_sfence_vma"],
     );
-    let a = read("crates/core/arch-riscv64/src/api_impl.rs");
+    let a = read("arch/riscv64/src/api_impl.rs");
     for sig in ["fn flush_tlb_all(", "fn flush_tlb_page("] {
         in_order(&body(&a, sig), &["disable_all()", "sfence_vma", "mark_all_stale(crate::cpu::hart_id())", "restore("]);
     }
@@ -372,7 +372,7 @@ fn the_riscv_shootdown_flushes_and_reads_its_hart_in_one_window() {
 
 #[test]
 fn the_x86_shootdown_flushes_and_reads_its_cpu_in_one_window() {
-    let s = read("crates/core/arch-x86_64/src/tlb.rs");
+    let s = read("arch/x86_64/src/tlb.rs");
     in_order(
         &body(&s, "pub fn shootdown("),
         &["disable_all()", "percpu_id()", "do_local", "restore(", "mark_space_stale(", "remote("],
@@ -382,10 +382,10 @@ fn the_x86_shootdown_flushes_and_reads_its_cpu_in_one_window() {
     // lock waiters' hook too), read per call under a mask (`serve_here`).
     in_order(&body(&s, "fn remote("), &["serve_waiting()", "post(", "send(mask)"]);
     in_order(&body(&s, "fn serve_here("), &["disable_all()", "percpu_id()", "serve_with(here", "restore("]);
-    let l = read("crates/core/arch-x86_64/src/lib.rs");
+    let l = read("arch/x86_64/src/lib.rs");
     in_order(&body(&l, "fn flush_tlb_all("), &["disable_all()", "flush_all()", "mark_all_stale(self.hart_id())", "restore("]);
     in_order(
-        &body(&read("crates/core/arch-x86_64/src/ext/hv/mod.rs"), "fn stage2_flush("),
+        &body(&read("arch/x86_64/src/ext/hv/mod.rs"), "fn stage2_flush("),
         &["disable_all()", "vcpu::flush(vmid, crate::cpu::percpu_id()", "restore("],
     );
 }

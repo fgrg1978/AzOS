@@ -18,7 +18,7 @@ config TLB_RETAIN
       generation (the record lives in the TLB_SPACE_SLOTS_BITS table).
       A shootdown that cannot reach a
       hart that ran the space marks that hart stale, and its next switch
-      flushes (crates/core/arch-api/src/tlb_gen.rs).
+      flushes (arch/api/src/tlb_gen.rs).
 
       Boards whose MMU has no ASID bits (the boot probe reads 0) keep
       flush-on-switch whatever this says.
@@ -64,7 +64,7 @@ config TLB_SPACE_MASK
       shootdowns reach only the harts running the space now, so without
       this every other hart is marked stale and flushes its whole TLB at
       its next user switch. With it, each switch-in records the hart in a
-      table keyed by the space's root frame (crates/core/arch-api/src/
+      table keyed by the space's root frame (arch/api/src/
       tlb_gen.rs, Linux's mm_cpumask), and a shootdown marks stale only
       the harts recorded for that space in the current ASID generation,
       plus any hart whose TLB is of an older generation. The table resets
@@ -84,7 +84,7 @@ config TLB_ASID_SCOPED
     help
       With TLB_RETAIN each address space holds exactly one ASID per
       generation (crates/core/sched/src/asid.rs, the per-space record in
-      crates/core/arch-api/src/tlb_gen.rs). A shootdown of one space can
+      arch/api/src/tlb_gen.rs). A shootdown of one space can
       then invalidate that ASID only, and leave every other space's
       retained entries in place.
 
@@ -169,8 +169,8 @@ config TLB_FLUSH_CEILING_PAGES
       whole address space (x86_64: the PCID's non-global entries; the
       kernel's own range: everything) instead of one invalidation per
       page. Linux's tlb_single_page_flush_ceiling, also 33. Read by
-      x86_64 (crates/core/arch-x86_64/src/tlb.rs) and by riscv64's local
-      part (crates/core/arch-riscv64/src/tlb.rs, which runs masked);
+      x86_64 (arch/x86_64/src/tlb.rs) and by riscv64's local
+      part (arch/riscv64/src/tlb.rs, which runs masked);
       aarch64 broadcasts and still invalidates page by page. This is the plan's
       TLB_FLUSH_THRESHOLD_PAGES (N12).
 

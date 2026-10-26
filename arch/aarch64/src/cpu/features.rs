@@ -13,7 +13,7 @@
 //! # Why this is nicer than the RISC-V equivalent, and why it is still a probe
 //!
 //! RISC-V has no architectural way to ask a hart what it implements: reading an
-//! unimplemented CSR traps, so `crates/core/arch-riscv64/src/cache.rs` has to take the
+//! unimplemented CSR traps, so `arch/riscv64/src/cache.rs` has to take the
 //! device tree's word for it *and* execute the instruction under a private
 //! `stvec` to see whether it faults. AArch64 has `ID_AA64*_EL1`: reading them
 //! at EL1 is architectural, always succeeds, and the values are defined by the

@@ -5,7 +5,7 @@
 #
 # Same interface as context_switch.S but additionally saves/restores v0-v31,
 # vl, vtype, and vstart via rvv_ctx_save() / rvv_ctx_restore() (defined in
-# crates/core/arch-riscv64/src/fp.rs).  Only linked when --features rvv is active.
+# arch/riscv64/src/fp.rs).  Only linked when --features rvv is active.
 #
 # fn context_switch(old: *mut Task, new: *mut Task)
 #   a0 = old task pointer (NULL on first call)

@@ -17,7 +17,7 @@ azos_dtb = { path = "../../../crates/drivers/dtb" }
 azos_topology = { path = "../../../crates/core/topology", features = ["energy", "dev-key"] }
 
 [features]
-# `crates/core/arch-x86_64/src/cpu/features.rs` (pulled in for the CPUID decode)
+# `arch/x86_64/src/cpu/features.rs` (pulled in for the CPUID decode)
 # reads it; the arch suite owns the canary (tests/host/arch-tests).
 x86-cpuid-canary = []
 # The gate's canary run: `EnergyModel::validate` accepts everything, and the

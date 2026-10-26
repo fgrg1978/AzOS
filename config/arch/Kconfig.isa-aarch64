@@ -42,7 +42,7 @@ choice
       kernel), so require compiles the kernel and user images with +lse;
       Armv8.1 and above include it (a level >= 8.1 with LSE not `require`
       is a build error). probe: the vDSO hwcap advertises it, and each use
-      of `SpinWait::cas32/64` and `swap32/64` (crates/core/arch-api
+      of `SpinWait::cas32/64` and `swap32/64` (arch/api
       spin.rs: every SpinLock acquire and every later spinner) is linked as
       a branch to an out-of-line LDAXR/STXR loop and rewritten once at
       boot, before the secondaries start, to the CAS*/SWP* when
@@ -117,7 +117,7 @@ choice
       Signed return addresses. Any policy but n builds the kernel and the
       user images with `-Z branch-protection=pac-ret` (`paciasp`/`autiasp`
       are no-ops on a core without it); boot.S turns SCTLR_EL1.EnIA on per
-      CPU, with one key made at boot (crates/core/arch-aarch64/src/cpu/cfi.rs),
+      CPU, with one key made at boot (arch/aarch64/src/cpu/cfi.rs),
       before the first signed frame. Exported to ring 3 as HWCAP_A64_PAUTH in
       the vDSO hwcap word (azos_libsys::vdso_hwcap), set while EnIA is on.
       With A64_PAUTH_PROC_KEYS (the default) every process has keys of its
@@ -154,7 +154,7 @@ config A64_PAUTH_PROC_KEYS
       runs in EL1: the trap entry from EL0 writes it before the first signed
       frame, and the return to EL0 writes the process's. The other four keys
       are not used by the kernel and are written when a process is switched
-      in (crates/core/arch-aarch64/src/cpu/cfi.rs, "Per-process keys").
+      in (arch/aarch64/src/cpu/cfi.rs, "Per-process keys").
       EnIB, EnDA and EnDB are set together with EnIA, so ring-3 code built
       with the B key or data-pointer signing has a live key; `pacga` needs
       no enable bit. Off: one key for the kernel and every process (EnIA
@@ -328,7 +328,7 @@ choice
     default A64_WFXT_PROBE
     help
       WFET/WFIT: WFE/WFI that also end at a counter deadline. The
-      spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      spin-wait hint of `SpinWait::wait_while` (arch/api
       spin.rs) sleeps in WFET until a store to the lock word, an event,
       or A64_WFET_TICKS generic-counter ticks, after which the word is
       re-read: a wait step is bounded even when nobody stores to the

@@ -16,6 +16,7 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | Path | Contents |
 |---|---|
 | `kernel/` | The kernel image: `kernel_main`, boot steps, per-ISA entry code, kernel tasks, panic handler, linker scripts. |
+| `arch/` | The architecture crates: `api/` (`azos_arch_api`, the cross-ISA contract), `facade/` (`azos_arch`, re-exports the build's ISA crate), and one crate per ISA, `riscv64/`, `aarch64/`, `x86_64/`. |
 | `crates/` | Kernel libraries, in four groups: `core/`, `drivers/`, `fs/`, `net/`. |
 | `domains/robot/` | The optional robot application domain (linked only when the image selects it). |
 | `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
@@ -165,7 +166,7 @@ directory of that name.
 ISA-only code goes under `ext/`; every arch crate and every entry directory has
 one.
 
-### crates/core/arch-<isa>/src
+### arch/<isa>/src
 
 | Module | riscv64 | aarch64 | x86_64 |
 |---|---|---|---|
@@ -191,7 +192,7 @@ one.
 Where a module is absent, the function lives elsewhere: riscv64 has no
 `fork_regs` because its fork snapshot is the trap frame's own `[u64; 32]`
 register file (`azos_sched::task::UserRegs`); the riscv64 timer is the
-CLINT/ACLINT in `crates/core/arch-riscv64/src/irq/clint.rs` and its secondary-hart start is in
+CLINT/ACLINT in `arch/riscv64/src/irq/clint.rs` and its secondary-hart start is in
 `kernel/src/entry/riscv64/smp.rs`; the aarch64 TLB invalidation is in `mmu` and
 `api_impl`, and its trap frame is in `kernel/src/entry/aarch64/mod.rs`; x86_64 has no `cache`
 (its DMA is cache-coherent), no `lat_hook` (the masked-window tracer is not built
@@ -202,7 +203,7 @@ The one module outside the shared set that sits outside `ext/` is aarch64's
 
 `ext/` per ISA:
 
-| ISA | `crates/core/arch-<isa>/src/ext/` |
+| ISA | `arch/<isa>/src/ext/` |
 |---|---|
 | riscv64 | `napot.rs` (Svnapot 64 KiB leaves), `pmp.rs` (physical memory protection), `ssqosid.rs` (the `srmcfg` resource-partition tag), `hv/` (H extension primitives) |
 | aarch64 | `mitigations.rs`, `sha2_ce.rs` (SHA-256 on the crypto extension), `tlbi_range.rs`, `wfxt.rs`, `hv/` (EL2 primitives) |
@@ -228,7 +229,7 @@ Extra asm files outside the shared set: `kernel/src/entry/riscv64/asm/context_sw
 vector-extension variant) and `kernel/src/entry/x86_64/asm/ap_entry.S` (the application-processor
 long-mode entry).
 
-Source: `tools/lint/arch_layout_lint.py` (`REQUIRED`), `crates/core/arch-*/src/`,
+Source: `tools/lint/arch_layout_lint.py` (`REQUIRED`), `arch/*/src/`,
 `kernel/src/entry/*/`.
 
 ## kernel/

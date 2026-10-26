@@ -14,4 +14,4 @@ bitflags = "2"
 # so the shim needs an `ARCH` singleton satisfying it — see the `Mmu impl`
 # in `src/lib.rs`, which mirrors `arch-riscv64/src/api_impl.rs`'s body over
 # this shim's own (real, path-pulled) `mmu` module.
-azos_arch_api = { path = "../../../../../crates/core/arch-api" }
+azos_arch_api = { path = "../../../../../arch/api" }

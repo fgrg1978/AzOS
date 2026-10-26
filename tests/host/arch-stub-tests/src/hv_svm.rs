@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The x86_64 hypervisor primitives (`crates/core/arch-x86_64/src/ext/hv`),
+//! The x86_64 hypervisor primitives (`arch/x86_64/src/ext/hv`),
 //! checked on the host against independent oracles: the AMD APM / Linux
 //! `svm.h` offsets and exit codes, and the kernel's own x86 PTE builder.
 //!

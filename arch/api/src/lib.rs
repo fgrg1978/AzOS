@@ -15,12 +15,12 @@
 //!
 //! # Scope
 //!
-//! `crates/core/arch-riscv64`, `crates/core/arch-aarch64` and
-//! `crates/core/arch-x86_64` implement this surface, and `azos_kernel` runs on
+//! `arch/riscv64`, `arch/aarch64` and
+//! `arch/x86_64` implement this surface, and `azos_kernel` runs on
 //! all three ISAs against it. Most call sites, however, still reach the ISA
 //! crate directly through the `azos_arch` facade's re-exported modules
 //! (`cpu::`, `mmu::`, ...) rather than through these traits; see
-//! `crates/core/arch/src/lib.rs` for the measured count. This trait surface
+//! `arch/facade/src/lib.rs` for the measured count. This trait surface
 //! does not close that gap by existing; the routing cleanup does.
 //!
 //! # The six trait families

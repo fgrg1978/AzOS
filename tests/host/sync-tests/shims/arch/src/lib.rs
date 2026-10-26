@@ -120,7 +120,7 @@ pub mod cpu {
         super::HART.with(|c| c.get())
     }
 
-    /// Same bit position as the kernel's `crates/core/arch-riscv64/src/cpu.rs`.
+    /// Same bit position as the kernel's `arch/riscv64/src/cpu.rs`.
     pub const SSTATUS_SIE: usize = 1 << 1;
 
     /// Stands in for `csrr {}, sstatus`. Only the SIE bit is modelled — it is

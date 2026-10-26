@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Per-process pointer-authentication keys (Kconfig `A64_PAUTH_PROC_KEYS`):
-//! the pure half of `crates/core/arch-aarch64/src/cpu/cfi.rs`.
+//! the pure half of `arch/aarch64/src/cpu/cfi.rs`.
 //!
 //! The kernel's production caller is `azos_sched::pac`, which composes these
 //! calls on the events below; [`Kernel`] repeats that composition so the

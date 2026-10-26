@@ -9,7 +9,7 @@
 //! drift. `firmware` is real CSR/SBI calls with no host meaning, so it is
 //! `todo!()` — nothing in this crate's three test targets reaches it.
 
-#[path = "../../../../../../crates/core/arch-riscv64/src/mmu.rs"]
+#[path = "../../../../../../arch/riscv64/src/mmu.rs"]
 pub mod mmu;
 
 /// Host stand-in for `azos_arch::cache` (cache-block zeroing), needed

@@ -81,7 +81,7 @@ Source: `crates/drivers/hwbus/src/{lib,bus,device,pattern,policy,tables}.rs`, `c
 
 A PC's legacy devices sit at I/O ports the architecture fixed, with no bus to enumerate them by, so their capability names the ports: `ty::IOPORT`, granted by a topology row as `ioport.<first>.<count>` (decimal, `READ|WRITE` only, refused past the port space). `DEVICE_IOPORT_ENABLE` on it opens the range to the calling thread, as Linux's `ioperm`: per thread, not inherited by a thread created later or a forked child. The kernel loads the thread's ranges into the CPU's TSS I/O permission bitmap; `in`/`out` on them then run in ring 3, and on any other port they fault with #GP, which kills the task (`KILLED_SEGV`). The bitmap covers ports `0..X86_IOPORT_BITMAP_PORTS` (Kconfig, 1024 by default, 132 bytes per CPU); a thread holds up to `X86_IOPORT_RANGES` ranges.
 
-A switch between threads that hold no port costs two loads and a test (`trap::iomap` in `crates/core/arch-x86_64`); one to a thread that holds ports rewrites the bitmap only when this CPU's TSS holds another thread's set, each set being named by a key that is never reused. riscv64 and aarch64 have no port space: the build refuses a non-zero bitmap there, the minter grants nothing and the op answers `-ENODEV` through the same code (`azos_arch_api::ioport`).
+A switch between threads that hold no port costs two loads and a test (`trap::iomap` in `arch/x86_64`); one to a thread that holds ports rewrites the bitmap only when this CPU's TSS holds another thread's set, each set being named by a key that is never reused. riscv64 and aarch64 have no port space: the build refuses a non-zero bitmap there, the minter grants nothing and the op answers `-ENODEV` through the same code (`azos_arch_api::ioport`).
 
 The topology decides which ports a row gets, within one limit it cannot lift: a range that holds a port the kernel drives itself is refused, and the refusal is recorded (`ioport-reserved`). Each kernel driver reserves its ports where it binds them (`azos_arch_api::ioport::reserve`): COM1, the CMOS pair, `0xCF8`-`0xCFF`, the 8042 once it answers, the PIT's channel 0, the 8259s, and the ACPI PM timer when the clock is measured on it. Two ports that also reach the kernel's devices are granted by rule: the PIT's mode register `0x43` (the kernel reads channel 0 only at boot, and keeps its line masked) and `0x61` (its NMI enable bits reach an NMI handler that only counts). The rules are in `crates/core/ipc/src/ioport_cap.rs`. Linux does not check `ioperm` against its `request_region` claims at all.
 
@@ -89,7 +89,7 @@ The ports close with the capability: `SYS_CAP_CLOSE` on it, or any revocation or
 
 The first user is the buzzer's ring-3 host (`userspace/drivers/buzz_drv`), which drives the PC speaker (`crates/drivers/pcspk`: PIT channel 2, ports `0x42`/`0x43`, and port `0x61`) where its row grants those ports and a silent check sees the counter tick.
 
-Source: `crates/core/arch-api/src/ioport.rs`, `crates/core/arch-x86_64/src/trap/{gdt,iomap}.rs`, `crates/core/sched/src/ioport.rs`, `crates/core/ipc/src/ioport_cap.rs`, `crates/core/syscall/src/ioport.rs`, `crates/drivers/pcspk/`.
+Source: `arch/api/src/ioport.rs`, `arch/x86_64/src/trap/{gdt,iomap}.rs`, `crates/core/sched/src/ioport.rs`, `crates/core/ipc/src/ioport_cap.rs`, `crates/core/syscall/src/ioport.rs`, `crates/drivers/pcspk/`.
 
 ## Discovery: PCI and PCIe
 

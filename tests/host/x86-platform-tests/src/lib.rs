@@ -10,32 +10,32 @@
 //! with real checksums; a test that corrupts one checks it is refused.
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/firmware/acpi.rs"]
+#[path = "../../../../arch/x86_64/src/firmware/acpi.rs"]
 mod acpi;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/firmware/bootinfo.rs"]
+#[path = "../../../../arch/x86_64/src/firmware/bootinfo.rs"]
 mod bootinfo;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/firmware/power.rs"]
+#[path = "../../../../arch/x86_64/src/firmware/power.rs"]
 mod power;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/irq/encode.rs"]
+#[path = "../../../../arch/x86_64/src/irq/encode.rs"]
 mod encode;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/firmware/limine.rs"]
+#[path = "../../../../arch/x86_64/src/firmware/limine.rs"]
 mod limine;
 
 // The microcode loader's choice: `cpu/ucode.rs` names `crate::cpu::features`
 // (the vendor), so both come in under the arch crate's own module names.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/cpu/features.rs"]
+#[path = "../../../../arch/x86_64/src/cpu/features.rs"]
 mod x86_features;
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/cpu/ucode.rs"]
+#[path = "../../../../arch/x86_64/src/cpu/ucode.rs"]
 mod ucode;
 mod cpu {
     pub(crate) use super::x86_features as features;

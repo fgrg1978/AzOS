@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! arch-api trait impls for ARMv8-A.
 //!
-//! See `crates/core/arch-riscv64/src/api_impl.rs` for the RISC-V reference
-//! version (there is no `crates/core/arch/src/api_impl.rs` — `crates/core/arch` is
+//! See `arch/riscv64/src/api_impl.rs` for the RISC-V reference
+//! version (there is no `arch/facade/src/api_impl.rs` — `arch/facade` is
 //! the target_arch facade that re-exports whichever ISA crate is active,
 //! not an impl crate itself). Trait shapes match exactly; the only thing
 //! that changes is the backing instructions.
@@ -217,7 +217,7 @@ impl Interrupts for Aarch64 {
         // M39 (coordinator / U10-5, audit): this used to hand-roll its own
         // `ICC_SGI1R_EL1` encoding — Aff0/Aff1 only, no Aff2/Aff3/RS, and
         // no `dsb ishst` before the write. `gic::send_sgi`/`sgi1r_encode`
-        // (`crates/core/arch-aarch64::gic`) is the tested, complete encoder
+        // (`arch/aarch64::gic`) is the tested, complete encoder
         // and carries the barrier
         // `send_sgi`'s own doc says is required whenever the SGI's
         // receiver depends on a store the sender made just before sending

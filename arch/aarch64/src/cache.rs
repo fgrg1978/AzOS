@@ -143,7 +143,7 @@ pub fn icache_invalidate_all() {}
 //
 // Bulk page zeroing — the aarch64 side of `azos_arch::cache`.
 //
-// RISC-V's `crates/core/arch-riscv64/src/cache.rs` dispatches to `cbo.zero`
+// RISC-V's `arch/riscv64/src/cache.rs` dispatches to `cbo.zero`
 // (Zicboz) behind a DTB-driven, trap-verified probe, with a scalar
 // `core::ptr::write_bytes` fallback whenever the extension is absent or
 // unproven. `crates/core/mm` (`pmm::alloc_page`, `demand::handle_demand_fault`,

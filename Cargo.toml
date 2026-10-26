@@ -387,7 +387,7 @@ members = [
     "crates/core/linux-abi",
     "crates/core/topology",
     "crates/core/common",
-    "crates/core/arch",
+    "arch/facade",
     "crates/core/sync",
     "crates/core/percpu",
     "crates/drivers/base",
@@ -467,17 +467,17 @@ members = [
     # SCSI over USB Bulk-Only Transport, target and initiator (USB mass-storage host).
     "crates/drivers/scsi",
     # Cross-ISA arch trait surface (B0 — Phase 2 prep for aarch64/x86_64).
-    "crates/core/arch-api",
+    "arch/api",
     # B1 — aarch64 ISA impl. Real code is cfg(target_arch="aarch64");
     # on the workspace's riscv64 target this builds as essentially empty.
-    # Item 2 Stage 1/2 — riscv64 ISA impl moved out of crates/core/arch;
-    # crates/core/arch is now a per-target_arch facade re-exporting one of
-    # the per-ISA crates (arch-riscv64, arch-aarch64).
-    "crates/core/arch-riscv64",
+    # Item 2 Stage 1/2 — riscv64 ISA impl; arch/facade is the
+    # per-target_arch facade re-exporting one of the per-ISA crates
+    # (arch/riscv64, arch/aarch64, arch/x86_64).
+    "arch/riscv64",
     # aarch64 (baseline: Kconfig AARCH64_LEVEL). Compiles to near-nothing on
     # riscv64; `tools/gate/ci_check.sh` builds and tests it for aarch64 so it cannot
     # rot unnoticed the way the parked copy did for a month.
-    "crates/core/arch-aarch64",
+    "arch/aarch64",
     # S1/S6 — lock-free SPSC camera frame ring for zero-copy pipelines.
     # Pure no_std; host-tested via tests/host/cam-ring-tests.
     "crates/drivers/cam-ring",
@@ -533,7 +533,7 @@ linked_list_allocator = { version = "0.10", default-features = false }
 azos_abi = { path = "crates/core/abi" }
 azos_linux_abi = { path = "crates/core/linux-abi" }
 azos_common = { path = "crates/core/common" }
-azos_arch = { path = "crates/core/arch" }
+azos_arch = { path = "arch/facade" }
 azos_sync = { path = "crates/core/sync" }
 azos_percpu = { path = "crates/core/percpu" }
 azos_drv_base = { path = "crates/drivers/base" }
@@ -598,9 +598,9 @@ azos_pkg       = { path = "crates/core/pkg" }
 azos_drv_api = { path = "crates/drivers/api" }
 azos_ina219      = { path = "crates/drivers/ina219" }
 azos_buzzer      = { path = "crates/drivers/buzzer" }
-azos_arch_api    = { path = "crates/core/arch-api" }
-azos_arch_riscv64 = { path = "crates/core/arch-riscv64" }
-azos_arch_aarch64 = { path = "crates/core/arch-aarch64" }
+azos_arch_api    = { path = "arch/api" }
+azos_arch_riscv64 = { path = "arch/riscv64" }
+azos_arch_aarch64 = { path = "arch/aarch64" }
 azos_cam_ring      = { path = "crates/drivers/cam-ring" }
 azos_multi_stream  = { path = "crates/net/multi-stream" }
 azos_limits        = { path = "crates/core/limits" }

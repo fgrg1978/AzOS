@@ -354,7 +354,7 @@ choice
         AutoIBRS   AMD, CPUID.80000021H:EAX[8]: EFER.AIBRS set on every CPU;
         retpoline  the kernel is built with the external indirect-branch thunk
                    (-Zretpoline-external-thunk) and the thunk
-                   (crates/core/arch-x86_64/src/retpoline.rs) takes the
+                   (arch/x86_64/src/retpoline.rs) takes the
                    retpoline sequence.
       With hardware protection the boot patches the thunk once, on the
       boot CPU before the text is made read-only, to a plain `jmp *%r11`
@@ -498,7 +498,7 @@ choice
       (CVE-2018-3639). The in-order Cortex-A35/A53/A55/A510 are not exposed;
       a core with FEAT_SSBS (ID_AA64PFR1_EL1.SSBS >= 1) is closed by clearing
       PSTATE.SSBS on every CPU and SCTLR_EL1.DSSBS for every exception entry,
-      kernel and ring 3 alike (done at boot, crates/core/arch-aarch64/src/ext/
+      kernel and ring 3 alike (done at boot, arch/aarch64/src/ext/
       mitigations.rs, no cost to speak of on the cores that have it). A core
       without it whose firmware implements SMCCC_ARCH_WORKAROUND_2 gets
       the call WORKAROUND_2(1) once per CPU at boot, through the PSCI

@@ -97,7 +97,7 @@ fn aarch64_entry_paths_write_sctlr_and_the_drop_defines_the_el2_traps() {
         assert!(w < rust, "{from}: SCTLR_EL1 is written after compiled code runs");
         assert!(path[..w].iter().any(|l| l == "movk    x9, #{sctlr_hi}, lsl #16"), "{from}: not the boot word");
     }
-    let drop = between("crates/core/arch-aarch64/src/mmu/boot.rs", "//", "_azos_drop_to_el1:", "eret");
+    let drop = between("arch/aarch64/src/mmu/boot.rs", "//", "_azos_drop_to_el1:", "eret");
     for reg in ["CPTR_EL2", "MDCR_EL2", "SCTLR_EL1"] {
         assert!(drop.iter().any(|l| l.ends_with(&format!("msr     {reg}, x10"))), "the drop does not write {reg}");
     }

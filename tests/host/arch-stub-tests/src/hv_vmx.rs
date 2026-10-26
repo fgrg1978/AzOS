@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The Intel half of the x86_64 hypervisor primitives
-//! (`crates/core/arch-x86_64/src/ext/hv/{vmx,ept}.rs`), checked on the host.
+//! (`arch/x86_64/src/ext/hv/{vmx,ept}.rs`), checked on the host.
 //!
 //! QEMU's TCG has no VMX and there is no Intel machine in the lab yet, so
 //! nothing here can be proven by running a guest. What is proven instead is

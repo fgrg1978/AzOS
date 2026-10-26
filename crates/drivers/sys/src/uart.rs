@@ -1127,7 +1127,7 @@ pub static CANARY_CONSOLE: CanaryConsole = CanaryConsole;
 //
 // Mechanism copied from `crates/core/sync/src/waitqueue.rs`'s
 // `wq_set_callbacks` — a boot-time registration read through an atomic —
-// rather than `crates/core/arch-api`'s `ARCH` singleton, because `ARCH` is a
+// rather than `arch/api`'s `ARCH` singleton, because `ARCH` is a
 // compile-time constant the ISA picks and this has to be a *choice*: the
 // point of the trait is that the console can be something other than the
 // platform UART without the ring-3 write path knowing. It differs from

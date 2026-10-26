@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # Firmware the kernel loads into the hardware: the x86 CPU microcode image
-# (Kconfig X86_UCODE_LOAD, crates/core/arch-x86_64/src/cpu/ucode.rs).
+# (Kconfig X86_UCODE_LOAD, arch/x86_64/src/cpu/ucode.rs).
 #
 # `make ucode` writes $(UCODE_BIN): the published Intel and AMD files,
 # concatenated per vendor and signed with the update key (tools/image/mk_ucode.py),

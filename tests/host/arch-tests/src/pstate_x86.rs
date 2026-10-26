@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! x86_64 PC power probe (`crates/core/arch-x86_64/src/cpu/pstate.rs`): which
+//! x86_64 PC power probe (`arch/x86_64/src/cpu/pstate.rs`): which
 //! of the level request (HWP, CPPC) and the energy counter (RAPL) a CPU is
 //! allowed to be asked for. The temperature sensor is `azos_thermal::x86_sensor`'s.
 //!

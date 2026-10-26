@@ -3,7 +3,7 @@
 # config/kernel/Kconfig.sync — Locks, futexes, RCU and lock-wait instructions
 
 # ---------------------------------------------------------------------------
-# Spin-wait (crates/core/arch-api spin.rs, every ISA)
+# Spin-wait (arch/api spin.rs, every ISA)
 # ---------------------------------------------------------------------------
 
 config SPIN_WAIT_RELAX_SPINS

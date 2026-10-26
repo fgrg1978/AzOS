@@ -34,7 +34,7 @@ two disagree:
 - as `azos_limits::PAGE_SHIFT`, derived from `.config`, which `kernel/src/main.rs`
   asserts equal to the first.
 
-`arch-aarch64`'s `Granule` (`crates/core/arch-aarch64/src/mmu/mod.rs`) carries
+`arch-aarch64`'s `Granule` (`arch/aarch64/src/mmu/mod.rs`) carries
 the consequences: the `TG0`/`TG1` encodings, `T0SZ`/`T1SZ`, the root size and the
 boot tables. The 4 KiB and 16 KiB granules walk three levels over a 39-bit
 input range, with the same virtual layout; at 16 KiB the root has 8 live
@@ -57,8 +57,8 @@ frames at the allocator, so a topology means the same number of bytes on every
 ISA and granule.
 
 Source: `config/arch/Kconfig.isa` (`AARCH64_PAGE_*`, `PAGE_SHIFT`),
-`crates/core/arch-api/src/lib.rs`, `crates/core/arch-riscv64/src/lib.rs`,
-`crates/core/arch-aarch64/src/mmu/mod.rs`, `kernel/src/main.rs`,
+`arch/api/src/lib.rs`, `arch/riscv64/src/lib.rs`,
+`arch/aarch64/src/mmu/mod.rs`, `kernel/src/main.rs`,
 `kernel/src/entry/aarch64/mod.rs`, `crates/core/libsys/src/lib.rs`,
 `crates/core/topology/src/memory.rs`.
 
@@ -180,7 +180,7 @@ entry, as a hint the hardware may ignore.
 | riscv64 | Svnapot: the N bit (PTE bit 63) with `PPN[3:0] = 0b1000` | 16 pages (64 KiB) | `RV_SVNAPOT_NEVER`, `_PROBE` (default), `_REQUIRE` |
 | x86_64 | None below a 2 MiB leaf | 0 | n/a |
 
-- **Planning is ISA-neutral.** `crates/core/arch-api/src/contig.rs` holds the
+- **Planning is ISA-neutral.** `arch/api/src/contig.rs` holds the
   arithmetic: a run is `contig_run_pages` leaves, the first at a virtual and a
   physical address both aligned to the run's size, the frames consecutive, every
   word one set of attributes. The ISA supplies `pte_make_contig_leaf`,
@@ -202,8 +202,8 @@ entry, as a hint the hardware may ignore.
   extension is a reserved-bit fault, so the decision is made once at boot.
 
 Source: `config/arch/Kconfig.isa-aarch64` (`A64_CONTIG_HINT`, `RV_SVNAPOT_*`),
-`crates/core/arch-api/src/contig.rs`, `crates/core/arch-riscv64/src/ext/napot.rs`,
-`crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/mm/src/vmm.rs`.
+`arch/api/src/contig.rs`, `arch/riscv64/src/ext/napot.rs`,
+`arch/aarch64/src/api_impl.rs`, `crates/core/mm/src/vmm.rs`.
 
 ## 6. The break-before-make gate
 
@@ -219,7 +219,7 @@ the CPU may raise a TLB conflict abort.
   answers `true` unless every CPU reports FEAT_BBM level 2
   (`ID_AA64MMFR2_EL1.BBM >= 2`), for which the change is allowed in place.
 - **The weakest CPU counts.** `BbmSurvey` in
-  `crates/core/arch-aarch64/src/cpu/features.rs` collects each CPU's answer as
+  `arch/aarch64/src/cpu/features.rs` collects each CPU's answer as
   it comes up. A system that mixes CPUs would otherwise let a block made while
   only a level-2 CPU was looked at meet a CPU that aborts. Until the boot's
   expected number of CPUs have all noted themselves (`expect_cpus_bbm`), the
@@ -247,9 +247,9 @@ the CPU may raise a TLB conflict abort.
   `tests/host/syscall-tests` `thp_vmm.rs`) and the abort itself is a hardware
   question.
 
-Source: `crates/core/arch-api/src/lib.rs`, `crates/core/arch-aarch64/src/cpu/features.rs`,
-`crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-riscv64/src/api_impl.rs`,
-`crates/core/arch-x86_64/src/lib.rs`, `crates/core/mm/src/vmm.rs`,
+Source: `arch/api/src/lib.rs`, `arch/aarch64/src/cpu/features.rs`,
+`arch/aarch64/src/api_impl.rs`, `arch/riscv64/src/api_impl.rs`,
+`arch/x86_64/src/lib.rs`, `crates/core/mm/src/vmm.rs`,
 `kernel/src/entry/aarch64/smp.rs`.
 
 ## 7. Limits

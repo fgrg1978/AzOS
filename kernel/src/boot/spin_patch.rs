@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The boot-once rewrite of the `SpinWait` probe sites (wave 15, N2b):
 //! Linux's ALTERNATIVE for Kconfig RV_ZACAS / RV_ZAWRS / RV_ZIHINTPAUSE /
-//! A64_LSE at `probe` (`crates/core/arch-api/src/spin.rs`,
+//! A64_LSE at `probe` (`arch/api/src/spin.rs`,
 //! `azos_trace::jump::KIND_*_ALT`).
 //!
 //! Every site is linked as its safe form (a branch to the out-of-line

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The microcode loader's choice (`crates/core/arch-x86_64/src/cpu/ucode.rs`)
+//! The microcode loader's choice (`arch/x86_64/src/cpu/ucode.rs`)
 //! on synthetic containers built byte by byte to Intel's and AMD's layouts:
 //! the checksums, the signature and platform-flag match, the extended
 //! signature table, AMD's equivalence table, the image's sections. Canary:

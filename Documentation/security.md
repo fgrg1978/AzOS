@@ -12,8 +12,8 @@ every refusal here produces.
 |------|-------------|
 | Capabilities and the syscall boundary | `crates/core/abi/src/cap.rs`, `crates/core/ipc/src/cap.rs`, `crates/core/syscall/src/invoke.rs` |
 | Per-image syscall filters | `crates/core/sched/src/seccomp.rs`, `crates/core/sched/src/filter.rs` |
-| Control-flow integrity | `crates/core/arch-aarch64/src/cpu/cfi.rs`, `crates/core/arch-x86_64/src/cpu/cfi.rs`, `config/subsys/Kconfig.topology` |
-| Speculation mitigations | `crates/core/arch-x86_64/src/ext/mitigations.rs`, `crates/core/arch-aarch64/src/ext/mitigations.rs`, `crates/core/limits/src/nospec.rs`, `config/axes/Kconfig.security` |
+| Control-flow integrity | `arch/aarch64/src/cpu/cfi.rs`, `arch/x86_64/src/cpu/cfi.rs`, `config/subsys/Kconfig.topology` |
+| Speculation mitigations | `arch/x86_64/src/ext/mitigations.rs`, `arch/aarch64/src/ext/mitigations.rs`, `crates/core/limits/src/nospec.rs`, `config/axes/Kconfig.security` |
 | Secure boot, signed artefacts | `crates/core/ota/src/secure_boot.rs`, `crates/core/ota/src/update.rs`, `crates/core/topology/src/verify.rs`, `crates/core/topology/src/signed.rs`, `crates/core/pkg/src` |
 | Crypto primitives | `crates/core/crypto/src` |
 | Entropy, TPM | `crates/core/crypto/src/entropy.rs`, `kernel/src/boot/entropy.rs`, `crates/drivers/tpm/src`, `kernel/src/boot/tpm.rs` |
@@ -241,15 +241,15 @@ run.
 
 ## Control-flow integrity
 
-Source: `crates/core/arch-aarch64/src/cpu/cfi.rs`,
-`crates/core/arch-x86_64/src/cpu/cfi.rs`, `tools/build/kconfig_to_cargo.py`
+Source: `arch/aarch64/src/cpu/cfi.rs`,
+`arch/x86_64/src/cpu/cfi.rs`, `tools/build/kconfig_to_cargo.py`
 (`cfi_rustflags`), `config/subsys/Kconfig.topology` (section "Hardware control-flow
 integrity"), `config/arch/Kconfig.isa`.
 
 The model is the same on every ISA: forward edges (an indirect call or jump may
 only land on a landing pad) and backward edges (a return address is signed or
 kept on a shadow stack). Each extension is a per-ISA `make config` choice of
-`n` / `probe` / `require` (`ExtPolicy` in `crates/core/arch-api/src/isa.rs`).
+`n` / `probe` / `require` (`ExtPolicy` in `arch/api/src/isa.rs`).
 Any policy but `n` makes the kernel and the user images compile with the pads,
 which are no-ops on a CPU without the extension; the boot then uses the
 extension when the CPU has it (`probe`) or refuses the CPU (`require`).
@@ -266,9 +266,9 @@ compiler does not support it for riscv64).
 ## Speculation mitigations
 
 Source: `config/axes/Kconfig.security`,
-`crates/core/arch-x86_64/src/ext/mitigations.rs`,
-`crates/core/arch-aarch64/src/ext/mitigations.rs`,
-`crates/core/arch-x86_64/src/ext/retpoline.rs`,
+`arch/x86_64/src/ext/mitigations.rs`,
+`arch/aarch64/src/ext/mitigations.rs`,
+`arch/x86_64/src/ext/retpoline.rs`,
 `crates/core/limits/src/nospec.rs`.
 
 Every mitigation is a switch in `make config`; none is forced. The threat model
@@ -327,8 +327,8 @@ speculation barrier on syscall entry.
 
 ## Kernel image randomization (KASLR)
 
-Source: `crates/core/arch-api/src/kaslr.rs`,
-`crates/core/arch-{aarch64,riscv64,x86_64}/src/mmu/kaslr.rs` and
+Source: `arch/api/src/kaslr.rs`,
+`arch/{aarch64,riscv64,x86_64}/src/mmu/kaslr.rs` and
 `kaslr_boot.rs`, `kernel/linker-*.ld`, `kernel/build.rs` (the `-pie` link),
 `config/kernel/Kconfig.hardening` (the `KASLR` choice), `tools/image/kaslr_image.sh`,
 `tools/gate/kaslr_boot_row.sh`.

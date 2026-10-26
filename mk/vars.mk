@@ -553,7 +553,7 @@ K1_LINKER   := kernel/linker-k1.ld
 # the VF2 and QEMU kernels and fails if any of these instructions is present.
 #
 # NOT the way to reach an extension that only SOME target has: that is a runtime
-# probe with a scalar fallback (`crates/core/arch-riscv64/src/cache.rs` for Zicboz). This
+# probe with a scalar fallback (`arch/riscv64/src/cache.rs` for Zicboz). This
 # is for extensions the board is known to have at build time.
 #
 # The flags come from the Kconfig (config/arch/Kconfig.isa-riscv64: the K1's RV_ZBA/ZBB/ZBS

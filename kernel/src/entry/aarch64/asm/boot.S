@@ -130,7 +130,7 @@ _entry_after_header:
     // `_azos_drop_to_el1` sets HCR_EL2, CPTR_EL2,
     // the physical-timer and GICv3-sysreg EL1 grants, and SCTLR_EL1
     // (MMU off), then ERETs back into the caller's LR at EL1h with DAIF
-    // masked — see crates/core/arch-aarch64/src/mmu/boot.rs for the full
+    // masked — see arch/aarch64/src/mmu/boot.rs for the full
     // sysreg-by-sysreg rationale. x19/x20 are callee-saved and survive
     // the `bl` regardless of that trampoline's own clobber list.
     mrs     x9, CurrentEL
@@ -189,7 +189,7 @@ _entry_after_header:
     //
     // Same bug class as CPACR_EL1 above, found the same way (this task's
     // own pan-probe feature, run against a scratch USER-tagged page):
-    // `crates/core/arch-aarch64::mmu::boot::_azos_drop_to_el1`'s `SPSR_EL2` write
+    // `arch/aarch64::mmu::boot::_azos_drop_to_el1`'s `SPSR_EL2` write
     // once set PAN too, but that trampoline runs ONLY when entered at EL2
     // (it now leaves PAN and SPAN to this block) — SCTLR_EL1.SPAN=0 (below)
     // only sets PAN on a LATER EL0->EL1 exception, which has not happened
@@ -653,7 +653,7 @@ _aarch64_secondary_entry:
 // "spin-table"`, a Raspberry Pi 3) jumps here when the boot CPU writes this
 // address to its `cpu-release-addr` (`azos_arch::smp::spin_table_release`,
 // early in the boot): MMU off, the firmware's exception level, no argument.
-// It waits for its slot of `AZOS_SPIN_GO` (crates/core/arch-aarch64/src/
+// It waits for its slot of `AZOS_SPIN_GO` (arch/aarch64/src/
 // smp.rs) to hold its own affinity key with bit 63 set — the boot CPU writes
 // it when it starts the CPU (`spin_table_start`) and cleans the line to the
 // point of coherency, which is what these Device-type loads see — and then

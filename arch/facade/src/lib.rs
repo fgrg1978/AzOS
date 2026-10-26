@@ -93,5 +93,5 @@ pub type ArchImpl = azos_arch_x86_64::X86_64;
 ))]
 compile_error!(
     "azos_arch: no port for this target_arch. Implement every trait arch-api \
-     exports (crates/core/arch-x86_64 is the template) in crates/core/arch-<isa>."
+     exports (arch/x86_64 is the template) in arch/<isa>."
 );

@@ -35,13 +35,13 @@ mod entries;
 /// aarch64: the register constants `cfi.rs` names.
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/sysregs.rs"]
+#[path = "../../../../arch/aarch64/src/sysregs.rs"]
 pub mod sysregs;
 
 /// aarch64: `cpu/cfi.rs`.
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/cpu/cfi.rs"]
+#[path = "../../../../arch/aarch64/src/cpu/cfi.rs"]
 pub mod a64_cfi;
 
 /// x86_64: `cpu/cfi.rs`, under the two MSR accessors it reaches through
@@ -56,7 +56,7 @@ pub fn wrmsr(_msr: u32, _v: u64) {
 }
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/cpu/cfi.rs"]
+#[path = "../../../../arch/x86_64/src/cpu/cfi.rs"]
 pub mod x86_cfi;
 
 /// aarch64: `ext/mitigations.rs`, the pure half (MIDR and ID registers ->
@@ -64,7 +64,7 @@ pub mod x86_cfi;
 /// `cfg(all(target_arch = "aarch64", target_os = "none"))`, nothing else.
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/ext/mitigations.rs"]
+#[path = "../../../../arch/aarch64/src/ext/mitigations.rs"]
 pub mod a64_mitigations;
 
 #[cfg(test)]

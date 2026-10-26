@@ -119,7 +119,7 @@ for j in glob.glob(OUT + "/json/*.json"):
 crate = collections.defaultdict(lambda: [0, 0.0])
 for rel, (n, pct) in best.items():
     parts = rel.split('/')
-    c = (parts[1] if parts[2] == 'src' else parts[2]) if parts[0] in ('crates', 'domains') else parts[0]
+    c = (parts[1] if parts[2] == 'src' else parts[2]) if parts[0] in ('arch', 'crates', 'domains') else parts[0]
     crate[c][0] += n
     crate[c][1] += n * pct / 100.0
 

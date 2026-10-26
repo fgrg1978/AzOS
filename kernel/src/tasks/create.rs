@@ -254,7 +254,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     }
 
     // RVV isolation probe: canary for the rvv_ctx_save/restore TID-vs-
-    // offset-120 bug (crates/core/arch-riscv64/src/fp.rs). Two tasks, pinned to
+    // offset-120 bug (arch/riscv64/src/fp.rs). Two tasks, pinned to
     // the SAME hart (0) so a build that indexes VEC_STATES[] by hart id
     // instead of TID aliases them onto one slot and corrupts both, fill
     // v0-v31 with distinct patterns, yield to each other a few times, then

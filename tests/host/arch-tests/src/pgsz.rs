@@ -21,7 +21,7 @@
 use azos_arch_api::contig;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/ext/napot.rs"]
+#[path = "../../../../arch/riscv64/src/ext/napot.rs"]
 mod napot;
 
 mod rv {

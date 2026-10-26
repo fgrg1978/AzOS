@@ -3,7 +3,7 @@ import os  # noqa: E402 (tools_layout.py)
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """mk_ucode.py: the signed microcode image the x86 kernel loads at boot
-(Kconfig X86_UCODE_LOAD; the format is crates/core/arch-x86_64/src/cpu/ucode.rs).
+(Kconfig X86_UCODE_LOAD; the format is arch/x86_64/src/cpu/ucode.rs).
 
     UCODE.BIN = RSIG (tools/sign/sigalg.py, by the update key) || payload
     payload   = "AZUCODE\\0" | version 1 (u32) | sections (u32)

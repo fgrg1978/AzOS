@@ -24,7 +24,7 @@ global_asm!(
     dmb = const azos_arch::mmu::DIRECT_MAP_BASE,
     // Kconfig `KASLR` not `n`: the image is linked position-independent, and
     // `long_entry` picks its base and applies its relocations
-    // (`x86_64_early_kaslr`, crates/core/arch-x86_64/src/mmu/kaslr_boot.rs).
+    // (`x86_64_early_kaslr`, arch/x86_64/src/mmu/kaslr_boot.rs).
     kaslr = const azos_arch::mmu::kaslr::ENABLED as u8,
     options(att_syntax),
 );

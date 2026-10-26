@@ -220,7 +220,7 @@ pub struct TaskContext {
 
     // aarch64 (bare metal only — `target_os = "none"` excludes this host's
     // own aarch64-apple-darwin build, which has no context-switch asm to
-    // agree with; see `crates/core/arch-aarch64/src/features.rs` for the same
+    // agree with; see `arch/aarch64/src/features.rs` for the same
     // guard used for the same reason).
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     pub x19: CtxReg,

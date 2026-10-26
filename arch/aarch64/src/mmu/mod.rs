@@ -461,7 +461,7 @@ pub const fn make_table(pa: usize) -> u64 {
 /// (`arch-aarch64::api_impl`'s original `encode_pte` always set AF too):
 /// every leaf this tree ever creates requests `accessed`, so honoring the
 /// field instead of hardcoding AF would not change any real caller's
-/// output — see the `Mmu` trait doc in `crates/core/arch-api` for the general
+/// output — see the `Mmu` trait doc in `arch/api` for the general
 /// rule this follows.
 fn attr_bits(perms: PagePerms) -> Result<u64, MmuError> {
     if !perms.read {

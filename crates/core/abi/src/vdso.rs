@@ -218,7 +218,7 @@ pub const VDSO_ABI_VERSION_OFFSET: usize = 84;
 /// seqlock generation (not the page's `seq`). Layout version 2.
 pub const VDSO_CLOCK_WORDS_OFFSET: usize = 88;
 
-// ── aarch64 (ID registers, `crates/core/arch-aarch64/src/features.rs`) ──────
+// ── aarch64 (ID registers, `arch/aarch64/src/features.rs`) ──────
 
 /// aarch64 FEAT_CRC32: `crc32{b,h,w,x}` / `crc32c*` (ID_AA64ISAR0_EL1.CRC32 >= 1).
 pub const HWCAP_A64_CRC32: u64 = 1 << 0;
@@ -278,7 +278,7 @@ pub const HWCAP_RV_PMU_CYCLES: u64 = 1 << 4;
 /// riscv64 `rdinstret` readable from U-mode (`scounteren.IR`), as above.
 pub const HWCAP_RV_PMU_INSTR: u64 = 1 << 5;
 
-// ── x86_64 (CPUID, `crates/core/arch-x86_64/src/features.rs`) ───────────────
+// ── x86_64 (CPUID, `arch/x86_64/src/features.rs`) ───────────────
 //
 // Each under its Kconfig `X86_<NAME>` policy.
 

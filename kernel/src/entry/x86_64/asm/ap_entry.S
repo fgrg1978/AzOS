@@ -4,7 +4,7 @@
 // x86_64 secondary-CPU entry (AT&T; included by entry/x86_64/smp.rs).
 //
 // `Boot::hart_start(cpu, _secondary_start, cpu)` lands here from the AP
-// trampoline (crates/core/arch-x86_64/src/ext/ap_trampoline.S) in 64-bit mode,
+// trampoline (arch/x86_64/src/ext/ap_trampoline.S) in 64-bit mode,
 // on the kernel's page tables, GDT and IDT, interrupts off, with %rdi = the
 // dense CPU number and no stack. As riscv64's `_secondary_start`: range
 // check, stack = AZOS_SECONDARY_SP[cpu] (0 = no per-CPU area: park), then

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side tests for the pure parts of `crates/core/arch-riscv64` (and
+//! Host-side tests for the pure parts of `arch/riscv64` (and
 //! of the aarch64 and x86_64 paging code, further down).
 //!
 //! **WHY.** 1375 lines with no test of any kind, and it is where the bug of
@@ -15,11 +15,11 @@
 //! test still passes.
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/mmu.rs"]
+#[path = "../../../../arch/riscv64/src/mmu.rs"]
 mod mmu;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/ext/pmp.rs"]
+#[path = "../../../../arch/riscv64/src/ext/pmp.rs"]
 mod pmp;
 
 // x86_64 paging and shootdown (wave 15, front X3).
@@ -31,11 +31,11 @@ mod x86_paging;
 // in `pac_keys.rs`.
 #[cfg(test)]
 #[allow(dead_code, unexpected_cfgs)]
-#[path = "../../../../crates/core/arch-aarch64/src/sysregs.rs"]
+#[path = "../../../../arch/aarch64/src/sysregs.rs"]
 mod sysregs;
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/cpu/cfi.rs"]
+#[path = "../../../../arch/aarch64/src/cpu/cfi.rs"]
 mod a64_cfi;
 #[cfg(test)]
 mod pac_keys;
@@ -67,7 +67,7 @@ mod pgsz;
 // silent in the direction that matters — a hart left out keeps a stale
 // translation and nothing faults — so the selection rule is pinned here.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/tlb.rs"]
+#[path = "../../../../arch/riscv64/src/tlb.rs"]
 mod tlb;
 
 /// The shootdown's scan bound: one past the highest hart ever noted, never
@@ -226,7 +226,7 @@ mod tlb_mask {
 // keep the register reads out of a host build; `detect()` answers `NONE` here,
 // which is itself asserted.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/cpu/features.rs"]
+#[path = "../../../../arch/aarch64/src/cpu/features.rs"]
 mod aarch64_features;
 
 // The PMUv3 counters' probe verdict and off-target state (the register images
@@ -234,19 +234,19 @@ mod aarch64_features;
 // The cross-ISA helpers it re-exports are the kernel's (`azos_arch::pmu`), not
 // this crate's.
 #[allow(dead_code, unused_imports)]
-#[path = "../../../../crates/core/arch-aarch64/src/pmu.rs"]
+#[path = "../../../../arch/aarch64/src/pmu.rs"]
 mod aarch64_pmu;
 
 // The WFET deadline and the probe's verdict (FEAT_WFxT).
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/ext/wfxt.rs"]
+#[path = "../../../../arch/aarch64/src/ext/wfxt.rs"]
 mod aarch64_wfxt;
 
 // The TLB shootdown's range decomposition (FEAT_TLBIRANGE): the steps must
 // cover the run exactly, the operand fields must sit in their own bits.
 // Canary: `--features a64-tlbi-canary` makes NUM one too large.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/ext/tlbi_range.rs"]
+#[path = "../../../../arch/aarch64/src/ext/tlbi_range.rs"]
 mod aarch64_tlbi_range;
 
 // The x86_64 CPUID decoding, for the same reason: a bit index off by one
@@ -260,16 +260,16 @@ mod aarch64_tlbi_range;
 // this root under the crate's own module names (the CPU-model matrix of the
 // q35 gate rows is asserted in `ext::mitigations`).
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/cpu/mod.rs"]
+#[path = "../../../../arch/x86_64/src/cpu/mod.rs"]
 mod cpu;
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/trap/mod.rs"]
+#[path = "../../../../arch/x86_64/src/trap/mod.rs"]
 mod trap;
 /// The x86_64 singleton type, which `trap::iomap` implements `IoPorts` for
-/// (`crates/core/arch-x86_64/src/lib.rs` is not included here).
+/// (`arch/x86_64/src/lib.rs` is not included here).
 struct X86_64;
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/ext/mod.rs"]
+#[path = "../../../../arch/x86_64/src/ext/mod.rs"]
 mod ext;
 
 // riscv64 H extension primitives (hypervisor plan step H1): G-stage tables,
@@ -302,7 +302,7 @@ mod shootdown_wait;
 // check because nothing else in the tree decodes a PTE and compares it
 // against the `PagePerms` that built it. See `mod aarch64_mmu` below.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/mmu/mod.rs"]
+#[path = "../../../../arch/aarch64/src/mmu/mod.rs"]
 mod aarch64_mmu;
 
 /// The bootstrap identity map on a board whose RAM is not QEMU `virt`'s: the
@@ -499,7 +499,7 @@ mod svadu {
 // Ssqosid (Kconfig `RV_SSQOSID`): the real `srmcfg` module, pulled in by path
 // (its asm is riscv64-only and compiles out here).
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/ext/ssqosid.rs"]
+#[path = "../../../../arch/riscv64/src/ext/ssqosid.rs"]
 mod ssqosid;
 
 /// Ssqosid: the field widths come from a write-ones read-back, the word is
@@ -697,7 +697,7 @@ mod a64_el0_state_tests {
 // riscv64 `senvcfg` (Kconfig `RV_SENVCFG`): the real module, pulled in by path
 // (its asm is riscv64-only and compiles out here).
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/ext/senvcfg.rs"]
+#[path = "../../../../arch/riscv64/src/ext/senvcfg.rs"]
 mod senvcfg;
 
 /// el0-state-audit: U-mode gets no cache-block instruction, no pointer

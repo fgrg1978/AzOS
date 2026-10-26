@@ -56,7 +56,7 @@
 .equ IPC_FAST_ENTRY,   {ipc_fast_entry}
 .equ IPC_FAST_LO,      {ipc_fast_lo}
 // Kconfig A64_PAUTH_PROC_KEYS: per-process pointer-authentication keys, swapped
-// at the EL0 boundary (PAC_ENTER / PAC_EXIT below; crates/core/arch-aarch64/
+// at the EL0 boundary (PAC_ENTER / PAC_EXIT below; arch/aarch64/
 // src/cpu/cfi.rs, "Per-process keys").
 .equ PAC_USER,         {pac_user}
 
@@ -326,7 +326,7 @@ trap_return:
     // hardware, so that half of the riscv64 bug class does not exist here
     // (verified by reading this whole file: no software SP swap anywhere
     // in it). The OTHER half does: once a syscall runs with IRQs enabled
-    // (`ARCH.enable_all()`, `crates/core/arch-aarch64/src/sysregs.rs`'s
+    // (`ARCH.enable_all()`, `arch/aarch64/src/sysregs.rs`'s
     // `msr DAIFClr,#2`), DAIF.I stays clear across this entire routine
     // unless masked again — `SPSR_EL1` is only "the PSTATE `eret` will
     // restore"; writing it does NOT affect this hart's OWN live DAIF
@@ -545,7 +545,7 @@ aarch64_ret_to_user_tls:
 // The frame's x10-x17 slots keep what an earlier full save of this task
 // left (zero after the first entry). Nothing on a native syscall reads them:
 // the fork snapshot clears them (`SYSCALL_CLOBBERED`,
-// crates/core/arch-aarch64/src/fork_regs.rs), the exec hand-off zeroes
+// arch/aarch64/src/fork_regs.rs), the exec hand-off zeroes
 // them with every other register (`exec_enter`,
 // kernel/src/entry/aarch64/trap.rs), the IPC fast path writes x0-x6; signals and
 // syscall restart are the Linux personality's.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The x86_64 port's pure encoders (`crates/core/arch-x86_64`: trap::gdt, trap::idt,
+//! The x86_64 port's pure encoders (`arch/x86_64`: trap::gdt, trap::idt,
 //! fp, cpu, fork_regs), checked on the host against independent oracles:
 //! Linux's GDT constants, the SDM's descriptor layouts, and the vector lists
 //! hand-written in `kernel/src/entry/x86_64/asm/trap_entry.S`.

@@ -114,7 +114,7 @@ config HV_MAX_VCPUS
 
       Cost: 32 B of RAM per vCPU on riscv64 and x86_64; on aarch64 also
       about 3 KiB of static RAM per vCPU (the world-switch block and the
-      virtual interrupt controller's queue, crates/core/arch-aarch64
+      virtual interrupt controller's queue, arch/aarch64
       `ext/hv/vcpu.rs`).
 
 config HV_EXAMPLE_GUEST

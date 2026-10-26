@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! x86_64 paging (`crates/core/arch-x86_64/src/{mmu,tlb}.rs`): PTE encode and
+//! x86_64 paging (`arch/x86_64/src/{mmu,tlb}.rs`): PTE encode and
 //! decode, the CR3 word, the table walker, the shootdown's target mask and
 //! local-flush choice. A wrong bit here is silent until real hardware walks
 //! it (a PAT bit read as PS maps 2 MiB where 4 KiB was meant; a missing NX
@@ -8,11 +8,11 @@
 //! when that one bit is dropped.
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/mmu.rs"]
+#[path = "../../../../arch/x86_64/src/mmu.rs"]
 pub mod mmu;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/tlb.rs"]
+#[path = "../../../../arch/x86_64/src/tlb.rs"]
 pub mod tlb;
 
 #[cfg(test)]

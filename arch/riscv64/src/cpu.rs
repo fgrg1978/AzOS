@@ -263,11 +263,11 @@ pub const SIE_SEIE: usize = 1 << 9;
 // ============================================================
 //
 // `siselect`/`sireg`/`stopei` are written as numeric CSR addresses, not
-// mnemonics, for the same reason `crates/core/arch-riscv64/src/irq/clint.rs` writes
+// mnemonics, for the same reason `arch/riscv64/src/irq/clint.rs` writes
 // `csrw 0x14d` for `stimecmp`: the mnemonic needs the Ssaia (or Sstc)
 // target feature, which this build's RUSTFLAGS do not enable. Whether the
 // hart implements the CSR is a runtime question: the only caller,
-// `crates/core/arch-riscv64/src/irq/imsic.rs`, is reached only after the DTB described a
+// `arch/riscv64/src/irq/imsic.rs`, is reached only after the DTB described a
 // `riscv,imsics` group.
 //
 // Addresses as in Linux `arch/riscv/include/asm/csr.h`: CSR_SISELECT 0x150,

@@ -30,7 +30,7 @@ azos_common = { path = "../../../crates/core/common" }
 # The kernel's end of the trap ring and of the guest's RAM, run against this
 # program's device models (src/monitor_tests.rs).
 azos_hv = { path = "../../../crates/core/hv" }
-azos_arch_api = { path = "../../../crates/core/arch-api" }
+azos_arch_api = { path = "../../../arch/api" }
 # The state words and the grants `life` and the built-in row agree on.
 azos_devif = { path = "../../../crates/core/devif" }
 # `dev-key`: the topology crate embeds a test key in a build without a production one.

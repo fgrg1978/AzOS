@@ -3,7 +3,7 @@
 //! The boot decision for the H extension (Kconfig `RV_H`): the device tree
 //! says whether cpu@0 declares `h`, the policy says whether the kernel may
 //! use it, and one trap-safe `hstatus` access on this hart confirms it. The
-//! primitives themselves live in `azos_arch::ext::hv` (crates/core/arch-riscv64);
+//! primitives themselves live in `azos_arch::ext::hv` (arch/riscv64);
 //! the `[ISA]` row `h=` reports what this resolves to.
 
 use azos_arch_api::isa::riscv64 as policy;

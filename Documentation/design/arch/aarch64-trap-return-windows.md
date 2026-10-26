@@ -27,11 +27,11 @@ The generic syscall flow switches interrupts on for the body of a call
 (`interrupts_on` in `kernel/src/trap/syscall.rs`, implemented in
 `kernel/src/trap/kernel.rs` as `ARCH.enable_all()`, which `api_impl.rs` runs as
 `sysregs::enable_irq`, `msr DAIFClr, #2`, in
-`crates/core/arch-aarch64/src/sysregs.rs`). On the way out the return code is
+`arch/aarch64/src/sysregs.rs`). On the way out the return code is
 responsible for closing them.
 
 Source: `kernel/src/trap/syscall.rs`, `kernel/src/trap/kernel.rs`,
-`crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-aarch64/src/sysregs.rs`.
+`arch/aarch64/src/api_impl.rs`, `arch/aarch64/src/sysregs.rs`.
 
 ## 2. The hazard
 

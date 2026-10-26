@@ -9,7 +9,7 @@
 //!   [`Boot`]. `Vector` (the B1.vec placeholder mentioned here originally)
 //!   is riscv64-only today — arch-api's own `Vector` trait has no aarch64
 //!   impl in this crate, and `azos_arch::Vector` calls are 0 across the
-//!   tree outside `crates/core/arch*` (measured, U10's arch-api count).
+//!   tree outside `arch/` (measured, U10's arch-api count).
 //! - System-register read/write helpers in [`sysregs`].
 //! - VMSAv8-64 PTE encoding in [`mmu`].
 //! - PSCI v1.0 calls (CPU_ON / SYSTEM_OFF / SYSTEM_RESET) in
@@ -22,7 +22,7 @@
 //!
 //! # Why everything is `cfg(target_arch = "aarch64")`
 //!
-//! `crates/core/arch-aarch64` is a workspace member, but the workspace
+//! `arch/aarch64` is a workspace member, but the workspace
 //! default target is `riscv64imac-unknown-none-elf`. The asm bodies
 //! cannot assemble on RISC-V, so the inner functions are
 //! cfg-gated. On the workspace target the crate compiles as

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host tests of the riscv64 H-extension primitives
-//! (`crates/core/arch-riscv64/src/ext/hv/`): the G-stage PTE encoder and
+//! (`arch/riscv64/src/ext/hv/`): the G-stage PTE encoder and
 //! table builder, the CSR addresses and save/restore lists, the guest frame
 //! layout the entry assembly indexes, and the VM-exit decode.
 //!
@@ -16,13 +16,13 @@
 //! not derived from the constants under test.
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/ext/hv/mod.rs"]
+#[path = "../../../../arch/riscv64/src/ext/hv/mod.rs"]
 mod hv;
 
 // The IMSIC driver's pure half (layout, selectors); its CSR half is
 // riscv64-only.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/irq/imsic.rs"]
+#[path = "../../../../arch/riscv64/src/irq/imsic.rs"]
 mod imsic;
 
 #[cfg(test)]

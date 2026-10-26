@@ -37,15 +37,15 @@ The kernel image is one program, `kernel_main` in `kernel/src/main.rs`, built
 for each ISA from the same sources. Ring 3 is U-mode on riscv64, EL0 on
 aarch64 and ring 3 on x86_64.
 
-Source: `kernel/src/main.rs`, `crates/core/arch/src/lib.rs`,
-`crates/core/arch-api/src/lib.rs`, `userspace/`.
+Source: `kernel/src/main.rs`, `arch/facade/src/lib.rs`,
+`arch/api/src/lib.rs`, `userspace/`.
 
 ## Boot path
 
 | Step | What happens | Code |
 |---|---|---|
 | 1 | The ISA entry asm (`boot.S`) sets up the boot stack and calls `kernel_main` | `kernel/src/entry/<isa>/asm/boot.S`, `kernel/src/main.rs` |
-| 2 | `boot::early_main` runs the common early steps in one order for every ISA and calls an `ArchEntry` hook where the ISAs differ | `kernel/src/boot/early.rs`, `crates/core/arch-api/src/contract.rs` |
+| 2 | `boot::early_main` runs the common early steps in one order for every ISA and calls an `ArchEntry` hook where the ISAs differ | `kernel/src/boot/early.rs`, `arch/api/src/contract.rs` |
 | 3 | Boot install steps run in order, one module per subsystem | `kernel/src/boot/` |
 | 4 | The signed topology is verified, admitted and published; it is immutable afterwards | `kernel/src/boot/topology.rs`, `crates/core/topology` |
 | 5 | Secondary CPUs start and the scheduler starts | `kernel/src/entry/<isa>/smp.rs`, `kernel/src/boot/smp.rs`, `crates/core/sched` |
@@ -53,10 +53,10 @@ Source: `kernel/src/main.rs`, `crates/core/arch/src/lib.rs`,
 
 The early-boot hooks of `ArchEntry` run from `pre_console` through
 `boot_selftests`, in the order the trait declares them
-(`crates/core/arch-api/src/contract.rs`).
+(`arch/api/src/contract.rs`).
 
 Source: `kernel/src/main.rs`, `kernel/src/boot/early.rs`,
-`crates/core/arch-api/src/contract.rs`.
+`arch/api/src/contract.rs`.
 
 ## Map by topic
 
@@ -188,7 +188,7 @@ control, power domains), the DMA mapping API, the IOMMU interface, PCI
 enumeration, the device tree parser and the interrupt-controller selection are
 shared crates.
 
-- Source: `crates/core/arch-api`, `crates/core/arch-*`,
+- Source: `arch/api`, `arch/*`,
   `crates/drivers/{soc,dma,iommu,pci,dtb,irqchip,base}`.
 - Doc: [hal.md](Documentation/hal.md).
 
@@ -326,7 +326,7 @@ SVM) sit behind `azos_arch_api::Hypervisor` and live in the `hv` module of each 
 crate's `ext/`.
 
 - Source: `crates/core/hv`, `userspace/services/vmmd`,
-  `crates/core/arch-*/src/ext/hv/`, `kernel/src/boot/hv.rs`, `config/axes/Kconfig.virt`.
+  `arch/*/src/ext/hv/`, `kernel/src/boot/hv.rs`, `config/axes/Kconfig.virt`.
 - Doc: [virtualization.md](Documentation/virtualization.md).
 
 ### API reference
@@ -363,13 +363,13 @@ static rows of the topology; there is no fork and no exec.
 
 An ISA is three pieces, and the layout lint reports which files are missing.
 
-1. An arch crate `crates/core/arch-<isa>` implementing the `arch-api` traits,
+1. An arch crate `arch/<isa>` implementing the `arch-api` traits,
    with ISA-only code under `ext/`.
 2. A kernel entry directory `kernel/src/entry/<isa>` with `arch_entry.rs`
    (the `ArchEntry` impl with every early-boot hook), `boot_hooks.rs`, `asm/`
    (`boot.S`, `context_switch.S`, `trap_entry.S`), `trap.rs`, `irq.rs`, `smp.rs`,
    `resume.rs` and `ext/`.
-3. A branch in the facade (`crates/core/arch/src/lib.rs`), a kernel linker
+3. A branch in the facade (`arch/facade/src/lib.rs`), a kernel linker
    script (`kernel/linker-*.ld`), the ring-3 target spec (`sdk/targets/`, which
    carries the user image layout too) and a Kconfig ISA symbol (`config/arch/Kconfig.isa`).
 
@@ -377,5 +377,5 @@ Check with `python3 tools/lint/arch_layout_lint.py`. See
 [Documentation/structure.md](Documentation/structure.md#per-isa-layout) for the
 full layout.
 
-Source: `tools/lint/arch_layout_lint.py`, `crates/core/arch/src/lib.rs`,
-`kernel/src/entry/`, `crates/core/arch-api/src/contract.rs`.
+Source: `tools/lint/arch_layout_lint.py`, `arch/facade/src/lib.rs`,
+`kernel/src/entry/`, `arch/api/src/contract.rs`.

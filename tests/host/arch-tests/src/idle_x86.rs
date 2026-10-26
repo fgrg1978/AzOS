@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! x86_64 deep idle (`crates/core/arch-x86_64/src/cpu/idle.rs`): the C-state
+//! x86_64 deep idle (`arch/x86_64/src/cpu/idle.rs`): the C-state
 //! ladder per CPU model, what CPUID must say before a state is on it, and the
 //! depth `cpu_idle` enters for a depth asked.
 //!

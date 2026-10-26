@@ -21,6 +21,6 @@ x86-ucode-canary = []
 tlb-local-only = []
 
 [dependencies]
-azos_common = { path = "../common" }
-azos_arch_api = { path = "../arch-api" }
-azos_limits = { path = "../limits" }
+azos_common = { path = "../../crates/core/common" }
+azos_arch_api = { path = "../api" }
+azos_limits = { path = "../../crates/core/limits" }

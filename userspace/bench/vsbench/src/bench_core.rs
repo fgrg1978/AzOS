@@ -95,7 +95,7 @@ pub const TSC_CALIBRATE_NS: u64 = 1_000_000;
 
 /// The give-up bound of [`calibrate_tsc`], in TSC ticks: what a 100 GHz TSC
 /// (the kernel's own `TSC_HZ_MAX` plausibility ceiling,
-/// `crates/core/arch-x86_64/src/timer.rs`) ticks in one window. Past it with
+/// `arch/x86_64/src/timer.rs`) ticks in one window. Past it with
 /// the ns clock short of the window, that clock is not advancing.
 // arch-only: see TSC_HZ.
 #[cfg(target_arch = "x86_64")]

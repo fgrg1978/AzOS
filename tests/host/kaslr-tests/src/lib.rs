@@ -577,11 +577,11 @@ fn every_failure_says_why() {
 
 // ── the aarch64 layout ─────────────────────────────────────────────────────
 //
-// `crates/core/arch-aarch64/src/mmu/mod.rs` is pure arithmetic and pulled by
+// `arch/aarch64/src/mmu/mod.rs` is pure arithmetic and pulled by
 // path, as the other aarch64 host suites do; its `kaslr` submodule is the code
 // under test.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/mmu/mod.rs"]
+#[path = "../../../../arch/aarch64/src/mmu/mod.rs"]
 mod aarch64_mmu;
 
 mod aarch64_layout {
@@ -713,11 +713,11 @@ mod aarch64_layout {
 
 // ── the riscv64 layout and boot root ──────────────────────────────────────
 //
-// `crates/core/arch-riscv64/src/mmu.rs` is pure Sv39 arithmetic and pulled by
+// `arch/riscv64/src/mmu.rs` is pure Sv39 arithmetic and pulled by
 // path, as `tests/host/arch-tests` does; its `kaslr` submodule is the code
 // under test (the boot half, `kaslr_boot`, is bare-metal only).
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/mmu.rs"]
+#[path = "../../../../arch/riscv64/src/mmu.rs"]
 mod riscv_mmu;
 
 mod riscv64_layout {
@@ -861,10 +861,10 @@ mod riscv64_layout {
 
 // ── the x86_64 layout and the image page directory ───────────────────────
 //
-// `crates/core/arch-x86_64/src/mmu.rs` is pure paging arithmetic and pulled by
+// `arch/x86_64/src/mmu.rs` is pure paging arithmetic and pulled by
 // path; `kaslr` is the code under test.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-x86_64/src/mmu.rs"]
+#[path = "../../../../arch/x86_64/src/mmu.rs"]
 mod x86_mmu;
 
 mod x86_64_layout {

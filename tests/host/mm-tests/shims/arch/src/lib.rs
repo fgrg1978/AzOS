@@ -14,7 +14,7 @@
 //! documents at length: a test asserting against a hand-written duplicate of
 //! the logic it claims to watch.
 
-#[path = "../../../../../../crates/core/arch-riscv64/src/mmu.rs"]
+#[path = "../../../../../../arch/riscv64/src/mmu.rs"]
 pub mod mmu;
 
 /// Host stand-in for `azos_arch::cache` (cache-block zeroing).

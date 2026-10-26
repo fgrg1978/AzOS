@@ -7,7 +7,7 @@ A module is a top-level name of a source directory: `foo.rs`, `foo.S` or the
 directory `foo/` all name the module `foo` (`lib` and `mod` are crate roots,
 not modules). Three directories per ISA are compared:
 
-  arch   crates/core/arch-<isa>/src      the ISA crate
+  arch   arch/<isa>/src                  the ISA crate
   entry  kernel/src/entry/<isa>          the kernel's per-ISA trap/boot entry
   asm    kernel/src/entry/<isa>/asm      the asm files (names include the suffix)
 
@@ -42,7 +42,7 @@ ISAS = ("riscv64", "aarch64", "x86_64")
 
 # group -> directory, relative to the repo root, with {isa}.
 DIRS = {
-    "arch": "crates/core/arch-{isa}/src",
+    "arch": "arch/{isa}/src",
     "entry": "kernel/src/entry/{isa}",
     "asm": "kernel/src/entry/{isa}/asm",
 }
@@ -177,9 +177,9 @@ def self_test():
     extra = {("asm", "x86_64", "ap.S"): "AP entry"}
     tree = {}
     for isa in ISAS:
-        tree[f"crates/core/arch-{isa}/src"] = ["cpu.rs", "ext/mod.rs", "irq.rs", "lib.rs"]
+        tree[f"arch/{isa}/src"] = ["cpu.rs", "ext/mod.rs", "irq.rs", "lib.rs"]
         tree[f"kernel/src/entry/{isa}"] = ["ext/mod.rs", "mod.rs", "trap.rs", "asm/boot.S"]
-    tree["crates/core/arch-aarch64/src"].remove("irq.rs")
+    tree["arch/aarch64/src"].remove("irq.rs")
     tree["kernel/src/entry/x86_64"].append("asm/ap.S")
 
     def build(base, files):
@@ -197,7 +197,7 @@ def self_test():
             build(base, t)
             return lint(base, req, am, ae)
 
-    a = "crates/core/arch-riscv64/src"
+    a = "arch/riscv64/src"
     mutants = [
         ("clean toy tree", None, miss, extra, None),
         ("required module missing", lambda t: t[a].remove("cpu.rs"), miss, extra,
@@ -206,10 +206,10 @@ def self_test():
          "`pmu` is on the only ISA"),
         ("ISA-only module under ext/", lambda t: t[a].append("ext/pmu.rs"), miss, extra, None),
         ("module on two ISAs, not required",
-         lambda t: (t[a].append("tlb.rs"), t["crates/core/arch-x86_64/src"].append("tlb.rs")),
+         lambda t: (t[a].append("tlb.rs"), t["arch/x86_64/src"].append("tlb.rs")),
          miss, extra, "`tlb` is on some ISAs"),
         ("stale ALLOW_MISSING (module exists)",
-         lambda t: t["crates/core/arch-aarch64/src"].append("irq.rs"), miss, extra,
+         lambda t: t["arch/aarch64/src"].append("irq.rs"), miss, extra,
          "ALLOW_MISSING arch/aarch64/irq: stale"),
         ("stale ALLOW_EXTRA (module gone)",
          lambda t: t["kernel/src/entry/x86_64"].remove("asm/ap.S"), miss, extra,

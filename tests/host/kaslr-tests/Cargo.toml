@@ -9,7 +9,7 @@ description = "Host-side tests for virtual KASLR (azos_arch_api::kaslr and the a
 # Run with:  cd tests/host/kaslr-tests && cargo test
 
 [dependencies]
-azos_arch_api = { path = "../../../crates/core/arch-api" }
+azos_arch_api = { path = "../../../arch/api" }
 azos_limits = { path = "../../../crates/core/limits" }
 # arch-riscv64/src/mmu.rs (pulled in by path) uses bitflags, arch-x86_64/src/mmu.rs azos_limits,
 # as tests/host/arch-tests does.

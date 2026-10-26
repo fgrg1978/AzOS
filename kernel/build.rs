@@ -14,7 +14,7 @@
 //! The values are not trusted on their own: the script ASSERTs both against
 //! absolute symbols `boot.S` emits from Rust's own constants
 //! (`_azos_page_size_check`, `_kernel_va_offset_check`), so if this file
-//! and `crates/core/arch-aarch64/src/mmu.rs` ever disagree the kernel fails
+//! and `arch/aarch64/src/mmu.rs` ever disagree the kernel fails
 //! to link. The riscv64 linker scripts do not include the file.
 //!
 //! It also owns the link half of virtual KASLR (config/kernel/Kconfig.hardening,

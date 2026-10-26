@@ -47,7 +47,7 @@ import gate_rows  # noqa: E402
 ROOT = gate_rows.ROOT
 SMOKES = ["boot + SMP scheduling", "aarch64 kernel boots (EL1, -smp 4)"]
 CORE = ["Cargo.toml", "Cargo.lock", "kernel/Cargo.toml", "kernel/build.rs", "Kconfig",
-        "config/**", "crates/core/limits/**", "crates/core/arch-api/**", "kernel/src/main.rs",
+        "config/**", "crates/core/limits/**", "arch/api/**", "kernel/src/main.rs",
         "kernel/src/boot/**", "kernel/src/entry/riscv64/irq.rs", "kernel/src/entry/riscv64/trap.rs", "kernel/src/smokes/**",
         "kernel/src/entry/*/asm.rs", "kernel/src/tasks/create.rs",
         "kernel/linker*.ld", ".cargo/**", "rust-toolchain.toml", "Makefile",
@@ -240,7 +240,7 @@ def self_test():
     expect("canary: crates/core/sync -> crates/core/limits (workspace = true) lost",
            "crates/core/limits" in graph.get("crates/core/sync", ()))
     # arch-api-tests reaches crates/core/limits only through `azos_limits =
-    # { workspace = true }`, its own and crates/core/arch-api's.
+    # { workspace = true }`, its own and arch/api's.
     lim = "crates/core/limits/src/lib.rs"
     expect("canary: %s does not reach arch-api-tests through a workspace dep" % lim,
            "tests/host/arch-api-tests" in host_suites([lim]))

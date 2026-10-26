@@ -55,7 +55,7 @@ A change is expected to leave the gate green. **Warnings count as failures.**
 - Public items in the crates under `crates/` carry doc comments.
 - Every feature is built for all three ISAs (riscv64, aarch64, x86_64), and
   ISA-specific code lives under the ISA's own directories
-  (`crates/core/arch-<isa>`, `kernel/src/entry/<isa>`).
+  (`arch/<isa>`, `kernel/src/entry/<isa>`).
 - Options are Kconfig symbols (`config/Kconfig.*`), not constants in code.
 
 ## Tests

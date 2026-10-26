@@ -58,7 +58,7 @@ pub extern "C" fn aarch64_early_mmu_init(dram_base: u64) {
     // directly: the kernel crate depends on the facade (it is already
     // built for both ISAs through it), and the facade re-exports this
     // module verbatim (`pub use azos_arch_aarch64::*` in
-    // `crates/core/arch/src/lib.rs`) when `target_arch = "aarch64"`.
+    // `arch/facade/src/lib.rs`) when `target_arch = "aarch64"`.
     use azos_arch::mmu::setup::{enable_identity_map, IdentityMapConfig};
 
     // config/arch/Kconfig.isa AARCH64_PAGE_*: a PE that does not implement the
@@ -322,7 +322,7 @@ pub extern "C" fn aarch64_secondary_ttbr1_attach() -> u64 {
     //
     // TCR_EL1's upper-half fields (T1SZ/TG1/IRGN1/ORGN1/SH1/EPD1) do not
     // change between the alias and the real table (`enable_paging`'s
-    // `switch_kernel_pt` writes only `TTBR1_EL1`, `crates/core/arch-aarch64::
+    // `switch_kernel_pt` writes only `TTBR1_EL1`, `arch/aarch64::
     // api_impl::Mmu::switch_kernel_pt`). The one later change is E0PD1
     // (Kconfig A64_E0PD, `boot_hooks::cpu_features`), which re-publishes
     // `TCR_BOOT_VALUE` before any secondary starts, so it still describes

@@ -86,7 +86,7 @@ config TIMER_FREQ
     default 54000000 if BOARD_RPI5
     default 1000000000 if ARCH_AARCH64
     # x86_64: a unit, not a hardware rate: `now_ticks` scales the TSC, rated
-    # at boot, to it (crates/core/arch-x86_64/src/timer.rs).
+    # at boot, to it (arch/x86_64/src/timer.rs).
     default 1000000000 if ARCH_X86_64
     default 10000000 if BOARD_QEMU
     default 4000000  if BOARD_VF2
@@ -408,7 +408,7 @@ endmenu # Platform / Board
 
 # ---------------------------------------------------------------------------
 # x86_64 platform: boot information, ACPI, LAPIC/IOAPIC, clock, AP start.
-# crates/core/arch-x86_64/src/{platform_impl,acpi,apic,ioapic,timer,smp}.rs
+# arch/x86_64/src/{platform_impl,acpi,apic,ioapic,timer,smp}.rs
 # ---------------------------------------------------------------------------
 if ARCH_X86_64
 menu "x86_64 platform (ACPI, APIC, timer, SMP)"
@@ -610,7 +610,7 @@ choice
     prompt "The TSC as the clock"
     default X86_TSC_CLOCK_INVARIANT
     help
-      Which counter the kernel clock reads (crates/core/arch-x86_64/src/
+      Which counter the kernel clock reads (arch/x86_64/src/
       timer.rs `now_ticks`; the [TIMER] boot line names it). The TSC is
       one instruction; the fallbacks are the HPET main counter (an MMIO
       read, X86_HPET) and the ACPI PM timer (a port read, about a

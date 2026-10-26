@@ -430,7 +430,7 @@ pub mod hw {
 // ── QEMU virt (aarch64) ──────────────────────────────────────────────────────
 //
 // `target_os = "none"` in addition to the arch check, matching the guard
-// `crates/core/arch`'s facade uses: the host toolchain is `aarch64-apple-darwin`,
+// `arch/facade`'s facade uses: the host toolchain is `aarch64-apple-darwin`,
 // so `target_arch = "aarch64"` alone is also true for `cargo test`/`cargo
 // build` run directly on this Mac, not just for the bare-metal target. Every
 // host-side crate that reaches a driver crate goes through a `#[path]`
@@ -524,7 +524,7 @@ pub mod hw {
     pub const RTC_IRQ: u32 = 34;
 
     // ── GIC ───────────────────────────────────────────────────────────────────
-    // Deliberately NOT re-declared here: `crates/core/arch-aarch64/src/gic.rs`
+    // Deliberately NOT re-declared here: `arch/aarch64/src/gic.rs`
     // already defines `GICD_BASE` (0x0800_0000) and `GICR_BASE`
     // (0x080A_0000) — that crate's own DTB-confirmed constants (same
     // `gic-version=3` fetch as this module's — its GICv3 `intc@8000000`

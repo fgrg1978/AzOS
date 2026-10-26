@@ -244,7 +244,7 @@ fn a_choice_reaches_the_policy_the_boot_reads() {
 
 #[test]
 fn arch_api_reads_the_same_symbols_the_kconfig_declares() {
-    let isa = read("crates/core/arch-api/src/isa.rs");
+    let isa = read("arch/api/src/isa.rs");
     for (bug, konst) in BUGS {
         let want = format!("pub const {konst}: ExtPolicy = ext_policy!(A64_MIT_{bug}_NEVER, A64_MIT_{bug}_REQUIRE);");
         assert!(isa.contains(&want), "{want}");

@@ -11,7 +11,7 @@
 //! firmware wrapper too, not only at the ladder in front of it.
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-riscv64/src/firmware.rs"]
+#[path = "../../../../arch/riscv64/src/firmware.rs"]
 mod firmware;
 
 use firmware::*;

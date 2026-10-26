@@ -166,7 +166,7 @@ ctx_callee_saved_skipped:
     sfence.vma zero, zero
     j    ctx_skip_pt_switch
 ctx_do_pt_switch:
-    # TLB shootdown bookkeeping (crates/core/arch-riscv64/src/tlb.rs): publish the
+    # TLB shootdown bookkeeping (arch/riscv64/src/tlb.rs): publish the
     # root this hart is about to translate through, BEFORE the csrw, fenced,
     # so a remote `tlb::shootdown` either sees it or this hart's walk after
     # the sfence below sees the shooter's PTE store. Indexed by `tp`, this

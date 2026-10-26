@@ -59,7 +59,7 @@ having no trusted key.
 - The OTA and secure-boot chain (`crates/core/ota`).
 - Capability-typed IPC and the capability tables (`crates/core/ipc`).
 - The driver framework (`crates/drivers/api`, `crates/drivers/base`).
-- The architecture crates (`crates/core/arch-riscv64`, `arch-aarch64`,
+- The architecture crates (`arch/riscv64`, `arch-aarch64`,
   `arch-x86_64`).
 
 ## Out of scope

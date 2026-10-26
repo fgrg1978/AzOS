@@ -18,7 +18,7 @@ azos_arch = { path = "shims/arch", package = "mm_test_arch" }
 # property that makes it safe to link on the host, unlike the facade above.
 # `wx.rs` (pulled in with `#[path]` below) types against it directly since
 # the page-table abstraction (B2) made `wx` ISA-neutral.
-azos_arch_api = { path = "../../../crates/core/arch-api" }
+azos_arch_api = { path = "../../../arch/api" }
 azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 azos_common = { path = "../../../crates/core/common" }
 # Real crate, not a shim: it is generated from .config by a build script and

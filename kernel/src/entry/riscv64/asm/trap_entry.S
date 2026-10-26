@@ -22,12 +22,12 @@
 
 # TrapFrame layout constants (B2-01).
 # NOT hand-duplicated: these six were `.equ N` literals with a comment
-# claiming they matched "crates/core/arch/src/trap.rs" — that path is an 18-line
+# claiming they matched "arch/facade/src/trap.rs" — that path is an 18-line
 # facade, not the struct, and nothing checked the numbers against either.
 # `{trap_frame_size}` / `{tf_sepc}` / `{tf_sstatus}` / `{tf_scause}` /
 # `{tf_stval}` / `{tf_sp}` are substituted by the `global_asm!(...)` block in
 # kernel/src/main.rs via `size_of::<TrapFrame>()` / `offset_of!(TrapFrame,
-# ..)` on the real struct in crates/core/arch-riscv64/src/trap.rs — the same
+# ..)` on the real struct in arch/riscv64/src/trap.rs — the same
 # technique this file already uses for `{max_harts}` / `{irq_stack_size}`
 # below and context_switch.S uses for `task_satp_off`. A field added before
 # `sepc` moves these automatically instead of silently disagreeing with a
@@ -514,7 +514,7 @@ restore_to_smode:
 # earlier full save of this task left there (or zero: the first entry clears
 # them). Nothing on a native syscall reads them: the fork snapshot clears
 # them (`clear_syscall_clobbers`, crates/core/sched/src/scheduler/mod.rs, over
-# `SYSCALL_CLOBBERED`, crates/core/arch-riscv64/src/trap.rs), the exec
+# `SYSCALL_CLOBBERED`, arch/riscv64/src/trap.rs), the exec
 # hand-off zeroes every slot but the tag (`exec_enter`,
 # kernel/src/entry/riscv64/trap.rs), the IPC fast path touches sepc and a0-a6,
 # signal delivery and syscall restart are the Linux personality's only.

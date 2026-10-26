@@ -3420,7 +3420,7 @@ par "aarch64 kernel boots (GICv2)" aarch64_kernel_row "aarch64 kernel boots (GIC
 # Every process has APIA/APIB/APDA/APDB/APGA keys of its own, the kernel's key
 # is back in APIAKey_EL1 on every entry from EL0 and the process's on the way
 # out (kernel/src/entry/aarch64/asm/trap_entry.S, PAC_ENTER / PAC_EXIT;
-# crates/core/arch-aarch64/src/cpu/cfi.rs). The row boots the default image on
+# arch/aarch64/src/cpu/cfi.rs). The row boots the default image on
 # `-cpu max,pauth=on -smp 4` (so processes migrate and switch across harts) to
 # the end of the early boot and the user tasks, and wants the `[CFI]` line to
 # say proc-keys=true. What breaks it, by hand (reverted): the user image is
@@ -14621,7 +14621,7 @@ PY
     par "ktest hold bound canary, -icount (arm)" ktest_hold_row "ktest hold bound canary, -icount (arm)" arm \
         "$KTEST_HOLD_SMP1 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
 
-    # Wave 15 (N2): `SpinWait` (crates/core/arch-api spin.rs) off the
+    # Wave 15 (N2): `SpinWait` (arch/api spin.rs) off the
     # extension, on CPUs QEMU builds without it. The plain `ktest (rv)` row
     # already boots QEMU's rv64, which has Zawrs and no Zacas (`[SPIN] cas:
     # lr/sc; wait: lr+wrs.nto`); `ktest (arm)` boots `-cpu max` (LSE).
@@ -14993,7 +14993,7 @@ PY
         bad; printf '%s\n' "$why" | sed 's/^/      /'; echo "      log kept: $log"
     }
     par "boot: no self-tests by default (x86)" x86_selftests_off_row
-    # CPU microcode at boot (Kconfig X86_UCODE_LOAD, crates/core/arch-x86_64/src/
+    # CPU microcode at boot (Kconfig X86_UCODE_LOAD, arch/x86_64/src/
     # cpu/ucode.rs, kernel/src/entry/x86_64/ext/ucode.rs): the signed image
     # (`make ucode`, mk/firmware.mk, every Intel and AMD file under AZOS_DL) as
     # the PVH boot module, one kernel embedding the TEST key the image is
@@ -15486,7 +15486,7 @@ PY
     }
     par "x86_64: TPM over CRB (q35 tpm-crb)" x86_tpm_crb_row "x86_64: TPM over CRB (q35 tpm-crb)" PASS
     par "x86_64: TPM over CRB canary (no START)" x86_tpm_crb_row "x86_64: TPM over CRB canary (no START)" FAIL
-    # The TSC watchdog (Kconfig X86_TSC_WATCHDOG, crates/core/arch-x86_64/src/
+    # The TSC watchdog (Kconfig X86_TSC_WATCHDOG, arch/x86_64/src/
     # timer.rs `watch`, kernel/src/entry/x86_64/ext/tsc_watchdog.rs) on QEMU q35,
     # the machine with an HPET to watch the TSC against (microvm has none, so
     # its rows never start the task). QEMU's TSC is not invariant, so the
@@ -15625,7 +15625,7 @@ PY
     par "x86_64: igc leaves e1000e canary" x86_igc_row "x86_64: igc leaves e1000e canary" e1000e FAIL
     # The x86 PC on QEMU q35, under OVMF and Limine (Kconfig X86_BOOT_LIMINE,
     # `make run-x86-pc`), once per CPU model: the speculation mitigations
-    # (Kconfig X86_MIT_*, crates/core/arch-x86_64/src/mitigations.rs) are chosen
+    # (Kconfig X86_MIT_*, arch/x86_64/src/mitigations.rs) are chosen
     # by probe, so the path each model takes is the assertion. The `[MITIGATE]`
     # lines name the identity the probe read (the model's family and model
     # from CPUID.1) and the verdicts; <want> lines must be in the log and
@@ -24558,7 +24558,7 @@ par -h "hv: guest banner judge" hv_guest_judge
 
 # ── hv: the riscv64 guest entry under H (S6, QEMU `-cpu rv64,h=on`) ───────────
 #
-# `Hypervisor::enter` of riscv64 (crates/core/arch-riscv64/src/ext/hv/guest.rs)
+# `Hypervisor::enter` of riscv64 (arch/riscv64/src/ext/hv/guest.rs)
 # is the first code that runs a guest: the CSRs it loads, `hfence.gvma`, the
 # `sret` into VS-mode, the exit vector. Host tests cover everything around it
 # (tests/host/hv-tests/src/rv_enter.rs) and nothing can cover that part but

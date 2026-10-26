@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The fake ISA (the x86_64 port skeleton, `crates/core/arch-x86_64`)
+//! The fake ISA (the x86_64 port skeleton, `arch/x86_64`)
 //! through the real facade: `azos_arch` with feature `stub`
 //! must export the whole contract under the names the kernel uses
 //! (`ARCH`, `ArchImpl`, the traits, `PAGE_SIZE`), and nothing a caller could

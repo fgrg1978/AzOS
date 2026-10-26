@@ -71,7 +71,7 @@ Source: `mk/host.mk`.
 | `azos_devif` | `azos_devif` | `crates/core/devif` | The interfaces of kernel-hosted services and driver endpoints |
 | `azos_rings` | `azos_rings` | `crates/core/rings` | `Queue` and `Log`, in process and over a shared-memory region |
 | `azos_bytepipe` | `azos_bytepipe` | `crates/core/bytepipe` | The POSIX byte pipe over a byte ring |
-| `azos_arch_api` | `azos_arch_api` | `crates/core/arch-api` | The cross-ISA trait surface |
+| `azos_arch_api` | `azos_arch_api` | `arch/api` | The cross-ISA trait surface |
 | `azos_stdrt` | `azos_stdrt` | `crates/core/stdrt` | The layer under Rust's `std` on `*-unknown-azos` |
 
 All eight are `no_std`. `azos_abi`, `azos_libsys`, `azos_devif`, `azos_rings`,
@@ -261,7 +261,7 @@ surface.
 | `kaslr` | Virtual KASLR (the Kconfig choice `KASLR_NEVER` / `KASLR_PROBE` / `KASLR_REQUIRE`): policy, slide choice, relocation walk and device-tree seed |
 | `lat` | Masked-window tracer (cargo feature `lat-trace`) |
 
-Source: `crates/core/arch-api/src/lib.rs`, `contract.rs`, `isa.rs`, `spin.rs`,
+Source: `arch/api/src/lib.rs`, `contract.rs`, `isa.rs`, `spin.rs`,
 `contig.rs`, `tlb_gen.rs`, `entropy.rs`, `aging.rs`, `pmu.rs`, `kaslr.rs`,
 `lat.rs`.
 

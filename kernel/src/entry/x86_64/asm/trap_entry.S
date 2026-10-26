@@ -450,7 +450,7 @@ syscall_entry:
 //
 // Otherwise the frame's rcx/r11 slots keep what an earlier full save left;
 // nothing on a syscall reads them: the fork snapshot clears them
-// (`SYSCALL_CLOBBERED`, crates/core/arch-x86_64/src/fork_regs.rs) and a
+// (`SYSCALL_CLOBBERED`, arch/x86_64/src/fork_regs.rs) and a
 // reflected foreign trap reports RIP/RFLAGS there.
 //
 // rsp = frame, rbx = CR3 word or 0. The frame is ring 3's (only `syscall`

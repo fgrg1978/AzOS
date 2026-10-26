@@ -8,13 +8,13 @@ Related pages: [drivers.md](drivers.md) covers the device side (buses, DMA, inte
 
 | Layer | Path | Role |
 |---|---|---|
-| Contract | `crates/core/arch-api` (`azos_arch_api`) | Traits and ISA-neutral helpers. No hardware access except `core` atomics. |
-| ISA crates | `crates/core/arch-riscv64`, `crates/core/arch-aarch64`, `crates/core/arch-x86_64` | One implementation of the contract per ISA, plus ISA-only modules under `ext/`. |
-| Facade | `crates/core/arch` (`azos_arch`) | Re-exports the active ISA crate and names its singleton `ARCH` and its type `ArchImpl`. |
+| Contract | `arch/api` (`azos_arch_api`) | Traits and ISA-neutral helpers. No hardware access except `core` atomics. |
+| ISA crates | `arch/riscv64`, `arch/aarch64`, `arch/x86_64` | One implementation of the contract per ISA, plus ISA-only modules under `ext/`. |
+| Facade | `arch/facade` (`azos_arch`) | Re-exports the active ISA crate and names its singleton `ARCH` and its type `ArchImpl`. |
 | Kernel entry | `kernel/src/entry/<isa>/` | Boot assembly, the trap stub, the register-frame decode and the `ArchEntry` hooks for that ISA. |
 | Generic trap policy | `kernel/src/trap/` | Syscall, fault and interrupt policy, written once. |
 
-Source: `crates/core/arch-api/src/lib.rs`, `crates/core/arch/src/lib.rs`.
+Source: `arch/api/src/lib.rs`, `arch/facade/src/lib.rs`.
 
 ## The `arch-api` contract
 
@@ -72,7 +72,7 @@ Most `ArchPlatform` and `ArchEntry` methods are required, so a new ISA learns wh
 | `kaslr` | The shared half of virtual KASLR (Kconfig `KASLR`): the policy, the slide choice, the relocation walk and the device-tree seed, panic-free so the boot can run them before relocation. |
 | `lat` | Masked-window tracer bookkeeping, compiled only with the `lat-trace` feature. |
 
-Source: `crates/core/arch-api/src/lib.rs`, `contract.rs`, `isa.rs`, `spin.rs`, `tlb_gen.rs`, `contig.rs`, `entropy.rs`, `aging.rs`, `pmu.rs`, `kaslr.rs`, `lat.rs`.
+Source: `arch/api/src/lib.rs`, `contract.rs`, `isa.rs`, `spin.rs`, `tlb_gen.rs`, `contig.rs`, `entropy.rs`, `aging.rs`, `pmu.rs`, `kaslr.rs`, `lat.rs`.
 
 ### Boot hooks
 
@@ -91,7 +91,7 @@ Source: `crates/core/arch-api/src/lib.rs`, `contract.rs`, `isa.rs`, `spin.rs`, `
 
 `LineHooks` is a table of function pointers (`release`, `mask`, `unmask` and the `msi_*` set) the kernel installs once so the ring-3 interrupt binding table stays free of interrupt-controller code. `FirmwareMemory` is the RAM and CPU summary `firmware_memory` returns.
 
-Source: `crates/core/arch-api/src/contract.rs`, `kernel/src/boot/early.rs`, `kernel/src/boot/smp.rs`, `kernel/src/main.rs`.
+Source: `arch/api/src/contract.rs`, `kernel/src/boot/early.rs`, `kernel/src/boot/smp.rs`, `kernel/src/main.rs`.
 
 ## The facade
 
@@ -117,7 +117,7 @@ Selection rules:
 
 Callers can also reach ISA modules the facade re-exports (`cpu`, `mmu`, `irq`, `ext`, and so on) directly. The facade lint below tracks and ratchets those references.
 
-Source: `crates/core/arch/src/lib.rs`, `crates/core/arch/Cargo.toml`.
+Source: `arch/facade/src/lib.rs`, `arch/facade/Cargo.toml`.
 
 ## Extension model
 
@@ -153,7 +153,7 @@ A `Probe` extension that replaces a hot-path instruction (compare-and-swap, a wa
 
 The provided `SpinWait` bodies are the fallback every ISA has without the extension (`core::sync::atomic`, a relax loop); an ISA overrides what it has a better instruction for. Under `Never` only the fallback is compiled. Under `Require` the extension is inlined with no branch. Under `Probe` (riscv64, aarch64) each use is a site in the `.azos_keys` section, linked as the safe form and rewritten once on the boot CPU, before secondaries start, if the probe found the extension (`ArchEntry::boot_patch`, `kernel/src/boot/spin_patch.rs`, site keys `SITE_KEY_CAS`, `SITE_KEY_WAIT`, `SITE_KEY_RELAX`). After boot a probe site costs what a `Require` site costs. x86_64's WAITPKG (the contended wait only) tests a boot-set flag instead. The exchange (`swap32`, `swap64`) is `amoswap` on riscv64, `xchg` on x86_64, and an `ldaxr`/`stxr` loop on aarch64 (LSE `swp` under `A64_LSE`). Callers never name an ISA. Orderings are explicit (`CasOrder`: relaxed, acquire, release, acquire-release) and never sequentially consistent.
 
-Source: `crates/core/arch-api/src/isa.rs`, `crates/core/arch-api/src/spin.rs`, `config/arch/Kconfig.isa`, `kernel/src/boot/spin_patch.rs`.
+Source: `arch/api/src/isa.rs`, `arch/api/src/spin.rs`, `config/arch/Kconfig.isa`, `kernel/src/boot/spin_patch.rs`.
 
 ## Per-ISA layout
 
@@ -161,7 +161,7 @@ Source: `crates/core/arch-api/src/isa.rs`, `crates/core/arch-api/src/spin.rs`, `
 
 | Directory | Required modules |
 |---|---|
-| `crates/core/arch-<isa>/src` | `api_impl`, `cache`, `cpu`, `ext`, `firmware`, `fork_regs`, `fp`, `irq`, `lat_hook`, `mmu`, `platform_impl`, `pmu`, `seed`, `smp`, `spin`, `timer`, `tlb`, `trap` |
+| `arch/<isa>/src` | `api_impl`, `cache`, `cpu`, `ext`, `firmware`, `fork_regs`, `fp`, `irq`, `lat_hook`, `mmu`, `platform_impl`, `pmu`, `seed`, `smp`, `spin`, `timer`, `tlb`, `trap` |
 | `kernel/src/entry/<isa>` | `arch_entry`, `asm`, `board_map`, `boot_hooks`, `ext`, `fp`, `irq`, `resume`, `smp`, `trap` |
 | `kernel/src/entry/<isa>/asm` | `boot.S`, `context_switch.S`, `trap_entry.S` |
 
@@ -200,7 +200,7 @@ ISA-only modules otherwise sit in each ISA's `ext/`:
 
 Each ISA crate's `lib.rs` also re-exports the contract (`pub use azos_arch_api::{...}`), so a caller written against `azos_arch` sees the same names on every ISA. On x86_64 the hypervisor module is declared as `hv` at the crate root with `#[path = "ext/hv/mod.rs"]` and re-exported as `azos_arch::HvImpl`, because it builds on the crate's `mmu` module.
 
-Source: `crates/core/arch-*/src/lib.rs`, `crates/core/arch-*/src/ext/mod.rs`, `kernel/src/entry/*/ext/mod.rs`, `tools/lint/arch_layout_lint.py`.
+Source: `arch/*/src/lib.rs`, `arch/*/src/ext/mod.rs`, `kernel/src/entry/*/ext/mod.rs`, `tools/lint/arch_layout_lint.py`.
 
 ## Generic trap layer
 

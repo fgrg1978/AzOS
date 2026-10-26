@@ -261,7 +261,7 @@ def cfi_rustflags(cfg: dict[str, str]) -> list[str]:
                functions), as `-Z branch-protection=bti,pac-ret`. Whether the
                pads are enforced is the page-table GP bit and SCTLR_EL1 (BT*),
                whether the signature is checked is SCTLR_EL1.EnIA
-               (crates/core/arch-aarch64/src/cpu/cfi.rs).
+               (arch/aarch64/src/cpu/cfi.rs).
       x86_64:  X86_CET_IBT -> `-Z cf-protection=branch` (`endbr64` at every
                function entry and indirect-jump target; CR4.CET and
                IA32_S_CET.ENDBR_EN enforce it, arch-x86_64/src/cpu/cfi.rs).
@@ -282,7 +282,7 @@ def x86_mitigation_rustflags(cfg: dict[str, str]) -> list[str]:
     """The x86_64 kernel's Spectre v2 build hook (config/axes/Kconfig.security):
     X86_MIT_SPECTRE_V2 = probe builds every indirect call and jump through
     the external thunk `__x86_indirect_thunk_r11`
-    (crates/core/arch-x86_64/src/retpoline.rs), whose path the boot chooses
+    (arch/x86_64/src/retpoline.rs), whose path the boot chooses
     by probe. `n` and `require` build without it (require demands the
     hardware modes, so the thunk would be dead weight)."""
     if cfg.get("CONFIG_ARCH_X86_64") == "y" and cfg.get("CONFIG_X86_MIT_SPECTRE_V2_PROBE") == "y":

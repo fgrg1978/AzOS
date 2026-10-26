@@ -16,7 +16,7 @@ use crate::pvh::{self, PvhError};
 
 /// The x86 platform's own reading of the boot information, the code the
 /// guest kernel runs.
-#[path = "../../../../crates/core/arch-x86_64/src/firmware/bootinfo.rs"]
+#[path = "../../../../arch/x86_64/src/firmware/bootinfo.rs"]
 mod bootinfo;
 
 const MIB: u64 = 1 << 20;

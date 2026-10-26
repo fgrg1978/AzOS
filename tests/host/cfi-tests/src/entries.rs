@@ -33,9 +33,9 @@ const SOURCES: &[Src] = &[
         exempt: &[("_vectors", "the vector table: exceptions enter it, no branch does")],
     },
     Src { path: "kernel/src/entry/aarch64/asm/context_switch.S", isa: Isa::Aarch64, exempt: &[] },
-    Src { path: "crates/core/arch-aarch64/src/cpu/cfi.rs", isa: Isa::Aarch64, exempt: &[] },
+    Src { path: "arch/aarch64/src/cpu/cfi.rs", isa: Isa::Aarch64, exempt: &[] },
     Src {
-        path: "crates/core/arch-aarch64/src/spin.rs",
+        path: "arch/aarch64/src/spin.rs",
         isa: Isa::Aarch64,
         exempt: &[
             ("azos_spin_swpa_llsc32", "the target of `bl` at every patched probe site"),
@@ -44,12 +44,12 @@ const SOURCES: &[Src] = &[
         ],
     },
     Src {
-        path: "crates/core/arch-aarch64/src/ext/sha2_ce.rs",
+        path: "arch/aarch64/src/ext/sha2_ce.rs",
         isa: Isa::Aarch64,
         exempt: &[("azos_sha256_ce_blocks", A64_DIRECT)],
     },
     Src {
-        path: "crates/core/arch-aarch64/src/mmu/boot.rs",
+        path: "arch/aarch64/src/mmu/boot.rs",
         isa: Isa::Aarch64,
         exempt: &[("_azos_drop_to_el1", "called by `bl` from boot.S, before translation is on")],
     },
@@ -64,17 +64,17 @@ const SOURCES: &[Src] = &[
     Src { path: "kernel/src/entry/x86_64/asm/context_switch.S", isa: Isa::X86_64, exempt: &[] },
     Src { path: "kernel/src/entry/x86_64/asm/trap_entry.S", isa: Isa::X86_64, exempt: &[] },
     Src {
-        path: "crates/core/arch-x86_64/src/spin.rs",
+        path: "arch/x86_64/src/spin.rs",
         isa: Isa::X86_64,
         exempt: &[("azos_spin_tas_tramp32", "the target of `call` at every probe site")],
     },
     Src {
-        path: "crates/core/arch-x86_64/src/ext/retpoline.rs",
+        path: "arch/x86_64/src/ext/retpoline.rs",
         isa: Isa::X86_64,
         exempt: &[("__x86_indirect_thunk_r11", "the target of the compiler's direct `call`/`jmp` (-Z retpoline-external-thunk)")],
     },
     Src {
-        path: "crates/core/arch-x86_64/src/ext/ap_trampoline.S",
+        path: "arch/x86_64/src/ext/ap_trampoline.S",
         isa: Isa::X86_64,
         exempt: &[
             ("x86_ap_start64", "entered by a far jump on an AP that has not set CR4.CET"),

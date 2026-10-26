@@ -35,7 +35,7 @@ choice
         bool "x86_64 (port skeleton: type-checks only)"
         help
           The x86_64 port skeleton: every arch-api trait implemented with
-          todo!() bodies (crates/core/arch-x86_64), the entry/asm/linker
+          todo!() bodies (arch/x86_64), the entry/asm/linker
           stubs under kernel/src/entry/x86_64/, and this Kconfig block. It
           type-checks (`make ARCH=x86_64 check`); it does not link or boot.
           Its purpose is to show, as code, what a new ISA must provide.
@@ -59,7 +59,7 @@ endchoice
 #    The boot prints one `[ISA]` line: the baseline and each extension's
 #    state (n / probed-present / probed-absent / required).
 # 3. Per-board defaults (`default ... if BOARD_*`) say what each board has.
-# The policy values reach Rust as azos_arch_api::isa (crates/core/arch-api).
+# The policy values reach Rust as azos_arch_api::isa (arch/api).
 # The vDSO hwcap word (azos_libsys::vdso_hwcap) is one word per ISA: each
 # numbers its own HWCAP_<ISA>_* bits from 0 (crates/core/abi/src/vdso.rs),
 # and the reserved hwcap2 word takes the overflow.
@@ -240,7 +240,7 @@ config PAGE_SHIFT
       riscv64). Exported as azos_limits::PAGE_SHIFT.
 
 # ---------------------------------------------------------------------------
-# Ring-3 port I/O (crates/core/arch-api ioport.rs, every ISA: 0 ports off
+# Ring-3 port I/O (arch/api ioport.rs, every ISA: 0 ports off
 # x86_64, which the build checks, so shared code needs no cfg)
 # ---------------------------------------------------------------------------
 

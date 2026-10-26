@@ -11,14 +11,14 @@ description = "Host-side tests for azos_arch_api — PagePerms named constants, 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
 # `lat-trace`: the masked-window tracer bookkeeping (`lat`), tested below.
-azos_arch_api = { path = "../../../crates/core/arch-api", features = ["lat-trace"] }
+azos_arch_api = { path = "../../../arch/api", features = ["lat-trace"] }
 # The kernel entropy pool: the CPU sources' credit is checked against the pool
 # it seeds (`entropy_tests`).
 azos_crypto = { path = "../../../crates/core/crypto" }
 
 # `aarch64_its` (below, pulled via `#[path]`) carries
 # `#[cfg(feature = "its-skip-mapti")]` — declared here too, mirroring
-# `crates/core/arch-aarch64/Cargo.toml`'s own feature of the same name, purely
+# `arch/aarch64/Cargo.toml`'s own feature of the same name, purely
 # so this crate's `unexpected_cfgs` lint recognizes it (the pulled file
 # never turns the feature on; nothing here sets it).
 [features]

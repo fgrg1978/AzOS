@@ -126,7 +126,7 @@ A server that runs Linux code on more than one thread has more than one CPU, and
 
 The ext4 slice does not need these: it runs on one thread. They are built with the first server that runs more than one. On aarch64 the per-task `TPIDR_EL0` already gives each thread its own `current`.
 
-Source: `kernel/src/entry/x86_64/trap.rs` (`IA32_KERNEL_GS_BASE` at the first entry and after a fork), `crates/core/arch-x86_64/src/cpu/mod.rs` (`fs_base_to_load`), `crates/core/sched/src/fp.rs` (`TPIDR_EL0`), `lx/emul/src/switch/`.
+Source: `kernel/src/entry/x86_64/trap.rs` (`IA32_KERNEL_GS_BASE` at the first entry and after a fork), `arch/x86_64/src/cpu/mod.rs` (`fs_base_to_load`), `crates/core/sched/src/fp.rs` (`TPIDR_EL0`), `lx/emul/src/switch/`.
 
 ### No GPL code in ring 0
 

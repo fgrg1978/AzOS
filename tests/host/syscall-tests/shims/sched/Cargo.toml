@@ -13,7 +13,7 @@ description = "Host stand-in for azos_sched, used only by tests/host/syscall-tes
 # built through `azos_mm::vmm::map`.
 azos_mm = { path = "../mm", package = "syscall_test_mm" }
 azos_arch = { path = "../arch", package = "syscall_test_arch" }
-azos_arch_api = { path = "../../../../../crates/core/arch-api" }
+azos_arch_api = { path = "../../../../../arch/api" }
 # For the REAL `crates/core/sched/src/seccomp.rs`, pulled in by `#[path]` so that
 # `sys_exec`/`sys_execpath` look images up in the real table with the real hash.
 azos_abi = { path = "../../../../../crates/core/abi" }

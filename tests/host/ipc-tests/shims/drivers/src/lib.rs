@@ -15,7 +15,7 @@
 //! root. The kernel never sees it.
 
 pub mod plic {
-    /// Mirrors `crates/core/arch-riscv64/src/irq/plic.rs`'s non-`k1` default (QEMU/VF2):
+    /// Mirrors `arch/riscv64/src/irq/plic.rs`'s non-`k1` default (QEMU/VF2):
     /// the profile this host suite has no reason to vary by, since nothing
     /// here exercises the K1-specific PLIC line count.
     pub const MAX_IRQS: u32 = 128;

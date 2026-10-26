@@ -192,7 +192,7 @@ pub(crate) const NAMES: &[&str] = &[
     // its previous owner's entries (ktest
     // `asid_rollover_no_stale_translation`).
     "asid-rollover-noflush",
-    // crates/core/arch-api/src/tlb_gen.rs `note_ran`: a switch-in records
+    // arch/api/src/tlb_gen.rs `note_ran`: a switch-in records
     // nothing in the per-address-space hart mask, so a shootdown misses the
     // harts that ran the space (ktest `tlb_space_mask_reaches_the_harts_that_ran`).
     "tlb-space-mask-drop",

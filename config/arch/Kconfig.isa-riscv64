@@ -46,7 +46,7 @@ choice
     default RV_ZICBOZ_PROBE
     help
       `cbo.zero` zeroes a whole cache block per instruction in the page
-      allocator's zero-fill (crates/core/arch-riscv64/src/cache.rs): about a
+      allocator's zero-fill (arch/riscv64/src/cache.rs): about a
       third of the cycles of a store loop per 4 KiB page under QEMU. probe:
       used when cpu@0's device tree declares it AND a trap-safe execution
       probe confirms it zeroes; plain stores otherwise. n: always plain stores.
@@ -67,7 +67,7 @@ choice
       `cbo.clean` writes a cache block back and `cbo.flush` writes it back
       and drops it: what a driver does around a transfer to a device that is
       not cache-coherent with the CPU (DMA_NONCOHERENT; crates/drivers/dma
-      src/cache.rs, crates/core/arch-riscv64/src/cache.rs). probe: used when
+      src/cache.rs, arch/riscv64/src/cache.rs). probe: used when
       cpu@0's device tree declares it AND a trap-safe execution probe confirms
       it (the firmware must have set menvcfg.CBCFE). n: never used, so a
       DMA_NONCOHERENT kernel refuses to boot unless the device tree names a
@@ -88,7 +88,7 @@ choice
     help
       The timer is programmed by writing `stimecmp` (one CSR write) instead of
       an SBI `set_timer` call into firmware (an M-mode round trip, hundreds of
-      cycles) on every tick and deadline (crates/core/arch-riscv64/src/irq/clint.rs).
+      cycles) on every tick and deadline (arch/riscv64/src/irq/clint.rs).
       probe: used when cpu@0 declares Sstc and S-mode can read the CSR; SBI
       otherwise. n: always SBI. require: refuse to boot without it.
 
@@ -288,7 +288,7 @@ choice
     default RV_ZIHINTPAUSE_REQUIRE if BOARD_K1
     default RV_ZIHINTPAUSE_PROBE
     help
-      `SpinWait::cpu_relax` (crates/core/arch-api spin.rs), once per poll of
+      `SpinWait::cpu_relax` (arch/api spin.rs), once per poll of
       every spin-wait: `pause` lets a hart that only waits give up issue
       slots and power. A HINT encoding (`fence w,0`), so a hart without it
       runs it as a fence with no successor. n: no instruction at all (the
@@ -311,7 +311,7 @@ choice
     default RV_ZAWRS_NEVER if BOARD_VF2 || BOARD_K1
     default RV_ZAWRS_PROBE
     help
-      The spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      The spin-wait hint of `SpinWait::wait_while` (arch/api
       spin.rs, every kernel spinner): after SPIN_WAIT_RELAX_SPINS polls the
       waiter takes a reservation on the lock word (`lr.w`/`lr.d`) and
       stalls in `wrs.nto` until another hart's store breaks it or an
@@ -337,7 +337,7 @@ choice
     default RV_ZACAS_NEVER if BOARD_VF2 || BOARD_K1
     default RV_ZACAS_PROBE
     help
-      The CAS of `SpinWait::cas32/cas64` (crates/core/arch-api spin.rs:
+      The CAS of `SpinWait::cas32/cas64` (arch/api spin.rs:
       the CAS of every spinner that needs one; the SpinLock's test-and-set
       is `amoswap`, base A, on every hart) as one `amocas`
       instead of an `lr`/`sc` loop (five instructions and a retry branch).
@@ -391,7 +391,7 @@ choice
     default RV_H_NEVER
     help
       The G-stage page tables, the VS-mode entry and the `hvip` injection a
-      hosted-guest monitor is built from (crates/core/arch-riscv64/src/ext/hv).
+      hosted-guest monitor is built from (arch/riscv64/src/ext/hv).
       Nothing in a kernel that hosts no guest touches an H CSR, so the default
       follows the VIRT axis: n for VIRT_NONE, probe otherwise.
       probe: used when cpu@0's device tree declares `h` in riscv,isa AND a
@@ -451,7 +451,7 @@ choice
       pointer masking (PMM, Ssnpm), the U-mode landing-pad and shadow-stack
       enables (LPE, SSE) and FIOM. Its reset value is not defined, and ring
       3 cannot read it, only use what it opens. Every hart writes 0
-      (crates/core/arch-riscv64/src/ext/senvcfg.rs): no ring-3 program uses
+      (arch/riscv64/src/ext/senvcfg.rs): no ring-3 program uses
       a cache-block instruction or pointer masking, so U-mode gets none
       (Linux opens CBZE where Zicboz is, for user space's `cbo.zero`).
       probe: the boot hart reads the CSR once under a private stvec; a hart
@@ -499,7 +499,7 @@ choice
       The overflow bit of an `hpmcounterN`, the `scountovf` CSR that shows it
       to S-mode and the local counter-overflow interrupt (LCOFI, `sie`/`sip`
       bit 13): what the profiler's PMU sampling (PROFILER_PMU) is
-      interrupted by (crates/core/arch-riscv64/src/pmu.rs). It also needs a
+      interrupted by (arch/riscv64/src/pmu.rs). It also needs a
       programmable counter from RV_PMU. probe: used when cpu@0's
       `riscv,isa` names `sscofpmf` and one `scountovf` read under a private
       trap vector does not trap; tick sampling otherwise. QEMU virt has it
@@ -590,4 +590,4 @@ config PMP_REGIONS_RESERVED
       (16 - PMP_REGIONS_RESERVED) entries are available for user-process
       isolation.  Must leave headroom; current hardware cap is 16.
       Current codebase: 6 total in use, but 4 is the design budget
-      (crates/core/arch-riscv64/src/ext/pmp.rs N_PMP_REGIONS = 6 current impl).
+      (arch/riscv64/src/ext/pmp.rs N_PMP_REGIONS = 6 current impl).

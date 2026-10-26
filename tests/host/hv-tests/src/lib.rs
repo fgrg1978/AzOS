@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host tests of the hypervisor core (`crates/core/hv`) and of the three ISA
-//! glues of `azos_arch_api::Hypervisor` (`crates/core/arch-*/src/ext/hv/mod.rs`).
+//! glues of `azos_arch_api::Hypervisor` (`arch/*/src/ext/hv/mod.rs`).
 //!
 //! The glues are the real files: riscv64's and aarch64's are pulled in by
 //! path (their modules are pure and their CSR/instruction parts are

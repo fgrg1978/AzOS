@@ -240,7 +240,7 @@ fn bump(c: &AtomicU32) {
 /// crate's `hart_id()` decoded `MPIDR_EL1` directly (`Aff0 | Aff1<<8 |
 /// Aff2<<16`), a value that only stays inside `0..SLOTS` on a flat topology
 /// (`Aff1 == 0`, true on QEMU virt's `-smp N`, false on any clustered SoC) —
-/// U10-4 (audit). `crates/core/arch-aarch64::cpu::hart_id()` now reads
+/// U10-4 (audit). `arch/aarch64::cpu::hart_id()` now reads
 /// `TPIDR_EL1` instead — the SAME logical, contiguous `0..num_cpus` id
 /// `boot.S` publishes and range-checks against `MAX_HARTS` before this
 /// crate ever sees it (see that crate's own doc for the full history) — so

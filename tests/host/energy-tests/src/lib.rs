@@ -1380,10 +1380,10 @@ mod assertion;
 // The x86_64 CPUID decode, included from the arch crate (`#[path]`, as
 // `tests/host/arch-tests` does): `hybrid.rs` names `crate::cpu::features`.
 #[cfg(test)]
-#[path = "../../../../crates/core/arch-x86_64/src/cpu/features.rs"]
+#[path = "../../../../arch/x86_64/src/cpu/features.rs"]
 pub mod x86_features;
 #[cfg(test)]
-#[path = "../../../../crates/core/arch-x86_64/src/ext/hybrid.rs"]
+#[path = "../../../../arch/x86_64/src/ext/hybrid.rs"]
 pub mod x86_hybrid;
 #[cfg(test)]
 mod cpu {

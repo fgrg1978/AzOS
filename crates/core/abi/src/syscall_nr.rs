@@ -40,7 +40,7 @@
 //! The numbers are ISA-independent — `SYS_GETPID` is `10` on every
 //! target this ABI reaches. Which *registers* carry the number, the
 //! arguments and the result is a per-ISA convention, established here so the
-//! kernel side (`kernel/**`, `crates/core/arch-*/**`) implements exactly this
+//! kernel side (`kernel/**`, `arch/*/**`) implements exactly this
 //! rather than inventing its own mapping.
 //!
 //! ### RISC-V64 (established, `crates/core/libsys`)

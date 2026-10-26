@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! An SMP model of the x86_64 IPI shootdown against a lock waiter that has
-//! interrupts masked (`crates/core/arch-x86_64/src/tlb.rs`, the request and
-//! its acks; `crates/core/arch-api/src/spin.rs`, the lock's wait loop).
+//! interrupts masked (`arch/x86_64/src/tlb.rs`, the request and
+//! its acks; `arch/api/src/spin.rs`, the lock's wait loop).
 //!
 //! Two host threads are two CPUs. CPU 0 holds a lock word and posts a
 //! shootdown for CPU 1, then waits for the ack, as `tlb::remote` does with

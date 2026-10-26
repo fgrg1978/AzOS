@@ -180,7 +180,7 @@ impl Interrupts for Riscv64 {
     /// that legitimately changed while interrupts were off.
     ///
     /// Unobservable in this tree today, and said plainly rather than
-    /// dressed up as a fix with a rate: `crates/core/arch-riscv64/src/cpu.rs`
+    /// dressed up as a fix with a rate: `arch/riscv64/src/cpu.rs`
     /// declares only `SSTATUS_SIE`, `SSTATUS_SPIE` and `SSTATUS_SPP`, and
     /// nothing writes the latter two inside a critical section. What makes
     /// it worth correcting now is that this function had **no production
@@ -245,7 +245,7 @@ impl Interrupts for Riscv64 {
 // classification (Sv39: R|W|X on the word decides leaf-ness at any
 // level), so most methods below take it only to satisfy the trait
 // shape aarch64 genuinely needs it for. `#[inline]` on every one: this
-// workspace builds with `lto = false` (see `crates/core/arch/src/lib.rs`),
+// workspace builds with `lto = false` (see `arch/facade/src/lib.rs`),
 // so an un-inlined trait call here would be a real cross-crate call on
 // every page-table write.
 impl Mmu for Riscv64 {

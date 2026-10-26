@@ -37,7 +37,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 // The cross-ISA interrupt contract. In scope for the method calls on
 // `azos_arch::ARCH`, which replaced 37 hand-written reads and writes of
-// `sstatus.SIE` in this file on 2026-09-21 — see `crates/core/arch-api`.
+// `sstatus.SIE` in this file on 2026-09-21 — see `arch/api`.
 use azos_arch::Interrupts;
 use crate::task::{
     Task, TaskContext, TaskState, CtxReg, MAX_TASKS, STACK_SIZE,
@@ -1503,7 +1503,7 @@ unsafe fn ring_doorbell(cpu: usize, idx: usize, appended: bool) {
     // seconds per exchange, with both peers correct, awake and enqueued. It
     // reads as a hang and is a missing doorbell.
     //
-    // `send_ipi` (`crates/core/arch-riscv64/src/api_impl.rs`) and the
+    // `send_ipi` (`arch/riscv64/src/api_impl.rs`) and the
     // `INT_SOFTWARE_S` trap arm both already existed; the arm was used only
     // for TLB shootdown and nothing ever called the sender. `cpu` is the
     // logical CPU id (`tp`); `firmware::send_ipi` maps it to the hart's

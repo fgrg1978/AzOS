@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side proof that the x86_64 port skeleton (crates/core/arch-x86_64), the facade's fake ISA under feature `stub`, satisfies the whole arch contract."
+description = "Host-side proof that the x86_64 port skeleton (arch/x86_64), the facade's fake ISA under feature `stub`, satisfies the whole arch contract."
 
 # Run with:  cd tests/host/arch-stub-tests && cargo test
 # Not a member of the kernel workspace (host target, own lock file).
 [workspace]
 
 [dependencies]
-azos_arch = { path = "../../../crates/core/arch", features = ["stub"] }
-azos_arch_api = { path = "../../../crates/core/arch-api" }
+azos_arch = { path = "../../../arch/facade", features = ["stub"] }
+azos_arch_api = { path = "../../../arch/api" }

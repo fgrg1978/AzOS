@@ -29,7 +29,7 @@ import sys
 import tempfile
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
-SCOPES = ("kernel", os.path.join("crates", "core"))
+SCOPES = ("kernel", "arch", os.path.join("crates", "core"))
 MARK = "reason:"
 # `#[allow(...)]` / `#![allow(...)]`, the list possibly over several lines.
 ALLOW = re.compile(r"#!?\[\s*allow\s*\(([^)]*)\)\s*\]", re.S)

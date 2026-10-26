@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host tests for `crates/core/arch-aarch64/src/ext/hv` (hypervisor step H1):
+//! Host tests for `arch/aarch64/src/ext/hv` (hypervisor step H1):
 //! the stage-2 descriptor and `VTCR_EL2` / `VTTBR_EL2` encoders and the table
 //! mapper, the vGICv3 list-register model, the virtual timer arithmetic and
 //! the EL2 stub's `HVC` dispatch.
@@ -16,7 +16,7 @@
 #![cfg(test)]
 
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/ext/hv/mod.rs"]
+#[path = "../../../../arch/aarch64/src/ext/hv/mod.rs"]
 mod hv;
 
 use hv::stage2::*;

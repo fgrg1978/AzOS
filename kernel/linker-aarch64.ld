@@ -55,7 +55,7 @@ ENTRY(_start)
  * (where the loader actually puts the bytes), reachable only through
  * `TTBR1_EL1` once `boot.S` turns the MMU on and jumps there — see that
  * file's header comment for the low→high sequence and
- * `crates/core/arch-aarch64::mmu`'s module doc for why OFFSET's bits are
+ * `arch/aarch64::mmu`'s module doc for why OFFSET's bits are
  * `[63:39]` only (matching `TCR_EL1.T1SZ = 25`).
  *
  * `KERNEL_VA_OFFSET_LITERAL` exists ONLY so `RAM_VMA`'s ORIGIN below has
@@ -125,7 +125,7 @@ SECTIONS
 
     /*
      * Exception-vector table (entry/aarch64/asm/trap_entry.S) and the
-     * EL2->EL1 trampoline (crates/core/arch-aarch64::boot, section
+     * EL2->EL1 trampoline (arch/aarch64::boot, section
      * .text.azos_boot) — kept explicitly like .text.boot: both are
      * reached only via VBAR_EL1 / `bl` from hand-written asm, never a
      * Rust call the linker can see, so an LTO-unaware "nothing

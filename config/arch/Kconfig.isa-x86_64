@@ -5,11 +5,11 @@
 # ---------------------------------------------------------------------------
 # x86_64 (port skeleton)
 # ---------------------------------------------------------------------------
-# The same three tiers riscv64 uses (crates/core/arch-riscv64/src/cache.rs):
+# The same three tiers riscv64 uses (arch/riscv64/src/cache.rs):
 #   1. the compile-time BASELINE (X86_64_LEVEL), the only thing codegen may
 #      assume, checked at boot: a CPU below it is refused with a message;
 #   2. optional extensions, each a runtime CPUID probe before use with a
-#      fallback (crates/core/arch-x86_64/src/features.rs), emitted only
+#      fallback (arch/x86_64/src/features.rs), emitted only
 #      inside gated asm unless set to `require`;
 #   3. each extension a three-way choice X86_* (n / probe / require, the
 #      model above); per-board defaults say what a board has. `require`
@@ -669,7 +669,7 @@ choice
       CR4.LA57 after CPUID.(EAX=7,ECX=0):ECX[16]: 57-bit virtual
       addresses (64 PiB of user space instead of 128 TiB) through a PML5
       above the PML4. boot.S decides it before paging is on (CR4.LA57
-      cannot change in long mode), and crates/core/arch-x86_64/src/mmu.rs
+      cannot change in long mode), and arch/x86_64/src/mmu.rs
       reads the depth back from CR4. Cost: one more level on every TLB
       miss (one more memory access per walk, 4 KiB more per address
       space). Only for a machine whose RAM or VA needs exceed 64/128 TiB.
@@ -693,7 +693,7 @@ choice
       Any policy but n builds the kernel and the user images with
       `-Z cf-protection=branch`, and the boot sets CR4.CET and
       IA32_S_CET.ENDBR_EN on every CPU that has it
-      (crates/core/arch-x86_64/src/cpu/cfi.rs): ring 0 is enforced, ring 3
+      (arch/x86_64/src/cpu/cfi.rs): ring 0 is enforced, ring 3
       is not (IA32_U_CET is per process). Exported to ring 3 as
       HWCAP_X86_CET_IBT in the vDSO hwcap word (azos_libsys::vdso_hwcap), set
       once the kernel sets CR4.CET. Cost when used: an ENDBR64 per function
@@ -855,7 +855,7 @@ choice
     prompt "WAITPKG (UMONITOR/UMWAIT/TPAUSE)"
     default X86_WAITPKG_PROBE
     help
-      The spin-wait hint of `SpinWait::wait_while` (crates/core/arch-api
+      The spin-wait hint of `SpinWait::wait_while` (arch/api
       spin.rs): after SPIN_WAIT_RELAX_SPINS PAUSE polls the waiter arms
       UMONITOR on the lock word and sleeps in UMWAIT (C0.1 or C0.2,
       X86_UMWAIT_C02) until a store to the line, an interrupt, or the

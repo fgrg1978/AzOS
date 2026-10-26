@@ -236,11 +236,11 @@ Next: [config.md](config.md), [building.md](building.md).
 
 The same kernel crate builds for riscv64, aarch64 and x86_64.
 
-- **Contract.** `crates/core/arch-api` defines the trait surface: `Cpu`,
+- **Contract.** `arch/api` defines the trait surface: `Cpu`,
   `Interrupts`, `Mmu`, `Boot`, `Vector`, `SpinWait`, `Pmu`, plus `ArchPlatform` and
   `ArchEntry`, and for the hypervisor `Hypervisor`, `StageTableMem` and
   `HypercallHost`. Each ISA crate (`arch-riscv64`, `arch-aarch64`, `arch-x86_64`)
-  implements it, and `crates/core/arch` re-exports the one that matches
+  implements it, and `arch/facade` re-exports the one that matches
   `target_arch`.
 - **One boot sequence.** `kernel_main` calls `boot::early_main`
   (`kernel/src/boot/early.rs`), which owns the common steps and their order
@@ -259,7 +259,7 @@ The same kernel crate builds for riscv64, aarch64 and x86_64.
   registers differ (`a7`/`a0..a5` on riscv64, `x8`/`x0..x5` on aarch64,
   `rax`/`rdi, rsi, rdx, r10, r8, r9` on x86_64).
 
-Source: `crates/core/arch-api/src/contract.rs`, `crates/core/arch/src/lib.rs`,
+Source: `arch/api/src/contract.rs`, `arch/facade/src/lib.rs`,
 `kernel/src/boot/early.rs`, `kernel/src/trap/mod.rs`,
 `crates/core/abi/src/syscall_nr.rs`, `tools/lint/arch_layout_lint.py`.
 Next: [hal.md](hal.md).

@@ -74,10 +74,10 @@ tree also builds desktop and server configurations.
 ## One tree, three ISAs
 
 The same source builds for **riscv64, aarch64 and x86_64** behind one
-architecture API (`crates/core/arch-api`). Each ISA has a compile-time
+architecture API (`arch/api`). Each ISA has a compile-time
 baseline level, and every optional extension above it is a three-way
 `make config` choice (`n`, `probe`, `require`) resolved at boot. Source:
-`config/arch/Kconfig.isa`, `crates/core/arch-api/src/isa.rs`.
+`config/arch/Kconfig.isa`, `arch/api/src/isa.rs`.
 
 `make config` starts from a preset, and the preset sets the defaults of the
 other axes (hardware class, real-time mode, driver placement, security

@@ -31,7 +31,7 @@ On x86_64 the clock is the TSC scaled: `ticks = base_ticks + ((tsc - base_tsc) *
 
 `azos_abi::time` converts between nanoseconds and ticks with two functions both sides use: `ns_to_ticks_ceil(ns, freq)` rounds up, so a deadline converted here is never reached early; `ticks_to_ns(ticks, freq)` rounds down and returns 0 for a zero frequency. Both split the value at the second to avoid wide intermediates and saturate rather than wrap.
 
-Source: `crates/drivers/sys/src/timebase.rs`, `crates/core/arch-api/src/lib.rs` (`Cpu::now_ticks`, `Interrupts::set_timer_deadline`), `crates/core/arch-riscv64/src/api_impl.rs`, `crates/core/arch-aarch64/src/api_impl.rs`, `crates/core/arch-x86_64/src/lib.rs`, `crates/core/arch-x86_64/src/timer.rs` (`now_ticks`, `calibrate`), `crates/core/abi/src/time.rs`, `config/arch/Kconfig.platform` (`TIMER_FREQ`, `X86_*`), `config/arch/Kconfig.isa` (`RV_SSTC_*`, `X86_TSC_DEADLINE_*`).
+Source: `crates/drivers/sys/src/timebase.rs`, `arch/api/src/lib.rs` (`Cpu::now_ticks`, `Interrupts::set_timer_deadline`), `arch/riscv64/src/api_impl.rs`, `arch/aarch64/src/api_impl.rs`, `arch/x86_64/src/lib.rs`, `arch/x86_64/src/timer.rs` (`now_ticks`, `calibrate`), `crates/core/abi/src/time.rs`, `config/arch/Kconfig.platform` (`TIMER_FREQ`, `X86_*`), `config/arch/Kconfig.isa` (`RV_SSTC_*`, `X86_TSC_DEADLINE_*`).
 
 ## Programming the timer interrupt
 

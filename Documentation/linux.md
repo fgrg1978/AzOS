@@ -189,7 +189,7 @@ An image that contains a Linux module is distributed as GPL-2.0-only as a whole;
 
 A guest kernel is not a separate component. It is a virtual machine the signed topology declares, hosted by the same hypervisor core as any other guest. Nothing in `crates/core/hv` or `userspace/services/vmmd` is specific to Linux; this section describes the path any unmodified guest kernel takes, and the boundary around it.
 
-Source: `crates/core/hv`, `crates/core/arch-api/src/lib.rs` (the `Hypervisor` trait), `userspace/services/vmmd`, `crates/core/devif/src/vm.rs`, `crates/core/devif/src/vmctl.rs`, `config/axes/Kconfig.virt`, `config/axes/Kconfig.preset`.
+Source: `crates/core/hv`, `arch/api/src/lib.rs` (the `Hypervisor` trait), `userspace/services/vmmd`, `crates/core/devif/src/vm.rs`, `crates/core/devif/src/vmctl.rs`, `config/axes/Kconfig.virt`, `config/axes/Kconfig.preset`.
 
 ### Roles and hardware
 

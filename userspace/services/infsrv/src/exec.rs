@@ -168,7 +168,7 @@ fn agrees(dot: impl Fn(&[f32], &[f32]) -> f32) -> bool {
 
 // arch-only: the RISC-V vector unit has no counterpart in this program on other ISAs (they run the sequential kernel)
 /// The RISC-V vector dot product. The same instruction sequence the kernel's
-/// own (`crates/core/arch-riscv64/src/fp.rs`, `dot_f32_rvv`) uses, in this
+/// own (`arch/riscv64/src/fp.rs`, `dot_f32_rvv`) uses, in this
 /// program: LMUL 4, `vfredusum` into element 0 of v16.
 #[cfg(target_arch = "riscv64")]
 mod rvv {

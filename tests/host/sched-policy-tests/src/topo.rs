@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! `crates/core/sched/src/topo.rs`: the topology levels built from the labels
 //! of each source, the CPUID decoder on synthetic CPUID values, and the PPTT
-//! parser of `crates/core/arch-x86_64/src/firmware/acpi.rs` on synthetic tables.
+//! parser of `arch/x86_64/src/firmware/acpi.rs` on synthetic tables.
 //!
 //! Registered in `lib.rs` by `#[cfg(test)] mod topo;`.
 
@@ -10,7 +10,7 @@
 #[allow(dead_code)]
 mod subject;
 
-#[path = "../../../../crates/core/arch-x86_64/src/firmware/acpi.rs"]
+#[path = "../../../../arch/x86_64/src/firmware/acpi.rs"]
 #[allow(dead_code)]
 mod acpi;
 

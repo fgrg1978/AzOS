@@ -146,7 +146,7 @@ config USER_ALLOC_GUARD_PAGES
 #     CET state (XSAVES supervisor component).
 #   * aarch64 GCS (FEAT_GCS, Armv9.4): reserved. The return-address stack is
 #     the aarch64 twin of the shadow stack; GCSCR_EL1/GCSPR_EL1 would be
-#     programmed in crates/core/arch-aarch64/src/cpu/cfi.rs. No compiler mode
+#     programmed in arch/aarch64/src/cpu/cfi.rs. No compiler mode
 #     is needed beyond `-Z branch-protection=gcs`, which the pinned
 #     compiler does not take.
 #   * riscv64 Zicfilp (`lpad` at every function entry): no symbol until the
@@ -250,7 +250,7 @@ choice
       with the code PC-relative, tools/build/kconfig_to_cargo.py kaslr_rustflags;
       a boot that finds no relocation table refuses to slide): the boot
       picks a random base for the image inside the ISA's image window
-      (crates/core/arch-*/src/mmu/kaslr.rs), maps the image there and applies
+      (arch/*/src/mmu/kaslr.rs), maps the image there and applies
       the image's relative relocations (`R_*_RELATIVE`) with the distance from
       the link address, before any Rust that needs a pointer runs. A leaked
       kernel pointer then no longer says where the rest of the image is, and a

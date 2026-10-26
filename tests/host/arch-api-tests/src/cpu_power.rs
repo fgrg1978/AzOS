@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! aarch64 saved context and CPU stop (`crates/core/arch-aarch64/src/firmware.rs`,
+//! aarch64 saved context and CPU stop (`arch/aarch64/src/firmware.rs`,
 //! Kconfig `CPU_IDLE_POWERDOWN` and `CPU_HOTPLUG`): the layout the resume asm
 //! reads, the PSCI numbers of the stop, and what the idle ladder does with a
 //! power-down state before and after the kernel has a resume entry.
@@ -16,7 +16,7 @@
 // Its own copy of the module: the resume entry is process-wide state, and the
 // ladder tests of `idle_deep` (the shared copy) assert a kernel with none.
 #[allow(dead_code)]
-#[path = "../../../../crates/core/arch-aarch64/src/firmware.rs"]
+#[path = "../../../../arch/aarch64/src/firmware.rs"]
 mod firmware;
 
 use firmware::*;

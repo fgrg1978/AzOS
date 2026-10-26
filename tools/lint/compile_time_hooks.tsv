@@ -259,7 +259,7 @@ threads-no-cleartid-canary	pending
 threads-private-table-canary	pending	
 threads-tls-canary	pending	
 timer-heap-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
-tlb-bound-canary	hot	a site on crates/core/arch-riscv64/src/tlb.rs
+tlb-bound-canary	hot	a site on arch/riscv64/src/tlb.rs
 tlb-smoke	hot	a site on kernel/src/entry/x86_64/trap.rs
 topo-device-canary	pending	
 topo-replay-canary	pending	

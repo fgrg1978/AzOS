@@ -20,8 +20,8 @@ The rules apply to:
 - `crates/core/ipc`, `crates/core/sched`, `crates/core/mm`,
   `crates/core/ota`, `crates/core/crypto`, `crates/core/abi`,
   `crates/core/topology`;
-- the architecture crates (`crates/core/arch`, `crates/core/arch-api` and the
-  per-ISA `crates/core/arch-*` crates);
+- the architecture crates (`arch/facade`, `arch/api` and the
+  per-ISA `arch/*` crates);
 - `domains/robot/behavior`.
 
 Other crates (drivers, file systems, networking, the ML runtime) are

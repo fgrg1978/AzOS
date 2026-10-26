@@ -38,7 +38,7 @@ Source: `crates/core/abi/src/time.rs`, `crates/drivers/sys/src/timebase.rs`,
 
 - The clock is the architecture's free-running monotonic counter, read through
   `azos_drv_sys::timebase::now`, which delegates to the `Cpu` trait of
-  `crates/core/arch-api`. Its origin is the counter's zero (reset), and it is
+  `arch/api`. Its origin is the counter's zero (reset), and it is
   not wall-clock time.
 - The ABI unit is nanoseconds. The counter frequency is a per-board number
   (`TIMER_FREQ`), so a raw tick count is never a duration, and the same

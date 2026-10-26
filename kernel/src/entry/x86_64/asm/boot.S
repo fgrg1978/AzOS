@@ -11,7 +11,7 @@
 // Exports:
 //   _start                 boot CPU entry (the PVH note's target)
 //   (the AP entry `_secondary_start` is entry/x86_64/asm/ap_entry.S, reached
-//    through crates/core/arch-x86_64/src/ext/ap_trampoline.S)
+//    through arch/x86_64/src/ext/ap_trampoline.S)
 //   _limine_start          boot CPU entry of the Limine build (Kconfig
 //                          X86_BOOT_LIMINE; linker-x86_64-limine.ld ENTRY);
 //                          the end of this file

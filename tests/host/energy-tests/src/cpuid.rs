@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The CPUID energy source (x86 hybrid parts): the decode of each logical
 //! processor's core type on synthetic CPUID words
-//! (`crates/core/arch-x86_64/src/ext/hybrid.rs`), the model the classes make
+//! (`arch/x86_64/src/ext/hybrid.rs`), the model the classes make
 //! (`EnergyModel::from_core_classes`), where it ranks among the sources
 //! (`resolve`) and what EAS does with it.
 //!
