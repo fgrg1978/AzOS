@@ -11,4 +11,4 @@ publish = false
 # Pinned to stable via rust-toolchain.toml.
 
 [dependencies]
-azos_flight_math = { path = "../../../domains/robot/flight-math" }
+azos_flight_math = { path = "../../../crates/lib/control/flight-math" }

@@ -92,7 +92,7 @@ crate_dir() {
             printf '%s' "$CRATES_DIR/$1"; return 0 ;;
     esac
     if [ -f "$REPO_ROOT/crates/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/crates/$1"; return 0; fi
-    for g in crates/core crates/net crates/drivers domains/robot; do
+    for g in crates/core crates/net crates/drivers crates/lib/control domains/robot; do
         if [ -f "$REPO_ROOT/$g/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/$g/$1"; return 0; fi
     done
     printf '%s' "$CRATES_DIR/$1"
@@ -449,7 +449,7 @@ workspace_member_dirs() {
 # test crates live under tests/, not here, so they are not part of this walk.
 tree_crate_keys() {
     local toml dir name
-    for toml in "$REPO_ROOT"/crates/*/Cargo.toml "$REPO_ROOT"/crates/*/*/Cargo.toml \
+    for toml in "$REPO_ROOT"/crates/*/Cargo.toml "$REPO_ROOT"/crates/*/*/Cargo.toml "$REPO_ROOT"/crates/lib/*/*/Cargo.toml \
                 "$REPO_ROOT"/domains/*/*/Cargo.toml "$REPO_ROOT"/arch/*/Cargo.toml; do
         [ -f "$toml" ] || continue
         dir="${toml%/Cargo.toml}"

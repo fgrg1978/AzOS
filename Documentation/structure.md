@@ -8,6 +8,7 @@ relative to the repository root. For the design behind the layout see
 
 Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 [crates/drivers](#cratesdrivers) | [crates/fs and crates/net](#cratesfs-and-cratesnet) |
+[crates/lib](#crateslib) |
 [domains/robot](#domainsrobot) | [Per-ISA layout](#per-isa-layout) |
 [kernel/](#kernel) | [userspace/](#userspace) | [Tests and tools](#tests-and-tools)
 
@@ -17,7 +18,7 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 |---|---|
 | `kernel/` | The kernel image: `kernel_main`, boot steps, per-ISA entry code, kernel tasks, panic handler, the linker scripts' shared include. |
 | `arch/` | The architecture crates: `api/` (`azos_arch_api`, the cross-ISA contract), `facade/` (`azos_arch`, re-exports the build's ISA crate), and one crate per ISA, `riscv64/`, `aarch64/`, `x86_64/`, each with its kernel linker scripts in `boot/`. |
-| `crates/` | Kernel libraries, in four groups: `core/`, `drivers/`, `fs/`, `net/`. |
+| `crates/` | Kernel libraries, in five groups: `core/`, `drivers/`, `fs/`, `net/`, `lib/`. |
 | `domains/robot/` | The optional robot application domain (linked only when the image selects it). |
 | `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
 | `sdk/` | The native `std` SDK: target specs, linker scripts, the `std` overlay, and `sdktest`, the SDK's own test program. |
@@ -142,6 +143,15 @@ Source: `crates/drivers/*/Cargo.toml` and each `lib.rs` header.
 
 Source: `crates/fs/src/lib.rs`, `crates/net/stack/src/lib.rs`, `crates/net/*/Cargo.toml`.
 
+## crates/lib
+
+| Crate (directory under `crates/lib/`) | What it holds |
+|---|---|
+| `control/flight-math` | The pure flight math (`azos_flight_math`) the flight controller shares with host tests. |
+| `control/ahrs` | Attitude and heading estimation (`azos_ahrs`). |
+
+Source: `crates/lib/*/*/Cargo.toml`.
+
 ## domains/robot
 
 | Crate (directory under `domains/robot/`) | What it holds |
@@ -149,8 +159,7 @@ Source: `crates/fs/src/lib.rs`, `crates/net/stack/src/lib.rs`, `crates/net/*/Car
 | `safety-core` | The safety path of the actuation authority: the motor gate (`actuation.rs`), the real-time motor loop (`rt_motor.rs`), flight control (`flight_ctrl.rs`), the transactional control ticks rolled back on a synchronous exception (`txn.rs`). |
 | `degrade-policy` | The graded degrade levels and their speed ceilings (leaf crate). |
 | `behavior` | A layered, subsumption-style behavior engine. |
-| `ahrs` | Attitude and heading estimation. |
-| `flight`, `flight-math` | Flight controller (mixer, PID, modes) and the pure math it shares with host tests. |
+| `flight` | Flight controller (mixer, PID, modes); its pure math is `crates/lib/control/flight-math`. |
 | `nav` | Waypoints, mission, occupancy grid, obstacle avoidance. |
 | `telemetry` | The binary telemetry protocol. |
 | `robot` | Robot framework: PID controller, motor control, sensor abstraction. |

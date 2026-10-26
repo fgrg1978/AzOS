@@ -435,11 +435,11 @@ members = [
     "crates/core/rings",
     "crates/core/bytepipe",
     "crates/core/hv",
-    "domains/robot/ahrs",
+    "crates/lib/control/ahrs",
     "crates/drivers/gps",
     "domains/robot/flight",
     # Pure no_std drone math (D04 trig + wind), host-tested via flight-math-tests.
-    "domains/robot/flight-math",
+    "crates/lib/control/flight-math",
     "domains/robot/telemetry",
     "domains/robot/nav",
     "crates/core/libsys",
@@ -575,10 +575,10 @@ azos_channel  = { path = "crates/core/channel" }
 azos_rings    = { path = "crates/core/rings" }
 azos_bytepipe = { path = "crates/core/bytepipe" }
 azos_hv       = { path = "crates/core/hv" }
-azos_ahrs     = { path = "domains/robot/ahrs" }
+azos_ahrs     = { path = "crates/lib/control/ahrs" }
 azos_gps       = { path = "crates/drivers/gps" }
 azos_flight    = { path = "domains/robot/flight" }
-azos_flight_math = { path = "domains/robot/flight-math" }
+azos_flight_math = { path = "crates/lib/control/flight-math" }
 azos_telemetry = { path = "domains/robot/telemetry" }
 azos_nav       = { path = "domains/robot/nav" }
 azos_libsys    = { path = "crates/core/libsys" }

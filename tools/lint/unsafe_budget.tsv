@@ -95,13 +95,13 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-domains/robot/ahrs	0	0	0	0	1	0
+crates/lib/control/ahrs	0	0	0	0	1	0
 domains/robot/behavior	4	1	0	0	0	9
 domains/robot/bench	0	0	0	0	1	0
 domains/robot/degrade-policy	0	0	0	0	1	0
 crates/drivers/rc-esc	0	0	0	0	1	0
 domains/robot/flight	0	0	0	0	1	0
-domains/robot/flight-math	0	0	0	0	1	0
+crates/lib/control/flight-math	0	0	0	0	1	0
 domains/robot/nav	0	0	0	0	1	0
 domains/robot/robot	1	0	0	0	0	47
 domains/robot/safety-core	0	0	0	0	1	0

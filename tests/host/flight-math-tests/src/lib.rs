@@ -341,10 +341,10 @@ mod scan_tests {
     }
 }
 
-/// The AHRS's barometric altitude term (domains/robot/ahrs/src/baro_alt.rs),
+/// The AHRS's barometric altitude term (crates/lib/control/ahrs/src/baro_alt.rs),
 /// pure, pulled by path: the AHRS crate itself needs the kernel's drivers.
 #[cfg(test)]
-#[path = "../../../../domains/robot/ahrs/src/baro_alt.rs"]
+#[path = "../../../../crates/lib/control/ahrs/src/baro_alt.rs"]
 mod baro_alt;
 
 #[cfg(test)]
