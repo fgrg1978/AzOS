@@ -16,7 +16,7 @@ crosses.
 
 ## Levels
 
-Source: `domains/robot/degrade-policy/src/lib.rs`, `crates/core/ipc/src/cap.rs`
+Source: `crates/domains/robot/degrade-policy/src/lib.rs`, `crates/core/ipc/src/cap.rs`
 
 ```text
 FULL (0)  <  CAUTIOUS (1)  <  SLOW (2)  <  CONTAINED (3)
@@ -40,7 +40,7 @@ index to the maximum is therefore the same operation as failing closed.
 
 ## Where the pieces live
 
-Source: `domains/robot/degrade-policy/src/lib.rs`, `crates/core/ipc/src/cap.rs`, `domains/robot/behavior/src/safety.rs`
+Source: `crates/domains/robot/degrade-policy/src/lib.rs`, `crates/core/ipc/src/cap.rs`, `crates/domains/robot/behavior/src/safety.rs`
 
 Three places hold part of the design, and the split is deliberate.
 
@@ -50,15 +50,15 @@ Three places hold part of the design, and the split is deliberate.
   trusted base, and containment has to be enforced where capabilities are
   dereferenced.
 * **The level-to-speed mapping** is `level_cap_pct` in the dependency-free
-  crate `domains/robot/degrade-policy` (`azos_degrade_policy`). A speed ceiling
+  crate `crates/domains/robot/degrade-policy` (`azos_degrade_policy`). A speed ceiling
   is motor policy, and putting it in the trusted base would grow that base
   without any security gain. The crate has no dependencies, so the capability
   core and the robot domain can both see it without seeing each other.
 * **Application of the ceiling** is `motor_envelope` in
-  `domains/robot/behavior/src/safety.rs`.
+  `crates/domains/robot/behavior/src/safety.rs`.
 
 The level numbers are declared in both the capability core and the policy
-crate. `domains/robot/behavior/src/safety.rs` sees both and asserts at compile
+crate. `crates/domains/robot/behavior/src/safety.rs` sees both and asserts at compile
 time that the five constants agree, so a drift is a build error and not a
 mis-mapped speed cap.
 
@@ -69,7 +69,7 @@ the kernel cannot unlock speed by sending a level the kernel does not know.
 
 ## Wire protocol
 
-Source: `domains/robot/behavior/src/brain_protocol.rs`, `kernel/src/tasks/behavior.rs`
+Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `kernel/src/tasks/behavior.rs`
 
 Two packet types set the level. Both handlers exist on the network link and on
 the UART bridge in `kernel/src/tasks/behavior.rs`. The network link is a Noise
@@ -107,7 +107,7 @@ reset id: the level is the brain's to set, not the operator's.
 **Sticky.** A level holds until the brain sends another. There is no timeout on
 the level: it is a standing constraint, not a heartbeat. Loss of the link is a
 separate failure, handled by the 500 ms motor-command watchdog in
-`domains/robot/safety-core/src/rt_motor.rs`, which safe-stops at any level.
+`crates/domains/robot/safety-core/src/rt_motor.rs`, which safe-stops at any level.
 
 **Global.** The level is one system-wide value, set at packet ingest and read
 at each enforcement point. It is coarse by design. Per-task or self-decaying
@@ -115,13 +115,13 @@ levels are not built.
 
 ## Enforcement
 
-Source: `domains/robot/behavior/src/safety.rs`, `domains/robot/safety-core/src/actuation.rs`, `domains/robot/robot/src/motor.rs`, `crates/core/ipc/src/cap.rs`
+Source: `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/safety-core/src/actuation.rs`, `crates/domains/robot/robot/src/motor.rs`, `crates/core/ipc/src/cap.rs`
 
 Two mechanisms apply a level, and neither replaces the other.
 
 ### Speed ceiling at the motor write
 
-`motor_envelope(speed_l, speed_r)` in `domains/robot/behavior/src/safety.rs`
+`motor_envelope(speed_l, speed_r)` in `crates/domains/robot/behavior/src/safety.rs`
 returns the permitted pair. In order: an active emergency stop returns
 `(0, 0)`; the per-robot-type cap applies (`SAFETY_WHEELED_MAX_SPEED_PCT` for
 wheeled and Ackermann robots; other types pass through at 100 and have their own
@@ -135,8 +135,8 @@ The composed envelope is described in [motor-envelope.md](motor-envelope.md).
 
 The envelope is applied by `rt_motor_task` and, more importantly, by the
 actuation gate installed into the motor layer at boot
-(`domains/robot/safety-core/src/actuation.rs`, `set_motor_gate` in
-`domains/robot/robot/src/motor.rs`). `motor_set` is where the duty is written,
+(`crates/domains/robot/safety-core/src/actuation.rs`, `set_motor_gate` in
+`crates/domains/robot/robot/src/motor.rs`). `motor_set` is where the duty is written,
 so every caller crosses the gate: the control task, a ring-3 syscall, a
 driver server. Until the kernel installs a gate, the gate answers 0.
 
@@ -254,7 +254,7 @@ level and records its changes.
 
 ## Limitations
 
-Source: `domains/robot/degrade-policy/src/lib.rs`, `crates/core/ipc/src/cap.rs`
+Source: `crates/domains/robot/degrade-policy/src/lib.rs`, `crates/core/ipc/src/cap.rs`
 
 * The 70 % and 30 % ceilings are chosen values. No stopping-distance model and
   no measurement supports them, and the kernel does not know a robot's mass,

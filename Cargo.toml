@@ -416,9 +416,9 @@ members = [
     "crates/fs",
     "crates/net/stack",
     "crates/core/ipc",
-    "domains/robot/robot",
+    "crates/domains/robot/robot",
     "crates/core/recovery",
-    "domains/robot/bench",
+    "crates/domains/robot/bench",
     "crates/drivers/camera",
     "crates/drivers/display",
     "crates/drivers/fb",
@@ -430,18 +430,18 @@ members = [
     # that joins azos_energy::thermal to a board's sensor and clock.
     "crates/drivers/firmware",
     "crates/drivers/thermal",
-    "domains/robot/behavior",
+    "crates/domains/robot/behavior",
     "crates/core/channel",
     "crates/core/rings",
     "crates/core/bytepipe",
     "crates/core/hv",
     "crates/lib/control/ahrs",
     "crates/drivers/gps",
-    "domains/robot/flight",
+    "crates/domains/robot/flight",
     # Pure no_std drone math (D04 trig + wind), host-tested via flight-math-tests.
     "crates/lib/control/flight-math",
-    "domains/robot/telemetry",
-    "domains/robot/nav",
+    "crates/domains/robot/telemetry",
+    "crates/domains/robot/nav",
     "crates/core/libsys",
     "crates/core/ota",
     "crates/core/crypto",
@@ -490,10 +490,10 @@ members = [
     # Degrade taxonomy + speed-ceiling mapping. Dep-free leaf crate;
     # owned here so both ipc (TCB) and behavior (safety domain) can depend on it
     # without putting motor policy in the TCB.
-    "domains/robot/degrade-policy",
+    "crates/domains/robot/degrade-policy",
     # The actuation safety path (gate, e-stop seams, rt-motor,
     # sys-wdt, flight-ctrl, I-13, WDT feed), out of the kernel composition root.
-    "domains/robot/safety-core",
+    "crates/domains/robot/safety-core",
     # Wave 11 (DOMAIN): the actuation authority every domain shares (e-stop
     # latch, release authority, flight recorder, sys-wdt), out of the robot
     # crates so a non-robot image keeps it.
@@ -558,7 +558,7 @@ azos_syscall = { path = "crates/core/syscall" }
 azos_fs = { path = "crates/fs" }
 azos_net = { path = "crates/net/stack" }
 azos_ipc = { path = "crates/core/ipc" }
-azos_robot = { path = "domains/robot/robot" }
+azos_robot = { path = "crates/domains/robot/robot" }
 azos_recovery = { path = "crates/core/recovery" }
 azos_camera = { path = "crates/drivers/camera" }
 azos_display = { path = "crates/drivers/display" }
@@ -570,17 +570,17 @@ azos_dtb      = { path = "crates/drivers/dtb" }
 azos_firmware = { path = "crates/drivers/firmware" }
 azos_thermal  = { path = "crates/drivers/thermal" }
 azos_soc      = { path = "crates/drivers/soc" }
-azos_behavior = { path = "domains/robot/behavior" }
+azos_behavior = { path = "crates/domains/robot/behavior" }
 azos_channel  = { path = "crates/core/channel" }
 azos_rings    = { path = "crates/core/rings" }
 azos_bytepipe = { path = "crates/core/bytepipe" }
 azos_hv       = { path = "crates/core/hv" }
 azos_ahrs     = { path = "crates/lib/control/ahrs" }
 azos_gps       = { path = "crates/drivers/gps" }
-azos_flight    = { path = "domains/robot/flight" }
+azos_flight    = { path = "crates/domains/robot/flight" }
 azos_flight_math = { path = "crates/lib/control/flight-math" }
-azos_telemetry = { path = "domains/robot/telemetry" }
-azos_nav       = { path = "domains/robot/nav" }
+azos_telemetry = { path = "crates/domains/robot/telemetry" }
+azos_nav       = { path = "crates/domains/robot/nav" }
 azos_libsys    = { path = "crates/core/libsys" }
 azos_ota       = { path = "crates/core/ota" }
 azos_scsi      = { path = "crates/drivers/scsi" }
@@ -604,7 +604,7 @@ azos_arch_aarch64 = { path = "arch/aarch64" }
 azos_cam_ring      = { path = "crates/drivers/cam-ring" }
 azos_multi_stream  = { path = "crates/net/multi-stream" }
 azos_limits        = { path = "crates/core/limits" }
-azos_degrade_policy = { path = "domains/robot/degrade-policy" }
+azos_degrade_policy = { path = "crates/domains/robot/degrade-policy" }
 azos_actuation = { path = "crates/core/actuation" }
 azos_pci    = { path = "crates/drivers/pci" }
 azos_nvme   = { path = "crates/drivers/nvme" }

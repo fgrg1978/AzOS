@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// which hid the divergence; on any topology with Aff1 != 0 the old decode
 /// returned a value >= 256, and every caller keying a fixed-size per-hart
 /// table by `hart_id()` — `crates/core/sync::preempt::slot()` (`SLOTS = 8`),
-/// `domains/robot/safety-core::txn`/`watchdog`, `crates/core/ipc::fast_ipc`/`trace`,
+/// `crates/domains/robot/safety-core::txn`/`watchdog`, `crates/core/ipc::fast_ipc`/`trace`,
 /// `crates/core/syscall::dispatch`, `kernel::panic` — silently fell outside the
 /// table's range on that hart (`preempt::slot()` returns `None`, i.e.
 /// preemption control OFF; the others index out of range or misfile the

@@ -12,7 +12,7 @@
 # target has to be installed. RUSTFLAGS is set only when the ISA has baseline
 # flags: an empty one would override riscv64's build.rustflags.
 # CHECK_PRESET picks the gate cell: generic (the default, the image the gate
-# is about) or robot (the robot worked example, which links domains/robot/).
+# is about) or robot (the robot worked example, which links crates/domains/robot/).
 ARCH ?= riscv64
 CHECK_PRESET ?= generic
 CHECK_DEFCONFIG_riscv64 := config/defconfigs/$(CHECK_PRESET)-sbc-riscv64-dev+qemu+linux+gui.config

@@ -7,7 +7,7 @@
 
 /// Sensor state snapshot, as returned by `SYS_SENSOR_READ`.
 ///
-/// Layout chosen to match the kernel-side `domains/robot/behavior/src/types.rs`
+/// Layout chosen to match the kernel-side `crates/domains/robot/behavior/src/types.rs`
 /// `SensorState` so that the cross-crate copy is a `*src` deref.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(C)]

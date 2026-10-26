@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the RRT* planner in domains/robot/flight/src/path3d.rs. Excluded from the kernel workspace. Run with: cd tests/host/flight-tests && cargo test"
+description = "Host-side tests for the RRT* planner in crates/domains/robot/flight/src/path3d.rs. Excluded from the kernel workspace. Run with: cd tests/host/flight-tests && cargo test"
 
 # Its own workspace root, like sync-tests: without this, cargo walks up to the
 # kernel manifest and refuses to build a package listed in neither `members`

@@ -98,7 +98,7 @@ releases yet. The ABI crate keeps its own file,
     (`crates/core/linux-abi`, `crates/core/syscall/src/linux.rs`,
     `userspace/lib/linux_rt`); Linux driver glue (`crates/drivers/lx/`).
   - **Other kernels and domains:** AzOS-micro for parts without an MMU
-    (`micro/`); the robot domain (`domains/robot/`).
+    (`micro/`); the robot domain (`crates/domains/robot/`).
   - **Build and tests:** the Kconfig tree, presets and defconfigs (`Kconfig`,
     `config/`), the Makefile split under `mk/`, build, check and signing tools
     (`tools/`), host test crates (`tests/host/`), fuzz targets (`tests/fuzz/`)

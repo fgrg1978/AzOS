@@ -1261,7 +1261,7 @@ mod sbus_decoder {
     }
 
     /// **The failsafe bit, both ways.** This is the bit the whole RC-link-loss
-    /// chain turns on: `domains/robot/safety-core/src/flight_ctrl.rs`'s flight loop passes the failsafe
+    /// chain turns on: `crates/domains/robot/safety-core/src/flight_ctrl.rs`'s flight loop passes the failsafe
     /// bool to `rc_frame_is_fresh_input`, which decides whether the frame
     /// refreshes `CH_RC_INPUT` and therefore whether `rc_age` ever grows.
     /// A decoder that reads bit 3 as always-clear makes the link look healthy

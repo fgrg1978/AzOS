@@ -34,7 +34,7 @@ neither linked nor installed and a motor op goes straight to the motor layer.
 The kernel's own motor writes (the real-time motor task, the PID loop) are not
 ring-3 ops and do not pass through it; they are recorded after the write, on a
 change of duty, at most four records per wheel per second
-(`record_motor_change`, `domains/robot/safety-core/src/actuation.rs`). Neither
+(`record_motor_change`, `crates/domains/robot/safety-core/src/actuation.rs`). Neither
 does the I/O ring's `OP_MOTOR_SPEED` entry (`ioring_ops::motor_wheel`): it calls
 the motor layer directly, so the motor gate, the halt rule and the speed
 envelope apply to it, but not the write-ahead record, the hold, the deadline

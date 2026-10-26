@@ -38,7 +38,7 @@ use std::time::Instant;
 // Pull the same brain_protocol source the kernel ships, via #[path].
 // Mirrors the pattern in property.rs.
 #[allow(dead_code, unused_imports, clippy::all)]
-#[path = "../../../../domains/robot/behavior/src/brain_protocol.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/brain_protocol.rs"]
 mod brain_protocol_src;
 
 // ── Microbench primitives ────────────────────────────────────────────────────

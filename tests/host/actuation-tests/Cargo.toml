@@ -39,7 +39,7 @@ azos_crypto = { path = "../../../crates/core/crypto" }
 ed25519-dalek = { version = "2", default-features = false, features = ["zeroize"] }
 # Real, a dependency-free leaf: the degrade policy's speed ceilings, which the
 # gate's envelope ceilings are pinned to (src/b4.rs).
-azos_degrade_policy = { path = "../../../domains/robot/degrade-policy" }
+azos_degrade_policy = { path = "../../../crates/domains/robot/degrade-policy" }
 # Real: the receipt of a refusal is one of its records.
 azos_decision = { path = "../../../crates/core/decision", features = ["on", "durable"] }
 

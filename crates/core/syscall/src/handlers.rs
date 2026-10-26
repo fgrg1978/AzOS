@@ -75,10 +75,10 @@ azos_common::ro_hook! {
     ///
     /// # Why a hook and not a call
     ///
-    /// The flight recorder lives in `domains/robot/behavior` and this crate does not
+    /// The flight recorder lives in `crates/domains/robot/behavior` and this crate does not
     /// depend on it — `behavior` is above `syscall` in the graph, and the edge
     /// would close a cycle. Same seam, same reason, as `MotorGate` in
-    /// `domains/robot/robot` and `FileOps` for the TCB split: the kernel is the one place
+    /// `crates/domains/robot/robot` and `FileOps` for the TCB split: the kernel is the one place
     /// that can see both sides, so it is the place that wires them.
     ///
     /// `None` until `set_cap_deny_recorder` runs, which makes the pre-boot window
@@ -95,7 +95,7 @@ azos_common::ro_hook! {
     /// boot.
     ///
     /// Same seam and the same reason as `CAP_DENY_RECORDER` above: latching the
-    /// e-stop lives in `domains/robot/behavior`, disarming the ESC in `crates/drivers/rc-esc`,
+    /// e-stop lives in `crates/domains/robot/behavior`, disarming the ESC in `crates/drivers/rc-esc`,
     /// and the durable record in the flight recorder — all above this crate in the
     /// graph, so the kernel is the one place that can see both sides.
     ///

@@ -627,7 +627,7 @@ IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
 # a feature itself (tools/lint/feature_source_lint.py). `-p azos_kernel`, here and
 # in every kernel recipe below: without it cargo builds every workspace
 # member, and a Generic build then compiled the robot crates anyway
-# (domains/robot/*, as members), with none of the features the kernel would
+# (crates/domains/robot/*, as members), with none of the features the kernel would
 # have given them.
 #
 # The development QEMU kernels (`build`, `build-rvv`, `build-pci` and the

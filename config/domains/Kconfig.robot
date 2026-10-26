@@ -20,7 +20,7 @@ choice
     default ROBOT_NONE
     help
       The robot type the safety envelope starts with
-      (domains/robot/behavior/src/safety.rs, ROBOT_TYPE; the value comes
+      (crates/domains/robot/behavior/src/safety.rs, ROBOT_TYPE; the value comes
       from ROBOT_TYPE_ID). It selects the type-specific checks
       `safety_check` runs every tick and the motor cap `motor_envelope`
       applies. No production code changes the type at run time today:
@@ -76,7 +76,7 @@ config ROBOT_TYPE_ID
     default 0
     help
       The robot type as the safety layer numbers it (ROBOT_TYPE_* in
-      domains/robot/behavior/src/safety.rs and brain_protocol.rs):
+      crates/domains/robot/behavior/src/safety.rs and brain_protocol.rs):
       0 wheeled, 1 drone, 2 humanoid, 3 ackermann. No prompt: derived from
       the choice above, and 0 in every other domain, so a non-robot image
       keeps the starting type every image had before.
@@ -92,7 +92,7 @@ config SAFETY_COMMS_TIMEOUT_S
     range 1 600
     default 5
     help
-      domains/robot/behavior/src/safety.rs, SAFETY_COMMS_TIMEOUT_TICKS =
+      crates/domains/robot/behavior/src/safety.rs, SAFETY_COMMS_TIMEOUT_TICKS =
       TIMER_FREQ x this, so the time is the same on every board (a raw
       tick count was 5 s on QEMU, 7.5 s on the VF2, 1.25 s on the K1).
       No safety check reads the wheeled comms timeout today: the wheeled
@@ -104,7 +104,7 @@ config SAFETY_DRONE_COMMS_TIMEOUT_S
     range 1 600
     default 3
     help
-      domains/robot/behavior/src/safety.rs,
+      crates/domains/robot/behavior/src/safety.rs,
       SAFETY_DRONE_COMMS_TIMEOUT_TICKS = TIMER_FREQ x this. `check_drone`
       returns ReturnToLaunch (CommsTimeout) when the last brain command is
       older than this. Wave 11: was SAFETY_DRONE_COMMS_TIMEOUT_TICKS, read
@@ -286,7 +286,7 @@ config RC_INPUT
     help
       Wires the RC receiver (crates/drivers/rc-esc/src/rc.rs) into the
       behavior loop (kernel/src/tasks/rc_safety.rs; the policy is
-      domains/robot/behavior/src/rc_link.rs): a receiver failsafe or a link
+      crates/domains/robot/behavior/src/rc_link.rs): a receiver failsafe or a link
       silent for RC_LINK_TIMEOUT_MS latches the e-stop (when
       RC_FAILSAFE_ESTOP), the kill switch latches it on every robot type,
       and with the mode switch high the sticks drive: the arbiter ranks them
@@ -313,7 +313,7 @@ config RC_FAILSAFE_ESTOP
       On a ground robot, stopping is the safe reaction to losing the
       transmitter. On a drone, stopping the motors drops it: there the
       flight controller's own reaction (return to launch,
-      domains/robot/flight/src/failsafe.rs) is the right one, so the
+      crates/domains/robot/flight/src/failsafe.rs) is the right one, so the
       default is n for ROBOT_DRONE. The kill switch latches either way.
       No cost either way.
 
@@ -399,7 +399,7 @@ config GEOFENCE
     default y if USE_ROBOT
     default n
     help
-      Arms the circular geofence (domains/robot/behavior/src/safety.rs, E03)
+      Arms the circular geofence (crates/domains/robot/behavior/src/safety.rs, E03)
       at the first trusted GPS fix of the boot, with radius
       GEOFENCE_RADIUS_M. Leaving it latches the e-stop with a durable
       SAFETY_ESTOP record (action 8, detail = metres beyond the fence), and

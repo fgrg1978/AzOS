@@ -128,7 +128,7 @@ pub mod gpio {
         LEVEL[pin as usize].load(Ordering::Acquire) as i32
     }
 
-    /// `motor_stop_panic`'s (`domains/robot/robot/src/motor.rs`) lock-free write.
+    /// `motor_stop_panic`'s (`crates/domains/robot/robot/src/motor.rs`) lock-free write.
     /// No real concurrency concern on a host stand-in with no interrupts —
     /// same store `gpio_write` does.
     pub fn gpio_write_panic(pin: u32, val: u32) -> i32 {
@@ -159,7 +159,7 @@ pub mod pwm {
     }
     pub fn pwm_duty_ns() -> u32 { DUTY.load(Ordering::Relaxed) }
 
-    /// Per-channel duty percent, for `domains/robot/robot/src/motor.rs` (pulled in
+    /// Per-channel duty percent, for `crates/domains/robot/robot/src/motor.rs` (pulled in
     /// by the motor-gate/record suite) — separate from the single-channel
     /// `DUTY`/`pwm_set_duty` above, which `payload.rs`'s gripper already
     /// owns and asserts on in nanoseconds. Motors need one duty per PWM
@@ -189,7 +189,7 @@ pub mod pwm {
         Some(DUTY_PCT[ch as usize].load(Ordering::Relaxed))
     }
 
-    /// `motor_stop_panic`'s (`domains/robot/robot/src/motor.rs`) lock-free write.
+    /// `motor_stop_panic`'s (`crates/domains/robot/robot/src/motor.rs`) lock-free write.
     /// No real concurrency concern on a host stand-in with no interrupts —
     /// same store `pwm_set_duty_pct_reporting` does.
     pub fn pwm_set_duty_pct_panic(ch: u32, pct: u32) -> i32 {

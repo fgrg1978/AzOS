@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The emergency-stop latch, its release authority and safe mode.
 //!
-//! Moved out of `domains/robot/behavior/src/safety.rs` (wave 11, DOMAIN): the
+//! Moved out of `crates/domains/robot/behavior/src/safety.rs` (wave 11, DOMAIN): the
 //! latch is cross-cutting. Every domain with an actuator needs it, and the
 //! paths that arm it are not robot code: the ring-3 `motor.estop`, the
 //! GPIO kill switch and the stack/timer checks of `sys_wdt`, and the boot
@@ -465,13 +465,13 @@ fn operator_pubkey() -> Option<[u8; 32]> {
 /// BEFORE it moves this atomic (see that function's doc for the exact
 /// order), and [`release_nonce_floor_seed`] raises it at boot from
 /// `logger::replay_boot`'s scan of the previous session(s)' record — see
-/// `domains/robot/safety-core::boot_latch` for the call, made before
+/// `crates/domains/robot/safety-core::boot_latch` for the call, made before
 /// `operator_authority_init` can accept a key.
 static RELEASE_NONCE_FLOOR: AtomicU64 = AtomicU64::new(0);
 
 /// Raise [`RELEASE_NONCE_FLOOR`] to at least `floor`, never lowering it.
 ///
-/// Called once at boot (`domains/robot/safety-core::boot_latch::seed_release_
+/// Called once at boot (`crates/domains/robot/safety-core::boot_latch::seed_release_
 /// nonce_floor`), before `operator_authority_init` can accept a key or a
 /// brain frame can reach [`verify_operator_release`] — see
 /// [`RELEASE_NONCE_FLOOR`]'s own doc for why persistence, not

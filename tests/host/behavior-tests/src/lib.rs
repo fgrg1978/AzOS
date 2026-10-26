@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host-side tests for the brain wire protocol.
 //!
-//! **WHY this file and not the other 4100 lines of `domains/robot/behavior`.** These
+//! **WHY this file and not the other 4100 lines of `crates/domains/robot/behavior`.** These
 //! functions parse bytes that arrive over TCP from the brain server, which is
 //! a separate process on another machine — the same class as the DNS and NTP
 //! parsers, and the same consequence: with `panic = "abort"` a reachable panic
@@ -25,7 +25,7 @@ extern crate beh_test_drivers as azos_drv_sys;
 extern crate self as azos_behavior;
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/brain_protocol.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/brain_protocol.rs"]
 // Named for the file it is, not shortened: `remote.rs` — pulled in below —
 // refers to `crate::brain_protocol`, and a suite that renames a module makes
 // the code under test stop resolving against itself.
@@ -169,7 +169,7 @@ mod actuator {
 }
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/types.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/types.rs"]
 mod types;
 
 // `remote.rs` holds the bridge from a decoded `ActuatorCmd` to the behaviour
@@ -177,11 +177,11 @@ mod types;
 // real crate for the same reason as `types` and `safety` above: the code under
 // test is the code the kernel ships.
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/remote.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/remote.rs"]
 mod remote;
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/safety.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/safety.rs"]
 mod safety;
 
 // The e-stop latch, its release authority and safe mode moved out of
@@ -211,7 +211,7 @@ mod motor_stop_latch;
 mod operator_key_source;
 
 // ---------------------------------------------------------------------------
-// Subsumption arbiter (`domains/robot/behavior/src/arbiter.rs`) and the layers +
+// Subsumption arbiter (`crates/domains/robot/behavior/src/arbiter.rs`) and the layers +
 // offline patrol it depends on (`layers.rs`, `offline.rs`) — pulled in by
 // `#[path]` for the same reason as `types`/`safety` above: the code under
 // test must be the code that ships, and the crate is `#![no_std]` so it
@@ -219,33 +219,33 @@ mod operator_key_source;
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/layers.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/layers.rs"]
 mod layers;
 
 // Pulled in 2026-09-11, when `payload_cam_trigger`'s 50 ms busy-wait turned
 // out to be reachable per-frame from a remote peer. It needs the shim's GPIO.
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/payload.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/payload.rs"]
 mod payload;
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/offline.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/offline.rs"]
 mod offline;
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/arbiter.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/arbiter.rs"]
 mod arbiter;
 
 // The producer side of the geofence: `update_gps`, the unit conversion and the
 // staleness rule `snapshot` applies before `safety.rs` ever sees a fix.
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/sensor_bus.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/sensor_bus.rs"]
 mod sensor_bus;
 
 // The ring-3 ML verdict policy (what L1 gets when the ML service answers,
 // is late, is gone, or was never started).
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/ml_link.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/ml_link.rs"]
 mod ml_link;
 
 // The behavior loop's call of the `Infer` interface: the kernel's file, with no
@@ -375,7 +375,7 @@ mod envelope {
 }
 
 // ---------------------------------------------------------------------------
-// PKT_MODE e-stop reset gate (`domains/robot/behavior/src/brain_protocol.rs`,
+// PKT_MODE e-stop reset gate (`crates/domains/robot/behavior/src/brain_protocol.rs`,
 // `MODE_ID_ESTOP_RESET` / `mode_estop_record` / `mode_degrade_record`).
 //
 // Owner decision, 2026-09-06: `PKT_ESTOP` only ever ARMS (grep it), so
@@ -535,7 +535,7 @@ mod mode_reset {
 }
 
 // ---------------------------------------------------------------------------
-// E03 geofence (`domains/robot/behavior/src/safety.rs`, `check_geofence_from_gps`
+// E03 geofence (`crates/domains/robot/behavior/src/safety.rs`, `check_geofence_from_gps`
 // down to `GeofenceStatus`).
 //
 // The first tests inject a fix directly into `SensorState` and pin the math
@@ -1038,7 +1038,7 @@ mod imu_incoherence {
 }
 
 // ---------------------------------------------------------------------------
-// Subsumption arbiter (`domains/robot/behavior/src/arbiter.rs`) — the L0
+// Subsumption arbiter (`crates/domains/robot/behavior/src/arbiter.rs`) — the L0
 // always-runs / always-applied / cannot-be-disabled claim.
 //
 // A claim scanner flagged the three "L0: always runs, cannot be disabled"
@@ -1228,7 +1228,7 @@ mod arbitration {
 
 // ---------------------------------------------------------------------------
 // Flight recorder (`crates/core/actuation/src/logger.rs`; moved from
-// `domains/robot/behavior/src/logger.rs` in wave 11).
+// `crates/domains/robot/behavior/src/logger.rs` in wave 11).
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
@@ -2967,7 +2967,7 @@ mod payload_refuses_while_latched {
 
     /// The seam every e-stop source's `latch_and_stop` calls must physically
     /// stop an ALREADY-RUNNING pump, not just refuse the next command.
-    /// `domains/robot/safety-core::actuation::latch_and_stop` itself is not pulled
+    /// `crates/domains/robot/safety-core::actuation::latch_and_stop` itself is not pulled
     /// into this crate, so this exercises the pump-stop half it calls
     /// directly, alongside `estop_activate` standing in for the latch half.
     #[test]
@@ -3034,7 +3034,7 @@ mod refused_estop_clears_are_metered {
 // instant an operator clears it. That must stay a stop (a stop is never
 // refused), but the record wrote action 4, shared with a refused clear, and
 // `detail = 0`: it could not say which program did it, nor that it undid a
-// clear. `ring3_estop` in `domains/robot/safety-core/src/actuation.rs` now writes
+// clear. `ring3_estop` in `crates/domains/robot/safety-core/src/actuation.rs` now writes
 // what `safety::ring3_estop_record` returns.
 #[cfg(test)]
 mod ring3_relatch_is_attributed {
@@ -3747,7 +3747,7 @@ mod remote_actuation {
 // transmit path uses for that; the socket and the clock are injected.
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/brain_tx.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/brain_tx.rs"]
 mod brain_tx;
 
 // ── C1: the camera connection's sender policy ─────────────────────────────
@@ -3758,7 +3758,7 @@ mod brain_tx;
 // sits at the crate root.
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/camera_tx.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/camera_tx.rs"]
 mod camera_tx;
 
 #[cfg(test)]
@@ -4169,7 +4169,7 @@ mod brain_tx_queue {
 // bounded, rate-limited record.
 // ═══════════════════════════════════════════════════════════════════════
 //
-// `domains/robot/robot/src/motor.rs` (the gate/record hooks) is the code under
+// `crates/domains/robot/robot/src/motor.rs` (the gate/record hooks) is the code under
 // test, not a reimplementation — but unlike every other `#[path]`-pulled
 // module in this file, it cannot be pulled directly into THIS crate: it
 // needs `SpinLock::get_mut_unchecked` (`motor_stop_panic`'s panic-path
@@ -4216,7 +4216,7 @@ mod motor_gate_and_record {
     /// `None` arm returned `speed_pct` unchanged: a caller reaching
     /// `motor_set_reporting` before boot finished installing the gate got
     /// full authority, not none. Revert `gate_speed`'s `None => 0`
-    /// (`domains/robot/robot/src/motor.rs`) to `None => speed_pct` and this fails
+    /// (`crates/domains/robot/robot/src/motor.rs`) to `None => speed_pct` and this fails
     /// — `applied` comes back `Some(77)`.
     #[test]
     fn no_gate_installed_clamps_every_speed_to_zero_not_passthrough() {
@@ -4314,8 +4314,8 @@ mod motor_actuation_reaches_the_flight_recorder {
     //! Q1.3's other half: once a change is admitted, it must actually reach
     //! the bounded ring and — through the watchdog's EXISTING periodic
     //! flush — disk, with no second durable path invented for it.
-    //! `domains/robot/safety-core/src/actuation.rs`'s `record_motor_change` hook
-    //! calls exactly `log_actuator_cmd`, after `domains/robot/robot`'s own
+    //! `crates/domains/robot/safety-core/src/actuation.rs`'s `record_motor_change` hook
+    //! calls exactly `log_actuator_cmd`, after `crates/domains/robot/robot`'s own
     //! on-change filter (`motor_gate_and_record`, above); this suite
     //! exercises `log_actuator_cmd` itself, the function both that hook and
     //! any future caller go through.
@@ -4373,16 +4373,16 @@ mod motor_actuation_reaches_the_flight_recorder {
 }
 
 // ---------------------------------------------------------------------------
-// Entropy-refusal policy (`domains/robot/behavior/src/encrypt_link_policy.rs`),
+// Entropy-refusal policy (`crates/domains/robot/behavior/src/encrypt_link_policy.rs`),
 // U09-8 / owner decision 2026-09-26 V1.2.
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/encrypt_link_policy.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/encrypt_link_policy.rs"]
 mod encrypt_link_policy;
 
 /// RED test for "unseeded ⇒ no session keys". This is the exact boolean
-/// `domains/robot/behavior/src/encrypt_link.rs`'s `derive_ephemeral_priv` gates on
+/// `crates/domains/robot/behavior/src/encrypt_link.rs`'s `derive_ephemeral_priv` gates on
 /// before deriving anything — pulled in by `#[path]` so this is the code
 /// under test, not a restatement of it.
 #[cfg(test)]
@@ -4651,11 +4651,11 @@ mod geofence_home_arm {
 }
 
 // ---------------------------------------------------------------------------
-// Wave 15: the RC receiver's safety policy (`domains/robot/behavior/src/rc_link.rs`).
+// Wave 15: the RC receiver's safety policy (`crates/domains/robot/behavior/src/rc_link.rs`).
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/behavior/src/rc_link.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/rc_link.rs"]
 mod rc_link;
 
 #[cfg(test)]

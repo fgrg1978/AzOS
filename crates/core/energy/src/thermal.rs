@@ -39,7 +39,7 @@
 //!
 //! What the clock cannot do, the system declines to do. [`Thermal::settle`]
 //! turns the situation into a level of the degrade vocabulary
-//! (`DEGRADE_LEVEL_*` of `domains/robot/degrade-policy`, the signed
+//! (`DEGRADE_LEVEL_*` of `crates/domains/robot/degrade-policy`, the signed
 //! topology's `Envelope`) that the power service applies:
 //!
 //! | Situation | Level |

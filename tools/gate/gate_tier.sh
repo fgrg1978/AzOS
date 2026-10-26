@@ -47,7 +47,7 @@ fi
 # the x86_64 skeleton by exit status, as the gate's "x86_64: make check" row.
 noise='^warning: [A-Za-z0-9_-]+@[0-9]|prod pubkey|packages contain code that will be rejected by a future version of Rust: core v0\.0\.0'
 # Each ISA twice: the generic gate cell and the robot one (the robot crates
-# under domains/robot/ and the kernel's `use-robot` code).
+# under crates/domains/robot/ and the kernel's `use-robot` code).
 if [ "$tier" = n0 ]; then
     for arch in riscv64 aarch64 x86_64 riscv64:robot aarch64:robot x86_64:robot; do
         preset=generic

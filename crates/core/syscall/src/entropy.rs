@@ -36,7 +36,7 @@
 //! writes the same `SAFETY_ENTROPY_UNSEEDED_REFUSED` record the handshake
 //! writes, durably. Every later refusal only counts: a ring-3 loop asking an
 //! unseeded pool must not be a synchronous disk write per call (the ring-3
-//! e-stop's latch in `domains/robot/safety-core/src/actuation.rs` exists for the
+//! e-stop's latch in `crates/domains/robot/safety-core/src/actuation.rs` exists for the
 //! same reason).
 //!
 //! ## Why hooks and not a direct call

@@ -1792,7 +1792,7 @@ mod builder_tests {
     ///
     /// The list is restated here rather than imported because
     /// `crates/core/topology` parses static configuration and must not depend on
-    /// `domains/robot/robot` to do it. The source of truth is `robot::robot_init`:
+    /// `crates/domains/robot/robot` to do it. The source of truth is `robot::robot_init`:
     /// motor 0 is PWM channel 0 with direction pins 0 and 1, motor 1 is
     /// channel 1 with pins 2 and 3. If that wiring changes, this list is one
     /// of the places that has to change with it — which is the cost of the

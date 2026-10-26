@@ -9,7 +9,7 @@ constraints that make it safe, and which architectures it covers.
 
 ## Coverage
 
-Source: `domains/robot/safety-core/src/txn.rs`, `kernel/src/entry/riscv64/trap.rs`, `kernel/src/entry/aarch64/trap.rs`, `kernel/src/entry/x86_64/trap.rs`
+Source: `crates/domains/robot/safety-core/src/txn.rs`, `kernel/src/entry/riscv64/trap.rs`, `kernel/src/entry/aarch64/trap.rs`, `kernel/src/entry/x86_64/trap.rs`
 
 The hook, `txn_try_rollback(recoverable) -> Option<(sp, pc)>`, has no ISA code:
 each ISA's trap entry decodes whether the fault is in the whitelist and was
@@ -36,7 +36,7 @@ a compile-time constant `false` and the trap handler is unchanged.
 
 ## Mechanism
 
-Source: `domains/robot/safety-core/src/txn.rs`, `domains/robot/safety-core/src/rt_motor.rs`, `domains/robot/robot/src/lib.rs`
+Source: `crates/domains/robot/safety-core/src/txn.rs`, `crates/domains/robot/safety-core/src/rt_motor.rs`, `crates/domains/robot/robot/src/lib.rs`
 
 **Checkpoint.** One slot holds the armed task's id, a stack pointer and a
 program counter. It belongs to the task, not to a CPU: a fault of any other
@@ -60,7 +60,7 @@ restart: a `[TXN]` console line and a `SAFETY_TXN_ROLLBACK` record, written
 from task context (the trap writes none).
 
 **Stopping.** `motor_cmd_zero` is one atomic `fetch_max` of a timestamp
-(`MOTOR_ZERO_AT`, in `domains/robot/robot/src/lib.rs`); a command published after it overrides it, and the reader
+(`MOTOR_ZERO_AT`, in `crates/domains/robot/robot/src/lib.rs`); a command published after it overrides it, and the reader
 (`motor_cmd_read`) resolves the two. It takes no lock, so it is safe from trap
 context on any hart. The stop takes effect on the next control tick of the
 restarted task. A duty already written to the PWM peripheral by an earlier
@@ -69,7 +69,7 @@ outputs: the guarantee is about the command channel, not about the actuator.
 
 ## The four constraints
 
-Source: `domains/robot/safety-core/src/txn.rs`
+Source: `crates/domains/robot/safety-core/src/txn.rs`
 
 **1. A conservative cause whitelist.** Only misaligned load and misaligned store
 (riscv64 `TRAP_LOAD_MISALIGNED`, `TRAP_STORE_MISALIGNED`; aarch64 the EL1
@@ -109,7 +109,7 @@ in the armed region.
 
 ## Limitations
 
-Source: `domains/robot/safety-core/src/txn.rs`, `domains/robot/safety-core/src/rt_motor.rs`
+Source: `crates/domains/robot/safety-core/src/txn.rs`, `crates/domains/robot/safety-core/src/rt_motor.rs`
 
 * Restarting the task is coarser than resuming the tick: locals of the task
   (its safe-mode flag, its edge-trigger state) are lost.

@@ -22,7 +22,7 @@ The rules apply to:
   `crates/core/topology`;
 - the architecture crates (`arch/facade`, `arch/api` and the
   per-ISA `arch/*` crates);
-- `domains/robot/behavior`.
+- `crates/domains/robot/behavior`.
 
 Other crates (drivers, file systems, networking, the ML runtime) are
 encouraged to follow them. Nothing enforces it there.

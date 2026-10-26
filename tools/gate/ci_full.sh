@@ -121,7 +121,7 @@ echo ""
 
 # ── 3. Protocol sync ───────────────────────────────────────────────
 echo "[3/3] Protocol sync"
-RUST_PROTO="$OS_DIR/domains/robot/behavior/src/brain_protocol.rs"
+RUST_PROTO="$OS_DIR/crates/domains/robot/behavior/src/brain_protocol.rs"
 PY_PROTO="$BRAIN_DIR/protocol.py"
 
 if [ -f "$RUST_PROTO" ] && [ -f "$PY_PROTO" ]; then

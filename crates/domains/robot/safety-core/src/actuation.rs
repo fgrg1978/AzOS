@@ -11,7 +11,7 @@ use azos_sync::SpinLock;
 // Motor actuation record — Q1.3, 2026-09-25.
 // ---------------------------------------------------------------------------
 //
-// `domains/robot/robot`'s `motor_set_reporting` already calls the hook installed
+// `crates/domains/robot/robot`'s `motor_set_reporting` already calls the hook installed
 // below only on a CHANGE of (id, direction, effective speed) — a held
 // command is naturally one call, not one per control tick. That alone is
 // not a rate limit: a ramping PID output can change the duty every tick
@@ -217,11 +217,11 @@ pub fn install() {
     kprintln!("[SAFETY] actuation gate armed (estop + envelope on every motor write)");
 
     // Q1.3: every ADMITTED actuation command gets a bounded, rate-limited
-    // record. `domains/robot/robot` already calls this only on a change of (id,
+    // record. `crates/domains/robot/robot` already calls this only on a change of (id,
     // direction, effective speed); `admit_motor_record` above bounds the
     // rest (a ramping PID output can still change every tick).
     //
-    // `LOG_EVT_ACTUATOR_CMD` / `log_actuator_cmd` (`domains/robot/behavior/src/
+    // `LOG_EVT_ACTUATOR_CMD` / `log_actuator_cmd` (`crates/domains/robot/behavior/src/
     // logger.rs`) already existed for exactly this shape with zero callers —
     // reused rather than adding a second event kind. `actuator_type` carries
     // the motor id, `ch0` the applied `MotorDir` discriminant (0 Forward, 1

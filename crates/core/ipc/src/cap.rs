@@ -69,7 +69,7 @@ use wcet_macro::wcet;
 // The level taxonomy is defined here, in the crate that holds the level state
 // and enforces containment at `CapTable::get`. The level -> speed-ceiling
 // mapping is motor policy and stays in the robot domain's dep-free leaf
-// `azos_degrade_policy` (domains/robot/degrade-policy), which declares the
+// `azos_degrade_policy` (crates/domains/robot/degrade-policy), which declares the
 // same five numbers for its own mapping; `azos_behavior::safety` asserts
 // at compile time that the two agree. Wave 11 (DOMAIN): until then this file
 // re-exported the levels and the speed ceilings from that leaf, so every image
@@ -4254,7 +4254,7 @@ mod tests {
 
     // ── `degrade_level_cap_pct` mapping tests ───────────────────────────────
     //
-    // These 6 tests have moved to domains/robot/degrade-policy/src/lib.rs where
+    // These 6 tests have moved to crates/domains/robot/degrade-policy/src/lib.rs where
     // they live next to the mapping function (level_cap_pct) and run via
     // `cargo test` from that crate's directory. The cap-tests host runner
     // no longer needs to cover them. Since wave 11 this file no longer

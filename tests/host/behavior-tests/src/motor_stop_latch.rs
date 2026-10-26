@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host tests for the motor stop latch (`domains/robot/robot/src/motor_cmd.rs`,
+//! Host tests for the motor stop latch (`crates/domains/robot/robot/src/motor_cmd.rs`,
 //! pulled in with `#[path]`, so this is the source the kernel links).
 //!
 //! Trap, fault and shutdown paths used to publish `(0, 0)` into the motor
@@ -9,7 +9,7 @@
 //! timestamp, and the reader resolves the command against it. These tests pin
 //! that resolution: what wins, and what the motor watchdog sees as the age.
 
-#[path = "../../../../domains/robot/robot/src/motor_cmd.rs"]
+#[path = "../../../../crates/domains/robot/robot/src/motor_cmd.rs"]
 mod motor_cmd;
 
 use motor_cmd::{age, resolve};

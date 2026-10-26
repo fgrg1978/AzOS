@@ -112,7 +112,7 @@ const ARP_REACHABLE_TICKS: u64 = 30 * azos_drv_sys::timebase::TIMER_FREQ;
 /// The ARP cache as a data structure, independent of the machine's live one.
 ///
 /// **Public so it can be measured and exercised without touching
-/// the ARP caches.** Until 2026-09-08 `domains/robot/bench/src/net.rs` benchmarked
+/// the ARP caches.** Until 2026-09-08 `crates/domains/robot/bench/src/net.rs` benchmarked
 /// `arp::insert` — the global — on every boot: 100 iterations x 5 repeats of
 /// `insert([10, 0, 2, i], TEST_MAC)` into a 16-entry LRU table, which wiped
 /// every real entry several times over and, at `i == 2`, replaced the SLIRP

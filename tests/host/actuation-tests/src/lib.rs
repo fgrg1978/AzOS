@@ -61,7 +61,7 @@ mod b4;
 mod envelope;
 #[cfg(test)]
 mod held;
-// I-13's rollback decision (`domains/robot/safety-core/src/txn_rule.rs`).
+// I-13's rollback decision (`crates/domains/robot/safety-core/src/txn_rule.rs`).
 #[cfg(test)]
 mod txn;
 

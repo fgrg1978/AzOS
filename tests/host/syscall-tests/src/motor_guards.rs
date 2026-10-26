@@ -15,7 +15,7 @@
 // * `estop` needs `WRITE` on the wheel used and is never contained.
 //
 // Included inside `mod handlers { .. }`. The real motor layer
-// (`domains/robot/robot/src/motor.rs`, `shims/robot`) runs under a halt query
+// (`crates/domains/robot/robot/src/motor.rs`, `shims/robot`) runs under a halt query
 // and a gate that read the test's e-stop latch together with the containment
 // level, the two conditions the kernel's `actuation_halt` and `actuation_gate`
 // answer on; that wiring is covered by the kernel build.

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host-side tests for the 3D RRT* path planner.
 //!
-//! `domains/robot/flight` as a whole does not build on the host — it pulls in AHRS,
+//! `crates/domains/robot/flight` as a whole does not build on the host — it pulls in AHRS,
 //! GPS and the driver layer — so the module under test is pulled in with
 //! `#[path]` and compiled unmodified against a shim for its single external
 //! dependency. The code exercised here is the code that ships.
@@ -16,23 +16,23 @@
 //! far the other had got — the same shared-table pollution that has broken
 //! tests in this tree before. A single sequential test is deterministic.
 
-#[path = "../../../../domains/robot/flight/src/path3d.rs"]
+#[path = "../../../../crates/domains/robot/flight/src/path3d.rs"]
 pub mod path3d;
 
 /// The failsafe chain, compiled unmodified — it names no external crate.
 ///
 /// It had no test at all until 2026-09-06: `check_failsafe` and
-/// `FailsafeAction` appear nowhere in the tree except `domains/robot/flight/src` and
+/// `FailsafeAction` appear nowhere in the tree except `crates/domains/robot/flight/src` and
 /// one kernel call site, so nothing exercised the failsafe logic of a flying
 /// machine on the host or in QEMU.
-#[path = "../../../../domains/robot/flight/src/failsafe.rs"]
+#[path = "../../../../crates/domains/robot/flight/src/failsafe.rs"]
 pub mod failsafe;
 
 /// The PID controller, compiled unmodified — it names no external crate,
-/// which is what makes it the ONE piece of `domains/robot/flight/src/lib.rs` this
+/// which is what makes it the ONE piece of `crates/domains/robot/flight/src/lib.rs` this
 /// crate can pull in directly (see that file's own doc for why the whole
 /// module cannot be).
-#[path = "../../../../domains/robot/flight/src/pid.rs"]
+#[path = "../../../../crates/domains/robot/flight/src/pid.rs"]
 pub mod pid;
 
 #[cfg(test)]

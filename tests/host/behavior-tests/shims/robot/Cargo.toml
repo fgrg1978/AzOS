@@ -8,7 +8,7 @@ description = "Host stand-in for azos_robot, used only by tests/host/behavior-te
 
 # Always on: this crate exists only for tests, so `motor.rs`'s
 # `clear_motor_gate_for_test`/`clear_motor_recorder_for_test`
-# (`#[cfg(any(test, feature = "test-util"))]` in `domains/robot/robot/src/
+# (`#[cfg(any(test, feature = "test-util"))]` in `crates/domains/robot/robot/src/
 # motor.rs`) must be reachable here even though `cargo test` never runs
 # directly ON this crate — it is an ordinary dependency of
 # `azos_behavior_tests`, compiled as a plain library, so `cfg(test)`

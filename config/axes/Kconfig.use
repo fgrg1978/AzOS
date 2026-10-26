@@ -17,7 +17,7 @@
 # changed by hand (wave 11).
 #
 # What each domain does:
-#   Only Robot links the robot crates under domains/robot/ (behavior and the
+#   Only Robot links the robot crates under crates/domains/robot/ (behavior and the
 #   brain link, safety-core, flight, the ESC and RC receiver drivers) plus the
 #   IMU / barometer / GPS drivers. Every domain links the shared actuation
 #   authority (crates/core/actuation: e-stop latch, signed release, flight

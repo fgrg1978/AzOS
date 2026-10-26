@@ -5,7 +5,7 @@
 //! This crate has **zero kernel dependencies** so it builds both for the
 //! workspace's `riscv64imac-unknown-none-elf` target (as part of the kernel)
 //! and for the developer host (where `flight-math-tests` runs its `cargo test`
-//! suite). Keeping the math here — rather than inside `domains/robot/flight`, which
+//! suite). Keeping the math here — rather than inside `crates/domains/robot/flight`, which
 //! pulls in `azos_drv_*` and is therefore not host-buildable — is what
 //! makes it unit-testable.
 //!

@@ -2746,7 +2746,7 @@ fi
 # programs of the image it boots, the optional crates and test-hook files of
 # its features, the files that print its markers): a row whose deps missed
 # its source was never picked for a change to it (the bench row and
-# domains/robot/bench). The row runs the tool's canaries first.
+# crates/domains/robot/bench). The row runs the tool's canaries first.
 printf "  %-26s" "gate rows manifest..."
 if grm_out="$(python3 "${REPO_ROOT}/tools/gate/gate_rows.py" --self-test 2>&1)" \
    && grm_out="$(python3 "${REPO_ROOT}/tools/gate/gate_rows.py" --check 2>&1)"; then
@@ -2862,7 +2862,7 @@ fi
 fi; ci_row_end
 
 # No forced recompile here any more. This line used to `touch` every .rs file
-# under crates/ domains/ kernel/ because "rustc only emits warnings when it
+# under the kernel source roots because "rustc only emits warnings when it
 # compiles": four unused-constant warnings once sat unnoticed on a warm cache.
 # The cargo this tree pins (nightly-2026-02-21) REPLAYS a fresh unit's stored
 # warnings on every build. Measured 2026-10-03 on this tree: an unused const
@@ -4158,9 +4158,9 @@ par "aarch64 network: TX batch canary" net_tx_batch_row "aarch64 network: TX bat
 # what was on disk. riscv64 has a gate row for this property (`safety: latch
 # survives reboot`, driven by a real brain-link peer + kill-switch GPIO); this
 # is its aarch64 twin, using `estop-latch-smoke`'s direct durable-write call
-# (`domains/robot/behavior::logger::log_safety_violation_durable`) instead of that
+# (`crates/domains/robot/behavior::logger::log_safety_violation_durable`) instead of that
 # whole apparatus — same on-disk record, same replay code, same ISA-neutral
-# `domains/robot/behavior`/`domains/robot/safety-core`, a smaller trigger.
+# `crates/domains/robot/behavior`/`crates/domains/robot/safety-core`, a smaller trigger.
 #
 # Two boots, ONE image (hermetic per boot — the SECOND boot reads what the
 # FIRST wrote, so reusing the image across the pair is the point, not a bug;
@@ -16701,7 +16701,7 @@ PY
     # ── Row 2: Q1.3 — an admitted actuation command reaches the flight recorder ─
     #
     # Same baseline boot (gate armed, `actuation-smoke` on) already commands both
-    # wheels via reflex. `[ACTREC]` (domains/robot/safety-core/src/actuation.rs,
+    # wheels via reflex. `[ACTREC]` (crates/domains/robot/safety-core/src/actuation.rs,
     # `record_motor_change`) is the record hook itself printing its own
     # admission, `duty=` the value it just wrote to `log_actuator_cmd`, and
     # `ring_len=` the flight recorder's ring depth read back immediately after —
@@ -16788,14 +16788,14 @@ PY
     #
     #   Q1.4 fail-closed, host test `no_gate_installed_clamps_every_speed_to_
     #   zero_not_passthrough` (tests/host/behavior-tests/src/lib.rs):
-    #     (a) discriminates — revert `domains/robot/robot/src/motor.rs`'s
+    #     (a) discriminates — revert `crates/domains/robot/robot/src/motor.rs`'s
     #         `gate_speed`'s `None => 0` to `None => speed_pct`: RED,
     #         `left: Some(77) / right: Some(0)`.
     #     (c) did not compile — this row's OWN mechanism: `kbuild` fails loudly
     #         on any build error rather than reusing a stale binary (its own doc,
     #         citing gate 116's postmortem) — reproduced directly during this
     #         task by a one-identifier typo in `admit_motor_record`
-    #         (domains/robot/safety-core/src/actuation.rs): `cargo build` exited
+    #         (crates/domains/robot/safety-core/src/actuation.rs): `cargo build` exited
     #         nonzero with `error[E0425]: cannot find value
     #         'MOTOR_RECORD_BUDGET_PER_WINDOOP' in this scope`.
     #     (b) does not discriminate — N/A for this property: there is no
@@ -19724,7 +19724,7 @@ PYEOF
 
     # ── The 41 measurements nobody was reading ─────────────────────────
     #
-    # `domains/robot/bench` (10 subsystems) runs on **every** boot and emits 41
+    # `crates/domains/robot/bench` (10 subsystems) runs on **every** boot and emits 41
     # `[BENCH-RES]` lines: ipc, mm, sched, net, fs, crypto, cap, ota, protocol,
     # asyncrt. The gate looked at none of them. A subsystem
     # whose benchmark stopped emitting -- because it panicked, was cfg'd out,
@@ -24048,7 +24048,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # $A64_IMG is touched.
     #
     # Build row: zero warnings; `cargo tree` of the kernel names no crate
-    # under domains/robot/ (the shell lives in crates/core since w14), nor imu/baro/gps/multi_stream/camera;
+    # under crates/domains/robot/ (the shell lives in crates/core since w14), nor imu/baro/gps/multi_stream/camera;
     # `llvm-nm` finds no symbol of a robot crate in the ELF. Both checks are
     # run on the robot kernel of the same ISA first and must FIND robot crates
     # and symbols there, so a query that went blind cannot pass.
@@ -24063,7 +24063,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # no robot task created — each robot task's own `[SCHED] Created` line is
     # what only the failure prints.
     GENERIC_DIR="$AZOS_OUT/target/generic"
-    GENERIC_ROBOT_CRATES="$(for d in "${REPO_ROOT}"/domains/robot/*/ "${REPO_ROOT}"/crates/drivers/rc-esc/ "${REPO_ROOT}"/crates/lib/control/*/; do
+    GENERIC_ROBOT_CRATES="$(for d in "${REPO_ROOT}"/crates/domains/robot/*/ "${REPO_ROOT}"/crates/drivers/rc-esc/ "${REPO_ROOT}"/crates/lib/control/*/; do
             n="$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$d/Cargo.toml" | sed -n 1p)"
             printf "%s\n" "$n"
         done; printf '%s\n' azos_multi_stream azos_camera azos_imu azos_baro azos_gps)"

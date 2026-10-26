@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host stand-in for `azos_sync`, for the real `domains/robot/robot/src/motor.rs`
+//! Host stand-in for `azos_sync`, for the real `crates/domains/robot/robot/src/motor.rs`
 //! only.
 //!
 //! **Why not `cap_test_sync`.** That stand-in is backed by `std::sync::Mutex`

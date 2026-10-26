@@ -5,7 +5,7 @@
 //! **L0 (emergency stop) is the canonical statement of the "always runs /
 //! always applied / cannot be disabled" invariant** — see the comment on the
 //! `layer_emergency_stop` call inside `arbitrate()` below for the evidence.
-//! `domains/robot/behavior/src/safety.rs` and `domains/robot/behavior/src/layers.rs` state
+//! `crates/domains/robot/behavior/src/safety.rs` and `crates/domains/robot/behavior/src/layers.rs` state
 //! the same guarantee but point back here rather than re-deriving it, so the
 //! claim has one place to go stale instead of three.
 

@@ -820,7 +820,7 @@ restarts it).
 
 Source: `crates/core/syscall/src/link_key.rs`,
 `crates/core/crypto/src/secure_channel.rs`,
-`domains/robot/behavior/src/encrypt_link.rs`, `userspace/lib/rpc/src/chan.rs`,
+`crates/domains/robot/behavior/src/encrypt_link.rs`, `userspace/lib/rpc/src/chan.rs`,
 `config/subsys/Kconfig.topology`.
 
 There are two kinds of authenticated link.

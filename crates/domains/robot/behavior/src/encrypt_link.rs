@@ -105,7 +105,7 @@ pub fn pool_fill(out: &mut [u8]) -> bool {
 /// unseeded AND this is a `link-provisioning-enforced` build (every non-DEV robot build).
 /// Before this decision the function always returned a key — silently
 /// degraded on the boards, which have no TRNG (see [`refuse_unseeded`] and
-/// `domains/robot/behavior/src/encrypt_link_policy.rs`, the host-testable pure
+/// `crates/domains/robot/behavior/src/encrypt_link_policy.rs`, the host-testable pure
 /// decision this wraps). A caller that gets `None` MUST refuse the
 /// handshake and MUST NOT fall back to any other key-derivation path — see
 /// callers in `kernel/src/tasks/brain_link.rs` (`brain_handshake`, run by the

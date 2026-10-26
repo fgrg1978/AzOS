@@ -3,7 +3,7 @@
 //! Host stand-in for `azos_robot`, used only by `tests/host/syscall-tests`.
 //!
 //! **The motor layer is the real one.** `motor.rs` and `pid.rs` are the files
-//! from `domains/robot/robot/src`, pulled in with `#[path]` the way `shims/ipc` pulls
+//! from `crates/domains/robot/robot/src`, pulled in with `#[path]` the way `shims/ipc` pulls
 //! `cap.rs`, so `sys_motor_*` run the actual `motor_set_reporting`: the halt
 //! rule, the direction-pin writes and the duty write. Those land on this
 //! crate's driver stand-in (`syscall_test_drivers`), which is the same one `handlers.rs` sees,
@@ -22,10 +22,10 @@ extern crate syscall_test_drivers as azos_drv_actuator;
 extern crate syscall_test_drivers as azos_drv_gpio;
 extern crate syscall_test_drivers as azos_drv_sys;
 
-#[path = "../../../../../../domains/robot/robot/src/pid.rs"]
+#[path = "../../../../../../crates/domains/robot/robot/src/pid.rs"]
 pub mod pid;
 
-#[path = "../../../../../../domains/robot/robot/src/motor.rs"]
+#[path = "../../../../../../crates/domains/robot/robot/src/motor.rs"]
 pub mod motor_real;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -36,7 +36,7 @@ pub use motor_real::{
     MotorDir, MAX_MOTORS, MOTOR_REFUSED_HALTED,
 };
 
-/// Ticks `encoder_read` reports. The real `domains/robot/robot` reads the wheel
+/// Ticks `encoder_read` reports. The real `crates/domains/robot/robot` reads the wheel
 /// encoders; a test sets the pair it expects back.
 static ENCODER_LEFT: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 static ENCODER_RIGHT: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
@@ -84,7 +84,7 @@ pub fn odom_get_stamped() -> ((i64, i64), u64) {
 /// Which PWM channels and direction pins an initialised motor claims, as the
 /// raw GPIO/PWM guards in `handlers.rs` ask it.
 ///
-/// The real `domains/robot/robot` answers this from its `MOTORS` table. Here it is a
+/// The real `crates/domains/robot/robot` answers this from its `MOTORS` table. Here it is a
 /// bitmask a test can set, because the point is not to model motor
 /// initialisation — it is to drive the two guards in `handlers.rs` that refuse
 /// a motor-bound channel through `SYS_DRV_INVOKE` and the typed `Cap<Pwm>`,

@@ -718,7 +718,7 @@ pub(crate) fn behavior_task(_: usize) {
                                         azos_behavior::safety::note_refused_estop_clear()
                                     {
                                     // **A REFUSED CLEAR IS METERED, and that is the same
-                                    // argument `ring3_estop` makes in `domains/robot/safety-core/src/actuation.rs`.**
+                                    // argument `ring3_estop` makes in `crates/domains/robot/safety-core/src/actuation.rs`.**
                                     //
                                     // This recorded DURABLY — a synchronous flush — and printed a
                                     // console line, once per frame, for a refusal that changes no

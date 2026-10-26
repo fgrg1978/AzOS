@@ -4,7 +4,7 @@
 //!
 //! Owns the graded degrade LEVEL constants and the level→speed-ceiling
 //! mapping. Having these in a dep-free leaf lets both `crates/core/ipc` (TCB)
-//! and `domains/robot/behavior` (safety domain) depend on them without polluting
+//! and `crates/domains/robot/behavior` (safety domain) depend on them without polluting
 //! the TCB with motor-actuation policy.
 //!
 //! ## Design

@@ -5,7 +5,7 @@
 //! Cycles are `PMCCNTR_EL0`; instructions are event counter 0 counting
 //! INST_RETIRED (0x08); [`Pmu::event`](azos_arch_api::Pmu::event) uses event
 //! counter 1. Their users: `azos_drv_sys::wcet::read_cycles` (every WCET and
-//! jitter figure, `domains/robot/bench`, the `ifconfig` receive cost), the
+//! jitter figure, `crates/domains/robot/bench`, the `ifconfig` receive cost), the
 //! lock hold times of lockdep, the tracer's cycle timestamps
 //! (`KTRACE_TS_CYCLES`) and, in ring 3, vsbench's cycle lanes (Kconfig
 //! `PMU_USER`: `PMUSERENR_EL0` with CR and ER, never EN, so ring 3 can read

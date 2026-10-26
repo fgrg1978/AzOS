@@ -328,7 +328,7 @@ written as asked and a forward or backward command is refused (`-EAGAIN` to
 ring 3).
 
 Source: `crates/core/ipc/src/cap.rs` (`degrade_level`, `degraded_active`,
-`CapTable::get`, `get_uncontained`), `domains/robot/robot/src/motor.rs`
+`CapTable::get`, `get_uncontained`), `crates/domains/robot/robot/src/motor.rs`
 (`set_motor_halt`), `kernel/src/tasks/behavior.rs`.
 
 ## 8. The second layer: image confinement

@@ -4,7 +4,7 @@
 //! motor-gate/record suite (Q1.3/Q1.4, 2026-09-25).
 //!
 //! **The motor layer is the real one.** `motor.rs` and `pid.rs` are the files
-//! from `domains/robot/robot/src`, pulled in with `#[path]` — the same technique
+//! from `crates/domains/robot/robot/src`, pulled in with `#[path]` — the same technique
 //! `tests/host/syscall-tests/shims/robot` already uses for the same file, for the
 //! same reason: the code under test is the code that ships, not a
 //! reimplementation. `motor.rs` also needs `SpinLock::get_mut_unchecked`,
@@ -18,10 +18,10 @@ extern crate beh_test_drivers as azos_drv_actuator;
 extern crate beh_test_drivers as azos_drv_gpio;
 extern crate beh_test_drivers as azos_drv_sys;
 
-#[path = "../../../../../../domains/robot/robot/src/pid.rs"]
+#[path = "../../../../../../crates/domains/robot/robot/src/pid.rs"]
 pub mod pid;
 
-#[path = "../../../../../../domains/robot/robot/src/motor.rs"]
+#[path = "../../../../../../crates/domains/robot/robot/src/motor.rs"]
 pub mod motor_real;
 
 pub use motor_real::{

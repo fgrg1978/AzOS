@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! I-13 (`domains/robot/safety-core/src/txn_rule.rs`, pulled in by `#[path]`):
+//! I-13 (`crates/domains/robot/safety-core/src/txn_rule.rs`, pulled in by `#[path]`):
 //! only a whitelisted kernel-mode fault of the task that armed the checkpoint
 //! is rolled back into its restart, and only while the budget lasts.
 
-#[path = "../../../../domains/robot/safety-core/src/txn_rule.rs"]
+#[path = "../../../../crates/domains/robot/safety-core/src/txn_rule.rs"]
 mod txn_rule;
 
 use txn_rule::{may_roll_back, Fault, MAX_TXN_RESTARTS};

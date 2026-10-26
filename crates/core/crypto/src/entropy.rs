@@ -203,7 +203,7 @@ pub fn fill(out: &mut [u8]) -> bool {
 //
 // "Refuse to derive session keys on an unseeded pool" (the fix for U09-8 /
 // security finding #26, applied at the caller —
-// `domains/robot/behavior/src/encrypt_link.rs::derive_ephemeral_priv`, not in this
+// `crates/domains/robot/behavior/src/encrypt_link.rs::derive_ephemeral_priv`, not in this
 // crate) is only survivable on hardware with no TRNG if a seed can persist
 // ACROSS boots. This is the pure side of that seed: the record format, the
 // load-and-rotate rule, and the check that the storage is not filesystem

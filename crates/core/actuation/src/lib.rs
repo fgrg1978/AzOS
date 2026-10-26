@@ -30,7 +30,7 @@
 //!   latch replay, the GPIO kill-switch check, the system watchdog task and
 //!   the timer-ISR tick / heartbeat / hardware-watchdog feed.
 //!
-//! Robot-specific parts stay in `domains/robot`: the motor gate and its
+//! Robot-specific parts stay in `crates/domains/robot`: the motor gate and its
 //! per-robot-type envelope (`azos_safety_core::actuation`,
 //! `azos_behavior::safety::motor_envelope`), the control loop, flight.
 //! They plug in through [`hooks`] tables registered at boot, so this crate

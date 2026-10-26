@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host stand-in for `azos_sync`, for the real `domains/robot/robot/src/motor.rs`
+//! Host stand-in for `azos_sync`, for the real `crates/domains/robot/robot/src/motor.rs`
 //! only. A copy of `tests/host/syscall-tests/shims/robot_sync`, scoped to
 //! `tests/host/behavior-tests`' own motor-gate/record suite (Q1.3/Q1.4,
 //! 2026-09-25) for the identical reason that one exists.

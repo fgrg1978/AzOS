@@ -122,7 +122,7 @@ mod window_clamp_invariants {
 // core types, so it compiles cleanly on the host target.
 
 #[allow(dead_code, unused_imports, clippy::all)]
-#[path = "../../../../domains/robot/behavior/src/brain_protocol.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/brain_protocol.rs"]
 mod brain_protocol_src;
 
 #[cfg(test)]

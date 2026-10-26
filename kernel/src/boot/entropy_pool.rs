@@ -4,7 +4,7 @@
 //! around `azos_crypto::entropy`, the persisted-seed record, and the
 //! durable record of a refused ring-3 read.
 //!
-//! Moved here from `domains/robot/behavior/src/encrypt_link.rs` (wave 11,
+//! Moved here from `crates/domains/robot/behavior/src/encrypt_link.rs` (wave 11,
 //! DOMAIN): the pool seeds the network stack and the `entropy` endpoint in
 //! every image, with or without the Robot domain's brain link.
 

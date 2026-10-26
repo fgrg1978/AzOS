@@ -132,7 +132,7 @@ pub fn payload_init() {
 // ── Command dispatch ──────────────────────────────────────────────────────────
 
 /// `actuator_type` byte base for a `log_actuator_cmd` record of a PAYLOAD
-/// command, distinct from a motor id (`domains/robot/robot::motor::MAX_MOTORS` is
+/// command, distinct from a motor id (`crates/domains/robot/robot::motor::MAX_MOTORS` is
 /// 4, so ids 0-3 are taken) — a reader tells the two domains apart by this
 /// offset rather than by which file wrote the record.
 pub const PAYLOAD_ACTUATOR_TYPE_BASE: u8 = 0x10;
@@ -171,7 +171,7 @@ pub fn payload_exec(cmd: PayloadCmd) -> bool {
 }
 
 /// Stop every payload actuator that can move — called from `crate::safety::
-/// estop_activate()`'s callers via `domains/robot/safety-core::actuation::
+/// estop_activate()`'s callers via `crates/domains/robot/safety-core::actuation::
 /// latch_and_stop`, the one place that sequence lives, so a command already
 /// in flight when the latch engages does not keep running until the next
 /// `payload_exec` call refuses the NEXT one.

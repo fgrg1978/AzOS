@@ -136,14 +136,16 @@ is split by concern under `mk/` (`vars.mk`, `userspace.mk`, `images.mk`,
 ```
 kernel/      composition root: kernel_main, boot steps, trap entry and
              boot hooks per ISA (kernel/src/entry/<isa>), kernel tasks
-crates/      core (abi, arch-*, sched, mm, ipc, syscall, topology, idl, ...),
-             drivers (one crate per class), fs, net
-domains/     use-specific crates (robot)
+arch/        the ISA crates: api, facade, riscv64, aarch64, x86_64 (each
+             with its kernel linker scripts in boot/)
+crates/      core (abi, sched, mm, ipc, syscall, topology, idl, ...),
+             drivers (one crate per class; lx/, the glue for running Linux
+             driver modules in ring-3 servers), fs, net, lib (control math),
+             domains (use-specific crates: robot)
 userspace/   ring-3 services, drivers, libraries (relibc port, names, rpc, ...),
              tests and benchmark programs
 sdk/         the std target for AzOS and its own test program
 micro/       AzOS-micro, a separate kernel for parts without an MMU
-crates/drivers/lx/          glue for running Linux driver modules in ring-3 servers
 config/      Kconfig fragments and defconfigs
 mk/          the Makefile, split by concern
 tools/       build, check, signing, packaging and analysis tools

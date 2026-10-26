@@ -411,7 +411,7 @@ pub(crate) fn boot_validate_and_verify_slots() {
 
 /// Hand `sys-wdt` the OTA boot-good mark. Both ISAs, one call site each.
 ///
-/// `domains/robot/safety-core` is core and `crates/core/ota` is scaffolding, so the
+/// `crates/domains/robot/safety-core` is core and `crates/core/ota` is scaffolding, so the
 /// watchdog cannot name `ota_mark_boot_good` itself; the kernel links both
 /// sides and installs the pair here. Without it the boot is NEVER marked
 /// good: `BOOTMETA`'s `boot_count` only climbs, and on the boot after

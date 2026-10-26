@@ -3,7 +3,7 @@
 //! Beam-count bound shared between the kernel `flight` crate's SLAM update
 //! and its host tests.
 //!
-//! `slam_update_scan` (`domains/robot/flight/src/slam.rs`) takes caller-supplied
+//! `slam_update_scan` (`crates/domains/robot/flight/src/slam.rs`) takes caller-supplied
 //! `ranges`/`angles_cdeg` slices with no static bound on their length —
 //! unlike the sibling `nav` crate's 2D scan matcher, whose `Scan2D` caps
 //! beam count at the *type* level (`SCAN_MAX_POINTS: usize = 360`, baked
@@ -13,8 +13,8 @@
 //! while it holds `SLAM`'s lock — a bound that lives only in the caller is
 //! not a bound.
 //!
-//! This lives in `flight-math` rather than directly in `domains/robot/flight`
-//! because `domains/robot/flight` pulls in `azos_drv_*` and is not
+//! This lives in `flight-math` rather than directly in `crates/domains/robot/flight`
+//! because `crates/domains/robot/flight` pulls in `azos_drv_*` and is not
 //! host-buildable (see the crate-level doc comment), so a cap enforced
 //! only there could never be exercised by a host test — mutating it would
 //! be invisible to `cargo test`. `flight-math` has zero kernel

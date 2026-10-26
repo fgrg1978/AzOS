@@ -79,20 +79,16 @@ CRATES_DIR="$REPO_ROOT/crates"
 # crate_dir <name>: the crate lives in one of the restructured groups (wave 11),
 # or is a group of its own (crates/fs). A bare name is searched group by
 # group; a name that is ambiguous across groups is listed group-qualified,
-# `<group>/<name>`, and resolves under crates/ or domains/ directly (w14).
+# `<group>/<name>`, and resolves under crates/ directly (w14).
 # The ISA crates under arch/ are keyed by their path (`arch/<name>`).
 crate_dir() {
     local g
     case "$1" in
         arch/*) printf '%s' "$REPO_ROOT/$1"; return 0 ;;
-        */*)
-            for g in crates domains; do
-                if [ -f "$REPO_ROOT/$g/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/$g/$1"; return 0; fi
-            done
-            printf '%s' "$CRATES_DIR/$1"; return 0 ;;
+        */*) printf '%s' "$CRATES_DIR/$1"; return 0 ;;
     esac
     if [ -f "$REPO_ROOT/crates/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/crates/$1"; return 0; fi
-    for g in crates/core crates/net crates/drivers crates/lib/control domains/robot; do
+    for g in crates/core crates/net crates/drivers crates/lib/control crates/domains/robot; do
         if [ -f "$REPO_ROOT/$g/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/$g/$1"; return 0; fi
     done
     printf '%s' "$CRATES_DIR/$1"
@@ -100,7 +96,7 @@ crate_dir() {
 
 # ── The partition (single source of truth) ──────────────────────────────────
 #
-# Directory names under crates/ and domains/ (group-qualified where a name is
+# Directory names under crates/ (group-qualified where a name is
 # in two groups). The Cargo *package* name is read from each Cargo.toml
 # (`pkg_name`): the driver class crates (w14) break the old `azos_<dir>`
 # rule — crates/drivers/sys is `azos_drv_sys`, crates/drivers/rc-esc is
@@ -276,7 +272,7 @@ BASELINE_VIOLATIONS=0
 #
 # The `safety-core` four were NOT named in the audit's own shorthand list —
 # found by running this check against the full CORE_CRATES list, not just
-# the two crates Q2.3 called out. `domains/robot/safety-core/Cargo.toml`'s own
+# the two crates Q2.3 called out. `crates/domains/robot/safety-core/Cargo.toml`'s own
 # header comment ("Core crate: it depends on core crates only") is now
 # false; this script does not edit that file. Report, do not fix (task
 # instruction) — flagging it here so it is not lost between fronts.
@@ -418,7 +414,7 @@ workspace_member_dirs() {
         esac
         if [ "$in_members" = 1 ]; then
             case "$line" in
-                *'"crates/'*|*'"domains/'*|*'"arch/'*)
+                *'"crates/'*|*'"arch/'*)
                     rest="${line#*\"}"
                     path="${rest%%\"*}"
                     name="${path##*/}"
@@ -441,7 +437,7 @@ workspace_member_dirs() {
 }
 
 # Every crate in the tree (crates/<group> when the group is one crate,
-# crates/<group>/<name>, domains/<group>/<name>) must be on exactly one
+# crates/<group>/<name>, crates/<group>/<subgroup>/<name>) must be on exactly one
 # list, and every name on a list must be a crate in the tree. A crate on no list is not a pass: it means this script's partition has
 # drifted from the tree, silently, in exactly the way a feature flag was
 # rejected for doing. A listed name with no crate is the opposite drift: a
@@ -450,7 +446,7 @@ workspace_member_dirs() {
 tree_crate_keys() {
     local toml dir name
     for toml in "$REPO_ROOT"/crates/*/Cargo.toml "$REPO_ROOT"/crates/*/*/Cargo.toml "$REPO_ROOT"/crates/lib/*/*/Cargo.toml \
-                "$REPO_ROOT"/domains/*/*/Cargo.toml "$REPO_ROOT"/arch/*/Cargo.toml; do
+                "$REPO_ROOT"/crates/domains/*/*/Cargo.toml "$REPO_ROOT"/arch/*/Cargo.toml; do
         [ -f "$toml" ] || continue
         dir="${toml%/Cargo.toml}"
         name="${dir##*/}"
@@ -513,7 +509,7 @@ fi
 
 if [ -n "$unlisted" ]; then
     echo ""
-    echo "  FAIL: crates present in crates/ or domains/ but not classified on any list:"
+    echo "  FAIL: crates present in crates/ but not classified on any list:"
     printf '%b' "$unlisted"
     echo "  Add each one to CORE_CRATES, PROFILE_CRATES, SCAFFOLD_CRATES or"
     echo "  OFF_IMAGE_CRATES in this script with a one-line reason before trusting"

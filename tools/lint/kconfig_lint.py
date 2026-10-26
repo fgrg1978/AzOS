@@ -81,7 +81,7 @@ def parse_symbols(files, root):
 
 
 # Where a symbol's reader may live (the code, the build, the tools and the tests).
-READER_DIRS = ("kernel", "arch", "crates", "micro", "userspace", "sdk", "domains", "boot",
+READER_DIRS = ("kernel", "arch", "crates", "micro", "userspace", "sdk", "boot",
                "formal", "mk", "tools", "tests")
 READER_SKIP_DIRS = {"target", ".git", "__pycache__", "node_modules"}
 _SLASH_COMMENT = (".rs", ".c", ".h", ".S", ".s", ".ld", ".x", ".zig", ".cpp")

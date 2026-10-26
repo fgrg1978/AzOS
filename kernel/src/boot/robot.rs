@@ -311,7 +311,7 @@ pub(crate) fn install_flight_recorder() {
     // drive motors. `push_event` is a no-op until `logger_init`
     // succeeds, so every call site added below is safe whether or
     // not this line worked.
-    // The flight recorder's storage seam. `domains/robot/behavior` is
+    // The flight recorder's storage seam. `crates/domains/robot/behavior` is
     // core and `crates/fs` is scaffolding, so the recorder cannot
     // name FAT32 directly -- it declares what it needs and the
     // kernel, which is the composition root, supplies it. Same
@@ -495,7 +495,7 @@ pub(crate) fn install_flight_recorder() {
     // latch survives reboot` gate rows for the two-boot harness this
     // feeds. Action 2 matches `kill_switch.rs`'s own latching write (a
     // real GPIO kill switch is riscv64's `safety: latch survives reboot`
-    // row's trigger; this is the same durable-write API, `domains/robot/behavior`
+    // row's trigger; this is the same durable-write API, `crates/domains/robot/behavior`
     // is core and takes no ISA branch, called directly rather than through
     // a GPIO nobody has wired in QEMU on either ISA).
     #[cfg(feature = "estop-latch-smoke")]

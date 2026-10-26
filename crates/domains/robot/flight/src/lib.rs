@@ -251,17 +251,17 @@ azos_common::ro_hook! {
     /// permitted — the pre-2026-09-26 behaviour, for a build with no safety
     /// layer wired at all.
     ///
-    /// This crate cannot depend on `domains/robot/behavior`/`domains/robot/safety-core`
+    /// This crate cannot depend on `crates/domains/robot/behavior`/`crates/domains/robot/safety-core`
     /// directly: `safety-core` already depends on THIS crate
     /// (`flight_ctrl.rs`), so the reverse edge would be a cycle. Same seam
-    /// shape as `domains/robot/robot::motor::MOTOR_GATE` — the consumer (this crate)
-    /// hosts the hook, and `domains/robot/safety-core::actuation::install()` (which
+    /// shape as `crates/domains/robot/robot::motor::MOTOR_GATE` — the consumer (this crate)
+    /// hosts the hook, and `crates/domains/robot/safety-core::actuation::install()` (which
     /// already depends on both `azos_flight` and `azos_behavior`)
     /// installs it at boot.
     static ARM_GATE: fn() -> bool;
 }
 /// Install the e-stop query `flight_arm` consults. Called once at boot from
-/// `domains/robot/safety-core::actuation::install`.
+/// `crates/domains/robot/safety-core::actuation::install`.
 pub fn set_arm_gate(f: fn() -> bool) {
     ARM_GATE.set(f);
 }
@@ -283,7 +283,7 @@ pub fn is_armed() -> bool {
 /// 2026-09-26, H22/U08-6) — before this, `flight_arm`/`esc_arm` (the shell
 /// command wrapping it) re-energised the ESC while the latch held; the
 /// ACTUATION half of that gap is closed independently in
-/// `domains/robot/safety-core/src/flight_ctrl.rs` (throttle zeroed every tick while
+/// `crates/domains/robot/safety-core/src/flight_ctrl.rs` (throttle zeroed every tick while
 /// latched, regardless of `ARMED`), and this closes the STATE half so
 /// arming itself visibly fails rather than silently doing nothing useful.
 pub fn flight_arm() -> bool {

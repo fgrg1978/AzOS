@@ -95,7 +95,7 @@ so a value set by hand wins. A hard incompatibility is a `depends on`.
 | Axis | Symbols | Values | What it decides |
 |---|---|---|---|
 | Preset | `PRESET_*` | `GENERIC`, `ROBOT`, `INDUSTRIAL`, `AUTOMOTIVE`, `FIRMWARE`, `IOT_HMI`, `WEARABLE`, `GATEWAY`, `DESKTOP`, `SERVER` | The starting value of all other axes. |
-| Use | `USE_*` | one per preset that something reads | Which crates are linked (`USE_ROBOT` links the robot crates under `domains/robot/`) and which menus show. Derived from the preset (`def_bool`), never asked. Every use links the shared actuation authority. |
+| Use | `USE_*` | one per preset that something reads | Which crates are linked (`USE_ROBOT` links the robot crates under `crates/domains/robot/`) and which menus show. Derived from the preset (`def_bool`), never asked. Every use links the shared actuation authority. |
 | Hardware class | `HWCLASS_*` | `EMBEDDED`, `SBC`, `DESKTOP`, `SERVER` | The resource-limit tier: embedded the smallest tables, `SBC` and `DESKTOP` the edge tables, `SERVER` the fleet tables. |
 | Structure | `STRUCTURE_*` | `HYBRID`, `RING3_DRIVERS` | Where drivers run: each as its own placement choice says, or every placeable driver in ring 3. Drivers a safety decision reads have no placement choice and stay in the kernel. |
 | Real-time class | `RT_*` | `NONE`, `SOFT`, `HARD`, `MIXED` | What the image promises about time. Hard and mixed need memory committed at map time. |

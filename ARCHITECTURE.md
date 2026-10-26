@@ -80,7 +80,7 @@ a signed release, an effect gate that commits a record before the device op,
 safe-state handling for missed deadlines, and a flight recorder. Decision
 records say which rule decided and on what numbers.
 
-- Source: `crates/core/actuation`, `crates/core/decision`, `domains/robot/safety-core`.
+- Source: `crates/core/actuation`, `crates/core/decision`, `crates/domains/robot/safety-core`.
 - Doc: [effects.md](Documentation/effects.md).
 
 ### ABI
@@ -339,14 +339,15 @@ Where the public surfaces are defined: `azos_abi` (kernel and ring-3 boundary),
 
 ## The robot domain
 
-`domains/robot` holds the robot application domain: a behavior engine, AHRS,
-navigation, flight control, telemetry, ESC and RC drivers and the motor safety
-envelope. It is linked only when the image selects `USE_ROBOT` (kernel feature
+`crates/domains/robot` holds the robot application domain: a behavior engine,
+navigation, flight control, telemetry and the motor safety envelope; it also
+links the AHRS and flight math (`crates/lib/control/`) and the ESC and RC
+drivers (`crates/drivers/rc-esc`). It is linked only when the image selects `USE_ROBOT` (kernel feature
 `use-robot`) and plugs into the shared actuation authority through
 `azos_actuation::hooks`. Its ring-3 pieces are
 `userspace/services/{brain_client,reflex,infsrv}`.
 
-Source: `domains/robot/`, `config/axes/Kconfig.use`, `crates/core/actuation/src/hooks.rs`.
+Source: `crates/domains/robot/`, `crates/lib/control/`, `crates/drivers/rc-esc/`, `config/axes/Kconfig.use`, `crates/core/actuation/src/hooks.rs`.
 
 ## AzOS-micro
 

@@ -19,7 +19,7 @@ publish = false
 # tags there.
 default = []
 # The Robot application domain (wave 11, DOMAIN; config/axes/Kconfig.use
-# USE_ROBOT). Links the robot crates under domains/robot/ — behavior and
+# USE_ROBOT). Links the robot crates under crates/domains/robot/ — behavior and
 # the brain link, the motor/sensor/flight stack, the robot safety layer
 # (safety-core), the robot shell commands, the in-kernel benches — and the
 # kernel tasks and call sites that use them (`#[cfg(feature =
@@ -800,7 +800,7 @@ actuation-smoke = ["qemu", "use-robot", "azos_syscall/actuation-smoke", "azos_sa
 # gate-skip-smoke: canary for Q1.4's fail-closed default (2026-09-25) —
 # `azos_safety_core::actuation::install()` does not install the motor
 # gate, so `motor_set_reporting` must clamp every duty to 0. Never in the
-# default feature set; see `domains/robot/safety-core/src/actuation.rs`.
+# default feature set; see `crates/domains/robot/safety-core/src/actuation.rs`.
 gate-skip-smoke = ["qemu", "use-robot", "azos_safety_core?/gate-skip-smoke"]
 # Gate-only console-routing canary — see crates/drivers/sys/Cargo.toml for what it
 # proves and why the property is untestable without it.
@@ -1347,7 +1347,7 @@ azos_ota       = { workspace = true }
 # triggers a one-shot `run_all` from behavior_task post-boot so the
 # bench harness scrapes [BENCH-RES] lines without needing shell input
 # (which is unreliable end-to-end under QEMU TCG SMP).
-azos_bench     = { path = "../domains/robot/bench", features = ["all"], optional = true }
+azos_bench     = { path = "../crates/domains/robot/bench", features = ["all"], optional = true }
 azos_trace     = { workspace = true }
 azos_ktest     = { workspace = true, optional = true }
 azos_chaos     = { workspace = true }
@@ -1366,9 +1366,9 @@ azos_limits    = { workspace = true }
 # The Linux personality's numbers (the aarch64 trap snapshots a
 # Linux `clone` like a native fork).
 azos_linux_abi = { workspace = true }
-# The safety path (domains/robot/safety-core). The kernel creates its
+# The safety path (crates/domains/robot/safety-core). The kernel creates its
 # tasks, calls its ISR-side functions and installs its OTA boot-good hook.
-azos_safety_core = { path = "../domains/robot/safety-core", optional = true }
+azos_safety_core = { path = "../crates/domains/robot/safety-core", optional = true }
 # Wave 11 (DOMAIN): the actuation authority every domain shares — e-stop latch,
 # release authority, safe mode, flight recorder, sys-wdt, the timer-ISR feed.
 azos_actuation = { workspace = true }

@@ -29,10 +29,10 @@ x86_64). A driver written once can be hosted in either place (see
 | Kernel targets | `riscv64imac-unknown-none-elf`, `aarch64-unknown-none-softfloat`, `x86_64-unknown-none` (`mk/vars.mk`) |
 | Ring-3 programs | `userspace/`; Rust `std` targets `*-unknown-azos` in `sdk/targets/` |
 | Second, separate kernel for MMU-less parts | `micro/` (riscv32imac, M-mode, PMP); it compiles the main kernel's scheduling, topology and ABI sources rather than copies |
-| Application domains are optional features | `config/axes/Kconfig.use`, `domains/robot/` |
+| Application domains are optional features | `config/axes/Kconfig.use`, `crates/domains/robot/` |
 
 AzOS is a general-purpose kernel with application domains on top. The `robot`
-domain (`domains/robot/`) is linked only when the image selects it
+domain (`crates/domains/robot/`) is linked only when the image selects it
 (`USE_ROBOT` in `config/axes/Kconfig.use`, kernel feature `use-robot`); the shared
 actuation authority (`crates/core/actuation`) is linked by every domain.
 
@@ -160,12 +160,12 @@ capability, applies a limit and writes a record.
   `DECISION_REFUSALS_DURABLE`) every refusal is also handed to the flight recorder, which survives a reset.
 - **Domain code plugs in, it does not own the gate.** Robot-specific parts
   (the motor gate and its envelope, the control loop, flight) live in
-  `domains/robot` and register through `hooks`; `azos_actuation` depends on no
+  `crates/domains/robot` and register through `hooks`; `azos_actuation` depends on no
   domain crate.
 
 Source: `crates/core/actuation/src/lib.rs`, `crates/core/actuation/src/effect_gate.rs`,
 `crates/core/actuation/src/safe_state.rs`, `crates/core/decision/src/lib.rs`,
-`domains/robot/safety-core`.
+`crates/domains/robot/safety-core`.
 Next: [effects.md](effects.md), [observability.md](observability.md).
 
 ## Service placement: kernel or ring 3

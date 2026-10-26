@@ -12,7 +12,7 @@ policy and the limits of the forward-secrecy claim.
 
 Source: `crates/core/crypto/src/secure_channel.rs`,
 `crates/core/crypto/src/noise.rs`,
-`domains/robot/behavior/src/encrypt_link.rs`,
+`crates/domains/robot/behavior/src/encrypt_link.rs`,
 `kernel/src/tasks/brain_link.rs`.
 
 Layers on the wire, outermost first:
@@ -145,7 +145,7 @@ life), has no caller outside the host tests.
 
 Source: `config/subsys/Kconfig.secure-boot` (`LINK_PROVISIONING_ENFORCED`),
 `crates/core/topology/src/types.rs` (`Topology::brain_noise_pk`),
-`domains/robot/behavior/src/encrypt_link.rs` (`brain_pinned_key`,
+`crates/domains/robot/behavior/src/encrypt_link.rs` (`brain_pinned_key`,
 `link_key_copy`).
 
 There is no negotiated downgrade and no runtime switch; the only choice an
@@ -173,8 +173,8 @@ on it.
 
 ## Entropy
 
-Source: `domains/robot/behavior/src/encrypt_link.rs`
-(`derive_ephemeral_priv`), `domains/robot/behavior/src/encrypt_link_policy.rs`,
+Source: `crates/domains/robot/behavior/src/encrypt_link.rs`
+(`derive_ephemeral_priv`), `crates/domains/robot/behavior/src/encrypt_link_policy.rs`,
 `crates/core/crypto/src/entropy.rs`.
 
 `azos_crypto::secure_channel` is pure: it collects no entropy. The caller

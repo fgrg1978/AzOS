@@ -76,7 +76,7 @@ mechanisms below.
 
 Source: `kernel/src/tasks/brain_link.rs` (`enqueue_framed`, `frame_wire`,
 `tx_drain`), `kernel/src/tasks/behavior.rs`, `kernel/src/tasks/camera.rs`,
-`kernel/src/tasks/cam_capture.rs`, `domains/robot/behavior/src/brain_tx.rs`.
+`kernel/src/tasks/cam_capture.rs`, `crates/domains/robot/behavior/src/brain_tx.rs`.
 
 The data path of a robot frame is:
 

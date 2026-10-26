@@ -9,7 +9,7 @@
 /// MMIO, whichever `pwm.rs` selects). Before this fix, `esc_set_throttle`
 /// only stored an `AtomicU16` and the doc claimed "on real hardware, wraps
 /// the PWM driver" while never calling `azos_drv_actuator::pwm` on any `cfg` — a
-/// caller (`domains/robot/safety-core/src/flight_ctrl.rs` calls this for real) got
+/// caller (`crates/domains/robot/safety-core/src/flight_ctrl.rs` calls this for real) got
 /// state that changed but no PWM line that moved, on VF2/K1 OR the QEMU
 /// simulation.
 ///

@@ -41,7 +41,7 @@ import time
 
 MAGIC = b"BR"
 
-# From domains/robot/behavior/src/brain_protocol.rs. Restated rather than generated
+# From crates/domains/robot/behavior/src/brain_protocol.rs. Restated rather than generated
 # because this file must be able to send a type the kernel does NOT know, which
 # a generated mirror could not express.
 PKT_SEMANTIC_LEVEL = 0x8B
@@ -54,7 +54,7 @@ PKT_UNKNOWN_PROBE = 0x7F  # deliberately not a type the kernel handles
 PKT_ACTUATOR = 0x80
 
 # `PKT_MODE` / `MODE_ID_ESTOP_RESET`: the only rearm path in the tree (see
-# `domains/robot/behavior/src/brain_protocol.rs`). Added 2026-09-25, alongside the
+# `crates/domains/robot/behavior/src/brain_protocol.rs`). Added 2026-09-25, alongside the
 # owner decision that this frame — sent BARE, exactly as below — is now a
 # REQUEST the kernel records but never acts on by itself. See
 # `kernel_estop_release` for the frame that DOES clear the latch: the same

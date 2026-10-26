@@ -341,7 +341,7 @@ fn print_hwcap(h: u64) {
 /// volume correctly mounted underneath it. `azos_safety_core::actuation
 /// ::install()` was the same story for the e-stop gate. Hoisted here, once,
 /// so both ISAs call the identical code rather than growing a second copy —
-/// the seams this touches are core (`crates/core/syscall`, `domains/robot/safety-core`,
+/// the seams this touches are core (`crates/core/syscall`, `crates/domains/robot/safety-core`,
 /// `crates/core/ipc`), never per-ISA.
 ///
 /// `#[inline(always)]`: riscv64's `kernel_main` used to have this inlined
@@ -1012,8 +1012,8 @@ pub(crate) fn install_ring3_seams() {
     }
 
     // The actuation gate. Installed here, next to the other seams. It lives in
-    // `domains/robot/safety-core`, which sees both the motor driver and the safety
-    // layer — `domains/robot/robot` does not depend on `domains/robot/behavior`.
+    // `crates/domains/robot/safety-core`, which sees both the motor driver and the safety
+    // layer — `crates/domains/robot/robot` does not depend on `crates/domains/robot/behavior`.
     //
     // Until this ran, the thesis was not true. `motor_envelope` and the e-stop
     // were applied by `rt_motor_task` alone, and `sys_motor_speed` /

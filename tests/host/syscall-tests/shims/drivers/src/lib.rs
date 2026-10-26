@@ -228,7 +228,7 @@ pub mod pwm {
     static HOLD: ChanHold = ChanHold::new();
 
     /// Which PWM entry point a probe was called from. Only the entry points
-    /// the real `domains/robot/robot/src/motor.rs` calls take a probe.
+    /// the real `crates/domains/robot/robot/src/motor.rs` calls take a probe.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum PwmOp {
         Enable,

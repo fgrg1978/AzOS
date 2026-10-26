@@ -856,7 +856,7 @@ loop keeps them and reads the answer after the reply), and the deadline is
 `ML_REPLY_TIMEOUT_US` (10 ms). The loop does not make the call itself: the kernel's endpoint call
 waits for as long as the server takes, so a task of its own, `ml-infer`, makes the calls one at a
 time and the loop waits for it with a timer. Every way a call can end that is not a class is a
-missing verdict and L1 holds STOP (`domains/robot/behavior/src/ml_link.rs`): a refusal
+missing verdict and L1 holds STOP (`crates/domains/robot/behavior/src/ml_link.rs`): a refusal
 (`REFUSED` is `Late`, `NO_RESOURCE`, `NOT_READY`, `BUSY` and `UNSUPPORTED` are `Unavailable`, any other
 code `Malformed`), a deadline that passed, a service that is not there, a reply of another model
 than the one asked for, or logits that are not numbers. The reply's model reference, variant and

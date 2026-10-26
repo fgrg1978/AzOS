@@ -33,7 +33,7 @@ normal build. There is no separate `formal/kani/` source tree.
 | `a_bare_index_never_matches_a_live_generation` | `crates/core/ipc/src/objref.rs` | A bare in-range index (generation 0) never equals the generation of a live slot. |
 
 None of the harnesses covers the actuation path (`crates/core/actuation`,
-`domains/robot/behavior/src/safety.rs`); the e-stop and motor gate are checked
+`crates/domains/robot/behavior/src/safety.rs`); the e-stop and motor gate are checked
 by host tests, listed in `formal/INVARIANTS.md`.
 
 ### How Kani runs

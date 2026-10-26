@@ -40,7 +40,7 @@ pub enum FailsafeAction {
 /// # Why this is a function and not one `if` at the call site
 ///
 /// It is the decision that makes [`check_failsafe`]'s RC branch reachable at
-/// all, and the call site is inside `domains/robot/safety-core/src/flight_ctrl.rs`'s flight task, which
+/// all, and the call site is inside `crates/domains/robot/safety-core/src/flight_ctrl.rs`'s flight task, which
 /// no host test can enter. Same split, and the same reason, as
 /// `irq_wait_ret` and `wake_action`.
 ///

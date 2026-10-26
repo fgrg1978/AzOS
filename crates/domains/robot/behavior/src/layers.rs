@@ -11,7 +11,7 @@ use crate::types::*;
 // ── L0: Emergency stop ────────────────────────────────────────────────────────
 // Invariant + evidence (always-runs / always-applied / cannot-be-disabled):
 // canonical statement is the comment on the `layer_emergency_stop` call
-// inside `arbitrate()` in `domains/robot/behavior/src/arbiter.rs`.
+// inside `arbitrate()` in `crates/domains/robot/behavior/src/arbiter.rs`.
 
 /// Emergency stop: runs full safety profile for the current robot type.
 /// Checks: fall, spin, battery, tilt, obstacle, GPS (drone), comms timeout.

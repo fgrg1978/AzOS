@@ -61,9 +61,9 @@ fn main() {
     let mut entries: BTreeMap<String, (String, u32)> = BTreeMap::new();
 
     // Every directory that used to live under crates/ is still scanned, or the WCET point
-    // IDs (assigned in sorted order) would silently shift: domains/robot/* (behavior...) and
-    // tests/host/*, tests/qemu/* were crates/* before the restructure.
-    for scan_root in ["crates", "domains", "tests/host", "tests/qemu"] {
+    // IDs (assigned in sorted order) would silently shift: tests/host/*, tests/qemu/* were
+    // crates/* before the restructure.
+    for scan_root in ["crates", "tests/host", "tests/qemu"] {
         let crates_dir = workspace_root.join(scan_root);
         if crates_dir.exists() {
             scan_dir(&crates_dir, workspace_root, &mut entries);
@@ -245,7 +245,7 @@ fn scan_dir(dir: &Path, workspace_root: &Path, entries: &mut BTreeMap<String, (S
 /// Scan a single `.rs` file for `#[wcet(N_us)]` attribute annotations.
 ///
 /// Derives a module-qualified name from the file path + function name:
-///   - `domains/robot/behavior/src/arbiter.rs` + fn `arbitrate` → `arbiter_arbitrate`
+///   - `crates/domains/robot/behavior/src/arbiter.rs` + fn `arbitrate` → `arbiter_arbitrate`
 ///
 /// Budget normalisation mirrors the proc-macro:
 ///   - no suffix / `us`  → identity

@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the brain wire protocol in domains/robot/behavior/src/brain_protocol.rs. Excluded from workspace."
+description = "Host-side tests for the brain wire protocol in crates/domains/robot/behavior/src/brain_protocol.rs. Excluded from workspace."
 
 # Run with:  cd tests/host/behavior-tests && cargo test --release
 
-# `no-ml` mirrors `domains/robot/behavior`'s own feature of the same name so
+# `no-ml` mirrors `crates/domains/robot/behavior`'s own feature of the same name so
 # `#[cfg(not(feature = "no-ml"))]` in the `#[path]`-included `layers.rs` /
 # `arbiter.rs` (L1, avoid-obstacle) is a *known* cfg value here too — without
 # this declaration rustc's `unexpected_cfgs` lint fires on both files even
@@ -45,7 +45,7 @@ azos_devif = { path = "../../../crates/core/devif" }
 wcet-macro = { path = "../../../crates/core/wcet-macro" }
 # Real crate: dependency-free leaf, so the degrade ceiling under test is the
 # kernel's own mapping rather than a number this suite made up.
-azos_degrade_policy = { path = "../../../domains/robot/degrade-policy" }
+azos_degrade_policy = { path = "../../../crates/domains/robot/degrade-policy" }
 azos_ipc = { path = "shims/ipc", package = "beh_test_ipc" }
 azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 azos_rings = { path = "../../../crates/core/rings" }
@@ -55,7 +55,7 @@ azos_rings = { path = "../../../crates/core/rings" }
 azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
 azos_crypto = { path = "../../../crates/core/crypto" }
 beh_test_drivers = { path = "shims/drivers" }
-# The real `domains/robot/robot/src/motor.rs` (+ `pid.rs`), pulled in by its own
+# The real `crates/domains/robot/robot/src/motor.rs` (+ `pid.rs`), pulled in by its own
 # small shim crate the same way `tests/host/syscall-tests/shims/robot` already
 # does — it needs a `SpinLock::get_mut_unchecked` this crate's own
 # `cap_test_sync` (line above) deliberately omits, so it cannot share the
@@ -64,7 +64,7 @@ beh_test_drivers = { path = "shims/drivers" }
 azos_robot = { path = "shims/robot", package = "beh_test_robot" }
 azos_limits = { path = "shims/limits", package = "beh_test_limits" }
 # The flight recorder's `LogStorage` seam is a trait `logger.rs` defines
-# itself now (domains/robot/behavior no longer depends on azos_fs at all -- see
+# itself now (crates/domains/robot/behavior no longer depends on azos_fs at all -- see
 # tools/lint/tcb_check.sh), so the fault-injecting stand-in that used to impersonate
 # azos_fs's whole API lives directly in this crate as `log_storage_mock`
 # (src/lib.rs) instead of a separate aliased shim crate.

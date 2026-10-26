@@ -4,7 +4,7 @@
 //! the stop work domains register into it, and the seams the kernel installs
 //! at boot (capability-denial and audit recorders, the ring-3 e-stop).
 //!
-//! Moved out of `domains/robot/safety-core/src/actuation.rs` (wave 11,
+//! Moved out of `crates/domains/robot/safety-core/src/actuation.rs` (wave 11,
 //! DOMAIN). What stays there is the robot's own part: the motor gate and
 //! halt query, the motor-command record, the flight-arm gate, and the
 //! registration of the robot's stop work into the tables below.
@@ -126,7 +126,7 @@ pub fn install() {
     // The capability layer's refusals reach the black box the same way the
     // motor gate reaches the safety layer: through a hook the kernel
     // installs, because `crates/core/syscall` cannot depend on
-    // `domains/robot/behavior` without closing a cycle.
+    // `crates/domains/robot/behavior` without closing a cycle.
     //
     // `SAFETY_CAP_DENIED` existed as an event code with no production
     // caller — the refusal happened, nothing recorded it. A denial is a
@@ -248,7 +248,7 @@ pub fn install() {
     // only difference is the source code in the record.
     //
     // Through a hook for the usual reason: `crates/core/syscall` cannot depend
-    // on `domains/robot/behavior` (cycle), and the latch, the recorder and the
+    // on `crates/domains/robot/behavior` (cycle), and the latch, the recorder and the
     // ESC all live above it.
     fn ring3_estop() {
         // ALREADY LATCHED IS ALREADY DONE — and this guard is the fix
@@ -274,7 +274,7 @@ pub fn install() {
         // the flag is false again by then, and the record below says the stop
         // undid a clear. And the check lives HERE rather
         // than in `MotorServer::estop` because `crates/core/syscall` cannot reach
-        // `domains/robot/behavior` — the same cycle that put this behind a hook.
+        // `crates/domains/robot/behavior` — the same cycle that put this behind a hook.
         if crate::estop::estop_is_active() { return; }
 
         // The operator's clear, read BEFORE the latch: arming spends the

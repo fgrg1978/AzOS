@@ -41,7 +41,7 @@ const TILT_ESTOP_MG: i32 = 700;
 //
 // That doc was wrong. The `Motor` interface's `speed` takes an UNSIGNED
 // percentage and always drives forward, and `motor_set`
-// (domains/robot/robot/src/motor.rs) clamps it with `speed_pct.min(100)`. A
+// (crates/domains/robot/robot/src/motor.rs) clamps it with `speed_pct.min(100)`. A
 // sign-extended -30 arrives as 0xFFFF...E2 and clamps to 100 — so "reverse
 // away from the obstacle" drove BOTH MOTORS FULL SPEED FORWARD INTO IT. On
 // QEMU that was a log line; on the robot it is a collision, and it is the

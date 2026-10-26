@@ -129,7 +129,7 @@ impl<T: Copy> Channel<T> {
     /// on an unpublished channel is a board RESET.
     ///
     /// **It was reachable on real hardware and invisible in QEMU.** The flight
-    /// controller (`domains/robot/safety-core`'s `flight_control_task`, created
+    /// controller (`crates/domains/robot/safety-core`'s `flight_control_task`, created
     /// unconditionally at boot) reads three channels this way on every
     /// iteration. `CH_RC_INPUT` is published only when `rc_read()` returns
     /// `Some`, and with `RcMode::Sbus` — the mode a real receiver uses — the

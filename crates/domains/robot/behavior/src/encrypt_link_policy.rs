@@ -7,7 +7,7 @@
 //! kept dependency-free, same reason `crates/core/ota/src/pure.rs` is, so
 //! `tests/host/behavior-tests/` can `#[path]`-include this file directly and
 //! exercise the exact decision `derive_ephemeral_priv`
-//! (`domains/robot/behavior/src/encrypt_link.rs`) makes, on the host, with no
+//! (`crates/domains/robot/behavior/src/encrypt_link.rs`) makes, on the host, with no
 //! hardware shims involved.
 
 /// `true` iff ephemeral-key derivation must refuse rather than derive a key

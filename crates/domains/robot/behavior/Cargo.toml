@@ -28,7 +28,7 @@ azos_rings        = { workspace = true }
 azos_drv_sys      = { workspace = true }
 azos_drv_gpio     = { workspace = true }
 azos_drv_actuator = { workspace = true }
-azos_crypto       = { path = "../../../crates/core/crypto" }
+azos_crypto       = { path = "../../../../crates/core/crypto" }
 # Graded degrade level — motor_envelope reads degrade_level() from
 # ipc and level_cap_pct() from the dep-free degrade-policy leaf.
 azos_ipc          = { workspace = true }
@@ -43,4 +43,4 @@ azos_topology     = { workspace = true }
 # #[wcet(N_us)] proc-macro for per-function WCET budget annotations.
 # Host-built proc-macro; Cargo resolves it correctly for cross-compilation
 # because proc-macros are always built for the host (build target).
-wcet-macro = { path = "../../../crates/core/wcet-macro" }
+wcet-macro = { path = "../../../../crates/core/wcet-macro" }

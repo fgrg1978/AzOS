@@ -103,7 +103,7 @@ SUBSYS = [
     ("security", r"secure boot|secboot|topology|\bota\b|ota:|config|signed|seccomp|\bcap|toposign|key|tamper|crypto|spectre",
      "crates/core/topology/** crates/core/ota/** crates/core/crypto/** crates/core/config/** crates/core/azos-config/**"),
     ("safety", r"safety|e-stop|estop|watchdog|wdt|envelope|reflex|geofence|actuation|behavior|panic|safe mode",
-     "crates/core/actuation/** domains/robot/** crates/drivers/rc-esc/** crates/lib/control/** kernel/src/panic.rs kernel/src/behavior_*.rs"),
+     "crates/core/actuation/** crates/domains/robot/** crates/drivers/rc-esc/** crates/lib/control/** kernel/src/panic.rs kernel/src/behavior_*.rs"),
     ("lx", r"\blx\b|lx:|linux",
      "crates/drivers/lx/** crates/core/lx-loader/** crates/core/linux-abi/** userspace/tests/lx* "
      "crates/core/syscall/src/linux.rs"),
@@ -475,7 +475,7 @@ def check_manifest():
 CARGO_TOML = os.path.join(ROOT, "kernel", "Cargo.toml")
 # A row that depends on the robot domain (its deps name these): the gate runs
 # it on the robot cell, so its kernel features must close over `use-robot`.
-ROBOT_DEPS = ("domains/robot/", "crates/drivers/rc-esc/", "crates/lib/control/", "config/domains/Kconfig.robot", "config/domains/Kconfig.brain")
+ROBOT_DEPS = ("crates/domains/robot/", "crates/drivers/rc-esc/", "crates/lib/control/", "config/domains/Kconfig.robot", "config/domains/Kconfig.brain")
 
 
 def cargo_features(path):
@@ -613,7 +613,7 @@ def check_robot_rows(rs=None, man=None, robot=None):
 #            names them even under a dir glob that already covers them:
 #            tools/gate/rows_for_diff.py ranks a row by its most specific glob, so
 #            the row that reads a file's output outranks the rows that only
-#            build its crate (the bench row and domains/robot/bench).
+#            build its crate (the bench row and crates/domains/robot/bench).
 # A path the row only names as the prefix of a shell expansion
 # (`config/defconfigs/$cell.config`) is no dependency. Comment lines are not
 # read. A function at least SHARED_FN_ROWS rows reach (kbuild, make_disk, ...)
@@ -624,8 +624,8 @@ MARKER_MAX_SOURCES = 3
 HUB_FEATURES = 8
 REGISTRY_FILES = ("main.rs", "mod.rs", "lib.rs")
 TEST_HOOK_RE = re.compile(r"(-smoke|-canary|-test)$|^ktest$")
-SRC_ROOTS = ("kernel/", "arch/", "crates/", "domains/", "userspace/", "micro/", "sdk/")
-PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|arch|crates|domains|kernel|config"
+SRC_ROOTS = ("kernel/", "arch/", "crates/", "userspace/", "micro/", "sdk/")
+PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|arch|crates|kernel|config"
                      r"|sdk|micro|formal|Documentation)/[\w.+-]+(?:/[\w.+-]+)*)")
 IMG_RE = re.compile(r"\b(disk[\w-]*)\.img\b")
 STR_RE = re.compile(r'"((?:[^"\\$`]|\\.)*)"|\'([^\']*)\'')
@@ -1358,7 +1358,7 @@ def self_test():
     toy = {"use-robot": [], "a": ["use-robot"], "b": ["a"], "c": ["azos_x/use-robot"], "d": []}
     expect("robot closure %r" % robot_features(toy), robot_features(toy) == ["a", "b", "use-robot"])
     row = dict(key="r", fn="f", args=[], body='kbuild "qemu,d"', prior=None, flags=[], boots="qemu-system-riscv64")
-    man = {"r": ("n2", "domains/robot/**")}
+    man = {"r": ("n2", "crates/domains/robot/**")}
     import contextlib, io
     with contextlib.redirect_stdout(io.StringIO()):
         expect("canary: a robot-domain row with a generic kernel passes",
@@ -1377,9 +1377,9 @@ def self_test():
         ("suite closure", dict(syn, fn="host_canary_row", args=["syn", "tls-tests", "canary-no-pin", "t"]),
          "userspace/lib/tls/**"),
         ("image", dict(syn, body="fresh_disk $AZOS_OUT/build/disk-uhello.img"), "userspace/tests/uhello/**"),
-        ("feature dep", dict(syn, body='kbuild "qemu,use-robot"'), "domains/robot/bench/**"),
+        ("feature dep", dict(syn, body='kbuild "qemu,use-robot"'), "crates/domains/robot/bench/**"),
         ("marker", dict(syn, call='par_row qemu_run "syn" "run_all done emitted=49" 180'),
-         "domains/robot/bench/src/lib.rs"),
+         "crates/domains/robot/bench/src/lib.rs"),
     ]
     with contextlib.redirect_stdout(io.StringIO()):
         for what, r, want in cases:

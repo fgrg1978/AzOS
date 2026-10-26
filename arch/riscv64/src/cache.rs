@@ -418,7 +418,7 @@ mod probe {
     // private `stvec` handler this probe alone installs, so an illegal
     // instruction here never reaches the kernel's normal trap dispatcher —
     // which is the right call, not a shortcut: `txn_is_recoverable`
-    // (`domains/robot/safety-core/src/txn.rs`) deliberately excludes
+    // (`crates/domains/robot/safety-core/src/txn.rs`) deliberately excludes
     // TRAP_ILLEGAL_INSTR from recovery, and the generic `handle_exception`
     // arm for an S-mode illegal instruction stops the motors and shuts the
     // board down. A boot-time capability probe cannot be the thing that

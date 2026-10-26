@@ -31,7 +31,7 @@ use azos_sync::SpinLock;
 // Storage seam — the flight recorder's only contact with a filesystem.
 // ---------------------------------------------------------------------------
 //
-// `domains/robot/behavior` is core (the actuation authority) and `crates/fs` is
+// `crates/domains/robot/behavior` is core (the actuation authority) and `crates/fs` is
 // scaffolding (FAT32 is the only filesystem this OS has, but nothing in it
 // can move or stop a motor). This module used to call `fat32_mount_volume`/
 // `mkdir`/`open`/`write`/`fsync`/`close`/`file_stat` directly, which put a
@@ -456,7 +456,7 @@ pub const SAFETY_COW_OOM: u8 = 0x0F;
 /// (`azos_robot::motor::set_motor_gate`) was not installed yet.
 ///
 /// Owner decision 2026-09-25 (Q1.4): the motor write path already fails
-/// closed with no gate installed (`gate_speed` in `domains/robot/robot/src/
+/// closed with no gate installed (`gate_speed` in `crates/domains/robot/robot/src/
 /// motor.rs` now returns 0, not the requested speed), and this is the
 /// second, independent layer — boot refuses to hand a user program the CPU
 /// at all while that is true, rather than trusting the fail-closed default
@@ -590,7 +590,7 @@ pub const fn sup_record_detail(kind: u32, count: u8) -> u32 {
 /// One record per episode; an episode ends at the next verdict.
 pub const SAFETY_ML_ABSENT: u8 = 0x18;
 
-/// The rt-motor task's motor-command watchdog (`domains/robot/safety-core/
+/// The rt-motor task's motor-command watchdog (`crates/domains/robot/safety-core/
 /// src/rt_motor.rs`): no motor command for 500 ms holds SAFE STOP until one
 /// arrives. `action_code` is one of the `RTWD_ACTION_*` below.
 ///

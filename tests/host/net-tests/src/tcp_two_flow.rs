@@ -18,7 +18,7 @@
 //! **The control flow.** `CONTROL_MSG` = 31 B written every
 //! `CONTROL_PERIOD_MS` = 100 ms. 31 B is a diff-drive ActuatorCmd sealed for
 //! the brain link: a 13 B frame (payload 3 + 2 x 2 channels, `FRAME_OVERHEAD`
-//! 6, in `domains/robot/behavior/src/brain_protocol.rs`) in one Noise transport
+//! 6, in `crates/domains/robot/behavior/src/brain_protocol.rs`) in one Noise transport
 //! frame of `secure_channel::FRAME_OVERHEAD` 18 (`crates/core/crypto/src/secure_channel.rs`).
 //! 100 ms is the period of the kernel's behavior loop (`behavior_task` in
 //! `kernel/src/tasks/behavior.rs`), which sends one sensor frame per pass. On the robot

@@ -238,8 +238,8 @@ azos_common::ro_hook! {
     /// left none — only refusals and stops were recorded. This is the seam that
     /// closes it, installed once at boot by
     /// `azos_safety_core::actuation::install`, beside [`MOTOR_GATE`] and
-    /// [`MOTOR_HALT`] and for the same reason: `domains/robot/robot` cannot depend on
-    /// `domains/robot/behavior` (the flight recorder), so a function pointer crosses
+    /// [`MOTOR_HALT`] and for the same reason: `crates/domains/robot/robot` cannot depend on
+    /// `crates/domains/robot/behavior` (the flight recorder), so a function pointer crosses
     /// the seam instead of a direct call.
     ///
     /// `None` until installed — [`motor_set_reporting`] simply does not record,
@@ -250,7 +250,7 @@ azos_common::ro_hook! {
     /// every control tick, and a held command must be one record, not one per
     /// tick — the failure class `sys_wdt.rs`'s e-stop poll already had to learn
     /// for the same reason. The installed function additionally rate-limits per
-    /// motor (`domains/robot/safety-core/src/actuation.rs`), because "on change" alone
+    /// motor (`crates/domains/robot/safety-core/src/actuation.rs`), because "on change" alone
     /// still fires every tick of a ramping PID output.
     static MOTOR_RECORD: fn(id: u32, dir: MotorDir, speed_pct: u32);
 }

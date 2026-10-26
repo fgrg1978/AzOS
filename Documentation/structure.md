@@ -9,7 +9,7 @@ relative to the repository root. For the design behind the layout see
 Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 [crates/drivers](#cratesdrivers) | [crates/fs and crates/net](#cratesfs-and-cratesnet) |
 [crates/lib](#crateslib) |
-[domains/robot](#domainsrobot) | [Per-ISA layout](#per-isa-layout) |
+[crates/domains/robot](#cratesdomainsrobot) | [Per-ISA layout](#per-isa-layout) |
 [kernel/](#kernel) | [userspace/](#userspace) | [Tests and tools](#tests-and-tools)
 
 ## Top level
@@ -18,8 +18,7 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 |---|---|
 | `kernel/` | The kernel image: `kernel_main`, boot steps, per-ISA entry code, kernel tasks, panic handler, the linker scripts' shared include. |
 | `arch/` | The architecture crates: `api/` (`azos_arch_api`, the cross-ISA contract), `facade/` (`azos_arch`, re-exports the build's ISA crate), and one crate per ISA, `riscv64/`, `aarch64/`, `x86_64/`, each with its kernel linker scripts in `boot/`. |
-| `crates/` | Kernel libraries, in five groups: `core/`, `drivers/`, `fs/`, `net/`, `lib/`. |
-| `domains/robot/` | The optional robot application domain (linked only when the image selects it). |
+| `crates/` | Kernel libraries, in six groups: `core/`, `drivers/`, `fs/`, `net/`, `lib/`, and `domains/robot/` (the optional robot application domain, linked only when the image selects it). |
 | `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
 | `sdk/` | The native `std` SDK: target specs, linker scripts, the `std` overlay, and `sdktest`, the SDK's own test program. |
 | `micro/` | AzOS-micro, the MMU-less MCU kernel (riscv32imac, M-mode, PMP region domains, static tasks from the signed topology in `micro/topology/`). It is its own workspace and links the main kernel's pure crates; `make micro` builds it. |
@@ -152,9 +151,9 @@ Source: `crates/fs/src/lib.rs`, `crates/net/stack/src/lib.rs`, `crates/net/*/Car
 
 Source: `crates/lib/*/*/Cargo.toml`.
 
-## domains/robot
+## crates/domains/robot
 
-| Crate (directory under `domains/robot/`) | What it holds |
+| Crate (directory under `crates/domains/robot/`) | What it holds |
 |---|---|
 | `safety-core` | The safety path of the actuation authority: the motor gate (`actuation.rs`), the real-time motor loop (`rt_motor.rs`), flight control (`flight_ctrl.rs`), the transactional control ticks rolled back on a synchronous exception (`txn.rs`). |
 | `degrade-policy` | The graded degrade levels and their speed ceilings (leaf crate). |
@@ -165,7 +164,7 @@ Source: `crates/lib/*/*/Cargo.toml`.
 | `robot` | Robot framework: PID controller, motor control, sensor abstraction. |
 | `bench` | Synthetic microbenchmarks for kernel subsystems. |
 
-Source: `domains/robot/*/Cargo.toml`, `config/axes/Kconfig.use`.
+Source: `crates/domains/robot/*/Cargo.toml`, `config/axes/Kconfig.use`.
 
 ## Per-ISA layout
 

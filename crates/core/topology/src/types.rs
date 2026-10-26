@@ -170,7 +170,7 @@ impl Preemption {
 }
 
 /// How far a principal's effects are allowed to go: the degrade vocabulary of
-/// `domains/robot/degrade-policy` (`DEGRADE_LEVEL_*`), ordered from no
+/// `crates/domains/robot/degrade-policy` (`DEGRADE_LEVEL_*`), ordered from no
 /// restriction to none at all. The same word is a class's `envelope`, a guest's
 /// `envelope` and a `[degrade.NAME]` row's `level`.
 ///

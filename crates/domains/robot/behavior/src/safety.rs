@@ -13,7 +13,7 @@
 //! subsumption arbiter. For the always-runs / always-applied /
 //! cannot-be-disabled invariant and its evidence, see the comment on the
 //! `layer_emergency_stop` call inside `arbitrate()` in
-//! `domains/robot/behavior/src/arbiter.rs` (canonical statement) — this module only
+//! `crates/domains/robot/behavior/src/arbiter.rs` (canonical statement) — this module only
 //! computes the `SafetyAction` that L0 consumes.
 //!
 //! Robot types:
@@ -285,7 +285,7 @@ pub fn cmd_low_confidence() -> bool {
 /// `motor_set` among several: `sys_motor_speed` and `sys_motor_enable` reach
 /// the motors without passing through here. What makes the envelope
 /// unavoidable is the actuation gate inside `motor_set`
-/// (`domains/robot/robot/src/motor.rs`), which calls this. Every command source funnels
+/// (`crates/domains/robot/robot/src/motor.rs`), which calls this. Every command source funnels
 /// through it).
 ///
 /// This complements, and does not replace, the sensor-reactive L0 `safety_check`

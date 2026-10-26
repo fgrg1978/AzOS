@@ -8,7 +8,7 @@ the argument for where it sits.
 
 ## What the envelope is
 
-Source: `domains/robot/behavior/src/safety.rs`
+Source: `crates/domains/robot/behavior/src/safety.rs`
 
 `motor_envelope(speed_l, speed_r) -> (i32, i32)` takes a requested pair of
 speed percentages (plus or minus 100) and returns the pair the machine may
@@ -21,7 +21,7 @@ allocation and no I/O. The steps, in order:
 2. **Robot-type cap.** For wheeled and Ackermann robots the cap is
    `SAFETY_WHEELED_MAX_SPEED_PCT` (80). Other robot types start at 100 here: their
    per-type limits are handled on their own paths (the flight loop in
-   `domains/robot/safety-core/src/flight_ctrl.rs` reads the same e-stop latch
+   `crates/domains/robot/safety-core/src/flight_ctrl.rs` reads the same e-stop latch
    every tick). The robot type is a build-time choice
    (`ROBOT_TYPE_ID`, Kconfig `config/domains/Kconfig.robot`).
 3. **Confidence cap.** If the most recent brain command was marked
@@ -37,7 +37,7 @@ last step overwrite the cap, would let the looser constraint through.
 
 ## Where it sits
 
-Source: `domains/robot/robot/src/motor.rs`, `domains/robot/safety-core/src/actuation.rs`, `domains/robot/safety-core/src/rt_motor.rs`
+Source: `crates/domains/robot/robot/src/motor.rs`, `crates/domains/robot/safety-core/src/actuation.rs`, `crates/domains/robot/safety-core/src/rt_motor.rs`
 
 The envelope has to be at the one place every command becomes a duty write,
 not at the places commands come in. Gating at the ingest sites (the network
@@ -50,7 +50,7 @@ A ring-3 program holding a motor capability reaches the motors through
 syscalls, and a driver server through its own path. What makes the envelope
 unavoidable is the gate inside the motor layer:
 
-* `set_motor_gate` in `domains/robot/robot/src/motor.rs` installs a function
+* `set_motor_gate` in `crates/domains/robot/robot/src/motor.rs` installs a function
   `(id, speed_pct) -> speed_pct` that `motor_set_reporting` applies to every
   duty before it is written.
 * `azos_safety_core::actuation::install` installs `actuation_gate`, which returns
@@ -79,7 +79,7 @@ clamp that holds for a minute is one event.
 
 Every change of a wheel's applied (direction, duty), after the gate, is one
 actuator-command record (`set_motor_recorder`, `record_motor_change` in
-`domains/robot/safety-core/src/actuation.rs`), at most four per wheel per
+`crates/domains/robot/safety-core/src/actuation.rs`), at most four per wheel per
 second; the value a window suppressed is written at the next window's first
 change. With Kconfig `MOTOR_COMMANDER_EXIT_STOP` (default `y` with the robot
 domain) a ring-3 task that leaves a wheel at a non-zero duty through the
@@ -89,7 +89,7 @@ durable `SAFETY_ESTOP` record written that does not latch
 
 ## Confidence-aware limit
 
-Source: `domains/robot/behavior/src/brain_protocol.rs`, `domains/robot/behavior/src/safety.rs`, `kernel/src/tasks/behavior.rs`
+Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `crates/domains/robot/behavior/src/safety.rs`, `kernel/src/tasks/behavior.rs`
 
 Commands are not equally trustworthy. A scripted or planned step is more
 reliable than a single reactive action taken from one camera frame. The brain
@@ -105,7 +105,7 @@ anything.
 
 ## Why a runtime gate
 
-Source: `domains/robot/behavior/src/safety.rs`
+Source: `crates/domains/robot/behavior/src/safety.rs`
 
 The envelope follows the Simplex pattern: a small, simple gate that does not
 depend on the complex, untrusted component in front of it, and that holds
@@ -123,7 +123,7 @@ output.
 
 ## Limitations
 
-Source: `domains/robot/behavior/src/safety.rs`, `domains/robot/behavior/src/brain_protocol.rs`
+Source: `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/behavior/src/brain_protocol.rs`
 
 * The speed unit is a duty percentage per wheel. The envelope does not know
   the robot's real velocity, mass or stopping distance.

@@ -302,7 +302,7 @@ config NO_ML
     default n
     help
       Compiles out the ML service path: the behavior arbiter's ML layer
-      (domains/robot/behavior), the ML supervisor and the recovery shell's
+      (crates/domains/robot/behavior), the ML supervisor and the recovery shell's
       ML commands; the boot prints `[ML] Compile-time disabled`. For an
       image with no ML service and no weights. Off: the ML path is built
       and the topology decides whether it runs.
