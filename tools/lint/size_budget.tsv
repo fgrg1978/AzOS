@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2749268
-riscv64-qemu	.rodata	488424
-riscv64-qemu	.data	3257632
-riscv64-qemu	.bss	5801824
-riscv64-qemu	reason	main-split: kernel_main's phases moved out of main.rs (pure move, inlined); rustc's codegen-unit partitioning shifted, .rodata crosses one more 4 KiB step (panic locations name the new files)
+riscv64-qemu	.text	2680470
+riscv64-qemu	.rodata	450912
+riscv64-qemu	.data	3257832
+riscv64-qemu	.bss	5795552
+riscv64-qemu	reason	codegen-units = 1 for the kernel workspace: one unit per crate, .text -2.5%, .rodata -7.7%

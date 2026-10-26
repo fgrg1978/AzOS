@@ -625,6 +625,13 @@ debug = true       # Keep debug info for GDB
 # CSE the confirmation pass into nothing; re-audit that function before
 # flipping this.
 lto = false
+# One codegen unit per crate: with the default 16, rustc groups a crate's items
+# into units by module, so moving code between files changes which functions
+# LLVM can inline into which (the main.rs split took x86 `trap::irq::arm` from
+# 56 to 792 instructions). Pinned, the code depends on the program, not on the
+# file layout. This workspace holds only the bare-metal kernel and its crates;
+# the host suites (tests/host/*) are workspaces of their own and keep theirs.
+codegen-units = 1
 panic = "abort"
 overflow-checks = true   # Detect integer overflow at runtime (safety > speed)
 
