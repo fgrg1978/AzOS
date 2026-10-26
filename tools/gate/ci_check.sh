@@ -24063,7 +24063,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # no robot task created — each robot task's own `[SCHED] Created` line is
     # what only the failure prints.
     GENERIC_DIR="$AZOS_OUT/target/generic"
-    GENERIC_ROBOT_CRATES="$(for d in "${REPO_ROOT}"/domains/robot/*/; do
+    GENERIC_ROBOT_CRATES="$(for d in "${REPO_ROOT}"/domains/robot/*/ "${REPO_ROOT}"/crates/drivers/rc-esc/; do
             n="$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$d/Cargo.toml" | sed -n 1p)"
             printf "%s\n" "$n"
         done; printf '%s\n' azos_multi_stream azos_camera azos_imu azos_baro azos_gps)"

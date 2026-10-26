@@ -95,7 +95,7 @@ azos_common::ro_hook! {
     /// boot.
     ///
     /// Same seam and the same reason as `CAP_DENY_RECORDER` above: latching the
-    /// e-stop lives in `domains/robot/behavior`, disarming the ESC in `domains/robot/drivers`,
+    /// e-stop lives in `domains/robot/behavior`, disarming the ESC in `crates/drivers/rc-esc`,
     /// and the durable record in the flight recorder — all above this crate in the
     /// graph, so the kernel is the one place that can see both sides.
     ///

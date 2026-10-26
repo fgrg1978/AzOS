@@ -284,7 +284,7 @@ config RC_INPUT
     default y if USE_ROBOT
     default n
     help
-      Wires the RC receiver (domains/robot/drivers/src/rc.rs) into the
+      Wires the RC receiver (crates/drivers/rc-esc/src/rc.rs) into the
       behavior loop (kernel/src/tasks/rc_safety.rs; the policy is
       domains/robot/behavior/src/rc_link.rs): a receiver failsafe or a link
       silent for RC_LINK_TIMEOUT_MS latches the e-stop (when

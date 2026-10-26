@@ -114,6 +114,7 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `usb` | The native USB host (Kconfig `USB_HOST`, `USB_XHCI`): the xHCI controller driver, the DWC3 dual-role check, the USB core (enumeration, descriptors, hubs, pipes, hot-plug events), the class-driver interface, the mass-storage and CDC (ACM, ECM, NCM) class drivers, and the `lsusb`-style listing. The kernel half is `kernel/src/boot/usb.rs`. |
 | `gpio` | The pin controller and its `Driver` registration. |
 | `actuator` | PWM, the motor PID loop and the buzzer's kernel host. |
+| `rc-esc` | `azos_robot_drivers`: the ESC outputs for brushless motors (over `actuator`'s PWM) and the RC receiver (SBUS / PPM). |
 | `buzzer` | Piezo buzzer chip logic, one source for both placements. |
 | `ina219` | INA219 power-monitor chip logic, one source for both placements. |
 | `sensor` | INA219, ADS1115 ADC, LD19 LiDAR, range finders, MIPI CSI-2 camera interface. |
@@ -153,7 +154,6 @@ Source: `crates/fs/src/lib.rs`, `crates/net/stack/src/lib.rs`, `crates/net/*/Car
 | `nav` | Waypoints, mission, occupancy grid, obstacle avoidance. |
 | `telemetry` | The binary telemetry protocol. |
 | `robot` | Robot framework: PID controller, motor control, sensor abstraction. |
-| `drivers` | Drivers only this domain uses: ESC outputs and the RC receiver. |
 | `bench` | Synthetic microbenchmarks for kernel subsystems. |
 
 Source: `domains/robot/*/Cargo.toml`, `config/axes/Kconfig.use`.

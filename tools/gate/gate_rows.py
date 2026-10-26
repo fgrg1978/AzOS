@@ -103,7 +103,7 @@ SUBSYS = [
     ("security", r"secure boot|secboot|topology|\bota\b|ota:|config|signed|seccomp|\bcap|toposign|key|tamper|crypto|spectre",
      "crates/core/topology/** crates/core/ota/** crates/core/crypto/** crates/core/config/** crates/core/azos-config/**"),
     ("safety", r"safety|e-stop|estop|watchdog|wdt|envelope|reflex|geofence|actuation|behavior|panic|safe mode",
-     "crates/core/actuation/** domains/robot/** kernel/src/panic.rs kernel/src/behavior_*.rs"),
+     "crates/core/actuation/** domains/robot/** crates/drivers/rc-esc/** kernel/src/panic.rs kernel/src/behavior_*.rs"),
     ("lx", r"\blx\b|lx:|linux",
      "crates/drivers/lx/** crates/core/lx-loader/** crates/core/linux-abi/** userspace/tests/lx* "
      "crates/core/syscall/src/linux.rs"),
@@ -475,7 +475,7 @@ def check_manifest():
 CARGO_TOML = os.path.join(ROOT, "kernel", "Cargo.toml")
 # A row that depends on the robot domain (its deps name these): the gate runs
 # it on the robot cell, so its kernel features must close over `use-robot`.
-ROBOT_DEPS = ("domains/robot/", "config/domains/Kconfig.robot", "config/domains/Kconfig.brain")
+ROBOT_DEPS = ("domains/robot/", "crates/drivers/rc-esc/", "config/domains/Kconfig.robot", "config/domains/Kconfig.brain")
 
 
 def cargo_features(path):

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host-side tests for the computation inside the driver class crates
-//! (`crates/drivers/<class>`, `domains/robot/drivers`).
+//! (`crates/drivers/<class>`, `crates/drivers/rc-esc`).
 //!
 //! **WHY.** 11274 lines, zero tests, and it is the crate that touches the
 //! hardware: GPIO, PWM, I2C, SPI, VirtIO, MACB, camera, ESC, rangefinder.
@@ -977,7 +977,7 @@ mod can_frames {
 // statics would race and make the outcome depend on scheduling rather than
 // the code.
 #[allow(dead_code)]
-#[path = "../../../../domains/robot/drivers/src/rc.rs"]
+#[path = "../../../../crates/drivers/rc-esc/src/rc.rs"]
 mod rc;
 
 #[cfg(test)]

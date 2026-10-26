@@ -44,7 +44,7 @@ pub const MAX_MOTORS: usize = 8;
 /// `RcInput::channels` holds exactly what `azos_robot_drivers::rc::rc_read`
 /// returns — pulse widths in `RC_PULSE_MIN_US`..=`RC_PULSE_MAX_US` — so the
 /// neutral stick is the midpoint of that range. Its home is beside the two
-/// bounds in `domains/robot/drivers/src/rc.rs`.
+/// bounds in `crates/drivers/rc-esc/src/rc.rs`.
 pub const RC_PULSE_CENTER_US: u16 = (RC_PULSE_MIN_US + RC_PULSE_MAX_US) / 2;
 
 // `rc_to_target` scales `channel_signed` by 9 and by 60 to reach ±4500 cdeg

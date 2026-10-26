@@ -103,7 +103,7 @@ crate_dir() {
 # Directory names under crates/ and domains/ (group-qualified where a name is
 # in two groups). The Cargo *package* name is read from each Cargo.toml
 # (`pkg_name`): the driver class crates (w14) break the old `azos_<dir>`
-# rule — crates/drivers/sys is `azos_drv_sys`, domains/robot/drivers is
+# rule — crates/drivers/sys is `azos_drv_sys`, crates/drivers/rc-esc is
 # `azos_robot_drivers`.
 
 CORE_CRATES="
@@ -186,7 +186,7 @@ hwbus input nvme bytepipe devif idl
 # `record` is empty.
 
 PROFILE_CRATES="
-behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core drivers
+behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-core rc-esc
 lx-loader
 "
 
