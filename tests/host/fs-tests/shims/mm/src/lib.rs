@@ -5,7 +5,7 @@
 
 /// The page cache's backing callback: the REAL
 /// `crates/core/mm/src/page_backing.rs` (core-only), under the path the real
-/// crate exports it by (`azos_mm::pager`), for `crates/fs/fs/src/pagecache.rs`.
+/// crate exports it by (`azos_mm::pager`), for `crates/fs/src/pagecache.rs`.
 #[path = "../../../../../../crates/core/mm/src/page_backing.rs"]
 mod page_backing;
 

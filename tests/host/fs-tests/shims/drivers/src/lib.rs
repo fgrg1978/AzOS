@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host stand-in for the driver class crates `crates/fs/fs` names
+//! Host stand-in for the driver class crates `crates/fs` names
 //! (`azos_drv_block`, `azos_drv_sys`, `azos_drv_base`), reduced to the things
-//! `crates/fs/fs/src/fat32.rs` actually calls: `blkdev::{read,write,flush}` and
+//! `crates/fs/src/fat32.rs` actually calls: `blkdev::{read,write,flush}` and
 //! `kprintln!`. The suite aliases each of those crate names to this one.
 //!
 //! **WHY this exists.** The real driver crates are RV64-only — MMIO,

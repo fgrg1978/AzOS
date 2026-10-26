@@ -378,7 +378,7 @@ pub fn write(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
 /// [`write`] without telling the observer: for the one caller that updates
 /// the block cache itself (FAT32's write-through path), which may hold the
 /// cache's lock while it writes. `tests/host/fs-tests` keeps its callers to
-/// `crates/fs/fs/src/fat32.rs`.
+/// `crates/fs/src/fat32.rs`.
 #[inline]
 pub fn write_quiet(sector: u64, count: u32, buf: &[u8]) -> Result<(), ()> {
     rt_io_check();

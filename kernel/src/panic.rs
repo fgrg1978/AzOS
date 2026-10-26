@@ -144,7 +144,7 @@ fn capture(hart: usize, tid: u32) -> PanicContext {
         preempt_depth: azos_sync::preempt::depth(),
         irqs_were_enabled: azos_sync::preempt::irqs_enabled(),
         // Locks nobody else would release: held `Mutex`es, FAT-sector
-        // claims (crates/fs/fs/src/fat32.rs, F1: not a mutex, same rule) and
+        // claims (crates/fs/src/fat32.rs, F1: not a mutex, same rule) and
         // the claims held across device waits (F1: the flight recorder's
         // flush claim, the exec bounce buffer, the file descriptor I/O
         // claims; `azos_sync::claim`).
@@ -641,7 +641,7 @@ fn write_crash_log(in_pstore: bool) {
     // Write to FAT32 (best-effort), rotating to /fat/CRASH.OLD first if this
     // entry would push /fat/CRASH.LOG past `azos_fs::CRASH_LOG_CAP` (64
     // KiB / 128 entries). The decision and the open/write/close sequence both
-    // live in `crates/fs/fs/src/crash_log.rs`, which `tests/host/fs-tests` exercises
+    // live in `crates/fs/src/crash_log.rs`, which `tests/host/fs-tests` exercises
     // on the host — see that module's doc.
     //
     // Rotation is what removed the `MAX_FAT32_PROXY_BYTES` (8 MiB) failure

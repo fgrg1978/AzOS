@@ -338,7 +338,7 @@ fn the_file_syscalls_route_through_the_seam() {
 // because the console is intercepted before it.
 
 /// Sentinel matching `azos_fs::FD_NO_OWNER`, restated rather than imported
-/// because `crates/fs/fs` is not in this suite's dependency graph — the seam
+/// because `crates/fs` is not in this suite's dependency graph — the seam
 /// exists precisely so it is not.
 const NO_OWNER: u32 = 0;
 

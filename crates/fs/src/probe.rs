@@ -15,7 +15,7 @@
 //!   can also observe it on a live boot, not just on the host.
 //!
 //! The inode probe is opt-in via `feature = "fs-inode-probe"`
-//! (`crates/fs/fs/Cargo.toml`). Its one caller is a one-line hook in
+//! (`crates/fs/Cargo.toml`). Its one caller is a one-line hook in
 //! `kernel/src/main.rs`'s boot path, delivered as a diff — `main.rs` is not
 //! this front's file to edit directly.
 

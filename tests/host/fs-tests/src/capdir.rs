@@ -176,7 +176,7 @@ fn the_kernel_open_is_the_open_at_the_root() {
 /// filesystem with a path that skipped the join.
 #[test]
 fn only_the_joined_opens_are_public() {
-    let src = include_str!("../../../../crates/fs/fs/src/vfs.rs");
+    let src = include_str!("../../../../crates/fs/src/vfs.rs");
     let public: Vec<&str> = src
         .lines()
         .filter(|l| l.starts_with("pub fn vfs_open") || l.starts_with("pub fn open_"))

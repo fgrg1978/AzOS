@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! `NetDevice` — one trait per NIC backend, and the table of the NICs that
-//! came up: `crates/net/net` calls through it, by NIC number, instead of
+//! came up: `crates/net/stack` calls through it, by NIC number, instead of
 //! asking `eth::eth_is_ready()` at every one of its three call sites (send,
 //! recv, and the MAC/ready read at `net_init`).
 //!
 //! # What this replaces
 //!
-//! Before this module, `crates/net/net/src/lib.rs` did:
+//! Before this module, `crates/net/stack/src/lib.rs` did:
 //! ```ignore
 //! if azos_drv_net::eth::eth_is_ready() {
 //!     azos_drv_net::eth::eth_send(frame)
@@ -29,12 +29,12 @@
 //! # Why an enum-selected static, not `&'static dyn NetDevice`
 //!
 //! This workspace builds with `lto = false`, so a call through `dyn
-//! NetDevice` cannot be devirtualised across the `crates/net/net` ↔
+//! NetDevice` cannot be devirtualised across the `crates/net/stack` ↔
 //! `crates/drivers/net` boundary — every `send`/`recv` on the network hot path
 //! would keep a real vtable indirection forever. The two-backend enum
 //! dispatch below compiles to a compare-and-branch on a byte the caller
 //! already has to load, and every method on [`EthNetDevice`] /
-//! [`VirtioNetDevice`] is `#[inline]`, so the whole chain — `crates/net/net`'s
+//! [`VirtioNetDevice`] is `#[inline]`, so the whole chain — `crates/net/stack`'s
 //! `net_raw_send` down to the backend's own `send`/`eth_send` — is eligible
 //! to inline into one function body despite the crate boundary. See the
 //! module doc on why that boundary matters at all: cross-crate calls need an

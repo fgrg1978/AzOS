@@ -27,7 +27,7 @@ mod entry_asm;
 // `p_vaddr` the real loader refuses). Dedicated crates that pull the
 // REAL source via `#[path]` now cover the same ground for real:
 // `mm-tests` (`crates/core/mm/src/pmm.rs`), `net-tests`
-// (`crates/net/net/src/tcp.rs` — the exact `window_clamp`/rx-ring properties
+// (`crates/net/stack/src/tcp.rs` — the exact `window_clamp`/rx-ring properties
 // `tcp_ring_buffer`/`tcp_window_clamp` below used to mirror), `fs-tests`,
 // `bytepipe-tests`, `crypto-tests` (a correct, real `Aes128::encrypt_block`
 // round-trip already existed there — see this crate's own

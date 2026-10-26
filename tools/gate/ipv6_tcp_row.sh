@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
-# Gate row for TCP over IPv6 and SLAAC (crates/net/net: ipv6.rs, tcp.rs,
+# Gate row for TCP over IPv6 and SLAAC (crates/net/stack: ipv6.rs, tcp.rs,
 # socket.rs): the "network: IPv6 SLAAC on the wire" row of tools/gate/ci_check.sh.
 # What slirp does was read off this row's frame capture (QEMU 11.0, libslirp
 # 4.9.1): the places that are still from memory are marked UNVERIFIED.

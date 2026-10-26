@@ -26,7 +26,7 @@
 ///
 /// - **Above one retransmission timeout.** The socket takes nothing while the
 ///   send window is full, and a segment lost then comes back only after
-///   `RTO_INITIAL_MS` (1000 ms, `crates/net/net/src/tcp.rs`). A bound below that
+///   `RTO_INITIAL_MS` (1000 ms, `crates/net/stack/src/tcp.rs`). A bound below that
 ///   would end a healthy session on one lost segment; twice it lets the first
 ///   retransmission land.
 /// - **Below the brain's shortest comms timeout.** `comms_timeout_s` is 3.0 s

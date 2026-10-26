@@ -339,7 +339,7 @@ pub mod oflag {
 /// What an `openat` asks for, in the native vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenReq {
-    /// `crates/fs/fs/src/vfs.rs` flags: access mode, `O_CREAT` 0x40,
+    /// `crates/fs/src/vfs.rs` flags: access mode, `O_CREAT` 0x40,
     /// `O_TRUNC` 0x200, `O_APPEND` 0x400 (the same values as Linux).
     pub native: u64,
     /// `O_DIRECTORY`: only a directory may be opened.

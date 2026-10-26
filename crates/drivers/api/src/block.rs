@@ -7,7 +7,7 @@
 /// (virtio-blk on QEMU, NVMe) over the request layer, `Mmc` on VF2/K1.
 ///
 /// `#[inline]` on every method: with `lto = false` workspace-wide, a
-/// cross-crate call (this crate to `crates/fs/fs`) is not inlined without the
+/// cross-crate call (this crate to `crates/fs`) is not inlined without the
 /// hint, and the FAT32 read path (`fat32_read_chain` → `fat32_next_cluster`
 /// → `read_sector` → `blkdev::read`) runs on every file read and every
 /// exec. Each method here is a one-line forward to the existing

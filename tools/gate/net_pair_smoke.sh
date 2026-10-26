@@ -153,7 +153,7 @@ done
 # MSS and nothing else, so every other boot runs without Window Scale, SACK,
 # Timestamps and ECN and a round trip passes either way. Each side prints what its
 # connection agreed. Shift 1 is `RCV_WSCALE` for the 128 KiB receive ring
-# (`crates/net/net/src/tcp.rs`); the value is pinned, not just the option's
+# (`crates/net/stack/src/tcp.rs`); the value is pinned, not just the option's
 # presence. Timestamps and ECN: Kconfig TCP_TIMESTAMPS and TCP_ECN, on in the
 # image this boots.
 OPTS="NETSMOKE] opts wscale=1/1 sack=1 ts=1 ecn=1"

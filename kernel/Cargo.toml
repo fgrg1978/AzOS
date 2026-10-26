@@ -468,7 +468,7 @@ usb-storage = ["usb-hc", "azos_drv_block/usb-msc"]
 # it on; azos_drv_net's adapter, crates/drivers/net/src/usb_net.rs).
 usb-net = ["usb-hc", "azos_drv_net/usb-net"]
 # Kconfig USB_STORAGE_VOLUME: the stick's FAT32 volume mounted beside /fat
-# (crates/fs/fs/src/usbvol.rs).
+# (crates/fs/src/usbvol.rs).
 usb-storage-volume = ["usb-storage", "azos_fs/usb-volume"]
 # Kconfig USB_CDC: the CDC class driver: ECM/NCM as a NIC of the network device
 # table (crates/drivers/net/src/usb_net.rs), ACM as a `Uart` port
@@ -846,7 +846,7 @@ irq-reinit-probe = ["qemu"]
 # Temporary: prints how long an ARP resolution actually took, to set the
 # budget from data instead of by argument.
 arp-timing = ["qemu", "azos_net/arp-timing"]
-# Gate row and canary (wave 15): see crates/net/net/Cargo.toml.
+# Gate row and canary (wave 15): see crates/net/stack/Cargo.toml.
 loopback-preempt-probe = ["qemu", "azos_net/loopback-preempt-probe"]
 loopback-guard-canary = ["qemu", "azos_net/loopback-guard-canary"]
 # Gate canary (`riscv64: net-poll idle canary`): the net-poll task keeps the
@@ -1112,7 +1112,7 @@ irq-nomem-canary = ["irq-order-probe", "azos_arch/irq-nomem-canary"]
 # `[VDSO] mapped` line. Refusals, floors, aborts and fallbacks print anyway.
 spawn-log = ["azos_syscall/spawn-log", "azos_sched/spawn-log"]
 # Wave 14 vsbench diagnostic: per-phase cost of a backend file open/read/close
-# (crates/fs/fs/src/census.rs). Never in a shipped build.
+# (crates/fs/src/census.rs). Never in a shipped build.
 file-census = ["azos_fs/file-census"]
 # Wave 15 (FW) canaries, for a before/after vsbench `disk` run: an in-place
 # write closes an epoch for its own entry again; a full hold table frees one
@@ -1139,7 +1139,7 @@ lat-irqsoff-canary = ["lat-smoke", "lat-trace", "azos_sched/pool-lock-spin-canar
 # Wave 15 (FM): it also counts FAT device I/O issued under a held Mutex
 # (`pi_io=` in `[LAT] load`; owner rule F1 wants 0).
 lat-fat = ["lat-smoke", "azos_fs/fat-pi-io-probe", "azos_drv_virtio/blk-wait-probe"]
-# Its canary: a `SpinLock` held across each FAT update (crates/fs/fs/src/fat32.rs).
+# Its canary: a `SpinLock` held across each FAT update (crates/fs/src/fat32.rs).
 fat-mutate-spin-canary = ["lat-fat", "lat-trace", "azos_fs/fat-mutate-spin-canary"]
 # F1 canary: a `Mutex` held across each FAT update; `pi_io=` goes non-zero.
 fat-mutate-pi-canary = ["lat-fat", "azos_fs/fat-mutate-pi-canary"]

@@ -8907,7 +8907,7 @@ par "aarch64 granule 64 KiB" aarch64_granule_row 64
 # end, on real riscv64 QEMU, for the first time (`grep -c CRASH.LOG
 # tools/gate/ci_check.sh` was 0 before this row). Boot 1 panics ON PURPOSE
 # (nothing else in this gate provokes a genuine `panic!()` on riscv64 — see
-# `crates/fs/fs/src/lib.rs`'s `crash-log-smoke`-gated `vfs_mount` wrapper, the
+# `crates/fs/src/lib.rs`'s `crash-log-smoke`-gated `vfs_mount` wrapper, the
 # ONLY caller of that feature, and its doc for why the trigger lives there
 # and not in `vfs.rs`/`fat32.rs`/`crash_log.rs`, all three of which
 # `tests/host/fs-tests` pulls whole and which must therefore stay free of this
@@ -10785,11 +10785,11 @@ host_job host_canary_row "envelope: truncate canary" fs-tests envelope-delete-ca
 host_job host_canary_row "envelope: snapshot drop canary" fs-tests envelope-delete-canary a_refused_snapshot_drop_leaves_the_snapshot
 host_job host_canary_row "envelope: egress canary" net-tests envelope-egress-canary a_sendto_past_the_rows_reach_is_refused_and_nothing_leaves
 host_job host_canary_row "envelope: connect canary" net-tests envelope-egress-canary a_connect_asks_once_for_the_peer_and_a_refused_one_connects_nothing
-# A NIC queue a ring-3 program took (crates/net/net/src/nic_queue.rs): the
+# A NIC queue a ring-3 program took (crates/net/stack/src/nic_queue.rs): the
 # canary makes the receive pass ignore the take, and the named test, alone,
 # must go red (the stack would get the queue's frames).
 host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-canary a_taken_queue_goes_to_the_sink_and_the_stack_sees_none_of_it
-# SLAAC (crates/net/net/src/ipv6.rs, RFC 4862): Duplicate Address Detection
+# SLAAC (crates/net/stack/src/ipv6.rs, RFC 4862): Duplicate Address Detection
 # and the valid-lifetime rule of §5.5.3 (e); each canary takes one out.
 host_job host_canary_row "ipv6: no DAD canary" net-tests slaac-no-dad-canary the_advertisement_slirp_sends_forms_its_address_through_duplicate_address_detection
 host_job host_canary_row "ipv6: claim ignored canary" net-tests slaac-no-dad-canary a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned
@@ -11229,7 +11229,7 @@ host_job host_canary_row "wake: ring exclusion canary (host)" sched-wake-tests w
 host_job host_canary_row "wake: public TID canary (host)" inspect-tests wake-public-tid-canary \
     a_public_reader_never_sees_a_task_id
 
-# net-tests again at the fleet ring. The run above compiles `crates/net/net` from
+# net-tests again at the fleet ring. The run above compiles `crates/net/stack` from
 # the workspace `.config` (the 128 KiB ring of edge); this one from the config
 # `fleet_config` expands (a 16 KiB ring, 1024 connections), the same way the
 # fleet build row does: `KCONFIG_CONFIG`, and a target dir of its own so neither
@@ -21028,7 +21028,7 @@ PYEOF
     # (6 KiB: chain allocation, free, journal barriers) every 1.37 ms, not
     # paced by lat-rt, while lat-rt (priority 1, same hart) measures its
     # wake-ups against the same 100 us bound. The cause these rows pin:
-    # `FAT_MUTATE` (crates/fs/fs/src/fat32.rs) was a `SpinLock`, so the
+    # `FAT_MUTATE` (crates/fs/src/fat32.rs) was a `SpinLock`, so the
     # allocator's FAT scan and entry writes, each a virtio-blk round trip,
     # ran with preemption off on the writer's hart — and under -icount the
     # length followed host load: one cause of the intermittent `rt7: panic

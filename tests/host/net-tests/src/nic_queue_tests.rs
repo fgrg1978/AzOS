@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! A NIC queue taken from the stack by a ring-3 program
-//! (`crates/net/net/src/nic_queue.rs`): who may take one, and that the stack
+//! (`crates/net/stack/src/nic_queue.rs`): who may take one, and that the stack
 //! does not see a taken one.
 //!
 //! **The real `nic_queue.rs` and `ip.rs` are in the loop.** The interfaces are

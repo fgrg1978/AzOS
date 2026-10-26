@@ -8,7 +8,7 @@
 //! never one without the other.
 //!
 //! What stands in for ring 3: [`Files`] is implemented here over the engine
-//! with the mount's rules (`crates/fs/fs/src/azvol/mount.rs`, tested against
+//! with the mount's rules (`crates/fs/src/azvol/mount.rs`, tested against
 //! the real `FileSystem` in `tests/host/fs-tests/src/azvol_mount.rs`): a plain
 //! write joins the open transaction, only `fsync` commits. The mount's fence
 //! (a transaction has one owner; another task's change or commit is `Busy`)
@@ -35,7 +35,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 #[allow(dead_code, unused_imports)]
-#[path = "../../../../crates/fs/fs/src/azvol/mod.rs"]
+#[path = "../../../../crates/fs/src/azvol/mod.rs"]
 pub(crate) mod azvol;
 
 #[allow(dead_code)]

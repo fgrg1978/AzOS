@@ -3,7 +3,7 @@
 //! The seam between the syscall layer and whatever provides files.
 //!
 //! `crates/core/syscall` is core: it is the gate ring 3 passes through to reach the
-//! motors. `crates/fs/fs` is scaffolding — FAT32, a block device, a descriptor
+//! motors. `crates/fs` is scaffolding — FAT32, a block device, a descriptor
 //! table. The file syscalls sit in the same dispatch table as `SYS_MOTOR_*`,
 //! so the core crate linked the entire filesystem, and `tools/lint/tcb_check.sh`
 //! counted that as the last of three TCB violations.

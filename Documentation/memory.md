@@ -192,7 +192,7 @@ writes. There is no second cache to keep coherent.
   are filled on first use, outside every lock, through a `PageBacking`
   (`crates/core/mm/src/page_backing.rs`): `read_page`/`write_page` over a
   `PageKey`. `azos_fs::FsPageBacking` implements it over a filesystem's
-  positional `read_at`/`write_at` (`crates/fs/fs/src/pagecache.rs`).
+  positional `read_at`/`write_at` (`crates/fs/src/pagecache.rs`).
 * **Reading and writing from the kernel.** `memobj_paged_frame_ref`,
   `memobj_paged_read_ref`, `memobj_paged_write_ref`.
 * **Dirty state.** A page is dirty after a kernel write, after a `write`
@@ -222,7 +222,7 @@ file layer's use of this cache at boot (`kernel/src/boot/pagecache.rs`); see
 [storage.md](storage.md#the-page-cache-path) for that side.
 
 Source: `crates/core/ipc/src/memobj.rs`,
-`crates/core/mm/src/page_backing.rs`, `crates/fs/fs/src/pagecache.rs`,
+`crates/core/mm/src/page_backing.rs`, `crates/fs/src/pagecache.rs`,
 `kernel/src/boot/pagecache.rs`.
 
 ## File-backed mmap

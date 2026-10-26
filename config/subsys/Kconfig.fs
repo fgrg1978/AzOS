@@ -6,7 +6,7 @@ config FS_WRITEBACK
     bool "FAT32 write-back block cache (writes queue in RAM; fsync/sync make them durable)"
     default y
     help
-      crates/fs/fs/src/fat32.rs, crates/fs/fs/src/bcache.rs: FAT32 writes
+      crates/fs/src/fat32.rs, crates/fs/src/bcache.rs: FAT32 writes
       dirty the block cache (FS_BLOCK_CACHE_KB) instead of waiting on the
       device. A journal barrier closes an epoch without I/O; dirty lines go
       out oldest epoch first with a device flush between epochs, and
@@ -60,7 +60,7 @@ config FS_DEFERRED_FREE
     depends on FS_WRITEBACK
     default y
     help
-      crates/fs/fs/src/fat32.rs, `defer_free`: the chain that an O_TRUNC to
+      crates/fs/src/fat32.rs, `defer_free`: the chain that an O_TRUNC to
       zero, an overwrite or a rename over a file takes away from a name
       stays allocated in the FAT, so no allocation can hand it out, until
       the flush that makes the directory entry no longer naming it durable.

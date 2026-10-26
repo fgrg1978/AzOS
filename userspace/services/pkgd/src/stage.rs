@@ -26,7 +26,7 @@
 //!
 //! The volume commits only when asked (`fsync`), and everything written
 //! between two commits becomes durable together or not at all (see
-//! `crates/fs/fs/src/azvol/mount.rs`). The installer writes a staged file
+//! `crates/fs/src/azvol/mount.rs`). The installer writes a staged file
 //! (`write_file`: open, write, close, no `fsync`) and then appends the
 //! decision to the journal (`append`: open, write, **`fsync`**, close). The
 //! journal append is the commit point of the one transaction, so a power cut

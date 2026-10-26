@@ -507,7 +507,7 @@ const FIN_WAIT2_TIMEOUT_MS: u64 = 60_000;
 ///
 /// `crates/core/arch-riscv64/src/irq/clint.rs` already had the right pattern
 /// (`TIMER_FREQ = platform::hw::TIMER_FREQ`, ticks computed from it) and
-/// `motor_pid`, `wcet` and `bench` already used it. All of `crates/net/net` did
+/// `motor_pid`, `wcet` and `bench` already used it. All of `crates/net/stack` did
 /// not.
 const TICKS_PER_MS: u64 = azos_drv_sys::timebase::TIMER_FREQ / 1_000;
 
@@ -2286,7 +2286,7 @@ fn connect_h<A: Into<IpAddr>>(dst_ip: A, dst_port: u16, src_port: u16) -> Option
 /// `connect` (which now hits the populated cache and sends the SYN in one
 /// pass), keeps the SYN and its retransmission clock in step.
 ///
-/// `yield_fn` is injected to keep `crates/net/net` scheduler-agnostic — same
+/// `yield_fn` is injected to keep `crates/net/stack` scheduler-agnostic — same
 /// pattern as `send_all_with_yield`.  Falls back to the non-blocking
 /// `connect` after [`CONNECT_ARP_BUDGET_US`] to bound worst-case latency.
 #[allow(dead_code)]

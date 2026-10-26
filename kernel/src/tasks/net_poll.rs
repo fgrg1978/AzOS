@@ -21,7 +21,7 @@ use crate::*;
 ///
 /// Shared between both ISAs (aarch64 parity, this task): the body has no
 /// RISC-V content — `azos_net::net_poll`/`tcp_tick` and
-/// `azos_sched::task_block` are already ISA-neutral (`crates/net/net` has
+/// `azos_sched::task_block` are already ISA-neutral (`crates/net/stack` has
 /// no `target_arch` cfg anywhere in it). The periods below are converted at
 /// the counter's own rate (`timebase::freq()`: `CNTFRQ_EL0` on aarch64, not
 /// the board's Kconfig word for it).

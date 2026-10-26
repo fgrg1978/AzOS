@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The packet-filter seam (`crates/net/net/src/filter.rs`) on the IPv4 path:
+//! The packet-filter seam (`crates/net/stack/src/filter.rs`) on the IPv4 path:
 //! the three hooks, what each verdict does, the null filter, and the rate limit
 //! on refusal records. The IPv6 path's hooks are in `ipv6_tcp.rs`.
 //!

@@ -14,8 +14,8 @@ covers and leaves out.
 | Memory | Reclaim and memory-pressure policy, file-backed paging through the page cache, and larger pages. | `crates/core/mm`, `config/limits/Kconfig.limits` |
 | Real time | Admission and budgets for every kind of time a task consumes, including interrupt handlers and time spent in servers on a client's behalf. | `crates/core/sched`, `config/kernel/Kconfig.sched` |
 | Driver placement | Drivers that run in ring 3 or move between ring 3 and the kernel, and Linux driver modules running in ring-3 servers under DMA and capability limits. | `crates/core/topology/src/placement.rs`, `lx/`, `config/axes/Kconfig.personality` |
-| File authority | A task reaches files through the directory handles it was granted, not through global paths. | `crates/core/abi/src/invoke.rs`, `crates/fs/fs` |
-| Storage | A crash-consistent, checksummed volume for logs, crash reports, the device record and update state, beside FAT32 as the boot medium. | `crates/fs/fs/src/azvol` |
+| File authority | A task reaches files through the directory handles it was granted, not through global paths. | `crates/core/abi/src/invoke.rs`, `crates/fs` |
+| Storage | A crash-consistent, checksummed volume for logs, crash reports, the device record and update state, beside FAT32 as the boot medium. | `crates/fs/src/azvol` |
 | Less `unsafe` | A per-crate ratchet on `unsafe`, then `forbid(unsafe_code)` in the crates that can take it. | `crates/` |
 | Native interfaces | More of the device and service surface as IDL interfaces on endpoints, with the SDK and the relibc port built on them. | `crates/core/idl`, `crates/core/devif`, `sdk/` |
 

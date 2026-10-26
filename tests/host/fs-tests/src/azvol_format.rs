@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host tests of the azvol on-disk format and its read/write engine
-//! (`crates/fs/fs/src/azvol/`), pulled whole with `#[path]` and driven over
+//! (`crates/fs/src/azvol/`), pulled whole with `#[path]` and driven over
 //! an in-memory device that can replay a power cut: the writes since the
 //! last `flush` land in any subset, any of them torn at a sector boundary.
 //!
@@ -10,7 +10,7 @@
 #![cfg(test)]
 
 #[allow(dead_code, unused_imports)]
-#[path = "../../../../crates/fs/fs/src/azvol/mod.rs"]
+#[path = "../../../../crates/fs/src/azvol/mod.rs"]
 mod azvol;
 
 use azvol::layout::{self, sbo, Kind, SB_SLOTS};

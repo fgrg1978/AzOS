@@ -3,7 +3,7 @@
 //! On-disk names of the signed topology pair and their `.SIG` sidecars.
 //!
 //! **Every name here must be a valid FAT 8.3 short name**: one dot, a base of
-//! at most 8 characters, an extension of at most 3. `crates/fs/fs/src/fat32.rs`
+//! at most 8 characters, an extension of at most 3. `crates/fs/src/fat32.rs`
 //! matches directory entries by their short name only — it skips VFAT
 //! long-filename entries and never parses them — so a file whose name is not
 //! already 8.3 is unreachable by the name a human wrote. Standard tools do not

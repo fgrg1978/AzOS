@@ -1196,7 +1196,7 @@ pub(crate) fn exec_end_other_threads() -> Result<(), azos_sched::scheduler::Exec
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
-/// `vfs_open`'s flag bits (`crates/fs/fs/src/vfs.rs`), the ones that make an
+/// `vfs_open`'s flag bits (`crates/fs/src/vfs.rs`), the ones that make an
 /// `open` change the tree or a file: access mode in the low two bits.
 const OPEN_ACCMODE: u64 = 0x3;
 const OPEN_CREAT: u64 = 0x40;
@@ -1216,7 +1216,7 @@ const fn open_changes_tree(flags: u64) -> bool {
 // ── Cap<File> typed handlers (563-566) ───────────────────────────────────────
 
 /// The permissions a `Cap<File>` is minted with: the access mode of the `open`
-/// flags (`O_RDONLY` 0, `O_WRONLY` 1, `O_RDWR` 2 — `crates/fs/fs/src/vfs.rs`).
+/// flags (`O_RDONLY` 0, `O_WRONLY` 1, `O_RDWR` 2 — `crates/fs/src/vfs.rs`).
 /// Mode 3 means nothing, and is refused before anything is opened.
 const fn file_perms_for_flags(flags: u64) -> Option<azos_abi::cap::CapPerms> {
     use azos_abi::cap::CapPerms;

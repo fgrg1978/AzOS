@@ -18,7 +18,7 @@ use crate::*;
 /// its own body until this hoist; aarch64 never called `azos_net::
 /// net_set_ip` at all (same class of gap `install_topology`'s doc
 /// describes — code nobody ported, not a deliberate omission), so its
-/// stack ran with whatever `crates/net/net` itself defaults to instead of
+/// stack ran with whatever `crates/net/stack` itself defaults to instead of
 /// these config-driven atomics.
 ///
 /// `#[inline(always)]`: riscv64's call site had this inlined directly;
@@ -119,7 +119,7 @@ pub(crate) fn install_firewall() {
 }
 
 /// Install the topology's `[route.NAME]` rows (CAPS.TOML format 7) in the
-/// routing table of `crates/net/net` (`ip.rs`, "Interfaces and routes").
+/// routing table of `crates/net/stack` (`ip.rs`, "Interfaces and routes").
 ///
 /// Runs once the topology is installed, which is after `net_init()` has
 /// numbered the interfaces: a row's `dev` names one (`eth0`, `eth1`, ...), and

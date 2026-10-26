@@ -15,7 +15,7 @@ use crate::*;
 /// before the scheduler starts preempting (it busy-polls synchronously, not
 /// through a task).
 ///
-/// Shared between both `kernel_main`s: the body is pure `crates/net/net` API
+/// Shared between both `kernel_main`s: the body is pure `crates/net/stack` API
 /// (`dhcp::dhcp_start`, `net_poll`, `net_set_ip`, `net_get_ip`/
 /// `net_get_gateway`), none of it RISC-V-specific — riscv64 had this
 /// inlined directly in its own body; aarch64 gets the identical scenario

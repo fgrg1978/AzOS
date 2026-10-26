@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Byte-level wire conformance for DNS (`crates/net/net/src/dns.rs`).
+//! Byte-level wire conformance for DNS (`crates/net/stack/src/dns.rs`).
 //!
 //! Encode: the query `resolve` puts on the wire, compared octet for octet
 //! with RFC 1035 §4.1.1 (header) and §4.1.2 (question), names encoded per

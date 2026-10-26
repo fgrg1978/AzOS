@@ -584,7 +584,7 @@ fn commander_exit_stop(tid: u32) {
 ///
 /// The exit hook takes a single `fn(u32)`, and two crates need to clean up:
 /// `azos_ipc` (legacy handles, typed caps, shared-memory references) and
-/// `azos_net` (sockets). Neither can call the other — `crates/net/net` is
+/// `azos_net` (sockets). Neither can call the other — `crates/net/stack` is
 /// deliberately scheduler-agnostic and `crates/core/ipc` has no business knowing
 /// about sockets — so the kernel is the only place the two can be joined.
 ///

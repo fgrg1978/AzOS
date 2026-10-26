@@ -684,7 +684,7 @@ fn run_validations(cfg: &ConfigMap) {
 
     // -----------------------------------------------------------------------
     // TCP_BUF_SIZE is used as a ring-buffer bitmask (TCP_BUF_SIZE - 1) in
-    // crates/net/net/src/tcp.rs — it must be a power of two or the mask silently
+    // crates/net/stack/src/tcp.rs — it must be a power of two or the mask silently
     // produces wrong wrap-around behavior. The Kconfig `range 4096 1048576`
     // doesn't enforce this on its own.
     // -----------------------------------------------------------------------
@@ -693,7 +693,7 @@ fn run_validations(cfg: &ConfigMap) {
         panic!(
             "validation FAIL: TCP_BUF_SIZE ({tcp_buf_size}) is not a power of \
              two. It's used as a ring-buffer mask (TCP_BUF_SIZE - 1) in \
-             crates/net/net/src/tcp.rs and must stay a power of two. \
+             crates/net/stack/src/tcp.rs and must stay a power of two. \
              Fix: pick a power-of-two value in .config (e.g. 65536, 131072, \
              262144)."
         );
@@ -749,7 +749,7 @@ fn run_validations(cfg: &ConfigMap) {
     // TCP_BUF_SIZE lower bound: the send ring (the same size) must hold
     // DUP_ACK_THRESHOLD + 1 full-size segments, or no loss can be repaired by
     // fast retransmit or SACK recovery and every one waits for the
-    // retransmission timer. crates/net/net/src/tcp.rs asserts the same at compile
+    // retransmission timer. crates/net/stack/src/tcp.rs asserts the same at compile
     // time from its own constants; TCP_MSS (1460) and DUP_ACK_THRESHOLD (3)
     // are hard-coded there and not read from .config, so they are restated
     // here. The Kconfig `range` enforces this only through kconfiglib, not
@@ -793,7 +793,7 @@ fn run_validations(cfg: &ConfigMap) {
     // Wave 11 tunables whose constraint a Kconfig `range` cannot state, or
     // that a hand-edited .config could break (kconfiglib enforces `range`
     // only when it writes the file).
-    //   UDP_RX_SLOTS: the receive ring index is a mask (crates/net/net/src/
+    //   UDP_RX_SLOTS: the receive ring index is a mask (crates/net/stack/src/
     //     udp.rs asserts the same at compile time).
     //   SUP_RESTART_BURST: crates/core/sched/src/supervisor.rs keeps at most
     //     SUP_BURST_MAX = 16 restart times and clamps a larger burst silently.
@@ -926,7 +926,7 @@ fn run_validations(cfg: &ConfigMap) {
             if kb != 0 && (kb < 4 || !kb.is_power_of_two()) {
                 panic!(
                     "validation FAIL: {key} ({kb}) must be 0 or a power of two \
-                     from 4 (crates/fs/fs/src/bcache.rs: 8-way sets, a power-of-two set count). \
+                     from 4 (crates/fs/src/bcache.rs: 8-way sets, a power-of-two set count). \
                      Fix: set {key} to 0, 4, 8, 16, ... in .config."
                 );
             }

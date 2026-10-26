@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Byte-level wire conformance for NTP (`crates/net/net/src/ntp.rs`).
+//! Byte-level wire conformance for NTP (`crates/net/stack/src/ntp.rs`).
 //!
 //! Encode: the client request, compared with the RFC 5905 §7.3 header
 //! layout and RFC 4330 §5 ("all the NTP header fields ... are set to 0,

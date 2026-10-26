@@ -89,7 +89,7 @@ releases yet. The ABI crate keeps its own file,
     (`decision`), the tracer (`trace`), the in-kernel test registry (`ktest`),
     OTA and secure boot (`ota`, `crypto`) and the hypervisor core (`hv`).
   - **Drivers, storage and network:** one crate per driver class under
-    `crates/drivers/`; `crates/fs/fs` (VFS, FAT32, tmpfs, azvol, page cache,
+    `crates/drivers/`; `crates/fs` (VFS, FAT32, tmpfs, azvol, page cache,
     crash log); `crates/net/` (the TCP/IP stack, an encrypted link, a stream
     multiplexer, a TFTP client).
   - **User space:** ring-3 services, drivers, libraries and test programs under

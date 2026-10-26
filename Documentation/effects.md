@@ -395,8 +395,8 @@ under [Decision records and `why`](#decision-records-and-why)) with a receipt.
 Source: `crates/core/actuation/src/effect_gate.rs` (`KIND_STORAGE_DELETE`,
 `KIND_NET_EGRESS`, `EnvelopeProbe`, `Why::Envelope`),
 `crates/core/actuation/src/envelope.rs`, `crates/core/common/src/envelope.rs`,
-`crates/fs/fs/src/vfs.rs` (`DeleteGate`), `crates/fs/fs/src/azvol/snap.rs`,
-`crates/net/net/src/socket.rs` (`EgressGate`).
+`crates/fs/src/vfs.rs` (`DeleteGate`), `crates/fs/src/azvol/snap.rs`,
+`crates/net/stack/src/socket.rs` (`EgressGate`).
 
 ## Configuration, update and real-time-time envelopes
 

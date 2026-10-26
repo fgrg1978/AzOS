@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host-side tests for TCP sequence-number arithmetic.
 //!
-//! **WHY this and not the rest of `crates/net/net`.** The parsers — Ethernet,
+//! **WHY this and not the rest of `crates/net/stack`.** The parsers — Ethernet,
 //! IPv4, ICMP, UDP, TCP framing, DNS, NTP, IPv6, ARP, broadcast, multicast —
 //! are already driven with hand-built bytes by the boot-time conformance
 //! block, fifteen RFCs' worth, in every QEMU scenario. Repeating that here
@@ -21,7 +21,7 @@ extern crate beh_test_drivers as azos_drv_irqchip;
 extern crate beh_test_drivers as azos_drv_sys;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/seq.rs"]
+#[path = "../../../../crates/net/stack/src/seq.rs"]
 mod seq;
 
 // The real TCP implementation, pulled in whole.
@@ -45,35 +45,35 @@ mod seq;
 /// ARP-resolves them, and `ip.rs` — the FIRST code a hostile packet touches —
 /// was not under test at all.
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/ethernet.rs"]
+#[path = "../../../../crates/net/stack/src/ethernet.rs"]
 mod ethernet;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/arp.rs"]
+#[path = "../../../../crates/net/stack/src/arp.rs"]
 mod arp;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/checksum.rs"]
+#[path = "../../../../crates/net/stack/src/checksum.rs"]
 mod checksum;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/ip.rs"]
+#[path = "../../../../crates/net/stack/src/ip.rs"]
 mod ip;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/filter.rs"]
+#[path = "../../../../crates/net/stack/src/filter.rs"]
 mod filter;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/igmp.rs"]
+#[path = "../../../../crates/net/stack/src/igmp.rs"]
 mod igmp;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/udp.rs"]
+#[path = "../../../../crates/net/stack/src/udp.rs"]
 mod udp;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/ipv6.rs"]
+#[path = "../../../../crates/net/stack/src/ipv6.rs"]
 mod ipv6;
 
 /// The REAL DNS resolver, not a stub.
@@ -85,7 +85,7 @@ mod ipv6;
 /// any seam in production code. That is what puts `handle_response`'s
 /// off-path-forgery defences under test.
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/dns.rs"]
+#[path = "../../../../crates/net/stack/src/dns.rs"]
 mod dns;
 
 /// The TFTP client. Its poll loop calls `crate::net_poll`, so the suite plays
@@ -99,7 +99,7 @@ mod tftp_client;
 /// Its only dependencies are `tcp` and `udp`, both already running here, so it
 /// needs nothing new.
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/socket.rs"]
+#[path = "../../../../crates/net/stack/src/socket.rs"]
 mod socket;
 
 /// The REAL DHCP client.
@@ -111,7 +111,7 @@ mod socket;
 /// and builds an OFFER that matches — which is exactly what a real server
 /// does.
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/dhcp.rs"]
+#[path = "../../../../crates/net/stack/src/dhcp.rs"]
 mod dhcp;
 
 /// The REAL NTP client.
@@ -125,7 +125,7 @@ mod dhcp;
 /// any host on the path could set the robot's wall clock to any value after
 /// 1970.
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/ntp.rs"]
+#[path = "../../../../crates/net/stack/src/ntp.rs"]
 mod ntp;
 
 /// Frames waiting to be delivered to the stack, and the clock they advance.
@@ -177,7 +177,7 @@ pub mod inbound {
     }
 }
 
-/// `super::net_poll`, mirroring the real one in `crates/net/net/src/lib.rs`:
+/// `super::net_poll`, mirroring the real one in `crates/net/stack/src/lib.rs`:
 /// drain up to 64 frames, parse the Ethernet header, dispatch by ethertype.
 ///
 /// It also advances the test clock, which the real one does not need to do —
@@ -236,7 +236,7 @@ pub fn net_get_gateway() -> [u8; 4] {
 }
 
 /// `super::net_set_ip`, recorded — and it DOES propagate to TCP, exactly as
-/// `crates/net/net/src/lib.rs` does.
+/// `crates/net/stack/src/lib.rs` does.
 ///
 /// The propagation is not decoration. TCP caches its own copy of the address
 /// for the checksum pseudo-header, and it used to be written only by
@@ -385,7 +385,7 @@ pub mod random {
     pub static SOURCE: Mutex<Option<fn(&mut [u8]) -> bool>> = Mutex::new(None);
 }
 
-/// `super::net_random_fill`, mirroring `crates/net/net/src/lib.rs`: the installed
+/// `super::net_random_fill`, mirroring `crates/net/stack/src/lib.rs`: the installed
 /// source's answer, or `false` with none installed.
 pub fn net_random_fill(buf: &mut [u8]) -> bool {
     let f = *random::SOURCE.lock().unwrap();
@@ -398,11 +398,11 @@ pub fn net_random_fill(buf: &mut [u8]) -> bool {
 /// The waiter queues `tcp`, `arp` and `dns` notify (N7). No hooks are
 /// registered here, so every wait is the caller's own `yield_fn`, as before.
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/wait.rs"]
+#[path = "../../../../crates/net/stack/src/wait.rs"]
 mod wait;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/tcp.rs"]
+#[path = "../../../../crates/net/stack/src/tcp.rs"]
 mod tcp;
 
 /// Generation-checked TCP handles (a stale one acts on nothing) and the
@@ -473,12 +473,12 @@ mod checksum_sum {
 
 /// N8: the owner bit that makes `net_poll`'s receive pass single-consumer.
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/rx_owner.rs"]
+#[path = "../../../../crates/net/stack/src/rx_owner.rs"]
 mod rx_owner;
 
 /// The interfaces whose NIC queue a ring-3 program took (`ty::NIC_QUEUE`).
 #[allow(dead_code)]
-#[path = "../../../../crates/net/net/src/nic_queue.rs"]
+#[path = "../../../../crates/net/stack/src/nic_queue.rs"]
 mod nic_queue;
 #[cfg(test)]
 mod nic_queue_tests;
@@ -2865,7 +2865,7 @@ mod tcp_persist_timer {
 
 /// Two sends before the peer answers — `socket_send(fd, a); socket_send(fd, b);`,
 /// ordinary application behaviour — must not cost the first segment its bytes.
-/// `socket_send`/`socket_sendto` (`crates/net/net/src/socket.rs`) call
+/// `socket_send`/`socket_sendto` (`crates/net/stack/src/socket.rs`) call
 /// `tcp::send_data` directly, with no gate of their own. The connection holds
 /// every byte in flight once, in its send ring, and cuts every retransmission
 /// from SND.UNA, so a later send can neither overwrite an earlier segment nor
@@ -3765,7 +3765,7 @@ mod tcp_half_close {
     }
 }
 
-/// ARP cache poisoning defences (`crates/net/net/src/arp.rs`).
+/// ARP cache poisoning defences (`crates/net/stack/src/arp.rs`).
 ///
 /// The cache decides which MAC every outbound IP datagram is addressed to, so
 /// an attacker who can write one entry redirects the robot's traffic to
@@ -6179,7 +6179,7 @@ mod ipv6_input {
     }
 }
 
-/// The DNS resolver's off-path forgery defences (`crates/net/net/src/dns.rs`).
+/// The DNS resolver's off-path forgery defences (`crates/net/stack/src/dns.rs`).
 ///
 /// A DNS answer is an unauthenticated UDP datagram, so anyone who can guess or
 /// observe the query can try to answer it first and point the robot's next
@@ -6756,7 +6756,7 @@ mod dns_resolver {
     }
 }
 
-/// The DHCP client's server-binding defences (`crates/net/net/src/dhcp.rs`).
+/// The DHCP client's server-binding defences (`crates/net/stack/src/dhcp.rs`).
 ///
 /// DHCP is unauthenticated by design: any host on the link can answer a
 /// DISCOVER. What stops a rogue server taking the lease is that the client
@@ -6978,7 +6978,7 @@ mod dhcp_client {
     }
 }
 
-/// The socket table (`crates/net/net/src/socket.rs`) — the layer ring 3 talks to.
+/// The socket table (`crates/net/stack/src/socket.rs`) — the layer ring 3 talks to.
 ///
 /// **What this module is responsible for, and what it is not.** The ownership
 /// GATE lives in `crates/core/syscall/src/handlers.rs`, which asks
@@ -7289,7 +7289,7 @@ mod socket_table {
     }
 }
 
-/// The SNTP client (`crates/net/net/src/ntp.rs`).
+/// The SNTP client (`crates/net/stack/src/ntp.rs`).
 ///
 /// This sets the robot's wall clock from an unauthenticated UDP datagram.
 /// SNTP has exactly one anti-spoofing mechanism (RFC 4330 §5): the client puts
@@ -7627,7 +7627,7 @@ mod tftp {
     /// The transport the fetch loop takes as an argument, backed by this
     /// crate's own shimmed UDP and poll pump.
     ///
-    /// This seam is why the client lives outside `crates/net/net` at all: the
+    /// This seam is why the client lives outside `crates/net/stack` at all: the
     /// suite supplies a fake wire here exactly as the package installer
     /// supplies a ring-3 socket, and neither crate has to depend on the other.
     struct TestUdp;
@@ -8316,7 +8316,7 @@ mod connect_handshake_deadline {
 /// Entry points for `tests/fuzz/net-fuzz` (cargo-fuzz). Compiled only under the
 /// `--cfg fuzzing` cargo-fuzz passes to every crate it builds; it lives here
 /// to reuse this crate's shims (inbound queue, raw TX capture, netcfg) and the
-/// real `crates/net/net` modules it already pulls in.
+/// real `crates/net/stack` modules it already pulls in.
 #[cfg(fuzzing)]
 pub mod fuzz_entry {
     use super::{arp, dhcp, dns, inbound, ip, net_get_ip, net_get_mac, net_poll, raw, tcp, udp};

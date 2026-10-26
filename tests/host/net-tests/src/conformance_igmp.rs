@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Byte-level wire conformance for IGMP (`crates/net/net/src/igmp.rs`).
+//! Byte-level wire conformance for IGMP (`crates/net/stack/src/igmp.rs`).
 //!
 //! **What exists is IGMPv2 (RFC 2236)**: Membership Report 0x16 and Leave
 //! Group 0x17. There is no IGMPv3 (RFC 3376) encoder in the tree — no 0x22

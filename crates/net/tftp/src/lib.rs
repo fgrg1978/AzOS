@@ -62,7 +62,7 @@ extern crate self as azos_tftp;
 
 /// The UDP-driven fetch loop, over a transport the caller supplies.
 ///
-/// It lives in this crate rather than in `crates/net/net` because the stack
+/// It lives in this crate rather than in `crates/net/stack` because the stack
 /// has no need of it, and takes its datagram socket as a trait so this crate
 /// stays dependency-free: the installer supplies a `std::net` socket, the
 /// host suite of the stack a fake wire.

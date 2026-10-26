@@ -35,7 +35,7 @@
 # it, not on a vibe.
 #
 # The rule for which side a crate is on (owner's, 2026-09-05): core is
-# everything that can move or stop a motor, PLUS all of `crates/net/net` — the
+# everything that can move or stop a motor, PLUS all of `crates/net/stack` — the
 # e-stop arrives over TCP, so the network stack that carries it is core too.
 # Scaffolding is everything else: FAT32, camera, OTA, TFTP, USB MSC,
 # UEFI boot, the HDMI framebuffer, the synthetic benchmarks and the
@@ -76,11 +76,10 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CRATES_DIR="$REPO_ROOT/crates"
-# crate_dir <name>: the crate lives in one of the restructured groups (wave 11).
-# A bare name is searched group by group; a name that is ambiguous across
-# groups (`net`: crates/net/net is the stack, crates/drivers/net the NIC class)
-# is listed group-qualified, `drivers/net`, and resolves under crates/ or
-# domains/ directly (w14).
+# crate_dir <name>: the crate lives in one of the restructured groups (wave 11),
+# or is a group of its own (crates/fs). A bare name is searched group by
+# group; a name that is ambiguous across groups is listed group-qualified,
+# `<group>/<name>`, and resolves under crates/ or domains/ directly (w14).
 crate_dir() {
     local g
     case "$1" in
@@ -90,7 +89,8 @@ crate_dir() {
             done
             printf '%s' "$CRATES_DIR/$1"; return 0 ;;
     esac
-    for g in crates/core crates/fs crates/net crates/drivers domains/robot; do
+    if [ -f "$REPO_ROOT/crates/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/crates/$1"; return 0; fi
+    for g in crates/core crates/net crates/drivers domains/robot; do
         if [ -f "$REPO_ROOT/$g/$1/Cargo.toml" ]; then printf '%s' "$REPO_ROOT/$g/$1"; return 0; fi
     done
     printf '%s' "$CRATES_DIR/$1"
@@ -106,9 +106,9 @@ crate_dir() {
 
 CORE_CRATES="
 abi arch arch-api arch-riscv64 arch-aarch64 arch-x86_64 common sync mm limits
-api base irqchip sys gpio bus virtio block drivers/net sensor actuator power
+api base irqchip sys gpio bus virtio block net sensor actuator power
 driver_server ina219 buzzer rings pci dma iommu
-ipc sched syscall net energy
+ipc sched syscall stack energy
 crypto
 actuation channel
 config topology multi-stream dtb
@@ -421,7 +421,7 @@ workspace_member_dirs() {
                     path="${rest%%\"*}"
                     name="${path##*/}"
                     # The key the lists use: the bare name when it resolves
-                    # back to this member, else group-qualified (`drivers/net`).
+                    # back to this member, else group-qualified (`<group>/<name>`).
                     if [ "$(crate_dir "$name")" != "$REPO_ROOT/$path" ]; then
                         name="${path#*/}"
                     fi
@@ -435,21 +435,22 @@ workspace_member_dirs() {
     done < "$toml"
 }
 
-# Every crate in the tree (crates/<group>/<name>, domains/<group>/<name>) must
-# be on exactly one list, and every name on a list must be a crate in the
-# tree. A crate on no list is not a pass: it means this script's partition has
+# Every crate in the tree (crates/<group> when the group is one crate,
+# crates/<group>/<name>, domains/<group>/<name>) must be on exactly one
+# list, and every name on a list must be a crate in the tree. A crate on no list is not a pass: it means this script's partition has
 # drifted from the tree, silently, in exactly the way a feature flag was
 # rejected for doing. A listed name with no crate is the opposite drift: a
 # crate that was deleted but still counts in the totals above. Host-side
 # test crates live under tests/, not here, so they are not part of this walk.
 tree_crate_keys() {
     local toml dir name
-    for toml in "$REPO_ROOT"/crates/*/*/Cargo.toml "$REPO_ROOT"/domains/*/*/Cargo.toml; do
+    for toml in "$REPO_ROOT"/crates/*/Cargo.toml "$REPO_ROOT"/crates/*/*/Cargo.toml \
+                "$REPO_ROOT"/domains/*/*/Cargo.toml; do
         [ -f "$toml" ] || continue
         dir="${toml%/Cargo.toml}"
         name="${dir##*/}"
         # The key the lists use: the bare name when it resolves back to this
-        # crate, else group-qualified (`drivers/net`).
+        # crate, else group-qualified (`<group>/<name>`).
         if [ "$(crate_dir "$name")" != "$dir" ]; then
             name="${dir#"$REPO_ROOT"/}"
             name="${name#*/}"

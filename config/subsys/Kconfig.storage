@@ -117,7 +117,7 @@ config BLK_FUA
     bool "fsync commits with a force-unit-access write where the device has one"
     default y
     help
-      crates/fs/fs/src/fat32.rs: a write-back pass ends its last run with
+      crates/fs/src/fat32.rs: a write-back pass ends its last run with
       PREFLUSH | FUA (every earlier write is made durable first, then this
       run is on stable media when it completes) and the explicit device flush
       that used to follow is skipped, one command fewer per fsync. Only on
@@ -135,7 +135,7 @@ config FS_DISCARD_RUNS
     default 8 if HWCLASS_EMBEDDED
     default 16
     help
-      crates/fs/fs/src/fat32.rs: the contiguous cluster runs of the chains
+      crates/fs/src/fat32.rs: the contiguous cluster runs of the chains
       one flush frees are collected up to this many (adjacent runs merge)
       and then discarded as one batch; a full batch is issued and a new one
       started. Batched mode only: online discards each chain's runs as they
@@ -149,10 +149,10 @@ choice FS_CHECK_FAILED
     help
       What the mount does with a volume whose mount-time check found damage
       it cannot vouch for. The check runs on a volume that was not shut down
-      cleanly: FAT32 (crates/fs/fs/src/fat32.rs) when the FAT[1] clean bit
+      cleanly: FAT32 (crates/fs/src/fat32.rs) when the FAT[1] clean bit
       is clear, the boot sector's dirty bit set, the FAT[1] hard-error bit
       clear, or the journal held a record; an azvol volume
-      (crates/fs/fs/src/azvol/mount.rs) when the mount had to rebuild its
+      (crates/fs/src/azvol/mount.rs) when the mount had to rebuild its
       free-space map or found one superblock copy damaged. "Damage" is a
       chain or tree that leaves the volume, two owners of one block, or a
       scan that could not read what it walks; leaked space (clusters or

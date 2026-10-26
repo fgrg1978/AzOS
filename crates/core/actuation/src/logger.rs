@@ -31,7 +31,7 @@ use azos_sync::SpinLock;
 // Storage seam — the flight recorder's only contact with a filesystem.
 // ---------------------------------------------------------------------------
 //
-// `domains/robot/behavior` is core (the actuation authority) and `crates/fs/fs` is
+// `domains/robot/behavior` is core (the actuation authority) and `crates/fs` is
 // scaffolding (FAT32 is the only filesystem this OS has, but nothing in it
 // can move or stop a motor). This module used to call `fat32_mount_volume`/
 // `mkdir`/`open`/`write`/`fsync`/`close`/`file_stat` directly, which put a
@@ -51,7 +51,7 @@ use azos_sync::SpinLock;
 //
 // The kernel supplies the implementation over `azos_fs` at boot, the
 // same shape `crates/net/tftp`'s `UdpTransport` uses to take its UDP operations
-// from `crates/net/net` through the kernel rather than depending on it.
+// from `crates/net/stack` through the kernel rather than depending on it.
 
 /// Opaque handle to one open log destination. Assigned and interpreted only
 /// by the [`LogStorage`] implementation that issued it — the recorder never

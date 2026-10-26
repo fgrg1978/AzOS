@@ -1774,7 +1774,7 @@ fn backend_file_exists(path: &[u8]) -> bool {
 /// The other half of [`backend_file_exists`]'s reason to exist: a caller that
 /// needs a SIZE, not a boolean, and must not pay for [`try_backend_open`]'s
 /// whole-file proxy load to get it. `FileSystem::stat` is one directory scan
-/// with no allocation — `crates/fs/fs/src/crash_log.rs` calls this on every
+/// with no allocation — `crates/fs/src/crash_log.rs` calls this on every
 /// panic to decide whether `/fat/CRASH.LOG` needs to rotate before an
 /// `O_APPEND` open would load the file it is about to decide NOT to load.
 pub fn vfs_file_size(path: &[u8]) -> Option<u64> {
@@ -2207,7 +2207,7 @@ pub fn fd_count_owned<const N: usize>(table: &FdTableN<N>, tid: u32) -> usize {
 /// was stamped at `open` and read at task death, and **nothing consulted it in
 /// between** — so every other syscall on the descriptor path (`read`, `write`,
 /// `close`, `lseek`, `dup`) operated on any of the machine-wide slots
-/// regardless of who opened it. `crates/fs/fs` cannot make the comparison itself
+/// regardless of who opened it. `crates/fs` cannot make the comparison itself
 /// (it deliberately knows nothing about the scheduler), so this hands the
 /// value to the kernel, which does.
 pub fn fd_owner<const N: usize>(table: &FdTableN<N>, fd: i32) -> Option<u32> {

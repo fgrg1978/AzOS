@@ -19,7 +19,7 @@ usb-volume-stale-fd-canary = []
 # Enabled through the kernel's `ktest` feature.
 ktest = []
 # Opt-in end-to-end proof of `/fat/CRASH.LOG` rotation
-# (`crates/fs/fs/src/crash_log.rs`). `tools/gate/ci_check.sh`'s crash-log gate row is
+# (`crates/fs/src/crash_log.rs`). `tools/gate/ci_check.sh`'s crash-log gate row is
 # the only caller — enabled via `--features azos_fs/crash-log-smoke`, not
 # through `azos_kernel`'s own `[features]` (this crate's file-ownership
 # boundary for this task does not extend to `kernel/Cargo.toml`). See the
@@ -31,7 +31,7 @@ crash-log-smoke = []
 # shared-offset rows must turn red with it. Never in a real build.
 fd-private-offset-canary = []
 # U09-1 QEMU/board proof: `MAX_FILES + 1` ramfs create+unlink cycles,
-# printed as `[FS] inode probe: ...`. See `crates/fs/fs/src/probe.rs`. The one
+# printed as `[FS] inode probe: ...`. See `crates/fs/src/probe.rs`. The one
 # caller is a one-line hook in `kernel/src/main.rs`'s boot path (delivered
 # as a diff — outside this front's file ownership).
 fs-inode-probe = []
@@ -54,7 +54,7 @@ fat-medium-bound-canary = []
 fat-walk-read-error-canary = []
 fat-walk-cycle-canary = []
 # Wave 14 (FATCACHE) canaries, one per coherence path of the block cache
-# (crates/fs/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
+# (crates/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
 # red. Never in a real build.
 #   observer:     external medium writes no longer drop cached sectors
 #   writethrough: FAT32's own writes no longer update a cached line
@@ -65,7 +65,7 @@ fatcache-writethrough-canary = []
 fatcache-token-canary = []
 fatcache-run-bypass-canary = []
 # Wave 15 (WRITEBACK) canaries, one per write-back property of the block
-# cache (crates/fs/fs/src/bcache.rs, fat32.rs). Each must turn an fs-tests
+# cache (crates/fs/src/bcache.rs, fat32.rs). Each must turn an fs-tests
 # `writeback` test red. Never in a real build.
 #   epoch-merge:       an older epoch's dirty line is overwritten in place
 #   no-ordering-flush: a run of a later epoch goes out with no flush first
@@ -134,7 +134,7 @@ rename-across-unjournaled-canary = []
 write-epoch-canary = []
 write-gen-early-canary = []
 content-stamp-off-canary = []
-# Wave 14 vsbench diagnostic: `crates/fs/fs/src/census.rs` prints where a
+# Wave 14 vsbench diagnostic: `crates/fs/src/census.rs` prints where a
 # backend open/read/close goes. Enabled through the kernel's `file-census`.
 file-census = []
 # Wave 15 (VF) gate canary: a `SpinLock` is held across every FAT-sector

@@ -137,7 +137,7 @@ config FILE_CENSUS_EVERY
     range 1 1000000000
     default 20
     help
-      The `file-census` vsbench diagnostic (crates/fs/fs/src/census.rs,
+      The `file-census` vsbench diagnostic (crates/fs/src/census.rs,
       kernel cargo feature `file-census`, off in every build that ships)
       sums where a backend file's open, read, close and write go and
       prints one per-operation average line every this many backend

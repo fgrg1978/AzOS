@@ -181,7 +181,7 @@ A reply is accepted only if all of these hold:
 * it echoes the 64-bit nonce the client put in its transmit timestamp, drawn from the kernel entropy pool when a seeded source is installed;
 * its transmit timestamp is non-zero and, in NTP era 0, not before 2020-01-01; the era bit is honoured, so a time past 2036 is accepted.
 
-Source: `crates/net/net/src/ntp.rs`, `kernel/src/boot/net.rs` (`install_net_config`).
+Source: `crates/net/stack/src/ntp.rs`, `kernel/src/boot/net.rs` (`install_net_config`).
 
 ## PTP
 

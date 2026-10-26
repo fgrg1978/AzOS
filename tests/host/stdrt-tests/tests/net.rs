@@ -31,7 +31,7 @@ use azos_stdrt::netpure::{
 };
 
 const KERNEL_HANDLERS: &str = include_str!("../../../../crates/core/syscall/src/handlers.rs");
-const KERNEL_SOCKET: &str = include_str!("../../../../crates/net/net/src/socket.rs");
+const KERNEL_SOCKET: &str = include_str!("../../../../crates/net/stack/src/socket.rs");
 const LIBSYS: &str = include_str!("../../../../crates/core/libsys/src/lib.rs");
 const STDRT_NET: &str = include_str!("../../../../crates/core/stdrt/src/net.rs");
 const STD_NET: &str = include_str!("../../../../sdk/std/sys/net/connection/azos.rs");

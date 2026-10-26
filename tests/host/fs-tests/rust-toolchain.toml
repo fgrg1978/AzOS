@@ -1,5 +1,5 @@
 # Pin stable, as every other host-test crate in this tree does — and here the
-# pin is what makes `crates/fs/fs/src/vfs.rs` testable at all.
+# pin is what makes `crates/fs/src/vfs.rs` testable at all.
 #
 # The workspace `rust-toolchain.toml` pins nightly, and the repository's
 # `.cargo/config.toml` carries `[unstable] build-std = ["core", "alloc"]`.

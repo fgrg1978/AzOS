@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Several interfaces in one stack: the registry, the routing table, ARP per
-//! interface, and `AF_PACKET` sockets (`crates/net/net/src/{ip,arp,socket}.rs`).
+//! interface, and `AF_PACKET` sockets (`crates/net/stack/src/{ip,arp,socket}.rs`).
 //!
 //! **The real `ip.rs`, `arp.rs` and `socket.rs` are in the loop.** A test
 //! attaches two interfaces to the real registry, then sends through `ip::send`

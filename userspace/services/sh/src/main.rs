@@ -72,7 +72,7 @@ const ORPHAN_POLLS: u32 = 40;
 /// (the server starts after the shell and claims its endpoint then).
 const CONNECT_MS: u64 = 20_000;
 
-// `open` flags (`crates/fs/fs/src/vfs.rs`).
+// `open` flags (`crates/fs/src/vfs.rs`).
 const O_RDONLY: u64 = 0;
 const O_WRONLY: u64 = 1;
 const O_CREAT: u64 = 0x40;

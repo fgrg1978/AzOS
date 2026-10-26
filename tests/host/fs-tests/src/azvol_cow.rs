@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host tests of azvol snapshots and change groups
-//! (`crates/fs/fs/src/azvol/{snap,group}.rs`) over a device that can replay a
+//! (`crates/fs/src/azvol/{snap,group}.rs`) over a device that can replay a
 //! power cut: the writes since the last `flush` land in any subset, any of
 //! them torn at a sector boundary. The format and the plain engine are in
 //! `azvol_format.rs`; this file leans on what it proved and asks:
@@ -25,7 +25,7 @@
 #![cfg(test)]
 
 #[allow(dead_code, unused_imports)]
-#[path = "../../../../crates/fs/fs/src/azvol/mod.rs"]
+#[path = "../../../../crates/fs/src/azvol/mod.rs"]
 mod azvol;
 
 use azvol::layout::{self, sbo, Kind, SB_SLOTS};

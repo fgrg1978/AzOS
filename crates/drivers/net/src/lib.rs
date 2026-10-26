@@ -6,7 +6,7 @@
 #![no_std]
 
 /// `NetDevice` trait + the NIC-backend selection point. See the module doc
-/// for why `crates/net/net`'s three hand-written `if eth_is_ready() {...} else
+/// for why `crates/net/stack`'s three hand-written `if eth_is_ready() {...} else
 /// {...}` dispatch sites collapse into this.
 pub mod net_device;
 

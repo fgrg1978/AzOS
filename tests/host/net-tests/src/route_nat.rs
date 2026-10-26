@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Forwarding between interfaces and NAPT (`crates/net/net/src/ip.rs`
+//! Forwarding between interfaces and NAPT (`crates/net/stack/src/ip.rs`
 //! `forward`, `nat.rs`).
 //!
 //! **The real `ip.rs`, `arp.rs`, `filter.rs` and `nat.rs` are in the loop.** The

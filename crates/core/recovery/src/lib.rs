@@ -438,7 +438,7 @@ fn cmd_ota_rollback() {
 /// `tmp_path` now survive a failed promotion for a retry. What this
 /// function still cannot do without a real FAT32 rename primitive: avoid
 /// `bin_path` going through a truncate-then-write window at all — that
-/// window, and the fix for it, belong to `crates/fs/fs/src/fat32.rs`.
+/// window, and the fix for it, belong to `crates/fs/src/fat32.rs`.
 fn ota_promote_tmp_to_bin(tmp_path: &[u8], bin_path: &[u8]) -> bool {
     // Buffer reused for read+write copy. The slot binary is bounded by
     // OTA_MAX_IMAGE_SIZE so we know the loop terminates.
@@ -491,7 +491,7 @@ fn ota_promote_tmp_to_bin(tmp_path: &[u8], bin_path: &[u8]) -> bool {
 /// U11-2 — payload phase idle timeout. A peer whose TCP connection is
 /// live but whose application sends nothing (valid header, then silence)
 /// must not pin this listener indefinitely: the stack's own keepalive only
-/// reaps a genuinely DEAD peer (`crates/net/net/src/tcp.rs`, 30 s x 3 probes),
+/// reaps a genuinely DEAD peer (`crates/net/stack/src/tcp.rs`, 30 s x 3 probes),
 /// and until 2026-09-26 nothing else bounded an application-silent one.
 /// TIMER_FREQ-derived, never a raw tick literal — see U06-13/U11-6 for why
 /// a hard-coded 10 MHz assumption is wrong on VF2 (4 MHz), K1 (24 MHz) and
@@ -888,7 +888,7 @@ fn cmd_ota_recv(port: u16) {
     }
 
     // OT02.A — promote .TMP to .BIN. FAT32 has no atomic rename primitive
-    // (a driver gap — `crates/fs/fs/src/fat32.rs`, not owned here), so this
+    // (a driver gap — `crates/fs/src/fat32.rs`, not owned here), so this
     // still emulates it with unlink-then-copy. U11-3, PARTIALLY closed from
     // this side: on a copy FAILURE we no longer also delete `.TMP` (below) —
     // the already-verified staged bytes survive for a retry. What remains

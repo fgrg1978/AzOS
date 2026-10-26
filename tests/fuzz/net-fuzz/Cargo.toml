@@ -3,14 +3,14 @@ name = "azos_net_fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "cargo-fuzz (libFuzzer) targets for the network stack's receive path (crates/net/net: Ethernet, ARP, IPv4, ICMP, IGMP, UDP, TCP, IPv6) and the DHCP/DNS payload parsers. Its own workspace; run with tools/gate/fuzz.sh."
+description = "cargo-fuzz (libFuzzer) targets for the network stack's receive path (crates/net/stack: Ethernet, ARP, IPv4, ICMP, IGMP, UDP, TCP, IPv6) and the DHCP/DNS payload parsers. Its own workspace; run with tools/gate/fuzz.sh."
 
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-# The real crates/net/net modules and their host shims, through the host-test
+# The real crates/net/stack modules and their host shims, through the host-test
 # crate's `#[cfg(fuzzing)] fuzz_entry` module.
 azos_net_tests = { path = "../../host/net-tests" }
 

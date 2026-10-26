@@ -200,7 +200,7 @@ Two priority-inheritance mechanisms coexist. The wait graph is the one selected 
 | user-driver proxy | `donate_priority` / `return_donation` |
 | kernel mutex, PI futex | wait graph; without `WAIT_GRAPH` the mutex sleeps and excludes but boosts nobody and PI futexes answer `ENOSYS` |
 
-Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `kernel/src/boot/sched.rs` (`register_sched`, `PROXY_HOOKS`), `crates/fs/fs/src/fat32.rs`, `config/kernel/Kconfig.sync` (`WAIT_GRAPH`, `PI_MAX_DEPTH`, `FUTEX_PI`).
+Source: `crates/core/sync/src/waitgraph.rs`, `crates/core/sync/src/pi_attr.rs`, `crates/core/sync/src/kmutex.rs`, `crates/core/sync/src/pi_futex.rs`, `crates/core/sched/src/classes.rs` (`ClassPi`, `ClassPiInline`, `pi_prio`, `graph_floored`), `crates/core/sched/src/donation.rs`, `crates/core/sched/src/scheduler/donation.rs`, `crates/core/ipc/src/fastcall.rs`, `crates/drivers/sys/src/user_driver_proxy.rs`, `kernel/src/boot/sched.rs` (`register_sched`, `PROXY_HOOKS`), `crates/fs/src/fat32.rs`, `config/kernel/Kconfig.sync` (`WAIT_GRAPH`, `PI_MAX_DEPTH`, `FUTEX_PI`).
 
 ## CPU topology
 

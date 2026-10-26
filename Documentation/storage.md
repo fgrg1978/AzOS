@@ -366,9 +366,9 @@ Source: `crates/drivers/api/src/block.rs`,
 
 ## FAT32: journal, write ordering and the dirty bit
 
-`crates/fs/fs/src/fat32.rs` is the FAT32 driver. It sits on a shared block
+`crates/fs/src/fat32.rs` is the FAT32 driver. It sits on a shared block
 cache (`bcache.rs`) and is mounted through the `FileSystem` trait
-(`crates/fs/fs/src/vfs.rs`).
+(`crates/fs/src/vfs.rs`).
 
 ### The journal
 
@@ -536,7 +536,7 @@ away from a name stays allocated until the flush that makes the unlinking
 directory entry durable, and is freed into the next epoch (`defer_free`,
 `release_held`).
 
-Source: `crates/fs/fs/src/fat32.rs`, `crates/fs/fs/src/bcache.rs`,
+Source: `crates/fs/src/fat32.rs`, `crates/fs/src/bcache.rs`,
 `crates/drivers/block/src/blkdev.rs`, `kernel/src/boot/sched.rs`,
 `config/limits/Kconfig.limits`.
 
@@ -548,7 +548,7 @@ not mount tmpfs: `/tmp` is a ramfs directory); azvol does not. A backend must al
 
 The cache is the one `mmap` maps (see [memory.md](memory.md#page-cache-as-a-paged-memobj)):
 one `MemKind::Paged` MemObj per aligned 64-page window of a file, filled and
-written back through `FsPageBacking` (`crates/fs/fs/src/pagecache.rs`), which
+written back through `FsPageBacking` (`crates/fs/src/pagecache.rs`), which
 wraps the filesystem's `read_at` and `write_at`. One `FsPageBacking` exists per
 filesystem (`backing_of`, at most 8 distinct), so a `write` and a `MAP_SHARED`
 store meet in one frame.
@@ -603,18 +603,18 @@ Rules of the path (`vfs.rs`, "The page cache seam"):
   to the allocator under memory pressure (first stage of the reclaim order in
   [memory.md](memory.md#reclaim-order)).
 
-Source: `crates/fs/fs/src/vfs.rs`, `crates/fs/fs/src/pagecache.rs`,
-`crates/fs/fs/src/bcache.rs`, `crates/core/syscall/src/file_map.rs`,
+Source: `crates/fs/src/vfs.rs`, `crates/fs/src/pagecache.rs`,
+`crates/fs/src/bcache.rs`, `crates/core/syscall/src/file_map.rs`,
 `crates/core/ipc/src/memobj.rs`, `kernel/src/boot/pagecache.rs`.
 
 ## azvol
 
 `azvol` is the project's own volume format. The engine
-(`crates/fs/fs/src/azvol/`) uses only `core` and `alloc`, talks to the medium
+(`crates/fs/src/azvol/`) uses only `core` and `alloc`, talks to the medium
 through a `BlockDev` trait, and holds no global state; the same source runs in
 the kernel and in the host tools. `tools/image/mkazvol.py` is a second implementation
 that builds plain (unsealed) images. `AzvolFs`
-(`crates/fs/fs/src/azvol/mount.rs`) is the adapter that mounts it into the VFS.
+(`crates/fs/src/azvol/mount.rs`) is the adapter that mounts it into the VFS.
 
 ### Format
 
@@ -738,7 +738,7 @@ sealed; they hold geometry, allocation state and tags.
 
 A read-only volume (the system image a package installer stages) can be served
 over a SHA-256 hash tree kept after it on the same partition
-(`crates/fs/fs/src/azvol/verity.rs`). The volume format does not change: the
+(`crates/fs/src/azvol/verity.rs`). The volume format does not change: the
 tree is a wrapper device, `VerityDev`, between the engine and the partition.
 
 ```text
@@ -821,13 +821,13 @@ atomic unit: it commits the caller's earlier changes, then copies and removes
 inside one group and commits that. No snapshot or caller-opened change group is
 reachable through `AzvolFs`.
 
-Source: `crates/fs/fs/src/azvol/mod.rs`, `crates/fs/fs/src/azvol/layout.rs`,
-`crates/fs/fs/src/azvol/engine.rs`, `crates/fs/fs/src/azvol/volume.rs`,
-`crates/fs/fs/src/azvol/group.rs`, `crates/fs/fs/src/azvol/snap.rs`,
-`crates/fs/fs/src/azvol/seal.rs`, `crates/fs/fs/src/azvol/check.rs`,
-`crates/fs/fs/src/azvol/mount.rs`, `crates/fs/fs/src/azvol/dev.rs`,
-`crates/fs/fs/src/azvol/verity.rs`,
-`crates/fs/fs/src/probe.rs`, `kernel/src/boot/azvol.rs`, `kernel/src/boot/azvol_key.rs`,
+Source: `crates/fs/src/azvol/mod.rs`, `crates/fs/src/azvol/layout.rs`,
+`crates/fs/src/azvol/engine.rs`, `crates/fs/src/azvol/volume.rs`,
+`crates/fs/src/azvol/group.rs`, `crates/fs/src/azvol/snap.rs`,
+`crates/fs/src/azvol/seal.rs`, `crates/fs/src/azvol/check.rs`,
+`crates/fs/src/azvol/mount.rs`, `crates/fs/src/azvol/dev.rs`,
+`crates/fs/src/azvol/verity.rs`,
+`crates/fs/src/probe.rs`, `kernel/src/boot/azvol.rs`, `kernel/src/boot/azvol_key.rs`,
 `crates/core/topology/src/types.rs`, `tools/image/mkazvol.py`.
 
 ## Directory capabilities and `Cap<Dir>` namespaces
@@ -902,12 +902,12 @@ The kernel's own files (boot files, the crash log, an image to spawn) are opened
 from `ROOT_DIR`; ring 3 reaches the VFS only through `vfs_open_at` with its own
 `Cap<Dir>`. Kernel code that writes on a task's behalf, such as the crash dump
 for a faulting task, writes beneath that Domain's write tree
-(`crates/fs/fs/src/crash_log.rs`).
+(`crates/fs/src/crash_log.rs`).
 
 Source: `crates/core/ipc/src/file_cap.rs`, `crates/core/common/src/path.rs`,
 `crates/core/syscall/src/handlers.rs`, `crates/core/syscall/src/file_ops.rs`,
-`crates/fs/fs/src/vfs.rs`, `crates/core/libsys/src/lib.rs`,
-`crates/core/abi/src/invoke.rs`, `crates/fs/fs/src/crash_log.rs`,
+`crates/fs/src/vfs.rs`, `crates/core/libsys/src/lib.rs`,
+`crates/core/abi/src/invoke.rs`, `crates/fs/src/crash_log.rs`,
 `kernel/src/trap/crash.rs`.
 
 ## ext4 and the Linux module set
@@ -940,4 +940,4 @@ module is GPL-2.0-only as a whole (`config/axes/Kconfig.personality`).
 
 Source: `config/axes/Kconfig.personality`, `tools/build/lx_kbuild/run.sh`, `crates/core/lx-loader/src/lib.rs`,
 `lx/FS_EXT4_UNRESOLVED`, `.gitmodules`, `lx/emul/src/lib.rs`,
-`crates/fs/fs/src/bcache.rs`, `crates/fs/fs/src/vfs.rs`.
+`crates/fs/src/bcache.rs`, `crates/fs/src/vfs.rs`.

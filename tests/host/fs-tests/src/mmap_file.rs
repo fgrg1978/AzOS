@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host rows for the file layer's half of a file `mmap` (front mmap-file,
-//! storage L11 part B): `azos_fs::page_source` (`crates/fs/fs/src/pagecache.rs`,
+//! storage L11 part B): `azos_fs::page_source` (`crates/fs/src/pagecache.rs`,
 //! the REAL source, with `vfs::fd_file_backing`), which turns an open
 //! descriptor into the page cache's name for its file.
 //!

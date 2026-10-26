@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Byte-level wire conformance for DHCP (`crates/net/net/src/dhcp.rs`).
+//! Byte-level wire conformance for DHCP (`crates/net/stack/src/dhcp.rs`).
 //!
 //! Encode: the DISCOVER and the SELECTING-state REQUEST, compared octet for
 //! octet — Ethernet, IPv4, UDP and all 300 BOOTP octets — with layouts

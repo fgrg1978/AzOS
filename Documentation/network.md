@@ -1,6 +1,6 @@
 # Network
 
-The network stack is the `azos_net` crate (`crates/net/net`). It is `no_std`,
+The network stack is the `azos_net` crate (`crates/net/stack`). It is `no_std`,
 polling-driven, and sits between the NIC drivers (`azos_drv_net`) and the
 socket calls. Ring 3 reaches it through capability-typed socket operations;
 the heavier protocols (TLS, QUIC) run in ring 3 on top of those sockets.
@@ -12,21 +12,21 @@ the OTA listener that uses the stack.
 
 | Layer | Where it lives |
 |-------|----------------|
-| Ethernet, ARP | `crates/net/net/src/ethernet.rs`, `crates/net/net/src/arp.rs` |
-| IPv4, ICMP, routing, forwarding | `crates/net/net/src/ip.rs` |
-| Packet filter seam, built-in firewall | `crates/net/net/src/filter.rs` |
-| NAT (NAPT) | `crates/net/net/src/nat.rs` |
-| IPv6, ICMPv6, neighbour discovery | `crates/net/net/src/ipv6.rs` |
-| UDP, TCP | `crates/net/net/src/udp.rs`, `crates/net/net/src/tcp.rs` |
-| Sockets (kernel side) | `crates/net/net/src/socket.rs` |
-| DHCP, DNS, SNTP, IGMP | `crates/net/net/src/dhcp.rs`, `dns.rs`, `ntp.rs`, `igmp.rs` |
+| Ethernet, ARP | `crates/net/stack/src/ethernet.rs`, `crates/net/stack/src/arp.rs` |
+| IPv4, ICMP, routing, forwarding | `crates/net/stack/src/ip.rs` |
+| Packet filter seam, built-in firewall | `crates/net/stack/src/filter.rs` |
+| NAT (NAPT) | `crates/net/stack/src/nat.rs` |
+| IPv6, ICMPv6, neighbour discovery | `crates/net/stack/src/ipv6.rs` |
+| UDP, TCP | `crates/net/stack/src/udp.rs`, `crates/net/stack/src/tcp.rs` |
+| Sockets (kernel side) | `crates/net/stack/src/socket.rs` |
+| DHCP, DNS, SNTP, IGMP | `crates/net/stack/src/dhcp.rs`, `dns.rs`, `ntp.rs`, `igmp.rs` |
 | Socket syscalls | `crates/core/syscall/src/handlers.rs`, `crates/core/syscall/src/invoke.rs` |
 | TLS, QUIC | `userspace/lib/tls`, `userspace/lib/quic` |
 
 ## Receive path
 
-Source: `crates/net/net/src/lib.rs`, `crates/net/net/src/rx_owner.rs`,
-`crates/net/net/src/wait.rs`.
+Source: `crates/net/stack/src/lib.rs`, `crates/net/stack/src/rx_owner.rs`,
+`crates/net/stack/src/wait.rs`.
 
 The stack has no interrupt-driven protocol processing of its own. `net_poll`
 runs one receive pass:
@@ -68,8 +68,8 @@ the wait.
 
 ## Interfaces and routes
 
-Source: `crates/net/net/src/ip.rs` (section "Interfaces and routes"),
-`crates/net/net/src/lib.rs`, `kernel/src/boot/net.rs`.
+Source: `crates/net/stack/src/ip.rs` (section "Interfaces and routes"),
+`crates/net/stack/src/lib.rs`, `kernel/src/boot/net.rs`.
 
 Every NIC the driver layer reports ready becomes an interface (`Iface`).
 
@@ -115,8 +115,8 @@ solicited one.
 
 ## IPv4
 
-Source: `crates/net/net/src/ip.rs`, `crates/net/net/src/arp.rs`,
-`crates/net/net/src/igmp.rs`.
+Source: `crates/net/stack/src/ip.rs`, `crates/net/stack/src/arp.rs`,
+`crates/net/stack/src/igmp.rs`.
 
 On receive, `ip::handle` checks length, version, header checksum and rejects
 fragments. **The stack performs no reassembly and no fragmentation**: a
@@ -175,7 +175,7 @@ go through `filter::refuse`, so they are counted and recorded like a filter's.
 
 ## IPv6
 
-Source: `crates/net/net/src/ipv6.rs`, `crates/net/net/src/socket.rs`.
+Source: `crates/net/stack/src/ipv6.rs`, `crates/net/stack/src/socket.rs`.
 
 | Feature | State in the tree |
 |---------|-------------------|
@@ -204,7 +204,7 @@ answers `Unsupported`).
 
 ## TCP and UDP
 
-Source: `crates/net/net/src/tcp.rs`, `crates/net/net/src/udp.rs`.
+Source: `crates/net/stack/src/tcp.rs`, `crates/net/stack/src/udp.rs`.
 
 The TCP implementation (`TCP_MAX_CONNS` connections, Kconfig-sized per
 profile) provides:
@@ -241,7 +241,7 @@ profile) provides:
 - a connection address that is IPv4 or IPv6 (`tcp::IpAddr`); the state machine
   does not look at the family.
 
-Sequence arithmetic is in `crates/net/net/src/seq.rs` so a host test suite can
+Sequence arithmetic is in `crates/net/stack/src/seq.rs` so a host test suite can
 reach it.
 
 UDP has a fixed table of `UDP_MAX_SOCKETS` (8, a constant in `udp.rs`) bound
@@ -265,7 +265,7 @@ each exchange to the clock discipline through `ntp::set_exchange_sink`; the
 
 Source: `crates/core/abi/src/invoke.rs`, `crates/core/abi/src/cap.rs`,
 `crates/core/syscall/src/handlers.rs`, `crates/core/syscall/src/invoke.rs`,
-`crates/core/syscall/src/ioring_ops.rs`, `crates/net/net/src/socket.rs`.
+`crates/core/syscall/src/ioring_ops.rs`, `crates/net/stack/src/socket.rs`.
 
 A ring-3 socket is a capability. `DOMAIN_SOCKET` (domain, type, protocol),
 invoked on the caller's own domain handle, creates a socket and returns a
@@ -339,7 +339,7 @@ The raw descriptor-style calls (`sys_socket`, `sys_bind`, ...) are in
 
 ## Packet filter hooks
 
-Source: `crates/net/net/src/filter.rs`.
+Source: `crates/net/stack/src/filter.rs`.
 
 The IPv4 path asks one installed object, a `PacketFilter`, at three hooks; the
 IPv6 path asks the same object at the first two (`ipv6_rx` and the one send
@@ -399,7 +399,7 @@ the counters.
 
 ## The built-in firewall
 
-Source: `crates/net/net/src/filter.rs`, `kernel/src/boot/net.rs`,
+Source: `crates/net/stack/src/filter.rs`, `kernel/src/boot/net.rs`,
 `crates/core/topology/src/types.rs`, `crates/core/topology/src/parser.rs`.
 
 `filter::Firewall` is the simple filter every preset can have. At boot,
@@ -455,7 +455,7 @@ sends no TCP reset.
 
 ## NAT
 
-Source: `crates/net/net/src/nat.rs`, `crates/net/net/src/ip.rs`.
+Source: `crates/net/stack/src/nat.rs`, `crates/net/stack/src/ip.rs`.
 
 With Kconfig `NET_NAT` on, traffic forwarded out of the uplink (the interface
 of the best default route, `ip::uplink`) is masqueraded. The NAT is not a
@@ -492,7 +492,7 @@ there is no sweeper.
 
 ## Packet sockets
 
-Source: `crates/net/net/src/socket.rs`.
+Source: `crates/net/stack/src/socket.rs`.
 
 `AF_PACKET` with `SOCK_RAW` gives a socket that sees whole Ethernet frames and
 sends whole frames. The `proto` argument is the EtherType wanted (host byte
@@ -517,7 +517,7 @@ field (0 means every interface).
 
 ## NIC queues in ring 3
 
-Source: `crates/net/net/src/nic_queue.rs`, `crates/core/syscall/src/nicq.rs`,
+Source: `crates/net/stack/src/nic_queue.rs`, `crates/core/syscall/src/nicq.rs`,
 `crates/core/abi/src/nic_queue.rs`.
 
 A program whose topology row holds a NIC queue (`{ kind = "device", target =
@@ -621,7 +621,7 @@ without a network.
 
 ## DNS
 
-Source: `crates/net/net/src/dns.rs`, `sdk/std/sys/net/connection/azos.rs`.
+Source: `crates/net/stack/src/dns.rs`, `sdk/std/sys/net/connection/azos.rs`.
 
 The resolver is a kernel-side function set in `azos_net::dns`:
 `resolve_with_yield` (A record) and `resolve_aaaa_with_yield` (AAAA record), which

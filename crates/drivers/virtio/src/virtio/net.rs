@@ -1324,7 +1324,7 @@ const VIRTIO_BASE: usize = VIRTIO_MMIO_BASE;
 //
 // Thin, zero-sized adapter over `send`/`poll_recv`/`get_mac`/`is_ready`
 // above — same pattern as `eth::EthNetDevice`. `send`'s `Result<(), ()>`
-// only ever meant one of two things at its single call site (`crates/net/net`):
+// only ever meant one of two things at its single call site (`crates/net/stack`):
 // "not ready" or "ring full"; split those here rather than changing `send`
 // itself, since that keeps the fast path (an `Ok(())` return) exactly as
 // cheap as before — the extra `is_ready()` read only runs on the error path.

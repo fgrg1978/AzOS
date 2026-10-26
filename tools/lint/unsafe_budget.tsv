@@ -90,10 +90,10 @@ crates/drivers/tpm	0	0	0	0	1	0
 crates/drivers/usb	19	1	1	0	0	34
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	145	42	8	0	0	90
-crates/fs/fs	46	8	4	0	0	58
+crates/fs	46	8	4	0	0	58
 crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
-crates/net/net	17	0	0	0	0	58
+crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
 domains/robot/ahrs	0	0	0	0	1	0
 domains/robot/behavior	4	1	0	0	0	9

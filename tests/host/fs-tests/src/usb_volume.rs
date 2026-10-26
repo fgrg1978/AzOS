@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The removable volume (`crates/fs/fs/src/usbvol.rs`): a FAT32 on a fake USB
+//! The removable volume (`crates/fs/src/usbvol.rs`): a FAT32 on a fake USB
 //! stick, mounted at `/usb` beside the shim disk's `/fat`.
 //!
 //! The stick is [`Stick`], an in-memory [`usbvol::Disk`] that can be pulled

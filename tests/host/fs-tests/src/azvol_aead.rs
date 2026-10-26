@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host tests of azvol's sealing (`crates/fs/fs/src/azvol/seal.rs`): every
+//! Host tests of azvol's sealing (`crates/fs/src/azvol/seal.rs`): every
 //! block of the data area is ChaCha20-Poly1305 at rest.
 //!
 //! * a sealed volume round-trips through unmount and mount, checks clean,
@@ -21,7 +21,7 @@
 #![cfg(test)]
 
 #[allow(dead_code, unused_imports)]
-#[path = "../../../../crates/fs/fs/src/azvol/mod.rs"]
+#[path = "../../../../crates/fs/src/azvol/mod.rs"]
 mod azvol;
 
 use azos_crypto::{chachapoly, hkdf};

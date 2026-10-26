@@ -175,7 +175,7 @@ mod tests {
 // COST MODEL (the I2 probe geometry: 16 KiB bulk, 1460-byte chunks)
 // --------------------------------------------------------------
 // `send_data` never emits more than `TCP_MSS = 1460` payload bytes per
-// segment (`crates/net/net/src/tcp.rs`: `TCP_MSS`, `send_data`,
+// segment (`crates/net/stack/src/tcp.rs`: `TCP_MSS`, `send_data`,
 // `send_all_with_yield`), so putting `L` bytes on the wire takes
 // `ceil(L / 1460)` segments. How many round trips that is depends on the
 // congestion window: one per segment only while the window is one segment.
@@ -189,7 +189,7 @@ mod tests {
 mod i2_holdoff {
     use azos_multi_stream::{wrap, HEADER_LEN, STREAM_CAMERA_BASE, STREAM_CONTROL};
 
-    /// `crates/net/net/src/tcp.rs`: `const TCP_MSS: usize = 1460`.
+    /// `crates/net/stack/src/tcp.rs`: `const TCP_MSS: usize = 1460`.
     const TCP_MSS: usize = 1460;
 
     /// Probe geometry of the I2 experiment.

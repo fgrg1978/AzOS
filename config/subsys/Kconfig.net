@@ -3,7 +3,7 @@
 # config/subsys/Kconfig.net — Ethernet and the TCP/IP stack
 #
 # All network constants with defaults matching the
-# current codebase values from crates/net/net/src/*.
+# current codebase values from crates/net/stack/src/*.
 
 config NET
     bool "TCP/IP stack: bring-up, the net-poll task and the network clients"
@@ -20,7 +20,7 @@ config NET
       connection then has no TCP timers running (no in-tree user opens TCP
       to its own address without a NIC; UDP loopback is delivered inline).
 
-      Off: none of that is compiled. The stack crate itself (crates/net/net)
+      Off: none of that is compiled. The stack crate itself (crates/net/stack)
       is still linked: the syscall, recovery and actuation crates call it
       without a feature of their own, so a socket call answers as on a
       machine with no interface (open: a `net` feature for those crates).
@@ -41,7 +41,7 @@ config TCP_BUF_SIZE
     default 131072
     help
       Size of each of the two static rings of one TCP connection, the
-      receive ring and the send ring (crates/net/net/src/tcp.rs rx_buf and
+      receive ring and the send ring (crates/net/stack/src/tcp.rs rx_buf and
       tx_buf).  Must be a power of two, and at least 8192 so that the
       send ring holds a few full-size segments of headroom for loss
       recovery; crates/core/limits/build.rs rejects anything else.
@@ -86,7 +86,7 @@ config TCP_DELACK_MS
     default 40
     help
       Longest an in-order data segment's acknowledgement may be held
-      (crates/net/net/src/tcp.rs, TCP_DELACK_TICKS). An ACK held this
+      (crates/net/stack/src/tcp.rs, TCP_DELACK_TICKS). An ACK held this
       long is sent from tcp_tick; one the receive path sends earlier
       (TCP_DELACK_SEGS, TCP_DELACK_PASS_FLUSH, out-of-order data, a
       closing window) or one that rides on our own data leaves sooner.
@@ -145,7 +145,7 @@ config TCP_EPHEMERAL_PORT_MAX
     default 65535
     help
       Upper end of the ephemeral range (see TCP_EPHEMERAL_PORT_MIN);
-      must not be below it (crates/net/net/src/tcp.rs asserts this at
+      must not be below it (crates/net/stack/src/tcp.rs asserts this at
       compile time). Cost: none.
 
 config TCP_DELACK_PASS_FLUSH
@@ -169,7 +169,7 @@ config TCP_WINDOW_UPDATE_SHIFT
     default 3 if TCP_BUF_SIZE < 32768
     default 2
     help
-      crates/net/net/src/tcp.rs, TCP_WINDOW_UPDATE_BYTES = TCP_BUF_SIZE >> N.
+      crates/net/stack/src/tcp.rs, TCP_WINDOW_UPDATE_BYTES = TCP_BUF_SIZE >> N.
       A recv() that opens the receive window by at least this much sends
       the window update as a pure ACK at once; a smaller opening is held
       like a delayed ACK (TCP_DELACK_MS) and rides on the next data ACK
@@ -197,7 +197,7 @@ config TCP_TIMESTAMPS
       that offers it is answered with it. Once both SYNs carried it, every
       segment of the connection carries the sender's clock (milliseconds
       plus a per-connection offset, RFC 7323 §7.1) and echoes the peer's
-      (crates/net/net/src/tcp.rs, TcpConn::seg_opts):
+      (crates/net/stack/src/tcp.rs, TcpConn::seg_opts):
       - RTTM: every ACK of new data is an RTT sample, retransmissions
         included (the echo says which transmission it answers, so Karn's
         rule is not needed);
@@ -220,7 +220,7 @@ config TCP_ECN
     help
       Our SYN asks for ECN (ECE and CWR), a SYN that asks for it is agreed
       to, and on a connection where both ends did
-      (crates/net/net/src/tcp.rs):
+      (crates/net/stack/src/tcp.rs):
       - new data leaves ECT(0), so a router may mark it (CE) instead of
         dropping it; SYNs, pure ACKs, retransmissions and probes leave
         Not-ECT (RFC 3168 §6.1.4-6.1.6);
@@ -244,7 +244,7 @@ config TCP_SYNCOOKIES
       connection table), or a table with no free slot, answers a further
       SYN with a SYN-ACK whose sequence number is a cookie: a keyed MAC of
       the 4-tuple, the peer's ISN and a 64 s clock, with the peer's MSS in
-      two bits (crates/net/net/src/tcp.rs, cookie_make). No slot is taken
+      two bits (crates/net/stack/src/tcp.rs, cookie_make). No slot is taken
       until the third leg comes back with it, so a flood of spoofed SYNs
       costs the table nothing. With Timestamps the cookie also carries the
       Window Scale, SACK and ECN the SYN offered (in our TSval's low bits);
@@ -267,7 +267,7 @@ config NET_WAIT_SLOTS
     default 16 if HWCLASS_SERVER
     default 8
     help
-      crates/net/net/src/wait.rs, NET_WAIT_SLOTS: a task waiting for a TCP
+      crates/net/stack/src/wait.rs, NET_WAIT_SLOTS: a task waiting for a TCP
       handshake, an incoming connection, the send window (one queue) or an
       ARP reply (another) registers its TID here and is woken by the
       receive path when the event lands, instead of sleeping 1 ms and
@@ -284,7 +284,7 @@ config NET_DNS_TIMEOUT_MS
     range 100 30000
     default 2000
     help
-      crates/net/net/src/dns.rs, resolve_with_yield: the bound on one
+      crates/net/stack/src/dns.rs, resolve_with_yield: the bound on one
       query (was a literal 2 s). The resolver is woken by the answer
       (NET_WAIT_SLOTS), so this is only what an unanswered query costs
       its caller.
@@ -297,7 +297,7 @@ config TCP_RECV_MAX_PER_CALL
     default 1024 if HWCLASS_EMBEDDED
     default 4096
     help
-      crates/net/net/src/tcp.rs, TCP_RECV_MAX_PER_CALL: the copy out of
+      crates/net/stack/src/tcp.rs, TCP_RECV_MAX_PER_CALL: the copy out of
       the receive ring runs with the TCP lock held, so this bounds that
       hold (a short read is ordinary TCP; callers loop).
 
@@ -311,7 +311,7 @@ config NET_RX_DRAIN_PER_POLL
     default 16 if HWCLASS_EMBEDDED
     default 64
     help
-      crates/net/net/src/lib.rs, net_poll: the most frames one pass takes
+      crates/net/stack/src/lib.rs, net_poll: the most frames one pass takes
       off the receive ring before it ends (and flushes held ACKs, see
       TCP_DELACK_PASS_FLUSH). 64 is one line-rate burst; a smaller bound
       shortens the pass on a small core at the price of more passes.
@@ -330,10 +330,10 @@ config NET_MAX_INTERFACES
     default 2 if HWCLASS_EMBEDDED
     default 4
     help
-      crates/net/net/src/ip.rs, MAX_IFS: the interface registry (ifindex 1
+      crates/net/stack/src/ip.rs, MAX_IFS: the interface registry (ifindex 1
       is the primary one; named eth0, eth1, ... in registration order), and
       with it the number of ARP caches and outstanding-request tables
-      (crates/net/net/src/arp.rs). An interface is one NIC the driver
+      (crates/net/stack/src/arp.rs). An interface is one NIC the driver
       layer reports ready; NICs beyond this are left unused.
 
       Cost: 40 B per interface (the registry, .bss) plus one ARP cache and
@@ -348,7 +348,7 @@ config NET_PACKET_SOCKETS
     default 1 if HWCLASS_EMBEDDED
     default 2
     help
-      crates/net/net/src/socket.rs, PACKET_SOCKETS: how many AF_PACKET
+      crates/net/stack/src/socket.rs, PACKET_SOCKETS: how many AF_PACKET
       sockets can exist at once, kernel-owned only for now (a gPTP or LLDP
       service). Each owns a receive ring of NET_PACKET_RX_SLOTS frames;
       0 refuses the socket type (the receive pass then costs one relaxed
@@ -363,7 +363,7 @@ config NET_PACKET_RX_SLOTS
     default 2 if HWCLASS_EMBEDDED
     default 4
     help
-      crates/net/net/src/socket.rs, PACKET_RX_SLOTS: the receive ring of each
+      crates/net/stack/src/socket.rs, PACKET_RX_SLOTS: the receive ring of each
       packet socket. A frame that arrives with the ring full is counted and
       dropped (the oldest stays): a reader that falls behind loses the
       newest traffic, as a UDP socket does.
@@ -375,7 +375,7 @@ config NET_NIC_QUEUES
     bool "Ring-3 packet rings on a NIC queue (Cap<NicQueue>, QUEUE_NICQ_*)"
     default y
     help
-      crates/net/net/src/nic_queue.rs, crates/core/syscall/src/nicq.rs: a
+      crates/net/stack/src/nic_queue.rs, crates/core/syscall/src/nicq.rs: a
       program whose topology row holds a NIC queue (`nicq.eth1.0`) may take
       it from the kernel's stack and run it on a pair of rings it made, in
       the netmap and AF_XDP shape: what arrives on the queue is pushed on
@@ -396,7 +396,7 @@ config NET_NIC_QUEUES
       work.
 
 # ---------------------------------------------------------------------------
-# ARP, DNS and UDP tables (wave 11: were literals in crates/net/net)
+# ARP, DNS and UDP tables (wave 11: were literals in crates/net/stack)
 # ---------------------------------------------------------------------------
 
 config ARP_CACHE_SIZE
@@ -405,7 +405,7 @@ config ARP_CACHE_SIZE
     default 64 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 16
     help
-      crates/net/net/src/arp.rs, ARP_CACHE_SIZE. USE_GATEWAY on the
+      crates/net/stack/src/arp.rs, ARP_CACHE_SIZE. USE_GATEWAY on the
       Edge profile starts it at 64.
 
       Cost: 24 B of RAM per entry per interface (ARP_TABLES, .bss: one cache
@@ -418,7 +418,7 @@ config ARP_PENDING_SIZE
     default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 8
     help
-      crates/net/net/src/arp.rs, ARP_PENDING_SIZE: requests whose reply
+      crates/net/stack/src/arp.rs, ARP_PENDING_SIZE: requests whose reply
       is still eligible to be accepted. USE_GATEWAY on the Edge
       profile starts it at 16.
 
@@ -432,7 +432,7 @@ config DNS_CACHE_SIZE
     default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 4
     help
-      crates/net/net/src/dns.rs, DNS_CACHE_SIZE. USE_GATEWAY on the
+      crates/net/stack/src/dns.rs, DNS_CACHE_SIZE. USE_GATEWAY on the
       Edge profile starts it at 16.
 
       Cost: 80 B of RAM per entry (DNS_CACHE, .bss), the same on riscv64 and
@@ -443,7 +443,7 @@ config UDP_MAX_SOCKETS
     range 4 64
     default 8
     help
-      crates/net/net/src/udp.rs: the table of bound UDP ports, each with
+      crates/net/stack/src/udp.rs: the table of bound UDP ports, each with
       UDP_RX_SLOTS datagram slots. The kernel's own clients (DHCP, DNS, NTP,
       TFTP, PTP) bind from it too. Cost: 16 B per socket for its identity,
       which dispatch scans for every arriving datagram, plus UDP_RX_SLOTS x
@@ -455,7 +455,7 @@ config UDP_RX_SLOTS
     default 16 if USE_GATEWAY && (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 4
     help
-      crates/net/net/src/udp.rs, UDP_RX_SLOTS: the receive ring of each
+      crates/net/stack/src/udp.rs, UDP_RX_SLOTS: the receive ring of each
       UDP socket. USE_GATEWAY on the Edge profile starts it at 16.
       Must be a power of two (the ring index is a mask);
       crates/core/limits/build.rs refuses any other value.
@@ -467,7 +467,7 @@ config UDP_RX_SLOTS
       depend on MAX_SOCKETS.
 
 # ---------------------------------------------------------------------------
-# Firewall (crates/net/net/src/filter.rs, installed by kernel/src/boot/net.rs)
+# Firewall (crates/net/stack/src/filter.rs, installed by kernel/src/boot/net.rs)
 # ---------------------------------------------------------------------------
 
 config FIREWALL_INBOUND_DROP
@@ -507,7 +507,7 @@ config FIREWALL_CONNTRACK_MAX
     help
       Size of the flow table the firewall keeps so that the answer to a
       packet this node sent (or to one a rule let in) passes whatever the
-      rules say (crates/net/net/src/filter.rs, CT_SLOTS). The table is 4-way
+      rules say (crates/net/stack/src/filter.rs, CT_SLOTS). The table is 4-way
       set-associative, keyed by the 5-tuple with a boot-random seed: the
       value is rounded down to a multiple of 4, and a flow whose set is full
       of live entries is refused, never the table grown. Within a set a
@@ -547,7 +547,7 @@ config FIREWALL_TCP_TIMEOUT_S
       Cost: none.
 
 # ---------------------------------------------------------------------------
-# Forwarding and NAT (crates/net/net/src/ip.rs `forward`, nat.rs)
+# Forwarding and NAT (crates/net/stack/src/ip.rs `forward`, nat.rs)
 # ---------------------------------------------------------------------------
 
 config NET_IP_FORWARD
@@ -607,7 +607,7 @@ config NAT_TABLE_MAX
     default 1024 if NET_NAT
     default 16
     help
-      Size of the mapping table (crates/net/net/src/nat.rs, NAT_SLOTS). 4-way
+      Size of the mapping table (crates/net/stack/src/nat.rs, NAT_SLOTS). 4-way
       set-associative, keyed by the 5-tuple with a boot-random seed: the value
       is rounded down to a multiple of 4. The translated port of a mapping is
       chosen so that both directions of it live in the same set, which makes
@@ -690,7 +690,7 @@ config NAT_ICMP_TIMEOUT_S
 
 # ---------------------------------------------------------------------------
 # NIC queues (wave 15 IO-QUEUES N1/N2/N3: were VIRTIO_QUEUE_SIZE = 16 and
-# literals in crates/drivers/virtio/src/virtio/net.rs, crates/net/net/src/lib.rs
+# literals in crates/drivers/virtio/src/virtio/net.rs, crates/net/stack/src/lib.rs
 # and kernel/src/tasks/net_poll.rs)
 # ---------------------------------------------------------------------------
 

@@ -7078,7 +7078,7 @@ impl Volume {
 
 // ── The VFS backend ───────────────────────────────────────────────────────────
 //
-// `crates/fs/fs` declared no traits at all: three filesystems, no interface
+// `crates/fs` declared no traits at all: three filesystems, no interface
 // between them, and the generic inode carrying an 8.3 name because this one
 // filesystem needed it. This block is FAT32's side of `vfs::FileSystem` — the
 // eight operations the VFS actually performs, and nothing else. The free

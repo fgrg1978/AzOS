@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Whose answer is it (`crates/net/net/src/dns.rs`, `parse_answer`).
+//! Whose answer is it (`crates/net/stack/src/dns.rs`, `parse_answer`).
 //!
 //! A response is trusted for the name that was asked, and for the names it is
 //! an alias of, and for nothing else: the owner of an address record must be

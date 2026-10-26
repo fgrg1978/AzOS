@@ -75,7 +75,7 @@ is missing or the wrong size — never silently signs with a placeholder.
 The default `<file>.SIG` naming is fine for a host-side build artifact, but
 if the SIGNED file's own name already has a dot (`CONFIG.INI`, `CAPS.TOML`),
 appending `.SIG` produces a name with TWO dots — not a valid FAT 8.3 short
-name (one dot; base <=8 chars; extension <=3 chars). `crates/fs/fs/src/fat32.rs`
+name (one dot; base <=8 chars; extension <=3 chars). `crates/fs/src/fat32.rs`
 has no VFAT/long-filename support, so `azos_fs::vfs_open` can only ever
 find a file by its exact 8.3 short name; `mkfs.fat`/`mcopy` silently mangle
 a two-dot name into an auto-generated short name instead (verified: writing

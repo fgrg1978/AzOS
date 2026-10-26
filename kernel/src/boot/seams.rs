@@ -363,7 +363,7 @@ pub(crate) fn install_ring3_seams() {
     // The filesystem behind the file syscalls.
     //
     // `crates/core/syscall` is core — it is the gate ring 3 passes through to reach
-    // the motors — and `crates/fs/fs` is scaffolding, so the syscall crate names a
+    // the motors — and `crates/fs` is scaffolding, so the syscall crate names a
     // `FileOps` trait and the kernel, the composition root, supplies the VFS
     // behind it. Same shape as `KernelLogStorage` for the flight recorder; this
     // one closed the last of the TCB violations.
@@ -546,7 +546,7 @@ pub(crate) fn install_ring3_seams() {
                     return -1;
                 }
                 // Stamp the owner here, under the same lock that allocated the
-                // slot. `crates/fs/fs` deliberately does not know about the
+                // slot. `crates/fs` deliberately does not know about the
                 // scheduler; the kernel is the only place that holds the table
                 // AND knows who is running. A descriptor opened by a kernel
                 // task keeps `FD_NO_OWNER` and is never auto-reclaimed.

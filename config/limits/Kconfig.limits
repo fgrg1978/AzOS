@@ -140,7 +140,7 @@ config TCP_MAX_CONNS
       on the Edge profile starts it at 64, with TCP_BUF_SIZE 16384.  Each entry
       costs TCP_BUF_SIZE × 2 bytes of buffer memory (RX + TX) plus
       6,168 B of connection state, 4 × 1,468 B of it the out-of-order
-      queue: size_of::<TcpConn>() (crates/net/net/src/tcp.rs) is 268,312 B
+      queue: size_of::<TcpConn>() (crates/net/stack/src/tcp.rs) is 268,312 B
       at TCP_BUF_SIZE = 131072 and 38,936 B at 16384.  TCP_BUF_SIZE is
       per profile (config/subsys/Kconfig.net), so the static table is
       4 × 268,312 B embedded, 8 × 268,312 B edge and 1024 × 38,936 B
@@ -188,7 +188,7 @@ config MAX_FDS_PER_PROC
     default 256 if HWCLASS_SERVER
     help
       Size of the kernel's file-descriptor table, for the WHOLE MACHINE.
-      `crates/fs/fs/src/vfs.rs` re-exports this as `MAX_FDS`, the length of the
+      `crates/fs/src/vfs.rs` re-exports this as `MAX_FDS`, the length of the
       one shared array — the name says "per proc" and the option has never
       controlled a per-process anything.
 
@@ -1292,7 +1292,7 @@ config VFS_MAX_FILES
     range 64 4096
     default 128
     help
-      Size of the VFS inode pool (crates/fs/fs/src/vfs.rs, MAX_FILES):
+      Size of the VFS inode pool (crates/fs/src/vfs.rs, MAX_FILES):
       every file and directory of the RAM filesystem, plus the inodes a
       mounted filesystem's open files take.
 
@@ -1307,7 +1307,7 @@ config VFS_MAX_MOUNTS
     default 7 if USB_STORAGE_VOLUME
     default 6
     help
-      crates/fs/fs/src/vfs.rs, MAX_MOUNTS.
+      crates/fs/src/vfs.rs, MAX_MOUNTS.
 
       The kernel mounts /fat, then one mount per `[volume.NAME]` row of the
       topology (kernel/src/boot/azvol.rs): the default 6 holds it and five
@@ -1326,7 +1326,7 @@ config FS_BLOCK_CACHE_KB
     default 512  if (HWCLASS_SBC || HWCLASS_DESKTOP)
     default 4096 if HWCLASS_SERVER
     help
-      crates/fs/fs/src/fat32.rs, SECTOR_CACHE (crates/fs/fs/src/bcache.rs):
+      crates/fs/src/fat32.rs, SECTOR_CACHE (crates/fs/src/bcache.rs):
       the FAT32 driver's cache of 512-byte volume sectors, directory and FAT
       sectors and file data alike, set-associative (8 ways) past 8 lines.
       A repeated open/read of a small file, or a repeated spawn of the same
@@ -1374,7 +1374,7 @@ config FAT32_SECTOR_CLAIM_SLOTS
     range 1 64
     default 64
     help
-      crates/fs/fs/src/fat32.rs, FAT_SECTOR_BUSY: a FAT entry update (cluster
+      crates/fs/src/fat32.rs, FAT_SECTOR_BUSY: a FAT entry update (cluster
       allocation, free, chain link) reads a FAT sector, patches 4 bytes and
       writes it to every FAT copy. No mutex is held across that device I/O
       (an RT waiter must not inherit disk latency through priority
@@ -1409,7 +1409,7 @@ config FAT_PI_IO_SITES
     range 1 64
     default 8
     help
-      crates/fs/fs/src/fat32.rs, PI_IO_SITE: with the `fat-pi-io-probe`
+      crates/fs/src/fat32.rs, PI_IO_SITE: with the `fat-pi-io-probe`
       cargo feature (the `lat-fat` smoke), each FAT32 device I/O issued under
       a held Mutex is attributed to (task, outermost lock, innermost lock);
       this many distinct sites are kept and counted, the rest only add to
@@ -1850,7 +1850,7 @@ config TMPFS_MAX_FILES
     range 8 1024
     default 64
     help
-      crates/fs/fs/src/tmpfs.rs, TMPFS_MAX_FILES.
+      crates/fs/src/tmpfs.rs, TMPFS_MAX_FILES.
 
       Cost: 96 B of RAM per entry (TMPFS, .data), the same on riscv64 and
       aarch64: 6,168 B at the default 64.  File data is not in this table (see
@@ -1861,7 +1861,7 @@ config TMPFS_MAX_KB
     range 64 65536
     default 2048
     help
-      crates/fs/fs/src/tmpfs.rs, TMPFS_MAX_BYTES. A write that would pass
+      crates/fs/src/tmpfs.rs, TMPFS_MAX_BYTES. A write that would pass
       it evicts the oldest file first (FIFO).
 
       Cost: no static RAM (+0 B measured, both ISAs).  File data is allocated

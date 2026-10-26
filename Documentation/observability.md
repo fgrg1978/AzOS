@@ -446,8 +446,8 @@ row holds and prints the report.
 
 ## Panic record and crash log
 
-Source: `kernel/src/panic.rs`, `crates/fs/fs/src/crash_log.rs`,
-`kernel/src/pstore.rs`, `crates/fs/fs/src/pstore.rs`, Kconfig `PSTORE_SIZE_KB`.
+Source: `kernel/src/panic.rs`, `crates/fs/src/crash_log.rs`,
+`kernel/src/pstore.rs`, `crates/fs/src/pstore.rs`, Kconfig `PSTORE_SIZE_KB`.
 
 - **`/fat/CRASH.LOG`** collects one entry (at most 512 bytes) per kernel panic.
   Appending is capped at `CRASH_LOG_CAP` (64 KiB, 128 entries). When an append

@@ -5,7 +5,7 @@
 //! **`socket` is the real stack, not a stand-in.** Target 3
 //! (`socket_access_ok`, `crates/core/syscall/src/handlers.rs:861`) reads
 //! `azos_net::MAX_SOCKETS` and calls `azos_net::socket_owner`, both
-//! defined for real in `crates/net/net/src/socket.rs`. `socket.rs` itself needs
+//! defined for real in `crates/net/stack/src/socket.rs`. `socket.rs` itself needs
 //! only `tcp` and `udp` (per `tests/host/net-tests`' own doc comment on the same
 //! pull), which need `ip`, which needs `ethernet`/`arp`/`igmp`, which need
 //! `checksum`. All eight are pulled in with `#[path]`, the same set
@@ -23,24 +23,24 @@
 extern crate beh_test_drivers as azos_drv_sys;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/checksum.rs"]
+#[path = "../../../../../../crates/net/stack/src/checksum.rs"]
 mod checksum;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/ethernet.rs"]
+#[path = "../../../../../../crates/net/stack/src/ethernet.rs"]
 mod ethernet;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/arp.rs"]
+#[path = "../../../../../../crates/net/stack/src/arp.rs"]
 mod arp;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/igmp.rs"]
+#[path = "../../../../../../crates/net/stack/src/igmp.rs"]
 mod igmp;
 
 // `pub`: the NIC-queue tests attach interfaces to the real registry.
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/ip.rs"]
+#[path = "../../../../../../crates/net/stack/src/ip.rs"]
 pub mod ip;
 
 pub use ip::{IfIndex, MAX_IFS};
@@ -48,7 +48,7 @@ pub use ip::{IfIndex, MAX_IFS};
 /// The real rules of who may take a NIC queue and of the receive pass's turn
 /// (`syscall/src/nicq.rs` takes and gives back through it).
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/nic_queue.rs"]
+#[path = "../../../../../../crates/net/stack/src/nic_queue.rs"]
 pub mod nic_queue;
 
 /// `crate::nic_queue_send` (`lib.rs`), with the NIC replaced by a record of
@@ -71,45 +71,45 @@ pub fn shim_take_nicq_sent() -> Vec<(IfIndex, Vec<u8>)> {
 
 // `ip.rs` calls the packet-filter hooks.
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/filter.rs"]
+#[path = "../../../../../../crates/net/stack/src/filter.rs"]
 mod filter;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/ipv6.rs"]
+#[path = "../../../../../../crates/net/stack/src/ipv6.rs"]
 mod ipv6;
 
 // `pub`: the `Net` interface's `resolve` (`syscall/src/net_host.rs`) calls
 // `dns::resolve_with_yield`.
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/dns.rs"]
+#[path = "../../../../../../crates/net/stack/src/dns.rs"]
 pub mod dns;
 
 // `pub`: the clock discipline's feed (`syscall/src/clock.rs`) takes `ntp::Exchange`,
 // and `Net::ntp_status` reads `ntp::status`.
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/ntp.rs"]
+#[path = "../../../../../../crates/net/stack/src/ntp.rs"]
 pub mod ntp;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/seq.rs"]
+#[path = "../../../../../../crates/net/stack/src/seq.rs"]
 mod seq;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/udp.rs"]
+#[path = "../../../../../../crates/net/stack/src/udp.rs"]
 mod udp;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/tcp.rs"]
+#[path = "../../../../../../crates/net/stack/src/tcp.rs"]
 mod tcp;
 
 /// N7 waiter queues (`sys_accept` arms `TCP_WAITERS`). No hooks are
 /// registered here, so every wait is the caller's fallback, as before.
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/wait.rs"]
+#[path = "../../../../../../crates/net/stack/src/wait.rs"]
 pub mod wait;
 
 #[allow(dead_code)]
-#[path = "../../../../../../crates/net/net/src/socket.rs"]
+#[path = "../../../../../../crates/net/stack/src/socket.rs"]
 pub mod socket;
 
 // The real, callable surface `handlers.rs` uses at the crate root.

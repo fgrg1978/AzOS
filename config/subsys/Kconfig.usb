@@ -39,7 +39,7 @@ config USB_VOLUME_CACHE_KB
     range 0 4096
     default 64
     help
-      crates/fs/fs/src/usbvol.rs: the sector cache of the stick's FAT32
+      crates/fs/src/usbvol.rs: the sector cache of the stick's FAT32
       volume (USB_STORAGE_VOLUME), its own and not /fat's (FS_BLOCK_CACHE_KB),
       run by the same cache code. In .bss whether or not a stick is plugged.
       64 KiB is 128 lines of 512 bytes: a stick's FAT window, its root and
@@ -230,7 +230,7 @@ config USB_STORAGE_VOLUME
     default n
     depends on USB_STORAGE
     help
-      Kernel feature `usb-storage-volume` (crates/fs/fs/src/usbvol.rs,
+      Kernel feature `usb-storage-volume` (crates/fs/src/usbvol.rs,
       kernel/src/boot/usb.rs). When a stick becomes ready its partition table
       is read (MBR or GPT, else the bare medium) and the first FAT32 volume on
       it is mounted at /usb: a second, separate volume (a second instance of

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
-# Gate row for the packet filter on the IPv6 path (crates/net/net: filter.rs,
+# Gate row for the packet filter on the IPv6 path (crates/net/stack: filter.rs,
 # ipv6.rs): the "network: IPv6 firewall refuses" row of tools/gate/ci_check.sh and
 # its control, "network: IPv6 firewall control".
 #

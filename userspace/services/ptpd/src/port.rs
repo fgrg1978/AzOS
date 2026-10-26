@@ -7,7 +7,7 @@
 //! learns the master's arrival time from the Delay_Resp (`t4`). Offset and
 //! delay come from all four ([`e2e_measure`]). The 802.1AS peer-delay
 //! exchange is not here: it needs a raw Ethernet socket, which the kernel
-//! keeps to itself (`crates/net/net/src/socket.rs`), so it comes with the
+//! keeps to itself (`crates/net/stack/src/socket.rs`), so it comes with the
 //! capability that grants one.
 //!
 //! The master is chosen by `bmc` (Announce, qualification, best dataset) and

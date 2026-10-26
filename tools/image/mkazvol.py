@@ -16,13 +16,13 @@ clocks: the time is --time-ns, default $SOURCE_DATE_EPOCH or 0, and the
 uuid derives from the label and the size unless given).
 
 --verity appends a SHA-256 hash tree after the volume (header, then the
-levels, see crates/fs/fs/src/azvol/verity.rs) and prints `verity_root HEX` on
+levels, see crates/fs/src/azvol/verity.rs) and prints `verity_root HEX` on
 stdout: the value of the topology row's `verity_root`. --size stays the size
 of the volume; the image file is longer by the tree, and the partition it goes
 to must hold both. `verify --verity-root` recomputes the tree from the volume
 blocks and checks the stored one and the root against it.
 
-The format is described in crates/fs/fs/src/azvol/mod.rs. This file is the
+The format is described in crates/fs/src/azvol/mod.rs. This file is the
 second, independent implementation of it: the host suite
 (tests/host/fs-tests/src/azvol_format.rs) mounts what `create` writes with
 the Rust engine and has `verify` read what the Rust engine wrote, so a layout

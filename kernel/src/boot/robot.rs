@@ -312,7 +312,7 @@ pub(crate) fn install_flight_recorder() {
     // succeeds, so every call site added below is safe whether or
     // not this line worked.
     // The flight recorder's storage seam. `domains/robot/behavior` is
-    // core and `crates/fs/fs` is scaffolding, so the recorder cannot
+    // core and `crates/fs` is scaffolding, so the recorder cannot
     // name FAT32 directly -- it declares what it needs and the
     // kernel, which is the composition root, supplies it. Same
     // shape as `KernelFileOps` for the file syscalls.

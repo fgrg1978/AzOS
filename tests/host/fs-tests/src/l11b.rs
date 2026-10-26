@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host rows for storage L11 part B: FAT32 and tmpfs file data through the
-//! unified page cache (`crates/fs/fs/src/vfs.rs`, "The page cache seam").
+//! unified page cache (`crates/fs/src/vfs.rs`, "The page cache seam").
 //!
 //! The rows run the REAL `vfs.rs`, `fat32.rs`, `tmpfs.rs` and the REAL
 //! `FsPageBacking` + `fill_page`/`write_back_page` arithmetic; what stands in

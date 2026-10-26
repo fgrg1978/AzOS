@@ -3,7 +3,7 @@ name = "azos_fs_fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "cargo-fuzz (libFuzzer) target for the FAT32 driver (crates/fs/fs/src/fat32.rs) on an in-memory disk: mount, journal recovery, read and write paths. Its own workspace; run with tools/gate/fuzz.sh."
+description = "cargo-fuzz (libFuzzer) target for the FAT32 driver (crates/fs/src/fat32.rs) on an in-memory disk: mount, journal recovery, read and write paths. Its own workspace; run with tools/gate/fuzz.sh."
 
 [package.metadata]
 cargo-fuzz = true

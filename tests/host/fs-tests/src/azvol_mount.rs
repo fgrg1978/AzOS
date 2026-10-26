@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host tests of the azvol volume in use (`crates/fs/fs/src/azvol/mount.rs`,
+//! Host tests of the azvol volume in use (`crates/fs/src/azvol/mount.rs`,
 //! `probe.rs`): the probe that recognises it, mounting from a topology row,
 //! the volume behind the REAL `vfs.rs`, the transaction fence (one owner; no
 //! other task's change or commit lands in it; a dead owner's is discarded), and
@@ -21,17 +21,17 @@
 #![cfg(test)]
 
 #[allow(dead_code, unused_imports)]
-#[path = "../../../../crates/fs/fs/src/azvol/mod.rs"]
+#[path = "../../../../crates/fs/src/azvol/mod.rs"]
 mod azvol;
 
 // `probe.rs` also holds the opt-in inode probe, gated on a feature this suite
 // does not declare.
 #[allow(dead_code, unexpected_cfgs)]
-#[path = "../../../../crates/fs/fs/src/probe.rs"]
+#[path = "../../../../crates/fs/src/probe.rs"]
 mod probe;
 
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/azvol/mount.rs"]
+#[path = "../../../../crates/fs/src/azvol/mount.rs"]
 mod mount;
 
 use super::vfs::{self, FileSystem as _, FsErr, O_CREAT, O_RDONLY, O_WRONLY};

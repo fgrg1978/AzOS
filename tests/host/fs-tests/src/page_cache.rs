@@ -3,7 +3,7 @@
 //! Host rows for the file layer's side of the page cache (storage L11, part A):
 //! a `MemKind::Paged` MemObj fills and writes back its pages through the
 //! `PageBacking` callback (`crates/core/mm/src/page_backing.rs`), and
-//! `azos_fs::FsPageBacking` (`crates/fs/fs/src/pagecache.rs`, the REAL source,
+//! `azos_fs::FsPageBacking` (`crates/fs/src/pagecache.rs`, the REAL source,
 //! pulled with `#[path]` like the other file-layer modules) implements it over
 //! a filesystem's positional `read_at` / `write_at`.
 //!

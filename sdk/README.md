@@ -58,7 +58,7 @@ No file descriptor numbers, no `errno`, no signals, no POSIX layer:
   name lookup, IPv6 addresses and UDP over IPv6, `shutdown(Write)` and a stream's
   local address. The first two are service functions that come as IDL interfaces
   on endpoints (a listener and a resolver, over the stack's
-  `crates/net/net/src/dns.rs` and TCP listener), not as more socket ops; that work is not done. A program that opens
+  `crates/net/stack/src/dns.rs` and TCP listener), not as more socket ops; that work is not done. A program that opens
   a socket has a seccomp row naming one op of the `net` class.
 - **Output.** stdout and stderr are the console handle's `WRITE` op (a handle
   the spawner passed is written with `NODE_WRITE`). The console has no read:

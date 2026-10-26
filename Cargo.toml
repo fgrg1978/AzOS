@@ -413,8 +413,8 @@ members = [
     # Utilisation tracking, energy model, scheduler energy seams.
     "crates/core/energy",
     "crates/core/syscall",
-    "crates/fs/fs",
-    "crates/net/net",
+    "crates/fs",
+    "crates/net/stack",
     "crates/core/ipc",
     "domains/robot/robot",
     "crates/core/recovery",
@@ -555,8 +555,8 @@ azos_mm = { path = "crates/core/mm" }
 azos_sched = { path = "crates/core/sched" }
 azos_energy = { path = "crates/core/energy" }
 azos_syscall = { path = "crates/core/syscall" }
-azos_fs = { path = "crates/fs/fs" }
-azos_net = { path = "crates/net/net" }
+azos_fs = { path = "crates/fs" }
+azos_net = { path = "crates/net/stack" }
 azos_ipc = { path = "crates/core/ipc" }
 azos_robot = { path = "domains/robot/robot" }
 azos_recovery = { path = "crates/core/recovery" }

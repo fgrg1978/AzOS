@@ -4,20 +4,20 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for crates/net/net: TCP, UDP, IP, ARP, IGMP, DHCP, DNS, NTP and sockets, including wire-conformance modules. Excluded from workspace."
+description = "Host-side tests for crates/net/stack: TCP, UDP, IP, ARP, IGMP, DHCP, DNS, NTP and sockets, including wire-conformance modules. Excluded from workspace."
 
 # Run with:  cd tests/host/net-tests && cargo test --release
 
-# Gate canary (crates/net/net): the egress gate is never asked.
+# Gate canary (crates/net/stack): the egress gate is never asked.
 [features]
 envelope-egress-canary = []
-# Gate canary (crates/net/net): IPv6 skips the packet filter at both hooks.
+# Gate canary (crates/net/stack): IPv6 skips the packet filter at both hooks.
 fw-ipv6-canary = []
-# Gate canary (crates/net/net): the receive pass ignores a taken NIC queue.
+# Gate canary (crates/net/stack): the receive pass ignores a taken NIC queue.
 nic-queue-blind-canary = []
-# Gate canary (crates/net/net): SLAAC assigns with no Duplicate Address Detection.
+# Gate canary (crates/net/stack): SLAAC assigns with no Duplicate Address Detection.
 slaac-no-dad-canary = []
-# Gate canary (crates/net/net): a refresh over two hours is lowered to two hours.
+# Gate canary (crates/net/stack): a refresh over two hours is lowered to two hours.
 slaac-two-hours-canary = []
 
 [dependencies]

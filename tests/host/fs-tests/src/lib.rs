@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side tests for `crates/fs/fs/src/fat32.rs` and `crates/fs/fs/src/vfs.rs`,
+//! Host-side tests for `crates/fs/src/fat32.rs` and `crates/fs/src/vfs.rs`,
 //! driven against hand-built volume images.
 //!
 //! Both files are the REAL ones, pulled with `#[path]`. `vfs.rs` joined them
@@ -22,7 +22,7 @@
 //! watch is the exact failure `tests/host/regression-tests/src/sched_tests.rs`
 //! documents at length.
 
-// The pulled `crates/fs/fs` sources name the driver class crates directly
+// The pulled `crates/fs` sources name the driver class crates directly
 // (`azos_drv_block::blkdev`, `azos_drv_sys::kprintln!`); both are the one
 // host shim.
 extern crate fs_test_drivers as azos_drv_block;
@@ -34,10 +34,10 @@ extern crate fs_test_drivers as azos_drv_sys;
 // "warnings are failures" rule intact for everything else — including this
 // file's own code.
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/fat32.rs"]
+#[path = "../../../../crates/fs/src/fat32.rs"]
 mod fat32;
 // The boot volume's device and knobs (`fat32::BOOT`), as
-// `crates/fs/fs/src/lib.rs` gives them: the shim disk.
+// `crates/fs/src/lib.rs` gives them: the shim disk.
 #[allow(dead_code)]
 mod fat32_dev {
     pub(crate) use azos_drv_block::{blkdev, partition};
@@ -52,13 +52,13 @@ mod fat32_dev {
 // a recording device. `dead_code`: the write-back half is exercised only from
 // the test module, not from the pulled FAT32 code.
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/bcache.rs"]
+#[path = "../../../../crates/fs/src/bcache.rs"]
 mod bcache;
 
 // `vfs.rs` and `fat32.rs` call the `file-census` hooks (no-ops without the
 // feature, which this suite never enables).
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/census.rs"]
+#[path = "../../../../crates/fs/src/census.rs"]
 mod census;
 
 // The MBR/GPT parser the kernel scopes `Cap<Disk>` by (partition-scoped block endpoints). It
@@ -76,7 +76,7 @@ use azos_drv_block::partition;
 // ── The `vfs` seam ───────────────────────────────────────────────
 //
 // `fat32.rs` ends with `impl crate::vfs::FileSystem for Fat32Fs` — its side of
-// the one interface the three filesystems in `crates/fs/fs` share. This used to
+// the one interface the three filesystems in `crates/fs` share. This used to
 // be a hand-written MIRROR of that trait, because the real `vfs.rs` could not
 // be pulled: it opened with `use alloc::alloc::{...}`, and this suite inherits
 // `[unstable] build-std = ["core", "alloc"]` from the repository's
@@ -104,7 +104,7 @@ extern crate alloc;
 // write / close path, so the descriptor-table half of `vfs.rs` (dup,
 // owner quotas) is legitimately unreferenced here.
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/vfs.rs"]
+#[path = "../../../../crates/fs/src/vfs.rs"]
 mod vfs;
 
 // The rotation policy for `/fat/CRASH.LOG` (`kernel/src/panic.rs`'s crash
@@ -112,18 +112,18 @@ mod vfs;
 // item here IS exercised, but only from the `#[cfg(test)]` module below, so
 // the plain (non-test) build of this lib target sees no caller at all.
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/crash_log.rs"]
+#[path = "../../../../crates/fs/src/crash_log.rs"]
 mod crash_log;
 
 // The panic record kept in reserved RAM across a warm reboot
 // (`kernel/src/pstore.rs` owns the region; this file is the format).
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/pstore.rs"]
+#[path = "../../../../crates/fs/src/pstore.rs"]
 mod pstore;
 // The page cache's backing over a `FileSystem` (storage L11): the real
 // `azos_fs::FsPageBacking`, over the `azos_mm::pager` shim's real callback.
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/pagecache.rs"]
+#[path = "../../../../crates/fs/src/pagecache.rs"]
 mod pagecache;
 #[cfg(test)]
 mod page_cache;
@@ -146,7 +146,7 @@ mod swap_file;
 // so `TmpFs::read_at`/`write_at` run against the REAL
 // `tmpfs_read_at`/`tmpfs_write_at`, not a hand-copy of them.
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/tmpfs.rs"]
+#[path = "../../../../crates/fs/src/tmpfs.rs"]
 mod tmpfs;
 
 // The on-disk names of the signed topology pair (`crates/core/topology/src/
@@ -191,7 +191,7 @@ mod sync_all;
 // The removable volume (`usbvol`): a second `fat32::Vol` over a USB stick,
 // mounted beside `/fat`, run by the same FAT32 code.
 #[allow(dead_code)]
-#[path = "../../../../crates/fs/fs/src/usbvol.rs"]
+#[path = "../../../../crates/fs/src/usbvol.rs"]
 mod usbvol;
 
 #[cfg(test)]
@@ -2073,7 +2073,7 @@ mod vfs_open_close {
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
     }
 
-    // ── `/fat/CRASH.LOG` rotation (`crates/fs/fs/src/crash_log.rs`) ───────────
+    // ── `/fat/CRASH.LOG` rotation (`crates/fs/src/crash_log.rs`) ───────────
     //
     // The DECISION (`plan_rotation`) is pure — bare integers, no fixture —
     // and covered first, on its own. The MECHANISM (`record_entry_with_cap`)
@@ -2564,7 +2564,7 @@ mod inode_leak {
 
 /// **The signed topology files must be reachable by the names a loader opens.**
 ///
-/// `crates/fs/fs/src/fat32.rs` matches short 8.3 names only. `crates/core/topology`
+/// `crates/fs/src/fat32.rs` matches short 8.3 names only. `crates/core/topology`
 /// used to document its sidecars as `CAPS.TOML.SIG` / `SCHED.TOML.SIG`, and the
 /// data files as `CAPS.TOML` / `SCHED.TOML`: all four fail 8.3 (a four-letter
 /// extension, and two dots), and `mcopy` stores them under generated short
@@ -3901,7 +3901,7 @@ mod power_cut {
     // mount-time check that gives leaked space back, and the atomic replace.
     //
     // Canaries (each must turn at least one test below red; see
-    // `crates/fs/fs/Cargo.toml`): `fat-dirty-bit-canary`,
+    // `crates/fs/Cargo.toml`): `fat-dirty-bit-canary`,
     // `fat-dirty-unordered-canary`, `fat-clean-early-canary`,
     // `fat-no-repair-canary`, `fat-check-no-mark-canary`,
     // `mkdir-unordered-canary`, `replace-in-place-canary`,
@@ -7564,7 +7564,7 @@ mod fuzz_regressions {
     }
 }
 
-// ── pstore: the RAM panic record (`crates/fs/fs/src/pstore.rs`) ─────────────
+// ── pstore: the RAM panic record (`crates/fs/src/pstore.rs`) ─────────────
 //
 // The format is pure, so most tests are plain slices. The last two take the
 // recovery line through the real `crash_log::record_entry` onto a volume, the
@@ -7988,9 +7988,9 @@ mod fatcache {
         discard.dedup();
         virtio.dedup();
         mmc.dedup();
-        assert_eq!(quiet, ["crates/fs/fs/src/fat32.rs", "kernel/src/boot/swap.rs"],
+        assert_eq!(quiet, ["crates/fs/src/fat32.rs", "kernel/src/boot/swap.rs"],
                    "write_quiet outside FAT32's write path and the swap area");
-        assert_eq!(discard, ["crates/fs/fs/src/fat32.rs", "kernel/src/boot/azvol.rs", "kernel/src/boot/swap.rs"],
+        assert_eq!(discard, ["crates/fs/src/fat32.rs", "kernel/src/boot/azvol.rs", "kernel/src/boot/swap.rs"],
                    "a discard outside FAT32's released chains, azvol's freed blocks and the swap area");
         // Both queued devices are driven through the request layer; nothing
         // writes virtio-blk directly any more.

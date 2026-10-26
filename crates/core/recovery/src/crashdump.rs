@@ -10,7 +10,7 @@
 //! records of the kernel (`crates/core/decision`: why the kernel refused or
 //! denied what it did just before) and the SHA-256 of the task's image, the
 //! key the symbol file of that exact build is stored under. A kernel panic is
-//! not a dump: it keeps `/fat/CRASH.LOG` (`crates/fs/fs/src/crash_log.rs`).
+//! not a dump: it keeps `/fat/CRASH.LOG` (`crates/fs/src/crash_log.rs`).
 //!
 //! **Where it goes.** The Log and a file (owner decision 16-10). The Log: a
 //! record of task and status on the flight recorder's ring, and the dump

@@ -69,7 +69,7 @@ with custom reliability.
   frame queued behind them.
 
 A transport with independent streams would remove that cost. The brain link is
-a TCP connection (`crates/net/net`), so it keeps the cost and bounds it with the
+a TCP connection (`crates/net/stack`), so it keeps the cost and bounds it with the
 mechanisms below.
 
 ## Where the traffic goes

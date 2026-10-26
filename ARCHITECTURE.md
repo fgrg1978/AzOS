@@ -175,7 +175,7 @@ log and a pstore; `azvol`, a native volume format with snapshots and per-block
 encryption. Block devices come from VirtIO, SD/eMMC or NVMe drivers and a
 partition table parser.
 
-- Source: `crates/fs/fs`, `crates/drivers/block`, `crates/drivers/nvme`,
+- Source: `crates/fs`, `crates/drivers/block`, `crates/drivers/nvme`,
   `crates/drivers/virtio`, `kernel/src/pstore.rs`, `kernel/src/boot/azvol.rs`.
 - Doc: [storage.md](Documentation/storage.md).
 
@@ -269,7 +269,7 @@ reserved RAM (pstore) and a crash log on the volume; minidumps of faulted ring-3
 tasks; in-kernel tests (`ktest`) and boot smokes.
 
 - Source: `crates/core/{trace,inspect,decision,ktest,chaos}`,
-  `crates/fs/fs/src/{crash_log,pstore}.rs`, `kernel/src/{pstore,ktest}.rs`,
+  `crates/fs/src/{crash_log,pstore}.rs`, `kernel/src/{pstore,ktest}.rs`,
   `kernel/src/smokes/`, `userspace/services/{tracectl,why,decisd}`.
 - Doc: [observability.md](Documentation/observability.md).
 

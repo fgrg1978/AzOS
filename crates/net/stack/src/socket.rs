@@ -149,7 +149,7 @@ struct Socket {
     /// enforces nothing.
     ///
     /// The check itself lives in `crates/core/syscall` (`socket_access_ok` in
-    /// `handlers.rs`), which is where the TID comes from — `crates/net/net` is
+    /// `handlers.rs`), which is where the TID comes from — `crates/net/stack` is
     /// scheduler-agnostic by design and must not depend on `crates/core/sched`.
     /// Read it through [`socket_owner`]. **A field with no check is worse
     /// than no field: it reads as protection while enforcing nothing.**
@@ -361,7 +361,7 @@ pub fn socket_create(domain: u32, sock_type: u32, proto: u32) -> i32 {
 /// file-descriptor-style index or -1.
 ///
 /// `owner` is the TID the socket belongs to, supplied by the caller rather
-/// than read from the scheduler here so `crates/net/net` stays scheduler-
+/// than read from the scheduler here so `crates/net/stack` stays scheduler-
 /// agnostic. Every later entry point is gated against this stamp — see the
 /// `owner` field on `Socket` for what that prevents.
 ///
@@ -416,7 +416,7 @@ pub fn socket_create_owned(domain: u32, sock_type: u32, proto: u32, owner: u32) 
 /// unowned.
 ///
 /// This is the accessor the syscall layer's ownership gate reads; it exists
-/// so `crates/net/net` can expose the stamp without importing the scheduler.
+/// so `crates/net/stack` can expose the stamp without importing the scheduler.
 /// Mirrors `azos_ipc::memobj_owner` / `port_owner`.
 pub fn socket_owner(fd: i32) -> Option<u32> {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return None; }
@@ -662,7 +662,7 @@ pub const CONNECT_HANDSHAKE_SPIN_CAP: u32 = 5_000_000;
 /// than at connect's semantics.
 ///
 /// POSIX is unambiguous here: a blocking `connect()` does not report success
-/// until the connection is established. `yield_fn` is injected so `crates/net/net`
+/// until the connection is established. `yield_fn` is injected so `crates/net/stack`
 /// stays scheduler-agnostic, the same pattern `connect_with_yield` and
 /// `send_all_with_yield` already use.
 pub fn socket_connect_with_yield<F: FnMut()>(

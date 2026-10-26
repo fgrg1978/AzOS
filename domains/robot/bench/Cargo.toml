@@ -13,9 +13,9 @@ azos_ipc     = { path = "../../../crates/core/ipc" }
 azos_sched   = { path = "../../../crates/core/sched" }
 azos_sync    = { path = "../../../crates/core/sync" }
 azos_behavior = { path = "../behavior" }
-azos_net     = { path = "../../../crates/net/net" }
+azos_net     = { path = "../../../crates/net/stack" }
 azos_crypto  = { path = "../../../crates/core/crypto" }
-azos_fs      = { path = "../../../crates/fs/fs" }
+azos_fs      = { path = "../../../crates/fs" }
 azos_mm      = { path = "../../../crates/core/mm" }
 azos_ota     = { path = "../../../crates/core/ota" }
 

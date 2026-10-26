@@ -64,7 +64,7 @@ tree also builds desktop and server configurations.
   records across resets, the panic path writes `CRASH.LOG`, and a recovery
   console runs on the UART when ring 3 cannot start. A service endpoint can be
   handed to a successor without losing queued callers. Source:
-  `crates/core/actuation/src/logger.rs`, `crates/fs/fs/src/crash_log.rs`,
+  `crates/core/actuation/src/logger.rs`, `crates/fs/src/crash_log.rs`,
   `crates/core/recovery`.
 - **Introspection without system calls.** The kernel publishes a tree of typed
   values (scheduler, memory, decision counters) into a memory object that

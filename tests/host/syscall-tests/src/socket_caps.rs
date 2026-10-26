@@ -3,7 +3,7 @@
 // `Cap<Socket>` (567-570): a socket as a capability.
 //
 // The socket table here is the real one (`shims/net` pulls
-// `crates/net/net/src/socket.rs` whole), so ownership, the per-task quota and
+// `crates/net/stack/src/socket.rs` whole), so ownership, the per-task quota and
 // index reuse are the shipping behaviour. What a host cannot do is put a
 // datagram on a wire — `net_poll` and the NIC are `todo!()` — so these tests
 // stop at the capability check, at the untyped handler's own first refusal, or

@@ -132,13 +132,13 @@ Source: `crates/drivers/*/Cargo.toml` and each `lib.rs` header.
 
 | Crate | What it holds |
 |---|---|
-| `crates/fs/fs` (`azos_fs`) | The VFS, FAT32, tmpfs, block cache, page cache, crash log, pstore, and `azvol` (the native volume format with snapshots and per-block authenticated encryption). |
-| `crates/net/net` (`azos_net`) | Ethernet, ARP, IPv4/IPv6, ICMP, UDP, TCP, DHCP, DNS, NTP, IGMP, NAT, packet filter, BSD-style sockets. Polling-based. |
+| `crates/fs` (`azos_fs`) | The VFS, FAT32, tmpfs, block cache, page cache, crash log, pstore, and `azvol` (the native volume format with snapshots and per-block authenticated encryption). |
+| `crates/net/stack` (`azos_net`) | Ethernet, ARP, IPv4/IPv6, ICMP, UDP, TCP, DHCP, DNS, NTP, IGMP, NAT, packet filter, BSD-style sockets. Polling-based. |
 | `crates/net/ethercat` (`azos_ethercat`) | EtherCAT master protocol logic, `no_std`: frame and datagram builder and parser, the slave-side records a master writes, the AL state machine, distributed-clock arithmetic. It owns no socket or clock; the cyclic loop is the caller's. Tested by `tests/host/ethercat-tests`. |
 | `crates/net/multi-stream` | A stream-ID-prefixed multiplexed wire format for a point-to-point link. |
 | `crates/net/tftp` | A TFTP client: the protocol state machine and a fetch loop over a caller-supplied UDP socket. Used by the package installer in development builds (`PKG_FETCH_TFTP`). |
 
-Source: `crates/fs/fs/src/lib.rs`, `crates/net/net/src/lib.rs`, `crates/net/*/Cargo.toml`.
+Source: `crates/fs/src/lib.rs`, `crates/net/stack/src/lib.rs`, `crates/net/*/Cargo.toml`.
 
 ## domains/robot
 

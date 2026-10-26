@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The built-in firewall (`crates/net/net/src/filter.rs`, `Firewall`): the rule
+//! The built-in firewall (`crates/net/stack/src/filter.rs`, `Firewall`): the rule
 //! table compiled from the topology's `[firewall.NAME]` rows, the default
 //! policy, the flow table that lets the answer to an accepted flow through, and
 //! its bound.

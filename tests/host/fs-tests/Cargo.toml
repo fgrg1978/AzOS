@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for crates/fs/fs/src/fat32.rs and crates/fs/fs/src/vfs.rs, driven against hand-built volume images. Excluded from workspace."
+description = "Host-side tests for crates/fs/src/fat32.rs and crates/fs/src/vfs.rs, driven against hand-built volume images. Excluded from workspace."
 
 # Run with:  cd tests/host/fs-tests && cargo test --release
 
@@ -16,13 +16,13 @@ description = "Host-side tests for crates/fs/fs/src/fat32.rs and crates/fs/fs/sr
 doctest = false
 
 [features]
-# Round 48 canary: per-descriptor offsets (see crates/fs/fs).
+# Round 48 canary: per-descriptor offsets (see crates/fs).
 fd-private-offset-canary = []
-# Gate canary (crates/fs/fs): the delete gate is never asked.
+# Gate canary (crates/fs): the delete gate is never asked.
 envelope-delete-canary = []
-# Wave 15 (PI) canary: no per-description position lock (see crates/fs/fs).
+# Wave 15 (PI) canary: no per-description position lock (see crates/fs).
 fd-pos-lock-canary = []
-# Wave 14 canary: per-sector `fat32_read_chain` (see crates/fs/fs).
+# Wave 14 canary: per-sector `fat32_read_chain` (see crates/fs).
 read-chain-sector-canary = []
 # Wave 15 (GR4) canaries for the FAT32 chain walkers; the fs-tests chain-walk
 # tests must turn red with each. Never in a real build.
@@ -36,7 +36,7 @@ fat-medium-bound-canary = []
 fat-walk-read-error-canary = []
 fat-walk-cycle-canary = []
 # Wave 14 (FATCACHE) canaries, one per coherence path of the block cache
-# (crates/fs/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
+# (crates/fs/src/fat32.rs). Each must turn an fs-tests `fatcache` test
 # red. Never in a real build.
 #   observer:     external medium writes no longer drop cached sectors
 #   writethrough: FAT32's own writes no longer update a cached line
@@ -47,7 +47,7 @@ fatcache-writethrough-canary = []
 fatcache-token-canary = []
 fatcache-run-bypass-canary = []
 # Wave 15 (WRITEBACK) canaries, one per write-back property of the block
-# cache (crates/fs/fs/src/bcache.rs, fat32.rs). Each must turn an fs-tests
+# cache (crates/fs/src/bcache.rs, fat32.rs). Each must turn an fs-tests
 # `writeback` test red. Never in a real build.
 #   epoch-merge:       an older epoch's dirty line is overwritten in place
 #   no-ordering-flush: a run of a later epoch goes out with no flush first
@@ -125,7 +125,7 @@ fat-mutate-spin-canary = []
 # Wave 15 (FM): declared so the cfgs are known. `fat-sector-claim-canary` is
 # the concurrent-mutator test's canary; the other two are kernel-only.
 fat-sector-claim-canary = []
-# A retired mount's inodes left on its backend (see crates/fs/fs).
+# A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it
 # on (`fat32_ktest_with_wb_claim`), never this suite.
