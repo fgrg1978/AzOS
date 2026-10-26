@@ -16,6 +16,15 @@
 # variable must be defined before the rule that lists it (images.mk defines the
 # TEST key paths that kernel.mk, read after it, uses).
 
+# make splits words on spaces, so a path with one cannot be a target or a
+# prerequisite, and every output here is named by its absolute path. A
+# checkout or an output root under such a path (iCloud Drive's "Mobile
+# Documents") stops here, before anything runs: builds belong outside iCloud.
+empty :=
+ifneq ($(findstring $(empty) $(empty),$(CURDIR)$(AZOS_OUT)),)
+$(error build outside iCloud: path has spaces)
+endif
+
 include mk/vars.mk
 
 .PHONY: check0 check1 check-presets check-neverallow check-fast prune all build build-rvv build-fleet clean qemu qemu-smp qemu-full-smp qemu-net-pair \

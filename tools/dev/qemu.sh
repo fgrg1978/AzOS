@@ -15,7 +15,7 @@
 #   hv-x86_64   — AMD SVM in TCG (-cpu max,svm=on)
 
 MAKE="/usr/bin/make"
-REPO="/Users/azor/Library/Mobile Documents/com~apple~CloudDocs/Development/ia/azos"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 MODE="${1:-default}"
 
 cd "$REPO"
