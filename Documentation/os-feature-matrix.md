@@ -174,9 +174,9 @@ Options and choices: 876. Defconfigs: 21.
 | `AARCH64_PAGE_16K` | 16 KiB (39-bit VA, 3 levels) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `AARCH64_PAGE_4K` | 4 KiB (39-bit VA, 3 levels) | n | n | y | y | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
 | `AARCH64_PAGE_64K` | 64 KiB (48-bit VA, 3 levels) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `ARCH_AARCH64` | Aarch64 (ARMv8.0-A and later) | n | n | y | y | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
+| `ARCH_AARCH64` | AArch64 (Armv8.0-A and later) | n | n | y | y | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
 | `ARCH_RISCV64` | RISC-V 64-bit (rv64imac / rv64gc) | y | y | n | n | y | y | y | n | y | y | n | n | n | y | y | y | y | n | n | n | y |
-| `ARCH_X86_64` | x86_64 (port skeleton: type-checks only) | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
+| `ARCH_X86_64` | x86_64 | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | y | y | y | n |
 | `FP_HARDFLOAT_D` | RISC-V D extension (32 × f64 = 256 B, default rv64) | y | y | n | n | y | y | y | n | y | y | n | n | n | y | y | y | y | n | n | n | y |
 | `FP_HARDFLOAT_F` | RISC-V F extension (32 × f32 = 128 B) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `FP_NEON` | Aarch64 NEON (32 × 128-bit q-regs = 512 B) | n | n | y | y | n | n | n | n | n | n | y | y | y | n | n | n | n | n | n | n | n |

@@ -415,9 +415,9 @@ The index lists every declared option: 1274.
 | `AHCI_NCQ_DEPTH` | `config/limits/Kconfig.limits` | AHCI command slots (native command queuing depth; 1: one at a time) |
 | `AHCI_XFER_KB` | `config/limits/Kconfig.limits` | AHCI bounce buffer (KiB; one command's largest transfer) |
 | `ALLOC_RANDOM` | `config/kernel/Kconfig.hardening` | Randomize allocation order (slab carve order, buddy list order) |
-| `ARCH_AARCH64` | `config/arch/Kconfig.isa` | Aarch64 (ARMv8.0-A and later) |
+| `ARCH_AARCH64` | `config/arch/Kconfig.isa` | AArch64 (Armv8.0-A and later) |
 | `ARCH_RISCV64` | `config/arch/Kconfig.isa` | RISC-V 64-bit (rv64imac / rv64gc) |
-| `ARCH_X86_64` | `config/arch/Kconfig.isa` | x86_64 (port skeleton: type-checks only) |
+| `ARCH_X86_64` | `config/arch/Kconfig.isa` | x86_64 |
 | `ARP_CACHE_SIZE` | `config/subsys/Kconfig.net` | ARP cache entries |
 | `ARP_PENDING_SIZE` | `config/subsys/Kconfig.net` | Outstanding ARP requests remembered |
 | `ASID_BITS` | `config/kernel/Kconfig.mm` | Address-space ID width the allocator uses (bits) |
