@@ -22,7 +22,6 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
 | `sdk/` | The native `std` SDK: target specs, linker scripts, the `std` overlay, and `sdktest`, the SDK's own test program. |
 | `micro/` | AzOS-micro, the MMU-less MCU kernel (riscv32imac, M-mode, PMP region domains, static tasks from the signed topology in `micro/topology/`). It is its own workspace and links the main kernel's pure crates; `make micro` builds it. |
-| `crates/drivers/lx/` | The Linux driver compatibility layer: `emul/` (Rust base), `glue/` (C module built against a pinned Linux tree), and the lists it is checked against: `LINUX_PIN` (the Linux stable tag), `HOST_ABI` (every symbol the Linux driver server exports to modules), `DEVICE_SOURCES` (the Linux leaf drivers whose ids the hardware bus matches), `FS_EXT4_UNRESOLVED` (the imports of the ext4 module set). |
 | `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. One fragment, `Kconfig.userspace` (the programs under `userspace/`), is generated at every parse by `tools/build/gen_userspace_kconfig.py` and is not committed. |
 | `mk/` | Makefile fragments included by the top-level `Makefile`: `vars.mk`, `kernel.mk`, `userspace.mk`, `images.mk`, `host.mk`, `qemu.mk`, `lints.mk`. |
 | `tools/` | The host tools (Python and shell), one directory per role (see [Tests and tools](#tests-and-tools)); `tools/image/boot.cmd` is the U-Boot script that boots slots A/B/R from the SD card. |
@@ -125,6 +124,7 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `tpm` | The TPM 2.0 TIS/FIFO and CRB interfaces and the commands. |
 | `rtc` | Real-time clocks behind one `Rtc` trait: goldfish, PL031, MC146818 CMOS, PCF8563 over I2C. |
 | `firmware` | A firmware mailbox property-protocol encoder. The crate is a single source file at the crate directory root, which its `Cargo.toml` declares as the library root. |
+| `lx` | The Linux driver compatibility layer (not one crate): `emul/` (the Rust base), `glue/` (the C module built against a pinned Linux tree), and the lists it is checked against: `HOST_ABI` (every symbol the Linux driver server exports to modules), `DEVICE_SOURCES` (the Linux leaf drivers whose ids the hardware bus matches), `FS_EXT4_UNRESOLVED` (the imports of the ext4 module set). |
 | `chip_source.rs` | Not a crate: a file `include!`d by the build scripts of `buzzer` and `ina219` to fingerprint their source. |
 
 Source: `crates/drivers/*/Cargo.toml` and each `lib.rs` header.
