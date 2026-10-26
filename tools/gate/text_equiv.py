@@ -27,6 +27,17 @@ per function instead, over every executable section:
   the function is compared as its offset from the function start; one
   outside as its symbol (hash removed). An immediate that falls inside one of
   the ELF's allocated sections is an absolute address and compares as ADDR.
+  x86 names a rip operand's target after the nearest symbol: the name
+  counts only when the target is a symbol or lies inside one's object
+  (st_size); past the end it is unnamed data (a panic `Location`, a
+  string) whose neighbour moves with the layout, and compares as D;
+* a symbol annotation is the whole `<...>` (generics nest: `<A<B>>::f`);
+* trailing padding (unimp, int3, udf, nops) is the fill up to the next
+  function's alignment, not code;
+* identical-code folding keeps one of the folded names, and which one
+  follows the layout: a body only under name X in A and only under name Y
+  in B, unique on both sides, is one function renamed, and every reference
+  to X in A reads as Y (printed as `folded renames`).
 Also undone: aarch64 linker relaxation (`adrp+add` vs `nop+adr`), and
 RISC-V's `mv` / bare `jalr ra` spellings of a zero lo12 displacement.
 Prints counts and the first mismatching functions (`--show N`, default 15);
@@ -34,7 +45,7 @@ exit 1 on any mismatch.
 A canary: two builds that differ by one real instruction must mismatch (the
 ENERGY report shows the energy-on build failing it).
 """
-import re, subprocess, sys, collections
+import bisect, re, subprocess, sys, collections
 def _objdump():
     """$OBJDUMP, else the llvm-objdump of the active Rust toolchain."""
     import os
@@ -70,7 +81,19 @@ def relax(raw):
             out.append((a, "ADDR", nx[2].split(",")[0].strip())); i += 2; continue
         out.append(raw[i]); i += 1
     return out
-def norm_fn(start, raw, ranges):
+PAD = {"unimp", "c.unimp", "int3", "udf", "nop", "nopw", "nopl"}
+def named(v, objs):
+    """Is v a symbol's address, or inside a sized object?"""
+    starts, iv = objs
+    if v in starts:
+        return True
+    i = bisect.bisect_right(iv, (v, 2**64)) - 1
+    return i >= 0 and v < iv[i][1]
+def norm_fn(start, raw, ranges, objs):
+    while raw and raw[-1][1] in PAD:
+        raw = raw[:-1]
+    if not raw:
+        return None
     raw = relax(raw)
     # Every register some auipc/adrp of this function writes: its lo12
     # consumer can sit anywhere after it, including before it in layout order
@@ -87,10 +110,12 @@ def norm_fn(start, raw, ranges):
         note = ""
         if re.search(r"#\s*0x", ops):
             ops, _, c = ops.partition("#"); ops = ops.strip()
-            s = re.search(r"<([^>]*)>", c)
-            note = "#<" + re.sub(r"\+0x[0-9a-f]+$", "", HASH.sub("H", s.group(1))) + ">" if s else ""
-        sym = re.search(r"<([^>]*)>", ops)
-        base = re.sub(r"<[^>]*>", "", ops).strip()
+            s = re.search(r"<(.*)>", c)
+            if s:
+                v = int(re.search(r"0x([0-9a-f]+)", c).group(1), 16)
+                note = "#<" + HASH.sub("H", s.group(1)) + ">" if named(v, objs) else "#<D>"
+        sym = re.search(r"<(.*)>", ops)
+        base = re.sub(r"<.*>", "", ops).strip()
         base = re.sub(r"-?0x[0-9a-f]+\(%rip\)", "IMM(%rip)", base)
         regs = [r.strip() for r in base.split(",")]
         isbr = mn in BR or mn.startswith("b.") or bool(X86_JCC.fullmatch(mn))
@@ -131,13 +156,39 @@ def alloc_ranges(path):
             if vma and size:
                 rs.append((vma, vma + size))
     return rs
+def objects(path):
+    """Every symbol's address, and the merged [start, end) of the sized ones
+    (`objdump -t`: addr flags section<TAB>size name)."""
+    out = subprocess.run([OBJDUMP, "-t", path], capture_output=True, text=True, check=True).stdout
+    starts = set(); iv = []
+    for line in out.splitlines():
+        head, tab, tail = line.partition("\t")
+        p = head.split(); q = tail.split()
+        if not tab or not p or not q:
+            continue
+        try:
+            lo, size = int(p[0], 16), int(q[0], 16)
+        except ValueError:
+            continue
+        starts.add(lo)
+        if size:
+            iv.append((lo, lo + size))
+    iv.sort(); merged = []
+    for lo, hi in iv:
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return starts, merged
 def funcs(path):
-    ranges = alloc_ranges(path)
+    ranges = alloc_ranges(path); objs = objects(path)
     out = subprocess.run([OBJDUMP, "-d", "--no-show-raw-insn", "--demangle", path],
                          capture_output=True, text=True, check=True).stdout
     fs = collections.defaultdict(list); cur = None; start = 0; raw = []; sec = ""
     def flush():
-        if cur is not None and raw: fs[cur].append(norm_fn(start, raw, ranges))
+        if cur is not None and raw:
+            body = norm_fn(start, raw, ranges, objs)
+            if body is not None: fs[cur].append(body)
     for line in out.splitlines():
         if line.startswith("Disassembly of section "):
             flush(); cur = None; raw = []; sec = line.split()[-1].rstrip(":"); continue
@@ -158,11 +209,31 @@ if len(args) >= 2 and args[0] == "--show":
 if len(args) != 2:
     sys.exit("usage: text_equiv.py [--show N] A.elf B.elf")
 a, b = funcs(args[0]), funcs(args[1])
+def folded(a, b):
+    """Pairs (X in A only, Y in B only) with the same bodies, unique on both
+    sides and in the same section: one folded function, renamed."""
+    def lone(x, y):
+        by = collections.defaultdict(list)
+        for k, v in x.items():
+            if k not in y: by[tuple(sorted(v))].append(k)
+        return {body: ks[0] for body, ks in by.items() if len(ks) == 1}
+    la, lb = lone(a, b), lone(b, a)
+    return [(la[body], lb[body]) for body in la
+            if body in lb and la[body].split(" ", 1)[0] == lb[body].split(" ", 1)[0]]
+renames = folded(a, b)
+for ka, kb in renames:
+    x, y = ka.split(" ", 1)[1], kb.split(" ", 1)[1]
+    ref = re.compile(r"(?<=[ <])" + re.escape(x) + r"(?=$|[ +>])")
+    a[kb] = a.pop(ka)
+    for k, v in a.items():
+        a[k] = [tuple(ref.sub(y, i) if x in i else i for i in body) for body in v]
 na = sum(len(v) for v in a.values()); nb = sum(len(v) for v in b.values())
 ia = sum(len(x) for v in a.values() for x in v); ib = sum(len(x) for v in b.values() for x in v)
 print(f"A: {na} functions, {ia} instructions; B: {nb} functions, {ib} instructions")
 bad = [k for k in sorted(set(a) | set(b)) if sorted(a.get(k, [])) != sorted(b.get(k, []))]
-print(f"mismatching functions: {len(bad)}")
+print(f"folded renames: {len(renames)}; mismatching functions: {len(bad)}")
+for ka, kb in renames[:show]:
+    print("   renamed:", ka[:100], "->", kb.split(" ", 1)[1][:100])
 for k in bad[:show]:
     print("  ", k[:150], [len(x) for x in a.get(k, [])], [len(x) for x in b.get(k, [])])
 sys.exit(1 if bad else 0)
