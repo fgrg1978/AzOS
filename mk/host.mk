@@ -32,7 +32,7 @@ OTA_BIN := $(OUT_BUILD)/kernel-ota.bin
 
 $(OTA_BIN): build
 	@mkdir -p $(OUT_BUILD)
-	riscv64-unknown-elf-objcopy -O binary $(KERNEL_ELF) $@
+	riscv64-unknown-elf-objcopy -O binary $(RISCV64_KERNEL_ELF) $@
 	@echo "[OTA] Raw binary: $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 ota-send: $(OTA_BIN)

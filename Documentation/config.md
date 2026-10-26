@@ -207,7 +207,7 @@ it. `make defconfig-<name>` loads a committed defconfig into `.config` and runs
 | Defconfig | Used by |
 |---|---|
 | `generic-sbc-<arch>-dev+qemu+linux+gui` | `make check` (all three ISAs), the gate's generic image |
-| `robot-sbc-<arch>-dev+qemu+linux+gui` | `make check CHECK_PRESET=robot`, `make aarch64` / `make x86_64`, the gate's robot rows, vsbench |
+| `robot-sbc-<arch>-dev+qemu+linux+gui` | `make check CHECK_PRESET=robot`, the gate's robot rows, vsbench |
 | `generic-sbc-riscv64-dev` | `make defconfig-generic-sbc-riscv64-dev`, the fallback when there is no `.config` |
 | `generic-embedded-riscv64+board-generic`, `generic-server-riscv64+board-generic` | the embedded and fleet profiles (`make build-fleet`) |
 | `robot-embedded-riscv64+board-generic`, `robot-server-riscv64+board-generic` | the gate's embedded and fleet rows |

@@ -42,13 +42,14 @@ case "$MODE" in
         exec "$MAKE" qemu QEMU_FLAGS="-machine virt -nographic -bios default -cpu rv64,h=true"
         ;;
     hv-aarch64)
-        # `virtualization=on` gives the guest-less boot an EL2 to keep.
+        # `virtualization=on` gives the guest-less boot an EL2 to keep
+        # (an aarch64 .config).
         exec "$MAKE" qemu-aarch64-el2
         ;;
     hv-x86_64)
         # TCG implements SVM (nested paging included); `max` is also what the
-        # kernel's x86-64-v2 baseline needs.
-        exec "$MAKE" qemu-x86_64 QEMU_X86_64_CPU=max,svm=on
+        # kernel's x86-64-v2 baseline needs (an x86_64 .config).
+        exec "$MAKE" qemu QEMU_X86_64_CPU=max,svm=on
         ;;
     default|*)
         exec "$MAKE" qemu

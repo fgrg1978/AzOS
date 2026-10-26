@@ -564,8 +564,8 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img: $(OUT_BUILD)/disk-aarch64
 	@echo "[DISK] aarch64 FAT32 image: $@ (ring-3 drivers BUZZDRV.ELF, INADRV.ELF, and COMPMGR.ELF, which starts them)"
 
 # See `build/disk-sh.img`.
-$(OUT_BUILD)/disk-aarch64-sh.img: $(OUT_BUILD)/disk-aarch64-drvbase.img $(SH_ELF_AARCH64) $(TERMD_ELF_AARCH64) $(NAMESD_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(TRACECTL_ELF_AARCH64) $(DECISD_ELF_AARCH64) $(INPUTD_ELF_AARCH64) $(COMPSRV_ELF_AARCH64) $(LOGD_ELF_AARCH64) $(WHY_ELF_AARCH64) $(PKGD_ELF_AARCH64) $(PKG_ELF_AARCH64) $(RPCSRV_ELF_AARCH64) $(ZENOHD_ELF_AARCH64) $(VMMD_ELF_AARCH64) $(PTPD_ELF_AARCH64) $(AUDIOD_ELF_AARCH64) $(RPCQUIC_ELF_AARCH64) $(MCPD_ELF_AARCH64) $(SSHD_ELF_AARCH64) $(LOGIND_ELF_AARCH64)
-	cp $(OUT_BUILD)/disk-aarch64-drvbase.img $@
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(SH_ELF_AARCH64) $(TERMD_ELF_AARCH64) $(NAMESD_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(TRACECTL_ELF_AARCH64) $(DECISD_ELF_AARCH64) $(INPUTD_ELF_AARCH64) $(COMPSRV_ELF_AARCH64) $(LOGD_ELF_AARCH64) $(WHY_ELF_AARCH64) $(PKGD_ELF_AARCH64) $(PKG_ELF_AARCH64) $(RPCSRV_ELF_AARCH64) $(ZENOHD_ELF_AARCH64) $(VMMD_ELF_AARCH64) $(PTPD_ELF_AARCH64) $(AUDIOD_ELF_AARCH64) $(RPCQUIC_ELF_AARCH64) $(MCPD_ELF_AARCH64) $(SSHD_ELF_AARCH64) $(LOGIND_ELF_AARCH64)
+	cp $< $@
 	mmd -i $@ ::PKG
 	mcopy -i $@ $(SH_ELF_AARCH64) ::SH.ELF
 	mcopy -i $@ $(TERMD_ELF_AARCH64) ::TERMD.ELF
@@ -927,7 +927,7 @@ $(THIRDPARTY_HASHES_X86_64): userspace/image_hashes.py $(wildcard $(BUSYBOX_ELF_
 # weights. `disk-x86_64.img` names no autorun image (the console program,
 # Kconfig CONSOLE_PROGRAM, is the first user task); the others autorun one
 # test. QEMU attaches it as a virtio-blk-device on microvm's virtio-mmio
-# window (`QEMU_X86_64_DISK` below).
+# window (`make qemu`).
 $(OUT_BUILD)/disk-x86_64.img:         AUTORUN_ELF_X86_64 :=
 $(OUT_BUILD)/disk-x86_64-abitest.img: AUTORUN_ELF_X86_64 := /fat/ABITEST.ELF
 $(OUT_BUILD)/disk-x86_64-ipctest.img: AUTORUN_ELF_X86_64 := /fat/IPCTEST.ELF
@@ -1210,11 +1210,11 @@ define azos_kernel_riscv64
 cp $(1) $(AZOS_GUEST_DIR)/$(2).config
 KCONFIG_CONFIG=$(AZOS_GUEST_DIR)/$(2).config $(PYTHON) -m olddefconfig
 rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(AZOS_GUEST_DIR)/$(2).config)"; \
-	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]"; \
+	isa=""; [ -z "$$rf" ] || isa="target.$(RISCV64_TARGET).rustflags=[$$rf]"; \
 	env KCONFIG_CONFIG=$(AZOS_GUEST_DIR)/$(2).config CARGO_TARGET_DIR=$(OUT_TARGET)/azos-guest-$(ARCH)-$(2) \
 	    $(CARGO) build --release -p azos_kernel $${isa:+--config "$$isa"} \
 	    $$(python3 tools/build/kconfig_to_cargo.py $(AZOS_GUEST_DIR)/$(2).config | tr -s ' ')
-cp $(OUT_TARGET)/azos-guest-$(ARCH)-$(2)/$(TARGET)/release/kernel $(AZOS_GUEST_DIR)/$(2).kernel
+cp $(OUT_TARGET)/azos-guest-$(ARCH)-$(2)/$(RISCV64_TARGET)/release/kernel $(AZOS_GUEST_DIR)/$(2).kernel
 endef
 
 define azos_kernel_aarch64

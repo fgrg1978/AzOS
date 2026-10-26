@@ -20,8 +20,8 @@
 #                             key whose public half the kernel embeds,
 #                             PROD_PUBKEY_PATH)
 #
-# Where it goes: QEMU's PVH entry takes it as `-initrd` (`make qemu-x86_64
-# QEMU_X86_64_UCODE=$(UCODE_BIN)`); the PC's ESP carries it as /UCODE.BIN with
+# Where it goes: QEMU's PVH entry takes it as `-initrd` (`make qemu
+# QEMU_X86_64_UCODE=$(UCODE_BIN)` with an x86_64 configuration); the PC's ESP carries it as /UCODE.BIN with
 # a `module_path:` line in limine.conf (`make x86-pc-esp X86_PC_UCODE=...`,
 # mk/qemu.mk), and the kernel is built with PROD_PUBKEY_PATH naming the
 # public half of UCODE_PRIV.

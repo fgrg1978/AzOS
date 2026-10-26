@@ -114,16 +114,16 @@ Host: macOS or Linux, the nightly Rust toolchain pinned by
 `rust-toolchain.toml`, Python 3 with `kconfiglib`, and QEMU.
 
 ```bash
-make config        # pick a preset and options
-make build         # riscv64 kernel for QEMU virt (make qemu boots it)
-make aarch64       # aarch64 kernel (make qemu-aarch64)
-make x86_64        # x86_64 kernel (make qemu-x86_64)
-make sdk           # the Rust std target for AzOS
+make config        # pick the ISA, a preset and options (or make defconfig-<name>)
+make build         # build what .config selects: kernel, images, system volume
+make qemu          # boot what make build built
+make sdk           # the Rust std target for AzOS, on the three ISAs
 make check0        # cargo check per ISA + the host suites the diff reaches
 make ci            # the full gate: builds, host suites and QEMU scenarios
 make help          # every target
 ```
 
+`make build` prints where the kernel, the system volume and the SDK target are.
 Every output (kernels, images, ELFs, cargo target directories) goes to
 `$AZOS_OUT`, by default `~/azos-out/<checkout name>-<hash>`
 (`python3 tools/lib/out_dir.py` prints it), never into the checkout. To run a bare

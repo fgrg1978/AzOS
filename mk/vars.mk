@@ -24,22 +24,31 @@ OUT_TARGET := $(AZOS_OUT)/target
 OUT_TGT    := $(AZOS_OUT)/tgt
 export CARGO_TARGET_DIR := $(OUT_TARGET)
 
+# The configuration (`make config` writes it) and the ISA it selects
+# (config/arch/Kconfig.isa, the ARCH choice): `make build` builds that ISA and
+# `make qemu` boots it ("The configured system", at the end of this file).
+# Without a configuration it is riscv64, the ISA of the defconfig the
+# `$(KCONFIG_CONFIG)` rule (mk/kernel.mk) falls back to.
+KCONFIG_CONFIG ?= .config
+KCONFIG_ISA := $(or $(shell sed -n -E 's/^CONFIG_ARCH_(RISCV64|AARCH64|X86_64)=y$$/\1/p' '$(KCONFIG_CONFIG)' 2>/dev/null | tr '[:upper:]' '[:lower:]'),riscv64)
+
 QEMU  := qemu-system-riscv64
 QEMU_FLAGS := -machine virt -nographic -bios default
 CARGO := $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
 
-# Cargo output paths
-TARGET := riscv64imac-unknown-none-elf
+# The riscv64 kernel's cargo output (the `riscv64` build, the boards,
+# size-kernel): its triple, its profile's directory and its ELF.
+RISCV64_TARGET := riscv64imac-unknown-none-elf
 PROFILE ?= release
 ifeq ($(PROFILE),release)
     CARGO_FLAGS := --release
-    TARGET_DIR := $(OUT_TARGET)/$(TARGET)/release
+    RISCV64_TARGET_DIR := $(OUT_TARGET)/$(RISCV64_TARGET)/release
 else
     CARGO_FLAGS :=
-    TARGET_DIR := $(OUT_TARGET)/$(TARGET)/debug
+    RISCV64_TARGET_DIR := $(OUT_TARGET)/$(RISCV64_TARGET)/debug
 endif
 
-KERNEL_ELF := $(TARGET_DIR)/kernel
+RISCV64_KERNEL_ELF := $(RISCV64_TARGET_DIR)/kernel
 
 # The ring-3 images' target on each ISA: the one spec per ISA in sdk/targets,
 # no_std and std alike. It carries the whole layout (image base, page size,
@@ -342,6 +351,11 @@ comma := ,
 # kernel of that granule binds (crates/core/sched/src/seccomp.rs):
 #   make AARCH64_PAGE_SIZE=16384 build/image_hashes_aarch64_16k.rs  -> build/aarch64-16k/*.elf
 #   make AARCH64_PAGE_SIZE=16384 aarch64                            -> build/kernel-aarch64-16k.img
+# With an aarch64 configuration it is the configuration's (CONFIG_PAGE_SHIFT).
+ifeq ($(KCONFIG_ISA),aarch64)
+KCONFIG_PAGE_SHIFT := $(shell sed -n 's/^CONFIG_PAGE_SHIFT=//p' '$(KCONFIG_CONFIG)')
+AARCH64_PAGE_SIZE ?= $(if $(filter 14,$(KCONFIG_PAGE_SHIFT)),16384,$(if $(filter 16,$(KCONFIG_PAGE_SHIFT)),65536,4096))
+endif
 AARCH64_PAGE_SIZE ?= 4096
 # ── aarch64 baseline of the user images ─────────────────────────────────────
 # The Kconfig level and `require`d extensions (config/arch/Kconfig.isa-aarch64
@@ -521,7 +535,7 @@ VF2_BAUD    ?= 115200
 # VF2 kernel ELF (built with vf2 feature + vf2 linker script)
 VF2_LINKER   := arch/riscv64/boot/linker-vf2.ld
 VF2_RUSTFLAGS := -C link-arg=-T$(VF2_LINKER)
-VF2_ELF      := $(OUT_TARGET)/$(TARGET)/release/kernel-vf2
+VF2_ELF      := $(OUT_TARGET)/$(RISCV64_TARGET)/release/kernel-vf2
 VF2_BIN      = $(OUT_BUILD)/kernel-vf2$(VF2_SUFFIX).bin
 # Where cargo builds the board kernel. The farm's targets use target/farm: a
 # board kernel built with other features must not replace the `release/kernel`
@@ -648,7 +662,7 @@ kernel_select = args="$$(python3 tools/build/kconfig_to_cargo.py --select '$(2)'
 # baseline (RV_ZBA/ZBB/ZBS set to `require`), merged into the target's
 # rustflags; empty on the default config.
 QEMU_DEV_ISA = rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(QEMU_DEV_KCONFIG))"; \
-	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]";
+	isa=""; [ -z "$$rf" ] || isa="target.$(RISCV64_TARGET).rustflags=[$$rf]";
 # BUILD_TYPE for the vf2 targets (the farm's board image): `make vf2
 # BUILD_TYPE=DEV` is a development image. Unset or RELEASE is the product
 # build, byte for byte what it was: no test key, the fleet key required.
@@ -758,14 +772,14 @@ IMAGE_ELFS_AARCH64 := HELLO.ELF=$(HELLO_ELF_AARCH64) SYSTEST.ELF=$(SYSTEST_ELF_A
 IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
 
 # ── aarch64 kernel (QEMU virt) ───────────────────────────────────────────────
-# The aarch64 counterpart of `make build` / `make qemu`. Three things differ
-# from RISC-V, and each is here on purpose:
+# The aarch64 kernel `make build` builds with an aarch64 configuration (the
+# internal `aarch64` target). Three things differ from RISC-V, and each is
+# here on purpose:
 #
-#  * Its own Kconfig profile. config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config is minimal, so it
-#    is expanded by olddefconfig into build/aarch64.config — the same expansion
-#    tools/gate/ci_check.sh does for the fleet profile — and handed to the build via
-#    KCONFIG_CONFIG. The workspace .config (the RISC-V edge profile) is not
-#    touched, so `make build` is unaffected.
+#  * Its own expanded configuration. AARCH64_DEFCONFIG (the .config at
+#    QEMU_LOG_LEVEL with an aarch64 .config, else config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config)
+#    is expanded by olddefconfig into build/aarch64.config and handed to the
+#    build via KCONFIG_CONFIG; the user images read the same file.
 #  * The linker script goes on the command line, as `make vf2` / `make k1` do,
 #    NOT in .cargo/config.toml like RISC-V's: cargo merges that file into every
 #    config below it, and the aarch64 userspace builds carry their own `-T`
@@ -784,6 +798,10 @@ AARCH64_LINKER   := arch/aarch64/boot/linker-aarch64.ld
 AARCH64_KCONFIG  := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX).config
 # `make aarch64 AARCH64_DEFCONFIG=<file> AARCH64_KCONFIG=<expanded> AARCH64_IMG=<image> ...` builds another
 # configuration beside the default one (`make azos-guest`, the x86_64 `X86_64_DEFCONFIG` shape).
+# With an aarch64 configuration it is that configuration (`make build`).
+ifeq ($(KCONFIG_ISA),aarch64)
+AARCH64_DEFCONFIG ?= $(QEMU_DEV_KCONFIG)
+endif
 AARCH64_DEFCONFIG ?= config/defconfigs/robot-sbc-aarch64-dev+qemu+linux+gui.config
 # A non-default granule builds in its own target directory: switching granule
 # rebuilds every crate (azos_arch_api's PAGE_SIZE is a feature), and the
@@ -801,24 +819,26 @@ AARCH64_OBJCOPY   = $(shell rustc --print sysroot)/lib/rustlib/$(shell rustc -vV
 QEMU_AARCH64_KERNEL_FLAGS := -cpu max,pauth=on -smp 2 -nographic
 
 # ── x86_64: build and boot (QEMU microvm, PVH) ─────────────────────────────
-# `make ARCH=x86_64 x86_64` builds the kernel ELF; `make qemu-x86_64` boots it
-# on `-M microvm` (PVH entry via -kernel, COM1 on stdio, isa-debug-exit so a
-# stop ends QEMU with a status). With `QEMU_X86_64_DISK=<FAT image>` (e.g.
-# build/disk-x86_64.img) the volume is a virtio-blk-device on the microvm
-# virtio-mmio window and the console program runs in ring 3; without one it
-# stops at the kernel shell. Same Kconfig expansion as `check`.
+# With an x86_64 configuration `make build` builds the kernel ELF (the internal
+# `x86_64` target) and `make qemu` boots it on `-M microvm` (PVH entry via
+# -kernel, COM1 on stdio, isa-debug-exit so a stop ends QEMU with a status).
 # X86_64_SELECT is a selection on the configuration (`make x86_64
 # X86_64_SELECT=ktest`, tools/build/kconfig_to_cargo.py --select).
 # X86_64_DEFCONFIG / X86_64_KCONFIG (a path relative to the tree) build from
 # another configuration into its own expanded file, so the default one never
 # goes stale under it (a build from a configuration of its own).
 X86_64_SELECT ?=
+# With an x86_64 configuration it is that configuration (`make build`).
+ifeq ($(KCONFIG_ISA),x86_64)
+X86_64_DEFCONFIG ?= $(QEMU_DEV_KCONFIG)
+endif
 X86_64_DEFCONFIG ?= config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+gui.config
 X86_64_KCONFIG ?= $(OUT_BUILD)/x86_64.config
 # Where cargo builds this kernel: the Limine variant has its own directory so
 # the two never rebuild each other (RUSTFLAGS differ in the linker script).
 X86_64_TARGET_DIR ?= $(OUT_TARGET)
-X86_64_ELF     := $(X86_64_TARGET_DIR)/x86_64-unknown-none/release/kernel
+X86_64_TARGET  := x86_64-unknown-none
+X86_64_ELF     := $(X86_64_TARGET_DIR)/$(X86_64_TARGET)/release/kernel
 X86_64_IMG     := $(OUT_BUILD)/kernel-x86_64.elf
 X86_64_LINKER  := arch/x86_64/boot/linker-x86_64.ld
 # curve25519-dalek picks its AVX2 "simd" backend on x86_64; the kernel is
@@ -829,7 +849,7 @@ X86_64_LINKER  := arch/x86_64/boot/linker-x86_64.ld
 # (tools/lint/stack_frames.py reads realigned frames since 2026-10-24).
 X86_64_DALEK   := --cfg curve25519_dalek_backend=\"serial\"
 # -cpu max: the default model (qemu64) is below the x86-64-v2 baseline, and the
-# kernel refuses it (the canary: `make qemu-x86_64 QEMU_X86_64_CPU=qemu64`).
+# kernel refuses it (the canary: `make qemu QEMU_X86_64_CPU=qemu64`, x86_64 configured).
 QEMU_X86_64_CPU ?= max
 QEMU_X86_64_FLAGS := -M microvm -cpu $(QEMU_X86_64_CPU) -m 128M -nographic -no-reboot \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
@@ -929,3 +949,72 @@ IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) SYSTEST.ELF=$(SYSTEST_ELF_X86
               LXHELLO.ELF=$(LXHELLO_ELF_X86_64)
 IMAGE_ELF_PATHS_X86_64 := $(foreach e,$(IMAGE_ELFS_X86_64),$(lastword $(subst =, ,$(e))))
 IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs
+
+# ── The configured system: `make build`, `make qemu` ────────────────────────
+# `make build` builds the ISA $(KCONFIG_CONFIG) selects (KCONFIG_ISA, at the
+# top): the kernel, the ring-3 images and the system volume, from the
+# configuration expanded at QEMU_LOG_LEVEL (QEMU_DEV_KCONFIG, then the ISA's
+# own expansion), and prints where they are. `make qemu` boots that kernel.
+#   SYSTEM_KCONFIG  the expanded configuration the kernel and the images read
+#   SYSTEM_KERNEL   the internal target that builds the kernel (mk/kernel.mk)
+#   SYSTEM_VOLUME   the system volume: the shell volume, which carries the
+#                   console program (Kconfig CONSOLE_PROGRAM) and every image
+#                   the topology starts, and names no autorun image
+#   TARGET          the kernel's target triple
+#   USER_TARGET     the ring-3 images' and the SDK's (sdk/targets/<it>.json)
+#   KERNEL_ELF      the kernel ELF cargo writes
+#   KERNEL_IMAGE    what QEMU loads: the ELF, or on aarch64 the arm64 Image
+#   SDK_BUILD       how a std program is built for it (sdk/README.md)
+SYSTEM_KCONFIG_riscv64 := $(QEMU_DEV_KCONFIG)
+SYSTEM_KCONFIG_aarch64 := $(AARCH64_KCONFIG)
+SYSTEM_KCONFIG_x86_64  := $(X86_64_KCONFIG)
+SYSTEM_VOLUME_riscv64  := $(OUT_BUILD)/disk-sh.img
+SYSTEM_VOLUME_aarch64  := $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img
+SYSTEM_VOLUME_x86_64   := $(OUT_BUILD)/disk-x86_64.img
+TARGET_riscv64         := $(RISCV64_TARGET)
+TARGET_aarch64         := $(AARCH64_TARGET)
+TARGET_x86_64          := $(X86_64_TARGET)
+USER_TARGET_riscv64    := $(TARGET_RISCV64_USER)
+USER_TARGET_aarch64    := $(TARGET_AARCH64)
+USER_TARGET_x86_64     := $(TARGET_X86_64)
+KERNEL_ELF_riscv64     := $(RISCV64_KERNEL_ELF)
+KERNEL_ELF_aarch64     := $(AARCH64_ELF)
+KERNEL_ELF_x86_64      := $(X86_64_ELF)
+KERNEL_IMAGE_riscv64   := $(RISCV64_KERNEL_ELF)
+KERNEL_IMAGE_aarch64   := $(AARCH64_IMG)
+KERNEL_IMAGE_x86_64    := $(X86_64_IMG)
+
+SYSTEM_KCONFIG := $(SYSTEM_KCONFIG_$(KCONFIG_ISA))
+SYSTEM_KERNEL  := $(KCONFIG_ISA)
+SYSTEM_VOLUME  := $(SYSTEM_VOLUME_$(KCONFIG_ISA))
+TARGET         := $(TARGET_$(KCONFIG_ISA))
+USER_TARGET    := $(USER_TARGET_$(KCONFIG_ISA))
+KERNEL_ELF     := $(KERNEL_ELF_$(KCONFIG_ISA))
+KERNEL_IMAGE   := $(KERNEL_IMAGE_$(KCONFIG_ISA))
+SDK_BUILD       = $(SDK_BUILD_$(KCONFIG_ISA))
+
+# `make qemu`: the machine of each ISA, the gate's (tools/gate/ci_check.sh
+# `ushell_row`). TCG on every host, Apple silicon included. QEMU_AARCH64_MACHINE
+# with `virtualization=on` enters the kernel at EL2 (`make qemu-aarch64-el2`).
+QEMU_AARCH64_MACHINE ?= virt,gic-version=3
+QEMU_SYSTEM_riscv64 = $(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_IMAGE)
+QEMU_SYSTEM_aarch64 = qemu-system-aarch64 -M $(QEMU_AARCH64_MACHINE) $(QEMU_AARCH64_KERNEL_FLAGS) -kernel $(KERNEL_IMAGE)
+QEMU_SYSTEM_x86_64  = qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(KERNEL_IMAGE) \
+	$(if $(QEMU_X86_64_UCODE),-initrd $(QEMU_X86_64_UCODE))
+
+# The goals that build or boot the riscv64 kernel only (the variants of
+# `build` and `qemu` above it in `make help`); with another ISA configured they
+# would boot a kernel `make build` did not build, so they refuse.
+RISCV64_ONLY_GOALS := build-rvv build-pci build-nvme qemu-smp qemu-full-smp qemu-rvv qemu-full-smp-rvv \
+	qemu-gdb qemu-pci qemu-nvme qemu-systest qemu-dhcp-smoke qemu-net-pair
+AARCH64_ONLY_GOALS := qemu-aarch64-el2
+ifneq ($(KCONFIG_ISA),riscv64)
+ifneq ($(filter $(RISCV64_ONLY_GOALS),$(MAKECMDGOALS)),)
+$(error $(filter $(RISCV64_ONLY_GOALS),$(MAKECMDGOALS)): riscv64 only, and $(KCONFIG_CONFIG) selects $(KCONFIG_ISA))
+endif
+endif
+ifneq ($(KCONFIG_ISA),aarch64)
+ifneq ($(filter $(AARCH64_ONLY_GOALS),$(MAKECMDGOALS)),)
+$(error $(filter $(AARCH64_ONLY_GOALS),$(MAKECMDGOALS)): aarch64 only, and $(KCONFIG_CONFIG) selects $(KCONFIG_ISA))
+endif
+endif

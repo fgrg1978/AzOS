@@ -1,14 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# Kernel: the build recipes (QEMU development kernel, boards, aarch64, x86_64,
-# micro), the Kconfig targets and the expanded configurations.
+# Kernel: the build recipes (the configured system, boards, the riscv64,
+# aarch64 and x86_64 kernels, micro), the Kconfig targets and the expanded
+# configurations.
 # Included by the top-level Makefile; the order of the includes there is part of the contract.
 
-build: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
+# `make build`: the system $(KCONFIG_CONFIG) selects (mk/vars.mk, "The
+# configured system"). The ISA's expanded configuration is made by a make of
+# its own first: the images' codegen flags are read from it when the makefiles
+# are (RV_USER_ISA, AARCH64_USER_ISA), so it must exist before the make that
+# builds them starts.
+.PHONY: riscv64
+build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
+	@$(MAKE) --no-print-directory $(SYSTEM_KCONFIG)
+	@$(MAKE) --no-print-directory $(SYSTEM_KERNEL) $(SYSTEM_VOLUME)
+	@$(MAKE) --no-print-directory prune
+	@echo "[BUILD] $(KCONFIG_ISA), from $(KCONFIG_CONFIG) ($(SYSTEM_KCONFIG)):"
+	@echo "  kernel  $(KERNEL_IMAGE)"
+	@echo "  volume  $(SYSTEM_VOLUME)"
+	@echo "  SDK     sdk/targets/$(USER_TARGET).json; a std program: $(SDK_BUILD) --manifest-path <crate>/Cargo.toml"
+	@echo "  boot    make qemu"
+
+# The riscv64 kernel of $(QEMU_DEV_KCONFIG): `make build` with a riscv64
+# configuration.
+riscv64: $(IMAGE_HASHES) $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
 	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
 		$${isa:+--config "$$isa"} \
 		$(QEMU_DEV_ARGS)
-	@$(MAKE) --no-print-directory prune
 
 # Cargo never deletes an artifact: every feature set leaves another copy of
 # every crate in deps/. `prune` drops crates this tree no longer has and build
@@ -111,7 +129,7 @@ vf2: $(IMAGE_HASHES_BOARD) $(VF2_KCONFIG) $(VF2_DISK)
 		--config "build.rustflags=['-C','link-arg=-T$(VF2_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
 	riscv64-unknown-elf-objcopy -O binary \
-		$(VF2_TARGET_DIR)/$(TARGET)/release/kernel $(VF2_BIN)
+		$(VF2_TARGET_DIR)/$(RISCV64_TARGET)/release/kernel $(VF2_BIN)
 	@echo "[VF2] Built $(VF2_BIN) and its volume $(VF2_DISK) (signed topology)"
 	@ls -lh $(VF2_BIN)
 
@@ -139,7 +157,7 @@ FARM_TARGET_DIR := $(OUT_TARGET)/farm
 vf2-ktest:
 	@$(FARM) check
 	$(MAKE) --no-print-directory vf2 BUILD_TYPE=DEV VF2_TEST=ktest VF2_TARGET_DIR=$(FARM_TARGET_DIR)
-	$(FARM) run ktest --kernel $(OUT_BUILD)/kernel-vf2-ktest.bin --elf $(FARM_TARGET_DIR)/$(TARGET)/release/kernel
+	$(FARM) run ktest --kernel $(OUT_BUILD)/kernel-vf2-ktest.bin --elf $(FARM_TARGET_DIR)/$(RISCV64_TARGET)/release/kernel
 
 vf2-pstore:
 	@$(FARM) check
@@ -189,7 +207,7 @@ k1: $(IMAGE_HASHES_BOARD) $(K1_KCONFIG) $(OUT_BUILD)/disk-board-k1.img
 		--config "build.rustflags=['-C','link-arg=-T$(K1_LINKER)']"
 	@mkdir -p $(OUT_BUILD)
 	riscv64-unknown-elf-objcopy -O binary \
-		$(OUT_TARGET)/$(TARGET)/release/kernel $(K1_BIN)
+		$(OUT_TARGET)/$(RISCV64_TARGET)/release/kernel $(K1_BIN)
 	@echo "[K1] Built $(K1_BIN) and its volume $(OUT_BUILD)/disk-board-k1.img (signed topology)"
 	@ls -lh $(K1_BIN)
 
@@ -219,7 +237,6 @@ k1-console:
 # Install kconfiglib first:
 #   /opt/homebrew/bin/python3 -m pip install --user --break-system-packages kconfiglib
 
-KCONFIG_CONFIG     ?= .config
 KCONFIG_DEFCONFIG_DIR := config/defconfigs
 PYTHON             ?= /opt/homebrew/bin/python3
 
@@ -294,7 +311,7 @@ $(QEMU_DEV_KCONFIG): $(KCONFIG_CONFIG) FORCE
 	@grep -qx '$(QEMU_LEVEL_LINE)' $@.new || { echo "could not set $(QEMU_LEVEL_LINE) in $@" >&2; exit 1; }
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
 
-.PHONY: x86_64 qemu-x86_64
+.PHONY: x86_64
 $(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(KCONFIG_FILES)
 	@mkdir -p $(dir $@)
 	cp $(X86_64_DEFCONFIG) $@
@@ -311,7 +328,7 @@ x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 	cp $(X86_64_ELF) $(X86_64_IMG)
 	@echo "[X86_64] Built $(X86_64_IMG)"
 
-.PHONY: aarch64 qemu-aarch64 qemu-aarch64-el2
+.PHONY: aarch64
 
 # U12-8: see the LIBSYS_SRC comment above — same iCloud-duplicate hazard,
 # same fix, inlined rather than a shared variable so a board Kconfig rule

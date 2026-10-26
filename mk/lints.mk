@@ -96,7 +96,7 @@ unsafe-budget:
 SIZE_DEFCONFIG  := config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config
 SIZE_KCONFIG    := $(OUT_BUILD)/size-riscv64.config
 SIZE_TARGET_DIR := $(AZOS_OUT)/target/size
-SIZE_ELF        := $(SIZE_TARGET_DIR)/$(TARGET)/release/kernel
+SIZE_ELF        := $(SIZE_TARGET_DIR)/$(RISCV64_TARGET)/release/kernel
 SIZE_LABEL      := riscv64-qemu
 .PHONY: size-kernel size-check size-update
 $(SIZE_KCONFIG): $(SIZE_DEFCONFIG) FORCE
@@ -107,7 +107,7 @@ $(SIZE_KCONFIG): $(SIZE_DEFCONFIG) FORCE
 
 size-kernel: $(SIZE_KCONFIG) | $(IMAGE_HASHES)
 	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(SIZE_KCONFIG))"; \
-	isa=""; [ -z "$$rf" ] || isa="target.$(TARGET).rustflags=[$$rf]"; \
+	isa=""; [ -z "$$rf" ] || isa="target.$(RISCV64_TARGET).rustflags=[$$rf]"; \
 	env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(SIZE_KCONFIG)" \
 	    $(CARGO) build --release --target-dir $(SIZE_TARGET_DIR) -p azos_kernel \
 	    $${isa:+--config "$$isa"} $$(python3 tools/build/kconfig_to_cargo.py $(SIZE_KCONFIG))

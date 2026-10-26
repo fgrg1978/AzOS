@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# QEMU: the boot targets of the three ISAs and the smoke runs.
+# QEMU: `make qemu` (the configured system), the riscv64 variants, the PCI
+# and PC boots, and the smoke runs.
 # Included by the top-level Makefile; the order of the includes there is part of the contract.
 
-# Single CPU
+# The system `make build` built, for the ISA $(KCONFIG_CONFIG) selects
+# (mk/vars.mk, "The configured system").
 qemu: build
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF)
+	$(QEMU_SYSTEM_$(KCONFIG_ISA))
 
 # Gate 4: native PCI enumeration on QEMU `virt`.
 # `disable-legacy=on` on every virtio-*-pci device matters: without it QEMU's
@@ -43,7 +45,7 @@ build-pci: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
 	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-pci.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 
 qemu-pci: build-pci $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
-	$(QEMU) $(QEMU_FLAGS) $(QEMU_PCI_ARGS) -kernel $(KERNEL_ELF)
+	$(QEMU) $(QEMU_FLAGS) $(QEMU_PCI_ARGS) -kernel $(RISCV64_KERNEL_ELF)
 
 # Boot from an NVMe SSD (Kconfig DRV_NVME): the gate's disk image as the
 # controller's namespace, MSI-X through the AIA IMSIC (a PLIC machine boots
@@ -53,7 +55,7 @@ build-nvme: $(IMAGE_HASHES) .config $(QEMU_DEV_KCONFIG)
 	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-nvme.config" $(CARGO) build $(CARGO_FLAGS) -p azos_kernel $$args
 
 qemu-nvme: build-nvme $(OUT_BUILD)/disk.img
-	$(QEMU) -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel $(KERNEL_ELF) \
+	$(QEMU) -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel $(RISCV64_KERNEL_ELF) \
 		-drive file=$(OUT_BUILD)/disk.img,if=none,format=raw,id=nv -device nvme,serial=x,drive=nv
 
 # aarch64 counterpart. `iommu=smmuv3` IS safe to enable here (unlike riscv64's
@@ -66,8 +68,8 @@ qemu-nvme: build-nvme $(OUT_BUILD)/disk.img
 # Boots the flat Image, not the ELF: QEMU hands a DTB pointer in x0 only to an
 # Image, and the kernel reads the host bridge (ECAM, mem32 window) from it
 # (`[PCI] host bridge: ... (dtb)`). The ELF boots with x0 = 0 and falls back to
-# the built-in constants. Build the kernel with DRV_PCI on (`make aarch64` from a
-# configuration with CONFIG_DRV_PCI=y) first.
+# the built-in constants. Build the kernel with DRV_PCI on (`make build` from an
+# aarch64 configuration with CONFIG_DRV_PCI=y) first.
 AARCH64_PCI_IMG := $(OUT_BUILD)/kernel-aarch64-pci.img
 qemu-pci-aarch64: $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
 	@test -f $(AARCH64_ELF) || { echo "build the aarch64 kernel with CONFIG_DRV_PCI=y first: $(AARCH64_ELF)"; exit 1; }
@@ -78,11 +80,11 @@ qemu-pci-aarch64: $(OUT_BUILD)/pci-blk0.img $(OUT_BUILD)/pci-nvme0.img
 
 # 4 CPUs (SMP testing)
 qemu-smp: build
-	$(QEMU) $(QEMU_FLAGS) -smp 4 -kernel $(KERNEL_ELF)
+	$(QEMU) $(QEMU_FLAGS) -smp 4 -kernel $(RISCV64_KERNEL_ELF)
 
 # Full: SMP + disk + network
 qemu-full-smp: build userspace $(OUT_BUILD)/disk.img
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) \
+	$(QEMU) $(QEMU_FLAGS) -kernel $(RISCV64_KERNEL_ELF) \
 		-smp 4 \
 		-global virtio-mmio.force-legacy=false \
 		-drive file=$(OUT_BUILD)/disk.img,if=none,format=raw,id=hd0 \
@@ -95,7 +97,7 @@ qemu-full-smp: build userspace $(OUT_BUILD)/disk.img
 # end to end: ELF load from FAT32, exec, getpid/write/brk/exit via ecall.
 # Prints `[SYSCALL_TEST] ALL PASSED!` or `FAILED!`.
 qemu-systest: build userspace $(OUT_BUILD)/disk-systest.img
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) \
+	$(QEMU) $(QEMU_FLAGS) -kernel $(RISCV64_KERNEL_ELF) \
 		-smp 4 \
 		-global virtio-mmio.force-legacy=false \
 		-drive file=$(OUT_BUILD)/disk-systest.img,if=none,format=raw,id=hd0 \
@@ -107,12 +109,12 @@ qemu-systest: build userspace $(OUT_BUILD)/disk-systest.img
 qemu-dhcp-smoke: $(QEMU_DEV_KCONFIG)
 	$(call kernel_select,$(QEMU_DEV_KCONFIG),dhcp-smoke,$(OUT_BUILD)/qemu-dev-dhcp-smoke.config); \
 	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-dhcp-smoke.config" $(CARGO) build --release -p azos_kernel $$args
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) \
+	$(QEMU) $(QEMU_FLAGS) -kernel $(RISCV64_KERNEL_ELF) \
 		-netdev user,id=net0 -device virtio-net-device,netdev=net0
 
 # RVV: single CPU with Vector extension
 qemu-rvv: build-rvv
-	$(QEMU) $(QEMU_FLAGS) -cpu $(QEMU_RVV_CPU) -kernel $(KERNEL_ELF)
+	$(QEMU) $(QEMU_FLAGS) -cpu $(QEMU_RVV_CPU) -kernel $(RISCV64_KERNEL_ELF)
 
 # RVV: 4 CPUs + disk + network + Vector extension
 qemu-full-smp-rvv: build-rvv userspace $(OUT_BUILD)/disk.img
@@ -123,11 +125,11 @@ qemu-full-smp-rvv: build-rvv userspace $(OUT_BUILD)/disk.img
 		-device virtio-blk-device,drive=hd0 \
 		-netdev user,id=net0,hostfwd=udp::5555-:5555,hostfwd=tcp::8080-:8080 \
 		-device virtio-net-device,netdev=net0 \
-		-kernel $(KERNEL_ELF)
+		-kernel $(RISCV64_KERNEL_ELF)
 
 # GDB debug
 qemu-gdb: build
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -s -S
+	$(QEMU) $(QEMU_FLAGS) -kernel $(RISCV64_KERNEL_ELF) -s -S
 
 # ── Two-node network smoke (DEV01.5) ─────────────────────────────────────────
 # Boots two kernel instances wired by QEMU's `socket` net backend and asserts a
@@ -139,16 +141,11 @@ qemu-net-pair: $(QEMU_DEV_KCONFIG)
 	KCONFIG_CONFIG="$(OUT_BUILD)/qemu-dev-net-smoke.config" $(CARGO) build --release -p azos_kernel $$args
 	QEMU=$(QEMU) bash tools/gate/net_pair_smoke.sh
 
-QEMU_X86_64_DISK ?=
-# The signed microcode image as the PVH boot module (`make ucode`,
-# mk/firmware.mk; Kconfig X86_UCODE_LOAD). QEMU ignores the MSR write: the
-# boot log shows the image verified, the patch chosen and the revision read
-# back unchanged.
+# The signed microcode image as the PVH boot module of an x86_64 `make qemu`
+# (`make ucode`, mk/firmware.mk; Kconfig X86_UCODE_LOAD). QEMU ignores the MSR
+# write: the boot log shows the image verified, the patch chosen and the
+# revision read back unchanged.
 QEMU_X86_64_UCODE ?=
-qemu-x86_64: x86_64 $(QEMU_X86_64_DISK) $(QEMU_X86_64_UCODE)
-	qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -kernel $(X86_64_IMG) \
-	    $(if $(QEMU_X86_64_UCODE),-initrd $(QEMU_X86_64_UCODE)) \
-	    $(if $(QEMU_X86_64_DISK),-drive file=$(QEMU_X86_64_DISK)$(comma)if=none$(comma)format=raw$(comma)id=d0 -device virtio-blk-device$(comma)drive=d0)
 
 # PCI on x86_64: the same kernel with Kconfig DRV_PCI and DRV_NVME, in its own
 # Kconfig expansion, cargo target directory and image. microvm has no PCI bus
@@ -245,14 +242,12 @@ x86-pc-qemu-args:
 run-x86-pc: x86-pc-esp
 	qemu-system-x86_64 $(X86_PC_QEMU_ARGS)
 
-# Entered at EL1: QEMU `virt` without virtualization has no EL2.
-qemu-aarch64: aarch64
-	qemu-system-aarch64 -M virt,gic-version=3 $(QEMU_AARCH64_KERNEL_FLAGS) -kernel $(AARCH64_IMG)
-
 # Entered at EL2, the way U-Boot / TF-A hand over on real boards: exercises the
-# EL2->EL1 trampoline and SMC-conduit PSCI.
-qemu-aarch64-el2: aarch64
-	qemu-system-aarch64 -M virt,gic-version=3,virtualization=on $(QEMU_AARCH64_KERNEL_FLAGS) -kernel $(AARCH64_IMG)
+# EL2->EL1 trampoline and SMC-conduit PSCI (`make qemu` enters at EL1: QEMU
+# `virt` without virtualization has no EL2).
+.PHONY: qemu-aarch64-el2
+qemu-aarch64-el2:
+	@$(MAKE) --no-print-directory qemu QEMU_AARCH64_MACHINE=virt,gic-version=3,virtualization=on
 
 
 # ── Network boot: nothing on a disk (tools/gate/netboot, Documentation/building.md) ─

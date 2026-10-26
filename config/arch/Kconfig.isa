@@ -13,32 +13,33 @@ choice
     prompt "Instruction Set Architecture"
     default ARCH_RISCV64
     help
-      Select the target ISA for this kernel build.  All downstream defaults
-      (stack sizes, FP context, page sizes, WCET bounds) adjust automatically.
-      Changing this choice requires a full `cargo clean` before rebuilding.
+      The ISA of this build. `make build` builds the kernel, the ring-3
+      images and the system volume for it, and `make qemu` boots them on
+      the ISA's QEMU machine; no make target names an ISA. Downstream
+      defaults (stack sizes, FP context, page sizes, WCET bounds) follow
+      it. Each ISA has its own output files, so switching needs no clean.
 
     config ARCH_RISCV64
         bool "RISC-V 64-bit (rv64imac / rv64gc)"
         help
-          RISC-V 64-bit — the primary AZOS target.  Supports all five
-          build profiles (edge/vf2, edge/k1, QEMU virt).
-          ISA base: rv64imac minimum; optional extensions via Kconfig.
+          RISC-V 64-bit: the boards (VisionFive 2, SpacemiT K1) and QEMU
+          `virt`. ISA base rv64imac; further extensions in
+          config/arch/Kconfig.isa-riscv64.
 
     config ARCH_AARCH64
-        bool "Aarch64 (ARMv8.0-A and later)"
+        bool "AArch64 (Armv8.0-A and later)"
         help
-          64-bit ARM — secondary target, demonstrated on cortex-a72 QEMU.
-          Phase 2 multi-arch support.  Kernel builds but E2E robot loop
-          is deferred to Phase 3 hardware bring-up.
+          64-bit Arm: the Raspberry Pi boards and QEMU `virt` (GICv3, the
+          kernel entered at EL1, or at EL2 with `make qemu-aarch64-el2`).
+          The kernel is soft-float; the level and the extensions are in
+          config/arch/Kconfig.isa-aarch64.
 
     config ARCH_X86_64
-        bool "x86_64 (port skeleton: type-checks only)"
+        bool "x86_64"
         help
-          The x86_64 port skeleton: every arch-api trait implemented with
-          todo!() bodies (arch/x86_64), the entry/asm/linker
-          stubs under kernel/src/entry/x86_64/, and this Kconfig block. It
-          type-checks (`make ARCH=x86_64 check`); it does not link or boot.
-          Its purpose is to show, as code, what a new ISA must provide.
+          x86_64: QEMU `microvm` through the PVH entry (`make qemu`), q35
+          under UEFI through Limine (`make run-x86-pc`). The baseline level
+          and the extensions are in config/arch/Kconfig.isa-x86_64.
 
 endchoice
 
