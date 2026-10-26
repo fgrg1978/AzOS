@@ -17,7 +17,7 @@ drops its symbol).
 What it scans (one program directory = one directory below a class):
 
     userspace/{bench,drivers,services,tests}/<prog>/   Cargo.toml, or C sources
-    userspace/thirdparty/busybox.fragment              BusyBox (BUSYBOX.ELF)
+    third_party/busybox.fragment                       BusyBox (BUSYBOX.ELF)
 
 Each program directory names the FAT32 images it builds. A Cargo crate says so
 in `[package.metadata.azos]`, a C program in `azos.toml` (`[azos]` table):
@@ -171,7 +171,7 @@ def scan(root):
 
 
 def busybox_present(root):
-    return os.path.isfile(os.path.join(root, "userspace", "thirdparty", "busybox.fragment"))
+    return os.path.isfile(os.path.join(root, "third_party", "busybox.fragment"))
 
 
 def wrap(text, indent="      ", width=76):

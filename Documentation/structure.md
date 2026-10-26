@@ -28,7 +28,7 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), `sdk/` (SDK test program), plus the emulator runner scripts `qemu_boot.sh` and `run_all.sh`. |
 | `formal/` | `tla/` (TLA+ models `cap_table` and `topology_load`, each with its `.cfg`), `INVARIANTS.md` and `README.md`. |
 | `boot/` | `boot.scr.cmd`, a U-Boot boot script. |
-| `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/build/third_party_fetch.sh`); `patches/`. |
+| `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/build/third_party_fetch.sh`); `busybox.fragment` (the BusyBox configuration `make busybox` adds to allnoconfig); `patches/`. |
 | `LICENSES/` | Licence texts: Apache-2.0, GPL-2.0-only, MIT. |
 
 Top-level files: `Cargo.toml` (workspace) and `Cargo.lock`, `Kconfig`, `Makefile`,
@@ -262,7 +262,6 @@ ISA by the `mk/userspace.mk` rules.
 | `lib/` | Libraries for ring-3 programs: `compose` (the compositor's pixel engine), `compositor`, `decisions`, `inspect`, `names`, `packages`, `power`, `term` (typed objects over IPC); `rpc`, `quic`, `tls`, `zenoh`, `mcp`, `ml`, `ualloc` (hardened allocator), `linux_rt`, `relibc-azos` (overlay for the relibc C library); `login` (the `Login` object and the credential the login service checks); `tls-probe` (a rustls client/server handshake run over memory or a stream). |
 | `tests/` | Ring-3 test programs: `abitest` and `abichild` (the processes it spawns), `captest`, `ipctest`, `hello`, `uhello` (a minimal `no_std` program over `libsys`), `epsrv`, `syscall_test`, the `lx*` programs (`lxbench`, `lxhello`, `lxmod`, `lxthreads`) and `relibc`. |
 | `bench/` | `latbench`, `vsbench`, `vssrv`: ring-3 measurement programs. |
-| `thirdparty/` | `busybox.fragment`. |
 
 Source: `userspace/*/`, the header of each program's `main.rs`.
 

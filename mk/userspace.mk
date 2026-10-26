@@ -570,7 +570,7 @@ $(LXHELLO_ELF_X86_64): $(LXHELLO_DIR)/lxhello_x86_64.c
 # (the checkout stays pristine) under BUSYBOX_WORK (outside the repository),
 # with `zig cc` (musl and the Linux uapi headers bundled; tools/build/busybox_cc.sh),
 # host tools with the system clang, from allnoconfig plus
-# userspace/thirdparty/busybox.fragment, static. All three ISAs; riscv64 is
+# third_party/busybox.fragment, static. All three ISAs; riscv64 is
 # rv64gc/lp64d (the kernel keeps a Linux task's F/D state). The digests go to
 # build/thirdparty_hashes{,_aarch64,_x86_64}.rs (empty without a build),
 # which bind BUSYBOX.ELF to its row in crates/core/sched/src/seccomp.rs.
@@ -583,7 +583,7 @@ BUSYBOX_VERSION  := $(subst _,.,$(BUSYBOX_TAG))
 BUSYBOX_WORK     ?= $(HOME)/azos-tools/build/busybox-$(BUSYBOX_VERSION)
 BUSYBOX_ZIG      ?= $(or $(LX_ZIG),$(firstword $(wildcard /opt/homebrew/bin/zig /usr/local/bin/zig) zig))
 BUSYBOX_HOSTCC   ?= /usr/bin/clang
-BUSYBOX_FRAGMENT := userspace/thirdparty/busybox.fragment
+BUSYBOX_FRAGMENT := third_party/busybox.fragment
 BUSYBOX_ISAS     := riscv64 aarch64 x86_64
 BUSYBOX_ELF_RISCV64 := $(BUSYBOX_WORK)/busybox-riscv64.elf
 BUSYBOX_ELF_AARCH64 := $(BUSYBOX_WORK)/busybox-aarch64.elf

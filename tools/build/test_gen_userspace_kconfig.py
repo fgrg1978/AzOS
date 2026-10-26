@@ -59,16 +59,14 @@ def copy_tree(dst):
     gen = "tools/build/gen_userspace_kconfig.py"
     os.makedirs(os.path.dirname(os.path.join(dst, gen)))
     shutil.copy(os.path.join(REPO, gen), os.path.join(dst, gen))
+    os.makedirs(os.path.join(dst, "third_party"))
+    for f in os.listdir(os.path.join(REPO, "third_party")):
+        if f.endswith(".fragment"):
+            shutil.copy(os.path.join(REPO, "third_party", f), os.path.join(dst, "third_party"))
     src = os.path.join(REPO, "userspace")
     for cls in sorted(os.listdir(src)):
         cdir = os.path.join(src, cls)
         if not os.path.isdir(cdir):
-            continue
-        if cls == "thirdparty":
-            os.makedirs(os.path.join(dst, "userspace", cls), exist_ok=True)
-            for f in os.listdir(cdir):
-                if f.endswith(".fragment"):
-                    shutil.copy(os.path.join(cdir, f), os.path.join(dst, "userspace", cls))
             continue
         for prog in sorted(os.listdir(cdir)):
             pdir = os.path.join(cdir, prog)
