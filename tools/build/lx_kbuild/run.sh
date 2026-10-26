@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
-# Build the lx/ module set with Linux's Kbuild inside the pinned container
+# Build the crates/drivers/lx/ module set with Linux's Kbuild inside the pinned container
 # (podman on the Mac).
 #
 #   tools/build/lx_kbuild/run.sh build <outdir>   # the three ISAs + the xz fixture
@@ -12,7 +12,7 @@
 #
 # `linux` (after `build` into build/lx/kbuild) builds, for riscv64 and aarch64, a Linux
 # kernel from the FULL pinned tree with the modules' exact configuration,
-# lxbench.ko (lx/glue/bench) and an initramfs holding the same xz_dec.ko and
+# lxbench.ko (crates/drivers/lx/glue/bench) and an initramfs holding the same xz_dec.ko and
 # XZTEST.XZ the AzOS volume carries: the "same QEMU, same .ko" baseline
 # (owner rule, wave 13). The full tree is streamed with `git archive` from
 # the checkout's object store (the sparse checkout is not widened).
@@ -35,7 +35,7 @@ tag="azos-lx-kbuild:$(shasum -a 256 "$here/Containerfile" | cut -c1-12)"
 modules=(XZ_DEC=lib/xz/xz_dec.ko)
 # The filesystem set (Kconfig LX_FS_EXT4_RO), in load order:
 # built in the same configuration, written to <isa>/fs/, and gated by the
-# recorded list of imports nothing provides yet (lx/FS_EXT4_UNRESOLVED), not
+# recorded list of imports nothing provides yet (crates/drivers/lx/FS_EXT4_UNRESOLVED), not
 # by the validated set's rule. ext4 selects JBD2, CRC16, BUFFER_HEAD,
 # FS_IOMAP; FS_MBCACHE defaults to m with it; CRC32 is built into the base.
 fs_modules=(fs:CRC16=lib/crc/crc16.ko fs:FS_MBCACHE=fs/mbcache.ko fs:JBD2=fs/jbd2/jbd2.ko fs:EXT4_FS=fs/ext4/ext4.ko)
@@ -76,7 +76,7 @@ check|build|linux)
         rm -rf "$out"; mkdir -p "$out"; out="$(cd "$out" && pwd)"
         for arch in riscv arm64; do
             git -C "$src" archive --format=tar "$pin" | "$podman" run -i --rm --network=none \
-                -v "$here:/cfg:ro" -v "$root/lx/glue:/glue:ro" -v "$mods:/mods:ro" \
+                -v "$here:/cfg:ro" -v "$root/crates/drivers/lx/glue:/glue:ro" -v "$mods:/mods:ro" \
                 -v "$root/userspace/tests/lxbench:/bench-src:ro" -v "$out:/out" "$tag" \
                 sh -c 'mkdir -p /work/linux && tar -x -C /work/linux && sh /cfg/kbuild-in.sh linux "$@"' sh "$arch" "${modules[@]}" "${fs_modules[@]}"
         done
@@ -87,7 +87,7 @@ check|build|linux)
     out="$(cd "$out" && pwd)"
     run() {
         "$podman" run --rm --network=none -v "$src:/src:ro" -v "$here:/cfg:ro" \
-            -v "$root/lx/glue:/glue:ro" -v "$out:/out" "$tag" sh /cfg/kbuild-in.sh "$@"
+            -v "$root/crates/drivers/lx/glue:/glue:ro" -v "$out:/out" "$tag" sh /cfg/kbuild-in.sh "$@"
     }
     run riscv "${modules[@]}" "${fs_modules[@]}"
     run arm64 "${modules[@]}" "${fs_modules[@]}"

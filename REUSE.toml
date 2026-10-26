@@ -11,15 +11,15 @@ precedence = "closest"
 SPDX-FileCopyrightText = "2026 Fernando Rodriguez"
 SPDX-License-Identifier = "Apache-2.0 OR GPL-2.0-only"
 
-# The Linux driver layer. Our own code there (lx/emul: Rust, no
+# The Linux driver layer. Our own code there (crates/drivers/lx/emul: Rust, no
 # Linux header) is dual-licensed like the rest of the project (owner decision,
 # round 47) and falls under the catch-all above. Only the glue that includes
-# Linux headers, lx/glue/, is GPL-2.0-only, including files there without an
+# Linux headers, crates/drivers/lx/glue/, is GPL-2.0-only, including files there without an
 # in-file header. Listed after the catch-all so it wins for these paths.
 # third_party/linux is a submodule: Linux's own SPDX headers and COPYING
 # govern it.
 [[annotations]]
-path = "lx/glue/**"
+path = "crates/drivers/lx/glue/**"
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 Fernando Rodriguez"
 SPDX-License-Identifier = "GPL-2.0-only"

@@ -5,7 +5,7 @@ Three separate mechanisms connect AzOS to Linux. They do not share code, and eac
 | Path | What runs | Where | Licence boundary |
 |---|---|---|---|
 | [Linux personality](#path-1-the-linux-personality) | Unmodified static Linux user programs | In the kernel (translation table) or in a ring-3 runtime inside the program's own address space | None: the personality is AzOS code that implements Linux's syscall ABI |
-| [Linux kernel driver slice](#path-2-the-linux-kernel-driver-slice-lx) | Unmodified Linux kernel modules (`.ko`) | Ring-3 server processes (`lxsrv`) | GPL-2.0-only code lives only in `lx/glue/`, `third_party/linux` and the built `.ko` files |
+| [Linux kernel driver slice](#path-2-the-linux-kernel-driver-slice-lx) | Unmodified Linux kernel modules (`.ko`) | Ring-3 server processes (`lxsrv`) | GPL-2.0-only code lives only in `crates/drivers/lx/glue/`, `third_party/linux` and the built `.ko` files |
 | [Linux as a guest](#path-3-linux-as-a-guest-under-the-hypervisor) | A guest kernel in a virtual machine | Behind the hypervisor core, with device models in a ring-3 monitor | None: the guest is data in a memory object |
 
 Related pages: [hal.md](hal.md) for the `Hypervisor` trait and the trap layer; [drivers.md](drivers.md) for the hardware bus that matches Linux driver ids and for DMA and interrupt handling.
@@ -74,36 +74,36 @@ Bounds that Kconfig sets: `LINUX_ROBUST_LIST_LIMIT` (robust futex list entries w
 
 `USERSPACE_GPL` is the switch without which no third-party GPL program is built or placed in an image. `BUSYBOX` (requires `USERSPACE_GPL` and `LINUX_ABI`) builds the pinned BusyBox release (the gitlink `third_party/busybox`, fetched by `tools/build/third_party_fetch.sh busybox`) static with `zig cc` for riscv64, aarch64 and x86_64; it runs as `BUSYBOX.ELF` under its own row with `abi = "linux"`. The `make busybox` target refuses, naming what is missing, without `zig` or without a clean checkout at the gitlink. `make busybox-source-offer` writes the source offer.
 
-## Path 2: the Linux kernel driver slice (`lx/`)
+## Path 2: the Linux kernel driver slice (`crates/drivers/lx/`)
 
 Unmodified Linux kernel modules run in ring-3 server processes, one process per driver class, through a compatibility layer, over a pinned Linux tree. A server holds no actuator capability, and no safety decision reads its output. The kernel never links a Linux object.
 
-Source: `lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`, `userspace/services/lxsrv`, `config/axes/Kconfig.personality`, `tools/build/lx_*`, `tools/lint/lx_license_lint.py`.
+Source: `crates/drivers/lx/`, `crates/core/lx-loader`, `crates/core/syscall/src/module_ops.rs`, `userspace/services/lxsrv`, `config/axes/Kconfig.personality`, `tools/build/lx_*`, `tools/lint/lx_license_lint.py`.
 
 ### Pieces
 
 | Piece | Path | Role |
 |---|---|---|
 | Pinned tree | `third_party/linux` (a shallow submodule, `update = none`; its `tag` in `.gitmodules`) | A tag of the kernel.org stable tree; the gitlink is its commit. `tools/build/third_party_fetch.sh linux` is the one way to fetch it (shallow and sparse). |
-| Glue | `lx/glue/lxbase.c`, `lx/glue/Kbuild` | `lxbase.ko`: the base of the layer, compiled by Linux's own Kbuild against the pinned tree. It exports the Linux symbols the validated modules import and forwards them to the host ABI. GPL-2.0-only. |
-| Host ABI | `lx/HOST_ABI` | Every symbol `lxsrv` exports to modules: `lxh_alloc`, `lxh_free`, `lxh_hwcap`, and the C string and memory functions. Plain scalars and pointers, no Linux type. |
-| Compatibility base | `lx/emul` (`lx_emul`) | A `no_std` Rust crate that re-implements the behaviour of Linux core APIs drivers call (allocation, locks, timers, workqueues, RCU, `printk`, the device model, reference counts, the exported-symbol table) with fixed-capacity containers and generation-checked handles. No Linux source is copied. See [Threads in the server](#threads-in-the-server). |
+| Glue | `crates/drivers/lx/glue/lxbase.c`, `crates/drivers/lx/glue/Kbuild` | `lxbase.ko`: the base of the layer, compiled by Linux's own Kbuild against the pinned tree. It exports the Linux symbols the validated modules import and forwards them to the host ABI. GPL-2.0-only. |
+| Host ABI | `crates/drivers/lx/HOST_ABI` | Every symbol `lxsrv` exports to modules: `lxh_alloc`, `lxh_free`, `lxh_hwcap`, and the C string and memory functions. Plain scalars and pointers, no Linux type. |
+| Compatibility base | `crates/drivers/lx/emul` (`lx_emul`) | A `no_std` Rust crate that re-implements the behaviour of Linux core APIs drivers call (allocation, locks, timers, workqueues, RCU, `printk`, the device model, reference counts, the exported-symbol table) with fixed-capacity containers and generation-checked handles. No Linux source is copied. See [Threads in the server](#threads-in-the-server). |
 | Loader | `crates/core/lx-loader` (`azos_lx_loader`) | Turns a relocatable `.ko` into code and data a ring-3 server can run. |
 | Kernel half of loading | `crates/core/syscall/src/module_ops.rs` | `DOMAIN_MODULE_VERIFY` and `DOMAIN_MODULE_MAP_X`. |
 | Server | `userspace/services/lxsrv` (`LXSRV.ELF`) | Runs the whole module path; its topology row (kernels with the `lx-server` feature) grants one capability, READ on the kernel entropy pool, which keys its allocator. |
 | Module build | `tools/build/lx_kbuild/`, `make lx-kbuild` | Runs Kbuild for riscv64 and aarch64 in a pinned container with no network and the tree mounted read-only; `make lx-kbuild-repro` rebuilds from scratch and requires identical `.ko` hashes. |
-| Device ids | `lx/DEVICE_SOURCES`, `tools/build/lx_device_table.py` | See [Leaf drivers](#leaf-drivers-and-the-hardware-bus). |
+| Device ids | `crates/drivers/lx/DEVICE_SOURCES`, `tools/build/lx_device_table.py` | See [Leaf drivers](#leaf-drivers-and-the-hardware-bus). |
 | Licence lint | `tools/lint/lx_license_lint.py` | See [Licensing of the driver layer](#licensing-of-the-driver-layer). |
 
 ### Threads in the server
 
-`lx_emul` runs on one AzOS thread. Kernel threads, the workqueue worker and whatever they call (a probe called from a task included) are stackful cooperative tasks (`lx/emul/src/sched.rs`): each has its own stack, given by the server (`Env::add_stack`), and gives the hart up only at a block point: `msleep`, `usleep_range`, `schedule`, `schedule_timeout`, `wait_event`, `wait_event_timeout`, `wait_for_completion[_timeout]`, a contended `mutex_lock`, `down`, `flush_workqueue`, `kthread_stop`. A task blocks on the address of the object it waits for, and wake-ups (`wake_up`, `complete`, `mutex_unlock`, `up`, `wake_up_process`, a timeout) run waiters in the order they started waiting; a mutex or semaphore is handed to the first waiter. Timer, RCU and interrupt callbacks run to completion in atomic context, where a sleeping call is refused and counted. The switch saves the callee-saved registers only, one file per ISA (`lx/emul/src/switch/{riscv64,aarch64,x86_64}.rs`).
+`lx_emul` runs on one AzOS thread. Kernel threads, the workqueue worker and whatever they call (a probe called from a task included) are stackful cooperative tasks (`crates/drivers/lx/emul/src/sched.rs`): each has its own stack, given by the server (`Env::add_stack`), and gives the hart up only at a block point: `msleep`, `usleep_range`, `schedule`, `schedule_timeout`, `wait_event`, `wait_event_timeout`, `wait_for_completion[_timeout]`, a contended `mutex_lock`, `down`, `flush_workqueue`, `kthread_stop`. A task blocks on the address of the object it waits for, and wake-ups (`wake_up`, `complete`, `mutex_unlock`, `up`, `wake_up_process`, a timeout) run waiters in the order they started waiting; a mutex or semaphore is handed to the first waiter. Timer, RCU and interrupt callbacks run to completion in atomic context, where a sleeping call is refused and counted. The switch saves the callee-saved registers only, one file per ISA (`crates/drivers/lx/emul/src/switch/{riscv64,aarch64,x86_64}.rs`).
 
 The server's loop needs no kernel mechanism of its own: `Env::run_once(now)` runs one pass and returns the next deadline, the server waits in `SYS_PORT_WAIT` until that deadline or a notification, and an interrupt notification is handed to `Env::deliver_irq`. Work items run in one worker task, so an item that sleeps holds up the items behind it, as on an ordered workqueue.
 
-Interrupt lines (`lx/emul/src/irq.rs`) follow the kernel's mask-until-ACK delivery. At the first `request_irq` or `request_threaded_irq` of a line the server binds it to its port with the Linux irq number as the event key (`DEVICE_IRQ_BIND`), once for the life of the server. Each `PORT_EVENT_IRQ` leaves the line masked, and the layer sends `DEVICE_IRQ_ACK` after the primary handler, or after the thread function of an `IRQF_ONESHOT` line, so a level device is not taken again before its thread has quietened it. `disable_irq` only counts a depth, as on Linux: an event that arrives while the line is disabled runs nothing and keeps the line masked, and the `enable_irq` that ends the disable ACKs a level line and replays an edge line's handler in the next pass. A thread function runs on its own task (Linux's `irq/N-name` thread), where it may sleep; `disable_irq`, `synchronize_irq` and `free_irq` wait for it. A freed line stays bound and masked until it is requested again. The layer makes no system call: the server gives it the bind and the ACK as an `IrqChip`.
+Interrupt lines (`crates/drivers/lx/emul/src/irq.rs`) follow the kernel's mask-until-ACK delivery. At the first `request_irq` or `request_threaded_irq` of a line the server binds it to its port with the Linux irq number as the event key (`DEVICE_IRQ_BIND`), once for the life of the server. Each `PORT_EVENT_IRQ` leaves the line masked, and the layer sends `DEVICE_IRQ_ACK` after the primary handler, or after the thread function of an `IRQF_ONESHOT` line, so a level device is not taken again before its thread has quietened it. `disable_irq` only counts a depth, as on Linux: an event that arrives while the line is disabled runs nothing and keeps the line masked, and the `enable_irq` that ends the disable ACKs a level line and replays an edge line's handler in the next pass. A thread function runs on its own task (Linux's `irq/N-name` thread), where it may sleep; `disable_irq`, `synchronize_irq` and `free_irq` wait for it. A freed line stays bound and masked until it is requested again. The layer makes no system call: the server gives it the bind and the ACK as an `IrqChip`.
 
-To Linux the server is one CPU, number 0, with a per-CPU offset of 0 (`lx/emul/src/percpu.rs`). The spinlock calls raise a preemption count, as on Linux, so a task that sleeps while it holds a spinlock is refused and counted. Each task carries a current word, the address of the `task_struct` the glue allocates for it, which the server installs at every switch into the task (`CurrentOps`). The per-ISA detail and what more than one thread would need are in [lx-driver-slices.md](design/lx-driver-slices.md#3-per-cpu-state-and-current).
+To Linux the server is one CPU, number 0, with a per-CPU offset of 0 (`crates/drivers/lx/emul/src/percpu.rs`). The spinlock calls raise a preemption count, as on Linux, so a task that sleeps while it holds a spinlock is refused and counted. Each task carries a current word, the address of the `task_struct` the glue allocates for it, which the server installs at every switch into the task (`CurrentOps`). The per-ISA detail and what more than one thread would need are in [lx-driver-slices.md](design/lx-driver-slices.md#3-per-cpu-state-and-current).
 
 ### The module path
 
@@ -141,42 +141,42 @@ The cost is that every new or changed `.ko` needs a kernel rebuild and an image 
 | Rule | Checks |
 |---|---|
 | K1 | Every `.ko` carries a GPL-compatible `license` and `vermagic` equal to the pinned release, `SMP preempt` and the ISA. |
-| K2 | `lxbase.ko` imports only the host ABI (`lx/HOST_ABI`). |
+| K2 | `lxbase.ko` imports only the host ABI (`crates/drivers/lx/HOST_ABI`). |
 | K3 | Every other module imports only the host ABI and symbols exported by modules earlier in the order. An unprovided Linux symbol fails the build, not the boot. |
 | K4 | No image (kernel ELF or userspace ELF) has a symbol named like one a `.ko` defines. |
 | K0 | An empty `.ko` set or image set is a failure, so a row cannot pass by finding nothing. |
 
-The filesystem set (`<isa>/fs/*.ko`: `crc16`, `mbcache`, `jbd2`, `ext4`, built by `make lx-kbuild` from `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c`) is held to K1 and K4. Its imports are not K3-gated. `lx/FS_EXT4_UNRESOLVED` lists, per ISA, the imports of that set that neither `lx/HOST_ABI` nor an earlier module exports, and `tests/host/lx-loader-tests` fails when the list differs from the set the built modules compute. A symbol leaves the list in the change that provides it.
+The filesystem set (`<isa>/fs/*.ko`: `crc16`, `mbcache`, `jbd2`, `ext4`, built by `make lx-kbuild` from `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c`) is held to K1 and K4. Its imports are not K3-gated. `crates/drivers/lx/FS_EXT4_UNRESOLVED` lists, per ISA, the imports of that set that neither `crates/drivers/lx/HOST_ABI` nor an earlier module exports, and `tests/host/lx-loader-tests` fails when the list differs from the set the built modules compute. A symbol leaves the list in the change that provides it.
 
 The Kconfig menu "Linux compatibility" (`config/axes/Kconfig.personality`) defines `LINUX_DRIVERS` and one option per class: filesystems (`LX_FS_EXT2`, `LX_FS_EXT4_RO`, `LX_FS_EXT4_RW`; Linux filesystems use the native `BlockDevice`, and the ext4 options are read-only without journal replay or read-write with `jbd2`), USB (`LX_USB_XHCI`, `LX_USB_DWC3`, `LX_USB_HID`, `LX_USB_STORAGE`, `LX_USB_CDC`, `LX_USB_UVC`), and further classes (`LX_SND_ASOC`, `LX_DRM_PANEL`, `LX_IIO`, `LX_WIFI`, `LX_BLUETOOTH`). `LX_ACCEPT_UNCONFINED_DMA` is the build-time acceptance a DMA-capable class needs on a board without an IOMMU. The configuration validator in `crates/core/limits/build.rs` refuses a `.config` that sets any class option or `LX_ACCEPT_UNCONFINED_DMA`, and `LINUX_DRIVERS` builds only together with `LX_SERVER_SKELETON`. The boolean enable and class options (`LINUX_DRIVERS`, `LX_SERVER_SKELETON`, the `LX_FS_*`, `LX_USB_*` and later-class options, `LX_ACCEPT_UNCONFINED_DMA`) default to `n`. The non-boolean symbols have their own defaults: `LX_MODULE_TOKENS` is a count (the pinned tag is the `tag` of `third_party/linux` in `.gitmodules`, not a Kconfig option). A small board (`HWCLASS_EMBEDDED`) cannot enable `LINUX_DRIVERS` at all.
 
 ### Leaf drivers and the hardware bus
 
-`lx/DEVICE_SOURCES` lists the Linux leaf drivers whose ids the hardware bus matches, one `<lxsrv class> <path under third_party/linux>` line each. `tools/build/lx_device_table.py` reads each file's `MODULE_DEVICE_TABLE`, and `crates/drivers/hwbus/build.rs` turns the ids into the `LINUX` match table (see [drivers.md](drivers.md#match-tables)). The build refuses an id that is also in a native `hwbus.ids`. The first listed leaf is the sensor pilot, `drivers/media/i2c/imx219.c` (class `media`, selector `dt:sony,imx219`); the slices that follow, and the Linux sources each needs, are in [design/lx-driver-slices.md](design/lx-driver-slices.md). At bind time the native table is consulted first. A class server (`lxsrv-<class>`) is launched only when one of its ids matched a device the bus admitted (`Bus::linux_class_wanted`; the topology row marks the task as the server of a class).
+`crates/drivers/lx/DEVICE_SOURCES` lists the Linux leaf drivers whose ids the hardware bus matches, one `<lxsrv class> <path under third_party/linux>` line each. `tools/build/lx_device_table.py` reads each file's `MODULE_DEVICE_TABLE`, and `crates/drivers/hwbus/build.rs` turns the ids into the `LINUX` match table (see [drivers.md](drivers.md#match-tables)). The build refuses an id that is also in a native `hwbus.ids`. The first listed leaf is the sensor pilot, `drivers/media/i2c/imx219.c` (class `media`, selector `dt:sony,imx219`); the slices that follow, and the Linux sources each needs, are in [design/lx-driver-slices.md](design/lx-driver-slices.md). At bind time the native table is consulted first. A class server (`lxsrv-<class>`) is launched only when one of its ids matched a device the bus admitted (`Bus::linux_class_wanted`; the topology row marks the task as the server of a class).
 
 A leaf-driver server drives devices only through ring-3 capabilities: a mapped register window (`DOMAIN_MMIO_MAP`), interrupt binding with `DEVICE_IRQ_BIND`, and the DMA and IOMMU services described in [drivers.md](drivers.md#dma). Because a bus master can write any physical address on a machine with no IOMMU, `LX_ACCEPT_UNCONFINED_DMA` (which depends on a DMA-capable class option) is the build-time acceptance of that; like the class options, the configuration validator refuses it.
 
 ### Licensing of the driver layer
 
-The project is `Apache-2.0 OR GPL-2.0-only`. Code that includes a Linux kernel header is GPL-2.0-only, and the layer keeps it in one place: `lx/glue/`. Every source file there carries `SPDX-License-Identifier: GPL-2.0-only`, exactly. The rule is set by directory, not by file content: a C or assembly file anywhere else may not include a Linux kernel header (`<linux/...>`, `<asm/...>`, `<asm-generic/...>`, `<uapi/...>`) at all, so a shim that needs one is glue and moves to `lx/glue/`. Everything else in the layer keeps the project licence:
+The project is `Apache-2.0 OR GPL-2.0-only`. Code that includes a Linux kernel header is GPL-2.0-only, and the layer keeps it in one place: `crates/drivers/lx/glue/`. Every source file there carries `SPDX-License-Identifier: GPL-2.0-only`, exactly. The rule is set by directory, not by file content: a C or assembly file anywhere else may not include a Linux kernel header (`<linux/...>`, `<asm/...>`, `<asm-generic/...>`, `<uapi/...>`) at all, so a shim that needs one is glue and moves to `crates/drivers/lx/glue/`. Everything else in the layer keeps the project licence:
 
 | Part | Licence | Why |
 |---|---|---|
-| `lx/glue/` (`lxbase.c`, its `Kbuild`) | GPL-2.0-only | Compiled against Linux headers by Linux's Kbuild |
+| `crates/drivers/lx/glue/` (`lxbase.c`, its `Kbuild`) | GPL-2.0-only | Compiled against Linux headers by Linux's Kbuild |
 | `third_party/linux` and every `.ko` built from it | GPL-2.0-only | Unmodified Linux; the submodule carries no patch |
-| `lx/emul`, `crates/core/lx-loader`, `userspace/services/lxsrv` | `Apache-2.0 OR GPL-2.0-only` | Rust that includes no Linux header and copies no Linux code: it re-implements behaviour |
-| `lx/` data files (`LINUX_PIN`, `HOST_ABI`, `DEVICE_SOURCES`, `FS_EXT4_UNRESOLVED`) and `tools/lx_*` | `Apache-2.0 OR GPL-2.0-only` | Lists and tools of this project; they read the Linux tree as data |
+| `crates/drivers/lx/emul`, `crates/core/lx-loader`, `userspace/services/lxsrv` | `Apache-2.0 OR GPL-2.0-only` | Rust that includes no Linux header and copies no Linux code: it re-implements behaviour |
+| `crates/drivers/lx/` data files (`LINUX_PIN`, `HOST_ABI`, `DEVICE_SOURCES`, `FS_EXT4_UNRESOLVED`) and `tools/lx_*` | `Apache-2.0 OR GPL-2.0-only` | Lists and tools of this project; they read the Linux tree as data |
 | `LXTEST.KO` (`userspace/tests/lxmod/lxtest.c`) | `Apache-2.0 OR GPL-2.0-only`, module tag `Dual Apache/GPL` | This project's C, built with no Linux header |
 | The kernel image | `Apache-2.0 OR GPL-2.0-only` | It never links a Linux object: no GPL code runs in ring 0 |
 
-A server process that loads a Linux module runs GPL-2.0-only code as part of one program, and is distributed under GPL-2.0-only as a whole. The rule `tools/lint/lx_license_lint.py` enforces is: no GPL-only source, symbol or object outside `lx/glue/` and `third_party/`. Its `--self-test` plants one violation per rule and requires each rule to report it.
+A server process that loads a Linux module runs GPL-2.0-only code as part of one program, and is distributed under GPL-2.0-only as a whole. The rule `tools/lint/lx_license_lint.py` enforces is: no GPL-only source, symbol or object outside `crates/drivers/lx/glue/` and `third_party/`. Its `--self-test` plants one violation per rule and requires each rule to report it.
 
 | Rule | Checks (over `git ls-files`) |
 |---|---|
-| T1 | Every SPDX line under `lx/glue/` says exactly `GPL-2.0-only`, and every source file there has one. |
-| T2 | Outside `lx/glue/` and `third_party/`, every SPDX expression offers `Apache-2.0`. |
-| T3 | Outside `lx/glue/` and `third_party/`, no C or assembly source includes a Linux kernel header (`<linux/...>`, `<asm/...>`, `<asm-generic/...>`). |
-| T4 | No `Cargo.toml` outside `lx/glue/` depends on a path inside it. |
+| T1 | Every SPDX line under `crates/drivers/lx/glue/` says exactly `GPL-2.0-only`, and every source file there has one. |
+| T2 | Outside `crates/drivers/lx/glue/` and `third_party/`, every SPDX expression offers `Apache-2.0`. |
+| T3 | Outside `crates/drivers/lx/glue/` and `third_party/`, no C or assembly source includes a Linux kernel header (`<linux/...>`, `<asm/...>`, `<asm-generic/...>`). |
+| T4 | No `Cargo.toml` outside `crates/drivers/lx/glue/` depends on a path inside it. |
 | T5 | `third_party/linux` is named only by the files allowed to. |
 | A1 | No symbol of the GPL glue appears in a kernel ELF, a userspace ELF or a module. |
 | A2 | Every `build/lx/*.ko` of the output root carries the project's own licence tag (`Dual Apache/GPL`). |

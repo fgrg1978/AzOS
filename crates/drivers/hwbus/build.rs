@@ -118,7 +118,7 @@ fn main() {
     // ── Linux ───────────────────────────────────────────────────────────
     let gen = root.join("tools/build/lx_device_table.py");
     println!("cargo:rerun-if-changed={}", gen.display());
-    println!("cargo:rerun-if-changed={}", root.join("lx/DEVICE_SOURCES").display());
+    println!("cargo:rerun-if-changed={}", root.join("crates/drivers/lx/DEVICE_SOURCES").display());
     let out = Command::new("python3")
         .arg(&gen)
         .arg(&root)

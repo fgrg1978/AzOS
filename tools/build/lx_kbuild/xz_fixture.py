@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Write the plaintext of the lx/ xz fixture to stdout.
+"""Write the plaintext of the crates/drivers/lx/ xz fixture to stdout.
 
 The Linux driver server regenerates the same bytes independently
 (`userspace/services/lxsrv`, `xz_pattern`) and compares them with what the

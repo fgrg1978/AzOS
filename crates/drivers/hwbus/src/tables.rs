@@ -9,7 +9,7 @@
 //!   devices are not claimed on its behalf.
 //! - [`LINUX`]: from `tools/build/lx_device_table.py`, which reads the
 //!   `MODULE_DEVICE_TABLE` of the Linux leaf drivers listed in
-//!   `lx/DEVICE_SOURCES` out of the pinned Linux checkout. Empty while that tree
+//!   `crates/drivers/lx/DEVICE_SOURCES` out of the pinned Linux checkout. Empty while that tree
 //!   or that list is.
 //!
 //! `build.rs` refuses a build in which a native pattern and a Linux pattern

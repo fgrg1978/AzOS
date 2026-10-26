@@ -105,7 +105,7 @@ SUBSYS = [
     ("safety", r"safety|e-stop|estop|watchdog|wdt|envelope|reflex|geofence|actuation|behavior|panic|safe mode",
      "crates/core/actuation/** domains/robot/** kernel/src/panic.rs kernel/src/behavior_*.rs"),
     ("lx", r"\blx\b|lx:|linux",
-     "lx/** crates/core/lx-loader/** crates/core/linux-abi/** userspace/tests/lx* "
+     "crates/drivers/lx/** crates/core/lx-loader/** crates/core/linux-abi/** userspace/tests/lx* "
      "crates/core/syscall/src/linux.rs"),
     ("trace", r"trace|flight recorder", "crates/core/trace/** crates/core/rings/** kernel/src/lat_trace.rs"),
     ("energy", r"energy|power", "crates/core/energy/** crates/drivers/power/**"),
@@ -624,8 +624,8 @@ MARKER_MAX_SOURCES = 3
 HUB_FEATURES = 8
 REGISTRY_FILES = ("main.rs", "mod.rs", "lib.rs")
 TEST_HOOK_RE = re.compile(r"(-smoke|-canary|-test)$|^ktest$")
-SRC_ROOTS = ("kernel/", "arch/", "crates/", "domains/", "userspace/", "lx/", "micro/", "sdk/")
-PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|arch|crates|domains|kernel|config|lx"
+SRC_ROOTS = ("kernel/", "arch/", "crates/", "domains/", "userspace/", "micro/", "sdk/")
+PATH_RE = re.compile(r"(?<![\w.$/-])(?:\$\{?REPO_ROOT\}?/)?((?:tools|tests|userspace|arch|crates|domains|kernel|config"
                      r"|sdk|micro|formal|Documentation)/[\w.+-]+(?:/[\w.+-]+)*)")
 IMG_RE = re.compile(r"\b(disk[\w-]*)\.img\b")
 STR_RE = re.compile(r'"((?:[^"\\$`]|\\.)*)"|\'([^\']*)\'')

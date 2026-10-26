@@ -926,8 +926,8 @@ The tree contains:
 | The build of the unmodified `fs/ext4`, `fs/jbd2`, `fs/mbcache.c` and `lib/crc/crc16.c` of the pinned Linux tag, for both ISAs, into `<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko`, in load order | `make lx-kbuild`, `tools/build/lx_kbuild/run.sh` (`fs_modules`), pinned by the `third_party/linux` gitlink |
 | The relocatable-module loader: parses an `ET_REL` object, lays out text and data regions, resolves symbols through a caller-supplied table and applies relocations | `crates/core/lx-loader/src/lib.rs` |
 | The kernel half of loading: a module's file bytes are checked against a digest table built into the kernel image before they run, and text is flipped to read-execute after loading | invoke ops `DOMAIN_MODULE_VERIFY` and `DOMAIN_MODULE_MAP_X` (`crates/core/abi/src/invoke.rs`) |
-| The base of the compatibility layer a ring-3 server would run modules on (memory, locks, timers, workqueues, RCU, printk, device model, reference counts, exported-symbol table) | `lx/emul` |
-| The list of imports of the ext4 module set that neither the host ABI (`lx/HOST_ABI`) nor an earlier module exports | `lx/FS_EXT4_UNRESOLVED` (the Linux VFS, page cache, buffer heads, bio, wait queues and per-CPU data are among the symbols listed) |
+| The base of the compatibility layer a ring-3 server would run modules on (memory, locks, timers, workqueues, RCU, printk, device model, reference counts, exported-symbol table) | `crates/drivers/lx/emul` |
+| The list of imports of the ext4 module set that neither the host ABI (`crates/drivers/lx/HOST_ABI`) nor an earlier module exports | `crates/drivers/lx/FS_EXT4_UNRESOLVED` (the Linux VFS, page cache, buffer heads, bio, wait queues and per-CPU data are among the symbols listed) |
 
 Linux filesystems use the native `BlockDevice` rather than a Linux block
 driver (`config/axes/Kconfig.personality`).
@@ -939,5 +939,5 @@ directory cannot be addressed by position. An image that contains a Linux
 module is GPL-2.0-only as a whole (`config/axes/Kconfig.personality`).
 
 Source: `config/axes/Kconfig.personality`, `tools/build/lx_kbuild/run.sh`, `crates/core/lx-loader/src/lib.rs`,
-`lx/FS_EXT4_UNRESOLVED`, `.gitmodules`, `lx/emul/src/lib.rs`,
+`crates/drivers/lx/FS_EXT4_UNRESOLVED`, `.gitmodules`, `crates/drivers/lx/emul/src/lib.rs`,
 `crates/fs/src/bcache.rs`, `crates/fs/src/vfs.rs`.

@@ -545,9 +545,9 @@ fn kbuild(isa: Isa, name: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// The host ABI (`lx/HOST_ABI`) at fixed addresses near the text.
+/// The host ABI (`crates/drivers/lx/HOST_ABI`) at fixed addresses near the text.
 fn host_abi(name: &[u8]) -> Option<u64> {
-    let abi = std::fs::read_to_string(format!("{}/../../../lx/HOST_ABI", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let abi = std::fs::read_to_string(format!("{}/../../../crates/drivers/lx/HOST_ABI", env!("CARGO_MANIFEST_DIR"))).unwrap();
     abi.lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
         .position(|l| l.trim().as_bytes() == name)
@@ -714,14 +714,14 @@ fn placement_equals_an_independent_walk() {
 //   vermagic), is laid out and relocated by the loader, in load order, with
 //   every relocation checked by the oracle;
 // * the imports nothing provides are exactly the list in
-//   `lx/FS_EXT4_UNRESOLVED` (the "nm -u" gate): a new one, or one that
+//   `crates/drivers/lx/FS_EXT4_UNRESOLVED` (the "nm -u" gate): a new one, or one that
 //   the slice started providing and the list still carries, fails the test.
 //   `LX_BLESS_FS=1 cargo test` rewrites the list.
 
 const FS_ORDER: [&str; 5] = ["lxbase.ko", "fs/crc16.ko", "fs/mbcache.ko", "fs/jbd2.ko", "fs/ext4.ko"];
 
 fn fs_list_path() -> String {
-    format!("{}/../../../lx/FS_EXT4_UNRESOLVED", env!("CARGO_MANIFEST_DIR"))
+    format!("{}/../../../crates/drivers/lx/FS_EXT4_UNRESOLVED", env!("CARGO_MANIFEST_DIR"))
 }
 
 /// The arch word of the vermagic (`MODULE_ARCH_VERMAGIC`): x86_64 has none,
@@ -744,7 +744,7 @@ fn isa_key(isa: Isa) -> &'static str {
 
 /// The recorded list: `[<isa>]` section headers, one symbol per line.
 fn fs_recorded() -> BTreeMap<String, BTreeSet<String>> {
-    let text = std::fs::read_to_string(fs_list_path()).expect("lx/FS_EXT4_UNRESOLVED");
+    let text = std::fs::read_to_string(fs_list_path()).expect("crates/drivers/lx/FS_EXT4_UNRESOLVED");
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut cur = None;
     for l in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
@@ -764,7 +764,7 @@ fn fs_write_recorded(sets: &BTreeMap<String, BTreeSet<String>>) {
          # SPDX-FileCopyrightText: 2026 Fernando Rodriguez\n\
          #\n\
          # The imports of the filesystem set (lxbase, crc16, mbcache, jbd2, ext4;\n\
-         # Kconfig LX_FS_EXT4_RO) that neither the host ABI (lx/HOST_ABI) nor an\n\
+         # Kconfig LX_FS_EXT4_RO) that neither the host ABI (crates/drivers/lx/HOST_ABI) nor an\n\
          # earlier module of the set exports: the Linux symbols the slice (VFS, page\n\
          # cache, buffer heads, bio, wait queues, per-CPU data) has still to provide.\n\
          # Read by tests/host/lx-loader-tests; it must equal the set the built modules\n\
@@ -911,7 +911,7 @@ fn fs_unresolved_imports_equal_the_recorded_list() {
     }
     let rec = fs_recorded();
     for (isa, syms) in &now {
-        let want = rec.get(isa).unwrap_or_else(|| panic!("no [{isa}] section in lx/FS_EXT4_UNRESOLVED"));
+        let want = rec.get(isa).unwrap_or_else(|| panic!("no [{isa}] section in crates/drivers/lx/FS_EXT4_UNRESOLVED"));
         let new: Vec<_> = syms.difference(want).collect();
         let gone: Vec<_> = want.difference(syms).collect();
         assert!(new.is_empty() && gone.is_empty(),

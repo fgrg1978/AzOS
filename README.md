@@ -143,7 +143,7 @@ userspace/   ring-3 services, drivers, libraries (relibc port, names, rpc, ...),
              tests and benchmark programs
 sdk/         the std target for AzOS and its own test program
 micro/       AzOS-micro, a separate kernel for parts without an MMU
-lx/          glue for running Linux driver modules in ring-3 servers
+crates/drivers/lx/          glue for running Linux driver modules in ring-3 servers
 config/      Kconfig fragments and defconfigs
 mk/          the Makefile, split by concern
 tools/       build, check, signing, packaging and analysis tools

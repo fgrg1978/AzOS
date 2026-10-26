@@ -286,7 +286,7 @@ exclude = [
     "tests/host/lx-loader-tests",
     # The Linux layer (GPL-2.0-only): never a member, so no workspace build
     # can link it into the kernel or a dual-licensed image.
-    "lx/emul",
+    "crates/drivers/lx/emul",
     "tests/host/dma-tests",
     "tests/host/iommu-tests",
     "tests/host/tpm-tests",

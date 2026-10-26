@@ -90,7 +90,7 @@ REPO = azos_tools.ROOT
 BASELINE = os.path.join(REPO, "tools/lint/arch_cfg_lint.baseline")
 
 # Shared code lives here; the arch crates are where per-ISA code belongs.
-SCAN_ROOTS = ("arch", "crates", "kernel", "domains", "lx", "userspace")
+SCAN_ROOTS = ("arch", "crates", "kernel", "domains", "userspace")
 ARCH_CRATES = (
     "arch/facade/",
     "arch/api/",

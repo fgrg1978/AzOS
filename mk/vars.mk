@@ -257,7 +257,7 @@ KCONFIG_FILES := Kconfig $(shell find config -name 'Kconfig*' -not -name '* [0-9
 UALLOC_SRC    := $(wildcard userspace/lib/ualloc/src/*.rs) userspace/lib/ualloc/Cargo.toml \
                  $(or $(KCONFIG_CONFIG),.config)
 # The Linux driver server skeleton. Links the module loader
-# (crates/core/lx-loader, no Linux code) and nothing from lx/.
+# (crates/core/lx-loader, no Linux code) and nothing from crates/drivers/lx/.
 LXSRV_DIR     := userspace/services/lxsrv
 LXSRV_BUILT   := $(OUT_TGT)/$(LXSRV_DIR)/$(TARGET_RISCV64_USER)/release/lxsrv
 LXSRV_ELF     := $(OUT_BUILD)/lxsrv.elf

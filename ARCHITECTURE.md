@@ -216,10 +216,10 @@ and the kernel translates them to native handlers
 (`userspace/lib/linux_rt`, `userspace/services/lxrt`). The Linux driver layer
 is made of a loader for relocatable Linux driver modules (`lx-loader`), a
 ring-3 server (`userspace/services/lxsrv`), a Rust reimplementation of the
-kernel APIs such modules call (`lx/emul`) and a small C base module built
-against a pinned Linux tree (`lx/glue`).
+kernel APIs such modules call (`crates/drivers/lx/emul`) and a small C base module built
+against a pinned Linux tree (`crates/drivers/lx/glue`).
 
-- Source: `crates/core/linux-abi`, `crates/core/lx-loader`, `lx/`,
+- Source: `crates/core/linux-abi`, `crates/core/lx-loader`, `crates/drivers/lx/`,
   `userspace/services/{lxsrv,lxrt}`, `config/axes/Kconfig.personality`.
 - Doc: [linux.md](Documentation/linux.md).
 

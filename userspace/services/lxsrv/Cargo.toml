@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The Linux driver server skeleton: starts from its topology row, loads the test module LXTEST.KO through DOMAIN_MODULE_VERIFY and the token-gated DOMAIN_MODULE_MAP_X, runs its init, and idles. Links no Linux object and no lx/ code. Excluded from workspace; built standalone."
+description = "The Linux driver server skeleton: starts from its topology row, loads the test module LXTEST.KO through DOMAIN_MODULE_VERIFY and the token-gated DOMAIN_MODULE_MAP_X, runs its init, and idles. Links no Linux object and no crates/drivers/lx/ code. Excluded from workspace; built standalone."
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }

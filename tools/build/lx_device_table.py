@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """lx_device_table.py -- the Linux half of the hwbus match tables.
 
-Reads the Linux leaf drivers listed in lx/DEVICE_SOURCES, finds their
+Reads the Linux leaf drivers listed in crates/drivers/lx/DEVICE_SOURCES, finds their
 MODULE_DEVICE_TABLE(pci|of|virtio, ...) arrays in the pinned tree
 (third_party/linux) and prints one line per id:
 
@@ -14,7 +14,7 @@ pci:VVVV:DDDD, pciclass:CCCCCC:MMMMMM, dt:<compatible>, virtio:<id>. The
 output is read by crates/drivers/hwbus/build.rs, which refuses an id that a
 native driver also declares.
 
-lx/DEVICE_SOURCES: one `<class> <path under third_party/linux>` per line, `#`
+crates/drivers/lx/DEVICE_SOURCES: one `<class> <path under third_party/linux>` per line, `#`
 comments. No file or an empty list prints nothing; so does a tree that is not
 checked out (tools/build/third_party_fetch.sh linux fetches it): the table is then empty and
 no Linux class server is ever wanted. A listed file that is missing from a
@@ -195,7 +195,7 @@ def ids_of_source(src: str, h: Headers) -> list[str]:
 
 
 def read_sources(root: Path) -> list[tuple[str, str]]:
-    lst = root / "lx/DEVICE_SOURCES"
+    lst = root / "crates/drivers/lx/DEVICE_SOURCES"
     if not lst.is_file():
         return []
     rows = []
@@ -205,7 +205,7 @@ def read_sources(root: Path) -> list[tuple[str, str]]:
             continue
         parts = line.split()
         if len(parts) != 2:
-            raise TableError(f"lx/DEVICE_SOURCES:{n}: want `<class> <path>`")
+            raise TableError(f"crates/drivers/lx/DEVICE_SOURCES:{n}: want `<class> <path>`")
         rows.append((parts[0], parts[1]))
     return rows
 
@@ -222,7 +222,7 @@ def generate(root: Path) -> list[str]:
         if not f.is_file():
             # A tree fetched before the file joined the sparse set: the blob is
             # already in its pack, so a re-run checks it out without a download.
-            raise TableError(f"lx/DEVICE_SOURCES names {rel}, not in third_party/linux "
+            raise TableError(f"crates/drivers/lx/DEVICE_SOURCES names {rel}, not in third_party/linux "
                              "(re-run tools/build/third_party_fetch.sh linux to apply the sparse set)")
         module = f.stem
         for sel in ids_of_source(f.read_text(errors="replace"), h):

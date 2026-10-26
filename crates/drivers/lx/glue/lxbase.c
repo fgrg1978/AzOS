@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 /*
- * lxbase.ko: the base of the lx/ layer at stage L1.
+ * lxbase.ko: the base of the crates/drivers/lx/ layer at stage L1.
  *
  * It is compiled by Linux's own Kbuild against the pinned tree, so every
  * prototype, gfp flag and array shape below comes from the Linux headers of
@@ -15,7 +15,7 @@
  * forwards them to the host ABI below, which the Linux driver server
  * (userspace/services/lxsrv, Apache-2.0 OR GPL-2.0-only, no Linux header)
  * provides. The host ABI is plain scalars and pointers, no Linux type, and
- * is listed in lx/HOST_ABI, which tools/lint/lx_license_lint.py
+ * is listed in crates/drivers/lx/HOST_ABI, which tools/lint/lx_license_lint.py
  * enforces against every .ko's imports.
  */
 #include <linux/crc32.h>

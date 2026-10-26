@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
-# The Kbuild host for the lx/ layer (chosen by the owner): Linux's own build system runs inside this Linux
+# The Kbuild host for the crates/drivers/lx/ layer (chosen by the owner): Linux's own build system runs inside this Linux
 # container, never on the macOS host. The base is pinned by digest, the
 # top-level packages by version; tools/build/lx_kbuild/IMAGE records the digest,
 # the platform and the full installed package set (`make lx-kbuild-image`

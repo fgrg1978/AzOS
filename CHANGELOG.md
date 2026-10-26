@@ -96,7 +96,7 @@ releases yet. The ABI crate keeps its own file,
     `userspace/`; the native `std` SDK (`sdk/`); the relibc port
     (`userspace/lib/relibc-azos`); the optional Linux personality
     (`crates/core/linux-abi`, `crates/core/syscall/src/linux.rs`,
-    `userspace/lib/linux_rt`); Linux driver glue (`lx/`).
+    `userspace/lib/linux_rt`); Linux driver glue (`crates/drivers/lx/`).
   - **Other kernels and domains:** AzOS-micro for parts without an MMU
     (`micro/`); the robot domain (`domains/robot/`).
   - **Build and tests:** the Kconfig tree, presets and defconfigs (`Kconfig`,

@@ -234,14 +234,14 @@ Source: `third_party/VENDOR_PIN`, `userspace/lib/tls-probe/vendor.py`
 ## Licence headers: `REUSE.toml` and `tools/lint/spdx_headers.py`
 
 Every tracked source file (`.rs`, `.S`, `.ld`, `.py`, `.sh`, `.mk`, `Makefile`)
-outside `third_party/` and `lx/glue/` carries an `SPDX-License-Identifier` and `SPDX-FileCopyrightText` header.
+outside `third_party/` and `crates/drivers/lx/glue/` carries an `SPDX-License-Identifier` and `SPDX-FileCopyrightText` header.
 `tools/lint/spdx_headers.py` adds a missing one; with `--check` it writes nothing,
 lists the files that lack one and exits 1, which is a row of the gate's first
 tier. Files that cannot take a comment (documentation, data, images, keys, lock
 files) are covered by `REUSE.toml`: a catch-all annotation gives every path the
-project licence unless the file has its own header, `lx/glue/**` is
+project licence unless the file has its own header, `crates/drivers/lx/glue/**` is
 GPL-2.0-only and the relibc patches under `userspace/lib/relibc-azos/patches/`
-are MIT. That no GPL-only source or symbol leaves `lx/glue/` and
+are MIT. That no GPL-only source or symbol leaves `crates/drivers/lx/glue/` and
 `third_party/` is checked by `tools/lint/lx_license_lint.py` ([linux.md](../linux.md)).
 
 Source: `REUSE.toml`, `tools/lint/spdx_headers.py`, `tools/gate/gate_tier.sh`,

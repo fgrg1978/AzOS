@@ -27,7 +27,7 @@
 	update = none
 	tag = v10.8.5-binary
 
-# Linux (GPL-2.0-only), the kernel.org stable tree: the lx/ layer's modules
+# Linux (GPL-2.0-only), the kernel.org stable tree: the crates/drivers/lx/ layer's modules
 # are built against it (fetched sparse). Its tag is also the module
 # `vermagic` release (this tag is its one record); changing it is an
 # "Lbump" (every validated module row re-runs).

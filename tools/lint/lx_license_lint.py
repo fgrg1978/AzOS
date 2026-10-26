@@ -4,10 +4,10 @@
 """Licence lint for the Linux driver layer (gate rows `lx: ...`).
 
 The project is "Apache-2.0 OR GPL-2.0-only", and so is our own Rust in the
-Linux layer (`lx/emul`, no Linux header; owner decision, round 47). The glue
-that includes Linux headers (`lx/glue/`) and the pinned Linux tree
+Linux layer (`crates/drivers/lx/emul`, no Linux header; owner decision, round 47). The glue
+that includes Linux headers (`crates/drivers/lx/glue/`) and the pinned Linux tree
 (`third_party/linux/`) are GPL-2.0-only. The rule this keeps: **no GPL-only
-source, symbol or object outside `lx/glue/` and `third_party/`**, so nothing
+source, symbol or object outside `crates/drivers/lx/glue/` and `third_party/`**, so nothing
 GPL-only reaches the kernel or any image by accident.
 
     python3 tools/lint/lx_license_lint.py              # tree + build artefacts
@@ -19,20 +19,20 @@ GPL-only reaches the kernel or any image by accident.
 Tree rules (over `git ls-files`, so build output and untracked files are not
 judged):
 
-  T1  every SPDX line under lx/glue/ says exactly GPL-2.0-only, and every source
+  T1  every SPDX line under crates/drivers/lx/glue/ says exactly GPL-2.0-only, and every source
       file there (.rs .c .h .S .toml .py .sh) has one;
-  T2  outside lx/glue/ and third_party/ (lx/emul included), every SPDX
+  T2  outside crates/drivers/lx/glue/ and third_party/ (crates/drivers/lx/emul included), every SPDX
       expression offers Apache-2.0
       (a GPL-only file there would make its crate GPL-only);
-  T3  outside lx/glue/ and third_party/, no C/assembly source includes a Linux
+  T3  outside crates/drivers/lx/glue/ and third_party/, no C/assembly source includes a Linux
       kernel header (`<linux/...>`, `<asm/...>`, `<asm-generic/...>`): a file
       compiled against Linux headers is GPL-2.0-only;
-  T4  no Cargo.toml outside lx/glue/ depends on a path inside lx/glue/ (a dual-licensed
+  T4  no Cargo.toml outside crates/drivers/lx/glue/ depends on a path inside crates/drivers/lx/glue/ (a dual-licensed
       crate linking a GPL one);
   T5  `third_party/linux` is named only by the files allowed to: the
       submodule record, this lint, the Kconfig help, the Kbuild runner and the
       device-id table that reads the tree as data (`tools/build/lx_device_table.py`
-      and its list, `lx/DEVICE_SOURCES`).
+      and its list, `crates/drivers/lx/DEVICE_SOURCES`).
 
   T6  MIT is accepted in exactly one place: userspace/lib/relibc-azos/patches/,
       the patch against relibc (Redox's libc, MIT, pinned in
@@ -52,11 +52,11 @@ is a failure so the row cannot pass by finding nothing):
 
 Module rules (`--ko DIR`, DIR = `make lx-kbuild`'s output: <isa>/*.ko for
 riscv64, aarch64 and x86_64). The load order is lxbase.ko (the base,
-lx/glue) and then every other module:
+crates/drivers/lx/glue) and then every other module:
 
   K1  every .ko carries a GPL-compatible `license` (the Linux loader's list)
       and `vermagic` = "<the Linux tree's tag, no v> SMP preempt <riscv|aarch64|nothing>";
-  K2  lxbase.ko imports only the host ABI (lx/HOST_ABI): no Linux symbol is
+  K2  lxbase.ko imports only the host ABI (crates/drivers/lx/HOST_ABI): no Linux symbol is
       expected from the server;
   K3  every other module imports only the host ABI and symbols EXPORTED
       (`__ksymtab`) by modules earlier in the order: the RFC 6.3 "nm -u"
@@ -66,7 +66,7 @@ lx/glue) and then every other module:
 
 The filesystem set (<isa>/fs/*.ko: crc16, mbcache, jbd2, ext4) is
 held to K1 and K4. Its imports are not K3-gated, because the slice that
-provides most of them does not exist yet: lx/FS_EXT4_UNRESOLVED records what
+provides most of them does not exist yet: crates/drivers/lx/FS_EXT4_UNRESOLVED records what
 is missing and tests/host/lx-loader-tests fails when the built set differs.
   K0  an empty .ko set, or an empty image set, is a failure.
 
@@ -100,7 +100,7 @@ from out_dir import out_root  # noqa: E402
 OUT = out_root()
 BUILD = "build"
 TARGET = "target"
-GPL_ONLY_DIRS = ("lx/glue/", "third_party/")
+GPL_ONLY_DIRS = ("crates/drivers/lx/glue/", "third_party/")
 MIT_DIRS = ("userspace/lib/relibc-azos/patches/",)
 SOURCE_EXT = (".rs", ".c", ".h", ".S", ".s", ".toml", ".py", ".sh")
 C_EXT = (".c", ".h", ".S", ".s", ".cc", ".cpp")
@@ -117,7 +117,7 @@ T5_ALLOWED = {
     "config/axes/Kconfig.personality",
     "tools/build/lx_kbuild/run.sh",
     "tools/build/lx_device_table.py",
-    "lx/DEVICE_SOURCES",
+    "crates/drivers/lx/DEVICE_SOURCES",
 }
 LX_SYMBOL_RE = re.compile(rb"lx_glue|7lx_glue")
 OUR_MODULE_TAG = b"Dual Apache/GPL"
@@ -154,10 +154,10 @@ def check_tree(root, files):
         ids = [i for i in ids if "{" not in i]
         if in_gpl:
             if rel.endswith(SOURCE_EXT) and not ids and not rel.endswith("Cargo.lock"):
-                errs.append(f"T1 {rel}: no SPDX line (lx/glue/ is GPL-2.0-only)")
+                errs.append(f"T1 {rel}: no SPDX line (crates/drivers/lx/glue/ is GPL-2.0-only)")
             for i in ids:
                 if i != "GPL-2.0-only":
-                    errs.append(f"T1 {rel}: SPDX '{i}' under lx/glue/ (must be GPL-2.0-only)")
+                    errs.append(f"T1 {rel}: SPDX '{i}' under crates/drivers/lx/glue/ (must be GPL-2.0-only)")
             continue
         if rel.startswith(MIT_DIRS):
             if not ids:
@@ -168,11 +168,11 @@ def check_tree(root, files):
             continue
         for i in ids:
             if "Apache-2.0" not in re.split(r"[\s()]+", i):
-                errs.append(f"T2 {rel}: SPDX '{i}' outside lx/glue/ offers no Apache-2.0")
+                errs.append(f"T2 {rel}: SPDX '{i}' outside crates/drivers/lx/glue/ offers no Apache-2.0")
         if rel.endswith(C_EXT) and LINUX_INC_RE.search(text):
-            errs.append(f"T3 {rel}: includes a Linux kernel header outside lx/glue/")
+            errs.append(f"T3 {rel}: includes a Linux kernel header outside crates/drivers/lx/glue/")
         if os.path.basename(rel) == "Cargo.toml" and LX_DEP_RE.search(text):
-            errs.append(f"T4 {rel}: depends on a crate inside lx/glue/")
+            errs.append(f"T4 {rel}: depends on a crate inside crates/drivers/lx/glue/")
         if "third_party/linux" in text and rel not in T5_ALLOWED and not rel.endswith(".md"):
             errs.append(f"T5 {rel}: names third_party/linux (not an allowed user)")
     return errs
@@ -222,7 +222,7 @@ def check_artefacts(root, rels):
     for rel in rels:
         data = read(root, rel)
         if LX_SYMBOL_RE.search(strtab_names(data)):
-            errs.append(f"A1 {rel}: carries a symbol of the GPL glue (lx/glue/)")
+            errs.append(f"A1 {rel}: carries a symbol of the GPL glue (crates/drivers/lx/glue/)")
         if rel.startswith(f"{BUILD}/lx/") and rel.endswith(".ko"):
             tag = modinfo(data, b"license")
             if tag != OUR_MODULE_TAG:
@@ -277,7 +277,7 @@ def ko_defined(data):
 
 
 def host_abi(root):
-    with open(os.path.join(root, "lx", "HOST_ABI"), encoding="utf-8") as f:
+    with open(os.path.join(root, "crates", "drivers", "lx", "HOST_ABI"), encoding="utf-8") as f:
         return {l.strip().encode() for l in f if l.strip() and not l.startswith("#")}
 
 
@@ -311,7 +311,7 @@ def check_ko(OUT, kodir, abi, images, release):
             defined |= ko_defined(data)
         # The filesystem set (<isa>/fs/): same licence and
         # vermagic rules, and its symbols join K4. Its imports are not K3-gated:
-        # the recorded list lx/FS_EXT4_UNRESOLVED is, by lx-loader-tests.
+        # the recorded list crates/drivers/lx/FS_EXT4_UNRESOLVED is, by lx-loader-tests.
         fsd = os.path.join(d, "fs")
         for ko in sorted(f for f in os.listdir(fsd) if f.endswith(".ko")) if os.path.isdir(fsd) else []:
             data = open(os.path.join(fsd, ko), "rb").read()
@@ -497,26 +497,26 @@ def self_test():
         ok_hdr = "// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only\n"
         gpl_hdr = "// SPDX-License-Identifier: GPL-2.0-only\n"
         mit_hdr = "# SPDX-License-Identifier: MIT\n"
-        w("lx/glue/src/lib.rs", gpl_hdr)
+        w("crates/drivers/lx/glue/src/lib.rs", gpl_hdr)
         w("userspace/lib/relibc-azos/patches/0001.patch", mit_hdr)
         w("userspace/lib/relibc-azos/src/lib.rs", ok_hdr)
-        w("lx/emul/src/lib.rs", ok_hdr)
+        w("crates/drivers/lx/emul/src/lib.rs", ok_hdr)
         w("crates/x/src/lib.rs", ok_hdr)
         w("crates/z/Cargo.toml", "# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only\n"
-                                 "[dependencies]\nlx_emul = { path = \"../../lx/emul\" }\n")
-        clean = ["lx/glue/src/lib.rs", "lx/emul/src/lib.rs", "crates/x/src/lib.rs", "crates/z/Cargo.toml",
+                                 "[dependencies]\nlx_emul = { path = \"../../crates/drivers/lx/emul\" }\n")
+        clean = ["crates/drivers/lx/glue/src/lib.rs", "crates/drivers/lx/emul/src/lib.rs", "crates/x/src/lib.rs", "crates/z/Cargo.toml",
                  "userspace/lib/relibc-azos/patches/0001.patch", "userspace/lib/relibc-azos/src/lib.rs"]
         if check_tree(td, clean):
             failures.append(f"clean tree flagged: {check_tree(td, clean)}")
         cases = {
-            "T1": ("lx/glue/src/bad.rs", ok_hdr),
-            "T1 ": ("lx/glue/src/none.rs", "fn main() {}\n"),
+            "T1": ("crates/drivers/lx/glue/src/bad.rs", ok_hdr),
+            "T1 ": ("crates/drivers/lx/glue/src/none.rs", "fn main() {}\n"),
             "T2": ("crates/x/src/gpl.rs", gpl_hdr),
-            "T2 ": ("lx/emul/src/gpl.rs", gpl_hdr),
+            "T2 ": ("crates/drivers/lx/emul/src/gpl.rs", gpl_hdr),
             "T3": ("userspace/tests/x/a.c", ok_hdr + "#include <linux/module.h>\n"),
-            "T3 ": ("lx/emul/src/shim.c", ok_hdr + "#include <linux/slab.h>\n"),
+            "T3 ": ("crates/drivers/lx/emul/src/shim.c", ok_hdr + "#include <linux/slab.h>\n"),
             "T4": ("crates/y/Cargo.toml", "# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only\n"
-                                          "[dependencies]\nlx_glue = { path = \"../../lx/glue\" }\n"),
+                                          "[dependencies]\nlx_glue = { path = \"../../crates/drivers/lx/glue\" }\n"),
             "T5": ("Makefile.x", "CFLAGS += -Ithird_party/linux/include\n"),
             # MIT is accepted in the relibc patch and nowhere else.
             "T2  ": ("crates/x/src/mit.rs", "// SPDX-License-Identifier: MIT\n"),
@@ -649,7 +649,7 @@ def main(argv):
         if not errs:
             print(f"lx_license_lint: {n} validated Kbuild modules clean (GPL-compatible, vermagic {release}, "
                   f"imports resolved by host ABI + exports); {n_fs} filesystem-set modules checked for licence, "
-                  f"vermagic and K4 only (their imports are gated by lx/FS_EXT4_UNRESOLVED, not resolved); "
+                  f"vermagic and K4 only (their imports are gated by crates/drivers/lx/FS_EXT4_UNRESOLVED, not resolved); "
                   f"{len(images)} images carry none of their symbols")
         return 1 if errs else 0
     if "--self-test" in argv:

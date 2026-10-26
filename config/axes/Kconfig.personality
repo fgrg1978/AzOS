@@ -4,8 +4,8 @@
 #
 # The menu of the Linux driver layer: unmodified Linux modules run in
 # ring-3 servers (lxsrv-<class>), built from a pinned Linux tree
-# (third_party/linux/) against a compatibility layer (lx/). None of that code
-# exists beyond stage L0/L0b: the pinned submodule, the lx/ base skeleton,
+# (third_party/linux/) against a compatibility layer (crates/drivers/lx/). None of that code
+# exists beyond stage L0/L0b: the pinned submodule, the crates/drivers/lx/ base skeleton,
 # the module loader (DOMAIN_MODULE_VERIFY / DOMAIN_MODULE_MAP_X) and the empty
 # server (LX_SERVER_SKELETON). So that no symbol here is silently inert,
 # enabling any other fails the build: crates/core/limits/build.rs
@@ -30,7 +30,7 @@ config LINUX_DRIVERS
       LX_SERVER_SKELETON (below), and every module option still fails.
 
       Runs validated, unmodified Linux modules in ring-3 server processes,
-      one process per driver class, through a compatibility layer (lx/)
+      one process per driver class, through a compatibility layer (crates/drivers/lx/)
       over a pinned Linux tree (third_party/linux/). A server holds no
       actuator capability, and no safety decision reads its output.
 
@@ -82,7 +82,7 @@ config LX_FS_EXT4_RO
       tools/build/third_party_fetch.sh linux), and the module loader admits, lays out
       and relocates all of them (tests/host/lx-loader-tests).
       What is missing: the 400 or so Linux symbols they import and
-      nothing provides yet (lx/FS_EXT4_UNRESOLVED; the VFS, page cache,
+      nothing provides yet (crates/drivers/lx/FS_EXT4_UNRESOLVED; the VFS, page cache,
       buffer heads, bio, wait queues and per-CPU data),
       the ring-3 filesystem server that would load them, and the
       filesystem protocol it would speak. On aarch64 the unpatched

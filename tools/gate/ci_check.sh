@@ -11301,7 +11301,7 @@ if us_out="$(python3 "${REPO_ROOT}/tools/lint/user_stacks.py" --self-test 2>&1)"
 else bad; printf '%s\n' "$us_out" | sed -n 1,6p | sed 's/^/      /'; fi
 fi; ci_row_end
 
-# The Linux half of the hardware bus's match tables (lx/DEVICE_SOURCES ->
+# The Linux half of the hardware bus's match tables (crates/drivers/lx/DEVICE_SOURCES ->
 # MODULE_DEVICE_TABLE ids): the reader on fixture sources, an unresolvable id
 # an error and not a dropped line.
 if ci_row_begin "lx_device_table"; then
@@ -11576,14 +11576,14 @@ test_host_features "topology(lx-server)" \
 
 # ── The Linux layer's host rows (wave 12, LXL0) ─────────────
 #
-# * `lx-emul`: the base skeleton in lx/ (Apache-2.0 OR GPL-2.0-only since round 47, never a workspace
+# * `lx-emul`: the base skeleton in crates/drivers/lx/ (Apache-2.0 OR GPL-2.0-only since round 47, never a workspace
 #   member), its own host tests.
 # * `lx-loader-tests`: the relocatable-module loader the server links, its
 #   encoders against llvm-mc encodings and every relocation of the test module
 #   (`make lx-modules`, every ISA) against an independent decoder; the suite
 #   carries its own oracle canary.
-# * licence lint (`tools/lint/lx_license_lint.py`): no GPL-only source outside lx/
-#   and third_party/, no lx/ symbol in any built kernel, ELF or module, no
+# * licence lint (`tools/lint/lx_license_lint.py`): no GPL-only source outside crates/drivers/lx/
+#   and third_party/, no crates/drivers/lx/ symbol in any built kernel, ELF or module, no
 #   module with Linux's licence tag before stage L1. Its canary is
 #   `--self-test`, which breaks each rule once in a throwaway tree and fails
 #   unless every rule reports it.
@@ -11597,15 +11597,15 @@ test_host_features "topology(lx-server)" \
 #   LINUX_DRIVERS without LX_SERVER_SKELETON, and builds with the pair. Its
 #   own target dir: a different KCONFIG_CONFIG must not leave a stale
 #   azos_limits in the shared one.
-test_host "lx-emul" "${REPO_ROOT}/lx/emul"
+test_host "lx-emul" "${REPO_ROOT}/crates/drivers/lx/emul"
 # The same crate must also build no_std for the server targets (lxsrv links it
 # from stage L1): a host-only dependency on std would surface only then. x86_64
-# too: the task switch is per ISA (lx/emul/src/switch/).
+# too: the task switch is per ISA (crates/drivers/lx/emul/src/switch/).
 lx_emul_nostd_row() {
     printf "  %-26s" "lx-emul no_std (rv, arm, x86)..."
     local t out
     for t in riscv64imac-unknown-none-elf aarch64-unknown-none x86_64-unknown-none; do
-        if ! out="$( (cd "${REPO_ROOT}/lx/emul" && CARGO_TARGET_DIR="$AZOS_OUT/tgt/lx/emul/cross" \
+        if ! out="$( (cd "${REPO_ROOT}/crates/drivers/lx/emul" && CARGO_TARGET_DIR="$AZOS_OUT/tgt/lx/emul/cross" \
                 "$CARGO" +nightly build --release --target "$t" -Zbuild-std=core) 2>&1)" \
            || printf '%s\n' "$out" | qgrep -qE "^warning"; then
             bad; printf '%s\n' "$out" | grep -m3 -E "^(error|warning)" | sed 's/^/      /'; return
@@ -11676,7 +11676,7 @@ ci_row "lx: Kconfig gates" lx_kconfig_row
 # `tools/build/lx_kbuild/run.sh` runs Kbuild for the three ISAs inside the pinned
 # container (tools/build/lx_kbuild/Containerfile, recorded in tools/build/lx_kbuild/IMAGE;
 # owner decision, round 49: podman), --network=none, the Linux tree mounted
-# read-only: lxbase.ko (lx/glue, GPL-2.0-only, the base) and the upstream
+# read-only: lxbase.ko (crates/drivers/lx/glue, GPL-2.0-only, the base) and the upstream
 # lib/xz/xz_dec.ko, plus the xz fixtures, into build/lx/kbuild/.
 #
 # * `modules`: the build, `tools/lint/lx_license_lint.py --ko` (GPL-compatible
@@ -11728,7 +11728,7 @@ lx_kbuild_row() { # <label> <mode: modules|repro|canary>
     fsset)
         # The filesystem set (<isa>/fs/*.ko, the modules row's
         # build) loads in order with every relocation checked, its unresolved
-        # imports equal lx/FS_EXT4_UNRESOLVED, and withholding one fails the load.
+        # imports equal crates/drivers/lx/FS_EXT4_UNRESOLVED, and withholding one fails the load.
         # The modules row builds the set; running first is part of the contract,
         # so a missing module is a failure here, not a SKIP (LX_REQUIRE_FS).
         if [ ! -f "$dir/SHA256SUMS" ] || ! grep -q ' aarch64/fs/ext4.ko$' "$dir/SHA256SUMS" \

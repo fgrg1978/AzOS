@@ -3,8 +3,8 @@
 //! `LXSRV.ELF`: the Linux driver server skeleton.
 //!
 //! In the finished layer one such process runs per driver class, hosting
-//! unmodified Linux modules over the `lx/` base. At this stage it links **no
-//! Linux object and no `lx/` code** (the first Linux object is stage L1,
+//! unmodified Linux modules over the `crates/drivers/lx/` base. At this stage it links **no
+//! Linux object and no `crates/drivers/lx/` code** (the first Linux object is stage L1,
 //! after the owner's sign-off), so this image stays
 //! "Apache-2.0 OR GPL-2.0-only". What it does run is the whole module path:
 //!
@@ -31,7 +31,7 @@
 //! Stage L1 adds the first Linux modules, built by Linux's own
 //! Kbuild from the pinned tree (`make lx-kbuild`, in a container): when the
 //! volume carries them, the server loads `LXBASE.KO` (the GPL glue in
-//! `lx/glue`, resolved against this server's host ABI) and then the
+//! `crates/drivers/lx/glue`, resolved against this server's host ABI) and then the
 //! unmodified upstream `XZ_DEC.KO` (resolved against `LXBASE.KO`'s
 //! `__ksymtab`, as the Linux loader resolves against exports), each through
 //! the same verify/map-X path, and makes `xz_dec` decompress `XZTEST.XZ`.
@@ -305,7 +305,7 @@ extern "C" {
     fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32;
 }
 
-/// The host ABI (`lx/HOST_ABI`): all a module may import from this
+/// The host ABI (`crates/drivers/lx/HOST_ABI`): all a module may import from this
 /// server. Linux symbols come from `LXBASE.KO`'s exports, never from here.
 fn host_abi(name: &[u8]) -> Option<u64> {
     Some(match name {

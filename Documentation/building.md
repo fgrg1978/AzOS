@@ -264,7 +264,7 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | Conflict markers | `git grep` | no tracked file outside `third_party/` holds a merge-conflict marker line |
 | Config index | `python3 tools/build/gen_config_index.py --check` | `Documentation/config.md`'s option index is what the Kconfig tree declares; `--self-test` runs first |
 | Kernel constants | `python3 tools/build/export_kernel_consts.py --self-test` | every Kconfig symbol the brain's constant mirror exports is declared (`make ci-full` compares the mirror itself) |
-| Zbc CRC constants | `python3 tools/build/lx_kbuild/zbc_crc_constants.py` | the CRC-32 fold constants `lx/glue/lxbase.c` carries are the derived ones |
+| Zbc CRC constants | `python3 tools/build/lx_kbuild/zbc_crc_constants.py` | the CRC-32 fold constants `crates/drivers/lx/glue/lxbase.c` carries are the derived ones |
 | OTA sender | `python3 tools/dev/ota_send.py --self-test` | the sender's header and its single and fleet sends, against a localhost receiver |
 | Claims scanner | `bash tools/lint/claims_check.sh --self-test` | the absolute-claim scanner still finds what it looks for; the scan of the tree (a review aid that always passes) is by hand |
 | Supply chain | `cargo deny check licenses bans sources` | licences, bans and sources of the registry crates (`deny.toml`) |

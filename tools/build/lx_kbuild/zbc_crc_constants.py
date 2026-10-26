@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Derive and check the Zbc CRC-32 constants lx/glue/lxbase.c uses (wave 13).
+"""Derive and check the Zbc CRC-32 constants crates/drivers/lx/glue/lxbase.c uses (wave 13).
 
 Computes z^64 mod P, z^96 mod P, floor(z^64 / P) and P bit-reversed in 64
 bits, prints them, and checks the folding algorithm (a model of `clmulr`)
@@ -9,7 +9,7 @@ against the table CRC on random data. Exit 1 on any mismatch, or when the
 constants differ from the ones in lxbase.c. The lint tier
 (tools/gate/gate_tier.sh lints) runs it, after its --self-test.
 
-  zbc_crc_constants.py [LXBASE_C]   check (default: lx/glue/lxbase.c)
+  zbc_crc_constants.py [LXBASE_C]   check (default: crates/drivers/lx/glue/lxbase.c)
   zbc_crc_constants.py --self-test  a planted wrong or missing constant fails
 """
 import os
@@ -22,7 +22,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../lib"))
 import azos_tools  # noqa: E402
 
-LXBASE = os.path.join(azos_tools.ROOT, "lx/glue/lxbase.c")
+LXBASE = os.path.join(azos_tools.ROOT, "crates/drivers/lx/glue/lxbase.c")
 
 M = (1 << 64) - 1
 P = 0x104C11DB7

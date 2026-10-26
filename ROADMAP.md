@@ -13,7 +13,7 @@ covers and leaves out.
 | One feature set on every ISA | Every feature lands on riscv64, aarch64 and x86_64 together, under the same hardware-support model: a compile-time baseline per ISA, and each extension above it probed at boot with a fallback. | `arch/api/src/isa.rs`, `config/arch/Kconfig.isa` |
 | Memory | Reclaim and memory-pressure policy, file-backed paging through the page cache, and larger pages. | `crates/core/mm`, `config/limits/Kconfig.limits` |
 | Real time | Admission and budgets for every kind of time a task consumes, including interrupt handlers and time spent in servers on a client's behalf. | `crates/core/sched`, `config/kernel/Kconfig.sched` |
-| Driver placement | Drivers that run in ring 3 or move between ring 3 and the kernel, and Linux driver modules running in ring-3 servers under DMA and capability limits. | `crates/core/topology/src/placement.rs`, `lx/`, `config/axes/Kconfig.personality` |
+| Driver placement | Drivers that run in ring 3 or move between ring 3 and the kernel, and Linux driver modules running in ring-3 servers under DMA and capability limits. | `crates/core/topology/src/placement.rs`, `crates/drivers/lx/`, `config/axes/Kconfig.personality` |
 | File authority | A task reaches files through the directory handles it was granted, not through global paths. | `crates/core/abi/src/invoke.rs`, `crates/fs` |
 | Storage | A crash-consistent, checksummed volume for logs, crash reports, the device record and update state, beside FAT32 as the boot medium. | `crates/fs/src/azvol` |
 | Less `unsafe` | A per-crate ratchet on `unsafe`, then `forbid(unsafe_code)` in the crates that can take it. | `crates/` |

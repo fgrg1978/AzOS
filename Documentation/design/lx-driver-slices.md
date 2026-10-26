@@ -8,13 +8,13 @@
 
 The next three slices of the Linux driver layer ([linux.md](../linux.md#path-2-the-linux-kernel-driver-slice-lx)) are ext4 (Kconfig `LX_FS_EXT4_RO`, then `LX_FS_EXT4_RW`), the URB adapter for the HID quirk drivers, and the IMX219 sensor pilot. This note lists the Linux sources each one needs at the pinned tag, and specifies what running the ext4 module set in a ring-3 server needs on all three ISAs, with no GPL code in ring 0: a fixed low window for module memory, a virtual interrupt flag, and per-CPU state and `current` without privileged registers. On the module set as built, interrupt state needs no kernel mechanism on any ISA, and per-CPU state needs none on riscv64 and x86_64 while a server runs its Linux code on one thread. The kernel side is the window, the aarch64 thread pointer kept per task for a Linux class server, and a per-thread base register once a server runs more than one thread.
 
-Source: `lx/FS_EXT4_UNRESOLVED`, `lx/DEVICE_SOURCES`, `tools/build/third_party_fetch.sh linux`, `tools/build/lx_kbuild/`.
+Source: `crates/drivers/lx/FS_EXT4_UNRESOLVED`, `crates/drivers/lx/DEVICE_SOURCES`, `tools/build/third_party_fetch.sh linux`, `tools/build/lx_kbuild/`.
 
 ## Motivation
 
-`ext4.ko`, `jbd2.ko` and `mbcache.ko` already build for every ISA and pass the module rules, but they are built to run in ring 0. In ring 3 their privileged instructions fault. Their per-CPU and `current` accesses assume registers that a user thread cannot read, and the x86_64 code model reaches its symbols through sign-extended 32-bit absolute addresses. Each of these needs an answer before the slice can provide the symbols `lx/FS_EXT4_UNRESOLVED` still lists. Hosting the modules in the kernel instead would answer all of them at once, at the cost of GPL code in ring 0. That option is rejected.
+`ext4.ko`, `jbd2.ko` and `mbcache.ko` already build for every ISA and pass the module rules, but they are built to run in ring 0. In ring 3 their privileged instructions fault. Their per-CPU and `current` accesses assume registers that a user thread cannot read, and the x86_64 code model reaches its symbols through sign-extended 32-bit absolute addresses. Each of these needs an answer before the slice can provide the symbols `crates/drivers/lx/FS_EXT4_UNRESOLVED` still lists. Hosting the modules in the kernel instead would answer all of them at once, at the cost of GPL code in ring 0. That option is rejected.
 
-Source: `lx/FS_EXT4_UNRESOLVED`, `crates/core/lx-loader/src/lib.rs`.
+Source: `crates/drivers/lx/FS_EXT4_UNRESOLVED`, `crates/core/lx-loader/src/lib.rs`.
 
 ## Detailed design
 
@@ -22,17 +22,17 @@ Source: `lx/FS_EXT4_UNRESOLVED`, `crates/core/lx-loader/src/lib.rs`.
 
 Every file below is part of the pinned commit, and `tools/build/third_party_fetch.sh linux` checks each one out. The sparse set controls what is checked out, not what is fetched: the depth-1 fetch brings every blob of the commit. Adding a file to the set therefore downloads nothing.
 
-| Slice | Compiled by Kbuild | Read, or re-implemented in `lx/emul` | How its server is chosen |
+| Slice | Compiled by Kbuild | Read, or re-implemented in `crates/drivers/lx/emul` | How its server is chosen |
 |---|---|---|---|
-| ext4 | `fs/ext4/`, `fs/jbd2/`, `fs/mbcache.c`, `lib/crc/crc16.c` | The files that export the symbols `lx/FS_EXT4_UNRESOLVED` lists: in `fs/`, `buffer.c`, `inode.c`, `dcache.c`, `libfs.c`, `fs_parser.c`, `fs-writeback.c`, `mnt_idmapping.c`, `read_write.c`, `seq_file.c`, `stat.c`, `attr.c`, `bad_inode.c`, `namespace.c`, `open.c`, `super.c`, `filesystems.c`, `ioctl.c`, `sync.c`, `d_path.c`, `file.c`, `file_attr.c`, `file_table.c`, `fserror.c`, `namei.c` and `splice.c`; `fs/iomap/{fiemap,seek,direct-io,swapfile}.c`; `block/{bdev,blk-core,bio,blk-lib,blk-flush,blk-ioc}.c`; files under `mm/`, `kernel/` and `lib/` (already in the set); `init/main.c`, `init/version.c` and `drivers/char/random.c`; on aarch64, `drivers/clocksource/arm_arch_timer.c` | Kconfig `LX_FS_EXT4_RO` |
+| ext4 | `fs/ext4/`, `fs/jbd2/`, `fs/mbcache.c`, `lib/crc/crc16.c` | The files that export the symbols `crates/drivers/lx/FS_EXT4_UNRESOLVED` lists: in `fs/`, `buffer.c`, `inode.c`, `dcache.c`, `libfs.c`, `fs_parser.c`, `fs-writeback.c`, `mnt_idmapping.c`, `read_write.c`, `seq_file.c`, `stat.c`, `attr.c`, `bad_inode.c`, `namespace.c`, `open.c`, `super.c`, `filesystems.c`, `ioctl.c`, `sync.c`, `d_path.c`, `file.c`, `file_attr.c`, `file_table.c`, `fserror.c`, `namei.c` and `splice.c`; `fs/iomap/{fiemap,seek,direct-io,swapfile}.c`; `block/{bdev,blk-core,bio,blk-lib,blk-flush,blk-ioc}.c`; files under `mm/`, `kernel/` and `lib/` (already in the set); `init/main.c`, `init/version.c` and `drivers/char/random.c`; on aarch64, `drivers/clocksource/arm_arch_timer.c` | Kconfig `LX_FS_EXT4_RO` |
 | URB adapter | `drivers/hid/{hid-core,hid-input,hid-quirks,hid-generic}.c` with `hid-ids.h` and `hid-haptic.h`, `drivers/hid/usbhid/`, and the leaves `hid-multitouch.c` and `hid-playstation.c` | `drivers/usb/core/{urb,message,driver,usb,hub}.c`, `drivers/input/{input,input-mt,ff-core,ff-memless}.c` | usb and hid ids, which are not a hwbus bus kind yet |
-| Sensor pilot | `drivers/media/i2c/imx219.c`, `drivers/media/v4l2-core/`, `drivers/media/mc/` | `drivers/i2c/i2c-core-base.c`, `drivers/regulator/{core,devres}.c`, `drivers/clk/clk.c`, `drivers/gpio/{gpiolib,gpiolib-devres}.c`, and `property.c`, `power/runtime.c` and `regmap/` under `drivers/base/` (already in the set) | `lx/DEVICE_SOURCES`: `media drivers/media/i2c/imx219.c`, the selector `dt:sony,imx219` |
+| Sensor pilot | `drivers/media/i2c/imx219.c`, `drivers/media/v4l2-core/`, `drivers/media/mc/` | `drivers/i2c/i2c-core-base.c`, `drivers/regulator/{core,devres}.c`, `drivers/clk/clk.c`, `drivers/gpio/{gpiolib,gpiolib-devres}.c`, and `property.c`, `power/runtime.c` and `regmap/` under `drivers/base/` (already in the set) | `crates/drivers/lx/DEVICE_SOURCES`: `media drivers/media/i2c/imx219.c`, the selector `dt:sony,imx219` |
 
-For ext4, each symbol in `lx/FS_EXT4_UNRESOLVED` was mapped to the file that holds its `EXPORT_SYMBOL` at the pinned commit. The mapping skips other architectures and the configurations the Kbuild does not use: `mm/nommu.c` (no MMU), and `rcu/tiny.c` and `locking/rtmutex_api.c` under the Linux `kernel/` directory (tiny RCU and PREEMPT_RT). 399 of the 401 symbols map directly. `get_random_u16` and `get_random_u32` are exported through a macro in `drivers/char/random.c`.
+For ext4, each symbol in `crates/drivers/lx/FS_EXT4_UNRESOLVED` was mapped to the file that holds its `EXPORT_SYMBOL` at the pinned commit. The mapping skips other architectures and the configurations the Kbuild does not use: `mm/nommu.c` (no MMU), and `rcu/tiny.c` and `locking/rtmutex_api.c` under the Linux `kernel/` directory (tiny RCU and PREEMPT_RT). 399 of the 401 symbols map directly. `get_random_u16` and `get_random_u32` are exported through a macro in `drivers/char/random.c`.
 
 For the two leaves, the list holds the files that export the symbols their sources call by name. The exact import set is the one `tools/lint/lx_license_lint.py --ko` computes over the first Kbuild of each leaf. Each slice records that set the way the ext4 set is recorded.
 
-Source: `tools/build/third_party_fetch.sh linux`, `lx/DEVICE_SOURCES`, `tools/build/lx_device_table.py`.
+Source: `tools/build/third_party_fetch.sh linux`, `crates/drivers/lx/DEVICE_SOURCES`, `tools/build/lx_device_table.py`.
 
 ### What the ext4 module set executes
 
@@ -66,7 +66,7 @@ Source: `crates/core/sched/src/process.rs` (`USER_STACK_TOP`), `crates/core/sysc
 
 ### 2. A virtual interrupt flag
 
-An interrupt reaches a server only as a notification its loop passes to `Env::deliver_irq`, between tasks. Module code is never interrupted by a Linux handler. "Interrupts disabled" is therefore the server's own state, and `lx/emul` keeps it:
+An interrupt reaches a server only as a notification its loop passes to `Env::deliver_irq`, between tasks. Module code is never interrupted by a Linux handler. "Interrupts disabled" is therefore the server's own state, and `crates/drivers/lx/emul` keeps it:
 
 - The imported `_raw_spin_lock_irqsave` family raises an atomic depth and returns a flags word, and the matching restore lowers the depth again. Inside that depth a sleeping call is refused and counted, as in any other atomic context. This covers all three ISAs.
 - The inline riscv64 sites are rewritten by the loader in `Module::load`, after the copy and before any relocation. This runs in ring 3, before `DOMAIN_MODULE_MAP_X`. The rewrites:
@@ -79,7 +79,7 @@ An interrupt reaches a server only as a notification its loop passes to `Env::de
 
 The digest covers the input bytes, and the rewrite is a fixed function of them, as relocation is. It gives a compromised server nothing it could not already do between `DOMAIN_MODULE_VERIFY` and `DOMAIN_MODULE_MAP_X`.
 
-Source: `lx/emul/src/sched.rs` (atomic context), `crates/core/lx-loader/src/lib.rs` (`Module::layout`, `Error`).
+Source: `crates/drivers/lx/emul/src/sched.rs` (atomic context), `crates/core/lx-loader/src/lib.rs` (`Module::layout`, `Error`).
 
 ### 3. Per-CPU state and `current`
 
@@ -89,7 +89,7 @@ A server runs all of its Linux code on one AzOS thread ([Threads in the server](
 - **aarch64.** The loader rewrites `mrs xN, SP_EL0` to `mrs xN, TPIDR_EL0`. `TPIDR_EL0` is writable at EL0. The server's task switch writes the current task's address there, and the server keeps no thread pointer of its own in `TPIDR_EL0` while Linux code runs. The kernel keeps `TPIDR_EL0` per task for every task (`switch_thread_pointer` in `crates/core/sched/src/fp.rs`): it is read back as a task leaves a hart and written as the next one arrives, and a new task starts with 0. So a server needs no mark of its own. `mrs xN, TPIDR_EL1` and `mrs xN, TPIDR_EL2` become `movz xN, #0`. Refusing them instead would refuse `ext4.ko`. Its 5 `TPIDR_EL1` reads are `__kern_my_cpu_offset`, and 0 is the exact offset of the server's one CPU. The 5 `TPIDR_EL2` reads are the VHE replacement tails left in `.text` after the alternatives table is stripped: unreachable, and given the same value. Kept as they are: hints, barriers, `brk` and `ldtr`/`sttr`, which run at EL0. Every other system-register access refuses the module. That includes `TPIDR_EL0` itself, which now holds `current`. Also refused: `msr` of a `PSTATE` field (`DAIFSet`, `PAN`), `sys`/`sysl`, `svc`/`hvc`/`smc`, and `eret`.
 - **riscv64.** `tp` is a general register, which the kernel preserves for every task (`crates/core/abi/src/syscall_nr.rs`: `sp`, `gp` and `tp` are kept across a syscall, and a trap saves every register). The server's task switch sets `tp` to the current task, `smp_processor_id()` reads 0 from the task's `thread_info`, and `__per_cpu_offset` is the server's one-entry array. Nothing is rewritten and nothing changes in the kernel.
 
-What the inline per-CPU code reads, in the module set as built: riscv64 `ext4.ko` forms a per-CPU address as the variable's address plus `__per_cpu_offset[cpu]`, with `cpu` loaded from `0x20(tp)`, and keeps the preemption count at `0x8(tp)`. aarch64 keeps the preemption count at `[SP_EL0, #8]`, which the loader turns into `TPIDR_EL0`. So on both, `current` must hold the address of a `task_struct` laid out as the pinned headers lay it out, with `thread_info` first, and only the glue can size one. `lx/emul` therefore carries `current` as an opaque word per task (`lx/emul/src/percpu.rs`, `CurrentOps`): the server creates the word when a task is created (kernel threads, the workqueue worker, irq threads), installs it before the loop switches into the task and installs the loop's own word when the switch comes back, and releases it when the task's slot is freed. Installing is per ISA, in the server: `mv tp` on riscv64, `msr TPIDR_EL0` on aarch64, a store to `const_current_task` on x86_64.
+What the inline per-CPU code reads, in the module set as built: riscv64 `ext4.ko` forms a per-CPU address as the variable's address plus `__per_cpu_offset[cpu]`, with `cpu` loaded from `0x20(tp)`, and keeps the preemption count at `0x8(tp)`. aarch64 keeps the preemption count at `[SP_EL0, #8]`, which the loader turns into `TPIDR_EL0`. So on both, `current` must hold the address of a `task_struct` laid out as the pinned headers lay it out, with `thread_info` first, and only the glue can size one. `crates/drivers/lx/emul` therefore carries `current` as an opaque word per task (`crates/drivers/lx/emul/src/percpu.rs`, `CurrentOps`): the server creates the word when a task is created (kernel threads, the workqueue worker, irq threads), installs it before the loop switches into the task and installs the loop's own word when the switch comes back, and releases it when the task's slot is freed. Installing is per ISA, in the server: `mv tp` on riscv64, `msr TPIDR_EL0` on aarch64, a store to `const_current_task` on x86_64.
 
 The rest is values, which the glue defines and the ext4 slice adds to `lxbase.c`:
 
@@ -103,7 +103,7 @@ The rest is values, which the glue defines and the ext4 slice adds to `lxbase.c`
 | x86_64 `this_cpu_off`, `cpu_number` | 0 |
 | x86_64 `__preempt_count`, `const_current_task` | the count, and the word the server installs |
 
-A module's own `.data..percpu` (8 bytes in `ext4.ko` on both ISAs) is laid out as data by the loader, and that copy is CPU 0's. The preemption count that matters to the layer's own checks is `lx/emul`'s: `Env::spin_lock` and the other spinlock calls raise it, as on Linux, so a sleep while a spinlock is held is refused and counted, and an item that returns with it raised is fixed up and counted. A block point is never reached with it raised, so one count serves every task.
+A module's own `.data..percpu` (8 bytes in `ext4.ko` on both ISAs) is laid out as data by the loader, and that copy is CPU 0's. The preemption count that matters to the layer's own checks is `crates/drivers/lx/emul`'s: `Env::spin_lock` and the other spinlock calls raise it, as on Linux, so a sleep while a spinlock is held is refused and counted, and an item that returns with it raised is fixed up and counted. A block point is never reached with it raised, so one count serves every task.
 
 #### What SMP would need
 
@@ -126,11 +126,11 @@ A server that runs Linux code on more than one thread has more than one CPU, and
 
 The ext4 slice does not need these: it runs on one thread. They are built with the first server that runs more than one. On aarch64 the per-task `TPIDR_EL0` already gives each thread its own `current`.
 
-Source: `kernel/src/entry/x86_64/trap.rs` (`IA32_KERNEL_GS_BASE` at the first entry and after a fork), `arch/x86_64/src/cpu/mod.rs` (`fs_base_to_load`), `crates/core/sched/src/fp.rs` (`TPIDR_EL0`), `lx/emul/src/switch/`.
+Source: `kernel/src/entry/x86_64/trap.rs` (`IA32_KERNEL_GS_BASE` at the first entry and after a fork), `arch/x86_64/src/cpu/mod.rs` (`fs_base_to_load`), `crates/core/sched/src/fp.rs` (`TPIDR_EL0`), `crates/drivers/lx/emul/src/switch/`.
 
 ### No GPL code in ring 0
 
-The kernel's part is the window (a flag and its checks) and, on aarch64, `TPIDR_EL0` kept per task (for every task), all in project code. The rewriter lives in `crates/core/lx-loader`, and the virtual interrupt flag and per-CPU symbols in `lx/emul` and `lxsrv`. All of it is project Rust under the project licence. Linux code stays in `lxbase.ko` and the Linux modules, mapped only in the server.
+The kernel's part is the window (a flag and its checks) and, on aarch64, `TPIDR_EL0` kept per task (for every task), all in project code. The rewriter lives in `crates/core/lx-loader`, and the virtual interrupt flag and per-CPU symbols in `crates/drivers/lx/emul` and `lxsrv`. All of it is project Rust under the project licence. Linux code stays in `lxbase.ko` and the Linux modules, mapped only in the server.
 
 Source: `tools/lint/lx_license_lint.py` (T1 to T5, A1).
 
@@ -139,16 +139,16 @@ Source: `tools/lint/lx_license_lint.py` (T1 to T5, A1).
 1. **lx-module-window** (kernel, three ISAs): the Kconfig window, the fixed no-replace flag on `SYS_MO_MAP` for a task that holds a live module token, the break kept out of the window by construction, the window check in `DOMAIN_MODULE_MAP_X`, and the loader's planner, which `lxsrv` uses. Host tests in `tests/host/syscall-tests` and `tests/host/lx-loader-tests`, each with a canary.
 2. **lx-insn-rewrite** (`crates/core/lx-loader`, ring 3): the riscv64 `sstatus` rewrites and the aarch64 `SP_EL0`/`TPIDR_EL1`/`TPIDR_EL2` rewrites, with a refusal for anything else privileged. Host tests in `tests/host/lx-loader-tests` over the built filesystem set: no privileged instruction is left, and the canary is a module with one other CSR.
 3. **lx-tpidr-el0**, then **arm-tpidr-all-tasks** (kernel, aarch64): `TPIDR_EL0` saved and restored per task for every task, not only for Linux-personality tasks (a native relibc task writes it too). Tested with ktests whose canary keeps only the Linux-personality slots.
-4. **lx-virtual-irq** (`lx/emul`): `request_irq`, `request_threaded_irq`, `free_irq`, `enable_irq` and `disable_irq` over the kernel's mask-until-ACK line, with thread functions on their own tasks. The `irqsave` family over the emulated interrupt flag, with sleeping inside it refused and counted, was already in `lx/emul/src/lock.rs`; the exported `_raw_spin_lock_irqsave` symbols are the ext4 slice's.
-5. **lx-percpu-single** (`lx/emul`): the preemption count and the spinlock calls that raise it, the CPU number, and `current` as a word per task, installed at each task switch through the server's `CurrentOps`. The `lxsrv` side (the per-ISA install, the glue values above) comes with the ext4 slice.
-6. **ext4-lx-slice** itself: the symbols `lx/FS_EXT4_UNRESOLVED` lists, over fronts 1 to 5.
+4. **lx-virtual-irq** (`crates/drivers/lx/emul`): `request_irq`, `request_threaded_irq`, `free_irq`, `enable_irq` and `disable_irq` over the kernel's mask-until-ACK line, with thread functions on their own tasks. The `irqsave` family over the emulated interrupt flag, with sleeping inside it refused and counted, was already in `crates/drivers/lx/emul/src/lock.rs`; the exported `_raw_spin_lock_irqsave` symbols are the ext4 slice's.
+5. **lx-percpu-single** (`crates/drivers/lx/emul`): the preemption count and the spinlock calls that raise it, the CPU number, and `current` as a word per task, installed at each task switch through the server's `CurrentOps`. The `lxsrv` side (the per-ISA install, the glue values above) comes with the ext4 slice.
+6. **ext4-lx-slice** itself: the symbols `crates/drivers/lx/FS_EXT4_UNRESOLVED` lists, over fronts 1 to 5.
 7. **Deferred until a multi-threaded server exists:** the x86_64 per-thread user GS base and the aarch64 per-thread `TPIDRRO_EL0`.
 
 ## Drawbacks
 
 - A fixed window gives module memory the same addresses on every boot. The server can pick a random offset inside the window from the entropy capability it already holds.
 - The rewriter is a second pass over module text, and it has to track every privileged encoding a new module brings. It refuses an unknown one by name instead of guessing, so a new module can need a rewriter change before it loads.
-- One thread per server serialises all of its Linux code, as `lx/emul` already does.
+- One thread per server serialises all of its Linux code, as `crates/drivers/lx/emul` already does.
 
 ## Rationale and alternatives
 
@@ -171,5 +171,5 @@ Source: `tools/lint/lx_license_lint.py` (T1 to T5, A1).
 
 ## Future possibilities
 
-- The usb and hid bus kinds in `tools/build/lx_device_table.py`, which turn the URB adapter's leaves into `lx/DEVICE_SOURCES` lines.
+- The usb and hid bus kinds in `tools/build/lx_device_table.py`, which turn the URB adapter's leaves into `crates/drivers/lx/DEVICE_SOURCES` lines.
 - Per-thread bases for multi-threaded servers, as listed under the next fronts.

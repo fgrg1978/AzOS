@@ -6,7 +6,7 @@
 //!
 //! A server runs all of its Linux code on one AzOS thread, so to Linux it
 //! is one CPU, number 0, whose per-CPU offset is 0
-//! ([lx-driver-slices.md](../../../Documentation/design/lx-driver-slices.md),
+//! ([lx-driver-slices.md](../../../../../Documentation/design/lx-driver-slices.md),
 //! "Per-CPU state and `current`"). Most of the per-CPU API is inline code
 //! in the modules (`this_cpu_*`, `per_cpu`, `get_cpu`, `put_cpu`), which
 //! works once three things are right: the per-CPU base reads 0, the CPU

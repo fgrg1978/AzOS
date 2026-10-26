@@ -37,8 +37,8 @@ BY_NAME = {"Makefile": LINE_HASH}
 
 # Trees that carry their own license (Linux sources, and our glue that includes
 # Linux headers, which is GPL-2.0-only): never stamped with the project header.
-# The rest of lx/ (lx/emul, our own Rust) takes the project header.
-SKIP_PREFIXES = ("third_party/", "lx/glue/")
+# The rest of crates/drivers/lx/ (crates/drivers/lx/emul, our own Rust) takes the project header.
+SKIP_PREFIXES = ("third_party/", "crates/drivers/lx/glue/")
 
 
 def asm_style(text):

@@ -5,7 +5,7 @@
 # Runs INSIDE the lx-kbuild container (tools/build/lx_kbuild/Containerfile), never
 # on the host; tools/build/lx_kbuild/run.sh starts it with --network=none and
 # these mounts: /src = the pinned Linux tree (read-only), /cfg = this
-# directory (read-only), /glue = lx/glue (read-only), /out = where the
+# directory (read-only), /glue = crates/drivers/lx/glue (read-only), /out = where the
 # results land (read-write).
 #
 #   kbuild-in.sh <arch> <SYMBOL>=<path/in/tree.ko> ...
@@ -28,7 +28,7 @@
 # n and builds i386 unless a fragment says otherwise), and the output
 # directory is already the ISA's name. Configures tinyconfig + common.config +
 # <arch>.config + each SYMBOL=m in a fresh O= directory inside the
-# container, runs modules_prepare, builds lx/glue as an external module
+# container, runs modules_prepare, builds crates/drivers/lx/glue as an external module
 # (lxbase.ko) and each upstream module as an in-tree single target: Linux's
 # own sources compiled by Linux's own Kbuild, the tree never written.
 set -eu
@@ -114,7 +114,7 @@ LIST
     exit 0
 fi
 mk modules_prepare
-# The base: lx/glue as an external module, built from a copy because
+# The base: crates/drivers/lx/glue as an external module, built from a copy because
 # Kbuild writes an external module's objects next to its sources.
 rm -rf "/work/glue-$arch"; cp -R /glue "/work/glue-$arch"
 # modpost's "undefined" and "vmlinux.o is missing" warnings are expected

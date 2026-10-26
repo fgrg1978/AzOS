@@ -24,7 +24,7 @@
 # serves no commit by id) and the tag must peel to the gitlink; one without
 # (relibc, a commit of `master`) is fetched by commit.
 #
-# Linux is sparse: only the directories the lx/ layer builds from or reads.
+# Linux is sparse: only the directories the crates/drivers/lx/ layer builds from or reads.
 #   * Three uapi netfilter header directories are excluded: Linux ships pairs
 #     of headers differing only in case (xt_CONNMARK.h / xt_connmark.h), which
 #     a case-insensitive macOS volume cannot hold, so a full checkout there is
@@ -58,18 +58,18 @@
 #     out, not what is fetched: the depth-1 fetch of the pinned commit brings
 #     every blob of it, so widening the set downloads nothing, and a tree
 #     fetched earlier only needs this script re-run.
-#     - ext4: the files that export what lx/FS_EXT4_UNRESOLVED lists and are
+#     - ext4: the files that export what crates/drivers/lx/FS_EXT4_UNRESOLVED lists and are
 #       not in a directory of the set already: 25 top-level files of fs/, four
 #       of fs/iomap, six of block/, init/main.c (system_state), init/version.c
 #       (init_uts_ns), drivers/char/random.c (get_random_*) and, for aarch64,
 #       drivers/clocksource/arm_arch_timer.c (arch_timer_read_counter). The
-#       slice decides which are compiled and which lx/emul re-implements.
+#       slice decides which are compiled and which crates/drivers/lx/emul re-implements.
 #     - the URB adapter: the HID core (hid-core, hid-input, hid-quirks,
 #       hid-generic and their two local headers), usbhid, the first two quirk
 #       leaves (hid-multitouch, hid-playstation), and the USB-core and
 #       input-core files whose exports they call, which the adapter
 #       re-implements over the native xHCI stack.
-#     - the sensor pilot: imx219 (lx/DEVICE_SOURCES) and the Makefiles that
+#     - the sensor pilot: imx219 (crates/drivers/lx/DEVICE_SOURCES) and the Makefiles that
 #       descend to it, v4l2-core and mc (the subdev, control, fwnode and CCI
 #       helpers it calls), and the I2C-core, regulator, clock and GPIO files
 #       whose exports it calls, which the server provides over its
