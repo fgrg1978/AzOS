@@ -40,7 +40,7 @@ use-robot = [
     "dep:azos_camera", "dep:azos_robot_drivers",
     "azos_recovery/use-robot", "azos_syscall/use-robot",
 ]
-# Wave 15 (config/domains/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
+# Wave 15 (config/subsys/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
 # domain default y, off = compiled out). `rc-input`: the RC receiver feeds the
 # safety path (link loss / kill switch latch the e-stop, the sticks drive
 # through L0 and the motor envelope) — kernel/src/tasks/rc_safety.rs and

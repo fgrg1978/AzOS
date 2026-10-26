@@ -683,7 +683,7 @@ config RT_BAND_CAP_PCT
       Surfaces as `azos_limits::RT_BAND_CAP_PCT`.
 
 # The safety comms timeouts (now in seconds) and PID_DT_MS are in the Robot
-# menu (config/domains/Kconfig.robot, "Safety layer and motor control"), wave 11.
+# menu (config/subsys/Kconfig.robot, "Safety layer and motor control"), wave 11.
 config SCHED_SWITCH_COUNTERS
     bool "Count each task's context switches (voluntary / preempted)"
     default n if HWCLASS_EMBEDDED

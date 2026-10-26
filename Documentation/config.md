@@ -21,8 +21,7 @@ generated and ignored by git.
 | `config/axes/` | The profile axes: the preset, the hardware class, structure, real-time class, security posture (with the mitigation switches it sets), virtualization role, build type, the application domain (`USE`), the Linux personality and the C library. |
 | `config/arch/` | The ISA choice, one file per ISA for its baseline level and extensions, and the board choice with its platform addresses. |
 | `config/kernel/` | The core kernel: scheduler, IPC and capabilities, synchronization, memory management, kernel tasks, energy and thermal, panic and crash dump, hardening, live patches, tracing and logging, the lock dependency checker, decision records, and AzOS-micro. |
-| `config/subsys/` | Subsystems and drivers: storage, file systems, network, RPC, network services, the signed topology, secure boot, entropy and TPM, the keystore, packages, drivers, USB, display and input, console and login, audio, OTA. |
-| `config/domains/` | Application domains, shown only for their `USE`: the robot domain and its brain link. |
+| `config/subsys/` | Subsystems and drivers: storage, file systems, network, RPC, network services, the signed topology, secure boot, entropy and TPM, the keystore, packages, drivers, USB, display and input, console and login, audio, OTA. The application domains too, shown only for their `USE`: the robot domain (`Kconfig.robot`) and its brain link (`Kconfig.brain`). |
 | `config/limits/` | The resource cap table: the integers that bound a static table, with defaults per hardware class. |
 | config/Kconfig.userspace | Generated at every parse by `tools/build/gen_userspace_kconfig.py` from the directories under `userspace/`; never committed. |
 | `config/fragments/`, `config/defconfigs/` | The defconfig matrix (below). |
@@ -39,8 +38,8 @@ The topic files, in menu order:
 | `config/axes/Kconfig.virt` | `VIRT` and the hypervisor core (`HV`) |
 | `config/axes/Kconfig.build` | `BUILD_TYPE` and the test machinery (ktest, canaries, chaos, census, boot bench) |
 | `config/axes/Kconfig.use` | `USE`, derived from the preset |
-| `config/domains/Kconfig.robot` | The robot domain: robot type, safety layer, RC input |
-| `config/domains/Kconfig.brain` | The brain link |
+| `config/subsys/Kconfig.robot` | The robot domain: robot type, safety layer, RC input |
+| `config/subsys/Kconfig.brain` | The brain link |
 | `config/arch/Kconfig.isa` | ISA choice, FP state format, page size |
 | `config/arch/Kconfig.isa-riscv64`, `-aarch64`, `-x86_64` | Each ISA's baseline level and extensions (n / probe / require) |
 | `config/arch/Kconfig.platform` | Board, SoC frameworks, platform addresses |
@@ -432,7 +431,7 @@ The index lists every declared option: 1274.
 | `AUDIO_MAX_STREAMS` | `config/subsys/Kconfig.audio` | Audio server: streams open at once |
 | `AUTORUN` | `config/kernel/Kconfig.tasks` | autorun: load and become CONFIG.INI's `autorun` image at boot |
 | `AUTORUN_MEM_PAGES` | `config/limits/Kconfig.limits` | Frame budget of the default topology's autorun row (pages) |
-| `B2_HOLD_MIN_MS` | `config/domains/Kconfig.robot` | Minimum hold of a device after the kernel drove it to its safe state (ms) |
+| `B2_HOLD_MIN_MS` | `config/subsys/Kconfig.robot` | Minimum hold of a device after the kernel drove it to its safe state (ms) |
 | `BENCH_MINIMAL` | `config/axes/Kconfig.build` | Benchmark kernel: boot only the idle and autorun tasks (vsbench) |
 | `BLK_DISCARD_BATCHED` | `config/subsys/Kconfig.storage` | batched: gather what one flush frees, adjacent runs merged, and discard it together |
 | `BLK_DISCARD_OFF` | `config/subsys/Kconfig.storage` | off: never discard |
@@ -453,13 +452,13 @@ The index lists every declared option: 1274.
 | `BOOT_BENCH_PRIORITY` | `config/axes/Kconfig.build` | Boot [BENCH-RES] sweep: task priority |
 | `BOOT_INI_MAX_KB` | `config/subsys/Kconfig.topology` | Largest CONFIG.INI the boot reads (KiB) |
 | `BOOT_SELFTESTS` | `config/axes/Kconfig.build` | Boot self-tests: start the demo, stress and probe work at boot |
-| `BRAIN_NET_WAIT_POLL_MS` | `config/domains/Kconfig.brain` | Brain link: network wait poll period (ms) |
-| `BRAIN_SEND_BUDGET_US` | `config/domains/Kconfig.brain` | Brain link: longest blocking send (us) |
-| `BRAIN_TX_CONTROL_RESERVE_BYTES` | `config/domains/Kconfig.brain` | Brain link: queue bytes only control messages may use |
-| `BRAIN_TX_IDLE_PARK_MS` | `config/domains/Kconfig.brain` | Brain link: brain-tx park with an empty queue (ms) |
-| `BRAIN_TX_PRIORITY` | `config/domains/Kconfig.brain` | Brain link: priority of the brain-tx sender task |
-| `BRAIN_TX_QUEUE_BYTES` | `config/domains/Kconfig.brain` | Brain link: control-socket transmit queue (bytes) |
-| `BRAIN_TX_STALL_MS` | `config/domains/Kconfig.brain` | Brain link: end the session after the socket takes nothing (ms) |
+| `BRAIN_NET_WAIT_POLL_MS` | `config/subsys/Kconfig.brain` | Brain link: network wait poll period (ms) |
+| `BRAIN_SEND_BUDGET_US` | `config/subsys/Kconfig.brain` | Brain link: longest blocking send (us) |
+| `BRAIN_TX_CONTROL_RESERVE_BYTES` | `config/subsys/Kconfig.brain` | Brain link: queue bytes only control messages may use |
+| `BRAIN_TX_IDLE_PARK_MS` | `config/subsys/Kconfig.brain` | Brain link: brain-tx park with an empty queue (ms) |
+| `BRAIN_TX_PRIORITY` | `config/subsys/Kconfig.brain` | Brain link: priority of the brain-tx sender task |
+| `BRAIN_TX_QUEUE_BYTES` | `config/subsys/Kconfig.brain` | Brain link: control-socket transmit queue (bytes) |
+| `BRAIN_TX_STALL_MS` | `config/subsys/Kconfig.brain` | Brain link: end the session after the socket takes nothing (ms) |
 | `BUILD_TYPE_CERTIFIABLE` | `config/axes/Kconfig.build` | Certifiable: release, with secure boot and signed OTA forced on |
 | `BUILD_TYPE_DEV` | `config/axes/Kconfig.build` | Development: test machinery and the TEST key allowed |
 | `BUILD_TYPE_RELEASE` | `config/axes/Kconfig.build` | Release: test machinery forced off, TEST key refused |
@@ -588,8 +587,8 @@ The index lists every declared option: 1274.
 | `E1000E_LINK_WAIT_MS` | `config/subsys/Kconfig.drivers` | e1000e: milliseconds to wait for link at bring-up (0 = do not wait) |
 | `E1000E_RX_DESCS` | `config/limits/Kconfig.limits` | e1000e receive ring entries (a multiple of 8) |
 | `E1000E_TX_DESCS` | `config/limits/Kconfig.limits` | e1000e transmit ring entries (a multiple of 8) |
-| `EFFECT_WATCH_SLOTS` | `config/domains/Kconfig.robot` | In-flight effects the deadline watch holds |
-| `EFFECT_WRITE_AHEAD` | `config/domains/Kconfig.robot` | Write-ahead receipts: record a ring-3 motor op before it reaches the wheel |
+| `EFFECT_WATCH_SLOTS` | `config/subsys/Kconfig.robot` | In-flight effects the deadline watch holds |
+| `EFFECT_WRITE_AHEAD` | `config/subsys/Kconfig.robot` | Write-ahead receipts: record a ring-3 motor op before it reaches the wheel |
 | `ELF_REFUSE_EXEC_HEADERS` | `config/axes/Kconfig.security` | ELF loader: refuse an executable segment that maps the ELF headers |
 | `ENERGY` | `config/kernel/Kconfig.energy` | Energy-aware scheduling: utilisation tracking and the energy model |
 | `ENERGY_APPLY_DEADLINE_MS` | `config/kernel/Kconfig.sched` | Governor: longest wait for a choice to reach the clock (ms) |
@@ -647,9 +646,9 @@ The index lists every declared option: 1274.
 | `FUTEX_REQUEUE` | `config/kernel/Kconfig.sync` | FUTEX_REQUEUE and FUTEX_CMP_REQUEUE |
 | `FUTEX_SHARED` | `config/kernel/Kconfig.sync` | Linux shared futexes on shm words keyed by (region, offset) |
 | `FUTEX_SHARED_BUCKETS` | `config/limits/Kconfig.limits` | Futex hash buckets for shared keys (shm words, notify) |
-| `GEOFENCE` | `config/domains/Kconfig.robot` | On-board geofence armed at the home fix |
-| `GEOFENCE_MIN_SATELLITES` | `config/domains/Kconfig.robot` | Geofence: minimum satellites for a trusted fix |
-| `GEOFENCE_RADIUS_M` | `config/domains/Kconfig.robot` | Geofence radius (m) |
+| `GEOFENCE` | `config/subsys/Kconfig.robot` | On-board geofence armed at the home fix |
+| `GEOFENCE_MIN_SATELLITES` | `config/subsys/Kconfig.robot` | Geofence: minimum satellites for a trusted fix |
+| `GEOFENCE_RADIUS_M` | `config/subsys/Kconfig.robot` | Geofence radius (m) |
 | `HAS_RVV` | `config/arch/Kconfig.isa-riscv64` | (no prompt — internal/derived) |
 | `HDMI_HEIGHT` | `config/arch/Kconfig.platform` | HDMI framebuffer height (pixels) |
 | `HDMI_WIDTH` | `config/arch/Kconfig.platform` | HDMI framebuffer width (pixels) |
@@ -875,7 +874,7 @@ The index lists every declared option: 1274.
 | `MICRO_TIMESLICE_TICKS` | `config/kernel/Kconfig.micro` | Round-robin slice (ticks) |
 | `MICRO_UART_BASE` | `config/kernel/Kconfig.micro` | Console UART (16550) base |
 | `MITIGATION_SPECTRE_V1_INDEX` | `config/axes/Kconfig.security` | Spectre v1: mask table indices that come from ring 3 |
-| `ML_REPLY_TIMEOUT_US` | `config/domains/Kconfig.robot` | Behavior loop: inference service reply timeout (us) |
+| `ML_REPLY_TIMEOUT_US` | `config/subsys/Kconfig.robot` | Behavior loop: inference service reply timeout (us) |
 | `MM_AGING_CHUNKS` | `config/limits/Kconfig.limits` | Page-age table: chunks of 64 pages the reclaimer tracks |
 | `MM_AGING_INTERVAL_MS` | `config/kernel/Kconfig.mm` | Page-age pass interval per Domain (ms) |
 | `MM_COMPRESS_ALGO_WKDM` | `config/kernel/Kconfig.mm` | wkdm |
@@ -906,7 +905,7 @@ The index lists every declared option: 1274.
 | `MM_ZPOOL_MAX_RATIO_PCT` | `config/kernel/Kconfig.mm` | Largest compressed size worth storing (% of a page) |
 | `MM_ZPOOL_SEGMENTS` | `config/limits/Kconfig.limits` | Compressed-pool segments (ceiling on its memory) |
 | `MM_ZPOOL_SEGMENT_PAGES` | `config/limits/Kconfig.limits` | Frames per compressed-pool segment |
-| `MOTOR_COMMANDER_EXIT_STOP` | `config/domains/Kconfig.robot` | A dead motor commander's wheels go to a safe stop |
+| `MOTOR_COMMANDER_EXIT_STOP` | `config/subsys/Kconfig.robot` | A dead motor commander's wheels go to a safe stop |
 | `NAMES_LEND_TTL_MS` | `config/kernel/Kconfig.ipc` | Lifetime of a capability the name server lends (ms, 0 = the server's own) |
 | `NAT_ICMP_TIMEOUT_S` | `config/subsys/Kconfig.net` | NAT: idle timeout of an ICMP echo mapping (s) |
 | `NAT_PORT_MAX` | `config/subsys/Kconfig.net` | NAT: highest translated port |
@@ -958,7 +957,7 @@ The index lists every declared option: 1274.
 | `PANIC_STOP_WAIT_US` | `config/kernel/Kconfig.panic` | Panic: how long to wait for the other CPUs to park (us) |
 | `PCI_MAX_FUNCTIONS` | `config/subsys/Kconfig.drivers` | Most PCI functions the boot enumeration keeps |
 | `PCI_SOC_HOST` | `config/subsys/Kconfig.drivers` | SoC PCIe host controllers: JH7110 (PLDA) and BCM2712 (brcmstb) |
-| `PID_DT_MS` | `config/domains/Kconfig.robot` | Motor PID loop delta-T (ms) |
+| `PID_DT_MS` | `config/subsys/Kconfig.robot` | Motor PID loop delta-T (ms) |
 | `PI_MAX_DEPTH` | `config/limits/Kconfig.limits` | Longest ownership chain a priority-inheritance walk follows |
 | `PI_TRACE_DEPTH` | `config/limits/Kconfig.limits` | Mutex trace: nesting levels recorded per task (diagnostics) |
 | `PKG_FETCH_TFTP` | `config/subsys/Kconfig.packages` | Installer may fetch a package from a TFTP server (development builds) |
@@ -1015,28 +1014,28 @@ The index lists every declared option: 1274.
 | `RCU_NOCBS_CPUS` | `config/kernel/Kconfig.sync` | RCU: CPUs that never run RCU callbacks (the RT CPUs, a mask) |
 | `RCU_QSBR` | `config/kernel/Kconfig.sync` | Read-copy-update, quiescent-state based (QSBR) |
 | `RCU_STALL_TIMEOUT_MS` | `config/kernel/Kconfig.sync` | RCU: a grace period older than this is a stall (ms) |
-| `RC_DRIVE_CHANNEL` | `config/domains/Kconfig.robot` | RC channel of the drive (forward/back) stick (1-16) |
-| `RC_FAILSAFE_ESTOP` | `config/domains/Kconfig.robot` | RC link loss latches the e-stop |
-| `RC_INPUT` | `config/domains/Kconfig.robot` | RC receiver feeds the safety path |
-| `RC_KILL_CHANNEL` | `config/domains/Kconfig.robot` | RC channel of the kill switch (1-16, 0 = none) |
-| `RC_LINK_TIMEOUT_MS` | `config/domains/Kconfig.robot` | RC link timeout (ms) |
-| `RC_MODE_CHANNEL` | `config/domains/Kconfig.robot` | RC channel of the manual-override switch (1-16, 0 = none) |
-| `RC_STEER_CHANNEL` | `config/domains/Kconfig.robot` | RC channel of the steering stick (1-16) |
-| `RC_STICK_DEADBAND_US` | `config/domains/Kconfig.robot` | RC stick deadband (us) |
-| `RC_STICK_FULL_SCALE_PCT` | `config/domains/Kconfig.robot` | RC stick full-deflection speed (percent) |
-| `RC_SWITCH_HIGH_US` | `config/domains/Kconfig.robot` | RC switch threshold (us) |
+| `RC_DRIVE_CHANNEL` | `config/subsys/Kconfig.robot` | RC channel of the drive (forward/back) stick (1-16) |
+| `RC_FAILSAFE_ESTOP` | `config/subsys/Kconfig.robot` | RC link loss latches the e-stop |
+| `RC_INPUT` | `config/subsys/Kconfig.robot` | RC receiver feeds the safety path |
+| `RC_KILL_CHANNEL` | `config/subsys/Kconfig.robot` | RC channel of the kill switch (1-16, 0 = none) |
+| `RC_LINK_TIMEOUT_MS` | `config/subsys/Kconfig.robot` | RC link timeout (ms) |
+| `RC_MODE_CHANNEL` | `config/subsys/Kconfig.robot` | RC channel of the manual-override switch (1-16, 0 = none) |
+| `RC_STEER_CHANNEL` | `config/subsys/Kconfig.robot` | RC channel of the steering stick (1-16) |
+| `RC_STICK_DEADBAND_US` | `config/subsys/Kconfig.robot` | RC stick deadband (us) |
+| `RC_STICK_FULL_SCALE_PCT` | `config/subsys/Kconfig.robot` | RC stick full-deflection speed (percent) |
+| `RC_SWITCH_HIGH_US` | `config/subsys/Kconfig.robot` | RC switch threshold (us) |
 | `RECOVERY_CONSOLE` | `config/subsys/Kconfig.console` | Recovery console: a kernel console task for when ring 3 cannot start |
 | `RELIBC` | `config/axes/Kconfig.libc` | relibc: libc.a and the test C programs (make relibc) |
 | `RING3_MEM_PAGES_DEFAULT` | `config/limits/Kconfig.limits` | Frame budget of a ring-3 topology row that declares none (pages) |
 | `RISCV64_LEVEL_RV64GC` | `config/arch/Kconfig.isa-riscv64` | rv64gc (+ F, D, Zicsr, Zifencei: JH7110 / VisionFive 2) |
 | `RISCV64_LEVEL_RV64GCV` | `config/arch/Kconfig.isa-riscv64` | rv64gcv (+ V 1.0: SpacemiT K1 / X60) |
 | `RISCV64_LEVEL_RV64IMAC` | `config/arch/Kconfig.isa-riscv64` | rv64imac (QEMU virt, any RV64 with atomics and C) |
-| `ROBOT_ACKERMANN` | `config/domains/Kconfig.robot` | Ackermann (car-like, 2-channel: throttle + steering) |
-| `ROBOT_DRONE` | `config/domains/Kconfig.robot` | Drone (4-channel quadrotor PWM) |
-| `ROBOT_HUMANOID` | `config/domains/Kconfig.robot` | Humanoid (N-channel joint angles) |
-| `ROBOT_NONE` | `config/domains/Kconfig.robot` | None (no platform chosen at build time) |
-| `ROBOT_TYPE_ID` | `config/domains/Kconfig.robot` | (no prompt — internal/derived) |
-| `ROBOT_WHEELED` | `config/domains/Kconfig.robot` | Wheeled (2-channel differential drive) |
+| `ROBOT_ACKERMANN` | `config/subsys/Kconfig.robot` | Ackermann (car-like, 2-channel: throttle + steering) |
+| `ROBOT_DRONE` | `config/subsys/Kconfig.robot` | Drone (4-channel quadrotor PWM) |
+| `ROBOT_HUMANOID` | `config/subsys/Kconfig.robot` | Humanoid (N-channel joint angles) |
+| `ROBOT_NONE` | `config/subsys/Kconfig.robot` | None (no platform chosen at build time) |
+| `ROBOT_TYPE_ID` | `config/subsys/Kconfig.robot` | (no prompt — internal/derived) |
+| `ROBOT_WHEELED` | `config/subsys/Kconfig.robot` | Wheeled (2-channel differential drive) |
 | `RPC_DEDUPE_WINDOW` | `config/subsys/Kconfig.rpc` | Calls per session the far node remembers the answer of |
 | `RPC_MISS_LIMIT` | `config/subsys/Kconfig.rpc` | Unanswered probes or calls in a row that break a session |
 | `RPC_NODE_ID` | `config/subsys/Kconfig.rpc` | This node's id on the RPC links |
@@ -1128,8 +1127,8 @@ The index lists every declared option: 1274.
 | `RV_ZKR_NEVER` | `config/arch/Kconfig.isa-riscv64` | n: never use it |
 | `RV_ZKR_PROBE` | `config/arch/Kconfig.isa-riscv64` | probe: use it when the boot finds it, fall back otherwise |
 | `RV_ZKR_REQUIRE` | `config/arch/Kconfig.isa-riscv64` | require: baseline; refuse to boot without it |
-| `SAFETY_COMMS_TIMEOUT_S` | `config/domains/Kconfig.robot` | Safety comms timeout (seconds) |
-| `SAFETY_DRONE_COMMS_TIMEOUT_S` | `config/domains/Kconfig.robot` | Drone comms timeout (seconds) |
+| `SAFETY_COMMS_TIMEOUT_S` | `config/subsys/Kconfig.robot` | Safety comms timeout (seconds) |
+| `SAFETY_DRONE_COMMS_TIMEOUT_S` | `config/subsys/Kconfig.robot` | Drone comms timeout (seconds) |
 | `SCHED_BALANCE` | `config/kernel/Kconfig.sched` | Fair class: balance load between CPUs |
 | `SCHED_BALANCE_INTERVAL_MS` | `config/kernel/Kconfig.sched` | Load balancing: push interval (ms) |
 | `SCHED_BALANCE_MOVES` | `config/kernel/Kconfig.sched` | Load balancing: moves per pass |

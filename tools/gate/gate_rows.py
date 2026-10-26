@@ -475,7 +475,7 @@ def check_manifest():
 CARGO_TOML = os.path.join(ROOT, "kernel", "Cargo.toml")
 # A row that depends on the robot domain (its deps name these): the gate runs
 # it on the robot cell, so its kernel features must close over `use-robot`.
-ROBOT_DEPS = ("crates/domains/robot/", "crates/drivers/rc-esc/", "crates/lib/control/", "config/domains/Kconfig.robot", "config/domains/Kconfig.brain")
+ROBOT_DEPS = ("crates/domains/robot/", "crates/drivers/rc-esc/", "crates/lib/control/", "config/subsys/Kconfig.robot", "config/subsys/Kconfig.brain")
 
 
 def cargo_features(path):

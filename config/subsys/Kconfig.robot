@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# config/domains/Kconfig.robot — Robot domain: robot type, safety layer, RC input
+# config/subsys/Kconfig.robot — Robot domain: robot type, safety layer, RC input
 #
 # Shown only for USE_ROBOT (config/axes/Kconfig.use; set by PRESET_ROBOT).
 # config/Kconfig hides the Robot menu

@@ -41,7 +41,7 @@ pub const PID_OUTPUT_MAX: i32 = 100;
 
 /// PID loop period in milliseconds (expected call rate of `motor_pid_tick`).
 pub const PID_DT_MS: u32 = azos_limits::PID_DT_MS as u32;
-// Kconfig range 1..=1000 (config/domains/Kconfig.robot); checked again here because a
+// Kconfig range 1..=1000 (config/subsys/Kconfig.robot); checked again here because a
 // zero would reach the divisions in `motor_pid_tick`'s fallback path.
 const _: () = assert!(PID_DT_MS >= 1 && PID_DT_MS <= 1000, "PID_DT_MS out of 1..=1000");
 

@@ -122,7 +122,7 @@ Source: `crates/core/actuation/src/effect_gate.rs` (`Effect`, `Class`,
 `verify_operator_release`), `crates/core/actuation/src/hooks.rs`,
 `crates/core/syscall/src/motor_host.rs`, `crates/core/syscall/src/ioring_ops.rs`
 (`motor_wheel`), `crates/drivers/soc/src/effect.rs`,
-`config/domains/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).
+`config/subsys/Kconfig.robot` (`EFFECT_WRITE_AHEAD`).
 
 ## Write-ahead receipts and the safety reserve
 
@@ -275,7 +275,7 @@ Source: `crates/core/actuation/src/safe_state.rs` (`arm`, `cancel`,
 `complete`, `sweep`, `register`, `held`, `release`, `release_from_frame`,
 `ReleaseError`, `compensate`, `HOLD_RELEASE_BODY_BYTES`, `CAUSE_*`, `COMP_*`),
 `crates/core/actuation/src/effect_gate.rs` (`Timing`), `crates/core/actuation/src/sys_wdt.rs`,
-`config/domains/Kconfig.robot` (`EFFECT_WATCH_SLOTS`, `B2_HOLD_MIN_MS`).
+`config/subsys/Kconfig.robot` (`EFFECT_WATCH_SLOTS`, `B2_HOLD_MIN_MS`).
 
 ## Receipt-conditioned warrants
 

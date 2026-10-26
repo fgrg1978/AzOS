@@ -827,7 +827,7 @@ fn run_validations(cfg: &ConfigMap) {
                     (0 wheeled, 1 drone, 2 humanoid, 3 ackermann).");
         }
     }
-    // Wave 15 (config/domains/Kconfig.robot, RC input): a switch that shares a
+    // Wave 15 (config/subsys/Kconfig.robot, RC input): a switch that shares a
     // channel with a stick, or the kill switch on the mode switch, turns an
     // ordinary stick movement into a stop or a hand-over. Refused, not
     // guessed at. Channel 0 is "none".

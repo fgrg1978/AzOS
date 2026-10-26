@@ -809,7 +809,7 @@ Options and choices: 876. Defconfigs: 21.
 | `HV_EXAMPLE_GUEST` | Declare an example guest in the built-in topology | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | y | n | n | n | n |
 | `HV_REQUIRE` | Refuse to boot when the CPU cannot host the guests | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 
-## config/domains/Kconfig.robot
+## config/subsys/Kconfig.robot
 
 ### Robot
 

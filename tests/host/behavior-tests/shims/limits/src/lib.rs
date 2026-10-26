@@ -16,7 +16,7 @@ pub const ROBOT_TYPE_ID: usize = 0;
 pub const SAFETY_COMMS_TIMEOUT_S: usize = 5;
 pub const SAFETY_DRONE_COMMS_TIMEOUT_S: usize = 3;
 
-/// Wave 15 (config/domains/Kconfig.robot, "RC input and geofence"), at their defaults.
+/// Wave 15 (config/subsys/Kconfig.robot, "RC input and geofence"), at their defaults.
 pub const RC_INPUT: bool = true;
 pub const RC_FAILSAFE_ESTOP: bool = true;
 pub const RC_LINK_TIMEOUT_MS: u64 = 500;

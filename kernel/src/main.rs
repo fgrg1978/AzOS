@@ -64,7 +64,7 @@ const _: () = assert!(
      `use-robot` feature: build with $(python3 tools/build/kconfig_to_cargo.py <config>)",
 );
 // Wave 15: the same rule for the two robot subsystems the .config can turn
-// off (config/domains/Kconfig.robot RC_INPUT, GEOFENCE). On means compiled in.
+// off (config/subsys/Kconfig.robot RC_INPUT, GEOFENCE). On means compiled in.
 const _: () = assert!(
     !azos_limits::RC_INPUT || cfg!(feature = "rc-input"),
     "the .config selects RC_INPUT but the kernel was built without the `rc-input` feature",

@@ -111,7 +111,7 @@ sensor / status packet -> sealed record (encrypted session)
   `BRAIN_TX_CONTROL_RESERVE_BYTES` stay free, and a refused telemetry frame is
   dropped before it is sealed and counted. This matters because a sealed record
   cannot be dropped or reordered once its counter is spent. Sizes are
-  `BRAIN_TX_QUEUE_BYTES` and `BRAIN_TX_PRIORITY` in `config/domains/Kconfig.brain`.
+  `BRAIN_TX_QUEUE_BYTES` and `BRAIN_TX_PRIORITY` in `config/subsys/Kconfig.brain`.
 
 ## No scheduling policy between streams
 

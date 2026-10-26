@@ -24852,7 +24852,7 @@ par_row lx_module_row "lx: hwcap canary, Zbc bit cleared (rv)"    rv  "qemu,CONF
 #
 # Owner decision: the RC receiver and the geofence were inert (no byte source
 # fed the SBUS decoder, nothing called `geofence_set` on a normal boot). Both
-# are now Kconfig subsystems (config/domains/Kconfig.robot RC_INPUT / GEOFENCE, robot
+# are now Kconfig subsystems (config/subsys/Kconfig.robot RC_INPUT / GEOFENCE, robot
 # default y, kernel features `rc-input` / `geofence`), and these rows prove
 # one property per boot (kernel/src/smokes/rc_fence.rs; a latched e-stop would
 # mask the next one). The receiver and the GPS are board-blocked, so the test
