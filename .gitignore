@@ -32,6 +32,10 @@ __pycache__/
 
 # Agent / AI editor instructions
 AGENTS.md
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.mcp.json
 
 # Other agentic-IDE workspace metadata
 .antigravitycli/
