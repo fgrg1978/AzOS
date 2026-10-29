@@ -16,7 +16,7 @@ panic = "abort"
 # Prevents Cargo from merging this crate into the workspace above. The root
 # manifest already excludes it, but that exclusion is relative to the root, so
 # it does not hold when the checkout is nested inside another workspace (a git
-# worktree under .claude/worktrees). Same belt-and-braces shape as
+# worktree nested inside another checkout). Same belt-and-braces shape as
 # tests/host/cam-ring-tests.
 [workspace]
 

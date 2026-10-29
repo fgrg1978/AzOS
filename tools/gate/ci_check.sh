@@ -2634,7 +2634,7 @@ sys_nr_tmp="$(mktemp)"
                 printf '%s:%s\n' "$f" "$hitline"
             fi
         done < <(grep -nE '^[[:space:]]*(pub[[:space:]]+)?(const|static)[[:space:]]+SYS_[A-Za-z0-9_]+[[:space:]]*:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*(0x)?[0-9]' "$f" 2>/dev/null)
-    done < <(find . \( -name .git -o -name .claude -o -name .codex -o -name target -o -name build -o -name 'target 2' -o -name 'build 2' \) -prune -o -type f -name '*.rs' -print0)
+    done < <(find . \( -path './.*' -o -name target -o -name build -o -name 'target 2' -o -name 'build 2' \) -prune -o -type f -name '*.rs' -print0)
     if [ "$scanned" -lt 100 ]; then
         echo "SCAN_BROKEN:$scanned"
     fi
@@ -2649,8 +2649,8 @@ elif grep -q '^SCAN_BROKEN:' "$sys_nr_tmp"; then
     bad
     n="$(sed -n 's/^SCAN_BROKEN://p' "$sys_nr_tmp")"
     echo "      scanned only $n .rs files — the exclusion filters likely ate"
-    echo "      the tree (expect several hundred outside .git/"
-    echo "      .claude/.codex). A check that scans nothing"
+    echo "      the tree (expect several hundred outside the"
+    echo "      hidden top-level dirs). A check that scans nothing"
     echo "      reports ok for the wrong reason."
 elif [ -s "$sys_nr_tmp" ]; then
     bad

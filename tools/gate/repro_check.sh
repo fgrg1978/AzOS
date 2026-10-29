@@ -297,7 +297,7 @@ build_asm_artifact() {
 copy_source_tree() {
     local dst="$1"
     local -a cmd=(rsync -a
-        --exclude '/.git' --exclude '/.claude' --exclude '/.codex'
+        --include '/.cargo/' --include '/.gitignore' --include '/.gitmodules' --exclude '/.*'
         --exclude '/tools/keys/*priv*'
         "$REPO_ROOT/" "$dst/")
     if [[ "$DRY_RUN" -eq 1 ]]; then

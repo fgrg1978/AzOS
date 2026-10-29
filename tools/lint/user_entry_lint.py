@@ -40,7 +40,7 @@ SPEC_DIR = os.path.join("sdk", "targets")
 SPECS = ("riscv64imac-unknown-azos.json", "aarch64-unknown-azos.json", "x86_64-unknown-azos.json")
 # Not walked: build output, the vendored crates (their own `.cargo-checksum.json`
 # and configs), version control, agent worktrees.
-SKIP_DIRS = {"target", ".git", "third_party", "node_modules", ".claude", ".codex"}
+SKIP_DIRS = {"target", "third_party", "node_modules"}
 ENDBR64 = b"\xf3\x0f\x1e\xfa"
 # xor ebp, ebp; and rsp, -16
 REALIGN = b"\x31\xed\x48\x83\xe4\xf0"
@@ -60,7 +60,7 @@ def source_findings(root):
     """[(path, what is wrong)] in the tree at `root`."""
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith("target-")]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(("target-", "."))]
         rel = os.path.relpath(dirpath, root)
         in_user = rel == "userspace" or rel.startswith("userspace" + os.sep)
         for n in filenames:
