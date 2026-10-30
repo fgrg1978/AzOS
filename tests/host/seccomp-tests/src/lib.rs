@@ -3431,10 +3431,10 @@ mod image_profiles {
         assert_eq!(sdk_recipes, 3 + 3, "expected 3 WHY.ELF and 3 sdktest $(SDK_BUILD_<isa>) recipes");
         const SDK_CARGO: &str = include_str!("../../../../tools/build/sdk_cargo.py");
         assert!(
-            SDK_CARGO.contains(r#"env["RUSTC_WRAPPER"] = wrapper"#)
-                && SDK_CARGO.contains(r#"wrapper = os.path.join(ROOT, "userspace", "rustc_stable_metadata.py")"#)
-                && SDK_CARGO.contains(r#"flags = ["--cfg=azos_stable_metadata_" + tag,"#)
-                && SDK_CARGO.contains("hashlib.sha256(f.read()).hexdigest()[:12]"),
+            SDK_CARGO.contains(r#"env["RUSTC_WRAPPER"] = WRAPPER"#)
+                && SDK_CARGO.contains(r#"WRAPPER = os.path.join(ROOT, "userspace", "rustc_stable_metadata.py")"#)
+                && SDK_CARGO.contains(r#"flags = ["--cfg=azos_stable_metadata_" + wrapper_tag()]"#)
+                && SDK_CARGO.contains("file_digest(WRAPPER)[:12]"),
             "tools/build/sdk_cargo.py no longer builds through the metadata wrapper with its digest as the cfg",
         );
 

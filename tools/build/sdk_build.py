@@ -20,7 +20,8 @@ import shutil
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+import azos_tools  # noqa: E402,F401
 import sdk_cargo  # noqa: E402
 
 ROOT = sdk_cargo.ROOT

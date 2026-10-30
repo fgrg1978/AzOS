@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Vendoring probe: links rustls (the rustls-rustcrypto provider, no aws-lc-rs, no ring) and quinn-proto (no crypto feature) into a std program for *-unknown-azos on the three ISAs, so a toolchain, std port or vendor bump that breaks either shows up in `make sdk`; the same code runs a loopback TLS handshake under `vendor.py test` on the host. Excluded from workspace; built standalone through tools/build/sdk_cargo.py --vendored."
+description = "Vendoring probe: links rustls (the rustls-rustcrypto provider, no aws-lc-rs, no ring) and quinn-proto (no crypto feature) into a std program for *-unknown-azos on the three ISAs, so a toolchain, std port or vendor bump that breaks either shows up in `make build` (Kconfig SDK_TEST_PROGRAMS); the same code runs a loopback TLS handshake under `vendor.py test` on the host. Excluded from workspace; built standalone through tools/build/sdk_cargo.py --vendored."
 
 [lib]
 name = "tls_probe"
