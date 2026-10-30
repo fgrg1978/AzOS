@@ -41,8 +41,14 @@ CLASSES = (
 # is the virtio/NVMe/AHCI driver telling that the HOST stalled the guest (an
 # info line that counts host load); lockdep's summary and hold table are
 # reports of a clean run, and a hold over the limit is a note, not a violation.
+# A TAP failure's reason is the test's verdict, which the row judges by name; a
+# canary's name on its arming lines is not lockdep speaking.
 NOT_WARNINGS = (
     ("did-not-run", r"\] guest did not run for \d+ ms"),
+    ("did-not-run", r"^not ok \d+ - "),
+    ("lockdep", r"^not ok \d+ - "),
+    ("lockdep", r"^\[CANARY\] armed: "),
+    ("lockdep", r"^\[CMDLINE\] canary="),
     ("lockdep", r"# lockdep: violations=0 "),
     ("lockdep", r"# lockdep: hold "),
     ("lockdep", r"lockdep: .*\(note[,)]"),
@@ -178,6 +184,10 @@ def self_test():
     expect("lockdep violation outside a test", cls("lockdep: sleep or device wait under a SpinLock (block I/O); SpinLock a.rs:1"), ["lockdep"])
     expect("lockdep violation", cls("# lockdep: lock order inversion; SpinLock a.rs:1"), ["lockdep"])
     expect("lockdep summary with violations", cls("# lockdep: violations=2 notes=0"), ["lockdep"])
+    expect("a test's reason is its verdict", cls("not ok 44 - fat_claim # the claim owner did not run at its waiter's priority"), [])
+    expect("a test's lockdep reason", cls("not ok 93 - hold_bounded # lockdep violation (the `# lockdep:` line above)"), [])
+    expect("a canary's name when armed", cls("[CANARY] armed: lockdep-hold (this boot breaks its property on purpose)"), [])
+    expect("a canary's name on the command line", cls("[CMDLINE] canary=lockdep-hold"), [])
     expect("ordinary line", cls("[BOOT] Starting scheduler on boot CPU"), [])
     expect("no substring match on 'warning' words in lower case", cls("[NET] warning-free link"), [])
 
