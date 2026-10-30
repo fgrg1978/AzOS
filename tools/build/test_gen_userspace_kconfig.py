@@ -10,17 +10,24 @@ of the Kconfig tree and of the program metadata under userspace/:
      (HWCLASS_EMBEDDED) builds only the images its topology starts (DECISD
      with the decision records) and the ones its config names;
   2. a program directory added under userspace/ appears in the menu
-     (default n), and may be chosen as the console program;
+     (default n); it is a console program only if its metadata says
+     `console = "<expr>"`, and then only where the expression holds;
+     naming any other image as the console program is dropped with a warning;
   3. deleted again: olddefconfig drops its symbols, the console program
      falls back to the default (native sh on edge), and the configuration
      step warns that the chosen program is gone;
   4. a bad metadata line removes the generated file, so the next parse fails
-     instead of reading a stale menu.
+     instead of reading a stale menu;
+  5. every console program the choice offers has its effect: its image in
+     CONSOLE_PATH, its argv in CONSOLE_ARGS, USER_SHELL on (none: off), and
+     the choice offers exactly those (native sh, BusyBox sh, BRAINCLI on a
+     robot, none).
 
     python3 tools/build/test_gen_userspace_kconfig.py      (exit 0 = all pass)
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -146,16 +153,29 @@ def main():
             f.write('[package]\nname = "dummyprg"\ndescription = "A test program."\n')
         rc, log, v = defconfig(tmp, "generic-sbc-riscv64-dev", cfg)
         gen = open(os.path.join(tmp, "config", "Kconfig.userspace")).read()
-        check("config USERSPACE_DUMMYPRG" in gen and "config CONSOLE_PROGRAM_DUMMYPRG" in gen,
-              "added dir: USERSPACE_DUMMYPRG and its console choice are generated")
+        check("config USERSPACE_DUMMYPRG" in gen and "config CONSOLE_PROGRAM_DUMMYPRG" not in gen,
+              "added dir: USERSPACE_DUMMYPRG is generated, and it is not offered as a console program")
         check("# CONFIG_USERSPACE_DUMMYPRG is not set" in open(cfg).read(), "added dir: default n")
         with open(cfg, "a") as f:
             f.write("CONFIG_USERSPACE_DUMMYPRG=y\nCONFIG_CONSOLE_PROGRAM_DUMMYPRG=y\n")
         rc, log = olddefconfig(tmp, cfg)
         v = values(cfg)
-        check(rc == 0 and v.get("USERSPACE_DUMMYPRG") == "y" and v.get("CONSOLE_PROGRAM_DUMMYPRG") == "y"
-              and v.get("CONSOLE_PATH") == '"/fat/DUMMYPRG.ELF"' and v.get("USER_SHELL") == "y",
-              "added dir: selectable as the console program (CONSOLE_PATH=/fat/DUMMYPRG.ELF)")
+        check(rc == 0 and v.get("USERSPACE_DUMMYPRG") == "y" and "CONSOLE_PROGRAM_DUMMYPRG" not in v
+              and v.get("CONSOLE_PROGRAM_SH") == "y" and v.get("CONSOLE_PATH") == '"/fat/TERMD.ELF"',
+              "added dir without `console`: naming it as the console program is dropped, native sh stays")
+        check("CONSOLE_PROGRAM_DUMMYPRG is not a console program" in log,
+              "added dir without `console`: olddefconfig says it is not a console program")
+        with open(os.path.join(dummy, "Cargo.toml"), "a") as f:
+            f.write('\n[package.metadata.azos]\nconsole = "USE_ROBOT"\n')
+        for defc, want in (("generic-sbc-riscv64-dev", "TERMD"), ("robot-sbc-riscv64-dev+qemu+linux+gui", "DUMMYPRG")):
+            rc, log, v = defconfig(tmp, defc, cfg)
+            with open(cfg, "a") as f:
+                f.write("CONFIG_USERSPACE_DUMMYPRG=y\nCONFIG_CONSOLE_PROGRAM_DUMMYPRG=y\n")
+            rc, log = olddefconfig(tmp, cfg)
+            v = values(cfg)
+            check(rc == 0 and v.get("CONSOLE_PATH") == f'"/fat/{want}.ELF"'
+                  and v.get("CONSOLE_PROGRAM_DUMMYPRG") == ("y" if want == "DUMMYPRG" else None),
+                  f"added dir with `console = USE_ROBOT` on {defc}: console program is {want}.ELF")
 
         # 3. Delete it again.
         shutil.rmtree(dummy)
@@ -167,7 +187,7 @@ def main():
               "deleted dir: its symbols leave the menu and the .config")
         check(rc == 0 and v.get("CONSOLE_PROGRAM_SH") == "y" and v.get("CONSOLE_PATH") == '"/fat/TERMD.ELF"',
               "deleted dir: the console program falls back to native sh")
-        check("CONSOLE_PROGRAM_DUMMYPRG names a program that is no longer under userspace/" in log,
+        check("CONSOLE_PROGRAM_DUMMYPRG is not a console program" in log,
               "deleted dir: olddefconfig warns about the console program")
 
         # 4. A bad metadata line: no stale menu.
@@ -178,6 +198,43 @@ def main():
         rc, log = olddefconfig(tmp, cfg)
         check(rc != 0 and not os.path.exists(os.path.join(tmp, "config", "Kconfig.userspace")),
               "bad metadata: generated file removed, olddefconfig fails")
+
+        # 5. Every console program has its effect, and the choice offers no other.
+        shutil.rmtree(bad)
+        olddefconfig(tmp, cfg)
+        gen = open(os.path.join(tmp, "config", "Kconfig.userspace")).read()
+        choice = gen[gen.index("choice CONSOLE_PROGRAM"):gen.index("endchoice")]
+        members = set(re.findall(r"^config CONSOLE_PROGRAM_(\w+)$", choice, re.M))
+        check(members == {"SH", "BUSYBOX_SH", "BRAINCLI", "NONE"},
+              f"the choice offers native sh, BusyBox sh, BRAINCLI and none ({sorted(members)})")
+        cases = (
+            ("SH", "generic-sbc-riscv64-dev+qemu+linux+gui", '"/fat/TERMD.ELF"', '""', True),
+            ("BUSYBOX_SH", "generic-sbc-riscv64-dev+qemu+linux+gui", '"/fat/BUSYBOX.ELF"', '"sh"', True),
+            ("BRAINCLI", "robot-sbc-riscv64-dev+qemu+linux+gui", '"/fat/BRAINCLI.ELF"', '""', True),
+            ("NONE", "generic-sbc-riscv64-dev+qemu+linux+gui", '""', '""', False),
+        )
+        for member, defc, path, args, user_shell in cases:
+            rc, log, v = defconfig(tmp, defc, cfg)
+            with open(cfg) as f:
+                kept = [ln for ln in f if not ln.startswith("CONFIG_CONSOLE_PROGRAM_")
+                        and not ln.startswith("# CONFIG_CONSOLE_PROGRAM_")]
+            with open(cfg, "w") as f:
+                f.writelines(kept)
+                f.write("CONFIG_USERSPACE_GPL=y\nCONFIG_LINUX_ABI=y\nCONFIG_BUSYBOX=y\n"
+                        f"CONFIG_CONSOLE_PROGRAM_{member}=y\n")
+            rc, log = olddefconfig(tmp, cfg)
+            v = values(cfg)
+            check(rc == 0 and v.get(f"CONSOLE_PROGRAM_{member}") == "y" and v.get("CONSOLE_PATH") == path
+                  and v.get("CONSOLE_ARGS") == args and (v.get("USER_SHELL") == "y") == user_shell,
+                  f"{member}: CONSOLE_PATH {path}, CONSOLE_ARGS {args}, USER_SHELL {'y' if user_shell else 'off'}")
+        # BRAINCLI is for a robot: elsewhere the choice drops it.
+        rc, log, v = defconfig(tmp, "generic-sbc-riscv64-dev+qemu+linux+gui", cfg)
+        with open(cfg, "a") as f:
+            f.write("CONFIG_CONSOLE_PROGRAM_BRAINCLI=y\n")
+        rc, log = olddefconfig(tmp, cfg)
+        v = values(cfg)
+        check(rc == 0 and v.get("CONSOLE_PROGRAM_BRAINCLI") is None and v.get("CONSOLE_PATH") == '"/fat/TERMD.ELF"',
+              "BRAINCLI on a non-robot preset: dropped, native sh stays")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"{len(FAILS)} failed")

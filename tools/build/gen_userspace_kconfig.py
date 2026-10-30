@@ -28,6 +28,8 @@ in `[package.metadata.azos]`, a C program in `azos.toml` (`[azos]` table):
     default  = "y"          # or a Kconfig expression; default n
     start    = "<expr>"     # the Kconfig condition under which the topology
                             # STARTS the image at boot (absent: never)
+    console  = "<expr>"     # the image may be chosen as the console program
+                            # when the Kconfig expression holds (absent: never)
 
 `images = []` marks a directory that builds no AzOS program (a Linux module,
 a Linux baseline's init). A `topology = true` image defaults y and, outside a
@@ -48,8 +50,8 @@ Output, in a menu "Userspace programs":
   * one bool per image, `USERSPACE_<STEM>` ("include in the board volume");
     BusyBox is not generated: its one symbol is `BUSYBOX` in
     config/axes/Kconfig.personality, which the console choice below reads;
-  * `choice` CONSOLE_PROGRAM: native sh, BusyBox sh, any other included
-    image, a custom /fat path with arguments, or none;
+  * `choice` CONSOLE_PROGRAM: native sh, BusyBox sh, the images whose
+    metadata says `console` (below), or none;
   * the derived strings the kernel and the topology read: CONSOLE_PATH and
     CONSOLE_ARGS.
 
@@ -71,7 +73,7 @@ CLASSES = ("bench", "drivers", "services", "tests")
 OUT_REL = os.path.join("config", "Kconfig.userspace")
 
 # Choice members that are not per-program.
-FIXED_CHOICES = {"SH", "BUSYBOX_SH", "CUSTOM", "NONE"}
+FIXED_CHOICES = {"SH", "BUSYBOX_SH", "NONE"}
 # The three images of the native shell session; CONSOLE_PROGRAM_SH names them
 # all (the console program is the terminal server, which the shell is a client
 # of, and the shell reaches it through the name server).
@@ -204,6 +206,7 @@ def render(root):
     a("")
     a('comment "Images on the board volume (AZOS_OUT/build/disk-board*.img)"')
     images = []  # (image, stem, cls, dir)
+    console_images = []  # (image, stem, cls, dir, kconfig expression)
     for cls in CLASSES:
         members = [p for p in progs if p[0] == cls]
         if not members:
@@ -214,6 +217,11 @@ def render(root):
             for img in imgs:
                 stem = stem_of(img)
                 images.append((img, stem, cls, d))
+                cexpr = meta.get("console")
+                if cexpr is not None:
+                    if not (isinstance(cexpr, str) and cexpr.strip()):
+                        raise GenError(f"userspace/{cls}/{d}: console must be a Kconfig expression")
+                    console_images.append((img, stem, cls, d, cexpr))
                 a("")
                 a(f"config USERSPACE_{stem}")
                 topo = bool(meta.get("topology"))
@@ -274,7 +282,13 @@ def render(root):
         "program does not take console input within SH_START_TIMEOUT_S, or after "
         "it ended and its row does not restart it. With secure boot off, `init=/fat/NAME.ELF` "
         "on the kernel command line starts another image instead (its row must "
-        "say start = true); with secure boot on it is ignored and the boot log says so."
+        "say start = true); with secure boot on it is ignored and the boot log says so. "
+        "Only programs meant to run on the console are offered: the native shell, "
+        "BusyBox sh and the images whose metadata says `console`. Whenever the "
+        "console program ends and is not restarted, or does not take the console in "
+        "time, the console prints one `console program NAME gave up` line and the "
+        "recovery console takes over. The console login (CONSOLE_LOGIN) is a layer "
+        "over the native shell, not a program of its own."
     ):
         a(ln)
     a("")
@@ -311,59 +325,34 @@ def render(root):
             "the pinned tarball to build (`make busybox`)."
         ):
             a(ln)
-    for img, stem, cls, d in images:
+    for img, stem, cls, d, cexpr in console_images:
         if stem in FIXED_CHOICES or img in NATIVE_SHELL_IMAGES:
-            continue
+            raise GenError(f"userspace/{cls}/{d}: {img} is a console program already (console = ...)")
         a("")
         a(f"config CONSOLE_PROGRAM_{stem}")
         a(f'    bool "{img} (userspace/{cls}/{d})"')
-        a(f"    depends on USERSPACE_{stem}")
-    a("")
-    a("config CONSOLE_PROGRAM_CUSTOM")
-    a('    bool "Custom image and arguments"')
-    a("    help")
-    for ln in wrap("CONSOLE_PROGRAM_CUSTOM_PATH with CONSOLE_PROGRAM_CUSTOM_ARGS."):
-        a(ln)
+        a(f"    depends on USERSPACE_{stem} && ({cexpr})")
+        a("    help")
+        for ln in wrap(
+            f"The kernel starts {img} last, after every other row (offered when {cexpr}). "
+            "It runs under its own row like any other program; "
+            "a program that does not read console input leaves the console to the recovery "
+            f"console after SH_START_TIMEOUT_S, and prints `console program {img} gave up`."
+        ):
+            a(ln)
     a("")
     a("config CONSOLE_PROGRAM_NONE")
     a('    bool "None (the in-kernel shell has the console)"')
     a("")
     a("endchoice")
     a("")
-    a("config CONSOLE_PROGRAM_CUSTOM_PATH")
-    a('    string "Custom console program: image path (/fat/NAME.ELF)"')
-    a("    depends on CONSOLE_PROGRAM_CUSTOM")
-    a('    default "/fat/SH.ELF"')
-    a("    help")
-    for ln in wrap(
-        "An 8.3 image directly under /fat (the loader starts only those). If no "
-        "topology row names it, one is added (no capabilities, best_effort). The "
-        "board volume build fails if this tree does not build the image."
-    ):
-        a(ln)
-    a("")
-    a("config CONSOLE_PROGRAM_CUSTOM_ARGS")
-    a('    string "Custom console program: argv (space-separated, argv[0] first)"')
-    a("    depends on CONSOLE_PROGRAM_CUSTOM")
-    a('    default ""')
-    a("    help")
-    for ln in wrap(
-        "Passed to a Linux-ABI image (its row says abi = \"linux\") as its argv; "
-        "empty: argv[0] is the image name. A native image takes no arguments from "
-        "the kernel: the build refuses arguments for one."
-    ):
-        a(ln)
-    a("")
     a("config CONSOLE_PATH")
     a("    string")
     a('    default "/fat/TERMD.ELF" if CONSOLE_PROGRAM_SH')
     if bb:
         a('    default "/fat/BUSYBOX.ELF" if CONSOLE_PROGRAM_BUSYBOX_SH')
-    for img, stem, _, _ in images:
-        if stem in FIXED_CHOICES or img in NATIVE_SHELL_IMAGES:
-            continue
+    for img, stem, _, _, _ in console_images:
         a(f'    default "/fat/{img}" if CONSOLE_PROGRAM_{stem}')
-    a("    default CONSOLE_PROGRAM_CUSTOM_PATH if CONSOLE_PROGRAM_CUSTOM")
     a('    default ""')
     a("    help")
     a("      Derived from CONSOLE_PROGRAM: the console program's image, \"\" for none.")
@@ -372,14 +361,13 @@ def render(root):
     a("    string")
     if bb:
         a('    default "sh" if CONSOLE_PROGRAM_BUSYBOX_SH')
-    a("    default CONSOLE_PROGRAM_CUSTOM_ARGS if CONSOLE_PROGRAM_CUSTOM")
     a('    default ""')
     a("    help")
     a("      Derived from CONSOLE_PROGRAM: the console program's argv, \"\" for its name.")
     a("")
     a("endmenu")
     a("")
-    return "\n".join(L), {s for (_, s, _, _) in images}
+    return "\n".join(L), {s for (_, s, _, _, _) in console_images}
 
 
 def warn_stale_console(config_path, stems, bb):
@@ -391,12 +379,12 @@ def warn_stale_console(config_path, stems, bb):
             if not m:
                 continue
             s = m.group(1)
-            if s in ("SH", "CUSTOM", "NONE") or s in stems or (s == "BUSYBOX_SH" and bb):
+            if s in ("SH", "NONE") or s in stems or (s == "BUSYBOX_SH" and bb):
                 continue
             sys.stderr.write(
-                f"warning: {config_path}: CONSOLE_PROGRAM_{s} names a program that is no "
-                f"longer under userspace/; the console program falls back to the default "
-                f"(native sh where the profile has one)\n"
+                f"warning: {config_path}: CONSOLE_PROGRAM_{s} is not a console program: no "
+                f"program under userspace/ says `console` for it; the console program falls "
+                f"back to the default (native sh where the profile has one)\n"
             )
 
 

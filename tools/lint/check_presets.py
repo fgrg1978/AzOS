@@ -24,6 +24,14 @@ asserted on every config/defconfigs/*.config of a small board, and a canary
 (a server-class image with the Linux layers and a default-on driver) must
 trip the same function, so a rule that went blind fails the check.
 
+The console program (console_violations below) is checked on every expansion
+and every defconfig: the CONSOLE_PROGRAM choice offers only native sh, BusyBox
+sh, the images whose metadata says `console` where their expression holds, and
+none; a defconfig that names a console program gets it; and CONSOLE_LOGIN comes
+with the native shell as the console program (the build refuses it otherwise).
+A canary (login with no shell, a robot-only program on a generic image) must
+trip the same function.
+
 The kernels are not built; that is `make check` / the gate. Usage:
 
     python3 tools/lint/check_presets.py [--list]
@@ -148,6 +156,68 @@ def small_board_violations(kconf):
     return bad, seen
 
 
+def console_violations(kconf):
+    """What is wrong with the console program of the loaded config, and how
+    many rules looked at something (so a rename cannot make the rule vacuous):
+    (violations, {"members": n, "login": n})."""
+    bad, seen = [], {"members": 0, "login": 0}
+    capable = {gus.stem_of(img): meta["console"]
+               for _, _, imgs, meta, _ in gus.scan(ROOT) if "console" in meta for img in imgs}
+    choice = kconf.syms["CONSOLE_PROGRAM_SH"].nodes[0].parent.item
+    offered = {sym.name.removeprefix("CONSOLE_PROGRAM_"): sym for sym in choice.syms}
+    expected = set(capable) | (gus.FIXED_CHOICES if gus.busybox_present(ROOT) else gus.FIXED_CHOICES - {"BUSYBOX_SH"})
+    if set(offered) != expected:
+        bad.append(f"CONSOLE_PROGRAM offers {sorted(offered)}, the metadata asks for {sorted(expected)}")
+    for stem, sym in offered.items():
+        seen["members"] += 1
+        if stem in capable and sym.str_value == "y" and kconf.eval_string(capable[stem]) != 2:
+            bad.append(f"{sym.name} is the console program but its condition ({capable[stem]}) does not hold")
+    if kconf.syms["CONSOLE_LOGIN"].str_value == "y":
+        seen["login"] += 1
+        if kconf.syms["CONSOLE_PROGRAM_SH"].str_value != "y":
+            bad.append("CONSOLE_LOGIN is on and the console program is not the native shell: "
+                       "nothing would ask for the login")
+    return bad, seen
+
+
+def _console_sweep(kconf, td, archs, failures):
+    """Every defconfig names the console program it gets, and the canary: a
+    login with no shell and a robot-only program on a generic image both trip
+    console_violations. Returns the number of expansions."""
+    cfg = os.path.join(td, "console.config")
+    done = 0
+    defdir = os.path.join(ROOT, "config", "defconfigs")
+    for fname in sorted(os.listdir(defdir)):
+        path = os.path.join(defdir, fname)
+        kconf.load_config(path)
+        done += 1
+        bad = console_violations(kconf)[0]
+        with open(path, encoding="utf-8") as fh:
+            asked = [ln[len("CONFIG_"):-len("=y")] for ln in fh.read().splitlines()
+                     if ln.startswith("CONFIG_CONSOLE_PROGRAM_") and ln.endswith("=y")]
+        bad += [f"the defconfig names {a} and the choice resolved to another program"
+                for a in asked if kconf.syms[a].str_value != "y"]
+        if bad:
+            failures.append((f"defconfig {fname}", bad))
+    for arch in archs:
+        tag = f"console canary on {arch.removeprefix('CONFIG_ARCH_').lower()}"
+        _expand(kconf, cfg, [f"{arch}=y", "CONFIG_CONSOLE_LOGIN=y", "CONFIG_CONSOLE_PROGRAM_NONE=y"])
+        bad, seen = console_violations(kconf)
+        if not any(b.startswith("CONSOLE_LOGIN is on") for b in bad):
+            failures.append((tag, ["the console rule did not flag a login with no console program"]))
+        if not all(seen.values()):
+            failures.append((tag, [f"the console rule examined {seen}: a name matches nothing"]))
+        # A robot-only program is dropped on a generic image and taken on a robot one.
+        for preset, taken in (("CONFIG_PRESET_GENERIC=y", "n"), ("CONFIG_PRESET_ROBOT=y", "y")):
+            _expand(kconf, cfg, [f"{arch}=y", preset, "CONFIG_USERSPACE_BRAINCLI=y",
+                                 "CONFIG_CONSOLE_PROGRAM_BRAINCLI=y"])
+            got = kconf.syms["CONSOLE_PROGRAM_BRAINCLI"].str_value
+            if got != taken or console_violations(kconf)[0]:
+                failures.append((tag, [f"{preset} with BRAINCLI asked for: it is {got}, wanted {taken}"]))
+        done += 3
+    return done
+
+
 def presets(kconf):
     """The members of the PRESET choice, in Kconfig order."""
     return [s.name for s in kconf.syms["PRESET_GENERIC"].nodes[0].parent.item.syms]
@@ -243,6 +313,7 @@ def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory() as td:
         small_boards = _small_board_sweep(kconf, td, names, archs, failures)
+        console_expansions = _console_sweep(kconf, td, archs, failures)
         for preset in names:
             for arch in archs:
                 tag = f"{preset} on {arch.removeprefix('CONFIG_ARCH_').lower()}"
@@ -255,6 +326,7 @@ def main() -> int:
                 if kconf.syms["HWCLASS_EMBEDDED"].str_value == "y":
                     small_boards += 1
                     bad += small_board_violations(kconf)[0]
+                bad += console_violations(kconf)[0]
                 kconf.write_config(cfg)
                 bad += list(kconf.warnings[before:])
                 if kconf.syms[preset].str_value != "y":
@@ -299,7 +371,7 @@ def main() -> int:
     if failures:
         return 1
     print(f"check-presets: ok ({len(names)} presets x {len(archs)} ISAs, "
-          f"{small_boards} small-board expansions)")
+          f"{small_boards} small-board expansions, {console_expansions} console-program expansions)")
     return 0
 
 

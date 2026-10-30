@@ -30,3 +30,4 @@ panic = "abort"
 # (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
 topology = true
+console = "USE_ROBOT"
