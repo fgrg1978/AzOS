@@ -59,7 +59,7 @@ that key and needs `TOPOLOGY_PUBKEY_PATH` to name the fleet public key.
 Source: `Makefile`, `mk/vars.mk` ("The configured system"), `mk/kernel.mk`, `mk/qemu.mk`,
 `tools/build/make_help.txt`.
 
-`make config` (or `make defconfig-<name>`) selects; `make build` builds exactly that;
+`make defconfig`, `make config` (or `make defconfig-<name>`) selects; `make build` builds exactly that;
 `make qemu` boots exactly that. The ISA is the configuration's (`CONFIG_ARCH_*`, the
 ARCH choice in `config/arch/Kconfig.isa`); no target names one. `make build` builds
 the kernel, the ring-3 images and the system volume (the shell volume: the console
@@ -290,7 +290,7 @@ and `tools/lint/lx_license_lint.py` (the licences of the Linux driver layer).
 ## A usual order
 
 ```sh
-make config                 # or: make defconfig-<name>
+make defconfig              # or: make config, make defconfig-<name>
 make check0                 # while editing
 make check1                 # before sharing a change
 make ci                     # before pushing

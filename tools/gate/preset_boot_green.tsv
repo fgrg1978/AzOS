@@ -14,8 +14,8 @@ firmware	x86_64	experimental	-
 gateway	riscv64	experimental	-
 gateway	aarch64	experimental	-
 gateway	x86_64	experimental	-
-generic	riscv64	experimental	-
-generic	aarch64	experimental	-
+generic	riscv64	green	make defconfig, build and qemu reached the user shell and answered help (u3-menu 2026-10-30; no gate row yet)
+generic	aarch64	green	make defconfig, build and qemu reached the user shell and answered help (u3-menu 2026-10-30; no gate row yet)
 generic	x86_64	experimental	-
 industrial	riscv64	experimental	-
 industrial	aarch64	experimental	-
@@ -24,7 +24,7 @@ iot_hmi	riscv64	experimental	-
 iot_hmi	aarch64	experimental	-
 iot_hmi	x86_64	experimental	-
 robot	riscv64	experimental	-
-robot	aarch64	experimental	-
+robot	aarch64	green	make defconfig, build and qemu reached the user shell and answered help (u3-menu 2026-10-30; no gate row yet)
 robot	x86_64	experimental	-
 server	riscv64	experimental	-
 server	aarch64	experimental	-

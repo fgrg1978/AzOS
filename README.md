@@ -114,7 +114,7 @@ Host: macOS or Linux, the nightly Rust toolchain pinned by
 `rust-toolchain.toml`, Python 3 with `kconfiglib`, and QEMU.
 
 ```bash
-make config        # pick the ISA, a preset and options (or make defconfig-<name>)
+make defconfig     # two questions, the ISA and the domain (or make config to pick every option)
 make build         # build what .config selects: kernel, images, system volume
 make qemu          # boot what make build built, with its system volume
 make sdk           # the Rust std target for AzOS, on the three ISAs
