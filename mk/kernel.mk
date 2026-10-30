@@ -13,6 +13,7 @@
 .PHONY: riscv64
 build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
 	@$(MAKE) --no-print-directory $(SYSTEM_KCONFIG)
+	@$(if $(BUSYBOX_ON),$(MAKE) --no-print-directory busybox,:)
 	@$(MAKE) --no-print-directory $(SYSTEM_KERNEL) $(SYSTEM_VOLUME)
 	@$(MAKE) --no-print-directory prune
 	@echo "[BUILD] $(KCONFIG_ISA), from $(KCONFIG_CONFIG) ($(SYSTEM_KCONFIG)):"

@@ -602,10 +602,15 @@ THIRDPARTY_HASHES := $(OUT_BUILD)/thirdparty_hashes.rs
 THIRDPARTY_HASHES_AARCH64 := $(OUT_BUILD)/thirdparty_hashes_aarch64.rs
 THIRDPARTY_HASHES_X86_64 := $(OUT_BUILD)/thirdparty_hashes_x86_64.rs
 
-.PHONY: busybox busybox-check busybox-one busybox-source-offer thirdparty-hashes
-busybox-check:
+.PHONY: busybox busybox-config busybox-check busybox-one busybox-source-offer thirdparty-hashes
+busybox-config:
 	@grep -q '^CONFIG_BUSYBOX=y' $(BUSYBOX_CONFIG_FILE) || { \
-	  echo "busybox: CONFIG_BUSYBOX is not set in $(BUSYBOX_CONFIG_FILE) (needs USERSPACE_GPL and LINUX_ABI; default off)"; exit 1; }
+	  echo "busybox: CONFIG_BUSYBOX is not set in $(BUSYBOX_CONFIG_FILE) (needs USERSPACE_GPL and LINUX_ABI; on by default in a development build with the Linux personality)"; exit 1; }
+
+# What a rebuild needs: zig and the pinned source tree. Only the ELF rule below
+# runs it, so a cache that is current (the pin, the fragment and the compiler
+# wrapper unchanged) is used on a host that has neither.
+busybox-check: busybox-config
 	@command -v $(BUSYBOX_ZIG) >/dev/null 2>&1 || { \
 	  echo "busybox: no zig ($(BUSYBOX_ZIG)): install zig (Homebrew: zig) or set LX_ZIG=<path>"; exit 1; }
 	@[ -n "$(BUSYBOX_COMMIT)" ] || { echo "busybox: $(BUSYBOX_SRC) is not a gitlink"; exit 1; }
@@ -647,7 +652,7 @@ $(BUSYBOX_WORK)/busybox-%.elf: $(BUSYBOX_INPUTS_STAMP)
 	$(MAKE) busybox-one ISA=$*
 endif
 
-busybox: busybox-check $(BUSYBOX_ELF_RISCV64) $(BUSYBOX_ELF_AARCH64) $(BUSYBOX_ELF_X86_64)
+busybox: busybox-config $(BUSYBOX_ELF_RISCV64) $(BUSYBOX_ELF_AARCH64) $(BUSYBOX_ELF_X86_64)
 	$(MAKE) busybox-source-offer thirdparty-hashes
 
 # The third-party digest tables: BUSYBOX.ELF when it was built, empty otherwise.

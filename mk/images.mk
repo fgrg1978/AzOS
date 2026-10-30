@@ -46,6 +46,21 @@ $(OUT_BUILD)/disk-busybox.img: $(OUT_BUILD)/disk-lxabi.img $(wildcard $(BUSYBOX_
 	mcopy -i $@ "$(BUSYBOX_ELF_RISCV64)" ::BUSYBOX.ELF
 	@echo "[DISK] FAT32 image: $@ (user shell, LXHELLO.ELF, third-party BUSYBOX.ELF)"
 
+# The system volume of a configuration with BUSYBOX (SYSTEM_VOLUME, mk/vars.mk):
+# the shell volume plus BUSYBOX.ELF. The ELF is the cache's (`make busybox`,
+# which `make build` runs first), copied by a quoted path as above.
+$(OUT_BUILD)/disk-sh-busybox.img: $(OUT_BUILD)/disk-sh.img $(wildcard $(BUSYBOX_ELF_RISCV64))
+	@[ -f "$(BUSYBOX_ELF_RISCV64)" ] || { echo "no $(BUSYBOX_ELF_RISCV64): run make busybox"; exit 1; }
+	cp $(OUT_BUILD)/disk-sh.img $@
+	mcopy -i $@ "$(BUSYBOX_ELF_RISCV64)" ::BUSYBOX.ELF
+	@echo "[DISK] FAT32 image: $@ (user shell + third-party BUSYBOX.ELF)"
+
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh-busybox.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img $(wildcard $(BUSYBOX_ELF_AARCH64))
+	@[ -f "$(BUSYBOX_ELF_AARCH64)" ] || { echo "no $(BUSYBOX_ELF_AARCH64): run make busybox"; exit 1; }
+	cp $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img $@
+	mcopy -i $@ "$(BUSYBOX_ELF_AARCH64)" ::BUSYBOX.ELF
+	@echo "[DISK] aarch64 FAT32 image: $@ (user shell + third-party BUSYBOX.ELF)"
+
 $(OUT_BUILD)/disk-aarch64-busybox.img: $(OUT_BUILD)/disk-aarch64-lxabi.img $(wildcard $(BUSYBOX_ELF_AARCH64))
 	@[ -f "$(BUSYBOX_ELF_AARCH64)" ] || { echo "no $(BUSYBOX_ELF_AARCH64): run make busybox"; exit 1; }
 	cp $(OUT_BUILD)/disk-aarch64-lxabi.img $@

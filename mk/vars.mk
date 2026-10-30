@@ -974,9 +974,12 @@ IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs
 SYSTEM_KCONFIG_riscv64 := $(QEMU_DEV_KCONFIG)
 SYSTEM_KCONFIG_aarch64 := $(AARCH64_KCONFIG)
 SYSTEM_KCONFIG_x86_64  := $(X86_64_KCONFIG)
-SYSTEM_VOLUME_riscv64  := $(OUT_BUILD)/disk-sh.img
-SYSTEM_VOLUME_aarch64  := $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img
-SYSTEM_VOLUME_x86_64   := $(OUT_BUILD)/disk-x86_64.img
+# The volume carries BUSYBOX.ELF when the configuration has BUSYBOX
+# (BUSYBOX_ON, mk/userspace.mk): the same volume plus the one file, so a
+# configuration without it builds the volume it always did.
+SYSTEM_VOLUME_riscv64  = $(OUT_BUILD)/disk-sh$(if $(BUSYBOX_ON),-busybox).img
+SYSTEM_VOLUME_aarch64  = $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh$(if $(BUSYBOX_ON),-busybox).img
+SYSTEM_VOLUME_x86_64   = $(OUT_BUILD)/disk-x86_64$(if $(BUSYBOX_ON),-busybox).img
 TARGET_riscv64         := $(RISCV64_TARGET)
 TARGET_aarch64         := $(AARCH64_TARGET)
 TARGET_x86_64          := $(X86_64_TARGET)
@@ -992,7 +995,7 @@ KERNEL_IMAGE_x86_64    := $(X86_64_IMG)
 
 SYSTEM_KCONFIG := $(SYSTEM_KCONFIG_$(KCONFIG_ISA))
 SYSTEM_KERNEL  := $(KCONFIG_ISA)
-SYSTEM_VOLUME  := $(SYSTEM_VOLUME_$(KCONFIG_ISA))
+SYSTEM_VOLUME   = $(SYSTEM_VOLUME_$(KCONFIG_ISA))
 TARGET         := $(TARGET_$(KCONFIG_ISA))
 USER_TARGET    := $(USER_TARGET_$(KCONFIG_ISA))
 KERNEL_ELF     := $(KERNEL_ELF_$(KCONFIG_ISA))

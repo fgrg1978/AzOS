@@ -23408,7 +23408,11 @@ echo after-x \$?"
             case "$ush_isa" in rv) bb_cfg="$bb_cfg_rv" ;; arm) bb_cfg="$bb_cfg_arm" ;; *) bb_cfg="$PRIMARY_CONFIG" ;; esac
             bb_x86_def="$CI_LOG_DIR/ush-x86-busybox.defconfig"
             { cat config/defconfigs/${GATE_DEFC_X86}.config; printf 'CONFIG_LINUX_RUNTIME=y\nCONFIG_USERSPACE_GPL=y\nCONFIG_BUSYBOX=y\n'; } >"$bb_x86_def"
-            USH_X86_DEFCONFIG="$bb_x86_def" KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT" par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
+            # The volume is the system volume `make build` makes for that
+            # configuration (mk/vars.mk SYSTEM_VOLUME): the shell volume plus
+            # BUSYBOX.ELF, x86_64's the busybox variant of its one volume.
+            case "$ush_isa" in x86) bb_sys_disk=busybox ;; *) bb_sys_disk=sh-busybox ;; esac
+            USH_X86_DEFCONFIG="$bb_x86_def" KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=$bb_sys_disk USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT" par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
                 "busybox sh -c 'x=prod; echo bb-\$x-ok'
 echo after-prod \$?" 150 \
                 "row=BUSYBOX.ELF" "bb-prod-ok" "after-prod 0"

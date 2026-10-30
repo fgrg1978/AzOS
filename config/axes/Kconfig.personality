@@ -108,30 +108,38 @@ config LX_MODULE_WINDOW_SIZE
 
 config USERSPACE_GPL
     bool "Allow third-party GPL userspace programs (e.g. BusyBox)"
-    default n
+    default y if BUILD_TYPE_DEV && LINUX_ABI
     help
+      LICENCE NOTE: with this on, a volume that carries a program below is a
+      distribution of that program, GPL-2.0-only, not of the kernel's
+      Apache-2.0 OR GPL-2.0-only. Whoever ships such a volume owes the
+      written offer of source `make busybox-source-offer` writes (GPL-2.0
+      section 3); the kernel itself still contains no third-party code.
+
       The switch without which no third-party GPL program is built or put
-      in an image. The kernel and the base image never contain one; with
-      this on, a program below may be built from a pinned upstream release
-      (fetched by URL and SHA-256, never committed) and copied onto a
-      volume that is then distributed under that program's licence, with
-      the source offer `make busybox-source-offer` writes (GPL-2.0
-      section 3). Off by default.
+      in an image. A development build (BUILD_TYPE_DEV) with the Linux
+      personality turns it on; a release build leaves it off until you
+      turn it on by hand, so a product never ships GPL code by default.
 
 config BUSYBOX
     bool "BusyBox (static, run through the Linux personality)"
-    default n
+    default y if BUILD_TYPE_DEV
     depends on USERSPACE_GPL && LINUX_ABI
     help
-      `make busybox` builds the pinned BusyBox release (Makefile:
-      BUSYBOX_VERSION, BUSYBOX_SHA256) from a tarball already on disk
-      (BUSYBOX_TARBALL, outside the repository; make never downloads),
-      checks its SHA-256, and builds a static binary with `zig cc`
-      (BUSYBOX_ZIG or LX_ZIG; zig carries musl and the Linux uapi headers
-      for both ISAs). It runs as BUSYBOX.ELF under its own topology row
-      with abi = "linux". The make target refuses, naming what is missing,
-      without zig or the tarball, or on a digest mismatch.
-      GPL-2.0-only: see USERSPACE_GPL for the source offer.
+      BusyBox on the system volume as BUSYBOX.ELF, reachable as `busybox sh`
+      from the native shell. A development build turns it on with the Linux
+      personality; a release build leaves it off (see USERSPACE_GPL for the
+      licence note and the source offer).
+
+      The pinned release is the gitlink third_party/busybox (its upstream
+      tag in .gitmodules), built once for the three ISAs by `make busybox`
+      with `zig cc` (musl and the Linux uapi headers come with zig) into a
+      cache outside the repository (BUSYBOX_WORK). `make build` reuses that
+      cache while the pin, third_party/busybox.fragment and the compiler
+      wrapper are unchanged; it never downloads. It runs under its own
+      topology row with abi = "linux". When the cache is stale or missing,
+      the build stops and names what to run (zig, and
+      tools/build/third_party_fetch.sh busybox for the source tree).
 
 config LINUX_ABI
     bool "Linux syscall personality (static Linux binaries)"
@@ -167,7 +175,7 @@ config LINUX_ABI
 config LINUX_RUNTIME
     # cargo-feature: linux-runtime
     bool "Host the Linux personality in a ring-3 runtime (trap reflect)"
-    default n
+    default y if ARCH_X86_64
     depends on LINUX_ABI && !HWCLASS_EMBEDDED && !AARCH64_PAGE_16K && !AARCH64_PAGE_64K
     help
       A Linux task is hosted by `userspace/lib/linux_rt`, mapped into its
@@ -179,6 +187,9 @@ config LINUX_RUNTIME
       directory, signal state) and maps the rest onto native calls. The
       runtime's native calls meet the row's seccomp profile and the task's
       capability tables as any native call does.
+
+      On x86_64 it defaults to on with LINUX_ABI: the in-kernel table does
+      not speak x86-64, so without the runtime a Linux row is refused at spawn.
 
       Not on a small board (HWCLASS_EMBEDDED): such a board keeps every
       Linux layer off (see the head of this file).
