@@ -304,51 +304,18 @@ fn run_validations(cfg: &ConfigMap) {
         }
     }
     // -----------------------------------------------------------------------
-    // Options for code that does not exist yet (wave 11). The Linux
-    // compatibility menu (config/axes/Kconfig.personality) is laid out before
-    // its code; none of its symbols may be silently inert, so a .config that
-    // enables one does not build. A stage that lands removes its symbols
-    // from this list in the same change that wires them.
-    // -----------------------------------------------------------------------
-    const NOT_IMPLEMENTED: &[(&str, &str)] = &[
-        ("LX_FS_EXT2",               "Linux driver stages L1 (read-only) and L2 (read-write)"),
-        ("LX_FS_EXT4_RO",            "Linux driver stage L3"),
-        ("LX_FS_EXT4_RW",            "Linux driver stage L4"),
-        ("LX_USB_XHCI",              "Linux driver stages L5 (DMA/BAR/MSI prerequisites) and L6"),
-        ("LX_USB_DWC3",              "Linux driver stage L8"),
-        ("LX_USB_HID",               "Linux driver stage L6"),
-        ("LX_USB_STORAGE",           "Linux driver stage L7"),
-        ("LX_USB_CDC",               "Linux driver stage L7"),
-        ("LX_USB_UVC",               "Linux driver stage L9+ (needs an amendment)"),
-        ("LX_SND_ASOC",              "Linux driver stage L9+ (needs an amendment)"),
-        ("LX_DRM_PANEL",             "Linux driver stage L9+ (needs an amendment)"),
-        ("LX_IIO",                   "Linux driver stage L9+ (needs an amendment)"),
-        ("LX_WIFI",                  "Linux driver stage L9+ (needs an amendment)"),
-        ("LX_BLUETOOTH",             "Linux driver stage L9+ (needs an amendment)"),
-        ("LX_ACCEPT_UNCONFINED_DMA", "Linux driver stages L5/L8"),
-    ];
-    let set: Vec<String> = NOT_IMPLEMENTED
-        .iter()
-        .filter(|(k, _)| get_bool(cfg, k))
-        .map(|(k, stage)| format!("CONFIG_{k}=y: not implemented ({stage})"))
-        .collect();
     // L0/L0b landed the module loader and the empty server only.
     // `LINUX_DRIVERS` alone would be a menu with nothing behind it, so it
     // builds only together with the dev option that says what it builds: the
-    // server skeleton (`LX_SERVER_SKELETON`, no Linux object). Every module
-    // option above still refuses until its stage lands (L1 needs the
-    // owner's sign-off).
-    let mut set = set;
+    // server skeleton (`LX_SERVER_SKELETON`, no Linux object). A driver class
+    // adds its own option in the change that lands it.
+    // -----------------------------------------------------------------------
     if get_bool(cfg, "LINUX_DRIVERS") && !get_bool(cfg, "LX_SERVER_SKELETON") {
-        set.push("CONFIG_LINUX_DRIVERS=y without CONFIG_LX_SERVER_SKELETON=y: only the empty \
-                  server skeleton exists; the first Linux module is stage L1".to_string());
-    }
-    if !set.is_empty() {
         panic!(
-            "validation FAIL: .config enables options whose code does not exist yet:\n  {}\n\
-             Fix: turn them off (`make menuconfig`, \"Linux compatibility\"). An image with a \
-             Linux module will also ship as GPL-2.0-only.",
-            set.join("\n  ")
+            "validation FAIL: CONFIG_LINUX_DRIVERS=y without CONFIG_LX_SERVER_SKELETON=y: only \
+             the empty server skeleton exists; the first Linux module is stage L1.\n\
+             Fix: turn it off or enable the skeleton (`make menuconfig`, \"Linux compatibility\"). \
+             An image with a Linux module will also ship as GPL-2.0-only."
         );
     }
 

@@ -12,8 +12,8 @@
 # tools/build/third_party_fetch.sh (linux): in a checked-out tree a missing one fails the build.
 #
 # Only a leaf the bus matches belongs here. Of the slices that follow
-# (Documentation/design/lx-driver-slices.md): the ext4 slice is chosen by
-# Kconfig (LX_FS_EXT4_RO), not by a device id; the HID leaves of the URB
+# (Documentation/design/lx-driver-slices.md): the ext4 slice is not
+# chosen by a device id; the HID leaves of the URB
 # adapter match on usb and hid ids, which are not a hwbus bus kind yet
 # (lx_device_table.py skips them), so their lines come with the change that
 # adds that kind.

@@ -435,7 +435,7 @@ function no kernel driver binds is blocked (`iommu_init`). The AMD-Vi `Block`
 mode is an entry with `V` and `TV` set and no permission (`encode_dte`): an
 all-zero entry would pass DMA through, so a fresh table starts blocked.
 A Linux driver server that drives a bus master on a
-board without an IOMMU needs `LX_ACCEPT_UNCONFINED_DMA`, which fails the build.
+board without an IOMMU is not built yet: no driver class is declared.
 
 ## Secure boot and signed artefacts
 

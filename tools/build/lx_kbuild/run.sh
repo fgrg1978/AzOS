@@ -33,7 +33,7 @@ podman="${PODMAN:-podman}"
 tag="azos-lx-kbuild:$(shasum -a 256 "$here/Containerfile" | cut -c1-12)"
 # The upstream modules, as SYMBOL=path/in/tree.ko (the RFC 8.1 validated list).
 modules=(XZ_DEC=lib/xz/xz_dec.ko)
-# The filesystem set (Kconfig LX_FS_EXT4_RO), in load order:
+# The filesystem set (the ext4 slice), in load order:
 # built in the same configuration, written to <isa>/fs/, and gated by the
 # recorded list of imports nothing provides yet (crates/drivers/lx/FS_EXT4_UNRESOLVED), not
 # by the validated set's rule. ext4 selects JBD2, CRC16, BUFFER_HEAD,

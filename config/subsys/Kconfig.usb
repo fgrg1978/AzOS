@@ -393,7 +393,7 @@ config USB_UVC
       32 with this driver and the `usb` task naps 1 ms while a stream runs;
       what a given board sustains is a test-week measurement (the driver
       counts the intervals the bus lost). Native: no Linux driver is
-      involved (LX_USB_UVC is the not-implemented Linux alternative). The
+      involved. The
       QEMU xHCI has no camera model, so the stream is exercised on a board
       or a PC only; tests/host/usb-uvc-tests covers the driver against a
       register-level xHCI mock.

@@ -913,11 +913,9 @@ Source: `crates/core/ipc/src/file_cap.rs`, `crates/core/common/src/path.rs`,
 ## ext4 and the Linux module set
 
 The ext4 module set is the unmodified Linux `fs/ext4` code, built as
-relocatable modules that the module loader lays out and relocates. The Kconfig symbols
-`LX_FS_EXT4_RO` and `LX_FS_EXT4_RW` are declared in `config/axes/Kconfig.personality`;
-setting either fails the build (`crates/core/limits/build.rs`), and nothing
-loads the modules or mounts an ext4 volume: the imports listed below and the
-ring-3 filesystem server are not there.
+relocatable modules that the module loader lays out and relocates. No Kconfig
+symbol selects them yet, and nothing loads the modules or mounts an ext4
+volume: the imports listed below and the ring-3 filesystem server are not there.
 
 The tree contains:
 

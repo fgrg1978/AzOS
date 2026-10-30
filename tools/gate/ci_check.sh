@@ -11593,8 +11593,8 @@ test_host_features "topology(lx-server)" \
 #   patches; relibc's MIT notice
 #   travels (LICENSES/MIT.txt, NOTICE). A fresh clone fetches a tree with
 #   `tools/build/third_party_fetch.sh <name>`: nothing fetches one by accident.
-# * `Kconfig gates`: azos_limits refuses a module option (LX_FS_EXT2) and
-#   LINUX_DRIVERS without LX_SERVER_SKELETON, and builds with the pair. Its
+# * `Kconfig gates`: azos_limits refuses LINUX_DRIVERS without
+#   LX_SERVER_SKELETON, and builds with the pair. Its
 #   own target dir: a different KCONFIG_CONFIG must not leave a stale
 #   azos_limits in the shared one.
 test_host "lx-emul" "${REPO_ROOT}/crates/drivers/lx/emul"
@@ -11649,8 +11649,7 @@ lx_kconfig_row() {
     local tdir="$AZOS_OUT/target/lx-kconfig" cfg="$AZOS_OUT/target/lx-kconfig/lx.config" out
     mkdir -p "$tdir"
     local case lines want got
-    for case in "LX_FS_EXT2|CONFIG_LINUX_DRIVERS=y CONFIG_LX_SERVER_SKELETON=y CONFIG_LX_FS_EXT2=y|refuse" \
-                "LINUX_DRIVERS alone|CONFIG_LINUX_DRIVERS=y|refuse" \
+    for case in "LINUX_DRIVERS alone|CONFIG_LINUX_DRIVERS=y|refuse" \
                 "skeleton|CONFIG_LINUX_DRIVERS=y CONFIG_LX_SERVER_SKELETON=y|build"; do
         lines="$(printf '%s' "$case" | cut -d'|' -f2)"; want="$(printf '%s' "$case" | cut -d'|' -f3)"
         cp "$PRIMARY_CONFIG" "$cfg"

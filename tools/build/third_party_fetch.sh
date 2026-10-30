@@ -49,7 +49,7 @@
 #     and igb's e1000_regs.h by name. They are read for facts, not built.
 #   * drivers/i2c/busses/i2c-k1.c (24 KB) is the same kind of reference for
 #     the native SpacemiT K1 I2C master (crates/drivers/bus/src/i2c_k1.rs).
-#   * The ext4 stage (Kconfig LX_FS_EXT4_RO) adds /fs/Makefile (the same
+#   * The ext4 stage adds /fs/Makefile (the same
 #     descent for fs/ext4/ext4.ko and fs/jbd2/jbd2.ko) and /fs/mbcache.c
 #     (EXT4_FS selects FS_MBCACHE). The rest of fs/ that ext4.ko imports from
 #     (buffer.c, inode.c, dcache.c, ...) is checked out file by file, below.

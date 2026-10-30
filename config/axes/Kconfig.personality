@@ -4,16 +4,13 @@
 #
 # The menu of the Linux driver layer: unmodified Linux modules run in
 # ring-3 servers (lxsrv-<class>), built from a pinned Linux tree
-# (third_party/linux/) against a compatibility layer (crates/drivers/lx/). None of that code
-# exists beyond stage L0/L0b: the pinned submodule, the crates/drivers/lx/ base skeleton,
+# (third_party/linux/) against a compatibility layer (crates/drivers/lx/).
+# What exists is the pinned submodule, the crates/drivers/lx/ base skeleton,
 # the module loader (DOMAIN_MODULE_VERIFY / DOMAIN_MODULE_MAP_X) and the empty
-# server (LX_SERVER_SKELETON). So that no symbol here is silently inert,
-# enabling any other fails the build: crates/core/limits/build.rs
-# (`NOT_IMPLEMENTED`) refuses a .config that sets one, naming the stage that
-# would implement it, and refuses LINUX_DRIVERS without LX_SERVER_SKELETON.
-# When a stage lands, its symbols leave that list in the same change that
-# wires them. Stages (L0, L1, ...) are the steps of the Linux driver layer, in
-# dependency order.
+# server (LX_SERVER_SKELETON). A driver class gets its option in the change
+# that lands it; no option is declared ahead of its code, and
+# crates/core/limits/build.rs refuses LINUX_DRIVERS without
+# LX_SERVER_SKELETON.
 #
 # Every symbol is default n: the default image contains no Linux-derived
 # object. A small board (HWCLASS_EMBEDDED, HWCLASS_EMBEDDED) runs only the
@@ -27,7 +24,7 @@ config LINUX_DRIVERS
     help
       Implemented up to stage L0b: the module loader and the
       empty server. On its own it fails the build; it builds only with
-      LX_SERVER_SKELETON (below), and every module option still fails.
+      LX_SERVER_SKELETON (below).
 
       Runs validated, unmodified Linux modules in ring-3 server processes,
       one process per driver class, through a compatibility layer (crates/drivers/lx/)
@@ -55,150 +52,6 @@ config LX_SERVER_SKELETON
       module LXTEST.KO, compiled from this project's own C, and idles. No
       Linux object is built or linked: the image stays
       "Apache-2.0 OR GPL-2.0-only". Kernel feature `lx-server`.
-
-menu "Filesystems (lxsrv-fs)"
-
-config LX_FS_EXT2
-    bool "ext2"
-    help
-      Not implemented: stage L1 (read-only, the pilot; needs
-      owner sign-off), stage L2 (read-write). Enabling it fails the build.
-      ext2 does no DMA: its server is isolated on every board.
-      Licence: GPL-2.0-only image (see LINUX_DRIVERS).
-
-config LX_FS_EXT4_RO
-    bool "ext4 read-only (no journal replay)"
-    help
-      Not implemented: stage L3 (ext4 + inert jbd2, mounted
-      `noload`; a volume that needs recovery is refused). Enabling it
-      fails the build. No DMA. Licence: GPL-2.0-only image.
-
-      STATUS: PARTIAL. The option is not deliverable yet (it fails the
-      build); only the first step exists.
-
-      What exists: `make lx-kbuild` builds the unmodified fs/ext4,
-      fs/jbd2, fs/mbcache.c and lib/crc/crc16.c of the pinned tree for
-      both ISAs (<isa>/fs/{crc16,mbcache,jbd2,ext4}.ko, fetched by
-      tools/build/third_party_fetch.sh linux), and the module loader admits, lays out
-      and relocates all of them (tests/host/lx-loader-tests).
-      What is missing: the 400 or so Linux symbols they import and
-      nothing provides yet (crates/drivers/lx/FS_EXT4_UNRESOLVED; the VFS, page cache,
-      buffer heads, bio, wait queues and per-CPU data),
-      the ring-3 filesystem server that would load them, and the
-      filesystem protocol it would speak. On aarch64 the unpatched
-      per-CPU base and `current` reads are MRS TPIDR_EL1 and SP_EL0,
-      which are UNDEFINED at EL0: the slice must answer that before
-      the ISA can run them.
-
-config LX_FS_EXT4_RW
-    bool "ext4 read-write with journal (jbd2)"
-    help
-      Not implemented: stage L4 (journalled writes, barrier
-      mapping to BlockDevice::flush). Enabling it fails the build. No DMA.
-      Licence: GPL-2.0-only image.
-
-endmenu
-
-comment "Block devices: Linux filesystems use the native BlockDevice; no Linux block driver is planned"
-
-menu "USB (lxsrv-usb)"
-
-config LX_USB_XHCI
-    bool "xHCI host controller over PCI (xhci-pci, usbcore, hub)"
-    help
-      Not implemented: stage L6 (QEMU qemu-xhci), after the
-      native prerequisites of stage L5 (ring-3 DMA capability, PCI-BAR
-      capability, ring-3 MSI, IOMMU wiring). Enabling it fails the build.
-      Does DMA: see LX_ACCEPT_UNCONFINED_DMA. Licence: GPL-2.0-only image.
-
-config LX_USB_DWC3
-    bool "Board USB controller (xhci-plat over dwc3)"
-    help
-      Not implemented: stage L8 (VF2/K1 board bring-up of the
-      dwc3 clocks, resets and PHY). Enabling it fails the build. Does
-      DMA, and VF2/K1 have no IOMMU: needs LX_ACCEPT_UNCONFINED_DMA.
-      Licence: GPL-2.0-only image.
-
-config LX_USB_HID
-    bool "HID keyboard / mouse (usbhid)"
-    help
-      Not implemented: stage L6. Enabling it fails the build.
-      Licence: GPL-2.0-only image.
-
-config LX_USB_STORAGE
-    bool "Mass storage (usb-storage)"
-    help
-      Not implemented: stage L7 (host-template side only; the
-      SCSI mid layer is not compiled). Enabling it fails the build.
-      Licence: GPL-2.0-only image.
-
-config LX_USB_CDC
-    bool "CDC serial (cdc-acm)"
-    help
-      Not implemented: stage L7. Enabling it fails the build.
-      Licence: GPL-2.0-only image.
-
-config LX_USB_UVC
-    bool "UVC camera (uvcvideo)"
-    help
-      Not implemented: stage L9+ (needs its own design work;
-      V4L2 and videobuf2 are the heaviest class). Enabling it fails the
-      build. Licence: GPL-2.0-only image.
-
-endmenu
-
-menu "Later classes (each needs its own design work)"
-
-config LX_SND_ASOC
-    bool "Audio (ALSA core + ASoC codecs)"
-    help
-      Not implemented: stage L9+. Enabling it fails the build.
-      Does DMA. Licence: GPL-2.0-only image.
-
-config LX_DRM_PANEL
-    bool "Display panels (DRM/KMS panel drivers)"
-    help
-      Not implemented: stage L9+ (panel drivers only, not GPU
-      stacks). Enabling it fails the build. Does DMA. Licence:
-      GPL-2.0-only image.
-
-config LX_IIO
-    bool "IIO sensors"
-    help
-      Not implemented: stage L9+ (one driver per sensor, usually
-      I2C/SPI, no DMA). No safety decision may read an IIO server's
-      output. Enabling it fails the build. Licence:
-      GPL-2.0-only image.
-
-config LX_WIFI
-    bool "Wi-Fi (mac80211 / cfg80211)"
-    help
-      Not implemented: stage L9+, last, only with a product
-      case. Enabling it fails the build. Does DMA. Licence: GPL-2.0-only
-      image.
-
-config LX_BLUETOOTH
-    bool "Bluetooth"
-    help
-      Not implemented: stage L9+. Enabling it fails the build.
-      Does DMA. Licence: GPL-2.0-only image.
-
-endmenu
-
-config LX_ACCEPT_UNCONFINED_DMA
-    bool "Allow DMA-capable Linux servers on a board without an IOMMU"
-    default n
-    depends on LX_USB_XHCI || LX_USB_DWC3 || LX_SND_ASOC || LX_DRM_PANEL || LX_WIFI || LX_BLUETOOTH
-    help
-      Not implemented: stages L5/L8. Enabling it fails the build.
-
-      Where a Linux server drives a bus master and the board has no
-      IOMMU (VF2 and K1 have none), the device can write any physical
-      address, including kernel memory, and the ring-3 boundary does not
-      contain it. A DMA class on such a board is meant to
-      build only with this option set, so the acceptance is a recorded
-      build-time act, never inherited silently; the server prints
-      "[LX] DMA UNCONFINED" at start.
 
 endif # LINUX_DRIVERS
 

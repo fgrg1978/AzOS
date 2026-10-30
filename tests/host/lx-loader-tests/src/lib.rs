@@ -764,7 +764,7 @@ fn fs_write_recorded(sets: &BTreeMap<String, BTreeSet<String>>) {
          # SPDX-FileCopyrightText: 2026 Fernando Rodriguez\n\
          #\n\
          # The imports of the filesystem set (lxbase, crc16, mbcache, jbd2, ext4;\n\
-         # Kconfig LX_FS_EXT4_RO) that neither the host ABI (crates/drivers/lx/HOST_ABI) nor an\n\
+         # ext4 slice) that neither the host ABI (crates/drivers/lx/HOST_ABI) nor an\n\
          # earlier module of the set exports: the Linux symbols the slice (VFS, page\n\
          # cache, buffer heads, bio, wait queues, per-CPU data) has still to provide.\n\
          # Read by tests/host/lx-loader-tests; it must equal the set the built modules\n\
