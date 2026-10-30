@@ -17,7 +17,7 @@
 (?!preset boot: ).*	*	console program /fat/TERMD\.ELF gave up: recovery console \(it is not on this volume\)	a gate kernel has the default console program and a bare volume: the recovery console is the console there
 sh: supervisor gives up, recovery console \((rv|arm)\)	*	console program /fat/TERMD\.ELF gave up: recovery console \(	the row ends the terminal server for good to see the recovery console take over
 sh: exit gives the console back \((rv|arm)\)	gave-up	console program /fat/TERMD\.ELF gave up: recovery console \(	the row exits the shell and asserts that the recovery console takes over
-console: brain client \((rv|arm)\)	gave-up	console program /fat/BRAINCLI\.ELF gave up: recovery console \(it did not take the console	the client reads no console input, and the row asserts this give-up
+console: brain client \((rv|arm)\)	gave-up	console program /fat/BRAINCLI\.ELF gave up: recovery console \(it did not take the console	the client exits (no motor capability on this volume) until compmgr stops restarting it, and the row asserts this give-up
 sh: safe mode( canary)? \((rv|arm)\)	warn	\[WDT\] WARNING: 3 consecutive crashes detected	the row crashes the boots on purpose to reach safe mode
 ktest lockdep canaries \((rv|arm|x86)\)	lockdep	.	the row arms every lockdep canary: each one provokes its violation
 boot: x86_64 desktop reaches the shell, canary	lockdep	lockdep: sleep or device wait under a SpinLock	the canary holds the storm's lock across the durable record, and the row asserts the violation
