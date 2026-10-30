@@ -25694,13 +25694,13 @@ clock_scale_row() { # clock_scale_row <label> <hvf|tcg> <extra cpu options> <pas
     local pid=$! i=0
     {
         while [ "$i" -lt 240 ] && kill -0 "$pid"; do
-            grep -aqE "^(not )?ok [0-9]+ - clock_timeout_holds_against_counter" "$log" && break
+            tr -d '\r' <"$log" | grep -aE "^(not )?ok [0-9]+ - clock_timeout_holds_against_counter" >/dev/null && break
             i=$((i + 1)); sleep 0.5
         done
         kill -9 "$pid"; wait "$pid"
     } 2>/dev/null
     rm -f "$kimg"
-    if grep -aqE "$want" "$log"; then
+    if tr -d '\r' <"$log" | grep -aE "$want" >/dev/null; then
         ok; tr -d '\r' <"$log" | grep -a '^# clock:' | sed 's/^/      /'; rm -f "$log"
     else
         bad; echo "      wanted: $want"; tr -d '\r' <"$log" | grep -aE '^# clock:|clock_timeout|KERNEL PANIC' | sed 's/^/        /'
