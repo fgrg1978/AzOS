@@ -491,7 +491,10 @@ USPACE_METADATA_TAG := $(shell python3 -c 'import hashlib; print(hashlib.sha256(
 # QEMU's default, so the default images and digests do not move). A board's
 # images: `make RV_USER_KCONFIG=build/k1.config userspace`.
 RV_USER_KCONFIG ?= $(OUT_BUILD)/qemu-dev.config
-RV_USER_ISA := $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
+# Only a riscv64 expansion gives them: the development configuration follows the
+# ISA of .config, and in an out dir last built for another ISA it still holds
+# that ISA's flags when `make check ARCH=riscv64` or `make azos-guest` read it.
+RV_USER_ISA := $(if $(shell grep -qs '^CONFIG_ARCH_RISCV64=y$$' '$(RV_USER_KCONFIG)' && echo y),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
 # Cargo hashes the target spec's contents into every artifact's fingerprint,
 # so an edit of sdk/targets/*.json relinks every image; a crate's build.rs (the
 # stack an image asks for, `-z stack-size`) is tracked by cargo itself.
