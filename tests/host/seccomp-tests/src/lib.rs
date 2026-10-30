@@ -3064,8 +3064,10 @@ mod image_profiles {
         let path = makefile_var(&var).replace("$(OUT_BUILD)", concat!(env!("AZOS_OUT"), "/build"));
         std::fs::read(&path).unwrap_or_else(|e| {
             panic!(
-                "{path}: {e}. The seccomp image table is generated from the shipped ELFs: \
-                 run `make $AZOS_OUT/build/image_hashes.rs`, which builds them, before this suite."
+                "{path}: {e}. The seccomp image table is generated from the ELFs of the images \
+                 the .config enables (CONFIG_USERSPACE_{}): run `make $AZOS_OUT/build/image_hashes.rs`, \
+                 which builds them, before this suite.",
+                name.trim_end_matches(".ELF"),
             )
         })
     }
@@ -3135,14 +3137,20 @@ mod image_profiles {
         assert!(rule.len() >= 13, "found only {rule:?} in the x86_64 Makefile image recipe");
     }
 
-    /// Every row is bound to one digest and every digest to a row, in Makefile
-    /// copy order, and no two shipped ELFs have the same bytes, which would bind
-    /// one binary to the other's row.
+    /// Every digest is bound to a row, in Makefile copy order, and no two shipped
+    /// ELFs have the same bytes, which would bind one binary to the other's row.
+    /// The table lists the images the .config enables (Kconfig USERSPACE_<NAME>),
+    /// so a row may have no digest; the profiles stay whole, as a configuration
+    /// that enables the image needs its policy.
     #[test]
-    fn every_row_is_bound_to_one_digest_and_every_digest_to_a_row() {
+    fn every_digest_is_bound_to_a_row() {
         let rows: Vec<&str> = IMAGE_PROFILES.iter().map(|p| p.image).collect();
         let bound: Vec<&str> = IMAGE_SHA256.iter().map(|(n, _)| *n).collect();
-        assert_eq!(bound, rows, "IMAGE_SHA256 vs IMAGE_PROFILES");
+        let mut rest = rows.iter();
+        assert!(
+            bound.iter().all(|n| rest.any(|r| r == n)),
+            "IMAGE_SHA256 {bound:?} is not an ordered subset of IMAGE_PROFILES {rows:?}",
+        );
         let digests: BTreeSet<[u8; 32]> = IMAGE_SHA256.iter().map(|(_, d)| *d).collect();
         assert_eq!(digests.len(), IMAGE_SHA256.len(), "two shipped ELFs have the same bytes");
     }

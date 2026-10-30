@@ -235,6 +235,20 @@ def main():
         v = values(cfg)
         check(rc == 0 and v.get("CONSOLE_PROGRAM_BRAINCLI") is None and v.get("CONSOLE_PATH") == '"/fat/TERMD.ELF"',
               "BRAINCLI on a non-robot preset: dropped, native sh stays")
+        # 6. --all-on names every image (the lines the gate appends to ask for all).
+        r = subprocess.run([sys.executable, os.path.join(tmp, "tools/build/gen_userspace_kconfig.py"), "--root", tmp, "--all-on"],
+                           capture_output=True, text=True)
+        lines = r.stdout.split()
+        check(r.returncode == 0 and "CONFIG_USERSPACE_SH=y" in lines and "CONFIG_USERSPACE_HELLO=y" in lines
+              and all(re.fullmatch(r"CONFIG_USERSPACE_[A-Z0-9_]+=y", ln) for ln in lines),
+              "--all-on: CONFIG_USERSPACE_<STEM>=y for every image, nothing else")
+        rc, log, v = defconfig(tmp, "generic-sbc-riscv64-dev+qemu+linux+gui", cfg)
+        with open(cfg, "a") as f:
+            f.write(r.stdout)
+        rc, log = olddefconfig(tmp, cfg)
+        v = values(cfg)
+        check(rc == 0 and all(v.get(ln[len("CONFIG_"):-2]) == "y" for ln in lines),
+              "--all-on lines survive olddefconfig on a large board: every program is on")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"{len(FAILS)} failed")

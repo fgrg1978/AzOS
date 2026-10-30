@@ -4,6 +4,7 @@
 """Write config/Kconfig.userspace from the programs under userspace/.
 
     python3 tools/build/gen_userspace_kconfig.py [--root DIR] [--out FILE] [--config FILE]
+    python3 tools/build/gen_userspace_kconfig.py [--root DIR] --all-on
 
 The root `Kconfig` runs this script from a `$(shell,...)` line before it
 sources the file, so every kconfiglib entry point (menuconfig, olddefconfig,
@@ -59,6 +60,10 @@ Output, in a menu "Userspace programs":
 configuration whose console program names an image that no longer exists
 gets a warning on stderr; olddefconfig then drops that symbol and the
 choice falls back to its default.
+
+`--all-on` prints `CONFIG_USERSPACE_<STEM>=y` for every image and writes nothing:
+the lines a configuration appends to ask for every program (the gate, whose
+scenario volumes boot test programs that no product configuration enables).
 
 The output file is rewritten only when its contents change (it is a
 `rerun-if-changed` input of `azos_limits`). On an error it is removed, so
@@ -391,10 +396,13 @@ def warn_stale_console(config_path, stems, bb):
 def main(argv):
     root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
     out = None
+    all_on = False
     config = os.environ.get("KCONFIG_CONFIG") or ".config"
     it = iter(argv[1:])
     for arg in it:
-        if arg == "--root":
+        if arg == "--all-on":
+            all_on = True
+        elif arg == "--root":
             root = next(it)
         elif arg == "--out":
             out = next(it)
@@ -403,6 +411,15 @@ def main(argv):
         else:
             sys.stderr.write(f"gen_userspace_kconfig.py: unknown argument {arg!r}\n")
             return 2
+    if all_on:
+        try:
+            for _, _, images, _, _ in scan(root):
+                for img in images:
+                    print(f"CONFIG_USERSPACE_{stem_of(img)}=y")
+        except (GenError, OSError) as e:
+            sys.stderr.write(f"gen_userspace_kconfig.py: {e}\n")
+            return 1
+        return 0
     out = out or os.path.join(root, OUT_REL)
     try:
         text, stems = render(root)

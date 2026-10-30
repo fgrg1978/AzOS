@@ -633,7 +633,11 @@ gate_defc() { # gate_defc rv|a64|x86 <features>: the defconfig a kernel with the
 # self-tests became optional. `boot: no self-tests by default` boots each ISA
 # with it off. tools/gate/check_fast.sh writes the same two files the same way,
 # and the robot cells (gate_config) take it too.
-GATE_KCONFIG_EXTRA="CONFIG_BOOT_SELFTESTS=y"
+# The gate's scenario volumes boot programs no product configuration enables (the
+# test and bench programs, the optional services), and the kernel binds only the
+# images the configuration enables (Kconfig USERSPACE_<NAME>): the gate asks for all.
+GATE_KCONFIG_EXTRA="CONFIG_BOOT_SELFTESTS=y
+$(python3 "$REPO_ROOT/tools/build/gen_userspace_kconfig.py" --all-on)"
 PRIMARY_DIR="${PRIMARY_DIR:-$AZOS_OUT/target/primary}"
 PRIMARY_CONFIG="${PRIMARY_DIR}/qemu.config"
 primary_config() {

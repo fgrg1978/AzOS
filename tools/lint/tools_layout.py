@@ -92,7 +92,7 @@ ROLES = {
     "image": [
         "azpkg.py", "azpkg_licences.txt", "blklog_crash_image.py", "boot.cmd", "check_board_disk.py",
         "gen_board_manifest.py", "kaslr_image.sh", "make_gguf.py", "make_mbl.py", "make_parted_disk.py",
-        "mkazvol.py", "ota_delta.py", "test_board_manifest.py",
+        "mkazvol.py", "ota_delta.py", "test_board_manifest.py", "test_user_images.py",
     ],
     "sign": [
         "check_board_keys.py", "check_prod_key.sh", "corrupt_sig.py", "device_provision.py",

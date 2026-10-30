@@ -13,15 +13,10 @@ $(IMAGE_HASHES_BOARD): userspace/image_hashes.py \
 	@mkdir -p $(BOARD_DIR)
 	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_BOARD)
 
-$(IMAGE_HASHES): userspace/image_hashes.py \
-               $(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF) \
-               $(UHELLO_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) \
-               $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(VSBENCH_ELF) \
-               $(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) \
-               $(SH_ELF) $(TERMD_ELF) $(NAMESD_ELF) $(COMPMGR_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(TRACECTL_ELF) $(DECISD_ELF) $(INPUTD_ELF) $(COMPSRV_ELF) $(LOGD_ELF) $(WHY_ELF) $(PKGD_ELF) $(PKG_ELF) $(RPCSRV_ELF) $(ZENOHD_ELF) $(VMMD_ELF) $(PTPD_ELF) $(AUDIOD_ELF) $(RPCQUIC_ELF) $(MCPD_ELF) $(SSHD_ELF) $(LOGIND_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF) \
+$(IMAGE_HASHES): userspace/image_hashes.py $(IMAGE_ELF_PATHS_ON) $(USER_ON_STAMP) \
                $(if $(LXRT_NEED),$(LXRT_ELF))
 	@mkdir -p $(OUT_BUILD)
-	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS)
+	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_ON)
 	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing $(OUT_BUILD)/thirdparty_hashes.rs \
 		BUSYBOX.ELF=$(BUSYBOX_ELF_RISCV64) LXTHR.ELF=$(LXTHR_ELF_RISCV64)
 
@@ -73,16 +68,10 @@ $(OUT_BUILD)/disk-x86_64-busybox.img: $(OUT_BUILD)/disk-x86_64.img $(wildcard $(
 	mcopy -i $@ "$(BUSYBOX_ELF_X86_64)" ::BUSYBOX.ELF
 	@echo "[DISK] x86_64 FAT32 image: $@ (user shell, LXHELLO.ELF, third-party BUSYBOX.ELF)"
 
-$(IMAGE_HASHES_AARCH64): userspace/image_hashes.py \
-               $(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AARCH64) $(MLSRV_ELF_AARCH64) \
-               $(UHELLO_ELF_AARCH64) $(REFLEX_ELF_AARCH64) $(BRAINCLI_ELF_AARCH64) \
-               $(CAPTEST_ELF_AARCH64) $(LATBENCH_ELF_AARCH64) $(ABITEST_ELF_AARCH64) \
-               $(IPCTEST_ELF_AARCH64) $(VSBENCH_ELF_AARCH64) $(EPSRV_ELF_AARCH64) $(ABICHILD_ELF_AARCH64) \
-               $(VSSRV_ELF_AARCH64) $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64) \
-               $(SH_ELF_AARCH64) $(TERMD_ELF_AARCH64) $(NAMESD_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(POWER_ELF_AARCH64) $(TRACECTL_ELF_AARCH64) $(DECISD_ELF_AARCH64) $(INPUTD_ELF_AARCH64) $(COMPSRV_ELF_AARCH64) $(LOGD_ELF_AARCH64) $(WHY_ELF_AARCH64) $(PKGD_ELF_AARCH64) $(PKG_ELF_AARCH64) $(RPCSRV_ELF_AARCH64) $(ZENOHD_ELF_AARCH64) $(VMMD_ELF_AARCH64) $(PTPD_ELF_AARCH64) $(AUDIOD_ELF_AARCH64) $(RPCQUIC_ELF_AARCH64) $(MCPD_ELF_AARCH64) $(SSHD_ELF_AARCH64) $(LOGIND_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(LXSRV_ELF_AARCH64) $(LXHELLO_ELF_AARCH64) \
+$(IMAGE_HASHES_AARCH64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_AARCH64_ON) $(USER_ON_STAMP) \
                $(if $(LXRT_NEED),$(LXRT_ELF_AARCH64))
 	@mkdir -p $(OUT_BUILD)
-	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_AARCH64)
+	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_AARCH64_ON)
 	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing $(OUT_BUILD)/thirdparty_hashes_aarch64.rs \
 		BUSYBOX.ELF=$(BUSYBOX_ELF_AARCH64) LXTHR.ELF=$(LXTHR_ELF_AARCH64)
 
@@ -231,7 +220,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-gpiodrv.img $(OUT_BUILD)/disk-b
 	mkfs.fat -F 32 -n "ROBTOS" $@ 32768
 	@printf "Hello from AzOS FAT32!\n" > $@.tmp_hello.txt
 	@printf "AzOS Phase 18 — Persistent configuration + dynamic model loading\n" > $@.tmp_readme.txt
-	@printf "# AzOS Configuration\nml_enabled=1\nlog_level=1\nmotor_max_speed=100\nwatchdog_ms=500\nnet_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\nbehavior_l1_enabled=1\nbehavior_l2_enabled=1\nbehavior_l3_enabled=1\nautorun=$(AUTORUN_ELF)\n" \
+	@printf "$(DISK_INI_riscv64)autorun=$(AUTORUN_ELF)\n" \
 		> $@.tmp_config.ini
 	@printf "$(CFG_EXTRA)" >> $@.tmp_config.ini
 	@printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" \
@@ -319,22 +308,6 @@ $(OUT_BUILD)/disk-sh.img: $(OUT_BUILD)/disk-drvbase.img $(SH_ELF) $(TERMD_ELF) $
 	mcopy -i $@ $(LOGIND_ELF) ::LOGIND.ELF
 	mcopy -i $@ $(VMMD_ELF) ::VMMD.ELF
 	@echo "[DISK] FAT32 image: $@ (user shell SH.ELF with its terminal server TERMD.ELF and name server NAMESD.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF, TRACECTL.ELF, DECISD.ELF, LOGD.ELF, WHY.ELF, PKGD.ELF, PKG.ELF, RPCSRV.ELF, ZENOHD.ELF, PTPD.ELF, RPCQUIC.ELF, MCPD.ELF, SSHD.ELF)"
-
-# The system volume (`make build`, `make qemu`): the shell volume plus the two
-# ring-3 drivers the built-in topology starts on every board class but the
-# embedded one, so the console of `make qemu` names no missing program. The
-# gate's own volumes stay as they are: `disk-drv.img` is the one that starts them.
-$(OUT_BUILD)/disk-system.img: $(OUT_BUILD)/disk-sh.img $(BUZZ_DRV_ELF) $(INA_DRV_ELF)
-	cp $< $@
-	mcopy -i $@ $(BUZZ_DRV_ELF) ::BUZZDRV.ELF
-	mcopy -i $@ $(INA_DRV_ELF) ::INADRV.ELF
-	@echo "[DISK] FAT32 image: $@ (the user-shell disk plus the ring-3 drivers BUZZDRV.ELF and INADRV.ELF)"
-
-$(OUT_BUILD)/disk-system-busybox.img: $(OUT_BUILD)/disk-system.img $(wildcard $(BUSYBOX_ELF_RISCV64))
-	@[ -f "$(BUSYBOX_ELF_RISCV64)" ] || { echo "no $(BUSYBOX_ELF_RISCV64): run make busybox"; exit 1; }
-	cp $< $@
-	mcopy -i $@ "$(BUSYBOX_ELF_RISCV64)" ::BUSYBOX.ELF
-	@echo "[DISK] FAT32 image: $@ (the system volume plus third-party BUSYBOX.ELF)"
 
 # The Linux-server disk -- the drivers base (no autorun) plus
 # LXSRV.ELF and its test module. The only gate image that carries them; a
@@ -457,7 +430,7 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 	# 512 B = 32 MiB = 32768 KiB, the mkfs.fat BLOCKS unit.
 	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
 	mkfs.fat -F 32 -n "ROBTOS" $@ 32768
-	@printf "# AzOS Configuration\nml_enabled=1\nlog_level=1\nmotor_max_speed=100\nwatchdog_ms=500\nnet_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\nbehavior_l1_enabled=1\nbehavior_l2_enabled=1\nbehavior_l3_enabled=1\nautorun=$(AUTORUN_ELF)\n" \
+	@printf "$(DISK_INI_riscv64)autorun=$(AUTORUN_ELF)\n" \
 		> $@.tmp_board_config.ini
 	@printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" \
 		> $@.tmp_board_bootmeta
@@ -555,7 +528,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
 	mkfs.fat -F 32 -n "ROBTOS" $@ 32768
 	@printf "Hello from AzOS FAT32!\n" > $@.tmp_hello_aarch64.txt
-	@printf "net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\nautorun=$(AUTORUN_ELF_AARCH64)\n" > $@.tmp_config_aarch64.ini
+	@printf "$(DISK_INI_aarch64)autorun=$(AUTORUN_ELF_AARCH64)\n" > $@.tmp_config_aarch64.ini
 	@printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" \
 		> $@.tmp_bootmeta_aarch64
 	mcopy -i $@ $@.tmp_hello_aarch64.txt ::HELLO.TXT
@@ -626,19 +599,6 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$
 	mcopy -i $@ $(LOGIND_ELF_AARCH64) ::LOGIND.ELF
 	mcopy -i $@ $(VMMD_ELF_AARCH64) ::VMMD.ELF
 	@echo "[DISK] aarch64 FAT32 image: $@ (user shell SH.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF, TRACECTL.ELF, DECISD.ELF, LOGD.ELF, WHY.ELF, PKGD.ELF, PKG.ELF, RPCSRV.ELF, ZENOHD.ELF, PTPD.ELF, RPCQUIC.ELF, MCPD.ELF, SSHD.ELF)"
-
-# See `build/disk-system.img`.
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64)
-	cp $< $@
-	mcopy -i $@ $(BUZZ_DRV_ELF_AARCH64) ::BUZZDRV.ELF
-	mcopy -i $@ $(INA_DRV_ELF_AARCH64) ::INADRV.ELF
-	@echo "[DISK] aarch64 FAT32 image: $@ (the user-shell disk plus the ring-3 drivers BUZZDRV.ELF and INADRV.ELF)"
-
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system-busybox.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system.img $(wildcard $(BUSYBOX_ELF_AARCH64))
-	@[ -f "$(BUSYBOX_ELF_AARCH64)" ] || { echo "no $(BUSYBOX_ELF_AARCH64): run make busybox"; exit 1; }
-	cp $< $@
-	mcopy -i $@ "$(BUSYBOX_ELF_AARCH64)" ::BUSYBOX.ELF
-	@echo "[DISK] aarch64 FAT32 image: $@ (the system volume plus third-party BUSYBOX.ELF)"
 
 # See `build/disk-lx.img`.
 $(OUT_BUILD)/disk-aarch64-lx.img: $(OUT_BUILD)/disk-aarch64-drvbase.img $(LXSRV_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(LXTEST_KO_AARCH64) $(LX_KO_A64) $(LX_XZTEST)
@@ -954,11 +914,11 @@ $(OUT_BUILD)/disk-recovery.img: $(OUT_BUILD)/disk.img $(OUT_BUILD)/KERN_R.BIN $(
 # The third-party table (BUSYBOX.ELF when `make busybox` built it, empty
 # otherwise) is a target of its own, so an output tree whose image table is
 # already current still gets it.
-$(IMAGE_HASHES_X86_64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_X86_64) \
+$(IMAGE_HASHES_X86_64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_X86_64_ON) $(USER_ON_STAMP) \
                $(if $(LXRT_NEED_X86_64),$(LXRT_ELF_X86_64)) $(THIRDPARTY_HASHES_X86_64)
 	@mkdir -p $(OUT_BUILD)
-	python3 tools/lint/user_entry_lint.py --image $(filter-out $(LXHELLO_ELF_X86_64),$(IMAGE_ELF_PATHS_X86_64))
-	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_X86_64)
+	python3 tools/lint/user_entry_lint.py --image $(filter-out $(LXHELLO_ELF_X86_64),$(IMAGE_ELF_PATHS_X86_64_ON))
+	python3 userspace/image_hashes.py $@ $(IMAGE_ELFS_X86_64_ON)
 
 $(THIRDPARTY_HASHES_X86_64): userspace/image_hashes.py $(wildcard $(BUSYBOX_ELF_X86_64))
 	@mkdir -p $(OUT_BUILD)
@@ -990,7 +950,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 	dd if=/dev/zero of=$@ bs=512 count=8 seek=65536 conv=notrunc
 	mkfs.fat -F 32 -n "ROBTOS" $@ 32768
 	@printf "Hello from AzOS FAT32!\n" > $@.tmp_hello.txt
-	@printf "net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nautorun=$(AUTORUN_ELF_X86_64)\n" > $@.tmp_config.ini
+	@printf "$(DISK_INI_x86_64)autorun=$(AUTORUN_ELF_X86_64)\n" > $@.tmp_config.ini
 	@printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" > $@.tmp_bootmeta
 	mcopy -i $@ $@.tmp_hello.txt ::HELLO.TXT
 	mcopy -i $@ $(HELLO_ELF_X86_64) ::HELLO.ELF

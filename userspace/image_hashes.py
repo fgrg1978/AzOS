@@ -5,6 +5,9 @@
 
     python3 userspace/image_hashes.py $AZOS_OUT/build/image_hashes.rs HELLO.ELF=$AZOS_OUT/build/hello.elf ...
 
+The Makefile passes only the images the .config enables (Kconfig USERSPACE_<NAME>);
+no pair at all writes an empty table.
+
 The output is Rust, `include!`d by `crates/core/sched/src/seccomp.rs`: the kernel binds
 each seccomp image profile to the digest of the exact bytes the Makefile copies
 onto the image, not to the file name those bytes are copied under.
@@ -66,8 +69,8 @@ def main(argv):
             argv = argv[:1] + argv[2:]
         else:
             sys.exit(f"image_hashes.py: unknown option {argv[1]}")
-    if len(argv) < 3 and not skip_missing:
-        sys.exit("usage: image_hashes.py [--const NAME] [--skip-missing] <out.rs> NAME=path.elf ...")
+    if len(argv) < 2:
+        sys.exit("usage: image_hashes.py [--const NAME] [--skip-missing] <out.rs> [NAME=path.elf ...]")
     out = argv[1]
     rows = []
     seen = set()

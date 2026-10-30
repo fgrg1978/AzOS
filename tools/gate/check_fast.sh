@@ -47,7 +47,7 @@ t0=$SECONDS
 cfg() { # cfg <defconfig> <out>
     local tmp rc=0; tmp="$(mktemp -d)" || return 1
     mkdir -p "$(dirname "$2")"
-    { cat "config/defconfigs/$1"; echo "CONFIG_BOOT_SELFTESTS=y"; } >"$tmp/c" \
+    { cat "config/defconfigs/$1"; echo "CONFIG_BOOT_SELFTESTS=y"; python3 tools/build/gen_userspace_kconfig.py --all-on; } >"$tmp/c" \
         && KCONFIG_CONFIG="$tmp/c" python3 -m olddefconfig >/dev/null 2>&1 || rc=1
     [ "$rc" = 0 ] && { cmp -s "$tmp/c" "$2" || cp "$tmp/c" "$2"; } || rc=1
     rm -rf "$tmp"; return $rc
@@ -91,6 +91,10 @@ if [ "${CHECK_FAST_NOBUILD:-0}" != 1 ]; then
     cfg robot-sbc-riscv64-dev+qemu+linux+gui.config "$RV_CFG" \
         && cfg robot-sbc-aarch64-dev+qemu+linux+gui.config "$ARM_CFG" \
 || { echo "check-fast: olddefconfig failed"; exit 2; }
+    # make reads the images to bind from the gate's cell, not from the workspace .config.
+    export KCONFIG_CONFIG="$RV_CFG"
+    make "$AZOS_OUT/build/image_hashes.rs" "$AZOS_OUT/build/image_hashes_aarch64.rs" >"$OUT/build-tables.log" 2>&1 \
+        || { echo "check-fast: the image tables did not build (see $OUT/build-tables.log)"; exit 2; }
     # A canary list the kernel would cut fails here, before any build.
     for isa in $ISAS; do
         python3 tools/gate/check_fast.py cmdline "$isa" "$(kcfg "$isa")" >/dev/null || { echo "check-fast: $isa canary= list too long"; exit 2; }

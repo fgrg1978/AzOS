@@ -972,6 +972,31 @@ IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) SYSTEST.ELF=$(SYSTEST_ELF_X86
 IMAGE_ELF_PATHS_X86_64 := $(foreach e,$(IMAGE_ELFS_X86_64),$(lastword $(subst =, ,$(e))))
 IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs
 
+# ── The images the .config builds ───────────────────────────────────────────
+# Kconfig USERSPACE_<NAME> (config/Kconfig.userspace, generated from the
+# programs' metadata) decides which of the programs above the build makes, the
+# digest tables bind and the system volume carries. The IMAGE_ELFS lists stay
+# the catalogue of everything this tree can build: the board manifest and the
+# scenario volumes read them whole. One selection for every ISA, read from
+# $(KCONFIG_CONFIG): which programs a system has does not depend on its ISA.
+USER_ON := $(shell sed -n -E 's/^CONFIG_USERSPACE_([A-Z0-9_]+)=y$$/\1/p' '$(KCONFIG_CONFIG)' 2>/dev/null)
+# $(call image_on,<NAME=path ...>): the pairs whose image the configuration enables.
+image_on = $(foreach e,$(1),$(if $(filter $(basename $(firstword $(subst =, ,$(e)))),$(USER_ON)),$(e)))
+elf_paths = $(foreach e,$(1),$(lastword $(subst =, ,$(e))))
+IMAGE_ELFS_ON         := $(call image_on,$(IMAGE_ELFS))
+IMAGE_ELFS_AARCH64_ON := $(call image_on,$(IMAGE_ELFS_AARCH64))
+IMAGE_ELFS_X86_64_ON  := $(call image_on,$(IMAGE_ELFS_X86_64))
+IMAGE_ELF_PATHS_ON         := $(call elf_paths,$(IMAGE_ELFS_ON))
+IMAGE_ELF_PATHS_AARCH64_ON := $(call elf_paths,$(IMAGE_ELFS_AARCH64_ON))
+IMAGE_ELF_PATHS_X86_64_ON  := $(call elf_paths,$(IMAGE_ELFS_X86_64_ON))
+# What the selection was when the tables and volumes were last made: they
+# depend on it, so a changed selection remakes them though no ELF moved.
+USER_ON_STAMP := $(OUT_BUILD)/user-images.on
+# CONFIG.INI of the volumes, up to its autorun line (which each recipe adds).
+DISK_INI_riscv64 := \# AzOS Configuration\nml_enabled=1\nlog_level=1\nmotor_max_speed=100\nwatchdog_ms=500\nnet_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\nbehavior_l1_enabled=1\nbehavior_l2_enabled=1\nbehavior_l3_enabled=1\n
+DISK_INI_aarch64 := net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\n
+DISK_INI_x86_64  := net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\n
+
 # ── The configured system: `make build`, `make qemu` ────────────────────────
 # `make build` builds the ISA $(KCONFIG_CONFIG) selects (KCONFIG_ISA, at the
 # top): the kernel, the ring-3 images and the system volume, from the
@@ -995,7 +1020,7 @@ SYSTEM_KCONFIG_x86_64  := $(X86_64_KCONFIG)
 # configuration without it builds the volume it always did.
 SYSTEM_VOLUME_riscv64  = $(OUT_BUILD)/disk-system$(if $(BUSYBOX_ON),-busybox).img
 SYSTEM_VOLUME_aarch64  = $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system$(if $(BUSYBOX_ON),-busybox).img
-SYSTEM_VOLUME_x86_64   = $(OUT_BUILD)/disk-x86_64$(if $(BUSYBOX_ON),-busybox).img
+SYSTEM_VOLUME_x86_64   = $(OUT_BUILD)/disk-x86_64-system$(if $(BUSYBOX_ON),-busybox).img
 TARGET_riscv64         := $(RISCV64_TARGET)
 TARGET_aarch64         := $(AARCH64_TARGET)
 TARGET_x86_64          := $(X86_64_TARGET)

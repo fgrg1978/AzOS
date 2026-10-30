@@ -150,6 +150,9 @@ fi
 # or not shipped) and an orphan ELF (on the disk, not declared); "board: volume = topology" boots only the good case.
 [ "$lints" = 1 ] && { printf "  %-26s" "board manifest..."; if out="$(python3 tools/image/test_board_manifest.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^(FAIL|ERROR)|Error' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
+# The ring-3 images follow the .config (tools/image/test_user_images.py): an image off in it is on no digest table and no system volume.
+[ "$lints" = 1 ] && { printf "  %-26s" "user images..."; if out="$(python3 tools/image/test_user_images.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^FAIL' | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # Kconfig is the only source of truth (tools/lint/kconfig_lint.py): cargo-feature
 # tags against kernel/Cargo.toml, no `select` of a visible symbol.
 if [ "$lints" = 1 ]; then

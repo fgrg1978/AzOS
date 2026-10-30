@@ -7,6 +7,7 @@
 #   vars.mk       variables (read first; it defines no rule)
 #   userspace.mk  ring-3 ELFs, SDK, Linux personality binaries, BusyBox, relibc
 #   images.mk     image-hash tables, disk images, fixtures, board volumes, topology files
+#   system.mk     the images the .config enables and the system volume of each ISA
 #   firmware.mk   firmware the kernel loads into the hardware (the x86 microcode image)
 #   kernel.mk     kernel builds, boards, Kconfig targets, micro
 #   host.mk       host-side tools (OTA, TFTP, weight files, clean)
@@ -44,6 +45,7 @@ all: build
 
 include mk/userspace.mk
 include mk/images.mk
+include mk/system.mk
 include mk/firmware.mk
 include mk/kernel.mk
 include mk/host.mk
