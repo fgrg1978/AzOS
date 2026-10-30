@@ -150,8 +150,56 @@ PASS=0
 FAIL=0
 SKIP=0
 
-ok()   { echo "ok";   PASS=$((PASS + 1)); ci_time_row ok; }
-bad()  { echo "FAIL"; FAIL=$((FAIL + 1)); ci_time_row FAIL; }
+ok() {
+    if ! ci_console_judge; then bad; printf '%s\n' "$CI_CONSOLE_OUT" | sed 's/^/      /'; return; fi
+    echo "ok"; PASS=$((PASS + 1)); ci_time_row ok
+}
+bad()  { ci_console_drop; echo "FAIL"; FAIL=$((FAIL + 1)); ci_time_row FAIL; }
+
+# ── The clean-console judge ─────────────────────────────────────────────────
+#
+# A QEMU row that reached its marker still fails when its console printed a
+# warning the row did not provoke on purpose (tools/gate/console_judge.py: the
+# classes, tools/gate/console_allow.tsv: what a row may print). Every row
+# reaches this through ok(), so no row calls it.
+#
+# Which console: the gate puts tools/gate/qemu_tap.py first on PATH as
+# qemu-system-<arch>; it appends the files QEMU's console goes to to
+# $CI_QTAP_REG (one registry per job) and then becomes QEMU. ok() judges what
+# the registry holds and empties it. A console the row removed before its
+# verdict is counted as not judged, and the gate prints the counts at the end.
+# CI_CONSOLE_JUDGE=0 turns it off. CI_CONSOLE_PLANT=<row label> appends a
+# warning line to the console of that row before it is judged: the canary
+# that the judge, the hook and the allowlist make a passing row fail.
+CI_CONSOLE_OUT=""
+ci_console_drop() { [ -n "${CI_QTAP_REG:-}" ] && : >"$CI_QTAP_REG"; return 0; }
+ci_console_note() { # ci_console_note <judged|clean-gone|dirty|none>
+    [ -n "${CI_QTAP_DIR:-}" ] && builtin printf '%s\t%s\n' "$1" "$CI_ROW_LABEL" >>"$CI_QTAP_DIR/verdicts.tsv"; return 0
+}
+ci_console_judge() { # 0 clean or nothing to judge; 1 dirty (CI_CONSOLE_OUT says what)
+    CI_CONSOLE_OUT=""
+    local reg="${CI_QTAP_REG:-}" snap rc
+    [ -n "$reg" ] && [ "${CI_CONSOLE_JUDGE:-1}" != 0 ] || return 0
+    if [ ! -s "$reg" ]; then ci_console_note none; return 0; fi
+    snap="$reg.judging"; mv "$reg" "$snap"; : >"$reg"
+    if [ -n "${CI_CONSOLE_PLANT:-}" ] && [ "$CI_CONSOLE_PLANT" = "$CI_ROW_LABEL" ]; then
+        builtin printf '[CANARY] WARNING: planted by CI_CONSOLE_PLANT\n' >>"$(sed -n 1p "$snap")"
+    fi
+    CI_CONSOLE_OUT="$(python3 "$CI_CHECK_DIR/gate/console_judge.py" judge --row "$CI_ROW_LABEL" \
+        --allow "$CI_CHECK_DIR/gate/console_allow.tsv" --reg "$snap" --keep "$CI_LOG_DIR" 2>&1)"; rc=$?
+    rm -f "$snap"
+    case "$rc" in
+        0) ci_console_note judged ;;
+        3) ci_console_note clean-gone ;;
+        *) ci_console_note dirty; return 1 ;;
+    esac
+    return 0
+}
+ci_console_report() { # the totals of the rows' console verdicts
+    [ -s "${CI_QTAP_DIR:-/nonexistent}/verdicts.tsv" ] || return 0
+    awk -F'\t' '{n[$1]++} END {printf "  console judge: %d row(s) judged clean, %d dirty, %d with a console removed before the verdict (not judged), %d passed with no QEMU console\n", n["judged"], n["dirty"], n["clean-gone"], n["none"]}' \
+        "$CI_QTAP_DIR/verdicts.tsv"
+}
 
 # ── Timing ──────────────────────────────────────────────────────────────────
 #
@@ -1767,6 +1815,13 @@ CI_QEMU_MAX="${GATE_QEMU_MAX:-${CI_QEMU_MAX:-4}}"
 CI_INJECT_FAIL="${CI_INJECT_FAIL:-}"
 PAR_DIR="$CI_LOG_DIR/par"
 rm -rf "$PAR_DIR"; mkdir -p "$PAR_DIR"
+# The console tap (see "The clean-console judge"): qemu-system-<arch> first on PATH.
+CI_QTAP_DIR="$CI_LOG_ABS/qtap"
+rm -rf "$CI_QTAP_DIR"; mkdir -p "$CI_QTAP_DIR"
+for ci_qarch in riscv64 aarch64 x86_64; do ln -s "$CI_CHECK_DIR/gate/qemu_tap.py" "$CI_QTAP_DIR/qemu-system-$ci_qarch"; done
+export CI_QTAP_DIR CI_QTAP_REG="$CI_QTAP_DIR/main.reg"
+: >"$CI_QTAP_REG"
+export PATH="$CI_QTAP_DIR:$PATH"
 PAR_PGID="$(ps -o pgid= -p $$ | tr -d ' ')"
 # Host commands' own process groups (wave 13): see tools/gate/gate_pgroup.sh.
 GATE_PGROUP_DIR="$PAR_DIR/pgroups"
@@ -2170,6 +2225,7 @@ par() { # par [-a] [-h] [-n <qemus>] [-s|-w] <key> <command> [args...]
         trap - INT TERM
         exec >"$PAR_DIR/$n.out" 2>&1 </dev/null 7>&-
         PASS=0; FAIL=0; SKIP=0; CI_TIMING="$PAR_DIR/$n.timing"; CI_T_LAST=$SECONDS
+        export CI_QTAP_REG="$CI_QTAP_DIR/job$n.reg"; : >"$CI_QTAP_REG"
         export CI_BUILD_ACC="$CI_LOG_ABS/par/$n.bacc"; : >"$CI_BUILD_ACC"
         "$@"
         echo "$PASS $FAIL $SKIP" >"$PAR_DIR/$n.res"
@@ -25404,6 +25460,7 @@ if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then
 fi
 echo ""
 ci_phase_report
+ci_console_report
 echo ""
 if [ "$SKIP" -gt 0 ]; then
     echo "[4/4] Results: ${PASS} passed, ${FAIL} failed, ${SKIP} skipped (CI_TIER=${CI_TIER}; each is marked above)"

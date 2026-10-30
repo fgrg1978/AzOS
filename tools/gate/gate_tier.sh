@@ -132,6 +132,10 @@ fi
 # reads) and the diff-to-rows map that reads it (tools/gate/rows_for_diff.py), after their canaries.
 [ "$lints" = 1 ] && { printf "  %-26s" "gate rows manifest..."; if out="$(python3 tools/gate/rows_for_diff.py --self-test 2>&1 && python3 tools/gate/gate_rows.py --self-test 2>&1 && python3 tools/gate/gate_rows.py --check 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -v ': ok' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
+# The clean-console judge (tools/gate/console_judge.py: its classes and allowlist, tools/gate/console_allow.tsv: every
+# row-specific entry names a row of the manifest).
+[ "$lints" = 1 ] && { printf "  %-26s" "console judge lint..."; if out="$(python3 tools/gate/console_judge.py --self-test 2>&1 && python3 tools/gate/console_judge.py check 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # The Kconfig option index (tools/build/gen_config_index.py --check: Documentation/config.md's table
 # is what the Kconfig tree declares; regenerate with it when a symbol changes), the Zbc CRC fold constants crates/drivers/lx/glue/lxbase.c carries
 # (tools/build/lx_kbuild/zbc_crc_constants.py), and the absolute-claim scanner (tools/lint/claims_check.sh,

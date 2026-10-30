@@ -1,0 +1,18 @@
+# Warnings a gate row's console may print (tools/gate/console_judge.py reads this; its classes are listed there).
+# Columns, tab separated: a regex the row's label must match entirely (.* for every row), a class (or *),
+# a regex the warning line must contain, and why the line is expected there.
+# The first block is every row: what an unprovisioned development image says on each boot, by design.
+# The second is every gate row but the preset boot rows: the gate's volumes carry only the programs a scenario
+# needs (mk/images.mk: "no other scenario gains their tasks"), so the topology's rows for the others are said
+# not to be on the volume, and a kernel built with the default console program (TERMD.ELF) finds it missing and
+# says once that the recovery console took over. The preset boot rows run the owner's own `make qemu` volume
+# and get no such entry.
+# Below that each entry belongs to the rows that provoke the line on purpose; a row that only happens to print
+# one does not get an entry, it is a finding.
+.*	warn	\[TOPO\] WARNING: no signed topology on the volume	a dev image boots a volume without CAPS.TOM/SCHED.TOM signatures and says so
+.*	warn	\[SECURE-BOOT\] WARNING: slot A not verified	a dev image embeds no signing key (secure-boot-enforced is the product build)
+.*	warn	\[SECCHAN\] WARNING: brain link has no key	a dev volume has no provisioned link key
+.*	*	\[OTA\] WARNING: both BOOTMETA\.A/\.B are missing or failed CRC	a fresh volume has no boot metadata yet; the kernel says it falls back to the legacy file
+(?!preset boot: ).*	not-on-volume	\[DRVLAUNCH\] \S+ is not on this volume	a gate volume carries only the programs its scenario starts
+(?!preset boot: ).*	*	console program /fat/TERMD\.ELF gave up: recovery console \(it is not on this volume\)	a gate kernel has the default console program and a bare volume: the recovery console is the console there
+sh: supervisor gives up, recovery console \((rv|arm)\)	*	console program /fat/TERMD\.ELF gave up: recovery console \(	the row ends the terminal server for good to see the recovery console take over

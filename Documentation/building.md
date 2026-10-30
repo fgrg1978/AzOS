@@ -254,6 +254,15 @@ subsystem per ISA) or `CI_TIER=rows` with `CI_ROWS` (the rows named); `CI_JOBS` 
 canary: that row must fail). Per-row timing goes to `$AZOS_OUT/build/ci-logs/timing.tsv`. The
 gate is run by hand; there is no hosted CI.
 
+A QEMU row that reached its marker also fails when its console printed a warning (`tools/gate/console_judge.py`):
+a console program that gave up, a component or program that did not run or is not on the volume, lockdep, a
+`WARN`/`WARNING` line, a recovery fallback, a ktest bail-out. Every row gets this through `ok()`, so no row calls it:
+the gate puts `tools/gate/qemu_tap.py` first on `PATH` as `qemu-system-<arch>`; it notes the file QEMU's console goes
+to and becomes QEMU. A warning a row provokes on purpose, or a development image prints on every boot, is listed
+with its reason in `tools/gate/console_allow.tsv` (row-label regex, class, line regex, reason). The end of a gate
+run prints how many rows were judged. `CI_CONSOLE_JUDGE=0` turns the judge off; `CI_CONSOLE_PLANT=<row label>`
+appends a warning line to that row's console first, the canary that a passing row then fails.
+
 ### Lints
 
 N0 runs each lint after its own self-test, so a lint that went blind fails.
