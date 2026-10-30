@@ -345,6 +345,12 @@ impl BytePipe {
         self.ring.len()
     }
 
+    /// Whether a one-byte write would find room now (a snapshot): `poll`'s
+    /// writable.
+    pub fn has_room(&self) -> bool {
+        self.ring.len() < self.ring.cap
+    }
+
     /// Writer ends alive (a snapshot).
     pub fn writers(&self) -> u32 {
         self.header().writers()

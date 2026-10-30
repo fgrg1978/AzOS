@@ -119,6 +119,23 @@ pub const EXE_MAX: usize = 64;
 /// Size of the native directory-entry name buffer.
 pub const NAME_BYTES: usize = azos_abi::syscall_nr::READDIR_NAME_BYTES;
 
+/// The state of a pipe end, as `poll` reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PipeReady {
+    /// Which end: a write end is ready when it has room, a read end when it
+    /// holds bytes.
+    pub write_end: bool,
+    pub ready: bool,
+    /// The other end is gone.
+    pub hup: bool,
+}
+
+/// How long a `poll` that found nothing sleeps before it looks again. A pipe
+/// end has no event a sleeping `poll` could be woken by without holding its
+/// futex word, so the wait is a bounded sleep; it is the latency of a `poll`
+/// on a pipe a peer fills later.
+pub const POLL_TICK_NS: u64 = 1_000_000;
+
 /// The native calls the runtime makes. The runtime image implements them
 /// with `azos_libsys`; the host tests implement them with a model. Every
 /// error is the native negative code (`azos_linux_abi::errno_from_native` maps
@@ -152,6 +169,9 @@ pub trait Native {
     /// `O_NONBLOCK` of the pipe end `h` changed (`fcntl(F_SETFL)`): a flag of
     /// the open file description, which the image keeps with the end.
     fn handle_set_nonblock(&self, _h: u32, _on: bool) {}
+    /// What a call on the pipe end `h` would find now, for `poll`; `None`
+    /// when `h` names no open end.
+    fn pipe_ready(&self, h: u32) -> Option<PipeReady>;
     /// `DOMAIN_STAT`: the record `azos_abi::syscall_nr::STAT_BYTES` documents.
     fn stat(&self, path: &[u8], out: &mut [u8; STAT_BYTES]) -> i64;
     /// `DOMAIN_READDIR`: entry `idx` of the directory `dir` (NUL-terminated).
@@ -443,6 +463,14 @@ impl<N: Native> Runtime<N> {
                 let a = c.args;
                 match c.post {
                     Post::None => self.call(c.num, a[0], a[1], a[2], a[3], a[4], a[5]),
+                    Post::PollMs(ms) => {
+                        let wait = if (ms as i32) < 0 {
+                            None
+                        } else {
+                            Some(self.native.now_ns().saturating_add(u64::from(ms) * 1_000_000))
+                        };
+                        self.poll(a[0], a[1], wait)
+                    }
                     Post::Sigaction => self.sys_rt_sigaction(lx::Arch::Aarch64, a[0], a[1], a[2], a[3]),
                     Post::Uname(buf) => put_user(buf, &x86::utsname_bytes(b"azos")),
                     Post::ArchPrctl => self.sys_arch_prctl(f, a[0], a[1]),
@@ -529,6 +557,7 @@ impl<N: Native> Runtime<N> {
             nr::MUNMAP => lx::errno_from_native(self.native.munmap(a0, a1), le::EINVAL),
             nr::CLOCK_GETTIME => self.sys_clock_gettime(a0, a1),
             nr::NANOSLEEP => self.sys_nanosleep(a0),
+            nr::PPOLL => self.sys_ppoll(a0, a1, a2),
             nr::SCHED_YIELD => {
                 self.native.yield_now();
                 0
@@ -1375,6 +1404,86 @@ impl<N: Native> Runtime<N> {
         let Some(ns) = lx::timespec_ns(&b) else { return neg(le::EINVAL) };
         self.native.sleep_until_ns(self.native.now_ns().saturating_add(ns));
         0
+    }
+
+    // ── poll ────────────────────────────────────────────────────────────────
+
+    /// `ppoll(fds, nfds, timeout, ...)`: the signal mask argument is not
+    /// applied (no signal is delivered here).
+    fn sys_ppoll(&self, fds: u64, nfds: u64, tmo: u64) -> i64 {
+        let wait = if tmo == 0 {
+            None
+        } else {
+            let mut b = [0u8; 16];
+            if get_user(tmo, &mut b) != 0 {
+                return neg(le::EFAULT);
+            }
+            let Some(ns) = lx::timespec_ns(&b) else { return neg(le::EINVAL) };
+            Some(self.native.now_ns().saturating_add(ns))
+        };
+        self.poll(fds, nfds, wait)
+    }
+
+    /// Report each descriptor's readiness in its `revents`; with none ready
+    /// wait until `deadline` (`None`: without bound), looking again every
+    /// [`POLL_TICK_NS`]. The count of descriptors with a nonzero `revents`.
+    fn poll(&self, fds: u64, nfds: u64, deadline: Option<u64>) -> i64 {
+        use lx::poll::{parse, NFDS_MAX, POLLFD_BYTES};
+        if nfds > NFDS_MAX {
+            return neg(le::EINVAL);
+        }
+        loop {
+            let mut ready = 0i64;
+            for i in 0..nfds {
+                let at = fds.wrapping_add(i * POLLFD_BYTES as u64);
+                let mut rec = [0u8; POLLFD_BYTES];
+                if get_user(at, &mut rec) != 0 {
+                    return neg(le::EFAULT);
+                }
+                let (fd, events) = parse(&rec);
+                let revents = if fd < 0 { 0 } else { self.revents(fd as u64, events) };
+                if put_user(at.wrapping_add(6), &revents.to_le_bytes()) != 0 {
+                    return neg(le::EFAULT);
+                }
+                ready += i64::from(revents != 0);
+            }
+            if ready > 0 {
+                return ready;
+            }
+            let now = self.native.now_ns();
+            let next = match deadline {
+                Some(d) if now >= d => return 0,
+                Some(d) => d.min(now.saturating_add(POLL_TICK_NS)),
+                None => now.saturating_add(POLL_TICK_NS),
+            };
+            self.native.sleep_until_ns(next);
+        }
+    }
+
+    /// The events descriptor `fd` reports for the `events` asked.
+    fn revents(&self, fd: u64, events: u16) -> u16 {
+        use lx::poll::*;
+        let Ok(e) = self.fd_get(fd) else { return POLLNVAL };
+        let raw = match e.kind {
+            // Reads of the console answer end of file at once, and a write
+            // never waits.
+            Kind::Console | Kind::File | Kind::Dir => POLLIN | POLLOUT,
+            Kind::Pipe => match self.native.pipe_ready(e.handle) {
+                None => POLLNVAL,
+                Some(p) if p.write_end => {
+                    if p.hup {
+                        POLLERR
+                    } else if p.ready {
+                        POLLOUT
+                    } else {
+                        0
+                    }
+                }
+                Some(p) => (if p.ready { POLLIN } else { 0 }) | (if p.hup { POLLHUP } else { 0 }),
+            },
+            Kind::Closed => POLLNVAL,
+        };
+        raw & (events | POLLERR | POLLHUP | POLLNVAL)
     }
 
     // ── signals (state only) ────────────────────────────────────────────────

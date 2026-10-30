@@ -283,6 +283,27 @@ pub fn write(tok: u32, buf: &[u8]) -> isize {
     }
 }
 
+/// What a call on the end `tok` would find now: `poll`'s view of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ready {
+    pub end: End,
+    /// A read end holding bytes; a write end with room for one.
+    pub ready: bool,
+    /// The other end is gone: end of file for a read end once it is empty,
+    /// `EPIPE` for a write end.
+    pub hup: bool,
+}
+
+/// The state of the end `tok` (a snapshot, no lock taken), or `None` when it
+/// names no open end.
+pub fn ready(tok: u32) -> Option<Ready> {
+    match lookup(tok) {
+        Some((p, End::Read, _)) => Some(Ready { end: End::Read, ready: p.len() > 0, hup: p.writers() == 0 }),
+        Some((p, End::Write, _)) => Some(Ready { end: End::Write, ready: p.has_room(), hup: p.readers() == 0 }),
+        None => None,
+    }
+}
+
 /// Set `O_NONBLOCK` on the description `tok` names.
 pub fn set_nonblock(tok: u32, on: bool) -> isize {
     if !is_token(tok) {

@@ -13,7 +13,7 @@ mod tests {
     use azos_linux_abi::nr;
     use azos_abi::cap::{CapHandle, CapPerms, ty, CapType};
     use azos_abi::ushell::{StartupFd, FD_CONSOLE, FD_HANDLE, STARTUP_FDS};
-    use azos_linux_rt::{Native, Runtime, Startup, NAME_BYTES};
+    use azos_linux_rt::{Native, PipeReady, Runtime, Startup, NAME_BYTES};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
@@ -55,6 +55,14 @@ mod tests {
         /// each call's (thread pointer, result register of the frame).
         resume_fails: i64,
         resumed: Vec<(u64, u64)>,
+        /// The write ends of the model's pipes (a pipe's handles are otherwise alike).
+        write_ends: Vec<u32>,
+        /// The pipes whose other end is gone.
+        peer_gone: Vec<usize>,
+        /// Bytes that arrive in a pipe the next time the process sleeps.
+        fill_on_sleep: Option<(usize, Vec<u8>)>,
+        /// Every deadline the process slept until.
+        sleeps: Vec<u64>,
     }
 
     struct Mock(RefCell<Model>);
@@ -152,7 +160,14 @@ mod tests {
                 let h = m.next_handle;
                 m.handles.insert(h, (Vec::new(), 0, Some(id)));
             }
+            m.write_ends.push(ends[1]);
             0
+        }
+        fn pipe_ready(&self, h: u32) -> Option<PipeReady> {
+            let m = self.0.borrow();
+            let id = (*m.handles.get(&h)?).2?;
+            let write_end = m.write_ends.contains(&h);
+            Some(PipeReady { write_end, ready: write_end || !m.pipes[id].is_empty(), hup: m.peer_gone.contains(&id) })
         }
         fn stat(&self, path: &[u8], out: &mut [u8; STAT_BYTES]) -> i64 {
             let m = self.0.borrow();
@@ -207,7 +222,12 @@ mod tests {
             0
         }
         fn sleep_until_ns(&self, deadline_ns: u64) {
-            self.0.borrow_mut().slept_until = Some(deadline_ns);
+            let mut m = self.0.borrow_mut();
+            m.slept_until = Some(deadline_ns);
+            m.sleeps.push(deadline_ns);
+            if let Some((id, data)) = m.fill_on_sleep.take() {
+                m.pipes[id].extend(data);
+            }
         }
         fn yield_now(&self) {}
         fn fork(&self) -> i64 {
@@ -970,7 +990,7 @@ mod tests {
         // A translated number the runtime's own match does not know would
         // fall to its `unanswered` and print a report: none may, at any argument.
         for n in 0..1024u64 {
-            if lx::x86_64::translate(n, [0; 6]).is_none() || n == xnr::EXIT || n == xnr::EXIT_GROUP {
+            if lx::x86_64::translate(n, [0; 6]).is_none() || n == xnr::EXIT || n == xnr::EXIT_GROUP || n == xnr::PPOLL {
                 continue;
             }
             let r = rt();
@@ -989,5 +1009,146 @@ mod tests {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| xcall(&r, xnr::EXIT_GROUP, [3, 0, 0, 0, 0, 0])));
         assert!(res.is_err());
         assert_eq!(r.native().0.borrow().exited, Some(3));
+    }
+
+    // ── poll / ppoll ────────────────────────────────────────────────────────
+
+    use lx::poll::{POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT};
+
+    /// One `struct pollfd`.
+    fn pfd(fd: i32, events: u16) -> [u8; 8] {
+        let mut b = [0u8; 8];
+        b[..4].copy_from_slice(&fd.to_le_bytes());
+        b[4..6].copy_from_slice(&events.to_le_bytes());
+        b
+    }
+
+    fn revents(b: &[u8; 8]) -> u16 {
+        u16::from_le_bytes([b[6], b[7]])
+    }
+
+    /// `ppoll(fds, n, timeout)` with a timeout of `ns` nanoseconds.
+    fn ppoll(r: &Runtime<Mock>, fds: &mut [[u8; 8]], ns: Option<u64>) -> i64 {
+        let ts = ns.map(lx::timespec_bytes);
+        let tmo = ts.as_ref().map_or(0, |t| t.as_ptr() as u64);
+        call(r, nr::PPOLL, [fds.as_mut_ptr() as u64, fds.len() as u64, tmo, 0, 0, 0])
+    }
+
+    /// A pipe in the runtime: its descriptors (read, write) and the model's id.
+    fn rt_pipe(r: &Runtime<Mock>) -> (i32, i32, usize) {
+        let mut fds = [0i32; 2];
+        assert_eq!(call(r, nr::PIPE2, [fds.as_mut_ptr() as u64, 0, 0, 0, 0, 0]), 0);
+        (fds[0], fds[1], r.native().0.borrow().pipes.len() - 1)
+    }
+
+    #[test]
+    fn poll_an_empty_pipe_with_a_writer_is_not_ready_and_does_not_wait_at_timeout_zero() {
+        let r = rt();
+        let (rd, _, _) = rt_pipe(&r);
+        let mut fds = [pfd(rd, POLLIN)];
+        assert_eq!(ppoll(&r, &mut fds, Some(0)), 0);
+        assert_eq!(revents(&fds[0]), 0);
+        assert!(r.native().0.borrow().sleeps.is_empty(), "a timeout of zero must not sleep");
+    }
+
+    #[test]
+    fn poll_a_pipe_with_bytes_is_readable() {
+        let r = rt();
+        let (rd, wr, id) = rt_pipe(&r);
+        r.native().0.borrow_mut().pipes[id].extend_from_slice(b"x");
+        let mut fds = [pfd(rd, POLLIN), pfd(wr, POLLIN | POLLOUT)];
+        assert_eq!(ppoll(&r, &mut fds, Some(0)), 2);
+        assert_eq!(revents(&fds[0]), POLLIN);
+        assert_eq!(revents(&fds[1]), POLLOUT, "the write end has room, and POLLIN is not its event");
+    }
+
+    #[test]
+    fn poll_a_pipe_whose_writer_is_gone_reports_hangup_even_if_unasked() {
+        let r = rt();
+        let (rd, _, id) = rt_pipe(&r);
+        r.native().0.borrow_mut().peer_gone.push(id);
+        let mut fds = [pfd(rd, 0)];
+        assert_eq!(ppoll(&r, &mut fds, Some(0)), 1);
+        assert_eq!(revents(&fds[0]), POLLHUP);
+        // With bytes left it is readable as well.
+        r.native().0.borrow_mut().pipes[id].extend_from_slice(b"x");
+        let mut fds = [pfd(rd, POLLIN)];
+        assert_eq!(ppoll(&r, &mut fds, Some(0)), 1);
+        assert_eq!(revents(&fds[0]), POLLIN | POLLHUP);
+    }
+
+    #[test]
+    fn poll_a_write_end_with_no_reader_is_an_error() {
+        let r = rt();
+        let (_, wr, id) = rt_pipe(&r);
+        r.native().0.borrow_mut().peer_gone.push(id);
+        let mut fds = [pfd(wr, POLLOUT)];
+        assert_eq!(ppoll(&r, &mut fds, Some(0)), 1);
+        assert_eq!(revents(&fds[0]), POLLERR);
+    }
+
+    #[test]
+    fn poll_names_a_closed_descriptor_and_skips_a_negative_one() {
+        let r = rt();
+        let mut fds = [pfd(9, POLLIN), pfd(-1, POLLIN), pfd(0, POLLIN)];
+        assert_eq!(ppoll(&r, &mut fds, Some(0)), 2, "the closed descriptor and the console count, the negative one does not");
+        assert_eq!(revents(&fds[0]), POLLNVAL);
+        assert_eq!(revents(&fds[1]), 0);
+        assert_eq!(revents(&fds[2]), POLLIN, "the console reads end of file at once: readable");
+        let mut one = [pfd(1, POLLOUT)];
+        assert_eq!(ppoll(&r, &mut one, Some(0)), 1);
+        assert_eq!(revents(&one[0]), POLLOUT);
+    }
+
+    #[test]
+    fn poll_waits_for_a_pipe_a_peer_fills_and_for_its_timeout() {
+        let r = rt();
+        let (rd, _, id) = rt_pipe(&r);
+        // Nothing arrives: a timeout of 3 ticks sleeps, then answers 0.
+        let mut fds = [pfd(rd, POLLIN)];
+        let before = r.native().0.borrow().now;
+        assert_eq!(ppoll(&r, &mut fds, Some(3 * azos_linux_rt::POLL_TICK_NS)), 0);
+        assert!(!r.native().0.borrow().sleeps.is_empty(), "a timeout that has not passed sleeps");
+        assert!(r.native().0.borrow().now > before);
+        // Bytes arrive while it sleeps: no timeout, and it answers 1.
+        r.native().0.borrow_mut().sleeps.clear();
+        r.native().0.borrow_mut().fill_on_sleep = Some((id, b"hi".to_vec()));
+        assert_eq!(ppoll(&r, &mut fds, None), 1);
+        assert_eq!(revents(&fds[0]), POLLIN);
+        assert_eq!(r.native().0.borrow().sleeps.len(), 1);
+    }
+
+    #[test]
+    fn poll_refuses_too_many_descriptors_and_a_bad_timespec() {
+        let r = rt();
+        let mut fds = [pfd(0, POLLIN)];
+        assert_eq!(call(&r, nr::PPOLL, [fds.as_mut_ptr() as u64, lx::poll::NFDS_MAX + 1, 0, 0, 0, 0]), -le::EINVAL);
+        let bad = lx::timespec_bytes(0);
+        let mut neg_nsec = bad;
+        neg_nsec[8..16].copy_from_slice(&(-1i64).to_le_bytes());
+        assert_eq!(call(&r, nr::PPOLL, [fds.as_mut_ptr() as u64, 1, neg_nsec.as_ptr() as u64, 0, 0, 0]), -le::EINVAL);
+    }
+
+    #[test]
+    fn x86_poll_takes_its_timeout_in_milliseconds() {
+        let r = rt();
+        let (rd, _, id) = rt_pipe(&r);
+        let mut fds = [pfd(rd, POLLIN)];
+        let fp = fds.as_mut_ptr() as u64;
+        assert_eq!(xcall(&r, xnr::POLL, [fp, 1, 0, 0, 0, 0]), 0);
+        assert!(r.native().0.borrow().sleeps.is_empty());
+        // 5 ms on an empty pipe: it sleeps, and answers 0 once the time is up.
+        assert_eq!(xcall(&r, xnr::POLL, [fp, 1, 5, 0, 0, 0]), 0);
+        assert!(!r.native().0.borrow().sleeps.is_empty());
+        // The register holds an `int`: -1 in the low 32 bits is "wait without
+        // bound" whatever the upper half holds; a ready descriptor answers at once.
+        r.native().0.borrow_mut().pipes[id].extend_from_slice(b"x");
+        r.native().0.borrow_mut().sleeps.clear();
+        assert_eq!(xcall(&r, xnr::POLL, [fp, 1, 0xdead_ffff_ffff, 0, 0, 0]), 1);
+        assert_eq!(revents(&fds[0]), POLLIN);
+        assert!(r.native().0.borrow().sleeps.is_empty());
+        // ppoll is the same call with a timespec.
+        let ts = lx::timespec_bytes(0);
+        assert_eq!(xcall(&r, xnr::PPOLL, [fp, 1, ts.as_ptr() as u64, 0, 0, 0]), 1);
     }
 }

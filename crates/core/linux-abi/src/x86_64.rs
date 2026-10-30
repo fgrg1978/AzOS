@@ -39,6 +39,7 @@ pub mod nr {
     pub const STAT: u64 = 4;
     pub const FSTAT: u64 = 5;
     pub const LSTAT: u64 = 6;
+    pub const POLL: u64 = 7;
     pub const MMAP: u64 = 9;
     pub const MUNMAP: u64 = 11;
     pub const BRK: u64 = 12;
@@ -79,6 +80,7 @@ pub mod nr {
     pub const EXIT_GROUP: u64 = 231;
     pub const OPENAT: u64 = 257;
     pub const NEWFSTATAT: u64 = 262;
+    pub const PPOLL: u64 = 271;
     pub const DUP3: u64 = 292;
     pub const PIPE2: u64 = 293;
     /// Not answered (the runtime has no seek): named so the test can say so.
@@ -136,6 +138,10 @@ pub enum Post {
     /// `rt_sigaction`: the kernel `struct sigaction` is `{handler, flags,
     /// restorer, mask}`, the layout `Arch::Aarch64` has.
     Sigaction,
+    /// `poll(fds, nfds, timeout)`, which `ppoll` replaced in the generic table:
+    /// the call is a `ppoll` with no timeout argument, and this is the
+    /// timeout in milliseconds, an `int` (negative: wait without bound).
+    PollMs(u32),
     /// `arch_prctl(code, addr)`, which has no asm-generic number: the
     /// runtime answers it itself ([`arch_prctl`]).
     ArchPrctl,
@@ -201,12 +207,14 @@ pub fn translate(num: u64, a: [u64; 6]) -> Option<Call> {
         nr::CLOCK_GETTIME => same(g::CLOCK_GETTIME),
         nr::OPENAT => same(g::OPENAT),
         nr::PIPE2 => same(g::PIPE2),
+        nr::PPOLL => same(g::PPOLL),
         // `clone(flags, stack, ptid, ctid, tls)` here, `(flags, stack, ptid,
         // tls, ctid)` in the generic table.
         nr::CLONE => c(g::CLONE, [a[0], a[1], a[2], a[4], a[3], a[5]], Post::None),
         // The calls the generic table dropped, in the generic call's terms.
         nr::OPEN => c(g::OPENAT, [crate::AT_FDCWD, a[0], a[1], a[2], 0, 0], Post::None),
         nr::PIPE => c(g::PIPE2, [a[0], 0, 0, 0, 0, 0], Post::None),
+        nr::POLL => c(g::PPOLL, [a[0], a[1], 0, 0, 0, 0], Post::PollMs(a[2] as u32)),
         nr::DUP2 if a[0] == a[1] => c(g::FCNTL, [a[0], F_GETFD, 0, 0, 0, 0], Post::DupSame(a[1])),
         nr::DUP2 => c(g::DUP3, [a[0], a[1], 0, 0, 0, 0], Post::None),
         nr::FORK => c(g::CLONE, [SIGCHLD, 0, 0, 0, 0, 0], Post::None),

@@ -1055,8 +1055,8 @@ mod x86_64_face {
     /// The x86-64 numbers the runtime answers, as `musl arch/x86_64/bits/syscall.h.in`
     /// numbers them: this is the whole translated set.
     const ANSWERED: &[u64] = &[
-        0, 1, 2, 3, 4, 5, 6, 9, 11, 12, 13, 14, 16, 19, 20, 22, 24, 32, 33, 35, 39, 56, 57, 58, 60, 61, 63, 72,
-        79, 80, 95, 102, 104, 107, 108, 110, 127, 131, 157, 158, 186, 204, 217, 218, 228, 231, 257, 262, 292, 293,
+        0, 1, 2, 3, 4, 5, 6, 7, 9, 11, 12, 13, 14, 16, 19, 20, 22, 24, 32, 33, 35, 39, 56, 57, 58, 60, 61, 63, 72,
+        79, 80, 95, 102, 104, 107, 108, 110, 127, 131, 157, 158, 186, 204, 217, 218, 228, 231, 257, 262, 271, 292, 293,
     ];
 
     #[test]
@@ -1096,6 +1096,17 @@ mod x86_64_face {
         assert_eq!((x86::REG_NUMBER, x86::REG_RESULT), (0, 0));
         // `syscall` overwrites rcx (the return address) and r11 (rflags).
         assert!(!x86::REG_ARGS.contains(&1) && !x86::REG_ARGS.contains(&11));
+    }
+
+    #[test]
+    fn poll_is_a_ppoll_with_the_timeout_in_milliseconds() {
+        // poll(fds, nfds, ms): the generic ppoll without a timespec; the
+        // register carries an `int`, so only its low 32 bits count.
+        let c = call(nr::POLL, [0x1000, 3, 0xdead_ffff_ffff, 7, 8, 9]);
+        assert_eq!((c.num, c.args[..3].to_vec(), c.post), (lx::nr::PPOLL, vec![0x1000, 3, 0], Post::PollMs(0xffff_ffff)));
+        // ppoll keeps its arguments (its number differs: 271 here, 73 there).
+        let c = call(nr::PPOLL, [0x1000, 3, 0x2000, 0, 8, 9]);
+        assert_eq!((c.num, c.args, c.post), (lx::nr::PPOLL, [0x1000, 3, 0x2000, 0, 8, 9], Post::None));
     }
 
     #[test]

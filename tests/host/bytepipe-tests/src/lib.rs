@@ -313,6 +313,20 @@ mod tests {
     }
 
     #[test]
+    fn has_room_follows_the_fill_of_the_ring() {
+        let _w = wd();
+        let (_r, p, f) = mk(DEFAULT_CAP);
+        let cap = DEFAULT_CAP as usize;
+        assert!(p.has_room(), "empty");
+        assert_eq!(p.write(&*f, &vec![0u8; cap - 1], true), Ok(cap - 1));
+        assert!(p.has_room(), "one byte left");
+        assert_eq!(p.write(&*f, &[1u8], true), Ok(1));
+        assert!(!p.has_room(), "full: a write would block");
+        assert_eq!(read_in(p, &f, 1, true), Ok(1));
+        assert!(p.has_room(), "a read made room");
+    }
+
+    #[test]
     fn nonblocking_atomic_write_that_does_not_fit_writes_nothing() {
         let _w = wd();
         let (_r, p, f) = mk(DEFAULT_CAP);

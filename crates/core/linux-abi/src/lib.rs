@@ -92,6 +92,7 @@ pub mod nr {
     pub const WRITE: u64 = 64;
     pub const READV: u64 = 65;
     pub const WRITEV: u64 = 66;
+    pub const PPOLL: u64 = 73;
     pub const NEWFSTATAT: u64 = 79;
     pub const FSTAT: u64 = 80;
     pub const EXIT: u64 = 93;
@@ -179,6 +180,10 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     // Wave 15: the robust futex list walked at the thread's exit.
     (nr::SET_ROBUST_LIST, "set_robust_list", &[]),
     (nr::NANOSLEEP, "nanosleep", &[k::SYS_SLEEP_UNTIL as u16]),
+    // Only the ring-3 runtime answers it (`poll` shapes: [`poll`]); the
+    // in-kernel table answers `-ENOSYS` and records it. A pipe end reports
+    // its state from memory; the wait between two looks is a sleep.
+    (nr::PPOLL, "ppoll", &[k::SYS_SLEEP_UNTIL as u16]),
     (nr::CLOCK_GETTIME, "clock_gettime", &[]),
     (nr::SCHED_YIELD, "sched_yield", &[k::SYS_YIELD as u16]),
     // One CPU, the one the task runs on (a single-threaded task's view).
@@ -643,6 +648,25 @@ pub fn timespec_ns(b: &[u8; 16]) -> Option<u64> {
         return None;
     }
     Some((sec as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64))
+}
+
+/// `poll` / `ppoll`: `struct pollfd` and the event bits (asm-generic and
+/// x86-64 alike).
+pub mod poll {
+    pub const POLLIN: u16 = 0x001;
+    pub const POLLOUT: u16 = 0x004;
+    pub const POLLERR: u16 = 0x008;
+    pub const POLLHUP: u16 = 0x010;
+    pub const POLLNVAL: u16 = 0x020;
+    /// Bytes of one `struct pollfd`: `int fd; short events; short revents`.
+    pub const POLLFD_BYTES: usize = 8;
+    /// The most descriptors one call may name (Linux's `RLIMIT_NOFILE` bound,
+    /// here a fixed one).
+    pub const NFDS_MAX: u64 = 1024;
+    /// `(fd, events)` of the record `b`.
+    pub fn parse(b: &[u8; POLLFD_BYTES]) -> (i32, u16) {
+        (i32::from_le_bytes([b[0], b[1], b[2], b[3]]), u16::from_le_bytes([b[4], b[5]]))
+    }
 }
 
 /// Auxiliary-vector keys the initial stack carries.

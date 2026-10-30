@@ -43,7 +43,7 @@ use azos_abi::foreign::{ForeignFrame, REG_SP};
 use azos_libsys as sys;
 use azos_linux_abi::at;
 use azos_abi::ushell::{StartupBlock, STARTUP_BLOCK_SIZE};
-use azos_linux_rt::{Native, Runtime, Startup, NAME_BYTES};
+use azos_linux_rt::{Native, PipeReady, Runtime, Startup, NAME_BYTES};
 
 /// The native calls, over `azos_libsys`.
 struct Sys;
@@ -104,6 +104,9 @@ impl Native for Sys {
     }
     fn handle_set_nonblock(&self, h: u32, on: bool) {
         let _ = sys::pipe::set_nonblock(h, on);
+    }
+    fn pipe_ready(&self, h: u32) -> Option<PipeReady> {
+        sys::pipe::ready(h).map(|r| PipeReady { write_end: r.end == sys::pipe::End::Write, ready: r.ready, hup: r.hup })
     }
     fn stat(&self, path: &[u8], out: &mut [u8; azos_abi::syscall_nr::STAT_BYTES]) -> i64 {
         sys::stat(path, out) as i64
