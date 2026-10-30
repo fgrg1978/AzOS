@@ -562,6 +562,7 @@ static RP_SRV_WORD: AtomicUsize = AtomicUsize::new(0);
 /// The server's slot and TID, for the client to see it parked.
 static RP_SRV_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 static RP_SRV_TID: AtomicU32 = AtomicU32::new(0);
+static RP_NOT_PARKED: AtomicBool = AtomicBool::new(false);
 
 fn rp_server(_: usize) {
     if !serve(RP_EP) {
@@ -594,20 +595,32 @@ fn rp_server_next(_: usize, h: i64, r: [u64; 7], at: bool) {
     RP_SRV_DONE.store(true, Ordering::Release);
 }
 
+/// Until the server is parked in its accept, as the fast path reads it
+/// (`ipc_fast_parked`): a call that finds it not parked yet queues, leaves no
+/// point, and reads as a missed resume. How long that takes is the host's to
+/// decide, so the bound only catches a server that never parks, with a verdict
+/// of its own.
+fn rp_server_parks() -> bool {
+    let (slot, tid) = (RP_SRV_SLOT.load(Ordering::Acquire), RP_SRV_TID.load(Ordering::Acquire));
+    let parked = azos_syscall::sleep::wait_until_ms(azos_limits::KTEST_LATE_TIMEOUT_MS as u64 / 2, 1, || {
+        azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
+    });
+    if !parked {
+        RP_NOT_PARKED.store(true, Ordering::Release);
+        RP_CLI_DONE.store(true, Ordering::Release);
+    }
+    parked
+}
+
 fn rp_client(_: usize) {
     let Some(cap) = client_cap(RP_EP) else {
         RP_CLI_DONE.store(true, Ordering::Release);
         return;
     };
     RP_CAP.store(cap as usize, Ordering::Release);
-    // Until the server is parked in its accept, as the fast path reads it
-    // (`ipc_fast_parked`): a call that finds it not parked yet queues, leaves
-    // no point, and reads as a missed resume. A fixed 20 ms sleep lost that
-    // race on a loaded host (aarch64, about one boot in three).
-    let (slot, tid) = (RP_SRV_SLOT.load(Ordering::Acquire), RP_SRV_TID.load(Ordering::Acquire));
-    azos_syscall::sleep::wait_until_ms(PARK_MS, 1, || {
-        azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
-    });
+    if !rp_server_parks() {
+        return;
+    }
     rcall(SYS_IPC_FAST_CALL_EP, [cap, 0x600, 0, 0, 0, 0], rp_client_next, 0);
 }
 
@@ -618,15 +631,10 @@ fn rp_client_next(_: usize, rc: i64, _: [u64; 7], at: bool) {
     if rc == 0x601 {
         RP_RIGHT.fetch_add(1, Ordering::AcqRel);
     }
-    // The server is parked with a point: this call finishes its accept. The
-    // reply woke this task before the server's REPLY_ACCEPT parked it, so wait
-    // for that park as the first call did: a call that finds the server not
-    // parked yet queues and leaves no point (it lost that race on the generic
-    // gate kernel, -smp 1 -icount, every boot).
-    let (slot, tid) = (RP_SRV_SLOT.load(Ordering::Acquire), RP_SRV_TID.load(Ordering::Acquire));
-    azos_syscall::sleep::wait_until_ms(PARK_MS, 1, || {
-        azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
-    });
+    // The reply woke this task before the server's REPLY_ACCEPT parked it.
+    if !rp_server_parks() {
+        return;
+    }
     let cap = RP_CAP.load(Ordering::Acquire) as u64;
     if call(SYS_IPC_FAST_CALL_EP, [cap, 0x602, 0, 0, 0, 0]).0 == 0x603 {
         RP_RIGHT.fetch_add(1, Ordering::AcqRel);
@@ -642,8 +650,13 @@ azos_ktest::ktest_late! {
         azos_sched::task_create_affinity("fp-rp-srv", rp_server, 0, PRIO, 0);
         crate::ktest::wait("the server never claimed its endpoint", || RP_READY.load(Ordering::Acquire))?;
         azos_sched::task_create_affinity("fp-rp-cli", rp_client, 0, PRIO, 0);
-        crate::ktest::wait("the calls were not answered",
-            || RP_CLI_DONE.load(Ordering::Acquire) && RP_SRV_DONE.load(Ordering::Acquire))?;
+        crate::ktest::wait("the calls were not answered", || {
+            RP_NOT_PARKED.load(Ordering::Acquire)
+                || (RP_CLI_DONE.load(Ordering::Acquire) && RP_SRV_DONE.load(Ordering::Acquire))
+        })?;
+        if RP_NOT_PARKED.load(Ordering::Acquire) {
+            return Err("the server never parked in its accept");
+        }
         if RP_RIGHT.load(Ordering::Acquire) != 2 || RP_SRV_WORD.load(Ordering::Acquire) != 0x602 {
             return Err("a call or an accept came back with a wrong answer");
         }
