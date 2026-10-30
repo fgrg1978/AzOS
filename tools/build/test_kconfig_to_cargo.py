@@ -439,6 +439,44 @@ def test_fleet_ram_size_holds_the_heap() -> None:
         )
 
 
+def test_limits_that_do_not_fit_the_ram_are_refused() -> None:
+    """The server preset's limits build with its RAM_SIZE and are refused with a smaller one.
+
+    The heap and the per-task kernel stacks alone (256 MiB + 4096 x 32 KiB) need
+    384 MiB; a RAM_SIZE of 300 clears the heap-below-RAM check, so only the
+    limits-against-RAM check refuses it, with one message naming the limits.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        server = Path(td) / "server.config"
+        made = subprocess.run(
+            ["make", "-s", "defconfig", "ARCH=riscv64", "PRESET=server"], cwd=REPO_ROOT,
+            env=dict(os.environ, KCONFIG_CONFIG=str(server), AZOS_OUT=td),
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
+        assert made.returncode == 0, f"make defconfig PRESET=server failed:\n{made.stderr[-500:]}"
+        base = server.read_text(encoding="utf-8").splitlines()
+        assert "CONFIG_RAM_SIZE=1024" in base, "the server preset lost its RAM_SIZE"
+
+        def build_limits(lines: list[str], name: str) -> subprocess.CompletedProcess:
+            cfg = Path(td) / name
+            cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            env = dict(os.environ, KCONFIG_CONFIG=str(cfg), CARGO_TARGET_DIR=str(Path(td) / "target"),
+                       CARGO_NET_OFFLINE="true")
+            return subprocess.run(["cargo", "build", "--release", "-p", "azos_limits"],
+                                  cwd=REPO_ROOT, env=env, capture_output=True, text=True)
+
+        fits = build_limits(base, "fits.config")
+        assert fits.returncode == 0, f"the server preset's limits do not build:\n{fits.stderr[-800:]}"
+        small = [l for l in base if not l.startswith("CONFIG_RAM_SIZE=")] + ["CONFIG_RAM_SIZE=300"]
+        refused = build_limits(small, "small.config")
+        assert refused.returncode != 0 and "the limits need at least 384 MiB of RAM" in refused.stderr, (
+            f"MAX_TASKS 4096 with RAM_SIZE 300 was not refused by the limits-against-RAM check:\n"
+            f"{refused.stderr[-800:]}"
+        )
+
+
 def test_the_ota_crate_embeds_a_key_only_a_dev_build_may_trust() -> None:
     """crates/core/ota/build.rs: no rebuild without a key file, and no TEST key in a release image.
 
@@ -1476,6 +1514,7 @@ def _run_all_tests() -> int:
         test_no_config_emits_small_mem,
         test_embedded_ram_size_comes_through,
         test_fleet_ram_size_holds_the_heap,
+        test_limits_that_do_not_fit_the_ram_are_refused,
         test_the_ota_crate_embeds_a_key_only_a_dev_build_may_trust,
         test_default_target_is_riscv64,
         test_domain_defaults_to_generic_and_robot_type_is_wired,

@@ -457,6 +457,30 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
+    // The two largest claims on the RAM against RAM_SIZE
+    //
+    // The kernel heap and the per-task kernel stacks (a static arena of
+    // MAX_TASKS x KERNEL_STACK_SIZE_KB, linked into the image) are both exact.
+    // The image holds more (the capability, socket and task tables), so this
+    // is a floor: a configuration under it cannot link or boot, and the
+    // message says which limits to lower, where the linker would only name
+    // the bytes of one section.
+    // -----------------------------------------------------------------------
+    if let (Some(ram_mib), Some(stack_kib)) = (get_u64(cfg, "RAM_SIZE"), get_u64(cfg, "KERNEL_STACK_SIZE_KB")) {
+        let stacks_mib = (max_tasks * stack_kib).div_ceil(1024);
+        let heap_mib = heap_size_kib.div_ceil(1024);
+        if heap_mib + stacks_mib >= ram_mib {
+            panic!(
+                "validation FAIL: the limits need at least {} MiB of RAM (KERNEL_HEAP_SIZE {heap_mib} MiB + \
+                 MAX_TASKS {max_tasks} x KERNEL_STACK_SIZE_KB {stack_kib} KiB = {stacks_mib} MiB of kernel \
+                 stacks, before the other tables) but RAM_SIZE gives {ram_mib} MiB. \
+                 Fix: raise RAM_SIZE, or lower MAX_TASKS, KERNEL_STACK_SIZE_KB or KERNEL_HEAP_SIZE in .config.",
+                heap_mib + stacks_mib
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Board → arch consistency
     // -----------------------------------------------------------------------
     let board_vf2      = get_bool(cfg, "BOARD_VF2");
