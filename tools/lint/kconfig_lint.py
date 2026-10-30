@@ -28,6 +28,9 @@ Checks (exit 1 on any ERROR; REPORT lines never fail):
             nothing.
   once      no symbol is defined in two places (kconfiglib merges them
             silently).
+  inert     no visible symbol's help has a line that opens "Not implemented": an option
+            declared ahead of its code does nothing (or only fails the build),
+            so it is added in the change that lands the code.
   source    every kernel cargo feature is a Kconfig symbol's (its tag) or a
             test hook by name (kconfig_to_cargo.TEST_HOOK_RE): a build selection
             (`kconfig_to_cargo.py --select`) refuses any other, so no build
@@ -49,6 +52,7 @@ import kconfig_to_cargo as k2c  # noqa: E402
 _CONFIG_RE = re.compile(r"^\s*(?:menu)?config\s+(\w+)\s*$")
 _PROMPT_RE = re.compile(r'^\s*(?:(?:bool|tristate|int|hex|string)\s+"|prompt\s+")')
 _SELECT_RE = re.compile(r"^\s*select\s+(\w+)")
+_NOT_IMPLEMENTED_RE = re.compile(r"^\s*not implemented\b", re.IGNORECASE | re.MULTILINE)
 _KEYWORD_RE = re.compile(r"^\s*(?:choice|endchoice|menu|endmenu|if|endif|comment|source|mainmenu)\b")
 
 
@@ -126,7 +130,7 @@ def reader_index(root):
 
 
 def kconfig_checks(root, tags):
-    """The `reader`, `tautology` and `once` checks over the loaded tree."""
+    """The `reader`, `tautology`, `once` and `inert` checks over the loaded tree."""
     from kconfiglib import Kconfig, Choice, Symbol, expr_items, expr_str
 
     errors = []
@@ -143,6 +147,14 @@ def kconfig_checks(root, tags):
             where = ", ".join(f"{os.path.relpath(n.filename, root) if os.path.isabs(n.filename) else n.filename}:{n.linenr}"
                               for n in sym.nodes)
             errors.append(f"once: {sym.name} is defined {len(sym.nodes)} times: {where}")
+
+    # inert
+    for sym in kconf.unique_defined_syms:
+        for n in sym.nodes:
+            if n.prompt and n.help and _NOT_IMPLEMENTED_RE.search(n.help):
+                errors.append(f"inert: {n.filename}:{n.linenr}: {sym.name} is visible and its help says "
+                              "'not implemented': add the option in the change that lands its code")
+                break
 
     # tautology (the defaults as written: `orig_defaults` leave out the
     # propagated `depends on`)
@@ -336,6 +348,9 @@ def self_test():
             'config BY_CODE\n\tint "read by the code"\n\tdefault 3 if BY_KCONFIG\n\tdefault 3\n'
             'config BY_KCONFIG\n\tbool "read by a Kconfig expression"\n'
             'config BY_FEATURE\n\t# cargo-feature: feat-x\n\tbool "read through its feature"\n'
+            'config INERT\n\tbool "declared ahead of its code"\n\thelp\n\t  Not implemented: stage L9.\n'
+            'config INERT_PROSE\n\tbool "mentions it mid-sentence"\n\thelp\n\t  See the "not\n\t  implemented" lines of another file.\n'
+            'config INERT_HIDDEN\n\tbool\n\thelp\n\t  Not implemented, and not visible.\n'
             'config TWICE\n\tbool "defined twice"\n'
             'config TWICE\n\tbool\n'
             'config NOT_TAUT\n\tint "two values"\n\tdefault 1 if BY_KCONFIG\n\tdefault 2\n'
@@ -351,9 +366,11 @@ def self_test():
         open(ct, "w").write('[features]\nfeat-x = []\n[dependencies]\n')
         errors, _ = lint(d, ct, generate=False)
         bad = ["reader: config/Kconfig.a:1: DEAD ", "IN_COMMENT has no reader", "DC_A has no reader",
+               "INERT is visible and its help says",
                "DC_B has no reader", "tautology: config/Kconfig.a:5: BY_CODE ", "once: TWICE ",
                'choice "a dead choice" has 2 defaults']
-        good = ["BY_KCONFIG ", "BY_FEATURE ", "CH_A ", "CH_B ", "NOT_TAUT "]
+        good = ["BY_KCONFIG ", "BY_FEATURE ", "CH_A ", "CH_B ", "NOT_TAUT ", "INERT_HIDDEN is visible",
+                "INERT_PROSE is visible"]
         miss = [b for b in bad if not any(b in e for e in errors)]
         wrong = [g for g in good if any(g in e for e in errors)]
         if miss or wrong:
