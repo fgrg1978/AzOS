@@ -32,7 +32,7 @@ CLASSES = (
     ("gave-up", r"console program .* gave up"),
     ("did-not-run", r"did not run"),
     ("not-on-volume", r"not on this volume"),
-    ("lockdep", r"lockdep"),
+    ("lockdep", r"\blockdep\b"),
     ("warn", r"\bWARN(ING)?\b"),
     ("recovery", r"recovery fallback|falling back"),
     ("bail-out", r"Bail out!"),
@@ -45,7 +45,7 @@ NOT_WARNINGS = (
     ("did-not-run", r"\] guest did not run for \d+ ms"),
     ("lockdep", r"# lockdep: violations=0 "),
     ("lockdep", r"# lockdep: hold "),
-    ("lockdep", r"# lockdep: .*\(note\)"),
+    ("lockdep", r"lockdep: .*\(note[,)]"),
 )
 CLASS_RE = {n: re.compile(r) for n, r in CLASSES}
 NOT_RE = [(n, re.compile(r)) for n, r in NOT_WARNINGS]
@@ -172,6 +172,10 @@ def self_test():
     expect("lockdep clean summary", cls("# lockdep: violations=0 notes=2 edges=9"), [])
     expect("lockdep hold table", cls("# lockdep: hold SpinLock x holds=3 max=4us"), [])
     expect("lockdep note", cls("# lockdep: SpinLock held past LOCK_MAX_HOLD_US (note); SpinLock a.rs:1 taken at b.rs:2: held 9 us, limit 5 us"), [])
+    expect("lockdep note outside a test", cls("lockdep: SpinLock held past LOCK_MAX_HOLD_US (note); SpinLock a.rs:1"), [])
+    expect("lockdep note with its rule", cls("# lockdep: Mutex held across a device wait (note, rule F1); Mutex a.rs:1"), [])
+    expect("a ktest named after lockdep", cls("ok 9 - lockdep_boot_phase_clean"), [])
+    expect("lockdep violation outside a test", cls("lockdep: sleep or device wait under a SpinLock (block I/O); SpinLock a.rs:1"), ["lockdep"])
     expect("lockdep violation", cls("# lockdep: lock order inversion; SpinLock a.rs:1"), ["lockdep"])
     expect("lockdep summary with violations", cls("# lockdep: violations=2 notes=0"), ["lockdep"])
     expect("ordinary line", cls("[BOOT] Starting scheduler on boot CPU"), [])

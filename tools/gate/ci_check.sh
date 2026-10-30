@@ -8986,8 +8986,8 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
         local mm nofeat
         nofeat="$(printf '%s' "$feats" | tr ',' '\n' | grep -v "^page-" | paste -sd, -)"
         mm="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/aarch64-granule-mismatch" \
-            "$CARGO" check --release --target aarch64-unknown-none-softfloat -p azos_kernel \
-            --select "$nofeat" 2>&1)"
+            "$CI_REAL_CARGO" check --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+            --features "$nofeat" 2>&1)"
         if ! printf '%s\n' "$mm" | qgrep -q "page size mismatch"; then
             bad; echo "      a 16 KiB .config built WITHOUT page-16k was not refused (no 'page size mismatch'):"
             printf '%s\n' "$mm" | grep -E "^error" | head -3 | sed 's|^|        |'
