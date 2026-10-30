@@ -131,6 +131,7 @@ qemu-full-smp-rvv: build-rvv userspace $(OUT_BUILD)/disk.img
 # `make qemu` with the GDB stub on :1234 and the CPUs stopped at reset; the
 # kernel ELF carries the symbols of every ISA (the aarch64 image is its binary).
 .PHONY: qemu-gdb
+qemu-gdb: QEMU_ACCEL := tcg
 qemu-gdb: build
 	cp $(SYSTEM_VOLUME) $(QEMU_VOLUME)
 	@echo "[GDB] waiting on :1234; gdb $(KERNEL_ELF) -ex 'target remote :1234'"

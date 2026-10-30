@@ -11,6 +11,19 @@ name = "azos_abi"
 version = "1.0.0"
 
 [[package]]
+name = "azos_arch_api"
+version = "0.1.0"
+dependencies = [
+ "azos_common",
+ "azos_limits",
+ "azos_percpu",
+]
+
+[[package]]
+name = "azos_common"
+version = "0.1.0"
+
+[[package]]
 name = "azos_dtb"
 version = "0.1.0"
 dependencies = [
@@ -28,6 +41,9 @@ dependencies = [
 [[package]]
 name = "azos_firmware"
 version = "0.1.0"
+dependencies = [
+ "azos_arch_api",
+]
 
 [[package]]
 name = "azos_hwbus"
@@ -43,6 +59,13 @@ version = "0.1.0"
 dependencies = [
  "azos-config",
  "sha2",
+]
+
+[[package]]
+name = "azos_percpu"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
 ]
 
 [[package]]

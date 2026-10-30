@@ -76,6 +76,18 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# The MMIO accessor lint (tools/lint/mmio_accessors.py), as the gate's row does.
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "mmio accessors lint..."
+    if out="$(python3 tools/lint/mmio_accessors.py --self-test 2>&1)" \
+       && out="$(python3 tools/lint/mmio_accessors.py 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 # The boot sequence lint (tools/lint/boot_seq_lint.py), as the gate's row does.
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "boot seq lint..."

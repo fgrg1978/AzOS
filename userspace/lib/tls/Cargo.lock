@@ -73,6 +73,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_devif"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl",
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_hwbus"
 version = "0.1.0"
 dependencies = [
@@ -124,9 +133,14 @@ dependencies = [
  "azos_abi",
  "azos_crypto",
  "azos_decision",
+ "azos_devif",
  "azos_limits",
  "azos_topology",
 ]
+
+[[package]]
+name = "azos_rings"
+version = "0.1.0"
 
 [[package]]
 name = "azos_tls"

@@ -2776,6 +2776,17 @@ else
     bad; printf '%s\n' "$acl_out" | sed 's/^/      /'
 fi
 
+# MMIO accessor lint (tools/lint/mmio_accessors.py): on the aarch64 tree a raw
+# volatile access is counted as memory by hand or it fails, so a device register
+# cannot leave azos_arch_api::mmio. Also its canaries (`--self-test`).
+printf "  %-26s" "mmio accessors lint..."
+if mal_out="$(python3 "${REPO_ROOT}/tools/lint/mmio_accessors.py" --self-test 2>&1)" \
+   && mal_out="$(python3 "${REPO_ROOT}/tools/lint/mmio_accessors.py" 2>&1)"; then
+    ok
+else
+    bad; printf '%s\n' "$mal_out" | sed 's/^/      /'
+fi
+
 # Boot sequence lint (tools/lint/boot_seq_lint.py): the common early-boot steps
 # (console, firmware table, memory map, page tables, W^X/NX, guards, heap, ...)
 # run from boot::early_main, not from each ISA's boot_hooks.rs, unless a
@@ -25499,9 +25510,17 @@ par -s -h "supply chain: reproducible build" repro_row
 # build` would, from a config of its own ($AZOS_OUT/build/preset-<cell>.config),
 # so the rows are serial and come last. PRESET_BOOT_LIMIT is the seconds a cell
 # has to reach its prompt (default 240).
-preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64>
-    local preset="$1" isa="$2" label="preset boot: $1 $2" status
+hvf_host() { # this host can run an aarch64 guest under HVF
+    [ "$(uname -sm)" = "Darwin arm64" ] && [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ] \
+        && qemu-system-aarch64 -accel help 2>/dev/null | grep -qx hvf
+}
+preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64> [accelerator, default tcg]
+    local preset="$1" isa="$2" accel="${3:-tcg}" label="preset boot: $1 $2" status
+    [ "$accel" = tcg ] || label="$label ($accel)"
     printf "  %-26s" "${label}..."
+    if [ "$accel" = hvf ] && ! hvf_host; then
+        SKIP=$((SKIP + 1)); echo "skipped (this host has no HVF)"; return
+    fi
     if ! status="$(python3 "$REPO_ROOT/tools/build/defconfig_menu.py" --status "$preset" "$isa" 2>&1)"; then
         bad; echo "      $status"; return
     fi
@@ -25509,7 +25528,7 @@ preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64>
         SKIP=$((SKIP + 1)); echo "skipped (experimental in tools/gate/preset_boot_green.tsv; PRESET_BOOT_ALL=1 runs it)"
         return
     fi
-    local slug="$1-$2" cfg log fifo pid limit="${PRESET_BOOT_LIMIT:-240}"
+    local slug="$1-$2${3:+-$3}" cfg log fifo pid limit="${PRESET_BOOT_LIMIT:-240}"
     local prog="" prompt cmd want verdict=""
     cfg="$AZOS_OUT/build/preset-$slug.config"; log="$CI_LOG_DIR/preset-$slug.log"; fifo="$CI_LOG_DIR/preset-$slug.fifo"
     mkdir -p "$AZOS_OUT/build" "$CI_LOG_DIR"; rm -f "$log" "$fifo" "$log.make"
@@ -25536,7 +25555,7 @@ preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64>
     : >"$log"
     while [ $(( $(par_qemu_count) + 1 )) -gt "$CI_QEMU_MAX" ]; do sleep 2; done
     par_ready
-    (exec python3 -c 'import os, sys; os.setpgid(0, 0); os.execvp(sys.argv[1], sys.argv[1:])' "${mk[@]}" qemu) <"$fifo" >"$log" 2>&1 &
+    (exec python3 -c 'import os, sys; os.setpgid(0, 0); os.execvp(sys.argv[1], sys.argv[1:])' "${mk[@]}" qemu QEMU_ACCEL="$accel") <"$fifo" >"$log" 2>&1 &
     pid=$!
     : >"$GATE_PGROUP_DIR/$pid"
     exec 8>"$fifo"
@@ -25572,6 +25591,55 @@ for pb_preset in generic robot server gateway iot_hmi desktop firmware wearable 
         par -s "preset boot: $pb_preset $pb_isa" preset_boot_row "$pb_preset" "$pb_isa"
     done
 done
+# `make qemu` under HVF, its default on Apple silicon; `hvf` alone, so a QEMU that
+# cannot use it fails the row instead of falling back to TCG.
+for pb_preset in generic robot; do
+    par -s "preset boot: $pb_preset aarch64 (hvf)" preset_boot_row "$pb_preset" aarch64 hvf
+done
+
+# The hazard behind azos_arch_api::mmio. One post-indexed store to a GIC register
+# (feature mmio-writeback-canary), the semantics of a plain store: HVF ends the VM
+# at the first one, after the banner and before the distributor is up, and TCG
+# goes past it, so what stops the boot is the addressing form and nothing else.
+hvf_writeback_canary_row() {
+    local label="aarch64 hvf: a writeback store on a device aborts"
+    printf "  %-26s" "${label}..."
+    if ! hvf_host; then SKIP=$((SKIP + 1)); echo "skipped (this host has no HVF)"; return; fi
+    mkdir -p "$CI_LOG_DIR"
+    if ! a64_kbuild "qemu,mmio-writeback-canary"; then
+        bad; echo "      the aarch64 kernel (--features qemu,mmio-writeback-canary) did not build"; return
+    fi
+    local kimg="$CI_LOG_DIR/hvf-writeback.img" hlog="$CI_LOG_DIR/hvf-writeback-hvf.log" tlog="$CI_LOG_DIR/hvf-writeback-tcg.log"
+    rm -f "$hlog" "$tlog"; cp "$A64_IMG" "$kimg"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -accel hvf -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$kimg" </dev/null >"$hlog" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 120 ] && kill -0 "$pid" 2>/dev/null; do
+        grep -aqF "[GIC] distributor" "$hlog" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.5
+    done
+    local alive=0; kill -0 "$pid" 2>/dev/null && alive=1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    if [ "$alive" = 1 ] || ! grep -aqF "[GIC] MMIO mapped" "$hlog" || grep -aqF "[GIC] distributor" "$hlog"; then
+        bad; echo "      under HVF the post-indexed GIC store did not end the VM at the GIC"
+        tr -d '\r' <"$hlog" | tail -3 | sed 's/^/        /'; echo "      log kept: $hlog"; rm -f "$kimg"; return
+    fi
+    qemu-system-aarch64 -M virt,gic-version=3 -accel tcg -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$kimg" </dev/null >"$tlog" 2>&1 &
+    pid=$!; i=0
+    while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
+        grep -aqF "[GIC] distributor" "$tlog" 2>/dev/null && break
+        i=$((i + 1)); sleep 0.5
+    done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$kimg"
+    if ! grep -aqF "[GIC] distributor" "$tlog"; then
+        bad; echo "      the same kernel did not get past the GIC under TCG either: not the addressing form"
+        tr -d '\r' <"$tlog" | tail -3 | sed 's/^/        /'; echo "      log kept: $tlog"; return
+    fi
+    ok; rm -f "$hlog" "$tlog"
+}
+par "aarch64 hvf: a writeback store on a device aborts" hvf_writeback_canary_row
 
 par_drain
 if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then

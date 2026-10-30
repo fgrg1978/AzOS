@@ -81,6 +81,10 @@ irq-nomem-canary = []
 # so only a kernel whose stamps, deadlines and ring 3's vDSO all read the
 # VIRTUAL counter still agrees with itself (needs a boot at EL2).
 cntvoff-canary = []
+# Canary: the GIC's 32-bit register write is post-indexed, so a hypervisor gets
+# it with ISV=0: HVF aborts the VM at the first one, TCG boots on (gate row
+# `aarch64 hvf: a writeback store on a device aborts`).
+mmio-writeback-canary = []
 # tls-hygiene gate canary, never in a real build: `sysregs::init_el0_state`
 # keeps CNTKCTL_EL1's EL0 bits and writes a non-zero TPIDRRO_EL0, standing for
 # the UNKNOWN reset values on silicon, and leaves MDSCR_EL1 at its reset value

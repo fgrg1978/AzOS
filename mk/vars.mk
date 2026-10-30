@@ -1080,16 +1080,25 @@ SDK_BUILD       = $(SDK_BUILD_$(KCONFIG_ISA))
 # the system volume on virtio-blk, so boot ends in the console program, not in
 # the recovery console. It boots a copy of the volume (QEMU_VOLUME): a boot
 # writes to it (BOOTMETA, logs), and each `make qemu` starts from what `make
-# build` made. TCG on every host, Apple silicon included. QEMU_AARCH64_MACHINE
-# with `virtualization=on` enters the kernel at EL2 (`make qemu-aarch64-el2`).
-# An image that needs the hypervisor extension (HV_REQUIRE) is entered at EL2.
+# build` made. QEMU_AARCH64_MACHINE with `virtualization=on` enters the kernel
+# at EL2 (`make qemu-aarch64-el2`). An image that needs the hypervisor extension
+# (HV_REQUIRE) is entered at EL2.
 QEMU_AARCH64_MACHINE ?= virt,gic-version=3$(if $(shell grep -qsx 'CONFIG_HV_REQUIRE=y' '$(SYSTEM_KCONFIG)' && echo y),$(comma)virtualization=on)
+# The aarch64 guest runs natively on an Apple silicon host: HVF, then TCG if this
+# QEMU cannot use it (no hvf in the binary, no hypervisor entitlement). HVF has
+# no guest EL2 (QEMU refuses virtualization=on outright, before any fallback),
+# so a machine that enters at EL2 stays on TCG; it has no -icount either, which
+# is why the gate's rows name their own accelerator. QEMU_ACCEL=tcg, hvf or
+# hvf,tcg overrides.
+QEMU_HOST_HVF := $(shell [ "$$(uname -sm)" = "Darwin arm64" ] && [ "$$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ] && echo y)
+QEMU_ACCEL ?= $(if $(and $(QEMU_HOST_HVF),$(if $(findstring virtualization=on,$(QEMU_AARCH64_MACHINE)),,y)),hvf$(comma)tcg,tcg)
+QEMU_ACCEL_FLAGS = $(foreach a,$(subst $(comma), ,$(QEMU_ACCEL)),-accel $(a))
 QEMU_VOLUME := $(OUT_BUILD)/qemu-$(KCONFIG_ISA).img
 QEMU_RAM     = $(shell sed -n 's/^CONFIG_RAM_SIZE=//p' '$(SYSTEM_KCONFIG)')M
 QEMU_BLK     = -drive file=$(QEMU_VOLUME),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0
 QEMU_SYSTEM_riscv64 = $(QEMU) $(QEMU_FLAGS) -smp 4 -m $(QEMU_RAM) -global virtio-mmio.force-legacy=false \
 	$(QEMU_BLK) -device virtio-rng-device -kernel $(KERNEL_IMAGE)
-QEMU_SYSTEM_aarch64 = qemu-system-aarch64 -M $(QEMU_AARCH64_MACHINE) $(QEMU_AARCH64_KERNEL_FLAGS) -m $(QEMU_RAM) \
+QEMU_SYSTEM_aarch64 = qemu-system-aarch64 -M $(QEMU_AARCH64_MACHINE) $(QEMU_ACCEL_FLAGS) $(QEMU_AARCH64_KERNEL_FLAGS) -m $(QEMU_RAM) \
 	-global virtio-mmio.force-legacy=false $(QEMU_BLK) -device virtio-rng-device -kernel $(KERNEL_IMAGE)
 QEMU_SYSTEM_x86_64  = qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -m $(QEMU_RAM) $(QEMU_BLK) -kernel $(KERNEL_IMAGE) \
 	$(if $(QEMU_X86_64_UCODE),-initrd $(QEMU_X86_64_UCODE))

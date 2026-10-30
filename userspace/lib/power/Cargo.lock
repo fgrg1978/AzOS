@@ -7,6 +7,15 @@ name = "azos_abi"
 version = "1.0.0"
 
 [[package]]
+name = "azos_devif"
+version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_idl",
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_idl"
 version = "0.1.0"
 dependencies = [
@@ -28,8 +37,12 @@ name = "azos_power"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
- "azos_idl",
+ "azos_devif",
 ]
+
+[[package]]
+name = "azos_rings"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"

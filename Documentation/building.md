@@ -80,7 +80,10 @@ builds"); the kernel boots without it. The gate asks for all of them
 | Variants | `build-rvv`, `build-pci`, `qemu-smp`, `qemu-full-smp`, `qemu-rvv`, `qemu-full-smp-rvv`, `qemu-pci` | | `qemu-pci-x86_64`, `run-x86-pc` (each from its own defconfig; q35 with OVMF, booted by Limine; needs `LIMINE_DIR`, `OVMF_CODE`, `OVMF_VARS`) |
 | Type-check only | `make ARCH=riscv64 check` | `make ARCH=aarch64 check` | `make ARCH=x86_64 check` |
 
-QEMU runs under TCG on every host. `make qemu-gdb` is `make qemu` with the GDB
+On an Apple silicon host an aarch64 `make qemu` runs under HVF and falls back to
+TCG if QEMU cannot use it; everything else runs under TCG. An image that enters
+at EL2 stays on TCG, since HVF has no guest EL2. `QEMU_ACCEL=tcg` (or `hvf`,
+which then has no fallback) overrides it. `make qemu-gdb` is `make qemu` with the GDB
 stub on :1234 and the CPUs stopped at reset, for the ISA the configuration selects.
 A target of one ISA refuses when the
 configuration selects another. The internal per-ISA kernel targets (`riscv64`,

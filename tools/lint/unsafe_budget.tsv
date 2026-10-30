@@ -12,7 +12,7 @@
 # crate	blocks	fns	impls	attrs	forbid	share
 .	5	10	1	0	0	-
 arch/aarch64	202	48	1	2	0	77
-arch/api	27	10	0	0	0	28
+arch/api	31	10	0	0	0	29
 arch/facade	0	0	0	0	1	0
 arch/riscv64	160	42	0	3	0	91
 arch/x86_64	157	18	4	11	0	59
