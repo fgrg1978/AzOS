@@ -1247,6 +1247,8 @@ pub(crate) fn inspect_build(
 pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
     let g = TREE.lock_irqsave();
     let Some(ids) = g.as_ref() else { return 0 };
+    // A local, not a tail temporary: in edition 2021 that would drop after `g`
+    // and restore the masked state it saved, leaving the caller with interrupts off.
     let lister = LISTER.lock_irqsave();
     azos_usb::listing::refresh(w, ids, &lister)
 }

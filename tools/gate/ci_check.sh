@@ -14332,8 +14332,9 @@ PY
     # +1 user_visible_state_is_set_on_every_cpu (tls-hygiene: the per-CPU
     # state ring 3 can read is set on every CPU; canary `el0-state-canary`,
     # aarch64) -> 124, arm 127.
-    KTEST_N_RV=124
-    KTEST_N_ARM=127
+    # +1 inspect_refresh_leaves_interrupts_as_they_were -> 125, arm 128.
+    KTEST_N_RV=125
+    KTEST_N_ARM=128
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15016,7 +15017,8 @@ PY
     # `fs-base-cache-canary`) -> 129.
     # +1 user_visible_state_is_set_on_every_cpu (tls-hygiene), as on rv and
     # arm -> 130.
-    KTEST_N_X86=130
+    # +1 inspect_refresh_leaves_interrupts_as_they_were, as on rv and arm -> 131.
+    KTEST_N_X86=131
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

@@ -363,6 +363,27 @@ fn inspect_task(_arg: usize) {
     }
 }
 
+azos_ktest::ktest_late! {
+    fn inspect_refresh_leaves_interrupts_as_they_were() {
+        use azos_arch::Interrupts as _;
+        let mut ran = false;
+        with_state(|st| {
+            st.refresh();
+            ran = true;
+        });
+        // Masked, the runner would fail every later test for sleeping with
+        // interrupts off, so the state is put back before the verdict.
+        let on = azos_sync::preempt::irqs_enabled();
+        if !on {
+            azos_arch::ARCH.enable_all();
+        }
+        if !ran {
+            return Err("no inspect state to refresh");
+        }
+        if on { Ok(()) } else { Err("a refresh returned with interrupts off") }
+    }
+}
+
 fn build_public(b: &mut Builder<'_, 'static>, cpus: usize) -> Result<Ids, Error> {
     let root = NodeId::ROOT;
     let meta = b.dir(root, "inspect")?;
