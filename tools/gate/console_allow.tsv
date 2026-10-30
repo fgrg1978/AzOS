@@ -23,3 +23,5 @@ ktest lockdep canaries \((rv|arm|x86)\)	lockdep	.	the row arms every lockdep can
 boot: x86_64 desktop reaches the shell, canary	lockdep	lockdep: sleep or device wait under a SpinLock	the canary holds the storm's lock across the durable record, and the row asserts the violation
 ktest hold bound canary, -icount \((rv|arm)\)	lockdep	# lockdep: (SpinLock held past LOCK_MAX_HOLD_US;|violations=1 )	canary lockdep-hold breaks the hold bound on purpose
 ktest spin fallback \(arm, cortex-a53\)	warn	\[TIMER\] WARN: live CNTFRQ_EL0 disagrees with platform::hw::TIMER_FREQ	this QEMU CPU model has another counter frequency than the preset, and the kernel says it uses the live one
+ktest disk RT-inline canary \((rv|arm|x86)\)	*	Bail out! ktest: ioring_fsync_completes_after_flush panicked	canary ioring-rt-inline panics in that test on purpose
+ktest rcu canaries \((rv|arm|x86)\)	lockdep	# lockdep: (sleep or device wait under a SpinLock \(WaitQueue::wait_if\); holding RcuRead|violations=1 )	the row sleeps inside an RCU read section on purpose
