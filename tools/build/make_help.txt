@@ -6,6 +6,10 @@ Configure
   nconfig                Same as config (menuconfig is the ncurses front end).
   oldconfig              Update .config after a Kconfig change, asking about new symbols.
   olddefconfig           Update .config after a Kconfig change, taking defaults.
+  defconfig              Two questions, the ISA (default: the host's) and the domain (a preset): writes the .config of
+                         a development QEMU image, then `make build && make qemu` boots it. No questions:
+                         make defconfig ARCH=aarch64 PRESET=robot (domains: the names under config/fragments/presets/).
+                         Combinations without a green boot row are marked experimental.
   defconfig-generic-sbc-riscv64-dev  Load a defconfig: config/defconfigs/<name>.config, or <name> assembled
                          from config/fragments/ (<preset>-<hwclass>-<arch>[-<build>][+<overlay>...]).
                          This one is the fallback when there is no .config; others:

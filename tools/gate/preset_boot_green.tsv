@@ -1,0 +1,34 @@
+# Which (preset, ISA) combinations of `make defconfig` have a green preset boot row.
+# Read by tools/build/defconfig_menu.py (the menu marks the rest experimental) and checked by its --self-test.
+# Columns, tab separated: preset, isa, status (green|experimental), evidence (the row or run that proves green; - for experimental).
+# The preset-boot-rows work fills the evidence column; until a row exists a green line names the QEMU run that booted it.
+automotive	riscv64	experimental	-
+automotive	aarch64	experimental	-
+automotive	x86_64	experimental	-
+desktop	riscv64	experimental	-
+desktop	aarch64	experimental	-
+desktop	x86_64	experimental	-
+firmware	riscv64	experimental	-
+firmware	aarch64	experimental	-
+firmware	x86_64	experimental	-
+gateway	riscv64	experimental	-
+gateway	aarch64	experimental	-
+gateway	x86_64	experimental	-
+generic	riscv64	experimental	-
+generic	aarch64	experimental	-
+generic	x86_64	experimental	-
+industrial	riscv64	experimental	-
+industrial	aarch64	experimental	-
+industrial	x86_64	experimental	-
+iot_hmi	riscv64	experimental	-
+iot_hmi	aarch64	experimental	-
+iot_hmi	x86_64	experimental	-
+robot	riscv64	experimental	-
+robot	aarch64	experimental	-
+robot	x86_64	experimental	-
+server	riscv64	experimental	-
+server	aarch64	experimental	-
+server	x86_64	experimental	-
+wearable	riscv64	experimental	-
+wearable	aarch64	experimental	-
+wearable	x86_64	experimental	-

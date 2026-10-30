@@ -66,7 +66,7 @@ SELF = "tools/lint/tools_layout.py"
 #   lib    modules the other tools import (out_dir, azos_tools)
 ROLES = {
     "build": [
-        "busybox_cc.sh", "export_kernel_consts.py", "gen_config_index.py", "gen_feature_matrix.py",
+        "busybox_cc.sh", "defconfig_menu.py", "export_kernel_consts.py", "gen_config_index.py", "gen_feature_matrix.py",
         "gen_userspace_kconfig.py", "kconfig_to_cargo.py", "lx_device_table.py", "lx_kbuild/",
         "make_help.txt", "micro_topology.py", "module_hashes.py", "prune_build.py", "relibc_build.sh",
         "relibc_cc.sh", "sdk_cargo.py", "sdk_std.py", "syscall_defs.py", "test_gen_userspace_kconfig.py",
@@ -79,6 +79,8 @@ ROLES = {
         "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "qemu_sendkeys.py", "repro_check.sh", "rows_for_diff.py",
         "sbom.sh", "text_equiv.py", "vmmd_withhold_row.sh",
+        "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_sendkeys.py", "repro_check.sh", "rows_for_diff.py",
+        "sbom.sh", "text_equiv.py",
     ],
     "lint": [
         "aarch64_fp_free_check.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",

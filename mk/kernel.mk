@@ -273,6 +273,15 @@ oldconfig:
 olddefconfig:
 	$(PYTHON) -m olddefconfig
 
+# `make defconfig`: two questions, the ISA (the host's by default) and the domain
+# (a preset), and a defconfig that builds and boots in QEMU; ARCH= and PRESET=
+# answer them. defconfig-<name> stays for boards and advanced combinations.
+.PHONY: defconfig
+defconfig:
+	@name="$$($(PYTHON) tools/build/defconfig_menu.py $(if $(filter command line,$(origin ARCH)),--arch $(ARCH)) $(if $(PRESET),--preset $(PRESET)))" \
+	  && $(MAKE) --no-print-directory defconfig-$$name \
+	  && $(PYTHON) tools/build/defconfig_menu.py --after "$$name"
+
 # A committed config/defconfigs/NAME.config, else NAME assembled from the
 # fragments under config/fragments/ (tools/build/gen_defconfigs.py: the name is
 # <preset>-<hwclass>-<arch>[-<build>][+<overlay>...]).
