@@ -311,8 +311,21 @@ $(QEMU_DEV_KCONFIG): $(KCONFIG_CONFIG) FORCE
 	@grep -qx '$(QEMU_LEVEL_LINE)' $@.new || { echo "could not set $(QEMU_LEVEL_LINE) in $@" >&2; exit 1; }
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
 
+# An expansion is made from the file its DEFCONFIG names: the .config's
+# expansion when it selects the ISA, the shipped default otherwise. make
+# compares modification times only, so after the .config changes ISA an
+# expansion of the other source would be kept for being newer. The stamp
+# holds the name of the source and is rewritten only when it changes.
+define config_source_stamp
+$(1).src: FORCE
+	@mkdir -p $$(dir $$@)
+	@printf '%s\n' '$(2)' | cmp -s - $$@ || printf '%s\n' '$(2)' >$$@
+endef
+$(eval $(call config_source_stamp,$(X86_64_KCONFIG),$(X86_64_DEFCONFIG)))
+$(eval $(call config_source_stamp,$(AARCH64_KCONFIG),$(AARCH64_DEFCONFIG)))
+
 .PHONY: x86_64
-$(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(KCONFIG_FILES)
+$(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(X86_64_KCONFIG).src $(KCONFIG_FILES)
 	@mkdir -p $(dir $@)
 	cp $(X86_64_DEFCONFIG) $@
 	KCONFIG_CONFIG=$@ $(PYTHON) -m olddefconfig
@@ -334,7 +347,7 @@ x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 # same fix, inlined rather than a shared variable so a board Kconfig rule
 # defined earlier in this file (`$(VF2_KCONFIG)`/`$(K1_KCONFIG)`) does not
 # depend on a `:=` assignment that has not been parsed yet.
-$(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) \
+$(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) $(AARCH64_KCONFIG).src \
 		$(KCONFIG_FILES)
 	@mkdir -p $(dir $@)
 	cp $(AARCH64_DEFCONFIG) $@
