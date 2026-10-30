@@ -72,10 +72,12 @@ prints where they are:
 | System volume | `$AZOS_OUT/build/disk-sh.img` | `$AZOS_OUT/build/disk-aarch64-sh.img` | `$AZOS_OUT/build/disk-x86_64.img` |
 | SDK target | `sdk/targets/riscv64imac-unknown-azos.json` | `sdk/targets/aarch64-unknown-azos.json` | `sdk/targets/x86_64-unknown-azos.json` |
 | `make qemu` (a copy of the system volume on virtio-blk, `-m` from Kconfig `RAM_SIZE`) | QEMU `virt` | QEMU `virt`, GICv3, entered at EL1 (`qemu-aarch64-el2`: at EL2) | QEMU `microvm`, PVH entry |
-| Variants | `build-rvv`, `build-pci`, `qemu-smp`, `qemu-full-smp`, `qemu-rvv`, `qemu-full-smp-rvv`, `qemu-pci`, `qemu-gdb` | | `qemu-pci-x86_64`, `run-x86-pc` (each from its own defconfig; q35 with OVMF, booted by Limine; needs `LIMINE_DIR`, `OVMF_CODE`, `OVMF_VARS`) |
+| Variants | `build-rvv`, `build-pci`, `qemu-smp`, `qemu-full-smp`, `qemu-rvv`, `qemu-full-smp-rvv`, `qemu-pci` | | `qemu-pci-x86_64`, `run-x86-pc` (each from its own defconfig; q35 with OVMF, booted by Limine; needs `LIMINE_DIR`, `OVMF_CODE`, `OVMF_VARS`) |
 | Type-check only | `make ARCH=riscv64 check` | `make ARCH=aarch64 check` | `make ARCH=x86_64 check` |
 
-QEMU runs under TCG on every host. A target of one ISA refuses when the
+QEMU runs under TCG on every host. `make qemu-gdb` is `make qemu` with the GDB
+stub on :1234 and the CPUs stopped at reset, for the ISA the configuration selects.
+A target of one ISA refuses when the
 configuration selects another. The internal per-ISA kernel targets (`riscv64`,
 `aarch64`, `x86_64`) are what `make build` and the gate call.
 

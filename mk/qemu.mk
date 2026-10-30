@@ -128,9 +128,13 @@ qemu-full-smp-rvv: build-rvv userspace $(OUT_BUILD)/disk.img
 		-device virtio-net-device,netdev=net0 \
 		-kernel $(RISCV64_KERNEL_ELF)
 
-# GDB debug
+# `make qemu` with the GDB stub on :1234 and the CPUs stopped at reset; the
+# kernel ELF carries the symbols of every ISA (the aarch64 image is its binary).
+.PHONY: qemu-gdb
 qemu-gdb: build
-	$(QEMU) $(QEMU_FLAGS) -kernel $(RISCV64_KERNEL_ELF) -s -S
+	cp $(SYSTEM_VOLUME) $(QEMU_VOLUME)
+	@echo "[GDB] waiting on :1234; gdb $(KERNEL_ELF) -ex 'target remote :1234'"
+	$(QEMU_SYSTEM_$(KCONFIG_ISA)) -s -S
 
 # ── Two-node network smoke (DEV01.5) ─────────────────────────────────────────
 # Boots two kernel instances wired by QEMU's `socket` net backend and asserts a

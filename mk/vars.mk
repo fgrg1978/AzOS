@@ -1018,7 +1018,7 @@ QEMU_SYSTEM_x86_64  = qemu-system-x86_64 $(QEMU_X86_64_FLAGS) -m $(QEMU_RAM) $(Q
 # `build` and `qemu` above it in `make help`); with another ISA configured they
 # would boot a kernel `make build` did not build, so they refuse.
 RISCV64_ONLY_GOALS := build-rvv build-pci build-nvme qemu-smp qemu-full-smp qemu-rvv qemu-full-smp-rvv \
-	qemu-gdb qemu-pci qemu-nvme qemu-systest qemu-dhcp-smoke qemu-net-pair
+	qemu-pci qemu-nvme qemu-systest qemu-dhcp-smoke qemu-net-pair
 AARCH64_ONLY_GOALS := qemu-aarch64-el2
 ifneq ($(KCONFIG_ISA),riscv64)
 ifneq ($(filter $(RISCV64_ONLY_GOALS),$(MAKECMDGOALS)),)

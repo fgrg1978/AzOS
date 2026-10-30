@@ -34,11 +34,11 @@ Run in QEMU
   qemu                   Boot what `make build` built: the kernel of the configured ISA (QEMU virt on
                          riscv64 and aarch64, microvm on x86_64, TCG) with a copy of its system volume,
                          so it reaches the console program.
+  qemu-gdb               `make qemu` stopped at reset, waiting for a GDB connection on :1234.
   qemu-smp               riscv64: boot with 4 CPUs.
   qemu-full-smp          riscv64: boot with 4 CPUs, a disk, a network card and hello.elf.
   qemu-rvv               riscv64: boot with vector extension, one CPU.
   qemu-full-smp-rvv      riscv64: boot with vector extension, 4 CPUs, disk and network.
-  qemu-gdb               riscv64: boot and wait for a GDB connection on :1234.
   qemu-pci               riscv64: boot with PCI block and NVMe devices.
   qemu-aarch64-el2       aarch64: `make qemu` with the kernel entered at EL2, as boot firmware does.
   netboot-row            Boot with nothing on a disk, the firmware fetching AzOS over the network: make netboot-row NETBOOT_CASE=x86-pxe|x86-http|riscv64-tftp (cases and canaries: tools/gate/netboot/row.sh).

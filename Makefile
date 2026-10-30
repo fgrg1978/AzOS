@@ -24,7 +24,7 @@
 # configuration goals and help name no checkout path in a rule (they read and
 # write its own .config, relative) and stay.
 empty :=
-SPACE_SAFE_GOALS := config menuconfig nconfig oldconfig olddefconfig savedefconfig defconfig-% help
+SPACE_SAFE_GOALS := config menuconfig nconfig oldconfig olddefconfig savedefconfig defconfigs defconfig-% help
 ifneq ($(findstring $(empty) $(empty),$(AZOS_OUT)),)
 $(error build outside iCloud: path has spaces)
 endif
