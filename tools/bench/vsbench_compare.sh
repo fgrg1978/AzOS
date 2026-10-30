@@ -546,7 +546,7 @@ KP_KERNEL="$BENCH_TARGET/azos-product/riscv64imac-unknown-none-elf/release/kerne
 # benchmark. The symptom is "did not reach its last lane" on both kernels and
 # nothing about a hash, which reads like a kernel regression (2026-09-18: a server
 # loop change, twice; earlier, N_PROC). Regenerate it first, like the gate does.
-( cd "$REPO_ROOT" && make $AZOS_OUT/build/image_hashes.rs >/dev/null 2>&1 ) \
+( cd "$REPO_ROOT" && make ALL_USER_IMAGES=1 $AZOS_OUT/build/image_hashes.rs >/dev/null 2>&1 ) \
     || die "could not regenerate $AZOS_OUT/build/image_hashes.rs"
 # VSBENCH_AZOS_EXTRA_FEATURES: extra kernel features for the gate kernel only,
 # for a diagnostic run (e.g. `spawn-census`, whose `[SPAWN-CENSUS]` lines land in

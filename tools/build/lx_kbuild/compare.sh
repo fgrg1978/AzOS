@@ -29,7 +29,7 @@ export TOPOLOGY_PUBKEY_PATH="${TOPOLOGY_PUBKEY_PATH:-$root/tools/keys/test_pub.b
 bash "$here/run.sh" check || exit $?
 [ -f $AZOS_OUT/build/lx/kbuild/SHA256SUMS ] || bash "$here/run.sh" build $AZOS_OUT/build/lx/kbuild
 bash "$here/run.sh" linux $AZOS_OUT/build/lx/kbuild-linux >/dev/null
-make -s lx-modules $AZOS_OUT/build/image_hashes.rs $AZOS_OUT/build/image_hashes_aarch64.rs >/dev/null
+make -s ALL_USER_IMAGES=1 lx-modules $AZOS_OUT/build/image_hashes.rs $AZOS_OUT/build/image_hashes_aarch64.rs >/dev/null
 # The gate's cells with the lx bench selection (tools/build/kconfig_to_cargo.py --select).
 sel=CONFIG_LINUX_DRIVERS=y,lx-server,bench-minimal
 rv_cfg="$AZOS_OUT/target/primary/qemu.config" arm_cfg="$AZOS_OUT/target/primary-aarch64/qemu-aarch64.config"

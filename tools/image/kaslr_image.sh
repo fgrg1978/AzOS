@@ -60,9 +60,9 @@ fi
 
 # The digest tables the kernel include!s, from the Makefile.
 case "$isa" in
-    riscv64) make "$AZOS_OUT/build/image_hashes.rs" >&2 ;;
-    aarch64) make "$AZOS_OUT/build/image_hashes_aarch64.rs" >&2 ;;
-    x86_64)  make "$AZOS_OUT/build/image_hashes_x86_64.rs" >&2 ;;
+    riscv64) make ALL_USER_IMAGES=1 "$AZOS_OUT/build/image_hashes.rs" >&2 ;;
+    aarch64) make ALL_USER_IMAGES=1 "$AZOS_OUT/build/image_hashes_aarch64.rs" >&2 ;;
+    x86_64)  make ALL_USER_IMAGES=1 "$AZOS_OUT/build/image_hashes_x86_64.rs" >&2 ;;
 esac
 
 # The dynamic relocations of the ELF, as the boot walk will see them: a slid

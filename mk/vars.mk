@@ -1001,7 +1001,8 @@ IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs
 # $(KCONFIG_CONFIG): which programs a system has does not depend on its ISA.
 USER_ON := $(shell sed -n -E 's/^CONFIG_USERSPACE_([A-Z0-9_]+)=y$$/\1/p' '$(KCONFIG_CONFIG)' 2>/dev/null)
 # $(call image_on,<NAME=path ...>): the pairs whose image the configuration enables.
-image_on = $(foreach e,$(1),$(if $(filter $(basename $(firstword $(subst =, ,$(e)))),$(USER_ON)),$(e)))
+# ALL_USER_IMAGES=1 is for a bench or row that boots a program outside the configured system.
+image_on = $(if $(ALL_USER_IMAGES),$(1),$(foreach e,$(1),$(if $(filter $(basename $(firstword $(subst =, ,$(e)))),$(USER_ON)),$(e))))
 elf_paths = $(foreach e,$(1),$(lastword $(subst =, ,$(e))))
 IMAGE_ELFS_ON         := $(call image_on,$(IMAGE_ELFS))
 IMAGE_ELFS_AARCH64_ON := $(call image_on,$(IMAGE_ELFS_AARCH64))

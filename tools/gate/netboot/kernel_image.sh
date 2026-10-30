@@ -42,7 +42,7 @@ case "$isa" in
         cfg="$out/riscv64.config"; tdir="$out/target"
         cp config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config "$cfg"
         KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null
-        make "$AZOS_OUT/build/image_hashes.rs" >&2
+        make ALL_USER_IMAGES=1 "$AZOS_OUT/build/image_hashes.rs" >&2
         rf="$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
         isa_cfg=""; [ -z "$rf" ] || isa_cfg="target.riscv64imac-unknown-none-elf.rustflags=[$rf]"
         # shellcheck disable=SC2046
@@ -55,7 +55,7 @@ case "$isa" in
         cfg="$out/x86_64.config"; tdir="$out/target"
         cp config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+limine.config "$cfg"
         KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null
-        make "$AZOS_OUT/build/image_hashes_x86_64.rs" >&2
+        make ALL_USER_IMAGES=1 "$AZOS_OUT/build/image_hashes_x86_64.rs" >&2
         # shellcheck disable=SC2046
         env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" \
             RUSTFLAGS="-C link-arg=-Tarch/x86_64/boot/linker-x86_64-limine.ld -C relocation-model=static --cfg curve25519_dalek_backend=\"serial\" $(python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")" \

@@ -93,7 +93,7 @@ case "$VSBENCH_LOG_LEVEL" in
     *) die "VSBENCH_LOG_LEVEL=$VSBENCH_LOG_LEVEL: want err, warn, info or debug" ;;
 esac
 AZ_LEVEL="CONFIG_LOG_LEVEL_$(printf '%s' "$VSBENCH_LOG_LEVEL" | tr '[:lower:]' '[:upper:]')=y"
-( cd "$REPO_ROOT" && make $AZOS_OUT/build/image_hashes_x86_64.rs $AZOS_OUT/build/disk-x86_64-vsbench.img \
+( cd "$REPO_ROOT" && make ALL_USER_IMAGES=1 $AZOS_OUT/build/image_hashes_x86_64.rs $AZOS_OUT/build/disk-x86_64-vsbench.img \
     VSBENCH_FEATURES="${VSBENCH_BENCH_FEATURES:-}" >"$WORK/build-disk.log" 2>&1 ) \
     || die "could not build $AZOS_OUT/build/disk-x86_64-vsbench.img — see $WORK/build-disk.log"
 

@@ -152,9 +152,9 @@ mkdir -p "$BENCH_TARGET"
 BENCH_MINIMAL_BANNER='[BENCH] bench-minimal: only idle+autorun run; all other tasks parked'
 
 # ── Build prerequisites: image hash tables + disk images, both ISAs ─────────
-( cd "$REPO_ROOT" && make $AZOS_OUT/build/image_hashes.rs >/dev/null 2>&1 ) \
+( cd "$REPO_ROOT" && make ALL_USER_IMAGES=1 $AZOS_OUT/build/image_hashes.rs >/dev/null 2>&1 ) \
     || die "could not regenerate $AZOS_OUT/build/image_hashes.rs"
-( cd "$REPO_ROOT" && make $AZOS_OUT/build/image_hashes_aarch64.rs >/dev/null 2>&1 ) \
+( cd "$REPO_ROOT" && make ALL_USER_IMAGES=1 $AZOS_OUT/build/image_hashes_aarch64.rs >/dev/null 2>&1 ) \
     || die "could not regenerate $AZOS_OUT/build/image_hashes_aarch64.rs (needs the \
 aarch64 userspace ELFs — 'make userspace-aarch64' first if this is a clean checkout)"
 ( cd "$REPO_ROOT" && make $AZOS_OUT/build/disk-vsbench.img >/dev/null 2>&1 ) \
