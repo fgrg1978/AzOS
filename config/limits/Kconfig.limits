@@ -2051,3 +2051,16 @@ config SDK_THREAD_STACK_KB
       whole, when it is made, so a program with a tight `mem_pages` row wants
       this small; a deep recursion wants it large. Rounded up to the page
       size, with a guard page below and above.
+
+config SDK_TEST_PROGRAMS
+    bool "Native SDK: build the SDK's own test and the TLS probe with the system"
+    default y if BUILD_TYPE_DEV
+    default n
+    help
+      `make build` also builds sdk/sdktest (the std port tested from inside:
+      the allocator, threads, locks, the clock, sockets) and
+      userspace/lib/tls-probe (rustls and QUIC over the port) for the
+      configuration's ISA. They are std programs that no volume carries, so
+      this only decides whether they are built; booting one needs an image
+      whose topology row grants it the entropy capability and the `net` op
+      class. Off in release builds: nothing is built that nothing ships.

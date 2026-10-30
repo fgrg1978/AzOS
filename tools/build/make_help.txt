@@ -64,7 +64,7 @@ Test & gate
   check0                 Quick check after an edit: type-check riscv64, aarch64 and x86_64, run the host tests the diff reaches.
   lint                   Every lint of the tree (tools/ layout, Kconfig, docs, unsafe budget, ...); builds nothing.
   check-presets          Every preset expands on riscv64, aarch64 and x86_64 and the cargo bridge accepts it (no build).
-  sdk                    The native SDK: every std program (WHY.ELF, PKGD.ELF, RPCQUIC.ELF, sdktest, the TLS probe) for <isa>-unknown-azos on riscv64, aarch64 and x86_64.
+  sdk                    The native SDK of the .config ISA, into $AZOS_OUT/sdk/<isa>: std for <isa>-unknown-azos, rebuilt only when the toolchain, the port layer or a Kconfig value it is built with changes. `make build` runs it first.
   sdk-check              The std port layer type-checks on the three ISAs; its host tests and the proc-macros' run.
   check-neverallow       No preset's, defconfig's or micro's topology breaks a neverallow rule (host builds, no boot).
   unsafe-budget          Unsafe counts, #![forbid(unsafe_code)] and the kernel's unsafe share against tools/lint/unsafe_budget.tsv.

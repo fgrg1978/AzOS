@@ -14,12 +14,13 @@
 build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
 	@$(MAKE) --no-print-directory $(SYSTEM_KCONFIG)
 	@$(if $(BUSYBOX_ON),$(MAKE) --no-print-directory busybox,:)
-	@$(MAKE) --no-print-directory $(SYSTEM_KERNEL) $(SYSTEM_VOLUME)
+	@$(MAKE) --no-print-directory sdk
+	@$(MAKE) --no-print-directory $(SYSTEM_KERNEL) $(SYSTEM_VOLUME) $(SDK_TEST_ELFS)
 	@$(MAKE) --no-print-directory prune
 	@echo "[BUILD] $(KCONFIG_ISA), from $(KCONFIG_CONFIG) ($(SYSTEM_KCONFIG)):"
 	@echo "  kernel  $(KERNEL_IMAGE)"
 	@echo "  volume  $(SYSTEM_VOLUME)"
-	@echo "  SDK     sdk/targets/$(USER_TARGET).json; a std program: $(SDK_BUILD) --manifest-path <crate>/Cargo.toml"
+	@echo "  SDK     $(SDK_DIR_$(KCONFIG_ISA)); a std program: $(SDK_BUILD) --manifest-path <crate>/Cargo.toml"
 	@echo "  boot    make qemu"
 
 # The riscv64 kernel of $(QEMU_DEV_KCONFIG): `make build` with a riscv64

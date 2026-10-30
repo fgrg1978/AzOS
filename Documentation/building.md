@@ -62,15 +62,20 @@ Source: `Makefile`, `mk/vars.mk` ("The configured system"), `mk/kernel.mk`, `mk/
 `make defconfig`, `make config` (or `make defconfig-<name>`) selects; `make build` builds exactly that;
 `make qemu` boots exactly that. The ISA is the configuration's (`CONFIG_ARCH_*`, the
 ARCH choice in `config/arch/Kconfig.isa`); no target names one. `make build` builds
-the kernel, the ring-3 images and the system volume (the shell volume: the console
-program, Kconfig `CONSOLE_PROGRAM`, and every image the topology starts), then
-prints where they are:
+the SDK, the kernel, the ring-3 images the `.config` enables and the system volume that
+carries exactly those, then prints where they are. An image is enabled by its Kconfig
+symbol `USERSPACE_<NAME>` (generated from the program metadata under `userspace/` by
+`tools/build/gen_userspace_kconfig.py`): the console program, the images the topology starts and what
+`make config` adds. One that is off is not built, is not on the volume and is not in the
+table of image hashes the kernel binds (`mk/system.mk`, `mk/vars.mk` "The images the .config
+builds"); the kernel boots without it. The gate asks for all of them
+(`tools/build/gen_userspace_kconfig.py --all-on`), as its scenario volumes boot test programs:
 
 | | riscv64 | aarch64 | x86_64 |
 |---|---|---|---|
 | Kernel | `$AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel` | `$AZOS_OUT/build/kernel-aarch64.img`, the arm64 Image (`-16k`/`-64k` with another granule) | `$AZOS_OUT/build/kernel-x86_64.elf` |
-| System volume | `$AZOS_OUT/build/disk-system.img` | `$AZOS_OUT/build/disk-aarch64-system.img` | `$AZOS_OUT/build/disk-x86_64.img` |
-| SDK target | `sdk/targets/riscv64imac-unknown-azos.json` | `sdk/targets/aarch64-unknown-azos.json` | `sdk/targets/x86_64-unknown-azos.json` |
+| System volume | `$AZOS_OUT/build/disk-system.img` | `$AZOS_OUT/build/disk-aarch64-system.img` | `$AZOS_OUT/build/disk-x86_64-system.img` |
+| SDK target, built SDK | `sdk/targets/riscv64imac-unknown-azos.json`, `$AZOS_OUT/sdk/riscv64` | `sdk/targets/aarch64-unknown-azos.json`, `$AZOS_OUT/sdk/aarch64` | `sdk/targets/x86_64-unknown-azos.json`, `$AZOS_OUT/sdk/x86_64` |
 | `make qemu` (a copy of the system volume on virtio-blk, `-m` from Kconfig `RAM_SIZE`) | QEMU `virt` | QEMU `virt`, GICv3, entered at EL1 (`qemu-aarch64-el2`: at EL2) | QEMU `microvm`, PVH entry |
 | Variants | `build-rvv`, `build-pci`, `qemu-smp`, `qemu-full-smp`, `qemu-rvv`, `qemu-full-smp-rvv`, `qemu-pci` | | `qemu-pci-x86_64`, `run-x86-pc` (each from its own defconfig; q35 with OVMF, booted by Limine; needs `LIMINE_DIR`, `OVMF_CODE`, `OVMF_VARS`) |
 | Type-check only | `make ARCH=riscv64 check` | `make ARCH=aarch64 check` | `make ARCH=x86_64 check` |
@@ -101,7 +106,7 @@ Other targets:
 
 | Target | What |
 |---|---|
-| `make sdk`, `make sdk-check` | The std programs for the three ISAs; the port layer's checks ([sdk.md](sdk.md)) |
+| `make sdk`, `make sdk-check` | The SDK of the `.config` ISA; the port layer's checks ([sdk.md](sdk.md)) |
 | `make relibc`, `make busybox` | C programs against relibc; BusyBox for the three ISAs (needs `zig` and the fetched tree, `tools/build/third_party_fetch.sh busybox`) |
 | `make micro-config`, `micro-topology`, `micro-check`, `micro`, `micro-test`, `micro-qemu` | The MCU kernel (`micro/`): riscv32imac, M-mode, PMP |
 | `make vf2`, `flash-vf2`, `vf2-console`, `vf2-ktest`, `vf2-pstore` | The VisionFive 2 image, writing it to an SD card (`VF2_SD`), its serial console (`VF2_SERIAL`), and the board-farm rows (`tools/dev/farm/README.md`) |

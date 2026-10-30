@@ -2,10 +2,17 @@
 
 A Rust `std` target for AzOS, `riscv64imac-unknown-azos`, `aarch64-unknown-azos`
 and `x86_64-unknown-azos`, built with `-Zbuild-std` from the toolchain pinned in
-`rust-toolchain.toml`. `make sdk` builds every std program on the three ISAs
-(`WHY.ELF`, `PKGD.ELF`, `RPCQUIC.ELF`, the TLS probe and the SDK's own test,
-`sdk/sdktest`); `make sdk-check` type-checks the port layer on the three
-ISAs and runs its host tests.
+`rust-toolchain.toml`. `make sdk` builds the SDK of the ISA `.config` selects into
+`$AZOS_OUT/sdk/<isa>/`: a sysroot (`sysroot/`, with `core`, `alloc`, `std` and
+`panic_abort`) and `key`, which names what it was built from: the toolchain, the
+port layer, the target, and the Kconfig values that change its bytes (the ISA
+baseline, the allocator and thread-stack knobs, the aarch64 granule). The same key
+builds nothing; another rebuilds. `make build` builds it first, then the std
+programs the `.config` enables (`WHY.ELF`, `PKGD.ELF`, `RPCQUIC.ELF` by their
+`USERSPACE_` symbols; `sdktest` and the TLS probe by `SDK_TEST_PROGRAMS`); a std
+program compiles only its own crates against the sysroot
+(`tools/build/sdk_cargo.py --sdk`). `make sdk-check` type-checks the port layer on
+the three ISAs and runs its host tests.
 
 ## What is where
 
@@ -15,7 +22,9 @@ ISAs and runs its host tests.
 | `sdk/std/sys/**` | The files of the port, copied into `library/std/src/sys/` of the library source. Each is thin: a call into `azos_stdrt`. |
 | `crates/core/stdrt` | The port layer: traps, startup block, vDSO clock, threads, futexes, the hardened allocator, console, entropy. |
 | `tools/build/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src` plus `std/sys` and the dispatch edits. |
-| `tools/build/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment from the expanded Kconfig. |
+| `tools/build/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment from the expanded Kconfig; `--sdk <dir>` builds against an SDK instead of building `std` with the program. |
+| `tools/build/sdk_build.py` | Builds the SDK of one ISA into `$AZOS_OUT/sdk/<isa>/`. |
+| `sdk/driver` | The empty package cargo builds `std` for (its profile is the std programs'). |
 | `crates/core/libsys-macros` | `#[main]` and `#[test]`, re-exported by `azos_libsys`. |
 
 `tools/build/sdk_cargo.py` points cargo at the assembled tree with

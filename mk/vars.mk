@@ -526,21 +526,41 @@ RV_UFLAGS = --target $(USER_SPECS)/$(TARGET_RISCV64_USER).json \
 # Kconfig named here and nothing else, and goes through the metadata wrapper
 # above like every ring-3 ELF. One target directory per ISA (and granule) holds
 # the std build every SDK program shares.
-#   make sdk                    every SDK program, on the three ISAs
+#   make sdk                    the SDK of the .config's ISA, into $AZOS_OUT/sdk/<isa>
 #   make sdk-check              stdrt type-checks on the three ISAs; its host tests
 SDK_TARGET_DIR := $(OUT_BUILD)/sdk/target
-SDK_SRC := $(shell find sdk -type f -not -name '* [0-9]*') tools/build/sdk_std.py tools/build/sdk_cargo.py \
+SDK_SRC := $(shell find sdk -type f -not -name '* [0-9]*' -not -path 'sdk/sdktest/*') tools/build/sdk_std.py tools/build/sdk_cargo.py tools/build/sdk_build.py \
            crates/core/stdrt/Cargo.toml $(shell find crates/core/stdrt/src -name '*.rs' -not -name '* [0-9]*') \
            crates/core/libsys/src/pure.rs crates/core/abi/Cargo.toml \
            $(shell find crates/core/abi/src -name '*.rs' -not -name '* [0-9]*') \
            userspace/lib/ualloc/Cargo.toml $(shell find userspace/lib/ualloc/src -name '*.rs' -not -name '* [0-9]*') \
            userspace/rustc_stable_metadata.py
-SDK_BUILD_riscv64 = $(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
-SDK_BUILD_aarch64 = $(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX) -- build --release
-SDK_BUILD_x86_64  = $(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(SDK_TARGET_DIR) -- build --release
-SDK_OUT_riscv64   = $(SDK_TARGET_DIR)/riscv64imac-unknown-azos/release
-SDK_OUT_aarch64   = $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release
-SDK_OUT_x86_64    = $(SDK_TARGET_DIR)/x86_64-unknown-azos/release
+# The SDK of each ISA, built by `make sdk` (tools/build/sdk_build.py) into $AZOS_OUT/sdk/<isa>:
+# the sysroot and a `key` file. A std program is built against it, and waits for its key.
+SDK_DIR_riscv64     = $(AZOS_OUT)/sdk/riscv64
+SDK_DIR_aarch64     = $(AZOS_OUT)/sdk/aarch64$(AARCH64_PG_SUFFIX)
+SDK_DIR_x86_64      = $(AZOS_OUT)/sdk/x86_64
+SDK_KEY_riscv64     = $(SDK_DIR_riscv64)/key
+SDK_KEY_aarch64     = $(SDK_DIR_aarch64)/key
+SDK_KEY_x86_64      = $(SDK_DIR_x86_64)/key
+SDK_KCONFIG_riscv64 = $(RV_USER_KCONFIG)
+SDK_KCONFIG_aarch64 = $(AARCH64_USER_KCONFIG)
+SDK_KCONFIG_x86_64  = $(X86_64_KCONFIG)
+SDK_PAGE_riscv64    = 4096
+SDK_PAGE_aarch64    = $(AARCH64_PAGE_SIZE)
+SDK_PAGE_x86_64     = 4096
+SDK_CARGO_riscv64   = $(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(SDK_KCONFIG_riscv64) --sdk $(SDK_DIR_riscv64)
+SDK_CARGO_aarch64   = $(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(SDK_KCONFIG_aarch64) --page-size $(SDK_PAGE_aarch64) --sdk $(SDK_DIR_aarch64)
+SDK_CARGO_x86_64    = $(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(SDK_KCONFIG_x86_64) --sdk $(SDK_DIR_x86_64)
+SDK_BUILD_riscv64   = $(SDK_CARGO_riscv64) --target-dir $(SDK_TARGET_DIR) -- build --release
+SDK_BUILD_aarch64   = $(SDK_CARGO_aarch64) --target-dir $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX) -- build --release
+SDK_BUILD_x86_64    = $(SDK_CARGO_x86_64) --target-dir $(SDK_TARGET_DIR) -- build --release
+SDK_OUT_riscv64     = $(SDK_TARGET_DIR)/riscv64imac-unknown-azos/release
+SDK_OUT_aarch64     = $(SDK_TARGET_DIR)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release
+SDK_OUT_x86_64      = $(SDK_TARGET_DIR)/x86_64-unknown-azos/release
+# The SDK's own test and the TLS probe are std programs no volume carries; they
+# are built with the system when the configuration asks (Kconfig SDK_TEST_PROGRAMS).
+SDK_TEST_ON := $(shell grep -qs '^CONFIG_SDK_TEST_PROGRAMS=y' '$(KCONFIG_CONFIG)' && echo y)
 
 # VisionFive 2 configuration (Phase 10)
 # Override these from the command line as needed:

@@ -131,7 +131,7 @@ and refuses every goal that builds or runs. Every output (kernels, images, ELFs,
 (`python3 tools/lib/out_dir.py` prints it), never into the checkout. To run a bare
 `cargo`, export `AZOS_OUT` and point `CARGO_TARGET_DIR` under it. The Makefile
 is split by concern under `mk/` (`vars.mk`, `userspace.mk`, `images.mk`,
-`kernel.mk`, `host.mk`, `qemu.mk`, `lints.mk`).
+`system.mk`, `kernel.mk`, `host.mk`, `qemu.mk`, `lints.mk`).
 
 ## Layout
 

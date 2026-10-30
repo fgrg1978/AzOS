@@ -153,6 +153,9 @@ fi
 # The ring-3 images follow the .config (tools/image/test_user_images.py): an image off in it is on no digest table and no system volume.
 [ "$lints" = 1 ] && { printf "  %-26s" "user images..."; if out="$(python3 tools/image/test_user_images.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^FAIL' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
+# The SDK is keyed by what changes its bytes (tools/build/test_sdk_build.py; --build builds it and is run by hand).
+[ "$lints" = 1 ] && { printf "  %-26s" "sdk keys..."; if out="$(python3 tools/build/test_sdk_build.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^FAIL' | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # Kconfig is the only source of truth (tools/lint/kconfig_lint.py): cargo-feature
 # tags against kernel/Cargo.toml, no `select` of a visible symbol.
 if [ "$lints" = 1 ]; then

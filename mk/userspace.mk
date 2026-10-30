@@ -190,21 +190,21 @@ $(MLSRV_ELF): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP)
 # directory as the probe. The key choice reaches build.rs through the
 # environment as for the ML service: the QEMU build must not see
 # TOPOLOGY_PUBKEY_PATH, the board build exactly the named key.
-PKGD_DEPS := $(wildcard $(PKGD_DIR)/src/*.rs) $(PKGD_DIR)/Cargo.toml $(PKGD_DIR)/Cargo.lock $(PACKAGES_LIB_SRC) $(TLS_LIB_SRC) $(LIBSYS_SRC) $(SDK_SRC) third_party/VENDOR_PIN \
+PKGD_DEPS := $(wildcard $(PKGD_DIR)/src/*.rs) $(PKGD_DIR)/Cargo.toml $(PKGD_DIR)/Cargo.lock $(PACKAGES_LIB_SRC) $(TLS_LIB_SRC) $(LIBSYS_SRC) third_party/VENDOR_PIN \
               $(shell find crates/core/topology/src crates/core/limits/src crates/core/decision/src crates/core/devif/src crates/core/idl/src crates/net/tftp/src userspace/lib/names/src userspace/lib/decisions/src userspace/lib/term/src -maxdepth 1 -name '*.rs' -not -name '* [0-9]*') \
               crates/core/topology/Cargo.toml crates/core/topology/build.rs crates/core/limits/Cargo.toml \
               crates/core/limits/build.rs $(KCONFIG_FILES) $(wildcard .config) $(wildcard tools/keys/test_pub.bin)
 PKGD_CARGO = --vendored -- build --release --manifest-path $(PKGD_DIR)/Cargo.toml
-$(PKGD_ELF): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(RV_USER_KCONFIG)
+$(PKGD_ELF): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(RV_USER_KCONFIG) $(SDK_KEY_riscv64)
 	@mkdir -p $(OUT_BUILD)
-	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
+	env -u TOPOLOGY_PUBKEY_PATH $(SDK_CARGO_riscv64) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PKGD_ELF_BOARD): $(PKGD_DEPS) $(BOARD_KEY_STAMP) $(RV_USER_KCONFIG)
+$(PKGD_ELF_BOARD): $(PKGD_DEPS) $(BOARD_KEY_STAMP) $(RV_USER_KCONFIG) $(SDK_KEY_riscv64)
 	$(call require_board_key,BOARD-PKGD)
 	@mkdir -p $(BOARD_DIR)
-	env TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" $(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO)
+	env TOPOLOGY_PUBKEY_PATH="$(BOARD_TOPOLOGY_KEY)" $(SDK_CARGO_riscv64) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/pkgd $@
 	$(BOARD_KEYCHECK) elf "$(BOARD_TOPOLOGY_KEY)" tools/keys/test_pub.bin $@
 
@@ -312,7 +312,7 @@ $(LOGD_ELF): $(LOGD_SRC) $(LIBSYS_SRC)
 	cp $(LOGD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(WHY_ELF): $(WHY_SRC) $(SDK_SRC) $(LIBSYS_SRC) $(RV_USER_KCONFIG)
+$(WHY_ELF): $(WHY_SRC) $(LIBSYS_SRC) $(RV_USER_KCONFIG) $(SDK_KEY_riscv64)
 	@mkdir -p $(OUT_BUILD)
 	$(SDK_BUILD_riscv64) --manifest-path $(WHY_DIR)/Cargo.toml
 	cp $(SDK_OUT_riscv64)/why $@
@@ -924,15 +924,15 @@ $(LOGD_ELF_AARCH64): $(LOGD_SRC) $(LIBSYS_SRC)
 	cp $(OUT_TGT)/$(LOGD_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/logd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(WHY_ELF_AARCH64): $(WHY_SRC) $(SDK_SRC) $(LIBSYS_SRC) $(AARCH64_USER_KCONFIG)
+$(WHY_ELF_AARCH64): $(WHY_SRC) $(LIBSYS_SRC) $(AARCH64_USER_KCONFIG) $(SDK_KEY_aarch64)
 	@mkdir -p $(AARCH64_DIR)
 	$(SDK_BUILD_aarch64) --manifest-path $(WHY_DIR)/Cargo.toml
 	cp $(SDK_OUT_aarch64)/why $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PKGD_ELF_AARCH64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(AARCH64_USER_KCONFIG)
+$(PKGD_ELF_AARCH64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(AARCH64_USER_KCONFIG) $(SDK_KEY_aarch64)
 	@mkdir -p $(AARCH64_DIR)
-	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
+	env -u TOPOLOGY_PUBKEY_PATH $(SDK_CARGO_aarch64) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
 	cp $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1271,7 +1271,7 @@ $(LOGD_ELF_X86_64): $(LOGD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	cd $(LOGD_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(LOGD_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(LOGD_DIR)/$(X86_64_UBUILT)/logd $@
 
-$(WHY_ELF_X86_64): $(WHY_SRC) $(SDK_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(WHY_ELF_X86_64): $(WHY_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	@mkdir -p $(X86_64_DIR)
 	$(SDK_BUILD_x86_64) --manifest-path $(WHY_DIR)/Cargo.toml
 	cp $(SDK_OUT_x86_64)/why $@
@@ -1283,28 +1283,28 @@ $(WHY_ELF_X86_64): $(WHY_SRC) $(SDK_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 # cargo config never sees it). Its own target directory: the flags differ from
 # the other SDK programs', and a shared one would rebuild std on every switch.
 TLSPROBE_DIR     := userspace/lib/tls-probe
-TLSPROBE_SRC      = $(wildcard $(TLSPROBE_DIR)/src/*.rs $(TLSPROBE_DIR)/pki/*.der) $(TLSPROBE_DIR)/Cargo.toml $(TLSPROBE_DIR)/Cargo.lock third_party/VENDOR_PIN $(SDK_SRC)
+TLSPROBE_SRC      = $(wildcard $(TLSPROBE_DIR)/src/*.rs $(TLSPROBE_DIR)/pki/*.der) $(TLSPROBE_DIR)/Cargo.toml $(TLSPROBE_DIR)/Cargo.lock third_party/VENDOR_PIN
 TLSPROBE_TGT     := $(OUT_BUILD)/sdk/target-vendored
 TLSPROBE_ELF     := $(OUT_BUILD)/tls-probe.elf
 TLSPROBE_ELF_AARCH64 := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX)/tls-probe.elf
 TLSPROBE_ELF_X86_64  := $(OUT_BUILD)/x86_64/tls-probe.elf
 TLSPROBE_CARGO    = --vendored -- build --release --manifest-path $(TLSPROBE_DIR)/Cargo.toml
 
-$(TLSPROBE_ELF): $(TLSPROBE_SRC) $(RV_USER_KCONFIG)
+$(TLSPROBE_ELF): $(TLSPROBE_SRC) $(RV_USER_KCONFIG) $(SDK_KEY_riscv64)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
+	$(SDK_CARGO_riscv64) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/tls-probe $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TLSPROBE_ELF_AARCH64): $(TLSPROBE_SRC) $(AARCH64_USER_KCONFIG)
+$(TLSPROBE_ELF_AARCH64): $(TLSPROBE_SRC) $(AARCH64_USER_KCONFIG) $(SDK_KEY_aarch64)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(TLSPROBE_CARGO)
+	$(SDK_CARGO_aarch64) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(TLSPROBE_CARGO)
 	cp $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release/tls-probe $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TLSPROBE_ELF_X86_64): $(TLSPROBE_SRC) $(X86_64_KCONFIG)
+$(TLSPROBE_ELF_X86_64): $(TLSPROBE_SRC) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
+	$(SDK_CARGO_x86_64) --target-dir $(TLSPROBE_TGT) $(TLSPROBE_CARGO)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/tls-probe $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1315,24 +1315,24 @@ $(TLSPROBE_ELF_X86_64): $(TLSPROBE_SRC) $(X86_64_KCONFIG)
 # RPC_QUIC.
 RPCQUIC_DIR      := userspace/services/rpcquic
 RPCQUIC_LIB      := userspace/lib/quic
-RPCQUIC_SRC       = $(wildcard $(RPCQUIC_DIR)/src/*.rs $(RPCQUIC_LIB)/src/*.rs) $(RPCQUIC_DIR)/Cargo.toml $(RPCQUIC_DIR)/Cargo.lock $(RPCQUIC_LIB)/Cargo.toml third_party/VENDOR_PIN $(RPC_LIB_SRC) $(SDK_SRC)
+RPCQUIC_SRC       = $(wildcard $(RPCQUIC_DIR)/src/*.rs $(RPCQUIC_LIB)/src/*.rs) $(RPCQUIC_DIR)/Cargo.toml $(RPCQUIC_DIR)/Cargo.lock $(RPCQUIC_LIB)/Cargo.toml third_party/VENDOR_PIN $(RPC_LIB_SRC)
 RPCQUIC_CARGO     = --vendored -- build --release --manifest-path $(RPCQUIC_DIR)/Cargo.toml
 
-$(RPCQUIC_ELF): $(RPCQUIC_SRC) $(RV_USER_KCONFIG)
+$(RPCQUIC_ELF): $(RPCQUIC_SRC) $(RV_USER_KCONFIG) $(SDK_KEY_riscv64)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/build/sdk_cargo.py --isa riscv64 --kconfig $(RV_USER_KCONFIG) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
+	$(SDK_CARGO_riscv64) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
 	cp $(TLSPROBE_TGT)/riscv64imac-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(RPCQUIC_ELF_AARCH64): $(RPCQUIC_SRC) $(AARCH64_USER_KCONFIG)
+$(RPCQUIC_ELF_AARCH64): $(RPCQUIC_SRC) $(AARCH64_USER_KCONFIG) $(SDK_KEY_aarch64)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/build/sdk_cargo.py --isa aarch64 --kconfig $(AARCH64_USER_KCONFIG) --page-size $(AARCH64_PAGE_SIZE) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(RPCQUIC_CARGO)
+	$(SDK_CARGO_aarch64) --target-dir $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX) $(RPCQUIC_CARGO)
 	cp $(TLSPROBE_TGT)$(AARCH64_PG_SUFFIX)/aarch64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG)
+$(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	@mkdir -p $(dir $@)
-	$(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
+	$(SDK_CARGO_x86_64) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1341,17 +1341,26 @@ $(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG)
 # row grants it the entropy capability and the `net` op class (nothing ships it
 # yet).
 SDKTEST_DIR      := sdk/sdktest
-SDKTEST_SRC       = $(SDKTEST_DIR)/src/main.rs $(SDKTEST_DIR)/Cargo.toml $(SDK_SRC) $(LIBSYS_SRC)
+SDKTEST_SRC       = $(SDKTEST_DIR)/src/main.rs $(SDKTEST_DIR)/Cargo.toml $(LIBSYS_SRC)
 SDKTEST_ELF      := $(OUT_BUILD)/sdktest.elf
 SDKTEST_ELF_AARCH64 := $(OUT_BUILD)/aarch64$(AARCH64_PG_SUFFIX)/sdktest.elf
 SDKTEST_ELF_X86_64  := $(OUT_BUILD)/x86_64/sdktest.elf
-SDK_ELFS          = $(WHY_ELF) $(WHY_ELF_AARCH64) $(WHY_ELF_X86_64) $(SDKTEST_ELF) $(SDKTEST_ELF_AARCH64) $(SDKTEST_ELF_X86_64) \
-                    $(TLSPROBE_ELF) $(TLSPROBE_ELF_AARCH64) $(TLSPROBE_ELF_X86_64) \
-                    $(RPCQUIC_ELF) $(RPCQUIC_ELF_AARCH64) $(RPCQUIC_ELF_X86_64) \
-                    $(PKGD_ELF) $(PKGD_ELF_AARCH64) $(PKGD_ELF_X86_64)
+SDK_TEST_ELFS_riscv64 = $(SDKTEST_ELF) $(TLSPROBE_ELF)
+SDK_TEST_ELFS_aarch64 = $(SDKTEST_ELF_AARCH64) $(TLSPROBE_ELF_AARCH64)
+SDK_TEST_ELFS_x86_64  = $(SDKTEST_ELF_X86_64) $(TLSPROBE_ELF_X86_64)
+SDK_TEST_ELFS         = $(if $(SDK_TEST_ON),$(SDK_TEST_ELFS_$(KCONFIG_ISA)))
 
 .PHONY: sdk sdk-check
-sdk: $(SDK_ELFS)
+sdk: $(SDK_KEY_$(KCONFIG_ISA))
+
+# The SDK of an ISA is built when its sources or its configuration are newer than its key; the
+# builder compares the content key and builds nothing when it is the one it holds.
+define sdk_rule
+$(SDK_KEY_$(1)): $(SDK_SRC) $(SDK_KCONFIG_$(1))
+	@mkdir -p $(SDK_DIR_$(1))
+	$$(PYTHON) tools/build/sdk_build.py --isa $(1) --kconfig $(SDK_KCONFIG_$(1)) --page-size $(SDK_PAGE_$(1)) --out $(SDK_DIR_$(1))
+endef
+$(foreach isa,riscv64 aarch64 x86_64,$(eval $(call sdk_rule,$(isa))))
 
 # The std port layer type-checks alone on the three ISAs (the pinned toolchain's
 # stock library, no std), and its host tests run.
@@ -1362,27 +1371,27 @@ sdk-check: $(RV_USER_KCONFIG) $(AARCH64_USER_KCONFIG) $(X86_64_KCONFIG)
 	cd tests/host/stdrt-tests && CARGO_TARGET_DIR="$(OUT_TGT)/tests/host/stdrt-tests" $(CARGO) test --release
 	cd crates/core/libsys-macros && CARGO_TARGET_DIR="$(OUT_TGT)/crates/core/libsys-macros" $(CARGO) test --offline
 
-$(SDKTEST_ELF): $(SDKTEST_SRC) $(RV_USER_KCONFIG)
+$(SDKTEST_ELF): $(SDKTEST_SRC) $(RV_USER_KCONFIG) $(SDK_KEY_riscv64)
 	@mkdir -p $(OUT_BUILD)
 	$(SDK_BUILD_riscv64) --manifest-path $(SDKTEST_DIR)/Cargo.toml
 	cp $(SDK_OUT_riscv64)/sdktest $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(SDKTEST_ELF_AARCH64): $(SDKTEST_SRC) $(AARCH64_USER_KCONFIG)
+$(SDKTEST_ELF_AARCH64): $(SDKTEST_SRC) $(AARCH64_USER_KCONFIG) $(SDK_KEY_aarch64)
 	@mkdir -p $(dir $@)
 	$(SDK_BUILD_aarch64) --manifest-path $(SDKTEST_DIR)/Cargo.toml
 	cp $(SDK_OUT_aarch64)/sdktest $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(SDKTEST_ELF_X86_64): $(SDKTEST_SRC) $(X86_64_KCONFIG)
+$(SDKTEST_ELF_X86_64): $(SDKTEST_SRC) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	@mkdir -p $(dir $@)
 	$(SDK_BUILD_x86_64) --manifest-path $(SDKTEST_DIR)/Cargo.toml
 	cp $(SDK_OUT_x86_64)/sdktest $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(PKGD_ELF_X86_64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
+$(PKGD_ELF_X86_64): $(PKGD_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	@mkdir -p $(X86_64_DIR)
-	env -u TOPOLOGY_PUBKEY_PATH $(PYTHON) tools/build/sdk_cargo.py --isa x86_64 --kconfig $(X86_64_KCONFIG) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
+	env -u TOPOLOGY_PUBKEY_PATH $(SDK_CARGO_x86_64) --target-dir $(TLSPROBE_TGT) $(PKGD_CARGO) $(MLSRV_KEY_FEATURES)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/pkgd $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 

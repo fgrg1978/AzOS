@@ -24,11 +24,14 @@ Source: `sdk/README.md`, `sdk/targets/`, `sdk/std/sys/`,
 A Rust `std` target for each ISA: `riscv64imac-unknown-azos`,
 `aarch64-unknown-azos` and `x86_64-unknown-azos` (`os = "azos"`, panic strategy
 `abort`). `std` is built with `-Zbuild-std` from the toolchain pinned in
-`rust-toolchain.toml`. `make sdk` builds every std program for the three ISAs
-(the list is `SDK_ELFS` in `mk/userspace.mk`: `userspace/services/why`,
-`userspace/services/pkgd`, `userspace/services/rpcquic`, `sdk/sdktest` and `userspace/lib/tls-probe`);
-`make sdk-check` type-checks the port layer on the three ISAs and runs its host
-tests.
+`rust-toolchain.toml`. `make sdk` builds the SDK of the ISA `.config` selects into
+`$AZOS_OUT/sdk/<isa>/` (a sysroot and a `key` over the toolchain, the port layer, the
+target and the Kconfig values that change its bytes), and builds nothing when the key
+is the one it holds. `make build` builds it first, then the std programs the `.config`
+enables: `userspace/services/why`, `userspace/services/pkgd` and
+`userspace/services/rpcquic` by their `USERSPACE_` symbols, `sdk/sdktest` and
+`userspace/lib/tls-probe` by `SDK_TEST_PROGRAMS`. `make sdk-check` type-checks the
+port layer on the three ISAs and runs its host tests.
 
 | Path | What |
 |---|---|
@@ -36,7 +39,8 @@ tests.
 | `sdk/std/sys/**` | The files of the port, copied into `library/std/src/sys/` of the library source. Each is thin: a call into `azos_stdrt`. |
 | `crates/core/stdrt` | The port layer (`azos_stdrt`): traps, startup block, vDSO clock, threads, futexes, the hardened allocator, console, entropy, sockets. |
 | `tools/build/sdk_std.py` | Assembles `$AZOS_OUT/build/sdk/rust-src/library` from the toolchain's `rust-src`, `sdk/std/sys` and the dispatch edits to `std`. |
-| `tools/build/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment taken from the expanded Kconfig. |
+| `tools/build/sdk_cargo.py` | Runs cargo for one ISA with the target, flags and environment taken from the expanded Kconfig; with `--sdk <dir>` it builds against that SDK. |
+| `tools/build/sdk_build.py` | Builds the SDK of one ISA into `$AZOS_OUT/sdk/<isa>/`. |
 | `crates/core/libsys-macros` | `#[main]` and `#[test]`, re-exported by `azos_libsys`. |
 
 `tools/build/sdk_std.py` points cargo at the assembled tree with
@@ -108,10 +112,10 @@ strip = "symbols"    # the loader reads a bounded amount of the file
 
 `fn main` is the entry. `userspace/services/why/Cargo.toml` is a complete example
 of a std program, and `sdk/sdktest/src/main.rs` exercises the port. Build with
-`tools/build/sdk_cargo.py`:
+`tools/build/sdk_cargo.py`, against the SDK `make sdk` made:
 
 ```sh
-python3 tools/build/sdk_cargo.py --isa riscv64 --kconfig <expanded .config> -- build --release --manifest-path userspace/services/why/Cargo.toml
+python3 tools/build/sdk_cargo.py --isa riscv64 --kconfig <expanded .config> --sdk $AZOS_OUT/sdk/riscv64 -- build --release --manifest-path userspace/services/why/Cargo.toml
 ```
 
 A std program needs the `entropy` capability in its topology row (the allocator

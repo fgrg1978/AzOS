@@ -1,0 +1,17 @@
+[package]
+name = "azos_sdk_driver"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The package `make sdk` builds so that cargo builds `std` for the target: it holds nothing. Its profile is that of the std programs, which the library inherits (bitcode kept for their LTO). Excluded from workspace; built standalone."
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = "symbols"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]

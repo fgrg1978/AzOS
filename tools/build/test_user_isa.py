@@ -66,7 +66,7 @@ def image_configs_follow_arch(tmp):
     for cfg_isa in ISAS:
         cfg = os.path.join(tmp, cfg_isa + "-stub.config")
         with open(cfg, "w") as f:
-            f.write(f"CONFIG_ARCH_{cfg_isa.upper()}=y\n")
+            f.write(f"CONFIG_ARCH_{cfg_isa.upper()}=y\nCONFIG_USERSPACE_WHY=y\n")  # a std program: an SDK image in the table
         for arch in ISAS:
             r = make(["-n", f"ARCH={arch}", f"KCONFIG_CONFIG={cfg}", "check"], out)
             seen = re.findall(r"sdk_cargo\.py --isa (\w+) --kconfig (\S+)", r.stdout)
