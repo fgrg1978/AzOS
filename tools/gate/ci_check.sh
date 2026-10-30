@@ -25449,6 +25449,95 @@ repro_row() {
 }
 par -s -h "supply chain: reproducible build" repro_row
 
+# ── Preset boot rows ────────────────────────────────────────────────────────
+#
+# One row per cell of `make defconfig` (10 presets x 3 ISAs): the commands the
+# owner types, `make defconfig ARCH=<isa> PRESET=<preset>`, `make build`,
+# `make qemu`, and the console they end in. The cell passes when the
+# console program its configuration selects owns the console (the native shell
+# answers a command; with no console program the recovery console answers
+# `help`) and the console is clean (ok() judges it like every QEMU row's).
+#
+# Only the cells tools/gate/preset_boot_green.tsv marks green run; the rest
+# print a skip line (`make defconfig` marks them experimental), and
+# PRESET_BOOT_ALL=1 runs every cell, which is how a cell earns its green.
+# The cell builds in the gate's own output directory, where the owner's `make
+# build` would, from a config of its own ($AZOS_OUT/build/preset-<cell>.config),
+# so the rows are serial and come last. PRESET_BOOT_LIMIT is the seconds a cell
+# has to reach its prompt (default 240).
+preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64>
+    local preset="$1" isa="$2" label="preset boot: $1 $2" status
+    printf "  %-26s" "${label}..."
+    if ! status="$(python3 "$REPO_ROOT/tools/build/defconfig_menu.py" --status "$preset" "$isa" 2>&1)"; then
+        bad; echo "      $status"; return
+    fi
+    if [ "$status" != green ] && [ "${PRESET_BOOT_ALL:-0}" != 1 ]; then
+        SKIP=$((SKIP + 1)); echo "skipped (experimental in tools/gate/preset_boot_green.tsv; PRESET_BOOT_ALL=1 runs it)"
+        return
+    fi
+    local slug="$1-$2" cfg log fifo pid limit="${PRESET_BOOT_LIMIT:-240}"
+    local prog="" prompt cmd want verdict=""
+    cfg="$AZOS_OUT/build/preset-$slug.config"; log="$CI_LOG_DIR/preset-$slug.log"; fifo="$CI_LOG_DIR/preset-$slug.fifo"
+    mkdir -p "$AZOS_OUT/build" "$CI_LOG_DIR"; rm -f "$log" "$fifo" "$log.make"
+    local mk=(env AZOS_OUT="$AZOS_OUT" KCONFIG_CONFIG="$cfg" make -C "$REPO_ROOT")
+    if ! "${mk[@]}" defconfig ARCH="$isa" PRESET="$preset" </dev/null >"$log.make" 2>&1; then
+        bad; echo "      make defconfig ARCH=$isa PRESET=$preset failed:"; grep -a -m3 -iE 'error|refus' "$log.make" | sed 's/^/        /'
+        echo "      log kept: $log.make"; return
+    fi
+    grep -qx "CONFIG_PRESET_$(printf '%s' "$preset" | tr a-z A-Z)=y" "$cfg" \
+        || { bad; echo "      the expanded config does not select the preset $preset"; return; }
+    if ! "${mk[@]}" build </dev/null >"$log.make" 2>&1; then
+        bad; echo "      make build failed:"; grep -a -m5 -E '^error|error\[|\*\*\*' "$log.make" | sed 's/^/        /'
+        echo "      log kept: $log.make"; return
+    fi
+    # The console program the configuration selected decides the prompt and
+    # the command that proves it answers.
+    prog="$(sed -n 's/^CONFIG_CONSOLE_PROGRAM_\([A-Z_]*\)=y$/\1/p' "$cfg")"
+    case "$prog" in
+        SH)   prompt='azos\$ '; cmd='echo preset-boot-ok'; want='^preset-boot-ok$' ;;
+        NONE) prompt="${preset}> "; cmd='help'; want='^ *help +- this message$' ;;
+        *)    bad; echo "      console program ${prog:-?}: the row has no way to reach it"; return ;;
+    esac
+    mkfifo "$fifo" || { bad; echo "      mkfifo failed: $fifo"; return; }
+    while [ $(( $(par_qemu_count) + 1 )) -gt "$CI_QEMU_MAX" ]; do sleep 2; done
+    par_ready
+    (exec python3 -c 'import os, sys; os.setpgid(0, 0); os.execvp(sys.argv[1], sys.argv[1:])' "${mk[@]}" qemu) <"$fifo" >"$log" 2>&1 &
+    pid=$!
+    : >"$GATE_PGROUP_DIR/$pid"
+    exec 8>"$fifo"
+    preset_boot_wait() { # preset_boot_wait <regex> <seconds>: the console prints it, or the boot ends
+        local n=0
+        while [ "$n" -lt "$(($2 * 2))" ]; do
+            tr -d '\r\0' <"$log" | grep -aqE -- "$1" && return 0
+            kill -0 "$pid" 2>/dev/null || { verdict=exited; return 1; }
+            grep -aqiE 'panic|FATAL|AARCH64-TRAP\] unhandled' "$log" && { verdict=crash; return 1; }
+            n=$((n + 1)); sleep 0.5
+        done
+        verdict=timeout; return 1
+    }
+    if preset_boot_wait "$prompt" "$limit"; then
+        sleep 2
+        local c; for ((c = 0; c < ${#cmd}; c++)); do printf '%s' "${cmd:c:1}" >&8; sleep 0.03; done; printf '\r' >&8
+        preset_boot_wait "$want" 30 || true
+        tr -d '\r\0' <"$log" | grep -aqE -- "$want" && verdict=pass
+    fi
+    gate_pgroup_kill "$pid"; wait "$pid" 2>/dev/null
+    rm -f "$GATE_PGROUP_DIR/$pid"
+    exec 8>&-; rm -f "$fifo"
+    if [ "$verdict" = pass ]; then
+        ok; rm -f "$log" "$log.make"
+    else
+        bad; echo "      ${verdict:-no answer}: the console (console program ${prog}) did not answer '$cmd' within ${limit}s"
+        tr -d '\r\0' <"$log" | tail -4 | sed 's/^/        /'
+        echo "      log kept: $log"
+    fi
+}
+for pb_preset in generic robot server gateway iot_hmi desktop firmware wearable industrial automotive; do
+    for pb_isa in riscv64 aarch64 x86_64; do
+        par -s "preset boot: $pb_preset $pb_isa" preset_boot_row "$pb_preset" "$pb_isa"
+    done
+done
+
 par_drain
 if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then
     fast_missing="$(fast_unseen)"

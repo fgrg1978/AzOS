@@ -204,7 +204,8 @@ it. `make defconfig` asks two questions, the ISA (the host's by default) and the
 and loads the QEMU development image of that pair, with the Linux personality and BusyBox
 (`+linux-dev`: the gate's `+linux` pins BusyBox off) (`make defconfig ARCH=aarch64 PRESET=robot`
 answers them); the pairs `tools/gate/preset_boot_green.tsv` does not list as green are marked
-experimental. `make defconfig-<name>` loads a committed defconfig into `.config` and runs
+experimental (a green pair has a gate row, `preset boot: <preset> <isa>`, that runs the three commands
+and needs the selected shell to answer on a clean console; the file says why each other pair fails). `make defconfig-<name>` loads a committed defconfig into `.config` and runs
 `olddefconfig`; any other name is assembled on the fly
 (`make defconfig-industrial-embedded-aarch64+board-generic`).
 

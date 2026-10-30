@@ -263,6 +263,11 @@ with its reason in `tools/gate/console_allow.tsv` (row-label regex, class, line 
 run prints how many rows were judged. `CI_CONSOLE_JUDGE=0` turns the judge off; `CI_CONSOLE_PLANT=<row label>`
 appends a warning line to that row's console first, the canary that a passing row then fails.
 
+The preset boot rows (`preset boot: <preset> <isa>`, ten presets on three ISAs) run what `make defconfig ARCH=<isa>
+PRESET=<preset>`, `make build` and `make qemu` do (from a config of their own, `$AZOS_OUT/build/preset-<cell>.config`), and need the console program the
+configuration selected to answer on a clean console. The cells `tools/gate/preset_boot_green.tsv` marks green run;
+`PRESET_BOOT_ALL=1` runs the others.
+
 ### Lints
 
 N0 runs each lint after its own self-test, so a lint that went blind fails.

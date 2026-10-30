@@ -1,34 +1,35 @@
 # Which (preset, ISA) combinations of `make defconfig` have a green preset boot row.
 # Read by tools/build/defconfig_menu.py (the menu marks the rest experimental) and checked by its --self-test.
-# Columns, tab separated: preset, isa, status (green|experimental), evidence (the row or run that proves green; - for experimental).
-# The preset-boot-rows work fills the evidence column; until a row exists a green line names the QEMU run that booted it.
-automotive	riscv64	experimental	-
-automotive	aarch64	experimental	-
-automotive	x86_64	experimental	-
-desktop	riscv64	experimental	-
-desktop	aarch64	experimental	-
-desktop	x86_64	experimental	-
-firmware	riscv64	experimental	-
-firmware	aarch64	experimental	-
-firmware	x86_64	experimental	-
-gateway	riscv64	experimental	-
-gateway	aarch64	experimental	-
-gateway	x86_64	experimental	-
-generic	riscv64	green	make defconfig, build and qemu reached the user shell and answered help (u3-menu 2026-10-30; no gate row yet)
-generic	aarch64	green	make defconfig, build and qemu reached the user shell and answered help (u3-menu 2026-10-30; no gate row yet)
-generic	x86_64	experimental	-
-industrial	riscv64	experimental	-
-industrial	aarch64	experimental	-
-industrial	x86_64	experimental	-
-iot_hmi	riscv64	experimental	-
-iot_hmi	aarch64	experimental	-
-iot_hmi	x86_64	experimental	-
-robot	riscv64	experimental	-
-robot	aarch64	green	make defconfig, build and qemu reached the user shell and answered help (u3-menu 2026-10-30; no gate row yet)
-robot	x86_64	experimental	-
-server	riscv64	experimental	-
-server	aarch64	experimental	-
-server	x86_64	experimental	-
-wearable	riscv64	experimental	-
-wearable	aarch64	experimental	-
-wearable	x86_64	experimental	-
+# Columns, tab separated: preset, isa, status (green|experimental), evidence. A green line names its gate row, `preset boot: PRESET ISA` (tools/gate/ci_check.sh),
+# and what ran: make defconfig, make build and make qemu reached the selected shell and answered, on a console tools/gate/console_judge.py found clean.
+# An experimental line says why the cell fails, or that it was not run; PRESET_BOOT_ALL=1 runs every cell, which is how one earns its green.
+automotive	riscv64	experimental	halts at boot: the posture implies SECURE_BOOT_ENFORCED and a dev image embeds no signing key ([SECURE-BOOT] FATAL)
+automotive	aarch64	experimental	halts at boot: the posture implies SECURE_BOOT_ENFORCED and a dev image embeds no signing key ([SECURE-BOOT] FATAL)
+automotive	x86_64	experimental	expected to halt like riscv64 (SECURE_BOOT_ENFORCED, no key in a dev image); not run
+desktop	riscv64	green	preset boot: desktop riscv64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+desktop	aarch64	green	preset boot: desktop aarch64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+desktop	x86_64	experimental	hangs at boot (u2-x86hang is fixing it); not run by u3-gate
+firmware	riscv64	green	preset boot: firmware riscv64: make defconfig, build and qemu reached the recovery console (no console program) and answered, console clean (u3-gate 2026-10-30)
+firmware	aarch64	green	preset boot: firmware aarch64: make defconfig, build and qemu reached the recovery console (no console program) and answered, console clean (u3-gate 2026-10-30)
+firmware	x86_64	experimental	make build fails: sshd does not compile, `SSHD_PORT` is not in azos_limits on this embedded x86_64 config
+gateway	riscv64	green	preset boot: gateway riscv64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+gateway	aarch64	green	preset boot: gateway aarch64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+gateway	x86_64	experimental	hangs after LOGD starts: [K-C29] block_current refused (8 lines), the shell never answers (u3-gate run 2026-10-30); generic, robot and iot_hmi boot on x86_64
+generic	riscv64	green	preset boot: generic riscv64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+generic	aarch64	green	preset boot: generic aarch64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+generic	x86_64	green	preset boot: generic x86_64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+industrial	riscv64	experimental	halts at boot: the posture implies SECURE_BOOT_ENFORCED and a dev image embeds no signing key ([SECURE-BOOT] FATAL)
+industrial	aarch64	experimental	expected to halt like riscv64 (SECURE_BOOT_ENFORCED, no key in a dev image); not run
+industrial	x86_64	experimental	expected to halt like riscv64 (SECURE_BOOT_ENFORCED, no key in a dev image); not run
+iot_hmi	riscv64	green	preset boot: iot_hmi riscv64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+iot_hmi	aarch64	green	preset boot: iot_hmi aarch64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+iot_hmi	x86_64	green	preset boot: iot_hmi x86_64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+robot	riscv64	green	preset boot: robot riscv64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+robot	aarch64	green	preset boot: robot aarch64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+robot	x86_64	green	preset boot: robot x86_64: make defconfig, build and qemu reached the native shell and answered, console clean (u3-gate 2026-10-30)
+server	riscv64	experimental	make build fails to link: .bss overflows the RAM region by ~164 MiB (RAM_SIZE=1024 with MAX_TASKS=4096, MAX_SOCKETS=2048, MAX_CAPS_TOTAL=65536)
+server	aarch64	experimental	make build fails to link: .bss overflows the RAM region by ~164 MiB (RAM_SIZE=1024 with MAX_TASKS=4096, MAX_SOCKETS=2048, MAX_CAPS_TOTAL=65536)
+server	x86_64	experimental	hangs after LOGD starts: [K-C29] block_current refused (8 lines), the shell never answers (u3-gate run 2026-10-30)
+wearable	riscv64	green	preset boot: wearable riscv64: make defconfig, build and qemu reached the recovery console (no console program) and answered, console clean (u3-gate 2026-10-30)
+wearable	aarch64	green	preset boot: wearable aarch64: make defconfig, build and qemu reached the recovery console (no console program) and answered, console clean (u3-gate 2026-10-30)
+wearable	x86_64	experimental	make build fails: sshd does not compile, `SSHD_PORT` is not in azos_limits on this embedded x86_64 config

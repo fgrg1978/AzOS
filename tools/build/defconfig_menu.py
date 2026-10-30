@@ -5,6 +5,7 @@
 
 Usage: python3 tools/build/defconfig_menu.py [--arch ISA] [--preset NAME]
        python3 tools/build/defconfig_menu.py --after NAME
+       python3 tools/build/defconfig_menu.py --status PRESET ISA
        python3 tools/build/defconfig_menu.py --self-test
 
 The first form asks what --arch and --preset did not answer (on a terminal;
@@ -24,7 +25,11 @@ tools/build/gen_defconfigs.py:
 
 --after NAME prints what was chosen and what to run next; it marks the choice
 green when tools/gate/preset_boot_green.tsv names a green boot row for the
-(preset, ISA) and experimental otherwise.
+(preset, ISA) and experimental otherwise. --status prints that word alone, for
+the gate's preset boot rows (tools/gate/ci_check.sh), which run the green cells
+and skip the experimental ones. A green line names its gate row,
+`preset boot: PRESET ISA` (row_key), which the self-test finds in
+tools/gate/gate_rows.tsv.
 """
 
 import os
@@ -38,6 +43,7 @@ import azos_tools  # noqa: E402
 REPO = azos_tools.ROOT
 PRESETS_DIR = os.path.join(REPO, "config", "fragments", "presets")
 GREEN_FILE = os.path.join(REPO, "tools/gate/preset_boot_green.tsv")
+ROWS_FILE = os.path.join(REPO, "tools/gate/gate_rows.tsv")
 ISAS = ("riscv64", "aarch64", "x86_64")
 HOST_ISA = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64", "riscv64": "riscv64"}
 DEFAULT_PRESET = "generic"
@@ -94,6 +100,25 @@ def read_green(path=GREEN_FILE):
     missing = [(p, i) for p in presets() for i in ISAS if (p, i) not in out]
     if missing:
         raise Refused(f"{path}: no row for {', '.join(f'{p}/{i}' for p, i in missing)}")
+    return out
+
+
+def row_key(preset, isa):
+    """The key of the gate row that boots this cell (tools/gate/ci_check.sh, preset_boot_row)."""
+    return f"preset boot: {preset} {isa}"
+
+
+def evidence_problems(green, rows_path=ROWS_FILE):
+    """Each green cell's evidence names its gate row, and the gate has that row."""
+    keys = {l.split("\t")[0] for l in open(rows_path, encoding="utf-8").read().splitlines()}
+    out = []
+    for (p, i), (status, evidence) in sorted(green.items()):
+        if status != "green":
+            continue
+        if row_key(p, i) not in evidence:
+            out.append(f"{p} on {i} is green but its evidence does not name the row {row_key(p, i)!r}")
+        if row_key(p, i) not in keys:
+            out.append(f"{p} on {i} is green but gate_rows.tsv has no row {row_key(p, i)!r}")
     return out
 
 
@@ -206,6 +231,23 @@ def self_test():
     refused(good + good.splitlines()[0] + "\n", "a combination listed twice")
     refused(good.replace("experimental", "maybe", 1), "a status that is not green or experimental")
 
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as t:
+        t.write("# header\n" + row_key("generic", "riscv64") + "\tn2\tx\n")
+    try:
+        rows = t.name
+        fake = {("generic", "riscv64"): ("green", f"{row_key('generic', 'riscv64')}; run"),
+                ("generic", "aarch64"): ("green", "a run nobody can find again"),
+                ("robot", "aarch64"): ("experimental", "-")}
+        got = evidence_problems(fake, rows)
+        if len(got) != 2 or "generic on aarch64" not in got[0]:
+            fails.append(f"green evidence: {got}")
+        fake[("generic", "aarch64")] = ("green", row_key("generic", "aarch64"))
+        if len(evidence_problems(fake, rows)) != 1:
+            fails.append("a green cell whose row the gate lacks was not reported")
+    finally:
+        os.unlink(t.name)
+    fails += evidence_problems(read_green())
+
     import kconfiglib
     os.chdir(REPO)
     k = kconfiglib.Kconfig("Kconfig", warn_to_stderr=False)
@@ -241,7 +283,7 @@ def self_test():
     for f in fails:
         print("defconfig_menu self-test: FAIL", f)
     if not fails:
-        print(f"defconfig_menu self-test: ok (6 data-file rules, {len(presets()) * len(ISAS)} presets x ISAs assemble)")
+        print(f"defconfig_menu self-test: ok (7 data-file rules, {len(presets()) * len(ISAS)} presets x ISAs assemble)")
     return 1 if fails else 0
 
 
@@ -258,6 +300,9 @@ def main(argv):
                 preset = argv[i + 1]
             elif argv[i] == "--after" and i + 1 < len(argv):
                 after_name = argv[i + 1]
+            elif argv[i] == "--status" and i + 2 < len(argv):
+                print(read_green()[(normalise_preset(argv[i + 1]), normalise_isa(argv[i + 2]))][0])
+                return 0
             else:
                 raise Refused(f"unknown argument {argv[i]!r}")
             i += 2
