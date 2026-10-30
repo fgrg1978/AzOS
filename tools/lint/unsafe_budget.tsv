@@ -45,7 +45,7 @@ crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	62
 crates/core/rings	23	4	4	0	0	98
-crates/core/sched	426	136	12	3	0	70
+crates/core/sched	427	136	12	3	0	70
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	46	9	18	0	0	84
 crates/core/syscall	41	2	0	0	0	39
@@ -107,7 +107,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	348	14	12	52	0	61
+kernel	348	14	12	52	0	62
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
