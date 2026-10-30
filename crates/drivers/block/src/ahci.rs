@@ -103,7 +103,7 @@
 //! DMA coherence is assumed (the PCs this driver is for), as for NVMe.
 
 use crate::queue::{Claim, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, HW_TAGS_MAX};
-use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US};
+use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US, STALL_SAY_EVERY_US};
 use azos_drv_api::recovery::{Class, Recovery, Verdict};
 use azos_sync::kmutex::Mutex;
 #[cfg(feature = "ahci")]
@@ -1256,14 +1256,18 @@ impl<R: Regs> Ahci<R> {
     }
 
     /// Tell [`StallClock`] the guest is looking at the HBA now; says so once
-    /// per stall. Returns the timebase tick it read.
-    fn watch(&self) -> u64 {
+    /// per stall, at most once per `STALL_SAY_EVERY_US`. A gap is a stall only
+    /// while a command is in the device (or the NCQ error log is being read),
+    /// not for one that is armed and not yet issued. Returns the timebase
+    /// tick it read.
+    fn watch(&self, st: &Slots) -> u64 {
         let t = now();
-        let credited = self.stall.observe(t, STALL_GAP_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000);
-        if credited != 0 {
+        let ticks = |us: u64| us * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000;
+        let busy = st.queued | st.single != 0 || st.log.is_some();
+        if let Some(n) = self.stall.look(t, ticks(STALL_GAP_US), ticks(STALL_SAY_EVERY_US), busy) {
             azos_drv_sys::kprintln!(
-                "[AHCI] guest did not run for {} ms: command budgets extended by that time",
-                credited * 1000 / azos_drv_sys::timebase::TIMER_FREQ
+                "[AHCI] guest did not run for {} ms: command budgets extended by that time ({} more since the last line)",
+                n.ticks * 1000 / azos_drv_sys::timebase::TIMER_FREQ, n.held
             );
         }
         t
@@ -1436,7 +1440,7 @@ impl<R: Regs> Ahci<R> {
             self.put_header(k, cmd_header(c.write, c.prdtl as usize, self.ct_pa[k]));
             // The look before the credit is read: the baseline already holds
             // any stall that ended just now.
-            self.watch();
+            self.watch(st);
             st.credit[k] = self.stall.credit();
             st.deadline[k] = deadline_after_us(c.budget_us);
             st.armed &= !bit;
@@ -1466,7 +1470,7 @@ impl<R: Regs> Ahci<R> {
             return After::Nothing;
         }
         let ev = self.take_events();
-        let t = self.watch();
+        let t = self.watch(st);
         if self.recovery.dead() {
             // The device died with these commands in it: no data to trust.
             st.end_all(HwStatus::Io);
@@ -1557,7 +1561,7 @@ impl<R: Regs> Ahci<R> {
             return;
         }
         self.build_internal(&read_log_fis(LOG_NCQ_ERROR, 1));
-        self.watch();
+        self.watch(st);
         st.log = Some(LogRead { held, deadline: deadline_after_us(self.b.identify_us), credit: self.stall.credit() });
         azos_dma::order::io_wmb();
         self.port_regs().wr(P_CI, 1);

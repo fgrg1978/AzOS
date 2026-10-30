@@ -112,7 +112,7 @@ fn a_discard_and_a_flush_get_the_long_budget_and_data_the_short_one() {
 // ── The budget is time the guest ran ────────────────────────────────────
 
 mod stall {
-    use azos_drv_api::block::StallClock;
+    use azos_drv_api::block::{StallClock, StallNote};
 
     /// Units are arbitrary ticks: a command has `BUDGET` of them, two looks
     /// further apart than `GAP` are a guest that did not run.
@@ -198,5 +198,51 @@ mod stall {
         assert_eq!(c.observe(900, GAP), 0);
         // And does not move the last look back: the next gap is from 1000.
         assert_eq!(c.observe(1_040, GAP), 0);
+    }
+
+    const SAY: u64 = 10_000;
+
+    /// An idle disk looked at seconds apart is no stall: nothing waits on
+    /// it, so nothing is credited, said or held, and the next look measures
+    /// from the idle one. Canary: `look` observes whether or not a command
+    /// is waiting (the logd feedback loop: one stall line per write, each
+    /// write the next look).
+    #[test]
+    fn an_idle_disk_looked_at_seconds_apart_is_no_stall() {
+        let c = StallClock::new();
+        assert_eq!(c.look(1_000, GAP, SAY, false), None);
+        assert_eq!(c.look(5_000, GAP, SAY, false), None, "an idle gap was said");
+        assert_eq!(c.credit(), 0, "an idle gap was credited");
+        // A command submitted right after the idle look finds no stall.
+        assert_eq!(c.look(5_010, GAP, SAY, true), None, "the idle gap leaked into the busy look");
+        assert_eq!(c.credit(), 0);
+    }
+
+    /// The same gap with a command waiting in the device is the stall the
+    /// credit exists for. Canary: `look` ignores `busy` the other way
+    /// (never credits): a stopped guest then times its disk out.
+    #[test]
+    fn the_same_gap_with_a_command_waiting_is_credited_and_said() {
+        let c = StallClock::new();
+        c.look(1_000, GAP, SAY, true);
+        assert_eq!(c.look(3_000, GAP, SAY, true), Some(StallNote { ticks: 2_000, held: 0 }));
+        assert_eq!(c.credit(), 2_000);
+    }
+
+    /// Stalls credited inside `SAY` of the last line are counted, not said;
+    /// the credit itself is never held back. Canary: say every credit.
+    #[test]
+    fn a_stall_line_is_said_at_most_once_per_period() {
+        let c = StallClock::new();
+        c.look(1_000, GAP, SAY, true);
+        let first = c.look(2_000, GAP, SAY, true);
+        assert_eq!(first, Some(StallNote { ticks: 1_000, held: 0 }));
+        assert_eq!(c.look(3_000, GAP, SAY, true), None);
+        assert_eq!(c.look(4_000, GAP, SAY, true), None);
+        assert_eq!(c.credit(), 3_000, "a held line lost its credit");
+        // A look that credits nothing says nothing and holds nothing.
+        assert_eq!(c.look(4_010, GAP, SAY, true), None);
+        // The period over: the next stall is said, with the two held.
+        assert_eq!(c.look(20_000, GAP, SAY, true), Some(StallNote { ticks: 15_990, held: 2 }));
     }
 }

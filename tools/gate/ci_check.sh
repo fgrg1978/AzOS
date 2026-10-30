@@ -1334,6 +1334,41 @@ blk_stall_row() { # blk_stall_row <label> <riscv64|aarch64> <kernel image> <pass
     ok; rm -f "$log" "$disk"
 }
 
+# (f2) An idle disk is no stall. Credit is for a command that waited in the
+# device while the guest did not run. An idle guest looks at the disk once per
+# client write, seconds apart, and every such gap used to be credited and said;
+# the line is a log record, whose write was the next look, so a booted, idle
+# shell wrote `guest did not run` and the volume once a second for good
+# (62 lines in 60 s). The boot runs on after its disk I/O is over; nothing may
+# be said after that point, whatever the driver (`[VIRTIO-BLK]`, `[NVME]`,
+# `[AHCI]` share the clock). Canary, by hand: `StallClock::look` observing
+# whether or not a command waits (the `busy` test removed): the lines return.
+BLK_IDLE_HALF_SECONDS=100
+blk_idle_row() { # blk_idle_row <riscv64|aarch64>
+    local isa="$1" label="$1: blk: idle disk is no stall"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local log="$CI_LOG_DIR/blk-idle-$isa.log" disk="$CI_LOG_DIR/blk-idle-$isa.img" dsrc stop
+    rm -f "$log" "$disk"
+    if [ "$isa" = riscv64 ]; then dsrc=$AZOS_OUT/build/disk.img; stop='Stack canary: '; else dsrc=$AZOS_OUT/build/disk-aarch64.img; stop='persisted seed: (rewritten|REWRITE FAILED)'; fi
+    rm -f "$dsrc"; make_disk "$dsrc"; cp "$dsrc" "$disk"
+    par_ready
+    entseed_boot "$isa" "$disk" "$log" yes 'the-boot-is-never-stopped-on-a-marker' "$BLK_IDLE_HALF_SECONDS"
+    entseed_log_sane "$log" "idle boot" || return
+    if ! grep -aqE "$stop" "$log" 2>/dev/null; then
+        bad; echo "      the boot did not reach the end of its disk I/O: the row proves nothing"
+        echo "      log kept: $log"; return
+    fi
+    local idle
+    idle="$(sed -E -n "/$stop/,\$p" "$log" | grep -acE "guest did not run for")"
+    if [ "$idle" != 0 ]; then
+        bad; echo "      the driver said the guest did not run $idle time(s) after the boot's disk I/O was over:"
+        sed -E -n "/$stop/,\$p" "$log" | grep -aE "guest did not run for" | tr -d '\r' | sed -n '1,4p' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$disk"
+}
+
 # (g) The device timeout policy (azos_drv_api::recovery, owner decision
 # 2026-10-23): a command out of its budget resets the disk once, the next
 # timeout latches it dead. Booted on the `blk-stall-canary` kernel (no stall
@@ -8632,10 +8667,11 @@ if a64_kbuild "qemu"; then
     ENTSEED_A64_IMG="$CI_LOG_DIR/kernel-entseed-a64.img"
     if ci_wants "aarch64: persisted seed rotates" "aarch64: persisted seed seeds" \
             "aarch64: seed diskless unchanged" "aarch64: seed spares the filesystem" \
-            "aarch64: blk: guest stop survives"; then
+            "aarch64: blk: guest stop survives" "aarch64: blk: idle disk is no stall"; then
         ci_kflush; cp "$A64_IMG" "$ENTSEED_A64_IMG"
     fi
     par "aarch64: blk: guest stop survives" blk_stall_row "aarch64: blk: guest stop survives" aarch64 "$ENTSEED_A64_IMG" pass
+    par "aarch64: blk: idle disk is no stall" blk_idle_row aarch64
     par "aarch64: persisted seed rotates" entseed_rotate_row aarch64
     par "aarch64: persisted seed seeds" entseed_alone_row aarch64
     par "aarch64: seed diskless unchanged" entseed_diskless_row aarch64
@@ -12131,10 +12167,11 @@ else
     ENTSEED_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-rv"
     if ci_wants "riscv64: persisted seed rotates" "riscv64: persisted seed seeds" \
             "riscv64: seed diskless unchanged" "riscv64: seed spares the filesystem" \
-            "riscv64: GPT records partition" "riscv64: blk: guest stop survives"; then
+            "riscv64: GPT records partition" "riscv64: blk: guest stop survives" "riscv64: blk: idle disk is no stall"; then
         ci_kflush; cp "$KERNEL" "$ENTSEED_RV_KERNEL"
     fi
     par "riscv64: blk: guest stop survives" blk_stall_row "riscv64: blk: guest stop survives" riscv64 "$ENTSEED_RV_KERNEL" pass
+    par "riscv64: blk: idle disk is no stall" blk_idle_row riscv64
     par "riscv64: persisted seed rotates" entseed_rotate_row riscv64
     par "riscv64: persisted seed seeds" entseed_alone_row riscv64
     par "riscv64: seed diskless unchanged" entseed_diskless_row riscv64

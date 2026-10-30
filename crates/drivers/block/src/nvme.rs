@@ -89,7 +89,7 @@
 //!   device write. Where it does, every sync is a no-op.
 
 use crate::queue::{Claim, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, HW_TAGS_MAX};
-use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US};
+use azos_drv_api::block::{DeviceWait, StallClock, STALL_GAP_US, STALL_SAY_EVERY_US};
 use azos_drv_api::recovery::{Class, Recovery, Verdict};
 use azos_drv_sys::kprintln;
 use azos_drv_virtio::virtio::blk_proto::queue_of;
@@ -368,15 +368,22 @@ fn now() -> u64 {
     azos_drv_sys::timebase::now()
 }
 
+/// Is a command in the controller whose budget is running (started, not yet
+/// answered)? Only then is a gap between two looks time it was left to answer.
+fn waiting_on_controller() -> bool {
+    (0..SLOTS).any(|s| SLOT_INFLIGHT[s].load(Ordering::Acquire) && !SLOT_DONE[s].load(Ordering::Acquire))
+}
+
 /// Tell [`STALL`] the guest is looking at the controller now; says so once per
-/// stall. Returns the timebase tick it read.
+/// stall, at most once per `STALL_SAY_EVERY_US`. Returns the timebase tick it
+/// read.
 fn watch() -> u64 {
     let t = now();
-    let credited = STALL.observe(t, STALL_GAP_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000);
-    if credited != 0 {
+    let ticks = |us: u64| us * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000;
+    if let Some(n) = STALL.look(t, ticks(STALL_GAP_US), ticks(STALL_SAY_EVERY_US), waiting_on_controller()) {
         azos_drv_sys::kprintln!(
-            "[NVME] guest did not run for {} ms: command budgets extended by that time",
-            credited * 1000 / azos_drv_sys::timebase::TIMER_FREQ);
+            "[NVME] guest did not run for {} ms: command budgets extended by that time ({} more since the last line)",
+            n.ticks * 1000 / azos_drv_sys::timebase::TIMER_FREQ, n.held);
     }
     t
 }

@@ -241,7 +241,12 @@ command is out of budget only when its deadline plus the credit gained since
 it was submitted has passed. The task that waits looks at least once per
 millisecond (the slice below), so a running guest never credits anything, and
 a device that really died is found at its budget plus the time the guest did
-not run. The driver prints `guest did not run for N ms` when it credits.
+not run. A gap is a stall only while a command waits in the device: an idle
+disk looked at seconds apart (a tickless guest, one client write a second) is
+not, and is neither credited nor said. The driver prints `guest did not run
+for N ms` when it credits, at most once per `STALL_SAY_EVERY_US` (10 s), the
+others counted in the next line; the log sink's write is itself the next look,
+so a line per gap fed back on itself.
 Decision: this, and not "retry once before latching" (a second budget after
 the first expiry): that forgives one stall of any length but only one, and a
 guest stopped twice during one command still lost its disk. NVMe, AHCI and
@@ -249,7 +254,8 @@ virtio-blk do it; the SD/eMMC drivers time their commands per call and do not
 latch, and the USB disk, whose budget is Kconfig `USB_MSC_TIMEOUT_MS` with no
 stall credit, is failed until it is unplugged when a command outlives it.
 Gate rows `blk: guest stop survives` (both ISAs) pause QEMU during the boot's
-disk I/O and must finish; `blk: guest stop canary` (feature
+disk I/O and must finish, and `blk: idle disk is no stall` boots on past its
+I/O and forbids the line; `blk: guest stop canary` (feature
 `blk-stall-canary`, no credit) must see a command time out. On that same
 kernel the stops are the fault injection of the reset policy: `blk: timeout
 resets once` must see one reset and the disk serve the rest of the boot,

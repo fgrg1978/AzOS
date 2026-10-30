@@ -223,6 +223,10 @@ use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 /// running guest sees and far below a command budget (500 ms).
 pub const STALL_GAP_US: u64 = 50_000;
 
+/// A driver says it credited a stall at most this often; the others are
+/// counted ([`StallNote::held`]).
+pub const STALL_SAY_EVERY_US: u64 = 10_000_000;
+
 /// What a block driver's command budget is measured in: time the guest ran.
 ///
 /// A command's budget (`virtio::blk_proto::BLK_TIMEOUT_US`, NVMe's `IO_TIMEOUT_US`)
@@ -248,11 +252,22 @@ pub const STALL_GAP_US: u64 = 50_000;
 pub struct StallClock {
     last: AtomicU64,
     credit: AtomicU64,
+    said: AtomicU64,
+    held: AtomicU32,
+}
+
+/// What [`StallClock::look`] asks its driver to say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StallNote {
+    /// The stall this look credited, in timebase ticks.
+    pub ticks: u64,
+    /// Stalls credited since the last line and not said.
+    pub held: u32,
 }
 
 impl StallClock {
     pub const fn new() -> Self {
-        StallClock { last: AtomicU64::new(0), credit: AtomicU64::new(0) }
+        StallClock { last: AtomicU64::new(0), credit: AtomicU64::new(0), said: AtomicU64::new(0), held: AtomicU32::new(0) }
     }
 
     /// The driver looks at the device at timebase tick `now`; gaps above
@@ -272,6 +287,40 @@ impl StallClock {
         };
         self.last.fetch_max(now, Ordering::AcqRel);
         credited
+    }
+
+    /// The driver looks at an idle device at `now`: nothing was waiting on
+    /// it, so the gap since the last look is no stall, whatever its length (a
+    /// tickless idle guest looks once per client I/O, seconds apart). Only
+    /// the look is recorded; the next [`observe`](Self::observe) measures from
+    /// here.
+    pub fn touch(&self, now: u64) {
+        self.last.fetch_max(now, Ordering::AcqRel);
+    }
+
+    /// The driver's look at the device at `now`. A gap is credited only when
+    /// `busy` (a command is in the device and its budget runs): an idle disk
+    /// looked at seconds apart is no stall, and saying so fed the log sink a
+    /// line per period, whose write was the next look.
+    ///
+    /// Answers what the driver says, at most once per `say_every` ticks:
+    /// `None` when nothing was credited or the line is held back.
+    pub fn look(&self, now: u64, stall_ticks: u64, say_every: u64, busy: bool) -> Option<StallNote> {
+        if !busy {
+            self.touch(now);
+            return None;
+        }
+        let ticks = self.observe(now, stall_ticks);
+        if ticks == 0 {
+            return None;
+        }
+        let said = self.said.load(Ordering::Relaxed);
+        if said != 0 && now.saturating_sub(said) < say_every {
+            self.held.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        self.said.store(now, Ordering::Relaxed);
+        Some(StallNote { ticks, held: self.held.swap(0, Ordering::Relaxed) })
     }
 
     /// The credit so far: record it when a command is submitted

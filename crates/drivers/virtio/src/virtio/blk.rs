@@ -63,7 +63,7 @@ use super::{mmio_read, mmio_write, probe, virtq_init, virtq_reprogram,
             virtq_alloc_desc, virtq_free_desc, virtq_submit, virtq_poll,
             read_config32, read_config64};
 use azos_dma::Direction;
-use azos_drv_api::block::{Claim, DeviceWait, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, StallClock, HW_TAGS_MAX, STALL_GAP_US};
+use azos_drv_api::block::{Claim, DeviceWait, HwCaps, HwCmd, HwDone, HwOp, HwQueue, HwStatus, StallClock, HW_TAGS_MAX, STALL_GAP_US, STALL_SAY_EVERY_US};
 use azos_drv_api::recovery::{Class, Recovery, Verdict};
 use azos_drv_sys::kprintln;
 use azos_sync::kmutex::Mutex;
@@ -228,17 +228,24 @@ static SLOT_CREDIT: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 /// (`StallClock`).
 static STALL: StallClock = StallClock::new();
 
+/// Is a command in the device whose budget is running (submitted, not yet
+/// answered)? Only then is a gap between two looks time it was left to answer.
+fn waiting_on_device() -> bool {
+    (0..SLOTS).any(|t| SLOT_INFLIGHT[t].load(Ordering::Acquire) && !SLOT_DONE[t].load(Ordering::Acquire))
+}
+
 /// Tell [`STALL`] the guest is looking at the device now; says so once per
-/// stall. Returns the timebase tick it read.
+/// stall, at most once per `STALL_SAY_EVERY_US`. Returns the timebase tick it
+/// read.
 fn watch() -> u64 {
     let now = azos_drv_sys::timebase::now();
+    let ticks = |us: u64| us * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000;
     // Gate canary `blk-stall-canary`: no gap is a stall, the budget is wall-clock.
-    let gap = if cfg!(feature = "blk-stall-canary") { u64::MAX } else { STALL_GAP_US * azos_drv_sys::timebase::TIMER_FREQ / 1_000_000 };
-    let credited = STALL.observe(now, gap);
-    if credited != 0 {
+    let gap = if cfg!(feature = "blk-stall-canary") { u64::MAX } else { ticks(STALL_GAP_US) };
+    if let Some(n) = STALL.look(now, gap, ticks(STALL_SAY_EVERY_US), waiting_on_device()) {
         azos_drv_sys::kprintln!(
-            "[VIRTIO-BLK] guest did not run for {} ms: command budgets extended by that time",
-            credited * 1000 / azos_drv_sys::timebase::TIMER_FREQ);
+            "[VIRTIO-BLK] guest did not run for {} ms: command budgets extended by that time ({} more since the last line)",
+            n.ticks * 1000 / azos_drv_sys::timebase::TIMER_FREQ, n.held);
     }
     now
 }
