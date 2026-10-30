@@ -23234,6 +23234,24 @@ tracectl start sched
     # BusyBox on the three ISAs. x86_64 runs it in the ring-3 runtime
     # (ushell_row's x86 branch), its volume made by lx_busybox_ready when the
     # x86_64 userspace builds.
+    # The desktop preset on x86_64 boots to the shell, its console free of a
+    # refused block. COMPMGR.ELF's Domain stands at its high watermark there
+    # (27 of 32 frames, nothing to compress), so the reclaim task runs a storm
+    # that refuses within seconds of boot and writes the durable record, whose
+    # flush sleeps. Under a SpinLock that hangs one CPU only when the write-back
+    # claim is busy at that moment; LOCKDEP_Y takes the race out of the row, the
+    # wait under the lock is reported on every boot. The canary's kernel writes
+    # the record holding AGES.
+    ush_desk_def="$CI_LOG_DIR/ush-x86-desktop.defconfig"
+    mkdir -p "$CI_LOG_DIR"
+    { python3 tools/build/gen_defconfigs.py --print desktop-desktop-x86_64-dev+qemu+linux+gui; echo "CONFIG_LOCKDEP_Y=y"; } >"$ush_desk_def"
+    ush_desk_forbid='robot> |K-C29|sleep or device wait under a SpinLock'
+    ush_desk_script="echo desktop-ok
+#sleep 25"
+    USH_X86_DEFCONFIG="$ush_desk_def" USH_QEMU_EXTRA="-m 1024M" USH_FORBID="$ush_desk_forbid" par_row ushell_row "boot: x86_64 desktop reaches the shell" x86 "" PASS \
+        "$ush_desk_script" 150 "has the console" "desktop-ok"
+    USH_X86_DEFCONFIG="$ush_desk_def" USH_QEMU_EXTRA="-m 1024M -append canary=storm-record-locked" USH_FORBID="$ush_desk_forbid" par_row ushell_row "boot: x86_64 desktop reaches the shell, canary" x86 "" FAIL \
+        "$ush_desk_script" 150 "has the console" "desktop-ok"
     for ush_isa in rv arm x86; do
         ush_feat=qemu; [ "$ush_isa" = x86 ] && ush_feat=spawn-log
         # BusyBox (third-party, GPL-2.0-only; `make busybox` with
