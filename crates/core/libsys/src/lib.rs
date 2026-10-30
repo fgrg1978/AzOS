@@ -333,25 +333,26 @@ fn read_time_csr() -> u64 {
     let t: u64;
     #[cfg(target_arch = "riscv64")]
     unsafe { core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack)); }
-    // aarch64 and x86_64: the counter (`CR4.TSD` clear, so `rdtsc` runs in ring
-    // 3), turned into the kernel clock's TIMER_FREQ ticks with the conversion
-    // the kernel published (`azos_abi::vdso::VDSO_COUNTER_*`, written once before
-    // any user task: no seqlock), the same arithmetic as its own `now_ticks`.
-    // On x86_64 only reached when the vDSO says the counter is native.
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    // aarch64: the counter turned into the kernel clock's TIMER_FREQ ticks with
+    // the multiplier the kernel published (`azos_abi::vdso::VDSO_COUNTER_MULT_OFFSET`,
+    // written once before any user task: no seqlock); the kernel's `now_ticks`.
+    #[cfg(target_arch = "aarch64")]
     {
-        #[cfg(target_arch = "aarch64")]
-        let tsc = {
-            let c: u64;
-            unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) c, options(nomem, nostack)); }
-            c
-        };
-        #[cfg(target_arch = "x86_64")]
-        let tsc = {
-            let (lo, hi): (u32, u32);
-            unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)); }
-            ((hi as u64) << 32) | lo as u64
-        };
+        let c: u64;
+        unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) c, options(nomem, nostack)); }
+        // SAFETY: the page is mapped at VDSO_USER_BASE for every user task.
+        let mult = unsafe { core::ptr::read_volatile((VDSO_USER_BASE + azos_abi::vdso::VDSO_COUNTER_MULT_OFFSET) as *const u64) };
+        t = ((c as u128 * mult as u128) >> 32) as u64;
+    }
+    // x86_64: the TSC (`CR4.TSD` clear, so `rdtsc` runs in ring 3), turned
+    // into the kernel clock's TIMER_FREQ ticks with the conversion the kernel
+    // published, the same arithmetic as its own `now_ticks`.
+    // Only reached when the vDSO says the counter is native.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (lo, hi): (u32, u32);
+        unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)); }
+        let tsc = ((hi as u64) << 32) | lo as u64;
         // SAFETY: the page is mapped at VDSO_USER_BASE for every user task.
         let rd = |off: usize| unsafe { core::ptr::read_volatile((VDSO_USER_BASE + off) as *const u64) };
         let (base, ticks, mult) = (rd(azos_abi::vdso::VDSO_COUNTER_BASE_OFFSET),

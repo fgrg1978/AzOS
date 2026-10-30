@@ -26,13 +26,17 @@ use crate::sysregs;
 #[cfg(target_arch = "aarch64")]
 use azos_arch_api::clock_scale::Scale;
 #[cfg(target_arch = "aarch64")]
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const NS_PER_S: u64 = 1_000_000_000;
 
 /// The clock's rate (Kconfig `TIMER_FREQ`).
 pub const TICK_HZ: u64 = azos_limits::TIMER_FREQ as u64;
 
+/// `CNTFRQ_EL0` is not `TIMER_FREQ`: one load and a branch on the clock's path
+/// when they match, the boards whose Kconfig states their rate and TCG.
+#[cfg(target_arch = "aarch64")]
+static SCALED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "aarch64")]
 static TO_TICKS: AtomicU64 = AtomicU64::new(Scale::IDENTITY.mult);
 #[cfg(target_arch = "aarch64")]
@@ -47,6 +51,7 @@ pub fn clock_init() {
     if let (Some(to_ticks), Some(to_counter)) = (Scale::new(hz, TICK_HZ), Scale::new_up(TICK_HZ, hz)) {
         TO_TICKS.store(to_ticks.mult, Ordering::Relaxed);
         TO_COUNTER.store(to_counter.mult, Ordering::Relaxed);
+        SCALED.store(to_ticks != Scale::IDENTITY, Ordering::Relaxed);
     }
 }
 
@@ -56,6 +61,7 @@ pub fn clock_init() {
 pub fn clock_unscaled() {
     TO_TICKS.store(Scale::IDENTITY.mult, Ordering::Relaxed);
     TO_COUNTER.store(Scale::IDENTITY.mult, Ordering::Relaxed);
+    SCALED.store(false, Ordering::Relaxed);
 }
 
 /// The 32.32 multiplier from the counter to the clock, as ring 3 applies it.
@@ -80,7 +86,11 @@ pub fn counter_hz() -> u64 {
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn now_ticks() -> u64 {
-    Scale { mult: TO_TICKS.load(Ordering::Relaxed) }.apply(sysregs::read_cntvct_el0())
+    let counter = sysregs::read_cntvct_el0();
+    if !SCALED.load(Ordering::Relaxed) {
+        return counter;
+    }
+    Scale { mult: TO_TICKS.load(Ordering::Relaxed) }.apply(counter)
 }
 
 /// The raw counter value at which the clock reaches `deadline`, never earlier;
@@ -89,13 +99,13 @@ pub fn now_ticks() -> u64 {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn ticks_to_counter(deadline: u64) -> u64 {
-    let mult = TO_COUNTER.load(Ordering::Relaxed);
-    if mult == Scale::IDENTITY.mult {
+    if !SCALED.load(Ordering::Relaxed) {
         return deadline;
     }
     let counter = sysregs::read_cntvct_el0();
     let now = Scale { mult: TO_TICKS.load(Ordering::Relaxed) }.apply(counter);
-    counter.saturating_add(Scale { mult }.apply_ceil(deadline.saturating_sub(now)))
+    let distance = Scale { mult: TO_COUNTER.load(Ordering::Relaxed) }.apply_ceil(deadline.saturating_sub(now));
+    counter.saturating_add(distance)
 }
 
 /// Wall-clock-style nanosecond reading. Convenience wrapper

@@ -34,7 +34,7 @@ crates/core/idl-macros	0	0	0	0	1	-
 crates/core/inspect	1	1	0	0	0	3
 crates/core/ipc	40	10	4	0	0	53
 crates/core/ktest	3	0	0	0	0	67
-crates/core/libsys	88	10	2	0	0	94
+crates/core/libsys	89	10	2	0	0	94
 crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
@@ -46,7 +46,7 @@ crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	62
 crates/core/rings	23	4	4	0	0	98
 crates/core/sched	426	136	12	3	0	70
-crates/core/stdrt	44	1	4	0	0	-
+crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	46	9	18	0	0	84
 crates/core/syscall	41	2	0	0	0	39
 crates/core/topology	4	0	1	0	0	1

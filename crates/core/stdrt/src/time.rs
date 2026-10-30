@@ -58,20 +58,18 @@ fn counter() -> u64 {
     unsafe {
         core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack));
     }
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
     {
-        #[cfg(target_arch = "aarch64")]
-        let tsc = {
-            let c: u64;
-            unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) c, options(nomem, nostack)) };
-            c
-        };
-        #[cfg(target_arch = "x86_64")]
-        let tsc = {
-            let (lo, hi): (u32, u32);
-            unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)) };
-            ((hi as u64) << 32) | lo as u64
-        };
+        let c: u64;
+        unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) c, options(nomem, nostack)) };
+        let mult = unsafe { core::ptr::read_volatile((VDSO_USER_BASE + azos_abi::vdso::VDSO_COUNTER_MULT_OFFSET) as *const u64) };
+        t = ((c as u128 * mult as u128) >> 32) as u64;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (lo, hi): (u32, u32);
+        unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)) };
+        let tsc = ((hi as u64) << 32) | lo as u64;
         let rd = |off: usize| unsafe { core::ptr::read_volatile((VDSO_USER_BASE + off) as *const u64) };
         let (base, ticks, mult) = (
             rd(azos_abi::vdso::VDSO_COUNTER_BASE_OFFSET),
