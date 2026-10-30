@@ -49,6 +49,7 @@ NOT_WARNINGS = (
     ("lockdep", r"^not ok \d+ - "),
     ("lockdep", r"^\[CANARY\] armed: "),
     ("lockdep", r"^\[CMDLINE\] canary="),
+    ("lockdep", r"^\[BOOT\] cmdline: "),
     ("lockdep", r"# lockdep: violations=0 "),
     ("lockdep", r"# lockdep: hold "),
     ("lockdep", r"lockdep: .*\(note[,)]"),
@@ -188,6 +189,7 @@ def self_test():
     expect("a test's lockdep reason", cls("not ok 93 - hold_bounded # lockdep violation (the `# lockdep:` line above)"), [])
     expect("a canary's name when armed", cls("[CANARY] armed: lockdep-hold (this boot breaks its property on purpose)"), [])
     expect("a canary's name on the command line", cls("[CMDLINE] canary=lockdep-hold"), [])
+    expect("x86's command line", cls("[BOOT] cmdline: canary=rcu-free-no-grace,lockdep-rcu-sleep"), [])
     expect("ordinary line", cls("[BOOT] Starting scheduler on boot CPU"), [])
     expect("no substring match on 'warning' words in lower case", cls("[NET] warning-free link"), [])
 
