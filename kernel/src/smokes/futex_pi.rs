@@ -235,6 +235,7 @@ azos_ktest::ktest_late! {
             return Err("FUTEX_PI is y but no PI futex ops are registered");
         }
         EXIT_WORD.store(0, Ordering::Release);
+        let used = pf::states_in_use();
         azos_sched::task_create_affinity("n10b-pi-owner", exit_owner, 0, OWNER_PRIO, -1);
         crate::ktest::wait("the owner never took the free PI word", || {
             EXIT_OWNED.load(Ordering::Acquire) || EXIT_OWNER_DONE.load(Ordering::Acquire)
@@ -264,7 +265,10 @@ azos_ktest::ktest_late! {
         if EXIT_UNLOCK_RC.load(Ordering::Acquire) != 0 || EXIT_WORD.load(Ordering::Acquire) != 0 {
             return Err("the heir's UNLOCK_PI did not free the word");
         }
-        Ok(())
+        // The entry returns to the pool after a grace period: the next test reads the count.
+        crate::ktest::wait("the pi_state was not retired after the last waiter", || {
+            pf::states_in_use() == used
+        })
     }
 }
 
@@ -374,6 +378,7 @@ azos_ktest::ktest_late! {
         }
         RQ_COND.store(0, Ordering::Release);
         RQ_MUTEX.store(0, Ordering::Release);
+        let used = pf::states_in_use();
         azos_sched::task_create_affinity("n10e-rq-owner", rq_owner, 0, OWNER_PRIO, -1);
         crate::ktest::wait("the fair owner never took the free PI word", || {
             RQ_OWNED.load(Ordering::Acquire) || RQ_OWNER_DONE.load(Ordering::Acquire)
@@ -456,6 +461,9 @@ azos_ktest::ktest_late! {
         if RQ_MUTEX.load(Ordering::Acquire) != 0 || ft::TABLE.lock_irqsave().waiters_on(RQ_COND_KEY) != 0 {
             return Err("the PI word or the condition's chain was left behind");
         }
-        Ok(())
+        // The entry returns to the pool after a grace period: the next test reads the count.
+        crate::ktest::wait("the pi_state was not retired after the last waiter", || {
+            pf::states_in_use() == used
+        })
     }
 }
