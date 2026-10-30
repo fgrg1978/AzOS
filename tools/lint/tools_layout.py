@@ -133,7 +133,6 @@ NO_CALLER = {
     "dev_uart.py": "relays a board's serial console to a person: needs the board (kept until it)",
     "esp32_bridge/": "ESP32 sketch, flashed with the Arduino tools: needs the board (kept until it)",
     "gen_prod_key.py": "generates the production signing key: never automated, on purpose",
-    "symbolize_bt.py": "reads a console log with a panic backtrace for a person: needs the log of a PROFILER kernel's panic",
     "text_equiv.py": "compares two kernels' .text: an A/B a person picks the two builds for",
     "qemu.sh": "interactive QEMU launcher (console, gdb): a person at the terminal",
     "limits_cost.py": "RAM cost of a sizing option: two builds per option a person chooses to price",
