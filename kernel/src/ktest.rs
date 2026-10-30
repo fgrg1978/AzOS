@@ -260,11 +260,26 @@ fn probe_trampoline(arg: usize) {
     probe_done();
 }
 
-/// Wait, sleeping 10 ms at a time, until `ready()` holds, at most Kconfig
-/// `KTEST_LATE_TIMEOUT_MS`; `Err(why)` on timeout. A late test's wait on the
-/// tasks it started: a timer wait on the counter, never a yield count.
+/// Sleep 10 ms at a time until `ready()` holds; false after as many sleeps as
+/// Kconfig `KTEST_LATE_TIMEOUT_MS` holds. The bound is a hang detector counted
+/// in sleeps, not a deadline on the clock: the clock runs on while the host
+/// keeps the vCPUs off, a sleep this CPU never finished does not count, and
+/// each one lasts at least its 10 ms.
+pub(crate) fn until(mut ready: impl FnMut() -> bool) -> bool {
+    const STEP_MS: u64 = 10;
+    for _ in 0..azos_limits::KTEST_LATE_TIMEOUT_MS as u64 / STEP_MS {
+        if ready() {
+            return true;
+        }
+        azos_syscall::sleep::sleep_ms(STEP_MS);
+    }
+    ready()
+}
+
+/// [`until`], with `Err(why)` when it gives up: a late test's wait on the tasks
+/// it started.
 pub(crate) fn wait(why: &'static str, ready: impl FnMut() -> bool) -> Result<(), &'static str> {
-    if azos_syscall::sleep::wait_until_ms(azos_limits::KTEST_LATE_TIMEOUT_MS as u64, 10, ready) {
+    if until(ready) {
         Ok(())
     } else {
         Err(why)
