@@ -382,7 +382,10 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     // 2. A fence around the driver's own fix, in the bus's unit.
     let centre = azos_gps::CH_GPS.read().val;
     geofence_set(deg7_to_udeg(centre.lat_deg7), deg7_to_udeg(centre.lon_deg7), RADIUS_M);
-    let s = poll();
+    // A fix goes stale (reads as none) while the host keeps its publisher off.
+    let mut s = poll();
+    let mut polls: u32 = 1;
+    while s.gps_fix == 0 && polls < MAX_POLLS { s = poll(); polls += 1; }
     let status = geofence_status(&s);
     if status != GeofenceStatus::Inside {
         GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
