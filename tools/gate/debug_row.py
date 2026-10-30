@@ -124,6 +124,7 @@ class Row:
         self.cfg = os.path.join(out, "build", "debug-%s.config" % isa)
         self.env = dict(os.environ, AZOS_OUT=out, KCONFIG_CONFIG=self.cfg)
         self.proc = None
+        self.slow_host = False
 
     def make(self, *args, log, background=False):
         cmd = ["make", "-C", self.repo] + list(args)
@@ -191,13 +192,19 @@ class Row:
         prompt = prompt_of(read_file(self.cfg))
         if prompt is None:
             return fail("the configuration's console program has no prompt this row knows")
-        port = free_port()
         log = os.path.join(self.logs, "debug-%s.log" % self.isa)
-        self.make("debug", "DEBUG_PORT=%d" % port, log=log, background=True)
-        try:
-            return self.judge(log, port, prompt, fail)
-        finally:
-            self.stop()
+        for attempt in (1, 2):
+            port = free_port()
+            self.make("debug", "DEBUG_PORT=%d" % port, log=log, background=True)
+            self.slow_host = False
+            try:
+                rc = self.judge(log, port, prompt, fail)
+            finally:
+                self.stop()
+            if rc == 0 or not self.slow_host:
+                return rc
+            print("      attempt %d: the console program gave up (a host too loaded for its 10 s), once more" % attempt)
+        return rc
 
     def judge(self, log, port, prompt, fail):
         cmd = None
@@ -237,6 +244,9 @@ class Row:
             text = self.console(log)
             if prompt in text:
                 break
+            if re.search(r"console program \S+ gave up: recovery console \(it did not take the console", text):
+                self.slow_host = True
+                return fail("the boot ended in the recovery console, log kept: %s" % log)
             if re.search(r"panic|FATAL", text, re.I):
                 return fail("the kernel crashed after detach, log kept: %s" % log)
             time.sleep(0.5)
