@@ -850,6 +850,17 @@ $(OUT_BUILD)/disk-sh-signed.img: $(OUT_BUILD)/disk-sh.img $(OUT_BUILD)/KERN_A.BI
 	mcopy -o -i $@ $(OUT_BUILD)/KERN_A.SIG ::KERN_A.SIG
 	@echo "[DISK] FAT32 shell image with signed slot A: $@"
 
+# The system volume of a development build that enforces secure boot
+# (SECBOOT_SUFFIX, mk/vars.mk): any volume plus the slot image and its
+# signature by the TEST key, which that build's kernel embeds. The payload is
+# the fixture above: QEMU loads the kernel with -kernel, so the slot file is
+# what secure boot verifies, not what runs.
+$(OUT_BUILD)/%-signed.img: $(OUT_BUILD)/%.img $(OUT_BUILD)/KERN_A.BIN $(OUT_BUILD)/KERN_A.SIG
+	cp $< $@
+	mcopy -o -i $@ $(OUT_BUILD)/KERN_A.BIN ::KERN_A.BIN
+	mcopy -o -i $@ $(OUT_BUILD)/KERN_A.SIG ::KERN_A.SIG
+	@echo "[DISK] FAT32 image: $@ (the volume plus a slot image signed with the TEST key)"
+
 # REJECT fixture: identical, except KERN_A.SIG has one flipped bit in s.
 $(OUT_BUILD)/disk-badsig.img: $(OUT_BUILD)/disk-signed.img $(OUT_BUILD)/KERN_BAD.SIG
 	cp $(OUT_BUILD)/disk-signed.img $@

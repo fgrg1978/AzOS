@@ -1038,9 +1038,9 @@ SYSTEM_KCONFIG_x86_64  := $(X86_64_KCONFIG)
 # The volume carries BUSYBOX.ELF when the configuration has BUSYBOX
 # (BUSYBOX_ON, mk/userspace.mk): the same volume plus the one file, so a
 # configuration without it builds the volume it always did.
-SYSTEM_VOLUME_riscv64  = $(OUT_BUILD)/disk-system$(if $(BUSYBOX_ON),-busybox).img
-SYSTEM_VOLUME_aarch64  = $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system$(if $(BUSYBOX_ON),-busybox).img
-SYSTEM_VOLUME_x86_64   = $(OUT_BUILD)/disk-x86_64-system$(if $(BUSYBOX_ON),-busybox).img
+SYSTEM_VOLUME_riscv64  = $(OUT_BUILD)/disk-system$(if $(BUSYBOX_ON),-busybox)$(SECBOOT_SUFFIX).img
+SYSTEM_VOLUME_aarch64  = $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system$(if $(BUSYBOX_ON),-busybox)$(SECBOOT_SUFFIX).img
+SYSTEM_VOLUME_x86_64   = $(OUT_BUILD)/disk-x86_64-system$(if $(BUSYBOX_ON),-busybox)$(SECBOOT_SUFFIX).img
 TARGET_riscv64         := $(RISCV64_TARGET)
 TARGET_aarch64         := $(AARCH64_TARGET)
 TARGET_x86_64          := $(X86_64_TARGET)
@@ -1053,6 +1053,17 @@ KERNEL_ELF_x86_64      := $(X86_64_ELF)
 KERNEL_IMAGE_riscv64   := $(RISCV64_KERNEL_ELF)
 KERNEL_IMAGE_aarch64   := $(AARCH64_IMG)
 KERNEL_IMAGE_x86_64    := $(X86_64_IMG)
+
+# A development build that enforces secure boot (SECURE_BOOT_ENFORCED, which the
+# separation postures imply) trusts the TEST key: its kernel embeds it
+# (PROD_PUBKEY_PATH, absolute because cargo runs a build script from its crate's
+# directory) and its system volume carries a slot image signed with it
+# (`%-signed.img`, mk/images.mk). A release or certifiable build is refused the
+# TEST key by crates/core/ota/build.rs. $(call secboot_dev,<config>) is y for
+# such a configuration.
+secboot_dev = $(shell grep -qsx 'CONFIG_BUILD_TYPE_DEV=y' '$(1)' && grep -qsx 'CONFIG_SECURE_BOOT_ENFORCED=y' '$(1)' && echo y)
+secboot_key_env = $(if $(call secboot_dev,$(1)),PROD_PUBKEY_PATH=$(CURDIR)/tools/keys/test_pub.bin)
+SECBOOT_SUFFIX = $(if $(call secboot_dev,$(SYSTEM_KCONFIG)),-signed)
 
 SYSTEM_KCONFIG := $(SYSTEM_KCONFIG_$(KCONFIG_ISA))
 SYSTEM_KERNEL  := $(KCONFIG_ISA)

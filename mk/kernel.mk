@@ -11,7 +11,7 @@
 # are (AARCH64_USER_ISA), so it must exist before the make that
 # builds them starts.
 .PHONY: riscv64
-build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
+build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG) $(TEST_PRIV_KEY) $(TEST_PUB_KEY)
 	@$(MAKE) --no-print-directory $(SYSTEM_KCONFIG)
 	@$(if $(BUSYBOX_ON),$(MAKE) --no-print-directory busybox,:)
 	@$(MAKE) --no-print-directory sdk
@@ -26,7 +26,7 @@ build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
 # The riscv64 kernel of $(QEMU_DEV_KCONFIG): `make build` with a riscv64
 # configuration.
 riscv64: $(IMAGE_HASHES) $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
+	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(call secboot_key_env,$(QEMU_DEV_KCONFIG)) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
 		$${isa:+--config "$$isa"} \
 		$(QEMU_DEV_ARGS)
 
@@ -356,7 +356,7 @@ $(X86_64_KCONFIG): $(X86_64_DEFCONFIG) $(X86_64_KCONFIG).src $(KCONFIG_FILES)
 # The seccomp table of the x86_64 images (crates/core/sched/src/seccomp.rs).
 x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 	$(call kernel_select,$(X86_64_KCONFIG),$(X86_64_SELECT),$(X86_64_KCONFIG:.config=-sel.config)); \
-	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(X86_64_KCONFIG:.config=-sel.config)" CARGO_TARGET_DIR="$(X86_64_TARGET_DIR)" \
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(X86_64_KCONFIG:.config=-sel.config)" CARGO_TARGET_DIR="$(X86_64_TARGET_DIR)" $(call secboot_key_env,$(X86_64_KCONFIG)) \
 	    RUSTFLAGS="-C link-arg=-T$(X86_64_LINKER) -C relocation-model=static $(X86_64_DALEK) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(X86_64_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel $$args
 	@mkdir -p $(OUT_BUILD)
@@ -389,7 +389,7 @@ $(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) $(AARCH64_KCONFIG).src \
 # passed here rather than through `--config`, where a stray variable in the
 # caller's shell would silently drop it.
 aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
-	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(AARCH64_KCONFIG)" $(AARCH64_KTARGET_ENV) \
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(AARCH64_KCONFIG)" $(AARCH64_KTARGET_ENV) $(call secboot_key_env,$(AARCH64_KCONFIG)) \
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(AARCH64_KCONFIG))" \
 	    $(CARGO) build --release -p azos_kernel \
 	    $$(python3 tools/build/kconfig_to_cargo.py $(AARCH64_KCONFIG) | tr -s ' ')
