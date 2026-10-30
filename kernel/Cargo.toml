@@ -1185,8 +1185,6 @@ oneshot-canary = ["lat-smoke", "azos_sched/oneshot-canary"]
 # read the physical counter would stamp 2 ms (2_000_000 ticks) off the vDSO.
 a64clk-ppi-canary = ["qemu"]
 a64clk-cntvoff-canary = ["qemu", "azos_arch/cntvoff-canary"]
-# gate row `aarch64 hvf: a writeback store on a device aborts`.
-mmio-writeback-canary = ["qemu", "azos_arch/mmio-writeback-canary"]
 # tls-hygiene / el0-state-audit canary: the ring-3-visible per-CPU state no
 # task owns keeps a stand-in for its reset value (aarch64: boot.S's SCTLR_EL1
 # write skipped, `sysregs::init_el0_state`; riscv64: `ext::senvcfg`; x86_64:

@@ -360,6 +360,10 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/usb.rs: the lister guard drops last and leaves interrupts masked,
     // armed only inside ktest `inspect_refresh_leaves_interrupts_as_they_were`.
     "usb-refresh-tail-guard",
+    // entry/aarch64/boot_hooks.rs: one post-indexed store to a GIC register,
+    // which HVF cannot emulate (gate row `aarch64 hvf: a writeback store on a
+    // device aborts`).
+    "mmio-writeback",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 

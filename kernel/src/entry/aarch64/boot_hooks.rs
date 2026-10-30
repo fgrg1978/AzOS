@@ -702,6 +702,15 @@ pub fn irqchip_init(_hart_id: usize, dtb_ptr: usize) {
     kprintln!("[GIC] MMIO mapped: GICD={:#x} GICR={:#x} (x{} frames)",
         gic::GICD_BASE, gic::GICR_BASE, crate::MAX_HARTS);
 
+    if canary!("mmio-writeback") {
+        // SAFETY: GICD_CTLR rewritten with its own value by a post-indexed store
+        // of offset 0, a plain store but for its encoding.
+        unsafe {
+            let ctlr = azos_arch_api::mmio::read32(gic::GICD_BASE);
+            core::arch::asm!("str {v:w}, [{a}], #0", a = inout(reg) gic::GICD_BASE => _, v = in(reg) ctlr,
+                options(nostack, preserves_flags));
+        }
+    }
     gic::init_distributor();
     gic::init_redistributor(0);
     // Also sets ICC_SRE_EL1.SRE=1 — task 2's EL1-path requirement.

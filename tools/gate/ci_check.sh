@@ -25594,7 +25594,7 @@ for pb_preset in generic robot; do
 done
 
 # The hazard behind azos_arch_api::mmio. One post-indexed store to a GIC register
-# (feature mmio-writeback-canary), the semantics of a plain store: HVF ends the VM
+# (canary=mmio-writeback), the semantics of a plain store: HVF ends the VM
 # at the first one, after the banner and before the distributor is up, and TCG
 # goes past it, so what stops the boot is the addressing form and nothing else.
 hvf_writeback_canary_row() {
@@ -25602,14 +25602,14 @@ hvf_writeback_canary_row() {
     printf "  %-26s" "${label}..."
     if ! hvf_host; then SKIP=$((SKIP + 1)); echo "skipped (this host has no HVF)"; return; fi
     mkdir -p "$CI_LOG_DIR"
-    if ! a64_kbuild "qemu,mmio-writeback-canary"; then
-        bad; echo "      the aarch64 kernel (--features qemu,mmio-writeback-canary) did not build"; return
+    if ! a64_kbuild "qemu"; then
+        bad; echo "      the aarch64 kernel (--features qemu) did not build"; return
     fi
     local kimg="$CI_LOG_DIR/hvf-writeback.img" hlog="$CI_LOG_DIR/hvf-writeback-hvf.log" tlog="$CI_LOG_DIR/hvf-writeback-tcg.log"
     rm -f "$hlog" "$tlog"; cp "$A64_IMG" "$kimg"
     par_ready
     qemu-system-aarch64 -M virt,gic-version=3 -accel hvf -cpu max,pauth=on -smp 2 -nographic \
-        -kernel "$kimg" </dev/null >"$hlog" 2>&1 &
+        -kernel "$kimg" -append "canary=mmio-writeback" </dev/null >"$hlog" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ] && kill -0 "$pid" 2>/dev/null; do
         grep -aqF "[GIC] distributor" "$hlog" 2>/dev/null && break
@@ -25622,7 +25622,7 @@ hvf_writeback_canary_row() {
         tr -d '\r' <"$hlog" | tail -3 | sed 's/^/        /'; echo "      log kept: $hlog"; rm -f "$kimg"; return
     fi
     qemu-system-aarch64 -M virt,gic-version=3 -accel tcg -cpu max,pauth=on -smp 2 -nographic \
-        -kernel "$kimg" </dev/null >"$tlog" 2>&1 &
+        -kernel "$kimg" -append "canary=mmio-writeback" </dev/null >"$tlog" 2>&1 &
     pid=$!; i=0
     while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
         grep -aqF "[GIC] distributor" "$tlog" 2>/dev/null && break

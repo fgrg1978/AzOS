@@ -196,10 +196,6 @@ unsafe fn mmio_read32(addr: usize) -> u32 {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_write32(addr: usize, val: u32) {
-    #[cfg(feature = "mmio-writeback-canary")]
-    core::arch::asm!("str {v:w}, [{a}], #0", a = inout(reg) addr => _, v = in(reg) val,
-        options(nostack, preserves_flags));
-    #[cfg(not(feature = "mmio-writeback-canary"))]
     azos_arch_api::mmio::write32(addr, val);
 }
 

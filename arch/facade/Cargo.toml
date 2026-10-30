@@ -24,7 +24,6 @@ tlb-local-only = ["azos_arch_riscv64/tlb-local-only", "azos_arch_aarch64/tlb-loc
 tlb-bound-canary = ["azos_arch_riscv64/tlb-bound-canary"]
 # One-clock canary: CNTVOFF_EL2 left nonzero at the EL2 drop (aarch64 only).
 cntvoff-canary = ["azos_arch_aarch64/cntvoff-canary"]
-mmio-writeback-canary = ["azos_arch_aarch64/mmio-writeback-canary"]
 # tls-hygiene / el0-state-audit canary: the ring-3-visible per-CPU state keeps
 # a stand-in for its UNKNOWN reset value (aarch64 `sysregs::init_el0_state`,
 # riscv64 `ext::senvcfg`; x86_64's is in the kernel's `cpu_init`).
