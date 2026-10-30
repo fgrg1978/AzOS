@@ -175,9 +175,9 @@ impl Interrupts for X86_64 {
             InterruptState(f & cpu::RFLAGS_IF)
         }, "x86_64: disable_all: pushfq; cli -> RFLAGS.IF")
     }
-    /// `sti` only if the saved RFLAGS.IF was set.
+    /// Writes the saved RFLAGS.IF back: `sti` if it was set, `cli` if not.
     fn restore(&self, _prev: InterruptState) {
-        on_x86!(if _prev.0 & cpu::RFLAGS_IF != 0 { cpu::sti() }, "x86_64: restore: sti iff saved IF")
+        on_x86!(if _prev.0 & cpu::RFLAGS_IF != 0 { cpu::sti() } else { cpu::cli() }, "x86_64: restore: write the saved IF back")
     }
     /// `sti`.
     fn enable_all(&self) {
