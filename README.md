@@ -124,8 +124,9 @@ make help          # every target
 ```
 
 `make build` prints where the kernel, the system volume and the SDK target are.
-Work in a checkout outside a synced folder: make stops at once in a path with
-spaces (iCloud Drive's "Mobile Documents"). Every output (kernels, images, ELFs, cargo target directories) goes to
+Work in a checkout outside a synced folder: in a path with spaces (iCloud
+Drive's "Mobile Documents") make runs `config`, `defconfig-*` and `help` only
+and refuses every goal that builds or runs. Every output (kernels, images, ELFs, cargo target directories) goes to
 `$AZOS_OUT`, by default `~/azos-out/<checkout name>-<hash>`
 (`python3 tools/lib/out_dir.py` prints it), never into the checkout. To run a bare
 `cargo`, export `AZOS_OUT` and point `CARGO_TARGET_DIR` under it. The Makefile
