@@ -142,7 +142,7 @@ def big_linker(arch):
     """Linker script with a RAM region big enough for a fleet-sized image.
 
     riscv64 has arch/riscv64/boot/linker-fleet.ld (1022 MiB).  aarch64 has none: a copy of
-    its script with the two 128 MiB regions widened is written under target/.
+    its script with the two RAM_SIZE regions widened is written under target/.
     """
     if arch == "riscv64":
         return os.path.join(REPO, "arch", "riscv64", "boot", "linker-fleet.ld")
@@ -150,7 +150,7 @@ def big_linker(arch):
     dst = os.path.join(OUT, "target", "limits_cost", "linker-aarch64-1022M.ld")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, "w", encoding="utf-8") as f:
-        f.write(src.replace("LENGTH = 128M - 512K", "LENGTH = 1022M"))
+        f.write(src.replace("LENGTH = AZOS_RAM_BYTES - 512K", "LENGTH = 1022M"))
     return dst
 
 

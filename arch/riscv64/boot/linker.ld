@@ -20,9 +20,16 @@ ENTRY(_start)
  */
 INCLUDE kernel/linker-common.ld
 
+/*
+ * AZOS_RAM_BYTES: the configuration's RAM_SIZE, written by kernel/build.rs.
+ * The image links into the RAM above OpenSBI, so a configuration whose
+ * static tables do not fit its RAM fails here and not at boot.
+ */
+INCLUDE azos_ram.ld
+
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = 32M
+    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = AZOS_RAM_BYTES - 0x200000
 }
 
 SECTIONS

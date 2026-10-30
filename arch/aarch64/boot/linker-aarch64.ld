@@ -79,6 +79,7 @@ ENTRY(_start)
  * this file against symbols boot.S emits from Rust's constants.
  */
 INCLUDE azos_granule.ld
+INCLUDE azos_ram.ld
 
 /*
  * BOOT_STACK_SIZE / BOOT_STACK_REDZONE: single source in linker-common.ld,
@@ -92,11 +93,10 @@ INCLUDE kernel/linker-common.ld
 MEMORY
 {
     /*
-     * QEMU's `virt` machine defaults to 128 MiB of guest RAM when `-m` is
-     * not passed. A full 128M region on top of the 512 KiB offset
-     * (ORIGIN 0x4008_0000 + LENGTH 128M = 0x4808_0000) would overrun the
-     * actual end of RAM (0x4800_0000) by that 512 KiB, so LENGTH is capped
-     * to fit inside the default 128 MiB window this address assumes.
+     * The RAM the configuration expects (AZOS_RAM_BYTES, Kconfig RAM_SIZE,
+     * written by kernel/build.rs), less the 512 KiB the image starts above
+     * the RAM base: a region of the whole RAM would overrun its end by that
+     * much.
      *
      * RAM_LMA: where the loader (QEMU `-kernel`/U-Boot `booti`) actually
      * places the bytes — unchanged from the pre-migration single-region
@@ -108,8 +108,8 @@ MEMORY
      * (identical-sized) virtual window fails to link instead of silently
      * overlapping something.
      */
-    RAM_LMA (rwx) : ORIGIN = 0x40080000, LENGTH = 128M - 512K
-    RAM_VMA (rwx) : ORIGIN = 0x40080000 + KERNEL_VA_OFFSET_LITERAL, LENGTH = 128M - 512K
+    RAM_LMA (rwx) : ORIGIN = 0x40080000, LENGTH = AZOS_RAM_BYTES - 512K
+    RAM_VMA (rwx) : ORIGIN = 0x40080000 + KERNEL_VA_OFFSET_LITERAL, LENGTH = AZOS_RAM_BYTES - 512K
 }
 
 SECTIONS
