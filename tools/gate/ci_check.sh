@@ -8696,6 +8696,26 @@ if a64_kbuild "qemu"; then
         printf "  %-26s" "aarch64: blk: guest stop canary..."; bad
         echo "      the blk-stall-canary aarch64 kernel did not build"
     fi
+    # The desktop preset on QEMU `virt` at EL1: it asks for the hypervisor and
+    # has a VMMD.ELF row, the boot has no EL2 and no guest, so the kernel
+    # installs no monitor. The row is left out of the manager's plan; a monitor
+    # started with nothing to serve was restarted until it was given up on.
+    # tools/gate/vmmd_withhold_row.sh builds the cell (its own output directory)
+    # and judges the boot. Canary, by hand: `mark_unstartable` out of
+    # `boot::hv::install_hv` -> `[compmgr] start VMMD.ELF`.
+    vmmd_withhold_row() { # vmmd_withhold_row <defconfig>
+        local label="aarch64: desktop boots clean, vmmd withheld" out
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        out="$CI_LOG_DIR/vmmd-withhold.out"
+        par_ready
+        if "$REPO_ROOT/tools/gate/vmmd_withhold_row.sh" "$1" >"$out" 2>&1; then
+            ok; rm -f "$out"
+        else
+            bad; sed 's/^/      /' "$out"
+        fi
+    }
+    par "aarch64: desktop boots clean, vmmd withheld" vmmd_withhold_row desktop-desktop-aarch64-dev+qemu
     a64_kbuild "qemu" >/dev/null
 else
     printf "  %-26s" "aarch64: persisted seed..."; bad

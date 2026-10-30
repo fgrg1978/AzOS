@@ -34,17 +34,17 @@ const PATH_MAX: usize = 5 + 12;
 /// Words of the bitmap of rows the launcher found it cannot start.
 const WORDS: usize = azos_limits::MAX_TASKS.div_ceil(64);
 
-/// One bit per topology row: the launcher looked at the row and its image
-/// cannot be started on this boot (the name is not an 8.3 image under `/fat`,
-/// or the image is not on this volume). The plan the manager reads leaves
-/// those rows out: they are said once, here, and skipped, not started and
-/// restarted until a restart budget gives up on them.
+/// One bit per topology row: the row cannot be started on this boot (the name
+/// is not an 8.3 image under `/fat`, the image is not on this volume, or a
+/// boot step found the row has nothing to serve: `boot::hv`, no monitor). The
+/// plan the manager reads leaves those rows out: they are said once, here, and
+/// skipped, not started and restarted until a restart budget gives up on them.
 static UNSTARTABLE: [AtomicU64; WORDS] = {
     const NONE: AtomicU64 = AtomicU64::new(0);
     [NONE; WORDS]
 };
 
-fn mark_unstartable(row: usize) {
+pub(crate) fn mark_unstartable(row: usize) {
     if let Some(w) = UNSTARTABLE.get(row / 64) {
         w.fetch_or(1 << (row % 64), Ordering::Release);
     }

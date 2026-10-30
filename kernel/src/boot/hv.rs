@@ -87,8 +87,25 @@ fn max_guest_mib() -> u64 {
     (objects * azos_ipc::MAX_MEMOBJ_PAGES as u64 * azos_arch_api::PAGE_SIZE as u64) >> 20
 }
 
-/// Admit the topology's guest rows and install the monitor.
+/// Admit the topology's guest rows and install the monitor. When none is
+/// installed (no hypervisor, no guest, none admitted) `vm.0` answers
+/// `NOT_READY` and `VMMD.ELF` has nothing to serve: its row is left out of the
+/// manager's plan, or it would exit with an error and be restarted until its
+/// budget gave up, and every row that imports its `vmctl` would be stopped
+/// behind it.
 pub(crate) fn install_hv(num_cpus: usize) {
+    if install_monitor(num_cpus) {
+        return;
+    }
+    let Some(topo) = azos_topology::get() else { return };
+    if let Some(i) = topo.tasks().iter().position(|r| r.name.as_bytes() == azos_topology::builder::TASK_VMMD_IMAGE) {
+        super::launch::mark_unstartable(i);
+        kprintln!("[HV] {} not started: no monitor on this boot", azos_topology::builder::TASK_VMMD_IMAGE.escape_ascii());
+    }
+}
+
+/// Did the monitor get installed?
+fn install_monitor(num_cpus: usize) -> bool {
     let role = role();
     let status = HV.status();
     if let HvStatus::Absent(why) = status {
@@ -96,11 +113,11 @@ pub(crate) fn install_hv(num_cpus: usize) {
             super::isa::refuse(|w| write!(w, "[HV] role {}: no hypervisor ({}) and HV_REQUIRE is set", role.name(), why));
         }
     }
-    let Some(topo) = azos_topology::get() else { return };
+    let Some(topo) = azos_topology::get() else { return false };
     let rows = topo.guests();
     if rows.is_empty() {
         kprintln!("[HV] role {}: {}; no [guest.*] row declared", role.name(), describe(status));
-        return;
+        return false;
     }
     // The guests' RAM is made by `VMMD.ELF` and charged to its Domain: its row
     // has to budget it, or the guest would end with a RAM that is partial.
@@ -113,7 +130,7 @@ pub(crate) fn install_hv(num_cpus: usize) {
             "[HV] role {}: guests NOT admitted ({} row(s)): the VMMD.ELF row budgets {} pages and its own frames plus the guests' RAM are {}",
             role.name(), rows.len(), have, need
         );
-        return;
+        return false;
     }
     let (online, rt) = (online_mask(num_cpus), rt_mask(topo, num_cpus));
     let facts = HostFacts { role, hv: status, online, rt, free_mib: free_mib(topo, rows), max_guest_mib: max_guest_mib() };
@@ -130,10 +147,17 @@ pub(crate) fn install_hv(num_cpus: usize) {
                         i, g.name.as_str(), g.cpus, g.mem_mib, g.envelope.as_str(), g.devices_len, i
                     );
                 }
+                true
             }
-            Err(e) => kprintln!("[HV] role {}: guests admitted but the monitor refused them: {:?}", role.name(), e),
+            Err(e) => {
+                kprintln!("[HV] role {}: guests admitted but the monitor refused them: {:?}", role.name(), e);
+                false
+            }
         },
-        Err(r) => kprintln!("[HV] role {}: guests NOT admitted ({} row(s)): {:?}", role.name(), rows.len(), r),
+        Err(r) => {
+            kprintln!("[HV] role {}: guests NOT admitted ({} row(s)): {:?}", role.name(), rows.len(), r);
+            false
+        }
     }
 }
 

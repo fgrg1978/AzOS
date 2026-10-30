@@ -771,6 +771,13 @@ fn main() -> ! {
         log(b"[vmmd] no guest is declared: nothing to serve\n");
         sys::exit(0);
     }
+    // The kernel installed no monitor on this boot (`boot::hv` leaves this
+    // row out of the plan then): a restart would find the same, so it is a
+    // clean end.
+    if state == Err(sys::dev::outcome::NOT_READY) {
+        log(b"[vmmd] the kernel hosts no guest on this boot: nothing to serve\n");
+        sys::exit(0);
+    }
     // [cpus, mem_mib, envelope | devices << 8 | vmid << 16, backends, ram_base]
     let Ok(cfg) = sys::dev::value(vm.config()) else {
         log(b"[vmmd] vm.0 has no configuration\n");
