@@ -25532,6 +25532,7 @@ preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64>
         *)    bad; echo "      console program ${prog:-?}: the row has no way to reach it"; return ;;
     esac
     mkfifo "$fifo" || { bad; echo "      mkfifo failed: $fifo"; return; }
+    : >"$log"
     while [ $(( $(par_qemu_count) + 1 )) -gt "$CI_QEMU_MAX" ]; do sleep 2; done
     par_ready
     (exec python3 -c 'import os, sys; os.setpgid(0, 0); os.execvp(sys.argv[1], sys.argv[1:])' "${mk[@]}" qemu) <"$fifo" >"$log" 2>&1 &
