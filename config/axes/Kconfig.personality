@@ -124,12 +124,16 @@ config USERSPACE_GPL
 config BUSYBOX
     bool "BusyBox (static, run through the Linux personality)"
     default y if BUILD_TYPE_DEV
-    depends on USERSPACE_GPL && LINUX_ABI
+    depends on USERSPACE_GPL && LINUX_ABI && (!ARCH_X86_64 || LINUX_RUNTIME)
     help
       BusyBox on the system volume as BUSYBOX.ELF, reachable as `busybox sh`
       from the native shell. A development build turns it on with the Linux
       personality; a release build leaves it off (see USERSPACE_GPL for the
       licence note and the source offer).
+
+      Not where it cannot run: on x86_64 only the ring-3 runtime
+      (LINUX_RUNTIME) hosts a Linux program, so without it a Linux row is
+      refused at spawn and BusyBox is unavailable.
 
       The pinned release is the gitlink third_party/busybox (its upstream
       tag in .gitmodules), built once for the three ISAs by `make busybox`

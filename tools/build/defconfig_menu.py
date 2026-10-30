@@ -228,10 +228,14 @@ def self_test():
             for w in k.warnings[warned:]:
                 fails.append(f"{name}: Kconfig drops an assignment: {w.strip()}")
             for sym in (f"PRESET_{p.upper()}", f"HWCLASS_{hw.upper()}", f"ARCH_{isa.upper()}",
-                        "BUILD_TYPE_DEV", "LINUX_ABI", "USERSPACE_GPL", "BUSYBOX") + (
-                    ("LINUX_RUNTIME",) if isa == "x86_64" and hw != "embedded" else ()):
+                        "BUILD_TYPE_DEV", "LINUX_ABI", "USERSPACE_GPL"):
                 if k.syms[sym].str_value != "y":
                     fails.append(f"{name}: expands without {sym}")
+            unhosted = isa == "x86_64" and hw == "embedded"   # no ring-3 runtime there, so no BusyBox
+            for sym in ("BUSYBOX",) + (("LINUX_RUNTIME",) if isa == "x86_64" else ()):
+                want = "n" if unhosted else "y"
+                if k.syms[sym].str_value != want:
+                    fails.append(f"{name}: {sym} is {k.syms[sym].str_value}, want {want}")
             if (k.syms["INPUTD"].str_value == "y") != (p in OVERLAYS_BY_PRESET):
                 fails.append(f"{name}: +gui is on exactly for the {', '.join(OVERLAYS_BY_PRESET)} preset")
     for f in fails:
