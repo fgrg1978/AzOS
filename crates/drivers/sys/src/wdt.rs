@@ -105,13 +105,13 @@ const fn wdt_lock_value() -> u32 {
 #[inline(always)]
 #[cfg(any(feature = "vf2", feature = "k1"))]
 fn rd32(base: usize, off: usize) -> u32 {
-    unsafe { core::ptr::read_volatile((base + off) as *const u32) }
+    unsafe { azos_arch_api::mmio::read32(base + off) }
 }
 
 #[inline(always)]
 #[cfg(any(feature = "vf2", feature = "k1"))]
 fn wr32(base: usize, off: usize, val: u32) {
-    unsafe { core::ptr::write_volatile((base + off) as *mut u32, val) }
+    unsafe { azos_arch_api::mmio::write32(base + off, val) }
 }
 
 #[cfg(feature = "vf2")]
@@ -202,15 +202,15 @@ mod sbsa {
         fn ctrl_read32(&self, off: usize) -> u32 {
             // SAFETY: `ctrl` is the control frame the bus mapped
             // (`sbsa_attach`, at least `FRAME_BYTES`); `off` is a register in it.
-            unsafe { core::ptr::read_volatile((self.ctrl + off) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(self.ctrl + off) }
         }
         fn ctrl_write32(&self, off: usize, val: u32) {
             // SAFETY: as for `ctrl_read32`.
-            unsafe { core::ptr::write_volatile((self.ctrl + off) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(self.ctrl + off, val) }
         }
         fn refresh_write32(&self, off: usize, val: u32) {
             // SAFETY: `refresh` is the mapped refresh frame, as above.
-            unsafe { core::ptr::write_volatile((self.refresh + off) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(self.refresh + off, val) }
         }
     }
 
@@ -279,11 +279,11 @@ mod sp5100 {
         fn read32(&self, off: usize) -> u32 {
             // SAFETY: the watchdog window the kernel mapped (`sp5100_attach`,
             // `WDT_BYTES`); `off` is one of its two registers.
-            unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(self.0 + off) }
         }
         fn write32(&self, off: usize, val: u32) {
             // SAFETY: as for `read32`.
-            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(self.0 + off, val) }
         }
     }
 
@@ -293,11 +293,11 @@ mod sp5100 {
         fn read8(&self, off: usize) -> u8 {
             // SAFETY: the FCH PM window the kernel mapped (`PM_BYTES`); `off`
             // is one of its byte registers.
-            unsafe { core::ptr::read_volatile((self.0 + off) as *const u8) }
+            unsafe { azos_arch_api::mmio::read8(self.0 + off) }
         }
         fn write8(&self, off: usize, val: u8) {
             // SAFETY: as for `read8`.
-            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u8, val) }
+            unsafe { azos_arch_api::mmio::write8(self.0 + off, val) }
         }
     }
 
@@ -369,11 +369,11 @@ mod pm {
             // SAFETY: `self.0` is the window the bus mapped for the node
             // (`pm_attach`); `off` is one of the block's registers, inside
             // `bcm2835_pm::MIN_WINDOW`, which the probe checked.
-            unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(self.0 + off) }
         }
         fn write32(&self, off: usize, val: u32) {
             // SAFETY: as for `read32`.
-            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(self.0 + off, val) }
         }
     }
 

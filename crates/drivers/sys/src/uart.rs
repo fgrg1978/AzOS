@@ -279,13 +279,13 @@ mod ns16550a {
     #[cfg(not(any(feature = "vf2", feature = "k1")))]
     #[inline(always)]
     fn read_reg(reg: usize) -> u8 {
-        unsafe { core::ptr::read_volatile((UART_BASE + reg) as *const u8) }
+        unsafe { azos_arch_api::mmio::read8(UART_BASE + reg) }
     }
 
     #[cfg(not(any(feature = "vf2", feature = "k1")))]
     #[inline(always)]
     fn write_reg(reg: usize, val: u8) {
-        unsafe { core::ptr::write_volatile((UART_BASE + reg) as *mut u8, val) }
+        unsafe { azos_arch_api::mmio::write8(UART_BASE + reg, val) }
     }
 
     // ---- Register access: 4-byte-stride/32-bit (JH7110 DW-APB-UART, K1) ----
@@ -307,13 +307,13 @@ mod ns16550a {
     #[cfg(any(feature = "vf2", feature = "k1"))]
     #[inline(always)]
     fn read_reg(reg: usize) -> u8 {
-        unsafe { core::ptr::read_volatile((UART_BASE + (reg << 2)) as *const u32) as u8 }
+        unsafe { azos_arch_api::mmio::read32(UART_BASE + (reg << 2)) as u8 }
     }
 
     #[cfg(any(feature = "vf2", feature = "k1"))]
     #[inline(always)]
     fn write_reg(reg: usize, val: u8) {
-        unsafe { core::ptr::write_volatile((UART_BASE + (reg << 2)) as *mut u32, val as u32) }
+        unsafe { azos_arch_api::mmio::write32(UART_BASE + (reg << 2), val as u32) }
     }
 
     // ---- LCR write, busy-detect-safe on real DW-APB-UART silicon ----
@@ -562,12 +562,12 @@ mod pl011 {
 
     #[inline(always)]
     fn read_reg(reg: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((super::mmio_base() + reg) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(super::mmio_base() + reg) }
     }
 
     #[inline(always)]
     fn write_reg(reg: usize, val: u32) {
-        unsafe { core::ptr::write_volatile((super::mmio_base() + reg) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(super::mmio_base() + reg, val) }
     }
 
     /// Baud-rate divisor (`IBRD`/`FBRD`) is deliberately left unprogrammed:
@@ -722,12 +722,12 @@ mod bcm2835_aux {
 
     #[inline(always)]
     fn read_reg(reg: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((super::mmio_base() + reg) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(super::mmio_base() + reg) }
     }
 
     #[inline(always)]
     fn write_reg(reg: usize, val: u32) {
-        unsafe { core::ptr::write_volatile((super::mmio_base() + reg) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(super::mmio_base() + reg, val) }
     }
 
     pub fn init() {

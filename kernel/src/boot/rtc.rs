@@ -67,11 +67,11 @@ impl azos_rtc::Mmio for Window {
     fn read32(&mut self, off: u32) -> u32 {
         // SAFETY: inside the 4 KiB window `probe_mmio` mapped; every register
         // the drivers name is 4-aligned.
-        unsafe { core::ptr::read_volatile((self.0 + off as usize) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.0 + off as usize) }
     }
     fn write32(&mut self, off: u32, v: u32) {
         // SAFETY: as `read32`.
-        unsafe { core::ptr::write_volatile((self.0 + off as usize) as *mut u32, v) }
+        unsafe { azos_arch_api::mmio::write32(self.0 + off as usize, v) }
     }
 }
 

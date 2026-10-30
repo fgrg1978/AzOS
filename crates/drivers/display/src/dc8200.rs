@@ -65,12 +65,12 @@ const FB_CONFIG_FMT_UNCONFIRMED: u32 = 0;
 
 #[inline(always)]
 fn reg_read(base: usize, off: usize) -> u32 {
-    unsafe { core::ptr::read_volatile((base + off) as *const u32) }
+    unsafe { azos_arch_api::mmio::read32(base + off) }
 }
 
 #[inline(always)]
 fn reg_write(base: usize, off: usize, val: u32) {
-    unsafe { core::ptr::write_volatile((base + off) as *mut u32, val) }
+    unsafe { azos_arch_api::mmio::write32(base + off, val) }
 }
 
 /// One fixed display mode — VESA 640x480@60Hz, the most universally

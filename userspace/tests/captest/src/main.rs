@@ -1125,9 +1125,9 @@ pub extern "C" fn _start() -> ! {
                 // with a real host clock, so the SAME two-word read proves the
                 // mapping reaches a live register on either ISA: a zero page or
                 // a mapping of the wrong frame returns 0|0.
-                let reg = va as usize as *const u32;
-                let low = unsafe { core::ptr::read_volatile(reg) };
-                let high = unsafe { core::ptr::read_volatile(reg.add(1)) };
+                let reg = va as usize;
+                let low = unsafe { azos_arch_api::mmio::read32(reg) };
+                let high = unsafe { azos_arch_api::mmio::read32(reg + 4) };
                 report(b"RTC time reads non-zero through the mapping",
                        (low | high) != 0, high as isize);
             }
@@ -1183,10 +1183,10 @@ mod rtc {
     pub const RO_DEVICE: &[u8] = b"dt:arm,pl061";
 
     fn rd(va: usize, off: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((va + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(va + off) }
     }
     fn wr(va: usize, off: usize, v: u32) {
-        unsafe { core::ptr::write_volatile((va + off) as *mut u32, v) }
+        unsafe { azos_arch_api::mmio::write32(va + off, v) }
     }
     /// No alarm latched, none enabled.
     pub fn quiet(va: usize) {
@@ -1244,10 +1244,10 @@ mod rtc {
     pub const RO_DEVICE: &[u8] = b"dt:sifive,test1";
 
     fn rd(va: usize, off: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((va + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(va + off) }
     }
     fn wr(va: usize, off: usize, v: u32) {
-        unsafe { core::ptr::write_volatile((va + off) as *mut u32, v) }
+        unsafe { azos_arch_api::mmio::write32(va + off, v) }
     }
     pub fn quiet(va: usize) {
         wr(va, IRQ_ENABLED, 0);

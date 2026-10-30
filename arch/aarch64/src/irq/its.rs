@@ -446,22 +446,22 @@ pub enum ItsError {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_read32(addr: usize) -> u32 {
-    core::ptr::read_volatile(addr as *const u32)
+    azos_arch_api::mmio::read32(addr)
 }
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_write32(addr: usize, val: u32) {
-    core::ptr::write_volatile(addr as *mut u32, val);
+    azos_arch_api::mmio::write32(addr, val);
 }
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_read64(addr: usize) -> u64 {
-    core::ptr::read_volatile(addr as *const u64)
+    azos_arch_api::mmio::read64(addr)
 }
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_write64(addr: usize, val: u64) {
-    core::ptr::write_volatile(addr as *mut u64, val);
+    azos_arch_api::mmio::write64(addr, val);
 }
 
 /// One ITS instance, owning the command queue + Devices table + one ITT

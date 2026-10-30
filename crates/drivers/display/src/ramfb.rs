@@ -65,7 +65,7 @@ const FOURCC_XRGB8888: u32 = (b'X' as u32)
 
 #[inline(always)]
 fn read_u8(off: usize) -> u8 {
-    unsafe { core::ptr::read_volatile((FW_CFG_BASE + off) as *const u8) }
+    unsafe { azos_arch_api::mmio::read8(FW_CFG_BASE + off) }
 }
 
 // No 8-bit write helper on purpose: the only register we write is the selector,
@@ -79,10 +79,7 @@ fn select(key: u16) {
     // (unlike the DATA register, which is documented as supporting
     // byte-wise streaming access). Big-endian on the wire.
     unsafe {
-        core::ptr::write_volatile(
-            (FW_CFG_BASE + REG_SELECTOR) as *mut u16,
-            key.to_be(),
-        );
+        azos_arch_api::mmio::write16(FW_CFG_BASE + REG_SELECTOR, key.to_be());
     }
 }
 
@@ -151,7 +148,7 @@ fn dma_write_file(sel: u16) -> Result<(), DmaFail> {
     // write to REG_DMA starts `fw_cfg_dma_transfer()`.
     azos_dma::order::io_wmb();
     // SAFETY: the fw_cfg DMA register of the board's mapped window.
-    unsafe { core::ptr::write_volatile((FW_CFG_BASE + REG_DMA) as *mut u64, dma_pa.to_be()) };
+    unsafe { azos_arch_api::mmio::write64(FW_CFG_BASE + REG_DMA, dma_pa.to_be()) };
 
     // The device clears `control` when it is done and leaves only the error
     // bit if it failed (Linux `fw_cfg_wait_for_control`). A volatile read:

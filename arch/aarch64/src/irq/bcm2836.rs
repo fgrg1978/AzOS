@@ -250,13 +250,13 @@ pub fn windows() -> [(usize, usize); 2] {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn read32(addr: usize) -> u32 {
-    core::ptr::read_volatile(addr as *const u32)
+    azos_arch_api::mmio::read32(addr)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn write32(addr: usize, val: u32) {
-    core::ptr::write_volatile(addr as *mut u32, val);
+    azos_arch_api::mmio::write32(addr, val);
 }
 
 #[cfg(target_arch = "aarch64")]

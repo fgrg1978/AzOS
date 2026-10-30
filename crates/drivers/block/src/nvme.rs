@@ -344,13 +344,13 @@ fn slot_give(slot: usize) {
 fn rd32(bar: usize, off: usize) -> u32 {
     // SAFETY: `bar` is BAR 0 mapped by `map_bars`; `off` is a register
     // offset of the NVMe register map, inside it.
-    unsafe { core::ptr::read_volatile((bar + off) as *const u32) }
+    unsafe { azos_arch_api::mmio::read32(bar + off) }
 }
 
 #[inline(always)]
 fn wr32(bar: usize, off: usize, val: u32) {
     // SAFETY: as `rd32`.
-    unsafe { core::ptr::write_volatile((bar + off) as *mut u32, val) }
+    unsafe { azos_arch_api::mmio::write32(bar + off, val) }
 }
 
 /// A 64-bit register as two 32-bit accesses (low dword first), which every
@@ -525,13 +525,13 @@ impl Dev {
         self.a_tail = proto::ring_next(self.a_tail, ADMIN_DEPTH);
         azos_dma::order::io_wmb();
         // SAFETY: the admin SQ tail doorbell of a mapped controller.
-        unsafe { core::ptr::write_volatile(self.sq_doorbell(0) as *mut u32, self.a_tail as u32) };
+        unsafe { azos_arch_api::mmio::write32(self.sq_doorbell(0), self.a_tail as u32) };
         let deadline = deadline_after_us(ADMIN_TIMEOUT_US);
         loop {
             if let Some(e) = cqe_peek(self.dma, self.acq, &self.a_cq) {
                 self.a_cq.advance(ADMIN_DEPTH);
                 // SAFETY: the admin CQ head doorbell.
-                unsafe { core::ptr::write_volatile(self.cq_doorbell(0) as *mut u32, self.a_cq.head as u32) };
+                unsafe { azos_arch_api::mmio::write32(self.cq_doorbell(0), self.a_cq.head as u32) };
                 if e.cid() != cid {
                     return Err(NvmeError::Admin(what));
                 }
@@ -893,7 +893,7 @@ fn drain(dev: &Dev, qi: usize, q: &mut Queue) {
     }
     if any {
         // SAFETY: the CQ head doorbell of queue `qi` of a mapped controller.
-        unsafe { core::ptr::write_volatile(dev.cq_doorbell(qid_of(qi)) as *mut u32, q.cur.head as u32) };
+        unsafe { azos_arch_api::mmio::write32(dev.cq_doorbell(qid_of(qi)), q.cur.head as u32) };
     }
 }
 
@@ -1049,7 +1049,7 @@ fn submit(dev: &Dev, qi: usize, q: &mut Queue, slot: usize, sqe: &proto::Sqe) ->
     q.tail = proto::ring_next(q.tail, IO_DEPTH);
     azos_dma::order::io_wmb();
     // SAFETY: the SQ tail doorbell of queue `qi` of a mapped controller.
-    unsafe { core::ptr::write_volatile(dev.sq_doorbell(qid_of(qi)) as *mut u32, q.tail as u32) };
+    unsafe { azos_arch_api::mmio::write32(dev.sq_doorbell(qid_of(qi)), q.tail as u32) };
     Ok(())
 }
 

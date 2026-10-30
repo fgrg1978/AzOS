@@ -607,11 +607,11 @@ impl<H: DmaHooks> MmioPort<H> {
 impl<H: DmaHooks> MailboxPort for MmioPort<H> {
     fn read32(&mut self, off: usize) -> u32 {
         // SAFETY: `new`'s contract: `base` is the mapped register block.
-        unsafe { core::ptr::read_volatile((self.base + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.base + off) }
     }
     fn write32(&mut self, off: usize, v: u32) {
         // SAFETY: as above.
-        unsafe { core::ptr::write_volatile((self.base + off) as *mut u32, v) }
+        unsafe { azos_arch_api::mmio::write32(self.base + off, v) }
     }
     fn bus_addr(&self, buf: *const u8, len: usize) -> Option<u32> {
         self.window.bus_addr(self.hooks.phys(buf), len)

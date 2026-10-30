@@ -215,13 +215,13 @@ pub fn interface_mask(key: u32) -> Option<u8> {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn read32(addr: usize) -> u32 {
-    core::ptr::read_volatile(addr as *const u32)
+    azos_arch_api::mmio::read32(addr)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn write32(addr: usize, val: u32) {
-    core::ptr::write_volatile(addr as *mut u32, val);
+    azos_arch_api::mmio::write32(addr, val);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -334,7 +334,7 @@ pub fn program_route(intid: u32, mpidr: u64, edge: bool) {
     unsafe {
         let cfg = d + GICD_ICFGR0 + (intid / 16) as usize * 4;
         write32(cfg, super::gic::icfgr_with_trigger(read32(cfg), intid, edge));
-        core::ptr::write_volatile((d + itargetsr_offset(intid)) as *mut u8, mask);
+        azos_arch_api::mmio::write8(d + itargetsr_offset(intid), mask);
     }
 }
 
@@ -344,7 +344,7 @@ pub fn program_route(intid: u32, mpidr: u64, edge: bool) {
 pub fn spi_state(intid: u32) -> (u64, bool, bool) {
     let d = gicd();
     unsafe {
-        let target = core::ptr::read_volatile((d + itargetsr_offset(intid)) as *const u8);
+        let target = azos_arch_api::mmio::read8(d + itargetsr_offset(intid));
         let cfg = read32(d + GICD_ICFGR0 + (intid / 16) as usize * 4);
         let en = read32(d + GICD_ISENABLER0 + (intid / 32) as usize * 4);
         (target as u64, cfg & (1 << (((intid % 16) * 2) + 1)) != 0, en & (1 << (intid % 32)) != 0)

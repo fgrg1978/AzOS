@@ -287,19 +287,19 @@ mod hw {
     impl Mmio for KMmio {
         fn read32(&self, off: usize) -> u32 {
             // SAFETY: `base` is a mapped device window and `off` a register of it.
-            unsafe { core::ptr::read_volatile((self.base + off) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(self.base + off) }
         }
         fn write32(&self, off: usize, val: u32) {
             // SAFETY: as `read32`.
-            unsafe { core::ptr::write_volatile((self.base + off) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(self.base + off, val) }
         }
         fn read64(&self, off: usize) -> u64 {
             // SAFETY: as `read32`; the 64-bit registers are 8-byte aligned.
-            unsafe { core::ptr::read_volatile((self.base + off) as *const u64) }
+            unsafe { azos_arch_api::mmio::read64(self.base + off) }
         }
         fn write64(&self, off: usize, val: u64) {
             // SAFETY: as `read64`.
-            unsafe { core::ptr::write_volatile((self.base + off) as *mut u64, val) }
+            unsafe { azos_arch_api::mmio::write64(self.base + off, val) }
         }
     }
 

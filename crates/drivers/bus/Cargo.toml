@@ -16,6 +16,7 @@ k1  = []
 i2c-dw = []
 
 [dependencies]
+azos_arch_api = { workspace = true }
 azos_common = { workspace = true }
 azos_abi      = { workspace = true }
 azos_sync     = { workspace = true }

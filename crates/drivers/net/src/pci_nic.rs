@@ -125,13 +125,13 @@ impl<W: Wire> Regs<W> {
     pub fn rd(&self, off: usize) -> u32 {
         // SAFETY: `bar` is BAR 0 mapped by `map_bars` (a `Regs` is made only
         // from a stored BAR); `off` is a register of the driver's map.
-        unsafe { core::ptr::read_volatile((self.bar + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.bar + off) }
     }
 
     #[inline(always)]
     pub fn wr(&self, off: usize, val: u32) {
         // SAFETY: as `rd`.
-        unsafe { core::ptr::write_volatile((self.bar + off) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(self.bar + off, val) }
     }
 
     fn link_is_up(&self) -> bool {

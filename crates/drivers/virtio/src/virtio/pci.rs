@@ -639,27 +639,27 @@ pub mod msix_selftest {
         fn read8(&self, off: usize) -> u8 {
             // SAFETY: `base` is a mapped BAR and `off` lies inside it
             // (offsets come from the device's own virtio caps / MSI-X cap).
-            unsafe { core::ptr::read_volatile((self.base + off) as *const u8) }
+            unsafe { azos_arch_api::mmio::read8(self.base + off) }
         }
         fn write8(&mut self, off: usize, val: u8) {
             // SAFETY: as for `read8`.
-            unsafe { core::ptr::write_volatile((self.base + off) as *mut u8, val) }
+            unsafe { azos_arch_api::mmio::write8(self.base + off, val) }
         }
         fn read16(&self, off: usize) -> u16 {
             // SAFETY: as for `read8`; virtio register offsets are aligned.
-            unsafe { core::ptr::read_volatile((self.base + off) as *const u16) }
+            unsafe { azos_arch_api::mmio::read16(self.base + off) }
         }
         fn write16(&mut self, off: usize, val: u16) {
             // SAFETY: as for `read16`.
-            unsafe { core::ptr::write_volatile((self.base + off) as *mut u16, val) }
+            unsafe { azos_arch_api::mmio::write16(self.base + off, val) }
         }
         fn read32(&self, off: usize) -> u32 {
             // SAFETY: as for `read16`.
-            unsafe { core::ptr::read_volatile((self.base + off) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(self.base + off) }
         }
         fn write32(&mut self, off: usize, val: u32) {
             // SAFETY: as for `read16`.
-            unsafe { core::ptr::write_volatile((self.base + off) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(self.base + off, val) }
         }
     }
 

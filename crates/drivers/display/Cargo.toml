@@ -23,6 +23,7 @@ qemu = []
 ramfb-va-canary = ["qemu"]
 
 [dependencies]
+azos_arch_api = { workspace = true }
 azos_arch    = { workspace = true }
 azos_drv_base = { workspace = true }
 azos_drv_sys  = { workspace = true }

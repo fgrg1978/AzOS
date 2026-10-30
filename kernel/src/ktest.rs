@@ -85,7 +85,7 @@ fn power_off(failed: bool) -> ! {
         let _ = azos_arch::ARCH.disable_all();
         // SAFETY: QEMU virt's test device, identity-mapped just above; the
         // write requests the exit with status 1.
-        unsafe { core::ptr::write_volatile(base as *mut u32, FINISHER_FAIL | (1 << 16)) };
+        unsafe { azos_arch_api::mmio::write32(base, FINISHER_FAIL | (1 << 16)) };
         // Never on to `shutdown`: its finisher write would replace the 1.
         azos_arch::ARCH.halt()
     }

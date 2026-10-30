@@ -288,32 +288,32 @@ impl Regs for Hw {
     #[inline(always)]
     fn rd8(&self, off: usize) -> u8 {
         // SAFETY: `self.0` is a mapped SDHCI window (`slot_base`) and `off` a register inside it.
-        unsafe { core::ptr::read_volatile((self.0 + off) as *const u8) }
+        unsafe { azos_arch_api::mmio::read8(self.0 + off) }
     }
     #[inline(always)]
     fn rd16(&self, off: usize) -> u16 {
         // SAFETY: as `rd8`.
-        unsafe { core::ptr::read_volatile((self.0 + off) as *const u16) }
+        unsafe { azos_arch_api::mmio::read16(self.0 + off) }
     }
     #[inline(always)]
     fn rd32(&self, off: usize) -> u32 {
         // SAFETY: as `rd8`.
-        unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.0 + off) }
     }
     #[inline(always)]
     fn wr8(&self, off: usize, val: u8) {
         // SAFETY: as `rd8`.
-        unsafe { core::ptr::write_volatile((self.0 + off) as *mut u8, val) }
+        unsafe { azos_arch_api::mmio::write8(self.0 + off, val) }
     }
     #[inline(always)]
     fn wr16(&self, off: usize, val: u16) {
         // SAFETY: as `rd8`.
-        unsafe { core::ptr::write_volatile((self.0 + off) as *mut u16, val) }
+        unsafe { azos_arch_api::mmio::write16(self.0 + off, val) }
     }
     #[inline(always)]
     fn wr32(&self, off: usize, val: u32) {
         // SAFETY: as `rd8`.
-        unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(self.0 + off, val) }
     }
 }
 

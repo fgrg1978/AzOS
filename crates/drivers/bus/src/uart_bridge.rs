@@ -102,12 +102,12 @@ mod uart1 {
     // the 16550-compatible register value.
     #[inline(always)]
     fn rd(reg: usize) -> u8 {
-        unsafe { core::ptr::read_volatile((BASE + (reg << 2)) as *const u32) as u8 }
+        unsafe { azos_arch_api::mmio::read32(BASE + (reg << 2)) as u8 }
     }
 
     #[inline(always)]
     fn wr(reg: usize, val: u8) {
-        unsafe { core::ptr::write_volatile((BASE + (reg << 2)) as *mut u32, val as u32) }
+        unsafe { azos_arch_api::mmio::write32(BASE + (reg << 2), val as u32) }
     }
 
     // Busy-detect-safe LCR write — see the USR/USR_BUSY doc comment above.

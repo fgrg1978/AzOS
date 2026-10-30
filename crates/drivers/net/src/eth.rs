@@ -189,12 +189,12 @@ mod macb {
 
     #[inline(always)]
     fn rd(off: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((MACB_BASE + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(MACB_BASE + off) }
     }
 
     #[inline(always)]
     fn wr(off: usize, val: u32) {
-        unsafe { core::ptr::write_volatile((MACB_BASE + off) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(MACB_BASE + off, val) }
     }
 
     /// Initialise Cadence MACB Ethernet on JH7110.

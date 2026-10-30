@@ -148,8 +148,8 @@ fn early_halt(msg: &[u8]) -> ! {
     let base = azos_drv_base::platform::hw::UART_BASE;
     for &byte in msg {
         // UARTFR.TXFF (bit 5): wait for room, then UARTDR.
-        while unsafe { core::ptr::read_volatile((base + 0x18) as *const u32) } & (1 << 5) != 0 {}
-        unsafe { core::ptr::write_volatile(base as *mut u32, byte as u32) };
+        while unsafe { azos_arch_api::mmio::read32(base + 0x18) } & (1 << 5) != 0 {}
+        unsafe { azos_arch_api::mmio::write32(base, byte as u32) };
     }
     loop {
         unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };

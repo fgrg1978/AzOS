@@ -57,6 +57,7 @@ console-mirror = []
 console-tx-sync = []
 
 [dependencies]
+azos_arch_api = { workspace = true }
 azos_common = { workspace = true }
 azos_abi           = { workspace = true }
 azos_arch          = { workspace = true }

@@ -404,7 +404,7 @@ mod mmio {
     fn reg_read32(offset: usize) -> u32 {
         match WINDOW.base() {
             // SAFETY: the base the bus bound and the kernel mapped.
-            Some(b) => unsafe { core::ptr::read_volatile((b + offset) as *const u32) },
+            Some(b) => unsafe { azos_arch_api::mmio::read32(b + offset) },
             None => 0,
         }
     }
@@ -413,7 +413,7 @@ mod mmio {
     fn reg_write32(offset: usize, val: u32) {
         if let Some(b) = WINDOW.base() {
             // SAFETY: as `reg_read32`.
-            unsafe { core::ptr::write_volatile((b + offset) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(b + offset, val) }
         }
     }
 
@@ -751,12 +751,12 @@ mod k1 {
         fn read32(&mut self, off: usize) -> u32 {
             // SAFETY: the base the bus bound and the kernel mapped; `off` is a
             // register offset of `gpio_k1` (below 0x200).
-            unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(self.0 + off) }
         }
         #[inline(always)]
         fn write32(&mut self, off: usize, v: u32) {
             // SAFETY: as `read32`.
-            unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, v) }
+            unsafe { azos_arch_api::mmio::write32(self.0 + off, v) }
         }
     }
 

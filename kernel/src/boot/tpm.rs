@@ -128,20 +128,20 @@ struct Mmio;
 impl azos_tpm::mmio::MmioAccess for Mmio {
     fn read8(&mut self, addr: u64) -> u8 {
         // SAFETY: inside the window `probe` mapped (identity: VA = PA).
-        unsafe { core::ptr::read_volatile(addr as usize as *const u8) }
+        unsafe { azos_arch_api::mmio::read8(addr as usize) }
     }
     fn read32(&mut self, addr: u64) -> u32 {
         // SAFETY: as above; the driver reads dwords only at 4-aligned registers.
-        unsafe { core::ptr::read_volatile(addr as usize as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(addr as usize) }
     }
     fn write8(&mut self, addr: u64, v: u8) {
         // SAFETY: as above.
-        unsafe { core::ptr::write_volatile(addr as usize as *mut u8, v) }
+        unsafe { azos_arch_api::mmio::write8(addr as usize, v) }
     }
     fn write32(&mut self, addr: u64, v: u32) {
         // SAFETY: as above; the CRB driver writes dwords only at its 4-aligned
         // control registers.
-        unsafe { core::ptr::write_volatile(addr as usize as *mut u32, v) }
+        unsafe { azos_arch_api::mmio::write32(addr as usize, v) }
     }
 }
 

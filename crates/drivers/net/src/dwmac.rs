@@ -452,12 +452,12 @@ impl Hw for Mmio {
     #[inline(always)]
     fn rd(&self, off: usize) -> u32 {
         // SAFETY: the board maps `[base, base + reg::WINDOW)` (board_map.rs).
-        unsafe { core::ptr::read_volatile((self.base + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.base + off) }
     }
     #[inline(always)]
     fn wr(&self, off: usize, val: u32) {
         // SAFETY: as `rd`.
-        unsafe { core::ptr::write_volatile((self.base + off) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(self.base + off, val) }
     }
     fn now_us(&self) -> u64 {
         let t = azos_drv_sys::timebase::now();

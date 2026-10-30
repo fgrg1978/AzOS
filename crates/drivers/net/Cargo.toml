@@ -25,6 +25,7 @@ igc = ["azos_drv_virtio/pci", "dep:azos_pci", "dep:azos_mm"]
 usb-net = ["dep:azos_usb", "dep:azos_devif"]
 
 [dependencies]
+azos_arch_api = { workspace = true }
 azos_sync       = { workspace = true }
 azos_drv_api    = { workspace = true }
 azos_drv_base   = { workspace = true }

@@ -116,11 +116,11 @@ mod host {
             // SAFETY: `base` is the controller's register window, mapped by the
             // attach before the first access; the driver's offsets come from the
             // controller's own capability registers.
-            unsafe { core::ptr::read_volatile((self.base + off) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(self.base + off) }
         }
         fn write32(&self, off: usize, val: u32) {
             // SAFETY: as for `read32`.
-            unsafe { core::ptr::write_volatile((self.base + off) as *mut u32, val) }
+            unsafe { azos_arch_api::mmio::write32(self.base + off, val) }
         }
     }
 

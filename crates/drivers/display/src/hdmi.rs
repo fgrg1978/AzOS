@@ -45,12 +45,12 @@ const PHY_PRE_DIV_RATIO: usize = 0xed;
 
 #[inline(always)]
 fn reg_read(base: usize, off: usize) -> u8 {
-    unsafe { core::ptr::read_volatile((base + off) as *const u8) }
+    unsafe { azos_arch_api::mmio::read8(base + off) }
 }
 
 #[inline(always)]
 fn reg_write(base: usize, off: usize, val: u8) {
-    unsafe { core::ptr::write_volatile((base + off) as *mut u8, val) }
+    unsafe { azos_arch_api::mmio::write8(base + off, val) }
 }
 
 fn set_le16(base: usize, off_low: usize, off_high: usize, val: u16) {

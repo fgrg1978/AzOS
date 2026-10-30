@@ -491,12 +491,12 @@ impl Regs for Hw {
         // SAFETY: `self.0` is the HBA's ABAR, mapped by the kernel's PCI
         // bring-up, and `off` a register offset inside the 4 KiB-or-larger
         // window.
-        unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.0 + off) }
     }
     #[inline(always)]
     fn wr32(&self, off: usize, val: u32) {
         // SAFETY: as `rd32`.
-        unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(self.0 + off, val) }
     }
 }
 

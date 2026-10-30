@@ -283,12 +283,12 @@ mod cdns_spi {
 
     #[inline(always)]
     fn rd(base: usize, off: usize) -> u32 {
-        unsafe { core::ptr::read_volatile((base + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(base + off) }
     }
 
     #[inline(always)]
     fn wr(base: usize, off: usize, val: u32) {
-        unsafe { core::ptr::write_volatile((base + off) as *mut u32, val) }
+        unsafe { azos_arch_api::mmio::write32(base + off, val) }
     }
 
     /// Assert CS line for the given slave (active low in CR bits 13:10).

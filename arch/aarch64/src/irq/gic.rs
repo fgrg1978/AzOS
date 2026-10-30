@@ -190,13 +190,13 @@ pub const fn sgi1r_encode(target_affinity: u32, intid: u8) -> u64 {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_read32(addr: usize) -> u32 {
-    core::ptr::read_volatile(addr as *const u32)
+    azos_arch_api::mmio::read32(addr)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_write32(addr: usize, val: u32) {
-    core::ptr::write_volatile(addr as *mut u32, val);
+    azos_arch_api::mmio::write32(addr, val);
 }
 
 /// Wait for any pending distributor register write to complete.
@@ -689,8 +689,7 @@ pub fn spi_state(intid: u32) -> (u64, bool, bool) {
         return super::gicv2::spi_state(intid);
     }
     unsafe {
-        let router = core::ptr::read_volatile(
-            (GICD_BASE + GICD_IROUTER0 + intid as usize * 8) as *const u64);
+        let router = azos_arch_api::mmio::read64(GICD_BASE + GICD_IROUTER0 + intid as usize * 8);
         let cfg = mmio_read32(GICD_BASE + GICD_ICFGR0 + (intid / 16) as usize * 4);
         let en = mmio_read32(GICD_BASE + GICD_ISENABLER0 + (intid / 32) as usize * 4);
         (router, cfg & (1 << (((intid % 16) * 2) + 1)) != 0, en & (1 << (intid % 32)) != 0)
@@ -781,7 +780,7 @@ pub const GICR_WALK_MAX_FRAMES: usize = 16;
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_read64(addr: usize) -> u64 {
-    core::ptr::read_volatile(addr as *const u64)
+    azos_arch_api::mmio::read64(addr)
 }
 
 /// Walk redistributor frames from `GICR_BASE`, reading each one's own
@@ -1045,5 +1044,5 @@ pub fn enable_lpis_at(rd_base: usize, prop_table_pa: u64, pend_table_pa: u64) {
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn mmio_write64(addr: usize, val: u64) {
-    core::ptr::write_volatile(addr as *mut u64, val);
+    azos_arch_api::mmio::write64(addr, val);
 }

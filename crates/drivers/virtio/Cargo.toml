@@ -44,6 +44,7 @@ blk-wait-probe = []
 blk-lock-wait-canary = ["blk-wait-probe"]
 
 [dependencies]
+azos_arch_api = { workspace = true }
 azos_common = { workspace = true }
 azos_arch        = { workspace = true }
 azos_mm          = { workspace = true }

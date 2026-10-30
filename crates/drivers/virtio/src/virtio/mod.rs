@@ -260,12 +260,12 @@ impl VirtioDev {
 
 #[inline(always)]
 pub unsafe fn mmio_read(base: *mut u32, offset: u32) -> u32 {
-    core::ptr::read_volatile(base.add((offset / 4) as usize))
+    azos_arch_api::mmio::read32(base as usize + offset as usize)
 }
 
 #[inline(always)]
 pub unsafe fn mmio_write(base: *mut u32, offset: u32, val: u32) {
-    core::ptr::write_volatile(base.add((offset / 4) as usize), val);
+    azos_arch_api::mmio::write32(base as usize + offset as usize, val);
 }
 
 // ---- virtio_probe (port of virtio_probe in virtio.c) ----
@@ -906,7 +906,7 @@ pub unsafe fn virtq_notify_mmio(dev: &VirtioDev, queue_idx: u32) {
 #[inline(always)]
 pub unsafe fn virtq_notify_pci(notify: usize, queue: u16) {
     azos_dma::order::io_wmb();
-    core::ptr::write_volatile(notify as *mut u16, queue);
+    azos_arch_api::mmio::write16(notify, queue);
 }
 
 /// Has the device written a used entry this driver has not consumed yet?

@@ -206,11 +206,11 @@ struct SfcTempMmio(usize);
 impl azos_thermal::jh7110::SfcTempBus for SfcTempMmio {
     fn read32(&mut self, off: usize) -> u32 {
         // SAFETY: the window `hwbus::map_window` mapped for the bound node.
-        unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.0 + off) }
     }
     fn write32(&mut self, off: usize, v: u32) {
         // SAFETY: as `read32`.
-        unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, v) }
+        unsafe { azos_arch_api::mmio::write32(self.0 + off, v) }
     }
     fn delay_us(&mut self, us: u32) {
         let end = azos_drv_sys::timebase::now()
@@ -257,11 +257,11 @@ impl azos_thermal::k1::K1TsensorBus for K1TsensorMmio {
         // SAFETY: the window `hwbus::map_window` mapped for the bound node;
         // `off` is one of the block's word-aligned register offsets (below
         // 0x100).
-        unsafe { core::ptr::read_volatile((self.0 + off) as *const u32) }
+        unsafe { azos_arch_api::mmio::read32(self.0 + off) }
     }
     fn write32(&mut self, off: usize, v: u32) {
         // SAFETY: as `read32`.
-        unsafe { core::ptr::write_volatile((self.0 + off) as *mut u32, v) }
+        unsafe { azos_arch_api::mmio::write32(self.0 + off, v) }
     }
 }
 

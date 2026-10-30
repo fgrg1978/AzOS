@@ -142,7 +142,7 @@ impl ConfigSpace for KernelConfigSpace {
                 // access), `offset < 4096` per `ConfigSpace`'s contract, and
                 // the read is naturally aligned (`read16`/`read8` round down
                 // before calling `read32`).
-                unsafe { core::ptr::read_volatile(addr as *const u32) }
+                unsafe { azos_arch_api::mmio::read32(addr) }
             }
             #[cfg(feature = "pci-soc-host")]
             Access::Host(p) => p.read32(bdf, offset),
@@ -158,7 +158,7 @@ impl ConfigSpace for KernelConfigSpace {
                 }
                 let addr = ecam_address(*ecam, bdf, offset);
                 // SAFETY: as `read32`.
-                unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
+                unsafe { azos_arch_api::mmio::write32(addr, val) }
             }
             #[cfg(feature = "pci-soc-host")]
             Access::Host(p) => p.write32(bdf, offset, val),
@@ -219,7 +219,7 @@ pub(crate) fn attach_rp1<C: azos_pci::ConfigSpace>(
     }
     // SAFETY: BAR 1 was just assigned and mapped as device memory
     // (`map_bars`), and the word is inside it.
-    let id = unsafe { core::ptr::read_volatile((base + rp1::SYSINFO_CHIP_ID) as *const u32) };
+    let id = unsafe { azos_arch_api::mmio::read32(base + rp1::SYSINFO_CHIP_ID) };
     if id != rp1::CHIP_ID {
         azos_drv_sys::kwarn!("[RP1] {}: chip id {:#x}, not the RP1's {:#x}: not used", f.bdf, id, rp1::CHIP_ID);
         return Err(());
@@ -296,14 +296,14 @@ mod soc {
             }
             // SAFETY: `bring_up` mapped the block as device memory before it
             // stored the base, and every offset the flows use lies inside it.
-            unsafe { core::ptr::read_volatile((base + off as usize) as *const u32) }
+            unsafe { azos_arch_api::mmio::read32(base + off as usize) }
         }
 
         fn write32(&self, region: Region, off: u32, val: u32) {
             let base = self.base(region);
             if base != 0 {
                 // SAFETY: as `read32`.
-                unsafe { core::ptr::write_volatile((base + off as usize) as *mut u32, val) }
+                unsafe { azos_arch_api::mmio::write32(base + off as usize, val) }
             }
         }
 

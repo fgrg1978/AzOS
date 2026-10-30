@@ -175,12 +175,12 @@ pub fn device_count() -> usize {
 
 #[inline(always)]
 unsafe fn cfg_read8(dev: &VirtioDev, off: usize) -> u8 {
-    core::ptr::read_volatile((dev.base as *const u8).add(VIRTIO_MMIO_CONFIG as usize + off))
+    azos_arch_api::mmio::read8(dev.base as usize + VIRTIO_MMIO_CONFIG as usize + off)
 }
 
 #[inline(always)]
 unsafe fn cfg_write8(dev: &VirtioDev, off: usize, v: u8) {
-    core::ptr::write_volatile((dev.base as *mut u8).add(VIRTIO_MMIO_CONFIG as usize + off), v)
+    azos_arch_api::mmio::write8(dev.base as usize + VIRTIO_MMIO_CONFIG as usize + off, v)
 }
 
 /// One config query against a real device: the answer's bytes and count.

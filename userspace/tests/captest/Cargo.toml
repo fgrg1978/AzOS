@@ -8,6 +8,7 @@ description = "Userspace capability + syscall ABI test: asserts that a ring-3 pr
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_arch_api = { path = "../../../arch/api" }
 azos_inspect_lib = { path = "../../lib/inspect" }
 # `DOMAIN_MMIO_MAP` and `CapPerms` for the raw region-index call; libsys has no
 # wrapper for it.

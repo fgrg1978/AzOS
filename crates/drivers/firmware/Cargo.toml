@@ -9,3 +9,6 @@ description = "Firmware interfaces: the Raspberry Pi VideoCore mailbox property 
 [lib]
 name = "azos_firmware"
 path = "rpi_mailbox.rs"
+
+[dependencies]
+azos_arch_api = { workspace = true }

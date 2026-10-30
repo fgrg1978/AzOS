@@ -220,6 +220,7 @@ name = "azos_display"
 version = "0.1.0"
 dependencies = [
  "azos_arch",
+ "azos_arch_api",
  "azos_dma",
  "azos_drv_base",
  "azos_drv_sys",
@@ -249,6 +250,7 @@ name = "azos_drv_actuator"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_arch_api",
  "azos_buzzer",
  "azos_devif",
  "azos_drv_api",
@@ -282,6 +284,7 @@ name = "azos_drv_block"
 version = "0.1.0"
 dependencies = [
  "azos_arch",
+ "azos_arch_api",
  "azos_chaos",
  "azos_common",
  "azos_devif",
@@ -304,6 +307,7 @@ name = "azos_drv_bus"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_arch_api",
  "azos_common",
  "azos_devif",
  "azos_drv_api",
@@ -319,6 +323,7 @@ name = "azos_drv_gpio"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_arch_api",
  "azos_common",
  "azos_driver_server",
  "azos_drv_api",
@@ -350,6 +355,7 @@ dependencies = [
 name = "azos_drv_net"
 version = "0.1.0"
 dependencies = [
+ "azos_arch_api",
  "azos_devif",
  "azos_dma",
  "azos_drv_api",
@@ -394,6 +400,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch",
+ "azos_arch_api",
  "azos_common",
  "azos_driver_server",
  "azos_drv_api",
@@ -409,6 +416,7 @@ name = "azos_drv_virtio"
 version = "0.1.0"
 dependencies = [
  "azos_arch",
+ "azos_arch_api",
  "azos_chaos",
  "azos_common",
  "azos_devif",
@@ -455,6 +463,9 @@ dependencies = [
 [[package]]
 name = "azos_firmware"
 version = "0.1.0"
+dependencies = [
+ "azos_arch_api",
+]
 
 [[package]]
 name = "azos_flight"
