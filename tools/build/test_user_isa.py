@@ -15,16 +15,19 @@
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402
+import out_dir  # noqa: E402
 
 REPO = azos_tools.ROOT
 ISAS = ("riscv64", "aarch64", "x86_64")
 FAILS = []
+OUT = os.path.join(out_dir.out_root(), "user-isa-test")
 
 
 def check(cond, what):
@@ -56,7 +59,7 @@ def sdk_cargo_refuses(tmp):
 
 
 def image_configs_follow_arch(tmp):
-    out = os.path.join(tmp, "out")
+    out = OUT
     for cfg_isa in ISAS:
         cfg = os.path.join(tmp, cfg_isa + "-stub.config")
         with open(cfg, "w") as f:
@@ -75,7 +78,7 @@ def image_configs_follow_arch(tmp):
 
 
 def stale_development_config(tmp):
-    out = os.path.join(tmp, "stale")
+    out = OUT
     rv, x86 = os.path.join(tmp, "rv.config"), os.path.join(tmp, "x86.config")
     make([f"KCONFIG_CONFIG={rv}", "defconfig-generic-sbc-riscv64-dev+qemu+linux+gui"], out)
     with open(rv, "a") as f:
@@ -83,11 +86,11 @@ def stale_development_config(tmp):
     subprocess.run([sys.executable, "-m", "olddefconfig"], cwd=REPO, env=dict(os.environ, KCONFIG_CONFIG=rv),
                    capture_output=True, check=True)
     make([f"KCONFIG_CONFIG={x86}", "defconfig-generic-sbc-x86_64-dev+qemu+linux+gui"], out)
-    dev = os.path.join(out, "build", "qemu-dev.config")
+    dev = os.path.join(OUT, "build", "qemu-dev.config")
     make([f"KCONFIG_CONFIG={rv}", dev], out)
     make([f"KCONFIG_CONFIG={x86}", dev], out)
     left = "CONFIG_ARCH_X86_64=y" in open(dev).read()
-    r = make([f"KCONFIG_CONFIG={rv}", "USPACE_BUILD=echo", os.path.join(out, "build", "logd.elf")], out)
+    r = make([f"KCONFIG_CONFIG={rv}", "USPACE_BUILD=echo", os.path.join(OUT, "build", "logd.elf")], out)
     flags = set(re.findall(r"rustflags=\[[^\]]*\]", r.stdout))
     check(left, "the earlier make left an x86_64 qemu-dev.config")
     check(len(flags) == 1 and "target-feature=+zbb" in "".join(flags),
@@ -95,6 +98,7 @@ def stale_development_config(tmp):
 
 
 def main():
+    shutil.rmtree(OUT, ignore_errors=True)
     with tempfile.TemporaryDirectory() as tmp:
         sdk_cargo_refuses(tmp)
         image_configs_follow_arch(tmp)
