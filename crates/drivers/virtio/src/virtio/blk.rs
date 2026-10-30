@@ -908,8 +908,8 @@ impl HwQueue for VirtioBlk {
                     // as the device's "I have no such command".
                     SLOT_OP[t].store(OP_FLUSH, Ordering::Relaxed);
                     SLOT_STATUS[t].store(proto::S_UNSUPP, Ordering::Relaxed);
-                    SLOT_REPORTED[t].store(false, Ordering::Relaxed);
                     SLOT_DONE[t].store(true, Ordering::Relaxed);
+                    SLOT_REPORTED[t].store(false, Ordering::Release);
                     SLOT_INFLIGHT[t].store(true, Ordering::Release);
                     return Ok(());
                 }
@@ -962,8 +962,8 @@ impl HwQueue for VirtioBlk {
                 // the reset abandoned.
                 SLOT_OP[t].store(op, Ordering::Relaxed);
                 SLOT_STATUS[t].store(proto::S_RESET, Ordering::Relaxed);
-                SLOT_REPORTED[t].store(false, Ordering::Relaxed);
                 SLOT_DONE[t].store(true, Ordering::Relaxed);
+                SLOT_REPORTED[t].store(false, Ordering::Release);
                 SLOT_INFLIGHT[t].store(true, Ordering::Release);
                 return Ok(());
             }
@@ -1038,7 +1038,9 @@ impl HwQueue for VirtioBlk {
             SLOT_CREDIT[t].store(STALL.credit(), Ordering::Relaxed);
             SLOT_DEADLINE[t].store(deadline_after_us(budget), Ordering::Relaxed);
             SLOT_DONE[t].store(false, Ordering::Relaxed);
-            SLOT_REPORTED[t].store(false, Ordering::Relaxed);
+            // After the rest: a reaper that sees it clear must not see the
+            // previous command's `SLOT_DONE`.
+            SLOT_REPORTED[t].store(false, Ordering::Release);
             SLOT_INFLIGHT[t].store(true, Ordering::Release);
 
             virtq_submit(&dev.vdev, q as u32, d_hdr, vq);
@@ -1072,7 +1074,11 @@ impl HwQueue for VirtioBlk {
         let dead = RECOVERY.dead();
         let mut n = 0;
         for t in 0..dev.slots {
-            if !SLOT_INFLIGHT[t].load(Ordering::Acquire) || SLOT_REPORTED[t].load(Ordering::Relaxed) {
+            // Reapers run concurrently: under the lock a slot is reported once.
+            // A second report would reach the layer after it released the slot
+            // and end the slot's next command while the device still holds it.
+            let _g = QLOCK[proto::queue_of(t, dev.queues)].lock();
+            if !SLOT_INFLIGHT[t].load(Ordering::Acquire) || SLOT_REPORTED[t].load(Ordering::Acquire) {
                 continue;
             }
             let status = if SLOT_DONE[t].load(Ordering::Acquire) {
