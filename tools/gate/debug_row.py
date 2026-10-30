@@ -123,7 +123,7 @@ class Row:
         self.isa, self.repo, self.out, self.logs = isa, repo, out, logs
         self.cfg = os.path.join(out, "build", "debug-%s.config" % isa)
         self.env = dict(os.environ, AZOS_OUT=out, KCONFIG_CONFIG=self.cfg)
-        self.pg = None
+        self.proc = None
 
     def make(self, *args, log, background=False):
         cmd = ["make", "-C", self.repo] + list(args)
@@ -132,7 +132,7 @@ class Row:
                 return subprocess.run(cmd, env=self.env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
             p = subprocess.Popen(cmd, env=self.env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                  start_new_session=True)
-        self.pg = p.pid
+        self.proc = p
         gdir = os.environ.get("GATE_PGROUP_DIR")
         if gdir:
             with open(os.path.join(gdir, str(p.pid)), "w"):
@@ -140,23 +140,26 @@ class Row:
         return p
 
     def stop(self):
-        if self.pg is None:
+        """Kill the group `make debug` started, and reap its leader (a zombie leader makes killpg fail with EPERM)."""
+        if self.proc is None:
             return
-        for sig, wait in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 1.0)):
-            try:
-                os.killpg(self.pg, sig)
-            except ProcessLookupError:
-                break
-            end = time.time() + wait
-            while time.time() < end and subprocess.run(["pgrep", "-g", str(self.pg)], capture_output=True).returncode == 0:
-                time.sleep(0.1)
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+            self.proc.wait(timeout=5)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)  # QEMU, if it outlived make
+        except ProcessLookupError:
+            pass
+        self.proc.wait()
         gdir = os.environ.get("GATE_PGROUP_DIR")
         if gdir:
             try:
-                os.unlink(os.path.join(gdir, str(self.pg)))
+                os.unlink(os.path.join(gdir, str(self.proc.pid)))
             except FileNotFoundError:
                 pass
-        self.pg = None
+        self.proc = None
 
     def debugger(self, cmd, commands_, timeout=120):
         """Run the debugger in batch mode; its output, or None when it did not finish."""
