@@ -1247,5 +1247,6 @@ pub(crate) fn inspect_build(
 pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
     let g = TREE.lock_irqsave();
     let Some(ids) = g.as_ref() else { return 0 };
-    azos_usb::listing::refresh(w, ids, &LISTER.lock_irqsave())
+    let lister = LISTER.lock_irqsave();
+    azos_usb::listing::refresh(w, ids, &lister)
 }
