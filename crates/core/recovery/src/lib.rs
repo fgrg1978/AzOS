@@ -18,7 +18,7 @@
 //! * `reboot`, `shutdown`: the two exits, both checked against WRITE on the `power` endpoint.
 //!
 //! Marked **(c), not recovery**: `wcet` and `bench`, typed by hand on this
-//! console (no script drives them since the end-to-end harness went, 2026-10-24).
+//! console and left out of `help`.
 //!
 //! Besides the console loop the crate holds two things ring 3 and the boot
 //! also use: the family bodies behind the typed syscalls (`families`) and the
@@ -164,8 +164,6 @@ fn cmd_help() {
     azos_drv_sys::kconsoleln!("  config [list|get|set|save|defaults] - persistent config");
     azos_drv_sys::kconsoleln!("  ifconfig          - network interface info");
     azos_drv_sys::kconsoleln!("  dhcp              - DHCP client (acquire IP)");
-    azos_drv_sys::kconsoleln!("  wcet [reset|jitter|check] - WCET report (bench tooling)");
-    azos_drv_sys::kconsoleln!("  bench [subsystem|all] [iters] - microbenches (bench tooling)");
     azos_drv_sys::kconsoleln!("  shutdown          - shutdown system");
     azos_drv_sys::kconsoleln!("  reboot            - reboot system");
 }
