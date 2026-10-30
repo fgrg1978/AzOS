@@ -84,6 +84,7 @@ ROLES = {
         "aarch64_fp_free_check.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
         "arch_layout_lint.py", "boot_seq_lint.baseline", "boot_seq_lint.py",
         "check_livepatch_layout.py", "check_make_help.sh", "check_neverallow.py", "check_presets.py",
+        "mmio_accessors.py", "mmio_accessors.tsv",
         "chip_source_check.py", "claims_check.sh", "doc_lint.py", "elf_page_perms.py", "kconfig_lint.py",
         "lx_license_lint.py", "out_dir_lint.py", "req_trace.py", "size_budget.py", "size_budget.tsv",
         "spdx_headers.py", "stack_chain.py", "stack_frames.py", "tcb_check.sh", "tools_layout.py",
@@ -106,7 +107,7 @@ ROLES = {
     ],
     "dev": [
         "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
-        "ota_send.py", "perfetto_export.py", "qemu.sh", "run_guest.sh",
+        "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh",
         "test_farm.py", "tftp_serve.py", "worktree_seed.py",
     ],
     "lib": ["azos_tools.py", "out_dir.py"],

@@ -25510,10 +25510,7 @@ par -s -h "supply chain: reproducible build" repro_row
 # build` would, from a config of its own ($AZOS_OUT/build/preset-<cell>.config),
 # so the rows are serial and come last. PRESET_BOOT_LIMIT is the seconds a cell
 # has to reach its prompt (default 240).
-hvf_host() { # this host can run an aarch64 guest under HVF
-    [ "$(uname -sm)" = "Darwin arm64" ] && [ "$(sysctl -n kern.hv_support 2>/dev/null)" = 1 ] \
-        && qemu-system-aarch64 -accel help 2>/dev/null | grep -qx hvf
-}
+hvf_host() { "$REPO_ROOT/tools/dev/qemu_hvf.sh"; }
 preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64> [accelerator, default tcg]
     local preset="$1" isa="$2" accel="${3:-tcg}" label="preset boot: $1 $2" status
     [ "$accel" = tcg ] || label="$label ($accel)"
@@ -25591,8 +25588,7 @@ for pb_preset in generic robot server gateway iot_hmi desktop firmware wearable 
         par -s "preset boot: $pb_preset $pb_isa" preset_boot_row "$pb_preset" "$pb_isa"
     done
 done
-# `make qemu` under HVF, its default on Apple silicon; `hvf` alone, so a QEMU that
-# cannot use it fails the row instead of falling back to TCG.
+# `make qemu` under HVF, its default on Apple silicon.
 for pb_preset in generic robot; do
     par -s "preset boot: $pb_preset aarch64 (hvf)" preset_boot_row "$pb_preset" aarch64 hvf
 done
