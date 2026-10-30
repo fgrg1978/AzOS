@@ -56,6 +56,7 @@ pub mod khost;
 pub mod vdso_notify;
 pub mod ushell;
 // The Linux personality's translation (Kconfig `LINUX_ABI`).
+#[cfg(feature = "linux-abi")]
 pub mod linux;
 pub mod foreign;
 /// D6: `SYS_INVOKE`, the operations on a handle.

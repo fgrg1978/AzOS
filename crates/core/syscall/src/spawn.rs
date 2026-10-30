@@ -477,21 +477,24 @@ pub fn spawn_path_ex(
     // the stack and the descriptors.
     // A task hosted by the ring-3 runtime (Kconfig LINUX_RUNTIME) keeps that
     // state in its own memory and has no entry in the kernel's.
-    if child.is_hosted() {
-        #[cfg(feature = "spawn-log")]
-        azos_drv_sys::kprintln!(
-            "[SPAWN] tid={} {} hosted by the ring-3 runtime (entry in {:#x}..{:#x})",
-            tid, plan.profile.image,
-            azos_sched::foreign::RUNTIME_BASE, azos_sched::foreign::RUNTIME_LIMIT,
-        );
-    } else if child.is_linux() {
-        if !crate::linux::proc_init(tid, plan.topology_key, path) {
-            azos_drv_sys::kwarn!(
-                "[SPAWN] REFUSED: {} -- every Linux personality slot is in use",
-                plan.profile.image,
+    #[cfg(feature = "linux-abi")]
+    {
+        if child.is_hosted() {
+            #[cfg(feature = "spawn-log")]
+            azos_drv_sys::kprintln!(
+                "[SPAWN] tid={} {} hosted by the ring-3 runtime (entry in {:#x}..{:#x})",
+                tid, plan.profile.image,
+                azos_sched::foreign::RUNTIME_BASE, azos_sched::foreign::RUNTIME_LIMIT,
             );
-            let _ = azos_sched::spawn::spawn_abort(child);
-            return SpawnEx::Failed(azos_abi::error::Errno::ENOMEM.to_syscall_ret());
+        } else if child.is_linux() {
+            if !crate::linux::proc_init(tid, plan.topology_key, path) {
+                azos_drv_sys::kwarn!(
+                    "[SPAWN] REFUSED: {} -- every Linux personality slot is in use",
+                    plan.profile.image,
+                );
+                let _ = azos_sched::spawn::spawn_abort(child);
+                return SpawnEx::Failed(azos_abi::error::Errno::ENOMEM.to_syscall_ret());
+            }
         }
     }
     if !before_release(&mut child) {
@@ -502,14 +505,17 @@ pub fn spawn_path_ex(
     }
     // A Linux child the hook gave no stack (a plain `SYS_SPAWN_EX`): argv is
     // the image's name, no environment, the console on 0, 1 and 2.
-    if child.is_linux() && !child.linux_stack_written() {
-        let mut argv = [0u8; 16];
-        let name = plan.profile.image.as_bytes();
-        let n = name.len().min(argv.len() - 1);
-        argv[..n].copy_from_slice(&name[..n]);
-        if !child.write_linux_stack(&argv[..n + 1], 1, &[], 0, &crate::linux::random16()) {
-            let _ = azos_sched::spawn::spawn_abort(child);
-            return SpawnEx::Failed(azos_abi::error::Errno::ENOMEM.to_syscall_ret());
+    #[cfg(feature = "linux-abi")]
+    {
+        if child.is_linux() && !child.linux_stack_written() {
+            let mut argv = [0u8; 16];
+            let name = plan.profile.image.as_bytes();
+            let n = name.len().min(argv.len() - 1);
+            argv[..n].copy_from_slice(&name[..n]);
+            if !child.write_linux_stack(&argv[..n + 1], 1, &[], 0, &crate::linux::random16()) {
+                let _ = azos_sched::spawn::spawn_abort(child);
+                return SpawnEx::Failed(azos_abi::error::Errno::ENOMEM.to_syscall_ret());
+            }
         }
     }
     if !azos_sched::spawn::spawn_release(child) {

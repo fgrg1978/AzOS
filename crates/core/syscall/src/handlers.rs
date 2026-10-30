@@ -183,6 +183,7 @@ fn note_denial_recorded(tid: u32) {
 }
 
 /// Was the last recorded capability denial task `tid`'s? Clears the mark.
+#[cfg(feature = "linux-abi")]
 pub(crate) fn take_denial_recorded_for(tid: u32) -> bool {
     LAST_DENIAL_RECORDED_TID
         .compare_exchange(tid, 0, core::sync::atomic::Ordering::Relaxed, core::sync::atomic::Ordering::Relaxed)
@@ -1167,6 +1168,7 @@ pub(crate) fn record_exec_refused_recorded(action_code: u8, digest_head: u32) ->
 
 /// After an `execve`'s commit: the current task slot's endpoint resolve cache
 /// (Kconfig `IPC_RESOLVE_CACHE`) is the old image's, and goes.
+#[cfg(feature = "linux-abi")]
 pub(crate) fn exec_forget_resolves() {
     azos_ipc::endpoint::resolve_cache::clear_task(azos_sched::current_task_tid());
 }
@@ -1181,6 +1183,7 @@ pub(crate) fn exec_forget_resolves() {
 ///
 /// `Err(Ending)` when the process is ending (or another of its threads is
 /// already exec'ing). A process with no threads pays one load.
+#[cfg(feature = "linux-abi")]
 pub(crate) fn exec_end_other_threads() -> Result<(), azos_sched::scheduler::ExecDethreadError> {
     let n = azos_sched::scheduler::exec_end_other_threads()?;
     if n != 0 {
@@ -1497,6 +1500,7 @@ fn grant_opened_file(fd: i64, perms: azos_abi::cap::CapPerms) -> i64 {
 /// opened beneath is the held tree capability that covers the path with the
 /// rights the flags need; a path no held tree covers is refused (recorded),
 /// as an open through a handle the task does not hold would be. Ring 3 only.
+#[cfg(feature = "linux-abi")]
 pub(crate) fn file_open_typed_kpath(path: &[u8], flags: u64) -> i64 {
     use azos_abi::error::Errno;
     let perms = match file_perms_for_flags(flags) {
@@ -1535,6 +1539,7 @@ pub(crate) fn file_open_typed_kpath(path: &[u8], flags: u64) -> i64 {
 /// `path` without its first `skip` components (and the slashes before the
 /// rest): the part of an absolute path that lies below a directory `skip`
 /// components deep.
+#[cfg(feature = "linux-abi")]
 fn rel_below(path: &[u8], skip: usize) -> &[u8] {
     let mut rest = path;
     for _ in 0..skip {
@@ -1549,6 +1554,7 @@ fn rel_below(path: &[u8], skip: usize) -> &[u8] {
 /// The descriptor a `Cap<File>` the caller holds names, checked
 /// and recorded as the typed calls check it (no right needed: the
 /// personality reads its size and moves its offset).
+#[cfg(feature = "linux-abi")]
 pub(crate) fn file_desc_of(cap_raw: u64) -> Result<u64, i64> {
     file_fd_for(cap_raw, azos_abi::cap::CapPerms::NONE, crate::invoke::class_op(azos_abi::cap::ty::FILE, azos_abi::invoke::CLASS_READ))
 }
@@ -1602,6 +1608,7 @@ pub fn sys_file_write_typed(cap_raw: u64, buf: u64, count: u64) -> i64 {
 /// personality's `writev` gather, K2): the same `WRITE` check and the same
 /// containment refusal as [`sys_file_write_typed`] from ring 3, then ONE
 /// `write` of all of it (one hold of the description's position lock).
+#[cfg(feature = "linux-abi")]
 pub(crate) fn file_write_typed_kbuf(cap_raw: u64, src: &[u8]) -> i64 {
     match file_fd_for(cap_raw, azos_abi::cap::CapPerms::WRITE, azos_abi::invoke::NODE_WRITE) {
         Ok(fd) => {
@@ -1614,6 +1621,7 @@ pub(crate) fn file_write_typed_kbuf(cap_raw: u64, src: &[u8]) -> i64 {
 
 /// The typed file read into a kernel buffer (the Linux `readv` scatter
 /// source, K2): the `READ` check of [`sys_file_read_typed`], ONE `read`.
+#[cfg(feature = "linux-abi")]
 pub(crate) fn file_read_typed_kbuf(cap_raw: u64, dst: &mut [u8]) -> i64 {
     match file_fd_for(cap_raw, azos_abi::cap::CapPerms::READ, azos_abi::invoke::NODE_READ) {
         Ok(fd) => match file_ops() { Some(o) => o.read(fd as i32, dst), None => -1 },

@@ -183,6 +183,7 @@ impl ArchFrame for TrapFrame {
     /// Only the foreign-ABI work: Linux signal delivery is not here yet (the
     /// `signal::Context` is aarch64-shaped), and a foreign trap is only ever
     /// left pending by a syscall's dispatch.
+    #[cfg(feature = "linux-abi")]
     #[inline(never)]
     fn deliver_work(&mut self, from_syscall: bool) {
         if from_syscall {
@@ -299,12 +300,14 @@ fn native_syscall<const FAST: bool>(frame: &mut TrapFrame) -> u64 {
 /// `azos_abi::foreign::ForeignFrame::gpr` index of each of the trap frame's
 /// registers (`gpr` order, rax..r15 without rsp), in the hardware's
 /// encoding order the ABI documents.
+#[cfg(feature = "linux-abi")]
 const FOREIGN_GPR: [(usize, usize); gpr::COUNT] = [
     (gpr::RAX, 0), (gpr::RCX, 1), (gpr::RDX, 2), (gpr::RBX, 3), (gpr::RBP, 5), (gpr::RSI, 6),
     (gpr::RDI, 7), (gpr::R8, 8), (gpr::R9, 9), (gpr::R10, 10), (gpr::R11, 11), (gpr::R12, 12),
     (gpr::R13, 13), (gpr::R14, 14), (gpr::R15, 15),
 ];
 /// The foreign frame's index of rsp.
+#[cfg(feature = "linux-abi")]
 const FOREIGN_RSP: usize = 4;
 
 /// D6, the foreign-ABI family (`azos_abi::foreign`): finish a trap the current
@@ -314,6 +317,7 @@ const FOREIGN_RSP: usize = 4;
 /// `rsp`. A `SYS_FOREIGN_RESUME` restores the registers of the frame it
 /// names. Only the arithmetic flags and the direction flag come from a user
 /// frame (`FLAGS_USER_MASK`): IF, TF, IOPL and the rest stay the kernel's.
+#[cfg(feature = "linux-abi")]
 #[inline(never)]
 fn foreign_return(frame: &mut TrapFrame) {
     use azos_abi::foreign::{ForeignFrame, FLAGS_USER_MASK};

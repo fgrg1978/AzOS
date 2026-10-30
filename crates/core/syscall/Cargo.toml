@@ -64,6 +64,9 @@ energy = ["azos_sched/energy"]
 # ktest builds: the IPC fast path's per-slot hit counters, which only the
 # ktests read (`fastpath::hits_of`).
 ktest = []
+# Kernel feature `linux-abi` (Kconfig LINUX_ABI): `src/linux.rs`, the Linux personality's
+# translation, and the spawn paths that start a Linux task.
+linux-abi = []
 # Canary: a forked Linux child is also granted `/fat` read-write,
 # which its row does not declare. The gate's fork row must fail with it.
 linux-abi-fork-canary = []

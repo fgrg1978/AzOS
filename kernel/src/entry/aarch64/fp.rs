@@ -205,6 +205,7 @@ pub fn snapshot_current() -> FpState {
 
 /// Wave 13 (signal frames): [`snapshot_current`], or `None` when the
 /// current task has no FP state at all (never used the file since its exec).
+#[cfg(feature = "linux-abi")]
 pub fn snapshot_current_if_used() -> Option<FpState> {
     let _m = IrqMask::new();
     let (area, tid) = current_area()?;

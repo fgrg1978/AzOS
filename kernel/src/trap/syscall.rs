@@ -84,8 +84,11 @@ pub fn enter<S: SyscallServices<F>, F: Frame, const FAST: bool>(frame: &mut F) -
         S::census_exit();
         return S::exec_enter(frame, ctx);
     }
-    if S::return_work_pending() {
-        S::return_work(frame);
+    #[cfg(feature = "linux-abi")]
+    {
+        if S::return_work_pending() {
+            S::return_work(frame);
+        }
     }
     S::census_exit();
     0

@@ -483,6 +483,12 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             // Linux binary reads. One under the in-kernel personality has its
             // descriptors and working directory put in the personality's
             // table. A native one gets the startup block alone.
+            let write_native = |child: &mut azos_sched::spawn::SpawnPrepared| {
+                child.write_startup(azos_abi::ushell::STARTUP_BLOCK_SIZE + al + el + cwd.len() + 32, &mut |base, out| {
+                    layout_startup(out, base, &argv[..al], argc as u32, &env[..el], req.envc, cwd, flags, &fds)
+                })
+            };
+            #[cfg(feature = "linux-abi")]
             let wrote = if child.is_hosted() {
                 write_hosted(
                     child, &argv[..al], argc, &env[..el], req.envc as usize, cwd, flags, &fds,
@@ -494,10 +500,10 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                         &crate::linux::random16(),
                     )
             } else {
-                child.write_startup(azos_abi::ushell::STARTUP_BLOCK_SIZE + al + el + cwd.len() + 32, &mut |base, out| {
-                    layout_startup(out, base, &argv[..al], argc as u32, &env[..el], req.envc, cwd, flags, &fds)
-                })
+                write_native(child)
             };
+            #[cfg(not(feature = "linux-abi"))]
+            let wrote = write_native(child);
             if !wrote {
                 refusal.set(err(Errno::ENOMEM));
                 return false;
@@ -543,6 +549,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
 /// initial stack below it. `a1` carries the block's address at the runtime's
 /// first instruction, where the runtime builds its descriptor table from it
 /// (`azos_linux_rt::Runtime::init`); the Linux program never sees it.
+#[cfg(feature = "linux-abi")]
 #[allow(clippy::too_many_arguments)]
 fn write_hosted(
     child: &mut azos_sched::spawn::SpawnPrepared,

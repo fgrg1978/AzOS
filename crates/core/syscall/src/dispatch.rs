@@ -710,7 +710,8 @@ pub fn syscall_dispatch_checked(
     crate::kheap_census::enter(num);
     let r = match entry {
         SyscallEntry::Done(r) => r,
-        SyscallEntry::Linux if azos_limits::LINUX_ABI => {
+        #[cfg(feature = "linux-abi")]
+        SyscallEntry::Linux => {
             // A thread that registered a runtime entry has its foreign trap
             // reflected at the return to user mode (`azos_sched::foreign`);
             // anything else is a Linux task of the in-kernel personality.
@@ -741,6 +742,7 @@ pub fn syscall_dispatch_out(
 /// for a native call that reached the Linux personality's entry because its
 /// filter word was 0 (no task current, or a word not published). Not on the
 /// native path.
+#[cfg(feature = "linux-abi")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch_native_checked(
     num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64,

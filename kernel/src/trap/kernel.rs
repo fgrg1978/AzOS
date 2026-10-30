@@ -51,6 +51,7 @@ pub(crate) trait ArchFrame: Frame + Sized {
     /// at its return to user mode, from a syscall or from an interrupt, and
     /// finish a foreign-ABI trap its dispatch left pending. Out of line and not
     /// cold: a cold callee reshapes the hot caller.
+    #[cfg(feature = "linux-abi")]
     fn deliver_work(&mut self, from_syscall: bool);
     /// Does `cpu`'s interrupt stack still carry its magic word (riscv64's)?
     fn irq_stack_intact(_cpu: usize) -> bool {
@@ -180,11 +181,13 @@ impl<F: ArchFrame> SyscallServices<F> for Kernel {
         frame.exec_enter(&ctx)
     }
 
+    #[cfg(feature = "linux-abi")]
     #[inline(always)]
     fn return_work_pending() -> bool {
-        azos_limits::LINUX_ABI && azos_sched::scheduler::signal::work_pending()
+        azos_sched::scheduler::signal::work_pending()
     }
 
+    #[cfg(feature = "linux-abi")]
     #[inline(never)]
     fn return_work(frame: &mut F) {
         frame.deliver_work(true);
@@ -465,6 +468,7 @@ impl<F: ArchFrame> IrqServices<F> for Kernel {
         azos_sched::reap_stamped_sleepers();
     }
 
+    #[cfg_attr(not(feature = "linux-abi"), allow(unused_variables))]
     fn user_return_work(frame: &mut F) {
         // A task told to stop (`SYS_ALERT` force) that computes
         // without a syscall ends here, a safe point: it holds no kernel lock
@@ -473,8 +477,11 @@ impl<F: ArchFrame> IrqServices<F> for Kernel {
             azos_sched::scheduler::exit_if_forced();
         }
         // A Linux task computing without a syscall takes its signal here.
-        if azos_limits::LINUX_ABI && azos_sched::scheduler::signal::work_pending() {
-            frame.deliver_work(false);
+        #[cfg(feature = "linux-abi")]
+        {
+            if azos_sched::scheduler::signal::work_pending() {
+                frame.deliver_work(false);
+            }
         }
     }
 
@@ -510,8 +517,11 @@ impl Kernel {
         if !azos_drv_sys::uart::irq_handler() {
             return (false, false);
         }
-        if azos_drv_sys::uart::take_intr() && azos_limits::LINUX_ABI {
-            azos_syscall::linux::console_signal(2);
+        #[cfg(feature = "linux-abi")]
+        {
+            if azos_drv_sys::uart::take_intr() {
+                azos_syscall::linux::console_signal(2);
+            }
         }
         let tid = azos_drv_sys::uart::rx_waiter_take();
         let woke = tid != 0

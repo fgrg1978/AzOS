@@ -365,6 +365,9 @@ kcall-atomic-canary = ["azos_syscall/kcall-atomic-canary"]
 threads-private-table-canary = ["azos_sched/threads-private-table-canary"]
 natfork-template-tamper-canary = ["azos_syscall/natfork-template-tamper-canary"]
 natfork-template-noseal-canary = ["azos_syscall/natfork-template-noseal-canary"]
+# Kconfig LINUX_ABI: the Linux personality (`azos_syscall::linux`) and everything that
+# calls into it is compiled; without it none of that is in the image.
+linux-abi = ["azos_syscall/linux-abi"]
 # Kconfig LINUX_RUNTIME: the ring-3 runtime that hosts the Linux personality
 # (`userspace/lib/linux_rt`, built to $AZOS_OUT/build/linux_rt.elf) is embedded in the
 # kernel image and mapped into every Linux process at spawn.

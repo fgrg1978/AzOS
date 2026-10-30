@@ -192,7 +192,9 @@ pub trait SyscallServices<F: Frame> {
     /// Build the new image's frame; the address-space word to install.
     fn exec_enter(frame: &mut F, ctx: Self::Exec) -> u64;
     /// Signal or foreign-trap work pending for the return to user mode?
+    #[cfg(feature = "linux-abi")]
     fn return_work_pending() -> bool;
+    #[cfg(feature = "linux-abi")]
     fn return_work(frame: &mut F);
 }
 

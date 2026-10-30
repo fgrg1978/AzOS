@@ -279,6 +279,7 @@ impl ArchFrame for TrapFrame {
         ctx.satp
     }
 
+    #[cfg(feature = "linux-abi")]
     #[inline(never)]
     fn deliver_work(&mut self, from_syscall: bool) {
         signal_return(self, from_syscall);
@@ -360,7 +361,7 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame) -> usize {
 ///
 /// Only `x1..x31` and `sepc` are written back: `sstatus` never comes from a
 /// user frame, so a sigreturn cannot raise its own privilege.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", feature = "linux-abi"))]
 #[inline(never)]
 pub(crate) fn signal_return(frame: &mut trap::TrapFrame, from_syscall: bool) {
     use azos_linux_abi::signal as sig;
@@ -406,7 +407,7 @@ pub(crate) fn signal_return(frame: &mut trap::TrapFrame, from_syscall: bool) {
 /// restores the registers of the frame it names. Only `x1..x31` and `sepc`
 /// are written: `sstatus` never comes from a user frame.
 // arch-only: riscv64's trap frame; aarch64 and x86_64 build theirs in kernel/src/entry/.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", feature = "linux-abi"))]
 #[inline(never)]
 fn foreign_return(frame: &mut trap::TrapFrame) -> bool {
     use azos_abi::foreign::ForeignFrame;

@@ -351,6 +351,7 @@ impl ArchFrame for TrapFrame {
         ctx.satp
     }
 
+    #[cfg(feature = "linux-abi")]
     #[inline(never)]
     fn deliver_work(&mut self, from_syscall: bool) {
         signal_return(self, from_syscall);
@@ -580,6 +581,7 @@ fn print_trap(frame: &TrapFrame, what: &str) {
 /// `SPSR_EL1` keeps its EL0t mode and interrupt mask; only N, Z, C and V may
 /// come from a user frame, so a sigreturn cannot enter EL1 or mask its own
 /// interrupts. The FP file moves through the lazy save area.
+#[cfg(feature = "linux-abi")]
 #[inline(never)]
 fn signal_return(frame: &mut TrapFrame, from_syscall: bool) {
     use azos_linux_abi::signal as sig;
@@ -630,6 +632,7 @@ fn signal_return(frame: &mut TrapFrame, from_syscall: bool) {
 /// entry with the frame's address in `x0` and `sp`. A `SYS_FOREIGN_RESUME`
 /// restores the registers of the frame it names. `SPSR_EL1` keeps its EL0t
 /// mode and interrupt mask; only N, Z, C and V come from a user frame.
+#[cfg(feature = "linux-abi")]
 #[inline(never)]
 fn foreign_return(frame: &mut TrapFrame) -> bool {
     use azos_abi::foreign::{ForeignFrame, FLAGS_USER_MASK};

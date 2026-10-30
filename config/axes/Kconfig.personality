@@ -146,6 +146,7 @@ config BUSYBOX
       tools/build/third_party_fetch.sh busybox for the source tree).
 
 config LINUX_ABI
+    # cargo-feature: linux-abi
     bool "Linux syscall personality (static Linux binaries)"
     default n
     help

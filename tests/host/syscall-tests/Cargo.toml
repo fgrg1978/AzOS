@@ -12,10 +12,13 @@ description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded
 # The syscall sources pulled in below name the robot crates through the shims
 # in `shims/` (robot, imu, gps); `use-robot` is what makes them do so
 # instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).
-default = ["use-robot", "virtio-snd"]
+default = ["use-robot", "virtio-snd", "linux-abi"]
 use-robot = []
 # Mirrors azos_syscall's `virtio-snd`: the pulled-in khost.rs serves the `sound` key.
 virtio-snd = []
+# Mirrors azos_syscall's `linux-abi` (the pulled-in handlers.rs): on, because
+# the tests drive the file helpers the Linux personality calls.
+linux-abi = []
 # Mirrors azos_syscall's `energy` (the pulled-in power.rs): off here, so the
 # energy policy operations answer -ENOSYS (the host has no governor).
 energy = []
