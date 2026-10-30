@@ -1850,7 +1850,9 @@ mod kmutex_ktests {
     fn pi_owner(_: usize) {
         let g = PM.lock();
         let _ = task_create_affinity("kmx-rt-waiter", pi_waiter, 0, RT_WAITER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || PI_CONTENDING.load(Ordering::SeqCst));
+        // The flag precedes the waiter's `lock`: only its queueing is the contention.
+        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || PI_CONTENDING.load(Ordering::SeqCst)
+            && PM.wait_node().has_waiters());
         // No yield: only the boost lets this fair task run past the RT
         // waiter's band; sample the best priority seen while holding.
         let me = current_task_tid();
@@ -1918,7 +1920,8 @@ mod kmutex_ktests {
         azos_sched::scheduler::ktest_flag_ring3(azos_sched::classes::current());
         let g = RM.lock();
         let _ = task_create_affinity("kmx-r3-waiter", r_waiter, 0, RT_WAITER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || R_CONTENDING.load(Ordering::SeqCst));
+        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || R_CONTENDING.load(Ordering::SeqCst)
+            && RM.wait_node().has_waiters());
         let me = current_task_tid();
         let mut acc = 0u32;
         for i in 0..HOLD_WORK {
