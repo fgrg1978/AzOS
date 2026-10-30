@@ -602,7 +602,7 @@ fn rp_server_next(_: usize, h: i64, r: [u64; 7], at: bool) {
 /// of its own.
 fn rp_server_parks() -> bool {
     let (slot, tid) = (RP_SRV_SLOT.load(Ordering::Acquire), RP_SRV_TID.load(Ordering::Acquire));
-    let parked = azos_syscall::sleep::wait_until_ms(azos_limits::KTEST_LATE_TIMEOUT_MS as u64 / 2, 1, || {
+    let parked = crate::ktest::until(|| {
         azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
     });
     if !parked {
@@ -750,7 +750,7 @@ fn pk_server(k: usize) {
     }
     if k == DRAIN {
         // Until the caller is parked with its point, then end unanswered.
-        let pre = azos_syscall::sleep::wait_until_ms(PARK_MS, 5, || held(p.cli_slot.load(Ordering::Acquire)));
+        let pre = crate::ktest::until(|| held(p.cli_slot.load(Ordering::Acquire)));
         p.pre.store(pre, Ordering::Release);
         p.srv_done.store(true, Ordering::Release);
         return;
@@ -767,7 +767,10 @@ fn pk_client(k: usize) {
         return;
     };
     // Let the server park in its accept.
-    sleep_ms(20);
+    let (slot, tid) = (p.srv_slot.load(Ordering::Acquire), p.srv_tid.load(Ordering::Acquire));
+    crate::ktest::until(|| {
+        azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
+    });
     if k == DRAIN {
         rcall(SYS_IPC_FAST_CALL_EP, [cap, 0x800, 0, 0, 0, 0], pk_back, k);
     } else {
@@ -802,16 +805,17 @@ fn pk_park(k: usize) -> Result<(), &'static str> {
     if p.cli_rc.load(Ordering::Acquire) != 0x801 {
         return Err("the first call came back with a wrong answer");
     }
-    // The server parks as it answers: a short bound, so a canary that keeps
-    // it from leaving a point fails here and not at the late timeout.
-    if !azos_syscall::sleep::wait_until_ms(PARK_MS, 5, || held(p.srv_slot.load(Ordering::Acquire))) {
+    // The server parks as it answers. Its point is written before it reads as
+    // parked, so parked without one is the verdict, at once.
+    let (slot, tid) = (p.srv_slot.load(Ordering::Acquire), p.srv_tid.load(Ordering::Acquire));
+    crate::ktest::until(|| {
+        held(slot) || azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
+    });
+    if !held(slot) {
         return Err("the server never parked with a resume point");
     }
     Ok(())
 }
-
-/// How long a scenario waits for its side to park with a point.
-const PARK_MS: u64 = 2000;
 
 /// The parked side came back where it blocked, its point spent.
 fn pk_back_where_it_blocked(k: usize) -> Result<(), &'static str> {
