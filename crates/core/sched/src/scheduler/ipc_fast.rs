@@ -229,6 +229,15 @@ pub fn ipc_fast_resume_held(ti: usize) -> bool {
     ti < MAX_TASKS && unsafe { core::ptr::read_volatile(&task_ref(ti).fast_resume_pc) } != 0
 }
 
+/// Is the task in slot `ti` blocked, on anything? For the ktests: a task's
+/// point is written before it reads as blocked.
+pub fn ipc_fast_blocked(ti: usize) -> bool {
+    use crate::task::sched_word::{pack, STATE_MASK};
+    // SAFETY: `ti < MAX_TASKS`; a word-sized read for a test's verdict.
+    ti < MAX_TASKS
+        && unsafe { task_ref(ti).state_word.load(Ordering::Acquire) } & STATE_MASK == pack(TaskState::Blocked)
+}
+
 /// Take the resume point of the task in slot `ti`, which the caller claimed
 /// with [`ipc_fast_claim`], which found it saved (interrupts off, the task in
 /// no queue, no hart saving its registers): the point

@@ -750,8 +750,10 @@ fn pk_server(k: usize) {
     }
     if k == DRAIN {
         // Until the caller is parked with its point, then end unanswered.
-        let pre = crate::ktest::until(|| held(p.cli_slot.load(Ordering::Acquire)));
-        p.pre.store(pre, Ordering::Release);
+        // Its call is here, so blocked is blocked in that call: the verdict, at once.
+        let slot = p.cli_slot.load(Ordering::Acquire);
+        crate::ktest::until(|| held(slot) || azos_sched::scheduler::ipc_fast_blocked(slot));
+        p.pre.store(held(slot), Ordering::Release);
         p.srv_done.store(true, Ordering::Release);
         return;
     }
