@@ -48,7 +48,7 @@ const PERIOD_US: u64 = 10_000;
 /// with the line masked by that delivery, which no canary can tell from the
 /// rule.
 const WORK_US: u64 = 6_000;
-/// How long the storm lasts.
+/// How long the storm lasts at least: it goes on until a budget has run out.
 const RUN_MS: u64 = 120;
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -215,11 +215,14 @@ azos_ktest::ktest_late! {
         azos_sched::task_create_affinity("irq-device", device, 0, DEVICE_PRIO, cpu as i8);
 
         // Let the storm run, then stop both.
+        let t0 = azos_drv_sys::timebase::now();
         azos_syscall::sleep::sleep_ms(RUN_MS);
+        crate::ktest::until(|| irq_bind::irq_overruns() != overruns0);
         STOP.store(true, Ordering::Release);
         crate::ktest::wait("the storm's tasks never ended", || {
             HANDLER_DONE.load(Ordering::Acquire) && DEVICE_DONE.load(Ordering::Acquire)
         })?;
+        let ran_us = azos_drv_sys::timebase::now().wrapping_sub(t0) / us_to_ticks(1);
 
         let (top, late, handled) = (
             TOP_HALVES.load(Ordering::Relaxed),
@@ -245,7 +248,7 @@ azos_ktest::ktest_late! {
         // two periods more for the edges. A handler without the reservation
         // does a job every `WORK_US` plus the device's pause.
         let jobs_per_period = BUDGET_US / WORK_US + 1;
-        if u64::from(handled) > (RUN_MS * 1000 / PERIOD_US + 2) * jobs_per_period {
+        if u64::from(handled) > (ran_us / PERIOD_US + 2) * jobs_per_period {
             return Err("the handler ran past its reservation");
         }
         #[cfg(feature = "decisions")]
