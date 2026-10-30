@@ -984,10 +984,6 @@ pub fn timer_init() {
     // tick by up to 16x.
     let live_hz = arch_timer::freq_hz();
     kprintln!("[TIMER] CNTFRQ_EL0: {} Hz (platform const: {} Hz)", live_hz, hw::TIMER_FREQ);
-    if live_hz != hw::TIMER_FREQ {
-        azos_drv_sys::kwarn!("[TIMER] WARN: live CNTFRQ_EL0 disagrees with platform::hw::TIMER_FREQ \
-                   — using the live value for the tick period");
-    }
 
     // Publish for `handle_irq` (`kernel/src/entry/aarch64/trap.rs`) to convert
     // CNTVCT_EL0 ticks to milliseconds on every timer IRQ — see

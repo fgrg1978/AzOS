@@ -25610,13 +25610,16 @@ hvf_writeback_canary_row() {
     par_ready
     qemu-system-aarch64 -M virt,gic-version=3 -accel hvf -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$kimg" -append "canary=mmio-writeback" </dev/null >"$hlog" 2>&1 &
-    local pid=$! i=0
-    while [ "$i" -lt 120 ] && kill -0 "$pid" 2>/dev/null; do
-        grep -aqF "[GIC] distributor" "$hlog" 2>/dev/null && break
-        i=$((i + 1)); sleep 0.5
-    done
-    local alive=0; kill -0 "$pid" 2>/dev/null && alive=1
-    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    local pid=$! i=0 alive=0
+    # Redirected: bash reports the aborted job on its own stderr when it reaps it.
+    {
+        while [ "$i" -lt 120 ] && kill -0 "$pid"; do
+            grep -aqF "[GIC] distributor" "$hlog" && break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -0 "$pid" && alive=1
+        kill -9 "$pid"; wait "$pid"
+    } 2>/dev/null
     if [ "$alive" = 1 ] || ! grep -aqF "[GIC] MMIO mapped" "$hlog" || grep -aqF "[GIC] distributor" "$hlog"; then
         bad; echo "      under HVF the post-indexed GIC store did not end the VM at the GIC"
         tr -d '\r' <"$hlog" | tail -3 | sed 's/^/        /'; echo "      log kept: $hlog"; rm -f "$kimg"; return
