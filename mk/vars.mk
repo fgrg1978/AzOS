@@ -368,7 +368,8 @@ AARCH64_PAGE_SIZE ?= 4096
 # and their digests are what this Makefile always built. A board's images:
 #   make AARCH64_USER_KCONFIG=build/rpi5.config userspace-aarch64
 AARCH64_USER_KCONFIG ?= $(OUT_BUILD)/aarch64$(if $(filter 16384,$(AARCH64_PAGE_SIZE)),-16k,$(if $(filter 65536,$(AARCH64_PAGE_SIZE)),-64k)).config
-AARCH64_USER_ISA := $(if $(wildcard $(AARCH64_USER_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml $(AARCH64_USER_KCONFIG)))
+# Read when a recipe runs, as RV_USER_ISA is.
+AARCH64_USER_ISA = $(if $(wildcard $(AARCH64_USER_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml $(AARCH64_USER_KCONFIG)))
 ifeq ($(AARCH64_PAGE_SIZE),4096)
 AARCH64_PG_SUFFIX :=
 AARCH64_PG_LINK   :=
@@ -790,6 +791,7 @@ IMAGE_ELFS_AARCH64 := HELLO.ELF=$(HELLO_ELF_AARCH64) SYSTEST.ELF=$(SYSTEST_ELF_A
               LXSRV.ELF=$(LXSRV_ELF_AARCH64) \
               LXHELLO.ELF=$(LXHELLO_ELF_AARCH64)
 IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
+AARCH64_USER_ELFS := $(foreach e,$(IMAGE_ELFS_AARCH64),$(word 2,$(subst =, ,$(e))))
 
 # ── aarch64 kernel (QEMU virt) ───────────────────────────────────────────────
 # The aarch64 kernel `make build` builds with an aarch64 configuration (the

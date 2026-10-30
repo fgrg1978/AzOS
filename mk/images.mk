@@ -1053,7 +1053,8 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 #   TOPO_SELECT            the selection the kernel that boots the files was
 #                          built with beyond its .config (tools/build/kconfig_to_cargo.py
 #                          --select; default none)
-#   TOPO_KCONFIG_RISCV64   its .config (default $(QEMU_DEV_KCONFIG))
+#   TOPO_KCONFIG_RISCV64   its .config (default $(RV_USER_KCONFIG): the development
+#                          configuration with a riscv64 .config, else a riscv64 expansion)
 #   TOPO_KCONFIG_AARCH64   (default $(AARCH64_KCONFIG))
 #   TOPO_KCONFIG_X86_64    (default $(X86_64_KCONFIG))
 #   TOPO_ISA               topo-volume's ISA (riscv64 | aarch64 | x86_64)
@@ -1069,7 +1070,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 # TOPOLOGY_SOURCE_SIGNED_OR_BUILTIN a signed default topology on the shared
 # disk would replace each of them.
 TOPO_SELECT ?=
-TOPO_KCONFIG_RISCV64 ?= $(QEMU_DEV_KCONFIG)
+TOPO_KCONFIG_RISCV64 ?= $(RV_USER_KCONFIG)
 TOPO_KCONFIG_AARCH64 ?= $(AARCH64_KCONFIG)
 TOPO_KCONFIG_X86_64 ?= $(X86_64_KCONFIG)
 TOPO_ISA ?= riscv64

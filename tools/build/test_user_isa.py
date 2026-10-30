@@ -7,8 +7,10 @@
   2. for every (ISA of .config) x (ARCH of `make check`), the configuration each
      SDK image of `make -n check` is built from is an expansion of that image's
      ISA;
-  3. a qemu-dev.config that an earlier make left for another ISA does not give
-     the riscv64 images the flags of the configuration they are built with.
+  3. the signed topology of each ISA is emitted from a configuration of that ISA;
+  4. an expansion (qemu-dev.config, aarch64.config, x86_64.config) that an earlier make
+     left for another ISA's configuration does not give the images the flags of the
+     configuration they are built with.
 
     python3 tools/build/test_user_isa.py      (exit 0 = all pass)
 """
@@ -19,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402
@@ -77,24 +80,47 @@ def image_configs_follow_arch(tmp):
                   + ("each from its own ISA" if not wrong else "; ".join(sorted(set(wrong)))))
 
 
-def stale_development_config(tmp):
-    out = OUT
-    rv, x86 = os.path.join(tmp, "rv.config"), os.path.join(tmp, "x86.config")
-    make([f"KCONFIG_CONFIG={rv}", "defconfig-generic-sbc-riscv64-dev+qemu+linux+gui"], out)
-    with open(rv, "a") as f:
-        f.write("CONFIG_RV_ZBB_REQUIRE=y\n")
-    subprocess.run([sys.executable, "-m", "olddefconfig"], cwd=REPO, env=dict(os.environ, KCONFIG_CONFIG=rv),
+def topology_follows_its_isa(tmp):
+    for cfg_isa in ISAS:
+        cfg = os.path.join(tmp, cfg_isa + "-topo.config")
+        with open(cfg, "w") as f:
+            f.write(f"CONFIG_ARCH_{cfg_isa.upper()}=y\n")
+        for isa in ISAS:
+            want = ("qemu-dev.config" if cfg_isa == "riscv64" else "riscv64.config") if isa == "riscv64" else isa + ".config"
+            r = make(["-n", f"KCONFIG_CONFIG={cfg}", os.path.join(OUT, "build", "topo", isa, "CAPS.TOM")], OUT)
+            kconfigs = set(re.findall(r"build/([\w-]+\.config)\b", r.stdout))
+            check(want in kconfigs and (isa != "riscv64" or kconfigs == {want}),
+                  f".config {cfg_isa}, topology of {isa}: emitted from {want} ({', '.join(sorted(kconfigs))})")
+
+
+def stale_expansion(tmp, isa, option, target, elf, wanted):
+    """An expansion an earlier make left for the configuration of another ISA is not read for the
+    flags of the configuration the images are built with: `option` sets a flag only this one has."""
+    cfg, other = os.path.join(tmp, isa + ".config"), os.path.join(tmp, "other.config")
+    make([f"KCONFIG_CONFIG={cfg}", f"defconfig-generic-sbc-{isa}-dev+qemu+linux+gui"], OUT)
+    with open(cfg, "a") as f:
+        f.write(option + "\n")
+    subprocess.run([sys.executable, "-m", "olddefconfig"], cwd=REPO, env=dict(os.environ, KCONFIG_CONFIG=cfg),
                    capture_output=True, check=True)
-    make([f"KCONFIG_CONFIG={x86}", "defconfig-generic-sbc-x86_64-dev+qemu+linux+gui"], out)
-    dev = os.path.join(OUT, "build", "qemu-dev.config")
-    make([f"KCONFIG_CONFIG={rv}", dev], out)
-    make([f"KCONFIG_CONFIG={x86}", dev], out)
-    left = "CONFIG_ARCH_X86_64=y" in open(dev).read()
-    r = make([f"KCONFIG_CONFIG={rv}", "USPACE_BUILD=echo", os.path.join(OUT, "build", "logd.elf")], out)
-    flags = set(re.findall(r"rustflags=\[[^\]]*\]", r.stdout))
-    check(left, "the earlier make left an x86_64 qemu-dev.config")
-    check(len(flags) == 1 and "target-feature=+zbb" in "".join(flags),
-          f"the riscv64 images of a RV_ZBB_REQUIRE configuration are built with +zbb ({' '.join(sorted(flags)) or 'no flags seen'})")
+    other_isa = "x86_64" if isa != "x86_64" else "aarch64"
+    make([f"KCONFIG_CONFIG={other}", f"defconfig-generic-sbc-{other_isa}-dev+qemu+linux+gui"], OUT)
+    exp = os.path.join(OUT, "build", target)
+    make([f"KCONFIG_CONFIG={cfg}", exp], OUT)
+    time.sleep(1.1)  # make 3.81 compares whole seconds: a stamp or expansion made in the same second as the one it replaces is not newer
+    make([f"KCONFIG_CONFIG={other}", exp], OUT)
+    time.sleep(1.1)
+    r = make([f"KCONFIG_CONFIG={cfg}", "USPACE_BUILD=echo", os.path.join(OUT, "build", elf)], OUT)
+    flags = " ".join(sorted(set(re.findall(r"^--target .*rustflags=(\[.*\])$", r.stdout, re.M))))
+    check(wanted(flags), f"{isa}: the images of a {option} configuration are built with its flags ({flags or 'no flags seen'})")
+
+
+def stale_expansions(tmp):
+    stale_expansion(tmp, "riscv64", "CONFIG_RV_ZBB_REQUIRE=y", "qemu-dev.config", "logd.elf",
+                    lambda f: "target-feature=+zbb" in f)
+    stale_expansion(tmp, "aarch64", "CONFIG_A64_BTI_NEVER=y", "aarch64.config", "aarch64/logd.elf",
+                    lambda f: 'branch-protection=pac-ret"' in f and "bti" not in f)
+    stale_expansion(tmp, "x86_64", "CONFIG_X86_CET_IBT_NEVER=y", "x86_64.config", "x86_64/logd.elf",
+                    lambda f: "azos_stable_metadata" in f and "cf-protection" not in f)
 
 
 def main():
@@ -102,7 +128,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         sdk_cargo_refuses(tmp)
         image_configs_follow_arch(tmp)
-        stale_development_config(tmp)
+        topology_follows_its_isa(tmp)
+        stale_expansions(tmp)
     print("test_user_isa:", "FAIL" if FAILS else "ok")
     return 1 if FAILS else 0
 

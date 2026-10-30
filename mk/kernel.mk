@@ -322,6 +322,7 @@ $(QEMU_DEV_KCONFIG): $(KCONFIG_CONFIG) FORCE
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
 
 $(RV_USER_ELFS): | $(RV_USER_KCONFIG)
+$(AARCH64_USER_ELFS): | $(AARCH64_USER_KCONFIG)
 
 # The riscv64 user images' configuration when .config selects another ISA
 # (`make check ARCH=riscv64`): the shipped default, as the other ISAs'.
