@@ -23246,39 +23246,48 @@ tracectl start sched
         # child may create). Skipped, and said so, when the toolchain (zig) or the
         # BusyBox tree (tools/build/third_party_fetch.sh busybox) is not on this host.
         if lx_busybox_ready && { [ "$ush_isa" != x86 ] || [ "${LX_BUSYBOX_X86:-}" = yes ]; }; then
-            # x86_64's ring-3 runtime answers no `poll` (7) yet: ash's `read`
-            # builtin waits in it, and the main row counts its subshells' lines
-            # with `read` (no `wc` or `cat` there: no `execve` (59) either), so
-            # that row and its two canaries are skipped and say so (owner
-            # 2026-10-24; poll is a front of its own). The fork canary would not
-            # discriminate there anyway: its plant is the in-kernel
-            # personality's fork_child_setup, which the runtime's fork does not
-            # take.
+            # x86_64 hosts BusyBox in the ring-3 runtime, which has no `execve`
+            # (59): an applet that is not run in the shell's own process (`wc`,
+            # `cat`) cannot start, so its script counts with the shell's `read`
+            # builtin, which waits in `poll` (7); the kernel's refusal line is
+            # the in-kernel personality's, and the runtime's child answers the
+            # denial itself ("Permission denied"). The fork canary has no
+            # plant there: it flips the in-kernel personality's
+            # fork_child_setup, which the runtime's fork does not take.
             if [ "$ush_isa" = x86 ]; then
-                for bb_k in "linux: busybox sh" "linux: busybox fork canary" "linux: busybox shared offset canary"; do
-                    printf "  %-26s%s\n" "$bb_k ($ush_isa)..." "SKIP (the x86_64 ring-3 runtime answers no poll: ash's read builtin waits in it)"
-                done
+                bb_pipe_cmd="busybox sh -c 'x=\$(echo pipe-in | { read l; echo \${#l}; }); echo wc-out=\$x'"
+                bb_pipe_marker="wc-out=7"
+                bb_count_cmd="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; c=; while read l; do c=\$c.; done < /tmp/BBF; echo bbfork-\${#c}'"
+                bb_refused=""
             else
-                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP" par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
-                    "busybox sh -c 'echo bb-sh-ok; ls /fat'
-busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
+                bb_pipe_cmd="busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'"
+                bb_pipe_marker="wc-out=8"
+                bb_count_cmd="busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'"
+                bb_refused="openat refused by the capability check: -EACCES (recorded)"
+            fi
+            USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP" par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
+                "busybox sh -c 'echo bb-sh-ok; ls /fat'
+$bb_pipe_cmd
 busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
-busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'
+$bb_count_cmd
 echo after-bb \$?" 240 \
-                    "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "wc-out=8" \
-                    "openat refused by the capability check: -EACCES (recorded)" \
-                    "Permission denied" "sub-rc=1" "bbfork-2" "after-bb 0"
+                "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "$bb_pipe_marker" \
+                ${bb_refused:+"$bb_refused"} \
+                "Permission denied" "sub-rc=1" "bbfork-2" "after-bb 0"
+            if [ "$ush_isa" = x86 ]; then
+                printf "  %-26s%s\n" "linux: busybox fork canary ($ush_isa)..." "SKIP (its plant is the in-kernel personality's fork_child_setup, which the runtime's fork does not take)"
+            else
                 USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
                     "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
                     "Permission denied" "sub-rc=1"
-                # Two subshells write one inherited descriptor in turn (the main
-                # row's `bbfork-2`: two lines). Canary
-                # `fd-private-offset-busybox-canary` (private offsets): the second
-                # subshell overwrites the first's line, one line is left.
-                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
-                    "busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'" 150 \
-                    "bbfork-2"
             fi
+            # Two subshells write one inherited descriptor in turn (the main
+            # row's `bbfork-2`: two lines). Canary
+            # `fd-private-offset-busybox-canary` (private offsets): the second
+            # subshell overwrites the first's line, one line is left.
+            USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
+                "$bb_count_cmd" 150 \
+                "bbfork-2"
             # Two Linux tasks on one hart: BusyBox sleeping in the background
             # while LXHELLO (which starts with TPIDR_EL0 = 0) runs, then
             # BusyBox forks again. Its thread pointer must be its own when it
@@ -23424,7 +23433,7 @@ echo after-prod \$?" 150 \
             if [ "$ush_isa" = x86 ] && [ "$LX_BUSYBOX_STATE" = yes ]; then
                 printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (${LX_BUSYBOX_X86_WHY:-})"
             else
-                printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (no zig or no fetched BusyBox tree: tools/build/third_party_fetch.sh busybox; see make busybox)"
+                printf "  %-26s%s\n" "linux: busybox sh ($ush_isa)..." "SKIP (no current BusyBox cache and no zig or no fetched tree to build it: make busybox, tools/build/third_party_fetch.sh busybox)"
             fi
         fi
     done
@@ -23788,15 +23797,15 @@ x=con; echo bb\$x-ok
             if [ "$con_isa" = x86 ] && [ "$LX_BUSYBOX_STATE" = yes ]; then
                 printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (${LX_BUSYBOX_X86_WHY:-})"
             else
-                printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no zig or no fetched BusyBox tree: tools/build/third_party_fetch.sh busybox; see make busybox)"
+                printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (no current BusyBox cache and no zig or no fetched tree to build it: make busybox, tools/build/third_party_fetch.sh busybox)"
             fi
             continue
         fi
-        # x86_64's ring-3 runtime answers no `poll` (7) yet, and ash's
-        # interactive line editor waits in it: the shell reads EOF and exits,
-        # and the console falls back (owner 2026-10-24: skipped until poll).
+        # x86_64's ring-3 runtime reads end of file from the console
+        # (`Kind::Console` in userspace/lib/linux_rt), so a shell started as the
+        # console program reads EOF and exits, and the console falls back.
         if [ "$con_isa" = x86 ]; then
-            printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (the x86_64 ring-3 runtime answers no poll: ash's line editor waits in it)"
+            printf "  %-26s%s\n" "console: busybox sh ($con_isa)..." "SKIP (the x86_64 ring-3 runtime offers a hosted task no console input: it reads end of file)"
             continue
         fi
         case "$con_isa" in
@@ -24350,6 +24359,91 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     if ci_row_begin "generic: aarch64 builds, no robot crate"; then generic_build_row arm
     else rm -f "$GENERIC_DIR/aarch64-unknown-none-softfloat/release/kernel"; fi; ci_row_end
     par "generic: aarch64 boots, abitest" generic_boot_row arm
+
+    # ── Linux off: no Linux code, no BusyBox (three ISAs) ──────────────────
+    #
+    # The Linux personality and everything that serves it (the runtime, the
+    # drivers, BusyBox) are Kconfig options and compile out entirely: a
+    # configuration with LINUX_ABI off links no `linux` or `lx` symbol and its
+    # system volume carries no BusyBox. Built from the gate's own defconfig of
+    # the ISA with LINUX_ABI turned off (x86_64: LINUX_RUNTIME goes with it),
+    # in a target dir of its own; `llvm-nm -C` is read for the symbols and
+    # `make -n build` for the volume `make build` would make.
+    # Both queries are first run on the Linux-ON kernel and on a configuration
+    # with BUSYBOX, and must FIND something there, so a query gone blind cannot
+    # pass. The canary row is the same check on the Linux-ON kernel: it must
+    # report the symbols (the row's PASS = the check flagged them).
+    lo_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+    lo_re='(^|[^[:alnum:]])(linux|lx)([^[:alnum:]]|_|$)|_(linux|lx)_|azos_(linux|lx)'
+    lo_kernel() { # lo_kernel <rv|arm|x86> <on|off> -> prints the kernel ELF
+        local isa="$1" mode="$2" dir base cfg tmp elf
+        dir="$AZOS_OUT/target/linux-$mode-$isa"
+        case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/${GATE_DEFC_X86}.config" ;; esac
+        mkdir -p "$dir"; cfg="$dir/linux.config"; tmp="$(mktemp -d)"
+        if [ "$mode" = off ]; then
+            sed -e 's/^CONFIG_LINUX_ABI=y$/# CONFIG_LINUX_ABI is not set/' -e '/^CONFIG_LINUX_RUNTIME=y$/d' "$base" >"$tmp/c.config"
+        else
+            cp "$base" "$tmp/c.config"
+            [ "$isa" = x86 ] && printf 'CONFIG_LINUX_RUNTIME=y\n' >>"$tmp/c.config"
+        fi
+        (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) || { rm -rf "$tmp"; return; }
+        if [ "$mode" = off ]; then grep -q '^CONFIG_LINUX_ABI=y$' "$tmp/c.config" && { rm -rf "$tmp"; return; }
+        else grep -q '^CONFIG_LINUX_ABI=y$' "$tmp/c.config" || { rm -rf "$tmp"; return; }; fi
+        cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
+        rm -rf "$tmp"
+        case "$isa" in
+        x86)
+            elf="$dir/kernel-x86_64.elf"; rm -f "$elf"
+            make x86_64 X86_64_DEFCONFIG="$cfg" X86_64_KCONFIG="$dir/x86_64.config" X86_64_TARGET_DIR="$dir" \
+                X86_64_IMG="$elf" X86_64_SELECT="qemu" >"$dir/build.log" 2>&1 ;;
+        rv)
+            elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
+            KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --select qemu >"$dir/build.log" 2>&1 ;;
+        *)
+            elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; rm -f "$elf"
+            env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
+                "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel \
+                --select qemu --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' >"$dir/build.log" 2>&1 ;;
+        esac
+        [ -f "$elf" ] && printf '%s\n' "$elf"
+    }
+    lo_volume() { # lo_volume <config>: the system volume `make build` names for it, or nothing
+        make -n build KCONFIG_CONFIG="$1" 2>/dev/null | sed -n 's/^echo "  volume  \(.*\)"$/\1/p' | sed -n 1p
+    }
+    linux_off_row() { # linux_off_row <label> <rv|arm|x86> <PASS|FAIL>: FAIL is the canary (the Linux-ON kernel)
+        local label="$1" isa="$2" expect="$3" elf on_elf n vol bb_cfg dir
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        on_elf="$(lo_kernel "$isa" on)"
+        [ -n "$on_elf" ] || { bad; echo "      the Linux-ON kernel did not build (log: $AZOS_OUT/target/linux-on-$isa/build.log)"; return; }
+        n="$("$lo_nm" -C "$on_elf" 2>/dev/null | grep -cE "$lo_re")"
+        if [ "${n:-0}" -eq 0 ]; then bad; echo "      llvm-nm found no Linux symbol in the Linux-ON kernel ($on_elf): the check is blind"; return; fi
+        dir="$AZOS_OUT/target/linux-on-$isa"
+        bb_cfg="$dir/busybox.config"
+        sed -e 's/^# CONFIG_USERSPACE_GPL is not set$/CONFIG_USERSPACE_GPL=y/' "$dir/linux.config" >"$bb_cfg"
+        (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg" python3 -m olddefconfig >/dev/null 2>&1)
+        sed -i '' -e 's/^# CONFIG_BUSYBOX is not set$/CONFIG_BUSYBOX=y/' "$bb_cfg"
+        (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg" python3 -m olddefconfig >/dev/null 2>&1)
+        case "$(lo_volume "$bb_cfg")" in *busybox*) ;; *) bad; echo "      make build names no BusyBox volume for a configuration with BUSYBOX: the volume query is blind"; return ;; esac
+        if [ "$expect" = FAIL ]; then
+            # The canary: the Linux-ON kernel carries the symbols the check looks for.
+            ok; return
+        fi
+        elf="$(lo_kernel "$isa" off)"
+        [ -n "$elf" ] || { bad; echo "      the Linux-OFF kernel did not build (log: $AZOS_OUT/target/linux-off-$isa/build.log)"; return; }
+        n="$("$lo_nm" -C "$elf" 2>/dev/null | grep -cE "$lo_re")"
+        if [ "${n:-0}" -ne 0 ]; then
+            bad; echo "      FAIL: $n Linux symbols in the Linux-OFF kernel ($elf):"
+            "$lo_nm" -C "$elf" | grep -E "$lo_re" | sed -n 1,5p | sed 's/^/        /'; return
+        fi
+        vol="$(lo_volume "$AZOS_OUT/target/linux-off-$isa/linux.config")"
+        case "$vol" in ''|*busybox*) bad; echo "      the Linux-OFF system volume is '$vol'"; return ;; esac
+        ok
+    }
+    for lo_isa in rv arm x86; do
+        host_job linux_off_row "linux off: no Linux code, no BusyBox ($lo_isa)" "$lo_isa" PASS
+        host_job linux_off_row "linux off: canary, the Linux kernel is flagged ($lo_isa)" "$lo_isa" FAIL
+    done
 
     # ── Energy-aware scheduling, stages E0-E2 (wave 12 ENERGY) ─────
     #
