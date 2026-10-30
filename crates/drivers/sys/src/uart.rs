@@ -1283,7 +1283,7 @@ pub fn getc() -> u8 {
 /// output, and a spliced line makes a passing run look like a failing one."
 ///
 /// It happened: gate 114's `seccomp: replaced image is refused` went red with
-/// the refusal having worked, because the shell's `robot> ` prompt — written
+/// the refusal having worked, because the recovery console's prompt — written
 /// through here — landed between `REFUSED` and `: /fat/UHELLO.ELF`, and the
 /// row's fixed-string marker spans exactly that point.
 ///

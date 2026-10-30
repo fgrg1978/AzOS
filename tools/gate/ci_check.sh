@@ -57,6 +57,9 @@ export CI_REAL_CARGO="$CARGO"
 CARGO="$CI_CHECK_DIR/gate/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
 REPO_ROOT="$(cd "$CI_CHECK_DIR/.." && pwd)"
+# The recovery console's prompt is `<preset>> ` (azos_limits::PRESET_PROMPT), and
+# the cell a row boots decides the preset: any preset's prompt matches.
+RECOVERY_PROMPT_RE="($(cd "$REPO_ROOT/config/fragments/presets" && printf '%s\n' *.frag | sed 's/\.frag$//' | paste -sd'|' -))> "
 # Every build output and every image QEMU loads lives under $AZOS_OUT, never in
 # the checkout (tools/lib/out_dir.py computes the default). Each cargo call names its
 # own target dir (tools/gate/ci_cargo.py defaults it), so a caller's is dropped.
@@ -2507,7 +2510,7 @@ dry_boot_row() {
 # ── The console answers a command (shell input path) ─────────────────────────
 #
 # Every other row only reads what the kernel prints. This one TYPES: it boots,
-# waits for the shell's `robot> ` prompt, writes `help\r` to QEMU's stdin (the
+# waits for the recovery console's prompt, writes `help\r` to QEMU's stdin (the
 # `-nographic` serial), and requires a line only `cmd_help` prints.
 #
 # Why it exists: on riscv64 the shell never answered. `kernel_main`'s driver-
@@ -2557,7 +2560,7 @@ shell_help_row() { # shell_help_row <label> <isa: rv|arm>
         # Send once the prompt is up, then again every 5 s (at most 3 sends):
         # a line typed while the shell is between prompts is still read, so a
         # resend only covers a byte lost before the shell existed.
-        if grep -aqF "robot> " "$log" 2>/dev/null && [ "$sent" -lt 3 ]; then
+        if grep -aqE "$RECOVERY_PROMPT_RE" "$log" 2>/dev/null && [ "$sent" -lt 3 ]; then
             if [ "$sent" -eq 0 ] || [ "$((i - last_send))" -ge 10 ]; then
                 if [ "$isa" = rv ]; then
                     ( printf 'help\r' >&9 ) 2>/dev/null
@@ -2578,13 +2581,13 @@ shell_help_row() { # shell_help_row <label> <isa: rv|arm>
                grep -a -m3 -iE "panic|\[FATAL\]|AARCH64-TRAP" "$log" | tr -d '\r' | sed 's/^/      /'
                echo "      full log kept: $log" ;;
         *) bad
-           if ! grep -aqF "robot> " "$log"; then
-               echo "      no 'robot> ' prompt within 60 s (verdict: ${verdict:-timeout})"
+           if ! grep -aqE "$RECOVERY_PROMPT_RE" "$log"; then
+               echo "      no recovery prompt within 60 s (verdict: ${verdict:-timeout})"
            else
                # `readline` echoes each accepted byte, so an echoed `help`
                # separates "input never reached the shell" from "the command
                # ran and its output was lost".
-               if tr -d '\r' <"$log" | qgrep -aqE '(^|robot> )help$'; then e=yes; else e=no; fi
+               if tr -d '\r' <"$log" | qgrep -aqE "(^|$RECOVERY_PROMPT_RE)help$"; then e=yes; else e=no; fi
                echo "      prompt seen, sent 'help\\r' ${sent}x, no help table; echoed: $e"
            fi
            tail -3 "$log" | tr -d '\r' | sed 's/^/      /'
@@ -3723,7 +3726,7 @@ raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
                      && { done=1; break; } ;;
             reboot) [ "$(grep -acF 'AzOS Rust kernel booted! (aarch64)' "$log")" -ge 2 ] && { done=1; break; } ;;
         esac
-        if [ "$sent" -eq 0 ] && grep -aqF "robot> " "$log" 2>/dev/null; then
+        if [ "$sent" -eq 0 ] && grep -aqE "$RECOVERY_PROMPT_RE" "$log" 2>/dev/null; then
             local cmd=help
             [ "$mode" = reboot ] && cmd=reboot
             if [ "$mode" != usb ]; then
@@ -3759,10 +3762,10 @@ raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
              "[SMP] hart 1 online" "[SMP] hart 2 online" "[SMP] hart 3 online" \
              "[SMP] hart 3 took" \
              "[SGI] sent by hart 0, received by hart 1: count=" \
-             "[HWBUS] watchdog@7e100000 dt:brcm,bcm2835-pm base=0x3f100000" \
-             "robot> "; do
+             "[HWBUS] watchdog@7e100000 dt:brcm,bcm2835-pm base=0x3f100000"; do
         grep -aqF "$m" "$log" 2>/dev/null || missing="$missing\n        $m"
     done
+    grep -aqE "$RECOVERY_PROMPT_RE" "$log" 2>/dev/null || missing="$missing\n        the recovery prompt"
     grep -aqE "\[TIMER\] ticks: 5 in [0-9]+ ms" "$log" 2>/dev/null || missing="$missing\n        [TIMER] ticks: 5 in N ms"
     case "$mode" in
         shell) grep -aqF "help              - this message" "$log" || missing="$missing\n        the help table (typed help)" ;;
@@ -8897,7 +8900,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
         grep -a "AARCH64-GRANULE" "$log" | tr -d '\r' | sed 's|^|        |'
         echo "      log kept: $log"; return
     fi
-    if ! grep -aq "robot> " "$log"; then
+    if ! grep -aqE "$RECOVERY_PROMPT_RE" "$log"; then
         bad; echo "      the shell prompt never appeared — log kept: $log"; return
     fi
     if ! grep -aqE "\[ABITEST\] [0-9]+ check\(s\) run" "$log"; then
@@ -12043,10 +12046,10 @@ else
     # ── Console lockdown: moved (wave 11) ─────────────────────
     #
     # The rows `lockdown: console unseeded` (rv, arm) booted a lockdown kernel
-    # and typed `flight arm` / `pm suspend` at the kernel console's `robot> `.
+    # and typed `flight arm` / `pm suspend` at the kernel console's prompt.
     # Owner decision: under CONFIG_CONSOLE_LOCKDOWN the kernel
     # console task is not created at all (`[CONSOLE] lockdown: no kernel
-    # console task`), so there is no `robot> ` to type at and those rows encoded
+    # console task`), so there is no recovery prompt to type at and those rows encoded
     # the old behaviour. Their successor is `sh: lockdown` in the user-shell
     # block: the user shell is the only console, and it may not start the
     # privileged power tool.
@@ -15163,7 +15166,7 @@ PY
     # virtio-input on x86_64 (Kconfig DRV_VIRTIO_INPUT): the kernel shell reads a
     # `-device virtio-keyboard-device` (a virtio-mmio v1 transport on microvm)
     # with the serial stdin silent. A typist in the background waits for the
-    # `robot> ` prompt and types `help` through the QEMU monitor
+    # recovery prompt and types `help` through the QEMU monitor
     # (tools/gate/qemu_sendkeys.py); the row needs the help text itself, which the
     # typed echo does not contain. The canary kernel drops every key byte at the
     # driver: the boot line is there, the shell never sees the command.
@@ -15177,7 +15180,7 @@ PY
         rm -f "$sock"; : >"$log"
         par_ready
         ( local t=0
-          while [ "$t" -lt 120 ] && ! grep -aqF 'robot> ' "$log" 2>/dev/null; do t=$((t + 1)); sleep 0.5; done
+          while [ "$t" -lt 120 ] && ! grep -aqE "$RECOVERY_PROMPT_RE" "$log" 2>/dev/null; do t=$((t + 1)); sleep 0.5; done
           sleep 1
           python3 tools/gate/qemu_sendkeys.py "$sock" "help" ) >/dev/null 2>&1 &
         local typist=$!
@@ -19281,7 +19284,7 @@ PYEOF
     }
     par "nvme: dma limit (riscv64)" nvme_dma_row riscv64
     # dev_boot_shell <pid> <log> <seconds> <reset-bre> <provoke> <then> <stop-ere>:
-    # drive the boot's shell (`robot> `) through fd 9, the write end of the
+    # drive the boot's shell (its prompt) through fd 9, the write end of the
     # fifo QEMU reads: before the reset line, type `provoke` (every 8 s; `-`
     # types nothing) so the device has commands to time out; after it, type
     # `then` (every 8 s), until `stop` is printed after the reset line, the
@@ -19295,7 +19298,7 @@ PYEOF
             sed -n "/$reset_re/,\$p" "$log" 2>/dev/null | grep -aqE "$stop" && break
             cmd="$provoke"
             grep -aq "$reset_re" "$log" 2>/dev/null && cmd="$then"
-            if [ "$cmd" != - ] && [ $((i - last)) -ge 16 ] && grep -aqF "robot> " "$log" 2>/dev/null; then
+            if [ "$cmd" != - ] && [ $((i - last)) -ge 16 ] && grep -aqE "$RECOVERY_PROMPT_RE" "$log" 2>/dev/null; then
                 ( for ((k = 0; k < ${#cmd}; k++)); do printf '%s' "${cmd:k:1}"; sleep 0.05; done; printf '\r' ) >&9 2>/dev/null
                 last=$i
             fi
@@ -22055,7 +22058,7 @@ PYEOF
     # building `<features>`; `USH_QEMU_EXTRA` is added to the QEMU command
     # line (`-icount shift=0,sleep=off` for a row whose verdict must not
     # depend on the host's load); rows that are about exclusive console input
-    # forbid the recovery console's `robot> ` prompt, which only the kernel
+    # forbid the recovery console's prompt, which only the kernel
     # shell prints; `USH_IMG=<path>` boots that volume, kept after the row (a
     # pristine copy when it does not exist yet), so a second row boots what
     # the first left on it; `USH_DISK=lxabi` boots `build/disk-lxabi.img` /
@@ -22233,7 +22236,11 @@ PYEOF
         exec 8>&-
         rm -f "$fifo" "$kimg" "$kimg.features" "$vsock"; [ -n "${USH_IMG:-}" ] || rm -f "$img"
         local missing="" m
-        for m in "$@"; do grep -aqF -- "$m" "$log" || missing="$missing [$m]"; done
+        # A marker starting with `re:` is an extended regular expression.
+        for m in "$@"; do
+            if [ "${m#re:}" != "$m" ]; then grep -aqE -- "${m#re:}" "$log" || missing="$missing [${m#re:}]"
+            else grep -aqF -- "$m" "$log" || missing="$missing [$m]"; fi
+        done
         local forbidden=""
         if [ -n "${USH_FORBID:-}" ] && grep -aqE -- "$USH_FORBID" "$log"; then
             forbidden="$(grep -aE -m1 -- "$USH_FORBID" "$log" | tr -d '\r')"
@@ -22354,7 +22361,7 @@ PY
         rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
         printf 'stick says hello\n' >"$dir/files/HELLO.TXT"
         if ! usb_stick_image "$stick" "$dir/files/HELLO.TXT"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
-        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|volume not mounted' \
+        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|volume not mounted" \
             ushell_row "$1" "$2" "$3" PASS \
             "#wait \[USB\] volume (mounted|not mounted)
 cat /usb/HELLO.TXT" 150 \
@@ -22372,7 +22379,7 @@ cat /usb/HELLO.TXT" 150 \
         rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
         printf 'stick says hello\n' >"$dir/files/HELLO.TXT"
         if ! usb_stick_image "$stick" "$dir/files/HELLO.TXT"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
-        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|eject FAILED|volume not mounted' \
+        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|eject FAILED|volume not mounted" \
             ushell_row "$1" "$3" "$4" PASS \
             "#wait \[USB\] volume (mounted|not mounted)
 echo usb-row-crash-42 > /fat/CRASH.LOG
@@ -22409,7 +22416,7 @@ PY
         rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
         python3 -c "import random; random.seed(0x55534250); open('$dir/files/ACME.PKG', 'wb').write(random.randbytes(4096))"
         if ! usb_stick_image "$stick" "$dir/files/ACME.PKG"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
-        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|cannot open the package file|volume not mounted' \
+        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|cannot open the package file|volume not mounted" \
             ushell_row "$1" "$2" "$3" PASS \
             "#wait \[pkgd\] AzOS package installer
 #wait \[USB\] volume (mounted|not mounted)
@@ -22424,7 +22431,7 @@ pkg admit /usb/ACME.PKG" 200 \
         rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
         printf 'stick says hello\n' >"$dir/files/HELLO.TXT"
         if ! usb_stick_image "$stick" "$dir/files/HELLO.TXT"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
-        USH_MON=1 USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID='robot> |PAGE FAULT|volume not mounted' \
+        USH_MON=1 USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|volume not mounted" \
             ushell_row "$1" "$2" "$3" PASS \
             "#wait \[USB\] volume (mounted|not mounted)
 cat /usb/HELLO.TXT
@@ -22447,7 +22454,7 @@ echo after-unplug-ok" 200 \
     done
     for ush_isa in rv arm; do
         ush_feat="qemu"
-        USH_FORBID='robot> ' par_row ushell_row "sh: prompt + exclusive reader ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: prompt + exclusive reader ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "echo sh-echo-ok
 #sleep 12" 120 \
             "[CONSOLE] user shell pending" "has the console" "[sh] AzOS user shell" "sh-echo-ok"
@@ -22458,7 +22465,7 @@ echo after-unplug-ok" 200 \
         # server before the shell that calls them). The canary of the
         # `[compmgr] start SH.ELF` line is `sh: safe mode canary`, which must
         # see it where the boot launcher ignores safe mode.
-        USH_FORBID='robot> ' par_row ushell_row "compmgr: starts the shell session ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "compmgr: starts the shell session ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "echo compmgr-ok
 #sleep 12" 120 \
             "[compmgr] AzOS component manager" "[compmgr] start NAMESD.ELF tid=" "[compmgr] start TERMD.ELF tid=" \
@@ -22468,11 +22475,11 @@ echo after-unplug-ok" 200 \
         # shell's parser byte by byte from the keyboard and ran (the echo of
         # the typed line carries no `argv[`). The canary kernel drops every key
         # byte at the driver: the boot line is there, the command never runs.
-        USH_VKBD=1 USH_FORBID='robot> ' par_row ushell_row "sh: virtio keyboard ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_VKBD=1 USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: virtio keyboard ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "cd /fat
 args vk1 'vk 2'" 120 \
             "[VIRTIO-INPUT] keyboard events by interrupt" "argc=3" "argv[1]=vk1" "argv[2]=vk 2"
-        USH_VKBD=1 USH_FORBID='robot> ' par_row ushell_row "sh: virtio keyboard canary ($ush_isa)" "$ush_isa" "$ush_feat,virtio-input-canary" FAIL \
+        USH_VKBD=1 USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: virtio keyboard canary ($ush_isa)" "$ush_isa" "$ush_feat,virtio-input-canary" FAIL \
             "cd /fat
 args vk1 'vk 2'" 40 \
             "argc=3" "argv[1]=vk1"
@@ -22490,16 +22497,16 @@ args vk1 'vk 2'" 40 \
         # `sound.0`: the same line comes back, the periods having been mixed by
         # the server and played by the device.
         USH_QEMU_EXTRA="-audiodev none,id=a -device virtio-sound-device,audiodev=a" \
-        USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: beep on virtio-sound mmio ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: beep on virtio-sound mmio ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "beep
 #sleep 1" 150 \
             "[VIRTIO-SND] virtio-mmio" "beep: 12 of 12 periods played"
         USH_QEMU_EXTRA="-audiodev none,id=a -device virtio-sound-pci,audiodev=a" \
-        USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: beep on virtio-sound pci ($ush_isa)" "$ush_isa" "$ush_feat,pci" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: beep on virtio-sound pci ($ush_isa)" "$ush_isa" "$ush_feat,pci" PASS \
             "beep
 #sleep 1" 150 \
             "[VIRTIO-SND] virtio-pci" "beep: 12 of 12 periods played"
-        USH_FORBID='robot> ' par_row ushell_row "sh: beep without a device canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: beep without a device canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
             "beep
 #sleep 1" 60 \
             "[VIRTIO-SND] " "beep: 12 of 12 periods played"
@@ -22539,7 +22546,7 @@ args vk1 'vk 2'" 40 \
         else
             ush_in_wait=''; ush_in_end="holder 0 grants 2 sak 1"
         fi
-        USH_VKBD=1 USH_FORBID='robot> |qxinput' par_row ushell_row "input: focus, events, attention key ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_VKBD=1 USH_FORBID="$RECOVERY_PROMPT_RE|qxinput" par_row ushell_row "input: focus, events, attention key ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "cd /fat
 input status
 input watch -n 10 &
@@ -22568,23 +22575,23 @@ input status" 240 \
         # 600 ms one had ended before the second was typed on a loaded host).
         # The canary is the same script with no sound device.
         USH_QEMU_EXTRA="-audiodev none,id=a -device virtio-sound-device,audiodev=a" \
-        USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: two beeps mixed by audiod ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: two beeps mixed by audiod ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "beep 5000 &
 beep 400 &
 #sleep 8" 150 \
             "[audiod] mixer: deadline reservation of " "[audiod] AzOS audio server" "beep: 235 of 235 periods played" "beep: 19 of 19 periods played" \
             "[audiod] playback ended: periods " ", most streams at once 2"
-        USH_FORBID='robot> ' par_row ushell_row "sh: two beeps without a device canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: two beeps without a device canary ($ush_isa)" "$ush_isa" "$ush_feat" FAIL \
             "beep 5000 &
 beep 400 &
 #sleep 2" 60 \
             "beep: 235 of 235 periods played" "beep: 19 of 19 periods played" ", most streams at once 2"
-        USH_FORBID='robot> ' par_row ushell_row "sh: spawn argv/env/cwd ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: spawn argv/env/cwd ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "export FOO=bar
 cd /fat
 args one 'two words'" 120 \
             "argc=3" "argv[0]=args" "argv[2]=two words" "env FOO=bar" "cwd=/fat"
-        USH_FORBID='robot> ' par_row ushell_row "sh: pipeline ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: pipeline ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "echo a b c | wc
 echo one two | cat | wc
 echo piped-ok | cat" 150 \
@@ -22597,18 +22604,18 @@ echo piped-ok | cat" 150 \
         # canary kernel maps the default stack whatever the image asks
         # (`user-stack-request-canary`): MLSRV.ELF dies again, never serves,
         # and the row must not see its line. The static half is `ring-3 stacks`.
-        USH_FORBID='robot> |PAGE FAULT|Killing user task' par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat,use-robot" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat,use-robot" PASS \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 240 \
             "[ML] ring-3 ML service /fat/MLSRV.ELF started" "[infsrv] serving the Infer interface on endpoint.infer" \
             "  TID  PPID PRI S NAME" " S MLSRV.ELF" " TOOLBOX.ELF"
-        USH_FORBID='robot> ' par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 120 \
             "[infsrv] serving the Infer interface on endpoint.infer" " S MLSRV.ELF"
-        USH_FORBID='robot> ' par_row ushell_row "sh: redirect ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: redirect ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "echo hello > /fat/T1.TXT
 args x > /fat/T2.TXT 2>&1
 cat /fat/T2.TXT
@@ -22620,14 +22627,14 @@ cat < /fat/T1.TXT | wc" 150 \
         # and refused any path below the root (the redirect failed with
         # `Io(Write)`); the key is now the path. The typed lines carry none of
         # the counts, so a marker is the file's own bytes read back.
-        USH_FORBID='robot> ' par_row ushell_row "sh: redirect into a FAT subdirectory ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: redirect into a FAT subdirectory ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "mkdir /fat/D1
 echo subdir-ok > /fat/D1/A.TXT
 wc < /fat/D1/A.TXT
 echo ab >> /fat/D1/A.TXT
 wc < /fat/D1/A.TXT" 150 \
             "1 1 10" "2 2 13"
-        USH_FORBID='robot> ' par_row ushell_row "sh: ctrl-c stops a job ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ctrl-c stops a job ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "!spin
 #wait spin: computing
 ^C
@@ -22637,15 +22644,15 @@ echo after-spin \$?
 ^C
 echo after-yes \$?" 180 \
             "stopped by an ancestor" "after-spin 130" "after-yes 130"
-        USH_FORBID='robot> ' par_row ushell_row "sh: kill reaches descendants only ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: kill reaches descendants only ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "kill 1
 kill 2" 120 \
             "no such descendant"
         par_row ushell_row "sh: exit gives the console back ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "spin &
 !exit 0
-#wait robot> " 150 \
-            "die-with-parent" "[CONSOLE] console program /fat/TERMD.ELF gave up: recovery console (tid=" "robot> "
+#wait $RECOVERY_PROMPT_RE" 150 \
+            "die-with-parent" "[CONSOLE] console program /fat/TERMD.ELF gave up: recovery console (tid=" "re:$RECOVERY_PROMPT_RE"
         # USHELL2. ^C on ONE hart: the console's RX interrupt delivers ^C to
         # the foreground job itself (`console_signal`), whatever the
         # priorities. The `[SPAWN][PRIO]` line pins the number the tool
@@ -22656,7 +22663,7 @@ kill 2" 120 \
         # (static ELF, busybox sh, busybox Kconfig row and its canary,
         # pthreads): without it they could never pass, and the Kconfig-row
         # canary passed for that reason instead of its own.
-        USH_SMP=1 USH_FORBID='robot> ' par_row ushell_row "sh: ctrl-c on one hart ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
+        USH_SMP=1 USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ctrl-c on one hart ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
             "!spin
 #wait spin: computing
 ^C
@@ -22671,7 +22678,7 @@ echo after-spin \$?" 120 \
         # kernel has no task freezer); an orderly reboot (the rebooted
         # shell's prompt answers the next line); an orderly power-off ends
         # QEMU.
-        USH_FORBID='robot> |\[AUTHORITY\]' par_row ushell_row "sh: power tool ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|\[AUTHORITY\]" par_row ushell_row "sh: power tool ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "power sched_hz 200
 power sched_hz
 power suspend
@@ -22686,7 +22693,7 @@ echo after-reboot
         # every operation is refused by the capability, recorded (the
         # `[AUTHORITY]` line prints only when the record was handed to the
         # recorder), and does not run.
-        USH_FORBID='robot> |Scheduler rate set|System suspended' par_row ushell_row "sh: power refused without the power right ($ush_isa)" "$ush_isa" "$ush_feat,power-cap-canary" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|Scheduler rate set|System suspended" par_row ushell_row "sh: power refused without the power right ($ush_isa)" "$ush_isa" "$ush_feat,power-cap-canary" PASS \
             "power sched_hz 200
 power suspend" 150 \
             "[AUTHORITY] sched_hz set REFUSED" "[AUTHORITY] pm suspend REFUSED" "(recorded)" \
@@ -22711,7 +22718,7 @@ power suspend" 150 \
             local label="$1" isa="$2" feats="$3"
             local img="$CI_LOG_DIR/ush-poweroff-$isa.img"
             mkdir -p "$CI_LOG_DIR"; rm -f "$img"
-            USH_IMG="$img" USH_FORBID='robot> |\[AUTHORITY\]' \
+            USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE|\[AUTHORITY\]" \
                 ushell_row "$label, boot 1" "$isa" "$feats" PASS \
                 "#wait \[OTA\] Boot marked good
 !echo durable-ok > /fat/DUR.TXT
@@ -22721,13 +22728,13 @@ power suspend" 150 \
             # Boot 2 boots the kernel boot 1 was built and cloned for: after
             # its par_ready a parallel job may not build (`par_shared`).
             local k2="$KERNEL"; [ "$isa" = rv ] || k2="$A64_IMG"
-            USH_KERNEL="$k2" USH_IMG="$img" USH_FORBID='robot> ' ushell_row "$label" "$isa" "$feats" PASS \
+            USH_KERNEL="$k2" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE" ushell_row "$label" "$isa" "$feats" PASS \
                 "wc < /fat/DUR.TXT" 120 \
                 "1 1 11"
             rm -f "$img"
         }
         par_row ush_poweroff_row "sh: power-off keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat"
-        USH_FORBID='robot> |\[AUTHORITY\]' par_row ushell_row "sh: reboot keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|\[AUTHORITY\]" par_row ushell_row "sh: reboot keeps a written file ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "echo durable-ok > /fat/DUR.TXT
 power reboot
 wc < /fat/DUR.TXT" 240 \
@@ -22750,7 +22757,7 @@ wc < /fat/DUR.TXT" 240 \
         # `flight-tool-drivetrain`
         # gives the drivetrain to FLIGHT.ELF (the default topology gives it to
         # the autorun row: one writer per motor).
-        USH_FORBID='robot> |REFUSED|command not found' par_row ushell_row "sh: family tools ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,flight-tool-drivetrain" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|REFUSED|command not found" par_row ushell_row "sh: family tools ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,flight-tool-drivetrain" PASS \
             "flight arm
 flight disarm
 behavior disable 2
@@ -22769,7 +22776,7 @@ ps" 240 \
         # Canary half (`family-cap-canary` leaves each tool's endpoint READ only):
         # every operation refused by the missing right, recorded (the `[AUTHORITY]`
         # line prints only when the record reached the recorder), not run.
-        USH_FORBID='robot> |FLIGHT\] ARMED|CFG\] set by|behavior: L2|ota: active' par_row ushell_row "sh: family tools refused without their capability ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,family-cap-canary" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|FLIGHT\] ARMED|CFG\] set by|behavior: L2|ota: active" par_row ushell_row "sh: family tools refused without their capability ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,family-cap-canary" PASS \
             "flight arm
 behavior disable 2
 config set log_level 2
@@ -22792,8 +22799,8 @@ ota rollback" 150 \
 exit 1
 exit 1
 !exit 1
-#wait robot> " 180 \
-            "exited: restarting" "[compmgr] restart SH.ELF" "[compmgr] give-up TERMD.ELF" "[CONSOLE] console program /fat/TERMD.ELF gave up: recovery console (" "robot> "
+#wait $RECOVERY_PROMPT_RE" 180 \
+            "exited: restarting" "[compmgr] restart SH.ELF" "[compmgr] give-up TERMD.ELF" "[CONSOLE] console program /fat/TERMD.ELF gave up: recovery console (" "re:$RECOVERY_PROMPT_RE"
         # ── The Linux personality (wave 12) ──────────────────────
         # `LXHELLO.ELF` is a static Linux ELF (`userspace/tests/lxhello`, our
         # own C, no C library) run from the shell under its row's
@@ -22810,7 +22817,7 @@ exit 1
         # so the create succeeds and the refusal lines are missing;
         # `linux-abi-tag-canary` never tags the task, so its Linux numbers hit
         # the native table and seccomp kills it at its first call.
-        USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL|SECCOMP' par_row ushell_row "linux: static ELF under the personality ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" PASS \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|lx: .* FAIL|SECCOMP" par_row ushell_row "linux: static ELF under the personality ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" PASS \
             "lxhello one 'two words'
 echo after-lx \$?" 120 \
             "row=LXHELLO.ELF" "lx: hello from a static Linux ELF, argc=3 [lxhello] [one] [two words]" \
@@ -22883,9 +22890,9 @@ cat /fat/RTOUT.TXT"
                   CI_KDEFER=0 AARCH64_CONFIG="$lx_rt_cfg" a64_kbuild "$ush_feat,linux-abi-test,spawn-log" && cp "$A64_IMG" "$lx_rt_k" \
                       && CI_KDEFER=0 AARCH64_CONFIG="$lx_rt_cfg" a64_kbuild "$ush_feat,linux-abi-test,spawn-log,hosted-startup-canary" && cp "$A64_IMG" "$lx_rt_kc"
               fi; then
-            USH_KERNEL="$lx_rt_k" USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL|SECCOMP' par_row ushell_row "linux: hosted by the ring-3 runtime ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" PASS \
+            USH_KERNEL="$lx_rt_k" USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|lx: .* FAIL|SECCOMP" par_row ushell_row "linux: hosted by the ring-3 runtime ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" PASS \
                 "$lx_rt_script" 150 "${lx_rt_markers[@]}"
-            USH_KERNEL="$lx_rt_kc" USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: hosted spawn canary, no startup block ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,hosted-startup-canary" FAIL \
+            USH_KERNEL="$lx_rt_kc" USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: hosted spawn canary, no startup block ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,hosted-startup-canary" FAIL \
                 "$lx_rt_script" 150 "${lx_rt_markers[@]}"
             # The fork child's descriptors and capabilities (wave 13, NATFORK;
             # `crates/core/syscall/src/natfork.rs`) are the hosted fork's now:
@@ -22916,14 +22923,14 @@ cat /fat/RTOUT.TXT"
                     CI_KDEFER=0 AARCH64_CONFIG="$lx_rt_cfg" a64_kbuild "$ush_feat,linux-abi-test,spawn-log,$nfc" && cp "$A64_IMG" "$lx_rt_kn"
                 fi || { printf "  %-26s" "linux: hosted fork canary $nfc ($ush_isa)..."; bad; echo "      the kernel with $nfc did not build"; continue; }
                 if [ "$nfc" = natfork-template-tamper-canary ]; then
-                    USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL|SECCOMP' par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" PASS \
+                    USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|lx: .* FAIL|SECCOMP" par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" PASS \
                         "$lx_rt_script" 150 "${lx_rt_markers[@]}" "capability template failed its seal: dropped, minted again"
                 elif [ "$nfc" = natfork-template-noseal-canary ]; then
                     # Red for its own reason: the template-seeded child's check.
-                    USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID='robot> |SECCOMP' par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" PASS \
+                    USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|SECCOMP" par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" PASS \
                         "$lx_rt_script" 150 "hosted by the ring-3 runtime" "lx: fork shares the file offset ok" "lx: fork child holds only its row FAIL"
                 else
-                    USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" FAIL \
+                    USH_KERNEL="$lx_rt_kn" USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: hosted fork canary $nfc ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,$nfc" FAIL \
                         "$lx_rt_script" 150 "${lx_rt_markers[@]}"
                 fi
             done
@@ -22931,13 +22938,13 @@ cat /fat/RTOUT.TXT"
             printf "  %-26s" "linux: hosted by the ring-3 runtime ($ush_isa)..."
             bad; echo "      the LINUX_RUNTIME kernel did not build"
         fi
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: runtime canary, in-kernel personality ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: runtime canary, in-kernel personality ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log" FAIL \
             "$lx_rt_script" 150 "${lx_rt_markers[@]}"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: caps canary, row granted /fat ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-caps-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: caps canary, row granted /fat ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-caps-canary" FAIL \
             "lxhello
 echo after-lx" 120 \
             "openat refused by the capability check" "lx: create outside caps refused ok" "lx: done failures=0"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: tag canary, native table ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-tag-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: tag canary, native table ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-tag-canary" FAIL \
             "lxhello
 echo after-lx" 120 \
             "lx: hello from a static Linux ELF" "lx: done failures=0"
@@ -22952,7 +22959,7 @@ echo after-lx" 120 \
         # memory, and to memory `mprotect` made read-only, faults; PROT_EXEC is
         # refused; a PROT_NONE mapping is made usable). Canary
         # `mmap-prot-canary`: read-write mappings, `mprotect` a no-op.
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: mmap prot canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,mmap-prot-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: mmap prot canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,mmap-prot-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: mprot: a store to PROT_READ memory faults ok" "lx: mprot: mprotect(PROT_READ) makes a store fault ok"
@@ -22961,11 +22968,11 @@ echo after-lx" 150 \
         # TPIDR_EL0 too), and its exec'd image must find all of them zero at
         # `_start` (exits 8 otherwise). Canary `exec-regs-canary`: the hand-off
         # writes only pc/status/sp and keeps the thread pointer, as before.
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: exec regs canary, old image's registers kept ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,exec-regs-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: exec regs canary, old image's registers kept ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,exec-regs-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: execve: the new image starts with every register zero but sp ok"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: inherited file reads [ab]" "lx: fork shares the file offset ok"
@@ -22976,17 +22983,17 @@ echo after-lx" 150 \
         # file, on aarch64 its TPIDR_EL0 (the FP file there is the kernel's
         # own lazy switch). With one hart the parent and its fork child, which
         # set different values, clobber each other's.
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fork canary, child beyond its row ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-fork-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: fork canary, child beyond its row ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-fork-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: fork child holds only its row ok"
         if [ "$ush_isa" = rv ]; then
-            USH_SMP=1 USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fp canary, file not switched (rv)" rv "$ush_feat,linux-abi-fp-canary" FAIL \
+            USH_SMP=1 USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: fp canary, file not switched (rv)" rv "$ush_feat,linux-abi-fp-canary" FAIL \
                 "lxhello
 echo after-lx" 150 \
                 "lx: fp state kept across switches ok"
         else
-            USH_SMP=1 USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: tls canary, TPIDR_EL0 not switched (arm)" arm "$ush_feat,linux-abi-fp-canary" FAIL \
+            USH_SMP=1 USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: tls canary, TPIDR_EL0 not switched (arm)" arm "$ush_feat,linux-abi-fp-canary" FAIL \
                 "lxhello
 echo after-lx" 150 \
                 "lx: thread pointer kept across switches ok"
@@ -23000,15 +23007,15 @@ echo after-lx" 150 \
         # signalling its parent, and delivery at an interrupt to a task that
         # makes no syscall). Canaries, each compiling one property out:
         # nothing delivered; no SIGCHLD; no SIGPIPE.
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: signal canary, nothing delivered ($ush_isa)" "$ush_isa" "$ush_feat,linux-signal-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: signal canary, nothing delivered ($ush_isa)" "$ush_isa" "$ush_feat,linux-signal-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: signal handler ok" "lx: signal delivered at an interrupt ok"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: sigchld canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-sigchld-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: sigchld canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-sigchld-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: sigchld ok"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: sigpipe canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-sigpipe-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: sigpipe canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-sigpipe-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: sigpipe ok"
@@ -23017,7 +23024,7 @@ echo after-lx" 150 \
         # leaves behind (`getppid`, `wait4(-1)`; the main row above). Canary
         # `orphan-reparent-canary`: nothing is re-parented, the grandchild's
         # notice is dropped, and the adoption line is missing.
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: orphan canary, no re-parent ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,orphan-reparent-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: orphan canary, no re-parent ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,orphan-reparent-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: orphan adopted by its subreaper ok"
@@ -23029,7 +23036,7 @@ echo after-lx" 150 \
         # a shell volume has no autorun (init), so the grandchild is left with
         # no parent (`ppid=0 not adopted`), its notice goes nowhere and no reap
         # line is printed.
-        USH_DISK=lxabi USH_FORBID='robot> |not adopted' par_row ushell_row "sh: adopts a job's orphan ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|not adopted" par_row ushell_row "sh: adopts a job's orphan ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
             "lxhello orphan
 #wait lx: orphan ppid=
 #sleep 2
@@ -23038,7 +23045,7 @@ echo after-orphan" 120 \
         # The canary row asserts the broken state itself (PASS on the canary
         # kernel: `ppid=0 not adopted` printed, no reap line), so a shell that
         # never started cannot pass it by printing nothing.
-        USH_DISK=lxabi USH_FORBID='robot> |\[reaped\] tid' par_row ushell_row "sh: orphan canary, shell not a subreaper ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,subreaper-mark-canary" PASS \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|\[reaped\] tid" par_row ushell_row "sh: orphan canary, shell not a subreaper ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,subreaper-mark-canary" PASS \
             "lxhello orphan
 #wait lx: orphan ppid=
 #sleep 2
@@ -23054,7 +23061,7 @@ echo after-orphan" 120 \
         # thread keeps its creator's thread pointer, so musl's thread-local
         # storage (and its thread descriptor) is the creator's.
         if lx_threads_ready; then
-            USH_DISK=lxthr USH_FORBID='robot> |lxthr: .* FAIL|SECCOMP|PAGE FAULT' par_row ushell_row "linux: pthreads ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,spawn-log" PASS \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE|lxthr: .* FAIL|SECCOMP|PAGE FAULT" par_row ushell_row "linux: pthreads ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,spawn-log" PASS \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "row=LXTHR.ELF" "lxthr: pthread_create x4 ok" "lxthr: pthread_join x4 ok" \
@@ -23080,19 +23087,19 @@ echo after-lxthr \$?" 150 \
             # signal always to the leader (which blocks it); a tgkill posted
             # as the process's (an unblocked thread takes it); wait4 reporting
             # a signalled child as exited 128 + n.
-            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: thread signal canary, leader only ($ush_isa)" "$ush_isa" "$ush_feat,linux-sig-thread-canary" FAIL \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: thread signal canary, leader only ($ush_isa)" "$ush_isa" "$ush_feat,linux-sig-thread-canary" FAIL \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "lxthr: a process signal lands on an unblocked thread ok"
-            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: tgkill canary, posted to the process ($ush_isa)" "$ush_isa" "$ush_feat,linux-tkill-process-canary" FAIL \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: tgkill canary, posted to the process ($ush_isa)" "$ush_isa" "$ush_feat,linux-tkill-process-canary" FAIL \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "lxthr: tgkill to a blocked thread stays pending on it ok"
-            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: wait4 canary, signalled child exited ($ush_isa)" "$ush_isa" "$ush_feat,linux-wait-exited-canary" FAIL \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: wait4 canary, signalled child exited ($ush_isa)" "$ush_isa" "$ush_feat,linux-wait-exited-canary" FAIL \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "lxthr: a fatal signal ends every thread; wait sees WIFSIGNALED ok"
-            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: pthreads tls canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,threads-tls-canary" FAIL \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: pthreads tls canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,threads-tls-canary" FAIL \
                 "lxthr
 echo after-lxthr \$?" 120 \
                 "lxthr: tls distinct per thread ok" "lxthr: done failures=0"
@@ -23103,7 +23110,7 @@ echo after-lxthr \$?" 120 \
             # failure prints (not a FAIL row, which a run that never reached
             # lxthr would also pass): the wedge, the check's FAIL, and that
             # check alone failing.
-            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: leader clear-tid canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,leader-cleartid-canary" PASS \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: leader clear-tid canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,leader-cleartid-canary" PASS \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "lxthr: leader-exit child wedged" \
@@ -23124,7 +23131,7 @@ echo after-lxthr \$?" 150 \
             # (the writev writer's bytes land on the console), so the run
             # never gets that far; the new image reports before it creates a
             # thread of its own for the same reason.
-            USH_DISK=lxthr USH_FORBID='robot> |ended [0-9]+ other thread' par_row ushell_row "linux: exec from a thread: dethread canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,exec-no-dethread-canary" PASS \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE|ended [0-9]+ other thread" par_row ushell_row "linux: exec from a thread: dethread canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,exec-no-dethread-canary" PASS \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "lxthr: execve from a thread: the exec'ing thread is the only one left (gettid == getpid) FAIL"
@@ -23134,7 +23141,7 @@ echo after-lxthr \$?" 150 \
             # between its segments). Canary `writev-per-segment-canary` (one
             # write per iovec again): a PASS row on the check's FAIL line,
             # which only a run that reached it prints.
-            USH_DISK=lxthr USH_FORBID='robot> ' par_row ushell_row "linux: writev one transfer canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,writev-per-segment-canary" PASS \
+            USH_DISK=lxthr USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: writev one transfer canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-threads-test,writev-per-segment-canary" PASS \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "lxthr: writev is one transfer: no other writer between its segments FAIL" \
@@ -23149,11 +23156,11 @@ echo after-lxthr \$?" 150 \
         # must read its own byte while the parent's stays. Canary
         # `mprotect-shared-canary` (the write bit set in place): the parent's
         # byte changes.
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fork child mprotect is private ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: fork child mprotect is private ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test" PASS \
             "lxhello
 echo after-lx" 150 \
             "lx: mprot: a fork child's mprotect(RW) write is its own ok" "lx: mprot: the parent's read-only page is unchanged ok"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: fork mprotect canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,mprotect-shared-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: fork mprotect canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,mprotect-shared-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: mprot: the parent's read-only page is unchanged ok"
@@ -23180,19 +23187,19 @@ echo after-lx" 150 \
         # -EINVAL by the call's shape (what tracectl's old null handle got,
         # with nothing recorded). Without the canary feature tracectl reads
         # the tracer and the forbidden `tracectl: cpus=` lines appear.
-        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID='robot> |ms, drops=[1-9]|drops=[0-9]+ lost=[1-9]|classes sched=0 | irq=0 syscall=|REFUSED|Killing user task' par_row ushell_row "trace: tracectl reads live, -smp 4 ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID="$RECOVERY_PROMPT_RE|ms, drops=[1-9]|drops=[0-9]+ lost=[1-9]|classes sched=0 | irq=0 syscall=|REFUSED|Killing user task" par_row ushell_row "trace: tracectl reads live, -smp 4 ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "spin &
 spin &
 tracectl stream -n 20000 -t 60000 -q
 tracectl stream -n 40 -c sched,irq" 240 \
             "[TRACE] tracer on: 4 CPUs" "tracectl: read 20000 records from 4 cpus" "drops=0 lost=0" \
             "tracectl: classes sched=" " sched_switch prev=" " irq_entry irq=" "tracectl: read 40 records from 4 cpus"
-        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID='robot> ' par_row ushell_row "trace: producer-index canary ($ush_isa)" "$ush_isa" "$ush_feat,trace-producer-canary" FAIL \
+        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "trace: producer-index canary ($ush_isa)" "$ush_isa" "$ush_feat,trace-producer-canary" FAIL \
             "spin &
 spin &
 tracectl stream -n 20000 -t 30000 -q" 180 \
             "tracectl: read 20000 records from 4 cpus" "drops=0 lost=0"
-        USH_SMP=4 USH_FORBID='robot> |tracectl: cpus=|tracectl: start mask=|tracectl: read ' par_row ushell_row "trace: refused without Cap<Trace> ($ush_isa)" "$ush_isa" "$ush_feat,trace-cap-canary" PASS \
+        USH_SMP=4 USH_FORBID="$RECOVERY_PROMPT_RE|tracectl: cpus=|tracectl: start mask=|tracectl: read " par_row ushell_row "trace: refused without Cap<Trace> ($ush_isa)" "$ush_isa" "$ush_feat,trace-cap-canary" PASS \
             "tracectl info
 tracectl start
 tracectl stream -n 10" 150 \
@@ -23211,7 +23218,7 @@ tracectl stream -n 10" 150 \
         # about the reader's time slice, not the keys. Hand canary (enabling
         # never re-patches a site to its branch): red, sched=0 in every
         # segment.
-        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID='robot> |segment 0 mask=0x1 sched=[0-9]+ irq=[0-9]+ syscall=[1-9]|segment 1 mask=0x5 sched=[0-9]+ irq=[0-9]+ syscall=0 |outside=[1-9]|mask=0x[0-9a-f]+ sched=0 |ms, drops=[1-9]|drops=[0-9]+ lost=[1-9]|REFUSED|Killing user task|could not start' par_row ushell_row "trace: static keys toggled live ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+        USH_SMP=4 USH_QEMU_EXTRA='-icount shift=0,sleep=off' USH_FORBID="$RECOVERY_PROMPT_RE|segment 0 mask=0x1 sched=[0-9]+ irq=[0-9]+ syscall=[1-9]|segment 1 mask=0x5 sched=[0-9]+ irq=[0-9]+ syscall=0 |outside=[1-9]|mask=0x[0-9a-f]+ sched=0 |ms, drops=[1-9]|drops=[0-9]+ lost=[1-9]|REFUSED|Killing user task|could not start" par_row ushell_row "trace: static keys toggled live ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "spin &
 !tracectl stream -t 60000 -m 2 -p 10 -c sched -q &
 #wait tracectl: stream mask=0x1 cpus=
@@ -23252,7 +23259,7 @@ tracectl start sched
                     printf "  %-26s%s\n" "$bb_k ($ush_isa)..." "SKIP (the x86_64 ring-3 runtime answers no poll: ash's read builtin waits in it)"
                 done
             else
-                USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP' par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP" par_row ushell_row "linux: busybox sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,spawn-log" PASS \
                     "busybox sh -c 'echo bb-sh-ok; ls /fat'
 busybox sh -c 'x=\$(echo pipe-in | wc -c); echo wc-out=\$x'
 busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'
@@ -23261,14 +23268,14 @@ echo after-bb \$?" 240 \
                     "row=BUSYBOX.ELF" "bb-sh-ok" "LXHELLO.ELF" "BUSYBOX.ELF" "wc-out=8" \
                     "openat refused by the capability check: -EACCES (recorded)" \
                     "Permission denied" "sub-rc=1" "bbfork-2" "after-bb 0"
-                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: busybox fork canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-fork-canary" FAIL \
                     "busybox sh -c '(echo x > /fat/BBDENY.TXT); echo sub-rc=\$?'" 150 \
                     "Permission denied" "sub-rc=1"
                 # Two subshells write one inherited descriptor in turn (the main
                 # row's `bbfork-2`: two lines). Canary
                 # `fd-private-offset-busybox-canary` (private offsets): the second
                 # subshell overwrites the first's line, one line is left.
-                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: busybox shared offset canary ($ush_isa)" "$ush_isa" "$ush_feat,fd-private-offset-busybox-canary" FAIL \
                     "busybox sh -c '{ (echo a); (echo b); } > /tmp/BBF; echo bbfork-\$(cat /tmp/BBF | wc -l)'" 150 \
                     "bbfork-2"
             fi
@@ -23283,7 +23290,7 @@ echo after-bb \$?" 240 \
             # deliberate faults (the fault-kill stages) are rv and arm's.
             bb_lx_faults=3
             [ "$ush_isa" = x86 ] && { bb_lx_stage=" rt"; bb_lx_done="lx: rt done failures=0"; bb_lx_faults=0; }
-            USH_SMP=1 USH_DISK=busybox USH_FAULTS=$bb_lx_faults USH_FORBID='robot> ' par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+            USH_SMP=1 USH_DISK=busybox USH_FAULTS=$bb_lx_faults USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: busybox beside another Linux task ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                 "!busybox sh -c 'sleep 2; echo tls-\$(echo kept)' &
 lxhello$bb_lx_stage
 #wait tls-kept" 240 \
@@ -23297,11 +23304,11 @@ lxhello$bb_lx_stage
             # check compiled out; the image runs and the refusal is missing.
             # (`bb-tamper-ran` is only ever printed by BusyBox: the typed line
             # spells it `bb-tamper-$(echo ran)`.)
-            USH_DISK=busybox USH_FORBID='robot> |bb-tamper-ran' par_row ushell_row "linux: streamed image changed, refused ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-test" PASS \
+            USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|bb-tamper-ran" par_row ushell_row "linux: streamed image changed, refused ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-test" PASS \
                 "busybox sh -c 'echo bb-tamper-\$(echo ran)'
 echo after-tamper \$?" 150 \
                 "BUSYBOX.ELF changed between its hash and its load (digest mismatch) (recorded)" "after-tamper "
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: tamper canary, check compiled out ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-canary" FAIL \
+            USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: tamper canary, check compiled out ($ush_isa)" "$ush_isa" "$ush_feat,linux-stream-tamper-canary" FAIL \
                 "busybox sh -c 'echo bb-tamper-\$(echo ran)'
 echo after-tamper \$?" 150 \
                 "changed between its hash and its load (digest mismatch)"
@@ -23336,21 +23343,21 @@ echo after-bb-int \$?"
                     printf "  %-26s%s\n" "$bb_k ($ush_isa)..." "SKIP (the x86_64 ring-3 runtime delivers no signal)"
                 done
             else
-                USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP|bb-slept" par_row ushell_row "linux: busybox interactive sh ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                     "$bb_int_script" 120 \
                     "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
                 # The same on one hart: the echo is written after the line
                 # discipline's lock is dropped, so a full TX ring cannot hold it.
                 # x86_64 boots one CPU: its plain row is already the one-hart case.
                 if [ "$ush_isa" != x86 ]; then
-                    USH_SMP=1 USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT|SECCOMP|bb-slept' par_row ushell_row "linux: busybox interactive sh, one hart ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                    USH_SMP=1 USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP|bb-slept" par_row ushell_row "linux: busybox interactive sh, one hart ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                         "$bb_int_script" 150 \
                         "bb-int-ok" "bb-after-intr-130" "after-bb-int 0"
                 fi
-                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: console EOF canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-console-eof-canary" FAIL \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: console EOF canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-console-eof-canary" FAIL \
                     "$bb_int_script" 90 \
                     "bb-int-ok" "bb-after-intr-130"
-                USH_DISK=busybox USH_FORBID='robot> |bb-slept' par_row ushell_row "linux: console ^C canary ($ush_isa)" "$ush_isa" "$ush_feat,console-isig-canary" FAIL \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|bb-slept" par_row ushell_row "linux: console ^C canary ($ush_isa)" "$ush_isa" "$ush_feat,console-isig-canary" FAIL \
                     "$bb_int_script" 90 \
                     "bb-after-intr-130"
             fi
@@ -23367,17 +23374,17 @@ echo after-bb-int \$?"
                 # exec is refused and recorded, and LXHELLO never runs. Canary
                 # `linux-exec-row-canary`: the launch check compiled out, the
                 # exec goes through without the grant.
-                USH_DISK=busybox USH_FAULTS=3 USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
+                USH_DISK=busybox USH_FAULTS=3 USH_FORBID="$RECOVERY_PROMPT_RE|lx: .* FAIL" par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
                     "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?" 180 \
                     "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
                     "lx: create outside caps refused ok" "lx: done failures=0" "after-x 0"
                 exec_refused_script="busybox sh -c 'exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?"
-                USH_DISK=busybox USH_FORBID='robot> |lx: hello' par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|lx: hello" par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
                     "$exec_refused_script" 150 \
                     "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)" "LXHELLO.ELF: Permission denied"
-                USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-canary" FAIL \
                     "$exec_refused_script" 150 \
                     "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (recorded)"
             fi
@@ -23401,11 +23408,11 @@ echo after-x \$?"
             case "$ush_isa" in rv) bb_cfg="$bb_cfg_rv" ;; arm) bb_cfg="$bb_cfg_arm" ;; *) bb_cfg="$PRIMARY_CONFIG" ;; esac
             bb_x86_def="$CI_LOG_DIR/ush-x86-busybox.defconfig"
             { cat config/defconfigs/${GATE_DEFC_X86}.config; printf 'CONFIG_LINUX_RUNTIME=y\nCONFIG_USERSPACE_GPL=y\nCONFIG_BUSYBOX=y\n'; } >"$bb_x86_def"
-            USH_X86_DEFCONFIG="$bb_x86_def" KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID='robot> |PAGE FAULT' par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
+            USH_X86_DEFCONFIG="$bb_x86_def" KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT" par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
                 "busybox sh -c 'x=prod; echo bb-\$x-ok'
 echo after-prod \$?" 150 \
                 "row=BUSYBOX.ELF" "bb-prod-ok" "after-prod 0"
-            USH_DISK=busybox USH_FORBID='robot> ' par_row ushell_row "linux: busybox Kconfig row canary ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" FAIL \
+            USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: busybox Kconfig row canary ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" FAIL \
                 "busybox sh -c 'x=prod; echo bb-\$x-ok'
 echo after-prod \$?" 150 \
                 "row=BUSYBOX.ELF" "bb-prod-ok"
@@ -23430,7 +23437,7 @@ echo after-prod \$?" 150 \
     # privileged tools REFUSED at `SYS_SPAWN_EX` — the lockdown shell row holds
     # no launch grant on `POWER.ELF` nor (wave 12) on `FLIGHT.ELF` — with the
     # refusal recorded. Forbidden: anything only the kernel console prints
-    # (`robot> `, `user shell pending`; the row waits past
+    # (the recovery prompt, `user shell pending`; the row waits past
     # `SH_START_TIMEOUT_S` first), and any of the three having run.
     # Canaries (by hand, 2026-10-03, rv): the lockdown row with `SH_CAPS` (the
     # launch grant kept): `not permitted` missing and the rate is set; the
@@ -23469,7 +23476,7 @@ echo after-prod \$?" 150 \
             printf "  %-26s" "sh: lockdown ($ush_isa)..."; bad; echo "      the lockdown kernel did not build"
             continue
         fi
-        USH_KERNEL="$ush_lk" USH_FORBID='robot> |user shell pending|Scheduler rate set|FLIGHT\] ARMED|PM\] Entering suspend|System suspended' \
+        USH_KERNEL="$ush_lk" USH_FORBID="$RECOVERY_PROMPT_RE|user shell pending|Scheduler rate set|FLIGHT\] ARMED|PM\] Entering suspend|System suspended" \
             par_row ushell_row "sh: lockdown ($ush_isa)" "$ush_isa" qemu PASS \
             "echo locked-ok
 #sleep 12
@@ -23542,13 +23549,13 @@ power suspend" 150 \
         else
             ush_pmu_on=''; ush_pmu_off='-cpu max,pauth=on,pmu=off'; ush_pmu_mark='[PMU] overflow interrupt: DTB PPI INTID'
         fi
-        USH_KERNEL="$ush_pk" USH_SMP=4 USH_QEMU_EXTRA="$ush_pmu_on" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
+        USH_KERNEL="$ush_pk" USH_SMP=4 USH_QEMU_EXTRA="$ush_pmu_on" USH_FORBID="$RECOVERY_PROMPT_RE|sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED" \
             par_row ushell_row "prof: PMU overflow samples ($ush_isa)" "$ush_isa" qemu PASS \
             "spin &
 spin &
 tracectl profile -t 4000" 240 \
             "$ush_pmu_mark" "tracectl: profile read " "tracectl: profile origins: tick="
-        USH_KERNEL="$ush_pk" USH_SMP=4 USH_QEMU_EXTRA="$ush_pmu_off" USH_FORBID='robot> |sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED' \
+        USH_KERNEL="$ush_pk" USH_SMP=4 USH_QEMU_EXTRA="$ush_pmu_off" USH_FORBID="$RECOVERY_PROMPT_RE|sample=none|origins: tick=[0-9]+ pmu=0 |REFUSED" \
             par_row ushell_row "prof: no overflow interrupt, tick only ($ush_isa)" "$ush_isa" qemu FAIL \
             "spin &
 spin &
@@ -23600,7 +23607,7 @@ tracectl profile -t 4000" 240 \
             printf "  %-26s" "compositor: window, damage, trusted path (rv)..."; bad; echo "      the ramfb kernel did not build"
         else
             USH_VKBD=1 USH_QEMU_EXTRA="-device ramfb" USH_KERNEL="$ush_ck" \
-            USH_FORBID='robot> |PAGE FAULT|Killing user task|input: focus granted, generation 2' \
+            USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task|input: focus granted, generation 2" \
                 par_row ushell_row "compositor: window, damage, trusted path (rv)" rv qemu,ramfb PASS \
                 "cd /fat
 #wait \[compsrv\] display claimed
@@ -23794,13 +23801,13 @@ x=con; echo bb\$x-ok
         esac
         con_k=""; con_wanted "console: busybox sh ($con_isa)" \
             && con_k="$(con_kernel "$con_isa" bbsh "$con_feat" CONFIG_USERSPACE_GPL=y CONFIG_LINUX_ABI=y CONFIG_BUSYBOX=y CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y 'CONFIG_CONSOLE_PATH="/fat/BUSYBOX.ELF"')"
-        CON_FORBID='robot> |PAGE FAULT|SECCOMP|\[compmgr\] start SH.ELF' \
+        CON_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP|\[compmgr\] start SH.ELF" \
             par_row con_row "console: busybox sh ($con_isa)" "$con_isa" "$con_k" "$con_disk" "" PASS "$con_bb_script" 150 \
             "[compmgr] start BUSYBOX.ELF" "[CONSOLE] user shell tid=" "bbcon-ok"
         if [ "$con_isa" = rv ]; then
             con_k=""; con_wanted "console: busybox sh canary, plain spawn (rv)" \
                 && con_k="$(con_kernel rv bbsh-canary qemu,console-spawn-canary CONFIG_USERSPACE_GPL=y CONFIG_LINUX_ABI=y CONFIG_BUSYBOX=y CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y)"
-            CON_FORBID='robot> ' \
+            CON_FORBID="$RECOVERY_PROMPT_RE" \
                 par_row con_row "console: busybox sh canary, plain spawn ($con_isa)" rv "$con_k" "$con_disk" "" FAIL "$con_bb_script" 90 \
                 "[compmgr] start BUSYBOX.ELF" "bbcon-ok"
         fi
@@ -23820,9 +23827,9 @@ x=con; echo bb\$x-ok
             printf "  %-26s" "console: brain client ($con_isa)..."; bad; echo "      the kernel did not build"; continue
         fi
         USH_KERNEL="$con_k" USH_FORBID='\[compmgr\] start SH.ELF|PAGE FAULT|SECCOMP' \
-            par_row ushell_row "console: brain client ($con_isa)" "$con_isa" qemu,use-robot PASS "#wait robot> " 120 \
+            par_row ushell_row "console: brain client ($con_isa)" "$con_isa" qemu,use-robot PASS "#wait $RECOVERY_PROMPT_RE" 120 \
             "[compmgr] start BRAINCLI.ELF" \
-            "[CONSOLE] console program /fat/BRAINCLI.ELF gave up: recovery console (it did not take the console within" "robot> "
+            "[CONSOLE] console program /fat/BRAINCLI.ELF gave up: recovery console (it did not take the console within" "re:$RECOVERY_PROMPT_RE"
     done
     # CONSOLE_LOGIN needs the native shell as the console program: `azos_limits`
     # refuses the others (build.rs), instead of building a login nothing asks for.
@@ -23884,7 +23891,7 @@ x=con; echo bb\$x-ok
     # loader starts no ring-3 program, `SH.ELF` included. The shell volume is
     # walked into safe mode the way `safe mode: attempts exhausted` does it
     # (`safe-mode-smoke` crashes boots 1-3 after their unconfirmed mark), then
-    # boot 4 must print the recovery reason and `robot> `, and must not start
+    # boot 4 must print the recovery reason and the recovery prompt, and must not start
     # the user shell: the component manager's `[compmgr] start SH.ELF` line
     # (printed in every build, debug or not) is forbidden. Wave 14: it replaces the
     # spawn's `SH.ELF profile` line, which a release build no longer prints.
@@ -23932,7 +23939,7 @@ x=con; echo bb\$x-ok
                 else
                     # Past the start timeout, so a user shell that should not
                     # start has had the time to.
-                    grep -aqF "robot> " "$log" 2>/dev/null && [ "$i" -ge 24 ] && break
+                    grep -aqE "$RECOVERY_PROMPT_RE" "$log" 2>/dev/null && [ "$i" -ge 24 ] && break
                 fi
                 kill -0 "$pid" 2>/dev/null || break
                 i=$((i + 1)); sleep 0.5
@@ -23942,9 +23949,10 @@ x=con; echo bb\$x-ok
                 bad; echo "      boot $n did not crash before its boot was confirmed; log kept: $log"; return
             fi
         done
-        for want in "[RECOVERY] armed" "[CONSOLE] recovery console: safe mode" "robot> "; do
+        for want in "[RECOVERY] armed" "[CONSOLE] recovery console: safe mode"; do
             grep -aqF "$want" "$log" || missing="$missing [$want]"
         done
+        grep -aqE "$RECOVERY_PROMPT_RE" "$log" || missing="$missing [the recovery prompt]"
         for want in 'azos$ ' "has the console" "[compmgr] start SH.ELF"; do
             grep -aqF "$want" "$log" && missing="$missing [forbidden: $want]"
         done
@@ -24136,7 +24144,7 @@ t = re.sub(r"\[[A-Za-z][A-Za-z0-9-]*\][^\n]*\n", "", t.replace("\r", ""))
 sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: alice]"
         # The passphrase is never echoed, never logged.
         grep -aqF -- "$pass" "$log" && missing="$missing [forbidden: the passphrase is in the console log]"
-        grep -aqF 'robot> ' "$log" && missing="$missing [forbidden: the recovery console took the console]"
+        grep -aqE "$RECOVERY_PROMPT_RE" "$log" && missing="$missing [forbidden: the recovery console took the console]"
         [ "$verdict" = crash ] && missing="$missing [kernel crash]"
         if [ -z "$missing" ]; then ok; rm -f "$log"; else
             bad; echo "      missing:$missing (stopped: ${verdict:-script done})"; echo "      log kept: $log"
@@ -24316,7 +24324,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             bad; echo "      abitest failed on the Generic kernel:"; printf '%s\n' "$fails" | sed 's/^/        /'
             echo "      log kept: $log"; return
         fi
-        if ! grep -aqF "robot> " "$log"; then
+        if ! grep -aqE "$RECOVERY_PROMPT_RE" "$log"; then
             bad; echo "      the shell prompt never printed"; echo "      log kept: $log"; return
         fi
         if ! grep -aqF "[SAFETY] ring-3 emergency stop armed" "$log"; then
@@ -24555,11 +24563,11 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # store to it (SIGSEGV). Canary `vdso-write-canary`: the mprotect is
     # granted and the child's store lands, so both markers go.
     for ush_isa in rv arm; do
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "perm: vdso mprotect refused ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "perm: vdso mprotect refused ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
             "lxhello
 echo after-lx" 150 \
             "lx: mprot: mprotect(RW) on the vDSO is refused ok" "lx: mprot: a store to the vDSO faults ok"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "perm: vdso mprotect canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,vdso-write-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "perm: vdso mprotect canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,vdso-write-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: mprot: mprotect(RW) on the vDSO is refused ok" "lx: mprot: a store to the vDSO faults ok"
@@ -24576,7 +24584,7 @@ echo after-lx" 150 \
     # leader's pending set is dropped at the identity hand-over, so the
     # process's pending signal is missing.
     for ush_isa in rv arm; do
-        USH_DISK=lxabi USH_FORBID='robot> |lx: .* FAIL' par_row ushell_row "linux: signals across a thread's exec ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|lx: .* FAIL" par_row ushell_row "linux: signals across a thread's exec ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
             "lxhello
 echo after-lx" 150 \
             "lx: exec-sig: the process's pending signal is kept ok" "lx: exec-sig: the thread's own pending signal is kept ok" \
@@ -24584,7 +24592,7 @@ echo after-lx" 150 \
             "lx: exec-sig: an ignored signal stays SIG_IGN ok" \
             "lx: exec-sig: the parent's kill of the original PID reaches the new image ok" \
             "lx: exec-sig: a thread's exec keeps the PID, its pending signals and mask ok"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: exec-sig handover canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,exec-sig-handover-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: exec-sig handover canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,exec-sig-handover-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: exec-sig: the process's pending signal is kept ok"
@@ -24609,7 +24617,7 @@ echo after-lx" 150 \
     # re-post; that is ktest `signal_retarget_on_thread_detach`, canary
     # `sig-exit-drop` in the `ktest sched canary` rows.
     for ush_isa in rv arm; do
-        USH_DISK=lxabi USH_FORBID='robot> |lx: robust.* FAIL|lx: retarget.* FAIL|SECCOMP' par_row ushell_row "linux: robust list and signal retarget at a thread's exit ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE|lx: robust.* FAIL|lx: retarget.* FAIL|SECCOMP" par_row ushell_row "linux: robust list and signal retarget at a thread's exit ($ush_isa)" "$ush_isa" "qemu,linux-abi-test" PASS \
             "lxhello
 echo after-lx" 150 \
             "lx: robust: set_robust_list takes only Linux's head length ok" \
@@ -24618,7 +24626,7 @@ echo after-lx" 150 \
             "lx: robust: a cyclic list ends at the limit and the pending lock is handled ok" \
             "lx: robust: a thread's exit releases the robust locks it held ok" \
             "lx: retarget: a process signal pending on a thread that ends stays the process's ok"
-        USH_DISK=lxabi USH_FORBID='robot> ' par_row ushell_row "linux: robust list canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,robust-list-canary" FAIL \
+        USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: robust list canary ($ush_isa)" "$ush_isa" "qemu,linux-abi-test,robust-list-canary" FAIL \
             "lxhello
 echo after-lx" 150 \
             "lx: robust: a thread's exit releases the robust locks it held ok"

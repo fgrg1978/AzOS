@@ -127,6 +127,7 @@ fn main() {
     let mut out = String::new();
     azos_config::emit_rust(&cfg, &mut out, sha12);
     emit_kheap_slab_classes(&cfg, &mut out);
+    emit_preset_prompt(&cfg, &mut out);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest = out_dir.join("generated.rs");
@@ -935,5 +936,23 @@ fn emit_kheap_slab_classes(cfg: &ConfigMap, out: &mut String) {
         "/// KHEAP_SLAB_CLASSES at or under KHEAP_SLAB_MAX_CLASS (limits build.rs).\n\
          pub const KHEAP_SLAB_CLASS_LIST: &[usize] = &[{}];\n",
         items.join(", ")
+    ));
+}
+
+// The PRESET choice (config/axes/Kconfig.preset) as the name its fragment has
+// (config/fragments/presets/<name>.frag), then a `> `: the recovery console's prompt.
+fn emit_preset_prompt(cfg: &ConfigMap, out: &mut String) {
+    let on: Vec<String> = cfg
+        .iter()
+        .filter(|(k, v)| k.starts_with("PRESET_") && v.as_str() == "y")
+        .map(|(k, _)| k["PRESET_".len()..].to_lowercase())
+        .collect();
+    let [name] = on.as_slice() else {
+        panic!("validation FAIL: exactly one PRESET_* must be y, found {on:?}. \
+                Fix: `python3 -m olddefconfig`.");
+    };
+    out.push_str(&format!(
+        "/// The recovery console's prompt: the PRESET choice in lower case, then `> ` (limits build.rs).\n\
+         pub const PRESET_PROMPT: &str = \"{name}> \";\n"
     ));
 }

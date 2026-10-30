@@ -35,7 +35,6 @@ use azos_ipc::authority_policy;
 
 const MAX_LINE:  usize = 256;
 const MAX_ARGS:  usize = 8;
-const PROMPT:    &str  = "robot> ";
 
 /// K-C27: park a listening/receiving loop for ~10 ms instead of yielding.
 /// A bare `task_yield()` in a wait-for-something loop returns immediately
@@ -1455,7 +1454,7 @@ pub fn recovery_run() -> ! {
     let mut line_buf = [0u8; MAX_LINE];
 
     loop {
-        azos_drv_sys::uart::puts_locked(PROMPT);
+        azos_drv_sys::uart::puts_locked(azos_limits::PRESET_PROMPT);
 
         let len = readline(&mut line_buf);
         azos_net::net_poll();

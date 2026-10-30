@@ -40,7 +40,7 @@ use azos_term::{
 use parse::{parse, Pipeline, Redir, Vars};
 use req::{Fd, ReqBuilder};
 
-/// The prompt. Distinct from the kernel recovery console's `robot> `.
+/// The prompt. Distinct from the kernel recovery console's `<preset>> `.
 const PROMPT: &[u8] = b"azos$ ";
 /// Environment strings kept, and their bytes.
 const ENV_MAX: usize = 16;
