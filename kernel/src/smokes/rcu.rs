@@ -156,17 +156,20 @@ azos_ktest::ktest_late! {
 
 static HOLD_STARTED: AtomicBool = AtomicBool::new(false);
 static HOLD_DONE: AtomicBool = AtomicBool::new(false);
-/// How long the holder keeps its CPU in the kernel without a quiescent
-/// state, and the test's stall window (well under it).
-const HOLD_MS: u64 = 300;
+static HOLD_RELEASE: AtomicBool = AtomicBool::new(false);
+/// The test's stall window.
 const STALL_WINDOW_MS: u64 = 100;
 
-/// A CPU stuck in the kernel: preemption off, no switch, for [`HOLD_MS`].
+/// A CPU stuck in the kernel: preemption off, no switch, until the test has
+/// looked past its window. A hold of its own length would race that look when
+/// the host keeps the test's CPU off.
 fn holder(_: usize) {
     {
         let _p = azos_sync::critical_section();
         HOLD_STARTED.store(true, Ordering::SeqCst);
-        spin_us(HOLD_MS * 1000);
+        while !HOLD_RELEASE.load(Ordering::SeqCst) {
+            core::hint::spin_loop();
+        }
     }
     HOLD_DONE.store(true, Ordering::SeqCst);
 }
@@ -183,24 +186,36 @@ azos_ktest::ktest_late! {
         };
         HOLD_STARTED.store(false, Ordering::SeqCst);
         HOLD_DONE.store(false, Ordering::SeqCst);
+        HOLD_RELEASE.store(false, Ordering::SeqCst);
         let stalls = qsbr::stalls();
         azos_sched::task_create_affinity("rcu-hold", holder, 0, 2, cpu as i8);
         crate::ktest::wait("the holder task never ran", || HOLD_STARTED.load(Ordering::SeqCst))?;
         let t0 = now_ms();
         let mut gp = qsbr::Gp::start(t0, me);
-        loop {
+        let ended_held = loop {
             let now = now_ms();
-            if gp.poll_within(now, STALL_WINDOW_MS) {
-                break;
-            }
-            if now.wrapping_sub(t0) > 2 * qsbr::STALL_TIMEOUT_MS {
-                return Err("the grace period never ended after the holder let go");
+            let ended = gp.poll_within(now, STALL_WINDOW_MS);
+            if ended || now.wrapping_sub(t0) > STALL_WINDOW_MS {
+                break ended;
             }
             sleep_ms(qsbr::GP_POLL_MS);
+        };
+        let counted = qsbr::stalls();
+        let ended_held = ended_held || gp.poll_within(now_ms(), STALL_WINDOW_MS);
+        let recounted = qsbr::stalls();
+        HOLD_RELEASE.store(true, Ordering::SeqCst);
+        if ended_held {
+            return Err("the grace period ended with a CPU still holding it");
         }
+        crate::ktest::wait("the grace period never ended after the holder let go", || {
+            gp.poll_within(now_ms(), STALL_WINDOW_MS)
+        })?;
         crate::ktest::wait("the holder task never finished", || HOLD_DONE.load(Ordering::SeqCst))?;
-        if qsbr::stalls() != stalls + 1 {
+        if counted == stalls {
             return Err("a CPU held a grace period past the window and no stall was counted");
+        }
+        if recounted != counted {
+            return Err("one grace period counted its stall twice");
         }
         if qsbr::last_stall_cpu() != Some(cpu) {
             return Err("the stall named another CPU than the one holding the grace period");
