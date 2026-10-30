@@ -43,7 +43,7 @@ pub mod azvol_mount;
 pub use probe::inode_leak_probe;
 
 #[cfg(feature = "ktest")]
-pub use fat32::fat32_ktest_with_wb_claim;
+pub use fat32::{fat32_ktest_with_wb_claim, fat32_ktest_wb_waiters};
 pub use fat32::{
     fat32_mount, fat32_mount_report, MountReport, fat32_check, fat32_read_only, fat32_lookup_root, fat32_read_chain, fat32_mounted, fat32_ls_root,
     fat32_write_file, fat32_unlink_root, fat32_unlink_path, fat32_rename,

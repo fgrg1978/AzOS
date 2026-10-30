@@ -1749,6 +1749,12 @@ pub fn fat32_ktest_with_wb_claim(f: impl FnOnce()) {
     drop(c);
 }
 
+/// ktest `fat_claim_waiter_donates_to_owner`: tasks asleep on the claim.
+#[cfg(feature = "ktest")]
+pub fn fat32_ktest_wb_waiters() -> usize {
+    BOOT.wb_wq.len()
+}
+
 /// Write back every dirty line of an epoch `<= upto`, oldest epoch first, as
 /// coalesced runs, `SECTOR_CACHE` released across each device request. A
 /// run of a later epoch than one already written since the last flush is

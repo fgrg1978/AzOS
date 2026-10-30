@@ -1382,14 +1382,13 @@ azos_ktest::ktest_late! {
 // The fair class is EEVDF: a fair priority is a weight, not a rank, so a
 // busy task between the two no longer starves an unboosted owner and the
 // wait time could not tell a donation from none; the lent priority (the
-// owner's weight while it holds) is read directly instead. Without the
-// donation (`canary=claim-no-donate`) the owner keeps its own priority until
-// it gives up, CLAIM_PI_GIVE_UP_MS later.
-
-/// How long the owner holds the claim waiting to be lent a priority, in ms.
-const CLAIM_PI_GIVE_UP_MS: u64 = 1000;
+// owner's weight while it holds) is read directly instead. A waiter lends
+// before it sleeps, so the owner holds until the waiter is asleep on the claim
+// and reads its priority once more. Without the donation
+// (`canary=claim-no-donate`) that read is still its own priority.
 
 static CLAIM_PI_HELD: AtomicBool = AtomicBool::new(false);
+static CLAIM_PI_ASLEEP: AtomicBool = AtomicBool::new(false);
 static CLAIM_PI_DONE: AtomicUsize = AtomicUsize::new(0);
 /// The most urgent priority the owner saw itself at while holding.
 static CLAIM_PI_SEEN: AtomicUsize = AtomicUsize::new(0);
@@ -1403,12 +1402,12 @@ fn claim_pi_owner(_: usize) {
     let base = azos_limits::FS_WRITEBACK_PRIORITY as u32;
     azos_fs::fat32_ktest_with_wb_claim(|| {
         CLAIM_PI_HELD.store(true, Ordering::Release);
-        let t0 = claim_pi_now_ms();
         let mut seen = base;
-        while seen >= base && claim_pi_now_ms().wrapping_sub(t0) < CLAIM_PI_GIVE_UP_MS {
+        while seen >= base && !CLAIM_PI_ASLEEP.load(Ordering::Acquire) {
             seen = seen.min(azos_sched::task_priority(me).unwrap_or(base));
             core::hint::spin_loop();
         }
+        seen = seen.min(azos_sched::task_priority(me).unwrap_or(base));
         CLAIM_PI_SEEN.store(seen as usize, Ordering::Release);
     });
     CLAIM_PI_DONE.fetch_add(1, Ordering::Release);
@@ -1430,11 +1429,15 @@ azos_ktest::ktest_late! {
             return Err("LOG_FLUSHER_PRIORITY is not more urgent than FS_WRITEBACK_PRIORITY: nothing to lend");
         }
         CLAIM_PI_HELD.store(false, Ordering::Release);
+        CLAIM_PI_ASLEEP.store(false, Ordering::Release);
         CLAIM_PI_DONE.store(0, Ordering::Release);
         CLAIM_PI_SEEN.store(usize::MAX, Ordering::Release);
         azos_sched::task_create_affinity("claim-pi-owner", claim_pi_owner, 0, owner, 1);
         wait("the claim owner never took the write-back claim", || CLAIM_PI_HELD.load(Ordering::Acquire))?;
         azos_sched::task_create_affinity("claim-pi-waiter", claim_pi_waiter, 0, waiter, 1);
+        // A lent priority ends the owner's hold before the waiter's sleep is seen.
+        crate::ktest::until(|| azos_fs::fat32_ktest_wb_waiters() != 0 || CLAIM_PI_DONE.load(Ordering::Acquire) == 2);
+        CLAIM_PI_ASLEEP.store(true, Ordering::Release);
         wait("owner and waiter did not both finish", || CLAIM_PI_DONE.load(Ordering::Acquire) == 2)?;
         let seen = CLAIM_PI_SEEN.load(Ordering::Acquire);
         kprintln!("# fat_claim_waiter_donates_to_owner: owner prio {} waiter {}: owner ran at {} while holding",
