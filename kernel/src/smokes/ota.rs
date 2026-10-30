@@ -58,6 +58,35 @@ pub(crate) fn power_off_durability_smoke_task(_: usize) {
     azos_syscall::handlers::power_off_orderly();
 }
 
+/// Gate row `power-off: a queued record is drained`. Past the boot-good mark,
+/// queues a latching e-stop record the way a caller in a SpinLock section does
+/// (on the ring, no wake), holds the flusher so its periodic pass cannot write
+/// it, and powers off. Only the orderly path's drain can put it on the medium;
+/// the next boot of the volume comes up latched, and then this does nothing.
+#[cfg(feature = "orderly-drain-smoke")]
+pub(crate) fn orderly_drain_smoke_task(_: usize) {
+    use azos_actuation::logger;
+    use azos_drv_sys::timebase::{now, TIMER_FREQ};
+    let past = (u64::from(azos_ota::OTA_BOOT_GOOD_DELAY_S) + 5) * TIMER_FREQ;
+    while now() < past {
+        azos_sched::task_block(azos_sched::WaitReason::Timer(past));
+    }
+    if azos_actuation::estop::estop_is_active() {
+        return;
+    }
+    logger::logger_hold_flusher();
+    let queued = {
+        let _section = azos_sync::critical_section();
+        logger::log_safety_violation_durable(logger::SAFETY_ESTOP, 2, 0)
+    };
+    if queued != Err(logger::LogStorageError::Deferred) || !logger::durable_record_pending() {
+        kprintln!("[ORDERLY] FAIL drain smoke: the record was not left queued");
+        return;
+    }
+    kprintln!("[ORDERLY] drain smoke: record queued, power-off now");
+    azos_syscall::handlers::power_off_orderly();
+}
+
 /// Gate row `safe mode: attempts exhausted`, on the boot that entered safe
 /// mode (every other boot of `safe-mode-smoke` crashed on purpose in
 /// `boot_count_loaded`). Asks the actuators to move and checks they did not,

@@ -193,6 +193,7 @@ placement-norecord-canary	pending
 portwait-timer-canary	pending	
 power-cap-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 power-off-durability-smoke	pending	
+orderly-drain-smoke	pending	
 preempt-account-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 proxy-donation-canary	pending	
 proxy-pi-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name

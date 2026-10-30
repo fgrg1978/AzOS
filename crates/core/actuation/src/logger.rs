@@ -1410,6 +1410,28 @@ fn atomic_caller() -> bool {
         && !LOG_CANARY_ATOMIC_FLUSH.load(Ordering::Relaxed)
 }
 
+/// Set by the gate's `orderly-drain-smoke`: a flusher pass leaves the ring
+/// alone until [`logger_drain`], so only the drain can write what is queued.
+static LOG_FLUSHER_HELD: AtomicBool = AtomicBool::new(false);
+
+/// See [`LOG_FLUSHER_HELD`].
+pub fn logger_hold_flusher() {
+    LOG_FLUSHER_HELD.store(true, Ordering::Release);
+}
+
+/// Hand every durable record still owed to the medium to the flusher and wait
+/// for it, `pause` between looks, until `expired`. `false`: some are still
+/// owed. The flusher does the write: the caller may be an RT task, and a stuck
+/// medium must not hold it past `expired`.
+pub fn logger_drain(expired: &dyn Fn() -> bool, pause: &dyn Fn()) -> bool {
+    LOG_FLUSHER_HELD.store(false, Ordering::Release);
+    logger_request_flush();
+    while durable_record_pending() && !expired() {
+        pause();
+    }
+    !durable_record_pending()
+}
+
 /// Who writes a record the caller just pushed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FlushBy {
@@ -1487,7 +1509,7 @@ pub fn logger_flusher_task(_: usize) {
 /// is served). The task body, and what a host test drives in its place.
 pub fn logger_flusher_pass() -> u32 {
     let seen = FLUSH_REQ.load(Ordering::SeqCst);
-    if LOG_ACTIVE.load(Ordering::Acquire) && ring_len() > 0 {
+    if LOG_ACTIVE.load(Ordering::Acquire) && ring_len() > 0 && !LOG_FLUSHER_HELD.load(Ordering::Acquire) {
         let _ = logger_flush_now();
     }
     for slot in DEFERRED_IO.iter() {

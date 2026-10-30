@@ -23311,8 +23311,31 @@ tracectl start sched
         "$ush_desk_script" 150 "has the console" "desktop-ok"
     USH_X86_DEFCONFIG="$ush_desk_def" USH_QEMU_EXTRA="-m 1024M -append canary=storm-record-locked,log-atomic-flush" USH_FORBID="$ush_desk_forbid" par_row ushell_row "boot: x86_64 desktop reaches the shell, canary" x86 "" FAIL \
         "$ush_desk_script" 150 "has the console" "desktop-ok"
+    # An orderly power-off drains the logger's ring: the smoke queues a latching
+    # record with the flusher held and powers off, and boot 2 of the volume must
+    # come up latched. Under `orderly-drain-skip` nothing else can write it.
+    ush_drain_row() { # ush_drain_row <label> <rv|arm|x86> <features> <PASS|FAIL> [canary name]
+        local label="$1" isa="$2" feats="$3" want="$4" img k2
+        img="$CI_LOG_DIR/ush-drain-$isa-$want.img"
+        mkdir -p "$CI_LOG_DIR"; rm -f "$img"
+        USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE" USH_QEMU_EXTRA="${5:+-append canary=$5}" \
+            ushell_row "$label, boot 1" "$isa" "$feats" PASS \
+            "#wait \[ORDERLY\] (boot volume|FAIL)" 240 \
+            "[ORDERLY] drain smoke: record queued" "[ORDERLY] boot volume: "
+        case "$isa" in
+            rv) k2="$KERNEL" ;;
+            arm) k2="$A64_IMG" ;;
+            x86) k2="$AZOS_OUT/build/kernel-x86_64-ush-x86-lxrt.elf" ;;
+        esac
+        USH_KERNEL="$k2" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE" ushell_row "$label" "$isa" "$feats" "$want" \
+            "#wait \[LOG\] flight recorder" 120 \
+            "SAFETY] ESTOP restored: the last session ended latched (action 2)"
+        rm -f "$img"
+    }
     for ush_isa in rv arm x86; do
         ush_feat=qemu; [ "$ush_isa" = x86 ] && ush_feat=spawn-log
+        par_row ush_drain_row "power-off: a queued record is drained ($ush_isa)" "$ush_isa" "$ush_feat,orderly-drain-smoke" PASS
+        par_row ush_drain_row "power-off: a queued record is drained ($ush_isa), canary" "$ush_isa" "$ush_feat,orderly-drain-smoke" FAIL orderly-drain-skip
         # BusyBox (third-party, GPL-2.0-only; `make busybox` with
         # USERSPACE_GPL + BUSYBOX in a config of its own, never the gate's).
         # `sh` runs a builtin, a NOEXEC applet over a FAT32 directory, a

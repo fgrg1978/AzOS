@@ -910,15 +910,22 @@ pub(crate) fn install_ring3_seams() {
                     return azos_syscall::file_ops::SyncAllOut::default();
                 }
                 use azos_drv_sys::timebase::{now, TIMER_FREQ};
-                let deadline = now().saturating_add(
-                    azos_limits::POWER_OFF_STEP_TIMEOUT_MS as u64 * TIMER_FREQ / 1000);
-                // A look every millisecond while FAT32's `fs-wb` task flushes;
-                // the waiter sleeps, so the flusher gets the CPU.
-                let pause = || {
+                let step = azos_limits::POWER_OFF_STEP_TIMEOUT_MS as u64 * TIMER_FREQ / 1000;
+                // A look every millisecond while FAT32's `fs-wb` task or the log
+                // flusher writes; the waiter sleeps, so they get the CPU.
+                let look = |deadline: u64| {
                     let until = now().saturating_add((TIMER_FREQ / 1000).max(1)).min(deadline);
                     azos_sched::task_block(azos_sched::WaitReason::Timer(until));
                 };
-                let r = azos_fs::vfs_sync_all(&|| now() >= deadline, &pause);
+                let deadline = now().saturating_add(step);
+                if !canary!("orderly-drain-skip")
+                    && !azos_actuation::logger::logger_drain(&|| now() >= deadline, &|| look(deadline))
+                {
+                    azos_drv_sys::kwarn!("[ORDERLY] flight recorder: durable records still not on the medium after {} ms",
+                        azos_limits::POWER_OFF_STEP_TIMEOUT_MS);
+                }
+                let deadline = now().saturating_add(step);
+                let r = azos_fs::vfs_sync_all(&|| now() >= deadline, &|| look(deadline));
                 azos_syscall::file_ops::SyncAllOut { volumes: r.volumes, failed: r.failed, timed_out: r.timed_out }
             }
             fn clean_unmount(&self) -> bool {

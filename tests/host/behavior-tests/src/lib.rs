@@ -1678,6 +1678,47 @@ mod decision_receipts {
         logger_shutdown();
     }
 
+    /// A power-off's drain waits for the flusher, and only for as long as it
+    /// is allowed: a flusher that never serves it answers `false`, with the
+    /// record still owed, and one that does writes the record.
+    ///
+    /// **Canary.** Return from `logger_drain` without its wait: the storage
+    /// assertion goes red. Ignore `expired`: the first call never returns.
+    #[test]
+    fn a_power_off_drain_is_bounded_and_ends_with_the_record_written() {
+        use std::cell::Cell;
+        let _g = flight_recorder::begin(0);
+        logger_init().expect("mount succeeds");
+        logger_set_rt_probe(rt_yes);
+        decision_refusal_sink(&azos_decision::ProvenanceRecord::new(0, 1, 7, [1, 2, 3]));
+        logger_set_rt_probe(rt_no);
+        let looks = Cell::new(0);
+        assert!(!logger_drain(&|| looks.get() >= 3, &|| looks.set(looks.get() + 1)));
+        assert_eq!(fsmock::file_bytes(0).len(), LOG_FILE_HEADER_BYTES);
+        assert!(logger_drain(&|| false, &|| { logger_flusher_pass(); }));
+        assert_eq!(on_disk().len(), 1, "the drain ended with the record on the storage");
+        logger_shutdown();
+    }
+
+    /// Held, a flusher pass leaves the ring alone; the drain lets go of it.
+    ///
+    /// **Canary.** Skip the `LOG_FLUSHER_HELD` test in the pass: the first
+    /// assertion goes red, and the gate's drain canary stops discriminating.
+    #[test]
+    fn a_held_flusher_writes_only_for_the_drain() {
+        let _g = flight_recorder::begin(0);
+        logger_init().expect("mount succeeds");
+        logger_set_rt_probe(rt_yes);
+        decision_refusal_sink(&azos_decision::ProvenanceRecord::new(0, 1, 7, [1, 2, 3]));
+        logger_set_rt_probe(rt_no);
+        logger_hold_flusher();
+        logger_flusher_pass();
+        assert_eq!(fsmock::file_bytes(0).len(), LOG_FILE_HEADER_BYTES, "a held flusher wrote");
+        assert!(logger_drain(&|| false, &|| { logger_flusher_pass(); }));
+        assert_eq!(on_disk().len(), 1);
+        logger_shutdown();
+    }
+
     /// A refusal that has a subject image and a topology row is TWO records
     /// on the storage, the base and the provenance extension, and they decode
     /// back through `azos_decision` to the same fields. One with neither is

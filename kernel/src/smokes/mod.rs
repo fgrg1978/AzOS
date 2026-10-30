@@ -48,9 +48,11 @@ pub(crate) use storage::*;
 mod net;
 #[cfg(any(feature = "dhcp-smoke", feature = "net-smoke"))]
 pub(crate) use net::*;
-#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke"))]
+#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke",
+          feature = "orderly-drain-smoke"))]
 mod ota;
-#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke"))]
+#[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke",
+          feature = "orderly-drain-smoke"))]
 pub(crate) use ota::*;
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke", feature = "geofence-smoke",
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
@@ -296,6 +298,8 @@ pub(crate) fn spawn_system_smokes() {
     #[cfg(feature = "power-off-durability-smoke")]
     azos_sched::task_create_affinity("durable-smoke", power_off_durability_smoke_task, 0,
                                          azos_sched::DEFAULT_PRIORITY, 1);
+    #[cfg(feature = "orderly-drain-smoke")]
+    azos_sched::task_create("drain-smoke", orderly_drain_smoke_task, 0, azos_sched::DEFAULT_PRIORITY);
 
     // DRV1: the buzzer and INA219 functional test. Hart 1, default priority,
     // like `gpio-aq3-smoke`: it only waits and reads.
