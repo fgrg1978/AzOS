@@ -14,3 +14,5 @@ pub(crate) mod selftests;
 // I-13's rollback of an EL1 Alignment fault (ktest).
 #[cfg(all(feature = "ktest", feature = "use-robot"))]
 mod txn_align;
+#[cfg(feature = "ktest")]
+mod clock_ktest;

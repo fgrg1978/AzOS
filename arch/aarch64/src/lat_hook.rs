@@ -26,7 +26,7 @@ pub fn site(loc: &'static Location<'static>) -> usize {
 
 #[inline(always)]
 fn now() -> u64 {
-    crate::sysregs::read_cntvct_el0()
+    crate::timer::now_ticks()
 }
 
 #[inline(always)]

@@ -49,9 +49,8 @@ fn page_u64(off: usize) -> u64 {
     }
 }
 
-/// The free-running hardware counter, read in ring 3: the RISC-V `time` CSR,
-/// the AArch64 virtual counter, or the x86_64 TSC converted with the factors
-/// the kernel published.
+/// The clock read in ring 3: the RISC-V `time` CSR, or the AArch64 virtual
+/// counter or x86_64 TSC converted with the factors the kernel published.
 #[inline(always)]
 fn counter() -> u64 {
     let t: u64;
@@ -59,15 +58,20 @@ fn counter() -> u64 {
     unsafe {
         core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack));
     }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack));
-    }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     {
-        let (lo, hi): (u32, u32);
-        unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)) };
-        let tsc = ((hi as u64) << 32) | lo as u64;
+        #[cfg(target_arch = "aarch64")]
+        let tsc = {
+            let c: u64;
+            unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) c, options(nomem, nostack)) };
+            c
+        };
+        #[cfg(target_arch = "x86_64")]
+        let tsc = {
+            let (lo, hi): (u32, u32);
+            unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)) };
+            ((hi as u64) << 32) | lo as u64
+        };
         let rd = |off: usize| unsafe { core::ptr::read_volatile((VDSO_USER_BASE + off) as *const u64) };
         let (base, ticks, mult) = (
             rd(azos_abi::vdso::VDSO_COUNTER_BASE_OFFSET),

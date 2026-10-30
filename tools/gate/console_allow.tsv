@@ -21,4 +21,3 @@ console: brain client \((rv|arm)\)	gave-up	console program /fat/BRAINCLI\.ELF ga
 sh: safe mode( canary)? \((rv|arm)\)	warn	\[WDT\] WARNING: 3 consecutive crashes detected	the row crashes the boots on purpose to reach safe mode
 ktest lockdep canaries \((rv|arm|x86)\)	lockdep	.	the row arms every lockdep canary: each one provokes its violation
 boot: x86_64 desktop reaches the shell, canary	lockdep	lockdep: sleep or device wait under a SpinLock	the canary holds the storm's lock across the durable record, and the row asserts the violation
-preset boot: \S+ aarch64 \(hvf\)	warn	\[TIMER\] WARN: live CNTFRQ_EL0 disagrees	HVF's counter is the host's 24 MHz and Kconfig TIMER_FREQ says 1 GHz: every compile-time timeout runs 41.67x long until aarch64 scales its clock as x86_64 does

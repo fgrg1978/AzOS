@@ -496,10 +496,8 @@ pub const TIMER_PPI_ENABLED: u32 = if cfg!(feature = "a64clk-ppi-canary") {
 
 pub static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Live `CNTFRQ_EL0` value, published once by `kernel_main` right after it
-/// reads it (see that function's `live_hz` and `install_vdso` call) so
-/// [`handle_irq`] can convert `CNTVCT_EL0` ticks to milliseconds for the
-/// vDSO page (M01) without re-reading a system register on every IRQ. 0
+/// The clock's rate, published once by `kernel_main` so [`handle_irq`] can
+/// convert ticks to milliseconds for the vDSO page (M01). 0
 /// until published — `handle_irq` treats that as "not ready yet" and skips
 /// the vDSO update for that tick rather than dividing by it.
 pub static VDSO_TIMEBASE_HZ: AtomicU64 = AtomicU64::new(0);

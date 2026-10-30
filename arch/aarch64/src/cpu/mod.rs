@@ -62,16 +62,14 @@ pub fn wfi() {
     }
 }
 
-/// Read the monotonic tick counter — `CNTVCT_EL0`, the generic timer's
-/// virtual count register.
+/// The clock ([`crate::timer::now_ticks`]).
 ///
 /// Free-function twin of `Cpu::now_ticks`, matching `arch-riscv64`'s `cpu`
 /// module so the `azos_arch` facade exposes the same name on both ISAs.
-/// Same timebase `set_timer_deadline` writes `CNTV_CVAL_EL0` against.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn now_ticks() -> u64 {
-    crate::sysregs::read_cntvct_el0()
+    crate::timer::now_ticks()
 }
 
 /// Read the generic timer's live counter frequency (`CNTFRQ_EL0`), set by

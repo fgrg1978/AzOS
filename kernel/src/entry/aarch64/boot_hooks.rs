@@ -58,6 +58,7 @@ fn entered_at_el2() -> bool {
 /// that first atomic runs. Printed by `boot_banner`.
 #[inline(always)]
 pub fn pre_console(dtb_ptr: usize, dt: Option<&azos_dtb::DtbInfo>) {
+    arch_timer::clock_init();
     SCTLR_BEFORE_FIRST_LOCK.store(azos_arch::sysregs::read_sctlr_el1(), Ordering::Relaxed);
     console_from_dt(dtb_ptr, dt);
     // The baseline level (Kconfig AARCH64_LEVEL), before the first lock:
@@ -315,7 +316,11 @@ pub fn irqchip_probe(fw: &Firmware) {
 /// Nothing to choose: the EL1 virtual timer; its frequency is read live from
 /// `CNTFRQ_EL0` in `timer_init`.
 #[inline(always)]
-pub fn timer_probe(_fw: &Firmware) {}
+pub fn timer_probe(_fw: &Firmware) {
+    if canary!("clock-scale-skip") {
+        arch_timer::clock_unscaled();
+    }
+}
 
 /// The `[ISA]` line: each extension's Kconfig choice against the ID
 /// registers (`azos_arch::cpu::features`; the DTB plays no part). The users act
@@ -644,10 +649,8 @@ pub fn post_heap(_heap_start: usize, _kernel_end_aligned: usize) {
     crate::boot_stack_report();
 }
 
-/// `CNTFRQ_EL0`, read live: the platform constant and QEMU's default
-/// disagree (see `timer_init`). The vDSO page (`install_vdso`) publishes
-/// it, so every aarch64 process can read `VDSO_USER_BASE` and `CNTVCT_EL0`
-/// at the right rate.
+/// The clock's rate, which the vDSO page (`install_vdso`) publishes next to the
+/// multiplier that takes ring 3's `CNTVCT_EL0` to it.
 #[inline(always)]
 pub fn timebase_hz() -> u64 {
     arch_timer::freq_hz()
@@ -974,20 +977,8 @@ pub fn smp_probe(dtb_ptr: usize) {
 /// converts ticks with, the periodic tick, then IRQs unmasked.
 #[inline(always)]
 pub fn timer_init() {
-    // Timer period: read CNTFRQ_EL0 LIVE rather than trust the
-    // platform constant. `arch-aarch64::sysregs::read_cntfrq_el0`'s
-    // own doc says QEMU virt's cortex-a72 default is 62.5 MHz, while
-    // `platform::hw::TIMER_FREQ` documents 1 GHz for machine >= 9.0 —
-    // the two sources disagree about which QEMU config this actually
-    // is, so only a live read is trustworthy; printed either way so a
-    // real mismatch is visible instead of silently mis-pacing every
-    // tick by up to 16x.
     let live_hz = arch_timer::freq_hz();
-    kprintln!("[TIMER] CNTFRQ_EL0: {} Hz (platform const: {} Hz)", live_hz, hw::TIMER_FREQ);
-    if live_hz != hw::TIMER_FREQ {
-        azos_drv_sys::kwarn!("[TIMER] WARN: live CNTFRQ_EL0 disagrees with platform::hw::TIMER_FREQ \
-                   — using the live value for the tick period");
-    }
+    kprintln!("[TIMER] CNTFRQ_EL0: {} Hz, the clock ticks at {} Hz", arch_timer::counter_hz(), live_hz);
 
     // Publish for `handle_irq` (`kernel/src/entry/aarch64/trap.rs`) to convert
     // CNTVCT_EL0 ticks to milliseconds on every timer IRQ — see

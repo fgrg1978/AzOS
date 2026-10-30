@@ -1416,6 +1416,7 @@ pub mod pmu;
 pub use pmu::{Pmu, PmuCaps};
 
 /// Ring-3 port I/O: a thread's open ports and the ISA seam that loads them.
+pub mod clock_scale;
 pub mod ioport;
 pub mod mmio;
 pub use ioport::{IoPorts, PortGrant};

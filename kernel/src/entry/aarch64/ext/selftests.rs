@@ -107,7 +107,8 @@ fn interrupt_selftests() {
     let probe_target = ticks_after + TICK_TARGET;
     let probe_deadline = ARCH.now_ticks().wrapping_add(live_hz.saturating_mul(2));
     let (v8_lo, v8_hi, _probe_final_ticks) =
-        crate::entry::aarch64::irq::fp_survives_interrupt_probe(probe_target, probe_deadline);
+        crate::entry::aarch64::irq::fp_survives_interrupt_probe(
+            probe_target, azos_arch::timer::ticks_to_counter(probe_deadline));
     let pattern = crate::entry::aarch64::FP_PROBE_PATTERN;
     if v8_lo == pattern && v8_hi == pattern {
         kprintln!("[TRAP] FP/SIMD survives interrupt: PASS (v8=[{:#x},{:#x}])", v8_hi, v8_lo);

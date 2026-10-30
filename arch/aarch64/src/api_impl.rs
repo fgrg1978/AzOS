@@ -124,12 +124,7 @@ impl Cpu for Aarch64 {
 
     #[inline]
     fn now_ticks(&self) -> u64 {
-        // `CNTVCT_EL0`, the virtual count register — the generic timer's
-        // monotonic counter as Linux reads it at EL1 and as ring 3's vDSO
-        // reads it, and the same timebase `set_timer_deadline` writes
-        // `CNTV_CVAL_EL0` against, so a deadline computed from a reading
-        // needs no conversion.
-        crate::sysregs::read_cntvct_el0()
+        crate::timer::now_ticks()
     }
 
     #[inline(always)]
@@ -205,10 +200,7 @@ impl Interrupts for Aarch64 {
 
     #[inline]
     fn set_timer_deadline(&self, deadline_ticks: u64) {
-        // Generic-timer ticks are CNTFRQ_EL0 Hz. The kernel
-        // already converts its scheduler ticks to the platform
-        // timebase, so this is a direct write.
-        crate::sysregs::write_cntv_cval_el0(deadline_ticks);
+        crate::sysregs::write_cntv_cval_el0(crate::timer::ticks_to_counter(deadline_ticks));
         crate::sysregs::enable_virt_timer();
     }
 

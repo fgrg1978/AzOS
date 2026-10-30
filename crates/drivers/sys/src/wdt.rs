@@ -224,7 +224,7 @@ mod sbsa {
     fn arm(ms: u32) -> u32 {
         let Some(f) = frames() else { return 0 };
         let v = VERSION.load(Ordering::Relaxed);
-        let (wor, armed) = g::wor_for_ms(ms, crate::timebase::freq(), v);
+        let (wor, armed) = g::wor_for_ms(ms, crate::timebase::counter_freq(), v);
         g::arm(&f, wor, v);
         armed
     }

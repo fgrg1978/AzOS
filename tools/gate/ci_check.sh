@@ -14358,7 +14358,7 @@ PY
     # aarch64) -> 124, arm 127.
     # +1 inspect_refresh_leaves_interrupts_as_they_were -> 125, arm 128.
     KTEST_N_RV=125
-    KTEST_N_ARM=128
+    KTEST_N_ARM=129
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -25674,6 +25674,43 @@ debug_row() { # debug_row <riscv64|aarch64|x86_64>
 for dbg_isa in riscv64 aarch64 x86_64; do
     par -s "debug: $dbg_isa" debug_row "$dbg_isa"
 done
+# A timeout in TIMER_FREQ ticks against the raw counter (ktest
+# clock_timeout_holds_against_counter), at a counter rate that is not TIMER_FREQ:
+# the host's under HVF, a Pi 3's under TCG. canary=clock-scale-skip takes the
+# counter for the clock, so the same test must read long there.
+clock_scale_row() { # clock_scale_row <label> <hvf|tcg> <extra cpu options> <pass|fail>
+    local label="$1" accel="$2" cpuopt="$3" verdict="$4" want="^ok [0-9]+ - clock_timeout_holds_against_counter"
+    printf "  %-26s" "${label}..."
+    if [ "$accel" = hvf ] && ! hvf_host; then SKIP=$((SKIP + 1)); echo "skipped (this host has no HVF)"; return; fi
+    mkdir -p "$CI_LOG_DIR"
+    a64_kbuild "$KTEST_FEATS" || { bad; echo "      aarch64 --features $KTEST_FEATS did not build"; return; }
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/clock-$tag.log" kimg="$CI_LOG_DIR/clock-$tag.img"
+    local -a app=(); [ "$verdict" = fail ] && { app=(-append "canary=clock-scale-skip"); want="^not ok [0-9]+ - clock_timeout_holds_against_counter"; }
+    rm -f "$log"; cp "$A64_IMG" "$kimg"
+    par_ready
+    qemu-system-aarch64 -M virt,gic-version=3 -accel "$accel" -cpu "max,pauth=on$cpuopt" -smp 2 -nographic \
+        -semihosting-config enable=on,target=native -kernel "$kimg" ${app[@]+"${app[@]}"} </dev/null >"$log" 2>&1 &
+    local pid=$! i=0
+    {
+        while [ "$i" -lt 240 ] && kill -0 "$pid"; do
+            grep -aqE "^(not )?ok [0-9]+ - clock_timeout_holds_against_counter" "$log" && break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -9 "$pid"; wait "$pid"
+    } 2>/dev/null
+    rm -f "$kimg"
+    if tr -d '\r' <"$log" | grep -aqE "$want"; then
+        ok; tr -d '\r' <"$log" | grep -a '^# clock:' | sed 's/^/      /'; rm -f "$log"
+    else
+        bad; echo "      wanted: $want"; tr -d '\r' <"$log" | grep -aE '^# clock:|clock_timeout|KERNEL PANIC' | sed 's/^/        /'
+        echo "      log kept: $log"
+    fi
+}
+par "aarch64 clock: timeout holds (hvf)" clock_scale_row "aarch64 clock: timeout holds (hvf)" hvf "" pass
+par "aarch64 clock: unscaled reads long (hvf)" clock_scale_row "aarch64 clock: unscaled reads long (hvf)" hvf "" fail
+par "aarch64 clock: timeout holds (19.2 MHz)" clock_scale_row "aarch64 clock: timeout holds (19.2 MHz)" tcg ",cntfrq=19200000" pass
+par "aarch64 clock: unscaled reads long (19.2 MHz)" clock_scale_row "aarch64 clock: unscaled reads long (19.2 MHz)" tcg ",cntfrq=19200000" fail
 
 par_drain
 if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then

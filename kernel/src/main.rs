@@ -456,10 +456,10 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     smokes::spawn_system_smokes();
 
     // Wave 15 (TRACE): the tracer's rings, one per CPU this boot brings up,
-    // created before any secondary can record; the timestamps' rate is the
-    // clock vDSO's (the live CNTFRQ_EL0 on aarch64). Nothing with KTRACE off.
+    // created before any secondary can record; the timestamps are the raw
+    // counter, unscaled, at its rate. Nothing with KTRACE off.
     {
-        let ts_hz = azos_drv_sys::timebase::freq();
+        let ts_hz = azos_drv_sys::timebase::counter_freq();
         // SAFETY: linker-script symbols; only their addresses are taken.
         let text = unsafe { (&_text_start as *const u8 as usize, &_text_end as *const u8 as usize) };
         azos_ipc::trace::init(num_cpus, ts_hz, text);

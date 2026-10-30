@@ -179,8 +179,7 @@ impl ArchEntry for Entry {
     /// the live `CNTFRQ_EL0` captured at boot. `None` until both are known.
     #[inline(always)]
     fn vdso_counter_scale(&self) -> Option<(u64, u64, u64)> {
-        // Ring 3 converts `cntvct_el0` with the vDSO's timebase itself.
-        None
+        Some((0, 0, azos_arch::timer::counter_to_ticks_mult()))
     }
 
     fn vdso_clock(&self) -> Option<(u64, u64)> {

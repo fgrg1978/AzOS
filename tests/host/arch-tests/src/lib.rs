@@ -41,6 +41,8 @@ mod a64_cfi;
 mod pac_keys;
 #[cfg(test)]
 mod mmio_width;
+#[cfg(test)]
+mod clock_scale;
 // aarch64 I-13: the syndrome the trap entry hands to the control-tick
 // rollback (`sysregs::el1_alignment_fault`).
 #[cfg(test)]

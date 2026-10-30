@@ -364,6 +364,9 @@ pub(crate) const NAMES: &[&str] = &[
     // which HVF cannot emulate (gate row `aarch64 hvf: a writeback store on a
     // device aborts`).
     "mmio-writeback",
+    // entry/aarch64/boot_hooks.rs: the raw counter is taken for the clock, as if
+    // CNTFRQ_EL0 were TIMER_FREQ (ktest `clock_timeout_holds_against_counter`).
+    "clock-scale-skip",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 

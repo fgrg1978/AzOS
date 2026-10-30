@@ -107,7 +107,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	348	14	12	52	0	62
+kernel	348	14	12	52	0	61
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-

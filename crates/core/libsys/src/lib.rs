@@ -319,10 +319,9 @@ pub fn clock_now(id: ClockId) -> Result<u64, ClockError> {
     clock_now_with(id, vdso_now_ns, vdso_clock_offsets)
 }
 
-/// The free-running hardware counter, read in ring 3: the RISC-V `time` CSR
-/// (`scounteren.TM` is set in `trap_init`), on aarch64 the generic timer's
-/// virtual counter `cntvct_el0`, on x86_64 the TSC scaled to the kernel
-/// clock's ticks.
+/// The clock read in ring 3: the RISC-V `time` CSR (`scounteren.TM` is set in
+/// `trap_init`), on aarch64 the generic timer's virtual counter `cntvct_el0`
+/// and on x86_64 the TSC, both scaled to the kernel clock's ticks.
 ///
 /// On aarch64 the kernel sets `CNTKCTL_EL1.EL0VCTEN` at boot (the analogue of
 /// `scounteren.TM`) and publishes the same vDSO page as on the other ISAs, so
@@ -334,18 +333,25 @@ fn read_time_csr() -> u64 {
     let t: u64;
     #[cfg(target_arch = "riscv64")]
     unsafe { core::arch::asm!("rdtime {}", out(reg) t, options(nomem, nostack)); }
-    #[cfg(target_arch = "aarch64")]
-    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack)); }
-    // x86_64: the TSC (`CR4.TSD` clear, so `rdtsc` runs in ring 3), turned
-    // into the kernel clock's TIMER_FREQ ticks with the conversion the kernel
-    // published (`azos_abi::vdso::VDSO_COUNTER_*`, written once before any
-    // user task: no seqlock), the same arithmetic as its own `now_ticks`.
-    // Only reached when the vDSO says the counter is native.
-    #[cfg(target_arch = "x86_64")]
+    // aarch64 and x86_64: the counter (`CR4.TSD` clear, so `rdtsc` runs in ring
+    // 3), turned into the kernel clock's TIMER_FREQ ticks with the conversion
+    // the kernel published (`azos_abi::vdso::VDSO_COUNTER_*`, written once before
+    // any user task: no seqlock), the same arithmetic as its own `now_ticks`.
+    // On x86_64 only reached when the vDSO says the counter is native.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     {
-        let (lo, hi): (u32, u32);
-        unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)); }
-        let tsc = ((hi as u64) << 32) | lo as u64;
+        #[cfg(target_arch = "aarch64")]
+        let tsc = {
+            let c: u64;
+            unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) c, options(nomem, nostack)); }
+            c
+        };
+        #[cfg(target_arch = "x86_64")]
+        let tsc = {
+            let (lo, hi): (u32, u32);
+            unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack)); }
+            ((hi as u64) << 32) | lo as u64
+        };
         // SAFETY: the page is mapped at VDSO_USER_BASE for every user task.
         let rd = |off: usize| unsafe { core::ptr::read_volatile((VDSO_USER_BASE + off) as *const u64) };
         let (base, ticks, mult) = (rd(azos_abi::vdso::VDSO_COUNTER_BASE_OFFSET),

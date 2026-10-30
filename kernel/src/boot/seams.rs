@@ -29,19 +29,13 @@ compile_error!("Kconfig LINUX_RUNTIME hosts the Linux personality on riscv64, aa
 /// aarch64 process; `abitest` then took a page fault the moment it read
 /// `VDSO_USER_BASE`, since nothing — not even the ecall fallback the
 /// module doc describes — was mapped there at all). `timebase_hz` is the
-/// counter frequency, board-specific and read differently per ISA (Kconfig
-/// `TIMER_FREQ` on riscv64, the rate the board's `mtime` runs at; a live
-/// `CNTFRQ_EL0` read on aarch64, since QEMU's default has changed across
-/// machine versions — see that kernel_main's own `live_hz` comment).
+/// clock's rate, Kconfig `TIMER_FREQ`.
 ///
-/// The `VDSO_FLAG_RDTIME_NATIVE` flag (riscv64's `rdtime`-from-U-mode
-/// read, set when the boot hart's trap-probe of `time` passes) is NOT set
-/// here for aarch64: it is a
-/// RISC-V-specific ABI promise about a RISC-V-specific instruction, and
-/// aarch64 has no equivalent wired yet. Ring 3 there still gets the vDSO's
-/// cooked `uptime_ms`/`uptime_ticks` fields. x86_64 sets it with
-/// `counter_scale` (`ArchEntry::vdso_counter_scale`): the TSC's conversion
-/// to the clock, which ring 3 applies to its own `rdtsc`.
+/// The `VDSO_FLAG_RDTIME_NATIVE` flag says ring 3 reads the counter itself:
+/// riscv64 sets it when the boot hart's trap-probe of `time` passes; x86_64 and
+/// aarch64 with `counter_scale` (`ArchEntry::vdso_counter_scale`), the counter's
+/// conversion to the clock, which ring 3 applies to its own `rdtsc` or
+/// `cntvct_el0`.
 pub(crate) fn install_vdso(timebase_hz: u64, counter_scale: Option<(u64, u64, u64)>) {
     {
         azos_mm::vdso::vdso_init();
