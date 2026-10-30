@@ -490,10 +490,18 @@ USPACE_METADATA_TAG := $(shell python3 -c 'import hashlib; print(hashlib.sha256(
 # extensions set to `require` (config/arch/Kconfig.isa-riscv64 RV_ZBA/ZBB/ZBS; nothing on
 # QEMU's default, so the default images and digests do not move). A board's
 # images: `make RV_USER_KCONFIG=build/k1.config userspace`.
+# With a riscv64 .config it is the development configuration; with another ISA's
+# it is an expansion of RISCV64_USER_DEFCONFIG (mk/kernel.mk), so `make check
+# ARCH=riscv64` takes none of the .config's codegen flags (as AARCH64_KCONFIG
+# and X86_64_KCONFIG do for their ISAs).
+ifeq ($(KCONFIG_ISA),riscv64)
 RV_USER_KCONFIG ?= $(OUT_BUILD)/qemu-dev.config
+endif
+RISCV64_USER_DEFCONFIG ?= config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config
+RV_USER_KCONFIG ?= $(OUT_BUILD)/riscv64.config
 # Only a riscv64 expansion gives them: the development configuration follows the
 # ISA of .config, and in an out dir last built for another ISA it still holds
-# that ISA's flags when `make check ARCH=riscv64` or `make azos-guest` read it.
+# that ISA's flags when `make azos-guest` reads it.
 RV_USER_ISA := $(if $(shell grep -qs '^CONFIG_ARCH_RISCV64=y$$' '$(RV_USER_KCONFIG)' && echo y),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
 # Cargo hashes the target spec's contents into every artifact's fingerprint,
 # so an edit of sdk/targets/*.json relinks every image; a crate's build.rs (the

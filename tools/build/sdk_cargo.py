@@ -38,6 +38,16 @@ def out(*cmd):
     return subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def config_isa(path):
+    """The ISA an expanded .config selects (riscv64 when no other ARCH_ symbol is on)."""
+    with open(path, encoding="utf-8") as f:
+        text = f.read().splitlines()
+    for isa in ("aarch64", "x86_64"):
+        if f"CONFIG_ARCH_{isa.upper()}=y" in text:
+            return isa
+    return "riscv64"
+
+
 def toml_array(items):
     return "[" + ",".join('"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"' for s in items) + "]"
 
@@ -62,6 +72,8 @@ def main():
     kconfig = os.path.realpath(os.path.join(ROOT, a.kconfig))
     if not os.path.isfile(kconfig):
         sys.exit(f"sdk_cargo: {a.kconfig}: no such file (make creates it)")
+    if config_isa(kconfig) != a.isa:
+        sys.exit(f"sdk_cargo: --isa {a.isa} but {a.kconfig} selects {config_isa(kconfig)}: its codegen flags are not {a.isa}'s")
     target = TARGETS[a.isa]
     spec = os.path.join(ROOT, "sdk", "targets", target + ".json")
 

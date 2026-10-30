@@ -267,6 +267,18 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# A ring-3 image takes its codegen flags from a configuration of its own ISA, whatever ISA
+# .config selects.
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "user image ISA..."
+    if out="$(python3 tools/build/test_user_isa.py 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | grep FAIL | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 # `make help` must not name a target the Makefile lacks (tools/lint/check_make_help.sh).
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "make help targets..."
