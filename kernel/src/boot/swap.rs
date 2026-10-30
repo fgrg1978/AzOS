@@ -76,7 +76,7 @@ fn pinned(owner: usize) -> bool {
 }
 
 fn record(r: &SwapRecord) {
-    let verdict = if r.paid() { Verdict::Admit } else { Verdict::Refuse };
+    let verdict = if r.refused() { Verdict::Refuse } else { Verdict::Admit };
     azos_decision::record(Rule::SwapOut, verdict, 0, r.fields());
 }
 

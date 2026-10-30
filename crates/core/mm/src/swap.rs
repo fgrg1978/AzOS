@@ -303,6 +303,14 @@ impl SwapRecord {
         self.segments != 0
     }
 
+    /// Wrote nothing because something said no. Not a refusal: no segment was
+    /// full enough, or `done` said there was room before the first (`Refuse`
+    /// is for a segment that could not go).
+    #[must_use]
+    pub const fn refused(&self) -> bool {
+        !self.paid() && !matches!(self.stop, Stop::NoSegment | Stop::Done | Stop::Max)
+    }
+
     /// The record's three numbers, in the rule's field order.
     #[must_use]
     pub const fn fields(&self) -> [u64; 3] {

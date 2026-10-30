@@ -520,7 +520,7 @@ fn swap_out_storm_refuses_pinned_memory_and_records_it() {
     assert_eq!(rig.outstanding(), 1);
     assert!(rig.pool.borrow().swapped(7, a[0]).is_none());
     assert_eq!(records(), vec![rec], "the storm that wrote nothing is still one record");
-    assert!(!rec.paid(), "and it is a refusal");
+    assert!(!rec.paid() && rec.refused(), "and it is a refusal");
     // Unpinned (the row changed): it goes.
     pin(&[]);
     assert_eq!(rig.storm(&swap, 4).unwrap().segments, 1);
@@ -574,6 +574,25 @@ fn done_ends_a_storm_before_it_writes() {
     let rec = swap_out_storm(&rig.pool, &swap, &rig.heap, false, 4, &|| true).unwrap();
     assert_eq!((rec.segments, rec.stop), (0, Stop::Done));
     assert_eq!(disk.writes.get(), 0);
+    assert!(!rec.refused(), "there was room: nothing to refuse");
+}
+
+/// A storm that found no full segment wrote nothing and refused nothing; the
+/// stops where a segment could not go are refusals.
+/// **Canary.** Answer `!paid()` from `SwapRecord::refused`: red.
+#[test]
+fn a_swap_storm_with_no_segment_is_not_a_refusal() {
+    let disk = Disk::new(SW);
+    let rig = Rig::<P>::new(&disk);
+    let swap = rig.swap();
+    let rec = rig.storm(&swap, 4).unwrap();
+    assert_eq!((rec.segments, rec.stop), (0, Stop::NoSegment));
+    assert!(!rec.refused());
+    for stop in [Stop::Pinned, Stop::Quota, Stop::AreaFull, Stop::NoSwap, Stop::Io, Stop::NoMemory, Stop::Busy] {
+        let rec = SwapRecord { stop, ..rec };
+        assert!(rec.refused(), "{stop:?}");
+        assert!(!SwapRecord { segments: 1, ..rec }.refused(), "{stop:?} after a segment went");
+    }
 }
 
 #[test]
