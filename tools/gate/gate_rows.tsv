@@ -1094,3 +1094,6 @@ preset boot: automotive x86_64	n2	arch/x86_64/** arch/x86_64/boot/linker-x86_64.
 preset boot: generic aarch64 (hvf)	n2	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** tools/build/defconfig_menu.py tools/gate/preset_boot_green.tsv arch/api/src/mmio.rs mk/vars.mk mk/qemu.mk
 preset boot: robot aarch64 (hvf)	n2	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/** tools/build/defconfig_menu.py tools/gate/preset_boot_green.tsv arch/api/src/mmio.rs mk/vars.mk mk/qemu.mk
 aarch64 hvf: a writeback store on a device aborts	n2	arch/api/src/mmio.rs arch/aarch64/src/irq/gic.rs arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/aarch64/**
+debug: riscv64	n2	arch/riscv64/** arch/riscv64/boot/linker.ld tools/gate/debug_row.py tools/dev/debug_script.py tools/dev/symbolize_bt.py mk/qemu.mk kernel/src/entry/** kernel/src/boot/early.rs
+debug: aarch64	n2	arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld tools/gate/debug_row.py tools/dev/debug_script.py tools/dev/symbolize_bt.py mk/qemu.mk kernel/src/entry/** kernel/src/boot/early.rs
+debug: x86_64	n2	arch/x86_64/** arch/x86_64/boot/linker-x86_64.ld arch/x86_64/boot/boot-pa-x86_64.ld tools/gate/debug_row.py tools/dev/debug_script.py tools/dev/symbolize_bt.py mk/qemu.mk kernel/src/entry/** kernel/src/boot/early.rs

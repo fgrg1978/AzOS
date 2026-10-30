@@ -11400,6 +11400,15 @@ printf "  %-26s" "farm tests..."
 if farm_out="$(python3 "${REPO_ROOT}/tools/dev/test_farm.py" 2>&1)"; then ok
 else bad; printf '%s\n' "$farm_out" | grep -E "^(FAIL|ERROR)" | sed 's/^/      /'; fi
 fi; ci_row_end
+# `make debug`'s tools (tools/dev/debug_script.py, symbolize_bt.py): the
+# debugger chosen per ISA, the scripts written, the slide arithmetic of the
+# lldb module against a stub, and a backtrace symbolized against an ELF with
+# DWARF that the test links, canaries included. No QEMU.
+if ci_row_begin "debug tools tests"; then
+printf "  %-26s" "debug tools tests..."
+if dbgt_out="$(python3 "${REPO_ROOT}/tools/dev/test_debug.py" 2>&1)"; then ok
+else bad; printf '%s\n' "$dbgt_out" | grep -E "^(FAIL|ERROR)" | sed 's/^/      /'; fi
+fi; ci_row_end
 # The generated "Userspace programs" menu (config/Kconfig.userspace): the
 # board defaults are the topology's images, a program directory added or
 # deleted under userspace/ enters or leaves the menu, a console program that
@@ -25639,6 +25648,32 @@ hvf_writeback_canary_row() {
     ok; rm -f "$hlog" "$tlog"
 }
 par "aarch64 hvf: a writeback store on a device aborts" hvf_writeback_canary_row
+
+# ── `make debug` (Kconfig-independent: the generic preset of each ISA) ──────
+#
+# tools/gate/debug_row.py does what the owner types in the gate's own output
+# directory (`make defconfig ARCH=<isa> PRESET=generic`, `make build`, `make
+# debug`) and attaches the debugger `make debug` printed: gdb on riscv64, lldb
+# on aarch64 and x86_64. It reads pc while QEMU is stopped at reset, lets the
+# kernel boot to the shell prompt, then `azos-slide <the KASLR base>` and
+# `kernel::kernel_main` must read at the address and with the bytes the ELF
+# gives. The canary is in the row: `azos-slide` given a base one 2 MiB step
+# off must NOT match, or the row fails.
+debug_row() { # debug_row <riscv64|aarch64|x86_64>
+    local isa="$1" label="debug: $1" out
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    out="$CI_LOG_DIR/debug-$isa.out"
+    par_ready
+    if AZOS_OUT="$AZOS_OUT" CI_LOG_DIR="$CI_LOG_DIR" python3 "$REPO_ROOT/tools/gate/debug_row.py" "$isa" >"$out" 2>&1; then
+        ok; rm -f "$out" "$CI_LOG_DIR/debug-$isa.log"
+    else
+        bad; sed 's/^/      /' "$out"; echo "      logs kept: $CI_LOG_DIR/debug-$isa.*"
+    fi
+}
+for dbg_isa in riscv64 aarch64 x86_64; do
+    par -s "debug: $dbg_isa" debug_row "$dbg_isa"
+done
 
 par_drain
 if [ "$CI_TIER" != full ] && [ "${CI_SKIP_QEMU:-0}" != 1 ]; then
