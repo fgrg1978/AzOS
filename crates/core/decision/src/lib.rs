@@ -36,10 +36,11 @@
 //! sink is a function pointer because the recorder (`azos_actuation`) sits
 //! above this crate: the scheduler's refusal path cannot name it.
 //!
-//! A sink may block on the medium, so it must be a function that defers
-//! when the caller is real-time: the recorder's `log_*_durable` entry points
-//! put the record on the logger's ring and wake the log flusher instead of
-//! flushing in the caller (`logger_flush`'s RT rule). A `Refuse` always goes
+//! A record can be written from anywhere, a SpinLock section included, so a
+//! sink must not block when the caller is real-time or may not block: the
+//! recorder's `log_*_durable` entry points put the record on the logger's ring
+//! for the log flusher instead of flushing in the caller (`logger_flush`'s
+//! rule). A `Refuse` always goes
 //! to the sink. A `Deny` (capability denial) goes there too, but it can
 //! arrive per syscall, so it passes a token bucket per subject first
 //! (Kconfig `DECISION_DENY_DURABLE_PER_SEC`, `DECISION_DENY_DURABLE_BURST`;

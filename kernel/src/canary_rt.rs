@@ -346,8 +346,14 @@ pub(crate) const NAMES: &[&str] = &[
     // x86_64 only).
     "x86-tlb-join-skip",
     // tasks/reclaim.rs `storm`: the storm's decision record is written holding
-    // AGES (gate row `boot: x86_64 desktop reaches the shell, canary`).
+    // AGES, and a storm with no candidate writes it as a refusal, so a durable
+    // record reaches the recorder under a SpinLock (gate row `boot: x86_64
+    // desktop, durable refusal under a SpinLock`, which stays green).
     "storm-record-locked",
+    // crates/core/actuation/src/logger.rs `atomic_caller`: a caller that may
+    // not block flushes itself (with `storm-record-locked`: gate row `boot:
+    // x86_64 desktop reaches the shell, canary`).
+    "log-atomic-flush",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 

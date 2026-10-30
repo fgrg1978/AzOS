@@ -1595,6 +1595,89 @@ mod decision_receipts {
         logger_shutdown();
     }
 
+    /// A task in a SpinLock section queues its refusal: nothing reaches the
+    /// storage, not even a wake, until the flusher's pass, and the flusher
+    /// writes it. Armed with the canary, the old behaviour, the same call
+    /// writes in the caller.
+    ///
+    /// **Canary.** Drop the `may_block` test from `atomic_caller`: red.
+    #[test]
+    fn a_refusal_in_a_spinlock_section_is_queued_for_the_flusher() {
+        static LOCK: azos_sync::SpinLock<()> = azos_sync::SpinLock::new(());
+        let _g = flight_recorder::begin(0);
+        logger_set_rt_probe(rt_no);
+        logger_init().expect("mount succeeds");
+        azos_sync::waitqueue::set_caller_tid(7);
+        let locked = LOCK.lock();
+        decision_refusal_sink(&azos_decision::ProvenanceRecord::new(0, 1, 7, [1, 2, 3]));
+        assert_eq!(fsmock::file_bytes(0).len(), LOG_FILE_HEADER_BYTES,
+                   "the caller wrote to the storage holding a SpinLock");
+        assert_eq!(logger_ring_len(), 1, "the refusal was not queued");
+        assert!(durable_record_pending(), "the record is owed to the medium");
+        drop(locked);
+        logger_flusher_pass();
+        assert_eq!(on_disk().len(), 1, "the flusher wrote it");
+        assert!(!durable_record_pending());
+
+        decision_refusal_sink(&azos_decision::ProvenanceRecord::new(0, 1, 7, [1, 2, 3]));
+        assert_eq!(on_disk().len(), 2, "out of the section the caller writes");
+
+        logger_canary_atomic_flush(true);
+        let locked = LOCK.lock();
+        decision_refusal_sink(&azos_decision::ProvenanceRecord::new(0, 1, 7, [1, 2, 3]));
+        drop(locked);
+        logger_canary_atomic_flush(false);
+        assert_eq!(on_disk().len(), 3, "the canary did not put the old behaviour back");
+        azos_sync::waitqueue::set_caller_tid(u32::MAX);
+        logger_shutdown();
+    }
+
+    /// The same section with no task to hand to, a boot path: the caller still
+    /// writes, because no flusher may exist yet and the boot may halt next.
+    ///
+    /// **Canary.** Drop the `caller_tid` test from `atomic_caller`: red.
+    #[test]
+    fn a_boot_path_under_a_lock_still_writes_its_record() {
+        static LOCK: azos_sync::SpinLock<()> = azos_sync::SpinLock::new(());
+        let _g = flight_recorder::begin(0);
+        logger_set_rt_probe(rt_no);
+        logger_init().expect("mount succeeds");
+        for tid in [0, u32::MAX] {
+            azos_sync::waitqueue::set_caller_tid(tid);
+            let _locked = LOCK.lock();
+            log_safety_violation_durable(SAFETY_ESTOP, 2, 0).expect("written in the caller");
+        }
+        azos_sync::waitqueue::set_caller_tid(u32::MAX);
+        assert_eq!(on_disk().len(), 2);
+        logger_shutdown();
+    }
+
+    /// A latching e-stop in a SpinLock section (no caller does this today)
+    /// stays pinned and owed, and the flusher's pass makes it durable: deferring
+    /// it can delay the record, not lose it.
+    ///
+    /// **Canary.** Skip the latch tracking in `log_safety_violation_durable`:
+    /// the pending assertion goes red.
+    #[test]
+    fn a_latch_record_in_a_spinlock_section_stays_pinned_for_the_flusher() {
+        static LOCK: azos_sync::SpinLock<()> = azos_sync::SpinLock::new(());
+        let _g = flight_recorder::begin(0);
+        logger_set_rt_probe(rt_no);
+        logger_init().expect("mount succeeds");
+        let (durable_before, _, _) = logger_latch_stats();
+        azos_sync::waitqueue::set_caller_tid(7);
+        let locked = LOCK.lock();
+        assert_eq!(log_safety_violation_durable(SAFETY_ESTOP, 2, 0), Err(LogStorageError::Deferred));
+        drop(locked);
+        azos_sync::waitqueue::set_caller_tid(u32::MAX);
+        assert!(logger_latch_stats().2, "the latch record is not pending");
+        logger_flusher_pass();
+        let (durable, _, pending) = logger_latch_stats();
+        assert_eq!((durable - durable_before, pending), (1, false));
+        assert_eq!(on_disk()[0].payload[0], SAFETY_ESTOP);
+        logger_shutdown();
+    }
+
     /// A refusal that has a subject image and a topology row is TWO records
     /// on the storage, the base and the provenance extension, and they decode
     /// back through `azos_decision` to the same fields. One with neither is

@@ -672,11 +672,11 @@ pub const fn decision_refusal_payload(rule: u8, verdict: u8, subject: u32, n: [u
 /// `parent_cap`, `node_id`, `session_id` and `seq` do not fit 20 bytes and are
 /// not durable in v1: see `azos_decision::ProvenanceRecord`).
 ///
-/// A real-time caller does not flush: the record is queued on the logger's
-/// ring and the log flusher is woken (`logger_flush`'s rule, through
-/// `push_durable`); only a ring full of a pinned latch record drops it, and
-/// that is the `Err`. A non-RT caller flushes itself. Does not count as a
-/// safety violation (`LOG_SAFETY_COUNT` is the e-stop path's).
+/// A real-time caller, and one that may not block, does not flush: the record
+/// is queued on the logger's ring for the log flusher (`logger_flush`'s rule,
+/// through `push_durable`); only a ring full of a pinned latch record drops
+/// it, and that is the `Err`. Any other caller flushes itself. Does not count
+/// as a safety violation (`LOG_SAFETY_COUNT` is the e-stop path's).
 pub fn log_decision_provenance_durable(p: &azos_decision::ProvenanceRecord) -> Result<usize, LogStorageError> {
     push_durable(decision_refusal_payload(p.rule, p.verdict, p.subject, p.n))?;
     if let Some(ext) = p.compact_ext() {
@@ -1392,6 +1392,46 @@ fn rt_caller() -> bool {
     }
 }
 
+/// Runtime canary `log-atomic-flush`: a caller that may not block flushes
+/// itself again, the sleep under a SpinLock the rule below exists to prevent.
+static LOG_CANARY_ATOMIC_FLUSH: AtomicBool = AtomicBool::new(false);
+
+/// Arm or disarm the runtime canary `log-atomic-flush`.
+pub fn logger_canary_atomic_flush(armed: bool) {
+    LOG_CANARY_ATOMIC_FLUSH.store(armed, Ordering::Relaxed);
+}
+
+/// Is the caller a task that holds a SpinLock or has interrupts masked? A boot
+/// path is no task: it has no flusher to hand to and its wait does not sleep
+/// (`WaitQueue::wait_if_for`), so it keeps writing its record itself.
+fn atomic_caller() -> bool {
+    !matches!(azos_sync::waitqueue::caller_tid(), 0 | u32::MAX)
+        && !azos_sync::preempt::may_block()
+        && !LOG_CANARY_ATOMIC_FLUSH.load(Ordering::Relaxed)
+}
+
+/// Who writes a record the caller just pushed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlushBy {
+    Caller,
+    /// A real-time task: woken at once.
+    FlusherNow,
+    /// A context that may not block: no wake, because the wake takes the
+    /// scheduler's locks and the caller may hold anything. The watchdog's
+    /// periodic request runs the pass within its ~500 ms cadence.
+    FlusherNextPass,
+}
+
+fn flush_by() -> FlushBy {
+    if atomic_caller() {
+        FlushBy::FlusherNextPass
+    } else if rt_caller() {
+        FlushBy::FlusherNow
+    } else {
+        FlushBy::Caller
+    }
+}
+
 /// Ask the flusher for a flush. Never blocks: an atomic add and a wake.
 pub fn logger_request_flush() {
     FLUSH_REQ.fetch_add(1, Ordering::SeqCst);
@@ -1584,13 +1624,22 @@ pub fn logger_tick() {
 /// durable (see `flush_one_batch`).
 ///
 /// A real-time caller does not flush (owner rule: an RT task never does
-/// block I/O): it wakes the log flusher and gets `Err(Deferred)` at once.
+/// block I/O), and neither does a task in a SpinLock section or with
+/// interrupts masked: `block_current` refuses its sleep, and the wait for the
+/// disk would spin with preemption off. Both get `Err(Deferred)` at once and
+/// the record stays on the ring for the flusher ([`FlushBy`]).
 pub fn logger_flush() -> Result<usize, LogStorageError> {
-    if rt_caller() {
-        logger_request_flush();
-        return Err(LogStorageError::Deferred);
+    match flush_by() {
+        FlushBy::Caller => logger_flush_now(),
+        FlushBy::FlusherNow => {
+            logger_request_flush();
+            Err(LogStorageError::Deferred)
+        }
+        FlushBy::FlusherNextPass => {
+            FLUSH_REQ.fetch_add(1, Ordering::SeqCst);
+            Err(LogStorageError::Deferred)
+        }
     }
-    logger_flush_now()
 }
 
 /// The flush itself, in the calling task (never an RT one: see
@@ -2131,9 +2180,9 @@ fn carry_key_pin_into_new_file() {
 /// durable. An ordinary record is refused while a pending latch record or a
 /// pinned write-ahead effect record is at the tail of a ring at its limit
 /// (`ring_push`); a record that uses the safety reserve ([`reserve_admit`])
-/// is refused only when the reserve is full as well. A non-RT caller then
-/// drains the ring itself and pushes again; an RT caller does not drain, and
-/// the flush it requested runs after it returns. Nothing evicts a pinned effect
+/// is refused only when the reserve is full as well. A caller [`FlushBy::Caller`]
+/// names then drains the ring itself and pushes again; any other does not
+/// drain, and the flush it requested runs after it returns. Nothing evicts a pinned effect
 /// record to make room. A record still refused is `Err`: the flush after it
 /// would answer `Ok` for OTHER records (for the release nonce floor that `Ok`
 /// would advance the in-memory floor with nothing on disk;
@@ -2148,7 +2197,8 @@ fn push_durable(payload: [u8; LOG_PAYLOAD_BYTES]) -> Result<Option<u64>, LogStor
     if !LOG_ACTIVE.load(Ordering::Acquire) {
         return Ok(None);
     }
-    if !rt_caller() {
+    let by = flush_by();
+    if by == FlushBy::Caller {
         let _ = logger_flush_now();
         if let Some(p) = push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, admit) {
             DURABLE_WANT.fetch_max(p + 1, Ordering::AcqRel);
@@ -2157,8 +2207,10 @@ fn push_durable(payload: [u8; LOG_PAYLOAD_BYTES]) -> Result<Option<u64>, LogStor
     }
     note_latch_lost(&payload);
     // Dropped, not deferred: nothing of this call is on the ring.
-    if rt_caller() {
-        logger_request_flush();
+    match by {
+        FlushBy::Caller => {}
+        FlushBy::FlusherNow => logger_request_flush(),
+        FlushBy::FlusherNextPass => { FLUSH_REQ.fetch_add(1, Ordering::SeqCst); }
     }
     Err(LogStorageError::Io)
 }

@@ -415,8 +415,8 @@ pub(crate) fn install_sched_hooks() {
     crate::drv_supervisor::register_block_sink();
     // Kconfig DECISION_REFUSALS_DURABLE: a refusal that goes through
     // `azos_decision::record` also becomes a flight-recorder record. The
-    // recorder defers an RT caller's write to the flusher, and the sink does
-    // nothing until the recorder is armed.
+    // recorder defers the write of an RT caller, and of one that may not block,
+    // to the flusher, and the sink does nothing until the recorder is armed.
     if azos_decision::DURABLE {
         azos_decision::set_durable_sink(azos_actuation::logger::decision_refusal_sink);
     }
@@ -810,6 +810,10 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
         "log-flush", azos_actuation::logger::logger_flusher_task, 0,
         azos_limits::LOG_FLUSHER_PRIORITY as u32);
     kprintln!("[SCHED] Created log-flush task (prio {})", azos_limits::LOG_FLUSHER_PRIORITY);
+    // Runtime canary: a durable record flushes in a caller that may not block.
+    if canary!("log-atomic-flush") {
+        azos_actuation::logger::logger_canary_atomic_flush(true);
+    }
     // Runtime canary: the latching record's durable write is deferred past
     // any kill (logger.rs `LOG_CANARY_LATCH_DEFER`).
     if canary!("log-latch-defer") {

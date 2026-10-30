@@ -25,6 +25,7 @@ pub struct SpinLock<T> {
 // Same guarantees the real guard offers, expressed over std's guard.
 pub struct Guard<'a, T> {
     inner: MutexGuard<'a, T>,
+    _cs: PreemptGuard,
 }
 
 /// The real crate has two guard types (plain and IRQ-saving). On the host
@@ -51,7 +52,7 @@ impl<T> SpinLock<T> {
     }
 
     pub fn lock(&self) -> Guard<'_, T> {
-        Guard { inner: self.inner.lock().unwrap_or_else(|e| e.into_inner()) }
+        Guard { inner: self.inner.lock().unwrap_or_else(|e| e.into_inner()), _cs: critical_section() }
     }
 
     /// No interrupts on the host — identical to `lock()`.
@@ -61,9 +62,9 @@ impl<T> SpinLock<T> {
 
     pub fn try_lock(&self) -> Option<Guard<'_, T>> {
         match self.inner.try_lock() {
-            Ok(g) => Some(Guard { inner: g }),
+            Ok(g) => Some(Guard { inner: g, _cs: critical_section() }),
             Err(std::sync::TryLockError::Poisoned(e)) => {
-                Some(Guard { inner: e.into_inner() })
+                Some(Guard { inner: e.into_inner(), _cs: critical_section() })
             }
             Err(std::sync::TryLockError::WouldBlock) => None,
         }
@@ -255,7 +256,22 @@ pub mod waitgraph {
 /// counter; the guard is a unit (threads stay preemptible, which only makes
 /// the lock-free code under test face more interleavings, never fewer).
 pub mod preempt {
+    std::thread_local! {
+        static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
     pub struct PreemptGuard;
-    pub fn critical_section() -> PreemptGuard { PreemptGuard }
+    pub fn critical_section() -> PreemptGuard {
+        DEPTH.with(|d| d.set(d.get() + 1));
+        PreemptGuard
+    }
+    impl Drop for PreemptGuard {
+        fn drop(&mut self) {
+            DEPTH.with(|d| d.set(d.get() - 1));
+        }
+    }
+    /// The real answer's depth half: no interrupts to mask on the host.
+    pub fn may_block() -> bool {
+        DEPTH.with(|d| d.get()) == 0
+    }
 }
 pub use preempt::{critical_section, PreemptGuard};
