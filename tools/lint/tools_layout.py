@@ -78,7 +78,7 @@ ROLES = {
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
         "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "qemu_sendkeys.py", "repro_check.sh", "rows_for_diff.py",
-        "sbom.sh", "text_equiv.py",
+        "sbom.sh", "text_equiv.py", "vmmd_withhold_row.sh",
     ],
     "lint": [
         "aarch64_fp_free_check.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
