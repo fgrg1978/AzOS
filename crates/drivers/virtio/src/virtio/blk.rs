@@ -234,6 +234,43 @@ fn waiting_on_device() -> bool {
     (0..SLOTS).any(|t| SLOT_INFLIGHT[t].load(Ordering::Acquire) && !SLOT_DONE[t].load(Ordering::Acquire))
 }
 
+/// A slot's flags, as [`report_once`] reads them.
+pub struct ReportFlags<'a> {
+    pub inflight: &'a AtomicBool,
+    pub done: &'a AtomicBool,
+    pub reported: &'a AtomicBool,
+}
+
+/// Runtime canary `blk-reap-unlocked`: [`report_once`] takes no lock.
+static REAP_UNLOCKED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_reap_unlocked(on: bool) {
+    REAP_UNLOCKED.store(on, Ordering::Relaxed);
+}
+
+/// Should this reaper report the slot's command? `Some(done)` to one reaper per
+/// command: `done` when the device posted it, otherwise it died with the
+/// command in it (`dead`).
+///
+/// Reapers run concurrently. A second report would reach the layer after it
+/// released the slot and end the slot's next command while the device still
+/// holds it, so the check and the set are under `lock`. `checked` runs between
+/// them, where the ktest puts the second reaper.
+pub fn report_once(lock: &Mutex<()>, f: ReportFlags<'_>, dead: bool, checked: impl FnOnce()) -> Option<bool> {
+    let unlocked = azos_limits::CANARY_RUNTIME && REAP_UNLOCKED.load(Ordering::Relaxed);
+    let _g = (!unlocked).then(|| lock.lock());
+    if !f.inflight.load(Ordering::Acquire) || f.reported.load(Ordering::Acquire) {
+        return None;
+    }
+    let done = f.done.load(Ordering::Acquire);
+    if !done && !dead {
+        return None;
+    }
+    checked();
+    f.reported.store(true, Ordering::Relaxed);
+    Some(done)
+}
+
 /// Tell [`STALL`] the guest is looking at the device now; says so once per
 /// stall, at most once per `STALL_SAY_EVERY_US`. Returns the timebase tick it
 /// read.
@@ -1074,22 +1111,18 @@ impl HwQueue for VirtioBlk {
         let dead = RECOVERY.dead();
         let mut n = 0;
         for t in 0..dev.slots {
-            // Reapers run concurrently: under the lock a slot is reported once.
-            // A second report would reach the layer after it released the slot
-            // and end the slot's next command while the device still holds it.
-            let _g = QLOCK[proto::queue_of(t, dev.queues)].lock();
-            if !SLOT_INFLIGHT[t].load(Ordering::Acquire) || SLOT_REPORTED[t].load(Ordering::Acquire) {
-                continue;
-            }
-            let status = if SLOT_DONE[t].load(Ordering::Acquire) {
-                hw_status(SLOT_OP[t].load(Ordering::Relaxed), SLOT_STATUS[t].load(Ordering::Relaxed))
-            } else if dead {
-                // The device died with this command in it: no data to trust.
-                HwStatus::Io
-            } else {
+            let flags = ReportFlags { inflight: &SLOT_INFLIGHT[t], done: &SLOT_DONE[t], reported: &SLOT_REPORTED[t] };
+            let Some(done) = report_once(&QLOCK[proto::queue_of(t, dev.queues)], flags, dead, || ()) else {
                 continue;
             };
-            SLOT_REPORTED[t].store(true, Ordering::Relaxed);
+            // Only this reaper reads them, and nothing rewrites them until the
+            // layer hears of this report and releases the slot.
+            let status = if done {
+                hw_status(SLOT_OP[t].load(Ordering::Relaxed), SLOT_STATUS[t].load(Ordering::Relaxed))
+            } else {
+                // The device died with this command in it: no data to trust.
+                HwStatus::Io
+            };
             out[n] = HwDone { tag: t as u8, status };
             n += 1;
         }

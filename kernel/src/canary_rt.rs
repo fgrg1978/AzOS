@@ -51,6 +51,9 @@ pub(crate) const NAMES: &[&str] = &[
     // entry/aarch64/pan_patch.rs: the A64_PAN=probe sites are not rewritten
     // at boot (ktest `a64_pan_sites_patched`, aarch64 only).
     "pan-patch-skip",
+    // boot/blk_irq.rs: virtio-blk reapers check and set a slot's report with no
+    // lock (ktest `blk_reap_reports_once`).
+    "blk-reap-unlocked",
     // boot/net.rs: the virtio-net driver rings a doorbell per frame and per
     // RX re-post, batches and NO_NOTIFY ignored (QEMU trace
     // `virtio_queue_notify` count == frames; gate rows `network: TX batch canary`).

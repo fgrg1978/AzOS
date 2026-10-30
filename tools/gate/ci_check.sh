@@ -14357,8 +14357,9 @@ PY
     # state ring 3 can read is set on every CPU; canary `el0-state-canary`,
     # aarch64) -> 124, arm 127.
     # +1 inspect_refresh_leaves_interrupts_as_they_were -> 125, arm 128.
-    KTEST_N_RV=125
-    KTEST_N_ARM=129
+    # +1 blk_reap_reports_once -> 126, arm 130.
+    KTEST_N_RV=126
+    KTEST_N_ARM=130
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14571,6 +14572,11 @@ PY
     }
     par "ktest inspect guard canary (rv)" ktest_row "ktest inspect guard canary (rv)" rv "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest inspect guard canary (arm)" ktest_row "ktest inspect guard canary (arm)" arm "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
+    # The ERE pins the test by name: the row is green only if it ran and passed.
+    par "ktest blk reap once (rv)" ktest_row "ktest blk reap once (rv)" rv "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
+    par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
+    par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked"
+    par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
@@ -15044,7 +15050,8 @@ PY
     # +1 user_visible_state_is_set_on_every_cpu (tls-hygiene), as on rv and
     # arm -> 130.
     # +1 inspect_refresh_leaves_interrupts_as_they_were, as on rv and arm -> 131.
-    KTEST_N_X86=131
+    # +1 blk_reap_reports_once, as on rv and arm -> 132.
+    KTEST_N_X86=132
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -15918,7 +15925,7 @@ PY
     par -h "netboot riscv64: missing file canary"    netboot_row "netboot riscv64: missing file canary"    riscv64-tftp-nofile   "$NETBOOT_IMG_RISCV64"
     par -h "netboot riscv64: kernel hash canary"     netboot_row "netboot riscv64: kernel hash canary"     riscv64-tftp-badkernel "$NETBOOT_IMG_RISCV64"
     par -h "netboot riscv64: foreign key canary"     netboot_row "netboot riscv64: foreign key canary"     riscv64-tftp-badkey   "$NETBOOT_IMG_RISCV64"
-    x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names> [kernel command line] [disk image target]
+    x86_ktest_row() { # x86_ktest_row <label> <extra features or ""> <expected not-ok names> [kernel command line] [disk image target] [ERE the log must match]
         local label="$1" extra="$2" want="$3" why="" k plan got name
         local -a app=(); [ -n "${4:-}" ] && app=(-append "$4")
         local -a drv=(); local dimg=""
@@ -15955,6 +15962,7 @@ PY
             [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
                 && why="no matching summary line"
         fi
+        if [ -z "$why" ] && [ -n "${6:-}" ] && ! grep -aqE "$6" "$log"; then why="no line matching: $6"; fi
         # The verdict also rides on QEMU's exit status (isa-debug-exit, see
         # kernel/src/ktest.rs power_off): 1 after a clean run, 3 after a failed one.
         local qwhy=""
@@ -15989,6 +15997,8 @@ PY
     }
     par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" ""
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
+    par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
+    par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
     par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \

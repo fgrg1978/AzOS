@@ -42,10 +42,62 @@ pub(crate) fn blk_wake(tid: u32) {
     azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, azos_sched::WaitReason::Timer(_)));
 }
 
+// Two reapers at one slot, the second run while the first is between its check
+// and its set, and only if nothing keeps it out. If it reports, the layer
+// releases the slot and starts the next command, which the first then ends
+// early with the old status.
+#[cfg(feature = "ktest")]
+azos_ktest::ktest_late! {
+    fn blk_reap_reports_once() {
+        use azos_drv_virtio::virtio::blk::{report_once, ReportFlags};
+        use core::sync::atomic::{AtomicBool, Ordering};
+        let lock = azos_sync::kmutex::Mutex::new(());
+        let (inflight, done, reported) = (AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(false));
+        let f = || ReportFlags { inflight: &inflight, done: &done, reported: &reported };
+
+        let mut second = None;
+        let first = report_once(&lock, f(), false, || {
+            if lock.try_lock().is_some() {
+                second = report_once(&lock, f(), false, || ());
+                done.store(false, Ordering::Relaxed);
+                reported.store(false, Ordering::Relaxed);
+            }
+        });
+        if second.is_some() {
+            return Err("a second reaper reported a slot the first had checked");
+        }
+        if first != Some(true) {
+            return Err("the first reaper did not report a finished command");
+        }
+        if report_once(&lock, f(), false, || ()).is_some() {
+            return Err("a slot already reported was reported again");
+        }
+
+        reported.store(false, Ordering::Relaxed);
+        done.store(false, Ordering::Relaxed);
+        if report_once(&lock, f(), false, || ()).is_some() {
+            return Err("a command in the device was reported");
+        }
+        if report_once(&lock, f(), true, || ()) != Some(false) {
+            return Err("a command in a dead device was not reported");
+        }
+        reported.store(false, Ordering::Relaxed);
+        inflight.store(false, Ordering::Relaxed);
+        if report_once(&lock, f(), true, || ()).is_some() {
+            return Err("an idle slot was reported");
+        }
+        Ok(())
+    }
+}
+
 /// Route the block device's line and switch the driver to it. A no-op
 /// without a block device, or where the line cannot be routed (the driver
 /// then stays polled, as before).
 pub(crate) fn wire_virtio_blk_irq() {
+    if canary!("blk-reap-unlocked") {
+        azos_drv_virtio::virtio::blk::set_reap_unlocked(true);
+        kprintln!("[CANARY] blk-reap-unlocked: reapers check and set a slot's report with no lock");
+    }
     let Some((slot, base)) = azos_drv_virtio::virtio::blk::mmio_slot() else { return; };
     let Some(line) = line_of(slot, base) else {
         kprintln!("[VIRTIO-BLK] no interrupt line for slot {}: polled", slot);
