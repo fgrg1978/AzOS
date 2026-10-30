@@ -1548,6 +1548,9 @@ unsafe fn clear_tid_word(idx: usize, proc_id: u32) {
 /// free the thread's stack, where musl keeps the list head, once that word
 /// is cleared.
 fn robust_list_exit(idx: usize, tid: u32, proc_id: u32) {
+    if !azos_limits::LINUX_ABI {
+        return;
+    }
     let head = crate::group::take_robust_list(idx);
     // Gate canary only: the list is never walked (a lock its owner died
     // holding stays held; the next locker sleeps).

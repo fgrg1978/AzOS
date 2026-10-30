@@ -98,7 +98,8 @@ fn is_console_row(r: &azos_topology::TaskSpec) -> bool {
 /// A Linux class server (`lx_class`) starts only once the hardware bus has
 /// bound a device one of that class's ids matched.
 fn launch_row_wanted(r: &azos_topology::TaskSpec) -> bool {
-    r.lx_class.is_empty() || azos_drv_bus::hwbus::with(|b| b.linux_class_wanted(r.lx_class.as_str()))
+    r.lx_class.is_empty()
+        || (azos_limits::LINUX_DRIVERS && azos_drv_bus::hwbus::with(|b| b.linux_class_wanted(r.lx_class.as_str())))
 }
 
 /// The rows to start at boot, in the order to start them, handed to `f` with

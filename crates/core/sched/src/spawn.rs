@@ -124,13 +124,13 @@ impl SpawnPrepared {
     /// Is the child a Linux task (created with `linux` by
     /// [`spawn_prepare`])?
     pub fn is_linux(&self) -> bool {
-        self.linux
+        azos_limits::LINUX_ABI && self.linux
     }
 
     /// Is the child hosted by a ring-3 runtime (`crate::foreign`)? Then the
     /// kernel keeps no personality state for it.
     pub fn is_hosted(&self) -> bool {
-        self.rt_entry.is_some()
+        azos_limits::LINUX_RUNTIME && self.rt_entry.is_some()
     }
 
     /// Has the initial stack of a Linux child been written?
@@ -329,6 +329,9 @@ pub fn spawn_prepare(
     // The auxiliary values are read from the headers `load_elf` accepted;
     // unused unless the row makes the child a Linux task.
     let aux_of = |hdr: &[u8]| {
+        if !azos_limits::LINUX_ABI {
+            return Default::default();
+        }
         azos_linux_abi::image_aux(hdr, azos_arch::PAGE_SIZE as u64).unwrap_or_default()
     };
     let (mut ctx, aux) = match elf {

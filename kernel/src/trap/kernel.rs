@@ -510,7 +510,7 @@ impl Kernel {
         if !azos_drv_sys::uart::irq_handler() {
             return (false, false);
         }
-        if azos_drv_sys::uart::take_intr() {
+        if azos_drv_sys::uart::take_intr() && azos_limits::LINUX_ABI {
             azos_syscall::linux::console_signal(2);
         }
         let tid = azos_drv_sys::uart::rx_waiter_take();
