@@ -3,7 +3,7 @@ AzOS build system.  Usage: make <target> [VAR=value]
 Configure
   config                 Edit the configuration (menuconfig). Covers the
                          userspace programs, board images and console program.
-  nconfig                Same, with the ncurses front end.
+  nconfig                Same as config (menuconfig is the ncurses front end).
   oldconfig              Update .config after a Kconfig change, asking about new symbols.
   olddefconfig           Update .config after a Kconfig change, taking defaults.
   defconfig-generic-sbc-riscv64-dev  Load a defconfig: config/defconfigs/<name>.config, or <name> assembled

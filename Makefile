@@ -17,12 +17,21 @@
 # TEST key paths that kernel.mk, read after it, uses).
 
 # make splits words on spaces, so a path with one cannot be a target or a
-# prerequisite, and every output here is named by its absolute path. A
-# checkout or an output root under such a path (iCloud Drive's "Mobile
-# Documents") stops here, before anything runs: builds belong outside iCloud.
+# prerequisite, and every output here is named by its absolute path. An
+# output root under such a path stops every goal at parse time; a checkout
+# under one (iCloud Drive's "Mobile Documents") refuses the goals that build
+# or run, before anything does: builds belong outside iCloud. The
+# configuration goals and help name no checkout path in a rule (they read and
+# write its own .config, relative) and stay.
 empty :=
-ifneq ($(findstring $(empty) $(empty),$(CURDIR)$(AZOS_OUT)),)
+SPACE_SAFE_GOALS := config menuconfig nconfig oldconfig olddefconfig savedefconfig defconfig-% help
+ifneq ($(findstring $(empty) $(empty),$(AZOS_OUT)),)
 $(error build outside iCloud: path has spaces)
+endif
+ifneq ($(findstring $(empty) $(empty),$(CURDIR)),)
+ifneq ($(and $(MAKECMDGOALS),$(if $(filter-out $(SPACE_SAFE_GOALS),$(MAKECMDGOALS)),,y)),y)
+$(error build outside iCloud: path has spaces)
+endif
 endif
 
 include mk/vars.mk

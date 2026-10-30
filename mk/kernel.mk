@@ -264,8 +264,8 @@ menuconfig:
 
 config: menuconfig
 
-nconfig:
-	MENUCONFIG_STYLE='$(MENUCONFIG_STYLE)' $(PYTHON) -m menuconfig --style=nconfig
+# kconfiglib has one curses front end, menuconfig (it takes no style argument).
+nconfig: menuconfig
 
 oldconfig:
 	$(PYTHON) -m oldconfig
