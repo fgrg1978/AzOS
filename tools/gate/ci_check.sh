@@ -24431,7 +24431,8 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg" python3 -m olddefconfig >/dev/null 2>&1)
         sed -i '' -e 's/^# CONFIG_BUSYBOX is not set$/CONFIG_BUSYBOX=y/' "$bb_cfg"
         (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg" python3 -m olddefconfig >/dev/null 2>&1)
-        case "$(lo_volume "$bb_cfg")" in *busybox*) ;; *) bad; echo "      make build names no BusyBox volume for a configuration with BUSYBOX: the volume query is blind"; return ;; esac
+        vol="$(lo_volume "$bb_cfg")"; vol="${vol##*/}"
+        case "$vol" in *busybox*) ;; *) bad; echo "      make build names no BusyBox volume for a configuration with BUSYBOX: the volume query is blind"; return ;; esac
         if [ "$expect" = FAIL ]; then
             # The canary: the Linux-ON kernel has more of the symbols than the
             # baseline allows, so the same comparison on it reports a violation.
@@ -24445,7 +24446,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             bad; echo "      $n Linux symbols in the Linux-OFF kernel ($elf), the baseline says $base (set it to $n if that is fewer):"
             "$lo_nm" -C "$elf" | grep -E "$lo_re" | sed 's/^[0-9a-f]* . //' | sed -n 1,8p | sed 's/^/        /'; return
         fi
-        vol="$(lo_volume "$AZOS_OUT/target/linux-off-$isa/linux.config")"
+        vol="$(lo_volume "$AZOS_OUT/target/linux-off-$isa/linux.config")"; vol="${vol##*/}"
         case "$vol" in ''|*busybox*) bad; echo "      the Linux-OFF system volume is '$vol'"; return ;; esac
         ok
     }
