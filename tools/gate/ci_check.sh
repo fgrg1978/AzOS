@@ -25700,7 +25700,7 @@ clock_scale_row() { # clock_scale_row <label> <hvf|tcg> <extra cpu options> <pas
         kill -9 "$pid"; wait "$pid"
     } 2>/dev/null
     rm -f "$kimg"
-    if tr -d '\r' <"$log" | grep -aqE "$want"; then
+    if grep -aqE "$want" "$log"; then
         ok; tr -d '\r' <"$log" | grep -a '^# clock:' | sed 's/^/      /'; rm -f "$log"
     else
         bad; echo "      wanted: $want"; tr -d '\r' <"$log" | grep -aE '^# clock:|clock_timeout|KERNEL PANIC' | sed 's/^/        /'
