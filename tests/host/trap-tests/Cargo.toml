@@ -21,6 +21,10 @@ azos_mm = { path = "shims/mm", package = "trap_test_mm" }
 azos_sync = { path = "shims/sync", package = "trap_test_sync" }
 
 [features]
+# Mirrors the kernel's `linux-abi` (Kconfig LINUX_ABI): on, because the tests drive the
+# return-to-user work the pulled-in trap code runs for the Linux personality.
+default = ["linux-abi"]
+linux-abi = []
 # `budget.rs` (pulled by the mm shim) reads this; never enabled here.
 budget-racy-charge-canary = []
 # The kernel feature the pulled-in trap code gates the boot self-tests on
