@@ -26,7 +26,7 @@ A Rust `std` target for each ISA: `riscv64imac-unknown-azos`,
 `abort`). `std` is built with `-Zbuild-std` from the toolchain pinned in
 `rust-toolchain.toml`. `make sdk` builds the SDK of the ISA `.config` selects into
 `$AZOS_OUT/sdk/<isa>/` (a sysroot and a `key` over the toolchain, the port layer, the
-target and the Kconfig values that change its bytes), and builds nothing when the key
+target, the vendor pin and the Kconfig values that change its bytes), and builds nothing when the key
 is the one it holds. `make build` builds it first, then the std programs the `.config`
 enables: `userspace/services/why`, `userspace/services/pkgd` and
 `userspace/services/rpcquic` by their `USERSPACE_` symbols, `sdk/sdktest` and

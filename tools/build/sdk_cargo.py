@@ -112,7 +112,7 @@ def sdk_key(isa, kconfig, page_size):
     the Kconfig values std is built with (the ISA baseline, the runtime knobs, the granule)."""
     h = hashlib.sha256()
     for part in (out("rustc", "-vV"), isa, str(page_size), user_isa_flags(isa, kconfig), "\n".join(sdk_env(kconfig)),
-                 wrapper_tag(), port_digest()):
+                 wrapper_tag(), port_digest(), file_digest(os.path.join(ROOT, "third_party", "VENDOR_PIN"))):
         h.update(part.encode() + b"\0")
     tree_digest(h, ["sdk/std", f"sdk/targets/{TARGETS[isa]}.json", "sdk/driver", "tools/build/sdk_std.py", "tools/build/sdk_cargo.py"])
     return h.hexdigest()

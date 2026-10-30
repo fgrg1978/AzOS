@@ -5,8 +5,9 @@ and `x86_64-unknown-azos`, built with `-Zbuild-std` from the toolchain pinned in
 `rust-toolchain.toml`. `make sdk` builds the SDK of the ISA `.config` selects into
 `$AZOS_OUT/sdk/<isa>/`: a sysroot (`sysroot/`, with `core`, `alloc`, `std` and
 `panic_abort`) and `key`, which names what it was built from: the toolchain, the
-port layer, the target, and the Kconfig values that change its bytes (the ISA
-baseline, the allocator and thread-stack knobs, the aarch64 granule). The same key
+port layer, the target, the vendor pin (`std`'s own dependencies come from
+`third_party/vendor`, offline and locked) and the Kconfig values that change its bytes
+(the ISA baseline, the allocator and thread-stack knobs, the aarch64 granule). The same key
 builds nothing; another rebuilds. `make build` builds it first, then the std
 programs the `.config` enables (`WHY.ELF`, `PKGD.ELF`, `RPCQUIC.ELF` by their
 `USERSPACE_` symbols; `sdktest` and the TLS probe by `SDK_TEST_PROGRAMS`); a std

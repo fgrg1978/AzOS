@@ -316,6 +316,22 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# The seccomp suite reads the digest table, which binds the images the .config enables, and boots test
+# programs among them: it is made from the gate's configuration, which asks for all of them
+# (tools/build/gen_userspace_kconfig.py --all-on), whatever the last `make` here was.
+case " $suites " in *seccomp-tests*)
+    printf "  %-26s" "image table (all on)..."
+    atc="$AZOS_OUT/target/gate-tier/all-on.config"; mkdir -p "$(dirname "$atc")"
+    if { cat config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config; python3 tools/build/gen_userspace_kconfig.py --all-on; } >"$atc.tmp" \
+       && KCONFIG_CONFIG="$atc.tmp" python3 -m olddefconfig >/dev/null 2>&1 \
+       && { cmp -s "$atc.tmp" "$atc" && rm -f "$atc.tmp" || mv -f "$atc.tmp" "$atc"; } \
+       && out="$(KCONFIG_CONFIG="$atc" make "$AZOS_OUT/build/image_hashes.rs" 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "${out:-}" | grep -E '^(make|error)|\*\*\*' | sed -n 1,5p | sed 's/^/      /'
+    fi ;;
+esac
 # micro/build.rs reads $AZOS_OUT/build/micro.config, which ci_check.sh makes; do it here too.
 case " $suites " in *micro-tests*) make -s micro-config </dev/null >/dev/null 2>&1 ;; esac
 # lx-loader-tests reads the lxtest modules from $AZOS_OUT/build/lx (`make lx-modules`), as its gate row builds them.
