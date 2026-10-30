@@ -58,7 +58,7 @@ pub(crate) fn power_off_durability_smoke_task(_: usize) {
     azos_syscall::handlers::power_off_orderly();
 }
 
-/// Gate row `power-off: a queued record is drained`. Past the boot-good mark,
+/// Gate row `power-off: the log ring is drained`. Past the boot-good mark,
 /// queues a latching e-stop record the way a caller in a SpinLock section does
 /// (on the ring, no wake), holds the flusher so its periodic pass cannot write
 /// it, and powers off. Only the orderly path's drain can put it on the medium;

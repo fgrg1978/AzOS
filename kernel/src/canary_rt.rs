@@ -351,7 +351,7 @@ pub(crate) const NAMES: &[&str] = &[
     // desktop, durable refusal under a SpinLock`, which stays green).
     "storm-record-locked",
     // boot/seams.rs `sync_all`: an orderly power-off leaves the logger's ring
-    // as it is (gate row `power-off: a queued record is drained`, canary).
+    // as it is (gate row `power-off: the log ring is drained`, canary).
     "orderly-drain-skip",
     // crates/core/actuation/src/logger.rs `atomic_caller`: a caller that may
     // not block flushes itself (with `storm-record-locked`: gate row `boot:

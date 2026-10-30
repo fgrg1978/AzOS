@@ -23318,6 +23318,8 @@ tracectl start sched
         local label="$1" isa="$2" feats="$3" want="$4" img k2
         img="$CI_LOG_DIR/ush-drain-$isa-$want.img"
         mkdir -p "$CI_LOG_DIR"; rm -f "$img"
+        local USH_X86_DEFCONFIG="$CI_LOG_DIR/ush-x86-drain.defconfig"
+        cp "config/defconfigs/$GATE_ROBOT_DEFC_X86.config" "$USH_X86_DEFCONFIG"
         USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE" USH_QEMU_EXTRA="${5:+-append canary=$5}" \
             ushell_row "$label, boot 1" "$isa" "$feats" PASS \
             "#wait \[ORDERLY\] (boot volume|FAIL)" 240 \
@@ -23325,7 +23327,7 @@ tracectl start sched
         case "$isa" in
             rv) k2="$KERNEL" ;;
             arm) k2="$A64_IMG" ;;
-            x86) k2="$AZOS_OUT/build/kernel-x86_64-ush-x86-lxrt.elf" ;;
+            x86) k2="$AZOS_OUT/build/kernel-x86_64-ush-x86-drain.elf" ;;
         esac
         USH_KERNEL="$k2" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE" ushell_row "$label" "$isa" "$feats" "$want" \
             "#wait \[LOG\] flight recorder" 120 \
@@ -23334,8 +23336,8 @@ tracectl start sched
     }
     for ush_isa in rv arm x86; do
         ush_feat=qemu; [ "$ush_isa" = x86 ] && ush_feat=spawn-log
-        par_row ush_drain_row "power-off: a queued record is drained ($ush_isa)" "$ush_isa" "$ush_feat,orderly-drain-smoke" PASS
-        par_row ush_drain_row "power-off: a queued record is drained ($ush_isa), canary" "$ush_isa" "$ush_feat,orderly-drain-smoke" FAIL orderly-drain-skip
+        par_row ush_drain_row "power-off: the log ring is drained ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,orderly-drain-smoke" PASS
+        par_row ush_drain_row "power-off: the log ring is drained ($ush_isa), canary" "$ush_isa" "$ush_feat,use-robot,orderly-drain-smoke" FAIL orderly-drain-skip
         # BusyBox (third-party, GPL-2.0-only; `make busybox` with
         # USERSPACE_GPL + BUSYBOX in a config of its own, never the gate's).
         # `sh` runs a builtin, a NOEXEC applet over a FAT32 directory, a

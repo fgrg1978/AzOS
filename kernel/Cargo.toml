@@ -700,7 +700,7 @@ orderly-reboot-smoke = ["qemu"]
 # durable (no power service in front). The host reads the volume back; the
 # runtime canary `power-off-sync-skip` must lose the file.
 power-off-durability-smoke = ["qemu"]
-# Gate row `power-off: a queued record is drained`: a latching record left on the
+# Gate row `power-off: the log ring is drained`: a latching record left on the
 # logger's ring, the flusher held, and an orderly power-off at once.
 orderly-drain-smoke = ["qemu"]
 # Host-suite canary only (`tests/host/pkg-tests`, compiled over `boot/pkg_apply.rs`):
