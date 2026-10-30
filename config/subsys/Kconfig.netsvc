@@ -375,10 +375,12 @@ config SSHD
       at the root of the volume and two sockets while a client is connected.
 
 config SSHD_PORT
-    int "TCP port the SSH server listens on"
+    int "TCP port the SSH server listens on" if SSHD
     range 1 65535
     default 22
-    depends on SSHD
     help
       22 is the port `ssh` dials by default. Another port (a node behind NAT
       that forwards 22 elsewhere) is chosen here; the client names it with -p.
+      Without SSHD it is not offered but keeps its value: SSHD.ELF is built
+      into every volume (a configuration that does not start it still links
+      the constant), and the topology has no row for it.
