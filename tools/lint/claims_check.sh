@@ -156,7 +156,7 @@ GREP=grep
 # report every hit twice, at line numbers from a stale copy.
 EXCLUDE_DIRS=(
     target "target 2" build "build 2"
-    '.[!.]*'
+    '.[a-zA-Z0-9_]*'
     node_modules __pycache__ .venv
 )
 

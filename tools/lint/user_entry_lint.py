@@ -60,7 +60,7 @@ def source_findings(root):
     """[(path, what is wrong)] in the tree at `root`."""
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(("target-", "."))]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith("target-") and (d == ".cargo" or not d.startswith("."))]
         rel = os.path.relpath(dirpath, root)
         in_user = rel == "userspace" or rel.startswith("userspace" + os.sep)
         for n in filenames:
