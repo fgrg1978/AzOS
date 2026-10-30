@@ -543,11 +543,12 @@ config X86_VIRTIO_MMIO_STRIDE
 config X86_VIRTIO_MMIO_MAX
     int "virtio-mmio transports kept and scanned"
     range 0 32
-    default 8 if HWCLASS_EMBEDDED
+    default 8 if HWCLASS_EMBEDDED && !BOARD_QEMU
     default 24
     help
       The transports the platform records (from the command line, or
-      microvm's layout: 24 with its second IOAPIC, else 8) and the
+      microvm's layout: 24 with its second IOAPIC, else 8; QEMU plugs the
+      first device into the last of them, so a QEMU image keeps all 24) and the
       drivers probe at boot: one MMIO read pair per slot, 16 bytes of
       RAM each. 0 compiles virtio-mmio discovery down to nothing.
 
