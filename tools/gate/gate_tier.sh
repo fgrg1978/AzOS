@@ -268,7 +268,7 @@ if [ "$lints" = 1 ]; then
 fi
 
 # A ring-3 image takes its codegen flags from a configuration of its own ISA, whatever ISA
-# .config selects.
+# .config selects and whatever an earlier make left in the output directory.
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "user image ISA..."
     if out="$(python3 tools/build/test_user_isa.py 2>&1)"; then

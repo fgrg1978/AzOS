@@ -723,7 +723,7 @@ RELIBC_PROGS := $(basename $(notdir $(wildcard userspace/tests/relibc/*.c)))
 RELIBC_KCONFIG_riscv64 = $(RV_USER_KCONFIG)
 RELIBC_KCONFIG_aarch64 = $(AARCH64_USER_KCONFIG)
 RELIBC_KCONFIG_x86_64  = $(X86_64_KCONFIG)
-RELIBC_TOML_riscv64 = $(if $(wildcard $(RV_USER_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
+RELIBC_TOML_riscv64 = $(RV_USER_ISA)
 RELIBC_TOML_aarch64 = $(AARCH64_USER_ISA)
 RELIBC_TOML_x86_64  = $(if $(wildcard $(X86_64_KCONFIG)),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml $(X86_64_KCONFIG)))
 # An aarch64 image of another granule (AARCH64_PAGE_SIZE) goes to its own directory.

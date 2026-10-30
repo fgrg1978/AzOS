@@ -6,7 +6,9 @@
   1. sdk_cargo.py refuses a configuration of another ISA, before it runs cargo;
   2. for every (ISA of .config) x (ARCH of `make check`), the configuration each
      SDK image of `make -n check` is built from is an expansion of that image's
-     ISA.
+     ISA;
+  3. a qemu-dev.config that an earlier make left for another ISA does not give
+     the riscv64 images the flags of the configuration they are built with.
 
     python3 tools/build/test_user_isa.py      (exit 0 = all pass)
 """
@@ -72,10 +74,31 @@ def image_configs_follow_arch(tmp):
                   + ("each from its own ISA" if not wrong else "; ".join(sorted(set(wrong)))))
 
 
+def stale_development_config(tmp):
+    out = os.path.join(tmp, "stale")
+    rv, x86 = os.path.join(tmp, "rv.config"), os.path.join(tmp, "x86.config")
+    make([f"KCONFIG_CONFIG={rv}", "defconfig-generic-sbc-riscv64-dev+qemu+linux+gui"], out)
+    with open(rv, "a") as f:
+        f.write("CONFIG_RV_ZBB_REQUIRE=y\n")
+    subprocess.run([sys.executable, "-m", "olddefconfig"], cwd=REPO, env=dict(os.environ, KCONFIG_CONFIG=rv),
+                   capture_output=True, check=True)
+    make([f"KCONFIG_CONFIG={x86}", "defconfig-generic-sbc-x86_64-dev+qemu+linux+gui"], out)
+    dev = os.path.join(out, "build", "qemu-dev.config")
+    make([f"KCONFIG_CONFIG={rv}", dev], out)
+    make([f"KCONFIG_CONFIG={x86}", dev], out)
+    left = "CONFIG_ARCH_X86_64=y" in open(dev).read()
+    r = make([f"KCONFIG_CONFIG={rv}", "USPACE_BUILD=echo", os.path.join(out, "build", "logd.elf")], out)
+    flags = set(re.findall(r"rustflags=\[[^\]]*\]", r.stdout))
+    check(left, "the earlier make left an x86_64 qemu-dev.config")
+    check(len(flags) == 1 and "target-feature=+zbb" in "".join(flags),
+          f"the riscv64 images of a RV_ZBB_REQUIRE configuration are built with +zbb ({' '.join(sorted(flags)) or 'no flags seen'})")
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         sdk_cargo_refuses(tmp)
         image_configs_follow_arch(tmp)
+        stale_development_config(tmp)
     print("test_user_isa:", "FAIL" if FAILS else "ok")
     return 1 if FAILS else 0
 

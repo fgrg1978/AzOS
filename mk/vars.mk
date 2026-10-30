@@ -501,8 +501,11 @@ RISCV64_USER_DEFCONFIG ?= config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui
 RV_USER_KCONFIG ?= $(OUT_BUILD)/riscv64.config
 # Only a riscv64 expansion gives them: the development configuration follows the
 # ISA of .config, and in an out dir last built for another ISA it still holds
-# that ISA's flags when `make azos-guest` reads it.
-RV_USER_ISA := $(if $(shell grep -qs '^CONFIG_ARCH_RISCV64=y$$' '$(RV_USER_KCONFIG)' && echo y),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
+# that ISA's flags when `make azos-guest` reads it. It is read when a recipe
+# runs, not when the makefiles are read: the development configuration is made
+# (mk/kernel.mk) after they are, and a flag read from the copy an earlier make
+# left is another configuration's.
+RV_USER_ISA = $(if $(shell grep -qs '^CONFIG_ARCH_RISCV64=y$$' '$(RV_USER_KCONFIG)' && echo y),$(shell python3 tools/build/kconfig_to_cargo.py --user-rustflags --toml --skip-base $(RV_USER_KCONFIG)))
 # Cargo hashes the target spec's contents into every artifact's fingerprint,
 # so an edit of sdk/targets/*.json relinks every image; a crate's build.rs (the
 # stack an image asks for, `-z stack-size`) is tracked by cargo itself.
@@ -510,7 +513,7 @@ USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(C
 # Each ISA's target and rustflags: the wrapper's digest (above) and the Kconfig
 # codegen flags. A recipe adds exactly one of RV_UFLAGS, AARCH64_UFLAGS and
 # X86_64_UFLAGS after $(USPACE_BUILD).
-RV_UFLAGS := --target $(USER_SPECS)/$(TARGET_RISCV64_USER).json \
+RV_UFLAGS = --target $(USER_SPECS)/$(TARGET_RISCV64_USER).json \
 	--config 'target.$(TARGET_RISCV64_USER).rustflags=["--cfg=azos_stable_metadata_$(USPACE_METADATA_TAG)"$(if $(RV_USER_ISA),$(comma)$(RV_USER_ISA))]'
 
 # ── The native SDK (plan phase 6, item 2) ───────────────────────────────────
@@ -644,6 +647,9 @@ TOPO_EMIT_DEPS := tests/host/topology-tests/src/bin/topo_emit.rs tests/host/topo
 MLSRV_ELF_BOARD := $(BOARD_DIR)/mlsrv.elf
 PKGD_ELF_BOARD := $(BOARD_DIR)/pkgd.elf
 IMAGE_ELFS_BOARD := $(patsubst PKGD.ELF=%,PKGD.ELF=$(PKGD_ELF_BOARD),$(patsubst MLSRV.ELF=%,MLSRV.ELF=$(MLSRV_ELF_BOARD),$(IMAGE_ELFS)))
+# The riscv64 user images, whose flags (RV_USER_ISA) are read from RV_USER_KCONFIG
+# when their recipe runs: it is made first, but is not what rebuilds them.
+RV_USER_ELFS := $(foreach e,$(IMAGE_ELFS_BOARD) $(IMAGE_ELFS),$(word 2,$(subst =, ,$(e))))
 IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
 
 # The .config decides the kernel's features (wave 11, F5): Kconfig is the

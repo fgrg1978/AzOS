@@ -8,7 +8,7 @@
 # `make build`: the system $(KCONFIG_CONFIG) selects (mk/vars.mk, "The
 # configured system"). The ISA's expanded configuration is made by a make of
 # its own first: the images' codegen flags are read from it when the makefiles
-# are (RV_USER_ISA, AARCH64_USER_ISA), so it must exist before the make that
+# are (AARCH64_USER_ISA), so it must exist before the make that
 # builds them starts.
 .PHONY: riscv64
 build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
@@ -320,6 +320,8 @@ $(QEMU_DEV_KCONFIG): $(KCONFIG_CONFIG) FORCE
 	@KCONFIG_CONFIG=$@.new $(PYTHON) -m olddefconfig >/dev/null
 	@grep -qx '$(QEMU_LEVEL_LINE)' $@.new || { echo "could not set $(QEMU_LEVEL_LINE) in $@" >&2; exit 1; }
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
+
+$(RV_USER_ELFS): | $(RV_USER_KCONFIG)
 
 # The riscv64 user images' configuration when .config selects another ISA
 # (`make check ARCH=riscv64`): the shipped default, as the other ISAs'.
