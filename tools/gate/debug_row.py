@@ -119,10 +119,10 @@ def free_port():
 
 
 class Row:
-    def __init__(self, isa, repo, out, logs):
-        self.isa, self.repo, self.out, self.logs = isa, repo, out, logs
-        self.cfg = os.path.join(out, "build", "debug-%s.config" % isa)
-        self.env = dict(os.environ, AZOS_OUT=out, KCONFIG_CONFIG=self.cfg)
+    def __init__(self, isa, repo, out_root, logs):
+        self.isa, self.repo, self.out_root, self.logs = isa, repo, out_root, logs
+        self.cfg = os.path.join(out_root, "build", "debug-%s.config" % isa)
+        self.env = dict(os.environ, AZOS_OUT=out_root, KCONFIG_CONFIG=self.cfg)
         self.proc = None
         self.slow_host = False
 
@@ -182,7 +182,7 @@ class Row:
 
     def run(self):
         fail = self.fail
-        os.makedirs(os.path.join(self.out, "build"), exist_ok=True)
+        os.makedirs(os.path.join(self.out_root, "build"), exist_ok=True)
         r = self.make("defconfig", "ARCH=" + self.isa, "PRESET=" + PRESET, log=os.path.join(self.logs, "debug-%s.defconfig" % self.isa))
         if r.returncode != 0 or ("CONFIG_ARCH_%s=y" % self.isa.upper()) not in read_file(self.cfg).split("\n"):
             return fail("make defconfig ARCH=%s PRESET=%s did not write a %s configuration" % (self.isa, PRESET, self.isa))
