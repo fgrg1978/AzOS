@@ -40,12 +40,19 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or(default_path);
 
-    println!("cargo:rerun-if-changed={}", key_path.display());
+    // A missing path is always stale to cargo, so a tree without the key would
+    // rebuild this crate and the kernel on every build: watch the directory it
+    // would appear in instead.
+    let watched = if key_path.exists() { Some(key_path.as_path()) } else { key_path.parent() };
+    if let Some(p) = watched {
+        println!("cargo:rerun-if-changed={}", p.display());
+    }
     println!("cargo:rerun-if-env-changed=PROD_PUBKEY_PATH");
 
     // Quiet fallback to no key — typical for dev builds. The kernel logs
     // "[SEC] WARNING: dev key embedded" at runtime.
     let bytes = fs::read(&key_path).unwrap_or_default();
+    refuse_test_key_in_release(&manifest_dir, &bytes);
     if !bytes.is_empty() {
         println!("cargo:warning=secure_boot: embedding prod pubkey from {}", key_path.display());
     }
@@ -58,4 +65,31 @@ fn main() {
         write!(out, "0x{:02x}", b).unwrap();
     }
     writeln!(out, "];").unwrap();
+}
+
+/// A release or certifiable image never trusts the TEST key (Kconfig
+/// BUILD_TYPE), however the file is named: compared by content with
+/// tools/keys/test_pub.bin, as azos_topology does for its own key. Host builds
+/// are not images.
+fn refuse_test_key_in_release(manifest_dir: &str, key: &[u8]) {
+    println!("cargo:rerun-if-env-changed=KCONFIG_CONFIG");
+    let bare = env::var("CARGO_CFG_TARGET_OS").map(|o| o == "none" || o == "azos").unwrap_or(false);
+    let Ok(config) = env::var("KCONFIG_CONFIG").map(PathBuf::from) else { return };
+    println!("cargo:rerun-if-changed={}", config.display());
+    let release = fs::read_to_string(&config)
+        .map(|c| c.lines().any(|l| {
+            let l = l.trim();
+            l == "CONFIG_BUILD_TYPE_RELEASE=y" || l == "CONFIG_BUILD_TYPE_CERTIFIABLE=y"
+        }))
+        .unwrap_or(false);
+    if !(bare && release) || key.is_empty() {
+        return;
+    }
+    let test_pub = PathBuf::from(manifest_dir).join("../../../tools/keys/test_pub.bin");
+    if fs::read(&test_pub).map(|t| t[..] == *key).unwrap_or(false) {
+        eprintln!("error: azos_ota: BUILD_TYPE_RELEASE (as BUILD_TYPE_CERTIFIABLE) refuses the TEST key: \
+                   PROD_PUBKEY_PATH names a key whose bytes equal tools/keys/test_pub.bin; \
+                   set it to the fleet's public key, or select BUILD_TYPE_DEV");
+        std::process::exit(1);
+    }
 }

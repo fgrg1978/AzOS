@@ -439,6 +439,59 @@ def test_fleet_ram_size_holds_the_heap() -> None:
         )
 
 
+def test_the_ota_crate_embeds_a_key_only_a_dev_build_may_trust() -> None:
+    """crates/core/ota/build.rs: no rebuild without a key file, and no TEST key in a release image.
+
+    Without tools/keys/prod_pub.bin a second build of azos_ota must be fresh
+    (a rerun-if-changed on a missing file rebuilt it, and the kernel, on every
+    `make build`). A release configuration refuses PROD_PUBKEY_PATH naming the
+    TEST key by its bytes, a dev one embeds it, and a release one takes any
+    other key.
+    """
+    import tempfile
+
+    test_pub = REPO_ROOT / "tools" / "keys" / "test_pub.bin"
+    if not test_pub.exists():
+        return
+    with tempfile.TemporaryDirectory() as td:
+        server = Path(td) / "server.config"
+        made = subprocess.run(
+            ["make", "-s", "defconfig", "ARCH=riscv64", "PRESET=server"], cwd=REPO_ROOT,
+            env=dict(os.environ, KCONFIG_CONFIG=str(server), AZOS_OUT=td),
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
+        assert made.returncode == 0, f"make defconfig PRESET=server failed:\n{made.stderr[-500:]}"
+        dev = server.read_text(encoding="utf-8")
+        release = Path(td) / "release.config"
+        release.write_text(dev.replace("CONFIG_BUILD_TYPE_DEV=y", "CONFIG_BUILD_TYPE_RELEASE=y"), encoding="utf-8")
+        other = Path(td) / "other_pub.bin"
+        other.write_bytes(bytes(range(32)))
+
+        def build(config: Path, key: Optional[Path]) -> subprocess.CompletedProcess:
+            env = dict(os.environ, KCONFIG_CONFIG=str(config), CARGO_TARGET_DIR=str(Path(td) / "target"),
+                       CARGO_NET_OFFLINE="true")
+            env.pop("PROD_PUBKEY_PATH", None)
+            if key:
+                env["PROD_PUBKEY_PATH"] = str(key)
+            return subprocess.run(["cargo", "build", "--release", "-p", "azos_ota"], cwd=REPO_ROOT, env=env,
+                                  capture_output=True, text=True)
+
+        if not (REPO_ROOT / "tools" / "keys" / "prod_pub.bin").exists():
+            build(server, None)
+            again = build(server, None)
+            assert again.returncode == 0 and "Compiling azos_ota" not in again.stderr, (
+                f"azos_ota rebuilt with nothing changed and no prod_pub.bin:\n{again.stderr[-600:]}"
+            )
+        refused = build(release, test_pub)
+        assert refused.returncode != 0 and "refuses the TEST key" in refused.stderr, (
+            f"a release build embedded the TEST key:\n{refused.stderr[-600:]}"
+        )
+        for config, key, what in ((server, test_pub, "a dev build with the TEST key"),
+                                  (release, other, "a release build with another key")):
+            built = build(config, key)
+            assert built.returncode == 0, f"{what} did not build:\n{built.stderr[-600:]}"
+
+
 def test_default_target_is_riscv64() -> None:
     """Any defconfig without an explicit ARCH_ key defaults to riscv64."""
     riscv64_defconfigs = ["generic-sbc-riscv64-dev", "robot-sbc-riscv64-dev+qemu+linux+gui",
@@ -1423,6 +1476,7 @@ def _run_all_tests() -> int:
         test_no_config_emits_small_mem,
         test_embedded_ram_size_comes_through,
         test_fleet_ram_size_holds_the_heap,
+        test_the_ota_crate_embeds_a_key_only_a_dev_build_may_trust,
         test_default_target_is_riscv64,
         test_domain_defaults_to_generic_and_robot_type_is_wired,
         test_threat_profile_implies_never_forces,
