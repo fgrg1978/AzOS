@@ -207,22 +207,29 @@ fn console_on_volume(c: &ConsolePath) -> bool {
 }
 
 /// Why the kernel shell takes the console at boot, or `None` if the user
-/// shell is expected.
-fn recovery_reason_at_boot() -> Option<&'static str> {
+/// shell is expected. The flag says the console program is to blame.
+fn recovery_reason_at_boot() -> Option<(bool, &'static str)> {
     let Some(c) = console_path() else {
-        return Some("no console program (CONSOLE_PROGRAM_NONE)");
+        return Some((false, "no console program (CONSOLE_PROGRAM_NONE)"));
     };
     if azos_actuation::estop::safe_mode_active() {
-        Some("safe mode")
+        Some((false, "safe mode"))
     } else if !console_row_starts(&c) {
-        kprintln!("[CONSOLE] console program {}: the topology does not start it", c.shown());
-        Some("the topology does not start the console program")
+        Some((true, "the topology does not start it"))
     } else if !console_on_volume(&c) {
-        kprintln!("[CONSOLE] console program {}: not on this volume", c.shown());
-        Some("the console program is not on this volume")
+        Some((true, "it is not on this volume"))
     } else {
         None
     }
+}
+
+/// The one line that says the console program gave up and the recovery
+/// console follows. Safe mode and a build without a console program never
+/// print it: nothing gave up there.
+fn gave_up(why: core::fmt::Arguments<'_>) {
+    let c = console_path();
+    let name = c.as_ref().map_or("(none)", ConsolePath::shown);
+    azos_drv_sys::kwarn!("[CONSOLE] console program {} gave up: recovery console ({})", name, why);
 }
 
 /// Will the component manager start the console program again after task
@@ -275,7 +282,7 @@ pub(crate) fn user_shell_exited(tid: u32, restarting: bool) {
         kprintln!("[CONSOLE] user shell tid={} exited: restarting", tid);
     } else {
         MODE.store(RECOVERY, Ordering::Release);
-        azos_drv_sys::kwarn!("[CONSOLE] user shell tid={} gave up: recovery console", tid);
+        gave_up(format_args!("tid={} ended and its row does not restart it", tid));
     }
 }
 
@@ -284,9 +291,13 @@ pub(crate) fn user_shell_exited(tid: u32, restarting: bool) {
 pub(crate) fn wait_for_recovery() {
     let timeout = azos_limits::SH_START_TIMEOUT_S as u64 * TIMER_FREQ;
     match recovery_reason_at_boot() {
-        Some(why) => {
+        Some((program_failed, why)) => {
             MODE.store(RECOVERY, Ordering::Release);
-            azos_drv_sys::kwarn!("[CONSOLE] recovery console: {}", why);
+            if program_failed {
+                gave_up(format_args!("{}", why));
+            } else {
+                azos_drv_sys::kwarn!("[CONSOLE] recovery console: {}", why);
+            }
         }
         None => kprintln!("[CONSOLE] user shell pending (recovery console after {} s without it)",
                           azos_limits::SH_START_TIMEOUT_S),
@@ -311,8 +322,7 @@ pub(crate) fn wait_for_recovery() {
             since = now();
         } else if mode != RECOVERY && now().saturating_sub(since) > timeout {
             MODE.store(RECOVERY, Ordering::Release);
-            azos_drv_sys::kwarn!("[CONSOLE] user shell did not take the console within {} s: recovery console",
-                      azos_limits::SH_START_TIMEOUT_S);
+            gave_up(format_args!("it did not take the console within {} s", azos_limits::SH_START_TIMEOUT_S));
             continue;
         }
         azos_syscall::sleep::sleep_ms(100);

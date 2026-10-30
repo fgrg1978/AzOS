@@ -449,8 +449,11 @@ Source: `crates/core/topology/src/builder.rs` (`SH_CAPS`, `SH_CAPS_LOCKDOWN`,
 
 **Choosing the console program.** The Kconfig choice `CONSOLE_PROGRAM` names
 what the kernel starts on the console: the native shell session (the default
-on the edge and fleet profiles), BusyBox `sh` under the Linux personality, any
-included image, a custom image, or none. With secure boot off and
+on the edge and fleet profiles), BusyBox `sh` under the Linux personality, an
+image whose program metadata says `console` (today `BRAINCLI.ELF`, offered on
+the robot preset only), or none. The console login (`CONSOLE_LOGIN`) is a layer
+over the native shell: with another console program the build stops
+(`azos_limits`) instead of leaving a login nothing asks for. With secure boot off and
 `KERNEL_CMDLINE_INIT` (default `y`), `init=/fat/NAME.ELF` on the kernel command
 line replaces it for one boot, provided the image has a row that says
 `start = true`; with secure boot on (`SECURE_BOOT_ENFORCED`) or
@@ -485,6 +488,12 @@ It takes the console later when:
 - the session ended with status 0: `exit` hangs the terminal up with the
   shell's status, the server exits with it, and the rows of both programs
   restart only on failure, so a clean `exit` does not respawn them.
+
+Whenever the console program is the reason (not in the topology, not on the
+volume, no input taken in time, ended and not restarted), the console prints one
+line, `[CONSOLE] console program /fat/NAME.ELF gave up: recovery console (why)`.
+Safe mode and a build without a console program print their own line and no
+"gave up".
 
 While a user program owns input, the recovery console cannot read the UART.
 There is no physical-console takeover from a wedged but live shell.

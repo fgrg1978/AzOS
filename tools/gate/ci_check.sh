@@ -22588,7 +22588,7 @@ kill 2" 120 \
             "spin &
 !exit 0
 #wait robot> " 150 \
-            "die-with-parent" "gave up: recovery console" "robot> "
+            "die-with-parent" "[CONSOLE] console program /fat/TERMD.ELF gave up: recovery console (tid=" "robot> "
         # USHELL2. ^C on ONE hart: the console's RX interrupt delivers ^C to
         # the foreground job itself (`console_signal`), whatever the
         # priorities. The `[SPAWN][PRIO]` line pins the number the tool
@@ -22726,17 +22726,17 @@ ota rollback" 150 \
         # death, so the restart path is real: three restarts show it). The
         # fourth failure exhausts both bursts in one reap
         # (`SUP_RESTART_BURST` = 3 restarts): nothing takes the console within
-        # `SH_START_TIMEOUT_S` of that death (`did not take the console
-        # within`), and the recovery console does. Either line ends in
-        # `: recovery console`; the boot's `pending (recovery console after`
-        # line does not match it.
+        # `SH_START_TIMEOUT_S` of that death, and the recovery console does.
+        # Either way the console says `console program /fat/TERMD.ELF gave up:
+        # recovery console (` once; the boot's `pending (recovery console
+        # after` line does not match it.
         par_row ushell_row "sh: supervisor gives up, recovery console ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
             "exit 1
 exit 1
 exit 1
 !exit 1
 #wait robot> " 180 \
-            "exited: restarting" "[compmgr] restart SH.ELF" "[compmgr] give-up TERMD.ELF" ": recovery console" "robot> "
+            "exited: restarting" "[compmgr] restart SH.ELF" "[compmgr] give-up TERMD.ELF" "[CONSOLE] console program /fat/TERMD.ELF gave up: recovery console (" "robot> "
         # ── The Linux personality (wave 12) ──────────────────────
         # `LXHELLO.ELF` is a static Linux ELF (`userspace/tests/lxhello`, our
         # own C, no C library) run from the shell under its row's
@@ -23591,6 +23591,7 @@ input watch -n 100 &
         local isa="$1" tag="$2" feats="$3"; shift 3
         local dir="$AZOS_OUT/target/con-$tag-$isa" base tmp cfg elf img l k
         case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/${GATE_DEFC_X86}.config" ;; esac
+        base="${CON_BASE:-$base}"
         mkdir -p "$dir"; cfg="$dir/con.config"; tmp="$(mktemp -d)"
         cp "$base" "$tmp/c.config"
         [ "$isa" = x86 ] && set -- CONFIG_LINUX_RUNTIME=y "$@"
@@ -23747,6 +23748,63 @@ x=con; echo bb\$x-ok
                 "[compmgr] start BUSYBOX.ELF" "bbcon-ok"
         fi
     done
+    # BRAINCLI.ELF as the console program (the choice offers it on a robot
+    # preset only): the kernel starts it last; it reads no console input, so
+    # the console says once that it gave up, and the recovery console follows
+    # (`console_mode::gave_up`). The native shell must not start.
+    for con_isa in rv arm; do
+        if ! ci_wants "console: brain client ($con_isa)"; then ci_skip_rows "console: brain client ($con_isa)"; continue; fi
+        con_k=""
+        if con_wanted "console: brain client ($con_isa)"; then
+            if [ "$con_isa" = rv ]; then con_base="$ROBOT_PRIMARY_CONFIG"; else con_base="$ROBOT_AARCH64_CONFIG"; fi
+            con_k="$(CON_BASE="$con_base" con_kernel "$con_isa" brain qemu,use-robot CONFIG_USERSPACE_BRAINCLI=y CONFIG_CONSOLE_PROGRAM_BRAINCLI=y)"
+        fi
+        if [ -z "$con_k" ]; then
+            printf "  %-26s" "console: brain client ($con_isa)..."; bad; echo "      the kernel did not build"; continue
+        fi
+        USH_KERNEL="$con_k" USH_FORBID='\[compmgr\] start SH.ELF|PAGE FAULT|SECCOMP' \
+            par_row ushell_row "console: brain client ($con_isa)" "$con_isa" qemu,use-robot PASS "#wait robot> " 120 \
+            "[compmgr] start BRAINCLI.ELF" \
+            "[CONSOLE] console program /fat/BRAINCLI.ELF gave up: recovery console (it did not take the console within" "robot> "
+    done
+    # CONSOLE_LOGIN needs the native shell as the console program: `azos_limits`
+    # refuses the others (build.rs), instead of building a login nothing asks for.
+    # Canary: the refusal compiled out, the two refused cases build.
+    console_kconfig_row() {
+        printf "  %-26s" "console: Kconfig gates..."
+        local tdir="$AZOS_OUT/target/console-kconfig" cfg="$AZOS_OUT/target/console-kconfig/console.config" out kase lines want got l k
+        mkdir -p "$tdir"
+        for kase in "login, native shell|CONFIG_CONSOLE_LOGIN=y CONFIG_USERSPACE_LOGIND=y|build" \
+                    "login, no console program|CONFIG_CONSOLE_LOGIN=y CONFIG_USERSPACE_LOGIND=y CONFIG_CONSOLE_PROGRAM_NONE=y|refuse" \
+                    "login, busybox sh|CONFIG_CONSOLE_LOGIN=y CONFIG_USERSPACE_LOGIND=y CONFIG_USERSPACE_GPL=y CONFIG_LINUX_ABI=y CONFIG_BUSYBOX=y CONFIG_CONSOLE_PROGRAM_BUSYBOX_SH=y|refuse"; do
+            lines="$(printf '%s' "$kase" | cut -d'|' -f2)"; want="$(printf '%s' "$kase" | cut -d'|' -f3)"
+            cp "$PRIMARY_CONFIG" "$cfg"
+            for l in $lines; do
+                k="${l%%=*}"
+                grep -v -e "^$k=" -e "^# $k is not set" "$cfg" >"$cfg.d"; mv "$cfg.d" "$cfg"
+                printf '%s\n' "$l" >>"$cfg"
+            done
+            grep -v '^CONFIG_CONSOLE_PROGRAM_SH=y$' "$cfg" >"$cfg.d"; mv "$cfg.d" "$cfg"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1)
+            for l in $lines; do
+                grep -qxF -- "$l" "$cfg" || { bad; echo "      $(printf '%s' "$kase" | cut -d'|' -f1): the config lost $l"; return; }
+            done
+            if out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" build --release -p azos_limits 2>&1)"; then
+                got=build
+            elif printf '%s\n' "$out" | qgrep -q "validation FAIL: CONSOLE_LOGIN"; then
+                got=refuse
+            else
+                got=error
+            fi
+            if [ "$got" != "$want" ]; then
+                bad; echo "      $(printf '%s' "$kase" | cut -d'|' -f1): wanted $want, got $got"
+                printf '%s\n' "$out" | grep -m3 -E "^error|validation FAIL" | sed 's/^/        /'
+                return
+            fi
+        done
+        ok
+    }
+    ci_row "console: Kconfig gates" console_kconfig_row
     if ci_wants "console: init= ignored under secure boot (rv)" "console: init= canary, check compiled out (rv)"; then
         [ -f $AZOS_OUT/build/disk-signed.img ] || make_disk $AZOS_OUT/build/disk-signed.img
     fi
