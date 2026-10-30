@@ -1054,6 +1054,7 @@ mod image_profiles {
         // other wakes it, and a lock word records the caller's process id.
         ("read", &["SYS_FUTEX_WAIT", "SYS_FUTEX_WAKE", "SYS_GETPID"]),
         ("write", &["SYS_FUTEX_WAIT", "SYS_FUTEX_WAKE", "SYS_GETPID"]),
+        ("ready", &[]),
         ("set_nonblock", &[]),
         ("end_of", &[]),
         // The last close of an end gives it up to the kernel (which wakes the
