@@ -1178,7 +1178,6 @@ $(OUT_BUILD)/disk-x86_64-topo.img: $(OUT_BUILD)/disk-x86_64.img $(TOPO_EMIT_DEPS
 # it under QEMU with nested virtualisation and waits for the guest's banner.
 # The userspace images of the volume are built from the workspace .config, as
 # every image of the tree is.
-ARCH ?= riscv64
 # x86_64 has no guest entry yet: a PC kernel is entered through its PVH note (or a
 # flat image's real-mode/long-mode stub), and this target builds neither.
 # The target refuses the ISA rather than leave a KERNEL.ELF that cannot start; the

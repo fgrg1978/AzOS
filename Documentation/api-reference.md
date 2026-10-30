@@ -9,7 +9,7 @@ Source: `mk/host.mk` (the `doc` target), `crates/core/*/src/lib.rs`.
 ## Build
 
 ```sh
-make doc                 # riscv64 (the default ARCH)
+make doc                 # the ISA .config selects (the default ARCH)
 make doc ARCH=aarch64    # the aarch64 build of the same crates
 make doc ARCH=x86_64     # the x86_64 build of the same crates
 ```

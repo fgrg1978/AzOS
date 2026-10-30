@@ -85,7 +85,7 @@ prints, and embeds the table of image hashes the seccomp profiles are bound to. 
 
 | Variable | Meaning |
 |---|---|
-| `ARCH=riscv64\|aarch64\|x86_64` | The ISA of `make check` and `make azos-guest` |
+| `ARCH=riscv64\|aarch64\|x86_64` | The ISA of `make check`, `make doc` and `make azos-guest`; the default is the one `.config` selects |
 | `AARCH64_PAGE_SIZE=4096\|16384\|65536` | The aarch64 translation granule of the kernel and the programs |
 | `QEMU_LOG_LEVEL=err\|warn\|info\|debug` | Log level of the QEMU kernels (default `debug`) |
 | `CHECK_SELECT=...` | A selection on the cell `make check` type-checks (`tools/build/kconfig_to_cargo.py --select`), for example `ktest` |

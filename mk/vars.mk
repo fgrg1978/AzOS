@@ -31,6 +31,9 @@ export CARGO_TARGET_DIR := $(OUT_TARGET)
 # `$(KCONFIG_CONFIG)` rule (mk/kernel.mk) falls back to.
 KCONFIG_CONFIG ?= .config
 KCONFIG_ISA := $(or $(shell sed -n -E 's/^CONFIG_ARCH_(RISCV64|AARCH64|X86_64)=y$$/\1/p' '$(KCONFIG_CONFIG)' 2>/dev/null | tr '[:upper:]' '[:lower:]'),riscv64)
+# The ISA of `make check`, `make doc` and `make azos-guest`: the configuration's,
+# or the one named (`make check ARCH=aarch64`).
+ARCH ?= $(KCONFIG_ISA)
 
 QEMU  := qemu-system-riscv64
 QEMU_FLAGS := -machine virt -nographic -bios default

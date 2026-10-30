@@ -65,7 +65,7 @@ tftp-serve: $(OTA_BIN)
 # standalone crates (their own `[workspace]`) are documented from their own
 # directory into the same cargo target dir, so rustdoc merges one index and
 # one search across all of them. `make doc ARCH=aarch64` documents the
-# aarch64 build of the same crates (the default is riscv64, like `check`).
+# aarch64 build of the same crates (the default is the ISA of .config, like `check`).
 # Documentation/api-reference.md says what each crate is.
 DOC_WS_PKGS     := azos_abi azos_libsys azos_devif azos_rings azos_bytepipe azos_arch_api
 DOC_STANDALONE  := crates/core/idl crates/core/stdrt
