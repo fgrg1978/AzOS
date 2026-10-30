@@ -23497,7 +23497,7 @@ echo after-x \$?"
             # The volume is the system volume `make build` makes for that
             # configuration (mk/vars.mk SYSTEM_VOLUME): the shell volume plus
             # BUSYBOX.ELF, x86_64's the busybox variant of its one volume.
-            case "$ush_isa" in x86) bb_sys_disk=busybox ;; *) bb_sys_disk=sh-busybox ;; esac
+            case "$ush_isa" in x86) bb_sys_disk=busybox ;; *) bb_sys_disk=system-busybox ;; esac
             USH_X86_DEFCONFIG="$bb_x86_def" KCONFIG_CONFIG="$bb_cfg" AARCH64_CONFIG="$bb_cfg" USH_DISK=$bb_sys_disk USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT" par_row ushell_row "linux: busybox from its Kconfig row ($ush_isa)" "$ush_isa" "$ush_feat,spawn-log" PASS \
                 "busybox sh -c 'x=prod; echo bb-\$x-ok'
 echo after-prod \$?" 150 \

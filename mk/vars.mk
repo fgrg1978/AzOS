@@ -979,9 +979,9 @@ IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs
 # own expansion), and prints where they are. `make qemu` boots that kernel.
 #   SYSTEM_KCONFIG  the expanded configuration the kernel and the images read
 #   SYSTEM_KERNEL   the internal target that builds the kernel (mk/kernel.mk)
-#   SYSTEM_VOLUME   the system volume: the shell volume, which carries the
-#                   console program (Kconfig CONSOLE_PROGRAM) and every image
-#                   the topology starts, and names no autorun image
+#   SYSTEM_VOLUME   the system volume: the shell volume plus the ring-3 drivers,
+#                   which carries the console program (Kconfig CONSOLE_PROGRAM)
+#                   and every image the topology starts, and names no autorun image
 #   TARGET          the kernel's target triple
 #   USER_TARGET     the ring-3 images' and the SDK's (sdk/targets/<it>.json)
 #   KERNEL_ELF      the kernel ELF cargo writes
@@ -993,8 +993,8 @@ SYSTEM_KCONFIG_x86_64  := $(X86_64_KCONFIG)
 # The volume carries BUSYBOX.ELF when the configuration has BUSYBOX
 # (BUSYBOX_ON, mk/userspace.mk): the same volume plus the one file, so a
 # configuration without it builds the volume it always did.
-SYSTEM_VOLUME_riscv64  = $(OUT_BUILD)/disk-sh$(if $(BUSYBOX_ON),-busybox).img
-SYSTEM_VOLUME_aarch64  = $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh$(if $(BUSYBOX_ON),-busybox).img
+SYSTEM_VOLUME_riscv64  = $(OUT_BUILD)/disk-system$(if $(BUSYBOX_ON),-busybox).img
+SYSTEM_VOLUME_aarch64  = $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system$(if $(BUSYBOX_ON),-busybox).img
 SYSTEM_VOLUME_x86_64   = $(OUT_BUILD)/disk-x86_64$(if $(BUSYBOX_ON),-busybox).img
 TARGET_riscv64         := $(RISCV64_TARGET)
 TARGET_aarch64         := $(AARCH64_TARGET)

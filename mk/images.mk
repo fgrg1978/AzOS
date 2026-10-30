@@ -320,6 +320,22 @@ $(OUT_BUILD)/disk-sh.img: $(OUT_BUILD)/disk-drvbase.img $(SH_ELF) $(TERMD_ELF) $
 	mcopy -i $@ $(VMMD_ELF) ::VMMD.ELF
 	@echo "[DISK] FAT32 image: $@ (user shell SH.ELF with its terminal server TERMD.ELF and name server NAMESD.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF, TRACECTL.ELF, DECISD.ELF, LOGD.ELF, WHY.ELF, PKGD.ELF, PKG.ELF, RPCSRV.ELF, ZENOHD.ELF, PTPD.ELF, RPCQUIC.ELF, MCPD.ELF, SSHD.ELF)"
 
+# The system volume (`make build`, `make qemu`): the shell volume plus the two
+# ring-3 drivers the built-in topology starts on every board class but the
+# embedded one, so the console of `make qemu` names no missing program. The
+# gate's own volumes stay as they are: `disk-drv.img` is the one that starts them.
+$(OUT_BUILD)/disk-system.img: $(OUT_BUILD)/disk-sh.img $(BUZZ_DRV_ELF) $(INA_DRV_ELF)
+	cp $< $@
+	mcopy -i $@ $(BUZZ_DRV_ELF) ::BUZZDRV.ELF
+	mcopy -i $@ $(INA_DRV_ELF) ::INADRV.ELF
+	@echo "[DISK] FAT32 image: $@ (the user-shell disk plus the ring-3 drivers BUZZDRV.ELF and INADRV.ELF)"
+
+$(OUT_BUILD)/disk-system-busybox.img: $(OUT_BUILD)/disk-system.img $(wildcard $(BUSYBOX_ELF_RISCV64))
+	@[ -f "$(BUSYBOX_ELF_RISCV64)" ] || { echo "no $(BUSYBOX_ELF_RISCV64): run make busybox"; exit 1; }
+	cp $< $@
+	mcopy -i $@ "$(BUSYBOX_ELF_RISCV64)" ::BUSYBOX.ELF
+	@echo "[DISK] FAT32 image: $@ (the system volume plus third-party BUSYBOX.ELF)"
+
 # The Linux-server disk -- the drivers base (no autorun) plus
 # LXSRV.ELF and its test module. The only gate image that carries them; a
 # kernel built with `lx-server` starts LXSRV.ELF from its topology row
@@ -610,6 +626,19 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$
 	mcopy -i $@ $(LOGIND_ELF_AARCH64) ::LOGIND.ELF
 	mcopy -i $@ $(VMMD_ELF_AARCH64) ::VMMD.ELF
 	@echo "[DISK] aarch64 FAT32 image: $@ (user shell SH.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF, TRACECTL.ELF, DECISD.ELF, LOGD.ELF, WHY.ELF, PKGD.ELF, PKG.ELF, RPCSRV.ELF, ZENOHD.ELF, PTPD.ELF, RPCQUIC.ELF, MCPD.ELF, SSHD.ELF)"
+
+# See `build/disk-system.img`.
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64)
+	cp $< $@
+	mcopy -i $@ $(BUZZ_DRV_ELF_AARCH64) ::BUZZDRV.ELF
+	mcopy -i $@ $(INA_DRV_ELF_AARCH64) ::INADRV.ELF
+	@echo "[DISK] aarch64 FAT32 image: $@ (the user-shell disk plus the ring-3 drivers BUZZDRV.ELF and INADRV.ELF)"
+
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system-busybox.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-system.img $(wildcard $(BUSYBOX_ELF_AARCH64))
+	@[ -f "$(BUSYBOX_ELF_AARCH64)" ] || { echo "no $(BUSYBOX_ELF_AARCH64): run make busybox"; exit 1; }
+	cp $< $@
+	mcopy -i $@ "$(BUSYBOX_ELF_AARCH64)" ::BUSYBOX.ELF
+	@echo "[DISK] aarch64 FAT32 image: $@ (the system volume plus third-party BUSYBOX.ELF)"
 
 # See `build/disk-lx.img`.
 $(OUT_BUILD)/disk-aarch64-lx.img: $(OUT_BUILD)/disk-aarch64-drvbase.img $(LXSRV_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(LXTEST_KO_AARCH64) $(LX_KO_A64) $(LX_XZTEST)
