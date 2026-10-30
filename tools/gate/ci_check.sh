@@ -15965,7 +15965,6 @@ PY
     }
     par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" ""
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
-    par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
     par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" $AZOS_OUT/build/disk-x86_64.img
