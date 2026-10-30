@@ -80,9 +80,9 @@ endchoice
 
 config TIMER_FREQ
     int "Timer frequency (Hz)"
-    # ARMv8 generic timer on QEMU virt (>= 9.0): CNTFRQ_EL0 = 1 GHz. Every
-    # TIMER_FREQ-derived timeout is compile-time; a wrong value here is a
-    # 100x-short DHCP/ARP/safety timeout on that ISA (gate 182c).
+    # aarch64: a unit, as on x86_64: `now_ticks` scales CNTVCT_EL0 from the
+    # CNTFRQ_EL0 it finds at boot (arch/aarch64/src/timer.rs). A board's real rate
+    # here only skips the multiplication.
     default 54000000 if BOARD_RPI5
     default 1000000000 if ARCH_AARCH64
     # x86_64: a unit, not a hardware rate: `now_ticks` scales the TSC, rated
