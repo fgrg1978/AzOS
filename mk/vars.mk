@@ -1081,7 +1081,8 @@ SDK_BUILD       = $(SDK_BUILD_$(KCONFIG_ISA))
 # writes to it (BOOTMETA, logs), and each `make qemu` starts from what `make
 # build` made. TCG on every host, Apple silicon included. QEMU_AARCH64_MACHINE
 # with `virtualization=on` enters the kernel at EL2 (`make qemu-aarch64-el2`).
-QEMU_AARCH64_MACHINE ?= virt,gic-version=3
+# An image that needs the hypervisor extension (HV_REQUIRE) is entered at EL2.
+QEMU_AARCH64_MACHINE ?= virt,gic-version=3$(if $(shell grep -qsx 'CONFIG_HV_REQUIRE=y' '$(SYSTEM_KCONFIG)' && echo y),$(comma)virtualization=on)
 QEMU_VOLUME := $(OUT_BUILD)/qemu-$(KCONFIG_ISA).img
 QEMU_RAM     = $(shell sed -n 's/^CONFIG_RAM_SIZE=//p' '$(SYSTEM_KCONFIG)')M
 QEMU_BLK     = -drive file=$(QEMU_VOLUME),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0
