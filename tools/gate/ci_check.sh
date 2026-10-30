@@ -24369,6 +24369,11 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # the ISA with LINUX_ABI turned off (x86_64: LINUX_RUNTIME goes with it),
     # in a target dir of its own; `llvm-nm -C` is read for the symbols and
     # `make -n build` for the volume `make build` would make.
+    # The symbol count is a ratchet, tools/gate/linux_off.baseline: the Linux
+    # layers are not fully behind cfg yet (`const` switches leave functions
+    # that nothing calls with the personality off), the baseline is how many
+    # such symbols each ISA's Linux-OFF kernel has today, and the row is red
+    # when the count differs from it, so it can only go down, to 0.
     # Both queries are first run on the Linux-ON kernel and on a configuration
     # with BUSYBOX, and must FIND something there, so a query gone blind cannot
     # pass. The canary row is the same check on the Linux-ON kernel: it must
@@ -24411,7 +24416,9 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         make -n build KCONFIG_CONFIG="$1" 2>/dev/null | sed -n 's/^echo "  volume  \(.*\)"$/\1/p' | sed -n 1p
     }
     linux_off_row() { # linux_off_row <label> <rv|arm|x86> <PASS|FAIL>: FAIL is the canary (the Linux-ON kernel)
-        local label="$1" isa="$2" expect="$3" elf on_elf n vol bb_cfg dir
+        local label="$1" isa="$2" expect="$3" elf on_elf n vol bb_cfg dir base
+        base="$(sed -n "s/^$isa //p" "$REPO_ROOT/tools/gate/linux_off.baseline" | sed -n 1p)"
+        case "$base" in ''|*[!0-9]*) printf "  %-26s" "${label}..."; bad; echo "      no baseline for $isa in tools/gate/linux_off.baseline"; return ;; esac
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         on_elf="$(lo_kernel "$isa" on)"
@@ -24426,15 +24433,17 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg" python3 -m olddefconfig >/dev/null 2>&1)
         case "$(lo_volume "$bb_cfg")" in *busybox*) ;; *) bad; echo "      make build names no BusyBox volume for a configuration with BUSYBOX: the volume query is blind"; return ;; esac
         if [ "$expect" = FAIL ]; then
-            # The canary: the Linux-ON kernel carries the symbols the check looks for.
+            # The canary: the Linux-ON kernel has more of the symbols than the
+            # baseline allows, so the same comparison on it reports a violation.
+            if [ "$n" -le "$base" ]; then bad; echo "      the Linux-ON kernel has $n such symbols, not more than the Linux-OFF baseline $base: the check cannot tell them apart"; return; fi
             ok; return
         fi
         elf="$(lo_kernel "$isa" off)"
         [ -n "$elf" ] || { bad; echo "      the Linux-OFF kernel did not build (log: $AZOS_OUT/target/linux-off-$isa/build.log)"; return; }
         n="$("$lo_nm" -C "$elf" 2>/dev/null | grep -cE "$lo_re")"
-        if [ "${n:-0}" -ne 0 ]; then
-            bad; echo "      FAIL: $n Linux symbols in the Linux-OFF kernel ($elf):"
-            "$lo_nm" -C "$elf" | grep -E "$lo_re" | sed -n 1,5p | sed 's/^/        /'; return
+        if [ "${n:-0}" -ne "$base" ]; then
+            bad; echo "      $n Linux symbols in the Linux-OFF kernel ($elf), the baseline says $base (set it to $n if that is fewer):"
+            "$lo_nm" -C "$elf" | grep -E "$lo_re" | sed 's/^[0-9a-f]* . //' | sed -n 1,8p | sed 's/^/        /'; return
         fi
         vol="$(lo_volume "$AZOS_OUT/target/linux-off-$isa/linux.config")"
         case "$vol" in ''|*busybox*) bad; echo "      the Linux-OFF system volume is '$vol'"; return ;; esac

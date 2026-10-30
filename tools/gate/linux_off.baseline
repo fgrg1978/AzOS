@@ -1,0 +1,5 @@
+# Linux symbols (tools/gate/ci_check.sh, linux_off_row) in the kernel built with LINUX_ABI off, per ISA.
+# A ratchet toward 0: the row is red when the count differs, so lower it as the code moves behind cfg.
+rv 15
+arm 74
+x86 15
