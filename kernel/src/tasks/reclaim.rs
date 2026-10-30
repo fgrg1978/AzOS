@@ -271,12 +271,17 @@ fn storm(key: domain::Key, rt_hart: bool) -> Round {
     let mut roots = [0usize; ROOTS_PER_DOMAIN];
     let n = roots_of(key, &mut roots);
     let owner = domain::index(key);
-    let mut ages = AGES.lock();
-    let mut source = AnonReclaim::new(&roots[..n], owner, &mut ages);
     // The storm stops at the low watermark; this only bounds a source that
     // keeps offering pages that do not come off (twice what it has to free).
     let max_steps = b.used().saturating_sub(b.low()).saturating_mul(2).max(1);
-    let r = zpool::run_storm(b, &mut source, domain::mem_locked(key), rt_hart, max_steps, azos_arch::PAGE_SIZE as u32);
+    let r = {
+        let mut ages = AGES.lock();
+        let mut source = AnonReclaim::new(&roots[..n], owner, &mut ages);
+        zpool::run_storm(b, &mut source, domain::mem_locked(key), rt_hart, max_steps, azos_arch::PAGE_SIZE as u32)
+    };
+    // The record is written with AGES released: a refusal is flushed to the
+    // medium, and the flush sleeps on the disk and on the write-back claim.
+    let _ages = canary!("storm-record-locked").then(|| AGES.lock());
     match r {
         Ok(rec) => {
             let verdict = if rec.paid() { Verdict::Admit } else { Verdict::Refuse };

@@ -345,6 +345,9 @@ pub(crate) const NAMES: &[&str] = &[
     // `icache_sync_all` (ktest `tlb_kernel_shootdown_names_every_online_cpu`,
     // x86_64 only).
     "x86-tlb-join-skip",
+    // tasks/reclaim.rs `storm`: the storm's decision record is written holding
+    // AGES (gate row `boot: x86_64 desktop reaches the shell, canary`).
+    "storm-record-locked",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 
