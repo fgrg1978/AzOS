@@ -1122,9 +1122,9 @@ azos_ktest::ktest_late! {
 
 const FIFO_CONTENDERS: usize = 4;
 const FIFO_ROUNDS: u64 = 2_000;
-/// The bypasses past the FIFO bound the test tolerates, summed over every
-/// late acquisition: an eighth of the acquisitions; a test parameter.
-const FIFO_EXCESS_MAX: u64 = FIFO_CONTENDERS as u64 * FIFO_ROUNDS / 8;
+/// A host that never runs two contenders at once queues nobody in
+/// `FIFO_ROUNDS`: they go on until the hook has fired, up to this many.
+const FIFO_ROUNDS_MAX: u64 = 16 * FIFO_ROUNDS;
 
 static FIFO_L: azos_sync::SpinLock<u64> = azos_sync::SpinLock::new(0);
 static FIFO_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -1139,6 +1139,8 @@ static FIFO_EXCESS: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { 
 static FIFO_MAX_WAIT: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
 static FIFO_SUM_WAIT: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
 static FIFO_MARKED: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
+static FIFO_ROUNDS_RUN: [core::sync::atomic::AtomicU64; FIFO_CONTENDERS] = [const { core::sync::atomic::AtomicU64::new(0) }; FIFO_CONTENDERS];
+static FIFO_ANY_MARK: AtomicBool = AtomicBool::new(false);
 /// The count each CPU read where the queued lock fixed its turn (by
 /// `ARCH.hart_id()`, the index `qspinlock` keys its nodes by).
 const FIFO_NO_MARK: u64 = u64::MAX;
@@ -1172,7 +1174,11 @@ fn fifo_contender(c: usize) {
         azos_sched::task_yield();
     }
     let (mut max_over, mut late, mut excess, mut max_wait, mut sum_wait, mut marked) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-    for _ in 0..FIFO_ROUNDS {
+    let mut rounds = 0u64;
+    while rounds < FIFO_ROUNDS
+        || (azos_sync::qspinlock::ON && rounds < FIFO_ROUNDS_MAX && !FIFO_ANY_MARK.load(r))
+    {
+        rounds += 1;
         let s = ARCH.disable_all();
         let mark = FIFO_MARK.get(ARCH.hart_id());
         if let Some(m) = mark {
@@ -1193,6 +1199,7 @@ fn fifo_contender(c: usize) {
                 m => {
                     c0 = m;
                     marked += 1;
+                    FIFO_ANY_MARK.store(true, r);
                 }
             }
         }
@@ -1217,6 +1224,7 @@ fn fifo_contender(c: usize) {
     FIFO_MAX_WAIT[c].store(max_wait, r);
     FIFO_SUM_WAIT[c].store(sum_wait, r);
     FIFO_MARKED[c].store(marked, r);
+    FIFO_ROUNDS_RUN[c].store(rounds, r);
     FIFO_DONE.fetch_add(1, Ordering::Release);
 }
 
@@ -1254,7 +1262,7 @@ azos_ktest::ktest_late! {
                 FIFO_ABORT_SEEN.load(Ordering::Relaxed), FIFO_CONTENDERS);
             return Err("a contender did not start (the four never ran together)");
         }
-        let n = FIFO_CONTENDERS as u64 * FIFO_ROUNDS;
+        let n: u64 = FIFO_ROUNDS_RUN.iter().map(|a| a.load(r)).sum();
         if *FIFO_L.lock() != n {
             return Err("four CPUs lost an increment under the SpinLock");
         }
@@ -1273,7 +1281,8 @@ azos_ktest::ktest_late! {
         if azos_sync::qspinlock::ON && marked == 0 {
             return Err("the queued lock never fixed a waiter's turn (order_mark dead: the FIFO verdict would be vacuous)");
         }
-        if excess > FIFO_EXCESS_MAX {
+        // An eighth of the acquisitions; a test parameter.
+        if excess > n / 8 {
             return Err("waiters were passed over by more acquisitions than the CPUs ahead of them (not FIFO)");
         }
         Ok(())
