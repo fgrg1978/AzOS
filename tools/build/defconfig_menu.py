@@ -10,7 +10,7 @@ Usage: python3 tools/build/defconfig_menu.py [--arch ISA] [--preset NAME]
 The first form asks what --arch and --preset did not answer (on a terminal;
 without one it takes the default of each) and prints the defconfig name on
 stdout, for `make defconfig-<name>`; the menu goes to stderr. The name is
-<preset>-<hwclass>-<arch>-dev+qemu[+gui]+linux, assembled by
+<preset>-<hwclass>-<arch>-dev+qemu[+gui]+linux-dev, assembled by
 tools/build/gen_defconfigs.py:
 
   * the preset is the domain; its fragment name is the spelling (iot_hmi);
@@ -18,7 +18,9 @@ tools/build/gen_defconfigs.py:
     (config/axes/Kconfig.hwclass), read from Kconfig, not listed here;
   * the build is dev and the image is the QEMU one, so `make build && make
     qemu` boots it; +gui is added when the preset's USE is the desktop;
-  * the Linux personality (+linux) is on in a dev image.
+  * the Linux personality is on in a dev image, as +linux-dev has it: without the
+    gate's pins (+linux), so BusyBox and, on x86_64, the ring-3 runtime that
+    hosts it take their Kconfig defaults, which are on.
 
 --after NAME prints what was chosen and what to run next; it marks the choice
 green when tools/gate/preset_boot_green.tsv names a green boot row for the
@@ -113,7 +115,7 @@ def hwclass_of(preset):
 
 
 def defconfig_name(preset, isa, hwclass):
-    overlays = ("qemu",) + OVERLAYS_BY_PRESET.get(preset, ()) + ("linux",)
+    overlays = ("qemu",) + OVERLAYS_BY_PRESET.get(preset, ()) + ("linux-dev",)
     return f"{preset}-{hwclass}-{isa}-dev+" + "+".join(overlays)
 
 
@@ -163,7 +165,7 @@ def after(name):
     parts = name.split("-")
     preset, hwclass, isa = parts[0], parts[1], parts[2]
     status, evidence = read_green()[(preset, isa)]
-    print(f"Chosen: {preset} on {isa} (hardware class {hwclass}, dev build, QEMU image, Linux personality"
+    print(f"Chosen: {preset} on {isa} (hardware class {hwclass}, dev build, QEMU image, Linux personality with BusyBox"
           f"{', GUI inputs' if '+gui' in name else ''}).")
     if status == "green":
         print(f"Boot row: green ({evidence}).")
@@ -226,7 +228,8 @@ def self_test():
             for w in k.warnings[warned:]:
                 fails.append(f"{name}: Kconfig drops an assignment: {w.strip()}")
             for sym in (f"PRESET_{p.upper()}", f"HWCLASS_{hw.upper()}", f"ARCH_{isa.upper()}",
-                        "BUILD_TYPE_DEV", "LINUX_ABI"):
+                        "BUILD_TYPE_DEV", "LINUX_ABI", "USERSPACE_GPL", "BUSYBOX") + (
+                    ("LINUX_RUNTIME",) if isa == "x86_64" and hw != "embedded" else ()):
                 if k.syms[sym].str_value != "y":
                     fails.append(f"{name}: expands without {sym}")
             if (k.syms["INPUTD"].str_value == "y") != (p in OVERLAYS_BY_PRESET):

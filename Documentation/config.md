@@ -201,7 +201,8 @@ else. `python3 tools/build/gen_defconfigs.py` (`make defconfigs`) rewrites them;
 `python3 tools/build/gen_defconfigs.py --check`, run by `make check0`, fails when one is not what
 its fragments assemble or does not keep the axes its name gives once Kconfig has expanded
 it. `make defconfig` asks two questions, the ISA (the host's by default) and the domain (a preset),
-and loads the QEMU development image of that pair (`make defconfig ARCH=aarch64 PRESET=robot`
+and loads the QEMU development image of that pair, with the Linux personality and BusyBox
+(`+linux-dev`: the gate's `+linux` pins BusyBox off) (`make defconfig ARCH=aarch64 PRESET=robot`
 answers them); the pairs `tools/gate/preset_boot_green.tsv` does not list as green are marked
 experimental. `make defconfig-<name>` loads a committed defconfig into `.config` and runs
 `olddefconfig`; any other name is assembled on the fly
