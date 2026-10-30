@@ -41,7 +41,7 @@
 //! reclaim on and one for off (both run: `KCONFIG_CONFIG` with
 //! `MM_RECLAIM_COMPRESS=y` and the default `MM_RECLAIM_OFF`).
 
-use super::budget::{watermarks_for, NoStorm, PageBudget};
+use super::budget::{watermarks_for, NoStorm, PageBudget, StormOutcome};
 use super::zpool::{fill_page, run_storm, Backing, Codec, Error, Fetched, Packed, Pool, Reclaimee};
 use azos_arch_api::PAGE_SIZE;
 
@@ -397,6 +397,7 @@ fn incompressible_pages_are_kept_and_the_storm_goes_on() {
     let rec = run_storm(&b, &mut m, false, false, 1000, P).unwrap();
     assert_eq!(rec.pages, 0);
     assert!(!rec.paid());
+    assert_eq!(rec.outcome(), StormOutcome::Refused);
     assert_eq!(rec.fields(), [0, 0, 0]);
     assert_eq!(b.used(), 17, "nothing was freed, nothing is owed back");
     assert_eq!(m.kept.len(), 17, "it went through every page before giving up");
@@ -424,12 +425,43 @@ fn skipping_an_incompressible_page_does_not_cost_the_target() {
 
 /// When the pool has no room the storm stops: every later page would be
 /// unmapped (a shoot-down on every hart) for the same answer.
+/// A storm that reached no page is not a refusal, whatever kept it from one: a
+/// source with nothing to offer, or pages whose mapping cannot be removed.
+/// **Canary.** Answer `Refused` for no pages in `StormRecord::outcome`: red.
+#[test]
+fn a_storm_with_no_candidate_is_not_a_refusal() {
+    let b = budget(20, 10, 16, 17);
+    let mut m = Model::new(Roomy::new(Heap), Vec::new());
+    let rec = run_storm(&b, &mut m, false, false, 1000, P).unwrap();
+    assert_eq!((rec.pages, rec.outcome()), (0, StormOutcome::NoCandidate));
+    let mut m = Model::new(Roomy::new(Heap), (0..17).map(compressible).collect());
+    m.busy.iter_mut().for_each(|b| *b = true);
+    let rec = run_storm(&b, &mut m, false, false, 1000, P).unwrap();
+    assert_eq!((rec.pages, rec.outcome()), (0, StormOutcome::NoCandidate));
+}
+
+/// A candidate the pool has no room for is a refusal though nothing compressed
+/// badly: the quota's "no" stays a `Refuse`.
+/// **Canary.** Drop `refused = true` in `run_storm`: this row and
+/// `incompressible_pages_are_kept_and_the_storm_goes_on` red.
+#[test]
+fn a_pool_with_no_room_is_a_refusal() {
+    let b = budget(20, 5, 16, 17);
+    let mut m = Model::new(Four::new(Heap), (0..17).map(compressible).collect());
+    let filled = run_storm(&b, &mut m, false, false, 4, P).unwrap();
+    assert_eq!(filled.pages, 4);
+    assert!(b.charge(4), "back over the high watermark");
+    let rec = run_storm(&b, &mut m, false, false, 1000, P).unwrap();
+    assert_eq!((rec.pages, rec.full, rec.outcome()), (0, true, StormOutcome::Refused));
+}
+
 #[test]
 fn a_full_pool_ends_the_storm_early() {
     let b = budget(20, 5, 16, 17);
     let mut m = Model::new(Four::new(Heap), (0..17).map(|i| compressible(i)).collect());
     let rec = run_storm(&b, &mut m, false, false, 1000, P).unwrap();
     assert_eq!(rec.pages, 4, "the pool holds four");
+    assert_eq!(rec.outcome(), StormOutcome::Paid);
     assert_eq!(b.used(), 13);
     assert_eq!(m.unmapped.len(), 5, "the fifth was unmapped, refused, kept: and the storm stopped there");
     assert_eq!(m.kept, vec![4]);

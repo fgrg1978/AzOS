@@ -79,7 +79,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 
 use azos_decision::{Rule, Verdict};
 use azos_ipc::port::{self as ports, PortEvent};
-use azos_mm::budget::Pressure;
+use azos_mm::budget::{Pressure, StormOutcome};
 use azos_mm::pager::{self, Ages, AnonReclaim};
 use azos_mm::zpool::{self, Round, Stages};
 use azos_mm::{budget, pmm};
@@ -279,12 +279,18 @@ fn storm(key: domain::Key, rt_hart: bool) -> Round {
         let mut source = AnonReclaim::new(&roots[..n], owner, &mut ages);
         zpool::run_storm(b, &mut source, domain::mem_locked(key), rt_hart, max_steps, azos_arch::PAGE_SIZE as u32)
     };
-    // The record is written with AGES released: a refusal is flushed to the
-    // medium, and the flush sleeps on the disk and on the write-back claim.
-    let _ages = canary!("storm-record-locked").then(|| AGES.lock());
+    let locked = canary!("storm-record-locked");
+    let _ages = locked.then(|| AGES.lock());
     match r {
         Ok(rec) => {
-            let verdict = if rec.paid() { Verdict::Admit } else { Verdict::Refuse };
+            let verdict = match rec.outcome() {
+                StormOutcome::Paid => Verdict::Admit,
+                StormOutcome::Refused => Verdict::Refuse,
+                StormOutcome::NoCandidate if locked => Verdict::Refuse,
+                // In the ring with no pages, not on the medium: the Domain
+                // sits at its watermark with nothing to compress, no refusal.
+                StormOutcome::NoCandidate => Verdict::Admit,
+            };
             azos_decision::record(Rule::Compress, verdict, key, rec.fields());
             Round { stored: rec.pages, full: rec.full }
         }

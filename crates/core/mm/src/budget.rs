@@ -195,14 +195,37 @@ pub struct StormRecord {
     /// stage, writing a segment to swap, is due. Not one of the decision
     /// record's fields.
     pub full: bool,
+    /// The pool said no to a page: it did not compress or there was no room.
+    /// Not one of the decision record's fields.
+    pub refused: bool,
+}
+
+/// How a storm ended, for its `Rule::Compress` verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StormOutcome {
+    /// A page was stored: `Admit`.
+    Paid,
+    /// Candidates, and the pool stored none of them: the rule's `Refuse`.
+    Refused,
+    /// Nothing reached the pool: not a refusal, and nothing the medium needs.
+    NoCandidate,
 }
 
 impl StormRecord {
-    /// A storm that stored a page was compression that paid (`Admit`); one
-    /// that stored none (everything incompressible, or no candidate) is the
-    /// `Refuse` of the rule's "compression did not pay".
+    /// A storm that stored a page was compression that paid.
     #[must_use]
     pub const fn paid(&self) -> bool { self.pages != 0 }
+
+    #[must_use]
+    pub const fn outcome(&self) -> StormOutcome {
+        if self.paid() {
+            StormOutcome::Paid
+        } else if self.refused {
+            StormOutcome::Refused
+        } else {
+            StormOutcome::NoCandidate
+        }
+    }
 
     /// The record's three numbers, in the rule's field order.
     #[must_use]
@@ -410,7 +433,7 @@ impl PageBudget {
         let pages = self.storm_pages.swap(0, Ordering::Relaxed);
         let bytes_out = self.storm_out.swap(0, Ordering::Relaxed);
         self.storm.store(STORM_IDLE, Ordering::Release);
-        Some(StormRecord { pages, bytes_in: u64::from(pages) * u64::from(page_bytes), bytes_out, full: false })
+        Some(StormRecord { pages, bytes_in: u64::from(pages) * u64::from(page_bytes), bytes_out, full: false, refused: false })
     }
 
     /// Charge `pages` for a restore (the fault found its page compressed and

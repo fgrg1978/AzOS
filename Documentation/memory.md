@@ -615,7 +615,8 @@ their space alone and are plain 4 KiB leaves, coldest generation first (see
 pages shared copy-on-write, pages of a promoted block or contiguous run, or
 any page of a space with a fork walking it. A storm stops at the first refusal
 that is not "this page does not compress", and is recorded as one
-`Rule::Compress` decision however many pages it took. Shared frames take other paths: the page cache's
+`Rule::Compress` decision however many pages it took: `Refuse` when candidates reached the pool and
+none was stored, `Admit` otherwise, with no pages when there was no candidate. Shared frames take other paths: the page cache's
 clean frames go through `memobj_paged_drop_clean`, and a shared Anon MemObj is not reclaimed (no fault
 path restores a frame taken from an shm window).
 

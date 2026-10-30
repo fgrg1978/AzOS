@@ -1567,8 +1567,8 @@ pub trait Reclaimee {
 /// charge reached `low`, `max_steps` candidates were tried (the bound on how
 /// long a storm holds its hart), the source had no more, or the pool refused
 /// for want of room; the answer is its one record, whatever it did, and the
-/// caller writes the `Rule::Compress` decision from it (`Refuse` when no page
-/// was stored). `locked` and `rt_hart` are the caller's facts about the
+/// caller writes the `Rule::Compress` decision from it
+/// ([`StormRecord::outcome`]). `locked` and `rt_hart` are the caller's facts about the
 /// Domain's memory row and the hart it runs on; `page_bytes` the page size.
 /// With reclaim off no Domain has a watermark, so no storm starts.
 pub fn run_storm<R: Reclaimee>(
@@ -1582,6 +1582,7 @@ pub fn run_storm<R: Reclaimee>(
     b.storm_begin(locked, rt_hart)?;
     let mut steps = 0;
     let mut full = false;
+    let mut refused = false;
     while steps < max_steps && b.reclaim_target() != 0 {
         steps += 1;
         let Some(v) = r.next() else { break };
@@ -1595,6 +1596,7 @@ pub fn run_storm<R: Reclaimee>(
             }
             Err(e) => {
                 r.keep(v);
+                refused = true;
                 if e != Error::Incompressible {
                     full = e == Error::Full;
                     break;
@@ -1604,6 +1606,7 @@ pub fn run_storm<R: Reclaimee>(
     }
     let mut rec = b.storm_end(page_bytes).ok_or(NoStorm::Busy)?;
     rec.full = full;
+    rec.refused = refused;
     Ok(rec)
 }
 
