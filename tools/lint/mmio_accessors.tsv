@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# tools/lint/mmio_accessors.py: the raw volatile accesses of the scanned tree,
+# every one to memory, per file: <count><TAB><file><TAB><what memory>. Edited by
+# hand: a device register goes through azos_arch_api::mmio instead.
+2	arch/aarch64/src/irq/its.rs	the LPI configuration table and command queue, in RAM
+6	arch/aarch64/src/mmu/setup.rs	page table entries
+1	arch/aarch64/src/smp.rs	the spin-table release word, in RAM
+3	crates/drivers/block/src/ahci.rs	the command list and tables, in our pages
+5	crates/drivers/block/src/nvme.rs	submission and completion queue entries, in RAM
+5	crates/drivers/display/src/ramfb.rs	the fw_cfg DMA descriptor and the payload, in RAM
+2	crates/drivers/input/wire/src/screen.rs	a shared-memory region
+1	crates/drivers/lx/emul/src/sched.rs	a stack page
+1	crates/drivers/lx/emul/src/switch/mod.rs	a stack canary
+5	crates/drivers/net/src/dwmac.rs	DMA descriptors, in RAM
+13	crates/drivers/net/src/eth.rs	DMA descriptor rings, in RAM
+6	crates/drivers/net/src/pci_nic.rs	DMA descriptor rings, in RAM
+11	crates/drivers/sys/src/klog/wire.rs	the klog region, shared memory
+4	crates/drivers/usb/src/hw.rs	DmaBuf, RAM the controller also writes
+2	crates/drivers/virtio/src/virtio/blk.rs	request headers and status bytes, in RAM
+4	crates/drivers/virtio/src/virtio/gpu.rs	virtqueue rings, in RAM
+2	crates/drivers/virtio/src/virtio/input.rs	event buffers, in RAM
+9	crates/drivers/virtio/src/virtio/mod.rs	virtqueue rings, in RAM
+10	crates/drivers/virtio/src/virtio/pci.rs	a probe frame and its virtqueue, in RAM
+4	crates/drivers/virtio/src/virtio/snd.rs	virtqueue rings and status slots, in RAM
+2	kernel/src/behavior_ml.rs	a page shared with the service
+2	kernel/src/boot/dma.rs	IOMMU page tables, in RAM
+2	kernel/src/boot/early.rs	guard-page probes, which must fault
+1	kernel/src/boot/livepatch.rs	kernel text
+2	kernel/src/boot/spin_patch.rs	kernel text
+3	kernel/src/boot/stacks.rs	stack paint and magic words
+2	kernel/src/entry/aarch64/boot_hooks.rs	a static and the PAN probe's user page
+1	kernel/src/entry/aarch64/ext/pan_patch.rs	kernel text
+2	kernel/src/entry/aarch64/mod.rs	the TTBR1 alias canary, a static
+2	kernel/src/ktest.rs	statics and their aliases
+1	kernel/src/prof.rs	a stack frame walk
+1	kernel/src/smokes/asid_rollover.rs	a test page
+1	kernel/src/smokes/panic_splice_smoke.rs	a deliberately bad address, which must fault
+1	kernel/src/smokes/tlb_probe.rs	a test page
+1	kernel/src/smokes/x86_64_ring3.rs	a test page
