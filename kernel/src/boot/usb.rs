@@ -1245,10 +1245,32 @@ pub(crate) fn inspect_build(
 /// published.
 #[cfg(feature = "inspect")]
 pub(crate) fn inspect_refresh(w: &azos_inspect::Writer<'_>) -> u32 {
+    if canary!("usb-refresh-tail-guard") && REFRESH_CANARY_ARMED.load(core::sync::atomic::Ordering::Relaxed) {
+        return inspect_refresh_tail_guard(w);
+    }
     let g = TREE.lock_irqsave();
     let Some(ids) = g.as_ref() else { return 0 };
     // A local, not a tail temporary: in edition 2021 that would drop after `g`
     // and restore the masked state it saved, leaving the caller with interrupts off.
     let lister = LISTER.lock_irqsave();
     azos_usb::listing::refresh(w, ids, &lister)
+}
+
+/// Set only around the ktest's own refresh, under inspect's `STATE` mutex, so
+/// the periodic pass never takes the canary's path and the row fails by that
+/// test's name alone.
+#[cfg(feature = "inspect")]
+static REFRESH_CANARY_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(all(feature = "inspect", feature = "ktest"))]
+pub(crate) fn arm_refresh_canary(armed: bool) {
+    REFRESH_CANARY_ARMED.store(armed, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Runtime canary `usb-refresh-tail-guard`: the lister guard as a tail temporary.
+#[cfg(feature = "inspect")]
+fn inspect_refresh_tail_guard(w: &azos_inspect::Writer<'_>) -> u32 {
+    let g = TREE.lock_irqsave();
+    let Some(ids) = g.as_ref() else { return 0 };
+    azos_usb::listing::refresh(w, ids, &LISTER.lock_irqsave())
 }

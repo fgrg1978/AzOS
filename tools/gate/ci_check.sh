@@ -14545,6 +14545,8 @@ PY
             || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with DECISION_REFUSALS_DURABLE off ($cfg)"; return; }
         if [ "$isa" = rv ]; then KCONFIG_CONFIG="$cfg" ktest_row "$@"; else AARCH64_CONFIG="$cfg" ktest_row "$@"; fi
     }
+    par "ktest inspect guard canary (rv)" ktest_row "ktest inspect guard canary (rv)" rv "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
+    par "ktest inspect guard canary (arm)" ktest_row "ktest inspect guard canary (arm)" arm "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
@@ -15963,6 +15965,7 @@ PY
     }
     par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" ""
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
+    par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
     par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" $AZOS_OUT/build/disk-x86_64.img

@@ -367,17 +367,21 @@ fn inspect_task(_arg: usize) {
 azos_ktest::ktest_late! {
     fn inspect_refresh_leaves_interrupts_as_they_were() {
         use azos_arch::Interrupts as _;
-        let mut ran = false;
+        let (mut ran, mut on) = (false, true);
         with_state(|st| {
+            #[cfg(feature = "usb-host")]
+            super::usb::arm_refresh_canary(true);
             st.refresh();
+            #[cfg(feature = "usb-host")]
+            super::usb::arm_refresh_canary(false);
             ran = true;
+            // Masked, the runner would fail every later test for sleeping with
+            // interrupts off, so the state is put back before the verdict.
+            on = azos_sync::preempt::irqs_enabled();
+            if !on {
+                azos_arch::ARCH.enable_all();
+            }
         });
-        // Masked, the runner would fail every later test for sleeping with
-        // interrupts off, so the state is put back before the verdict.
-        let on = azos_sync::preempt::irqs_enabled();
-        if !on {
-            azos_arch::ARCH.enable_all();
-        }
         if !ran {
             return Err("no inspect state to refresh");
         }

@@ -357,6 +357,9 @@ pub(crate) const NAMES: &[&str] = &[
     // not block flushes itself (with `storm-record-locked`: gate row `boot:
     // x86_64 desktop reaches the shell, canary`).
     "log-atomic-flush",
+    // boot/usb.rs: the lister guard drops last and leaves interrupts masked,
+    // armed only inside ktest `inspect_refresh_leaves_interrupts_as_they_were`.
+    "usb-refresh-tail-guard",
 ];
 const _: () = assert!(NAMES.len() <= azos_limits::CANARY_RUNTIME_MAX as usize);
 
