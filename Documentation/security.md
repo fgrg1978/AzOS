@@ -465,7 +465,14 @@ keys:
   `prod_pub.bin` in the `keys` directory of `tools`, a file that is not kept in the repository (override
   the path with `PROD_PUBKEY_PATH`) into the section
   `.secure_boot_pubkey` as `SECURE_BOOT_PUBKEY`. If no key file exists the array
-  is all zeros, which the kernel treats as "no trusted key";
+  is all zeros, which the kernel treats as "no trusted key". A bare-metal build
+  whose `KCONFIG_CONFIG` selects `BUILD_TYPE_RELEASE` or `BUILD_TYPE_CERTIFIABLE`
+  fails if the key is the test key (`test_pub.bin` in the `keys` directory of `tools`, compared
+  by its bytes). `make build` of a `BUILD_TYPE_DEV` configuration that enforces secure
+  boot (the separation postures imply it) names the test key in `PROD_PUBKEY_PATH`
+  and signs a slot image, `KERN_A.BIN` and `KERN_A.SIG`, into its system volume
+  with the test private key, so that image verifies and boots in QEMU; the slot
+  file is a fixed payload, since QEMU loads the kernel itself;
 - the **topology key**, embedded by `crates/core/topology/build.rs`
   (`TRUSTED_PUBKEY`). It comes from `TOPOLOGY_PUBKEY_PATH`, or from the
   `dev-key` feature (a test key; the kernel's `qemu` feature enables it). The

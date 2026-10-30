@@ -34,7 +34,7 @@ import azos_tools  # noqa: E402
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(azos_tools.ROOT).resolve()
-TOOLS_DIR = REPO_ROOT / "tools" / "build"
+TOOLS_DIR = Path(__file__).resolve().parent
 DEFCONFIGS_DIR = REPO_ROOT / "config" / "defconfigs"
 KERNEL_CARGO_TOML = REPO_ROOT / "kernel" / "Cargo.toml"
 

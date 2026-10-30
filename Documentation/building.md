@@ -273,6 +273,12 @@ PRESET=<preset>`, `make build` and `make qemu` do (from a config of their own, `
 configuration selected to answer on a clean console. The cells `tools/gate/preset_boot_green.tsv` marks green run;
 `PRESET_BOOT_ALL=1` runs the others.
 
+The image's RAM region is the configuration's `RAM_SIZE` (`kernel/build.rs` writes it as `azos_ram.ld`, which the
+riscv64 and aarch64 linker scripts include), and `azos_limits` refuses a configuration whose kernel heap and
+per-task kernel stacks (`MAX_TASKS` x `KERNEL_STACK_SIZE_KB`) alone do not fit it, naming the limits to lower. An
+aarch64 image that requires the hypervisor extension (`HV_REQUIRE`, the static-partition postures) is started by
+`make qemu` at EL2.
+
 ### Lints
 
 N0 runs each lint after its own self-test, so a lint that went blind fails.
