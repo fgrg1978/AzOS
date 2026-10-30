@@ -2484,8 +2484,14 @@ mod kmutex_ktests {
     // calls `lock` on the ownerless word as an equally urgent newcomer (not
     // strictly more urgent: held back). The waiter, now holding the Mutex,
     // samples: it is the graph owner and the newcomer is its top waiter,
-    // blocked on this Mutex.
+    // blocked on this Mutex. A tick in that window can run the waiter first:
+    // it takes the Mutex with nobody queued, so no owner is linked until the
+    // newcomer blocks behind it, as any contender does. Nobody was held back
+    // and the round proves nothing, so another one runs.
     static D_M: Mutex<u32> = Mutex::new(0);
+    static D_NOT_HELD_BACK: AtomicBool = AtomicBool::new(false);
+    /// Rounds a tick may spoil before the test gives up on a held-back newcomer.
+    const D_ROUNDS: u32 = 16;
     static D_QUEUED: AtomicBool = AtomicBool::new(false);
     static D_WINDOW: AtomicBool = AtomicBool::new(false);
     static D_SEEN: AtomicU32 = AtomicU32::new(0);
@@ -2505,6 +2511,7 @@ mod kmutex_ktests {
         let me = azos_sched::classes::current().map_or(u32::MAX, |i| i as u32);
         let nc = D_NEWCOMER.load(Ordering::SeqCst);
         let node = D_M.wait_node();
+        D_NOT_HELD_BACK.store(node.owner().is_none() && !node.has_waiters(), Ordering::SeqCst);
         let mut seen = 0;
         if node.owner() == Some(me) {
             seen |= D_OWNER_OK;
@@ -2526,8 +2533,7 @@ mod kmutex_ktests {
         let g = D_M.lock();
         D_NEWCOMER.store(azos_sched::classes::current().map_or(u32::MAX, |i| i as u32), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-defer-w", d_waiter, 0, D_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || D_QUEUED.load(Ordering::SeqCst)
-            && D_M.wait_node().has_waiters());
+        let _ = crate::ktest::until(|| D_QUEUED.load(Ordering::SeqCst) && D_M.wait_node().has_waiters());
         drop(g);
         // The ownerless window: released, the waiter still queued.
         D_WINDOW.store(!D_M.is_locked() && D_M.wait_node().has_waiters(), Ordering::SeqCst);
@@ -2540,7 +2546,7 @@ mod kmutex_ktests {
     fn d_run(_: usize) {
         D_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-defer-o", d_owner, 0, D_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 10, || D_DONE.load(Ordering::SeqCst) == 2);
+        let _ = crate::ktest::until(|| D_DONE.load(Ordering::SeqCst) == 2);
     }
 
     azos_ktest::ktest_late! {
@@ -2548,19 +2554,31 @@ mod kmutex_ktests {
             if !pi_on() || !azos_sync::kmutex::STEAL_RULE {
                 return Ok(());
             }
-            crate::ktest::probe("kmx-defer", d_run, 0, RUNNER_PRIO, CPU0)?;
-            let seen = D_SEEN.load(Ordering::SeqCst);
-            if D_DONE.load(Ordering::SeqCst) != 2 {
-                Err("the owner or the waiter never finished")
-            } else if !D_WINDOW.load(Ordering::SeqCst) {
-                Err("no ownerless window: the newcomer was never held back (the test proves nothing)")
-            } else if seen & D_OWNER_OK == 0 {
-                Err("the waiter that took the Mutex is not its graph owner")
-            } else if seen & (D_TOP_OK | D_BLOCKED_OK) != D_TOP_OK | D_BLOCKED_OK {
-                Err("the held-back newcomer slept outside the wait graph: it boosts nobody")
-            } else {
-                Ok(())
+            for _ in 0..D_ROUNDS {
+                for a in [&D_QUEUED, &D_WINDOW, &D_NOT_HELD_BACK] {
+                    a.store(false, Ordering::SeqCst);
+                }
+                D_SEEN.store(0, Ordering::SeqCst);
+                D_DONE.store(0, Ordering::SeqCst);
+                crate::ktest::probe("kmx-defer", d_run, 0, RUNNER_PRIO, CPU0)?;
+                if D_DONE.load(Ordering::SeqCst) != 2 {
+                    return Err("the owner or the waiter never finished");
+                }
+                if D_NOT_HELD_BACK.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let seen = D_SEEN.load(Ordering::SeqCst);
+                return if !D_WINDOW.load(Ordering::SeqCst) {
+                    Err("no ownerless window: the newcomer was never held back (the test proves nothing)")
+                } else if seen & D_OWNER_OK == 0 {
+                    Err("the waiter that took the Mutex is not its graph owner")
+                } else if seen & (D_TOP_OK | D_BLOCKED_OK) != D_TOP_OK | D_BLOCKED_OK {
+                    Err("the held-back newcomer slept outside the wait graph: it boosts nobody")
+                } else {
+                    Ok(())
+                };
             }
+            Err("no newcomer was held back in any round, or it slept outside the wait graph")
         }
     }
 
