@@ -363,6 +363,7 @@ fn inspect_task(_arg: usize) {
     }
 }
 
+#[cfg(feature = "ktest")]
 azos_ktest::ktest_late! {
     fn inspect_refresh_leaves_interrupts_as_they_were() {
         use azos_arch::Interrupts as _;
