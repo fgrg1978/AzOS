@@ -88,7 +88,7 @@ def topology_follows_its_isa(tmp):
         for isa in ISAS:
             want = ("qemu-dev.config" if cfg_isa == "riscv64" else "riscv64.config") if isa == "riscv64" else isa + ".config"
             r = make(["-n", f"KCONFIG_CONFIG={cfg}", os.path.join(OUT, "build", "topo", isa, "CAPS.TOM")], OUT)
-            kconfigs = set(re.findall(r"build/([\w-]+\.config)\b", r.stdout))
+            kconfigs = set(re.findall(re.escape(os.path.join(OUT, "build")) + r"/([\w-]+\.config)\b", r.stdout))
             check(want in kconfigs and (isa != "riscv64" or kconfigs == {want}),
                   f".config {cfg_isa}, topology of {isa}: emitted from {want} ({', '.join(sorted(kconfigs))})")
 
