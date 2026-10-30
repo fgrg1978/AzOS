@@ -9,7 +9,7 @@
 #   full        — 4 CPUs + VirtIO disk + network (TCP port 8080 forwarded)
 #   rvv         — 1 CPU + RVV 1.0 vector extension
 #   full-rvv    — 4 CPUs + disk + net + RVV 1.0
-#   gdb         — the configured ISA's system + GDB server on :1234 (paused at start)
+#   gdb         — `make debug`: the configured ISA's system, gdbstub on :1234, paused at reset
 #   hv-riscv64  — the H extension on (-cpu rv64,h=true): a hypervisor kernel (Kconfig VIRT) finds it
 #   hv-aarch64  — EL2 resident (QEMU virt, virtualization=on): the boot stub keeps it
 #   hv-x86_64   — AMD SVM in TCG (-cpu max,svm=on)
@@ -34,7 +34,7 @@ case "$MODE" in
         exec "$MAKE" qemu-full-smp-rvv
         ;;
     gdb)
-        exec "$MAKE" qemu-gdb
+        exec "$MAKE" debug
         ;;
     hv-riscv64)
         # QEMU's default rv64 CPU has no H; without it the probe reports the

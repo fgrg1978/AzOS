@@ -83,8 +83,15 @@ builds"); the kernel boots without it. The gate asks for all of them
 An aarch64 `make qemu` runs under HVF on an Apple silicon host whose QEMU can use
 it, and under TCG otherwise; every other ISA runs under TCG. An image that enters
 at EL2 stays on TCG, since HVF has no guest EL2. `QEMU_ACCEL=tcg` or `hvf` overrides
-it. `make qemu-gdb` is `make qemu` with the GDB
-stub on :1234 and the CPUs stopped at reset, for the ISA the configuration selects.
+it.
+`make debug` is `make qemu` for the ISA the configuration
+selects, with QEMU's gdbstub on 127.0.0.1:`DEBUG_PORT` (1234) and the CPUs stopped at reset. It writes the
+debugger script of the kernel ELF (`$AZOS_OUT/build/debug_<isa>.gdb`, or `.py` for lldb) and prints the command that
+starts the debugger: `riscv64-elf-gdb` on riscv64, lldb on aarch64 and x86_64 (a gdb built for them is used when
+installed; nothing is downloaded). The script loads the ELF's symbols and connects. The kernel is slid by KASLR, so
+the ELF's addresses match the running image only after `azos-slide 0x<base>`, the base in the console's
+`[KASLR] image slid to 0x<base>` line. A panic's backtrace (Kconfig `PROFILER`) becomes function, file and line with
+`python3 tools/dev/symbolize_bt.py <kernel ELF> <console log>`.
 A target of one ISA refuses when the
 configuration selects another. The internal per-ISA kernel targets (`riscv64`,
 `aarch64`, `x86_64`) are what `make build` and the gate call.

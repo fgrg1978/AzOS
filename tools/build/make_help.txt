@@ -38,7 +38,9 @@ Run in QEMU
   qemu                   Boot what `make build` built: the kernel of the configured ISA (QEMU virt on
                          riscv64 and aarch64, microvm on x86_64, TCG) with a copy of its system volume,
                          so it reaches the console program.
-  qemu-gdb               `make qemu` stopped at reset, waiting for a GDB connection on :1234.
+  debug                  `make qemu` under TCG, stopped at reset with QEMU's gdbstub on 127.0.0.1:DEBUG_PORT (1234), and the debugger
+                         script of the kernel ELF (tools/dev/debug_script.py): gdb on riscv64, lldb on aarch64 and x86_64. Prints the
+                         command that starts it. A KASLR-slid kernel needs `azos-slide 0x<base>` (the base the console prints).
   qemu-smp               riscv64: boot with 4 CPUs.
   qemu-full-smp          riscv64: boot with 4 CPUs, a disk, a network card and hello.elf.
   qemu-rvv               riscv64: boot with vector extension, one CPU.

@@ -128,14 +128,19 @@ qemu-full-smp-rvv: build-rvv userspace $(OUT_BUILD)/disk.img
 		-device virtio-net-device,netdev=net0 \
 		-kernel $(RISCV64_KERNEL_ELF)
 
-# `make qemu` with the GDB stub on :1234 and the CPUs stopped at reset; the
-# kernel ELF carries the symbols of every ISA (the aarch64 image is its binary).
-.PHONY: qemu-gdb
-qemu-gdb: QEMU_ACCEL := tcg
-qemu-gdb: build
+# `make qemu` with QEMU's gdbstub on 127.0.0.1:DEBUG_PORT and the CPUs stopped
+# at reset. TCG only: no test has put the gdbstub under HVF. The debugger
+# script of the kernel ELF `make build` made (tools/dev/debug_script.py) is
+# written first, and so is the command of the debugger that serves this ISA.
+DEBUG_PORT ?= 1234
+.PHONY: debug
+debug: QEMU_ACCEL := tcg
+debug: build
+	@cmd="$$(python3 tools/dev/debug_script.py $(KCONFIG_ISA) $(KERNEL_ELF) --port $(DEBUG_PORT) --out-dir $(OUT_BUILD))" || exit 1; \
+	echo "[DEBUG] stopped at reset, gdbstub on 127.0.0.1:$(DEBUG_PORT); attach with:"; echo "[DEBUG]   $$cmd"; \
+	echo "[DEBUG] a slid kernel: azos-slide 0x<base> from the console's '[KASLR] image slid to 0x<base>'"
 	cp $(SYSTEM_VOLUME) $(QEMU_VOLUME)
-	@echo "[GDB] waiting on :1234; gdb $(KERNEL_ELF) -ex 'target remote :1234'"
-	$(QEMU_SYSTEM_$(KCONFIG_ISA)) -s -S
+	$(QEMU_SYSTEM_$(KCONFIG_ISA)) -gdb tcp:127.0.0.1:$(DEBUG_PORT) -S
 
 # ── Two-node network smoke (DEV01.5) ─────────────────────────────────────────
 # Boots two kernel instances wired by QEMU's `socket` net backend and asserts a

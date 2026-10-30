@@ -468,7 +468,8 @@ Source: `kernel/src/panic.rs`, `crates/fs/src/crash_log.rs`,
   `[PANIC] other CPUs parked: n/m`.
 - **Backtrace.** With `PROFILER` on, the panic path and every fatal trap print the
   panicking CPU's own call chain with the profiler's walker (`prof::backtrace`);
-  the addresses resolve with `addr2line -f -e <kernel ELF>`.
+  `tools/dev/symbolize_bt.py <kernel ELF> <console log>` turns the addresses into function, file and
+  line, undoing the KASLR slide the log's `[KASLR]` line gives.
 
 ## Sampling profiler
 

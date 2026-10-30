@@ -74,7 +74,7 @@ ROLES = {
     ],
     "gate": [
         "check_fast.py", "check_fast.sh", "ci_cargo.py", "ci_check.sh", "ci_full.sh",
-        "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "coverage.sh", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
+        "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "coverage.sh", "debug_row.py", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
         "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_sendkeys.py", "qemu_tap.py", "repro_check.sh", "rows_for_diff.py",
@@ -106,9 +106,9 @@ ROLES = {
         "vsbench_tcp_pcap.py", "vsbench_tcp_peer.py", "vsbench_x86_64.sh",
     ],
     "dev": [
-        "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
-        "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh",
-        "test_farm.py", "tftp_serve.py", "worktree_seed.py",
+        "debug_script.py", "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
+        "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh", "symbolize_bt.py",
+        "test_debug.py", "test_farm.py", "tftp_serve.py", "worktree_seed.py",
     ],
     "lib": ["azos_tools.py", "out_dir.py"],
 }
@@ -133,6 +133,7 @@ NO_CALLER = {
     "dev_uart.py": "relays a board's serial console to a person: needs the board (kept until it)",
     "esp32_bridge/": "ESP32 sketch, flashed with the Arduino tools: needs the board (kept until it)",
     "gen_prod_key.py": "generates the production signing key: never automated, on purpose",
+    "symbolize_bt.py": "reads a console log with a panic backtrace for a person: needs the log of a PROFILER kernel's panic",
     "text_equiv.py": "compares two kernels' .text: an A/B a person picks the two builds for",
     "qemu.sh": "interactive QEMU launcher (console, gdb): a person at the terminal",
     "limits_cost.py": "RAM cost of a sizing option: two builds per option a person chooses to price",
