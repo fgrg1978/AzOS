@@ -51,9 +51,10 @@ config CONSOLE_LOGIN
       owned by the user (`owner_root`, never 0): its keystore scope.
 
       Needs the native shell session as the console program (Userspace
-      programs: SH.ELF served by TERMD.ELF); with another console program the
-      row is there and nothing asks for a login. (Not a `depends on`: the
-      console choice depends on the images this one pulls in.)
+      programs: SH.ELF served by TERMD.ELF). With another console program,
+      or none, the build stops with a message (azos_limits), instead of
+      leaving a login row that nothing asks for. (Not a `depends on`, which
+      would turn the login off without a word.)
 
       y: when the topology has at least one `[login.NAME]` row the kernel does
       not start SH.ELF at boot; LOGIND.ELF starts it after a login. Every

@@ -286,22 +286,15 @@ fn check_target_features(workspace_root: &std::path::Path, config_path: &std::pa
 }
 
 fn run_validations(cfg: &ConfigMap) {
-    // The console program (CONSOLE_PROGRAM, config/Kconfig.userspace): the
-    // loader starts only an 8.3 image directly under /fat, and the topology
-    // row is named by what follows `/fat/`. A custom path that is not one
-    // fails here rather than at boot.
-    if let Some(p) = cfg.get("CONSOLE_PATH") {
-        let ok = p.is_empty()
-            || p.strip_prefix("/fat/").is_some_and(|n| {
-                let (stem, ext) = n.split_once('.').unwrap_or((n, ""));
-                !stem.is_empty() && stem.len() <= 8 && ext.len() <= 3 && !ext.is_empty()
-                    && n.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
-                    && n.bytes().filter(|&b| b == b'.').count() == 1
-            });
-        if !ok {
-            panic!("CONSOLE_PATH {p:?} is not an 8.3 image directly under /fat (/fat/NAME.ELF, upper case). \
-                    Fix CONSOLE_PROGRAM_CUSTOM_PATH in `make config` (Userspace programs).");
-        }
+    // The console login starts the native shell after a login: with another
+    // console program (or none) the login row would exist and nothing would
+    // ask for a credential.
+    if get_bool(cfg, "CONSOLE_LOGIN") && !get_bool(cfg, "CONSOLE_PROGRAM_SH") {
+        let path = cfg.get("CONSOLE_PATH").map(String::as_str).unwrap_or("");
+        panic!("validation FAIL: CONSOLE_LOGIN=y needs the native shell as the console program \
+                (CONSOLE_PROGRAM_SH), and CONSOLE_PATH is {path:?}: nothing would ask for the \
+                login. Fix: choose the native shell in `make config` (Userspace programs), or \
+                turn CONSOLE_LOGIN off.");
     }
     // -----------------------------------------------------------------------
     // L0/L0b landed the module loader and the empty server only.
