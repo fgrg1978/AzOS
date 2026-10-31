@@ -2252,11 +2252,11 @@ mod kmutex_ktests {
 
     fn hd_run(_: usize) {
         let _ = task_create_affinity("pil-dead-h", hd_holder, 0, FAIR_OWNER_PRIO, CPU0);
-        // The exit path drops the count before the slot turns Zombie; the
-        // bound is wall clock, so the canary does not hold the run up.
-        let _ = azos_syscall::sleep::wait_until_ms(3_000, 10, || {
+        // The exit path drops the count before the slot turns Zombie, so a
+        // reaped holder has run it; the canary stops waiting there too.
+        let _ = azos_syscall::sleep::wait_until_ms(30_000, 10, || {
             let t = HD_TID.load(Ordering::SeqCst);
-            t != 0 && azos_sync::held::held_by(t) == 0
+            t != 0 && (azos_sync::held::held_by(t) == 0 || azos_sched::scheduler::idx_for_tid(t).is_none())
         });
     }
 
@@ -2267,6 +2267,9 @@ mod kmutex_ktests {
             if t == 0 || HD_COUNTED.load(Ordering::SeqCst) == 0 {
                 Err("the holder was never counted in the held table (the test proves nothing)")
             } else if azos_sync::held::held_by(t) != 0 {
+                if azos_sched::scheduler::idx_for_tid(t).is_some() {
+                    return Err("the holder did not finish exiting within the bound (the test proves nothing)");
+                }
                 Err("a dead Mutex holder is still counted in the held table")
             } else {
                 Ok(())
@@ -2295,9 +2298,9 @@ mod kmutex_ktests {
 
     fn cd_run(_: usize) {
         let _ = task_create_affinity("claim-dead-o", cd_owner, 0, FAIR_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(3_000, 10, || {
+        let _ = azos_syscall::sleep::wait_until_ms(30_000, 10, || {
             let t = CD_TID.load(Ordering::SeqCst);
-            t != 0 && azos_sync::claim::held_by(t) == 0
+            t != 0 && (azos_sync::claim::held_by(t) == 0 || azos_sched::scheduler::idx_for_tid(t).is_none())
         });
     }
 
@@ -2308,6 +2311,9 @@ mod kmutex_ktests {
             if t == 0 || CD_COUNTED.load(Ordering::SeqCst) != 2 {
                 Err("the owner was never counted in the claim table (the test proves nothing)")
             } else if azos_sync::claim::held_by(t) != 0 {
+                if azos_sched::scheduler::idx_for_tid(t).is_some() {
+                    return Err("the owner did not finish exiting within the bound (the test proves nothing)");
+                }
                 Err("a dead claim owner is still counted in the held table")
             } else {
                 Ok(())
