@@ -3747,6 +3747,14 @@ impl SampleMeta {
 /// `SENSOR_SAMPLE_FLAG_SYNTHETIC`, under a short name for the arms below.
 const SYNTHETIC: u16 = azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
 
+/// The IMU, odometry, encoder and GPS exist only with the Robot domain
+/// (`crate::no_robot` stands in for it without): a read refuses them like a
+/// sensor that is not ready, and so does a bind to the vDSO page.
+pub(crate) fn robot_sensor_absent(sensor_type: u64) -> bool {
+    cfg!(not(feature = "use-robot"))
+        && matches!(sensor_type, SENSOR_TYPE_IMU | SENSOR_TYPE_ODOM | SENSOR_TYPE_ENCODER | SENSOR_TYPE_GPS)
+}
+
 /// The sensor read with its destination left to the caller: the arm for
 /// `sensor_type` builds the bytes and hands them to `sink` once, with the
 /// value's [`SampleMeta`], and `sink`'s answer is the call's.
@@ -3763,10 +3771,7 @@ const SYNTHETIC: u16 = azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
 /// integrated; the encoder, rangefinder, battery ADC and GPIO lines are read
 /// here, and the counter is read right after the first device read returns.
 pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type: u64, buf_len: u64, sink: F) -> i64 {
-    // Without the Robot domain the IMU, odometry, encoder and GPS do not
-    // exist (`crate::no_robot`): refused like a sensor that is not ready.
-    #[cfg(not(feature = "use-robot"))]
-    if matches!(sensor_type, SENSOR_TYPE_IMU | SENSOR_TYPE_ODOM | SENSOR_TYPE_ENCODER | SENSOR_TYPE_GPS) {
+    if robot_sensor_absent(sensor_type) {
         return -1;
     }
     match sensor_type {

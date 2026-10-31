@@ -10874,13 +10874,13 @@ done
 # requires exactly the named test to fail: if it passes, the test above
 # proves nothing. vdso-write-canary: mprotect(RW) makes the shared vDSO frame
 # writable (syscall-tests mmap_guards).
-host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <feature> <test fn>
+host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <feature> <test fn> [extra cargo test flag]
     local label="$1" suite="$2" feat="$3" test="$4" out dir
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     case "$suite" in */*) dir="${REPO_ROOT}/${suite}" ;; *) dir="${REPO_ROOT}/tests/host/${suite}" ;; esac
     CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/$(printf '%s' "$suite" | tr '/' '-')" \
-        host_cargo out "$dir" test --release --features "$feat" -- "$test"
+        host_cargo out "$dir" test --release ${5:+"$5"} --features "$feat" -- "$test"
     if echo "$out" | qgrep -qE "(test |::)${test} \.\.\. FAILED" \
        && echo "$out" | qgrep -qE "test result: FAILED\. 0 passed; 1 failed"; then
         ok; echo "$out" | grep -m1 -A1 "panicked at" | sed -n 2p | cut -c1-200 | sed 's/^/      canary caught: /'
@@ -10889,6 +10889,26 @@ host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <featu
         echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
     fi
 }
+# The generic image (no `use-robot`): syscall-tests builds without the robot
+# shims' test controls, and `Sensor::bind_vdso` must refuse the four robot
+# sensors there, as `read` does, instead of letting the timer interrupt publish
+# a zero slot. The canary (`vdso-bind-canary`) skips the refusal.
+host_generic_row() { # <label> <test fn>
+    local label="$1" test="$2" out
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-generic" \
+        host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release --no-default-features \
+        --features virtio-snd,linux-abi -- "$test"
+    if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
+    else
+        bad; echo "      syscall-tests --no-default-features: $test did not pass alone"
+        echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
+host_job host_generic_row "sensor: vdso bind, no robot domain" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain
+host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,vdso-bind-canary \
+    a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
 host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mismatch_is_refused
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused
 host_job host_canary_row "tls: rsa key canary" tls-tests canary-rsa-keys the_server_refuses_an_rsa_private_key
@@ -23919,7 +23939,6 @@ input watch -n 100 &
         local isa="$1" tag="$2" feats="$3"; shift 3
         local dir="$AZOS_OUT/target/con-$tag-$isa" base tmp cfg elf img l k
         case "$isa" in rv) base="$PRIMARY_CONFIG" ;; arm) base="$AARCH64_CONFIG" ;; *) base="$REPO_ROOT/config/defconfigs/${GATE_DEFC_X86}.config" ;; esac
-        base="${CON_BASE:-$base}"
         mkdir -p "$dir"; cfg="$dir/con.config"; tmp="$(mktemp -d)"
         cp "$base" "$tmp/c.config"
         [ "$isa" = x86 ] && set -- CONFIG_LINUX_RUNTIME=y "$@"
@@ -24075,32 +24094,6 @@ x=con; echo bb\$x-ok
                 par_row con_row "console: busybox sh canary, plain spawn ($con_isa)" rv "$con_k" "$con_disk" "" FAIL "$con_bb_script" 90 \
                 "[compmgr] start BUSYBOX.ELF" "bbcon-ok"
         fi
-    done
-    # BRAINCLI.ELF as the console program (the choice offers it on a robot
-    # preset only): the kernel starts it last. Its own row grants no motor
-    # capability (the robot's grants are the autorun row's alone, see the
-    # comment above TASK_GPIODRV_IMAGE in the topology builder), so the client
-    # prints its FATAL line and exits, the component manager stops restarting
-    # it, it never takes the console, and the console says once that it gave
-    # up (`console_mode::gave_up`) before the recovery console follows. The
-    # native shell must not start. The FATAL line is the row's cause: a client
-    # that stayed alive reading no console input would reach the same give-up
-    # line by the timeout alone, and this row would then be about another thing.
-    for con_isa in rv arm; do
-        if ! ci_wants "console: brain client ($con_isa)"; then ci_skip_rows "console: brain client ($con_isa)"; continue; fi
-        con_k=""
-        if con_wanted "console: brain client ($con_isa)"; then
-            if [ "$con_isa" = rv ]; then con_base="$ROBOT_PRIMARY_CONFIG"; else con_base="$ROBOT_AARCH64_CONFIG"; fi
-            con_k="$(CON_BASE="$con_base" con_kernel "$con_isa" brain qemu,use-robot CONFIG_USERSPACE_BRAINCLI=y CONFIG_CONSOLE_PROGRAM_BRAINCLI=y)"
-        fi
-        if [ -z "$con_k" ]; then
-            printf "  %-26s" "console: brain client ($con_isa)..."; bad; echo "      the kernel did not build"; continue
-        fi
-        USH_KERNEL="$con_k" USH_FORBID='\[compmgr\] start SH.ELF|PAGE FAULT|SECCOMP' \
-            par_row ushell_row "console: brain client ($con_isa)" "$con_isa" qemu,use-robot PASS "#wait $RECOVERY_PROMPT_RE" 120 \
-            "[compmgr] start BRAINCLI.ELF" \
-            "[brain_client] FATAL no motor capabilities - refusing to run" \
-            "[CONSOLE] console program /fat/BRAINCLI.ELF gave up: recovery console (it did not take the console within" "re:$RECOVERY_PROMPT_RE"
     done
     # CONSOLE_LOGIN needs the native shell as the console program: `azos_limits`
     # refuses the others (build.rs), instead of building a login nothing asks for.

@@ -97,7 +97,7 @@ fn main() {
     let gen = workspace_root.join("tools/build/gen_userspace_kconfig.py");
     println!("cargo:rerun-if-changed={}", gen.display());
     let st = std::process::Command::new("python3")
-        .arg(&gen).arg("--root").arg(workspace_root).arg("--config").arg(&config_path)
+        .arg(&gen).arg("--root").arg(workspace_root)
         .status()
         .unwrap_or_else(|e| panic!("azos_limits: cannot run python3 {}: {e}", gen.display()));
     if !st.success() {

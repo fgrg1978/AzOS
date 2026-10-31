@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """Write config/Kconfig.userspace from the programs under userspace/.
 
-    python3 tools/build/gen_userspace_kconfig.py [--root DIR] [--out FILE] [--config FILE]
+    python3 tools/build/gen_userspace_kconfig.py [--root DIR] [--out FILE]
     python3 tools/build/gen_userspace_kconfig.py [--root DIR] --all-on
 
 The root `Kconfig` runs this script from a `$(shell,...)` line before it
@@ -29,8 +29,6 @@ in `[package.metadata.azos]`, a C program in `azos.toml` (`[azos]` table):
     default  = "y"          # or a Kconfig expression; default n
     start    = "<expr>"     # the Kconfig condition under which the topology
                             # STARTS the image at boot (absent: never)
-    console  = "<expr>"     # the image may be chosen as the console program
-                            # when the Kconfig expression holds (absent: never)
 
 `images = []` marks a directory that builds no AzOS program (a Linux module,
 a Linux baseline's init). A `topology = true` image defaults y and, outside a
@@ -51,15 +49,9 @@ Output, in a menu "Userspace programs":
   * one bool per image, `USERSPACE_<STEM>` ("include in the board volume");
     BusyBox is not generated: its one symbol is `BUSYBOX` in
     config/axes/Kconfig.personality, which the console choice below reads;
-  * `choice` CONSOLE_PROGRAM: native sh, BusyBox sh, the images whose
-    metadata says `console` (below), or none;
+  * `choice` CONSOLE_PROGRAM: native sh, BusyBox sh, or none;
   * the derived strings the kernel and the topology read: CONSOLE_PATH and
     CONSOLE_ARGS.
-
-`--config FILE` (default `$KCONFIG_CONFIG`, else `.config`): an existing
-configuration whose console program names an image that no longer exists
-gets a warning on stderr; olddefconfig then drops that symbol and the
-choice falls back to its default.
 
 `--all-on` prints `CONFIG_USERSPACE_<STEM>=y` for every image and writes nothing:
 the lines a configuration appends to ask for every program (the gate, whose
@@ -77,12 +69,8 @@ import sys
 CLASSES = ("bench", "drivers", "services", "tests")
 OUT_REL = os.path.join("config", "Kconfig.userspace")
 
-# Choice members that are not per-program.
+# The members of the CONSOLE_PROGRAM choice.
 FIXED_CHOICES = {"SH", "BUSYBOX_SH", "NONE"}
-# The three images of the native shell session; CONSOLE_PROGRAM_SH names them
-# all (the console program is the terminal server, which the shell is a client
-# of, and the shell reaches it through the name server).
-NATIVE_SHELL_IMAGES = {"SH.ELF", "TERMD.ELF", "NAMESD.ELF"}
 
 
 class GenError(Exception):
@@ -211,7 +199,6 @@ def render(root):
     a("")
     a('comment "Images on the board volume (AZOS_OUT/build/disk-board*.img)"')
     images = []  # (image, stem, cls, dir)
-    console_images = []  # (image, stem, cls, dir, kconfig expression)
     for cls in CLASSES:
         members = [p for p in progs if p[0] == cls]
         if not members:
@@ -222,11 +209,6 @@ def render(root):
             for img in imgs:
                 stem = stem_of(img)
                 images.append((img, stem, cls, d))
-                cexpr = meta.get("console")
-                if cexpr is not None:
-                    if not (isinstance(cexpr, str) and cexpr.strip()):
-                        raise GenError(f"userspace/{cls}/{d}: console must be a Kconfig expression")
-                    console_images.append((img, stem, cls, d, cexpr))
                 a("")
                 a(f"config USERSPACE_{stem}")
                 topo = bool(meta.get("topology"))
@@ -288,8 +270,8 @@ def render(root):
         "it ended and its row does not restart it. With secure boot off, `init=/fat/NAME.ELF` "
         "on the kernel command line starts another image instead (its row must "
         "say start = true); with secure boot on it is ignored and the boot log says so. "
-        "Only programs meant to run on the console are offered: the native shell, "
-        "BusyBox sh and the images whose metadata says `console`. Whenever the "
+        "Only programs meant to run on the console are offered: the native shell "
+        "and BusyBox sh. Whenever the "
         "console program ends and is not restarted, or does not take the console in "
         "time, the console prints one `console program NAME gave up` line and the "
         "recovery console takes over. The console login (CONSOLE_LOGIN) is a layer "
@@ -330,21 +312,6 @@ def render(root):
             "the pinned tarball to build (`make busybox`)."
         ):
             a(ln)
-    for img, stem, cls, d, cexpr in console_images:
-        if stem in FIXED_CHOICES or img in NATIVE_SHELL_IMAGES:
-            raise GenError(f"userspace/{cls}/{d}: {img} is a console program already (console = ...)")
-        a("")
-        a(f"config CONSOLE_PROGRAM_{stem}")
-        a(f'    bool "{img} (userspace/{cls}/{d})"')
-        a(f"    depends on USERSPACE_{stem} && ({cexpr})")
-        a("    help")
-        for ln in wrap(
-            f"The kernel starts {img} last, after every other row (offered when {cexpr}). "
-            "It runs under its own row like any other program; "
-            "a program that does not read console input leaves the console to the recovery "
-            f"console after SH_START_TIMEOUT_S, and prints `console program {img} gave up`."
-        ):
-            a(ln)
     a("")
     a("config CONSOLE_PROGRAM_NONE")
     a('    bool "None (the in-kernel shell has the console)"')
@@ -356,8 +323,6 @@ def render(root):
     a('    default "/fat/TERMD.ELF" if CONSOLE_PROGRAM_SH')
     if bb:
         a('    default "/fat/BUSYBOX.ELF" if CONSOLE_PROGRAM_BUSYBOX_SH')
-    for img, stem, _, _, _ in console_images:
-        a(f'    default "/fat/{img}" if CONSOLE_PROGRAM_{stem}')
     a('    default ""')
     a("    help")
     a("      Derived from CONSOLE_PROGRAM: the console program's image, \"\" for none.")
@@ -372,32 +337,13 @@ def render(root):
     a("")
     a("endmenu")
     a("")
-    return "\n".join(L), {s for (_, s, _, _, _) in console_images}
-
-
-def warn_stale_console(config_path, stems, bb):
-    if not config_path or not os.path.isfile(config_path):
-        return
-    with open(config_path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            m = re.match(r"CONFIG_CONSOLE_PROGRAM_([A-Z0-9_]+)=y$", line.strip())
-            if not m:
-                continue
-            s = m.group(1)
-            if s in ("SH", "NONE") or s in stems or (s == "BUSYBOX_SH" and bb):
-                continue
-            sys.stderr.write(
-                f"warning: {config_path}: CONSOLE_PROGRAM_{s} is not a console program: no "
-                f"program under userspace/ says `console` for it; the console program falls "
-                f"back to the default (native sh where the profile has one)\n"
-            )
+    return "\n".join(L)
 
 
 def main(argv):
     root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
     out = None
     all_on = False
-    config = os.environ.get("KCONFIG_CONFIG") or ".config"
     it = iter(argv[1:])
     for arg in it:
         if arg == "--all-on":
@@ -406,8 +352,6 @@ def main(argv):
             root = next(it)
         elif arg == "--out":
             out = next(it)
-        elif arg == "--config":
-            config = next(it)
         else:
             sys.stderr.write(f"gen_userspace_kconfig.py: unknown argument {arg!r}\n")
             return 2
@@ -422,7 +366,7 @@ def main(argv):
         return 0
     out = out or os.path.join(root, OUT_REL)
     try:
-        text, stems = render(root)
+        text = render(root)
     except (GenError, OSError) as e:
         try:
             os.remove(out)
@@ -430,7 +374,6 @@ def main(argv):
             pass
         sys.stderr.write(f"gen_userspace_kconfig.py: {e}\n")
         return 1
-    warn_stale_console(config, stems, busybox_present(root))
     try:
         with open(out, encoding="utf-8") as f:
             if f.read() == text:

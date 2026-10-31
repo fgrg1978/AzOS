@@ -137,3 +137,4 @@ fn a_vdso_bind_is_gated_like_a_read() {
     assert_eq!(server(SENSOR_TYPE_ENCODER as u32, CapPerms::WRITE).bind_vdso().code, outcome::DENIED);
     assert_eq!(server(azos_devif::sensor::TYPES, CapPerms::READ).bind_vdso().code, outcome::BAD_ARGUMENT);
 }
+
