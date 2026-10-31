@@ -5760,8 +5760,8 @@ aarch64_captest_group() {
     sensor_ts_captest_row "aarch64 sensors: stamped read" "$CI_LOG_DIR/aarch64-captest.log"
     aarch64_ring3_irq_row
     # The rows after this one boot the plain kernel, not the one with captest's
-    # row (it needs four CPUs).
-    a64_kbuild "qemu"
+    # row (it needs four CPUs). A parallel job has its own copy of the kernel.
+    [ -n "$PAR_JOB" ] || a64_kbuild "qemu"
 }
 par "aarch64 captest" aarch64_captest_group
 
