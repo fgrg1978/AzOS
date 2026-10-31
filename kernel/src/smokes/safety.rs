@@ -385,7 +385,12 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     // A fix goes stale (reads as none) while the host keeps its publisher off.
     let mut s = poll();
     let mut polls: u32 = 1;
-    while s.gps_fix == 0 && polls < MAX_POLLS { s = poll(); polls += 1; }
+    // `canary=geofence-stale-read`: no wait, and this read is stale.
+    if canary!("geofence-stale-read") {
+        s.gps_fix = 0;
+        s.gps_satellites = 0;
+    }
+    while !canary!("geofence-stale-read") && s.gps_fix == 0 && polls < MAX_POLLS { s = poll(); polls += 1; }
     let status = geofence_status(&s);
     if status != GeofenceStatus::Inside {
         GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
@@ -417,7 +422,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
     }
     let mut s = poll();
     let mut polls: u32 = 1;
-    while s.gps_lat_udeg != OUTSIDE_LAT_UDEG && polls < MAX_POLLS { s = poll(); polls += 1; }
+    while (s.gps_lat_udeg != OUTSIDE_LAT_UDEG || s.gps_fix == 0) && polls < MAX_POLLS { s = poll(); polls += 1; }
     let status = geofence_status(&s);
     let verdict = safety_check(&s);
     // Either outcome proves the GPS path reached the fence: L0 says

@@ -96,12 +96,8 @@ azos_ktest::ktest_late! {
                 return Err("the object was freed inside a read section that held it (no grace period)");
             }
         }
-        let t0 = now_ms();
-        while !a.freed.load(Ordering::SeqCst) {
-            if now_ms().wrapping_sub(t0) > 2 * qsbr::STALL_TIMEOUT_MS {
-                return Err("the retired object was never freed (no grace period ended)");
-            }
-            sleep_ms(qsbr::GP_POLL_MS);
+        if !crate::ktest::until_for(2 * qsbr::STALL_TIMEOUT_MS, || a.freed.load(Ordering::SeqCst)) {
+            return Err("the retired object was never freed (no grace period ended)");
         }
         let cpu = RAN_ON.load(Ordering::SeqCst);
         if Some(cpu) != qsbr::callback_cpu() {
@@ -130,16 +126,16 @@ azos_ktest::ktest_late! {
             let t0 = now_ms();
             let mut gp = qsbr::Gp::start(t0, me);
             quiet += others - gp.waiting();
-            loop {
+            let ended = crate::ktest::until_for(2 * qsbr::STALL_TIMEOUT_MS, || {
                 let now = now_ms();
-                if gp.poll(now) {
+                let ended = gp.poll(now);
+                if ended {
                     longest = longest.max(now.wrapping_sub(t0));
-                    break;
                 }
-                if now.wrapping_sub(t0) > 2 * qsbr::STALL_TIMEOUT_MS {
-                    return Err("a grace period did not end (an idle CPU held it)");
-                }
-                sleep_ms(qsbr::GP_POLL_MS);
+                ended
+            });
+            if !ended {
+                return Err("a grace period did not end (an idle CPU held it)");
             }
         }
         crate::kprintln!("# rcu: {} of {} CPU snapshots quiescent at the start, longest grace period {} ms, stalls {}",

@@ -31,7 +31,7 @@ fn sleep_ms(ms: u64) {
 
 fn waiter(_: usize) {
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
-    let deadline = azos_drv_sys::timebase::now() + 10_000 * per_ms;
+    let deadline = azos_drv_sys::timebase::now() + azos_limits::KTEST_LATE_TIMEOUT_MS as u64 * per_ms;
     let rc = azos_sched::futex::wait(&|| Some((COND, WORD.load(Ordering::Acquire))), 0, Some(deadline));
     if rc == 0 {
         RAN.fetch_add(1, Ordering::AcqRel);

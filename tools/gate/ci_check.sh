@@ -14907,8 +14907,8 @@ PY
     # `fdt-reserve-skip`: the device tree blob stays in the page allocator
     # (`mm_fdt_reserved`; QEMU leaves it in free RAM on both ISAs: riscv64
     # near the top, aarch64 mid-RAM).
-    KTEST_RT_CANARIES="canary=stack-guard-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer,preempt-isr-leak,irq-storm,commander-exit-late,fdt-reserve-skip"
-    KTEST_RT_CANARIED="sched_stack_guards_unmapped chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels mm_fdt_reserved"
+    KTEST_RT_CANARIES="canary=stack-guard-skip,chaos-leak,decision-skip,ioring-fsync-inline,camera-encode-per-consumer,preempt-isr-leak,irq-storm,commander-exit-late,fdt-reserve-skip,geofence-stale-read"
+    KTEST_RT_CANARIED="sched_stack_guards_unmapped chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels mm_fdt_reserved safety_geofence_breach_latches_estop"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     # Wave 15 (N1, lockdep-lite): `canary=lockdep-abba` takes the test's two
@@ -15186,10 +15186,25 @@ PY
     # mutex across the device wait, rule F1: kmutex_unlocked_for_io) and
     # `canary=claim-mutex-held` (a claim's owner keeps the exchange mutex, so
     # a Mutex is held across its device waits: claim_holds_no_mutex_across_a_device_wait).
-    KTEST_KMUTEX_CANARIES="canary=kmutex-io-held,claim-mutex-held"
-    KTEST_KMUTEX_CANARIED="kmutex_unlocked_for_io claim_holds_no_mutex_across_a_device_wait"
+    # `canary=claim-no-exclude` (a contender enters the owned claim:
+    # claim_excludes_across_a_wait_and_wakes_a_contender).
+    KTEST_KMUTEX_CANARIES="canary=kmutex-io-held,claim-mutex-held,claim-no-exclude"
+    KTEST_KMUTEX_CANARIED="kmutex_unlocked_for_io claim_holds_no_mutex_across_a_device_wait claim_excludes_across_a_wait_and_wakes_a_contender"
     par "ktest kmutex canary (rv)" ktest_row "ktest kmutex canary (rv)" rv "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
     par "ktest kmutex canary (arm)" ktest_row "ktest kmutex canary (arm)" arm "" "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
+    # The wait-graph canaries (WAIT_GRAPH y), one boot of the pass row's kernel;
+    # each breaks only its own test(s). `claim-release-silent` is here because
+    # `claim-no-exclude` above fails the same test before it reaches the wake.
+    # kmutex-steal-any lets the releaser's own re-lock overtake the queued
+    # waiter, so the held-back-newcomer test loses its graph owner too.
+    # kmutex-park-aba parks the held-back newcomer on its word alone after a
+    # widened window: the word's ABA loses its wake, so that test fails too.
+    # ipc-call-no-edge leaves every IPC call, ordinary or fast, without its
+    # wait-graph edge (the fast call is then taken with nothing to boost).
+    KTEST_WG_CANARIES="canary=kmutex-steal-any,kmutex-park-aba,owner-died-silent,exit-keeps-graph,futex-pi-no-edge,futex-pi-exit-silent,futex-requeue-pi-plain,futex-requeue-pi-no-proxy,held-keeps-dead,claim-held-keeps-dead,ipc-call-no-edge,claim-release-silent"
+    KTEST_WG_CANARIED="kmutex_steal_rule_holds_for_top_waiter kmutex_held_back_newcomer_is_in_the_graph kmutex_owner_died_wakes_waiter waitgraph_exit_clears_state futex_pi_boosts_the_owner futex_pi_owner_exit_hands_over futex_requeue_pi_hands_the_mutex_over kmutex_dead_holder_leaves_the_held_table claim_dead_owner_leaves_the_held_table waitgraph_ipc_call_boosts_server ipc_fastpath_boosting_call_is_slow_and_boosts ipc_fastpath_call_edge_is_in_the_graph claim_excludes_across_a_wait_and_wakes_a_contender"
+    par "ktest wait-graph canary (rv)" ktest_row "ktest wait-graph canary (rv)" rv "" "$KTEST_WG_CANARIED" "$KTEST_WG_CANARIES"
+    par "ktest wait-graph canary (arm)" ktest_row "ktest wait-graph canary (arm)" arm "" "$KTEST_WG_CANARIED" "$KTEST_WG_CANARIES"
     # N6a + N7, one boot of the pass row's kernel: `canary=sched-class-invert`
     # (the class walk runs its precedence backwards: sched_class_precedence)
     # and `pi-depth-1` (the wait graph walks one owner: waitgraph_transitive_chain,
@@ -16418,6 +16433,8 @@ PY
     # rv/arm); a storm delivers to a throttled handler.
     par "ktest irq-storm canary (x86)" x86_ktest_row "ktest irq-storm canary (x86)" "" \
         "irq_storm_is_contained" "canary=irq-storm"
+    par "ktest geofence stale read canary (x86)" x86_ktest_row "ktest geofence stale read canary (x86)" "" \
+        "safety_geofence_breach_latches_estop" "canary=geofence-stale-read"
     # N1 (lockdep-lite): see `ktest lockdep canaries (rv)`.
     par "ktest lockdep canaries (x86)" x86_ktest_row "ktest lockdep canaries (x86)" "" \
         "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES"
@@ -16438,6 +16455,8 @@ PY
     # N8: see `ktest kmutex canary (rv)`.
     par "ktest kmutex canary (x86)" x86_ktest_row "ktest kmutex canary (x86)" "" \
         "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
+    par "ktest wait-graph canary (x86)" x86_ktest_row "ktest wait-graph canary (x86)" "" \
+        "$KTEST_WG_CANARIED" "$KTEST_WG_CANARIES"
     # N6a + N7: see `ktest sched canary (rv)`.
     par "ktest sched canary (x86)" x86_ktest_row "ktest sched canary (x86)" "" \
         "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"

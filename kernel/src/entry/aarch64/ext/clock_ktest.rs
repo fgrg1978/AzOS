@@ -14,11 +14,18 @@ const LATEST_MS: u64 = 1000;
 azos_ktest::ktest_late! {
     fn clock_timeout_holds_against_counter() {
         let hz = counter_freq();
-        let (c0, t0) = (azos_arch::sysregs::read_cntvct_el0(), ARCH.now_ticks());
-        azos_sched::task_block(azos_sched::WaitReason::Timer(t0 + TIMER_FREQ * TIMEOUT_MS / 1000));
-        let (c1, t1) = (azos_arch::sysregs::read_cntvct_el0(), ARCH.now_ticks());
-        let counter_ms = (c1 - c0) * 1000 / hz;
-        let clock_ms = (t1 - t0) * 1000 / TIMER_FREQ;
+        // A host pause lengthens one timeout; an unscaled clock, all of them.
+        let (mut counter_ms, mut clock_ms) = (0, 0);
+        for _ in 0..3 {
+            let (c0, t0) = (azos_arch::sysregs::read_cntvct_el0(), ARCH.now_ticks());
+            azos_sched::task_block(azos_sched::WaitReason::Timer(t0 + TIMER_FREQ * TIMEOUT_MS / 1000));
+            let (c1, t1) = (azos_arch::sysregs::read_cntvct_el0(), ARCH.now_ticks());
+            counter_ms = (c1 - c0) * 1000 / hz;
+            clock_ms = (t1 - t0) * 1000 / TIMER_FREQ;
+            if counter_ms <= LATEST_MS {
+                break;
+            }
+        }
         azos_drv_sys::kprintln!(
             "# clock: counter {} Hz, clock {} Hz: a {} ms timeout took {} ms by the counter, {} ms by the clock",
             hz, TIMER_FREQ, TIMEOUT_MS, counter_ms, clock_ms

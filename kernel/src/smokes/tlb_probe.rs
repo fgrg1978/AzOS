@@ -372,12 +372,12 @@ fn toucher(_: usize) {
         FIRST.store(r.value | r2.value | r3.value, Ordering::SeqCst);
         FIRST_CAUSE.store(r.cause | r2.cause | r3.cause, Ordering::SeqCst);
         STAGE.store(2, Ordering::SeqCst);
-        // Bounded spin (~2 s of counter time) for the unmap + overwrite.
-        let t0 = azos_arch::ARCH.now_ticks();
-        let limit = hz() * 2;
-        while STAGE.load(Ordering::SeqCst) < 3
-            && azos_arch::ARCH.now_ticks().wrapping_sub(t0) < limit {
+        // A bounded spin for the unmap + overwrite, counted and not on the
+        // clock: the clock runs on while the host keeps the runner's vCPU off.
+        let mut spins = 0u64;
+        while STAGE.load(Ordering::SeqCst) < 3 && spins < 1 << 32 {
             core::hint::spin_loop();
+            spins += 1;
         }
         if STAGE.load(Ordering::SeqCst) >= 3 {
             let r = unsafe { azos_tlb_probe_load(VA) };

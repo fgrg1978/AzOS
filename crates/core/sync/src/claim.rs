@@ -76,6 +76,24 @@ pub fn canary_held_keeps_dead() {
     CANARY_HELD_KEEPS_DEAD.store(true, Ordering::Relaxed);
 }
 
+/// The one claim whose `acquire` ignores its owner: `canary=claim-no-exclude`
+/// (ktest `claim_excludes_across_a_wait_and_wakes_a_contender`).
+static CANARY_NO_EXCLUDE: AtomicUsize = AtomicUsize::new(0);
+
+/// Arm `claim-no-exclude` for the claim at `claim_addr`.
+pub fn canary_no_exclude(claim_addr: usize) {
+    CANARY_NO_EXCLUDE.store(claim_addr, Ordering::Relaxed);
+}
+
+/// The one claim whose release wakes nobody: `canary=claim-release-silent`
+/// (the same ktest).
+static CANARY_RELEASE_SILENT: AtomicUsize = AtomicUsize::new(0);
+
+/// Arm `claim-release-silent` for the claim at `claim_addr`.
+pub fn canary_release_silent(claim_addr: usize) {
+    CANARY_RELEASE_SILENT.store(claim_addr, Ordering::Relaxed);
+}
+
 /// The address of the one claim the `claim-mutex-held` canary is armed for,
 /// 0 when it is off.
 static CANARY_MUTEX_HELD: AtomicUsize = AtomicUsize::new(0);
@@ -143,7 +161,7 @@ impl<T> Claim<T> {
     #[track_caller]
     pub fn acquire(&self) -> ClaimGuard<'_, T> {
         let mut g = self.st.lock();
-        while g.busy {
+        while g.busy && CANARY_NO_EXCLUDE.load(Ordering::Relaxed) != self as *const Self as usize {
             let seen = self.gen.load(Ordering::SeqCst);
             // F1: nothing is held while this task waits for the owner.
             let parked = g.unlock_for_io();
@@ -151,6 +169,11 @@ impl<T> Claim<T> {
             g = parked.relock();
         }
         self.own(g)
+    }
+
+    /// How many tasks sleep on the claim.
+    pub fn waiters(&self) -> usize {
+        self.wq.len()
     }
 
     /// Take the claim if it is free; `None`, without waiting, if it is owned.
@@ -208,6 +231,8 @@ impl<T> Drop for ClaimGuard<'_, T> {
         c.gen.fetch_add(1, Ordering::SeqCst);
         drop(g);
         if tid != 0 { CLAIM_HELD.lower(tid); }
-        c.wq.wake_all();
+        if CANARY_RELEASE_SILENT.load(Ordering::Relaxed) != c as *const Claim<T> as usize {
+            c.wq.wake_all();
+        }
     }
 }

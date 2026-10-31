@@ -111,10 +111,13 @@ fn call_regs(num: u64, a: [u64; 6], point: bool) -> (i64, [u64; 7]) {
     (rc, r.0)
 }
 
-fn sleep_ms(ms: u64) {
-    let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
-    let due = azos_drv_sys::timebase::now() + ms * per_ms;
-    azos_sched::task_block(azos_sched::WaitReason::Timer(due));
+/// Until the server `tid` is parked in its accept: only a call that finds it
+/// there deposits on the fast path, which these tests count.
+fn until_parked(tid: u32) {
+    crate::ktest::until(|| {
+        azos_sched::idx_for_tid(tid)
+            .is_some_and(|i| azos_sched::scheduler::ipc_fast_parked(i, tid, azos_sched::WaitReason::FastIpcServer(tid)))
+    });
 }
 
 fn my_slot() -> usize {
@@ -137,6 +140,7 @@ fn serve(name: &[u8]) -> bool {
 
 const HIT_EP: &[u8] = b"fp.hit";
 static HIT_READY: AtomicBool = AtomicBool::new(false);
+static HIT_SRV_TID: AtomicU32 = AtomicU32::new(0);
 static HIT_DONE: AtomicBool = AtomicBool::new(false);
 static HIT_RIGHT: AtomicU32 = AtomicU32::new(0);
 static HIT_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -149,6 +153,7 @@ fn hit_server(_: usize) {
         return;
     }
     let before = fastpath::hits_of(my_slot()).1;
+    HIT_SRV_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     HIT_READY.store(true, Ordering::Release);
     // The first call through the ordinary accept (parked in it, the fast
     // call deposits), every next one through the fast reply-and-accept.
@@ -172,8 +177,7 @@ fn hit_client(_: usize) {
         return;
     };
     let before = fastpath::hits_of(my_slot()).0;
-    // Let the server park in its accept.
-    sleep_ms(20);
+    until_parked(HIT_SRV_TID.load(Ordering::Acquire));
     for k in 0..ROUNDS {
         let w = 0x500 + k;
         let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, w, 0, 0, 0, 0]);
@@ -228,11 +232,7 @@ fn q_server(_: usize) {
     let before = fastpath::hits_of(my_slot()).1;
     Q_READY.store(true, Ordering::Release);
     // Asleep, not in the accept: the calls cannot find it parked and queue.
-    let mut waited = 0;
-    while (Q_QUEUED.load(Ordering::Acquire) < 2 || azos_ipc::fastcall::census().0 < 2) && waited < 2000 {
-        sleep_ms(10);
-        waited += 10;
-    }
+    crate::ktest::until(|| Q_QUEUED.load(Ordering::Acquire) >= 2 && azos_ipc::fastcall::census().0 >= 2);
     let (h, r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
     if h >= 0 {
         // The second call is queued: the fast reply must not jump it.
@@ -304,6 +304,8 @@ const RC_EP: &[u8] = b"fp.rcache";
 /// The word that ends a server: answered with itself.
 const RC_STOP: u64 = 0x5709;
 static RC_A_READY: AtomicBool = AtomicBool::new(false);
+/// The endpoint's current owner, published before its `_READY`.
+static RC_SRV_TID: AtomicU32 = AtomicU32::new(0);
 static RC_A_GONE: AtomicBool = AtomicBool::new(false);
 static RC_B_READY: AtomicBool = AtomicBool::new(false);
 static RC_B_GONE: AtomicBool = AtomicBool::new(false);
@@ -337,6 +339,7 @@ fn rc_serve(add: u64) {
 
 fn rc_server_a(_: usize) {
     if serve(RC_EP) {
+        RC_SRV_TID.store(azos_sched::current_task_tid(), Ordering::Release);
         RC_A_READY.store(true, Ordering::Release);
         rc_serve(1);
         // Kept for a successor, as a supervised driver's exit keeps it.
@@ -347,6 +350,7 @@ fn rc_server_a(_: usize) {
 
 fn rc_server_b(_: usize) {
     if serve(RC_EP) {
+        RC_SRV_TID.store(azos_sched::current_task_tid(), Ordering::Release);
         RC_B_READY.store(true, Ordering::Release);
         rc_serve(2);
     }
@@ -364,8 +368,7 @@ fn rc_steps() -> Result<(), usize> {
     let cap = client_cap(RC_EP).ok_or(1usize)?;
     let me = azos_sched::current_task_tid();
     let kept = || !resolve_cache::ENABLED || resolve_cache::cached(my_slot()) == Some((me, cap as u32));
-    // Let the server park in its accept.
-    sleep_ms(20);
+    until_parked(RC_SRV_TID.load(Ordering::Acquire));
     if !rc_calls(cap, 0x900, 1) {
         return Err(2);
     }
@@ -376,15 +379,10 @@ fn rc_steps() -> Result<(), usize> {
         return Err(4);
     }
     // The test body starts B once A is gone.
-    let mut waited = 0;
-    while !RC_B_READY.load(Ordering::Acquire) && waited < 2000 {
-        sleep_ms(10);
-        waited += 10;
-    }
-    if !RC_B_READY.load(Ordering::Acquire) {
+    if !crate::ktest::until(|| RC_B_READY.load(Ordering::Acquire)) {
         return Err(5);
     }
-    sleep_ms(20);
+    until_parked(RC_SRV_TID.load(Ordering::Acquire));
     if !rc_calls(cap, 0xA00, 2) || !kept() {
         return Err(6);
     }
@@ -968,14 +966,13 @@ fn wb_client(_: usize) {
         WB_CLI_DONE.store(true, Ordering::Release);
         return;
     };
-    // Let the server park in its accept.
-    sleep_ms(20);
+    until_parked(WB_SRV_TID.load(Ordering::Acquire));
     let before = fastpath::hits_of(my_slot()).0;
     let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, 0x7A, 0, 0, 0, 0]);
     WB_CALL_HITS.store(i64::from(fastpath::hits_of(my_slot()).0.wrapping_sub(before)), Ordering::Release);
     WB_RC.store(rc, Ordering::Release);
-    // Let the server park again after its reply, then read its priority.
-    sleep_ms(20);
+    // Parked again after its reply: its boost has ended.
+    until_parked(WB_SRV_TID.load(Ordering::Acquire));
     WB_AFTER.store(azos_sched::task_priority(WB_SRV_TID.load(Ordering::Acquire)).unwrap_or(u32::MAX), Ordering::Release);
     call(SYS_IPC_FAST_CALL_EP, [cap, WB_STOP, 0, 0, 0, 0]);
     WB_CLI_DONE.store(true, Ordering::Release);
@@ -1063,11 +1060,7 @@ fn we_client(_: usize) {
         return;
     };
     // This call must find the server parked: the test allows it no ordinary path.
-    let srv = WE_SRV_TID.load(Ordering::Acquire);
-    crate::ktest::until(|| {
-        azos_sched::idx_for_tid(srv)
-            .is_some_and(|i| azos_sched::scheduler::ipc_fast_parked(i, srv, azos_sched::WaitReason::FastIpcServer(srv)))
-    });
+    until_parked(WE_SRV_TID.load(Ordering::Acquire));
     WE_OBJ.set_owner(Some(slot as waitgraph::TaskId));
     let before = fastpath::hits_of(slot).0;
     let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, 0x7C, 0, 0, 0, 0]);

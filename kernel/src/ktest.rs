@@ -260,14 +260,20 @@ fn probe_trampoline(arg: usize) {
     probe_done();
 }
 
-/// Sleep 10 ms at a time until `ready()` holds; false after as many sleeps as
-/// Kconfig `KTEST_LATE_TIMEOUT_MS` holds. The bound is a hang detector counted
-/// in sleeps, not a deadline on the clock: the clock runs on while the host
-/// keeps the vCPUs off, a sleep this CPU never finished does not count, and
-/// each one lasts at least its 10 ms.
-pub(crate) fn until(mut ready: impl FnMut() -> bool) -> bool {
+/// [`until_for`] the longest a late test waits, Kconfig `KTEST_LATE_TIMEOUT_MS`.
+pub(crate) fn until(ready: impl FnMut() -> bool) -> bool {
+    until_for(azos_limits::KTEST_LATE_TIMEOUT_MS as u64, ready)
+}
+
+/// Sleep 10 ms at a time until `ready()` holds; false after `bound_ms` of such
+/// sleeps. The bound is a hang detector counted in sleeps, not a deadline on
+/// the clock: the clock runs on while the host keeps the vCPUs off, a sleep
+/// this CPU never finished does not count, and each one lasts at least its
+/// 10 ms. A bound shorter than [`until`]'s is for a wait a canary means never
+/// to end, so that its row is not held up.
+pub(crate) fn until_for(bound_ms: u64, mut ready: impl FnMut() -> bool) -> bool {
     const STEP_MS: u64 = 10;
-    for _ in 0..azos_limits::KTEST_LATE_TIMEOUT_MS as u64 / STEP_MS {
+    for _ in 0..bound_ms / STEP_MS {
         if ready() {
             return true;
         }
@@ -1493,10 +1499,25 @@ azos_ktest::ktest_late! {
     }
 }
 
-/// How long `preempt_count_survives_irq_nesting` waits for three ticks, in ms.
-/// The clock runs while a loaded host keeps the timer from firing, and three
-/// ticks end the wait, so only a hart with no ticks at all ever reaches this.
+/// How long `preempt_count_survives_irq_nesting` waits for its ticks and the
+/// debt, in ms. The clock runs while a loaded host keeps the timer from firing,
+/// and those end the wait, so only a hart whose ticks are gone or never defer
+/// ever reaches this.
 const PREEMPT_NEST_MS: u64 = 30_000;
+
+static PREEMPT_RIVAL_RAN: AtomicBool = AtomicBool::new(false);
+static PREEMPT_RIVAL_STOP: AtomicBool = AtomicBool::new(false);
+static PREEMPT_RIVAL_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Ready on the test's hart for as long as the section lasts. A tick defers
+/// only a switch it wants, and a fair task alone on its hart keeps the CPU.
+fn preempt_rival(_: usize) {
+    while !PREEMPT_RIVAL_STOP.load(Ordering::Acquire) {
+        PREEMPT_RIVAL_RAN.store(true, Ordering::Release);
+        azos_sched::task_yield();
+    }
+    PREEMPT_RIVAL_DONE.store(true, Ordering::Release);
+}
 
 azos_ktest::ktest_late! {
     fn preempt_count_survives_irq_nesting() {
@@ -1513,10 +1534,15 @@ azos_ktest::ktest_late! {
         if !preempt::irqs_enabled() {
             return Err("the late runner runs with interrupts off: no tick can nest");
         }
+        // The runner is pinned, so the rival is queued behind it whenever it runs.
+        azos_sched::task_create_affinity("preempt-rival", preempt_rival, 0,
+            azos_limits::KTEST_LATE_PRIORITY as u32, azos_sched::smp::current_cpu_id() as i8);
+        wait("the rival never ran", || PREEMPT_RIVAL_RAN.load(Ordering::Acquire))?;
         let d0 = preempt::depth();
         let (u0, _) = preempt::audit_counters();
-        let fired0 = preempt::fired();
         let outer = azos_sync::critical_section();
+        // What is owed from here on is this section's.
+        preempt::clear_need_resched();
         // Taken after the guard: this task cannot move harts from here on.
         let me = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
         preempt::ktest_probe::arm(me, canary!("preempt-isr-leak"));
@@ -1531,7 +1557,7 @@ azos_ktest::ktest_late! {
                 wrong = Some((inside, after));
                 break;
             }
-            if preempt::ktest_probe::hits() >= 3
+            if (preempt::ktest_probe::hits() >= 3 && preempt::need_resched())
                 || claim_pi_now_ms().wrapping_sub(t0) >= PREEMPT_NEST_MS {
                 break;
             }
@@ -1539,12 +1565,17 @@ azos_ktest::ktest_late! {
         let (hits, deepest) = preempt::ktest_probe::disarm();
         let owed = preempt::need_resched();
         drop(outer);
+        // Paid by this drop, or by a tick that landed right after its
+        // decrement, which clears the debt as it switches.
+        let unpaid = preempt::need_resched();
         let end = preempt::depth();
         if end != d0 && d0 == 0 {
             // Only the canary gets here: put the leaked count back, or the
             // hart never preempts again.
             preempt::force_zero_depth();
         }
+        PREEMPT_RIVAL_STOP.store(true, Ordering::Release);
+        wait("the rival never ended", || PREEMPT_RIVAL_DONE.load(Ordering::Acquire))?;
         kprintln!("# preempt_count_survives_irq_nesting: {} ticks took a guard, deepest {}, wrong {:?}, end {}",
             hits, deepest, wrong, end);
         if wrong.is_some() || end != d0 {
@@ -1556,7 +1587,7 @@ azos_ktest::ktest_late! {
         if deepest < d0 + 2 {
             return Err("the interrupt's guard did not nest on the outer one");
         }
-        if !owed || preempt::fired() == fired0 {
+        if !owed || unpaid {
             return Err("the ticks inside the section were not deferred and paid at its end");
         }
         if preempt::audit_counters().0 != u0 {
@@ -1588,6 +1619,7 @@ fn wp_hi(_: usize) {
 }
 
 fn wp_lo(cpu: usize) {
+    use azos_arch::Interrupts;
     use azos_sync::preempt;
     // Same hart as the fair task, a band level (never the exempt loops').
     azos_sched::task_create_affinity("wp-hi", wp_hi, 0, 5, cpu as i8);
@@ -1598,10 +1630,14 @@ fn wp_lo(cpu: usize) {
     // the wake is only stamped and nothing is enqueued to preempt for.
     let _ = azos_syscall::sleep::wait_until_ms(20, 5, || false);
     WP_GO.store(true, Ordering::Release);
-    // No debt of an earlier tick: what is owed after the wake is the wake's.
+    // No tick from here to the read: one would serve the wake's debt itself,
+    // and it fires as soon as a host pause ends. No debt of an earlier tick
+    // either: what is owed after the wake is the wake's.
+    let irqs = azos_arch::ARCH.disable_all();
     preempt::clear_need_resched();
     azos_sched::wq_wake_by_tid(WP_HI_TID.load(Ordering::Acquire) as u32);
     WP_OWED.store(preempt::need_resched(), Ordering::Release);
+    azos_arch::ARCH.restore(irqs);
     // The first preemption point after the wake: an empty critical section
     // pays a debt `need_resched` recorded, with interrupts on.
     drop(azos_sync::critical_section());
