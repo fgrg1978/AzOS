@@ -11297,6 +11297,10 @@ host_job host_canary_row "memobj: PI swap word unlocked canary" syscall-tests me
     a_pi_swap_keeps_its_shm_frame_until_the_swap_ends
 host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-resolve-stale-canary \
     the_resolve_cache_answers_what_the_scan_answers
+# revoke-chain-canary: the revocation window never opens, so the IPC resolve cache
+# answers for a capability whose ancestor was revoked until the sweep frees it.
+host_job host_canary_row "ipc: resolve cache in a revocation canary" ipc-tests revoke-chain-canary \
+    a_descendant_of_a_revoked_capability_misses_before_the_sweep
 # The futex wait's check and filing are one table hold (front futex-single-section).
 # futex-look-unlocked-canary: the wait looks at its word before it locks the table,
 # so a waker's store and wake land between the check and the row (futex_table.rs).
