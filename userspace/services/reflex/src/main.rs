@@ -172,6 +172,16 @@ fn motor_caps_init() -> bool {
     let rng = sys::dev::lookup(sys::dev::key::SENSOR, SENSOR_TYPE_RANGE as u32);
     let imu = sys::dev::lookup(sys::dev::key::SENSOR, SENSOR_TYPE_IMU as u32);
     let (Some(l), Some(r), Some(rng), Some(imu)) = (l, r, rng, imu) else { return false };
+    // The obstacle half of the reflex needs a rangefinder that measures. A
+    // board with none answers NOT_READY (the kernel serves a simulated
+    // distance only under QEMU): starting anyway would call a robot that
+    // cannot see an obstacle "watched", so the daemon declares itself
+    // unavailable instead and says why on the console.
+    let mut probe = [0u8; 4];
+    if !matches!(sys::dev::sensor_read(rng, &mut probe), Ok(s) if s.len >= 4) {
+        sys::println(b"[reflex] UNAVAILABLE: no rangefinder reports on this board");
+        return false;
+    }
     // SAFETY: single-threaded ring-3 program, written once before `run()`
     // reads them and never again.
     unsafe {
@@ -236,17 +246,6 @@ fn run() {
     // one that never started, because the log says it is watching.
     if !motor_caps_init() {
         sys::println(b"[reflex] FATAL missing motor or sensor capabilities - refusing to run");
-        sys::exit(1);
-    }
-
-    // The obstacle half of the reflex needs a rangefinder that measures. A
-    // board with none answers NOT_READY (the kernel serves a simulated
-    // distance only under QEMU): starting anyway would call a robot that
-    // cannot see an obstacle "watched", so the daemon declares itself
-    // unavailable instead and says why on the console.
-    let mut probe = [0u8; 4];
-    if !matches!(sys::dev::sensor_read(unsafe { CAP_RANGE }, &mut probe), Ok(s) if s.len >= 4) {
-        sys::println(b"[reflex] UNAVAILABLE: no rangefinder reports on this board - refusing to run");
         sys::exit(1);
     }
 
