@@ -36,6 +36,8 @@
 #   FUZZ_RSS_MB   per-process memory limit (default 2048)
 #   FUZZ_WORK     scratch dir for grown corpora, artifacts, logs
 #                 (default target/fuzz-work)
+#   KCONFIG_CONFIG  the expanded configuration the targets build against (the
+#                 gate exports its own); default the gate's cell, expanded here
 
 set -uo pipefail
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
@@ -48,6 +50,7 @@ FUZZ_TIMEOUT="${FUZZ_TIMEOUT:-25}"
 FUZZ_RSS_MB="${FUZZ_RSS_MB:-2048}"
 FUZZ_WORK="${FUZZ_WORK:-$AZOS_OUT/target/fuzz-work}"
 TARGET_DIR="$AZOS_OUT/target/fuzz"
+FUZZ_DEFCONFIG="generic-sbc-riscv64-dev+qemu+linux+gui"
 
 # Every target the gate runs. Order: cheapest first.
 TARGETS="
@@ -76,9 +79,27 @@ split_spec() { # <crate>:<target> -> CRATE_DIR, TGT
 
 host_triple() { rustc -vV | sed -n 's/^host: //p'; }
 
+# azos_limits, under most targets, builds its constants from an expanded
+# configuration, and a checkout has none: neither `.config` nor the generated
+# config/Kconfig.userspace is tracked. A checkout's `.config` is not used even
+# when it exists, because a stale one fails the same way.
+fuzz_config() {
+    [ -n "${KCONFIG_CONFIG:-}" ] && return 0
+    local cfg="$AZOS_OUT/build/fuzz.config" new="$AZOS_OUT/build/fuzz.config.new"
+    mkdir -p "$AZOS_OUT/build"
+    cp "${REPO_ROOT}/config/defconfigs/${FUZZ_DEFCONFIG}.config" "$new" \
+        && (cd "${REPO_ROOT}" && python3 tools/build/gen_userspace_kconfig.py --config "$new" >/dev/null \
+            && KCONFIG_CONFIG="$new" python3 -m olddefconfig >/dev/null) \
+        || { echo "      could not expand ${FUZZ_DEFCONFIG}"; return 1; }
+    # Only a changed file: its mtime rebuilds azos_limits and all above it.
+    if cmp -s "$new" "$cfg"; then rm -f "$new"; else mv "$new" "$cfg"; fi
+    export KCONFIG_CONFIG="$cfg"
+}
+
 build() { # -> BIN; prints cargo errors on failure
     local log="${FUZZ_WORK}/logs/${TGT}.build.log"
     mkdir -p "${FUZZ_WORK}/logs"
+    fuzz_config || return 1
     if ! (cd "${REPO_ROOT}" && "$CARGO" fuzz build --build-std --fuzz-dir "${CRATE_DIR}" \
             --target-dir "${TARGET_DIR}" "${TGT}") >"$log" 2>&1; then
         echo "      build failed (log: $log):"
