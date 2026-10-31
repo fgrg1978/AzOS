@@ -21,7 +21,9 @@ set -euo pipefail
 isa="${1:?isa}"; image="${2:?linux Image}"; disk="${3:?disk}"; out="${4:?outdir}"
 here="$(cd "$(dirname "$0")" && pwd)"
 prog="${PROG:-lat}"
-cc="${LX_CC:-/opt/homebrew/opt/llvm/bin/clang}"
+brew_clang="$(brew --prefix llvm 2>/dev/null)/bin/clang"
+[ -x "$brew_clang" ] || brew_clang=clang
+cc="${LX_CC:-$brew_clang}"
 lld="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/rust-lld"
 mkdir -p "$out/root"; out="$(cd "$out" && pwd)"
 common=(-ffreestanding -fno-builtin -fno-pic -fno-stack-protector -O2 -Wall -Wextra -Werror)

@@ -238,10 +238,14 @@ k1-console:
 
 # ── Kconfig targets ─────────────────────────────────────────────────
 # Install kconfiglib first:
-#   /opt/homebrew/bin/python3 -m pip install --user --break-system-packages kconfiglib
+#   $(PYTHON) -m pip install --user --break-system-packages kconfiglib
 
 KCONFIG_DEFCONFIG_DIR := config/defconfigs
-PYTHON             ?= /opt/homebrew/bin/python3
+# The newest interpreter on PATH that can run the tools, whatever installed it.
+ifeq ($(origin PYTHON),undefined)
+PYTHON := $(or $(shell for p in python3.14 python3.13 python3.12 python3.11 python3; do \
+    $$p -c 'import kconfiglib, tomllib' >/dev/null 2>&1 && { echo $$p; break; }; done),python3)
+endif
 
 # Colour scheme of `make config` / `menuconfig` / `nconfig`: white text on a
 # black background, whatever the terminal's own theme is (every element names

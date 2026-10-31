@@ -117,6 +117,7 @@ SUBSYS = [
 ARCH_DEPS = {
     "rv": "arch/riscv64/** arch/riscv64/boot/linker.ld kernel/src/entry/**",
     "arm": "arch/aarch64/** arch/aarch64/boot/linker-aarch64.ld kernel/src/entry/**",
+    "x86": "arch/x86_64/** arch/x86_64/boot/linker-x86_64.ld kernel/src/entry/**",
 }
 # Classes that keep a row out of a shared boot, and the evidence for each.
 HAZARDS = [
@@ -333,6 +334,8 @@ def isa_of(r):
     s = " ".join([r["key"], r["fn"]] + r["args"])
     if re.search(r"aarch64|\barm\b|\ba64\b|\(arm\)", s):
         return "arm"
+    if re.search(r"x86", s):
+        return "x86"
     return "rv"
 
 
@@ -1036,6 +1039,8 @@ def required_deps(r):
     def add(globs, cause, why):
         for x in globs:
             req.setdefault(x, (cause, why))
+    if "x86" == isa_of(r) and "-a" not in (r["flags"] or ""):
+        add(ARCH_DEPS["x86"].split(), "arch", "an x86 row boots this ISA")
     if r["fn"] == "host_canary_row" and len(r["args"]) > 1:
         suite = r["args"][1] if "/" in r["args"][1] else "tests/host/" + r["args"][1]
         add(_path_globs(suite), "crate", "suite " + suite)
@@ -1396,6 +1401,10 @@ def self_test():
                not required_deps(prefix))
         expect("canary: a commented path is a dep",
                not required_deps(dict(syn, body="  # python3 tools/gate/fake_brain.py\n  true # tools/gate/fake_brain.py")))
+    x86 = dict(syn, key="soak (x86)", fn="soak_row", args=[], flags="", body="", call="")
+    expect("an x86 row does not need arch/x86_64", "arch/x86_64/**" in required_deps(x86))
+    expect("canary: a riscv64 row needs arch/x86_64",
+           "arch/x86_64/**" not in required_deps(dict(x86, key="soak (rv)")))
     # The lints tier runs --check: without it `make check0` passed a manifest
     # whose deps miss what a row reads.
     tier = _read("tools/gate/gate_tier.sh")

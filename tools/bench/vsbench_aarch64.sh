@@ -94,8 +94,7 @@
 #
 # ## How to run this
 #
-#   PATH="/Users/azor/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin" \
-#     bash tools/bench/vsbench_aarch64.sh
+#   bash tools/bench/vsbench_aarch64.sh
 #
 # Takes ~25-40 s: two full kernel builds (riscv64 + aarch64, `--features
 # qemu,bench-minimal`, each into its own scratch `CARGO_TARGET_DIR` under
@@ -112,7 +111,7 @@
 # program needs a fresh aarch64-vs-riscv64 number, or after a change that
 # could move either kernel's syscall path.
 #
-# Env overrides: QEMU_RISCV64 (default: /opt/homebrew/bin/qemu-system-riscv64),
+# Env overrides: QEMU_RISCV64 (default: qemu-system-riscv64),
 # QEMU_AARCH64 (default: qemu-system-aarch64), CARGO (default: cargo),
 # WAIT_SECS (default: 90, per boot), VSBENCH_SMP (default: 1 — see the
 # determinism note above; only change this to deliberately reproduce the
@@ -125,7 +124,7 @@ AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../lib/out_dir.py")}"; export A
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CARGO="${CARGO:-cargo}"
-QEMU_RISCV64="${QEMU_RISCV64:-/opt/homebrew/bin/qemu-system-riscv64}"
+QEMU_RISCV64="${QEMU_RISCV64:-qemu-system-riscv64}"
 QEMU_AARCH64="${QEMU_AARCH64:-qemu-system-aarch64}"
 WAIT_SECS="${WAIT_SECS:-90}"
 VSBENCH_SMP="${VSBENCH_SMP:-1}"

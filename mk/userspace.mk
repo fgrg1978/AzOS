@@ -18,7 +18,7 @@
 # The kernel binds each module to the SHA-256 of these exact bytes
 # (`build/module_hashes*.rs`, `include!`d under the `lx-loader` feature only).
 # The default kernel neither includes the table nor has the two syscalls.
-LX_CC ?= /opt/homebrew/opt/llvm/bin/clang
+LX_CC ?= $(firstword $(wildcard $(shell brew --prefix llvm 2>/dev/null)/bin/clang) clang)
 LXMOD_SRC := userspace/tests/lxmod/lxtest.c
 LXMOD_CFLAGS := -ffreestanding -fno-pic -fno-common -fno-builtin -nostdinc -O2 \
                 -Wall -Wextra -Werror
@@ -522,7 +522,6 @@ $(MEMPRESS_ELF): $(MEMPRESS_DIR)/src/main.rs $(MEMPRESS_DIR)/Cargo.toml \
 # Homebrew's llvm does); the linker is rustc's own rust-lld, with lld's
 # default layout for a static executable (what an unmodified Linux binary
 # has), the page size the kernel maps.
-LX_CC ?= $(firstword $(wildcard /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/llvm/bin/clang) clang)
 LX_LLD = $(shell rustc --print sysroot)/lib/rustlib/$(shell rustc -vV | sed -n 's/^host: //p')/bin/rust-lld
 LX_CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin -fno-pic -fno-pie \
              -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdlib
@@ -584,7 +583,7 @@ BUSYBOX_TAG      := $(call tp_tag,busybox)
 BUSYBOX_COMMIT   := $(shell git ls-files -s $(BUSYBOX_SRC) | awk '$$1 == "160000" { print $$2 }')
 BUSYBOX_VERSION  := $(subst _,.,$(BUSYBOX_TAG))
 BUSYBOX_WORK     ?= $(HOME)/azos-tools/build/busybox-$(BUSYBOX_VERSION)
-BUSYBOX_ZIG      ?= $(or $(LX_ZIG),$(firstword $(wildcard /opt/homebrew/bin/zig /usr/local/bin/zig) zig))
+BUSYBOX_ZIG      ?= $(or $(LX_ZIG),zig)
 BUSYBOX_HOSTCC   ?= /usr/bin/clang
 BUSYBOX_FRAGMENT := third_party/busybox.fragment
 BUSYBOX_ISAS     := riscv64 aarch64 x86_64

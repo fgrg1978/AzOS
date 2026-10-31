@@ -14,7 +14,7 @@ Source: `rust-toolchain.toml`, `.cargo/config.toml`, `Makefile`, `mk/vars.mk`,
 | Tool | Used for |
 |---|---|
 | Rust nightly with `rust-src` and `llvm-tools-preview` | Everything. `rust-toolchain.toml` pins a dated nightly, so every build uses one compiler. Kernel and ring-3 builds use `-Zbuild-std` (`.cargo/config.toml`), so no prebuilt target is needed. |
-| Python 3 with `kconfiglib` | `make config` and every `olddefconfig` step; the build tools under `tools/`. The `PYTHON` make variable names the interpreter (default `/opt/homebrew/bin/python3`, `mk/kernel.mk`). |
+| Python 3 with `kconfiglib` | `make config` and every `olddefconfig` step; the build tools under `tools/`. The `PYTHON` make variable names the interpreter (default: the newest on `PATH` with `kconfiglib` and `tomllib`, `mk/kernel.mk`). |
 | QEMU: `qemu-system-riscv64`, `qemu-system-aarch64`, `qemu-system-x86_64` | `make qemu*` targets and the QEMU scenarios of the gate. |
 | `zig`, `cbindgen` | `make relibc` and `make busybox` (C programs): `zig` is the C compiler and linker, `cbindgen` generates relibc's headers. |
 | A Linux-targeting `clang` (`LX_CC`) | The Linux module fixtures (`LXTEST.KO`) and the static Linux test program. |

@@ -63,6 +63,18 @@ if [ "$tier" = n0 ]; then
     done
 fi
 
+# No host's install paths in the tree (tools/lint/host_paths_lint.py): canary, then the tree.
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "host paths lint..."
+    if out="$(python3 tools/lint/host_paths_lint.py --self-test 2>&1)" \
+       && out="$(python3 tools/lint/host_paths_lint.py 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 # Nothing writes into the checkout (tools/lint/out_dir_lint.py): its canary first,
 # then the tree.
 if [ "$lints" = 1 ]; then

@@ -3566,7 +3566,7 @@ mod metadata_wrapper {
     #[test]
     fn the_metadata_rustc_sees_does_not_depend_on_the_checkout() {
         let tmp = std::env::temp_dir();
-        let a = unit("/Users/one/azos/crates/core/libsys/src/lib.rs", "metadata=1111111111111111");
+        let a = unit("/home/one/azos/crates/core/libsys/src/lib.rs", "metadata=1111111111111111");
         let b = unit("/tmp/two/os/crates/core/libsys/src/lib.rs", "metadata=2222222222222222");
         let (rc_a, out_a, err_a) = run(&a, "/", Some("0.1.0"));
         let (rc_b, out_b, err_b) = run(&b, tmp.to_str().unwrap(), Some("0.1.0"));
@@ -3579,7 +3579,7 @@ mod metadata_wrapper {
         assert!(!out_a.contains("metadata=1111111111111111"), "cargo's path-derived metadata reached rustc: {out_a}");
         assert!(
             out_a.contains("extra-filename=-0123456789abcdef")
-                && out_a.contains("/Users/one/azos/crates/core/libsys/src/lib.rs"),
+                && out_a.contains("/home/one/azos/crates/core/libsys/src/lib.rs"),
             "an argument other than -C metadata changed: {out_a}",
         );
     }
@@ -3600,7 +3600,7 @@ mod metadata_wrapper {
             assert_eq!(rc, 0, "{err}");
             metadata(&out).to_string()
         };
-        let a = with("/Users/one/azos/sdk/targets/riscv64imac-unknown-azos.json");
+        let a = with("/home/one/azos/sdk/targets/riscv64imac-unknown-azos.json");
         let b = with("/tmp/two/os/sdk/targets/riscv64imac-unknown-azos.json");
         let c = with("/tmp/two/os/sdk/targets/aarch64-unknown-azos.json");
         assert_eq!(a, b, "two checkouts of one target reach rustc with different metadata");

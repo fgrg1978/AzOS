@@ -27,10 +27,10 @@ case "$PLATFORM" in
 vf2)
     SPL="${1:?'Usage: dev_dfu_recovery.sh vf2 <u-boot-spl.bin> <u-boot.itb>'}"
     ITB="${2:?}"
-    DFU_UTIL=/opt/homebrew/bin/dfu-util
+    DFU_UTIL="${DFU_UTIL:-dfu-util}"
 
-    if [[ ! -x "$DFU_UTIL" ]]; then
-        echo "ERROR: install dfu-util via 'brew install dfu-util'"
+    if ! command -v "$DFU_UTIL" >/dev/null; then
+        echo "ERROR: dfu-util not on PATH"
         exit 2
     fi
     echo "Looking for VF2 in DFU mode (vid:pid 0x046d:0x0001)..."
@@ -48,9 +48,9 @@ vf2)
 
 k1)
     IMG="${1:?'Usage: dev_dfu_recovery.sh k1 <recovery_image.bin>'}"
-    TITOOLS="${TITOOLS:-/opt/homebrew/bin/titools}"
+    TITOOLS="${TITOOLS:-titools}"
 
-    if [[ ! -x "$TITOOLS" ]]; then
+    if ! command -v "$TITOOLS" >/dev/null; then
         echo "ERROR: SpacemiT 'titools' not installed."
         echo "       Get it from the BananaPi BPI-F3 vendor package."
         exit 2
