@@ -136,9 +136,13 @@ def judge(console, ram_mib, swap_file):
     told, kill = first(ls, "[MEMPRESS] event level=1"), first(ls, "Killing user task")
     if told is None or not has(ls, "pressure told at the limit") or not any(r == "mem-pressure" for r, *_ in recs):
         red["pressure"] = "the program was not told its pressure"
-    if kill is not None:
-        red["limit"] = "a task was killed at line %d" % kill
-    elif not has(ls, "[MEMPRESS] limit PASS"):
+    # The limit either holds or kills on a page table the charge did not cover
+    # (whether the range needs a new one is the address space's layout), and
+    # then only after the program was told.
+    at_limit = first(ls, "pressure told at the limit")
+    if kill is not None and (at_limit is None or kill < at_limit):
+        red["limit"] = "a task was killed at line %d, told it was at the limit at line %s" % (kill, at_limit)
+    elif kill is None and not has(ls, "[MEMPRESS] limit PASS"):
         red["limit"] = "no `limit PASS`"
     if swap_file is None:
         red["at-rest"] = "no swap file on the volume"
@@ -308,7 +312,8 @@ def self_test():
     expect("no swap", ["swap-out"], GOOD.replace("swap-out admit", "swap-out refuse"))
     expect("no purge of the program's", ["purge"], GOOD.replace("purge admit subject=5", "purge admit subject=0"))
     expect("no events", ["pressure"], GOOD.replace("pressure told at the limit", "x"))
-    expect("a kill", ["limit"], GOOD + "[PAGE FAULT] Killing user task\n")
+    expect("a kill at the limit, told", [], GOOD.replace("[MEMPRESS] limit PASS refused=4\n", "") + "[PAGE FAULT] Killing user task\n")
+    expect("a kill before the limit", ["limit"], GOOD.replace("[MEMPRESS] pressure told", "[PAGE FAULT] Killing user task\n[MEMPRESS] pressure told"))
     expect("no limit", ["limit"], GOOD.replace("limit PASS", "x"))
     if judge_kill_order(GOOD + "[PAGE FAULT] Killing user task\n"):
         fails.append("a kill after the pressure did not pass")
