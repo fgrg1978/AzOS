@@ -15,11 +15,11 @@ use super::*;
 /// not apply. The direct path skips three things and nothing else: enqueueing
 /// the woken task, `do_schedule`'s pick (deadline check, dequeue, priority
 /// guard), and the spin gate on the woken task's `context_saving`. The gate is
-/// replaced by a refusal: the claim re-reads `context_saving` with `Acquire`
-/// AFTER its dispatch CAS and does not claim a task still being saved. The
-/// `saved` flag `wake_transition` is given is read BEFORE that CAS and is NOT
-/// proof — a server that blocked on another hart an instant earlier is
-/// `Blocked` while that hart is still storing its registers. Trusting it was
+/// replaced by a refusal: the claim reads `context_saving` again with `Acquire`
+/// AFTER its dispatch CAS and does not claim a task still being saved. The word's
+/// generation already ties the `saved` flag `wake_transition` is given to the
+/// block its CAS wins; before it a server that blocked on another hart an instant
+/// earlier was claimed while that hart was still storing its registers,
 /// measured: 1 aarch64 `ipctest -smp 4` run in 10 died with a jump into
 /// `_text_end + 0x3e01` (a half-saved context resumed). A task that is
 /// `Ready` and in no queue cannot start saving again, so one check suffices.
@@ -239,7 +239,7 @@ pub fn ipc_fast_blocked(ti: usize) -> bool {
 }
 
 /// Take the resume point of the task in slot `ti`, which the caller claimed
-/// with [`ipc_fast_claim`], which found it saved (interrupts off, the task in
+/// with [`ipc_fast_claim`] (interrupts off, the task in
 /// no queue, no hart saving its registers): the point
 /// it left, or [`FastResume::NONE`] when it left none or its syscall has exit
 /// work of its own (an exec hand-off). The point is spent either way: the
@@ -252,7 +252,7 @@ pub fn ipc_fast_take_resume(ti: usize) -> FastResume {
     }
     // SAFETY: `ti < MAX_TASKS`, claimed by the caller: no CPU runs it, and
     // its point was written before its saved context was published (the
-    // claim read `context_saving` false with Acquire after its CAS).
+    // claim read `context_saving` false with Acquire, of this same block).
     unsafe {
         let t = task_mut(ti);
         let point = FastResume { sp: t.fast_resume_sp, pc: t.fast_resume_pc };
@@ -350,21 +350,17 @@ pub fn ipc_fast_parked(ti: usize, tid: u32, want: WaitReason) -> bool {
 
 /// Claim the task in slot `ti` for the fast path: its `Blocked -> Ready`
 /// CAS, taken only when it is `Blocked` on exactly `want` with no stamp and
-/// its registers saved (`task::sched_word::fast_claim`). On `Some(saved)`
-/// the caller owns its dispatch exactly as a waker that won
-/// `wake_transition`'s CAS does, and must call [`ipc_fast_handoff`]
-/// (interrupts stay off from here to there); `saved` is `context_saving`
-/// read after the CAS, and only a saved task's resume point may be taken
-/// ([`ipc_fast_take_resume`]). On `None` nothing was written: unlike
+/// its registers saved (`task::sched_word::fast_claim`). On `true` the
+/// caller owns its dispatch exactly as a waker that won `wake_transition`'s
+/// CAS does, and must call [`ipc_fast_handoff`] (interrupts stay off from here
+/// to there). On `false` nothing was written: unlike
 /// `wake_transition`, a task that is not parked is not stamped, because the
 /// fast path then leaves the call to the ordinary path, which wakes it.
 ///
-/// The hand-off reads `context_saving` after the CAS too (`dispatched`,
-/// `target_saved`): an unsaved task is enqueued, not switched to.
 #[inline(always)]
-pub fn ipc_fast_claim(ti: usize, want: WaitReason) -> Option<bool> {
+pub fn ipc_fast_claim(ti: usize, want: WaitReason) -> bool {
     if ti >= MAX_TASKS {
-        return None;
+        return false;
     }
     // SAFETY: `ti < MAX_TASKS`. The fields read are the ones every waker
     // reads (see `ipc_fast_parked`); the only write is the CAS.
@@ -492,7 +488,7 @@ unsafe fn direct_switch_block<const FAST: bool>(cpu: usize, ti: usize, reason: W
         // stamped instead of dispatching. Consume that stamp into a normal
         // `Ready` + enqueue here, or it waits for the periodic reaper.
         loop {
-            use crate::task::sched_word::{pack, WAKE_STAMP};
+            use crate::task::sched_word::{moved, WAKE_STAMP};
             let curw = task.state_word.load(Ordering::Acquire);
             if curw & WAKE_STAMP == 0
                 || crate::task::sched_word::state_of(curw) != TaskState::Blocked
@@ -500,7 +496,7 @@ unsafe fn direct_switch_block<const FAST: bool>(cpu: usize, ti: usize, reason: W
                 break;
             }
             if task.state_word.compare_exchange_weak(
-                curw, pack(TaskState::Ready),
+                curw, moved(curw, TaskState::Ready),
                 Ordering::AcqRel, Ordering::Relaxed,
             ).is_ok() {
                 hist_reaccount(cur);

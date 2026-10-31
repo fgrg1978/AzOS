@@ -1108,7 +1108,7 @@ pub(super) enum Reap {
     /// waker delivered it first.
     Done,
     /// `Blocked` with the stamp set but still switching away
-    /// (`context_saving`) or current on some hart: look again next tick.
+    /// (`context_saving`): look again next tick.
     Again,
     /// Recovered here: `Ready` and enqueued.
     Reaped,
@@ -1135,30 +1135,7 @@ pub(super) unsafe fn reap_one(i: usize) -> Reap {
             if task.context_saving.load(Ordering::Acquire) {
                 return Reap::Again;
             }
-            // ABA guard (measured 2026-08-24, first reaper version): the
-            // state word has no generation, so "Blocked+STAMP" can be the
-            // SAME bit pattern twice with a full consume→run→re-block→
-            // re-stamp cycle in between — and `context_saving` sampled in
-            // that window reads false. A CAS alone then reaps a task that is
-            // EXECUTING its unswitched-block loop, enqueueing a running task
-            // (census signature: `READY-UNQUEUED name=autorun`, the exact
-            // state K-C24 exists to prevent — the commit's defensive arm
-            // then parks it Ready-in-no-queue forever). The discriminator a
-            // recycled bit pattern cannot fake: a PARKED task is current on
-            // no hart. A parked Blocked task can only become current again
-            // by first leaving Blocked (dispatch CAS → our CAS fails), so
-            // checking currency before the CAS closes the ABA.
-            let mut is_current = false;
-            for cpu in 0..ncpu() {
-                if PER_CPU[cpu].current_idx.load(Ordering::Relaxed) == i {
-                    is_current = true;
-                    break;
-                }
-            }
-            if is_current {
-                return Reap::Again;
-            }
-            if crate::task::sched_word::reap_orphaned_stamp(&task.state_word) {
+            if crate::task::sched_word::reap_orphaned_stamp(&task.state_word, w) {
                 WAKE_LATE_DISPATCH.fetch_add(1, Ordering::Relaxed);
                 task.ready_site.store(
                     crate::task::ready_site::REAP | ((current_cpu_id() as u8) << 4),

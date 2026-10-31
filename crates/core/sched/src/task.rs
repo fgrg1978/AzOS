@@ -444,6 +444,14 @@ pub mod sched_word {
     pub const STATE_MASK: u32 = 0b0111;
     /// Bit 3: the K-C9 wake stamp ("a wake arrived before you blocked").
     pub const WAKE_STAMP: u32 = 0b1000;
+    /// Bits 4..=31: how many times this slot committed to `Blocked` (wrapping).
+    /// Every other transition keeps it. So a CAS against a word read earlier
+    /// fails if the task has been through another block since, however alike
+    /// the two words look otherwise, and a `context_saving` read after that
+    /// word describes that same block.
+    pub const GEN_MASK: u32 = !(STATE_MASK | WAKE_STAMP);
+    /// One block. The canary makes a re-block the same word again (the ABA).
+    const GEN_ONE: u32 = if cfg!(feature = "state-gen-canary") { 0 } else { GEN_MASK & GEN_MASK.wrapping_neg() };
 
     /// Count of `Blocked + WAKE_STAMP` words made (wrapping): bumped by
     /// [`wake_transition`]'s `!saved` arm after its CAS, Release, so a reader
@@ -460,6 +468,10 @@ pub mod sched_word {
 
     #[inline]
     pub const fn pack(s: TaskState) -> u32 { s as u32 }
+
+    /// `cur` moved to state `s`, stamp cleared, generation kept.
+    #[inline(always)]
+    pub const fn moved(cur: u32, s: TaskState) -> u32 { (cur & GEN_MASK) | pack(s) }
 
     /// Decode the state field. Never panics: an out-of-range discriminant
     /// (impossible unless the word is corrupted) decodes to `Invalid`, which
@@ -514,19 +526,11 @@ pub mod sched_word {
         loop {
             let cur = w.load(Ordering::Relaxed);
             if cur & WAKE_STAMP != 0 {
-                // Consume AND normalize in one CAS (K-C24). The caller is
-                // the current task, so `Running` is the truth; leaving a
-                // stale `Blocked` behind on the skip path would let a waker
-                // dispatch-and-enqueue a task that is executing — the
-                // Ready-in-no-queue starvation this protocol exists to make
-                // impossible. Reachable with `Blocked` here: an unswitched
-                // block (do_schedule found nothing, we kept running) loops
-                // back into a fresh block attempt while the word still says
-                // `Blocked`, and a K-C24 stamp may have landed on it.
-                // Acquire pairs with the waker's Release stamp: everything
-                // the waker published before waking is visible on return.
+                // Consume in one CAS. Acquire pairs with the waker's Release
+                // stamp: everything the waker published before waking is
+                // visible on return.
                 if w.compare_exchange_weak(
-                    cur, pack(TaskState::Running),
+                    cur, moved(cur, TaskState::Running),
                     Ordering::Acquire, Ordering::Relaxed,
                 ).is_ok() {
                     return false;
@@ -536,7 +540,7 @@ pub mod sched_word {
             match state_of(cur) {
                 TaskState::Running => {
                     if w.compare_exchange_weak(
-                        cur, pack(TaskState::Blocked),
+                        cur, moved(cur.wrapping_add(GEN_ONE), TaskState::Blocked),
                         Ordering::Release, Ordering::Relaxed,
                     ).is_ok() {
                         return true;
@@ -544,16 +548,37 @@ pub mod sched_word {
                     // CAS failed ⇒ a waker just stamped us ⇒ next iteration
                     // consumes the stamp and skips the block.
                 }
-                // Already `Blocked` (unswitched block looping back in) with
-                // no stamp: the commit stands as-is — proceed to
-                // do_schedule and keep trying to yield the hart.
-                TaskState::Blocked => return true,
                 // Defensive (no such remote transition exists today): don't
                 // clobber Zombie/Ready — fall through to do_schedule, which
                 // handles every non-Running current.
                 _ => return true,
             }
         }
+    }
+
+    /// The current task's block did not switch away (`do_schedule` kept it on
+    /// the hart): it is executing, so `Blocked` is false and is taken back
+    /// here, stamp included. Its caller is told it was woken and re-tests its
+    /// condition; left `Blocked`, a caller that finds the condition already
+    /// true runs on with no stamp, and the next switch parks it for good.
+    /// `false` if the word is not `Blocked`.
+    ///
+    /// Acquire pairs with a waker's Release stamp. Its caller clears
+    /// `context_saving` only after this: a waker that reads the flag clear
+    /// then fails its CAS on the word it read before.
+    #[inline]
+    pub fn take_back_unswitched(w: &AtomicU32) -> bool {
+        let mut cur = w.load(Ordering::Relaxed);
+        while state_of(cur) == TaskState::Blocked {
+            match w.compare_exchange_weak(
+                cur, moved(cur, TaskState::Running),
+                Ordering::Acquire, Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(now) => cur = now,
+            }
+        }
+        false
     }
 
     /// Waker side — the one transition every wake path goes through.
@@ -576,8 +601,9 @@ pub mod sched_word {
     /// Measured: the phase-A server (`autorun`) starved exactly this way,
     /// and the 2026-08-22 "Replied + client asleep" residue is the same
     /// mechanism hitting a client. So: `Blocked` + matching reason + NOT
-    /// saved ⇒ **stamp, never dispatch** — the target is still running, its
-    /// next commit attempt consumes the stamp. If it instead gets parked
+    /// saved ⇒ **stamp, never dispatch** — the target is still running, and
+    /// [`take_back_unswitched`] or the switch-away sweep takes the stamp. If
+    /// it instead gets parked
     /// with the stamp set (the stamp landed after `do_schedule`'s
     /// switch-away sweep checked), the dispatch CAS below WOULD sweep stamp
     /// and state together on the next wake — but the one-shot wakes have no
@@ -638,7 +664,7 @@ pub mod sched_word {
                 // sees the blocker's writes; Release so the Ready transition
                 // is ordered before the enqueue that publishes it.
                 if w.compare_exchange_weak(
-                    cur, pack(TaskState::Ready),
+                    cur, moved(cur, TaskState::Ready),
                     Ordering::AcqRel, Ordering::Relaxed,
                 ).is_ok() {
                     return WakeTransition::Dispatched;
@@ -667,20 +693,11 @@ pub mod sched_word {
     /// parked on exactly the reason `parked` checks: the `Blocked -> Ready`
     /// CAS, tried only when the word is `Blocked` with no stamp, `parked()`
     /// holds and `saving` (the task's `context_saving`) is clear. Nothing is
-    /// written otherwise (`None`): unlike [`wake_transition`] it never stamps.
+    /// written otherwise (`false`): unlike [`wake_transition`] it never stamps.
     ///
-    /// `Some(saved)` on a won CAS, with `saved` the task's `context_saving`
-    /// read again, with Acquire, AFTER the CAS. The word carries no sequence,
-    /// so between the read before the CAS and the CAS the task can be woken
-    /// by another waker, run, and park again on the same reason: the CAS then
-    /// succeeds against a task whose hart is still saving its registers. The
-    /// CAS acquires that park's `Blocked` release, which follows its
-    /// `context_saving = true`, so the read after it cannot miss the save.
-    /// The read before only keeps a task being saved from being claimed. With
-    /// `saved` false the claimer owns the task's dispatch as before but must
-    /// touch nothing of its saved context: no resume point (the task resumes
-    /// where it blocked), and the dispatch refuses the direct switch
-    /// (`dispatched`'s own read) and enqueues it behind `do_schedule`'s gate.
+    /// A won CAS means the same block the two reads were about: a task woken
+    /// in between that parked again has another generation. So its registers
+    /// are saved and the claimer owns its dispatch.
     ///
     /// `between` runs between the read and the CAS: the host suite's
     /// injection point for that interleaving (`tests/host/sched-wake-tests`);
@@ -691,25 +708,18 @@ pub mod sched_word {
         parked: impl FnOnce() -> bool,
         saving: &AtomicBool,
         between: impl FnOnce(),
-    ) -> Option<bool> {
+    ) -> bool {
         let cur = w.load(Ordering::Acquire);
         if cur & WAKE_STAMP != 0 || state_of(cur) != TaskState::Blocked {
-            return None;
+            return false;
         }
         if !parked() || saving.load(Ordering::Acquire) {
-            return None;
+            return false;
         }
         between();
         // AcqRel, as `wake_transition`'s dispatch CAS: Acquire for the
         // bookkeeping after the win, Release so `Ready` precedes the enqueue.
-        if w.compare_exchange(cur, pack(TaskState::Ready), Ordering::AcqRel, Ordering::Relaxed).is_err() {
-            return None;
-        }
-        // The canary trusts the read before the CAS (the old claim).
-        if cfg!(feature = "fast-claim-stale-canary") {
-            return Some(true);
-        }
-        Some(!saving.load(Ordering::Acquire))
+        w.compare_exchange(cur, moved(cur, TaskState::Ready), Ordering::AcqRel, Ordering::Relaxed).is_ok()
     }
 
     /// Reaper side (K-C25) — recover a *parked* task whose wake was delivered
@@ -731,46 +741,35 @@ pub mod sched_word {
     /// and the client in exactly this state (2026-08-24).
     ///
     /// This transition is the missing consumer: `Blocked + WAKE_STAMP` →
-    /// `Ready` (stamp cleared) in one CAS. The caller must verify TWO things
-    /// first, and the CAS is only sound with both:
+    /// `Ready` (stamp cleared) in one CAS against `seen`, the word the caller
+    /// read BEFORE it found `context_saving` clear. While the flag is true the
+    /// target may still be executing, and its own commit or the switch-away
+    /// sweep owns the stamp.
     ///
-    ///  * `context_saving == false` — while the flag is true the target may
-    ///    still be executing its retry loop, and its own
-    ///    `commit_blocked_or_consume_wake` or the switch-away sweep still
-    ///    owns the stamp.
-    ///  * the task is **current on no hart** — the word has no generation,
-    ///    so `Blocked+STAMP` can recur as the same bit pattern across a full
-    ///    consume→run→re-block→re-stamp cycle, and `context_saving` sampled
-    ///    in that window reads false (ABA, measured 2026-08-24: the first
-    ///    reaper version enqueued the still-executing phase-A server, which
-    ///    then parked `Ready` in no queue). Non-currency is what a recycled
-    ///    pattern cannot fake: a parked `Blocked` task only becomes current
-    ///    again by first leaving `Blocked`, which fails this CAS.
+    /// The flag read clear after `seen` says the block `seen` describes was
+    /// saved (its commit released the flag set); `seen` still in the word says
+    /// the task has not left that block since, because every later block is
+    /// another generation. Re-reading the word here instead would apply the
+    /// check to whichever block the task is in by now: a running task, and
+    /// that is the ABA this signature exists to close (measured 2026-08-24:
+    /// the first reaper version enqueued the still-executing phase-A server,
+    /// which then parked `Ready` in no queue).
     ///
-    /// With both checks a lost race here just means someone else delivered
-    /// the wake, which the `false` return reports.
+    /// A lost race just means someone else delivered the wake: `false`.
     ///
     /// Returns `true` if this call performed the recovery (the caller now
     /// owns the dispatch: clear `wait_reason`, enqueue — same contract as
     /// `WakeTransition::Dispatched`).
     #[inline]
-    pub fn reap_orphaned_stamp(w: &AtomicU32) -> bool {
-        loop {
-            let cur = w.load(Ordering::Acquire);
-            if cur & WAKE_STAMP == 0 || state_of(cur) != TaskState::Blocked {
-                return false;
-            }
-            // AcqRel for the same reasons as the dispatch CAS in
-            // `wake_transition`: Acquire so the dispatch bookkeeping sees the
-            // blocker's writes, Release so Ready is ordered before the
-            // enqueue that publishes it.
-            if w.compare_exchange_weak(
-                cur, pack(TaskState::Ready),
-                Ordering::AcqRel, Ordering::Relaxed,
-            ).is_ok() {
-                return true;
-            }
+    pub fn reap_orphaned_stamp(w: &AtomicU32, seen: u32) -> bool {
+        if seen & WAKE_STAMP == 0 || state_of(seen) != TaskState::Blocked {
+            return false;
         }
+        // AcqRel for the same reasons as the dispatch CAS in
+        // `wake_transition`: Acquire so the dispatch bookkeeping sees the
+        // blocker's writes, Release so Ready is ordered before the enqueue
+        // that publishes it.
+        w.compare_exchange(seen, moved(seen, TaskState::Ready), Ordering::AcqRel, Ordering::Relaxed).is_ok()
     }
 
     /// Scheduler-side state change (Running/Ready/Zombie transitions made by
@@ -783,16 +782,16 @@ pub mod sched_word {
         // `Ready` packs to 0, so its transition is `cur & WAKE_STAMP`: one
         // atomic AND (`amoand.w` / `ldclr`) instead of a load and a CAS loop
         // — wave 15 (SWITCH), once per context switch. Exact: the word holds
-        // only the state bits and the stamp.
-        const _: () = assert!(pack(TaskState::Ready) == 0 && STATE_MASK | WAKE_STAMP == 0xF);
+        // the state bits, the stamp and the generation.
+        const _: () = assert!(pack(TaskState::Ready) == 0 && STATE_MASK | WAKE_STAMP | GEN_MASK == u32::MAX);
         if s == TaskState::Ready {
-            w.fetch_and(WAKE_STAMP, Ordering::Relaxed);
+            w.fetch_and(!STATE_MASK, Ordering::Relaxed);
             return;
         }
         let mut cur = w.load(Ordering::Relaxed);
         loop {
             match w.compare_exchange_weak(
-                cur, (cur & WAKE_STAMP) | pack(s),
+                cur, (cur & !STATE_MASK) | pack(s),
                 Ordering::Relaxed, Ordering::Relaxed,
             ) {
                 Ok(_) => return,

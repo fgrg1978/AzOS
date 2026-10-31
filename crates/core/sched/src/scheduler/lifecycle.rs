@@ -603,9 +603,14 @@ pub fn try_task_create_init(
                     // One plain store resets state AND clears any stale wake
                     // stamp from the slot's previous occupant — the only
                     // place a plain (non-CAS) store of the word is correct,
-                    // because the slot is not yet visible to any waker.
+                    // because the slot is not yet visible to any waker. The
+                    // generation carries on: a reaper still holding a word of
+                    // the old occupant must not match the new one.
                     task.state_word.store(
-                        crate::task::sched_word::pack(TaskState::Ready),
+                        crate::task::sched_word::moved(
+                            task.state_word.load(Ordering::Relaxed),
+                            TaskState::Ready,
+                        ),
                         Ordering::Relaxed,
                     );
                     // K-C26 provenance — see `Task::ready_site`.
@@ -3062,44 +3067,108 @@ pub fn stop_die_with_parent_children(dead: u32) -> usize {
 /// do not dispatch it yet", and it is normally cleared by the save tail in
 /// `context_switch.S`. `block_current` sets it *before* committing to
 /// `Blocked`, so every path where `do_schedule` returns instead of switching
-/// leaves it set on a task that nothing is saving.
+/// leaves it set on a task that nothing is saving, and a hart that picks that
+/// task waits at its gate.
 ///
-/// The consequence is not subtle: `do_schedule` spin-gates on
-/// `next.context_saving` before switching to a task, so a stuck flag makes
-/// every hart that picks that task spin forever. Observed directly in the
-/// census as `blocked tid=21 client=false saving=true` with phase A of
-/// `ipctest` stalled — 369 of 1600 calls served and every client stuck.
-///
-/// Safe on the switching paths too, which is why it is called at the returns
-/// rather than being conditional on state: if we are not switching away from
-/// this task, nobody is saving it.
+/// A `Blocked` current here is a block that did not switch: the word goes back
+/// to `Running` first and the flag clears after, so no waker can read the flag
+/// clear and then win its CAS against a task that is executing (two harts, one
+/// register file: measured 12906 times in one `ipctest` run when the flag was
+/// cleared with the word still `Blocked`).
 #[inline(always)]
 pub(super) unsafe fn clear_saving_on_no_switch(cpu: usize) {
     let idx = unsafe { PER_CPU[cpu].current_idx.load(Ordering::Relaxed) };
     if idx >= MAX_TASKS { return; }
     let task = unsafe { task_ref(idx) };
-    // **Only for a `Running` current, and the restriction is load-bearing.**
-    //
-    // Clearing it unconditionally was tried and is a far worse bug than the
-    // wedge it cures. For a `Blocked` current at a no-switch return the task
-    // keeps executing on this hart with live registers; clearing the flag lets
-    // a waker take it Blocked -> Ready -> enqueued, another hart dequeue it,
-    // pass the spin-gate, and restore a **stale** saved context while this
-    // hart is still running the real one. Two harts, one register file.
-    //
-    // Not hypothetical: the counters measured that path firing **12906 times**
-    // in a single `ipctest` run (`self` arm, current Blocked), against 216
-    // with the current Running. The dangerous case was the dominant one.
-    //
-    // A `Blocked` current at a no-switch return keeps the flag set and the
-    // hart that picks it spins -- the IPC wedge. That is the lesser evil, and the real fix
-    // is to never return to a `Blocked` current at all.
-    if task.state() == TaskState::Running {
-        task.context_saving.store(false, Ordering::Release);
+    match task.state() {
+        TaskState::Running => task.context_saving.store(false, Ordering::Release),
+        TaskState::Blocked => unsafe { take_back_unswitched_block(idx) },
+        _ => {}
     }
 }
 
+/// Runtime canary `unswitched-block-stays` (`kernel/src/canary_rt.rs`): a block
+/// that does not switch leaves the task `Blocked` (ktest
+/// `unswitched_block_returns_running`).
+static CANARY_UNSWITCHED_STAYS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// See [`CANARY_UNSWITCHED_STAYS`].
+pub fn canary_unswitched_stays() {
+    CANARY_UNSWITCHED_STAYS.store(true, Ordering::Relaxed);
+}
+
+/// Ktest `unswitched_block_returns_running`, on the hart `tid` (parked, slot
+/// `h`, more urgent than anything here) is pinned to: wake it into this hart's
+/// queue with its save marked as still running, so `do_schedule`'s gate gives
+/// it up, then block and yield. Each must come back with this task `Running`,
+/// out of the queue, its flag clear. Puts everything right before it answers,
+/// canary or not.
+#[cfg(feature = "ktest")]
+pub fn ktest_unswitched_block(h: usize, tid: u32) -> Result<(), &'static str> {
+    use crate::task::sched_word::{state_of, take_back_unswitched};
+    if h >= MAX_TASKS {
+        return Err("the helper does not exist");
+    }
+    // SAFETY: `h` and the current slot are live, and only atomics are touched.
+    unsafe {
+        let irq = azos_arch::ARCH.disable_all();
+        let cpu = current_cpu_id();
+        let me = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
+        let (task, held) = (task_ref(me), task_ref(h));
+        let gave_up = SPIN_GATE_EXPIRED.load(Ordering::Relaxed);
+        wq_wake_by_tid(tid);
+        held.context_saving.store(true, Ordering::Release);
+        azos_arch::ARCH.restore(irq);
+
+        block_current(cpu, WaitReason::Timer(azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ));
+        let irq = azos_arch::ARCH.disable_all();
+        let blocked_word = task.state_word.load(Ordering::Acquire);
+        let blocked_saving = task.context_saving.load(Ordering::Acquire);
+        if take_back_unswitched(&task.state_word) {
+            task.wait_reason.store(WaitReason::None);
+            hist_reaccount(me);
+        }
+        task.context_saving.store(false, Ordering::Release);
+        azos_arch::ARCH.restore(irq);
+
+        task_yield();
+        let irq = azos_arch::ARCH.disable_all();
+        let yielded = task.state();
+        let yielded_queued = task.queued.load(Ordering::Acquire);
+        let yielded_saving = task.context_saving.load(Ordering::Acquire);
+        held.context_saving.store(false, Ordering::Release);
+        azos_arch::ARCH.restore(irq);
+
+        // A tick in between may add its own give-up: at least these two.
+        if SPIN_GATE_EXPIRED.load(Ordering::Relaxed).wrapping_sub(gave_up) < 2 {
+            return Err("the save gate did not give up: not the route under test");
+        }
+        if state_of(blocked_word) != TaskState::Running {
+            return Err("a block that did not switch left the task Blocked");
+        }
+        if blocked_saving {
+            return Err("a block that did not switch left context_saving set");
+        }
+        if yielded != TaskState::Running || yielded_queued || yielded_saving {
+            return Err("a yield that did not switch left the task queued while it runs");
+        }
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn take_back_unswitched_block(idx: usize) {
+    if azos_limits::CANARY_RUNTIME && CANARY_UNSWITCHED_STAYS.load(Ordering::Relaxed) {
+        return;
+    }
+    let task = unsafe { task_ref(idx) };
+    if crate::task::sched_word::take_back_unswitched(&task.state_word) {
+        task.wait_reason.store(WaitReason::None);
+        unsafe { hist_reaccount(idx) };
+        task.context_saving.store(false, Ordering::Release);
+    }
+}
 
 /// Early-return accounting for [`do_schedule`], split by whether the *current*
 /// task had already committed to `Blocked`.
@@ -3107,13 +3176,9 @@ pub(super) unsafe fn clear_saving_on_no_switch(cpu: usize) {
 /// **WHY the split is the whole point.** `do_schedule` returning without
 /// switching is perfectly normal when the current task is `Running` — there is
 /// simply nothing better to run, so it keeps running. The same return with the
-/// current task `Blocked` is a defect: `block_current` has already published
-/// `Blocked` and does not idle, so control goes back through the syscall to
-/// ring 3 and a task that the whole system believes is asleep keeps executing.
-/// Every subsequent `task_block` then takes the "already Blocked, unswitched"
-/// arm of `commit_blocked_or_consume_wake`, calls `do_schedule` again, and
-/// returns again — which is exactly the signature measured in
-/// on the IPC wedge: eight turns, zero wakes, 15 us.
+/// current task `Blocked` is a block that did not sleep: its caller is handed a
+/// spurious wake ([`clear_saving_on_no_switch`]) and spins on its condition
+/// while the hart has nothing to give it to.
 ///
 /// The three sites are the three early returns, so a single run names the line.
 #[path = "../unswitched.rs"]
