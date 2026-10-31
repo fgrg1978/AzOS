@@ -14406,8 +14406,10 @@ PY
     }
     stall_watch() { # stall_watch <isa> <elf> <console log> <qemu pid>
         [ -n "${STALL_WATCH:-}" ] || return 0
+        # The aarch64 linker script drops the ELF's DWARF: the layouts come from the scheduler's rlib.
         python3 tools/dev/stall_attach.py watch --isa "$(stall_isa "$1")" --elf "$2" --log "$3" --pid "$4" \
             --dir "$STALL_DIR" --marker "$STALL_WATCH" --out "$STALL_PREFIX" ${STALL_BREAK:+--canary-never-stall} \
+            $([ "$1" = arm ] && echo "--dwarf-dir $(dirname "$A64_KERNEL_OUT")/deps") \
             >"$STALL_PREFIX.watch.txt" 2>&1 &
         STALL_PID=$!
     }
@@ -24308,7 +24310,7 @@ x=con; echo bb\$x-ok
         local load1; load1="$(uptime | sed 's/.*load/load/')"
         if [ -n "$kcan$scan" ]; then
             if [ "$rdk" != 0 ] && [ "$rds" != 0 ]; then
-                ok; echo "      canary failed as it must on both halves"; printf '%s' "$fails" | grep -aE 'not ok [0-9]+ - |missing:|forbidden' | sed -n 1,4p | cut -c1-160
+                ok; echo "      canary failed as it must on both halves"; printf '%s' "$fails" | grep -aE 'not ok [0-9]+ - |missing:|forbidden|stalled:' | sed -n 1,6p | cut -c1-300
                 rm -f "$CI_LOG_DIR/ktest-$slug-"*.log "$CI_LOG_DIR/ush-$slug-"*.log
             else
                 bad; echo "      the canary did not turn both halves red (ktest $rdk, shell $rds): the row does not discriminate"
@@ -24349,7 +24351,7 @@ x=con; echo bb\$x-ok
         [ -n "$ta" ] && [ -n "$tb" ] && [ "$(( $(date -j -f %T "$tb" +%s) - $(date -j -f %T "$ta" +%s) ))" -ge 9 ] || why="dumps not 10 s apart ($ta, $tb)"
         grep -aq '^approximate: this build has no frame pointers' "$a" || why="$why; the dump does not say its backtraces are approximate"
         [ "$(grep -ac '^hart [0-9]*: pc=' "$a")" -ge 1 ] && ! grep -aq 'not in the kernel image' "$a" || why="$why; a hart pc is not in a kernel symbol"
-        grep -aq '^hart [0-9]*: pc=0x[0-9a-f]* [^ ]*+0x' "$a" || why="$why; no hart pc was symbolized"
+        grep -aq '^hart [0-9]*: pc=0x[0-9a-f]* .*+0x[0-9a-f]' "$a" || why="$why; no hart pc was symbolized"
         grep -aq '^task table (' "$a" && grep -aq 'Blocked' "$a" || why="$why; the task table shows no blocked task"
         grep -aq '^interrupt controller:' "$a" || why="$why; no interrupt controller state"
         [ -z "$why" ] && return 0
