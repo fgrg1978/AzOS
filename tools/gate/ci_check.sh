@@ -14426,7 +14426,8 @@ PY
         kill -0 "$STALL_PID" 2>/dev/null && kill "$STALL_PID" 2>/dev/null
         wait "$STALL_PID" 2>/dev/null
         STALL_PID=""
-        [ "$(cat "$STALL_PREFIX.stall-verdict" 2>/dev/null)" = stalled ] && STALL_VERDICT=stalled
+        if [ "$(cat "$STALL_PREFIX.stall-verdict" 2>/dev/null)" = stalled ]; then STALL_VERDICT=stalled
+        else rm -f "$STALL_PREFIX.stall-verdict" "$STALL_PREFIX.watch.txt"; fi
         rm -rf "$STALL_DIR"
         return 0
     }
