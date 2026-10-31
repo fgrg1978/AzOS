@@ -10,6 +10,8 @@ description = "Host-side tests for the computation inside the driver class crate
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
+# The device-register accessors of the #[path]-pulled drivers.
+azos_arch_api = { path = "../../../arch/api" }
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
 # (off on the host: the `on` feature is not enabled).
 azos_chaos = { path = "../../../crates/core/chaos" }
