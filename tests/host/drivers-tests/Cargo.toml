@@ -9,7 +9,6 @@ description = "Host-side tests for the computation inside the driver class crate
 # Run with:  cd tests/host/drivers-tests && cargo test --release
 
 [dependencies]
-azos_arch_api = { path = "../../../arch/api" }
 azos_common = { path = "../../../crates/core/common" }
 # The device-register accessors of the #[path]-pulled drivers.
 azos_arch_api = { path = "../../../arch/api" }
