@@ -251,16 +251,15 @@ pub fn unplugged() {
 
 /// The orderly way out (the power-off): write the volume back and mark it
 /// clean, flush the stick's cache, retire the mount. `Ok(None)` when nothing
-/// was mounted; otherwise whether the stick confirmed it is durable.
+/// was mounted; otherwise whether the stick confirmed it is durable (a stick
+/// with no cache flush cannot).
 pub fn eject() -> Option<Result<(), ()>> {
     let r = retire(true)?;
     // The unmount flushed already; once more for what it wrote last (the
     // clean flag), and so a stick that answered the flush wrongly is told.
-    let flushed = match UsbDev.flush() {
-        Ok(()) | Err(FlushError::Unsupported) => true,
-        Err(FlushError::Io) => false,
-    };
-    Some(if r && flushed { Ok(()) } else { Err(()) })
+    // A stick that cannot confirm a flush (`Unsupported`) has not confirmed
+    // the eject: the caller does not tell its user it is safe to pull.
+    Some(if r && UsbDev.flush().is_ok() { Ok(()) } else { Err(()) })
 }
 
 /// Retire the mount (`writeback`: the page cache's dirty pages go to the
