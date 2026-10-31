@@ -26,9 +26,10 @@ build: $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG) $(TEST_PRIV_KEY) $(TEST_PUB_KEY)
 # The riscv64 kernel of $(QEMU_DEV_KCONFIG): `make build` with a riscv64
 # configuration.
 riscv64: $(IMAGE_HASHES) $(KCONFIG_CONFIG) $(QEMU_DEV_KCONFIG)
-	$(QEMU_DEV_ISA) $(QEMU_DEV_ENV) $(call secboot_key_env,$(QEMU_DEV_KCONFIG)) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
+	$(call kernel_select,$(QEMU_DEV_KCONFIG),$(RISCV64_SELECT),$(QEMU_DEV_KCONFIG:.config=-sel.config)); \
+	$(QEMU_DEV_ISA) KCONFIG_CONFIG="$(QEMU_DEV_KCONFIG:.config=-sel.config)" $(call secboot_key_env,$(QEMU_DEV_KCONFIG)) $(CARGO) build $(CARGO_FLAGS) -p azos_kernel \
 		$${isa:+--config "$$isa"} \
-		$(QEMU_DEV_ARGS)
+		$$args
 
 # Cargo never deletes an artifact: every feature set leaves another copy of
 # every crate in deps/. `prune` drops crates this tree no longer has and build
@@ -389,10 +390,10 @@ $(AARCH64_KCONFIG): $(AARCH64_DEFCONFIG) $(AARCH64_KCONFIG).src \
 # passed here rather than through `--config`, where a stray variable in the
 # caller's shell would silently drop it.
 aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
-	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(AARCH64_KCONFIG)" $(AARCH64_KTARGET_ENV) $(call secboot_key_env,$(AARCH64_KCONFIG)) \
+	$(call kernel_select,$(AARCH64_KCONFIG),$(AARCH64_SELECT),$(AARCH64_KCONFIG:.config=-sel.config)); \
+	env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(AARCH64_KCONFIG:.config=-sel.config)" $(AARCH64_KTARGET_ENV) $(call secboot_key_env,$(AARCH64_KCONFIG)) \
 	    RUSTFLAGS="-C link-arg=-T$(AARCH64_LINKER) $$(python3 tools/build/kconfig_to_cargo.py --rustflags $(AARCH64_KCONFIG))" \
-	    $(CARGO) build --release -p azos_kernel \
-	    $$(python3 tools/build/kconfig_to_cargo.py $(AARCH64_KCONFIG) | tr -s ' ')
+	    $(CARGO) build --release -p azos_kernel $$args
 	@mkdir -p $(OUT_BUILD)
 	"$(AARCH64_OBJCOPY)" -O binary $(AARCH64_ELF) $(AARCH64_IMG)
 	@echo "[AARCH64] Built $(AARCH64_IMG)"

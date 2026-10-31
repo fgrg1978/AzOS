@@ -1734,6 +1734,26 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_start(azos_limits::DECISION_REFUSALS_DURABLE || azos_limits::DECISION_RECORDS_DEV);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
     }
+    // The reclaim rows' memory pressure driver (`userspace/tests/mempress`).
+    // The gate's scenario kernels ask for every image; only an image with
+    // reclaim has the pressure it is there to make, and only there does the
+    // row exist.
+    if azos_limits::USERSPACE_MEMPRESS && azos_limits::MM_RECLAIM_COMPRESS {
+        topo.push_task(
+            MaybeStr::from_bytes(TASK_MEMPRESS_IMAGE),
+            MaybeStr::from_bytes(NAME_BEST_EFFORT),
+            TOOL_PRIORITY,
+            &[CapSpec {
+                kind: CapKind::Endpoint,
+                perms: CapPerms::WRITE,
+                target: MaybeStr::from_bytes(RESOURCE_MEMCTL), transfer: false, ops: 0,
+            }],
+        )
+        .expect("default_minimal_topology: MEMPRESS.ELF push failed");
+        topo.set_last_task_mem_pages(azos_limits::MM_PRESSURE_TEST_PAGES as u32);
+        topo.set_last_task_start(true);
+        topo.set_last_task_restart(crate::types::RestartPolicy::No);
+    }
     if azos_limits::USERSPACE_WHY {
         topo.push_task(MaybeStr::from_bytes(TASK_WHY_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, WHY_CAPS)
             .expect("default_minimal_topology: WHY.ELF push failed");
@@ -3258,6 +3278,8 @@ const DECISIONS_SERVE: CapSpec = CapSpec {
 
 /// The decision server's image (`userspace/services/decisd`).
 pub const TASK_DECISD_IMAGE: &[u8] = b"DECISD.ELF";
+/// The reclaim rows' memory pressure driver (`userspace/tests/mempress`).
+pub const TASK_MEMPRESS_IMAGE: &[u8] = b"MEMPRESS.ELF";
 /// Frame budget of `DECISD.ELF`: image, stack and page tables (46 pages), and
 /// its static table of decoded records and the copy it reads them into
 /// (each Kconfig `DECISION_VIEW_ROWS` records); no heap.

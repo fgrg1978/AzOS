@@ -11310,6 +11310,12 @@ host_job host_canary_row "memobj: delete revokes canary (syscall)" syscall-tests
 # The frame budget is atomic (D4/L6): charges from several harts, and across
 # Domains, neither pass the limit nor lose an update. The canary tests the
 # limit and stores in two steps again.
+host_job host_canary_row "mm: swap Busy spins the fault canary" mm-tests swap-busy-rings-canary \
+    a_restore_during_a_read_is_told_busy
+host_job host_canary_row "mm: storm cut short stops canary" mm-tests storm-no-resume-canary \
+    a_storm_cut_short_by_a_full_pool_goes_on_below_high
+host_job host_canary_row "mm: restore loses its slot to a store canary" mm-tests swap-no-restore-slot-canary \
+    a_store_does_not_take_the_slot_a_restore_made_room_in
 host_job host_canary_row "mm: budget racy charge canary" mm-tests budget-racy-charge-canary \
     concurrent_charges_never_pass_the_limit_or_lose_an_update
 # The same holes through the frozen syscalls (syscall-tests): mprotect in the shm
@@ -25610,6 +25616,47 @@ done
 # `make qemu` under HVF, its default on Apple silicon.
 for pb_preset in generic robot; do
     par -s "preset boot: $pb_preset aarch64 (hvf)" preset_boot_row "$pb_preset" aarch64 hvf
+done
+
+# ── Reclaim under real pressure (config/fragments/overlays/reclaim.frag) ─────
+#
+# tools/gate/reclaim_row.py does `make defconfig-generic-sbc-<isa>-dev+qemu+reclaim`,
+# `make build`, `make qemu`: MEMPRESS.ELF fills past the machine's RAM under a
+# frame budget, so its pages go to the compressed pool and to the swap file, reads
+# them back, round-trips a purgeable object and runs into its limit. The script
+# holds the console and the swap file left on the volume to it: past RAM, contents,
+# Rule::Compress and Rule::SwapOut verdicts, pressure told, no kill at the limit,
+# nothing but ciphertext at rest; `kill-order` provokes the one memory kill (restores
+# with no back-off, HVF) and its pressure must come first. Each canary must turn its own check red; the pinned rows
+# make every Domain count as locked to the storm or to swap, and must be refused.
+reclaim_row() { # reclaim_row <riscv64|aarch64|x86_64> <scenario> <label>
+    local isa="$1" scenario="$2" label="$3" out
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    out="$CI_LOG_DIR/reclaim-$isa-$scenario.out"
+    par_ready
+    if AZOS_OUT="$AZOS_OUT" CI_LOG_DIR="$CI_LOG_DIR" GATE_PGROUP_DIR="$GATE_PGROUP_DIR" \
+        python3 "$REPO_ROOT/tools/gate/reclaim_row.py" "$isa" "$scenario" >"$out" 2>&1; then
+        ok; rm -f "$out"
+    else
+        bad; sed 's/^/      /' "$out"
+    fi
+}
+host_row_reclaim_judge() {
+    local label="reclaim: the row's judge" out
+    printf "  %-26s" "${label}..."
+    if out="$(python3 "$REPO_ROOT/tools/gate/reclaim_row.py" --self-test 2>&1)"; then ok; else bad; printf '%s\n' "$out" | sed 's/^/      /'; fi
+}
+par "reclaim: the row's judge" host_row_reclaim_judge
+for rc_isa in riscv64 aarch64 x86_64; do
+    par -s "reclaim: $rc_isa past RAM, swap, purge, pressure" reclaim_row "$rc_isa" pass "reclaim: $rc_isa past RAM, swap, purge, pressure"
+    par -s "reclaim: $rc_isa pinned page never compressed" reclaim_row "$rc_isa" pinned-storm "reclaim: $rc_isa pinned page never compressed"
+    par -s "reclaim: $rc_isa pinned page never swapped" reclaim_row "$rc_isa" pinned-swap "reclaim: $rc_isa pinned page never swapped"
+done
+# The canaries boot on one ISA: they break arch-independent code and read the
+# same console. A row per canary and the kernel selection each needs.
+for rc_case in content-canary at-rest-canary medium-canary pressure-canary purge-canary verdicts-canary break-canary pinned-storm-canary pinned-swap-canary kill-order kill-order-canary; do
+    par -s "reclaim: aarch64 $rc_case" reclaim_row aarch64 "$rc_case" "reclaim: aarch64 $rc_case"
 done
 
 # The hazard behind azos_arch_api::mmio. One post-indexed store to a GIC register

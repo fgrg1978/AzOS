@@ -74,7 +74,7 @@ ROLES = {
     ],
     "gate": [
         "check_fast.py", "check_fast.sh", "ci_cargo.py", "ci_check.sh", "ci_full.sh",
-        "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "coverage.sh", "debug_row.py", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
+        "reclaim_row.py", "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "coverage.sh", "debug_row.py", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
         "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_sendkeys.py", "qemu_tap.py", "repro_check.sh", "rows_for_diff.py",

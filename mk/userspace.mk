@@ -508,6 +508,13 @@ $(IPCTEST_ELF): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml \
 	cp $(IPCTEST_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+$(MEMPRESS_ELF): $(MEMPRESS_DIR)/src/main.rs $(MEMPRESS_DIR)/Cargo.toml \
+               $(LIBSYS_SRC)
+	@mkdir -p $(OUT_BUILD)
+	cd $(MEMPRESS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MEMPRESS_DIR)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	cp $(MEMPRESS_BUILT) $@
+	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 # ── The Linux personality's test binary ──────────────────────────
 # A static Linux ELF from userspace/tests/lxhello/lxhello.c: no C library,
 # its own `_start`, Linux syscall numbers. `LX_CC` is any clang that targets
@@ -1117,6 +1124,13 @@ $(IPCTEST_ELF_AARCH64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml \
 	cp $(OUT_TGT)/$(IPCTEST_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/ipctest $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+$(MEMPRESS_ELF_AARCH64): $(MEMPRESS_DIR)/src/main.rs $(MEMPRESS_DIR)/Cargo.toml \
+               $(LIBSYS_SRC)
+	@mkdir -p $(AARCH64_DIR)
+	cd $(MEMPRESS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MEMPRESS_DIR)$(AARCH64_PG_SUFFIX)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cp $(OUT_TGT)/$(MEMPRESS_DIR)$(AARCH64_PG_SUFFIX)/$(TARGET_AARCH64)/release/mempress $@
+	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 $(IMAGE_ELF_PATHS_X86_64): $(USER_SPECS)/$(TARGET_X86_64).json
 .PHONY: userspace-x86_64
 userspace-x86_64: $(IMAGE_ELF_PATHS_X86_64_ON)
@@ -1168,6 +1182,12 @@ $(IPCTEST_ELF_X86_64): $(IPCTEST_DIR)/src/main.rs $(IPCTEST_DIR)/Cargo.toml \
 	@mkdir -p $(X86_64_DIR)
 	cd $(IPCTEST_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(IPCTEST_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(OUT_TGT)/$(IPCTEST_DIR)/$(X86_64_UBUILT)/ipctest $@
+
+$(MEMPRESS_ELF_X86_64): $(MEMPRESS_DIR)/src/main.rs $(MEMPRESS_DIR)/Cargo.toml \
+               $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(MEMPRESS_DIR) && export CARGO_TARGET_DIR="$(OUT_TGT)/$(MEMPRESS_DIR)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(OUT_TGT)/$(MEMPRESS_DIR)/$(X86_64_UBUILT)/mempress $@
 
 $(SYSTEST_ELF_X86_64): $(SYSTEST_DIR)/src/main.rs $(SYSTEST_DIR)/Cargo.toml $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)

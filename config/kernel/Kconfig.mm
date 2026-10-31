@@ -377,6 +377,20 @@ choice
         bool "wkdm"
 endchoice
 
+config MM_PRESSURE_TEST_PAGES
+    int "Frame budget of the memory pressure test program (4 KiB pages)"
+    range 64 1048576
+    default 4096
+    help
+      Read only when the image carries MEMPRESS.ELF (USERSPACE_MEMPRESS) and
+      has reclaim on: its topology row's mem_pages. The reclaim overlay
+      (config/fragments/overlays/reclaim.frag) sets it against its RAM_SIZE:
+      above what takes the system past MM_RECLAIM_HIGH_PCT with the program's
+      pages resident (stage 0 and 1 of a pass need that), below what memory
+      admission gives the row.
+
+      Cost: none.
+
 config MM_ZPOOL_MAX_RATIO_PCT
     int "Largest compressed size worth storing (% of a page)"
     range 10 95
