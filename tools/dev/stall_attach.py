@@ -62,11 +62,19 @@ GAP_S = 10
 STATE_MASK = 7
 STATES = {0: "Ready", 1: "Running", 2: "Blocked", 3: "Zombie", 4: "Invalid"}
 WAITS = {0: "None", 1: "Ring", 2: "Timer", 3: "Port", 4: "WaitQueue", 5: "FastIpcServer", 6: "FastIpcClient"}
-LLVM_BIN = ["/opt/homebrew/opt/llvm/bin"]
 SCAN_BYTES = 16384
 SCAN_KEEP = 20
 LOCK_CAP = 600
 MON_PROMPT = b"(qemu)"
+
+
+def llvm_bins():
+    """Homebrew keeps its LLVM off PATH, so ask it."""
+    try:
+        return [subprocess.run(["brew", "--prefix", "llvm"], capture_output=True, text=True,
+                               check=True).stdout.strip() + "/bin"]
+    except (OSError, subprocess.CalledProcessError):
+        return []
 
 
 def stalled(now, last_output, marker_seen, silence=SILENCE_S):
@@ -102,7 +110,7 @@ def write(path, text):
 
 def find_tool(names):
     for n in names:
-        p = shutil.which(n) or next((os.path.join(d, n) for d in LLVM_BIN if os.access(os.path.join(d, n), os.X_OK)), None)
+        p = shutil.which(n) or next((os.path.join(d, n) for d in llvm_bins() if os.access(os.path.join(d, n), os.X_OK)), None)
         if p:
             return p
     return None
@@ -118,7 +126,7 @@ class Elf:
         self.path = path
         nm = find_tool(["llvm-nm"])
         if nm is None:
-            raise RuntimeError("no llvm-nm (looked on PATH and in %s)" % " ".join(LLVM_BIN))
+            raise RuntimeError("no llvm-nm (looked on PATH and in %s)" % " ".join(llvm_bins()))
         out = subprocess.run([nm, "-C", "-S", "--defined-only", path], capture_output=True, text=True).stdout
         self.data, text = {}, []
         for line in out.splitlines():

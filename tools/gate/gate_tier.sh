@@ -36,7 +36,7 @@ export TOPOLOGY_PUBKEY_PATH="${TOPOLOGY_PUBKEY_PATH:-$PWD/tools/keys/test_pub.bi
 if [ -z "${KCONFIG_CONFIG:-}" ] && [ ! -f .config ]; then
     KCONFIG_CONFIG="${AZOS_OUT:-out}/gate-tier.config"; export KCONFIG_CONFIG
     mkdir -p "$(dirname "$KCONFIG_CONFIG")"
-    cp config/defconfigs/qemu.config "$KCONFIG_CONFIG" && python3 -m olddefconfig >/dev/null 2>&1 || exit 2
+    cp config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config "$KCONFIG_CONFIG" && python3 -m olddefconfig >/dev/null 2>&1 || exit 2
 fi
 suites=""
 [ "$tier" = lints ] || { suites="$(python3 tools/gate/rows_for_diff.py --base "$base" --host)" || exit 2; }
