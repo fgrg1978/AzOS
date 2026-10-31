@@ -98,6 +98,7 @@ $(OUT_BUILD)/disk-braincli.img: CFG_EXTRA := brain_client_rekey_secs=10\n
 $(OUT_BUILD)/disk-captest.img: AUTORUN_ELF := /fat/CAPTEST.ELF
 $(OUT_BUILD)/disk-latbench.img: AUTORUN_ELF := /fat/LATBENCH.ELF
 $(OUT_BUILD)/disk-abitest.img: AUTORUN_ELF := /fat/ABITEST.ELF
+$(OUT_BUILD)/disk-sdktestbase.img: AUTORUN_ELF := /fat/SDKTEST.ELF
 # The envelope scenario runs no ring-3 program: it exercises the kernel's own
 # actuation chokepoint and then reads the flight-recorder file back. An autorun
 # here would just compete with the RT control loop for CPU.
@@ -198,7 +199,7 @@ $(OUT_BUILD)/disk-reflex.img $(OUT_BUILD)/disk-braincli.img $(OUT_BUILD)/disk-ca
 $(OUT_BUILD)/disk-latbench.img $(OUT_BUILD)/disk-abitest.img $(OUT_BUILD)/disk-ipctest.img $(OUT_BUILD)/disk-vsbench.img \
 $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-gpiodrv.img $(OUT_BUILD)/disk-brainlies.img \
 		$(OUT_BUILD)/disk-brainrec.img $(OUT_BUILD)/disk-brainestop.img \
-		$(OUT_BUILD)/disk-estopgpio.img $(OUT_BUILD)/disk-drvbase.img $(OUT_BUILD)/disk-lxbench-base.img: \
+		$(OUT_BUILD)/disk-estopgpio.img $(OUT_BUILD)/disk-drvbase.img $(OUT_BUILD)/disk-sdktestbase.img $(OUT_BUILD)/disk-lxbench-base.img: \
 		$(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF) $(UHELLO_ELF) \
 		$(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) \
 		$(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) \
@@ -485,6 +486,7 @@ board-elfs: $(OUT_BUILD)/board_elfs.list
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX).img:         AUTORUN_ELF_AARCH64 := /fat/HELLO.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-systest.img: AUTORUN_ELF_AARCH64 := /fat/SYSTEST.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-abitest.img: AUTORUN_ELF_AARCH64 := /fat/ABITEST.ELF
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktestbase.img: AUTORUN_ELF_AARCH64 := /fat/SDKTEST.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-ipctest.img: AUTORUN_ELF_AARCH64 := /fat/IPCTEST.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-captest.img: AUTORUN_ELF_AARCH64 := /fat/CAPTEST.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img: AUTORUN_ELF_AARCH64 := /fat/VSBENCH.ELF
@@ -509,7 +511,7 @@ $(OUT_BUILD)/disk-aarch64-lxbench-base.img: AUTORUN_ELF_AARCH64 := /fat/LXSRV.EL
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX).img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-systest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-abitest.img \
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-ipctest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-captest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img \
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-gpiodrv.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-braincli.img \
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarch64-lxbench-base.img: \
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktestbase.img $(OUT_BUILD)/disk-aarch64-lxbench-base.img: \
 		$(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AARCH64) $(MLSRV_ELF_AARCH64) \
 		$(UHELLO_ELF_AARCH64) $(EPSRV_ELF_AARCH64) $(ABICHILD_ELF_AARCH64) $(VSSRV_ELF_AARCH64) \
 		$(REFLEX_ELF_AARCH64) $(BRAINCLI_ELF_AARCH64) $(CAPTEST_ELF_AARCH64) \
@@ -951,11 +953,12 @@ $(OUT_BUILD)/disk-x86_64-ipctest.img: AUTORUN_ELF_X86_64 := /fat/IPCTEST.ELF
 $(OUT_BUILD)/disk-x86_64-systest.img: AUTORUN_ELF_X86_64 := /fat/SYSTEST.ELF
 $(OUT_BUILD)/disk-x86_64-captest.img: AUTORUN_ELF_X86_64 := /fat/CAPTEST.ELF
 $(OUT_BUILD)/disk-x86_64-latbench.img: AUTORUN_ELF_X86_64 := /fat/LATBENCH.ELF
+$(OUT_BUILD)/disk-x86_64-sdktestbase.img: AUTORUN_ELF_X86_64 := /fat/SDKTEST.ELF
 # vsbench (tools/bench/vsbench_x86_64.sh); its `spawn+wait` lane starts TOOLBOX.ELF,
 # which every x86_64 image carries.
 $(OUT_BUILD)/disk-x86_64-vsbench.img: AUTORUN_ELF_X86_64 := /fat/VSBENCH.ELF
 $(OUT_BUILD)/disk-x86_64.img $(OUT_BUILD)/disk-x86_64-abitest.img $(OUT_BUILD)/disk-x86_64-ipctest.img $(OUT_BUILD)/disk-x86_64-vsbench.img \
-$(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_BUILD)/disk-x86_64-latbench.img: \
+$(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_BUILD)/disk-x86_64-latbench.img $(OUT_BUILD)/disk-x86_64-sdktestbase.img: \
 		$(IMAGE_ELF_PATHS_X86_64) $(OUT_BUILD)/policy.gguf $(OUT_BUILD)/policy.sig $(OUT_BUILD)/behavior.mbl \
 		tools/keys/test_priv.bin $(CONFIG_SIG_TOOLS)
 	@mkdir -p $(OUT_BUILD)
@@ -1275,3 +1278,24 @@ $(AZOS_GUEST_DIR)/host-volume.img: $(AZOS_HOST_VOLUME_$(ARCH)) $(AZOS_GUEST_DIR)
 .PHONY: azos-guest
 azos-guest: $(AZOS_GUEST_DIR)/host.kernel $(AZOS_GUEST_DIR)/host-volume.img
 	@echo "[AZOS-GUEST] $(ARCH): host kernel $(AZOS_GUEST_DIR)/host.kernel, volume $(AZOS_GUEST_DIR)/host-volume.img; boot with tools/dev/run_guest.sh $(ARCH)"
+
+# ── The SDK's own test (userspace/tests/sdktest) as the autorun program ──────
+#
+# The base volume of each ISA with `/fat/SDKTEST.ELF` as its autorun image, and
+# the std program copied onto it: the base recipes name no std program (the
+# SDK is not built for them), as `disk-drv.img` adds the ring-3 drivers to
+# `disk-drvbase.img`. Gate rows `<isa>: sdktest boots`.
+$(OUT_BUILD)/disk-sdktest.img: $(OUT_BUILD)/disk-sdktestbase.img $(SDKTEST_ELF)
+	cp $(OUT_BUILD)/disk-sdktestbase.img $@
+	mcopy -i $@ $(SDKTEST_ELF) ::SDKTEST.ELF
+	@echo "[DISK] FAT32 image: $@ (autorun=/fat/SDKTEST.ELF)"
+
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktest.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktestbase.img $(SDKTEST_ELF_AARCH64)
+	cp $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktestbase.img $@
+	mcopy -i $@ $(SDKTEST_ELF_AARCH64) ::SDKTEST.ELF
+	@echo "[DISK] aarch64 FAT32 image: $@ (autorun=/fat/SDKTEST.ELF)"
+
+$(OUT_BUILD)/disk-x86_64-sdktest.img: $(OUT_BUILD)/disk-x86_64-sdktestbase.img $(SDKTEST_ELF_X86_64)
+	cp $(OUT_BUILD)/disk-x86_64-sdktestbase.img $@
+	mcopy -i $@ $(SDKTEST_ELF_X86_64) ::SDKTEST.ELF
+	@echo "[DISK] x86_64 FAT32 image: $@ (autorun=/fat/SDKTEST.ELF)"
