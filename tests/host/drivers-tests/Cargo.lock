@@ -66,6 +66,7 @@ name = "azos_drv_tests"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_arch_api",
  "azos_buzzer",
  "azos_chaos",
  "azos_common",

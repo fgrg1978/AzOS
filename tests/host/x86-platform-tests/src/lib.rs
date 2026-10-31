@@ -22,6 +22,7 @@ mod bootinfo;
 mod power;
 
 #[allow(dead_code)]
+#[allow(unused_imports)]
 #[path = "../../../../arch/x86_64/src/irq/encode.rs"]
 mod encode;
 
