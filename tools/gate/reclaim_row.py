@@ -158,13 +158,13 @@ def judge_pinned(which, console):
     refused = sum(1 for r, v, _, _ in recs if r == "compress" and v == "refuse")
     out = sum(n[0] for r, v, _, n in recs if r == "swap-out" and v == "admit")
     swap_refused = sum(1 for r, v, _, _ in recs if r == "swap-out" and v == "refuse")
-    if not has(ls, "contents of the partial fill PASS"):
-        return "the program did not end with its pages intact"
     if which == "pinned-storm":
         if stored or not refused:
             return "%d pages compressed, %d refusals" % (stored, refused)
     elif not stored or out or not swap_refused:
         return "%d pages compressed, %d segments out, %d refusals" % (stored, out, swap_refused)
+    if not has(ls, "contents of the partial fill PASS"):
+        return "the program did not end with its pages intact"
     return None
 
 
