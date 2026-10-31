@@ -88,7 +88,7 @@ of its own, and `sdktest` holds the edge (`fs_is_not_provided`). What of
 `std::net` the socket ops cannot serve is listed under Sockets above, and
 `sdktest` holds that edge too (`net_edges_and_udp_timeouts`).
 
-Source: `sdk/sdktest/src/main.rs`.
+Source: `userspace/tests/sdktest/src/main.rs`.
 
 ## Writing a program
 

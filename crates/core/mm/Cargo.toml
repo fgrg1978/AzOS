@@ -21,6 +21,9 @@ linked_list_allocator = { workspace = true }
 # vsbench diagnostic only (wave 15, SLAB): count and time every kernel heap
 # alloc/free by size bucket and by syscall (src/kheap_census.rs). Never shipped.
 kheap-census = []
+# Canary only (x86_64): the heap's interrupt token says interrupts were on whatever the
+# flags were, as it did before it read RFLAGS.IF; ktest `kheap_irq_token_follows_the_interrupt_state`.
+kheap-token-canary = []
 # The masked-window tracer (kernel `lat-trace`): the heap's size-class cache
 # masks interrupts through the arch calls the tracer hooks, not its own asm.
 lat-trace = []

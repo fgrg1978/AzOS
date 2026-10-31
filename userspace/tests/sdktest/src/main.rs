@@ -6,9 +6,10 @@
 //! `main` runs them in name order and exits with the number that failed. The
 //! output is TAP on the console, `# 0 failed` on a pass.
 //!
-//! No shipped image row starts it yet (`mk/userspace.mk`). The row that does must
-//! grant the `entropy` capability (the allocator and `HashMap` draw from the
-//! kernel pool) and, for `net_edges_and_udp_timeouts`, the socket ops: a row
+//! No configuration starts it. The gate's `<isa>: sdktest boots` rows run it as the
+//! autorun program of `disk-<isa>-sdktest.img`; its seccomp row (`SDKTEST.ELF`)
+//! carries the `entropy` interface (the allocator and `HashMap` draw from the
+//! kernel pool) and the socket ops for `net_edges_and_udp_timeouts`: a row
 //! naming one op of the `net` invoke class (`DOMAIN_SOCKET`, `NODE_SEND`, ...)
 //! grants the class, and without it the first `socket` is refused by the
 //! seccomp filter. It tests what the port provides: no

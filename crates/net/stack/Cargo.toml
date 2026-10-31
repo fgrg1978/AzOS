@@ -36,6 +36,10 @@ nic-queue-blind-canary = []
 # advertisement forms it, with no Duplicate Address Detection probe or wait.
 # Never in a real build.
 slaac-no-dad-canary = []
+# Gate canary (host suite `net-tests`): a second TCP listener on a port another
+# one holds is taken, as it was: the `NODE_LISTEN` that must say `AddrInUse`
+# (std's `TcpListener::bind` of a taken port) succeeds. Never in a real build.
+listen-dup-canary = []
 # Canary (host suite `net-tests`): a refresh's valid lifetime over two hours
 # but under what remains is lowered to two hours (RFC 4862 §5.5.3 (e) read
 # wrong). Never in a real build.

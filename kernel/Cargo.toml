@@ -294,6 +294,8 @@ native-fork-no-inherit-canary = ["azos_syscall/native-fork-no-inherit-canary"]
 native-fork-copy-canary = ["azos_syscall/native-fork-copy-canary"]
 fork-profile = ["azos_sched/fork-profile"]
 cow-ro-canary = ["azos_mm/cow-ro-canary"]
+# Gate canary (x86_64, ktest): see `crates/core/mm/Cargo.toml`.
+kheap-token-canary = ["azos_mm/kheap-token-canary"]
 # Gate canary only (wave 14, security): a fork child's mprotect(RW) of a page
 # its parent shares read-only writes the parent's frame again.
 mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]

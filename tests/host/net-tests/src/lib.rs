@@ -1370,6 +1370,8 @@ mod tcp_rx_state {
         tcp::abort(idx_a);
         assert!(tcp::conn_state(idx_a) == tcp::TcpState::Closed,
             "precondition: abort must close the slot, got {}", st(tcp::conn_state(idx_a)));
+        // `establish` listens again, and a port's listener is not taken twice.
+        tcp::TcpHandle::find(7120, tcp::TcpState::Listen).expect("A's listener").close();
         let (idx_a2, ours_a2, theirs_a2) = establish(7120, 41200, 0x1500_0000);
         deliver(&segment(41200, 7120, theirs_a2, ours_a2, PSH | ACK, 4096, b"fresh"));
         let n = tcp::recv(idx_a2, &mut buf) as usize;

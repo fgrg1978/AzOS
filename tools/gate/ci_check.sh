@@ -5387,6 +5387,86 @@ aarch64_abitest_row() {
 }
 par "aarch64 abitest" aarch64_abitest_row
 
+# The SDK's own test (`userspace/tests/sdktest`), a std program built with
+# `make sdk` for the ISA, booted as the autorun program of
+# `disk-<isa>-sdktest.img` (rv, arm and x86 rows below). The program prints TAP
+# on the console and exits with the number of tests that failed; the verdict is
+# read back from the log, not counted here: the summary line `# N tests, 0
+# failed`, N `ok` lines, no `not ok`. The kernel for the PASS row is the base
+# row's; the CANARY row is the same boot with `mem-quota-canary` (the autorun
+# budget drops to 64 pages): the program cannot get the memory its tests need,
+# and no summary may come, with the autorun task started on the program (its
+# `[AUTORUN]` line names it) so the red is the canary's and not a boot that never
+# got there.
+sdktest_judge() { # sdktest_judge <log> <PASS|CANARY> <trap ERE>
+    local log="$1" expect="$2" trap_re="$3" why="" n ok_lines
+    # Under the canary the program dies of the memory it is refused (a user
+    # fault on x86_64): only a kernel panic is a boot that proves nothing.
+    [ "$expect" = CANARY ] && trap_re='KERNEL PANIC'
+    if grep -aqE "KERNEL PANIC|$trap_re" "$log" 2>/dev/null; then
+        why="$(grep -aE "KERNEL PANIC|$trap_re" "$log" | tr -d '\r' | sed -n 1p)"
+    fi
+    if [ "$expect" = CANARY ]; then
+        if [ -n "$why" ]; then bad; echo "      $why: the canary proves nothing"; echo "      log kept: $log"; return; fi
+        if ! grep -aE "\[AUTORUN\]" "$log" | qgrep -qF "SDKTEST.ELF"; then
+            bad; echo "      the autorun task never named SDKTEST.ELF: the canary proves nothing"; echo "      log kept: $log"; return
+        fi
+        if grep -aqE "^# [0-9]+ tests, 0 failed" "$log"; then
+            bad; echo "      sdktest passed with a 64-page budget: the row does not discriminate"; echo "      log kept: $log"; return
+        fi
+        ok; echo "      canary failed as it must: no summary with 0 failed under a 64-page budget"; rm -f "$log"; return
+    fi
+    if [ -z "$why" ] && ! grep -aqF "[sdktest] std on AzOS" "$log"; then
+        why="sdktest never started: $(grep -aE '\[AUTORUN\]' "$log" | tr -d '\r' | sed -n 1,2p | tr '\n' ';')"
+    fi
+    if [ -z "$why" ]; then
+        n="$(sed -n -E 's/^# ([0-9]+) tests, 0 failed.*/\1/p' "$log" | sed -n 1p)"
+        ok_lines="$(grep -acE '^ok ' "$log")"
+        if [ -z "$n" ]; then why="no '# N tests, 0 failed' summary: $(grep -aE '^(not ok|# )' "$log" | tr -d '\r' | sed -n 1,3p | tr '\n' ';')"
+        elif [ "$n" -eq 0 ]; then why="the summary counts no test"
+        elif [ "$ok_lines" -ne "$n" ]; then why="the summary counts $n tests and the log has $ok_lines 'ok' lines"
+        elif grep -aq '^not ok' "$log"; then why="a 'not ok' line: $(grep -a '^not ok' "$log" | tr -d '\r' | sed -n 1p)"
+        fi
+    fi
+    if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+    bad; echo "      $why"; echo "      log kept: $log"
+}
+aarch64_sdktest_row() { # aarch64_sdktest_row <label> <PASS|CANARY>
+    local label="$1" expect="$2" feats=qemu
+    [ "$expect" = CANARY ] && feats="qemu,mem-quota-canary"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" img="$CI_LOG_DIR/${tag}-kernel.img" dimg="$CI_LOG_DIR/${tag}-disk.img"
+    rm -f "$log"
+    a64_kbuild "$feats" || return
+    a64_kernel_check || return
+    rm -f $AZOS_OUT/build/disk-aarch64-sdktest.img
+    make_disk $AZOS_OUT/build/disk-aarch64-sdktest.img
+    cp "$A64_IMG" "$img"; cp $AZOS_OUT/build/disk-aarch64-sdktest.img "$dimg"
+    par_ready
+    while [ "$(qemu_count)" -ge 4 ]; do sleep 2; done
+    # A std program draws on the entropy pool (`HashMap`'s keys); the device
+    # makes the pool seeded whatever the CPU model offers (`-cpu max` has FEAT_RNG).
+    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        -kernel "$img" -global virtio-mmio.force-legacy=false -device virtio-rng-device \
+        -drive file="$dimg",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+    local pid=$! i=0
+    while [ "$i" -lt 240 ]; do
+        grep -aqE "^# [0-9]+ tests, [0-9]+ failed|AARCH64-TRAP\] unhandled|KERNEL PANIC" "$log" 2>/dev/null && break
+        [ "$expect" = CANARY ] && grep -aqE "\[AUTORUN\].*(REFUSED|exited|exit)" "$log" 2>/dev/null && break
+        kill -0 "$pid" 2>/dev/null || break
+        i=$((i + 1)); sleep 0.5
+    done
+    sleep 1
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+    rm -f "$img" "$dimg"
+    sdktest_judge "$log" "$expect" 'AARCH64-TRAP\] unhandled'
+}
+par "aarch64: sdktest boots" aarch64_sdktest_row "aarch64: sdktest boots" PASS
+par "aarch64: sdktest canary (64-page budget)" aarch64_sdktest_row "aarch64: sdktest canary (64-page budget)" CANARY
+
 # aarch64 twin of `userspace: a crashed ring-3 driver is restarted` (`kernel/src/drv_supervisor.rs`): the kernel stops gpio_drv four times;
 # three restarts must answer again and the fourth death must stay down, with
 # 3 restarts + 1 give-up added to the flight recorder. `[SUP] FAIL` is a
@@ -10942,6 +11022,10 @@ host_job host_canary_row "envelope: connect canary" net-tests envelope-egress-ca
 host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-canary a_taken_queue_goes_to_the_sink_and_the_stack_sees_none_of_it
 # SLAAC (crates/net/stack/src/ipv6.rs, RFC 4862): Duplicate Address Detection
 # and the valid-lifetime rule of §5.5.3 (e); each canary takes one out.
+# std's `TcpListener::bind` of a taken port is `AddrInUse` because `NODE_LISTEN`
+# says so (found by the `<isa>: sdktest boots` rows, `net_edges_and_udp_timeouts`);
+# `listen-dup-canary` takes the second listener, as the stack did.
+host_job host_canary_row "net: second listener canary (host)" net-tests listen-dup-canary a_second_listener_on_a_taken_port_is_refused
 host_job host_canary_row "ipv6: no DAD canary" net-tests slaac-no-dad-canary the_advertisement_slirp_sends_forms_its_address_through_duplicate_address_detection
 host_job host_canary_row "ipv6: claim ignored canary" net-tests slaac-no-dad-canary a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned
 host_job host_canary_row "ipv6: two hours canary" net-tests slaac-two-hours-canary a_refresh_over_two_hours_is_taken_as_it_is_even_when_it_lowers_what_remains
@@ -11377,6 +11461,23 @@ host_job host_canary_row "hwbus: topology-only policy canary" hwbus-tests policy
 # sched-wake-tests (`elf_bounds_tests`) must fail.
 host_job host_canary_row "elf: mixed-page canary (host)" sched-wake-tests elf-mixed-page-canary \
     a_page_shared_by_segments_mapped_differently_is_refused
+# The header walk the loader and the ELF fuzz target share (`elf_bounds`,
+# tests in sched-wake-tests `elf_walk`, run for the three ISAs' machine types):
+# `elf-machine-canary` takes an image of any machine, `elf-entry-align-canary`
+# holds an x86_64 entry to the 2-byte alignment of the other ISAs,
+# `elf-page-copy-canary` copies a segment that starts mid-page to the start of
+# the page. The named test, alone, must go red.
+host_job host_canary_row "elf: foreign machine canary (host)" sched-wake-tests elf-machine-canary \
+    a_foreign_machine_is_refused
+host_job host_canary_row "elf: x86 entry alignment canary (host)" sched-wake-tests elf-entry-align-canary \
+    an_entry_off_the_instruction_alignment_is_accepted_on_x86_only
+host_job host_canary_row "elf: mid-page copy canary (host)" sched-wake-tests elf-page-copy-canary \
+    a_segment_that_starts_mid_page_is_copied_to_its_offset_in_the_page
+# `elf-fill-canary`: the streamed fill walks every `PT_LOAD` header itself, so a
+# segment with no memory (skipped by the walk, nothing mapped) still receives
+# its file bytes.
+host_job host_canary_row "elf: fill without memory canary (host)" sched-wake-tests elf-fill-canary \
+    a_segment_without_memory_receives_no_file_bytes
 # QoS timer tolerance: `qos-rt-slack-canary` gives the stop, deadline and
 # real-time classes the fair class's timer slack: the policy test in
 # sched-policy-tests (`sc::timer_slack_us`) must fail. Its in-kernel twin is
@@ -12689,6 +12790,43 @@ else
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-systest.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
+
+    # The SDK's own test on riscv64 (see `sdktest_judge`).
+    riscv64_sdktest_row() { # riscv64_sdktest_row <label> <PASS|CANARY>
+        local label="$1" expect="$2" feats=qemu
+        [ "$expect" = CANARY ] && feats="qemu,mem-quota-canary"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/${tag}.log" kimg="$CI_LOG_DIR/kernel-${tag}" dimg="$CI_LOG_DIR/disk-${tag}.img"
+        rm -f "$log"
+        kbuild "$feats" || return
+        ci_kernel_check || return
+        rm -f $AZOS_OUT/build/disk-sdktest.img
+        make_disk $AZOS_OUT/build/disk-sdktest.img
+        cp "$KERNEL" "$kimg"; cp $AZOS_OUT/build/disk-sdktest.img "$dimg"
+        par_ready
+        while [ "$(qemu_count)" -ge 4 ]; do sleep 2; done
+        # The pool needs a source: `virt` has no Zkr, and a std program draws on it
+        # (`HashMap`'s keys); without virtio-rng the first draw is refused and std panics.
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 \
+            -global virtio-mmio.force-legacy=false -device virtio-rng-device \
+            -drive file="$dimg",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
+        local pid=$! i=0
+        while [ "$i" -lt 360 ]; do
+            grep -aqE "^# [0-9]+ tests, [0-9]+ failed|KERNEL PANIC" "$log" 2>/dev/null && break
+            [ "$expect" = CANARY ] && grep -aqE "\[AUTORUN\].*(REFUSED|exited|exit)" "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 1
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        rm -f "$kimg" "$dimg"
+        sdktest_judge "$log" "$expect" 'trap: unhandled|TRAP\] unhandled'
+    }
+    par "riscv64: sdktest boots" riscv64_sdktest_row "riscv64: sdktest boots" PASS
+    par "riscv64: sdktest canary (64-page budget)" riscv64_sdktest_row "riscv64: sdktest canary (64-page budget)" CANARY
 
     # ── Deadline admission: an infeasible topology must not boot ────────
     #
@@ -14415,8 +14553,9 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
     # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
     # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
-    KTEST_N_RV=130
-    KTEST_N_ARM=134
+    # +1 kheap_irq_token_follows_the_interrupt_state -> 131, arm 135.
+    KTEST_N_RV=131
+    KTEST_N_ARM=135
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15186,7 +15325,8 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
     # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
     # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
-    KTEST_N_X86=136
+    # +1 kheap_irq_token_follows_the_interrupt_state, as on rv and arm -> 137.
+    KTEST_N_X86=137
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -15216,6 +15356,9 @@ PY
             [ -n "$stop" ] && tr -d '\r' <"$log" | grep -aqE "$stop" && break
             i=$((i + 1)); sleep 0.5
         done
+        # `X86_LINGER`: seconds the guest runs on after the stop line (a row
+        # that looks at what the booted, idle guest says).
+        [ -n "${X86_LINGER:-}" ] && [ -n "$stop" ] && [ "$i" -lt $((secs * 2)) ] && kill -0 "$pid" 2>/dev/null && sleep "$X86_LINGER"
         X86_QRC=stopped
         stall_settle
         if kill -0 "$pid" 2>/dev/null; then
@@ -15643,6 +15786,70 @@ PY
     par "x86_64: PCI AHCI canary (no driver)" x86_ahci_row "x86_64: PCI AHCI canary (no driver)" FAIL
     par "x86_64: PCI AHCI canary (NCQ off)" x86_ahci_row "x86_64: PCI AHCI canary (NCQ off)" NONCQ
     par "x86_64: PCI AHCI disk without TRIM" x86_ahci_row "x86_64: PCI AHCI disk without TRIM" NOTRIM
+    # An idle disk is no stall (`blk_idle_row`, riscv64 and aarch64), for the
+    # three block drivers an x86_64 machine boots from: the virtio-blk device on
+    # microvm, an NVMe namespace (microvm with a PCIe bus) and a SATA disk behind
+    # an AHCI host (q35). They share `StallClock`: a look at a disk with nothing
+    # in flight, seconds apart on a tickless idle guest, is no stall, and
+    # crediting it said `guest did not run` and the volume once a second for
+    # good. The boot runs to the shell's prompt, which comes after the disk I/O of
+    # the boot (the mount, the images the shell and its servers load), and the
+    # guest then idles `X86_BLK_IDLE_SECONDS` more seconds: nothing may be said
+    # after the prompt. Canary, by hand: `StallClock::look` observing whether or not
+    # a command waits (the `busy` test removed): the lines return, per driver.
+    X86_BLK_IDLE_SECONDS=60
+    x86_blk_idle_row() { # x86_blk_idle_row <label> <virtio|nvme|ahci>
+        local label="$1" drv="$2" why="" tag
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
+        local -a dev=(); local machine=microvm found
+        rm -f "$kimg" "$kimg.features"
+        case "$drv" in
+            virtio)
+                x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
+                dev=(-drive "file=$dimg,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0)
+                found='\[VIRTIO-BLK\] Found block device' ;;
+            nvme|ahci)
+                make x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config \
+                    X86_64_KCONFIG="$AZOS_OUT/build/x86_64-idle-${tag}.config" \
+                    X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-idle-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
+                    && builtin printf '\n' >"$kimg.features" \
+                    || { bad; echo "      make x86_64 (the PCI configuration) did not build"; return; }
+                if [ "$drv" = nvme ]; then
+                    machine=microvm,pcie=on
+                    dev=(-drive "file=$dimg,if=none,format=raw,id=idle0" -device nvme,serial=deadbeef,drive=idle0)
+                    found='\[NVME\] controller .* ns1'
+                else
+                    machine=q35
+                    dev=(-drive "file=$dimg,if=none,format=raw,id=idle0" -device ich9-ahci,id=ahci -device ide-hd,drive=idle0,bus=ahci.0)
+                    found='\[AHCI\] port [0-9]+ .*: [0-9]+ sectors mode=irq'
+                fi ;;
+        esac
+        fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
+            || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; rm -f "$kimg" "$kimg.features"; return; }
+        par_ready
+        X86_LINGER=$X86_BLK_IDLE_SECONDS X86_MACHINE=$machine x86_qemu "$kimg" "$log" 150 'azos\$ |KERNEL PANIC' -smp 2 -nic none "${dev[@]}" \
+            || { rm -f "$kimg" "$kimg.features" "$dimg"; return; }
+        rm -f "$kimg" "$kimg.features" "$dimg"
+        grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$log" && why="$(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$log" | sed -n 1p)"
+        [ -z "$why" ] && ! grep -aqE "$found" "$log" && why="the $drv driver did not find its disk: the row proves nothing"
+        [ -z "$why" ] && ! grep -aqF '[FS] FAT32 mounted at /fat' "$log" && why="the volume did not mount from the $drv disk: the row proves nothing"
+        [ -z "$why" ] && ! grep -aqF 'azos$ ' "$log" && why="the boot did not reach the shell's prompt: the row proves nothing"
+        if [ -z "$why" ]; then
+            local idle
+            idle="$(sed -n '/azos\$ /,$p' "$log" | grep -acE "guest did not run for")"
+            if [ "$idle" != 0 ]; then
+                why="the driver said the guest did not run $idle time(s) after the boot's disk I/O was over: $(sed -n '/azos\$ /,$p' "$log" | grep -aE 'guest did not run for' | sed -n 1p)"
+            fi
+        fi
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"; echo "      log kept: $log"
+    }
+    par "x86_64: blk: idle disk is no stall (virtio-blk)" x86_blk_idle_row "x86_64: blk: idle disk is no stall (virtio-blk)" virtio
+    par "x86_64: blk: idle disk is no stall (NVMe)" x86_blk_idle_row "x86_64: blk: idle disk is no stall (NVMe)" nvme
+    par "x86_64: blk: idle disk is no stall (AHCI)" x86_blk_idle_row "x86_64: blk: idle disk is no stall (AHCI)" ahci
     # Ring-3 port I/O (Kconfig X86_IOPORT_*, `ty::IOPORT`, DEVICE_IOPORT_ENABLE):
     # BUZZDRV.ELF opens PIT channel 2 (0x42-0x43) and the speaker gate (0x61)
     # through its topology grants and checks, silently, that channel 2 counts
@@ -16138,6 +16345,8 @@ PY
     par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" ""
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
+    par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
+    par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
@@ -16588,6 +16797,27 @@ PY
     par "x86_64 abitest hwcap canary, -sha-ni" x86_autorun_row hwcapcanary
     par "x86_64 abitest sysabi canary" x86_autorun_row sysabicanary
     par "x86_64 abitest foreign regs canary" x86_autorun_row foreigncanary
+    # The SDK's own test on x86_64 (see `sdktest_judge`).
+    x86_sdktest_row() { # x86_sdktest_row <label> <PASS|CANARY>
+        local label="$1" expect="$2" feats=""
+        [ "$expect" = CANARY ] && feats=mem-quota-canary
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" disk="$CI_LOG_DIR/disk-x86-${tag}.img"
+        rm -f $AZOS_OUT/build/disk-x86_64-sdktest.img
+        x86_disk_prep $AZOS_OUT/build/disk-x86_64-sdktest.img "$kimg" "$disk" "$feats" || return
+        par_ready
+        local stop='^# [0-9]+ tests, [0-9]+ failed|KERNEL PANIC|\[X86-TRAP\]'
+        [ "$expect" = CANARY ] && stop='\[AUTORUN\].*(REFUSED|exited|exit)|KERNEL PANIC|\[X86-TRAP\]'
+        x86_qemu "$kimg" "$log" 240 "$stop" -smp 2 \
+            -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+            || { rm -f "$kimg" "$kimg.features" "$disk"; return; }
+        rm -f "$kimg" "$kimg.features" "$disk"
+        sdktest_judge "$log" "$expect" '\[X86-TRAP\]'
+    }
+    par "x86_64: sdktest boots" x86_sdktest_row "x86_64: sdktest boots" PASS
+    par "x86_64: sdktest canary (64-page budget)" x86_sdktest_row "x86_64: sdktest canary (64-page budget)" CANARY
     par "x86_64 syscall ABI" x86_autorun_row systest
     par "x86_64 syscall latency" x86_autorun_row latbench
     par "x86_64 captest" x86_autorun_row captest

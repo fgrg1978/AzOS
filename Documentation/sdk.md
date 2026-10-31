@@ -29,9 +29,15 @@ A Rust `std` target for each ISA: `riscv64imac-unknown-azos`,
 target, the vendor pin and the Kconfig values that change its bytes), and builds nothing when the key
 is the one it holds. `make build` builds it first, then the std programs the `.config`
 enables: `userspace/services/why`, `userspace/services/pkgd` and
-`userspace/services/rpcquic` by their `USERSPACE_` symbols, `sdk/sdktest` and
+`userspace/services/rpcquic` by their `USERSPACE_` symbols, `userspace/tests/sdktest` and
 `userspace/lib/tls-probe` by `SDK_TEST_PROGRAMS`. `make sdk-check` type-checks the
 port layer on the three ISAs and runs its host tests.
+
+The gate boots `userspace/tests/sdktest` on all three ISAs (`<isa>: sdktest boots`):
+the SDK of the ISA built by `make sdk`, the program as the autorun image of
+`disk-<isa>-sdktest.img`, `# N tests, 0 failed` read back from its TAP output. Its
+canary row boots the same volume under a 64-page autorun budget and requires no
+passing summary.
 
 | Path | What |
 |---|---|
@@ -111,7 +117,7 @@ strip = "symbols"    # the loader reads a bounded amount of the file
 ```
 
 `fn main` is the entry. `userspace/services/why/Cargo.toml` is a complete example
-of a std program, and `sdk/sdktest/src/main.rs` exercises the port. Build with
+of a std program, and `userspace/tests/sdktest/src/main.rs` exercises the port. Build with
 `tools/build/sdk_cargo.py`, against the SDK `make sdk` made:
 
 ```sh

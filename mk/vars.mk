@@ -330,6 +330,7 @@ IPCTEST_ELF   := $(OUT_BUILD)/ipctest.elf
 MEMPRESS_DIR   := userspace/tests/mempress
 MEMPRESS_BUILT := $(OUT_TGT)/$(MEMPRESS_DIR)/$(TARGET_RISCV64_USER)/release/mempress
 MEMPRESS_ELF   := $(OUT_BUILD)/mempress.elf
+SDKTEST_ELF    := $(OUT_BUILD)/sdktest.elf
 
 # ── aarch64 userspace parity (phase 6 prep) ──────────────────────────────────
 #
@@ -443,6 +444,7 @@ LATBENCH_ELF_AARCH64  := $(AARCH64_DIR)/latbench.elf
 ABITEST_ELF_AARCH64   := $(AARCH64_DIR)/abitest.elf
 IPCTEST_ELF_AARCH64   := $(AARCH64_DIR)/ipctest.elf
 MEMPRESS_ELF_AARCH64  := $(AARCH64_DIR)/mempress.elf
+SDKTEST_ELF_AARCH64   := $(AARCH64_DIR)/sdktest.elf
 VSBENCH_ELF_AARCH64   := $(AARCH64_DIR)/vsbench.elf
 
 # Every Rust ring-3 program links crates/core/libsys. Cargo tracks that path
@@ -534,7 +536,7 @@ RV_UFLAGS = --target $(USER_SPECS)/$(TARGET_RISCV64_USER).json \
 #   make sdk                    the SDK of the .config's ISA, into $AZOS_OUT/sdk/<isa>
 #   make sdk-check              stdrt type-checks on the three ISAs; its host tests
 SDK_TARGET_DIR := $(OUT_BUILD)/sdk/target
-SDK_SRC := $(shell find sdk -type f -not -name '* [0-9]*' -not -path 'sdk/sdktest/*') tools/build/sdk_std.py tools/build/sdk_cargo.py tools/build/sdk_build.py \
+SDK_SRC := $(shell find sdk -type f -not -name '* [0-9]*') tools/build/sdk_std.py tools/build/sdk_cargo.py tools/build/sdk_build.py \
            crates/core/stdrt/Cargo.toml $(shell find crates/core/stdrt/src -name '*.rs' -not -name '* [0-9]*') \
            crates/core/libsys/src/pure.rs crates/core/abi/Cargo.toml \
            $(shell find crates/core/abi/src -name '*.rs' -not -name '* [0-9]*') \
@@ -653,7 +655,7 @@ IMAGE_ELFS := HELLO.ELF=$(HELLO_ELF) SYSTEST.ELF=$(SYSTEST_ELF) \
               TRACECTL.ELF=$(TRACECTL_ELF) DECISD.ELF=$(DECISD_ELF) INPUTD.ELF=$(INPUTD_ELF) COMPSRV.ELF=$(COMPSRV_ELF) LOGD.ELF=$(LOGD_ELF) WHY.ELF=$(WHY_ELF) \
               PKGD.ELF=$(PKGD_ELF) PKG.ELF=$(PKG_ELF) RPCSRV.ELF=$(RPCSRV_ELF) ZENOHD.ELF=$(ZENOHD_ELF) PTPD.ELF=$(PTPD_ELF) AUDIOD.ELF=$(AUDIOD_ELF) RPCQUIC.ELF=$(RPCQUIC_ELF) MCPD.ELF=$(MCPD_ELF) SSHD.ELF=$(SSHD_ELF) LOGIND.ELF=$(LOGIND_ELF) VMMD.ELF=$(VMMD_ELF) \
               LXSRV.ELF=$(LXSRV_ELF) \
-              LXHELLO.ELF=$(LXHELLO_ELF)
+              LXHELLO.ELF=$(LXHELLO_ELF) SDKTEST.ELF=$(SDKTEST_ELF)
 IMAGE_HASHES := $(OUT_BUILD)/image_hashes.rs
 
 # The BOARD volume's ML service, and the image-hash table its kernel binds
@@ -814,7 +816,7 @@ IMAGE_ELFS_AARCH64 := HELLO.ELF=$(HELLO_ELF_AARCH64) SYSTEST.ELF=$(SYSTEST_ELF_A
               TRACECTL.ELF=$(TRACECTL_ELF_AARCH64) DECISD.ELF=$(DECISD_ELF_AARCH64) INPUTD.ELF=$(INPUTD_ELF_AARCH64) COMPSRV.ELF=$(COMPSRV_ELF_AARCH64) LOGD.ELF=$(LOGD_ELF_AARCH64) WHY.ELF=$(WHY_ELF_AARCH64) \
               PKGD.ELF=$(PKGD_ELF_AARCH64) PKG.ELF=$(PKG_ELF_AARCH64) RPCSRV.ELF=$(RPCSRV_ELF_AARCH64) ZENOHD.ELF=$(ZENOHD_ELF_AARCH64) PTPD.ELF=$(PTPD_ELF_AARCH64) AUDIOD.ELF=$(AUDIOD_ELF_AARCH64) RPCQUIC.ELF=$(RPCQUIC_ELF_AARCH64) MCPD.ELF=$(MCPD_ELF_AARCH64) SSHD.ELF=$(SSHD_ELF_AARCH64) LOGIND.ELF=$(LOGIND_ELF_AARCH64) VMMD.ELF=$(VMMD_ELF_AARCH64) \
               LXSRV.ELF=$(LXSRV_ELF_AARCH64) \
-              LXHELLO.ELF=$(LXHELLO_ELF_AARCH64)
+              LXHELLO.ELF=$(LXHELLO_ELF_AARCH64) SDKTEST.ELF=$(SDKTEST_ELF_AARCH64)
 IMAGE_HASHES_AARCH64 := $(OUT_BUILD)/image_hashes_aarch64$(AARCH64_PG_TABLE).rs
 AARCH64_USER_ELFS := $(foreach e,$(IMAGE_ELFS_AARCH64),$(word 2,$(subst =, ,$(e))))
 
@@ -938,6 +940,7 @@ BRAINCLI_ELF_X86_64  := $(X86_64_DIR)/brain_client.elf
 ABITEST_ELF_X86_64   := $(X86_64_DIR)/abitest.elf
 IPCTEST_ELF_X86_64   := $(X86_64_DIR)/ipctest.elf
 MEMPRESS_ELF_X86_64  := $(X86_64_DIR)/mempress.elf
+SDKTEST_ELF_X86_64   := $(X86_64_DIR)/sdktest.elf
 CAPTEST_ELF_X86_64   := $(X86_64_DIR)/captest.elf
 LATBENCH_ELF_X86_64  := $(X86_64_DIR)/latbench.elf
 GPIO_DRV_ELF_X86_64  := $(X86_64_DIR)/gpio_drv.elf
@@ -994,7 +997,7 @@ IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) SYSTEST.ELF=$(SYSTEST_ELF_X86
               CONFIG.ELF=$(CONFIG_ELF_X86_64) OTA.ELF=$(OTA_ELF_X86_64) \
               VSBENCH.ELF=$(VSBENCH_ELF_X86_64) VSSRV.ELF=$(VSSRV_ELF_X86_64) \
               LXSRV.ELF=$(LXSRV_ELF_X86_64) \
-              LXHELLO.ELF=$(LXHELLO_ELF_X86_64)
+              LXHELLO.ELF=$(LXHELLO_ELF_X86_64) SDKTEST.ELF=$(SDKTEST_ELF_X86_64)
 IMAGE_ELF_PATHS_X86_64 := $(foreach e,$(IMAGE_ELFS_X86_64),$(lastword $(subst =, ,$(e))))
 IMAGE_HASHES_X86_64 := $(OUT_BUILD)/image_hashes_x86_64.rs
 

@@ -17,6 +17,7 @@ use azos_crypto::noise::{CipherState, HandshakeState, Pattern};
 use azos_crypto::secure_channel::*;
 use azos_crypto::x25519::x25519_pubkey;
 use libfuzzer_sys::fuzz_target;
+use std::sync::OnceLock;
 
 const PSK: [u8; 32] = [7; 32];
 const BRAIN_SK: [u8; 32] = [0x77; 32];
@@ -30,8 +31,17 @@ fn prologue(pb: u8) -> Vec<u8> {
     p
 }
 
-/// A completed IK handshake: the robot's link and the brain's send cipher.
+/// A completed IK handshake, run once: a full Noise exchange (X25519 several
+/// times over) costs more than the surface it opens, and the same fixed
+/// ephemerals make every run produce the same session. Each input takes a copy
+/// (`fuzz-clone` of `azos_crypto`).
 fn pair() -> (Link, CipherState) {
+    static SESSION: OnceLock<(Link, CipherState)> = OnceLock::new();
+    SESSION.get_or_init(handshake).clone()
+}
+
+/// A completed IK handshake: the robot's link and the brain's send cipher.
+fn handshake() -> (Link, CipherState) {
     let pinned = x25519_pubkey(&BRAIN_SK);
     let mut ini = Initiator::new(&PSK, Some(&pinned)).unwrap();
     let mut out = [0u8; HANDSHAKE_OUT_MAX];

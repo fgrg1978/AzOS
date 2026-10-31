@@ -1017,6 +1017,8 @@ mod image_profiles {
     /// generated stubs, which this scanner does not follow, so what each
     /// public function issues is written out here and held to the source by
     /// `the_dev_clients_table_names_every_public_function`.
+    /// What `utest::run()` issues: the console write of the TAP lines.
+    const UTEST_REACH: &str = "console_write";
     const DEV_SRC: &str = include_str!("../../../../crates/core/libsys/src/dev.rs");
     const DEV_REACH: &[(&str, &[&str])] = &[
         // The lookup of an endpoint capability by interface and badge.
@@ -1256,6 +1258,10 @@ mod image_profiles {
             src!("userspace/lib/tls/src/remote.rs"),
         ]),
         ("PKG.ELF", Lang::Rust, &[src!("userspace/services/pkg/src/main.rs")]),
+        // The std port tested from inside (`userspace/tests/sdktest`): the allocator,
+        // threads, locks, the clock, sockets. Autorun on its own volume
+        // (`disk-<isa>-sdktest.img`), never part of a shipped system.
+        ("SDKTEST.ELF", Lang::RustStd, &[src!("userspace/tests/sdktest/src/main.rs")]),
         ("SYSTEST.ELF", Lang::Asm, &[src!("userspace/tests/syscall_test/test.S")]),
         ("GPIODRV.ELF", Lang::Rust, &[src!("userspace/drivers/gpio_drv/src/main.rs")]),
         ("MLSRV.ELF", Lang::Rust, &[
@@ -1994,11 +2000,25 @@ mod image_profiles {
             // `#[sys::main]` / `#[azos::main]` (azos_libsys_macros) writes the
             // entry, whose end is `sys::exit`, and a panic handler that is too.
             let compact: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+            // The test harness (`crates/core/libsys/src/utest.rs`) issues one
+            // call of its own, the console write of its TAP lines, whose
+            // closure is `UTEST_REACH`; any other name under `utest::` is a call
+            // this scanner does not follow.
+            let utest_rest = compact.replace("::utest::run()", "");
             assert!(
-                !compact.contains("::utest::"),
-                "{path}: names the test harness (`utest`), whose calls this scanner does not follow; \
+                !utest_rest.contains("::utest::"),
+                "{path}: names the test harness (`utest`) beyond `run()`, whose calls this scanner does not follow; \
                  describe them (like DEV_REACH) before an image carries a test",
             );
+            if compact.contains("::utest::run()") {
+                for s in closure(&fns, UTEST_REACH) {
+                    if let Some(&o) = opn.get(s.as_str()) {
+                        ops_out.insert(o);
+                    } else {
+                        out.insert(*nrs.get(&s).unwrap_or_else(|| panic!("libsys {UTEST_REACH} issues {s}, which neither syscall_nr.rs nor invoke.rs defines")));
+                    }
+                }
+            }
             if ["sys", "azos", "azos_libsys"].iter().any(|q| compact.contains(&format!("#[{q}::main"))) {
                 for s in closure(&fns, "exit") {
                     out.insert(*nrs.get(&s).unwrap_or_else(|| panic!("libsys exit issues {s}, which syscall_nr.rs does not define")));

@@ -17,6 +17,11 @@ no-bitmanip = []
 # same shape as `secure-boot-enforced`. See the module doc of
 # src/secure_channel.rs.
 link-provisioning-enforced = []
+# `Clone` for `CipherState` and `Link`, for the brain-link fuzz target
+# (tests/fuzz/brain-link-fuzz): one handshake per process, a copy per input. A
+# copy of a live cipher state reuses its nonces, so no kernel or ring-3 build
+# enables it.
+fuzz-clone = []
 
 [dependencies]
 azos_common = { path = "../common" }

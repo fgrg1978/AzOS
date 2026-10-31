@@ -96,6 +96,7 @@ const XX: [&[Tok]; 3] =
     [&[Tok::E], &[Tok::E, Tok::Ee, Tok::S, Tok::Es], &[Tok::S, Tok::Se]];
 
 /// Noise CipherState: a key and a 64-bit message counter.
+#[cfg_attr(feature = "fuzz-clone", derive(Clone))]
 pub struct CipherState {
     k: [u8; KEY_LEN],
     n: u64,

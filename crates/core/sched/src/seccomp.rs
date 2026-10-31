@@ -1460,6 +1460,26 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: LINUX_RT_OPS,
         ifaces: NO_IFACES,
     },
+    // The SDK's own test (`userspace/tests/sdktest`), the autorun program of the
+    // gate's `<isa>: sdktest boots` rows: a `std` program that tests the port
+    // from inside, so its row is the port layer's whole reach (`STDRT`,
+    // `STDRT_NET`: it opens sockets) and the console write of the TAP lines.
+    // `tests/host/seccomp-tests` derives this from the sources.
+    ImageProfile {
+        image: "SDKTEST.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD, SYS_IPC_CALL_V2,
+            SYS_CAP_CLOSE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL,
+            SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
+        ],
+        audit: false,
+        ops: inv_ops![
+            LOG_CONSOLE_WRITE, NODE_READ, NODE_WRITE, DOMAIN_UPTIME,
+            DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_CONNECT,
+            NODE_SEND, NODE_SENDTO, NODE_RECV, NODE_RECVFROM, NODE_MCAST_JOIN, NODE_MCAST_LEAVE,
+        ],
+        ifaces: &[azos_devif::key::ENTROPY],
+    },
 ];
 
 // `IMAGE_SHA256: &[(&str, [u8; 32])]`: the name each shipped ELF is copied
