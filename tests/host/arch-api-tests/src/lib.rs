@@ -66,6 +66,13 @@ mod aarch64_cpu;
 mod aarch64_sysregs;
 #[allow(dead_code)]
 use crate::aarch64_sysregs as sysregs;
+// `now_ticks` in `cpu.rs` forwards here; nothing below calls it.
+#[allow(dead_code)]
+mod timer {
+    pub fn now_ticks() -> u64 {
+        0
+    }
+}
 
 #[allow(dead_code)]
 #[path = "../../../../arch/aarch64/src/irq/gic.rs"]
