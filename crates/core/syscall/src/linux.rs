@@ -2582,15 +2582,15 @@ fn fork_child_setup(parent: u32, child: u32) -> bool {
 /// open file description, so the two share one offset as on Linux; each
 /// descriptor keeps its own owner (`set_owner`). `None` if it cannot.
 fn dup_handle_into(parent: u32, child: u32, handle: u32) -> Option<u32> {
-    use azos_ipc::cap::targets::{File, Shm};
-    let (kind, perms, res) =
-        azos_ipc::cap_store::with_table(parent, |t| {
-            let h = CapHandle::from_raw(handle);
-            // A void source (expired, or derived from a revoked capability
-            // not yet swept) is not duplicated.
-            if t.is_void(h) { None } else { t.peek_raw(h) }
-        })
-        .flatten()?;
+    // A void source (expired, or derived from a revoked capability not yet
+    // swept) is not duplicated.
+    let h = CapHandle::from_raw(handle);
+    let (kind, res) = azos_ipc::cap_store::with_table(parent, |t| {
+        if t.is_void(h) { None } else { t.peek_raw(h).map(|(k, _, r)| (k, r)) }
+    })
+    .flatten()?;
+    // The child's capability is a copy that keeps the original's place in the
+    // warrant tree (`grant_like`): forking neither sheds a revoke nor a deadline.
     match kind {
         ty::SHM => {
             use azos_ipc::memobj::{memobj_acquire_ref, memobj_pipe_drop_all_ref, memobj_pipe_inherit, memobj_release_ref};
@@ -2601,8 +2601,8 @@ fn dup_handle_into(parent: u32, child: u32, handle: u32) -> Option<u32> {
                 let _ = memobj_release_ref(child, res);
                 return None;
             }
-            match azos_ipc::cap::objref::grant_packed::<Shm>(child, perms, res) {
-                Some(c) => Some(c.raw().as_raw()),
+            match azos_ipc::cap_store::grant_like(parent, h, child, res) {
+                Some(c) => Some(c.as_raw()),
                 None => {
                     memobj_pipe_drop_all_ref(child, res);
                     let _ = memobj_release_ref(child, res);
@@ -2620,11 +2620,8 @@ fn dup_handle_into(parent: u32, child: u32, handle: u32) -> Option<u32> {
                 let _ = ops.close(nfd as i32);
                 return None;
             }
-            match azos_ipc::cap_store::grant::<File>(child, perms, nfd as u32) {
-                Some(c) => Some(c.raw().as_raw()),
-                // The child owns it now; its exit closes it.
-                None => None,
-            }
+            // The child owns the descriptor now; its exit closes it.
+            azos_ipc::cap_store::grant_like(parent, h, child, nfd as u32).map(|c| c.as_raw())
         }
         _ => None,
     }

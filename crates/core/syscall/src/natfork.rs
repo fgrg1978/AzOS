@@ -30,7 +30,11 @@
 //!    holds (kind, permissions, resource) keeps that placeholder, which is
 //!    then the same capability, and the fresh copy goes: a handle the parent
 //!    looked up before the fork names the same capability in the child. One
-//!    the parent no longer holds keeps the slot it was minted in.
+//!    the parent no longer holds keeps the slot it was minted in, and so does
+//!    any capability that is not a plain root (a badge, an op mask or other
+//!    caveats, a deadline): the placeholder is a bare copy and would shed
+//!    them, so the child gets the row's own mint and the parent's handle is
+//!    stale for it.
 //! 3. Every placeholder left is removed, keeping its generation: each parent
 //!    handle naming something the child does not hold is stale in the child,
 //!    and a later grant in that slot gets a newer generation.
@@ -183,7 +187,12 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> bool {
             }
             let s = h.slot() as usize;
             placeholder[s / 64] |= 1 << (s % 64);
-            if row_kinds & (1u64 << (h.kind() & 63)) != 0 && ncand < CANDIDATES {
+            // Only a plain root can stand for a row capability: the kept slot
+            // carries no badge, caveat or warrant of its own.
+            if row_kinds & (1u64 << (h.kind() & 63)) != 0
+                && ncand < CANDIDATES
+                && azos_ipc::cap_store::read_table(parent, |t| t.is_plain_root(h)) == Some(true)
+            {
                 cand[ncand] = (h, res);
                 ncand += 1;
             }
@@ -594,7 +603,10 @@ fn mint_one(
     };
     azos_ipc::cap_store::with_table(child, |t| {
         let (kind, perms, res) = t.peek_raw(m)?;
-        if al.take(kind, perms, res) {
+        // A badged or caveated mint (an op mask) keeps its own slot: a
+        // placeholder would replace it with the bare capability.
+        let plain = t.is_plain_root(m);
+        if plain && al.take(kind, perms, res) {
             t.delete_raw(m);
         }
         Some((kind, perms, res))

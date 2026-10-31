@@ -1401,6 +1401,54 @@ mod cap_store_tests {
         assert!(!live(&b, b1) && !live(&child, b1), "forking escaped a revoke of the ancestor");
     }
 
+    /// The Linux personality's fork copies a descriptor's capability with
+    /// `grant_like`: under every ancestor of the original, with its deadline
+    /// (`dup_handle_into` re-granted it as a new root before). **Canary.** In
+    /// `grant_like` store `Warrant::ROOT` again: the copy survives the revoke
+    /// and its deadline is gone, and both assertions go red.
+    #[test]
+    fn a_linux_fork_copy_is_a_sibling_not_a_new_root() {
+        let _g = wguard();
+        let (a, b, child) = (wtask(44), wtask(45), wtask(46));
+        let r = root_with(&a, CapPerms::RW_DELEGATE, 5, Warrant { expiry_ns: 1000, ..Warrant::ROOT });
+        let b1 = dup(&a, &b, r).unwrap();
+        let copy = cap_store::grant_like(b.tid, b1, child.tid, 77).expect("a live source copies");
+        assert_eq!(cap_store::get(child.tid, ch(copy), CapPerms::READ), Ok(77), "the copy names the new resource");
+        assert_eq!(warrant(&child, copy), warrant(&b, b1), "same parent, depth and deadline");
+        NOW.store(1000, Ordering::SeqCst);
+        assert_eq!(cap_store::get(child.tid, ch(copy), CapPerms::READ), Err(CapError::Revoked), "forking sheds no deadline");
+        NOW.store(0, Ordering::SeqCst);
+        assert_eq!(cap_store::get(child.tid, ch(copy), CapPerms::READ), Ok(77));
+        cap_store::revoke(a.tid, ch(r));
+        assert!(!live(&child, copy), "forking escaped a revoke of the ancestor");
+        assert!(cap_store::grant_like(b.tid, b1, child.tid, 78).is_none(), "a revoked source is not copied");
+    }
+
+    /// A fork child's bare placeholder may stand for a row capability only
+    /// when that capability is a plain root: a badge (`grant_badged`), an op
+    /// mask (`grant_op_masked`), a deadline or a derive each fail
+    /// `is_plain_root`, so `natfork` keeps the row's own mint there.
+    /// **Canary.** Make `is_plain_root` answer true for every live slot: the
+    /// badged, masked, deadlined and derived assertions go red.
+    #[test]
+    fn only_a_plain_root_stands_for_a_row_capability() {
+        let _g = wguard();
+        let (a, b) = (wtask(44), wtask(45));
+        let plain = root(&a, CapPerms::RW_DELEGATE, 5);
+        let badged: Cap<Port> = cap_store::grant_badged(a.tid, CapPerms::RW, 3, 9).unwrap();
+        let masked: Cap<Port> = cap_store::grant_op_masked(a.tid, CapPerms::RW, 3, 0, 0b101).unwrap();
+        let timed = root_with(&a, CapPerms::RW, 5, Warrant { expiry_ns: 1000, ..Warrant::ROOT });
+        let derived = dup(&a, &b, plain).unwrap();
+        let is_plain = |t: &Task, h: CapHandle| cap_store::with_table(t.tid, |tb| tb.is_plain_root(h)).unwrap();
+        assert!(is_plain(&a, plain), "an unbadged root is plain");
+        assert!(!is_plain(&a, badged.raw()), "a badge is not plain");
+        assert!(!is_plain(&a, masked.raw()), "an op mask is not plain");
+        assert!(!is_plain(&a, timed), "a deadline is not plain");
+        assert!(!is_plain(&b, derived), "a derived copy is not plain");
+        let gone = CapHandle::pack(ty::PORT, CapPerms::RW, 9, 60);
+        assert!(!is_plain(&a, gone), "a handle that names nothing is not plain");
+    }
+
     /// The sweep is bounded: at most `WARRANT_DEPTH_MAX + 1` passes, each at
     /// most the tables' slots, and it is exactly that when every link of a chain
     /// sits in a lower table than its parent (a pass clears one level). A wide

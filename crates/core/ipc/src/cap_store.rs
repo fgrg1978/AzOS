@@ -1033,6 +1033,25 @@ pub fn grant_op_masked<T: CapTarget>(
     }
 }
 
+/// A copy of the capability `handle` of `from`'s table, for `to`'s table, naming
+/// `resource` (a duplicated descriptor names another one): the same kind,
+/// rights, badge and place in the warrant tree, so the copy is a sibling of
+/// the original. A fork duplicates a descriptor and delegates nothing: a revoke
+/// of any ancestor still reaches the copy and a deadline is not shed by
+/// forking. `None` for a handle that is void (expired, revoked, stale) or a
+/// full table. The two locks are never held together.
+pub fn grant_like(from: u32, handle: CapHandle, to: u32, resource: u32) -> Option<CapHandle> {
+    let (kind, perms, warrant, ext) = with_table(from, |t| {
+        if t.is_void(handle) {
+            return None;
+        }
+        let (kind, perms, _) = t.peek_raw(handle)?;
+        Some((kind, perms, t.warrant_of(handle)?, t.ext_of(handle)?))
+    })
+    .flatten()?;
+    with_table(to, |t| t.grant_warranted(kind, perms, resource, ext, warrant)).flatten()
+}
+
 /// Make `tid`'s table a shadow task's (a topology row with `shadow = true`):
 /// every capability in it, held now or granted later by any minter, is weak
 /// (`Warrant::WEAK`) and resolves read-only; each use the mask refuses is
