@@ -179,9 +179,10 @@ def judge_kill_order(console):
     return None
 
 
-def boot(repo, env, cmdline, accel, log, limit):
+def boot(repo, env, selection, cmdline, accel, log, limit):
     """`make qemu` until the program ended, in a process group of its own. Its console."""
-    args = ["make", "-C", repo, "qemu", "QEMU_ACCEL=%s" % accel]
+    # `qemu` builds first: the same selection, or it boots another kernel.
+    args = ["make", "-C", repo, "qemu", selection, "QEMU_ACCEL=%s" % accel]
     if cmdline:
         args.append("QEMU_CMDLINE=%s" % cmdline)
     with open(log, "wb") as out:
@@ -223,7 +224,8 @@ def run(isa, scenario):
     env = dict(os.environ, AZOS_OUT=out_root, KCONFIG_CONFIG=cfg)
     defconfig = "generic-sbc-%s-dev+qemu+reclaim" % isa
     sel = {"riscv64": "RISCV64_SELECT", "aarch64": "AARCH64_SELECT", "x86_64": "X86_64_SELECT"}[isa]
-    for goal in (["defconfig-" + defconfig], ["build", "%s=%s" % (sel, select)]):
+    selection = "%s=%s" % (sel, select)
+    for goal in (["defconfig-" + defconfig], ["build", selection]):
         with open(log + ".make", "wb") as out:
             r = subprocess.run(["make", "-C", repo] + goal, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
         if r.returncode:
@@ -234,7 +236,7 @@ def run(isa, scenario):
     accel = "tcg"
     if isa == "aarch64" and subprocess.run([os.path.join(repo, "tools/dev/qemu_hvf.sh")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
         accel = "hvf"
-    console = boot(repo, env, cmdline, accel, log, int(os.environ.get("RECLAIM_ROW_LIMIT", "600")))
+    console = boot(repo, env, selection, cmdline, accel, log, int(os.environ.get("RECLAIM_ROW_LIMIT", "600")))
     if scenario.startswith(("pinned-", "kill-order")):
         which = scenario.replace("-canary", "")
         why = judge_kill_order(console) if which == "kill-order" else judge_pinned(which, console)
