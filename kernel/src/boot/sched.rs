@@ -1931,7 +1931,7 @@ mod kmutex_ktests {
         let g = PM.lock();
         let _ = task_create_affinity("kmx-rt-waiter", pi_waiter, 0, RT_WAITER_PRIO, CPU0);
         // The flag precedes the waiter's `lock`: only its queueing is the contention.
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || PI_CONTENDING.load(Ordering::SeqCst)
+        let _ = crate::ktest::until_for(10_000, || PI_CONTENDING.load(Ordering::SeqCst)
             && PM.wait_node().has_waiters());
         // No yield: only the boost lets this fair task run past the RT
         // waiter's band; sample the best priority seen while holding.
@@ -1963,7 +1963,7 @@ mod kmutex_ktests {
     fn pi_run(_: usize) {
         PI_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-fair-owner", pi_owner, 0, FAIR_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 10, || PI_ACQUIRED.load(Ordering::SeqCst));
+        let _ = crate::ktest::until_for(10_000, || PI_ACQUIRED.load(Ordering::SeqCst));
     }
 
     // An RT waiter boosts a fair owner of a kernel Mutex through the wait
@@ -2000,7 +2000,7 @@ mod kmutex_ktests {
         azos_sched::scheduler::ktest_flag_ring3(azos_sched::classes::current());
         let g = RM.lock();
         let _ = task_create_affinity("kmx-r3-waiter", r_waiter, 0, RT_WAITER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || R_CONTENDING.load(Ordering::SeqCst)
+        let _ = crate::ktest::until_for(10_000, || R_CONTENDING.load(Ordering::SeqCst)
             && RM.wait_node().has_waiters());
         let me = current_task_tid();
         let mut acc = 0u32;
@@ -2030,7 +2030,7 @@ mod kmutex_ktests {
     fn r_run(_: usize) {
         R_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-r3-owner", r_owner, 0, FAIR_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 10, || R_ACQUIRED.load(Ordering::SeqCst));
+        let _ = crate::ktest::until_for(10_000, || R_ACQUIRED.load(Ordering::SeqCst));
         azos_sched::scheduler::ktest_flag_ring3(None);
     }
 
@@ -2088,7 +2088,7 @@ mod kmutex_ktests {
         // Both outrank this owner: each runs at creation and blocks on CM.
         let _ = task_create_affinity("kmx-hi", c_waiter, C_HI as usize, C_HI, CPU0);
         let _ = task_create_affinity("kmx-lo", c_waiter, C_LO as usize, C_LO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || C_QUEUED.load(Ordering::SeqCst) == 2);
+        let _ = crate::ktest::until_for(10_000, || C_QUEUED.load(Ordering::SeqCst) == 2);
         drop(g);
         // C_HI preempted at the wake and C_LO (less urgent than this owner)
         // still waits. Its wake left the word ownerless with C_LO queued.
@@ -2099,7 +2099,7 @@ mod kmutex_ktests {
     fn c_run(_: usize) {
         C_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-owner", c_owner, 0, C_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 10, || C_DONE.load(Ordering::SeqCst) == 3);
+        let _ = crate::ktest::until_for(10_000, || C_DONE.load(Ordering::SeqCst) == 3);
     }
 
     // Contended: an owner and three RT waiters on one CPU. Every waiter
@@ -2144,7 +2144,7 @@ mod kmutex_ktests {
         let g = S_M.lock();
         let _ = task_create_affinity("kmx-steal-w", s_waiter, 0, S_WAITER_PRIO, CPU0);
         // The waiter is less urgent: sleep until it is queued in the graph.
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || S_QUEUED.load(Ordering::SeqCst)
+        let _ = crate::ktest::until_for(10_000, || S_QUEUED.load(Ordering::SeqCst)
             && S_M.wait_node().has_waiters());
         drop(g);
         // Woken, the waiter cannot preempt this more urgent owner. The rule:
@@ -2160,7 +2160,7 @@ mod kmutex_ktests {
     fn s_run(_: usize) {
         S_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-steal-o", s_owner, 0, S_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 10, || S_DONE.load(Ordering::SeqCst));
+        let _ = crate::ktest::until_for(10_000, || S_DONE.load(Ordering::SeqCst));
     }
 
     // Steal rule (KMUTEX_STEAL_RULE): after a release with a waiter queued
@@ -2208,7 +2208,7 @@ mod kmutex_ktests {
     fn x_owner(_: usize) {
         let g = X_M.lock();
         let _ = task_create_affinity("kmx-exit-w", x_waiter, 0, RT_WAITER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || X_CONTENDING.load(Ordering::SeqCst)
+        let _ = crate::ktest::until_for(10_000, || X_CONTENDING.load(Ordering::SeqCst)
             && X_M.wait_node().has_waiters());
         drop(g);
         let me = azos_sched::classes::current().map_or(u32::MAX, |i| i as u32);
@@ -2220,12 +2220,12 @@ mod kmutex_ktests {
     fn x_run(_: usize) {
         X_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-exit-o", x_owner, 0, FAIR_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 10, || X_DONE.load(Ordering::SeqCst)
+        let _ = crate::ktest::until_for(10_000, || X_DONE.load(Ordering::SeqCst)
             && X_SLOT.load(Ordering::SeqCst) != u32::MAX);
         // The owner runs its exit path after the waiter: poll until its
         // graph state is gone (bounded; the canary keeps it).
         let slot = X_SLOT.load(Ordering::SeqCst);
-        let _ = azos_syscall::sleep::wait_until_ms(2_000, 5, || azos_sync::waitgraph::effective(slot).is_none());
+        let _ = crate::ktest::until_for(2_000, || azos_sync::waitgraph::effective(slot).is_none());
     }
 
     azos_ktest::ktest_late! {
@@ -2275,7 +2275,7 @@ mod kmutex_ktests {
     fn od_owner(_: usize) {
         let g = OD_M.lock();
         let _ = task_create_affinity("kmx-died-w", od_waiter, 0, RT_WAITER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 1, || OD_M.wait_node().has_waiters());
+        let _ = crate::ktest::until_for(10_000, || OD_M.wait_node().has_waiters());
         OD_QUEUED.store(OD_M.wait_node().has_waiters(), Ordering::SeqCst);
         // Exit holding the Mutex (the kernel bug this rule survives). Its
         // lockdep entry is dropped first, so the exit is not a lockdep
@@ -2288,7 +2288,7 @@ mod kmutex_ktests {
     fn od_run(_: usize) {
         OD_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-died-o", od_owner, 0, FAIR_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(30_000, 10, || OD_GOT.load(Ordering::SeqCst));
+        let _ = crate::ktest::until_for(30_000, || OD_GOT.load(Ordering::SeqCst));
     }
 
     azos_ktest::ktest_late! {
@@ -2334,7 +2334,7 @@ mod kmutex_ktests {
         let _ = task_create_affinity("pil-dead-h", hd_holder, 0, FAIR_OWNER_PRIO, CPU0);
         // The exit path drops the count before the slot turns Zombie, so a
         // reaped holder has run it; the canary stops waiting there too.
-        let _ = azos_syscall::sleep::wait_until_ms(30_000, 10, || {
+        let _ = crate::ktest::until_for(30_000, || {
             let t = HD_TID.load(Ordering::SeqCst);
             t != 0 && (azos_sync::held::held_by(t) == 0 || azos_sched::scheduler::idx_for_tid(t).is_none())
         });
@@ -2378,7 +2378,7 @@ mod kmutex_ktests {
 
     fn cd_run(_: usize) {
         let _ = task_create_affinity("claim-dead-o", cd_owner, 0, FAIR_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(30_000, 10, || {
+        let _ = crate::ktest::until_for(30_000, || {
             let t = CD_TID.load(Ordering::SeqCst);
             t != 0 && (azos_sync::claim::held_by(t) == 0 || azos_sched::scheduler::idx_for_tid(t).is_none())
         });
@@ -2452,23 +2452,31 @@ mod kmutex_ktests {
     }
 
     fn ce_run(_: usize) {
+        if canary!("claim-no-exclude") {
+            azos_sync::claim::canary_no_exclude(&CE_C as *const _ as usize);
+        }
+        if canary!("claim-release-silent") {
+            azos_sync::claim::canary_release_silent(&CE_C as *const _ as usize);
+        }
         let mut g = CE_C.acquire();
         CE_OWNED.store(true, Ordering::SeqCst);
         *g += 1;
         // The runner outranks the contender (priority 1): the contender runs
         // once this task sleeps for its "device wait" and sleeps on the claim.
         let _ = task_create_affinity("claim-excl-c", ce_contender, 0, FAIR_OWNER_PRIO, CPU0);
-        // The "device wait": the claim is owned and this task is asleep, past
-        // the contender's first step however long the host took to reach it.
-        crate::ktest::until(|| CE_TRYING.load(Ordering::SeqCst));
-        let _ = azos_syscall::sleep::wait_until_ms(30, 5, || false);
+        // The "device wait": the claim is owned and this task sleeps until
+        // the contender sleeps on it, or a release would wake nobody.
+        // `canary=claim-no-exclude`: it never does, it has entered.
+        crate::ktest::until(|| CE_C.waiters() != 0 || CE_GOT.load(Ordering::SeqCst));
         CE_OWNED.store(false, Ordering::SeqCst);
         drop(g);
-        let _ = azos_syscall::sleep::wait_until_ms(30_000, 5, || CE_GOT.load(Ordering::SeqCst));
+        let _ = crate::ktest::until_for(30_000, || CE_GOT.load(Ordering::SeqCst));
     }
 
     azos_ktest::ktest_late! {
         fn claim_excludes_across_a_wait_and_wakes_a_contender() {
+            let site = azos_sync::waitstat::Site::Claim;
+            let lost0 = azos_sync::waitstat::stats(site).1;
             crate::ktest::probe("claim-excl", ce_run, 0, RUNNER_PRIO, CPU0)?;
             if !CE_TRYING.load(Ordering::SeqCst) {
                 Err("the contender never ran (the test proves nothing)")
@@ -2476,6 +2484,8 @@ mod kmutex_ktests {
                 Err("the contender entered while the claim was owned across the wait")
             } else if !CE_GOT.load(Ordering::SeqCst) {
                 Err("the contender was never woken by the claim's release")
+            } else if azos_sync::waitstat::stats(site).1 != lost0 {
+                Err("the claim's release left its waiter to its time slice (a lost wake)")
             } else if *CE_C.acquire() != 2 {
                 Err("an owner's update was lost")
             } else {
@@ -2519,7 +2529,7 @@ mod kmutex_ktests {
     fn db_run(_: usize) {
         let _ = task_create_affinity("disk-bounce-a", db_reader, 0, FAIR_OWNER_PRIO, 0);
         let _ = task_create_affinity("disk-bounce-b", db_reader, 1, FAIR_OWNER_PRIO, -1);
-        let _ = azos_syscall::sleep::wait_until_ms(10_000, 10, || DB_DONE.load(Ordering::SeqCst) == 2);
+        let _ = crate::ktest::until(|| DB_DONE.load(Ordering::SeqCst) == 2);
     }
 
     azos_ktest::ktest_late! {

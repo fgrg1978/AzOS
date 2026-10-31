@@ -278,6 +278,17 @@ pub(crate) const NAMES: &[&str] = &[
     // a claim stays counted in the F1 table (ktest
     // `claim_dead_owner_leaves_the_held_table`).
     "claim-held-keeps-dead",
+    // kernel/src/smokes/safety.rs `geofence_smoke_task`: the read at the
+    // fence's centre is stale and not waited out (ktest
+    // `safety_geofence_breach_latches_estop`).
+    "geofence-stale-read",
+    // crates/core/sync/src/claim.rs `acquire`: the ktest's claim admits a
+    // contender while it is owned (ktest
+    // `claim_excludes_across_a_wait_and_wakes_a_contender`).
+    "claim-no-exclude",
+    // crates/core/sync/src/claim.rs: the release of the ktest's claim wakes
+    // nobody (the same ktest).
+    "claim-release-silent",
     // crates/core/sync/src/claim.rs `acquire`: the owner keeps the claim's
     // exchange mutex, so a Mutex is held across its device waits, rule F1
     // (ktest `claim_holds_no_mutex_across_a_device_wait`).

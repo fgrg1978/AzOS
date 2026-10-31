@@ -53,30 +53,13 @@ CMDLINE_MARGIN = 128
 # left out break other sets' tests (`chaos-inert` disarms `chaos-leak`'s
 # point), stop the run (`ioring-rt-inline` bails, and needs a disk) or invert
 # the verdict (`ktest-exit-pass`).
-# The wait-graph canaries (WAIT_GRAPH, FUTEX_PI default y): each breaks only
-# its own test(s), and the others stay ok.
-# kmutex-steal-any lets the releaser's own re-lock overtake the queued
-# waiter, so the held-back-newcomer test loses its graph owner too.
-# kmutex-park-aba parks the held-back newcomer on its word alone after a
-# widened window: the word's ABA loses its wake, so that test fails too.
-# ipc-call-no-edge leaves every IPC call, ordinary or fast, without its
-# wait-graph edge (the fast call is then taken with nothing to boost).
-_WG = ("kmutex-steal-any,kmutex-park-aba,owner-died-silent,exit-keeps-graph,futex-pi-no-edge,"
-       "futex-pi-exit-silent,futex-requeue-pi-plain,futex-requeue-pi-no-proxy,"
-       "held-keeps-dead,claim-held-keeps-dead,ipc-call-no-edge",
-       "kmutex_steal_rule_holds_for_top_waiter kmutex_held_back_newcomer_is_in_the_graph "
-       "kmutex_owner_died_wakes_waiter waitgraph_exit_clears_state futex_pi_boosts_the_owner "
-       "futex_pi_owner_exit_hands_over futex_requeue_pi_hands_the_mutex_over "
-       "kmutex_dead_holder_leaves_the_held_table claim_dead_owner_leaves_the_held_table "
-       "waitgraph_ipc_call_boosts_server ipc_fastpath_boosting_call_is_slow_and_boosts "
-       "ipc_fastpath_call_edge_is_in_the_graph")
 SETS = {
-    "rv": ["RT", "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", _WG, ("spin-patch-skip", "spin_sites_patched"),
+    "rv": ["RT", "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", "WG", ("spin-patch-skip", "spin_sites_patched"),
            ("console-drop", "console_task_line_waits_never_drops"),
            ("tlb-space-mask-drop", "tlb_space_mask_reaches_the_harts_that_ran"),
            ("asid-per-thread", "asid_one_per_space_across_rollover"),
            ("copyout-raw-kernel-ctx", "copyout_refused_in_kernel_context")],
-    "arm": ["RT", "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", _WG, ("spin-patch-skip", "spin_sites_patched"),
+    "arm": ["RT", "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", "WG", ("spin-patch-skip", "spin_sites_patched"),
             ("pan-patch-skip", "a64_pan_sites_patched"),
             ("console-drop", "console_task_line_waits_never_drops"),
             ("asid-per-thread", "asid_one_per_space_across_rollover"),
@@ -86,10 +69,11 @@ SETS = {
             ("x86-low-alias", "x86_low_half_maps_no_ram"),
             ("camera-encode-per-consumer", "camera_one_encode_per_frame"),
             ("irq-storm", "irq_storm_is_contained"),
+            ("geofence-stale-read", "safety_geofence_breach_latches_estop"),
             ("console-drop", "console_task_line_waits_never_drops"),
             ("copyout-raw-kernel-ctx", "copyout_refused_in_kernel_context"),
             ("x86-tlb-join-skip", "tlb_kernel_shootdown_names_every_online_cpu"),
-            "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", _WG],
+            "LOCKDEP", "RCU", "IPC", "FUTEX", "KMUTEX", "SCHED", "WG"],
 }
 CLEAN_STATUS = {"rv": "0", "arm": "0", "x86": "1"}
 FAILED_STATUS = {"rv": "1", "arm": "1", "x86": "3"}
