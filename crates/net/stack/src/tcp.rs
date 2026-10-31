@@ -2139,10 +2139,19 @@ pub(crate) fn listen(port: u16) -> i32 {
 
 /// A listener of one family: it takes connections to any address of that
 /// family. An IPv4 listener holds our IPv4 address, an IPv6 one the
-/// unspecified address `::`, which also says which family it is.
+/// unspecified address `::`, which also says which family it is. `None` when
+/// another listener of the family holds `port` (a second one would never see a
+/// connection), or when no slot is free.
 fn listen_h(port: u16, v6: bool) -> Option<TcpHandle> {
     let mut t = TCP.lock();
     let ip = if v6 { IpAddr::V6([0; 16]) } else { IpAddr::V4(t.our_ip) };
+    if !cfg!(feature = "listen-dup-canary")
+        && t.conns[..TCP_MAX_CONNS]
+            .iter()
+            .any(|c| c.state == TcpState::Listen && c.local_port == port && c.local_ip.is_v6() == v6)
+    {
+        return None;
+    }
     let idx = t.alloc()?;
     t.conns[idx].state      = TcpState::Listen;
     t.conns[idx].local_ip   = ip;

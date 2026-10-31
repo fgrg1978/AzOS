@@ -166,3 +166,20 @@ fn a_port_held_in_time_wait_is_skipped() {
     }
     assert!(a.state() == tcp::TcpState::TimeWait, "the TIME-WAIT connection was left alone");
 }
+
+/// A second listener on a port another holds is refused: it would never see a
+/// connection, and `NODE_LISTEN` answers `AddrInUse` through it (std's
+/// `TcpListener::bind` of a taken port). Another port and the other IP family
+/// are not taken, and the port is free again once its listener is closed.
+/// Canary `listen-dup-canary` (gate row): the second listener is taken.
+#[test]
+fn a_second_listener_on_a_taken_port_is_refused() {
+    let _g = begin();
+    let first = tcp::TcpHandle::listen(8080).expect("first listener");
+    assert!(tcp::TcpHandle::listen(8080).is_none(), "a second IPv4 listener took port 8080");
+    assert!(tcp::TcpHandle::listen(8081).is_some(), "port 8081 is not taken");
+    assert!(tcp::TcpHandle::listen6(8080).is_some(), "an IPv6 listener on 8080 is another family's");
+    assert!(tcp::TcpHandle::listen6(8080).is_none(), "a second IPv6 listener took port 8080");
+    first.close();
+    assert!(tcp::TcpHandle::listen(8080).is_some(), "port 8080 is still taken after its listener closed");
+}
