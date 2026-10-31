@@ -2131,6 +2131,28 @@ pub fn forget(root: usize) {
     }
 }
 
+/// Host tests only: forget every space the table holds. A test arena is rebuilt
+/// between tests, so a root a test never tore down is a dead space whose slot
+/// would greet the next test that is given the same page as its root with
+/// regions, a committed count and a full table it did not make.
+#[cfg(not(target_os = "none"))]
+pub fn shim_forget_all() {
+    let mut roots = [0usize; SPACES];
+    let mut n = 0;
+    {
+        let t = TABLE.lock_irqsave();
+        for sp in t.s[..t.used].iter() {
+            if sp.root != 0 && n < roots.len() {
+                roots[n] = sp.root;
+                n += 1;
+            }
+        }
+    }
+    for &r in &roots[..n] {
+        forget(r);
+    }
+}
+
 /// `(reserved, committed)` region pages under `root`, for tests and reports.
 pub fn space_pages(root: usize) -> (usize, usize) {
     let t = TABLE.lock_irqsave();
