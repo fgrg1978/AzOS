@@ -58,6 +58,7 @@ CARGO="$CI_CHECK_DIR/gate/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
 REPO_ROOT="$(cd "$CI_CHECK_DIR/.." && pwd)"
 . "$REPO_ROOT/tools/lib/qemu_count.sh"
+. "$REPO_ROOT/tools/lib/volume_stale.sh"
 # The recovery console's prompt is `<preset>> ` (azos_limits::PRESET_PROMPT), and
 # the cell a row boots decides the preset: any preset's prompt matches.
 RECOVERY_PROMPT_RE="($(cd "$REPO_ROOT/config/fragments/presets" && printf '%s\n' *.frag | sed 's/\.frag$//' | paste -sd'|' -))> "
@@ -12072,6 +12073,21 @@ gate_pgroup_row() {
     fi
 }
 ci_row "gate: host groups killed" gate_pgroup_row
+volume_stale_row() {
+    printf "  %-26s" "gate: stale volume remade..."
+    local out cout
+    if ! out="$(bash "${REPO_ROOT}/tools/gate/volume_stale_selftest.sh" 2>&1)"; then
+        bad; printf '%s\n' "$out" | sed -n 1,3p | sed 's/^/      /'; return
+    fi
+    if cout="$(VOLUME_STALE_CANARY=1 bash "${REPO_ROOT}/tools/gate/volume_stale_selftest.sh" 2>&1)"; then
+        bad; echo "      canary passed: the self-test does not see a volume older than an image"
+    elif ! printf '%s\n' "$cout" | qgrep -q "^FAIL: an image rebuilt after the volume was made"; then
+        bad; printf '%s\n' "$cout" | sed -n 1,3p | sed 's/^/      canary: /'
+    else
+        ok
+    fi
+}
+ci_row "gate: stale volume remade" volume_stale_row
 
 echo ""
 ci_phase "[3/4] QEMU rows"
@@ -22779,7 +22795,10 @@ PYEOF
             fi
             x86_kernel_check "$kimg" || { rm -f "$kimg" "$kimg.features"; return; }
             case "$dsk" in sh|lxabi) xvol=x86_64 ;; *) xvol="x86_64-$dsk" ;; esac
-            if [ ! -f "$AZOS_OUT/build/disk-$xvol.img.pristine" ]; then
+            # The kernel above was just built from the images in build/x86_64, which
+            # the last x86 build of any configuration left there; a volume snapshotted
+            # before that holds other bytes, and the kernel refuses every one of them.
+            if volume_stale "$AZOS_OUT/build/disk-$xvol.img.pristine" "$AZOS_OUT/build/x86_64"; then
                 rm -f "$AZOS_OUT/build/disk-$xvol.img"; make_disk "$AZOS_OUT/build/disk-$xvol.img"
             fi
             [ -f "$img" ] || cp "$AZOS_OUT/build/disk-$xvol.img.pristine" "$img"

@@ -78,7 +78,7 @@ ROLES = {
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
         "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_sendkeys.py", "qemu_tap.py", "repro_check.sh", "rows_for_diff.py",
-        "sbom.sh", "text_equiv.py", "vmmd_withhold_row.sh",
+        "sbom.sh", "text_equiv.py", "vmmd_withhold_row.sh", "volume_stale_selftest.sh",
     ],
     "lint": [
         "aarch64_fp_free_check.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
@@ -110,7 +110,7 @@ ROLES = {
         "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh", "stall_attach.py", "symbolize_bt.py",
         "test_debug.py", "test_farm.py", "test_stall_attach.py", "tftp_serve.py", "worktree_seed.py",
     ],
-    "lib": ["azos_tools.py", "out_dir.py", "qemu_count.sh"],
+    "lib": ["azos_tools.py", "out_dir.py", "qemu_count.sh", "volume_stale.sh"],
 }
 
 # Entries in flight on other branches (2026-10-23): placed here so that --apply
