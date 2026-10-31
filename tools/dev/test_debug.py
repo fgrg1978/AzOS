@@ -204,6 +204,19 @@ class RowJudge(unittest.TestCase):
     def test_canary_a_symbol_at_another_address_is_refused(self):
         self.assertIn("expected", debug_row.judge_read(SYM + GDB_DUMP, 0xffffffef71276244, BYTES))
 
+    def test_a_breakpoint_stop_is_read_in_either_debugger(self):
+        self.assertIsNone(debug_row.judge_break("(lldb) continue\n* thread #1, stop reason = breakpoint 1.1\n"))
+        self.assertIsNone(debug_row.judge_break("Continuing.\n\nBreakpoint 1, 0x00000000 in tick ()\n"))
+
+    def test_canary_no_stop_is_refused(self):
+        self.assertIn("no stop", debug_row.judge_break("(lldb) continue\nProcess 1 resuming\n"))
+        self.assertIn("never reached", debug_row.judge_break(None))
+        self.assertIn("no stop", debug_row.judge_break("Breakpoint 1 at 0x1234\nContinuing.\n"))
+
+    def test_the_break_command_is_spelt_for_the_debugger(self):
+        self.assertEqual(debug_row.break_commands("lldb")[0], "breakpoint set --name azos_syscall::clock::tick")
+        self.assertEqual(debug_row.break_commands("riscv64-elf-gdb")[0], "break azos_syscall::clock::tick")
+
     def test_canary_other_bytes_are_refused(self):
         self.assertIn("the ELF", debug_row.judge_read(SYM + GDB_DUMP, 0xffffffef71076244, BYTES[::-1]))
 
