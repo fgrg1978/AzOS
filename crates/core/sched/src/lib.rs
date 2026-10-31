@@ -207,7 +207,7 @@ pub fn user_mmap_area() -> (usize, usize) {
 
 pub use process::{
     exec_user, exec_user_mem, MemSpec, take_current_task_exec_ctx, sret_to_user, ExecHandoff,
-    copy_from_user, copy_to_user, copy_cstr_from_user, user_range_writable,
+    copy_from_user, copy_from_user_resident, copy_to_user, copy_cstr_from_user, user_range_writable,
     user_range_prepare_write,
     sys_brk_impl,
     mmio_map_user, shm_map_user,

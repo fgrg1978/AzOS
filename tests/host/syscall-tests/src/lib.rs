@@ -418,6 +418,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod futex_under_table {
+        use super::*;
+        include!("futex_under_table.rs");
+    }
+
+    #[cfg(test)]
     mod uaccess_mmio {
         use super::*;
         include!("uaccess_mmio.rs");

@@ -98,17 +98,26 @@ fn errno(r: WaitResult) -> i64 {
     }
 }
 
+/// What a look that answered `None` asks of its call, with no lock held
+/// (Linux's `fault_in` retry around `get_futex_value_locked`): a look under the
+/// table lock faults nothing in and never spins on the region table, so `None`
+/// may only mean "not now". `true`: the word is reachable, look again. `false`:
+/// it never will be, `EFAULT`.
+pub type Settle<'a> = &'a dyn Fn() -> bool;
+
 /// Wait on the word `look` names (its key and value, [`Look`]) while it holds
 /// `expected`, until a wake, the absolute deadline (timer ticks; `None`:
 /// none) or a forced stop. Returns 0 (woken), `-EAGAIN` (the word differs),
 /// `-ETIMEDOUT`, `-EINTR` or `-EFAULT`. The waiter is filed under the key of
-/// the look, which is taken once, with the table locked. A caller waiting on a
-/// user word reads it once before (`azos_syscall::vdso_notify::futex_precheck`:
-/// an unreadable or differing word is answered without the table, and the
-/// look under the lock is then at a page already resolved).
-pub fn wait(look: Look, expected: u32, deadline: Option<u64>) -> i64 {
+/// the look, which is taken once, with the table locked.
+pub fn wait(look: Look, settle: Settle, expected: u32, deadline: Option<u64>) -> i64 {
     let tid = crate::scheduler::current_task_tid();
-    errno(ft::wait_key(&KernelEnv, tid, look, expected, deadline.unwrap_or(u64::MAX)))
+    loop {
+        match ft::wait_key(&KernelEnv, tid, look, expected, deadline.unwrap_or(u64::MAX)) {
+            WaitResult::Fault if settle() => {}
+            r => return errno(r),
+        }
+    }
 }
 
 /// Wake at most `n` waiters on `key`. Returns how many were woken, or
@@ -174,12 +183,19 @@ pub fn robust_key(proc_id: u32, addr: u64) -> Key {
 /// `-EINVAL` with nothing done when the two keys differ in kind or a
 /// `FUTEX_WAIT_REQUEUE_PI` waiter is among those it would take (owner
 /// decision 10-10, as Linux).
-pub fn requeue(look: Look, to: Key, nr_wake: u32, nr_requeue: u32, cmp: Option<u32>) -> Result<(u32, u32), i64> {
+pub fn requeue(
+    look: Look, settle: Settle, to: Key, nr_wake: u32, nr_requeue: u32, cmp: Option<u32>,
+) -> Result<(u32, u32), i64> {
     if !ft::REQUEUE {
         return Err(-ENOSYS);
     }
     let wake_all = CANARY_REQUEUE_WAKE_ALL.load(Ordering::Relaxed);
-    ft::requeue_key(&KernelEnv, look, to, nr_wake, nr_requeue, cmp, wake_all).map_err(errno)
+    loop {
+        match ft::requeue_key(&KernelEnv, look, to, nr_wake, nr_requeue, cmp, wake_all) {
+            Err(WaitResult::Fault) if settle() => {}
+            r => return r.map_err(errno),
+        }
+    }
 }
 
 // ── The PI seam (interface §4): one key's slot, lent under the table lock ──
@@ -191,8 +207,9 @@ use azos_sync::waitgraph::TaskId;
 pub trait PiWord {
     fn read(&self) -> Result<u32, UserFault>;
     fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, UserFault>;
-    /// Make the word writable with no lock held (a copy-on-write or not
-    /// yet committed user page); `false`: nothing to do, or it cannot be.
+    /// Make the word reachable and writable with no lock held (a copy-on-write,
+    /// not yet committed or evicted user page; a busy region table). `true`: an
+    /// access that answered `UserFault` under the table lock may be tried again.
     fn fault_in(&self) -> bool {
         false
     }
@@ -260,12 +277,12 @@ pub fn with_pi_key<R>(key: Key, word: &dyn PiWord, f: impl FnOnce(&mut dyn PiBuc
     Some(r)
 }
 
-/// A PI word of the CURRENT address space, translated on every access
-/// (`process::user_cas_u32_nofault`: a page-table walk, no fault, no
-/// allocation, no TLB shootdown under the table lock), so a relock after
-/// the sleep never trusts a translation taken before it. A copy-on-write
-/// or not yet committed page answers `UserFault`; the call faults it in
-/// with the lock dropped and retries (Linux `fault_in_user_writeable`).
+/// A PI word of the CURRENT address space, translated on every access (a
+/// page-table walk, no fault, no allocation, no TLB shootdown under the table
+/// lock), so a relock after the sleep never trusts a translation taken before
+/// it. A copy-on-write, not yet committed or evicted page answers `UserFault`;
+/// the call faults it in with the lock dropped and retries (Linux
+/// `fault_in_user_writeable`).
 pub struct UserWord(pub u64);
 
 impl PiWord for UserWord {
@@ -273,7 +290,7 @@ impl PiWord for UserWord {
         crate::process::fault_in_user_writable(self.0 as usize)
     }
     fn read(&self) -> Result<u32, UserFault> {
-        crate::UserPtr::<u32>::new(self.0).read().map_err(|_| UserFault)
+        crate::UserPtr::<u32>::new(self.0).read_resident().map_err(|_| UserFault)
     }
     fn cmpxchg(&self, expected: u32, new: u32) -> Result<u32, UserFault> {
         match crate::UserPtr::<u32>::new(self.0).cas_resident(expected, new) {
@@ -297,6 +314,23 @@ const EXIT_RETRY_TICKS: u64 = {
     if t == 0 { 1 } else { t }
 };
 
+/// `lock_pi_finish` for a task that slept on `key`. A word that cannot be read
+/// is faulted in with the lock dropped, because the word decides who owns it; a
+/// word that never can be takes the task off the graph (`-EFAULT`).
+fn pi_finish(ops: &dyn azos_sync::pi_futex::PiFutexOps, key: Key, word: &dyn PiWord, me: TaskId, timed_out: bool) -> Option<i32> {
+    use azos_sync::pi_futex as pf;
+    loop {
+        let r = with_pi_key(key, word, |b| ops.lock_pi_finish(b, me, timed_out))?;
+        if r != -pf::EFAULT {
+            return Some(r);
+        }
+        if !word.fault_in() {
+            let _ = with_pi_key(key, word, |b| ops.lock_pi_leave(b, me));
+            return Some(r);
+        }
+    }
+}
+
 /// One PI `futex` operation by the current task on `key`, whose user word
 /// `word` reads and swaps (interface §4, the dispatcher's loop). `LOCK_PI`:
 /// prepare under the table lock; on `Block`, drop it, run
@@ -304,17 +338,19 @@ const EXIT_RETRY_TICKS: u64 = {
 /// canary; `EDEADLK` ends the call there), sleep on
 /// `WaitReason::Timer(deadline)` with no lock held, relock and finish; a
 /// spurious wake (`-EINTR` from the finish, no stop, no refused block)
-/// restarts at the prepare. Returns 0 or `-errno` (`-ENOSYS` while
-/// Kconfig `FUTEX_PI` is n or nothing is registered).
+/// restarts at the prepare. A word that faulted under the lock is faulted in
+/// with it dropped ([`PiWord::fault_in`]) and the step runs again. Returns 0 or
+/// `-errno` (`-ENOSYS` while Kconfig `FUTEX_PI` is n or nothing is registered).
 pub fn pi_call_key(key: Key, word: &dyn PiWord, cmd: azos_sync::pi_futex::PiCmd) -> i64 {
     use azos_sync::pi_futex::{self as pf, LockPiStep, PiCmd};
     let Some(ops) = pf::ops() else { return -ENOSYS };
     let Some(me) = crate::scheduler::current_slot() else { return -(pf::ESRCH as i64) };
     let me = me as TaskId;
     let (deadline, try_only) = match cmd {
-        PiCmd::Unlock => {
+        PiCmd::Unlock => loop {
             return match with_pi_key(key, word, |b| ops.unlock_pi(b, me)) {
                 None => -(pf::ENOMEM as i64),
+                Some(Err(e)) if e == -pf::EFAULT && word.fault_in() => continue,
                 Some(Err(e)) => e as i64,
                 Some(Ok(woken)) => {
                     if let Some(t) = woken {
@@ -323,7 +359,7 @@ pub fn pi_call_key(key: Key, word: &dyn PiWord, cmd: azos_sync::pi_futex::PiCmd)
                     0
                 }
             };
-        }
+        },
         PiCmd::TryLock => (u64::MAX, true),
         PiCmd::Lock { deadline } => (deadline.unwrap_or(u64::MAX), false),
     };
@@ -331,6 +367,7 @@ pub fn pi_call_key(key: Key, word: &dyn PiWord, cmd: azos_sync::pi_futex::PiCmd)
         let p = match with_pi_key(key, word, |b| ops.lock_pi_prepare(b, me, try_only)) {
             None => return -(pf::ENOMEM as i64),
             Some(LockPiStep::Acquired) => return 0,
+            Some(LockPiStep::Err(e)) if e == -pf::EFAULT && word.fault_in() => continue,
             Some(LockPiStep::Err(e)) => return e as i64,
             Some(LockPiStep::Block(p)) => p,
             // The owner is mid-exit: sleep Kconfig FUTEX_PI_EXIT_RETRY_US,
@@ -349,16 +386,15 @@ pub fn pi_call_key(key: Key, word: &dyn PiWord, cmd: azos_sync::pi_futex::PiCmd)
         };
         // The table lock is dropped: walk (boost the owner chain), then sleep.
         if let Err(e) = pf::block_commit(p) {
+            // The refused block is off the graph; a state made for it goes too.
+            let _ = with_pi_key(key, word, |b| ops.lock_pi_leave(b, me));
             return -(e.errno() as i64);
         }
         let past = |now: u64| deadline != u64::MAX && now >= deadline;
         let stopped = KernelEnv.stopped();
         let refused = if stopped || past(KernelEnv.now()) { false } else { KernelEnv.block(deadline) };
         let timed_out = past(KernelEnv.now());
-        let r = match with_pi_key(key, word, |b| ops.lock_pi_finish(b, me, timed_out)) {
-            None => return -(pf::ENOMEM as i64),
-            Some(r) => r,
-        };
+        let Some(r) = pi_finish(ops, key, word, me, timed_out) else { return -(pf::ENOMEM as i64) };
         if r == -pf::EINTR && !refused && !stopped && !KernelEnv.stopped() {
             continue;
         }
@@ -398,16 +434,22 @@ pub fn canary_requeue_pi_no_proxy() {
 /// requeue-PI took it), `-ETIMEDOUT`, `-EINTR`, `-EFAULT`, `-EDEADLK`
 /// and `LOCK_PI`'s other answers; `-EINVAL` when `from == to`, `-ENOSYS`
 /// while `FUTEX_PI` is n or nothing is registered.
-pub fn wait_requeue_pi(look: Look, to: Key, expected: u32, deadline: Option<u64>, to_word: &dyn PiWord) -> i64 {
+pub fn wait_requeue_pi(
+    look: Look, settle: Settle, to: Key, expected: u32, deadline: Option<u64>, to_word: &dyn PiWord,
+) -> i64 {
     use azos_sync::pi_futex::{self as pf, PiCmd};
     if !pf::ENABLED || pf::ops().is_none() {
         return -ENOSYS;
     }
-    // `from == to` is refused under the lock, by the look's key. The caller
-    // read the user word once before, as for [`wait`].
+    // `from == to` is refused under the lock, by the look's key.
     let tid = crate::scheduler::current_task_tid();
     let until = deadline.unwrap_or(u64::MAX);
-    let r = ft::wait_requeue_pi_key(&KernelEnv, tid, look, to, expected, until);
+    let r = loop {
+        match ft::wait_requeue_pi_key(&KernelEnv, tid, look, to, expected, until) {
+            WaitResult::Fault if settle() => {}
+            r => break r,
+        }
+    };
     if r == WaitResult::Proxied {
         // Enqueued on `to` by proxy while it slept: whatever woke it, finish
         // the lock there (owner, heir of an exited owner, or leave the graph
@@ -415,8 +457,7 @@ pub fn wait_requeue_pi(look: Look, to: Key, expected: u32, deadline: Option<u64>
         let Some(ops) = pf::ops() else { return -ENOSYS };
         let Some(me) = crate::scheduler::current_slot() else { return -(pf::ESRCH as i64) };
         let past = until != u64::MAX && KernelEnv.now() >= until;
-        let fin = with_pi_key(to, to_word, |b| ops.lock_pi_finish(b, me as TaskId, past));
-        match fin {
+        match pi_finish(ops, to, to_word, me as TaskId, past) {
             None => return -(pf::ENOMEM as i64),
             Some(e) if e == -pf::EINTR && !KernelEnv.stopped() => {}
             Some(e) => return e as i64,
@@ -424,14 +465,7 @@ pub fn wait_requeue_pi(look: Look, to: Key, expected: u32, deadline: Option<u64>
     }
     match r {
         WaitResult::PiOwner => 0,
-        WaitResult::Requeued | WaitResult::Proxied => {
-            let cmd = PiCmd::Lock { deadline };
-            let r = pi_call_key(to, to_word, cmd);
-            if r == -EFAULT && to_word.fault_in() {
-                return pi_call_key(to, to_word, cmd);
-            }
-            r
-        }
+        WaitResult::Requeued | WaitResult::Proxied => pi_call_key(to, to_word, PiCmd::Lock { deadline }),
         // Woken without a requeue-PI (Linux: -EWOULDBLOCK).
         WaitResult::Woken => -EAGAIN,
         r => errno(r),
@@ -449,7 +483,7 @@ pub fn wait_requeue_pi(look: Look, to: Key, expected: u32, deadline: Option<u64>
 /// were taken (Linux: woken + requeued), `-EAGAIN` (cmpval), `-EINVAL`
 /// (a waiter is plain or bound elsewhere; `from == to`), `-EFAULT`,
 /// `-ENOSYS` while `FUTEX_PI` is n or nothing is registered.
-pub fn cmp_requeue_pi(look: Look, to: Key, nr_requeue: u32, cmpval: u32, to_word: &dyn PiWord) -> i64 {
+pub fn cmp_requeue_pi(look: Look, settle: Settle, to: Key, nr_requeue: u32, cmpval: u32, to_word: &dyn PiWord) -> i64 {
     use azos_sync::pi_futex as pf;
     use ft::RequeuePiError as E;
     if !pf::ENABLED || pf::ops().is_none() {
@@ -480,19 +514,16 @@ pub fn cmp_requeue_pi(look: Look, to: Key, nr_requeue: u32, cmpval: u32, to_word
         t.pi_put(to, entry);
         r
     };
-    let mut retried = false;
     loop {
         return match ft::requeue_pi_key(&KernelEnv, look, to, n, cmpval, plain, &mut proxy, &mut enqueue) {
             Ok(k) => k as i64,
+            // Neither was taken with anything done: settle with the lock
+            // dropped and run again.
+            Err(E::Fault) if settle() => continue,
             Err(E::Fault) => -EFAULT,
             Err(E::ValueChanged) => -EAGAIN,
             Err(E::Invalid) => -EINVAL,
-            // The PI word's page faulted under the lock: fault it in with
-            // the lock dropped and run once more (nothing was taken).
-            Err(E::Pi(e)) if e == -pf::EFAULT && !retried && to_word.fault_in() => {
-                retried = true;
-                continue;
-            }
+            Err(E::Pi(e)) if e == -pf::EFAULT && to_word.fault_in() => continue,
             Err(E::Pi(e)) => e as i64,
         };
     }
@@ -513,17 +544,11 @@ impl azos_sync::pi_futex::PiTable for FutexPiTable {
         }
         let word = UserWord(uaddr);
         // Fault outside the lock: an unreadable word never reaches the table.
-        if word.read().is_err() {
+        if crate::UserPtr::<u32>::new(uaddr).read().is_err() {
             return -EFAULT;
         }
         let Some(key) = private_key(uaddr) else { return -EFAULT };
-        let r = pi_call_key(key, &word, cmd);
-        // A copy-on-write (or untouched) page: the CAS under the lock does
-        // not fault; break it here, lock dropped, and retry once.
-        if r == -EFAULT && crate::process::fault_in_user_writable(uaddr as usize) {
-            return pi_call_key(key, &word, cmd);
-        }
-        r
+        pi_call_key(key, &word, cmd)
     }
 
     fn owner_died(&self, proc_id: u32, uaddr: u64, dead: TaskId) -> Option<bool> {
@@ -532,8 +557,10 @@ impl azos_sync::pi_futex::PiTable for FutexPiTable {
         // A shm word is keyed by its region (owner decision 10-10), resolved
         // here, before the table lock: TABLE is never held over MEMOBJS
         // here. The walk runs in the dying task's space, so the word is
-        // still reached through `uaddr` (shm pages are never copy-on-write).
+        // still reached through `uaddr`, faulted in here: its accesses under
+        // the lock fault nothing in.
         let key = robust_key(proc_id, uaddr);
+        word.fault_in();
         // `Ok(None)` is both "nobody waits: the word is now OWNER_DIED" and
         // "the word is not the dead task's": the word itself tells them apart.
         let r = with_pi_key(key, &word, |b| {

@@ -63,6 +63,7 @@ memobj-purge-locked-canary = []
 # (the frame may change owner under it), and a new mapping leaves a cached
 # "no mapping" answer standing.
 memobj-word-unlocked-canary = []
+memobj-word-spin-canary = []
 memobj-resolve-stale-canary = []
 # Front memobj-multihart: the futex paths' lookups hold the region table for
 # a few thousand spins more, a lock that serialises futex calls. Its user is

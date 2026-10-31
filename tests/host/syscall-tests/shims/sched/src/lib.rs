@@ -456,6 +456,17 @@ pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool 
     azos_mm::uaccess::copy_in(user_pt, kernel_dst, user_src, len)
 }
 
+/// As [`copy_from_user`]: the resident read is the real `azos_mm::uaccess::copy_in_resident`.
+pub fn copy_from_user_resident(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool {
+    if user_src.checked_add(len).is_none() { return false; }
+    let user_pt = current_user_pt();
+    if user_pt == 0 {
+        unsafe { core::ptr::copy_nonoverlapping(user_src as *const u8, kernel_dst, len); }
+        return true;
+    }
+    azos_mm::uaccess::copy_in_resident(user_pt, kernel_dst, user_src, len) == len
+}
+
 /// Transcribed from `crates/core/sched/src/process.rs`. It uses the PROBE, not `translate_user(.., true)`:
 /// asking whether a write would be permitted must not break a COW page, which
 /// is what production does since owner decision 100c.
@@ -1433,12 +1444,18 @@ pub mod futex {
     /// a word that holds `expected` is "woken" at once (0). The call is
     /// recorded with the key the look gave, the key the row would be filed
     /// under.
-    pub fn wait(look: Look, expected: u32, deadline: Option<u64>) -> i64 {
+    pub fn wait(look: Look, settle: &dyn Fn() -> bool, expected: u32, deadline: Option<u64>) -> i64 {
         let before = *BEFORE_SECTION.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(f) = before {
             f();
         }
-        let Some((key, v)) = look() else { return -14 };
+        let (key, v) = loop {
+            match look() {
+                Some(l) => break l,
+                None if settle() => {}
+                None => return -14,
+            }
+        };
         CALLS.lock().unwrap_or_else(|e| e.into_inner()).push(Call { is_wait: true, key, arg: expected, deadline });
         if v != expected { -11 } else { 0 }
     }

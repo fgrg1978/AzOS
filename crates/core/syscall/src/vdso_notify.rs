@@ -185,34 +185,60 @@ pub fn futex_look(uaddr: u64, shared: bool) -> Option<(azos_sched::futex::Key, u
     use azos_sched::futex::Key;
     if shared {
         let tid = azos_sched::current_proc_tid();
-        let shm = azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, false, |obj, off, w| {
+        let shm = azos_ipc::memobj::memobj_try_with_mapped_word(tid, uaddr as usize, false, |obj, off, w| {
             (Key::Shared { obj, offset: off as u32 }, w.load(Ordering::Acquire))
         });
-        if shm.is_some() {
-            return shm;
+        match shm {
+            Ok(Some(l)) => return Some(l),
+            Ok(None) => {}
+            Err(_) => return None,
         }
     }
     let key = azos_sched::futex::private_key(uaddr)?;
-    azos_sched::UserPtr::<u32>::new(uaddr).read().ok().map(|v| (key, v))
+    let word = azos_sched::UserPtr::<u32>::new(uaddr);
+    // Canary `futex-look-faults-canary`: the look faults the page in under the
+    // table lock.
+    let v = if cfg!(feature = "futex-look-faults-canary") { word.read() } else { word.read_resident() };
+    v.ok().map(|v| (key, v))
+}
+
+/// [`futex_look`] answered `None`: with no lock held, wait for the region
+/// table and fault the page in. `false` when the word cannot be read at all
+/// (`azos_sched::futex::Settle`).
+pub fn futex_settle(uaddr: u64) -> bool {
+    azos_ipc::memobj::memobj_wait_unlocked();
+    azos_sched::futex::private_key(uaddr).is_some() && azos_sched::UserPtr::<u32>::new(uaddr).read().is_ok()
 }
 
 /// Run `f` on the shm futex word at `uaddr` (process `tid`'s mapping) while it
 /// is still the word of `key`, the (region, offset) an earlier lookup gave
 /// the operation's key: with the region table held across `f`, as
 /// [`azos_ipc::memobj::memobj_with_mapped_word`] (and its `write` checks).
-/// `None` when the mapping at `uaddr` now names another word, or none: a PI
-/// step under its key's table hold reads and swaps that key's word or
-/// nothing, never the word of a region mapped there since.
+/// `None` when the mapping at `uaddr` now names another word, or none, or the
+/// region table is busy ([`keyed_shm_word_settle`] tells them apart with no
+/// lock held): a PI step under its key's table hold reads and swaps that key's
+/// word or nothing, never the word of a region mapped there since.
 ///
 /// Canary `futex-key-outside-canary`: the identity is not checked.
 pub fn with_keyed_shm_word<R>(
     tid: u32, uaddr: u64, key: (u32, usize), write: bool, f: impl FnOnce(&core::sync::atomic::AtomicU32) -> R,
 ) -> Option<R> {
     let any = cfg!(feature = "futex-key-outside-canary");
-    azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, write, |obj, off, w| {
+    azos_ipc::memobj::memobj_try_with_mapped_word(tid, uaddr as usize, write, |obj, off, w| {
         (any || (obj, off) == key).then(|| f(w))
     })
+    .ok()
     .flatten()
+    .flatten()
+}
+
+/// A [`with_keyed_shm_word`] that answered `None` under the futex table, with
+/// no lock held: can it succeed if tried again? `false` when the mapping at
+/// `uaddr` names another word or none, or (for `write`) is not writable.
+pub fn keyed_shm_word_settle(tid: u32, uaddr: u64, key: (u32, usize), write: bool) -> bool {
+    let any = cfg!(feature = "futex-key-outside-canary");
+    azos_ipc::memobj::memobj_with_mapped_word(tid, uaddr as usize, write, |obj, off, _| any || (obj, off) == key)
+        == Some(true)
 }
 
 /// One read of the futex word at `uaddr` through the caller's own mapping
@@ -254,7 +280,7 @@ pub fn sys_futex_wait(uaddr: u64, expected: u64, timeout_ns: u64) -> i64 {
     // value from the look inside it.
     let early = if cfg!(feature = "futex-key-outside-canary") { futex_word(uaddr).ok().map(|w| w.0) } else { None };
     let look = || futex_look(uaddr, true).map(|(k, v)| (early.unwrap_or(k), v));
-    azos_sched::futex::wait(&look, expected as u32, deadline)
+    azos_sched::futex::wait(&look, &|| futex_settle(uaddr), expected as u32, deadline)
 }
 
 /// `SYS_FUTEX_WAKE`: `a0 = uaddr`, `a1 = n`. Wakes up to `n` waiters on the

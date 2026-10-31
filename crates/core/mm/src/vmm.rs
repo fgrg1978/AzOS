@@ -1633,6 +1633,7 @@ pub fn translate(pt_phys: usize, vaddr: usize) -> Option<usize> {
 /// Returns the physical address on success, `None` on any permission failure
 /// or unmapped page. Never panics.
 pub fn translate_user(pt_phys: usize, vaddr: usize, write: bool) -> Option<usize> {
+    azos_sync::lockdep::might_sleep("user page fault-in");
     match user_leaf(pt_phys, vaddr) {
         Some((pte, mask)) => user_leaf_ok(pt_phys, vaddr, pte, mask, write),
         // A tail call with the caller's own arguments: nothing stays live

@@ -1687,6 +1687,19 @@ pub fn copy_from_user(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool 
     azos_mm::uaccess::copy_in(user_pt, kernel_dst, user_src, len)
 }
 
+/// [`copy_from_user`] that never faults a page in: `true` only when every byte
+/// was resident and readable. Takes no lock and allocates nothing.
+pub fn copy_from_user_resident(kernel_dst: *mut u8, user_src: usize, len: usize) -> bool {
+    if user_src.checked_add(len).is_none() { return false; }
+    let user_pt = crate::scheduler::current_user_pt();
+    if user_pt == 0 {
+        if !kernel_ctx_addr_ok(user_src, len, "copy_from_user_resident") { return false; }
+        unsafe { core::ptr::copy_nonoverlapping(user_src as *const u8, kernel_dst, len); }
+        return true;
+    }
+    azos_mm::uaccess::copy_in_resident(user_pt, kernel_dst, user_src, len) == len
+}
+
 /// Copy `len` bytes FROM kernel buffer `kernel_src` INTO user virtual address `user_dst`.
 ///
 /// Each destination page is validated via [`vmm::translate_user`] with

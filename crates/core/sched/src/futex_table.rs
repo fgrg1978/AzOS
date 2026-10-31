@@ -53,8 +53,8 @@
 //!
 //! The check and the filing are one hold, with nothing in between: the look
 //! at the word ([`Look`]: its key AND its value; for a word of a shm region
-//! `memobj_with_mapped_word` takes the region table inside this hold, order
-//! TABLE, then MEMOBJS), the comparison with `expected`, and the row, filed
+//! `memobj_try_with_mapped_word` tries the region table inside this hold, never
+//! spinning on it), the comparison with `expected`, and the row, filed
 //! under the key that same look gave. So are a requeue's compare and move
 //! (its source key from its look), and each PI step's reads, swap and state
 //! change (`futex::with_pi_key`). The host test
@@ -64,7 +64,12 @@
 //! loses that wake.
 //!
 //! The lock is only taken with `lock_irqsave`: a kernel producer may wake a
-//! shared key from an interrupt (`vdso_notify::notify_wake_kernel`).
+//! shared key from an interrupt (`vdso_notify::notify_wake_kernel`). So a holder
+//! waits for nothing that runs with interrupts on: it faults no user page in
+//! (allocation, I/O, TLB shootdowns) and does not spin on the region table,
+//! whose holder may be the hart whose interrupt is spinning on this lock. An
+//! access that cannot be made now answers as a fault, and its call settles
+//! with the lock dropped (`futex::Settle`, `PiWord::fault_in`).
 
 use azos_sync::SpinLock;
 
@@ -694,7 +699,8 @@ pub trait FutexEnv {
 
 /// A futex word as one operation sees it, in ONE look (front
 /// futex-single-section): its key and its value, `None` when it cannot be
-/// read. Called with the table locked. For a word of a shm region the key is
+/// read now. Called with the table locked: it faults nothing in and takes no
+/// lock it would spin on. For a word of a shm region the key is
 /// (region, offset) and both come from one look at the caller's mapping, so
 /// the key a waiter is filed under is always the key of the word whose value
 /// it checked, whatever the mapping at the address becomes meanwhile (a key
