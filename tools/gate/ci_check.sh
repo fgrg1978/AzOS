@@ -5400,6 +5400,9 @@ par "aarch64 abitest" aarch64_abitest_row
 # got there.
 sdktest_judge() { # sdktest_judge <log> <PASS|CANARY> <trap ERE>
     local log="$1" expect="$2" trap_re="$3" why="" n ok_lines
+    # Under the canary the program dies of the memory it is refused (a user
+    # fault on x86_64): only a kernel panic is a boot that proves nothing.
+    [ "$expect" = CANARY ] && trap_re='KERNEL PANIC'
     if grep -aqE "KERNEL PANIC|$trap_re" "$log" 2>/dev/null; then
         why="$(grep -aE "KERNEL PANIC|$trap_re" "$log" | tr -d '\r' | sed -n 1p)"
     fi
