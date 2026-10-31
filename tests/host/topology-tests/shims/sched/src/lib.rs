@@ -80,6 +80,18 @@ pub fn shim_clear_stale() {
     with(|p| p.stale_once = None);
 }
 
+static SERVER_WAKES: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// The wake of a server parked in its accept: recorded.
+pub fn wake_fast_ipc_server(server_tid: u32) {
+    SERVER_WAKES.lock().unwrap_or_else(|e| e.into_inner()).push(server_tid);
+}
+
+/// The servers woken since the last call, in order.
+pub fn shim_take_server_wakes() -> Vec<u32> {
+    std::mem::take(&mut *SERVER_WAKES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Translate a TID to a task-pool slot index.
 pub fn idx_for_tid(tid: u32) -> Option<usize> {
     with(|p| {

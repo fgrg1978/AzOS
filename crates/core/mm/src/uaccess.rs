@@ -555,6 +555,9 @@ fn copy_in_pages(pt: usize, dst: *mut u8, va: usize, len: usize) -> bool {
 /// profiler, the crash dump). Stops at the first page that is not resident
 /// and readable; the bytes copied.
 pub fn copy_in_resident(pt: usize, dst: *mut u8, va: usize, len: usize) -> usize {
+    if small(va, len) {
+        return if copy_small(pt, va, dst, len, false).is_some() { len } else { 0 };
+    }
     let mut done = 0;
     while done < len {
         let Some(at) = va.checked_add(done) else { break };
