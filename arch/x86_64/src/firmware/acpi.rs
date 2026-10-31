@@ -670,11 +670,14 @@ pub fn parse_dmar(t: &[u8], out: &mut Dmar) {
             // RMRR: segment @6, base @8, limit @16 (inclusive).
             (1, 24..) => {
                 let (base, limit) = (le64(e, 8), le64(e, 16));
-                if limit < base {
-                    out.malformed += 1;
-                } else if out.n_rmrr < MAX_IOMMU_REGIONS {
-                    out.rmrr[out.n_rmrr] = DmaRegion { segment: le16(e, 6), base, len: limit - base + 1 };
+                // A table is firmware's word: a region of the whole address
+                // space (0..=u64::MAX) has a length no u64 holds, and is refused.
+                let len = limit.checked_sub(base).and_then(|d| d.checked_add(1));
+                if let Some(len) = len.filter(|_| out.n_rmrr < MAX_IOMMU_REGIONS) {
+                    out.rmrr[out.n_rmrr] = DmaRegion { segment: le16(e, 6), base, len };
                     out.n_rmrr += 1;
+                } else if len.is_none() {
+                    out.malformed += 1;
                 } else {
                     out.skipped += 1;
                 }
@@ -776,8 +779,13 @@ pub fn parse_ivrs(t: &[u8], out: &mut Ivrs) {
             }
             // IVMD 0x20 (all), 0x21 (select), 0x22 (range): start @16, length @24.
             (0x20..=0x22, 32..) => {
-                if out.n_ivmd < MAX_IOMMU_REGIONS {
-                    out.ivmd[out.n_ivmd] = DmaRegion { segment: 0, base: le64(e, 16), len: le64(e, 24) };
+                let (base, len) = (le64(e, 16), le64(e, 24));
+                // A region that runs past the end of the address space is
+                // refused, as a DMAR's.
+                if base.checked_add(len).is_none() {
+                    out.malformed += 1;
+                } else if out.n_ivmd < MAX_IOMMU_REGIONS {
+                    out.ivmd[out.n_ivmd] = DmaRegion { segment: 0, base, len };
                     out.n_ivmd += 1;
                 } else {
                     out.skipped += 1;

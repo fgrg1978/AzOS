@@ -216,6 +216,24 @@ fn the_ivrs_lists_units_and_unity_regions() {
     assert_eq!((v.n_units, v.malformed), (0, 1));
 }
 
+/// A region whose length cannot be held, from a table that is firmware's word,
+/// is refused and counted, never stored: an RMRR over the whole address space
+/// (base 0, limit u64::MAX) has no u64 length, and an IVMD that runs past the
+/// end of it has no end. **Canary.** Back to `limit - base + 1` and an
+/// unchecked IVMD: the RMRR wraps to a zero-length region (a panic where the
+/// build checks overflow) and the IVMD is stored.
+#[test]
+fn a_region_that_overflows_the_address_space_is_refused() {
+    let mut d = Dmar::EMPTY;
+    acpi::parse_dmar(&dmar_table(38, 0, &[rmrr(0, 0, u64::MAX), rmrr(0, 0x1000, 0x1FFF)]), &mut d);
+    assert_eq!((d.n_rmrr, d.malformed), (1, 1), "only the sane region is kept");
+    assert_eq!((d.rmrr()[0].base, d.rmrr()[0].len), (0x1000, 0x1000));
+    let mut v = Ivrs::EMPTY;
+    acpi::parse_ivrs(&ivrs_table(0, &[ivmd(0x20, u64::MAX - 0xFF, 0x1000), ivmd(0x22, 0x7000_0000, 0x4000)]), &mut v);
+    assert_eq!((v.ivmd().len(), v.malformed), (1, 1), "only the sane region is kept");
+    assert_eq!((v.ivmd()[0].base, v.ivmd()[0].len), (0x7000_0000, 0x4000));
+}
+
 // ── the walk, end to end ────────────────────────────────────────────────────
 
 struct Mem(Vec<(u64, Vec<u8>)>);
