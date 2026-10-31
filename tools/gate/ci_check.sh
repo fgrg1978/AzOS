@@ -11452,6 +11452,11 @@ host_job host_canary_row "elf: x86 entry alignment canary (host)" sched-wake-tes
     an_entry_off_the_instruction_alignment_is_accepted_on_x86_only
 host_job host_canary_row "elf: mid-page copy canary (host)" sched-wake-tests elf-page-copy-canary \
     a_segment_that_starts_mid_page_is_copied_to_its_offset_in_the_page
+# `elf-fill-canary`: the streamed fill walks every `PT_LOAD` header itself, so a
+# segment with no memory (skipped by the walk, nothing mapped) still receives
+# its file bytes.
+host_job host_canary_row "elf: fill without memory canary (host)" sched-wake-tests elf-fill-canary \
+    a_segment_without_memory_receives_no_file_bytes
 # QoS timer tolerance: `qos-rt-slack-canary` gives the stop, deadline and
 # real-time classes the fair class's timer slack: the policy test in
 # sched-policy-tests (`sc::timer_slack_us`) must fail. Its in-kernel twin is
@@ -14527,8 +14532,9 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
     # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
     # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
-    KTEST_N_RV=129
-    KTEST_N_ARM=133
+    # +1 kheap_irq_token_follows_the_interrupt_state -> 130, arm 134.
+    KTEST_N_RV=130
+    KTEST_N_ARM=134
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15296,7 +15302,8 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
     # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
     # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
-    KTEST_N_X86=135
+    # +1 kheap_irq_token_follows_the_interrupt_state, as on rv and arm -> 136.
+    KTEST_N_X86=136
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16315,6 +16322,8 @@ PY
     par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" ""
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
+    par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
+    par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).

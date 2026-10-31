@@ -59,16 +59,23 @@ fn me() -> usize { ARCH.hart_id().wrapping_add(1) }
 
 /// Whether the token from `disable_all` says interrupts were enabled. The
 /// encoding is the ISA's: `sstatus.SIE` set on riscv64, `DAIF.I` clear on
-/// aarch64 (the bits `restore` writes back).
+/// aarch64, `RFLAGS.IF` set on x86_64 (the bits `restore` writes back).
 #[inline(always)]
 fn token_on(t: u64) -> bool {
     #[cfg(target_arch = "riscv64")]
     { t & azos_arch::cpu::SSTATUS_SIE as u64 != 0 }
     #[cfg(target_arch = "aarch64")]
     { t & azos_arch::sysregs::DAIF_I == 0 }
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    { t & azos_arch::cpu::RFLAGS_IF != 0 || cfg!(feature = "kheap-token-canary") }
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", all(target_arch = "x86_64", target_os = "none"))))]
     { let _ = t; true }
 }
+
+/// [`token_on`] of a token [`irq_off`] returned: did that call find interrupts
+/// enabled. The slab asks it inside its masked window, and an interrupt-context
+/// allocation (the answer is no) never restores them around a backing-heap call.
+pub fn irq_was_on(t: usize) -> bool { token_on(t as u64) }
 
 /// Run `f` on the heap under its lock, owner recorded, deferred frees
 /// drained first. `None` when this hart already holds the lock (an
@@ -214,7 +221,7 @@ unsafe impl Backing for KBacking {
     #[inline(always)]
     fn irq_restore(&self, t: usize) { irq_restore(t) }
     #[inline(always)]
-    fn was_on(&self, t: usize) -> bool { token_on(t as u64) }
+    fn was_on(&self, t: usize) -> bool { irq_was_on(t) }
     #[inline(always)]
     // percpu-hint: the slab calls it inside its irq_off window
     fn cpu(&self) -> usize { ARCH.hart_id() }

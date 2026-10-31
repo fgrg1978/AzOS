@@ -1646,3 +1646,28 @@ azos_ktest::ktest_late! {
         Ok(())
     }
 }
+
+// The heap's interrupt token (`azos_mm::kheap::irq_off`) says whether interrupts
+// were on when it was taken: a token taken with them masked says no, on every
+// ISA. The slab reads it to leave an interrupt-context allocation masked around
+// the backing heap. Canary `kheap-token-canary` (x86_64): always yes.
+azos_ktest::ktest_late! {
+    fn kheap_irq_token_follows_the_interrupt_state() {
+        use azos_arch::Interrupts;
+        use azos_mm::kheap::{irq_off, irq_restore, irq_was_on};
+        let enabled = azos_arch::ARCH.interrupts_enabled();
+        let outer = irq_off();
+        let outer_says = irq_was_on(outer);
+        let inner = irq_off();
+        let inner_says = irq_was_on(inner);
+        irq_restore(inner);
+        irq_restore(outer);
+        if outer_says != enabled {
+            Err("the token does not say whether interrupts were enabled when it was taken")
+        } else if inner_says {
+            Err("a token taken with interrupts masked says they were enabled")
+        } else {
+            Ok(())
+        }
+    }
+}
