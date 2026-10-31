@@ -611,12 +611,10 @@ pub fn fill_elf_segments(
     read: &mut dyn FnMut(usize, &mut [u8]) -> usize,
     hasher: &mut azos_crypto::sha256::Sha256,
 ) -> bool {
-    if hdr.len() < 64 || buf.is_empty() {
+    let Some(header) = elf_bounds::parse_header(hdr, EXPECTED_MACHINE) else { return false };
+    if buf.is_empty() {
         return false;
     }
-    let e_phoff = r64(hdr, 32) as usize;
-    let e_phentsize = r16(hdr, 54) as usize;
-    let e_phnum = r16(hdr, 56) as usize;
     let mut off = 0usize;
     while off < file_len {
         let want = buf.len().min(file_len - off);
@@ -626,35 +624,23 @@ pub fn fill_elf_segments(
         }
         let chunk = &buf[..n];
         hasher.update(chunk);
-        for i in 0..e_phnum {
-            let ph = e_phoff + i * e_phentsize;
-            if ph + 56 > hdr.len() || r32(hdr, ph) != PT_LOAD {
-                continue;
+        // The segments the loader mapped, by the walk that mapped them.
+        let filled = elf_bounds::fill_runs(hdr, file_len, header, image_params(), off, n, |page, in_page, src, len| {
+            let Some(phys) = vmm::translate_user(user_pt, page, false) else { return false };
+            // SAFETY: `phys` is a frame `load_elf_hdr` mapped for this
+            // segment in an address space no task runs on yet; it is
+            // reached through the kernel's own mapping of RAM.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    chunk.as_ptr().add(src),
+                    (azos_mm::addr::phys_to_virt(phys) + in_page) as *mut u8,
+                    len,
+                );
             }
-            let p_offset = r64(hdr, ph + 8) as usize;
-            let p_vaddr = r64(hdr, ph + 16) as usize;
-            let p_filesz = r64(hdr, ph + 32) as usize;
-            // The overlap of this chunk with the segment's file range.
-            let lo = off.max(p_offset);
-            let hi = (off + n).min(p_offset.saturating_add(p_filesz));
-            let mut x = lo;
-            while x < hi {
-                let va = p_vaddr + (x - p_offset);
-                let page = va & !(PAGE_SIZE - 1);
-                let in_page = (PAGE_SIZE - (va - page)).min(hi - x);
-                let Some(phys) = vmm::translate_user(user_pt, page, false) else { return false };
-                // SAFETY: `phys` is a frame `load_elf_hdr` mapped for this
-                // segment in an address space no task runs on yet; it is
-                // reached through the kernel's own mapping of RAM.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        chunk.as_ptr().add(x - off),
-                        (azos_mm::addr::phys_to_virt(phys) + (va - page)) as *mut u8,
-                        in_page,
-                    );
-                }
-                x += in_page;
-            }
+            true
+        });
+        if !filled {
+            return false;
         }
         off += n;
     }

@@ -19,6 +19,7 @@ elf-mixed-page-canary = []
 elf-machine-canary = []
 elf-entry-align-canary = []
 elf-page-copy-canary = []
+elf-fill-canary = []
 
 [[bin]]
 name = "elf_load"

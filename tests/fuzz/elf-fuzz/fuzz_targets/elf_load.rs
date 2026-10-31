@@ -26,7 +26,7 @@
 #[path = "../../../../crates/core/sched/src/elf_bounds.rs"]
 mod elf_bounds;
 
-use elf_bounds::{entry_align, page_copy, page_up, parse_header, ImageParams, PageCopy, SegLimits, SegWalk, EM_AARCH64, EM_RISCV, EM_X86_64};
+use elf_bounds::{entry_align, fill_runs, page_copy, page_up, parse_header, ImageParams, PageCopy, SegLimits, SegWalk, EM_AARCH64, EM_RISCV, EM_X86_64};
 use libfuzzer_sys::fuzz_target;
 
 const PAGE_SIZE: usize = 4096;
@@ -48,9 +48,11 @@ fn walk(elf: &[u8], params: ImageParams) {
     let mut prev_seg_end = 0usize;
     let mut prev_page_end = 0usize;
     let mut entry_in_text = false;
+    let mut accepted = Vec::new();
     for seg in &mut w {
         let Ok(seg) = seg else { return };
         let r = seg.range;
+        accepted.push(seg);
         assert!(r.seg_end >= prev_seg_end, "segments went backwards");
         prev_seg_end = r.seg_end;
         assert!(r.va_start >= LIM.guard_limit && r.va_end <= LIM.low_max && r.va_start < r.va_end);
@@ -79,6 +81,31 @@ fn walk(elf: &[u8], params: ImageParams) {
                 }
             }
             va += PAGE_SIZE;
+        }
+    }
+    // The streamed fill writes file bytes only inside the accepted segments, in
+    // any chunking of the file: never for a `PT_LOAD` that maps no page.
+    for chunk in [64usize, PAGE_SIZE, elf.len()] {
+        let mut off = 0usize;
+        while off < elf.len() {
+            let n = chunk.min(elf.len() - off);
+            let ok = fill_runs(elf, elf.len(), hdr, params, off, n, |page, in_page, src, len| {
+                assert!(len > 0 && in_page + len <= PAGE_SIZE && src + len <= n, "a run leaves its page or its chunk");
+                let at = page + in_page;
+                let file = off + src;
+                assert!(
+                    accepted.iter().any(|s| {
+                        let d = at.wrapping_sub(s.vaddr);
+                        at >= s.range.va_start && at + len <= s.range.va_end
+                            && at >= s.vaddr && at + len <= s.vaddr + s.filesz
+                            && file == s.offset + d
+                    }),
+                    "file bytes at {file:#x} were written to {at:#x}, which no accepted segment's file range holds",
+                );
+                true
+            });
+            assert!(ok, "the fill refused headers the walk accepted");
+            off += n;
         }
     }
     let end = w.finish();

@@ -638,3 +638,63 @@ pub fn page_copy(va: usize, vaddr: usize, offset: usize, filesz: usize, page_siz
         _ => PageCopy::Skipped,
     }
 }
+
+/// The page-bounded runs through which the bytes `chunk_off..chunk_off + chunk_len`
+/// of an image's file reach the segments the loader mapped: `run(page, in_page,
+/// src, len)` for each, `src` an index into the chunk, `page` the page's base
+/// address, `in_page` the offset in it. Only the segments [`SegWalk`] accepted
+/// have runs: a `PT_LOAD` it skipped (`p_memsz == 0`) or refused maps no page,
+/// so no file byte may be written for it, whatever its `p_filesz` says.
+/// `false` when the walk refuses the headers or `run` does.
+///
+/// Used by the streamed fill (`process::fill_elf_segments`) of an image larger
+/// than the exec bounce buffer, after `load_elf_hdr` mapped its pages from the
+/// same headers by the same walk.
+pub fn fill_runs(
+    hdr: &[u8],
+    file_len: usize,
+    header: ElfHeader,
+    params: ImageParams,
+    chunk_off: usize,
+    chunk_len: usize,
+    mut run: impl FnMut(usize, usize, usize, usize) -> bool,
+) -> bool {
+    let page = params.limits.page_size;
+    let mut seg_runs = |vaddr: usize, offset: usize, filesz: usize| -> bool {
+        // The overlap of this chunk with the segment's file range.
+        let lo = chunk_off.max(offset);
+        let hi = chunk_off.saturating_add(chunk_len).min(offset.saturating_add(filesz));
+        let mut x = lo;
+        while x < hi {
+            let va = vaddr.wrapping_add(x - offset);
+            let base = va & !(page - 1);
+            let len = (page - (va - base)).min(hi - x);
+            if !run(base, va - base, x - chunk_off, len) {
+                return false;
+            }
+            x += len;
+        }
+        true
+    };
+    if cfg!(feature = "elf-fill-canary") {
+        // Every `PT_LOAD` header, as the fill walked them on its own.
+        for i in 0..header.phnum {
+            let Some(ph) = i.checked_mul(header.phentsize).and_then(|x| header.phoff.checked_add(x)) else { return false };
+            if ph.checked_add(56).map_or(true, |end| end > hdr.len()) || rd32(hdr, ph) != PT_LOAD {
+                continue;
+            }
+            if !seg_runs(rd64(hdr, ph + 16) as usize, rd64(hdr, ph + 8) as usize, rd64(hdr, ph + 32) as usize) {
+                return false;
+            }
+        }
+        return true;
+    }
+    let mut walk = SegWalk::new(hdr, file_len, header, params);
+    for seg in &mut walk {
+        let Ok(seg) = seg else { return false };
+        if !seg_runs(seg.vaddr, seg.offset, seg.filesz) {
+            return false;
+        }
+    }
+    true
+}

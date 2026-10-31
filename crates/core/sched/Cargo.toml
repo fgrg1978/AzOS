@@ -79,6 +79,9 @@ elf-mixed-page-canary = []
 elf-machine-canary = []
 elf-entry-align-canary = []
 elf-page-copy-canary = []
+# `elf_bounds::fill_runs` (the streamed fill): the canary fills every `PT_LOAD`
+# header's file bytes, including a segment the walk skipped for `p_memsz == 0`.
+elf-fill-canary = []
 # The IPC fast path's claim trusts its `context_saving` read from before its
 # CAS (`task::sched_word::fast_claim`): host row "sched: fast claim stale
 # save canary (host)" must fail.

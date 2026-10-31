@@ -6,7 +6,7 @@
 //! `elf-page-copy-canary` (gate rows).
 
 use super::elf_bounds::{
-    entry_align, page_copy, parse_header, ImageParams, PageCopy, SegLimits, SegReject, SegWalk, WalkReject,
+    entry_align, fill_runs, page_copy, parse_header, ImageParams, PageCopy, SegLimits, SegReject, SegWalk, WalkReject,
     EM_AARCH64, EM_RISCV, EM_X86_64, PT_GNU_STACK, PT_LOAD, PT_NOTE,
 };
 
@@ -192,4 +192,48 @@ fn a_segment_that_starts_mid_page_is_copied_to_its_offset_in_the_page() {
     // Bytes past the blob, or an overflowing source, are skipped.
     assert_eq!(page_copy(0x2000, 0x2800, 0x3000, 0x400, 4096, 0x3100), PageCopy::Skipped);
     assert_eq!(page_copy(0x2000, 0x2000, usize::MAX - 8, 0x400, 4096, usize::MAX), PageCopy::Skipped);
+}
+
+/// The streamed fill writes file bytes only where the walk mapped pages. A
+/// `PT_LOAD` with `p_memsz == 0` maps nothing and is skipped, whatever
+/// `p_filesz` says; its bytes must reach no page, in any chunking of the file.
+/// Canary `elf-fill-canary` (gate row): the fill walks every `PT_LOAD` itself.
+#[test]
+fn a_segment_without_memory_receives_no_file_bytes() {
+    for m in MACHINES {
+        let img = image(m, 0x20_0000, &[
+            (PT_LOAD, RX, 0x1000, 0x20_0000, 0x100, 0x100),
+            // No memory, a page of file bytes, aimed at the vDSO page.
+            (PT_LOAD, RW, 0x1800, 0x01ff_f000, 0x800, 0),
+        ], 0x3000);
+        let hdr = parse_header(&img, m).unwrap();
+        for chunk in [0x40usize, 0x1000, img.len()] {
+            let (mut bytes, mut off) = (0usize, 0usize);
+            while off < img.len() {
+                let n = chunk.min(img.len() - off);
+                assert!(fill_runs(&img, img.len(), hdr, params(m, true), off, n, |page, in_page, src, len| {
+                    assert_eq!(page, 0x20_0000, "a run on page {page:#x}: bytes for a segment that maps none");
+                    assert!(in_page + len <= 0x100 && src + len <= n);
+                    bytes += len;
+                    true
+                }));
+                off += n;
+            }
+            assert_eq!(bytes, 0x100, "chunk {chunk:#x}: exactly the mapped segment's file bytes");
+        }
+    }
+}
+
+/// A run crosses no page, and a segment that starts mid-page fills from there.
+#[test]
+fn fill_runs_split_at_pages_and_start_where_the_segment_does() {
+    let m = EM_X86_64;
+    let img = image(m, 0x20_0800, &[(PT_LOAD, RX, 0x1000, 0x20_0800, 0x1000, 0x1000)], 0x3000);
+    let hdr = parse_header(&img, m).unwrap();
+    let mut runs = Vec::new();
+    assert!(fill_runs(&img, img.len(), hdr, params(m, true), 0, img.len(), |page, in_page, src, len| {
+        runs.push((page, in_page, src, len));
+        true
+    }));
+    assert_eq!(runs, vec![(0x20_0000, 0x800, 0x1000, 0x800), (0x20_1000, 0, 0x1800, 0x800)]);
 }
