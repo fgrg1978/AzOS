@@ -11438,6 +11438,13 @@ printf "  %-26s" "debug tools tests..."
 if dbgt_out="$(python3 "${REPO_ROOT}/tools/dev/test_debug.py" 2>&1)"; then ok
 else bad; printf '%s\n' "$dbgt_out" | grep -E "^(FAIL|ERROR)" | sed 's/^/      /'; fi
 fi; ci_row_end
+# The stall attach tool (tools/dev/stall_attach.py): the stall decision, the watcher's
+# verdicts, a dump of a small ELF against a fake monitor, canaries included. No QEMU.
+if ci_row_begin "stall attach tests"; then
+printf "  %-26s" "stall attach tests..."
+if sat_out="$(python3 "${REPO_ROOT}/tools/dev/test_stall_attach.py" 2>&1)"; then ok
+else bad; printf '%s\n' "$sat_out" | grep -E "^(FAIL|ERROR)" | sed 's/^/      /'; fi
+fi; ci_row_end
 # The generated "Userspace programs" menu (config/Kconfig.userspace): the
 # board defaults are the topology's images, a program directory added or
 # deleted under userspace/ enters or leaves the menu, a console program that
@@ -14400,6 +14407,57 @@ PY
     # boot for a row that needs it (`ktest hold bound, -icount`); the
     # environment's KCONFIG_CONFIG / AARCH64_CONFIG choose the kernel's
     # configuration, as for any `kbuild`.
+    # Stall attach (tools/dev/stall_attach.py). With STALL_WATCH=<ERE of the row's last
+    # console line> a row's QEMU gets a monitor and a gdbstub socket and a watcher: 20 s of
+    # console silence before that line, and the watcher pauses the machine, dumps every
+    # hart, the task table and the interrupt controller twice 10 s apart, next to the log
+    # ($CI_LOG_DIR/stall-<row>.stall-{a,b}.txt). A boot that reaches the line keeps nothing.
+    # STALL_BREAK=1 (canary only) breaks the stall decision. The row calls stall_setup before
+    # it starts QEMU, stall_watch after, stall_settle before it kills QEMU and stall_finish
+    # after; stall_report names the dumps.
+    stall_isa() { case "$1" in rv) echo riscv64 ;; arm) echo aarch64 ;; *) echo x86_64 ;; esac; }
+    stall_elf() { # stall_elf <isa> <image the row boots>: the ELF to symbolize against
+        if [ "$1" = arm ]; then echo "$2.elf"; else echo "$2"; fi
+    }
+    stall_setup() { # stall_setup <isa> <row tag>: fills STALL_ARGS (empty unless STALL_WATCH is set)
+        STALL_ARGS=(); STALL_PID=""; STALL_VERDICT=""
+        [ -n "${STALL_WATCH:-}" ] || return 0
+        STALL_PREFIX="$CI_LOG_DIR/stall-$2"
+        STALL_DIR="$CI_LOG_DIR/st-$(printf '%s' "$2" | cksum | cut -d' ' -f1)"
+        rm -rf "$STALL_DIR"; rm -f "$STALL_PREFIX".stall-*; mkdir -p "$STALL_DIR"
+        STALL_ARGS=($(python3 tools/dev/stall_attach.py args --isa "$(stall_isa "$1")" --dir "$STALL_DIR"))
+    }
+    stall_watch() { # stall_watch <isa> <elf> <console log> <qemu pid>
+        [ -n "${STALL_WATCH:-}" ] || return 0
+        # The aarch64 linker script drops the ELF's DWARF: the layouts come from the scheduler's rlib.
+        python3 tools/dev/stall_attach.py watch --isa "$(stall_isa "$1")" --elf "$2" --log "$3" --pid "$4" \
+            --dir "$STALL_DIR" --marker "$STALL_WATCH" --out "$STALL_PREFIX" ${STALL_BREAK:+--canary-never-stall} \
+            $([ "$1" = arm ] && echo "--dwarf-dir $(dirname "$A64_KERNEL_OUT")/deps") \
+            >"$STALL_PREFIX.watch.txt" 2>&1 &
+        STALL_PID=$!
+    }
+    stall_settle() { # a dump in progress must finish before QEMU is killed
+        local i=0
+        [ -n "$STALL_PID" ] || return 0
+        while [ -e "$STALL_PREFIX.stall-busy" ] && [ "$i" -lt 240 ]; do i=$((i + 1)); sleep 0.5; done
+        return 0
+    }
+    stall_finish() { # QEMU is gone: the watcher writes its verdict and ends
+        local i=0
+        [ -n "$STALL_PID" ] || return 0
+        while kill -0 "$STALL_PID" 2>/dev/null && [ "$i" -lt 40 ]; do i=$((i + 1)); sleep 0.5; done
+        kill -0 "$STALL_PID" 2>/dev/null && kill "$STALL_PID" 2>/dev/null
+        wait "$STALL_PID" 2>/dev/null
+        STALL_PID=""
+        if [ "$(cat "$STALL_PREFIX.stall-verdict" 2>/dev/null)" = stalled ]; then STALL_VERDICT=stalled
+        else rm -f "$STALL_PREFIX.stall-verdict" "$STALL_PREFIX.watch.txt"; fi
+        rm -rf "$STALL_DIR"
+        return 0
+    }
+    stall_report() {
+        [ "${STALL_VERDICT:-}" = stalled ] || return 0
+        echo "      stalled: 20 s of console silence before the marker; state dumped twice: $STALL_PREFIX.stall-a.txt $STALL_PREFIX.stall-b.txt"
+    }
     ktest_row() { # ktest_row <label> <isa: rv|arm> <extra features> <expected not-ok names, space separated> [kernel command line] [ERE the log must match] [disk image target]
         local label="$1" isa="$2" extra="$3" want="$4" n_want=$KTEST_N_RV
         local -a app=(); [ -n "${5:-}" ] && app=(-append "$5")
@@ -14429,17 +14487,20 @@ PY
         fi
         par_ready
         while [ $(qemu_count) -ge 4 ]; do sleep 2; done
+        stall_setup "$isa" "$tag"
         if [ "$isa" = rv ]; then
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} \
-                ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
+                ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} </dev/null >"$log" 2>&1 &
         else
             # Kconfig KTEST_SEMIHOSTING_EXIT: the runner's exit status rides
             # on semihosting SYS_EXIT (PSCI SYSTEM_OFF has none).
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} -nographic \
                 -semihosting-config enable=on,target=native \
-                -kernel "$kimg" ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} </dev/null >"$log" 2>&1 &
+                -kernel "$kimg" ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
+        if [ "$isa" = rv ]; then stall_watch "$isa" "$kimg" "$log" "$pid"
+        else stall_watch "$isa" "$([ -n "${KTEST_KERNEL:-}" ] && echo "$KTEST_KERNEL.elf" || echo "$A64_KERNEL")" "$log" "$pid"; fi
         # The runner powers the machine off; the wait is only a backstop (the
         # late tests take about a minute together).
         while [ "$i" -lt 600 ] && kill -0 "$pid" 2>/dev/null; do i=$((i + 1)); sleep 0.5; done
@@ -14450,8 +14511,10 @@ PY
         # fails it (a failed run that exits 0 was seen once in ~7 runs on
         # riscv64, when OpenSBI's shutdown overwrote the finisher's 1).
         local qrc=timeout
+        stall_settle
         if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         else wait "$pid" 2>/dev/null; qrc=$?; fi
+        stall_finish
         rm -f "$kimg" ${dimg:+"$dimg"}
         tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
         local plan why="" k name got
@@ -14495,6 +14558,7 @@ PY
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
         echo "      log kept: $log"
+        stall_report
     }
     par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
     par "ktest (arm)" ktest_row "ktest (arm)" arm "" ""
@@ -15111,19 +15175,23 @@ PY
         x86_kernel_check "$img" || return 1
         while [ $(qemu_count) -ge 4 ]; do sleep 2; done
         : >"$log"   # exists before the first poll reads it
+        stall_setup x86 "$(basename "$log" .log)"
         qemu-system-x86_64 -M "${X86_MACHINE:-microvm}" -cpu "${X86_CPU:-max}" -m 256M -nographic -no-reboot \
-            -device isa-debug-exit,iobase=0xf4,iosize=0x04 "$@" -kernel "$img" </dev/null >"$log" 2>&1 &
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 "$@" ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} -kernel "$img" </dev/null >"$log" 2>&1 &
         local pid=$!
+        stall_watch x86 "$img" "$log" "$pid"
         while [ "$i" -lt $((secs * 2)) ] && kill -0 "$pid" 2>/dev/null; do
             [ -n "$stop" ] && tr -d '\r' <"$log" | grep -aqE "$stop" && break
             i=$((i + 1)); sleep 0.5
         done
         X86_QRC=stopped
+        stall_settle
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null; sleep 2; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         else
             wait "$pid" 2>/dev/null; X86_QRC=$?
         fi
+        stall_finish
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
         return 0   # only a refused kernel returns 1: its callers stop on it
     }
@@ -16023,6 +16091,7 @@ PY
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
         echo "      log kept: $log"
+        stall_report
     }
     par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
     # S6: the same ktests on an AMD model with SVM on (TCG runs VMRUN). Under `-cpu max`
@@ -22391,7 +22460,9 @@ PYEOF
                 make_disk "$AZOS_OUT/build/disk-aarch64-$dsk.img"
             fi
             [ -f "$img" ] || cp "$AZOS_OUT/build/disk-aarch64-$dsk.img.pristine" "$img"; cp "${USH_KERNEL:-$A64_IMG}" "$kimg"
+            [ -z "${STALL_WATCH:-}" ] || cp "$([ -n "${USH_KERNEL:-}" ] && echo "$USH_KERNEL.elf" || echo "$A64_KERNEL")" "$kimg.elf"
         fi
+        stall_setup "$isa" "$slug"
         if ! mkfifo "$fifo"; then bad; echo "      mkfifo failed: $fifo"; return; fi
         par_ready   # the wait below happens in the job, not in the gate
         while [ $(qemu_count) -ge 4 ]; do sleep 2; done
@@ -22400,21 +22471,22 @@ PYEOF
             qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot ${USH_QEMU_EXTRA:-} \
                 -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
                 -drive file="$img",if=none,format=raw,id=hd0 \
-                -device virtio-blk-device,drive=hd0 -kernel "$kimg" <"$fifo" >"$log" 2>&1 &
+                -device virtio-blk-device,drive=hd0 ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} -kernel "$kimg" <"$fifo" >"$log" 2>&1 &
         elif [ "$isa" = rv ]; then
             par_ready
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "${USH_SMP:-4}" ${USH_QEMU_EXTRA:-} \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
-                -device virtio-blk-device,drive=hd0 -device virtio-rng-device ${vkbd[@]+"${vkbd[@]}"} <"$fifo" >"$log" 2>&1 &
+                -device virtio-blk-device,drive=hd0 -device virtio-rng-device ${vkbd[@]+"${vkbd[@]}"} ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} <"$fifo" >"$log" 2>&1 &
         else
             par_ready
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${USH_SMP:-2}" ${USH_QEMU_EXTRA:-} -nographic \
                 -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
-                -device virtio-blk-device,drive=hd0 -device virtio-rng-device ${vkbd[@]+"${vkbd[@]}"} <"$fifo" >"$log" 2>&1 &
+                -device virtio-blk-device,drive=hd0 -device virtio-rng-device ${vkbd[@]+"${vkbd[@]}"} ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} <"$fifo" >"$log" 2>&1 &
         fi
         local pid=$! t0 prompts verdict="" line
+        stall_watch "$isa" "$kimg$([ "$isa" = arm ] && echo .elf)" "$log" "$pid"
         exec 8>"$fifo"
         t0=$(date +%s)
         ush_prompts() { grep -ao 'azos\$ ' "$log" 2>/dev/null | wc -l | tr -d ' '; }
@@ -22456,12 +22528,14 @@ PYEOF
             sleep 1
         fi
         # QEMU under `-icount` may ignore SIGTERM: escalate after 2 s at most.
+        stall_settle
         kill "$pid" 2>/dev/null
         local k; for k in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
         kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
         exec 8>&-
-        rm -f "$fifo" "$kimg" "$kimg.features" "$vsock"; [ -n "${USH_IMG:-}" ] || rm -f "$img"
+        stall_finish
+        rm -f "$fifo" "$kimg" "$kimg.elf" "$kimg.features" "$vsock"; [ -n "${USH_IMG:-}" ] || rm -f "$img"
         local missing="" m
         # A marker starting with `re:` is an extended regular expression.
         for m in "$@"; do
@@ -22489,7 +22563,7 @@ PYEOF
         if [ "$verdict" = crash ]; then missing="$missing [kernel crash]"; fi
         if [ "$expect" = FAIL ]; then
             if [ -n "$missing" ] || [ -n "$forbidden" ]; then
-                ok; echo "      canary failed as it must:${missing}${forbidden:+ forbidden: $forbidden}"; rm -f "$log"
+                ok; echo "      canary failed as it must:${missing}${forbidden:+ forbidden: $forbidden}"; stall_report; rm -f "$log"
             else
                 bad; echo "      the canary build passed: the row does not discriminate"; echo "      log kept: $log"
             fi
@@ -22502,6 +22576,7 @@ PYEOF
             [ -n "$missing" ] && echo "      missing:$missing (stopped: ${verdict:-script done})"
             [ -n "$forbidden" ] && echo "      forbidden line printed: $forbidden"
             echo "      log kept: $log"
+            stall_report
         fi
     }
     # Wave 15 (TRACE, static keys): the W^X canary. `trace-wx-canary` makes
@@ -24325,7 +24400,8 @@ x=con; echo bb\$x-ok
             rv)  disk="$AZOS_OUT/build/disk.img"
                  kbuild "$feats" && cp "$KERNEL" "$ks" && kbuild "$KTEST_FEATS" && cp "$KERNEL" "$kt" ;;
             arm) disk="$AZOS_OUT/build/disk-aarch64.img"
-                 a64_kbuild "$feats" && cp "$A64_IMG" "$ks" && a64_kbuild "$KTEST_FEATS" && cp "$A64_IMG" "$kt" ;;
+                 a64_kbuild "$feats" && cp "$A64_IMG" "$ks" && cp "$A64_KERNEL" "$ks.elf" \
+                     && a64_kbuild "$KTEST_FEATS" && cp "$A64_IMG" "$kt" && cp "$A64_KERNEL" "$kt.elf" ;;
             x86) disk="$AZOS_OUT/build/disk-x86_64.img"; feats="$scan"; ks=""; kt="" ;;
         esac
         [ $? = 0 ] && fresh_disk "$disk" || { bad; echo "      the kernels did not build"; rm -f "$ks" "$kt"; return; }
@@ -24335,13 +24411,13 @@ x=con; echo bb\$x-ok
         soak_load $(( iters * 900 + 300 + rounds * 60 ))
         ktest_half() {
             local l="$slug boot $1"
-            if [ "$isa" = x86 ]; then soak_half x86_ktest_row "$l" "" "" "$kcan" "$disk"
-            else KTEST_KERNEL="$kt" soak_half ktest_row "$l" "$isa" "" "" "$kcan" "" "$disk"; fi
+            if [ "$isa" = x86 ]; then STALL_WATCH='^# ktest: [0-9]+ tests' soak_half x86_ktest_row "$l" "" "" "$kcan" "$disk"
+            else STALL_WATCH='^# ktest: [0-9]+ tests' KTEST_KERNEL="$kt" soak_half ktest_row "$l" "$isa" "" "" "$kcan" "" "$disk"; fi
         }
         for ((i = 1; i <= iters; i++)); do
             ktest_half "$i"; r=$?; n=$((n + 1))
             if [ "$r" != 0 ]; then rdk=$((rdk + 1)); fails="$fails$SOAK_OUT"$'\n'; fi
-            USH_KERNEL="$ks" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" \
+            STALL_WATCH='\[POWER\] shutdown by' USH_KERNEL="$ks" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" \
                 soak_half ushell_row "$slug power-off $i" "$isa" "$feats" PASS \
                 "#wait \[OTA\] Boot marked good
 !echo soak-boot >> /fat/BOOTS.LOG
@@ -24352,17 +24428,17 @@ x=con; echo bb\$x-ok
         done
         local -a want=("$rounds $rounds $((2 * rounds))" "$iters $iters $((10 * iters))")
         for ((i = 1; i <= rounds; i++)); do want+=("argv[1]=soak-$i" "after-spin-$i 130"); done
-        USH_KERNEL="$ks" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" \
+        STALL_WATCH="after-spin-$rounds 130" USH_KERNEL="$ks" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" \
             soak_half ushell_row "$slug session" "$isa" "$feats" PASS "$(soak_session "$rounds")" \
             $((120 + rounds * 60)) "${want[@]}"
         r=$?; n=$((n + 1))
         if [ "$r" != 0 ]; then rds=$((rds + 1)); fails="$fails$SOAK_OUT"$'\n'; fi
         soak_load_stop
-        rm -f "$ks" "$kt"
+        rm -f "$ks" "$kt" "$ks.elf" "$kt.elf"
         local load1; load1="$(uptime | sed 's/.*load/load/')"
         if [ -n "$kcan$scan" ]; then
             if [ "$rdk" != 0 ] && [ "$rds" != 0 ]; then
-                ok; echo "      canary failed as it must on both halves"; printf '%s' "$fails" | grep -aE 'not ok [0-9]+ - |missing:|forbidden' | sed -n 1,4p | cut -c1-160
+                ok; echo "      canary failed as it must on both halves"; printf '%s' "$fails" | grep -aE 'not ok [0-9]+ - |missing:|forbidden|stalled:' | sed -n 1,6p | cut -c1-300
                 rm -f "$CI_LOG_DIR/ktest-$slug-"*.log "$CI_LOG_DIR/ush-$slug-"*.log
             else
                 bad; echo "      the canary did not turn both halves red (ktest $rdk, shell $rds): the row does not discriminate"
@@ -24383,6 +24459,66 @@ x=con; echo bb\$x-ok
     par_row -s soak_row "soak (rv)" rv
     par_row -s soak_row "soak (arm)" arm
     par_row -s soak_row "soak (x86)" x86
+
+    # ── Stall attach ────────────────────────────────────────────────────────
+    #
+    # A boot that deliberately never reaches its marker: the console program's prompt is
+    # reached and the script waits for a line nothing prints. After 20 s of silence the
+    # watcher (tools/dev/stall_attach.py) must attach and leave two dumps 10 s apart that
+    # show the state the boot is in: every hart's pc in a kernel symbol, the shell parked
+    # in the task table, the interrupt controller read. This tests the plumbing of the
+    # attach on each ISA; it is not a kernel-side lost wakeup, no kernel build stalls on
+    # purpose. With `broken` the stall decision never fires: the dumps are missing, and the
+    # row is green only if its own check says so.
+    stall_check() { # stall_check <row output>: 0 when it names two dumps that show the provoked state
+        local out="$1" a b ta tb why=""
+        a="$(printf '%s\n' "$out" | sed -n 's/.*dumped twice: \([^ ]*\) \([^ ]*\)$/\1/p' | sed -n 1p)"
+        b="$(printf '%s\n' "$out" | sed -n 's/.*dumped twice: \([^ ]*\) \([^ ]*\)$/\2/p' | sed -n 1p)"
+        if [ -z "$a" ] || [ ! -s "$a" ] || [ ! -s "$b" ]; then echo "no stall dumps named in the row output"; return 1; fi
+        ta="$(sed -n 's/^==== dump a  \([0-9:]*\) .*/\1/p' "$a")"; tb="$(sed -n 's/^==== dump b  \([0-9:]*\) .*/\1/p' "$b")"
+        [ -n "$ta" ] && [ -n "$tb" ] && [ "$(( $(date -j -f %T "$tb" +%s) - $(date -j -f %T "$ta" +%s) ))" -ge 9 ] || why="dumps not 10 s apart ($ta, $tb)"
+        grep -aq '^approximate: this build has no frame pointers' "$a" || why="$why; the dump does not say its backtraces are approximate"
+        [ "$(grep -ac '^hart [0-9]*: pc=' "$a")" -ge 1 ] && ! grep -aq 'not in the kernel image' "$a" || why="$why; a hart pc is not in a kernel symbol"
+        grep -aq '^hart [0-9]*: pc=0x[0-9a-f]* .*+0x[0-9a-f]' "$a" || why="$why; no hart pc was symbolized"
+        grep -aq '^task table (' "$a" && grep -aq 'Blocked' "$a" || why="$why; the task table shows no blocked task"
+        grep -aq '^interrupt controller:' "$a" || why="$why; no interrupt controller state"
+        [ -z "$why" ] && return 0
+        echo "${why#; }"; return 1
+    }
+    stall_row() { # stall_row <label> <rv|arm|x86> [broken]
+        local label="$1" isa="$2" broken="${3:-}" slug out why feats=qemu ks="" rc=0
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/-$//')"
+        ks="$CI_LOG_DIR/$slug-kernel"
+        case "$isa" in
+            rv)  kbuild "$feats" && cp "$KERNEL" "$ks" ;;
+            arm) a64_kbuild "$feats" && cp "$A64_IMG" "$ks" && cp "$A64_KERNEL" "$ks.elf" ;;
+            x86) feats=""; ks="" ;;
+        esac
+        [ $? = 0 ] || { bad; echo "      the kernel did not build"; rm -f "$ks" "$ks.elf"; return; }
+        [ "$isa" = x86 ] || par_ready   # the x86 kernel is built by ushell_row, which releases the gate itself
+        out="$(STALL_WATCH='^no-such-console-line$' STALL_BREAK="$broken" USH_KERNEL="$ks" \
+            ushell_row "$slug boot" "$isa" "$feats" FAIL "#wait no-such-console-line" 120 "no-such-console-line" 2>&1)"
+        rm -f "$ks" "$ks.elf"
+        why="$(stall_check "$out")"; rc=$?
+        # The boot must have run to its end: a row that never started shows no dumps either.
+        printf '%s\n' "$out" | grep -aq 'canary failed as it must' || { rc=2; why="the boot did not run as the canary expects: $(printf '%s\n' "$out" | sed -n '1,3p' | tr '\n' ' ' | cut -c1-200)"; }
+        if [ -z "$broken" ]; then
+            if [ "$rc" = 0 ]; then ok; echo "      silent boot stalled as it must; two dumps show the harts, the task table and the interrupt controller"
+            else bad; echo "      $why"; printf '%s\n' "$out" | sed 's/^/      | /' | sed -n 1,6p; fi
+        else
+            if [ "$rc" = 1 ]; then ok; echo "      with the stall decision broken the row fails as it must: $why"
+            elif [ "$rc" = 0 ]; then bad; echo "      the dumps were taken although the stall decision never fires: the row does not discriminate"
+            else bad; echo "      $why"; fi
+        fi
+    }
+    par_row stall_row "stall attach (rv)" rv
+    par_row stall_row "stall attach (arm)" arm
+    par_row stall_row "stall attach (x86)" x86
+    par_row stall_row "stall attach broken canary (rv)" rv broken
+    par_row stall_row "stall attach broken canary (arm)" arm broken
+    par_row stall_row "stall attach broken canary (x86)" x86 broken
 
     # ── Console login (Kconfig CONSOLE_LOGIN, userspace/services/logind) ────
     #

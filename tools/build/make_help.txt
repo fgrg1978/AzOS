@@ -41,6 +41,10 @@ Run in QEMU
   debug                  `make qemu`, stopped at reset with QEMU's gdbstub on 127.0.0.1:DEBUG_PORT (1234), and the debugger
                          script of the kernel ELF (tools/dev/debug_script.py): gdb on riscv64, lldb on aarch64 and x86_64. Prints the
                          command that starts it. A KASLR-slid kernel needs `azos-slide 0x<base>` (the base the console prints).
+  stall                  `make qemu` under the stall watcher (tools/dev/stall_attach.py), console in build/stall-<isa>/console.log:
+                         20 s of console silence before STALL_MARKER (an ERE, default the console prompt) pauses QEMU, dumps every hart
+                         (pc, stack scan, current task), the task table, ready queues, lock words and interrupt controller, resumes,
+                         and dumps again 10 s later. Exit status 1 on a stall. STALL_LIMIT seconds long (300).
   qemu-smp               riscv64: boot with 4 CPUs.
   qemu-full-smp          riscv64: boot with 4 CPUs, a disk, a network card and hello.elf.
   qemu-rvv               riscv64: boot with vector extension, one CPU.

@@ -107,8 +107,8 @@ ROLES = {
     ],
     "dev": [
         "debug_script.py", "dev_dfu_recovery.sh", "dev_uart.py", "esp32_bridge/", "farm/",
-        "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh", "symbolize_bt.py",
-        "test_debug.py", "test_farm.py", "tftp_serve.py", "worktree_seed.py",
+        "ota_send.py", "perfetto_export.py", "qemu.sh", "qemu_hvf.sh", "run_guest.sh", "stall_attach.py", "symbolize_bt.py",
+        "test_debug.py", "test_farm.py", "test_stall_attach.py", "tftp_serve.py", "worktree_seed.py",
     ],
     "lib": ["azos_tools.py", "out_dir.py", "qemu_count.sh"],
 }
