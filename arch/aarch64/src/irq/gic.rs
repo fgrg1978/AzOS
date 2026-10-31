@@ -769,13 +769,11 @@ pub fn disable_ppi_at(rd_base: usize, intid: u32) {
 // Redistributor-frame discovery + SGI send — the SMP building blocks.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Safety bound on [`find_redistributor`]'s walk. QEMU virt `-smp 4`
-/// needs 4 frames; this is a generous multiple so real multi-socket
-/// systems aren't cut short, while still being finite — an unbounded
-/// walk that never sees `TYPER.Last` (firmware bug, or a caller that
-/// under-mapped the MMIO window) would otherwise read off the end of
-/// whatever IS mapped.
-pub const GICR_WALK_MAX_FRAMES: usize = 16;
+/// Safety bound on [`find_redistributor`]'s walk: one frame per CPU this
+/// build can run (Kconfig `NR_CPUS`). Finite because an unbounded walk that
+/// never sees `TYPER.Last` (firmware bug, or a caller that under-mapped the
+/// MMIO window) would otherwise read off the end of whatever IS mapped.
+pub const GICR_WALK_MAX_FRAMES: usize = azos_limits::NR_CPUS;
 
 #[cfg(target_arch = "aarch64")]
 #[inline]

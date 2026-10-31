@@ -147,9 +147,27 @@ pub fn sched_hz_get() -> u64 {
 // own id (`tp` / `TPIDR_EL1`, the read `current_cpu_id()` makes), never by that
 // argument — boot passes a hart id that need not be the scheduler's index.
 
-/// Records this many harts; a hart beyond it is programmed but never recorded,
-/// so [`arm_if_earlier`] leaves it alone (its record reads [`timer_arm::NOT_ARMED`]).
-const ARM_HARTS: usize = 16;
+/// One record per CPU id this build can run (Kconfig `NR_CPUS`).
+const ARM_HARTS: usize = azos_limits::NR_CPUS;
+
+/// Runtime canary `timer-record-16` (`kernel/src/canary_rt.rs`): a CPU id from 16
+/// up has no record, so its comparator never moves for a sleeper or an RT
+/// instant (ktest `timer_record_on_the_last_cpu`, in a row of more than 16).
+static CANARY_RECORD_16: AtomicBool = AtomicBool::new(false);
+
+/// See [`CANARY_RECORD_16`].
+pub fn canary_record_16() {
+    CANARY_RECORD_16.store(true, Ordering::Relaxed);
+}
+
+/// The record of CPU `cpu`.
+#[inline(always)]
+fn record(cpu: usize) -> Option<&'static AtomicU64> {
+    if azos_limits::CANARY_RUNTIME && cpu >= 16 && CANARY_RECORD_16.load(Ordering::Relaxed) {
+        return None;
+    }
+    PROGRAMMED.get(cpu)
+}
 
 /// The comparator value each hart last programmed, in [`now`]'s units.
 /// [`timer_arm::NOT_ARMED`] until the hart's first tick is armed.
@@ -186,7 +204,7 @@ fn program(next: u64, stopped: bool) {
     if let Some(flag) = STOPPED.get(cpu) {
         flag.store(stopped, Ordering::Relaxed);
     }
-    match PROGRAMMED.get(cpu) {
+    match record(cpu) {
         Some(slot) => {
             if slot.load(Ordering::Relaxed) != next {
                 set_timer(cpu as u32, next);
@@ -220,7 +238,7 @@ pub fn arm_if_earlier(deadline: u64) -> bool {
     use azos_arch::Interrupts;
     // percpu-hint: contract: every caller runs with interrupts masked (the dispatch, the tick handlers, the wake commit), so the hart cannot change; the record read is not a hint
     let cpu = azos_arch::ARCH.hart_id();
-    let Some(slot) = PROGRAMMED.get(cpu) else { return false };
+    let Some(slot) = record(cpu) else { return false };
     if !timer_arm::earlier_than_programmed(slot.load(Ordering::Relaxed), deadline) {
         return false;
     }
@@ -248,10 +266,10 @@ pub fn program_at(_hart: u32, next: u64) {
 }
 
 /// What the calling hart last programmed ([`timer_arm::NOT_ARMED`] if
-/// never, or if the hart is beyond the recorded range).
+/// never).
 pub fn programmed() -> u64 {
     // percpu-hint: read for a decision its callers take masked (dispatch, tick, idle)
-    PROGRAMMED.get(azos_arch::ARCH.hart_id())
+    record(azos_arch::ARCH.hart_id())
         .map_or(timer_arm::NOT_ARMED, |s| s.load(Ordering::Relaxed))
 }
 
@@ -297,10 +315,7 @@ pub fn tick_stopped() -> bool {
 /// this is called once per re-arm.
 #[inline]
 fn stop_wanted() -> bool {
-    // A hart past the records ([`ARM_HARTS`]) has no flag to say it stopped,
-    // so nothing would restore its tick: it never stops.
-    // percpu-hint: only called by the callers of program(), which are masked (tick handlers, dispatch) or hold the mask (tick_restart)
-    if !azos_limits::NOHZ_FULL || azos_arch::ARCH.hart_id() >= ARM_HARTS {
+    if !azos_limits::NOHZ_FULL {
         return false;
     }
     match TICK_STOP_HOOK.get() {
