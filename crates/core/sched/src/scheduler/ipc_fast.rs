@@ -343,7 +343,7 @@ pub fn ipc_fast_parked(ti: usize, tid: u32, want: WaitReason) -> bool {
             && t.tid == tid
             && t.state_word.load(Ordering::Acquire) & (crate::task::sched_word::STATE_MASK | WAKE_STAMP)
                 == pack(TaskState::Blocked)
-            && same_ipc_wait(&t.wait_reason, &want)
+            && same_ipc_wait(&t.wait_reason.load(), &want)
             && !t.context_saving.load(Ordering::Acquire)
     }
 }
@@ -371,7 +371,7 @@ pub fn ipc_fast_claim(ti: usize, want: WaitReason) -> Option<bool> {
     unsafe {
         let t = task_ref(ti);
         crate::task::sched_word::fast_claim(
-            &t.state_word, || same_ipc_wait(&t.wait_reason, &want), &t.context_saving, || {},
+            &t.state_word, || same_ipc_wait(&t.wait_reason.load(), &want), &t.context_saving, || {},
         )
     }
 }
@@ -471,7 +471,7 @@ unsafe fn direct_switch_block<const FAST: bool>(cpu: usize, ti: usize, reason: W
         // Same three steps, same order, as `block_current`: in-transit mark,
         // reason, then the commit CAS that publishes `Blocked`.
         task.context_saving.store(true, Ordering::Relaxed);
-        task.wait_reason = reason;
+        task.wait_reason.store(reason);
         let committed = crate::task::sched_word::commit_blocked_or_consume_wake(&task.state_word);
         if !committed {
             hist_reaccount(cur);
@@ -504,7 +504,7 @@ unsafe fn direct_switch_block<const FAST: bool>(cpu: usize, ti: usize, reason: W
                 Ordering::AcqRel, Ordering::Relaxed,
             ).is_ok() {
                 hist_reaccount(cur);
-                task.wait_reason = WaitReason::None;
+                task.wait_reason.store(WaitReason::None);
                 task.ready_site.store(
                     crate::task::ready_site::KC24_RESCUE | ((cpu as u8) << 4),
                     Ordering::Relaxed,

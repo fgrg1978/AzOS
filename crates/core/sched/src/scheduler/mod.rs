@@ -2588,7 +2588,7 @@ unsafe fn do_schedule(why: SwitchReason) {
                     Ordering::AcqRel, Ordering::Relaxed,
                 ).is_ok() {
                     hist_reaccount(old_idx);
-                    old.wait_reason = WaitReason::None;
+                    old.wait_reason.store(WaitReason::None);
                     old.ready_site.store(
                         crate::task::ready_site::KC24_RESCUE | ((cpu as u8) << 4),
                         Ordering::Relaxed,

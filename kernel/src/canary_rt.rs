@@ -54,6 +54,10 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/blk_irq.rs: virtio-blk reapers check and set a slot's report with no
     // lock (ktest `blk_reap_reports_once`).
     "blk-reap-unlocked",
+    // scheduler/wake.rs `wq_wake_by_tid`: a WaitQueue wake of the ktest's task
+    // reads the reason before the state word (ktest
+    // `wq_wake_in_the_block_window_is_kept`).
+    "wake-reason-first",
     // boot/net.rs: the virtio-net driver rings a doorbell per frame and per
     // RX re-post, batches and NO_NOTIFY ignored (QEMU trace
     // `virtio_queue_notify` count == frames; gate rows `network: TX batch canary`).

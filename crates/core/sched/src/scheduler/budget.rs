@@ -884,7 +884,7 @@ pub fn blocked_fastipc_ids(out: &mut [(u32, bool, u32, u32, bool)]) -> usize {
             if t.state_acquire() != TaskState::Blocked { continue; }
             let word = t.state_word.load(Ordering::Acquire);
             let saving = t.context_saving.load(Ordering::Acquire);
-            match t.wait_reason {
+            match t.wait_reason.load() {
                 // The low 6 bits of the handle are the caller's call record
                 // (its task slot) by `ep_queue.rs`'s encoding, on a board of
                 // at most 64 tasks — this diagnostic reports the seat;
@@ -1024,7 +1024,7 @@ pub fn task_census() -> (u32, u32, u32, [u32; MAX_CPUS], u32, u32, [u32; 5]) {
                     // a client asleep on `FastIpcClient` with its reply already
                     // deposited is a lost wake; asleep on anything else means
                     // the model of the failure is wrong.
-                    match t.wait_reason {
+                    match t.wait_reason.load() {
                         WaitReason::FastIpcClient(_) => by_reason[0] += 1,
                         WaitReason::FastIpcServer(_) => by_reason[1] += 1,
                         WaitReason::Timer(_)         => by_reason[2] += 1,

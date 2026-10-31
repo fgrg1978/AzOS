@@ -267,7 +267,10 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
             // wake without stamping, so a torn read here was a permanent
             // sleep). The old explicit fence pair moved into the CAS
             // orderings.
-            task.wait_reason = reason;
+            if reason == WaitReason::WaitQueue && wake_window_of(task.tid) {
+                wake_window_hold(1);
+            }
+            task.wait_reason.store(reason);
 
             // K-C9 + K-C19 — one conditional CAS replaces "consume the stamp,
             // then mark Blocked" (two independently-ordered cells, a measured
@@ -361,6 +364,31 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
         }
     }
     azos_arch::ARCH.restore(sstatus);
+}
+
+/// Ktest `wq_wake_in_the_block_window_is_kept`: the task whose WaitQueue block
+/// holds its window open, between being listed and publishing its reason.
+static WAKE_WINDOW_TID: AtomicU32 = AtomicU32::new(0);
+/// Runtime canary `wake-reason-first`: a wake of that task reads the reason
+/// before the state word, as a compiler may when the reason is a plain field.
+static WAKE_REASON_FIRST: AtomicBool = AtomicBool::new(false);
+
+pub fn set_wake_window(tid: u32, reason_first: bool) {
+    WAKE_REASON_FIRST.store(reason_first, Ordering::Relaxed);
+    WAKE_WINDOW_TID.store(tid, Ordering::Relaxed);
+}
+
+#[cold]
+fn wake_window_hold(ms: u64) {
+    let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 1000 * ms;
+    while azos_drv_sys::timebase::now() < until {
+        core::hint::spin_loop();
+    }
+}
+
+#[inline(always)]
+fn wake_window_of(tid: u32) -> bool {
+    azos_limits::CANARY_RUNTIME && tid != 0 && WAKE_WINDOW_TID.load(Ordering::Relaxed) == tid
 }
 
 /// Try to wake task `idx` if it matches the predicate.
@@ -599,7 +627,7 @@ pub fn try_wake_task(idx: usize, pred: &dyn Fn(&WaitReason) -> bool) {
         // stamped, never enqueued. See `sched_word::wake_transition`.
         // `saved` read after `Blocked` is seen (inside the transition).
         let saved_seen = core::cell::Cell::new(true);
-        let wt = wake_transition(&task.state_word, || pred(&task.wait_reason), false, || {
+        let wt = wake_transition(&task.state_word, || pred(&task.wait_reason.load()), false, || {
             let s = !task.context_saving.load(Ordering::Acquire);
             saved_seen.set(s);
             s
@@ -614,8 +642,8 @@ pub fn try_wake_task(idx: usize, pred: &dyn Fn(&WaitReason) -> bool) {
         #[cfg(feature = "ipc-census")]
         wakelat::arm(idx);
 
-        let reason = attrib::Reason::of(&task.wait_reason);
-        task.wait_reason = WaitReason::None;
+        let reason = attrib::Reason::of(&task.wait_reason.load());
+        task.wait_reason.store(WaitReason::None);
         let target_cpu = wake_target_cpu(idx, task);
         // K-A11: the saved tp records the CPU this task is enqueued on (mirrors
         // rebalance_from_offline_cpus): the wake and balance paths read it as
@@ -665,9 +693,14 @@ pub fn wq_wake_by_tid(tid: u32) {
             // K-C24: see try_wake_task — an unsaved Blocked target is still
             // running and gets a stamp, not an enqueue.
             let saved_seen = core::cell::Cell::new(true);
+            let reason_first = (wake_window_of(tid) && WAKE_REASON_FIRST.load(Ordering::Relaxed)).then(|| {
+                let r = task.wait_reason.load();
+                wake_window_hold(3);
+                r
+            });
             let wt = wake_transition(
                 &task.state_word,
-                || task.wait_reason == WaitReason::WaitQueue,
+                || reason_first.unwrap_or_else(|| task.wait_reason.load()) == WaitReason::WaitQueue,
                 true,
                 || {
                     let s = !task.context_saving.load(Ordering::Acquire);
@@ -685,8 +718,8 @@ pub fn wq_wake_by_tid(tid: u32) {
             #[cfg(feature = "ipc-census")]
             wakelat::arm(i);
 
-            let reason = attrib::Reason::of(&task.wait_reason);
-            task.wait_reason = WaitReason::None;
+            let reason = attrib::Reason::of(&task.wait_reason.load());
+            task.wait_reason.store(WaitReason::None);
             let target_cpu = wake_target_cpu(i, task);
             // K-A11: keep saved tp consistent with the enqueue CPU (see try_wake_task).
             task.context.tp = target_cpu as CtxReg;
@@ -1134,8 +1167,8 @@ pub(super) unsafe fn reap_one(i: usize) -> Reap {
                 // Same dispatch-ownership contract as `wake_task_by_tid`'s
                 // Dispatched arm: winner clears the reason and enqueues,
                 // keeping tp consistent with the enqueue CPU (K-A11).
-                let reason = attrib::Reason::of(&task.wait_reason);
-                task.wait_reason = WaitReason::None;
+                let reason = attrib::Reason::of(&task.wait_reason.load());
+                task.wait_reason.store(WaitReason::None);
                 let target_cpu = wake_target_cpu(i, task);
                 task.context.tp = target_cpu as CtxReg;
                 note_wake_cold(task, reason, attrib::Via::Reap, target_cpu);
@@ -1245,7 +1278,7 @@ pub(super) fn wake_by_slot_as(
             // K-C24: `saved` keeps an unswitched-block target (Blocked but
             // still executing) out of the ready queues — stamp instead.
             let saved_seen = core::cell::Cell::new(true);
-            let wt = wake_transition(&task.state_word, || pred(&task.wait_reason), true, || {
+            let wt = wake_transition(&task.state_word, || pred(&task.wait_reason.load()), true, || {
                 let s = !task.context_saving.load(Ordering::Acquire);
                 saved_seen.set(s);
                 s
@@ -1299,8 +1332,8 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
         #[cfg(feature = "ipc-census")]
         WAKE_DISPATCHED.fetch_add(1, Ordering::Relaxed);
         // What it waited on, for the attribution: read before the clear.
-        let reason = attrib::Reason::of(&task.wait_reason);
-        task.wait_reason = WaitReason::None;
+        let reason = attrib::Reason::of(&task.wait_reason.load());
+        task.wait_reason.store(WaitReason::None);
         // Direct-switch claim: keep the task out of every queue and
         // hand it to the caller, who switches to it on `claim_cpu`
         // without a trip through `do_schedule`'s pick.
@@ -1409,7 +1442,7 @@ fn nearest_timer_deadline_sweep_where(keep: impl Fn(usize) -> bool) -> Option<u6
             // Acquire pairs with block_current's Release commit: it publishes
             // the `wait_reason` (and deadline) we read next (K-C17).
             if task.state_acquire() != TaskState::Blocked { continue; }
-            if let WaitReason::Timer(deadline) = task.wait_reason {
+            if let WaitReason::Timer(deadline) = task.wait_reason.load() {
                 // The instant the heap fires it at (QoS timer slack).
                 #[cfg(feature = "sched-timer-heap")]
                 let deadline = timer_sleepers::fire_of(i, deadline);

@@ -831,6 +831,51 @@ pub enum WaitReason {
     FastIpcClient(u64),
 }
 
+/// A task's [`WaitReason`]: published by the blocker before its Release commit
+/// of `Blocked`, read by a waker after its Acquire of the same word.
+///
+/// Atomic because those two race: as a plain field the waker's read is one the
+/// compiler may hoist above that Acquire, and a wake that then sees `Blocked`
+/// with the reason from before the block is dropped as a mismatch, for good.
+/// Relaxed: the state word orders it. A reader not holding that order may see
+/// the tag of one wait and the payload of another (diagnostics only).
+#[repr(C)]
+pub struct WaitCell {
+    tag: core::sync::atomic::AtomicU32,
+    payload: core::sync::atomic::AtomicU64,
+}
+
+impl WaitCell {
+    #[inline(always)]
+    pub fn load(&self) -> WaitReason {
+        let payload = || self.payload.load(core::sync::atomic::Ordering::Relaxed);
+        match self.tag.load(core::sync::atomic::Ordering::Relaxed) {
+            1 => WaitReason::Ring(payload() as u32),
+            2 => WaitReason::Timer(payload()),
+            3 => WaitReason::Port(payload() as u32),
+            4 => WaitReason::WaitQueue,
+            5 => WaitReason::FastIpcServer(payload() as u32),
+            6 => WaitReason::FastIpcClient(payload()),
+            _ => WaitReason::None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn store(&self, r: WaitReason) {
+        let (tag, payload) = match r {
+            WaitReason::None => (0, 0),
+            WaitReason::Ring(v) => (1, v as u64),
+            WaitReason::Timer(v) => (2, v),
+            WaitReason::Port(v) => (3, v as u64),
+            WaitReason::WaitQueue => (4, 0),
+            WaitReason::FastIpcServer(v) => (5, v as u64),
+            WaitReason::FastIpcClient(v) => (6, v),
+        };
+        self.payload.store(payload, core::sync::atomic::Ordering::Relaxed);
+        self.tag.store(tag, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 // Syscall filter (AQ11) and creation-time init parameters live in
 // `filter.rs` so host tests can reach them without the TCB. Re-exported
 // here because the whole tree refers to them as `crate::task::…`.
@@ -922,7 +967,7 @@ pub struct Task {
     pub total_runtime: u64,      // total timer ticks consumed
 
     // == IO-wait reason (AQ0) ==
-    pub wait_reason: WaitReason,
+    pub wait_reason: WaitCell,
 
     // == Syscall filter (AQ11) ==
     pub syscall_filter: SyscallFilter,

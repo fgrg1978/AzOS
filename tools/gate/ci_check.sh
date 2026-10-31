@@ -14579,6 +14579,8 @@ PY
     par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img
     par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk-aarch64.img
+    par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
+    par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
@@ -16001,6 +16003,7 @@ PY
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
+    par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
     par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \

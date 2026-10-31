@@ -257,7 +257,7 @@ pub(super) fn still_sleeping(slot: usize) -> Option<u64> {
         if t.state_acquire() != TaskState::Blocked {
             return None;
         }
-        match t.wait_reason {
+        match t.wait_reason.load() {
             WaitReason::Timer(d) => Some(d),
             _ => None,
         }
@@ -403,7 +403,7 @@ pub fn ktest_coalescing() -> Result<(), &'static str> {
         // but `still_sleeping`, which checks exactly what is written here.
         unsafe {
             let t = super::task_mut(slot);
-            t.wait_reason = WaitReason::Timer(deadline);
+            t.wait_reason.store(WaitReason::Timer(deadline));
             t.state_word.store(sched_word::pack(TaskState::Blocked), Ordering::Relaxed);
         }
         core::sync::atomic::fence(Ordering::Release);
@@ -413,7 +413,7 @@ pub fn ktest_coalescing() -> Result<(), &'static str> {
     let saved: [(usize, WaitReason, u32); 2] = [a, b].map(|s| {
         // SAFETY: as above.
         let t = unsafe { super::task_mut(s) };
-        (s, t.wait_reason, t.state_word.load(Ordering::Relaxed))
+        (s, t.wait_reason.load(), t.state_word.load(Ordering::Relaxed))
     });
 
     // Instants an hour away: no tick on any hart can find these due.
@@ -463,7 +463,7 @@ pub fn ktest_coalescing() -> Result<(), &'static str> {
         unsafe {
             TASK_VALID[s].store(false, Ordering::Relaxed);
             let t = super::task_mut(s);
-            t.wait_reason = reason;
+            t.wait_reason.store(reason);
             t.state_word.store(word, Ordering::Relaxed);
         }
         if let Some(c) = SLACK.get(s) {
@@ -679,7 +679,7 @@ pub(super) fn check_tick(now: u64) {
             if TASK_VALID[i].load(Ordering::Relaxed) {
                 let t = &*core::ptr::addr_of!(TASKS[i]);
                 if t.state_acquire() == TaskState::Blocked {
-                    if let WaitReason::Timer(d) = t.wait_reason {
+                    if let WaitReason::Timer(d) = t.wait_reason.load() {
                         // The instant the heap fires the slot at (QoS slack).
                         let d = fire_of(i, d);
                         if now >= d && owned_here(i) && h.armed_deadline(i) != Some(d) {
@@ -785,7 +785,7 @@ impl LostNote {
             val,
             armed,
             word: t.state_word.load(Ordering::Acquire),
-            reason: match t.wait_reason {
+            reason: match t.wait_reason.load() {
                 WaitReason::Timer(d) => Some(d),
                 _ => None,
             },

@@ -1090,6 +1090,84 @@ fn block_request_owner() -> u32 {
     azos_sched::scheduler::current_task_slot().map_or(0, |(idx, _)| azos_sched::task_domain(idx))
 }
 
+// A wake that lands between a task being listed on a WaitQueue and its commit
+// of `Blocked`. The wake must see "not blocked yet" and stamp, or see `Blocked`
+// with the reason this block published; it must never see `Blocked` with the
+// reason from before. That is one lost task and every waiter behind it (a
+// kmutex's queued top waiter, whose lock nobody else may then take). The block
+// holds the window open, so each round lands in it; canary `wake-reason-first`:
+// the waker reads the reason first, `not ok` in the first round.
+#[cfg(feature = "ktest")]
+mod wq_window_ktests {
+    use azos_sync::waitqueue::WaitQueue;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const ROUNDS: u32 = 8;
+    const PRIO: u32 = 16;
+    static Q: WaitQueue = WaitQueue::new();
+    static ROUND: AtomicU32 = AtomicU32::new(0);
+    static ANSWERED: AtomicU32 = AtomicU32::new(0);
+    static TID: AtomicU32 = AtomicU32::new(0);
+    static WAKER_DONE: AtomicBool = AtomicBool::new(false);
+    static LOST: AtomicBool = AtomicBool::new(false);
+
+    fn waiter(_: usize) {
+        TID.store(azos_sched::current_task_tid(), Ordering::Release);
+        for r in 1..=ROUNDS {
+            while ROUND.load(Ordering::Acquire) < r {
+                Q.wait_if(|| ROUND.load(Ordering::Acquire) < r);
+            }
+            ANSWERED.store(r, Ordering::Release);
+        }
+    }
+
+    fn waker(_: usize) {
+        for r in 1..=ROUNDS {
+            while Q.is_empty() {
+                core::hint::spin_loop();
+            }
+            ROUND.store(r, Ordering::Release);
+            Q.wake_all();
+            // Spinning first: the next round's window opens as soon as this
+            // one is answered, and it is shorter than the shortest sleep.
+            let spin_until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 50;
+            while ANSWERED.load(Ordering::Acquire) < r && azos_drv_sys::timebase::now() < spin_until {
+                core::hint::spin_loop();
+            }
+            if !crate::ktest::until(|| ANSWERED.load(Ordering::Acquire) >= r) {
+                LOST.store(true, Ordering::Release);
+                ROUND.store(ROUNDS, Ordering::Release);
+                azos_sched::wq_wake_by_tid(TID.load(Ordering::Acquire));
+                break;
+            }
+        }
+        WAKER_DONE.store(true, Ordering::Release);
+    }
+
+    azos_ktest::ktest_late! {
+        fn wq_wake_in_the_block_window_is_kept() {
+            if azos_percpu::nr_cpu_ids() < 2 {
+                return Ok(());
+            }
+            azos_sched::task_create_affinity("wq-window", waiter, 0, PRIO, 1);
+            crate::ktest::wait("the waiter never started", || TID.load(Ordering::Acquire) != 0)?;
+            azos_sched::scheduler::set_wake_window(TID.load(Ordering::Acquire), canary!("wake-reason-first"));
+            azos_sched::task_create_affinity("wq-waker", waker, 0, PRIO, 0);
+            // Past the waker's own bound on one round, so a lost wake is told as one.
+            let done = || WAKER_DONE.load(Ordering::Acquire);
+            let finished = crate::ktest::until(done) || crate::ktest::until(done);
+            azos_sched::scheduler::set_wake_window(0, false);
+            if !finished {
+                return Err("the waker never finished");
+            }
+            if LOST.load(Ordering::Acquire) {
+                return Err("a wake inside the block window was lost: the waiter slept on");
+            }
+            Ok(())
+        }
+    }
+}
+
 // The accessors of "the task running here" (`current_task_slot`,
 // `current_proc_tid`, `current_user_pt`, the syscall-filter verdicts, the
 // writer `set_current_task_satp`, ...) read the hart id and then a per-hart

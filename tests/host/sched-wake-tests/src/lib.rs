@@ -2814,16 +2814,16 @@ mod ipc_direct_wiring {
         ];
         for (sig, log) in tails {
             let b = body_of(sig);
-            let read = b.find("attrib::Reason::of(&task.wait_reason)").unwrap_or_else(|| panic!("{sig} does not read the reason"));
-            let clear = b.find("task.wait_reason = WaitReason::None").unwrap_or_else(|| panic!("{sig} does not clear it"));
+            let read = b.find("attrib::Reason::of(&task.wait_reason.load())").unwrap_or_else(|| panic!("{sig} does not read the reason"));
+            let clear = b.find("task.wait_reason.store(WaitReason::None)").unwrap_or_else(|| panic!("{sig} does not clear it"));
             let note = b.find(log).unwrap_or_else(|| panic!("{sig} does not log its wake"));
             assert!(read < clear, "{sig}: the reason is read after it was cleared");
             assert!(clear < note, "{sig}: the wake is logged before its target is known");
         }
         // The hand-off logs on both of its exits: claimed, and enqueued.
         let d = body_of("fn dispatched(");
-        let read = d.find("attrib::Reason::of(&task.wait_reason)").expect("dispatched reads the reason");
-        assert!(read < d.find("task.wait_reason = WaitReason::None").unwrap());
+        let read = d.find("attrib::Reason::of(&task.wait_reason.load())").expect("dispatched reads the reason");
+        assert!(read < d.find("task.wait_reason.store(WaitReason::None)").unwrap());
         assert_eq!(d.matches("note_wake(task, reason, via,").count(), 2);
         assert!(d.find("note_wake(task, reason, via, claim_cpu)").unwrap() < d.find("return WakeOut::Claimed(i)").unwrap());
         assert!(

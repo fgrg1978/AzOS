@@ -82,11 +82,11 @@ fn run_tick_sweep_probe(on_timer: bool) {
             // `on_timer`: asleep on a timer that is never due in this probe
             // (`u64::MAX - 1`), so the timer path's per-sleeper cost is
             // paid without anything being woken.
-            t.wait_reason = if on_timer {
+            t.wait_reason.store(if on_timer {
                 WaitReason::Timer(u64::MAX - 1)
             } else {
                 WaitReason::WaitQueue
-            };
+            });
             t.context_saving.store(false, Ordering::Relaxed);
             t.state_word.store(sched_word::pack(TaskState::Blocked), Ordering::Relaxed);
             publish_filter_word(i);
@@ -113,7 +113,7 @@ fn run_tick_sweep_probe(on_timer: bool) {
                 #[cfg(feature = "sched-timer-heap")]
                 timer_sleepers::cancel(i);
                 TASK_VALID[i].store(false, Ordering::Relaxed);
-                TASKS[i].wait_reason = WaitReason::None;
+                TASKS[i].wait_reason.store(WaitReason::None);
                 TASKS[i].tid = 0;
             }
         }
@@ -614,7 +614,7 @@ pub fn try_task_create_init(
                             | ((current_cpu_id() as u8) << 4),
                         Ordering::Relaxed,
                     );
-                    task.wait_reason    = WaitReason::None;
+                    task.wait_reason.store(WaitReason::None);
                     // The slot is being reused: a reservation its previous
                     // occupant still held (one that died without passing the
                     // dispatch tail's reap) leaves its hart's set and ledger.
