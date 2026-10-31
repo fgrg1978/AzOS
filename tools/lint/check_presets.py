@@ -26,11 +26,9 @@ trip the same function, so a rule that went blind fails the check.
 
 The console program (console_violations below) is checked on every expansion
 and every defconfig: the CONSOLE_PROGRAM choice offers only native sh, BusyBox
-sh, the images whose metadata says `console` where their expression holds, and
-none; a defconfig that names a console program gets it; and CONSOLE_LOGIN comes
+sh and none; a defconfig that names a console program gets it; and CONSOLE_LOGIN comes
 with the native shell as the console program (the build refuses it otherwise).
-A canary (login with no shell, a robot-only program on a generic image) must
-trip the same function.
+A canary (login with no shell) must trip the same function.
 
 The kernels are not built; that is `make check` / the gate. Usage:
 
@@ -161,17 +159,12 @@ def console_violations(kconf):
     many rules looked at something (so a rename cannot make the rule vacuous):
     (violations, {"members": n, "login": n})."""
     bad, seen = [], {"members": 0, "login": 0}
-    capable = {gus.stem_of(img): meta["console"]
-               for _, _, imgs, meta, _ in gus.scan(ROOT) if "console" in meta for img in imgs}
     choice = kconf.syms["CONSOLE_PROGRAM_SH"].nodes[0].parent.item
     offered = {sym.name.removeprefix("CONSOLE_PROGRAM_"): sym for sym in choice.syms}
-    expected = set(capable) | (gus.FIXED_CHOICES if gus.busybox_present(ROOT) else gus.FIXED_CHOICES - {"BUSYBOX_SH"})
+    expected = gus.FIXED_CHOICES if gus.busybox_present(ROOT) else gus.FIXED_CHOICES - {"BUSYBOX_SH"}
     if set(offered) != expected:
         bad.append(f"CONSOLE_PROGRAM offers {sorted(offered)}, the metadata asks for {sorted(expected)}")
-    for stem, sym in offered.items():
-        seen["members"] += 1
-        if stem in capable and sym.str_value == "y" and kconf.eval_string(capable[stem]) != 2:
-            bad.append(f"{sym.name} is the console program but its condition ({capable[stem]}) does not hold")
+    seen["members"] = len(offered)
     if kconf.syms["CONSOLE_LOGIN"].str_value == "y":
         seen["login"] += 1
         if kconf.syms["CONSOLE_PROGRAM_SH"].str_value != "y":
@@ -182,8 +175,7 @@ def console_violations(kconf):
 
 def _console_sweep(kconf, td, archs, failures):
     """Every defconfig names the console program it gets, and the canary: a
-    login with no shell and a robot-only program on a generic image both trip
-    console_violations. Returns the number of expansions."""
+    login with no shell trips console_violations. Returns the number of expansions."""
     cfg = os.path.join(td, "console.config")
     done = 0
     defdir = os.path.join(ROOT, "config", "defconfigs")
@@ -207,14 +199,7 @@ def _console_sweep(kconf, td, archs, failures):
             failures.append((tag, ["the console rule did not flag a login with no console program"]))
         if not all(seen.values()):
             failures.append((tag, [f"the console rule examined {seen}: a name matches nothing"]))
-        # A robot-only program is dropped on a generic image and taken on a robot one.
-        for preset, taken in (("CONFIG_PRESET_GENERIC=y", "n"), ("CONFIG_PRESET_ROBOT=y", "y")):
-            _expand(kconf, cfg, [f"{arch}=y", preset, "CONFIG_USERSPACE_BRAINCLI=y",
-                                 "CONFIG_CONSOLE_PROGRAM_BRAINCLI=y"])
-            got = kconf.syms["CONSOLE_PROGRAM_BRAINCLI"].str_value
-            if got != taken or console_violations(kconf)[0]:
-                failures.append((tag, [f"{preset} with BRAINCLI asked for: it is {got}, wanted {taken}"]))
-        done += 3
+        done += 1
     return done
 
 

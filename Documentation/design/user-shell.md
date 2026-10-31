@@ -449,9 +449,7 @@ Source: `crates/core/topology/src/builder.rs` (`SH_CAPS`, `SH_CAPS_LOCKDOWN`,
 
 **Choosing the console program.** The Kconfig choice `CONSOLE_PROGRAM` names
 what the kernel starts on the console: the native shell session (the default
-on the edge and fleet profiles), BusyBox `sh` under the Linux personality, an
-image whose program metadata says `console` (today `BRAINCLI.ELF`, offered on
-the robot preset only), or none. The console login (`CONSOLE_LOGIN`) is a layer
+on the edge and fleet profiles), BusyBox `sh` under the Linux personality, or none. The console login (`CONSOLE_LOGIN`) is a layer
 over the native shell: with another console program the build stops
 (`azos_limits`) instead of leaving a login nothing asks for. With secure boot off and
 `KERNEL_CMDLINE_INIT` (default `y`), `init=/fat/NAME.ELF` on the kernel command
