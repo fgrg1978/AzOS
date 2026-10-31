@@ -3276,7 +3276,12 @@ static DONATION_LOCKS: [AtomicBool; MAX_TASKS] = {
 /// Remove a specific task `idx` from its current ready bucket, if present.
 /// O(bucket length). Returns `true` if it was found and removed.
 unsafe fn cpu_remove(cpu: usize, idx: usize) -> bool {
-    let prio = prio_bucket(task_mut(idx).priority.load(Ordering::Relaxed));
+    cpu_remove_at(cpu, idx, prio_bucket(task_mut(idx).priority.load(Ordering::Relaxed)))
+}
+
+/// [`cpu_remove`] from the list of bucket `prio`, whatever `priority` says now.
+#[inline(always)]
+unsafe fn cpu_remove_at(cpu: usize, idx: usize, prio: usize) -> bool {
     // `&`, not `&mut` — see `cpu_dequeue`.
     let q = &cpu_queues(cpu)[prio];
     // O(position): the list is walked from its head, under the lock, for at
@@ -3328,6 +3333,21 @@ unsafe fn cpu_remove_anywhere(idx: usize) -> Option<usize> {
         if cpu_remove(cpu, idx) {
             // It leaves the fair order keeping its lag (a priority change,
             // a move to the hart its reservation was admitted on).
+            fairq::left(cpu, idx);
+            return Some(cpu);
+        }
+    }
+    None
+}
+
+/// The task `idx` linked under bucket `old` while its priority was changed, off
+/// whichever CPU's list holds it. See `TaskDonation::apply_prio`.
+#[cold]
+#[inline(never)]
+unsafe fn cpu_remove_stale(idx: usize, old: usize) -> Option<usize> {
+    for cpu in 0..ncpu() {
+        let _g = CpuLockGuard::acquire(cpu);
+        if cpu_remove_at(cpu, idx, old) {
             fairq::left(cpu, idx);
             return Some(cpu);
         }
