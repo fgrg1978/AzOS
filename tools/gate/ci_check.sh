@@ -21984,7 +21984,9 @@ PYEOF
     # VSBENCH_RING_DET in the script.
     vsbench_row() {
         printf "  %-26s" "bench: vsbench vs Linux..."
-        if QEMU="$QEMU" WAIT_SECS=90 VSBENCH_SECCOMP=1 bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh"; then
+        # The robot cell: the vdso section reads the encoder, which the generic
+        # cell's kernel does not link.
+        if KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" QEMU="$QEMU" WAIT_SECS=90 VSBENCH_SECCOMP=1 bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh"; then
             ok
         else
             bad; echo "      logs in $AZOS_OUT/build/vsbench-compare/"
