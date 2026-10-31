@@ -387,6 +387,8 @@ impl<T> core::ops::DerefMut for IrqSaveGuard<'_, T> {
 
 impl<T> Drop for IrqSaveGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "lockdep")]
+        crate::lockdep::irqsave_release(self.lock as *const SpinLock<T> as usize);
         // Release lock first, then restore interrupt state.
         self.lock.release();
         #[cfg(feature = "lat-trace")]

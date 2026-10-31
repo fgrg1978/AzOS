@@ -225,9 +225,9 @@ fn lockdep_summary() -> usize {
     }
     lockdep_print();
     let st = azos_sync::lockdep::stats();
-    kprintln!("\n# lockdep: violations={} notes={} edges={} chains={} unmatched-releases={} unprinted={} checked: switches={} sleeps={} user-returns={} scopes={} contended={} rt-cross-cpu={} classes={} classes-full={} hold-bound={}us{}",
+    kprintln!("\n# lockdep: violations={} notes={} edges={} chains={} unmatched-releases={} unprinted={} checked: switches={} sleeps={} user-returns={} scopes={} irqsave={} contended={} rt-cross-cpu={} classes={} classes-full={} hold-bound={}us{}",
         st.violations, st.notes, st.edges, st.chains, st.unmatched, azos_sync::lockdep::dropped(),
-        st.switches, st.sleep_checks, st.user_returns, st.scope_checks, st.contended, st.rt_cross_cpu, st.classes,
+        st.switches, st.sleep_checks, st.user_returns, st.scope_checks, st.irqsave_checks, st.contended, st.rt_cross_cpu, st.classes,
         st.classes_full, azos_sync::lockdep::MAX_HOLD_US,
         if azos_sync::lockdep::HOLD_ENFORCE { "" } else { " (not enforced)" });
     crate::lockdep_log::holds("# ");
@@ -669,6 +669,50 @@ azos_ktest::ktest! {
         }
         if azos_sync::lockdep::stats().edges == edges {
             return Err("taking A then B recorded no lockdep edge");
+        }
+        Ok(())
+    }
+}
+
+static LD_IRQ_A: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
+static LD_IRQ_B: azos_sync::SpinLock<u32> = azos_sync::SpinLock::new(0);
+
+azos_ktest::ktest! {
+    fn lockdep_irqsave_guards_release_in_reverse_order() {
+        if !azos_sync::lockdep::ON {
+            return Err("LOCKDEP is not on in this ktest kernel (Kconfig LOCKDEP_KTEST or LOCKDEP_Y)");
+        }
+        use azos_arch::Interrupts as _;
+        if !azos_sync::preempt::irqs_enabled() {
+            return Err("the test needs interrupts on to start");
+        }
+        let checked = azos_sync::lockdep::stats().irqsave_checks;
+        let outer = LD_IRQ_A.lock_irqsave();
+        let inner = LD_IRQ_B.lock_irqsave();
+        // `canary=irqsave-out-of-order`: the outer guard first, which puts
+        // interrupts back on under the inner one; the inner guard's release
+        // is then the one lockdep reports, and its own restore leaves them
+        // off.
+        if canary!("irqsave-out-of-order") {
+            drop(outer);
+            drop(inner);
+        } else {
+            drop(inner);
+            drop(outer);
+        }
+        let on = azos_sync::preempt::irqs_enabled();
+        if !on {
+            // Masked, the runner would fail every later test for sleeping
+            // with interrupts off: put back before the verdict.
+            azos_arch::ARCH.enable_all();
+        }
+        if azos_sync::lockdep::stats().irqsave_checks != checked + 2 {
+            return Err("the two guard releases did not reach lockdep's irqsave check");
+        }
+        // Armed, the interrupt state is the symptom and lockdep's report the
+        // verdict: the runner fails the test with it.
+        if !on && !canary!("irqsave-out-of-order") {
+            return Err("the guards were released in order and interrupts stayed off");
         }
         Ok(())
     }

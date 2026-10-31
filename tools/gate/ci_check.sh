@@ -14358,8 +14358,9 @@ PY
     # aarch64) -> 124, arm 127.
     # +1 inspect_refresh_leaves_interrupts_as_they_were -> 125, arm 128.
     # +1 blk_reap_reports_once -> 126, arm 130.
-    KTEST_N_RV=126
-    KTEST_N_ARM=130
+    # +1 lockdep_irqsave_guards_release_in_reverse_order -> 127, arm 131.
+    KTEST_N_RV=127
+    KTEST_N_ARM=131
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14666,9 +14667,11 @@ PY
     # `lockdep-rt-pi` (a Mutex contended by RT tasks on CPUs 1 and 2,
     # rule F7) -> lockdep_rt_tasks_share_only_spinlocks. N1d adds
     # `lockdep-early-abba` (an ABBA in early_main, before the scheduler)
-    # -> lockdep_boot_phase_clean.
-    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk,lockdep-scope-irq,lockdep-scope-preempt,lockdep-irq-inversion,lockdep-hold,lockdep-rt-pi,lockdep-early-abba"
-    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io lockdep_scope_rules lockdep_irq_safe_class_taken_irqsave lockdep_spinlock_hold_bounded lockdep_rt_tasks_share_only_spinlocks lockdep_boot_phase_clean"
+    # -> lockdep_boot_phase_clean. `irqsave-out-of-order` (two
+    # `lock_irqsave` guards released outer first) ->
+    # lockdep_irqsave_guards_release_in_reverse_order.
+    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk,lockdep-scope-irq,lockdep-scope-preempt,lockdep-irq-inversion,lockdep-hold,lockdep-rt-pi,lockdep-early-abba,irqsave-out-of-order"
+    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io lockdep_scope_rules lockdep_irq_safe_class_taken_irqsave lockdep_spinlock_hold_bounded lockdep_rt_tasks_share_only_spinlocks lockdep_boot_phase_clean lockdep_irqsave_guards_release_in_reverse_order"
     KTEST_LOCKDEP_RE='^# lockdep: lock order inversion \(ABBA\); holding SpinLock kernel/src/ktest\.rs:'
     par "ktest lockdep canaries (rv)" ktest_row "ktest lockdep canaries (rv)" rv "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
     par "ktest lockdep canaries (arm)" ktest_row "ktest lockdep canaries (arm)" arm "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
@@ -15051,7 +15054,8 @@ PY
     # arm -> 130.
     # +1 inspect_refresh_leaves_interrupts_as_they_were, as on rv and arm -> 131.
     # +1 blk_reap_reports_once, as on rv and arm -> 132.
-    KTEST_N_X86=132
+    # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 133.
+    KTEST_N_X86=133
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

@@ -605,6 +605,21 @@ mod lockdep_tests {
     }
 
     #[test]
+    fn irqsave_release_with_interrupts_on_is_out_of_order() {
+        let c = class(Kind::Spin);
+        let h = held(&c, 0x100);
+        assert!(irqsave_out_of_order(false, &[h], 0x100).is_none(), "in order, interrupts are off at every release");
+        let r = irqsave_out_of_order(true, &[h], 0x100).expect("a release with interrupts on is out of order");
+        assert_eq!(r.what, What::IrqSaveOutOfOrder);
+        assert!(!r.what.is_note(), "it fails the run");
+        assert_eq!(r.held.key, c.key(), "the report names the lock of the guard released late");
+        let line = format!("{}", r);
+        assert!(line.starts_with("lockdep: IrqSave guard released with interrupts on"), "{line}");
+        let r = irqsave_out_of_order(true, &[], 0x100).expect("reported though the stack lost the entry");
+        assert_eq!(r.held.key, 0);
+    }
+
+    #[test]
     fn irq_context_locks_form_no_edge_with_task_locks() {
         let g = G::new();
         let (ca, cb) = (class(Kind::Spin), class(Kind::Spin));

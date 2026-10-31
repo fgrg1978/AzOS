@@ -112,6 +112,10 @@ pub(crate) const NAMES: &[&str] = &[
     "lockdep-irq-inversion",
     "lockdep-hold",
     "lockdep-rt-pi",
+    // kernel/src/ktest.rs: two `lock_irqsave` guards released outer first,
+    // which restores "interrupts on" under the inner one; lockdep must report
+    // the inner release (ktest `lockdep_irqsave_guards_release_in_reverse_order`).
+    "irqsave-out-of-order",
     // kernel/src/ktest.rs `preempt_count_survives_irq_nesting`: the timer
     // interrupt's probe keeps the preempt guard it takes, a handler that is
     // not depth-balanced; the non-atomic per-hart count must come out wrong
