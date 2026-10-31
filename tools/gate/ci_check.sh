@@ -23971,9 +23971,15 @@ x=con; echo bb\$x-ok
         fi
     done
     # BRAINCLI.ELF as the console program (the choice offers it on a robot
-    # preset only): the kernel starts it last; it reads no console input, so
-    # the console says once that it gave up, and the recovery console follows
-    # (`console_mode::gave_up`). The native shell must not start.
+    # preset only): the kernel starts it last. Its own row grants no motor
+    # capability (the robot's grants are the autorun row's alone, see the
+    # comment above TASK_GPIODRV_IMAGE in the topology builder), so the client
+    # prints its FATAL line and exits, the component manager stops restarting
+    # it, it never takes the console, and the console says once that it gave
+    # up (`console_mode::gave_up`) before the recovery console follows. The
+    # native shell must not start. The FATAL line is the row's cause: a client
+    # that stayed alive reading no console input would reach the same give-up
+    # line by the timeout alone, and this row would then be about another thing.
     for con_isa in rv arm; do
         if ! ci_wants "console: brain client ($con_isa)"; then ci_skip_rows "console: brain client ($con_isa)"; continue; fi
         con_k=""
@@ -23987,6 +23993,7 @@ x=con; echo bb\$x-ok
         USH_KERNEL="$con_k" USH_FORBID='\[compmgr\] start SH.ELF|PAGE FAULT|SECCOMP' \
             par_row ushell_row "console: brain client ($con_isa)" "$con_isa" qemu,use-robot PASS "#wait $RECOVERY_PROMPT_RE" 120 \
             "[compmgr] start BRAINCLI.ELF" \
+            "[brain_client] FATAL no motor capabilities - refusing to run" \
             "[CONSOLE] console program /fat/BRAINCLI.ELF gave up: recovery console (it did not take the console within" "re:$RECOVERY_PROMPT_RE"
     done
     # CONSOLE_LOGIN needs the native shell as the console program: `azos_limits`
