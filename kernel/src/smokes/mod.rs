@@ -167,6 +167,8 @@ pub(crate) mod preempt_account_smoke;
 pub(crate) mod commander_exit;
 #[cfg(all(feature = "ktest", feature = "use-robot", feature = "effect-gate"))]
 mod held_wheel;
+#[cfg(feature = "ktest")]
+mod memobj_map_flight;
 #[cfg(feature = "tail-smoke")]
 pub(crate) mod tail_smoke;
 #[cfg(feature = "energy-smoke")]

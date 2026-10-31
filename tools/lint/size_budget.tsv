@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2680470
-riscv64-qemu	.rodata	450912
-riscv64-qemu	.data	3257832
+riscv64-qemu	.text	2688606
+riscv64-qemu	.rodata	451008
+riscv64-qemu	.data	3258984
 riscv64-qemu	.bss	5795552
-riscv64-qemu	reason	codegen-units = 1 for the kernel workspace: one unit per crate, .text -2.5%, .rodata -7.7%
+riscv64-qemu	reason	the object table's map and unmap in flight: begin, commit, abandon, end (+4.8 KiB riscv64 .text); int/t1b had already grown 3.3 KiB within tolerance

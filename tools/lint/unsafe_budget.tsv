@@ -32,7 +32,7 @@ crates/core/hv	3	1	0	0	0	5
 crates/core/idl	0	0	0	0	1	0
 crates/core/idl-macros	0	0	0	0	1	-
 crates/core/inspect	1	1	0	0	0	3
-crates/core/ipc	40	10	4	0	0	53
+crates/core/ipc	40	10	4	0	0	54
 crates/core/ktest	3	0	0	0	0	67
 crates/core/libsys	89	10	2	0	0	94
 crates/core/libsys-macros	0	0	0	0	1	-
@@ -107,7 +107,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	17	0	0	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	348	14	12	52	0	62
+kernel	349	14	12	52	0	62
 micro	20	4	0	0	0	68
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-

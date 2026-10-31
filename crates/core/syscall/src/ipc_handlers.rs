@@ -821,26 +821,11 @@ pub(crate) fn map_region_ref(tid: u32, r: u32, writable: bool, max_write: bool) 
         Ok((n, _)) => n,
         Err(e) => return errno_for_memobj_err(e),
     };
-    // A volatile object is not purged while this mapping is built: the frames'
-    // addresses are read now and the leaves installed after, and a purge in
-    // between would free them under the leaves. A purged one has nothing to
-    // map (`-EPURGED`).
-    let pinned = match memobj::memobj_pin_for_map(r) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = memobj::memobj_release_ref(tid, r);
-            return errno_for_memobj_err(e);
-        }
-    };
-    let mapped = map_acquired(tid, r, page_count, writable, max_write);
-    if pinned {
-        memobj::memobj_frames_unpin(r);
-    }
-    mapped
+    map_acquired(tid, r, page_count, writable, max_write)
 }
 
-/// [`map_region_ref`] once the caller holds its reference on `r` (and, for a
-/// volatile object, the kernel its pin): build the mapping and book it.
+/// [`map_region_ref`] once the caller holds its reference on `r`: build the
+/// mapping and book it.
 fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: bool) -> i64 {
     use azos_abi::error::Errno;
     use azos_ipc::memobj::{self, MapAccess, MAX_MEMOBJ_PAGES};
@@ -860,34 +845,23 @@ fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: 
         }
     }
     let mut pages = [0usize; MAX_MEMOBJ_PAGES];
-    for (i, page) in pages.iter_mut().enumerate().take(page_count) {
-        match memobj::memobj_page_phys_ref(r, i) {
-            Ok(Some(p)) => *page = p,
-            // Not reachable while this task holds its reference. Nothing is
-            // mapped yet, so the reference goes back.
-            _ => {
-                let _ = memobj::memobj_release_ref(tid, r);
-                return Errno::EBADF.to_syscall_ret();
-            }
-        }
+    if let Err(e) = memobj::memobj_map_begin_ref(tid, r, writable, &mut pages[..page_count]) {
+        let _ = memobj::memobj_release_ref(tid, r);
+        return errno_for_memobj_err(e);
     }
-    let mapped = match azos_sched::process::shm_map_user(&pages[..page_count], writable) {
-        Some(va) => matches!(
-            memobj::memobj_note_mapping_ref(tid, r, azos_sched::current_user_pt(), va, page_count,
-                MapAccess { write: writable, max_write: max_write && writable }),
-            Ok(true)
-        )
-        .then_some(va),
-        None => None,
+    let Some(va) = azos_sched::process::shm_map_user(&pages[..page_count], writable) else {
+        // A partial mapping's leaves are not named by any address this call has.
+        memobj::memobj_map_abandon_ref(tid, r);
+        return Errno::ENOMEM.to_syscall_ret();
     };
-    match mapped {
-        Some(va) => va as i64,
-        // PTEs this record does not name may remain: the reference taken above
-        // must outlive the task's typed release. The task holds it, so the
-        // region is live and the pin finds its holder.
-        None => {
-            let _ = memobj::memobj_pin_ref(tid, r);
-            Errno::ENOMEM.to_syscall_ret()
+    let access = MapAccess { write: writable, max_write: max_write && writable };
+    match memobj::memobj_map_commit_ref(tid, r, azos_sched::current_user_pt(), va, page_count, access) {
+        Ok(true) => va as i64,
+        _ => {
+            unmap_user_pages(va, page_count);
+            let _ = azos_sched::process::release_user_window(va, page_count);
+            memobj::memobj_map_abandon_ref(tid, r);
+            Errno::EBADF.to_syscall_ret()
         }
     }
 }
@@ -957,11 +931,12 @@ pub fn sys_shm_release_typed(cap_raw: u64) -> i64 {
     }
     let mapping = azos_ipc::cap_store::with_table(tid, |table| {
         let r = table.get_op(cap, CapPerms::READ, class_op(ty::SHM, CLASS_CTL)).ok()?;
-        azos_ipc::memobj::memobj_take_mapping_ref(tid, r).ok().flatten()
+        azos_ipc::memobj::memobj_unmap_begin_ref(tid, r).ok().flatten().map(|m| (r, m))
     })
     .flatten();
-    if let Some((va, pages)) = mapping {
+    if let Some((r, (va, pages))) = mapping {
         unmap_user_pages(va, pages);
+        azos_ipc::memobj::memobj_unmap_end_ref(tid, r);
         // With its PTEs gone, the addresses go back to the task's window.
         let _ = azos_sched::process::release_user_window(va, pages);
     }

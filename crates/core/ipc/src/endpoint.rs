@@ -1382,7 +1382,10 @@ pub mod resolve_cache {
         // dereferenced here, and the call re-checks the endpoint's
         // generation and owner under the endpoint's queue lock.
         let lw = LOOKUP.get(LAYOUT.idx(r) as usize)?.load(core::sync::atomic::Ordering::Acquire);
-        if lw != e.lookup.load(Relaxed) || crate::cap::degraded_active() {
+        // Whether the word descends from a revoked capability is in the warrant,
+        // so the full resolution decides while a revocation is in flight, as
+        // for `fill` (`CapTable::word_grants`).
+        if lw != e.lookup.load(Relaxed) || crate::cap::degraded_active() || crate::cap::revocation_in_flight() {
             return None;
         }
         Some((Dest { r, owner: lw as u32 }, e.server.load(Relaxed)))
@@ -2974,6 +2977,40 @@ mod tests {
         assert_eq!(resolve_cache::hit(CLIENT as usize, CLIENT, raw), Some(full), "no hit");
         assert_eq!(resolve_cache::hit(CLIENT as usize, THIRD, raw), None, "another TID in the slot hit");
         assert_eq!(resolve_cache::hit(CLIENT as usize, CLIENT, raw ^ 1), None, "another handle hit");
+    }
+
+    /// **A capability derived from a revoked one stops resolving before the
+    /// sweep frees it.** Its own slot word has not changed, so only the revocation
+    /// window tells the cache, as it tells the full resolution.
+    ///
+    /// **Canary** `revoke-chain-canary` (the window never opens): the derived
+    /// capability hits with its ancestor gone.
+    #[test]
+    fn a_descendant_of_a_revoked_capability_misses_before_the_sweep() {
+        if !resolve_cache::ENABLED {
+            return;
+        }
+        let _g = setup();
+        assert!(endpoint_named_cap(SERVER, CapPerms::READ, b"svc").is_some());
+        let root = endpoint_named_cap(CLIENT, CapPerms::WRITE.union(CapPerms::DELEGATE), b"svc").unwrap().raw();
+        let x = crate::cap_store::CapXfer::new(root, true);
+        let mut out = [azos_abi::cap::CapHandle::from_raw(0); 1];
+        crate::cap_store::move_caps(CLIENT, THIRD, &[x], true, &mut out).expect("derive");
+        let child = out[0].as_raw();
+        assert_eq!(resolve(THIRD, child).map(|d| d.owner), Ok(SERVER));
+        assert!(resolve_cache::hit(THIRD as usize, THIRD, child).is_some(), "precondition: a hit");
+
+        crate::cap_store::with_table(CLIENT, |t| {
+            assert!(t.revoke_raw(root));
+            assert!(crate::cap::sweep_take(), "the sweep waits");
+        })
+        .unwrap();
+        assert_eq!(resolve_cache::hit(THIRD as usize, THIRD, child), None, "a revoked descendant hit");
+        assert_eq!(endpoint_resolve(THIRD, child), Err(EndpointCapError::Cap(CapError::Revoked)));
+
+        crate::cap::sweep_owed();
+        crate::cap_store::sweep();
+        assert_eq!(resolve_cache::hit(THIRD as usize, THIRD, child), None, "the swept slot hit");
     }
 
     /// **A change of the capability slot word misses**: revoked, the cached

@@ -46,6 +46,9 @@ memobj-resolve-stale-canary = []
 # Front memobj-multihart: declared for the shared source's cfg check (the
 # kernel's `scale` vsbench canary; no host test enables it).
 memobj-hold-canary = []
+memobj-map-unrecorded-canary = []
+# Front memobj-multihart: one resolve answer a process (memobj.rs).
+memobj-resolve-one-answer-canary = []
 delete-revokes-canary = []
 move-lifts-depth-canary = []
 

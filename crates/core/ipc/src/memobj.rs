@@ -324,11 +324,63 @@ pub struct MemHolder {
     /// and not in the region, so no kill can separate a task's record of an
     /// end from the count it stands for.
     pub ends: u8,
+    /// This holder's leaves are being installed or removed with the table
+    /// unlocked ([`memobj_map_begin_ref`], [`memobj_unmap_begin_ref`]), so the
+    /// record does not name them: it counts as a mapping for everything that
+    /// decides by the recorded mappings.
+    pub building: bool,
+    /// The leaves being installed or removed are writable.
+    pub build_write: bool,
 }
 
 impl MemHolder {
     pub const fn empty() -> Self {
-        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, pinned: false, map_root: 0, map_write: false, map_max_write: false, ends: 0 }
+        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, pinned: false, map_root: 0, map_write: false, map_max_write: false, ends: 0, building: false, build_write: false }
+    }
+
+    /// Are leaves of this holder in flight, which the record does not name?
+    /// Canary `memobj-map-unrecorded-canary`: only the record counts.
+    #[inline]
+    fn leaves_in_flight(&self) -> bool {
+        self.refs > 0 && self.building && !cfg!(feature = "memobj-map-unrecorded-canary")
+    }
+
+    /// Can a mapping, recorded or in flight, reach this holder's frames?
+    #[inline]
+    fn reaches_frames(&self) -> bool {
+        self.is_mapped() || self.leaves_in_flight()
+    }
+
+    /// Frames reached without a record: a failed map's leaves ([`Self::pinned`]),
+    /// the kernel's own use of the frames by address (a registered ring buffer, a
+    /// guest's RAM, a display). They may be written, and a frame must not leave
+    /// the object under them.
+    #[inline]
+    fn holds_frames_unrecorded(&self) -> bool {
+        self.refs > 0 && (self.pinned || self.tid == MEMOBJ_KERNEL_OWNER) && !cfg!(feature = "memobj-map-unrecorded-canary")
+    }
+
+    /// May a frame of the object change under this holder?
+    #[inline]
+    fn fixes_frames(&self) -> bool {
+        self.reaches_frames() || self.holds_frames_unrecorded()
+    }
+
+    /// May this holder write the frames, as far as a clone can tell?
+    #[inline]
+    fn may_write_frames(&self) -> bool {
+        (self.is_mapped() && self.map_write) || (self.leaves_in_flight() && self.build_write) || self.holds_frames_unrecorded()
+    }
+
+    /// The holder is losing its references under a map or unmap in flight: that
+    /// call will find no booking, and until it has removed its leaves one
+    /// reference stays pinned so no frame goes back under them.
+    #[inline]
+    fn strand_leaves_in_flight(&mut self) {
+        if self.leaves_in_flight() {
+            self.building = false;
+            self.pinned = true;
+        }
     }
 
     /// Does this holder have a mapping recorded: a live reference and a VA?
@@ -510,8 +562,10 @@ struct MemObjTable {
     next_gen: [u32; MAX_MEMOBJS],
     /// What [`memobj_resolve_mapped`] answered last for a few processes, so a
     /// futex call on the same word (or on any private word) does not scan the
-    /// table: see [`ResolveEntry`].
-    resolved: [ResolveEntry; RESOLVE_WAYS],
+    /// table: see [`ResolveEntry`]. Two answers a way: the last mapping found
+    /// ([`HIT`]) and the last gap ([`GAP`]), so a process that calls futexes
+    /// on a shm word and on its private words in turn keeps both.
+    resolved: [[ResolveEntry; 2]; RESOLVE_WAYS],
     /// Bumped by every mapping recorded ([`memobj_note_mapping_ref`]): the only
     /// event that can put a mapping where none was (`note_mapping_locked` is
     /// the only writer of a nonzero `MemHolder::map_va`; every other holder is
@@ -520,11 +574,22 @@ struct MemObjTable {
     map_epoch: u64,
 }
 
-/// The entries of [`MemObjTable::resolved`]: a process's entry is
+/// The ways of [`MemObjTable::resolved`]: a process's way is
 /// `tid % RESOLVE_WAYS`, so a few processes calling futexes at once keep
-/// theirs; one more only costs the next caller of its slot one scan.
+/// theirs; one more only costs the next caller of its way one scan.
 /// Kconfig `MEMOBJ_RESOLVE_WAYS`.
 const RESOLVE_WAYS: usize = azos_limits::MEMOBJ_RESOLVE_WAYS;
+
+/// A way's entry for an answer that names a mapping, and the one for a gap.
+/// Front memobj-multihart: with ONE answer a process, a shm word's lookup
+/// evicted the private words' gap and the next private word's lookup evicted
+/// the shm word's mapping, so a process alternating the two (a shm ring and
+/// its own mutexes) scanned the whole table under the lock on every call:
+/// about 3,200 instructions a futex wake on riscv64 against 789, and the
+/// lock the other harts' futex calls collided on. Canary
+/// `memobj-resolve-one-answer-canary`: both answers share entry [`HIT`].
+const HIT: usize = 0;
+const GAP: usize = if cfg!(feature = "memobj-resolve-one-answer-canary") { HIT } else { 1 };
 
 /// One remembered answer of [`memobj_resolve_mapped`] for process `tid` and
 /// the user addresses `[lo, hi)`.
@@ -571,7 +636,7 @@ impl core::ops::DerefMut for MemObjTable {
 static MEMOBJS: SpinLock<MemObjTable> = SpinLock::new(MemObjTable {
     regions: [EMPTY_MEMOBJ; MAX_MEMOBJS],
     next_gen: [1u32; MAX_MEMOBJS],
-    resolved: [ResolveEntry::EMPTY; RESOLVE_WAYS],
+    resolved: [[ResolveEntry::EMPTY; 2]; RESOLVE_WAYS],
     map_epoch: 0,
 });
 
@@ -1124,6 +1189,91 @@ pub fn memobj_note_mapping_ref(
     Ok(noted)
 }
 
+/// Start a map of the object `r` names for `tid`: in one hold, refuse a write
+/// mapping of frames a clone shares (`Busy`) and a second map by the holder
+/// (`Busy`), read the frames into `pages`, and mark the holder as building, so
+/// that from here a clone copies, a break waits and a purge leaves the object. The caller installs its
+/// leaves with the table unlocked (page-table work takes the address space's
+/// locks and may allocate) and ends with [`memobj_map_commit_ref`] or
+/// [`memobj_map_abandon_ref`]. `Closed` for a holder with no reference or a page
+/// with no frame.
+pub fn memobj_map_begin_ref(tid: u32, r: u32, write: bool, pages: &mut [usize]) -> Result<(), MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let o = &mut regions[i];
+    if o.purge == PurgeState::Purged {
+        return Err(MemObjError::Purged);
+    }
+    if write && o.cow_shared != 0 {
+        return Err(MemObjError::Busy);
+    }
+    let frames = o.phys_pages.get(..pages.len()).filter(|_| pages.len() <= o.page_count).ok_or(MemObjError::Closed)?;
+    if frames.contains(&0) {
+        return Err(MemObjError::Closed);
+    }
+    pages.copy_from_slice(frames);
+    let h = o.holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid).ok_or(MemObjError::Closed)?;
+    if h.map_va != 0 || h.building {
+        return Err(MemObjError::Busy);
+    }
+    h.building = true;
+    h.build_write = write;
+    Ok(())
+}
+
+/// The leaves of [`memobj_map_begin_ref`] are in place: book them. `Ok(false)`
+/// when the holder lost its references meanwhile (a revoke, a MOVE); the caller
+/// removes the leaves and the holder's pinned reference waits for its exit.
+pub fn memobj_map_commit_ref(tid: u32, r: u32, root: usize, va: usize, pages: usize, access: MapAccess) -> Result<bool, MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    if !regions[i].holders.iter().any(|h| h.refs > 0 && h.tid == tid && h.building) {
+        return Ok(false);
+    }
+    let noted = note_mapping_locked(&mut regions[i], tid, root, va, pages, access);
+    regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
+    Ok(noted)
+}
+
+/// The map of [`memobj_map_begin_ref`] will not be booked and may have left
+/// leaves it cannot name: the holder's reference stays pinned until its exit.
+pub fn memobj_map_abandon_ref(tid: u32, r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = live_index(&regions, r) {
+        if let Some(h) = regions[i].holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+            h.pinned = true;
+            h.building = false;
+        }
+    }
+}
+
+/// [`memobj_take_mapping_ref`] for a caller that removes the leaves after this
+/// hold: they stay counted until [`memobj_unmap_end_ref`].
+pub fn memobj_unmap_begin_ref(tid: u32, r: u32) -> Result<Option<(usize, usize)>, MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let region = &mut regions[i];
+    let write = region.holders.iter().any(|h| h.refs > 0 && h.tid == tid && h.map_va != 0 && h.map_write);
+    let taken = take_mapping_locked(region, tid);
+    if taken.is_some() {
+        if let Some(h) = region.holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+            h.building = true;
+            h.build_write = write;
+        }
+    }
+    Ok(taken)
+}
+
+/// The leaves of [`memobj_unmap_begin_ref`] are gone, on every hart.
+pub fn memobj_unmap_end_ref(tid: u32, r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = live_index(&regions, r) {
+        if let Some(h) = regions[i].holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+            h.building = false;
+        }
+    }
+}
+
 /// The access a recorded mapping has and the most it may be given back
 /// ([`MemHolder::map_write`], [`MemHolder::map_max_write`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1151,6 +1301,7 @@ fn note_mapping_locked(region: &mut MemObj, tid: u32, root: usize, va: usize, pa
             h.map_root = root;
             h.map_write = access.write;
             h.map_max_write = access.max_write;
+            h.building = false;
             return true;
         }
     }
@@ -1172,6 +1323,11 @@ pub fn memobj_take_mapping(tid: u32, shm_id: u32) -> Option<(usize, usize)> {
     let region = &mut regions[shm_id as usize];
     if !region.active {
         return None;
+    }
+    // A map or unmap the exiting task left in flight has no address space to
+    // finish in: nothing remains that the marker protects.
+    if let Some(h) = region.holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+        h.building = false;
     }
     take_mapping_locked(region, tid)
 }
@@ -1325,12 +1481,15 @@ struct MappedWord {
     phys: usize,
 }
 
-/// [`memobj_resolve_mapped`] under the lock: from `tid`'s cache entry when it
-/// answers for `va`, else by a scan that refills it.
+/// [`memobj_resolve_mapped`] under the lock: from one of `tid`'s two cache
+/// entries when it answers for `va`, else by a scan that refills the entry of
+/// the answer's kind.
 fn resolve_mapped_locked(t: &mut MemObjTable, tid: u32, va: usize) -> Option<MappedWord> {
     let slot = tid as usize % RESOLVE_WAYS;
-    let e = t.resolved[slot];
-    if e.tid == tid && va >= e.lo && va < e.hi {
+    for e in &t.resolved[slot] {
+        if e.tid != tid || va < e.lo || va >= e.hi {
+            continue;
+        }
         match e.hit {
             None if e.epoch == t.map_epoch => return None,
             None => {}
@@ -1368,12 +1527,12 @@ fn resolve_mapped_locked(t: &mut MemObjTable, tid: u32, va: usize) -> Option<Map
     match found {
         Some((i, h, end)) => {
             let lo = t.regions[i].holders[h].map_va;
-            t.resolved[slot] = ResolveEntry { tid, epoch, lo, hi: end, hit: Some((i as u16, h as u8)) };
+            t.resolved[slot][HIT] = ResolveEntry { tid, epoch, lo, hi: end, hit: Some((i as u16, h as u8)) };
             mapped_word_locked(&t.regions[i], i, h, tid, va).ok().flatten()
         }
         None => {
             if !ineligible {
-                t.resolved[slot] = ResolveEntry { tid, epoch, lo, hi, hit: None };
+                t.resolved[slot][GAP] = ResolveEntry { tid, epoch, lo, hi, hit: None };
             }
             None
         }
@@ -1606,7 +1765,7 @@ fn release_locked(region: &mut MemObj, tid: u32) -> Option<Reclaim> {
         let h = &region.holders[i];
         if h.refs > 0 && h.tid == tid {
             // Refuse while this holder still has PTEs into the region.
-            if h.map_va != 0 {
+            if h.reaches_frames() {
                 return None;
             }
             found = Some(i);
@@ -1647,7 +1806,7 @@ fn release_holder_locked(region: &mut MemObj, tid: u32) -> Option<Reclaim> {
     let holder = region.holders[idx];
     // Refuse while this holder still has PTEs into the region, as
     // `release_locked` does.
-    if holder.map_va != 0 {
+    if holder.reaches_frames() {
         return None;
     }
     // `refs > 0` is established above, so neither form underflows.
@@ -1989,7 +2148,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
         if o.cow_shared & (1u64 << page) == 0 {
             return Ok(());
         }
-        if o.holders.iter().any(|h| h.refs > 0 && h.map_va != 0) {
+        if o.holders.iter().any(MemHolder::fixes_frames) {
             return Err(MemObjError::Busy);
         }
         (o.phys_pages[page], o.generation)
@@ -2027,7 +2186,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
         o.generation == key
             && o.phys_pages[page] == old
             && o.cow_shared & (1u64 << page) != 0
-            && !o.holders.iter().any(|h| h.refs > 0 && h.map_va != 0)
+            && !o.holders.iter().any(MemHolder::fixes_frames)
     });
     let Some(i) = still else {
         drop(regions);
@@ -2116,7 +2275,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
             return Err(MemObjError::Closed);
         }
         let o = &mut regions[i];
-        let writable_somewhere = o.holders.iter().any(|h| h.refs > 0 && h.map_va != 0 && h.map_write);
+        let writable_somewhere = o.holders.iter().any(MemHolder::may_write_frames);
         pages[..n].copy_from_slice(&o.phys_pages[..n]);
         if !writable_somewhere && o.kind == MemKind::Anon {
             let mut shared = 0usize;
@@ -2216,7 +2375,7 @@ fn copy_into_new(src_pages: &[usize], owner_task: u32, spec: &MemSpec, key: u32)
 /// PTEs the mapping list does not name, so a walk of the list is not a walk of
 /// every PTE of the object.
 fn any_pinned(region: &MemObj) -> bool {
-    region.holders.iter().any(|h| h.refs > 0 && h.pinned)
+    region.holders.iter().any(|h| (h.refs > 0 && h.pinned) || h.leaves_in_flight())
 }
 
 /// The holder `tid` lost its name for the object `r` names: unmap its mapping
@@ -2251,6 +2410,7 @@ fn memobj_revoke_holder_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
         unmap_range(root, va, pages);
         note_moved_window(tid, va, pages);
     }
+    region.holders[hi].strand_leaves_in_flight();
     let h = region.holders[hi];
     let n = if h.pinned { h.refs - 1 } else { h.refs };
     if n > 0 {
@@ -2427,6 +2587,7 @@ pub fn memobj_move(from: u32, to: u32, r: u32) -> Result<Moved, MemObjError> {
     });
     let not_moved = Moved { mapping, transferred: false };
 
+    regions[i].holders[fi].strand_leaves_in_flight();
     let sender = regions[i].holders[fi];
     let movable = if sender.pinned { sender.refs - 1 } else { sender.refs };
     if movable == 0 {
@@ -3744,7 +3905,7 @@ pub fn __memobj_reset_for_tests() {
         regions[i] = MemObj::empty();
         regions.next_gen[i] = 1;
     }
-    regions.resolved = [ResolveEntry::EMPTY; RESOLVE_WAYS];
+    regions.resolved = [[ResolveEntry::EMPTY; 2]; RESOLVE_WAYS];
     regions.map_epoch = 0;
     drop(regions);
     // The windows a MOVE, a revoke or a shrink left for their tasks belong to
@@ -4106,6 +4267,110 @@ mod tests {
         assert!(hits > 700 && misses > 7000, "{hits} mapped answers, {misses} unmapped");
     }
 
+    /// **A failed map's leaves and the kernel's own use fix the frames.** Neither
+    /// has a record: a failed map cannot name its partial leaves, a registered
+    /// ring buffer holds frame addresses. A clone made under them copies, and a
+    /// share made before them is not broken, which would drop the frame from the
+    /// object while something still uses it.
+    ///
+    /// Canary `memobj-map-unrecorded-canary`: red.
+    #[test]
+    fn a_failed_map_and_a_kernel_pin_keep_the_frames_where_they_are() {
+        let _g = setup();
+        let frame = |r| memobj_page_phys_ref(r, 0).unwrap().unwrap();
+        let shared = |r| memobj_describe_ref(r).unwrap().cow_shared != 0;
+
+        let failed = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let earlier = memobj_clone(A, failed, A, MemPerms::ReadOnly).expect("clone");
+        let f = frame(failed);
+        let mut pages = [0usize; 1];
+        assert_eq!(memobj_map_begin_ref(A, failed, false, &mut pages), Ok(()));
+        memobj_map_abandon_ref(A, failed);
+        assert_eq!(memobj_cow_break_all(failed), Err(MemObjError::Busy), "a break under a failed map's leaves");
+        assert_eq!(frame(failed), f);
+        assert_eq!(memobj_release_ref(A, earlier), Ok(()));
+
+        let buffer = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let earlier = memobj_clone(A, buffer, A, MemPerms::ReadOnly).expect("clone");
+        let f = frame(buffer);
+        let mut addrs = [0usize; 1];
+        assert_eq!(memobj_frames_pin(buffer, &mut addrs), Ok(1));
+        assert_eq!(memobj_cow_break_all(buffer), Err(MemObjError::Busy), "a break under the kernel's addresses");
+        assert_eq!(frame(buffer), f);
+        assert_eq!(memobj_release_ref(A, earlier), Ok(()));
+        memobj_frames_unpin(buffer);
+
+        let pinned = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_frames_pin(pinned, &mut addrs), Ok(1));
+        let c = memobj_clone(A, pinned, A, MemPerms::ReadOnly).expect("clone");
+        assert!(!shared(pinned), "a clone shared frames the kernel may write");
+        assert_ne!(frame(c), frame(pinned));
+        memobj_frames_unpin(pinned);
+    }
+
+    /// **A purge leaves an object with a map in flight**, and a map does not start
+    /// on a purged one.
+    ///
+    /// Canary `memobj-map-unrecorded-canary`: red.
+    #[test]
+    fn a_map_in_flight_keeps_a_volatile_object_from_being_purged() {
+        let _g = setup();
+        let (_cap, r) = create_volatile(A, 1);
+        assert_eq!(memobj_set_volatile_ref(A, r, true), Ok(false));
+        let mut pages = [0usize; 1];
+        assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Ok(()));
+        assert_eq!(memobj_purge_volatile(8, nobody_is_locked), 0, "purged under leaves being installed");
+        assert_eq!(memobj_map_commit_ref(A, r, 0x1000, 0x4000_0000, 1, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((0x4000_0000, 1))));
+        assert_eq!(memobj_purge_volatile(8, nobody_is_locked), 1);
+        assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Err(MemObjError::Purged));
+    }
+
+    /// **An exit ends a map left in flight**: its references go back with the
+    /// others, or the object would outlive the task.
+    #[test]
+    fn an_exit_releases_a_holder_with_a_map_in_flight() {
+        let _g = setup();
+        let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let mut pages = [0usize; 1];
+        assert_eq!(memobj_map_begin_ref(A, r, true, &mut pages), Ok(()));
+        assert_eq!(memobj_map_begin_ref(A, r, true, &mut pages), Err(MemObjError::Busy), "one map at a time");
+        memobj_release_all(A);
+        assert!(memobj_describe_ref(r).is_err(), "the object outlived its only holder");
+    }
+
+    /// **A process that alternates a shm word and a private word keeps both
+    /// answers** (front memobj-multihart). A process with a shm ring and its
+    /// own mutexes calls futexes on both; with one remembered answer per
+    /// process each call evicted the other's, and every futex wake scanned
+    /// the whole region table under `MEMOBJS` (the vsbench `scale futex`
+    /// lanes alternate the two: about 3,200 instructions a wake on riscv64,
+    /// against 789 for a wake that repeats its word).
+    ///
+    /// Canary `memobj-resolve-one-answer-canary`: one answer a process: red.
+    #[test]
+    fn a_process_alternating_a_shm_word_and_a_private_word_keeps_both_answers() {
+        let _g = setup();
+        const VA: usize = 0x4000_0000;
+        const PRIVATE: usize = VA + 0x10_0000;
+        let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_note_mapping_ref(A, r, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        let kept = |want_hit: bool| {
+            MEMOBJS.lock_irqsave().resolved.iter().flatten().any(|e| e.tid == A && e.hit.is_some() == want_hit)
+        };
+        for _ in 0..2 {
+            assert!(memobj_resolve_mapped(A, VA).is_some());
+            assert_eq!(memobj_resolve_mapped(A, PRIVATE), None);
+            assert!(kept(true), "the private word's answer evicted the shm word's");
+            assert!(kept(false), "no answer for the private word was kept");
+        }
+        // Both stay correct: the gap answer still yields to a new mapping.
+        let r2 = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_note_mapping_ref(A, r2, 0x1000, PRIVATE, 1, MapAccess::RW), Ok(true));
+        assert!(memobj_resolve_mapped(A, PRIVATE).is_some(), "a cached gap answered over a new mapping");
+        assert!(memobj_resolve_mapped(A, VA).is_some());
+    }
+
     /// **The resolution cache has Kconfig `MEMOBJ_RESOLVE_WAYS` entries.** As
     /// many processes as there are ways each keep their own remembered answer;
     /// one more, whose id picks the first one's entry, takes it over. Run at a
@@ -4117,7 +4382,7 @@ mod tests {
         let ways = azos_limits::MEMOBJ_RESOLVE_WAYS as u32;
         // Outside every mapping: each answer fills its process's entry.
         const VA: usize = 0x4000_0000;
-        let kept = |t: u32| MEMOBJS.lock().resolved.iter().any(|e| e.tid == t);
+        let kept = |t: u32| MEMOBJS.lock().resolved.iter().flatten().any(|e| e.tid == t);
         for t in A..A + ways {
             assert_eq!(memobj_resolve_mapped(t, VA), None);
         }

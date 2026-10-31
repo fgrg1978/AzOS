@@ -50,6 +50,29 @@ static CURRENT_TASK_TID: AtomicU32 = AtomicU32::new(0);
 /// The current task's program break — see [`update_user_brk`].
 static USER_BRK: AtomicU64 = AtomicU64::new(0);
 
+type OnceHook = std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>;
+static AFTER_SHM_MAP: OnceHook = std::sync::Mutex::new(None);
+static AT_MM_LOCK: OnceHook = std::sync::Mutex::new(None);
+
+fn shim_run_once(hook: &OnceHook) {
+    let f = hook.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(f) = f {
+        f();
+    }
+}
+
+/// Test-only: what another hart does once [`process::shm_map_user`] has
+/// installed its leaves, before it returns to the map call. Runs once.
+pub fn shim_after_shm_map(f: Box<dyn FnOnce() + Send>) {
+    *AFTER_SHM_MAP.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+/// Test-only: what another hart does as an unmap takes the address-space lock,
+/// with the mapping's record already taken and its leaves still there. Runs once.
+pub fn shim_at_mm_lock(f: Box<dyn FnOnce() + Send>) {
+    *AT_MM_LOCK.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
 /// Test-only control surface — not part of the real `azos_sched` API.
 pub fn set_current_user_pt(pt: usize) {
     shim_assert_serial("set_user_pt");
@@ -1185,6 +1208,7 @@ pub mod process {
                 return None;
             }
         }
+        super::shim_run_once(&super::AFTER_SHM_MAP);
         Some(base)
     }
 
@@ -1314,7 +1338,10 @@ pub mod group {
     pub fn current_group_ending() -> bool { false }
     pub fn set_current_clear_tid(_addr: u64) {}
     pub struct MmGuard;
-    pub fn mm_lock() -> MmGuard { MmGuard }
+    pub fn mm_lock() -> MmGuard {
+        super::shim_run_once(&super::AT_MM_LOCK);
+        MmGuard
+    }
 }
 
 /// `azos_sched::futex` as `crate::vdso_notify` calls it: the key of a private

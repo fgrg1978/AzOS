@@ -11297,6 +11297,14 @@ host_job host_canary_row "memobj: PI swap word unlocked canary" syscall-tests me
     a_pi_swap_keeps_its_shm_frame_until_the_swap_ends
 host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-resolve-stale-canary \
     the_resolve_cache_answers_what_the_scan_answers
+# revoke-chain-canary: the revocation window never opens, so the IPC resolve cache
+# answers for a capability whose ancestor was revoked until the sweep frees it.
+host_job host_canary_row "ipc: resolve cache in a revocation canary" ipc-tests revoke-chain-canary \
+    a_descendant_of_a_revoked_capability_misses_before_the_sweep
+# memobj-resolve-one-answer-canary: the cache keeps one answer a process, so a shm
+# word and a private word in turn evict each other's.
+host_job host_canary_row "memobj: one resolve answer a process canary" ipc-tests memobj-resolve-one-answer-canary \
+    a_process_alternating_a_shm_word_and_a_private_word_keeps_both_answers
 # The futex wait's check and filing are one table hold (front futex-single-section).
 # futex-look-unlocked-canary: the wait looks at its word before it locks the table,
 # so a waker's store and wake land between the check and the row (futex_table.rs).
@@ -11349,6 +11357,16 @@ host_job host_canary_row "memobj: MOVE keeps the mapping canary (syscall)" sysca
     a_moved_capability_takes_the_senders_mapping_with_it
 host_job host_canary_row "memobj: READ share maps writable canary (syscall)" syscall-tests memobj-share-no-narrow-canary \
     a_typed_map_asks_write_only_for_a_writable_region
+# memobj-map-unrecorded-canary: a map or unmap in flight does not count, so a clone
+# shares and a break moves frames under its leaves (typed_ipc.rs).
+host_job host_canary_row "memobj: clone inside a write map canary" syscall-tests memobj-map-unrecorded-canary \
+    a_clone_inside_a_write_map_does_not_share_the_frames
+host_job host_canary_row "memobj: break inside a map canary" syscall-tests memobj-map-unrecorded-canary \
+    a_cow_break_inside_a_map_does_not_move_the_frames_under_it
+host_job host_canary_row "memobj: clone inside an unmap canary" syscall-tests memobj-map-unrecorded-canary \
+    a_clone_inside_an_unmap_does_not_share_the_frames
+host_job host_canary_row "memobj: move inside a map canary" syscall-tests memobj-map-unrecorded-canary \
+    a_move_inside_a_map_leaves_no_leaf_and_frees_no_frame_under_it
 # Hardware bus (crates/drivers/hwbus): `policy-canary` makes the topology-only
 # policy admit like auto; the four rows that pin the policy must fail, and
 # only they.
@@ -14397,8 +14415,8 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
     # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
     # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
-    KTEST_N_RV=129
-    KTEST_N_ARM=133
+    KTEST_N_RV=130
+    KTEST_N_ARM=134
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14675,6 +14693,8 @@ PY
     par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img
     par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk-aarch64.img
+    par "ktest clone against maps in flight canary (rv)" ktest_row "ktest clone against maps in flight canary (rv)" rv ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
+    par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
@@ -15166,7 +15186,7 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
     # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
     # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
-    KTEST_N_X86=135
+    KTEST_N_X86=136
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -22249,6 +22269,28 @@ PYEOF
         fi
     }
     par -s "bench: receipts cost canary" receipts_cost_canary_row
+
+    # The `scale` lanes' canary (memobj-hold-canary): the futex lookups hold the
+    # object table a few thousand spins longer. Under -icount at four harts the
+    # instruction cost of `scale futex h=1` must at least double against the same
+    # lane without it, or the lanes cannot see a longer hold.
+    scale_hold_canary_row() {
+        printf "  %-26s" "bench: scale hold canary..."
+        local w="$AZOS_OUT/build/vsbench-scale-hold" base held
+        scale_h1() { # scale_h1 <work dir> [kernel features]
+            QEMU="$QEMU" VSBENCH_GATE_ONLY=1 VSBENCH_ICOUNT=1 VSBENCH_SMP=4 VSBENCH_LANES=scale VSBENCH_WORK="$1" \
+                VSBENCH_AZOS_EXTRA_FEATURES="${2:-}" bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh" >"$1.out" 2>&1
+            sed -n 's/.*azos scale futex h=1 rep=0:.*per-call=\([0-9]*\) ns.*/\1/p' "$1/azos-bench-minimal.log" | sed -n 1p
+        }
+        mkdir -p "$w"
+        base="$(scale_h1 "$w/base")"; held="$(scale_h1 "$w/held" memobj-hold-canary)"
+        if [ -n "$base" ] && [ -n "$held" ] && [ "$held" -ge $((base * 2)) ]; then
+            ok; echo "      scale futex h=1: $base without, $held with the longer hold"
+        else
+            bad; echo "      CANARY: scale futex h=1 '$base' without, '$held' with the longer hold: the lanes did not see it"
+        fi
+    }
+    par -s "bench: scale hold canary" scale_hold_canary_row
 
     # vsbench on x86_64 (tools/bench/vsbench_x86_64.sh): the same ring-3 work on
     # AzOS and on Linux 6.12, both on `-M microvm` under -icount at one CPU, as

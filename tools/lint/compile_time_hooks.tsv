@@ -162,6 +162,7 @@ mem-locked-refusal-canary	pending	adds rows to the built-in topology (crates/cor
 mem-locked-smoke	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 mem-quota-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 memobj-hold-canary	pending	
+memobj-map-unrecorded-canary	host-shared	crates/core/ipc/src/memobj.rs: ipc-tests and syscall-tests build the same source
 mmap-break-only-canary	hot	crates/core/syscall/src/handlers.rs: mmap_place, on the syscall path, in a crate `canary!` does not reach
 mmap-prot-canary	pending	
 mmc-flush-canary	pending	
