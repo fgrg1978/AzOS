@@ -26,10 +26,9 @@ static STORES: AtomicU32 = AtomicU32::new(0);
 static STOP: AtomicBool = AtomicBool::new(false);
 static WRITER_DONE: AtomicBool = AtomicBool::new(false);
 
-fn byte_of(r: u32) -> Option<&'static AtomicU8> {
-    let phys = memobj_page_phys_ref(r, 0).ok().flatten()?;
+fn byte_at(phys: usize) -> &'static AtomicU8 {
     // SAFETY: a live frame of an object this task holds; the direct map covers it.
-    Some(unsafe { &*(azos_mm::addr::phys_to_virt(phys) as *const AtomicU8) })
+    unsafe { &*(azos_mm::addr::phys_to_virt(phys) as *const AtomicU8) }
 }
 
 fn store_a_while(byte: &AtomicU8, seq: &mut u8) {
@@ -56,10 +55,8 @@ fn writer(_: usize) {
             }
             Err(_) => break,
         }
-        // The map's frame, not the object's now: a break cannot move it under a
-        // map in flight.
-        // SAFETY: as `byte_of`; the mark keeps this frame the object's.
-        let byte = unsafe { &*(azos_mm::addr::phys_to_virt(pages[0]) as *const AtomicU8) };
+        // The frame the map read: a break cannot move it under a map in flight.
+        let byte = byte_at(pages[0]);
         store_a_while(byte, &mut seq);
         let _ = memobj_map_commit_ref(me, r, 0, VA, 1, MapAccess::RW);
         store_a_while(byte, &mut seq);
@@ -98,10 +95,11 @@ azos_ktest::ktest_late! {
                 break;
             };
             copied += u32::from(memobj_describe_ref(c).map_or(false, |d| d.cow_shared == 0));
-            let Some(byte) = byte_of(c) else {
+            let Ok(Some(phys)) = memobj_page_phys_ref(c, 0) else {
                 result = Err("a clone has no frame");
                 break;
             };
+            let byte = byte_at(phys);
             let seen = byte.load(Ordering::Relaxed);
             let from = STORES.load(Ordering::Relaxed);
             let moved = crate::ktest::wait("the mapper stopped storing", || {
