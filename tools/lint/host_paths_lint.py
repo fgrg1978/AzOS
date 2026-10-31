@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-BAD = re.compile(r"/opt/homebrew|/usr/local/(?:opt|share/qemu)|/Users/[a-z]|pgrep\s[^|]*-x qemu-system|^\s*target = "[a-z0-9_]+-apple-darwin"")
+BAD = re.compile(r"/opt/homebrew|/usr/local/(?:opt|share/qemu)|/Users/[a-z]|pgrep\s[^|]*-x qemu-system|^\s*target = .[a-z0-9_]+-apple-darwin")
 SELF = "tools/lint/host_paths_lint.py"
 
 
