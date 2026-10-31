@@ -14358,8 +14358,8 @@ PY
     # aarch64) -> 124, arm 127.
     # +1 inspect_refresh_leaves_interrupts_as_they_were -> 125, arm 128.
     # +1 blk_reap_reports_once -> 126, arm 130.
-    KTEST_N_RV=126
-    KTEST_N_ARM=130
+    KTEST_N_RV=127
+    KTEST_N_ARM=131
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15055,7 +15055,7 @@ PY
     # arm -> 130.
     # +1 inspect_refresh_leaves_interrupts_as_they_were, as on rv and arm -> 131.
     # +1 blk_reap_reports_once, as on rv and arm -> 132.
-    KTEST_N_X86=132
+    KTEST_N_X86=133
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
