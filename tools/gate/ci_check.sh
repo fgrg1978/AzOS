@@ -11312,6 +11312,8 @@ host_job host_canary_row "memobj: delete revokes canary (syscall)" syscall-tests
 # limit and stores in two steps again.
 host_job host_canary_row "mm: swap Busy spins the fault canary" mm-tests swap-busy-rings-canary \
     a_restore_during_a_read_is_told_busy
+host_job host_canary_row "mmap: native mapping stops at the break canary" syscall-tests mmap-break-only-canary \
+    a_break_range_that_is_occupied_goes_in_the_mmap_area
 host_job host_canary_row "mm: storm cut short stops canary" mm-tests storm-no-resume-canary \
     a_storm_cut_short_by_a_full_pool_goes_on_below_high
 host_job host_canary_row "mm: restore loses its slot to a store canary" mm-tests swap-no-restore-slot-canary \
