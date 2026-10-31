@@ -1128,20 +1128,8 @@ fn break_range(root: usize, s: usize, e: usize) {
 /// cannot copy, which is why it is waited out and not skipped. The wait sleeps
 /// (a fork runs in a syscall, outside every lock of this module).
 pub fn fork_begin(root: usize) -> bool {
-    loop {
-        let seen = MARKER_SEQ.load(Ordering::Acquire);
-        {
-            let mut t = TABLE.lock_irqsave();
-            match t.slot(root) {
-                Some(i) if t.s[i].reclaiming == 0 => {
-                    t.s[i].forking += 1;
-                    break;
-                }
-                Some(_) => {}
-                None => return true,
-            }
-        }
-        MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seen);
+    if !reclaim_hold(root) {
+        return true;
     }
     if !resv::ENABLED {
         return true;
@@ -1156,10 +1144,55 @@ pub fn fork_begin(root: usize) -> bool {
 /// nothing of it can be promoted until it is filled afresh, and the reclaimer
 /// may take pages of it again.
 pub fn fork_end(root: usize) {
+    reclaim_release(root);
+}
+
+/// Wait for the stores in flight in `root` to end and keep the reclaimer from
+/// starting more until [`reclaim_release`]. Counted, so holds nest and overlap.
+/// `false`: the space has no record here (no regions), so nothing is held.
+/// Sleeps while a store is in flight: call it outside every lock of this module.
+fn reclaim_hold(root: usize) -> bool {
+    loop {
+        let seen = MARKER_SEQ.load(Ordering::Acquire);
+        {
+            let mut t = TABLE.lock_irqsave();
+            match t.slot(root) {
+                Some(i) if t.s[i].reclaiming == 0 => {
+                    t.s[i].forking += 1;
+                    return true;
+                }
+                Some(_) => {}
+                None => return false,
+            }
+        }
+        MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seen);
+    }
+}
+
+fn reclaim_release(root: usize) {
     let mut t = TABLE.lock_irqsave();
     if let Some(i) = t.slot(root) {
         t.s[i].forking = t.s[i].forking.saturating_sub(1);
     }
+}
+
+/// The reclaimer takes no page out of a space for as long as this lives, and
+/// none is in flight when it is made ([`reclaim_pause`]).
+pub struct ReclaimPause(usize);
+
+impl Drop for ReclaimPause {
+    fn drop(&mut self) {
+        reclaim_release(self.0);
+    }
+}
+
+/// Hold the reclaimer off `root` while its leaves are rewritten in place
+/// (`mprotect`): a leaf the reclaimer swaps for its `InTransit` marker between
+/// the rewrite's read and its store would be overwritten with a valid leaf on a
+/// frame the store then frees, and a store that fails (`keep`) puts back the
+/// leaf it took out, with the permission it had then.
+pub fn reclaim_pause(root: usize) -> Option<ReclaimPause> {
+    reclaim_hold(root).then_some(ReclaimPause(root))
 }
 
 /// Break every reservation of `root`.

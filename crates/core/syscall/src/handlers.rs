@@ -3490,6 +3490,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
         return 0;
     }
     // Pass 2: back what has nothing behind it, then set the permission.
+    // The reclaimer takes no page of the space meanwhile: a leaf it swapped
+    // out under the rewrite would be written back as a valid leaf on a frame
+    // it is about to free, and a store that fails restores the old permission.
+    let _reclaim_off = azos_mm::pager::reclaim_pause(user_pt);
     // Wave 14: regions first. It is the step that can refuse for want of a
     // record, and a refusal here leaves everything as it was.
     if azos_mm::pager::protect_range(user_pt, start, end, write).is_err() {

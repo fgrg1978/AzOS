@@ -460,6 +460,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod mprotect_reclaim {
+        use super::*;
+        include!("mprotect_reclaim.rs");
+    }
+
+    #[cfg(test)]
     mod thp_vmm {
         use super::*;
         include!("thp_vmm.rs");
