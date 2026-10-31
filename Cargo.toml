@@ -26,6 +26,8 @@ exclude = [
     # ipctest — ring-3 IPC probe: fast-path round trip, server impersonation,
     # and the shm/port/io_ring ownership gates.
     "userspace/tests/ipctest",
+    # mempress — ring-3 memory pressure driver of the gate's reclaim rows.
+    "userspace/tests/mempress",
     # vsbench — the same ring-3 work measured on Azos and on Linux/riscv64.
     # One shared core, two syscall backends; the binaries differ only in which
     # kernel they call.

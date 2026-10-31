@@ -8,7 +8,7 @@
 # its system volume (mk/vars.mk, "The configured system").
 qemu: build
 	cp $(SYSTEM_VOLUME) $(QEMU_VOLUME)
-	$(QEMU_SYSTEM_$(KCONFIG_ISA))
+	$(QEMU_SYSTEM_$(KCONFIG_ISA)) $(if $(QEMU_CMDLINE),-append "$(QEMU_CMDLINE)")
 
 # Gate 4: native PCI enumeration on QEMU `virt`.
 # `disable-legacy=on` on every virtio-*-pci device matters: without it QEMU's

@@ -76,7 +76,7 @@
 //! endpoint queues, MemObj metadata, page tables grown at run time), bounded by
 //! the row's `kmem_kib`. Same rules: atomic, all-or-nothing, saturating.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 /// How hard a Domain's frame budget is pressed. The value is what a pressure
 /// event carries in its `source_id` (`PORT_EVENT_PRESSURE`).
@@ -160,6 +160,9 @@ pub struct PageBudget {
     /// When the Domain's pages were last aged (`aging.rs`), in the caller's
     /// ticks; `0`: never ([`PageBudget::aging_due`]).
     aged: AtomicU64,
+    /// The last storm stopped for want of room, having freed pages
+    /// ([`PageBudget::storm_cut_short`]).
+    cut_short: AtomicBool,
 }
 
 const STORM_IDLE: u8 = 0;
@@ -255,6 +258,7 @@ impl PageBudget {
             storm_out: AtomicU64::new(0),
             level: AtomicU8::new(Pressure::Normal as u8),
             aged: AtomicU64::new(0),
+            cut_short: AtomicBool::new(false),
         }
     }
 
@@ -306,12 +310,28 @@ impl PageBudget {
     #[must_use]
     pub fn low(&self) -> u32 { self.low.load(Ordering::Relaxed) }
 
-    /// Is the charge at or above the high watermark? Two loads: the trigger
-    /// site (after a charge) asks it without a lock.
+    /// Is a storm due: the charge at or above the high watermark, or the last
+    /// storm stopped for want of room with the charge still above `low`? The
+    /// second holds a pass to its word: it wrote a segment to make that room,
+    /// and a Domain told `warning` is told `normal` only at `low`, so a storm
+    /// that did not go on there would leave a program that held back waiting
+    /// for good. A few loads: the trigger site asks it without a lock.
     #[must_use]
     pub fn over_high(&self) -> bool {
         let high = self.high.load(Ordering::Relaxed);
-        high != 0 && self.used.load(Ordering::Relaxed) >= high
+        let used = self.used.load(Ordering::Relaxed);
+        high != 0
+            && (used >= high
+                || (!cfg!(feature = "storm-no-resume-canary")
+                    && self.cut_short.load(Ordering::Relaxed)
+                    && used > self.low.load(Ordering::Relaxed)))
+    }
+
+    /// How the storm that just ended stopped: `true` when the pool had no room
+    /// and it had made progress, so the next one goes on from there. One that
+    /// freed nothing does not ask again before the charge is back at `high`.
+    pub fn storm_cut_short(&self, cut_short: bool) {
+        self.cut_short.store(cut_short, Ordering::Relaxed);
     }
 
     /// The level the charge puts the Domain at now, given the level it was last
@@ -386,7 +406,7 @@ impl PageBudget {
     /// harts are never reclaimed" is one decision with one test, not two
     /// checks at two call sites.
     pub fn storm_begin(&self, locked: bool, rt_hart: bool) -> Result<(), NoStorm> {
-        if locked {
+        if locked && !cfg!(feature = "storm-ignore-locked-canary") {
             return Err(NoStorm::Locked);
         }
         if rt_hart {
@@ -495,6 +515,7 @@ impl PageBudget {
     pub fn reset(&self) {
         self.used.store(0, Ordering::Release);
         self.peak.store(0, Ordering::Relaxed);
+        self.cut_short.store(false, Ordering::Relaxed);
     }
 }
 

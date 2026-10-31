@@ -7,7 +7,7 @@
 $(IMAGE_HASHES_BOARD): userspace/image_hashes.py \
                $(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF_BOARD) \
                $(UHELLO_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) \
-               $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(VSBENCH_ELF) \
+               $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(MEMPRESS_ELF) $(VSBENCH_ELF) \
                $(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) \
                $(SH_ELF) $(TERMD_ELF) $(NAMESD_ELF) $(COMPMGR_ELF) $(TOOLBOX_ELF) $(POWER_ELF) $(TRACECTL_ELF) $(DECISD_ELF) $(INPUTD_ELF) $(COMPSRV_ELF) $(LOGD_ELF) $(WHY_ELF) $(PKGD_ELF_BOARD) $(PKG_ELF) $(RPCSRV_ELF) $(ZENOHD_ELF) $(VMMD_ELF) $(PTPD_ELF) $(AUDIOD_ELF) $(RPCQUIC_ELF) $(MCPD_ELF) $(SSHD_ELF) $(LOGIND_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
 	@mkdir -p $(BOARD_DIR)
@@ -203,7 +203,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-gpiodrv.img $(OUT_BUILD)/disk-b
 		$(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) \
 		$(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) \
 		$(VSBENCH_ELF) \
-		$(IPCTEST_ELF) \
+		$(IPCTEST_ELF) $(MEMPRESS_ELF) \
 		$(OUT_BUILD)/policy.gguf $(OUT_BUILD)/policy.sig $(OUT_BUILD)/behavior.mbl \
 		$(TEST_PRIV_KEY) $(CONFIG_SIG_TOOLS) $(LINK_KEY_TOOL)
 	@mkdir -p $(OUT_BUILD)
@@ -247,6 +247,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-gpiodrv.img $(OUT_BUILD)/disk-b
 	mcopy -i $@ $(LATBENCH_ELF) ::LATBENCH.ELF
 	mcopy -i $@ $(ABITEST_ELF) ::ABITEST.ELF
 	mcopy -i $@ $(IPCTEST_ELF) ::IPCTEST.ELF
+	mcopy -i $@ $(MEMPRESS_ELF) ::MEMPRESS.ELF
 	mcopy -i $@ $(VSBENCH_ELF) ::VSBENCH.ELF
 	$(foreach f,$(DISK_EXTRA),mcopy -i $@ $(word 1,$(subst =, ,$(f))) ::$(word 2,$(subst =, ,$(f)));)
 	# 8.3 names, as the FAT32 driver matches no other (`tests/host/fs-tests`).
@@ -413,7 +414,7 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 		$(BOARD_PRIV_STAMP) \
 		$(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF_BOARD) $(PKGD_ELF_BOARD) $(PKG_ELF) $(UHELLO_ELF) \
 		$(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) \
-		$(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) \
+		$(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(MEMPRESS_ELF) \
 		$(VSBENCH_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) $(OUT_BUILD)/policy.gguf \
 		$(CONFIG_SIG_TOOLS) $(TOPO_EMIT_DEPS) $(VF2_KCONFIG) $(OUT_BUILD)/k1.config $(OUT_BUILD)/fleet.config
 	$(call require_board_key,BOARD)
@@ -512,7 +513,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 		$(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AARCH64) $(MLSRV_ELF_AARCH64) \
 		$(UHELLO_ELF_AARCH64) $(EPSRV_ELF_AARCH64) $(ABICHILD_ELF_AARCH64) $(VSSRV_ELF_AARCH64) \
 		$(REFLEX_ELF_AARCH64) $(BRAINCLI_ELF_AARCH64) $(CAPTEST_ELF_AARCH64) \
-		$(LATBENCH_ELF_AARCH64) $(ABITEST_ELF_AARCH64) $(IPCTEST_ELF_AARCH64) \
+		$(LATBENCH_ELF_AARCH64) $(ABITEST_ELF_AARCH64) $(IPCTEST_ELF_AARCH64) $(MEMPRESS_ELF_AARCH64) \
 		$(VSBENCH_ELF_AARCH64) $(OUT_BUILD)/policy.gguf $(OUT_BUILD)/policy.sig $(OUT_BUILD)/behavior.mbl \
 		tools/keys/test_priv.bin $(CONFIG_SIG_TOOLS)
 	@mkdir -p $(OUT_BUILD)
@@ -546,6 +547,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 	mcopy -i $@ $(LATBENCH_ELF_AARCH64) ::LATBENCH.ELF
 	mcopy -i $@ $(ABITEST_ELF_AARCH64) ::ABITEST.ELF
 	mcopy -i $@ $(IPCTEST_ELF_AARCH64) ::IPCTEST.ELF
+	mcopy -i $@ $(MEMPRESS_ELF_AARCH64) ::MEMPRESS.ELF
 	mcopy -i $@ $(VSBENCH_ELF_AARCH64) ::VSBENCH.ELF
 	$(foreach f,$(DISK_EXTRA),mcopy -i $@ $(word 1,$(subst =, ,$(f))) ::$(word 2,$(subst =, ,$(f)));)
 	# 8.3 names, as the FAT32 driver matches no other (`tests/host/fs-tests`).
@@ -973,6 +975,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 	mcopy -i $@ $(BRAINCLI_ELF_X86_64) ::BRAINCLI.ELF
 	mcopy -i $@ $(ABITEST_ELF_X86_64) ::ABITEST.ELF
 	mcopy -i $@ $(IPCTEST_ELF_X86_64) ::IPCTEST.ELF
+	mcopy -i $@ $(MEMPRESS_ELF_X86_64) ::MEMPRESS.ELF
 	mcopy -i $@ $(CAPTEST_ELF_X86_64) ::CAPTEST.ELF
 	mcopy -i $@ $(LATBENCH_ELF_X86_64) ::LATBENCH.ELF
 	mcopy -i $@ $(GPIO_DRV_ELF_X86_64) ::GPIODRV.ELF

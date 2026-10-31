@@ -697,6 +697,7 @@ impl Parkable for VanishingPool {
     fn set_cap(&mut self, _: usize) -> bool {
         unreachable!()
     }
+    fn hold_room(&mut self, _: bool) {}
 }
 
 #[test]
@@ -773,6 +774,35 @@ fn a_restore_at_the_ceiling_writes_another_segment_out() {
     assert!(rig.pool.borrow().swapped(8, b[0]).is_some(), "the segment that was in the way is out now");
     assert_eq!(rig.restore(&swap, 8, b[0]).unwrap(), page(b[0] as u32), "and it comes back in turn");
     assert_eq!(rig.restore(&swap, 7, a[5]).unwrap(), page(a[5] as u32), "the others are still right");
+}
+
+/// A storm runs on another hart while a restore writes a segment out to come
+/// back: the slot that frees is the restore's, a store takes the pool's word
+/// that it is full and the storm swaps instead.
+#[test]
+fn a_store_does_not_take_the_slot_a_restore_made_room_in() {
+    let disk = Disk::new(SW);
+    let rig = Rig::<Tight>::new(&disk);
+    let swap = rig.swap();
+    let a = rig.fill_one_segment(1, 7, 0);
+    rig.storm(&swap, 1).unwrap();
+    let _ = rig.fill_one_segment(1, 8, 0);
+    rig.store(1, 9, 0, 9);
+    assert!(!rig.pool.borrow().swap_has_room());
+    rig.pool.borrow_mut().swap_hold_room(true);
+    rig.storm(&swap, 1).unwrap();
+    assert!(rig.pool.borrow().swap_has_room(), "the segment that was in the way left");
+    assert_eq!(rig.segments(), 1);
+    let mut scratch = vec![0u8; PAGE_SIZE];
+    let refused = (0..4096u64).any(|pg| {
+        let Packed::Blob { len, nonce } = codec().pack(&page(pg as u32), &mut scratch).unwrap() else { panic!("did not compress") };
+        rig.pool.borrow_mut().insert_blob(1, 10, pg, nonce, &scratch[..len]) == Err(Error::Full)
+    });
+    assert!(refused, "a store past the segment that is left is told the pool is full");
+    assert_eq!(rig.segments(), 1);
+    assert!(rig.pool.borrow().swap_has_room(), "and the slot is still there for the restore");
+    rig.pool.borrow_mut().swap_hold_room(false);
+    assert_eq!(rig.restore(&swap, 7, a[0]).unwrap(), page(a[0] as u32));
 }
 
 #[test]

@@ -296,7 +296,11 @@ fn a_restore_during_a_read_is_told_busy() {
     let seen = Rc::new(RefCell::new(None));
     let s2 = seen.clone();
     *disk.on_read.borrow_mut() = Some(Box::new(move || {
+        let rung = inner.swap.steps.get();
         *s2.borrow_mut() = Some(inner.bring_in(8, b0));
+        // A fault waits on this count: moved by its own refusal, it would ask
+        // again at once, for ever, on the CPU the step it waits for needs.
+        assert_eq!(inner.swap.steps.get(), rung, "a step told Busy rang the waiters");
     }));
     rig.bring_in(7, a[0]).unwrap();
     assert_eq!(*seen.borrow(), Some(Err(SwapError::Busy)), "two segments were coming back at once");

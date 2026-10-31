@@ -72,7 +72,7 @@ static DEV: BlockQueue = BlockQueue;
 /// A Domain on a `mem = "locked"` row is pinned: none of its pages is ever in
 /// a segment that is written out. Called under the pool's lock; takes none.
 fn pinned(owner: usize) -> bool {
-    azos_sched::domain::slot_mem_locked(owner)
+    azos_sched::domain::slot_mem_locked(owner) || canary!("reclaim-pin-swap")
 }
 
 fn record(r: &SwapRecord) {
@@ -166,7 +166,11 @@ impl SwapDev for FileArea {
         Self::each(sector, (buf.len() / SECTOR) as u32, |lba, n, done| {
             let at = done as usize * SECTOR;
             azos_drv_block::blkdev::read_quiet(lba, n, &mut buf[at..at + n as usize * SECTOR])
-        })
+        })?;
+        if canary!("swap-read-flip") {
+            buf[0] ^= 1;
+        }
+        Ok(())
     }
 
     fn discard(&self, sector: u64, sectors: u32) -> Result<(), ()> {

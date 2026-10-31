@@ -172,6 +172,8 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // placed outside the real-time CPUs the topology has just published.
     #[cfg(feature = "mm-reclaim")]
     create_reclaim_task();
+    #[cfg(feature = "decisions-console")]
+    create_decision_console_task();
     // Kconfig ENERGY (and THERMAL): applies the governor's choices, reads the
     // zones and caps the clocks (nothing on a board with neither a clock to
     // move nor a zone).

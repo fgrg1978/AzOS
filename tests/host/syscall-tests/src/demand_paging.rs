@@ -279,16 +279,18 @@ fn a_page_committed_during_the_fork_is_charged_to_the_child() {
 }
 
 #[test]
-fn a_reservation_refuses_an_occupied_range_as_the_eager_path_did() {
+fn a_break_range_that_is_occupied_goes_in_the_mmap_area() {
     let _g = serial();
     let pt = space();
     let page = azos_mm::pmm::alloc_page().unwrap().as_usize();
     let occupied = BRK as usize + 2 * PAGE_SIZE;
     azos_mm::vmm::map(pt, occupied, page, azos_arch_api::PagePerms::USER_RW).unwrap();
-    assert_eq!(sys_mmap(0, (4 * PAGE_SIZE) as u64, RW, 0, ANON, 0), -1);
-    assert_eq!(azos_sched::update_user_brk(0), BRK, "nothing moved");
-    assert_eq!(azos_sched::shim_user_pages(), 0, "nothing charged");
-    assert_eq!(azos_mm::pager::space_pages(pt), (0, 0));
+    let at = sys_mmap(0, (4 * PAGE_SIZE) as u64, RW, 0, ANON, 0);
+    let (floor, ceiling) = azos_sched::user_mmap_area();
+    assert!(at as usize >= floor && at as usize + 4 * PAGE_SIZE <= ceiling, "in the area: {at:#x}");
+    assert_eq!(azos_sched::update_user_brk(0), BRK, "the break did not move");
+    assert_eq!(azos_sched::shim_user_pages(), 4, "the mapping is charged where it went");
+    assert_eq!(azos_mm::pager::space_pages(pt), (4, 0));
 }
 
 #[test]

@@ -288,9 +288,11 @@ fn mmap_va_ceiling_is_exclusive_at_the_top_and_inclusive_below_it() {
     let pt = fresh_user_pt();
     let (window_base, _) = azos_sched::user_shm_window();
 
-    // One byte more than a page needs a second page, which lies in the window.
+    // One byte more than a page needs a second page, which lies in the window:
+    // not at the break, then.
     azos_sched::shim_set_brk((window_base - PAGE_SIZE) as u64);
-    assert_eq!(sys_mmap(0, PAGE_SIZE as u64 + 1, 3, 0, ANON, 0), -1);
+    let past = sys_mmap(0, PAGE_SIZE as u64 + 1, 3, 0, ANON, 0);
+    assert!(past > 0 && past as usize + 2 * PAGE_SIZE <= window_base - PAGE_SIZE, "{past:#x}");
     assert_eq!(azos_mm::vmm::translate_user(pt, window_base, false), None);
 
     azos_sched::shim_set_brk((window_base - PAGE_SIZE) as u64);
@@ -345,9 +347,12 @@ fn mmap_length_ceiling_is_inclusive() {
 fn mmap_survives_a_break_at_the_top_of_the_address_space() {
     let _g = serial();
     fresh_user_pt();
+    let (floor, ceiling) = azos_sched::user_mmap_area();
     for brk in [u64::MAX, u64::MAX - 1, (usize::MAX & !(PAGE_SIZE - 1)) as u64] {
         azos_sched::shim_set_brk(brk);
-        assert_eq!(sys_mmap(0, PAGE_SIZE as u64, 3, 0, ANON, 0), -1, "brk = {brk:#x}");
+        let at = sys_mmap(0, PAGE_SIZE as u64, 3, 0, ANON, 0) as usize;
+        assert!(at >= floor && at < ceiling, "brk = {brk:#x}: {at:#x}");
+        assert_eq!(azos_sched::update_user_brk(0), brk, "the break stays");
     }
 }
 
@@ -694,13 +699,11 @@ fn munmap_does_protect_addresses_at_and_above_the_user_ceiling() {
 /// `vmm::map`'s `AlreadyMapped`: every shared region's *first* page is
 /// occupied, because each MMIO base (CLINT `0x0200_0000`, PLIC
 /// `0x0C00_0000`, UART `0x1000_0000`) happens to sit exactly on the 2 MiB
-/// boundary of the VPN[1] slot it occupies. A mapping walking up from the
-/// break hits that page first, fails, and unwinds.
+/// boundary of the VPN[1] slot it occupies. A mapping that would walk up from
+/// the break into that page goes in the mmap area instead.
 ///
-/// This asserts all three halves of that: the refusal, the kernel tables
-/// still resolving, and the pages coming back — the last being an unwind on a
-/// failure that originates in `map`, a different arm from the OOM one
-/// `a_failed_mmap_leaves_no_physical_pages_stranded` covers.
+/// This asserts the three halves of that: no page of it in a shared table, the
+/// kernel tables still resolving, and nothing committed by the reservation.
 #[test]
 fn mmap_cannot_walk_into_a_shared_kernel_table_on_this_layout() {
     let _g = serial();
@@ -713,9 +716,13 @@ fn mmap_cannot_walk_into_a_shared_kernel_table_on_this_layout() {
     // test blind to the unwind it is here to check (it was, at first).
     azos_sched::shim_set_brk(0x2_0000);
     let max = azos_mm::demand::MAX_DEMAND_ALLOC_BYTES;
-    // 64 MiB from 0x20000 runs ~8,000 pages up to the CLINT at 0x0200_0000
-    // and fails there, so there is a real partial mapping to unwind.
-    assert_eq!(sys_mmap(0, max as u64, 3, 0, ANON, 0), -1);
+    // 64 MiB from 0x20000 would run up to the CLINT at 0x0200_0000: it goes in
+    // the mmap area, and no page of it in a table the kernel shares.
+    let at = sys_mmap(0, max as u64, 3, 0, ANON, 0) as usize;
+    assert!(at >= azos_sched::user_mmap_area().0, "placed at {at:#x}");
+    for va in (at..at + max).step_by(1 << 21) {
+        assert!(!azos_mm::vmm::write_would_enter_kernel_table(upt, va), "{va:#x} is in a shared table");
+    }
 
     for mmio in [CLINT, PLIC, UART] {
         assert_eq!(
@@ -729,18 +736,8 @@ fn mmap_cannot_walk_into_a_shared_kernel_table_on_this_layout() {
             "and it must not have become user-writable"
         );
     }
-    // Same slack, same reason, as `a_failed_mmap_leaves_no_physical_pages_
-    // stranded`: `mmap_unwind` frees the mapped pages but deliberately not
-    // the intermediate page tables `vmm::walk` allocated (they are still
-    // valid tables). ~8,000 pages were mapped before the collision, so a
-    // missing unwind misses this bound by two orders of magnitude — measured
-    // at +15 with the unwind in place.
     let after = azos_mm::shim_pages_in_use();
-    assert!(
-        after <= before + 64,
-        "the AlreadyMapped failure stranded {} pages (before {before}, after {after})",
-        after - before
-    );
+    assert!(after <= before + 64, "a reservation committed {} pages", after - before);
     assert_eq!(azos_sched::update_user_brk(0), 0x2_0000);
 }
 
@@ -774,8 +771,8 @@ fn mmap_cannot_write_into_an_empty_slot_of_a_shared_kernel_table() {
     assert_eq!(azos_mm::vmm::translate(kpt, target), None, "precondition: slot is free");
 
     azos_sched::shim_set_brk(target as u64);
-    assert_eq!(
-        sys_mmap(0, PAGE_SIZE as u64, 3, 0, ANON, 0), -1,
+    assert_ne!(
+        sys_mmap(0, PAGE_SIZE as u64, 3, 0, ANON, 0), target as i64,
         "a ring-3 mmap was allowed to write a PTE into a table the kernel owns. \
          The slot was EMPTY, which is why no address-based check catches this: \
          `va_is_kernel_mapped` is false for a hole, and a mapper marching \

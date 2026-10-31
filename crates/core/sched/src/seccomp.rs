@@ -653,6 +653,18 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_CREATE_PORT, DOMAIN_CREATE_ENDPOINT, DOMAIN_UPTIME, DOMAIN_WAIT, PORT_POLL, PORT_BIND, MEMOBJ_ACQUIRE],
         ifaces: NO_IFACES,
     },
+    // The reclaim rows' memory pressure driver: anonymous memory, a volatile
+    // object it marks through `memctl`, and its Domain's pressure on a Port.
+    ImageProfile {
+        image: "MEMPRESS.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO,
+            SYS_IPC_CALL_V2, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_MEMINFO, DOMAIN_CREATE_PORT, PORT_BIND, PORT_POLL],
+        ifaces: &[azos_devif::key::MEMCTL],
+    },
     // The `--features azos` build (the image never carries the Linux one).
     ImageProfile {
         image: "VSBENCH.ELF",

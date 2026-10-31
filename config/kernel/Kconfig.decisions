@@ -89,6 +89,20 @@ config DECISION_DENY_DURABLE_BURST
       denials a task may leave a durable record for back to back, from a
       full bucket.
 
+config DECISION_RECORDS_CONSOLE
+    # cargo-feature: decisions-console
+    bool "Print every decision record on the console"
+    depends on DECISION_RECORDS_DEV
+    default n
+    help
+      A kernel task follows the decision ring and prints one line per record,
+      `[DECISION] <rule> <verdict> subject=<n> n=<a>,<b>,<c>`, and how many the
+      ring overwrote before it got there. For a machine with a console and no
+      `why` to ask, and for the gate rows that hold the verdicts of a boot to
+      account (reclaim's). Off in every preset.
+
+      Cost: one task, a wake every 50 ms, and the console time of the lines.
+
 config DECISION_RECORDS_ENTRIES
     int "Explainable decision records: ring depth"
     range 8 4096

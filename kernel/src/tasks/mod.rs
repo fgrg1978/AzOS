@@ -23,6 +23,11 @@ pub(crate) use sensors::*;
 mod loader;
 mod loader_admit;
 pub(crate) use loader::*;
+// Kconfig `DECISION_RECORDS_CONSOLE`: the decision ring on the console.
+#[cfg(feature = "decisions-console")]
+mod decision_console;
+#[cfg(feature = "decisions-console")]
+pub(crate) use decision_console::*;
 // Kconfig `MM_RECLAIM_COMPRESS`: the memory reclaim task.
 #[cfg(feature = "mm-reclaim")]
 mod reclaim;

@@ -52,7 +52,8 @@
 //!    (`pager::AnonReclaim`). The watermarks are declared
 //!    with the Domain's frame limit, from its topology row (`mem_pages`;
 //!    `domain::set_limit`), and a Domain without a limit has none. A Domain on
-//!    a `mem = "locked"` row is never reclaimed (`PageBudget::storm_begin`).
+//!    a `mem = "locked"` row is never reclaimed (`PageBudget::storm_begin`): it
+//!    gets one `Rule::Compress` refusal each time it goes over its watermark.
 //!    One `Rule::Compress` record per storm.
 //! 3. *Swap.* When a storm ended because the pool had no room, one full pool
 //!    segment is written to the swap area (`pager::swap_segment`) and
@@ -73,13 +74,16 @@
 //! **A restore is charged back.** The storm gives a stored page's charge back
 //! to its Domain; the fault that restores it charges it again, without
 //! refusing it (`PageBudget::charge_restore`), through the hook this file
-//! installs (`pager::set_restore_hook`).
+//! installs (`pager::set_restore_hook`). A Domain at its limit backs off for a
+//! poll there: it cannot be refused the page it asked for, but a task that
+//! reads back more than the machine holds must not outrun the storms and empty
+//! the allocator, where the next fault of anybody dies.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 
 use azos_decision::{Rule, Verdict};
 use azos_ipc::port::{self as ports, PortEvent};
-use azos_mm::budget::{Pressure, StormOutcome};
+use azos_mm::budget::{NoStorm, Pressure, StormOutcome};
 use azos_mm::pager::{self, Ages, AnonReclaim};
 use azos_mm::zpool::{self, Round, Stages};
 use azos_mm::{budget, pmm};
@@ -108,6 +112,12 @@ static OVERFLOWED: [AtomicBool; domain::DOMAINS_MAX] = [const { AtomicBool::new(
 /// storm waits for the next poll. Rewritten by every [`announce_pressure`]; the
 /// reclaim task alone.
 static DEFER: [AtomicBool; domain::DOMAINS_MAX] = [const { AtomicBool::new(false) }; domain::DOMAINS_MAX];
+
+/// Domains (by slot) already told, since they went over their high watermark,
+/// that a storm can do nothing for them (they are locked, or have no candidate):
+/// said once, not at every poll, or they would push the storms that did
+/// something out of the ring.
+static TOLD_NOTHING: [AtomicBool; domain::DOMAINS_MAX] = [const { AtomicBool::new(false) }; domain::DOMAINS_MAX];
 
 /// Is the CPU this runs on one of the real-time ones? By the scheduler's
 /// logical CPU id: the mask is built from CPU indices, and the architecture's
@@ -185,6 +195,9 @@ fn announce_pressure(key: domain::Key) -> bool {
 fn announce_all() {
     for d in &DEFER {
         d.store(false, SeqCst);
+    }
+    if canary!("reclaim-pressure-skip") {
+        return;
     }
     each_domain(|key| {
         if announce_pressure(key) {
@@ -265,9 +278,14 @@ fn age_all(interval: u64) {
 fn storm(key: domain::Key, rt_hart: bool) -> Round {
     let none = Round::default();
     let Some(b) = domain::budget(key) else { return none };
-    if !b.over_high() || DEFER[domain::index(key)].load(SeqCst) {
+    if !b.over_high() {
+        TOLD_NOTHING[domain::index(key)].store(false, SeqCst);
         return none;
     }
+    if DEFER[domain::index(key)].load(SeqCst) {
+        return none;
+    }
+    let pinned = domain::mem_locked(key) || canary!("reclaim-pin-storm");
     let mut roots = [0usize; ROOTS_PER_DOMAIN];
     let n = roots_of(key, &mut roots);
     let owner = domain::index(key);
@@ -277,7 +295,7 @@ fn storm(key: domain::Key, rt_hart: bool) -> Round {
     let r = {
         let mut ages = AGES.lock();
         let mut source = AnonReclaim::new(&roots[..n], owner, &mut ages);
-        zpool::run_storm(b, &mut source, domain::mem_locked(key), rt_hart, max_steps, azos_arch::PAGE_SIZE as u32)
+        zpool::run_storm(b, &mut source, pinned, rt_hart, max_steps, azos_arch::PAGE_SIZE as u32)
     };
     let locked = canary!("storm-record-locked");
     let _ages = locked.then(|| AGES.lock());
@@ -291,11 +309,20 @@ fn storm(key: domain::Key, rt_hart: bool) -> Round {
                 // sits at its watermark with nothing to compress, no refusal.
                 StormOutcome::NoCandidate => Verdict::Admit,
             };
-            azos_decision::record(Rule::Compress, verdict, key, rec.fields());
+            let again = rec.outcome() == StormOutcome::NoCandidate && TOLD_NOTHING[domain::index(key)].swap(true, SeqCst);
+            if !again {
+                azos_decision::record(Rule::Compress, verdict, key, rec.fields());
+            }
             Round { stored: rec.pages, full: rec.full }
         }
-        // Below the watermark by now, locked, or a storm of this Domain
-        // already running: not a storm, and nothing to record.
+        Err(NoStorm::Locked) => {
+            if !TOLD_NOTHING[domain::index(key)].swap(true, SeqCst) {
+                azos_decision::record(Rule::Compress, Verdict::Refuse, key, [0; 3]);
+            }
+            none
+        }
+        // Below the watermark by now, or a storm of this Domain already
+        // running: not a storm, and nothing to record.
         Err(_) => none,
     }
 }
@@ -307,7 +334,7 @@ struct Pass {
 
 impl Stages for Pass {
     fn purge(&mut self) {
-        if system_low() {
+        if system_low() && !canary!("reclaim-purge-skip") {
             azos_ipc::memobj::memobj_purge_volatile(frames_to_target(), domain::mem_locked);
         }
     }
@@ -337,6 +364,17 @@ impl Stages for Pass {
     }
 }
 
+/// One poll of the reclaim task, by the clock and not by a wake from it: the
+/// fault may hold a lock the task is waiting for (a filesystem's, copying to a
+/// user page), and this must end all the same.
+fn restore_backoff() {
+    let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
+    let end = azos_drv_sys::timebase::now() + azos_limits::MM_RECLAIM_POLL_MS as u64 * per_ms;
+    while azos_drv_sys::timebase::now() < end {
+        azos_sched::task_block(azos_sched::WaitReason::Timer(end));
+    }
+}
+
 /// The restore hook: the fault that brought a page back from the pool charges
 /// the Domain slot the pool entry was stored for, the one whose storm gave the
 /// charge back, and not whoever happens to be running (a kernel-side fault has
@@ -345,6 +383,9 @@ impl Stages for Pass {
 fn charge_restore(owner: usize) {
     if let Some(b) = domain::slot_budget(owner) {
         b.charge_restore(1);
+        if b.limit() != 0 && b.used() >= b.limit() && !canary!("reclaim-restore-no-wait") {
+            restore_backoff();
+        }
     }
 }
 

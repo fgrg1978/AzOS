@@ -37,7 +37,7 @@ azos_crypto = { path = "../../../crates/core/crypto" }
 # are failures in this project. Declared rather than silenced so the condition
 # stays visible.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("slab-freelist-canary", "slab-align-canary", "slab-geometry-canary", "buddy-merge-canary", "buddy-split-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary", "budget-racy-charge-canary", "zone-share-canary", "swap-pinned-canary", "swap-verify-canary", "ktest"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("swap-plain-canary", "storm-ignore-locked-canary", "restore-flip-canary", "swap-busy-rings-canary", "storm-no-resume-canary", "swap-no-restore-slot-canary", "slab-freelist-canary", "slab-align-canary", "slab-geometry-canary", "buddy-merge-canary", "buddy-split-canary", "pcp-refill-canary", "pcp-drain-canary", "frame-index-canary", "refcount-canary", "budget-racy-charge-canary", "zone-share-canary", "swap-pinned-canary", "swap-verify-canary", "ktest"))'] }
 
 # Wave 15 (SLAB) canaries for the pulled `slab.rs` (see src/slab_tests.rs):
 # a free list that hands an object out twice, objects off their alignment,
@@ -62,6 +62,12 @@ zone-share-canary = []
 # offered to the swap-out storm; a segment read back is attached without its tag checked.
 swap-pinned-canary = []
 swap-verify-canary = []
+storm-no-resume-canary = []
+swap-no-restore-slot-canary = []
+swap-busy-rings-canary = []
+swap-plain-canary = []
+storm-ignore-locked-canary = []
+restore-flip-canary = []
 
 [profile.release]
 overflow-checks = true

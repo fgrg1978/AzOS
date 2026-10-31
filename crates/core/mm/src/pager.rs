@@ -681,6 +681,9 @@ fn zpool_restore_once(space: usize, va: usize, kind: PageMarker, gen: u32) -> KR
         }
         Lookup::Page(Fetched::Blob { len, nonce }, g, o) => {
             let r = with_codec(|c| c.unpack(nonce, len, buf, page)).and_then(|r| r);
+            if cfg!(feature = "restore-flip-canary") {
+                page[0] ^= 1;
+            }
             // The decrypted stream is the page in another form.
             pmm::zero_frame(scratch);
             r.map(|()| Some((g, o)))

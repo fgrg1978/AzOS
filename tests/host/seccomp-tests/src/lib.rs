@@ -1301,6 +1301,7 @@ mod image_profiles {
             src!("userspace/tests/abichild/src/shared.rs"),
         ]),
         ("IPCTEST.ELF", Lang::Rust, &[src!("userspace/tests/ipctest/src/main.rs")]),
+        ("MEMPRESS.ELF", Lang::Rust, &[src!("userspace/tests/mempress/src/main.rs")]),
         // The image carries the `--features azos` build (`Makefile`,
         // `$(VSBENCH_ELF)`), so `abi_linux.rs` is not part of it.
         ("VSBENCH.ELF", Lang::Rust, &[
@@ -3423,8 +3424,8 @@ mod image_profiles {
         // +4 on x86_64 with SYSTEST.ELF, CAPTEST.ELF, LATBENCH.ELF and LXSRV.ELF.
         assert_eq!(
             recipes,
-            rust_images + 42 + 1 + 42 + 3,
-            "expected {rust_images} riscv64 + 42 aarch64 + 1 board + 42 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
+            rust_images + 43 + 1 + 43 + 3,
+            "expected {rust_images} riscv64 + 43 aarch64 + 1 board + 43 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
         );
         // The SDK's recipes: WHY.ELF on three ISAs and the SDK's own test, sdktest,
         // on three.

@@ -506,6 +506,15 @@ net = []
 autorun = []
 # Kconfig MM_RECLAIM_COMPRESS: the reclaim task (kernel/src/tasks/reclaim.rs).
 mm-reclaim = []
+# Kconfig DECISION_RECORDS_CONSOLE: the task that prints the decision ring.
+decisions-console = ["decisions"]
+# Canaries of the `reclaim:` rows (crates/core/mm/Cargo.toml).
+swap-plain-canary = ["azos_mm/swap-plain-canary"]
+restore-flip-canary = ["azos_mm/restore-flip-canary"]
+swap-pinned-canary = ["azos_mm/swap-pinned-canary"]
+storm-ignore-locked-canary = ["azos_mm/storm-ignore-locked-canary"]
+# A native mmap stops at the first device window in low user space.
+mmap-break-only-canary = ["azos_syscall/mmap-break-only-canary"]
 net-smoke = ["net"]
 dhcp-smoke = ["net"]
 # Two riscv64 kernel tasks pinned to the SAME hart each fill v0-v31 with a
