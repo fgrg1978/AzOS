@@ -9,3 +9,5 @@ description = "Host stand-in for azos_mm, used only by tests/host/sched-wake-tes
 [features]
 # Declared for the pulled budget.rs's `cfg!(feature = ...)`; never enabled.
 budget-racy-charge-canary = []
+storm-no-resume-canary = []
+storm-ignore-locked-canary = []

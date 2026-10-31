@@ -658,11 +658,11 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     ImageProfile {
         image: "MEMPRESS.ELF",
         syscalls: sys_nrs![
-            SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE,
+            SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO,
             SYS_IPC_CALL_V2, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_MEMINFO, DOMAIN_CREATE_PORT, PORT_BIND, PORT_POLL, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_MEMINFO, DOMAIN_CREATE_PORT, PORT_BIND, PORT_POLL],
         ifaces: &[azos_devif::key::MEMCTL],
     },
     // The `--features azos` build (the image never carries the Linux one).

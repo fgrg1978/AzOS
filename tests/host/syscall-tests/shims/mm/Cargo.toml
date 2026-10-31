@@ -41,6 +41,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("buddy-mer
 # `cfg(feature = "budget-racy-charge-canary")` in the pulled-in `budget.rs`
 # (the Domain ledgers of the subtree policy's Domain table).
 budget-racy-charge-canary = []
+storm-no-resume-canary = []
+storm-ignore-locked-canary = []
 # Mirrors azos_mm's gate canary so `cfg(feature = "lx-wx-canary")` in
 # the #[path]-pulled vmm.rs is a known feature here.
 lx-wx-canary = []
@@ -81,4 +83,7 @@ zone-share-canary = []
 ktest = []
 # ... and the swap canaries of the pulled-in `swap.rs` (Kconfig MM_SWAP_BACKEND); the host rows are in tests/host/mm-tests.
 swap-pinned-canary = []
+swap-no-restore-slot-canary = []
+swap-plain-canary = []
+swap-busy-rings-canary = []
 swap-verify-canary = []
