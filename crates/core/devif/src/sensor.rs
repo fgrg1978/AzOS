@@ -91,6 +91,7 @@ pub trait Sensor {
     /// refreshes the slot (the sensors it can sample: the encoder and the
     /// odometry), `false` when the sensor is bound but has no interrupt-safe
     /// source and is read by `read` only. `NOT_READY` when the caller has not
-    /// mapped its page. Needs `READ`.
+    /// mapped its page, or when the sensor needs the Robot domain and the image
+    /// is built without it (as `read` answers). Needs `READ`.
     fn bind_vdso(&mut self) -> Out<bool>;
 }

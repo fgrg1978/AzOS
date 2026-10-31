@@ -138,6 +138,11 @@ ipc-admit-canary = []
 # `a_run_outside_the_partition_is_refused_and_an_unqueueable_one_falls_back`
 # (queued entry) must go red.
 block-scope-canary = []
+# Gate canary, never in a real build: `Sensor::bind_vdso` binds a robot sensor
+# on an image built without the Robot domain, so the timer interrupt publishes a
+# zero slot. The host test `a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain`,
+# run without `use-robot`, must go red.
+vdso-bind-canary = []
 # Wave 15 (plan 4a) gate canary, never in a real build: a port a thread
 # creates is booked to the thread instead of its process, so the thread's
 # exit frees it under its siblings.

@@ -19,7 +19,7 @@ use azos_abi::cap::CapPerms;
 use azos_devif::sensor::{Sample, SAMPLE_BYTES, TYPES};
 use azos_devif::{outcome, Out};
 
-use crate::handlers::{sensor_read_into, SENSOR_TYPE_CAMERA, SENSOR_TYPE_LIDAR};
+use crate::handlers::{robot_sensor_absent, sensor_read_into, SENSOR_TYPE_CAMERA, SENSOR_TYPE_LIDAR};
 use crate::khost::Caller;
 
 /// The `Sensor` interface served for one caller.
@@ -68,6 +68,10 @@ impl azos_devif::Sensor for SensorServer {
             Ok(t) => t,
             Err(c) => return Out::err(c),
         };
+        // CANARY, never in a real build: the bind skips the build's answer.
+        if !cfg!(feature = "vdso-bind-canary") && robot_sensor_absent(ty as u64) {
+            return Out::err(outcome::NOT_READY);
+        }
         match crate::vdso_notify::bind_sensor(self.0.tid, ty) {
             Ok(published) => Out::ok(published),
             Err(_) => Out::err(outcome::NOT_READY),

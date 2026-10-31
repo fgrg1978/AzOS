@@ -10873,13 +10873,13 @@ done
 # requires exactly the named test to fail: if it passes, the test above
 # proves nothing. vdso-write-canary: mprotect(RW) makes the shared vDSO frame
 # writable (syscall-tests mmap_guards).
-host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <feature> <test fn>
+host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <feature> <test fn> [extra cargo test flag]
     local label="$1" suite="$2" feat="$3" test="$4" out dir
     ci_tier_skips "$label" && return 0
     printf "  %-26s" "${label}..."
     case "$suite" in */*) dir="${REPO_ROOT}/${suite}" ;; *) dir="${REPO_ROOT}/tests/host/${suite}" ;; esac
     CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/$(printf '%s' "$suite" | tr '/' '-')" \
-        host_cargo out "$dir" test --release --features "$feat" -- "$test"
+        host_cargo out "$dir" test --release ${5:+"$5"} --features "$feat" -- "$test"
     if echo "$out" | qgrep -qE "(test |::)${test} \.\.\. FAILED" \
        && echo "$out" | qgrep -qE "test result: FAILED\. 0 passed; 1 failed"; then
         ok; echo "$out" | grep -m1 -A1 "panicked at" | sed -n 2p | cut -c1-200 | sed 's/^/      canary caught: /'
@@ -10888,6 +10888,26 @@ host_canary_row() { # <label> <suite: tests/host/<suite>, or a repo path> <featu
         echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
     fi
 }
+# The generic image (no `use-robot`): syscall-tests builds without the robot
+# shims' test controls, and `Sensor::bind_vdso` must refuse the four robot
+# sensors there, as `read` does, instead of letting the timer interrupt publish
+# a zero slot. The canary (`vdso-bind-canary`) skips the refusal.
+host_generic_row() { # <label> <test fn>
+    local label="$1" test="$2" out
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-generic" \
+        host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release --no-default-features \
+        --features virtio-snd,linux-abi -- "$test"
+    if echo "$out" | qgrep -qE "test result: ok\. 1 passed; 0 failed"; then ok
+    else
+        bad; echo "      syscall-tests --no-default-features: $test did not pass alone"
+        echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
+host_job host_generic_row "sensor: vdso bind, no robot domain" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain
+host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,vdso-bind-canary \
+    a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
 host_job host_canary_row "tls: no pin canary" tls-tests canary-no-pin a_pin_mismatch_is_refused
 host_job host_canary_row "tls: no validity canary" tls-tests canary-no-validity an_expired_certificate_is_refused
 host_job host_canary_row "tls: rsa key canary" tls-tests canary-rsa-keys the_server_refuses_an_rsa_private_key

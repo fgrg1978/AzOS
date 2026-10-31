@@ -177,6 +177,10 @@ pub mod devices;
 pub mod motor_host;
 #[path = "../../../../crates/core/syscall/src/sensor_host.rs"]
 pub mod sensor_host;
+// The stand-in for the robot crates that `use-robot` off selects (generic image).
+#[cfg(not(feature = "use-robot"))]
+#[path = "../../../../crates/core/syscall/src/no_robot.rs"]
+pub mod no_robot;
 #[path = "../../../../crates/core/syscall/src/block_host.rs"]
 pub mod block_host;
 // Wave 15: the kernel tracer's control call (632), the real file.
@@ -518,7 +522,7 @@ mod handlers {
         include!("cap_denial_record.rs");
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "use-robot"))]
     mod hw_cap_guards {
         use super::*;
         include!("hw_cap_guards.rs");
@@ -536,13 +540,13 @@ mod handlers {
         include!("file_ops_seam.rs");
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "use-robot"))]
     mod motor_guards {
         use super::*;
         include!("motor_guards.rs");
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "use-robot"))]
     mod device_guards {
         use super::*;
         include!("device_guards.rs");
@@ -590,7 +594,7 @@ mod handlers {
         include!("mcast_caps.rs");
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "use-robot"))]
     mod unit6_contain {
         use super::*;
         include!("unit6_contain.rs");
@@ -642,7 +646,7 @@ mod handlers {
         include!("pledge.rs");
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "use-robot"))]
     mod ioring_ops_guards {
         use super::*;
         include!("ioring_ops_guards.rs");
@@ -800,10 +804,18 @@ mod handlers {
     }
 
     // The `Sensor` interface the kernel hosts (D6 part A).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "use-robot"))]
     mod sensor_guards {
         use super::*;
         include!("sensor_guards.rs");
+    }
+
+    // The robot sensors' vDSO bind, once per build of the domain: its file is
+    // the one test the suite also runs without `use-robot` (the generic image).
+    #[cfg(test)]
+    mod sensor_bind {
+        use super::*;
+        include!("sensor_bind.rs");
     }
 }
 
