@@ -28,9 +28,15 @@ bits of a task are read with the mask of `sched_word` (STATE_MASK below); the
 interrupt controllers are read at the bases QEMU reports (`info mtree`).
 
 The gdbstub is started with the monitor so that a person can attach too; the
-dumps use the monitor alone (the same commands on every ISA, no gdb for
-aarch64 and x86_64 needed). The gdbstub under HVF on arm is not exercised by
-the soak rows (they run TCG); see the findings in tools/dev/test_stall_attach.py.
+dumps use the monitor alone (the same commands on every ISA, and no gdb for
+aarch64 and x86_64 is installed). Under HVF on arm (QEMU 11, macOS) the gdbstub
+answers qSupported, `g` and `m` (the pc of a running kernel and the code at it,
+as under TCG) and the monitor dumps work; the soak rows run TCG.
+
+The aarch64 linker script drops the ELF's DWARF, so the layout of the scheduler's
+types comes from the newest libazos_sched rlib of --dwarf-dir (default: the deps
+directory beside the ELF), checked against the size of the TASKS symbol; the
+dump names the file it used.
 """
 import argparse
 import bisect
@@ -391,6 +397,10 @@ class Dumper:
                 self.remote = pick("PerCpuRemote<", ("ptrs",))
                 break
 
+    def static(self, suffix):
+        v = self.elf.static(suffix)
+        return (v[0] + self.slide, v[1]) if v else None
+
     def line(self, addr):
         if not self.addr2line:
             return ""
@@ -417,7 +427,7 @@ class Dumper:
 
     def tasks(self):
         t = self.task
-        sym = self.elf.static("scheduler::TASKS")
+        sym = self.static("scheduler::TASKS")
         if not (t and sym):
             return None, {}
         n = sym[1] // t["size"]
@@ -463,7 +473,7 @@ class Dumper:
         harts = self.hart_blocks()
         ntasks, tasks = self.tasks()
         cur = {}
-        ps = self.elf.static("scheduler::PER_CPU")
+        ps = self.static("scheduler::PER_CPU")
         if ps and self.percpu:
             stride = self.percpu["size"]
             raw = self.mon.read(ps[0], stride * len(harts))
@@ -482,7 +492,7 @@ class Dumper:
             t = tasks.get(cur.get(h))
             P("  current task: %s" % (("idx %d " % cur[h] + self.describe(t)) if t else "idx %s (not in the table)" % cur.get(h, "?")))
         if ntasks is None:
-            P("task table: not decoded (%s)" % ("no TASKS symbol in the ELF" if not self.elf.static("scheduler::TASKS")
+            P("task table: not decoded (%s)" % ("no TASKS symbol in the ELF" if not self.static("scheduler::TASKS")
               else "no DWARF layout of Task, or the read failed"))
         else:
             P("task table (%d slots, %d in use):" % (ntasks, len(tasks)))
@@ -496,7 +506,7 @@ class Dumper:
         return "\n".join(o) + "\n"
 
     def queues(self, o, ncpu):
-        q = self.elf.static("scheduler::PER_CPU_QUEUES")
+        q = self.static("scheduler::PER_CPU_QUEUES")
         if not (q and self.remote and self.ready):
             o.append("ready queues: not decoded (no PER_CPU_QUEUES symbol or no DWARF layout)")
             return
@@ -517,7 +527,7 @@ class Dumper:
                 if cnt:
                     busy.append("prio %d count %d head %d" % (k, cnt, int.from_bytes(b[self.ready["members"]["head"]:][:4], "little", signed=True)))
             o.append("  hart %d: %s" % (c, "; ".join(busy) or "empty"))
-        ps = self.elf.static("scheduler::PER_CPU")
+        ps = self.static("scheduler::PER_CPU")
         if ps and self.percpu and "ready_bitmap" in self.percpu["members"]:
             raw = self.mon.read(ps[0], self.percpu["size"] * ncpu)
             if raw:
@@ -533,7 +543,7 @@ class Dumper:
             seen += 1
             if seen > LOCK_CAP:
                 break
-            b = self.mon.read(addr, size)
+            b = self.mon.read(addr + self.slide, size)
             if b is None:
                 held.append("%s unreadable" % name)
             elif any(b):
@@ -542,7 +552,7 @@ class Dumper:
                 zero += 1
         o.append("lock words (statics named *_LOCK or *_LOCKS, up to 256 B): %d zero, %d not zero%s" % (zero, len(held), ":" if held else ""))
         o.extend("  " + h for h in held)
-        if not self.elf.static("PI_HELD_ADDR"):
+        if not self.static("PI_HELD_ADDR"):
             o.append("PI_HELD_ADDR: not in this ELF (the table is compiled out of this build)")
 
 
@@ -574,16 +584,15 @@ def alive(pid):
         return bool(state) and not state.startswith("Z")
 
 
-def take_dumps(isa, elf_path, d, log, prefix, dwarf_dir=None):
+def take_dumps(isa, elf_path, d, log, prefix, dwarf_dir, produced):
+    """Pauses the machine, dumps, resumes; twice, GAP_S apart. Each file written is appended to `produced`."""
     scratch = os.path.join(d, "scratch")
     os.makedirs(scratch, exist_ok=True)
     mon = Monitor(os.path.join(d, "m"), scratch)
     elf = Elf(elf_path)
     with open(log, errors="replace") as f:
         slide, how = slide_from(f.read(), elf)
-    d2l = symbolize_bt.find_addr2line(symbolize_bt.ADDR2LINE)
-    dumper = Dumper(isa, elf, mon, slide, d2l, dwarf_dir)
-    paths = []
+    dumper = Dumper(isa, elf, mon, slide, symbolize_bt.find_addr2line(symbolize_bt.ADDR2LINE), dwarf_dir)
     try:
         for k, name in enumerate(("a", "b")):
             if k:
@@ -595,51 +604,54 @@ def take_dumps(isa, elf_path, d, log, prefix, dwarf_dir=None):
                 mon.cmd("cont")
             path = "%s.stall-%s.txt" % (prefix, name)
             write(path, text)
-            paths.append(path)
+            produced.append(path)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    return paths
 
 
 def watch(isa, elf_path, d, log, pid, marker, prefix, silence=SILENCE_S, decide=stalled, limit=None, poll=0.5, dwarf_dir=None):
-    """Returns ("stalled", dumps), ("marker", []) or ("exited", []). The verdict is also written to PREFIX.stall-verdict."""
+    """Returns ("stalled", dumps), ("marker", []) or ("exited", []). The verdict is also written to PREFIX.stall-verdict.
+    Dumps of a boot that reached the marker after all (a long quiet, then the marker) are deleted."""
     clock = Silence(time.time(), marker, silence, decide)
-    pos, dumps, t0 = 0, [], time.time()
-    verdict = "exited"
-    while alive(pid):
+    state = {"pos": 0}
+    produced = []
+    t0 = time.time()
+
+    def read_console():
         try:
             with open(log, "rb") as f:
-                f.seek(pos)
+                f.seek(state["pos"])
                 new = f.read()
         except OSError:
             new = b""
-        pos += len(new)
-        now = time.time()
-        hit = clock.feed(now, new.decode(errors="replace"))
-        if hit and not dumps:
+        state["pos"] += len(new)
+        return clock.feed(time.time(), new.decode(errors="replace"))
+
+    attached = False
+    while alive(pid):
+        hit = read_console()
+        if hit and not attached:
+            attached = True
             write(prefix + ".stall-busy", "")
             try:
-                dumps = take_dumps(isa, elf_path, d, log, prefix, dwarf_dir)
-            except Exception as e:  # a watcher that dies leaves the row without its dumps: the error is the dump
+                take_dumps(isa, elf_path, d, log, prefix, dwarf_dir, produced)
+            except Exception as e:  # QEMU may exit between the dumps; any other failure must not end the row's watcher silently
                 write(prefix + ".stall-error.txt", "attach failed: %s\n%s" % (e, traceback.format_exc()))
-                dumps = [prefix + ".stall-error.txt"]
+                produced.append(prefix + ".stall-error.txt")
             finally:
                 os.unlink(prefix + ".stall-busy")
             clock.last = time.time()
-        if limit and now - t0 > limit:
+        if limit and time.time() - t0 > limit:
             break
         time.sleep(poll)
-    if dumps and clock.seen:
-        for p in dumps:
+    read_console()
+    if produced and clock.seen:
+        for p in produced:
             os.unlink(p)
-        dumps = []
-        verdict = "marker"
-    elif dumps:
-        verdict = "stalled"
-    elif clock.seen:
-        verdict = "marker"
+        produced = []
+    verdict = "stalled" if produced else ("marker" if clock.seen else "exited")
     write(prefix + ".stall-verdict", verdict + "\n")
-    return verdict, dumps
+    return verdict, produced
 
 
 def cmd_run(a, qemu):

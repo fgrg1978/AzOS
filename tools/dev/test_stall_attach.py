@@ -9,9 +9,6 @@ verdicts around it, and a dump of a small aarch64 ELF with the scheduler's
 type and symbol names against a monitor that serves memory from a dictionary.
 No QEMU: the gate's `stall attach` rows attach to real kernels.
 
-Findings on the gdbstub under HVF (aarch64 macOS host, QEMU 11): see the commit
-message of the change that added this file.
-
 Run with:
     python3 tools/dev/test_stall_attach.py
 """
@@ -136,15 +133,16 @@ class Dump(unittest.TestCase):
         put(0, 1, b"idle0", 1, 0, 0)
         put(2, 5, b"shell", 2, 1, 0x30)
         pc = self.addr("idle") + 4 + slide
-        mem = {self.addr("azos_sched::scheduler::TASKS"): tasks,
-               self.addr("azos_sched::scheduler::PER_CPU"): bytearray(16 * 2),
-               self.addr("azos_sched::scheduler::CPU_LOCKS"): bytearray(8),
-               self.addr("azos_sched::scheduler::POOL_LOCK"): bytearray(struct.pack("<I", lock)),
+        at = lambda name: self.addr(name) + slide
+        mem = {at("azos_sched::scheduler::TASKS"): tasks,
+               at("azos_sched::scheduler::PER_CPU"): bytearray(16 * 2),
+               at("azos_sched::scheduler::CPU_LOCKS"): bytearray(8),
+               at("azos_sched::scheduler::POOL_LOCK"): bytearray(struct.pack("<I", lock)),
                0xffff0000: bytearray(struct.pack("<QQQQ", 0x1234, self.addr("work") + 8 + slide, 0, self.addr("_start") + 4 + slide)).ljust(4096, b"\0")}
         pcs = self.E.statics()
         per = stall_attach.layout(self.E, "PerCpuSched", ("current_idx",))
-        struct.pack_into("<Q", mem[self.addr("azos_sched::scheduler::PER_CPU")], per["members"]["current_idx"], 0)
-        struct.pack_into("<Q", mem[self.addr("azos_sched::scheduler::PER_CPU")], per["size"] + per["members"]["current_idx"], 2)
+        struct.pack_into("<Q", mem[at("azos_sched::scheduler::PER_CPU")], per["members"]["current_idx"], 0)
+        struct.pack_into("<Q", mem[at("azos_sched::scheduler::PER_CPU")], per["size"] + per["members"]["current_idx"], 2)
         self.assertIn("azos_sched::scheduler::TASKS", pcs)
         return FakeMonitor(aarch64_regs(pc, 0xffff0000, pc, 0xffff0000), mem)
 
@@ -164,9 +162,11 @@ class Dump(unittest.TestCase):
         self.assertIn("current task: idx 2 shell tid=5 Blocked pr=7 aff=-1 wait=Ring(0x30)", out)
         self.assertIn("task table (4 slots, 2 in use)", out)
 
-    def test_a_slid_kernel_is_symbolized_at_the_slide(self):
+    def test_a_slid_kernel_is_symbolized_and_read_at_the_slide(self):
         out = self.dump(self.machine(slide=0x200000), slide=0x200000)
         self.assertRegex(out, r"hart 0: pc=0x[0-9a-f]+ idle\+0x4")
+        self.assertIn("current task: idx 2 shell tid=5 Blocked", out)
+        self.assertIn("task table (4 slots, 2 in use)", out)
         out = self.dump(self.machine(slide=0x200000), slide=0)
         self.assertIn("not in the kernel image", out)
 
@@ -237,18 +237,19 @@ class Watch(unittest.TestCase):
         self.log = os.path.join(self.tmp, "console.log")
         self.prefix = os.path.join(self.tmp, "row")
         test_debug.write(self.log, "")
+        self.die_between = False
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def fake_dumps(self, *a, **k):
+    def fake_dumps(self, isa, elf, d, log, prefix, dwarf_dir, produced):
         self.taken = getattr(self, "taken", 0) + 1
-        paths = []
         for n in ("a", "b"):
             p = "%s.stall-%s.txt" % (self.prefix, n)
             test_debug.write(p, "dump\n")
-            paths.append(p)
-        return paths
+            produced.append(p)
+        if self.die_between:
+            raise BrokenPipeError(32, "Broken pipe")
 
     def run_watch(self, script, **kw):
         p = subprocess.Popen(["sh", "-c", script])
@@ -271,6 +272,21 @@ class Watch(unittest.TestCase):
         verdict, dumps = self.run_watch(script)
         self.assertEqual((verdict, dumps), ("marker", []))
         self.assertFalse(os.path.exists(self.prefix + ".stall-a.txt"))
+
+    def test_a_boot_that_ends_between_the_dumps_with_the_marker_keeps_nothing(self):
+        self.die_between = True
+        script = "sleep 1.5; echo MARK >> '%s'; sleep 0.2" % self.log
+        verdict, dumps = self.run_watch(script)
+        self.assertEqual((verdict, dumps), ("marker", []))
+        self.assertFalse(os.path.exists(self.prefix + ".stall-a.txt"))
+
+    def test_a_boot_that_ends_between_the_dumps_without_the_marker_keeps_what_was_taken(self):
+        self.die_between = True
+        verdict, dumps = self.run_watch("sleep 2.5")
+        self.assertEqual(verdict, "stalled")
+        self.assertTrue(os.path.exists(self.prefix + ".stall-error.txt"))
+        self.assertIn("Broken pipe", test_debug.read(self.prefix + ".stall-error.txt"))
+        self.assertTrue(os.path.exists(self.prefix + ".stall-a.txt"))
 
     def test_quiet_after_the_marker_takes_no_dump(self):
         script = "echo MARK >> '%s'; sleep 2.5" % self.log

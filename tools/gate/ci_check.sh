@@ -24369,17 +24369,20 @@ x=con; echo bb\$x-ok
             x86) feats=""; ks="" ;;
         esac
         [ $? = 0 ] || { bad; echo "      the kernel did not build"; rm -f "$ks" "$ks.elf"; return; }
-        par_ready
+        [ "$isa" = x86 ] || par_ready   # the x86 kernel is built by ushell_row, which releases the gate itself
         out="$(STALL_WATCH='^no-such-console-line$' STALL_BREAK="$broken" USH_KERNEL="$ks" \
             ushell_row "$slug boot" "$isa" "$feats" FAIL "#wait no-such-console-line" 120 "no-such-console-line" 2>&1)"
         rm -f "$ks" "$ks.elf"
         why="$(stall_check "$out")"; rc=$?
+        # The boot must have run to its end: a row that never started shows no dumps either.
+        printf '%s\n' "$out" | grep -aq 'canary failed as it must' || { rc=2; why="the boot did not run as the canary expects: $(printf '%s\n' "$out" | sed -n '1,3p' | tr '\n' ' ' | cut -c1-200)"; }
         if [ -z "$broken" ]; then
             if [ "$rc" = 0 ]; then ok; echo "      silent boot stalled as it must; two dumps show the harts, the task table and the interrupt controller"
             else bad; echo "      $why"; printf '%s\n' "$out" | sed 's/^/      | /' | sed -n 1,6p; fi
         else
-            if [ "$rc" != 0 ]; then ok; echo "      with the stall decision broken the row fails as it must: $why"
-            else bad; echo "      the dumps were taken although the stall decision never fires: the row does not discriminate"; fi
+            if [ "$rc" = 1 ]; then ok; echo "      with the stall decision broken the row fails as it must: $why"
+            elif [ "$rc" = 0 ]; then bad; echo "      the dumps were taken although the stall decision never fires: the row does not discriminate"
+            else bad; echo "      $why"; fi
         fi
     }
     par_row stall_row "stall attach (rv)" rv
