@@ -238,10 +238,10 @@ k1-console:
 
 # ── Kconfig targets ─────────────────────────────────────────────────
 # Install kconfiglib first:
-#   /opt/homebrew/bin/python3 -m pip install --user --break-system-packages kconfiglib
+#   $(PYTHON) -m pip install --user --break-system-packages kconfiglib
 
 KCONFIG_DEFCONFIG_DIR := config/defconfigs
-PYTHON             ?= /opt/homebrew/bin/python3
+PYTHON             ?= $(or $(wildcard /opt/homebrew/bin/python3),python3)
 
 # Colour scheme of `make config` / `menuconfig` / `nconfig`: white text on a
 # black background, whatever the terminal's own theme is (every element names
