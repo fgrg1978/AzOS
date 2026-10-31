@@ -19,6 +19,7 @@
 #           same decode in kernel.
 # Rebuilds the riscv64/aarch64 kernels in target/ with bench-minimal: run a
 # normal build afterwards before booting anything else. Exit 3 = SKIP.
+. "$(dirname "$0")/../../lib/qemu_count.sh"
 set -euo pipefail
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../../lib/out_dir.py")}"; export AZOS_OUT
@@ -51,7 +52,7 @@ done
 ic="-icount shift=0,sleep=off"
 boot() { # <log> <done-regex> <qemu...>: one QEMU at a time, never more than 4 host-wide
     local log="$1" re="$2"; shift 2; rm -f "$log"
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(qemu_count) -ge 4 ]; do sleep 2; done
     "$@" > "$log" 2>&1 &
     local pid=$! end=$(( $(date +%s) + 240 ))
     while [ "$(date +%s)" -lt "$end" ] && ! grep -aqE "$re" "$log"; do sleep 2; done

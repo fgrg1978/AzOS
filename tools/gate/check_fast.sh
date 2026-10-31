@@ -25,6 +25,7 @@
 #   CHECK_FAST_KTEST_APPEND=...    the same for the ktest boot (a canary there
 #                                  must turn the ktest verdict red)
 #   CHECK_FAST_NOBUILD=1           boot the kernels of the previous run
+. "$(dirname "$0")/../lib/qemu_count.sh"
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 REPO="$PWD"
@@ -121,7 +122,7 @@ if [ "${CHECK_FAST_NOBUILD:-0}" != 1 ]; then
 fi
 tb=$SECONDS
 
-qemu_slots() { echo $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )); }
+qemu_slots() { echo $(qemu_count); }
 
 # boot <isa> <kind: ktest|canary|system> <log> [append]; prints QEMU's status.
 boot() {

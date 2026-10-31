@@ -29,6 +29,7 @@
 # runs cannot both see the last free one); the QEMU this starts is killed on
 # the way out, whatever the exit, a signal (INT, TERM) included.
 
+. "$(dirname "$0")/../lib/qemu_count.sh"
 set -uo pipefail
 
 usage() { echo "usage: $0 <riscv64|aarch64> [--no-build] [--timeout SECONDS] [--log FILE] | --judge FILE" >&2; exit 2; }
@@ -115,7 +116,7 @@ case "$ISA" in
 esac
 
 qemu_count() { # QEMU processes on the host, any ISA
-    echo $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) ))
+    echo $(qemu_count)
 }
 
 # A QEMU slot is taken under a lock: the count and the start are one step, so

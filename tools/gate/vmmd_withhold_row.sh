@@ -29,6 +29,7 @@
 # Needs the gate's environment (PATH, CARGO_NET_OFFLINE) and `AZOS_OUT`; builds
 # under $VMMD_WITHHOLD_OUT (default $AZOS_OUT/vmmd-withhold), kept between runs
 # so only the first one builds everything. Exit 0 when the boot is clean.
+. "$(dirname "$0")/../lib/qemu_count.sh"
 set -u
 defc="${1:?defconfig name, e.g. desktop-desktop-aarch64-dev+qemu}"
 secs="${2:-90}"
@@ -52,7 +53,7 @@ volume="$out/build/disk-aarch64-sh.img"
 [ -f "$kernel" ] && [ -f "$volume" ] || { echo "vmmd withhold: make build left no kernel or volume under $out/build"; exit 1; }
 cp "$volume" "$out/boot.img"
 
-while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+while [ $(qemu_count) -ge 4 ]; do sleep 2; done
 # EL1: no `virtualization=on`, as `make qemu` boots.
 qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 1G -nographic \
     -global virtio-mmio.force-legacy=false \

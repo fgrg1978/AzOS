@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""No tracked file names where one host installed its tools: tools come from
-PATH or from asking a package manager, so the tree builds on any machine."""
+"""No tracked file names where one host installed its tools (they come from PATH
+or from asking a package manager), or counts QEMU with `pgrep -x`, which matches
+nothing on Linux: the tree builds and paces itself on any machine."""
 import re
 import subprocess
 import sys
 
-BAD = re.compile(r"/opt/homebrew|/usr/local/(?:opt|share/qemu)|/Users/[a-z]")
+BAD = re.compile(r"/opt/homebrew|/usr/local/(?:opt|share/qemu)|/Users/[a-z]|pgrep\s[^|]*-x qemu-system")
 SELF = "tools/lint/host_paths_lint.py"
 
 
@@ -17,7 +18,8 @@ def hits(lines):
 
 def main(argv):
     if "--self-test" in argv:
-        if not hits(["cc=/opt/homebrew/opt/llvm/bin/clang"]) or not hits(["# /Users/someone/x"]):
+        if not hits(["cc=/opt/homebrew/opt/llvm/bin/clang"]) or not hits(["# /Users/someone/x"]) \
+                or not hits(["n=$(pgrep -g 1 -x qemu-system-x86_64 | wc -l)"]):
             print("host_paths_lint self-test: a fixed path passed")
             return 1
         if hits(["cc=$(brew --prefix llvm)/bin/clang", "/usr/local/bin is on PATH"]):

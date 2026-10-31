@@ -40,6 +40,7 @@
 # uboot_build.sh),
 # QEMU_X86_64_CPU (default max), NETBOOT_TIMEOUT (seconds per boot, default 150),
 # NETBOOT_KEEP=1 (keep the console log of a passing row too).
+. "$(dirname "$0")/../../lib/qemu_count.sh"
 set -uo pipefail
 
 case_="${1:?usage: row.sh <case> <kernel image> [logdir]}"
@@ -72,7 +73,7 @@ sys.stdout.write(re.sub(r"\x1b\[[0-9;?=]*[A-Za-z]", "", s).replace("\r", ""))' "
 
 # The most QEMUs the host may run at once (the gate's rule).
 qemu_slot() {
-    while [ $(( $(pgrep -x qemu-system-riscv64 | wc -l) + $(pgrep -x qemu-system-aarch64 | wc -l) + $(pgrep -x qemu-system-x86_64 | wc -l) )) -ge 4 ]; do sleep 2; done
+    while [ $(qemu_count) -ge 4 ]; do sleep 2; done
 }
 
 # run_qemu <program> <marker ERE: stop when the console matches> <qemu args...>
