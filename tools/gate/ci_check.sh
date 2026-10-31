@@ -22266,6 +22266,28 @@ PYEOF
     }
     par -s "bench: receipts cost canary" receipts_cost_canary_row
 
+    # The `scale` lanes' canary (memobj-hold-canary): the futex lookups hold the
+    # object table a few thousand spins longer. Under -icount at four harts the
+    # instruction cost of `scale futex h=1` must at least double against the same
+    # lane without it, or the lanes cannot see a longer hold.
+    scale_hold_canary_row() {
+        printf "  %-26s" "bench: scale hold canary..."
+        local w="$AZOS_OUT/build/vsbench-scale-hold" base held
+        scale_h1() { # scale_h1 <work dir> [kernel features]
+            QEMU="$QEMU" VSBENCH_GATE_ONLY=1 VSBENCH_ICOUNT=1 VSBENCH_SMP=4 VSBENCH_LANES=scale VSBENCH_WORK="$1" \
+                VSBENCH_AZOS_EXTRA_FEATURES="${2:-}" bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh" >"$1.out" 2>&1
+            sed -n 's/.*azos scale futex h=1 rep=0:.*per-call=\([0-9]*\) ns.*/\1/p' "$1/azos-bench-minimal.log" | sed -n 1p
+        }
+        mkdir -p "$w"
+        base="$(scale_h1 "$w/base")"; held="$(scale_h1 "$w/held" memobj-hold-canary)"
+        if [ -n "$base" ] && [ -n "$held" ] && [ "$held" -ge $((base * 2)) ]; then
+            ok; echo "      scale futex h=1: $base without, $held with the longer hold"
+        else
+            bad; echo "      CANARY: scale futex h=1 '$base' without, '$held' with the longer hold: the lanes did not see it"
+        fi
+    }
+    par -s "bench: scale hold canary" scale_hold_canary_row
+
     # vsbench on x86_64 (tools/bench/vsbench_x86_64.sh): the same ring-3 work on
     # AzOS and on Linux 6.12, both on `-M microvm` under -icount at one CPU, as
     # the riscv64 row above runs it with vsbench_compare.sh. It asserts the
