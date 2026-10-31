@@ -10112,9 +10112,9 @@ par "rt7: panic safety (arm)" rt7_row arm safety
 # slow calls, and the move back refused after the fault with a refusal record.
 # Canary `placement-norecord-canary`: the moves are made and not recorded:
 # `[DRVCONTAIN] FAIL the placement decisions are not the moves that happened`.
-drvcontain_row() { # drvcontain_row <isa: rv|arm> [features] [PASS|FAIL-record|deadline]
-    local isa="$1" feats="${2:-qemu,drv-contain-smoke,buzzer-kernel}" expect="${3:-PASS}"
-    printf "  %-26s" "rt7: driver contained, demoted (${isa})..."
+drvcontain_row() { # drvcontain_row <label> <isa: rv|arm> [features] [PASS|FAIL-record|deadline]
+    local label="$1" isa="$2" feats="${3:-qemu,drv-contain-smoke,buzzer-kernel}" expect="${4:-PASS}"
+    printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
     local defc src_disk="$AZOS_OUT/build/disk-drv.img"
     [ "$isa" = arm ] && src_disk="$AZOS_OUT/build/disk-aarch64-drv.img"
@@ -10202,10 +10202,10 @@ drvcontain_row() { # drvcontain_row <isa: rv|arm> [features] [PASS|FAIL-record|d
 # Canary: `sup-canary` (the supervisor ignores every death) -> "[DRVCONTAIN]
 # FAIL the driver was not restarted in ring 3" (isolations=1, successor=None).
 # Compile errors: `kbuild`/`a64_kbuild`'s own FAIL line.
-par -s "rt7: driver contained, demoted (rv)" drvcontain_row rv
-par -s "rt7: driver contained, demoted (arm)" drvcontain_row arm
-par -s "rt7: a move without its record (rv)" drvcontain_row rv "qemu,drv-contain-smoke,buzzer-kernel,placement-norecord-canary" FAIL-record
-par -s "rt7: promoted on its deadline, demoted on a fault (rv)" drvcontain_row rv "qemu,drv-contain-smoke" deadline
+par_row -s drvcontain_row "rt7: driver contained, demoted (rv)" rv
+par_row -s drvcontain_row "rt7: driver contained, demoted (arm)" arm
+par_row -s drvcontain_row "rt7: a move without its record (rv)" rv "qemu,drv-contain-smoke,buzzer-kernel,placement-norecord-canary" FAIL-record
+par_row -s drvcontain_row "rt7: promoted on its deadline, demoted on a fault (rv)" rv "qemu,drv-contain-smoke" deadline
 # The timer-sleeper heap under the interleavings that lost rt-motor's wake
 # with it (gate 185; fixed in wave 5: the retry re-arm, now in
 # `timer_heap::wake_due`, and `peek_live`), wave 13: `timer-heap-smoke` +
