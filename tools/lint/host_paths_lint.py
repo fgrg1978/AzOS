@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """No tracked file names where one host installed its tools: tools come from
 PATH or from asking a package manager, so the tree builds on any machine."""
 import re
