@@ -1020,6 +1020,26 @@ mod tap_runner {
         );
     }
 
+    /// A test that cannot run in this configuration is reported as skipped:
+    /// an `ok` line that says SKIP and why, counted apart in the summary, and
+    /// not a failure. **Canary.** Treat a skip as `Ok(())` (the old way): the
+    /// line loses its SKIP and the summary its count.
+    #[test]
+    fn a_skipped_test_says_so() {
+        fn skips() -> Result<(), &'static str> {
+            azos_ktest::skip!("needs a build with X")
+        }
+        static T: [KTest; 2] =
+            [KTest { name: "a_ran", run: ok, phase: EARLY }, KTest { name: "b_skips", run: skips, phase: EARLY }];
+        let (text, failed) = report(&T);
+        assert_eq!(failed, 0);
+        assert_eq!(
+            text,
+            "TAP version 14\n1..2\n# running a_ran\nok 1 - a_ran\n# running b_skips\n\
+             ok 2 - b_skips # SKIP needs a build with X\n# 2 tests, 0 failed, 1 skipped\n"
+        );
+    }
+
     /// A name registered twice is a bail-out before anything runs.
     #[test]
     fn a_duplicate_name_bails_out() {

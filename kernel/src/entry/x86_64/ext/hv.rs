@@ -363,7 +363,7 @@ mod guest_test {
     fn body() -> Result<(), &'static str> {
         let rec = probe::record();
         if rec.kind != Kind::Svm {
-            return Ok(());
+            return azos_ktest::skip!("this CPU has no SVM: no guest is run");
         }
         let mut fr = Frames { list: [0; 24], n: 0 };
         let (vmcb_pa, host_pa) = (fr.page()?, fr.page()?);
@@ -596,7 +596,7 @@ mod enter_test {
 
     fn body() -> Result<(), &'static str> {
         if probe::record().kind != Kind::Svm {
-            return Ok(());
+            return azos_ktest::skip!("this CPU has no SVM: no guest is run");
         }
         let hv = HvImpl;
         let mut mem = Frames;

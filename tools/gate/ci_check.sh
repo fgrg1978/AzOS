@@ -16323,7 +16323,12 @@ PY
             [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
                 && why="no matching summary line"
         fi
-        if [ -z "$why" ] && [ -n "${6:-}" ] && ! grep -aqE "$6" "$log"; then why="no line matching: $6"; fi
+        if [ -z "$why" ] && [ -n "${6:-}" ]; then
+            # One pattern per line, all required.
+            while IFS= read -r pat; do
+                [ -n "$pat" ] && ! grep -aqE "$pat" "$log" && { why="no line matching: $pat"; break; }
+            done <<< "$6"
+        fi
         # The verdict also rides on QEMU's exit status (isa-debug-exit, see
         # kernel/src/ktest.rs power_off): 1 after a clean run, 3 after a failed one.
         local qwhy=""
@@ -16349,15 +16354,17 @@ PY
     }
     par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
     # S6: the same ktests on an AMD model with SVM on (TCG runs VMRUN). Under `-cpu max`
-    # the two hv ktests (`hv_svm_guest_exits`, `hv_enter_guest`) pass without running a
-    # guest; here they run one: the first the VMCB and the exits one VMRUN at a time,
+    # the two hv ktests (`hv_svm_guest_exits`, `hv_enter_guest`) report SKIP (no SVM, no
+    # guest); here they run one, and the row requires their plain `ok` lines and the
+    # kernel's `[HV] svm rev` line, so a CPU that stops offering SVM fails it: the first the VMCB and the exits one VMRUN at a time,
     # the second the entry `Hypervisor::enter` is (CPUID, an empty port, two device
     # stores, HLT; the faulting instruction read through the nested tables).
     x86_ktest_row_svm() {
         local X86_CPU="EPYC-Rome,svm=on"
         x86_ktest_row "$@"
     }
-    par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" ""
+    par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" "" "" "" \
+        $'\\[HV\\] svm rev\n^ok [0-9]+ - hv_svm_guest_exits$\n^ok [0-9]+ - hv_enter_guest$'
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'

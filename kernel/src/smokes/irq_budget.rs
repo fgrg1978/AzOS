@@ -274,7 +274,7 @@ azos_ktest::ktest_late! {
         // A handler on a reservation is not what this test builds: the bind
         // below is the one without the budget rule's requirement.
         if azos_limits::IRQ_THREADED {
-            return Ok(());
+            return azos_ktest::skip!("IRQ_THREADED: a bind needs a reservation, which this test does not make");
         }
         let tid = azos_sched::current_task_tid();
         let Some(port) = azos_ipc::port::port_create_ref(tid as usize) else {

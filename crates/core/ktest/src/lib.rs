@@ -139,6 +139,26 @@ pub fn all() -> &'static [KTest] {
     }
 }
 
+/// The start of the reason of a test that did not run: the configuration it
+/// needs is not the one this kernel was built with. A runner reports it as
+/// `ok N - name # SKIP reason`, counted as skipped, neither passed nor failed;
+/// a test returns `skip!("reason")` for it, never a plain `Ok(())` that a
+/// reader of the report takes for a pass.
+pub const SKIP_PREFIX: &str = "SKIP: ";
+
+/// `Err` carrying a skip reason: `return azos_ktest::skip!("needs ...")`.
+#[macro_export]
+macro_rules! skip {
+    ($why:literal) => {
+        ::core::result::Result::Err(::core::concat!("SKIP: ", $why))
+    };
+}
+
+/// The reason, if `why` (a test's `Err`) is a skip.
+pub fn skip_reason(why: &str) -> Option<&str> {
+    why.strip_prefix(SKIP_PREFIX)
+}
+
 /// How many tests of `phase` are registered.
 pub fn count(tests: &'static [KTest], phase: usize) -> usize {
     tests.iter().filter(|t| t.phase == phase).count()
