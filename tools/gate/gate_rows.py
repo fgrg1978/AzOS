@@ -1075,6 +1075,11 @@ def _path_globs(p):
     return []
 
 
+# A kernel build of one of the three ISAs, as the gate spells it: the x86_64
+# `make` goal, the aarch64 bare-metal target, the riscv64 `--select` build.
+KERNEL_BUILD_RE = re.compile(r"\bmake x86_64\b|--target aarch64-unknown-none-softfloat|-p azos_kernel|\bbuild --release --select\b")
+
+
 def required_deps(r):
     """{glob: (cause, why)}: the sources the row demonstrably reads (the rules
     above), whatever its manifest line says."""
@@ -1091,6 +1096,10 @@ def required_deps(r):
             req.setdefault(x, (cause, why))
     if "x86" == isa_of(r) and "-a" not in (r["flags"] or ""):
         add(ARCH_DEPS["x86"].split(), "arch", "an x86 row boots this ISA")
+    elif KERNEL_BUILD_RE.search(text):
+        # A host job (`-a`: no QEMU of its own) that builds a kernel builds the
+        # one of the ISA its label names: that ISA's sources change its bytes.
+        add(ARCH_DEPS[isa_of(r)].split(), "arch", "the row builds this ISA's kernel")
     if r["fn"] == "host_canary_row" and len(r["args"]) > 1:
         suite = r["args"][1] if "/" in r["args"][1] else "tests/host/" + r["args"][1]
         add(_path_globs(suite), "crate", "suite " + suite)
@@ -1466,6 +1475,14 @@ def self_test():
     expect("an x86 row does not need arch/x86_64", "arch/x86_64/**" in required_deps(x86))
     expect("canary: a riscv64 row needs arch/x86_64",
            "arch/x86_64/**" not in required_deps(dict(x86, key="soak (rv)")))
+    # A host job (`-a`) is arch-independent unless it builds its ISA's kernel.
+    host_x86 = dict(x86, key="lo (x86)", flags=["-a", "-h"])
+    build = dict(host_x86, body='make x86_64 X86_64_IMG="$elf" >/dev/null')
+    expect("an x86 host job that builds the x86 kernel needs arch/x86_64", "arch/x86_64/**" in required_deps(build))
+    expect("canary: an x86 host job that builds no kernel needs arch/x86_64",
+           "arch/x86_64/**" not in required_deps(host_x86))
+    expect("a host job that builds the aarch64 kernel needs arch/aarch64",
+           "arch/aarch64/**" in required_deps(dict(build, key="lo (arm)", body="cargo build --target aarch64-unknown-none-softfloat -p azos_kernel")))
     # The lints tier runs --check: without it `make check0` passed a manifest
     # whose deps miss what a row reads.
     tier = _read("tools/gate/gate_tier.sh")
