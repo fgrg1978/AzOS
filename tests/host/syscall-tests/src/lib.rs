@@ -426,6 +426,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod table_promised {
+        use super::*;
+        include!("table_promised.rs");
+    }
+
+    #[cfg(test)]
     mod module_window_tests {
         use super::*;
         include!("module_window_tests.rs");

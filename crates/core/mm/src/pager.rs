@@ -69,10 +69,15 @@
 //! back ([`release_range`]). Overcommit
 //! policy: the per-task quota is never overcommitted; physical frames are,
 //! within what memory admission allows, so a fault that finds the page
-//! allocator empty kills the task, as a COW break does. One residual: the
-//! intermediate page-table frames a first touch allocates are charged then,
-//! through the table hook, so a task at its exact limit can still be refused
-//! a table at fault time.
+//! allocator empty kills the task, as a COW break does. The intermediate
+//! page-table frames a first touch allocates are not in the reservation's
+//! charge (a range's tables are built as its pages are touched), so the fault
+//! takes each from the Domain whatever the limit says
+//! ([`crate::vmm::TableCharge::Promised`]): the charge overshoots by at most
+//! one frame per 2 MiB block the reservation touches, plus the upper levels
+//! (the next reservation is then refused), and the touch is never refused for
+//! a table. The kernel-memory ledger's own ceiling (`kmem_kib`) still applies
+//! to a table.
 //!
 //! **Superpage reservations** (Kconfig `MM_THP_RESV`, `crate::resv`). The first
 //! fault in a block-aligned part of an anonymous region that one record covers
@@ -1508,7 +1513,9 @@ fn resolve_file_fault(root: usize, page: usize, r: &Region) -> KResult<()> {
             let _ = pmm::free_page(f);
         }
     };
-    let pte_ptr = match vmm::walk(root, page, true) {
+    // A private mapping was charged whole when it was made; a shared one is the
+    // cache's memory and promised nothing.
+    let pte_ptr = match walk_installing(root, page, !r.shared) {
         Ok(p) => p,
         Err(e) => {
             give_back(frame);
@@ -1620,6 +1627,19 @@ fn peek(root: usize, page: usize) -> u64 {
     }
 }
 
+/// The walk of a fault that is about to install a page, building the tables it
+/// needs. `promised`: the page was charged with its reservation, so a table is
+/// taken from the Domain whatever the limit says ([`vmm::TableCharge::Promised`]).
+fn walk_installing(root: usize, page: usize, promised: bool) -> KResult<*mut u64> {
+    // Canary `table-refusable-canary`: the table is refusable like any other,
+    // and a touch at the limit dies for it.
+    if promised && !cfg!(feature = "table-refusable-canary") {
+        vmm::walk_promised(root, page)
+    } else {
+        vmm::walk(root, page, true)
+    }
+}
+
 fn fault_once(root: usize, page: usize) -> KResult<Step> {
     let r = {
         let t = TABLE.lock_irqsave();
@@ -1680,7 +1700,7 @@ fn fault_once(root: usize, page: usize) -> KResult<Step> {
         }
     };
     let (Source::Plain(frame) | Source::Run { frame, .. }) = src;
-    let pte_ptr = match vmm::walk(root, page, true) {
+    let pte_ptr = match walk_installing(root, page, true) {
         Ok(p) => p,
         Err(e) => {
             src.give_back(root, block);

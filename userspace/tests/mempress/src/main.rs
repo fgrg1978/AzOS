@@ -295,19 +295,15 @@ fn purge_control(ctl: &MemCtl) {
 
 /// Hold pages that do not compress until the budget refuses more: the charge
 /// stays at the limit, and that is what takes the system past its own
-/// watermark. Every mapping keeps `SPARE` pages of the budget free until it is
-/// written, as a page table its first touch needs is charged then. The runs it
-/// made.
+/// watermark. The runs it made.
 fn hold_incompressible(p: &mut Pressure, chunk: usize) -> usize {
-    const SPARE: usize = 8;
     let (mut n, mut held, mut refused) = (0usize, 0u64, 0);
     while refused < 8 && n < MAX_RUNS {
-        let Some(base) = map(chunk + SPARE) else {
+        let Some(base) = map(chunk) else {
             refused += 1;
             sys::sleep(TICK_MS);
             continue;
         };
-        sys::munmap((base + chunk * PAGE) as u64, (SPARE * PAGE) as u64);
         for i in 0..chunk {
             // SAFETY: the page is in the mapping just made.
             unsafe { write_page(base + i * PAGE, held + i as u64, incompressible) };
@@ -352,11 +348,17 @@ fn purge_round_trip(ctl: &MemCtl, p: &mut Pressure, cap: u32, chunk: usize) {
     say(b"purge PASS", &[(b"rc", again.unsigned_abs() as u64), (b"waited_ms", waited)]);
 }
 
+/// A range of this many bytes crosses a boundary of the 2 MiB blocks a page
+/// table covers wherever it is placed, so touching it builds a table.
+const RANGE_BYTES: usize = 4 * 1024 * 1024;
+
 /// Take the charge to the limit with a range nothing has touched yet and wait
 /// to be told. The budget has answered by refusing the mappings; a range it
 /// charged is the program's, and touching it must work: the charge was taken
-/// when it was mapped.
+/// when it was mapped, and the page tables the touch builds are the kernel's
+/// to take at the limit.
 fn run_into_the_limit(p: &mut Pressure, chunk: usize) {
+    let chunk = chunk.max(RANGE_BYTES / PAGE);
     let Some(far) = map(chunk) else {
         fail(b"limit FAIL the range was refused", &[]);
     };
