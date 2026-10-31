@@ -93,6 +93,7 @@ fuzz_config() {
         || { echo "      could not expand ${FUZZ_DEFCONFIG}"; return 1; }
     # Only a changed file: its mtime rebuilds azos_limits and all above it.
     if cmp -s "$new" "$cfg"; then rm -f "$new"; else mv "$new" "$cfg"; fi
+    rm -f "$new.old"
     export KCONFIG_CONFIG="$cfg"
 }
 
