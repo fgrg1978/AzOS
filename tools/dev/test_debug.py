@@ -142,6 +142,15 @@ class Symbolize(unittest.TestCase):
         self.assertRegex(out, r"fail at ")
         self.assertNotRegex(out, r"die at ")
 
+    def test_expect_names_the_frame_the_walk_must_reach(self):
+        rc, out, err = run_tool(self.elf, self.line(self.leaf + 8, self.top + 24), "--expect", "top")
+        self.assertEqual(rc, 0, out + err)
+
+    def test_canary_a_walk_that_stopped_before_the_expected_frame_is_refused(self):
+        rc, out, err = run_tool(self.elf, self.line(self.leaf + 8), "--expect", "top")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("stopped short", err)
+
     def test_a_log_without_a_backtrace_fails(self):
         rc, _, err = run_tool(self.elf, "[PANIC] something else\n")
         self.assertEqual(rc, 1)

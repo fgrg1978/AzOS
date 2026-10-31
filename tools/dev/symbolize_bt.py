@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """symbolize_bt.py — a panic's backtrace from a console log, as function, file and line.
 
-    symbolize_bt.py <kernel ELF> [LOG] [--slide 0xN]
+    symbolize_bt.py <kernel ELF> [LOG] [--slide 0xN] [--expect NAME]
 
 With Kconfig PROFILER the panic path and every fatal trap print the
 frame-pointer chain of the CPU that stopped:
@@ -17,10 +17,14 @@ before the backtrace (none, or a kernel that ran at its link address: no
 slide; `--slide` names it when the log lacks it, as a release image's does).
 Each address is looked up one byte before the return address, inside the
 call, with the DWARF of the ELF (inlined callers come out as their own lines).
+`--expect NAME` also requires a frame whose function name contains NAME: a
+walk that stopped short of the frame that matters is as bad as an address that
+did not resolve.
 
 LOG is read from standard input when absent. Exit status: 0 when every address
-of every backtrace resolved, 1 when one did not or the log has no backtrace,
-2 for a usage error or when no addr2line is installed.
+of every backtrace resolved (and a frame is NAME's), 1 when one did not, the
+log has no backtrace or no frame is NAME's, 2 for a usage error or when no
+addr2line is installed.
 """
 import argparse
 import os
@@ -81,9 +85,10 @@ def unresolved(where):
 
 
 def symbolize(elf, text, addr2line, slide=None):
-    """Print every backtrace of `text`; return (backtraces, unresolved addresses)."""
+    """Print every backtrace of `text`; return (backtraces, unresolved addresses, function names)."""
     link_base = elf_symbol(elf, "_text_start")
     found = bad = 0
+    names = []
     pending = slide or 0
     for line in text.splitlines():
         m = SLID.search(line)
@@ -102,8 +107,9 @@ def symbolize(elf, text, addr2line, slide=None):
                 print("  #%-2d %#x  ?? (not in %s at slide %#x)" % (n, ret, os.path.basename(elf), pending))
                 continue
             for k, (func, where) in enumerate(frames):
+                names.append(func)
                 print("  #%-2d %#x  %s at %s%s" % (n, ret, func, where, "  (inlined into the next)" if k < len(frames) - 1 else ""))
-    return found, bad
+    return found, bad, names
 
 
 def main(argv=None):
@@ -111,6 +117,7 @@ def main(argv=None):
     ap.add_argument("elf")
     ap.add_argument("log", nargs="?")
     ap.add_argument("--slide", type=lambda s: int(s, 0))
+    ap.add_argument("--expect", metavar="NAME")
     a = ap.parse_args(argv)
     addr2line = find_addr2line()
     if addr2line is None:
@@ -118,7 +125,7 @@ def main(argv=None):
         return 2
     try:
         text = open(a.log, errors="replace").read() if a.log else sys.stdin.read()
-        found, bad = symbolize(a.elf, text.replace("\r", ""), addr2line, a.slide)
+        found, bad, names = symbolize(a.elf, text.replace("\r", ""), addr2line, a.slide)
     except (OSError, ValueError) as e:
         print("symbolize_bt: %s" % e, file=sys.stderr)
         return 2
@@ -128,6 +135,10 @@ def main(argv=None):
     if bad:
         print("symbolize_bt: %d address(es) not in the ELF: another build, or a slide the log lacks "
               "(a release image does not print its base; --slide 0xN)" % bad, file=sys.stderr)
+    if a.expect and not any(a.expect in n for n in names):
+        print("symbolize_bt: no frame of the backtrace is in a function named %s: the walk stopped short" % a.expect,
+              file=sys.stderr)
+        return 1
     return 1 if bad else 0
 
 

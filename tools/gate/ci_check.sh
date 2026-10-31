@@ -16473,6 +16473,90 @@ PY
     par "panic: nested, second report canary (x86)" x86_panic_splice_row \
         "panic: nested, second report canary (x86)" rereport "canary=panic-nested,panic-nested-report"
 
+    # The backtrace a panic prints (Kconfig PROFILER), symbolized, on every ISA:
+    # the panic-splice smoke's culprit task panics in a kernel built with frame
+    # pointers, and tools/dev/symbolize_bt.py must resolve every address of the
+    # `[PANIC] backtrace:` line against the ELF's DWARF and reach the culprit's
+    # function (`--expect`). It fails on a walk that stops early (x86_64 refused
+    # the odd return addresses of byte-addressed code, `prof::walk`) and on an
+    # ELF without DWARF (the aarch64 linker script discarded it).
+    panic_backtrace_row() { # panic_backtrace_row <label> <rv|arm|x86>
+        local label="$1" isa="$2" tag dir cfg base rf elf img="" kimg="" log why="" i pid objcopy
+        printf "  %-26s" "${label}..."
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        mkdir -p "$CI_LOG_DIR"; log="$CI_LOG_DIR/${tag}.log"
+        dir="$AZOS_OUT/target/backtrace-$isa"; mkdir -p "$dir"; cfg="$dir/backtrace.config"
+        case "$isa" in
+            rv) base="$ROBOT_PRIMARY_CONFIG" ;;
+            arm) base="$ROBOT_AARCH64_CONFIG" ;;
+            x86) base="$REPO_ROOT/config/defconfigs/${GATE_ROBOT_DEFC_X86}.config" ;;
+        esac
+        if [ "$isa" = x86 ]; then
+            { cat "$base"; echo "CONFIG_PROFILER=y"; } >"$dir/backtrace.defconfig"
+            local X86_KBUILD_OUT="$dir/kernel.elf" X86_KBUILD_ARGS
+            X86_KBUILD_ARGS="X86_64_DEFCONFIG=$dir/backtrace.defconfig X86_64_KCONFIG=$cfg X86_64_TARGET_DIR=$dir/target X86_64_IMG=$X86_KBUILD_OUT"
+            kimg="$dir/kernel-run.elf"
+            x86_kbuild "use-robot,panic-splice-smoke" "$kimg" || { bad; echo "      the x86_64 PROFILER kernel did not build"; return; }
+            elf="$kimg"
+        else
+            sed 's/^# CONFIG_PROFILER is not set$/CONFIG_PROFILER=y/' "$base" >"$cfg"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1)
+            grep -q '^CONFIG_PROFILER=y$' "$cfg" || { bad; echo "      the configuration lost PROFILER"; return; }
+            if [ "$isa" = rv ]; then
+                elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
+                rf="$(cd "$REPO_ROOT" && python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
+                KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --select "qemu,use-robot,panic-splice-smoke" \
+                    ${rf:+--config "target.riscv64imac-unknown-none-elf.rustflags=[$rf]"} >/dev/null 2>&1
+                img="$elf"
+            else
+                elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
+                rf="$(cd "$REPO_ROOT" && python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")"
+                env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
+                    RUSTFLAGS="-C link-arg=-Tarch/aarch64/boot/linker-aarch64.ld $rf" \
+                    "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel --select "qemu,use-robot,panic-splice-smoke" >/dev/null 2>&1
+                objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+                [ -f "$elf" ] && "$objcopy" -O binary "$elf" "$img" 2>/dev/null
+            fi
+            [ -f "$elf" ] && [ -f "$img" ] || { bad; echo "      the $isa PROFILER kernel did not build"; return; }
+        fi
+        par_ready
+        case "$isa" in
+        rv)
+            "$QEMU" -machine virt -nographic -bios default -kernel "$img" -smp 3 </dev/null >"$log" 2>&1 &
+            pid=$!; i=0
+            while [ "$i" -lt 120 ]; do
+                grep -aq 'Crash counter = \|\[TRACE\] cpu0' "$log" 2>/dev/null && { sleep 1; break; }
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.5
+            done
+            kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ;;
+        arm)
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 3 -nographic -kernel "$img" </dev/null >"$log" 2>&1 &
+            pid=$!; i=0
+            while [ "$i" -lt 120 ]; do
+                grep -aq 'Crash counter = \|\[TRACE\] cpu0' "$log" 2>/dev/null && { sleep 1; break; }
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.5
+            done
+            kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ;;
+        x86)
+            x86_qemu "$kimg" "$log" 60 'Crash counter = |\[TRACE\] cpu0' -smp 3 || { rm -f "$kimg" "$kimg.features"; return; } ;;
+        esac
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        why="$(python3 tools/dev/symbolize_bt.py --expect culprit_task "$elf" "$log" 2>&1 >"$log.sym" | tr '\n' ' ')"
+        [ "$isa" = x86 ] && rm -f "$kimg" "$kimg.features"
+        if [ -z "$why" ] && grep -q 'culprit_task' "$log.sym"; then
+            ok; grep -a '#[0-9]' "$log.sym" | sed -n '1,3p' | cut -c1-150 | sed 's/^/      /'; rm -f "$log" "$log.sym"
+        else
+            bad; echo "      ${why:-the symbolizer printed no culprit_task frame}"
+            grep -a 'PANIC\] backtrace' "$log" | sed 's/^/        /'
+            echo "      log kept: $log"
+        fi
+    }
+    par "panic: backtrace symbolized (rv)" panic_backtrace_row "panic: backtrace symbolized (rv)" rv
+    par "panic: backtrace symbolized (arm)" panic_backtrace_row "panic: backtrace symbolized (arm)" arm
+    par "panic: backtrace symbolized (x86)" panic_backtrace_row "panic: backtrace symbolized (x86)" x86
+
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #
     # aarch64's `read_daif`/`write_daif`/`enable_irq` were `nomem`, so LLVM
