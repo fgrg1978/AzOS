@@ -13,7 +13,8 @@ the configuration enables, taken from the configuration and from the program
 metadata, not from the Makefile:
 
   1. an image off in the configuration is on no table (three ISAs) and no
-     system volume (three ISAs); one on is on both;
+     system volume (three ISAs, nor the BusyBox and signed variants of it);
+     one on is on both;
   2. the table that lists nothing is written, not refused;
   3. the selection stamp keeps its mtime while the selection is the same and
      changes with it, so the tables and volumes follow Kconfig and not only the
@@ -43,6 +44,14 @@ VOLUMES = {
     "riscv64": "disk-system.img",
     "aarch64": "disk-aarch64-system.img",
     "x86_64": "disk-x86_64-system.img",
+}
+# What SYSTEM_VOLUME names when the configuration has BUSYBOX or enforces secure
+# boot (mk/vars.mk): the system volume plus a file or two, so the images on it
+# are the selection's as well.
+DERIVED = {
+    "riscv64": ["disk-system-busybox.img", "disk-system-signed.img"],
+    "aarch64": ["disk-aarch64-system-busybox.img", "disk-aarch64-system-signed.img"],
+    "x86_64": ["disk-x86_64-system-busybox.img", "disk-x86_64-system-signed.img"],
 }
 
 
@@ -130,6 +139,11 @@ def main():
             check(rc == 0, f"{isa}: make -n {vol} plans the volume ({stderr.strip()[:80]})")
             check(got == want, f"{isa}: the system volume carries exactly the enabled images (extra {sorted(set(got) - set(want))}, missing {sorted(set(want) - set(got))})")
             check("SSHD" not in got and "HELLO" in got, f"{isa}: SSHD is off the volume, HELLO is on it")
+        for isa, vols in DERIVED.items():
+            for vol in vols:
+                stdout, stderr, rc = make_n(cfg, out, f"{out}/build/{vol}")
+                got = volume_images(stdout)
+                check(rc == 0 and got == want, f"{isa}: {vol} carries exactly the enabled images (extra {sorted(set(got) - set(want))}, missing {sorted(set(want) - set(got))}; {stderr.strip()[:80]})")
 
         # Nothing enabled but what the profile forces: the smallest table, written as it is.
         empty = os.path.join(tmp, "none.config")
