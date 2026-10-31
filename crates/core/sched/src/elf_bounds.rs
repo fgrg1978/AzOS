@@ -327,3 +327,314 @@ pub fn check_pt_load(
         seg_end,
     })
 }
+
+// ── The header walk ──────────────────────────────────────────────────────────
+//
+// The loader (`process::load_elf_into`) and the fuzz target (`tests/fuzz/elf-fuzz`)
+// read an image's headers through the code below, and nothing else: it takes
+// every fact it needs from [`ImageParams`], so it names no kernel crate, no
+// Kconfig value and no `cfg(target_arch)`, and one host build runs it for all
+// three ISAs' machine types.
+
+/// `e_machine` of the three ISAs a native image is built for.
+pub const EM_RISCV: u16 = 0xf3;
+pub const EM_AARCH64: u16 = 0xb7;
+pub const EM_X86_64: u16 = 0x3e;
+
+/// `p_type` of a loadable segment.
+pub const PT_LOAD: u32 = 1;
+
+/// The alignment an entry point must have for `machine`: RISC-V fetches on
+/// 2-byte boundaries (compressed instructions), aarch64 keeps the same check
+/// (its instructions are 4-byte, so 4 would be the tighter value), x86_64
+/// instructions start on any byte (its `_start` is wherever the linker put it,
+/// odd as often as not), so there it constrains nothing.
+pub const fn entry_align(machine: u16) -> u64 {
+    if machine == EM_X86_64 && !cfg!(feature = "elf-entry-align-canary") { 1 } else { 2 }
+}
+
+/// What the walk is told, none of which it may name itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageParams {
+    /// The `e_machine` this kernel build runs.
+    pub machine: u16,
+    pub limits: SegLimits,
+    /// Kconfig `ELF_REFUSE_EXEC_HEADERS` ([`check_exec_headers`]).
+    pub refuse_exec_headers: bool,
+    /// The ABI note's type and the version this build speaks ([`abi_note_version`]).
+    pub abi_note_type: u32,
+    pub abi_version: u32,
+}
+
+/// The fields of the ELF header the loader reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ElfHeader {
+    pub entry: u64,
+    pub phoff: usize,
+    pub phentsize: usize,
+    pub phnum: usize,
+}
+
+fn rd16(d: &[u8], o: usize) -> u16 {
+    u16::from_le_bytes([d[o], d[o + 1]])
+}
+fn rd32(d: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
+}
+fn rd64(d: &[u8], o: usize) -> u64 {
+    u64::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3], d[o + 4], d[o + 5], d[o + 6], d[o + 7]])
+}
+
+/// The ELF header of `elf` (its first bytes at least), or `None` when it is not
+/// a little-endian 64-bit image for `machine` with a program header table
+/// whose entries hold the 56 bytes the walk reads.
+///
+/// The machine is matched against the ISA this kernel binary is built for, not
+/// "either machine on both": a RISC-V kernel is never handed an aarch64 image
+/// whatever the file it arrived in was called.
+pub fn parse_header(elf: &[u8], machine: u16) -> Option<ElfHeader> {
+    if elf.len() < 64 || elf[0..4] != [0x7f, b'E', b'L', b'F'] {
+        return None;
+    }
+    if elf[4] != 2 || elf[5] != 1 {
+        return None; // ELFCLASS64, ELFDATA2LSB
+    }
+    if rd16(elf, 18) != machine && !cfg!(feature = "elf-machine-canary") {
+        return None;
+    }
+    let hdr = ElfHeader {
+        entry: rd64(elf, 24),
+        phoff: rd64(elf, 32) as usize,
+        phentsize: rd16(elf, 54) as usize,
+        phnum: rd16(elf, 56) as usize,
+    };
+    if hdr.phentsize < 56 || hdr.phnum == 0 {
+        return None;
+    }
+    Some(hdr)
+}
+
+/// One accepted `PT_LOAD` segment: its header fields and the pages it maps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Segment {
+    pub flags: u32,
+    pub offset: usize,
+    pub vaddr: usize,
+    pub filesz: usize,
+    pub range: SegRange,
+}
+
+/// Why the walk refused an image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalkReject {
+    /// A program header lies (partly) outside the blob, or `e_phoff + i *
+    /// e_phentsize` overflows. The walk refuses the image instead of loading
+    /// the segments that happened to fit: a half-built address space is a far
+    /// worse outcome than a failed exec.
+    ProgramTable,
+    /// The ABI note names a version other than this build's.
+    AbiVersion,
+    Segment(SegReject),
+}
+
+/// What the headers say once every one has been walked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WalkEnd {
+    /// The entry point lies in the file-backed part of a segment the loader
+    /// maps executable, and has the ISA's instruction alignment. Only a
+    /// segment that passed [`check_pt_load`] sets it, so it is also confined to
+    /// the guard limit..`low_max` window: the one ELF address not checked
+    /// directly, and it goes straight to the return-to-user as the PC.
+    pub entry_ok: bool,
+    /// `p_memsz` of the `PT_GNU_STACK` header: 0 for none or no request.
+    pub stack_req: usize,
+    /// The image carries the ABI note: built for this native ABI, so its stack
+    /// request is held to the ceiling instead of clamped.
+    pub native: bool,
+}
+
+/// An iterator over the accepted `PT_LOAD` segments of an image, in the order
+/// the loader maps them; the first refusal ends it with an `Err`. Read the
+/// rest of what the headers say with [`finish`](Self::finish) after the last
+/// segment.
+///
+/// `elf` is the whole image, or its header bytes only when `file_len` is the
+/// length of the file they belong to: every segment's file range is bounded by
+/// `file_len`, every program header by `elf.len()`.
+pub struct SegWalk<'a> {
+    elf: &'a [u8],
+    file_len: usize,
+    hdr: ElfHeader,
+    p: ImageParams,
+    next: usize,
+    done: bool,
+    prev_seg_end: usize,
+    prev_perms: Option<SegPerms>,
+    headers_end: usize,
+    entry_ok: bool,
+    stack_req: usize,
+    native: bool,
+}
+
+impl<'a> SegWalk<'a> {
+    pub fn new(elf: &'a [u8], file_len: usize, hdr: ElfHeader, p: ImageParams) -> Self {
+        SegWalk {
+            elf,
+            file_len,
+            hdr,
+            p,
+            next: 0,
+            done: false,
+            // `p_vaddr >= prev_seg_end` is the ascending order the page-reuse
+            // branch of the mapper relies on ([`check_pt_load`]).
+            prev_seg_end: 0,
+            prev_perms: None,
+            // End of the ELF header and the program header table in the file
+            // ([`check_exec_headers`]). Saturating: a bogus `e_phoff` only
+            // widens the range no executable segment may cover.
+            headers_end: hdr
+                .phoff
+                .saturating_add(hdr.phentsize.saturating_mul(hdr.phnum))
+                .max(64),
+            entry_ok: false,
+            stack_req: 0,
+            native: false,
+        }
+    }
+
+    /// What the headers said, after the iterator ran out.
+    pub fn finish(&self) -> WalkEnd {
+        WalkEnd {
+            entry_ok: self.entry_ok && self.hdr.entry % entry_align(self.p.machine) == 0,
+            stack_req: self.stack_req,
+            native: self.native,
+        }
+    }
+
+    fn advance(&mut self) -> Result<Option<Segment>, WalkReject> {
+        let elf = self.elf;
+        while self.next < self.hdr.phnum {
+            let i = self.next;
+            self.next += 1;
+            // Only 56 bytes are read of each entry, whatever `e_phentsize` says.
+            let ph = i
+                .checked_mul(self.hdr.phentsize)
+                .and_then(|x| self.hdr.phoff.checked_add(x))
+                .ok_or(WalkReject::ProgramTable)?;
+            if ph.checked_add(56).map_or(true, |end| end > elf.len()) {
+                return Err(WalkReject::ProgramTable);
+            }
+            let p_type = rd32(elf, ph);
+            // The ABI note: an image built for another version of the native
+            // ABI is refused (a mismatch would mean other calls). No note is
+            // no refusal: a Linux program or a hand-assembled test has none.
+            if p_type == PT_NOTE {
+                if let Some(v) = abi_note_version(elf, ph, self.p.abi_note_type) {
+                    if v != self.p.abi_version {
+                        return Err(WalkReject::AbiVersion);
+                    }
+                    self.native = true;
+                }
+                continue;
+            }
+            if p_type == PT_GNU_STACK {
+                self.stack_req = rd64(elf, ph + 40) as usize;
+                continue;
+            }
+            if p_type != PT_LOAD {
+                continue;
+            }
+            let flags = rd32(elf, ph + 4);
+            let offset = rd64(elf, ph + 8) as usize;
+            let vaddr = rd64(elf, ph + 16) as usize;
+            let filesz = rd64(elf, ph + 32) as usize;
+            let memsz = rd64(elf, ph + 40) as usize;
+            let range = match check_pt_load(offset, vaddr, filesz, memsz, self.file_len, self.prev_seg_end, self.p.limits) {
+                SegCheck::Empty => continue,
+                SegCheck::Reject(r) => return Err(WalkReject::Segment(r)),
+                SegCheck::Load(r) => r,
+            };
+            let perms = seg_perms(flags);
+            check_page_sharing(self.prev_seg_end, self.prev_perms, vaddr, perms, self.p.limits.page_size)
+                .map_err(WalkReject::Segment)?;
+            if self.p.refuse_exec_headers {
+                check_exec_headers(flags, offset, filesz, self.headers_end).map_err(WalkReject::Segment)?;
+            }
+            self.prev_seg_end = range.seg_end;
+            self.prev_perms = Some(perms);
+            // The entry must sit in the *file-backed* part of a segment the
+            // loader maps executable. `p_memsz` would be too loose (its tail is
+            // zero-filled BSS: an entry there executes zeros), and `PF_X` alone
+            // too (a writable segment is mapped without the execute bit, so an
+            // `RWX` one advertises X in the header and faults on fetch): the
+            // check agrees with the mapper, not with the header.
+            if flags & PF_X != 0 && flags & PF_W == 0 {
+                let e = self.hdr.entry as usize;
+                if e >= vaddr && e < vaddr.saturating_add(filesz) {
+                    self.entry_ok = true;
+                }
+            }
+            return Ok(Some(Segment { flags, offset, vaddr, filesz, range }));
+        }
+        Ok(None)
+    }
+}
+
+impl Iterator for SegWalk<'_> {
+    type Item = Result<Segment, WalkReject>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        match self.advance() {
+            Ok(Some(s)) => Some(Ok(s)),
+            Ok(None) => {
+                self.done = true;
+                None
+            }
+            Err(e) => {
+                self.done = true;
+                Some(Err(e))
+            }
+        }
+    }
+}
+
+/// What the copy loop of the mapper does with the page at `va` of a segment
+/// (`vaddr`, `offset`, `filesz`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageCopy {
+    /// The page holds no file byte of the segment.
+    Nothing,
+    /// `n` bytes from `src` (an offset into the blob) to `dest` (an offset in
+    /// the page).
+    Copy { dest: usize, src: usize, n: usize },
+    /// The segment has file bytes here but the copy would leave the blob or the
+    /// page (or overflow): the mapper skips it. A segment [`check_pt_load`]
+    /// accepted never gets here.
+    Skipped,
+}
+
+/// The copy of segment bytes into the page `[va, va + page_size)`, bounded by
+/// the blob of `blob_len` bytes the bytes are read from.
+///
+/// When a segment starts mid-page (`vaddr > va`, a `.rodata` sharing the
+/// `.text` page), its bytes land at `vaddr - va` in the page, not at offset 0,
+/// which would clobber the preceding segment's code.
+pub fn page_copy(va: usize, vaddr: usize, offset: usize, filesz: usize, page_size: usize, blob_len: usize) -> PageCopy {
+    let page_end = va.saturating_add(page_size);
+    let seg_file_end = vaddr.saturating_add(filesz);
+    let copy_start = va.max(vaddr);
+    let copy_end = page_end.min(seg_file_end);
+    if copy_start >= copy_end {
+        return PageCopy::Nothing;
+    }
+    let dest = if cfg!(feature = "elf-page-copy-canary") { 0 } else { copy_start - va };
+    let src = offset.saturating_add(copy_start - vaddr);
+    let n = copy_end - copy_start;
+    match (src.checked_add(n), dest.checked_add(n)) {
+        (Some(src_end), Some(dst_end)) if src_end <= blob_len && dst_end <= page_size => PageCopy::Copy { dest, src, n },
+        _ => PageCopy::Skipped,
+    }
+}

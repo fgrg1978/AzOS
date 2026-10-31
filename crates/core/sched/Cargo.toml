@@ -71,6 +71,14 @@ ktest = ["azos_sync/ktest"]
 # before); `rodata-exec-canary` maps read-only segments read-execute (the old
 # two-way split). Gate rows: host `elf_bounds` tests, abitest `elfperm:`.
 elf-mixed-page-canary = []
+# The header walk (`elf_bounds::SegWalk`), host rows in sched-wake-tests:
+# `elf-machine-canary` takes an image of any machine, `elf-entry-align-canary`
+# holds an x86_64 entry to the 2-byte alignment of the other ISAs,
+# `elf-page-copy-canary` copies a segment that starts mid-page to the start
+# of the page.
+elf-machine-canary = []
+elf-entry-align-canary = []
+elf-page-copy-canary = []
 # The IPC fast path's claim trusts its `context_saving` read from before its
 # CAS (`task::sched_word::fast_claim`): host row "sched: fast claim stale
 # save canary (host)" must fail.

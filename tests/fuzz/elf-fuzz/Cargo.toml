@@ -16,6 +16,9 @@ libfuzzer-sys = "0.4"
 # real check.
 [features]
 elf-mixed-page-canary = []
+elf-machine-canary = []
+elf-entry-align-canary = []
+elf-page-copy-canary = []
 
 [[bin]]
 name = "elf_load"

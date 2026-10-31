@@ -105,9 +105,7 @@ const VDSO_FITS_BELOW_USER_CEILING: bool =
 
 // ── ELF constants ─────────────────────────────────────────────────────────────
 
-const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-const PT_LOAD: u32 = 1;
-use elf_bounds::{PF_W, PF_X};
+use elf_bounds::PT_LOAD;
 
 /// Ceiling for everything userspace places in the low VA region: the loaded
 /// image and the `brk` heap.
@@ -153,16 +151,6 @@ const _: () = assert!(LX_WINDOW_END - vmm::USER_GUARD_LIMIT <= 1 << 27);
 #[path = "elf_bounds.rs"]
 pub mod elf_bounds;
 
-/// The instruction alignment an image's entry point must have (see the
-/// entry check in `load_elf_into`): riscv64's 2 everywhere but x86_64.
-/// aarch64 keeps the check it always had (2; its instructions are 4-byte,
-/// so 4 is the tighter value). Host builds load riscv64 images
-/// (`tests/host/syscall-tests`' `exec_binding`).
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
-const ENTRY_ALIGN: u64 = 1;
-#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
-const ENTRY_ALIGN: u64 = 2;
-
 /// The address limits `elf_bounds` enforces, taken from their real
 /// definitions. This is the only place they are named together; `elf_bounds`
 /// declares none of them itself, so there is nothing to drift.
@@ -172,6 +160,32 @@ const fn seg_limits() -> elf_bounds::SegLimits {
         guard_limit: vmm::USER_GUARD_LIMIT,
         low_max: USER_LOW_MAX,
         page_size: PAGE_SIZE,
+    }
+}
+
+/// The `e_machine` this kernel binary runs. Host builds (`cargo test` on
+/// aarch64-apple-darwin, where `target_arch = "aarch64"` but `target_os !=
+/// "none"`) compile this module and exercise it for real:
+/// `tests/host/syscall-tests`' `exec_binding` suite feeds the real
+/// `$AZOS_OUT/build/uhello.elf` (RISC-V bytes) through the loader to test
+/// seccomp image binding, so a host build expects EM_RISCV. A "matches
+/// neither ISA" value turned that test's real machine-check pass into a
+/// rejection before the loader got to the check the test is about.
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+const EXPECTED_MACHINE: u16 = elf_bounds::EM_AARCH64;
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+const EXPECTED_MACHINE: u16 = elf_bounds::EM_X86_64;
+#[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none")))]
+const EXPECTED_MACHINE: u16 = elf_bounds::EM_RISCV;
+
+/// Everything the header walk is told ([`elf_bounds::ImageParams`]).
+fn image_params() -> elf_bounds::ImageParams {
+    elf_bounds::ImageParams {
+        machine: EXPECTED_MACHINE,
+        limits: seg_limits(),
+        refuse_exec_headers: azos_limits::ELF_REFUSE_EXEC_HEADERS,
+        abi_note_type: azos_abi::ABI_NOTE_TYPE,
+        abi_version: azos_abi::ABI_VERSION,
     }
 }
 
@@ -765,44 +779,7 @@ pub(crate) fn sync_image_text(user_pt: usize, lo: usize, hi: usize) {
 /// The loader behind [`load_elf`] and [`load_elf_hdr`]: `elf` is the whole
 /// image when `copy`, else its header bytes, and `file_len` the image length.
 fn load_elf_impl(elf: &[u8], file_len: usize, copy: bool) -> Option<ExecContext> {
-    if elf.len() < 64               { return None; }
-    if &elf[0..4] != ELF_MAGIC      { return None; }
-    if elf[4] != 2                  { return None; } // ELFCLASS64
-    if elf[5] != 1                  { return None; } // ELFDATA2LSB
-    // e_machine must match the ISA this kernel binary is itself built for —
-    // checked per-ISA (not "either machine accepted on both") so a RISC-V
-    // kernel can never be handed an aarch64 image or vice versa, whatever
-    // FAT32 file name it arrived under.
-    #[cfg(target_arch = "riscv64")]
-    const EXPECTED_MACHINE: u16 = 0xf3;  // EM_RISCV
-    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
-    const EXPECTED_MACHINE: u16 = 0xb7;  // EM_AARCH64
-    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
-    const EXPECTED_MACHINE: u16 = 0x3e;  // EM_X86_64
-    // Host builds (e.g. `cargo test` on aarch64-apple-darwin, where
-    // `target_arch = "aarch64"` but `target_os != "none"`) compile this
-    // function too (this module has no host-exclusion at the `mod` level)
-    // AND exercise it for real: `tests/host/syscall-tests`' `exec_binding`
-    // suite feeds the REAL `$AZOS_OUT/build/uhello.elf` (RISC-V bytes) through this
-    // exact loader on the host to test seccomp image binding
-    // (`exec_of_a_shipped_image_reaches_the_loader_with_the_bytes_hashed`).
-    // `0xffff` here — "matches neither real ISA" — broke that test: it
-    // turned a real machine-check pass (RISC-V bytes, RISC-V expectation)
-    // into a rejection before the loader ever got far enough to hit the
-    // check that test is actually about. EM_RISCV on host preserves this
-    // function's ENTIRE pre-existing behavior there (the literal was
-    // `0xf3` unconditionally before this task); it is not a claim that a
-    // host build ever really execs anything.
-    #[cfg(not(any(target_arch = "riscv64", all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "none"))))]
-    const EXPECTED_MACHINE: u16 = 0xf3;  // EM_RISCV — see comment above
-    if r16(elf, 18) != EXPECTED_MACHINE { return None; }
-
-    let e_entry     = r64(elf, 24);
-    let e_phoff     = r64(elf, 32) as usize;
-    let e_phentsize = r16(elf, 54) as usize;
-    let e_phnum     = r16(elf, 56) as usize;
-
-    if e_phentsize < 56 || e_phnum == 0 { return None; }
+    let hdr = elf_bounds::parse_header(elf, EXPECTED_MACHINE)?;
 
     // Tables this task allocated for some earlier, abandoned
     // build are not this address space's; start the count clean.
@@ -816,7 +793,7 @@ fn load_elf_impl(elf: &[u8], file_len: usize, copy: bool) -> Option<ExecContext>
     // allocate anything — a slow, silent death rather than a rejected exec.
     // Funnelling the whole build through one call gives a single teardown
     // point that covers all of them.
-    match load_elf_into(elf, file_len, copy, user_pt, e_entry, e_phoff, e_phentsize, e_phnum) {
+    match load_elf_into(elf, file_len, copy, user_pt, hdr) {
         Some(mut ctx) => {
             // The root, plus every table `vmm::walk` hung under it while the
             // image, the stack and the vDSO were mapped (counted by the
@@ -843,16 +820,12 @@ fn load_elf_impl(elf: &[u8], file_len: usize, copy: bool) -> Option<ExecContext>
 /// every `return None` below happens while `user_pt` still contains nothing
 /// but tables this function allocated, which is exactly what
 /// [`vmm::destroy_user_pagetable`] needs in order to free them safely.
-#[allow(clippy::too_many_arguments)]
 fn load_elf_into(
     elf: &[u8],
     file_len: usize,
     copy: bool,
     user_pt: usize,
-    e_entry: u64,
-    e_phoff: usize,
-    e_phentsize: usize,
-    e_phnum: usize,
+    hdr: elf_bounds::ElfHeader,
 ) -> Option<ExecContext> {
     // Track the highest mapped virtual address for initial brk.
     let mut brk_va: usize = 0;
@@ -860,129 +833,27 @@ fn load_elf_into(
     // the page tables.
     let mut frames: u32 = 0;
 
-    // Does `e_entry` land in a mapped, file-backed, executable segment?
-    // Nothing validated it before, and it is handed straight to `sret_to_user`
-    // as sepc: an ELF could name any address at all — an unmapped page, the
-    // stack, the vDSO — and the SRET would fault immediately in U-mode with
-    // the kernel treating it as a fatal user trap.
-    let mut entry_ok = false;
-
-    // `p_memsz` of the image's `PT_GNU_STACK`; 0 = none, or no request.
-    let mut stack_req: usize = 0;
-    // The image carries the AZOS ABI note: built for this native ABI, so its
-    // stack request is held to the ceiling instead of clamped.
-    let mut native = false;
-
-    // End (`p_vaddr + p_memsz`, unaligned) of the last accepted segment. The
-    // page-reuse branch below *documents* that segments arrive in ascending
-    // vaddr order, and then relies on it; nothing checked it. See
-    // `elf_bounds::check_pt_load`.
-    let mut prev_seg_end: usize = 0;
-    // How the last accepted segment is mapped: a segment that starts on the
-    // page it ends on must be mapped alike (`elf_bounds::check_page_sharing`).
-    let mut prev_perms: Option<elf_bounds::SegPerms> = None;
-    // End of the ELF header and the program header table in the file
-    // (`elf_bounds::check_exec_headers`). Saturating: a bogus `e_phoff` only
-    // widens the range no executable segment may cover.
-    let headers_end = e_phoff.saturating_add(e_phentsize.saturating_mul(e_phnum)).max(64);
-
-    for i in 0..e_phnum {
-        // Bounded ph offset — `i * e_phentsize` must not overflow, and
-        // the program header itself (56 bytes) must fit entirely in the
-        // ELF blob. Even if e_phentsize > 56, we only read 56 bytes.
-        //
-        // These reject the image instead of `break`ing out of the loop:
-        // breaking meant a truncated or bogus `e_phoff`/`e_phentsize` loaded
-        // however many segments happened to fit and then SRET'd into a
-        // half-built address space, which is a far worse outcome than a
-        // failed exec.
-        let ph = match e_phoff.checked_add(i.checked_mul(e_phentsize)?) {
-            Some(p) => p,
-            None    => return None,
+    // Every header check lives in `elf_bounds::SegWalk`, so the fuzz target
+    // reads the same code (`tests/fuzz/elf-fuzz`). A refusal fails the whole
+    // build: breaking out instead would SRET into a half-built address space.
+    //
+    // Without bounds on user-supplied ELF fields a malicious ELF could:
+    //   - set p_vaddr = 0 -> the null-guard page mapped for real, which
+    //     un-does `handle_demand_fault`/`handle_cow_fault`'s refusal to
+    //     resolve anything below `vmm::USER_GUARD_LIMIT`
+    //   - set p_vaddr over kernel MMIO or over the stack/vDSO (see
+    //     USER_LOW_MAX) -> S-mode mappings clobbered in the user PT
+    //   - set p_memsz huge -> infinite alloc loop / OOM kernel
+    //   - set p_offset+p_filesz > file_len -> OOB read
+    //   - emit segments out of vaddr order -> a later segment's file bytes
+    //     rewritten over an earlier segment's already-mapped page
+    let mut walk = elf_bounds::SegWalk::new(elf, file_len, hdr, image_params());
+    for seg in &mut walk {
+        let Ok(elf_bounds::Segment { flags: p_flags, offset: p_offset, vaddr: p_vaddr, filesz: p_filesz, range }) = seg
+        else {
+            return None;
         };
-        if ph.checked_add(56).map_or(true, |end| end > elf.len()) { return None; }
-
-        // The ABI note `libsys` embeds: an image built for another version of
-        // the native ABI is refused (a mismatch would mean other calls). No note
-        // is no refusal: a Linux program or a hand-assembled test has none.
-        if r32(elf, ph) == elf_bounds::PT_NOTE {
-            if let Some(v) = elf_bounds::abi_note_version(elf, ph, azos_abi::ABI_NOTE_TYPE) {
-                if v != azos_abi::ABI_VERSION { return None; }
-                native = true;
-            }
-            continue;
-        }
-        // The stack the image asks for (`elf_bounds::PT_GNU_STACK`).
-        if r32(elf, ph) == elf_bounds::PT_GNU_STACK {
-            stack_req = r64(elf, ph + 40) as usize;
-            continue;
-        }
-        if r32(elf, ph) != PT_LOAD { continue; }
-
-        let p_flags  = r32(elf, ph + 4);
-        let p_offset = r64(elf, ph + 8)  as usize;
-        let p_vaddr  = r64(elf, ph + 16) as usize;
-        let p_filesz = r64(elf, ph + 32) as usize;
-        let p_memsz  = r64(elf, ph + 40) as usize;
-
-        // Sanity bounds on user-supplied ELF fields. Without these a
-        // malicious ELF can:
-        //   - set p_vaddr = 0 → the null-guard page mapped for real, which
-        //     un-does `handle_demand_fault`/`handle_cow_fault`'s refusal to
-        //     resolve anything below `vmm::USER_GUARD_LIMIT` (a task that
-        //     jumps through a null pointer goes back to executing zeros)
-        //   - set p_vaddr over kernel MMIO or over the stack/vDSO (see
-        //     USER_LOW_MAX) → S-mode mappings clobbered in the user PT
-        //   - set p_memsz huge → infinite alloc loop / OOM kernel
-        //   - set p_filesz > p_memsz → unspecified by ELF spec, refuse
-        //   - set p_offset+p_filesz > elf.len() → OOB read
-        //   - emit segments out of vaddr order → a later segment's file bytes
-        //     rewritten over an earlier segment's already-mapped page
-        // All of them live in `elf_bounds` so they can actually be tested;
-        // nothing about them is duplicated here.
-        let (va_start, va_end) = match elf_bounds::check_pt_load(
-            p_offset, p_vaddr, p_filesz, p_memsz,
-            file_len, prev_seg_end, seg_limits(),
-        ) {
-            elf_bounds::SegCheck::Empty     => continue,
-            elf_bounds::SegCheck::Reject(_) => return None,
-            elf_bounds::SegCheck::Load(r)   => {
-                let perms = elf_bounds::seg_perms(p_flags);
-                if elf_bounds::check_page_sharing(prev_seg_end, prev_perms, p_vaddr, perms, PAGE_SIZE)
-                    .is_err()
-                {
-                    return None;
-                }
-                // An RX segment over the ELF/program headers: `.rodata`
-                // folded into the text segment (Kconfig
-                // ELF_REFUSE_EXEC_HEADERS; canary: the option off).
-                if azos_limits::ELF_REFUSE_EXEC_HEADERS
-                    && elf_bounds::check_exec_headers(p_flags, p_offset, p_filesz, headers_end).is_err()
-                {
-                    return None;
-                }
-                prev_seg_end = r.seg_end;
-                prev_perms = Some(perms);
-                (r.va_start, r.va_end)
-            }
-        };
-
-        // Entry point must sit in the *file-backed* part of a segment this
-        // loader actually maps executable.
-        //
-        // `p_memsz` would be too loose: its tail is the zero-filled BSS, and
-        // an entry there executes zeros (illegal instruction). And `PF_X`
-        // alone would be too loose in the other direction — the flag
-        // derivation below maps any writable segment as USER_RW with no EXEC
-        // bit, so an `RWX` segment (p_flags = 7) advertises X in the header
-        // but faults on instruction fetch. The check has to agree with the
-        // mapper, not with the ELF header.
-        if p_flags & PF_X != 0 && p_flags & PF_W == 0 {
-            let e = e_entry as usize;
-            if e >= p_vaddr && e < p_vaddr.saturating_add(p_filesz) {
-                entry_ok = true;
-            }
-        }
+        let (va_start, va_end) = (range.va_start, range.va_end);
 
         // W^X, in both directions.
         //
@@ -1110,36 +981,22 @@ fn load_elf_into(
                 }
             };
 
-            // Copy the intersection of this page [va, va+PAGE) with the
-            // segment's file-backed range [p_vaddr, p_vaddr+p_filesz) into the
-            // page at the correct *destination offset*. When a segment starts
-            // mid-page (p_vaddr > va, e.g. .rodata sharing the .text page), its
-            // bytes must land at `p_vaddr - va` within the page — not at offset
-            // 0, which previously clobbered the preceding segment's code.
-            let page_end     = va.saturating_add(PAGE_SIZE);
-            let seg_file_end = p_vaddr.saturating_add(p_filesz);
-            let copy_start   = va.max(p_vaddr);
-            let copy_end     = page_end.min(seg_file_end);
-            if copy && copy_start < copy_end {
-                let dest_off = copy_start - va;        // offset within the page
-                let seg_off  = copy_start - p_vaddr;   // offset within the segment
-                let src_off  = p_offset.saturating_add(seg_off);
-                let copy_n   = copy_end - copy_start;
-                if let (Some(src_end), Some(dst_end)) =
-                    (src_off.checked_add(copy_n), dest_off.checked_add(copy_n))
+            // The intersection of this page with the segment's file-backed
+            // range, at its offset in the page (`elf_bounds::page_copy`).
+            if copy {
+                if let elf_bounds::PageCopy::Copy { dest, src, n } =
+                    elf_bounds::page_copy(va, p_vaddr, p_offset, p_filesz, PAGE_SIZE, elf.len())
                 {
-                    if src_end <= elf.len() && dst_end <= PAGE_SIZE {
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                elf.as_ptr().add(src_off),
-                                // The allocator hands back a PHYSICAL page;
-                                // the kernel reaches it through its own
-                                // mapping. Identity on riscv64, the upper
-                                // half on aarch64.
-                                (azos_mm::addr::phys_to_virt(phys) + dest_off) as *mut u8,
-                                copy_n,
-                            );
-                        }
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            elf.as_ptr().add(src),
+                            // The allocator hands back a PHYSICAL page;
+                            // the kernel reaches it through its own
+                            // mapping. Identity on riscv64, the upper
+                            // half on aarch64.
+                            (azos_mm::addr::phys_to_virt(phys) + dest) as *mut u8,
+                            n,
+                        );
                     }
                 }
             }
@@ -1147,21 +1004,13 @@ fn load_elf_into(
         }
     }
 
-    // Reject an entry point we cannot vouch for: one off the ISA's
-    // instruction alignment is malformed by construction. RISC-V fetches on
-    // 2-byte boundaries (compressed instructions; aarch64 shares the check);
-    // x86_64 instructions start on any byte (its `_start` is wherever the
-    // linker put it, odd as often as not), so there it constrains nothing.
-    //
-    // `e_entry` needs no bound of its own, above or below: `entry_ok` is only
-    // ever set from inside a segment that already passed
-    // `elf_bounds::check_pt_load`, so it is transitively confined to
-    // `USER_GUARD_LIMIT..USER_LOW_MAX`. That is worth stating because it is
-    // the only ELF-supplied address here that is *not* checked directly —
-    // it is handed straight to `sret_to_user` as sepc.
-    if !entry_ok || e_entry % ENTRY_ALIGN != 0 {
+    // An entry point the walk cannot vouch for is refused: off the ISA's
+    // instruction alignment, or not in a file-backed executable segment.
+    let end = walk.finish();
+    if !end.entry_ok {
         return None;
     }
+    let (stack_req, native) = (end.stack_req, end.native);
     // Canary (`user-stack-request-canary`): the request is not read, and every
     // image gets the default stack. Never in a normal build.
     #[cfg(feature = "user-stack-request-canary")]
@@ -1183,7 +1032,7 @@ fn load_elf_into(
             return None;
         }
     };
-    finish_user_space(user_pt, e_entry, brk_va, frames, stack)
+    finish_user_space(user_pt, hdr.entry, brk_va, frames, stack)
 }
 
 /// Is `va` in the area a user stack can occupy: from `USER_STACK_MAX` below

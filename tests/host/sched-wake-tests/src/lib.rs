@@ -3344,3 +3344,5 @@ mod wake_list_tests {
 
 #[cfg(test)]
 mod marker_pte;
+#[cfg(test)]
+mod elf_walk;

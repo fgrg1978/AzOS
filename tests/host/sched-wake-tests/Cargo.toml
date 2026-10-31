@@ -52,6 +52,9 @@ forced-seal-skip-canary = []
 # `elf_bounds.rs` (pulled by path): the gate's canary build accepts a page
 # shared by segments mapped differently, and `elf_bounds_tests` must fail.
 elf-mixed-page-canary = []
+elf-machine-canary = []
+elf-entry-align-canary = []
+elf-page-copy-canary = []
 # `task.rs`'s `sched_word::fast_claim`: the canary build trusts the read
 # before the CAS, and `fast_claim_sees_a_save_begun_after_its_check` must fail.
 fast-claim-stale-canary = []
