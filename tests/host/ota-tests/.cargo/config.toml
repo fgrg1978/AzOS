@@ -3,7 +3,7 @@
 # tests need to run on the host (Apple Silicon).
 
 [build]
-target = "aarch64-apple-darwin"
+target = "host-tuple"
 
 [unstable]
 # Disable build-std — host has precompiled std/core/alloc.

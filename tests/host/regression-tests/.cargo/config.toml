@@ -1,6 +1,6 @@
 # Override workspace target — run tests on the host, not riscv.
 [build]
-target = "aarch64-apple-darwin"
+target = "host-tuple"
 
 [unstable]
 build-std = []

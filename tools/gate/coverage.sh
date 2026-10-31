@@ -28,7 +28,7 @@ cd "$REPO_ROOT"
 OUT="${OUT:-$(mktemp -d)}"
 mkdir -p "$OUT/prof" "$OUT/json" || { echo "cannot create $OUT" >&2; exit 1; }
 
-TC="$(ls -d "$HOME"/.rustup/toolchains/*/lib/rustlib/aarch64-apple-darwin/bin 2>/dev/null | head -1)"
+TC="$(ls -d "$HOME"/.rustup/toolchains/*/lib/rustlib/"$(rustc -vV | sed -n 's/^host: //p')"/bin 2>/dev/null | head -1)"
 if [ -z "$TC" ] || [ ! -x "$TC/llvm-cov" ]; then
     echo "llvm-tools not found:  rustup component add llvm-tools" >&2
     exit 1

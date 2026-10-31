@@ -1,6 +1,6 @@
 # Run on developer host, not the kernel target.
 [build]
-target = "aarch64-apple-darwin"
+target = "host-tuple"
 
 [unstable]
 build-std = []

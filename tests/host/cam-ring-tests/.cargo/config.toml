@@ -2,7 +2,7 @@
 # (Apple Silicon), not the riscv64-none-elf the kernel uses.
 
 [build]
-target = "aarch64-apple-darwin"
+target = "host-tuple"
 
 [unstable]
 build-std = []

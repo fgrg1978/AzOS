@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 
-BAD = re.compile(r"/opt/homebrew|/usr/local/(?:opt|share/qemu)|/Users/[a-z]|pgrep\s[^|]*-x qemu-system")
+BAD = re.compile(r"/opt/homebrew|/usr/local/(?:opt|share/qemu)|/Users/[a-z]|pgrep\s[^|]*-x qemu-system|^\s*target = "[a-z0-9_]+-apple-darwin"")
 SELF = "tools/lint/host_paths_lint.py"
 
 
@@ -19,7 +19,8 @@ def hits(lines):
 def main(argv):
     if "--self-test" in argv:
         if not hits(["cc=/opt/homebrew/opt/llvm/bin/clang"]) or not hits(["# /Users/someone/x"]) \
-                or not hits(["n=$(pgrep -g 1 -x qemu-system-x86_64 | wc -l)"]):
+                or not hits(["n=$(pgrep -g 1 -x qemu-system-x86_64 | wc -l)"]) \
+                or not hits(['target = "aarch64-apple-darwin"']):
             print("host_paths_lint self-test: a fixed path passed")
             return 1
         if hits(["cc=$(brew --prefix llvm)/bin/clang", "/usr/local/bin is on PATH"]):

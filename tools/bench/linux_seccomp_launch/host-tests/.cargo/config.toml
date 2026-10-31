@@ -2,7 +2,7 @@
 # riscv64imac-unknown-none-elf with build-std; these run on the host.
 # Same override as tests/host/seccomp-tests and tests/host/ota-tests.
 [build]
-target = "aarch64-apple-darwin"
+target = "host-tuple"
 
 [unstable]
 build-std = []

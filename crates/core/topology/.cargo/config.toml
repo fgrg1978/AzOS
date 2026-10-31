@@ -11,7 +11,7 @@
 # `tests/host/topology-tests/.cargo/config.toml` and ~50 other test-oriented
 # crates in this tree.
 [build]
-target = "aarch64-apple-darwin"
+target = "host-tuple"
 
 [unstable]
 build-std = []
