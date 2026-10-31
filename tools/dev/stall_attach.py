@@ -35,6 +35,7 @@ the soak rows (they run TCG); see the findings in tools/dev/test_stall_attach.py
 import argparse
 import bisect
 import concurrent.futures
+import glob
 import os
 import re
 import shutil
@@ -43,6 +44,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402,F401
@@ -358,23 +360,36 @@ IRQ = {"aarch64": irq_aarch64, "riscv64": irq_riscv64, "x86_64": irq_x86_64}
 
 # ---- the dump ---------------------------------------------------------------------------------
 
+def rlibs(dwarf_dir):
+    """The scheduler crate's rlibs under `dwarf_dir`, newest first (their objects carry the DWARF a linker script may drop)."""
+    paths = glob.glob(os.path.join(dwarf_dir, "libazos_sched-*.rlib")) if dwarf_dir else []
+    return sorted(paths, key=os.path.getmtime, reverse=True)
+
+
 class Dumper:
-    def __init__(self, isa, elf, mon, slide, addr2line=None):
+    def __init__(self, isa, elf, mon, slide, addr2line=None, dwarf_dir=None):
         self.isa, self.elf, self.mon, self.slide = isa, elf, mon, slide
         self.addr2line = addr2line
-        with concurrent.futures.ThreadPoolExecutor(2) as pool:
-            remote = pool.submit(struct_layouts, elf.path, (), r"^PerCpuRemote<.*ReadyList.*>$")
-            found = struct_layouts(elf.path, ("Task", "WaitCell", "PerCpuSched", "ReadyList")) + remote.result()
+        self.layouts_from = None
+        tasks = elf.static("scheduler::TASKS")
+        self.task = self.wait = self.percpu = self.ready = self.remote = None
+        for src in [elf.path] + rlibs(dwarf_dir):
+            with concurrent.futures.ThreadPoolExecutor(2) as pool:
+                remote = pool.submit(struct_layouts, src, (), r"^PerCpuRemote<.*ReadyList.*>$")
+                found = struct_layouts(src, ("Task", "WaitCell", "PerCpuSched", "ReadyList")) + remote.result()
 
-        def pick(name, needs):
-            return next((x for x in found if (x["name"] == name or name.endswith("<") and x["name"].startswith(name))
-                         and all(n in x["members"] for n in needs)), None)
+            def pick(name, needs):
+                return next((x for x in found if (x["name"] == name or name.endswith("<") and x["name"].startswith(name))
+                             and all(n in x["members"] for n in needs)), None)
 
-        self.task = pick("Task", ("tid", "state_word", "name", "wait_reason", "priority", "cpu_affinity"))
-        self.wait = pick("WaitCell", ("tag", "payload"))
-        self.percpu = pick("PerCpuSched", ("current_idx",))
-        self.ready = pick("ReadyList", ("head", "tail", "count"))
-        self.remote = pick("PerCpuRemote<", ("ptrs",))
+            task = pick("Task", ("tid", "state_word", "name", "wait_reason", "priority", "cpu_affinity"))
+            if task and tasks and tasks[1] % task["size"] == 0:
+                self.task, self.layouts_from = task, src
+                self.wait = pick("WaitCell", ("tag", "payload"))
+                self.percpu = pick("PerCpuSched", ("current_idx",))
+                self.ready = pick("ReadyList", ("head", "tail", "count"))
+                self.remote = pick("PerCpuRemote<", ("ptrs",))
+                break
 
     def line(self, addr):
         if not self.addr2line:
@@ -404,11 +419,11 @@ class Dumper:
         t = self.task
         sym = self.elf.static("scheduler::TASKS")
         if not (t and sym):
-            return None, []
+            return None, {}
         n = sym[1] // t["size"]
         raw = self.mon.read(sym[0], n * t["size"])
         if raw is None:
-            return None, []
+            return None, {}
         out = {}
         for i in range(n):
             b = raw[i * t["size"]:(i + 1) * t["size"]]
@@ -442,6 +457,8 @@ class Dumper:
         P = o.append
         P("==== %s  %s  isa %s  slide %#x  %s" % (tag, time.strftime("%H:%M:%S"), self.isa, self.slide, extra))
         P("elf %s" % self.elf.path)
+        P("struct layouts from %s" % (self.layouts_from if self.layouts_from != self.elf.path else "the ELF's DWARF")
+          if self.layouts_from else "struct layouts: none found (no DWARF of the scheduler in the ELF or in --dwarf-dir)")
         P("approximate: this build has no frame pointers, so the stack lines are scans for kernel text addresses, not a backtrace")
         harts = self.hart_blocks()
         ntasks, tasks = self.tasks()
@@ -557,7 +574,7 @@ def alive(pid):
         return bool(state) and not state.startswith("Z")
 
 
-def take_dumps(isa, elf_path, d, log, prefix, tag_prefix=""):
+def take_dumps(isa, elf_path, d, log, prefix, dwarf_dir=None):
     scratch = os.path.join(d, "scratch")
     os.makedirs(scratch, exist_ok=True)
     mon = Monitor(os.path.join(d, "m"), scratch)
@@ -565,7 +582,7 @@ def take_dumps(isa, elf_path, d, log, prefix, tag_prefix=""):
     with open(log, errors="replace") as f:
         slide, how = slide_from(f.read(), elf)
     d2l = symbolize_bt.find_addr2line(symbolize_bt.ADDR2LINE)
-    dumper = Dumper(isa, elf, mon, slide, d2l)
+    dumper = Dumper(isa, elf, mon, slide, d2l, dwarf_dir)
     paths = []
     try:
         for k, name in enumerate(("a", "b")):
@@ -573,7 +590,7 @@ def take_dumps(isa, elf_path, d, log, prefix, tag_prefix=""):
                 time.sleep(GAP_S)
             mon.cmd("stop")
             try:
-                text = dumper.dump(tag_prefix + "dump " + name, how)
+                text = dumper.dump("dump " + name, how)
             finally:
                 mon.cmd("cont")
             path = "%s.stall-%s.txt" % (prefix, name)
@@ -584,7 +601,7 @@ def take_dumps(isa, elf_path, d, log, prefix, tag_prefix=""):
     return paths
 
 
-def watch(isa, elf_path, d, log, pid, marker, prefix, silence=SILENCE_S, decide=stalled, limit=None, poll=0.5):
+def watch(isa, elf_path, d, log, pid, marker, prefix, silence=SILENCE_S, decide=stalled, limit=None, poll=0.5, dwarf_dir=None):
     """Returns ("stalled", dumps), ("marker", []) or ("exited", []). The verdict is also written to PREFIX.stall-verdict."""
     clock = Silence(time.time(), marker, silence, decide)
     pos, dumps, t0 = 0, [], time.time()
@@ -602,9 +619,9 @@ def watch(isa, elf_path, d, log, pid, marker, prefix, silence=SILENCE_S, decide=
         if hit and not dumps:
             write(prefix + ".stall-busy", "")
             try:
-                dumps = take_dumps(isa, elf_path, d, log, prefix)
+                dumps = take_dumps(isa, elf_path, d, log, prefix, dwarf_dir)
             except Exception as e:  # a watcher that dies leaves the row without its dumps: the error is the dump
-                write(prefix + ".stall-error.txt", "attach failed: %s\n" % e)
+                write(prefix + ".stall-error.txt", "attach failed: %s\n%s" % (e, traceback.format_exc()))
                 dumps = [prefix + ".stall-error.txt"]
             finally:
                 os.unlink(prefix + ".stall-busy")
@@ -637,7 +654,8 @@ def cmd_run(a, qemu):
                              start_new_session=True)
     try:
         verdict, dumps = watch(a.isa, a.elf, d, log, p.pid, a.marker, os.path.join(d, "run"),
-                               decide=never_stalled if a.canary_never_stall else stalled, limit=a.limit)
+                               decide=never_stalled if a.canary_never_stall else stalled, limit=a.limit,
+                               dwarf_dir=a.dwarf_dir or os.path.join(os.path.dirname(a.elf), "deps"))
     finally:
         if p.poll() is None:
             p.terminate()
@@ -663,6 +681,8 @@ def main(argv=None):
         s.add_argument("--elf", required=True)
         s.add_argument("--marker", required=True)
         s.add_argument("--canary-never-stall", action="store_true", help="gate canary: the stall decision never fires")
+        s.add_argument("--dwarf-dir", help="where to look for the scheduler's rlibs when the ELF has no DWARF "
+                                           "(default: the deps directory beside the ELF)")
         if name == "watch":
             s.add_argument("--dir", required=True)
             s.add_argument("--log", required=True)
@@ -679,7 +699,8 @@ def main(argv=None):
     if a.mode == "run":
         return cmd_run(a, [r for r in rest if r != "--"])
     verdict, dumps = watch(a.isa, a.elf, a.dir, a.log, a.pid, a.marker, a.out,
-                           decide=never_stalled if a.canary_never_stall else stalled, limit=a.limit)
+                           decide=never_stalled if a.canary_never_stall else stalled, limit=a.limit,
+                           dwarf_dir=a.dwarf_dir or os.path.join(os.path.dirname(a.elf), "deps"))
     print("%s %s" % (verdict, " ".join(dumps)))
     return 1 if verdict == "stalled" else 0
 

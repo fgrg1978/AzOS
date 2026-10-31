@@ -142,6 +142,21 @@ debug: build
 	cp $(SYSTEM_VOLUME) $(QEMU_VOLUME)
 	$(QEMU_SYSTEM_$(KCONFIG_ISA)) -gdb tcp:127.0.0.1:$(DEBUG_PORT) -S
 
+# `make qemu` under the stall watcher (tools/dev/stall_attach.py): the console goes
+# to $(OUT_BUILD)/stall-<isa>/console.log, QEMU gets a monitor and a gdbstub socket
+# there, and 20 s of console silence before STALL_MARKER (an ERE; the console
+# program's prompt by default) leaves two state dumps next to the log. The
+# accelerator is `make qemu`'s: the monitor and the gdbstub were exercised under
+# HVF on arm (registers and memory read, dumps taken). Exit status 1 on a stall.
+# STALL_LIMIT is the run's length in seconds.
+STALL_MARKER ?= azos[$$] 
+STALL_LIMIT ?= 300
+.PHONY: stall
+stall: build
+	cp $(SYSTEM_VOLUME) $(QEMU_VOLUME)
+	python3 tools/dev/stall_attach.py run --isa $(KCONFIG_ISA) --elf $(KERNEL_ELF) --marker '$(STALL_MARKER)' \
+		--out-dir $(OUT_BUILD)/stall-$(KCONFIG_ISA) --limit $(STALL_LIMIT) -- $(QEMU_SYSTEM_$(KCONFIG_ISA))
+
 # ── Two-node network smoke (DEV01.5) ─────────────────────────────────────────
 # Boots two kernel instances wired by QEMU's `socket` net backend and asserts a
 # 256-byte TCP payload round-trips byte-for-byte. Both ends are our kernel, so
