@@ -156,6 +156,15 @@ impl EdgeKind {
     pub const fn lazy_capable(self) -> bool {
         matches!(self, EdgeKind::IpcCall)
     }
+
+    /// The kinds whose owner comes from a word a task reads with no graph lock
+    /// and then records: the read can be older than the owner's exit, which
+    /// found nothing to hand over, so an edge to it would never end. Every other
+    /// client learns of its owner's death by its own path (a drain, a revoke).
+    #[inline(always)]
+    const fn refuses_exited_owner(self) -> bool {
+        matches!(self, EdgeKind::FutexPi)
+    }
 }
 
 pub use crate::pi_attr::{quiet_le, PiAttr, QUIET_DL};
@@ -420,6 +429,9 @@ struct State<const N: usize> {
     owned: [usize; N],
     /// [`OwnerDiedHook`] per [`EdgeKind`].
     died_hooks: [Option<&'static dyn OwnerDiedHook>; KINDS],
+    /// The task's exit passed through the graph and its slot is not reused yet:
+    /// [`EdgeKind::refuses_exited_owner`] kinds do not take it as an owner.
+    exited: [bool; N],
 }
 
 /// One wait graph over `N` task slots.
@@ -498,6 +510,7 @@ impl<const N: usize> Graph<N> {
                 next: [NONE; N],
                 owned: [0; N],
                 died_hooks: [None; KINDS],
+                exited: [false; N],
             }),
             lazy: [const { AtomicBool::new(false) }; N],
             raised: [const { AtomicBool::new(false) }; N],
@@ -718,7 +731,7 @@ impl<const N: usize> Graph<N> {
         let mut st = self.st.lock_irqsave();
         let h = hooks(&st);
         let owner = obj.owner.load(Ordering::Relaxed);
-        if owner == NONE || owner as usize >= N {
+        if owner == NONE || owner as usize >= N || st.refuses(obj, owner) {
             return Err(WaitError::NoOwner);
         }
         if owner == waiter {
@@ -834,11 +847,11 @@ impl<const N: usize> Graph<N> {
 
     /// See [`PiWaiters::set_owner`].
     pub fn set_owner(&self, obj: &PiWaiters, owner: Option<TaskId>) {
+        let mut st = self.st.lock_irqsave();
         let new = match owner {
-            Some(t) if (t as usize) < N => t,
+            Some(t) if (t as usize) < N && !st.refuses(obj, t) => t,
             _ => NONE,
         };
-        let mut st = self.st.lock_irqsave();
         let old = obj.owner.load(Ordering::Relaxed);
         if old == new {
             return;
@@ -879,6 +892,13 @@ impl<const N: usize> Graph<N> {
         let t = slot(obj.head.load(Ordering::Relaxed))?;
         let h = st.hooks?;
         Some((t, st.eff_of(h, t)))
+    }
+
+    /// See [`owner_exited`].
+    pub fn owner_exited(&self, obj: &PiWaiters) -> bool {
+        let st = self.st.lock_irqsave();
+        let owner = obj.owner.load(Ordering::Relaxed);
+        owner != NONE && (owner as usize) < N && st.refuses(obj, owner)
     }
 
     /// See [`attr_changed`]. A no-op before registration.
@@ -928,6 +948,10 @@ impl<const N: usize> Graph<N> {
         // slot then inherits). Dekker with `block_on_lazy` as in set_owner.
         {
             let mut st = self.st.lock_irqsave();
+            // Before the owned set is read, under the lock that reads it: an
+            // owner recorded after this is refused, one recorded before is
+            // in the set if it has waiters.
+            st.exited[t as usize] = dispatch;
             if let Some(h) = st.hooks {
                 fence(Ordering::SeqCst);
                 self.materialize_waiters_of(&mut st, h, t);
@@ -1071,6 +1095,12 @@ fn hooks<const N: usize>(st: &State<N>) -> &'static dyn SchedPi {
 }
 
 impl<const N: usize> State<N> {
+    /// `obj` does not take the exited task `owner` as its owner.
+    #[inline]
+    fn refuses(&self, obj: &PiWaiters, owner: TaskId) -> bool {
+        !cfg!(feature = "pi-exited-owner-canary") && obj.kind.refuses_exited_owner() && self.exited[owner as usize]
+    }
+
     fn eff_of(&self, h: &dyn SchedPi, t: TaskId) -> PiAttr {
         self.eff[t as usize].unwrap_or_else(|| h.base_attr(t))
     }
@@ -1218,6 +1248,13 @@ struct Cycle {
     closer: TaskId,
     /// Owner links followed to find it.
     links: u8,
+}
+
+/// Is `obj`'s recorded owner a task that has exited ([`task_exit`]; its slot not
+/// reused yet)? An owner recorded before the exit with no waiter on the object is
+/// not in the owned set the exit walks. Task context.
+pub fn owner_exited(obj: &PiWaiters) -> bool {
+    GRAPH.owner_exited(obj)
 }
 
 /// Install the scheduler's hooks. Called once by the scheduler's init,
