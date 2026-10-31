@@ -3818,7 +3818,10 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
         SENSOR_TYPE_RANGE => {
             const RANGE_DATA_SIZE: usize = 4; // 2 × u16
             if (buf_len as usize) < RANGE_DATA_SIZE { return -1; }
-            let front = azos_drv_sensor::rangefinder::us_read_mm(0).unwrap_or(0) as u16;
+            // No rangefinder (a real board has no driver for one): not ready,
+            // never a zero that reads as "clear" or a simulated distance.
+            let Some(front) = azos_drv_sensor::rangefinder::us_read_mm(0) else { return -1 };
+            let front = front as u16;
             let acq = azos_drv_sys::timebase::now();
             let right = azos_drv_sensor::rangefinder::us_read_mm(1).unwrap_or(0) as u16;
             let mut tmp = [0u8; RANGE_DATA_SIZE];

@@ -239,6 +239,17 @@ fn run() {
         sys::exit(1);
     }
 
+    // The obstacle half of the reflex needs a rangefinder that measures. A
+    // board with none answers NOT_READY (the kernel serves a simulated
+    // distance only under QEMU): starting anyway would call a robot that
+    // cannot see an obstacle "watched", so the daemon declares itself
+    // unavailable instead and says why on the console.
+    let mut probe = [0u8; 4];
+    if !matches!(sys::dev::sensor_read(unsafe { CAP_RANGE }, &mut probe), Ok(s) if s.len >= 4) {
+        sys::println(b"[reflex] UNAVAILABLE: no rangefinder reports on this board - refusing to run");
+        sys::exit(1);
+    }
+
     let mut sensors = ReflexSensors::new();
     let mut overriding = false;
 

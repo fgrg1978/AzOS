@@ -12,6 +12,12 @@
 
 #![no_std]
 
+/// Is this the QEMU machine (Kconfig `BOARD_QEMU`, the `qemu` feature)? The one
+/// place a driver may answer from a simulation: a sensor with no hardware
+/// behind it reports what a test set, which a real board must never serve as
+/// a measurement.
+pub const ON_QEMU: bool = cfg!(feature = "qemu");
+
 pub mod uart;
 
 /// The structured kernel log: the ring `uart::kernel_log` pushes into and ring

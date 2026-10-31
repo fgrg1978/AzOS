@@ -213,9 +213,9 @@ pub(crate) fn install_robot_payload_and_sensors() {
 
     // Phase M: rangefinder sensors (proximity).
     #[cfg(feature = "use-robot")]
-    azos_drv_sensor::rangefinder::us_init(4);   // 4 ultrasonic (front/right/rear/left)
+    let _ = azos_drv_sensor::rangefinder::us_init(4);   // 4 ultrasonic (front/right/rear/left)
     #[cfg(feature = "use-robot")]
-    azos_drv_sensor::rangefinder::tof_init(2);  // 2 ToF (down + forward)
+    let _ = azos_drv_sensor::rangefinder::tof_init(2);  // 2 ToF (down + forward)
 
     // Phase M2: MIPI CSI-2 camera (simulated on QEMU).
     #[cfg(feature = "use-robot")]
