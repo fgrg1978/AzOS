@@ -18,6 +18,10 @@ that QEMU:
   3. the canary, in the same boot: `azos-slide` given a base one slide step
      off (2 MiB). The same read must then FAIL to match; a judge that passes
      that is a row that looks at nothing.
+  4. a breakpoint at a function the kernel runs on every tick, set after
+     `azos-slide` and continued to: the debugger must report the stop. Its
+     canary is the same with the base one slide step off: the breakpoint sits
+     where nothing runs, and the continue must not report a stop.
 
 QEMU is started in a process group of its own and killed with it. Exit
 status 0 when all three hold.
@@ -40,6 +44,8 @@ import debug_script  # noqa: E402
 import symbolize_bt  # noqa: E402
 
 FUNCTION = "kernel_main"
+TICK = "azos_syscall::clock::tick"
+STOPPED = re.compile(r"stop reason = breakpoint|^(?:Thread \d+ hit )?Breakpoint \d+, ", re.M)
 SLIDE_STEP = 0x200000
 READ_BYTES = 32
 PRESET = "generic"
@@ -54,6 +60,22 @@ def commands(debugger_name, addr):
     if debugger_name == "lldb":
         return "register read pc", "image lookup -a %#x" % addr, "memory read -s1 -c%d -fx %#x" % (READ_BYTES, addr)
     return "info registers pc", "info symbol %#x" % addr, "x/%dxb %#x" % (READ_BYTES, addr)
+
+
+def break_commands(debugger_name):
+    """The debugger's own spelling of: break at TICK; continue."""
+    if debugger_name == "lldb":
+        return "breakpoint set --name %s" % TICK, "continue"
+    return "break %s" % TICK, "continue"
+
+
+def judge_break(output):
+    """None when the debugger reports a stop at the breakpoint, else why not."""
+    if output is None:
+        return "the debugger did not finish: the breakpoint was never reached"
+    if not STOPPED.search(output.replace("\r", "")):
+        return "no stop at the breakpoint in the debugger's output: %s" % output.strip().splitlines()[-1:]
+    return None
 
 
 def elf_bytes(path, vaddr, n):
@@ -271,6 +293,17 @@ class Row:
         if out is not None and judge_read(out, want_addr, want) is None:
             return fail("canary did not bite: the same read matched after azos-slide %#x" % (base + SLIDE_STEP))
         print("      canary: azos-slide %#x does not match" % (base + SLIDE_STEP))
+
+        # 4. a breakpoint on the tick, then the canary with the slide off
+        out = self.debugger(cmd, ["azos-slide %#x" % base, *break_commands(name), "detach"], timeout=60)
+        why = judge_break(out)
+        if why:
+            return fail("after azos-slide %#x: %s" % (base, why))
+        print("      breakpoint on %s after azos-slide %#x: stopped" % (TICK, base))
+        out = self.debugger(cmd, ["azos-slide %#x" % (base + SLIDE_STEP), *break_commands(name), "detach"], timeout=20)
+        if judge_break(out) is None:
+            return fail("canary did not bite: the breakpoint stopped after azos-slide %#x" % (base + SLIDE_STEP))
+        print("      canary: azos-slide %#x, the breakpoint is never reached" % (base + SLIDE_STEP))
         return 0
 
 

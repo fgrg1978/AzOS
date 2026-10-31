@@ -3,6 +3,14 @@
 #![no_std]
 extern crate alloc;
 
+// A build that skips tools/build/kconfig_to_cargo.py (a bare `cargo build
+// --features linux-abi`) could compile the Linux translation into a kernel
+// whose constants refuse Linux tasks, or leave it out of one that admits them.
+const _: () = assert!(
+    cfg!(feature = "linux-abi") == azos_limits::LINUX_ABI,
+    "cargo feature `linux-abi` and Kconfig LINUX_ABI disagree: build through tools/build/kconfig_to_cargo.py"
+);
+
 pub mod file_ops;
 pub mod file_map;
 pub mod numbers;

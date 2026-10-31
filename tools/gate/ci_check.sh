@@ -14366,8 +14366,10 @@ PY
     # aarch64) -> 124, arm 127.
     # +1 inspect_refresh_leaves_interrupts_as_they_were -> 125, arm 128.
     # +1 blk_reap_reports_once -> 126, arm 130.
-    KTEST_N_RV=127
-    KTEST_N_ARM=131
+    # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
+    # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
+    KTEST_N_RV=128
+    KTEST_N_ARM=132
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14678,9 +14680,11 @@ PY
     # `lockdep-rt-pi` (a Mutex contended by RT tasks on CPUs 1 and 2,
     # rule F7) -> lockdep_rt_tasks_share_only_spinlocks. N1d adds
     # `lockdep-early-abba` (an ABBA in early_main, before the scheduler)
-    # -> lockdep_boot_phase_clean.
-    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk,lockdep-scope-irq,lockdep-scope-preempt,lockdep-irq-inversion,lockdep-hold,lockdep-rt-pi,lockdep-early-abba"
-    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io lockdep_scope_rules lockdep_irq_safe_class_taken_irqsave lockdep_spinlock_hold_bounded lockdep_rt_tasks_share_only_spinlocks lockdep_boot_phase_clean"
+    # -> lockdep_boot_phase_clean. `irqsave-out-of-order` (two
+    # `lock_irqsave` guards released outer first) ->
+    # lockdep_irqsave_guards_release_in_reverse_order.
+    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk,lockdep-scope-irq,lockdep-scope-preempt,lockdep-irq-inversion,lockdep-hold,lockdep-rt-pi,lockdep-early-abba,irqsave-out-of-order"
+    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io lockdep_scope_rules lockdep_irq_safe_class_taken_irqsave lockdep_spinlock_hold_bounded lockdep_rt_tasks_share_only_spinlocks lockdep_boot_phase_clean lockdep_irqsave_guards_release_in_reverse_order"
     KTEST_LOCKDEP_RE='^# lockdep: lock order inversion \(ABBA\); holding SpinLock kernel/src/ktest\.rs:'
     par "ktest lockdep canaries (rv)" ktest_row "ktest lockdep canaries (rv)" rv "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
     par "ktest lockdep canaries (arm)" ktest_row "ktest lockdep canaries (arm)" arm "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
@@ -15063,7 +15067,9 @@ PY
     # arm -> 130.
     # +1 inspect_refresh_leaves_interrupts_as_they_were, as on rv and arm -> 131.
     # +1 blk_reap_reports_once, as on rv and arm -> 132.
-    KTEST_N_X86=133
+    # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
+    # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
+    KTEST_N_X86=134
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16481,6 +16487,90 @@ PY
         "panic: a panic inside the handler prints one line (x86)" nested "canary=panic-nested"
     par "panic: nested, second report canary (x86)" x86_panic_splice_row \
         "panic: nested, second report canary (x86)" rereport "canary=panic-nested,panic-nested-report"
+
+    # The backtrace a panic prints (Kconfig PROFILER), symbolized, on every ISA:
+    # the panic-splice smoke's culprit task panics in a kernel built with frame
+    # pointers, and tools/dev/symbolize_bt.py must resolve every address of the
+    # `[PANIC] backtrace:` line against the ELF's DWARF and reach the culprit's
+    # function (`--expect`). It fails on a walk that stops early (x86_64 refused
+    # the odd return addresses of byte-addressed code, `prof::walk`) and on an
+    # ELF without DWARF (the aarch64 linker script discarded it).
+    panic_backtrace_row() { # panic_backtrace_row <label> <rv|arm|x86>
+        local label="$1" isa="$2" tag dir cfg base rf elf img="" kimg="" log why="" i pid objcopy
+        printf "  %-26s" "${label}..."
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        mkdir -p "$CI_LOG_DIR"; log="$CI_LOG_DIR/${tag}.log"
+        dir="$AZOS_OUT/target/backtrace-$isa"; mkdir -p "$dir"; cfg="$dir/backtrace.config"
+        case "$isa" in
+            rv) base="$ROBOT_PRIMARY_CONFIG" ;;
+            arm) base="$ROBOT_AARCH64_CONFIG" ;;
+            x86) base="$REPO_ROOT/config/defconfigs/${GATE_ROBOT_DEFC_X86}.config" ;;
+        esac
+        if [ "$isa" = x86 ]; then
+            { cat "$base"; echo "CONFIG_PROFILER=y"; } >"$dir/backtrace.defconfig"
+            local X86_KBUILD_OUT="$dir/kernel.elf" X86_KBUILD_ARGS
+            X86_KBUILD_ARGS="X86_64_DEFCONFIG=$dir/backtrace.defconfig X86_64_KCONFIG=$cfg X86_64_TARGET_DIR=$dir/target X86_64_IMG=$X86_KBUILD_OUT"
+            kimg="$dir/kernel-run.elf"
+            x86_kbuild "use-robot,panic-splice-smoke" "$kimg" || { bad; echo "      the x86_64 PROFILER kernel did not build"; return; }
+            elf="$kimg"
+        else
+            sed 's/^# CONFIG_PROFILER is not set$/CONFIG_PROFILER=y/' "$base" >"$cfg"
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1)
+            grep -q '^CONFIG_PROFILER=y$' "$cfg" || { bad; echo "      the configuration lost PROFILER"; return; }
+            if [ "$isa" = rv ]; then
+                elf="$dir/riscv64imac-unknown-none-elf/release/kernel"; rm -f "$elf"
+                rf="$(cd "$REPO_ROOT" && python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base "$cfg")"
+                KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" "$CARGO" build --release --select "qemu,use-robot,panic-splice-smoke" \
+                    ${rf:+--config "target.riscv64imac-unknown-none-elf.rustflags=[$rf]"} >/dev/null 2>&1
+                img="$elf"
+            else
+                elf="$dir/aarch64-unknown-none-softfloat/release/kernel"; img="$dir/kernel.img"; rm -f "$elf" "$img"
+                rf="$(cd "$REPO_ROOT" && python3 tools/build/kconfig_to_cargo.py --rustflags "$cfg")"
+                env -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$dir" \
+                    RUSTFLAGS="-C link-arg=-Tarch/aarch64/boot/linker-aarch64.ld $rf" \
+                    "$CARGO" build --release --target aarch64-unknown-none-softfloat -p azos_kernel --select "qemu,use-robot,panic-splice-smoke" >/dev/null 2>&1
+                objcopy="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+                [ -f "$elf" ] && "$objcopy" -O binary "$elf" "$img" 2>/dev/null
+            fi
+            [ -f "$elf" ] && [ -f "$img" ] || { bad; echo "      the $isa PROFILER kernel did not build"; return; }
+        fi
+        par_ready
+        case "$isa" in
+        rv)
+            "$QEMU" -machine virt -nographic -bios default -kernel "$img" -smp 3 </dev/null >"$log" 2>&1 &
+            pid=$!; i=0
+            while [ "$i" -lt 120 ]; do
+                grep -aq 'Crash counter = \|\[TRACE\] cpu0' "$log" 2>/dev/null && { sleep 1; break; }
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.5
+            done
+            kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ;;
+        arm)
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 3 -nographic -kernel "$img" </dev/null >"$log" 2>&1 &
+            pid=$!; i=0
+            while [ "$i" -lt 120 ]; do
+                grep -aq 'Crash counter = \|\[TRACE\] cpu0' "$log" 2>/dev/null && { sleep 1; break; }
+                kill -0 "$pid" 2>/dev/null || break
+                i=$((i + 1)); sleep 0.5
+            done
+            kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ;;
+        x86)
+            x86_qemu "$kimg" "$log" 60 'Crash counter = |\[TRACE\] cpu0' -smp 3 || { rm -f "$kimg" "$kimg.features"; return; } ;;
+        esac
+        tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
+        why="$(python3 tools/dev/symbolize_bt.py --expect culprit_task "$elf" "$log" 2>&1 >"$log.sym" | tr '\n' ' ')"
+        [ "$isa" = x86 ] && rm -f "$kimg" "$kimg.features"
+        if [ -z "$why" ] && grep -q 'culprit_task' "$log.sym"; then
+            ok; grep -a '#[0-9]' "$log.sym" | sed -n '1,3p' | cut -c1-150 | sed 's/^/      /'; rm -f "$log" "$log.sym"
+        else
+            bad; echo "      ${why:-the symbolizer printed no culprit_task frame}"
+            grep -a 'PANIC\] backtrace' "$log" | sed 's/^/        /'
+            echo "      log kept: $log"
+        fi
+    }
+    par "panic: backtrace symbolized (rv)" panic_backtrace_row "panic: backtrace symbolized (rv)" rv
+    par "panic: backtrace symbolized (arm)" panic_backtrace_row "panic: backtrace symbolized (arm)" arm
+    par "panic: backtrace symbolized (x86)" panic_backtrace_row "panic: backtrace symbolized (x86)" x86
 
     # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
     #
@@ -23986,9 +24076,15 @@ x=con; echo bb\$x-ok
         fi
     done
     # BRAINCLI.ELF as the console program (the choice offers it on a robot
-    # preset only): the kernel starts it last; it reads no console input, so
-    # the console says once that it gave up, and the recovery console follows
-    # (`console_mode::gave_up`). The native shell must not start.
+    # preset only): the kernel starts it last. Its own row grants no motor
+    # capability (the robot's grants are the autorun row's alone, see the
+    # comment above TASK_GPIODRV_IMAGE in the topology builder), so the client
+    # prints its FATAL line and exits, the component manager stops restarting
+    # it, it never takes the console, and the console says once that it gave
+    # up (`console_mode::gave_up`) before the recovery console follows. The
+    # native shell must not start. The FATAL line is the row's cause: a client
+    # that stayed alive reading no console input would reach the same give-up
+    # line by the timeout alone, and this row would then be about another thing.
     for con_isa in rv arm; do
         if ! ci_wants "console: brain client ($con_isa)"; then ci_skip_rows "console: brain client ($con_isa)"; continue; fi
         con_k=""
@@ -24002,6 +24098,7 @@ x=con; echo bb\$x-ok
         USH_KERNEL="$con_k" USH_FORBID='\[compmgr\] start SH.ELF|PAGE FAULT|SECCOMP' \
             par_row ushell_row "console: brain client ($con_isa)" "$con_isa" qemu,use-robot PASS "#wait $RECOVERY_PROMPT_RE" 120 \
             "[compmgr] start BRAINCLI.ELF" \
+            "[brain_client] FATAL no motor capabilities - refusing to run" \
             "[CONSOLE] console program /fat/BRAINCLI.ELF gave up: recovery console (it did not take the console within" "re:$RECOVERY_PROMPT_RE"
     done
     # CONSOLE_LOGIN needs the native shell as the console program: `azos_limits`
@@ -24042,6 +24139,40 @@ x=con; echo bb\$x-ok
         ok
     }
     ci_row "console: Kconfig gates" console_kconfig_row
+    # Cargo feature `linux-abi` and Kconfig LINUX_ABI are two spellings of one
+    # fact, and `azos_syscall` refuses a build in which they differ. The
+    # feature is named by hand here, as a build outside the Kconfig flow would.
+    # Canary: the assertion removed, the two disagreeing builds go through.
+    linuxabi_kconfig_row() {
+        printf "  %-26s" "linux-abi: feature and Kconfig agree..."
+        local tdir="$AZOS_OUT/target/linuxabi-kconfig" cfg="$AZOS_OUT/target/linuxabi-kconfig/linuxabi.config" out kase on want got
+        mkdir -p "$tdir"
+        for kase in "feature on, Kconfig on|y|--features linux-abi|build" \
+                    "feature on, Kconfig off|n|--features linux-abi|refuse" \
+                    "feature off, Kconfig on|y||refuse"; do
+            on="$(printf '%s' "$kase" | cut -d'|' -f2)"; want="$(printf '%s' "$kase" | cut -d'|' -f4)"
+            cp "$PRIMARY_CONFIG" "$cfg"
+            grep -v -e '^CONFIG_LINUX_ABI=' -e '^# CONFIG_LINUX_ABI is not set' "$cfg" >"$cfg.d"; mv "$cfg.d" "$cfg"
+            if [ "$on" = y ]; then echo "CONFIG_LINUX_ABI=y" >>"$cfg"; else echo "# CONFIG_LINUX_ABI is not set" >>"$cfg"; fi
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1)
+            if [ "$on" = y ]; then grep -qx "CONFIG_LINUX_ABI=y" "$cfg"; else grep -qx "# CONFIG_LINUX_ABI is not set" "$cfg"; fi \
+                || { bad; echo "      $(printf '%s' "$kase" | cut -d'|' -f1): the config lost LINUX_ABI=$on"; return; }
+            if out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" check --release -p azos_syscall $(printf '%s' "$kase" | cut -d'|' -f3) 2>&1)"; then
+                got=build
+            elif printf '%s\n' "$out" | qgrep -q "cargo feature .linux-abi. and Kconfig LINUX_ABI disagree"; then
+                got=refuse
+            else
+                got=error
+            fi
+            if [ "$got" != "$want" ]; then
+                bad; echo "      $(printf '%s' "$kase" | cut -d'|' -f1): wanted $want, got $got"
+                printf '%s\n' "$out" | grep -m3 -E "^error" | sed 's/^/        /'
+                return
+            fi
+        done
+        ok
+    }
+    ci_row "linux-abi: feature and Kconfig agree" linuxabi_kconfig_row
     if ci_wants "console: init= ignored under secure boot (rv)" "console: init= canary, check compiled out (rv)"; then
         [ -f $AZOS_OUT/build/disk-signed.img ] || make_disk $AZOS_OUT/build/disk-signed.img
     fi

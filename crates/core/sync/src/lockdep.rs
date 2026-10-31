@@ -403,6 +403,11 @@ pub enum What {
     HoldOverLimitNote = 18,
     /// CPU `value`'s `PerCpu` instance reached as its own from CPU `value2`.
     ScopePerCpuRemote = 19,
+    /// The `lock_irqsave` guard of `held` restored the interrupt state it
+    /// saved while interrupts were on: a guard taken after it had already
+    /// restored "on" (guards released out of order), so the section the
+    /// later guard protects ran with interrupts on.
+    IrqSaveOutOfOrder = 20,
 }
 
 impl What {
@@ -432,6 +437,7 @@ impl What {
             What::RtCrossCpu => "sleeping lock contended by RT tasks on two CPUs (note, rule F7)",
             What::LevelOrder => "Object lock taken out of level order",
             What::ScopePerCpuRemote => "another CPU's PerCpu instance used as this CPU's",
+            What::IrqSaveOutOfOrder => "IrqSave guard released with interrupts on (guards released out of order)",
         }
     }
 }
@@ -866,6 +872,7 @@ static SWITCHES: AtomicU32 = AtomicU32::new(0);
 static SLEEP_CHECKS: AtomicU32 = AtomicU32::new(0);
 static USER_RETURNS: AtomicU32 = AtomicU32::new(0);
 static SCOPE_CHECKS_RUN: AtomicU32 = AtomicU32::new(0);
+static IRQSAVE_CHECKS: AtomicU32 = AtomicU32::new(0);
 static CONTENDED_CHECKS: AtomicU32 = AtomicU32::new(0);
 /// Rule F7 hits, every one (the report itself is queued once per pair),
 /// and the address of the lock of the latest.
@@ -1124,6 +1131,45 @@ fn release_slow(addr: usize, kind: Kind) {
             Err(()) => { UNMATCHED.fetch_add(1, Ordering::Relaxed); }
         }
     });
+}
+
+/// The `lock_irqsave` guard of the SpinLock at `addr` is about to release it
+/// and restore the interrupt state it saved.
+///
+/// Guards that saved the state restore it in the order opposite to the taking:
+/// the inner one puts back "off", the outer one the caller's state. So at any
+/// guard's release interrupts are off, unless an earlier-taken guard was
+/// released first and already restored "on". That is the out-of-order
+/// release this reports: the later guard's section ran with interrupts on,
+/// and its own restore (to "off") then leaves them masked for good.
+#[inline]
+pub fn irqsave_release(addr: usize) {
+    if ON {
+        irqsave_release_slow(addr);
+    }
+}
+
+#[inline(never)]
+fn irqsave_release_slow(addr: usize) {
+    use azos_arch::Interrupts as _;
+    IRQSAVE_CHECKS.fetch_add(1, Ordering::Relaxed);
+    // Before `with_cpu` masks them.
+    let irqs_on = azos_arch::ARCH.interrupts_enabled();
+    with_cpu(|cpu, _| {
+        if let Some(r) = irqsave_out_of_order(irqs_on, cpu.held.held(), addr) {
+            record(r);
+        }
+    });
+}
+
+/// The report for releasing the `lock_irqsave` guard of `addr` with
+/// `irqs_on`, given what this CPU holds: none when interrupts are off.
+pub fn irqsave_out_of_order(irqs_on: bool, held: &[Held], addr: usize) -> Option<Report> {
+    if !irqs_on {
+        return None;
+    }
+    let h = held.iter().rev().find(|h| h.addr == addr && h.kind == Kind::Spin).copied().unwrap_or(Held::EMPTY);
+    Some(Report::new(What::IrqSaveOutOfOrder, h, Held::EMPTY))
 }
 
 /// A hold ended at `t1` (timer ticks) / `c1` (cycle stamp): into its class's
@@ -1455,6 +1501,8 @@ pub struct Stats {
     /// Scope checks run (`scope_cpu_owned`, `scope_per_cpu`) and contended
     /// sleeping locks checked against rule F7.
     pub scope_checks: u32,
+    /// `lock_irqsave` guards released and checked for [`What::IrqSaveOutOfOrder`].
+    pub irqsave_checks: u32,
     pub contended: u32,
     /// Rule F7 hits (a note each): every contention of a sleeping lock by
     /// an RT task on another CPU than its RT holder's, not only the first
@@ -1469,7 +1517,7 @@ pub fn stats() -> Stats {
     Stats {
         violations: l(&VIOLATIONS), notes: l(&NOTES), device_wait_notes: l(&DEVICE_WAIT_NOTES), edges, chains, unmatched: l(&UNMATCHED),
         switches: l(&SWITCHES), sleep_checks: l(&SLEEP_CHECKS), user_returns: l(&USER_RETURNS),
-        classes, classes_full, scope_checks: l(&SCOPE_CHECKS_RUN), contended: l(&CONTENDED_CHECKS),
+        classes, classes_full, scope_checks: l(&SCOPE_CHECKS_RUN), irqsave_checks: l(&IRQSAVE_CHECKS), contended: l(&CONTENDED_CHECKS),
         rt_cross_cpu: l(&RT_CROSS_HITS),
     }
 }

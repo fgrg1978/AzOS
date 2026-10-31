@@ -34,7 +34,8 @@
 //!   does not climb is a loop or a stale register),
 //! * the memory read succeeds (a user stack page that is not mapped does
 //!   not fault the kernel: the reader is the caller's), and
-//! * the return address points into code (the caller's predicate).
+//! * the return address is aligned for the ISA's instructions and points into
+//!   code (the caller's predicate).
 //!
 //! The first check that fails ends the walk and the sample says which
 //! ([`Stop`]): a half-truthful stack is better than none, a lying one is
@@ -57,17 +58,22 @@ pub struct Layout {
     pub fp_off: i64,
     /// Frame pointers are multiples of this.
     pub align: u64,
+    /// Return addresses are multiples of this: the ISA's smallest
+    /// instruction (2 with riscv64's compressed instructions, 4 on aarch64,
+    /// 1 on x86_64, where code is byte-addressed and half the return
+    /// addresses are odd).
+    pub code_align: u64,
 }
 
 /// riscv64: `fp` is the canonical frame address (the stack pointer at
 /// entry); the return address is saved at `fp - 8`, the caller's `fp` at
 /// `fp - 16`.
-pub const RISCV64: Layout = Layout { ra_off: -8, fp_off: -16, align: 16 };
+pub const RISCV64: Layout = Layout { ra_off: -8, fp_off: -16, align: 16, code_align: 2 };
 /// aarch64: `x29` points at the record `[caller x29, x30]`.
-pub const AARCH64: Layout = Layout { ra_off: 8, fp_off: 0, align: 16 };
+pub const AARCH64: Layout = Layout { ra_off: 8, fp_off: 0, align: 16, code_align: 4 };
 /// x86_64: `rbp` points at the record `[caller rbp, return address]`. Kernel
 /// assembly stubs keep 8-byte alignment, so no more is asked.
-pub const X86_64: Layout = Layout { ra_off: 8, fp_off: 0, align: 8 };
+pub const X86_64: Layout = Layout { ra_off: 8, fp_off: 0, align: 8, code_align: 1 };
 
 /// Why a walk ended. The values are the record format's (3 bits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +89,8 @@ pub enum Stop {
     Bounds = 3,
     /// A frame pointer did not climb: a loop, or a stale register.
     NotAscending = 4,
-    /// A return address does not point into code.
+    /// A return address is not aligned for the ISA's instructions, or does
+    /// not point into code.
     BadReturn = 5,
     /// A memory read failed (an unmapped user page).
     ReadFault = 6,
@@ -180,7 +187,7 @@ pub fn walk(
         if ra == 0 {
             return Walk { depth: n, stop: Stop::End };
         }
-        if !ret_ok(ra) {
+        if ra % layout.code_align != 0 || !ret_ok(ra) {
             return Walk { depth: n, stop: Stop::BadReturn };
         }
         out[n] = ra;

@@ -321,6 +321,32 @@ SECTIONS
     .strtab   0 : { *(.strtab) }
     .shstrtab 0 : { *(.shstrtab) }
 
+    /*
+     * DWARF, kept: it is not SHF_ALLOC, so `objcopy -O binary` never reads
+     * it and the image QEMU boots is the same, while `make debug` and the
+     * panic backtrace's symbolizer (tools/dev/symbolize_bt.py) resolve
+     * source lines in the ELF, as on the other ISAs. One rule per name: a
+     * wildcard would fuse them into a single output section. Sections not
+     * named here stay in the discard below.
+     */
+    .debug_abbrev      0 : { *(.debug_abbrev) }
+    .debug_addr        0 : { *(.debug_addr) }
+    .debug_aranges     0 : { *(.debug_aranges) }
+    .debug_frame       0 : { *(.debug_frame) }
+    .debug_info        0 : { *(.debug_info) }
+    .debug_line        0 : { *(.debug_line) }
+    .debug_line_str    0 : { *(.debug_line_str) }
+    .debug_loc         0 : { *(.debug_loc) }
+    .debug_loclists    0 : { *(.debug_loclists) }
+    .debug_macro       0 : { *(.debug_macro) }
+    .debug_names       0 : { *(.debug_names) }
+    .debug_pubnames    0 : { *(.debug_pubnames) }
+    .debug_pubtypes    0 : { *(.debug_pubtypes) }
+    .debug_ranges      0 : { *(.debug_ranges) }
+    .debug_rnglists    0 : { *(.debug_rnglists) }
+    .debug_str         0 : { *(.debug_str) }
+    .debug_str_offsets 0 : { *(.debug_str_offsets) }
+
     /DISCARD/ :
     {
         *(.comment)
@@ -343,15 +369,7 @@ SECTIONS
         *(.eh_frame_hdr)
         *(.note*)
         *(.ARM.attributes*)
-        /*
-         * DWARF debug sections (`.debug_info`/`.debug_line`/etc): not
-         * SHF_ALLOC, so `objcopy -O binary` never reads them either way
-         * (it only walks allocated sections) — discarding them here has
-         * zero effect on the `.img` QEMU actually boots, only on whether
-         * `--orphan-handling=error` accepts the ELF link at all. This
-         * migration's own RISC-V-side `llvm-objdump`/`llvm-nm` proof reads
-         * a SEPARATE (riscv64) binary, unaffected by anything in this file.
-         */
+        /* The DWARF sections not kept above. */
         *(.debug*)
     }
 }

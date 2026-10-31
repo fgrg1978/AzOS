@@ -205,7 +205,7 @@ fn kernel_stack(sp: usize, cpu: usize) -> Option<(u64, u64)> {
 fn kernel_text(a: u64) -> bool {
     // Linker symbols; only their addresses are taken.
     let (lo, hi) = (&raw const crate::_text_start as u64, &raw const crate::_text_end as u64);
-    a >= lo && a < hi && a & 1 == 0
+    a >= lo && a < hi
 }
 
 /// A stack word with the pointer-authentication code of a signed return
@@ -251,7 +251,7 @@ fn walk_kernel(i: &Interrupted, cpu: usize, out: &mut [u64]) -> Walk {
 /// A return address into user code: above the null page, below the top of the
 /// user address space.
 fn user_text(a: u64) -> bool {
-    a >= 0x1000 && a < azos_sched::process::USER_STACK_TOP as u64 && a & 1 == 0
+    a >= 0x1000 && a < azos_sched::process::USER_STACK_TOP as u64
 }
 
 /// One word of the interrupted task's user stack, from its page table, in

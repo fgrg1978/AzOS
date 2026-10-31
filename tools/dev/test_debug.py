@@ -142,6 +142,15 @@ class Symbolize(unittest.TestCase):
         self.assertRegex(out, r"fail at ")
         self.assertNotRegex(out, r"die at ")
 
+    def test_expect_names_the_frame_the_walk_must_reach(self):
+        rc, out, err = run_tool(self.elf, self.line(self.leaf + 8, self.top + 24), "--expect", "top")
+        self.assertEqual(rc, 0, out + err)
+
+    def test_canary_a_walk_that_stopped_before_the_expected_frame_is_refused(self):
+        rc, out, err = run_tool(self.elf, self.line(self.leaf + 8), "--expect", "top")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("stopped short", err)
+
     def test_a_log_without_a_backtrace_fails(self):
         rc, _, err = run_tool(self.elf, "[PANIC] something else\n")
         self.assertEqual(rc, 1)
@@ -194,6 +203,21 @@ class RowJudge(unittest.TestCase):
 
     def test_canary_a_symbol_at_another_address_is_refused(self):
         self.assertIn("expected", debug_row.judge_read(SYM + GDB_DUMP, 0xffffffef71276244, BYTES))
+
+    def test_a_breakpoint_stop_is_read_in_either_debugger(self):
+        self.assertIsNone(debug_row.judge_break("(lldb) continue\n* thread #1, stop reason = breakpoint 1.1\n"))
+        self.assertIsNone(debug_row.judge_break("Continuing.\n\nBreakpoint 1, 0x00000000 in tick ()\n"))
+        # gdb names the thread on an SMP target
+        self.assertIsNone(debug_row.judge_break("[Switching to Thread 1.3]\n\nThread 3 hit Breakpoint 1, azos_syscall::clock::tick () at clock.rs:135\n"))
+
+    def test_canary_no_stop_is_refused(self):
+        self.assertIn("no stop", debug_row.judge_break("(lldb) continue\nProcess 1 resuming\n"))
+        self.assertIn("never reached", debug_row.judge_break(None))
+        self.assertIn("no stop", debug_row.judge_break("Breakpoint 1 at 0x1234\nContinuing.\n"))
+
+    def test_the_break_command_is_spelt_for_the_debugger(self):
+        self.assertEqual(debug_row.break_commands("lldb")[0], "breakpoint set --name azos_syscall::clock::tick")
+        self.assertEqual(debug_row.break_commands("riscv64-elf-gdb")[0], "break azos_syscall::clock::tick")
 
     def test_canary_other_bytes_are_refused(self):
         self.assertIn("the ELF", debug_row.judge_read(SYM + GDB_DUMP, 0xffffffef71076244, BYTES[::-1]))

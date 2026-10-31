@@ -129,12 +129,13 @@ qemu-full-smp-rvv: build-rvv userspace $(OUT_BUILD)/disk.img
 		-kernel $(RISCV64_KERNEL_ELF)
 
 # `make qemu` with QEMU's gdbstub on 127.0.0.1:DEBUG_PORT and the CPUs stopped
-# at reset. TCG only: no test has put the gdbstub under HVF. The debugger
-# script of the kernel ELF `make build` made (tools/dev/debug_script.py) is
-# written first, and so is the command of the debugger that serves this ISA.
+# at reset, under the accelerator `make qemu` picks (HVF answers at reset,
+# single-steps and stops at a breakpoint after `azos-slide`; the gate's
+# `debug: aarch64` row runs it). The debugger script of the kernel ELF
+# `make build` made (tools/dev/debug_script.py) is written first, and so is
+# the command of the debugger that serves this ISA.
 DEBUG_PORT ?= 1234
 .PHONY: debug
-debug: QEMU_ACCEL := tcg
 debug: build
 	@cmd="$$(python3 tools/dev/debug_script.py $(KCONFIG_ISA) $(KERNEL_ELF) --port $(DEBUG_PORT) --out-dir $(OUT_BUILD))" || exit 1; \
 	echo "[DEBUG] stopped at reset, gdbstub on 127.0.0.1:$(DEBUG_PORT); attach with:"; echo "[DEBUG]   $$cmd"; \
