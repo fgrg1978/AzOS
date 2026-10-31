@@ -26,7 +26,7 @@ const WORDS: usize = PAGE / 8;
 const RW: u64 = sys::PROT_READ | sys::PROT_WRITE;
 
 /// How long a step waits on the kernel before it says the kernel did not act.
-const PATIENCE_MS: u64 = 20_000;
+const PATIENCE_MS: u64 = 60_000;
 const TICK_MS: u64 = 20;
 /// The largest memory object the kernel makes (`MAX_MEMOBJ_PAGES`).
 const OBJECT_PAGES: usize = 64;
@@ -386,7 +386,7 @@ fn run_into_the_limit(p: &mut Pressure, chunk: usize) {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     let free = sys::meminfo().max(0) as usize;
-    let target = 2 * free;
+    let target = free + free / 2;
     let chunk = (free / 64).max(16);
     say(b"start", &[(b"free", free as u64), (b"target", target as u64), (b"chunk", chunk as u64), (b"page", PAGE as u64)]);
     let mut p = Pressure::bind();

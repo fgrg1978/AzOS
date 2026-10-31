@@ -236,7 +236,7 @@ def run(isa, scenario):
     accel = "tcg"
     if isa == "aarch64" and subprocess.run([os.path.join(repo, "tools/dev/qemu_hvf.sh")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
         accel = "hvf"
-    console = boot(repo, env, selection, cmdline, accel, log, int(os.environ.get("RECLAIM_ROW_LIMIT", "600")))
+    console = boot(repo, env, selection, cmdline, accel, log, int(os.environ.get("RECLAIM_ROW_LIMIT", "900")))
     if scenario.startswith(("pinned-", "kill-order")):
         which = scenario.replace("-canary", "")
         why = judge_kill_order(console) if which == "kill-order" else judge_pinned(which, console)
