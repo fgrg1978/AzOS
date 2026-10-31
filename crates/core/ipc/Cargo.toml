@@ -69,6 +69,9 @@ memobj-resolve-stale-canary = []
 # the `scale` lanes (tools/vsbench_*.sh VSBENCH_AZOS_EXTRA_FEATURES), which must
 # see it as `over floor` well above 1 at h=4. Never in a real build.
 memobj-hold-canary = []
+# A map or unmap in flight (its leaves exist, its record does not say so) does
+# not count for a clone, a break, a release or a purge.
+memobj-map-unrecorded-canary = []
 # Delete is not revoke (20-10): a delete revokes the copies of the slot again.
 delete-revokes-canary = []
 # A move of a slot with copies lifts them a level (as a delete does) again.

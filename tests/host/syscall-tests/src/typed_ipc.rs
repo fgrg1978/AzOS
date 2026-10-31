@@ -61,6 +61,8 @@ impl Scene {
 
 impl Drop for Scene {
     fn drop(&mut self) {
+        azos_sched::shim_after_shm_map(Box::new(|| {}));
+        azos_sched::shim_at_mm_lock(Box::new(|| {}));
         azos_ipc::cap::degraded_set(false);
         azos_sched::shim_set_block_hook(None);
         let _ = azos_sched::shim_take_blocks();
@@ -1452,4 +1454,137 @@ fn an_op_mask_gates_the_irq_ops_and_the_port_they_report_to() {
     assert_eq!(key_at_buf(), 0xCD);
     assert_eq!(irq_ack_op(drv), 0);
     assert_eq!(irq_ack_op(rd), denied);
+}
+
+// ── A map or an unmap under way, against what decides by the recorded mappings ──
+//
+// `shim_after_shm_map` and `shim_at_mm_lock` run what another hart would at the
+// instant the leaves exist and the object's record does not say so.
+
+fn phys_of(r: u32) -> usize {
+    azos_ipc::memobj::memobj_page_phys_ref(r, 0).unwrap().unwrap()
+}
+
+/// **A clone taken while a write mapping is being built copies.** The mapping's
+/// leaves are writable before the object records them, so a clone that shared
+/// the frames would change under the mapper's writes.
+#[test]
+fn a_clone_inside_a_write_map_does_not_share_the_frames() {
+    use std::sync::Arc;
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let pt = ring3(a, SLOT_A);
+    let src = handle(sys_shm_create_typed(1, 1));
+    let rs = resource_of::<Shm>(a, src);
+    unsafe { *(phys_of(rs) as *mut u8) = 0x11 };
+
+    let cloned = Arc::new(AtomicU32::new(0));
+    let c = cloned.clone();
+    azos_sched::shim_after_shm_map(Box::new(move || {
+        let r = azos_ipc::memobj::memobj_clone(a, rs, a, azos_ipc::memobj::MemPerms::ReadWrite).expect("clone");
+        c.store(r, Ordering::SeqCst);
+    }));
+    let va = sys_shm_map_typed(src, 0);
+    assert!(va > 0, "map: {va}");
+    let rc = cloned.load(Ordering::SeqCst);
+    assert_ne!(rc, 0, "the clone ran");
+    assert!(azos_mm::vmm::translate_user(pt, va as usize, true).is_some(), "the mapping is writable");
+    assert_eq!(azos_ipc::memobj::memobj_describe_ref(rs).unwrap().cow_shared, 0, "a writable mapping over shared frames");
+    assert_ne!(phys_of(rc), phys_of(rs), "the clone shares a frame the mapper writes");
+    unsafe { *(phys_of(rs) as *mut u8) = 0x22 };
+    assert_eq!(unsafe { *(phys_of(rc) as *const u8) }, 0x11, "the snapshot moved");
+}
+
+/// **A share is not broken under a mapping being built.** The mapper has read the
+/// frame's address; a break in between would give the object another frame and
+/// drop the old one, which the last sharer's release then frees under the leaves.
+#[test]
+fn a_cow_break_inside_a_map_does_not_move_the_frames_under_it() {
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let pt = ring3(a, SLOT_A);
+    let ro = handle(sys_shm_create_typed(1, 0));
+    let rs = resource_of::<Shm>(a, ro);
+    let rc = azos_ipc::memobj::memobj_clone(a, rs, a, azos_ipc::memobj::MemPerms::ReadOnly).expect("clone");
+    assert_ne!(azos_ipc::memobj::memobj_describe_ref(rs).unwrap().cow_shared, 0, "precondition: shared");
+
+    azos_sched::shim_after_shm_map(Box::new(move || {
+        let _ = azos_ipc::memobj::memobj_cow_break_all(rs);
+    }));
+    let va = sys_shm_map_typed(ro, 0);
+    assert!(va > 0, "map: {va}");
+    let leaf = azos_mm::vmm::translate_user(pt, va as usize, false).expect("mapped");
+    assert_eq!(leaf, phys_of(rs), "the leaf names a frame the object no longer holds");
+    let _ = rc;
+}
+
+/// **A clone taken while a write mapping is being torn down copies.** The record
+/// goes first and the leaves after; until they are gone another thread of the
+/// process can still write through them.
+#[test]
+fn a_clone_inside_an_unmap_does_not_share_the_frames() {
+    use std::sync::Arc;
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let _pt = ring3(a, SLOT_A);
+    let src = handle(sys_shm_create_typed(1, 1));
+    let rs = resource_of::<Shm>(a, src);
+    assert!(sys_shm_map_typed(src, 0) > 0);
+    let frame = phys_of(rs);
+
+    let cloned = Arc::new(AtomicU32::new(0));
+    let c = cloned.clone();
+    azos_sched::shim_at_mm_lock(Box::new(move || {
+        let r = azos_ipc::memobj::memobj_clone(a, rs, a, azos_ipc::memobj::MemPerms::ReadWrite).expect("clone");
+        c.store(r, Ordering::SeqCst);
+    }));
+    assert_eq!(sys_shm_release_typed(src), 0);
+    let rc = cloned.load(Ordering::SeqCst);
+    assert_ne!(rc, 0, "the clone ran");
+    assert_ne!(phys_of(rc), frame, "the clone shared a frame with writable leaves on it");
+}
+
+/// **A holder that loses its references under a map keeps the frames until the
+/// leaves are gone.** A MOVE takes the sender's references while its map is
+/// installing leaves the record does not name: the map finds no booking, removes
+/// them and fails; the reference that stayed behind kept the frames alive.
+#[test]
+fn a_move_inside_a_map_leaves_no_leaf_and_frees_no_frame_under_it() {
+    let _g = serial();
+    let (a, b) = (fresh_tid(), fresh_tid());
+    let _s = Scene::new(&[a, b]);
+    let pt_b = ring3(b, SLOT_B);
+    let pt = ring3(a, SLOT_A);
+    let _ = pt_b;
+    let src = handle(sys_shm_create_typed(1, 1));
+    let rs = resource_of::<Shm>(a, src);
+
+    azos_sched::shim_after_shm_map(Box::new(move || {
+        assert!(azos_ipc::memobj::memobj_move(a, b, rs).expect("move").transferred);
+        assert_eq!(azos_ipc::memobj::memobj_release_holder_ref(b, rs), Ok(()));
+        assert!(azos_ipc::memobj::memobj_page_phys_ref(rs, 0).is_ok(), "the frames went back under the leaves");
+    }));
+    assert_eq!(sys_shm_map_typed(src, 0), errno(Errno::EBADF));
+    let (lo, _) = azos_sched::user_shm_window();
+    assert!(azos_mm::vmm::translate_user(pt, lo, false).is_none(), "a leaf stayed after the failed map");
+}
+
+/// **One map at a time per holder**: a second thread's map finds the first in
+/// flight, and a release of the holder's references waits for it.
+#[test]
+fn a_map_or_a_release_inside_a_map_is_refused() {
+    let _g = serial();
+    let a = fresh_tid();
+    let _s = Scene::new(&[a]);
+    let _pt = ring3(a, SLOT_A);
+    let src = handle(sys_shm_create_typed(1, 1));
+    let rs = resource_of::<Shm>(a, src);
+    azos_sched::shim_after_shm_map(Box::new(move || {
+        assert_eq!(sys_shm_map_typed(src, 0), errno(Errno::EBUSY), "the second map");
+        assert!(azos_ipc::memobj::memobj_release_holder_ref(a, rs).is_err(), "the release freed the frames");
+    }));
+    assert!(sys_shm_map_typed(src, 0) > 0);
 }

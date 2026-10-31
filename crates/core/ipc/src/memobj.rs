@@ -324,11 +324,42 @@ pub struct MemHolder {
     /// and not in the region, so no kill can separate a task's record of an
     /// end from the count it stands for.
     pub ends: u8,
+    /// This holder's leaves are being installed or removed with the table
+    /// unlocked ([`memobj_map_begin_ref`], [`memobj_unmap_begin_ref`]), so the
+    /// record does not name them: it counts as a mapping for everything that
+    /// decides by the recorded mappings.
+    pub building: bool,
+    /// The leaves being installed or removed are writable.
+    pub build_write: bool,
 }
 
 impl MemHolder {
     pub const fn empty() -> Self {
-        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, pinned: false, map_root: 0, map_write: false, map_max_write: false, ends: 0 }
+        Self { tid: 0, refs: 0, map_va: 0, map_pages: 0, pinned: false, map_root: 0, map_write: false, map_max_write: false, ends: 0, building: false, build_write: false }
+    }
+
+    /// Are leaves of this holder in flight, which the record does not name?
+    /// Canary `memobj-map-unrecorded-canary`: only the record counts.
+    #[inline]
+    fn leaves_in_flight(&self) -> bool {
+        self.refs > 0 && self.building && !cfg!(feature = "memobj-map-unrecorded-canary")
+    }
+
+    /// Can a mapping, recorded or in flight, reach this holder's frames?
+    #[inline]
+    fn reaches_frames(&self) -> bool {
+        self.is_mapped() || self.leaves_in_flight()
+    }
+
+    /// The holder is losing its references under a map or unmap in flight: that
+    /// call will find no booking, and until it has removed its leaves one
+    /// reference stays pinned so no frame goes back under them.
+    #[inline]
+    fn strand_leaves_in_flight(&mut self) {
+        if self.leaves_in_flight() {
+            self.building = false;
+            self.pinned = true;
+        }
     }
 
     /// Does this holder have a mapping recorded: a live reference and a VA?
@@ -1124,6 +1155,88 @@ pub fn memobj_note_mapping_ref(
     Ok(noted)
 }
 
+/// Start a map of the object `r` names for `tid`: in one hold, refuse a write
+/// mapping of frames a clone shares (`Busy`) and a second map by the holder
+/// (`Busy`), read the frames into `pages`, and mark the holder as building, so
+/// that from here a clone copies and a break waits. The caller installs its
+/// leaves with the table unlocked (page-table work takes the address space's
+/// locks and may allocate) and ends with [`memobj_map_commit_ref`] or
+/// [`memobj_map_abandon_ref`]. `Closed` for a holder with no reference or a page
+/// with no frame.
+pub fn memobj_map_begin_ref(tid: u32, r: u32, write: bool, pages: &mut [usize]) -> Result<(), MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let o = &mut regions[i];
+    if write && o.cow_shared != 0 {
+        return Err(MemObjError::Busy);
+    }
+    let frames = o.phys_pages.get(..pages.len()).filter(|_| pages.len() <= o.page_count).ok_or(MemObjError::Closed)?;
+    if frames.contains(&0) {
+        return Err(MemObjError::Closed);
+    }
+    pages.copy_from_slice(frames);
+    let h = o.holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid).ok_or(MemObjError::Closed)?;
+    if h.map_va != 0 || h.building {
+        return Err(MemObjError::Busy);
+    }
+    h.building = true;
+    h.build_write = write;
+    Ok(())
+}
+
+/// The leaves of [`memobj_map_begin_ref`] are in place: book them. `Ok(false)`
+/// when the holder lost its references meanwhile (a revoke, a MOVE); the caller
+/// removes the leaves and the holder's pinned reference waits for its exit.
+pub fn memobj_map_commit_ref(tid: u32, r: u32, root: usize, va: usize, pages: usize, access: MapAccess) -> Result<bool, MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    if !regions[i].holders.iter().any(|h| h.refs > 0 && h.tid == tid && h.building) {
+        return Ok(false);
+    }
+    let noted = note_mapping_locked(&mut regions[i], tid, root, va, pages, access);
+    regions.map_epoch += u64::from(noted && !cfg!(feature = "memobj-resolve-stale-canary"));
+    Ok(noted)
+}
+
+/// The map of [`memobj_map_begin_ref`] will not be booked and may have left
+/// leaves it cannot name: the holder's reference stays pinned until its exit.
+pub fn memobj_map_abandon_ref(tid: u32, r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = live_index(&regions, r) {
+        if let Some(h) = regions[i].holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+            h.pinned = true;
+            h.building = false;
+        }
+    }
+}
+
+/// [`memobj_take_mapping_ref`] for a caller that removes the leaves after this
+/// hold: they stay counted until [`memobj_unmap_end_ref`].
+pub fn memobj_unmap_begin_ref(tid: u32, r: u32) -> Result<Option<(usize, usize)>, MemObjError> {
+    let mut regions = MEMOBJS.lock();
+    let i = live_index(&regions, r)?;
+    let region = &mut regions[i];
+    let write = region.holders.iter().any(|h| h.refs > 0 && h.tid == tid && h.map_va != 0 && h.map_write);
+    let taken = take_mapping_locked(region, tid);
+    if taken.is_some() {
+        if let Some(h) = region.holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+            h.building = true;
+            h.build_write = write;
+        }
+    }
+    Ok(taken)
+}
+
+/// The leaves of [`memobj_unmap_begin_ref`] are gone, on every hart.
+pub fn memobj_unmap_end_ref(tid: u32, r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = live_index(&regions, r) {
+        if let Some(h) = regions[i].holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+            h.building = false;
+        }
+    }
+}
+
 /// The access a recorded mapping has and the most it may be given back
 /// ([`MemHolder::map_write`], [`MemHolder::map_max_write`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1151,6 +1264,7 @@ fn note_mapping_locked(region: &mut MemObj, tid: u32, root: usize, va: usize, pa
             h.map_root = root;
             h.map_write = access.write;
             h.map_max_write = access.max_write;
+            h.building = false;
             return true;
         }
     }
@@ -1172,6 +1286,11 @@ pub fn memobj_take_mapping(tid: u32, shm_id: u32) -> Option<(usize, usize)> {
     let region = &mut regions[shm_id as usize];
     if !region.active {
         return None;
+    }
+    // A map or unmap the exiting task left in flight has no address space to
+    // finish in: nothing remains that the marker protects.
+    if let Some(h) = region.holders.iter_mut().find(|h| h.refs > 0 && h.tid == tid) {
+        h.building = false;
     }
     take_mapping_locked(region, tid)
 }
@@ -1606,7 +1725,7 @@ fn release_locked(region: &mut MemObj, tid: u32) -> Option<Reclaim> {
         let h = &region.holders[i];
         if h.refs > 0 && h.tid == tid {
             // Refuse while this holder still has PTEs into the region.
-            if h.map_va != 0 {
+            if h.reaches_frames() {
                 return None;
             }
             found = Some(i);
@@ -1647,7 +1766,7 @@ fn release_holder_locked(region: &mut MemObj, tid: u32) -> Option<Reclaim> {
     let holder = region.holders[idx];
     // Refuse while this holder still has PTEs into the region, as
     // `release_locked` does.
-    if holder.map_va != 0 {
+    if holder.reaches_frames() {
         return None;
     }
     // `refs > 0` is established above, so neither form underflows.
@@ -1989,7 +2108,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
         if o.cow_shared & (1u64 << page) == 0 {
             return Ok(());
         }
-        if o.holders.iter().any(|h| h.refs > 0 && h.map_va != 0) {
+        if o.holders.iter().any(MemHolder::reaches_frames) {
             return Err(MemObjError::Busy);
         }
         (o.phys_pages[page], o.generation)
@@ -2027,7 +2146,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
         o.generation == key
             && o.phys_pages[page] == old
             && o.cow_shared & (1u64 << page) != 0
-            && !o.holders.iter().any(|h| h.refs > 0 && h.map_va != 0)
+            && !o.holders.iter().any(MemHolder::reaches_frames)
     });
     let Some(i) = still else {
         drop(regions);
@@ -2116,7 +2235,8 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
             return Err(MemObjError::Closed);
         }
         let o = &mut regions[i];
-        let writable_somewhere = o.holders.iter().any(|h| h.refs > 0 && h.map_va != 0 && h.map_write);
+        let writable_somewhere =
+            o.holders.iter().any(|h| (h.is_mapped() && h.map_write) || (h.leaves_in_flight() && h.build_write));
         pages[..n].copy_from_slice(&o.phys_pages[..n]);
         if !writable_somewhere && o.kind == MemKind::Anon {
             let mut shared = 0usize;
@@ -2216,7 +2336,7 @@ fn copy_into_new(src_pages: &[usize], owner_task: u32, spec: &MemSpec, key: u32)
 /// PTEs the mapping list does not name, so a walk of the list is not a walk of
 /// every PTE of the object.
 fn any_pinned(region: &MemObj) -> bool {
-    region.holders.iter().any(|h| h.refs > 0 && h.pinned)
+    region.holders.iter().any(|h| (h.refs > 0 && h.pinned) || h.leaves_in_flight())
 }
 
 /// The holder `tid` lost its name for the object `r` names: unmap its mapping
@@ -2251,6 +2371,7 @@ fn memobj_revoke_holder_ref(tid: u32, r: u32) -> Result<(), MemObjError> {
         unmap_range(root, va, pages);
         note_moved_window(tid, va, pages);
     }
+    region.holders[hi].strand_leaves_in_flight();
     let h = region.holders[hi];
     let n = if h.pinned { h.refs - 1 } else { h.refs };
     if n > 0 {
@@ -2427,6 +2548,7 @@ pub fn memobj_move(from: u32, to: u32, r: u32) -> Result<Moved, MemObjError> {
     });
     let not_moved = Moved { mapping, transferred: false };
 
+    regions[i].holders[fi].strand_leaves_in_flight();
     let sender = regions[i].holders[fi];
     let movable = if sender.pinned { sender.refs - 1 } else { sender.refs };
     if movable == 0 {
@@ -4104,6 +4226,19 @@ mod tests {
         }
         // The walk reaches both answers often (not a vacuous run).
         assert!(hits > 700 && misses > 7000, "{hits} mapped answers, {misses} unmapped");
+    }
+
+    /// **An exit ends a map left in flight**: its references go back with the
+    /// others, or the object would outlive the task.
+    #[test]
+    fn an_exit_releases_a_holder_with_a_map_in_flight() {
+        let _g = setup();
+        let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let mut pages = [0usize; 1];
+        assert_eq!(memobj_map_begin_ref(A, r, true, &mut pages), Ok(()));
+        assert_eq!(memobj_map_begin_ref(A, r, true, &mut pages), Err(MemObjError::Busy), "one map at a time");
+        memobj_release_all(A);
+        assert!(memobj_describe_ref(r).is_err(), "the object outlived its only holder");
     }
 
     /// **The resolution cache has Kconfig `MEMOBJ_RESOLVE_WAYS` entries.** As

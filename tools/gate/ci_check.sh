@@ -11349,6 +11349,16 @@ host_job host_canary_row "memobj: MOVE keeps the mapping canary (syscall)" sysca
     a_moved_capability_takes_the_senders_mapping_with_it
 host_job host_canary_row "memobj: READ share maps writable canary (syscall)" syscall-tests memobj-share-no-narrow-canary \
     a_typed_map_asks_write_only_for_a_writable_region
+# memobj-map-unrecorded-canary: a map or unmap in flight does not count, so a clone
+# shares and a break moves frames under its leaves (typed_ipc.rs).
+host_job host_canary_row "memobj: clone inside a write map canary" syscall-tests memobj-map-unrecorded-canary \
+    a_clone_inside_a_write_map_does_not_share_the_frames
+host_job host_canary_row "memobj: break inside a map canary" syscall-tests memobj-map-unrecorded-canary \
+    a_cow_break_inside_a_map_does_not_move_the_frames_under_it
+host_job host_canary_row "memobj: clone inside an unmap canary" syscall-tests memobj-map-unrecorded-canary \
+    a_clone_inside_an_unmap_does_not_share_the_frames
+host_job host_canary_row "memobj: move inside a map canary" syscall-tests memobj-map-unrecorded-canary \
+    a_move_inside_a_map_leaves_no_leaf_and_frees_no_frame_under_it
 # Hardware bus (crates/drivers/hwbus): `policy-canary` makes the topology-only
 # policy admit like auto; the four rows that pin the policy must fail, and
 # only they.
