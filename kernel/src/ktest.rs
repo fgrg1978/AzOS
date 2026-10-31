@@ -1499,7 +1499,6 @@ azos_ktest::ktest_late! {
         let outer = azos_sync::critical_section();
         // What is owed from here on is this section's.
         preempt::clear_need_resched();
-        let fired0 = preempt::fired();
         // Taken after the guard: this task cannot move harts from here on.
         let me = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
         preempt::ktest_probe::arm(me, canary!("preempt-isr-leak"));
@@ -1522,6 +1521,9 @@ azos_ktest::ktest_late! {
         let (hits, deepest) = preempt::ktest_probe::disarm();
         let owed = preempt::need_resched();
         drop(outer);
+        // Paid by this drop, or by a tick that landed right after its
+        // decrement, which clears the debt as it switches.
+        let unpaid = preempt::need_resched();
         let end = preempt::depth();
         if end != d0 && d0 == 0 {
             // Only the canary gets here: put the leaked count back, or the
@@ -1541,7 +1543,7 @@ azos_ktest::ktest_late! {
         if deepest < d0 + 2 {
             return Err("the interrupt's guard did not nest on the outer one");
         }
-        if !owed || preempt::fired() == fired0 {
+        if !owed || unpaid {
             return Err("the ticks inside the section were not deferred and paid at its end");
         }
         if preempt::audit_counters().0 != u0 {
