@@ -68,6 +68,25 @@ const ISAS: [(&str, Layout); 3] = [("riscv64", RISCV64), ("aarch64", AARCH64), (
 // ── The walker ──────────────────────────────────────────────────────────────
 
 #[test]
+fn return_addresses_follow_the_isa_s_instruction_alignment() {
+    // An odd return address is x86_64 code and no other ISA's; one on a 2-byte
+    // boundary is riscv64's (compressed instructions) and x86_64's.
+    for (rets, ok) in [([0x8000_2001u64, 0x8000_3003], &["x86_64"][..]), ([0x8000_2002, 0x8000_3006], &["riscv64", "x86_64"][..])] {
+        for (name, l) in ISAS {
+            let mut s = Stack::new();
+            let fp = s.chain(&l, &rets);
+            let (w, f) = go(&l, &mut s, fp, 16);
+            if ok.contains(&name) {
+                assert_eq!(w, Walk { depth: 3, stop: Stop::End }, "{name} {rets:x?}");
+                assert_eq!(f, [PC, rets[0], rets[1]], "{name}");
+            } else {
+                assert_eq!(w, Walk { depth: 1, stop: Stop::BadReturn }, "{name} {rets:x?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn good_chain_on_every_isa() {
     let rets = [0x8000_2000, 0x8000_3000, 0x8000_4000, 0x8000_5000];
     for (name, l) in ISAS {
