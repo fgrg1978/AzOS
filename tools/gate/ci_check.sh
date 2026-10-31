@@ -23736,6 +23736,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr: mutex contention keeps the count exact ok" "lxthr: tls distinct per thread ok" \
                 "lxthr: gettid differs from getpid in a thread ok" "lxthr: shared file reads [ab]" \
                 "lxthr: a second round of threads ok" \
+                "lxthr: FUTEX_CMP_REQUEUE reads a word on an untouched page ok" \
                 "lxthr: a process signal lands on an unblocked thread ok" \
                 "lxthr: tgkill to a blocked thread stays pending on it ok" \
                 "lxthr: a fatal signal ends every thread; wait sees WIFSIGNALED ok" \
