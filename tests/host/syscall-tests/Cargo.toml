@@ -34,6 +34,7 @@ mmap-hint-canary = []
 mmap-noreplace-canary = []
 mmap-hint-window-canary = []
 mmap-brk-apart-canary = []
+mmap-break-only-canary = []
 # Mirrors azos_syscall's gate canary (wave 15, plan 4a) in the pulled-in
 # ipc_handlers.rs. Off: the real behaviour.
 thread-objects-canary = []
