@@ -556,6 +556,7 @@ pub enum SealError {
 
 /// An established session: the two Noise transport CipherStates and the
 /// per-generation accounting.
+#[cfg_attr(feature = "fuzz-clone", derive(Clone))]
 pub struct Link {
     send: CipherState,
     recv: CipherState,
