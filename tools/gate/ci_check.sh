@@ -14407,8 +14407,8 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
     # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
     # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
-    KTEST_N_RV=129
-    KTEST_N_ARM=133
+    KTEST_N_RV=130
+    KTEST_N_ARM=134
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14685,6 +14685,8 @@ PY
     par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img
     par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk-aarch64.img
+    par "ktest clone against maps in flight canary (rv)" ktest_row "ktest clone against maps in flight canary (rv)" rv ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
+    par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
@@ -15176,7 +15178,7 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
     # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
     # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
-    KTEST_N_X86=135
+    KTEST_N_X86=136
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
