@@ -540,6 +540,8 @@ pub struct Pool<
     /// Slots of the swap area that are usable (at most `SW`): what the
     /// attached area holds. 0: no swap.
     swap_cap: usize,
+    /// A restore holds the next free resident slot ([`Pool::swap_hold_room`]).
+    room_held: bool,
     n_parked: usize,
     /// Parkings so far (wrapping, never 0 in a record): names an incarnation.
     pgen: u32,
@@ -612,6 +614,7 @@ impl<
             gen: 0,
             parked: [Parked { fill: 0, live: 0, gen: 0 }; SW],
             swap_cap: 0,
+            room_held: false,
             n_parked: 0,
             pgen: 0,
             leaving: 0,
@@ -813,9 +816,11 @@ impl<
         None
     }
 
-    /// Take a segment from the backing. `false`: the ceiling, or no memory.
+    /// Take a segment from the backing. `false`: the ceiling (a slot a restore
+    /// holds counts, [`swap_hold_room`](Self::swap_hold_room)), or no memory.
     fn grow(&mut self) -> bool {
-        if self.n_segs + self.inbound as usize >= SEGS {
+        let held = self.room_held && !cfg!(feature = "swap-no-restore-slot-canary");
+        if self.n_segs + self.inbound as usize + held as usize >= SEGS {
             return false;
         }
         let Some(s) = (0..SEGS).find(|&s| self.segs[s].base.is_null()) else { return false };
@@ -1425,6 +1430,14 @@ impl<
         (n, None)
     }
 
+    /// A restore at the ceiling is about to write a segment out to come back to
+    /// its slot: until it has begun (or given up), the slot that frees is not
+    /// for stores. A storm on another hart that took it would leave the restore
+    /// no way on but to fail the task that faulted; the storm can always swap.
+    pub fn swap_hold_room(&mut self, held: bool) {
+        self.room_held = held;
+    }
+
     /// Does a segment have somewhere to come back to (a free resident slot,
     /// below the ceiling)?
     pub fn swap_has_room(&self) -> bool {
@@ -1605,6 +1618,7 @@ pub fn run_storm<R: Reclaimee>(
         }
     }
     let mut rec = b.storm_end(page_bytes).ok_or(NoStorm::Busy)?;
+    b.storm_cut_short(full && rec.pages != 0);
     rec.full = full;
     rec.refused = refused;
     Ok(rec)

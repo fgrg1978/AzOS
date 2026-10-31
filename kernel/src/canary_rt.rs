@@ -51,6 +51,25 @@ pub(crate) const NAMES: &[&str] = &[
     // entry/aarch64/pan_patch.rs: the A64_PAN=probe sites are not rewritten
     // at boot (ktest `a64_pan_sites_patched`, aarch64 only).
     "pan-patch-skip",
+    // tasks/reclaim.rs: the pressure of every Domain goes untold (rows
+    // `reclaim: pressure canary`).
+    "reclaim-pressure-skip",
+    // tasks/reclaim.rs: a restore past the limit does not wait for the reclaim
+    // task, so a task that reads back fast empties the allocator and dies
+    // (`reclaim: aarch64 kill-order`).
+    "reclaim-restore-no-wait",
+    // tasks/reclaim.rs: stage 0 of a pass purges nothing (`reclaim: purge canary`).
+    "reclaim-purge-skip",
+    // tasks/reclaim.rs: every Domain counts as a locked one to the storm, so no
+    // page may reach the pool (`reclaim: pinned page never compressed`).
+    "reclaim-pin-storm",
+    // boot/swap.rs: every Domain counts as a locked one to swap, so a page may
+    // reach the pool and no segment may leave it (`reclaim: pinned page never swapped`).
+    "reclaim-pin-swap",
+    // boot/swap.rs: a segment read back from the swap file has one bit changed,
+    // as a medium that was written behind the kernel's back
+    // (`reclaim: changed on the medium`).
+    "swap-read-flip",
     // boot/blk_irq.rs: virtio-blk reapers check and set a slot's report with no
     // lock (ktest `blk_reap_reports_once`).
     "blk-reap-unlocked",

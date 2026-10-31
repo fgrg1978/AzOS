@@ -467,6 +467,23 @@ fn a_full_pool_ends_the_storm_early() {
     assert_eq!(m.kept, vec![4]);
 }
 
+/// The pass writes a segment when a storm ends for want of room and asks for
+/// compression again. The charge may be under `high` by then and is still over
+/// `low`, where a Domain told `warning` waits to be told `normal`: the storm
+/// goes on. One that freed nothing does not ask again below `high`.
+#[test]
+fn a_storm_cut_short_by_a_full_pool_goes_on_below_high() {
+    let b = budget(20, 5, 16, 17);
+    let mut m = Model::new(Four::new(Heap), (0..17).map(|i| compressible(i)).collect());
+    let rec = run_storm(&b, &mut m, false, false, 1000, P).unwrap();
+    assert!(rec.full && b.used() < 16 && b.used() > 5, "the storm stops between the marks");
+    assert!(b.over_high(), "the rest of the storm is still due");
+    assert!(b.storm_begin(false, false).is_ok());
+    assert_eq!(b.storm_end(P).map(|r| r.pages), Some(0));
+    b.storm_cut_short(false);
+    assert!(!b.over_high(), "a storm that freed nothing leaves it to the high mark");
+}
+
 /// A page whose mapping cannot be removed is passed over; the storm moves to
 /// the next one.
 #[test]

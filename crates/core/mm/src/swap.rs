@@ -356,6 +356,7 @@ pub trait Parkable {
     fn in_abort(&mut self, buf: NonNull<u8>);
     fn slots(&self) -> SwapSlots;
     fn set_cap(&mut self, cap: usize) -> bool;
+    fn hold_room(&mut self, held: bool);
 }
 
 impl<
@@ -400,6 +401,9 @@ impl<
     }
     fn set_cap(&mut self, cap: usize) -> bool {
         self.swap_set_cap(cap)
+    }
+    fn hold_room(&mut self, held: bool) {
+        self.swap_hold_room(held)
     }
 }
 
@@ -506,7 +510,9 @@ impl<'d, const SW: usize, const SEG: usize> Swap<'d, SW, SEG> {
         self.idle = 0;
         self.nonce += 1;
         let nonce = self.nonce;
-        self.enc.ctr_encrypt(&nonce12(nonce), img);
+        if !cfg!(feature = "swap-plain-canary") {
+            self.enc.ctr_encrypt(&nonce12(nonce), img);
+        }
         self.recs[slot] = Rec { nonce, tag: self.tag_of(slot, nonce, img) };
     }
 
@@ -520,7 +526,9 @@ impl<'d, const SW: usize, const SEG: usize> Swap<'d, SW, SEG> {
         if !ok && !cfg!(feature = "swap-verify-canary") {
             return Err(SwapError::Tamper);
         }
-        self.enc.ctr_decrypt(&nonce12(rec.nonce), img);
+        if !cfg!(feature = "swap-plain-canary") {
+            self.enc.ctr_decrypt(&nonce12(rec.nonce), img);
+        }
         Ok(())
     }
 
@@ -567,7 +575,7 @@ where
     B: Backing,
 {
     let r = swap_out_step::<P, L, SL, B, SW, SEG>(pool, swap, bounce, grow);
-    swap.step_end();
+    ring_unless_busy(swap, &r);
     r
 }
 
@@ -602,6 +610,8 @@ where
     // ends (`step_end`).
     if swap.with(|s| s.trimming == Some(pick.slot)) {
         pool.with(|p| p.abort(&pick));
+        // Its own pick made others wait for a moment: they ask again.
+        swap.step_end();
         return Err(SwapError::Busy);
     }
     let Some(buf) = bounce.alloc(SEG) else {
@@ -803,6 +813,19 @@ where
     r
 }
 
+/// A step ended: ring whoever was told `Busy`. A step that was itself told
+/// `Busy` started nothing, and ringing for it would have the fault that waits
+/// on the count see it move and ask again at once: a spin in the kernel that,
+/// on the CPU of the task it is waiting for, that task never gets to end.
+fn ring_unless_busy<'d, SL, T, const SW: usize, const SEG: usize>(swap: &SL, r: &Result<T, SwapError>)
+where
+    SL: Locked<Swap<'d, SW, SEG>>,
+{
+    if !matches!(r, Err(SwapError::Busy)) || cfg!(feature = "swap-busy-rings-canary") {
+        swap.step_end();
+    }
+}
+
 /// Bring the swapped segment `sw` back into the pool: read, verify, decrypt,
 /// attach. `Ok` also when its pages left meanwhile (another fault brought it
 /// back first, or the segment was freed and its slot used again while the
@@ -827,7 +850,7 @@ where
     B: Backing,
 {
     let r = swap_in_step::<P, L, SL, B, SW, SEG>(pool, swap, bounce, sw);
-    swap.step_end();
+    ring_unless_busy(swap, &r);
     r
 }
 
@@ -848,17 +871,31 @@ where
     let buf = loop {
         match pool.with(|p| p.in_begin(sw)) {
             Ok(b) => break b,
-            Err(PoolError::Gone) => return Ok(()),
-            Err(PoolError::Busy) => return Err(SwapError::Busy),
+            Err(PoolError::Gone) => {
+                pool.with(|p| p.hold_room(false));
+                return Ok(());
+            }
+            Err(PoolError::Busy) => {
+                pool.with(|p| p.hold_room(false));
+                return Err(SwapError::Busy);
+            }
             Err(PoolError::Full) if !made_room => {
                 made_room = true;
                 // Under pressure by definition: the segment written out is
                 // what frees a frame run for this one.
-                swap_out_one::<P, L, SL, B, SW, SEG>(pool, swap, bounce, false)?;
+                pool.with(|p| p.hold_room(true));
+                if let Err(e) = swap_out_one::<P, L, SL, B, SW, SEG>(pool, swap, bounce, false) {
+                    pool.with(|p| p.hold_room(false));
+                    return Err(e);
+                }
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                pool.with(|p| p.hold_room(false));
+                return Err(e.into());
+            }
         }
     };
+    pool.with(|p| p.hold_room(false));
     // SAFETY: the pool handed the buffer over until commit or abort.
     let img = unsafe { bytes(buf, SEG) };
     // The record the read verifies against, taken while the pool still holds

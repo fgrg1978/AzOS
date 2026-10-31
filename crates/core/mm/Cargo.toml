@@ -101,3 +101,16 @@ swap-pinned-canary = []
 # Canary only (MM_SWAP_BACKEND): `swap_in` hands the segment on without
 # comparing its tag. The tamper rows in tests/host/mm-tests (swap.rs) must go red.
 swap-verify-canary = []
+# Gate canaries of the reclaim rows (kernel features of the same name):
+# a segment leaves unencrypted; a restored page has one bit changed; a locked
+# Domain's storm starts.
+swap-plain-canary = []
+restore-flip-canary = []
+storm-ignore-locked-canary = []
+# A storm cut short by a full pool does not go on below the high watermark
+# (host row, tests/host/mm-tests).
+storm-no-resume-canary = []
+# A store takes the last resident slot, which a restore wrote a segment out for.
+swap-no-restore-slot-canary = []
+# A swap step told Busy rings the faults that wait for a step to end.
+swap-busy-rings-canary = []
