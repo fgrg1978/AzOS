@@ -64,6 +64,15 @@ static RESTORE_SP: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TA
 /// signal; taken at that same return to user mode.
 static RESTART: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
 static RESTART_SET: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
+/// `rt_sigsuspend`'s caller's own mask while it waits, put back when the
+/// handler that ended the wait returns or the wait ends with no handler; set
+/// only while [`SUSPENDED`] is 1. Per task: two threads of one process can be
+/// suspended at once, each with a mask of its own.
+static SUSPEND_SAVED: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(0) }; MAX_TASKS];
+static SUSPENDED: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
+/// Runtime canary `sigsuspend-shared`: every task keeps its saved mask in the
+/// first slot's cell, as the per-process field did.
+static CANARY_SUSPEND_SHARED: AtomicBool = AtomicBool::new(false);
 /// Signals posted, and taken for delivery, machine-wide (diagnostics).
 static POSTED: AtomicU32 = AtomicU32::new(0);
 static DELIVERED: AtomicU32 = AtomicU32::new(0);
@@ -131,6 +140,7 @@ pub fn attach(tid: u32, blocked: u64, ignored: u64) -> bool {
 }
 
 fn detach_slot(idx: usize) {
+    SUSPENDED[idx].store(0, Ordering::Release);
     TID[idx].store(0, Ordering::Release);
     PENDING[idx].store(0, Ordering::Release);
     PROC_PENDING[idx].store(0, Ordering::Release);
@@ -306,6 +316,32 @@ pub fn take_current() -> Option<(u32, u32)> {
 pub fn current_blocked() -> Option<u64> {
     let idx = current_slot()?;
     (TID[idx].load(Ordering::Acquire) != 0).then(|| BLOCKED[idx].load(Ordering::Relaxed))
+}
+
+/// The cell the current task's saved `rt_sigsuspend` mask lives in.
+fn suspend_cell() -> Option<usize> {
+    let idx = current_slot()?;
+    Some(if CANARY_SUSPEND_SHARED.load(Ordering::Relaxed) { 0 } else { idx })
+}
+
+/// Remember `mask` as the current task's mask to put back after a suspend.
+pub fn set_current_suspend_saved(mask: u64) {
+    if let Some(i) = suspend_cell() {
+        SUSPEND_SAVED[i].store(mask, Ordering::Relaxed);
+        SUSPENDED[i].store(1, Ordering::Release);
+    }
+}
+
+/// The mask [`set_current_suspend_saved`] kept, once: `None` when the current
+/// task is not suspended (or has no signal state).
+pub fn take_current_suspend_saved() -> Option<u64> {
+    let i = suspend_cell()?;
+    (SUSPENDED[i].swap(0, Ordering::AcqRel) != 0).then(|| SUSPEND_SAVED[i].load(Ordering::Relaxed))
+}
+
+/// Arm the `sigsuspend-shared` canary (boot only).
+pub fn canary_suspend_shared() {
+    CANARY_SUSPEND_SHARED.store(true, Ordering::Relaxed);
 }
 
 /// Set the current task's mask (`SIGKILL`/`SIGSTOP` never blocked). A signal

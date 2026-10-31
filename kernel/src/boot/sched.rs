@@ -319,6 +319,10 @@ pub(crate) fn install_sched_hooks() {
     if canary!("sig-exit-drop") {
         azos_sched::scheduler::signal::canary_exit_drop();
     }
+    // Runtime canary: the masks `rt_sigsuspend` saves are one cell for every task.
+    if canary!("sigsuspend-shared") {
+        azos_sched::scheduler::signal::canary_suspend_shared();
+    }
     // Owner decision 10-10: the robust exit walk keys a word of a shm region
     // by (region, offset), as the Linux personality keys a shared futex.
     if azos_sched::futex_table::SHARED {

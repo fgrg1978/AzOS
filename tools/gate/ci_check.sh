@@ -14554,8 +14554,9 @@ PY
     # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
     # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
     # +1 kheap_irq_token_follows_the_interrupt_state -> 131, arm 135.
-    KTEST_N_RV=131
-    KTEST_N_ARM=135
+    # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 132, arm 136.
+    KTEST_N_RV=132
+    KTEST_N_ARM=136
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15218,8 +15219,8 @@ PY
     # claim waiter lends nothing: fat_claim_waiter_donates_to_owner), and N6b's
     # `sched-dl-in-level` (a reservation ranks by its level again:
     # sched_dl_above_rt).
-    KTEST_SCHED_CANARIES="canary=sched-class-invert,pi-depth-1,schedctl-no-warrant,sig-exit-drop,claim-no-donate,sched-dl-in-level"
-    KTEST_SCHED_CANARIED="sched_class_precedence waitgraph_transitive_chain waitgraph_dl_donor_and_attr_changed waitgraph_depth_cap schedctl_self_promotion_refused signal_retarget_on_thread_detach fat_claim_waiter_donates_to_owner sched_dl_above_rt"
+    KTEST_SCHED_CANARIES="canary=sched-class-invert,pi-depth-1,schedctl-no-warrant,sig-exit-drop,sigsuspend-shared,claim-no-donate,sched-dl-in-level"
+    KTEST_SCHED_CANARIED="sched_class_precedence waitgraph_transitive_chain waitgraph_dl_donor_and_attr_changed waitgraph_depth_cap schedctl_self_promotion_refused signal_retarget_on_thread_detach sigsuspend_saves_the_mask_per_thread fat_claim_waiter_donates_to_owner sched_dl_above_rt"
     par "ktest sched canary (rv)" ktest_row "ktest sched canary (rv)" rv "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
     par "ktest sched canary (arm)" ktest_row "ktest sched canary (arm)" arm "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
 
@@ -15341,7 +15342,8 @@ PY
     # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
     # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
     # +1 kheap_irq_token_follows_the_interrupt_state, as on rv and arm -> 137.
-    KTEST_N_X86=137
+    # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 138.
+    KTEST_N_X86=138
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16369,9 +16371,9 @@ PY
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
     par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
+    par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
-    par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
     par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \

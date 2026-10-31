@@ -143,9 +143,6 @@ struct Proc {
     cwd: [u8; CWD_MAX],
     cwd_len: u8,
     act: [lx::KSigaction; NSIG],
-    /// `rt_sigsuspend`'s caller's own mask, put back when the handler that
-    /// ended the wait returns (it is the mask its frame saves).
-    suspend_saved: Option<u64>,
     umask: u32,
     /// The topology row (image name) the task runs under: what a forked
     /// child is reseeded from, and the only row `execve` may enter.
@@ -169,7 +166,6 @@ const PROC_FREE: Proc = Proc {
     cwd: [0; CWD_MAX],
     cwd_len: 0,
     act: [KSA_DFL; NSIG],
-    suspend_saved: None,
     umask: 0o022,
     row: [0; 16],
     row_len: 0,
@@ -1640,6 +1636,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             if uaddr & 3 != 0 {
                 return neg(le::EINVAL);
             }
+            let pcmd_is_unlock = cmd == FUTEX_UNLOCK_PI;
             let pcmd = match cmd {
                 FUTEX_TRYLOCK_PI => PiCmd::TryLock,
                 FUTEX_UNLOCK_PI => PiCmd::Unlock,
@@ -1656,6 +1653,8 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                     PiCmd::Lock { deadline: Some(abs_deadline_ticks(ns, realtime)) }
                 }
             };
+            // The native calls these stand for: a lock waits, an unlock wakes.
+            reach(if pcmd_is_unlock { k::SYS_FUTEX_WAKE } else { k::SYS_FUTEX_WAIT });
             // Without FUTEX_PRIVATE_FLAG a word of a shm region is keyed by
             // the region (N10b), so two processes sharing it share one
             // pi_state, as N9 keys plain shared futexes.
@@ -2054,7 +2053,7 @@ fn sys_rt_sigsuspend(mask_ptr: u64, size: u64) -> i64 {
     let Some(mask) = get_u64(mask_ptr) else { return neg(le::EFAULT) };
     reach(k::SYS_SLEEP_UNTIL);
     let Some(old) = sigst::current_blocked() else { return neg(le::EFAULT) };
-    with_me(|p| p.suspend_saved = Some(old));
+    sigst::set_current_suspend_saved(old);
     sigst::set_current_blocked(mask);
     while !crate::ushell::stop_requested() {
         // A clock ceiling bounds a lost wake; a post wakes the wait at once.
@@ -2318,12 +2317,8 @@ pub fn on_return_to_user(
     while let Some((s, sender)) = sigst::take_current() {
         // The action and, for a handler, the mask its frame saves
         // (`rt_sigsuspend`'s caller's own), in one look at the table.
-        let (act, suspended) = with_me(|p| {
-            let act = p.act[s as usize - 1];
-            let sus = if act.handler > lx::sig::SIG_IGN { p.suspend_saved.take() } else { None };
-            (act, sus)
-        })
-        .unwrap_or((KSA_DFL, None));
+        let act = with_me(|p| p.act[s as usize - 1]).unwrap_or(KSA_DFL);
+        let suspended = if act.handler > lx::sig::SIG_IGN { sigst::take_current_suspend_saved() } else { None };
         match act.handler {
             lx::sig::SIG_IGN => {
                 azos_ipc::trace::trace_event(azos_ipc::trace::TRACE_SIGNAL, me, s, sender, 0);
@@ -2415,7 +2410,7 @@ pub fn on_return_to_user(
         }
     }
     // `rt_sigsuspend` ended with no handler run: its caller's mask is back.
-    if let Some(m) = with_me(|p| p.suspend_saved.take()).flatten() {
+    if let Some(m) = sigst::take_current_suspend_saved() {
         sigst::set_current_blocked(m);
     }
     changed
