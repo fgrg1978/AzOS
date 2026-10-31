@@ -2208,7 +2208,7 @@ mod kmutex_ktests {
     fn od_run(_: usize) {
         OD_RUNNER.store(current_task_tid(), Ordering::SeqCst);
         let _ = task_create_affinity("kmx-died-o", od_owner, 0, FAIR_OWNER_PRIO, CPU0);
-        let _ = azos_syscall::sleep::wait_until_ms(3_000, 10, || OD_GOT.load(Ordering::SeqCst));
+        let _ = azos_syscall::sleep::wait_until_ms(30_000, 10, || OD_GOT.load(Ordering::SeqCst));
     }
 
     azos_ktest::ktest_late! {
@@ -2378,11 +2378,13 @@ mod kmutex_ktests {
         // The runner outranks the contender (priority 1): the contender runs
         // once this task sleeps for its "device wait" and sleeps on the claim.
         let _ = task_create_affinity("claim-excl-c", ce_contender, 0, FAIR_OWNER_PRIO, CPU0);
-        // The "device wait": the claim is owned and this task is asleep.
+        // The "device wait": the claim is owned and this task is asleep, past
+        // the contender's first step however long the host took to reach it.
+        crate::ktest::until(|| CE_TRYING.load(Ordering::SeqCst));
         let _ = azos_syscall::sleep::wait_until_ms(30, 5, || false);
         CE_OWNED.store(false, Ordering::SeqCst);
         drop(g);
-        let _ = azos_syscall::sleep::wait_until_ms(3_000, 5, || CE_GOT.load(Ordering::SeqCst));
+        let _ = azos_syscall::sleep::wait_until_ms(30_000, 5, || CE_GOT.load(Ordering::SeqCst));
     }
 
     azos_ktest::ktest_late! {

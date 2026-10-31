@@ -1450,7 +1450,9 @@ azos_ktest::ktest_late! {
 }
 
 /// How long `preempt_count_survives_irq_nesting` waits for three ticks, in ms.
-const PREEMPT_NEST_MS: u64 = 500;
+/// The clock runs while a loaded host keeps the timer from firing, and three
+/// ticks end the wait, so only a hart with no ticks at all ever reaches this.
+const PREEMPT_NEST_MS: u64 = 30_000;
 
 azos_ktest::ktest_late! {
     fn preempt_count_survives_irq_nesting() {

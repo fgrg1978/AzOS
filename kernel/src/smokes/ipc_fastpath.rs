@@ -1014,6 +1014,7 @@ const WE_EP: &[u8] = b"fp.wg.edge";
 /// A kernel mutex's wait object, owned by the caller while it calls.
 static WE_OBJ: PiWaiters = PiWaiters::new(EdgeKind::Mutex);
 static WE_READY: AtomicBool = AtomicBool::new(false);
+static WE_SRV_TID: AtomicU32 = AtomicU32::new(0);
 static WE_CLI_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// The server's finding: 1 the cycle refused, 2 no edge, 3 the cycle
 /// accepted, 4 another refusal.
@@ -1028,6 +1029,7 @@ fn we_server(_: usize) {
         WE_SRV_DONE.store(true, Ordering::Release);
         return;
     }
+    WE_SRV_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     WE_READY.store(true, Ordering::Release);
     let (h, r) = call(SYS_IPC_FAST_ACCEPT, [0; 6]);
     if h >= 0 {
@@ -1060,8 +1062,12 @@ fn we_client(_: usize) {
         WE_CLI_DONE.store(true, Ordering::Release);
         return;
     };
-    // Let the server park in its accept.
-    sleep_ms(20);
+    // This call must find the server parked: the test allows it no ordinary path.
+    let srv = WE_SRV_TID.load(Ordering::Acquire);
+    crate::ktest::until(|| {
+        azos_sched::idx_for_tid(srv)
+            .is_some_and(|i| azos_sched::scheduler::ipc_fast_parked(i, srv, azos_sched::WaitReason::FastIpcServer(srv)))
+    });
     WE_OBJ.set_owner(Some(slot as waitgraph::TaskId));
     let before = fastpath::hits_of(slot).0;
     let (rc, _) = call(SYS_IPC_FAST_CALL_EP, [cap, 0x7C, 0, 0, 0, 0]);
