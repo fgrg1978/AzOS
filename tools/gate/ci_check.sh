@@ -10113,9 +10113,9 @@ par "rt7: panic safety (arm)" rt7_row arm safety
 # slow calls, and the move back refused after the fault with a refusal record.
 # Canary `placement-norecord-canary`: the moves are made and not recorded:
 # `[DRVCONTAIN] FAIL the placement decisions are not the moves that happened`.
-drvcontain_row() { # drvcontain_row <isa: rv|arm> [features] [PASS|FAIL-record|deadline]
-    local isa="$1" feats="${2:-qemu,drv-contain-smoke,buzzer-kernel}" expect="${3:-PASS}"
-    printf "  %-26s" "rt7: driver contained, demoted (${isa})..."
+drvcontain_row() { # drvcontain_row <label> <isa: rv|arm> [features] [PASS|FAIL-record|deadline]
+    local label="$1" isa="$2" feats="${3:-qemu,drv-contain-smoke,buzzer-kernel}" expect="${4:-PASS}"
+    printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
     local defc src_disk="$AZOS_OUT/build/disk-drv.img"
     [ "$isa" = arm ] && src_disk="$AZOS_OUT/build/disk-aarch64-drv.img"
@@ -10203,10 +10203,10 @@ drvcontain_row() { # drvcontain_row <isa: rv|arm> [features] [PASS|FAIL-record|d
 # Canary: `sup-canary` (the supervisor ignores every death) -> "[DRVCONTAIN]
 # FAIL the driver was not restarted in ring 3" (isolations=1, successor=None).
 # Compile errors: `kbuild`/`a64_kbuild`'s own FAIL line.
-par -s "rt7: driver contained, demoted (rv)" drvcontain_row rv
-par -s "rt7: driver contained, demoted (arm)" drvcontain_row arm
-par -s "rt7: a move without its record (rv)" drvcontain_row rv "qemu,drv-contain-smoke,buzzer-kernel,placement-norecord-canary" FAIL-record
-par -s "rt7: promoted on its deadline, demoted on a fault (rv)" drvcontain_row rv "qemu,drv-contain-smoke" deadline
+par_row -s drvcontain_row "rt7: driver contained, demoted (rv)" rv
+par_row -s drvcontain_row "rt7: driver contained, demoted (arm)" arm
+par_row -s drvcontain_row "rt7: a move without its record (rv)" rv "qemu,drv-contain-smoke,buzzer-kernel,placement-norecord-canary" FAIL-record
+par_row -s drvcontain_row "rt7: promoted on its deadline, demoted on a fault (rv)" rv "qemu,drv-contain-smoke" deadline
 # The timer-sleeper heap under the interleavings that lost rt-motor's wake
 # with it (gate 185; fixed in wave 5: the retry re-arm, now in
 # `timer_heap::wake_due`, and `peek_live`), wave 13: `timer-heap-smoke` +
@@ -22095,7 +22095,9 @@ PYEOF
     # VSBENCH_RING_DET in the script.
     vsbench_row() {
         printf "  %-26s" "bench: vsbench vs Linux..."
-        if QEMU="$QEMU" WAIT_SECS=90 VSBENCH_SECCOMP=1 bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh"; then
+        # The robot cell: the vdso section reads the encoder, which the generic
+        # cell's kernel does not link.
+        if KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" QEMU="$QEMU" WAIT_SECS=90 VSBENCH_SECCOMP=1 bash "${REPO_ROOT}/tools/bench/vsbench_compare.sh"; then
             ok
         else
             bad; echo "      logs in $AZOS_OUT/build/vsbench-compare/"
@@ -25761,7 +25763,12 @@ repro_row() {
     if out="$(TMPDIR="$AZOS_OUT/build" bash "${REPO_ROOT}/tools/gate/repro_check.sh" 2>&1)"; then
         ok; echo "      $(printf '%s\n' "$out" | grep -c ' MATCH ') artefacts byte-identical"
     else
-        bad; printf '%s\n' "$out" | grep -E ' (DIFFER|ERROR) |^error|repro_check' | sed -n 1,10p | sed 's/^/      /'
+        # The last lines, not a filter on them: they are the failing step's own
+        # output (a tool's "Error:" included) and the script's FAILED line, or
+        # the comparison table. Every line of the script's log matches
+        # "repro_check", so a filter keeping the first ten showed only its start.
+        local n; n="$(printf '%s\n' "$out" | wc -l)"
+        bad; printf '%s\n' "$out" | sed -n "$((n > 25 ? n - 24 : 1)),\$p" | sed 's/^/      /'
     fi
 }
 par -s -h "supply chain: reproducible build" repro_row

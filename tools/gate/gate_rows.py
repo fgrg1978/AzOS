@@ -584,6 +584,56 @@ def check_robot_rows(rs=None, man=None, robot=None):
     return 1 if bad else 0
 
 
+# The first `printf "  %-26s" "<label>..."` of a row function.
+LABEL_RE = re.compile(r'printf\s+"\s*%-26s"\s+"([^"]*?)(?:\.\.\.)?"')
+# `name="$2"` / `name="${3:-default}"`: a local bound to a positional argument.
+BIND_RE = re.compile(r'\b(\w+)="\$(?:(\d)|\{(\d)(?::-([^}"]*))?\})"')
+
+
+def printed_label(r):
+    """The label row `r`'s function prints for its own arguments, or None when
+    it is not decided by them (a loop variable, a command substitution)."""
+    m = LABEL_RE.search(r["body"])
+    if not m:
+        return None
+    binds = {}
+    for name, d1, d2, dflt in BIND_RE.findall(r["body"]):
+        binds[name] = (int(d1 or d2), dflt)
+    args, unknown = r["args"], []
+
+    def val(name):
+        if name.isdigit():
+            idx, dflt = int(name), ""
+        elif name in binds:
+            idx, dflt = binds[name]
+        else:
+            unknown.append(name)
+            return ""
+        return args[idx - 1] if 0 < idx <= len(args) else dflt
+
+    label = re.sub(r"\$\{(\w+)\}|\$(\w+)", lambda v: val(v.group(1) or v.group(2)), m.group(1))
+    return None if unknown or "$" in label else label
+
+
+def check_labels(rs=None):
+    """A row prints its label and the log is read by label (`--ktap`), so two
+    keys must not print one: a verdict by label would be the other row's."""
+    rs = rs if rs is not None else rows()
+    seen, bad = {}, []
+    for r in rs:
+        if r["fn"] in GENERIC:
+            continue
+        lab = printed_label(r)
+        if lab is None:
+            continue
+        other = seen.setdefault((r["fn"], lab), r["key"])
+        if other != r["key"]:
+            bad.append((r["key"], other, lab))
+    for k, other, lab in bad:
+        print("gate_rows: rows '%s' and '%s' both print '%s...'" % (other, k, lab))
+    return 1 if bad else 0
+
+
 # ── Required deps: the sources a row demonstrably reads ──────────────────────
 #
 # The SUBSYS tags above are a guess from a row's name. These rules are read
@@ -1370,6 +1420,17 @@ def self_test():
                check_robot_rows([row], man, ["a", "use-robot"]) == 1)
         expect("a robot-domain row with a robot kernel fails",
                check_robot_rows([dict(row, body='kbuild "qemu,a"')], man, ["a", "use-robot"]) == 0)
+    # Labels: a function that prints a label built from its isa alone is run by
+    # two keys with one isa; that is the defect, and `${label}` is the cure.
+    lab = dict(key="a", fn="f_row", args=["rv", "qemu,x"], prior=None, flags=[], boots="",
+               body='local isa="$1" feats="${2:-q}"\nprintf "  %-26s" "t (${isa})..."')
+    with contextlib.redirect_stdout(io.StringIO()):
+        expect("canary: two keys printing one label pass", check_labels([lab, dict(lab, key="b")]) == 1)
+        expect("a key whose label differs by isa fails", check_labels([lab, dict(lab, key="b", args=["arm"])]) == 0)
+        keyed = dict(lab, body='local label="$1"\nprintf "  %-26s" "${label}..."')
+        expect("a label that is the key fails",
+               check_labels([dict(keyed, args=["a"]), dict(keyed, key="b", args=["b"])]) == 0)
+        expect("the defaulted arg is read", printed_label(dict(lab, args=["rv"])) == "t (rv)")
     # Required deps: one synthetic row per rule. A row whose manifest line
     # misses what it reads fails the check; with the globs written, it passes.
     syn = dict(key="syn", fn="syn_row", args=["syn"], body="", prior=None, flags=[], boots="", call="")
@@ -1447,7 +1508,7 @@ def main(argv):
     if "--check-deps" in argv:
         return check_deps()
     if "--check" in argv:
-        return check_manifest() | check_needs() | check_robot_rows() | check_deps()
+        return check_manifest() | check_needs() | check_robot_rows() | check_labels() | check_deps()
     if "--robot-features" in argv:
         print("\n".join(robot_features()))
         return 0

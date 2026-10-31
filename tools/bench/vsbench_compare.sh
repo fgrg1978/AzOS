@@ -580,6 +580,13 @@ mkdir -p "$BENCH_TARGET"
     || die "could not derive the AzOS kernel configuration ($AZ_CONFIG.new)"
 # Replaced only when it changed: `azos_limits` rebuilds on the file's mtime.
 if cmp -s "$AZ_CONFIG.new" "$AZ_CONFIG"; then rm -f "$AZ_CONFIG.new"; else mv "$AZ_CONFIG.new" "$AZ_CONFIG"; fi
+# The vdso section reads the encoder, a robot-domain sensor. A kernel without
+# `use-robot` publishes that slot as zeros with no stamp and refuses the sensor
+# call, which fails two of the section's canaries for the configuration's sake.
+if { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBENCH_LANES" | grep -q ',vdso,'; } \
+   && ! grep -q '^CONFIG_USE_ROBOT=y$' "$AZ_CONFIG"; then
+    die "the vdso section needs the robot domain (CONFIG_USE_ROBOT=y), and $AZ_CONFIG has none: run it from a robot configuration or leave vdso out of VSBENCH_LANES"
+fi
 # The riscv64 Linux image: VSBENCH_LINUX_IMAGE, else the `riscv64=` line of
 # tools/bench/vsbench_linux.conf. A leading `~/` is $HOME.
 LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$(sed -n 's/^riscv64=//p' "$REPO_ROOT/tools/bench/vsbench_linux.conf")}"
