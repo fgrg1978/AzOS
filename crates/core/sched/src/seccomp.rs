@@ -612,18 +612,6 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_EXIT_STATS, DOMAIN_SUBREAPER, PORT_POLL, PORT_BIND, NODE_OPENAT, DOMAIN_MKDIR, DOMAIN_SOCKET, NODE_READ, NODE_WRITE, NODE_SEND, DOMAIN_WAIT, DEVICE_IRQ_BIND, DOMAIN_CREATE_PORT],
         ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::MOTOR],
     },
-    // The reclaim rows' memory pressure driver: anonymous memory, a volatile
-    // object it marks through `memctl`, and its Domain's pressure on a Port.
-    ImageProfile {
-        image: "MEMPRESS.ELF",
-        syscalls: sys_nrs![
-            SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE,
-            SYS_IPC_CALL_V2, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
-        ],
-        audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_MEMINFO, DOMAIN_CREATE_PORT, PORT_BIND, PORT_POLL, MEMOBJ_ACQUIRE],
-        ifaces: &[azos_devif::key::MEMCTL],
-    },
     // `SYS_FOREIGN_FORK` is issued as raw asm (`spawn`, the register canary),
     // not through libsys, after the foreign entry that allows it is registered.
     // The mailbox and phase C are typed now: the untyped
@@ -664,6 +652,18 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_CREATE_PORT, DOMAIN_CREATE_ENDPOINT, DOMAIN_UPTIME, DOMAIN_WAIT, PORT_POLL, PORT_BIND, MEMOBJ_ACQUIRE],
         ifaces: NO_IFACES,
+    },
+    // The reclaim rows' memory pressure driver: anonymous memory, a volatile
+    // object it marks through `memctl`, and its Domain's pressure on a Port.
+    ImageProfile {
+        image: "MEMPRESS.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE,
+            SYS_IPC_CALL_V2, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_MEMINFO, DOMAIN_CREATE_PORT, PORT_BIND, PORT_POLL, MEMOBJ_ACQUIRE],
+        ifaces: &[azos_devif::key::MEMCTL],
     },
     // The `--features azos` build (the image never carries the Linux one).
     ImageProfile {
