@@ -1146,13 +1146,15 @@ mod wq_window_ktests {
 
     azos_ktest::ktest_late! {
         fn wq_wake_in_the_block_window_is_kept() {
-            if azos_percpu::nr_cpu_ids() < 2 {
+            let harts = azos_percpu::nr_cpu_ids();
+            if harts < 2 {
                 return Ok(());
             }
-            azos_sched::task_create_affinity("wq-window", waiter, 0, PRIO, 1);
+            let (waiter_hart, waker_hart) = ((harts - 1) as i8, (harts - 2) as i8);
+            azos_sched::task_create_affinity("wq-window", waiter, 0, PRIO, waiter_hart);
             crate::ktest::wait("the waiter never started", || TID.load(Ordering::Acquire) != 0)?;
             azos_sched::scheduler::set_wake_window(TID.load(Ordering::Acquire), canary!("wake-reason-first"));
-            azos_sched::task_create_affinity("wq-waker", waker, 0, PRIO, 0);
+            azos_sched::task_create_affinity("wq-waker", waker, 0, PRIO, waker_hart);
             // Past the waker's own bound on one round, so a lost wake is told as one.
             let done = || WAKER_DONE.load(Ordering::Acquire);
             let finished = crate::ktest::until(done) || crate::ktest::until(done);
