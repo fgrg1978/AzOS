@@ -45,7 +45,7 @@ import symbolize_bt  # noqa: E402
 
 FUNCTION = "kernel_main"
 TICK = "azos_syscall::clock::tick"
-STOPPED = re.compile(r"stop reason = breakpoint|^Breakpoint \d+, ", re.M)
+STOPPED = re.compile(r"stop reason = breakpoint|^(?:Thread \d+ hit )?Breakpoint \d+, ", re.M)
 SLIDE_STEP = 0x200000
 READ_BYTES = 32
 PRESET = "generic"

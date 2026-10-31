@@ -207,6 +207,8 @@ class RowJudge(unittest.TestCase):
     def test_a_breakpoint_stop_is_read_in_either_debugger(self):
         self.assertIsNone(debug_row.judge_break("(lldb) continue\n* thread #1, stop reason = breakpoint 1.1\n"))
         self.assertIsNone(debug_row.judge_break("Continuing.\n\nBreakpoint 1, 0x00000000 in tick ()\n"))
+        # gdb names the thread on an SMP target
+        self.assertIsNone(debug_row.judge_break("[Switching to Thread 1.3]\n\nThread 3 hit Breakpoint 1, azos_syscall::clock::tick () at clock.rs:135\n"))
 
     def test_canary_no_stop_is_refused(self):
         self.assertIn("no stop", debug_row.judge_break("(lldb) continue\nProcess 1 resuming\n"))
