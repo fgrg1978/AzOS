@@ -182,8 +182,13 @@ pub trait Pager {
 pub trait FileFrames: Sync {
     /// The cache frame of the page, read from the file first if it is not
     /// there; `write` says the caller is about to store through it. The frame
-    /// belongs to the cache.
+    /// belongs to the cache. It is pinned: the cache drops no frame of `obj`
+    /// until [`FileFrames::installed`], so the caller can put it in a leaf.
     fn frame(&self, obj: u32, page: usize, write: bool) -> KResult<PhysAddr>;
+
+    /// The caller of a [`FileFrames::frame`] that returned a frame is done with
+    /// it, installed or not: the pin ends.
+    fn installed(&self, obj: u32);
 
     /// The frame the cache holds for the page now, without filling it.
     fn resident(&self, obj: u32, page: usize) -> Option<PhysAddr>;
@@ -1525,8 +1530,20 @@ pub fn has_file(root: usize, s: usize, e: usize) -> bool {
 fn resolve_file_fault(root: usize, page: usize, r: &Region) -> KResult<()> {
     let ff = file_frames()?;
     let idx = r.page_index(page);
+    // The cache's pin on a shared frame, held to the end of the install.
+    struct Pin<'a>(Option<(&'a dyn FileFrames, u32)>);
+    impl Drop for Pin<'_> {
+        fn drop(&mut self) {
+            if let Some((ff, obj)) = self.0 {
+                ff.installed(obj);
+            }
+        }
+    }
+    let mut _pin = Pin(None);
     let frame = if r.shared {
-        ff.frame(r.obj, idx, r.write)?
+        let f = ff.frame(r.obj, idx, r.write)?;
+        _pin = Pin(Some((ff, r.obj)));
+        f
     } else {
         // SAFETY: filled right below, before the entry that exposes it exists.
         let f = unsafe { pmm::alloc_page_uninit()? };

@@ -305,7 +305,11 @@ fn kernel_err(e: PagedError) -> KernelError {
 
 impl FileFrames for Cache {
     fn frame(&self, obj: u32, page: usize, write: bool) -> KResult<PhysAddr> {
-        memobj::memobj_paged_frame_ref(obj, page, write).map(PhysAddr::new).map_err(kernel_err)
+        memobj::memobj_paged_frame_pinned_ref(obj, page, write).map(PhysAddr::new).map_err(kernel_err)
+    }
+
+    fn installed(&self, obj: u32) {
+        memobj::memobj_paged_install_done_ref(obj);
     }
 
     fn resident(&self, obj: u32, page: usize) -> Option<PhysAddr> {
