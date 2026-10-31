@@ -821,26 +821,11 @@ pub(crate) fn map_region_ref(tid: u32, r: u32, writable: bool, max_write: bool) 
         Ok((n, _)) => n,
         Err(e) => return errno_for_memobj_err(e),
     };
-    // A volatile object is not purged while this mapping is built: the frames'
-    // addresses are read now and the leaves installed after, and a purge in
-    // between would free them under the leaves. A purged one has nothing to
-    // map (`-EPURGED`).
-    let pinned = match memobj::memobj_pin_for_map(r) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = memobj::memobj_release_ref(tid, r);
-            return errno_for_memobj_err(e);
-        }
-    };
-    let mapped = map_acquired(tid, r, page_count, writable, max_write);
-    if pinned {
-        memobj::memobj_frames_unpin(r);
-    }
-    mapped
+    map_acquired(tid, r, page_count, writable, max_write)
 }
 
-/// [`map_region_ref`] once the caller holds its reference on `r` (and, for a
-/// volatile object, the kernel its pin): build the mapping and book it.
+/// [`map_region_ref`] once the caller holds its reference on `r`: build the
+/// mapping and book it.
 fn map_acquired(tid: u32, r: u32, page_count: usize, writable: bool, max_write: bool) -> i64 {
     use azos_abi::error::Errno;
     use azos_ipc::memobj::{self, MapAccess, MAX_MEMOBJ_PAGES};

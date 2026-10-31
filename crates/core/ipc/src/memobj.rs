@@ -351,6 +351,27 @@ impl MemHolder {
         self.is_mapped() || self.leaves_in_flight()
     }
 
+    /// Frames reached without a record: a failed map's leaves ([`Self::pinned`]),
+    /// the kernel's own use of the frames by address (a registered ring buffer, a
+    /// guest's RAM, a display). They may be written, and a frame must not leave
+    /// the object under them.
+    #[inline]
+    fn holds_frames_unrecorded(&self) -> bool {
+        self.refs > 0 && (self.pinned || self.tid == MEMOBJ_KERNEL_OWNER) && !cfg!(feature = "memobj-map-unrecorded-canary")
+    }
+
+    /// May a frame of the object change under this holder?
+    #[inline]
+    fn fixes_frames(&self) -> bool {
+        self.reaches_frames() || self.holds_frames_unrecorded()
+    }
+
+    /// May this holder write the frames, as far as a clone can tell?
+    #[inline]
+    fn may_write_frames(&self) -> bool {
+        (self.is_mapped() && self.map_write) || (self.leaves_in_flight() && self.build_write) || self.holds_frames_unrecorded()
+    }
+
     /// The holder is losing its references under a map or unmap in flight: that
     /// call will find no booking, and until it has removed its leaves one
     /// reference stays pinned so no frame goes back under them.
@@ -1158,7 +1179,7 @@ pub fn memobj_note_mapping_ref(
 /// Start a map of the object `r` names for `tid`: in one hold, refuse a write
 /// mapping of frames a clone shares (`Busy`) and a second map by the holder
 /// (`Busy`), read the frames into `pages`, and mark the holder as building, so
-/// that from here a clone copies and a break waits. The caller installs its
+/// that from here a clone copies, a break waits and a purge leaves the object. The caller installs its
 /// leaves with the table unlocked (page-table work takes the address space's
 /// locks and may allocate) and ends with [`memobj_map_commit_ref`] or
 /// [`memobj_map_abandon_ref`]. `Closed` for a holder with no reference or a page
@@ -1167,6 +1188,9 @@ pub fn memobj_map_begin_ref(tid: u32, r: u32, write: bool, pages: &mut [usize]) 
     let mut regions = MEMOBJS.lock();
     let i = live_index(&regions, r)?;
     let o = &mut regions[i];
+    if o.purge == PurgeState::Purged {
+        return Err(MemObjError::Purged);
+    }
     if write && o.cow_shared != 0 {
         return Err(MemObjError::Busy);
     }
@@ -2108,7 +2132,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
         if o.cow_shared & (1u64 << page) == 0 {
             return Ok(());
         }
-        if o.holders.iter().any(MemHolder::reaches_frames) {
+        if o.holders.iter().any(MemHolder::fixes_frames) {
             return Err(MemObjError::Busy);
         }
         (o.phys_pages[page], o.generation)
@@ -2146,7 +2170,7 @@ pub fn memobj_cow_break(r: u32, page: usize) -> Result<(), MemObjError> {
         o.generation == key
             && o.phys_pages[page] == old
             && o.cow_shared & (1u64 << page) != 0
-            && !o.holders.iter().any(MemHolder::reaches_frames)
+            && !o.holders.iter().any(MemHolder::fixes_frames)
     });
     let Some(i) = still else {
         drop(regions);
@@ -2235,8 +2259,7 @@ pub fn memobj_clone(tid: u32, src: u32, owner_task: u32, perms: MemPerms) -> Res
             return Err(MemObjError::Closed);
         }
         let o = &mut regions[i];
-        let writable_somewhere =
-            o.holders.iter().any(|h| (h.is_mapped() && h.map_write) || (h.leaves_in_flight() && h.build_write));
+        let writable_somewhere = o.holders.iter().any(MemHolder::may_write_frames);
         pages[..n].copy_from_slice(&o.phys_pages[..n]);
         if !writable_somewhere && o.kind == MemKind::Anon {
             let mut shared = 0usize;
@@ -4226,6 +4249,65 @@ mod tests {
         }
         // The walk reaches both answers often (not a vacuous run).
         assert!(hits > 700 && misses > 7000, "{hits} mapped answers, {misses} unmapped");
+    }
+
+    /// **A failed map's leaves and the kernel's own use fix the frames.** Neither
+    /// has a record: a failed map cannot name its partial leaves, a registered
+    /// ring buffer holds frame addresses. A clone made under them copies, and a
+    /// share made before them is not broken, which would drop the frame from the
+    /// object while something still uses it.
+    ///
+    /// Canary `memobj-map-unrecorded-canary`: red.
+    #[test]
+    fn a_failed_map_and_a_kernel_pin_keep_the_frames_where_they_are() {
+        let _g = setup();
+        let frame = |r| memobj_page_phys_ref(r, 0).unwrap().unwrap();
+        let shared = |r| memobj_describe_ref(r).unwrap().cow_shared != 0;
+
+        let failed = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let earlier = memobj_clone(A, failed, A, MemPerms::ReadOnly).expect("clone");
+        let f = frame(failed);
+        let mut pages = [0usize; 1];
+        assert_eq!(memobj_map_begin_ref(A, failed, false, &mut pages), Ok(()));
+        memobj_map_abandon_ref(A, failed);
+        assert_eq!(memobj_cow_break_all(failed), Err(MemObjError::Busy), "a break under a failed map's leaves");
+        assert_eq!(frame(failed), f);
+        assert_eq!(memobj_release_ref(A, earlier), Ok(()));
+
+        let buffer = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        let earlier = memobj_clone(A, buffer, A, MemPerms::ReadOnly).expect("clone");
+        let f = frame(buffer);
+        let mut addrs = [0usize; 1];
+        assert_eq!(memobj_frames_pin(buffer, &mut addrs), Ok(1));
+        assert_eq!(memobj_cow_break_all(buffer), Err(MemObjError::Busy), "a break under the kernel's addresses");
+        assert_eq!(frame(buffer), f);
+        assert_eq!(memobj_release_ref(A, earlier), Ok(()));
+        memobj_frames_unpin(buffer);
+
+        let pinned = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_frames_pin(pinned, &mut addrs), Ok(1));
+        let c = memobj_clone(A, pinned, A, MemPerms::ReadOnly).expect("clone");
+        assert!(!shared(pinned), "a clone shared frames the kernel may write");
+        assert_ne!(frame(c), frame(pinned));
+        memobj_frames_unpin(pinned);
+    }
+
+    /// **A purge leaves an object with a map in flight**, and a map does not start
+    /// on a purged one.
+    ///
+    /// Canary `memobj-map-unrecorded-canary`: red.
+    #[test]
+    fn a_map_in_flight_keeps_a_volatile_object_from_being_purged() {
+        let _g = setup();
+        let (_cap, r) = create_volatile(A, 1);
+        assert_eq!(memobj_set_volatile_ref(A, r, true), Ok(false));
+        let mut pages = [0usize; 1];
+        assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Ok(()));
+        assert_eq!(memobj_purge_volatile(8, nobody_is_locked), 0, "purged under leaves being installed");
+        assert_eq!(memobj_map_commit_ref(A, r, 0x1000, 0x4000_0000, 1, MapAccess::RO), Ok(true));
+        assert_eq!(memobj_take_mapping_ref(A, r), Ok(Some((0x4000_0000, 1))));
+        assert_eq!(memobj_purge_volatile(8, nobody_is_locked), 1);
+        assert_eq!(memobj_map_begin_ref(A, r, false, &mut pages), Err(MemObjError::Purged));
     }
 
     /// **An exit ends a map left in flight**: its references go back with the

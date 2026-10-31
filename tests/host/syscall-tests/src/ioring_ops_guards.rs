@@ -970,14 +970,13 @@ fn a_pin_is_refused_once_the_owner_no_longer_maps_the_object() {
     azos_ipc::memobj::memobj_release_all(s.tid);
 }
 
-/// **A clone that shares a frame refuses the pin, and a pin refuses to become
-/// a window the kernel writes through once a clone shares it.** The owner maps
-/// the object read-only (so a snapshot may share its frames lazily), clones it,
-/// and the registration is refused `-EBUSY`: a receive into it would write the
-/// clone's memory. The share taken AFTER a registration closes the sink
-/// (`buf_usable`) and leaves a read from the buffer alone.
+/// **A clone that shares a frame refuses the pin, and a pin keeps any later clone
+/// from sharing.** The owner maps the object read-only (so a snapshot may share
+/// its frames lazily), clones it, and the registration is refused `-EBUSY`: a
+/// receive into it would write the clone's memory. Once registered, the kernel
+/// may write the frames whatever the mapping says, so a clone copies them.
 #[test]
-fn a_shared_object_is_not_pinned_and_a_pin_stops_being_a_sink_once_shared() {
+fn a_shared_object_is_not_pinned_and_a_pin_keeps_a_clone_from_sharing() {
     use azos_ipc::memobj::{memobj_clone, MemPerms};
     let _g = serial();
     let (s, pt) = ring3();
@@ -996,11 +995,9 @@ fn a_shared_object_is_not_pinned_and_a_pin_stops_being_a_sink_once_shared() {
         // Read-only mapping: nobody can change the bytes under a lazy share.
         assert_eq!(crate::ipc_handlers::sys_shm_map_typed(u64::from(shm), azos_abi::syscall_nr::SHM_MAP_OP_PROTECT), 0);
         let clone = memobj_clone(s.tid, r, s.tid, MemPerms::ReadWrite).expect("clone");
-        assert!(azos_ipc::memobj::memobj_describe_ref(r).unwrap().cow_shared != 0, "the clone copied instead of sharing");
+        let shared = azos_ipc::memobj::memobj_describe_ref(r).unwrap().cow_shared != 0;
+        assert_eq!(shared, !registered_first, "a clone shares only frames the kernel cannot write");
         if registered_first {
-            let recv = SqEntry { flags: SQE_F_FIXED, reg: 0, ..sqe(OP_NET_RECV, 0xDEAD_0000, 0, 4) };
-            let (_, c) = unsafe { submit(cap, ring, recv) };
-            assert_eq!(done(c), busy, "the kernel may write a buffer a clone shares");
             let (_, c) = unsafe { submit(cap, ring, buf_entry(OP_BUF_UNREGISTER, 0, 0, 0, 0)) };
             assert_eq!(done(c), (0, 0));
         } else {

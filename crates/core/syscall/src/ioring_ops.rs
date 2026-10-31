@@ -628,14 +628,14 @@ fn buf_unpin(r: u32) {
 /// May the kernel reach the pin on `r` for `owner_tid` now: the owner still
 /// maps the object (released, or MOVEd away, the frames are somebody else's and
 /// a use would leak them or overwrite them), the object is not purged, and for
-/// a sink it is still read-write with no frame a clone shares.
+/// a sink it is still read-write. The pin keeps a clone from sharing a frame.
 fn buf_usable(owner_tid: u32, r: u32, sink: bool) -> bool {
     use azos_ipc::memobj::{self, MemPerms, PurgeState};
     if !matches!(memobj::memobj_mapping_of_ref(owner_tid, r), Ok(Some(_))) {
         return false;
     }
     memobj::memobj_describe_ref(r).is_ok_and(|d| {
-        d.purge != PurgeState::Purged && (!sink || (d.perms == MemPerms::ReadWrite && d.cow_shared == 0))
+        d.purge != PurgeState::Purged && (!sink || d.perms == MemPerms::ReadWrite)
     })
 }
 
