@@ -25636,7 +25636,12 @@ repro_row() {
     if out="$(TMPDIR="$AZOS_OUT/build" bash "${REPO_ROOT}/tools/gate/repro_check.sh" 2>&1)"; then
         ok; echo "      $(printf '%s\n' "$out" | grep -c ' MATCH ') artefacts byte-identical"
     else
-        bad; printf '%s\n' "$out" | grep -E ' (DIFFER|ERROR) |^error|repro_check' | sed -n 1,10p | sed 's/^/      /'
+        # The last lines, not a filter on them: they are the failing step's own
+        # output (a tool's "Error:" included) and the script's FAILED line, or
+        # the comparison table. Every line of the script's log matches
+        # "repro_check", so a filter keeping the first ten showed only its start.
+        local n; n="$(printf '%s\n' "$out" | wc -l)"
+        bad; printf '%s\n' "$out" | sed -n "$((n > 25 ? n - 24 : 1)),\$p" | sed 's/^/      /'
     fi
 }
 par -s -h "supply chain: reproducible build" repro_row

@@ -105,6 +105,10 @@ for arg in "$@"; do
 done
 
 log() { echo "[repro_check] $*"; }
+# The step in progress: what the last line names when the script stops, so the
+# output that precedes it is read as that step's.
+STEP=""
+step() { STEP="$*"; log "=== $* ==="; }
 
 if [[ "$DRY_RUN" -eq 0 ]] && [[ ! -f "$AZOS_OUT/build/image_hashes.rs" ]]; then
     echo "repro_check.sh: $AZOS_OUT/build/image_hashes.rs is missing; run make $AZOS_OUT/build/image_hashes.rs first" >&2
@@ -334,6 +338,8 @@ SRC_A="$REPO_ROOT"
 SRC_B="$ROOT_B/src"
 
 cleanup() {
+    local rc=$?
+    [[ "$rc" -ne 0 ]] && log "FAILED (status $rc) in: $STEP"
     if [[ "$KEEP" -eq 1 ]]; then
         log "kept build roots: $TMPROOT"
     else
@@ -347,7 +353,7 @@ log "build root A: $ROOT_A (sources: $SRC_A)"
 log "build root B: $ROOT_B (sources: $SRC_B, a copy)"
 [[ "$DRY_RUN" -eq 1 ]] && log "DRY RUN — no build will be executed"
 
-log "=== copying the sources for build B ==="
+step "copying the sources for build B"
 copy_source_tree "$SRC_B"
 
 # Portability note: parallel indexed arrays instead of `declare -A`,
@@ -364,9 +370,9 @@ for row in "${ARTIFACTS[@]}"; do
         target_dir_a="$ROOT_A/target-$name"
         target_dir_b="$ROOT_B/target-$name"
 
-        log "=== $name (cargo) — build A ==="
+        step "$name (cargo) — build A"
         build_cargo_artifact "$SRC_A" "$build_dir" "$config_toml" "$extra_args" "$nightly" "$target_dir_a"
-        log "=== $name (cargo) — build B ==="
+        step "$name (cargo) — build B"
         build_cargo_artifact "$SRC_B" "$build_dir" "$config_toml" "$extra_args" "$nightly" "$target_dir_b"
 
         ELF_A+=("$target_dir_a/$rel_bin")
@@ -386,10 +392,10 @@ for row in "${ARTIFACTS[@]}"; do
         elf_a="$ROOT_A/asm-out/$name.elf"
         elf_b="$ROOT_B/asm-out/$name.elf"
 
-        log "=== $name (asm) — build A ==="
+        step "$name (asm) — build A"
         mkdir -p "$ROOT_A/asm-out" "$ROOT_B/asm-out"
         build_asm_artifact "$SRC_A/$build_dir" "$src" "$SRC_A" "$obj_a" "$elf_a"
-        log "=== $name (asm) — build B ==="
+        step "$name (asm) — build B"
         build_asm_artifact "$SRC_B/$build_dir" "$src" "$SRC_B" "$obj_b" "$elf_b"
 
         ELF_A+=("$elf_a")
@@ -405,6 +411,7 @@ fi
 # ---------------------------------------------------------------------
 # Compare.
 # ---------------------------------------------------------------------
+STEP="comparing the artefacts"
 printf '\n%-16s %-10s %s\n' "ARTEFACT" "RESULT" "SHA256 (A / B)"
 FAIL=0
 for i in "${!ARTIFACTS[@]}"; do
