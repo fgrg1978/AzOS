@@ -15,7 +15,7 @@
 #
 # TEST KEYS: made to be committed and protect nothing.
 #
-#     OPENSSL=/opt/homebrew/bin/openssl sh tests/host/tls-tests/pki/gen.sh   # OpenSSL >= 3.4 (-not_before)
+#     OPENSSL=<path to openssl> sh tests/host/tls-tests/pki/gen.sh   # OpenSSL >= 3.4 (-not_before)
 set -eu
 cd "$(dirname "$0")"
 OPENSSL=${OPENSSL:-openssl}

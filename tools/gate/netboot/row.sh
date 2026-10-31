@@ -113,7 +113,7 @@ verdict() {
 }
 
 x86_setup() {
-    OVMF_CODE="${OVMF_CODE:-$(ls /opt/homebrew/share/qemu/edk2-x86_64-code.fd /usr/local/share/qemu/edk2-x86_64-code.fd /usr/share/qemu/edk2-x86_64-code.fd /usr/share/OVMF/OVMF_CODE.fd 2>/dev/null | sed -n 1p)}"
+    OVMF_CODE="${OVMF_CODE:-$(ls "$(dirname "$(command -v qemu-system-x86_64)")/../share/qemu/edk2-x86_64-code.fd" /usr/share/OVMF/OVMF_CODE.fd 2>/dev/null | sed -n 1p)}"
     [ -f "${OVMF_CODE:-}" ] || skip "no OVMF (OVMF_CODE: QEMU's edk2-x86_64-code.fd)"
     OVMF_VARS="${OVMF_VARS:-$(ls "$(dirname "$OVMF_CODE")"/edk2-i386-vars.fd "$(dirname "$OVMF_CODE")"/OVMF_VARS.fd 2>/dev/null | sed -n 1p)}"
     [ -f "${OVMF_VARS:-}" ] || skip "no OVMF variable store (OVMF_VARS)"

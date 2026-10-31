@@ -885,7 +885,7 @@ test_host() {
 # Disk images are PREREQUISITES, not part of the scenario under test: a
 # failed image build must abort the whole gate loudly, never hand QEMU 32 MB
 # of zeros. Learned 2026-08-23: `mkfs.fat` (dosfstools) lives in
-# /opt/homebrew/sbin, a PATH without sbin made every regenerated image
+# Homebrew's sbin, a PATH without it made every regenerated image
 # silently unformattable, and the result was NINE scenario FAILs that read
 # exactly like kernel regressions in the exec path. The `>/dev/null 2>&1`
 # on these make calls is fine for noise — swallowing the EXIT CODE was the
@@ -895,8 +895,8 @@ make_disk() {
     if ! make "$@" >/dev/null 2>&1; then
         echo ""
         echo "  FATAL: disk image build failed: make $*"
-        echo "         mkfs.fat missing from PATH? dosfstools installs it in"
-        echo "         /opt/homebrew/sbin — every userspace/secure-boot/link"
+        echo "         mkfs.fat missing from PATH? dosfstools may install it in"
+        echo "         an sbin directory — every userspace/secure-boot/link"
         echo "         scenario would fail on a zeroed image, so aborting the"
         echo "         gate here instead."
         exit 1

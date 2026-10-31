@@ -202,10 +202,10 @@ x86_64-limine:
 	    X86_64_IMG=$(X86_64_LIMINE_IMG)
 
 LIMINE_DIR ?= $(CURDIR)/third_party/limine
-# UEFI firmware: QEMU's own (homebrew / distro) edk2 build; the vars file is
+# UEFI firmware: the edk2 build next to the QEMU on PATH, or the distro's; the vars file is
 # the matching template (copied, so the run never writes the original).
-OVMF_CODE ?= $(firstword $(wildcard /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
-    /usr/local/share/qemu/edk2-x86_64-code.fd /usr/share/qemu/edk2-x86_64-code.fd \
+OVMF_CODE ?= $(firstword $(wildcard \
+    $(dir $(shell command -v qemu-system-x86_64 2>/dev/null))../share/qemu/edk2-x86_64-code.fd \
     /usr/share/OVMF/OVMF_CODE.fd))
 OVMF_VARS ?= $(firstword $(wildcard $(dir $(OVMF_CODE))edk2-i386-vars.fd $(dir $(OVMF_CODE))OVMF_VARS.fd))
 X86_PC_ESP := $(OUT_BUILD)/x86-pc-esp

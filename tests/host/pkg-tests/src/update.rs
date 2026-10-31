@@ -496,7 +496,9 @@ fn tool() -> PathBuf {
 
 fn python() -> Option<String> {
     let mut candidates: Vec<String> = std::env::var("PYTHON").ok().into_iter().collect();
-    candidates.extend(["/opt/homebrew/bin/python3".to_string(), "python3".to_string()]);
+    candidates.extend(
+        ["python3.14", "python3.13", "python3.12", "python3.11", "python3"].map(String::from),
+    );
     candidates.into_iter().find(|p| {
         Command::new(p).args(["-c", "import cryptography"]).output().is_ok_and(|o| o.status.success())
     })

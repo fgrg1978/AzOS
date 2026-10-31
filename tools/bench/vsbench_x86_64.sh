@@ -29,8 +29,7 @@
 # sections: ipc mem proc disk thread vdso ioring shell timer net tcp switch).
 #
 # Usage:
-#   PATH="/Users/azor/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin" \
-#     bash tools/bench/vsbench_x86_64.sh
+#   bash tools/bench/vsbench_x86_64.sh
 # Environment: QEMU_X86_64 (default qemu-system-x86_64), CARGO (cargo),
 # WAIT_SECS (90), VSBENCH_SMP (1), VSBENCH_LOG_LEVEL (warn),
 # VSBENCH_AZOS_EXTRA_FEATURES, VSBENCH_BENCH_FEATURES, VSBENCH_LANES,

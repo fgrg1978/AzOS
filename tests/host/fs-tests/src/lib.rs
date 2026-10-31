@@ -2584,11 +2584,10 @@ mod topology_paths_on_a_real_volume {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    /// Homebrew's `sbin` holds `mkfs.fat` on macOS and is not on every PATH.
     fn tool(name: &str) -> PathBuf {
-        for dir in ["/opt/homebrew/sbin", "/opt/homebrew/bin", "/usr/local/sbin",
-                    "/usr/local/bin", "/usr/sbin", "/sbin", "/usr/bin"] {
-            let p = Path::new(dir).join(name);
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        for dir in std::env::split_paths(&path) {
+            let p = dir.join(name);
             if p.is_file() { return p; }
         }
         panic!("`{name}` not found: this test needs real mtools/dosfstools \

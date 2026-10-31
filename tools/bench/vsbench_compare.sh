@@ -220,7 +220,7 @@ set -u
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../lib/out_dir.py")}"; export AZOS_OUT
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-QEMU="${QEMU:-/opt/homebrew/bin/qemu-system-riscv64}"
+QEMU="${QEMU:-qemu-system-riscv64}"
 
 # ── VSBENCH_ICOUNT=1: measure instructions instead of nanoseconds ───────────
 #

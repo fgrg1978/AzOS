@@ -46,7 +46,7 @@ lld="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/b
 [ -n "$lld" ] || { echo "uboot_build: no ld.lld (rustup component llvm-tools / rust-lld, or an LLVM install)" >&2; exit 1; }
 # The host tools U-Boot builds (mkimage, fdt tools) include <openssl/...>.
 ssl=""
-for d in /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3 /usr; do
+for d in "$(brew --prefix openssl@3 2>/dev/null)" /usr; do
     [ -f "$d/include/openssl/evp.h" ] && { ssl="$d"; break; }
 done
 hostcflags=""; hostldflags=""
