@@ -115,8 +115,9 @@ fn look_task(_: usize) {
         let frame = azos_mm::pmm::alloc_page().map_err(|_| 2u32)?;
         azos_mm::vmm::map(pt, RESIDENT as usize, frame.as_usize(), azos_arch_api::PagePerms::USER_RW).map_err(|_| 3u32)?;
         // The table is this task's for `current_user_pt` only: it keeps
-        // running in the kernel's (`task_satp` 0).
-        azos_sched::scheduler::set_current_user_info(0, pt as u64, 0);
+        // running in the kernel's.
+        let satp = azos_sched::kernel_task_satp();
+        azos_sched::scheduler::set_current_user_info(satp, pt as u64, 0);
         let r = (|| {
             let settle = |a: u64| azos_syscall::vdso_notify::futex_settle(a);
             let Some(to) = azos_sched::futex::private_key(RESIDENT + 8) else { return 1u32 };
@@ -134,7 +135,7 @@ fn look_task(_: usize) {
             }
             0
         })();
-        azos_sched::scheduler::set_current_user_info(0, 0, 0);
+        azos_sched::scheduler::set_current_user_info(satp, 0, 0);
         azos_sched::process::destroy_user_address_space(pt as u64);
         Ok::<u32, u32>(r)
     })();

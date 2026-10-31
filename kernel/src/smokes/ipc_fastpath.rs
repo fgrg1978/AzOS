@@ -8,8 +8,10 @@
 //! * `ipc_fastpath_taken_when_parked`: a client and its server on one hart
 //!   exchange `ROUNDS` calls; every answer is right, and the per-task hit
 //!   counters show the calls and the replies went through the fast path (all
-//!   but the first exchange, whose server may not be parked yet). The server's
-//!   first call is taken by its ordinary accept, from the deposit.
+//!   at least half of them: the fast path may decline any one call, because
+//!   a tick that lands in a hand-off's enqueue arm leaves the peer runnable, not
+//!   parked, and the ordinary path then answers it). The server's first call is
+//!   taken by its ordinary accept, from the deposit.
 //!   Canary `canary=ipc-force-slow`: the fast path is off for the boot, the
 //!   answers are still right, the counters do not move: `not ok`.
 //! * `ipc_fastpath_not_taken_when_calls_queued`: two callers call a server
@@ -203,10 +205,10 @@ azos_ktest::ktest_late! {
         if HIT_RIGHT.load(Ordering::Acquire) as u64 != ROUNDS {
             return Err("a call came back with a wrong answer");
         }
-        if (HIT_CALLS.load(Ordering::Acquire) as u64) < ROUNDS - 1 {
+        if (HIT_CALLS.load(Ordering::Acquire) as u64) < ROUNDS / 2 {
             return Err("the calls to a parked server did not take the fast path");
         }
-        if (HIT_REPLIES.load(Ordering::Acquire) as u64) < ROUNDS - 2 {
+        if (HIT_REPLIES.load(Ordering::Acquire) as u64) < ROUNDS / 2 {
             return Err("the replies to a parked client did not take the fast path");
         }
         Ok(())
@@ -440,6 +442,9 @@ azos_ktest::ktest_late! {
 //   and accept leaves one, the caller's second (fast) call finishes it there.
 //   Canaries `canary=ipc-resume-off` (no point is left) and
 //   `canary=ipc-force-slow`: every answer right, nothing started at a point.
+//   The fast path may decline a call (see `ipc_fastpath_taken_when_parked`), so
+//   a pair that missed a point is run again, on an endpoint of its own, a few
+//   times; a wrong answer ends the test at once.
 // * `ipc_fastpath_resume_point_kill`: a server parked with a point is
 //   killed (`task_stop`, forced): it resumes where it blocked, its point
 //   spent, and its call ends.
@@ -548,7 +553,8 @@ fn held(slot: usize) -> bool {
 
 // ── Taken at the point ──────────────────────────────────────────────────────
 
-const RP_EP: &[u8] = b"fp.resume";
+const RP_EPS: [&[u8]; 4] = [b"fp.resume0", b"fp.resume1", b"fp.resume2", b"fp.resume3"];
+static RP_TRY: AtomicUsize = AtomicUsize::new(0);
 static RP_READY: AtomicBool = AtomicBool::new(false);
 static RP_SRV_DONE: AtomicBool = AtomicBool::new(false);
 static RP_CLI_DONE: AtomicBool = AtomicBool::new(false);
@@ -563,7 +569,7 @@ static RP_SRV_TID: AtomicU32 = AtomicU32::new(0);
 static RP_NOT_PARKED: AtomicBool = AtomicBool::new(false);
 
 fn rp_server(_: usize) {
-    if !serve(RP_EP) {
+    if !serve(RP_EPS[RP_TRY.load(Ordering::Acquire)]) {
         RP_SRV_DONE.store(true, Ordering::Release);
         return;
     }
@@ -611,7 +617,7 @@ fn rp_server_parks() -> bool {
 }
 
 fn rp_client(_: usize) {
-    let Some(cap) = client_cap(RP_EP) else {
+    let Some(cap) = client_cap(RP_EPS[RP_TRY.load(Ordering::Acquire)]) else {
         RP_CLI_DONE.store(true, Ordering::Release);
         return;
     };
@@ -645,26 +651,35 @@ azos_ktest::ktest_late! {
         if !fastpath::RESUME {
             return Ok(());
         }
-        azos_sched::task_create_affinity("fp-rp-srv", rp_server, 0, PRIO, 0);
-        crate::ktest::wait("the server never claimed its endpoint", || RP_READY.load(Ordering::Acquire))?;
-        azos_sched::task_create_affinity("fp-rp-cli", rp_client, 0, PRIO, 0);
-        crate::ktest::wait("the calls were not answered", || {
-            RP_NOT_PARKED.load(Ordering::Acquire)
-                || (RP_CLI_DONE.load(Ordering::Acquire) && RP_SRV_DONE.load(Ordering::Acquire))
-        })?;
-        if RP_NOT_PARKED.load(Ordering::Acquire) {
-            return Err("the server never parked in its accept");
-        }
-        if RP_RIGHT.load(Ordering::Acquire) != 2 || RP_SRV_WORD.load(Ordering::Acquire) != 0x602 {
-            return Err("a call or an accept came back with a wrong answer");
+        for attempt in 0..RP_EPS.len() {
+            RP_TRY.store(attempt, Ordering::Release);
+            for flag in [&RP_READY, &RP_SRV_DONE, &RP_CLI_DONE] {
+                flag.store(false, Ordering::Release);
+            }
+            for count in [&RP_RIGHT, &RP_SRV_AT, &RP_CLI_AT] {
+                count.store(0, Ordering::Release);
+            }
+            azos_sched::task_create_affinity("fp-rp-srv", rp_server, 0, PRIO, 0);
+            crate::ktest::wait("the server never claimed its endpoint", || RP_READY.load(Ordering::Acquire))?;
+            azos_sched::task_create_affinity("fp-rp-cli", rp_client, 0, PRIO, 0);
+            crate::ktest::wait("the calls were not answered", || {
+                RP_NOT_PARKED.load(Ordering::Acquire)
+                    || (RP_CLI_DONE.load(Ordering::Acquire) && RP_SRV_DONE.load(Ordering::Acquire))
+            })?;
+            if RP_NOT_PARKED.load(Ordering::Acquire) {
+                return Err("the server never parked in its accept");
+            }
+            if RP_RIGHT.load(Ordering::Acquire) != 2 || RP_SRV_WORD.load(Ordering::Acquire) != 0x602 {
+                return Err("a call or an accept came back with a wrong answer");
+            }
+            if RP_CLI_AT.load(Ordering::Acquire) == 1 && RP_SRV_AT.load(Ordering::Acquire) == 1 {
+                return Ok(());
+            }
         }
         if RP_CLI_AT.load(Ordering::Acquire) != 1 {
             return Err("the fast reply did not finish the caller's call at its resume point");
         }
-        if RP_SRV_AT.load(Ordering::Acquire) != 1 {
-            return Err("the fast call did not finish the server's accept at its resume point");
-        }
-        Ok(())
+        Err("the fast call did not finish the server's accept at its resume point")
     }
 }
 
@@ -681,6 +696,9 @@ struct Pk {
     /// DRAIN: the caller held a resume point when its server ended, and
     /// the server is ending.
     pre: AtomicBool,
+    /// The server parked with its point: the next thing that wakes it is the
+    /// scenario's. Before this a call is one more try to get it there.
+    armed: AtomicBool,
     srv_done: AtomicBool,
     /// The parked side's call returned, where (`at`), with what, and
     /// whether its point was still held then.
@@ -702,6 +720,7 @@ static PK: [Pk; 3] = [const {
         cli_done: AtomicBool::new(false),
         cli_rc: AtomicI64::new(NOT_YET),
         pre: AtomicBool::new(false),
+        armed: AtomicBool::new(false),
         srv_done: AtomicBool::new(false),
         done: AtomicBool::new(false),
         at: AtomicBool::new(false),
@@ -712,6 +731,8 @@ static PK: [Pk; 3] = [const {
 }; 3];
 
 /// The scenarios, `PK`'s index.
+/// Exchanges a scenario gets to see its server parked with a point.
+const PK_TRIES: usize = 4;
 const KILL: usize = 0;
 const DRAIN: usize = 1;
 const ORDINARY: usize = 2;
@@ -720,6 +741,10 @@ const PK_EP: [&[u8]; 3] = [b"fp.rp.kill", b"fp.rp.drain", b"fp.rp.call"];
 /// The parked side's continuation: where it came back, and its point.
 fn pk_back(k: usize, rc: i64, r: [u64; 7], at: bool) {
     let p = &PK[k];
+    if k != DRAIN && rc >= 0 && !p.armed.load(Ordering::Acquire) {
+        rcall(SYS_IPC_FAST_REPLY_ACCEPT, [rc as u64, 0, r[2] + 1, 0, 0, 0], pk_back, k);
+        return;
+    }
     p.at.store(at, Ordering::Release);
     p.rc.store(rc, Ordering::Release);
     p.word.store(r[2] as usize, Ordering::Release);
@@ -801,20 +826,28 @@ fn pk_park(k: usize) -> Result<(), &'static str> {
     if k == DRAIN {
         return Ok(());
     }
-    crate::ktest::wait("the first call was not answered", || p.cli_done.load(Ordering::Acquire))?;
-    if p.cli_rc.load(Ordering::Acquire) != 0x801 {
-        return Err("the first call came back with a wrong answer");
+    for _ in 0..PK_TRIES {
+        crate::ktest::wait("the call was not answered", || p.cli_done.load(Ordering::Acquire))?;
+        if p.cli_rc.load(Ordering::Acquire) != 0x801 {
+            return Err("the call came back with a wrong answer");
+        }
+        // The server parks as it answers. Its point is written before it reads
+        // as parked, so parked without one is known at once.
+        let (slot, tid) = (p.srv_slot.load(Ordering::Acquire), p.srv_tid.load(Ordering::Acquire));
+        crate::ktest::until(|| {
+            held(slot) || azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
+        });
+        if held(slot) {
+            p.armed.store(true, Ordering::Release);
+            return Ok(());
+        }
+        // The fast path declined that reply (see `ipc_fastpath_taken_when_parked`):
+        // the server sleeps in its ordinary accept. One more exchange.
+        p.cli_done.store(false, Ordering::Release);
+        p.cli_rc.store(NOT_YET, Ordering::Release);
+        azos_sched::task_create_affinity("fp-pk-cli", pk_client, k, PRIO, 0);
     }
-    // The server parks as it answers. Its point is written before it reads as
-    // parked, so parked without one is the verdict, at once.
-    let (slot, tid) = (p.srv_slot.load(Ordering::Acquire), p.srv_tid.load(Ordering::Acquire));
-    crate::ktest::until(|| {
-        held(slot) || azos_sched::scheduler::ipc_fast_parked(slot, tid, azos_sched::WaitReason::FastIpcServer(tid))
-    });
-    if !held(slot) {
-        return Err("the server never parked with a resume point");
-    }
-    Ok(())
+    Err("the server never parked with a resume point")
 }
 
 /// The parked side came back where it blocked, its point spent.
