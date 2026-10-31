@@ -5438,9 +5438,9 @@ aarch64_sdktest_row() { # aarch64_sdktest_row <label> <PASS|CANARY>
     rm -f "$log"
     a64_kbuild "$feats" || return
     a64_kernel_check || return
-    rm -f $AZOS_OUT/build/disk-aarch64$AARCH64_PG_SUFFIX-sdktest.img
-    make_disk $AZOS_OUT/build/disk-aarch64$AARCH64_PG_SUFFIX-sdktest.img
-    cp "$A64_IMG" "$img"; cp $AZOS_OUT/build/disk-aarch64$AARCH64_PG_SUFFIX-sdktest.img "$dimg"
+    rm -f $AZOS_OUT/build/disk-aarch64-sdktest.img
+    make_disk $AZOS_OUT/build/disk-aarch64-sdktest.img
+    cp "$A64_IMG" "$img"; cp $AZOS_OUT/build/disk-aarch64-sdktest.img "$dimg"
     par_ready
     while [ "$(qemu_count)" -ge 4 ]; do sleep 2; done
     # A std program draws on the entropy pool (`HashMap`'s keys); the device
