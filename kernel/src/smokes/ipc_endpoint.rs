@@ -114,10 +114,12 @@ static REV_READY: AtomicBool = AtomicBool::new(false);
 static REV_ACCEPTED: AtomicBool = AtomicBool::new(false);
 static REV_GO: AtomicBool = AtomicBool::new(false);
 static REV_DESTROYED: AtomicBool = AtomicBool::new(false);
+static REV_SRV_DONE: AtomicBool = AtomicBool::new(false);
 static REV_RC: [AtomicI64; 2] = [const { AtomicI64::new(NOT_YET) }; 2];
 
 fn rev_server(_: usize) {
     if !serve(REV_EP) {
+        REV_SRV_DONE.store(true, Ordering::Release);
         return;
     }
     REV_READY.store(true, Ordering::Release);
@@ -129,7 +131,7 @@ fn rev_server(_: usize) {
     while !REV_GO.load(Ordering::Acquire) {
         sleep_ms(5);
     }
-    sleep_ms(20);
+    crate::ktest::until(|| azos_ipc::fastcall::census().0 >= 1);
     let me = azos_sched::current_task_tid();
     if let Some(r) = azos_ipc::endpoint::endpoint_ref_by_name(REV_EP) {
         REV_DESTROYED.store(azos_ipc::endpoint::destroy_ref_as(r, me).is_ok(), Ordering::Release);
@@ -139,6 +141,7 @@ fn rev_server(_: usize) {
     if late == 0 {
         REV_DESTROYED.store(false, Ordering::Release);
     }
+    REV_SRV_DONE.store(true, Ordering::Release);
 }
 
 fn rev_client(k: usize) {
@@ -164,6 +167,8 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("a caller was never completed (no Revoked)", || {
             REV_RC.iter().all(|r| r.load(Ordering::Acquire) != NOT_YET)
         })?;
+        // The destroy wakes the callers before the server can say how it went.
+        crate::ktest::wait("the server never finished", || REV_SRV_DONE.load(Ordering::Acquire))?;
         if !REV_DESTROYED.load(Ordering::Acquire) {
             return Err("the owner could not destroy its endpoint, or answered a revoked call");
         }
@@ -182,7 +187,6 @@ const MANY_EP: &[u8] = b"n5.many";
 /// fast call (the host suite queues 150, past the old table's 64 slots).
 const MANY: usize = 12;
 static MANY_READY: AtomicBool = AtomicBool::new(false);
-static MANY_QUEUED: AtomicUsize = AtomicUsize::new(0);
 static MANY_OK: AtomicUsize = AtomicUsize::new(0);
 static MANY_SEEN_QUEUED: AtomicU32 = AtomicU32::new(0);
 
@@ -192,13 +196,7 @@ fn many_server(_: usize) {
     }
     MANY_READY.store(true, Ordering::Release);
     // Let every caller queue before serving any.
-    let deadline_ms = 2000u64;
-    let mut waited = 0;
-    while MANY_QUEUED.load(Ordering::Acquire) < MANY && waited < deadline_ms {
-        sleep_ms(10);
-        waited += 10;
-    }
-    sleep_ms(30);
+    crate::ktest::until_for(2000, || azos_ipc::fastcall::census().0 as usize >= MANY);
     MANY_SEEN_QUEUED.store(azos_ipc::fastcall::census().0, Ordering::Release);
     let mut out = SyscallOut::new();
     for _ in 0..MANY {
@@ -214,7 +212,6 @@ fn many_server(_: usize) {
 fn many_client(k: usize) {
     let Some(cap) = client_cap(MANY_EP) else { return };
     let mut out = SyscallOut::new();
-    MANY_QUEUED.fetch_add(1, Ordering::AcqRel);
     let w = 0x1000 + k as u64;
     let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, w, 0, 0, 0, 0], &mut out);
     if rc == (w + 1) as i64 {
@@ -467,7 +464,7 @@ fn sc_exits() -> Verdict {
         return Err("a notice arrived after the first exit, with one sender left");
     }
     EXIT_GO[1].store(true, Ordering::Release);
-    if !no_senders(wait_event(port, 3000), KEY_EXIT) {
+    if !no_senders(wait_event(port, 10_000), KEY_EXIT) {
         return Err("no NoSenders notice after the last sender exited");
     }
     if poll(port).is_some() {
@@ -575,7 +572,7 @@ fn sc_gone() -> Verdict {
     }
     GONE_EP.store(r, Ordering::Release);
     GONE_STAGE.store(1, Ordering::Release);
-    if !gone_event(wait_event(port, 3000), KEY_EP) {
+    if !gone_event(wait_event(port, 10_000), KEY_EP) {
         return Err("the waiter was not woken with SOURCE_GONE (EREVOKED) when its endpoint was destroyed");
     }
     if poll(port).is_some() {

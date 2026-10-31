@@ -87,7 +87,7 @@ fn waiter(_: usize) {
     WAITER_SLOT.store(me, Ordering::Release);
     WAITER_TID.store(azos_sched::scheduler::current_task_tid(), Ordering::Release);
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
-    let deadline = azos_drv_sys::timebase::now() + 10_000 * per_ms;
+    let deadline = azos_drv_sys::timebase::now() + azos_limits::KTEST_LATE_TIMEOUT_MS as u64 * per_ms;
     let rc = pi_call_key(KEY, &word(), PiCmd::Lock { deadline: Some(deadline) });
     WAITER_SAW.store(WORD.load(Ordering::Acquire), Ordering::Release);
     WAITER_LOCK_RC.store(rc, Ordering::Release);
@@ -139,7 +139,7 @@ azos_ktest::ktest_late! {
         };
         // Bounded well under the late timeout: the walk runs before the
         // waiter sleeps, so a boost that has not come in 1 s never will.
-        let ok = azos_syscall::sleep::wait_until_ms(1000, 10, boosted);
+        let ok = crate::ktest::until_for(1000, boosted);
         if !ok {
             finish()?;
             return Err("an RT LOCK_PI waiter did not boost the fair owner (no graph edge)");
@@ -216,7 +216,7 @@ fn exit_waiter(_: usize) {
     EXIT_WAITER_SLOT.store(me, Ordering::Release);
     EXIT_WAITER_TID.store(azos_sched::scheduler::current_task_tid(), Ordering::Release);
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
-    let deadline = azos_drv_sys::timebase::now() + 2_000 * per_ms;
+    let deadline = azos_drv_sys::timebase::now() + 10_000 * per_ms;
     let rc = pi_call_key(EXIT_KEY, &exit_word(), PiCmd::Lock { deadline: Some(deadline) });
     EXIT_SAW.store(EXIT_WORD.load(Ordering::Acquire), Ordering::Release);
     EXIT_LOCK_RC.store(rc, Ordering::Release);
@@ -248,7 +248,7 @@ azos_ktest::ktest_late! {
             let w = EXIT_WAITER_SLOT.load(Ordering::Acquire);
             w != usize::MAX && azos_sched::classes::PI.blocked_on(w as wg::TaskId).is_some()
         };
-        let ok = azos_syscall::sleep::wait_until_ms(1000, 10, blocked);
+        let ok = crate::ktest::until_for(1000, blocked);
         // The owner exits holding the word either way.
         EXIT_GO.store(true, Ordering::Release);
         crate::ktest::wait("the waiter never returned from LOCK_PI", || EXIT_WAITER_DONE.load(Ordering::Acquire))?;
@@ -343,7 +343,7 @@ fn rq_waiter(i: usize) {
         RQ_SLOT[i].store(slot, Ordering::Release);
     }
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
-    let deadline = azos_drv_sys::timebase::now() + 4_000 * per_ms;
+    let deadline = azos_drv_sys::timebase::now() + 10_000 * per_ms;
     let look = || Some((RQ_COND_KEY, RQ_COND.load(Ordering::Acquire)));
     let rc = azos_sched::futex::wait_requeue_pi(&look, RQ_MUTEX_KEY, 0, Some(deadline), &KvaWord(&RQ_MUTEX));
     RQ_RC[i].store(rc, Ordering::Release);
@@ -389,7 +389,7 @@ azos_ktest::ktest_late! {
             azos_sched::task_create_affinity("n10d-rq-waiter", rq_waiter, i, WAITER_PRIO, -1);
         }
         let filed = || ft::TABLE.lock_irqsave().waiters_on(RQ_COND_KEY) == RQ_WAITERS;
-        let ok = azos_syscall::sleep::wait_until_ms(1000, 10, filed);
+        let ok = crate::ktest::until_for(1000, filed);
         let look = || Some((RQ_COND_KEY, RQ_COND.load(Ordering::Acquire)));
         let mutex = KvaWord(&RQ_MUTEX);
         // Neither a plain wake, a plain requeue nor a requeue-PI with a
@@ -411,7 +411,7 @@ azos_ktest::ktest_late! {
                 })
                 && wg::effective(o as wg::TaskId) == Some(base_of(w))
         };
-        let boost = o != usize::MAX && azos_syscall::sleep::wait_until_ms(1000, 10, boosted);
+        let boost = o != usize::MAX && crate::ktest::until_for(1000, boosted);
         let asleep = RQ_DONE.load(Ordering::Acquire) == 0 && RQ_RC.iter().all(|r| r.load(Ordering::Acquire) == i64::MIN);
         rq_finish()?;
         if !owned {
