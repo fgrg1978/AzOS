@@ -14386,7 +14386,9 @@ PY
             fresh_disk "$7" && cp "$7" "$dimg" || { bad; echo "      disk image $7 did not build"; return; }
             drv=(-drive "file=$dimg,if=none,format=raw,id=hd0" -device virtio-blk-device,drive=hd0)
         fi
-        if [ "$isa" = rv ]; then
+        if [ -n "${KTEST_KERNEL:-}" ]; then
+            cp "$KTEST_KERNEL" "$kimg"
+        elif [ "$isa" = rv ]; then
             kbuild "$KTEST_FEATS$extra" || { bad; echo "      riscv64 --features $KTEST_FEATS$extra did not build"; return; }
             cp "$KERNEL" "$kimg"
         else
@@ -22306,6 +22308,12 @@ PYEOF
                     while ush_alive && ! grep -aqE "${line#\#wait }" "$log"; do sleep 0.5; done
                     [ -n "$verdict" ] && break; continue
                 fi
+                # `#count N ERE`: `#wait` for the Nth such line, in a script that repeats one.
+                if [ "${line#\#count }" != "$line" ]; then
+                    local cnt="${line#\#count }"
+                    while ush_alive && [ "$(grep -aE -- "${cnt#* }" "$log" | wc -l)" -lt "${cnt%% *}" ]; do sleep 0.5; done
+                    [ -n "$verdict" ] && break; continue
+                fi
                 if [ "${line#!}" != "$line" ]; then ush_type "${line#!}"; printf '\r' >&8; continue; fi
                 if [ "$line" = "#intr" ]; then printf '\003' >&8; continue; fi
                 # `#key NAME...`: raw key presses through the monitor (USH_VKBD),
@@ -24128,6 +24136,115 @@ x=con; echo bb\$x-ok
     par "sh: safe mode (arm)" ush_safe_mode_row arm
     par "sh: safe mode canary (rv)" ush_safe_mode_row rv canary
     par "sh: safe mode canary (arm)" ush_safe_mode_row arm canary
+
+    # ── Soak ────────────────────────────────────────────────────────────────
+    #
+    # What a board's entry condition asks of QEMU: nothing fails over repeated
+    # boots under host load, nor over a long shell session. SOAK_ITERS scales the
+    # row (the same row, longer): one iteration is a ktest boot with a disk and an
+    # ordinary boot that appends to a file and powers off in order, on one volume;
+    # then one session of 5 rounds per iteration on that volume, which reads back
+    # every boot's line and every round's. No -icount: wall-clock sensitivity is
+    # what it looks for. Every boot is a row of its own to the console judge. All
+    # iterations run whatever fails, so a failure comes with its rate. SOAK_LOAD
+    # spinners (default one per host CPU) load the host, so the row runs alone.
+    #
+    # With a kernel command line for the ktest half and kernel features for the
+    # shell half it is its canary: one iteration, one round, each half must go red.
+    soak_load() { # soak_load <secs>: the spinners; each ends by itself at <secs> if the row is killed
+        local k end=$((SECONDS + $1))
+        SOAK_PIDS=""
+        for ((k = 0; k < ${SOAK_LOAD:-$(getconf _NPROCESSORS_ONLN)}; k++)); do
+            ( while [ "$SECONDS" -lt "$end" ]; do :; done ) </dev/null >/dev/null 2>&1 &
+            SOAK_PIDS="$SOAK_PIDS $!"
+        done
+    }
+    soak_load_stop() { local p; for p in $SOAK_PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; SOAK_PIDS=""; }
+    soak_session() { # soak_session <rounds>: the long session's script
+        local r
+        for ((r = 1; r <= $1; r++)); do
+            printf '%s\n' "echo a b c | wc" "echo soak > /fat/S.TXT" "cat /fat/S.TXT | wc" "echo x >> /fat/SOAK.LOG" \
+                "args soak-$r" "!spin" "#count $r spin: computing" "^C" "echo after-spin-$r \$?"
+        done
+        printf '%s\n' "wc < /fat/SOAK.LOG" "wc < /fat/BOOTS.LOG"
+    }
+    soak_half() { # soak_half <row function> <args...>: 0 when the row inside said ok; its report in SOAK_OUT
+        SOAK_OUT="$("$@" 2>&1)"
+        printf '%s\n' "$SOAK_OUT" | sed -n 1p | grep -aq 'ok$'
+    }
+    soak_row() { # soak_row <label> <rv|arm|x86> [ktest canary command line] [shell canary features]
+        local label="$1" isa="$2" kcan="${3:-}" scan="${4:-}" iters="${SOAK_ITERS:-1}" i r m rounds fails="" ks kt
+        local n=0 rdk=0 rds=0 feats="qemu${scan:+,$scan}" disk
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug; slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/-$//')"
+        local img="$CI_LOG_DIR/$slug.img" load0
+        rm -f "$img"; ks="$CI_LOG_DIR/$slug-sh-kernel"; kt="$CI_LOG_DIR/$slug-ktest-kernel"
+        [ -n "$kcan$scan" ] && iters=1
+        rounds=$((5 * iters)); [ -n "$kcan$scan" ] && rounds=1
+        # The kernels are built before the load, and once: the halves alternate.
+        case "$isa" in
+            rv)  disk="$AZOS_OUT/build/disk.img"
+                 kbuild "$feats" && cp "$KERNEL" "$ks" && kbuild "$KTEST_FEATS" && cp "$KERNEL" "$kt" ;;
+            arm) disk="$AZOS_OUT/build/disk-aarch64.img"
+                 a64_kbuild "$feats" && cp "$A64_IMG" "$ks" && a64_kbuild "$KTEST_FEATS" && cp "$A64_IMG" "$kt" ;;
+            x86) disk="$AZOS_OUT/build/disk-x86_64.img"; feats="$scan"; ks=""; kt="" ;;
+        esac
+        [ $? = 0 ] && fresh_disk "$disk" || { bad; echo "      the kernels did not build"; rm -f "$ks" "$kt"; return; }
+        par_ready
+        load0="$(uptime | sed 's/.*load/load/')"
+        # Bound on the spinners: every boot's limit, a kept row's kill leaves none for longer.
+        soak_load $(( iters * 900 + 300 + rounds * 60 ))
+        ktest_half() {
+            local l="$slug boot $1"
+            if [ "$isa" = x86 ]; then soak_half x86_ktest_row "$l" "" "" "$kcan" "$disk"
+            else KTEST_KERNEL="$kt" soak_half ktest_row "$l" "$isa" "" "" "$kcan" "" "$disk"; fi
+        }
+        for ((i = 1; i <= iters; i++)); do
+            ktest_half "$i"; r=$?; n=$((n + 1))
+            if [ "$r" != 0 ]; then rdk=$((rdk + 1)); fails="$fails$SOAK_OUT"$'\n'; fi
+            USH_KERNEL="$ks" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" \
+                soak_half ushell_row "$slug power-off $i" "$isa" "$feats" PASS \
+                "#wait \[OTA\] Boot marked good
+!echo soak-boot >> /fat/BOOTS.LOG
+!power shutdown
+#wait \[POWER\] shutdown by" 300 "[POWER] sync by tid" "[ORDERLY] filesystems: " "[POWER] shutdown by tid"
+            r=$?; n=$((n + 1))
+            if [ "$r" != 0 ]; then rds=$((rds + 1)); fails="$fails$SOAK_OUT"$'\n'; fi
+        done
+        local -a want=("$rounds $rounds $((2 * rounds))" "$iters $iters $((10 * iters))")
+        for ((i = 1; i <= rounds; i++)); do want+=("argv[1]=soak-$i" "after-spin-$i 130"); done
+        USH_KERNEL="$ks" USH_IMG="$img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" \
+            soak_half ushell_row "$slug session" "$isa" "$feats" PASS "$(soak_session "$rounds")" \
+            $((120 + rounds * 60)) "${want[@]}"
+        r=$?; n=$((n + 1))
+        if [ "$r" != 0 ]; then rds=$((rds + 1)); fails="$fails$SOAK_OUT"$'\n'; fi
+        soak_load_stop
+        rm -f "$ks" "$kt"
+        local load1; load1="$(uptime | sed 's/.*load/load/')"
+        if [ -n "$kcan$scan" ]; then
+            if [ "$rdk" != 0 ] && [ "$rds" != 0 ]; then
+                ok; echo "      canary failed as it must on both halves"; printf '%s' "$fails" | grep -aE 'not ok [0-9]+ - |missing:|forbidden' | sed -n 1,4p | cut -c1-160
+                rm -f "$CI_LOG_DIR/ktest-$slug-"*.log "$CI_LOG_DIR/ush-$slug-"*.log
+            else
+                bad; echo "      the canary did not turn both halves red (ktest $rdk, shell $rds): the row does not discriminate"
+            fi
+            rm -f "$img"; return
+        fi
+        if [ -z "$fails" ]; then
+            ok; echo "      $n boots, $rounds session rounds: no failure ($load0; $load1)"; rm -f "$img"
+        else
+            bad; echo "      $((rdk + rds)) of $n boots failed ($rdk ktest, $rds shell; $load0; $load1)"
+            printf '%s' "$fails" | sed 's/^/    /'
+            echo "      volume kept: $img"
+        fi
+    }
+    par_row -s soak_row "soak canary (rv)" rv canary=preempt-isr-leak power-cap-canary
+    par_row -s soak_row "soak canary (arm)" arm canary=preempt-isr-leak power-cap-canary
+    par_row -s soak_row "soak canary (x86)" x86 canary=preempt-isr-leak power-cap-canary
+    par_row -s soak_row "soak (rv)" rv
+    par_row -s soak_row "soak (arm)" arm
+    par_row -s soak_row "soak (x86)" x86
 
     # ── Console login (Kconfig CONSOLE_LOGIN, userspace/services/logind) ────
     #
