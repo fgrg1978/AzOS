@@ -276,7 +276,11 @@ build_cargo_artifact() {
 build_asm_artifact() {
     local dir="$1" src="$2" src_root="$3" obj_out="$4" elf_out="$5"
 
-    local -a as_cmd=("$RISCV_AS" -march=rv64imac -mabi=lp64 -o "$obj_out" "$dir/$src")
+    # The constants the Makefile rule hands the assembler (mk/userspace.mk, $(HELLO_ELF) and $(SYSTEST_ELF)).
+    local defs="SYS_EXIT SYS_INVOKE SYS_CAP_INFO INVOKE_CONSOLE_WRITE CONSOLE_TYPE"
+    [[ "$src" == "hello.S" ]] || defs="$defs SYS_GETPID SYS_MO_MAP"
+    # shellcheck disable=SC2207 # `--defsym NAME=VALUE`, one word each
+    local -a as_cmd=("$RISCV_AS" -march=rv64imac -mabi=lp64 $(python3 "$src_root/tools/build/syscall_defs.py" $defs) -o "$obj_out" "$dir/$src")
     # shellcheck disable=SC2207 # the spec's link flags, one word each
     local -a ld_cmd=("$LLD" -flavor gnu $(python3 "$src_root/tools/build/user_link_args.py" riscv64) -o "$elf_out" "$obj_out")
 
