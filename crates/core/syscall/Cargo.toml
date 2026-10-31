@@ -119,6 +119,9 @@ mmap-hint-canary = []
 mmap-noreplace-canary = []
 mmap-hint-window-canary = []
 mmap-brk-apart-canary = []
+# A native mmap stops at the first device window in low user space (row
+# `reclaim: past RAM`).
+mmap-break-only-canary = []
 # SUBTREE-POLICY canary: `families::creation_gate` allows every creation, so a
 # Domain's endpoint, port and MemObj limits are never enforced. The host rows
 # of `tests/host/syscall-tests/src/subtree_policy.rs` must go red.

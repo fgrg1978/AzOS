@@ -3148,11 +3148,21 @@ pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> 
         // the kernel's): `shm_map_user` and `mmio_map_user` hand out addresses
         // there, and `sys_munmap` and teardown never free a frame there, so an
         // anonymous page placed in it would never be freed.
-        return match aligned.checked_add(span) {
-            Some(end) if end <= azos_sched::user_shm_window().0 => Ok(aligned),
-            _ => Err(-1),
-        };
+        let at_break = aligned
+            .checked_add(span)
+            .is_some_and(|end| end <= azos_sched::user_shm_window().0 && azos_mm::vmm::user_range_vacant(user_pt, aligned, end));
+        if at_break {
+            return Ok(aligned);
+        }
+        // The break runs into the first device window the kernel keeps in low
+        // user space (32 MiB up on riscv64, 128 MiB on aarch64 QEMU virt): the
+        // rest of the address space is no less the task's, so the mapping goes
+        // in the mmap area a Linux task places in.
+        if cfg!(feature = "mmap-break-only-canary") {
+            return Err(-1);
+        }
     }
+    let addr = if mmap_at_break() { 0 } else { addr };
     let (floor, ceiling) = azos_sched::user_mmap_area();
     let low = match azos_sched::update_user_mmap_low(0) as usize {
         0 => ceiling,
@@ -3197,18 +3207,23 @@ pub(crate) fn mmap_place(user_pt: usize, addr: u64, span: usize, flags: u64) -> 
     Err(-1)
 }
 
-/// Does the calling task's mmap go at its break (a native or hosted task),
-/// not in a Linux task's mmap area? [`mmap_place`]'s two arms.
+/// Does the calling task's mmap go at its break first (a native or hosted
+/// task), not straight in the mmap area? [`mmap_place`]'s two arms.
 fn mmap_at_break() -> bool {
     !azos_sched::scheduler::current_is_linux() || cfg!(feature = "mmap-brk-apart-canary")
 }
 
 /// Record a mapping [`mmap_place`] placed at `[start, end)`: a native task's
-/// break moves past it, a Linux task's cursor down to it.
+/// break moves past it when it went at the break, the cursor of the mmap area
+/// down to it when it went there, as every Linux task's.
 pub(crate) fn mmap_placed(start: usize, end: usize) {
     if mmap_at_break() {
-        azos_sched::update_user_brk(end as u64);
-        return;
+        let page = azos_arch::PAGE_SIZE;
+        let brk = azos_sched::update_user_brk(0) as usize;
+        if start == brk.saturating_add(page - 1) & !(page - 1) {
+            azos_sched::update_user_brk(end as u64);
+            return;
+        }
     }
     let low = azos_sched::update_user_mmap_low(0) as usize;
     if low == 0 || start < low {
@@ -3221,9 +3236,6 @@ pub(crate) fn mmap_placed(start: usize, end: usize) {
 /// cursor stays vacant and a range given back next to it is placed again
 /// (zig's allocator trims each slab's head, just below the cursor).
 fn mmap_unmapped(start: usize, end: usize) {
-    if !azos_sched::scheduler::current_is_linux() {
-        return;
-    }
     let (_, ceiling) = azos_sched::user_mmap_area();
     let low = azos_sched::update_user_mmap_low(0) as usize;
     if low != 0 && start <= low && end > low {
