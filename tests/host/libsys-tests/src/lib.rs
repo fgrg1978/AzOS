@@ -52,6 +52,13 @@ fn yield_now() {
     std::thread::yield_now();
 }
 
+// The fd table the threads of a program share, as shipped (`fds.rs` names the
+// pure helpers as `crate::pure`).
+use libsys as pure;
+#[allow(dead_code)]
+#[path = "../../../../crates/core/libsys/src/fds.rs"]
+mod fds;
+
 #[cfg(test)]
 mod lock_tests {
     use super::lock::Lock;
@@ -1049,5 +1056,61 @@ mod tap_runner {
         let line = text.lines().find(|l| l.starts_with("not ok")).unwrap();
         assert!(line.len() < 192 && line.starts_with("not ok 1 - t # é-this"), "{line}");
         assert!(text.ends_with("# 1 tests, 1 failed\n"));
+    }
+}
+
+#[cfg(test)]
+mod shared_fds_tests {
+    use super::fds::SharedFds;
+    use super::libsys::{FdEntry, FD_TABLE_LEN};
+    use std::sync::{Barrier, Mutex};
+
+    /// Threads of one program share its fd table: concurrent `dup`s of an open
+    /// fd are given distinct fds, and concurrent `close`s of one fd release its
+    /// handle once. **Canary.** Split `SharedFds::dup` into two holds (find the
+    /// free fd, yield, store): two threads take the same fd and the distinct
+    /// count comes up short.
+    #[test]
+    fn concurrent_dups_get_distinct_fds_and_one_close_wins() {
+        let free = FD_TABLE_LEN - 3;
+        for round in 0..400 {
+            let t = SharedFds::new();
+            assert_eq!(t.put(0, 77), None);
+            let go = Barrier::new(free);
+            let got = Mutex::new(Vec::new());
+            std::thread::scope(|sc| {
+                for _ in 0..free {
+                    sc.spawn(|| {
+                        go.wait();
+                        if let Some(n) = t.dup(0) {
+                            got.lock().unwrap().push(n);
+                        }
+                    });
+                }
+            });
+            let mut fds = got.into_inner().unwrap();
+            fds.sort();
+            fds.dedup();
+            assert_eq!(fds.len(), free, "round {round}: two threads were given the same fd");
+            assert_eq!(t.get(fds[0]), FdEntry::Handle(77));
+
+            // Every fd naming handle 77 closes at once: exactly one reports the last reference.
+            let named: Vec<u64> = (0..FD_TABLE_LEN as u64).filter(|&f| t.get(f) == FdEntry::Handle(77)).collect();
+            let go = Barrier::new(named.len());
+            let last = Mutex::new(0usize);
+            std::thread::scope(|sc| {
+                for &f in &named {
+                    let (t, go, last) = (&t, &go, &last);
+                    sc.spawn(move || {
+                        go.wait();
+                        if let Ok(Some(77)) = t.close(f) {
+                            *last.lock().unwrap() += 1;
+                        }
+                    });
+                }
+            });
+            assert_eq!(last.into_inner().unwrap(), 1, "round {round}: the handle was released {} times", named.len());
+            assert_eq!(t.close(0), Err(()), "a closed fd reports EBADF");
+        }
     }
 }

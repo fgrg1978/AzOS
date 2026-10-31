@@ -109,7 +109,11 @@ pub mod pipe;
 #[cfg(not(target_arch = "riscv32"))]
 mod lock;
 #[cfg(not(target_arch = "riscv32"))]
+mod fds;
+#[cfg(not(target_arch = "riscv32"))]
 pub use lock::{Lock, LockGuard};
+#[cfg(not(target_arch = "riscv32"))]
+use fds::SharedFds;
 
 #[cfg(not(target_arch = "riscv32"))]
 pub mod dev;
@@ -1645,12 +1649,10 @@ pub fn close(fd: u64) -> isize {
     // A small fd is a table entry; only the last fd naming a
     // handle closes it in the kernel.
     if fd < FD_TABLE_LEN as u64 {
-        if fd_entry(fd) == FdEntry::Closed {
-            return E_BADF;
-        }
-        return match proc_state().fds.fd_release(fd) {
-            Some(h) => close_typed(h),
-            None => 0,
+        return match FDS.close(fd) {
+            Err(()) => E_BADF,
+            Ok(Some(h)) => close_typed(h),
+            Ok(None) => 0,
         };
     }
     match handle_arg(fd) {
@@ -3401,22 +3403,21 @@ pub use azos_abi::ushell::{
     KILL_REQUEST, KILL_FORCE, KILL_SUBTREE, CONSOLE_WAIT_FOREVER, SPAWN_REQ_VERSION,
 };
 
-/// What a process knows about itself: its fd table and, if it was started
-/// by `SYS_SPAWN_EX`, its startup block. Programs are single-threaded.
+/// What a process knows about itself: its startup block, if it was started
+/// by `SYS_SPAWN_EX`, set once before any thread runs.
 struct ProcState {
-    fds: FdTable,
     startup: Option<StartupBlock>,
 }
 
+/// The fd table, shared by every thread of the program.
+static FDS: SharedFds = SharedFds::new();
+
 struct ProcCell(core::cell::UnsafeCell<ProcState>);
-// SAFETY: a ring-3 program here has one thread; nothing runs concurrently
-// with it in its address space.
+// SAFETY: `startup` is written once by `startup_init`, first thing in
+// `_start`, before the program can create a thread; it is only read after.
 unsafe impl Sync for ProcCell {}
 
-static PROC: ProcCell = ProcCell(core::cell::UnsafeCell::new(ProcState {
-    fds: FdTable::new(),
-    startup: None,
-}));
+static PROC: ProcCell = ProcCell(core::cell::UnsafeCell::new(ProcState { startup: None }));
 
 fn proc_state() -> &'static mut ProcState {
     // SAFETY: see `ProcCell`; no reference outlives the call that takes it.
@@ -3424,7 +3425,7 @@ fn proc_state() -> &'static mut ProcState {
 }
 
 fn fd_entry(fd: u64) -> FdEntry {
-    proc_state().fds.fd_slot(fd)
+    FDS.get(fd)
 }
 
 /// Read the startup block `SYS_SPAWN_EX` left for this process. Call it
@@ -3444,7 +3445,7 @@ pub fn startup_init(a1: usize) -> bool {
     // position says which end).
     let mut fds = sb.fds;
     pipe::adopt_startup(&mut fds);
-    p.fds = FdTable::fd_table_from_startup(&fds);
+    FDS.replace(FdTable::fd_table_from_startup(&fds));
     p.startup = Some(sb);
     true
 }
@@ -3497,7 +3498,7 @@ pub fn fd_get(fd: u64) -> FdEntry {
 
 /// `dup`: the lowest closed small fd now names what `fd` names. No trap.
 pub fn dup(fd: u64) -> isize {
-    match proc_state().fds.fd_alias(fd) {
+    match FDS.dup(fd) {
         Some(n) => n as isize,
         None => E_BADF,
     }
@@ -3506,7 +3507,7 @@ pub fn dup(fd: u64) -> isize {
 /// `dup2`: `new` names what `old` names; what `new` named is closed if that
 /// was its last fd. Traps only for that close.
 pub fn dup2(old: u64, new: u64) -> isize {
-    match proc_state().fds.fd_alias_to(old, new) {
+    match FDS.dup2(old, new) {
         Ok(Some(h)) => {
             let _ = close_typed(h);
             new as isize
@@ -3518,7 +3519,7 @@ pub fn dup2(old: u64, new: u64) -> isize {
 
 /// Make small fd `fd` name handle `h` (closing what it named, if last).
 pub fn fd_install(fd: u64, h: u32) {
-    if let Some(gone) = proc_state().fds.fd_put_handle(fd, h) {
+    if let Some(gone) = FDS.put(fd, h) {
         let _ = close_typed(gone);
     }
 }
