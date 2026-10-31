@@ -165,4 +165,4 @@ overflow-checks = true
 # for; a handful of driver/ipc modules it pulls in declare cfg's (qemu, vf2,
 # kani, loom) that this crate's Cargo.toml does not also declare features
 # for. Declared rather than silenced, so the condition stays visible.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)', 'cfg(feature, values("qemu"))', 'cfg(feature, values("vf2"))', 'cfg(feature, values("actuation-smoke"))', 'cfg(feature, values("arp-timing"))', 'cfg(feature, values("portwait-timer-canary"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)', 'cfg(feature, values("qemu"))', 'cfg(feature, values("storm-no-resume-canary", "storm-ignore-locked-canary", "swap-no-restore-slot-canary"))', 'cfg(feature, values("vf2"))', 'cfg(feature, values("actuation-smoke"))', 'cfg(feature, values("arp-timing"))', 'cfg(feature, values("portwait-timer-canary"))'] }
