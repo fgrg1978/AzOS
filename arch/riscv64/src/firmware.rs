@@ -737,7 +737,7 @@ fn irq_mask() -> usize {
     {
         let old: usize;
         // SAFETY: clears sstatus.SIE only.
-        unsafe { core::arch::asm!("csrrci {}, sstatus, 2", out(reg) old, options(nomem, nostack)) };
+        unsafe { core::arch::asm!("csrrci {}, sstatus, 2", out(reg) old, options(nostack)) };
         old & 2
     }
     #[cfg(not(target_arch = "riscv64"))]
@@ -751,7 +751,7 @@ fn irq_restore(old: usize) {
     #[cfg(target_arch = "riscv64")]
     // SAFETY: sets sstatus.SIE back to what `irq_mask` found.
     unsafe {
-        core::arch::asm!("csrs sstatus, {}", in(reg) old, options(nomem, nostack));
+        core::arch::asm!("csrs sstatus, {}", in(reg) old, options(nostack));
     }
     #[cfg(not(target_arch = "riscv64"))]
     let _ = old;
