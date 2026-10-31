@@ -562,8 +562,10 @@ struct MemObjTable {
     next_gen: [u32; MAX_MEMOBJS],
     /// What [`memobj_resolve_mapped`] answered last for a few processes, so a
     /// futex call on the same word (or on any private word) does not scan the
-    /// table: see [`ResolveEntry`].
-    resolved: [ResolveEntry; RESOLVE_WAYS],
+    /// table: see [`ResolveEntry`]. Two answers a way: the last mapping found
+    /// ([`HIT`]) and the last gap ([`GAP`]), so a process that calls futexes
+    /// on a shm word and on its private words in turn keeps both.
+    resolved: [[ResolveEntry; 2]; RESOLVE_WAYS],
     /// Bumped by every mapping recorded ([`memobj_note_mapping_ref`]): the only
     /// event that can put a mapping where none was (`note_mapping_locked` is
     /// the only writer of a nonzero `MemHolder::map_va`; every other holder is
@@ -572,11 +574,22 @@ struct MemObjTable {
     map_epoch: u64,
 }
 
-/// The entries of [`MemObjTable::resolved`]: a process's entry is
+/// The ways of [`MemObjTable::resolved`]: a process's way is
 /// `tid % RESOLVE_WAYS`, so a few processes calling futexes at once keep
-/// theirs; one more only costs the next caller of its slot one scan.
+/// theirs; one more only costs the next caller of its way one scan.
 /// Kconfig `MEMOBJ_RESOLVE_WAYS`.
 const RESOLVE_WAYS: usize = azos_limits::MEMOBJ_RESOLVE_WAYS;
+
+/// A way's entry for an answer that names a mapping, and the one for a gap.
+/// Front memobj-multihart: with ONE answer a process, a shm word's lookup
+/// evicted the private words' gap and the next private word's lookup evicted
+/// the shm word's mapping, so a process alternating the two (a shm ring and
+/// its own mutexes) scanned the whole table under the lock on every call:
+/// about 3,200 instructions a futex wake on riscv64 against 789, and the
+/// lock the other harts' futex calls collided on. Canary
+/// `memobj-resolve-one-answer-canary`: both answers share entry [`HIT`].
+const HIT: usize = 0;
+const GAP: usize = if cfg!(feature = "memobj-resolve-one-answer-canary") { HIT } else { 1 };
 
 /// One remembered answer of [`memobj_resolve_mapped`] for process `tid` and
 /// the user addresses `[lo, hi)`.
@@ -623,7 +636,7 @@ impl core::ops::DerefMut for MemObjTable {
 static MEMOBJS: SpinLock<MemObjTable> = SpinLock::new(MemObjTable {
     regions: [EMPTY_MEMOBJ; MAX_MEMOBJS],
     next_gen: [1u32; MAX_MEMOBJS],
-    resolved: [ResolveEntry::EMPTY; RESOLVE_WAYS],
+    resolved: [[ResolveEntry::EMPTY; 2]; RESOLVE_WAYS],
     map_epoch: 0,
 });
 
@@ -1468,12 +1481,15 @@ struct MappedWord {
     phys: usize,
 }
 
-/// [`memobj_resolve_mapped`] under the lock: from `tid`'s cache entry when it
-/// answers for `va`, else by a scan that refills it.
+/// [`memobj_resolve_mapped`] under the lock: from one of `tid`'s two cache
+/// entries when it answers for `va`, else by a scan that refills the entry of
+/// the answer's kind.
 fn resolve_mapped_locked(t: &mut MemObjTable, tid: u32, va: usize) -> Option<MappedWord> {
     let slot = tid as usize % RESOLVE_WAYS;
-    let e = t.resolved[slot];
-    if e.tid == tid && va >= e.lo && va < e.hi {
+    for e in &t.resolved[slot] {
+        if e.tid != tid || va < e.lo || va >= e.hi {
+            continue;
+        }
         match e.hit {
             None if e.epoch == t.map_epoch => return None,
             None => {}
@@ -1511,12 +1527,12 @@ fn resolve_mapped_locked(t: &mut MemObjTable, tid: u32, va: usize) -> Option<Map
     match found {
         Some((i, h, end)) => {
             let lo = t.regions[i].holders[h].map_va;
-            t.resolved[slot] = ResolveEntry { tid, epoch, lo, hi: end, hit: Some((i as u16, h as u8)) };
+            t.resolved[slot][HIT] = ResolveEntry { tid, epoch, lo, hi: end, hit: Some((i as u16, h as u8)) };
             mapped_word_locked(&t.regions[i], i, h, tid, va).ok().flatten()
         }
         None => {
             if !ineligible {
-                t.resolved[slot] = ResolveEntry { tid, epoch, lo, hi, hit: None };
+                t.resolved[slot][GAP] = ResolveEntry { tid, epoch, lo, hi, hit: None };
             }
             None
         }
@@ -3889,7 +3905,7 @@ pub fn __memobj_reset_for_tests() {
         regions[i] = MemObj::empty();
         regions.next_gen[i] = 1;
     }
-    regions.resolved = [ResolveEntry::EMPTY; RESOLVE_WAYS];
+    regions.resolved = [[ResolveEntry::EMPTY; 2]; RESOLVE_WAYS];
     regions.map_epoch = 0;
     drop(regions);
     // The windows a MOVE, a revoke or a shrink left for their tasks belong to
@@ -4323,6 +4339,38 @@ mod tests {
         assert!(memobj_describe_ref(r).is_err(), "the object outlived its only holder");
     }
 
+    /// **A process that alternates a shm word and a private word keeps both
+    /// answers** (front memobj-multihart). A process with a shm ring and its
+    /// own mutexes calls futexes on both; with one remembered answer per
+    /// process each call evicted the other's, and every futex wake scanned
+    /// the whole region table under `MEMOBJS` (the vsbench `scale futex`
+    /// lanes alternate the two: about 3,200 instructions a wake on riscv64,
+    /// against 789 for a wake that repeats its word).
+    ///
+    /// Canary `memobj-resolve-one-answer-canary`: one answer a process: red.
+    #[test]
+    fn a_process_alternating_a_shm_word_and_a_private_word_keeps_both_answers() {
+        let _g = setup();
+        const VA: usize = 0x4000_0000;
+        const PRIVATE: usize = VA + 0x10_0000;
+        let r = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_note_mapping_ref(A, r, 0x1000, VA, 1, MapAccess::RW), Ok(true));
+        let kept = |want_hit: bool| {
+            MEMOBJS.lock_irqsave().resolved.iter().flatten().any(|e| e.tid == A && e.hit.is_some() == want_hit)
+        };
+        for _ in 0..2 {
+            assert!(memobj_resolve_mapped(A, VA).is_some());
+            assert_eq!(memobj_resolve_mapped(A, PRIVATE), None);
+            assert!(kept(true), "the private word's answer evicted the shm word's");
+            assert!(kept(false), "no answer for the private word was kept");
+        }
+        // Both stay correct: the gap answer still yields to a new mapping.
+        let r2 = memobj_create_ref(A, 1, MemPerms::ReadWrite).expect("create");
+        assert_eq!(memobj_note_mapping_ref(A, r2, 0x1000, PRIVATE, 1, MapAccess::RW), Ok(true));
+        assert!(memobj_resolve_mapped(A, PRIVATE).is_some(), "a cached gap answered over a new mapping");
+        assert!(memobj_resolve_mapped(A, VA).is_some());
+    }
+
     /// **The resolution cache has Kconfig `MEMOBJ_RESOLVE_WAYS` entries.** As
     /// many processes as there are ways each keep their own remembered answer;
     /// one more, whose id picks the first one's entry, takes it over. Run at a
@@ -4334,7 +4382,7 @@ mod tests {
         let ways = azos_limits::MEMOBJ_RESOLVE_WAYS as u32;
         // Outside every mapping: each answer fills its process's entry.
         const VA: usize = 0x4000_0000;
-        let kept = |t: u32| MEMOBJS.lock().resolved.iter().any(|e| e.tid == t);
+        let kept = |t: u32| MEMOBJS.lock().resolved.iter().flatten().any(|e| e.tid == t);
         for t in A..A + ways {
             assert_eq!(memobj_resolve_mapped(t, VA), None);
         }

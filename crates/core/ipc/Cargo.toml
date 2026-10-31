@@ -66,12 +66,17 @@ memobj-word-unlocked-canary = []
 memobj-resolve-stale-canary = []
 # Front memobj-multihart: the futex paths' lookups hold the region table for
 # a few thousand spins more, a lock that serialises futex calls. Its user is
-# the `scale` lanes (tools/vsbench_*.sh VSBENCH_AZOS_EXTRA_FEATURES), which must
-# see it as `over floor` well above 1 at h=4. Never in a real build.
+# the `scale` lanes (tools/vsbench_*.sh VSBENCH_AZOS_EXTRA_FEATURES): their
+# host-timed `over floor` did not move with it on a shared host (see their
+# section comment). Never in a real build.
 memobj-hold-canary = []
 # A map or unmap in flight (its leaves exist, its record does not say so) does
 # not count for a clone, a break, a release or a purge.
 memobj-map-unrecorded-canary = []
+# Front memobj-multihart: the resolution cache keeps one answer a process, so a
+# shm word and a private word evict each other's
+# (a_process_alternating_a_shm_word_and_a_private_word_keeps_both_answers).
+memobj-resolve-one-answer-canary = []
 # Delete is not revoke (20-10): a delete revokes the copies of the slot again.
 delete-revokes-canary = []
 # A move of a slot with copies lifts them a level (as a delete does) again.

@@ -91,6 +91,8 @@ memobj-word-unlocked-canary = []
 # kernel's `scale` vsbench canary; no host test enables it).
 memobj-hold-canary = []
 memobj-map-unrecorded-canary = []
+# Front memobj-multihart: one resolve answer a process (memobj.rs).
+memobj-resolve-one-answer-canary = []
 # Front futex-single-section: the wait checks its word before it locks the
 # futex table (a_wake_between_the_check_and_the_filing_still_finds_the_row).
 futex-look-unlocked-canary = []

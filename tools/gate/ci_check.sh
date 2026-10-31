@@ -11301,6 +11301,10 @@ host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-r
 # answers for a capability whose ancestor was revoked until the sweep frees it.
 host_job host_canary_row "ipc: resolve cache in a revocation canary" ipc-tests revoke-chain-canary \
     a_descendant_of_a_revoked_capability_misses_before_the_sweep
+# memobj-resolve-one-answer-canary: the cache keeps one answer a process, so a shm
+# word and a private word in turn evict each other's.
+host_job host_canary_row "memobj: one resolve answer a process canary" ipc-tests memobj-resolve-one-answer-canary \
+    a_process_alternating_a_shm_word_and_a_private_word_keeps_both_answers
 # The futex wait's check and filing are one table hold (front futex-single-section).
 # futex-look-unlocked-canary: the wait looks at its word before it locks the table,
 # so a waker's store and wake land between the check and the row (futex_table.rs).
