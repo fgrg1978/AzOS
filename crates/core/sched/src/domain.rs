@@ -308,11 +308,6 @@ struct State {
     mem_policy: u8,
     /// D10 (multi-user): the user root warrant id; 0 for the system.
     owner_root: u32,
-    /// Console login: the one-shot grant the `keys` interface's `login` op
-    /// armed for this Domain, `(owner_root of the session it admits, the second
-    /// it lapses at)`. Spent by the next `SPAWN_F_USER` spawn
-    /// ([`take_login_grant`]); a slot reused by another Domain starts without.
-    login_grant: Option<(u32, u64)>,
     /// Reserved: the virtual-machine context, when a domain is a guest.
     vm: Option<u32>,
     /// DICE: the measurement of the image the domain started from.
@@ -324,7 +319,6 @@ impl State {
         Self {
             mem_policy: 0,
             owner_root: 0,
-            login_grant: None,
             vm: None,
             measurement: [0; 32],
         }
@@ -367,6 +361,13 @@ struct Domain {
     /// the three words go together, set by a member and read by the reclaim
     /// task; a leaf lock, taken alone and never around another).
     pressure_port: SpinLock<Option<PressureBind>>,
+    /// Console login: the one-shot grant the `keys` interface's `login` op
+    /// armed for this Domain, `(owner_root of the session it admits, the second
+    /// it lapses at)`. Spent by the next `SPAWN_F_USER` spawn
+    /// ([`take_login_grant`]); a slot reused by another Domain starts without.
+    /// Behind a lock of its own (a leaf, taken alone): two members spawning at
+    /// once must not both take the one grant.
+    login_grant: SpinLock<Option<(u32, u64)>>,
     /// The hardware resource partition its tasks run under ([`set_partition`]).
     /// Atomic: the context-switch path of any hart reads it ([`partition_of`]).
     partition: AtomicU16,
@@ -396,6 +397,7 @@ impl Domain {
             pledge: AtomicU32::new(PLEDGE_ALL),
             refused: AtomicU32::new(0),
             pressure_port: SpinLock::new(None),
+            login_grant: SpinLock::new(None),
             partition: AtomicU16::new(0),
             state: UnsafeCell::new(State::new()),
         }
@@ -509,6 +511,7 @@ pub fn create_child(parent: Key) -> Option<Key> {
         // A child runs where its creator does until its own row says otherwise.
         d.partition.store(get(parent).map_or(0, |p| p.partition.load(Ordering::Relaxed)), Ordering::Relaxed);
         *d.pressure_port.lock() = None;
+        *d.login_grant.lock() = None;
         d.parent.store(NONE, Ordering::Relaxed);
         d.depth.store(0, Ordering::Relaxed);
         if let Some(p) = get(parent) {
@@ -1096,14 +1099,15 @@ pub fn set_owner_root(key: Key, owner_root: u32) -> bool {
 /// credential, one session. `false`, nothing armed, when `key` names no live
 /// domain.
 pub fn arm_login_grant(key: Key, owner_root: u32, until_s: u64) -> bool {
-    with(key, |_, s| s.login_grant = Some((owner_root, until_s))).is_some()
+    get(key).map(|d| *d.login_grant.lock() = Some((owner_root, until_s))).is_some()
 }
 
 /// Spend the login grant of the domain `key` names at second `now_s`: the root
 /// it admits, or `None` when none is armed or it has lapsed. The grant is gone
 /// either way (a lapsed one is not kept for a later look).
 pub fn take_login_grant(key: Key, now_s: u64) -> Option<u32> {
-    with(key, |_, s| s.login_grant.take()).flatten().filter(|&(_, until)| now_s <= until).map(|(root, _)| root)
+    let grant = get(key).and_then(|d| d.login_grant.lock().take());
+    grant.filter(|&(_, until)| now_s <= until).map(|(root, _)| root)
 }
 
 /// Put the domain `key` names in resource partition `partition` (0: the
