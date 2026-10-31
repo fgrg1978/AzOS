@@ -457,8 +457,9 @@ impl PageBudget {
     }
 
     /// Charge `pages` for a restore (the fault found its page compressed and
-    /// gave it a frame): saturating, never refused, and the peak follows. See
-    /// the header for why the limit is not tested here.
+    /// gave it a frame), or for the page table a reserved page's first touch
+    /// builds: saturating, never refused, and the peak follows. See the header
+    /// for why the limit is not tested here.
     pub fn charge_restore(&self, pages: u32) {
         if pages == 0 { return; }
         let prev = self.used.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |u| Some(u.saturating_add(pages)));

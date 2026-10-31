@@ -108,7 +108,7 @@ fn l2_table_alloc_upper(root: usize, vaddr: usize) -> KResult<(usize, usize)> {
         } else if ARCH.pte_is_valid(pte) {
             return Err(KernelError::AlreadyMapped);
         } else {
-            let new_pt = alloc_table(root)?;
+            let new_pt = alloc_table(root, false)?;
             let new_pte = ARCH.pte_make_table(new_pt.as_usize());
             // SAFETY: `pte_ptr` is an aligned entry of a live table page. CAS
             // as in `walk`: threads of one process share the root.
@@ -118,7 +118,7 @@ fn l2_table_alloc_upper(root: usize, vaddr: usize) -> KResult<(usize, usize)> {
                 Ok(_) => pt = new_pt.as_usize(),
                 Err(cur) => {
                     let _ = pmm::free_page(new_pt);
-                    let _ = table_charge(root, false);
+                    let _ = table_charge(root, TableCharge::Return);
                     if !ARCH.pte_is_table(cur, level) {
                         return Err(KernelError::NotMapped);
                     }
@@ -323,11 +323,26 @@ pub fn note_demand_resolved() {
 // scheduler installs two plain function pointers at boot, the same seam
 // `task_exit`'s hooks use. Unset (host tests, early boot) they charge nothing.
 
+/// What a [`TABLE_HOOK`] call asks about one page-table frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TableCharge {
+    /// A table is about to be allocated: `false` refuses it.
+    Take,
+    /// As `Take`, for a table the first touch of a reserved page needs. The
+    /// reservation was charged whole and promised the page, so the touch has
+    /// nowhere to report a refusal: the hook takes the frame whatever the
+    /// limit says and answers `true`.
+    Promised,
+    /// The table was not allocated after all, or has been freed.
+    Return,
+}
+
 azos_common::ro_hook! {
-    /// `fn(root, charge) -> allowed`: called with `charge = true` before a page
-    /// table is allocated under the user root `root`, and with `false` if that
-    /// allocation then failed. `false` from a charge refuses the table.
-    static TABLE_HOOK: fn(usize, bool) -> bool;
+    /// `fn(root, what) -> allowed`: asked before a page table is allocated under
+    /// the user root `root` ([`TableCharge::Take`], [`TableCharge::Promised`]),
+    /// and told if that allocation then failed or the table went
+    /// ([`TableCharge::Return`]).
+    static TABLE_HOOK: fn(usize, TableCharge) -> bool;
 }
 azos_common::ro_hook! {
     /// `fn()`: one user page fault was resolved for the current task.
@@ -335,7 +350,7 @@ azos_common::ro_hook! {
 }
 
 /// Install the page-table charge hook. See [`TABLE_HOOK`].
-pub fn set_table_hook(f: fn(usize, bool) -> bool) {
+pub fn set_table_hook(f: fn(usize, TableCharge) -> bool) {
     TABLE_HOOK.set(f);
 }
 
@@ -345,9 +360,9 @@ pub fn set_fault_hook(f: fn()) {
 }
 
 #[inline]
-fn table_charge(root: usize, charge: bool) -> bool {
+fn table_charge(root: usize, what: TableCharge) -> bool {
     match TABLE_HOOK.get() {
-        Some(f) => f(root, charge),
+        Some(f) => f(root, what),
         None => true,
     }
 }
@@ -359,15 +374,17 @@ fn fault_hook() {
     }
 }
 
-/// Allocate a page-table frame under `root`, charged through [`TABLE_HOOK`].
-fn alloc_table(root: usize) -> KResult<crate::addr::PhysAddr> {
-    if !table_charge(root, true) {
+/// Allocate a page-table frame under `root`, charged through [`TABLE_HOOK`]:
+/// `promised` for the table a reserved page's first touch needs.
+fn alloc_table(root: usize, promised: bool) -> KResult<crate::addr::PhysAddr> {
+    let take = if promised { TableCharge::Promised } else { TableCharge::Take };
+    if !table_charge(root, take) {
         return Err(KernelError::OutOfMemory);
     }
     match pmm::alloc_page_zone(Zone::PageTable) {
         Ok(p) => Ok(p),
         Err(e) => {
-            let _ = table_charge(root, false);
+            let _ = table_charge(root, TableCharge::Return);
             Err(e)
         }
     }
@@ -725,6 +742,17 @@ fn kernel_shadow_step(kt: usize, vpn: usize, level: usize, child: usize) -> KRes
 }
 
 pub(crate) fn walk(pt_phys: usize, vaddr: usize, alloc: bool) -> KResult<*mut u64> {
+    walk_charged(pt_phys, vaddr, alloc, false)
+}
+
+/// [`walk`] allocating, for the first touch of a page a reservation promised:
+/// a table it must build is taken from the Domain whatever its limit says
+/// ([`TableCharge::Promised`]).
+pub(crate) fn walk_promised(pt_phys: usize, vaddr: usize) -> KResult<*mut u64> {
+    walk_charged(pt_phys, vaddr, true, true)
+}
+
+fn walk_charged(pt_phys: usize, vaddr: usize, alloc: bool, promised: bool) -> KResult<*mut u64> {
     let mut pt = pt_phys;
     // N12i: an allocating walk is a writer. On a user root it walks the
     // kernel root in step and refuses to descend into a table the kernel
@@ -763,7 +791,7 @@ pub(crate) fn walk(pt_phys: usize, vaddr: usize, alloc: bool) -> KResult<*mut u6
             }
             // Allocate intermediate page table, charged to whoever owns
             // `pt_phys`.
-            let new_pt = alloc_table(pt_phys)?;
+            let new_pt = alloc_table(pt_phys, promised)?;
             let new_pte = ARCH.pte_make_table(new_pt.as_usize());
             // Installed by compare-and-swap (wave 13): the threads of one
             // process walk one table, and two of them may both find this slot
@@ -775,7 +803,7 @@ pub(crate) fn walk(pt_phys: usize, vaddr: usize, alloc: bool) -> KResult<*mut u6
                 Ok(_) => new_pt.as_usize(),
                 Err(cur) => {
                     let _ = pmm::free_page(new_pt);
-                    let _ = table_charge(pt_phys, false);
+                    let _ = table_charge(pt_phys, TableCharge::Return);
                     if !ARCH.pte_is_valid(cur) {
                         return Err(KernelError::NotMapped);
                     }
@@ -960,7 +988,7 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
         }
         ARCH.pte_phys(l2_pte)
     } else {
-        let new_pt = alloc_table(pt_phys)?;
+        let new_pt = alloc_table(pt_phys, false)?;
         let new_pte = ARCH.pte_make_table(new_pt.as_usize());
         // By CAS (N12h), as in `walk`: the kernel-half merge or another
         // thread of this process may install this word meanwhile; the loser
@@ -969,7 +997,7 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
             Ok(()) => new_pt.as_usize(),
             Err(cur) => {
                 let _ = pmm::free_page(new_pt);
-                let _ = table_charge(pt_phys, false);
+                let _ = table_charge(pt_phys, TableCharge::Return);
                 if !ARCH.pte_is_table(cur, 2) {
                     return Err(KernelError::AlreadyMapped);
                 }
@@ -3750,7 +3778,7 @@ pub fn unmap_user_range_and_free(
 pub(crate) fn release_pruned_tables(root: usize, tables: &[usize]) {
     for &t in tables {
         let _ = pmm::free_page(PhysAddr::new(t));
-        let _ = table_charge(root, false);
+        let _ = table_charge(root, TableCharge::Return);
     }
 }
 
@@ -4546,7 +4574,7 @@ pub(crate) fn promote_finish(pt_phys: usize, block_va: usize, old_l0: usize, flu
         user_shootdown(pt_phys, block_va, MEGA_SIZE);
     }
     let _ = pmm::free_page(PhysAddr::new(old_l0));
-    let _ = table_charge(pt_phys, false);
+    let _ = table_charge(pt_phys, TableCharge::Return);
 }
 
 /// Split the promoted block that maps `vaddr` back into 512 4 KiB leaves.
@@ -4566,12 +4594,12 @@ pub(crate) fn split_user_mega(pt_phys: usize, vaddr: usize) -> bool {
     let Some((slot, w)) = promoted_leaf(pt_phys, vaddr) else { return true };
     let base = ARCH.pte_phys(w);
     let perms = ARCH.pte_perms(w);
-    let charged = table_charge(pt_phys, true);
+    let charged = table_charge(pt_phys, TableCharge::Take);
     let l0 = match pmm::alloc_page_zone(Zone::PageTable) {
         Ok(p) => p.as_usize(),
         Err(_) => {
             if charged {
-                let _ = table_charge(pt_phys, false);
+                let _ = table_charge(pt_phys, TableCharge::Return);
             }
             return false;
         }
@@ -4585,7 +4613,7 @@ pub(crate) fn split_user_mega(pt_phys: usize, vaddr: usize) -> bool {
     let Some(flushed) = l1_replace(pt_phys, block, slot, w, ARCH.pte_make_table(l0)) else {
         let _ = pmm::free_page(PhysAddr::new(l0));
         if charged {
-            let _ = table_charge(pt_phys, false);
+            let _ = table_charge(pt_phys, TableCharge::Return);
         }
         return promoted_leaf(pt_phys, vaddr).is_none();
     };

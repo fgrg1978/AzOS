@@ -14396,8 +14396,9 @@ PY
     # +1 blk_reap_reports_once -> 126, arm 130.
     # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
     # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
-    KTEST_N_RV=128
-    KTEST_N_ARM=132
+    # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
+    KTEST_N_RV=129
+    KTEST_N_ARM=133
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14780,7 +14781,7 @@ PY
     # Wave 15 (plan 7b): `canary=chaos-inert` arms no injection point, so
     # every `chaos_*` test but the parser's reports `not ok` (one boot: the
     # inert registry would also hide `chaos-leak`, which rides above).
-    KTEST_CHAOS_INERT="chaos_disk_io_error_recorded chaos_frame_alloc_no_leak chaos_heap_alloc_refused chaos_ipc_send_refused chaos_spurious_irq_tolerated chaos_timer_wake_late_not_lost"
+    KTEST_CHAOS_INERT="chaos_disk_io_error_recorded chaos_frame_alloc_no_leak chaos_heap_alloc_refused chaos_ipc_send_refused chaos_spurious_irq_tolerated chaos_timer_wake_late_is_not_a_storm chaos_timer_wake_late_not_lost"
     par "ktest chaos-inert canary (rv)" ktest_row "ktest chaos-inert canary (rv)" rv "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
     par "ktest chaos-inert canary (arm)" ktest_row "ktest chaos-inert canary (arm)" arm "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
     # Wave 15 (C2): `console_rt_lines_only_append` (an RT task's kernel lines
@@ -14869,6 +14870,16 @@ PY
         "$KTEST_HOLD_SMP1 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
     par "ktest hold bound canary, -icount (arm)" ktest_hold_row "ktest hold bound canary, -icount (arm)" arm \
         "$KTEST_HOLD_SMP1 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
+    # The injected timer delay (`timer-wake`) arms the timer for the instant the
+    # sleeper is due; `chaos-storm-canary` arms it for the deadline, already past, and
+    # the timer storms until the delay is over (an interrupt every microsecond or two,
+    # the same on every host under -icount; on TCG's wall clock a host timer's latency
+    # decides how many).
+    ktest_icount_row() { KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" ktest_row "$@"; }
+    par "ktest chaos storm canary, -icount (rv)" ktest_icount_row "ktest chaos storm canary, -icount (rv)" rv ",chaos-storm-canary" \
+        "$KTEST_HOLD_SMP1 chaos_timer_wake_late_is_not_a_storm"
+    par "ktest chaos storm canary, -icount (arm)" ktest_icount_row "ktest chaos storm canary, -icount (arm)" arm ",chaos-storm-canary" \
+        "$KTEST_HOLD_SMP1 chaos_timer_wake_late_is_not_a_storm"
 
     # Wave 15 (N2): `SpinWait` (arch/api spin.rs) off the
     # extension, on CPUs QEMU builds without it. The plain `ktest (rv)` row
@@ -15154,7 +15165,8 @@ PY
     # +1 blk_reap_reports_once, as on rv and arm -> 132.
     # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
     # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
-    KTEST_N_X86=134
+    # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
+    KTEST_N_X86=135
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16047,7 +16059,7 @@ PY
             drv=(-drive "file=$dimg,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0)
         fi
         par_ready
-        x86_qemu "$kimg" "$log" 300 "" -smp 4 ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} || { rm -f "$kimg" "$kimg.features" ${dimg:+"$dimg"}; return; }
+        x86_qemu "$kimg" "$log" 300 "" -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} || { rm -f "$kimg" "$kimg.features" ${dimg:+"$dimg"}; return; }
         rm -f "$kimg" "$kimg.features" ${dimg:+"$dimg"}
         plan="$(sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' "$log" | sed -n '1p')"
         got="$(sed -n 's/^not ok [0-9][0-9]* - \([A-Za-z0-9_]*\)\( #.*\)\{0,1\}$/\1/p' "$log" | grep . | sort | tr '\n' ' ')"
@@ -16125,6 +16137,33 @@ PY
         x86_ktest_row "$@"
     }
     par "ktest why durable-off canary (x86)" x86_ktest_row_nodur "ktest why durable-off canary (x86)" "" "why_resolves_a_refused_reservation"
+    # The SpinLock hold bound in instruction time on x86_64: see `ktest hold bound,
+    # -icount (rv)`. The kernel is built from a configuration with
+    # LOCKDEP_HOLD_ENFORCE=y and LOCK_MAX_HOLD_US=$KTEST_HOLD_US, into a target
+    # directory and image of its own, and boots `-smp 1 -icount shift=0,sleep=off`.
+    # `-cpu max,-x2apic` because QEMU 11.0.0 aborts "Bad icount read" on x86 under
+    # -icount at `[IRQ] MSI address` when the guest has x2APIC; the kernel then
+    # uses the xAPIC.
+    x86_ktest_hold_row() { # x86_ktest_hold_row <label> <expected not-ok names> [kernel command line] [ERE]
+        local label="$1" tag def X86_KBUILD_OUT X86_KBUILD_ARGS
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        mkdir -p "$CI_LOG_DIR"
+        def="$CI_LOG_DIR/x86-ktest-hold.defconfig"
+        { cat "config/defconfigs/${GATE_ROBOT_DEFC_X86}.config"
+          printf 'CONFIG_LOCKDEP_HOLD_ENFORCE=y\nCONFIG_LOCK_MAX_HOLD_US=%s\n' "$KTEST_HOLD_US"; } >"$def"
+        X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-hold.elf
+        X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-hold.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-hold X86_64_IMG=$X86_KBUILD_OUT"
+        X86_CPU="max,-x2apic" KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" \
+            x86_ktest_row "$label" "" "$2" "${3:-}" "" "${4:-}"
+    }
+    # Needs a second CPU, as the tests of `KTEST_HOLD_SMP1`, and x86_64 only.
+    KTEST_HOLD_SMP1_X86="$KTEST_HOLD_SMP1 tlb_kernel_shootdown_names_every_online_cpu"
+    par "ktest hold bound, -icount (x86)" x86_ktest_hold_row "ktest hold bound, -icount (x86)" "$KTEST_HOLD_SMP1_X86" "" "$KTEST_HOLD_RE"
+    par "ktest hold bound canary, -icount (x86)" x86_ktest_hold_row "ktest hold bound canary, -icount (x86)" \
+        "$KTEST_HOLD_SMP1_X86 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
+    x86_ktest_icount_row() { X86_CPU="max,-x2apic" KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" x86_ktest_row "$@"; }
+    par "ktest chaos storm canary, -icount (x86)" x86_ktest_icount_row "ktest chaos storm canary, -icount (x86)" ",chaos-storm-canary" \
+        "$KTEST_HOLD_SMP1_X86 chaos_timer_wake_late_is_not_a_storm"
     par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
     # An AP that publishes no CR3 when it comes online (the old step): a CPU
     # that has only run kernel tasks is no target of a kernel-wide shootdown.
@@ -26045,7 +26084,7 @@ for rc_isa in riscv64 aarch64 x86_64; do
 done
 # The canaries boot on one ISA: they break arch-independent code and read the
 # same console. A row per canary and the kernel selection each needs.
-for rc_case in content-canary at-rest-canary medium-canary pressure-canary purge-canary verdicts-canary break-canary pinned-storm-canary pinned-swap-canary kill-order kill-order-canary; do
+for rc_case in content-canary at-rest-canary medium-canary pressure-canary purge-canary verdicts-canary break-canary limit-canary pinned-storm-canary pinned-swap-canary kill-order kill-order-canary; do
     par -s "reclaim: aarch64 $rc_case" reclaim_row aarch64 "$rc_case" "reclaim: aarch64 $rc_case"
 done
 

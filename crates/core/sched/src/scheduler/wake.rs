@@ -1410,14 +1410,15 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
 /// disagreements (`timer_sleepers::NEAREST_MISMATCH`).
 pub fn nearest_timer_deadline() -> Option<u64> {
     #[cfg(feature = "sched-timer-heap")]
-    {
+    let got = {
         let got = timer_sleepers::nearest();
         #[cfg(feature = "ipc-census")]
         timer_sleepers::check_nearest(got, nearest_timer_deadline_sweep_where(timer_sleepers::owned_here));
         got
-    }
+    };
     #[cfg(not(feature = "sched-timer-heap"))]
-    nearest_timer_deadline_sweep()
+    let got = nearest_timer_deadline_sweep();
+    got.map(super::chaos_deadline)
 }
 
 /// The O(`MAX_TASKS`) sweep: the whole of `nearest_timer_deadline` without

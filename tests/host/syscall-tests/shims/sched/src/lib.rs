@@ -114,6 +114,39 @@ pub fn mm_charge(pages: u32) -> bool {
     true
 }
 
+static CHARGE_TABLES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The page-table hook of `scheduler/budget.rs`, for the current task's root:
+/// a table is charged like a page, one the first touch of a reserved page needs
+/// is charged past the limit, and one that goes back is discharged.
+fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
+    use azos_mm::vmm::TableCharge;
+    if !CHARGE_TABLES.load(Ordering::SeqCst) || root != current_user_pt() {
+        return true;
+    }
+    match what {
+        TableCharge::Take => mm_charge(1),
+        TableCharge::Promised => {
+            USER_PAGES.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+        TableCharge::Return => {
+            mm_discharge(1);
+            true
+        }
+    }
+}
+
+/// Test-only control surface: page tables built for the current task's root
+/// are charged to its budget (off: they are free, as every other row sees them).
+pub fn shim_charge_tables(on: bool) {
+    shim_assert_serial("shim_charge_tables");
+    if on {
+        azos_mm::vmm::set_table_hook(table_hook);
+    }
+    CHARGE_TABLES.store(on, Ordering::SeqCst);
+}
+
 pub fn mm_discharge(pages: u32) {
     if pages == 0 { return; }
     let cur = USER_PAGES.load(Ordering::SeqCst);

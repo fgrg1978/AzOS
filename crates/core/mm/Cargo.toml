@@ -58,6 +58,10 @@ fork-commit-race-canary = []
 # Host-suite canary (front uaccess-pin): `uaccess::wait_readers` returns at
 # once, as before the access sections; `syscall-tests`' `uaccess_race` fails.
 uaccess-race-canary = []
+# Canary (front t1-reclaim-fixes): `pager`'s fault walks with a table refusable
+# like any other, so a touch of a reserved page at the Domain's limit dies for
+# its table: `syscall-tests`' `table_promised` fails.
+table-refusable-canary = []
 # Canary (front uaccess-mmio-buffer): `vmm::kernel_reaches` answers `true`,
 # so a user device window passes the user walk again: `syscall-tests`'
 # `uaccess_mmio` and ktest `uaccess_refuses_a_user_device_window` fail.

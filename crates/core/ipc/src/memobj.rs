@@ -2772,9 +2772,13 @@ fn pipe_drop_all(tid: u32) {
 /// Reserve `pages` pages of private Anon memory at `base` in the address space
 /// rooted at `root`, as the CALLING task: charged to its Domain now, the whole
 /// reservation, so a first touch can never be refused for budget
-/// (as Linux's strict overcommit). All or nothing: a refusal leaves no
-/// marker and no charge. `NoMem` when the Domain cannot take it, `Busy` when
-/// part of the range is already mapped or marked.
+/// (as Linux's strict overcommit). The page tables the markers sit in are built
+/// here too (the walk allocates them, charged like any table), so the touch
+/// never needs one (`mmap`'s regions build theirs at the touch, and take them
+/// past the limit: `azos_mm::pager`). All or nothing: a refusal leaves
+/// no marker and no page charged (tables already built stay). `NoMem` when the
+/// Domain cannot take the pages, `Busy` when part of the range is already
+/// mapped or marked, or a table was refused.
 pub fn anon_reserve(root: usize, base: usize, pages: usize) -> Result<(), MemObjError> {
     // Canary `memobj-anon-uncharged-canary`: the reservation is not charged.
     if !cfg!(feature = "memobj-anon-uncharged-canary") && !azos_sched::mm_charge(pages as u32) {

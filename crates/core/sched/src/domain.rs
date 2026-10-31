@@ -610,6 +610,15 @@ pub fn charge(key: Key, pages: u32) -> Option<u32> {
     d.budget.charge(pages).then(|| d.budget.used())
 }
 
+/// Charge `pages` to the domain `key` names whatever its limit says
+/// (`PageBudget::charge_restore`): for a frame the kernel took for memory the
+/// domain was promised. `Some(used)`, or `None` when the key names no domain.
+pub fn charge_unrefused(key: Key, pages: u32) -> Option<u32> {
+    let d = get(key)?;
+    d.budget.charge_restore(pages);
+    Some(d.budget.used())
+}
+
 /// Give `pages` back to the budget of the domain `key names`, from any
 /// context and any Domain.
 pub fn discharge(key: Key, pages: u32) {

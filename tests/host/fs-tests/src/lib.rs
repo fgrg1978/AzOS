@@ -2581,7 +2581,7 @@ mod inode_leak {
 #[cfg(test)]
 mod topology_paths_on_a_real_volume {
     use super::{fat32, serial, topology_paths as tp, vfs};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::process::Command;
 
     fn tool(name: &str) -> PathBuf {

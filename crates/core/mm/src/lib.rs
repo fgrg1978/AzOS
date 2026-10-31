@@ -35,11 +35,16 @@ pub mod demand;
 pub mod region;
 /// Kconfig `MM_THP_RESV`: superpage reservations (host-tested, `#[path]`).
 pub mod resv;
-/// Kconfig `MM_RECLAIM_COMPRESS`: the compressed-page pool (host-tested,
-/// `#[path]`).
+/// Kconfig `MM_RECLAIM_COMPRESS`: the compressed-page pool. Its host rows
+/// (`tests/host/mm-tests`) pull this file with `#[path]` and run the pool, the
+/// codec and the storm loop; the walk of a live address space that feeds it is
+/// `pager`'s, which the `reclaim:` gate rows exercise and the host rows do not.
 pub mod zpool;
-/// Kconfig `MM_RECLAIM_COMPRESS`: page generations for the reclaimer (host-tested,
-/// `#[path]`).
+/// Kconfig `MM_RECLAIM_COMPRESS`: page generations for the reclaimer. The table
+/// has host rows (`tests/host/mm-tests` pulls this file with `#[path]`) over a
+/// modelled address space; `Mmu::harvest_accessed` has rows in
+/// `tests/host/arch-api-tests`, and `pager::age_space`, which walks real tables,
+/// runs only in the `reclaim:` gate rows.
 pub mod aging;
 /// Kconfig `MM_SWAP_BACKEND`: full segments of the pool written to the swap
 /// partition (host-tested, `#[path]`).

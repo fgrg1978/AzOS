@@ -390,7 +390,8 @@ pub fn mm_charge_if_current(tid: u32, pages: u32) -> bool {
 /// in `mem.pt_build` and charged, with the rest of that address space, to the
 /// task that receives it. No current task (boot, the kernel's own tables): not
 /// charged.
-fn table_hook(root: usize, charge: bool) -> bool {
+fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
+    use azos_mm::vmm::TableCharge;
     let idx = my_idx();
     unsafe {
         if idx >= MAX_TASKS { return true; }
@@ -405,8 +406,17 @@ fn table_hook(root: usize, charge: bool) -> bool {
             // so the ledger's refusal is recorded without the durable sink.
             let page = azos_arch_api::PAGE_SIZE as u64;
             let d = TASKS[idx].domain();
-            if charge {
-                if !mm_charge(1) { return false; }
+            if what != TableCharge::Return {
+                // A table the first touch of a reserved page needs is a frame
+                // the reservation did not count and the touch cannot be refused:
+                // charged past the limit, as a restore is.
+                if what == TableCharge::Promised {
+                    if let Some(used) = crate::domain::charge_unrefused(d, 1) {
+                        MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
+                    }
+                } else if !mm_charge(1) {
+                    return false;
+                }
                 if !crate::domain::kmem_charge_atomic(d, crate::domain::KmemClass::PageTable, page) {
                     mm_discharge(1);
                     return false;
@@ -418,7 +428,7 @@ fn table_hook(root: usize, charge: bool) -> bool {
             return true;
         }
         let b = &mut TASKS[idx].mem.pt_build;
-        *b = if charge { b.saturating_add(1) } else { b.saturating_sub(1) };
+        *b = if what != TableCharge::Return { b.saturating_add(1) } else { b.saturating_sub(1) };
         true
     }
 }

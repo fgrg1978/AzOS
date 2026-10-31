@@ -3521,10 +3521,42 @@ pub(crate) fn chaos_sweep_now(now_ticks: u64) -> u64 {
     }
     if azos_chaos::fire(azos_chaos::Point::TimerWake) {
         let per_us = (azos_drv_sys::timebase::TIMER_FREQ / 1_000_000).max(1);
-        now_ticks.saturating_sub(azos_limits::CHAOS_TIMER_DELAY_US * per_us)
+        let behind = azos_limits::CHAOS_TIMER_DELAY_US * per_us;
+        set_chaos_behind(behind);
+        now_ticks.saturating_sub(behind)
     } else {
+        if azos_chaos::ON {
+            set_chaos_behind(0);
+        }
         now_ticks
     }
+}
+
+/// How far behind the clock this CPU's last sweep ran (`timer-wake`), in timer
+/// ticks; 0 when it ran on time. The sleepers that sweep left are due that much
+/// later than their deadlines say, so the timer is armed for that instant
+/// ([`chaos_deadline`]): armed for the deadline, which is already past, it
+/// would fire again at once, and the interrupts would keep the CPU from
+/// everything else, a SpinLock holder's critical section included, until the
+/// clock caught up.
+static CHAOS_BEHIND: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+fn set_chaos_behind(ticks: u64) {
+    if let Some(slot) = CHAOS_BEHIND.get(current_cpu_id()) {
+        slot.store(ticks, Ordering::Relaxed);
+    }
+}
+
+/// The instant the timer is armed for a sleeper whose deadline is `deadline`.
+/// Kconfig CHAOS off: `deadline`, nothing compiled.
+#[inline(always)]
+pub(crate) fn chaos_deadline(deadline: u64) -> u64 {
+    // Canary `chaos-storm-canary`: the deadline as it was, and the injected
+    // delay is an interrupt storm.
+    if !azos_chaos::ON || cfg!(feature = "chaos-storm-canary") {
+        return deadline;
+    }
+    deadline.saturating_add(CHAOS_BEHIND.get(current_cpu_id()).map_or(0, |s| s.load(Ordering::Relaxed)))
 }
 
 /// Kconfig CHAOS, point `spurious-irq`: ring the next online CPU's doorbell

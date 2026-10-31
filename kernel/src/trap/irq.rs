@@ -99,6 +99,16 @@ pub fn arm<S: IrqServices<F>, F: Frame>(frame: &mut F, body: impl FnOnce(&mut F)
     S::isr_exit(cpu);
 }
 
+/// Timer interrupts each CPU has taken since boot (ktest `chaos_timer_wake_late_is_not_a_storm`).
+#[cfg(feature = "ktest")]
+static TICKS_TAKEN: [AtomicU64; crate::MAX_HARTS] = [const { AtomicU64::new(0) }; crate::MAX_HARTS];
+
+/// The timer interrupts `cpu` has taken since boot.
+#[cfg(feature = "ktest")]
+pub fn ticks_taken(cpu: usize) -> u64 {
+    TICKS_TAKEN.get(cpu).map_or(0, |t| t.load(Ordering::Relaxed))
+}
+
 /// The work every timer tick does after its ISA re-armed the timer: the
 /// watchdog trio, the vDSO pages, the sleepers whose deadline passed, the
 /// wakes stamped onto a task that parked before consuming them (a one-shot
@@ -107,6 +117,10 @@ pub fn arm<S: IrqServices<F>, F: Frame>(frame: &mut F, body: impl FnOnce(&mut F)
 /// `uptime_ms`: `None` while the clock cannot say.
 #[inline]
 pub fn tick_work<S: IrqServices<F>, F: Frame>(now: u64, ticks: Option<u64>, uptime_ms: Option<u64>) {
+    #[cfg(feature = "ktest")]
+    if let Some(t) = TICKS_TAKEN.get(<S as IrqServices<F>>::cpu()) {
+        t.fetch_add(1, Ordering::Relaxed);
+    }
     let wd = S::watchdog_tick();
     S::vdso_tick(ticks.unwrap_or(wd), uptime_ms, now);
     // `now` is 0 until this CPU's timer is armed: nothing can have expired.
