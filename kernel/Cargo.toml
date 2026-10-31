@@ -513,6 +513,9 @@ swap-plain-canary = ["azos_mm/swap-plain-canary"]
 restore-flip-canary = ["azos_mm/restore-flip-canary"]
 swap-pinned-canary = ["azos_mm/swap-pinned-canary"]
 storm-ignore-locked-canary = ["azos_mm/storm-ignore-locked-canary"]
+table-refusable-canary = ["azos_mm/table-refusable-canary"]
+# The timer is armed for the deadline of a sleeper the delayed sweep left, already past.
+chaos-storm-canary = ["azos_sched/chaos-storm-canary"]
 # A native mmap stops at the first device window in low user space.
 mmap-break-only-canary = ["azos_syscall/mmap-break-only-canary"]
 net-smoke = ["net"]

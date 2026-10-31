@@ -251,6 +251,31 @@ mod chaos_ktests {
     }
 
     azos_ktest::ktest_late! {
+        fn chaos_timer_wake_late_is_not_a_storm() {
+            use azos_drv_sys::timebase::{now, TIMER_FREQ};
+            // The delay makes the sleeper due later, not the timer fire at once
+            // until it is: a storm of interrupts keeps every critical section on
+            // the CPU open for the whole delay (the `ktest hold bound` rows).
+            let cpus = azos_percpu::nr_cpu_ids().min(crate::MAX_HARTS);
+            let before: [u64; crate::MAX_HARTS] = core::array::from_fn(|c| crate::trap::irq::ticks_taken(c));
+            let f0 = fired(Point::TimerWake);
+            let t0 = now();
+            armed(Point::TimerWake, 1, 0, || azos_syscall::sleep::sleep_ms(5));
+            let elapsed_us = now().saturating_sub(t0) / (TIMER_FREQ / 1_000_000).max(1);
+            // A CPU takes a tick a millisecond; a storm takes one every few
+            // microseconds of the delay at the most. A tick per 250 us is the line.
+            let worst = (0..cpus).map(|c| crate::trap::irq::ticks_taken(c) - before[c]).max().unwrap_or(0);
+            if fired(Point::TimerWake) == f0 {
+                Err("an armed timer-wake point never fired")
+            } else if worst > elapsed_us / 250 + 8 {
+                Err("the injected timer delay was a storm of timer interrupts")
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    azos_ktest::ktest_late! {
         fn chaos_spurious_irq_tolerated() {
             let f0 = fired(Point::SpuriousIrq);
             armed(Point::SpuriousIrq, 1, 0, || azos_syscall::sleep::sleep_ms(20));

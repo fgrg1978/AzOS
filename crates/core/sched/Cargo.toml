@@ -9,6 +9,10 @@ publish = false
 # Wave 13: print per-phase means of fork, exit and wait (`prof.rs`); for
 # QEMU `-icount` profiling only. Never in a real build.
 fork-profile = []
+# Gate canary only (Kconfig CHAOS): the timer is armed for a sleeper's deadline
+# when the last sweep ran behind the clock (`timer-wake`), not for the instant
+# it will be due; the delay is then a storm of timer interrupts.
+chaos-storm-canary = []
 # Wave 14: debug output, every exec's `[VDSO] mapped` line (kernel `spawn-log`).
 spawn-log = []
 # Gate only: every `current_cpu_id()` is checked against the hardware id

@@ -34,6 +34,7 @@ boot-count-smoke	pending
 brain-lies-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 cap-deny-smoke	pending	
 captest-row	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
+chaos-storm-canary	hot	crates/core/sched/src/scheduler/mod.rs: chaos_deadline, on the timer arm path of every tick, in a crate `canary!` does not reach
 cmdline-init-canary	secure-boot	kernel/src/console_mode.rs: the check it breaks exists only under secure-boot-enforced
 commander-exit-nostop-canary	host-shared	crates/core/syscall/src/motor_commander.rs, also built by tests/host/syscall-tests with this feature
 console-format-in-lock	pending	
@@ -252,6 +253,7 @@ supall-smoke	pending
 swap-pinned-canary	host-shared	crates/core/mm/src/swap.rs: mm-tests builds the same source with the same feature
 swap-plain-canary	host-shared	crates/core/mm/src/swap.rs: mm-tests builds the same source
 syscall-abi-canary	const	kernel/src/entry/<isa>/asm.rs: a `const` operand of the trap-entry asm (syscall_abi_canary)
+table-refusable-canary	host-shared	crates/core/mm/src/pager.rs: syscall-tests builds the same source with the same feature
 tail-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 task-view-stale-canary	pending	
 thermal-floor-canary	pending	
