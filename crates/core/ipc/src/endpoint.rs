@@ -1771,6 +1771,10 @@ pub fn endpoint_handover_begin_all(old: u32, new: u32) -> Result<usize, Handover
             eps[i].successor = if eps[i].name_len > 0 { SWAP_OPEN } else { 0 };
             eps[i].handover = false;
         }
+        drop(eps);
+        if n != 0 {
+            wake_after_abort(old);
+        }
         return Err(e);
     }
     Ok(n)
@@ -1878,19 +1882,45 @@ pub fn endpoint_rebind_all(old: u32, new: u32) -> Result<usize, HandoverError> {
 /// Undo a swap that was opened or begun and not rebound: `old` serves as it
 /// did, its queued calls are delivered to it.
 pub fn endpoint_swap_cancel(old: u32) -> usize {
-    let mut eps = ENDPOINTS.lock_irqsave();
-    let mut n = 0;
-    for i in 0..MAX_ENDPOINTS {
-        if eps[i].active && eps[i].owner_tid == old && eps[i].successor != 0 {
-            if eps[i].handover {
-                let _ = glue::abort_handover(i, eps[i].generation, slot_of(old));
+    let (n, aborted) = {
+        let mut eps = ENDPOINTS.lock_irqsave();
+        let (mut n, mut aborted) = (0, false);
+        for i in 0..MAX_ENDPOINTS {
+            if eps[i].active && eps[i].owner_tid == old && eps[i].successor != 0 {
+                if eps[i].handover {
+                    let _ = glue::abort_handover(i, eps[i].generation, slot_of(old));
+                    aborted = true;
+                }
+                eps[i].successor = 0;
+                eps[i].handover = false;
+                n += 1;
             }
-            eps[i].successor = 0;
-            eps[i].handover = false;
-            n += 1;
         }
+        (n, aborted)
+    };
+    if aborted {
+        wake_after_abort(old);
     }
     n
+}
+
+/// `canary=ipc-handover-abort-no-wake`: an aborted handover leaves its server
+/// asleep (ktest `ipc_handover_abort_wakes_the_old_server`).
+static CANARY_ABORT_NO_WAKE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm the `ipc-handover-abort-no-wake` canary (boot only).
+pub fn canary_handover_abort_no_wake() {
+    CANARY_ABORT_NO_WAKE.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// A handover was given up with `old` possibly parked in its accept: nothing
+/// was delivered to it meanwhile, and the calls that queued woke it for nothing
+/// or found it awake. They are its again, and no later event names it: without
+/// this wake they wait for the next caller, which may be none. No lock held.
+fn wake_after_abort(old: u32) {
+    if !CANARY_ABORT_NO_WAKE.load(core::sync::atomic::Ordering::Relaxed) {
+        azos_sched::wake_fast_ipc_server(old);
+    }
 }
 
 /// Mint `child_tid` a `WRITE`-only capability to every endpoint `parent_tid`
@@ -3312,7 +3342,9 @@ mod tests {
         assert_eq!(endpoint_swap_open(SERVER), 1);
         assert!(endpoint_named_cap(HEIR, CapPerms::READ, b"svc").is_some());
         assert_eq!(endpoint_handover_begin_all(SERVER, HEIR), Ok(1));
+        let _ = azos_sched::shim_take_server_wakes();
         assert_eq!(endpoint_swap_cancel(SERVER), 1);
+        assert_eq!(azos_sched::shim_take_server_wakes(), [SERVER], "calls queued in the handover are its again: it is told");
         assert_eq!(endpoint_dest_for(CLIENT, ep.raw().as_raw()), Ok(SERVER));
         assert_eq!(endpoint_rebind_all(SERVER, HEIR), Ok(0), "cancelled: nothing to rebind");
         // And the successor is refused again: the swap is closed.

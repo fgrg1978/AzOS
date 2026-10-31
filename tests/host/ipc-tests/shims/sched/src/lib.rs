@@ -34,6 +34,8 @@ struct FakeSched {
     limits: Vec<(u32, u32)>,
     /// `(region, offset)` of each `futex::wake_key` on a shared word, in order.
     futex_wakes: Vec<(u32, u32)>,
+    /// The servers `wake_fast_ipc_server` addressed, in order.
+    server_wakes: Vec<u32>,
 }
 
 static SCHED: Mutex<Option<FakeSched>> = Mutex::new(None);
@@ -73,6 +75,16 @@ pub mod futex {
         super::with(|s| s.futex_wakes.push((obj, offset)));
         0
     }
+}
+
+/// The wake of a server parked in its accept: recorded.
+pub fn wake_fast_ipc_server(server_tid: u32) {
+    with(|s| s.server_wakes.push(server_tid));
+}
+
+/// The servers woken since the last call, in order.
+pub fn shim_take_server_wakes() -> Vec<u32> {
+    with(|s| std::mem::take(&mut s.server_wakes))
 }
 
 /// `(region, offset)` of the futex wakes since the last call, in order.

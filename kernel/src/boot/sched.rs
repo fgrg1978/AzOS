@@ -193,6 +193,9 @@ pub(crate) fn install_sched_hooks() {
     if canary!("sched-class-invert") {
         azos_sched::sc::canary_invert_precedence();
     }
+    if canary!("ipc-handover-abort-no-wake") {
+        azos_ipc::endpoint::canary_handover_abort_no_wake();
+    }
     // Wave 15 N9 runtime canary: a futex requeue wakes every waiter and
     // moves none (ktest `futex_requeue_wakes_one_not_the_herd`).
     if canary!("futex-requeue-wake-all") {
