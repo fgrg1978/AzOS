@@ -24027,6 +24027,40 @@ x=con; echo bb\$x-ok
         ok
     }
     ci_row "console: Kconfig gates" console_kconfig_row
+    # Cargo feature `linux-abi` and Kconfig LINUX_ABI are two spellings of one
+    # fact, and `azos_syscall` refuses a build in which they differ. The
+    # feature is named by hand here, as a build outside the Kconfig flow would.
+    # Canary: the assertion removed, the two disagreeing builds go through.
+    linuxabi_kconfig_row() {
+        printf "  %-26s" "linux-abi: feature and Kconfig agree..."
+        local tdir="$AZOS_OUT/target/linuxabi-kconfig" cfg="$AZOS_OUT/target/linuxabi-kconfig/linuxabi.config" out kase on want got
+        mkdir -p "$tdir"
+        for kase in "feature on, Kconfig on|y|--features linux-abi|build" \
+                    "feature on, Kconfig off|n|--features linux-abi|refuse" \
+                    "feature off, Kconfig on|y||refuse"; do
+            on="$(printf '%s' "$kase" | cut -d'|' -f2)"; want="$(printf '%s' "$kase" | cut -d'|' -f4)"
+            cp "$PRIMARY_CONFIG" "$cfg"
+            grep -v -e '^CONFIG_LINUX_ABI=' -e '^# CONFIG_LINUX_ABI is not set' "$cfg" >"$cfg.d"; mv "$cfg.d" "$cfg"
+            if [ "$on" = y ]; then echo "CONFIG_LINUX_ABI=y" >>"$cfg"; else echo "# CONFIG_LINUX_ABI is not set" >>"$cfg"; fi
+            (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1)
+            if [ "$on" = y ]; then grep -qx "CONFIG_LINUX_ABI=y" "$cfg"; else grep -qx "# CONFIG_LINUX_ABI is not set" "$cfg"; fi \
+                || { bad; echo "      $(printf '%s' "$kase" | cut -d'|' -f1): the config lost LINUX_ABI=$on"; return; }
+            if out="$(KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$tdir" "$CARGO" check --release -p azos_syscall $(printf '%s' "$kase" | cut -d'|' -f3) 2>&1)"; then
+                got=build
+            elif printf '%s\n' "$out" | qgrep -q "cargo feature .linux-abi. and Kconfig LINUX_ABI disagree"; then
+                got=refuse
+            else
+                got=error
+            fi
+            if [ "$got" != "$want" ]; then
+                bad; echo "      $(printf '%s' "$kase" | cut -d'|' -f1): wanted $want, got $got"
+                printf '%s\n' "$out" | grep -m3 -E "^error" | sed 's/^/        /'
+                return
+            fi
+        done
+        ok
+    }
+    ci_row "linux-abi: feature and Kconfig agree" linuxabi_kconfig_row
     if ci_wants "console: init= ignored under secure boot (rv)" "console: init= canary, check compiled out (rv)"; then
         [ -f $AZOS_OUT/build/disk-signed.img ] || make_disk $AZOS_OUT/build/disk-signed.img
     fi
