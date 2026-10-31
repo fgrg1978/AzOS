@@ -11365,12 +11365,16 @@ host_job host_canary_row "elf: mixed-page canary (host)" sched-wake-tests elf-mi
 # the `ktest QoS RT slack canary` rows.
 host_job host_canary_row "qos: RT timer slack canary (host)" sched-policy-tests qos-rt-slack-canary \
     qos_timer_slack_is_fair_class_only
-# `fast-claim-stale-canary`: the IPC fast path's claim trusts its
-# `context_saving` read from before its CAS (`task::sched_word::fast_claim`),
-# so a task parked again and still being saved is claimed as saved: the
-# sched-wake-tests race test must fail.
-host_job host_canary_row "sched: fast claim stale save canary (host)" sched-wake-tests fast-claim-stale-canary \
-    fast_claim_sees_a_save_begun_after_its_check
+# `state-gen-canary`: a commit to `Blocked` does not move the word's
+# generation, so a word read before a wake, a run and a new block matches the
+# new block (`task::sched_word`): the fast claim takes a task still being saved
+# and the reaper a task still running. Both sched-wake-tests races must fail.
+host_job host_canary_row "sched: state word generation canary, claim (host)" sched-wake-tests state-gen-canary \
+    fast_claim_refuses_a_task_parked_again_after_its_check
+host_job host_canary_row "sched: state word generation canary, reaper (host)" sched-wake-tests state-gen-canary \
+    reaper_refuses_a_task_that_blocked_again_after_its_check
+host_job host_canary_row "sched: state word generation canary, wake (host)" sched-wake-tests state-gen-canary \
+    a_wake_refuses_a_task_that_blocked_again_after_its_saved_read
 # Wake attribution (`scheduler/wake/attrib.rs`): `wake-attrib-canary` never
 # recognises a bound line's delivery nor an interrupt handler's wake, so an
 # interrupt's wake is attributed as the port event of a task: the
@@ -14397,8 +14401,11 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept -> 127, arm 131.
     # +1 lockdep_irqsave_guards_release_in_reverse_order -> 128, arm 132.
     # +1 chaos_timer_wake_late_is_not_a_storm (canary `chaos-storm-canary`) -> 129, arm 133.
-    KTEST_N_RV=129
-    KTEST_N_ARM=133
+    # +1 unswitched_block_returns_running (canary `unswitched-block-stays`) -> 130, arm 134.
+    # +1 timer_record_on_the_last_cpu (canary `timer-record-16`, -smp 17) -> 131, arm 135.
+    # +1 pi_boost_lands_on_a_racing_wake (canary `pi-boost-stale-bucket`) -> 132, arm 136.
+    KTEST_N_RV=132
+    KTEST_N_ARM=136
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14677,6 +14684,13 @@ PY
     par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk-aarch64.img
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
+    par "ktest unswitched block canary (rv)" ktest_row "ktest unswitched block canary (rv)" rv "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest unswitched block canary (arm)" ktest_row "ktest unswitched block canary (arm)" arm "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
+    par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
+    ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
+    par "ktest 17 cpus (arm)" ktest_17cpu_row "ktest 17 cpus (arm)" arm "" ""
+    par "ktest 17 cpus canary (arm)" ktest_17cpu_row "ktest 17 cpus canary (arm)" arm "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
@@ -15166,7 +15180,7 @@ PY
     # +1 wq_wake_in_the_block_window_is_kept, as on rv and arm -> 133.
     # +1 lockdep_irqsave_guards_release_in_reverse_order, as on rv and arm -> 134.
     # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
-    KTEST_N_X86=135
+    KTEST_N_X86=139
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16120,6 +16134,9 @@ PY
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
+    par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
+    par "ktest tlb request window canary (x86)" x86_ktest_row "ktest tlb request window canary (x86)" "" "tlb_request_window_is_masked" "canary=tlb-request-unmasked"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
     par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \
@@ -16714,7 +16731,7 @@ PY
     # Canary (both ISAs, in the gate): `irq-nomem-canary` gives the mask asm
     # `nomem` back; the first store is then dead and LLVM drops it, so the
     # row must find one store, or the first store after the mask.
-    irq_order_row() { # irq_order_row <isa: rv|arm> <features> <pass|canary>
+    irq_order_row() { # irq_order_row <isa: rv|arm|x86> <features> <pass|canary>
         local isa="$1" feats="$2" want="$3" elf objdump dis mask
         local label="irq order: store before mask ($isa)"
         [ "$want" = canary ] && label="irq order: canary refused ($isa)"
@@ -16722,6 +16739,10 @@ PY
         if [ "$isa" = rv ]; then
             kbuild "$feats" || { bad; echo "      riscv64 --features $feats did not build"; return; }
             elf="$KERNEL"; mask='csrw[[:space:]]+sstatus'
+        elif [ "$isa" = x86 ]; then
+            local kimg="$CI_LOG_DIR/kernel-irq-order-$want-x86"
+            x86_kbuild "$feats" "$kimg" || { bad; echo "      make x86_64 X86_64_SELECT=$feats did not build"; return; }
+            elf="$kimg"; mask='[[:space:]]cli$'
         else
             a64_kbuild "$feats" || { bad; echo "      aarch64 --features $feats did not build"; return; }
             elf="$A64_KERNEL"; mask='msr[[:space:]]+DAIF,'
@@ -16730,8 +16751,10 @@ PY
         dis="$("$objdump" -d --no-show-raw-insn --disassemble-symbols=azos_irq_order_probe "$elf" 2>/dev/null \
                | grep -E '^[[:space:]]*[0-9a-f]+:[[:space:]]')"
         local stores first_store first_mask
-        stores="$(printf '%s\n' "$dis" | grep -cE '[[:space:]](sd|str)[[:space:]]')"
-        first_store="$(printf '%s\n' "$dis" | grep -nE '[[:space:]](sd|str)[[:space:]]' | sed -n '1s/:.*//p')"
+        local st='[[:space:]](sd|str)[[:space:]]'
+        [ "$isa" = x86 ] && st='[[:space:]]movq[[:space:]]+\$0x[12], \(%rdi\)'
+        stores="$(printf '%s\n' "$dis" | grep -cE "$st")"
+        first_store="$(printf '%s\n' "$dis" | grep -nE "$st" | sed -n '1s/:.*//p')"
         first_mask="$(printf '%s\n' "$dis" | grep -nE "$mask" | sed -n '1s/:.*//p')"
         if [ -z "$dis" ] || [ -z "$first_mask" ]; then
             bad; echo "      azos_irq_order_probe not found or has no mask instruction in $elf"; return
@@ -16748,6 +16771,8 @@ PY
     par -s "irq order: store before mask (arm)" irq_order_row arm qemu,irq-order-probe pass
     par -s "irq order: canary refused (rv)" irq_order_row rv qemu,irq-nomem-canary canary
     par -s "irq order: canary refused (arm)" irq_order_row arm qemu,irq-nomem-canary canary
+    par -s "irq order: store before mask (x86)" irq_order_row x86 irq-order-probe pass
+    par -s "irq order: canary refused (x86)" irq_order_row x86 irq-nomem-canary canary
     kbuild "qemu"
 
     # The diagnostic counters that must stay at zero, on a kernel that has them.

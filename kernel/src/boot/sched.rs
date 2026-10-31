@@ -307,6 +307,15 @@ pub(crate) fn install_sched_hooks() {
     }
     // Owner decision 10-10: a wait-graph boost ignores the ring-3 floor
     // (ktest `waitgraph_ring3_owner_floored`).
+    if canary!("timer-record-16") {
+        azos_drv_sys::timebase::canary_record_16();
+    }
+    if canary!("pi-boost-stale-bucket") {
+        azos_sched::scheduler::canary_boost_stale_bucket();
+    }
+    if canary!("unswitched-block-stays") {
+        azos_sched::scheduler::canary_unswitched_stays();
+    }
     if canary!("pi-ring3-unclamped") {
         azos_sched::classes::canary_pi_ring3_unclamped();
     }
@@ -1164,6 +1173,169 @@ mod wq_window_ktests {
             }
             if LOST.load(Ordering::Acquire) {
                 return Err("a wake inside the block window was lost: the waiter slept on");
+            }
+            Ok(())
+        }
+    }
+}
+
+// A block `do_schedule` could not switch away from returns to its caller with
+// the task executing, and a caller that then finds its condition true runs on
+// with no wake to stamp it: the word must say `Running`, or the next switch
+// parks it for good (a kmutex's new holder, and every waiter behind it). A
+// helper queued here with its save held "in progress" makes the pick wait out
+// the save gate and give up, the one route that needs no timing. The same for a
+// yield, which must keep the task out of the queue. Late. Canary
+// `unswitched-block-stays`: `not ok`.
+#[cfg(feature = "ktest")]
+mod unswitched_ktests {
+    use azos_sync::waitqueue::WaitQueue;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    /// The prober is more urgent than the runner and the daemons, so its CPU
+    /// runs nothing else; the helper more urgent still, so the pick takes it.
+    const PROBER_PRIO: u32 = 3;
+    const HELPER_PRIO: u32 = 2;
+    static Q: WaitQueue = WaitQueue::new();
+    static GO: AtomicBool = AtomicBool::new(false);
+    static HELPER: AtomicU32 = AtomicU32::new(0);
+    static HELPER_RAN: AtomicBool = AtomicBool::new(false);
+    static DONE: AtomicBool = AtomicBool::new(false);
+    /// What the probe found wrong.
+    static REASON: azos_sync::SpinLock<Option<&'static str>> = azos_sync::SpinLock::new(None);
+
+    fn helper(_: usize) {
+        HELPER.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO.load(Ordering::Acquire) {
+            Q.wait_if(|| !GO.load(Ordering::Acquire));
+        }
+        HELPER_RAN.store(true, Ordering::Release);
+    }
+
+    fn prober(cpu: usize) {
+        let slot = azos_sched::task_create_affinity("unswitched-h", helper, 0, HELPER_PRIO, cpu as i8);
+        let tid = loop {
+            let t = HELPER.load(Ordering::Acquire);
+            if t != 0 && azos_sched::scheduler::ktest_parked(t) {
+                break t;
+            }
+            // Sleeping: the helper needs the CPU to reach its wait.
+            let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 500;
+            azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+        };
+        GO.store(true, Ordering::Release);
+        let got = azos_sched::scheduler::ktest_unswitched_block(slot, tid);
+        *REASON.lock() = got.err();
+        while !HELPER_RAN.load(Ordering::Acquire) {
+            azos_sched::task_yield();
+        }
+        DONE.store(true, Ordering::Release);
+    }
+
+    azos_ktest::ktest_late! {
+        fn unswitched_block_returns_running() {
+            let cpu = azos_percpu::nr_cpu_ids() - 1;
+            azos_sched::task_create_affinity("unswitched-p", prober, cpu, PROBER_PRIO, cpu as i8);
+            crate::ktest::wait("the probe never finished", || DONE.load(Ordering::Acquire))?;
+            match *REASON.lock() {
+                Some(reason) => Err(reason),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
+// Every CPU id this build can run keeps a record of its comparator, or a timed
+// sleeper and an RT enforcement instant never move it there. Only a row of more
+// than 16 CPUs (`ktest 17 cpus`) reaches the old limit. Late. Canary
+// `timer-record-16` in that row: `not ok`.
+#[cfg(feature = "ktest")]
+mod timer_record_ktests {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    const NOT_RUN: u32 = 0;
+    const RECORDED: u32 = 1;
+    const NO_RECORD: u32 = 2;
+    static GOT: AtomicU32 = AtomicU32::new(NOT_RUN);
+
+    fn on_last_cpu(_: usize) {
+        let armed = azos_drv_sys::timebase::programmed() != azos_drv_sys::timer_arm::NOT_ARMED;
+        GOT.store(if armed { RECORDED } else { NO_RECORD }, Ordering::Release);
+    }
+
+    azos_ktest::ktest_late! {
+        fn timer_record_on_the_last_cpu() {
+            let last = azos_percpu::nr_cpu_ids() - 1;
+            azos_sched::task_create_affinity("timer-rec", on_last_cpu, 0, 16, last as i8);
+            crate::ktest::wait("the task on the last CPU never ran", || GOT.load(Ordering::Acquire) != NOT_RUN)?;
+            if GOT.load(Ordering::Acquire) != RECORDED {
+                return Err("the last CPU's comparator is not recorded");
+            }
+            Ok(())
+        }
+    }
+}
+
+// A wake (or a migration, or a preemption) that reads a task's priority under its
+// queue's lock while a boost is writing it links the task into the old priority's
+// list. The boost that does not find it there leaves it behind every level between
+// the two, and no removal can reach it: unbounded inversion against the waiter.
+// The wake runs here inside `apply_prio`'s window, after its look at the state,
+// with interrupts masked on the task's CPU so nothing dispatches it first. Late.
+// Canary `pi-boost-stale-bucket`: `not ok`.
+#[cfg(feature = "ktest")]
+mod pi_boost_ktests {
+    use azos_arch::Interrupts;
+    use azos_sync::waitqueue::WaitQueue;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const TARGET_PRIO: u32 = 20;
+    const BOOST: u32 = 10;
+    const DRIVER_PRIO: u32 = 4;
+    static Q: WaitQueue = WaitQueue::new();
+    static GO: AtomicBool = AtomicBool::new(false);
+    static TID: AtomicU32 = AtomicU32::new(0);
+    static ANSWER: AtomicU32 = AtomicU32::new(0);
+    const PASSED: u32 = 1;
+    const STALE: u32 = 2;
+
+    fn target(_: usize) {
+        TID.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO.load(Ordering::Acquire) {
+            Q.wait_if(|| !GO.load(Ordering::Acquire));
+        }
+        // Only a wake and the boost's return left to prove: it runs at all.
+        while ANSWER.load(Ordering::Acquire) == 0 {
+            azos_sched::task_yield();
+        }
+    }
+
+    fn driver(_: usize) {
+        let tid = loop {
+            let t = TID.load(Ordering::Acquire);
+            if t != 0 && azos_sched::scheduler::ktest_parked(t) {
+                break t;
+            }
+            // Sleeping: a yield never hands the CPU to a worse priority.
+            let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 500;
+            azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+        };
+        GO.store(true, Ordering::Release);
+        let irq = azos_arch::ARCH.disable_all();
+        let good = azos_sched::scheduler::ktest_boost_during_wake(tid, BOOST);
+        azos_arch::ARCH.restore(irq);
+        azos_sched::scheduler::return_donation(tid);
+        ANSWER.store(if good { PASSED } else { STALE }, Ordering::Release);
+    }
+
+    azos_ktest::ktest_late! {
+        fn pi_boost_lands_on_a_racing_wake() {
+            let cpu = azos_percpu::nr_cpu_ids() - 1;
+            azos_sched::task_create_affinity("pi-target", target, 0, TARGET_PRIO, cpu as i8);
+            azos_sched::task_create_affinity("pi-driver", driver, 0, DRIVER_PRIO, cpu as i8);
+            crate::ktest::wait("the boost driver never finished", || ANSWER.load(Ordering::Acquire) != 0)?;
+            if ANSWER.load(Ordering::Acquire) != PASSED {
+                return Err("the boost left the woken task in its old priority's list");
             }
             Ok(())
         }

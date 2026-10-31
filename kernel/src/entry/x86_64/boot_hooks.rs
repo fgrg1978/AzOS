@@ -1290,6 +1290,38 @@ pub(crate) fn user_visible_state_wrong(cpu: usize, bad: &mut dyn FnMut(usize, u6
     }
 }
 
+#[cfg(feature = "ktest")]
+mod tlb_request_ktests {
+    use azos_arch::Interrupts;
+
+    // A shooter preempted holding the request lock leaves every other shooter
+    // spinning, a more urgent one on the same CPU for good: its window is masked,
+    // and `remote` asks for that itself, whatever the caller's interrupts are.
+    // Canary `tlb-request-unmasked`: `not ok`.
+    azos_ktest::ktest_late! {
+        fn tlb_request_window_is_masked() {
+            let harts = azos_percpu::nr_cpu_ids();
+            if harts < 2 {
+                return Ok(());
+            }
+            if canary!("tlb-request-unmasked") {
+                azos_arch::tlb::canary_request_unmasked();
+            }
+            let irq = azos_arch::ARCH.disable_all();
+            let me = azos_sched::smp::current_cpu_id();
+            azos_arch::ARCH.enable_all();
+            // Any other online CPU: its vector or this CPU's wait serves it.
+            let other = if me == 0 { 1 } else { 0 };
+            let masked = azos_arch::tlb::ktest_request_window_masked(1 << other);
+            azos_arch::ARCH.restore(irq);
+            if !masked {
+                return Err("the shootdown request was posted with interrupts open");
+            }
+            Ok(())
+        }
+    }
+}
+
 // tls-hygiene: ring 3 can ZERO its own x86_64 FS base with a selector load
 // (`mov %fs, sel` loads the base of the descriptor it names, 0 for every
 // segment ring 3 may load), and the kernel did not know: a switch between
