@@ -525,22 +525,70 @@ fn remote(mask: usize, root: usize, va: usize, len: usize) {
         // another CPU still translates.
         panic!("x86_64 tlb: shootdown to CPU mask {mask:#x} with no IPI sender registered");
     };
-    while REQUEST_LOCK
-        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
+    // Masked while the lock is held: a holder preempted here leaves every
+    // shooter spinning, a more urgent one on this CPU for good. Open between
+    // attempts, so the wait for another shooter costs no interrupt latency.
+    let irq = loop {
+        let irq = mask_request();
+        if REQUEST_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            break irq;
+        }
+        crate::X86_64.restore(irq);
         // Another shooter's request may name this CPU: serve it, or the
         // two wait on each other. `serve_here` reads the CPU per iteration:
         // `me` (the CPU that flushed) may not be the one spinning any more.
         serve_waiting();
         core::hint::spin_loop();
+    };
+    if azos_limits::CANARY_RUNTIME && crate::X86_64.interrupts_enabled() {
+        REQUEST_WINDOW_OPEN.store(true, Ordering::Relaxed);
     }
     post(mask, root, va, len);
     send(mask);
+    // The task may have moved to a CPU in `mask` since it flushed, and this
+    // mask now holds that CPU's own vector back.
     while PENDING.load(Ordering::Acquire) != 0 {
+        serve_waiting();
         core::hint::spin_loop();
     }
     REQUEST_LOCK.store(false, Ordering::Release);
+    crate::X86_64.restore(irq);
+}
+
+/// The request window's mask; the runtime canary leaves it open.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn mask_request() -> azos_arch_api::InterruptState {
+    if azos_limits::CANARY_RUNTIME && CANARY_REQUEST_UNMASKED.load(Ordering::Relaxed) {
+        return azos_arch_api::InterruptState(crate::cpu::rflags() & crate::cpu::RFLAGS_IF);
+    }
+    crate::X86_64.disable_all()
+}
+
+/// Runtime canary `tlb-request-unmasked` (`kernel/src/canary_rt.rs`): the lock's
+/// holder can be preempted (ktest `tlb_request_window_is_masked`).
+#[cfg(target_arch = "x86_64")]
+static CANARY_REQUEST_UNMASKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// A request was posted with interrupts open (`CANARY_RUNTIME` builds).
+#[cfg(target_arch = "x86_64")]
+static REQUEST_WINDOW_OPEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// See [`CANARY_REQUEST_UNMASKED`].
+#[cfg(target_arch = "x86_64")]
+pub fn canary_request_unmasked() {
+    CANARY_REQUEST_UNMASKED.store(true, Ordering::Relaxed);
+}
+
+/// Ktest `tlb_request_window_is_masked`: post one flush of a page no space maps to
+/// `mask`, with interrupts on at the call; whether its window was masked.
+#[cfg(target_arch = "x86_64")]
+pub fn ktest_request_window_masked(mask: usize) -> bool {
+    REQUEST_WINDOW_OPEN.store(false, Ordering::Relaxed);
+    remote(mask, ANY_ROOT, 0, 0x1000);
+    !REQUEST_WINDOW_OPEN.load(Ordering::Relaxed)
 }
 
 /// Invalidate `[va, va + len)` (everything with `len == ALL`) of the address
