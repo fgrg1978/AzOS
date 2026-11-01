@@ -14899,6 +14899,8 @@ PY
     par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
+    par "ktest 17 cpus (rv)" ktest_17cpu_row "ktest 17 cpus (rv)" rv "" ""
+    par "ktest 17 cpus canary (rv)" ktest_17cpu_row "ktest 17 cpus canary (rv)" rv "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     par "ktest 17 cpus (arm)" ktest_17cpu_row "ktest 17 cpus (arm)" arm "" ""
     par "ktest 17 cpus canary (arm)" ktest_17cpu_row "ktest 17 cpus canary (arm)" arm "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
@@ -16448,6 +16450,9 @@ PY
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
+    x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
+    par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""
+    par "ktest 17 cpus canary (x86)" x86_ktest_17cpu_row "ktest 17 cpus canary (x86)" "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     par "ktest tlb request window canary (x86)" x86_ktest_row "ktest tlb request window canary (x86)" "" "tlb_request_window_is_masked" "canary=tlb-request-unmasked"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
