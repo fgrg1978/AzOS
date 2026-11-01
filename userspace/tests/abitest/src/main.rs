@@ -1702,6 +1702,15 @@ fn check_fault_kills_only_the_child() {
         expect_eq(b"fault: NULL-write child reaped", reaped, pid);
         expect_eq(b"fault: NULL-write status is 128+SIGSEGV", status as isize, 139);
     }
+
+    // Known registers and a known stack word at the fault: what the core file row reads back.
+    let pid = spawn_child(&[b"fault-regs"]);
+    expect_true(b"fault: spawn a child that faults with known registers", pid > 0);
+    if pid > 0 {
+        let (reaped, status) = reap(pid);
+        expect_eq(b"fault: known-register child reaped", reaped, pid);
+        expect_eq(b"fault: known-register status is 128+SIGSEGV", status as isize, 139);
+    }
 }
 
 /// **Ring-3 port I/O** (`DEVICE_IOPORT_ENABLE`). On every ISA, the op on a

@@ -39,7 +39,9 @@ use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 
 use azos_abi::cap::{ty, CapPerms};
 use azos_ipc::file_cap::{self, TREE_PATH_MAX};
+use azos_recovery::coredump as core_elf;
 use azos_recovery::crashdump as cd;
+use azos_sync::SpinLock;
 
 use super::kernel::ArchFrame;
 
@@ -50,6 +52,18 @@ const RING: usize = azos_limits::CRASHDUMP_RING as usize;
 const FILES: usize = azos_limits::CRASHDUMP_FILES as usize;
 /// A ring slot: the largest dump these bounds make.
 const SLOT_BYTES: usize = cd::max_bytes(STACK, MAPS, DECISIONS);
+
+/// Whether the core file is made: Kconfig `CRASHDUMP_CORE_Y`, or `CRASHDUMP_CORE_KTEST` in a
+/// kernel built with the `ktest` feature.
+pub(crate) const CORE: bool =
+    azos_limits::CRASHDUMP_CORE_Y || (azos_limits::CRASHDUMP_CORE_KTEST && cfg!(feature = "ktest"));
+const CORE_BYTES: usize = azos_limits::CRASHDUMP_CORE_KB as usize * 1024;
+/// What `core_capture` puts on the stack beyond [`capture`]'s own: the registers and both run tables.
+const CORE_STACK_BYTES: usize = if CORE {
+    core_elf::MAX_REGS * 8 + MAPS * (core::mem::size_of::<azos_mm::vmm::UserRun>() + core::mem::size_of::<core_elf::Run>())
+} else {
+    0
+};
 
 const _: () = assert!(STACK <= cd::MAX_STACK && MAPS <= cd::MAX_MAPS && DECISIONS <= cd::MAX_DECISIONS);
 const _: () = assert!(FILES >= 1 && FILES <= cd::MAX_SLOTS && RING >= 1);
@@ -67,7 +81,8 @@ const CAPTURE_STACK_BYTES: usize = core::mem::size_of::<azos_sched::UserRegs>()
     + STACK
     + MAPS * (core::mem::size_of::<azos_mm::vmm::UserRun>() + core::mem::size_of::<cd::Map>())
     + DECISIONS * core::mem::size_of::<cd::Decision>()
-    + TREE_PATH_MAX;
+    + TREE_PATH_MAX
+    + CORE_STACK_BYTES;
 const _: () = assert!(
     CAPTURE_STACK_BYTES <= (azos_limits::KERNEL_STACK_SIZE_BYTES - (1 << azos_limits::PAGE_SHIFT)) / 2,
     "crash dump capture takes over half the kernel stack: lower CRASHDUMP_STACK_BYTES / CRASHDUMP_MAPS / \
@@ -150,6 +165,42 @@ fn claim() -> Option<&'static Slot> {
 
 #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
 compile_error!("crash: no register dump order for this ISA: a new ISA names its `registers` here");
+
+/// `pr_reg` of the ISA's `user_regs_struct`, the order gdb and lldb decode
+/// `NT_PRSTATUS` in (`coredump.rs`), and the ELF machine: how many.
+#[inline(never)]
+fn core_registers<F: ArchFrame>(frame: &F, out: &mut [u64; core_elf::MAX_REGS]) -> (u16, usize) {
+    let pc = frame.pc();
+    frame.with_user_regs(true, |r| {
+        #[cfg(target_arch = "riscv64")]
+        {
+            out[0] = pc;
+            for i in 1..32 {
+                out[i] = r[i] as u64;
+            }
+            (core_elf::EM_RISCV, 32)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            out[..31].copy_from_slice(&r.gpr);
+            out[31] = r.sp_el0;
+            out[32] = pc;
+            out[33] = r.spsr_el1;
+            (core_elf::EM_AARCH64, 34)
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let g = &r.gpr;
+            // `gpr` is rax rbx rcx rdx rsi rdi rbp r8..r15.
+            let (cs, ds) = (crate::entry::x86_64::USER_CS, crate::entry::x86_64::USER_DS);
+            out[..27].copy_from_slice(&[
+                g[14], g[13], g[12], g[11], g[6], g[1], g[10], g[9], g[8], g[7], g[0], g[2], g[3], g[4], g[5],
+                u64::MAX, pc, cs, r.rflags, r.rsp, ds, r.fs_base, r.gs_base, ds, ds, 0, 0,
+            ]);
+            (core_elf::EM_X86_64, 27)
+        }
+    })
+}
 
 /// The trap's registers in the dump's order, and the ISA that order is.
 #[inline(never)]
@@ -253,6 +304,105 @@ fn own_decisions(tid: u32, out: &mut [cd::Decision; DECISIONS]) -> usize {
     n
 }
 
+/// Write one `core-dump` decision record.
+fn core_decision(tid: u32, verdict: azos_decision::Verdict, written: usize, limit: usize, extra: u64) {
+    azos_decision::record(azos_decision::Rule::CoreDump, verdict, tid, [written as u64, limit as u64, extra]);
+}
+
+/// The core file of `task` in a buffer of `limit` bytes, read from the task's
+/// memory by `read`; `None` when none can be made. Admitted whole, refused cut
+/// (what was left out is the record's third number) or refused outright
+/// (why: 1 the budget does not hold the headers, 2 the kernel heap refused the
+/// buffer, 4 too many registers or runs).
+pub(crate) fn make_core(
+    tid: u32,
+    task: &core_elf::Task,
+    runs: &[core_elf::Run],
+    limit: usize,
+    read: impl FnMut(u64, &mut [u8]) -> usize,
+) -> Option<alloc::vec::Vec<u8>> {
+    use azos_decision::Verdict;
+    let mut buf = alloc::vec::Vec::new();
+    if buf.try_reserve_exact(limit).is_err() {
+        core_decision(tid, Verdict::Refuse, 0, limit, 2);
+        return None;
+    }
+    buf.resize(limit, 0);
+    match core_elf::encode(task, runs, &mut buf, read) {
+        Ok(w) => {
+            buf.truncate(w.len);
+            core_decision(tid, if w.dropped == 0 { Verdict::Admit } else { Verdict::Refuse }, w.len, limit, w.dropped);
+            Some(buf)
+        }
+        Err(e) => {
+            core_decision(tid, Verdict::Refuse, 0, limit, if e == core_elf::Refused::Budget { 1 } else { 4 });
+            None
+        }
+    }
+}
+
+/// A core waiting for the log flusher to write its file.
+struct Core {
+    root: [u8; TREE_PATH_MAX],
+    root_len: usize,
+    bytes: alloc::vec::Vec<u8>,
+}
+
+static CORES: SpinLock<[Option<Core>; RING]> = SpinLock::new([const { None }; RING]);
+static CORE_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// Make the core of the faulting task and stage it for [`drain`]. On the fault
+/// path, with the task's page table still the running one.
+#[inline(never)]
+fn core_capture<F: ArchFrame>(frame: &F, pt: usize, tid: u32, status: i32, root: &[u8]) {
+    let name = azos_sched::current_task_name();
+    let mut regs = [0u64; core_elf::MAX_REGS];
+    let (machine, nregs) = core_registers(frame, &mut regs);
+    let mut user = [azos_mm::vmm::UserRun::default(); MAPS];
+    let (stored, _) = azos_mm::vmm::user_runs(pt, &mut user);
+    let mut runs = [core_elf::Run::default(); MAPS];
+    for (r, u) in runs.iter_mut().zip(&user[..stored]) {
+        *r = core_elf::Run { start: u.start as u64, end: u.end as u64, write: u.write };
+    }
+    let task = core_elf::Task {
+        machine,
+        tid,
+        status,
+        name: name.as_bytes(),
+        image: image_digest(name),
+        sp: frame.user_sp(),
+        regs: &regs[..nregs],
+    };
+    let read = |addr: u64, buf: &mut [u8]| azos_mm::uaccess::copy_in_resident(pt, buf.as_mut_ptr(), addr as usize, buf.len());
+    let Some(bytes) = make_core(tid, &task, &runs[..stored], CORE_BYTES, read) else { return };
+    let mut slots = CORES.lock();
+    let Some(slot) = slots.iter_mut().find(|s| s.is_none()) else {
+        drop(slots);
+        core_decision(tid, azos_decision::Verdict::Refuse, 0, CORE_BYTES, 3);
+        return;
+    };
+    let mut r = [0u8; TREE_PATH_MAX];
+    r[..root.len()].copy_from_slice(root);
+    *slot = Some(Core { root: r, root_len: root.len(), bytes });
+    drop(slots);
+    let _ = azos_actuation::logger::logger_defer_io(drain);
+}
+
+/// Write the staged cores, each to the next slot of the core ring beneath its directory.
+fn drain_cores() {
+    loop {
+        let taken = CORES.lock().iter_mut().find_map(|s| s.take());
+        let Some(c) = taken else { return };
+        let mut table = azos_fs::ScratchFds::new();
+        let mut rel = [0u8; core_elf::REL_MAX];
+        let k = core_elf::slot_rel(CORE_SEQ.fetch_add(1, Ordering::Relaxed) as usize % FILES, &mut rel);
+        let root = &c.root[..c.root_len];
+        let wrote = azos_fs::crash_log::write_beneath(&mut table, root, &rel[..k], &c.bytes);
+        azos_drv_sys::kwarn!("[CRASHDUMP] core: {:?} as {}/{} ({} bytes)",
+            wrote, core::str::from_utf8(root).unwrap_or("?"), core::str::from_utf8(&rel[..k]).unwrap_or("?"), c.bytes.len());
+    }
+}
+
 /// Leave the dump of the running task, which a fault is about to kill with
 /// `status`. Called on the fault path, before the kill.
 pub(super) fn capture<F: ArchFrame>(frame: &F, status: i32) {
@@ -268,6 +418,9 @@ pub(super) fn capture<F: ArchFrame>(frame: &F, status: i32) {
     // No write tree, no file, so no dump: nothing reads a dump that is not one.
     let mut root = [0u8; TREE_PATH_MAX];
     let Some(root_len) = write_tree(tid, &mut root) else { return };
+    if CORE {
+        core_capture(frame, pt, tid, status, &root[..root_len]);
+    }
     let Some(slot) = claim() else { return };
     let name = azos_sched::current_task_name();
     let (pc, sp) = (frame.pc(), frame.user_sp());
@@ -333,6 +486,9 @@ pub(super) fn capture<F: ArchFrame>(frame: &F, status: i32) {
 
 /// The log flusher's job: write every dump that waits for its file.
 fn drain() {
+    if CORE {
+        drain_cores();
+    }
     for slot in SLOTS.iter() {
         if slot.state.compare_exchange(PENDING, WRITING, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
             write_file(slot);

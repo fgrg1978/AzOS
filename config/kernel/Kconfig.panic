@@ -154,6 +154,58 @@ config CRASHDUMP
       Cost: CRASHDUMP_RING x (a few KiB) of .bss, one page-table walk and
       one fixed-size copy per killed task. Nothing on any other path.
 
+choice
+    prompt "Core file of a ring-3 task a fault kills"
+    depends on CRASHDUMP
+    default CRASHDUMP_CORE_KTEST if BUILD_TYPE_DEV
+    default CRASHDUMP_CORE_N
+    help
+      Besides the minidump, the task's writable memory goes to a file a
+      debugger reads: CORE<n>.ELF, an ELF64 core (crates/core/recovery/src/coredump.rs)
+      in the root of the first write tree the Domain holds, next to CRASH<n>.DMP,
+      a ring of CRASHDUMP_FILES slots. PT_NOTE carries the registers
+      (NT_PRSTATUS, the ISA's user_regs_struct), the name and the image's
+      SHA-256; one PT_LOAD per writable run carries its pages, the stack
+      first and from the stack pointer's page. Code and read-only data are in
+      the image file the debugger is given, so they are left out. The core is
+      cut at CRASHDUMP_CORE_KB; what was left out, a core the budget cannot
+      start, a buffer the kernel heap refuses and a full staging ring are
+      each a `core-dump` decision record (`why`), never a silent miss.
+
+      Unlike the minidump this allocates on the fault path (the buffer,
+      CRASHDUMP_CORE_KB at most, freed once the log flusher has written the
+      file), and copies up to that many bytes of the task's memory: a
+      development tool, off in every shipping BUILD_TYPE.
+
+config CRASHDUMP_CORE_N
+    bool "Off"
+    help
+      No core file; the minidump is as it was.
+
+config CRASHDUMP_CORE_KTEST
+    bool "In ktest kernels"
+    depends on BUILD_TYPE_DEV
+    help
+      On in kernels built with KTEST only; every other kernel is as with Off.
+      The default in development builds.
+
+config CRASHDUMP_CORE_Y
+    bool "In every development kernel"
+    depends on BUILD_TYPE_DEV
+    help
+      Compiled into every kernel of this configuration.
+
+endchoice
+
+config CRASHDUMP_CORE_KB
+    int "Core file: byte budget (KiB)"
+    range 4 4096
+    default 256
+    help
+      Read only with a core file on. The file, headers and notes included,
+      is never larger than this; the buffer is allocated at this size on the
+      fault path and freed after the file is written.
+
 config CRASHDUMP_STACK_BYTES
     int "Crash dump: stack window (bytes, from the stack pointer up)"
     depends on CRASHDUMP

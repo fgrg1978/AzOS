@@ -24,7 +24,7 @@
 //! `tests/host/trap-tests` compiles them unchanged against fake frames.
 
 #[cfg(feature = "crashdump")]
-mod crash;
+pub(crate) mod crash;
 pub mod frame;
 pub mod fault;
 pub mod irq;

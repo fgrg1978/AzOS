@@ -14768,9 +14768,12 @@ PY
     # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
     # +2 hung_task_detector_reports_a_blocked_owner_wait,
     # stuck_cpu_detector_names_the_cpu (Kconfig HUNG_DETECT; canaries `ktest hung
-    # canary (rv|arm|x86)`).
-    KTEST_N_RV=145
-    KTEST_N_ARM=149
+    # canary (rv|arm|x86)`) -> 143 + 2 = 145, arm 149.
+    # +2 kheap_guard_reports_a_buffer_overflow, kheap_guard_reports_a_use_after_free -> 147, arm 151.
+    # +1 kheap_leaks_reports_a_block_nobody_freed -> 148, arm 152.
+    # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 150, arm 154.
+    KTEST_N_RV=150
+    KTEST_N_ARM=154
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14926,7 +14929,7 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded):' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
@@ -15060,6 +15063,44 @@ PY
     par "ktest 17 cpus canary (rv)" ktest_17cpu_row "ktest 17 cpus canary (rv)" rv "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     par "ktest 17 cpus (arm)" ktest_17cpu_row "ktest 17 cpus (arm)" arm "" ""
     par "ktest 17 cpus canary (arm)" ktest_17cpu_row "ktest 17 cpus canary (arm)" arm "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
+    # Kconfig KHEAP_GUARD_*: the heap guard reports a deliberate overflow, underflow, use after
+    # free and double free (the ERE pins both tests by name); the canary builds the same kernel
+    # with the guard off (KHEAP_GUARD_N), where the tests must go red.
+    KTEST_GUARD_RE=$'^ok [0-9]+ - kheap_guard_reports_a_buffer_overflow$\n^ok [0-9]+ - kheap_guard_reports_a_use_after_free$'
+    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free kheap_leaks_reports_a_block_nobody_freed"
+    KTEST_LEAKS_RE=$'^ok [0-9]+ - kheap_leaks_reports_a_block_nobody_freed$'
+    # A ktest row built from the gate's Kconfig with one more line (KCFG_LINE, `KCFG_GREP` what it must read back as).
+    ktest_row_cfgline() {
+        local isa="$2" defc cfg
+        defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
+        mkdir -p "$CI_LOG_DIR"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-${KCFG_TAG}-${isa}.config"
+        { cat "${REPO_ROOT}/config/defconfigs/${defc}.config"; printf '%s\n' "$KCFG_LINE"; } >"$cfg" \
+            && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+            && grep -q "^${KCFG_GREP}\$" "$cfg" \
+            || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with $KCFG_LINE ($cfg)"; return; }
+        if [ "$isa" = rv ]; then KCONFIG_CONFIG="$cfg" ktest_row "$@"; else AARCH64_CONFIG="$cfg" ktest_row "$@"; fi
+    }
+    par "ktest heap guard (rv)" ktest_row "ktest heap guard (rv)" rv "" "" "" "$KTEST_GUARD_RE"
+    par "ktest heap guard (arm)" ktest_row "ktest heap guard (arm)" arm "" "" "" "$KTEST_GUARD_RE"
+    ktest_row_guardoff() { KCFG_TAG=guardoff KCFG_LINE="CONFIG_KHEAP_GUARD_N=y" KCFG_GREP="CONFIG_KHEAP_GUARD_N=y" ktest_row_cfgline "$@"; }
+    ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" KCFG_GREP="# CONFIG_KHEAP_LEAKS is not set" ktest_row_cfgline "$@"; }
+    par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
+    par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
+    # Kconfig KHEAP_LEAKS: the tracker names a block nobody freed; the canary keeps the guard and drops the tracker.
+    # Kconfig CRASHDUMP_CORE_*: the kernel's core writer makes an ELF core of a run of memory, and a refused or
+    # cut core leaves a `core-dump` decision record; the canary builds with the core off (CRASHDUMP_CORE_N).
+    KTEST_CORE_RE=$'^ok [0-9]+ - crash_core_file_is_an_elf_core$\n^ok [0-9]+ - crash_core_refusal_is_a_decision_record$'
+    KTEST_CORE_OFF="crash_core_file_is_an_elf_core crash_core_refusal_is_a_decision_record"
+    ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" KCFG_GREP="CONFIG_CRASHDUMP_CORE_N=y" ktest_row_cfgline "$@"; }
+    par "ktest core file (rv)" ktest_row "ktest core file (rv)" rv "" "" "" "$KTEST_CORE_RE"
+    par "ktest core file (arm)" ktest_row "ktest core file (arm)" arm "" "" "" "$KTEST_CORE_RE"
+    par "ktest core file off canary (rv)" ktest_row_coreoff "ktest core file off canary (rv)" rv "" "$KTEST_CORE_OFF"
+    par "ktest core file off canary (arm)" ktest_row_coreoff "ktest core file off canary (arm)" arm "" "$KTEST_CORE_OFF"
+    par "ktest heap leaks (rv)" ktest_row "ktest heap leaks (rv)" rv "" "" "" "$KTEST_LEAKS_RE"
+    par "ktest heap leaks (arm)" ktest_row "ktest heap leaks (arm)" arm "" "" "" "$KTEST_LEAKS_RE"
+    par "ktest heap leaks off canary (rv)" ktest_row_leaksoff "ktest heap leaks off canary (rv)" rv "" "kheap_leaks_reports_a_block_nobody_freed"
+    par "ktest heap leaks off canary (arm)" ktest_row_leaksoff "ktest heap leaks off canary (arm)" arm "" "kheap_leaks_reports_a_block_nobody_freed"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     # A real CPU stop and start, on a kernel with CPU_HOTPLUG (off in the robot cell
@@ -15641,7 +15682,9 @@ PY
     # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
     # +4 the hotplug_* tests -> 150.
     # +2 the hung-task and stuck-CPU tests, as on rv and arm.
-    KTEST_N_X86=154
+    # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
+    # tests, as on rv and arm -> 152 + 7 = 159.
+    KTEST_N_X86=159
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16703,7 +16746,7 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded):' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
@@ -16755,6 +16798,126 @@ PY
         x86_ktest_row "$@"
     }
     par "ktest why durable-off canary (x86)" x86_ktest_row_nodur "ktest why durable-off canary (x86)" "" "why_resolves_a_refused_reservation"
+    # See the riscv64 and aarch64 `ktest heap guard` rows.
+    x86_ktest_row_cfgline() { # KCFG_TAG, KCFG_LINE: one more Kconfig line on the gate's cell
+        local def="$CI_LOG_DIR/x86-$KCFG_TAG.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-$KCFG_TAG.elf X86_KBUILD_ARGS
+        mkdir -p "$CI_LOG_DIR"
+        { cat config/defconfigs/${GATE_ROBOT_DEFC_X86}.config; printf '%s\n' "$KCFG_LINE"; } >"$def"
+        X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-$KCFG_TAG.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-$KCFG_TAG X86_64_IMG=$X86_KBUILD_OUT"
+        x86_ktest_row "$@"
+    }
+    x86_ktest_row_guardoff() { KCFG_TAG=guardoff KCFG_LINE="CONFIG_KHEAP_GUARD_N=y" x86_ktest_row_cfgline "$@"; }
+    x86_ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" x86_ktest_row_cfgline "$@"; }
+    par "ktest heap guard (x86)" x86_ktest_row "ktest heap guard (x86)" "" "" "" "" "$KTEST_GUARD_RE"
+    par "ktest heap guard off canary (x86)" x86_ktest_row_guardoff "ktest heap guard off canary (x86)" "" "$KTEST_GUARD_OFF"
+    x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
+    par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
+    par "ktest core file off canary (x86)" x86_ktest_row_coreoff "ktest core file off canary (x86)" "" "$KTEST_CORE_OFF"
+    # Kconfig CRASHDUMP_CORE_*, end to end: abitest's child `fault-regs` faults for real with known
+    # callee-saved registers and a known stack array; the kernel (CRASHDUMP_CORE_Y) writes CORE<n>.ELF
+    # into /fat, and the host reads it back off the volume copy (tools/gate/core_check.py: llvm-readobj
+    # parses it, NT_PRSTATUS holds the known values in the ISA's slots, the stack PT_LOAD holds the array,
+    # the image note is ABICHILD.ELF's SHA-256). `cut`: CRASHDUMP_CORE_KB=8, the file must be exactly
+    # 8192 bytes and still carry all of that. `off` is the canary (CRASHDUMP_CORE_N): no core file, so the
+    # same check is red, and the row is green only because it is.
+    core_fault_row() { # core_fault_row <label> <isa: rv|arm|x86> <whole|cut|off>
+        local label="$1" isa="$2" mode="$3" lines limit=262144 tag cfg log kimg disk why="" f k
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        log="$CI_LOG_DIR/$tag.log"; kimg="$CI_LOG_DIR/kernel-$tag"; disk="$CI_LOG_DIR/disk-$tag.img"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/core-$tag.config"
+        case "$mode" in
+            whole) lines=$'CONFIG_CRASHDUMP_CORE_Y=y\nCONFIG_CRASHDUMP_FILES=16' ;;
+            cut)   lines=$'CONFIG_CRASHDUMP_CORE_Y=y\nCONFIG_CRASHDUMP_FILES=16\nCONFIG_CRASHDUMP_CORE_KB=8'; limit=8192 ;;
+            off)   lines=$'CONFIG_CRASHDUMP_CORE_N=y\nCONFIG_CRASHDUMP_FILES=16' ;;
+        esac
+        local keep='^(# )?CONFIG_CRASHDUMP_(CORE_(N|KTEST|Y|KB)|FILES)[= ]'
+        rm -f "$log" "$kimg" "$disk"
+        case "$isa" in
+        rv|arm)
+            { grep -v -E "$keep" "$([ "$isa" = rv ] && echo "$PRIMARY_CONFIG" || echo "$GATE_AARCH64_CONFIG")"; printf '%s\n' "$lines"; } >"$cfg" \
+                && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+                && grep -q "^CONFIG_CRASHDUMP_CORE_$([ "$mode" = off ] && echo N || echo Y)=y" "$cfg" \
+                || { bad; echo "      could not make the Kconfig ($cfg)"; return; }
+            if [ "$isa" = rv ]; then
+                KCONFIG_CONFIG="$cfg" kbuild "qemu,abichild-fat-row" || { bad; echo "      riscv64 kernel did not build"; return; }
+                cp "$KERNEL" "$kimg"
+                make_disk $AZOS_OUT/build/disk-abitest.img; cp $AZOS_OUT/build/disk-abitest.img "$disk"
+            else
+                AARCH64_CONFIG="$cfg" a64_kbuild "qemu,abichild-fat-row" || { bad; echo "      aarch64 kernel did not build"; return; }
+                cp "$A64_IMG" "$kimg"
+                make $AZOS_OUT/build/disk-aarch64-abitest.img >/dev/null 2>&1 || { bad; echo "      disk image build failed"; return; }
+                cp $AZOS_OUT/build/disk-aarch64-abitest.img "$disk"
+            fi
+            par_ready
+            while [ $(qemu_count) -ge 4 ]; do sleep 2; done
+            if [ "$isa" = rv ]; then
+                "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 -global virtio-mmio.force-legacy=false \
+                    -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+            else
+                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                    -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
+            fi
+            local pid=$! i=0
+            while [ "$i" -lt 300 ] && kill -0 "$pid" 2>/dev/null; do
+                grep -aqE "ABITEST\] [0-9]+ check\(s\) run" "$log" 2>/dev/null && break
+                i=$((i + 1)); sleep 1
+            done
+            sleep 3; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ;;
+        x86)
+            { cat "config/defconfigs/$(gate_defc x86 qemu).config"; echo "$GATE_KCONFIG_EXTRA"; printf '%s\n' "$lines"; } >"$cfg.def"
+            X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-core.elf \
+            X86_KBUILD_ARGS="X86_64_DEFCONFIG=$cfg.def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-core-$mode.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-core-$mode X86_64_IMG=$AZOS_OUT/build/kernel-x86_64-core.elf" \
+                x86_kbuild "abichild-fat-row" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
+            make $AZOS_OUT/build/disk-x86_64-abitest.img >/dev/null 2>&1 || { bad; echo "      disk image build failed"; return; }
+            cp $AZOS_OUT/build/disk-x86_64-abitest.img "$disk"
+            par_ready
+            x86_qemu "$kimg" "$log" 300 'ABITEST\] [0-9]+ check\(s\) run|KERNEL PANIC' -smp 2 \
+                -drive "file=$disk,if=none,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+                || { rm -f "$kimg" "$kimg.features" "$disk"; return; }
+            sleep 1 ;;
+        esac
+        local isan; case "$isa" in rv) isan=riscv64 ;; arm) isan=aarch64 ;; x86) isan=x86_64 ;; esac
+        local -a cores=()
+        mkdir -p "$CI_LOG_DIR/$tag.d"; rm -f "$CI_LOG_DIR/$tag.d"/*
+        for k in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+            mcopy -n -i "$disk" ::CORE$k.ELF "$CI_LOG_DIR/$tag.d/CORE$k.ELF" 2>/dev/null && cores+=("$CI_LOG_DIR/$tag.d/CORE$k.ELF")
+        done
+        mcopy -n -i "$disk" ::ABICHILD.ELF "$CI_LOG_DIR/$tag.d/ABICHILD.ELF" 2>/dev/null || why="no ABICHILD.ELF on the volume"
+        rm -f "$kimg" "$kimg.features"
+        if [ -z "$why" ]; then
+            if [ "${#cores[@]}" = 0 ]; then why="no CORE<n>.ELF on the volume after the fault"
+            else why="$(python3 tools/gate/core_check.py "$isan" "$CI_LOG_DIR/$tag.d/ABICHILD.ELF" "$([ "$mode" = cut ] && echo cut || echo whole)" "$limit" "${cores[@]}" 2>&1)" \
+                && { f="$why"; why=""; } || true
+            fi
+        fi
+        rm -f "$disk"
+        if [ "$mode" = off ]; then
+            if [ -n "$why" ]; then ok; echo "      red as it must be with the core off: $why"; rm -rf "$CI_LOG_DIR/$tag.d" "$log"
+            else bad; echo "      a core file was written with CRASHDUMP_CORE_N"; fi
+            return
+        fi
+        if [ -z "$why" ]; then ok; echo "      $f"; rm -rf "$CI_LOG_DIR/$tag.d" "$log"; return; fi
+        bad; echo "      $why"; grep -aE "CRASHDUMP|Killing user" "$log" | sed -n 1,6p | sed 's/^/      /'; echo "      kept: $CI_LOG_DIR/$tag.d $log"
+    }
+    par "core file: a fault (rv)" core_fault_row "core file: a fault (rv)" rv whole
+    par "core file: a fault, cut at the budget (rv)" core_fault_row "core file: a fault, cut at the budget (rv)" rv cut
+    par "core file: a fault, core off canary (rv)" core_fault_row "core file: a fault, core off canary (rv)" rv off
+    par "core file: a fault (arm)" core_fault_row "core file: a fault (arm)" arm whole
+    par "core file: a fault, cut at the budget (arm)" core_fault_row "core file: a fault, cut at the budget (arm)" arm cut
+    par "core file: a fault, core off canary (arm)" core_fault_row "core file: a fault, core off canary (arm)" arm off
+    par "core file: a fault (x86)" core_fault_row "core file: a fault (x86)" x86 whole
+    par "core file: a fault, cut at the budget (x86)" core_fault_row "core file: a fault, cut at the budget (x86)" x86 cut
+    par "core file: a fault, core off canary (x86)" core_fault_row "core file: a fault, core off canary (x86)" x86 off
+    # The `# leak:` note: the runtime canary kheap-leak-kept leaves one 24-byte block allocated in an early
+    # test, and the note must name it.
+    KTEST_NOTE_RE=$'^# leak: kheap_leaks_reports_a_block_nobody_freed: 1 blocks, 24 bytes still allocated\n^#   block 0x[0-9a-f]+ size 24 '
+    par "ktest leak note (rv)" ktest_row "ktest leak note (rv)" rv "" "" "canary=kheap-leak-kept" "$KTEST_NOTE_RE"
+    par "ktest leak note (arm)" ktest_row "ktest leak note (arm)" arm "" "" "canary=kheap-leak-kept" "$KTEST_NOTE_RE"
+    par "ktest leak note (x86)" x86_ktest_row "ktest leak note (x86)" "" "" "canary=kheap-leak-kept" "" "$KTEST_NOTE_RE"
+    par "ktest heap leaks (x86)" x86_ktest_row "ktest heap leaks (x86)" "" "" "" "" "$KTEST_LEAKS_RE"
+    par "ktest heap leaks off canary (x86)" x86_ktest_row_leaksoff "ktest heap leaks off canary (x86)" "" "kheap_leaks_reports_a_block_nobody_freed"
     x86_ktest_row_hotplug() {
         local def="$CI_LOG_DIR/x86-hotplug.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-hotplug.elf X86_KBUILD_ARGS
         mkdir -p "$CI_LOG_DIR"

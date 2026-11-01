@@ -33,6 +33,7 @@ use linked_list_allocator::Heap;
 use azos_arch::ARCH;
 use azos_arch_api::Cpu;
 use azos_sync::SpinLock;
+use crate::kheap_guard as guard;
 use crate::slab::{Backing, Params, Slab, NO_CLASS};
 
 struct LockedHeap(SpinLock<Heap>);
@@ -351,7 +352,7 @@ unsafe impl GlobalAlloc for LockedHeap {
         }
         #[cfg(feature = "kheap-census")]
         let t0 = crate::kheap_census::now();
-        let p = unsafe { inner_alloc(layout) };
+        let p = if guard::ENABLED { unsafe { guard::alloc(layout, RAW) } } else { unsafe { inner_alloc(layout) } };
         #[cfg(feature = "kheap-census")]
         {
             let t = crate::kheap_census::now().wrapping_sub(t0);
@@ -363,11 +364,14 @@ unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         #[cfg(feature = "kheap-census")]
         let t0 = crate::kheap_census::now();
-        unsafe { inner_dealloc(ptr, layout) };
+        if guard::ENABLED { unsafe { guard::dealloc(ptr, layout, RAW) } } else { unsafe { inner_dealloc(ptr, layout) } };
         #[cfg(feature = "kheap-census")]
         crate::kheap_census::on_free(layout.size(), crate::kheap_census::now().wrapping_sub(t0));
     }
 }
+
+/// The allocator under the heap guard (Kconfig `KHEAP_GUARD_*`).
+const RAW: guard::Raw = guard::Raw { alloc: inner_alloc, free: inner_dealloc };
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap(SpinLock::new(Heap::empty()));
@@ -385,11 +389,19 @@ pub unsafe fn init(start: usize, size: usize) {
 
 /// Bytes in use: what the heap has handed out, less what the size-class
 /// cache holds free (objects in its slabs, depot and magazines; other
-/// CPUs' magazines read as a snapshot). Slab headers and tails and the
+/// CPUs' magazines read as a snapshot) and what the heap guard holds in
+/// quarantine. Slab headers and tails and the
 /// cache's magazines count as used.
 pub fn used() -> usize {
     let h = HEAP.0.lock().used();
-    if azos_limits::KHEAP_SLAB { h.saturating_sub(SLAB.cached_bytes()) } else { h }
+    let h = if azos_limits::KHEAP_SLAB { h.saturating_sub(SLAB.cached_bytes()) } else { h };
+    if guard::ENABLED { h.saturating_sub(guard::bytes_held()) } else { h }
+}
+
+/// Release the heap guard's quarantine now, checking every block in it: how
+/// many it held (0 with the guard off).
+pub fn guard_drain() -> usize {
+    if guard::ENABLED { unsafe { guard::drain(RAW) } } else { 0 }
 }
 
 /// Get the total heap size in bytes.

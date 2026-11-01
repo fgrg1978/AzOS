@@ -182,6 +182,9 @@ flight-tool-drivetrain = ["profile-actuation"]
 # image's create under `/fat` is no longer refused.
 linux-abi-test = []
 linux-abi-caps-canary = ["linux-abi-test"]
+# Gate only: `abichild`'s row holds `/fat` read-write, so a ring-3 child's fault leaves its core file
+# (Kconfig CRASHDUMP_CORE_*) on the volume the gate reads back (rows `core file: a fault`).
+abichild-fat-row = []
 # The third-party BUSYBOX.ELF row (`make busybox`) and the
 # shell's grant to start it. Gate only.
 linux-busybox-test = ["linux-abi-test"]

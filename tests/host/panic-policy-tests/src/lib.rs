@@ -6,6 +6,8 @@
 //! them.
 
 #[cfg(test)]
+mod coredump;
+#[cfg(test)]
 mod crashdump;
 #[cfg(test)]
 mod ro_hooks;

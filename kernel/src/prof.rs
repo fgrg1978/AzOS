@@ -315,6 +315,37 @@ fn puts_hex(v: u64) {
     azos_drv_sys::uart::puts(core::str::from_utf8(&d[first..]).unwrap_or("?"));
 }
 
+/// Words of stack [`scan_chain`] looks at.
+const SCAN_WORDS: usize = 384;
+
+/// The return addresses into the kernel's text on this CPU's stack, nearest
+/// first, into `out`; how many. The kernel keeps no frame pointers, so this is
+/// a scan of the live stack, not a walk: the outermost callers may be missing
+/// and a stale slot of a live frame may show. For the heap leak tracker
+/// (`azos_mm::kheap_leaks`), which only needs a place to start reading.
+#[inline(never)]
+pub(crate) fn scan_chain(out: &mut [usize]) -> usize {
+    let (_, sp) = regs!();
+    // The boot hart's own stack, before any task: bounded by the scan, not by a top the profiler lacks.
+    let (lo, hi) = match kernel_stack(sp as usize, azos_sched::smp::current_cpu_id()) {
+        Some(b) => b,
+        None if azos_sched::current_task_stack_top() == 0 => (sp, sp + (SCAN_WORDS * 8) as u64),
+        None => return 0,
+    };
+    let (mut at, mut n) = (lo, 0);
+    for _ in 0..SCAN_WORDS {
+        if at + 8 > hi || n == out.len() {
+            break;
+        }
+        if let Some(v) = read_stack(at).filter(|&v| kernel_text(v) && (n == 0 || out[n - 1] != v as usize)) {
+            out[n] = v as usize;
+            n += 1;
+        }
+        at += 8;
+    }
+    n
+}
+
 /// Print this CPU's call chain on the console, from the caller's frame up:
 /// `[PANIC] backtrace: 0x... 0x...` and why the walk stopped. Raw console
 /// writes only (no lock, no allocation), for the panic path.

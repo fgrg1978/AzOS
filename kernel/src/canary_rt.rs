@@ -454,6 +454,9 @@ pub(crate) const NAMES: &[&str] = &[
     // boot/usb.rs: the lister guard drops last and leaves interrupts masked,
     // armed only inside ktest `inspect_refresh_leaves_interrupts_as_they_were`.
     "usb-refresh-tail-guard",
+    // ktest.rs `kheap_leaks_reports_a_block_nobody_freed`: the test leaves one 24-byte block
+    // allocated, which the runner's `# leak:` note must name (gate rows `ktest leak note`).
+    "kheap-leak-kept",
     // entry/aarch64/boot_hooks.rs: one post-indexed store to a GIC register,
     // which HVF cannot emulate (gate row `aarch64 hvf: a writeback store on a
     // device aborts`).

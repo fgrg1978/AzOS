@@ -328,6 +328,9 @@ pub enum Rule {
     /// took the action the build's Kconfig `HUNG_ACTION` names
     /// (`azos_actuation::sys_wdt`, Kconfig `HUNG_DETECT`).
     Hang = 76,
+    /// A ring-3 task's core file (Kconfig `CRASHDUMP_CORE_*`) was written whole,
+    /// written cut to its byte budget, or not written at all.
+    CoreDump = 77,
 }
 
 /// The verdict of a record.
@@ -355,7 +358,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 77] = [
+pub const RULES: [RuleInfo; 78] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1128,6 +1131,17 @@ pub const RULES: [RuleInfo; 77] = [
         fields: ["waited_ms", "kind<<32|culprit", "action<<32|detail"],
         rejected_if_yes: "act on it: the wait may still end by itself",
         rejected_if_no: "keep waiting: the wait has no bound and nothing else will end it",
+    },
+    RuleInfo {
+        // Refuse with bytes_written > 0 is a core cut to its budget; with 0, no core.
+        // The third number is the bytes of the task's writable memory left out, or
+        // when no core was made, why: 1 the budget does not hold the headers, 2 the
+        // kernel heap refused the buffer, 3 the staging ring was full.
+        name: "core-dump",
+        subject: "tid",
+        fields: ["bytes_written", "limit_bytes", "dropped_bytes|why"],
+        rejected_if_yes: "-",
+        rejected_if_no: "write the whole core: the task's writable memory does not fit CRASHDUMP_CORE_KB, or the kernel could not stage it",
     },
 ];
 

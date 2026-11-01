@@ -175,7 +175,14 @@ fn run_phase(phase: usize, first: usize) -> usize {
         kprintln!("{}# ktest {} {}", nl, i, t.name);
         azos_ktest::set_current(Some((i, t)));
         let before = azos_sync::lockdep::violations();
+        let leak_mark = azos_mm::kheap_leaks::mark();
         let mut verdict = (t.run)();
+        // The heap guard checks what the test freed while the test is still
+        // the one running: a write after free is then its own `not ok`.
+        azos_mm::kheap::guard_drain();
+        if azos_mm::kheap_guard::LEAKS && phase == azos_ktest::EARLY {
+            leak_note(t.name, leak_mark);
+        }
         azos_ktest::set_current(None);
         // Any lockdep violation during the test fails it (Kconfig LOCKDEP).
         let found = azos_sync::lockdep::violations().wrapping_sub(before) as usize;
@@ -199,6 +206,23 @@ fn run_phase(phase: usize, first: usize) -> usize {
         }
     }
     failed
+}
+
+/// What the early test `name` left allocated (Kconfig `KHEAP_LEAKS`): a note,
+/// not a failure, since a cache or a registry may keep a block on purpose. The
+/// early phase runs on the boot hart before any task, so what is live since
+/// the mark is the test's. The chains are return addresses into the kernel's
+/// text, `tools/dev/symbolize_bt.py` turns them into names.
+fn leak_note(name: &str, mark: u64) {
+    let mut out = [azos_mm::kheap_leaks::Leak::default(); 8];
+    let (n, bytes) = azos_mm::kheap_leaks::since(mark, None, &mut out);
+    if n == 0 {
+        return;
+    }
+    kprintln!("# leak: {}: {} blocks, {} bytes still allocated", name, n, bytes);
+    for l in out.iter().take(n) {
+        kprintln!("#   block {:#x} size {} allocation {} chain {:x?}", l.addr, l.size, l.seq, &l.frames[..l.depth as usize]);
+    }
 }
 
 fn summary(n: usize, failed: usize) -> ! {
@@ -537,6 +561,214 @@ azos_ktest::ktest! {
             Ok(_) => Err("the self-test allocated no object"),
             Err(e) => Err(e),
         }
+    }
+}
+
+// The heap guard (Kconfig `KHEAP_GUARD_*`, `crates/core/mm/src/kheap_guard.rs`)
+// reports a bug committed on purpose: one byte past a block and one before it,
+// a clean block that must report nothing. With the guard off (the canary row's
+// configuration) the test is red.
+azos_ktest::ktest! {
+    fn kheap_guard_reports_a_buffer_overflow() {
+        use alloc::boxed::Box;
+        use azos_mm::kheap_guard::expect;
+        if !azos_mm::kheap_guard::ENABLED {
+            return Err("the heap guard (Kconfig KHEAP_GUARD_*) is off in this kernel");
+        }
+        azos_mm::kheap::guard_drain();
+        let (_, clean) = expect(|| drop(core::hint::black_box(Box::new([7u8; 40]))));
+        let (_, over) = expect(|| {
+            let p = core::hint::black_box(Box::into_raw(Box::new([0u8; 40]))) as *mut u8;
+            // SAFETY: one byte past the 40 the block holds, inside its red zone.
+            unsafe {
+                p.add(40).write_volatile(1);
+                drop(Box::from_raw(p as *mut [u8; 40]));
+            }
+        });
+        let (_, under) = expect(|| {
+            let p = core::hint::black_box(Box::into_raw(Box::new([0u8; 40]))) as *mut u8;
+            // SAFETY: one byte before the block, inside its red zone.
+            unsafe {
+                p.sub(1).write_volatile(1);
+                drop(Box::from_raw(p as *mut [u8; 40]));
+            }
+        });
+        azos_mm::kheap::guard_drain();
+        if clean != [0; 4] { return Err("the guard reported a block nobody abused"); }
+        if over != [1, 0, 0, 0] { return Err("the guard did not report one overflow"); }
+        if under != [0, 1, 0, 0] { return Err("the guard did not report one underflow"); }
+        Ok(())
+    }
+}
+
+// A write after free and a second free, both while the block is held.
+azos_ktest::ktest! {
+    fn kheap_guard_reports_a_use_after_free() {
+        use alloc::boxed::Box;
+        use azos_mm::kheap_guard::expect;
+        if !azos_mm::kheap_guard::ENABLED {
+            return Err("the heap guard (Kconfig KHEAP_GUARD_*) is off in this kernel");
+        }
+        azos_mm::kheap::guard_drain();
+        let (_, uaf) = expect(|| {
+            let p = core::hint::black_box(Box::into_raw(Box::new([0u8; 48]))) as *mut u8;
+            // SAFETY: the box is freed first; the write is the bug under test.
+            unsafe {
+                drop(Box::from_raw(p as *mut [u8; 48]));
+                p.add(8).write_volatile(0x41);
+            }
+            azos_mm::kheap::guard_drain();
+        });
+        let (_, twice) = expect(|| {
+            let layout = core::alloc::Layout::new::<[u8; 48]>();
+            // SAFETY: the second free is the bug under test; the block is held, not reused.
+            unsafe {
+                let p = core::hint::black_box(alloc::alloc::alloc(layout));
+                alloc::alloc::dealloc(p, layout);
+                alloc::alloc::dealloc(p, layout);
+            }
+            azos_mm::kheap::guard_drain();
+        });
+        if uaf != [0, 0, 1, 0] { return Err("the guard did not report one use after free"); }
+        if twice != [0, 0, 0, 1] { return Err("the guard did not report one double free"); }
+        Ok(())
+    }
+}
+
+// The leak tracker (Kconfig `KHEAP_LEAKS`) names a block nobody freed and not
+// one that was. With it off (the canary row's configuration) the test is red.
+azos_ktest::ktest! {
+    fn kheap_leaks_reports_a_block_nobody_freed() {
+        use alloc::boxed::Box;
+        use azos_mm::kheap_leaks::{since, mark, Leak};
+        if !azos_mm::kheap_guard::LEAKS {
+            return Err("the heap leak tracker (Kconfig KHEAP_LEAKS) is off in this kernel");
+        }
+        let m = mark();
+        let mut out = [Leak::default(); 4];
+        drop(core::hint::black_box(Box::new([1u8; 24])));
+        if since(m, None, &mut out).0 != 0 {
+            return Err("a block that was freed is reported as a leak");
+        }
+        let p = core::hint::black_box(Box::into_raw(Box::new([2u8; 24])));
+        let (n, bytes) = since(m, None, &mut out);
+        // SAFETY: `p` came from `Box::into_raw` above and is freed once.
+        unsafe { drop(Box::from_raw(p)) };
+        if (n, bytes) != (1, 24) || out[0].addr != p as usize || out[0].size != 24 {
+            return Err("the leaked block was not reported with its address and size");
+        }
+        if since(m, None, &mut out).0 != 0 {
+            return Err("the block is still reported after it was freed");
+        }
+        if canary!("kheap-leak-kept") {
+            core::mem::forget(core::hint::black_box(Box::new([3u8; 24])));
+        }
+        Ok(())
+    }
+}
+
+// The core file of a killed ring-3 task (Kconfig `CRASHDUMP_CORE_*`,
+// `crates/core/recovery/src/coredump.rs`): built by the kernel's own writer from
+// a run of kernel memory standing in for the task's, it is an ELF core of this
+// machine whose stack segment starts at the stack pointer's page and holds the
+// bytes of the run. With the core off (the canary row) the test is red.
+azos_ktest::ktest! {
+    fn crash_core_file_is_an_elf_core() {
+        #[cfg(feature = "crashdump")]
+        {
+            use azos_recovery::coredump::{Run, Task};
+            use crate::trap::crash::{make_core, CORE};
+            if !CORE {
+                return Err("the core file (Kconfig CRASHDUMP_CORE_*) is off in this kernel");
+            }
+            let data: alloc::vec::Vec<u8> = (0..3 * 4096usize).map(|i| (i * 7) as u8).collect();
+            let (start, end) = (data.as_ptr() as u64, data.as_ptr() as u64 + data.len() as u64);
+            let sp = start + 4096 + 16;
+            let regs: [u64; 27] = core::array::from_fn(|i| 0xC0DE_0000 + i as u64);
+            #[cfg(target_arch = "riscv64")]
+            let machine = azos_recovery::coredump::EM_RISCV;
+            #[cfg(target_arch = "aarch64")]
+            let machine = azos_recovery::coredump::EM_AARCH64;
+            #[cfg(target_arch = "x86_64")]
+            let machine = azos_recovery::coredump::EM_X86_64;
+            let task = Task { machine, tid: 5, status: 11, name: b"KTEST", image: [9; 32], sp, regs: &regs };
+            let read = |a: u64, buf: &mut [u8]| {
+                // SAFETY: `a` is inside `data`, a live allocation.
+                unsafe { core::ptr::copy_nonoverlapping(a as *const u8, buf.as_mut_ptr(), buf.len()) };
+                buf.len()
+            };
+            let run = [Run { start, end, write: true }, Run { start: 0x1_0000, end: 0x2_0000, write: false }];
+            let core = make_core(5, &task, &run, 64 * 1024, read).ok_or("no core was made")?;
+            let u16at = |at: usize| u16::from_le_bytes([core[at], core[at + 1]]);
+            let u64at = |at: usize| u64::from_le_bytes(core[at..at + 8].try_into().unwrap());
+            if &core[..4] != b"\x7fELF" || u16at(16) != 4 || u16at(18) != machine {
+                return Err("the file is not an ELF core of this machine");
+            }
+            let phnum = u16at(56) as usize;
+            if phnum != 2 {
+                return Err("expected the notes and one writable run, and nothing for the read-only one");
+            }
+            let load = 64 + 56;
+            let (off, va, sz) = (u64at(load + 8) as usize, u64at(load + 16), u64at(load + 32) as usize);
+            let want = (sp & !4095).max(start);
+            if va != want || sz as u64 != end - want || core[off..off + sz] != data[(want - start) as usize..] {
+                return Err("the stack segment is not the run from the stack pointer's page up");
+            }
+            let note = u64at(64 + 8) as usize;
+            if !core[note..].windows(8).any(|w| w == regs[0].to_le_bytes()) {
+                return Err("the registers are not in the notes");
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "crashdump"))]
+        Err("the crash dump (Kconfig CRASHDUMP) is off in this kernel")
+    }
+}
+
+// A core the budget cannot hold is refused with a decision record, not
+// dropped without a word: one the budget cuts is recorded with what it left out.
+azos_ktest::ktest! {
+    fn crash_core_refusal_is_a_decision_record() {
+        #[cfg(feature = "crashdump")]
+        {
+            use azos_recovery::coredump::{Run, Task};
+            use crate::trap::crash::{make_core, CORE};
+            if !CORE {
+                return Err("the core file (Kconfig CRASHDUMP_CORE_*) is off in this kernel");
+            }
+            let data = alloc::vec![1u8; 2 * 4096];
+            let (start, end) = (data.as_ptr() as u64, data.as_ptr() as u64 + data.len() as u64);
+            let regs = [0u64; 27];
+            let task = Task { machine: 0, tid: 6, status: 11, name: b"KTEST", image: [0; 32], sp: start, regs: &regs };
+            let run = [Run { start, end, write: true }];
+            let read = |a: u64, buf: &mut [u8]| {
+                // SAFETY: `a` is inside `data`, a live allocation.
+                unsafe { core::ptr::copy_nonoverlapping(a as *const u8, buf.as_mut_ptr(), buf.len()) };
+                buf.len()
+            };
+            let last = || azos_decision::get(azos_decision::total()).filter(|r| r.rule == azos_decision::Rule::CoreDump as u8);
+            let before = azos_decision::total();
+            if make_core(6, &task, &run, 200, read).is_some() {
+                return Err("a budget below the headers made a core");
+            }
+            let r = last().ok_or("a refused core left no decision record")?;
+            if azos_decision::total() != before + 1 || r.verdict != azos_decision::Verdict::Refuse as u8 || r.n[0] != 0 || r.n[2] != 1 {
+                return Err("the refusal record does not say that the budget held no headers");
+            }
+            let cut = make_core(6, &task, &run, 1500 + 4096, read).ok_or("a cut core was not made")?;
+            let r = last().ok_or("a cut core left no decision record")?;
+            if r.verdict != azos_decision::Verdict::Refuse as u8 || r.n[0] != cut.len() as u64 || r.n[2] == 0 {
+                return Err("the record of a cut core does not name what was left out");
+            }
+            let whole = make_core(6, &task, &run, 64 * 1024, read).ok_or("a whole core was not made")?;
+            let r = last().ok_or("a whole core left no decision record")?;
+            if r.verdict != azos_decision::Verdict::Admit as u8 || r.n[0] != whole.len() as u64 || r.n[2] != 0 {
+                return Err("the record of a whole core is not an admission");
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "crashdump"))]
+        Err("the crash dump (Kconfig CRASHDUMP) is off in this kernel")
     }
 }
 
