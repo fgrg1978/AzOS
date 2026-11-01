@@ -563,12 +563,18 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
             0
         }
         nr::SCHED_GETAFFINITY => {
-            // `sched_getaffinity(pid, size, mask)`: one CPU set; the kernel
-            // answers the bytes written (a `long`).
-            if a1 < 8 {
+            // `sched_getaffinity(pid, size, mask)`: the thread's CPU set (0 =
+            // the caller), padded to the kernel's mask length like Linux's;
+            // the kernel answers the bytes written (a `long`).
+            const WORDS: usize = azos_limits::NR_CPUS.div_ceil(64);
+            if (a1 as usize) < WORDS * 8 {
                 return neg(le::EINVAL);
             }
-            if put_user(a2, &1u64.to_le_bytes()) { 8 } else { neg(le::EFAULT) }
+            let tid = if a0 == 0 { azos_sched::current_task_tid() } else { a0 as u32 };
+            let Some(pin) = azos_sched::task_cpu_affinity(tid) else { return neg(le::ESRCH) };
+            let online = azos_sched::smp::NUM_ONLINE_CPUS.load(core::sync::atomic::Ordering::Acquire);
+            let words = lx::cpu_set::<WORDS>(pin, online);
+            if put_user_words(a2, &words) { (WORDS * 8) as i64 } else { neg(le::EFAULT) }
         }
         nr::PRCTL => match a0 {
             // PR_SET_NAME, PR_GET_NAME: the task's name is its image's.
