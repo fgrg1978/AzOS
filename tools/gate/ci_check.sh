@@ -11512,6 +11512,11 @@ host_job host_canary_row "elf: fill without memory canary (host)" sched-wake-tes
 # the `ktest QoS RT slack canary` rows.
 host_job host_canary_row "qos: RT timer slack canary (host)" sched-policy-tests qos-rt-slack-canary \
     qos_timer_slack_is_fair_class_only
+# A real board has no rangefinder driver: the refusal must leave a record
+# (`drivers-tests` stands in for `azos_drv_sys` with `ON_QEMU` false; a QEMU
+# kernel never refuses).
+host_job host_canary_row "rangefinder: refusal record canary (host)" drivers-tests rangefinder-record-canary \
+    a_board_with_no_driver_records_the_refusal
 # `state-gen-canary`: a commit to `Blocked` does not move the word's
 # generation, so a word read before a wake, a run and a new block matches the
 # new block (`task::sched_word`): the fast claim takes a task still being saved

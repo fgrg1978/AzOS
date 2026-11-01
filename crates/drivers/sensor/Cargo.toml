@@ -21,9 +21,13 @@ ads1115-pipeline-canary = []
 # Gate canary (S2): an ADS1115 unit runs outside the device queue, so another
 # caller's unit can land inside it (drivers-tests' interleaving test fails).
 ads1115-queue-canary = []
+# Gate canary: a refused rangefinder writes no decision record (drivers-tests'
+# refusal test fails).
+rangefinder-record-canary = []
 
 [dependencies]
 azos_abi           = { workspace = true }
+azos_decision      = { workspace = true }
 azos_devif         = { workspace = true }
 azos_sync          = { workspace = true }
 azos_rings         = { workspace = true }

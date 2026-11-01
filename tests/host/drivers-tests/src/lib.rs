@@ -3922,6 +3922,42 @@ mod buzzer_chip {
 
 // ── ADS1115 pipelined read (wave 15, S2) ────────────────────────────────────
 //
+// `rangefinder.rs` on a real board (this crate stands in for `azos_drv_sys`, with
+// `ON_QEMU` false): there is no driver, so it refuses, serves nothing and leaves a
+// record of the refusal.
+pub const ON_QEMU: bool = false;
+
+#[allow(dead_code)]
+#[path = "../../../../crates/drivers/sensor/src/rangefinder.rs"]
+mod rangefinder;
+
+#[cfg(test)]
+mod rangefinder_refusal {
+    use super::rangefinder::*;
+    use azos_decision::{Rule, Verdict};
+
+    fn refusals(kind: u32) -> Vec<[u64; 3]> {
+        let mut seen = Vec::new();
+        azos_decision::for_each(|r| {
+            if r.rule == Rule::Rangefinder as u8 && r.verdict == Verdict::Refuse as u8 && r.subject == kind {
+                seen.push(r.n);
+            }
+        });
+        seen
+    }
+
+    #[test]
+    fn a_board_with_no_driver_records_the_refusal() {
+        assert!(!us_init(4));
+        assert!(!tof_init(2));
+        assert_eq!(refusals(0), [[4, US_MAX as u64, 0]], "ultrasonic");
+        assert_eq!(refusals(1), [[2, TOF_MAX as u64, 0]], "time of flight");
+        assert_eq!((us_count(), tof_count()), (0, 0));
+        assert_eq!(us_read_mm(0), None, "a distance nothing measured");
+        assert_eq!(tof_read_mm(0), None, "a distance nothing measured");
+    }
+}
+
 // `ads1115.rs` over `shims/bus`'s scripted chip: a conversion reads busy for
 // `busy_polls` config reads. The blocking read polls through all of them; the
 // pipelined one takes the conversion the previous call started and starts the

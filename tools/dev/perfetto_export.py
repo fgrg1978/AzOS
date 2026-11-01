@@ -75,7 +75,7 @@ RULES = ["deadline-admission", "rt-band-cap", "memory-admission", "wake-placemen
          "usb-authorize", "block-timeout", "clock-set", "estop-release",
          "thermal", "durability", "net-timeout", "usb-host-fault",
          "call-admission", "opp-apply", "power-assertion", "nic-queue",
-         "clocksource", "ioport-reserved"]
+         "clocksource", "ioport-reserved", "rangefinder"]
 # `azos_decision::VERDICTS`.
 VERDICTS = ["admit", "refuse", "place", "deny"]
 # `azos_decision::REFUSAL_REASONS`.
@@ -164,6 +164,7 @@ FIELDS = {
     "nic-queue": (["ifindex", "queue", "why"], None),
     "clocksource": (["reason", "drift_ppm", "limit_ppm"], None),
     "ioport-reserved": (["first", "last", "kernel_port"], None),
+    "rangefinder": (["asked", "max", "0"], None),
 }
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",

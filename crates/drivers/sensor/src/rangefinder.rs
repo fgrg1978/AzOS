@@ -6,14 +6,24 @@
 /// Under QEMU (`azos_drv_sys::ON_QEMU`), returns simulated distances.
 /// There is no driver for the real sensors yet (ultrasonic: GPIO trigger +
 /// echo pulse timing; ToF: I2C VL53L0X), so on a real board `us_init` and
-/// `tof_init` refuse and the sensors are never ready: a read answers `None`,
-/// never a simulated distance, and obstacle avoidance and the REFLEX daemon
-/// run without a rangefinder (the daemon refuses to start).
+/// `tof_init` refuse, with a `Rule::Rangefinder` record, and the sensors are
+/// never ready: a read answers `None`, never a simulated distance, and obstacle
+/// avoidance and the REFLEX daemon run without a rangefinder (the daemon refuses
+/// to start).
 ///
 /// Both sensors feed into the behavior engine L1 (avoid-obstacle)
 /// without requiring the server.
 
+use azos_decision::{Rule, Verdict};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
+
+/// Record that `asked` sensors of `kind` were refused: `max` is the most the
+/// driver would have taken.
+fn record_refusal(kind: u32, asked: u8, max: usize) {
+    if !cfg!(feature = "rangefinder-record-canary") {
+        azos_decision::record(Rule::Rangefinder, Verdict::Refuse, kind, [asked as u64, max as u64, 0]);
+    }
+}
 
 // ── Ultrasonic (HC-SR04) ────────────────────────────────────────────────────
 
@@ -39,6 +49,7 @@ static US_DIST: [AtomicU16; US_MAX] = [
 pub fn us_init(count: u8) -> bool {
     if !azos_drv_sys::ON_QEMU {
         azos_drv_sys::kwarn!("[RANGE] Ultrasonic: no driver for this board: not initialized, no simulated distances served");
+        record_refusal(0, count, US_MAX);
         return false;
     }
     let count = if count > US_MAX as u8 { US_MAX as u8 } else { count };
@@ -96,6 +107,7 @@ pub const VL53L0X_ADDR: u8 = 0x29;
 pub fn tof_init(count: u8) -> bool {
     if !azos_drv_sys::ON_QEMU {
         azos_drv_sys::kwarn!("[RANGE] ToF VL53L0X: no driver for this board: not initialized, no simulated distances served");
+        record_refusal(1, count, TOF_MAX);
         return false;
     }
     let count = if count > TOF_MAX as u8 { TOF_MAX as u8 } else { count };

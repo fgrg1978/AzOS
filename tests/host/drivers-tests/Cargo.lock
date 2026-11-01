@@ -38,6 +38,14 @@ name = "azos_common"
 version = "0.1.0"
 
 [[package]]
+name = "azos_decision"
+version = "0.1.0"
+dependencies = [
+ "azos_common",
+ "azos_limits",
+]
+
+[[package]]
 name = "azos_devif"
 version = "0.1.0"
 dependencies = [
@@ -70,6 +78,7 @@ dependencies = [
  "azos_buzzer",
  "azos_chaos",
  "azos_common",
+ "azos_decision",
  "azos_devif",
  "azos_dma",
  "azos_drv_api",

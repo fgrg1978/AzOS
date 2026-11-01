@@ -20,6 +20,8 @@ azos_mm = { path = "shims/mm", package = "drv_test_mm" }
 # S2 (wave 15): ads1115.rs, pulled via #[path], over a scripted ADS1115.
 azos_drv_bus = { path = "shims/bus", package = "drv_test_bus" }
 azos_arch = { path = "shims/arch", package = "drv_test_arch" }
+# rangefinder.rs, pulled via #[path]: the record of a refusal.
+azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
 # `motor_pid.rs` reads Kconfig `PID_DT_MS` (wave 11); the real crate, as
 # cap-tests uses it.
 azos_limits = { path = "../../../crates/core/limits" }
@@ -91,3 +93,5 @@ mmc-poll-canary = []
 ads1115-pipeline-canary = []
 # S2 canary: an ADS1115 unit runs outside the device queue.
 ads1115-queue-canary = []
+# A refused rangefinder writes no decision record.
+rangefinder-record-canary = []

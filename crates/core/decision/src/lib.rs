@@ -319,6 +319,10 @@ pub enum Rule {
     /// clock, the PCI configuration pair, the 8042, the PIT's channel 0), and
     /// the minter refused the grant (`azos_ipc::ioport_cap`).
     IoportReserved = 74,
+    /// A rangefinder was asked for on a board with no driver for it: it stays
+    /// not ready instead of serving simulated distances, so obstacle avoidance
+    /// and the REFLEX daemon run without it (`azos_drv_sensor::rangefinder`).
+    Rangefinder = 75,
 }
 
 /// The verdict of a record.
@@ -346,7 +350,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 75] = [
+pub const RULES: [RuleInfo; 76] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1097,6 +1101,14 @@ pub const RULES: [RuleInfo; 75] = [
         fields: ["first", "last", "kernel_port"],
         rejected_if_yes: "-",
         rejected_if_no: "grant the ports as the signed row asks: a ring-3 access would race the kernel's driver of that port (its console, clock, PCI configuration or timer)",
+    },
+    RuleInfo {
+        // The subject is the sensor type: 0 ultrasonic, 1 time of flight.
+        name: "rangefinder",
+        subject: "kind",
+        fields: ["asked", "max", "0"],
+        rejected_if_yes: "-",
+        rejected_if_no: "serve the simulated distances: obstacle avoidance would trust a clear path no sensor measured",
     },
 ];
 

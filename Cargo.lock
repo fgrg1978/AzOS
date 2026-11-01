@@ -382,6 +382,7 @@ name = "azos_drv_sensor"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_decision",
  "azos_devif",
  "azos_driver_server",
  "azos_drv_api",
