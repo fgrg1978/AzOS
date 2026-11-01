@@ -14651,8 +14651,9 @@ PY
     # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
     # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
     # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
-    KTEST_N_RV=143
-    KTEST_N_ARM=147
+    # +2 kheap_guard_reports_a_buffer_overflow, kheap_guard_reports_a_use_after_free -> 145, arm 149.
+    KTEST_N_RV=145
+    KTEST_N_ARM=149
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14942,6 +14943,26 @@ PY
     par "ktest 17 cpus canary (rv)" ktest_17cpu_row "ktest 17 cpus canary (rv)" rv "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     par "ktest 17 cpus (arm)" ktest_17cpu_row "ktest 17 cpus (arm)" arm "" ""
     par "ktest 17 cpus canary (arm)" ktest_17cpu_row "ktest 17 cpus canary (arm)" arm "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
+    # Kconfig KHEAP_GUARD_*: the heap guard reports a deliberate overflow, underflow, use after
+    # free and double free (the ERE pins both tests by name); the canary builds the same kernel
+    # with the guard off (KHEAP_GUARD_N), where the tests must go red.
+    KTEST_GUARD_RE=$'^ok [0-9]+ - kheap_guard_reports_a_buffer_overflow$\n^ok [0-9]+ - kheap_guard_reports_a_use_after_free$'
+    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free"
+    ktest_row_guardoff() {
+        local isa="$2" defc cfg
+        defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
+        mkdir -p "$CI_LOG_DIR"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-guardoff-${isa}.config"
+        { cat "${REPO_ROOT}/config/defconfigs/${defc}.config"; printf "CONFIG_KHEAP_GUARD_N=y\n"; } >"$cfg" \
+            && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+            && grep -q "^CONFIG_KHEAP_GUARD_N=y" "$cfg" \
+            || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with the heap guard off ($cfg)"; return; }
+        if [ "$isa" = rv ]; then KCONFIG_CONFIG="$cfg" ktest_row "$@"; else AARCH64_CONFIG="$cfg" ktest_row "$@"; fi
+    }
+    par "ktest heap guard (rv)" ktest_row "ktest heap guard (rv)" rv "" "" "" "$KTEST_GUARD_RE"
+    par "ktest heap guard (arm)" ktest_row "ktest heap guard (arm)" arm "" "" "" "$KTEST_GUARD_RE"
+    par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
+    par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     # A real CPU stop and start, on a kernel with CPU_HOTPLUG (off in the robot cell
@@ -15515,7 +15536,8 @@ PY
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
     # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
     # +4 the hotplug_* tests -> 150.
-    KTEST_N_X86=152
+    # +2 the kheap_guard_* tests, as on rv and arm -> 154.
+    KTEST_N_X86=154
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16571,6 +16593,16 @@ PY
         x86_ktest_row "$@"
     }
     par "ktest why durable-off canary (x86)" x86_ktest_row_nodur "ktest why durable-off canary (x86)" "" "why_resolves_a_refused_reservation"
+    # See the riscv64 and aarch64 `ktest heap guard` rows.
+    x86_ktest_row_guardoff() {
+        local def="$CI_LOG_DIR/x86-guardoff.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-guardoff.elf X86_KBUILD_ARGS
+        mkdir -p "$CI_LOG_DIR"
+        { cat config/defconfigs/${GATE_ROBOT_DEFC_X86}.config; echo "CONFIG_KHEAP_GUARD_N=y"; } >"$def"
+        X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-guardoff.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-guardoff X86_64_IMG=$X86_KBUILD_OUT"
+        x86_ktest_row "$@"
+    }
+    par "ktest heap guard (x86)" x86_ktest_row "ktest heap guard (x86)" "" "" "" "" "$KTEST_GUARD_RE"
+    par "ktest heap guard off canary (x86)" x86_ktest_row_guardoff "ktest heap guard off canary (x86)" "" "$KTEST_GUARD_OFF"
     x86_ktest_row_hotplug() {
         local def="$CI_LOG_DIR/x86-hotplug.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-hotplug.elf X86_KBUILD_ARGS
         mkdir -p "$CI_LOG_DIR"

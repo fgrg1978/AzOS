@@ -176,6 +176,9 @@ fn run_phase(phase: usize, first: usize) -> usize {
         azos_ktest::set_current(Some((i, t)));
         let before = azos_sync::lockdep::violations();
         let mut verdict = (t.run)();
+        // The heap guard checks what the test freed while the test is still
+        // the one running: a write after free is then its own `not ok`.
+        azos_mm::kheap::guard_drain();
         azos_ktest::set_current(None);
         // Any lockdep violation during the test fails it (Kconfig LOCKDEP).
         let found = azos_sync::lockdep::violations().wrapping_sub(before) as usize;
@@ -537,6 +540,77 @@ azos_ktest::ktest! {
             Ok(_) => Err("the self-test allocated no object"),
             Err(e) => Err(e),
         }
+    }
+}
+
+// The heap guard (Kconfig `KHEAP_GUARD_*`, `crates/core/mm/src/kheap_guard.rs`)
+// reports a bug committed on purpose: one byte past a block and one before it,
+// a clean block that must report nothing. With the guard off (the canary row's
+// configuration) the test is red.
+azos_ktest::ktest! {
+    fn kheap_guard_reports_a_buffer_overflow() {
+        use alloc::boxed::Box;
+        use azos_mm::kheap_guard::expect;
+        if !azos_mm::kheap_guard::ENABLED {
+            return Err("the heap guard (Kconfig KHEAP_GUARD_*) is off in this kernel");
+        }
+        azos_mm::kheap::guard_drain();
+        let (_, clean) = expect(|| drop(core::hint::black_box(Box::new([7u8; 40]))));
+        let (_, over) = expect(|| {
+            let p = core::hint::black_box(Box::into_raw(Box::new([0u8; 40]))) as *mut u8;
+            // SAFETY: one byte past the 40 the block holds, inside its red zone.
+            unsafe {
+                p.add(40).write_volatile(1);
+                drop(Box::from_raw(p as *mut [u8; 40]));
+            }
+        });
+        let (_, under) = expect(|| {
+            let p = core::hint::black_box(Box::into_raw(Box::new([0u8; 40]))) as *mut u8;
+            // SAFETY: one byte before the block, inside its red zone.
+            unsafe {
+                p.sub(1).write_volatile(1);
+                drop(Box::from_raw(p as *mut [u8; 40]));
+            }
+        });
+        azos_mm::kheap::guard_drain();
+        if clean != [0; 4] { return Err("the guard reported a block nobody abused"); }
+        if over != [1, 0, 0, 0] { return Err("the guard did not report one overflow"); }
+        if under != [0, 1, 0, 0] { return Err("the guard did not report one underflow"); }
+        Ok(())
+    }
+}
+
+// A write after free and a second free, both while the block is held.
+azos_ktest::ktest! {
+    fn kheap_guard_reports_a_use_after_free() {
+        use alloc::boxed::Box;
+        use azos_mm::kheap_guard::expect;
+        if !azos_mm::kheap_guard::ENABLED {
+            return Err("the heap guard (Kconfig KHEAP_GUARD_*) is off in this kernel");
+        }
+        azos_mm::kheap::guard_drain();
+        let (_, uaf) = expect(|| {
+            let p = core::hint::black_box(Box::into_raw(Box::new([0u8; 48]))) as *mut u8;
+            // SAFETY: the box is freed first; the write is the bug under test.
+            unsafe {
+                drop(Box::from_raw(p as *mut [u8; 48]));
+                p.add(8).write_volatile(0x41);
+            }
+            azos_mm::kheap::guard_drain();
+        });
+        let (_, twice) = expect(|| {
+            let layout = core::alloc::Layout::new::<[u8; 48]>();
+            // SAFETY: the second free is the bug under test; the block is held, not reused.
+            unsafe {
+                let p = core::hint::black_box(alloc::alloc::alloc(layout));
+                alloc::alloc::dealloc(p, layout);
+                alloc::alloc::dealloc(p, layout);
+            }
+            azos_mm::kheap::guard_drain();
+        });
+        if uaf != [0, 0, 1, 0] { return Err("the guard did not report one use after free"); }
+        if twice != [0, 0, 0, 1] { return Err("the guard did not report one double free"); }
+        Ok(())
     }
 }
 

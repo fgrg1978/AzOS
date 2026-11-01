@@ -32,7 +32,7 @@
 2	kernel/src/entry/aarch64/boot_hooks.rs	a static and the PAN probe's user page
 1	kernel/src/entry/aarch64/ext/pan_patch.rs	kernel text
 2	kernel/src/entry/aarch64/mod.rs	the TTBR1 alias canary, a static
-2	kernel/src/ktest.rs	statics and their aliases
+5	kernel/src/ktest.rs	statics, heap blocks and their aliases
 1	kernel/src/prof.rs	a stack frame walk
 1	kernel/src/smokes/asid_rollover.rs	a test page
 1	kernel/src/smokes/panic_splice_smoke.rs	a deliberately bad address, which must fault

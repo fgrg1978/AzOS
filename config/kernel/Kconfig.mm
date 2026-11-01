@@ -263,6 +263,64 @@ config KHEAP_SLAB_DEBUG
       Cost: a fill and a scan of the object on every alloc and free (about
       size/8 to size instructions each), nothing in RAM.
 
+choice
+    prompt "Kernel heap guard: red zones, poison and quarantine"
+    default KHEAP_GUARD_KTEST if BUILD_TYPE_DEV
+    default KHEAP_GUARD_N
+    help
+      Wraps every allocation of the global allocator
+      (crates/core/mm/src/kheap_guard.rs) in a red zone on each side and
+      holds a freed block, filled with 0xdd, in a FIFO quarantine before the
+      allocator can hand it out again. A free checks both red zones (a buffer
+      overflow or underflow: the first changed offset and byte), a block
+      leaving quarantine must still be all 0xdd (a write after free), and a
+      second free of a held block is named. A finding panics with the block
+      and offset, so the crash log carries it. A new body is filled with
+      0xcd.
+
+      Why not the compiler's kernel-address sanitizer: rustc accepts
+      `-Zsanitizer=kernel-address` on all three targets, but it needs the
+      standard crates rebuilt with it (rustc refuses to mix), a hook for
+      every load and store size and for memcpy/memmove/memset, and a shadow
+      mapped and kept in step with the heap, with every access in the kernel
+      (interrupt entry, early boot, the slab itself) paying a call. This guard
+      is the part of it that needs no compiler support and no shadow: it
+      catches writes, at the free, not reads. The sanitizer is the way to
+      the reads.
+
+      Not caught: a read through a stale or out-of-bounds pointer; a write
+      beyond the red zone or into another live object; a use after the block
+      has left quarantine; memory that is not from the global allocator
+      (frames, stacks, statics, DMA pools); the slab's own bookkeeping.
+      Development builds only (BUILD_TYPE); the `kheap_guard_*` ktests commit
+      each bug on purpose.
+
+      Cost: two red zones and the alignment padding per allocation, the
+      quarantine's memory (KHEAP_GUARD_QUARANTINE_KB, counted out of the
+      heap's use), a fill of the whole block on alloc and on free and a scan
+      on free. Nothing when off: the allocator is as it was.
+
+config KHEAP_GUARD_N
+    bool "Off"
+    help
+      Not compiled: the allocator is as it was.
+
+config KHEAP_GUARD_KTEST
+    bool "In ktest kernels"
+    depends on BUILD_TYPE_DEV
+    help
+      On in kernels built with KTEST (the gate's `ktest` rows) only; every
+      other kernel is as with Off. The default in development builds.
+
+config KHEAP_GUARD_Y
+    bool "In every development kernel"
+    depends on BUILD_TYPE_DEV
+    help
+      Compiled into every kernel of this configuration, at the cost stated
+      above.
+
+endchoice
+
 config MM_THP_RESV
     bool "Superpage reservations: a 2 MiB run per aligned anonymous region, promoted when full"
     depends on MM_DEMAND_PAGING

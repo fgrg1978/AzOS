@@ -672,6 +672,33 @@ config KHEAP_SLAB_KEEP_EMPTY
       walk on a class that oscillates around a slab boundary; it costs one
       slab per class.
 
+config KHEAP_GUARD_REDZONE
+    int "Heap guard: bytes of red zone on each side"
+    range 16 256
+    default 32
+    help
+      Read only with KHEAP_GUARD on (as the KHEAP_SLAB_* options below are
+      read only with KHEAP_SLAB).
+      An overflow that skips farther than this lands in the next block
+      unseen. Each allocation costs twice this, plus its alignment padding.
+
+config KHEAP_GUARD_QUARANTINE_KB
+    int "Heap guard: KiB of freed blocks held before reuse"
+    range 4 65536
+    default 256
+    help
+      A freed block is held, poisoned, until this many bytes of later frees
+      push it out; a use after free is caught only while it is held. The
+      bytes count as free in `kheap::used()`.
+
+config KHEAP_GUARD_QUARANTINE_SLOTS
+    int "Heap guard: freed blocks held before reuse, at most"
+    range 8 65536
+    default 1024
+    help
+      The quarantine's block count, 24 bytes of .bss per slot. Small blocks
+      reach this before KHEAP_GUARD_QUARANTINE_KB.
+
 config RING3_MEM_PAGES_DEFAULT
     int "Frame budget of a ring-3 topology row that declares none (pages)"
     range 16 1048576
