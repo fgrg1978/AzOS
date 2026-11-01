@@ -89,7 +89,11 @@ unsafe-budget:
 # qemu-dev.config's log level) and from no caller RUSTFLAGS, into a target dir
 # of its own so it never invalidates the development build. The config is
 # rewritten only when its text changes: a fresh mtime would rebuild every
-# crate behind azos_limits. Build only; nothing boots.
+# crate behind azos_limits. The kernel binds the image-hash table of the
+# userspace images the configuration enables, so the table is made from this
+# configuration too: its rows are .rodata, and what the last `make` here left
+# (no .config: none; the gate's: all) moved the measure by a page. Build only;
+# nothing boots.
 # `make size-update REASON=".."` moves the baseline (in the commit that grows
 # or shrinks the image).
 SIZE_DEFCONFIG  := config/defconfigs/robot-sbc-riscv64-dev+qemu+linux+gui.config
@@ -104,7 +108,8 @@ $(SIZE_KCONFIG): $(SIZE_DEFCONFIG) FORCE
 	@KCONFIG_CONFIG=$@.new $(PYTHON) -m olddefconfig >/dev/null
 	@if cmp -s $@.new $@; then rm -f $@.new; else mv $@.new $@; fi
 
-size-kernel: $(SIZE_KCONFIG) | $(IMAGE_HASHES)
+size-kernel: $(SIZE_KCONFIG)
+	KCONFIG_CONFIG="$(SIZE_KCONFIG)" $(MAKE) --no-print-directory $(IMAGE_HASHES)
 	rf="$$(python3 tools/build/kconfig_to_cargo.py --rustflags --toml --skip-base $(SIZE_KCONFIG))"; \
 	isa=""; [ -z "$$rf" ] || isa="target.$(RISCV64_TARGET).rustflags=[$$rf]"; \
 	env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$(SIZE_KCONFIG)" \
