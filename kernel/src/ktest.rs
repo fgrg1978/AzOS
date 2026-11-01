@@ -685,12 +685,13 @@ azos_ktest::ktest! {
             let (start, end) = (data.as_ptr() as u64, data.as_ptr() as u64 + data.len() as u64);
             let sp = start + 4096 + 16;
             let regs: [u64; 27] = core::array::from_fn(|i| 0xC0DE_0000 + i as u64);
-            #[cfg(target_arch = "riscv64")]
-            let machine = azos_recovery::coredump::EM_RISCV;
-            #[cfg(target_arch = "aarch64")]
-            let machine = azos_recovery::coredump::EM_AARCH64;
-            #[cfg(target_arch = "x86_64")]
-            let machine = azos_recovery::coredump::EM_X86_64;
+            let machine = if cfg!(target_arch = "riscv64") {
+                azos_recovery::coredump::EM_RISCV
+            } else if cfg!(target_arch = "aarch64") {
+                azos_recovery::coredump::EM_AARCH64
+            } else {
+                azos_recovery::coredump::EM_X86_64
+            };
             let task = Task { machine, tid: 5, status: 11, name: b"KTEST", image: [9; 32], sp, regs: &regs };
             let read = |a: u64, buf: &mut [u8]| {
                 // SAFETY: `a` is inside `data`, a live allocation.
