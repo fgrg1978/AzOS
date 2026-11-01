@@ -169,10 +169,12 @@ config TLB_FLUSH_CEILING_PAGES
       whole address space (x86_64: the PCID's non-global entries; the
       kernel's own range: everything) instead of one invalidation per
       page. Linux's tlb_single_page_flush_ceiling, also 33. Read by
-      x86_64 (arch/x86_64/src/tlb.rs) and by riscv64's local
-      part (arch/riscv64/src/tlb.rs, which runs masked);
-      aarch64 broadcasts and still invalidates page by page. This is the plan's
-      TLB_FLUSH_THRESHOLD_PAGES (N12).
+      x86_64 (arch/x86_64/src/tlb.rs), by riscv64's local part
+      (arch/riscv64/src/tlb.rs, which runs masked), by aarch64 without
+      FEAT_TLBIRANGE (arch/aarch64/src/api_impl.rs: TLBI ASIDE1IS or VMALLE1IS,
+      one broadcast; with it a range is at most five operations for any
+      length) and by munmap, which then flushes each of its batches whole
+      (crates/core/mm/src/vmm.rs). This is the plan's TLB_FLUSH_THRESHOLD_PAGES (N12).
 
       Cost: below the ceiling one invlpg (~100-200 cycles) per page, on
       every CPU signalled; above it one full flush plus the re-walks it

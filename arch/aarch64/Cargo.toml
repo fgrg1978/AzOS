@@ -71,6 +71,7 @@ canary-cntvoff-per-vcpu = []
 canary-ppi-not-silenced = []
 # Gate canary for the TLB shootdown: non-broadcast TLBI (see api_impl.rs).
 tlb-local-only = []
+tlbi-no-ceiling-canary = []
 # Masked-window tracer hooks (`src/lat_hook.rs`); Kconfig `LAT_TRACE`.
 lat-trace = ["azos_arch_api/lat-trace"]
 # Gate canary only (wave 15): the interrupt-mask asm gets `nomem` back, so

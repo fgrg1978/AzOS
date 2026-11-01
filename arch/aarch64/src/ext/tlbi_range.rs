@@ -48,6 +48,14 @@ pub const fn use_range(hw: bool, pages: usize, min_pages: usize) -> bool {
     hw && pages >= min_pages && pages >= 2 && pages < MAX_RANGE_PAGES
 }
 
+/// Is a shootdown of `pages` pages that does not use the range form one
+/// invalidation of the whole space instead? Past `ceiling` (Kconfig
+/// `TLB_FLUSH_CEILING_PAGES`) a broadcast per page costs every PE more than the
+/// refills. `tlbi-no-ceiling-canary`: never, a block is 512 broadcasts.
+pub const fn whole_space(pages: usize, ceiling: usize) -> bool {
+    !cfg!(feature = "tlbi-no-ceiling-canary") && pages > ceiling
+}
+
 /// One invalidation of a [`Plan`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
@@ -134,6 +142,14 @@ mod tests {
 
     /// Every count below the limit is covered exactly, in at most five
     /// steps (one page and four scales), and no step is empty.
+    #[test]
+    fn a_shootdown_past_the_ceiling_is_one_flush() {
+        assert!(!whole_space(33, 33), "at the ceiling, page by page");
+        assert!(whole_space(34, 33));
+        assert!(whole_space(512, 33), "a block");
+        assert!(whole_space(1 << 18, 33), "a gigabyte");
+    }
+
     #[test]
     fn a_plan_covers_every_count_exactly() {
         let check = |pages: usize| {

@@ -25,6 +25,9 @@ a64-id-canary = []
 # `arch/aarch64/src/ext/tlbi_range.rs`: NUM one too large;
 # `a_plan_covers_every_count_exactly` must fail.
 a64-tlbi-canary = []
+# `arch/aarch64/src/ext/tlbi_range.rs`: no ceiling on the per-page form;
+# `a_shootdown_past_the_ceiling_is_one_flush` must fail.
+tlbi-no-ceiling-canary = []
 # `arch/aarch64/src/ext/hv` (pulled in by path) gates the resident EL2 stub
 # and the guest entry on it, and both are bare-metal aarch64 only: never set here.
 hv = []

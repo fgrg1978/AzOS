@@ -41,6 +41,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("buddy-mer
 # `cfg(feature = "budget-racy-charge-canary")` in the pulled-in `budget.rs`
 # (the Domain ledgers of the subtree policy's Domain table).
 budget-racy-charge-canary = []
+unmap-stack-batch-canary = []
+promote-ranged-flush-canary = []
 storm-no-resume-canary = []
 storm-ignore-locked-canary = []
 # Mirrors azos_mm's gate canary so `cfg(feature = "lx-wx-canary")` in

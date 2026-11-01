@@ -24,6 +24,12 @@ kheap-census = []
 # Canary only (x86_64): the heap's interrupt token says interrupts were on whatever the
 # flags were, as it did before it read RFLAGS.IF; ktest `kheap_irq_token_follows_the_interrupt_state`.
 kheap-token-canary = []
+# A range unmap holds its frames on the stack, one shootdown per 32 pages;
+# `a_release_unmaps_a_region_with_one_shootdown_per_batch` goes red.
+unmap-stack-batch-canary = []
+# A promotion frees its table after a flush of the block's range;
+# `a_promotion_flushes_the_whole_space_before_its_table_goes` goes red.
+promote-ranged-flush-canary = []
 # The masked-window tracer (kernel `lat-trace`): the heap's size-class cache
 # masks interrupts through the arch calls the tracer hooks, not its own asm.
 lat-trace = []
