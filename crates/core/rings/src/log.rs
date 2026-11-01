@@ -31,6 +31,40 @@ pub struct Log<T: Copy, const N: usize, D: Doorbell = ()> {
 unsafe impl<T: Copy + Send, const N: usize, D: Doorbell + Sync> Sync for Log<T, N, D> {}
 unsafe impl<T: Copy + Send, const N: usize, D: Doorbell + Send> Send for Log<T, N, D> {}
 
+/// Copy `*src` to `*dst` with volatile reads, one aligned unit at a time: the
+/// writer may be storing into `src`, so the compiler must not read it twice,
+/// widen the read or keep the copy as a view of `src` (a torn copy is
+/// discarded by the stamp re-read, but only if it is a copy). `MaybeUninit`
+/// units, so padding bytes are not read as integers. No temporary: a big `T`
+/// goes from the slot to the caller's storage.
+///
+/// # Safety
+/// `src` and `dst` are valid for a `T`, do not overlap, and `dst` is writable.
+unsafe fn copy_racing<T>(src: *const T, dst: *mut T) {
+    use core::mem::{align_of, size_of, MaybeUninit};
+    // The widest unit `T`'s alignment allows; `size_of::<T>()` is a multiple of
+    // its alignment, hence of the unit.
+    unsafe fn units<U>(s: *const u8, d: *mut u8, n: usize) {
+        for i in (0..n).step_by(size_of::<U>()) {
+            // Safety: in bounds, aligned for `U` (the caller chose `U` by `T`'s alignment).
+            unsafe {
+                let w = core::ptr::read_volatile(s.add(i) as *const MaybeUninit<U>);
+                core::ptr::write(d.add(i) as *mut MaybeUninit<U>, w);
+            }
+        }
+    }
+    let (s, d, n) = (src as *const u8, dst as *mut u8, size_of::<T>());
+    // Safety: see `units`.
+    unsafe {
+        match align_of::<T>() {
+            a if a >= size_of::<usize>() => units::<usize>(s, d, n),
+            a if a >= 4 => units::<u32>(s, d, n),
+            a if a >= 2 => units::<u16>(s, d, n),
+            _ => units::<u8>(s, d, n),
+        }
+    }
+}
+
 enum Try<T> {
     Got(T),
     /// Not published yet.
@@ -132,10 +166,9 @@ impl<T: Copy, const N: usize, D: Doorbell> Log<T, N, D> {
         let s1 = self.stamps[slot].load(Ordering::Acquire);
         let want = 2 * c;
         if s1 == want {
-            // Safety: copy-out of a plain `Copy` value straight into the
-            // caller's storage (no stack temporary, so a big `T` costs one
-            // copy); a concurrent store is caught by the stamp re-read below.
-            unsafe { core::ptr::copy_nonoverlapping((self.data.get() as *const T).add(slot), out, 1) };
+            // Safety: both sides are `T`-sized and non-overlapping; a
+            // concurrent store is caught by the stamp re-read below.
+            unsafe { copy_racing((self.data.get() as *const T).add(slot), out) };
             #[cfg(not(feature = "canary-no-fence"))]
             fence(Ordering::Acquire);
             #[cfg(feature = "canary-no-recheck")]
