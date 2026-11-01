@@ -64,7 +64,7 @@ pub(super) fn audit_tick(now: u64) {
                     i,
                     core::str::from_utf8(&t.name[..len]).unwrap_or("<?>"),
                     rec, live, t.state(), t.priority.load(Ordering::Relaxed),
-                    t.cpu_affinity, t.context.tp, now - since,
+                    t.affinity(), t.context.tp, now - since,
                     t.ready_site.load(Ordering::Relaxed),
                 );
             }

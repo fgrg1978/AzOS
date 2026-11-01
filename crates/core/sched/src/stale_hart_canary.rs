@@ -7,11 +7,11 @@ static ENTRY_CPU: [AtomicUsize; MAX_TASKS] = [const { AtomicUsize::new(usize::MA
 
 pub unsafe fn arm(cpu: usize, idx: usize) {
     if idx >= MAX_TASKS || ncpu() < 2 { return; }
-    let saved = task_ref(idx).cpu_affinity;
-    task_mut(idx).cpu_affinity = ((cpu + 1) % ncpu()) as i8;
+    let saved = task_ref(idx).affinity();
+    task_mut(idx).set_affinity(((cpu + 1) % ncpu()) as i8);
     let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 1000;
     crate::task_block(WaitReason::Timer(until));
-    task_mut(idx).cpu_affinity = saved;
+    task_mut(idx).set_affinity(saved);
     ENTRY_CPU[idx].store(cpu, Ordering::Release);
 }
 

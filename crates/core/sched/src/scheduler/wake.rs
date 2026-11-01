@@ -441,8 +441,8 @@ unsafe fn wake_target_cpu(idx: usize, task: &Task) -> usize {
         return KTEST_PLACED_CPU.load(Ordering::Relaxed) as usize;
     }
     match azos_energy::seams::PLACEMENT {
-        azos_energy::Placement::Legacy => if task.cpu_affinity >= 0 {
-            (task.cpu_affinity as usize).min(ncpu() - 1)
+        azos_energy::Placement::Legacy => if let Some(p) = task.pinned() {
+            p.min(ncpu() - 1)
         } else {
             // K-C12: "emptiest hart" is not the same question as "hart that will
             // dispatch this task". A woken task parked behind permanently
@@ -545,7 +545,7 @@ fn note_wake_move(task: &Task, cpu: usize, prio: u32) {
 pub(super) unsafe fn ipc_wake_target_cpu(idx: usize, task: &Task) -> usize {
     let azos_energy::Placement::Legacy = azos_energy::seams::PLACEMENT;
     #[cfg(feature = "sched-ipc-affinity")]
-    if task.cpu_affinity < 0 {
+    if task.affinity() < 0 {
         let num_online = NUM_ONLINE_CPUS.load(Ordering::Acquire).min(MAX_CPUS);
         if num_online > 1 {
             let here = current_cpu_id();
@@ -599,8 +599,8 @@ unsafe fn outranked_on(cpu: usize, prio: u32, a: usize, b: usize) -> bool {
             continue;
         }
         let t = &*core::ptr::addr_of!(TASKS[i]);
-        let home = if t.cpu_affinity >= 0 {
-            (t.cpu_affinity as usize).min(ncpu() - 1)
+        let home = if let Some(p) = t.pinned() {
+            p.min(ncpu() - 1)
         } else {
             (t.context.tp as usize).min(ncpu() - 1)
         };
@@ -1327,7 +1327,7 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
             if cur < MAX_TASKS && core_direct_ok(claim_cpu, cur, i) && ipc_direct::allowed(ipc_direct::DirectSwitch {
                 ready_bitmap: PER_CPU[claim_cpu].ready_bitmap.load(Ordering::Relaxed),
                 target_bucket: prio_bucket(prio),
-                target_affinity: task.cpu_affinity,
+                target_affinity: task.affinity(),
                 cpu: claim_cpu,
                 target_is_idle: prio == crate::task::IDLE_PRIORITY,
                 current_is_idle: cur_idle,

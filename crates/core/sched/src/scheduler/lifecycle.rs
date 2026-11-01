@@ -178,7 +178,7 @@ fn run_placement_probe(fill: usize) {
             let prio = (filled_count * 7) as u32 % NUM_PRIORITIES as u32;
             let t = task_mut(i);
             t.tid = 0; // never a live TID; `idx_for_tid` never matches 0.
-            t.cpu_affinity = -1;
+            t.set_affinity(-1);
             t.context.tp = cpu as CtxReg;
             t.priority.store(prio, Ordering::Relaxed);
             t.state_word.store(
@@ -207,7 +207,7 @@ fn run_placement_probe(fill: usize) {
                 TASK_VALID[i].store(false, Ordering::Relaxed);
                 hist_reaccount(i);
                 TASKS[i].tid = 0;
-                TASKS[i].cpu_affinity = -1;
+                TASKS[i].set_affinity(-1);
             }
         }
         core::sync::atomic::fence(Ordering::Release);
@@ -599,7 +599,7 @@ pub fn try_task_create_init(
                     task.exec_satp    = 0;
                     task.exec_old_pt  = 0;
                     task.context_saving.store(false, Ordering::Relaxed);
-                    task.cpu_affinity  = affinity;
+                    task.set_affinity(affinity);
                     // One plain store resets state AND clears any stale wake
                     // stamp from the slot's previous occupant — the only
                     // place a plain (non-CAS) store of the word is correct,
@@ -2136,7 +2136,7 @@ pub fn rebalance_from_offline_cpus(online: usize, _total: usize) -> usize {
                 let task = task_mut(idx);
                 let target_cpu = find_best_cpu(task.priority.load(Ordering::Relaxed), idx);
 
-                if task.cpu_affinity >= 0 {
+                if task.affinity() >= 0 {
                     // Pinned task stranded on a hart that never came up —
                     // the pin cannot be honored without leaving it stuck
                     // forever, so move it anyway and make that visible.
@@ -2147,7 +2147,7 @@ pub fn rebalance_from_offline_cpus(online: usize, _total: usize) -> usize {
                          reassigning to hart {} (affinity broken: hart never started)",
                         name, task.tid, dead_cpu, target_cpu
                     );
-                    task.cpu_affinity = target_cpu as i8;
+                    task.set_affinity(target_cpu as i8);
                 }
 
                 // Keep the saved tp consistent with the queue the task now
@@ -2205,7 +2205,7 @@ pub(crate) fn pinned_to(cpu: usize) -> u32 {
         // SAFETY: a valid slot; the fields read are plain words a stale read of
         // only makes this count off by a task that is being created or freed.
         let t = unsafe { task_ref(idx) };
-        if t.cpu_affinity == cpu as i8
+        if t.affinity() == cpu as i8
             && t.priority.load(Ordering::Relaxed) != crate::task::IDLE_PRIORITY
             && !matches!(t.state(), TaskState::Zombie | TaskState::Invalid)
         {
@@ -2325,7 +2325,7 @@ unsafe fn migrate_queue_off(cpu: usize, move_pinned: bool) -> Result<usize, usiz
         while let Some(idx) = cpu_dequeue_locked(cpu) {
             let task = task_mut(idx);
             let is_idle = task.priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY;
-            let pinned = task.cpu_affinity >= 0 && !move_pinned;
+            let pinned = task.affinity() >= 0 && !move_pinned;
             match disposition(is_idle, pinned) {
                 Disposition::KeepIdle => {
                     if n_idle < idle.len() {
@@ -3169,7 +3169,7 @@ pub fn ktest_wake_placed_on(tid: u32, cpu: usize, deferred: bool) -> bool {
 #[cfg(feature = "ktest")]
 pub fn ktest_set_pin(tid: u32, cpu: i8) -> bool {
     let Some(idx) = idx_for_tid(tid) else { return false };
-    unsafe { task_mut(idx).cpu_affinity = cpu };
+    unsafe { task_mut(idx).set_affinity(cpu) };
     true
 }
 
