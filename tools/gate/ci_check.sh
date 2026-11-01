@@ -317,6 +317,10 @@ kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     if [ -z "${KB_ROBOT_DONE:-}" ] && [ "${KCONFIG_CONFIG:-}" = "$PRIMARY_CONFIG" ] && ci_robot_feats "$feats"; then
         KB_ROBOT_DONE=1 KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" kbuild "$feats" "$@"; return
     fi
+    # Kconfig KASAN: the sanitizer's codegen flags join the target's rustflags of .cargo/config.toml.
+    if grep -qs '^CONFIG_KASAN=y$' "${KCONFIG_CONFIG:-}"; then
+        set -- "$@" --config "target.riscv64imac-unknown-none-elf.rustflags=[$(python3 tools/build/kconfig_to_cargo.py --kasan-rustflags --toml "$KCONFIG_CONFIG")]"
+    fi
     par_shared "kbuild $feats" || return 1
     if [ $# -eq 0 ] && ci_kb_defer rv "$feats"; then return 0; fi
     # Built now (a row's own build, or an environment the deferral does not
@@ -14973,13 +14977,16 @@ PY
     ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" KCFG_GREP="# CONFIG_KHEAP_LEAKS is not set" ktest_row_cfgline "$@"; }
     par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
     par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
-    # Kconfig KASAN (aarch64): a read past a block and a read through a freed pointer are reported at the
+    # Kconfig KASAN: a read past a block and a read through a freed pointer are reported at the
     # access, which the heap guard above cannot (the ERE pins both tests by name: a skip is not an `ok`);
     # the canary is the default kernel, KASAN off, told to expect them (`canary=kasan-expected`): the same
     # reads go unnoticed and both tests are red.
     KTEST_KASAN_RE=$'^ok [0-9]+ - kasan_reports_a_read_past_the_end_of_a_block$\n^ok [0-9]+ - kasan_reports_a_read_through_a_freed_pointer$'
     ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" KCFG_GREP="CONFIG_KASAN=y" ktest_row_cfgline "$@"; }
     par "ktest kasan (arm)" ktest_row_kasan "ktest kasan (arm)" arm "" "" "" "$KTEST_KASAN_RE"
+    par "ktest kasan (rv)" ktest_row_kasan "ktest kasan (rv)" rv "" "" "" "$KTEST_KASAN_RE"
+    KTEST_KASAN_OFF="kasan_reports_a_read_past_the_end_of_a_block kasan_reports_a_read_through_a_freed_pointer"
+    par "ktest kasan off canary (rv)" ktest_row "ktest kasan off canary (rv)" rv "" "$KTEST_KASAN_OFF" "canary=kasan-expected"
     par "ktest kasan off canary (arm)" ktest_row "ktest kasan off canary (arm)" arm "" "kasan_reports_a_read_past_the_end_of_a_block kasan_reports_a_read_through_a_freed_pointer" "canary=kasan-expected"
     # Kconfig KHEAP_LEAKS: the tracker names a block nobody freed; the canary keeps the guard and drops the tracker.
     # Kconfig CRASHDUMP_CORE_*: the kernel's core writer makes an ELF core of a run of memory, and a refused or
@@ -15570,6 +15577,7 @@ PY
     # +4 the hotplug_* tests -> 150.
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 157.
+    # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 159.
     KTEST_N_X86=159
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
@@ -16638,6 +16646,9 @@ PY
     x86_ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" x86_ktest_row_cfgline "$@"; }
     par "ktest heap guard (x86)" x86_ktest_row "ktest heap guard (x86)" "" "" "" "" "$KTEST_GUARD_RE"
     par "ktest heap guard off canary (x86)" x86_ktest_row_guardoff "ktest heap guard off canary (x86)" "" "$KTEST_GUARD_OFF"
+    x86_ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" x86_ktest_row_cfgline "$@"; }
+    par "ktest kasan (x86)" x86_ktest_row_kasan "ktest kasan (x86)" "" "" "" "" "$KTEST_KASAN_RE"
+    par "ktest kasan off canary (x86)" x86_ktest_row "ktest kasan off canary (x86)" "" "$KTEST_KASAN_OFF" "canary=kasan-expected"
     x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
     par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
     par "ktest core file off canary (x86)" x86_ktest_row_coreoff "ktest core file off canary (x86)" "" "$KTEST_CORE_OFF"

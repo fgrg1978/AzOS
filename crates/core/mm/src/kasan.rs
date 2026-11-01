@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Kernel address sanitizer (Kconfig `KASAN`, development builds, aarch64):
+//! Kernel address sanitizer (Kconfig `KASAN`, development builds):
 //! the compiler calls `__asan_load<N>` / `__asan_store<N>` before every
 //! access of the kernel's own code, and a shadow byte per 8 bytes of RAM says
 //! how much of the granule may be touched.
@@ -66,7 +66,7 @@ pub unsafe fn init(ram_va: usize, ram_len: usize, shadow_va: usize) {
         RAM_VA = ram_va;
         RAM_LEN = ram_len;
         SHADOW_VA = shadow_va;
-        core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         READY = true;
     }
 }

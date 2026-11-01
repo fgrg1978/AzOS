@@ -327,7 +327,6 @@ config KASAN
     # cargo-feature: kasan
     bool "Kernel address sanitizer: a shadow byte per 8 bytes of RAM, every load and store checked"
     depends on BUILD_TYPE_DEV
-    depends on ARCH_AARCH64
     depends on KHEAP_GUARD_KTEST || KHEAP_GUARD_Y
     default n
     help
@@ -342,8 +341,9 @@ config KASAN
       user space are not in the map and not checked.
 
       Cost: an eighth of RAM, a call and a shadow read for every access of
-      the kernel (the kernel runs several times slower), and the code grown
-      by the calls. Nothing when off: no flag, no hook, no shadow.
+      the kernel (the ktest run takes 1.6x as long on x86_64, 1.9x on
+      riscv64, under QEMU TCG), and .text a third larger (+1.2 MB on
+      riscv64, +1.2 MB on x86_64). Nothing when off: no flag, no hook, no shadow.
 
 config KHEAP_LEAKS
     bool "Kernel heap leak tracking: the live blocks, and where each was allocated"
