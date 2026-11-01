@@ -54,6 +54,15 @@ fn waiter(_: usize) {
     WAITER_DONE.store(true, Ordering::SeqCst);
 }
 
+/// A test's own findings only: a kernel that runs other tasks (a client waiting
+/// for a slow server, a task a canary left blocked) also gets reports the test
+/// did not stage, and those are not its to judge.
+fn own_records(from: u64, mine: impl Fn(u32, [u64; 3]) -> bool) -> u32 {
+    let mut n = 0;
+    hang_records(from, |subject, _, f| n += mine(subject, f) as u32);
+    n
+}
+
 /// The `Rule::Hang` records written since journal position `from`, as
 /// `(subject, verdict, n)`.
 fn hang_records(from: u64, mut each: impl FnMut(u32, u8, [u64; 3])) {
@@ -86,21 +95,26 @@ azos_ktest::ktest_late! {
         crate::ktest::wait("the owner never took the mutex", || OWNER_HOLDS.load(Ordering::SeqCst))?;
         azos_sched::task_create_affinity("hung-waiter", waiter, 0, 2, -1);
         let from = azos_decision::total();
-        let mut reports = 0;
+        let waiter_mine = |subject: u32, _: [u64; 3]| {
+            let tid = WAITER_TID.load(Ordering::SeqCst);
+            tid != 0 && subject == tid
+        };
         let seen = crate::ktest::until_for(REPORT_WAIT_MS, || {
-            reports += hung_pass(&MUTEX_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
-            reports > 0
+            hung_pass(&MUTEX_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
+            own_records(from, waiter_mine) > 0
         });
         // Past a second timeout the same hang is not reported again.
         crate::ktest::until_for(3 * TIMEOUT_MS, || false);
-        let again = hung_pass(&MUTEX_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
+        hung_pass(&MUTEX_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
         let (waiter_tid, owner_tid) = (WAITER_TID.load(Ordering::SeqCst), OWNER_TID.load(Ordering::SeqCst));
         let mut records = 0;
         let mut ok = true;
         hang_records(from, |subject, verdict, n| {
+            if subject != waiter_tid {
+                return;
+            }
             records += 1;
-            ok &= subject == waiter_tid
-                && verdict == Verdict::Admit as u8
+            ok &= verdict == Verdict::Admit as u8
                 && n[1] >> 32 == Kind::Owner as u64
                 && n[1] as u32 == owner_tid
                 && n[2] >> 32 == HungAction::None as u64;
@@ -112,14 +126,14 @@ azos_ktest::ktest_late! {
         if !seen {
             return Err("a task blocked on a mutex past the timeout was not reported");
         }
-        if again != 0 || records != 1 {
+        if records != 1 {
             return Err("one hang was reported more than once, or something else was reported");
         }
         if !ok {
             return Err("the record does not name the waiter, its owner and the kind");
         }
-        let after = hung_pass(&MUTEX_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
-        if after != 0 {
+        hung_pass(&MUTEX_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
+        if own_records(from, waiter_mine) != 1 {
             return Err("a task that ran again was reported");
         }
         // The watchdog task's own pass makes this scan too (it runs every 500 ms).
@@ -185,19 +199,22 @@ azos_ktest::ktest_late! {
             crate::ktest::wait("the spinner task never ran", || SPIN_STARTED.load(Ordering::SeqCst))?;
         }
         let from = azos_decision::total();
-        let mut reports = 0;
+        let cpu_mine = |_: u32, n: [u64; 3]| n[1] >> 32 == Kind::Cpu as u64;
         let seen = crate::ktest::until_for(REPORT_WAIT_MS, || {
-            reports += hung_pass(&CPU_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
-            reports > 0
+            hung_pass(&CPU_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
+            own_records(from, cpu_mine) > 0
         });
         crate::ktest::until_for(3 * TIMEOUT_MS, || false);
-        let again = hung_pass(&CPU_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
+        hung_pass(&CPU_HUNG, now(), TIMEOUT_MS, TIMEOUT_MS, HungAction::None);
         let held_on = HOLD_CPU.load(Ordering::SeqCst);
         let mut records = 0;
         let mut ok = true;
         hang_records(from, |subject, verdict, n| {
+            if !cpu_mine(subject, n) {
+                return;
+            }
             records += 1;
-            ok &= subject == held_on && verdict == Verdict::Admit as u8 && n[1] >> 32 == Kind::Cpu as u64;
+            ok &= subject == held_on && verdict == Verdict::Admit as u8;
         });
         HOLD_RELEASE.store(true, Ordering::SeqCst);
         crate::ktest::wait("the holder task never finished", || HOLD_DONE.load(Ordering::SeqCst))?;
@@ -207,7 +224,7 @@ azos_ktest::ktest_late! {
         if !seen {
             return Err("a CPU held in the kernel past the timeout was not reported");
         }
-        if again != 0 || records != 1 {
+        if records != 1 {
             return Err("one stuck CPU was reported more than once, or another CPU was reported");
         }
         if !ok {
