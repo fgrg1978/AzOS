@@ -16551,6 +16551,36 @@ PY
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""
     par "ktest 17 cpus canary (x86)" x86_ktest_17cpu_row "ktest 17 cpus canary (x86)" "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
+    # RAM past the 32-bit MMIO hole: microvm splits 5 GiB into 0..3 GiB and
+    # 4..6 GiB. The boot tables map the first BOOT_MAP_GIB GiB only, and
+    # `vmm::init` writes its page-table pages into whatever frame the PMM hands
+    # out; `pmm_floor` widens them over the rest. The canary leaves them narrow:
+    # the boot must fault in the direct map above 4 GiB, with no ktest plan.
+    x86_ktest_5g_row() { KTEST_QEMU_EXTRA="-m 5G" x86_ktest_row "$@"; }
+    par "ktest above 4 GiB (x86)" x86_ktest_5g_row "ktest above 4 GiB (x86)" "" "" "" "" \
+        '^\[MM\] RAM detected via the firmware memory map: 0x0 - 0x180000000 \(6144 MiB\)$
+^\[MM\] Boot direct map widened by 2 GiB to 0x180000000$'
+    x86_above_4g_canary_row() { # x86_above_4g_canary_row <label>
+        local label="$1" why="" tag log kimg
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        log="$CI_LOG_DIR/ktest-${tag}.log"; kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
+        x86_kbuild "use-robot,ktest,chaos,decisions" "$kimg" || { bad; echo "      the ktest kernel did not build"; return; }
+        par_ready
+        x86_qemu "$kimg" "$log" 120 'FATAL|KERNEL PANIC' -smp 1 -m 5G -append "canary=x86-boot-map-narrow" || { rm -f "$kimg" "$kimg.features"; return; }
+        rm -f "$kimg" "$kimg.features"
+        if grep -aq '^1\.\.[0-9]' "$log"; then why="the ktest plan ran: the narrow boot map did not break the boot"
+        elif ! grep -aqE '^\[MM\] RAM detected via the firmware memory map: 0x0 - 0x180000000 \(6144 MiB\)$' "$log"; then why="the guest did not see 6144 MiB of RAM"
+        elif grep -aq '^\[MM\] Boot direct map widened' "$log"; then why="the canary did not keep the boot map narrow"
+        elif ! grep -aqE '^\[FATAL\] x86_64 kernel page fault: write at 0xffff8881[0-9a-f]{8} ' "$log"; then why="no kernel page fault in the direct map above 4 GiB"
+        fi
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"
+        grep -aE '^\[(FATAL|MM)\]|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    }
+    par "ktest above 4 GiB canary (x86)" x86_above_4g_canary_row "ktest above 4 GiB canary (x86)"
     par "ktest tlb request window canary (x86)" x86_ktest_row "ktest tlb request window canary (x86)" "" "tlb_request_holder_keeps_its_cpu" "canary=tlb-request-preemptible"
     par "ktest tlb request wait canary (x86)" x86_ktest_row "ktest tlb request wait canary (x86)" "" "tlb_request_wait_takes_interrupts" "canary=tlb-request-wait-masked"
     par "ktest tlb shootdown in irq canary (x86)" x86_ktest_row "ktest tlb shootdown in irq canary (x86)" "" "tlb_no_shootdown_from_an_interrupt" "canary=tlb-shootdown-in-irq"
