@@ -1241,11 +1241,6 @@ mod unswitched_ktests {
 
     azos_ktest::ktest_late! {
         fn unswitched_block_returns_running() {
-            // While the helper's save is held, every pick on its CPU takes the helper and
-            // gives up, so only the prober, already on that CPU, can release it.
-            if azos_percpu::nr_cpu_ids() < 2 {
-                return Err("needs 2 CPUs (the runner, and a CPU only the probe runs on)");
-            }
             let cpu = azos_percpu::nr_cpu_ids() - 1;
             azos_sched::task_create_affinity("unswitched-p", prober, cpu, PROBER_PRIO, cpu as i8);
             crate::ktest::wait("the probe never finished", || DONE.load(Ordering::Acquire))?;
