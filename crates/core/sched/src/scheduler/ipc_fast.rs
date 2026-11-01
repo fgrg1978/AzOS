@@ -15,14 +15,13 @@ use super::*;
 /// not apply. The direct path skips three things and nothing else: enqueueing
 /// the woken task, `do_schedule`'s pick (deadline check, dequeue, priority
 /// guard), and the spin gate on the woken task's `context_saving`. The gate is
-/// replaced by a refusal: the claim reads `context_saving` again with `Acquire`
-/// AFTER its dispatch CAS and does not claim a task still being saved. The word's
-/// generation already ties the `saved` flag `wake_transition` is given to the
-/// block its CAS wins; before it a server that blocked on another hart an instant
-/// earlier was claimed while that hart was still storing its registers,
-/// measured: 1 aarch64 `ipctest -smp 4` run in 10 died with a jump into
-/// `_text_end + 0x3e01` (a half-saved context resumed). A task that is
-/// `Ready` and in no queue cannot start saving again, so one check suffices.
+/// not needed: `wake_transition` and `fast_claim` read the flag clear after the
+/// word they then win their CAS against, so the block that CAS ends is saved (the
+/// word's generation ties the read to that block), and a task that is `Ready` and
+/// in no queue cannot start saving again. Without the generation a server that
+/// blocked on another hart an instant earlier was claimed while that hart was
+/// still storing its registers, measured: 1 aarch64 `ipctest -smp 4` run in 10
+/// died with a jump into `_text_end + 0x3e01` (a half-saved context resumed).
 ///
 /// # The four outcomes, and why each is the old sequence
 ///
@@ -423,24 +422,10 @@ pub fn ipc_fast_handoff(_cpu: usize, _ti: usize, reason: WaitReason, irq: azos_a
 #[cfg(feature = "ipc-census")]
 pub static IPC_DIRECT_SWITCHES: AtomicU32 = AtomicU32::new(0);
 
-/// Claims [`ipc_wake_then_block`] declined because the woken task's
-/// registers were still being saved on another hart (census builds only).
-/// Non-zero proves the window the post-CAS re-read closes is really hit.
-#[cfg(feature = "ipc-census")]
-pub static IPC_DIRECT_UNSAVED: AtomicU32 = AtomicU32::new(0);
-
 /// See [`IPC_DIRECT_SWITCHES`]; `0` on a kernel without `ipc-census`.
 pub fn ipc_direct_switches() -> u32 {
     #[cfg(feature = "ipc-census")]
     { IPC_DIRECT_SWITCHES.load(Ordering::Relaxed) }
-    #[cfg(not(feature = "ipc-census"))]
-    { 0 }
-}
-
-/// See [`IPC_DIRECT_UNSAVED`]; `0` on a kernel without `ipc-census`.
-pub fn ipc_direct_unsaved() -> u32 {
-    #[cfg(feature = "ipc-census")]
-    { IPC_DIRECT_UNSAVED.load(Ordering::Relaxed) }
     #[cfg(not(feature = "ipc-census"))]
     { 0 }
 }

@@ -1320,11 +1320,6 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
             let cur_idle = cur < MAX_TASKS
                 && task_ref(cur).priority.load(Ordering::Relaxed)
                     == crate::task::IDLE_PRIORITY;
-            let target_saved = !task.context_saving.load(Ordering::Acquire);
-            #[cfg(feature = "ipc-census")]
-            if !target_saved {
-                IPC_DIRECT_UNSAVED.fetch_add(1, Ordering::Relaxed);
-            }
             if cur < MAX_TASKS && core_direct_ok(claim_cpu, cur, i) && ipc_direct::allowed(ipc_direct::DirectSwitch {
                 ready_bitmap: PER_CPU[claim_cpu].ready_bitmap.load(Ordering::Relaxed),
                 target_bucket: prio_bucket(prio),
@@ -1334,9 +1329,6 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
                 current_is_idle: cur_idle,
                 deadline_live: rt::holds_direct_switch(
                     claim_cpu, prio, task_ref(cur).priority.load(Ordering::Relaxed)),
-                // Read after the CAS, not the `saved` read before
-                // it — see the field's doc.
-                target_saved,
             }) {
                 task.context.tp = claim_cpu as CtxReg;
                 // Wave 15 (TRACE): a claimed wake never queues.

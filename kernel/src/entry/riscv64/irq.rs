@@ -157,9 +157,7 @@ fn dump_sched_counters() {
     // How many fast-IPC hand-offs switched straight to the woken
     // task (`scheduler::ipc_wake_then_block`) instead of through the run
     // queue. Evidence the path fires on a census kernel; not asserted.
-    kprintln!("[SCHED-DBG]   fast-ipc direct={} unsaved-declined={}",
-        azos_sched::scheduler::ipc_direct_switches(),
-        azos_sched::scheduler::ipc_direct_unsaved());
+    kprintln!("[SCHED-DBG]   fast-ipc direct={}", azos_sched::scheduler::ipc_direct_switches());
     // Kernel output deferred behind a ring-3 console owner (wave 9): the
     // buffer's high-water mark against `uart::DEFER_BYTES`, and lines dropped
     // for want of room. Not asserted here; a drop prints its own

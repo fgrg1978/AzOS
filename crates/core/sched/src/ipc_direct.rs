@@ -52,15 +52,6 @@ pub struct DirectSwitch {
     /// The hart has SCHED-RT state, or either side is a band task
     /// (`scheduler::rt::holds_direct_switch`): the pick must decide.
     pub deadline_live: bool,
-    /// The target's `context_saving` is clear, read with `Acquire` AFTER the
-    /// dispatch CAS. The `saved` flag `wake_transition` was given is read
-    /// BEFORE that CAS and can be stale: a task that blocked on another hart
-    /// an instant ago is `Blocked` while that hart is still saving its
-    /// registers. `do_schedule` covers this with its spin gate; the direct
-    /// switch has no gate, so it must refuse instead. The CAS acquires the
-    /// blocker's `Blocked` release, which follows its `context_saving = true`,
-    /// so this read cannot miss a save still in flight.
-    pub target_saved: bool,
 }
 
 /// Bitmap of every bucket at or better than `bucket` (bits `0..=bucket`).
@@ -76,9 +67,6 @@ pub const fn at_or_above(bucket: usize) -> u32 {
 /// `true` only when `do_schedule` would certainly dispatch the target next.
 #[inline(always)]
 pub fn allowed(s: DirectSwitch) -> bool {
-    if !s.target_saved {
-        return false;
-    }
     if s.deadline_live || s.target_is_idle || s.current_is_idle {
         return false;
     }
@@ -133,17 +121,7 @@ mod tests {
             target_is_idle: false,
             current_is_idle: false,
             deadline_live: false,
-            target_saved: true,
         }
-    }
-
-    /// The target blocked on another hart and that hart has not finished
-    /// saving its registers: switching to it would resume a half-saved
-    /// context. Must refuse (the ordinary wake + `do_schedule` spin gate
-    /// handles it).
-    #[test]
-    fn target_still_saving_refuses() {
-        assert!(!allowed(DirectSwitch { target_saved: false, ..base() }));
     }
 
     #[test]

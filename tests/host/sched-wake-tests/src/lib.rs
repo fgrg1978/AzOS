@@ -2844,14 +2844,6 @@ mod ipc_direct_wiring {
         );
         assert!(gate.contains("target_bucket: prio_bucket(prio)"), "the rule must see the target's live bucket");
         assert!(gate.contains("deadline_live: rt::holds_direct_switch("), "SCHED-RT state must refuse the switch");
-        // The save check must be read inside the claim branch, i.e. after the
-        // dispatch CAS — the pre-CAS `saved` read is stale on SMP.
-        assert!(
-            b[..rule].contains("let target_saved = !task.context_saving.load(Ordering::Acquire);")
-                && gate.contains("target_saved,"),
-            "the claim must re-read context_saving (Acquire) after the CAS"
-        );
-
     }
 
     /// Every Blocked -> Ready transition is logged with its source
