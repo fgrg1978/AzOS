@@ -33,7 +33,14 @@
 /// "died" holding the mutex) leaves a count for the boot identity; the drop
 /// forgets it, as the kernel's exit path does.
 #[cfg(test)]
-pub(crate) struct HeldTableGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+pub(crate) struct HeldTableGuard {
+    #[allow(dead_code)]
+    table: std::sync::MutexGuard<'static, ()>,
+    // The preemption slots are as global as the table: a test that takes a
+    // lock on hart 0 moves the same depth a `tests::guard()` test asserts on.
+    #[allow(dead_code)]
+    preempt: std::sync::MutexGuard<'static, ()>,
+}
 
 #[cfg(test)]
 impl Drop for HeldTableGuard {
@@ -45,7 +52,9 @@ impl Drop for HeldTableGuard {
 #[cfg(test)]
 pub(crate) fn held_table_lock() -> HeldTableGuard {
     static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    HeldTableGuard(L.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner()))
+    let preempt = tests::guard();
+    let table = L.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner());
+    HeldTableGuard { table, preempt }
 }
 
 #[path = "../../../../crates/core/sync/src/preempt_core.rs"]
@@ -2251,7 +2260,6 @@ mod tests {
     fn held_count_tracks_every_acquisition_until_release() {
         use super::held::held_by;
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let a = Mutex::new(1u32);
         let b = Mutex::new(2u32);
@@ -2282,7 +2290,6 @@ mod tests {
     fn held_forget_drops_a_dead_holder_only() {
         use super::held::{held_by, held_forget};
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let a = Mutex::new(1u32);
         let b = Mutex::new(2u32);
@@ -2306,7 +2313,6 @@ mod tests {
     fn held_count_is_lowered_for_the_owner_not_the_releaser() {
         use super::held::held_by;
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let a = Mutex::new(0u32);
         let ga = as_tid(42, || a.lock());
@@ -2323,7 +2329,6 @@ mod tests {
     fn held_count_is_exact_per_tid() {
         use super::held::held_by;
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let a = Mutex::new(0u32);
         let b = Mutex::new(0u32);
@@ -2347,7 +2352,6 @@ mod tests {
     fn held_count_sums_a_task_spread_over_two_entries() {
         use super::held::held_by;
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let (l1, l2, l3) = (Mutex::new(0u32), Mutex::new(0u32), Mutex::new(0u32));
         let (a, b) = (45u32, 45u32 + 64);
@@ -2373,7 +2377,6 @@ mod tests {
     fn held_count_first_level_overflow_is_per_tid() {
         use super::held::held_by;
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let locks: Vec<Mutex<u32>> = (0..65).map(Mutex::new).collect();
         let held: Vec<_> = (0..64u32).map(|i| as_tid(1000 + i, || locks[i as usize].lock())).collect();
@@ -2394,7 +2397,6 @@ mod tests {
     fn held_count_overflow_only_overcounts() {
         use super::held::held_by;
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let locks: Vec<Mutex<u32>> = (0..64 + 16 + 1).map(Mutex::new).collect();
         let held: Vec<_> = (0..64 + 16u32).map(|i| as_tid(1000 + i, || locks[i as usize].lock())).collect();
@@ -2423,7 +2425,6 @@ mod tests {
     fn held_count_a_forgotten_overflowed_holder_holds_nothing() {
         use super::held::{held_by, held_forget};
         use super::kmutex::Mutex;
-        let _g = guard();
         let _held = crate::held_table_lock();
         let locks: Vec<Mutex<u32>> = (0..67).map(Mutex::new).collect();
         let held: Vec<_> = (0..64u32).map(|i| as_tid(1000 + i, || locks[i as usize].lock())).collect();
