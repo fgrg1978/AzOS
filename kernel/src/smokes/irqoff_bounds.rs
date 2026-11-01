@@ -54,8 +54,10 @@ azos_ktest::ktest_late! {
     fn irqoff_timer_storm() {
         // Every slot left but a few, as a user with a thread limit of the table does.
         let most = azos_sched::free_task_slots().saturating_sub(8);
-        if most < 16 {
-            return Err("fewer than 16 free task slots");
+        // A storm no larger than the bounds cannot show them, and a small task table
+        // with the daemons of a volume (the soak and disk rows) leaves too few slots.
+        if most <= azos_limits::SCHED_TIMER_WAKES_PER_IRQ.max(azos_limits::FAIR_PLACE_SAMPLE as usize) {
+            return azos_ktest::skip!("the free task slots do not outnumber the bounds under test");
         }
         for k in [most / 4, most / 2, most] {
             let _ = azos_sched::scheduler::fairq::ktest_take_place_read_max();
