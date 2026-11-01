@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2705754
-riscv64-qemu	.rodata	451376
+riscv64-qemu	.text	2705942
+riscv64-qemu	.rodata	455472
 riscv64-qemu	.data	3258928
 riscv64-qemu	.bss	5795552
-riscv64-qemu	reason	heap guard, leak tracker and core file are compiled out here (they run in ktest kernels): .text +16 B against the T1 baseline, .rodata .data .bss unchanged
+riscv64-qemu	reason	the image-hash table the measure binds is now made from the size configuration (it was whatever the last make left: none without a .config); the baseline before it was taken with an empty table, so .rodata +4096 B here is the table's rows and TX_HDR's page alignment
