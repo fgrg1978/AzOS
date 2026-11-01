@@ -436,6 +436,10 @@ fn wake_window_of(tid: u32) -> bool {
 /// moved LLVM's inlining of `find_best_cpu` and changed seven functions).
 #[inline]
 unsafe fn wake_target_cpu(idx: usize, task: &Task) -> usize {
+    #[cfg(feature = "ktest")]
+    if KTEST_PLACED_TID.load(Ordering::Relaxed) == task.tid {
+        return KTEST_PLACED_CPU.load(Ordering::Relaxed) as usize;
+    }
     match azos_energy::seams::PLACEMENT {
         azos_energy::Placement::Legacy => if task.cpu_affinity >= 0 {
             (task.cpu_affinity as usize).min(ncpu() - 1)

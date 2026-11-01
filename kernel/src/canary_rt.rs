@@ -199,6 +199,20 @@ pub(crate) const NAMES: &[&str] = &[
     "rcu-idle-qs-skip",
     "rcu-free-no-grace",
     "lockdep-rcu-sleep",
+    // sync/src/qsbr.rs `cpu_stop_begin`: a stopping CPU stays "in the kernel", so a
+    // grace period that snapshotted it never ends (ktest
+    // `hotplug_stop_ends_a_grace_period`).
+    "rcu-stop-holds-gp",
+    // sched/src/smp.rs `offline_here`: a CPU that came back stays out of the online
+    // mask until its requester runs, and grace periods skip its readers (ktest
+    // `hotplug_cpu_coming_back_is_waited_for`).
+    "rcu-back-unseen",
+    // scheduler/lifecycle.rs `drain_stopped_cpu`: a stopping CPU's deferred wakes
+    // stay on its list (ktest `hotplug_deferred_wake_in_the_stop_window_runs`).
+    "hotplug-wake-list-skip",
+    // scheduler/mod.rs `ring_doorbell`: a wake placed on a CPU that stopped stays
+    // there (ktest `hotplug_wake_placed_on_the_stopped_cpu_runs`).
+    "hotplug-stale-wake-stays",
     // kernel/src/panic.rs `quiesce`: the panic handler does not stop the
     // other CPUs (no stop IPI, no wait); it still owns the console. The
     // `panic: other CPUs parked` rows must fail on the parked count.

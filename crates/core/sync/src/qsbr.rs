@@ -230,13 +230,16 @@ fn user_return() {
 }
 
 /// Report a quiescent state for every grace period started so far (a
-/// return to user mode). Needs no masking: a task preempted between the
-/// two accesses writes, into the CPU it left, a number that CPU's own
-/// switch away already satisfied, and an older number than a later report
-/// only delays a waiter.
+/// return to user mode). The caller has interrupts masked, so the task cannot
+/// move: the CPU read here is the one written. `TrapBoundary`'s drop runs on
+/// the interrupt path only (or masks, in [`user_return`]): `irq::arm` and
+/// `irq::resched_exit`, where the trap masked interrupts and `do_schedule`,
+/// always entered masked, hands them back masked. A move here would not be
+/// harmless: the number is read after the CPU, so it could be a grace period
+/// newer than the switch away, and pass a reader on the CPU left.
 #[inline(always)]
 fn report_qs() {
-    // percpu-hint: a task moved between the read and the store writes, into the CPU it left, a number that CPU's own switch away already satisfied (documented above)
+    // percpu-hint: interrupts masked by every caller (documented above)
     if let Some(s) = state(this_cpu()) {
         s.qs.store(GP_SEQ.load(Ordering::Acquire), Ordering::Release);
     }
@@ -329,6 +332,34 @@ pub fn switch() {
             }
         }
     }
+}
+
+/// This CPU is about to stop (CPU hotplug): out of the online mask, interrupts
+/// off, in no read section. It enters an extended quiescent state, so a grace
+/// period that snapshotted it in the kernel ends instead of waiting for a CPU
+/// that runs nothing; only [`cpu_stop_end`] leaves the state.
+pub fn cpu_stop_begin() {
+    if ON && !(azos_limits::CANARY_RUNTIME && STOP_KEEPS_GP.load(Ordering::Relaxed)) {
+        eqs_enter_here();
+    }
+}
+
+/// This CPU is running again (or its stop was refused). Interrupts still off,
+/// and the caller has put it back in the online mask: with the fence here, a
+/// grace period that does not see it online does not race its next reader.
+pub fn cpu_stop_end() {
+    if ON {
+        fence(Ordering::SeqCst);
+        let _ = eqs_exit();
+    }
+}
+
+/// Runtime canary `rcu-stop-holds-gp`: [`cpu_stop_begin`] does nothing.
+static STOP_KEEPS_GP: AtomicBool = AtomicBool::new(false);
+
+/// See [`STOP_KEEPS_GP`].
+pub fn canary_stop_holds_gp() {
+    STOP_KEEPS_GP.store(true, Ordering::Relaxed);
 }
 
 /// `cpu`'s two words, `(eqs, qs)` (diagnostics and tests).
@@ -461,6 +492,11 @@ impl Gp {
     /// CPUs that were in the kernel; the others were quiescent).
     pub fn waiting(&self) -> usize {
         self.snap.iter().filter(|&&e| e != DONE).count()
+    }
+
+    /// Whether this grace period still waits for `cpu`.
+    pub fn waits_for(&self, cpu: usize) -> bool {
+        self.snap.get(cpu).is_some_and(|&e| e != DONE)
     }
 
     /// The first CPU still waited for, if any (diagnostics).

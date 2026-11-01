@@ -51,8 +51,9 @@ pub fn is_empty(head: &AtomicU32) -> bool {
     head.load(Ordering::Relaxed) == NIL
 }
 
-/// Take every entry and call `f` on each, oldest push first. Only the
-/// list's owner (the target CPU) calls this. Returns the number taken.
+/// Take every entry and call `f` on each, oldest push first. The list's owner
+/// (the target CPU) calls this, or whoever empties a stopped CPU's list; the
+/// swap gives each entry to one of them. Returns the number taken.
 #[inline]
 pub fn drain(head: &AtomicU32, next: &[AtomicU32], mut f: impl FnMut(usize)) -> usize {
     if is_empty(head) {

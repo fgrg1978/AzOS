@@ -1514,6 +1514,11 @@ unsafe fn ring_doorbell(cpu: usize, idx: usize, appended: bool) {
     // longer. A refused enqueue (K-C12: the task was already queued) has
     // nothing new to announce.
     if appended && cpu != current_cpu_id() {
+        // The task went behind a CPU that stopped after this waker placed it.
+        // One load on a path about to send an IPI, so the wake paths need none.
+        if azos_limits::CPU_HOTPLUG && crate::smp::cpu_is_stopped(cpu) && stopped_cpu_wake(cpu) {
+            return;
+        }
         #[cfg(target_arch = "riscv64")]
         let rc = azos_arch::firmware::send_ipi(cpu);
         // aarch64: GICv3 SGI (`arch-api`'s `Interrupts::send_ipi`,
@@ -1631,6 +1636,12 @@ pub fn drain_remote_wakes() {
     unsafe { remote_wake_drain_on(current_cpu_id()) }
 }
 
+/// CPU hotplug: queue `cpu`'s deferred wakes from the CPU itself, interrupts off
+/// (its doorbell will not be taken before it stops).
+pub(crate) unsafe fn remote_wake_drain_here(cpu: usize) {
+    remote_wake_drain_on(cpu);
+}
+
 #[inline(never)]
 unsafe fn remote_wake_drain_slow(cpu: usize) {
     let valid = |i: usize| i < MAX_TASKS && TASK_VALID[i].load(Ordering::Relaxed);
@@ -1666,6 +1677,11 @@ unsafe fn wake_enqueue_locked(cpu: usize, idx: usize) -> bool {
 /// `true` when the task is queued, or deferred and so certain to be.
 #[inline(always)]
 unsafe fn enqueue_remote_aware(cpu: usize, idx: usize) -> bool {
+    #[cfg(feature = "ktest")]
+    if KTEST_PLACED_DEFER.load(Ordering::Relaxed) && KTEST_PLACED_TID.load(Ordering::Relaxed) == task_ref(idx).tid {
+        defer_remote_wake(cpu, idx);
+        return true;
+    }
     // `SCHED_REMOTE_WAKE_DEFER`: another CPU's queue is never spun on — a
     // held lock defers the wake to that CPU (see `remote_wake_try`). Its own
     // queue keeps the direct path.
@@ -1673,9 +1689,7 @@ unsafe fn enqueue_remote_aware(cpu: usize, idx: usize) -> bool {
         match remote_wake_try(cpu, idx) {
             Some(appended) => appended,
             None => {
-                crate::wake_list::push(&REMOTE_WAKE_HEAD[cpu], &REMOTE_WAKE_NEXT, idx);
-                REMOTE_WAKE_DEFERRED.fetch_add(1, Ordering::Relaxed);
-                ring_doorbell(cpu, idx, true);
+                defer_remote_wake(cpu, idx);
                 // The refusal, if any, is counted by the drain.
                 true
             }
@@ -1683,6 +1697,44 @@ unsafe fn enqueue_remote_aware(cpu: usize, idx: usize) -> bool {
     } else {
         cpu_enqueue_locked(cpu, idx)
     }
+}
+
+/// `ktest_wake_placed_on`: the task woken with a placement of the test's.
+#[cfg(feature = "ktest")]
+static KTEST_PLACED_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "ktest")]
+static KTEST_PLACED_CPU: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "ktest")]
+static KTEST_PLACED_DEFER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Leave `idx` on `cpu`'s deferred list and ring. The fence pairs with
+/// `drain_stopped_cpu`'s: the drain sees the push, or the doorbell's check sees
+/// `cpu` stopped.
+#[cold]
+unsafe fn defer_remote_wake(cpu: usize, idx: usize) {
+    crate::wake_list::push(&REMOTE_WAKE_HEAD[cpu], &REMOTE_WAKE_NEXT, idx);
+    REMOTE_WAKE_DEFERRED.fetch_add(1, Ordering::Relaxed);
+    core::sync::atomic::fence(Ordering::SeqCst);
+    ring_doorbell(cpu, idx, true);
+}
+
+/// `ring_doorbell` found `cpu` stopped: move what was left on it. Whether it did.
+#[cold]
+#[inline(never)]
+unsafe fn stopped_cpu_wake(cpu: usize) -> bool {
+    if azos_limits::CANARY_RUNTIME && CANARY_STOPPED_WAKE_STAYS.load(Ordering::Relaxed) {
+        return false;
+    }
+    drain_stopped_cpu(cpu);
+    true
+}
+
+/// Runtime canary `hotplug-stale-wake-stays`: [`stopped_cpu_wake`] moves nothing.
+static CANARY_STOPPED_WAKE_STAYS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// See [`CANARY_STOPPED_WAKE_STAYS`].
+pub fn canary_stopped_wake_stays() {
+    CANARY_STOPPED_WAKE_STAYS.store(true, Ordering::Relaxed);
 }
 
 /// Times the `context_saving` spin-gate hit its deadline and handed the task
