@@ -457,6 +457,9 @@ pub(crate) const NAMES: &[&str] = &[
     // ktest.rs `kheap_leaks_reports_a_block_nobody_freed`: the test leaves one 24-byte block
     // allocated, which the runner's `# leak:` note must name (gate rows `ktest leak note`).
     "kheap-leak-kept",
+    // ktest.rs `kasan_reports_*`: a kernel without the sanitizer runs the bad reads and fails
+    // the tests instead of skipping them (gate row `ktest kasan off canary (arm)`).
+    "kasan-expected",
     // entry/aarch64/boot_hooks.rs: one post-indexed store to a GIC register,
     // which HVF cannot emulate (gate row `aarch64 hvf: a writeback store on a
     // device aborts`).

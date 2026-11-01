@@ -18,6 +18,8 @@ azos_crypto = { workspace = true }
 linked_list_allocator = { workspace = true }
 
 [features]
+# Kconfig KASAN: the sanitizer's hooks and shadow (src/kasan.rs); the kernel is built with -Zsanitizer=kernel-address.
+kasan = []
 # vsbench diagnostic only (wave 15, SLAB): count and time every kernel heap
 # alloc/free by size bucket and by syscall (src/kheap_census.rs). Never shipped.
 kheap-census = []

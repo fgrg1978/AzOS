@@ -317,6 +317,10 @@ kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     if [ -z "${KB_ROBOT_DONE:-}" ] && [ "${KCONFIG_CONFIG:-}" = "$PRIMARY_CONFIG" ] && ci_robot_feats "$feats"; then
         KB_ROBOT_DONE=1 KCONFIG_CONFIG="$ROBOT_PRIMARY_CONFIG" kbuild "$feats" "$@"; return
     fi
+    # Kconfig KASAN: the sanitizer's codegen flags join the target's rustflags of .cargo/config.toml.
+    if grep -qs '^CONFIG_KASAN=y$' "${KCONFIG_CONFIG:-}"; then
+        set -- "$@" --config "target.riscv64imac-unknown-none-elf.rustflags=[$(python3 tools/build/kconfig_to_cargo.py --kasan-rustflags --toml "$KCONFIG_CONFIG")]"
+    fi
     par_shared "kbuild $feats" || return 1
     if [ $# -eq 0 ] && ci_kb_defer rv "$feats"; then return 0; fi
     # Built now (a row's own build, or an environment the deferral does not
@@ -3157,7 +3161,9 @@ A64_KNOWN_NOISE='prod pubkey|packages contain code that will be rejected by a fu
 a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64_IMG_OUT
     local feats="$1"
     rm -f "$A64_KERNEL_OUT" "$A64_IMG_OUT" "${A64_IMG_OUT}.features"
-    local out
+    local out ksan
+    # Kconfig KASAN: the sanitizer's codegen flags join the linker script in build.rustflags.
+    ksan="$(python3 tools/build/kconfig_to_cargo.py --kasan-rustflags --toml "$AARCH64_CONFIG")"
     # KCONFIG_CONFIG pinned to config/defconfigs/${GATE_DEFC_A64}.config (U12-3): without
     # this override every aarch64 build inherited the exported primary-column
     # KCONFIG_CONFIG above (an ARCH_RISCV64 config before this change existed
@@ -3165,7 +3171,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     # ARCH_AARCH64 kernel.
     if ! out="$(env -u RUSTFLAGS -u CARGO_BUILD_RUSTFLAGS KCONFIG_CONFIG="$AARCH64_CONFIG" "$CARGO" build --release \
             --target aarch64-unknown-none-softfloat -p azos_kernel --select "$feats" \
-            --config 'build.rustflags=["-C","link-arg=-Tarch/aarch64/boot/linker-aarch64.ld"]' 2>&1)"; then
+            --config "build.rustflags=[\"-C\",\"link-arg=-Tarch/aarch64/boot/linker-aarch64.ld\"${ksan:+,$ksan}]" 2>&1)"; then
         printf '%s\n' "$out" | grep -E "^(error|warning)" | grep -vE "$A64_KNOWN_NOISE" | head -5
         return 1
     fi
@@ -14772,8 +14778,10 @@ PY
     # +2 kheap_guard_reports_a_buffer_overflow, kheap_guard_reports_a_use_after_free -> 147, arm 151.
     # +1 kheap_leaks_reports_a_block_nobody_freed -> 148, arm 152.
     # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 150, arm 154.
-    KTEST_N_RV=150
-    KTEST_N_ARM=154
+    # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
+    # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
+    KTEST_N_RV=152
+    KTEST_N_ARM=156
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15087,6 +15095,17 @@ PY
     ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" KCFG_GREP="# CONFIG_KHEAP_LEAKS is not set" ktest_row_cfgline "$@"; }
     par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
     par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
+    # Kconfig KASAN: a read past a block and a read through a freed pointer are reported at the
+    # access, which the heap guard above cannot (the ERE pins both tests by name: a skip is not an `ok`);
+    # the canary is the default kernel, KASAN off, told to expect them (`canary=kasan-expected`): the same
+    # reads go unnoticed and both tests are red.
+    KTEST_KASAN_RE=$'^ok [0-9]+ - kasan_reports_a_read_past_the_end_of_a_block$\n^ok [0-9]+ - kasan_reports_a_read_through_a_freed_pointer$'
+    ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" KCFG_GREP="CONFIG_KASAN=y" ktest_row_cfgline "$@"; }
+    par "ktest kasan (arm)" ktest_row_kasan "ktest kasan (arm)" arm "" "" "" "$KTEST_KASAN_RE"
+    par "ktest kasan (rv)" ktest_row_kasan "ktest kasan (rv)" rv "" "" "" "$KTEST_KASAN_RE"
+    KTEST_KASAN_OFF="kasan_reports_a_read_past_the_end_of_a_block kasan_reports_a_read_through_a_freed_pointer"
+    par "ktest kasan off canary (rv)" ktest_row "ktest kasan off canary (rv)" rv "" "$KTEST_KASAN_OFF" "canary=kasan-expected"
+    par "ktest kasan off canary (arm)" ktest_row "ktest kasan off canary (arm)" arm "" "kasan_reports_a_read_past_the_end_of_a_block kasan_reports_a_read_through_a_freed_pointer" "canary=kasan-expected"
     # Kconfig KHEAP_LEAKS: the tracker names a block nobody freed; the canary keeps the guard and drops the tracker.
     # Kconfig CRASHDUMP_CORE_*: the kernel's core writer makes an ELF core of a run of memory, and a refused or
     # cut core leaves a `core-dump` decision record; the canary builds with the core off (CRASHDUMP_CORE_N).
@@ -15684,7 +15703,8 @@ PY
     # +2 the hung-task and stuck-CPU tests, as on rv and arm.
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
-    KTEST_N_X86=159
+    # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
+    KTEST_N_X86=161
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16810,6 +16830,9 @@ PY
     x86_ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" x86_ktest_row_cfgline "$@"; }
     par "ktest heap guard (x86)" x86_ktest_row "ktest heap guard (x86)" "" "" "" "" "$KTEST_GUARD_RE"
     par "ktest heap guard off canary (x86)" x86_ktest_row_guardoff "ktest heap guard off canary (x86)" "" "$KTEST_GUARD_OFF"
+    x86_ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" x86_ktest_row_cfgline "$@"; }
+    par "ktest kasan (x86)" x86_ktest_row_kasan "ktest kasan (x86)" "" "" "" "" "$KTEST_KASAN_RE"
+    par "ktest kasan off canary (x86)" x86_ktest_row "ktest kasan off canary (x86)" "" "$KTEST_KASAN_OFF" "canary=kasan-expected"
     x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
     par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
     par "ktest core file off canary (x86)" x86_ktest_row_coreoff "ktest core file off canary (x86)" "" "$KTEST_CORE_OFF"

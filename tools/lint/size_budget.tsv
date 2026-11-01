@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2707882
+riscv64-qemu	.text	2707902
 riscv64-qemu	.rodata	455472
 riscv64-qemu	.data	3258928
 riscv64-qemu	.bss	5799648
-riscv64-qemu	reason	hung-task and stuck-CPU detectors (f/hung-detector) and kheap guard, leak list and core file (f/debug-mem) together; the baseline now follows the merged image
+riscv64-qemu	reason	merge of f/kasan-proto and main: KASAN instrumentation with the hung-task and stuck-CPU detectors, kheap guard, leak list and core file; baseline follows the merged image

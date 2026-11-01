@@ -635,6 +635,11 @@ pub fn total_pages() -> usize {
     FRAME_COUNT.load(Ordering::Relaxed)
 }
 
+/// The physical range of the RAM the PMM manages: its start and length in bytes.
+pub fn managed_range() -> (usize, usize) {
+    (FIRST_PFN.load(Ordering::Relaxed) * PAGE_SIZE, FRAME_COUNT.load(Ordering::Relaxed) * PAGE_SIZE)
+}
+
 /// Get the number of currently free pages: the buddy lists, every hart's
 /// cache and every type zone's free list. Like a frame in another hart's
 /// cache, a zone's free frame is counted free yet out of reach of the other

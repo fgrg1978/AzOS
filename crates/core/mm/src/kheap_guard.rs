@@ -128,6 +128,29 @@ fn shape(layout: Layout) -> (usize, usize, usize) {
     (layout.align(), front, front + layout.size() + RZ)
 }
 
+/// Make the body accessible and its red zones not (Kconfig `KASAN`).
+#[cfg(feature = "kasan")]
+fn arm(body: usize, size: usize) {
+    use crate::kasan::{poison, unpoison, REDZONE};
+    if body & 7 != 0 {
+        return;
+    }
+    poison(body - RZ, RZ, REDZONE);
+    unpoison(body, size);
+    let end = body + size;
+    let rear = (end + 7) & !7;
+    poison(rear, (end + RZ - rear) & !7, REDZONE);
+}
+
+/// Everything the block's red zones poisoned accessible again, for the
+/// guard's own checks of them.
+#[cfg(feature = "kasan")]
+fn disarm(body: usize, size: usize) {
+    if body & 7 == 0 {
+        crate::kasan::poison(body - RZ, (size + 2 * RZ) & !7, 0);
+    }
+}
+
 /// First offset in `[p, p+n)` whose byte is not `byte`.
 unsafe fn first_other(p: *const u8, byte: u8, n: usize) -> Option<usize> {
     (0..n).find(|&i| unsafe { *p.add(i) } != byte)
@@ -174,6 +197,8 @@ pub unsafe fn alloc(layout: Layout, raw: Raw) -> *mut u8 {
         if LEAKS {
             crate::kheap_leaks::register(base, body as usize, layout.size());
         }
+        #[cfg(feature = "kasan")]
+        arm(body as usize, layout.size());
         body
     }
 }
@@ -190,6 +215,8 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout, raw: Raw) {
     unsafe {
         let base = ptr.sub(front);
         let zone = ptr.sub(RZ);
+        #[cfg(feature = "kasan")]
+        disarm(ptr as usize, size);
         if first_other(zone, FREED, RZ).is_none() {
             report(Kind::DoubleFree, base, ptr as usize, size, 0, FREED);
             return;
@@ -204,6 +231,8 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout, raw: Raw) {
             crate::kheap_leaks::unregister(base);
         }
         core::ptr::write_bytes(base.add(HDR), FREED, total - HDR);
+        #[cfg(feature = "kasan")]
+        crate::kasan::poison((base as usize + HDR + 7) & !7, (total - HDR) & !7, crate::kasan::FREED);
         hold(Held { base: base as usize, total, align }, raw);
     }
 }
@@ -248,6 +277,8 @@ fn evict(extra: usize) -> Option<Held> {
 unsafe fn release(h: Held, raw: Raw) {
     unsafe {
         let p = h.base as *mut u8;
+        #[cfg(feature = "kasan")]
+        crate::kasan::poison((h.base + HDR + 7) & !7, (h.total - HDR) & !7, 0);
         if let Some(i) = first_other(p.add(HDR), FREED, h.total - HDR) {
             let byte = *p.add(HDR + i);
             report(Kind::UseAfterFree, p, h.base, h.total, (HDR + i) as isize, byte);
@@ -280,6 +311,10 @@ pub fn bytes_held() -> usize {
 pub fn expect<R>(f: impl FnOnce() -> R) -> (R, [usize; 4]) {
     let before = Kind::ALL.map(|k| COUNTED[k as usize].load(Relaxed));
     EXPECTING.fetch_add(1, Relaxed);
+    // The deliberate bad accesses of a guard test are the sanitizer's too.
+    #[cfg(feature = "kasan")]
+    let r = crate::kasan::expect(f).0;
+    #[cfg(not(feature = "kasan"))]
     let r = f();
     EXPECTING.fetch_sub(1, Relaxed);
     let after = Kind::ALL.map(|k| COUNTED[k as usize].load(Relaxed));

@@ -512,6 +512,11 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
         halt();
     }
     azos_mm::pmm::reserve_range(heap_start, crate::HEAP_SIZE);
+    #[cfg(feature = "kasan")]
+    match azos_mm::kasan::boot() {
+        Some(n) => kprintln!("[KASAN] shadow {} KiB, checking on", n / 1024),
+        None => kprintln!("[KASAN] no free run for the shadow: not checking"),
+    }
     // `heap_start` is PHYSICAL; the allocator writes its own free list through
     // this pointer, so it gets the kernel's view of that memory.
     unsafe { azos_mm::kheap::init(azos_mm::addr::phys_to_virt(heap_start), crate::HEAP_SIZE) };

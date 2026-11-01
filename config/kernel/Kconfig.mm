@@ -323,6 +323,28 @@ config KHEAP_GUARD_Y
 
 endchoice
 
+config KASAN
+    # cargo-feature: kasan
+    bool "Kernel address sanitizer: a shadow byte per 8 bytes of RAM, every load and store checked"
+    depends on BUILD_TYPE_DEV
+    depends on KHEAP_GUARD_KTEST || KHEAP_GUARD_Y
+    default n
+    help
+      Builds the kernel with `-Zsanitizer=kernel-address` (call form: every
+      load and store of the kernel's own code calls `__asan_load<N>` /
+      `__asan_store<N>`, crates/core/mm/src/kasan.rs) and reserves an eighth
+      of RAM at boot for the shadow of the linear map. The heap guard poisons
+      its red zones while a block is live and the whole block while it sits
+      in quarantine, so a read through a freed pointer or past the end of a
+      block panics at the access, with the address, the size and the shadow
+      byte. Stacks, globals and frames are not poisoned; the image, MMIO and
+      user space are not in the map and not checked.
+
+      Cost: an eighth of RAM, a call and a shadow read for every access of
+      the kernel (the ktest run takes 1.6x as long on x86_64, 1.9x on
+      riscv64, under QEMU TCG), and .text a third larger (+1.2 MB on
+      riscv64, +1.2 MB on x86_64). Nothing when off: no flag, no hook, no shadow.
+
 config KHEAP_LEAKS
     bool "Kernel heap leak tracking: the live blocks, and where each was allocated"
     depends on KHEAP_GUARD_KTEST || KHEAP_GUARD_Y
