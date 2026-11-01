@@ -29,5 +29,8 @@ ktest = ["lockdep"]
 # an owner; a call that made a state and did not block on it keeps it; a word
 # that names a waiter returns 0 with its edge in place.
 pi-exited-owner-canary = []
+# A wait-graph heap loses its leftist shape: `irqoff_wait_graph_user_sized` holds
+# the graph lock past LOCK_MAX_HOLD_US, and the host test's visits grow with the set.
+pi-heap-no-swap-canary = []
 pi-state-leak-canary = []
 pi-keep-edge-canary = []

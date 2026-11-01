@@ -14,9 +14,11 @@
 //! * A task is blocked on at most one object: the scheduler's frozen field
 //!   `blocked_on` (N6a) holds an `Option<`[`WaitObj`]`>`.
 //! * Each object embeds a [`PiWaiters`]: its owner and its waiters ordered by
-//!   effective attribute ([`PiAttr`]), most urgent first. Each owner keeps
-//!   the set of objects it owns that have waiters (the graph's per-task
-//!   state, not a scheduler field).
+//!   effective attribute ([`PiAttr`]), most urgent first, FIFO among equals.
+//!   Each owner keeps the top waiter of every object it owns in the same
+//!   order (the graph's per-task state, not a scheduler field). Both are
+//!   [`pi_heap`]s, because their sizes are a user's to choose and the graph
+//!   runs with interrupts masked: a step costs O(log MAX_TASKS).
 //! * The **effective attribute** of a task is the most urgent of its base
 //!   attribute and the top waiter of every object it owns.
 //! * Edge kinds ([`EdgeKind`]): kernel mutex (N8), PI futex (N10), IPC call
@@ -75,6 +77,7 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
+use crate::pi_heap::{self, Node, NIL};
 use crate::spinlock::SpinLock;
 
 /// Kconfig `WAIT_GRAPH`: the graph is compiled into the lock paths. n: every
@@ -171,6 +174,10 @@ pub use crate::pi_attr::{quiet_le, PiAttr, QUIET_DL};
 
 /// "No task" in the slot fields of [`PiWaiters`] and the graph's links.
 const NONE: u32 = u32::MAX;
+const _: () = assert!(NONE == NIL);
+
+/// Task slots [`Graph::materialize_waiters_of`] looks at per hold of the lock.
+const MATERIALIZE_SLOTS: usize = 64;
 
 /// The waiter side of one blockable object. Embedded in the object (a
 /// `Mutex`, a futex `pi_state`, an endpoint's call record); the
@@ -189,15 +196,11 @@ pub struct PiWaiters {
     kind: EdgeKind,
     /// Owner slot, [`NONE`] = none.
     owner: AtomicU32,
-    /// First (most urgent) waiter, [`NONE`] = no waiter. The rest are
-    /// linked through the graph's per-task `next` array, most urgent first,
-    /// FIFO among equals.
+    /// The most urgent waiter, [`NONE`] = no waiter: the root of the heap
+    /// threaded through the graph's per-task `waiting` array.
     head: AtomicU32,
     /// Number of waiters.
     count: AtomicU32,
-    /// Next object in the owner's set of owned objects with waiters
-    /// (address, 0 = end). Linked iff `owner` and `head` are both set.
-    next_owned: AtomicUsize,
 }
 
 impl PiWaiters {
@@ -208,7 +211,6 @@ impl PiWaiters {
             owner: AtomicU32::new(NONE),
             head: AtomicU32::new(NONE),
             count: AtomicU32::new(0),
-            next_owned: AtomicUsize::new(0),
         }
     }
 
@@ -238,10 +240,6 @@ impl PiWaiters {
     /// True when at least one task is enqueued. Any context. O(1).
     pub fn has_waiters(&self) -> bool {
         self.head.load(Ordering::Relaxed) != NONE
-    }
-
-    fn linked(&self) -> bool {
-        self.owner.load(Ordering::Relaxed) != NONE && self.head.load(Ordering::Relaxed) != NONE
     }
 }
 
@@ -423,10 +421,17 @@ struct State<const N: usize> {
     /// The effective attribute last computed for the task (`None`: never
     /// computed since its slot was (re)used; its base attribute stands).
     eff: [Option<PiAttr>; N],
-    /// Next waiter on the object the task waits on, [`NONE`] = last.
-    next: [u32; N],
-    /// First object of the task's owned set (address, 0 = empty).
-    owned: [usize; N],
+    /// The task's links in the heap of waiters of the object it waits on.
+    waiting: [Node; N],
+    /// The task's links in its owner's heap of top waiters, while it is the
+    /// top waiter of an object that has an owner.
+    topping: [Node; N],
+    /// The root of the heap of top waiters of what the task owns, [`NIL`] = none.
+    owned: [u32; N],
+    /// When the task joined its object's waiters: FIFO among equals.
+    joined: [u64; N],
+    /// The next `joined`.
+    clock: u64,
     /// [`OwnerDiedHook`] per [`EdgeKind`].
     died_hooks: [Option<&'static dyn OwnerDiedHook>; KINDS],
     /// The task's exit passed through the graph and its slot is not reused yet:
@@ -507,8 +512,11 @@ impl<const N: usize> Graph<N> {
             st: SpinLock::new(State {
                 hooks: None,
                 eff: [None; N],
-                next: [NONE; N],
-                owned: [0; N],
+                waiting: [Node::EMPTY; N],
+                topping: [Node::EMPTY; N],
+                owned: [NIL; N],
+                joined: [0; N],
+                clock: 0,
                 died_hooks: [None; KINDS],
                 exited: [false; N],
             }),
@@ -690,30 +698,34 @@ impl<const N: usize> Graph<N> {
         // SAFETY: `t` is blocked on `o` (the lifetime contract).
         let obj = unsafe { o.get() };
         st.eff[t as usize] = Some(e);
-        let was_linked = obj.linked();
-        st.insert(h, obj, t, e);
+        st.insert(h, obj, t);
         let owner = obj.owner.load(Ordering::Relaxed);
-        if !was_linked && owner != NONE {
-            st.link_owned(owner, obj);
-        }
         self.materialized.fetch_add(1, Ordering::Relaxed);
         slot(owner).filter(|&o| (o as usize) < N)
     }
 
     /// Materialize every lazy edge on an object `owner` owns: its base is
     /// about to be re-read, and a lazy waiter is only harmless while the
-    /// owner's base is at least as urgent. O(N); `attr_changed` only.
-    fn materialize_waiters_of(&self, st: &mut State<N>, h: &dyn SchedPi, owner: TaskId) {
-        for w in 0..N {
-            if !self.lazy[w].load(Ordering::Acquire) {
-                continue;
+    /// owner's base is at least as urgent. O(N log N) in holds of
+    /// [`MATERIALIZE_SLOTS`] slots: until the walk that follows, a waiter not
+    /// joined yet boosts nothing, as if this ran later. No lock held.
+    fn materialize_waiters_of(&self, h: &dyn SchedPi, owner: TaskId) {
+        let mut base = 0;
+        while base < N {
+            let mut st = self.st.lock_irqsave();
+            for w in base..(base + MATERIALIZE_SLOTS).min(N) {
+                if !self.lazy[w].load(Ordering::Acquire) {
+                    continue;
+                }
+                let Some(o) = h.blocked_on(w as TaskId) else { continue };
+                // SAFETY: `w` is blocked on `o` (the lifetime contract).
+                if unsafe { o.get() }.owner() == Some(owner) {
+                    let e = st.compute_eff(h, w as TaskId);
+                    self.materialize(&mut st, h, w as TaskId, e);
+                }
             }
-            let Some(o) = h.blocked_on(w as TaskId) else { continue };
-            // SAFETY: `w` is blocked on `o` (the lifetime contract).
-            if unsafe { o.get() }.owner() == Some(owner) {
-                let e = st.compute_eff(h, w as TaskId);
-                self.materialize(st, h, w as TaskId, e);
-            }
+            drop(st);
+            base += MATERIALIZE_SLOTS;
         }
     }
 
@@ -740,12 +752,8 @@ impl<const N: usize> Graph<N> {
         debug_assert!(h.blocked_on(waiter).is_none(), "waitgraph: a task blocks on two objects");
         let e = st.compute_eff(h, waiter);
         st.eff[waiter as usize] = Some(e);
-        let was_linked = obj.linked();
-        st.insert(h, obj, waiter, e);
+        st.insert(h, obj, waiter);
         h.set_blocked_on(waiter, Some(WaitObj::of(obj)));
-        if !was_linked {
-            st.link_owned(owner, obj);
-        }
         Ok(PendingBlock { waiter, obj: WaitObj::of(obj) })
     }
 
@@ -763,12 +771,8 @@ impl<const N: usize> Graph<N> {
         debug_assert!(h.blocked_on(waiter).is_none(), "waitgraph: a task blocks on two objects");
         let e = st.compute_eff(h, waiter);
         st.eff[waiter as usize] = Some(e);
-        let was_linked = obj.linked();
-        st.insert(h, obj, waiter, e);
+        st.insert(h, obj, waiter);
         h.set_blocked_on(waiter, Some(WaitObj::of(obj)));
-        if !was_linked && owner != NONE {
-            st.link_owned(owner, obj);
-        }
         Ok(PendingBlock { waiter, obj: WaitObj::of(obj) })
     }
 
@@ -835,9 +839,7 @@ impl<const N: usize> Graph<N> {
             debug_assert!(false, "waitgraph: release by a task that is not the owner");
             return slot(obj.head.load(Ordering::Relaxed));
         }
-        if obj.linked() {
-            st.unlink_owned(owner, obj);
-        }
+        st.top_leaves(obj);
         obj.owner.store(NONE, Ordering::Relaxed);
         if (owner as usize) < N {
             self.walk(&mut st, h, owner);
@@ -856,13 +858,9 @@ impl<const N: usize> Graph<N> {
         if old == new {
             return;
         }
-        if obj.linked() {
-            st.unlink_owned(old, obj);
-        }
+        st.top_leaves(obj);
         obj.owner.store(new, Ordering::Relaxed);
-        if obj.linked() {
-            st.link_owned(new, obj);
-        }
+        st.top_joins(obj);
         // Before registration nothing can be enqueued: no walk to run.
         let Some(h) = st.hooks else { return };
         // A lazy waiter was harmless only under the old owner's base: it
@@ -906,12 +904,12 @@ impl<const N: usize> Graph<N> {
         if t as usize >= N {
             return;
         }
-        let mut st = self.st.lock_irqsave();
-        let Some(h) = st.hooks else { return };
+        let Some(h) = self.st.lock_irqsave().hooks else { return };
         // The new base was written before this call: after the fence a
         // lazy call on or by `t` either is seen here or saw the new base.
         fence(Ordering::SeqCst);
-        self.materialize_waiters_of(&mut st, h, t);
+        self.materialize_waiters_of(h, t);
+        let mut st = self.st.lock_irqsave();
         // The scheduler may have written the new base over a live boost:
         // put the boost back first, then let the walk move the chain.
         let e = st.compute_eff(h, t);
@@ -946,16 +944,17 @@ impl<const N: usize> Graph<N> {
         // owner loop below detaches those objects too (a lazy-only call node
         // is not linked and would keep naming the dead slot, which a reused
         // slot then inherits). Dekker with `block_on_lazy` as in set_owner.
-        {
+        let hooks = {
             let mut st = self.st.lock_irqsave();
             // Before the owned set is read, under the lock that reads it: an
             // owner recorded after this is refused, one recorded before is
             // in the set if it has waiters.
             st.exited[t as usize] = dispatch;
-            if let Some(h) = st.hooks {
-                fence(Ordering::SeqCst);
-                self.materialize_waiters_of(&mut st, h, t);
-            }
+            st.hooks
+        };
+        if let Some(h) = hooks {
+            fence(Ordering::SeqCst);
+            self.materialize_waiters_of(h, t);
         }
         // The owner role: no live object names a dead owner. Each object
         // still owned (it has waiters) is detached one at a time under the
@@ -969,10 +968,15 @@ impl<const N: usize> Graph<N> {
         loop {
             let (obj, hook) = {
                 let mut st = self.st.lock_irqsave();
-                let Some(o) = WaitObj::from_addr(st.owned[t as usize]) else { break };
-                // SAFETY: linked objects are live (the lifetime contract).
+                let top = st.owned[t as usize];
+                if top == NIL {
+                    break;
+                }
+                let Some(o) = hooks.and_then(|h| h.blocked_on(top)) else { break };
+                // SAFETY: a top waiter's edge names the object it tops, and an
+                // object with waiters is live (the lifetime contract).
                 let obj = unsafe { o.get() };
-                st.unlink_owned(t, obj);
+                st.top_leaves(obj);
                 obj.owner.store(NONE, Ordering::Relaxed);
                 let hook = if !dispatch || CANARY_OWNER_DIED_SILENT.load(Ordering::Relaxed) {
                     None
@@ -1010,7 +1014,7 @@ impl<const N: usize> Graph<N> {
             }
         }
         st.eff[t as usize] = None;
-        st.next[t as usize] = NONE;
+        st.waiting[t as usize] = Node::EMPTY;
     }
 
     /// The effective attribute the graph last computed for `t` (`None`:
@@ -1040,7 +1044,7 @@ impl<const N: usize> Graph<N> {
     /// moved, tell the scheduler, re-sort it where it waits and continue at
     /// that object's owner. Stops when nothing changes, at a task that is
     /// not blocked or an object without owner, or after the depth cap
-    /// (counted). O(depth_cap) steps, each O(W + owned).
+    /// (counted). O(depth_cap) steps, each O(log MAX_TASKS).
     fn walk(&self, st: &mut State<N>, h: &dyn SchedPi, start: TaskId) {
         self.walks.fetch_add(1, Ordering::Relaxed);
         let cap = depth_cap();
@@ -1074,8 +1078,8 @@ impl<const N: usize> Graph<N> {
             let Some(o) = h.blocked_on(t) else { return };
             // SAFETY: `t` is enqueued on `o` (the lifetime contract).
             let obj = unsafe { o.get() };
-            if st.remove(obj, t) {
-                st.insert(h, obj, t, new);
+            if st.remove(h, obj, t) {
+                st.insert(h, obj, t);
             }
             match obj.owner() {
                 Some(next) if (next as usize) < N && next != start => t = next,
@@ -1105,105 +1109,98 @@ impl<const N: usize> State<N> {
         self.eff[t as usize].unwrap_or_else(|| h.base_attr(t))
     }
 
-    /// max(base, the top waiter of every object `t` owns).
+    /// max(base, the top waiter of every object `t` owns). O(1).
     fn compute_eff(&self, h: &dyn SchedPi, t: TaskId) -> PiAttr {
-        let mut e = h.base_attr(t);
-        let mut a = self.owned[t as usize];
-        while let Some(o) = WaitObj::from_addr(a) {
-            // SAFETY: linked objects are live (the lifetime contract).
-            let obj = unsafe { o.get() };
-            if let Some(w) = slot(obj.head.load(Ordering::Relaxed)) {
-                e = e.max_urgent(self.eff_of(h, w));
-            }
-            a = obj.next_owned.load(Ordering::Relaxed);
+        let e = h.base_attr(t);
+        match self.owned[t as usize] {
+            NIL => e,
+            top => e.max_urgent(self.eff_of(h, top)),
         }
-        e
     }
 
-    /// Sorted insert: after every waiter at least as urgent (FIFO among
-    /// equals). O(W).
-    fn insert(&mut self, h: &dyn SchedPi, obj: &PiWaiters, t: TaskId, e: PiAttr) {
-        let mut prev = NONE;
-        let mut cur = obj.head.load(Ordering::Relaxed);
-        while cur != NONE && self.eff_of(h, cur) >= e {
-            prev = cur;
-            cur = self.next[cur as usize];
+    /// `eff`, then `joined`: does `x` come before `y`?
+    fn order<'a>(eff: &'a [Option<PiAttr>; N], joined: &'a [u64; N], h: &'a dyn SchedPi) -> impl Fn(u32, u32) -> bool + 'a {
+        move |x, y| {
+            let at = |t: u32| eff[t as usize].unwrap_or_else(|| h.base_attr(t));
+            let (a, b) = (at(x), at(y));
+            a > b || (a == b && joined[x as usize] < joined[y as usize])
         }
-        self.next[t as usize] = cur;
-        if prev == NONE {
-            obj.head.store(t, Ordering::Relaxed);
-        } else {
-            self.next[prev as usize] = t;
+    }
+
+    /// `obj`'s top waiter leaves its owner's heap, while the owner or the top
+    /// is about to change. O(log).
+    fn top_leaves(&mut self, obj: &PiWaiters) {
+        let (owner, top) = (obj.owner.load(Ordering::Relaxed), obj.head.load(Ordering::Relaxed));
+        if (owner as usize) >= N || top == NONE {
+            return;
+        }
+        let Some(h) = self.hooks else { return };
+        let first = Self::order(&self.eff, &self.joined, h);
+        self.owned[owner as usize] = pi_heap::remove(&mut self.topping, self.owned[owner as usize], top, &first);
+    }
+
+    /// `obj`'s top waiter joins its owner's heap. O(log).
+    fn top_joins(&mut self, obj: &PiWaiters) {
+        let (owner, top) = (obj.owner.load(Ordering::Relaxed), obj.head.load(Ordering::Relaxed));
+        if (owner as usize) >= N || top == NONE {
+            return;
+        }
+        let Some(h) = self.hooks else { return };
+        let first = Self::order(&self.eff, &self.joined, h);
+        self.owned[owner as usize] = pi_heap::insert(&mut self.topping, self.owned[owner as usize], top, &first);
+    }
+
+    /// `t` joins `obj`'s waiters at its effective attribute, after every
+    /// waiter at least as urgent, and the owner's heap follows the top. O(log).
+    fn insert(&mut self, h: &dyn SchedPi, obj: &PiWaiters, t: TaskId) {
+        self.clock += 1;
+        self.joined[t as usize] = self.clock;
+        let old = obj.head.load(Ordering::Relaxed);
+        let first = Self::order(&self.eff, &self.joined, h);
+        let new = pi_heap::insert(&mut self.waiting, old, t, &first);
+        drop(first);
+        if new != old {
+            self.top_leaves(obj);
+            obj.head.store(new, Ordering::Relaxed);
+            self.top_joins(obj);
         }
         obj.count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Unlink `t` from `obj`'s waiters. O(W).
-    fn remove(&mut self, obj: &PiWaiters, t: TaskId) -> bool {
-        let mut prev = NONE;
-        let mut cur = obj.head.load(Ordering::Relaxed);
-        while cur != NONE && cur != t {
-            prev = cur;
-            cur = self.next[cur as usize];
-        }
-        if cur == NONE {
+    /// Take `t` out of `obj`'s waiters, and the owner's heap follows the top.
+    /// `false` when it is not there. O(log).
+    fn remove(&mut self, h: &dyn SchedPi, obj: &PiWaiters, t: TaskId) -> bool {
+        if !self.waits_on(h, obj, t) {
             return false;
         }
-        let after = self.next[t as usize];
-        if prev == NONE {
-            obj.head.store(after, Ordering::Relaxed);
-        } else {
-            self.next[prev as usize] = after;
+        let old = obj.head.load(Ordering::Relaxed);
+        if old == t {
+            self.top_leaves(obj);
         }
-        self.next[t as usize] = NONE;
+        let first = Self::order(&self.eff, &self.joined, h);
+        let new = pi_heap::remove(&mut self.waiting, old, t, &first);
+        drop(first);
+        if old == t {
+            obj.head.store(new, Ordering::Relaxed);
+            self.top_joins(obj);
+        }
         obj.count.fetch_sub(1, Ordering::Relaxed);
         true
     }
 
-    /// `t` leaves `obj`: off its waiters, `blocked_on` cleared, and `obj`
-    /// out of its owner's set if that was the last waiter. No walk.
+    /// Is `t` in `obj`'s waiters? It is in one heap at most, and its edge
+    /// names which (a lazy edge is in none).
+    fn waits_on(&self, h: &dyn SchedPi, obj: &PiWaiters, t: TaskId) -> bool {
+        self.waiting[t as usize].in_heap()
+            && (obj.head.load(Ordering::Relaxed) == t || h.blocked_on(t) == Some(WaitObj::of(obj)))
+    }
+
+    /// `t` leaves `obj`: off its waiters, `blocked_on` cleared. No walk.
     fn dequeue(&mut self, h: &dyn SchedPi, t: TaskId, obj: &PiWaiters) {
-        let was_linked = obj.linked();
-        self.remove(obj, t);
+        self.remove(h, obj, t);
         if h.blocked_on(t) == Some(WaitObj::of(obj)) {
             h.set_blocked_on(t, None);
         }
-        if was_linked && !obj.linked() {
-            self.unlink_owned(obj.owner.load(Ordering::Relaxed), obj);
-        }
-    }
-
-    fn link_owned(&mut self, owner: u32, obj: &PiWaiters) {
-        if owner as usize >= N {
-            return;
-        }
-        obj.next_owned.store(self.owned[owner as usize], Ordering::Relaxed);
-        self.owned[owner as usize] = WaitObj::of(obj).addr();
-    }
-
-    /// O(objects `owner` owns with waiters).
-    fn unlink_owned(&mut self, owner: u32, obj: &PiWaiters) {
-        if owner as usize >= N {
-            return;
-        }
-        let target = WaitObj::of(obj).addr();
-        let after = obj.next_owned.load(Ordering::Relaxed);
-        if self.owned[owner as usize] == target {
-            self.owned[owner as usize] = after;
-        } else {
-            let mut a = self.owned[owner as usize];
-            while let Some(o) = WaitObj::from_addr(a) {
-                // SAFETY: linked objects are live.
-                let cur = unsafe { o.get() };
-                let n = cur.next_owned.load(Ordering::Relaxed);
-                if n == target {
-                    cur.next_owned.store(after, Ordering::Relaxed);
-                    break;
-                }
-                a = n;
-            }
-        }
-        obj.next_owned.store(0, Ordering::Relaxed);
     }
 
     /// Would `waiter`, now enqueued on `obj`, close a cycle? Follows owner

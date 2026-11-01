@@ -48,3 +48,5 @@ ktest = []
 pi-exited-owner-canary = []
 pi-state-leak-canary = []
 pi-keep-edge-canary = []
+# Wait-graph heap canary (tests/waitgraph_heaps.rs): its leftist shape is lost.
+pi-heap-no-swap-canary = []

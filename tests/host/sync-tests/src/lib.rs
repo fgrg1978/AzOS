@@ -106,6 +106,8 @@ pub mod qsbr_core;
 // the futex word protocol, the Kconfig-off behaviour).
 #[path = "../../../../crates/core/sync/src/pi_attr.rs"]
 pub mod pi_attr;
+#[path = "../../../../crates/core/sync/src/pi_heap.rs"]
+pub mod pi_heap;
 #[path = "../../../../crates/core/sync/src/waitgraph.rs"]
 pub mod waitgraph;
 #[path = "../../../../crates/core/sync/src/kmutex.rs"]
