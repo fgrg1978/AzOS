@@ -766,7 +766,7 @@ The cross-ISA contract is in `Mmu` (`arch/api/src/lib.rs`):
 |----------|----------|
 | `flush_tlb_page(va)` | Invalidate the entry translating `va`. For changes where a stale entry elsewhere only faults and re-walks: demand materialize, permission widening, the kernel's own table at boot. |
 | `tlb_shootdown(root, va, len)` | After the caller removed, downgraded or repointed user PTEs of the table at `root`, invalidate `[va, va + len)` (`TLB_ALL`: everything) on every hart that may hold a translation, this one included, and return only when none can use one. Frames the old PTEs named may be freed after it returns, not before. Returns the mask of remote harts interrupted. |
-| `flush_tlb_all`, `flush_tlb_asid` | Whole-TLB and per-address-space-tag forms. |
+| `flush_tlb_all` | Whole-TLB form. |
 | `root_holders(root)` | Harts that still translate through `root`; a page table may be freed only while this is 0. |
 | `asid_bits` | ASID/PCID bits this hart implements (0: none). |
 
@@ -777,7 +777,6 @@ The cross-ISA contract is in `Mmu` (`arch/api/src/lib.rs`):
 | Who is signalled | Harts whose published `satp` (`AZOS_HART_SATP`) names the root | Everyone (hardware broadcast) | CPUs whose published CR3 (`AZOS_HART_CR3`) names the root |
 | Ranged form | Local part: `sfence.w.inval; sinval.vma; sfence.inval.ir` for ranges of `SVINVAL_MIN_PAGES` (2) or more when Svinval is present (Kconfig choice, default `RV_SVINVAL_PROBE`, execution-probed); above `TLB_FLUSH_CEILING_PAGES` pages one full flush, ASID-scoped where it can be | `TLBI RVAE1IS`/`RVAAE1IS` (FEAT_TLBIRANGE, Kconfig choice, default `A64_TLBIRANGE_PROBE`) for ranges of `A64_TLBIRANGE_MIN_PAGES` (4) or more, at most five operations for any length; per page otherwise | Above `TLB_FLUSH_CEILING_PAGES` (33) pages, the whole PCID is dropped instead of one `invlpg` each |
 | `flush_tlb_all` | `sfence.vma`, local | `TLBI VMALLE1IS` | `invpcid` type 2, else a CR4.PGE toggle; local |
-| `flush_tlb_asid` | Falls back to a full local `sfence.vma` | `TLBI ASIDE1IS` | `invpcid` single-context, else a CR3 reload of the live PCID |
 | `root_holders` | Exact, from the published `satp` of every hart | This PE's own `TTBR0_EL1` only | From the published CR3 of every CPU |
 
 Each shootdown guarantees that when it returns, no CPU can use a translation

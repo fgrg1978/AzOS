@@ -1076,10 +1076,10 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         let t = unsafe { task_mut(idx) };
         let online_mask = if online >= 32 { u32::MAX } else { (1u32 << online) - 1 };
         let mut mask = if r.cpu_mask == 0 { online_mask } else { r.cpu_mask & online_mask };
-        if t.cpu_affinity >= 0 {
+        if let Some(pin) = t.pinned() {
             // A reservation mask is a u32 (the syscall ABI's): a pin past
             // CPU 31 cannot be named in it and leaves nothing to fit.
-            mask &= 1u32.checked_shl(t.cpu_affinity as u32).unwrap_or(0);
+            mask &= u32::try_from(pin).ok().and_then(|p| 1u32.checked_shl(p)).unwrap_or(0);
         } else if unsafe { PER_CPU[me].current_idx.load(Ordering::Relaxed) } == idx {
             mask &= 1u32.checked_shl(me as u32).unwrap_or(0);
         }
@@ -1112,7 +1112,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
             res(cpu, k).band = r.band;
             res(cpu, k).level = cand.level;
         }
-        t.cpu_affinity = cpu as i8;
+        t.set_affinity(cpu as i8);
         load[cpu].total_ppm = load[cpu].total_ppm.saturating_add(density);
         if r.band {
             load[cpu].band_ppm = load[cpu].band_ppm.saturating_add(density);

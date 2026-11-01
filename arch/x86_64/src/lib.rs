@@ -273,10 +273,6 @@ impl Mmu for X86_64 {
             self.restore(irq);
         }, "x86_64: flush_tlb_all: invpcid all / CR4.PGE toggle")
     }
-    /// `invpcid` type 1 (single context), else a CR3 reload of the live PCID.
-    fn flush_tlb_asid(&self, _asid: u16) {
-        on_x86!(mmu::cpu::flush_asid(_asid), "x86_64: flush_tlb_asid: invpcid single-context")
-    }
     /// 12 with CR4.PCIDE, else 0.
     fn asid_bits(&self) -> u32 {
         if mmu::pcid_on() { mmu::PCID_BITS } else { 0 }

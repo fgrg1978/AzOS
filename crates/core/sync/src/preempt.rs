@@ -222,32 +222,15 @@ fn bump(c: &AtomicU32) {
 
 /// This hart's slot, or `None` if the hart id is out of range.
 ///
-/// # The out-of-range policy — why `None` is unreachable on BOTH ISAs now
+/// # The out-of-range policy
 ///
-/// boot.S range-checks harts against `MAX_HARTS = 8` and `SLOTS == MAX_HARTS`,
-/// so `None` is unreachable on riscv64, where `hart_id()` reads `tp`, the
-/// same value `boot.S` range-checked. If it *were* reached, everything here
-/// degrades to a no-op: `depth()` reads 0, guards do nothing, and the hart
-/// behaves exactly as it does today with no preemption control at all —
-/// the right failure mode *while nothing carries a guard*, but wrong once
-/// something does.
-///
-/// **This paragraph used to say "Step 2 must revisit this" — Step 2 has
-/// landed** (`SpinLockGuard` carries a `PreemptGuard`; see the module doc's
-/// own correction), so a silent no-op here means a hart whose lock holders
-/// are freely preempted, i.e. K-C29 unfixed on exactly one hart — worse
-/// than a loud stop. On aarch64 this used to be reachable in principle: this
-/// crate's `hart_id()` decoded `MPIDR_EL1` directly (`Aff0 | Aff1<<8 |
-/// Aff2<<16`), a value that only stays inside `0..SLOTS` on a flat topology
-/// (`Aff1 == 0`, true on QEMU virt's `-smp N`, false on any clustered SoC) —
-/// U10-4 (audit). `arch/aarch64::cpu::hart_id()` now reads
-/// `TPIDR_EL1` instead — the SAME logical, contiguous `0..num_cpus` id
-/// `boot.S` publishes and range-checks against `MAX_HARTS` before this
-/// crate ever sees it (see that crate's own doc for the full history) — so
-/// `None` is unreachable on aarch64 too, for the same reason it already was
-/// on riscv64: one hart-identity source, one range check, both ISAs. The
-/// alternative that must NOT be chosen is `hart % SLOTS`: that reintroduces
-/// the counter-merging the deleted stub had.
+/// `None` is unreachable: `hart_id()` is the logical, contiguous id the boot
+/// code publishes (`tp` on riscv64, `TPIDR_EL1` on aarch64) after it has
+/// range-checked it against `MAX_HARTS`, and `SLOTS` (Kconfig `NR_CPUS`) is at
+/// least that (`kernel/src/main.rs` asserts it). Were it reached, everything here would degrade to a
+/// no-op, a hart whose lock holders are freely preempted (K-C29 unfixed on
+/// that hart), so `HART_OOR` counts it and must stay zero. Do not fold the id
+/// with `hart % SLOTS`: two harts would share one counter.
 #[inline(always)]
 fn slot() -> Option<&'static PreemptSlot> {
     let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);

@@ -165,8 +165,8 @@ static HIST_KEY: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASK
 #[cfg(feature = "sched-o1-placement")]
 #[inline]
 fn resident_home(task: &Task) -> usize {
-    if task.cpu_affinity >= 0 {
-        (task.cpu_affinity as usize).min(ncpu() - 1)
+    if let Some(p) = task.pinned() {
+        p.min(ncpu() - 1)
     } else {
         (task.context.tp as usize).min(ncpu() - 1)
     }
@@ -2118,8 +2118,8 @@ unsafe fn find_best_cpu_scan(prio: u32, exclude: usize, num_online: usize) -> [C
         if t.state() == TaskState::Zombie {
             continue;
         }
-        let home = if t.cpu_affinity >= 0 {
-            (t.cpu_affinity as usize).min(ncpu() - 1)
+        let home = if let Some(p) = t.pinned() {
+            p.min(ncpu() - 1)
         } else {
             (t.context.tp as usize).min(ncpu() - 1)
         };

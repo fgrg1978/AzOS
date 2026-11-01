@@ -93,7 +93,7 @@ fn a_descriptor_is_32_bytes_and_has_no_colour_or_node_field() {
 
 #[test]
 fn the_state_bits_are_distinct_single_bits() {
-    let bits = [F_FREE, F_ALLOCATED, F_RESERVED, F_PINNED, F_COMPRESSED, F_SWAPPED, F_CACHED];
+    let bits = [F_FREE, F_ALLOCATED, F_RESERVED, F_PINNED, F_COMPRESSED, F_CACHED];
     for (i, a) in bits.iter().enumerate() {
         assert_eq!(a.count_ones(), 1, "bit {i}");
         for b in &bits[i + 1..] {

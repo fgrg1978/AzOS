@@ -504,6 +504,22 @@ pub fn termios_bytes() -> [u8; TERMIOS_SIZE] {
 /// `sizeof(struct utsname)`: six 65-byte fields.
 pub const UTSNAME_SIZE: usize = 390;
 
+/// A thread's CPU set as `sched_getaffinity` writes it, bit `n` of word
+/// `n / 64` = CPU `n`: its pin (`-1` = none), or every CPU the scheduler
+/// places work on (`online` is the prefix it walks). Bits past the mask
+/// (`WORDS * 64`) are dropped.
+pub fn cpu_set<const WORDS: usize>(pin: i8, online: usize) -> [u64; WORDS] {
+    let mut set = [0u64; WORDS];
+    let cpus = match usize::try_from(pin) {
+        Ok(p) => p..p + 1,
+        Err(_) => 0..online,
+    };
+    for c in cpus.filter(|&c| c < WORDS * 64) {
+        set[c / 64] |= 1 << (c % 64);
+    }
+    set
+}
+
 /// `struct utsname`: sysname, nodename, release, version, machine,
 /// domainname. `release` is a Linux-shaped version string because musl and
 /// BusyBox parse it; it names this personality, not a Linux kernel.

@@ -950,14 +950,19 @@ job_disk() {
 # safe mode`). Rows that are not about what persists across boots start from
 # the built volume; rows that ARE (boot count, latch, OTA, safe mode) do not
 # call this.
+# The snapshot of $1 must be this run's, never one an earlier gate run left on
+# disk: its userspace may be another build's. Serially the row that made it
+# always ran first; under CI_TIER=fast it may have been skipped, and a parallel
+# job may have made it in another shell. Then it is made here, from scratch
+# (together with the extra files named, the stale inputs): `make` alone would
+# call an image a boot has written to up to date and snapshot that.
+pristine_disk() {
+    local d="$1"; shift
+    case "$MADE_DISKS" in *" $d "*) ;; *) rm -f "$d" "$d.pristine" "$@"; make_disk "$d" ;; esac
+}
 fresh_disk() {
     par_shared "fresh_disk $1" || return 1
-    # The snapshot must be this run's. Serially the row that made it always
-    # ran first; under CI_TIER=fast it may have been skipped, and a parallel
-    # job may have made it in another shell. Then it is made here, from
-    # scratch: `make` alone would call an image a boot has written to up to
-    # date and snapshot that.
-    case "$MADE_DISKS" in *" $1 "*) ;; *) rm -f "$1" "$1.pristine"; make_disk "$1" ;; esac
+    pristine_disk "$1" || return 1
     # A missing snapshot must stop the gate: booting on whatever the last boot
     # left is exactly what this helper exists to prevent.
     if ! cp -p "$1.pristine" "$1"; then
@@ -5935,10 +5940,7 @@ supall_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <exp
         if ! kbuild "qemu,supall-smoke$extra"; then
             bad; echo "      riscv64 kernel (qemu,supall-smoke$extra) did not build"; return
         fi
-        if [ ! -f $AZOS_OUT/build/disk-drv.img.pristine ]; then
-            rm -f $AZOS_OUT/build/disk-drvbase.img $AZOS_OUT/build/disk-drv.img
-            make_disk $AZOS_OUT/build/disk-drv.img
-        fi
+        pristine_disk $AZOS_OUT/build/disk-drv.img $AZOS_OUT/build/disk-drvbase.img
         cp $AZOS_OUT/build/disk-drv.img.pristine "$img"
         par_ready
         "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \
@@ -6027,10 +6029,7 @@ hung_row() { # <label> <isa: rv|arm> <action: RESTART|SAFE_STOP> <canary: yes|no
         if ! KCONFIG_CONFIG="$cfg" kbuild "$feats"; then
             bad; echo "      riscv64 kernel ($feats, HUNG_ACTION_$action) did not build"; return
         fi
-        if [ ! -f $AZOS_OUT/build/disk-drv.img.pristine ]; then
-            rm -f $AZOS_OUT/build/disk-drvbase.img $AZOS_OUT/build/disk-drv.img
-            make_disk $AZOS_OUT/build/disk-drv.img
-        fi
+        pristine_disk $AZOS_OUT/build/disk-drv.img $AZOS_OUT/build/disk-drvbase.img
         cp $AZOS_OUT/build/disk-drv.img.pristine "$img"
     else
         if ! AARCH64_CONFIG="$cfg" a64_kbuild "$feats"; then
@@ -6169,10 +6168,7 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
         if [ "$kind" = buzz-kernel ]; then
             src_why="$(python3 tools/lint/chip_source_check.py buzzer "$KERNEL" 2>&1)"
         fi
-        if [ ! -f $AZOS_OUT/build/disk-drv.img.pristine ]; then
-            rm -f $AZOS_OUT/build/disk-drvbase.img $AZOS_OUT/build/disk-drv.img
-            make_disk $AZOS_OUT/build/disk-drv.img
-        fi
+        pristine_disk $AZOS_OUT/build/disk-drv.img $AZOS_OUT/build/disk-drvbase.img
         cp $AZOS_OUT/build/disk-drv.img.pristine "$img"
         par_ready
         "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 \

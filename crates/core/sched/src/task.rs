@@ -949,7 +949,7 @@ pub struct Task {
     /// (`scheduler::set_current_sched_params`, interrupts off). Neither write
     /// has a concurrent writer: the donation paths only READ this field.
     pub base_priority: core::sync::atomic::AtomicU32,  // original priority (for PI restore)
-    pub cpu_affinity:  i8,       // -1 = any CPU, 0..NR_CPUS-1 = pinned to that hart
+    cpu_affinity:      core::sync::atomic::AtomicI8,  // -1 = any CPU, 0..NR_CPUS-1 = pinned to that hart; see `affinity`
     pub _pad:          [u8; 3],  // explicit padding for repr(C) alignment
 
     // == name ==
@@ -1355,6 +1355,26 @@ impl TaskMem {
 }
 
 impl Task {
+    /// The CPU the task is pinned to (-1: none). Relaxed: RT admission writes
+    /// it while wake paths on other CPUs read it, and the cost of a stale
+    /// read is one wake placed on the previous CPU. A decision that needs the
+    /// pin twice reads it once, through [`Task::pinned`].
+    #[inline(always)]
+    pub fn affinity(&self) -> i8 {
+        self.cpu_affinity.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The pinned CPU, one load.
+    #[inline(always)]
+    pub fn pinned(&self) -> Option<usize> {
+        usize::try_from(self.affinity()).ok()
+    }
+
+    #[inline(always)]
+    pub fn set_affinity(&self, cpu: i8) {
+        self.cpu_affinity.store(cpu, core::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The task's domain key ([`Task::domain`]).
     #[inline(always)]
     pub fn domain(&self) -> crate::domain::Key {

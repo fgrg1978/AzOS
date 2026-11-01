@@ -8,6 +8,19 @@
 mod tests {
     use azos_linux_abi::*;
 
+    /// `sched_getaffinity` answers the task's own set: its pin, else every
+    /// online CPU. Canary: always answer `1` (CPU 0) and the pinned and the
+    /// four-CPU asserts fail.
+    #[test]
+    fn affinity_mask_is_the_pin_or_the_online_prefix() {
+        assert_eq!(cpu_set::<1>(-1, 4), [0b1111]);
+        assert_eq!(cpu_set::<1>(2, 4), [0b100]);
+        assert_eq!(cpu_set::<1>(-1, 1), [1]);
+        assert_eq!(cpu_set::<2>(-1, 70), [u64::MAX, 0b11_1111]);
+        assert_eq!(cpu_set::<2>(65, 70), [0, 0b10]);
+        assert_eq!(cpu_set::<1>(64, 70), [0], "a bit past the mask is dropped");
+    }
+
     fn u64_at(b: &[u8], at: usize) -> u64 {
         u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
     }

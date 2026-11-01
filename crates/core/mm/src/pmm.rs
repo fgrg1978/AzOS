@@ -53,7 +53,7 @@ use crate::zone::{tag_frame, Zone, ZoneList, ZONES};
 pub use crate::frame::Pfn;
 use crate::frame::{
     table_bytes, FrameDesc, FrameTable, F_ALLOCATED, F_CACHED, F_COMPRESSED, F_FREE, F_PINNED,
-    F_RESERVED, F_SWAPPED,
+    F_RESERVED,
 };
 use azos_common::error::{KResult, KernelError};
 
@@ -135,11 +135,11 @@ pub fn frame_state(phys: usize) -> Option<u32> {
 }
 
 /// Set or clear one of the allocated-frame modifiers (`F_PINNED`,
-/// `F_COMPRESSED`, `F_SWAPPED`) on the frame at `phys`. `false` when the
+/// `F_COMPRESSED`) on the frame at `phys`. `false` when the
 /// frame is not managed or not allocated, or `bit` is not a modifier. A
 /// pinned frame is refused by `free`.
 pub fn set_frame_modifier(phys: usize, bit: u32, on: bool) -> bool {
-    if bit == 0 || bit & !(F_PINNED | F_COMPRESSED | F_SWAPPED) != 0 { return false; }
+    if bit == 0 || bit & !(F_PINNED | F_COMPRESSED) != 0 { return false; }
     let Some(d) = desc_of(phys) else { return false };
     let mut cur = d.flags.load(Ordering::Relaxed);
     loop {

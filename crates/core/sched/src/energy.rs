@@ -843,7 +843,7 @@ fn bound_band_tasks(cpu: usize) -> u32 {
         }
         // SAFETY: a valid slot; plain words read, see above.
         let t = unsafe { task_ref(idx) };
-        if t.cpu_affinity == cpu as i8
+        if t.affinity() == cpu as i8
             && crate::task::is_rt_priority(t.priority.load(Ordering::Relaxed))
             && !matches!(t.state(), super::TaskState::Zombie | super::TaskState::Invalid)
         {

@@ -337,8 +337,7 @@ fn broadcast(f: LocalFlush, global: bool) {
     invlpgb_plan(f, global, max, invlpgb);
     tlbsync();
     if saved & (1 << 9) != 0 {
-        // SAFETY: the interrupts were enabled on entry.
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
+        crate::cpu::sti();
     }
 }
 

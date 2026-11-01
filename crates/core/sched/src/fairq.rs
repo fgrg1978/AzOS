@@ -589,7 +589,7 @@ unsafe fn movable(cpu: usize, idx: usize, level: usize) -> bool {
         return false;
     }
     let t = task_ref(idx);
-    t.cpu_affinity < 0
+    t.affinity() < 0
         && t.state() == TaskState::Ready
         && !t.context_saving.load(Acquire)
         && prio_of(idx) as usize == level
@@ -681,7 +681,7 @@ impl Rq for Queues {
             let t = task_mut(idx);
             // A reservation admitted since `take` pinned it: it goes where it
             // was pinned (`rt::reserve` moves a queued task the same way).
-            let dst = if t.cpu_affinity >= 0 { (t.cpu_affinity as usize).min(ncpu() - 1) } else { dst };
+            let dst = if let Some(p) = t.pinned() { p.min(ncpu() - 1) } else { dst };
             t.context.tp = dst as CtxReg;
             hist_reaccount(idx);
             t.ready_site.store(crate::task::ready_site::REBALANCE | ((dst as u8) << 4), Relaxed);

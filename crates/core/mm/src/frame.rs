@@ -83,8 +83,6 @@ pub const F_RESERVED: u32 = 1 << 2;
 pub const F_PINNED: u32 = 1 << 3;
 /// Allocated, its contents held compressed elsewhere (modifier).
 pub const F_COMPRESSED: u32 = 1 << 4;
-/// Allocated, its contents written to swap (modifier).
-pub const F_SWAPPED: u32 = 1 << 5;
 /// Free, but held in a hart's page cache: counted free, not in a buddy list.
 pub const F_CACHED: u32 = 1 << 6;
 

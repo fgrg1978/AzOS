@@ -347,14 +347,6 @@ impl Mmu for Aarch64 {
         crate::sysregs::tlbi_vmalle1is();
     }
 
-    /// No caller today. User tables are installed with their ASID
-    /// (`ArchPlatform::user_root_word`, bits 63:48 of `TTBR0_EL1`), so this
-    /// drops exactly the entries tagged `asid`.
-    #[inline]
-    fn flush_tlb_asid(&self, asid: u16) {
-        crate::sysregs::tlbi_aside1is(asid);
-    }
-
     /// `ID_AA64MMFR0_EL1.ASIDBits` (bits 7:4): 0b0010 is 16 bits, 0b0000 is
     /// 8; 16 only counts when `TCR_EL1.AS` took the 1 `mmu::setup` writes.
     fn asid_bits(&self) -> u32 {

@@ -527,11 +527,6 @@ pub trait Mmu: Send + Sync {
     /// Invalidate the entire TLB. Used on PT teardown.
     fn flush_tlb_all(&self);
 
-    /// Invalidate TLB entries tagged with `asid`. Used on
-    /// per-task address-space tear-down to avoid blowing away
-    /// other tasks' translations.
-    fn flush_tlb_asid(&self, asid: u16);
-
     /// ASID bits this hart's MMU implements (0: none). Boot only, with the
     /// MMU on. riscv64 probes satp.ASID (ASIDLEN); aarch64 reads
     /// ID_AA64MMFR0_EL1.ASIDBits. The default is an ISA without ASIDs.

@@ -503,7 +503,6 @@ mod tests {
         fn switch_pt(&self, _root_phys: usize, _asid: u16) {}
         fn switch_kernel_pt(&self, _root_phys: usize) {}
         fn flush_tlb_all(&self) {}
-        fn flush_tlb_asid(&self, _asid: u16) {}
         fn flush_tlb_page(&self, _va: usize) { AGING_FLUSHES.with(|c| c.set(c.get() + 1)); }
         fn tlb_shootdown(&self, _root_phys: usize, _va: usize, _len: usize) -> usize { 0 }
         fn root_holders(&self, _root_phys: usize) -> usize { 0 }

@@ -361,6 +361,23 @@ fn flush_local_pages(start: usize, pages: usize, asid: usize) {
 }
 
 
+/// A remote fence that the firmware refused is not done: the caller frees the
+/// frames the old PTEs named right after, and a hart still holding a
+/// translation to one would read or write it as its next owner's. `first` is
+/// the SBI answer of the ranged, ASID-scoped fence; on failure `retry` runs
+/// the broadest form (whole space, every ASID) once, and a second failure is
+/// the caller's to stop on: nothing else in this kernel can reach a remote
+/// hart's TLB.
+pub fn settle_remote_fence(first: isize, retry: impl FnOnce() -> isize) -> Result<(), isize> {
+    if first == 0 {
+        return Ok(());
+    }
+    match retry() {
+        0 => Ok(()),
+        e => Err(e),
+    }
+}
+
 /// Invalidate `[va, va + len)` (or everything, `len == ALL`) for the address
 /// space rooted at `root_phys`, on this hart and on every hart that may hold
 /// it. Returns the mask of remote harts signalled (0: no IPI was sent).
@@ -432,11 +449,15 @@ pub fn shootdown(root_phys: usize, va: usize, len: usize) -> usize {
     #[cfg(not(feature = "tlb-local-only"))]
     {
         let (start, size) = if len == ALL { (0, usize::MAX) } else { (va & !0xfff, len) };
+        let mut rc = 0;
         if scoped != 0 {
-            let _ = crate::firmware::remote_sfence_vma_asid_cpus(scoped, start, size, asid as usize);
+            rc = crate::firmware::remote_sfence_vma_asid_cpus(scoped, start, size, asid as usize);
         }
-        if full != 0 {
-            let _ = crate::firmware::remote_sfence_vma_cpus(full, start, size);
+        if full != 0 && rc == 0 {
+            rc = crate::firmware::remote_sfence_vma_cpus(full, start, size);
+        }
+        if let Err(e) = settle_remote_fence(rc, || crate::firmware::remote_sfence_vma_cpus(mask, 0, usize::MAX)) {
+            panic!("tlb shootdown: remote sfence.vma failed (SBI error {e}) on harts {mask:#x}");
         }
     }
     mask

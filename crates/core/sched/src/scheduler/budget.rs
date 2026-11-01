@@ -1060,8 +1060,8 @@ pub fn task_census() -> (u32, u32, u32, [u32; MAX_CPUS], u32, u32, [u32; 5]) {
                 TaskState::Ready => {
                     ready += 1;
                     if !t.queued.load(Ordering::Acquire) { ready_unqueued += 1; }
-                    let c = if t.cpu_affinity >= 0 {
-                        (t.cpu_affinity as usize).min(ncpu() - 1)
+                    let c = if let Some(p) = t.pinned() {
+                        p.min(ncpu() - 1)
                     } else {
                         (t.context.tp as usize).min(ncpu() - 1)
                     };
@@ -1103,8 +1103,8 @@ pub fn ready_unqueued_ids(out: &mut [(u32, u32, u32, [u8; 8], u8)]) -> usize {
             let t = task_ref(i);
             if t.state() != TaskState::Ready { continue; }
             if t.queued.load(Ordering::Acquire) { continue; }
-            let home = if t.cpu_affinity >= 0 {
-                t.cpu_affinity as u32
+            let home = if let Some(p) = t.pinned() {
+                p as u32
             } else {
                 t.context.tp as u32
             };
@@ -1127,7 +1127,7 @@ pub fn task_priority(tid: u32) -> Option<u32> {
 
 /// The hart a task is pinned to (`-1` = any), or `None` if no such task.
 pub fn task_cpu_affinity(tid: u32) -> Option<i8> {
-    unsafe { idx_for_tid(tid).map(|i| task_ref(i).cpu_affinity) }
+    unsafe { idx_for_tid(tid).map(|i| task_ref(i).affinity()) }
 }
 
 // ---- AQ11: Syscall filter accessor ----

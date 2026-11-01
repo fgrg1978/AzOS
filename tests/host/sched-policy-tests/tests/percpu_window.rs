@@ -316,7 +316,7 @@ fn reserve_keeps_the_caller_on_its_hart_until_it_is_pinned() {
     let s = read("crates/core/sched/src/rt.rs");
     in_order(
         &body(&s, "pub fn reserve("),
-        &["critical_section()", "current_cpu_id()", "cpu_affinity = cpu", "drop(admission)"],
+        &["critical_section()", "current_cpu_id()", "set_affinity(cpu as i8)", "drop(admission)"],
     );
 }
 

@@ -36,7 +36,8 @@
 
 use core::marker::PhantomData;
 use core::mem::{size_of, transmute_copy};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::ptr::null_mut;
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 /// Why [`Hook::try_set`] refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,45 +80,45 @@ pub enum Install {
 /// An atomic slot holding a plain `fn(..) -> ..` pointer, or nothing.
 ///
 /// `F` must be a function pointer (checked by size; a function's address is
-/// never 0, so 0 is the empty slot). The word only ever holds 0 or the bits of
-/// an `F` stored by one of the methods below, which is what makes reading it
-/// back as an `F` sound.
+/// never null, so null is the empty slot). The word only ever holds null or
+/// the bits of an `F` stored by one of the methods below, which is what makes
+/// reading it back as an `F` sound.
 #[repr(transparent)]
 pub struct AtomicFn<F: Copy> {
-    raw: AtomicUsize,
+    raw: AtomicPtr<()>,
     _f: PhantomData<F>,
 }
 
 impl<F: Copy> AtomicFn<F> {
     /// An empty slot.
     pub const fn new() -> Self {
-        Self { raw: AtomicUsize::new(0), _f: PhantomData }
+        Self { raw: AtomicPtr::new(null_mut()), _f: PhantomData }
     }
 
     #[inline(always)]
-    fn word(f: F) -> usize {
-        const { assert!(size_of::<F>() == size_of::<usize>(), "an AtomicFn holds a fn pointer") };
+    fn word(f: F) -> *mut () {
+        const { assert!(size_of::<F>() == size_of::<*mut ()>(), "an AtomicFn holds a fn pointer") };
         // SAFETY: `F` is pointer-sized (asserted above) and `Copy`; reading its
-        // bytes as a `usize` is `f as usize`.
-        unsafe { transmute_copy::<F, usize>(&f) }
+        // bytes as a pointer keeps the function's provenance.
+        unsafe { transmute_copy::<F, *mut ()>(&f) }
     }
 
     #[inline(always)]
-    fn func(raw: usize) -> Option<F> {
-        const { assert!(size_of::<F>() == size_of::<usize>(), "an AtomicFn holds a fn pointer") };
-        if raw == 0 {
+    fn func(raw: *mut ()) -> Option<F> {
+        const { assert!(size_of::<F>() == size_of::<*mut ()>(), "an AtomicFn holds a fn pointer") };
+        if raw.is_null() {
             None
         } else {
             // SAFETY: `raw` was read from `self.raw`, which holds 0 or a word
             // made by `word` from a valid `F` (the type's invariant).
-            Some(unsafe { transmute_copy::<usize, F>(&raw) })
+            Some(unsafe { transmute_copy::<*mut (), F>(&raw) })
         }
     }
 
-    /// Store `f` if the slot is empty (a compare-exchange from 0).
+    /// Store `f` if the slot is empty (a compare-exchange from null).
     pub fn install(&self, f: F) -> Install {
         let w = Self::word(f);
-        match self.raw.compare_exchange(0, w, Ordering::AcqRel, Ordering::Acquire) {
+        match self.raw.compare_exchange(null_mut(), w, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => Install::Stored,
             Err(cur) if cur == w => Install::Same,
             Err(_) => Install::Taken,
@@ -127,13 +128,13 @@ impl<F: Copy> AtomicFn<F> {
     /// Replace the slot's content with `f` (`None` empties it).
     #[inline]
     pub fn set(&self, f: Option<F>) {
-        self.raw.store(f.map_or(0, Self::word), Ordering::Release);
+        self.raw.store(f.map_or(null_mut(), Self::word), Ordering::Release);
     }
 
     /// Empty the slot and return what it held.
     #[inline]
     pub fn take(&self) -> Option<F> {
-        Self::func(self.raw.swap(0, Ordering::AcqRel))
+        Self::func(self.raw.swap(null_mut(), Ordering::AcqRel))
     }
 
     /// The stored function, if any.
@@ -153,7 +154,7 @@ impl<F: Copy> AtomicFn<F> {
     /// Is a function stored?
     #[inline]
     pub fn is_set(&self) -> bool {
-        self.raw.load(Ordering::Acquire) != 0
+        !self.raw.load(Ordering::Acquire).is_null()
     }
 }
 

@@ -154,6 +154,19 @@ mod tlb_mask {
         assert_eq!(scoped_split(table(&pubd), 8, 0, root, 7), (0, real(0b1110)));
     }
 
+    /// A refused remote fence is retried once as the broad form and a second
+    /// refusal is surfaced, never dropped. Canary: make `settle_remote_fence`
+    /// answer `Ok(())` for any `first` and the refused-twice assert fails.
+    #[test]
+    fn a_refused_remote_fence_is_retried_then_surfaced() {
+        use super::tlb::settle_remote_fence;
+        let mut ran = false;
+        assert_eq!(settle_remote_fence(0, || { ran = true; -1 }), Ok(()));
+        assert!(!ran, "no retry after success");
+        assert_eq!(settle_remote_fence(-3, || 0), Ok(()));
+        assert_eq!(settle_remote_fence(-3, || -2), Err(-2));
+    }
+
     #[test]
     fn a_single_hart_address_space_needs_no_ipi() {
         // Today's shape: the caller runs the address space, nobody else does.
