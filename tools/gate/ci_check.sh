@@ -10230,8 +10230,15 @@ drvcontain_row() { # drvcontain_row <label> <isa: rv|arm> [features] [PASS|FAIL-
         fi
         cp "$A64_IMG" "$kimg"
     fi
-    if [ ! -f "$src_disk" ] && ! make "$src_disk" >/dev/null 2>&1; then
-        bad; echo "      make $src_disk failed"; return
+    # The kernel above bound the images its build found; a volume left by an
+    # earlier batch or configuration holds other bytes and every spawn is refused.
+    local image_dir="$AZOS_OUT/build" base_disk="$AZOS_OUT/build/disk-drvbase.img"
+    [ "$isa" = arm ] && { image_dir="$AZOS_OUT/build/aarch64"; base_disk="$AZOS_OUT/build/disk-aarch64-drvbase.img"; }
+    if volume_stale "$src_disk" "$image_dir"; then
+        rm -f "$base_disk" "$src_disk"
+        if ! make "$src_disk" >/dev/null 2>&1; then
+            bad; echo "      make $src_disk failed"; return
+        fi
     fi
     cp "$src_disk" "$disk"
     par_ready
