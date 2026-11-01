@@ -46,6 +46,9 @@ pub struct Dev {
     /// dataAvail drops after this many response bytes.
     pub truncate_at: Option<usize>,
     pub script: VecDeque<(Vec<u8>, Vec<u8>)>,
+    /// Answers every command itself (a model of the TPM's state) instead of the
+    /// script.
+    pub responder: Option<Box<dyn FnMut(&[u8]) -> Vec<u8>>>,
     pub seen: Vec<Vec<u8>>,
     pub violations: Vec<String>,
     pub active: Option<u8>,
@@ -75,6 +78,7 @@ impl Dev {
             trailing_avail: false,
             truncate_at: None,
             script: VecDeque::new(),
+            responder: None,
             seen: Vec::new(),
             violations: Vec::new(),
             active: None,
@@ -271,6 +275,13 @@ impl Dev {
         }
         let got = std::mem::take(&mut self.rx);
         self.seen.push(got.clone());
+        if let Some(f) = self.responder.as_mut() {
+            self.rsp = f(&got);
+            self.rpos = 0;
+            self.polls_left = self.exec_polls;
+            self.state = State::Execution;
+            return;
+        }
         match self.script.pop_front() {
             Some((cmd, rsp)) if cmd == got => self.rsp = rsp,
             Some((cmd, _)) => {

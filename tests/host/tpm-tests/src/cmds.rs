@@ -4,8 +4,9 @@
 //! rollback floor. Every command runs over every transport.
 
 use crate::*;
-use azos_tpm::tpm::{StartupType, FLOOR_ATTRS, FLOOR_INDEX, SECRET_ATTRS, SECRET_BYTES, SECRET_INDEX};
+use azos_tpm::tpm::{StartupType, FLOOR_ATTRS, FLOOR_INDEX, ORDINARY_ATTRS, SECRET_ATTRS, SECRET_BYTES, SECRET_INDEX};
 use azos_tpm::Error;
+use crate::fake::Dyn;
 
 const AUTH_AREA_EMPTY: &str = "00 00 00 09 40 00 00 09 00 00 01 00 00";
 const SESSION_RSP_TAIL: &str = "00 00 00 00 00 00 01 00 00";
@@ -209,19 +210,19 @@ fn pcr_read_mask_bytes() {
 fn nv_define_vector() {
     for k in ALL {
         let (mut t, r) = rig(k, 0);
-        assert_eq!(FLOOR_ATTRS, 0x0204_0004);
+        assert_eq!(FLOOR_ATTRS, 0x0204_0024);
         r.dev.borrow_mut().expect(
             &format!(
-                "80 02 00 00 00 2F 00 00 01 2A 40 00 00 01 {AUTH_AREA_EMPTY} 00 02 AA BB 00 0E 01 50 00 01 00 0B 02 04 00 04 00 00 00 04"
+                "80 02 00 00 00 2F 00 00 01 2A 40 00 00 01 {AUTH_AREA_EMPTY} 00 02 AA BB 00 0E 01 50 00 01 00 0B 02 04 00 24 00 00 00 08"
             ),
             &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"),
         );
-        t.nv_define(&[], FLOOR_INDEX, FLOOR_ATTRS, 4, &[0xAA, 0xBB]).unwrap();
+        t.nv_define(&[], FLOOR_INDEX, FLOOR_ATTRS, 8, &[0xAA, 0xBB]).unwrap();
         r.assert_clean();
     }
 }
 
-const NV_DEFINE_FLOOR: &str = "80 02 00 00 00 2F 00 00 01 2A 40 00 00 01 00 00 00 09 40 00 00 09 00 00 01 00 00 00 02 AA BB 00 0E 01 50 00 01 00 0B 02 04 00 04 00 00 00 04";
+const NV_DEFINE_FLOOR: &str = "80 02 00 00 00 2F 00 00 01 2A 40 00 00 01 00 00 00 09 40 00 00 09 00 00 01 00 00 00 02 AA BB 00 0E 01 50 00 01 00 0B 02 04 00 24 00 00 00 08";
 const NV_DEFINED_RSP: &str = "80 01 00 00 00 0A 00 00 01 4C";
 const NV_READ_PUBLIC: &str = "80 01 00 00 00 0E 00 00 01 69 01 50 00 01";
 
@@ -254,8 +255,8 @@ fn floor_provision_defines_once_and_adopts_only_our_own_index() {
     t.floor_provision(&[], FLOOR_INDEX, &[0xAA, 0xBB]).unwrap();
     r.assert_clean();
     // Already defined by us, never written, then written.
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 04", "", "00 04")), Ok(()));
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "22 04 00 04", "", "00 04")), Ok(()));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 24", "", "00 08")), Ok(()));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "22 04 00 24", "", "00 08")), Ok(()));
     // Any other error from the define passes through.
     let (mut t, r) = rig(Kind::Direct, 0);
     r.dev.borrow_mut().expect(NV_DEFINE_FLOOR, "80 01 00 00 00 0A 00 00 09 21");
@@ -267,28 +268,44 @@ fn floor_provision_refuses_a_squatted_index() {
     // A previous owner defined the index with weaker rights: every property
     // the floor relies on is checked, each on its own.
     // Plain owner write added (the owner can lower the floor without the auth).
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 06", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 26", "", "00 04")), Err(Error::NvMismatch));
     // Policy write instead of password write.
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 08", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 28", "", "00 04")), Err(Error::NvMismatch));
     // Subject to the dictionary-attack lockout (NO_DA clear).
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "00 04 00 04", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "00 04 00 24", "", "00 04")), Err(Error::NvMismatch));
     // Platform-created.
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 00 04", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 00 24", "", "00 04")), Err(Error::NvMismatch));
     // Write-locked (state the definition did not ask for).
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 08 04", "", "00 04")), Err(Error::NvMismatch));
-    // A counter, not an ordinary index.
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 14", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 08 24", "", "00 04")), Err(Error::NvMismatch));
+    // A counter, not a bit field.
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 14", "", "00 08")), Err(Error::NvMismatch));
     // Wrong size, wrong name algorithm, a policy attached.
     assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 04", "", "00 08")), Err(Error::NvMismatch));
-    assert_eq!(provision_against(&nv_public_rsp("00 04", "02 04 00 04", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 04", "02 04 00 24", "", "00 08")), Err(Error::NvMismatch));
     let digest: String = (0..32).map(|i| format!("{i:02X}")).collect::<Vec<_>>().join(" ");
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 04", &digest, "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 04", &digest, "00 08")), Err(Error::NvMismatch));
+}
+
+/// The index an earlier build defined: ordinary (type 0), 4 bytes, otherwise
+/// the same rights. Its holder can `NV_Write` any value, so the TPM would not
+/// keep the floor monotonic: it is refused, not adopted.
+///
+/// **Canary.** With `FLOOR_ATTRS` ordinary and `FLOOR_BYTES` 4 (the earlier
+/// build's definition) the first two cases are adopted and this goes red; the
+/// last two keep the type and the size each refused on its own.
+#[test]
+fn floor_provision_refuses_the_ordinary_index_of_an_earlier_build() {
+    assert_eq!(FLOOR_ATTRS & 0xF0, 0x20, "TPM_NT_BITS");
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 04", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "22 04 00 04", "", "00 04")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 04", "", "00 08")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 24", "", "00 04")), Err(Error::NvMismatch));
 }
 
 #[test]
 fn nv_read_public_is_bounds_checked() {
     // The reply names another index.
-    let mut other = nv_public_rsp("00 0B", "02 04 00 04", "", "00 04");
+    let mut other = nv_public_rsp("00 0B", "02 04 00 24", "", "00 08");
     other = other.replacen("01 50 00 01", "01 50 00 02", 1);
     assert_eq!(provision_against(&other), Err(Error::Malformed));
     // The area is shorter than its fields.
@@ -305,7 +322,7 @@ fn nv_read_public_is_bounds_checked() {
     r.dev.borrow_mut().expect(NV_READ_PUBLIC, "80 01 00 00 00 0E 00 00 00 00 FF FF 00 00");
     assert_eq!(t.floor_provision(&[], FLOOR_INDEX, &[0xAA, 0xBB]), Err(Error::Malformed));
     // Bytes left after the name.
-    let mut extra = nv_public_rsp("00 0B", "02 04 00 04", "", "00 04");
+    let mut extra = nv_public_rsp("00 0B", "02 04 00 24", "", "00 08");
     extra = extra.replacen("00 00 00 3E", "00 00 00 3F", 1) + " 00";
     assert_eq!(provision_against(&extra), Err(Error::Malformed));
     // The TPM refuses the read: the error passes through, the index is not adopted.
@@ -367,14 +384,39 @@ fn nv_write_vector() {
     }
 }
 
+const NV_READ8: &str = "80 02 00 00 00 25 00 00 01 4E 01 50 00 01 01 50 00 01 00 00 00 0B 40 00 00 09 00 00 01 00 02 AA BB 00 08 00 00";
+
+fn nv_set_bits_cmd(n: u32) -> String {
+    let bits: String = (1u64 << (n - 1)).to_be_bytes().iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+    format!("80 02 00 00 00 29 00 00 01 35 01 50 00 01 01 50 00 01 00 00 00 0B 40 00 00 09 00 00 01 00 02 AA BB {bits}")
+}
+
+/// The `NV_Read` reply of a bit field with `bits` set.
+fn nv_read8_rsp(bits: u64) -> String {
+    let b: String = bits.to_be_bytes().iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+    format!("80 02 00 00 00 1D 00 00 00 00 00 00 00 0A 00 08 {b} 00 00 01 00 00")
+}
+
 #[test]
 fn floor_read_uninitialized_is_zero_and_errors_pass_through() {
     let (mut t, r) = rig(Kind::Direct, 0);
-    r.dev.borrow_mut().expect(NV_READ4, "80 01 00 00 00 0A 00 00 01 4A");
+    r.dev.borrow_mut().expect(NV_READ8, "80 01 00 00 00 0A 00 00 01 4A");
     assert_eq!(t.floor_read(FLOOR_INDEX, &[0xAA, 0xBB]), Ok(0));
     let (mut t, r) = rig(Kind::Direct, 0);
-    r.dev.borrow_mut().expect(NV_READ4, "80 01 00 00 00 0A 00 00 01 4B");
+    r.dev.borrow_mut().expect(NV_READ8, "80 01 00 00 00 0A 00 00 01 4B");
     assert_eq!(t.floor_read(FLOOR_INDEX, &[0xAA, 0xBB]), Err(Error::Tpm(0x14B)));
+}
+
+#[test]
+fn floor_is_the_highest_set_bit() {
+    let (mut t, r) = rig(Kind::Direct, 0);
+    let a = &[0xAA, 0xBB];
+    // Bits 0 and 41 set: floor 42, the low bit is noise.
+    r.dev.borrow_mut().expect(NV_READ8, &nv_read8_rsp(1 | 1 << 41));
+    assert_eq!(t.floor_read(FLOOR_INDEX, a), Ok(42));
+    r.dev.borrow_mut().expect(NV_READ8, &nv_read8_rsp(1 << 63));
+    assert_eq!(t.floor_read(FLOOR_INDEX, a), Ok(64));
+    r.assert_clean();
 }
 
 #[test]
@@ -382,26 +424,139 @@ fn floor_only_goes_up() {
     for k in ALL {
         let (mut t, r) = rig(k, 0);
         let a = &[0xAA, 0xBB];
-        // Stored 0x2A. Raising to 0x2B reads then writes.
-        r.dev.borrow_mut().expect(NV_READ4, &nv_read_rsp("00 00 00 2A"));
-        r.dev.borrow_mut().expect(NV_WRITE4, &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
+        // Stored floor 0x2A. Raising to 0x2B reads then sets bit 0x2A.
+        r.dev.borrow_mut().expect(NV_READ8, &nv_read8_rsp(1 << 0x29));
+        r.dev.borrow_mut().expect(&nv_set_bits_cmd(0x2B), &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
         assert_eq!(t.floor_raise(FLOOR_INDEX, a, 0x2B), Ok(0x2B));
-        // Equal and lower: one read each, no write (the script would
-        // fail an unexpected write).
-        r.dev.borrow_mut().expect(NV_READ4, &nv_read_rsp("00 00 00 2A"));
-        assert_eq!(t.floor_raise(FLOOR_INDEX, a, 0x2A), Ok(0x2A));
-        r.dev.borrow_mut().expect(NV_READ4, &nv_read_rsp("00 00 00 2A"));
-        assert_eq!(t.floor_raise(FLOOR_INDEX, a, 1), Ok(0x2A));
+        // Equal, lower and zero: one read each, nothing sent.
+        for to in [0x2A, 1, 0] {
+            r.dev.borrow_mut().expect(NV_READ8, &nv_read8_rsp(1 << 0x29));
+            assert_eq!(t.floor_raise(FLOOR_INDEX, a, to), Ok(0x2A));
+        }
         r.assert_clean();
     }
 }
 
 #[test]
-fn floor_raise_from_unwritten_index() {
+fn floor_raise_from_unwritten_index_and_above_the_field() {
     let (mut t, r) = rig(Kind::Direct, 0);
-    r.dev.borrow_mut().expect(NV_READ4, "80 01 00 00 00 0A 00 00 01 4A");
-    r.dev.borrow_mut().expect(NV_WRITE4, &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
+    r.dev.borrow_mut().expect(NV_READ8, "80 01 00 00 00 0A 00 00 01 4A");
+    r.dev.borrow_mut().expect(&nv_set_bits_cmd(0x2B), &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
     assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], 0x2B), Ok(0x2B));
+    // 64 is the last bit; 65 has none and nothing reaches the wire.
+    r.dev.borrow_mut().expect(NV_READ8, "80 01 00 00 00 0A 00 00 01 4A");
+    r.dev.borrow_mut().expect(&nv_set_bits_cmd(64), &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
+    assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], 64), Ok(64));
+    assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], 65), Err(Error::BadArgument));
+    r.assert_clean();
+}
+
+// ── A model of one NV index, for what the TPM itself enforces ───────────────
+
+const NT_ORDINARY: u32 = 0;
+const NT_BITS: u32 = 2;
+
+/// An NV index as the TPM 2.0 spec describes its type rules: `NV_SetBits`
+/// ORs into a bit field and is refused on any other type, `NV_Write` is
+/// refused on a bit field, `NV_Read` of a never-set index is
+/// `TPM_RC_NV_UNINITIALIZED`. Authorization is not modelled (the holder of the
+/// password is the attacker here). The exact code `NV_Write` gets on a bit
+/// field is the spec's `TPM_RC_ATTRIBUTES` family; 0x182 is this model's
+/// reading of it, and the driver passes any code through.
+struct NvIndex {
+    nt: u32,
+    value: u64,
+    written: bool,
+}
+
+fn rc(code: u32) -> Vec<u8> {
+    let mut v = vec![0x80, 0x01, 0, 0, 0, 0x0A];
+    v.extend_from_slice(&code.to_be_bytes());
+    v
+}
+
+fn ok(params: &[u8]) -> Vec<u8> {
+    let mut v = vec![0x80, 0x02];
+    v.extend_from_slice(&((10 + 4 + params.len() + 5) as u32).to_be_bytes());
+    v.extend_from_slice(&[0, 0, 0, 0]);
+    v.extend_from_slice(&(params.len() as u32).to_be_bytes());
+    v.extend_from_slice(params);
+    v.extend_from_slice(&[0, 0, 1, 0, 0]);
+    v
+}
+
+impl NvIndex {
+    fn answer(&mut self, cmd: &[u8]) -> Vec<u8> {
+        let cc = u32::from_be_bytes(cmd[6..10].try_into().unwrap());
+        let auth = u32::from_be_bytes(cmd[18..22].try_into().unwrap()) as usize;
+        let p = &cmd[22 + auth..];
+        match cc {
+            0x135 if self.nt == NT_BITS => {
+                self.value |= u64::from_be_bytes(p[..8].try_into().unwrap());
+                self.written = true;
+                ok(&[])
+            }
+            0x135 | 0x137 if self.nt != NT_ORDINARY || cc == 0x135 => rc(0x182),
+            0x137 => {
+                let data = &p[2..2 + u16::from_be_bytes([p[0], p[1]]) as usize];
+                let mut b = [0u8; 8];
+                b[8 - data.len()..].copy_from_slice(data);
+                self.value = u64::from_be_bytes(b);
+                self.written = true;
+                ok(&[])
+            }
+            0x14E if !self.written => rc(0x14A),
+            0x14E => {
+                let mut params = vec![0, 8];
+                params.extend_from_slice(&self.value.to_be_bytes());
+                ok(&params)
+            }
+            _ => rc(0x143),
+        }
+    }
+}
+
+fn model_rig(nt: u32) -> (azos_tpm::tpm::Tpm<azos_tpm::tis::Tis<Dyn, FakeClock>>, Rig, std::rc::Rc<std::cell::RefCell<NvIndex>>) {
+    let (t, r) = rig(Kind::Direct, 0);
+    let nv = std::rc::Rc::new(std::cell::RefCell::new(NvIndex { nt, value: 0, written: false }));
+    let m = nv.clone();
+    r.dev.borrow_mut().responder = Some(Box::new(move |c| m.borrow_mut().answer(c)));
+    (t, r, nv)
+}
+
+/// Whoever holds the index's password can raise the floor and cannot lower
+/// it: the TPM refuses `NV_Write` on the bit field and a lower `NV_SetBits`
+/// leaves the highest bit where it was.
+#[test]
+fn the_tpm_refuses_to_lower_the_floor_bit_field() {
+    let (mut t, r, nv) = model_rig(NT_BITS);
+    let a = &[0xAA, 0xBB];
+    assert_eq!(t.floor_read(FLOOR_INDEX, a), Ok(0));
+    assert_eq!(t.floor_raise(FLOOR_INDEX, a, 5), Ok(5));
+    assert_eq!(t.floor_raise(FLOOR_INDEX, a, 3), Ok(5));
+    // A jump is one command, whatever its size.
+    let n = r.dev.borrow().seen.len();
+    assert_eq!(t.floor_raise(FLOOR_INDEX, a, 60), Ok(60));
+    assert_eq!(r.dev.borrow().seen.len() - n, 2, "a read and one NV_SetBits");
+    // The attacker's moves: overwrite with zero, or set a lower bit.
+    assert_eq!(t.nv_write(FLOOR_INDEX, a, 0, &[0; 8]), Err(Error::Tpm(0x182)));
+    t.nv_set_bits(FLOOR_INDEX, a, 1).unwrap();
+    assert_eq!(nv.borrow().value, 1 << 59 | 1 << 4 | 1);
+    assert_eq!(t.floor_read(FLOOR_INDEX, a), Ok(60));
+    r.assert_clean();
+}
+
+/// **Canary.** The same moves against an ordinary index, the earlier build's
+/// definition: `NV_Write` of zero lowers the floor to 0. This is what the
+/// bit-field type rules out, and why `floor_provision` refuses such an index.
+#[test]
+fn an_ordinary_index_lets_the_floor_be_lowered() {
+    let (mut t, r, _) = model_rig(NT_ORDINARY);
+    let a = &[0xAA, 0xBB];
+    t.nv_write(FLOOR_INDEX, a, 0, &(1u64 << 59).to_be_bytes()).unwrap();
+    assert_eq!(t.floor_read(FLOOR_INDEX, a), Ok(60));
+    t.nv_write(FLOOR_INDEX, a, 0, &[0; 8]).unwrap();
+    assert_eq!(t.floor_read(FLOOR_INDEX, a), Ok(0));
     r.assert_clean();
 }
 
@@ -435,7 +590,7 @@ const NV_READ_PUBLIC_SECRET: &str = "80 01 00 00 00 0E 00 00 01 69 01 50 00 02";
 /// the secret): `READ_STCLEAR` (bit 31) and `WRITE_STCLEAR` (bit 14).
 #[test]
 fn the_secret_index_is_the_floors_rights_lockable_for_the_session() {
-    assert_eq!((SECRET_ATTRS, SECRET_BYTES), (FLOOR_ATTRS | 1 << 31 | 1 << 14, 32));
+    assert_eq!((SECRET_ATTRS, SECRET_BYTES), (ORDINARY_ATTRS | 1 << 31 | 1 << 14, 32));
     assert_eq!(SECRET_ATTRS, 0x8204_4004);
     assert_ne!(SECRET_INDEX, FLOOR_INDEX);
     for k in ALL {

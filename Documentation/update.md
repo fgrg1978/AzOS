@@ -384,7 +384,7 @@ number that the volume cannot reach. The choice is Kconfig
 | Backend | Where the floor is held | Behaviour |
 |---------|------------------------|-----------|
 | `OTA_FLOOR_BOOTMETA` | The `min_sec_epoch` field of the BOOTMETA records | Whoever can write the volume can write an older record back; the signature check is then the only gate |
-| `OTA_FLOOR_TPM_NV` | BOOTMETA and a 4-byte TPM NV index | The floor in force is the higher of the two |
+| `OTA_FLOOR_TPM_NV` | BOOTMETA and an 8-byte TPM NV bit field | The floor in force is the higher of the two |
 
 The policy is in `floor.rs`, all of it pure:
 
@@ -405,7 +405,11 @@ The policy is in `floor.rs`, all of it pure:
 - With no TPM found, or one that fails to provision or read, the backend is not
   installed and BOOTMETA's floor holds alone; the boot says so.
 
-The NV index is an ordinary one, defined once per TPM, with a password the kernel
-derives (`floor::nv_auth`); see "TPM" in [security.md](security.md) for what that
+The NV index is a `TPM_NT_BITS` one, defined once per TPM: floor `n` is bit
+`n - 1`, set with `NV_SetBits`, so the TPM itself refuses to lower it and a raise
+is one command whatever the jump. The floor tops out at 64 (`FLOOR_MAX`; a higher
+epoch is refused, not wrapped). An index left by an earlier build (ordinary, 4
+bytes) is not adopted: the boot records it and BOOTMETA holds alone. The password
+is one the kernel derives (`floor::nv_auth`); see "TPM" in [security.md](security.md) for what that
 password does and does not protect against. A replay-protected eMMC partition is
 the other hardware floor the choice has room for; none is implemented.

@@ -13,6 +13,7 @@ pub const ST_NO_SESSIONS: u16 = 0x8001;
 pub const ST_SESSIONS: u16 = 0x8002;
 
 pub const CC_NV_DEFINE_SPACE: u32 = 0x0000_012A;
+pub const CC_NV_SET_BITS: u32 = 0x0000_0135;
 pub const CC_NV_WRITE: u32 = 0x0000_0137;
 pub const CC_NV_WRITE_LOCK: u32 = 0x0000_0138;
 pub const CC_STARTUP: u32 = 0x0000_0144;
@@ -95,6 +96,10 @@ impl Cmd {
     }
 
     pub fn u32(&mut self, v: u32) {
+        self.bytes(&v.to_be_bytes());
+    }
+
+    pub fn u64(&mut self, v: u64) {
         self.bytes(&v.to_be_bytes());
     }
 
