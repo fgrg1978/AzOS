@@ -773,6 +773,8 @@ azos_ktest::ktest! {
             let machine = azos_recovery::coredump::EM_AARCH64;
             #[cfg(target_arch = "x86_64")]
             let machine = azos_recovery::coredump::EM_X86_64;
+            #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+            compile_error!("no ELF machine for this ISA");
             let task = Task { machine, tid: 5, status: 11, name: b"KTEST", image: [9; 32], sp, regs: &regs };
             let read = |a: u64, buf: &mut [u8]| {
                 // SAFETY: `a` is inside `data`, a live allocation.
