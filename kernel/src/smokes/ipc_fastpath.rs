@@ -822,11 +822,11 @@ fn pk_park(k: usize) -> Result<(), &'static str> {
     let p = &PK[k];
     azos_sched::task_create_affinity("fp-pk-srv", pk_server, k, PRIO, 0);
     crate::ktest::wait("the server never claimed its endpoint", || p.ready.load(Ordering::Acquire))?;
-    azos_sched::task_create_affinity("fp-pk-cli", pk_client, k, PRIO, 0);
-    if k == DRAIN {
-        return Ok(());
-    }
     for _ in 0..PK_TRIES {
+        azos_sched::task_create_affinity("fp-pk-cli", pk_client, k, PRIO, 0);
+        if k == DRAIN {
+            return Ok(());
+        }
         crate::ktest::wait("the call was not answered", || p.cli_done.load(Ordering::Acquire))?;
         if p.cli_rc.load(Ordering::Acquire) != 0x801 {
             return Err("the call came back with a wrong answer");
@@ -845,7 +845,6 @@ fn pk_park(k: usize) -> Result<(), &'static str> {
         // the server sleeps in its ordinary accept. One more exchange.
         p.cli_done.store(false, Ordering::Release);
         p.cli_rc.store(NOT_YET, Ordering::Release);
-        azos_sched::task_create_affinity("fp-pk-cli", pk_client, k, PRIO, 0);
     }
     Err("the server never parked with a resume point")
 }
