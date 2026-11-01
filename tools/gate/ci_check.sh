@@ -14652,8 +14652,9 @@ PY
     # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
     # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
     # +2 kheap_guard_reports_a_buffer_overflow, kheap_guard_reports_a_use_after_free -> 145, arm 149.
-    KTEST_N_RV=145
-    KTEST_N_ARM=149
+    # +1 kheap_leaks_reports_a_block_nobody_freed -> 146, arm 150.
+    KTEST_N_RV=146
+    KTEST_N_ARM=150
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14809,7 +14810,7 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded):' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
@@ -14947,22 +14948,31 @@ PY
     # free and double free (the ERE pins both tests by name); the canary builds the same kernel
     # with the guard off (KHEAP_GUARD_N), where the tests must go red.
     KTEST_GUARD_RE=$'^ok [0-9]+ - kheap_guard_reports_a_buffer_overflow$\n^ok [0-9]+ - kheap_guard_reports_a_use_after_free$'
-    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free"
-    ktest_row_guardoff() {
+    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free kheap_leaks_reports_a_block_nobody_freed"
+    KTEST_LEAKS_RE=$'^ok [0-9]+ - kheap_leaks_reports_a_block_nobody_freed$'
+    # A ktest row built from the gate's Kconfig with one more line (KCFG_LINE, `KCFG_GREP` what it must read back as).
+    ktest_row_cfgline() {
         local isa="$2" defc cfg
         defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
         mkdir -p "$CI_LOG_DIR"
-        cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-guardoff-${isa}.config"
-        { cat "${REPO_ROOT}/config/defconfigs/${defc}.config"; printf "CONFIG_KHEAP_GUARD_N=y\n"; } >"$cfg" \
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-${KCFG_TAG}-${isa}.config"
+        { cat "${REPO_ROOT}/config/defconfigs/${defc}.config"; printf '%s\n' "$KCFG_LINE"; } >"$cfg" \
             && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
-            && grep -q "^CONFIG_KHEAP_GUARD_N=y" "$cfg" \
-            || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with the heap guard off ($cfg)"; return; }
+            && grep -q "^${KCFG_GREP}\$" "$cfg" \
+            || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with $KCFG_LINE ($cfg)"; return; }
         if [ "$isa" = rv ]; then KCONFIG_CONFIG="$cfg" ktest_row "$@"; else AARCH64_CONFIG="$cfg" ktest_row "$@"; fi
     }
     par "ktest heap guard (rv)" ktest_row "ktest heap guard (rv)" rv "" "" "" "$KTEST_GUARD_RE"
     par "ktest heap guard (arm)" ktest_row "ktest heap guard (arm)" arm "" "" "" "$KTEST_GUARD_RE"
+    ktest_row_guardoff() { KCFG_TAG=guardoff KCFG_LINE="CONFIG_KHEAP_GUARD_N=y" KCFG_GREP="CONFIG_KHEAP_GUARD_N=y" ktest_row_cfgline "$@"; }
+    ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" KCFG_GREP="# CONFIG_KHEAP_LEAKS is not set" ktest_row_cfgline "$@"; }
     par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
     par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
+    # Kconfig KHEAP_LEAKS: the tracker names a block nobody freed; the canary keeps the guard and drops the tracker.
+    par "ktest heap leaks (rv)" ktest_row "ktest heap leaks (rv)" rv "" "" "" "$KTEST_LEAKS_RE"
+    par "ktest heap leaks (arm)" ktest_row "ktest heap leaks (arm)" arm "" "" "" "$KTEST_LEAKS_RE"
+    par "ktest heap leaks off canary (rv)" ktest_row_leaksoff "ktest heap leaks off canary (rv)" rv "" "kheap_leaks_reports_a_block_nobody_freed"
+    par "ktest heap leaks off canary (arm)" ktest_row_leaksoff "ktest heap leaks off canary (arm)" arm "" "kheap_leaks_reports_a_block_nobody_freed"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
     # A real CPU stop and start, on a kernel with CPU_HOTPLUG (off in the robot cell
@@ -15536,8 +15546,8 @@ PY
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
     # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
     # +4 the hotplug_* tests -> 150.
-    # +2 the kheap_guard_* tests, as on rv and arm -> 154.
-    KTEST_N_X86=154
+    # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, as on rv and arm -> 155.
+    KTEST_N_X86=155
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16541,7 +16551,7 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded):' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
@@ -16594,15 +16604,19 @@ PY
     }
     par "ktest why durable-off canary (x86)" x86_ktest_row_nodur "ktest why durable-off canary (x86)" "" "why_resolves_a_refused_reservation"
     # See the riscv64 and aarch64 `ktest heap guard` rows.
-    x86_ktest_row_guardoff() {
-        local def="$CI_LOG_DIR/x86-guardoff.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-guardoff.elf X86_KBUILD_ARGS
+    x86_ktest_row_cfgline() { # KCFG_TAG, KCFG_LINE: one more Kconfig line on the gate's cell
+        local def="$CI_LOG_DIR/x86-$KCFG_TAG.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-$KCFG_TAG.elf X86_KBUILD_ARGS
         mkdir -p "$CI_LOG_DIR"
-        { cat config/defconfigs/${GATE_ROBOT_DEFC_X86}.config; echo "CONFIG_KHEAP_GUARD_N=y"; } >"$def"
-        X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-guardoff.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-guardoff X86_64_IMG=$X86_KBUILD_OUT"
+        { cat config/defconfigs/${GATE_ROBOT_DEFC_X86}.config; printf '%s\n' "$KCFG_LINE"; } >"$def"
+        X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-$KCFG_TAG.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-$KCFG_TAG X86_64_IMG=$X86_KBUILD_OUT"
         x86_ktest_row "$@"
     }
+    x86_ktest_row_guardoff() { KCFG_TAG=guardoff KCFG_LINE="CONFIG_KHEAP_GUARD_N=y" x86_ktest_row_cfgline "$@"; }
+    x86_ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" x86_ktest_row_cfgline "$@"; }
     par "ktest heap guard (x86)" x86_ktest_row "ktest heap guard (x86)" "" "" "" "" "$KTEST_GUARD_RE"
     par "ktest heap guard off canary (x86)" x86_ktest_row_guardoff "ktest heap guard off canary (x86)" "" "$KTEST_GUARD_OFF"
+    par "ktest heap leaks (x86)" x86_ktest_row "ktest heap leaks (x86)" "" "" "" "" "$KTEST_LEAKS_RE"
+    par "ktest heap leaks off canary (x86)" x86_ktest_row_leaksoff "ktest heap leaks off canary (x86)" "" "kheap_leaks_reports_a_block_nobody_freed"
     x86_ktest_row_hotplug() {
         local def="$CI_LOG_DIR/x86-hotplug.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-hotplug.elf X86_KBUILD_ARGS
         mkdir -p "$CI_LOG_DIR"

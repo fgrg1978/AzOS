@@ -175,10 +175,14 @@ fn run_phase(phase: usize, first: usize) -> usize {
         kprintln!("{}# ktest {} {}", nl, i, t.name);
         azos_ktest::set_current(Some((i, t)));
         let before = azos_sync::lockdep::violations();
+        let leak_mark = azos_mm::kheap_leaks::mark();
         let mut verdict = (t.run)();
         // The heap guard checks what the test freed while the test is still
         // the one running: a write after free is then its own `not ok`.
         azos_mm::kheap::guard_drain();
+        if azos_mm::kheap_guard::LEAKS && phase == azos_ktest::EARLY {
+            leak_note(t.name, leak_mark);
+        }
         azos_ktest::set_current(None);
         // Any lockdep violation during the test fails it (Kconfig LOCKDEP).
         let found = azos_sync::lockdep::violations().wrapping_sub(before) as usize;
@@ -202,6 +206,23 @@ fn run_phase(phase: usize, first: usize) -> usize {
         }
     }
     failed
+}
+
+/// What the early test `name` left allocated (Kconfig `KHEAP_LEAKS`): a note,
+/// not a failure, since a cache or a registry may keep a block on purpose. The
+/// early phase runs on the boot hart before any task, so what is live since
+/// the mark is the test's. The chains are return addresses into the kernel's
+/// text, `tools/dev/symbolize_bt.py` turns them into names.
+fn leak_note(name: &str, mark: u64) {
+    let mut out = [azos_mm::kheap_leaks::Leak::default(); 8];
+    let (n, bytes) = azos_mm::kheap_leaks::since(mark, None, &mut out);
+    if n == 0 {
+        return;
+    }
+    kprintln!("# leak: {}: {} blocks, {} bytes still allocated", name, n, bytes);
+    for l in out.iter().take(n) {
+        kprintln!("#   block {:#x} size {} allocation {} chain {:x?}", l.addr, l.size, l.seq, &l.frames[..l.depth as usize]);
+    }
 }
 
 fn summary(n: usize, failed: usize) -> ! {
@@ -610,6 +631,35 @@ azos_ktest::ktest! {
         });
         if uaf != [0, 0, 1, 0] { return Err("the guard did not report one use after free"); }
         if twice != [0, 0, 0, 1] { return Err("the guard did not report one double free"); }
+        Ok(())
+    }
+}
+
+// The leak tracker (Kconfig `KHEAP_LEAKS`) names a block nobody freed and not
+// one that was. With it off (the canary row's configuration) the test is red.
+azos_ktest::ktest! {
+    fn kheap_leaks_reports_a_block_nobody_freed() {
+        use alloc::boxed::Box;
+        use azos_mm::kheap_leaks::{since, mark, Leak};
+        if !azos_mm::kheap_guard::LEAKS {
+            return Err("the heap leak tracker (Kconfig KHEAP_LEAKS) is off in this kernel");
+        }
+        let m = mark();
+        let mut out = [Leak::default(); 4];
+        drop(core::hint::black_box(Box::new([1u8; 24])));
+        if since(m, None, &mut out).0 != 0 {
+            return Err("a block that was freed is reported as a leak");
+        }
+        let p = core::hint::black_box(Box::into_raw(Box::new([2u8; 24])));
+        let (n, bytes) = since(m, None, &mut out);
+        // SAFETY: `p` came from `Box::into_raw` above and is freed once.
+        unsafe { drop(Box::from_raw(p)) };
+        if (n, bytes) != (1, 24) || out[0].addr != p as usize || out[0].size != 24 {
+            return Err("the leaked block was not reported with its address and size");
+        }
+        if since(m, None, &mut out).0 != 0 {
+            return Err("the block is still reported after it was freed");
+        }
         Ok(())
     }
 }

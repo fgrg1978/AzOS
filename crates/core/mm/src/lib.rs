@@ -58,6 +58,8 @@ pub mod image_frames;
 pub mod kheap;
 /// Kconfig `KHEAP_GUARD_*`: red zones, poison and quarantine around every heap block.
 pub mod kheap_guard;
+/// Kconfig `KHEAP_LEAKS`: the live blocks of the heap guard, with where each was allocated.
+pub mod kheap_leaks;
 pub mod slab;
 #[cfg(feature = "kheap-census")]
 pub mod kheap_census;

@@ -17,6 +17,8 @@
 //!   `KHEAP_GUARD_QUARANTINE_SLOTS` blocks); leaving it, the block must still
 //!   be all [`FREED`], or something wrote to it while it was free. A second
 //!   free of a block still in quarantine finds its front zone poisoned.
+//! * With `KHEAP_LEAKS` a record of the allocation sits at the start of the
+//!   block and survives the free, so a finding names the allocation.
 //! * A new body is filled with [`FRESH`], so a read of a byte nobody wrote
 //!   does not see a freed object's old contents.
 //!
@@ -40,6 +42,9 @@ use azos_sync::SpinLock;
 /// Whether the guard is compiled in: Kconfig `KHEAP_GUARD_Y`, or
 /// `KHEAP_GUARD_KTEST` in a kernel built with the `ktest` feature.
 pub const ENABLED: bool = azos_limits::KHEAP_GUARD_Y || (azos_limits::KHEAP_GUARD_KTEST && cfg!(feature = "ktest"));
+/// Whether live blocks are tracked as well (Kconfig `KHEAP_LEAKS`,
+/// `kheap_leaks.rs`).
+pub const LEAKS: bool = ENABLED && azos_limits::KHEAP_LEAKS;
 /// Bytes of a red zone: Kconfig `KHEAP_GUARD_REDZONE`.
 pub const RZ: usize = azos_limits::KHEAP_GUARD_REDZONE as usize;
 /// Fill of a red zone.
@@ -49,6 +54,8 @@ pub const FREED: u8 = 0xdd;
 /// Fill of a new body.
 pub const FRESH: u8 = 0xcd;
 
+/// Bytes in front of the red zone: the leak record.
+const HDR: usize = if LEAKS { crate::kheap_leaks::HDR } else { 0 };
 const SLOTS: usize = azos_limits::KHEAP_GUARD_QUARANTINE_SLOTS as usize;
 const CAP_BYTES: usize = azos_limits::KHEAP_GUARD_QUARANTINE_KB as usize * 1024;
 
@@ -117,7 +124,7 @@ static EXPECTING: AtomicUsize = AtomicUsize::new(0);
 /// in it, and its size.
 #[inline(always)]
 fn shape(layout: Layout) -> (usize, usize, usize) {
-    let front = RZ.next_multiple_of(layout.align().max(16));
+    let front = (HDR + RZ).next_multiple_of(layout.align().max(16));
     (layout.align(), front, front + layout.size() + RZ)
 }
 
@@ -128,10 +135,14 @@ unsafe fn first_other(p: *const u8, byte: u8, n: usize) -> Option<usize> {
 
 #[cold]
 #[inline(never)]
-fn report(kind: Kind, body: usize, size: usize, off: isize, byte: u8) {
+fn report(kind: Kind, base: *const u8, body: usize, size: usize, off: isize, byte: u8) {
     if EXPECTING.load(Relaxed) != 0 {
         COUNTED[kind as usize].fetch_add(1, Relaxed);
         return;
+    }
+    if LEAKS {
+        panic!("kheap guard: {} in the {}-byte block at {:#x}: offset {} holds {:#04x}{}",
+            kind.name(), size, body, off, byte, crate::kheap_leaks::Site(base));
     }
     panic!("kheap guard: {} in the {}-byte block at {:#x}: offset {} holds {:#04x}", kind.name(), size, body, off, byte);
 }
@@ -157,9 +168,12 @@ pub unsafe fn alloc(layout: Layout, raw: Raw) -> *mut u8 {
     }
     unsafe {
         let body = base.add(front);
-        core::ptr::write_bytes(base, ZONE, front);
+        core::ptr::write_bytes(base.add(HDR), ZONE, front - HDR);
         core::ptr::write_bytes(body, FRESH, layout.size());
         core::ptr::write_bytes(body.add(layout.size()), ZONE, RZ);
+        if LEAKS {
+            crate::kheap_leaks::register(base, body as usize, layout.size());
+        }
         body
     }
 }
@@ -177,16 +191,19 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout, raw: Raw) {
         let base = ptr.sub(front);
         let zone = ptr.sub(RZ);
         if first_other(zone, FREED, RZ).is_none() {
-            report(Kind::DoubleFree, ptr as usize, size, 0, FREED);
+            report(Kind::DoubleFree, base, ptr as usize, size, 0, FREED);
             return;
         }
         if let Some(i) = first_other(zone, ZONE, RZ) {
-            report(Kind::Underflow, ptr as usize, size, i as isize - RZ as isize, *zone.add(i));
+            report(Kind::Underflow, base, ptr as usize, size, i as isize - RZ as isize, *zone.add(i));
         }
         if let Some(i) = first_other(ptr.add(size), ZONE, RZ) {
-            report(Kind::Overflow, ptr as usize, size, (size + i) as isize, *ptr.add(size + i));
+            report(Kind::Overflow, base, ptr as usize, size, (size + i) as isize, *ptr.add(size + i));
         }
-        core::ptr::write_bytes(base, FREED, total);
+        if LEAKS {
+            crate::kheap_leaks::unregister(base);
+        }
+        core::ptr::write_bytes(base.add(HDR), FREED, total - HDR);
         hold(Held { base: base as usize, total, align }, raw);
     }
 }
@@ -231,9 +248,9 @@ fn evict(extra: usize) -> Option<Held> {
 unsafe fn release(h: Held, raw: Raw) {
     unsafe {
         let p = h.base as *mut u8;
-        if let Some(i) = first_other(p, FREED, h.total) {
-            let byte = *p.add(i);
-            report(Kind::UseAfterFree, h.base, h.total, i as isize, byte);
+        if let Some(i) = first_other(p.add(HDR), FREED, h.total - HDR) {
+            let byte = *p.add(HDR + i);
+            report(Kind::UseAfterFree, p, h.base, h.total, (HDR + i) as isize, byte);
         }
         (raw.free)(p, Layout::from_size_align_unchecked(h.total, h.align));
     }

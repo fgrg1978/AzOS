@@ -699,6 +699,15 @@ config KHEAP_GUARD_QUARANTINE_SLOTS
       The quarantine's block count, 24 bytes of .bss per slot. Small blocks
       reach this before KHEAP_GUARD_QUARANTINE_KB.
 
+config KHEAP_LEAKS_FRAMES
+    int "Heap leak tracking: return addresses kept per block"
+    range 1 12
+    default 6
+    help
+      Read only with KHEAP_LEAKS on. The stack scan keeps the first this
+      many return addresses into the kernel's text; the first one or two are
+      the allocator's own. Each is 8 bytes in front of every block.
+
 config RING3_MEM_PAGES_DEFAULT
     int "Frame budget of a ring-3 topology row that declares none (pages)"
     range 16 1048576

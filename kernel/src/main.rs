@@ -503,6 +503,12 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         boot::seal_ro_after_init();
     }
 
+    // Kconfig KHEAP_LEAKS: the blocks the heap guard tracks from here on carry
+    // the call chain that allocated them.
+    if azos_mm::kheap_guard::LEAKS {
+        azos_mm::kheap_leaks::set_walker(prof::scan_chain);
+    }
+
     // Kconfig KTEST: every registered test, then power off. Boot init is
     // done; no secondary hart is awake and no task has run.
     #[cfg(feature = "ktest")]

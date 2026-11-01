@@ -321,6 +321,32 @@ config KHEAP_GUARD_Y
 
 endchoice
 
+config KHEAP_LEAKS
+    bool "Kernel heap leak tracking: the live blocks, and where each was allocated"
+    depends on KHEAP_GUARD_KTEST || KHEAP_GUARD_Y
+    default y
+    help
+      With the heap guard on, every live block is on a list
+      (crates/core/mm/src/kheap_leaks.rs) with its allocation number, the CPU
+      and a call chain. `kheap_leaks::mark()` before a scenario and
+      `kheap_leaks::since(mark, ..)` after it name the blocks allocated in
+      between and still live. The ktest runner does it around every early
+      test and prints what remains (`# leak:` lines, notes: a block a cache
+      or a registry keeps on purpose is live too). The chain is a scan of the
+      stack for return addresses into the kernel's text (the kernel keeps no
+      frame pointers): approximate, symbolize it with
+      tools/dev/symbolize_bt.py. A guard finding names the block's
+      allocation the same way.
+
+      Not found: a leak of memory that is not from the global allocator
+      (frames, DMA pools), and a block still reachable that nothing will use
+      again.
+
+      Cost: KHEAP_LEAKS_FRAMES words and 48 bytes in front of every block,
+      a global lock (interrupts masked) on each allocation and free, and a
+      stack scan on each allocation. Nothing when off, or with the guard
+      off.
+
 config MM_THP_RESV
     bool "Superpage reservations: a 2 MiB run per aligned anonymous region, promoted when full"
     depends on MM_DEMAND_PAGING
