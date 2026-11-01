@@ -128,6 +128,7 @@ static PREEMPTIBLE_AT: [AtomicU64; NCPU] = [const { AtomicU64::new(0) }; NCPU];
 #[inline]
 pub fn tick(now: u64) {
     if NCPU != 0 && azos_sync::preempt::depth() == 0 {
+        // percpu-hint: the timer interrupt: interrupts off
         if let Some(at) = PREEMPTIBLE_AT.get(crate::smp::current_cpu_id()) {
             at.store(now, Ordering::Relaxed);
         }
@@ -205,6 +206,7 @@ impl Hung {
     }
 
     fn cpus(&self, now: u64, timeout: u64, found: &mut impl FnMut(Finding)) {
+        // percpu-hint: a stale id only skips one CPU's check for a pass
         let me = crate::smp::current_cpu_id();
         for (cpu, seen) in self.cpus.iter().enumerate().take(azos_percpu::nr_cpu_ids()) {
             let word = if cpu == me || !azos_percpu::cpu_online(cpu) || BLIND_CPUS.load(Ordering::Relaxed) {

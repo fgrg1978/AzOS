@@ -42,7 +42,7 @@ fn the_bracket_reports_a_kernel_interrupt_as_not_from_user() {
 fn the_tick_does_the_shared_work_in_order() {
     reset();
     tick_work::<Fake, RvFrame>(5000, Some(77), Some(12));
-    assert_eq!(logged(), ["watchdog_tick", "vdso_tick 77 Some(12) 5000", "wake_expired 5000", "reap_stamped"]);
+    assert_eq!(logged(), ["watchdog_tick", "hung_tick 5000", "vdso_tick 77 Some(12) 5000", "wake_expired 5000", "reap_stamped"]);
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn the_vdso_ticks_with_the_watchdogs_counter_when_the_isa_has_none() {
 fn an_unarmed_clock_sweeps_no_timers_but_still_reaps() {
     reset();
     tick_work::<Fake, RvFrame>(0, Some(1), None);
-    assert_eq!(logged(), ["watchdog_tick", "vdso_tick 1 None 0", "reap_stamped"]);
+    assert_eq!(logged(), ["watchdog_tick", "hung_tick 0", "vdso_tick 1 None 0", "reap_stamped"]);
 }
 
 /// **A reschedule raised before the scheduler runs is left raised, not dropped:
