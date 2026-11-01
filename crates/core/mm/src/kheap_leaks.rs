@@ -101,6 +101,7 @@ pub(crate) unsafe fn register(base: *mut u8, body: usize, size: usize) {
             seq: SEQ.fetch_add(1, Relaxed),
             body,
             size,
+            // percpu-hint: a label on a report; a task that migrates here is named for the CPU it started on
             cpu: ARCH.hart_id() as u32,
             depth: depth as u32,
             frames,
