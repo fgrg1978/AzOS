@@ -97,6 +97,18 @@ fn waiter(_: usize) {
     WAITER_DONE.store(true, Ordering::Release);
 }
 
+/// Dropped at the end of a test, whatever its verdict: the pool entry its tasks
+/// retired is back (`call_rcu`) before the next test counts the pool. A failing
+/// path returns before the test's own wait for it, and a count that moves under
+/// `futex_pi_word_protocol` reads as a state that test took.
+struct Settled(u32);
+
+impl Drop for Settled {
+    fn drop(&mut self) {
+        let _ = crate::ktest::until_for(1000, || pf::states_in_use() == self.0);
+    }
+}
+
 /// Let both tasks finish before a verdict (or a failure) is returned.
 fn finish() -> Result<(), &'static str> {
     RELEASE.store(true, Ordering::Release);
@@ -115,6 +127,7 @@ azos_ktest::ktest_late! {
         }
         WORD.store(0, Ordering::Release);
         let used = pf::states_in_use();
+        let _settled = Settled(used);
         azos_sched::task_create_affinity("n10-pi-owner", owner, 0, OWNER_PRIO, -1);
         crate::ktest::wait("the fair owner never took the free PI word", || {
             OWNED.load(Ordering::Acquire) || OWNER_DONE.load(Ordering::Acquire)
@@ -236,6 +249,7 @@ azos_ktest::ktest_late! {
         }
         EXIT_WORD.store(0, Ordering::Release);
         let used = pf::states_in_use();
+        let _settled = Settled(used);
         azos_sched::task_create_affinity("n10b-pi-owner", exit_owner, 0, OWNER_PRIO, -1);
         crate::ktest::wait("the owner never took the free PI word", || {
             EXIT_OWNED.load(Ordering::Acquire) || EXIT_OWNER_DONE.load(Ordering::Acquire)
@@ -379,6 +393,7 @@ azos_ktest::ktest_late! {
         RQ_COND.store(0, Ordering::Release);
         RQ_MUTEX.store(0, Ordering::Release);
         let used = pf::states_in_use();
+        let _settled = Settled(used);
         azos_sched::task_create_affinity("n10e-rq-owner", rq_owner, 0, OWNER_PRIO, -1);
         crate::ktest::wait("the fair owner never took the free PI word", || {
             RQ_OWNED.load(Ordering::Acquire) || RQ_OWNER_DONE.load(Ordering::Acquire)
