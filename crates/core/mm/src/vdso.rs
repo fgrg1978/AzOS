@@ -326,6 +326,15 @@ pub fn vdso_init() {
     }
 }
 
+/// Host tests: the page is gone. The arena reset puts its frame back in the
+/// allocator, where another test gets it as an ordinary page and writes into
+/// the clock words (a clock sample then spins on an odd generation); a test
+/// that needs the page calls [`vdso_init`] again.
+#[cfg(not(target_os = "none"))]
+pub fn shim_forget_page() {
+    VDSO_PHYS.store(0, Ordering::Relaxed);
+}
+
 /// Return the physical address of the vDSO page, or 0 if not initialised.
 pub fn vdso_phys() -> usize {
     VDSO_PHYS.load(Ordering::Acquire) as usize
