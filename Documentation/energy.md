@@ -281,6 +281,8 @@ With Kconfig `CPU_HOTPLUG`, the `cpu_online(cpu, on)` op of the `power` endpoint
 
 **Offline.** A `cpu-down` thread pinned to the CPU cuts the online prefix first, then drains: ready tasks move to other CPUs (`migrate_off_cpu`, each placed where `find_best_cpu` puts a new task), timer sleepers move to the takeover CPU's heap (`timer_sleepers::migrate_off`), and the CPU stops through the firmware. A task queued onto it in the window before the stop is moved by a rescue drain afterwards. **Online.** The CPU is started through its secondary entry; a CPU that went offline resumes where it stopped (the saved-context path), one that never ran starts as at boot.
 
+A stopping CPU leaves the percpu online mask and enters RCU's extended quiescent state, so a grace period that already waits for it ends; a CPU that comes back re-enters both before it unmasks, since it may open read sections from there. A waker can have placed a task on the CPU before the cut and enqueue it at any later time: the CPU's last drain and the requester's take the deferred wake list as well as the queue (`drain_stopped_cpu`), and a wake that lands later finds the CPU stopped in `ring_doorbell` and moves the task itself, a task pinned to that CPU included (a pin cannot be honoured there).
+
 | ISA | Stop | Start |
 |---|---|---|
 | riscv64 | SBI HSM `hart_stop` | SBI HSM `hart_start` |

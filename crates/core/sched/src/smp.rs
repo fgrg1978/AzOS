@@ -300,16 +300,28 @@ pub fn current_cpu_id() -> usize {
 //      ready tasks to other CPUs
 //      (`lifecycle::migrate_off_cpu`), the timer sleepers to the takeover CPU's
 //      heap (`timer_sleepers::migrate_off`), leaves the TLB shootdown's scan,
-//      marks `t` offline in the percpu mask (RCU stops waiting for it) and
+//      marks `t` offline in the percpu mask and enters RCU's extended quiescent
+//      state (a grace period already waiting for it ends, a new one skips it),
+//      sets `STOPPED`, drains once more (`lifecycle::drain_stopped_cpu`) and
 //      stops through the firmware keeping its context
 //      (`firmware::stop_current`: HSM `hart_stop`, PSCI `CPU_OFF`, a halt loop
 //      on x86_64). If the firmware refuses, everything is undone;
-//   4. `r` waits for the firmware to report `t` stopped, then drains `t`'s queue
-//      once more (a task queued onto it in the window) and records the change.
+//   4. `r` waits for the firmware to report `t` stopped, then drains `t` again
+//      and records the change.
+//
+// A waker may have read its placement before the cut and enqueue on `t` at any
+// later time; nothing bounds it. Its enqueue runs under `t`'s queue lock or pushes
+// onto `t`'s deferred list. Either that comes before a drain and the drain moves
+// the task, or the waker, after it, sees `STOPPED` in `ring_doorbell` and moves it
+// itself: the lock orders the first, the fences of `defer_remote_wake` and
+// `drain_stopped_cpu` the second. So the wake paths carry no check of their own,
+// and a pin the CPU cannot honour now is moved rather than left to wait.
 //
 // Online, `cpu_online(t)`: the firmware starts `t` at the secondary entry,
 // which finds its saved context and returns into the `cpu-down` thread where
-// it stopped; the thread reports back and ends, `t` runs its own idle task
+// it stopped; before it unmasks it is back in the percpu mask and out of RCU's
+// extended quiescent state, since from there it may open read sections. The
+// thread reports back and ends, `t` runs its own idle task
 // again (still on its queue), and the requester puts it back in the prefix.
 // A CPU that never stopped here has no saved context and no idle task of its
 // own (a boot-time failure moved them), so it is refused (`NeverStopped`).
@@ -331,6 +343,13 @@ static ALIVE: AtomicU64 = AtomicU64::new(0);
 
 /// CPUs stopped by [`cpu_offline`] and not yet back: they hold a saved context.
 static STOPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Is `cpu` stopped by [`cpu_offline`], or on its way there or back? A wake that
+/// finds it so after its enqueue moves the task (`ring_doorbell`).
+#[inline(always)]
+pub(crate) fn cpu_is_stopped(cpu: usize) -> bool {
+    cpu < hart_set::HART_MASK_BITS && STOPPED.load(Ordering::Relaxed) >> cpu & 1 != 0
+}
 
 /// One hotplug change at a time.
 static HOTPLUG_BUSY: AtomicBool = AtomicBool::new(false);
@@ -400,7 +419,7 @@ const HOTPLUG_THREAD_MS: u64 = 500;
 const HOTPLUG_STOP_MS: u64 = 1000;
 const HOTPLUG_START_MS: u64 = 1000;
 
-use crate::scheduler::{migrate_off_cpu, pinned_to};
+use crate::scheduler::{drain_stopped_cpu, migrate_off_cpu, pinned_to};
 use hart_set::{HotplugOp, HotplugReason as Why};
 
 struct Busy;
@@ -536,8 +555,8 @@ fn offline_run(cpu: usize) -> Result<usize, Why> {
     // the stop would never run: move it. The CPU is stopped, so this is the
     // dead-hart rescue, from another CPU, through the same locked queue ops.
     // SAFETY: `cpu` is outside the prefix.
-    let _ = unsafe { migrate_off_cpu(cpu) };
-    Ok(MOVED[cpu].load(Ordering::Relaxed))
+    let late = unsafe { drain_stopped_cpu(cpu) };
+    Ok(MOVED[cpu].fetch_add(late, Ordering::Relaxed) + late)
 }
 
 fn reason_of(code: u8) -> Why {
@@ -598,12 +617,12 @@ unsafe fn offline_here(cpu: usize) -> Result<(), Why> {
     // queue one here.
     let mut moved = 0;
     for _ in 0..4 {
+        unsafe { crate::scheduler::remote_wake_drain_here(cpu) };
         match unsafe { migrate_off_cpu(cpu) } {
             Ok(n) => moved += n,
             Err(_) => return Err(Why::Pinned),
         }
     }
-    MOVED[cpu].store(moved, Ordering::Relaxed);
 
     // The timer sleepers, to the takeover CPU, which is rung: an idle CPU's
     // comparator may be far past the earliest of them. (Without the per-CPU
@@ -619,24 +638,35 @@ unsafe fn offline_here(cpu: usize) -> Result<(), Why> {
 
     // Leave the shootdown's scan and RCU's wait, then stop. Undone if the
     // firmware refuses.
+    #[cfg(feature = "ktest")]
+    ktest_hook::run(ktest_hook::Stage::Stopping, cpu);
     let old_root = tlb_leave(cpu);
     azos_percpu::set_cpu_online(cpu, false);
+    azos_sync::qsbr::cpu_stop_begin();
     ALIVE.store(after, Ordering::Release);
     STOPPED.fetch_or(1u64 << cpu, Ordering::AcqRel);
+    // SAFETY: the bit above is set; every touch goes through the locked queue ops.
+    moved += unsafe { drain_stopped_cpu(cpu) };
+    MOVED[cpu].store(moved, Ordering::Relaxed);
     set_phase(cpu, phase::STOPPING);
 
     // SAFETY: the caller's contract; queues drained, timers moved.
     let r = unsafe { stop_current() };
+    if !(azos_limits::CANARY_RUNTIME && CANARY_BACK_UNSEEN.load(Ordering::Relaxed) && is_resumed(r)) {
+        azos_percpu::set_cpu_online(cpu, true);
+    }
+    azos_sync::qsbr::cpu_stop_end();
     if is_resumed(r) {
         // Back: a `cpu_online` started this CPU at the secondary entry, which
         // restored this context. The requester finishes the accounting.
+        #[cfg(feature = "ktest")]
+        ktest_hook::run(ktest_hook::Stage::Back, cpu);
         return Ok(());
     }
 
     // Refused: nothing happened to the CPU. Undo.
     STOPPED.fetch_and(!(1u64 << cpu), Ordering::AcqRel);
     ALIVE.store(alive, Ordering::Release);
-    azos_percpu::set_cpu_online(cpu, true);
     tlb_return(cpu, old_root);
     azos_drv_sys::kwarn!("[HOTPLUG] cpu {}: the firmware refused the stop (code {})", cpu, r);
     Err(Why::FirmwareRefused)
@@ -669,7 +699,7 @@ fn online_run(cpu: usize) -> Result<usize, Why> {
     // A task queued onto it after an offline that gave up before its last drain
     // would wait for the CPU to come back: move it now.
     // SAFETY: `cpu` is outside the prefix (`check_online` saw it stopped).
-    let _ = unsafe { migrate_off_cpu(cpu) };
+    let _ = unsafe { drain_stopped_cpu(cpu) };
     set_phase(cpu, phase::STOPPING);
     // SAFETY: the CPU is stopped and holds its saved context; the entry address
     // and the stack table were published at boot.
@@ -727,6 +757,45 @@ fn reconcile(requested: usize) -> Result<u64, Why> {
         }
     }
     Ok(came_back)
+}
+
+/// Runtime canary `rcu-back-unseen`: a CPU that comes back stays out of the
+/// percpu online mask until the requester's `finish_online`.
+static CANARY_BACK_UNSEEN: AtomicBool = AtomicBool::new(false);
+
+/// See [`CANARY_BACK_UNSEEN`].
+pub fn canary_back_unseen() {
+    CANARY_BACK_UNSEEN.store(true, Ordering::Relaxed);
+}
+
+/// A ktest's way into the two windows of [`offline_here`], on the stopping CPU
+/// with interrupts off.
+#[cfg(feature = "ktest")]
+pub mod ktest_hook {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum Stage {
+        /// Drained, and still in the online mask.
+        Stopping,
+        /// Running again, before interrupts open.
+        Back,
+    }
+
+    static HOOK: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn set(f: Option<fn(Stage, usize)>) {
+        HOOK.store(f.map_or(0, |f| f as usize), Ordering::Release);
+    }
+
+    pub(super) fn run(stage: Stage, cpu: usize) {
+        let f = HOOK.load(Ordering::Acquire);
+        if f != 0 {
+            // SAFETY: only `set` writes it, from a `fn(Stage, usize)`.
+            let f: fn(Stage, usize) = unsafe { core::mem::transmute(f) };
+            f(stage, cpu);
+        }
+    }
 }
 
 // ---- Per-ISA pieces of the stop ----

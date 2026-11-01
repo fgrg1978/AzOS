@@ -14607,8 +14607,9 @@ PY
     # +2 futex_look_under_the_table_faults_nothing,
     # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
     # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
-    KTEST_N_RV=137
-    KTEST_N_ARM=141
+    # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
+    KTEST_N_RV=141
+    KTEST_N_ARM=145
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14898,6 +14899,30 @@ PY
     par "ktest 17 cpus canary (arm)" ktest_17cpu_row "ktest 17 cpus canary (arm)" arm "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     par "ktest why durable-off canary (rv)" ktest_row_nodur "ktest why durable-off canary (rv)" rv "" "why_resolves_a_refused_reservation"
     par "ktest why durable-off canary (arm)" ktest_row_nodur "ktest why durable-off canary (arm)" arm "" "why_resolves_a_refused_reservation"
+    # A real CPU stop and start, on a kernel with CPU_HOTPLUG (off in the robot cell
+    # `ktest_row` builds): the ERE proves the stops happened, the canaries that each
+    # hotplug_* test sees its race (`hotplug_ktests`, kernel/src/boot/sched.rs).
+    ktest_row_hotplug() {
+        local isa="$2" defc cfg
+        defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$KTEST_FEATS")"
+        mkdir -p "$CI_LOG_DIR"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/ktest-hotplug-${isa}.config"
+        { grep -v -E '^(# )?CONFIG_CPU_HOTPLUG[= ]' "${REPO_ROOT}/config/defconfigs/${defc}.config"; echo "CONFIG_CPU_HOTPLUG=y"; } >"$cfg" \
+            && (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+            && grep -q "^CONFIG_CPU_HOTPLUG=y" "$cfg" \
+            || { printf "  %-26s" "$1..."; bad; echo "      could not make a Kconfig with CPU_HOTPLUG on ($cfg)"; return; }
+        if [ "$isa" = rv ]; then KCONFIG_CONFIG="$cfg" ktest_row "$@"; else AARCH64_CONFIG="$cfg" ktest_row "$@"; fi
+    }
+    par "ktest hotplug (rv)" ktest_row_hotplug "ktest hotplug (rv)" rv "" "" "" '\[HOTPLUG\] cpu [0-9]+ offline'
+    par "ktest hotplug grace period canary (rv)" ktest_row_hotplug "ktest hotplug grace period canary (rv)" rv "" "hotplug_stop_ends_a_grace_period" "canary=rcu-stop-holds-gp"
+    par "ktest hotplug coming back canary (rv)" ktest_row_hotplug "ktest hotplug coming back canary (rv)" rv "" "hotplug_cpu_coming_back_is_waited_for" "canary=rcu-back-unseen"
+    par "ktest hotplug stop window wake canary (rv)" ktest_row_hotplug "ktest hotplug stop window wake canary (rv)" rv "" "hotplug_deferred_wake_in_the_stop_window_runs" "canary=hotplug-wake-list-skip"
+    par "ktest hotplug stale placement canary (rv)" ktest_row_hotplug "ktest hotplug stale placement canary (rv)" rv "" "hotplug_wake_placed_on_the_stopped_cpu_runs" "canary=hotplug-stale-wake-stays"
+    par "ktest hotplug (arm)" ktest_row_hotplug "ktest hotplug (arm)" arm "" "" "" '\[HOTPLUG\] cpu [0-9]+ offline'
+    par "ktest hotplug grace period canary (arm)" ktest_row_hotplug "ktest hotplug grace period canary (arm)" arm "" "hotplug_stop_ends_a_grace_period" "canary=rcu-stop-holds-gp"
+    par "ktest hotplug coming back canary (arm)" ktest_row_hotplug "ktest hotplug coming back canary (arm)" arm "" "hotplug_cpu_coming_back_is_waited_for" "canary=rcu-back-unseen"
+    par "ktest hotplug stop window wake canary (arm)" ktest_row_hotplug "ktest hotplug stop window wake canary (arm)" arm "" "hotplug_deferred_wake_in_the_stop_window_runs" "canary=hotplug-wake-list-skip"
+    par "ktest hotplug stale placement canary (arm)" ktest_row_hotplug "ktest hotplug stale placement canary (arm)" arm "" "hotplug_wake_placed_on_the_stopped_cpu_runs" "canary=hotplug-stale-wake-stays"
     par "ktest kcall atomic canary (rv)" ktest_row "ktest kcall atomic canary (rv)" rv ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
     par "ktest kcall atomic canary (arm)" ktest_row "ktest kcall atomic canary (arm)" arm ",kcall-atomic-canary" "kernel_endpoint_call_is_refused_under_a_spinlock"
     # arm-tpidr-all-tasks: only a Linux task's TPIDR_EL0 is kept, not a
@@ -15410,7 +15435,7 @@ PY
     # +2 futex_look_under_the_table_faults_nothing,
     # ipc_handover_abort_wakes_the_old_server -> 143.
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
-    KTEST_N_X86=144
+    KTEST_N_X86=148
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16461,6 +16486,18 @@ PY
         x86_ktest_row "$@"
     }
     par "ktest why durable-off canary (x86)" x86_ktest_row_nodur "ktest why durable-off canary (x86)" "" "why_resolves_a_refused_reservation"
+    x86_ktest_row_hotplug() {
+        local def="$CI_LOG_DIR/x86-hotplug.defconfig" X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-hotplug.elf X86_KBUILD_ARGS
+        mkdir -p "$CI_LOG_DIR"
+        { grep -v -E '^(# )?CONFIG_CPU_HOTPLUG[= ]' config/defconfigs/${GATE_ROBOT_DEFC_X86}.config; echo "CONFIG_CPU_HOTPLUG=y"; } >"$def"
+        X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-hotplug.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-hotplug X86_64_IMG=$X86_KBUILD_OUT"
+        x86_ktest_row "$@"
+    }
+    par "ktest hotplug (x86)" x86_ktest_row_hotplug "ktest hotplug (x86)" "" "" "" "" '\[HOTPLUG\] cpu [0-9]+ offline'
+    par "ktest hotplug grace period canary (x86)" x86_ktest_row_hotplug "ktest hotplug grace period canary (x86)" "" "hotplug_stop_ends_a_grace_period" "canary=rcu-stop-holds-gp"
+    par "ktest hotplug coming back canary (x86)" x86_ktest_row_hotplug "ktest hotplug coming back canary (x86)" "" "hotplug_cpu_coming_back_is_waited_for" "canary=rcu-back-unseen"
+    par "ktest hotplug stop window wake canary (x86)" x86_ktest_row_hotplug "ktest hotplug stop window wake canary (x86)" "" "hotplug_deferred_wake_in_the_stop_window_runs" "canary=hotplug-wake-list-skip"
+    par "ktest hotplug stale placement canary (x86)" x86_ktest_row_hotplug "ktest hotplug stale placement canary (x86)" "" "hotplug_wake_placed_on_the_stopped_cpu_runs" "canary=hotplug-stale-wake-stays"
     # The SpinLock hold bound in instruction time on x86_64: see `ktest hold bound,
     # -icount (rv)`. The kernel is built from a configuration with
     # LOCKDEP_HOLD_ENFORCE=y and LOCK_MAX_HOLD_US=$KTEST_HOLD_US, into a target

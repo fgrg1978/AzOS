@@ -319,6 +319,18 @@ pub(crate) fn install_sched_hooks() {
     if canary!("unswitched-block-stays") {
         azos_sched::scheduler::canary_unswitched_stays();
     }
+    if canary!("rcu-stop-holds-gp") {
+        azos_sync::qsbr::canary_stop_holds_gp();
+    }
+    if canary!("rcu-back-unseen") {
+        azos_sched::smp::canary_back_unseen();
+    }
+    if canary!("hotplug-wake-list-skip") {
+        azos_sched::scheduler::canary_stopped_list_stays();
+    }
+    if canary!("hotplug-stale-wake-stays") {
+        azos_sched::scheduler::canary_stopped_wake_stays();
+    }
     if canary!("pi-ring3-unclamped") {
         azos_sched::classes::canary_pi_ring3_unclamped();
     }
@@ -1248,6 +1260,218 @@ mod unswitched_ktests {
                 Some(reason) => Err(reason),
                 None => Ok(()),
             }
+        }
+    }
+}
+
+// A real CPU stop and start (`smp::cpu_offline`, `cpu_online`) with a grace period
+// and with wakes in the windows a race would need, reached through
+// `smp::ktest_hook` on the stopping CPU. Late; a kernel without CPU_HOTPLUG has no
+// saved-context path, so these say ok without stopping anything and the
+// `ktest hotplug` rows run them on a kernel with it. Canaries `rcu-stop-holds-gp`,
+// `rcu-back-unseen`, `hotplug-wake-list-skip`, `hotplug-stale-wake-stays`: `not ok`,
+// each in its test.
+#[cfg(feature = "ktest")]
+mod hotplug_ktests {
+    use azos_sched::smp::ktest_hook::{self, Stage};
+    use azos_sched::WaitReason;
+    use azos_sync::qsbr::Gp;
+    use azos_sync::SpinLock;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    /// More urgent than the runner and the daemons on CPU 0, so the change runs
+    /// from a CPU it may not take away, whichever the runner is on.
+    const DRIVER_PRIO: u32 = 3;
+    const PARKED_PRIO: u32 = 16;
+    /// A wait no sweep or timer ends: only the wake under test does.
+    const PARK: WaitReason = WaitReason::Port(0xFFFF_FF0E);
+
+    static GP: SpinLock<Option<Gp>> = SpinLock::new(None);
+    static BACK_WAITED_FOR: AtomicBool = AtomicBool::new(false);
+    static PARKED: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+    static RAN: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
+    static DONE: AtomicBool = AtomicBool::new(false);
+    static VERDICT: SpinLock<Result<(), &'static str>> = SpinLock::new(Ok(()));
+    static BODY: SpinLock<Option<fn(usize) -> Result<(), &'static str>>> = SpinLock::new(None);
+
+    /// Wait on the running clock, not the KTEST_LATE timeout: a canary's wait ends
+    /// here, and a stop in a healthy kernel takes well under this.
+    fn settle(mut done: impl FnMut() -> bool) -> bool {
+        let end = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * 3;
+        while !done() {
+            let now = azos_drv_sys::timebase::now();
+            if now >= end {
+                return false;
+            }
+            // Asleep: the driver outranks what it waits for on its own CPU.
+            azos_sched::task_block(WaitReason::Timer(now + azos_drv_sys::timebase::TIMER_FREQ / 500));
+        }
+        true
+    }
+
+    fn parked_task(n: usize) {
+        PARKED[n].store(azos_sched::current_task_tid(), Ordering::Release);
+        azos_sched::task_block(PARK);
+        RAN[n].store(true, Ordering::Release);
+    }
+
+    /// Start the parked task `n`, and wait until it really sleeps.
+    fn park(n: usize) -> Result<u32, &'static str> {
+        PARKED[n].store(0, Ordering::Release);
+        RAN[n].store(false, Ordering::Release);
+        azos_sched::task_create_affinity("hotplug-park", parked_task, n, PARKED_PRIO, -1);
+        let ok = settle(|| {
+            let t = PARKED[n].load(Ordering::Acquire);
+            t != 0 && azos_sched::scheduler::ktest_parked(t)
+        });
+        if ok { Ok(PARKED[n].load(Ordering::Acquire)) } else { Err("the parked task never slept") }
+    }
+
+    /// A band task passing through the CPU, or the last change's thread still on
+    /// its way out, refuses the request for that moment: asked again.
+    fn offline(cpu: usize) -> Result<(), &'static str> {
+        use azos_sched::smp::hart_set::HotplugReason as Why;
+        let mut verdict = Err("the CPU never stopped being refused");
+        settle(|| match azos_sched::smp::cpu_offline(cpu) {
+            Err(w @ (Why::RealTime | Why::Busy)) => {
+                verdict = Err(w.name());
+                false
+            }
+            r => {
+                verdict = r.map(|_| ()).map_err(|w| w.name());
+                true
+            }
+        });
+        verdict
+    }
+
+    fn driver(cpu: usize) {
+        let body = (*BODY.lock()).take();
+        let r = body.map_or(Err("no body"), |b| b(cpu));
+        ktest_hook::set(None);
+        // Whatever the body found, the CPU comes back for the tests after it.
+        let back = match azos_sched::smp::cpu_online(cpu) {
+            Err(w) if w != azos_sched::smp::hart_set::HotplugReason::NoChange => Err("the CPU did not come back"),
+            _ => Ok(()),
+        };
+        *VERDICT.lock() = r.and(back);
+        DONE.store(true, Ordering::Release);
+    }
+
+    fn run(body: fn(usize) -> Result<(), &'static str>) -> Result<(), &'static str> {
+        let cpu = azos_percpu::nr_cpu_ids() - 1;
+        if !azos_limits::CPU_HOTPLUG || cpu == 0 {
+            return Ok(());
+        }
+        DONE.store(false, Ordering::Release);
+        *BODY.lock() = Some(body);
+        // Not `cpu`: the lowest CPU online, the one a change never takes.
+        let home = (0..cpu).find(|&c| azos_percpu::cpu_online(c)).unwrap_or(0);
+        azos_sched::task_create_affinity("hotplug-drv", driver, cpu, DRIVER_PRIO, home as i8);
+        crate::ktest::wait("the change never finished", || DONE.load(Ordering::Acquire))?;
+        *VERDICT.lock()
+    }
+
+    fn snapshot_in_the_window(stage: Stage, _cpu: usize) {
+        if stage == Stage::Stopping {
+            *GP.lock() = Some(Gp::start(rcu_ms(), 0));
+        }
+    }
+
+    fn rcu_ms() -> u64 {
+        azos_drv_sys::timebase::now() / (azos_drv_sys::timebase::TIMER_FREQ / 1000)
+    }
+
+    azos_ktest::ktest_late! {
+        fn hotplug_stop_ends_a_grace_period() {
+            run(|cpu| {
+                *GP.lock() = None;
+                ktest_hook::set(Some(snapshot_in_the_window));
+                offline(cpu)?;
+                let mut gp = GP.lock().take().ok_or("the window never ran")?;
+                if !gp.waits_for(cpu) {
+                    return Err("the snapshot did not wait for the stopping CPU");
+                }
+                if !settle(|| gp.poll_within(rcu_ms(), u64::MAX)) {
+                    return Err("the grace period still waits for a stopped CPU");
+                }
+                Ok(())
+            })
+        }
+    }
+
+    fn snapshot_on_the_way_back(stage: Stage, _cpu: usize) {
+        if stage == Stage::Back {
+            let gp = Gp::start(rcu_ms(), 0);
+            BACK_WAITED_FOR.store(gp.waits_for(azos_sched::smp::current_cpu_id()), Ordering::Release);
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn hotplug_cpu_coming_back_is_waited_for() {
+            run(|cpu| {
+                BACK_WAITED_FOR.store(false, Ordering::Release);
+                ktest_hook::set(Some(snapshot_on_the_way_back));
+                offline(cpu)?;
+                azos_sched::smp::cpu_online(cpu).map_err(|w| w.name())?;
+                if BACK_WAITED_FOR.load(Ordering::Acquire) {
+                    Ok(())
+                } else {
+                    Err("a CPU running again before its requester was skipped by a grace period")
+                }
+            })
+        }
+    }
+
+    fn wake_in_the_window(stage: Stage, cpu: usize) {
+        if stage == Stage::Stopping {
+            azos_sched::scheduler::ktest_wake_placed_on(PARKED[0].load(Ordering::Acquire), cpu, true);
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn hotplug_deferred_wake_in_the_stop_window_runs() {
+            run(|cpu| {
+                park(0)?;
+                ktest_hook::set(Some(wake_in_the_window));
+                offline(cpu)?;
+                if settle(|| RAN[0].load(Ordering::Acquire)) {
+                    return Ok(());
+                }
+                azos_sched::scheduler::ktest_rescue_stopped(cpu);
+                settle(|| RAN[0].load(Ordering::Acquire));
+                Err("a deferred wake left on the stopping CPU never ran")
+            })
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn hotplug_wake_placed_on_the_stopped_cpu_runs() {
+            run(|cpu| {
+                let (direct, listed, pinned) = (park(0)?, park(1)?, park(2)?);
+                offline(cpu)?;
+                let cases: [(usize, &'static str); 3] = [
+                    (0, "a wake placed on the stopped CPU never ran"),
+                    (1, "a deferred wake pushed on the stopped CPU never ran"),
+                    (2, "a task pinned to the stopped CPU never ran its wake"),
+                ];
+                azos_sched::scheduler::ktest_wake_placed_on(direct, cpu, false);
+                azos_sched::scheduler::ktest_wake_placed_on(listed, cpu, true);
+                // Through the real placement: `wake_target_cpu` answers the pin.
+                azos_sched::scheduler::ktest_set_pin(pinned, cpu as i8);
+                azos_sched::scheduler::wake_task_by_tid(pinned, &|r| *r == PARK);
+                let mut verdict = Ok(());
+                for (n, why) in cases {
+                    if !settle(|| RAN[n].load(Ordering::Acquire)) && verdict.is_ok() {
+                        verdict = Err(why);
+                    }
+                }
+                if verdict.is_err() {
+                    azos_sched::scheduler::ktest_rescue_stopped(cpu);
+                    settle(|| RAN.iter().all(|r| r.load(Ordering::Acquire)));
+                }
+                verdict
+            })
         }
     }
 }

@@ -2257,6 +2257,63 @@ pub fn cpu_is_real_time(cpu: usize) -> bool {
 /// # Safety
 /// `cpu` is a real CPU and not in `0..NUM_ONLINE_CPUS`.
 pub(crate) unsafe fn migrate_off_cpu(cpu: usize) -> Result<usize, usize> {
+    migrate_queue_off(cpu, false)
+}
+
+/// CPU hotplug: `cpu` is stopping or stopped (`smp::cpu_is_stopped`): move its
+/// deferred wakes and its ready tasks to the online CPUs, a pinned task too (it
+/// would not run where it is pinned). The stopping CPU's last drain, the
+/// requester's, and a waker's that found the CPU stopped; they may overlap.
+/// Returns the number moved.
+///
+/// # Safety
+/// `cpu` is a real CPU and not in `0..NUM_ONLINE_CPUS`.
+pub(crate) unsafe fn drain_stopped_cpu(cpu: usize) -> usize {
+    core::sync::atomic::fence(Ordering::SeqCst);
+    let mut moved = 0;
+    if !(azos_limits::CANARY_RUNTIME && CANARY_STOPPED_LIST_STAYS.load(Ordering::Relaxed)) {
+        moved = crate::wake_list::drain(&REMOTE_WAKE_HEAD[cpu], &REMOTE_WAKE_NEXT, |i| {
+            if i < MAX_TASKS && TASK_VALID[i].load(Ordering::Relaxed) {
+                unsafe { move_ready_task(i) };
+            } else {
+                REMOTE_WAKE_STALE.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+    }
+    moved + migrate_queue_off(cpu, true).unwrap_or(0)
+}
+
+/// Runtime canary `hotplug-wake-list-skip`: [`drain_stopped_cpu`] leaves the
+/// deferred list.
+static CANARY_STOPPED_LIST_STAYS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// See [`CANARY_STOPPED_LIST_STAYS`].
+pub fn canary_stopped_list_stays() {
+    CANARY_STOPPED_LIST_STAYS.store(true, Ordering::Relaxed);
+}
+
+/// Put ready task `idx`, on no queue, where a new one would go.
+unsafe fn move_ready_task(idx: usize) {
+    let task = task_mut(idx);
+    let target = find_best_cpu(task.priority.load(Ordering::Relaxed), idx);
+    task.context.tp = target as CtxReg;
+    hist_reaccount(idx);
+    task.ready_site.store(
+        crate::task::ready_site::REBALANCE | ((target as u8) << 4),
+        Ordering::Relaxed,
+    );
+    if !cpu_enqueue_locked(target, idx) {
+        SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Back on `cpu`'s queue, without its doorbell: `cpu` is this one or a stopped one.
+unsafe fn put_back_silent(cpu: usize, idx: usize) {
+    let _g = CpuLockGuard::acquire(cpu);
+    let _ = cpu_enqueue(cpu, idx);
+}
+
+unsafe fn migrate_queue_off(cpu: usize, move_pinned: bool) -> Result<usize, usize> {
     use crate::smp::hart_set::{disposition, Disposition};
     let mut moved = 0usize;
     // The idle tasks found: put back after the drain (a dequeue pops the
@@ -2268,7 +2325,7 @@ pub(crate) unsafe fn migrate_off_cpu(cpu: usize) -> Result<usize, usize> {
         while let Some(idx) = cpu_dequeue_locked(cpu) {
             let task = task_mut(idx);
             let is_idle = task.priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY;
-            let pinned = task.cpu_affinity >= 0;
+            let pinned = task.cpu_affinity >= 0 && !move_pinned;
             match disposition(is_idle, pinned) {
                 Disposition::KeepIdle => {
                     if n_idle < idle.len() {
@@ -2277,33 +2334,24 @@ pub(crate) unsafe fn migrate_off_cpu(cpu: usize) -> Result<usize, usize> {
                     } else {
                         // More idle-class tasks than the model has: leave this one
                         // where it is rather than lose it.
-                        let _ = cpu_enqueue_locked(cpu, idx);
+                        put_back_silent(cpu, idx);
                         break;
                     }
                 }
                 Disposition::Pinned => {
                     // Back on its queue, and the drain ends: the change is undone.
-                    let _ = cpu_enqueue_locked(cpu, idx);
+                    put_back_silent(cpu, idx);
                     pinned_stop = true;
                     break;
                 }
                 Disposition::Move => {
-                    let target = find_best_cpu(task.priority.load(Ordering::Relaxed), idx);
-                    task.context.tp = target as CtxReg;
-                    hist_reaccount(idx);
-                    task.ready_site.store(
-                        crate::task::ready_site::REBALANCE | ((target as u8) << 4),
-                        Ordering::Relaxed,
-                    );
-                    if !cpu_enqueue_locked(target, idx) {
-                        SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
-                    }
+                    move_ready_task(idx);
                     moved += 1;
                 }
             }
         }
         for &idx in idle.iter().take(n_idle) {
-            let _ = cpu_enqueue_locked(cpu, idx);
+            put_back_silent(cpu, idx);
         }
     }
     if pinned_stop { Err(moved) } else { Ok(moved) }
@@ -3103,6 +3151,35 @@ pub fn canary_unswitched_stays() {
 /// it up, then block and yield. Each must come back with this task `Running`,
 /// out of the queue, its flag clear. Puts everything right before it answers,
 /// canary or not.
+/// Ktest of CPU hotplug: wake parked `tid` as a waker that placed it on `cpu`
+/// before `cpu` left the prefix would: through the direct enqueue, or (`deferred`)
+/// through the deferred list, as if the waker lost `cpu`'s lock. Whether it woke.
+#[cfg(feature = "ktest")]
+pub fn ktest_wake_placed_on(tid: u32, cpu: usize, deferred: bool) -> bool {
+    KTEST_PLACED_TID.store(tid, Ordering::Relaxed);
+    KTEST_PLACED_CPU.store(cpu as u32, Ordering::Relaxed);
+    KTEST_PLACED_DEFER.store(deferred, Ordering::Relaxed);
+    let woke = wake_task_by_tid(tid, &|_| true);
+    KTEST_PLACED_TID.store(0, Ordering::Relaxed);
+    woke
+}
+
+/// Ktest of CPU hotplug: pin `tid` to `cpu` (or unpin, `-1`) as a pin written
+/// after the request's check would.
+#[cfg(feature = "ktest")]
+pub fn ktest_set_pin(tid: u32, cpu: i8) -> bool {
+    let Some(idx) = idx_for_tid(tid) else { return false };
+    unsafe { task_mut(idx).cpu_affinity = cpu };
+    true
+}
+
+/// Ktest of CPU hotplug: what a canary left on the stopped `cpu`.
+#[cfg(feature = "ktest")]
+pub fn ktest_rescue_stopped(cpu: usize) {
+    CANARY_STOPPED_LIST_STAYS.store(false, Ordering::Relaxed);
+    unsafe { drain_stopped_cpu(cpu) };
+}
+
 #[cfg(feature = "ktest")]
 pub fn ktest_unswitched_block(h: usize, tid: u32) -> Result<(), &'static str> {
     use crate::task::sched_word::{state_of, take_back_unswitched};
