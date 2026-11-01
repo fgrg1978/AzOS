@@ -1437,15 +1437,23 @@ fn nearest_timer_deadline_sweep_where(keep: impl Fn(usize) -> bool) -> Option<u6
 /// own predicate. The host runner drives the same pass under a model of
 /// another hart (`timer_heap`'s `wake_due_*` tests).
 #[cfg(feature = "sched-timer-heap")]
-pub(crate) fn wake_expired_timers_heap(now_ticks: u64) {
+pub(crate) fn wake_expired_timers_heap(now_ticks: u64) -> usize {
     let due = timer_sleepers::Due::here();
     if !due.ready() {
-        return;
+        return 0;
     }
-    crate::timer_heap::wake_due::<MAX_TASKS, { azos_limits::SCHED_TIMER_WAKE_BATCH }, _>(
+    let popped = crate::timer_heap::wake_due::<MAX_TASKS, { azos_limits::SCHED_TIMER_WAKE_BATCH }, _>(
         &due,
         now_ticks,
+        // `timer-wake-unbounded-canary`: a whole storm in one masked pass;
+        // ktest `irqoff_timer_storm` goes red.
+        if cfg!(feature = "timer-wake-unbounded-canary") {
+            usize::MAX
+        } else {
+            azos_limits::SCHED_TIMER_WAKES_PER_IRQ
+        },
     );
     #[cfg(feature = "ipc-census")]
     timer_sleepers::check_tick(now_ticks);
+    popped
 }

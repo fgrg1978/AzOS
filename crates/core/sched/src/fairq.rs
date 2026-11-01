@@ -18,8 +18,9 @@
 //! is no longer a strict order among fair tasks but a weight
 //! ([`eevdf_core::weight_of_prio`](crate::eevdf_core::weight_of_prio), the
 //! default priority being nice 0). The cost is O(ready fair tasks on the
-//! hart) per pick, tick, wake and sleep; `eevdf_core.rs` says why that, and
-//! not a tree, is the choice.
+//! hart) per pick and tick, and O(FAIR_PLACE_SAMPLE) per wake and sleep (the
+//! mean they place against, [`eevdf_core::avg_of_first`]); `eevdf_core.rs`
+//! says why that, and not a tree, is the choice.
 //!
 //! # The running task counts
 //!
@@ -246,12 +247,10 @@ fn remote_cur(cpu: usize) -> Option<(usize, Ent)> {
 /// (the exit of its own process among them) arrived tens of seconds of `v`
 /// ahead of it, and waited that long for the CPU.
 unsafe fn others(cpu: usize, skip: usize) -> Avg {
-    let mut a = Avg::new();
-    for (i, e) in unsafe { members(cpu) } {
-        if i != skip {
-            a.add(&e);
-        }
-    }
+    let queued = unsafe { members(cpu) }.filter(|&(i, _)| i != skip).map(|(_, e)| e);
+    let (mut a, _read) = eevdf::avg_of_first(queued, azos_limits::FAIR_PLACE_SAMPLE as usize);
+    #[cfg(feature = "ktest")]
+    PLACE_READ_MAX.fetch_max(_read as u64, Relaxed);
     // percpu-hint: the caller holds CPU_LOCKS[cpu] (lock_irqsave): interrupts are off
     let cur = if cpu == crate::smp::current_cpu_id() { unsafe { cur_cand(cpu) } } else { remote_cur(cpu) };
     if let Some((i, e)) = cur {
@@ -260,6 +259,16 @@ unsafe fn others(cpu: usize, skip: usize) -> Avg {
         }
     }
     a
+}
+
+/// The most queued tasks one mean read since the last call to [`ktest_take_place_read_max`].
+#[cfg(feature = "ktest")]
+static PLACE_READ_MAX: AtomicU64 = AtomicU64::new(0);
+
+/// See [`PLACE_READ_MAX`]; starts over.
+#[cfg(feature = "ktest")]
+pub fn ktest_take_place_read_max() -> u64 {
+    PLACE_READ_MAX.swap(0, Relaxed)
 }
 
 /// What the pick found on `cpu`.

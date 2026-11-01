@@ -324,12 +324,19 @@ pub trait DueSleepers<const N: usize> {
 /// deadline) or precedes it (and is overwritten by the sleeper's own arm).
 /// A deadline read before the lock (wave 5, gate 185) could predate an arm
 /// that completed in between and overwrite it with an older deadline.
+///
+/// At most `limit` entries go in one pass: the pass runs with interrupts
+/// masked and how many sleepers share an instant is a user's to choose. What
+/// it leaves stays due at the top of the heap, so the caller's re-arm from the
+/// nearest deadline fires again as soon as interrupts open. Returns the
+/// entries popped.
 #[inline]
-pub fn wake_due<const N: usize, const BATCH: usize, S: DueSleepers<N>>(s: &S, now: u64) {
+pub fn wake_due<const N: usize, const BATCH: usize, S: DueSleepers<N>>(s: &S, now: u64, limit: usize) -> usize {
+    let mut popped = 0;
     let mut batch = [0usize; BATCH];
     // Each entry present at entry is popped at most about once per call: a
     // re-armed retry can come round again only while this lasts.
-    let mut budget = s.locked(|h| h.len());
+    let mut budget = s.locked(|h| h.len()).min(limit);
     while budget > 0 {
         let take = budget.min(BATCH);
         let n = s.locked(|h| {
@@ -347,6 +354,7 @@ pub fn wake_due<const N: usize, const BATCH: usize, S: DueSleepers<N>>(s: &S, no
             n
         });
         budget -= n;
+        popped += n;
         let mut retry = [0usize; BATCH];
         let mut r = 0;
         for &slot in &batch[..n] {
@@ -371,6 +379,7 @@ pub fn wake_due<const N: usize, const BATCH: usize, S: DueSleepers<N>>(s: &S, no
             break;
         }
     }
+    popped
 }
 
 #[cfg(test)]
@@ -798,7 +807,7 @@ mod tests {
             next: Cell::new(if start.1 { 0 } else { 1 }),
             first,
         };
-        wake_due::<4, BATCH, _>(&m, NOW);
+        wake_due::<4, BATCH, _>(&m, NOW, usize::MAX);
         m.run_due(usize::MAX);
         let live = |s: usize| match m.st[s].get() {
             St::Blocked(d) => Some(d),
@@ -840,6 +849,39 @@ mod tests {
             });
         }
         runs
+    }
+
+    /// A storm is taken in passes of `limit`, each leaving the rest due at the
+    /// top of the heap for the re-arm of the tick that ran it, none lost.
+    #[test]
+    fn wake_due_stops_at_its_limit_and_the_rest_stay_due() {
+        struct Model {
+            heap: core::cell::RefCell<TimerHeap<64>>,
+            woken: core::cell::Cell<usize>,
+        }
+        impl DueSleepers<64> for Model {
+            fn locked<R>(&self, f: impl FnOnce(&mut TimerHeap<64>) -> R) -> R {
+                f(&mut self.heap.borrow_mut())
+            }
+            fn live(&self, _slot: usize) -> Option<u64> {
+                None
+            }
+            fn wake(&self, _slot: usize, _now: u64) {
+                self.woken.set(self.woken.get() + 1);
+            }
+        }
+        const AT: u64 = 100;
+        let m = Model { heap: core::cell::RefCell::new(TimerHeap::new()), woken: core::cell::Cell::new(0) };
+        for s in 0..40 {
+            m.heap.borrow_mut().arm(s, AT);
+        }
+        assert_eq!(wake_due::<64, 8, _>(&m, AT, 16), 16);
+        assert_eq!(m.woken.get(), 16);
+        assert_eq!(m.heap.borrow().peek().map(|(d, _)| d), Some(AT), "the rest fire the next tick at once");
+        assert_eq!(wake_due::<64, 8, _>(&m, AT, 16), 16);
+        assert_eq!(wake_due::<64, 8, _>(&m, AT, 16), 8);
+        assert_eq!(m.woken.get(), 40);
+        assert_eq!(m.heap.borrow().peek(), None);
     }
 
     /// The tick's retry re-arm must not overwrite the deadline a sleeper

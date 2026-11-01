@@ -3730,17 +3730,21 @@ pub fn unmap_user_and_free(
     }
 }
 
-/// Pages cleared per shootdown by [`unmap_user_range_and_free`]: the frames
-/// waiting for it are held on the stack (8 B each).
+/// Pages cleared per shootdown by [`unmap_user_range_and_free`] when the
+/// frames waiting for it are held on the stack (8 B each).
 pub const UNMAP_BATCH_PAGES: usize = 32;
 
-/// [`unmap_user_and_free`] over `[start, end)`, with ONE shootdown per batch of
-/// up to [`UNMAP_BATCH_PAGES`] pages instead of one per page: clear the batch's
-/// PTEs, shoot the batch's range down, and only then free its frames. On a
-/// board where another hart holds the address space that is one SBI
-/// `remote_sfence_vma` (one IPI round) per batch; where none does (every
-/// address space today — one hart per task) it is one scan of the published
-/// roots per batch. Returns the frames released.
+/// The same when they are held on a page of their own.
+pub const UNMAP_GATHER_PAGES: usize = PAGE_SIZE / core::mem::size_of::<usize>();
+
+/// [`unmap_user_and_free`] over `[start, end)`, with ONE shootdown per batch
+/// instead of one per page: clear the batch's PTEs, shoot them down, and only
+/// then free its frames. A range past [`UNMAP_BATCH_PAGES`] gathers its frames
+/// on a borrowed page, [`UNMAP_GATHER_PAGES`] per batch (Linux's `mmu_gather`
+/// batch page); with none to borrow, on the stack, where a batch alone may not
+/// reach `TLB_FLUSH_CEILING_PAGES`: a range past it then flushes each batch
+/// whole, as the ISA's shootdown does with any batch past it.
+/// Returns the frames released.
 pub fn unmap_user_range_and_free(
     pt_phys: usize, start: usize, end: usize, skip_lo: usize, skip_hi: usize,
 ) -> u32 {
@@ -3748,13 +3752,29 @@ pub fn unmap_user_range_and_free(
     // here, a partly covered one is split for the loop below.
     let mut freed: u32 = release_megas(pt_phys, start, end);
     let mut va = start & !(PAGE_SIZE - 1);
+    let span = end.saturating_sub(va).div_ceil(PAGE_SIZE);
+    let ceiling = azos_limits::TLB_FLUSH_CEILING_PAGES as usize;
+    // `unmap-stack-batch-canary`: never borrowed, a shootdown per 32 pages.
+    let gather = if span > UNMAP_BATCH_PAGES && !cfg!(feature = "unmap-stack-batch-canary") {
+        pmm::alloc_page().ok()
+    } else {
+        None
+    };
+    let mut on_stack = [0usize; UNMAP_BATCH_PAGES];
+    let frames: &mut [usize] = match gather {
+        // SAFETY: a page just allocated, ours until it is freed below; the
+        // kernel's map of it, usize-aligned, this many words long.
+        Some(p) => unsafe {
+            core::slice::from_raw_parts_mut(crate::addr::phys_to_virt(p.as_usize()) as *mut usize, UNMAP_GATHER_PAGES)
+        },
+        None => &mut on_stack,
+    };
     while va < end {
         let batch_start = va;
-        let mut frames = [0usize; UNMAP_BATCH_PAGES];
         let mut n = 0;
         let mut cleared = false;
         let mut i = 0;
-        while i < UNMAP_BATCH_PAGES && va < end {
+        while i < frames.len() && va < end {
             if let Some(owned) = take_user_leaf(pt_phys, va, skip_lo, skip_hi) {
                 cleared = true;
                 if owned != 0 { frames[n] = owned; n += 1; }
@@ -3763,12 +3783,19 @@ pub fn unmap_user_range_and_free(
             i += 1;
         }
         if cleared {
-            user_shootdown(pt_phys, batch_start, va - batch_start);
+            if span > ceiling && i <= ceiling {
+                user_shootdown(pt_phys, 0, azos_arch_api::TLB_ALL);
+            } else {
+                user_shootdown(pt_phys, batch_start, va - batch_start);
+            }
         }
         for &f in &frames[..n] {
             let _ = pmm::free_page(PhysAddr::new(f));
             freed = freed.saturating_add(1);
         }
+    }
+    if let Some(p) = gather {
+        let _ = pmm::free_page(p);
     }
     freed
 }
@@ -4567,12 +4594,21 @@ pub(crate) fn promote_user_block(pt_phys: usize, block_va: usize, run_pa: usize,
 }
 
 /// The second half of [`promote_user_block`], outside every lock: shoot the
-/// block's old 4 KiB translations down (`flushed`: the break already did, as
+/// space's translations down (`flushed`: the break already did the block's, in
+/// the forms that reach walk caches on the one ISA that breaks, as
 /// `promote_user_block` says, and asking the CPU again could answer
 /// differently), then free the table and its charge.
 pub(crate) fn promote_finish(pt_phys: usize, block_va: usize, old_l0: usize, flushed: bool) {
     if !flushed {
-        user_shootdown(pt_phys, block_va, MEGA_SIZE);
+        // Whole: a walk cache may hold the table about to be freed, and on
+        // RISC-V an `sfence.vma` that names an address reaches leaf entries
+        // only (Linux `pmdp_collapse_flush` flushes the whole mm for this).
+        // `promote-ranged-flush-canary`: the block's range only.
+        if cfg!(feature = "promote-ranged-flush-canary") {
+            user_shootdown(pt_phys, block_va, MEGA_SIZE);
+        } else {
+            user_shootdown(pt_phys, 0, azos_arch_api::TLB_ALL);
+        }
     }
     let _ = pmm::free_page(PhysAddr::new(old_l0));
     let _ = table_charge(pt_phys, TableCharge::Return);

@@ -43,6 +43,10 @@ robust-list-canary = []
 eevdf-weight-canary = []
 eevdf-eligible-canary = []
 eevdf-fifo-canary = []
+# The canaries of `irqoff_timer_storm`: a tick pass wakes every due sleeper; a
+# placement reads the whole queue.
+timer-wake-unbounded-canary = []
+fair-place-all-canary = []
 eevdf-noclamp-canary = []
 eevdf-nowake-canary = []
 # Gate canary, never in a real build: `sc::timer_slack_us` gives the stop,

@@ -181,13 +181,14 @@ fn a_typed_map_follows_the_region_and_the_release_unmaps_first() {
 }
 
 /// **535 unmaps a region in batches: one TLB shootdown per
-/// `UNMAP_BATCH_PAGES` pages, not one per page, and no frame of the region is
+/// `UNMAP_GATHER_PAGES` pages, not one per page, and no frame of the region is
 /// freed by the unmap** (the region owns them until its last reference goes).
 /// A 64-page region cost 64 shootdowns before.
 ///
 /// **Canary.** Restore the per-page `vmm::unmap` loop in `unmap_user_pages`:
-/// the release costs 64 shootdowns, not 2. Pass an empty skip window: the
-/// unmap frees the region's frames and the free-page count moves.
+/// the release costs 64 shootdowns, not 1; `unmap-stack-batch-canary`: 2. Pass
+/// an empty skip window: the unmap frees the region's frames and the free-page
+/// count moves.
 #[test]
 fn a_release_unmaps_a_region_with_one_shootdown_per_batch() {
     use azos_arch::{SHOOTDOWNS_ON_WATCHED_ROOT, SHOOTDOWN_WATCH_ROOT};
@@ -223,7 +224,8 @@ fn a_release_unmaps_a_region_with_one_shootdown_per_batch() {
     };
     SHOOTDOWN_WATCH_ROOT.store(0, Ordering::SeqCst);
     assert_eq!(unmapped, pages);
-    let per_batch = azos_mm::vmm::UNMAP_BATCH_PAGES;
+    assert!(pages > azos_mm::vmm::UNMAP_BATCH_PAGES, "a region that gathers");
+    let per_batch = azos_mm::vmm::UNMAP_GATHER_PAGES;
     assert_eq!(batches, pages.div_ceil(per_batch), "shootdowns for a {pages}-page unmap");
     assert_eq!(azos_mm::pmm::free_pages(), region_frames_before, "the unmap freed a region frame");
     for p in 0..pages {

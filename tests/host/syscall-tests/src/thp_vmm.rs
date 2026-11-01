@@ -436,6 +436,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 static WATCH: AtomicUsize = AtomicUsize::new(0);
 static CALLS: AtomicUsize = AtomicUsize::new(0);
+static LAST_LEN: AtomicUsize = AtomicUsize::new(0);
 static SAW_PARK: AtomicUsize = AtomicUsize::new(0);
 static SAW_LEAF: AtomicUsize = AtomicUsize::new(0);
 static SAW_TABLE: AtomicUsize = AtomicUsize::new(0);
@@ -455,12 +456,13 @@ fn l1_word(root: usize, va: usize) -> u64 {
     word(l2.phys_addr(), azos_arch::mmu::vpn1(va))
 }
 
-fn observe(root: usize, va: usize, _len: usize) {
+fn observe(root: usize, va: usize, len: usize) {
     if root == 0 || WATCH.load(Ordering::SeqCst) != root {
         return;
     }
     CALLS.fetch_add(1, Ordering::SeqCst);
-    let w = l1_word(root, va);
+    LAST_LEN.store(len, Ordering::SeqCst);
+    let w = l1_word(root, if len == azos_arch_api::TLB_ALL { BLOCK_A } else { va });
     if w == PTE_BBM_PARK {
         SAW_PARK.fetch_add(1, Ordering::SeqCst);
         let probe = PROBE.load(Ordering::SeqCst);
@@ -588,6 +590,20 @@ fn the_shootdown_of_a_promotion_finds_the_slot_parked() {
     assert_eq!(SAW_TABLE.load(Ordering::SeqCst), 0, "the old table is no longer reachable at it");
     assert_eq!(CALLS.load(Ordering::SeqCst), 1, "one flush: the break's; the finish does not repeat it");
     assert_ne!(l1_word(pt, BLOCK_A), PTE_BBM_PARK, "the park never outlives the call");
+}
+
+#[test]
+fn a_promotion_flushes_the_whole_space_before_its_table_goes() {
+    if !on() {
+        return;
+    }
+    let _g = serial();
+    let pt = space();
+    region(RW);
+    let _b = Bbm::arm(pt, false);
+    fill(pt, BLOCK_A, PAGES);
+    assert_eq!(level(pt, BLOCK_A), Some(1));
+    assert_eq!(LAST_LEN.load(Ordering::SeqCst), azos_arch_api::TLB_ALL, "a ranged flush reaches no walk cache on RISC-V");
 }
 
 #[test]

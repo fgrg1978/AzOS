@@ -640,3 +640,18 @@ fn a_sleeper_keeps_its_credit_up_to_the_limit() {
     assert!(s.t[b].e.vruntime <= v + 1, "owed service: not ahead of V");
     let _ = a;
 }
+
+/// A mean past its cap reads the first entities only, stays inside the range
+/// of what it read, and is the exact one below the cap.
+#[test]
+fn a_placement_mean_reads_at_most_its_cap() {
+    let at = |v: i64| Ent { weight: NICE_0_WEIGHT, slice: 1000, vruntime: v, deadline: v + 1000 };
+    let all: Vec<Ent> = (0..100).map(|i| at(i * 10)).collect();
+    let (a, n) = avg_of_first(all.iter().copied(), 16);
+    assert_eq!(n, 16);
+    let m = a.mean().unwrap();
+    assert!((0..=150).contains(&m), "{m}");
+    let (exact, n) = avg_of_first(all.iter().copied(), 100);
+    assert_eq!(n, 100);
+    assert_eq!(exact.mean(), avg_of(all.iter().copied()).mean());
+}

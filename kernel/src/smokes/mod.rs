@@ -137,6 +137,8 @@ pub(crate) mod ipc_handover;
 // Chain E stage a (Kconfig IPC_FASTPATH): the fast path is taken for a
 // parked peer and not with calls queued.
 #[cfg(feature = "ktest")]
+pub(crate) mod irqoff_bounds;
+#[cfg(feature = "ktest")]
 pub(crate) mod ipc_fastpath;
 // Wave 15 N9: the futex requeue wakes one waiter, not the herd.
 #[cfg(feature = "ktest")]

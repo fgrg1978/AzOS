@@ -24,6 +24,7 @@ pub mod qsbr;
 /// Pure logic behind `qsbr`. Host-tested in `tests/host/sync-tests`.
 pub mod qsbr_core;
 pub mod pi_attr;
+pub mod pi_heap;
 pub mod waitgraph;
 pub mod kmutex;
 pub mod pi_futex;

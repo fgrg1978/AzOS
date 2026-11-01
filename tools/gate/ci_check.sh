@@ -11415,6 +11415,37 @@ host_job host_canary_row "futex: look spins on MEMOBJS canary" syscall-tests mem
 # locker sleeps behind it for good. pi-state-leak-canary: a call that made a state
 # and did not block on it keeps it. pi-keep-edge-canary: a word that names its
 # waiter returns 0 with the edge in place.
+host_job host_canary_row "wait graph: heap shape canary" sync-tests pi-heap-no-swap-canary \
+    heap_matches_a_sorted_model_and_keeps_its_spine_logarithmic --test=waitgraph_heaps
+host_job host_canary_row "tlbi: no ceiling canary" arch-tests tlbi-no-ceiling-canary a_shootdown_past_the_ceiling_is_one_flush
+host_job host_canary_row "munmap: stack batch canary" syscall-tests unmap-stack-batch-canary a_release_unmaps_a_region_with_one_shootdown_per_batch
+# The suite's thp_vmm tests pass without testing anything on a cell with MM_THP_RESV off,
+# which the host suites' robot cell is: these rows run them with it on.
+thp_host_cfg() { # thp_host_cfg <file>
+    cp "${REPO_ROOT}/config/defconfigs/${GATE_ROBOT_DEFC_RV}.config" "$1"
+    echo 'CONFIG_MM_THP_RESV=y' >>"$1"
+    (cd "$REPO_ROOT" && KCONFIG_CONFIG="$1" python3 -m olddefconfig >/dev/null 2>&1) && grep -q '^CONFIG_MM_THP_RESV=y$' "$1"
+}
+thp_host_row() { # <label>
+    local out cfg="$AZOS_OUT/build/thp-host.config"
+    ci_tier_skips "$1" && return 0
+    printf "  %-26s" "${1}..."
+    thp_host_cfg "$cfg" || { bad; echo "      $cfg lost MM_THP_RESV"; return; }
+    KCONFIG_CONFIG="$cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/syscall-tests-thp" \
+        host_cargo out "${REPO_ROOT}/tests/host/syscall-tests" test --release -- thp_vmm
+    if echo "$out" | qgrep -qE "test result: ok\. [1-9][0-9]* passed; 0 failed"; then ok
+    else
+        bad; echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
+thp_host_canary_row() { # <label> <feature> <test fn>
+    local cfg="$AZOS_OUT/build/thp-host-canary.config"
+    ci_tier_skips "$1" && return 0
+    thp_host_cfg "$cfg" || { printf "  %-26s" "${1}..."; bad; echo "      $cfg lost MM_THP_RESV"; return; }
+    KCONFIG_CONFIG="$cfg" host_canary_row "$1" syscall-tests "$2" "$3"
+}
+host_job thp_host_row "thp: host suite, reservations on"
+host_job thp_host_canary_row "thp: ranged flush before a table free canary" promote-ranged-flush-canary a_promotion_flushes_the_whole_space_before_its_table_goes
 host_job host_canary_row "pi futex: exited owner set canary" sync-tests pi-exited-owner-canary \
     an_owner_exiting_after_the_look_is_refused_as_the_new_owner --test=pi_futex_graph
 host_job host_canary_row "pi futex: exited owner block canary" sync-tests pi-exited-owner-canary \
@@ -14613,8 +14644,8 @@ PY
     # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
     # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
     # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
-    KTEST_N_RV=141
-    KTEST_N_ARM=145
+    KTEST_N_RV=143
+    KTEST_N_ARM=147
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15094,7 +15125,7 @@ PY
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
     # The tests that need a second CPU answer `not ok` at -smp 1 (they say so).
-    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter"
+    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
@@ -15118,7 +15149,7 @@ PY
             return
         fi
         KCONFIG_CONFIG="$cfg" AARCH64_CONFIG="$cfg" KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" \
-            ktest_row "$label" "$isa" "" "$3" "${4:-}" "${5:-}"
+            ktest_row "$label" "$isa" "${KTEST_HOLD_FEAT:-}" "$3" "${4:-}" "${5:-}"
     }
     par "ktest hold bound, -icount (rv)" ktest_hold_row "ktest hold bound, -icount (rv)" rv "$KTEST_HOLD_SMP1" "" "$KTEST_HOLD_RE"
     par "ktest hold bound, -icount (arm)" ktest_hold_row "ktest hold bound, -icount (arm)" arm "$KTEST_HOLD_SMP1" "" "$KTEST_HOLD_RE"
@@ -15131,7 +15162,40 @@ PY
     # the timer storms until the delay is over (an interrupt every microsecond or two,
     # the same on every host under -icount; on TCG's wall clock a host timer's latency
     # decides how many).
+    # A wait-graph set past a few tasks stays inside the bound (`irqoff_wait_graph_user_sized`,
+    # 4096 slots); `pi-heap-no-swap-canary` makes a set a list again and the hold goes past it.
+    KTEST_HOLD_PI_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock crates/core/sync/src/waitgraph\.rs:'
+    pi_heap_hold_row() { KTEST_HOLD_FEAT=",pi-heap-no-swap-canary" ktest_hold_row "$1" "$2" "$KTEST_HOLD_SMP1 irqoff_wait_graph_user_sized" "" "$KTEST_HOLD_PI_RE"; }
+    par "ktest hold bound, pi heap canary, -icount (rv)" pi_heap_hold_row "ktest hold bound, pi heap canary, -icount (rv)" rv
+    par "ktest hold bound, pi heap canary, -icount (arm)" pi_heap_hold_row "ktest hold bound, pi heap canary, -icount (arm)" arm
     ktest_icount_row() { KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" ktest_row "$@"; }
+    # A storm of sleepers on one instant and one CPU (`irqoff_timer_storm`): one tick wakes
+    # SCHED_TIMER_WAKES_PER_IRQ, each placed on FAIR_PLACE_SAMPLE queued tasks.
+    par "ktest timer wake bound canary, -icount (rv)" ktest_icount_row "ktest timer wake bound canary, -icount (rv)" rv ",timer-wake-unbounded-canary" \
+        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
+    par "ktest timer wake bound canary, -icount (arm)" ktest_icount_row "ktest timer wake bound canary, -icount (arm)" arm ",timer-wake-unbounded-canary" \
+        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
+    par "ktest fair place bound canary, -icount (rv)" ktest_icount_row "ktest fair place bound canary, -icount (rv)" rv ",fair-place-all-canary" \
+        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
+    par "ktest fair place bound canary, -icount (arm)" ktest_icount_row "ktest fair place bound canary, -icount (arm)" arm ",fair-place-all-canary" \
+        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
+    # aarch64 without FEAT_TLBIRANGE, a ceiling of one page: the cross-CPU stale read of
+    # `tlb_shootdown_cross_cpu` is answered by the whole-space broadcast; `tlb-local-only`
+    # takes the broadcast away.
+    tlb_ceiling_row() { # tlb_ceiling_row <label> <features> <expected not-ok names>
+        local cfg
+        mkdir -p "$CI_LOG_DIR"
+        cfg="$(cd "$CI_LOG_DIR" && pwd)/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '-').config"
+        cp "${REPO_ROOT}/config/defconfigs/$(gate_defc a64 "$KTEST_FEATS").config" "$cfg"
+        printf 'CONFIG_TLB_FLUSH_CEILING_PAGES=1\nCONFIG_A64_TLBIRANGE_NEVER=y\n' >>"$cfg"
+        if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+            || ! grep -q '^CONFIG_TLB_FLUSH_CEILING_PAGES=1$' "$cfg" || ! grep -q '^CONFIG_A64_TLBIRANGE_NEVER=y$' "$cfg"; then
+            printf "  %-26s" "${1}..."; bad; echo "      $cfg: olddefconfig lost the row's options"; return
+        fi
+        KCONFIG_CONFIG="$cfg" AARCH64_CONFIG="$cfg" ktest_row "$1" arm "$2" "$3"
+    }
+    par "ktest tlb ceiling, whole-space broadcast (arm)" tlb_ceiling_row "ktest tlb ceiling, whole-space broadcast (arm)" "" ""
+    par "ktest tlb ceiling, local-only canary (arm)" tlb_ceiling_row "ktest tlb ceiling, local-only canary (arm)" ",tlb-local-only" "tlb_shootdown_cross_cpu"
     par "ktest chaos storm canary, -icount (rv)" ktest_icount_row "ktest chaos storm canary, -icount (rv)" rv ",chaos-storm-canary" \
         "$KTEST_HOLD_SMP1 chaos_timer_wake_late_is_not_a_storm"
     par "ktest chaos storm canary, -icount (arm)" ktest_icount_row "ktest chaos storm canary, -icount (arm)" arm ",chaos-storm-canary" \
@@ -15444,7 +15508,7 @@ PY
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
     # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
     # +4 the hotplug_* tests -> 150.
-    KTEST_N_X86=150
+    KTEST_N_X86=152
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16529,14 +16593,20 @@ PY
         X86_KBUILD_OUT=$AZOS_OUT/build/kernel-x86_64-hold.elf
         X86_KBUILD_ARGS="X86_64_DEFCONFIG=$def X86_64_KCONFIG=$AZOS_OUT/build/x86_64-hold.config X86_64_TARGET_DIR=$AZOS_OUT/target/x86_64-hold X86_64_IMG=$X86_KBUILD_OUT"
         X86_CPU="max,-x2apic" KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" \
-            x86_ktest_row "$label" "" "$2" "${3:-}" "" "${4:-}"
+            x86_ktest_row "$label" "${KTEST_HOLD_FEAT:-}" "$2" "${3:-}" "" "${4:-}"
     }
     # Needs a second CPU, as the tests of `KTEST_HOLD_SMP1`, and x86_64 only.
     KTEST_HOLD_SMP1_X86="$KTEST_HOLD_SMP1 tlb_kernel_shootdown_names_every_online_cpu"
     par "ktest hold bound, -icount (x86)" x86_ktest_hold_row "ktest hold bound, -icount (x86)" "$KTEST_HOLD_SMP1_X86" "" "$KTEST_HOLD_RE"
     par "ktest hold bound canary, -icount (x86)" x86_ktest_hold_row "ktest hold bound canary, -icount (x86)" \
         "$KTEST_HOLD_SMP1_X86 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
+    x86_pi_heap_hold_row() { KTEST_HOLD_FEAT=",pi-heap-no-swap-canary" x86_ktest_hold_row "$1" "$KTEST_HOLD_SMP1_X86 irqoff_wait_graph_user_sized" "" "$KTEST_HOLD_PI_RE"; }
+    par "ktest hold bound, pi heap canary, -icount (x86)" x86_pi_heap_hold_row "ktest hold bound, pi heap canary, -icount (x86)"
     x86_ktest_icount_row() { X86_CPU="max,-x2apic" KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" x86_ktest_row "$@"; }
+    par "ktest timer wake bound canary, -icount (x86)" x86_ktest_icount_row "ktest timer wake bound canary, -icount (x86)" ",timer-wake-unbounded-canary" \
+        "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"
+    par "ktest fair place bound canary, -icount (x86)" x86_ktest_icount_row "ktest fair place bound canary, -icount (x86)" ",fair-place-all-canary" \
+        "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"
     par "ktest chaos storm canary, -icount (x86)" x86_ktest_icount_row "ktest chaos storm canary, -icount (x86)" ",chaos-storm-canary" \
         "$KTEST_HOLD_SMP1_X86 chaos_timer_wake_late_is_not_a_storm"
     par "ktest tlb local-only canary (x86)" x86_ktest_row "ktest tlb local-only canary (x86)" ",tlb-local-only" "tlb_shootdown_cross_cpu"

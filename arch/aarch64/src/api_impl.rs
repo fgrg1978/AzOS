@@ -407,7 +407,8 @@ impl Mmu for Aarch64 {
     /// finds a record of this generation and every PE's TLB of this
     /// generation or never used: the broadcast reaches a PE still on an
     /// older generation, which may hold the space under an older ASID.
-    /// Otherwise all ASIDs: `VAAE1IS` / `VMALLE1IS`.
+    /// Otherwise all ASIDs: `VAAE1IS` / `VMALLE1IS`. Without the range form a
+    /// shootdown past `TLB_FLUSH_CEILING_PAGES` is one of the whole-space forms.
     ///
     /// `tlb-local-only` (gate canary) issues the non-broadcast forms instead,
     /// which must leave another PE's entry live.
@@ -419,7 +420,12 @@ impl Mmu for Aarch64 {
             0
         };
         let tag = (asid as u64) << 48;
-        if len == azos_arch_api::TLB_ALL {
+        let start = va & !(PAGE_SIZE - 1);
+        let end = va.saturating_add(len);
+        let pages = end.saturating_sub(start).div_ceil(PAGE_SIZE);
+        let range = tlbi_range::use_range(tlbi_range::range_on(), pages, policy::TLBIRANGE_MIN_PAGES);
+        let ceiling = azos_limits::TLB_FLUSH_CEILING_PAGES as usize;
+        if len == azos_arch_api::TLB_ALL || (!range && tlbi_range::whole_space(pages, ceiling)) {
             if asid != 0 {
                 #[cfg(not(feature = "tlb-local-only"))]
                 unsafe { core::arch::asm!("tlbi aside1is, {0}", in(reg) tag, options(nostack, preserves_flags)); }
@@ -432,8 +438,6 @@ impl Mmu for Aarch64 {
                 unsafe { core::arch::asm!("tlbi vmalle1", options(nostack, preserves_flags)); }
             }
         } else {
-            let start = va & !(PAGE_SIZE - 1);
-            let end = va.saturating_add(len);
             let one_page = |a: usize| {
                 let page = (a as u64) >> 12;
                 if asid != 0 {
@@ -449,8 +453,7 @@ impl Mmu for Aarch64 {
                     unsafe { core::arch::asm!("tlbi vaae1, {0}", in(reg) page, options(nostack, preserves_flags)); }
                 }
             };
-            let pages = (end - start).div_ceil(PAGE_SIZE);
-            if tlbi_range::use_range(tlbi_range::range_on(), pages, policy::TLBIRANGE_MIN_PAGES) {
+            if range {
                 // FEAT_TLBIRANGE (`A64_TLBIRANGE`): at most five operations
                 // for any length. The `sys` forms, so no assembler feature
                 // is needed: RVAE1IS = `sys #0, c8, c2, #1`, RVAAE1IS = #3,

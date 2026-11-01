@@ -148,10 +148,34 @@ pub fn wake_expired_timers(now_ticks: u64) {
     // Kconfig CHAOS (points `spurious-irq`, `timer-wake`): the clock this
     // sweep runs at. Off: `now_ticks`, nothing compiled.
     let now_ticks = scheduler::chaos_sweep_now(now_ticks);
+    #[cfg(feature = "ktest")]
+    let t0 = azos_drv_sys::timebase::now();
     #[cfg(feature = "sched-timer-heap")]
-    scheduler::wake_expired_timers_heap(now_ticks);
+    let _popped = scheduler::wake_expired_timers_heap(now_ticks);
     #[cfg(not(feature = "sched-timer-heap"))]
-    wake_matching(|r| matches!(r, WaitReason::Timer(deadline) if now_ticks >= *deadline));
+    let _popped = {
+        wake_matching(|r| matches!(r, WaitReason::Timer(deadline) if now_ticks >= *deadline));
+        0usize
+    };
+    #[cfg(feature = "ktest")]
+    {
+        TICK_PASS_MAX_TICKS.fetch_max(azos_drv_sys::timebase::now().wrapping_sub(t0), core::sync::atomic::Ordering::Relaxed);
+        TICK_PASS_MAX_POPPED.fetch_max(_popped, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The longest timer pass of a tick since the last read, in timer counts, and
+/// the most sleepers one pass popped: interrupts are masked for all of it.
+#[cfg(feature = "ktest")]
+static TICK_PASS_MAX_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "ktest")]
+static TICK_PASS_MAX_POPPED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// `(longest pass in timer counts, most popped)`, and start over.
+#[cfg(feature = "ktest")]
+pub fn ktest_take_tick_pass_max() -> (u64, usize) {
+    use core::sync::atomic::Ordering::Relaxed;
+    (TICK_PASS_MAX_TICKS.swap(0, Relaxed), TICK_PASS_MAX_POPPED.swap(0, Relaxed))
 }
 
 // ── K-C10: the wake decision, isolated as pure logic ────────────────────────

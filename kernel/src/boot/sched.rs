@@ -1253,6 +1253,12 @@ mod unswitched_ktests {
 
     azos_ktest::ktest_late! {
         fn unswitched_block_returns_running() {
+            // Alone with the daemons a blocked prober is never picked again:
+            // every pick takes the helper it holds unsaved, gives it up and
+            // returns to the task on the CPU.
+            if azos_percpu::nr_cpu_ids() < 2 {
+                return Err("needs 2 CPUs (a CPU the daemons are not pinned to)");
+            }
             let cpu = azos_percpu::nr_cpu_ids() - 1;
             azos_sched::task_create_affinity("unswitched-p", prober, cpu, PROBER_PRIO, cpu as i8);
             crate::ktest::wait("the probe never finished", || DONE.load(Ordering::Acquire))?;
