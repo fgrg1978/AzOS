@@ -326,13 +326,18 @@ const SCAN_WORDS: usize = 384;
 #[inline(never)]
 pub(crate) fn scan_chain(out: &mut [usize]) -> usize {
     let (_, sp) = regs!();
-    let Some((lo, hi)) = kernel_stack(sp as usize, azos_sched::smp::current_cpu_id()) else { return 0 };
+    // The boot hart's own stack, before any task: bounded by the scan, not by a top the profiler lacks.
+    let (lo, hi) = match kernel_stack(sp as usize, azos_sched::smp::current_cpu_id()) {
+        Some(b) => b,
+        None if azos_sched::current_task_stack_top() == 0 => (sp, sp + (SCAN_WORDS * 8) as u64),
+        None => return 0,
+    };
     let (mut at, mut n) = (lo, 0);
     for _ in 0..SCAN_WORDS {
         if at + 8 > hi || n == out.len() {
             break;
         }
-        if let Some(v) = read_stack(at).filter(|&v| kernel_text(v)) {
+        if let Some(v) = read_stack(at).filter(|&v| kernel_text(v) && (n == 0 || out[n - 1] != v as usize)) {
             out[n] = v as usize;
             n += 1;
         }

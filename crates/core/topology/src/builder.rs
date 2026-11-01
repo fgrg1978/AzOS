@@ -1926,6 +1926,15 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 "default_minimal_topology: ABICHILD.ELF port 0x80"
             );
         }
+        #[cfg(feature = "abichild-fat-row")]
+        assert!(
+            topo.extend_task_caps(&MaybeStr::from_bytes(TASK_ABICHILD_IMAGE), &[CapSpec {
+                kind: CapKind::Node,
+                perms: CapPerms::RW,
+                target: MaybeStr::from_bytes(b"/fat"), transfer: false, ops: 0,
+            }]),
+            "default_minimal_topology: ABICHILD.ELF /fat"
+        );
         topo.set_last_task_mem_pages(ABICHILD_MEM_PAGES);
         topo.set_last_task_instances(ABICHILD_INSTANCES);
     }

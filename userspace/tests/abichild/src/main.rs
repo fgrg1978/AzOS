@@ -68,6 +68,7 @@ pub extern "C" fn _start(_a0: usize, a1: usize) -> ! {
     match mode {
         b"exit" => sys::exit(num(2) as i32),
         b"fault-udf" => fault_udf(),
+        b"fault-regs" => fault_regs(),
         b"fault-null" => {
             unsafe { core::ptr::write_volatile(0x10 as *mut u32, 1) };
             sys::exit(0)
@@ -177,6 +178,37 @@ fn ioport(which: &[u8]) -> ! {
         }
         _ => sys::exit(99),
     }
+}
+
+/// The registers `fault_regs` sets are 0x5ee1c0de0001 and 0x5ee1c0de0002 (tools/gate/core_check.py).
+/// Word `i` of the marker is `MARKER_BASE + i`.
+const MARKER_BASE: u64 = 0xA5A5_0000_0000_0010;
+
+/// A store through NULL with known callee-saved registers: two known words and the address
+/// of a stack array of eight words (`MARKER_BASE + i`), so the core file of the kill can be
+/// checked register by register and against the stack bytes. riscv64 `s2 s3 s4`, aarch64
+/// `x23 x24 x25`, x86_64 `r13 r14 r12`.
+#[inline(never)]
+fn fault_regs() -> ! {
+    let marker: [u64; 8] = core::array::from_fn(|i| MARKER_BASE + i as u64);
+    let m = core::hint::black_box(marker.as_ptr());
+    unsafe {
+        #[cfg(target_arch = "riscv64")]
+        core::arch::asm!(
+            "li s2, 0x5ee1c0de0001", "li s3, 0x5ee1c0de0002", "mv s4, {m}", "li t0, 0x10", "sd t0, 0(t0)",
+            m = in(reg) m, out("s2") _, out("s3") _, out("s4") _, out("t0") _);
+        #[cfg(target_arch = "aarch64")]
+        core::arch::asm!(
+            "movz x23, #0x0001", "movk x23, #0xc0de, lsl #16", "movk x23, #0x5ee1, lsl #32",
+            "movz x24, #0x0002", "movk x24, #0xc0de, lsl #16", "movk x24, #0x5ee1, lsl #32",
+            "mov x25, {m}", "mov x9, #0x10", "str x9, [x9]",
+            m = in(reg) m, out("x23") _, out("x24") _, out("x25") _, out("x9") _);
+        #[cfg(target_arch = "x86_64")]
+        core::arch::asm!(
+            "mov r13, 0x5ee1c0de0001", "mov r14, 0x5ee1c0de0002", "mov r12, {m}", "mov rax, 0x10", "mov qword ptr [rax], rax",
+            m = in(reg) m, out("r12") _, out("r13") _, out("r14") _, out("rax") _);
+    }
+    sys::exit(1)
 }
 
 fn fault_udf() -> ! {

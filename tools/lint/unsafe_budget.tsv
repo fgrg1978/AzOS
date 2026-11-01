@@ -43,7 +43,7 @@ crates/core/mm	277	41	11	0	0	79
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
-crates/core/recovery	5	0	0	0	0	62
+crates/core/recovery	5	0	0	0	0	56
 crates/core/rings	23	4	4	0	0	98
 crates/core/sched	440	147	12	3	0	70
 crates/core/stdrt	45	1	4	0	0	-
@@ -160,4 +160,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	504

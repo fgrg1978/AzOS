@@ -660,6 +660,9 @@ azos_ktest::ktest! {
         if since(m, None, &mut out).0 != 0 {
             return Err("the block is still reported after it was freed");
         }
+        if canary!("kheap-leak-kept") {
+            core::mem::forget(core::hint::black_box(Box::new([3u8; 24])));
+        }
         Ok(())
     }
 }

@@ -223,6 +223,7 @@ flight-tool-drivetrain = ["azos_topology/flight-tool-drivetrain"]
 # (its numbers go to the native table). Never in a real build.
 linux-abi-test = ["azos_topology/linux-abi-test"]
 linux-abi-caps-canary = ["azos_topology/linux-abi-caps-canary"]
+abichild-fat-row = ["azos_topology/abichild-fat-row"]
 linux-abi-tag-canary = ["azos_sched/linux-abi-tag-canary", "azos_topology/linux-abi-test"]
 # Chain E commit 8 canary: the native syscall exit (Kconfig
 # SYSCALL_LEAN_ENTRY) flips bit 0 of one callee-saved register (riscv64 s3,
