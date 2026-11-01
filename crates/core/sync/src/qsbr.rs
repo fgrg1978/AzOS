@@ -682,6 +682,14 @@ pub fn last_stall_cpu() -> Option<usize> {
         c => Some(c as usize),
     }
 }
+/// CPU `cpu`'s progress word, the one a grace period snapshots: odd while the
+/// CPU runs kernel code, even in user mode or idle, and moved by every kernel
+/// entry, exit, idle transition and context switch. `None` with RCU_QSBR off
+/// or for a CPU past the table. The stuck-CPU detector reads it
+/// (`azos_sched::hung`): odd and unchanged is a CPU that has not scheduled.
+pub fn cpu_word(cpu: usize) -> Option<u64> {
+    (ON && cpu < NCPU).then(|| CPUS[cpu].eqs.load(Ordering::Acquire))
+}
 /// Grace periods started and completed.
 pub fn grace_periods() -> (u64, u64) {
     (GPS_STARTED.load(Ordering::Relaxed), GPS_DONE.load(Ordering::Relaxed))

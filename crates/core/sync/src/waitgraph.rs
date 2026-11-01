@@ -276,6 +276,19 @@ impl WaitObj {
         NonNull::new(addr as *mut PiWaiters).map(WaitObj)
     }
 
+    /// The object's kind and owner, read without the graph lock, for a
+    /// diagnostic scan that tolerates a stale answer (`azos_sched::hung` reports
+    /// only a wait two scans a timeout apart both found). The object
+    /// is alive while the task named by `blocked_on` is enqueued on it; a task
+    /// that woke since the caller read the edge leaves a read of memory that
+    /// is still mapped (a static, or a slab object) and an answer the scan
+    /// discards for want of a second sighting.
+    pub fn peek(self) -> (EdgeKind, Option<TaskId>) {
+        // SAFETY: see above; both fields are plain or relaxed atomic reads.
+        let o = unsafe { self.get() };
+        (o.kind(), o.owner())
+    }
+
     /// SAFETY: the object outlives every `blocked_on` naming it and every
     /// owned set linking it (the `PiWaiters` lifetime contract); called only
     /// under the graph lock.

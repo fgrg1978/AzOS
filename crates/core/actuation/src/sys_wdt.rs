@@ -24,6 +24,105 @@ azos_common::ro_hook! {
     /// `ota_boot_validate` rolls the active slot back to `last_good`.
     static BOOT_GOOD_HOOK: fn();
 }
+/// What a hung-task or stuck-CPU report does besides the warning and the
+/// decision record (Kconfig `HUNG_ACTION`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HungAction {
+    None = 0,
+    /// Stop the ring-3 task the hung one waits on, so its supervisor respawns it.
+    Restart = 1,
+    /// Latch the e-stop.
+    SafeStop = 2,
+}
+
+/// The build's [`HungAction`].
+pub const HUNG_ACTION: HungAction = if azos_limits::HUNG_ACTION_SAFE_STOP {
+    HungAction::SafeStop
+} else if azos_limits::HUNG_ACTION_RESTART {
+    HungAction::Restart
+} else {
+    HungAction::None
+};
+
+static SCANS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Detector passes made since boot, by the watchdog and by a test.
+pub fn hung_scans() -> u32 {
+    SCANS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// The watchdog pass's detectors (`azos_sched::hung`); it is their only scanner.
+static HUNG: azos_sched::hung::Hung = azos_sched::hung::Hung::new();
+
+/// One pass of the hung-task and stuck-CPU detectors at timebase `now`, with
+/// the timeouts in ms and `action` to take. Each finding is warned, recorded
+/// (`Rule::Hang`) and acted on; returns how many there were.
+pub fn hung_pass(h: &azos_sched::hung::Hung, now: u64, task_ms: u64, cpu_ms: u64, action: HungAction) -> u32 {
+    let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
+    let mut found = 0;
+    SCANS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    h.scan(now, task_ms.saturating_mul(per_ms), cpu_ms.saturating_mul(per_ms), |f| {
+        hung_report(&f, action, per_ms);
+        found += 1;
+    });
+    found
+}
+
+static SKIP_ACTION: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Gate canary `hung-action-skip` (`kernel/src/drv_supervisor.rs`, `hung_act`): a
+/// finding is warned and recorded, and its action is not run.
+pub fn canary_skip_action() {
+    SKIP_ACTION.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+fn hung_report(f: &azos_sched::hung::Finding, action: HungAction, per_ms: u64) {
+    use azos_sched::hung::Kind;
+    let waited_ms = f.waited / per_ms;
+    let culprit = f.culprit.or_else(|| {
+        let server = azos_ipc::fastcall::call_server_of(f.slot).filter(|_| f.kind == Kind::Call)?;
+        azos_sched::tid_for_idx(server)
+    });
+    let (what, mark) = match f.kind {
+        Kind::Call => ("task blocked on a call", 0),
+        Kind::Owner => ("task blocked on an owner", 0),
+        Kind::Cpu => ("cpu in the kernel with no progress", 1 << 31),
+    };
+    azos_drv_sys::kwarn!(
+        "[HUNG] {} {}: {} ms, culprit tid {}, detail {:#x}, action {:?}",
+        what, f.subject, waited_ms, culprit.unwrap_or(0), f.detail, action
+    );
+    let acted = match action {
+        _ if SKIP_ACTION.load(core::sync::atomic::Ordering::Relaxed) => HungAction::None,
+        HungAction::None => HungAction::None,
+        HungAction::Restart => match culprit {
+            // A forced stop wakes the culprit out of its wait and ends it at its
+            // next syscall or return to user mode: a ring-3 task. A kernel task
+            // has neither, so it is left as it is.
+            Some(tid) if azos_sched::tid_holds_address_space(tid) && azos_sched::scheduler::task_stop(tid, true, 9) => {
+                HungAction::Restart
+            }
+            _ => HungAction::None,
+        },
+        HungAction::SafeStop => {
+            crate::gate::latch_and_stop();
+            let _ = crate::logger::log_safety_violation_durable(
+                crate::logger::SAFETY_ESTOP, crate::estop::ESTOP_ACTION_HANG, f.subject | mark);
+            HungAction::SafeStop
+        }
+    };
+    azos_decision::record(
+        azos_decision::Rule::Hang,
+        if acted == HungAction::None { azos_decision::Verdict::Admit } else { azos_decision::Verdict::Refuse },
+        f.subject,
+        [
+            waited_ms,
+            (f.kind as u64) << 32 | culprit.unwrap_or(0) as u64,
+            (acted as u64) << 32 | f.detail as u64,
+        ],
+    );
+}
+
 /// Seconds after boot the mark waits for ([`set_boot_good_hook`]).
 static BOOT_GOOD_DELAY_S: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -66,6 +165,9 @@ pub fn set_boot_good_hook(delay_s: u32, mark: fn()) {
 ///    I/O itself).
 ///
 /// 4. **Driver health** — `driver_check_health` with the time in ms.
+///
+/// 4b. **Hung tasks and stuck CPUs** — `hung_pass` (Kconfig `HUNG_DETECT`):
+///    a warning, a `Rule::Hang` record and the build's `HungAction`.
 ///
 /// 5. **OTA boot-good mark** — once, through `BOOT_GOOD_HOOK`, handed to the
 ///    `log-flush` task (it writes BOOTMETA).
@@ -304,6 +406,17 @@ pub fn system_wdt_task(_: usize) {
         let now_ms = azos_drv_sys::timebase::now()
             / (azos_drv_sys::timebase::TIMER_FREQ / 1000);
         azos_sched::driver_check_health(now_ms);
+
+        // ── 4b. Hung tasks and stuck CPUs (Kconfig HUNG_DETECT) ───────────
+        if azos_sched::hung::ON {
+            hung_pass(
+                &HUNG,
+                azos_drv_sys::timebase::now(),
+                azos_limits::HUNG_TASK_TIMEOUT_MS as u64,
+                azos_limits::HUNG_CPU_TIMEOUT_MS as u64,
+                HUNG_ACTION,
+            );
+        }
 
         // ── 5. OTA boot-good mark ────────────────────────────────────────
         // After OTA_BOOT_GOOD_DELAY_S of successful uptime, mark boot as good.

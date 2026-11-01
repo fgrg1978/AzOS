@@ -5990,7 +5990,122 @@ supall_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <exp
            echo "      log kept: $log" ;;
     esac
 }
+# `hung_row` (Kconfig HUNG_DETECT, `drv_supervisor::hung_act`): the hung-task
+# detector's action end to end, through the watchdog's own pass. A kernel task
+# waits on an edge owned by the ring-3 buzzer driver; after HUNG_TASK_TIMEOUT_MS
+# (1 s here) the pass reports it and the build's HUNG_ACTION must follow:
+# `restart` stops the driver and the component manager brings a new one up,
+# `safe stop` latches the e-stop (and, in a second boot of the same disk, the
+# latch is restored from the durable record, action 15). The canary
+# (`canary=hung-action-skip`) reports and does not act: the row must fail on
+# `[HUNGACT] FAIL`. The kernel is built from a copy of the defconfig that sets
+# the action; the drv disk is a fresh copy, as `supall_row`'s.
+hung_row() { # <label> <isa: rv|arm> <action: RESTART|SAFE_STOP> <canary: yes|no>
+    local label="$1" isa="$2" action="$3" canary="$4"
+    printf "  %-26s" "${label}..."
+    local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+    local log="$CI_LOG_DIR/${tag}.log" log2="$CI_LOG_DIR/${tag}-2.log" img="$CI_LOG_DIR/${tag}.img" kimg=""
+    local cfg defc="" feats="qemu,hung-smoke"
+    local -a app=()
+    [ "$canary" = yes ] && app=(-append "canary=hung-action-skip")
+    mkdir -p "$CI_LOG_DIR"; rm -f "$log" "$log2" "$img"
+    defc="$(gate_defc "$([ "$isa" = arm ] && echo a64 || echo rv)" "$feats")"
+    cfg="$(cd "$CI_LOG_DIR" && pwd)/${tag}.config"
+    cp "${REPO_ROOT}/config/defconfigs/${defc}.config" "$cfg"
+    printf 'CONFIG_HUNG_ACTION_%s=y\nCONFIG_HUNG_TASK_TIMEOUT_MS=1000\n' "$action" >>"$cfg"
+    if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+        || ! grep -q "^CONFIG_HUNG_ACTION_${action}=y\$" "$cfg" || ! grep -q '^CONFIG_HUNG_TASK_TIMEOUT_MS=1000$' "$cfg"; then
+        bad; echo "      $cfg: olddefconfig lost HUNG_ACTION_$action or the 1 s timeout"; return
+    fi
+    if [ "$isa" = rv ]; then
+        if ! KCONFIG_CONFIG="$cfg" kbuild "$feats"; then
+            bad; echo "      riscv64 kernel ($feats, HUNG_ACTION_$action) did not build"; return
+        fi
+        if [ ! -f $AZOS_OUT/build/disk-drv.img.pristine ]; then
+            rm -f $AZOS_OUT/build/disk-drvbase.img $AZOS_OUT/build/disk-drv.img
+            make_disk $AZOS_OUT/build/disk-drv.img
+        fi
+        cp $AZOS_OUT/build/disk-drv.img.pristine "$img"
+    else
+        if ! AARCH64_CONFIG="$cfg" a64_kbuild "$feats"; then
+            bad; echo "      aarch64 kernel ($feats, HUNG_ACTION_$action) did not build"; return
+        fi
+        rm -f $AZOS_OUT/build/disk-aarch64-drvbase.img $AZOS_OUT/build/disk-aarch64-drv.img
+        if ! make $AZOS_OUT/build/disk-aarch64-drv.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-drv.img"; return
+        fi
+        cp $AZOS_OUT/build/disk-aarch64-drv.img "$img"
+        kimg="$CI_LOG_DIR/${tag}-kernel.img"
+        cp "$A64_IMG" "$kimg"
+    fi
+    hung_boot() { # <log> <stop pattern>: one boot of $img until the pattern, a panic, or 240 s
+        local out="$1" pat="$2" pid i=0
+        if [ "$isa" = rv ]; then
+            "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 4 ${app[@]+"${app[@]}"} \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$out" 2>&1 &
+        else
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+                -kernel "$kimg" ${app[@]+"${app[@]}"} \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$img",if=none,format=raw,id=hd0 \
+                -device virtio-blk-device,drive=hd0 >"$out" 2>&1 &
+        fi
+        pid=$!
+        while [ "$i" -lt 480 ]; do
+            grep -aqE "$pat" "$out" 2>/dev/null && break
+            grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$out" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    }
+    par_ready
+    hung_boot "$log" '\[HUNGACT\] (PASS|FAIL)'
+    local verdict why=""
+    if grep -aqiE "panic|\[FATAL\]|AARCH64-TRAP\] unhandled" "$log" 2>/dev/null; then
+        why="kernel panic or fatal exception: $(grep -aiE -m1 'panic|\[FATAL\]|AARCH64-TRAP' "$log")"
+    fi
+    verdict="$(grep -a "\[HUNGACT\] \(PASS\|FAIL\)" "$log" | tr -d '\r' | sed -n '1p')"
+    if [ -z "$why" ] && ! grep -aq "\[HUNG\] task blocked on an owner" "$log" 2>/dev/null; then
+        why="the pass never reported the waiting task ([HUNG] line missing)"
+    fi
+    if [ -z "$why" ] && [ "$canary" = yes ]; then
+        case "$verdict" in
+            "[HUNGACT] FAIL"*) ;;
+            *) why="the canary did not fail the row: '${verdict:-no verdict}'" ;;
+        esac
+    elif [ -z "$why" ]; then
+        case "$verdict" in
+            "[HUNGACT] PASS"*) ;;
+            *) why="${verdict:-no [HUNGACT] verdict within 240 s}" ;;
+        esac
+    fi
+    if [ -z "$why" ] && [ "$canary" = no ] && [ "$action" = SAFE_STOP ]; then
+        # The record reached the medium, and a second boot of the same disk
+        # starts latched from it.
+        if ! grep -aq "SAFETY\] ESTOP record durable (action 15)" "$log" 2>/dev/null; then
+            why="the latching record (action 15) was never acknowledged durable"
+        else
+            hung_boot "$log2" 'SAFETY\] ESTOP restored|booting released'
+            grep -aq "SAFETY\] ESTOP restored: the last session ended latched (action 15)" "$log2" 2>/dev/null \
+                || why="boot 2 did not restore the latch from the action-15 record: $(grep -a -m2 'SAFETY\] ESTOP' "$log2" | tr -d '\r')"
+        fi
+    fi
+    rm -f "$img"; [ -n "$kimg" ] && rm -f "$kimg"
+    if [ -n "$why" ]; then
+        bad; echo "      $why"
+        grep -a "\[HUNG\]\|\[HUNGACT\]\|\[SUP\]\|\[SAFETY\]" "$log" | tr -d '\r' | sed -n '1,10p' | sed 's|^|        |'
+        echo "      log kept: $log"; return
+    fi
+    ok; rm -f "$log" "$log2"
+}
 par "aarch64 moving driver supervised" supall_row "aarch64 moving driver supervised" arm "" PASS
+par "hung: restart action (arm)" hung_row "hung: restart action (arm)" arm RESTART no
+par "hung: restart action, canary (arm)" hung_row "hung: restart action, canary (arm)" arm RESTART yes
+par "hung: safe stop action (arm)" hung_row "hung: safe stop action (arm)" arm SAFE_STOP no
+par "hung: safe stop action, canary (arm)" hung_row "hung: safe stop action, canary (arm)" arm SAFE_STOP yes
 a64_kbuild "qemu" || true
 
 # ── Wave 11 (DRVPLACE): driver placement and the `restart` row key ──────────
@@ -14651,8 +14766,11 @@ PY
     # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
     # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
     # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
-    KTEST_N_RV=143
-    KTEST_N_ARM=147
+    # +2 hung_task_detector_reports_a_blocked_owner_wait,
+    # stuck_cpu_detector_names_the_cpu (Kconfig HUNG_DETECT; canaries `ktest hung
+    # canary (rv|arm|x86)`).
+    KTEST_N_RV=145
+    KTEST_N_ARM=149
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15132,7 +15250,7 @@ PY
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
     # The tests that need a second CPU answer `not ok` at -smp 1 (they say so).
-    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter"
+    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter stuck_cpu_detector_names_the_cpu"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
@@ -15313,6 +15431,13 @@ PY
     KTEST_RCU_CANARIED="rcu_free_waits_for_the_reader rcu_idle_cpu_is_quiescent lockdep_no_sleep_in_rcu_read ipc_endpoint_slot_reused_after_grace"
     par "ktest rcu canaries (rv)" ktest_row "ktest rcu canaries (rv)" rv "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
     par "ktest rcu canaries (arm)" ktest_row "ktest rcu canaries (arm)" arm "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # Kconfig HUNG_DETECT (kernel/src/smokes/hung.rs): the base row passes both
+    # detectors' tests; `canary=hung-task-blind` makes the scan read no task and
+    # `hung-cpu-blind` no CPU, so each test must turn red.
+    KTEST_HUNG_CANARIED="hung_task_detector_reports_a_blocked_owner_wait stuck_cpu_detector_names_the_cpu"
+    KTEST_HUNG_CANARIES="canary=hung-task-blind,hung-cpu-blind"
+    par "ktest hung canary (rv)" ktest_row "ktest hung canary (rv)" rv "" "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"
+    par "ktest hung canary (arm)" ktest_row "ktest hung canary (arm)" arm "" "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"
     # N5 (kernel/src/smokes/ipc_endpoint.rs), one
     # boot of the pass row's kernel: `canary=ipc-no-peer-died` (a server's
     # death leaves its accepted call in service, nobody completes it, the
@@ -15515,7 +15640,8 @@ PY
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
     # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
     # +4 the hotplug_* tests -> 150.
-    KTEST_N_X86=152
+    # +2 the hung-task and stuck-CPU tests, as on rv and arm.
+    KTEST_N_X86=154
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16072,6 +16198,64 @@ PY
         ok; rm -f "$log"
     }
     par "x86_64: buzzer drives the PC speaker (q35)" x86_pcspk_row
+    # Kconfig HUNG_DETECT: the hung-task detector's action end to end on x86_64
+    # (`hung_row`'s scenario: the ring-3 buzzer driver of the PC-speaker row's
+    # q35 machine and AHCI disk, a kernel built with the action under test).
+    x86_hung_row() { # <label> <RESTART|SAFE_STOP> <canary: yes|no>
+        local label="$1" action="$2" canary="$3" why=""
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" log2="$CI_LOG_DIR/x86-${tag}-2.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
+        local def="$CI_LOG_DIR/x86-${tag}.defconfig"
+        local -a app=() dev=(-drive "file=$dimg,if=none,format=raw,id=sata0" -device ich9-ahci,id=ahci -device ide-hd,drive=sata0,bus=ahci.0)
+        [ "$canary" = yes ] && app=(-append "canary=hung-action-skip")
+        cp "${REPO_ROOT}/config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config" "$def"
+        printf 'CONFIG_HUNG_ACTION_%s=y\nCONFIG_HUNG_TASK_TIMEOUT_MS=1000\n' "$action" >>"$def"
+        rm -f "$kimg" "$kimg.features"
+        make x86_64 X86_64_DEFCONFIG="$def" X86_64_SELECT=hung-smoke X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
+            && builtin printf '\n' >"$kimg.features" \
+            || { bad; echo "      make x86_64 (HUNG_ACTION_$action, hung-smoke) did not build"; return; }
+        if ! grep -q "^CONFIG_HUNG_ACTION_${action}=y\$" "$AZOS_OUT/build/x86_64-${tag}.config" \
+            || ! grep -q '^CONFIG_HUNG_TASK_TIMEOUT_MS=1000$' "$AZOS_OUT/build/x86_64-${tag}.config"; then
+            bad; echo "      the expanded configuration lost HUNG_ACTION_$action or the 1 s timeout"; return
+        fi
+        fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
+            || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; return; }
+        par_ready
+        X86_MACHINE=q35 x86_qemu "$kimg" "$log" 240 '\[HUNGACT\] (PASS|FAIL)|KERNEL PANIC' -smp 2 ${app[@]+"${app[@]}"} "${dev[@]}" \
+            || { rm -f "$kimg" "$kimg.features" "$dimg"; return; }
+        local verdict
+        verdict="$(grep -a "\[HUNGACT\] \(PASS\|FAIL\)" "$log" | sed -n '1p')"
+        grep -aq 'KERNEL PANIC' "$log" && why="$(grep -a 'KERNEL PANIC' "$log" | sed -n 1p)"
+        [ -z "$why" ] && ! grep -aq "\[HUNG\] task blocked on an owner" "$log" && why="the pass never reported the waiting task ([HUNG] line missing)"
+        if [ -z "$why" ] && [ "$canary" = yes ]; then
+            case "$verdict" in "[HUNGACT] FAIL"*) ;; *) why="the canary did not fail the row: '${verdict:-no verdict}'" ;; esac
+        elif [ -z "$why" ]; then
+            case "$verdict" in "[HUNGACT] PASS"*) ;; *) why="${verdict:-no [HUNGACT] verdict within 240 s}" ;; esac
+        fi
+        if [ -z "$why" ] && [ "$canary" = no ] && [ "$action" = SAFE_STOP ]; then
+            if ! grep -aq "SAFETY\] ESTOP record durable (action 15)" "$log"; then
+                why="the latching record (action 15) was never acknowledged durable"
+            else
+                X86_MACHINE=q35 x86_qemu "$kimg" "$log2" 120 'SAFETY\] ESTOP restored|booting released|KERNEL PANIC' -smp 2 "${dev[@]}" || true
+                grep -aq "SAFETY\] ESTOP restored: the last session ended latched (action 15)" "$log2" \
+                    || why="boot 2 did not restore the latch from the action-15 record: $(grep -a -m2 'SAFETY\] ESTOP' "$log2")"
+            fi
+        fi
+        rm -f "$kimg" "$kimg.features" "$dimg"
+        if [ -n "$why" ]; then
+            bad; echo "      $why"
+            grep -a "\[HUNG\]\|\[HUNGACT\]\|\[SUP\]\|\[SAFETY\]" "$log" | sed -n '1,10p' | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log" "$log2"
+    }
+    par "x86_64: hung: restart action" x86_hung_row "x86_64: hung: restart action" RESTART no
+    par "x86_64: hung: restart action, canary" x86_hung_row "x86_64: hung: restart action, canary" RESTART yes
+    par "x86_64: hung: safe stop action" x86_hung_row "x86_64: hung: safe stop action" SAFE_STOP no
+    par "x86_64: hung: safe stop action, canary" x86_hung_row "x86_64: hung: safe stop action, canary" SAFE_STOP yes
     # IOMMU on (x86_64): the rv/arm `iommu:` rows on q35 with the unit QEMU models
     # first on the bus: AMD-Vi (`amd-iommu,dma-remap=on`, found through the ACPI
     # IVRS; every device-table entry blocks until its function is placed). No
@@ -16654,6 +16838,9 @@ PY
     # N4: see `ktest rcu canaries (rv)`.
     par "ktest rcu canaries (x86)" x86_ktest_row "ktest rcu canaries (x86)" "" \
         "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # Kconfig HUNG_DETECT: see `ktest hung canary (rv)`.
+    par "ktest hung canary (x86)" x86_ktest_row "ktest hung canary (x86)" "" \
+        "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"
     # N5: see `ktest ipc canary (rv)`.
     par "ktest ipc canary (x86)" x86_ktest_row "ktest ipc canary (x86)" "" \
         "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
@@ -20797,6 +20984,11 @@ PYEOF
     # supervision (`supall_row`, defined beside the aarch64 drivers row), and its canary.
     par_row supall_row "drivers: moving driver supervised" rv "" PASS
     par_row supall_row "drivers: moving driver supervised, canary" rv ",supall-canary" FAIL
+    # Kconfig HUNG_DETECT: the hung-task detector's action end to end (`hung_row`).
+    par_row hung_row "hung: restart action (rv)" rv RESTART no
+    par_row hung_row "hung: restart action, canary (rv)" rv RESTART yes
+    par_row hung_row "hung: safe stop action (rv)" rv SAFE_STOP no
+    par_row hung_row "hung: safe stop action, canary (rv)" rv SAFE_STOP yes
     # Wave 11 (DRVPLACE): the INA219 in the kernel placement (same readings
     # as `drivers: INA219 power monitor`), its two canaries, and the topology
     # row key `restart` as the component manager reads it (`drvplace_row`,

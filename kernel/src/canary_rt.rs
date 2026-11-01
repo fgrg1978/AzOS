@@ -196,6 +196,14 @@ pub(crate) const NAMES: &[&str] = &[
     // leaves an idle interrupt line live and an ACK unmasks a line whose
     // handler's budget is spent (ktest `irq_storm_is_contained`).
     "irq-storm",
+    // smokes/hung.rs: the hung-task scan reads no task / the stuck-CPU scan
+    // reads no CPU (ktests `hung_task_detector_reports_a_blocked_owner_wait`,
+    // `stuck_cpu_detector_names_the_cpu`).
+    // drv_supervisor.rs `hung_act`: the detector reports and the action is not run
+    // (`hung: restart ...`, `hung: safe stop ...` rows).
+    "hung-action-skip",
+    "hung-task-blind",
+    "hung-cpu-blind",
     "rcu-idle-qs-skip",
     "rcu-free-no-grace",
     "lockdep-rcu-sleep",

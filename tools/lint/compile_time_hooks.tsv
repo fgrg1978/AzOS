@@ -252,6 +252,7 @@ sup-smoke	pending
 sup-window-smoke	pending	
 supall-canary	pending	
 supall-smoke	pending	
+hung-smoke	pending	
 swap-pinned-canary	host-shared	crates/core/mm/src/swap.rs: mm-tests builds the same source with the same feature
 swap-plain-canary	host-shared	crates/core/mm/src/swap.rs: mm-tests builds the same source
 syscall-abi-canary	const	kernel/src/entry/<isa>/asm.rs: a `const` operand of the trap-entry asm (syscall_abi_canary)

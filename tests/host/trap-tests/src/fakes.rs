@@ -325,6 +325,9 @@ impl<F: Frame> IrqServices<F> for Fake {
         log("watchdog_tick");
         100
     }
+    fn hung_tick(now: u64) {
+        log(format!("hung_tick {now}"));
+    }
     fn vdso_tick(ticks: u64, uptime_ms: Option<u64>, now: u64) {
         log(format!("vdso_tick {ticks} {uptime_ms:?} {now}"));
     }

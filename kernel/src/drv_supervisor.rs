@@ -312,7 +312,7 @@ pub(crate) fn exit_done(tid: u32, e: Exit) {
 /// Wake the supervisor task: a placement move is waiting for it
 /// (`crate::buzzer`'s callers).
 #[cfg(any(feature = "use-robot", feature = "ring3-drv-smoke", feature = "drv-contain-smoke",
-          feature = "supall-smoke", feature = "restart-smoke"))]
+          feature = "supall-smoke", feature = "hung-smoke", feature = "restart-smoke"))]
 pub(crate) fn wake() {
     let sup = SUP_TID.load(Ordering::Acquire);
     if sup != 0 {
@@ -1250,6 +1250,133 @@ mod smoke {
 pub(crate) fn start_supall_smoke() {
     azos_sched::task_create_affinity("supall-smoke", supall::run, 0,
                                          azos_sched::DEFAULT_PRIORITY, 1);
+}
+
+#[cfg(feature = "hung-smoke")]
+pub(crate) fn start_hung_smoke() {
+    azos_sched::task_create_affinity("hung-smoke", hung_act::run, 0,
+                                         azos_sched::DEFAULT_PRIORITY, -1);
+}
+
+/// The hung-task detector's action, end to end (Kconfig `HUNG_ACTION`, the
+/// watchdog's own pass, no test hook in between). A kernel task blocks on a
+/// wait-graph edge owned by the ring-3 buzzer driver, as a task waiting for a
+/// driver's answer does, and the answer never comes. After `HUNG_TASK_TIMEOUT_MS`
+/// the sys-wdt pass reports it and the configured action must follow:
+/// restart (the driver is stopped and the component manager brings a new one up),
+/// safe stop (the e-stop latches) or none (nothing of either). Verdict line
+/// `[HUNGACT] PASS` or `[HUNGACT] FAIL`; the gate row builds the kernel with the
+/// action under test (`hung_row`). Runtime canary `canary=hung-action-skip`:
+/// the report is made and the action is not run.
+#[cfg(feature = "hung-smoke")]
+mod hung_act {
+    use super::*;
+    use azos_sync::waitgraph::{self, EdgeKind, PiWaiters, UnblockReason};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    const SETUP_MS: u64 = 60_000;
+    /// The report plus the action, with the watchdog's 500 ms pass and a loaded host.
+    const ACT_WITHIN_MS: u64 = 20_000;
+
+    static OBJ: PiWaiters = PiWaiters::new(EdgeKind::DriverProxy);
+    static WQ: azos_sync::WaitQueue = azos_sync::WaitQueue::new();
+    static BLOCKED: AtomicBool = AtomicBool::new(false);
+    static FREE: AtomicBool = AtomicBool::new(false);
+
+    fn sleep_ms(ms: u64) {
+        let end = now() + ms * ticks_per_ms();
+        while now() < end {
+            azos_sched::task_block(WaitReason::Timer(end));
+        }
+    }
+
+    /// A task other than `not` serves `endpoint.buzzer` and answers, within `ms`.
+    fn buzzer_serving(not: u32, ms: u64) -> Option<u32> {
+        let t0 = now();
+        loop {
+            if let Some(t) = crate::buzzer::driver_tid() {
+                if t != not && crate::buzzer::buzzer_off() {
+                    return Some(t);
+                }
+            }
+            if now() - t0 > ms * ticks_per_ms() {
+                return None;
+            }
+            sleep_ms(20);
+        }
+    }
+
+    /// Waits for a driver's answer that never comes.
+    fn waiter(_: usize) {
+        let Some((slot, _)) = azos_sched::scheduler::current_task_slot() else { return };
+        if waitgraph::block_on(slot as u32, &OBJ).is_err() {
+            return;
+        }
+        BLOCKED.store(true, Ordering::SeqCst);
+        WQ.wait_if(|| !FREE.load(Ordering::SeqCst));
+        waitgraph::unblock(slot as u32, &OBJ, UnblockReason::Interrupted);
+    }
+
+    pub(super) fn run(_: usize) {
+        if canary!("hung-action-skip") {
+            azos_actuation::sys_wdt::canary_skip_action();
+        }
+        let Some(b0) = buzzer_serving(0, SETUP_MS) else {
+            kprintln!("[HUNGACT] FAIL setup: buzzer not serving within {} ms", SETUP_MS);
+            return;
+        };
+        let Some(slot) = azos_sched::idx_for_tid(b0) else {
+            kprintln!("[HUNGACT] FAIL setup: buzzer tid={} has no slot", b0);
+            return;
+        };
+        OBJ.set_owner(Some(slot as u32));
+        azos_sched::task_create_affinity("hung-wait", waiter, 0, azos_sched::DEFAULT_PRIORITY, -1);
+        let t0 = now();
+        while !BLOCKED.load(Ordering::SeqCst) {
+            if now() - t0 > ACT_WITHIN_MS * ticks_per_ms() {
+                kprintln!("[HUNGACT] FAIL setup: the waiter never blocked on the driver");
+                return;
+            }
+            sleep_ms(5);
+        }
+        kprintln!("[HUNGACT] waiter blocked on buzzer tid={}; action {:?}", b0, azos_actuation::sys_wdt::HUNG_ACTION);
+        let t1 = now();
+        let within = |ms: u64| now() - t1 <= ms * ticks_per_ms();
+        let passed = match azos_actuation::sys_wdt::HUNG_ACTION {
+            azos_actuation::sys_wdt::HungAction::Restart => {
+                while within(ACT_WITHIN_MS) && crate::buzzer::driver_tid() == Some(b0) {
+                    sleep_ms(10);
+                }
+                match buzzer_serving(b0, ACT_WITHIN_MS) {
+                    Some(b1) => {
+                        kprintln!("[HUNGACT] driver tid={} stopped, tid={} serving again", b0, b1);
+                        true
+                    }
+                    None => {
+                        kprintln!("[HUNGACT] driver tid={} not stopped and replaced within {} ms", b0, ACT_WITHIN_MS);
+                        false
+                    }
+                }
+            }
+            azos_actuation::sys_wdt::HungAction::SafeStop => {
+                while within(ACT_WITHIN_MS) && !azos_actuation::estop::estop_is_active() {
+                    sleep_ms(10);
+                }
+                azos_actuation::estop::estop_is_active()
+            }
+            azos_actuation::sys_wdt::HungAction::None => {
+                sleep_ms(ACT_WITHIN_MS / 4);
+                crate::buzzer::driver_tid() == Some(b0) && !azos_actuation::estop::estop_is_active()
+            }
+        };
+        FREE.store(true, Ordering::SeqCst);
+        WQ.wake_all();
+        if passed {
+            kprintln!("[HUNGACT] PASS: action {:?} done", azos_actuation::sys_wdt::HUNG_ACTION);
+        } else {
+            kprintln!("[HUNGACT] FAIL: action {:?} not done", azos_actuation::sys_wdt::HUNG_ACTION);
+        }
+    }
 }
 
 /// The ring-3 host of the buzzer, the one driver whose row moves between

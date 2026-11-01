@@ -279,6 +279,9 @@ pub trait IrqServices<F: Frame> {
     /// The watchdog trio of a timer tick (count, halt if panicked, feed); the
     /// watchdog's tick count.
     fn watchdog_tick() -> u64;
+    /// The tick's note for the hung-task and stuck-CPU detectors: whether this
+    /// CPU was interrupted preemptible (`azos_sched::hung::tick`).
+    fn hung_tick(now: u64);
     /// The vDSO pages (`ticks`, the uptime in ms) when the clock allows it.
     fn vdso_tick(ticks: u64, uptime_ms: Option<u64>, now: u64);
     fn wake_expired(now: u64);
