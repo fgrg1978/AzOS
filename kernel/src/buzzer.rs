@@ -126,7 +126,7 @@ pub(crate) fn init() -> Option<Host> {
 
 /// The host the driver is in now, `None` while a move is under way or there
 /// is no buzzer. For the smokes that check where it runs.
-#[cfg(any(feature = "ring3-drv-smoke", feature = "drv-contain-smoke", feature = "supall-smoke", feature = "restart-smoke"))]
+#[cfg(any(feature = "ring3-drv-smoke", feature = "drv-contain-smoke", feature = "supall-smoke", feature = "hung-smoke", feature = "restart-smoke"))]
 pub(crate) fn host() -> Option<Host> {
     match HOST.load(Ordering::Acquire) {
         IN_KERNEL => Some(Host::Kernel),
@@ -137,7 +137,7 @@ pub(crate) fn host() -> Option<Host> {
 
 /// The task serving the buzzer now: the kernel host task, or the owner of
 /// `endpoint.buzzer`. For the smokes.
-#[cfg(any(feature = "ring3-drv-smoke", feature = "drv-contain-smoke", feature = "supall-smoke", feature = "restart-smoke"))]
+#[cfg(any(feature = "ring3-drv-smoke", feature = "drv-contain-smoke", feature = "supall-smoke", feature = "hung-smoke", feature = "restart-smoke"))]
 pub(crate) fn driver_tid() -> Option<u32> {
     match host()? {
         Host::Kernel => azos_drv_actuator::buzzer::host_tid(),
@@ -152,11 +152,11 @@ pub(crate) fn driver_tid() -> Option<u32> {
 // sections below); the kernel just never calls it.
 
 #[cfg(any(feature = "use-robot", feature = "ring3-drv-smoke", feature = "drv-contain-smoke",
-          feature = "supall-smoke", feature = "restart-smoke"))]
+          feature = "supall-smoke", feature = "hung-smoke", feature = "restart-smoke"))]
 pub(crate) use callers::*;
 
 #[cfg(any(feature = "use-robot", feature = "ring3-drv-smoke", feature = "drv-contain-smoke",
-          feature = "supall-smoke", feature = "restart-smoke"))]
+          feature = "supall-smoke", feature = "hung-smoke", feature = "restart-smoke"))]
 mod callers {
     use core::sync::atomic::Ordering;
 

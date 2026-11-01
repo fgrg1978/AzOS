@@ -321,6 +321,8 @@ pub(crate) fn spawn_system_smokes() {
     drv_supervisor::start_supall_smoke();
     #[cfg(feature = "restart-smoke")]
     drv_supervisor::start_restart_smoke();
+    #[cfg(feature = "hung-smoke")]
+    drv_supervisor::start_hung_smoke();
 
     // reflex-smoke: drive the ring-3 obstacle-avoidance daemon through a real
     // decision by moving the simulated rangefinder underneath it, and assert

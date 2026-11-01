@@ -199,6 +199,9 @@ pub(crate) const NAMES: &[&str] = &[
     // smokes/hung.rs: the hung-task scan reads no task / the stuck-CPU scan
     // reads no CPU (ktests `hung_task_detector_reports_a_blocked_owner_wait`,
     // `stuck_cpu_detector_names_the_cpu`).
+    // drv_supervisor.rs `hung_act`: the detector reports and the action is not run
+    // (`hung: restart ...`, `hung: safe stop ...` rows).
+    "hung-action-skip",
     "hung-task-blind",
     "hung-cpu-blind",
     "rcu-idle-qs-skip",

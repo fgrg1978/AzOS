@@ -68,6 +68,14 @@ pub fn hung_pass(h: &azos_sched::hung::Hung, now: u64, task_ms: u64, cpu_ms: u64
     found
 }
 
+static SKIP_ACTION: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Gate canary `hung-action-skip` (`kernel/src/drv_supervisor.rs`, `hung_act`): a
+/// finding is warned and recorded, and its action is not run.
+pub fn canary_skip_action() {
+    SKIP_ACTION.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
 fn hung_report(f: &azos_sched::hung::Finding, action: HungAction, per_ms: u64) {
     use azos_sched::hung::Kind;
     let waited_ms = f.waited / per_ms;
@@ -85,6 +93,7 @@ fn hung_report(f: &azos_sched::hung::Finding, action: HungAction, per_ms: u64) {
         what, f.subject, waited_ms, culprit.unwrap_or(0), f.detail, action
     );
     let acted = match action {
+        _ if SKIP_ACTION.load(core::sync::atomic::Ordering::Relaxed) => HungAction::None,
         HungAction::None => HungAction::None,
         HungAction::Restart => match culprit {
             // A forced stop wakes the culprit out of its wait and ends it at its

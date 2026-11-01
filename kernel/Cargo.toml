@@ -681,6 +681,9 @@ sup-window-smoke = ["sup-smoke"]
 # the manager. Boots `$AZOS_OUT/build/disk-drv.img` /
 # `$AZOS_OUT/build/disk-aarch64-drv.img`, the images carrying the drivers.
 supall-smoke = ["qemu"]
+# The hung-task detector's action end to end (`drv_supervisor::hung_act`), built by
+# the `hung: ...` rows with HUNG_ACTION as the row sets it. Boots the drv disk.
+hung-smoke = ["qemu"]
 
 # Wave 11 (DRVPLACE): the topology row key `restart` honoured by the
 # component manager (`drv_supervisor::restart`). The drv disk's BUZZDRV.ELF row
