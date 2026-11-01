@@ -45,6 +45,10 @@ impl ArchEntry for Entry {
         crate::boot_hooks::firmware_memory(fw)
     }
     #[inline(always)]
+    fn pmm_floor(&self, mem_start: usize, mem_size: usize, image_start_pa: usize, image_end_pa: usize) -> usize {
+        crate::boot_hooks::pmm_floor(mem_start, mem_size, image_start_pa, image_end_pa)
+    }
+    #[inline(always)]
     fn irq_trigger_controller(&self) -> Option<azos_dtb::IrqController> {
         crate::boot_hooks::irq_trigger_controller()
     }

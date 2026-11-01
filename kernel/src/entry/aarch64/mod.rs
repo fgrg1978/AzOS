@@ -114,9 +114,29 @@ pub(crate) fn early_map_devices(ram_end: u64) -> usize {
     unsafe { azos_arch::mmu::setup::identity_map_devices_above(&raw mut BOOT_ID_L2, dram_base, ram_end) }
 }
 
+/// Pages of page table [`extend_boot_alias`] needs for RAM `[ram_start, ram_end)`.
+pub(crate) fn boot_alias_extension_pages(ram_start: u64, ram_end: u64) -> usize {
+    let dram_base = BOOT_DRAM_BASE.load(Ordering::Relaxed);
+    azos_arch::mmu::boot_alias_extension_tables(azos_arch::mmu::GRANULE, dram_base, ram_start, ram_end)
+}
+
+/// Map the RAM past the boot alias's first gigabyte in the `TTBR1_EL1` table
+/// `aarch64_early_ttbr1_alias` built, with the pages at `fresh_pa` (inside
+/// that gigabyte: [`boot_alias_extension_pages`] of them).
+pub(crate) fn extend_boot_alias(ram_start: u64, ram_end: u64, fresh_pa: u64) {
+    let dram_base = BOOT_DRAM_BASE.load(Ordering::Relaxed);
+    let fresh = azos_mm::addr::phys_to_virt(fresh_pa as usize) as *mut azos_arch::mmu::setup::PageTable;
+    // SAFETY: boot CPU, before the PMM hands out a frame; the tables are the
+    // alias's own statics, and the pages are the PMM's reserved prefix.
+    unsafe {
+        azos_arch::mmu::setup::extend_ttbr1_alias(
+            &raw mut boot_alias::L1, &raw mut boot_alias::L2, fresh, fresh_pa, dram_base, ram_start, ram_end);
+    }
+}
+
 /// The DRAM base `boot.S` handed [`aarch64_early_mmu_init`] (the same on every
 /// PE). Stored with the MMU on, so a later cacheable read sees it.
-static BOOT_DRAM_BASE: AtomicU64 = AtomicU64::new(0);
+pub(crate) static BOOT_DRAM_BASE: AtomicU64 = AtomicU64::new(0);
 
 /// The bootstrap map's one extra level-2 table, for a device in a root slot
 /// of its own ([`early_map_device`]), and its physical address, taken by
@@ -199,6 +219,15 @@ pub extern "C" fn aarch64_early_misplaced() -> ! {
 (not position-independent); build with KASLR probe or require; halting\r\n")
 }
 
+/// The boot alias's tables, kept past `aarch64_early_ttbr1_alias` so that
+/// `boot_hooks::pmm_floor` can add the RAM beyond its first gigabyte.
+pub(crate) mod boot_alias {
+    use azos_arch::mmu::setup::PageTable;
+    pub(crate) static mut L1: PageTable = PageTable::zero();
+    pub(crate) static mut L2: PageTable = PageTable::zero();
+    pub(crate) static mut L3: PageTable = PageTable::zero();
+}
+
 /// Called from `boot.S`, once, right after `aarch64_early_mmu_init` — the
 /// aarch64 parity program's TTBR1 migration, first wave. Builds a
 /// STANDALONE alias table (own L1/L2/L3, separate from
@@ -220,12 +249,10 @@ pub extern "C" fn aarch64_early_ttbr1_alias(img: u64, img_end: u64, dram_base: u
     use azos_arch::mmu::kaslr;
     use azos_arch::mmu::setup::{enable_ttbr1_alias, ImageAlias, PageTable, Ttbr1AliasConfig};
 
-    static mut L1: PageTable = PageTable::zero();
-    static mut L2: PageTable = PageTable::zero();
-    static mut L3: PageTable = PageTable::zero();
     // The slid image's own level-2 table (Kconfig KASLR; unreferenced, so
     // dropped by the linker, where the image does not slide).
     static mut L2_IMG: PageTable = PageTable::zero();
+    use boot_alias::{L1, L2, L3};
 
     // Where `aarch64_early_kaslr` put the image: the blocks that map it.
     // `img`/`img_end` are the physical addresses `boot.S` passes (`_start`,

@@ -245,6 +245,31 @@ pub const fn boot_tail_blocks(g: Granule, base_pa: u64, ram_end: u64) -> (usize,
     }
     (first + start, blocks - start)
 }
+/// First byte `setup::extend_ttbr1_alias` maps: the end of the TTBR1 boot
+/// alias's own window at `base_pa`, or the 2 MiB-aligned `ram_start` if that
+/// lies past it.
+pub const fn boot_alias_extension_from(g: Granule, base_pa: u64, ram_start: u64) -> u64 {
+    let from = base_pa + BOOT_WINDOW;
+    let start = ram_start & !(g.level_size(1) as u64 - 1);
+    if start > from { start } else { from }
+}
+
+/// Pages of page table the extension of RAM `[ram_start, end)` takes: one per
+/// root slot past the alias's own table. Its window is one root slot at
+/// 4 KiB; at 16 and 64 KiB a slot spans 64 GiB and 4 TiB, so the window's
+/// table also holds the blocks that follow it.
+pub const fn boot_alias_extension_tables(g: Granule, base_pa: u64, ram_start: u64, end: u64) -> usize {
+    let from = boot_alias_extension_from(g, base_pa, ram_start);
+    if end <= from {
+        return 0;
+    }
+    let span = g.level_size(2) as u64;
+    let own = base_pa / span;
+    let first = if from / span == own { own + 1 } else { from / span };
+    let last = (end - 1) / span;
+    if last < first { 0 } else { (last - first + 1) as usize }
+}
+
 /// Where the bootstrap identity map can put one more Device block, for a
 /// device at `pa` that neither of its gigabytes holds: the console of a board
 /// whose peripherals are far above its RAM (a Raspberry Pi 5's PL011 at
@@ -952,5 +977,22 @@ mod tests {
             let tcr = tcr_with_e0pd1(TCR_TTBR1_BITS, policy.gate(present));
             assert_eq!(tcr_e0pd1(tcr), want, "{policy:?} present={present}");
         }
+    }
+
+    /// The boot alias's extension counts one table per gigabyte-slot past its
+    /// window, whatever the DRAM base: QEMU `virt` (RAM at 1 GiB), a board with
+    /// RAM at 0, and RAM that fits the window.
+    #[test]
+    fn boot_alias_extension_counts_the_slots_past_the_window() {
+        let n = |base, start, end| boot_alias_extension_tables(Granule::for_page_shift(12), base, start, end);
+        let gib = 1u64 << 30;
+        assert_eq!(n(gib, gib, 2 * gib), 0);
+        assert_eq!(boot_alias_extension_tables(Granule::for_page_shift(14), gib, gib, 6 * gib), 0);
+        assert_eq!(n(gib, gib, 6 * gib), 4);
+        assert_eq!(n(gib, gib, 6 * gib - 4096), 4);
+        assert_eq!(n(gib, gib, 9 * gib), 7);
+        assert_eq!(n(0, 0, 8 * gib), 7);
+        assert_eq!(n(0, 0, gib), 0);
+        assert_eq!(n(0, 0, 3 * gib / 2), 1);
     }
 }
