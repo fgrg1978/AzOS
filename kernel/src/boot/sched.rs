@@ -1267,8 +1267,8 @@ mod unswitched_ktests {
 // A real CPU stop and start (`smp::cpu_offline`, `cpu_online`) with a grace period
 // and with wakes in the windows a race would need, reached through
 // `smp::ktest_hook` on the stopping CPU. Late; a kernel without CPU_HOTPLUG has no
-// saved-context path, so these say ok without stopping anything and the
-// `ktest hotplug` rows run them on a kernel with it. Canaries `rcu-stop-holds-gp`,
+// saved-context path, so these skip and the `ktest hotplug` rows run them on a
+// kernel with it. Canaries `rcu-stop-holds-gp`,
 // `rcu-back-unseen`, `hotplug-wake-list-skip`, `hotplug-stale-wake-stays`: `not ok`,
 // each in its test.
 #[cfg(feature = "ktest")]
@@ -1360,8 +1360,11 @@ mod hotplug_ktests {
 
     fn run(body: fn(usize) -> Result<(), &'static str>) -> Result<(), &'static str> {
         let cpu = azos_percpu::nr_cpu_ids() - 1;
-        if !azos_limits::CPU_HOTPLUG || cpu == 0 {
-            return Ok(());
+        if !azos_limits::CPU_HOTPLUG {
+            return azos_ktest::skip!("needs CPU_HOTPLUG: the `ktest hotplug` rows");
+        }
+        if cpu == 0 {
+            return azos_ktest::skip!("one CPU: none to stop");
         }
         DONE.store(false, Ordering::Release);
         *BODY.lock() = Some(body);
