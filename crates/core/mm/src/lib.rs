@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
+#![cfg_attr(feature = "kasan", feature(sanitize))]
 
 extern crate alloc;
 
@@ -58,6 +59,9 @@ pub mod image_frames;
 pub mod kheap;
 /// Kconfig `KHEAP_GUARD_*`: red zones, poison and quarantine around every heap block.
 pub mod kheap_guard;
+/// Kconfig `KASAN`: the kernel address sanitizer's shadow and hooks.
+#[cfg(feature = "kasan")]
+pub mod kasan;
 /// Kconfig `KHEAP_LEAKS`: the live blocks of the heap guard, with where each was allocated.
 pub mod kheap_leaks;
 pub mod slab;

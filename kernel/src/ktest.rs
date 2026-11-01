@@ -635,6 +635,88 @@ azos_ktest::ktest! {
     }
 }
 
+// The kernel address sanitizer (Kconfig `KASAN`, `crates/core/mm/src/kasan.rs`)
+// reports what the heap guard cannot: a READ past a block and a READ through a
+// freed pointer, each at the access, with the address and the size. Skipped in
+// a kernel built without it; `canary=kasan-expected` (the canary row) turns
+// that skip into a failure, after running the same bad reads, which the heap
+// guard does not see.
+azos_ktest::ktest! {
+    fn kasan_reports_a_read_past_the_end_of_a_block() {
+        use alloc::boxed::Box;
+        if !cfg!(feature = "kasan") && !canary!("kasan-expected") {
+            return azos_ktest::skip!("the kernel address sanitizer (Kconfig KASAN) is off in this kernel");
+        }
+        azos_mm::kheap::guard_drain();
+        let p = core::hint::black_box(Box::into_raw(Box::new([5u8; 13]))) as *mut u8;
+        // SAFETY (every read here): the reads past or before the 13-byte block are the bug under test; they
+        // land in its red zones. The one at +12 is inside the block.
+        let read = |off: isize, wide: bool| unsafe {
+            if wide { core::ptr::read_volatile(p.offset(off) as *const u32) as u8 } else { core::ptr::read_volatile(p.offset(off)) }
+        };
+        #[cfg(feature = "kasan")]
+        {
+            use azos_mm::kasan::expect;
+            let (_, clean) = expect(|| read(12, false));
+            let (_, one) = expect(|| read(13, false));
+            let (_, four) = expect(|| read(16, true));
+            let (_, under) = expect(|| read(-1, false));
+            unsafe { drop(Box::from_raw(p as *mut [u8; 13])) };
+            azos_mm::kheap::guard_drain();
+            if clean.count != 0 { return Err("a read inside the block was reported"); }
+            if (one.count, one.addr, one.size, one.write, one.shadow) != (1, p as usize + 13, 1, false, 13 & 7) {
+                return Err("the read of the byte after the block was not reported at its address");
+            }
+            if (four.count, four.addr, four.size) != (1, p as usize + 16, 4) {
+                return Err("the 4-byte read in the red zone was not reported with its size");
+            }
+            if (under.count, under.addr) != (1, p as usize - 1) { return Err("the read before the block was not reported"); }
+            Ok(())
+        }
+        #[cfg(not(feature = "kasan"))]
+        {
+            let (_, seen) = azos_mm::kheap_guard::expect(|| (read(13, false), read(16, true), read(-1, false)));
+            unsafe { drop(Box::from_raw(p as *mut [u8; 13])) };
+            azos_mm::kheap::guard_drain();
+            if seen != [0; 4] { return Err("the heap guard saw a read"); }
+            Err("the reads past the block went unnoticed: no sanitizer in this kernel")
+        }
+    }
+}
+
+azos_ktest::ktest! {
+    fn kasan_reports_a_read_through_a_freed_pointer() {
+        use alloc::boxed::Box;
+        if !cfg!(feature = "kasan") && !canary!("kasan-expected") {
+            return azos_ktest::skip!("the kernel address sanitizer (Kconfig KASAN) is off in this kernel");
+        }
+        azos_mm::kheap::guard_drain();
+        let p = core::hint::black_box(Box::into_raw(Box::new([9u64; 6]))) as *mut u64;
+        // SAFETY: freed here; the reads after it are the bug under test, in a block the guard holds.
+        unsafe { drop(Box::from_raw(p as *mut [u64; 6])) };
+        #[cfg(feature = "kasan")]
+        {
+            use azos_mm::kasan::{expect, FREED};
+            let (_, r) = expect(|| unsafe { core::ptr::read_volatile(p.add(1)) });
+            let (_, r1) = expect(|| unsafe { core::ptr::read_volatile(p as *const u8) });
+            azos_mm::kheap::guard_drain();
+            if (r.count, r.addr, r.size, r.write, r.shadow) != (1, p as usize + 8, 8, false, FREED) {
+                return Err("the 8-byte read through the freed pointer was not reported at its address");
+            }
+            if (r1.count, r1.addr, r1.size) != (1, p as usize, 1) { return Err("the 1-byte read through the freed pointer was not reported"); }
+            return Ok(());
+        }
+        #[cfg(not(feature = "kasan"))]
+        {
+            let (v, seen) = azos_mm::kheap_guard::expect(|| unsafe { core::ptr::read_volatile(p.add(1)) });
+            azos_mm::kheap::guard_drain();
+            let _ = core::hint::black_box(v);
+            if seen != [0; 4] { return Err("the heap guard saw a read"); }
+            Err("the read through the freed pointer went unnoticed: no sanitizer in this kernel")
+        }
+    }
+}
+
 // The leak tracker (Kconfig `KHEAP_LEAKS`) names a block nobody freed and not
 // one that was. With it off (the canary row's configuration) the test is red.
 azos_ktest::ktest! {

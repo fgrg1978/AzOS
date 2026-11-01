@@ -231,11 +231,21 @@ def baseline_rustflags(cfg: dict[str, str], user: bool = False, skip_base: bool 
     already carry (for a `--config` that merges with them)."""
     base = _baseline_isa_flags(cfg, user, skip_base)
     extra = cfi_rustflags(cfg) + ([] if user else livepatch_rustflags(cfg) + x86_mitigation_rustflags(cfg)
-                                  + kaslr_rustflags(cfg))
+                                  + kaslr_rustflags(cfg) + kasan_rustflags(cfg))
     if cfg.get("CONFIG_PROFILER") == "y" and "force-frame-pointers=yes" not in extra:
         # The profiler walks frame-pointer chains, kernel and user.
         extra += ["-C", "force-frame-pointers=yes"]
     return " ".join(w for w in [base] + extra if w)
+
+
+def kasan_rustflags(cfg: dict[str, str]) -> list[str]:
+    """The kernel address sanitizer (config/kernel/Kconfig.mm, KASAN), kernel
+    only: call-form instrumentation (threshold 0) of every load and store, no
+    stack or global redzones (the shadow is the heap's). Off: no flag."""
+    if cfg.get("CONFIG_KASAN") != "y":
+        return []
+    return ["-Z", "sanitizer=kernel-address", "-C", "llvm-args=-asan-instrumentation-with-call-threshold=0",
+            "-C", "llvm-args=-asan-stack=0", "-C", "llvm-args=-asan-globals=0"]
 
 
 def cfi_policy(cfg: dict[str, str], symbol: str) -> str:
@@ -689,6 +699,9 @@ def main() -> int:
     as_toml = "--toml" in args
     target_features = "--target-features" in args
     skip_base = "--skip-base" in args
+    # `--kasan-rustflags`: only the sanitizer's codegen flags (kasan_rustflags),
+    # for a build that passes its own `build.rustflags` (the gate's aarch64 kernels).
+    kasan_only = "--kasan-rustflags" in args
     # `--sdk-env`: the AZOS_* variables of the std port layer, one per line.
     sdk_env_only = "--sdk-env" in args
     # `--select TOKENS --out PATH`: the build selection TOKENS (comma or space
@@ -713,7 +726,8 @@ def main() -> int:
         print("kconfig_to_cargo: --select and --out go together", file=sys.stderr)
         return 2
     args = [a for a in args if a not in ("--rustflags", "--user-rustflags",
-                                         "--toml", "--target-features", "--skip-base", "--sdk-env")]
+                                         "--toml", "--target-features", "--skip-base", "--sdk-env",
+                                         "--kasan-rustflags")]
     dot_config_path = args[0] if args else DOT_CONFIG_DEFAULT
 
     hooks: list[str] = []
@@ -740,6 +754,12 @@ def main() -> int:
 
     if sdk_env_only:
         print("\n".join(sdk_env(cfg)))
+        return 0
+
+    if kasan_only:
+        flags = " ".join(kasan_rustflags(cfg))
+        if flags:
+            print(toml_rustflags(flags) if as_toml else flags)
         return 0
 
     if rustflags_only or user_rustflags:

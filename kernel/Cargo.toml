@@ -1122,6 +1122,7 @@ soc-k1 = ["soc"]
 # vsbench diagnostic (wave 15, SLAB): `[KHEAP-*]` kernel heap census
 # (crates/core/mm/src/kheap_census.rs, crates/core/syscall/src/kheap_census.rs).
 kheap-census = ["azos_syscall/kheap-census"]
+kasan = ["azos_mm/kasan"]
 # Gate canary only (wave 15, SLAB): a slab hands out a freed object without
 # unlinking it. The `kheap slab` self-test rows must go red.
 slab-freelist-canary = ["azos_mm/slab-freelist-canary"]
