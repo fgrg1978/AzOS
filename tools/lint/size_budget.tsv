@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2696666
-riscv64-qemu	.rodata	455128
-riscv64-qemu	.data	3259688
+riscv64-qemu	.text	2705738
+riscv64-qemu	.rodata	451376
+riscv64-qemu	.data	3258928
 riscv64-qemu	.bss	5795552
-riscv64-qemu	reason	base 39feff84a was already over on .text (+8132 B, other fronts). This front: .text -72 B against the base, .rodata +4096 B with Rule::Rangefinder (table row and strings)
+riscv64-qemu	reason	T1 audit fixes: stopped-CPU drain and RCU states, wait graph heaps, tick wake bound, munmap batching, rule tables, futex and sched fixes; .text +17 KB over 5 fronts
