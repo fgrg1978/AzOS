@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2705958
-riscv64-qemu	.rodata	455472
+riscv64-qemu	.text	2705754
+riscv64-qemu	.rodata	451376
 riscv64-qemu	.data	3258928
 riscv64-qemu	.bss	5795552
-riscv64-qemu	reason	heap guard (off in this build): .text +220 B in the allocator entry points; .rodata +4096 B is alignment padding in front of the 4096-aligned virtio net TX_HDR, no content
+riscv64-qemu	reason	heap guard, leak tracker and core file are compiled out here (they run in ktest kernels): .text +16 B against the T1 baseline, .rodata .data .bss unchanged

@@ -98,7 +98,7 @@ pub(crate) unsafe fn register(base: *mut u8, body: usize, size: usize) {
         r.write(Record {
             next: core::ptr::null_mut(),
             prev: core::ptr::null_mut(),
-            seq: SEQ.fetch_add(1, Relaxed),
+            seq: 0,
             body,
             size,
             // percpu-hint: a label on a report; a task that migrates here is named for the CPU it started on
@@ -110,6 +110,8 @@ pub(crate) unsafe fn register(base: *mut u8, body: usize, size: usize) {
     let t = crate::kheap::irq_off();
     let mut l = LIVE.lock();
     unsafe {
+        // The number is taken under the lock so the list is in order: newest first.
+        (*r).seq = SEQ.fetch_add(1, Relaxed);
         (*r).next = l.0;
         if !l.0.is_null() {
             (*l.0).prev = r;
@@ -143,7 +145,8 @@ pub(crate) unsafe fn unregister(base: *mut u8) {
     crate::kheap::irq_restore(t);
 }
 
-/// The blocks allocated at or after `mark` and still live, on `cpu` (any
+/// The blocks allocated at or after `mark` and still live (the list is
+/// newest first, so the walk stops at the first older block), on `cpu` (any
 /// when `None`): how many, and their bytes as the callers asked for them.
 /// The newest `out.len()` of them are written to `out`.
 pub fn since(mark: u64, cpu: Option<u32>, out: &mut [Leak]) -> (usize, usize) {
@@ -154,7 +157,10 @@ pub fn since(mark: u64, cpu: Option<u32>, out: &mut [Leak]) -> (usize, usize) {
     while !p.is_null() {
         // SAFETY: a record on the list is in a live block, and the lock is held.
         let r = unsafe { &*p };
-        if r.seq >= mark && cpu.is_none_or(|c| c == r.cpu) {
+        if r.seq < mark {
+            break;
+        }
+        if cpu.is_none_or(|c| c == r.cpu) {
             if let Some(slot) = out.get_mut(n) {
                 *slot = Leak {
                     addr: r.body,

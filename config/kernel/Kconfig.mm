@@ -279,14 +279,16 @@ choice
       0xcd.
 
       Why not the compiler's kernel-address sanitizer: rustc accepts
-      `-Zsanitizer=kernel-address` on all three targets, but it needs the
-      standard crates rebuilt with it (rustc refuses to mix), a hook for
-      every load and store size and for memcpy/memmove/memset, and a shadow
-      mapped and kept in step with the heap, with every access in the kernel
-      (interrupt entry, early boot, the slab itself) paying a call. This guard
-      is the part of it that needs no compiler support and no shadow: it
-      catches writes, at the free, not reads. The sanitizer is the way to
-      the reads.
+      `-Zsanitizer=kernel-address` for all three targets and this tree already
+      builds core and alloc from source, but the code it emits calls
+      `__asan_load<N>`/`__asan_store<N>`/`__asan_memcpy` for every access in
+      the kernel, which this kernel would have to supply over a shadow mapped
+      before the first instrumented store (so set up in assembly, per ISA, at
+      an address that fits each ISA's memory map), and there is no stable
+      per-function opt-out for the early-boot, trap-entry and per-CPU paths
+      that run before or without that shadow. This guard is the part that
+      needs neither: it catches writes, at the free, not reads. The
+      sanitizer is the way to the reads.
 
       Not caught: a read through a stale or out-of-bounds pointer; a write
       beyond the red zone or into another live object; a use after the block
