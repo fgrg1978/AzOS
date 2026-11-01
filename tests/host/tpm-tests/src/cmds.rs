@@ -461,8 +461,8 @@ const NT_BITS: u32 = 2;
 /// refused on a bit field, `NV_Read` of a never-set index is
 /// `TPM_RC_NV_UNINITIALIZED`. Authorization is not modelled (the holder of the
 /// password is the attacker here). The exact code `NV_Write` gets on a bit
-/// field is the spec's `TPM_RC_ATTRIBUTES` family; 0x182 is this model's
-/// reading of it, and the driver passes any code through.
+/// field is `TPM_RC_ATTRIBUTES` (0x82): swtpm answers exactly that, and the
+/// driver passes any code through.
 struct NvIndex {
     nt: u32,
     value: u64,
@@ -496,7 +496,7 @@ impl NvIndex {
                 self.written = true;
                 ok(&[])
             }
-            0x135 | 0x137 if self.nt != NT_ORDINARY || cc == 0x135 => rc(0x182),
+            0x135 | 0x137 if self.nt != NT_ORDINARY || cc == 0x135 => rc(0x82),
             0x137 => {
                 let data = &p[2..2 + u16::from_be_bytes([p[0], p[1]]) as usize];
                 let mut b = [0u8; 8];
@@ -539,7 +539,7 @@ fn the_tpm_refuses_to_lower_the_floor_bit_field() {
     assert_eq!(t.floor_raise(FLOOR_INDEX, a, 60), Ok(60));
     assert_eq!(r.dev.borrow().seen.len() - n, 2, "a read and one NV_SetBits");
     // The attacker's moves: overwrite with zero, or set a lower bit.
-    assert_eq!(t.nv_write(FLOOR_INDEX, a, 0, &[0; 8]), Err(Error::Tpm(0x182)));
+    assert_eq!(t.nv_write(FLOOR_INDEX, a, 0, &[0; 8]), Err(Error::Tpm(0x82)));
     t.nv_set_bits(FLOOR_INDEX, a, 1).unwrap();
     assert_eq!(nv.borrow().value, 1 << 59 | 1 << 4 | 1);
     assert_eq!(t.floor_read(FLOOR_INDEX, a), Ok(60));
