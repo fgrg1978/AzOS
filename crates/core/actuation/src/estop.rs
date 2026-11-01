@@ -749,6 +749,12 @@ pub const ESTOP_ACTION_RC_KILL: u8 = 13;
 /// again.
 pub const ESTOP_ACTION_COMMANDER_LOST: u8 = 14;
 
+/// `SAFETY_ESTOP` action code of the stop `sys-wdt` latches when its hung-task
+/// or stuck-CPU detector reports and Kconfig `HUNG_ACTION` is the safe stop.
+/// `detail` is the hung task's tid, or the stuck CPU's id with the top bit set.
+/// It latches like the other watchdog stops.
+pub const ESTOP_ACTION_HANG: u8 = 15;
+
 /// `detail` of an [`ESTOP_ACTION_COMMANDER_LOST`] record: the dead task's
 /// TID in the low 24 bits, the wheels it commanded (bit `i` = wheel `i`) in
 /// the top 8.

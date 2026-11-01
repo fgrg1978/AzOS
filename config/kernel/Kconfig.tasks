@@ -266,6 +266,96 @@ config TASK_SYS_WDT_PLACE
       the real-time cluster, where its only other residents are the behavior
       tasks below it in priority.
 
+config HUNG_DETECT
+    bool "Hung task and stuck CPU detector (a step of the sys-wdt pass)"
+    default y
+    help
+      Every sys-wdt pass (500 ms) looks for two things and reports them
+      with a warning and a decision record (Rule::Hang) that carries the
+      captured state.
+
+      A hung task is one blocked on a wait that names who must end it, for
+      HUNG_TASK_TIMEOUT_MS with no context switch in between: a synchronous
+      IPC call whose reply has not come, or a wait on a lock or futex whose
+      owner is known to the wait graph (WAIT_GRAPH). A server waiting for
+      calls, an idle worker, an event or a ring wait and a timed sleep have
+      no owner and are never reported, however long they last.
+
+      A stuck CPU is one that stayed in the kernel for HUNG_CPU_TIMEOUT_MS
+      with no kernel entry, exit, idle or context switch (RCU_QSBR's
+      per-CPU word moved by none): preemption or interrupts off in a loop,
+      or a lock nobody releases. It needs RCU_QSBR and a second CPU, and
+      cannot see the CPU the sys-wdt task runs on (the hardware watchdog,
+      fed from CPU 0's timer interrupt, is the backstop for CPU 0).
+
+      Off: not compiled; the sys-wdt pass has no extra step. On, the cost
+      is the pass's scan of the task table, and nothing on the syscall, IPC
+      or context-switch paths: the detector only reads counters those paths
+      already keep.
+
+choice
+    prompt "Hung task / stuck CPU: action after the report"
+    depends on HUNG_DETECT
+    default HUNG_ACTION_SAFE_STOP if (USE_ROBOT || USE_INDUSTRIAL) && !BUILD_TYPE_DEV
+    default HUNG_ACTION_RESTART if (USE_SERVER || USE_GATEWAY) && !BUILD_TYPE_DEV
+    default HUNG_ACTION_NONE
+    help
+      What the system does besides the warning and the record. Development
+      builds only report: under QEMU's wall clock a vCPU the host paused
+      looks like a hang.
+
+    config HUNG_ACTION_NONE
+        bool "None (warning and record only)"
+        help
+          Nothing else happens. The record is the only trace a reader of the
+          decision journal finds.
+
+    config HUNG_ACTION_RESTART
+        bool "Restart the server (stop the task a hung caller waits on)"
+        help
+          A hung task is stopped on its culprit: the server a call waits for
+          or the owner of the lock, which the kernel ends (a forced stop) so
+          the supervisor respawns it per its topology row and the callers
+          get a peer-died completion. A hung task with no known culprit and
+          a stuck CPU get the warning and the record only.
+
+    config HUNG_ACTION_SAFE_STOP
+        bool "Safe stop (latch the e-stop: actuators to their safe state)"
+        help
+          Any report latches the e-stop (azos_actuation::gate::latch_and_stop):
+          the actuators go to their safe state and stay there until an
+          operator's signed release. For a machine that must not keep
+          moving while part of it does not answer.
+
+endchoice
+
+config HUNG_TASK_TIMEOUT_MS
+    int "Hung task: blocked with no switch for this long (ms)"
+    depends on HUNG_DETECT
+    range 1000 3600000
+    default 2000 if (USE_ROBOT || USE_INDUSTRIAL) && !BUILD_TYPE_DEV
+    default 30000
+    help
+      How long a task may sit on a wait with an owner, with no context
+      switch, before it is reported (once per hang). The scan runs every
+      sys-wdt pass, so the report comes up to one pass (500 ms) later.
+      Development builds wait longer for the reason HUNG_ACTION gives. A
+      robot or an industrial machine answers within seconds or is stopped.
+      No cost: a compare in the sys-wdt pass.
+
+config HUNG_CPU_TIMEOUT_MS
+    int "Stuck CPU: in the kernel with no progress for this long (ms)"
+    depends on HUNG_DETECT
+    range 1000 3600000
+    default 2000 if (USE_ROBOT || USE_INDUSTRIAL) && !BUILD_TYPE_DEV
+    default 10000
+    help
+      How long a CPU may run kernel code without one kernel entry, exit,
+      idle or context switch before it is reported (once per episode).
+      Longer than RCU_STALL_TIMEOUT_MS in a development build, so the RCU
+      stall counter (which names the same CPU when a grace period waits
+      for it) trips first. No cost: a compare in the sys-wdt pass.
+
 config TASK_OTA_RECV_PLACE
     string "ota-recv: placement class"
     default "general"

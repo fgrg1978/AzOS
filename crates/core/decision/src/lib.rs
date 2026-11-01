@@ -323,6 +323,11 @@ pub enum Rule {
     /// not ready instead of serving simulated distances, so obstacle avoidance
     /// and the REFLEX daemon run without it (`azos_drv_sensor::rangefinder`).
     Rangefinder = 75,
+    /// The system watchdog found a task blocked on a wait with an owner for
+    /// too long, or a CPU that stayed in the kernel with no progress, and
+    /// took the action the build's Kconfig `HUNG_ACTION` names
+    /// (`azos_actuation::sys_wdt`, Kconfig `HUNG_DETECT`).
+    Hang = 76,
 }
 
 /// The verdict of a record.
@@ -350,7 +355,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 76] = [
+pub const RULES: [RuleInfo; 77] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1109,6 +1114,20 @@ pub const RULES: [RuleInfo; 76] = [
         fields: ["asked", "max", "-"],
         rejected_if_yes: "-",
         rejected_if_no: "serve the simulated distances: obstacle avoidance would trust a clear path no sensor measured",
+    },
+    RuleInfo {
+        // The subject is the hung task's tid, or the stuck CPU's id. Admit:
+        // reported and left alone; Refuse: the action ran (a server stopped,
+        // the e-stop latched). Field 1 is `kind << 32 | culprit tid` (kind 0
+        // a call waiting for its reply, 1 a wait on an owner, 2 a CPU);
+        // field 2 is `action << 32 | detail` (action 0 none, 1 restart,
+        // 2 safe stop; detail the call handle, the edge kind or the CPU's
+        // progress word, low 32 bits).
+        name: "hang",
+        subject: "tid|cpu",
+        fields: ["waited_ms", "kind<<32|culprit", "action<<32|detail"],
+        rejected_if_yes: "act on it: the wait may still end by itself",
+        rejected_if_no: "keep waiting: the wait has no bound and nothing else will end it",
     },
 ];
 
