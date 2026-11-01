@@ -16862,6 +16862,9 @@ PY
     par "ktest heap guard off canary (x86)" x86_ktest_row_guardoff "ktest heap guard off canary (x86)" "" "$KTEST_GUARD_OFF"
     x86_ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" x86_ktest_row_cfgline "$@"; }
     par "ktest kasan (x86)" x86_ktest_row_kasan "ktest kasan (x86)" "" "" "" "" "$KTEST_KASAN_RE"
+    x86_ktest_row_kasan_5g() { KTEST_QEMU_EXTRA="-m 5G" x86_ktest_row_kasan "$@"; }
+    par "ktest kasan above 4 GiB (x86)" x86_ktest_row_kasan_5g "ktest kasan above 4 GiB (x86)" "" "" "" "" \
+        "$KTEST_KASAN_RE"$'\n^\\[MM\\] Boot direct map widened by 2 GiB to 0x180000000$'
     par "ktest kasan off canary (x86)" x86_ktest_row "ktest kasan off canary (x86)" "" "$KTEST_KASAN_OFF" "canary=kasan-expected"
     x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
     par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
