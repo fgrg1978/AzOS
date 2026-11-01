@@ -487,6 +487,10 @@ struct PagedState {
     /// Pages being written back now: bit `i` is page `i`. Such a page is not
     /// dropped and not written by the kernel until its write-back ends.
     flushing: u64,
+    /// Fault installs in flight ([`memobj_paged_frame_pinned_ref`] to
+    /// [`memobj_paged_install_done_ref`]): a frame a fault is about to put in a
+    /// leaf is not dropped, whatever page of the object it is.
+    installing: u32,
 }
 
 impl MemObj {
@@ -3125,7 +3129,7 @@ pub fn memobj_create_paged(
         return Err(MemObjError::BadArg);
     }
     let spec = MemSpec { kind: MemKind::Paged, perms, attrs: 0, device_visible: false };
-    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0 };
+    let st = PagedState { backing, key, first: first_page, size: file_size, dirty: 0, flushing: 0, installing: 0 };
     claim_slot_cow(MEMOBJ_KERNEL_OWNER, &[0usize; MAX_MEMOBJ_PAGES][..pages], &spec, 0, 0, Some(st))
         .ok_or(MemObjError::NoMem)
 }
@@ -3188,6 +3192,29 @@ fn paged_page_in(r: u32, idx: usize) -> Result<(), PagedError> {
 /// the page keeps being dropped under the call, `Io` if the file cannot be read,
 /// `Obj(NoMem)` without a frame.
 pub fn memobj_paged_frame_ref(r: u32, idx: usize, write: bool) -> Result<usize, PagedError> {
+    paged_frame(r, idx, write, false)
+}
+
+/// [`memobj_paged_frame_ref`] for a fault that puts the frame in a leaf at once:
+/// the object's drops (a reclaim pass, a truncate) leave it alone until
+/// [`memobj_paged_install_done_ref`], so the leaf never names a frame that went
+/// back to the allocator between the lookup and the install. The pin is taken
+/// in the hold that reads the frame, and only when it returns a frame.
+pub fn memobj_paged_frame_pinned_ref(r: u32, idx: usize, write: bool) -> Result<usize, PagedError> {
+    paged_frame(r, idx, write, true)
+}
+
+/// End the pin [`memobj_paged_frame_pinned_ref`] took on `r`.
+pub fn memobj_paged_install_done_ref(r: u32) {
+    let mut regions = MEMOBJS.lock();
+    if let Ok(i) = paged_slot(&regions, r) {
+        if let Some(st) = regions[i].paged.as_mut() {
+            st.installing = st.installing.saturating_sub(1);
+        }
+    }
+}
+
+fn paged_frame(r: u32, idx: usize, write: bool, pin: bool) -> Result<usize, PagedError> {
     for _ in 0..PAGED_TRIES {
         if write {
             let regions = MEMOBJS.lock();
@@ -3204,9 +3231,12 @@ pub fn memobj_paged_frame_ref(r: u32, idx: usize, write: bool) -> Result<usize, 
         if phys == 0 {
             continue; // dropped between the fill and here: bring it in again
         }
-        if write {
-            if let Some(st) = o.paged.as_mut() {
+        if let Some(st) = o.paged.as_mut() {
+            if write {
                 st.dirty |= 1u64 << idx;
+            }
+            if pin {
+                st.installing += 1;
             }
         }
         return Ok(phys);
@@ -3381,7 +3411,7 @@ pub fn memobj_paged_drop_clean(max_pages: usize) -> usize {
         'objects: for i in from..MAX_MEMOBJS {
             from = i;
             let o = &mut regions[i];
-            if !o.active || o.kind != MemKind::Paged || any_pinned(o) {
+            if !o.active || o.kind != MemKind::Paged || any_pinned(o) || o.paged.is_some_and(|st| st.installing != 0) {
                 from = i + 1;
                 continue;
             }
@@ -3485,7 +3515,10 @@ fn paged_forget_locked(o: &mut MemObj, from_idx: usize) -> Result<Reclaim, MemOb
         return Ok(freed);
     }
     let flushing = o.paged.map_or(0, |st| st.flushing);
-    if any_pinned(o) || (from_idx..o.page_count).any(|idx| flushing & (1u64 << idx) != 0) {
+    if any_pinned(o)
+        || o.paged.is_some_and(|st| st.installing != 0)
+        || (from_idx..o.page_count).any(|idx| flushing & (1u64 << idx) != 0)
+    {
         return Err(MemObjError::Busy);
     }
     for idx in from_idx..o.page_count {
@@ -5930,6 +5963,27 @@ mod tests {
         // The holder's reference keeps the object: the kernel's close waits.
         assert_eq!(memobj_paged_close_ref(r), Err(PagedError::Obj(MemObjError::Busy)));
         assert_eq!(memobj_release_ref(A, r), Ok(()));
+        assert_eq!(memobj_paged_close_ref(r), Ok(()));
+    }
+
+    /// **A frame a fault is about to install is not dropped under it.** Between
+    /// the cache's answer and the leaf there is no lock: a reclaim pass that
+    /// freed the frame then would leave a user leaf on memory the allocator
+    /// hands out again. The pinned lookup holds the object's drops off until
+    /// the install ends. **Canary (by hand).** Take the `installing` test out of
+    /// `memobj_paged_drop_clean`: the first `drop_clean` takes the pinned page.
+    #[test]
+    fn a_pinned_install_is_not_dropped_until_it_ends() {
+        let _g = setup();
+        let _h = Hooks::install();
+        let (_f, r, _base) = window();
+        let p = memobj_paged_frame_pinned_ref(r, 1, false).expect("fill");
+        assert_eq!(memobj_paged_drop_clean(8), 0, "dropped a frame whose install was in flight");
+        assert_eq!(memobj_paged_forget_ref(r, 0), Err(PagedError::Obj(MemObjError::Busy)), "a truncate waits for the install");
+        assert_eq!(memobj_page_phys_ref(r, 1), Ok(Some(p)), "the frame is still the cache's");
+        memobj_paged_install_done_ref(r);
+        assert_eq!(memobj_paged_drop_clean(8), 1, "dropped once the install ended");
+        assert_eq!(memobj_page_phys_ref(r, 1), Ok(None));
         assert_eq!(memobj_paged_close_ref(r), Ok(()));
     }
 

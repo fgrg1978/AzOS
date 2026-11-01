@@ -3,10 +3,12 @@
 /// Rangefinder drivers — ultrasonic (HC-SR04) and ToF (VL53L0X).
 ///
 /// Phase M1: proximity sensors for obstacle avoidance.
-/// In QEMU, returns simulated distances.
-/// On real hardware:
-/// - Ultrasonic: GPIO trigger + echo pulse timing
-/// - ToF: I2C VL53L0X (time-of-flight laser)
+/// Under QEMU (`azos_drv_sys::ON_QEMU`), returns simulated distances.
+/// There is no driver for the real sensors yet (ultrasonic: GPIO trigger +
+/// echo pulse timing; ToF: I2C VL53L0X), so on a real board `us_init` and
+/// `tof_init` refuse and the sensors are never ready: a read answers `None`,
+/// never a simulated distance, and obstacle avoidance and the REFLEX daemon
+/// run without a rangefinder (the daemon refuses to start).
 ///
 /// Both sensors feed into the behavior engine L1 (avoid-obstacle)
 /// without requiring the server.
@@ -32,13 +34,18 @@ static US_DIST: [AtomicU16; US_MAX] = [
 /// Initialize ultrasonic sensor(s).
 ///
 /// `count`: number of sensors (1-4).
-/// In QEMU, just stores count and sets ready flag.
-/// On real hardware, would configure GPIO trigger/echo pins.
-pub fn us_init(count: u8) {
+/// In QEMU, just stores count and sets ready flag. `false` (nothing set up, a
+/// record on the console) on a real board, which has no driver for it.
+pub fn us_init(count: u8) -> bool {
+    if !azos_drv_sys::ON_QEMU {
+        azos_drv_sys::kwarn!("[RANGE] Ultrasonic: no driver for this board: not initialized, no simulated distances served");
+        return false;
+    }
     let count = if count > US_MAX as u8 { US_MAX as u8 } else { count };
     US_COUNT.store(count, Ordering::Relaxed);
     US_READY.store(true, Ordering::Release);
     azos_drv_sys::kprintln!("[RANGE] Ultrasonic: {} sensors initialized (simulated)", count);
+    true
 }
 
 /// Read distance from ultrasonic sensor in millimetres.
@@ -85,13 +92,17 @@ pub const VL53L0X_ADDR: u8 = 0x29;
 /// Initialize ToF sensor(s).
 ///
 /// `count`: number of sensors (1-2).
-/// In QEMU, just stores count.
-/// On real hardware, would configure I2C and calibrate VL53L0X.
-pub fn tof_init(count: u8) {
+/// In QEMU, just stores count. `false` on a real board, as [`us_init`].
+pub fn tof_init(count: u8) -> bool {
+    if !azos_drv_sys::ON_QEMU {
+        azos_drv_sys::kwarn!("[RANGE] ToF VL53L0X: no driver for this board: not initialized, no simulated distances served");
+        return false;
+    }
     let count = if count > TOF_MAX as u8 { TOF_MAX as u8 } else { count };
     TOF_COUNT.store(count, Ordering::Relaxed);
     TOF_READY.store(true, Ordering::Release);
     azos_drv_sys::kprintln!("[RANGE] ToF VL53L0X: {} sensors initialized (simulated)", count);
+    true
 }
 
 /// Read distance from ToF sensor in millimetres.

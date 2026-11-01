@@ -118,6 +118,8 @@ static EARLY_FAILED: AtomicUsize = AtomicUsize::new(0);
 /// Lockdep violations counted while a test ran (each failed that test). The
 /// rest, at the summary, happened outside any test and fail the run.
 static LOCKDEP_IN_TESTS: AtomicUsize = AtomicUsize::new(0);
+/// Tests that reported a skip (`azos_ktest::skip!`).
+static SKIPPED: AtomicUsize = AtomicUsize::new(0);
 
 /// Lockdep violations counted before the first test ([`run`]): boot's. The
 /// early test `lockdep_boot_phase_clean` fails on them and claims them, so
@@ -186,6 +188,10 @@ fn run_phase(phase: usize, first: usize) -> usize {
         }
         match verdict {
             Ok(()) => kprintln!("{}ok {} - {}", nl, i, t.name),
+            Err(why) if azos_ktest::skip_reason(why).is_some() => {
+                SKIPPED.fetch_add(1, Ordering::Relaxed);
+                kprintln!("{}ok {} - {} # SKIP {}", nl, i, t.name, azos_ktest::skip_reason(why).unwrap_or(""));
+            }
             Err(why) => {
                 failed += 1;
                 kprintln!("{}not ok {} - {} # {}", nl, i, t.name, why);
@@ -207,6 +213,10 @@ fn summary(n: usize, failed: usize) -> ! {
     }
     let outside = lockdep_summary();
     kprintln!("\n# ktest: {} tests, {} passed, {} failed ({})", n, n - failed, failed, isa());
+    let skipped = SKIPPED.load(Ordering::Relaxed);
+    if skipped != 0 {
+        kprintln!("# ktest: {} of them skipped: the configuration does not run them ({})", skipped, isa());
+    }
     if outside != 0 {
         kprintln!("Bail out! lockdep: {} violation(s) outside any test ({})", outside, isa());
     }

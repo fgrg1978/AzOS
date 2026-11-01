@@ -65,17 +65,26 @@ pub fn run(tests: &'static [KTest], out: &mut dyn FnMut(&str), mut exec: impl Fn
     let total = count(tests, EARLY);
     emit(out, format_args!("1..{total}"));
     let mut failed = 0;
+    let mut skipped = 0;
     for r in 0..total {
         let Some(t) = nth(tests, EARLY, r) else { break };
         emit(out, format_args!("# running {}", t.name));
         match exec(t) {
             Ok(()) => emit(out, format_args!("ok {} - {}", r + 1, t.name)),
+            Err(why) if crate::skip_reason(why).is_some() => {
+                skipped += 1;
+                emit(out, format_args!("ok {} - {} # SKIP {}", r + 1, t.name, crate::skip_reason(why).unwrap_or("")));
+            }
             Err(why) => {
                 failed += 1;
                 emit(out, format_args!("not ok {} - {} # {}", r + 1, t.name, why));
             }
         }
     }
-    emit(out, format_args!("# {total} tests, {failed} failed"));
+    if skipped == 0 {
+        emit(out, format_args!("# {total} tests, {failed} failed"));
+    } else {
+        emit(out, format_args!("# {total} tests, {failed} failed, {skipped} skipped"));
+    }
     failed
 }

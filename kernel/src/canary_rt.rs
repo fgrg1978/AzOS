@@ -354,6 +354,10 @@ pub(crate) const NAMES: &[&str] = &[
     // signal pending on a non-leader thread is dropped with the thread
     // (ktest `signal_retarget_on_thread_detach`).
     "sig-exit-drop",
+    // crates/core/sched/src/signal_state.rs `suspend_cell`: the mask
+    // `rt_sigsuspend` saves is one cell for every task, as the per-process
+    // field was (ktest `sigsuspend_saves_the_mask_per_thread`).
+    "sigsuspend-shared",
     // crates/core/sched/src/classes.rs `graph_floored`: a wait-graph boost
     // lifts a ring-3 owner past RT_PRIORITY_THRESHOLD (ktest
     // `waitgraph_ring3_owner_floored`, WAIT_GRAPH y).

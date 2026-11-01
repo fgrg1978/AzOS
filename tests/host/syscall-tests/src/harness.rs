@@ -74,6 +74,11 @@ pub fn reset_state() {
     // `invoke_guards` tests end with an enforcing syscall filter armed, and the
     // next test to run (`h3_hosts`, `keys_guards`, ...) had its first syscall
     // killed by that filter, at `task_exit_with_code` (about 1 run in 300).
+    // The pager's table of spaces survives the arena: a root no test tore
+    // down keeps its regions, and the next test handed the same page as a root
+    // inherits them (`mmap_cannot_walk_into_a_shared_kernel_table_on_this_layout`
+    // failed in 1 shuffled run of 3, "a reservation committed 16416 pages").
+    azos_mm::pager::shim_forget_all();
     azos_sched::shim_reset();
     azos_sched::shim_reset_user_windows();
     azos_mm::shim_reset();

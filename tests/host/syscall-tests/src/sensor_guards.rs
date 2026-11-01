@@ -138,3 +138,29 @@ fn a_vdso_bind_is_gated_like_a_read() {
     assert_eq!(server(azos_devif::sensor::TYPES, CapPerms::READ).bind_vdso().code, outcome::BAD_ARGUMENT);
 }
 
+
+/// **A board with no rangefinder reads NOT_READY, never a zero or a simulated
+/// distance; where one reports, its sample is flagged synthetic.** The
+/// ultrasonic driver is ready only under QEMU, so on a real board the
+/// obstacle reflex gets no data to act on, and the daemon declines to run
+/// instead of treating "0" as "clear".
+///
+/// **Canary.** Make the range arm answer `us_read_mm(0).unwrap_or(0)` again
+/// (the old reading): the first assertion goes red (a zero sample).
+#[test]
+fn a_board_with_no_rangefinder_reads_not_ready_and_a_simulated_one_is_flagged() {
+    use azos_abi::sensor_sample::SENSOR_SAMPLE_FLAG_SYNTHETIC;
+    let _g = serial();
+    let range = || server(SENSOR_TYPE_RANGE as u32, CapPerms::READ).read();
+    azos_drv_sensor::rangefinder::shim_set_range(None, None);
+    let out = range();
+    assert_eq!(out.code, outcome::NOT_READY, "no rangefinder: not a sample (code {})", out.code);
+
+    azos_drv_sensor::rangefinder::shim_set_range(Some(1500), Some(800));
+    let out = range();
+    assert!(out.is_ok(), "code {}", out.code);
+    let s = out.value;
+    assert_eq!(s.len, 4);
+    assert_eq!(s.flags & SENSOR_SAMPLE_FLAG_SYNTHETIC as u32, SENSOR_SAMPLE_FLAG_SYNTHETIC as u32, "a simulated distance says so");
+    azos_drv_sensor::rangefinder::shim_set_range(None, None);
+}

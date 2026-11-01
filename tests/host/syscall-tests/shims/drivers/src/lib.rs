@@ -474,8 +474,15 @@ pub mod ina219 {
 }
 
 pub mod rangefinder {
-    pub fn us_read_mm(_index: u8) -> Option<u32> {
-        todo!("MMIO stand-in: not reached by any test in this crate")
+    use std::sync::Mutex;
+    /// What the ultrasonic sensors read (index 0, 1); `None`: not ready, as on
+    /// a board with no rangefinder driver.
+    static READING: Mutex<[Option<u32>; 2]> = Mutex::new([None, None]);
+    pub fn shim_set_range(front: Option<u32>, right: Option<u32>) {
+        *READING.lock().unwrap() = [front, right];
+    }
+    pub fn us_read_mm(index: u8) -> Option<u32> {
+        READING.lock().unwrap().get(index as usize).copied().flatten()
     }
 }
 

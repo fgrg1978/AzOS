@@ -3490,6 +3490,10 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
         return 0;
     }
     // Pass 2: back what has nothing behind it, then set the permission.
+    // The reclaimer takes no page of the space meanwhile: a leaf it swapped
+    // out under the rewrite would be written back as a valid leaf on a frame
+    // it is about to free, and a store that fails restores the old permission.
+    let _reclaim_off = azos_mm::pager::reclaim_pause(user_pt);
     // Wave 14: regions first. It is the step that can refuse for want of a
     // record, and a refusal here leaves everything as it was.
     if azos_mm::pager::protect_range(user_pt, start, end, write).is_err() {
@@ -3814,7 +3818,10 @@ pub(crate) fn sensor_read_into<F: FnOnce(&[u8], SampleMeta) -> i64>(sensor_type:
         SENSOR_TYPE_RANGE => {
             const RANGE_DATA_SIZE: usize = 4; // 2 × u16
             if (buf_len as usize) < RANGE_DATA_SIZE { return -1; }
-            let front = azos_drv_sensor::rangefinder::us_read_mm(0).unwrap_or(0) as u16;
+            // No rangefinder (a real board has no driver for one): not ready,
+            // never a zero that reads as "clear" or a simulated distance.
+            let Some(front) = azos_drv_sensor::rangefinder::us_read_mm(0) else { return -1 };
+            let front = front as u16;
             let acq = azos_drv_sys::timebase::now();
             let right = azos_drv_sensor::rangefinder::us_read_mm(1).unwrap_or(0) as u16;
             let mut tmp = [0u8; RANGE_DATA_SIZE];

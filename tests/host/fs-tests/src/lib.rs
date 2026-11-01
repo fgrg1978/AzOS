@@ -6765,6 +6765,27 @@ mod herm_wave11 {
         disk_write_fail_after(disk_stats().1);
     }
 
+    // ── fat32_unmount: a volume that could not be left clean says so ────────
+
+    /// An unmount reports `Ok` only when the medium holds the volume clean:
+    /// with every device write failing from the unmount on, the clean flag
+    /// cannot land and the answer is `Err(Io)`; the volume is unmounted
+    /// either way. **Canary.** Return `Ok(())` unconditionally at the end of
+    /// `fat32_unmount_on` (the old answer): the first assertion goes red.
+    #[test]
+    fn an_unmount_that_could_not_leave_the_volume_clean_says_so() {
+        let _g = serial();
+        fresh_volume();
+        put(&n83(b"A", b"TXT"), b"data");
+        fail_writes_now();
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Err(FsError::Io));
+        assert!(!fat32::fat32_mounted(), "the volume is unmounted all the same");
+        disk_write_fail_clear();
+        fresh_volume();
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()), "a healthy one is clean");
+        assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()), "nothing mounted loses nothing");
+    }
+
     // ── fat32_rename: the real answer ──────────────────────────────────────
 
     #[test]

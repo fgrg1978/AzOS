@@ -11488,7 +11488,7 @@ host_job host_canary_row "hwbus: topology-only policy canary" hwbus-tests policy
 # segments mapped differently (their union, as before): the refusal test in
 # sched-wake-tests (`elf_bounds_tests`) must fail.
 host_job host_canary_row "elf: mixed-page canary (host)" sched-wake-tests elf-mixed-page-canary \
-    a_page_shared_by_segments_mapped_differently_is_refused
+    elf_bounds_tests::a_page_shared_by_segments_mapped_differently_is_refused
 # The header walk the loader and the ELF fuzz target share (`elf_bounds`,
 # tests in sched-wake-tests `elf_walk`, run for the three ISAs' machine types):
 # `elf-machine-canary` takes an image of any machine, `elf-entry-align-canary`
@@ -14604,10 +14604,11 @@ PY
     # +1 unswitched_block_returns_running (canary `unswitched-block-stays`) -> 132, arm 136.
     # +1 timer_record_on_the_last_cpu (canary `timer-record-16`, -smp 17) -> 133, arm 137.
     # +1 pi_boost_lands_on_a_racing_wake (canary `pi-boost-stale-bucket`) -> 134, arm 138.
-        # +2 futex_look_under_the_table_faults_nothing,
+    # +2 futex_look_under_the_table_faults_nothing,
     # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
-    KTEST_N_RV=136
-    KTEST_N_ARM=140
+    # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
+    KTEST_N_RV=137
+    KTEST_N_ARM=141
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15061,7 +15062,7 @@ PY
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
     # The tests that need a second CPU answer `not ok` at -smp 1 (they say so).
-    KTEST_HOLD_SMP1="lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter"
+    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
@@ -15282,8 +15283,8 @@ PY
     # claim waiter lends nothing: fat_claim_waiter_donates_to_owner), and N6b's
     # `sched-dl-in-level` (a reservation ranks by its level again:
     # sched_dl_above_rt).
-    KTEST_SCHED_CANARIES="canary=sched-class-invert,pi-depth-1,schedctl-no-warrant,sig-exit-drop,claim-no-donate,sched-dl-in-level"
-    KTEST_SCHED_CANARIED="sched_class_precedence waitgraph_transitive_chain waitgraph_dl_donor_and_attr_changed waitgraph_depth_cap schedctl_self_promotion_refused signal_retarget_on_thread_detach fat_claim_waiter_donates_to_owner sched_dl_above_rt"
+    KTEST_SCHED_CANARIES="canary=sched-class-invert,pi-depth-1,schedctl-no-warrant,sig-exit-drop,sigsuspend-shared,claim-no-donate,sched-dl-in-level"
+    KTEST_SCHED_CANARIED="sched_class_precedence waitgraph_transitive_chain waitgraph_dl_donor_and_attr_changed waitgraph_depth_cap schedctl_self_promotion_refused signal_retarget_on_thread_detach sigsuspend_saves_the_mask_per_thread fat_claim_waiter_donates_to_owner sched_dl_above_rt"
     par "ktest sched canary (rv)" ktest_row "ktest sched canary (rv)" rv "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
     par "ktest sched canary (arm)" ktest_row "ktest sched canary (arm)" arm "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
 
@@ -15408,7 +15409,8 @@ PY
     # +4 the scheduler findings' ktests, the three of rv and arm and x86's own -> 141.
     # +2 futex_look_under_the_table_faults_nothing,
     # ipc_handover_abort_wakes_the_old_server -> 143.
-    KTEST_N_X86=143
+    # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
+    KTEST_N_X86=144
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16390,7 +16392,12 @@ PY
             [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
                 && why="no matching summary line"
         fi
-        if [ -z "$why" ] && [ -n "${6:-}" ] && ! grep -aqE "$6" "$log"; then why="no line matching: $6"; fi
+        if [ -z "$why" ] && [ -n "${6:-}" ]; then
+            # One pattern per line, all required.
+            while IFS= read -r pat; do
+                [ -n "$pat" ] && ! grep -aqE "$pat" "$log" && { why="no line matching: $pat"; break; }
+            done <<< "$6"
+        fi
         # The verdict also rides on QEMU's exit status (isa-debug-exit, see
         # kernel/src/ktest.rs power_off): 1 after a clean run, 3 after a failed one.
         local qwhy=""
@@ -16416,19 +16423,22 @@ PY
     }
     par "ktest (x86)" x86_ktest_row "ktest (x86)" "" ""
     # S6: the same ktests on an AMD model with SVM on (TCG runs VMRUN). Under `-cpu max`
-    # the two hv ktests (`hv_svm_guest_exits`, `hv_enter_guest`) pass without running a
-    # guest; here they run one: the first the VMCB and the exits one VMRUN at a time,
+    # the two hv ktests (`hv_svm_guest_exits`, `hv_enter_guest`) report SKIP (no SVM, no
+    # guest); here they run one, and the row requires their plain `ok` lines and the
+    # kernel's `[HV] svm rev` line, so a CPU that stops offering SVM fails it: the first the VMCB and the exits one VMRUN at a time,
     # the second the entry `Hypervisor::enter` is (CPUID, an empty port, two device
     # stores, HLT; the faulting instruction read through the nested tables).
     x86_ktest_row_svm() {
         local X86_CPU="EPYC-Rome,svm=on"
         x86_ktest_row "$@"
     }
-    par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" ""
+    par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" "" "" "" \
+        $'\\[HV\\] svm rev\n^ok [0-9]+ - hv_svm_guest_exits$\n^ok [0-9]+ - hv_enter_guest$'
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
     par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
+    par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"

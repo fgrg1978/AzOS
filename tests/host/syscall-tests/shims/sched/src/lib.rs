@@ -1539,13 +1539,26 @@ pub fn shim_serial_enter() {
 
 /// The serial lock is released.
 pub fn shim_serial_leave() {
+    SERIAL_SHARED.store(false, Ordering::SeqCst);
     *SERIAL_OWNER.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
+
+/// A test that runs a second thread against the shim state (a call that must
+/// block while the test's own thread does something) lends it to every thread
+/// until it gives it back; the test keeps the threads from touching it at once.
+pub fn shim_serial_share(on: bool) {
+    SERIAL_SHARED.store(on, Ordering::SeqCst);
+}
+
+static SERIAL_SHARED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Panics unless the calling thread holds the serial lock. `what` names the
 /// accessor, so the failure points at the test that forgot `serial()`.
 #[track_caller]
 pub fn shim_assert_serial(what: &str) {
+    if SERIAL_SHARED.load(Ordering::SeqCst) {
+        return;
+    }
     let owner = *SERIAL_OWNER.lock().unwrap_or_else(|e| e.into_inner());
     let me = std::thread::current();
     if owner != Some(me.id()) {

@@ -102,3 +102,69 @@ azos_ktest::ktest_late! {
         r
     }
 }
+
+// ── `rt_sigsuspend` keeps its saved mask per thread ─────────────────────────
+//
+// Two threads suspended at once each get their own mask back. The ktest's task
+// and a kernel task each save a mask; each takes its own once, and a second
+// take finds nothing. Canary `canary=sigsuspend-shared`: the cell is one for
+// every task (the old per-process field), so the first to take gets the
+// other's mask: `not ok`.
+
+const MASK_LEAD: u64 = 0x00AA_00AA;
+const MASK_MEMBER: u64 = 0x0055_0055;
+
+static MEMBER_SAVED: AtomicBool = AtomicBool::new(false);
+static MEMBER_GOT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(u64::MAX);
+
+fn suspended_member(_: usize) {
+    let me = azos_sched::scheduler::current_task_tid();
+    MEMBER_TID.store(me, Ordering::Release);
+    if sig::attach(me, 0, 0) {
+        sig::set_current_suspend_saved(MASK_MEMBER);
+    }
+    MEMBER_SAVED.store(true, Ordering::Release);
+    for _ in 0..10_000 {
+        if GO.load(Ordering::Acquire) {
+            break;
+        }
+        sleep_ms(1);
+    }
+    MEMBER_GOT.store(sig::take_current_suspend_saved().unwrap_or(u64::MAX - 1), Ordering::Release);
+    sig::detach(me);
+    MEMBER_DONE.store(true, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn sigsuspend_saves_the_mask_per_thread() {
+        MEMBER_TID.store(0, Ordering::Release);
+        MEMBER_DONE.store(false, Ordering::Release);
+        MEMBER_SAVED.store(false, Ordering::Release);
+        MEMBER_GOT.store(u64::MAX, Ordering::Release);
+        GO.store(false, Ordering::Release);
+        let lead = azos_sched::scheduler::current_task_tid();
+        if !sig::attach(lead, 0, 0) {
+            return Err("attach refused the test's own task");
+        }
+        sig::set_current_suspend_saved(MASK_LEAD);
+        azos_sched::task_create_affinity("sigsusp-member", suspended_member, 0, MEMBER_PRIO, -1);
+        let started = crate::ktest::wait("the member never saved its mask", || MEMBER_SAVED.load(Ordering::Acquire));
+        let mine = sig::take_current_suspend_saved();
+        let again = sig::take_current_suspend_saved();
+        GO.store(true, Ordering::Release);
+        let ended = crate::ktest::wait("the member never ended", || MEMBER_DONE.load(Ordering::Acquire));
+        sig::detach(lead);
+        started?;
+        ended?;
+        if mine != Some(MASK_LEAD) {
+            return Err("the test's task did not get its own saved mask back");
+        }
+        if again.is_some() {
+            return Err("a saved mask came back twice");
+        }
+        if MEMBER_GOT.load(Ordering::Acquire) != MASK_MEMBER {
+            return Err("the member did not get its own saved mask back");
+        }
+        Ok(())
+    }
+}

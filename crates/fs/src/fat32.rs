@@ -5746,6 +5746,11 @@ pub fn fat32_unmount(_vol: Volume) -> Result<(), FsError> {
 /// Anything short of a clean unmount (a cut, a crash, a halt that never gets
 /// here) leaves the volume dirty and the next mount checks it.  Safe to call
 /// even if no volume is mounted.
+///
+/// `Err(FsError::Io)`: the volume is unmounted but was not left clean on the
+/// medium (a write-back, the journal, the clean flag or a flush failed).
+/// Also `Err` when the device cannot confirm a flush: a clean flag nothing
+/// confirmed is not a clean volume.
 pub fn fat32_unmount_on(v: &'static Vol, _vol: Volume) -> Result<(), FsError> {
     let was_mounted = v.fat32.lock().mounted;
     // Sync + close every currently-open file so no write is lost.
@@ -5783,14 +5788,15 @@ pub fn fat32_unmount_on(v: &'static Vol, _vol: Volume) -> Result<(), FsError> {
     // held for a free that has not run: the flag promises no lost space.
     settled &= was_mounted && fat32_held_clusters_on(v) == 0 && fat32_journal_idle_on(v);
     held_reset(v);
+    // Whether the medium holds everything and says so: only then may a caller
+    // tell its user the volume is safe to remove.
+    let mut safe = if settled { Ok(()) } else { Err(FsError::Io) };
     if settled && volume_state_write_ready(v)
         && v.volume_marked_dirty.swap(false, core::sync::atomic::Ordering::Relaxed)
     {
         // Last write of the mount, flushed: a cut before it lands leaves the
         // volume dirty, which only costs the next mount a check.
-        if volume_set_clean(v, true).is_ok() {
-            let _ = device_flush_raw(v);
-        }
+        safe = volume_set_clean(v, true).map_err(|_| FsError::Io).and_then(|_| device_flush_raw(v));
     }
     // Mark volume unmounted. A refused volume may be another medium at the
     // next mount: that one is read and checked afresh.
@@ -5806,7 +5812,10 @@ pub fn fat32_unmount_on(v: &'static Vol, _vol: Volume) -> Result<(), FsError> {
     fat32_cache_invalidate_all_on(v);
     // The medium may be another one at the next mount: so are the pages.
     crate::vfs::page_cache_drop(v.fs, None, 0);
-    Ok(())
+    // The volume is unmounted either way; `Err` says it was left dirty (its
+    // next mount checks it) or that the medium did not confirm what it was
+    // given. Nothing mounted has nothing to lose.
+    if was_mounted { safe } else { Ok(()) }
 }
 
 // ── Path helpers ─────────────────────────────────────────────────────────────

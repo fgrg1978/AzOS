@@ -22,6 +22,8 @@ struct Stick {
     pulled: AtomicBool,
     flushes: AtomicU32,
     writes: AtomicU32,
+    /// From this flush on (counted from 1) the stick answers `Unsupported`; 0: never.
+    no_flush_from: AtomicU32,
 }
 
 impl Stick {
@@ -30,6 +32,7 @@ impl Stick {
             img: Mutex::new(img),
             pulled: AtomicBool::new(false),
             flushes: AtomicU32::new(0),
+            no_flush_from: AtomicU32::new(0),
             writes: AtomicU32::new(0),
         }))
     }
@@ -65,7 +68,11 @@ impl usbvol::Disk for Stick {
         if self.pulled.load(Ordering::SeqCst) {
             return Err(FlushError::Io);
         }
-        self.flushes.fetch_add(1, Ordering::SeqCst);
+        let n = self.flushes.fetch_add(1, Ordering::SeqCst) + 1;
+        let from = self.no_flush_from.load(Ordering::SeqCst);
+        if from != 0 && n >= from {
+            return Err(FlushError::Unsupported);
+        }
         Ok(())
     }
 }
@@ -252,6 +259,44 @@ fn an_eject_writes_back_marks_clean_and_flushes() {
     usbvol::unplugged();
     assert_eq!(p.writes.load(Ordering::SeqCst), writes);
     assert!(!clean_bit(&p.image()), "a pulled stick stays dirty");
+}
+
+/// **An eject whose last flush the stick cannot confirm does not say it is
+/// safe.** The stick answers the flushes of the unmount, then `Unsupported`
+/// (no cache flush command) to the eject's own final one: written back and
+/// marked clean, but unconfirmed, so the eject answers `Err`, never `Ok` (the
+/// kernel's "synchronize cache ok" line follows it). A stick that cannot flush
+/// at all also fails the unmount, which is the other half.
+///
+/// **Canary.** Count `Err(FlushError::Unsupported)` as a confirmed flush in
+/// `usbvol::eject` (the old answer): the first assertion goes red.
+#[test]
+fn an_eject_whose_last_flush_is_unsupported_is_not_safe() {
+    let _g = serial();
+    fresh_volume();
+    no_stick();
+    // How many flushes a healthy eject sends.
+    let probe = Stick::leak(stick_image());
+    usbvol::mount(probe, AT).expect("mounts");
+    let before = probe.flushes.load(Ordering::SeqCst);
+    assert_eq!(usbvol::eject(), Some(Ok(())));
+    let sent = probe.flushes.load(Ordering::SeqCst) - before;
+    assert!(sent >= 2, "the unmount flushes, then the eject does once more");
+
+    let s = Stick::leak(stick_image());
+    usbvol::mount(s, AT).expect("mounts");
+    write_file(b"/usb/CRASH.LOG", b"panic: test record\n");
+    let base = s.flushes.load(Ordering::SeqCst);
+    s.no_flush_from.store(base + sent, Ordering::SeqCst);
+    assert_eq!(usbvol::eject(), Some(Err(())), "the last flush was not confirmed");
+    assert!(clean_bit(&s.image()), "the volume was written back and marked clean all the same");
+    assert!(!usbvol::mounted(), "the mount is retired");
+
+    // A stick with no flush at all fails the unmount itself.
+    let n = Stick::leak(stick_image());
+    usbvol::mount(n, AT).expect("mounts");
+    n.no_flush_from.store(n.flushes.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    assert_eq!(usbvol::eject(), Some(Err(())));
 }
 
 /// **Plugging in and out does not run the mount table out.** Twice

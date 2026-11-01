@@ -563,3 +563,45 @@ fn wakes_follow_their_domain_and_a_new_occupant_starts_from_zero() {
     assert_eq!(domain::wakes_total() - t0, 3 + 3 + 1, "and are counted once when the slot is taken again");
     free_all(k2);
 }
+
+/// The login grant is one-shot even when several members of the Domain spend
+/// it at once: every grant armed admits exactly one session. Three members
+/// poll `take_login_grant` in a tight loop while the armer arms a grant and
+/// waits for its session. **Canary.** Keep the grant in the unlocked `State`
+/// again (`Option::take` on the shared cell): two takers read it before
+/// either clears it, and more sessions start than grants were armed.
+#[test]
+fn a_login_grant_is_spent_once_under_concurrent_takers() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let _s = serial();
+    let k = domain::create().expect("a free domain");
+    const ARMS: u32 = 20_000;
+    let sessions = AtomicU32::new(0);
+    let done = AtomicBool::new(false);
+    std::thread::scope(|sc| {
+        for _ in 0..3 {
+            sc.spawn(|| {
+                while !done.load(Ordering::Relaxed) {
+                    if domain::take_login_grant(k, 50) == Some(7) {
+                        sessions.fetch_add(1, Ordering::SeqCst);
+                    }
+                    std::thread::yield_now();
+                }
+            });
+        }
+        let t0 = std::time::Instant::now();
+        for n in 1..=ARMS {
+            assert!(domain::arm_login_grant(k, 7, 100));
+            while sessions.load(Ordering::SeqCst) < n && t0.elapsed().as_secs() < 20 {
+                std::thread::yield_now();
+            }
+        }
+        done.store(true, Ordering::Relaxed);
+    });
+    assert_eq!(sessions.load(Ordering::SeqCst), ARMS, "every grant admits one session, no more");
+    assert_eq!(domain::take_login_grant(k, 50), None, "spent");
+    assert!(domain::arm_login_grant(k, 7, 10));
+    assert_eq!(domain::take_login_grant(k, 11), None, "a lapsed grant admits nobody");
+    assert_eq!(domain::take_login_grant(k, 5), None, "and is gone either way");
+    free_all(k);
+}

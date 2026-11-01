@@ -182,8 +182,13 @@ pub trait Pager {
 pub trait FileFrames: Sync {
     /// The cache frame of the page, read from the file first if it is not
     /// there; `write` says the caller is about to store through it. The frame
-    /// belongs to the cache.
+    /// belongs to the cache. It is pinned: the cache drops no frame of `obj`
+    /// until [`FileFrames::installed`], so the caller can put it in a leaf.
     fn frame(&self, obj: u32, page: usize, write: bool) -> KResult<PhysAddr>;
+
+    /// The caller of a [`FileFrames::frame`] that returned a frame is done with
+    /// it, installed or not: the pin ends.
+    fn installed(&self, obj: u32);
 
     /// The frame the cache holds for the page now, without filling it.
     fn resident(&self, obj: u32, page: usize) -> Option<PhysAddr>;
@@ -1128,20 +1133,8 @@ fn break_range(root: usize, s: usize, e: usize) {
 /// cannot copy, which is why it is waited out and not skipped. The wait sleeps
 /// (a fork runs in a syscall, outside every lock of this module).
 pub fn fork_begin(root: usize) -> bool {
-    loop {
-        let seen = MARKER_SEQ.load(Ordering::Acquire);
-        {
-            let mut t = TABLE.lock_irqsave();
-            match t.slot(root) {
-                Some(i) if t.s[i].reclaiming == 0 => {
-                    t.s[i].forking += 1;
-                    break;
-                }
-                Some(_) => {}
-                None => return true,
-            }
-        }
-        MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seen);
+    if !reclaim_hold(root) {
+        return true;
     }
     if !resv::ENABLED {
         return true;
@@ -1156,10 +1149,55 @@ pub fn fork_begin(root: usize) -> bool {
 /// nothing of it can be promoted until it is filled afresh, and the reclaimer
 /// may take pages of it again.
 pub fn fork_end(root: usize) {
+    reclaim_release(root);
+}
+
+/// Wait for the stores in flight in `root` to end and keep the reclaimer from
+/// starting more until [`reclaim_release`]. Counted, so holds nest and overlap.
+/// `false`: the space has no record here (no regions), so nothing is held.
+/// Sleeps while a store is in flight: call it outside every lock of this module.
+fn reclaim_hold(root: usize) -> bool {
+    loop {
+        let seen = MARKER_SEQ.load(Ordering::Acquire);
+        {
+            let mut t = TABLE.lock_irqsave();
+            match t.slot(root) {
+                Some(i) if t.s[i].reclaiming == 0 => {
+                    t.s[i].forking += 1;
+                    return true;
+                }
+                Some(_) => {}
+                None => return false,
+            }
+        }
+        MARKER_WAIT.wait_if_for(azos_sync::waitstat::Site::PagerStore, || MARKER_SEQ.load(Ordering::Acquire) == seen);
+    }
+}
+
+fn reclaim_release(root: usize) {
     let mut t = TABLE.lock_irqsave();
     if let Some(i) = t.slot(root) {
         t.s[i].forking = t.s[i].forking.saturating_sub(1);
     }
+}
+
+/// The reclaimer takes no page out of a space for as long as this lives, and
+/// none is in flight when it is made ([`reclaim_pause`]).
+pub struct ReclaimPause(usize);
+
+impl Drop for ReclaimPause {
+    fn drop(&mut self) {
+        reclaim_release(self.0);
+    }
+}
+
+/// Hold the reclaimer off `root` while its leaves are rewritten in place
+/// (`mprotect`): a leaf the reclaimer swaps for its `InTransit` marker between
+/// the rewrite's read and its store would be overwritten with a valid leaf on a
+/// frame the store then frees, and a store that fails (`keep`) puts back the
+/// leaf it took out, with the permission it had then.
+pub fn reclaim_pause(root: usize) -> Option<ReclaimPause> {
+    reclaim_hold(root).then_some(ReclaimPause(root))
 }
 
 /// Break every reservation of `root`.
@@ -1492,8 +1530,20 @@ pub fn has_file(root: usize, s: usize, e: usize) -> bool {
 fn resolve_file_fault(root: usize, page: usize, r: &Region) -> KResult<()> {
     let ff = file_frames()?;
     let idx = r.page_index(page);
+    // The cache's pin on a shared frame, held to the end of the install.
+    struct Pin<'a>(Option<(&'a dyn FileFrames, u32)>);
+    impl Drop for Pin<'_> {
+        fn drop(&mut self) {
+            if let Some((ff, obj)) = self.0 {
+                ff.installed(obj);
+            }
+        }
+    }
+    let mut _pin = Pin(None);
     let frame = if r.shared {
-        ff.frame(r.obj, idx, r.write)?
+        let f = ff.frame(r.obj, idx, r.write)?;
+        _pin = Pin(Some((ff, r.obj)));
+        f
     } else {
         // SAFETY: filled right below, before the entry that exposes it exists.
         let f = unsafe { pmm::alloc_page_uninit()? };
@@ -2078,6 +2128,28 @@ pub fn forget(root: usize) {
                 ff.unref(obj);
             }
         }
+    }
+}
+
+/// Host tests only: forget every space the table holds. A test arena is rebuilt
+/// between tests, so a root a test never tore down is a dead space whose slot
+/// would greet the next test that is given the same page as its root with
+/// regions, a committed count and a full table it did not make.
+#[cfg(not(target_os = "none"))]
+pub fn shim_forget_all() {
+    let mut roots = [0usize; SPACES];
+    let mut n = 0;
+    {
+        let t = TABLE.lock_irqsave();
+        for sp in t.s[..t.used].iter() {
+            if sp.root != 0 && n < roots.len() {
+                roots[n] = sp.root;
+                n += 1;
+            }
+        }
+    }
+    for &r in &roots[..n] {
+        forget(r);
     }
 }
 

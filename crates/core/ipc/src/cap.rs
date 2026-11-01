@@ -3156,6 +3156,16 @@ impl CapTable {
         Some(r)
     }
 
+    /// Is `handle` a plain root: no badge, no caveat, no deadline or quota,
+    /// not derived from another slot? Weakness (a shadow table's) does not
+    /// count. A copy that rebuilds a capability from its kind, rights and
+    /// resource alone (`natfork`) stands for it only when this holds;
+    /// otherwise the copy would shed the badge or the caveats.
+    pub fn is_plain_root(&self, handle: CapHandle) -> bool {
+        let (Some(w), Some(e)) = (self.warrant_of(handle), self.ext_of(handle)) else { return false };
+        e == CapExt::NONE && Warrant { flags: w.flags & !Warrant::WEAK, ..w } == Warrant::ROOT
+    }
+
     /// Note that a copy was derived from the capability `handle` names: the
     /// slot is marked "may have children", so clearing it owes a sweep. The
     /// caller holds this table's lock (the copy was made under it and the
