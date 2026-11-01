@@ -10,7 +10,8 @@
 //!   asleep longer on a wait queue that names no owner, is not. Canary
 //!   feature `hung-task-canary`: the scan reads no task, `not ok`.
 //! * `stuck_cpu_detector_names_the_cpu`: a CPU held in a critical section is
-//!   reported once, by its id, and no other CPU is. Needs a second CPU
+//!   reported once, by its id, and no other CPU is, not even one running a
+//!   preemptible kernel loop. Needs a second CPU
 //!   (`not ok` at one). Canary `canary=hung-cpu-blind`: the scan reads no
 //!   CPU, `not ok`.
 
@@ -121,6 +122,9 @@ azos_ktest::ktest_late! {
         if after != 0 {
             return Err("a task that ran again was reported");
         }
+        // The watchdog task's own pass makes this scan too (it runs every 500 ms).
+        let scans = azos_actuation::sys_wdt::hung_scans();
+        crate::ktest::wait("the sys-wdt pass never ran the detectors", || azos_actuation::sys_wdt::hung_scans() != scans)?;
         Ok(())
     }
 }
@@ -130,6 +134,18 @@ static HOLD_STARTED: AtomicBool = AtomicBool::new(false);
 static HOLD_RELEASE: AtomicBool = AtomicBool::new(false);
 static HOLD_DONE: AtomicBool = AtomicBool::new(false);
 static CPU_HUNG: Hung = Hung::new();
+static SPIN_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// A busy CPU that is not stuck: kernel code in a loop with nothing else to
+/// run, so no switch moves its word, but preemptible at every tick.
+fn spinner(_: usize) {
+    SPIN_STARTED.store(true, Ordering::SeqCst);
+    while !HOLD_RELEASE.load(Ordering::SeqCst) {
+        core::hint::spin_loop();
+    }
+    SPIN_DONE.store(true, Ordering::SeqCst);
+}
+static SPIN_DONE: AtomicBool = AtomicBool::new(false);
 
 /// A CPU that cannot schedule: preemption off, in the kernel, until released.
 fn holder(_: usize) {
@@ -157,11 +173,17 @@ azos_ktest::ktest_late! {
         if canary!("hung-cpu-blind") {
             azos_sched::hung::canary_blind_cpus();
         }
-        for s in [&HOLD_STARTED, &HOLD_RELEASE, &HOLD_DONE] {
+        for s in [&HOLD_STARTED, &HOLD_RELEASE, &HOLD_DONE, &SPIN_STARTED, &SPIN_DONE] {
             s.store(false, Ordering::SeqCst);
         }
         azos_sched::task_create_affinity("hung-hold", holder, 0, 2, cpu as i8);
         crate::ktest::wait("the holder task never ran", || HOLD_STARTED.load(Ordering::SeqCst))?;
+        // With a third CPU, a preemptible spinner on it must not be reported.
+        let third = (1..n).map(|d| (cpu + d) % n).find(|&c| c != me && c != cpu && azos_percpu::cpu_online(c));
+        if let Some(third) = third {
+            azos_sched::task_create_affinity("hung-spin", spinner, 0, 2, third as i8);
+            crate::ktest::wait("the spinner task never ran", || SPIN_STARTED.load(Ordering::SeqCst))?;
+        }
         let from = azos_decision::total();
         let mut reports = 0;
         let seen = crate::ktest::until_for(REPORT_WAIT_MS, || {
@@ -179,6 +201,9 @@ azos_ktest::ktest_late! {
         });
         HOLD_RELEASE.store(true, Ordering::SeqCst);
         crate::ktest::wait("the holder task never finished", || HOLD_DONE.load(Ordering::SeqCst))?;
+        if third.is_some() {
+            crate::ktest::wait("the spinner task never finished", || SPIN_DONE.load(Ordering::SeqCst))?;
+        }
         if !seen {
             return Err("a CPU held in the kernel past the timeout was not reported");
         }

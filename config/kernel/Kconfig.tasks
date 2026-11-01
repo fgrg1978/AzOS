@@ -314,10 +314,12 @@ choice
         bool "Restart the server (stop the task a hung caller waits on)"
         help
           A hung task is stopped on its culprit: the server a call waits for
-          or the owner of the lock, which the kernel ends (a forced stop) so
-          the supervisor respawns it per its topology row and the callers
-          get a peer-died completion. A hung task with no known culprit and
-          a stuck CPU get the warning and the record only.
+          or the owner of the lock, when that is a ring-3 task. The kernel
+          wakes it out of its wait and ends it (a forced stop) at its next
+          syscall or return to user mode, the supervisor respawns it per its
+          topology row, and the callers get a peer-died completion. A hung
+          task whose culprit is unknown or a kernel task, and a stuck CPU,
+          get the warning and the record only.
 
     config HUNG_ACTION_SAFE_STOP
         bool "Safe stop (latch the e-stop: actuators to their safe state)"

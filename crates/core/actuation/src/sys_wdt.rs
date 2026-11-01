@@ -29,7 +29,7 @@ azos_common::ro_hook! {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HungAction {
     None = 0,
-    /// Stop the task the hung one waits on, so its supervisor respawns it.
+    /// Stop the ring-3 task the hung one waits on, so its supervisor respawns it.
     Restart = 1,
     /// Latch the e-stop.
     SafeStop = 2,
@@ -44,6 +44,13 @@ pub const HUNG_ACTION: HungAction = if azos_limits::HUNG_ACTION_SAFE_STOP {
     HungAction::None
 };
 
+static SCANS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Detector passes made since boot, by the watchdog and by a test.
+pub fn hung_scans() -> u32 {
+    SCANS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// The watchdog pass's detectors (`azos_sched::hung`); it is their only scanner.
 static HUNG: azos_sched::hung::Hung = azos_sched::hung::Hung::new();
 
@@ -53,6 +60,7 @@ static HUNG: azos_sched::hung::Hung = azos_sched::hung::Hung::new();
 pub fn hung_pass(h: &azos_sched::hung::Hung, now: u64, task_ms: u64, cpu_ms: u64, action: HungAction) -> u32 {
     let per_ms = (azos_drv_sys::timebase::TIMER_FREQ / 1000).max(1);
     let mut found = 0;
+    SCANS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     h.scan(now, task_ms.saturating_mul(per_ms), cpu_ms.saturating_mul(per_ms), |f| {
         hung_report(&f, action, per_ms);
         found += 1;
@@ -79,7 +87,12 @@ fn hung_report(f: &azos_sched::hung::Finding, action: HungAction, per_ms: u64) {
     let acted = match action {
         HungAction::None => HungAction::None,
         HungAction::Restart => match culprit {
-            Some(tid) if azos_sched::scheduler::task_stop(tid, true, 9) => HungAction::Restart,
+            // A forced stop wakes the culprit out of its wait and ends it at its
+            // next syscall or return to user mode: a ring-3 task. A kernel task
+            // has neither, so it is left as it is.
+            Some(tid) if azos_sched::tid_holds_address_space(tid) && azos_sched::scheduler::task_stop(tid, true, 9) => {
+                HungAction::Restart
+            }
             _ => HungAction::None,
         },
         HungAction::SafeStop => {

@@ -757,9 +757,11 @@ the syscall, IPC or context-switch paths; the only per-tick work is
 `hung::tick`, a depth load and a store in the timer interrupt. Every finding
 is a `kwarn!` line and a `Rule::Hang` decision record (subject: the task's tid
 or the CPU's id; numbers: ms waited, `kind << 32 | culprit tid`, `action << 32 |
-detail`), then the action of `HUNG_ACTION`: none, stop the culprit so its
+detail`), then the action of `HUNG_ACTION`: none, stop the culprit, when it is a ring-3 task, so its
 supervisor respawns it (the callers get a peer-died completion), or latch the
-e-stop (`SAFETY_ESTOP`, action 15). Development builds default to none.
+e-stop (`SAFETY_ESTOP`, action 15). Development builds default to none. A
+report that took no action is an `admit` record and stays in the ring; one that
+acted is a `refuse` record and also goes to the durable sink.
 
 **Hung task.** `Blocked`, on a wait that names who must end it, and its
 voluntary plus preempted switch count unchanged for `HUNG_TASK_TIMEOUT_MS`. The
