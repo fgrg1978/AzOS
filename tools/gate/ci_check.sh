@@ -16198,6 +16198,64 @@ PY
         ok; rm -f "$log"
     }
     par "x86_64: buzzer drives the PC speaker (q35)" x86_pcspk_row
+    # Kconfig HUNG_DETECT: the hung-task detector's action end to end on x86_64
+    # (`hung_row`'s scenario: the ring-3 buzzer driver of the PC-speaker row's
+    # q35 machine and AHCI disk, a kernel built with the action under test).
+    x86_hung_row() { # <label> <RESTART|SAFE_STOP> <canary: yes|no>
+        local label="$1" action="$2" canary="$3" why=""
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local log="$CI_LOG_DIR/x86-${tag}.log" log2="$CI_LOG_DIR/x86-${tag}-2.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}" dimg="$CI_LOG_DIR/disk-x86-${tag}.img"
+        local def="$CI_LOG_DIR/x86-${tag}.defconfig"
+        local -a app=() dev=(-drive "file=$dimg,if=none,format=raw,id=sata0" -device ich9-ahci,id=ahci -device ide-hd,drive=sata0,bus=ahci.0)
+        [ "$canary" = yes ] && app=(-append "canary=hung-action-skip")
+        cp "${REPO_ROOT}/config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config" "$def"
+        printf 'CONFIG_HUNG_ACTION_%s=y\nCONFIG_HUNG_TASK_TIMEOUT_MS=1000\n' "$action" >>"$def"
+        rm -f "$kimg" "$kimg.features"
+        make x86_64 X86_64_DEFCONFIG="$def" X86_64_SELECT=hung-smoke X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-${tag}" X86_64_IMG="$kimg" >/dev/null 2>&1 \
+            && builtin printf '\n' >"$kimg.features" \
+            || { bad; echo "      make x86_64 (HUNG_ACTION_$action, hung-smoke) did not build"; return; }
+        if ! grep -q "^CONFIG_HUNG_ACTION_${action}=y\$" "$AZOS_OUT/build/x86_64-${tag}.config" \
+            || ! grep -q '^CONFIG_HUNG_TASK_TIMEOUT_MS=1000$' "$AZOS_OUT/build/x86_64-${tag}.config"; then
+            bad; echo "      the expanded configuration lost HUNG_ACTION_$action or the 1 s timeout"; return
+        fi
+        fresh_disk $AZOS_OUT/build/disk-x86_64.img && cp $AZOS_OUT/build/disk-x86_64.img "$dimg" \
+            || { bad; echo "      $AZOS_OUT/build/disk-x86_64.img did not build"; return; }
+        par_ready
+        X86_MACHINE=q35 x86_qemu "$kimg" "$log" 240 '\[HUNGACT\] (PASS|FAIL)|KERNEL PANIC' -smp 2 ${app[@]+"${app[@]}"} "${dev[@]}" \
+            || { rm -f "$kimg" "$kimg.features" "$dimg"; return; }
+        local verdict
+        verdict="$(grep -a "\[HUNGACT\] \(PASS\|FAIL\)" "$log" | sed -n '1p')"
+        grep -aq 'KERNEL PANIC' "$log" && why="$(grep -a 'KERNEL PANIC' "$log" | sed -n 1p)"
+        [ -z "$why" ] && ! grep -aq "\[HUNG\] task blocked on an owner" "$log" && why="the pass never reported the waiting task ([HUNG] line missing)"
+        if [ -z "$why" ] && [ "$canary" = yes ]; then
+            case "$verdict" in "[HUNGACT] FAIL"*) ;; *) why="the canary did not fail the row: '${verdict:-no verdict}'" ;; esac
+        elif [ -z "$why" ]; then
+            case "$verdict" in "[HUNGACT] PASS"*) ;; *) why="${verdict:-no [HUNGACT] verdict within 240 s}" ;; esac
+        fi
+        if [ -z "$why" ] && [ "$canary" = no ] && [ "$action" = SAFE_STOP ]; then
+            if ! grep -aq "SAFETY\] ESTOP record durable (action 15)" "$log"; then
+                why="the latching record (action 15) was never acknowledged durable"
+            else
+                X86_MACHINE=q35 x86_qemu "$kimg" "$log2" 120 'SAFETY\] ESTOP restored|booting released|KERNEL PANIC' -smp 2 "${dev[@]}" || true
+                grep -aq "SAFETY\] ESTOP restored: the last session ended latched (action 15)" "$log2" \
+                    || why="boot 2 did not restore the latch from the action-15 record: $(grep -a -m2 'SAFETY\] ESTOP' "$log2")"
+            fi
+        fi
+        rm -f "$kimg" "$kimg.features" "$dimg"
+        if [ -n "$why" ]; then
+            bad; echo "      $why"
+            grep -a "\[HUNG\]\|\[HUNGACT\]\|\[SUP\]\|\[SAFETY\]" "$log" | sed -n '1,10p' | sed 's|^|        |'
+            echo "      log kept: $log"; return
+        fi
+        ok; rm -f "$log" "$log2"
+    }
+    par "x86_64: hung: restart action" x86_hung_row "x86_64: hung: restart action" RESTART no
+    par "x86_64: hung: restart action, canary" x86_hung_row "x86_64: hung: restart action, canary" RESTART yes
+    par "x86_64: hung: safe stop action" x86_hung_row "x86_64: hung: safe stop action" SAFE_STOP no
+    par "x86_64: hung: safe stop action, canary" x86_hung_row "x86_64: hung: safe stop action, canary" SAFE_STOP yes
     # IOMMU on (x86_64): the rv/arm `iommu:` rows on q35 with the unit QEMU models
     # first on the bus: AMD-Vi (`amd-iommu,dma-remap=on`, found through the ACPI
     # IVRS; every device-table entry blocks until its function is placed). No
