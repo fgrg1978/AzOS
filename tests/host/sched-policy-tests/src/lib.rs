@@ -1666,6 +1666,7 @@ mod percpu_accessor_window {
         ("set_current_sched_params", "disable_all around the read and the writes"),
         ("set_current_partition", "disable_all around the read, for the tag cached under the id"),
         ("block_current", "disable_all at the top"),
+        ("ktest_unswitched_block", "disable_all around the read; pinned by its ktest"),
         ("ipc_wake_target_cpu", "co-location hint of a wake: a stale hart costs a placement, never a wrong task"),
         ("task_running_on_other_hart", "documented snapshot: a stale answer costs one bounded spin or one block"),
     ];
