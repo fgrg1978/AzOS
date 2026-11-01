@@ -291,3 +291,6 @@ wake-public-tid-canary	host-shared	kernel/src/boot/inspect_metrics.rs, the host 
 wdt-sim	pending	
 writev-per-segment-canary	pending	
 zone-share-canary	hot	crates/core/mm/src/pmm.rs: the frame allocator
+timer-wake-unbounded-canary	hot	crates/core/sched/src/scheduler/wake.rs: every timer pass of a tick
+fair-place-all-canary	hot	crates/core/sched/src/eevdf_core.rs: every wake and block of a fair task
+pi-heap-no-swap-canary	hot	crates/core/sync/src/pi_heap.rs: every wait-graph set operation

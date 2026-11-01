@@ -6,8 +6,8 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-riscv64-qemu	.text	2688606
-riscv64-qemu	.rodata	451008
-riscv64-qemu	.data	3258984
+riscv64-qemu	.text	2705878
+riscv64-qemu	.rodata	451376
+riscv64-qemu	.data	3258928
 riscv64-qemu	.bss	5795552
-riscv64-qemu	reason	the object table's map and unmap in flight: begin, commit, abandon, end (+4.8 KiB riscv64 .text); int/t1b had already grown 3.3 KiB within tolerance
+riscv64-qemu	reason	wait-graph heaps (O(log) under the graph lock), tick wake bound, placement sample, munmap gather page; +~5 KiB

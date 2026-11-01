@@ -39,7 +39,7 @@ crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	257	33	10	0	0	79
+crates/core/mm	258	33	10	0	0	79
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
@@ -47,7 +47,7 @@ crates/core/recovery	5	0	0	0	0	62
 crates/core/rings	23	4	4	0	0	98
 crates/core/sched	434	140	12	3	0	70
 crates/core/stdrt	45	1	4	0	0	-
-crates/core/sync	46	9	18	0	0	84
+crates/core/sync	44	9	18	0	0	84
 crates/core/syscall	41	2	0	0	0	39
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	26	0	1	0	0	30
