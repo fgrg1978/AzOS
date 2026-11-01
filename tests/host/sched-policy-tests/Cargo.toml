@@ -24,6 +24,7 @@ decision-dev = ["azos_decision/on"]
 eevdf-weight-canary = []
 eevdf-eligible-canary = []
 eevdf-fifo-canary = []
+fair-place-all-canary = []
 eevdf-noclamp-canary = []
 eevdf-nowake-canary = []
 # Canary of `sc.rs`: the real-time classes get the fair class's timer slack;

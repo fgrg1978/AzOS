@@ -87,6 +87,24 @@ config SCHED_TIMER_WAKE_BATCH
       latency budget.
       Ignored without the heap (the per-tick sweep has no batch).
 
+config SCHED_TIMER_WAKES_PER_IRQ
+    int "Timer sleepers woken per timer interrupt (sched-timer-heap)"
+    range 1 16384
+    default 16
+    help
+      The most due sleepers one timer interrupt wakes, its interrupts masked
+      for all of them. How many threads sleep to one instant is a user's to
+      choose; the ones left stay due, and the same interrupt arms the timer
+      for their deadline, so the next one comes as soon as interrupts open:
+      any pending interrupt, and the first woken tasks, run in between. Linux
+      has no such bound for its hard-interrupt hrtimers, only a retry limit
+      after the pass.
+      Cost: about 3,000 instructions a wake at FAIR_PLACE_SAMPLE's default.
+      Raise it when many sleepers share a deadline and must all run in one
+      tick's order; a storm past it costs one more interrupt and one more
+      pick per this many sleepers.
+      Ignored without the heap (the per-tick sweep has no bound).
+
 # ---------------------------------------------------------------------------
 # QoS timer tolerance (timer coalescing by QoS tier, after Apple's timer
 # leeway). The hint is SYS_SCHEDCTL's form 4 (`libsys::qos_hint`); the reader
@@ -389,6 +407,20 @@ config FAIR_SLICE_US
       deadlines. Per task it will come from the QoS class (the `qos_id` hook
       in `fairq::params`, not wired).
       Surfaces as `azos_limits::FAIR_SLICE_US`.
+
+config FAIR_PLACE_SAMPLE
+    int "Fair class: queued tasks a wake's placement reads"
+    range 2 16384
+    default 16
+    help
+      A task woken or put to sleep is placed by its lag against the mean
+      virtual time of its CPU's queue, read with interrupts masked, inside
+      the tick for a timer wake. A queue longer than this gives an estimate:
+      the mean of its first this many tasks, a lag limit or so from the true
+      one. Without a bound N sleepers woken onto one CPU cost O(N^2) in
+      one interrupt. The pick is not bounded by this: it reads the whole queue.
+      Cost: about 40 instructions a task on each wake and block. Raise it
+      for a more exact placement on long queues.
 
 config WAIT_SLICE_US
     int "Bounded sleeps: longest sleep without a wake (us)"

@@ -325,6 +325,9 @@ qos-rt-slack-canary = ["azos_sched/qos-rt-slack-canary"]
 wake-preempt-canary = ["azos_sched/wake-preempt-canary"]
 # The coalescing path (ktest `qos_timer_coalescing_path`): the slack is lost / the armed instant is not reported.
 qos-fire-canary = ["azos_sched/qos-fire-canary"]
+timer-wake-unbounded-canary = ["azos_sched/timer-wake-unbounded-canary"]
+fair-place-all-canary = ["azos_sched/fair-place-all-canary"]
+pi-heap-no-swap-canary = ["azos_sync/pi-heap-no-swap-canary"]
 qos-armed-at-canary = ["azos_sched/qos-armed-at-canary"]
 # Wave 13 (THREADS) canaries, see `crates/core/sched/Cargo.toml`.
 futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]

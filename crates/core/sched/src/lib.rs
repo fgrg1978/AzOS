@@ -187,6 +187,8 @@ pub use wait::{
     wake_expired_timers,
     wake_fast_ipc_server,
 };
+#[cfg(feature = "ktest")]
+pub use wait::ktest_take_tick_pass_max;
 
 /// The shared-memory / MMIO VA window, `[base, limit)`.
 ///
