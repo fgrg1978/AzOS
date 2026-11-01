@@ -10,4 +10,4 @@ riscv64-qemu	.text	2705878
 riscv64-qemu	.rodata	451376
 riscv64-qemu	.data	3258928
 riscv64-qemu	.bss	5795552
-riscv64-qemu	reason	wait-graph heaps (O(log) under the graph lock), tick wake bound, placement sample, munmap gather page; +~5 KiB
+riscv64-qemu	reason	wait-graph heaps (O(log) under the graph lock), tick wake bound, placement sample, munmap gather page; .text +17.3 KB against the last baseline
