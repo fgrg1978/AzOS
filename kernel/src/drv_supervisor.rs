@@ -1255,7 +1255,7 @@ pub(crate) fn start_supall_smoke() {
 #[cfg(feature = "hung-smoke")]
 pub(crate) fn start_hung_smoke() {
     azos_sched::task_create_affinity("hung-smoke", hung_act::run, 0,
-                                         azos_sched::DEFAULT_PRIORITY, 1);
+                                         azos_sched::DEFAULT_PRIORITY, -1);
 }
 
 /// The hung-task detector's action, end to end (Kconfig `HUNG_ACTION`, the
