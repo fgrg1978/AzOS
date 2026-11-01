@@ -371,11 +371,17 @@ fn mitigations() {
 
 /// RAM above this is left out: the direct map
 /// (`azos_arch::mmu::DIRECT_MAP_BASE`) covers `DIRECT_MAP_BYTES` (64 TiB)
-/// from PA 0. The PMM's span crosses the PC's 32-bit MMIO hole when RAM
-/// continues above 4 GiB; `kernel_mmio_windows` takes every E820 hole back
-/// out of the direct map before the kernel's table goes live, so no device
-/// page is mapped as normal memory.
-const RAM_LIMIT: u64 = azos_arch::mmu::DIRECT_MAP_BYTES;
+/// from PA 0, but the boot tables that serve it until the kernel's own go
+/// live hang from one PDPT page (`BOOT_MAP_MAX_BYTES`). The PMM's span crosses
+/// the PC's 32-bit MMIO hole when RAM continues above 4 GiB;
+/// `kernel_mmio_windows` takes every E820 hole back out of the direct map
+/// before the kernel's table goes live, so no device page is mapped as normal
+/// memory.
+const RAM_LIMIT: u64 = if azos_arch::mmu::BOOT_MAP_MAX_BYTES < azos_arch::mmu::DIRECT_MAP_BYTES {
+    azos_arch::mmu::BOOT_MAP_MAX_BYTES
+} else {
+    azos_arch::mmu::DIRECT_MAP_BYTES
+};
 
 /// The logical CPUs and their APIC IDs. `discover` already numbered them
 /// densely, the boot CPU first (`Platform::apic_ids`, the table the IPI, SIPI
@@ -399,7 +405,7 @@ pub fn firmware_memory(_fw: &()) -> azos_arch::FirmwareMemory {
         .map(|e| e.addr.saturating_add(e.size).saturating_sub(e.addr.max(RAM_LIMIT)))
         .sum();
     if high != 0 {
-        azos_drv_sys::kwarn!("[MEM] {} MiB of RAM above the direct map's {} GiB not used",
+        azos_drv_sys::kwarn!("[MEM] {} MiB of RAM above the first {} GiB the boot tables reach not used",
                              high >> 20, RAM_LIMIT >> 30);
     }
     let (mem_start, mem_size, from_firmware) = match azos_arch::firmware::bootinfo::ram_span(p.memmap(), RAM_LIMIT) {
@@ -445,12 +451,47 @@ pub fn pmm_floor(mem_start: usize, mem_size: usize, image_start_pa: usize, image
     if let Some(t) = p.trampoline_pa {
         add(t, azos_arch::PAGE_SIZE as u64);
     }
-    match azos_arch::firmware::bootinfo::pick_pmm_floor(p.memmap(), &avoid[..n], bytes, LOW_MEMORY) {
-        Some(a) => a as usize,
+    // The boot tables map the first BOOT_MAP_GIB GiB only, yet `vmm::init`
+    // and the page tables it allocates write through the direct map into
+    // whatever frame the PMM hands out. The directories for the RAM past
+    // them go first in the reserved prefix, below the descriptors.
+    let mem_end = (mem_start + mem_size) as u64;
+    let pd_bytes = widen_pages(mem_end) * azos_arch::PAGE_SIZE as u64;
+    match azos_arch::firmware::bootinfo::pick_pmm_floor(p.memmap(), &avoid[..n], pd_bytes + bytes, LOW_MEMORY) {
+        Some(a) if pd_bytes == 0 => a as usize,
+        Some(a) if a + pd_bytes <= (azos_arch::mmu::BOOT_MAP_GIB as u64) << 30 => {
+            if !canary!("x86-boot-map-narrow") {
+                widen_boot_map(a, pd_bytes, mem_end);
+            }
+            (a + pd_bytes) as usize
+        }
         // No fit in the map: the old rule (the descriptors after the image),
         // which `pmm::init` refuses, with the reason, if they do not fit.
-        None => image_end_pa,
+        _ => image_end_pa,
     }
+}
+
+/// Page directories the boot tables need for RAM up to `mem_end`.
+fn widen_pages(mem_end: u64) -> u64 {
+    (mem_end.div_ceil(1 << 30)).saturating_sub(azos_arch::mmu::BOOT_MAP_GIB as u64)
+}
+
+/// Map RAM `[BOOT_MAP_GIB GiB, mem_end)` in the boot tables, with the
+/// directories at physical `pd_pa` (`pd_bytes`, inside the first GiBs the
+/// tables already map).
+fn widen_boot_map(pd_pa: u64, pd_bytes: u64, mem_end: u64) {
+    extern "C" {
+        static mut boot_pdpt: [u64; 512];
+    }
+    let pds = azos_mm::addr::phys_to_virt(pd_pa as usize) as *mut [u64; 512];
+    // SAFETY: boot CPU, no other running; `pdpt` is boot.S's own table, and the
+    // directories are RAM frames of the PMM's reserved prefix, reached through
+    // the direct map the boot tables already give below `BOOT_MAP_GIB` GiB.
+    let added = unsafe {
+        let pds = core::slice::from_raw_parts_mut(pds, (pd_bytes / azos_arch::PAGE_SIZE as u64) as usize);
+        azos_arch::mmu::fill_boot_extension(&mut *core::ptr::addr_of_mut!(boot_pdpt), pds, pd_pa, mem_end)
+    };
+    kprintln!("[MM] Boot direct map widened by {} GiB to {:#x}", added, mem_end);
 }
 
 /// The first MiB: real-mode memory, the BIOS data area, the trampoline page.
