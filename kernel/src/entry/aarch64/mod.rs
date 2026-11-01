@@ -120,17 +120,27 @@ pub(crate) fn boot_alias_extension_pages(ram_start: u64, ram_end: u64) -> usize 
     azos_arch::mmu::boot_alias_extension_tables(azos_arch::mmu::GRANULE, dram_base, ram_start, ram_end)
 }
 
-/// Map the RAM past the boot alias's first gigabyte in the `TTBR1_EL1` table
-/// `aarch64_early_ttbr1_alias` built, with the pages at `fresh_pa` (inside
-/// that gigabyte: [`boot_alias_extension_pages`] of them).
+/// Map the RAM past the first gigabyte of both boot tables, the `TTBR1_EL1`
+/// alias `aarch64_early_ttbr1_alias` built and the identity map in `TTBR0_EL1`
+/// that a secondary runs on until it attaches the kernel table (its stack is in
+/// the PMM's RAM), with the pages at `fresh_pa`: [`boot_alias_extension_pages`]
+/// for each, the alias first.
 pub(crate) fn extend_boot_alias(ram_start: u64, ram_end: u64, fresh_pa: u64) {
     let dram_base = BOOT_DRAM_BASE.load(Ordering::Relaxed);
-    let fresh = azos_mm::addr::phys_to_virt(fresh_pa as usize) as *mut azos_arch::mmu::setup::PageTable;
-    // SAFETY: boot CPU, before the PMM hands out a frame; the tables are the
-    // alias's own statics, and the pages are the PMM's reserved prefix.
+    let pages = boot_alias_extension_pages(ram_start, ram_end);
+    let page = azos_arch::PAGE_SIZE as u64;
+    let fresh = |pa: u64| azos_mm::addr::phys_to_virt(pa as usize) as *mut azos_arch::mmu::setup::PageTable;
+    // SAFETY: boot CPU, before the PMM hands out a frame and before a
+    // secondary starts; the tables are the boot statics, and the pages are the
+    // PMM's reserved prefix.
     unsafe {
         azos_arch::mmu::setup::extend_ttbr1_alias(
-            &raw mut boot_alias::L1, &raw mut boot_alias::L2, fresh, fresh_pa, dram_base, ram_start, ram_end);
+            &raw mut boot_alias::L1, &raw mut boot_alias::L2, fresh(fresh_pa), fresh_pa,
+            dram_base, ram_start, ram_end, true);
+        let id_pa = fresh_pa + pages as u64 * page;
+        azos_arch::mmu::setup::extend_ttbr1_alias(
+            &raw mut BOOT_ID_L1, &raw mut BOOT_ID_L2, fresh(id_pa), id_pa,
+            dram_base, ram_start, ram_end, false);
     }
 }
 

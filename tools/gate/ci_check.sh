@@ -14946,7 +14946,7 @@ PY
     a64_ktest_5g_row() { KTEST_QEMU_EXTRA="-m 5G" ktest_row "$@"; }
     par "ktest above 4 GiB (arm)" a64_ktest_5g_row "ktest above 4 GiB (arm)" arm "" "" "" \
         '^\[MM\] RAM detected via DTB: 0x40000000 - 0x180000000 \(5120 MiB\)$
-^\[MM\] Boot linear map extended over RAM up to 0x180000000 \(4 table pages\)$'
+^\[MM\] Boot maps extended over RAM up to 0x180000000 \(8 table pages\)$'
     a64_above_4g_canary_row() { # a64_above_4g_canary_row <label>
         local label="$1" why="" tag log kimg pid i=0
         printf "  %-26s" "${label}..."
@@ -14973,7 +14973,7 @@ PY
         tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
         if grep -aq '^1\.\.[0-9]' "$log"; then why="the ktest plan ran: the narrow boot alias did not break the boot"
         elif ! grep -aqE '^\[MM\] RAM detected via DTB: 0x40000000 - 0x180000000 \(5120 MiB\)$' "$log"; then why="the guest did not see 5120 MiB of RAM"
-        elif grep -aq '^\[MM\] Boot linear map extended' "$log"; then why="the canary did not keep the boot alias narrow"
+        elif grep -aq '^\[MM\] Boot maps extended' "$log"; then why="the canary did not keep the boot alias narrow"
         elif ! grep -aqE 'FATAL.*(write|data abort).*0xffffff81[0-9a-f]{8}' "$log"; then why="no kernel fault in the linear map above the first gigabyte"
         fi
         if [ -z "$why" ]; then ok; rm -f "$log"; return; fi

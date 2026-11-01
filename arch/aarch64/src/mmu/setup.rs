@@ -662,22 +662,23 @@ pub unsafe fn enable_ttbr1_alias(cfg: Ttbr1AliasConfig) {
     }
 }
 
-/// Add RAM `[ram_start, end)` past the alias's gigabyte window to the live
-/// `TTBR1_EL1` table: 2 MiB blocks, the same attributes as the window, in the
+/// Add RAM `[ram_start, end)` past the gigabyte window of a boot table (the
+/// `TTBR1_EL1` alias, `kernel_only`, or the identity map in `TTBR0_EL1`, which
+/// is also executable by EL0's rules): 2 MiB blocks, the window's attributes, in the
 /// pages at `fresh` (physical `fresh_pa`, [`crate::mmu::boot_alias_extension_tables`] of
 /// them, zeroed here), linked from `l1`. `own_l2` is the window's table.
 /// Entries go into slots that were invalid, so no break-before-make.
 ///
 /// # Safety
-/// `l1` and `own_l2` are the tables [`enable_ttbr1_alias`] was given for
-/// `base_pa`, and `fresh` points at that many exclusive pages whose physical
+/// `l1` and `own_l2` are the tables [`enable_ttbr1_alias`] or
+/// [`enable_identity_map`] was given for `base_pa`, and `fresh` points at that many exclusive pages whose physical
 /// address is `fresh_pa`; the boot CPU only, nothing reading the range yet.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn extend_ttbr1_alias(
     l1: *mut PageTable, own_l2: *mut PageTable, fresh: *mut PageTable, fresh_pa: u64,
-    base_pa: u64, ram_start: u64, end: u64,
+    base_pa: u64, ram_start: u64, end: u64, kernel_only: bool,
 ) {
-    let normal = attr_idx(MAIR_IDX_NORMAL) | SH_INNER | UXN;
+    let normal = attr_idx(MAIR_IDX_NORMAL) | SH_INNER | if kernel_only { UXN } else { 0 };
     let own = G.vpn(base_pa as usize, 2);
     let mut used = 0usize;
     let mut table = own_l2;
