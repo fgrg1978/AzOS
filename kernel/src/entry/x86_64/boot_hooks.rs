@@ -916,7 +916,7 @@ pub fn irqchip_init(hart_id: usize, _fw_table: usize) {
     azos_arch::irq::apic::init_local(hart_id);
     // The TLB shootdown: a fixed-vector IPI per target CPU, served by
     // `tlb::handle_ipi` on each (x86 has no broadcast invalidate).
-    azos_arch::tlb::register_ipi_sender(send_tlb_ipi);
+    azos_arch::tlb::register_ipi_sender(send_tlb_ipi, tlb_no_preempt, azos_sync::preempt::disabled);
     crate::entry::x86_64::irq::set_tlb_ipi_handler(serve_tlb_ipi);
     let gsis = azos_arch::irq::ioapic::init();
     kprintln!("[APIC] LAPIC ID {} on, {} IOAPIC GSIs masked, device vectors from {}",
@@ -934,6 +934,18 @@ pub fn irqchip_init(hart_id: usize, _fw_table: usize) {
     if routed != 0 {
         kprintln!("[APIC] {} virtio-mmio GSI(s) redirected (masked)", routed);
     }
+}
+
+/// Shootdowns seen in interrupt context (ktest `tlb_no_shootdown_from_an_interrupt`).
+static TLB_REQUESTS_IN_IRQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn tlb_no_preempt(body: &mut dyn FnMut()) {
+    let _g = azos_sync::preempt::critical_section();
+    // An interrupt that landed on the request lock's holder would wait for itself.
+    if azos_sync::isr_depth::in_isr(azos_sched::smp::current_cpu_id()) {
+        TLB_REQUESTS_IN_IRQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    body();
 }
 
 fn send_tlb_ipi(mut mask: usize) {
@@ -1294,28 +1306,73 @@ pub(crate) fn user_visible_state_wrong(cpu: usize, bad: &mut dyn FnMut(usize, u6
 mod tlb_request_ktests {
     use azos_arch::Interrupts;
 
-    // A shooter preempted holding the request lock leaves every other shooter
-    // spinning, a more urgent one on the same CPU for good: its window is masked,
-    // and `remote` asks for that itself, whatever the caller's interrupts are.
-    // Canary `tlb-request-unmasked`: `not ok`.
+    /// `(preemption off, interrupts open)` over a request's ack wait, from a task
+    /// with both on; `None` with one CPU.
+    fn request_window() -> Option<(bool, bool)> {
+        let harts = azos_percpu::nr_cpu_ids();
+        if harts < 2 {
+            return None;
+        }
+        let irq = azos_arch::ARCH.disable_all();
+        let me = azos_sched::smp::current_cpu_id();
+        azos_arch::ARCH.enable_all();
+        // Any other online CPU: its vector or this CPU's wait serves it.
+        let other = if me == 0 { 1 } else { 0 };
+        let window = azos_arch::tlb::ktest_request_window(1 << other);
+        azos_arch::ARCH.restore(irq);
+        Some(window)
+    }
+
+    // A shooter switched out holding the request lock leaves every other shooter
+    // spinning, a more urgent one on the same CPU for good: `remote` turns
+    // preemption off for itself, whatever its caller's state.
+    // Canary `tlb-request-preemptible`: `not ok`.
     azos_ktest::ktest_late! {
-        fn tlb_request_window_is_masked() {
-            let harts = azos_percpu::nr_cpu_ids();
-            if harts < 2 {
+        fn tlb_request_holder_keeps_its_cpu() {
+            if canary!("tlb-request-preemptible") {
+                azos_arch::tlb::canary_request_preemptible();
+            }
+            match request_window() {
+                Some((false, _)) => Err("the shootdown request lock was held with preemption on"),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    // The holder's wait lasts as long as its slowest target: it must not hold off
+    // this CPU's interrupts for that long. Canary `tlb-request-wait-masked`: `not ok`.
+    azos_ktest::ktest_late! {
+        fn tlb_request_wait_takes_interrupts() {
+            if canary!("tlb-request-wait-masked") {
+                azos_arch::tlb::canary_request_wait_masked();
+            }
+            match request_window() {
+                Some((_, false)) => Err("the shootdown's ack wait ran with interrupts masked"),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    // A shootdown from an interrupt that landed on the request lock's holder waits
+    // for itself. What this boot did so far: every shootdown path a ktest kernel
+    // took came through `tlb_no_preempt`, which counts those in interrupt context.
+    // Canary `tlb-shootdown-in-irq` plants one, as an interrupt's context looks to
+    // the count: `not ok`.
+    azos_ktest::ktest_late! {
+        fn tlb_no_shootdown_from_an_interrupt() {
+            if azos_percpu::nr_cpu_ids() < 2 {
                 return Ok(());
             }
-            if canary!("tlb-request-unmasked") {
-                azos_arch::tlb::canary_request_unmasked();
+            if canary!("tlb-shootdown-in-irq") {
+                let _irq = azos_sync::scope::IrqOff::new();
+                let me = azos_sched::smp::current_cpu_id();
+                azos_sync::isr_depth::enter(me);
+                let other = if me == 0 { 1 } else { 0 };
+                azos_arch::tlb::ktest_request_window(1 << other);
+                azos_sync::isr_depth::exit(me);
             }
-            let irq = azos_arch::ARCH.disable_all();
-            let me = azos_sched::smp::current_cpu_id();
-            azos_arch::ARCH.enable_all();
-            // Any other online CPU: its vector or this CPU's wait serves it.
-            let other = if me == 0 { 1 } else { 0 };
-            let masked = azos_arch::tlb::ktest_request_window_masked(1 << other);
-            azos_arch::ARCH.restore(irq);
-            if !masked {
-                return Err("the shootdown request was posted with interrupts open");
+            if super::TLB_REQUESTS_IN_IRQ.load(core::sync::atomic::Ordering::Relaxed) != 0 {
+                return Err("a shootdown was issued from an interrupt");
             }
             Ok(())
         }

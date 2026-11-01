@@ -37,7 +37,9 @@
 //! [`handle_ipi`] from it), and waits until every bit is clear. A target
 //! flushes in its handler. A CPU that is itself waiting to shoot (the
 //! request lock) services its own bit while it spins, so two shooters never
-//! wait on each other.
+//! wait on each other. The holder keeps its CPU (preemption off: a holder
+//! switched out leaves every shooter spinning) and takes interrupts through the
+//! ack wait, unless its caller masked them.
 //!
 //! **A target that waits for a lock with interrupts masked.** The shooter
 //! may hold a lock across the shootdown (the MemObj table across a revoke's
@@ -53,6 +55,15 @@
 //! a flush); here holding a lock across a shootdown is allowed, and what
 //! must not happen is a masked wait for something the shooter holds that is
 //! not a lock wait (a raw flag spin).
+//!
+//! **What an interrupt on the holder may not do.** It runs on top of the request
+//! lock, so anything that waits for that lock waits for it to return: it may not
+//! shoot down (`tlb_no_shootdown_from_an_interrupt` holds that), and it may not
+//! take a lock a shootdown is issued under, whose holder would be waiting for the
+//! request lock. A lock an interrupt takes is taken irqsave everywhere (lockdep's
+//! `lockdep_irq_safe_class_taken_irqsave`), and no irqsave lock is held across a
+//! shootdown except the text-write locks (`text_poke::lock_text`), which no
+//! interrupt takes: the `#BP` arm reads atomics only.
 //!
 //! **With INVLPGB (AMD Zen 3 and later).** `INVLPGB` broadcasts the
 //! invalidation through the fabric to every logical processor, the issuing
@@ -356,12 +367,27 @@ azos_common::ro_hook! {
     /// this mask" (unset = none yet).
     static IPI_SENDER: fn(usize);
 }
+azos_common::ro_hook! {
+    /// Run the closure with preemption off on this CPU (`azos_sync::preempt`,
+    /// which sits above this crate).
+    static NO_PREEMPT: fn(&mut dyn FnMut());
+}
+azos_common::ro_hook! {
+    /// Is preemption off on this CPU? Read by the ktests' window record only.
+    static PREEMPT_OFF: fn() -> bool;
+}
 
-/// Register the sender of the shootdown vector. The LAPIC code calls it once
-/// its ICR works, before any secondary CPU starts; its vector handler calls
-/// [`handle_ipi`].
-pub fn register_ipi_sender(send: fn(cpu_mask: usize)) {
+/// Register the sender of the shootdown vector and the scheduler's half of the
+/// request window. The LAPIC code calls it once its ICR works, before any
+/// secondary CPU starts; its vector handler calls [`handle_ipi`].
+pub fn register_ipi_sender(
+    send: fn(cpu_mask: usize),
+    no_preempt: fn(&mut dyn FnMut()),
+    preempt_off: fn() -> bool,
+) {
     IPI_SENDER.set(send);
+    NO_PREEMPT.set(no_preempt);
+    PREEMPT_OFF.set(preempt_off);
 }
 
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
@@ -525,70 +551,111 @@ fn remote(mask: usize, root: usize, va: usize, len: usize) {
         // another CPU still translates.
         panic!("x86_64 tlb: shootdown to CPU mask {mask:#x} with no IPI sender registered");
     };
-    // Masked while the lock is held: a holder preempted here leaves every
-    // shooter spinning, a more urgent one on this CPU for good. Open between
-    // attempts, so the wait for another shooter costs no interrupt latency.
-    let irq = loop {
-        let irq = mask_request();
+    let no_preempt = NO_PREEMPT.get().expect("registered with the sender");
+    let done = core::cell::Cell::new(false);
+    let mut attempt = || {
         if REQUEST_LOCK
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
-            break irq;
+            run_request(mask, root, va, len, send);
+            REQUEST_LOCK.store(false, Ordering::Release);
+            done.set(true);
         }
-        crate::X86_64.restore(irq);
-        // Another shooter's request may name this CPU: serve it, or the
-        // two wait on each other. `serve_here` reads the CPU per iteration:
-        // `me` (the CPU that flushed) may not be the one spinning any more.
-        serve_waiting();
-        core::hint::spin_loop();
     };
-    if azos_limits::CANARY_RUNTIME && crate::X86_64.interrupts_enabled() {
-        REQUEST_WINDOW_OPEN.store(true, Ordering::Relaxed);
+    // Preemptible between attempts, so the wait for another shooter costs no
+    // scheduling latency.
+    while !done.get() {
+        if azos_limits::CANARY_RUNTIME && CANARY_REQUEST_PREEMPTIBLE.load(Ordering::Relaxed) {
+            attempt();
+        } else {
+            no_preempt(&mut attempt);
+        }
+        if !done.get() {
+            // Another shooter's request may name this CPU: serve it, or the
+            // two wait on each other. `serve_here` reads the CPU per iteration:
+            // `me` (the CPU that flushed) may not be the one spinning any more.
+            serve_waiting();
+            core::hint::spin_loop();
+        }
     }
+}
+
+/// Post and signal, then wait for every ack. The caller holds the request lock.
+#[cfg(target_arch = "x86_64")]
+fn run_request(mask: usize, root: usize, va: usize, len: usize, send: fn(usize)) {
+    // Masked: an xAPIC ICR write is two registers, and a handler on this CPU
+    // may send an IPI of its own.
+    let irq = crate::X86_64.disable_all();
     post(mask, root, va, len);
     send(mask);
-    // The task may have moved to a CPU in `mask` since it flushed, and this
-    // mask now holds that CPU's own vector back.
+    crate::X86_64.restore(irq);
+    let held = if azos_limits::CANARY_RUNTIME {
+        canary_note_window()
+    } else {
+        None
+    };
+    // The task may have moved to a CPU in `mask` since it flushed, and with this
+    // CPU's interrupts masked by the caller its own vector is held back.
     while PENDING.load(Ordering::Acquire) != 0 {
         serve_waiting();
         core::hint::spin_loop();
     }
-    REQUEST_LOCK.store(false, Ordering::Release);
-    crate::X86_64.restore(irq);
-}
-
-/// The request window's mask; the runtime canary leaves it open.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn mask_request() -> azos_arch_api::InterruptState {
-    if azos_limits::CANARY_RUNTIME && CANARY_REQUEST_UNMASKED.load(Ordering::Relaxed) {
-        return azos_arch_api::InterruptState(crate::cpu::rflags() & crate::cpu::RFLAGS_IF);
+    if let Some(irq) = held {
+        crate::X86_64.restore(irq);
     }
-    crate::X86_64.disable_all()
 }
 
-/// Runtime canary `tlb-request-unmasked` (`kernel/src/canary_rt.rs`): the lock's
-/// holder can be preempted (ktest `tlb_request_window_is_masked`).
+/// Runtime canary `tlb-request-preemptible` (`kernel/src/canary_rt.rs`): the lock's
+/// holder can be switched out (ktest `tlb_request_holder_keeps_its_cpu`).
 #[cfg(target_arch = "x86_64")]
-static CANARY_REQUEST_UNMASKED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-/// A request was posted with interrupts open (`CANARY_RUNTIME` builds).
+static CANARY_REQUEST_PREEMPTIBLE: AtomicBool = AtomicBool::new(false);
+/// Runtime canary `tlb-request-wait-masked`: the ack wait runs masked (ktest
+/// `tlb_request_wait_takes_interrupts`).
 #[cfg(target_arch = "x86_64")]
-static REQUEST_WINDOW_OPEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CANARY_REQUEST_WAIT_MASKED: AtomicBool = AtomicBool::new(false);
+/// A request's wait began with preemption on (`CANARY_RUNTIME` builds).
+#[cfg(target_arch = "x86_64")]
+static REQUEST_WINDOW_PREEMPTIBLE: AtomicBool = AtomicBool::new(false);
+/// A request's wait began with interrupts open (`CANARY_RUNTIME` builds).
+#[cfg(target_arch = "x86_64")]
+static REQUEST_WAIT_OPEN: AtomicBool = AtomicBool::new(false);
 
-/// See [`CANARY_REQUEST_UNMASKED`].
+/// What the window was as the wait begins; `Some` to restore after it when
+/// the canary masked it.
 #[cfg(target_arch = "x86_64")]
-pub fn canary_request_unmasked() {
-    CANARY_REQUEST_UNMASKED.store(true, Ordering::Relaxed);
+fn canary_note_window() -> Option<azos_arch_api::InterruptState> {
+    let held = CANARY_REQUEST_WAIT_MASKED.load(Ordering::Relaxed).then(|| crate::X86_64.disable_all());
+    if !PREEMPT_OFF.get().is_some_and(|off| off()) {
+        REQUEST_WINDOW_PREEMPTIBLE.store(true, Ordering::Relaxed);
+    }
+    if crate::X86_64.interrupts_enabled() {
+        REQUEST_WAIT_OPEN.store(true, Ordering::Relaxed);
+    }
+    held
 }
 
-/// Ktest `tlb_request_window_is_masked`: post one flush of a page no space maps to
-/// `mask`, with interrupts on at the call; whether its window was masked.
+/// See [`CANARY_REQUEST_PREEMPTIBLE`].
 #[cfg(target_arch = "x86_64")]
-pub fn ktest_request_window_masked(mask: usize) -> bool {
-    REQUEST_WINDOW_OPEN.store(false, Ordering::Relaxed);
+pub fn canary_request_preemptible() {
+    CANARY_REQUEST_PREEMPTIBLE.store(true, Ordering::Relaxed);
+}
+
+/// See [`CANARY_REQUEST_WAIT_MASKED`].
+#[cfg(target_arch = "x86_64")]
+pub fn canary_request_wait_masked() {
+    CANARY_REQUEST_WAIT_MASKED.store(true, Ordering::Relaxed);
+}
+
+/// The ktests' request window, with interrupts and preemption on at the call:
+/// post one flush of a page no space maps to `mask`. Answers whether the wait
+/// began with preemption off, and whether it began with interrupts open.
+#[cfg(target_arch = "x86_64")]
+pub fn ktest_request_window(mask: usize) -> (bool, bool) {
+    REQUEST_WINDOW_PREEMPTIBLE.store(false, Ordering::Relaxed);
+    REQUEST_WAIT_OPEN.store(false, Ordering::Relaxed);
     remote(mask, ANY_ROOT, 0, 0x1000);
-    !REQUEST_WINDOW_OPEN.load(Ordering::Relaxed)
+    (!REQUEST_WINDOW_PREEMPTIBLE.load(Ordering::Relaxed), REQUEST_WAIT_OPEN.load(Ordering::Relaxed))
 }
 
 /// Invalidate `[va, va + len)` (everything with `len == ALL`) of the address

@@ -15417,7 +15417,8 @@ PY
     # +2 futex_look_under_the_table_faults_nothing,
     # ipc_handover_abort_wakes_the_old_server -> 143.
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
-    KTEST_N_X86=144
+    # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
+    KTEST_N_X86=146
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16453,7 +16454,9 @@ PY
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""
     par "ktest 17 cpus canary (x86)" x86_ktest_17cpu_row "ktest 17 cpus canary (x86)" "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
-    par "ktest tlb request window canary (x86)" x86_ktest_row "ktest tlb request window canary (x86)" "" "tlb_request_window_is_masked" "canary=tlb-request-unmasked"
+    par "ktest tlb request window canary (x86)" x86_ktest_row "ktest tlb request window canary (x86)" "" "tlb_request_holder_keeps_its_cpu" "canary=tlb-request-preemptible"
+    par "ktest tlb request wait canary (x86)" x86_ktest_row "ktest tlb request wait canary (x86)" "" "tlb_request_wait_takes_interrupts" "canary=tlb-request-wait-masked"
+    par "ktest tlb shootdown in irq canary (x86)" x86_ktest_row "ktest tlb shootdown in irq canary (x86)" "" "tlb_no_shootdown_from_an_interrupt" "canary=tlb-shootdown-in-irq"
     # K1: with a disk, and the RT-inline canary (see `ktest disk (rv)`).
     par "ktest disk (x86)" x86_ktest_row "ktest disk (x86)" "" "" "" $AZOS_OUT/build/disk-x86_64.img
     par "ktest disk RT-inline canary (x86)" x86_ktest_row "ktest disk RT-inline canary (x86)" "" \

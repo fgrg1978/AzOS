@@ -85,8 +85,14 @@ pub(crate) const NAMES: &[&str] = &[
     // record (ktest `timer_record_on_the_last_cpu`; the row needs -smp 17).
     "timer-record-16",
     // arch/x86_64/src/tlb.rs `remote`: the shootdown request lock is held with
-    // interrupts open (ktest `tlb_request_window_is_masked`).
-    "tlb-request-unmasked",
+    // preemption on (ktest `tlb_request_holder_keeps_its_cpu`).
+    "tlb-request-preemptible",
+    // arch/x86_64/src/tlb.rs `run_request`: the ack wait runs with interrupts
+    // masked (ktest `tlb_request_wait_takes_interrupts`).
+    "tlb-request-wait-masked",
+    // kernel/src/entry/x86_64/boot_hooks.rs: a shootdown from interrupt context
+    // (ktest `tlb_no_shootdown_from_an_interrupt`).
+    "tlb-shootdown-in-irq",
     // scheduler/donation.rs `apply_prio`: a priority change does not look for a
     // wake that linked the task under the old priority (ktest
     // `pi_boost_lands_on_a_racing_wake`).
