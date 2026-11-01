@@ -22,6 +22,8 @@ global_asm!(
     kva = const azos_arch::mmu::KERNEL_VA_OFFSET,
     // The direct map's base (RAM, page tables), mapped by boot.S's tables too.
     dmb = const azos_arch::mmu::DIRECT_MAP_BASE,
+    // GiB of RAM the boot tables map (one page directory each).
+    boot_gib = const azos_arch::mmu::BOOT_MAP_GIB,
     // Kconfig `KASLR` not `n`: the image is linked position-independent, and
     // `long_entry` picks its base and applies its relocations
     // (`x86_64_early_kaslr`, arch/x86_64/src/mmu/kaslr_boot.rs).

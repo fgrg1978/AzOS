@@ -44,6 +44,11 @@ pub(crate) const NAMES: &[&str] = &[
     // is mapped 1:1 in the low half again (ktest `x86_low_half_maps_no_ram`,
     // x86_64 only).
     "x86-low-alias",
+    // entry/x86_64/boot_hooks.rs `pmm_floor`: the boot tables keep to the first
+    // BOOT_MAP_GIB GiB of RAM, so `vmm::init` writes a page-table page above
+    // them and the boot faults (gate row `ktest above 4 GiB canary (x86)`,
+    // x86_64 only).
+    "x86-boot-map-narrow",
     // entry/x86_64/ext/tsc_watchdog.rs: the TSC is made to run four times the
     // watchdog's bound fast, so the watchdog must demote it (gate row
     // `x86_64: TSC watchdog demotes a skewed TSC (q35)`, x86_64 only).

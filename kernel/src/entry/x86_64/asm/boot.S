@@ -31,7 +31,7 @@
 //   2. The Kconfig BASELINE (X86_64_LEVEL), from CPUID, before any code
 //      compiled for it runs; below it, print why on COM1 and stop (exit
 //      through isa-debug-exit when QEMU has one, then halt).
-//   3. Clear .bss; page tables in 2 MiB pages: 0..4 GiB 1:1 (PML4[0]: the
+//   3. Clear .bss; page tables in 2 MiB pages: 0..BOOT_GIB GiB 1:1 (PML4[0]: the
 //      code running now, the firmware tables `platform_impl::discover`
 //      reads by physical address, the LAPIC/IOAPIC/HPET windows); the same
 //      PDPT again at DMB, the direct map (PML4[273]: the frames the PMM and
@@ -61,6 +61,7 @@
 .equ DEBUG_EXIT, 0xF4
 .equ KVA, {kva}
 .equ DMB, {dmb}
+.equ BOOT_GIB, {boot_gib}
 .equ DMB_ROOT_SLOT, ((DMB >> 39) & 511)
 .if (DMB >> 30) & 511
 .error "DIRECT_MAP_BASE must be 512 GiB-aligned: its slot reuses the 1:1 PDPT"
@@ -72,13 +73,13 @@
 .globl _kernel_va_offset_check
 .set _kernel_va_offset_check, {kva}
 // The PML4 (and PML5) slot and the first PDPT slot of KVA, and the GiBs of
-// physical memory mapped there (one identity PD each, of the four below).
+// physical memory mapped there (one identity PD each, BOOT_GIB below).
 .equ KVA_ROOT_SLOT, ((KVA >> 39) & 511)
 .equ KVA_LA57_SLOT, ((KVA >> 48) & 511)
 .equ KVA_PDPT_SLOT, ((KVA >> 30) & 511)
 .equ KVA_GIBS, ((~KVA + 1) >> 30)
-.if KVA_GIBS > 4
-.error "KERNEL_VA_OFFSET maps more than the 4 GiB boot.S's identity PDs cover"
+.if KVA_GIBS > BOOT_GIB
+.error "KERNEL_VA_OFFSET maps more than the GiBs boot.S's identity PDs cover"
 .endif
 .if KVA_PDPT_SLOT + KVA_GIBS > 512
 .error "KERNEL_VA_OFFSET's map runs past the end of its PDPT"
@@ -158,7 +159,7 @@ _start:
     xorl %eax, %eax
     rep stosb
 
-    // PML4[0] -> PDPT; PDPT[0..3] -> PD0..PD3; PDn[j] = 2 MiB leaf
+    // PML4[0] -> PDPT; PDPT[0..BOOT_GIB) -> PD0..; PDn[j] = 2 MiB leaf
     movl $boot_pml4_pa, %ebp
     movl $boot_pdpt_pa, %eax
     orl $0x3, %eax
@@ -167,7 +168,7 @@ _start:
     movl $boot_pdpt_hi_pa, %eax
     orl $0x3, %eax
     movl %eax, (KVA_ROOT_SLOT * 8)(%ebp)
-    // PML4[DMB_ROOT_SLOT] -> the 1:1 PDPT: PA 0..4 GiB at DMB too.
+    // PML4[DMB_ROOT_SLOT] -> the 1:1 PDPT: PA 0..BOOT_GIB GiB at DMB too.
     movl $boot_pdpt_pa, %eax
     orl $0x3, %eax
     movl %eax, (DMB_ROOT_SLOT * 8)(%ebp)
@@ -195,7 +196,7 @@ _start:
     movl %eax, (%ebp,%esi,8)
     movl %edx, 4(%ebp,%esi,8)
     incl %esi
-    cmpl $2048, %esi
+    cmpl $(BOOT_GIB * 512), %esi
     jne 2b
 
     // LA57 (Kconfig X86_LA57, AZOS_X86_LA57_POLICY: 0 n, 1 probe,
@@ -474,7 +475,7 @@ boot_pdpt:
 boot_pdpt_hi:
     .skip 4096
 boot_pd:
-    .skip 4096 * 4
+    .skip 4096 * BOOT_GIB
 .if {kaslr}
 // The slid image's page directory (Kconfig KASLR): 2 MiB blocks of the image
 // at its new base, hung from boot_pdpt_hi by `x86_64_early_kaslr`.

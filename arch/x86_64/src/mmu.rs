@@ -197,6 +197,35 @@ pub const DIRECT_MAP_BASE: u64 = 0xFFFF_8880_0000_0000;
 /// 273..400), Linux's 4-level `MAX_PHYSMEM_BITS` = 46. RAM above it is left
 /// out of the frame allocator (`boot_hooks::firmware_memory`).
 pub const DIRECT_MAP_BYTES: u64 = 1 << 46;
+/// GiB of physical memory the boot tables map 1:1 and at [`DIRECT_MAP_BASE`]
+/// (one page directory each, 2 MiB leaves): boot.S and `limine_prepare` build
+/// them before the memory map is known. RAM past them is added by
+/// [`fill_boot_extension`] before the first frame there is touched.
+pub const BOOT_MAP_GIB: usize = 4;
+const _: () = assert!(BOOT_MAP_GIB <= 4, "boot.S puts bits 32..33 of a 2 MiB frame in the high dword");
+/// What the boot tables can reach at most: their one PDPT page.
+pub const BOOT_MAP_MAX_BYTES: u64 = (PT_ENTRIES as u64) << 30;
+
+/// Extend the boot direct map over RAM `[BOOT_MAP_GIB GiB, end)`: one page
+/// directory per GiB in `pds` (at physical `pd_pa`, consecutive), 2 MiB leaves
+/// up to `end`, hung from `pdpt` after the boot ones. The directories are
+/// zeroed first (they come from RAM, not from `.bss`). Returns the GiBs added.
+pub fn fill_boot_extension(pdpt: &mut [u64; PT_ENTRIES], pds: &mut [[u64; PT_ENTRIES]], pd_pa: u64, end: u64) -> usize {
+    const P_RW: u64 = 0x3;
+    const LEAF_2M: u64 = 0x83;
+    let gib = |n: u64| n << 30;
+    let first = BOOT_MAP_GIB as u64;
+    let added = (end.saturating_add(gib(1) - 1) >> 30).saturating_sub(first).min(pds.len() as u64) as usize;
+    for (i, pd) in pds[..added].iter_mut().enumerate() {
+        let base = gib(first + i as u64);
+        for (j, e) in pd.iter_mut().enumerate() {
+            let pa = base + ((j as u64) << 21);
+            *e = if pa < end { pa | LEAF_2M } else { 0 };
+        }
+        pdpt[BOOT_MAP_GIB + i] = (pd_pa + 4096 * i as u64) | P_RW;
+    }
+    added
+}
 const _: () = assert!(KERNEL_VA_OFFSET & ((1 << 30) - 1) == 0, "1 GiB-aligned: the boot tables map it with PDPT entries");
 const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 3) == PT_ENTRIES - 1);
 const _: () = assert!(vpn(KERNEL_VA_OFFSET as usize, 4) == PT_ENTRIES - 1);

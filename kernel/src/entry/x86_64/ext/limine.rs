@@ -173,7 +173,7 @@ unsafe extern "C" {
     static mut boot_pml4: [u64; 512];
     static mut boot_pdpt: [u64; 512];
     static mut boot_pdpt_hi: [u64; 512];
-    static mut boot_pd: [[u64; 512]; 4];
+    static mut boot_pd: [[u64; 512]; azos_arch::mmu::BOOT_MAP_GIB];
     static mut pvh_start_info: u32;
     static _text_start: u8;
     static _kernel_end: u8;
@@ -333,7 +333,7 @@ pub extern "C" fn limine_prepare() -> u64 {
     };
 
     // 3. boot.S's page tables, in Rust (the same maps, `boot.S` section 3):
-    //    PML4[0] and PML4[DMB slot] -> the 1:1 PDPT (PA 0..4 GiB), PML4[KVA
+    //    PML4[0] and PML4[DMB slot] -> the 1:1 PDPT (PA 0..BOOT_MAP_GIB GiB), PML4[KVA
     //    slot] -> PDPT_HI -> the image directory.
     // SAFETY: boot CPU, sole execution; the statics are boot.S's own, in the
     // image's .bss (zero from the loader).
@@ -396,11 +396,11 @@ unsafe fn build_tables(image_pd: u64) -> u64 {
         write_volatile(pml4, pa(pdpt) | PRESENT_RW);
         write_volatile(pml4.add(KVA_ROOT_SLOT), pa(pdpt_hi) | PRESENT_RW);
         write_volatile(pml4.add(DMB_ROOT_SLOT), pa(pdpt) | PRESENT_RW);
-        for i in 0..4usize {
+        for i in 0..azos_arch::mmu::BOOT_MAP_GIB {
             write_volatile(pdpt.add(i), (pa(pd) + 4096 * i as u64) | PRESENT_RW);
         }
         write_volatile(pdpt_hi.add(KVA_PDPT_SLOT), image_pd | PRESENT_RW);
-        for j in 0..2048usize {
+        for j in 0..azos_arch::mmu::BOOT_MAP_GIB * 512 {
             write_volatile(pd.add(j), ((j as u64) << 21) | LEAF_2M);
         }
     }
