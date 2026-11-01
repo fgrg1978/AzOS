@@ -118,6 +118,9 @@ pub(crate) mod irq_order_probe;
 // capability reads, every ISA.
 #[cfg(feature = "ktest")]
 pub(crate) mod rcu;
+// The hung-task and stuck-CPU detectors (Kconfig HUNG_DETECT), every ISA.
+#[cfg(feature = "ktest")]
+pub(crate) mod hung;
 // N5: PeerDied / Revoked completion, many
 // callers on one endpoint, the grace period before a slot is reused.
 #[cfg(feature = "ktest")]

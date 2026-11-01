@@ -14651,8 +14651,11 @@ PY
     # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
     # +1 sigsuspend_saves_the_mask_per_thread (canary `sigsuspend-shared`, in the sched canary rows) -> 137, arm 141.
     # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
-    KTEST_N_RV=143
-    KTEST_N_ARM=147
+    # +2 hung_task_detector_reports_a_blocked_owner_wait,
+    # stuck_cpu_detector_names_the_cpu (Kconfig HUNG_DETECT; canaries `ktest hung
+    # canary (rv|arm|x86)`).
+    KTEST_N_RV=145
+    KTEST_N_ARM=149
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15132,7 +15135,7 @@ PY
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
     # The tests that need a second CPU answer `not ok` at -smp 1 (they say so).
-    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter"
+    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter stuck_cpu_detector_names_the_cpu"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
@@ -15313,6 +15316,13 @@ PY
     KTEST_RCU_CANARIED="rcu_free_waits_for_the_reader rcu_idle_cpu_is_quiescent lockdep_no_sleep_in_rcu_read ipc_endpoint_slot_reused_after_grace"
     par "ktest rcu canaries (rv)" ktest_row "ktest rcu canaries (rv)" rv "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
     par "ktest rcu canaries (arm)" ktest_row "ktest rcu canaries (arm)" arm "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # Kconfig HUNG_DETECT (kernel/src/smokes/hung.rs): the base row passes both
+    # detectors' tests; `canary=hung-task-blind` makes the scan read no task and
+    # `hung-cpu-blind` no CPU, so each test must turn red.
+    KTEST_HUNG_CANARIED="hung_task_detector_reports_a_blocked_owner_wait stuck_cpu_detector_names_the_cpu"
+    KTEST_HUNG_CANARIES="canary=hung-task-blind,hung-cpu-blind"
+    par "ktest hung canary (rv)" ktest_row "ktest hung canary (rv)" rv "" "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"
+    par "ktest hung canary (arm)" ktest_row "ktest hung canary (arm)" arm "" "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"
     # N5 (kernel/src/smokes/ipc_endpoint.rs), one
     # boot of the pass row's kernel: `canary=ipc-no-peer-died` (a server's
     # death leaves its accepted call in service, nobody completes it, the
@@ -15515,7 +15525,8 @@ PY
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
     # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
     # +4 the hotplug_* tests -> 150.
-    KTEST_N_X86=152
+    # +2 the hung-task and stuck-CPU tests, as on rv and arm.
+    KTEST_N_X86=154
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16654,6 +16665,9 @@ PY
     # N4: see `ktest rcu canaries (rv)`.
     par "ktest rcu canaries (x86)" x86_ktest_row "ktest rcu canaries (x86)" "" \
         "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
+    # Kconfig HUNG_DETECT: see `ktest hung canary (rv)`.
+    par "ktest hung canary (x86)" x86_ktest_row "ktest hung canary (x86)" "" \
+        "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"
     # N5: see `ktest ipc canary (rv)`.
     par "ktest ipc canary (x86)" x86_ktest_row "ktest ipc canary (x86)" "" \
         "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
