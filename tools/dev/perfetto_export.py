@@ -164,7 +164,7 @@ FIELDS = {
     "nic-queue": (["ifindex", "queue", "why"], None),
     "clocksource": (["reason", "drift_ppm", "limit_ppm"], None),
     "ioport-reserved": (["first", "last", "kernel_port"], None),
-    "rangefinder": (["asked", "max", "0"], None),
+    "rangefinder": (["asked", "max", "-"], None),
 }
 # logger.rs: `LOG_EVT_*` kinds and the `SAFETY_*` violation codes.
 EVENTS = {1: "sensor_snapshot", 2: "actuator_cmd", 3: "safety_violation", 4: "mode_change",

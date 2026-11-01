@@ -1106,7 +1106,7 @@ pub const RULES: [RuleInfo; 76] = [
         // The subject is the sensor type: 0 ultrasonic, 1 time of flight.
         name: "rangefinder",
         subject: "kind",
-        fields: ["asked", "max", "0"],
+        fields: ["asked", "max", "-"],
         rejected_if_yes: "-",
         rejected_if_no: "serve the simulated distances: obstacle avoidance would trust a clear path no sensor measured",
     },
