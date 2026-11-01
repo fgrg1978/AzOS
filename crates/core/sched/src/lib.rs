@@ -33,6 +33,7 @@ pub mod smp;
 /// at boot from the DT cpu-map, the ACPI PPTT or CPUID (pure, host-tested).
 pub mod topo;
 pub mod wait;
+pub mod hung;
 pub mod seccomp;
 pub mod driver;
 pub mod supervisor;
@@ -85,7 +86,7 @@ pub use scheduler::{
     task_running_on_other_hart,
     task_exit_with_code, current_exit_code, take_exit_note, take_exit_note_for, WaitpidMiss,
     exit_stat,
-    task_census, wake_counters, blocked_fastipc_ids, ready_unqueued_ids, unswitched, top_runtime,
+    task_census, wake_counters, blocked_fastipc_ids, blocked_task_at, BlockedRow, ready_unqueued_ids, unswitched, top_runtime,
     reap_stamped_sleepers, current_snapshot,
     alloc_asid, set_hw_asid_bits, asid_rollovers,
     wq_block_current, wq_wake_by_tid,

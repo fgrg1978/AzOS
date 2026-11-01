@@ -110,7 +110,8 @@ pub fn ticks_taken(cpu: usize) -> u64 {
 }
 
 /// The work every timer tick does after its ISA re-armed the timer: the
-/// watchdog trio, the vDSO pages, the sleepers whose deadline passed, the
+/// watchdog trio, the hung-task detectors' note, the vDSO pages, the sleepers
+/// whose deadline passed, the
 /// wakes stamped onto a task that parked before consuming them (a one-shot
 /// wake has no second chance: the tick is its consumer of last resort).
 /// `ticks`: the counter the vDSO publishes, `None` for the watchdog's own;
@@ -122,6 +123,7 @@ pub fn tick_work<S: IrqServices<F>, F: Frame>(now: u64, ticks: Option<u64>, upti
         t.fetch_add(1, Ordering::Relaxed);
     }
     let wd = S::watchdog_tick();
+    S::hung_tick(now);
     S::vdso_tick(ticks.unwrap_or(wd), uptime_ms, now);
     // `now` is 0 until this CPU's timer is armed: nothing can have expired.
     if now != 0 {

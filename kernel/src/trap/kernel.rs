@@ -452,6 +452,10 @@ impl<F: ArchFrame> IrqServices<F> for Kernel {
         ticks
     }
 
+    fn hung_tick(now: u64) {
+        azos_sched::hung::tick(now);
+    }
+
     fn vdso_tick(ticks: u64, uptime_ms: Option<u64>, now: u64) {
         if let Some(ms) = uptime_ms {
             azos_mm::vdso::vdso_update(ticks, ms);

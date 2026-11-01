@@ -745,6 +745,57 @@ running test; with `LOCKDEP_Y` outside ktest the log flusher task prints them
 (`lockdep_log::drain`). Notes fail nothing. Without the feature no lock carries
 a field or a call of it.
 
+## Hung tasks and stuck CPUs
+
+Source: `crates/core/sched/src/hung.rs`, `crates/core/actuation/src/sys_wdt.rs`
+(`hung_pass`), `kernel/src/trap/irq.rs` (`tick_work`), Kconfig `HUNG_DETECT`,
+`HUNG_ACTION`, `HUNG_TASK_TIMEOUT_MS`, `HUNG_CPU_TIMEOUT_MS`.
+
+A step of the system watchdog's 500 ms pass, not a task of its own. It samples
+counters the scheduler and the QSBR hooks already keep, so nothing is added to
+the syscall, IPC or context-switch paths; the only per-tick work is
+`hung::tick`, a depth load and a store in the timer interrupt. Every finding
+is a `kwarn!` line and a `Rule::Hang` decision record (subject: the task's tid
+or the CPU's id; numbers: ms waited, `kind << 32 | culprit tid`, `action << 32 |
+detail`), then the action of `HUNG_ACTION`: none, stop the culprit so its
+supervisor respawns it (the callers get a peer-died completion), or latch the
+e-stop (`SAFETY_ESTOP`, action 15). Development builds default to none.
+
+**Hung task.** `Blocked`, on a wait that names who must end it, and its
+voluntary plus preempted switch count unchanged for `HUNG_TASK_TIMEOUT_MS`. The
+waits that name an owner are the wait graph's edges: a call waiting for its
+reply (and a `FastIpcClient` wait with no edge), a kernel mutex, a user driver
+serving a kernel request, a FAT claim. Never hung, however long: a server
+waiting for calls, an idle worker on a wait queue, a ring or event-port wait, a
+timed sleep (no owner), a PI futex wait (a user lock; interruptible on Linux
+too). Reported once per hang; a task that runs again is watched afresh. Not
+detected: a lost timer wake (a sleeper past its deadline), because a timed
+sleep names no owner.
+
+**Stuck CPU.** Another CPU's QSBR word (`qsbr::cpu_word`) is odd (in the
+kernel) and unmoved for `HUNG_CPU_TIMEOUT_MS` (no kernel entry, exit, idle or
+switch), and no timer tick found the CPU preemptible in that time. The second
+test is what separates a CPU that cannot schedule (preemption off in a loop,
+interrupts masked, a lock nobody releases) from a kernel task that yields in a
+loop with nothing else to run. An idle or user-mode CPU is quiescent, so an
+idle CPU with its tick stopped is never a suspect. Needs `RCU_QSBR` and a
+second CPU; the CPU running the watchdog pass is not read, and for CPU 0 the
+hardware watchdog (fed from CPU 0's timer interrupt) is the backstop.
+
+**Against Linux.** `hung_task` samples the same way (state D, `nvcsw + nivcsw`
+unchanged for `hung_task_timeout_secs`, 120 s) but over every uninterruptible
+sleep, which includes the idle kernel threads', so it needs exceptions and
+reports the blocked task without its owner; here only waits that name an owner
+count, the owner is in the record, and the timeouts are per preset (seconds on
+a robot). `softlockup` is a per-CPU high-priority thread that must get to run
+(20 s) and `hardlockup` an NMI that finds the CPU's interrupt count still;
+here there is no per-CPU thread and no NMI, so one peer reads the CPU's QSBR
+word, which is odd and still only in the kernel with nothing scheduled, and the
+tick stamps the last time it found the CPU preemptible. The action differs
+too: Linux warns or panics (`hung_task_panic`, `softlockup_panic`); here a
+warning and a record always, then the preset's choice, and a safe stop of the
+actuators is a latch, not a panic.
+
 ## Fault injection
 
 Source: `crates/core/chaos/src/lib.rs`, Kconfig `CHAOS` (development builds,

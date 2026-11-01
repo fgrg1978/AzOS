@@ -915,6 +915,46 @@ pub fn blocked_fastipc_ids(out: &mut [(u32, bool, u32, u32, bool)]) -> usize {
     n
 }
 
+/// A blocked task as the hung-task scan (`crate::hung`) reads it.
+#[derive(Clone, Copy)]
+pub struct BlockedRow {
+    pub tid: u32,
+    /// Voluntary plus preempted switches: moves whenever the task ran.
+    pub switches: u64,
+    pub reason: WaitReason,
+    /// The wait-graph edge the task sits on, if it has one: its kind and the
+    /// owner's slot (`None` until the owner is known).
+    pub edge: Option<(azos_sync::waitgraph::EdgeKind, Option<u32>)>,
+}
+
+/// Slot `idx` as a [`BlockedRow`], `None` when it is not a live, blocked
+/// task. Lock-free and unsynchronised, as [`task_census`]: a diagnostic read.
+pub fn blocked_task_at(idx: usize) -> Option<BlockedRow> {
+    // SAFETY: a live slot; every field read is an atomic or immutable while valid.
+    let t = unsafe {
+        if idx >= MAX_TASKS || !TASK_VALID[idx].load(Ordering::Relaxed) {
+            return None;
+        }
+        task_ref(idx)
+    };
+    if t.state_acquire() != TaskState::Blocked {
+        return None;
+    }
+    let edge = if azos_sync::waitgraph::ENABLED {
+        use azos_sync::waitgraph::SchedPi;
+        classes::PI.blocked_on(idx as azos_sync::waitgraph::TaskId).map(|o| o.peek())
+    } else {
+        None
+    };
+    Some(BlockedRow {
+        tid: t.tid,
+        switches: t.switches_voluntary.load(Ordering::Relaxed)
+            .wrapping_add(t.switches_preempted.load(Ordering::Relaxed)),
+        reason: t.wait_reason.load(),
+        edge,
+    })
+}
+
 /// One task, as [`task_row_at`] reports it (the introspection tree's admin
 /// task list).
 #[derive(Clone, Copy)]
