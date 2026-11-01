@@ -25,3 +25,9 @@ pi-held-trace = []
 lockdep = []
 # The kernel's `ktest` feature: Kconfig LOCKDEP_KTEST turns lockdep on.
 ktest = ["lockdep"]
+# PI futex canaries (tests/pi_futex_graph.rs): the graph records an exited task as
+# an owner; a call that made a state and did not block on it keeps it; a word
+# that names a waiter returns 0 with its edge in place.
+pi-exited-owner-canary = []
+pi-state-leak-canary = []
+pi-keep-edge-canary = []

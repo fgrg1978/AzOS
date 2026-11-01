@@ -186,6 +186,11 @@ pub trait PiFutexOps: Sync {
     /// (unless ownership arrived meanwhile: then 0, as Linux).
     fn lock_pi_finish(&self, b: &mut dyn PiBucket, me: TaskId, timed_out: bool) -> i32;
 
+    /// The caller ends a `LOCK_PI` that blocked without finishing it (the walk
+    /// refused the block, or the word can no longer be reached), under the lock:
+    /// off the graph if it still is on it, and a state nobody uses any more goes.
+    fn lock_pi_leave(&self, b: &mut dyn PiBucket, me: TaskId);
+
     /// `UNLOCK_PI`, under the lock. Returns the task to wake (the new
     /// owner), which N9 wakes after dropping the lock, or `-errno`.
     fn unlock_pi(&self, b: &mut dyn PiBucket, me: TaskId) -> Result<Option<TaskId>, i32>;
@@ -375,6 +380,27 @@ unsafe fn rcu_free(h: *mut crate::qsbr::RcuHead) {
     free_now((h as usize - base) / core::mem::size_of::<PiState>());
 }
 
+/// A state with nothing behind it goes: no waiter, no heir still to write the
+/// word. What leaves one behind otherwise is a call that made it and then did
+/// not block on it, and every such call would pin an entry of the pool for good.
+fn retire_idle(b: &mut dyn PiBucket) {
+    if cfg!(feature = "pi-state-leak-canary") {
+        return;
+    }
+    if state_of(*b.pi_slot()).is_some_and(|p| !p.waiters.has_waiters() && !p.died.load(Ordering::Relaxed)) {
+        retire(b.pi_slot());
+    }
+}
+
+/// The heir of an exited owner exited itself before it wrote the word, and
+/// nobody else waits: nobody will hand the state on, and the word decides again.
+fn drop_exited_heir(b: &mut dyn PiBucket) {
+    let Some(p) = state_of(*b.pi_slot()) else { return };
+    if p.died.load(Ordering::Relaxed) && !p.waiters.has_waiters() && waitgraph::owner_exited(&p.waiters) {
+        retire(b.pi_slot());
+    }
+}
+
 /// The slot drops the state now; the entry is reused after a grace period.
 fn retire(slot: &mut u32) {
     let Some(id) = PiStateId::from_raw(*slot) else { return };
@@ -472,8 +498,86 @@ pub static PI_FUTEX: PiFutex = PiFutex;
 
 /// A raced `cmpxchg` on the word: re-read and decide again.
 const RETRY: i32 = i32::MIN;
+/// The graph refused the owner the word named: it has exited ([`attach`]). No
+/// re-read under the lock can change that; the caller lets the exit finish.
+const OWNER_EXITED: i32 = i32::MIN + 1;
 
 impl PiFutex {
+    fn prepare(&self, b: &mut dyn PiBucket, me: TaskId, try_only: bool) -> LockPiStep {
+        let Some(my_tid) = tid_of(me) else { return LockPiStep::Err(-ESRCH) };
+        drop_exited_heir(b);
+        loop {            let w = match b.read_word() {
+                Ok(w) => w,
+                Err(UserFault) => return LockPiStep::Err(-EFAULT),
+            };
+            // An owner that exited: the state names its heir until the heir
+            // writes its TID (`exit_handover`); the word is not trusted.
+            let heir = state_of(*b.pi_slot()).filter(|p| p.died.load(Ordering::Relaxed)).and_then(|p| p.waiters.owner());
+            let (owner, marked) = match heir {
+                Some(h) if h == me => match fixup_heir(b, w, my_tid) {
+                    Ok(true) => return LockPiStep::Acquired,
+                    Ok(false) => continue,
+                    Err(e) => return LockPiStep::Err(e),
+                },
+                Some(_) if try_only => return LockPiStep::Err(-EAGAIN),
+                Some(h) => (h, w | FUTEX_WAITERS),
+                None => match lock_word(w, my_tid) {
+                    LockWord::SelfOwned => return LockPiStep::Err(-EDEADLK),
+                    LockWord::Take { new } => {
+                        let ps = state_of(*b.pi_slot());
+                        let busy = ps.is_some_and(|p| p.waiters.has_waiters());
+                        let new = if busy { new | FUTEX_WAITERS } else { new };
+                        match b.cmpxchg_word(w, new) {
+                            Err(UserFault) => return LockPiStep::Err(-EFAULT),
+                            Ok(v) if v != w => continue,
+                            Ok(_) => {}
+                        }
+                        match ps {
+                            Some(p) if busy => p.waiters.set_owner(Some(me)),
+                            Some(_) => retire(b.pi_slot()),
+                            None => {}
+                        }
+                        return LockPiStep::Acquired;
+                    }
+                    LockWord::Owned { tid, marked } => match b.task_of_tid(tid) {
+                        Some(t) if t == me => return LockPiStep::Err(-EDEADLK),
+                        Some(t) => (t, marked),
+                        // The owner is gone: an OWNER_DIED word is taken over.
+                        // An owner mid-exit is not re-installed (its exit is
+                        // about to hand the word over): retry after it.
+                        None => {
+                            let Some(new) = takeover_word(w, my_tid) else {
+                                return if b.tid_exiting(tid) { LockPiStep::Retry } else { LockPiStep::Err(-ESRCH) };
+                            };
+                            match b.cmpxchg_word(w, new) {
+                                Err(UserFault) => return LockPiStep::Err(-EFAULT),
+                                Ok(v) if v != w => continue,
+                                Ok(_) => {}
+                            }
+                            if let Some(p) = state_of(*b.pi_slot()) {
+                                if p.waiters.has_waiters() {
+                                    p.waiters.set_owner(Some(me));
+                                } else {
+                                    retire(b.pi_slot());
+                                }
+                            }
+                            return LockPiStep::Acquired;
+                        }
+                    },
+                },
+            };
+            if try_only {
+                return LockPiStep::Err(-EAGAIN);
+            }
+            match attach(b, me, owner, w, marked) {
+                Ok(Some(p)) => return LockPiStep::Block(p),
+                Ok(None) => continue,
+                Err(OWNER_EXITED) => return LockPiStep::Retry,
+                Err(e) => return LockPiStep::Err(e),
+            }
+        }
+    }
+
     /// `from` gives the word up (UNLOCK_PI, `died` false; the robust exit,
     /// `died` true), `seen` being the word it owns. With waiters, the top
     /// one is handed the word in the kernel; else the word becomes
@@ -540,6 +644,7 @@ fn fixup_heir(b: &mut dyn PiBucket, w: u32, my_tid: u32) -> Result<bool, i32> {
             if let Some(p) = state_of(*b.pi_slot()) {
                 p.died.store(false, Ordering::Relaxed);
             }
+            retire_idle(b);
             Ok(true)
         }
     }
@@ -579,7 +684,7 @@ pub fn proxy_lock(b: &mut dyn PiBucket, top_tid: u32, more: bool) -> Result<bool
 /// Enqueue `me` on the key's `pi_state` (made now if the key has none),
 /// owned by `owner`, the word's owner; `w` is the word as read, `marked`
 /// the same with `FUTEX_WAITERS`. Under the key's lock. `Ok(None)`: the
-/// word moved or the state lost its owner, re-read. The tail `LOCK_PI` and
+/// word moved, re-read. `Err(OWNER_EXITED)`: `owner` has exited. The tail `LOCK_PI` and
 /// the proxy enqueue share (Linux `attach_to_pi_owner`, then the enqueue of
 /// `__rt_mutex_start_proxy_lock`).
 fn attach(b: &mut dyn PiBucket, me: TaskId, owner: TaskId, w: u32, marked: u32) -> Result<Option<PendingBlock>, i32> {
@@ -616,7 +721,7 @@ fn attach(b: &mut dyn PiBucket, me: TaskId, owner: TaskId, w: u32, marked: u32) 
     }
     match waitgraph::block_prepare(me, &ps.waiters) {
         Ok(p) => Ok(Some(p)),
-        Err(WaitError::NoOwner) => Ok(None),
+        Err(WaitError::NoOwner) => Err(OWNER_EXITED),
         Err(e) => Err(-e.errno()),
     }
 }
@@ -634,7 +739,16 @@ fn attach(b: &mut dyn PiBucket, me: TaskId, owner: TaskId, w: u32, marked: u32) 
 /// mid-exit, the word faulted, no state is free, or the edge would close a
 /// cycle (its `LOCK_PI` answers `EDEADLK`). O(W + PI_MAX_DEPTH).
 pub fn proxy_enqueue(b: &mut dyn PiBucket, waiter_tid: u32) -> bool {
+    let queued = proxy_enqueue_on(b, waiter_tid);
+    if !queued {
+        retire_idle(b);
+    }
+    queued
+}
+
+fn proxy_enqueue_on(b: &mut dyn PiBucket, waiter_tid: u32) -> bool {
     let Some(me) = b.task_of_tid(waiter_tid) else { return false };
+    drop_exited_heir(b);
     loop {
         let Ok(w) = b.read_word() else { return false };
         let heir = state_of(*b.pi_slot()).filter(|p| p.died.load(Ordering::Relaxed)).and_then(|p| p.waiters.owner());
@@ -650,12 +764,19 @@ pub fn proxy_enqueue(b: &mut dyn PiBucket, waiter_tid: u32) -> bool {
             },
         };
         match attach(b, me, owner, w, marked) {
-            // The `futex-pi-no-edge` wrapper; a cycle dequeued it again.
+            // The `futex-pi-no-edge` wrapper; a cycle dequeued it again and
+            // `proxy_enqueue` gives a state made for it back.
             Ok(Some(p)) => return block_commit(p).is_ok(),
             Ok(None) => continue,
             Err(_) => return false,
         }
     }
+}
+
+/// The state a slot names (host suites, which script the graph's handover).
+#[cfg(not(target_os = "none"))]
+pub fn state_by_id(id: PiStateId) -> &'static PiState {
+    &POOL[id.raw() as usize - 1]
 }
 
 /// The `pi_state` whose graph object is `obj`, if `obj` is one of the pool.
@@ -710,77 +831,11 @@ pub fn exit_handover(b: &mut dyn PiBucket, obj: &PiWaiters) -> Option<TaskId> {
 
 impl PiFutexOps for PiFutex {
     fn lock_pi_prepare(&self, b: &mut dyn PiBucket, me: TaskId, try_only: bool) -> LockPiStep {
-        let Some(my_tid) = tid_of(me) else { return LockPiStep::Err(-ESRCH) };
-        loop {
-            let w = match b.read_word() {
-                Ok(w) => w,
-                Err(UserFault) => return LockPiStep::Err(-EFAULT),
-            };
-            // An owner that exited: the state names its heir until the heir
-            // writes its TID (`exit_handover`); the word is not trusted.
-            let heir = state_of(*b.pi_slot()).filter(|p| p.died.load(Ordering::Relaxed)).and_then(|p| p.waiters.owner());
-            let (owner, marked) = match heir {
-                Some(h) if h == me => match fixup_heir(b, w, my_tid) {
-                    Ok(true) => return LockPiStep::Acquired,
-                    Ok(false) => continue,
-                    Err(e) => return LockPiStep::Err(e),
-                },
-                Some(_) if try_only => return LockPiStep::Err(-EAGAIN),
-                Some(h) => (h, w | FUTEX_WAITERS),
-                None => match lock_word(w, my_tid) {
-                    LockWord::SelfOwned => return LockPiStep::Err(-EDEADLK),
-                    LockWord::Take { new } => {
-                        let ps = state_of(*b.pi_slot());
-                        let busy = ps.is_some_and(|p| p.waiters.has_waiters());
-                        let new = if busy { new | FUTEX_WAITERS } else { new };
-                        match b.cmpxchg_word(w, new) {
-                            Err(UserFault) => return LockPiStep::Err(-EFAULT),
-                            Ok(v) if v != w => continue,
-                            Ok(_) => {}
-                        }
-                        match ps {
-                            Some(p) if busy => p.waiters.set_owner(Some(me)),
-                            Some(_) => retire(b.pi_slot()),
-                            None => {}
-                        }
-                        return LockPiStep::Acquired;
-                    }
-                    LockWord::Owned { tid, marked } => match b.task_of_tid(tid) {
-                        Some(t) if t == me => return LockPiStep::Err(-EDEADLK),
-                        Some(t) => (t, marked),
-                        // The owner is gone: an OWNER_DIED word is taken over.
-                        // An owner mid-exit is not re-installed (its exit is
-                        // about to hand the word over): retry after it.
-                        None => {
-                            let Some(new) = takeover_word(w, my_tid) else {
-                                return if b.tid_exiting(tid) { LockPiStep::Retry } else { LockPiStep::Err(-ESRCH) };
-                            };
-                            match b.cmpxchg_word(w, new) {
-                                Err(UserFault) => return LockPiStep::Err(-EFAULT),
-                                Ok(v) if v != w => continue,
-                                Ok(_) => {}
-                            }
-                            if let Some(p) = state_of(*b.pi_slot()) {
-                                if p.waiters.has_waiters() {
-                                    p.waiters.set_owner(Some(me));
-                                } else {
-                                    retire(b.pi_slot());
-                                }
-                            }
-                            return LockPiStep::Acquired;
-                        }
-                    },
-                },
-            };
-            if try_only {
-                return LockPiStep::Err(-EAGAIN);
-            }
-            match attach(b, me, owner, w, marked) {
-                Ok(Some(p)) => return LockPiStep::Block(p),
-                Ok(None) => continue,
-                Err(e) => return LockPiStep::Err(e),
-            }
+        let step = self.prepare(b, me, try_only);
+        if !matches!(step, LockPiStep::Block(_)) {
+            retire_idle(b);
         }
+        step
     }
 
     fn lock_pi_finish(&self, b: &mut dyn PiBucket, me: TaskId, timed_out: bool) -> i32 {
@@ -791,6 +846,21 @@ impl PiFutexOps for PiFutex {
             Err(UserFault) => return -EFAULT,
         };
         if may_unlock(w, my_tid) {
+            // A handover took this task off the graph and made it the owner.
+            // A word that names it otherwise was written by user space: its
+            // edge goes all the same, or it would boost the old owner for good
+            // and corrupt the waiter list of the next object it blocks on.
+            if !cfg!(feature = "pi-keep-edge-canary") {
+                if let Some(ps) = state_of(*b.pi_slot()).filter(|p| p.waiters.owner() != Some(me)) {
+                    waitgraph::unblock(me, &ps.waiters, UnblockReason::Acquired);
+                    ps.died.store(false, Ordering::Relaxed);
+                    if ps.waiters.has_waiters() {
+                        ps.waiters.set_owner(Some(me));
+                    } else {
+                        retire(b.pi_slot());
+                    }
+                }
+            }
             return 0;
         }
         // The owner exited and the graph handed the state to this task:
@@ -817,6 +887,13 @@ impl PiFutexOps for PiFutex {
             }
         }
         if timed_out { -ETIMEDOUT } else { -EINTR }
+    }
+
+    fn lock_pi_leave(&self, b: &mut dyn PiBucket, me: TaskId) {
+        if let Some(ps) = state_of(*b.pi_slot()) {
+            waitgraph::unblock(me, &ps.waiters, UnblockReason::ObjectGone);
+        }
+        retire_idle(b);
     }
 
     fn unlock_pi(&self, b: &mut dyn PiBucket, me: TaskId) -> Result<Option<TaskId>, i32> {

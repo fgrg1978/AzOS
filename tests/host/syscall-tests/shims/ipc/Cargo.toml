@@ -42,6 +42,7 @@ memobj-purge-held-canary = []
 memobj-purge-kernel-held-canary = []
 memobj-purge-locked-canary = []
 memobj-word-unlocked-canary = []
+memobj-word-spin-canary = []
 memobj-resolve-stale-canary = []
 # Front memobj-multihart: declared for the shared source's cfg check (the
 # kernel's `scale` vsbench canary; no host test enables it).

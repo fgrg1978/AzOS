@@ -138,6 +138,13 @@ pub(crate) const NAMES: &[&str] = &[
     // `lockdep_no_spinlock_across_block_io`).
     "lockdep-abba",
     "lockdep-spin-blk",
+    // crates/core/ipc/src/endpoint.rs: an aborted handover does not wake its
+    // server (ktest `ipc_handover_abort_wakes_the_old_server`).
+    "ipc-handover-abort-no-wake",
+    // kernel/src/smokes/futex_requeue.rs: a look that reads the word as a
+    // syscall's copy does, under the futex table; lockdep must report it (ktest
+    // `futex_look_under_the_table_faults_nothing`).
+    "futex-look-faults",
     // kernel/src/ktest.rs (N1b): another CPU's CpuOwned from interrupt
     // context; a PerCpu reached with preemption on; an IRQ-safe class
     // taken with interrupts on; a SpinLock held twice LOCK_MAX_HOLD_US; a

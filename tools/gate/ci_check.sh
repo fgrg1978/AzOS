@@ -11402,6 +11402,33 @@ host_job host_canary_row "futex: key before the look canary" syscall-tests futex
     a_wait_is_filed_under_the_key_of_the_word_it_checked
 host_job host_canary_row "futex: PI word not its key canary" syscall-tests futex-key-outside-canary \
     a_pi_step_never_touches_a_word_mapped_since_its_key_was_taken
+# Under the futex table a call faults no page in and does not spin on the region
+# table (syscall-tests futex_under_table.rs). futex-look-faults-canary: the look
+# commits the page. memobj-word-spin-canary: the look spins on the region table,
+# whose holder takes an interrupt that spins on the futex table.
+host_job host_canary_row "futex: look faults under the table canary" syscall-tests futex-look-faults-canary \
+    a_look_under_the_table_commits_nothing_and_the_settle_does
+host_job host_canary_row "futex: look spins on MEMOBJS canary" syscall-tests memobj-word-spin-canary \
+    a_futex_look_never_spins_on_the_region_table
+# PI futex against the kernel's wait graph (sync-tests tests/pi_futex_graph.rs).
+# pi-exited-owner-canary: the graph records an exited task as an owner, and a
+# locker sleeps behind it for good. pi-state-leak-canary: a call that made a state
+# and did not block on it keeps it. pi-keep-edge-canary: a word that names its
+# waiter returns 0 with the edge in place.
+host_job host_canary_row "pi futex: exited owner set canary" sync-tests pi-exited-owner-canary \
+    an_owner_exiting_after_the_look_is_refused_as_the_new_owner --test=pi_futex_graph
+host_job host_canary_row "pi futex: exited owner block canary" sync-tests pi-exited-owner-canary \
+    an_owner_exiting_after_set_owner_is_refused_at_the_block --test=pi_futex_graph
+host_job host_canary_row "pi futex: exited heir canary" sync-tests pi-exited-owner-canary \
+    a_heir_that_exited_is_not_waited_for --test=pi_futex_graph
+host_job host_canary_row "pi futex: EDEADLK state leak canary" sync-tests pi-state-leak-canary \
+    a_refused_block_gives_its_state_back --test=pi_futex_graph
+host_job host_canary_row "pi futex: proxy state leak canary" sync-tests pi-state-leak-canary \
+    a_refused_proxy_enqueue_gives_its_state_back --test=pi_futex_graph
+host_job host_canary_row "pi futex: heir state leak canary" sync-tests pi-state-leak-canary \
+    a_heir_with_no_waiter_behind_it_drops_the_state --test=pi_futex_graph
+host_job host_canary_row "pi futex: stale edge canary" sync-tests pi-keep-edge-canary \
+    a_word_naming_its_waiter_ends_the_edge --test=pi_futex_graph
 # A kernel copy of user memory keeps its frame until it ends (azos_mm::uaccess,
 # syscall-tests uaccess_race.rs). uaccess-race-canary: a user-leaf shootdown
 # returns without waiting for the access sections, as before the module.
@@ -14577,8 +14604,10 @@ PY
     # +1 unswitched_block_returns_running (canary `unswitched-block-stays`) -> 132, arm 136.
     # +1 timer_record_on_the_last_cpu (canary `timer-record-16`, -smp 17) -> 133, arm 137.
     # +1 pi_boost_lands_on_a_racing_wake (canary `pi-boost-stale-bucket`) -> 134, arm 138.
-    KTEST_N_RV=134
-    KTEST_N_ARM=138
+        # +2 futex_look_under_the_table_faults_nothing,
+    # ipc_handover_abort_wakes_the_old_server -> 136, arm 140.
+    KTEST_N_RV=136
+    KTEST_N_ARM=140
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14957,12 +14986,17 @@ PY
     # `lockdep-early-abba` (an ABBA in early_main, before the scheduler)
     # -> lockdep_boot_phase_clean. `irqsave-out-of-order` (two
     # `lock_irqsave` guards released outer first) ->
-    # lockdep_irqsave_guards_release_in_reverse_order.
-    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk,lockdep-scope-irq,lockdep-scope-preempt,lockdep-irq-inversion,lockdep-hold,lockdep-rt-pi,lockdep-early-abba,irqsave-out-of-order"
-    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io lockdep_scope_rules lockdep_irq_safe_class_taken_irqsave lockdep_spinlock_hold_bounded lockdep_rt_tasks_share_only_spinlocks lockdep_boot_phase_clean lockdep_irqsave_guards_release_in_reverse_order"
+    # lockdep_irqsave_guards_release_in_reverse_order. `futex-look-faults` (a
+    # look that may fault a page in, under the futex table) ->
+    # futex_look_under_the_table_faults_nothing.
+    KTEST_LOCKDEP_CANARIES="canary=lockdep-abba,lockdep-spin-blk,futex-look-faults,lockdep-scope-irq,lockdep-scope-preempt,lockdep-irq-inversion,lockdep-hold,lockdep-rt-pi,lockdep-early-abba,irqsave-out-of-order"
+    KTEST_LOCKDEP_CANARIED="lockdep_lock_order_consistent lockdep_no_spinlock_across_block_io futex_look_under_the_table_faults_nothing lockdep_scope_rules lockdep_irq_safe_class_taken_irqsave lockdep_spinlock_hold_bounded lockdep_rt_tasks_share_only_spinlocks lockdep_boot_phase_clean lockdep_irqsave_guards_release_in_reverse_order"
     KTEST_LOCKDEP_RE='^# lockdep: lock order inversion \(ABBA\); holding SpinLock kernel/src/ktest\.rs:'
     par "ktest lockdep canaries (rv)" ktest_row "ktest lockdep canaries (rv)" rv "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
     par "ktest lockdep canaries (arm)" ktest_row "ktest lockdep canaries (arm)" arm "" "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES" "$KTEST_LOCKDEP_RE"
+    # `ipc-handover-abort-no-wake`: an aborted handover leaves its server asleep.
+    par "ktest handover abort canary (rv)" ktest_row "ktest handover abort canary (rv)" rv "" "ipc_handover_abort_wakes_the_old_server" "canary=ipc-handover-abort-no-wake"
+    par "ktest handover abort canary (arm)" ktest_row "ktest handover abort canary (arm)" arm "" "ipc_handover_abort_wakes_the_old_server" "canary=ipc-handover-abort-no-wake"
     # A64_PAN=probe: `canary=pan-patch-skip` leaves every UserAccess site the
     # slow-path branch (kernel/src/entry/aarch64/pan_patch.rs); only
     # `a64_pan_sites_patched` goes not ok. aarch64 only.
@@ -15372,7 +15406,9 @@ PY
     # +1 chaos_timer_wake_late_is_not_a_storm, as on rv and arm -> 135.
     # +1 kheap_irq_token_follows_the_interrupt_state, as on rv and arm -> 137.
     # +4 the scheduler findings' ktests, the three of rv and arm and x86's own -> 141.
-    KTEST_N_X86=141
+    # +2 futex_look_under_the_table_faults_nothing,
+    # ipc_handover_abort_wakes_the_old_server -> 143.
+    KTEST_N_X86=143
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -23745,6 +23781,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr: mutex contention keeps the count exact ok" "lxthr: tls distinct per thread ok" \
                 "lxthr: gettid differs from getpid in a thread ok" "lxthr: shared file reads [ab]" \
                 "lxthr: a second round of threads ok" \
+                "lxthr: FUTEX_CMP_REQUEUE reads a word on an untouched page ok" \
                 "lxthr: a process signal lands on an unblocked thread ok" \
                 "lxthr: tgkill to a blocked thread stays pending on it ok" \
                 "lxthr: a fatal signal ends every thread; wait sees WIFSIGNALED ok" \

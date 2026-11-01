@@ -44,6 +44,10 @@ pub fn current_user_pt() -> usize {
     syscall_test_sched::current_user_pt()
 }
 
+/// No test of this crate parks a server; the wake of an aborted handover has
+/// nobody to reach.
+pub fn wake_fast_ipc_server(_server_tid: u32) {}
+
 /// Memory admission: `memobj.rs` and `io_ring.rs` charge their frames to the creator.
 /// Forwarded to the one budget stand-in `handlers.rs` also charges.
 pub fn mm_charge(pages: u32) -> bool {

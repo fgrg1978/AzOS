@@ -97,8 +97,22 @@ impl<T: Pod> UserPtr<T> {
     /// Read the value.
     #[inline]
     pub fn read(self) -> Result<T, Efault> {
+        self.read_by(crate::copy_from_user)
+    }
+
+    /// [`read`](Self::read) that never faults a page in, for a caller under a
+    /// spinlock or with interrupts off: a page that is not resident answers
+    /// `Efault`, and the caller retries with [`read`](Self::read) once it holds
+    /// no lock.
+    #[inline]
+    pub fn read_resident(self) -> Result<T, Efault> {
+        self.read_by(crate::copy_from_user_resident)
+    }
+
+    #[inline(always)]
+    fn read_by(self, copy: fn(*mut u8, usize, usize) -> bool) -> Result<T, Efault> {
         let mut v = MaybeUninit::<T>::uninit();
-        if crate::copy_from_user(v.as_mut_ptr() as *mut u8, self.addr, size_of::<T>()) {
+        if copy(v.as_mut_ptr() as *mut u8, self.addr, size_of::<T>()) {
             // SAFETY: every byte was written, and any bit pattern is a `T`.
             Ok(unsafe { v.assume_init() })
         } else {

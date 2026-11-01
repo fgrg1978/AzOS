@@ -149,7 +149,7 @@
 
 use crate::cap::ty;
 use core::sync::atomic::{AtomicU32, Ordering};
-use azos_sync::SpinLock;
+use azos_sync::{SpinLock, SpinLockGuard};
 
 use crate::cap::objref;
 use crate::cap::{CapError, CapType};
@@ -1402,15 +1402,52 @@ pub fn memobj_resolve_mapped(tid: u32, va: usize) -> Option<(u32, usize)> {
 /// the PMM only under this lock (`drop_refs_locked`, the purge), so the frame
 /// `f` sees cannot change owner before `f` returns, whatever another hart
 /// unmaps, releases or revokes meanwhile. `f` must be short and must not take
-/// this lock (one atomic access). Its order is the futex table's, then this
-/// one (`azos_sched::futex::register_shm_word_of`).
+/// this lock (one atomic access). Never called under the futex table: a holder
+/// of this lock may take an interrupt whose handler wakes a futex, so a hart
+/// that holds the table must not spin here ([`memobj_try_with_mapped_word`]).
 pub fn memobj_with_mapped_word<R>(
     tid: u32, va: usize, write: bool, f: impl FnOnce(u32, usize, &AtomicU32) -> R,
 ) -> Option<R> {
     if va % 4 != 0 {
         return None;
     }
-    let mut regions = MEMOBJS.lock();
+    with_mapped_word_locked(MEMOBJS.lock(), tid, va, write, f)
+}
+
+/// The region table is held by someone else ([`memobj_try_with_mapped_word`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TableBusy;
+
+/// [`memobj_with_mapped_word`] for a caller under the futex table: never spins
+/// on the region table. `Err(TableBusy)`: drop the futex table, wait with
+/// [`memobj_wait_unlocked`], start over.
+///
+/// Canary `memobj-word-spin-canary`: spins, the deadlock against an interrupt
+/// that wakes a futex on a hart holding this lock.
+pub fn memobj_try_with_mapped_word<R>(
+    tid: u32, va: usize, write: bool, f: impl FnOnce(u32, usize, &AtomicU32) -> R,
+) -> Result<Option<R>, TableBusy> {
+    if va % 4 != 0 {
+        return Ok(None);
+    }
+    let regions = if cfg!(feature = "memobj-word-spin-canary") {
+        MEMOBJS.lock()
+    } else {
+        MEMOBJS.try_lock().ok_or(TableBusy)?
+    };
+    Ok(with_mapped_word_locked(regions, tid, va, write, f))
+}
+
+/// Until the holder that made a [`memobj_try_with_mapped_word`] answer
+/// [`TableBusy`] has let go. No lock held.
+pub fn memobj_wait_unlocked() {
+    drop(MEMOBJS.lock());
+}
+
+fn with_mapped_word_locked<R>(
+    mut regions: SpinLockGuard<'_, MemObjTable>, tid: u32, va: usize, write: bool,
+    f: impl FnOnce(u32, usize, &AtomicU32) -> R,
+) -> Option<R> {
     hold_canary();
     let w = resolve_mapped_locked(&mut regions, tid, va)?;
     let region = &regions[w.idx];

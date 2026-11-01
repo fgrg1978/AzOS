@@ -38,6 +38,7 @@
 #define FUTEX_CMP_REQUEUE_PI 12
 #define FUTEX_PRIVATE_FLAG 128
 #define FUTEX_TID_MASK 0x3fffffff
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -512,6 +513,11 @@ static void cond_broadcast(void)
           created == NT - 1 && rq == NT - 1 && ran_after_requeue == 1 && woke == NT - 2);
     check("FUTEX_CMP_REQUEUE refuses a changed word with EAGAIN", bad == -1 && bad_errno == EAGAIN);
     check("every requeued waiter runs after the target's wake", joined == NT - 1 && rq_ran == NT - 1);
+
+    /* A word on a page nothing touched yet: the kernel commits it to compare. */
+    int *fresh = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    long untouched = fresh == MAP_FAILED ? -1 : futex(fresh, FUTEX_CMP_REQUEUE, 0, 0, fresh + 1, 0);
+    check("FUTEX_CMP_REQUEUE reads a word on an untouched page", untouched == 0);
 }
 
 /* Wave 15 N10d: the condition variable of a PI mutex. musl (this binary's

@@ -11,6 +11,10 @@
 //!   twice (the replies the two servers delivered add up to the calls made:
 //!   a re-presented call's first reply is refused, not delivered), and both
 //!   servers served some (the swap happened under load).
+//! * `ipc_handover_abort_wakes_the_old_server`: a call queues while its server
+//!   is parked in a handover, and the handover is given up with nobody else
+//!   calling: the server takes the call. Canary
+//!   `canary=ipc-handover-abort-no-wake`: it sleeps on, and the caller with it.
 //!
 //! The servers are kernel tasks (the fast calls go through
 //! `syscall_dispatch_out`, the arms ring 3 reaches). The supervisor's own
@@ -211,3 +215,85 @@ azos_ktest::ktest_late! {
         Ok(())
     }
 }
+
+// ── An aborted handover ─────────────────────────────────────────────────────
+
+const AB_EP: &[u8] = b"lu.abort";
+static AB_OLD: AtomicU32 = AtomicU32::new(0);
+static AB_NEW: AtomicU32 = AtomicU32::new(0);
+static AB_STOP: AtomicBool = AtomicBool::new(false);
+static AB_ANSWER: AtomicUsize = AtomicUsize::new(0);
+
+fn ab_old_server(_: usize) {
+    let me = azos_sched::current_task_tid();
+    if azos_ipc::endpoint::endpoint_named_cap(me, CapPerms::READ, AB_EP).is_none() {
+        return;
+    }
+    AB_OLD.store(me, Ordering::Release);
+    let mut out = SyscallOut::new();
+    while !AB_STOP.load(Ordering::Acquire) {
+        let h = dispatch(SYS_IPC_FAST_ACCEPT, [0; 6], &mut out);
+        if h >= 0 {
+            let _ = dispatch(SYS_IPC_FAST_REPLY, [h as u64, out.regs[1] + 1, 0, 0, 0, 0], &mut out);
+        }
+    }
+}
+
+fn ab_successor(_: usize) {
+    let me = azos_sched::current_task_tid();
+    if azos_ipc::endpoint::endpoint_named_cap(me, CapPerms::READ, AB_EP).is_some() {
+        AB_NEW.store(me, Ordering::Release);
+    }
+    crate::ktest::until(|| AB_STOP.load(Ordering::Acquire));
+}
+
+fn ab_client(_: usize) {
+    let me = azos_sched::current_task_tid();
+    let Some(cap) = azos_ipc::endpoint::endpoint_named_cap(me, CapPerms::WRITE, AB_EP).map(|c| c.raw().0 as u64) else {
+        return;
+    };
+    let mut out = SyscallOut::new();
+    let rc = dispatch(SYS_IPC_FAST_CALL_EP, [cap, 0x77, 0, 0, 0, 0], &mut out);
+    AB_ANSWER.store(rc as usize, Ordering::Release);
+}
+
+/// The server `tid` is parked in its accept, as the fast path reads it.
+fn ab_parked(tid: u32) -> bool {
+    azos_sched::idx_for_tid(tid)
+        .is_some_and(|i| azos_sched::scheduler::ipc_fast_parked(i, tid, azos_sched::WaitReason::FastIpcServer(tid)))
+}
+
+azos_ktest::ktest_late! {
+    fn ipc_handover_abort_wakes_the_old_server() {
+        use azos_ipc::endpoint::{endpoint_handover_begin_all, endpoint_swap_cancel, endpoint_swap_open};
+        azos_sched::task_create_affinity("ab-old", ab_old_server, 0, PRIO, -1);
+        crate::ktest::wait("the old server never claimed the endpoint", || AB_OLD.load(Ordering::Acquire) != 0)?;
+        let old = AB_OLD.load(Ordering::Acquire);
+        if endpoint_swap_open(old) != 1 {
+            return Err("the swap did not open on the old server's endpoint");
+        }
+        azos_sched::task_create_affinity("ab-new", ab_successor, 0, PRIO, -1);
+        crate::ktest::wait("the successor never took its grant", || AB_NEW.load(Ordering::Acquire) != 0)?;
+        crate::ktest::wait("the old server never parked", || ab_parked(old))?;
+        if endpoint_handover_begin_all(old, AB_NEW.load(Ordering::Acquire)).is_err() {
+            let _ = endpoint_swap_cancel(old);
+            return Err("the handover was refused");
+        }
+        let before = azos_ipc::fastcall::census().0;
+        azos_sched::task_create_affinity("ab-cli", ab_client, 0, PRIO, -1);
+        // The call queues behind the handover and wakes the server for
+        // nothing: it finds nothing to take and parks again.
+        crate::ktest::wait("the call never queued", || azos_ipc::fastcall::census().0 > before)?;
+        crate::ktest::wait("the old server never parked again", || ab_parked(old))?;
+        endpoint_swap_cancel(old);
+        let answered = crate::ktest::wait("the old server never took the queued call", || AB_ANSWER.load(Ordering::Acquire) != 0);
+        AB_STOP.store(true, Ordering::Release);
+        azos_sched::scheduler::task_stop(old, true, 9);
+        answered?;
+        if AB_ANSWER.load(Ordering::Acquire) != 0x78 {
+            return Err("the queued call came back with a wrong answer");
+        }
+        Ok(())
+    }
+}
+

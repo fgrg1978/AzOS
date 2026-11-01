@@ -226,6 +226,16 @@ fn resident(pt: usize, va: usize, write: bool) -> Option<usize> {
     }
 }
 
+/// This access may fault its page in, whether or not it does this time: the
+/// demand commit allocates, a file page waits for I/O, a COW break shoots TLBs
+/// down. Lockdep reports a caller under a spinlock, with interrupts off or in
+/// an interrupt, resident page or not. It cannot see this otherwise: a fault-in
+/// that spins or polls under the lock is no lock order.
+#[inline(always)]
+fn might_fault() {
+    azos_sync::lockdep::might_sleep("user memory access that may fault");
+}
+
 /// Run `f` on the frame address `va` resolves to, inside a section; on a miss,
 /// fault the page in outside it (demand commit, COW break: what ring 3's own
 /// access would do) and try again. `None` when the page cannot be made
@@ -234,6 +244,7 @@ fn resident(pt: usize, va: usize, write: bool) -> Option<usize> {
 /// interrupts are on between tries.
 #[inline(always)]
 fn with_frame<R>(pt: usize, va: usize, write: bool, f: impl FnOnce(usize) -> R) -> Option<R> {
+    might_fault();
     loop {
         {
             let _s = enter();
@@ -473,6 +484,7 @@ fn small(va: usize, len: usize) -> bool {
 /// failing one are written.
 #[inline]
 pub fn copy_out(pt: usize, va: usize, src: *const u8, len: usize) -> bool {
+    might_fault();
     if small(va, len) && copy_small(pt, va, src as *mut u8, len, true).is_some() {
         return true;
     }
@@ -509,6 +521,7 @@ fn copy_out_pages(pt: usize, va: usize, src: *const u8, len: usize) -> bool {
 /// reserved page not touched yet is committed first), or a range that wraps.
 #[inline]
 pub fn copy_in(pt: usize, dst: *mut u8, va: usize, len: usize) -> bool {
+    might_fault();
     if small(va, len) && copy_small(pt, va, dst, len, false).is_some() {
         return true;
     }
@@ -542,6 +555,9 @@ fn copy_in_pages(pt: usize, dst: *mut u8, va: usize, len: usize) -> bool {
 /// profiler, the crash dump). Stops at the first page that is not resident
 /// and readable; the bytes copied.
 pub fn copy_in_resident(pt: usize, dst: *mut u8, va: usize, len: usize) -> usize {
+    if small(va, len) {
+        return if copy_small(pt, va, dst, len, false).is_some() { len } else { 0 };
+    }
     let mut done = 0;
     while done < len {
         let Some(at) = va.checked_add(done) else { break };
