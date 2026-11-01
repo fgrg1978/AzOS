@@ -77,6 +77,20 @@ pub(crate) const NAMES: &[&str] = &[
     // reads the reason before the state word (ktest
     // `wq_wake_in_the_block_window_is_kept`).
     "wake-reason-first",
+    // scheduler/lifecycle.rs `take_back_unswitched_block`: a block that does
+    // not switch leaves the task `Blocked` (ktest
+    // `unswitched_block_returns_running`).
+    "unswitched-block-stays",
+    // drivers/sys/src/timebase.rs `record`: a CPU id from 16 up has no comparator
+    // record (ktest `timer_record_on_the_last_cpu`; the row needs -smp 17).
+    "timer-record-16",
+    // arch/x86_64/src/tlb.rs `remote`: the shootdown request lock is held with
+    // interrupts open (ktest `tlb_request_window_is_masked`).
+    "tlb-request-unmasked",
+    // scheduler/donation.rs `apply_prio`: a priority change does not look for a
+    // wake that linked the task under the old priority (ktest
+    // `pi_boost_lands_on_a_racing_wake`).
+    "pi-boost-stale-bucket",
     // boot/net.rs: the virtio-net driver rings a doorbell per frame and per
     // RX re-post, batches and NO_NOTIFY ignored (QEMU trace
     // `virtio_queue_notify` count == frames; gate rows `network: TX batch canary`).

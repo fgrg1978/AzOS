@@ -364,14 +364,25 @@ pub fn rflags() -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn cli() {
+    // A compiler barrier on purpose (no `nomem`): no memory access may move
+    // across an interrupt-mask change. The `irq-nomem-canary` arm exists only
+    // for the gate's `irq order` canary.
     // SAFETY: masks maskable interrupts.
+    #[cfg(not(feature = "irq-nomem-canary"))]
+    unsafe { core::arch::asm!("cli", options(nostack)) };
+    // SAFETY: as above.
+    #[cfg(feature = "irq-nomem-canary")]
     unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn sti() {
-    // SAFETY: unmasks maskable interrupts.
+    // SAFETY: unmasks maskable interrupts. A barrier, as `cli`.
+    #[cfg(not(feature = "irq-nomem-canary"))]
+    unsafe { core::arch::asm!("sti", options(nostack)) };
+    // SAFETY: as above.
+    #[cfg(feature = "irq-nomem-canary")]
     unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
 }
 

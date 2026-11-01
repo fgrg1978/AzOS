@@ -33,7 +33,7 @@ el0-state-canary = ["azos_arch_riscv64/el0-state-canary", "azos_arch_aarch64/el0
 hv = ["azos_arch_aarch64/hv"]
 # Masked-window tracer (Kconfig `LAT_TRACE`): hooks in both ISA crates.
 lat-trace = ["azos_arch_riscv64/lat-trace", "azos_arch_aarch64/lat-trace"]
-irq-nomem-canary = ["azos_arch_riscv64/irq-nomem-canary", "azos_arch_aarch64/irq-nomem-canary"]
+irq-nomem-canary = ["azos_arch_riscv64/irq-nomem-canary", "azos_arch_aarch64/irq-nomem-canary", "azos_arch_x86_64?/irq-nomem-canary"]
 # The x86_64 crate as the host-side fake ISA (off x86_64 its contract
 # methods are todo!()): host checks only, never a kernel build. On a
 # bare-metal x86_64 target the real port is selected without the feature.

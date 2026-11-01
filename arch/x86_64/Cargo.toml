@@ -10,6 +10,9 @@ description = "x86_64 port: the arch-api contract and the x86 platform. Off x86_
 name = "azos_arch_x86_64"
 
 [features]
+# `irq order` canary: `cli`/`sti` get `nomem` back, so they stop being compiler
+# barriers. The `irq order` rows must go red.
+irq-nomem-canary = []
 # Host-test canary (tests/host/arch-tests): cpu/features.rs forgets the XCR0
 # YMM state check, so `the_vector_extensions_need_their_xsave_state` fails.
 x86-cpuid-canary = []

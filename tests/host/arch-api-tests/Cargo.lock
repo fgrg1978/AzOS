@@ -22,6 +22,7 @@ dependencies = [
  "azos_arch_api",
  "azos_common",
  "azos_crypto",
+ "azos_limits",
 ]
 
 [[package]]

@@ -364,19 +364,16 @@ impl<R: IpcRegs, const HAND: bool> Parked<R, HAND> {
 impl<R: IpcRegs, const HAND: bool> fastcall::Claim for &mut Parked<R, HAND> {
     #[inline(always)]
     fn claim(&mut self, slot: usize) -> bool {
-        let Some(saved) = ipc_fast_claim(slot, self.reason) else {
+        if !ipc_fast_claim(slot, self.reason) {
             return false;
-        };
+        }
         if azos_ipc::endpoint::label::ENABLED {
             match self.carry {
                 Carry::Enter(l) => azos_ipc::endpoint::label::enter_slot(slot, l),
                 Carry::Absorb(l) => azos_ipc::endpoint::label::absorb_slot(slot, l),
             }
         }
-        // A peer whose registers are still being saved (it was woken, ran
-        // and parked again since the hint): its saved context is its hart's
-        // to write, so it keeps its point and resumes where it blocked.
-        if RESUME && HAND && saved {
+        if RESUME && HAND {
             let point = ipc_fast_take_resume(slot);
             if point.pc != 0 && point.pc == R::resume_pc() && exit_is_plain() {
                 self.point = point;

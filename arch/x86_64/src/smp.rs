@@ -470,8 +470,7 @@ pub unsafe fn stop_current() -> isize {
     let cpu = crate::cpu::percpu_id();
     let Some(area) = slot(cpu) else { return -1 };
     let flags = crate::cpu::rflags();
-    // SAFETY: masks interrupts; undone below.
-    unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
+    crate::cpu::cli();
     // SAFETY: `slot` returned this CPU's own area.
     unsafe { (*area).cpu.store(cpu as u64, Ordering::Relaxed) };
     // SAFETY: as above.
@@ -489,8 +488,7 @@ pub unsafe fn stop_current() -> isize {
         }
     }
     if flags & (1 << 9) != 0 {
-        // SAFETY: interrupts were enabled when we came in.
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
+        crate::cpu::sti();
     }
     r
 }

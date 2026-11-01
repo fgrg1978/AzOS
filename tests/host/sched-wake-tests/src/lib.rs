@@ -336,10 +336,9 @@ mod tests {
     // ── The IPC fast path's claim (`sched_word::fast_claim`) ──────────────
     //
     // The claim reads `context_saving` before its CAS (a task being saved is
-    // not claimed) and again after it. The word has no sequence: a task can
-    // be woken, run and park again on the same reason between the first read
-    // and the CAS, which then succeeds against a task whose hart is still
-    // saving its registers. `between` stands for that other hart.
+    // not claimed). A task can be woken, run and park again on the same reason
+    // between that read and the CAS; the word's generation fails the CAS.
+    // `between` stands for that other hart.
 
     use core::sync::atomic::AtomicBool;
 
@@ -348,7 +347,7 @@ mod tests {
     fn fast_claim_takes_a_saved_parked_task() {
         let w = word(TaskState::Blocked);
         let saving = AtomicBool::new(false);
-        assert_eq!(sched_word::fast_claim(&w, || true, &saving, || {}), Some(true));
+        assert!(sched_word::fast_claim(&w, || true, &saving, || {}));
         assert_eq!(state_now(&w), TaskState::Ready);
     }
 
@@ -358,17 +357,17 @@ mod tests {
     fn fast_claim_refuses_without_writing() {
         let saving = AtomicBool::new(false);
         let w = word(TaskState::Blocked);
-        assert_eq!(sched_word::fast_claim(&w, || false, &saving, || {}), None);
+        assert!(!sched_word::fast_claim(&w, || false, &saving, || {}));
         assert_eq!(w.load(Ordering::Relaxed), sched_word::pack(TaskState::Blocked));
         let w = AtomicU32::new(sched_word::pack(TaskState::Blocked) | WAKE_STAMP);
-        assert_eq!(sched_word::fast_claim(&w, || true, &saving, || {}), None);
+        assert!(!sched_word::fast_claim(&w, || true, &saving, || {}));
         assert!(stamped(&w));
         let w = word(TaskState::Running);
-        assert_eq!(sched_word::fast_claim(&w, || true, &saving, || {}), None);
+        assert!(!sched_word::fast_claim(&w, || true, &saving, || {}));
         assert!(!stamped(&w), "the fast claim never stamps");
         let w = word(TaskState::Blocked);
         let busy = AtomicBool::new(true);
-        assert_eq!(sched_word::fast_claim(&w, || true, &busy, || {}), None);
+        assert!(!sched_word::fast_claim(&w, || true, &busy, || {}));
         assert_eq!(state_now(&w), TaskState::Blocked);
     }
 
@@ -381,37 +380,37 @@ mod tests {
         let got = sched_word::fast_claim(&w, || true, &saving, || {
             assert_eq!(wake(&w, true), WakeTransition::Dispatched);
         });
-        assert_eq!(got, None);
+        assert!(!got);
         assert_eq!(state_now(&w), TaskState::Ready);
     }
 
     /// The race: between the claim's read and its CAS another waker wakes
     /// the task, it runs and parks again on the same reason, and its hart is
     /// still saving its registers (`context_saving` set before its `Blocked`
-    /// commit, as `block_current` / `direct_switch_block` set it). The CAS
-    /// succeeds (same word); the claim must report it unsaved, so the fast
-    /// path takes no resume point and writes nothing of its saved context.
-    /// Canary `fast-claim-stale-canary` (the claim trusting its first read)
-    /// reports it saved, and this fails.
+    /// commit, as `block_current` / `direct_switch_block` set it). The claim
+    /// must not take it: its saved context is that hart's to write. Canary
+    /// `state-gen-canary` (no generation) takes it.
     #[test]
-    fn fast_claim_sees_a_save_begun_after_its_check() {
+    fn fast_claim_refuses_a_task_parked_again_after_its_check() {
         let w = word(TaskState::Blocked);
         let saving = AtomicBool::new(false);
+        let before = w.load(Ordering::Relaxed);
         let got = sched_word::fast_claim(&w, || true, &saving, || {
             // Another hart: the wake, the run, the park again.
             assert_eq!(wake(&w, true), WakeTransition::Dispatched);
-            w.store(sched_word::pack(TaskState::Running), Ordering::Relaxed);
+            sched_word::set_state(&w, TaskState::Running);
             saving.store(true, Ordering::Relaxed);
             assert!(commit_blocked_or_consume_wake(&w), "parked again");
         });
-        assert_eq!(got, Some(false), "a task still being saved was claimed as saved");
-        assert_eq!(state_now(&w), TaskState::Ready, "claimed all the same: its dispatch is ours");
+        assert!(!got, "a task still being saved was claimed");
+        assert_ne!(w.load(Ordering::Relaxed), before, "a new block is a new word");
+        assert_eq!(state_now(&w), TaskState::Blocked, "left to whoever wakes it next");
     }
 
     /// The kernel's claim is this function, and the fast path takes a resume
-    /// point only from a claim that found the task saved (source check).
+    /// point only from a won claim (source check).
     #[test]
-    fn fast_path_takes_a_point_only_from_a_saved_claim() {
+    fn fast_path_takes_a_point_only_after_its_claim() {
         const SCHED: &str = concat!(
             include_str!("../../../../crates/core/sched/src/scheduler/mod.rs"),
             include_str!("../../../../crates/core/sched/src/scheduler/wake.rs"),
@@ -423,7 +422,7 @@ mod tests {
         const FAST: &str = include_str!("../../../../crates/core/syscall/src/fastpath.rs");
         assert_eq!(SCHED.matches("sched_word::fast_claim(").count(), 1, "ipc_fast_claim is fast_claim");
         assert_eq!(FAST.matches("ipc_fast_claim(").count(), 1, "one claim site");
-        assert_eq!(FAST.matches("if RESUME && HAND && saved {").count(), 1, "the point needs saved");
+        assert_eq!(FAST.matches("if RESUME && HAND {").count(), 1, "the point is taken after the claim");
         assert_eq!(FAST.matches("ipc_fast_take_resume(").count(), 1, "one take site");
     }
 
@@ -635,11 +634,11 @@ mod tests {
         assert_eq!(wake_unsaved(&w, true), WakeTransition::Stamped);
         // ...context_switch.S finishes the save; the task is parked
         // Blocked+stamp+saved. The tick's reaper must deliver the wake:
-        assert!(reap_orphaned_stamp(&w), "the reaper must recover the wake");
+        assert!(reap_orphaned_stamp(&w, w.load(Ordering::Acquire)), "the reaper must recover the wake");
         assert_eq!(state_now(&w), TaskState::Ready);
         assert!(!stamped(&w), "recovery must consume the stamp");
         // Idempotence: a second reap finds nothing to do.
-        assert!(!reap_orphaned_stamp(&w));
+        assert!(!reap_orphaned_stamp(&w, w.load(Ordering::Acquire)));
     }
 
     #[test]
@@ -648,7 +647,7 @@ mod tests {
         // with no delivered wake would be a phantom wake.
         let w = word(TaskState::Running);
         assert!(commit_blocked_or_consume_wake(&w));
-        assert!(!reap_orphaned_stamp(&w));
+        assert!(!reap_orphaned_stamp(&w, w.load(Ordering::Acquire)));
         assert_eq!(state_now(&w), TaskState::Blocked, "must stay asleep");
     }
 
@@ -659,7 +658,7 @@ mod tests {
         // imminent block into a permanent sleep.
         let w = word(TaskState::Running);
         assert_eq!(wake(&w, true), WakeTransition::Stamped);
-        assert!(!reap_orphaned_stamp(&w), "Running+stamp is not orphaned");
+        assert!(!reap_orphaned_stamp(&w, w.load(Ordering::Acquire)), "Running+stamp is not orphaned");
         assert!(stamped(&w), "the stamp must survive for the commit");
         assert!(!commit_blocked_or_consume_wake(&w), "commit consumes it");
     }
@@ -679,7 +678,7 @@ mod tests {
             let mut wins = 0usize;
             for _ in 0..ROUNDS {
                 start2.wait();
-                if reap_orphaned_stamp(&w2) { wins += 1; }
+                if reap_orphaned_stamp(&w2, w2.load(Ordering::Acquire)) { wins += 1; }
                 start2.wait();
             }
             wins
@@ -705,16 +704,70 @@ mod tests {
                    "every round must deliver exactly once");
     }
 
+    // The reaper's ABA, as the loom model and reproducer found it. The reaper
+    // reads `Blocked + stamp`, then finds `context_saving` clear. Between the
+    // two the task can consume the stamp, run, block again unswitched and be
+    // stamped again: the same state and stamp, on a task that is executing.
+    // Canary `state-gen-canary` (no generation) reaps it.
     #[test]
-    fn reentry_commit_with_a_standing_blocked_word_proceeds() {
-        // Unswitched block loops back in with the word still Blocked and no
-        // stamp: the commit must stand (return true) so the task keeps
-        // trying to yield the hart — not spin forever failing to re-commit.
+    fn reaper_refuses_a_task_that_blocked_again_after_its_check() {
         let w = word(TaskState::Running);
         assert!(commit_blocked_or_consume_wake(&w));
-        assert!(commit_blocked_or_consume_wake(&w),
-                "a standing commit is still a commit");
+        assert_eq!(wake_unsaved(&w, true), WakeTransition::Stamped);
+        let seen = w.load(Ordering::Acquire);
+        // The task, still on its hart: the stamp consumed by a skipped block,
+        // then a block that commits and is stamped in turn.
+        assert!(!commit_blocked_or_consume_wake(&w));
+        assert_eq!(state_now(&w), TaskState::Running);
+        assert!(commit_blocked_or_consume_wake(&w));
+        assert_eq!(wake_unsaved(&w, true), WakeTransition::Stamped);
+        assert!(!reap_orphaned_stamp(&w, seen), "a running task was reaped");
         assert_eq!(state_now(&w), TaskState::Blocked);
+        assert!(stamped(&w), "the stamp stays with the running task");
+        assert!(reap_orphaned_stamp(&w, w.load(Ordering::Acquire)), "the current word is reaped");
+    }
+
+    // A wake reads `Blocked` and `context_saving` clear from a parked task; the
+    // task is dispatched elsewhere, runs and blocks again. The wake's CAS must
+    // fail on it, or it enqueues a running task.
+    #[test]
+    fn a_wake_refuses_a_task_that_blocked_again_after_its_saved_read() {
+        let w = word(TaskState::Running);
+        assert!(commit_blocked_or_consume_wake(&w));
+        let ran_again = core::cell::Cell::new(false);
+        let wt = wake_transition(&w, || true, false, || {
+            if !ran_again.replace(true) {
+                assert_eq!(wake(&w, true), WakeTransition::Dispatched);
+                sched_word::set_state(&w, TaskState::Running);
+                assert!(commit_blocked_or_consume_wake(&w));
+                return true;
+            }
+            false
+        });
+        assert_eq!(wt, WakeTransition::Stamped, "the retry sees the task still running");
+        assert_eq!(state_now(&w), TaskState::Blocked);
+    }
+
+    // The block that does not switch: back to `Running` whether or not a wake
+    // stamped it, so a caller finding its condition true runs on as `Running`
+    // and the next switch re-queues it. Nothing done for any other state.
+    #[test]
+    fn an_unswitched_block_goes_back_to_running() {
+        let w = word(TaskState::Running);
+        assert!(commit_blocked_or_consume_wake(&w));
+        assert!(sched_word::take_back_unswitched(&w), "no stamp: the case the audit left open");
+        assert_eq!(state_now(&w), TaskState::Running);
+        assert!(!stamped(&w));
+        assert!(commit_blocked_or_consume_wake(&w));
+        assert_eq!(wake_unsaved(&w, true), WakeTransition::Stamped);
+        assert!(sched_word::take_back_unswitched(&w));
+        assert_eq!(state_now(&w), TaskState::Running);
+        assert!(!stamped(&w), "a wake taken back is a wake delivered");
+        for s in [TaskState::Running, TaskState::Ready, TaskState::Zombie] {
+            let w = word(s);
+            assert!(!sched_word::take_back_unswitched(&w));
+            assert_eq!(state_now(&w), s);
+        }
     }
 
     #[test]
@@ -751,7 +804,7 @@ mod tests {
             start.wait();
             let committed = commit_blocked_or_consume_wake(&w);
             end.wait(); // both sides done; the word is now quiescent
-            let now = w.load(Ordering::Acquire);
+            let now = w.load(Ordering::Acquire) & !sched_word::GEN_MASK;
             if committed {
                 // We really blocked, so the waker must have dispatched us.
                 assert_eq!(now, sched_word::pack(TaskState::Ready),
@@ -3126,7 +3179,7 @@ mod reap_flag_gate {
     fn a_stamp_flagged_late_is_reaped_one_tick_later() {
         let w = AtomicU32::new(sched_word::pack(TaskState::Blocked));
         let flag = AtomicBool::new(false);
-        let tick = |w: &AtomicU32| flag.swap(false, Ordering::AcqRel) && reap_orphaned_stamp(w);
+        let tick = |w: &AtomicU32| flag.swap(false, Ordering::AcqRel) && reap_orphaned_stamp(w, w.load(Ordering::Acquire));
 
         // The waker stamps a target that is still switching away.
         assert_eq!(wake_transition(&w, || true, false, || false), WakeTransition::Stamped);
@@ -3234,13 +3287,13 @@ mod reap_flag_gate {
         assert_eq!(wake_transition(&w, || true, false, || false), WakeTransition::Stamped);
         // No `note_unsaved_stamp`: every tick is gated out.
         for _ in 0..3 {
-            assert!(!(flag.swap(false, Ordering::AcqRel) && reap_orphaned_stamp(&w)));
+            assert!(!(flag.swap(false, Ordering::AcqRel) && reap_orphaned_stamp(&w, w.load(Ordering::Acquire))));
         }
         // The hart goes idle; the target has parked.
         let seen = sched_word::reapable_stamps();
         assert!(seen != swept.load(Ordering::Relaxed) && !flag.load(Ordering::Acquire),
                 "the idle skip test hides the stamp");
-        assert!(reap_orphaned_stamp(&w), "the idle walk must deliver the wake");
+        assert!(reap_orphaned_stamp(&w, w.load(Ordering::Acquire)), "the idle walk must deliver the wake");
         swept.store(seen, Ordering::Relaxed);
         assert_eq!(sched_word::state_of(w.load(Ordering::Acquire)), TaskState::Ready);
     }

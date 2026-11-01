@@ -58,7 +58,7 @@ elf-page-copy-canary = []
 elf-fill-canary = []
 # `task.rs`'s `sched_word::fast_claim`: the canary build trusts the read
 # before the CAS, and `fast_claim_sees_a_save_begun_after_its_check` must fail.
-fast-claim-stale-canary = []
+state-gen-canary = []
 # `wait.rs`'s timer-tick hook for the kernel's `preempt::ktest_probe`;
 # declared for the lint, never enabled here.
 ktest = []

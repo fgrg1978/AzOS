@@ -397,6 +397,11 @@ pub fn mark_space_stale(root_phys: usize, me: usize, include_me: bool) -> HartMa
     let except = if include_me { usize::MAX } else { me };
     let key = root_phys >> 12;
     let m = if SPACE_MASK && key != 0 {
+        // The caller's PTE store before these loads. Without it the record can
+        // be read first; a hart that then enters the space, walks the old PTE
+        // and leaves before the fence after this function is neither marked nor
+        // on the root, and keeps the entry under its retained ASID.
+        core::sync::atomic::fence(Ordering::SeqCst);
         let tg = SPACES.generation();
         let ran = SPACES.lookup(key, SPACE_PROBE);
         space_targets(ran, |h| HART_TLB_GEN[h].load(Ordering::Acquire), tg, HARTS, except)

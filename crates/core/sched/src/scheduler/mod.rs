@@ -598,15 +598,13 @@ const _: () = assert!(MAX_TASKS < i32::MAX as usize, "ready-list links are u32 s
 /// `ready_bitmap`. It is written by `start()`/`do_schedule()` under IRQ-disable
 /// on the OWNING hart only — same-hart reads while interrupts are off (every
 /// site inside `do_schedule()` itself, `task_entry_wrapper`) were never
-/// racing anything. What was racing: `current_snapshot()` and
-/// `reap_stamped_sleepers()` both read `PER_CPU[cpu].current_idx` for every
+/// racing anything. What was racing: `current_snapshot()` read
+/// `PER_CPU[cpu].current_idx` for every
 /// `cpu`, including harts other than the caller's, with no lock — a plain
 /// `usize` load on one hart against a plain `usize` store on another is a
 /// data race regardless of how the value is used afterwards. `Relaxed` makes
-/// that legal without adding synchronisation the readers do not need: both
-/// are diagnostics that tolerate a stale value (`current_snapshot` is
-/// display-only, and `reap_stamped_sleepers`'s ABA guard already treats "not
-/// current anywhere" as advisory — see its call site). It was not part of
+/// that legal without adding synchronisation the readers do not need: they
+/// are diagnostics that tolerate a stale value. It was not part of
 /// what `ring_claim_audit` reads, which is why the ring's conversion left it
 /// named rather than folding it in as an unrelated change; it is closed now.
 /// `align(32)` is load-bearing, not cosmetic. The struct's three fields are 20
@@ -2513,6 +2511,76 @@ unsafe fn do_schedule(why: SwitchReason) {
         (next_idx, next_t)
     };
 
+    let next = &mut *next_t;
+    // If `next` is mid-transition (context_saving == true — e.g. this
+    // exact task was just preempted/blocked on another hart and its
+    // context_switch.S save hasn't finished yet), wait for it. The
+    // window is a handful of instructions in the common case; see the
+    // fence+store tail of the save path in context_switch.S / the
+    // context_saving field doc.
+    //
+    // Before `old` is touched: when the wait gives up, the task keeps the hart
+    // exactly as it held it, not `Ready` in a queue while it executes.
+    //
+    // **This used to be compiled out under `--features rvv`**, because
+    // context_switch_rvv.S never cleared `context_saving` and the gate would
+    // have spun forever. That file now clears it with the same fence+sb tail
+    // (K-C23), so the exemption is gone and both builds take this path — the
+    // twelve divergent `cfg` sites this comment was the largest of are all
+    // deleted. An rvv build is a scheduler-identical build again.
+    {
+        // **Bounded.** This gate used to spin forever, and the audit recorded
+        // the risk honestly: a `Blocked` task keeps `context_saving` set (see
+        // `clear_saving_on_no_switch`, where clearing it unconditionally is a
+        // worse bug), so if such a task ever became selectable the hart picking
+        // it would spin until the board was power-cycled. It was unreachable
+        // "by construction, not by defence" -- and a construction argument is
+        // exactly what a hardware bring-up invalidates.
+        //
+        // **A wall-clock deadline, not a spin count**, for the reason the
+        // virtio-blk timeout was rewritten: a spin count buys a different
+        // amount of real time on QEMU, the VF2 and the K1, so it is the kind
+        // of budget that works on the desk and fails on the board. 1 ms (the
+        // SCHED_SAVING_GATE_US default) is ~100x any legitimate wait here
+        // (the save tail is a handful of instructions) and 10x below the
+        // 100 Hz tick, so it cannot fire on a healthy switch and cannot hide
+        // a wedge for a whole tick.
+        //
+        // The clock is read once per 256 spins: `get_time` on the CLINT is a
+        // device read, and putting one in a tight retry loop would make the
+        // gate expensive in the common case, which is the case that matters.
+        // Wave 15 (SWITCH): and not at all when the flag is already clear,
+        // which is every switch on one hart — the wait is out of line.
+        let expired = next.context_saving.load(Ordering::Acquire)
+            && !wait_context_saved(next);
+        if expired {
+            // **Give the task back rather than dispatching it.** Restoring a
+            // context nobody has finished saving is the double-dispatch
+            // corruption this gate exists to prevent, so waiting it out is not
+            // optional -- but neither is hanging. Put it back where the
+            // ordinary machinery will find it again and return without
+            // switching; the hart idles or takes its next tick, and the task
+            // is retried with the flag presumably settled.
+            //
+            // Safe: the pick dequeued it, so it is nowhere, and
+            // `Ready` + enqueue is the one state that is legal.
+            // `cpu_enqueue_locked` refuses a task that is somehow still
+            // queued, so this cannot double-list it.
+            // The RT pick (`rt::pick`) removes its task from the ring with
+            // `cpu_remove` under the CPU lock, so the same holds for it. (The
+            // old EDF pick claimed `Running` without leaving its ring, U02-4;
+            // it is deleted.)
+            SPIN_GATE_EXPIRED.fetch_add(1, Ordering::Relaxed);
+            next.set_state(TaskState::Ready);
+            if !cpu_requeue_self(cpu, next_idx) {
+                SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
+            clear_saving_on_no_switch(cpu);
+            return;
+        }
+    }
+    crate::swcensus::gated();
+
     // Re-enqueue old task if it is still runnable.
     // Set for a Zombie (the arm below): its context is not saved, and its
     // slot is freed after the switch (`finish_switch`), so nothing here may
@@ -2576,7 +2644,7 @@ unsafe fn do_schedule(why: SwitchReason) {
             // context_switch below finishes the save — the gate's original
             // purpose. CAS loop because K-C24 stampers race this window.
             loop {
-                use crate::task::sched_word::{pack, WAKE_STAMP};
+                use crate::task::sched_word::{moved, WAKE_STAMP};
                 let curw = old.state_word.load(Ordering::Acquire);
                 if curw & WAKE_STAMP == 0
                     || crate::task::sched_word::state_of(curw) != TaskState::Blocked
@@ -2584,7 +2652,7 @@ unsafe fn do_schedule(why: SwitchReason) {
                     break;
                 }
                 if old.state_word.compare_exchange_weak(
-                    curw, pack(TaskState::Ready),
+                    curw, moved(curw, TaskState::Ready),
                     Ordering::AcqRel, Ordering::Relaxed,
                 ).is_ok() {
                     hist_reaccount(old_idx);
@@ -2625,73 +2693,6 @@ unsafe fn do_schedule(why: SwitchReason) {
     }
 
     crate::swcensus::requeued();
-    // Activate next task.
-    let next = &mut *next_t;
-    // If `next` is mid-transition (context_saving == true — e.g. this
-    // exact task was just preempted/blocked on another hart and its
-    // context_switch.S save hasn't finished yet), wait for it. The
-    // window is a handful of instructions in the common case; see the
-    // fence+store tail of the save path in context_switch.S / the
-    // context_saving field doc.
-    //
-    // **This used to be compiled out under `--features rvv`**, because
-    // context_switch_rvv.S never cleared `context_saving` and the gate would
-    // have spun forever. That file now clears it with the same fence+sb tail
-    // (K-C23), so the exemption is gone and both builds take this path — the
-    // twelve divergent `cfg` sites this comment was the largest of are all
-    // deleted. An rvv build is a scheduler-identical build again.
-    {
-        // **Bounded.** This gate used to spin forever, and the audit recorded
-        // the risk honestly: a `Blocked` task keeps `context_saving` set (see
-        // `clear_saving_on_no_switch`, where clearing it unconditionally is a
-        // worse bug), so if such a task ever became selectable the hart picking
-        // it would spin until the board was power-cycled. It was unreachable
-        // "by construction, not by defence" -- and a construction argument is
-        // exactly what a hardware bring-up invalidates.
-        //
-        // **A wall-clock deadline, not a spin count**, for the reason the
-        // virtio-blk timeout was rewritten: a spin count buys a different
-        // amount of real time on QEMU, the VF2 and the K1, so it is the kind
-        // of budget that works on the desk and fails on the board. 1 ms (the
-        // SCHED_SAVING_GATE_US default) is ~100x any legitimate wait here
-        // (the save tail is a handful of instructions) and 10x below the
-        // 100 Hz tick, so it cannot fire on a healthy switch and cannot hide
-        // a wedge for a whole tick.
-        //
-        // The clock is read once per 256 spins: `get_time` on the CLINT is a
-        // device read, and putting one in a tight retry loop would make the
-        // gate expensive in the common case, which is the case that matters.
-        // Wave 15 (SWITCH): and not at all when the flag is already clear,
-        // which is every switch on one hart — the wait is out of line.
-        let expired = next.context_saving.load(Ordering::Acquire)
-            && !wait_context_saved(next);
-        if expired {
-            // **Give the task back rather than dispatching it.** Restoring a
-            // context nobody has finished saving is the double-dispatch
-            // corruption this gate exists to prevent, so waiting it out is not
-            // optional -- but neither is hanging. Put it back where the
-            // ordinary machinery will find it again and return without
-            // switching; the hart idles or takes its next tick, and the task
-            // is retried with the flag presumably settled.
-            //
-            // Safe: the pick dequeued it, so it is nowhere, and
-            // `Ready` + enqueue is the one state that is legal.
-            // `cpu_enqueue_locked` refuses a task that is somehow still
-            // queued, so this cannot double-list it.
-            // The RT pick (`rt::pick`) removes its task from the ring with
-            // `cpu_remove` under the CPU lock, so the same holds for it. (The
-            // old EDF pick claimed `Running` without leaving its ring, U02-4;
-            // it is deleted.)
-            SPIN_GATE_EXPIRED.fetch_add(1, Ordering::Relaxed);
-            next.set_state(TaskState::Ready);
-            if !cpu_requeue_self(cpu, next_idx) {
-                SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
-            }
-            clear_saving_on_no_switch(cpu);
-            return;
-        }
-    }
-    crate::swcensus::gated();
     #[cfg(feature = "ipc-census")]
     wakelat::measure(next_idx);
     next.set_state(TaskState::Running);
@@ -3275,7 +3276,12 @@ static DONATION_LOCKS: [AtomicBool; MAX_TASKS] = {
 /// Remove a specific task `idx` from its current ready bucket, if present.
 /// O(bucket length). Returns `true` if it was found and removed.
 unsafe fn cpu_remove(cpu: usize, idx: usize) -> bool {
-    let prio = prio_bucket(task_mut(idx).priority.load(Ordering::Relaxed));
+    cpu_remove_at(cpu, idx, prio_bucket(task_mut(idx).priority.load(Ordering::Relaxed)))
+}
+
+/// [`cpu_remove`] from the list of bucket `prio`, whatever `priority` says now.
+#[inline(always)]
+unsafe fn cpu_remove_at(cpu: usize, idx: usize, prio: usize) -> bool {
     // `&`, not `&mut` — see `cpu_dequeue`.
     let q = &cpu_queues(cpu)[prio];
     // O(position): the list is walked from its head, under the lock, for at
@@ -3327,6 +3333,21 @@ unsafe fn cpu_remove_anywhere(idx: usize) -> Option<usize> {
         if cpu_remove(cpu, idx) {
             // It leaves the fair order keeping its lag (a priority change,
             // a move to the hart its reservation was admitted on).
+            fairq::left(cpu, idx);
+            return Some(cpu);
+        }
+    }
+    None
+}
+
+/// The task `idx` linked under bucket `old` while its priority was changed, off
+/// whichever CPU's list holds it. See `TaskDonation::apply_prio`.
+#[cold]
+#[inline(never)]
+unsafe fn cpu_remove_stale(idx: usize, old: usize) -> Option<usize> {
+    for cpu in 0..ncpu() {
+        let _g = CpuLockGuard::acquire(cpu);
+        if cpu_remove_at(cpu, idx, old) {
             fairq::left(cpu, idx);
             return Some(cpu);
         }

@@ -2115,6 +2115,20 @@ mod entropy_tests {
 mod tlb_space_mask_tests {
     use azos_arch_api::tlb_gen::{space_targets, SpaceTable, STALE};
 
+    /// The record of who ran a space is read after the caller's PTE store, or
+    /// a hart can run the space and leave unseen between the two (store-load
+    /// reorders on riscv64 and x86_64). A missing fence does not show in a
+    /// run; the source is what this checks, and the rv64 image's fence count
+    /// differs without it.
+    #[test]
+    fn the_space_record_is_read_after_the_pte_store() {
+        const SRC: &str = include_str!("../../../../arch/api/src/tlb_gen.rs");
+        let body = &SRC[SRC.find("pub fn mark_space_stale(").expect("the function")..];
+        let fence = body.find("fence(Ordering::SeqCst)").expect("a fence");
+        let lookup = body.find("SPACES.lookup(").expect("the lookup");
+        assert!(fence < lookup, "the fence comes first");
+    }
+
     /// One ASID per address space (owner decision 10-10): the record a
     /// re-tag adopts. Canary: drop the `asid` store in `assign` and the
     /// first three asserts fail.

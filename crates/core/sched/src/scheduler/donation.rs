@@ -55,18 +55,35 @@ impl crate::donation::DonationCell for TaskDonation {
     fn apply_prio(&self, p: u32) {
         unsafe {
             let idx = self.idx;
+            let task = task_mut(idx);
+            let old = prio_bucket(task.priority.load(Ordering::Relaxed));
             // Only a Ready task sits in a run queue keyed by priority, so only
             // that case needs the remove/re-enqueue dance. Blocked and Running
             // tasks still need the field written: a blocked lessee must wake
             // at the donated priority, otherwise donation silently does
             // nothing in the most common case (lessee waiting on I/O).
-            let removed_from = if task_mut(idx).state() == TaskState::Ready {
+            let mut removed_from = if task.state() == TaskState::Ready {
                 cpu_remove_anywhere(idx)
             } else {
                 None
             };
-            task_mut(idx).priority.store(p, Ordering::Relaxed);
+            #[cfg(feature = "ktest")]
+            ktest_boost_window(idx);
+            task.priority.store(p, Ordering::Relaxed);
             hist_reaccount(idx);
+            // An enqueue reads the priority under its queue's lock (a wake, a
+            // migration, a preempted task's requeue), and the state read above
+            // says nothing about one in progress. Having read the old value it
+            // linked the task under the old bucket, where nothing looks: the
+            // boost is lost and no removal finds the task. Each queue's lock is
+            // taken after the store, so an enqueue this walk misses holds it
+            // later and reads the new priority.
+            if removed_from.is_none()
+                && prio_bucket(p) != old
+                && !(azos_limits::CANARY_RUNTIME && CANARY_BOOST_STALE.load(Ordering::Relaxed))
+            {
+                removed_from = cpu_remove_stale(idx, old);
+            }
             if let Some(q) = removed_from {
                 // Back onto the SAME queue it came off, under that queue's
                 // lock — `cpu_enqueue_locked` also wakes that hart, which is
@@ -76,6 +93,59 @@ impl crate::donation::DonationCell for TaskDonation {
                 }
             }
         }
+    }
+}
+
+/// Runtime canary `pi-boost-stale-bucket` (`kernel/src/canary_rt.rs`): a priority
+/// change does not look for an enqueue that read the old value (ktest
+/// `pi_boost_lands_on_a_racing_wake`).
+static CANARY_BOOST_STALE: AtomicBool = AtomicBool::new(false);
+
+/// See [`CANARY_BOOST_STALE`].
+pub fn canary_boost_stale_bucket() {
+    CANARY_BOOST_STALE.store(true, Ordering::Relaxed);
+}
+
+/// Ktest: the slot whose next `apply_prio` wakes it inside the window, plus 1.
+#[cfg(feature = "ktest")]
+static KTEST_BOOST_WAKE: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "ktest")]
+unsafe fn ktest_boost_window(idx: usize) {
+    if KTEST_BOOST_WAKE.load(Ordering::Relaxed) == idx + 1 {
+        KTEST_BOOST_WAKE.store(0, Ordering::Relaxed);
+        wq_wake_by_tid(unsafe { task_ref(idx) }.tid);
+    }
+}
+
+/// Ktest: `tid` sits parked, its registers saved.
+#[cfg(feature = "ktest")]
+pub fn ktest_parked(tid: u32) -> bool {
+    let Some(idx) = idx_for_tid(tid) else { return false };
+    let t = unsafe { task_ref(idx) };
+    t.state_acquire() == TaskState::Blocked && !t.context_saving.load(Ordering::Acquire)
+}
+
+/// Ktest `pi_boost_lands_on_a_racing_wake`: boost parked `tid`, pinned to this
+/// CPU, to `to`, with its WaitQueue wake inside `apply_prio`'s window. Interrupts
+/// masked by the caller, so nothing dispatches it here. Whether the task is in
+/// `to`'s list afterwards; it is put right either way.
+#[cfg(feature = "ktest")]
+pub fn ktest_boost_during_wake(tid: u32, to: u32) -> bool {
+    let Some(idx) = idx_for_tid(tid) else { return false };
+    let cpu = current_cpu_id();
+    unsafe {
+        let task = task_ref(idx);
+        let before = task.priority.load(Ordering::Relaxed);
+        KTEST_BOOST_WAKE.store(idx + 1, Ordering::Relaxed);
+        boost_ready_task(tid, to);
+        let _g = CpuLockIrqsOff::acquire(cpu);
+        let found = cpu_remove(cpu, idx);
+        if !found {
+            let _ = cpu_remove_at(cpu, idx, prio_bucket(before));
+        }
+        cpu_enqueue(cpu, idx);
+        found
     }
 }
 

@@ -10,6 +10,8 @@ description = "Host-side tests for azos_arch_api — PagePerms named constants, 
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
+# `GICR_WALK_MAX_FRAMES` in the pulled gic.rs is Kconfig NR_CPUS.
+azos_limits = { path = "../../../crates/core/limits" }
 # `lat-trace`: the masked-window tracer bookkeeping (`lat`), tested below.
 azos_arch_api = { path = "../../../arch/api", features = ["lat-trace"] }
 # The kernel entropy pool: the CPU sources' credit is checked against the pool
