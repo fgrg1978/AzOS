@@ -243,7 +243,6 @@ impl Mmu for Arch {
     }
 
     fn flush_tlb_all(&self) { cpu::sfence_vma(); }
-    fn flush_tlb_asid(&self, _asid: u16) { cpu::sfence_vma(); }
     fn flush_tlb_page(&self, va: usize) { cpu::sfence_vma_addr(va); }
     /// No remote harts on the host: the local part is the no-op above. Counts
     /// the calls against [`SHOOTDOWN_WATCH_ROOT`] so a test can pin how many

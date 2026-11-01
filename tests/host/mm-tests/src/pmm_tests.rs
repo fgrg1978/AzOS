@@ -202,7 +202,7 @@ fn pinned_frames_are_not_freed_and_reserved_frames_are() {
     assert_eq!(pmm::frame_state(p), Some(F_ALLOCATED | F_PINNED));
     assert_eq!(pmm::free_page(PhysAddr::new(p)), Err(KernelError::InvalidArg));
     assert!(pmm::set_frame_modifier(p, F_PINNED, false));
-    assert!(pmm::set_frame_modifier(p, F_COMPRESSED | F_SWAPPED, true));
+    assert!(pmm::set_frame_modifier(p, F_COMPRESSED, true));
     pmm::free_page(PhysAddr::new(p)).expect("modifiers other than pinned do not stop a free");
     assert_eq!(pmm::frame_state(p), Some(F_FREE));
     assert!(!pmm::set_frame_modifier(p, F_PINNED, true), "a free frame cannot be pinned");

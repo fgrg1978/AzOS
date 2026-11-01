@@ -451,15 +451,6 @@ impl Mmu for Riscv64 {
         self.restore(irq);
     }
 
-    #[inline]
-    fn flush_tlb_asid(&self, _asid: u16) {
-        // RISC-V SFENCE.VMA with rs2 != 0 selects by ASID, but the
-        // existing `cpu::sfence_vma()` flushes all. A per-ASID
-        // variant is a follow-up; flushing all preserves
-        // correctness at the cost of TLB pressure.
-        crate::cpu::sfence_vma();
-    }
-
     /// The privileged spec's ASIDLEN probe: satp.ASID (bits 59:44) is WARL,
     /// so all-ones written reads back as the bits the hart implements. The
     /// root and mode are kept, the old word is restored, and the TLB is

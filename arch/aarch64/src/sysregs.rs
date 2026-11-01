@@ -333,25 +333,6 @@ pub fn tlbi_vmalle1is() {
     }
 }
 
-/// Invalidate TLB entries tagged with `asid`. Uses
-/// `TLBI ASIDE1IS` which takes the ASID in bits [63:48] of the
-/// operand register.
-#[cfg(target_arch = "aarch64")]
-#[inline]
-pub fn tlbi_aside1is(asid: u16) {
-    let op = (asid as u64) << 48;
-    unsafe {
-        core::arch::asm!(
-            "dsb ishst",
-            "tlbi aside1is, {0}",
-            "dsb ish",
-            "isb",
-            in(reg) op,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-}
-
 /// Invalidate TLB entries translating `va`, all ASIDs, at EL1 +
 /// inner-shareable DSB. `TLBI VAAE1IS` takes bits `[43:0]` of the operand
 /// as `VA[55:12]` (the page number, not the byte address) — the same

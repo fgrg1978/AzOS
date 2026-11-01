@@ -1062,19 +1062,6 @@ pub mod cpu {
         }
     }
 
-    /// Drop the non-global entries tagged with `asid`'s PCID. Without
-    /// `invpcid` only the live PCID can be named; another PCID's entries are
-    /// unreachable until its switch-in, which drops them.
-    pub fn flush_asid(asid: u16) {
-        if !pcid_on() {
-            flush_current();
-        } else if invpcid_on() {
-            invpcid(INVPCID_SINGLE, (asid as u64 & CR3_PCID_MASK) as u16, 0);
-        } else if cr3_pcid(read_cr3()) == (asid as u64 & CR3_PCID_MASK) as u16 {
-            flush_current();
-        }
-    }
-
     /// Record the depth boot.S chose (CR4.LA57). The boot CPU calls it
     /// before the kernel's tables are built (`ArchEntry::trap_init`): they
     /// must have the depth the CPU will walk.
