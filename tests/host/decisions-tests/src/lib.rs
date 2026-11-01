@@ -563,6 +563,7 @@ mod tests {
             (Rule::Clocksource, 73, "clocksource"),
             (Rule::IoportReserved, 74, "ioport-reserved"),
             (Rule::Rangefinder, 75, "rangefinder"),
+            (Rule::CoreDump, 76, "core-dump"),
         ];
         assert_eq!(azos_decision::RULES.len(), all.len(), "a rule without a name, or a name without a rule");
         for &(rule, num, name) in all {

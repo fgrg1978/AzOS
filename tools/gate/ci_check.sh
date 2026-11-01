@@ -14653,8 +14653,9 @@ PY
     # +4 hotplug_* (the `ktest hotplug` rows) -> 141, arm 145.
     # +2 kheap_guard_reports_a_buffer_overflow, kheap_guard_reports_a_use_after_free -> 145, arm 149.
     # +1 kheap_leaks_reports_a_block_nobody_freed -> 146, arm 150.
-    KTEST_N_RV=146
-    KTEST_N_ARM=150
+    # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 148, arm 152.
+    KTEST_N_RV=148
+    KTEST_N_ARM=152
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14969,6 +14970,15 @@ PY
     par "ktest heap guard off canary (rv)" ktest_row_guardoff "ktest heap guard off canary (rv)" rv "" "$KTEST_GUARD_OFF"
     par "ktest heap guard off canary (arm)" ktest_row_guardoff "ktest heap guard off canary (arm)" arm "" "$KTEST_GUARD_OFF"
     # Kconfig KHEAP_LEAKS: the tracker names a block nobody freed; the canary keeps the guard and drops the tracker.
+    # Kconfig CRASHDUMP_CORE_*: the kernel's core writer makes an ELF core of a run of memory, and a refused or
+    # cut core leaves a `core-dump` decision record; the canary builds with the core off (CRASHDUMP_CORE_N).
+    KTEST_CORE_RE=$'^ok [0-9]+ - crash_core_file_is_an_elf_core$\n^ok [0-9]+ - crash_core_refusal_is_a_decision_record$'
+    KTEST_CORE_OFF="crash_core_file_is_an_elf_core crash_core_refusal_is_a_decision_record"
+    ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" KCFG_GREP="CONFIG_CRASHDUMP_CORE_N=y" ktest_row_cfgline "$@"; }
+    par "ktest core file (rv)" ktest_row "ktest core file (rv)" rv "" "" "" "$KTEST_CORE_RE"
+    par "ktest core file (arm)" ktest_row "ktest core file (arm)" arm "" "" "" "$KTEST_CORE_RE"
+    par "ktest core file off canary (rv)" ktest_row_coreoff "ktest core file off canary (rv)" rv "" "$KTEST_CORE_OFF"
+    par "ktest core file off canary (arm)" ktest_row_coreoff "ktest core file off canary (arm)" arm "" "$KTEST_CORE_OFF"
     par "ktest heap leaks (rv)" ktest_row "ktest heap leaks (rv)" rv "" "" "" "$KTEST_LEAKS_RE"
     par "ktest heap leaks (arm)" ktest_row "ktest heap leaks (arm)" arm "" "" "" "$KTEST_LEAKS_RE"
     par "ktest heap leaks off canary (rv)" ktest_row_leaksoff "ktest heap leaks off canary (rv)" rv "" "kheap_leaks_reports_a_block_nobody_freed"
@@ -15546,8 +15556,9 @@ PY
     # +1 sigsuspend_saves_the_mask_per_thread, as on rv and arm -> 144.
     # +2 tlb_request_wait_takes_interrupts, tlb_no_shootdown_from_an_interrupt -> 146.
     # +4 the hotplug_* tests -> 150.
-    # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, as on rv and arm -> 155.
-    KTEST_N_X86=155
+    # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
+    # tests, as on rv and arm -> 157.
+    KTEST_N_X86=157
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16615,6 +16626,9 @@ PY
     x86_ktest_row_leaksoff() { KCFG_TAG=leaksoff KCFG_LINE="# CONFIG_KHEAP_LEAKS is not set" x86_ktest_row_cfgline "$@"; }
     par "ktest heap guard (x86)" x86_ktest_row "ktest heap guard (x86)" "" "" "" "" "$KTEST_GUARD_RE"
     par "ktest heap guard off canary (x86)" x86_ktest_row_guardoff "ktest heap guard off canary (x86)" "" "$KTEST_GUARD_OFF"
+    x86_ktest_row_coreoff() { KCFG_TAG=coreoff KCFG_LINE="CONFIG_CRASHDUMP_CORE_N=y" x86_ktest_row_cfgline "$@"; }
+    par "ktest core file (x86)" x86_ktest_row "ktest core file (x86)" "" "" "" "" "$KTEST_CORE_RE"
+    par "ktest core file off canary (x86)" x86_ktest_row_coreoff "ktest core file off canary (x86)" "" "$KTEST_CORE_OFF"
     par "ktest heap leaks (x86)" x86_ktest_row "ktest heap leaks (x86)" "" "" "" "" "$KTEST_LEAKS_RE"
     par "ktest heap leaks off canary (x86)" x86_ktest_row_leaksoff "ktest heap leaks off canary (x86)" "" "kheap_leaks_reports_a_block_nobody_freed"
     x86_ktest_row_hotplug() {

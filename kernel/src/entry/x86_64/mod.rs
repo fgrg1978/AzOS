@@ -32,6 +32,10 @@ use azos_arch::fork_regs::gpr;
 use azos_arch::cpu;
 use azos_arch::trap::{gdt, idt};
 
+/// The user code and data selectors, for the core file's `cs`, `ss` and `ds`.
+pub(crate) const USER_CS: u64 = gdt::USER_CS as u64;
+pub(crate) const USER_DS: u64 = gdt::USER_DS as u64;
+
 /// Interrupt dispatch (vectors >= 32) and the tick.
 pub mod irq;
 /// Secondary-CPU entry and bring-up check.

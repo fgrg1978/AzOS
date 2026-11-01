@@ -664,6 +664,111 @@ azos_ktest::ktest! {
     }
 }
 
+// The core file of a killed ring-3 task (Kconfig `CRASHDUMP_CORE_*`,
+// `crates/core/recovery/src/coredump.rs`): built by the kernel's own writer from
+// a run of kernel memory standing in for the task's, it is an ELF core of this
+// machine whose stack segment starts at the stack pointer's page and holds the
+// bytes of the run. With the core off (the canary row) the test is red.
+azos_ktest::ktest! {
+    fn crash_core_file_is_an_elf_core() {
+        #[cfg(feature = "crashdump")]
+        {
+            use azos_recovery::coredump::{Run, Task};
+            use crate::trap::crash::{make_core, CORE};
+            if !CORE {
+                return Err("the core file (Kconfig CRASHDUMP_CORE_*) is off in this kernel");
+            }
+            let data: alloc::vec::Vec<u8> = (0..3 * 4096usize).map(|i| (i * 7) as u8).collect();
+            let (start, end) = (data.as_ptr() as u64, data.as_ptr() as u64 + data.len() as u64);
+            let sp = start + 4096 + 16;
+            let regs: [u64; 27] = core::array::from_fn(|i| 0xC0DE_0000 + i as u64);
+            #[cfg(target_arch = "riscv64")]
+            let machine = azos_recovery::coredump::EM_RISCV;
+            #[cfg(target_arch = "aarch64")]
+            let machine = azos_recovery::coredump::EM_AARCH64;
+            #[cfg(target_arch = "x86_64")]
+            let machine = azos_recovery::coredump::EM_X86_64;
+            let task = Task { machine, tid: 5, status: 11, name: b"KTEST", image: [9; 32], sp, regs: &regs };
+            let read = |a: u64, buf: &mut [u8]| {
+                // SAFETY: `a` is inside `data`, a live allocation.
+                unsafe { core::ptr::copy_nonoverlapping(a as *const u8, buf.as_mut_ptr(), buf.len()) };
+                buf.len()
+            };
+            let run = [Run { start, end, write: true }, Run { start: 0x1_0000, end: 0x2_0000, write: false }];
+            let core = make_core(5, &task, &run, 64 * 1024, read).ok_or("no core was made")?;
+            let u16at = |at: usize| u16::from_le_bytes([core[at], core[at + 1]]);
+            let u64at = |at: usize| u64::from_le_bytes(core[at..at + 8].try_into().unwrap());
+            if &core[..4] != b"\x7fELF" || u16at(16) != 4 || u16at(18) != machine {
+                return Err("the file is not an ELF core of this machine");
+            }
+            let phnum = u16at(56) as usize;
+            if phnum != 2 {
+                return Err("expected the notes and one writable run, and nothing for the read-only one");
+            }
+            let load = 64 + 56;
+            let (off, va, sz) = (u64at(load + 8) as usize, u64at(load + 16), u64at(load + 32) as usize);
+            let want = (sp & !4095).max(start);
+            if va != want || sz as u64 != end - want || core[off..off + sz] != data[(want - start) as usize..] {
+                return Err("the stack segment is not the run from the stack pointer's page up");
+            }
+            let note = u64at(64 + 8) as usize;
+            if !core[note..].windows(8).any(|w| w == regs[0].to_le_bytes()) {
+                return Err("the registers are not in the notes");
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "crashdump"))]
+        Err("the crash dump (Kconfig CRASHDUMP) is off in this kernel")
+    }
+}
+
+// A core the budget cannot hold is refused with a decision record, not
+// dropped without a word: one the budget cuts is recorded with what it left out.
+azos_ktest::ktest! {
+    fn crash_core_refusal_is_a_decision_record() {
+        #[cfg(feature = "crashdump")]
+        {
+            use azos_recovery::coredump::{Run, Task};
+            use crate::trap::crash::{make_core, CORE};
+            if !CORE {
+                return Err("the core file (Kconfig CRASHDUMP_CORE_*) is off in this kernel");
+            }
+            let data = alloc::vec![1u8; 2 * 4096];
+            let (start, end) = (data.as_ptr() as u64, data.as_ptr() as u64 + data.len() as u64);
+            let regs = [0u64; 27];
+            let task = Task { machine: 0, tid: 6, status: 11, name: b"KTEST", image: [0; 32], sp: start, regs: &regs };
+            let run = [Run { start, end, write: true }];
+            let read = |a: u64, buf: &mut [u8]| {
+                // SAFETY: `a` is inside `data`, a live allocation.
+                unsafe { core::ptr::copy_nonoverlapping(a as *const u8, buf.as_mut_ptr(), buf.len()) };
+                buf.len()
+            };
+            let last = || azos_decision::get(azos_decision::total()).filter(|r| r.rule == azos_decision::Rule::CoreDump as u8);
+            let before = azos_decision::total();
+            if make_core(6, &task, &run, 200, read).is_some() {
+                return Err("a budget below the headers made a core");
+            }
+            let r = last().ok_or("a refused core left no decision record")?;
+            if azos_decision::total() != before + 1 || r.verdict != azos_decision::Verdict::Refuse as u8 || r.n[0] != 0 || r.n[2] != 1 {
+                return Err("the refusal record does not say that the budget held no headers");
+            }
+            let cut = make_core(6, &task, &run, 1500 + 4096, read).ok_or("a cut core was not made")?;
+            let r = last().ok_or("a cut core left no decision record")?;
+            if r.verdict != azos_decision::Verdict::Refuse as u8 || r.n[0] != cut.len() as u64 || r.n[2] == 0 {
+                return Err("the record of a cut core does not name what was left out");
+            }
+            let whole = make_core(6, &task, &run, 64 * 1024, read).ok_or("a whole core was not made")?;
+            let r = last().ok_or("a whole core left no decision record")?;
+            if r.verdict != azos_decision::Verdict::Admit as u8 || r.n[0] != whole.len() as u64 || r.n[2] != 0 {
+                return Err("the record of a whole core is not an admission");
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "crashdump"))]
+        Err("the crash dump (Kconfig CRASHDUMP) is off in this kernel")
+    }
+}
+
 // Type zones of physical frames (Kconfig `PMM_TYPE_ZONES`, `crates/core/mm/src/zone.rs`):
 // a page-table frame, once freed, is held by its zone: tagged, and none of a
 // run of general allocations is handed it. The tag is read back from the

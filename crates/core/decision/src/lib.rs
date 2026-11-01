@@ -323,6 +323,9 @@ pub enum Rule {
     /// not ready instead of serving simulated distances, so obstacle avoidance
     /// and the REFLEX daemon run without it (`azos_drv_sensor::rangefinder`).
     Rangefinder = 75,
+    /// A ring-3 task's core file (Kconfig `CRASHDUMP_CORE_*`) was written whole,
+    /// written cut to its byte budget, or not written at all.
+    CoreDump = 76,
 }
 
 /// The verdict of a record.
@@ -350,7 +353,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 76] = [
+pub const RULES: [RuleInfo; 77] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1109,6 +1112,17 @@ pub const RULES: [RuleInfo; 76] = [
         fields: ["asked", "max", "-"],
         rejected_if_yes: "-",
         rejected_if_no: "serve the simulated distances: obstacle avoidance would trust a clear path no sensor measured",
+    },
+    RuleInfo {
+        // Refuse with bytes_written > 0 is a core cut to its budget; with 0, no core.
+        // The third number is the bytes of the task's writable memory left out, or
+        // when no core was made, why: 1 the budget does not hold the headers, 2 the
+        // kernel heap refused the buffer, 3 the staging ring was full.
+        name: "core-dump",
+        subject: "tid",
+        fields: ["bytes_written", "limit_bytes", "dropped_bytes|why"],
+        rejected_if_yes: "-",
+        rejected_if_no: "write the whole core: the task's writable memory does not fit CRASHDUMP_CORE_KB, or the kernel could not stage it",
     },
 ];
 

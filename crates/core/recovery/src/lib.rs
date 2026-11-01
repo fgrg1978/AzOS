@@ -30,6 +30,7 @@ pub mod families;
 /// The minidump of a ring-3 task a fault killed: layout, file ring, report
 /// (`kernel/src/trap/crash.rs` writes it, `why crash` reads it).
 pub mod crashdump;
+pub mod coredump;
 // The table is shared with the ring-3 typed calls.
 use azos_ipc::authority_policy;
 
