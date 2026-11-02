@@ -63,6 +63,23 @@ fn line_delays_edge_cases() {
     assert_eq!(line_delays(&bad, &mut [0u32; 3]), Err(Error::BadTimestamps));
 }
 
+#[test]
+fn line_delays_refuse_a_total_that_does_not_fit_32_bits() {
+    // Every hop passes the step check on its own (a gap difference just under
+    // 2^31, a hop of just under 2^30), and five of them add up past 2^32: the
+    // sum used to wrap and come back as delays that fall along the line.
+    let step = (1u32 << 31) - 2;
+    let times: Vec<PortTimes> = (0..6u32)
+        .map(|i| PortTimes { p0: 0, p1: step.wrapping_mul(5 - i) })
+        .collect();
+    let mut out = [0u32; 6];
+    assert_eq!(line_delays(&times, &mut out), Err(Error::BadTimestamps));
+    // Control: four hops of the same size still fit.
+    let mut four = [0u32; 5];
+    line_delays(&times[1..], &mut four).unwrap();
+    assert_eq!(four[4], 4 * (step / 2));
+}
+
 fn chain(skews: &[u64], hop: u64) -> Harness {
     let slaves = skews.iter().map(|&k| Esc::new(Script::default(), k)).collect();
     let mut h = Harness::new(Bus::new(slaves, hop));
