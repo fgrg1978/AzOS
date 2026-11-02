@@ -110,10 +110,12 @@ fn declare_endpoints() {
 }
 
 /// The rows installed are the built-in ones (see `late_core_class_check`).
+// arch-only: x86 hybrid cores (CPUID core types).
 #[cfg(target_arch = "x86_64")]
 static BUILTIN_ROWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 fn install_builtin(num_cpus: usize) {
+    // arch-only: x86 hybrid cores (CPUID core types).
     #[cfg(target_arch = "x86_64")]
     BUILTIN_ROWS.store(true, core::sync::atomic::Ordering::Relaxed);
     let tie = |t: &mut azos_topology::Topology<'static>| {
