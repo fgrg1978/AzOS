@@ -99,8 +99,7 @@ fn waiter(_: usize) {
 
 /// Dropped at the end of a test, whatever its verdict: the pool entry its tasks
 /// retired is back (`call_rcu`) before the next test counts the pool. A failing
-/// path returns before the test's own wait for it, and a count that moves under
-/// `futex_pi_word_protocol` reads as a state that test took.
+/// path returns before the test's own wait for it.
 struct Settled(u32);
 
 impl Drop for Settled {
