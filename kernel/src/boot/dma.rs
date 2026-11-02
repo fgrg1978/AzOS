@@ -29,6 +29,10 @@
 //! - a function no kernel driver binds is blocked: ring 3 has no DMA path
 //!   yet, so nothing it drives can need one.
 //!
+//! The first two stay in pass-through until their driver has run. Once every
+//! PCI driver had its turn, [`iommu_settle`] blocks each function none of them
+//! took and only then says which ones translate.
+//!
 //! IOMMU_BYPASS puts every function in pass-through instead.
 
 use azos_dma::{AddrRange, DmaAddr, DmaDomain, DmaError, Direction, DomainKind, DomainOps, IdentityDomain, SoftState, FULL_RANGE};
@@ -53,6 +57,12 @@ impl<S> Locked<S> {
 
     pub(crate) fn set(&self, domain: S) {
         *self.0.lock() = Some(domain);
+    }
+
+    /// `f` of the domain in this slot, if it holds one.
+    #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]
+    fn with<T>(&self, f: impl FnOnce(&S) -> T) -> Option<T> {
+        self.0.lock().as_ref().map(f)
     }
 }
 
@@ -259,7 +269,7 @@ pub(crate) fn dma_init(ram: (u64, u64)) {
     feature = "iommu-vtd",
     feature = "iommu-amdvi"
 ))]
-pub(crate) use hw::{fault_task, iommu_init, iommu_up};
+pub(crate) use hw::{fault_task, iommu_init, iommu_settle, iommu_up};
 
 #[cfg(any(
     feature = "iommu-riscv",
@@ -272,7 +282,7 @@ mod hw {
 
     use azos_iommu::domain::IoDomain;
     use azos_iommu::{
-        DmaFault, DomainMode, Flavour, IommuError, IommuUnit, Mmio, PtFormat, TableMem, UnitHandle,
+        DmaFault, DomainMode, Flavour, IommuError, IommuUnit, Mmio, PtFormat, Settled, TableMem, UnitHandle,
     };
     use azos_sync::SpinLock;
 
@@ -435,6 +445,8 @@ mod hw {
 
     /// The unit the fault task drains.
     static FAULTS: SpinLock<Option<&'static dyn UnitHandle>> = SpinLock::new(None);
+    /// The unit's own requester id, when it is a PCI function.
+    static OWN: SpinLock<Option<u32>> = SpinLock::new(None);
     static UP: AtomicBool = AtomicBool::new(false);
 
     /// Is an IOMMU being driven (so there is a fault task to create)?
@@ -581,7 +593,8 @@ mod hw {
     /// Bring up the IOMMU and place every function ([`Placement`]). A refusal
     /// is a line: a function whose entry the unit refused stays as a fresh
     /// unit has every function, blocked; one whose domain could not be built
-    /// stays in pass-through.
+    /// stays in pass-through. Nothing translates yet: [`iommu_settle`] says
+    /// what came of it.
     pub(crate) fn iommu_init<C: azos_pci::ConfigSpace>(
         cfg: &mut C,
         funcs: &[Option<azos_pci::FunctionInfo>],
@@ -590,7 +603,6 @@ mod hw {
         let Some(f) = bring_up(cfg, funcs, window) else { return };
 
         let mut pool = POOL.iter();
-        let (mut translated, mut passed, mut blocked) = (0, 0, 0);
         for info in funcs.iter().flatten() {
             let rid = info.bdf.requester_id();
             let place = placement(rid, crate::boot::hwbus::driver_of(info), f.own);
@@ -601,31 +613,71 @@ mod hw {
             }
             match place {
                 Placement::Translate(driver) => match install(&f, rid, pool.next()) {
-                    Ok(()) => {
-                        translated += 1;
-                        kprintln!("[IOMMU] {} {}: translating domain installed", info.bdf, driver);
-                    }
+                    Ok(()) => kprintln!("[IOMMU] {} {}: domain ready, pass-through until its driver enables it", info.bdf, driver),
                     Err(why) => {
-                        passed += 1;
                         azos_drv_sys::kwarn!("[IOMMU] {} {}: DMA NOT translated (pass-through): {}",
                                              info.bdf, driver, why);
                     }
                 },
                 // Said per function, so the summary is not read as protection.
                 Placement::Bypass(why) => {
-                    passed += 1;
                     azos_drv_sys::kwarn!("[IOMMU] {}: DMA NOT translated (pass-through): {}", info.bdf, why);
                 }
                 Placement::Block => {
-                    blocked += 1;
                     kprintln!("[IOMMU] {}: DMA blocked (no kernel driver)", info.bdf);
                 }
             }
         }
-        kprintln!("[IOMMU] {} function(s) translating, {} in pass-through, {} blocked", translated, passed, blocked);
 
+        *OWN.lock() = f.own;
         *FAULTS.lock() = Some(f.unit);
         UP.store(true, Ordering::Release);
+    }
+
+    /// Every PCI driver had its turn: a function none of them took goes to
+    /// Block, whatever it was placed as (its hardware may be why the driver
+    /// gave up, and it must not keep every page), and the log says where each
+    /// function really is. The unit's own function and IOMMU_BYPASS stay out.
+    pub(crate) fn iommu_settle(funcs: &[Option<azos_pci::FunctionInfo>]) {
+        let Some(unit) = *FAULTS.lock() else { return };
+        let own = *OWN.lock();
+        let (mut translated, mut passed, mut blocked) = (0, 0, 0);
+        for info in funcs.iter().flatten() {
+            let rid = info.bdf.requester_id();
+            let driver = crate::boot::hwbus::driver_of(info);
+            match placement(rid, driver, own) {
+                Placement::Block => {
+                    blocked += 1;
+                    continue;
+                }
+                Placement::Bypass(_) if azos_limits::IOMMU_BYPASS || own == Some(rid) => {
+                    passed += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            let enabled = POOL.iter().any(|s| s.with(|d| d.dev() == rid && d.enabled()) == Some(true));
+            // Canary: a function whose driver gave up keeps what the boot gave it.
+            let bound = crate::boot::hwbus::pci_bound(info) || cfg!(feature = "iommu-fail-open");
+            match azos_iommu::settle(bound, enabled) {
+                Settled::Translating => {
+                    translated += 1;
+                    kprintln!("[IOMMU] {} {}: translating", info.bdf, driver.unwrap_or("?"));
+                }
+                Settled::PassThrough => passed += 1,
+                Settled::Blocked => match unit.attach(rid, DomainMode::Block) {
+                    Ok(()) => {
+                        blocked += 1;
+                        kprintln!("[IOMMU] {}: DMA blocked (its driver did not bind)", info.bdf);
+                    }
+                    Err(e) => {
+                        passed += 1;
+                        azos_drv_sys::kerr!("[IOMMU] {}: no driver, Block refused, DMA NOT confined: {:?}", info.bdf, e);
+                    }
+                },
+            }
+        }
+        kprintln!("[IOMMU] {} function(s) translating, {} in pass-through, {} blocked", translated, passed, blocked);
     }
 
     /// Give function `rid` the translating domain in `slot` and install it

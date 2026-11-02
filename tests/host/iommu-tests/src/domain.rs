@@ -230,3 +230,18 @@ fn a_flush_is_due_when_any_page_changed_not_only_the_last() {
     assert_eq!(walk(mem, unit.fmt, 0x8000_1000), Some((0x8000_1000, RO)));
     assert_eq!(unit.flushed(), 2, "the first page's translation went away");
 }
+
+#[test]
+fn a_function_translates_only_once_its_driver_enabled_its_domain() {
+    let unit = FakeUnit::leak(PtKind::RiscvSv, 3);
+    let mem = TestMem::leak();
+    let mut d = IoDomain::<8>::new(0x18, Flavour::Riscv, unit.fmt, unit, mem, true).unwrap();
+    assert!(!d.enabled());
+    assert_eq!(azos_iommu::settle(true, d.enabled()), azos_iommu::Settled::PassThrough);
+    assert_eq!(azos_iommu::settle(false, d.enabled()), azos_iommu::Settled::Blocked);
+    d.enable().unwrap();
+    assert!(d.enabled());
+    assert_eq!(azos_iommu::settle(true, d.enabled()), azos_iommu::Settled::Translating);
+    // A driver that gave up after enabling is no driver.
+    assert_eq!(azos_iommu::settle(false, d.enabled()), azos_iommu::Settled::Blocked);
+}

@@ -508,6 +508,8 @@ usb-uvc = ["usb-hc", "use-robot"]
 # Gate canary only: the virtio-net TX buffers are left out of the NIC's
 # translating domain; its first transmitted frame must be refused and logged.
 iommu-tx-canary = ["azos_drv_virtio/iommu-tx-canary"]
+# A function whose driver gave up stays as the boot placed it, not blocked.
+iommu-fail-open = []
 iommu-riscv = ["pci", "azos_iommu"]
 iommu-smmuv3 = ["pci", "azos_iommu"]
 iommu-vtd = ["pci", "azos_iommu"]

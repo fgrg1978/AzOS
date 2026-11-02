@@ -56,6 +56,27 @@ pub enum DomainMode {
     Translate { root_pa: u64 },
 }
 
+/// Where a function stays once its driver had its turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    /// Its driver enabled its translating domain.
+    Translating,
+    /// Its driver runs without one: untranslated, and said so.
+    PassThrough,
+    /// No driver took it: nothing it asks for is anybody's.
+    Blocked,
+}
+
+/// Where a function goes: `bound`, a driver took it; `enabled`, that driver
+/// pointed the unit at its domain.
+pub const fn settle(bound: bool, enabled: bool) -> Settled {
+    match (bound, enabled) {
+        (false, _) => Settled::Blocked,
+        (true, true) => Settled::Translating,
+        (true, false) => Settled::PassThrough,
+    }
+}
+
 /// Which IOMMU a unit is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flavour {

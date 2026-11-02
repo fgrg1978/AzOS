@@ -431,7 +431,9 @@ default where the ISA has PCI and the firmware describes a unit
 its DMA through its domain (virtio-net/gpu/snd over PCI, e1000e, igc, xHCI) a
 translating domain of its own, with its own cache tag; NVMe and AHCI hand their
 devices physical addresses and stay in pass-through, said per function; a
-function no kernel driver binds is blocked (`iommu_init`). The AMD-Vi `Block`
+function no kernel driver binds is blocked (`iommu_init`), and so is one whose
+driver gave up (`iommu_settle`, after every PCI driver had its turn; until
+then a function with a driver is in pass-through). The AMD-Vi `Block`
 mode is an entry with `V` and `TV` set and no permission (`encode_dte`): an
 all-zero entry would pass DMA through, so a fresh table starts blocked.
 A Linux driver server that drives a bus master on a

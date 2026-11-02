@@ -2467,7 +2467,7 @@ iommu_net_verdict() { # iommu_net_verdict <log> <flavour> <PASS|CANARY> <trap ER
         bad; echo "      the kernel took an exception — log kept: $log"; return
     fi
     grep -aqF "[IOMMU] $flavour at " "$log" || why="no '[IOMMU] $flavour at' line: the unit was not found or not brought up"
-    [ -z "$why" ] && ! grep -aqE 'IOMMU\] [0-9a-f:.]+ virtio-net-pci: translating domain installed' "$log" \
+    [ -z "$why" ] && ! grep -aqE 'IOMMU\] [0-9a-f:.]+ virtio-net-pci: translating' "$log" \
         && why="the NIC got no translating domain"
     if [ -z "$why" ] && [ "$expect" = CANARY ]; then
         grep -aqE 'IOMMU\] fault: device 0x[0-9a-f]+ addr 0x[0-9a-f]+ UnmappedIova' "$log" \
@@ -2476,6 +2476,30 @@ iommu_net_verdict() { # iommu_net_verdict <log> <flavour> <PASS|CANARY> <trap ER
     elif [ -z "$why" ]; then
         grep -aqF '[DHCPSMOKE] PASS' "$log" || why="no DHCP lease through the translating domain"
         [ -z "$why" ] && grep -aqF '[IOMMU] fault' "$log" && why="the unit refused a DMA: $(grep -aF '[IOMMU] fault' "$log" | sed -n 1p)"
+    fi
+    if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+    bad; echo "      $why — log kept: $log"
+}
+# Two NICs and one driver: the second function's driver gives up, and it must
+# end blocked while the first translates. The canary leaves it as the boot
+# placed it, in pass-through.
+iommu_bail_verdict() { # iommu_bail_verdict <log> <flavour> <PASS|CANARY> <trap ERE>
+    local log="$1" flavour="$2" expect="$3" why=""
+    if grep -aqE "$4" "$log" 2>/dev/null; then
+        bad; echo "      the kernel took an exception — log kept: $log"; return
+    fi
+    grep -aqF "[IOMMU] $flavour at " "$log" || why="no '[IOMMU] $flavour at' line: the unit was not found or not brought up"
+    [ -z "$why" ] && ! grep -aqE 'not used: AlreadyUp' "$log" && why="the second NIC's driver did not give up"
+    [ -z "$why" ] && ! grep -aqE 'IOMMU\] [0-9a-f:.]+ virtio-net-pci: translating' "$log" \
+        && why="the first NIC does not translate"
+    [ -z "$why" ] && ! grep -aqE 'IOMMU\] 1 function\(s\) translating' "$log" \
+        && why="the summary counts a function that does not translate: $(grep -aF 'function(s) translating' "$log" | sed -n 1p)"
+    if [ -z "$why" ] && [ "$expect" = CANARY ]; then
+        grep -aqF 'its driver did not bind' "$log" && why="canary did not bite: the function was blocked anyway"
+    elif [ -z "$why" ]; then
+        grep -aqE 'IOMMU\] [0-9a-f:.]+: DMA blocked \(its driver did not bind\)' "$log" \
+            || why="the function whose driver gave up was not blocked"
+        [ -z "$why" ] && ! grep -aqF '[DHCPSMOKE] PASS' "$log" && why="no DHCP lease through the first NIC"
     fi
     if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
     bad; echo "      $why — log kept: $log"
@@ -13766,6 +13790,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         qemu-system-aarch64 -M "virt,gic-version=3${2:+,$2}" -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" \
             -netdev user,id=net0 -device "virtio-net-pci,netdev=net0,disable-legacy=on${2:+,iommu_platform=on}" \
+            ${SECOND_NIC:+-netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on} \
             </dev/null >"$log" 2>&1 &
         local qpid=$! i=0
         while [ "$i" -lt 90 ]; do
@@ -13850,6 +13875,19 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     }
     par "aarch64 iommu: smmuv3 translates the NIC" iommu_net_row_aarch64 "aarch64 iommu: smmuv3 translates the NIC" PASS
     par "aarch64 iommu: smmuv3 refuses unmapped" iommu_net_row_aarch64 "aarch64 iommu: smmuv3 refuses unmapped" CANARY
+    iommu_bail_row_aarch64() { # iommu_bail_row_aarch64 <label> <PASS|CANARY>
+        local label="$1" expect="$2" feats="qemu,pci,dhcp-smoke"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        [ "$expect" = CANARY ] && feats="$feats,iommu-fail-open"
+        a64_kbuild "$feats" || { bad; echo "      $feats aarch64 kernel did NOT build (row not run)"; return; }
+        a64_kernel_check || return
+        local log="$CI_LOG_DIR/iommu-bail-aarch64-$expect.log"
+        SECOND_NIC=1 pci_net_dhcp_boot_aarch64 "$log" iommu=smmuv3
+        iommu_bail_verdict "$log" smmuv3 "$expect" "AARCH64-TRAP\] unhandled"
+    }
+    par "aarch64 iommu: a function whose driver gave up is blocked" iommu_bail_row_aarch64 "aarch64 iommu: a function whose driver gave up is blocked" PASS
+    par "aarch64 iommu: fail open canary" iommu_bail_row_aarch64 "aarch64 iommu: fail open canary" CANARY
 
     # Ring-3 capabilities, seeded from the topology into the task's capability
     # table; cap_check and the typed calls answer from it. captest asserts BOTH
@@ -16419,30 +16457,43 @@ PY
     # virtio-net-pci function (`-nic none`: no q35 default e1000e) with
     # `iommu_platform=on`, so its DMA goes through the unit. Canary
     # `iommu-tx-canary` as there.
-    x86_iommu_row() { # x86_iommu_row <label> <qemu IOMMU device> <flavour> <PASS|CANARY>
-        local label="$1" unit="$2" flavour="$3" expect="$4" feats="dhcp-smoke" stop='DHCPSMOKE\]|KERNEL PANIC|\[X86-TRAP\]'
+    x86_iommu_row() { # x86_iommu_row <label> <qemu IOMMU device> <flavour> <PASS|CANARY> [bail]
+        local label="$1" unit="$2" flavour="$3" expect="$4" bail="${5:-}" feats="dhcp-smoke" stop='DHCPSMOKE\]|KERNEL PANIC|\[X86-TRAP\]'
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        [ "$expect" = CANARY ] && { feats="$feats,iommu-tx-canary"; stop='IOMMU\] fault|KERNEL PANIC|\[X86-TRAP\]'; }
+        if [ -n "$bail" ]; then
+            [ "$expect" = CANARY ] && feats="$feats,iommu-fail-open"
+        elif [ "$expect" = CANARY ]; then
+            feats="$feats,iommu-tx-canary"; stop='IOMMU\] fault|KERNEL PANIC|\[X86-TRAP\]'
+        fi
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
         local log="$CI_LOG_DIR/x86-${tag}.log" kimg="$CI_LOG_DIR/kernel-x86-${tag}"
         rm -f "$kimg" "$kimg.features"
         # One target directory per feature set: the two PASS rows share theirs.
         make x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
-            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-${expect}" X86_64_IMG="$kimg" X86_64_SELECT="$feats" >/dev/null 2>&1 \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-${expect}${bail}" X86_64_IMG="$kimg" X86_64_SELECT="$feats" >/dev/null 2>&1 \
             && builtin printf '%s\n' "$feats" >"$kimg.features" \
             || { bad; echo "      make x86_64 (qemu-x86_64-pci.config, $feats) did not build"; return; }
         par_ready
         X86_MACHINE=q35 x86_qemu "$kimg" "$log" 90 "$stop" -smp 1 -nic none -device "$unit" \
             -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on,iommu_platform=on \
+            ${bail:+-netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on} \
             || { rm -f "$kimg" "$kimg.features"; return; }
         rm -f "$kimg" "$kimg.features"
-        iommu_net_verdict "$log" "$flavour" "$expect" 'KERNEL PANIC|\[X86-TRAP\]'
+        if [ -n "$bail" ]; then
+            iommu_bail_verdict "$log" "$flavour" "$expect" 'KERNEL PANIC|\[X86-TRAP\]'
+        else
+            iommu_net_verdict "$log" "$flavour" "$expect" 'KERNEL PANIC|\[X86-TRAP\]'
+        fi
     }
     par "x86_64 iommu: amd-vi translates the NIC" x86_iommu_row "x86_64 iommu: amd-vi translates the NIC" \
         amd-iommu,dma-remap=on amd-vi PASS
     par "x86_64 iommu: amd-vi refuses unmapped" x86_iommu_row "x86_64 iommu: amd-vi refuses unmapped" \
         amd-iommu,dma-remap=on amd-vi CANARY
+    par "x86_64 iommu: a function whose driver gave up is blocked" x86_iommu_row "x86_64 iommu: a function whose driver gave up is blocked" \
+        amd-iommu,dma-remap=on amd-vi PASS bail
+    par "x86_64 iommu: fail open canary" x86_iommu_row "x86_64 iommu: fail open canary" \
+        amd-iommu,dma-remap=on amd-vi CANARY bail
     # The TPM 2.0 over the Command Response Buffer (crates/drivers/tpm/src/crb.rs,
     # kernel/src/boot/tpm.rs) on QEMU q35's `-device tpm-crb`: the ACPI TPM2 table
     # names start method 7 with the control area at 0xFED40040, the locality
@@ -21968,6 +22019,18 @@ PYEOF
     }
     par "iommu: riscv-iommu translates the NIC" iommu_net_row_riscv64 "iommu: riscv-iommu translates the NIC" PASS
     par "iommu: riscv-iommu refuses unmapped" iommu_net_row_riscv64 "iommu: riscv-iommu refuses unmapped" CANARY
+    iommu_bail_row_riscv64() { # iommu_bail_row_riscv64 <label> <PASS|CANARY>
+        local label="$1" expect="$2" feats="qemu,pci,dhcp-smoke"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        [ "$expect" = CANARY ] && feats="$feats,iommu-fail-open"
+        kbuild "$feats" || return
+        local log="$CI_LOG_DIR/iommu-bail-riscv64-$expect.log"
+        pci_net_dhcp_boot_riscv64 "$log" "" -device riscv-iommu-pci -netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on
+        iommu_bail_verdict "$log" riscv-iommu "$expect" "EXCEPTION\]|panic"
+    }
+    par "iommu: a function whose driver gave up is blocked" iommu_bail_row_riscv64 "iommu: a function whose driver gave up is blocked" PASS
+    par "iommu: fail open canary" iommu_bail_row_riscv64 "iommu: fail open canary" CANARY
     kbuild "qemu"
     # The runtime half, after the scheduler starts: a host datagram through a
     # UDP hostfwd reaches the NIC, and the ISR of its RX MSI must take
