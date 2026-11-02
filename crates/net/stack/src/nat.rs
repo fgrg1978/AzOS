@@ -468,7 +468,12 @@ pub fn phase_out(pkt: &[u8], ihl: usize, wan_if: u8, now: u64) -> ConnPhase {
     let Ok(k) = parse_out(pkt, ihl) else { return ConnPhase::New };
     let g = NAT.lock();
     match g.find_out(&k, wan_if, now) {
-        Some(i) if g.ents[i].replied() && !reopens(&g.ents[i], &k) => ConnPhase::Established,
+        Some(i)
+            if g.ents[i].replied()
+                && (cfg!(feature = "nat-closing-syn-canary") || !reopens(&g.ents[i], &k)) =>
+        {
+            ConnPhase::Established
+        }
         _ => ConnPhase::New,
     }
 }
@@ -478,10 +483,7 @@ pub fn phase_out(pkt: &[u8], ihl: usize, wan_if: u8, now: u64) -> ConnPhase {
 /// [`phase_out`] has to report what that leaves, since the filter is asked
 /// before the mapping is touched.
 fn reopens(e: &Entry, k: &Out) -> bool {
-    !cfg!(feature = "nat-closing-syn-canary")
-        && k.proto == IP_PROTO_TCP
-        && k.flags & (TCP_SYN | TCP_ACK) == TCP_SYN
-        && e.flags & ST_CLOSING != 0
+    k.proto == IP_PROTO_TCP && k.flags & (TCP_SYN | TCP_ACK) == TCP_SYN && e.flags & ST_CLOSING != 0
 }
 
 /// Translate an outbound packet in place: `pkt` is a whole IPv4 packet being

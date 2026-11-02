@@ -54,7 +54,8 @@ ipv6-unspecified-src-canary = []
 # another holds. Never in a real build.
 udp-dup-bind-canary = []
 # Gate canary (host suite `net-tests`): the forward hook is told what the NAT
-# mapping said before a SYN on a closing flow reset it. Never in a real build.
+# mapping said before a SYN on a closing flow resets it, not what it leaves.
+# Never in a real build.
 nat-closing-syn-canary = []
 # Gate canary (host suite `net-tests`): an adjusted checksum of 0x0000 is
 # stored as it is. Never in a real build.
