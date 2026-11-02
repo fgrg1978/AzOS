@@ -154,7 +154,7 @@ config CONSOLE_LOCKDOWN
       Under this option the in-kernel recovery console (RECOVERY_CONSOLE) is
       not created at all, in safe mode included: boot prints
       "[CONSOLE] lockdown: no kernel console task". The console belongs
-      to the ring-3 user shell (SH.ELF, USER_SHELL; with USER_SHELL=n
+      to the ring-3 user shell (SH.ELF; with CONSOLE_PROGRAM_NONE
       the image has no console).
 
       The user shell's built-in row is reduced: it may start the

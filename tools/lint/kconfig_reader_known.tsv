@@ -1,9 +1,0 @@
-# Reader and choice findings of tools/lint/kconfig_lint.py that stand, one per symbol:
-# symbol<TAB>why. Each is a decision for the owner (give the option a reader or an
-# effect, or remove it); the line leaves this file in that change.
-USER_SHELL	derived from CONSOLE_PROGRAM; only host tests read it, the topology builder keys on CONSOLE_PROGRAM
-RT_NONE	selects the same build as RT_SOFT: neither is read, only RT_HARD and RT_MIXED
-RT_SOFT	selects the same build as RT_NONE (see RT_NONE)
-FP_SOFTFLOAT	no code reads it; the save format follows the ISA
-FP_HARDFLOAT_F	no code reads it; rv64 saves the D registers
-FP_XSAVE_EAGER	the only x86_64 member; the x86_64 code keys on the ISA, not on the symbol

@@ -3,24 +3,15 @@
 # config/subsys/Kconfig.console — Console, user shell and login
 
 # ---------------------------------------------------------------------------
-# User shell (wave 11)
+# User shell
 # ---------------------------------------------------------------------------
-
-config USER_SHELL
-    bool
-    default y if !CONSOLE_PROGRAM_NONE
-    help
-      Derived from CONSOLE_PROGRAM (Userspace programs): y when a ring-3
-      program is started on the console at boot (by default the native
-      shell, userspace/services/sh, /fat/SH.ELF, supervised like the ring-3
-      drivers: its topology row says start = true). The in-kernel shell
-      becomes a recovery console: it runs only in safe mode, when the volume
-      has no console image, when the console program does not take the
-      console within SH_START_TIMEOUT_S, or after the supervisor gave up on
-      it.
-
-      n (CONSOLE_PROGRAM_NONE): the kernel shell owns the console, as before
-      wave 11.
+# The ring-3 shell is the console program (CONSOLE_PROGRAM, Userspace programs):
+# by default the native shell, userspace/services/sh, /fat/SH.ELF, supervised
+# like the ring-3 drivers (its topology row says start = true). The in-kernel
+# shell becomes a recovery console: it runs only in safe mode, when the volume
+# has no console image, when the console program does not take the console
+# within SH_START_TIMEOUT_S, or after the supervisor gave up on it. With
+# CONSOLE_PROGRAM_NONE the kernel shell owns the console.
 
 config SH_START_TIMEOUT_S
     int "User shell: seconds to take the console before the recovery console does"
@@ -90,7 +81,7 @@ config RECOVERY_CONSOLE
     default y
     help
       crates/core/recovery, kernel/src/tasks/system.rs. The one shell is the
-      ring-3 user shell (USER_SHELL); this is the small kernel console that
+      ring-3 user shell (CONSOLE_PROGRAM); this is the small kernel console that
       takes the UART when that shell cannot (safe mode, no console image on
       the volume, the supervisor gave up, SH_START_TIMEOUT_S passed) or when
       the build has no console program at all (CONSOLE_PROGRAM_NONE). Its

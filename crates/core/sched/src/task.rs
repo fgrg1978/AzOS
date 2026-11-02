@@ -281,7 +281,7 @@ pub struct TaskContext {
     pub d15: CtxReg,
     // x86_64 SysV has no callee-saved FP/SIMD register: the ring-3 XMM/YMM
     // state is the FPU path's (saved at the switch, restored on the way to
-    // ring 3, never by a #NM trap: FP_XSAVE_EAGER, entry/x86_64/fp.rs).
+    // ring 3, never by a #NM trap: entry/x86_64/fp.rs).
     #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
     pub _no_callee_saved_fp: [CtxReg; 0],
 }

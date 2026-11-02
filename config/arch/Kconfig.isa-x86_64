@@ -48,7 +48,7 @@ choice
         bool "x86-64-v3 (AVX, AVX2, BMI1/2, F16C, FMA, LZCNT, MOVBE, XSAVE)"
         help
           Haswell (2013) and later. AVX2 becomes baseline; kernel FP/SIMD
-          use still needs the FPU-section discipline (FP_XSAVE_EAGER). The
+          use still needs the FPU-section discipline. The
           soft-float kernel gains only the integer part (+bmi1, +bmi2,
           +lzcnt, +movbe, +xsave); the user images get all of it.
     config X86_64_LEVEL_V4
@@ -112,7 +112,7 @@ choice
     default X86_XSAVE_REQUIRE if X86_64_LEVEL_V3 || X86_64_LEVEL_V4
     default X86_XSAVE_PROBE
     help
-      CPUID.1:ECX[26]: the extended FP state save (fpu.rs, FP_XSAVE_EAGER)
+      CPUID.1:ECX[26]: the extended FP state save (fpu.rs)
       and the XCR0 register every AVX state needs. Fallback: FXSAVE (512 B,
       x87/SSE only), which also means no AVX anywhere. require adds +xsave.
       Cost: the XSAVE area per task (576 B + each enabled component). Part

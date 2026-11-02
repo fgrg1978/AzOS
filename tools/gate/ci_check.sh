@@ -24847,7 +24847,7 @@ echo after-prod \$?" 150 \
         sed 's/^# CONFIG_CONSOLE_LOCKDOWN is not set$/CONFIG_CONSOLE_LOCKDOWN=y/' "$base" >"$tmp/c.config"
         if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
            || ! grep -q '^CONFIG_CONSOLE_LOCKDOWN=y$' "$tmp/c.config" \
-           || ! grep -q '^CONFIG_USER_SHELL=y$' "$tmp/c.config"; then
+           || grep -q '^CONFIG_CONSOLE_PROGRAM_NONE=y$' "$tmp/c.config"; then
             rm -rf "$tmp"; return
         fi
         cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
@@ -24909,7 +24909,7 @@ power suspend" 150 \
         sed 's/^# CONFIG_PROFILER is not set$/CONFIG_PROFILER=y/' "$base" >"$tmp/c.config"
         if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
            || ! grep -q '^CONFIG_PROFILER_PMU=y$' "$tmp/c.config" \
-           || ! grep -q '^CONFIG_USER_SHELL=y$' "$tmp/c.config"; then
+           || grep -q '^CONFIG_CONSOLE_PROGRAM_NONE=y$' "$tmp/c.config"; then
             rm -rf "$tmp"; return
         fi
         cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"

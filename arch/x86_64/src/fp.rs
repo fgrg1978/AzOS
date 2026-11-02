@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! x86_64 FP/SIMD state (Kconfig `FP_XSAVE_EAGER`). **Never a first-use
+//! x86_64 FP/SIMD state. **Never a first-use
 //! trap**: CR0.TS stays clear and #NM is never armed. Lazy switching
 //! (CR0.TS and a #NM trap on first use) leaks the previous task's registers
 //! through speculation (LazyFP, CVE-2018-3665); Linux made eager the

@@ -33,7 +33,7 @@ choice
         bool "rv64gc (+ F, D, Zicsr, Zifencei: JH7110 / VisionFive 2)"
         help
           Adds the F and D floating-point registers the FP context
-          (FP_HARDFLOAT_*) saves. The SiFive U74 of the VF2.
+          (FP_HARDFLOAT_D) saves. The SiFive U74 of the VF2.
     config RISCV64_LEVEL_RV64GCV
         bool "rv64gcv (+ V 1.0: SpacemiT K1 / X60)"
         help
