@@ -11368,6 +11368,25 @@ host_job host_canary_row "usb: arena clean canary" usb-tests canary-arena-clean 
 # axis, modifiers after their report's keys, a hub tier not compared, a keyboard
 # that is also a drive admitted, a decision not recorded) and requires its test
 # to fail (tests/host/usb-hid-tests, table in src/lib.rs).
+# A buffer goes back only once the controller can no longer write it
+# (tests/host/usb-tests/src/abort.rs). The driver and the core are the same on
+# every ISA; the mock holds the controller's side of it.
+host_job host_canary_row "usb: closed control pipe keeps its transfer canary" usb-tests canary-ep0-close-no-abort \
+    closing_a_control_pipe_stops_what_it_has_queued
+host_job host_canary_row "usb: timed-out core control stays queued canary" usb-tests canary-core-control-no-abort \
+    a_core_control_that_times_out_is_taken_off_endpoint_0
+host_job host_canary_row "usb: refused drop taken for done canary" usb-tests canary-xhci-refusal-ignored \
+    a_refused_drop_resets_the_controller
+host_job host_canary_row "usb: refused reset endpoint taken for done canary" usb-tests canary-xhci-refusal-ignored \
+    a_refused_reset_endpoint_resets_the_controller
+host_job host_canary_row "usb: dead controller frees its memory canary" usb-tests canary-dead-hc-frees \
+    a_dead_controller_keeps_the_memory_it_was_given
+host_job host_canary_row "usb: DWC2 stuck channel taken for halted canary" usb-tests canary-dwc2-halt-ignored \
+    a_channel_that_will_not_halt_kills_the_controller
+host_job host_canary_row "usb-hid: late descriptor into a freed page canary" usb-hid-tests canary-ep0-close-no-abort \
+    a_report_descriptor_answered_after_the_timeout_writes_nothing_freed
+host_job host_canary_row "usb-hid: key array limits canary" usb-hid-tests canary-hid-array-range \
+    a_key_array_as_wide_as_its_field_does_not_overflow
 host_job host_canary_row "usb-hid: rollover canary" usb-hid-tests canary-rollover \
     a_rollover_report_changes_nothing
 host_job host_canary_row "usb-hid: report ID canary" usb-hid-tests canary-report-id \

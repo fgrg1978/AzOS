@@ -151,6 +151,10 @@ mod host {
         domain: &'static dyn DmaDomain,
     }
 
+    /// The controller went dead without proof that it stopped ([`Memory::quarantine`]).
+    static QUARANTINE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    static LEAKED_REGIONS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
     impl Memory for KMem {
         fn alloc_region(&self, len: usize, align: usize, mask: u64) -> Option<DmaBuf> {
             // `mask` is what the controller reaches on its bus; the domain
@@ -185,7 +189,17 @@ mod host {
             Some(unsafe { DmaBuf::new(cpu, bus, len) })
         }
 
+        fn quarantine(&self) {
+            QUARANTINE.store(true, core::sync::atomic::Ordering::Release);
+        }
+
         fn free_region(&self, b: DmaBuf) {
+            use core::sync::atomic::Ordering;
+            if QUARANTINE.load(Ordering::Acquire) {
+                let n = LEAKED_REGIONS.fetch_add(1, Ordering::Relaxed) + 1;
+                azos_drv_sys::kwarn!("[USB] {} bytes kept from the dead controller ({} regions so far)", b.len(), n);
+                return;
+            }
             let pa = azos_mm::addr::virt_to_phys(b.cpu() as usize) as u64;
             let _ = self.domain.unmap(azos_dma::DmaAddr(b.bus()), b.len());
             azos_dma::PageSource::free(&Pmm, pa, b.len());

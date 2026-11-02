@@ -31,6 +31,11 @@
 //! | `canary-dwc2-toggle` | the data toggle never read back | `dwc2::consecutive_bulk_transfers_keep_the_data_toggle` |
 //! | `canary-dwc2-no-bounce` | an IN tail received in place | `dwc2::an_in_shorter_than_a_packet_is_bounced_and_never_overruns` |
 //! | `canary-dwc2-split` | a full-speed device behind a high-speed hub reached without a split | `dwc2::a_full_speed_device_behind_a_high_speed_hub_is_refused_without_a_split` |
+//! | `canary-ep0-close-no-abort` | a control pipe closed with its transfer still on endpoint 0 | `abort::closing_a_control_pipe_stops_what_it_has_queued` |
+//! | `canary-core-control-no-abort` | a core control transfer that timed out stays on endpoint 0 | `abort::a_core_control_that_times_out_is_taken_off_endpoint_0` |
+//! | `canary-xhci-refusal-ignored` | a refused drop or reset endpoint is taken for done | `abort::a_refused_drop_resets_the_controller`, `abort::a_refused_reset_endpoint_resets_the_controller` |
+//! | `canary-dead-hc-frees` | the buffers of a dead controller are freed | `abort::a_dead_controller_keeps_the_memory_it_was_given` |
+//! | `canary-dwc2-halt-ignored` | a DWC2 channel that never halted is taken for halted | `dwc2::a_channel_that_will_not_halt_kills_the_controller` |
 //! | `canary-arena-clean` | an arena page zeroed and never cleaned for a non-coherent controller | `a_noncoherent_controller_enumerates_through_a_hub_and_reuses_its_pages` |
 //!
 //! `tests/chaos.rs` drives the kernel's injection point (`azos_chaos`,
@@ -41,6 +46,8 @@ pub mod dwc2_mock;
 pub mod harness;
 pub mod mock;
 
+#[cfg(test)]
+mod abort;
 #[cfg(test)]
 mod dwc2;
 

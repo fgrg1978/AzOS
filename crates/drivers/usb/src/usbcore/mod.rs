@@ -592,6 +592,12 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                 return Err(UsbError::Hc(xhci::Error::Reset));
             }
             if self.hc.clock().now_us() >= deadline {
+                // `ctl` serves the next request of any device: a late answer
+                // must not land there.
+                if !cfg!(feature = "canary-core-control-no-abort") {
+                    self.hc.abort_ep(Xhci::<R, M, C>::ep0_index(slot));
+                    self.drain();
+                }
                 return Err(UsbError::Timeout);
             }
             self.hc.clock().delay_us(100);
@@ -780,7 +786,8 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             .is_some_and(|ix| d.owner[ix] != 0)
     }
 
-    /// Close a pipe `claim` opened. Transfers queued on it are dropped.
+    /// Close a pipe `claim` opened. Transfers queued on it are dropped, those
+    /// in flight stopped: their buffers are the caller's again on return.
     pub fn close_pipe(&mut self, claim: Claim, id: u8) -> Result<(), OpenError> {
         let ix = id as usize;
         if ix >= MAX_PIPES || self.pipes[ix].kind != PipeKind::Class || self.pipes[ix].claim != claim {
@@ -792,15 +799,21 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
 
     /// Free pipe `ix`: drop its queued transfers, its endpoint, its ring ends.
     pub(crate) fn release_pipe(&mut self, ix: usize) {
-        let (slot, dci, dead, is_ctl) = {
+        let (slot, dci, dead, is_ctl, inflight) = {
             let p = &self.pipes[ix];
-            (p.slot, p.dci, p.dead, p.dci == 1)
+            (p.slot, p.dci, p.dead, p.dci == 1, p.inflight)
         };
         if let Some(end) = self.pipes[ix].end.as_mut() {
             while end.sq.pop().is_some() {}
         }
-        if !dead && !is_ctl && self.device(slot).is_some() {
-            let _ = self.hc.drop_endpoints(slot, 1 << dci);
+        if !dead && self.device(slot).is_some() {
+            if !is_ctl {
+                let _ = self.hc.drop_endpoints(slot, 1 << dci);
+            } else if inflight > 0 && !cfg!(feature = "canary-ep0-close-no-abort") {
+                self.hc.abort_ep(Xhci::<R, M, C>::ep0_index(slot));
+            }
+            // With the pipe still open: its completions reach its ring, not
+            // whoever takes the slot next.
             self.drain();
         }
         self.pipes[ix] = Pipe::FREE;

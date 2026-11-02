@@ -138,6 +138,9 @@ pub struct MockDev {
     pub out_log: Vec<(u8, Vec<u8>)>,
     /// Stall the control request with this bRequest.
     pub stall_requests: Vec<u8>,
+    /// NAK control requests with this (bmRequestType, bRequest), until a test
+    /// clears them.
+    pub nak_requests: Vec<(u8, u8)>,
     /// HID report descriptors by interface number.
     pub report_descs: Vec<(u8, Vec<u8>)>,
     pub fail_everything: bool,
@@ -166,6 +169,7 @@ impl MockDev {
             in_queue: (0..16).map(|_| VecDeque::new()).collect(),
             out_log: Vec::new(),
             stall_requests: Vec::new(),
+            nak_requests: Vec::new(),
             report_descs: Vec::new(),
             fail_everything: false,
             canned: Vec::new(),
@@ -193,6 +197,10 @@ impl MockDev {
     }
 
     /// Answer a control request: `Ok(data)` (IN) or `Err(())` for a stall.
+    pub fn naks(&self, request_type: u8, request: u8) -> bool {
+        self.nak_requests.contains(&(request_type, request))
+    }
+
     pub fn control(&mut self, setup: [u8; 8], out: &[u8]) -> Result<Vec<u8>, ()> {
         self.requests.push((setup, out.to_vec()));
         if self.fail_everything || self.stall_requests.contains(&setup[1]) {

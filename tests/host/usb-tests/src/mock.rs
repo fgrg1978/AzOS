@@ -201,6 +201,12 @@ pub struct St {
     /// Interrupts the controller raised (an event posted with EHB clear).
     pub interrupts_raised: u32,
     pub fault: Option<String>,
+    /// The next command of a type is answered with this code and does nothing.
+    refuse: Vec<(u8, u8)>,
+    /// `free_region` keeps the memory from now on ([`Memory::quarantine`]).
+    quarantined: bool,
+    /// Regions the driver gave back after the quarantine.
+    pub leaked: u32,
     /// Transfer events posted: (slot, dci, completion code).
     pub xfer_events: Vec<(u8, u8, u8)>,
     /// The first TRB of every data transfer descriptor the controller ran:
@@ -418,7 +424,10 @@ impl St {
                 continue;
             }
             self.commands.push(ty);
-            let (code, slot) = self.exec_cmd(ty, &t);
+            let (code, slot) = match self.refuse.iter().position(|r| r.0 == ty) {
+                Some(i) => (self.refuse.remove(i).1, (t[3] >> 24) as usize),
+                None => self.exec_cmd(ty, &t),
+            };
             self.post([at as u32, (at >> 32) as u32, (code as u32) << 24, 33 << 10 | (slot as u32) << 24]);
         }
     }
@@ -572,9 +581,18 @@ impl St {
                 (OK, slot)
             }
             15 => {
-                if valid && dci >= 1 {
-                    self.set_ep_state(slot, dci, 3);
+                if !valid || dci < 1 {
+                    return (SLOT_NOT_ENABLED, slot);
                 }
+                let ep = self.slots[slot].eps[dci];
+                if ep.state != 1 {
+                    return (CTX_STATE, slot);
+                }
+                // The descriptor it was on reports, before the command does.
+                if let Some(td) = self.read_td(ep.ptr, ep.ccs) {
+                    self.post_xfer(slot, dci, td.trbs[0].0, 26, 0);
+                }
+                self.set_ep_state(slot, dci, 3);
                 (OK, slot)
             }
             16 => {
@@ -748,6 +766,9 @@ impl St {
             let _ = setup;
             let dir_in = setup_bytes[0] & 0x80 != 0;
             let out = if !dir_in && total > 0 { gather(self) } else { Vec::new() };
+            if dev.borrow().naks(setup_bytes[0], setup_bytes[1]) {
+                return Exec::Pending;
+            }
             let res = dev.borrow_mut().control(setup_bytes, &out);
             match res {
                 Err(()) => {
@@ -1058,6 +1079,9 @@ impl Hw {
                 commands: Vec::new(),
                 interrupts_raised: 0,
                 fault: None,
+                refuse: Vec::new(),
+                quarantined: false,
+                leaked: 0,
                 xfer_events: Vec::new(),
                 td_first: Vec::new(),
                 cfg,
@@ -1141,11 +1165,11 @@ impl Hw {
     }
 
     /// Re-run every ring of a device (new data on an IN endpoint, a hub
-    /// change).
+    /// change, a control request it stops NAKing).
     pub fn kick_dev(&self, dev: &DevRef) {
         if let Some(s) = self.slot_of(dev) {
             let mut st = self.st.borrow_mut();
-            for dci in 2..32 {
+            for dci in 1..32 {
                 st.process_ring(s, dci);
             }
         }
@@ -1168,6 +1192,21 @@ impl Hw {
     /// controller that stopped answering).
     pub fn lose_commands(&self, n: u32) {
         self.st.borrow_mut().lose_commands = n;
+    }
+
+    /// The next command of type `ty` is answered with `code` and does nothing.
+    pub fn refuse_command(&self, ty: u8, code: u8) {
+        self.st.borrow_mut().refuse.push((ty, code));
+    }
+
+    /// Regions the driver gave back after its controller died.
+    pub fn leaked(&self) -> u32 {
+        self.st.borrow().leaked
+    }
+
+    /// Is the bus address memory the driver still holds?
+    pub fn mapped(&self, bus: u64) -> bool {
+        self.st.borrow().translate(bus, 1).is_some()
     }
 
     /// The controller hits a host system error: USBSTS.HSE set, and it halts
@@ -1328,7 +1367,15 @@ impl Memory for MockMem {
 
     fn free_region(&self, b: DmaBuf) {
         let mut st = self.0.st.borrow_mut();
+        if st.quarantined {
+            st.leaked += 1;
+            return;
+        }
         st.regions.retain(|r| r.bus != b.bus());
+    }
+
+    fn quarantine(&self) {
+        self.0.st.borrow_mut().quarantined = true;
     }
 
     fn enable(&self) -> bool {

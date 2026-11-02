@@ -108,6 +108,16 @@ canary-dwc2-no-bounce = []
 # A full- or low-speed device behind a high-speed hub is addressed without a
 # split transaction.
 canary-dwc2-split = []
+# Closing a control pipe leaves its transfer queued on endpoint 0.
+canary-ep0-close-no-abort = []
+# A core control transfer that timed out stays queued on endpoint 0.
+canary-core-control-no-abort = []
+# A refused command that stops an endpoint is taken for a stop.
+canary-xhci-refusal-ignored = []
+# A DWC2 channel that does not halt is taken for halted.
+canary-dwc2-halt-ignored = []
+# The memory of a controller latched dead is freed as usual.
+canary-dead-hc-frees = []
 
 # The SMSC LAN95xx Ethernet function (tests/host/usb-cdc-tests, `smsc`).
 #

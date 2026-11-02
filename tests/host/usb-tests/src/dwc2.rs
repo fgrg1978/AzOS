@@ -426,3 +426,30 @@ fn a_dwc2_is_a_host_unless_the_device_tree_makes_it_a_gadget_port() {
     assert!(!may_host(Some(b"peripheral\0")));
     assert!(!may_host(Some(b"peripheral")));
 }
+
+#[test]
+fn a_channel_that_will_not_halt_kills_the_controller() {
+    let mut rig = Rig2::new();
+    let d = rig.add_driver(Match::interface_class(8));
+    let dev = stick();
+    rig.hw.attach_root(dev.clone());
+    rig.settle();
+    let claim = Claim(rig.driver(d).attached[0].0);
+    let id = rig.usb.open_pipe(claim, 0x81).unwrap();
+    let mut end = rig.pipe_end(id);
+    let buf = rig.buffer(4096);
+    // Nothing to send: the channel keeps running.
+    let t = Transfer { tag: 1, dir: Dir::In, setup: [0; 8], buf: buf.bus(), len: 512 };
+    assert!(matches!(end.sq.push(t), Push::Pushed));
+    rig.service();
+    assert_eq!(end.cq.pop(), None);
+    rig.hw.stick_halts();
+    rig.usb.close_pipe(claim, id).unwrap();
+    assert!(rig.usb.controller().is_dead(), "a channel that never halted was taken for halted");
+    assert_eq!(end.cq.pop(), None, "a transfer the channel still runs was reported over");
+    drop(end);
+    rig.usb.controller().mem().free_region(buf);
+    assert!(rig.hw.mapped(buf.bus()), "the running channel still writes this");
+    assert_eq!(rig.hw.leaked(), 1);
+}
+
