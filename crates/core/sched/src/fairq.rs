@@ -67,7 +67,9 @@ use core::sync::atomic::{
 use azos_arch::Interrupts;
 
 use crate::eevdf_core::{self as eevdf, Avg, Choice, Ent};
-use crate::eevdf_tree::{self, AtomicNodes, Store as _, Tree, Unlink};
+#[cfg(feature = "ktest")]
+use crate::eevdf_tree::Store as _;
+use crate::eevdf_tree::{self, AtomicNodes, Tree, Unlink};
 use crate::task::{CtxReg, TaskState, DEFAULT_PRIORITY, IDLE_PRIORITY, RT_PRIORITY_THRESHOLD};
 
 use super::balance::{self, Load, Mask, Moved, Params, Rq, Take};
