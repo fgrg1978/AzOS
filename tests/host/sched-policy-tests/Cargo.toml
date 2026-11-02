@@ -56,6 +56,8 @@ azos_decision = { path = "../../../crates/core/decision", features = ["durable"]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
 # (off on the host: the `on` feature is not enabled).
 azos_chaos = { path = "../../../crates/core/chaos" }
+# Kconfig SCHED_ASYM_CPUS in the #[path]-pulled `topo.rs`.
+azos_limits = { path = "../../../crates/core/limits" }
 azos_abi = { path = "../../../crates/core/abi" }
 # The ask gate `rt_receipt::held_by_row` asks (the real hook, a model gate behind it).
 azos_common = { path = "../../../crates/core/common" }

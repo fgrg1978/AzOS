@@ -45,6 +45,7 @@ dependencies = [
  "azos_chaos",
  "azos_common",
  "azos_decision",
+ "azos_limits",
 ]
 
 [[package]]

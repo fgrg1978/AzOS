@@ -67,6 +67,9 @@ pub type Mask = u64;
 /// A label a source does not give.
 pub const NONE: u32 = u32::MAX;
 
+/// Kconfig `SCHED_ASYM_CPUS`: capacity and core class are read at all.
+pub const ASYM: bool = azos_limits::SCHED_ASYM_CPUS;
+
 /// Capacity of the largest CPU (Linux `SCHED_CAPACITY_SCALE`).
 pub const CAPACITY_SCALE: u16 = 1024;
 
@@ -154,6 +157,7 @@ pub struct Topology {
     n: usize,
     masks: [[Mask; MAX_CPUS]; LEVELS],
     caps: [u16; MAX_CPUS],
+    classes: [u8; MAX_CPUS],
     /// Where the labels came from.
     pub source: Source,
     /// Every CPU stated a `capacity-dmips-mhz`; otherwise all are
@@ -162,6 +166,8 @@ pub struct Topology {
     /// The source's levels did not nest, or did not partition the CPUs, and
     /// groups were merged until they did.
     pub irregular: bool,
+    /// The CPUs are not all of one core class.
+    pub differs: bool,
 }
 
 #[inline]
@@ -280,7 +286,17 @@ pub fn build(raw: &[CpuRaw], source: Source) -> Topology {
             caps[i] = ((r[i].dmips as u64 * CAPACITY_SCALE as u64) / max).max(1) as u16;
         }
     }
-    Topology { n, masks: m, caps, source, capacity_known, irregular }
+    // The class of a CPU is its rank among the distinct stated capacities,
+    // biggest first. Only a table that states every CPU ranks them.
+    let mut classes = [0u8; MAX_CPUS];
+    if capacity_known {
+        for i in 0..n {
+            let bigger = (0..n).filter(|&j| r[j].dmips > r[i].dmips && !(0..j).any(|k| r[k].dmips == r[j].dmips)).count();
+            classes[i] = bigger.min(u8::MAX as usize) as u8;
+        }
+    }
+    let differs = classes[..n].iter().any(|&c| c != 0);
+    Topology { n, masks: m, caps, classes, source, capacity_known, irregular, differs }
 }
 
 impl Topology {
@@ -293,6 +309,16 @@ impl Topology {
     /// `cpu`'s capacity, [`CAPACITY_SCALE`] for the largest.
     pub fn capacity(&self, cpu: usize) -> u16 {
         if cpu < self.n { self.caps[cpu] } else { CAPACITY_SCALE }
+    }
+
+    /// How many core classes the CPUs have.
+    pub fn class_count(&self) -> usize {
+        self.classes[..self.n].iter().map(|&c| c as usize + 1).max().unwrap_or(0)
+    }
+
+    /// `cpu`'s core class: 0 for the biggest capacity stated, 1 for the next.
+    pub fn class(&self, cpu: usize) -> u8 {
+        if cpu < self.n { self.classes[cpu] } else { 0 }
     }
 }
 
@@ -319,6 +345,8 @@ static N: AtomicUsize = AtomicUsize::new(0);
 static MASKS: [AtomicU64; LEVELS * MAX_CPUS] = [const { AtomicU64::new(0) }; LEVELS * MAX_CPUS];
 static CAPS: [AtomicU16; MAX_CPUS] = [const { AtomicU16::new(CAPACITY_SCALE) }; MAX_CPUS];
 static SOURCE: AtomicU8 = AtomicU8::new(0);
+static CLASSES: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
+static DIFFERS: AtomicBool = AtomicBool::new(false);
 static KNOWN: AtomicBool = AtomicBool::new(false);
 static IRREGULAR: AtomicBool = AtomicBool::new(false);
 
@@ -329,11 +357,17 @@ pub fn install(t: &Topology) {
             MASKS[level as usize * MAX_CPUS + i].store(t.mask(level, i), Ordering::Relaxed);
         }
     }
-    for i in 0..t.n {
-        CAPS[i].store(t.capacity(i), Ordering::Relaxed);
+    // Without SCHED_ASYM_CPUS only the fact that CPUs differ is kept, for the
+    // boot warning; every CPU counts as equal.
+    DIFFERS.store(t.differs, Ordering::Relaxed);
+    if ASYM {
+        for i in 0..t.n {
+            CAPS[i].store(t.capacity(i), Ordering::Relaxed);
+            CLASSES[i].store(t.class(i), Ordering::Relaxed);
+        }
+        KNOWN.store(t.capacity_known, Ordering::Relaxed);
     }
     SOURCE.store(t.source as u8, Ordering::Relaxed);
-    KNOWN.store(t.capacity_known, Ordering::Relaxed);
     IRREGULAR.store(t.irregular, Ordering::Relaxed);
     // Last, and Release: a reader that sees `n` sees everything above.
     N.store(t.n, Ordering::Release);
@@ -352,7 +386,19 @@ pub fn mask(level: Level, cpu: usize) -> Mask {
 
 /// The installed capacity of `cpu`; [`CAPACITY_SCALE`] before [`install`].
 pub fn capacity(cpu: usize) -> u16 {
-    if cpu < installed() { CAPS[cpu].load(Ordering::Relaxed) } else { CAPACITY_SCALE }
+    if ASYM && cpu < installed() { CAPS[cpu].load(Ordering::Relaxed) } else { CAPACITY_SCALE }
+}
+
+/// The installed core class of `cpu` (0 the biggest); 0 without
+/// SCHED_ASYM_CPUS and before [`install`].
+pub fn class(cpu: usize) -> u8 {
+    if ASYM && cpu < installed() { CLASSES[cpu].load(Ordering::Relaxed) } else { 0 }
+}
+
+/// The installed CPUs are not all of one core class, whether or not
+/// SCHED_ASYM_CPUS acts on it.
+pub fn differs() -> bool {
+    DIFFERS.load(Ordering::Relaxed)
 }
 
 /// Where the installed labels came from.

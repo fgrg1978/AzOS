@@ -185,6 +185,20 @@ fn capacity_is_scaled_to_the_largest_cpu_only_when_every_cpu_states_it() {
 }
 
 #[test]
+fn classes_rank_the_distinct_capacities_biggest_first() {
+    let mk = |d: &[u32]| -> Vec<CpuRaw> { d.iter().map(|&dmips| CpuRaw { dmips, ..CpuRaw::UNKNOWN }).collect() };
+    let t = build(&mk(&[300, 1024, 300, 700, 1024]), Source::Dt);
+    assert_eq!((0..5).map(|c| t.class(c)).collect::<Vec<_>>(), [2, 0, 2, 1, 0]);
+    assert_eq!(t.class_count(), 3);
+    assert!(t.differs);
+    let t = build(&mk(&[512, 512]), Source::Dt);
+    assert!(!t.differs && t.class_count() == 1);
+    // A table with a silent CPU states no classes: the part is not called asymmetric.
+    let t = build(&mk(&[300, 0, 1024]), Source::Dt);
+    assert!(!t.differs);
+}
+
+#[test]
 fn cpus_past_the_ceiling_are_ignored() {
     let r = vec![CpuRaw::UNKNOWN; MAX_CPUS + 8];
     let t = build(&r, Source::None);
@@ -204,9 +218,12 @@ fn install_publishes_masks_capacities_and_the_source() {
     install(&build(&r, Source::Dt));
     assert_eq!(installed(), 4);
     assert_eq!(source(), Source::Dt);
-    assert!(capacity_known() && !irregular());
+    assert_eq!(capacity_known(), ASYM);
+    assert!(!irregular());
     assert_eq!((mask(Level::Smt, 0), mask(Level::Smt, 3)), (0b0011, 0b1100));
-    assert_eq!((capacity(0), capacity(2)), (512, 1024));
+    assert_eq!((capacity(0), capacity(2)), if ASYM { (512, 1024) } else { (CAPACITY_SCALE, CAPACITY_SCALE) });
+    assert_eq!((class(0), class(2)), if ASYM { (1, 0) } else { (0, 0) });
+    assert!(differs(), "the fact is kept with or without SCHED_ASYM_CPUS");
     assert_eq!(mask(Level::Package, 9), 0, "a CPU it does not describe");
     assert_eq!(summary(Level::Smt), (2, 2, 2));
     assert_eq!(summary(Level::Package), (1, 4, 4));

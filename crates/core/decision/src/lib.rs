@@ -331,6 +331,10 @@ pub enum Rule {
     /// A ring-3 task's core file (Kconfig `CRASHDUMP_CORE_*`) was written whole,
     /// written cut to its byte budget, or not written at all.
     CoreDump = 77,
+    /// The CPUs differ in core class and Kconfig `SCHED_ASYM_CPUS` is off, so
+    /// every CPU counts as equal: a real-time budget measured on one core
+    /// type runs on any (`azos_sched::topo::differs`, noted once at boot).
+    AsymCpus = 78,
 }
 
 /// The verdict of a record.
@@ -358,7 +362,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 78] = [
+pub const RULES: [RuleInfo; 79] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1142,6 +1146,14 @@ pub const RULES: [RuleInfo; 78] = [
         fields: ["bytes_written", "limit_bytes", "dropped_bytes|why"],
         rejected_if_yes: "-",
         rejected_if_no: "write the whole core: the task's writable memory does not fit CRASHDUMP_CORE_KB, or the kernel could not stage it",
+    },
+    RuleInfo {
+        // Place: the CPUs differ and SCHED_ASYM_CPUS is off; no class is checked.
+        name: "asym-cpus",
+        subject: "cpus",
+        fields: ["classes", "asym_cpus", "0"],
+        rejected_if_yes: "-",
+        rejected_if_no: "treat the CPUs as unequal: build with SCHED_ASYM_CPUS, so a budget measured on one core type is admitted only there",
     },
 ];
 

@@ -152,7 +152,8 @@ pub(crate) fn install_topology(num_cpus: usize, dtb_ptr: usize) {
     let n = num_cpus.min(topo::MAX_CPUS);
     let mut raw = [CpuRaw::UNKNOWN; topo::MAX_CPUS];
     let source = firmware_labels(n, dtb_ptr, &mut raw);
-    topo::install(&topo::build(&raw[..n], source));
+    let built = topo::build(&raw[..n], source);
+    topo::install(&built);
 
     kprintln!("[TOPO] {} CPU(s) from {}", topo::installed(), topo::source().name());
     for level in Level::ALL {
@@ -180,6 +181,15 @@ pub(crate) fn install_topology(num_cpus: usize, dtb_ptr: usize) {
             topo::CAPACITY_SCALE);
     } else {
         kprintln!("[TOPO] capacity {} on every CPU (not stated)", topo::CAPACITY_SCALE);
+    }
+    if built.differs {
+        let classes = built.class_count() as u64;
+        if topo::ASYM {
+            kprintln!("[TOPO] {} core classes: the biggest is class 0", classes);
+        } else {
+            azos_drv_sys::kwarn!("[TOPO] {} core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal", classes);
+            azos_decision::record(azos_decision::Rule::AsymCpus, azos_decision::Verdict::Place, n as u32, [classes, 0, 0]);
+        }
     }
     if topo::irregular() {
         azos_drv_sys::kwarn!("[TOPO] the firmware's levels do not nest: groups merged until each holds the one inside it");
