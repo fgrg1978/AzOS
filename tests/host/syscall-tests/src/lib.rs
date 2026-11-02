@@ -778,6 +778,12 @@ mod handlers {
         include!("mmio_map.rs");
     }
 
+    // The timer interrupt's CPU-time charge (`vdso_notify.rs`).
+    #[cfg(test)]
+    mod vdso_tick {
+        include!("vdso_tick.rs");
+    }
+
     // The native futex calls' edge (`vdso_notify.rs`).
     #[cfg(test)]
     mod futex_calls {
