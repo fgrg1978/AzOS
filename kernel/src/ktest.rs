@@ -1152,7 +1152,7 @@ azos_ktest::ktest_late! {
             return Err("LOCKDEP is not on in this ktest kernel (Kconfig LOCKDEP_KTEST or LOCKDEP_Y)");
         }
         MASKED_EXIT_STARTED.store(false, Ordering::Release);
-        azos_sched::task_create_affinity("masked-exit", masked_exit, 0, azos_sched::DEFAULT_PRIORITY, 0);
+        azos_sched::task_create_affinity("masked-exit", masked_exit, 0, azos_sched::DEFAULT_PRIORITY, -1);
         wait("the masked-exit task did not start", || MASKED_EXIT_STARTED.load(Ordering::Acquire))?;
         // Its exit, hook included, runs within these sleeps.
         azos_syscall::sleep::sleep_ms(200);
