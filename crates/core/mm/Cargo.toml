@@ -26,6 +26,8 @@ kheap-census = []
 # Canary only (x86_64): the heap's interrupt token says interrupts were on whatever the
 # flags were, as it did before it read RFLAGS.IF; ktest `kheap_irq_token_follows_the_interrupt_state`.
 kheap-token-canary = []
+kheap-guard-hold-canary = []
+exec-reclaim-canary = []
 # A range unmap holds its frames on the stack, one shootdown per 32 pages;
 # `a_release_unmaps_a_region_with_one_shootdown_per_batch` goes red.
 unmap-stack-batch-canary = []

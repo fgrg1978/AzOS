@@ -14796,8 +14796,10 @@ PY
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
     # +1 save_gate_stuck_top_lets_lower_run (canary `save-gate-no-redraw`) -> 154, arm 158.
-    KTEST_N_RV=154
-    KTEST_N_ARM=158
+    # +1 kheap_guard_quarantine_never_holds_more_than_its_slots (canary
+    # `kheap-guard-hold-canary`) -> 155, arm 159.
+    KTEST_N_RV=155
+    KTEST_N_ARM=159
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15140,8 +15142,8 @@ PY
     # Kconfig KHEAP_GUARD_*: the heap guard reports a deliberate overflow, underflow, use after
     # free and double free (the ERE pins both tests by name); the canary builds the same kernel
     # with the guard off (KHEAP_GUARD_N), where the tests must go red.
-    KTEST_GUARD_RE=$'^ok [0-9]+ - kheap_guard_reports_a_buffer_overflow$\n^ok [0-9]+ - kheap_guard_reports_a_use_after_free$'
-    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free kheap_leaks_reports_a_block_nobody_freed"
+    KTEST_GUARD_RE=$'^ok [0-9]+ - kheap_guard_reports_a_buffer_overflow$\n^ok [0-9]+ - kheap_guard_reports_a_use_after_free$\n^ok [0-9]+ - kheap_guard_quarantine_never_holds_more_than_its_slots$'
+    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free kheap_guard_quarantine_never_holds_more_than_its_slots kheap_leaks_reports_a_block_nobody_freed"
     KTEST_LEAKS_RE=$'^ok [0-9]+ - kheap_leaks_reports_a_block_nobody_freed$'
     # A ktest row built from the gate's Kconfig with one more line (KCFG_LINE, `KCFG_GREP` what it must read back as).
     ktest_row_cfgline() {
@@ -15263,6 +15265,8 @@ PY
     par "ktest IMU frozen-stamp canary (arm)" ktest_row "ktest IMU frozen-stamp canary (arm)" arm ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition safety_geofence_breach_latches_estop"
     # `classes::current` reads the hart id and its slot with interrupts on
     # (the hart-id-then-table audit, front percpu-hazard-b): the one test red.
+    par "ktest kheap guard hold canary (rv)" ktest_row "ktest kheap guard hold canary (rv)" rv ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
+    par "ktest kheap guard hold canary (arm)" ktest_row "ktest kheap guard hold canary (arm)" arm ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest percpu hazard canary (rv)" ktest_row "ktest percpu hazard canary (rv)" rv ",percpu-hazard-canary" "percpu_hazard_reads_are_masked"
     par "ktest percpu hazard canary (arm)" ktest_row "ktest percpu hazard canary (arm)" arm ",percpu-hazard-canary" "percpu_hazard_reads_are_masked"
     # Runtime canaries: the pass row's kernel (`qemu,ktest`, a kernel-cache
@@ -15776,7 +15780,8 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=163
+    # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
+    KTEST_N_X86=164
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16891,6 +16896,7 @@ PY
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""
     par "ktest 17 cpus canary (x86)" x86_ktest_17cpu_row "ktest 17 cpus canary (x86)" "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     # RAM past the 32-bit MMIO hole: microvm splits 5 GiB into 0..3 GiB and
+    par "ktest kheap guard hold canary (x86)" x86_ktest_row "ktest kheap guard hold canary (x86)" ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     # 4..6 GiB. The boot tables map the first BOOT_MAP_GIB GiB only, and
     # `vmm::init` writes its page-table pages into whatever frame the PMM hands
     # out; `pmm_floor` widens them over the rest. The canary leaves them narrow:
