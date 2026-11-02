@@ -15162,7 +15162,13 @@ PY
     # the canary is the default kernel, KASAN off, told to expect them (`canary=kasan-expected`): the same
     # reads go unnoticed and both tests are red.
     KTEST_KASAN_RE=$'^ok [0-9]+ - kasan_reports_a_read_past_the_end_of_a_block$\n^ok [0-9]+ - kasan_reports_a_read_through_a_freed_pointer$'
-    ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" KCFG_GREP="CONFIG_KASAN=y" ktest_row_cfgline "$@"; }
+    # The shadow takes 1/8 of RAM (4096 of the 32768 pages at -m 128M), and memory admission needs the same
+    # pages with it as without: at 128M the rv row had 0 pages to spare (need 15440, free 15440) and the arm
+    # row 739. The plain rows spare 4375 (rv) pages; each 1 MiB of RAM adds about 223 free pages with the
+    # shadow (256 * 7/8, less the frame descriptors), so 144M would leave 3568 and 160M leaves about 7100 (rv)
+    # and 7900 (arm): the smallest 16 MiB step that clears what the plain rows spare. x86 runs on its own
+    # larger default RAM and spares 29198 pages.
+    ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" KCFG_GREP="CONFIG_KASAN=y" KTEST_QEMU_EXTRA="-m 160M" ktest_row_cfgline "$@"; }
     par "ktest kasan (arm)" ktest_row_kasan "ktest kasan (arm)" arm "" "" "" "$KTEST_KASAN_RE"
     par "ktest kasan (rv)" ktest_row_kasan "ktest kasan (rv)" rv "" "" "" "$KTEST_KASAN_RE"
     KTEST_KASAN_OFF="kasan_reports_a_read_past_the_end_of_a_block kasan_reports_a_read_through_a_freed_pointer"
