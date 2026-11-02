@@ -12,6 +12,8 @@ pub mod mitigations;
 /// The indirect-branch thunk of `X86_MIT_SPECTRE_V2` = probe.
 #[cfg(target_arch = "x86_64")]
 pub mod retpoline;
+/// Machine check: CR4.MCE and the handler's lock-free record.
+pub mod mce;
 /// Split-lock detection (Kconfig `X86_SPLIT_LOCK`): MSR_TEST_CTRL, probe-guarded.
 #[cfg(target_arch = "x86_64")]
 pub mod splitlock;

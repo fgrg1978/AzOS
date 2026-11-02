@@ -122,11 +122,11 @@ config RCU_STALL_TIMEOUT_MS
     default 2000
     help
       A grace period that has not ended this long after it started is
-      reported once: the stall counter (`qsbr::stalls`, printed by the
-      callback task, failing the running ktest) names the first CPU that
-      has not passed a quiescent state. A CPU stuck in kernel code with
-      preemption off, or a hook that stopped reporting (the ktest canary
-      `rcu-idle-qs-skip`), shows here. Higher in a development build
+      counted once (`qsbr::stalls`, and `qsbr::last_stall_cpu` names the first
+      CPU that has not passed a quiescent state); the count fails the running
+      ktest and the RCU smoke, and nothing prints it. A CPU stuck in kernel
+      code with preemption off is reported by the stuck-CPU detector
+      (HUNG_DETECT). Higher in a development build
       (BUILD_TYPE_DEV: the QEMU defconfigs, whose timer is host wall time
       under TCG; the build type, not the board, keys it). No cost: a
       compare in the waiter's poll.

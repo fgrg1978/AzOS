@@ -7,6 +7,8 @@ publish = false
 description = "Host stand-in for azos_ipc, used only by tests/host/syscall-tests. NOT part of the kernel."
 
 [features]
+# Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.
+fork-revoke-canary = []
 # `crates/core/ipc/src/irq_bind.rs` gates its in-kernel-test hooks on
 # `any(test, feature = "ktest")`; declared so that cfg is a known one here.
 ktest = []

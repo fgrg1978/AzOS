@@ -245,6 +245,9 @@ pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
         NMIS.fetch_add(1, Ordering::Relaxed);
         return 0;
     }
+    if frame.vector as usize == idt::MC {
+        machine_check(frame);
+    }
     // Lockdep (N1): no lock held when this returns to ring 3.
     // QSBR (Kconfig RCU_QSBR, N4): a syscall or exception does nothing
     // unless this is an RT CPU (RCU_NOCBS_CPUS); the interrupt arm has its
@@ -267,6 +270,38 @@ pub extern "C" fn x86_64_trap_entry(frame: &mut TrapFrame) -> u64 {
             0
         }
     }
+}
+
+/// #MC, on its own IST stack through `ist_common` and, like an NMI, possibly
+/// inside code that holds any lock or sits before `syscall_entry`'s `swapgs`.
+/// So before any guard, decode or lock: the actuators are told to stop (one
+/// atomic store), the check is recorded in `azos_arch::ext::mce::RECORD`
+/// (atomics), and the fatal tail runs, which claims the console instead of
+/// waiting for it. Nothing here returns: a machine check does not resume,
+/// and bank decoding, CMCI and page retirement are not done. Gate canary
+/// `mce-record-canary`: the record is not written; `mce-stop-canary`: the
+/// stop request comes only with the fatal tail, after the record.
+#[cold]
+#[inline(never)]
+fn machine_check(frame: &TrapFrame) -> ! {
+    use crate::trap::frame::FaultServices;
+    if !cfg!(feature = "mce-stop-canary") {
+        <Kernel as FaultServices<TrapFrame>>::stop_actuators();
+    }
+    #[cfg(feature = "use-robot")]
+    let stop = azos_robot::motor_cmd_is_valid();
+    #[cfg(not(feature = "use-robot"))]
+    let stop = false;
+    let cpu = <Kernel as FaultServices<TrapFrame>>::cpu() as u64;
+    let status = azos_arch::ext::mce::mcg_status();
+    let n = if cfg!(feature = "mce-record-canary") {
+        0
+    } else {
+        azos_arch::ext::mce::RECORD.note(cpu, frame.rip, frame.cs, frame.rflags, status)
+    };
+    crate::trap::fault::fatal_note::<Kernel, TrapFrame>(format_args!(
+        "[MCE] machine check on cpu {}: rip={:#x} cs={:#x} rflags={:#x} mcg_status={:#x} count={} motor_stop={}; halting",
+        cpu, frame.rip, frame.cs, frame.rflags, status, n, stop))
 }
 
 /// The lean `syscall` entry's ordinary target (trap_entry.S, `syscall_entry`,

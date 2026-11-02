@@ -42,6 +42,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("buddy-mer
 # (the Domain ledgers of the subtree policy's Domain table).
 budget-racy-charge-canary = []
 unmap-stack-batch-canary = []
+exec-reclaim-canary = []
 # `cfg(feature = "pmm-inflight-canary")` in the pulled-in pmm.rs: free_pages leaves the in-flight frames out.
 pmm-inflight-canary = []
 promote-ranged-flush-canary = []

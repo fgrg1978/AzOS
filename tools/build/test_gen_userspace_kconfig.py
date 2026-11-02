@@ -17,7 +17,7 @@ of the Kconfig tree and of the program metadata under userspace/:
   4. a bad metadata line removes the generated file, so the next parse fails
      instead of reading a stale menu;
   5. every console program the choice offers has its effect: its image in
-     CONSOLE_PATH, its argv in CONSOLE_ARGS, USER_SHELL on (none: off), and
+     CONSOLE_PATH, its argv in CONSOLE_ARGS, and
      the choice offers exactly those (native sh, BusyBox sh, none).
 
     python3 tools/build/test_gen_userspace_kconfig.py      (exit 0 = all pass)
@@ -120,10 +120,10 @@ def main():
               if k.startswith("USERSPACE_") and x == "y"} - {"GPL", "TOPOLOGY_ROWS"}
         check(on == BOARD_DEFAULT, f"edge: board images by default = topology rows ({sorted(on ^ BOARD_DEFAULT)} differ)")
         check(v.get("CONSOLE_PROGRAM_SH") == "y" and v.get("CONSOLE_PATH") == '"/fat/TERMD.ELF"'
-              and v.get("USER_SHELL") == "y", "edge: console = native shell session (TERMD.ELF), USER_SHELL=y")
+              , "edge: console = native shell session (TERMD.ELF)")
         rc, log, v = defconfig(tmp, "generic-embedded-riscv64+board-generic", cfg)
-        check(v.get("CONSOLE_PROGRAM_NONE") == "y" and "USER_SHELL" not in v
-              and v.get("CONSOLE_PATH") == '""', "embedded: console = none, USER_SHELL=n")
+        check(v.get("CONSOLE_PROGRAM_NONE") == "y"
+              and v.get("CONSOLE_PATH") == '""', "embedded: console = none")
         on = {k[len("USERSPACE_"):] for k, x in v.items() if k.startswith("USERSPACE_") and x == "y"} - {"GPL"}
         check(v.get("DECISION_REFUSALS_DURABLE") == "y" and "SSHD" not in v and on == {"DECISD"} | ALWAYS_EMBEDDED,
               f"embedded: only the started row's image is built by default, no SSHD ({sorted(on)})")
@@ -190,11 +190,11 @@ def main():
         check(members == {"SH", "BUSYBOX_SH", "NONE"},
               f"the choice offers native sh, BusyBox sh and none ({sorted(members)})")
         cases = (
-            ("SH", "generic-sbc-riscv64-dev+qemu+linux+gui", '"/fat/TERMD.ELF"', '""', True),
-            ("BUSYBOX_SH", "generic-sbc-riscv64-dev+qemu+linux+gui", '"/fat/BUSYBOX.ELF"', '"sh"', True),
-            ("NONE", "generic-sbc-riscv64-dev+qemu+linux+gui", '""', '""', False),
+            ("SH", "generic-sbc-riscv64-dev+qemu+linux+gui", '"/fat/TERMD.ELF"', '""'),
+            ("BUSYBOX_SH", "generic-sbc-riscv64-dev+qemu+linux+gui", '"/fat/BUSYBOX.ELF"', '"sh"'),
+            ("NONE", "generic-sbc-riscv64-dev+qemu+linux+gui", '""', '""'),
         )
-        for member, defc, path, args, user_shell in cases:
+        for member, defc, path, args in cases:
             rc, log, v = defconfig(tmp, defc, cfg)
             with open(cfg) as f:
                 kept = [ln for ln in f if not ln.startswith("CONFIG_CONSOLE_PROGRAM_")
@@ -206,8 +206,8 @@ def main():
             rc, log = olddefconfig(tmp, cfg)
             v = values(cfg)
             check(rc == 0 and v.get(f"CONSOLE_PROGRAM_{member}") == "y" and v.get("CONSOLE_PATH") == path
-                  and v.get("CONSOLE_ARGS") == args and (v.get("USER_SHELL") == "y") == user_shell,
-                  f"{member}: CONSOLE_PATH {path}, CONSOLE_ARGS {args}, USER_SHELL {'y' if user_shell else 'off'}")
+                  and v.get("CONSOLE_ARGS") == args,
+                  f"{member}: CONSOLE_PATH {path}, CONSOLE_ARGS {args}")
         # 6. --all-on names every image (the lines the gate appends to ask for all).
         r = subprocess.run([sys.executable, os.path.join(tmp, "tools/build/gen_userspace_kconfig.py"), "--root", tmp, "--all-on"],
                            capture_output=True, text=True)

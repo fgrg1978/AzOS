@@ -11524,6 +11524,16 @@ host_job host_canary_row "memobj: stale resolve cache canary" ipc-tests memobj-r
 # answers for a capability whose ancestor was revoked until the sweep frees it.
 host_job host_canary_row "ipc: resolve cache in a revocation canary" ipc-tests revoke-chain-canary \
     a_descendant_of_a_revoked_capability_misses_before_the_sweep
+# fork-revoke-canary: a fork copy made across a revoke of its ancestor is kept
+# live (the personality's grant_like does not look at the parent again).
+host_job host_canary_row "cap: fork copy across a revoke canary" cap-tests fork-revoke-canary \
+    a_fork_copy_made_across_a_revoke_is_not_kept
+# sshd-backlog-canary: the server reads the peer whatever replies it has queued.
+host_job host_canary_row "sshd: unread replies canary" sshd-tests sshd-backlog-canary \
+    a_client_that_does_not_read_is_not_read_from_without_bound
+# x86-region-round-canary: a DMAR/IVRS region whose page rounding overflows is kept.
+host_job host_canary_row "x86: region page rounding canary" x86-platform-tests x86-region-round-canary \
+    a_region_the_page_rounding_overflows_is_refused
 # memobj-resolve-one-answer-canary: the cache keeps one answer a process, so a shm
 # word and a private word in turn evict each other's.
 host_job host_canary_row "memobj: one resolve answer a process canary" ipc-tests memobj-resolve-one-answer-canary \
@@ -11557,6 +11567,8 @@ host_job host_canary_row "wait graph: heap shape canary" sync-tests pi-heap-no-s
     heap_matches_a_sorted_model_and_keeps_its_spine_logarithmic --test=waitgraph_heaps
 host_job host_canary_row "timer heap: rank canary" sched-wake-tests timer-rank-canary wake_due_pops_the_urgent_class_first
 host_job host_canary_row "tlbi: no ceiling canary" arch-tests tlbi-no-ceiling-canary a_shootdown_past_the_ceiling_is_one_flush
+host_job host_canary_row "module map: reclaim held off canary" syscall-tests exec-reclaim-canary module_map_x_waits_out_a_store_in_flight
+host_job host_canary_row "vdso: cpu time of the last CPU canary" syscall-tests vdso-8cpu-canary tick_interval_covers_every_cpu
 host_job host_canary_row "munmap: stack batch canary" syscall-tests unmap-stack-batch-canary a_release_unmaps_a_region_with_one_shootdown_per_batch
 # The suite's thp_vmm tests pass without testing anything on a cell with MM_THP_RESV off,
 # which the host suites' robot cell is: these rows run them with it on.
@@ -14811,8 +14823,12 @@ PY
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
     # +1 save_gate_stuck_top_lets_lower_run (canary `save-gate-no-redraw`) -> 154, arm 158.
-    KTEST_N_RV=154
-    KTEST_N_ARM=158
+    # +1 kheap_guard_quarantine_never_holds_more_than_its_slots (canary
+    # `kheap-guard-hold-canary`) -> 155, arm 159.
+    # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked
+    # (canary `exit-irq-masked-canary`) -> 156, arm 160.
+    KTEST_N_RV=156
+    KTEST_N_ARM=160
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15155,8 +15171,8 @@ PY
     # Kconfig KHEAP_GUARD_*: the heap guard reports a deliberate overflow, underflow, use after
     # free and double free (the ERE pins both tests by name); the canary builds the same kernel
     # with the guard off (KHEAP_GUARD_N), where the tests must go red.
-    KTEST_GUARD_RE=$'^ok [0-9]+ - kheap_guard_reports_a_buffer_overflow$\n^ok [0-9]+ - kheap_guard_reports_a_use_after_free$'
-    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free kheap_leaks_reports_a_block_nobody_freed"
+    KTEST_GUARD_RE=$'^ok [0-9]+ - kheap_guard_reports_a_buffer_overflow$\n^ok [0-9]+ - kheap_guard_reports_a_use_after_free$\n^ok [0-9]+ - kheap_guard_quarantine_never_holds_more_than_its_slots$'
+    KTEST_GUARD_OFF="kheap_guard_reports_a_buffer_overflow kheap_guard_reports_a_use_after_free kheap_guard_quarantine_never_holds_more_than_its_slots kheap_leaks_reports_a_block_nobody_freed"
     KTEST_LEAKS_RE=$'^ok [0-9]+ - kheap_leaks_reports_a_block_nobody_freed$'
     # A ktest row built from the gate's Kconfig with one more line (KCFG_LINE, `KCFG_GREP` what it must read back as).
     ktest_row_cfgline() {
@@ -15266,6 +15282,10 @@ PY
     par "ktest QoS fire canary (arm)" ktest_row "ktest QoS fire canary (arm)" arm ",qos-fire-canary" "qos_timer_coalescing_path"
     par "ktest QoS armed-at canary (rv)" ktest_row "ktest QoS armed-at canary (rv)" rv ",qos-armed-at-canary" "qos_timer_coalescing_path"
     par "ktest QoS armed-at canary (arm)" ktest_row "ktest QoS armed-at canary (arm)" arm ",qos-armed-at-canary" "qos_timer_coalescing_path"
+    par "ktest masked exit canary (rv)" ktest_row "ktest masked exit canary (rv)" rv ",exit-irq-masked-canary" "a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked"
+    par "ktest masked exit canary (arm)" ktest_row "ktest masked exit canary (arm)" arm ",exit-irq-masked-canary" "a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked"
+    par "ktest kheap guard hold canary (rv)" ktest_row "ktest kheap guard hold canary (rv)" rv ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
+    par "ktest kheap guard hold canary (arm)" ktest_row "ktest kheap guard hold canary (arm)" arm ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest tlb local-only canary (rv)" ktest_row "ktest tlb local-only canary (rv)" rv ",tlb-local-only" "tlb_shootdown_cross_cpu"
     par "ktest tlb local-only canary (arm)" ktest_row "ktest tlb local-only canary (arm)" arm ",tlb-local-only" "tlb_shootdown_cross_cpu"
     # The accessors of the running task read the hart id and its slot in one
@@ -15800,7 +15820,9 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=163
+    # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
+    # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked -> 165.
+    KTEST_N_X86=165
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -15883,6 +15905,23 @@ PY
         "AzOS shell|KERNEL PANIC"
     par "x86_64: baseline canary (qemu64)" x86_boot_row "x86_64: baseline canary (qemu64)" 1 qemu64 \
         "[X86] CPU below the configured baseline" "below the configured baseline"
+    # A machine check (#MC): QEMU raises none, so the smoke raises the vector
+    # with `int $18`. The handler stops the actuators before it records, names
+    # the check, and halts. Canaries: CR4.MCE left clear (the smoke reads it),
+    # the record skipped (`count=0`), the stop left to the fatal tail
+    # (`motor_stop=false`).
+    x86_mce_row() { # x86_mce_row <label> <canary features or ""> <want, |-separated>
+        x86_boot_row "$1" 2 max "$3" "halting|KERNEL PANIC" "use-robot,mce-smoke$2"
+    }
+    MCE_SMOKE="[MCE] smoke: CR4.MCE=1 on cpu 0, motor_stop=false before, raising #MC"
+    par "x86_64: machine check stops, records, halts" x86_mce_row "x86_64: machine check stops, records, halts" "" \
+        "$MCE_SMOKE|[MCE] machine check on cpu 0: |count=1 motor_stop=true; halting"
+    par "x86_64: machine check, CR4.MCE canary" x86_mce_row "x86_64: machine check, CR4.MCE canary" ",mce-cr4-canary" \
+        "CR4.MCE=0 on cpu 0"
+    par "x86_64: machine check, record canary" x86_mce_row "x86_64: machine check, record canary" ",mce-record-canary" \
+        "count=0 motor_stop=true; halting"
+    par "x86_64: machine check, stop canary" x86_mce_row "x86_64: machine check, stop canary" ",mce-stop-canary" \
+        "count=1 motor_stop=false; halting"
     # `boot: no self-tests by default` on x86_64 (see the riscv64/aarch64 rows'
     # comment, beside the NR_CPUS rows): the plain kernel, booted to the shell.
     x86_selftests_off_row() {
@@ -16886,6 +16925,8 @@ PY
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
+    par "ktest masked exit canary (x86)" x86_ktest_row "ktest masked exit canary (x86)" ",exit-irq-masked-canary" "a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked"
+    par "ktest kheap guard hold canary (x86)" x86_ktest_row "ktest kheap guard hold canary (x86)" ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
     par "ktest free_pages in flight canary (x86)" x86_ktest_row "ktest free_pages in flight canary (x86)" ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
@@ -17132,6 +17173,8 @@ PY
     # FS/GS selectors ring 3 loaded stay).
     par "ktest sched tls canary (x86)" x86_ktest_row "ktest sched tls canary (x86)" ",fs-base-cache-canary" "fs_selector_load_keeps_the_next_task_s_fs_base fs_gs_selectors_do_not_follow_a_task"
     par "ktest el0 state canary (x86)" x86_ktest_row "ktest el0 state canary (x86)" ",el0-state-canary" "user_visible_state_is_set_on_every_cpu"
+    # CR4.MCE is part of the same per-CPU check; canary `mce-cr4-canary`.
+    par "ktest mce cr4 canary (x86)" x86_ktest_row "ktest mce cr4 canary (x86)" ",mce-cr4-canary" "user_visible_state_is_set_on_every_cpu"
     # The same boot carries K1's `ioring-fsync-inline` (an io_ring OP_FSYNC
     # completes in the submit): `ioring_fsync_completes_after_flush`.
     par "ktest fork FP runtime canary (x86)" x86_ktest_row "ktest fork FP runtime canary (x86)" "" \
@@ -24875,7 +24918,7 @@ echo after-prod \$?" 150 \
         sed 's/^# CONFIG_CONSOLE_LOCKDOWN is not set$/CONFIG_CONSOLE_LOCKDOWN=y/' "$base" >"$tmp/c.config"
         if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
            || ! grep -q '^CONFIG_CONSOLE_LOCKDOWN=y$' "$tmp/c.config" \
-           || ! grep -q '^CONFIG_USER_SHELL=y$' "$tmp/c.config"; then
+           || grep -q '^CONFIG_CONSOLE_PROGRAM_NONE=y$' "$tmp/c.config"; then
             rm -rf "$tmp"; return
         fi
         cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"
@@ -24937,7 +24980,7 @@ power suspend" 150 \
         sed 's/^# CONFIG_PROFILER is not set$/CONFIG_PROFILER=y/' "$base" >"$tmp/c.config"
         if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$tmp/c.config" python3 -m olddefconfig >/dev/null 2>&1) \
            || ! grep -q '^CONFIG_PROFILER_PMU=y$' "$tmp/c.config" \
-           || ! grep -q '^CONFIG_USER_SHELL=y$' "$tmp/c.config"; then
+           || grep -q '^CONFIG_CONSOLE_PROGRAM_NONE=y$' "$tmp/c.config"; then
             rm -rf "$tmp"; return
         fi
         cmp -s "$tmp/c.config" "$cfg" || cp "$tmp/c.config" "$cfg"

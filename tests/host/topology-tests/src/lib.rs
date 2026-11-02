@@ -1254,7 +1254,7 @@ mod start_flag_tests {
 
     /// Which rows of the built-in topology the kernel starts. A board build
     /// (this crate's default features, as `vf2`/`k1`) starts only the user
-    /// shell, and only with Kconfig `USER_SHELL`; the
+    /// shell, and only with a console program (Kconfig `CONSOLE_PROGRAM`); the
     /// `qemu` shape (`ring3-driver-start`) adds exactly the two ring-3 driver
     /// images, and nothing else — least of all a row that names a role, not
     /// an image.
@@ -1264,7 +1264,7 @@ mod start_flag_tests {
         let started: Vec<&str> = topo.tasks().iter().filter(|t| t.start).map(|t| t.name.as_str()).collect();
         // The native shell session is two images (the Terminal object): the
         // shell, and the terminal server that is the console program.
-        let shell: &[&str] = if azos_limits::USER_SHELL { &["SH.ELF", "TERMD.ELF", "NAMESD.ELF"] } else { &[] };
+        let shell: &[&str] = if !azos_limits::CONSOLE_PROGRAM_NONE { &["SH.ELF", "TERMD.ELF", "NAMESD.ELF"] } else { &[] };
         // The decision server starts when the kernel keeps decisions to serve
         // (Kconfig `DECISION_REFUSALS_DURABLE` or `DECISION_RECORDS_DEV`).
         let decisions: &[&str] =
@@ -4417,7 +4417,7 @@ mod launch_cap_tests {
         let sh = topo.find_task(&MaybeStr::from_bytes(b"SH.ELF")).unwrap();
         assert_eq!(topo.imports_of(sh).iter().map(|n| n.as_bytes()).collect::<Vec<_>>(), [&b"term"[..]]);
         assert_eq!(topo.admission_check(), Ok(()), "the shell's import is something the name server can lend");
-        if azos_limits::USER_SHELL {
+        if !azos_limits::CONSOLE_PROGRAM_NONE {
             for n in ["SH.ELF", "TERMD.ELF", "NAMESD.ELF"] {
                 assert!(topo.find_task(&MaybeStr::from_bytes(n.as_bytes())).unwrap().start,
                         "{n} starts with the native shell session");

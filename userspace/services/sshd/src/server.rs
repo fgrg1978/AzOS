@@ -38,6 +38,9 @@ use azos_crypto::x25519::{x25519_checked, BASEPOINT};
 pub const MAX_FAILURES: u32 = 6;
 /// Authentication requests allowed in all (queries for keys included).
 pub const MAX_REQUESTS: u32 = 24;
+/// Bytes the server lets pile up unsent (the socket's queue and a key
+/// exchange's held packets) before it stops reading the peer.
+pub const MAX_BACKLOG: usize = 32 * 1024;
 /// The bytes of channel data the server lets the client have in flight.
 pub const LOCAL_WINDOW: u32 = 65536;
 /// The largest data packet the server accepts on the channel.
@@ -271,6 +274,19 @@ impl<'c> Server<'c> {
     /// Bytes to send to the peer.
     pub fn pending(&self) -> &[u8] {
         &self.out
+    }
+
+    /// Bytes queued for the peer and not yet sent, held packets included.
+    pub fn backlog(&self) -> usize {
+        self.out.len() + self.held.iter().map(|p| p.len()).sum::<usize>()
+    }
+
+    /// Whether to read more from the peer. A client that sends and does not
+    /// read would otherwise grow the replies without bound (one unknown
+    /// message earns one UNIMPLEMENTED); its socket window fills instead.
+    /// Test canary `sshd-backlog-canary`: always.
+    pub fn wants_input(&self) -> bool {
+        cfg!(feature = "sshd-backlog-canary") || self.backlog() < MAX_BACKLOG
     }
 
     /// `n` bytes of [`Server::pending`] were sent.

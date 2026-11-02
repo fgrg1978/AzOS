@@ -1424,6 +1424,27 @@ mod cap_store_tests {
         assert!(cap_store::grant_like(b.tid, b1, child.tid, 78).is_none(), "a revoked source is not copied");
     }
 
+    /// The Linux personality's fork reads a descriptor's capability under one
+    /// table lock and installs the copy under another, so a revoke of an
+    /// ancestor can finish in between: every table swept had no copy yet, and
+    /// the copy would be live under a revoked parent for good. `grant_like`
+    /// looks at the parent again after the install. **Canary.** Drop that look:
+    /// the copy is kept and live.
+    #[test]
+    fn a_fork_copy_made_across_a_revoke_is_not_kept() {
+        let _g = wguard();
+        let (a, b, child) = (wtask(44), wtask(45), wtask(46));
+        let r = root_with(&a, CapPerms::RW_DELEGATE, 5, Warrant::ROOT);
+        let b1 = dup(&a, &b, r).unwrap();
+        let copy = cap_store::grant_like_between(b.tid, b1, child.tid, 77, || cap_store::revoke(a.tid, ch(r)));
+        assert!(copy.is_none(), "a copy installed after its ancestor's revoke finished was kept");
+        assert_eq!(
+            cap_store::with_table(child.tid, |t| t.free_slots()),
+            cap_store::with_table(wtask(47).tid, |t| t.free_slots()),
+            "the refused copy left a slot behind"
+        );
+    }
+
     /// A fork child's bare placeholder may stand for a row capability only
     /// when that capability is a plain root: a badge (`grant_badged`), an op
     /// mask (`grant_op_masked`), a deadline or a derive each fail

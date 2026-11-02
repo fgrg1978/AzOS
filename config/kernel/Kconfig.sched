@@ -574,9 +574,10 @@ choice
         bool "RT for every non-idle task (static RT appliances only)"
         depends on SCHED_CLASS_RT
         help
-          Every task starts in the RT class. For a static profile whose
-          every task is a periodic control loop; the band budget still
-          applies.
+          Every task is labelled RT (the class decides its wake placement and
+          wake preemption). What is charged against the band budget is still
+          decided by the priority number: a task above the band is not charged.
+          For a static profile whose every task is a periodic control loop.
 
 endchoice
 

@@ -1660,6 +1660,12 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
 /// `task_exit()`, which never took one: there was nobody to notify and nothing
 /// to notify with.
 pub fn task_exit_with_code(code: i32) -> ! {
+    // A fault, or a forced stop at a return to user mode, arrives here with the
+    // trap's mask still on, and the exit hook takes sleeping locks.
+    // Gate canary `exit-irq-masked-canary`: left masked.
+    if !cfg!(feature = "exit-irq-masked-canary") {
+        azos_arch::ARCH.enable_all();
+    }
     // K-C29: exit cannot be refused and cannot be deferred. A task exiting
     // inside a critical section is a bug in that task — it is not coming back
     // to drop its guard — but refusing to switch away from a Zombie strands

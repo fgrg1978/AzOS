@@ -76,9 +76,10 @@ version is checked against `min_fw_version` only as an early, advisory refusal.
 sidecar. The image is written to `KERN_<slot>.TMP` and verified
 (`secure_boot_verify_staged_detailed`) before it replaces the slot: a present
 signature that fails is refused on every build, an image with no usable
-signature only with `SECURE_BOOT_ENFORCED`; otherwise it is installed with a
-warning. Kconfig `OTA_SIG_MANDATORY` plays no part here: only the build reads it,
-to refuse `SECURE_BOOT_ENFORCED=y` with it off. A build with no trusted key (an all-zero `SECURE_BOOT_PUBKEY`, the
+signature with `SECURE_BOOT_ENFORCED` or Kconfig `OTA_SIG_MANDATORY`; otherwise
+it is installed with a warning. The build also refuses
+`SECURE_BOOT_ENFORCED=y` with `OTA_SIG_MANDATORY` off, so the install is never
+looser than the boot. A build with no trusted key (an all-zero `SECURE_BOOT_PUBKEY`, the
 development default) reads no sidecar, so every image is `Unverified` there. The
 floor check against the signed version runs only for a verified image. A
 kernel-only install zeroes the slot's epoch and withdraws any signed set of that

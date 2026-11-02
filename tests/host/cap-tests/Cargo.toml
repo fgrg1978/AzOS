@@ -38,6 +38,9 @@ azos_sched = { path = "shims/sched", package = "cap_test_sched" }
 # capability derived from a revoked one is not refused before the sweep frees
 # it. Never in a real build.
 revoke-chain-canary = []
+# `cap_store.rs` `grant_like`: the parent is not looked at again after the copy
+# is installed, so a copy made across a revoke of its ancestor stays live.
+fork-revoke-canary = []
 # `cap_store.rs` `SweptSet`'s canaries (MemObj revoke, tests/host/ipc-tests): the
 # pulled sweep carries the sites, only the ipc suite enables them.
 memobj-sweep-no-hook-canary = []

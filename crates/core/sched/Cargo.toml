@@ -138,6 +138,9 @@ ctx-probe = []
 # Gate canary: the exit path hands `do_schedule` the hart it entered on,
 # after a forced move to the next hart (the pre-CTXHUNT stale id).
 exit-stale-hart-canary = []
+# `task_exit_with_code` leaves the trap's interrupt mask on (ktest
+# `a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked`).
+exit-irq-masked-canary = []
 # Gate canary (ktest build): the accessors of the running task read the hart id
 # and then its slot with interrupts on, as before the masked window
 # (ktest `percpu_accessors_read_masked` is `not ok`).

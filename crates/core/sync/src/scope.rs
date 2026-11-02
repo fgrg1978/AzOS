@@ -237,17 +237,6 @@ impl<T> CpuOwned<T> {
         unsafe { &*self.v.ptr(cpu) }.lock_irqsave()
     }
 
-    /// Lock this CPU's instance, interrupts off: `(cpu, guard)`. The CPU id
-    /// is read with interrupts already masked, so it is the one locked.
-    #[inline(always)]
-    #[cfg_attr(any(feature = "lat-trace", feature = "lockdep"), track_caller)]
-    pub fn lock_local(&self) -> (usize, IrqSaveGuard<'_, T>, IrqOff) {
-        let irq = IrqOff::new();
-        let cpu = ARCH.hart_id();
-        // SAFETY: this CPU runs, so its area is attached.
-        (cpu, unsafe { &*self.v.ptr(cpu) }.lock_irqsave(), irq)
-    }
-
     /// The type-erased handle the boot's `setup_per_cpu_areas` attaches.
     pub fn var(&self) -> &dyn PerCpuVar where T: 'static {
         &self.v

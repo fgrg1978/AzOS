@@ -22,7 +22,15 @@ Checks (exit 1 on any ERROR; REPORT lines never fail):
             Cargo.toml. A choice member is read when any member of its choice
             is (the others are the choice's implicit else). The symbols of
             the generated config/Kconfig.userspace are exempt (read through
-            images.mk by pattern).
+            images.mk by pattern). Only code and the build count: a mention
+            in tests/ or in a lint, gate, dev or bench tool, or in a test_*
+            file, is not a reader.
+  choice    a choice has at most one member nothing reads (the implicit else):
+            two unread members select the same build. A member that selects
+            or implies another symbol is read by that effect.
+  known     the reader and choice findings that stand are listed with their
+            reason in KNOWN_FILE; a listed symbol that now has a reader (or
+            is gone) must leave the list.
   tautology no symbol or choice has two or more defaults that all give the
             same value with one of them unconditional: the conditions decide
             nothing.
@@ -86,8 +94,11 @@ def parse_symbols(files, root):
 
 # Where a symbol's reader may live (the code, the build, the tools and the tests).
 READER_DIRS = ("kernel", "arch", "crates", "micro", "userspace", "sdk", "boot",
-               "formal", "mk", "tools", "tests")
+               "formal", "mk", "tools")
 READER_SKIP_DIRS = {"target", ".git", "__pycache__", "node_modules"}
+# Not readers: what checks the build is not the build.
+READER_SKIP_TREES = ("tools/lint", "tools/gate", "tools/dev", "tools/bench")
+KNOWN_FILE = "tools/lint/kconfig_reader_known.tsv"
 _SLASH_COMMENT = (".rs", ".c", ".h", ".S", ".s", ".ld", ".x", ".zig", ".cpp")
 _HASH_COMMENT = (".py", ".sh", ".mk", ".toml", ".cfg", ".conf", ".txt", ".yaml", ".yml",
                  ".json", ".tla")
@@ -103,8 +114,9 @@ def reader_index(root):
     paths = [os.path.join(root, "Makefile")]
     for d in READER_DIRS:
         for dirpath, dirs, files in os.walk(os.path.join(root, d)):
-            dirs[:] = [x for x in dirs if x not in READER_SKIP_DIRS]
-            paths += [os.path.join(dirpath, f) for f in files]
+            dirs[:] = [x for x in dirs if x not in READER_SKIP_DIRS
+                       and os.path.relpath(os.path.join(dirpath, x), root) not in READER_SKIP_TREES]
+            paths += [os.path.join(dirpath, f) for f in files if not f.startswith("test_")]
     for path in paths:
         base = os.path.basename(path)
         if path.endswith(_SLASH_COMMENT):
@@ -190,15 +202,60 @@ def kconfig_checks(root, tags):
         return (name in tokens or "CONFIG_" + name in tokens or name + "_BYTES" in tokens
                 or name in kref or (name in tags and tags[name] in quoted))
 
+    def acts(sym):
+        return any(getattr(n, a, []) for n in sym.nodes for a in ("orig_selects", "orig_implies"))
+
     for sym in kconf.unique_defined_syms:
         if all(n.filename.endswith(GENERATED_KCONFIG) for n in sym.nodes):
             continue
         group = sym.choice.syms if sym.choice is not None else [sym]
-        if not any(read(m.name) for m in group):
+        if not any(read(m.name) or acts(m) for m in group):
             n = sym.nodes[0]
             errors.append(f"reader: {n.filename}:{n.linenr}: {sym.name} has no reader "
                           "(no code, build file, Kconfig expression or cargo feature names it)")
+
+    # choice
+    for ch in kconf.unique_choices:
+        unread = [m for m in ch.syms
+                  if not (read(m.name) or acts(m)) and not all(n.filename.endswith(GENERATED_KCONFIG) for n in m.nodes)]
+        if len(unread) >= 2 and len(unread) < len(ch.syms):
+            n = unread[0].nodes[0]
+            errors.append(f"choice: {n.filename}:{n.linenr}: {', '.join(m.name for m in unread)} have no "
+                          "reader of their own: they select the same build as the implicit else")
     return errors
+
+
+def read_known(path):
+    """symbol -> why from KNOWN_FILE; {} when there is no such file."""
+    out = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip() and not line.startswith("#"):
+                    parts = line.rstrip("\n").split("\t")
+                    out[parts[0]] = parts[1] if len(parts) > 1 else ""
+    return out
+
+
+def apply_known(errors, root):
+    """Drop the reader and choice findings KNOWN_FILE lists; a listed symbol
+    that no finding names any more is itself an error."""
+    known = read_known(os.path.join(root, KNOWN_FILE))
+    kept, used = [], set()
+    for e in errors:
+        names = []
+        if e.startswith("reader: "):
+            names = [e.split(": ", 2)[2].split(" ", 1)[0]]
+        elif e.startswith("choice: "):
+            names = [x.strip() for x in e.split(": ", 2)[2].split(" have no ", 1)[0].split(",")]
+        if names and all(n in known for n in names):
+            used.update(names)
+            continue
+        kept.append(e)
+    for sym in sorted(set(known) - used):
+        kept.append(f"known: {KNOWN_FILE} lists {sym}, which no reader or choice finding names any more "
+                    "(delete the line)")
+    return kept
 
 
 def gen_userspace(root):
@@ -263,7 +320,7 @@ def lint(root=k2c.REPO_ROOT, cargo_toml=k2c.KERNEL_CARGO_TOML, generate=True, kc
             errors.append(f"select: {where}: {sym} selects the visible symbol {target}")
 
     if kconfig:
-        errors += kconfig_checks(root, {sym: feat for sym, feat, _ in tags})
+        errors += apply_known(kconfig_checks(root, {sym: feat for sym, feat, _ in tags}), root)
 
     # The feature set comes from Kconfig alone: no cargo `default`.
     if feats.get("default"):
@@ -357,20 +414,27 @@ def self_test():
             'choice\n\tprompt "a choice"\n\tdefault CH_A\n'
             'config CH_A\n\tbool "read"\nconfig CH_B\n\tbool "implicit else"\nendchoice\n'
             'choice\n\tprompt "a dead choice"\n\tdefault DC_A if BY_KCONFIG\n\tdefault DC_A\n'
-            'config DC_A\n\tbool "a"\nconfig DC_B\n\tbool "b"\nendchoice\n')
+            'config DC_A\n\tbool "a"\nconfig DC_B\n\tbool "b"\nendchoice\n'
+            'config ONLY_TEST\n\tbool "named only by a test"\n'
+            'choice\n\tprompt "two unread"\n\tdefault TU_A\n'
+            'config TU_A\n\tbool "read"\nconfig TU_B\n\tbool "unread"\nconfig TU_C\n\tbool "unread"\n'
+            'config TU_D\n\tbool "acts"\n\timply BY_KCONFIG\nendchoice\n')
         open(os.path.join(d, "kernel", "src", "lib.rs"), "w").write(
             "// IN_COMMENT TWICE NOT_TAUT\n"
             "const X: u32 = azos_limits::BY_CODE + azos_limits::TWICE as u32 + azos_limits::NOT_TAUT;\n"
-            "#[cfg(feature = \"feat-x\")] fn f() {}\nconst Y: bool = azos_limits::CH_A;\n")
+            "#[cfg(feature = \"feat-x\")] fn f() {}\nconst Y: bool = azos_limits::CH_A + azos_limits::TU_A;\n")
+        os.makedirs(os.path.join(d, "tests"))
+        open(os.path.join(d, "tests", "t.rs"), "w").write("const Z: bool = azos_limits::ONLY_TEST;\n")
         ct = os.path.join(d, "Cargo.toml")
         open(ct, "w").write('[features]\nfeat-x = []\n[dependencies]\n')
         errors, _ = lint(d, ct, generate=False)
         bad = ["reader: config/Kconfig.a:1: DEAD ", "IN_COMMENT has no reader", "DC_A has no reader",
                "INERT is visible and its help says",
                "DC_B has no reader", "tautology: config/Kconfig.a:5: BY_CODE ", "once: TWICE ",
-               'choice "a dead choice" has 2 defaults']
+               'choice "a dead choice" has 2 defaults', "ONLY_TEST has no reader",
+               "choice: config/Kconfig.a:", "TU_B, TU_C have no reader"]
         good = ["BY_KCONFIG ", "BY_FEATURE ", "CH_A ", "CH_B ", "NOT_TAUT ", "INERT_HIDDEN is visible",
-                "INERT_PROSE is visible"]
+                "INERT_PROSE is visible", "TU_D", "TU_A"]
         miss = [b for b in bad if not any(b in e for e in errors)]
         wrong = [g for g in good if any(g in e for e in errors)]
         if miss or wrong:

@@ -300,6 +300,9 @@ fork-profile = ["azos_sched/fork-profile"]
 cow-ro-canary = ["azos_mm/cow-ro-canary"]
 # Gate canary (x86_64, ktest): see `crates/core/mm/Cargo.toml`.
 kheap-token-canary = ["azos_mm/kheap-token-canary"]
+# The heap guard's quarantine checks for room and pushes in two critical
+# sections again: ktest `kheap_guard_quarantine_never_holds_more_than_its_slots`.
+kheap-guard-hold-canary = ["azos_mm/kheap-guard-hold-canary"]
 # Gate canary only (wave 14, security): a fork child's mprotect(RW) of a page
 # its parent shares read-only writes the parent's frame again.
 mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
@@ -370,6 +373,7 @@ thread-regs-canary = ["azos_sched/thread-regs-canary"]
 reap-window-canary = ["azos_sched/reap-window-canary"]
 ctx-probe = ["azos_sched/ctx-probe"]
 exit-stale-hart-canary = ["azos_sched/exit-stale-hart-canary"]
+exit-irq-masked-canary = ["azos_sched/exit-irq-masked-canary"]
 percpu-accessor-race-canary = ["azos_sched/percpu-accessor-race-canary"]
 orphan-late-adopter-canary = ["azos_sched/orphan-late-adopter-canary"]
 foreign-regs-canary = ["azos_sched/foreign-regs-canary"]
@@ -1192,6 +1196,17 @@ a64clk-cntvoff-canary = ["qemu", "azos_arch/cntvoff-canary"]
 # IA32_TSC_AUX not written, `cpu_init`). ktest
 # `user_visible_state_is_set_on_every_cpu` must go red, naming each register.
 el0-state-canary = ["azos_arch/el0-state-canary"]
+# x86_64 machine check (`azos_arch::ext::mce`, `entry/x86_64/trap.rs`). The
+# smoke raises #MC with `int $18` at the end of the boot self-tests (QEMU
+# raises none): the handler must stop the actuators, record, name the check on
+# the console and halt (row `x86_64: machine check`). `mce-cr4-canary` leaves
+# CR4.MCE clear (ktest `user_visible_state_is_set_on_every_cpu` goes red);
+# `mce-record-canary` skips the record (the row's `count=1` is missing);
+# `mce-stop-canary` leaves the stop to the fatal tail (`motor_stop=false`).
+mce-smoke = []
+mce-cr4-canary = []
+mce-record-canary = []
+mce-stop-canary = []
 # Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never
 # armed; ipctest's phase P must then fail its timer check (gate rows
 # `portwait: ring-3 multi-source wait`, riscv64 and aarch64).

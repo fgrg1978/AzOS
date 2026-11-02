@@ -14,6 +14,11 @@
 // * `the_reclaimer_takes_nothing_while_mprotect_rewrites`: the pause refuses
 //   `unmap`. Canary: `reclaim_hold` not counting the hold: the unmap succeeds.
 //
+// * `module_map_x_waits_out_a_store_in_flight`: the same for the Linux
+//   personality's module map (`set_user_range_exec`): it waits, then maps the
+//   restored page executable. Canary `exec-reclaim-canary`: it does not hold the
+//   reclaimer off, refuses the marker at once and returns while the store runs.
+//
 // Included into `mod handlers` (see `lib.rs`), so `sys_*` resolve directly.
 
 use super::harness::serial;
@@ -97,6 +102,37 @@ fn the_reclaimer_takes_nothing_while_mprotect_rewrites() {
     drop(pause);
     assert!(reclaim.unmap(victim), "the pause ended: the page may be taken again");
     reclaim.keep(victim);
+    azos_mm::pager::forget(pt);
+    azos_sched::set_current_user_pt(0);
+}
+
+#[test]
+fn module_map_x_waits_out_a_store_in_flight() {
+    let _g = serial();
+    let (pt, va) = resident_page();
+    let frame = azos_mm::vmm::translate(pt, va).expect("mapped");
+    let roots = [pt];
+    let mut ages = Ages::new();
+    let mut reclaim = AnonReclaim::new(&roots, 0, &mut ages);
+    let victim = Victim { space: pt, va };
+    assert!(reclaim.unmap(victim), "the page is taken out: a store is in flight");
+
+    let done = AtomicBool::new(false);
+    azos_sched::shim_serial_share(true);
+    std::thread::scope(|sc| {
+        let call = sc.spawn(|| {
+            let r = azos_mm::vmm::set_user_range_exec(pt, va, va + PAGE_SIZE, 0, 0);
+            done.store(true, Ordering::SeqCst);
+            r
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(!done.load(Ordering::SeqCst), "the module map ran while a store of its space was in flight");
+        reclaim.keep(victim);
+        assert_eq!(call.join().unwrap(), Ok(1), "the restored page is the one mapped executable");
+    });
+    azos_sched::shim_serial_share(false);
+    assert_eq!(azos_mm::vmm::translate(pt, va), Some(frame), "the same frame is still mapped");
+    assert!(!azos_mm::vmm::user_write_would_be_permitted(pt, va), "write was taken off with execute put on");
     azos_mm::pager::forget(pt);
     azos_sched::set_current_user_pt(0);
 }

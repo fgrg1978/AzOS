@@ -19,11 +19,23 @@ use crate::handlers::{SENSOR_TYPE_ENCODER, SENSOR_TYPE_ODOM};
 
 // ── Per-task vDSO page ──────────────────────────────────────────────────────
 
-/// Harts whose previous-interrupt time is kept for the CPU-time charge. A
-/// hart past this charges nothing (its tasks' `cpu_time` stays 0) rather
-/// than indexing out of bounds.
-const TICK_HARTS: usize = 8;
+/// Harts whose previous-interrupt time is kept for the CPU-time charge: every
+/// CPU the kernel is built for. A hart past this (a stray id) charges nothing
+/// rather than indexing out of bounds. Gate canary `vdso-8cpu-canary`: eight,
+/// so the tasks of every later CPU keep a `cpu_time` of 0.
+const TICK_HARTS: usize = if cfg!(feature = "vdso-8cpu-canary") { 8 } else { azos_limits::NR_CPUS };
 static LAST_TICK: [AtomicU64; TICK_HARTS] = [const { AtomicU64::new(0) }; TICK_HARTS];
+
+/// The time since `hart`'s previous timer interrupt, which becomes the CPU time
+/// of the task found running; 0 for the first interrupt of a hart and for a
+/// clock that went back.
+pub fn tick_interval(hart: usize, now: u64) -> u64 {
+    let last = match LAST_TICK.get(hart) {
+        Some(a) => a.swap(now, Ordering::Relaxed),
+        None => now,
+    };
+    if last == 0 || now < last { 0 } else { now - last }
+}
 
 /// The sensor types the timer interrupt can sample: the two whose source is
 /// a pair of lock-free atomics (`azos_robot::{encoder_read, odom_get}`).
@@ -62,11 +74,7 @@ pub fn vdso_task_tick(now: u64) {
     // nothing is standing), whatever runs on this hart.
     crate::clock::tick();
     let Some(f) = azos_sched::scheduler::current_task_vdso_facts() else { return };
-    let last = match LAST_TICK.get(f.hart) {
-        Some(a) => a.swap(now, Ordering::Relaxed),
-        None => now,
-    };
-    let cpu_delta = if last == 0 || now < last { 0 } else { now - last };
+    let cpu_delta = tick_interval(f.hart, now);
     azos_mm::vdso::task_page_publish(
         &azos_mm::vdso::TaskFacts {
             idx: f.idx,

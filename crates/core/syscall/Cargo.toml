@@ -111,6 +111,9 @@ native-fork-copy-canary = []
 # Wave 13 (security) canary: native and Linux `mmap` map read-write whatever
 # `prot` says, and `mprotect` changes nothing (the `mprot:` rows go red).
 mmap-prot-canary = []
+# `vdso_notify.rs` `TICK_HARTS`: eight harts' previous-interrupt times are kept,
+# whatever the kernel's CPU count (host test `tick_interval_covers_every_cpu`).
+vdso-8cpu-canary = []
 # mmap-hint canaries, host rows only (tests/host/syscall-tests/src/mmap_hint.rs),
 # never in a real build: a Linux task's hint is not read (`mmap-hint-canary`),
 # `MAP_FIXED_NOREPLACE` falls back like a hint (`mmap-noreplace-canary`), a hint

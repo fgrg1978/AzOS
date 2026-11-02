@@ -28,6 +28,21 @@ pub const MAX_MCFG: usize = 4;
 pub const MAX_TABLES: usize = 32;
 /// IOMMU units and reserved/unity-mapped regions kept per table.
 pub const MAX_IOMMUS: usize = 8;
+/// Can the boot code round `[base, base + len)` out to whole pages in a u64?
+/// The reservation of a DMAR or IVRS region computes `(base & 0xFFF) + len +
+/// 0xFFF` and `base + len + 0xFFF`; a table whose region reaches the end of the
+/// address space would overflow them (a panic at boot, where the build checks
+/// overflow). Such a region is the firmware's mistake and is refused.
+const fn rounds_to_pages(base: u64, len: u64) -> bool {
+    if cfg!(feature = "x86-region-round-canary") {
+        return base.checked_add(len).is_some();
+    }
+    match (base.checked_add(len), (base & 0xFFF).checked_add(len)) {
+        (Some(end), Some(head)) => end.checked_add(0xFFF).is_some() && head.checked_add(0xFFF).is_some(),
+        _ => false,
+    }
+}
+
 pub const MAX_IOMMU_REGIONS: usize = 8;
 /// No sane table is larger; a bigger length is a corrupt header.
 pub const MAX_TABLE_LEN: usize = 1 << 20;
@@ -672,7 +687,7 @@ pub fn parse_dmar(t: &[u8], out: &mut Dmar) {
                 let (base, limit) = (le64(e, 8), le64(e, 16));
                 // A table is firmware's word: a region of the whole address
                 // space (0..=u64::MAX) has a length no u64 holds, and is refused.
-                let len = limit.checked_sub(base).and_then(|d| d.checked_add(1));
+                let len = limit.checked_sub(base).and_then(|d| d.checked_add(1)).filter(|&l| rounds_to_pages(base, l));
                 if let Some(len) = len.filter(|_| out.n_rmrr < MAX_IOMMU_REGIONS) {
                     out.rmrr[out.n_rmrr] = DmaRegion { segment: le16(e, 6), base, len };
                     out.n_rmrr += 1;
@@ -780,9 +795,9 @@ pub fn parse_ivrs(t: &[u8], out: &mut Ivrs) {
             // IVMD 0x20 (all), 0x21 (select), 0x22 (range): start @16, length @24.
             (0x20..=0x22, 32..) => {
                 let (base, len) = (le64(e, 16), le64(e, 24));
-                // A region that runs past the end of the address space is
-                // refused, as a DMAR's.
-                if base.checked_add(len).is_none() {
+                // A region that runs past the end of the address space, or
+                // whose page rounding would, is refused, as a DMAR's.
+                if !rounds_to_pages(base, len) {
                     out.malformed += 1;
                 } else if out.n_ivmd < MAX_IOMMU_REGIONS {
                     out.ivmd[out.n_ivmd] = DmaRegion { segment: 0, base, len };

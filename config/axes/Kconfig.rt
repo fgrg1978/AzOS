@@ -9,26 +9,19 @@
 choice
     prompt "Real-time class (RT)"
     default RT_HARD if PRESET_ROBOT || PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
-    default RT_SOFT if PRESET_IOT_HMI || PRESET_GATEWAY || PRESET_DESKTOP || \
-                       PRESET_FIRMWARE || PRESET_WEARABLE
-    default RT_NONE
+    default RT_SOFT
     help
       What the image promises about time. The real-time band
       (SCHED_CLASS_RT) is in every image, because the shared actuation
       authority runs in it; this axis says whether the image's own tasks
       depend on it.
 
-    config RT_NONE
-        bool "None"
-        help
-          No task of the image has a deadline.
-
     config RT_SOFT
-        bool "Soft"
-        depends on SCHED_CLASS_RT
+        bool "None or soft"
         help
-          Deadlines whose misses degrade a service (audio, display,
-          haptics, sensor reads).
+          No task of the image has a deadline, or its deadlines are ones
+          whose misses degrade a service (audio, display, haptics, sensor
+          reads). Nothing is admitted differently for either.
 
     config RT_HARD
         bool "Hard"

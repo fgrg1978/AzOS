@@ -1576,7 +1576,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // the right to start `TOOLBOX.ELF` (`Cap<Launch>`, `SYS_SPAWN_EX` checks
     // it against the image the file's digest resolves to), and the directory
     // trees its redirections and `mkdir`/`rm` change (`/fat` and `/tmp`; only
-    // `/tmp` under `CONSOLE_LOCKDOWN`). `start` follows Kconfig `USER_SHELL`;
+    // `/tmp` under `CONSOLE_LOCKDOWN`). `start` follows Kconfig `CONSOLE_PROGRAM`;
     // the kernel launches this row after every other `start = true` row.
     //
     // The shell is the interactive session, so its class is `session`: the

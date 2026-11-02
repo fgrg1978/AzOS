@@ -234,6 +234,21 @@ fn a_region_that_overflows_the_address_space_is_refused() {
     assert_eq!((v.ivmd()[0].base, v.ivmd()[0].len), (0x7000_0000, 0x4000));
 }
 
+/// A region that fits the address space but not its page rounding is refused
+/// too: the boot code rounds each region out to pages (`pmm_floor`, the
+/// reservation of boot spans, the trampoline pick) and would overflow on one
+/// that ends within a page of 2^64. **Canary** `x86-region-round-canary`: only
+/// `base + len` is checked, and the region is kept.
+#[test]
+fn a_region_the_page_rounding_overflows_is_refused() {
+    let mut d = Dmar::EMPTY;
+    acpi::parse_dmar(&dmar_table(38, 0, &[rmrr(0, 0, u64::MAX - 0xFFF), rmrr(0, 0x1000, 0x1FFF)]), &mut d);
+    assert_eq!((d.n_rmrr, d.malformed), (1, 1), "only the sane region is kept");
+    let mut v = Ivrs::EMPTY;
+    acpi::parse_ivrs(&ivrs_table(0, &[ivmd(0x20, 0, u64::MAX - 0x7FF), ivmd(0x22, 0x7000_0000, 0x4000)]), &mut v);
+    assert_eq!((v.ivmd().len(), v.malformed), (1, 1), "only the sane region is kept");
+}
+
 // ── the walk, end to end ────────────────────────────────────────────────────
 
 struct Mem(Vec<(u64, Vec<u8>)>);

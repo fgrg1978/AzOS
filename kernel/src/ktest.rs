@@ -635,6 +635,51 @@ azos_ktest::ktest! {
     }
 }
 
+// Every CPU freeing at once: the quarantine checks for room and pushes in one
+// critical section, so it never holds more blocks than its slots. Two CPUs
+// that had both found the ring one short of full pushed into the same slot
+// and left it longer than its ring, after which the count test never fired
+// again and the oldest blocks were released twice. A push that finds the ring
+// full is counted (`overfull_pushes`) and gives up its oldest block. Canary
+// `kheap-guard-hold-canary`: the room check and the push are separate again.
+static HAMMER_DONE: AtomicUsize = AtomicUsize::new(0);
+static HAMMER_OVER: AtomicUsize = AtomicUsize::new(0);
+const HAMMER_ROUNDS: usize = 3 * azos_mm::kheap_guard::MAX_BLOCKS;
+
+fn quarantine_hammer(_: usize) {
+    for _ in 0..HAMMER_ROUNDS {
+        drop(core::hint::black_box(alloc::boxed::Box::new([0u8; 8])));
+        if azos_mm::kheap_guard::blocks_held() > azos_mm::kheap_guard::MAX_BLOCKS {
+            HAMMER_OVER.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    HAMMER_DONE.fetch_add(1, Ordering::Release);
+}
+
+azos_ktest::ktest_late! {
+    fn kheap_guard_quarantine_never_holds_more_than_its_slots() {
+        if !azos_mm::kheap_guard::ENABLED {
+            return Err("the heap guard (Kconfig KHEAP_GUARD_*) is off in this kernel");
+        }
+        let cpus = azos_percpu::nr_cpu_ids();
+        if cpus < 2 {
+            return Err("needs 2 CPUs freeing at once");
+        }
+        HAMMER_DONE.store(0, Ordering::Release);
+        HAMMER_OVER.store(0, Ordering::Relaxed);
+        for cpu in 0..cpus {
+            azos_sched::task_create_affinity("kg-hammer", quarantine_hammer, 0, azos_sched::DEFAULT_PRIORITY, cpu as i8);
+        }
+        wait("the quarantine hammers did not finish", || HAMMER_DONE.load(Ordering::Acquire) == cpus)?;
+        let (held, over) = (azos_mm::kheap_guard::blocks_held(), HAMMER_OVER.load(Ordering::Relaxed));
+        azos_mm::kheap::guard_drain();
+        if over != 0 || held > azos_mm::kheap_guard::MAX_BLOCKS || azos_mm::kheap_guard::overfull_pushes() != 0 {
+            return Err("the quarantine held more blocks than its slots");
+        }
+        Ok(())
+    }
+}
+
 // The kernel address sanitizer (Kconfig `KASAN`, `crates/core/mm/src/kasan.rs`)
 // reports what the heap guard cannot: a READ past a block and a READ through a
 // freed pointer, each at the access, with the address and the size. Skipped in
@@ -1083,6 +1128,35 @@ azos_ktest::ktest! {
             kprintln!("# lockdep: {} violation(s) before the first test (the `# lockdep:` lines above)", n);
             return Err("lockdep violation during boot, before the scheduler");
         }
+        Ok(())
+    }
+}
+
+// A fault, or a forced stop at a return to user mode, ends a task with the
+// trap's interrupt mask still on, and the exit hook takes sleeping locks. A
+// kernel task stands in for the trap: it masks interrupts and exits. Under
+// lockdep the hook's sleeping lock with interrupts off is a violation, which
+// fails the test; `task_exit_with_code` opens interrupts first. Canary
+// `exit-irq-masked-canary`: it does not.
+static MASKED_EXIT_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn masked_exit(_: usize) {
+    use azos_arch::Interrupts;
+    MASKED_EXIT_STARTED.store(true, Ordering::Release);
+    let _ = azos_arch::ARCH.disable_all();
+    azos_sched::task_exit_with_code(0)
+}
+
+azos_ktest::ktest_late! {
+    fn a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked() {
+        if !azos_sync::lockdep::ON {
+            return Err("LOCKDEP is not on in this ktest kernel (Kconfig LOCKDEP_KTEST or LOCKDEP_Y)");
+        }
+        MASKED_EXIT_STARTED.store(false, Ordering::Release);
+        azos_sched::task_create_affinity("masked-exit", masked_exit, 0, azos_sched::DEFAULT_PRIORITY, -1);
+        wait("the masked-exit task did not start", || MASKED_EXIT_STARTED.load(Ordering::Acquire))?;
+        // Its exit, hook included, runs within these sleeps.
+        azos_syscall::sleep::sleep_ms(200);
         Ok(())
     }
 }

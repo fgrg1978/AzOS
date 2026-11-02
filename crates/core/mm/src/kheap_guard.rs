@@ -113,6 +113,16 @@ static Q: SpinLock<Quarantine> = SpinLock::new(Quarantine {
     bytes: 0,
 });
 
+/// Pushes that found the ring full. The room check and the push share a
+/// critical section, so none does.
+static OVERFULL: AtomicUsize = AtomicUsize::new(0);
+
+/// Pushes that found the quarantine ring full; 0 unless the room check and the
+/// push were split (canary `kheap-guard-hold-canary`).
+pub fn overfull_pushes() -> usize {
+    OVERFULL.load(Relaxed)
+}
+
 /// Bytes the quarantine holds, readable without its lock.
 static HELD: AtomicUsize = AtomicUsize::new(0);
 /// Findings counted inside [`expect`], per [`Kind`].
@@ -237,20 +247,71 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout, raw: Raw) {
     }
 }
 
-/// Make room for `h`, release what that evicts, and hold it.
+/// Make room for `h`, release what that evicts, and hold it. The room check
+/// and the push are one critical section: two CPUs that both found the ring
+/// with a free slot would otherwise push into the same one.
 unsafe fn hold(h: Held, raw: Raw) {
-    while let Some(old) = evict(h.total) {
-        unsafe { release(old, raw) };
+    loop {
+        let t = crate::kheap::irq_off();
+        let mut q = Q.lock();
+        let mut out = q.evict_for(h.total);
+        if cfg!(feature = "kheap-guard-hold-canary") && out.is_none() {
+            drop(q);
+            for _ in 0..200 {
+                core::hint::spin_loop();
+            }
+            q = Q.lock();
+        }
+        let pushed = out.is_none();
+        if pushed {
+            out = q.push(h);
+        }
+        HELD.store(q.bytes, Relaxed);
+        drop(q);
+        crate::kheap::irq_restore(t);
+        if let Some(old) = out {
+            unsafe { release(old, raw) };
+        }
+        if pushed {
+            return;
+        }
     }
-    let t = crate::kheap::irq_off();
-    let mut q = Q.lock();
-    let at = (q.head + q.len) % SLOTS;
-    q.ring[at] = h;
-    q.len += 1;
-    q.bytes += h.total;
-    HELD.store(q.bytes, Relaxed);
-    drop(q);
-    crate::kheap::irq_restore(t);
+}
+
+impl Quarantine {
+    /// The oldest held block, when `extra` more bytes (or one more block)
+    /// would not fit; always one when `extra` is huge and any is held.
+    fn evict_for(&mut self, extra: usize) -> Option<Held> {
+        if self.len > 0 && (self.len == SLOTS || self.bytes + extra > CAP_BYTES) {
+            let old = self.ring[self.head];
+            self.head = (self.head + 1) % SLOTS;
+            self.len -= 1;
+            self.bytes -= old.total;
+            Some(old)
+        } else {
+            None
+        }
+    }
+
+    /// Hold `h`. A ring already full gives up its oldest block instead of
+    /// overwriting one, and counts it ([`overfull_pushes`]): the caller made
+    /// room under the same lock, so this is the invariant, and it never fires.
+    fn push(&mut self, h: Held) -> Option<Held> {
+        let mut displaced = None;
+        if self.len == SLOTS {
+            OVERFULL.fetch_add(1, Relaxed);
+            let old = self.ring[self.head];
+            self.head = (self.head + 1) % SLOTS;
+            self.len -= 1;
+            self.bytes -= old.total;
+            displaced = Some(old);
+        }
+        let at = (self.head + self.len) % SLOTS;
+        self.ring[at] = h;
+        self.len += 1;
+        self.bytes += h.total;
+        displaced
+    }
 }
 
 /// The oldest held block, when `extra` more bytes (or one more block) would
@@ -258,20 +319,23 @@ unsafe fn hold(h: Held, raw: Raw) {
 fn evict(extra: usize) -> Option<Held> {
     let t = crate::kheap::irq_off();
     let mut q = Q.lock();
-    let r = if q.len > 0 && (q.len == SLOTS || q.bytes + extra > CAP_BYTES) {
-        let old = q.ring[q.head];
-        q.head = (q.head + 1) % SLOTS;
-        q.len -= 1;
-        q.bytes -= old.total;
-        HELD.store(q.bytes, Relaxed);
-        Some(old)
-    } else {
-        None
-    };
+    let r = q.evict_for(extra);
+    HELD.store(q.bytes, Relaxed);
     drop(q);
     crate::kheap::irq_restore(t);
     r
 }
+
+/// Blocks in quarantine now. Never more than the Kconfig slot count.
+pub fn blocks_held() -> usize {
+    let t = crate::kheap::irq_off();
+    let n = Q.lock().len;
+    crate::kheap::irq_restore(t);
+    n
+}
+
+/// The slot count the quarantine is built with.
+pub const MAX_BLOCKS: usize = SLOTS;
 
 /// A block leaving quarantine: it must still be all [`FREED`].
 unsafe fn release(h: Held, raw: Raw) {
