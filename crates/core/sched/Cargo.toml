@@ -46,6 +46,9 @@ eevdf-fifo-canary = []
 # The canaries of `irqoff_timer_storm`: a tick pass wakes every due sleeper; a
 # placement reads the whole queue.
 timer-wake-unbounded-canary = []
+# Every timer sleeper has one rank: a storm of sleepers due at one instant pops by slot
+# index, not by class (`irqoff_timer_storm`, `wake_due_pops_the_urgent_class_first`).
+timer-rank-canary = []
 fair-place-all-canary = []
 eevdf-noclamp-canary = []
 eevdf-nowake-canary = []
@@ -292,13 +295,6 @@ sched-tick-probe = []
 # OFF by default: the maintenance is paid on every block and wake, the
 # saving only on machines with more than one hart online.
 sched-o1-placement = []
-# U02-3: timer sleepers live in an indexed min-heap (`timer_heap`,
-# `scheduler::timer_sleepers`); `wake_expired_timers` and
-# `nearest_timer_deadline` stop sweeping MAX_TASKS every tick.
-# `reap_stamped_sleepers` still sweeps (it is not timer-specific). With
-# `ipc-census` a live boot cross-checks both against the sweep.
-# Off in this crate; the kernel's `default` turns it on.
-sched-timer-heap = []
 # U02-3 / audit Q3: fast-IPC hand-off wakes (call -> server, reply ->
 # client) place the woken task on the waker's hart when nothing there
 # outranks it (`scheduler::ipc_wake_target_cpu`). OFF by default.

@@ -138,8 +138,7 @@ pub fn wake_by_port(port_id: u32) {
 
 /// Wake all tasks whose timer deadline has expired.
 ///
-/// With `sched-timer-heap` only the due sleepers are visited
-/// (`scheduler::timer_sleepers`); without it, every slot is.
+/// Only the due sleepers are visited (`scheduler::timer_sleepers`).
 pub fn wake_expired_timers(now_ticks: u64) {
     // Kconfig KTEST: the timer interrupt's half of the preempt-count nesting
     // ktest (`azos_sync::preempt::ktest_probe`). Off: nothing compiled.
@@ -150,13 +149,7 @@ pub fn wake_expired_timers(now_ticks: u64) {
     let now_ticks = scheduler::chaos_sweep_now(now_ticks);
     #[cfg(feature = "ktest")]
     let t0 = azos_drv_sys::timebase::now();
-    #[cfg(feature = "sched-timer-heap")]
     let _popped = scheduler::wake_expired_timers_heap(now_ticks);
-    #[cfg(not(feature = "sched-timer-heap"))]
-    let _popped = {
-        wake_matching(|r| matches!(r, WaitReason::Timer(deadline) if now_ticks >= *deadline));
-        0usize
-    };
     #[cfg(feature = "ktest")]
     {
         TICK_PASS_MAX_TICKS.fetch_max(azos_drv_sys::timebase::now().wrapping_sub(t0), core::sync::atomic::Ordering::Relaxed);
@@ -170,6 +163,33 @@ pub fn wake_expired_timers(now_ticks: u64) {
 static TICK_PASS_MAX_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 #[cfg(feature = "ktest")]
 static TICK_PASS_MAX_POPPED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Per slot, the place (from 1) its last timer wake had in the order of the timer wakes since
+/// [`ktest_wake_order_reset`]; 0 if it has none.
+#[cfg(feature = "ktest")]
+static WAKE_ORDER: [core::sync::atomic::AtomicU32; azos_limits::MAX_TASKS] = [const { core::sync::atomic::AtomicU32::new(0) }; azos_limits::MAX_TASKS];
+#[cfg(feature = "ktest")]
+static WAKE_NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+#[cfg(feature = "ktest")]
+pub(crate) fn ktest_note_timer_wake(slot: usize) {
+    use core::sync::atomic::Ordering::Relaxed;
+    WAKE_ORDER[slot].store(WAKE_NEXT.fetch_add(1, Relaxed), Relaxed);
+}
+
+#[cfg(feature = "ktest")]
+pub fn ktest_wake_order_reset() {
+    use core::sync::atomic::Ordering::Relaxed;
+    for o in &WAKE_ORDER {
+        o.store(0, Relaxed);
+    }
+    WAKE_NEXT.store(1, Relaxed);
+}
+
+#[cfg(feature = "ktest")]
+pub fn ktest_wake_order(slot: usize) -> u32 {
+    WAKE_ORDER.get(slot).map_or(0, |o| o.load(core::sync::atomic::Ordering::Relaxed))
+}
 
 /// `(longest pass in timer counts, most popped)`, and start over.
 #[cfg(feature = "ktest")]

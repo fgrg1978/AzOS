@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Indexed binary min-heap of timer sleepers (U02-3): the structure behind
-//! `wait::wake_expired_timers` and `scheduler::nearest_timer_deadline` when
-//! `sched-timer-heap` is on, replacing their two O(`MAX_TASKS`) sweeps.
+//! `wait::wake_expired_timers` and `scheduler::nearest_timer_deadline`.
 //!
 //! One entry per pool slot at most (`pos[slot]` is its heap index or
 //! [`NOT_ARMED`]), so the heap never holds more than `N` entries and never
@@ -20,7 +19,10 @@
 //! Deadlines are absolute `timebase` ticks (`u64`, 10 MHz on QEMU virt: no
 //! wrap in 58,000 years), compared with plain `>=` — the same comparison
 //! the sweep it replaces used, so `u64::MAX` ("forever") never expires.
-//! Equal deadlines order by slot index, so the pop order is deterministic.
+//! Equal deadlines order by the slot's rank (its scheduling class, most
+//! urgent first), then by slot index, so the pop order is deterministic and
+//! a pass that stops at its limit leaves the least urgent of a same-instant
+//! storm behind.
 //!
 //! **Coalescing** ([`TimerHeap::coalesce_target`]): a sleeper whose QoS tier
 //! lets its timer fire up to `slack` ticks late is armed, if the heap
@@ -41,6 +43,8 @@ pub struct TimerHeap<const N: usize> {
     deadline: [u64; N],
     slot: [u16; N],
     pos: [u16; N],
+    /// Per slot, not per heap position: it does not move with the entry.
+    rank: [u8; N],
     len: usize,
 }
 
@@ -52,7 +56,7 @@ impl<const N: usize> TimerHeap<N> {
     pub const fn new() -> Self {
         #[allow(clippy::let_unit_value)]
         let () = Self::FITS;
-        Self { deadline: [0; N], slot: [0; N], pos: [NOT_ARMED; N], len: 0 }
+        Self { deadline: [0; N], slot: [0; N], pos: [NOT_ARMED; N], rank: [0; N], len: 0 }
     }
 
     /// [`TimerHeap::new`] written in place on ZEROED memory (a per-CPU area):
@@ -150,19 +154,27 @@ impl<const N: usize> TimerHeap<N> {
     /// Arm `slot` to fire at `deadline`, replacing any deadline it already
     /// has. O(log N). Out-of-range slots are ignored.
     pub fn arm(&mut self, slot: usize, deadline: u64) {
+        if slot < N {
+            self.arm_ranked(slot, deadline, self.rank[slot]);
+        }
+    }
+
+    /// [`TimerHeap::arm`] with the slot's rank: among equal deadlines the
+    /// lower rank pops first. `arm` keeps the rank the slot had.
+    pub fn arm_ranked(&mut self, slot: usize, deadline: u64, rank: u8) {
         if slot >= N {
             return;
         }
+        // `timer-rank-canary` (cargo feature, never in a build): every slot
+        // has the one rank, so a storm pops by slot index. Ktest
+        // `irqoff_timer_storm` and the host test must go red.
+        self.rank[slot] = if cfg!(feature = "timer-rank-canary") { 0 } else { rank };
         let p = self.pos[slot];
         if p != NOT_ARMED {
             let i = p as usize;
-            let old = self.deadline[i];
             self.deadline[i] = deadline;
-            if deadline < old {
-                self.sift_up(i);
-            } else {
-                self.sift_down(i);
-            }
+            self.sift_up(i);
+            self.sift_down(i);
             return;
         }
         let i = self.len;
@@ -181,6 +193,12 @@ impl<const N: usize> TimerHeap<N> {
         let i = self.pos[slot] as usize;
         self.remove_at(i);
         true
+    }
+
+    /// The rank `slot` was last armed with.
+    #[inline]
+    pub fn rank_of(&self, slot: usize) -> u8 {
+        self.rank.get(slot).copied().unwrap_or(0)
     }
 
     /// Remove and return the earliest entry. O(log N).
@@ -230,7 +248,8 @@ impl<const N: usize> TimerHeap<N> {
 
     #[inline]
     fn less(&self, a: usize, b: usize) -> bool {
-        (self.deadline[a], self.slot[a]) < (self.deadline[b], self.slot[b])
+        let key = |i: usize| (self.deadline[i], self.rank[self.slot[i] as usize], self.slot[i]);
+        key(a) < key(b)
     }
 
     #[inline]
@@ -882,6 +901,39 @@ mod tests {
         assert_eq!(wake_due::<64, 8, _>(&m, AT, 16), 8);
         assert_eq!(m.woken.get(), 40);
         assert_eq!(m.heap.borrow().peek(), None);
+    }
+
+    /// Sleepers due at one instant pop by rank, then slot, whatever the slot of the
+    /// urgent one: a pass that stops at its limit has taken it.
+    #[test]
+    fn wake_due_pops_the_urgent_class_first() {
+        struct Model {
+            heap: core::cell::RefCell<TimerHeap<64>>,
+            woken: core::cell::RefCell<Vec<usize>>,
+        }
+        impl DueSleepers<64> for Model {
+            fn locked<R>(&self, f: impl FnOnce(&mut TimerHeap<64>) -> R) -> R {
+                f(&mut self.heap.borrow_mut())
+            }
+            fn live(&self, _slot: usize) -> Option<u64> {
+                None
+            }
+            fn wake(&self, slot: usize, _now: u64) {
+                self.woken.borrow_mut().push(slot);
+            }
+        }
+        const AT: u64 = 100;
+        let m = Model { heap: core::cell::RefCell::new(TimerHeap::new()), woken: core::cell::RefCell::new(Vec::new()) };
+        for s in 0..40 {
+            m.heap.borrow_mut().arm_ranked(s, AT, 3);
+        }
+        m.heap.borrow_mut().arm_ranked(41, AT, 2);
+        m.heap.borrow_mut().arm_ranked(42, AT, 1);
+        // An armed slot changes rank: the heap re-sorts it.
+        m.heap.borrow_mut().arm_ranked(39, AT, 0);
+        assert_eq!(wake_due::<64, 8, _>(&m, AT, 4), 4);
+        assert_eq!(m.woken.borrow()[..4], [39, 42, 41, 0], "by rank, then slot");
+        assert_eq!(m.heap.borrow().rank_of(41), 2);
     }
 
     /// The tick's retry re-arm must not overwrite the deadline a sleeper

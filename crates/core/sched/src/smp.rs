@@ -625,10 +625,7 @@ unsafe fn offline_here(cpu: usize) -> Result<(), Why> {
     }
 
     // The timer sleepers, to the takeover CPU, which is rung: an idle CPU's
-    // comparator may be far past the earliest of them. (Without the per-CPU
-    // timer heap, `sched-timer-heap`, a sleeper is not owned by a CPU: there
-    // is nothing to move.)
-    #[cfg(feature = "sched-timer-heap")]
+    // comparator may be far past the earliest of them.
     if let Some(to) = hart_set::takeover_cpu(after, crate::scheduler::ncpu(), cpu) {
         if crate::scheduler::migrate_timers_off_cpu(cpu, to) != 0 {
             use azos_arch::Interrupts;

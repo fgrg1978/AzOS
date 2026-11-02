@@ -159,6 +159,9 @@ pub mod scheduler {
         LOG.lock().unwrap().push(Call::Sweep { idx, accepts });
     }
 
+    /// The heap pass: no heap on the host (`timer_heap` is tested directly).
+    pub fn wake_expired_timers_heap(_now_ticks: u64) -> usize { 0 }
+
     /// Kconfig CHAOS stand-in: no injection on the host, the clock as given.
     pub fn chaos_sweep_now(now_ticks: u64) -> u64 { now_ticks }
 
@@ -886,7 +889,6 @@ mod tests {
         for (label, log) in [
             ("ring", with_log(|| { wait::wake_by_ring(5); scheduler::log() })),
             ("port", with_log(|| { wait::wake_by_port(5); scheduler::log() })),
-            ("timers", with_log(|| { wait::wake_expired_timers(9999); scheduler::log() })),
         ] {
             assert_eq!(log.len(), MAX_TASKS, "{label}: must sweep the whole pool");
             for c in &log {
@@ -1645,7 +1647,7 @@ pub mod tid_alloc;
 #[path = "../../../../crates/core/sched/src/resident_histogram.rs"]
 pub mod resident_histogram;
 
-// U02-3: the indexed timer min-heap behind `sched-timer-heap`. Pure logic;
+// U02-3: the indexed timer min-heap behind the timer sleepers. Pure logic;
 // its `#[cfg(test)]` module (ordering, re-arm, cancel, top-of-range
 // comparison, random ops against the sweep model) runs here.
 #[path = "../../../../crates/core/sched/src/timer_heap.rs"]

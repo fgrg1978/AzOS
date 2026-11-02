@@ -92,7 +92,6 @@ fn run_tick_sweep_probe(on_timer: bool) {
             publish_filter_word(i);
             core::sync::atomic::fence(Ordering::Release);
             TASK_VALID[i].store(true, Ordering::Relaxed);
-            #[cfg(feature = "sched-timer-heap")]
             if on_timer {
                 timer_sleepers::arm(i, u64::MAX - 1);
             }
@@ -110,7 +109,6 @@ fn run_tick_sweep_probe(on_timer: bool) {
 
         for i in 0..MAX_TASKS {
             if filled[i] {
-                #[cfg(feature = "sched-timer-heap")]
                 timer_sleepers::cancel(i);
                 TASK_VALID[i].store(false, Ordering::Relaxed);
                 TASKS[i].wait_reason.store(WaitReason::None);
@@ -131,11 +129,11 @@ fn run_tick_sweep_probe(on_timer: bool) {
             / (azos_drv_sys::timebase::TIMER_FREQ as u64).max(1);
         azos_drv_sys::kprintln!(
             "[SCHED] tick{} instr={} (ticks={} at {} filled slots, TIMER_FREQ={}) \
-             wake_expired_timers={} reap_stamped_sleepers={} nearest_timer_deadline={} heap={}",
+             wake_expired_timers={} reap_stamped_sleepers={} nearest_timer_deadline={}",
             if on_timer { "-timer" } else { "" },
             instr, ticks, filled_count, azos_drv_sys::timebase::TIMER_FREQ,
             per(mid.saturating_sub(before)), per(after.saturating_sub(mid)),
-            per(near_ticks), cfg!(feature = "sched-timer-heap"),
+            per(near_ticks),
         );
     }
 }
@@ -2362,9 +2360,7 @@ unsafe fn migrate_queue_off(cpu: usize, move_pinned: bool) -> Result<usize, usiz
 
 /// CPU hotplug: move the timer sleepers of `from`'s heap to `to`'s
 /// (`timer_sleepers::migrate_off`), part of taking `from` offline. Returns how
-/// many moved; the caller rings `to`. Without `sched-timer-heap` there is no
-/// per-CPU timer heap, so there is nothing to move and no function.
-#[cfg(feature = "sched-timer-heap")]
+/// many moved; the caller rings `to`.
 pub(crate) fn migrate_timers_off_cpu(from: usize, to: usize) -> usize {
     timer_sleepers::migrate_off(from, to)
 }
