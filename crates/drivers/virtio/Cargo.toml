@@ -25,6 +25,10 @@ input-rx-canary = []
 # domain; behind an IOMMU the first frame's read is refused and the fault task
 # must say so (`[IOMMU] fault:`).
 iommu-tx-canary = []
+# Gate canary only: a virtio-pci capability's window is not checked against its BAR.
+virtio-cap-bounds-canary = []
+# Gate canary only: a stuck virtio-snd is not reset before its arena goes back.
+snd-no-reset-canary = []
 # Board selection, forwarded by the kernel's own `vf2` / `k1`.
 vf2 = []
 k1  = []

@@ -336,8 +336,10 @@ impl Dma {
 
     /// Undo a mapping [`Dma::map_phys`] made: `bus`, `len` as it returned
     /// and was asked. A stream's arena is mapped for the stream's life.
-    pub fn unmap(&self, bus: u64, len: usize) {
-        let _ = self.domain.unmap(azos_dma::DmaAddr(bus), len);
+    pub fn unmap(&self, bus: u64, len: usize) -> Result<(), ()> {
+        self.domain.unmap(azos_dma::DmaAddr(bus), len).map_err(|e| {
+            azos_drv_sys::kerr!("[VIRTIO] DMA unmap of {:#x}+{:#x} failed: {:?}", bus, len, e);
+        })
     }
 
     /// Start the domain enforcing (a translating domain now refuses the

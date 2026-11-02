@@ -1495,8 +1495,11 @@ where
     if dev_base == 0 {
         return Err(PciNetError::NoVirtioCaps);
     }
-    let mut dev = VirtioPciDevice::new(KernelBar::new(dev_base), &caps, n, common_bar)
+    let mut dev = VirtioPciDevice::new(KernelBar::new(dev_base), &caps, n, common_bar, super::pci::bar_size(info, common_bar))
         .ok_or(PciNetError::NoVirtioCaps)?;
+    if !dev.device_cfg_holds(6) {
+        return Err(PciNetError::NoVirtioCaps);
+    }
     let want = VIRTIO_NET_F_MAC | if EVENT_IDX_WANTED { VIRTIO_F_EVENT_IDX } else { 0 };
     // ACCESS_PLATFORM when the device is on an IOMMU: it then uses the bus
     // addresses of the domain `dma` maps through.
@@ -1526,14 +1529,14 @@ where
             return Err(PciNetError::VectorRefused);
         }
     }
-    let notify_rx = dev_base + {
-        let off = dev.queue_notify_off_of(0);
-        dev.queue_notify_offset(off)
+    let (Some(rx_at), Some(tx_at)) = (
+        dev.queue_notify_offset(dev.queue_notify_off_of(0)),
+        dev.queue_notify_offset(dev.queue_notify_off_of(1)),
+    ) else {
+        dev.reset();
+        return Err(PciNetError::NoVirtioCaps);
     };
-    let notify_tx = dev_base + {
-        let off = dev.queue_notify_off_of(1);
-        dev.queue_notify_offset(off)
-    };
+    let (notify_rx, notify_tx) = (dev_base + rx_at, dev_base + tx_at);
     net.rxq.event_idx = ei;
     net.txq.event_idx = ei;
     if irq && !TX_IRQ_ALWAYS {

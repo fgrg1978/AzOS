@@ -17,6 +17,8 @@ azos_dma = { path = "../../../crates/drivers/dma" }
 [features]
 # Mirrors azos_pci's gate canary so the host tests can show it bites.
 msix-enable-canary = ["azos_pci/msix-enable-canary"]
+# virtio/pci.rs is pulled in by #[path]: the feature is this crate's too.
+virtio-cap-bounds-canary = []
 
 [profile.release]
 overflow-checks = true

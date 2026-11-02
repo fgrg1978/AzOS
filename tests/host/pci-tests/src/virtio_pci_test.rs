@@ -198,7 +198,7 @@ fn find_virtio_caps_locates_all_four_cfg_types() {
 fn make_device() -> VirtioPciDevice<FakeMmio> {
     let cfg = build_caps();
     let (caps, n) = find_virtio_caps(&cfg, Bdf::new(0, 0, 0));
-    VirtioPciDevice::new(FakeMmio::new(), &caps, n, BAR).expect("all required caps present")
+    VirtioPciDevice::new(FakeMmio::new(), &caps, n, BAR, BAR_SIZE as u64).expect("all required caps present")
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn queue_notify_offset_applies_the_multiplier() {
     let dev = make_device();
     // notify cap at NOTIFY_OFF, multiplier NOTIFY_MULT; queue_notify_off
     // 3 for some queue -> notify base + 3*mult.
-    assert_eq!(dev.queue_notify_offset(3), NOTIFY_OFF as usize + 3 * NOTIFY_MULT as usize);
+    assert_eq!(dev.queue_notify_offset(3), Some(NOTIFY_OFF as usize + 3 * NOTIFY_MULT as usize));
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn isr_read_reaches_the_isr_bar_offset() {
 fn notify_queue_writes_the_queue_index_at_the_computed_offset() {
     let mut dev = make_device();
     dev.notify_queue(5, 2); // queue 5, its notify_off is 2
-    assert_eq!(dev.mmio_read_at(dev.queue_notify_offset(2)), 5);
+    assert_eq!(dev.mmio_read_at(dev.queue_notify_offset(2).unwrap()), 5);
 }
 
 #[test]
@@ -386,4 +386,52 @@ fn common_cfg_bar_names_the_bar_of_the_common_cap() {
     let (caps, n) = find_virtio_caps(&cfg, Bdf::new(0, 0, 0));
     assert_eq!(common_cfg_bar(&caps, n), Some(BAR));
     assert_eq!(common_cfg_bar(&caps, 0), None, "no caps -> no common BAR");
+}
+
+// -----------------------------------------------------------------------
+// A device's offsets stay inside its BAR
+// -----------------------------------------------------------------------
+
+
+fn caps_with(common_off: u32, common_len: u32) -> FakeCfg {
+    let mut cfg = FakeCfg::new();
+    cfg.add_virtio_cap(CAP_COMMON, CAP_NOTIFY as u8, VIRTIO_PCI_CAP_COMMON_CFG, BAR, common_off, common_len, None);
+    cfg.add_virtio_cap(CAP_NOTIFY, CAP_ISR as u8, VIRTIO_PCI_CAP_NOTIFY_CFG, BAR, NOTIFY_OFF, 0x10, Some(NOTIFY_MULT));
+    cfg.add_virtio_cap(CAP_ISR, CAP_DEVICE as u8, VIRTIO_PCI_CAP_ISR_CFG, BAR, ISR_OFF, 0x1, None);
+    cfg.add_virtio_cap(CAP_DEVICE, 0x00, VIRTIO_PCI_CAP_DEVICE_CFG, BAR, DEVICE_OFF, 0x100, None);
+    cfg.set_cap_list(CAP_COMMON as u8);
+    cfg
+}
+
+fn built(cfg: &FakeCfg) -> Option<VirtioPciDevice<FakeMmio>> {
+    let (caps, n) = find_virtio_caps(cfg, Bdf::new(0, 0, 0));
+    VirtioPciDevice::new(FakeMmio::new(), &caps, n, BAR, BAR_SIZE as u64)
+}
+
+#[test]
+fn a_capability_outside_its_bar_refuses_the_device() {
+    assert!(built(&caps_with(COMMON_OFF, 0x100)).is_some());
+    assert!(built(&caps_with(0x8000_0000, 0x100)).is_none(), "common config far outside the BAR");
+    assert!(built(&caps_with(BAR_SIZE as u32 - 0x10, 0x100)).is_none(), "common config across the end of the BAR");
+    assert!(built(&caps_with(u32::MAX, u32::MAX)).is_none(), "a window that wraps");
+    assert!(built(&caps_with(COMMON_OFF, 4)).is_none(), "a window that does not hold the registers");
+}
+
+#[test]
+fn a_queue_notify_offset_outside_the_window_is_refused() {
+    let mut dev = built(&caps_with(COMMON_OFF, 0x100)).unwrap();
+    // The window is 0x10 bytes; a 16-bit write at the last whole multiple.
+    let last = (0x10 - 2) / NOTIFY_MULT as u16;
+    assert!(dev.queue_notify_offset(last).is_some());
+    assert_eq!(dev.queue_notify_offset(u16::MAX), None);
+    assert!(!dev.notify_queue(0, u16::MAX));
+}
+
+#[test]
+fn the_device_config_window_says_what_it_holds() {
+    let dev = built(&caps_with(COMMON_OFF, 0x100)).unwrap();
+    assert!(dev.device_cfg_holds(0x100));
+    assert!(!dev.device_cfg_holds(0x101));
+    assert_eq!(dev.status_offset(), COMMON_OFF as usize + 0x14);
+    let _: fn(&azos_pci::FunctionInfo, u8) -> u64 = bar_size;
 }

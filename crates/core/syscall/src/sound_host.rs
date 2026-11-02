@@ -26,7 +26,8 @@
 //!   its own (as `display.rs` does for a surface band). The device then DMAs
 //!   from or into the frames themselves, so the frames must not move, be
 //!   resized, revoked or freed while a descriptor names them; the pin is held
-//!   until `close` has made the device let go (`SET_PARAMS`..`RELEASE`), and
+//!   until `close` has made the device let go (`SET_PARAMS`..`RELEASE`, then a
+//!   device reset if it did not; one that will not reset keeps the pin), and
 //!   the arena is never shared copy-on-write (`Contig` is not).
 //!
 //! # The pump
@@ -144,7 +145,7 @@ fn code_of(e: dev::Error) -> u32 {
         dev::Error::Busy => outcome::BUSY,
         dev::Error::Unsupported => outcome::UNSUPPORTED,
         dev::Error::BadArgument => outcome::BAD_ARGUMENT,
-        dev::Error::Fault => outcome::FAULT,
+        dev::Error::Fault | dev::Error::ArenaHeld => outcome::FAULT,
     }
 }
 
@@ -316,8 +317,9 @@ impl Hosted {
 /// kernel's pin on the arena is given back. The host lock is held.
 fn close_locked(h: &mut Host, d: usize) {
     let Some(s) = h.s[d].take() else { return };
-    let _ = dev::close(dir_of(d));
-    unpin(s.arena);
+    if dev::close(dir_of(d)) != Err(dev::Error::ArenaHeld) {
+        unpin(s.arena);
+    }
     OWNER[d].store(0, Ordering::Release);
     if d == REC {
         indicator_off(s.subject);
@@ -544,7 +546,9 @@ impl snd::Sound for Server {
             indicator_on(subject);
         }
         if let Err(e) = dev::open(params.dir, &params, &geo, phys as u64) {
-            unpin(obj);
+            if e != dev::Error::ArenaHeld {
+                unpin(obj);
+            }
             if d == REC {
                 indicator_off(subject);
             }

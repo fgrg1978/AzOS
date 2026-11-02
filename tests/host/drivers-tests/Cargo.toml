@@ -84,6 +84,8 @@ e1000e = []
 # without its device half): a known value, never enabled on the host.
 igc = []
 input-rx-canary = []
+virtio-cap-bounds-canary = []
+snd-no-reset-canary = []
 # virtio/net.rs canary (the NIC's TX buffers left out of its DMA domain): never enabled on the host.
 iommu-tx-canary = []
 # mmc.rs's gate canaries (never enabled on the host; known values).
