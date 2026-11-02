@@ -425,7 +425,9 @@ the `call-admission` decision record), `words[1]` 1 (deadline) or 2 (budget),
 `words[2]` the offered deadline (ns) or budget (us), and `deadline` the offered
 deadline. A call with a deadline lends the caller to its server: a passive
 server runs on the caller's reservation, in its deadline order and on its
-budget (seL4 MCS style), and gets a `PORT_EVENT_CALL_NOTICE` when that budget
+budget (seL4 MCS style) when it is placed on the caller's hart and the edge
+is an IPC call (a mutex or PI-futex edge boosts the owner's priority
+instead), and gets a `PORT_EVENT_CALL_NOTICE` when that budget
 runs out (`ETIMEDOUT`) or the caller withdraws (`ECANCELED`). The register-only
 fast path carries no deadline and pays for none of this.
 
