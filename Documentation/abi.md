@@ -185,11 +185,10 @@ A capability crosses the boundary as a `u32` (`CapHandle`):
 | Bits | Field |
 |---|---|
 | 31..26 | type tag (`CapType`: kind in 4 bits, class in 2) |
-| 25..20 | permissions (`CapPerms`) |
-| 19..9 | generation (11 bits, per slot; a slot is retired at `MAX_GENERATION`, not wrapped) |
-| 8..0 | slot in the task's capability table (9 bits) |
+| 25..10 | generation (16 bits, per slot; restarts after a sweep past `MAX_GENERATION`) |
+| 9..0 | slot in the task's capability table (10 bits) |
 
-Handle 0 is `CAP_NULL`. The kernel resolves a handle in the caller's own
+The rights are the slot's, not the handle's: `CAP_INFO_QUERY` reads them. Handle 0 is `CAP_NULL`. The kernel resolves a handle in the caller's own
 table and refuses a generation that does not match (`-ECAPSTALE`).
 
 Kinds (`CapKind`): `Endpoint` 1, `MemObj` 2, `Queue` 3, `Port` 4, `Domain` 5,

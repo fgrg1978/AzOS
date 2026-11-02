@@ -46,9 +46,8 @@ There is no ambient root. A task reaches an object only through a handle in
 its own capability table.
 
 - **Handle format.** A handle is a `u32`: a 6-bit type tag (4-bit kind plus
-  2-bit class), 6 permission bits, an 11-bit generation and a 9-bit slot index.
-  A slot is retired when its generation reaches the maximum, never wrapped, so
-  a stale handle is refused (`-ECAPSTALE`).
+  2-bit class), a 16-bit generation and a 10-bit slot index. A stale handle is
+  refused (`-ECAPSTALE`); a slot past its last generation restarts behind a sweep.
 - **Kinds.** `CapKind` has eight kinds plus `Null`: `Endpoint`, `MemObj`, `Queue`, `Port`,
   `Domain`, `Node`, `Device`, `Log`.
 - **Rights.** `CapPerms` has six bits: `READ`, `WRITE`, `EXEC`, `DUP`,

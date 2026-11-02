@@ -234,6 +234,12 @@ pub(crate) fn install_sched_hooks() {
     }
     // Runtime canaries: a task's exit forgets its send capabilities; a gone
     // port source stays bound and silent.
+    if canary!("cap-gen-retire") {
+        azos_ipc::cap::canary_gen_retire(true);
+    }
+    if canary!("cap-full-silent") {
+        azos_ipc::cap::canary_full_silent(true);
+    }
     if canary!("ipc-no-senders-wipe") {
         azos_ipc::cap::senders::canary_no_wipe();
     }

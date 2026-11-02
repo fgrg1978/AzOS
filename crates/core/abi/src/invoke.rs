@@ -33,7 +33,7 @@
 //! written back into `words` and `n_words`. An op that needs more than four
 //! words is descriptor-only.
 
-use crate::cap::{CapHandle, CapKind, CapPerms, CapType};
+use crate::cap::{CapHandle, CapKind, CapType};
 
 /// The op word's op field.
 pub const INVOKE_OP_MASK: u64 = 0xFFFF;
@@ -114,9 +114,9 @@ pub const fn op_of(word: u64) -> u16 {
 
 /// The calling domain: `invoke` on it acts on the caller's own domain (its
 /// ports, endpoints, service names, filter, children). Kind `Domain`,
-/// class 1, every right, generation 0.
+/// class 1, generation 0.
 pub const DOMAIN_SELF: CapHandle =
-    CapHandle::pack(CapType::new(CapKind::Domain, 1), CapPerms::ALL, 0, 0);
+    CapHandle::pack(CapType::new(CapKind::Domain, 1), 0, 0);
 
 /// Is `h` the self handle of the calling domain?
 #[inline]

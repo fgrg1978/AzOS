@@ -1732,7 +1732,7 @@ fn check_ioports() {
     const E_NOENT: isize = -2;
     const E_NODEV: isize = -19;
     const E_CAPSTALE: isize = -202;
-    let forged = azos_abi::cap::CapHandle::pack(sys::ty::IOPORT, azos_abi::cap::CapPerms::RW, 0x3F, 0x1FF).as_raw();
+    let forged = azos_abi::cap::CapHandle::pack(sys::ty::IOPORT, 0x3F, 0x1FF).as_raw();
     let has_ports = cfg!(target_arch = "x86_64");
     expect_eq(b"ioport: enable on a forged port handle [ENODEV without a port space]",
               sys::ioport_enable(forged).err().unwrap_or(0), if has_ports { E_CAPSTALE } else { E_NODEV });

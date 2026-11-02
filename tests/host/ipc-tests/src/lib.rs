@@ -158,7 +158,7 @@ mod fork_grant_tests {
     /// which values are passed there does not matter; `Endpoint`/`WRITE`
     /// are used only for readability.
     fn first_grant_handle() -> CapHandle {
-        CapHandle::pack(ty::ENDPOINT, CapPerms::WRITE, 1, 0)
+        CapHandle::pack(ty::ENDPOINT, 1, 0)
     }
 
     /// **The relation holds.** A child inherits a capability reaching an

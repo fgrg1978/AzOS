@@ -7,6 +7,11 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ## [Unreleased]
 
+### Changed
+
+- `CapHandle` is `kind 6 | generation 16 | slot 10`. The rights left the handle
+  (`CAP_INFO_QUERY` reads them), so the generation is the slot word's whole field.
+
 ### Added
 
 - Initial import of the crate. It holds everything that crosses the

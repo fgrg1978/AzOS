@@ -91,9 +91,8 @@ authority to name a device, a file or a socket by number.
 | Bits | Field |
 |------|-------|
 | 31..26 | Type tag: kind (4 bits) and class (2 bits) |
-| 25..20 | Permissions (`CapPerms`, 6 bits) |
-| 19..9 | Generation (11 bits) |
-| 8..0 | Slot index in the task's capability table (9 bits) |
+| 25..10 | Generation (16 bits) |
+| 9..0 | Slot index in the task's capability table (10 bits) |
 
 **Kinds and classes** (`CapKind`, `CapType`, module `cap::ty`):
 
@@ -120,9 +119,10 @@ table (`Cap<T>`, a compile-time-typed wrapper in `crates/core/ipc/src/cap.rs`),
 and fails with a distinct errno if the slot index is out of range or empty or
 the generation does not match (`ECAPSTALE`), the kind tag does not match
 (`ECAPKIND`) or the slot's permissions do not contain the right the operation
-needs (`ECAPPERMS`). A slot's generation never wraps: a slot that reaches the maximum
-generation is retired, so a revoked handle cannot validate again against a
-later grant of the same slot.
+needs (`ECAPPERMS`). A slot that reaches the maximum generation restarts only after a sweep has
+cleared every warrant naming it, so a reference between domains never revives; a
+stale handle in the owner's own memory is refused for 65,534 grants of its slot
+and can recur after that (`capabilities.md`, Generations).
 
 **Tables.** Each domain (a process and its threads) has one capability table,
 indexed by domain slot, not by task id (`cap_store`). A recycled domain slot is

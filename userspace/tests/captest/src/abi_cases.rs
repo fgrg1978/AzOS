@@ -42,7 +42,7 @@ fn errno(e: Errno) -> isize {
 /// a generation no slot has reached (generations start at 1 and a forged
 /// 2000 is far past any a boot-time grant gave).
 fn forged() -> usize {
-    CapHandle::pack(ty::ENDPOINT, CapPerms::RW_DELEGATE, 2000, 5).as_raw() as usize
+    CapHandle::pack(ty::ENDPOINT, 2000, 5).as_raw() as usize
 }
 
 /// Run every case; each is reported through `env`.

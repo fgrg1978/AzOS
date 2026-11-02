@@ -240,10 +240,10 @@ mod captable {
         assert_eq!(t.resolve(h, ty::SHM, CapPerms::READ), Err(CapError::WrongKind));
         assert_eq!(t.resolve(h, ty::ENDPOINT, CapPerms::RW_DELEGATE), Err(CapError::MissingPerms));
         // Stale beats everything: a wrong generation says nothing about kind.
-        let forged = CapHandle::pack(ty::SHM, CapPerms::ALL, 99, h.slot());
+        let forged = CapHandle::pack(ty::SHM, 99, h.slot());
         assert_eq!(t.resolve(forged, ty::ENDPOINT, CapPerms::NONE), Err(CapError::Stale));
         assert_eq!(t.resolve(CapHandle::from_raw(0), ty::ENDPOINT, CapPerms::NONE), Err(CapError::Stale));
-        let far = CapHandle::pack(ty::ENDPOINT, CapPerms::RW, 1, 300);
+        let far = CapHandle::pack(ty::ENDPOINT, 1, 300);
         assert_eq!(t.resolve(far, ty::ENDPOINT, CapPerms::NONE), Err(CapError::Stale), "slot past the table");
     }
 
@@ -262,18 +262,23 @@ mod captable {
     }
 
     #[test]
-    fn a_slot_whose_generation_ran_out_is_retired_never_reissued() {
+    fn a_slot_past_the_top_generation_restarts_and_keeps_working() {
         let mut s = table(1);
         let mut t = CapTable::new(&mut s);
-        let mut last = None;
-        for _ in 0..CapHandle::MAX_GENERATION {
+        let first = t.install(ty::MMIO, CapPerms::READ, 0).unwrap();
+        t.close(first).unwrap();
+        let mut last = first;
+        for _ in 1..CapHandle::MAX_GENERATION {
             let h = t.install(ty::MMIO, CapPerms::READ, 0).unwrap();
-            assert!(last.map_or(true, |l: CapHandle| h.generation() == l.generation() + 1));
+            assert_eq!(h.generation(), last.generation() + 1);
+            assert_eq!(t.resolve(last, ty::MMIO, CapPerms::READ), Err(CapError::Stale));
             t.close(h).unwrap();
-            last = Some(h);
+            last = h;
         }
-        assert_eq!(last.unwrap().generation(), CapHandle::MAX_GENERATION);
-        assert!(t.install(ty::MMIO, CapPerms::READ, 0).is_none(), "retired, not wrapped");
+        assert_eq!(last.generation(), CapHandle::MAX_GENERATION);
+        let again = t.install(ty::MMIO, CapPerms::READ, 7).unwrap();
+        assert_eq!(again.generation(), 1, "generation 0 is never issued");
+        assert_eq!(t.resolve(last, ty::MMIO, CapPerms::READ), Err(CapError::Stale));
     }
 
     #[test]

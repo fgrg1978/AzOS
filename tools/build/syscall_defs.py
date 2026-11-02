@@ -58,7 +58,7 @@ for n in sys.argv[1:]:
     elif n.startswith("INVOKE_"):
         v = const(INV, "INVOKE_REGS") | op_const(INV, n[len("INVOKE_"):])
     elif n == "DOMAIN_SELF":
-        v = (21 << 26) | (0x3F << 20)
+        v = 21 << 26
     elif n == "CONSOLE_TYPE":
         v = 24
     else:

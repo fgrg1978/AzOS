@@ -214,7 +214,7 @@ fn an_op_of_another_kind_is_einval_and_does_not_reach_the_profile() {
 fn a_domain_op_on_a_handle_that_is_not_self_is_ecapkind() {
     let _g = serial();
     ring3();
-    let forged = CapHandle::pack(CapType::new(CapKind::Domain, 1), CapPerms::ALL, 1, 3).as_raw() as u64;
+    let forged = CapHandle::pack(CapType::new(CapKind::Domain, 1), 1, 3).as_raw() as u64;
     assert_ne!(forged, SELF);
     assert_eq!(invoke(SELF, SUBREAPER_REGS, SUBREAPER_GET, 0, 0, 0), 0, "the control call");
     assert_eq!(invoke(forged, SUBREAPER_REGS, SUBREAPER_GET, 0, 0, 0), Errno::ECAPKIND.to_syscall_ret());
@@ -282,7 +282,7 @@ fn the_console_write_is_uncontained_and_its_wait_needs_read() {
 
     assert_eq!(invoke(wr, wait, 0, 0, 0, 0), Errno::ECAPPERMS.to_syscall_ret(), "WAIT on a write-only handle");
     assert_eq!(invoke(rw, wait, 0, 0, 0, 0), crate::ushell::REACHED, "WAIT with READ reaches the wait");
-    let forged = CapHandle::pack(azos_abi::cap::ty::CONSOLE, CapPerms::ALL, 1, 200).as_raw() as u64;
+    let forged = CapHandle::pack(azos_abi::cap::ty::CONSOLE, 1, 200).as_raw() as u64;
     assert_eq!(invoke(forged, write, SCRATCH as u64, 2, 0, 0), Errno::ECAPSTALE.to_syscall_ret(), "a console handle nothing stored");
 
     let log = syscall_test_drivers::shim_fwd::disarm().map(|f| f.log).unwrap_or_default();
@@ -408,7 +408,7 @@ fn an_endpoint_derive_refuses_what_it_cannot_decode_or_mint() {
     );
     let no_dup = endpoint_with(tid, CapPerms::RW);
     assert_eq!(derive_with(no_dup, page, &derive_desc(w, 1, 0, &[])), Errno::ECAPPERMS.to_syscall_ret(), "no DUP");
-    let forged = CapHandle::pack(azos_abi::cap::ty::ENDPOINT, CapPerms::ALL, 1, 200).as_raw() as u64;
+    let forged = CapHandle::pack(azos_abi::cap::ty::ENDPOINT, 1, 200).as_raw() as u64;
     assert_eq!(derive_with(forged, page, &derive_desc(w, 1, 0, &[])), Errno::ECAPSTALE.to_syscall_ret(), "nothing stored");
 }
 
@@ -541,7 +541,7 @@ fn the_port_op_answers_enodev_without_a_port_space() {
     let _g = serial();
     ring3();
     assert_eq!(azos_arch_api::ioport::PORTS, 0, "this suite's build has no port space");
-    let forged = CapHandle::pack(azos_abi::cap::ty::IOPORT, CapPerms::RW, 3, 7).as_raw() as u64;
+    let forged = CapHandle::pack(azos_abi::cap::ty::IOPORT, 3, 7).as_raw() as u64;
     assert_eq!(invoke(forged, INVOKE_REGS | DEVICE_IOPORT_ENABLE as u64, 0, 0, 0, 0),
                Errno::ENODEV.to_syscall_ret());
     let unknown = op(CapKind::Device, CLASS_DRIVER, 250) as u64;

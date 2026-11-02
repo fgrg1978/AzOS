@@ -11,7 +11,7 @@ mod tests {
     use azos_linux_abi as lx;
     use azos_linux_abi::errno as le;
     use azos_linux_abi::nr;
-    use azos_abi::cap::{CapHandle, CapPerms, ty, CapType};
+    use azos_abi::cap::{CapHandle, ty, CapType};
     use azos_abi::ushell::{StartupFd, FD_CONSOLE, FD_HANDLE, STARTUP_FDS};
     use azos_linux_rt::{Native, PipeReady, Runtime, Startup, NAME_BYTES};
     use std::cell::RefCell;
@@ -292,7 +292,7 @@ mod tests {
     /// A native handle of kind `kind`, as the kernel packs them (the runtime
     /// reads the kind from the handle's own bits).
     fn handle(kind: CapType, slot: u16) -> u32 {
-        CapHandle::pack(kind, CapPerms::READ.union(CapPerms::WRITE), 1, slot).as_raw()
+        CapHandle::pack(kind, 1, slot).as_raw()
     }
 
     /// A process a `SYS_SPAWN_EX` request started: `fds` and `cwd` arrive in

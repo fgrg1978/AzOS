@@ -23,8 +23,8 @@
 //!   `abi-tests` crate checks the rest.
 //! - Syscall numbers are not re-assigned: a new one takes the next unused
 //!   number, and `SYS_NR_RESERVED_UPPER` (the table's end) grows with it.
-//! - The `CapHandle` bitfield layout (6-bit kind, 6-bit perms, 11-bit
-//!   generation, 9-bit slot; `cap.rs` says why each width) is the wire format
+//! - The `CapHandle` bitfield layout (6-bit kind, 16-bit
+//!   generation, 10-bit slot; `cap.rs` says why each width) is the wire format
 //!   every handle crosses the boundary in.
 //!
 //! `crates/core/abi/CHANGELOG.md` records the changes.

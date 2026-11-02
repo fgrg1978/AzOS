@@ -125,6 +125,9 @@ pub(crate) mod hung;
 // callers on one endpoint, the grace period before a slot is reused.
 #[cfg(feature = "ktest")]
 pub(crate) mod ipc_endpoint;
+// A capability slot past its last generation.
+#[cfg(feature = "ktest")]
+pub(crate) mod cap_generation;
 // A copy helper called by a task with no user page table refuses a user-range
 // VA instead of storing through it (the `thread` page fault at 0x14fb8).
 #[cfg(feature = "ktest")]

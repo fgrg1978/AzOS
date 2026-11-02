@@ -771,6 +771,7 @@ pub fn sweep() {
     // the table.
     let epoch = crate::cap::sweep_epoch();
     let rows = crate::cap::forward_mark();
+    let parks = crate::cap::parks_mark();
     let mut st = SweepStats::default();
     for pass in 0..=WARRANT_DEPTH_MAX {
         let mut changed = 0;
@@ -804,6 +805,13 @@ pub fn sweep() {
             // shut, and no slot names a deleted one, so its row can go.
             crate::cap::sweep_confirmed(epoch);
             crate::cap::forward_retire(rows);
+            // A park since `parks` may have children this pass did not see
+            // dead; it owes the next sweep, which restarts it.
+            if crate::cap::parks_mark() == parks {
+                for cell in CAP_TABLES.iter().filter(|c| c.table.parked() != 0) {
+                    cell.lock().unpark();
+                }
+            }
             break;
         }
         if pass == WARRANT_DEPTH_MAX {
@@ -1708,7 +1716,11 @@ fn move_caps_locked(
             return Err(CapError::MissingPerms);
         }
     }
-    if receiver.free_slots() < xs.len() || receiver.free_caveat_blocks() < blocks {
+    if receiver.free_slots() < xs.len() {
+        receiver.note_no_slot();
+        return Err(CapError::NoSpace);
+    }
+    if receiver.free_caveat_blocks() < blocks {
         return Err(CapError::NoSpace);
     }
     // Phase 2: every entry lands. Each step below was checked above under

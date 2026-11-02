@@ -94,6 +94,12 @@ pub(crate) const NAMES: &[&str] = &[
     // gate ends the pass, as the only candidate (ktest
     // `save_gate_stuck_top_lets_lower_run`).
     "save-gate-no-redraw",
+    // cap.rs `unpark`: a slot past its last generation is lost for the domain's
+    // life (ktest `cap_slot_restarts_past_its_last_generation`).
+    "cap-gen-retire",
+    // cap.rs `note_no_slot`: a grant into a full table is refused without a
+    // record (ktest `cap_table_full_refuses_with_a_record`).
+    "cap-full-silent",
     // drivers/sys/src/timebase.rs `record`: a CPU id from 16 up has no comparator
     // record (ktest `timer_record_on_the_last_cpu`; the row needs -smp 17).
     "timer-record-16",

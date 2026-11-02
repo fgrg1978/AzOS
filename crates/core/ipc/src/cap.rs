@@ -32,18 +32,21 @@
 //! 2. The slot is occupied (`generation > 0`).
 //! 3. The handle's generation matches the slot's generation.
 //! 4. The handle's kind tag matches `T::TYPE`.
-//! 5. The handle's permission bits ⊆ slot's permission bits.
+//! 5. The slot's permission bits hold what the use needs.
 //!
 //! Any failure returns [`Errno::ECAPSTALE`], [`Errno::ECAPKIND`], or
 //! [`Errno::ECAPPERMS`].
 //!
 //! ## Generation rollover
 //!
-//! The slot generation is 11 bits (`CapHandle::GEN_BITS` in `azos_abi`).
-//! It never wraps: a slot whose generation reaches
-//! [`CapHandle::MAX_GENERATION`] is retired instead of starting over, so a
-//! revoked handle can never validate again against a later grant of the same
-//! slot. Generation `0` means an empty slot and is never issued.
+//! The slot generation is 16 bits, the handle's and the slot word's. A slot
+//! freed at [`CapHandle::MAX_GENERATION`] is parked: no grant takes it until a
+//! sweep ([`cap_store::sweep`](crate::cap_store::sweep)) has confirmed that no
+//! warrant names one of its generations, then [`CapTable::unpark`] restarts it.
+//! So a reference between domains never revives, and a stale handle, which
+//! only the domain owning the table can present, is refused for 65,534 grants
+//! of its slot and can name that slot's occupant at the 65,535th. Generation
+//! `0` means a slot never granted in this cycle and is never issued.
 //!
 //! ## Object generation
 //!
@@ -341,16 +344,7 @@ pub struct CapSlot {
     /// Survives revoke so that a re-grant gets a fresh generation and the
     /// previous holder's `Cap` is detectably stale.
     ///
-    /// **It does not wrap.** It used to: `255 → 1`, with no sweep, which made
-    /// the 256th grant of a slot reissue a generation a previous holder still
-    /// held — its revoked handle validated again, against whatever object now
-    /// sat in the slot. A use-after-revoke, reachable from ring 3 by creating
-    /// and destroying an object in a loop. At [`CapHandle::MAX_GENERATION`]
-    /// (8,191 with the 13-bit field) the slot is **retired** instead:
-    /// [`CapTable::grant_raw`] never allocates it again, so no generation is
-    /// ever reissued. A task that exhausts every slot this way gets `None`
-    /// from its own grants and breaks nothing but itself; `retired()` counts
-    /// them so the condition is observable rather than silent.
+    /// Restarts only through [`CapTable::unpark`]: see the module doc.
     pub generation: u16,
     /// Resource-specific value; the resource subsystem owns interpreting it.
     /// For the kinds [`objref::is_packed_kind`] names (Port, Shm,
@@ -372,14 +366,6 @@ impl CapSlot {
     #[inline]
     pub const fn is_occupied(&self) -> bool {
         self.ty.raw() != CapType::NULL.raw()
-    }
-
-    /// Spent: its generation has reached the field's maximum, so granting it
-    /// again could only reissue a generation some previous holder still has.
-    /// Never allocated again, occupied or not.
-    #[inline]
-    pub const fn is_retired(&self) -> bool {
-        self.generation >= CapHandle::MAX_GENERATION
     }
 }
 
@@ -581,8 +567,9 @@ const _: () = assert!(
 //
 // The parent is a reference, not a pointer, and it is checked, not trusted:
 // a parent is alive iff its domain still owns its table and the slot still
-// holds the generation the reference names. A slot's generation never repeats
-// and a domain key's does not within 65,535 reuses (`azos_sched::domain`), so
+// holds the generation the reference names. A slot's generation restarts only
+// after a sweep has cleared every reference to it ([`CapTable::unpark`]), and a
+// domain key's does not repeat within 65,535 reuses (`azos_sched::domain`), so
 // a reference to a revoked, wiped or reused slot is dead for good, and a
 // descendant of a REVOKED one is revoked by the sweep (`cap_store`); a slot
 // that was DELETED (closed, or wiped by an exit) keeps its descendants, hung
@@ -1224,6 +1211,40 @@ pub fn canary_skip_caveats(on: bool) {
 /// lock, taken by the sweep.
 static SWEEP_PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Slots parked so far, in every table: a sweep restarts only what was parked
+/// before it began.
+static PARKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Canary `cap-gen-retire`: [`CapTable::unpark`] restarts nothing.
+static CANARY_GEN_RETIRE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm (`true`) or disarm the `cap-gen-retire` canary.
+pub fn canary_gen_retire(on: bool) {
+    CANARY_GEN_RETIRE.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Canary `cap-full-silent`: [`CapTable::note_no_slot`] records nothing.
+static CANARY_FULL_SILENT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Arm (`true`) or disarm the `cap-full-silent` canary.
+pub fn canary_full_silent(on: bool) {
+    CANARY_FULL_SILENT.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// A slot was parked: count it, then owe the sweep that restarts it. Under the
+/// table lock, like every other debt of the sweep.
+#[inline(never)]
+fn note_parked() {
+    PARKS.fetch_add(1, core::sync::atomic::Ordering::Release);
+    sweep_owed();
+}
+
+/// The parks a sweep starting now covers.
+#[inline]
+pub fn parks_mark() -> u64 {
+    PARKS.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// Is a sweep owed? One load, for `cap_store`'s post-lock path.
 #[inline(always)]
 pub fn sweep_pending() -> bool {
@@ -1641,10 +1662,16 @@ pub struct CapTable {
     /// instead of at MAX_CAPS_PER_TASK. Raised (release) after the slot's
     /// store; a reader loads it (acquire) before the slots.
     used: core::sync::atomic::AtomicU16,
-    /// Every slot below it is occupied or retired: a grant's search for a
+    /// Every slot below it is occupied or parked: a grant's search for a
     /// free slot starts here, not at slot 0. Lowered by every slot freed,
     /// raised past the slot a grant takes. Writers only (under the lock).
     free_from: core::sync::atomic::AtomicU16,
+    /// Free slots at the top generation, waiting for [`Self::unpark`].
+    parked: core::sync::atomic::AtomicU16,
+    /// Grants refused for want of a slot: [`Self::note_no_slot`] records at powers of two.
+    no_slot: core::sync::atomic::AtomicU32,
+    /// Slots restarted over this owner's life, for the record.
+    restarts: core::sync::atomic::AtomicU32,
     /// Send capabilities this table holds ([`senders`]): a wipe walks the
     /// table for them only when this is not 0. Writers only.
     senders: core::sync::atomic::AtomicU16,
@@ -1693,6 +1720,9 @@ impl CapTable {
             cache: [const { core::sync::atomic::AtomicU32::new(0) }; LOOKUP_CACHE],
             used: core::sync::atomic::AtomicU16::new(0),
             free_from: core::sync::atomic::AtomicU16::new(0),
+            parked: core::sync::atomic::AtomicU16::new(0),
+            no_slot: core::sync::atomic::AtomicU32::new(0),
+            restarts: core::sync::atomic::AtomicU32::new(0),
             senders: core::sync::atomic::AtomicU16::new(0),
             ext: [const { core::sync::atomic::AtomicU64::new(0) }; EXT_SLOTS],
             warrant: [WarrantCell::EMPTY; MAX_CAPS_PER_TASK],
@@ -1854,6 +1884,10 @@ impl CapTable {
         cell.clear();
         self.note_sender(w, -1);
         self.release_warrant(i, w, mode, handed);
+        if CapSlotCell::w_generation(w) == CapHandle::MAX_GENERATION {
+            self.parked.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            note_parked();
+        }
         let f = &self.free_from;
         if (i as u16) < f.load(core::sync::atomic::Ordering::Relaxed) {
             f.store(i as u16, core::sync::atomic::Ordering::Relaxed);
@@ -2019,6 +2053,9 @@ impl CapTable {
         self.uncache_all();
         self.used.store(0, core::sync::atomic::Ordering::Release);
         self.free_from.store(0, core::sync::atomic::Ordering::Relaxed);
+        self.parked.store(0, core::sync::atomic::Ordering::Relaxed);
+        self.no_slot.store(0, core::sync::atomic::Ordering::Relaxed);
+        self.restarts.store(0, core::sync::atomic::Ordering::Relaxed);
         // The wipe is stored: the rows take effect, and a slot with no row
         // revokes. The sweep is owed either way.
         if handed {
@@ -2109,11 +2146,11 @@ impl CapTable {
         self.slots[slot_idx].0.store(CapSlotCell::encode(s) | flag, core::sync::atomic::Ordering::Release);
         self.note_sender(self.slots[slot_idx].word(), 1);
         self.note_used(slot_idx);
-        // Every slot below this one was occupied or retired (the search
+        // Every slot below this one was occupied or parked (the search
         // started at `free_from` and took the first free one).
         self.free_from.store(slot + 1, core::sync::atomic::Ordering::Relaxed);
         self.uncache(kind, resource);
-        Some(CapHandle::pack(kind, perms, next_gen, slot))
+        Some(CapHandle::pack(kind, next_gen, slot))
     }
 
     /// Find the handle for a capability this table already holds.
@@ -2144,8 +2181,8 @@ impl CapTable {
     ///
     /// # Deliberately NOT filtered by permissions or by degraded mode
     ///
-    /// It returns whatever the holder holds — the perms ride in the handle,
-    /// and `get` is what enforces them at use. Containment likewise belongs at
+    /// It returns whatever the holder holds, and `get` is what enforces the
+    /// perms at use. Containment likewise belongs at
     /// use, not here: `get` returns `Contained` for a write while degraded
     /// mode is armed, and refusing to even name the capability would tell a
     /// task its authority was revoked when it was only suspended.
@@ -2179,7 +2216,7 @@ impl CapTable {
         let hit = |w: u64| w as u8 == k && ((w >> 32) as u32) & mask == resource;
         let pack = |w: u64, i: usize| {
             let slot = CapSlotCell::decode(w);
-            CapHandle::pack(slot.ty, slot.perms, slot.generation, i as u16)
+            CapHandle::pack(slot.ty, slot.generation, i as u16)
         };
         // Kconfig CAP_LOOKUP_CACHE: the slot the last lookup of this key
         // found, checked against the slot itself.
@@ -2228,7 +2265,7 @@ impl CapTable {
                 continue;
             }
             let slot = CapSlotCell::decode(w);
-            let h = CapHandle::pack(slot.ty, slot.perms, slot.generation, i as u16);
+            let h = CapHandle::pack(slot.ty, slot.generation, i as u16);
             let badge = self.ext_of(h).map_or(0, |e| e.badge);
             // The predicate decides authority (a send needs WRITE): it sees
             // what a use resolves with.
@@ -2814,7 +2851,7 @@ impl CapTable {
     }
 
     /// Install a capability at exactly `handle`: its slot, its generation,
-    /// and the kind and permissions packed in it, naming `resource`.
+    /// and the kind packed in it, with `perms`, naming `resource`.
     ///
     /// **Why a fork needs the exact handle (wave 13, NATFORK).** A native
     /// program names a file or pipe by the raw handle, and keeps those names
@@ -2825,17 +2862,14 @@ impl CapTable {
     /// `warrant` is the copied slot's ([`Self::warrant_of`]): see the comment at
     /// the store below.
     ///
-    /// Refused (`false`) for a null kind, a generation of 0 or past
-    /// [`CapHandle::MAX_GENERATION`], a slot outside the table, an occupied
-    /// slot, or a slot whose own counter already reached the handle's
-    /// generation: a slot's generation only ever rises (the rule `grant_raw`
-    /// keeps), so a stale handle this table issued earlier never validates
-    /// again. A fork's child table was wiped when its slot was claimed, so
-    /// every counter in it starts at 0.
-    pub fn install_at(&self, handle: CapHandle, resource: u32, warrant: &Warrant) -> bool {
+    /// Refused (`false`) for a null kind, a generation of 0, a slot outside
+    /// the table, an occupied slot, or a slot whose own counter already
+    /// reached the handle's generation. A fork's child table was wiped when its
+    /// slot was claimed, so every counter in it starts at 0.
+    pub fn install_at(&self, handle: CapHandle, perms: CapPerms, resource: u32, warrant: &Warrant) -> bool {
         let Some(kind) = CapType::from_raw(handle.kind()) else { return false };
         let gen = handle.generation();
-        if kind == CapType::NULL || gen == 0 || gen > CapHandle::MAX_GENERATION {
+        if kind == CapType::NULL || gen == 0 {
             return false;
         }
         let Some(cell) = azos_limits::nospec::get(&self.slots, handle.slot() as usize) else {
@@ -2859,7 +2893,7 @@ impl CapTable {
         // original may be closed at once) nor fail on the depth bound; but it
         // must stay under every ancestor, so revoking one still reaches it and
         // it cannot shed a deadline by forking.
-        let s = CapSlot { ty: kind, perms: handle.perms(), generation: gen, resource };
+        let s = CapSlot { ty: kind, perms, generation: gen, resource };
         let warrant = self.admit_warrant(*warrant);
         let flag = hot_flags(&warrant);
         let Some(block) = self.take_caveats(CaveatBlock::tag(handle.slot() as usize, gen), &warrant.caveats) else {
@@ -2884,14 +2918,14 @@ impl CapTable {
     }
 
     /// Copy out the occupied slots at index `from` and above whose kind
-    /// `want` accepts, as `(handle, resource)`, into `out`. Returns how many
+    /// `want` accepts, as `(handle, rights, resource)`, into `out`. Returns how many
     /// were written and the index to resume from (the table's length when
     /// the scan is done). Bounded by `out`, so a caller walks a table in
     /// chunks without holding its lock across what it does with each one.
     pub fn scan(
         &self,
         from: usize,
-        out: &mut [(CapHandle, u32)],
+        out: &mut [(CapHandle, CapPerms, u32)],
         mut want: impl FnMut(CapType) -> bool,
     ) -> (usize, usize) {
         let mut n = 0usize;
@@ -2901,7 +2935,7 @@ impl CapTable {
             let w = self.slots[i].word();
             let s = if CapSlotCell::w_occupied(w) { CapSlotCell::decode(w) } else { CapSlot::EMPTY };
             if s.is_occupied() && want(s.ty) && self.usable(i, w) {
-                out[n] = (CapHandle::pack(s.ty, s.perms, s.generation, i as u16), s.resource);
+                out[n] = (CapHandle::pack(s.ty, s.generation, i as u16), s.perms, s.resource);
                 n += 1;
             }
             i += 1;
@@ -2931,7 +2965,7 @@ impl CapTable {
         self.allocate_slot().is_some()
     }
 
-    /// Slots a grant could still take: free and not retired. A transfer of
+    /// Slots a grant could take now: free and not parked. A transfer of
     /// several capabilities checks this before the sender loses any.
     pub fn free_slots(&self) -> usize {
         self.slots
@@ -3257,19 +3291,12 @@ impl CapTable {
                     let s = CapSlotCell::decode(w);
                     self.clear_at(i, cell, Free::Swept);
                     self.post_notice();
-                    each(CapHandle::pack(s.ty, s.perms, s.generation, i as u16), s.ty, s.perms, s.resource, parent);
+                    each(CapHandle::pack(s.ty, s.generation, i as u16), s.ty, s.perms, s.resource, parent);
                     cleared += 1;
                 }
             }
         }
         (live.len(), cleared, moved)
-    }
-
-    /// Count slots retired by generation exhaustion — for diagnostics. A table
-    /// whose count is climbing is a task churning capabilities; one whose count
-    /// equals its size can grant nothing more.
-    pub fn retired(&self) -> usize {
-        self.slots.iter().filter(|s| CapSlotCell::w_generation(s.word()) >= CapHandle::MAX_GENERATION).count()
     }
 
     /// Count occupied slots — for diagnostics and quota enforcement.
@@ -3328,7 +3355,7 @@ impl CapTable {
                 && CapSlotCell::w_perms_raw(w).contains(need)
                 && self.usable(i, w)
             {
-                let h = CapHandle::pack(slot_word::ty(w), CapSlotCell::w_perms_raw(w), CapSlotCell::w_generation(w), i as u16);
+                let h = CapHandle::pack(slot_word::ty(w), CapSlotCell::w_generation(w), i as u16);
                 self.shadow_refusal(h, w, need);
                 return;
             }
@@ -3470,8 +3497,8 @@ impl CapTable {
 
     // REQ-001
     // Pick the next free slot index, or `None` if the table has no slot that
-    // can still be granted. A retired slot is skipped even when free: its
-    // generation cannot advance, so re-granting it would reissue one.
+    // can be granted now. A parked slot is skipped: its generation can only
+    // restart, and a warrant may still name it.
     fn allocate_slot(&self) -> Option<u16> {
         let from = (self.free_from.load(core::sync::atomic::Ordering::Relaxed) as usize).min(MAX_CAPS_PER_TASK);
         for (i, cell) in self.slots.iter().enumerate().skip(from) {
@@ -3480,16 +3507,71 @@ impl CapTable {
                 return Some(i as u16);
             }
         }
+        self.note_no_slot();
         None
     }
 
+    /// A grant found no slot: it is refused with a record of why, live slots
+    /// and parked ones (those come back with the sweep the park owed). At
+    /// powers of two: a task looping on a full table does not flood the ring.
+    pub(crate) fn note_no_slot(&self) {
+        use core::sync::atomic::Ordering::Relaxed;
+        let n = self.no_slot.fetch_add(1, Relaxed).wrapping_add(1);
+        if n.is_power_of_two() && !CANARY_FULL_SILENT.load(Relaxed) {
+            azos_decision::record(
+                azos_decision::Rule::CapTableFull,
+                azos_decision::Verdict::Refuse,
+                self.owner.load(Relaxed),
+                [self.occupied() as u64, self.parked.load(Relaxed) as u64, n as u64],
+            );
+        }
+    }
+
+    /// Free slots waiting for [`Self::unpark`].
+    #[inline]
+    pub fn parked(&self) -> usize {
+        self.parked.load(core::sync::atomic::Ordering::Relaxed) as usize
+    }
+
+    /// Restart every parked slot at generation 0. The caller (`cap_store::sweep`)
+    /// holds the table lock and has a confirming pass that started after these
+    /// parks: nothing names a generation of these slots any more. Each restart
+    /// is recorded, since from here that slot's old handles can recur.
+    /// Canary `cap-gen-retire`: nothing restarts, a slot is lost for the owner's
+    /// life.
+    pub fn unpark(&self) -> usize {
+        use core::sync::atomic::Ordering::{Relaxed, Release};
+        if self.parked.load(Relaxed) == 0 || CANARY_GEN_RETIRE.load(Relaxed) {
+            return 0;
+        }
+        let mut n = 0;
+        for (i, cell) in self.live().iter().enumerate() {
+            let w = cell.word();
+            if CapSlotCell::w_occupied(w) || CapSlotCell::w_generation(w) != CapHandle::MAX_GENERATION {
+                continue;
+            }
+            cell.0.store(0, Release);
+            n += 1;
+            let total = self.restarts.fetch_add(1, Relaxed).wrapping_add(1);
+            azos_decision::record(
+                azos_decision::Rule::CapSlotRestart,
+                azos_decision::Verdict::Admit,
+                self.owner.load(Relaxed),
+                [i as u64, total as u64, 0],
+            );
+            if (i as u16) < self.free_from.load(Relaxed) {
+                self.free_from.store(i as u16, Relaxed);
+            }
+        }
+        self.parked.store(0, Relaxed);
+        n
+    }
+
     // REQ-001
-    // The slot's next generation, or `None` if it is spent. Never wraps: see
-    // `CapSlot::generation`. `allocate_slot` already refuses a retired slot, so
-    // `None` here is defence in depth against a second caller of this path.
+    // The slot's next generation, or `None` at the top: `allocate_slot` never
+    // picks a parked slot, so this is defence in depth against a second caller.
     fn bump_generation(&self, slot_idx: usize) -> Option<u16> {
-        let next = CapSlotCell::w_generation(self.slots[slot_idx].word()).checked_add(1)?;
-        if next > CapHandle::MAX_GENERATION { None } else { Some(next) }
+        CapSlotCell::w_generation(self.slots[slot_idx].word()).checked_add(1)
     }
 }
 
@@ -3788,68 +3870,42 @@ mod tests {
     }
 
     // REQ-001
-    /// **The use-after-revoke this rule exists to stop.** The counter used to
-    /// wrap `255 → 1`, so the 256th grant of a slot reissued a generation a
-    /// previous holder still had, and that holder's revoked `Cap` validated
-    /// again — against whatever object the slot now names. Ring 3 reaches this
-    /// by creating and destroying an object in a loop.
-    ///
-    /// Now the slot is retired at `MAX_GENERATION`. The test drives one slot to
-    /// exhaustion and asserts the two halves: no generation is ever seen twice,
-    /// and the slot is never handed out again.
+    /// A slot's generations are all distinct through a cycle, the slot is
+    /// parked at the top so no grant takes it, and only `unpark` restarts it.
     #[test]
-    fn an_exhausted_slot_is_retired_and_never_reissues_a_generation() {
+    fn a_slot_at_the_top_is_parked_and_restarts_only_through_unpark() {
         let t = CapTable::empty();
-        // A bitmap over the generation space, not a Vec: this crate is `no_std`
-        // and its test scope has no `alloc`.
-        let mut seen = [0u64; (CapHandle::MAX_GENERATION as usize + 64) / 64];
-        let mut count = 0usize;
-        let mut last_slot = None;
-        // One slot at a time: grant, record, revoke. The table keeps handing
-        // back the same (lowest free) slot until that slot is spent.
-        loop {
-            let Some(c) = t.grant::<Port>(CapPerms::RW, 1) else { break };
-            let raw = c.raw();
-            if last_slot.is_none() {
-                last_slot = Some(raw.slot());
-            }
-            if raw.slot() != last_slot.unwrap() {
-                // The first slot retired and allocation moved on: that is the
-                // property under test, and the loop's job is done.
-                break;
-            }
-            let g = raw.generation() as usize;
-            let (w, b) = (g / 64, 1u64 << (g % 64));
-            assert!(
-                seen[w] & b == 0,
-                "generation {} reissued on slot {} — a revoked cap just became valid again",
-                raw.generation(), raw.slot(),
-            );
-            seen[w] |= b;
-            count += 1;
+        let first = t.grant::<Port>(CapPerms::RW, 1).unwrap();
+        let slot = first.raw().slot();
+        assert_eq!(first.raw().generation(), 1);
+        t.revoke(first);
+        let mut expect = 2u32;
+        let last = loop {
+            let c: Cap<Port> = t.grant(CapPerms::RW, 1).unwrap();
+            assert_eq!(c.raw().slot(), slot, "the lowest free slot takes the churn");
+            assert_eq!(c.raw().generation() as u32, expect, "a generation only rises within a cycle");
             t.revoke(c);
-        }
-        let first = last_slot.expect("the empty table must grant at least once");
+            if expect == CapHandle::MAX_GENERATION as u32 {
+                break c;
+            }
+            expect += 1;
+        };
+        assert_eq!(t.parked(), 1);
+        let other: Cap<Port> = t.grant(CapPerms::RW, 2).unwrap();
+        assert_ne!(other.raw().slot(), slot, "a parked slot is not granted");
+        assert_eq!(t.get(last, CapPerms::READ), Err(CapError::Stale));
+        assert_eq!(t.unpark(), 1);
+        assert_eq!(t.parked(), 0);
+        let restarted: Cap<Port> = t.grant(CapPerms::RW, 3).unwrap();
+        assert_eq!((restarted.raw().slot(), restarted.raw().generation()), (slot, 1));
+        assert_eq!(t.get(last, CapPerms::READ), Err(CapError::Stale), "the top generation is not back");
         assert_eq!(
-            count,
-            CapHandle::MAX_GENERATION as usize,
-            "a slot must yield exactly MAX_GENERATION distinct generations before retiring",
+            t.get(first, CapPerms::READ),
+            Ok(3),
+            "the documented recurrence: after a whole cycle the first handle names the occupant",
         );
-        assert!(seen[0] & 1 == 0, "generation 0 is the null handle and must never be granted");
-        assert_eq!(t.retired(), 1, "the spent slot must be counted as retired");
-        // And it is gone for good: every later grant is a different slot.
-        let next: Cap<Port> = t.grant(CapPerms::RW, 2).expect("other slots remain");
-        assert_ne!(next.raw().slot(), first, "a retired slot was handed out again");
     }
 
-    /// **The non-wrap contract, tested where it lives.**
-    ///
-    /// `allocate_slot` refuses a retired slot, so a table-level test can never
-    /// reach `bump_generation` with a spent slot — which means it cannot see the
-    /// counter wrap. Found by mutation: restoring the original wrap (then `8191 -> 1`)
-    /// left every table-level test green. The two defences are redundant on
-    /// purpose, and each needs its own assertion or the redundancy hides a
-    /// regression in either one.
     /// A slot's caveat block is checked against the occupant a reader's hot
     /// word names: a word loaded before the slot was freed and re-granted finds
     /// the block another occupant owns and refuses (`Revoked`), instead of
@@ -3900,33 +3956,20 @@ mod tests {
     fn bump_generation_refuses_a_spent_slot_instead_of_wrapping() {
         let t = CapTable::empty();
         assert_eq!(t.bump_generation(0), Some(1), "a fresh slot starts at 1");
-        t.slots[0].store(CapSlot { generation: CapHandle::MAX_GENERATION - 1, ..t.slots[0].load() });
-        assert_eq!(
-            t.bump_generation(0),
-            Some(CapHandle::MAX_GENERATION),
-            "the last usable generation must still be issued",
-        );
-        t.slots[0].store(CapSlot { generation: CapHandle::MAX_GENERATION, ..t.slots[0].load() });
-        assert_eq!(
-            t.bump_generation(0), None,
-            "a spent slot must refuse, not wrap: wrapping reissues a generation a \
-             revoked holder still has",
-        );
+        t.slots[0].store(CapSlot { generation: CapHandle::MAX_GENERATION, ..CapSlot::EMPTY });
+        assert_eq!(t.bump_generation(0), None, "a restart is `unpark`'s, after its sweep");
     }
 
-    /// Exhausting the whole table is a refusal, not a wrap. A ring-3 task that
-    /// churns capabilities breaks only its own table, and `retired()` says so.
+    /// With every free slot parked a grant is refused and writes nothing.
     #[test]
-    fn a_table_of_retired_slots_refuses_instead_of_wrapping() {
+    fn a_table_of_parked_slots_refuses_and_writes_nothing() {
         let t = CapTable::empty();
-        // Retire every slot by hand — driving 512 slots x MAX_GENERATION grants
-        // through the real path would be about 1M operations for the same assertion.
         for slot in t.slots.iter() {
             slot.store(CapSlot { generation: CapHandle::MAX_GENERATION, ..slot.load() });
         }
-        assert_eq!(t.retired(), MAX_CAPS_PER_TASK);
-        assert!(t.grant::<Port>(CapPerms::RW, 1).is_none(), "a spent table must refuse");
-        assert_eq!(t.occupied(), 0, "and must not have written a slot while refusing");
+        assert!(t.grant::<Port>(CapPerms::RW, 1).is_none());
+        assert_eq!(t.occupied(), 0);
+        assert_eq!(t.free_slots(), 0);
     }
 
     #[test]
@@ -4241,20 +4284,20 @@ mod tests {
         let _pad: Cap<Port> = parent.grant(CapPerms::RW, 1).unwrap();
         let h: Cap<Socket> = parent.grant(CapPerms::READ, 9).unwrap();
         let child = CapTable::empty();
-        assert!(child.install_at(h.raw(), 42, &Warrant::ROOT));
+        assert!(child.install_at(h.raw(), CapPerms::READ, 42, &Warrant::ROOT));
         assert_eq!(child.get(h, CapPerms::READ), Ok(42), "same handle, the child's own resource");
-        assert!(!child.install_at(h.raw(), 43, &Warrant::ROOT), "an occupied slot is refused");
+        assert!(!child.install_at(h.raw(), CapPerms::READ, 43, &Warrant::ROOT), "an occupied slot is refused");
         child.revoke(h);
-        assert!(!child.install_at(h.raw(), 44, &Warrant::ROOT), "the slot's counter reached the generation: refused");
-        assert!(!child.install_at(CapHandle::from_raw(0), 1, &Warrant::ROOT), "null");
-        let wide = CapHandle::pack(ty::SOCKET, CapPerms::READ, 1, MAX_CAPS_PER_TASK as u16);
-        assert!(!child.install_at(wide, 1, &Warrant::ROOT) || MAX_CAPS_PER_TASK >= 512, "a slot outside the table");
+        assert!(!child.install_at(h.raw(), CapPerms::READ, 44, &Warrant::ROOT), "the slot's counter reached the generation: refused");
+        assert!(!child.install_at(CapHandle::from_raw(0), CapPerms::READ, 1, &Warrant::ROOT), "null");
+        let wide = CapHandle::pack(ty::SOCKET, 1, MAX_CAPS_PER_TASK as u16);
+        assert!(!child.install_at(wide, CapPerms::READ, 1, &Warrant::ROOT), "a slot outside the table");
         // scan in chunks of one finds both parent entries, in slot order.
-        let mut out = [(CapHandle::from_raw(0), 0u32); 1];
+        let mut out = [(CapHandle::from_raw(0), CapPerms::NONE, 0u32); 1];
         let (n, next) = parent.scan(0, &mut out, |_| true);
-        assert_eq!((n, out[0].1), (1, 1));
+        assert_eq!((n, out[0].1, out[0].2), (1, CapPerms::RW, 1));
         let (n, _) = parent.scan(next, &mut out, |k| k == ty::SOCKET);
-        assert_eq!((n, out[0].0, out[0].1), (1, h.raw(), 9));
+        assert_eq!((n, out[0].0, out[0].1, out[0].2), (1, h.raw(), CapPerms::READ, 9));
         // clear_slot frees the slot and keeps its generation.
         child.clear_slot(h.raw().slot() as usize);
         assert_eq!(child.get(h, CapPerms::READ), Err(CapError::Stale));

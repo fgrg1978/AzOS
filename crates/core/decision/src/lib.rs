@@ -331,6 +331,11 @@ pub enum Rule {
     /// A ring-3 task's core file (Kconfig `CRASHDUMP_CORE_*`) was written whole,
     /// written cut to its byte budget, or not written at all.
     CoreDump = 77,
+    /// A capability slot's generation ran out and a sweep restarted it: from
+    /// here a handle of that slot's previous cycle can recur.
+    CapSlotRestart = 78,
+    /// A grant found no slot in the domain's capability table.
+    CapTableFull = 79,
 }
 
 /// The verdict of a record.
@@ -358,7 +363,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 78] = [
+pub const RULES: [RuleInfo; 80] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1142,6 +1147,21 @@ pub const RULES: [RuleInfo; 78] = [
         fields: ["bytes_written", "limit_bytes", "dropped_bytes|why"],
         rejected_if_yes: "-",
         rejected_if_no: "write the whole core: the task's writable memory does not fit CRASHDUMP_CORE_KB, or the kernel could not stage it",
+    },
+    RuleInfo {
+        name: "cap-slot-restart",
+        subject: "domain",
+        fields: ["slot", "restarts", "-"],
+        rejected_if_yes: "retire the slot for the domain's life: a long-running task would run out of slots",
+        rejected_if_no: "-",
+    },
+    RuleInfo {
+        // `parked` slots return with the sweep their park owed.
+        name: "cap-table-full",
+        subject: "domain",
+        fields: ["live", "parked", "refusals"],
+        rejected_if_yes: "-",
+        rejected_if_no: "grant a slot: every one is live, or waits for the sweep that restarts it",
     },
 ];
 

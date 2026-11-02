@@ -184,16 +184,16 @@ impl Gate for LoginGate {
 }
 
 /// The call right on `endpoint.login`: the `Cap<Endpoint>` of the row that is
-/// not the one it serves (`READ`, `endpoint.term`). The rights are in the
-/// handle, so the two are told apart without calling either (a call on the
-/// endpoint it serves would wait for itself). 0: the row grants none.
+/// not the one it serves (`READ`, `endpoint.term`). The two are told apart by
+/// their rights, without calling either (a call on the endpoint it serves
+/// would wait for itself). 0: the row grants none.
 fn find_login_endpoint() -> u32 {
     (0..16u32)
         .filter_map(|i| {
             let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), i);
             (h > 0).then_some(h as u32)
         })
-        .find(|&h| !azos_abi::cap::CapHandle::from_raw(h).perms().contains(azos_abi::cap::CapPerms::READ))
+        .find(|&h| sys::cap_info(h).is_ok_and(|i| i.rights & azos_abi::cap::CapPerms::READ.bits() == 0))
         .unwrap_or(0)
 }
 
