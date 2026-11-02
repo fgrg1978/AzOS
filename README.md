@@ -32,7 +32,8 @@ tree also builds desktop and server configurations.
   (EEVDF) and idle. A deadline reservation is admitted against the CPUs the
   machine has, and a set that does not fit is refused. An interrupt line can
   be bound to a handler that runs on its own reservation (Kconfig
-  `IRQ_THREADED`). Source: `crates/core/sched/src/sc.rs`,
+  `IRQ_THREADED`; riscv64 and aarch64, since x86_64's IOAPIC loses an edge
+  that arrives while the line is masked). Source: `crates/core/sched/src/sc.rs`,
   `config/kernel/Kconfig.sched`.
 - **A small native ABI.** 33 system calls, plus `SYS_INVOKE(handle, op,
   words)` for operations on an object a task holds a handle to. Devices and
