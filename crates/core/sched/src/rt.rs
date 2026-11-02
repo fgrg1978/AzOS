@@ -1033,6 +1033,28 @@ fn booked(r: &Reservation, density: u32) -> rt_core::Booked {
     }
 }
 
+/// Runtime canary `asym-row-any-class`: a row placed before the core types were
+/// known stays where that placement put it (`row_reservation`).
+#[cfg(feature = "ktest")]
+static CANARY_ROW_ANY_CLASS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// See [`CANARY_ROW_ANY_CLASS`].
+#[cfg(feature = "ktest")]
+pub fn canary_row_any_class_arm() {
+    CANARY_ROW_ANY_CLASS.store(true, Ordering::Relaxed);
+}
+/// See [`CANARY_ROW_ANY_CLASS`].
+#[inline(always)]
+pub fn canary_row_any_class() -> bool {
+    #[cfg(feature = "ktest")]
+    {
+        CANARY_ROW_ANY_CLASS.load(Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "ktest"))]
+    {
+        false
+    }
+}
+
 /// Ktest: give up `idx`'s reservation, as its exit does.
 #[cfg(feature = "ktest")]
 pub fn ktest_release(idx: usize) {
@@ -1177,6 +1199,12 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
                 }
             }
             ADMITTED.fetch_add(1, Ordering::Relaxed);
+            // The budget now binds to this class: a task the balancer had moved
+            // before it asked can read here why its budget throttles.
+            if crate::topo::ASYM && crate::topo::differs() {
+                azos_decision::record(azos_decision::Rule::RtCoreClass, azos_decision::Verdict::Place, tid,
+                    [crate::topo::class(cpu) as u64, cpu as u64, crate::topo::capacity(cpu) as u64]);
+            }
             super::classes::on_reserved(idx, &r);
             // N7: the task is DL now; where it waits, it re-sorts.
             super::classes::pi_attr_changed(idx);

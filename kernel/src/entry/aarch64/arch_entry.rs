@@ -101,6 +101,14 @@ impl ArchEntry for Entry {
         crate::entry::aarch64::ext::pan_patch::patch(text_start, text_end);
         crate::boot::spin_patch::patch(text_start, text_end)
     }
+    fn cpu_commitments(&self) -> (u64, u64) {
+        // Each is selected once, from the boot CPU, and run on every CPU: the
+        // spin CAS, the wait, the shootdown's range form, the seed.
+        let regs = azos_arch::cpu::features::read_id_regs();
+        let f = regs.features();
+        (0, f.lse as u64 | (regs.wfxt() as u64) << 1 | (regs.tlbirange() as u64) << 2 | (f.rng as u64) << 3)
+    }
+
     fn wake_secondaries(&self, num_cpus: usize) {
         crate::entry::aarch64::smp::wake_secondaries(num_cpus)
     }

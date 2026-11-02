@@ -1080,7 +1080,7 @@ mod tests {
     // that placement as a whole is correct.
 
     use crate::task::{CpuLoad, EnqueueOutcome, TaskState as TS, claim_audit_persistent,
-                      enqueue_decision, pick_cpu_by_load, pick_cpu_for_rt, resident_competes,
+                      enqueue_decision, pick_cpu_by_load, pick_cpu_biggest_of_free, resident_competes,
                       resident_load_contribution, ring_walk_bounds};
 
     /// Build the `CpuLoad` array exactly as `find_best_cpu` does — by summing
@@ -1110,12 +1110,12 @@ mod tests {
     fn a_real_time_task_takes_the_biggest_of_equally_loaded_cpus_and_never_a_busier_one() {
         let cap = |c: usize| [256u16, 1024, 1024, 512][c];
         // Tied: the first of the biggest.
-        assert_eq!(pick_cpu_for_rt(&[load(0, 0, 1); 4], cap), 1);
+        assert_eq!(pick_cpu_biggest_of_free(&[load(0, 0, 1); 4], cap), 1);
         // The load key outranks capacity: CPU 3 is freer than both big ones.
-        assert_eq!(pick_cpu_for_rt(&[load(0, 0, 2), load(0, 0, 2), load(0, 0, 2), load(0, 0, 1)], cap), 3);
+        assert_eq!(pick_cpu_biggest_of_free(&[load(0, 0, 2), load(0, 0, 2), load(0, 0, 2), load(0, 0, 1)], cap), 3);
         // Equal capacity: the lowest index, as pick_cpu_by_load.
-        assert_eq!(pick_cpu_for_rt(&[load(1, 1, 1), load(0, 0, 0), load(0, 0, 0), load(2, 2, 2)], |_| 1024), 1);
-        assert_eq!(pick_cpu_for_rt(&[], cap), 0);
+        assert_eq!(pick_cpu_biggest_of_free(&[load(1, 1, 1), load(0, 0, 0), load(0, 0, 0), load(2, 2, 2)], |_| 1024), 1);
+        assert_eq!(pick_cpu_biggest_of_free(&[], cap), 0);
         // pick_cpu_by_load itself is not capacity-aware: the tie goes to CPU 0.
         assert_eq!(pick_cpu_by_load(&[load(0, 0, 1); 4]), 0);
     }

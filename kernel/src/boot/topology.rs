@@ -680,14 +680,14 @@ mod dma_contig_canary {
 /// x86: the core types are known only once every CPU has run, after the rows
 /// were admitted. The signed rows, whose budgets were measured, are checked
 /// against them now, and one not on one core class halts the board as at boot
-/// admission. The built-in rows were measured nowhere and can no longer be tied
-/// to a class, which the line says.
+/// admission. The built-in rows were measured nowhere and are tied to the biggest
+/// class when they start (`azos_syscall::topo_sched::row_reservation`).
 // arch-only: x86 hybrid cores (CPUID core types).
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn late_core_class_check(num_cpus: usize) {
     let Some(topo) = azos_topology::get() else { return };
-    if BUILTIN_ROWS.load(core::sync::atomic::Ordering::Relaxed) {
-        azos_drv_sys::kwarn!("[TOPO] built-in real-time rows are not tied to a core class: their budgets were measured on none");
+    if BUILTIN_ROWS.load(core::sync::atomic::Ordering::Relaxed) && !canary!("asym-late-check-rows") {
+        kprintln!("[TOPO] built-in real-time rows go to core class 0 when they start");
         return;
     }
     let mut classes = [0u8; azos_sched::topo::MAX_CPUS];

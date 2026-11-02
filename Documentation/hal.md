@@ -196,7 +196,7 @@ ISA-only modules otherwise sit in each ISA's `ext/`:
 |---|---|---|
 | riscv64 | `pmp`, `hv`, `napot`, `ssqosid` | `hv`, `zicboz` |
 | aarch64 | `hv`, `mitigations`, `sha2_ce`, `tlbi_range`, `wfxt` | `hv_vectors`, `its_route` (feature `pci`), `pan_patch`, `rpi_mbox` (feature `thermal`), `selftests` |
-| x86_64 | `hv`, `hybrid`, `mitigations`, `retpoline`, `splitlock` | `cpu_init`, `hv`, `hybrid_energy` (feature `energy`), `limine` (feature `x86-limine`), `thermal_hw` (feature `thermal`) |
+| x86_64 | `hv`, `hybrid`, `mitigations`, `retpoline`, `splitlock` | `cpu_init`, `hv`, `hybrid` (feature `energy`), `limine` (feature `x86-limine`), `thermal_hw` (feature `thermal`) |
 
 Each ISA crate's `lib.rs` also re-exports the contract (`pub use azos_arch_api::{...}`), so a caller written against `azos_arch` sees the same names on every ISA. On x86_64 the hypervisor module is declared as `hv` at the crate root with `#[path = "ext/hv/mod.rs"]` and re-exported as `azos_arch::HvImpl`, because it builds on the crate's `mmu` module.
 

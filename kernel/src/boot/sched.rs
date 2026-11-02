@@ -324,8 +324,18 @@ pub(crate) fn install_sched_hooks() {
     }
     #[cfg(feature = "ktest")]
     {
+        use azos_sched::scheduler::fairq::misfit_canary as mc;
         if canary!("asym-misfit-off") {
-            azos_sched::scheduler::fairq::canary_misfit_off();
+            mc::arm(mc::OFF);
+        }
+        if canary!("asym-misfit-rt") {
+            mc::arm(mc::RT);
+        }
+        if canary!("asym-misfit-pinned") {
+            mc::arm(mc::PINNED);
+        }
+        if canary!("asym-row-any-class") {
+            azos_sched::rt::canary_row_any_class_arm();
         }
         if canary!("asym-rt-place-flat") {
             azos_sched::scheduler::canary_rt_place_flat();

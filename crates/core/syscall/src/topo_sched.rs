@@ -138,6 +138,11 @@ pub fn row_reservation(name: &[u8]) -> Option<azos_sched::rt::Reservation> {
     // The placement boot admission made: same hart count, same dispatch order.
     let order = azos_sched::classes::level_order();
     let cpu_mask = match topo.deadline_admission(online, order).ok()?.cpu_of(ti as u16) {
+        // The core types came after that placement (x86): a built-in row goes to
+        // the biggest class, as `tie_profiled_rows_to_class` does where they came
+        // before it. A signed row without a class was refused.
+        Some(_) if azos_sched::topo::ASYM && azos_sched::topo::differs() && task.profile.core_class.is_none()
+            && !azos_sched::rt::canary_row_any_class() => azos_sched::topo::class_mask(0),
         Some(cpu) => 1u32 << cpu,
         None => return None,
     };

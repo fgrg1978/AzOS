@@ -1485,7 +1485,7 @@ mod refusal_receipts {
         for r in [Refusal::Malformed, Refusal::NoRoom, Refusal::BandCap, Refusal::Busy, Refusal::Levels, Refusal::ClassOff, Refusal::Envelope] {
             assert_eq!(azos_decision::REFUSAL_REASONS[r.code() as usize], r.name());
         }
-        assert_eq!(azos_decision::REFUSAL_REASONS.len(), 8);
+        assert_eq!(azos_decision::REFUSAL_REASONS.len(), 9);
     }
 
     /// The gate as the kernel wires it, modelled: task `HELD_TID` is in a Domain

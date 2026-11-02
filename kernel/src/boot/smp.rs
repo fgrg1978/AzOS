@@ -30,12 +30,73 @@
 use crate::*;
 use azos_arch::{ArchEntry, Cpu, Interrupts, ARCH};
 use azos_sched::topo::{self, CpuRaw, Level};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // The DT parser's "not named" is the topology's.
 #[cfg(not(target_arch = "x86_64"))]
 const _: () = assert!(azos_dtb::DT_TOPO_NONE == topo::NONE);
 // Masks are one word.
 const _: () = assert!(azos_limits::NR_CPUS <= topo::MAX_CPUS);
+
+/// What the boot CPU's reading made the kernel commit to: ASID bits, then
+/// [`ArchEntry::cpu_commitments`](azos_arch_api::contract).
+static COMMITTED: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+/// A CPU left offline: the fact that differs + 1, and its value on that CPU.
+static REFUSED: [[AtomicU64; 2]; azos_limits::NR_CPUS as usize] = [const { [const { AtomicU64::new(0) }; 2] }; azos_limits::NR_CPUS as usize];
+const FACTS: [&str; 3] = ["ASID bits", "a value that must be equal", "a selected feature"];
+
+/// Boot CPU, before it starts any other.
+pub(crate) fn commit_boot_cpu_facts() {
+    use azos_arch::Mmu as _;
+    let (equal, have) = ARCH_ENTRY.cpu_commitments();
+    for (slot, v) in COMMITTED.iter().zip([ARCH.asid_bits() as u64, equal, have]) {
+        slot.store(v, Ordering::Release);
+    }
+}
+
+/// A CPU coming up that differs in what the kernel already committed to on the
+/// boot CPU parks here, before its first lock (whose CAS may be one of those
+/// facts): no value is the minimum across CPUs once code has run from it. Loads
+/// and stores only. The boot CPU says so (`report_refused_cpus`).
+fn refuse_if_it_differs(cpu: usize) {
+    use azos_arch::Mmu as _;
+    if canary!("asym-cpu-refusal-off") {
+        return;
+    }
+    let (equal, have) = ARCH_ENTRY.cpu_commitments();
+    let mut asid = ARCH.asid_bits() as u64;
+    if cpu + 1 == azos_percpu::nr_cpu_ids() && canary!("asym-cpu-mismatch-last") {
+        asid = COMMITTED[0].load(Ordering::Acquire).saturating_sub(1);
+    }
+    let [want_asid, want_equal, want_have] = [0, 1, 2].map(|i| COMMITTED[i].load(Ordering::Acquire));
+    let differs = if asid < want_asid {
+        Some((0, asid))
+    } else if equal != want_equal {
+        Some((1, equal))
+    } else if want_have & !have != 0 {
+        Some((2, have))
+    } else {
+        None
+    };
+    if let (Some((fact, value)), Some(slot)) = (differs, REFUSED.get(cpu)) {
+        slot[1].store(value, Ordering::Relaxed);
+        slot[0].store(fact + 1, Ordering::Release);
+        loop { ARCH.wait_for_interrupt(); }
+    }
+}
+
+/// Boot CPU, once the others have had their time: the refused ones, on record.
+pub(crate) fn report_refused_cpus() {
+    for (cpu, slot) in REFUSED.iter().enumerate() {
+        let fact = slot[0].load(Ordering::Acquire);
+        if fact != 0 {
+            let (i, value) = (fact as usize - 1, slot[1].load(Ordering::Relaxed));
+            let boot = COMMITTED[i].load(Ordering::Acquire);
+            azos_drv_sys::kerr!("[SMP] CPU {} refused: {} differs from the boot CPU ({:#x}, boot {:#x}): it stays offline", cpu, FACTS[i], value, boot);
+            azos_decision::record(azos_decision::Rule::CpuRefused, azos_decision::Verdict::Refuse, cpu as u32, [i as u64, boot, value]);
+        }
+    }
+}
 
 /// Secondary-CPU entry point, the ONE symbol both `boot.S` files call once
 /// this CPU has a stack, its trap vector and (aarch64) its MMU. Never
@@ -48,6 +109,7 @@ pub extern "C" fn secondary_main(hart_id: usize) -> ! {
     // again in case an early Rust call clobbered it (riscv64's `tp` is an
     // ordinary register to the ABI).
     ARCH.set_percpu_base(hart_id);
+    refuse_if_it_differs(hart_id);
 
     // boot.S range-checked us against MAX_HARTS (Kconfig `NR_CPUS`), which
     // guards the stack and trap-vector slots. A CPU below that ceiling but
@@ -145,7 +207,7 @@ use crate::entry::x86_64::smp::firmware_labels;
 /// The record [`report_core_classes`] wrote, for its ktest: by then the ring has
 /// long moved on.
 #[cfg(feature = "ktest")]
-pub(crate) static ASYM_OFF_RECEIPT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(crate) static ASYM_OFF_RECEIPT: AtomicU64 = AtomicU64::new(0);
 
 /// The CPUs differ in core class: said once, and with `SCHED_ASYM_CPUS` off
 /// recorded, so a budget measured on one core type is not admitted on another
@@ -157,7 +219,7 @@ pub(crate) fn report_core_classes(cpus: usize, classes: u64) {
         azos_drv_sys::kwarn!("[TOPO] {} core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal", classes);
         let _id = azos_decision::record_receipt(azos_decision::Rule::AsymCpus, azos_decision::Verdict::Place, cpus as u32, [classes, 0, 0]);
         #[cfg(feature = "ktest")]
-        ASYM_OFF_RECEIPT.store(_id, core::sync::atomic::Ordering::Relaxed);
+        ASYM_OFF_RECEIPT.store(_id, Ordering::Relaxed);
     }
 }
 
@@ -174,6 +236,9 @@ pub(crate) fn install_topology(num_cpus: usize, dtb_ptr: usize) {
     let source = firmware_labels(n, dtb_ptr, &mut raw);
     let built = topo::build(&raw[..n], source);
     topo::install(&built);
+    if canary!("asym-capacity-flat") {
+        topo::install_core_types(topo::class, |_| topo::CAPACITY_SCALE);
+    }
 
     kprintln!("[TOPO] {} CPU(s) from {}", topo::installed(), topo::source().name());
     for level in Level::ALL {
@@ -195,7 +260,12 @@ pub(crate) fn install_topology(num_cpus: usize, dtb_ptr: usize) {
             kprintln!("[TOPO] {:<7} {} groups of {}..{}: {:x?}{}", level.name(), groups, lo, hi, &shown[..k], more);
         }
     }
-    if topo::capacity_known() {
+    if built.capacity_partial {
+        azos_drv_sys::kwarn!("[TOPO] only some CPUs state capacity-dmips-mhz: every CPU counts as equal");
+    }
+    if !topo::ASYM {
+        kprintln!("[TOPO] capacity {} on every CPU (SCHED_ASYM_CPUS off)", topo::CAPACITY_SCALE);
+    } else if topo::capacity_known() {
         let caps = || (0..topo::installed()).map(topo::capacity);
         kprintln!("[TOPO] capacity {}..{} of {}", caps().min().unwrap_or(0), caps().max().unwrap_or(0),
             topo::CAPACITY_SCALE);

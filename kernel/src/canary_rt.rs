@@ -96,9 +96,28 @@ pub(crate) const NAMES: &[&str] = &[
     "save-gate-no-redraw",
     // The asym ktests (`boot/asym_ktests.rs`). Not breakage but the machine QEMU
     // cannot build: the last CPU lacks one hwcap bit (seams.rs); on x86_64 the
-    // CPUs report core types, the first half efficiency (hybrid_energy.rs).
+    // CPUs report core types, the first half efficiency (hybrid.rs).
     "asym-weak-last-cpu",
     "x86-hybrid-synth",
+    // The same: the last CPU lacks a bit no SHA-256 backend reads.
+    "asym-weak-other-bit",
+    // boot/smp.rs: the last CPU differs from what the boot CPU committed to.
+    "asym-cpu-mismatch-last",
+    // boot/smp.rs: such a CPU is not refused.
+    "asym-cpu-refusal-off",
+    // boot/smp.rs, entry/x86_64/ext/hybrid.rs: the classes stay, every capacity is
+    // the full one.
+    "asym-capacity-flat",
+    // scheduler: real-time tasks, and pinned ones, are moved as misfits too.
+    "asym-misfit-rt",
+    "asym-misfit-pinned",
+    // syscall/topo_sched.rs: a row placed before the core types were known stays
+    // on any class.
+    "asym-row-any-class",
+    // boot/topology.rs: the x86 built-in rows go through the late core class
+    // check as signed rows do, which they fail: the only way to run its refusal
+    // without a signed volume.
+    "asym-late-check-rows",
     // boot/seams.rs: the hwcap word stays the boot CPU's.
     "asym-hwcap-boot-only",
     // scheduler: nothing is marked misfit (`fairq::misfit_look`).

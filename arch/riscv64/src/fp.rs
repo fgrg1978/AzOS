@@ -299,6 +299,22 @@ pub fn init_vector_state() -> Result<usize, usize> {
     }
 }
 
+/// This hart's `vlenb` if the kernel sized its vector save area from the boot
+/// hart's (`init_vector_state`), else 0: a wider hart would overrun `VecState`,
+/// and any difference corrupts a state saved here and restored there.
+#[cfg(feature = "rvv")]
+pub fn vlen_commitment() -> usize {
+    if VLEN_BYTES.load(core::sync::atomic::Ordering::SeqCst) == 0 {
+        return 0;
+    }
+    read_vlenb()
+}
+
+#[cfg(not(feature = "rvv"))]
+pub fn vlen_commitment() -> usize {
+    0
+}
+
 /// The cached `vlenb` from `init_vector_state`, or `0` if disabled/not yet
 /// called.
 #[cfg(feature = "rvv")]

@@ -35,10 +35,12 @@ fn small_cpu() -> Option<usize> {
 static RUN_STOP: AtomicBool = AtomicBool::new(false);
 static RUN_DONE: AtomicBool = AtomicBool::new(false);
 static RUN_UNPIN: AtomicBool = AtomicBool::new(false);
+static RUN_TID: AtomicU32 = AtomicU32::new(0);
 static RUN_CPU: AtomicUsize = AtomicUsize::new(NO_CPU);
 
 /// Computes without a pause, publishing where it runs, until told to stop.
 fn spinner(_: usize) {
+    RUN_TID.store(azos_sched::current_task_tid(), Ordering::Release);
     if RUN_UNPIN.load(Ordering::Acquire) {
         azos_sched::scheduler::ktest_set_pin(azos_sched::current_task_tid(), -1);
     }
@@ -89,15 +91,21 @@ fn budget(cpu_mask: u32) -> Reservation {
 }
 
 static SELF_HART: AtomicUsize = AtomicUsize::new(NO_CPU);
+static SELF_RECORDED: AtomicBool = AtomicBool::new(false);
 
 /// What `SYS_SCHEDCTL` asks of the caller's own task: no CPU named.
 fn reserves_itself(_: usize) {
     let idx = azos_sched::idx_for_tid(azos_sched::current_task_tid()).expect("the running task has a slot");
     let me = azos_sched::smp::current_cpu_id();
+    let tid = azos_sched::current_task_tid();
+    let before = azos_decision::total();
     let got = rt::reserve(idx, budget(0));
     if got.is_ok() {
         rt::ktest_release(idx);
     }
+    let f = Filter { rule: Some(Rule::RtCoreClass as u8), verdict: Some(Verdict::Place as u8), subject: Some(tid), after: before };
+    let recorded = azos_decision::query(&f, &mut [0u64; 1]) != 0;
+    SELF_RECORDED.store(recorded, Ordering::Release);
     SELF_HART.store(if got == Ok(me) { me } else { NO_CPU - 1 }, Ordering::Release);
     azos_sched::task_exit();
 }
@@ -155,6 +163,9 @@ azos_ktest::ktest_late! {
         if SELF_HART.load(Ordering::Acquire) == NO_CPU - 1 {
             return Err("a running task's own request, naming no CPU, was not admitted where it runs");
         }
+        if !SELF_RECORDED.load(Ordering::Acquire) {
+            return Err("the admission did not record its core class");
+        }
         if verdicts != (Err(Refusal::CoreClass), Err(Refusal::CoreClass)) {
             return Err("an unpinned task, or a mask over two classes, was not refused core-class");
         }
@@ -171,6 +182,13 @@ azos_ktest::ktest_late! {
     }
 }
 
+static PLACED_CPU: AtomicUsize = AtomicUsize::new(NO_CPU);
+
+fn records_its_cpu(_: usize) {
+    PLACED_CPU.store(azos_sched::smp::current_cpu_id(), Ordering::Release);
+    azos_sched::task_exit();
+}
+
 azos_ktest::ktest_late! {
     fn asym_rt_task_placed_on_a_big_cpu() {
         differing()?;
@@ -180,7 +198,71 @@ azos_ktest::ktest_late! {
         let small = (0..n).find(|&c| topo::class(c) != 0).ok_or("no small CPU")?;
         let big = (small..n).find(|&c| topo::class(c) == 0).ok_or("no big CPU after the first small one")?;
         if azos_sched::scheduler::ktest_rt_pick_between(small, big) != big {
-            return Err("placement sends a real-time task to a small CPU with a big one as free");
+            return Err("placement sends a task to a small CPU with a big one as free");
+        }
+        // A real task runs where placement says, loads moving between the two.
+        for _ in 0..8 {
+            PLACED_CPU.store(NO_CPU, Ordering::Release);
+            let said = azos_sched::scheduler::ktest_place_now(RT_PRIO);
+            azos_sched::task_create("asym-rt", records_its_cpu, 0, RT_PRIO);
+            crate::ktest::wait("the task never ran", || PLACED_CPU.load(Ordering::Acquire) != NO_CPU)?;
+            if PLACED_CPU.load(Ordering::Acquire) == said {
+                return Ok(());
+            }
+        }
+        Err("a real-time task never ran where placement said")
+    }
+}
+
+// A task that computes for longer than the misfit window and sleeps: placement and
+// the misfit move must agree, or it pays a move every period.
+const PERIODS: u32 = 6;
+static HOG_DONE: AtomicBool = AtomicBool::new(false);
+
+fn periodic_hog(ms: usize) {
+    azos_sched::scheduler::ktest_set_pin(azos_sched::current_task_tid(), -1);
+    for _ in 0..PERIODS {
+        let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * ms as u64 / 1000;
+        while azos_drv_sys::timebase::now() < until {
+            core::hint::spin_loop();
+        }
+        azos_syscall::sleep::sleep_ms(ms as u64 / 4);
+    }
+    HOG_DONE.store(true, Ordering::Release);
+    azos_sched::task_exit();
+}
+
+azos_ktest::ktest_late! {
+    fn asym_periodic_hog_does_not_bounce() {
+        differing()?;
+        let small = small_cpu().ok_or("no small CPU")?;
+        let moves = azos_sched::scheduler::fairq::misfit_moves();
+        HOG_DONE.store(false, Ordering::Release);
+        let ms = 40 * azos_limits::SCHED_MISFIT_TICKS as usize;
+        azos_sched::task_create_affinity("asym-hog", periodic_hog, ms, FAIR_PRIO, small as i8);
+        crate::ktest::wait("the hog never ended", || HOG_DONE.load(Ordering::Acquire))?;
+        if azos_sched::scheduler::fairq::misfit_moves() - moves > PERIODS / 2 {
+            return Err("the hog was moved as a misfit about every period");
+        }
+        Ok(())
+    }
+}
+
+azos_ktest::ktest_late! {
+    fn asym_builtin_rows_on_the_biggest_class() {
+        differing()?;
+        let topo_now = azos_topology::get().ok_or("no topology")?;
+        let mut rows = 0;
+        for t in topo_now.tasks() {
+            if let Some(r) = azos_syscall::topo_sched::row_reservation(t.name.as_bytes()) {
+                rows += 1;
+                if r.cpu_mask & !topo::class_mask(0) != 0 {
+                    return Err("a row with a budget may run on a small CPU");
+                }
+            }
+        }
+        if rows == 0 {
+            return skip!("no row with a budget");
         }
         Ok(())
     }
@@ -193,16 +275,16 @@ azos_ktest::ktest_late! {
         // The balancer may take the spinner too, while something else on the CPU
         // holds it in the queue: that run says nothing, the next one does.
         for _ in 0..8 {
-            let moves = azos_sched::scheduler::fairq::misfit_moves();
             spin_on("asym-misfit", small, FAIR_PRIO, true)?;
+            let tid = RUN_TID.load(Ordering::Acquire);
             let moved = crate::ktest::wait("the lone task stayed on the small CPU", || {
                 let c = RUN_CPU.load(Ordering::Acquire);
                 c != NO_CPU && topo::class(c) == 0
             });
-            let counted = azos_sched::scheduler::fairq::misfit_moves() > moves;
+            let as_misfit = azos_sched::scheduler::fairq::misfit_last_tid() == tid;
             stop_spinner()?;
             moved?;
-            if counted {
+            if as_misfit {
                 return Ok(());
             }
         }
@@ -245,8 +327,8 @@ azos_ktest::ktest_late! {
         if azos_mm::vdso::vdso_hwcap() & bit != 0 {
             return Err("the shared hwcap word advertises what one CPU lacks");
         }
-        if !super::seams::sha256_avoids(bit) {
-            return Err("the kernel's SHA-256 still uses what one CPU lacks");
+        if !super::seams::sha256_follows(bit) {
+            return Err("the kernel's SHA-256 does not follow the shared word");
         }
         Ok(())
     }

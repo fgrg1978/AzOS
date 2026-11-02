@@ -3,9 +3,8 @@
 //! x86_64-only boot extras with no counterpart on the other ISAs.
 
 pub(crate) mod cpu_init;
-/// The core types the CPUs report, for the energy model (Kconfig ENERGY).
-#[cfg(feature = "energy")]
-pub(crate) mod hybrid_energy;
+/// The core types the CPUs report, for the scheduler and the energy model.
+pub(crate) mod hybrid;
 /// The hardware-virtualization probe and record (Kconfig X86_SVM, X86_VMX).
 pub(crate) mod hv;
 /// CPU microcode from a signed boot module, on every CPU (Kconfig X86_UCODE_LOAD).

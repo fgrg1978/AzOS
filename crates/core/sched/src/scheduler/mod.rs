@@ -2168,19 +2168,25 @@ pub fn ktest_rt_pick_between(a: usize, b: usize) -> usize {
     let mut loads = [CpuLoad { blocking: 0, rt_blocking: 0, total: 1 }; MAX_CPUS];
     loads[a].total = 0;
     loads[b].total = 0;
-    pick_for(0, &loads[..online])
+    pick_for(&loads[..online])
 }
 
-/// The CPU placement picks from `loads` for a task of priority `prio`: a
-/// real-time-band task takes the biggest of equally loaded CPUs where they
-/// differ in capacity.
-fn pick_for(prio: u32, loads: &[CpuLoad]) -> usize {
+/// Ktest: where placement sends a task of priority `prio` now, on real loads.
+#[cfg(feature = "ktest")]
+pub fn ktest_place_now(prio: u32) -> usize {
+    unsafe { find_best_cpu(prio, usize::MAX) }
+}
+
+/// The CPU placement picks from `loads`: where CPUs differ in capacity, the
+/// biggest of the equally loaded ones. A real-time task needs it; a fair one too,
+/// or it would wake on a small CPU only for the misfit move to take it back.
+fn pick_for(loads: &[CpuLoad]) -> usize {
     #[cfg(feature = "ktest")]
     if CANARY_RT_PLACE_FLAT.load(Ordering::Relaxed) {
         return pick_cpu_by_load(loads);
     }
-    if topo::ASYM && is_rt_priority(prio) {
-        crate::task::pick_cpu_for_rt(loads, topo::capacity)
+    if topo::ASYM {
+        crate::task::pick_cpu_biggest_of_free(loads, topo::capacity)
     } else {
         pick_cpu_by_load(loads)
     }
@@ -2193,7 +2199,7 @@ unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
         return 0;
     }
     let loads = find_best_cpu_scan(prio, exclude, num_online);
-    pick_for(prio, &loads[..num_online])
+    pick_for(&loads[..num_online])
 }
 
 /// `ipc-census` cross-check of the histogram against `find_best_cpu_scan`,
@@ -2227,7 +2233,7 @@ unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
     for (cpu, slot) in loads.iter_mut().enumerate().take(num_online) {
         *slot = RESIDENT_HIST.load_excluding(cpu, bucket, rt_threshold, &[excluded_key]);
     }
-    let pick = pick_for(prio, &loads[..num_online]);
+    let pick = pick_for(&loads[..num_online]);
 
     #[cfg(feature = "ipc-census")]
     {
@@ -2241,7 +2247,7 @@ unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
             } else {
                 hist_check::MISMATCH_NO_STALE_KEY.fetch_add(1, Ordering::Relaxed);
             }
-            if pick_for(prio, &scanned[..num_online]) != pick {
+            if pick_for(&scanned[..num_online]) != pick {
                 PICK_DIFF.fetch_add(1, Ordering::Relaxed);
             }
             // First mismatch only, in detail (this runs from the tick ISR:
@@ -2359,7 +2365,7 @@ unsafe fn do_schedule(why: SwitchReason) {
     let mut rt_force = false;
     // SCHED_ASYM_CPUS: the tick found the running task too big for this CPU. It
     // goes, even when what is left to run here is only the idle task.
-    let misfit_to = fairq::misfit_take(cpu);
+    let misfit_to = fairq::misfit_take(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed));
     if misfit_to.is_some() {
         rt_force = true;
     }
@@ -2695,12 +2701,13 @@ unsafe fn do_schedule(why: SwitchReason) {
             // K-C26 discriminator 2: `set_state(Ready)` above already happened,
             // so a refusal here leaves this task Ready and in no queue — the
             // terminal signature. Counted, not ignored.
-            let sent = match misfit_to {
+            match misfit_to {
                 Some(to) => fairq::misfit_send(cpu, old_idx, to),
-                None => false,
-            };
-            if !sent && !cpu_requeue_self(cpu, old_idx) { // enqueues at old.priority level
-                SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+                None => {
+                    if !cpu_requeue_self(cpu, old_idx) { // enqueues at old.priority level
+                        SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
             }
         } else if old.state() == TaskState::Zombie {
             // The slot is freed only once this hart is off its stack, by

@@ -95,6 +95,11 @@ impl ArchEntry for Entry {
     fn boot_patch(&self, text_start: usize, text_end: usize) {
         crate::boot::spin_patch::patch(text_start, text_end)
     }
+    fn cpu_commitments(&self) -> (u64, u64) {
+        // The vector save area is sized from the boot hart's `vlenb`.
+        (azos_arch::fp::vlen_commitment() as u64, 0)
+    }
+
     fn wake_secondaries(&self, num_cpus: usize) {
         crate::entry::riscv64::smp::wake_secondaries(num_cpus)
     }

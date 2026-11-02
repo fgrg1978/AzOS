@@ -69,15 +69,12 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     // is read for its core type and before its mitigation MSRs below.
     super::ext::ucode::this_cpu(cpu);
     // CPUID answers for the CPU that runs it: this CPU's core type, for the
-    // energy model the boot CPU makes once every CPU has recorded. Held here,
-    // interrupts off, until it has installed it: no CPU enters the scheduler
-    // before the model is in place (`azos_sched::energy::install`'s contract).
-    #[cfg(feature = "energy")]
-    {
-        azos_arch::ext::hybrid::record_this_cpu(cpu);
-        while !ENERGY_RELEASE.load(Ordering::Acquire) {
-            core::hint::spin_loop();
-        }
+    // scheduler's core classes and the energy model, which the boot CPU installs
+    // once every CPU has recorded. Held here, interrupts off, until then: no CPU
+    // enters the scheduler before they are in place.
+    azos_arch::ext::hybrid::record_this_cpu(cpu);
+    while !CORE_TYPES_RELEASE.load(Ordering::Acquire) {
+        core::hint::spin_loop();
     }
     let caps = crate::boot_hooks::paging_caps();
     let _ = azos_arch::mmu::cpu::setup_paging_regs(&caps);
@@ -116,8 +113,7 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
 /// The boot CPU has installed the energy model (or decided there is none):
 /// the secondaries may go on. Set once, by `wake_secondaries`, whatever the
 /// model; a CPU that comes up later (hotplug) finds it set.
-#[cfg(feature = "energy")]
-static ENERGY_RELEASE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CORE_TYPES_RELEASE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Wait up to `s` seconds for `done`, polling: this is the window in which a
 /// started secondary records its core type, a few microseconds in practice.
@@ -176,6 +172,7 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
     azos_drv_sys::uart::enable_smp_lock();
     kprintln!("[SMP] UART lock enabled");
     kprintln!("[SMP] Starting {} secondary CPU(s) via INIT-SIPI-SIPI...", num_cpus.saturating_sub(1));
+    azos_arch::ext::hybrid::record_this_cpu(0);
     // SAFETY: boot CPU, once, after the per-CPU areas and stacks exist.
     let online = unsafe { azos_sched::smp::wake_harts(num_cpus) };
     if online != num_cpus {
@@ -191,18 +188,18 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
     }
 
     // The started secondaries record their core type and wait in their entry;
-    // the energy model is installed, then they go on (`ENERGY_RELEASE`). A
-    // secondary that never records is named, and the model refuses it.
-    #[cfg(feature = "energy")]
-    {
-        for cpu in 1..online {
-            if !poll_until(2, || azos_arch::ext::hybrid::recorded(cpu).is_some()) {
-                azos_drv_sys::kerr!("[SMP] CPU {} started but never recorded its core type", cpu);
-            }
+    // the core classes and the energy model are installed, then they go on
+    // (`CORE_TYPES_RELEASE`). A secondary that never records is named, and
+    // neither takes it for a CPU of any type.
+    for cpu in 1..online {
+        if !poll_until(2, || azos_arch::ext::hybrid::recorded(cpu).is_some()) {
+            azos_drv_sys::kerr!("[SMP] CPU {} started but never recorded its core type", cpu);
         }
-        crate::boot::install_energy_after_smp(num_cpus, online);
-        ENERGY_RELEASE.store(true, Ordering::Release);
     }
+    super::ext::hybrid::install_core_classes(online);
+    #[cfg(feature = "energy")]
+    crate::boot::install_energy_after_smp(num_cpus, online);
+    CORE_TYPES_RELEASE.store(true, Ordering::Release);
 
     let p = azos_arch::platform_impl::platform();
     for cpu in 1..online {

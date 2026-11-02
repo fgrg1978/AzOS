@@ -294,8 +294,8 @@ pub fn select_hook(f: BlocksFn) -> bool {
     false
 }
 
-/// Back to the portable path: a CPU that came up after [`select_hook`] lacks
-/// the hook's instructions.
+/// Back to the portable path, for good: a CPU that came up after [`select_hook`]
+/// lacks the hook's instructions. Needs no write to the sealed hook.
 pub fn select_generic() {
     MODE.store(MODE_GENERIC, Ordering::Release);
 }

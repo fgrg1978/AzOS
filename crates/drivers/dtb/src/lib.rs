@@ -558,9 +558,9 @@ struct Walker {
     in_cpu0: bool,
     /// [`isa_bits`] of the ISA properties of the `cpu@` node being read.
     cpu_isa: Option<u32>,
-    cpu0_isa: u32,
-    /// The ISA every enabled `cpu@` node but `cpu@0` declares.
-    other_cpus_isa: u32,
+    /// What every enabled `cpu@` node so far declares.
+    cpus_isa: u32,
+    cpus_isa_seen: bool,
     /// True when we are inside a node whose name starts with
     /// "serial" or "uart" at any depth.
     in_uart: bool,
@@ -656,15 +656,13 @@ pub const MAX_CPU_REG: usize = azos_limits::NR_CPUS;
 
 impl Walker {
     /// The `cpu@` node ends. A task may run on any CPU that runs at all, so the
-    /// ISA reported is what they all declare.
+    /// ISA reported is what they all declare, and one that declares none has none.
     fn commit_cpu_isa(&mut self) {
-        if let Some(isa) = self.cpu_isa.take() {
-            if self.in_cpu0 {
-                self.cpu0_isa = isa;
-            } else if !self.cpu_disabled {
-                self.other_cpus_isa &= isa;
-            }
+        if self.in_cpu_child && !self.cpu_disabled {
+            self.cpus_isa &= self.cpu_isa.unwrap_or(0);
+            self.cpus_isa_seen = true;
         }
+        self.cpu_isa = None;
     }
 
     /// Read the next big-endian u32 token from the structure block and
@@ -1671,8 +1669,8 @@ pub unsafe fn dtb_pci_host(ptr: *const u8) -> Option<PciHost> {
         in_cpu_child: false,
         in_cpu0: false,
         cpu_isa: None,
-        cpu0_isa: 0,
-        other_cpus_isa: !0,
+        cpus_isa: !0,
+        cpus_isa_seen: false,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,
@@ -2262,8 +2260,8 @@ pub unsafe fn dtb_parse(ptr: *const u8) -> Option<DtbInfo> {
         in_cpu_child: false,
         in_cpu0: false,
         cpu_isa: None,
-        cpu0_isa: 0,
-        other_cpus_isa: !0,
+        cpus_isa: !0,
+        cpus_isa_seen: false,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,
@@ -2293,7 +2291,7 @@ pub unsafe fn dtb_parse(ptr: *const u8) -> Option<DtbInfo> {
     walker.walk();
     // A walk that stopped inside a `cpu@` node still commits what it read.
     walker.commit_cpu_isa();
-    let isa = walker.cpu0_isa & walker.other_cpus_isa;
+    let isa = if walker.cpus_isa_seen { walker.cpus_isa } else { 0 };
     apply_isa(&mut walker.info, isa);
     Some(walker.info)
 }
@@ -2363,8 +2361,8 @@ pub unsafe fn dtb_cpu_regs(ptr: *const u8, out: &mut [u64]) -> Option<usize> {
         in_cpu_child: false,
         in_cpu0: false,
         cpu_isa: None,
-        cpu0_isa: 0,
-        other_cpus_isa: !0,
+        cpus_isa: !0,
+        cpus_isa_seen: false,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,
@@ -2450,8 +2448,8 @@ pub unsafe fn dtb_pl011_irq(ptr: *const u8) -> Option<Pl011Irq> {
         in_cpu_child: false,
         in_cpu0: false,
         cpu_isa: None,
-        cpu0_isa: 0,
-        other_cpus_isa: !0,
+        cpus_isa: !0,
+        cpus_isa_seen: false,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,

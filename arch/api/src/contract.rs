@@ -337,6 +337,11 @@ pub trait ArchEntry {
     /// no such sites.
     fn boot_patch(&self, text_start: usize, text_end: usize);
 
+    /// What the kernel committed to from the boot CPU's reading and every CPU must
+    /// give, read on the calling CPU with no lock and no atomic read-modify-write:
+    /// `(must be equal, must all be present)`. See `boot::smp`.
+    fn cpu_commitments(&self) -> (u64, u64);
+
     /// Start every secondary CPU up to `num_cpus` (SBI HSM, PSCI, INIT-SIPI).
     fn wake_secondaries(&self, num_cpus: usize);
 

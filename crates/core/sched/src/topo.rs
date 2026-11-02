@@ -163,6 +163,8 @@ pub struct Topology {
     /// Every CPU stated a `capacity-dmips-mhz`; otherwise all are
     /// [`CAPACITY_SCALE`].
     pub capacity_known: bool,
+    /// Some CPUs stated one and others none, so none is believed.
+    pub capacity_partial: bool,
     /// The source's levels did not nest, or did not partition the CPUs, and
     /// groups were merged until they did.
     pub irregular: bool,
@@ -279,6 +281,7 @@ pub fn build(raw: &[CpuRaw], source: Source) -> Topology {
     }
 
     let capacity_known = n != 0 && r.iter().all(|c| c.dmips != 0);
+    let capacity_partial = !capacity_known && r.iter().any(|c| c.dmips != 0);
     let mut caps = [CAPACITY_SCALE; MAX_CPUS];
     if capacity_known {
         let max = r.iter().map(|c| c.dmips).max().unwrap_or(1) as u64;
@@ -296,7 +299,7 @@ pub fn build(raw: &[CpuRaw], source: Source) -> Topology {
         }
     }
     let differs = classes[..n].iter().any(|&c| c != 0);
-    Topology { n, masks: m, caps, classes, source, capacity_known, irregular, differs }
+    Topology { n, masks: m, caps, classes, source, capacity_known, capacity_partial, irregular, differs }
 }
 
 impl Topology {
