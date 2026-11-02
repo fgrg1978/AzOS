@@ -360,9 +360,6 @@ pub(super) unsafe fn begin(cpu: usize, voluntary: bool) {
         return;
     }
     unsafe { update_curr(idx, p) };
-    if crate::topo::ASYM && voluntary && MISFIT[cpu].run.load(Relaxed) != 0 {
-        MISFIT[cpu].run.store(0, Relaxed);
-    }
     if voluntary && st == TaskState::Running {
         let mut e = ent(idx, p);
         eevdf::yield_now(&mut e);
@@ -855,18 +852,20 @@ unsafe fn misfit_look(cpu: usize, cur: usize) -> bool {
 }
 
 /// The top of `do_schedule` on `cpu`, leaving `cur`: the CPU it must go to, if the
-/// tick decided so of this very task and it may still go. Read once.
-#[inline]
-pub(super) unsafe fn misfit_take(cpu: usize, cur: usize) -> Option<usize> {
-    if !crate::topo::ASYM {
-        return None;
+/// tick decided so of this very task and it may still go. Read once. A voluntary
+/// switch ends the task's run on this CPU.
+#[inline(never)]
+pub(super) unsafe fn misfit_take(cpu: usize, cur: usize, voluntary: bool) -> Option<usize> {
+    let m = &MISFIT[cpu];
+    if voluntary && m.run.load(Relaxed) != 0 {
+        m.run.store(0, Relaxed);
     }
-    let v = MISFIT[cpu].to.load(Relaxed);
+    let v = m.to.load(Relaxed);
     if v == 0 {
         return None;
     }
-    MISFIT[cpu].to.store(0, Relaxed);
-    if v >> 32 != cur as u64 + 1 || !misfit_may_move(cur, prio_of(cur)) {
+    m.to.store(0, Relaxed);
+    if v >> 32 != cur as u64 + 1 || cur >= MAX_TASKS || !misfit_may_move(cur, prio_of(cur)) {
         return None;
     }
     Some((v as u32 - 1) as usize)

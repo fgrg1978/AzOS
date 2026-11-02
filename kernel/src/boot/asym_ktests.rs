@@ -217,7 +217,7 @@ azos_ktest::ktest_late! {
 
 // A task that computes for longer than the misfit window and sleeps: placement and
 // the misfit move must agree, or it pays a move every period.
-const PERIODS: u32 = 6;
+const PERIODS: u32 = 12;
 static HOG_PERIOD: AtomicU32 = AtomicU32::new(0);
 static HOG_TID: AtomicU32 = AtomicU32::new(0);
 
@@ -254,7 +254,7 @@ azos_ktest::ktest_late! {
         }
         let moved = azos_sched::scheduler::fairq::misfit_moves() - moves;
         kprintln!("# asym_periodic_hog: {} misfit moves over {} periods", moved, PERIODS);
-        if moved > PERIODS / 2 {
+        if moved > PERIODS / 4 {
             return Err("the hog was moved as a misfit about every period");
         }
         Ok(())

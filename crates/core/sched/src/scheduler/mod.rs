@@ -2378,7 +2378,13 @@ unsafe fn do_schedule(why: SwitchReason) {
     let mut rt_force = false;
     // SCHED_ASYM_CPUS: the tick found the running task too big for this CPU. It
     // goes, even when what is left to run here is only the idle task.
-    let misfit_to = fairq::misfit_take(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed));
+    // Where every CPU is alike this is one load of a flag (none at all with the
+    // option off); a misfit needs CPUs that differ.
+    let misfit_to = if topo::ASYM && topo::differs() {
+        fairq::misfit_take(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed), matches!(why, SwitchReason::Voluntary))
+    } else {
+        None
+    };
     if misfit_to.is_some() {
         rt_force = true;
     }

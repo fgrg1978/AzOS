@@ -65,12 +65,10 @@ pub(crate) fn refuse_if_it_differs(cpu: usize) {
         return;
     }
     let (equal, have) = ARCH_ENTRY.cpu_commitments();
-    let mut asid = ARCH.asid_bits() as u64;
-    if cpu + 1 == azos_percpu::nr_cpu_ids() && canary!("asym-cpu-mismatch-last") {
-        asid = COMMITTED[0].load(Ordering::Acquire).saturating_sub(1);
-    }
+    let asid = ARCH.asid_bits() as u64;
+    let claimed = cpu + 1 == azos_percpu::nr_cpu_ids() && canary!("asym-cpu-mismatch-last");
     let [want_asid, want_equal, want_have] = [0, 1, 2].map(|i| COMMITTED[i].load(Ordering::Acquire));
-    let differs = if asid < want_asid {
+    let differs = if asid < want_asid || claimed {
         Some((0, asid))
     } else if equal != want_equal {
         Some((1, equal))
