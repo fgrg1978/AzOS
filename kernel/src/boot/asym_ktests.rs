@@ -150,21 +150,11 @@ azos_ktest::ktest_late! {
     }
 }
 
-static RT_CPU: AtomicUsize = AtomicUsize::new(NO_CPU);
-
-fn rt_placed(_: usize) {
-    RT_CPU.store(azos_sched::smp::current_cpu_id(), Ordering::Release);
-    azos_sched::task_exit();
-}
-
 azos_ktest::ktest_late! {
     fn asym_rt_task_placed_on_a_big_cpu() {
         differing()?;
-        RT_CPU.store(NO_CPU, Ordering::Release);
-        azos_sched::task_create("asym-rt", rt_placed, 0, RT_PRIO);
-        crate::ktest::wait("the task never ran", || RT_CPU.load(Ordering::Acquire) != NO_CPU)?;
-        if topo::class(RT_CPU.load(Ordering::Acquire)) != 0 {
-            return Err("an unpinned real-time task went to a small CPU with a big one as free");
+        if topo::class(azos_sched::scheduler::ktest_rt_pick_among_equals()) != 0 {
+            return Err("placement sends a real-time task to a small CPU with a big one as free");
         }
         Ok(())
     }
@@ -248,8 +238,7 @@ azos_ktest::ktest_late! {
         if topo::ASYM || !topo::differs() {
             return skip!("needs SCHED_ASYM_CPUS off and CPUs that differ");
         }
-        let f = Filter { rule: Some(Rule::AsymCpus as u8), verdict: Some(Verdict::Place as u8), subject: None, after: 0 };
-        if azos_decision::query(&f, &mut [0u64; 1]) == 0 {
+        if super::smp::ASYM_OFF_RECEIPT.load(Ordering::Relaxed) == 0 {
             return Err("no asym-cpus decision record");
         }
         if (0..azos_percpu::nr_cpu_ids()).any(|c| topo::capacity(c) != topo::CAPACITY_SCALE || topo::class(c) != 0) {

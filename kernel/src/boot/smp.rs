@@ -142,6 +142,11 @@ fn firmware_labels(n: usize, dtb_ptr: usize, raw: &mut [CpuRaw]) -> topo::Source
 #[cfg(target_arch = "x86_64")]
 use crate::entry::x86_64::smp::firmware_labels;
 
+/// The record [`report_core_classes`] wrote, for its ktest: by then the ring has
+/// long moved on.
+#[cfg(feature = "ktest")]
+pub(crate) static ASYM_OFF_RECEIPT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// The CPUs differ in core class: said once, and with `SCHED_ASYM_CPUS` off
 /// recorded, so a budget measured on one core type is not admitted on another
 /// unnoticed.
@@ -150,7 +155,9 @@ pub(crate) fn report_core_classes(cpus: usize, classes: u64) {
         kprintln!("[TOPO] {} core classes: the biggest is class 0", classes);
     } else if !canary!("asym-n-silent") {
         azos_drv_sys::kwarn!("[TOPO] {} core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal", classes);
-        azos_decision::record(azos_decision::Rule::AsymCpus, azos_decision::Verdict::Place, cpus as u32, [classes, 0, 0]);
+        let _id = azos_decision::record_receipt(azos_decision::Rule::AsymCpus, azos_decision::Verdict::Place, cpus as u32, [classes, 0, 0]);
+        #[cfg(feature = "ktest")]
+        ASYM_OFF_RECEIPT.store(_id, core::sync::atomic::Ordering::Relaxed);
     }
 }
 

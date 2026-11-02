@@ -632,14 +632,14 @@ config SCHED_ASYM_CPUS
 
 config SCHED_MISFIT_TICKS
     int "Ticks a fair task holds a small CPU before it counts as misfit"
-    depends on SCHED_ASYM_CPUS && SCHED_BALANCE
     range 1 1000
     default 4
     help
       A fair task that has run on a CPU smaller than the biggest for this many
       consecutive ticks, with a bigger CPU idle, is moved there at once. A
       queued task needs no such move: the balancer has it. Longer waits are
-      less eager to move short bursts. A real-time task is never moved.
+      less eager to move short bursts. A real-time task is never moved. No
+      effect without SCHED_ASYM_CPUS and SCHED_BALANCE.
 
 config SCHED_EAS
     bool "Energy-aware wake placement on asymmetric CPUs"
