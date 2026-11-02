@@ -687,7 +687,7 @@ mod dma_contig_canary {
 pub(crate) fn late_core_class_check(num_cpus: usize) {
     let Some(topo) = azos_topology::get() else { return };
     if BUILTIN_ROWS.load(core::sync::atomic::Ordering::Relaxed) {
-        kprintln!("[TOPO] built-in real-time rows are not tied to a core class: their budgets were measured on none");
+        azos_drv_sys::kwarn!("[TOPO] built-in real-time rows are not tied to a core class: their budgets were measured on none");
         return;
     }
     let mut classes = [0u8; azos_sched::topo::MAX_CPUS];

@@ -16951,7 +16951,7 @@ PY
     # the rest runs: install_energy_after_smp, the core classes, the late check.
     ASYM_X86_RUN_Y="$ASYM_RUN_Y
 ^\[ENERGY\] mode=.* model=cpuid
-^\[TOPO\] built-in real-time rows are not tied to a core class"
+\[TOPO\] built-in real-time rows are not tied to a core class"
     asym_x86_row() { # asym_x86_row <label> <y|n> <expected not-ok> <canaries> [patterns]
         local extra=",energy"
         [ "$2" = y ] && extra=",energy,CONFIG_SCHED_ASYM_CPUS=y"

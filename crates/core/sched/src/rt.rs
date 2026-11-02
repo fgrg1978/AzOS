@@ -1102,7 +1102,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         let t = unsafe { task_mut(idx) };
         let online_mask = if online >= 32 { u32::MAX } else { (1u32 << online) - 1 };
         let mut mask = if r.cpu_mask == 0 { online_mask } else { r.cpu_mask & online_mask };
-        let explicit = r.cpu_mask != 0 || t.pinned().is_some();
+        let mut explicit = r.cpu_mask != 0 || t.pinned().is_some();
         // The CPUs the request names, before the caller's own hart narrows it.
         let mut span = mask;
         if let Some(pin) = t.pinned() {
@@ -1112,6 +1112,12 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
             span = mask;
         } else if unsafe { PER_CPU[me].current_idx.load(Ordering::Relaxed) } == idx {
             mask &= 1u32.checked_shl(me as u32).unwrap_or(0);
+            // A running task that names no CPU is pinned where it runs: one
+            // class. `SYS_SCHEDCTL` is this request; ring 3 has no pin of its own.
+            if r.cpu_mask == 0 {
+                span = mask;
+                explicit = true;
+            }
         }
         asked_mask = mask;
         if crate::topo::ASYM && crate::topo::differs() && !canary_class_skipped() {

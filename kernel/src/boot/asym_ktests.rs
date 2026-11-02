@@ -88,6 +88,20 @@ fn budget(cpu_mask: u32) -> Reservation {
     Reservation { runtime_us: 100, period_us: 10_000, deadline_us: 0, hard: true, cpu_mask, band: false, level: FAIR_PRIO }
 }
 
+static SELF_HART: AtomicUsize = AtomicUsize::new(NO_CPU);
+
+/// What `SYS_SCHEDCTL` asks of the caller's own task: no CPU named.
+fn reserves_itself(_: usize) {
+    let idx = azos_sched::idx_for_tid(azos_sched::current_task_tid()).expect("the running task has a slot");
+    let me = azos_sched::smp::current_cpu_id();
+    let got = rt::reserve(idx, budget(0));
+    if got.is_ok() {
+        rt::ktest_release(idx);
+    }
+    SELF_HART.store(if got == Ok(me) { me } else { NO_CPU - 1 }, Ordering::Release);
+    azos_sched::task_exit();
+}
+
 static PARKED_TID: AtomicU32 = AtomicU32::new(0);
 static PARKED_GO: AtomicBool = AtomicBool::new(false);
 
@@ -111,8 +125,9 @@ fn refused_on_record(tid: u32, from: u64) -> bool {
 }
 
 azos_ktest::ktest_late! {
-    // What `SYS_SCHEDCTL` asks (mask 0, the caller's own pin decides), and
-    // a request that names CPUs of two classes.
+    // A task that is not running and names no CPU, and a request that names CPUs
+    // of two classes, are refused; a pin, a mask of one class and a running
+    // task's own request (`SYS_SCHEDCTL`'s) are admitted.
     fn asym_admission_within_one_class() {
         differing()?;
         let small = small_cpu().ok_or("no small CPU")?;
@@ -134,6 +149,12 @@ azos_ktest::ktest_late! {
         rt::ktest_release(idx);
         PARKED_GO.store(true, Ordering::Release);
         crate::ktest::wait("the parked task never left", || PARKED_TID.load(Ordering::Acquire) == 0)?;
+        SELF_HART.store(NO_CPU, Ordering::Release);
+        azos_sched::task_create("asym-self", reserves_itself, 0, FAIR_PRIO);
+        crate::ktest::wait("the task never asked", || SELF_HART.load(Ordering::Acquire) != NO_CPU)?;
+        if SELF_HART.load(Ordering::Acquire) == NO_CPU - 1 {
+            return Err("a running task's own request, naming no CPU, was not admitted where it runs");
+        }
         if verdicts != (Err(Refusal::CoreClass), Err(Refusal::CoreClass)) {
             return Err("an unpinned task, or a mask over two classes, was not refused core-class");
         }

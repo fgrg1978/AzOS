@@ -622,8 +622,10 @@ config SCHED_ASYM_CPUS
       boot admission of real-time rows is a single-type cluster: a signed
       row with a reservation declares the core class its budget was measured
       on (`core_class`, 0 the biggest) and a `cpu_mask` of CPUs of that class,
-      or the topology is refused with a decision record. Budgets are not scaled by
-      capacity and there are no per-class budgets.
+      or the topology is refused with a decision record. At run time a request
+      names one class by a mask or a pin, or by being made by the running task
+      for itself, which is then pinned where it runs (`SYS_SCHEDCTL`). Budgets
+      are not scaled by capacity and there are no per-class budgets.
 
       n: every CPU counts as equal and none of this is compiled in. A machine
       that reports differing CPUs still boots, with a warning line and a

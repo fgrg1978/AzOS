@@ -432,8 +432,9 @@ impl Refusal {
 }
 
 /// Single-type cluster at run time: where CPUs differ in core class, a
-/// reservation names the CPUs it may run on (`explicit`: the request or the
-/// task's pin did, not the default of every CPU) and they are of one class.
+/// reservation names the CPUs it may run on (`explicit`: the request, the
+/// task's pin or its running there did, not the default of every CPU) and they
+/// are of one class.
 pub fn single_class(explicit: bool, mask: u32, class_of: impl Fn(usize) -> u8) -> Result<(), Refusal> {
     if !explicit {
         return Err(Refusal::CoreClass);
