@@ -471,7 +471,7 @@ pub(super) unsafe fn unlink(cpu: usize, idx: usize) {
 #[cfg(feature = "ktest")]
 pub fn ktest_check(cpu: usize) -> Result<usize, &'static str> {
     use crate::eevdf_tree::Store as _;
-    let _g = CpuLockIrqsOff::acquire(cpu);
+    let _g = CpuLockGuard::acquire(cpu);
     let t = unsafe { tree(cpu) };
     t.check(&NODES)?;
     let mut listed = 0;
