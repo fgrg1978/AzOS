@@ -87,6 +87,7 @@ fn refuse_if_it_differs(cpu: usize) {
 
 /// Boot CPU, once the others have had their time: the refused ones, on record.
 pub(crate) fn report_refused_cpus() {
+    let mut refused = 0;
     for (cpu, slot) in REFUSED.iter().enumerate() {
         let fact = slot[0].load(Ordering::Acquire);
         if fact != 0 {
@@ -94,8 +95,10 @@ pub(crate) fn report_refused_cpus() {
             let boot = COMMITTED[i].load(Ordering::Acquire);
             azos_drv_sys::kerr!("[SMP] CPU {} refused: {} differs from the boot CPU ({:#x}, boot {:#x}): it stays offline", cpu, FACTS[i], value, boot);
             azos_decision::record(azos_decision::Rule::CpuRefused, azos_decision::Verdict::Refuse, cpu as u32, [i as u64, boot, value]);
+            refused += 1;
         }
     }
+    kprintln!("[SMP] {} CPU(s) refused for differing from the boot CPU", refused);
 }
 
 /// Secondary-CPU entry point, the ONE symbol both `boot.S` files call once

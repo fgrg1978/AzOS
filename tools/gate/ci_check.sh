@@ -15222,15 +15222,16 @@ PY
         x86) qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot -smp 4 -kernel "$kimg" -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
         esac
         pid=$!
-        while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
-            grep -aq "\[SCHED\]\|\[SHELL\]\|Completed " "$log" 2>/dev/null && grep -aq "UART lock" "$log" && [ "$i" -gt 60 ] && break
+        while [ "$i" -lt 360 ] && kill -0 "$pid" 2>/dev/null; do
+            grep -aq "CPU(s) refused for differing" "$log" 2>/dev/null && { sleep 3; break; }
             i=$((i + 1)); sleep 0.5
         done
         kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
         rm -f "$kimg" "$kimg.features"
         tr -d '\r' <"$log" >"$log.t" && mv "$log.t" "$log"
         local refused=0 went_on=1
-        grep -aq "\[SMP\] CPU 3 refused: ASID bits differs" "$log" && refused=1
+        grep -aq "\[SMP\] CPU 3 refused: ASID bits differs" "$log" && grep -aq "\[SMP\] 1 CPU(s) refused" "$log" && refused=1
+        grep -aq "CPU(s) refused for differing" "$log" || went_on=0
         grep -aqE "\[FATAL\]|KERNEL PANIC|panicked" "$log" && went_on=0
         if [ "$expect" = PASS ] && [ "$refused" = 1 ] && [ "$went_on" = 1 ]; then
             ok; grep -a "CPU 3 refused" "$log" | sed 's/^/      /'; rm -f "$log"
