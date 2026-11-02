@@ -13,6 +13,10 @@ x86-ucode-canary = []
 # cpu/features.rs (pulled in for the vendor) reads it; its tests are in
 # tests/host/arch-tests.
 x86-cpuid-canary = []
+# acpi.rs `rounds_to_pages` only checks that base + len fits: a region that
+# reaches the end of the address space is kept, and the boot code's page
+# rounding of it overflows (acpi_tests::a_region_the_page_rounding_overflows_is_refused).
+x86-region-round-canary = []
 
 [dependencies]
 azos_arch_api = { path = "../../../arch/api" }
