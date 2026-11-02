@@ -410,6 +410,10 @@ mod refusal_limit_ktests {
             azos_decision::flush_limited();
             let (mut flooded, mut quieted, mut held) = (0u64, 0u64, 0u64);
             azos_decision::for_each_held(|p| {
+                // The ring takes every call; the journal only what went durable.
+                if !azos_decision::durable_held(p.seq) {
+                    return;
+                }
                 if p.rule == Rule::DeadlineExpired as u8 && p.subject == flood {
                     flooded += 1;
                 } else if p.rule == Rule::DeadlineExpired as u8 && p.subject == quiet {
