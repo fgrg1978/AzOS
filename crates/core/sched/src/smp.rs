@@ -186,7 +186,7 @@ pub unsafe fn wake_hart(hart_id: usize) -> isize {
 /// How a secondary CPU stands against what the boot CPU committed to: 0 unknown,
 /// 1 it fits, 2 refused. A store, not a read-modify-write: the CPU that writes it
 /// may lack the atomics the kernel selected.
-static CPU_CHECK: [core::sync::atomic::AtomicU8; MAX_CPUS] = [const { core::sync::atomic::AtomicU8::new(0) }; MAX_CPUS];
+static CPU_CHECK: [core::sync::atomic::AtomicU8; crate::topo::MAX_CPUS] = [const { core::sync::atomic::AtomicU8::new(0) }; crate::topo::MAX_CPUS];
 
 /// The calling CPU has been compared with the boot CPU.
 pub fn note_cpu_checked(cpu: usize, refused: bool) {
@@ -206,7 +206,8 @@ pub fn cpu_refused(cpu: usize) -> bool {
 fn drop_refused_cpus(mut alive: u64, boot: usize, num_cpus: usize) -> u64 {
     let hz = azos_drv_sys::timebase::TIMER_FREQ;
     let until = azos_drv_sys::timebase::now() + 5 * hz;
-    for cpu in (0..num_cpus).filter(|&c| c != boot && alive >> c & 1 != 0) {
+    let started = alive;
+    for cpu in (0..num_cpus).filter(|&c| c != boot && started >> c & 1 != 0) {
         while CPU_CHECK[cpu].load(Ordering::Acquire) == 0 && azos_drv_sys::timebase::now() < until {
             core::hint::spin_loop();
         }
