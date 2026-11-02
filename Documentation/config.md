@@ -1120,6 +1120,7 @@ The index lists every declared option: 1240.
 | `SCHED_REMOTE_WAKE_DEFER` | `config/kernel/Kconfig.sched` | Defer a contended wake onto another CPU to that CPU |
 | `SCHED_RT_UTIL_SMOKE` | `config/axes/Kconfig.build` | Gate kernel: the RT utilisation smoke (sched-rt-util rows) |
 | `SCHED_SAVING_GATE_CLOCK_EVERY` | `config/kernel/Kconfig.sched` | Spins between clock reads in the context-saving gate |
+| `SCHED_SAVING_GATE_REDRAWS` | `config/kernel/Kconfig.sched` | Candidates tried after one that outlasts the context-saving gate |
 | `SCHED_SAVING_GATE_US` | `config/kernel/Kconfig.sched` | Longest wait for a picked task's context save (us) |
 | `SCHED_SWITCH_COUNTERS` | `config/kernel/Kconfig.sched` | Count each task's context switches (voluntary / preempted) |
 | `SCHED_TIMER_HEAP` | `config/kernel/Kconfig.sched` | Timer sleepers in an indexed min-heap |

@@ -2525,7 +2525,7 @@ unsafe fn do_schedule(why: SwitchReason) {
     // taken; with none that fits the running task keeps the hart, or the
     // hart idles. The running task is not kept when the RT pick forces it
     // off, nor when a sibling is displaced for a refused candidate.
-    let (next_idx, next_t) = if smt != 0 {
+    let (mut next_idx, mut next_t) = if smt != 0 {
         let old_runs = !rt_force
             && core_idle.is_none()
             && old_idx < MAX_TASKS
@@ -2574,7 +2574,7 @@ unsafe fn do_schedule(why: SwitchReason) {
         (next_idx, next_t)
     };
 
-    let next = &mut *next_t;
+    let mut next = &mut *next_t;
     // If `next` is mid-transition (context_saving == true — e.g. this
     // exact task was just preempted/blocked on another hart and its
     // context_switch.S save hasn't finished yet), wait for it. The
@@ -2620,26 +2620,27 @@ unsafe fn do_schedule(why: SwitchReason) {
             // **Give the task back rather than dispatching it.** Restoring a
             // context nobody has finished saving is the double-dispatch
             // corruption this gate exists to prevent, so waiting it out is not
-            // optional -- but neither is hanging. Put it back where the
-            // ordinary machinery will find it again and return without
-            // switching; the hart idles or takes its next tick, and the task
-            // is retried with the flag presumably settled.
-            //
-            // Safe: the pick dequeued it, so it is nowhere, and
-            // `Ready` + enqueue is the one state that is legal.
-            // `cpu_enqueue_locked` refuses a task that is somehow still
-            // queued, so this cannot double-list it.
-            // The RT pick (`rt::pick`) removes its task from the ring with
-            // `cpu_remove` under the CPU lock, so the same holds for it. (The
-            // old EDF pick claimed `Running` without leaving its ring, U02-4;
-            // it is deleted.)
-            SPIN_GATE_EXPIRED.fetch_add(1, Ordering::Relaxed);
-            next.set_state(TaskState::Ready);
-            if !cpu_requeue_self(cpu, next_idx) {
-                SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+            // optional -- but neither is hanging, nor letting one stuck flag
+            // on the queue top starve everything below it: the stuck task
+            // stays out of this pass, the next candidate is taken, and the
+            // hart keeps its task or idles only when none is left. The stuck
+            // tasks go back to their queue (`Ready` + enqueue is the one
+            // state that is legal: the pick dequeued them, and
+            // `cpu_enqueue_locked` refuses a task that is still queued), and
+            // are retried on the next pass with the flag presumably settled.
+            // The RT pick removes its task from the ring under the CPU lock,
+            // so the same holds for it.
+            match redraw_past_stuck(cpu, old_idx, smt != 0, &mut rt_force, next_idx) {
+                Some(j) => {
+                    next_idx = j;
+                    next_t = task_mut(j);
+                    next = &mut *next_t;
+                }
+                None => {
+                    clear_saving_on_no_switch(cpu);
+                    return;
+                }
             }
-            clear_saving_on_no_switch(cpu);
-            return;
         }
     }
     crate::swcensus::gated();
