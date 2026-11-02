@@ -13,7 +13,7 @@
 //! hart id in them is accepted when, in its enclosing function,
 //!
 //! - a mask (`disable_all`, `irq_off`, `IrqOff::new`, `critical_section`,
-//!   `lock_irqsave`, `with_cpu`, `cli`, `lock_local`, `irq_save`) comes
+//!   `lock_irqsave`, `with_cpu`, `cli`, `irq_save`) comes
 //!   before it and no `restore` closes that mask before the read; or
 //! - a `percpu-hint:` comment says why a stale id is harmless there (a
 //!   placement hint, a statistic, a context that already runs with interrupts
@@ -46,7 +46,6 @@ const MASKS: &[&str] = &[
     "lock_irqsave(",
     "with_cpu(",
     "cli()",
-    "lock_local(",
     "irq_save(",
 ];
 

@@ -818,16 +818,6 @@ pub fn sweep() {
     crate::cap::senders::flush();
 }
 
-/// Returns `true` iff `tid` currently maps to a live task-pool slot.
-///
-/// Kept under the historical name so existing callers compile, but the
-/// meaning changed with W3-F4: it is no longer "the integer is small
-/// enough", it is "this TID names a live task".
-#[inline]
-pub fn is_valid_tid(tid: u32) -> bool {
-    slot_for(tid).is_some()
-}
-
 /// Look up a capability for the named task.
 ///
 /// Wraps [`CapTable::get`]; returns `Err(CapError::Stale)` if `tid`
@@ -1034,6 +1024,16 @@ pub fn grant_op_masked<T: CapTarget>(
 }
 
 /// A copy of the capability `handle` of `from`'s table, for `to`'s table, naming
+/// `resource` (a duplicated descriptor names another one): the same kind,
+/// rights, badge and place in the warrant tree, so the copy is a sibling of
+/// the original. A fork duplicates a descriptor and delegates nothing: a revoke
+/// of any ancestor still reaches the copy and a deadline is not shed by
+/// forking. `None` for a handle that is void (expired, revoked, stale), for a
+/// copy whose parent was revoked while it was being made, or a full table. The
+/// two locks are never held together, so the parent is looked at again once
+/// the copy is installed: a revoke that finished before the install has swept
+/// every table without the copy in it, and one that starts after finds it.
+pub fn grant_like(from: u32, handle: CapHandle, to: u32, resource: u32) -> Option<CapHandle> {
     grant_like_between(from, handle, to, resource, || {})
 }
 
@@ -1042,13 +1042,6 @@ pub fn grant_op_masked<T: CapTarget>(
 /// (host test `a_fork_copy_made_across_a_revoke_is_not_kept`).
 #[doc(hidden)]
 pub fn grant_like_between(from: u32, handle: CapHandle, to: u32, resource: u32, between: impl FnOnce()) -> Option<CapHandle> {
-/// `resource` (a duplicated descriptor names another one): the same kind,
-/// rights, badge and place in the warrant tree, so the copy is a sibling of
-/// the original. A fork duplicates a descriptor and delegates nothing: a revoke
-/// of any ancestor still reaches the copy and a deadline is not shed by
-/// forking. `None` for a handle that is void (expired, revoked, stale) or a
-/// full table. The two locks are never held together.
-pub fn grant_like(from: u32, handle: CapHandle, to: u32, resource: u32) -> Option<CapHandle> {
     let (kind, perms, warrant, ext) = with_table(from, |t| {
         if t.is_void(handle) {
             return None;

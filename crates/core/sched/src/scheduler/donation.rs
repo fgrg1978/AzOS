@@ -296,14 +296,8 @@ pub fn donate_priority_for_call_at(ti: usize, target: u32) -> bool {
 
 /// Would [`donate_priority_for_call_at`] lend the current task's priority to
 /// `target` in slot `ti`? The IPC fast path (Kconfig IPC_FASTPATH) takes only
-/// a call that lends nothing and leaves the others to the ordinary path.
-#[inline]
-pub fn call_needs_donation_at(ti: usize, target: u32) -> bool {
-    call_donation_at(ti, target).is_some()
-}
-
-/// [`call_needs_donation_at`] for a caller that knows the current task's
-/// slot, `cur` (the IPC fast path: the caller's own).
+/// a call that lends nothing and leaves the others to the ordinary path. For a
+/// caller that knows the current task's slot, `cur` (the IPC fast path: the caller's own).
 #[inline(always)]
 pub fn call_needs_donation_from(cur: usize, ti: usize, target: u32) -> bool {
     call_donation_from(cur, ti, target).is_some()
