@@ -494,6 +494,32 @@ pub fn firmware_memory(fw: &Firmware) -> FirmwareMemory {
     FirmwareMemory { mem_start, mem_size, from_firmware, cpu_count, cpu_map: fw.cpus, cpu_source }
 }
 
+/// Where the PMM's frame descriptors start. The boot maps (the alias in
+/// `TTBR1_EL1` and the identity map in `TTBR0_EL1`) reach one gigabyte of RAM,
+/// yet `vmm::init` writes page-table pages into whatever frame the PMM hands
+/// out, the top of RAM first, and a secondary's boot stack is a PMM run. The
+/// tables for the RAM past that gigabyte go first in the reserved prefix, below the
+/// descriptors.
+pub fn pmm_floor(mem_start: usize, mem_size: usize, _image_start_pa: usize, image_end_pa: usize) -> usize {
+    let (start, end) = (mem_start as u64, (mem_start + mem_size) as u64);
+    let pages = 2 * crate::entry::aarch64::boot_alias_extension_pages(start, end);
+    if pages == 0 {
+        return image_end_pa;
+    }
+    let floor = image_end_pa + pages * azos_arch::PAGE_SIZE;
+    let dram_base = crate::entry::aarch64::BOOT_DRAM_BASE.load(Ordering::Relaxed) as usize;
+    // Past the gigabyte the alias maps, the tables cannot be written: the old
+    // rule, which `pmm::init` refuses with the reason.
+    if floor > dram_base + azos_arch::mmu::BOOT_WINDOW as usize {
+        return image_end_pa;
+    }
+    if !canary!("a64-boot-alias-narrow") {
+        crate::entry::aarch64::extend_boot_alias(start, end, image_end_pa as u64);
+        kprintln!("[MM] Boot maps extended over RAM up to {:#x} ({} table pages)", end, pages);
+    }
+    floor
+}
+
 /// Nothing: the blob is reserved (`early_main`) and read again after the GIC
 /// is up.
 #[inline(always)]

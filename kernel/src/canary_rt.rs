@@ -53,6 +53,10 @@ pub(crate) const NAMES: &[&str] = &[
     // watchdog's bound fast, so the watchdog must demote it (gate row
     // `x86_64: TSC watchdog demotes a skewed TSC (q35)`, x86_64 only).
     "x86-tsc-skew",
+    // entry/aarch64/boot_hooks.rs `pmm_floor`: the boot alias keeps to its first
+    // gigabyte of RAM, so `vmm::init` writes a page-table page above it and
+    // the boot faults (gate row `ktest above 4 GiB canary (arm)`, aarch64 only).
+    "a64-boot-alias-narrow",
     // entry/aarch64/pan_patch.rs: the A64_PAN=probe sites are not rewritten
     // at boot (ktest `a64_pan_sites_patched`, aarch64 only).
     "pan-patch-skip",

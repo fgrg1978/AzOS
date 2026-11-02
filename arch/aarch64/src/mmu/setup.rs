@@ -662,6 +662,55 @@ pub unsafe fn enable_ttbr1_alias(cfg: Ttbr1AliasConfig) {
     }
 }
 
+/// Add RAM `[ram_start, end)` past the gigabyte window of a boot table (the
+/// `TTBR1_EL1` alias, `kernel_only`, or the identity map in `TTBR0_EL1`, which
+/// is also executable by EL0's rules): 2 MiB blocks, the window's attributes, in the
+/// pages at `fresh` (physical `fresh_pa`, [`crate::mmu::boot_alias_extension_tables`] of
+/// them, zeroed here), linked from `l1`. `own_l2` is the window's table.
+/// Entries go into slots that were invalid, so no break-before-make.
+///
+/// # Safety
+/// `l1` and `own_l2` are the tables [`enable_ttbr1_alias`] or
+/// [`enable_identity_map`] was given for `base_pa`, and `fresh` points at that many exclusive pages whose physical
+/// address is `fresh_pa`; the boot CPU only, nothing reading the range yet.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn extend_ttbr1_alias(
+    l1: *mut PageTable, own_l2: *mut PageTable, fresh: *mut PageTable, fresh_pa: u64,
+    base_pa: u64, ram_start: u64, end: u64, kernel_only: bool,
+) {
+    let normal = attr_idx(MAIR_IDX_NORMAL) | SH_INNER | if kernel_only { UXN } else { 0 };
+    let own = G.vpn(base_pa as usize, 2);
+    let mut used = 0usize;
+    let mut table = own_l2;
+    let mut slot = own;
+    let mut pa = crate::mmu::boot_alias_extension_from(G, base_pa, ram_start);
+    let n = crate::mmu::boot_alias_extension_tables(G, base_pa, ram_start, end);
+    unsafe {
+        for i in 0..n {
+            core::ptr::write_bytes(fresh.add(i), 0, 1);
+        }
+        while pa < end {
+            let s = G.vpn(pa as usize, 2);
+            if s != slot {
+                slot = s;
+                if s == own {
+                    table = own_l2;
+                } else {
+                    if used == n {
+                        break;
+                    }
+                    table = fresh.add(used);
+                    (*l1).0[s] = (fresh_pa + (used as u64) * PAGE_SIZE) | TABLE_DESC;
+                    used += 1;
+                }
+            }
+            (*table).0[G.vpn(pa as usize, 1)] = pa | BLOCK_BASE | normal;
+            pa += L2_BLOCK_SIZE;
+        }
+        core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags));
+    }
+}
+
 /// Set `TCR_EL1.E0PD1` on THIS PE (Kconfig `A64_E0PD`, FEAT_E0PD) and return
 /// the bit read back. `TCR_BOOT_VALUE` is re-published from the live register,
 /// so a secondary's `aarch64_secondary_ttbr1_attach` copies the bit too: call
