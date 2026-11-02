@@ -415,14 +415,14 @@ unsafe fn run(st: &mut VcpuState, hgatp: u64, vmid: u16, flush: bool) {
 fn csr_clear_sie() -> bool {
     let old: u64;
     // SAFETY: clears `sstatus.SIE` and returns the old `sstatus`.
-    unsafe { core::arch::asm!("csrrci {o}, sstatus, 2", o = out(reg) old, options(nomem, nostack)) };
+    unsafe { core::arch::asm!("csrrci {o}, sstatus, 2", o = out(reg) old, options(nostack)) };
     old & 2 != 0
 }
 
 #[cfg(target_arch = "riscv64")]
 fn csr_set_sie() {
     // SAFETY: re-enables the interrupts `csr_clear_sie` found enabled.
-    unsafe { core::arch::asm!("csrsi sstatus, 2", options(nomem, nostack)) };
+    unsafe { core::arch::asm!("csrsi sstatus, 2", options(nostack)) };
 }
 
 #[cfg(target_arch = "riscv64")]

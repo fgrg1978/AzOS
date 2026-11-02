@@ -639,13 +639,14 @@ fn hart_now() -> usize {
     crate::cpu::hart_id()
 }
 
-/// Mask IRQ and FIQ, returning the old `DAIF`.
+/// Mask IRQ and FIQ, returning the old `DAIF`. No `nomem` on this or
+/// [`irq_restore`]: memory accesses must not move across the mask.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 #[inline]
 fn irq_mask() -> u64 {
     let old: u64;
     // SAFETY: sets the I and F mask bits only.
-    unsafe { core::arch::asm!("mrs {}, daif", "msr daifset, #3", out(reg) old, options(nomem, nostack)) };
+    unsafe { core::arch::asm!("mrs {}, daif", "msr daifset, #3", out(reg) old, options(nostack)) };
     old
 }
 
@@ -653,7 +654,7 @@ fn irq_mask() -> u64 {
 #[inline]
 fn irq_restore(daif: u64) {
     // SAFETY: puts back what `irq_mask` found.
-    unsafe { core::arch::asm!("msr daif, {}", in(reg) daif, options(nomem, nostack)) };
+    unsafe { core::arch::asm!("msr daif, {}", in(reg) daif, options(nostack)) };
 }
 
 /// The finisher of a power-down suspend: `CPU_SUSPEND` with the secondary
