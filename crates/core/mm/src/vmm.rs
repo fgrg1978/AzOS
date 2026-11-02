@@ -4053,6 +4053,11 @@ pub fn set_user_range_exec(pt_phys: usize, start: usize, end: usize, skip_lo: us
             b = match b.checked_add(MEGA_SIZE) { Some(v) => v, None => break };
         }
     }
+    // The reclaimer takes no page of the space meanwhile: a leaf it swapped
+    // for its marker between the rewrite's read and its store would be
+    // overwritten with a valid leaf on a frame it is freeing (as `mprotect`).
+    // Gate canary `exec-reclaim-canary`: not held.
+    let _reclaim_off = if cfg!(feature = "exec-reclaim-canary") { None } else { crate::pager::reclaim_pause(pt_phys) };
     let mut va = start;
     while va < end {
         if va < skip_hi && va.saturating_add(PAGE_SIZE) > skip_lo { return Err(KernelError::InvalidArg); }

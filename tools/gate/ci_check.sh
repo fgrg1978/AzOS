@@ -11552,6 +11552,8 @@ host_job host_canary_row "futex: look spins on MEMOBJS canary" syscall-tests mem
 host_job host_canary_row "wait graph: heap shape canary" sync-tests pi-heap-no-swap-canary \
     heap_matches_a_sorted_model_and_keeps_its_spine_logarithmic --test=waitgraph_heaps
 host_job host_canary_row "tlbi: no ceiling canary" arch-tests tlbi-no-ceiling-canary a_shootdown_past_the_ceiling_is_one_flush
+host_job host_canary_row "module map: reclaim held off canary" syscall-tests exec-reclaim-canary module_map_x_waits_out_a_store_in_flight
+host_job host_canary_row "vdso: cpu time of the last CPU canary" syscall-tests vdso-8cpu-canary tick_interval_covers_every_cpu
 host_job host_canary_row "munmap: stack batch canary" syscall-tests unmap-stack-batch-canary a_release_unmaps_a_region_with_one_shootdown_per_batch
 # The suite's thp_vmm tests pass without testing anything on a cell with MM_THP_RESV off,
 # which the host suites' robot cell is: these rows run them with it on.
