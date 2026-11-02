@@ -76,6 +76,7 @@ exec-no-dethread-canary	pending
 exec-no-pid-swap-canary	pending	
 exec-regs-canary	hot	a site on kernel/src/entry/aarch64/trap.rs, kernel/src/entry/riscv64/trap.rs, kernel/src/entry/x86_64/trap.rs
 exec-sig-handover-canary	pending	
+exit-irq-masked-canary	hot	crates/core/sched/src/scheduler/lifecycle.rs: task_exit_with_code, the exit path of every task
 exit-satp-canary	pending	
 exit-stale-hart-canary	pending	
 family-cap-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
@@ -125,6 +126,7 @@ irq-route-canary	pending
 irq-secondary-seie-canary	pending	
 its-skip-mapti	pending	
 kcall-atomic-canary	hot	crates/core/syscall/src/kcall.rs: every kernel-endpoint call
+kheap-guard-hold-canary	hot	crates/core/mm/src/kheap_guard.rs: the allocator path (every free while the heap guard is on)
 kheap-token-canary	hot	crates/core/mm/src/kheap.rs: every slab call reads the interrupt token
 kheap-census	hot	a site on crates/core/mm/src/kheap.rs, crates/core/syscall/src/dispatch.rs, crates/core/syscall/src/fastpath.rs
 kill-reblock-canary	pending	
@@ -157,6 +159,10 @@ loopback-guard-canary	pending
 loopback-preempt-probe	pending	
 lx-verify-canary	pending	
 lx-wx-canary	hot	crates/core/mm/src/vmm.rs: the page-table walk
+mce-cr4-canary	pending	
+mce-record-canary	pending	
+mce-smoke	pending	
+mce-stop-canary	pending	
 mem-admission-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 mem-locked-canary	pending	
 mem-locked-refusal-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
