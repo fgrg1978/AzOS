@@ -319,6 +319,9 @@ pub(crate) fn install_sched_hooks() {
     if canary!("unswitched-block-stays") {
         azos_sched::scheduler::canary_unswitched_stays();
     }
+    if canary!("save-gate-no-redraw") {
+        azos_sched::scheduler::canary_gate_no_redraw();
+    }
     if canary!("rcu-stop-holds-gp") {
         azos_sync::qsbr::canary_stop_holds_gp();
     }
@@ -1263,6 +1266,86 @@ mod unswitched_ktests {
             azos_sched::task_create_affinity("unswitched-p", prober, cpu, PROBER_PRIO, cpu as i8);
             crate::ktest::wait("the probe never finished", || DONE.load(Ordering::Acquire))?;
             match *REASON.lock() {
+                Some(reason) => Err(reason),
+                None => Ok(()),
+            }
+        }
+    }
+
+    // A task that outlasts the save gate on the queue top must not starve the
+    // ones below it: the lower task runs while the top one's save is held, and
+    // the top one runs once it is done. Canary `save-gate-no-redraw`: `not ok`.
+    const STUCK_PRIO: u32 = 2;
+    const LOWER_PRIO: u32 = 4;
+    static Q2: WaitQueue = WaitQueue::new();
+    static GO2: AtomicBool = AtomicBool::new(false);
+    static STUCK: AtomicU32 = AtomicU32::new(0);
+    static STUCK_RAN: AtomicBool = AtomicBool::new(false);
+    static LOWER_RAN: AtomicBool = AtomicBool::new(false);
+    static DONE2: AtomicBool = AtomicBool::new(false);
+    static REASON2: azos_sync::SpinLock<Option<&'static str>> = azos_sync::SpinLock::new(None);
+
+    fn stuck_task(_: usize) {
+        STUCK.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO2.load(Ordering::Acquire) {
+            Q2.wait_if(|| !GO2.load(Ordering::Acquire));
+        }
+        STUCK_RAN.store(true, Ordering::Release);
+    }
+
+    fn lower_task(_: usize) {
+        LOWER_RAN.store(true, Ordering::Release);
+    }
+
+    /// Sleep 2 ms at a time, at most `ROUNDS` times, until `done`.
+    fn sleep_until(done: impl Fn() -> bool) -> bool {
+        const ROUNDS: u32 = 50;
+        for _ in 0..ROUNDS {
+            if done() {
+                return true;
+            }
+            let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 500;
+            azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+        }
+        done()
+    }
+
+    fn prober2(cpu: usize) {
+        let slot = azos_sched::task_create_affinity("save-gate-s", stuck_task, 0, STUCK_PRIO, cpu as i8);
+        let found = sleep_until(|| {
+            let t = STUCK.load(Ordering::Acquire);
+            t != 0 && azos_sched::scheduler::ktest_parked(t)
+        });
+        let reason = if !found {
+            Some("the stuck task never parked")
+        } else {
+            GO2.store(true, Ordering::Release);
+            azos_sched::task_create_affinity("save-gate-l", lower_task, 0, LOWER_PRIO, cpu as i8);
+            azos_sched::scheduler::ktest_wake_held(slot, STUCK.load(Ordering::Acquire));
+            let lower = sleep_until(|| LOWER_RAN.load(Ordering::Acquire));
+            azos_sched::scheduler::ktest_release_save(slot);
+            let stuck = sleep_until(|| STUCK_RAN.load(Ordering::Acquire));
+            if !lower {
+                Some("a task whose save is held on the queue top starved the one below it")
+            } else if !stuck {
+                Some("the task did not run once its save was done")
+            } else {
+                None
+            }
+        };
+        *REASON2.lock() = reason;
+        DONE2.store(true, Ordering::Release);
+    }
+
+    azos_ktest::ktest_late! {
+        fn save_gate_stuck_top_lets_lower_run() {
+            if azos_percpu::nr_cpu_ids() < 2 {
+                return Err("needs 2 CPUs (a CPU the daemons are not pinned to)");
+            }
+            let cpu = azos_percpu::nr_cpu_ids() - 1;
+            azos_sched::task_create_affinity("save-gate-p", prober2, cpu, PROBER_PRIO, cpu as i8);
+            crate::ktest::wait("the probe never finished", || DONE2.load(Ordering::Acquire))?;
+            match *REASON2.lock() {
                 Some(reason) => Err(reason),
                 None => Ok(()),
             }
