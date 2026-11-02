@@ -40,14 +40,17 @@
 //! sink must not block when the caller is real-time or may not block: the
 //! recorder's `log_*_durable` entry points put the record on the logger's ring
 //! for the log flusher instead of flushing in the caller (`logger_flush`'s
-//! rule). A `Refuse` always goes
-//! to the sink. A `Deny` (capability denial) goes there too, but it can
-//! arrive per syscall, so it passes a token bucket per subject first
-//! (Kconfig `DECISION_DENY_DURABLE_PER_SEC`, `DECISION_DENY_DURABLE_BURST`;
-//! the `deny` module). A denial the bucket drops is counted, and the count
-//! rides in the third number of the next denial record that is written
-//! (`dropped`, printed when not zero), durable and ring alike; the total
-//! since boot is [`deny_dropped_total`], which the introspection tree's
+//! rule). A `Refuse` goes to the sink, except for the rules a task can raise
+//! once per syscall ([`Rule::caller_paced`]: a capability denial, an expired
+//! deadline, a call refused at admission, a refused wait), which pass a token
+//! bucket per (Domain, rule) first (Kconfig `DECISION_DENY_DURABLE_PER_SEC`,
+//! `DECISION_DENY_DURABLE_BURST`; the `deny` module). What the bucket drops is
+//! never silent: the first drop of a run writes a [`Rule::RefusalLimited`]
+//! record naming the Domain, the rule and the count, the rest are reported by
+//! the pair's next admitted record, by [`flush_limited`] once it has been
+//! quiet a second, or when a quieter Domain takes its bucket, and a denial's
+//! own third number (`dropped`) carries its count as well. The total since
+//! boot is [`deny_dropped_total`], which the introspection tree's
 //! `decisions/deny_dropped` shows.
 //!
 //! # Ids, the clock, the journal and the query
@@ -331,6 +334,22 @@ pub enum Rule {
     /// A ring-3 task's core file (Kconfig `CRASHDUMP_CORE_*`) was written whole,
     /// written cut to its byte budget, or not written at all.
     CoreDump = 77,
+    /// Records of a caller-paced rule (`Rule::caller_paced`) from one Domain
+    /// were held back by the durable rate limit: the subject is the Domain's
+    /// key, the numbers the rule held back, how many records, and whether the
+    /// run just began.
+    RefusalLimited = 78,
+}
+
+impl Rule {
+    /// Rules whose records an unprivileged task can raise once per syscall:
+    /// their durable path is rate-limited per Domain
+    /// (`DECISION_DENY_DURABLE_PER_SEC`), and what the limit holds back is
+    /// reported by [`Rule::RefusalLimited`]. Every other rule's refusals are
+    /// system events and are never limited.
+    pub const fn caller_paced(self) -> bool {
+        matches!(self, Rule::CapDenial | Rule::DeadlineExpired | Rule::CallAdmission | Rule::WaitCycle)
+    }
 }
 
 /// The verdict of a record.
@@ -358,7 +377,7 @@ pub struct RuleInfo {
 }
 
 /// The table, by [`Rule`] index.
-pub const RULES: [RuleInfo; 78] = [
+pub const RULES: [RuleInfo; 79] = [
     RuleInfo {
         // Two writers: the boot admission (subject = cpus; placed, rows, and
         // on a refusal the first row refused plus one,
@@ -1143,6 +1162,16 @@ pub const RULES: [RuleInfo; 78] = [
         rejected_if_yes: "-",
         rejected_if_no: "write the whole core: the task's writable memory does not fit CRASHDUMP_CORE_KB, or the kernel could not stage it",
     },
+    RuleInfo {
+        // The subject is the Domain key (the task id where the site cannot
+        // name the Domain). `started` is 1 when the run's first record was
+        // held back (that one is counted in `held`), 0 for the rest of it.
+        name: "refusal-limited",
+        subject: "domain",
+        fields: ["rule", "held", "started"],
+        rejected_if_yes: "-",
+        rejected_if_no: "write every record of the rule: one Domain's loop would fill the medium and push other Domains' receipts out",
+    },
 ];
 
 /// A record as read back.
@@ -1192,6 +1221,8 @@ static RING: [Slot; ENTRIES] = [SLOT; ENTRIES];
 static SEQ: AtomicU64 = AtomicU64::new(0);
 /// Gate canary `canary=decision-skip`: [`record`] writes nothing.
 static SKIP: AtomicBool = AtomicBool::new(false);
+/// Gate canary `canary=refusal-limit-off`: no rule is caller-paced.
+static PACE_OFF: AtomicBool = AtomicBool::new(false);
 
 azos_common::ro_hook! {
     /// The durable sink: the refusal as a [`ProvenanceRecord`]. Unset: none.
@@ -1213,9 +1244,7 @@ azos_common::ro_hook! {
 }
 static CLOCK_HZ: AtomicU64 = AtomicU64::new(1);
 
-/// Denials the rate limit has not written since the last record that was.
-static DENY_PENDING: AtomicU64 = AtomicU64::new(0);
-/// Denials the rate limit dropped since boot.
+/// Records of caller-paced rules the rate limit dropped since boot.
 static DENY_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// The buckets, behind a flag: a denial is a slow path, and the update is a
@@ -1291,26 +1320,65 @@ pub fn ticks_to_tai_ns(t: u64) -> u64 {
     }
 }
 
-/// Denials the rate limit dropped since boot (not written durably).
+/// Records of caller-paced rules the rate limit dropped since boot (not
+/// written durably; each is in a [`Rule::RefusalLimited`] report).
 pub fn deny_dropped_total() -> u64 {
     DENY_DROPPED.load(Ordering::Relaxed)
 }
 
-/// May this denial leave a durable record? `Some(owed)`: yes, and `owed` is
-/// the number dropped since the last one written, for its third number.
-/// `None`: dropped (counted), or no durable path to write to.
+/// May this caller-paced record leave a durable record? `Some(since)`: yes, and
+/// `since` is the number the (`bucket`, `rule`) pair dropped since its last
+/// record. `None`: dropped, counted and reported.
 #[inline(never)]
-fn deny_admit(subject: u32) -> Option<u64> {
-    if DENY_DURABLE_PER_SEC == 0 || !SINK.is_set() {
-        return None;
+fn paced_admit(rule: Rule, bucket: u32) -> Option<u32> {
+    let (now, hz) = (clock_now(), CLOCK_HZ.load(Ordering::Relaxed));
+    let o = BUCKETS.with(|l| l.admit(bucket, rule as u8, now, DENY_DURABLE_PER_SEC, DENY_DURABLE_BURST, hz));
+    if let Some(r) = o.evicted {
+        report_limited(r.key, r.rule, r.count, false);
+    }
+    match o.gate {
+        deny::Gate::Admit { owed, since } => {
+            // A denial carries its count in its own third number.
+            if owed > 0 && rule != Rule::CapDenial {
+                report_limited(bucket, rule as u8, owed, false);
+            }
+            Some(since)
+        }
+        deny::Gate::Drop { first } => {
+            DENY_DROPPED.fetch_add(1, Ordering::Relaxed);
+            if first {
+                report_limited(bucket, rule as u8, 1, true);
+            }
+            None
+        }
+    }
+}
+
+/// Write the report of drops: `held` records of `rule` from the Domain `key`.
+#[inline(never)]
+fn report_limited(key: u32, rule: u8, held: u32, started: bool) {
+    record_full(Rule::RefusalLimited, Verdict::Refuse, key, key, [rule as u64, held as u64, started as u64], Origin::default());
+}
+
+/// Report the drops of every (Domain, rule) pair that dropped and has been
+/// quiet for a second, so a flood that stops leaves its count on the medium
+/// without waiting for the pair's next record. The log flusher calls it once
+/// a pass.
+pub fn flush_limited() {
+    if !DURABLE || DENY_DURABLE_PER_SEC == 0 || !SINK.is_set() {
+        return;
     }
     let (now, hz) = (clock_now(), CLOCK_HZ.load(Ordering::Relaxed));
-    if BUCKETS.with(|l| l.admit(subject, now, DENY_DURABLE_PER_SEC, DENY_DURABLE_BURST, hz)) {
-        Some(DENY_PENDING.swap(0, Ordering::AcqRel))
-    } else {
-        DENY_PENDING.fetch_add(1, Ordering::AcqRel);
-        DENY_DROPPED.fetch_add(1, Ordering::Relaxed);
-        None
+    let mut runs = [deny::Run { key: 0, rule: 0, count: 0 }; deny::SLOTS];
+    let mut n = 0;
+    BUCKETS.with(|l| {
+        l.idle(now, hz, |r| {
+            runs[n] = r;
+            n += 1;
+        })
+    });
+    for r in &runs[..n] {
+        report_limited(r.key, r.rule, r.count, false);
     }
 }
 
@@ -1374,14 +1442,15 @@ pub fn set_durable_sink(f: fn(&ProvenanceRecord)) {
 /// Write one record. Empty when both the ring and the durable sink are off.
 ///
 /// `ON`: the ring takes every verdict. `DURABLE`: a [`Verdict::Refuse`] also
-/// goes to the sink, always, and so does a [`Verdict::Place`] of
+/// goes to the sink (a caller-paced rule's through its bucket, below), and so
+/// does a [`Verdict::Place`] of
 /// [`Rule::Placement`] (a driver's move) and every verdict of [`Rule::Login`]
 /// (who was let in is an audit record like who was kept out, and a ring that
-/// the wake path fills in seconds would lose it); a [`Verdict::Deny`] goes there when the
-/// subject's bucket has a token (a [`Rule::CapDenial`] only, see
-/// [`record_keyed`]), and its third number then carries the
-/// count of denials dropped since the last one written (a `Deny` site has
-/// that number free), in the ring record too. The tests are on constants
+/// the wake path fills in seconds would lose it); a [`Verdict::Deny`] of a
+/// [`Rule::CapDenial`] goes there when the Domain's bucket has a token (see
+/// [`record_keyed`]), and its third number then carries the count of denials
+/// dropped since the last one written (a `Deny` site has that number free), in
+/// the ring record too. The tests are on constants
 /// (and on the verdict, so a site that passes a literal verdict other than
 /// `Refuse` or `Deny` folds it away): a build with neither compiles to
 /// nothing.
@@ -1404,8 +1473,8 @@ pub fn record_receipt(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3]) -
 /// threads of one process share one bucket (a loop of threads denied in
 /// parallel is one subject, not 16).
 ///
-/// Only [`Rule::CapDenial`] goes through the bucket. The warrant rules'
-/// `Deny` ([`Rule::CapRevoke`]) are audit records of an operation that
+/// Only a [`Rule::caller_paced`] rule goes through the bucket. The warrant
+/// rules' `Deny` ([`Rule::CapRevoke`]) are audit records of an operation that
 /// happened, whose third number is the slots revoked; they stay in the ring,
 /// as before the bucket, and are neither limited nor overwritten.
 #[inline(always)]
@@ -1434,17 +1503,30 @@ pub fn record_with(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], orig
 #[inline(always)]
 fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64; 3], origin: Origin) -> u64 {
     let mut n = n;
-    // A refusal is always a receipt. A driver's move is one too: it changes
-    // which host holds a device's authority, so it is kept whole in the
-    // journal and on the medium like a refusal is. So is every login verdict:
-    // a session opened is as much an audit record as an attempt refused.
+    // A refusal is always a receipt, but for the rules a task can raise once
+    // per syscall (`Rule::caller_paced`), which pass the per-Domain bucket. A
+    // driver's move is a receipt too: it changes which host holds a device's
+    // authority, so it is kept whole in the journal and on the medium like a
+    // refusal is. So is every login verdict: a session opened is as much an
+    // audit record as an attempt refused.
+    let paced = DURABLE
+        && matches!(verdict, Verdict::Refuse | Verdict::Deny)
+        && rule.caller_paced()
+        && !PACE_OFF.load(Ordering::Relaxed);
     let mut to_sink = DURABLE
+        && !paced
         && (matches!(verdict, Verdict::Refuse)
             || matches!(rule, Rule::Login)
             || (matches!(verdict, Verdict::Place) && matches!(rule, Rule::Placement)));
-    if DURABLE && matches!(verdict, Verdict::Deny) && matches!(rule, Rule::CapDenial) {
-        if let Some(owed) = deny_admit(bucket) {
-            n[2] = owed;
+    if paced {
+        if !SINK.is_set() {
+            to_sink = matches!(verdict, Verdict::Refuse);
+        } else if DENY_DURABLE_PER_SEC == 0 {
+            DENY_DROPPED.fetch_add(1, Ordering::Relaxed);
+        } else if let Some(since) = paced_admit(rule, bucket) {
+            if rule == Rule::CapDenial {
+                n[2] = since as u64;
+            }
             to_sink = true;
         }
     }
@@ -1549,4 +1631,10 @@ pub fn for_each(mut f: impl FnMut(&Record)) {
 /// Gate canary `canary=decision-skip` (the kernel calls it at boot).
 pub fn set_skip() {
     SKIP.store(true, Ordering::Relaxed);
+}
+
+/// Gate canary `canary=refusal-limit-off` (the kernel calls it at boot): the
+/// durable rate limit holds nothing back.
+pub fn set_pace_off() {
+    PACE_OFF.store(true, Ordering::Relaxed);
 }

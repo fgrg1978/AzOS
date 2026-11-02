@@ -56,6 +56,9 @@ pub(crate) fn arm_from_cmdline(read: impl FnOnce(&mut [u8]) -> Option<usize>) {
     if canary!("decision-skip") {
         azos_decision::set_skip();
     }
+    if canary!("refusal-limit-off") {
+        azos_decision::set_pace_off();
+    }
 }
 
 /// Boot init is done: the command line's points fire from here on.
@@ -374,6 +377,57 @@ mod decision_ktests {
                     if bad { Err("a wake-placement record does not name a move between online CPUs") } else { Ok(()) }
                 }
             }
+        }
+    }
+}
+
+// Kconfig KTEST + DECISION_REFUSALS_DURABLE: a Domain that refuses a thousand
+// calls leaves its burst of receipts and a count of the rest, and another
+// Domain's one refusal is still held. Canary `canary=refusal-limit-off` (no
+// rule is rate-limited): `not ok`.
+#[cfg(feature = "ktest")]
+mod refusal_limit_ktests {
+    use azos_abi::ipc_msg::{MsgDesc, MSG_VERSION};
+    use azos_abi::time::ClockId;
+    use azos_decision::{Rule, DENY_DURABLE_BURST};
+
+    azos_ktest::ktest_late! {
+        fn refusal_flood_costs_no_other_domain() {
+            if !azos_decision::DURABLE {
+                return Err("DECISION_REFUSALS_DURABLE is off: no receipt to hold");
+            }
+            // Ids no task has: each is its own Domain key.
+            let (flood, quiet) = (0x7A00_0001u32, 0x7A00_0002u32);
+            let d = MsgDesc { version: MSG_VERSION, deadline: 1, clock_id: ClockId::MONO.raw(), ..MsgDesc::default() };
+            let calls = DENY_DURABLE_BURST * 4;
+            for _ in 0..calls {
+                let _ = azos_syscall::ipc_deadline::check(&d, 1_000, flood);
+            }
+            let _ = azos_syscall::ipc_deadline::check(&d, 1_000, quiet);
+            // A second of quiet: the log flusher's check runs the same call.
+            let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * 5 / 4;
+            azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+            azos_decision::flush_limited();
+            let (mut flooded, mut quieted, mut held) = (0u64, 0u64, 0u64);
+            azos_decision::for_each_held(|p| {
+                if p.rule == Rule::DeadlineExpired as u8 && p.subject == flood {
+                    flooded += 1;
+                } else if p.rule == Rule::DeadlineExpired as u8 && p.subject == quiet {
+                    quieted += 1;
+                } else if p.rule == Rule::RefusalLimited as u8 && p.subject == flood && p.n[0] == Rule::DeadlineExpired as u64 {
+                    held += p.n[1];
+                }
+            });
+            if quieted != 1 {
+                return Err("another Domain's one refusal was not held");
+            }
+            if flooded != DENY_DURABLE_BURST {
+                return Err("a Domain's flood was not limited to its burst");
+            }
+            if held != calls - DENY_DURABLE_BURST {
+                return Err("the records held back are not all counted in refusal-limited records");
+            }
+            Ok(())
         }
     }
 }

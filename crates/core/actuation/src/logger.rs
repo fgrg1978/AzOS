@@ -1518,6 +1518,7 @@ pub fn logger_flusher_pass() -> u32 {
         if let Some(job) = slot.take() {
             job();
         }
+    azos_decision::flush_limited();
     }
     // Only lockdep's printer uses it (LOCKDEP=y outside ktest); otherwise
     // compiled out.

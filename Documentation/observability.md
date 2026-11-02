@@ -53,10 +53,12 @@ alternative the rule rejected for each verdict.
   recorder. The sink defers when the caller is real-time (it queues on the
   logger's ring and wakes the flusher), so a refusal never makes a real-time task
   wait on the medium. A `deny` (capability denial) goes there too, but can arrive
-  per syscall, so it passes a token bucket per subject
-  (`DECISION_DENY_DURABLE_PER_SEC`, `DECISION_DENY_DURABLE_BURST`). A denial the
-  bucket drops is counted, and the count rides in the third number of the next
-  denial record written; `deny_dropped_total` is the total. A record that reaches
+  per syscall, so it passes a token bucket per Domain and rule, as do an
+  expired deadline, a call refused at admission and a refused wait
+  (`DECISION_DENY_DURABLE_PER_SEC`, `DECISION_DENY_DURABLE_BURST`). What the
+  bucket drops is counted in `refusal-limited` records (Domain, rule, count);
+  a denial's third number carries its count too; `deny_dropped_total` is the
+  total. A record that reaches
   the durable path is also kept whole in a small RAM journal
   (`DECISION_JOURNAL_ENTRIES`), so a lookup can name it whether or not the ring
   is built.

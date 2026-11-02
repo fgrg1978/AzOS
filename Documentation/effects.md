@@ -621,12 +621,17 @@ receipt on the medium); the journal is written where the sink is called:
   (`decisions/records/<n>`), oldest first. The oldest record is
   overwritten.
 - **The durable sink** (Kconfig `DECISION_REFUSALS_DURABLE`): a `Refuse` record,
-  every `Login` verdict and a `Placement` `Place` are always handed to a sink the
+  every `Login` verdict and a `Placement` `Place` are handed to a sink the
   kernel installs (`set_durable_sink`), which writes it to the flight recorder so
-  it survives the reset. A `Rule::CapDenial` `Deny` passes a per-subject token
-  bucket first (a `CapRevoke` `Deny` stays in the ring) (`DECISION_DENY_DURABLE_PER_SEC`,
-  `DECISION_DENY_DURABLE_BURST`); a denial the bucket drops is counted, and the
-  count rides in the third number of the next denial that is written. The sink
+  it survives the reset. The rules a task can raise once per syscall
+  (`Rule::caller_paced`: `cap-denial`, `deadline-expired`, `call-admission`,
+  `wait-cycle`) pass a token bucket per Domain and rule first (a `CapRevoke`
+  `Deny` stays in the ring) (`DECISION_DENY_DURABLE_PER_SEC`,
+  `DECISION_DENY_DURABLE_BURST`); what the bucket drops is counted into
+  `refusal-limited` records (Domain, rule, count), the first when the run
+  begins, the rest when the pair is next written, displaced or quiet for a
+  second, so the counts add up to the drops. A denial's third number carries its count
+  too. The sink
   must defer when the caller is real-time, so it queues onto the recorder's ring
   and wakes the flusher rather than flushing in the caller.
 - **The journal** (`DECISION_JOURNAL_ENTRIES`): every record that reaches the

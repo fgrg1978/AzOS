@@ -178,9 +178,11 @@ the recovery console out entirely.
 
 **Refusals leave records.** A refused typed call is recorded as
 `Rule::CapDenial` (verdict `deny`). It also reaches the durable flight recorder,
-through a token bucket per subject task (`DECISION_DENY_DURABLE_PER_SEC`,
+through a token bucket per Domain and rule (`DECISION_DENY_DURABLE_PER_SEC`,
 `DECISION_DENY_DURABLE_BURST`), so a ring-3 loop cannot turn denials into a
-flood of writes.
+flood of writes; the same bucket holds an expired-deadline, call-admission or
+wait-cycle refusal, and what it holds back is counted in `refusal-limited`
+records, so the limit never degrades silently.
 
 ## Image-bound syscall filters
 

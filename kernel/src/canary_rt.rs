@@ -40,6 +40,9 @@ pub(crate) const NAMES: &[&str] = &[
     // `decision_admission_recorded`, `decision_cap_denial_recorded`,
     // `why_resolves_a_refused_reservation`).
     "decision-skip",
+    // boot/chaos.rs: the durable rate limit of caller-paced refusals holds
+    // nothing back (ktest `refusal_flood_costs_no_other_domain`).
+    "refusal-limit-off",
     // entry/x86_64/boot_hooks.rs `mmu_enabled`: the first kernel text page
     // is mapped 1:1 in the low half again (ktest `x86_low_half_maps_no_ram`,
     // x86_64 only).

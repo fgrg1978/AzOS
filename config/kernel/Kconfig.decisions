@@ -52,10 +52,14 @@ config DECISION_REFUSALS_DURABLE
       flusher writes it, as it does every other real-time caller's record
       (an RT task never does block I/O). A refusal raised before the flight
       recorder is armed (boot admission) reaches the console and, when
-      DECISION_RECORDS_DEV is on, the ring, and nothing else. Refusals are
-      never rate-limited. Capability denials (the `Deny` verdict) are also
-      recorded, under DECISION_DENY_DURABLE_PER_SEC, because a ring-3 loop
-      can raise one per syscall.
+      DECISION_RECORDS_DEV is on, the ring, and nothing else. Refusals the
+      system raises on its own (admission, placement, e-stop, login, a
+      reservation) are never rate-limited. The records a ring-3 loop can
+      raise once per syscall (a capability denial, an expired deadline, a
+      call refused at admission, a refused wait) are written under
+      DECISION_DENY_DURABLE_PER_SEC, per Domain and rule; what the limit
+      holds back is counted in `refusal-limited` records, never dropped
+      without one.
 
       Cost: nothing on the wake path (the record is conditional on a
       refusal or a denial), and one 20-byte flight-recorder record per
@@ -63,31 +67,39 @@ config DECISION_REFUSALS_DURABLE
       `decisions-durable`.
 
 config DECISION_DENY_DURABLE_PER_SEC
-    int "Explainable decision records: durable capability denials per second, per task"
+    int "Explainable decision records: durable caller-paced records per second, per Domain and rule"
     range 0 1000
     default 4
     help
-      A capability denial (verdict `deny`, rule `cap-denial`) also writes a
-      flight-recorder record, through a token bucket per subject task: this
+      A record a task can raise once per syscall (rules `cap-denial`,
+      `deadline-expired`, `call-admission`, `wait-cycle`) also writes a
+      flight-recorder record, through a token bucket per Domain and rule: this
       many records per second refill the bucket, DECISION_DENY_DURABLE_BURST
-      is its depth. The bucket table is small and fixed; a task past it
-      shares one bucket with the other overflow tasks, so the total stays
-      bounded however many tasks deny.
+      is its depth. The threads of one process share their Domain's bucket.
+      The bucket table is small and fixed; when it is full a new Domain takes
+      the bucket of the one that has been held back the most, so a quiet
+      Domain keeps its first records however many Domains flood, and the
+      flooder is what loses its history.
 
-      A denial the bucket drops is counted. The count rides in the third
-      number (`dropped`) of the next denial record that is written, durable
-      and ring, and the total is the introspection tree's
-      `decisions/deny_dropped`. 0 turns the durable denial record off
-      (nothing is counted); refusals are not affected.
+      What the bucket holds back is never silent. The first record held back
+      in a run writes a `refusal-limited` record (Domain, rule, count 1); the
+      rest are counted into the one the pair's next record, a quieter
+      Domain's eviction of its bucket, or a second of quiet from the pair
+      writes (the log flusher runs the check), so the counts add up to the
+      records held back. A denial's own third number (`dropped`) also carries
+      its count. The total is the introspection tree's
+      `decisions/deny_dropped`. 0 writes no durable record of these rules
+      (they are only counted); the refusals the system raises are not
+      affected.
 
 config DECISION_DENY_DURABLE_BURST
-    int "Explainable decision records: durable capability denials, burst"
+    int "Explainable decision records: durable caller-paced records, burst"
     range 1 64
     default 8
     help
-      Depth of the per-task bucket of DECISION_DENY_DURABLE_PER_SEC: how many
-      denials a task may leave a durable record for back to back, from a
-      full bucket.
+      Depth of the per-Domain, per-rule bucket of
+      DECISION_DENY_DURABLE_PER_SEC: how many records a Domain may leave back
+      to back, from a full bucket.
 
 config DECISION_RECORDS_CONSOLE
     # cargo-feature: decisions-console
@@ -129,9 +141,10 @@ config DECISION_JOURNAL_ENTRIES
       interface) and the decision query read it back from, with the ring off.
       The oldest durable record is overwritten, however many records the
       ring (DECISION_RECORDS_DEV) keeps in between. 112 bytes each of .bss,
-      only with DECISION_REFUSALS_DURABLE. A capability-denial storm (bounded by
-      DECISION_DENY_DURABLE_PER_SEC per task) can push an old refusal out
-      of a small journal; the receipt on the medium is not affected.
+      only with DECISION_REFUSALS_DURABLE. A storm of caller-paced records (bounded by
+      DECISION_DENY_DURABLE_PER_SEC per Domain and rule) can push an old
+      refusal out of a small journal; the receipt on the medium is not
+      affected.
 
 config DECISION_VIEW_ROWS
     int "Explainable decision records: records the admin view publishes"

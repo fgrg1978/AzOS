@@ -258,6 +258,13 @@ pub(crate) fn note_typed_denial_for(tid: u32, kind: azos_abi::cap::CapType, e: a
     let _ = note_typed_denial_recorded(tid, kind, e);
 }
 
+/// The durable bucket of a task's caller-paced records: its Domain's key (the
+/// threads of one process share one), the TID only when the task is gone.
+pub(crate) fn durable_bucket(tid: u32) -> u32 {
+    let dom = azos_sched::idx_for_tid(tid).map_or(0, azos_sched::task_domain);
+    if dom != 0 { dom } else { tid }
+}
+
 /// [`note_typed_denial_for`], answering whether a record was handed to the
 /// recorder: `false` for a non-denial, no recorder installed, or a record
 /// the per-task bound suppressed (it is counted in the window's summary
@@ -272,14 +279,11 @@ pub(crate) fn note_typed_denial_recorded(tid: u32, kind: azos_abi::cap::CapType,
             f(kind.denial_code(), e.code());
             // Kconfig DECISION_RECORDS_DEV: the same denial, under the same
             // per-task bound, as an explained decision. Off: nothing.
-            // The durable bucket is the subject's Domain (its threads share
-            // one), the TID only when the task is gone.
-            let dom = azos_sched::idx_for_tid(tid).map_or(0, azos_sched::task_domain);
             azos_decision::record_keyed(
                 azos_decision::Rule::CapDenial,
                 azos_decision::Verdict::Deny,
                 tid,
-                if dom != 0 { dom } else { tid },
+                durable_bucket(tid),
                 [kind.denial_code() as u64, e.code() as u64, 0],
             );
             note_denial_recorded(tid);

@@ -371,10 +371,11 @@ fn endpoint_derive(c: &mut Call) -> i64 {
     }
     let now = azos_abi::time::ticks_to_ns(azos_drv_sys::timebase::now(), azos_drv_sys::timebase::TIMER_FREQ);
     if d.expiry_ns != 0 && d.expiry_ns <= now {
-        azos_decision::record(
+        azos_decision::record_keyed(
             azos_decision::Rule::DeadlineExpired,
             azos_decision::Verdict::Refuse,
             c.tid,
+            crate::handlers::durable_bucket(c.tid),
             [d.expiry_ns, now, c.handle as u64],
         );
         return Errno::EDEADLINE.to_syscall_ret();
