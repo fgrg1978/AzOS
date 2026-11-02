@@ -25,6 +25,8 @@ tcp-no-ack-canary = []
 tcp-closewait-data-canary = []
 # Gate canary (crates/net/stack): a TCP or UDP packet from `::` is taken.
 ipv6-unspecified-src-canary = []
+# Gate canary (crates/net/stack): a second UDP socket may bind a taken port.
+udp-dup-bind-canary = []
 # Gate canary (crates/net/stack): a refresh over two hours is lowered to two hours.
 slaac-two-hours-canary = []
 
@@ -65,4 +67,4 @@ overflow-checks = true
 # `tcp.rs` carries a `qemu`-gated RX trace probe that the net crate declares as
 # a feature. Declared rather than silenced, so the condition stays visible.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))', 'cfg(feature, values("arp-timing"))', 'cfg(feature, values("loopback-preempt-probe"))', 'cfg(feature, values("loopback-guard-canary"))', 'cfg(feature, values("tcp-handle-gen-canary"))', 'cfg(feature, values("tcp-ephemeral-port-canary"))', 'cfg(feature, values("envelope-egress-canary"))', 'cfg(feature, values("fw-ipv6-canary"))', 'cfg(feature, values("slaac-no-dad-canary"))', 'cfg(feature, values("slaac-two-hours-canary"))', 'cfg(feature, values("listen-dup-canary"))', 'cfg(feature, values("tcp-no-ack-canary"))', 'cfg(feature, values("tcp-closewait-data-canary"))', 'cfg(feature, values("ipv6-unspecified-src-canary"))', 'cfg(fuzzing)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("qemu"))', 'cfg(feature, values("arp-timing"))', 'cfg(feature, values("loopback-preempt-probe"))', 'cfg(feature, values("loopback-guard-canary"))', 'cfg(feature, values("tcp-handle-gen-canary"))', 'cfg(feature, values("tcp-ephemeral-port-canary"))', 'cfg(feature, values("envelope-egress-canary"))', 'cfg(feature, values("fw-ipv6-canary"))', 'cfg(feature, values("slaac-no-dad-canary"))', 'cfg(feature, values("slaac-two-hours-canary"))', 'cfg(feature, values("listen-dup-canary"))', 'cfg(feature, values("tcp-no-ack-canary"))', 'cfg(feature, values("tcp-closewait-data-canary"))', 'cfg(feature, values("ipv6-unspecified-src-canary"))', 'cfg(feature, values("udp-dup-bind-canary"))', 'cfg(fuzzing)'] }

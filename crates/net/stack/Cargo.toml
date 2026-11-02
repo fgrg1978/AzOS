@@ -50,6 +50,9 @@ tcp-closewait-data-canary = []
 # Gate canary (host suite `net-tests`): a TCP or UDP packet from the IPv6
 # unspecified address is taken like any other. Never in a real build.
 ipv6-unspecified-src-canary = []
+# Gate canary (host suite `net-tests`): a second UDP socket may bind a port
+# another holds. Never in a real build.
+udp-dup-bind-canary = []
 # Canary (host suite `net-tests`): a refresh's valid lifetime over two hours
 # but under what remains is lowered to two hours (RFC 4862 §5.5.3 (e) read
 # wrong). Never in a real build.

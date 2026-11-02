@@ -295,9 +295,16 @@ const _: () = assert!(
 
 static UDP_SOCKETS: SpinLock<UdpTable> = SpinLock::new(UdpTable::new());
 
-/// Bind a UDP socket to a local port.  Returns socket index or -1.
+/// Bind a UDP socket to a local port.  Returns socket index, or -1 when the
+/// table is full or another socket holds `port`: a second one would never see
+/// a datagram, and `dispatch` hands them to the first.
 pub fn bind(port: u16) -> i32 {
     let mut t = UDP_SOCKETS.lock();
+    if !cfg!(feature = "udp-dup-bind-canary")
+        && t.socks.iter().any(|s| s.bound && s.local_port == port)
+    {
+        return -1;
+    }
     for i in 0..UDP_MAX_SOCKETS {
         if !t.socks[i].bound {
             t.socks[i].bound       = true;

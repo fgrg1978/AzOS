@@ -4554,6 +4554,57 @@ mod udp_icmp {
         }
     }
 
+    /// A UDP port has one owner: `dispatch` hands a datagram to the first
+    /// socket bound to it, so a second bind would never receive anything and
+    /// std's `UdpSocket::bind` of a taken port is `AddrInUse`.
+    /// Canary `udp-dup-bind-canary` (gate row): the second bind is taken.
+    #[test]
+    fn a_taken_udp_port_is_refused_to_a_second_bind() {
+        let _g = begin();
+        let first = udp::bind(6200);
+        assert!(first >= 0);
+        assert_eq!(udp::bind(6200), -1, "a second socket took port 6200");
+        let other = udp::bind(6201);
+        assert!(other >= 0, "another port is not taken");
+        udp::unbind(first as usize);
+        let again = udp::bind(6200);
+        assert!(again >= 0, "the port is still taken after its socket closed");
+        udp::unbind(again as usize);
+        udp::unbind(other as usize);
+    }
+
+    /// A `connect` on an unbound UDP socket draws its port itself and passes
+    /// over one a socket bound by number holds, instead of failing.
+    #[test]
+    fn a_udp_connect_draws_a_port_no_other_socket_holds() {
+        use crate::socket::{socket_close, socket_connect, socket_create, socket_send, SockAddr,
+                            AF_INET, SOCK_DGRAM};
+        let _g = begin();
+        let peer = SockAddr { family: 2, port: 9100, addr: PEER_IP };
+        let src_port = |fd: i32| {
+            wire::clear_sent();
+            assert_eq!(socket_send(fd, b"x"), 1);
+            let s = wire::sent();
+            let p = &s.last().expect("a datagram on the wire").payload;
+            u16::from_be_bytes([p[0], p[1]])
+        };
+        let a = socket_create(AF_INET, SOCK_DGRAM, 0);
+        assert_eq!(socket_connect(a, &peer, 0), 0);
+        let pa = src_port(a);
+        // The draw is a counter: the next one is this port plus one, which a
+        // socket now takes by number.
+        let span = (tcp::EPHEMERAL_MAX - tcp::EPHEMERAL_MIN) as u32 + 1;
+        let next = |p: u16| tcp::EPHEMERAL_MIN + ((p - tcp::EPHEMERAL_MIN) as u32 + 1).rem_euclid(span) as u16;
+        let squatter = udp::bind(next(pa));
+        assert!(squatter >= 0, "precondition: the next draw is free");
+        let b = socket_create(AF_INET, SOCK_DGRAM, 0);
+        assert_eq!(socket_connect(b, &peer, 0), 0, "the connect failed on a held port");
+        assert_ne!(src_port(b), next(pa), "the connect took the squatter's port");
+        socket_close(a);
+        socket_close(b);
+        udp::unbind(squatter as usize);
+    }
+
     /// Wrap `body` in an IPv4 header with a correct header checksum.
     fn ipv4(proto: u8, src: [u8; 4], dst: [u8; 4], body: &[u8]) -> Vec<u8> {
         let mut p = vec![0u8; 20];
