@@ -1465,6 +1465,94 @@ azos_ktest::ktest_late! {
     }
 }
 
+// ── free_pages() against a hart that refills and flushes its cache ─────────
+//
+// CPU 1 allocates `PCP_CHURN` frames and frees them all, over and over: each
+// round crosses the cache's refill (empty) and flush (`PMM_PCP_HIGH`) edges.
+// CPU 0 reads `free_pages()` as fast as it can. The churner counts the
+// allocations it has started and the frees it has finished, so the frames out
+// of the allocator at any instant of a read are at most `started(after) -
+// freed(before)`; a read below `floor - that` lost frames that were in flight
+// between the lists and the cache. `floor` is the lowest count seen with the
+// churner idle.
+
+const PCP_CHURN: usize = 3 * azos_limits::PMM_PCP_HIGH as usize;
+const PCP_CYCLES: usize = 3000;
+const PCP_BOUND_MS: u64 = 60_000;
+
+static PCP_HELD: [AtomicUsize; PCP_CHURN] = [const { AtomicUsize::new(0) }; PCP_CHURN];
+static PCP_STARTED: AtomicUsize = AtomicUsize::new(0);
+static PCP_FREED: AtomicUsize = AtomicUsize::new(0);
+static PCP_CYCLE: AtomicUsize = AtomicUsize::new(0);
+static PCP_GO: AtomicBool = AtomicBool::new(false);
+
+fn pcp_churner(_: usize) {
+    while !PCP_GO.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    for _ in 0..PCP_CYCLES {
+        let mut got = 0;
+        while got < PCP_CHURN {
+            PCP_STARTED.fetch_add(1, Ordering::SeqCst);
+            match azos_mm::pmm::alloc(0, 0, 0) {
+                Some(p) => {
+                    PCP_HELD[got].store(p.0, Ordering::Relaxed);
+                    got += 1;
+                }
+                None => {
+                    PCP_FREED.fetch_add(1, Ordering::SeqCst);
+                    break;
+                }
+            }
+        }
+        for h in &PCP_HELD[..got] {
+            let _ = azos_mm::pmm::free(azos_mm::pmm::Pfn(h.load(Ordering::Relaxed)), 0);
+            PCP_FREED.fetch_add(1, Ordering::SeqCst);
+        }
+        PCP_CYCLE.fetch_add(1, Ordering::Release);
+    }
+}
+
+azos_ktest::ktest_late! {
+    fn pmm_free_pages_counts_frames_in_flight() {
+        if azos_percpu::nr_cpu_ids() < 2 {
+            return Err("needs 2 CPUs (the reader on 0, the churner on 1)");
+        }
+        PCP_STARTED.store(0, Ordering::SeqCst);
+        PCP_FREED.store(0, Ordering::SeqCst);
+        PCP_CYCLE.store(0, Ordering::Release);
+        PCP_GO.store(false, Ordering::Release);
+        azos_sched::task_create_affinity("pcp-churn", pcp_churner, 0, azos_sched::DEFAULT_PRIORITY, 1);
+        let (mut floor, mut ceil) = (usize::MAX, 0usize);
+        for _ in 0..2000 {
+            let f = azos_mm::pmm::free_pages();
+            floor = floor.min(f);
+            ceil = ceil.max(f);
+        }
+        let deadline = claim_pi_now_ms() + PCP_BOUND_MS;
+        PCP_GO.store(true, Ordering::Release);
+        let (mut under, mut over, mut reads) = (0usize, 0usize, 0u64);
+        while PCP_CYCLE.load(Ordering::Acquire) < PCP_CYCLES && claim_pi_now_ms() < deadline {
+            let freed0 = PCP_FREED.load(Ordering::SeqCst);
+            let f = azos_mm::pmm::free_pages();
+            let out = PCP_STARTED.load(Ordering::SeqCst).saturating_sub(freed0);
+            under = under.max((floor.saturating_sub(out)).saturating_sub(f));
+            over = over.max(f.saturating_sub(ceil));
+            reads += 1;
+        }
+        let done = PCP_CYCLE.load(Ordering::Acquire) == PCP_CYCLES;
+        kprintln!("# pmm_free_pages: {} reads, idle spread {}, worst undercount {}, worst overcount {}",
+                  reads, ceil - floor, under, over);
+        if !done {
+            return Err("the churner did not finish its rounds");
+        }
+        if under != 0 {
+            return Err("free_pages() read below the frames the churner left free: frames in flight between the lists and a cache are counted nowhere");
+        }
+        Ok(())
+    }
+}
+
 // ── SpinLock fairness: FIFO and a bounded wait (wave 15, N3) ────────────────
 //
 // Four contenders, one per CPU, take one SpinLock back to back with

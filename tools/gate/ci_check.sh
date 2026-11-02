@@ -14776,8 +14776,8 @@ PY
     # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 150, arm 154.
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
-    KTEST_N_RV=152
-    KTEST_N_ARM=156
+    KTEST_N_RV=153
+    KTEST_N_ARM=157
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15700,7 +15700,7 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=161
+    KTEST_N_X86=162
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

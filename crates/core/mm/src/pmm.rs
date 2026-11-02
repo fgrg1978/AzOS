@@ -43,7 +43,7 @@
 //! `range_is_free` and `next_free_addr` rely on.
 
 use azos_arch::ArchPlatform as _;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use azos_arch::PAGE_SIZE;
 use azos_sync::SpinLock;
@@ -98,6 +98,10 @@ pub const fn zones_on() -> bool {
 /// Per-hart caches of single frames, and whether they are in use.
 static PCP: [Pcp; MAX_CPUS] = [const { Pcp::new() }; MAX_CPUS];
 static PCP_ON: AtomicBool = AtomicBool::new(false);
+/// Frames a refill took off the lists that no cache holds yet.
+static XFER_IN: AtomicUsize = AtomicUsize::new(0);
+/// Frames a flush cut from a cache that the lists do not hold yet.
+static XFER_OUT: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
 fn table() -> FrameTable {
@@ -272,18 +276,27 @@ fn cache_alloc() -> Option<Pfn> {
     }
     irq_restore(tok);
     // A miss: a batch off the lists under the lock, interrupts as they were.
-    let chain = BUDDY.lock().take_chain(&t, BATCH);
-    if chain.len() == 0 { return None; }
+    let chain = {
+        let mut b = BUDDY.lock();
+        let c = b.take_chain(&t, BATCH);
+        XFER_IN.fetch_add(c.len(), Ordering::Relaxed);
+        c
+    };
+    let n = chain.len();
+    if n == 0 { return None; }
     // Masked again: the hart may have changed while unmasked, so the cache
     // is this hart's, looked up afresh (every hart id is below MAX_CPUS).
     let tok = irq_off();
     let cpu = ARCH.hart_id();
     if cpu >= MAX_CPUS {
         irq_restore(tok);
-        BUDDY.lock().release_chain(&t, chain);
+        let mut b = BUDDY.lock();
+        b.release_chain(&t, chain);
+        XFER_IN.fetch_sub(n, Ordering::Relaxed);
         return None;
     }
     PCP[cpu].splice(&t, chain);
+    XFER_IN.fetch_sub(n, Ordering::Release);
     let p = PCP[cpu].pop(&t);
     irq_restore(tok);
     p
@@ -315,10 +328,16 @@ fn cache_free(idx: usize) -> bool {
         irq_restore(tok);
         return true;
     }
+    // The cache holds at least HIGH >= BATCH frames, so the cut is BATCH.
+    XFER_OUT.fetch_add(BATCH, Ordering::Relaxed);
+    fence(Ordering::Release);
     let mut chain = pcp.detach(&t, BATCH);
     irq_restore(tok);
     chain.push_front(&t, idx);
-    BUDDY.lock().release_chain(&t, chain);
+    let mut b = BUDDY.lock();
+    b.release_chain(&t, chain);
+    XFER_OUT.fetch_sub(BATCH, Ordering::Relaxed);
+    drop(b);
     true
 }
 #[cfg(not(target_os = "none"))]
@@ -646,10 +665,20 @@ pub fn managed_range() -> (usize, usize) {
 /// types: a refusing general allocation can leave up to the zones' high-water
 /// mark "free" (`zone_pages` tells how much).
 pub fn free_pages() -> usize {
-    let mut n = BUDDY.lock().free_frames();
+    let b = BUDDY.lock();
+    let mut n = b.free_frames();
     if PCP_ON.load(Ordering::Relaxed) {
+        // A refill moves frames lists -> chain -> cache and a flush cache ->
+        // chain -> lists. The lists' side of each move is made under the lock
+        // held here, together with its in-flight count; the cache's side is
+        // ordered so that a frame is read in the cache or in flight, and for
+        // a few instructions in both, never in neither.
+        n += XFER_IN.load(Ordering::Acquire);
         for c in PCP.iter() { n += c.len(); }
+        fence(Ordering::Acquire);
+        n += XFER_OUT.load(Ordering::Relaxed);
     }
+    drop(b);
     if zones_on() {
         for l in ZONE_LISTS.iter() { n += l.lock().pooled(); }
     }
