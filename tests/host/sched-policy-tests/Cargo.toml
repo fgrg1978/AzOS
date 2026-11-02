@@ -13,6 +13,8 @@ description = "Host-side tests for the scheduler classes and RT arithmetic. Excl
 # Run with:  cd tests/host/sched-policy-tests && cargo +stable test
 
 [features]
+# Pulled-in source declares it (arch/x86_64/src/firmware/acpi.rs); only x86-platform-tests uses it.
+x86-region-round-canary = []
 # DECISION_RECORDS_DEV on as well: the receipts must not depend on the ring
 # either way. Run both: `cargo +stable test` and `... --features decision-dev`.
 decision-dev = ["azos_decision/on"]

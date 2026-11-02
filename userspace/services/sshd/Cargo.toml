@@ -6,6 +6,10 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 description = "The AzOS SSH server (ring 3): SSH-2 over a listening TCP socket on the native stack, with no download and no library beyond the in-tree crypto. Key exchange curve25519-sha256, host key ssh-ed25519, cipher chacha20-poly1305@openssh.com, public-key authentication only (ssh-ed25519; there are no passwords). One session channel (pty-req, env, shell, exec, window-change) whose commands run as the images the row may launch, with the channel as their stdout. The protocol engine (wire.rs, packet.rs, kex.rs, auth.rs, server.rs) is sans-IO and tested on the host (tests/host/sshd-tests) against a client written there; main.rs is the loop around it. Excluded from workspace; built standalone."
 
+[features]
+# server.rs `wants_input`: the host test canary (tests/host/sshd-tests); never in a build.
+sshd-backlog-canary = []
+
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
 azos_inspect_lib = { path = "../../lib/inspect" }

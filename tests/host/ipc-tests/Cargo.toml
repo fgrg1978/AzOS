@@ -40,6 +40,8 @@ ipc_test_drivers = { path = "shims/drivers" }
 azos_arch = { path = "shims/arch", package = "ipc_test_arch" }
 
 [features]
+# Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.
+fork-revoke-canary = []
 # `crates/core/ipc/src/irq_bind.rs` gates its in-kernel-test hooks on
 # `any(test, feature = "ktest")`; declared so that cfg is a known one here.
 ktest = []

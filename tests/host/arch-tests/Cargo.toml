@@ -9,6 +9,8 @@ description = "Host-side tests for the pure parts of arch/riscv64 and arch/aarch
 # Run with:  cd tests/host/arch-tests && cargo test --release
 
 [features]
+# Pulled-in source declares it (arch/x86_64/src/firmware/acpi.rs); only x86-platform-tests uses it.
+x86-region-round-canary = []
 # `arch/riscv64/src/tlb.rs` (pulled in below) reads it: the scan-bound
 # canary, under which `tlb_bound` must fail.
 tlb-bound-canary = []
