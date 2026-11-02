@@ -176,8 +176,11 @@ pub use crate::pi_attr::{quiet_le, PiAttr, QUIET_DL};
 const NONE: u32 = u32::MAX;
 const _: () = assert!(NONE == NIL);
 
-/// Task slots [`Graph::materialize_waiters_of`] looks at per hold of the lock.
-const MATERIALIZE_SLOTS: usize = 64;
+/// Task slots [`Graph::materialize_waiters_where`] looks at per hold of the lock,
+/// and the lazy edges it joins to the list in one: a join is about 1,500
+/// instructions, a look at a slot a few.
+const MATERIALIZE_SLOTS: usize = 256;
+const MATERIALIZE_JOINS: usize = 8;
 
 /// The waiter side of one blockable object. Embedded in the object (a
 /// `Mutex`, a futex `pi_state`, an endpoint's call record); the
@@ -717,29 +720,41 @@ impl<const N: usize> Graph<N> {
         slot(owner).filter(|&o| (o as usize) < N)
     }
 
-    /// Materialize every lazy edge on an object `owner` owns: its base is
-    /// about to be re-read, and a lazy waiter is only harmless while the
-    /// owner's base is at least as urgent. O(N log N) in holds of
-    /// [`MATERIALIZE_SLOTS`] slots: until the walk that follows, a waiter not
+    /// Materialize every lazy edge on an object `hit` selects: its owner's
+    /// base is about to be re-read, and a lazy waiter is only harmless while
+    /// the owner's base is at least as urgent. O(N log N) in holds of
+    /// [`MATERIALIZE_SLOTS`] slots or [`MATERIALIZE_JOINS`] joins: until the walk that follows, a waiter not
     /// joined yet boosts nothing, as if this ran later. No lock held.
-    fn materialize_waiters_of(&self, h: &dyn SchedPi, owner: TaskId) {
-        let mut base = 0;
-        while base < N {
+    fn materialize_waiters_where(&self, h: &dyn SchedPi, hit: impl Fn(WaitObj) -> bool) {
+        // `owner-scan-one-hold-canary`: one hold for the whole table;
+        // `irqoff_wait_graph_user_sized` goes red.
+        let (slots, joins) =
+            if cfg!(feature = "owner-scan-one-hold-canary") { (N, N) } else { (MATERIALIZE_SLOTS, MATERIALIZE_JOINS) };
+        let mut w = 0;
+        while w < N {
             let mut st = self.st.lock_irqsave();
-            for w in base..(base + MATERIALIZE_SLOTS).min(N) {
-                if !self.lazy[w].load(Ordering::Acquire) {
+            let (end, mut joined) = ((w + slots).min(N), 0);
+            while w < end && joined < joins {
+                let t = w as TaskId;
+                w += 1;
+                if !self.lazy[t as usize].load(Ordering::Acquire) {
                     continue;
                 }
-                let Some(o) = h.blocked_on(w as TaskId) else { continue };
-                // SAFETY: `w` is blocked on `o` (the lifetime contract).
-                if unsafe { o.get() }.owner() == Some(owner) {
-                    let e = st.compute_eff(h, w as TaskId);
-                    self.materialize(&mut st, h, w as TaskId, e);
+                let Some(o) = h.blocked_on(t) else { continue };
+                if hit(o) {
+                    let e = st.compute_eff(h, t);
+                    self.materialize(&mut st, h, t, e);
+                    joined += 1;
                 }
             }
             drop(st);
-            base += MATERIALIZE_SLOTS;
         }
+    }
+
+    /// [`Self::materialize_waiters_where`] for the objects `owner` owns.
+    fn materialize_waiters_of(&self, h: &dyn SchedPi, owner: TaskId) {
+        // SAFETY: a task blocked on `o` keeps it alive (the lifetime contract).
+        self.materialize_waiters_where(h, |o| unsafe { o.get() }.owner() == Some(owner));
     }
 
     /// See [`block_on`].
@@ -879,15 +894,14 @@ impl<const N: usize> Graph<N> {
         // A lazy waiter was harmless only under the old owner's base: it
         // joins the list before the new owner is walked. Dekker with
         // `block_on_lazy` (owner, fence, lazy flags here; edge, fence, owner
-        // re-read there). Only the kinds that take lazy edges pay it.
+        // re-read there). Only the kinds that take lazy edges pay it, in
+        // holds of their own: the owner is already stored, so a lazy call
+        // after it sees the new one.
         if obj.kind.lazy_capable() {
+            drop(st);
             fence(Ordering::SeqCst);
-            for w in 0..N {
-                if self.lazy[w].load(Ordering::Acquire) && h.blocked_on(w as TaskId) == Some(WaitObj::of(obj)) {
-                    let e = st.compute_eff(h, w as TaskId);
-                    self.materialize(&mut st, h, w as TaskId, e);
-                }
-            }
+            self.materialize_waiters_where(h, |o| o == WaitObj::of(obj));
+            st = self.st.lock_irqsave();
         }
         if old != NONE {
             self.walk(&mut st, h, old);

@@ -2022,7 +2022,6 @@ mod sched_class_ktests {
         }
     }
 
-    #[cfg(feature = "sched-timer-heap")]
     azos_ktest::ktest_late! {
         fn qos_timer_slack_rt_task_gets_zero() {
             use azos_sched::scheduler::timer_sleepers::slack_ticks;
@@ -2081,7 +2080,6 @@ mod sched_class_ktests {
     // other tests cover (the class rule, `slack_ticks`) are not repeated.
     // Cargo-feature canaries `qos-fire-canary` (the slack is forgotten) and
     // `qos-armed-at-canary` (the bare deadline is reported): `not ok`.
-    #[cfg(feature = "sched-timer-heap")]
     azos_ktest::ktest_late! {
         fn qos_timer_coalescing_path() {
             azos_sched::scheduler::timer_sleepers::ktest_coalescing()

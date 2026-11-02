@@ -222,7 +222,7 @@ Source: `crates/core/sched/src/sc.rs` (`timer_slack_us`),
 Kconfig `QOS_TIMER_TOLERANCE`, `QOS_TIMER_TOLERANCE_ROWS_ONLY`, `QOS_SLACK_*_US`.
 
 Fewer wake-ups save energy as surely as lower clocks. With
-`QOS_TIMER_TOLERANCE` (it needs the timer heap, `SCHED_TIMER_HEAP`), a timer
+`QOS_TIMER_TOLERANCE` (it works through the timer heap), a timer
 armed by a fair-class task may fire up to a slack **after** its deadline, never
 before. The slack comes from the task's QoS hint (set with
 `SCHEDCTL_HINT_QOS`: default, latency, throughput, background), through one

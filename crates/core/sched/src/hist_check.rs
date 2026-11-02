@@ -40,10 +40,7 @@ pub(super) fn audit_tick(now: u64) {
         // between its state CAS and its re-account: every hart programs
         // the same nearest deadline, so ticks land in that window
         // together. Not drift.
-        #[cfg(feature = "sched-timer-heap")]
         let waking = super::timer_sleepers::inflight(i);
-        #[cfg(not(feature = "sched-timer-heap"))]
-        let waking = false;
         if rec == live || waking {
             SINCE[i].store(0, Ordering::Relaxed);
             continue;

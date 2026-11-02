@@ -38,10 +38,8 @@ azos_abi = { path = "../../../crates/core/abi" }
 [dev-dependencies]
 
 [features]
-# `wait.rs` (pulled by path) branches on this sched feature. Declared here,
-# never enabled, so the host build compiles the sweep branch without an
-# `unexpected_cfgs` warning; the heap itself is tested through `timer_heap`.
-sched-timer-heap = []
+# `timer_heap.rs` (pulled by path): every slot gets one rank.
+timer-rank-canary = []
 # Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
 kill-reblock-canary = []
 # ipc-deadline-budget's proxy canary of the pulled-in `rt_core.rs`, declared

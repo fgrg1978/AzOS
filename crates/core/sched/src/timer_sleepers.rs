@@ -5,7 +5,7 @@
 use super::{TaskState, WaitReason, MAX_TASKS, TASKS, TASK_VALID};
 use crate::timer_heap::TimerHeap;
 use azos_arch::Interrupts;
-use crate::sc::{SlackMode, QOS_LEVELS};
+use crate::sc::{Class, SlackMode, QOS_LEVELS};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // `SCHED_TIMER_HEAP_PER_CPU` (owner decision, wave 15 VW): one heap per
@@ -214,20 +214,21 @@ pub(super) fn owned_here(slot: usize) -> bool {
 pub(super) fn arm(idx: usize, deadline: u64) -> u64 {
     // The window first, from the task's SC: nothing the heap lock guards.
     let slack = if deadline == u64::MAX { 0 } else { slack_ticks(idx) };
+    let rank = crate::classes::class_of(idx).map_or(Class::Fair as u8, |c| c as u8);
     let mut g = Guard::local();
     if !attached(g.h) {
         return deadline; // no task sleeps before the per-CPU areas exist
     }
     let h = g.h;
-    arm_on(g.heap(), h, idx, deadline, slack)
+    arm_on(g.heap(), h, idx, deadline, slack, rank)
 }
 
 /// [`arm`] on heap `heap` (the one of CPU `h`, its lock held) with the
-/// window `slack` already read: the part of the arm that moves the entry,
+/// window `slack` and the class `rank` already read: the part of the arm that moves the entry,
 /// writes the slot's slack and answers the instant armed at. A function of
 /// its heap so `ktest_coalescing` can run it on a heap of its own.
 #[inline(always)]
-fn arm_on(heap: &mut TimerHeap<MAX_TASKS>, h: usize, idx: usize, deadline: u64, slack: u64) -> u64 {
+fn arm_on(heap: &mut TimerHeap<MAX_TASKS>, h: usize, idx: usize, deadline: u64, slack: u64, rank: u8) -> u64 {
     OWNER[idx].store(h as u8, Ordering::Relaxed);
     let fire = if slack == 0 {
         deadline
@@ -238,7 +239,7 @@ fn arm_on(heap: &mut TimerHeap<MAX_TASKS>, h: usize, idx: usize, deadline: u64, 
         // `fire - deadline <= slack <= u32::MAX`.
         s.store((fire - deadline) as u32, Ordering::Relaxed);
     }
-    heap.arm(idx, fire);
+    heap.arm_ranked(idx, fire, rank);
     // `qos-armed-at-canary` (cargo feature, never in a build): the caller is
     // told the bare deadline, so `block_current` programs the comparator for
     // an instant the heap no longer wakes for (the governor sees the
@@ -294,9 +295,9 @@ pub(super) fn migrate_off(from: usize, to: usize) -> usize {
     loop {
         let popped = {
             let mut g = Guard::on(from);
-            g.heap().pop()
+            g.heap().pop().map(|(fire, slot)| (fire, slot, g.heap().rank_of(slot)))
         };
-        let Some((fire, slot)) = popped else { return moved };
+        let Some((fire, slot, rank)) = popped else { return moved };
         // Not this heap's entry any more (the sleeper woke, or sleeps elsewhere): drop.
         if OWNER[slot]
             .compare_exchange(from as u8, to as u8, Ordering::Relaxed, Ordering::Relaxed)
@@ -310,7 +311,7 @@ pub(super) fn migrate_off(from: usize, to: usize) -> usize {
         // SAFETY: `LOCKS[to]` is held, the exclusion every access to this heap
         // takes (its own CPU's `Guard::local` included); the scope check of
         // `with_mut_on` is the per-CPU one, which a cross-CPU arm cannot satisfy.
-        unsafe { (*TIMER_HEAPS.storage().ptr(to)).arm(slot, fire) };
+        unsafe { (*TIMER_HEAPS.storage().ptr(to)).arm_ranked(slot, fire, rank) };
         drop(g);
         moved += 1;
     }
@@ -423,12 +424,12 @@ pub fn ktest_coalescing() -> Result<(), &'static str> {
     let r = (|| {
         // `a` sleeps without slack at base + GAP.
         forge(a, base + GAP);
-        if arm_on(heap, h, a, base + GAP, 0) != base + GAP {
+        if arm_on(heap, h, a, base + GAP, 0, 0) != base + GAP {
             return Err("a sleeper without slack was not armed at its deadline");
         }
         // `b` wakes GAP earlier and may slip by WINDOW: it rides on `a`'s entry.
         forge(b, base);
-        if arm_on(heap, h, b, base, WINDOW) != base + GAP {
+        if arm_on(heap, h, b, base, WINDOW, 0) != base + GAP {
             return Err("a sleeper with slack was not armed at the wake-up inside its window");
         }
         if fire_of(b, base) != base + GAP || fire_of(a, base + GAP) != base + GAP {
@@ -446,10 +447,10 @@ pub fn ktest_coalescing() -> Result<(), &'static str> {
         // Nothing inside the window: armed at the deadline, the slack back to 0
         // (the 400 ticks of the last arm must not outlive it).
         forge(a, base + GAP);
-        arm_on(heap, h, a, base + GAP, 0);
+        arm_on(heap, h, a, base + GAP, 0, 0);
         let late = base + 3 * WINDOW;
         forge(b, late);
-        if arm_on(heap, h, b, late, WINDOW) != late || fire_of(b, late) != late {
+        if arm_on(heap, h, b, late, WINDOW, 0) != late || fire_of(b, late) != late {
             return Err("a sleeper with nothing inside its window was not armed at its deadline");
         }
         if heap.armed_deadline(b) != Some(late) || nearest_on(heap, h) != Some(base + GAP) {
@@ -512,6 +513,8 @@ impl crate::timer_heap::DueSleepers<MAX_TASKS> for Due {
         if OWNER[slot].load(Ordering::Relaxed) as usize != self.h {
             return;
         }
+        #[cfg(feature = "ktest")]
+        crate::wait::ktest_note_timer_wake(slot);
         super::try_wake_task(slot, &|r: &WaitReason| {
             matches!(r, WaitReason::Timer(d) if now >= *d)
         });

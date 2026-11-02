@@ -775,9 +775,7 @@ pub fn policy_stats(sel: u64) -> Option<u64> {
 // ── Stage E4: the idle governor ─────────────────────────────────────────────
 //
 // The sleep bound is the earlier of the nearest timer sleeper
-// (`nearest_timer_deadline`: the timer heap, in the default build since wave
-// 13; the O(MAX_TASKS) sleeper sweep without `sched-timer-heap`)
-// and what the
+// (`nearest_timer_deadline`: the timer heap) and what the
 // hart has programmed (`timebase::programmed`, which includes the hart-0
 // keepalive and the SCHED-RT enforcement arms). The real-time slack is
 // `rt::rt_slack`. The choice is counted and entered through the arch idle seam

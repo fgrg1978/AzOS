@@ -3746,7 +3746,6 @@ pub(crate) fn chaos_spurious_ipi() {
 /// The lock is a leaf (nothing else is taken under it) and masks interrupts
 /// on every acquisition, like `DeadlinePickGuard` — it is taken from the
 /// tick ISR and from `block_current`.
-#[cfg(feature = "sched-timer-heap")]
 #[path = "../timer_sleepers.rs"]
 pub mod timer_sleepers;
 

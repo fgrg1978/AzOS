@@ -330,8 +330,10 @@ wake-preempt-canary = ["azos_sched/wake-preempt-canary"]
 # The coalescing path (ktest `qos_timer_coalescing_path`): the slack is lost / the armed instant is not reported.
 qos-fire-canary = ["azos_sched/qos-fire-canary"]
 timer-wake-unbounded-canary = ["azos_sched/timer-wake-unbounded-canary"]
+timer-rank-canary = ["azos_sched/timer-rank-canary"]
 fair-place-all-canary = ["azos_sched/fair-place-all-canary"]
 pi-heap-no-swap-canary = ["azos_sync/pi-heap-no-swap-canary"]
+owner-scan-one-hold-canary = ["azos_sync/owner-scan-one-hold-canary"]
 qos-armed-at-canary = ["azos_sched/qos-armed-at-canary"]
 # Wave 13 (THREADS) canaries, see `crates/core/sched/Cargo.toml`.
 futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
@@ -971,39 +973,10 @@ energy-slack-canary = ["energy-gov-smoke", "azos_sched/energy-slack-canary"]
 # U02-3 measurement: prints `[SCHED] tick instr=N` at boot under
 # `-icount shift=0,sleep=off`. See `azos_sched`'s own feature doc.
 sched-tick-probe = ["azos_sched/sched-tick-probe"]
-# U02-3: O(NUM_PRIORITIES) placement, timer-sleeper heap,
-# fast-IPC hand-off co-location. Owned by SCHED_O1_PLACEMENT, SCHED_TIMER_HEAP
-# and SCHED_IPC_AFFINITY (config/kernel/Kconfig.sched); see crates/core/sched/Cargo.toml.
-# History of the three scheduler options (config/kernel/Kconfig.sched SCHED_*):
-# Owner decision 2026-09-27 (after gate 184): the wave-4 scheduler changes
-# are on by default once a gate is green with them. `sched-timer-heap` joined
-# the list in wave 8 (owner decision round 9). It had been left out after gate
-# 185 lost rt-motor's wake with it on: a retry re-armed a popped sleeper with
-# a deadline read outside the heap lock, overwriting the deadline the sleeper
-# had armed itself, and the next nearest-deadline query dropped the entry.
-# The fix (the retry re-arm in `timer_heap::wake_due`, `TimerHeap::peek_live`)
-# is in `crates/core/sched/src/timer_heap.rs`. `--no-default-features` brings back the
-# pre-wave-4 placement, load-balanced IPC wakes and the per-tick sleeper sweep.
-#
-# Taken back out after gate 193 (2026-09-28), the heap's own gate, was not
-# green: the red row was a yield-count wait in abitest, but an A/B of that row
-# left one heap-on boot hung in a fast-IPC reply wait that nothing explains
-# yet. The rule is a green gate with it on; it returns with its own gate.
-#
-# Back in (wave 13, RT7). Its own rows, `sched: timer heap raced` (rv, arm;
-# kernel/src/smokes/timer_heap_smoke.rs, heap + ipc-census), fail 4/4 with
-# the wave-5 bug put back and passed 20/20 per ISA twice (1-7 ms sleepers;
-# then with 20-100 us sleepers added), census lost=0 and unexplained=0 in
-# every boot. Gate 193's abitest boot, heap on: riscv64 20/20 ALL PASSED
-# (and 20/20 with the census, lost=0); aarch64 20/20 with only its known
-# `rdtime native` failure plus, once, its 20 ms wall-clock sleep bound
-# (24.6 ms at host load 11; heap-off boots reached 20.3 ms at load 2-7) —
-# no fast-IPC hang in 60. The vsbench spawn+wait hang (2 in 200 heap-on
-# boots) was a K-C24 rescue stranded on a tickless idle hart, not the heap
-# (`do_schedule`'s Blocked arm now rings the hart's doorbell): 0 in 200
-# after. The full gate with it on is main's to run.
+# O(NUM_PRIORITIES) placement and fast-IPC hand-off co-location. Owned by
+# SCHED_O1_PLACEMENT and SCHED_IPC_AFFINITY (config/kernel/Kconfig.sched); see
+# crates/core/sched/Cargo.toml.
 sched-o1-placement = ["azos_sched/sched-o1-placement"]
-sched-timer-heap = ["azos_sched/sched-timer-heap"]
 sched-ipc-affinity = ["azos_sched/sched-ipc-affinity"]
 # Event-driven K-C25 reaper (visits only slots stamped mid-switch). OFF by
 # default; see crates/core/sched/Cargo.toml.
