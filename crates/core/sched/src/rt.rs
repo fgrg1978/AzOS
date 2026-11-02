@@ -18,10 +18,10 @@
 //!   kernel-only).
 //! * **EDF + CBS, per hart.** A task with a reservation (`Task::rt`, admitted
 //!   by [`reserve`]) is pinned to the hart admission placed it on and listed
-//!   in that hart's reservation set. Inside one priority level reservation
-//!   tasks run before the level's FIFO tasks, earliest absolute deadline
-//!   first, and preempt a running task of the same level with a later
-//!   deadline. Run time is charged against the server budget; a hard
+//!   in that hart's reservation set. A reservation ranks above every band
+//!   level ([`rt_core::dl_rank`]; only the `sched-dl-in-level` canary ranks it
+//!   inside its own level), earliest absolute deadline first, and preempts
+//!   a running task with a later deadline. Run time is charged against the server budget; a hard
 //!   reservation that runs out is throttled until its deadline (the pick
 //!   skips it), a soft one has its deadline postponed by a period.
 //!
