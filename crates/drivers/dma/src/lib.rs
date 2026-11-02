@@ -29,7 +29,7 @@ pub mod domain;
 pub mod order;
 pub mod registry;
 
-pub use alloc::{alloc_below, PageSource};
+pub use alloc::{alloc_below, canary_free_anyway, leaked_bytes, note_leak, unmap_and_free, PageSource};
 pub use domain::{DmaDomain, DomainKind, DomainOps, IdentityDomain, SoftState};
 
 /// A bus address, as seen by the device. IOVA when an IOMMU domain is

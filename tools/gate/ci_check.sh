@@ -11395,6 +11395,12 @@ host_job host_canary_row "usb: arena clean canary" usb-tests canary-arena-clean 
 # A buffer goes back only once the controller can no longer write it
 # (tests/host/usb-tests/src/abort.rs). The driver and the core are the same on
 # every ISA; the mock holds the controller's side of it.
+host_job host_canary_row "iommu: vt-d registers past the window canary" iommu-tests vtd-window-canary \
+    a_vtd_unit_whose_registers_leave_the_window_is_refused
+host_job host_canary_row "virtio-pci: capability bounds canary" pci-tests virtio-cap-bounds-canary \
+    a_capability_outside_its_bar_refuses_the_device
+host_job host_canary_row "virtio-snd: stuck device not reset canary" drivers-tests snd-no-reset-canary \
+    a_close_the_device_did_not_answer_resets_it_before_the_arena_goes_back
 host_job host_canary_row "usb: closed control pipe keeps its transfer canary" usb-tests canary-ep0-close-no-abort \
     closing_a_control_pipe_stops_what_it_has_queued
 host_job host_canary_row "usb: timed-out core control stays queued canary" usb-tests canary-core-control-no-abort \
@@ -13791,6 +13797,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
             -kernel "$img_copy" \
             -netdev user,id=net0 -device "virtio-net-pci,netdev=net0,disable-legacy=on${2:+,iommu_platform=on}" \
             ${SECOND_NIC:+-netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on} \
+            ${BOOT_CANARY:+-append canary=$BOOT_CANARY} \
             </dev/null >"$log" 2>&1 &
         local qpid=$! i=0
         while [ "$i" -lt 90 ]; do
@@ -13876,14 +13883,14 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     par "aarch64 iommu: smmuv3 translates the NIC" iommu_net_row_aarch64 "aarch64 iommu: smmuv3 translates the NIC" PASS
     par "aarch64 iommu: smmuv3 refuses unmapped" iommu_net_row_aarch64 "aarch64 iommu: smmuv3 refuses unmapped" CANARY
     iommu_bail_row_aarch64() { # iommu_bail_row_aarch64 <label> <PASS|CANARY>
-        local label="$1" expect="$2" feats="qemu,pci,dhcp-smoke"
+        local label="$1" expect="$2" feats="qemu,pci,dhcp-smoke" armed=""
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        [ "$expect" = CANARY ] && feats="$feats,iommu-fail-open"
+        [ "$expect" = CANARY ] && armed=iommu-fail-open
         a64_kbuild "$feats" || { bad; echo "      $feats aarch64 kernel did NOT build (row not run)"; return; }
         a64_kernel_check || return
         local log="$CI_LOG_DIR/iommu-bail-aarch64-$expect.log"
-        SECOND_NIC=1 pci_net_dhcp_boot_aarch64 "$log" iommu=smmuv3
+        SECOND_NIC=1 BOOT_CANARY="$armed" pci_net_dhcp_boot_aarch64 "$log" iommu=smmuv3
         iommu_bail_verdict "$log" smmuv3 "$expect" "AARCH64-TRAP\] unhandled"
     }
     par "aarch64 iommu: a function whose driver gave up is blocked" iommu_bail_row_aarch64 "aarch64 iommu: a function whose driver gave up is blocked" PASS
@@ -14853,8 +14860,8 @@ PY
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
     # +1 save_gate_stuck_top_lets_lower_run (canary `save-gate-no-redraw`) -> 154, arm 158.
-    KTEST_N_RV=154
-    KTEST_N_ARM=158
+    KTEST_N_RV=155
+    KTEST_N_ARM=159
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15183,6 +15190,8 @@ PY
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (rv)" ktest_row "ktest unswitched block canary (rv)" rv "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest failed unmap frees canary (rv)" ktest_row "ktest failed unmap frees canary (rv)" rv "" "dma_failed_unmap_keeps_the_frame" "canary=dma-unmap-frees"
+    par "ktest failed unmap frees canary (arm)" ktest_row "ktest failed unmap frees canary (arm)" arm "" "dma_failed_unmap_keeps_the_frame" "canary=dma-unmap-frees"
     par "ktest save gate redraw canary (rv)" ktest_row "ktest save gate redraw canary (rv)" rv "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest unswitched block canary (arm)" ktest_row "ktest unswitched block canary (arm)" arm "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest ttbr0 holders canary (arm)" ktest_row "ktest ttbr0 holders canary (arm)" arm "" "tlb_shootdown_cross_cpu" "canary=ttbr0-holders-self" "root_holders did not name exactly"
@@ -15833,7 +15842,7 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=163
+    KTEST_N_X86=164
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16458,12 +16467,11 @@ PY
     # `iommu_platform=on`, so its DMA goes through the unit. Canary
     # `iommu-tx-canary` as there.
     x86_iommu_row() { # x86_iommu_row <label> <qemu IOMMU device> <flavour> <PASS|CANARY> [bail]
-        local label="$1" unit="$2" flavour="$3" expect="$4" bail="${5:-}" feats="dhcp-smoke" stop='DHCPSMOKE\]|KERNEL PANIC|\[X86-TRAP\]'
+        local label="$1" unit="$2" flavour="$3" expect="$4" bail="${5:-}" feats="dhcp-smoke" stop='DHCPSMOKE\]|KERNEL PANIC|\[X86-TRAP\]' armed=""
+        [ -n "$bail" ] && [ "$expect" = CANARY ] && armed=iommu-fail-open
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        if [ -n "$bail" ]; then
-            [ "$expect" = CANARY ] && feats="$feats,iommu-fail-open"
-        elif [ "$expect" = CANARY ]; then
+        if [ -z "$bail" ] && [ "$expect" = CANARY ]; then
             feats="$feats,iommu-tx-canary"; stop='IOMMU\] fault|KERNEL PANIC|\[X86-TRAP\]'
         fi
         local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
@@ -16478,6 +16486,7 @@ PY
         X86_MACHINE=q35 x86_qemu "$kimg" "$log" 90 "$stop" -smp 1 -nic none -device "$unit" \
             -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on,iommu_platform=on \
             ${bail:+-netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on} \
+            ${bail:+${armed:+-append canary=$armed}} \
             || { rm -f "$kimg" "$kimg.features"; return; }
         rm -f "$kimg" "$kimg.features"
         if [ -n "$bail" ]; then
@@ -16938,6 +16947,7 @@ PY
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest failed unmap frees canary (x86)" x86_ktest_row "ktest failed unmap frees canary (x86)" "" "dma_failed_unmap_keeps_the_frame" "canary=dma-unmap-frees"
     par "ktest save gate redraw canary (x86)" x86_ktest_row "ktest save gate redraw canary (x86)" "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
@@ -22023,10 +22033,10 @@ PYEOF
         local label="$1" expect="$2" feats="qemu,pci,dhcp-smoke"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        [ "$expect" = CANARY ] && feats="$feats,iommu-fail-open"
         kbuild "$feats" || return
         local log="$CI_LOG_DIR/iommu-bail-riscv64-$expect.log"
-        pci_net_dhcp_boot_riscv64 "$log" "" -device riscv-iommu-pci -netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on
+        local -a armed=(); [ "$expect" = CANARY ] && armed=(-append canary=iommu-fail-open)
+        pci_net_dhcp_boot_riscv64 "$log" "" -device riscv-iommu-pci -netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on "${armed[@]}"
         iommu_bail_verdict "$log" riscv-iommu "$expect" "EXCEPTION\]|panic"
     }
     par "iommu: a function whose driver gave up is blocked" iommu_bail_row_riscv64 "iommu: a function whose driver gave up is blocked" PASS

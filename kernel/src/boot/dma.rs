@@ -658,7 +658,7 @@ mod hw {
             }
             let enabled = POOL.iter().any(|s| s.with(|d| d.dev() == rid && d.enabled()) == Some(true));
             // Canary: a function whose driver gave up keeps what the boot gave it.
-            let bound = crate::boot::hwbus::pci_bound(info) || cfg!(feature = "iommu-fail-open");
+            let bound = crate::boot::hwbus::pci_bound(info) || canary!("iommu-fail-open");
             match azos_iommu::settle(bound, enabled) {
                 Settled::Translating => {
                     translated += 1;
@@ -714,6 +714,62 @@ mod hw {
                         f.device_id, f.fault_addr, f.kind, total);
                 }
             });
+        }
+    }
+}
+
+mod unmap_ktests {
+    use azos_dma::{Direction, DmaAddr, DmaDomain, DmaError, DomainKind, PageSource};
+
+    struct Frames;
+    impl PageSource for Frames {
+        fn alloc(&self, _len: usize) -> Option<u64> {
+            azos_mm::pmm::alloc_page().ok().map(|p| p.as_usize() as u64)
+        }
+        fn free(&self, pa: u64, _len: usize) {
+            let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(pa as usize));
+        }
+    }
+
+    /// A domain whose IOTLB flush never completes.
+    struct StuckFlush;
+    impl DmaDomain for StuckFlush {
+        fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
+            Ok(DmaAddr(pa))
+        }
+        fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
+            Err(DmaError::Iommu)
+        }
+        fn coherent(&self) -> bool {
+            true
+        }
+        fn kind(&self) -> DomainKind {
+            DomainKind::Identity
+        }
+        fn enable(&self) -> Result<(), DmaError> {
+            Ok(())
+        }
+        fn allow_msi(&self, _doorbell: u64) -> Result<(), DmaError> {
+            Ok(())
+        }
+    }
+
+    azos_ktest::ktest_late! {
+        fn dma_failed_unmap_keeps_the_frame() {
+            azos_dma::canary_free_anyway(canary!("dma-unmap-frees"));
+            let page = azos_arch::PAGE_SIZE;
+            let Some(pa) = Frames.alloc(page) else { return Err("no frame") };
+            let leaked = azos_dma::leaked_bytes();
+            let r = azos_dma::unmap_and_free(&StuckFlush, &Frames, pa, DmaAddr(pa), page);
+            azos_dma::canary_free_anyway(false);
+            if azos_mm::pmm::range_is_free(pa as usize, page) {
+                return Err("a frame the device can still reach went back to the allocator");
+            }
+            if r.is_ok() || azos_dma::leaked_bytes() != leaked + page as u64 {
+                return Err("the kept frame was not counted");
+            }
+            Frames.free(pa, page);
+            Ok(())
         }
     }
 }

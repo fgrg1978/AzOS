@@ -702,3 +702,58 @@ mod ccache_walk {
         assert!(lines.windows(2).all(|w| w[1] == w[0] + LINE));
     }
 }
+
+mod unmap_and_free {
+    use azos_dma::{DmaAddr, DmaDomain, DmaError, DomainKind, Direction, PageSource};
+    use std::cell::Cell;
+
+    struct Pages(Cell<u32>);
+    impl PageSource for Pages {
+        fn alloc(&self, _len: usize) -> Option<u64> {
+            None
+        }
+        fn free(&self, _pa: u64, _len: usize) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    struct Dom(Result<(), DmaError>);
+    impl DmaDomain for Dom {
+        fn map(&self, pa: u64, _len: usize, _dir: Direction) -> Result<DmaAddr, DmaError> {
+            Ok(DmaAddr(pa))
+        }
+        fn unmap(&self, _bus: DmaAddr, _len: usize) -> Result<(), DmaError> {
+            self.0
+        }
+        fn coherent(&self) -> bool {
+            true
+        }
+        fn kind(&self) -> DomainKind {
+            DomainKind::Identity
+        }
+        fn enable(&self) -> Result<(), DmaError> {
+            Ok(())
+        }
+        fn allow_msi(&self, _doorbell: u64) -> Result<(), DmaError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_page_whose_unmap_failed_stays_allocated_and_counted() {
+        let pages = Pages(Cell::new(0));
+        let before = azos_dma::leaked_bytes();
+        let r = azos_dma::unmap_and_free(&Dom(Err(DmaError::Iommu)), &pages, 0x1000, DmaAddr(0x1000), 4096);
+        assert_eq!(r, Err(DmaError::Iommu));
+        assert_eq!(pages.0.get(), 0, "a device can still reach this page");
+        assert_eq!(azos_dma::leaked_bytes() - before, 4096);
+    }
+
+    #[test]
+    fn a_page_whose_unmap_worked_goes_back() {
+        let pages = Pages(Cell::new(0));
+        let r = azos_dma::unmap_and_free(&Dom(Ok(())), &pages, 0x1000, DmaAddr(0x1000), 4096);
+        assert_eq!(r, Ok(()));
+        assert_eq!(pages.0.get(), 1);
+    }
+}

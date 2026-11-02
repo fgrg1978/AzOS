@@ -245,3 +245,12 @@ fn a_function_translates_only_once_its_driver_enabled_its_domain() {
     // A driver that gave up after enabling is no driver.
     assert_eq!(azos_iommu::settle(false, d.enabled()), azos_iommu::Settled::Blocked);
 }
+
+#[test]
+fn a_flush_that_failed_is_reported_by_unmap() {
+    let (mem, unit) = (TestMem::leak(), FakeUnit::leak(PtKind::RiscvSv, 3));
+    let mut d = IoDomain::<8>::new(0x18, Flavour::Riscv, unit.fmt, unit, mem, true).unwrap();
+    let bus = d.map(0x8000_0000, 4096, Direction::Bidirectional).unwrap();
+    *unit.fail_flush.lock().unwrap() = true;
+    assert_eq!(d.unmap(bus, 4096), Err(DmaError::Iommu));
+}

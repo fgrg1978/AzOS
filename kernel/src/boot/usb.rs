@@ -167,8 +167,7 @@ mod host {
             let bus = match self.domain.map(pa, len, Direction::Bidirectional) {
                 Ok(b) if b.0.checked_add(len as u64 - 1).is_some_and(|e| e <= mask) => b.0,
                 Ok(b) => {
-                    let _ = self.domain.unmap(b, len);
-                    azos_dma::PageSource::free(&Pmm, pa, len);
+                    let _ = azos_dma::unmap_and_free(self.domain, &Pmm, pa, b, len);
                     return None;
                 }
                 Err(_) => {
@@ -201,8 +200,9 @@ mod host {
                 return;
             }
             let pa = azos_mm::addr::virt_to_phys(b.cpu() as usize) as u64;
-            let _ = self.domain.unmap(azos_dma::DmaAddr(b.bus()), b.len());
-            azos_dma::PageSource::free(&Pmm, pa, b.len());
+            if let Err(e) = azos_dma::unmap_and_free(self.domain, &Pmm, pa, azos_dma::DmaAddr(b.bus()), b.len()) {
+                azos_drv_sys::kerr!("[USB] {} bytes at {:#x} stay allocated, the unmap failed: {:?}", b.len(), pa, e);
+            }
         }
 
         fn enable(&self) -> bool {

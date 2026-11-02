@@ -16,7 +16,43 @@
 //! refused ([`DmaError::NeedsBounce`]) rather than drained. A ranged
 //! allocation in the page allocator would make the bound unnecessary.
 
-use crate::{AddrRange, DmaError};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use crate::{AddrRange, DmaAddr, DmaDomain, DmaError};
+
+/// Bytes kept from the allocator because a device may still reach them.
+static LEAKED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Runtime canary: pages go back even when their unmap failed.
+static CANARY_FREE_ANYWAY: AtomicBool = AtomicBool::new(false);
+
+/// See [`CANARY_FREE_ANYWAY`].
+pub fn canary_free_anyway(on: bool) {
+    CANARY_FREE_ANYWAY.store(on, Ordering::Relaxed);
+}
+
+/// Bytes [`note_leak`] has counted since boot.
+pub fn leaked_bytes() -> u64 {
+    LEAKED_BYTES.load(Ordering::Relaxed)
+}
+
+/// `len` bytes stay out of the allocator for good: a device may still reach them.
+pub fn note_leak(len: usize) {
+    LEAKED_BYTES.fetch_add(len as u64, Ordering::Relaxed);
+}
+
+/// Undo the mapping at `bus` and give the `len` bytes at `pa` back to `src`. An
+/// unmap that failed may have left a translation the device can still use (the
+/// IOTLB flush did not complete): the pages then stay out for good, counted.
+pub fn unmap_and_free<S: PageSource>(domain: &dyn DmaDomain, src: &S, pa: u64, bus: DmaAddr, len: usize) -> Result<(), DmaError> {
+    let r = domain.unmap(bus, len);
+    if r.is_err() && !CANARY_FREE_ANYWAY.load(Ordering::Relaxed) {
+        note_leak(len);
+        return r;
+    }
+    src.free(pa, len);
+    r
+}
 
 /// Blocks [`alloc_below`] holds at once while it looks for one under the
 /// mask. More than this above the mask and it gives up.
