@@ -406,6 +406,8 @@ fn claim(cpu: usize, gen: u32, to: u8) -> bool {
 }
 /// The `HotplugReason` code of a `phase::FAILED`.
 static FAILED: [AtomicU8; azos_limits::NR_CPUS] = [const { AtomicU8::new(0) }; azos_limits::NR_CPUS];
+/// The TID of the change's `cpu-down` thread, set when it starts.
+static THREAD_TID: [AtomicU32; azos_limits::NR_CPUS] = [const { AtomicU32::new(0) }; azos_limits::NR_CPUS];
 /// Tasks the thread moved (for the record).
 static MOVED: [AtomicUsize; azos_limits::NR_CPUS] = [const { AtomicUsize::new(0) }; azos_limits::NR_CPUS];
 
@@ -573,6 +575,9 @@ fn reason_of(code: u8) -> Why {
 fn offline_thread(arg: usize) {
     use azos_arch::Interrupts;
     let (cpu, gen) = (arg & 0xFF, (arg >> 8) as u32);
+    if let Some(t) = THREAD_TID.get(cpu) {
+        t.store(crate::current_task_tid(), Ordering::Release);
+    }
     // The request was cancelled (or is an older one's): do nothing.
     if !claim(cpu, gen, phase::STARTED) {
         crate::task_exit();
@@ -724,6 +729,12 @@ fn finish_online(cpu: usize) -> usize {
     ALIVE.store(now, Ordering::Release);
     azos_percpu::set_cpu_online(cpu, true);
     publish_prefix(now);
+    // The thread reports BACK and then ends: until it has, it is the real-time
+    // task the next request for this CPU would be refused for.
+    let tid = THREAD_TID.get(cpu).map_or(0, |t| t.load(Ordering::Acquire));
+    if tid != 0 {
+        wait_ms(HOTPLUG_THREAD_MS, || crate::scheduler::idx_for_tid(tid).is_none());
+    }
     now.count_ones() as usize
 }
 
