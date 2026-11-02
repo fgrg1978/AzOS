@@ -397,7 +397,7 @@ fn vtd_model(cap: u64, ecap: u64) -> FakeMmio {
 fn vtd_bring_up_sets_the_root_then_invalidates_then_enables() {
     let mem = TestMem::leak();
     let mmio = vtd_model(VTD_CAP, VTD_ECAP);
-    let unit = Vtd::new(mmio.clone(), mem).unwrap();
+    let unit = Vtd::new(mmio.clone(), mem, 0x1_0000).unwrap();
     assert_eq!(mmio.get(vtd::REG_RTADDR), mem.page(0));
     assert_eq!(mmio.get(vtd::REG_FECTL), vtd::FECTL_IM as u64, "fault interrupt masked");
     // SRTP, then (after the invalidations) TE.
@@ -415,16 +415,16 @@ fn vtd_bring_up_sets_the_root_then_invalidates_then_enables() {
 fn vtd_prefers_three_levels_and_refuses_what_it_cannot_drive() {
     let mem = TestMem::leak();
     let both = (0b110 << 8) | (0x20 << 24) | 6;
-    assert_eq!(Vtd::new(vtd_model(both, VTD_ECAP), mem).unwrap().pt_format().levels, 3);
-    assert!(matches!(Vtd::new(vtd_model(VTD_CAP, 0x100 << 8), TestMem::leak()).err(), Some(IommuError::Unsupported(_))));
-    assert!(matches!(Vtd::new(vtd_model(6, VTD_ECAP), TestMem::leak()).err(), Some(IommuError::Unsupported(_))));
+    assert_eq!(Vtd::new(vtd_model(both, VTD_ECAP), mem, 0x1_0000).unwrap().pt_format().levels, 3);
+    assert!(matches!(Vtd::new(vtd_model(VTD_CAP, 0x100 << 8), TestMem::leak(), 0x1_0000).err(), Some(IommuError::Unsupported(_))));
+    assert!(matches!(Vtd::new(vtd_model(6, VTD_ECAP), TestMem::leak(), 0x1_0000).err(), Some(IommuError::Unsupported(_))));
 }
 
 #[test]
 fn vtd_attach_builds_root_and_context_entries() {
     let mem = TestMem::leak();
     let mmio = vtd_model(VTD_CAP, VTD_ECAP);
-    let mut unit = Vtd::new(mmio.clone(), mem).unwrap();
+    let mut unit = Vtd::new(mmio.clone(), mem, 0x1_0000).unwrap();
     let root = mem.page(0);
 
     // Device 00:03.0 = 0x18, bus 0.
@@ -461,7 +461,7 @@ fn vtd_keeps_one_domain_id_per_device_and_frees_it_when_the_device_stops_transla
     let mem = TestMem::leak();
     let tr = |pa| DomainMode::Translate { root_pa: pa };
     // ND = 0: 16 domain ids, 2 of them the crate's own: 14 translating devices.
-    let mut unit = Vtd::new(vtd_model(VTD_CAP & !7, VTD_ECAP), mem).unwrap();
+    let mut unit = Vtd::new(vtd_model(VTD_CAP & !7, VTD_ECAP), mem, 0x1_0000).unwrap();
     let ctx = {
         unit.attach(0x10, tr(0x8000_0000)).unwrap();
         mem.page(1)
@@ -493,7 +493,7 @@ fn vtd_keeps_one_domain_id_per_device_and_frees_it_when_the_device_stops_transla
 fn vtd_poll_faults_reads_and_frees_the_recording_registers() {
     let mem = TestMem::leak();
     let mmio = vtd_model(VTD_CAP, VTD_ECAP);
-    let mut unit = Vtd::new(mmio.clone(), mem).unwrap();
+    let mut unit = Vtd::new(mmio.clone(), mem, 0x1_0000).unwrap();
     assert!(faults(&mut unit).is_empty());
     // Register 1 (at FRO*16 + 16 = 0x210) holds a fault: write to 0x8000_1000
     // from 00:03.0, reason 5 (write permission).
@@ -695,4 +695,14 @@ fn amd_poll_faults_reads_the_event_log() {
     );
     assert_eq!(mmio.get(amdvi::REG_EVT_HEAD), 16);
     assert!(mem.invalidated_in(evt, 16), "the record was invalidated before it was read");
+}
+
+#[test]
+fn a_vtd_unit_whose_registers_leave_the_window_is_refused() {
+    // The IOTLB registers at IRO * 16 past the first page.
+    let far = (VTD_ECAP & !(0x3ff << 8)) | 0x200 << 8;
+    let span = azos_iommu::vtd::register_span(VTD_CAP, far);
+    assert_eq!(span, 0x200 * 16 + 16);
+    assert!(Vtd::new(vtd_model(VTD_CAP, far), TestMem::leak(), 0x1000).is_err(), "IOTLB registers past the mapped page");
+    assert!(Vtd::new(vtd_model(VTD_CAP, far), TestMem::leak(), span).is_ok());
 }

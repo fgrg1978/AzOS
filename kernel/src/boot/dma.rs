@@ -561,10 +561,17 @@ mod hw {
         let _ = (dmar, ivhd, funcs);
         #[cfg(feature = "iommu-vtd")]
         if let Some(base) = dmar.map(|b| b as usize) {
+            // The capability registers lie in the first page and say how many
+            // the rest take.
             if !crate::boot::map_mmio_region(base, 0x1000) {
                 return None;
             }
-            return match azos_iommu::vtd::Vtd::new(KMmio { base }, &MEM) {
+            let mmio = KMmio { base };
+            let span = azos_iommu::vtd::register_span(mmio.read64(azos_iommu::vtd::REG_CAP), mmio.read64(azos_iommu::vtd::REG_ECAP));
+            if !crate::boot::map_mmio_region(base, span) {
+                return None;
+            }
+            return match azos_iommu::vtd::Vtd::new(mmio, &MEM, span) {
                 Ok(u) => Some(found(&VTD, u, base, None)),
                 Err(e) => {
                     kprintln!("[IOMMU] vt-d at {:#x} not used: {:?}", base, e);
