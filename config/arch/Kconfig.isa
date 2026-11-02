@@ -111,8 +111,10 @@ choice
         bool "RISC-V D extension (32 × f64 = 256 B, default rv64)"
         depends on ARCH_RISCV64
         help
-          Saves all 32 double-precision FP registers.  The standard
-          choice for rv64gc targets.  Required for drone attitude math.
+          Saves all 32 double-precision FP registers of a Linux task, which
+          gets the file on its first FP instruction (crates/core/sched/src/fp.rs).
+          Native riscv64 images are rv64imac and run with sstatus.FS off, so no
+          native task uses FP; aarch64 and x86_64 save FP state for every task.
 
     config FP_RVV
         bool "RISC-V V extension (32 × vlen-bit + control regs)"
