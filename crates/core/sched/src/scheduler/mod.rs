@@ -3349,6 +3349,9 @@ unsafe fn cpu_remove_at(cpu: usize, idx: usize, prio: usize) -> bool {
         // invariant — otherwise the re-enqueue at its new priority (the whole
         // point of this call) is refused as a duplicate and the task is lost.
         task_mut(idx).queued.store(false, Ordering::Release);
+        if fairq::is_fair(prio as u32) {
+            fairq::unlink(cpu, idx);
+        }
     }
     found
 }

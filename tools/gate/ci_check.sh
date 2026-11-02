@@ -11667,6 +11667,11 @@ host_job host_canary_row "elf: fill without memory canary (host)" sched-wake-tes
 # the `ktest QoS RT slack canary` rows.
 host_job host_canary_row "qos: RT timer slack canary (host)" sched-policy-tests qos-rt-slack-canary \
     qos_timer_slack_is_fair_class_only
+# The fair queue's tree: `eevdf-tree-canary` never recomputes a node's least `v`
+# once it is linked, so the descent skips an eligible subtree and the tree's
+# pick differs from the list's (`tests/host/sched-policy-tests/src/eevdf_tree_tests.rs`).
+host_job host_canary_row "sched: fair tree augmentation canary (host)" sched-policy-tests eevdf-tree-canary \
+    the_tree_picks_what_the_list_picks_over_random_sequences
 # A real board has no rangefinder driver: the refusal must leave a record
 # (`drivers-tests` stands in for `azos_drv_sys` with `ON_QEMU` false; a QEMU
 # kernel never refuses).
@@ -14795,8 +14800,9 @@ PY
     # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 150, arm 154.
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
-    KTEST_N_RV=153
-    KTEST_N_ARM=157
+    # +2 fair_tree_pick_is_the_scan, fair_tree_follows_the_lists -> 155, arm 159.
+    KTEST_N_RV=155
+    KTEST_N_ARM=159
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15772,7 +15778,8 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=162
+    # +2 fair_tree_pick_is_the_scan, fair_tree_follows_the_lists -> 164.
+    KTEST_N_X86=164
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its

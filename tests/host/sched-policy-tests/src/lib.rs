@@ -14,6 +14,12 @@ pub mod class;
 #[path = "../../../../crates/core/sched/src/eevdf_core.rs"]
 pub mod eevdf_core;
 
+#[path = "../../../../crates/core/sched/src/eevdf_tree.rs"]
+pub mod eevdf_tree;
+
+#[cfg(test)]
+mod eevdf_tree_tests;
+
 #[cfg(test)]
 mod eevdf_tests;
 

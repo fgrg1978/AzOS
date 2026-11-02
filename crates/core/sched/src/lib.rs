@@ -9,6 +9,8 @@ pub mod class;
 pub mod sc;
 /// The fair class's arithmetic: EEVDF (pure, host-tested).
 pub mod eevdf_core;
+/// The fair class's order over its queue: a treap keyed by deadline (pure, host-tested).
+pub mod eevdf_tree;
 pub mod donation;
 pub mod filter;
 pub mod task;
