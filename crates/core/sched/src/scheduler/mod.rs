@@ -2161,11 +2161,14 @@ pub fn canary_rt_place_flat() {
     CANARY_RT_PLACE_FLAT.store(true, Ordering::Relaxed);
 }
 
-/// Ktest: where placement sends a real-time task when every CPU is equally free.
+/// Ktest: where placement sends a real-time task when only `a` and `b` are free.
 #[cfg(feature = "ktest")]
-pub fn ktest_rt_pick_among_equals() -> usize {
+pub fn ktest_rt_pick_between(a: usize, b: usize) -> usize {
     let online = NUM_ONLINE_CPUS.load(Ordering::Acquire).min(MAX_CPUS);
-    pick_for(0, &[CpuLoad { blocking: 0, rt_blocking: 0, total: 0 }; MAX_CPUS][..online])
+    let mut loads = [CpuLoad { blocking: 0, rt_blocking: 0, total: 1 }; MAX_CPUS];
+    loads[a].total = 0;
+    loads[b].total = 0;
+    pick_for(0, &loads[..online])
 }
 
 /// The CPU placement picks from `loads` for a task of priority `prio`: a

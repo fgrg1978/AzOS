@@ -153,7 +153,12 @@ azos_ktest::ktest_late! {
 azos_ktest::ktest_late! {
     fn asym_rt_task_placed_on_a_big_cpu() {
         differing()?;
-        if topo::class(azos_sched::scheduler::ktest_rt_pick_among_equals()) != 0 {
+        // Logical CPU 0 is whichever CPU booted: the small one is taken first, so
+        // that a placement blind to capacity picks it.
+        let n = azos_percpu::nr_cpu_ids();
+        let small = (0..n).find(|&c| topo::class(c) != 0).ok_or("no small CPU")?;
+        let big = (small..n).find(|&c| topo::class(c) == 0).ok_or("no big CPU after the first small one")?;
+        if azos_sched::scheduler::ktest_rt_pick_between(small, big) != big {
             return Err("placement sends a real-time task to a small CPU with a big one as free");
         }
         Ok(())
