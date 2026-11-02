@@ -462,6 +462,53 @@ fn a_v6_segment_that_is_not_for_us_or_does_not_verify_opens_nothing() {
     assert_eq!(out[0].tcp_flags(), SYN | ACK);
 }
 
+/// RFC 4291 §2.5.2: the unspecified address is a source only for a host that
+/// has no address yet, which on this link means Neighbor Discovery. A TCP SYN
+/// from `::` took a half-open slot and was answered to `::`. Canary
+/// `ipv6-unspecified-src-canary` (gate row): only multicast sources are refused.
+#[test]
+fn a_tcp_syn_from_the_unspecified_address_is_dropped() {
+    let _g = begin();
+    let me = ipv6::ipv6_link_local();
+    let unspecified = [0u8; 16];
+    assert!(tcp::TcpHandle::listen6(7006).is_some());
+
+    let out = inject(seg6(unspecified, me, 40008, 7006, 1, 0, SYN, &[], &[]));
+    assert!(out.is_empty(), "a SYN from :: was answered");
+    assert_eq!(tcp_rx::count_in(tcp::TcpState::SynRcvd), 0, "and it holds a half-open slot");
+
+    // Controls: the same SYN from a link-local peer is taken.
+    let out = inject(seg6(FE80_PEER, me, 40010, 7006, 1, 0, SYN, &[], &[]));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].tcp_flags(), SYN | ACK);
+}
+
+/// The same for a datagram: a reply to `::` goes nowhere.
+/// Canary `ipv6-unspecified-src-canary` (gate row).
+#[test]
+fn a_udp_datagram_from_the_unspecified_address_is_dropped() {
+    let _g = begin();
+    let me = ipv6::ipv6_link_local();
+    let unspecified = [0u8; 16];
+    let sock = super::udp::bind(7007);
+    assert!(sock >= 0);
+    let mut dgram = Vec::new();
+    dgram.extend_from_slice(&40009u16.to_be_bytes());
+    dgram.extend_from_slice(&7007u16.to_be_bytes());
+    dgram.extend_from_slice(&12u16.to_be_bytes());
+    dgram.extend_from_slice(&[0, 0]);
+    dgram.extend_from_slice(b"ping");
+    let from = |src: [u8; 16]| frame6(OUR_MAC, src, me, 17, 64, dgram.clone(), 6);
+    let mut buf = [0u8; 8];
+    inject(from(unspecified));
+    assert_eq!(super::udp::recv(sock as usize, &mut buf), 0, "a datagram from :: was delivered");
+
+    // Control: the same datagram from a link-local peer is taken.
+    inject(from(FE80_PEER));
+    assert_eq!(super::udp::recv(sock as usize, &mut buf), 4);
+    super::udp::unbind(sock as usize);
+}
+
 // ── SLAAC ────────────────────────────────────────────────────────────────────
 
 fn ra_with_prefix(valid: u32, preferred: u32) -> Vec<u8> {

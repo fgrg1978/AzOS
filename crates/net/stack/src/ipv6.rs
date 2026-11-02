@@ -679,6 +679,17 @@ pub fn ipv6_rx(frame: &[u8], frame_len: usize) {
     // stack builds is addressed to the packet's source, so one would be sent
     // to a group.
     if is_multicast(src) { return; }
+    // RFC 4291 §2.5.2: `::` is a source only for a host that has no address
+    // yet, and the only such traffic taken here is Neighbor Discovery over
+    // ICMPv6 (a Duplicate Address Detection probe, a Router Solicitation). A
+    // TCP or UDP packet from it is answered to nowhere and, for a SYN, holds a
+    // half-open slot.
+    if is_unspecified(src)
+        && frame[6] != NEXTHDR_ICMPV6
+        && !cfg!(feature = "ipv6-unspecified-src-canary")
+    {
+        return;
+    }
 
     // Destination filter: our unicast address, or a group we have joined
     // (all-nodes + solicited-node).  The trailing `|| is_multicast(dst)` this

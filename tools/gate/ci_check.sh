@@ -11151,6 +11151,20 @@ host_job host_canary_row "nicq: blind stack canary" net-tests nic-queue-blind-ca
 # says so (found by the `<isa>: sdktest boots` rows, `net_edges_and_udp_timeouts`);
 # `listen-dup-canary` takes the second listener, as the stack did.
 host_job host_canary_row "net: second listener canary (host)" net-tests listen-dup-canary a_second_listener_on_a_taken_port_is_refused
+# TCP segments a synchronised state must not take (crates/net/stack/src/tcp.rs, RFC 9293
+# §3.10.7.4): data in a segment without the ACK bit, and text after the peer's FIN.
+host_job host_canary_row "tcp: no-ACK data canary" net-tests tcp-no-ack-canary data_without_the_ack_bit_is_not_delivered
+host_job host_canary_row "tcp: close-wait data canary" net-tests tcp-closewait-data-canary data_after_the_peers_fin_is_ignored
+# IPv6 sources (ipv6.rs, RFC 4291 §2.5.2): `::` is not a source for TCP or UDP.
+host_job host_canary_row "ipv6: unspecified TCP source canary" net-tests ipv6-unspecified-src-canary a_tcp_syn_from_the_unspecified_address_is_dropped
+host_job host_canary_row "ipv6: unspecified UDP source canary" net-tests ipv6-unspecified-src-canary a_udp_datagram_from_the_unspecified_address_is_dropped
+# A UDP port has one owner (udp.rs `bind`; std's `UdpSocket::bind` of a taken port is `AddrInUse`).
+host_job host_canary_row "udp: duplicate bind canary" net-tests udp-dup-bind-canary a_taken_udp_port_is_refused_to_a_second_bind
+# NAT (nat.rs, behind NET_NAT): a SYN on a closing flow is new to the forward hook, and an
+# adjusted checksum never stores 0x0000 where only 0xFFFF verifies or "none" would be said.
+host_job host_canary_row "nat: closing SYN canary" net-tests nat-closing-syn-canary a_syn_on_a_closing_flow_is_a_new_connection_to_the_forward_hook
+host_job host_canary_row "nat: zero ICMP-quote checksum canary" net-tests nat-zero-checksum-canary an_icmp_error_never_quotes_a_udp_checksum_of_zero
+host_job host_canary_row "nat: all-zero echo canary" net-tests nat-zero-checksum-canary an_all_zero_echo_reply_keeps_a_checksum_that_verifies
 host_job host_canary_row "ipv6: no DAD canary" net-tests slaac-no-dad-canary the_advertisement_slirp_sends_forms_its_address_through_duplicate_address_detection
 host_job host_canary_row "ipv6: claim ignored canary" net-tests slaac-no-dad-canary a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned
 host_job host_canary_row "ipv6: two hours canary" net-tests slaac-two-hours-canary a_refresh_over_two_hours_is_taken_as_it_is_even_when_it_lowers_what_remains

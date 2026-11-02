@@ -52,8 +52,8 @@ pub struct PortTimes {
 /// forwarding time is inside every gap and cancels when they are subtracted.
 /// Branching topologies need the port map and are out of scope.
 ///
-/// `out` must be as long as `times`; a negative hop (timestamps that cannot come
-/// from a line) is [`Error::BadTimestamps`].
+/// `out` must be as long as `times`; a negative hop, or delays that add up past
+/// 32 bits (timestamps that cannot come from a line), is [`Error::BadTimestamps`].
 pub fn line_delays(times: &[PortTimes], out: &mut [u32]) -> Result<(), Error> {
     if out.len() != times.len() {
         return Err(Error::BufferTooSmall);
@@ -67,7 +67,7 @@ pub fn line_delays(times: &[PortTimes], out: &mut [u32]) -> Result<(), Error> {
             if diff >= 1 << 31 {
                 return Err(Error::BadTimestamps);
             }
-            delay = delay.wrapping_add(diff / 2);
+            delay = delay.checked_add(diff / 2).ok_or(Error::BadTimestamps)?;
         }
         *slot = delay;
     }

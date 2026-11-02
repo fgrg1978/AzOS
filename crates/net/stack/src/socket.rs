@@ -596,8 +596,13 @@ pub fn socket_connect(fd: i32, addr: &SockAddr, src_port: u16) -> i32 {
             // freshly created socket is the normal client case, and demanding
             // a prior `bind` would force userspace to invent a port.
             drop(t);
-            let port = ephemeral_port();
-            let slot = udp::bind(port);
+            // A port some socket bound by number holds is skipped.
+            let (mut port, mut slot) = (0, -1);
+            for _ in 0..UDP_EPHEMERAL_TRIES {
+                port = ephemeral_port();
+                slot = udp::bind(port);
+                if slot >= 0 { break; }
+            }
             if slot < 0 { return -1; }
             t = SOCKS.lock();
             t.sockets[fd].slot = slot;
@@ -616,6 +621,10 @@ pub fn socket_connect(fd: i32, addr: &SockAddr, src_port: u16) -> i32 {
     t.sockets[fd].remote = *addr;
     0
 }
+
+/// Draws of [`ephemeral_port`] a `connect` makes before it gives up on finding
+/// a free one.
+const UDP_EPHEMERAL_TRIES: u32 = 16;
 
 /// Ephemeral port for a `connect` on an unbound UDP socket.
 ///
