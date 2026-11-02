@@ -3,8 +3,8 @@
 # config/axes/Kconfig.virt — The VIRT axis and the hypervisor core (crates/core/hv)
 #
 # The role is the VIRT axis (the choice below): none, hosted, split or
-# static. The CPU's extension is probed per ISA, each with its n / probe /
-# require policy: RV_H (RISC-V H), X86_SVM and X86_VMX (config/arch/Kconfig.isa-*);
+# static; split is refused until an ISA has a monitor. The CPU's extension is
+# probed per ISA, each with its n / probe / require policy: RV_H (RISC-V H), X86_SVM and X86_VMX (config/arch/Kconfig.isa-*);
 # on aarch64 the boot trampoline keeps EL2 (VIRT is not none) when it was
 # entered there and the role degrades to `none` (with the reason in the boot
 # line) when it was not; with VIRT none it drops to EL1 as before.
@@ -33,10 +33,8 @@
 
 choice
     prompt "Virtualization role (VIRT)"
-    default VIRT_SPLIT if SECURITY_CONFIDENTIAL
     default VIRT_STATIC if PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
-    default VIRT_HOSTED if (PRESET_DESKTOP || PRESET_SERVER) && ARCH_X86_64
-    default VIRT_SPLIT if (PRESET_DESKTOP || PRESET_SERVER) && ARCH_AARCH64
+    default VIRT_HOSTED if (PRESET_DESKTOP || PRESET_SERVER) && (ARCH_X86_64 || ARCH_AARCH64)
     default VIRT_NONE
     help
       The hypervisor role of the image. Anything but `none` builds the
@@ -62,10 +60,12 @@ choice
 
     config VIRT_SPLIT
         bool "Split (a resident monitor under the kernel)"
-        depends on !BOARD_VF2
+        depends on ARCH_HAS_HYP_MONITOR && !BOARD_VF2
         help
           A small resident monitor owns the virtualization extension and the
-          kernel runs as its first guest (the aarch64 EL2 stub shape).
+          kernel runs as its first guest. Not selectable until an ISA
+          provides ARCH_HAS_HYP_MONITOR: no ISA does yet, so the role is
+          refused everywhere rather than run as hosted under another name.
 
     config VIRT_STATIC
         bool "Static partitioning (pinned guests, fixed at build time)"
@@ -75,6 +75,14 @@ choice
           topology; no guest is created at run time.
 
 endchoice
+
+config ARCH_HAS_HYP_MONITOR
+    bool
+    help
+      The ISA ships a resident monitor that the kernel runs under (VIRT_SPLIT
+      and SECURITY_CONFIDENTIAL depend on it). Set by an ISA's Kconfig only
+      when that monitor is built and its gate rows pass; none sets it yet.
+      Never asked.
 
 menu "Hypervisor"
 

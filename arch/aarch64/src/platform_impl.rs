@@ -76,6 +76,8 @@ impl ArchPlatform for Aarch64 {
     #[inline]
     fn install_user_root_local(&self, word: usize) {
         if word != 0 {
+            // percpu-hint: the arch contract: called on the switch and exec paths with interrupts off
+            crate::tlb::publish(crate::cpu::hart_id(), word);
             crate::sysregs::install_ttbr0_flush_local(word);
             // Outside the generation scheme: the next user switch flushes
             // (Kconfig `TLB_RETAIN`), and until then this PE may run the

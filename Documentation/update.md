@@ -408,7 +408,8 @@ The policy is in `floor.rs`, all of it pure:
 The NV index is a `TPM_NT_BITS` one, defined once per TPM: floor `n` is bit
 `n - 1`, set with `NV_SetBits`, so the TPM itself refuses to lower it and a raise
 is one command whatever the jump. The floor tops out at 64 (`FLOOR_MAX`; a higher
-epoch is refused, not wrapped). An index left by an earlier build (ordinary, 4
+epoch is refused, not wrapped), and `sign_ota.py bundle` refuses to sign an `--epoch` above it when
+the `.config` has `OTA_FLOOR_TPM_NV` (`--kconfig`, default `$KCONFIG_CONFIG`, then `.config`). An index left by an earlier build (ordinary, 4
 bytes) is not adopted: the boot records it and BOOTMETA holds alone. The password
 is one the kernel derives (`floor::nv_auth`); see "TPM" in [security.md](security.md) for what that
 password does and does not protect against. A replay-protected eMMC partition is

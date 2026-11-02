@@ -26,12 +26,12 @@ from `VIRT`, never asked).
 |---|---|---|
 | `NONE` | The kernel hosts no guest. | |
 | `HOSTED` | Guests run beside the kernel, which keeps its own drivers. | vCPUs share the harts that hold no deadline reservation |
-| `SPLIT` | A small resident monitor owns the virtualization extension and the kernel runs as its first guest (the aarch64 EL2 stub shape). | as hosted |
+| `SPLIT` | A small resident monitor owns the virtualization extension and the kernel runs as its first guest. Refused (not selectable) until an ISA provides `ARCH_HAS_HYP_MONITOR`; none does. | as hosted |
 | `STATIC` | Guests are pinned to harts and memory fixed in the signed topology; none is created at run time. | a hart of its own per vCPU |
 
 The defaults come from the preset: industrial and automotive use `STATIC`; desktop and
-server use `HOSTED` on x86_64 and `SPLIT` on aarch64; the confidential security posture
-starts at `SPLIT`; everything else is `NONE`.
+server use `HOSTED` on x86_64 and aarch64; everything else is `NONE`. The confidential
+security posture needs the same monitor and is refused with it.
 
 | Option | What |
 |---|---|
@@ -45,7 +45,7 @@ starts at `SPLIT`; everything else is `NONE`.
 
 A CPU that cannot host guests, or a role of `none`, is "no hypervisor, with the reason" on the
 boot line, never a boot failure (`HV_REQUIRE` refuses before that). The `qemu-hv` and
-`qemu-x86_64-hv` defconfigs set `HOSTED`, `qemu-aarch64-hv` sets `SPLIT`, each with
+`qemu-x86_64-hv` and `qemu-aarch64-hv` defconfigs set `HOSTED`, each with
 `MAX_MEMOBJS=256`; the `qemu-hv-guest` and `qemu-aarch64-hv-guest` defconfigs add the example
 guest. QEMU needs the extension turned
 on (`-cpu rv64,h=true`, `virtualization=on`, `-cpu max,svm=on`; `tools/dev/qemu.sh` lists the
@@ -335,7 +335,7 @@ written to the decision ring. The rules, in order:
 | `UnknownDevice` | A row lists a backend nobody serves. |
 | `NotEnoughHarts` | A static partition needs a hart per vCPU and there are fewer. |
 
-No rows at all is always an empty plan. In the plan, hosted and split guests may run on
+No rows at all is always an empty plan. In the plan, hosted guests may run on
 every non-real-time online hart; a static guest takes the next free harts, lowest first, and
 each of its vCPUs is pinned to one.
 

@@ -287,6 +287,16 @@ fn check_target_features(workspace_root: &std::path::Path, config_path: &std::pa
 }
 
 fn run_validations(cfg: &ConfigMap) {
+    // A split image or a confidential posture without a resident monitor
+    // would run as hosted while claiming otherwise. Kconfig refuses the
+    // request, and a .config written by hand that still carries it stops here.
+    if (get_bool(cfg, "VIRT_SPLIT") || get_bool(cfg, "SECURITY_CONFIDENTIAL"))
+        && !get_bool(cfg, "ARCH_HAS_HYP_MONITOR")
+    {
+        panic!("validation FAIL: VIRT_SPLIT / SECURITY_CONFIDENTIAL without ARCH_HAS_HYP_MONITOR: \
+                this ISA has no resident monitor, so the image would run its guests hosted and \
+                call it split. Fix: choose VIRT_HOSTED (or another SECURITY posture).");
+    }
     // The console login starts the native shell after a login: with another
     // console program (or none) the login row would exist and nothing would
     // ask for a credential.

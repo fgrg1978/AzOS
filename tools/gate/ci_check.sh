@@ -3667,7 +3667,7 @@ aarch64_hv_row() {
     mkdir -p "$CI_LOG_DIR"
     local log="$CI_LOG_DIR/aarch64-hv-entry.log"
     rm -f "$log"
-    if ! a64_kbuild "qemu,CONFIG_VIRT_SPLIT=y"; then
+    if ! a64_kbuild "qemu,CONFIG_VIRT_HOSTED=y"; then
         bad; echo "      aarch64 kernel (--features qemu,hv) did not build"; return
     fi
     local img_copy="$CI_LOG_DIR/kernel-aarch64-hv.img"
@@ -11726,6 +11726,25 @@ fi
 # Not under crates/: the allow-list and BPF program of the Linux+seccomp
 # column of vsbench, checked against userspace/bench/vsbench/src/abi_linux.rs.
 test_host "linux-seccomp-launch" "${REPO_ROOT}/tools/bench/linux_seccomp_launch/host-tests"
+# VIRT_SPLIT and SECURITY_CONFIDENTIAL are refused while no ISA has a resident
+# monitor (R13 of the split design): `make config` does not offer them, a
+# config that asks is reported, a hand-written .config stops the azos_limits
+# build. The canary row judges a Kconfig copy without the dependency and must
+# see the judge go red (tools/gate/hyp_refusal_row.py).
+hyp_refusal_row() { # <label> <isa> [--canary]
+    local label="$1" out
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    if out="$(CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/hyp-refusal" python3 "${REPO_ROOT}/tools/gate/hyp_refusal_row.py" "${@:2}" 2>&1)"; then
+        ok; printf '%s\n' "$out" | sed -n '1p'
+    else bad; printf '%s\n' "$out" | sed -n '1,6p'; fi
+}
+host_job hyp_refusal_row "split: refused at config (rv)" riscv64
+host_job hyp_refusal_row "split: refusal canary (rv)" riscv64 --canary
+host_job hyp_refusal_row "split: refused at config (arm)" aarch64
+host_job hyp_refusal_row "split: refusal canary (arm)" aarch64 --canary
+host_job hyp_refusal_row "split: refused at config (x86)" x86_64
+host_job hyp_refusal_row "split: refusal canary (x86)" x86_64 --canary
 if ci_row_begin "kconfig_to_cargo tests"; then
 printf "  %-26s" "kconfig_to_cargo tests..."
 if kc_out="$(python3 "${REPO_ROOT}/tools/build/test_kconfig_to_cargo.py" 2>&1)"; then ok
@@ -14776,8 +14795,8 @@ PY
     # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 150, arm 154.
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
-    KTEST_N_RV=152
-    KTEST_N_ARM=156
+    KTEST_N_RV=153
+    KTEST_N_ARM=157
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14933,7 +14952,8 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'
+            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
@@ -15098,12 +15118,15 @@ PY
     par "ktest blk reap once (arm)" ktest_row "ktest blk reap once (arm)" arm "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest blk reap once canary (rv)" ktest_row "ktest blk reap once canary (rv)" rv "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk.img
     par "ktest blk reap once canary (arm)" ktest_row "ktest blk reap once canary (arm)" arm "" "blk_reap_reports_once" "canary=blk-reap-unlocked" "" $AZOS_OUT/build/disk-aarch64.img
+    par "ktest free_pages in flight canary (rv)" ktest_row "ktest free_pages in flight canary (rv)" rv ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
+    par "ktest free_pages in flight canary (arm)" ktest_row "ktest free_pages in flight canary (arm)" arm ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest clone against maps in flight canary (rv)" ktest_row "ktest clone against maps in flight canary (rv)" rv ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (rv)" ktest_row "ktest unswitched block canary (rv)" rv "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest unswitched block canary (arm)" ktest_row "ktest unswitched block canary (arm)" arm "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest ttbr0 holders canary (arm)" ktest_row "ktest ttbr0 holders canary (arm)" arm "" "tlb_shootdown_cross_cpu" "canary=ttbr0-holders-self" "root_holders did not name exactly"
     par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
@@ -15140,7 +15163,13 @@ PY
     # the canary is the default kernel, KASAN off, told to expect them (`canary=kasan-expected`): the same
     # reads go unnoticed and both tests are red.
     KTEST_KASAN_RE=$'^ok [0-9]+ - kasan_reports_a_read_past_the_end_of_a_block$\n^ok [0-9]+ - kasan_reports_a_read_through_a_freed_pointer$'
-    ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" KCFG_GREP="CONFIG_KASAN=y" ktest_row_cfgline "$@"; }
+    # The shadow takes 1/8 of RAM (4096 of the 32768 pages at -m 128M), and memory admission needs the same
+    # pages with it as without: at 128M the rv row had 0 pages to spare (need 15440, free 15440) and the arm
+    # row 739. The plain rows spare 4375 (rv) pages; each 1 MiB of RAM adds about 223 free pages with the
+    # shadow (256 * 7/8, less the frame descriptors), so 144M would leave 3568 and 160M leaves about 7100 (rv)
+    # and 7900 (arm): the smallest 16 MiB step that clears what the plain rows spare. x86 runs on its own
+    # larger default RAM and spares 29198 pages.
+    ktest_row_kasan() { KCFG_TAG=kasan KCFG_LINE="CONFIG_KASAN=y" KCFG_GREP="CONFIG_KASAN=y" KTEST_QEMU_EXTRA="-m 160M" ktest_row_cfgline "$@"; }
     par "ktest kasan (arm)" ktest_row_kasan "ktest kasan (arm)" arm "" "" "" "$KTEST_KASAN_RE"
     par "ktest kasan (rv)" ktest_row_kasan "ktest kasan (rv)" rv "" "" "" "$KTEST_KASAN_RE"
     KTEST_KASAN_OFF="kasan_reports_a_read_past_the_end_of_a_block kasan_reports_a_read_through_a_freed_pointer"
@@ -15744,7 +15773,7 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=161
+    KTEST_N_X86=162
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16806,7 +16835,8 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'
+            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
@@ -16830,6 +16860,7 @@ PY
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
     par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
+    par "ktest free_pages in flight canary (x86)" x86_ktest_row "ktest free_pages in flight canary (x86)" ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"

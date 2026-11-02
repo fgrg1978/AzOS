@@ -278,6 +278,7 @@ oldconfig:
 	$(PYTHON) -m oldconfig
 
 olddefconfig:
+	@[ ! -f $(KCONFIG_CONFIG) ] || $(PYTHON) tools/build/kconfig_dropped.py $(KCONFIG_CONFIG)
 	$(PYTHON) -m olddefconfig
 
 # `make defconfig`: two questions, the ISA (the host's by default) and the domain
@@ -295,6 +296,7 @@ defconfig:
 defconfig-%:
 	@if [ -f $(KCONFIG_DEFCONFIG_DIR)/$*.config ]; then cp $(KCONFIG_DEFCONFIG_DIR)/$*.config $(KCONFIG_CONFIG); \
 	else $(PYTHON) tools/build/gen_defconfigs.py --print '$*' >$(KCONFIG_CONFIG).new && mv $(KCONFIG_CONFIG).new $(KCONFIG_CONFIG); fi
+	@$(PYTHON) tools/build/kconfig_dropped.py $(KCONFIG_CONFIG) || { rm -f $(KCONFIG_CONFIG); exit 1; }
 	@KCONFIG_CONFIG=$(KCONFIG_CONFIG) $(PYTHON) -m olddefconfig
 	@echo "[CONFIG] active = $*"
 

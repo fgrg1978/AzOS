@@ -246,6 +246,12 @@ mod tlb_mask {
 #[path = "../../../../arch/aarch64/src/cpu/features.rs"]
 mod aarch64_features;
 
+// The root each PE publishes for the page-table free check: the mask over
+// the published words.
+#[allow(dead_code)]
+#[path = "../../../../arch/aarch64/src/tlb.rs"]
+mod aarch64_tlb;
+
 // The PMUv3 counters' probe verdict and off-target state (the register images
 // and the decode are in arch-api: tests/host/arch-api-tests).
 // The cross-ISA helpers it re-exports are the kernel's (`azos_arch::pmu`), not

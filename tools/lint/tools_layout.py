@@ -67,7 +67,7 @@ SELF = "tools/lint/tools_layout.py"
 ROLES = {
     "build": [
         "busybox_cc.sh", "defconfig_menu.py", "export_kernel_consts.py", "gen_config_index.py", "gen_feature_matrix.py",
-        "gen_userspace_kconfig.py", "kconfig_to_cargo.py", "lx_device_table.py", "lx_kbuild/",
+        "gen_userspace_kconfig.py", "kconfig_dropped.py", "kconfig_to_cargo.py", "lx_device_table.py", "lx_kbuild/",
         "make_help.txt", "micro_topology.py", "module_hashes.py", "prune_build.py", "relibc_build.sh",
         "relibc_cc.sh", "sdk_build.py", "sdk_cargo.py", "sdk_std.py", "syscall_defs.py", "test_gen_userspace_kconfig.py",
         "test_kconfig_to_cargo.py", "test_sdk_build.py", "test_preset_prompt.py", "test_user_isa.py", "third_party_fetch.sh", "user_link_args.py",
@@ -76,7 +76,7 @@ ROLES = {
         "check_fast.py", "check_fast.sh", "ci_cargo.py", "ci_check.sh", "ci_full.sh",
         "reclaim_row.py", "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "core_check.py", "coverage.sh", "debug_row.py", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
-        "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
+        "hyp_refusal_row.py", "image_header.py", "ipv6_tcp_row.sh", "kaslr_boot_row.sh", "link_peer.py", "net_pair_smoke.sh",
         "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_sendkeys.py", "qemu_tap.py", "repro_check.sh", "rows_for_diff.py",
         "sbom.sh", "text_equiv.py", "vmmd_withhold_row.sh", "volume_stale_selftest.sh",
     ],
@@ -98,7 +98,7 @@ ROLES = {
     "sign": [
         "check_board_keys.py", "check_prod_key.sh", "corrupt_sig.py", "device_provision.py",
         "gen_config_sig.py", "gen_dev_key.py", "gen_prod_key.py", "gen_test_key.py", "link_key_provision.py",
-        "seed_provision.py", "sigalg.py", "sign_ota.py",
+        "seed_provision.py", "sigalg.py", "sign_ota.py", "test_sign_ota_epoch.py",
     ],
     "bench": [
         "lat_linux/", "limits_cost.py", "linux_seccomp_launch/",

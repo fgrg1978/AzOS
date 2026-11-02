@@ -605,14 +605,9 @@ pub trait Mmu: Send + Sync {
     /// someone else's page the walk fails on kernel text (the trap vector
     /// itself, in the one fault this was found by).
     ///
-    /// riscv64: exact, from the `satp` every hart publishes before it
-    /// installs one (`tlb::AZOS_HART_SATP`). aarch64: this PE's own
-    /// `TTBR0_EL1` only, the one a free on the exit or exec path could still
-    /// be running on; nothing publishes the other PEs' roots. That suffices
-    /// because no other PE can hold a lived root when it is freed: the free
-    /// waits for every other thread of the process to leave it
-    /// (`group_exit`, `exec_end_other_threads`), and the slot-reuse reclaim
-    /// only ever sees roots no PE installed (after boot).
+    /// Exact on every ISA, from the root each CPU publishes before it
+    /// installs one (riscv64 `tlb::AZOS_HART_SATP`, x86_64
+    /// `tlb::AZOS_HART_CR3`, aarch64 `tlb::AZOS_HART_TTBR0`).
     fn root_holders(&self, root_phys: usize) -> usize;
 
     // ── Page aging (MM-MGLRU): the Accessed bit ─────────────────────────

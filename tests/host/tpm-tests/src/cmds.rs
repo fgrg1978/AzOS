@@ -4,7 +4,7 @@
 //! rollback floor. Every command runs over every transport.
 
 use crate::*;
-use azos_tpm::tpm::{StartupType, FLOOR_ATTRS, FLOOR_INDEX, ORDINARY_ATTRS, SECRET_ATTRS, SECRET_BYTES, SECRET_INDEX};
+use azos_tpm::tpm::{StartupType, FLOOR_ATTRS, FLOOR_INDEX, FLOOR_MAX, ORDINARY_ATTRS, SECRET_ATTRS, SECRET_BYTES, SECRET_INDEX};
 use azos_tpm::Error;
 use crate::fake::Dyn;
 
@@ -443,11 +443,12 @@ fn floor_raise_from_unwritten_index_and_above_the_field() {
     r.dev.borrow_mut().expect(NV_READ8, "80 01 00 00 00 0A 00 00 01 4A");
     r.dev.borrow_mut().expect(&nv_set_bits_cmd(0x2B), &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
     assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], 0x2B), Ok(0x2B));
-    // 64 is the last bit; 65 has none and nothing reaches the wire.
+    // FLOOR_MAX is the last bit (the limit tools/sign/sign_ota.py enforces at signing); the next has
+    // none, nothing reaches the wire, and an image signed above it anyway cannot raise the floor.
     r.dev.borrow_mut().expect(NV_READ8, "80 01 00 00 00 0A 00 00 01 4A");
-    r.dev.borrow_mut().expect(&nv_set_bits_cmd(64), &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
-    assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], 64), Ok(64));
-    assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], 65), Err(Error::BadArgument));
+    r.dev.borrow_mut().expect(&nv_set_bits_cmd(FLOOR_MAX), &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"));
+    assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], FLOOR_MAX), Ok(FLOOR_MAX));
+    assert_eq!(t.floor_raise(FLOOR_INDEX, &[0xAA, 0xBB], FLOOR_MAX + 1), Err(Error::BadArgument));
     r.assert_clean();
 }
 

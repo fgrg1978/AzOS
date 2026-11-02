@@ -184,6 +184,9 @@ fi
 # The ring-3 images follow the .config (tools/image/test_user_images.py): an image off in it is on no digest table and no system volume.
 [ "$lints" = 1 ] && { printf "  %-26s" "user images..."; if out="$(python3 tools/image/test_user_images.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^FAIL' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
+# The TPM floor holds epochs up to FLOOR_MAX: the signing tool refuses a bundle above it (tools/sign/test_sign_ota_epoch.py); the canary signs one.
+[ "$lints" = 1 ] && { printf "  %-26s" "ota epoch cap..."; if out="$(python3 tools/sign/test_sign_ota_epoch.py 2>&1 && python3 tools/sign/test_sign_ota_epoch.py --canary 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # The SDK is keyed by what changes its bytes (tools/build/test_sdk_build.py; --build builds it and is run by hand).
 [ "$lints" = 1 ] && { printf "  %-26s" "sdk keys..."; if out="$(python3 tools/build/test_sdk_build.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^FAIL' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
@@ -350,7 +353,10 @@ fi
 # The seccomp suite reads the digest table, which binds the images the .config enables, and boots test
 # programs among them: it is made from the gate's configuration, which asks for all of them
 # (tools/build/gen_userspace_kconfig.py --all-on), whatever the last `make` here was.
-case " $suites " in *seccomp-tests*)
+# syscall-tests compiles in $AZOS_OUT/build/uhello.elf and checks its digest against the table
+# (image_binding.rs): it needs the same table and the same uhello.elf, made together here, not
+# whatever an earlier `make` (size-update, a row) left in $AZOS_OUT/build.
+case " $suites " in *seccomp-tests*|*syscall-tests*)
     printf "  %-26s" "image table (all on)..."
     atc="$AZOS_OUT/target/gate-tier/all-on.config"; mkdir -p "$(dirname "$atc")"
     if { cat config/defconfigs/generic-sbc-riscv64-dev+qemu+linux+gui.config; python3 tools/build/gen_userspace_kconfig.py --all-on; } >"$atc.tmp" \

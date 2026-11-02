@@ -195,6 +195,7 @@ pifast-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, 
 pkg-launch-grant-canary	pending	
 pl011-rx-irq-canary	pending	
 placement-norecord-canary	pending	
+pmm-inflight-canary	host-shared	crates/core/mm/src/pmm.rs: mm-tests and syscall-tests build the same source
 portwait-timer-canary	pending	
 power-cap-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 power-off-durability-smoke	pending	

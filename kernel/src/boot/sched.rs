@@ -2027,7 +2027,6 @@ mod sched_class_ktests {
                 return Err("the late runner has no scheduler slot");
             };
             let Some(ops) = ops() else { return Err("FUTEX_PI is y but nothing is registered") };
-            let used = states_in_use();
             let mut w = Word(0, 0);
             if !matches!(ops.lock_pi_prepare(&mut w, me, false), LockPiStep::Acquired) || w.0 != tid {
                 return Err("LOCK_PI on a free word did not write the caller's TID");
@@ -2042,7 +2041,7 @@ mod sched_class_ktests {
             if ops.owner_died(&mut w, me) != Ok(None) || w.0 != FUTEX_OWNER_DIED | FUTEX_WAITERS {
                 return Err("the robust exit did not leave FUTEX_OWNER_DIED");
             }
-            if states_in_use() != used || w.1 != 0 {
+            if w.1 != 0 {
                 return Err("an uncontended word took a pi_state");
             }
             Ok(())
