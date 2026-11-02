@@ -615,29 +615,18 @@ config SCHED_ASYM_CPUS
     help
       The scheduler treats CPUs that differ in performance as different
       (big.LITTLE from the DTB's capacity-dmips-mhz, a hybrid x86 part from
-      its CPUID core types). Capacity-scaled fair balancing; a fair task that
-      has held a smaller CPU for SCHED_MISFIT_TICKS ticks moves to an idle,
-      bigger one; an unpinned real-time task goes to the biggest CPU among
-      equally loaded ones; real-time admission is a single-type cluster: a
-      signed row with a reservation declares the core class its budget was
-      measured on (`core_class`, 0 the biggest) and is refused, with a
-      decision record, on a CPU of another class. Budgets are not scaled by
+      its CPUID core types). Capacity-scaled fair balancing; an unpinned
+      real-time task goes to the biggest CPU among equally loaded ones;
+      boot admission of real-time rows is a single-type cluster: a signed
+      row with a reservation declares the core class its budget was measured
+      on (`core_class`, 0 the biggest) and a `cpu_mask` of CPUs of that class,
+      or the topology is refused with a decision record. Budgets are not scaled by
       capacity and there are no per-class budgets.
 
       n: every CPU counts as equal and none of this is compiled in. A machine
       that reports differing CPUs still boots, with a warning line and a
       decision record, so a budget measured on one core type is never
       admitted on another unnoticed.
-
-config SCHED_MISFIT_TICKS
-    int "Ticks a fair task holds a small CPU before it counts as misfit"
-    depends on SCHED_ASYM_CPUS && SCHED_BALANCE
-    range 1 1000
-    default 4
-    help
-      A fair task that has run on a CPU smaller than the biggest for this many
-      consecutive ticks, with a bigger CPU idle, is moved there at its next
-      switch. Longer waits are less eager to move short bursts.
 
 config SCHED_EAS
     bool "Energy-aware wake placement on asymmetric CPUs"
