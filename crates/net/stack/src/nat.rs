@@ -414,6 +414,11 @@ fn fix_ip_checksum(pkt: &mut [u8], ihl: usize) {
 
 /// RFC 1624 eqn. 3: the checksum at `b[at..at + 2]` after the 16-bit words of
 /// `old` were replaced by those of `new`.
+///
+/// The equation yields 0x0000 for a message that sums to zero, where only
+/// 0xFFFF verifies; both verify for one that sums to 0xFFFF, so a zero result
+/// is stored as 0xFFFF. For UDP that is also the transmitted form of a computed
+/// zero, 0 being "no checksum".
 fn adjust(b: &mut [u8], at: usize, old: &[u8], new: &[u8]) {
     let mut c = be16(&b[at..]);
     for (o, n) in old.chunks_exact(2).zip(new.chunks_exact(2)) {
@@ -421,6 +426,9 @@ fn adjust(b: &mut [u8], at: usize, old: &[u8], new: &[u8]) {
         s = (s & 0xFFFF) + (s >> 16);
         s = (s & 0xFFFF) + (s >> 16);
         c = !(s as u16);
+    }
+    if c == 0 && !cfg!(feature = "nat-zero-checksum-canary") {
+        c = 0xFFFF;
     }
     b[at..at + 2].copy_from_slice(&c.to_be_bytes());
 }
@@ -440,10 +448,6 @@ fn rewrite_l4(pkt: &mut [u8], ihl: usize, src: bool, addr: [u8; 4], port: u16) {
     if proto == IP_PROTO_TCP || be16(&pkt[co..]) != 0 {
         adjust(pkt, co, &old_addr, &addr);
         adjust(pkt, co, &old_port, &new_port);
-        if proto == IP_PROTO_UDP && be16(&pkt[co..]) == 0 {
-            pkt[co] = 0xFF;
-            pkt[co + 1] = 0xFF;
-        }
     }
     fix_ip_checksum(pkt, ihl);
 }
@@ -464,9 +468,20 @@ pub fn phase_out(pkt: &[u8], ihl: usize, wan_if: u8, now: u64) -> ConnPhase {
     let Ok(k) = parse_out(pkt, ihl) else { return ConnPhase::New };
     let g = NAT.lock();
     match g.find_out(&k, wan_if, now) {
-        Some(i) if g.ents[i].replied() => ConnPhase::Established,
+        Some(i) if g.ents[i].replied() && !reopens(&g.ents[i], &k) => ConnPhase::Established,
         _ => ConnPhase::New,
     }
+}
+
+/// Is `k`, a packet on the tuple of mapping `e`, the SYN of a new connection
+/// because the old one was closing? [`outbound`] resets the mapping for it, and
+/// [`phase_out`] has to report what that leaves, since the filter is asked
+/// before the mapping is touched.
+fn reopens(e: &Entry, k: &Out) -> bool {
+    !cfg!(feature = "nat-closing-syn-canary")
+        && k.proto == IP_PROTO_TCP
+        && k.flags & (TCP_SYN | TCP_ACK) == TCP_SYN
+        && e.flags & ST_CLOSING != 0
 }
 
 /// Translate an outbound packet in place: `pkt` is a whole IPv4 packet being
@@ -480,7 +495,7 @@ pub fn outbound(pkt: &mut [u8], ihl: usize, wan_if: u8, wan_ip: [u8; 4], now: u6
     let (i, phase) = match g.find_out(&k, wan_if, now) {
         Some(i) => {
             // A SYN on the tuple of a flow that was closing is a new connection.
-            if k.proto == IP_PROTO_TCP && k.flags & (TCP_SYN | TCP_ACK) == TCP_SYN && g.ents[i].flags & ST_CLOSING != 0 {
+            if reopens(&g.ents[i], &k) {
                 g.ents[i].flags &= !ST_MASK;
             }
             let phase = if g.ents[i].replied() { ConnPhase::Established } else { ConnPhase::New };

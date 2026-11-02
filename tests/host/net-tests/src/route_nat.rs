@@ -999,3 +999,78 @@ fn without_a_default_route_there_is_no_uplink() {
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].pkt.src(), HOST, "routed, not masqueraded");
 }
+
+// ── NAT: closing flows, zero checksums ──────────────────────────────────────
+
+/// **Discriminates.** A SYN on the 4-tuple of a flow that is closing is a new
+/// connection, and the forward hook is told so: it asks before the mapping is
+/// touched, and the mapping is what resets, so a "state: new" rule must see the
+/// SYN as `New` and not as the old answered flow. Mirror: the same packet while
+/// the flow is open (an ACK, or a repeated SYN) is `Established`.
+/// Canary `nat-closing-syn-canary` (gate row): the hook is told what the
+/// mapping said before the reset.
+#[test]
+fn a_syn_on_a_closing_flow_is_a_new_connection_to_the_forward_hook() {
+    let _g = begin();
+    *PROBE.verdict.lock().unwrap() = Verdict::Accept;
+    filter::set_filter(&PROBE);
+    let wan = out_via_wan(&tcp(HOST, REMOTE, 5000, 80, SYN, b"")).pkt.sport();
+    from_wan(&tcp(REMOTE, IP_W, 80, wan, SYN | ACK, b""));
+    let phase_of_last = || PROBE.calls.lock().unwrap().last().unwrap().conn.unwrap().phase;
+
+    out_via_wan(&tcp(HOST, REMOTE, 5000, 80, ACK, b"data"));
+    assert_eq!(phase_of_last(), ConnPhase::Established, "precondition: an answered flow is Established");
+    out_via_wan(&tcp(HOST, REMOTE, 5000, 80, FIN | ACK, b""));
+    assert_eq!(phase_of_last(), ConnPhase::Established, "the FIN itself still belongs to the flow");
+
+    out_via_wan(&tcp(HOST, REMOTE, 5000, 80, SYN, b""));
+    assert_eq!(phase_of_last(), ConnPhase::New,
+        "a SYN on a closing flow was reported as part of the old connection");
+}
+
+/// A quoted UDP checksum of 0 means "none" (RFC 768), so a translation that
+/// computes one writes 0xFFFF, as `rewrite_l4` does for the datagram itself.
+/// Every quoted checksum a sender could have used is tried, since which
+/// values the adjustment turns into 0 depends on the addresses and ports.
+/// Canary `nat-zero-checksum-canary` (gate row): the adjusted sum is stored as is.
+#[test]
+fn an_icmp_error_never_quotes_a_udp_checksum_of_zero() {
+    let _g = begin();
+    let sent = out_via_wan(&udp(HOST, REMOTE, 5000, 33434, b"probe"));
+    let mut quoted = sent.pkt.raw[..28].to_vec();
+    let mut zero_at = None;
+    for c in 1..=0xFFFFu16 {
+        quoted[26..28].copy_from_slice(&c.to_be_bytes());
+        raw::reset();
+        from_wan(&ip_packet(1, ROUTER, IP_W, 60, false, &icmp_msg(3, 3, [0; 4], &quoted)));
+        let e = sent_by(MAC_L);
+        assert_eq!(e.len(), 1, "quoted checksum {c:#06x}");
+        let q = e[0].pkt.quoted();
+        let out = u16::from_be_bytes([q.raw[26], q.raw[27]]);
+        if out == 0 {
+            zero_at = Some(c);
+            break;
+        }
+    }
+    assert_eq!(zero_at, None, "a quoted UDP checksum became 0, which says there is none");
+}
+
+/// The adjustment of RFC 1624 eqn. 3 gives 0x0000 where only 0xFFFF verifies:
+/// an all-zero message sums to zero, and a checksum field holding zero then
+/// sums to zero too, not to 0xFFFF. An echo reply with identifier 0 that
+/// carries nothing else is that message once its identifier is put back.
+/// Canary `nat-zero-checksum-canary` (gate row).
+#[test]
+fn an_all_zero_echo_reply_keeps_a_checksum_that_verifies() {
+    let _g = begin();
+    let request = ip_packet(1, HOST, REMOTE, 64, false, &icmp_msg(8, 0, [0; 4], b""));
+    let id = out_via_wan(&request).pkt.echo_id();
+    raw::reset();
+    from_wan(&ip_packet(1, REMOTE, IP_W, 64, false,
+                        &icmp_msg(0, 0, [(id >> 8) as u8, id as u8, 0, 0], b"")));
+    let r = sent_by(MAC_L);
+    assert_eq!(r.len(), 1);
+    assert_eq!(&r[0].pkt.l4()[..2], &[0, 0], "precondition: nothing but the checksum is left");
+    assert_eq!(&r[0].pkt.l4()[4..], &[0, 0, 0, 0]);
+    assert!(r[0].pkt.checksums_hold(), "the reply's checksum {:02x?} does not verify", &r[0].pkt.l4()[2..4]);
+}

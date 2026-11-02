@@ -53,6 +53,12 @@ ipv6-unspecified-src-canary = []
 # Gate canary (host suite `net-tests`): a second UDP socket may bind a port
 # another holds. Never in a real build.
 udp-dup-bind-canary = []
+# Gate canary (host suite `net-tests`): the forward hook is told what the NAT
+# mapping said before a SYN on a closing flow reset it. Never in a real build.
+nat-closing-syn-canary = []
+# Gate canary (host suite `net-tests`): an adjusted checksum of 0x0000 is
+# stored as it is. Never in a real build.
+nat-zero-checksum-canary = []
 # Canary (host suite `net-tests`): a refresh's valid lifetime over two hours
 # but under what remains is lowered to two hours (RFC 4862 §5.5.3 (e) read
 # wrong). Never in a real build.
