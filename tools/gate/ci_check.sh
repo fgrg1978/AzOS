@@ -14952,7 +14952,8 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'
+            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
@@ -16825,7 +16826,8 @@ PY
         fi
         [ -z "$why" ] && why="$qwhy"
         if [ -z "$why" ]; then
-            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'; rm -f "$log"; return
+            ok; grep -aE '^# (ktest|spin_lock_fifo_bounded|leak):|^#   block ' "$log" | sed 's/^/      /'
+            grep -aoE 'kernel reserve = [0-9]+ of [0-9]+ free pages' "$log" | sed 's/^/      memory admission: /'; rm -f "$log"; return
         fi
         bad; echo "      $why"
         grep -aE '^(not ok|Bail out!|# ktest:)|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
