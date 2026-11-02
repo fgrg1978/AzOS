@@ -49,7 +49,7 @@ done
 env AZOS_OUT="$out" KCONFIG_CONFIG="$cfg" make build >"$out/build.log" 2>&1 \
     || { echo "vmmd withhold: make build failed, log: $out/build.log"; exit 1; }
 kernel="$out/build/kernel-aarch64.img"
-volume="$out/build/disk-aarch64-sh.img"
+volume="$out/build/disk-aarch64-system.img"
 [ -f "$kernel" ] && [ -f "$volume" ] || { echo "vmmd withhold: make build left no kernel or volume under $out/build"; exit 1; }
 cp "$volume" "$out/boot.img"
 
