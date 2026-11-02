@@ -191,14 +191,6 @@ fn store(idx: usize, e: &Ent) {
 /// one joins at the mean.
 pub(super) fn reset(idx: usize) {
     if let Some(s) = SLOTS.get(idx) {
-        // An occupant that died queued left its node behind, and a tree would
-        // refuse the new one for it.
-        let owner = NODES.node(idx);
-        if owner.weight != 0 {
-            let _g = CpuLockGuard::acquire(owner.owner as usize);
-            unsafe { tree(owner.owner as usize) }.remove(&NODES, idx);
-            TREE_RECOVERED.fetch_add(1, Relaxed);
-        }
         s.vruntime.store(0, Relaxed);
         s.deadline.store(0, Relaxed);
         s.lag.store(0, Relaxed);
@@ -523,6 +515,18 @@ pub struct TreeStats {
 /// See [`TreeStats`].
 pub fn tree_stats() -> TreeStats {
     TreeStats { refused: TREE_REFUSED.load(Relaxed), recovered: TREE_RECOVERED.load(Relaxed) }
+}
+
+/// A new task is about to join a queue: an occupant of its slot that died queued
+/// left its node behind, and a tree would refuse the new one for it. No lock
+/// held: a CPU lock does not nest in `POOL_LOCK`, which covers the slot's reset.
+pub(super) fn drop_leaked_node(idx: usize) {
+    let n = NODES.node(idx);
+    if n.weight != 0 {
+        let _g = CpuLockGuard::acquire(n.owner as usize);
+        unsafe { tree(n.owner as usize) }.remove(&NODES, idx);
+        TREE_RECOVERED.fetch_add(1, Relaxed);
+    }
 }
 
 /// The tree of `cpu` against its lists: the invariants of the tree, and one

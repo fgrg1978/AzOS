@@ -791,6 +791,7 @@ pub fn try_task_create_init(
                 // lock three times and looks at every lazy edge (4.6 us of
                 // the masked window above, riscv64 `-icount`).
                 classes::on_slot_graph_reset(idx);
+                fairq::drop_leaked_node(idx);
                 if !cpu_enqueue_locked(target_cpu, idx) {
                     {
                         let _pool = PoolGuard::acquire();
