@@ -1183,10 +1183,17 @@ pub(super) fn ktest_mark_reserved(cpu: usize, idx: usize, on: bool) -> bool {
     set_of(cpu)[k].store(to, Ordering::Release);
     if on {
         FLAGS[cpu].fetch_or(F_RESV, Ordering::Release);
-    } else if set_of(cpu).iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
-        FLAGS[cpu].fetch_and(!F_RESV, Ordering::Release);
+    } else {
+        clear_resv_if_empty(cpu);
     }
     true
+}
+
+/// `cpu`'s set has just lost a slot: the flag goes when no slot is left.
+fn clear_resv_if_empty(cpu: usize) {
+    if set_of(cpu).iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
+        FLAGS[cpu].fetch_and(!F_RESV, Ordering::Release);
+    }
 }
 
 /// Drop task `idx`'s reservation, if it has one: out of its hart's set and
@@ -1214,9 +1221,7 @@ pub(super) fn release(idx: usize) {
         }
         #[cfg(feature = "energy")]
         ADMITTED_PPM[cpu].store(load[cpu].total_ppm, Ordering::Relaxed);
-        if set_of(cpu).iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
-            FLAGS[cpu].fetch_and(!F_RESV, Ordering::Release);
-        }
+        clear_resv_if_empty(cpu);
         if cpu == crate::smp::current_cpu_id() {
             let o = unsafe { &mut *owner_of(cpu) };
             // Its own task or a proxy running on it.

@@ -3252,7 +3252,7 @@ mod reap_flag_gate {
         let flag = res.find("fetch_or(F_RESV").expect("the flag set");
         assert!(slot < flag, "F_RESV is set before the slot it announces");
         // release: the flag is cleared only once every slot is empty.
-        let rel = code(body_of(RT, "pub(super) fn release("));
+        let rel = code(body_of(RT, "fn clear_resv_if_empty("));
         let empty = rel.find(".all(|s| s.load(Ordering::Relaxed) == usize::MAX)").expect("emptiness test");
         let clear = rel.find("fetch_and(!F_RESV").expect("the flag clear");
         assert!(empty < clear, "F_RESV is cleared without checking the set is empty");
