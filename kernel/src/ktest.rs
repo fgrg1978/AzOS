@@ -639,7 +639,8 @@ azos_ktest::ktest! {
 // critical section, so it never holds more blocks than its slots. Two CPUs
 // that had both found the ring one short of full pushed into the same slot
 // and left it longer than its ring, after which the count test never fired
-// again and the oldest blocks were released twice. Canary
+// again and the oldest blocks were released twice. A push that finds the ring
+// full is counted (`overfull_pushes`) and gives up its oldest block. Canary
 // `kheap-guard-hold-canary`: the room check and the push are separate again.
 static HAMMER_DONE: AtomicUsize = AtomicUsize::new(0);
 static HAMMER_OVER: AtomicUsize = AtomicUsize::new(0);
@@ -672,7 +673,7 @@ azos_ktest::ktest_late! {
         wait("the quarantine hammers did not finish", || HAMMER_DONE.load(Ordering::Acquire) == cpus)?;
         let (held, over) = (azos_mm::kheap_guard::blocks_held(), HAMMER_OVER.load(Ordering::Relaxed));
         azos_mm::kheap::guard_drain();
-        if over != 0 || held > azos_mm::kheap_guard::MAX_BLOCKS {
+        if over != 0 || held > azos_mm::kheap_guard::MAX_BLOCKS || azos_mm::kheap_guard::overfull_pushes() != 0 {
             return Err("the quarantine held more blocks than its slots");
         }
         Ok(())

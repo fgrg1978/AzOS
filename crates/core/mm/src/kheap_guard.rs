@@ -113,6 +113,16 @@ static Q: SpinLock<Quarantine> = SpinLock::new(Quarantine {
     bytes: 0,
 });
 
+/// Pushes that found the ring full. The room check and the push share a
+/// critical section, so none does.
+static OVERFULL: AtomicUsize = AtomicUsize::new(0);
+
+/// Pushes that found the quarantine ring full; 0 unless the room check and the
+/// push were split (canary `kheap-guard-hold-canary`).
+pub fn overfull_pushes() -> usize {
+    OVERFULL.load(Relaxed)
+}
+
 /// Bytes the quarantine holds, readable without its lock.
 static HELD: AtomicUsize = AtomicUsize::new(0);
 /// Findings counted inside [`expect`], per [`Kind`].
@@ -244,23 +254,26 @@ unsafe fn hold(h: Held, raw: Raw) {
     loop {
         let t = crate::kheap::irq_off();
         let mut q = Q.lock();
-        let old = q.evict_for(h.total);
-        if cfg!(feature = "kheap-guard-hold-canary") && old.is_none() {
+        let mut out = q.evict_for(h.total);
+        if cfg!(feature = "kheap-guard-hold-canary") && out.is_none() {
             drop(q);
             for _ in 0..200 {
                 core::hint::spin_loop();
             }
             q = Q.lock();
         }
-        if old.is_none() {
-            q.push(h);
+        let pushed = out.is_none();
+        if pushed {
+            out = q.push(h);
         }
         HELD.store(q.bytes, Relaxed);
         drop(q);
         crate::kheap::irq_restore(t);
-        match old {
-            Some(old) => unsafe { release(old, raw) },
-            None => return,
+        if let Some(old) = out {
+            unsafe { release(old, raw) };
+        }
+        if pushed {
+            return;
         }
     }
 }
@@ -280,11 +293,24 @@ impl Quarantine {
         }
     }
 
-    fn push(&mut self, h: Held) {
+    /// Hold `h`. A ring already full gives up its oldest block instead of
+    /// overwriting one, and counts it ([`overfull_pushes`]): the caller made
+    /// room under the same lock, so this is the invariant, and it never fires.
+    fn push(&mut self, h: Held) -> Option<Held> {
+        let mut displaced = None;
+        if self.len == SLOTS {
+            OVERFULL.fetch_add(1, Relaxed);
+            let old = self.ring[self.head];
+            self.head = (self.head + 1) % SLOTS;
+            self.len -= 1;
+            self.bytes -= old.total;
+            displaced = Some(old);
+        }
         let at = (self.head + self.len) % SLOTS;
         self.ring[at] = h;
         self.len += 1;
         self.bytes += h.total;
+        displaced
     }
 }
 
