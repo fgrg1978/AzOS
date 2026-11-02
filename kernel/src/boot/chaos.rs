@@ -394,7 +394,7 @@ mod refusal_limit_ktests {
     azos_ktest::ktest_late! {
         fn refusal_flood_costs_no_other_domain() {
             if !azos_decision::DURABLE {
-                return Err("DECISION_REFUSALS_DURABLE is off: no receipt to hold");
+                return azos_ktest::skip!("DECISION_REFUSALS_DURABLE is off: no receipt to hold");
             }
             // Ids no task has: each is its own Domain key.
             let (flood, quiet) = (0x7A00_0001u32, 0x7A00_0002u32);
