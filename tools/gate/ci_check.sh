@@ -16469,6 +16469,8 @@ PY
     x86_iommu_row() { # x86_iommu_row <label> <qemu IOMMU device> <flavour> <PASS|CANARY> [bail]
         local label="$1" unit="$2" flavour="$3" expect="$4" bail="${5:-}" feats="dhcp-smoke" stop='DHCPSMOKE\]|KERNEL PANIC|\[X86-TRAP\]' armed=""
         [ -n "$bail" ] && [ "$expect" = CANARY ] && armed=iommu-fail-open
+        # A bail row's kernel is the PASS row's: its canary is on the command line.
+        local tdir="$expect"; [ -n "$bail" ] && tdir=PASS
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         if [ -z "$bail" ] && [ "$expect" = CANARY ]; then
@@ -16479,7 +16481,7 @@ PY
         rm -f "$kimg" "$kimg.features"
         # One target directory per feature set: the two PASS rows share theirs.
         make x86_64 X86_64_DEFCONFIG=config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config X86_64_KCONFIG="$AZOS_OUT/build/x86_64-${tag}.config" \
-            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-${expect}${bail}" X86_64_IMG="$kimg" X86_64_SELECT="$feats" >/dev/null 2>&1 \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-iommu-$tdir" X86_64_IMG="$kimg" X86_64_SELECT="$feats" >/dev/null 2>&1 \
             && builtin printf '%s\n' "$feats" >"$kimg.features" \
             || { bad; echo "      make x86_64 (qemu-x86_64-pci.config, $feats) did not build"; return; }
         par_ready

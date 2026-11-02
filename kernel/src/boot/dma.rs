@@ -564,11 +564,13 @@ mod hw {
             // The capability registers lie in the first page and say how many
             // the rest take.
             if !crate::boot::map_mmio_region(base, 0x1000) {
+                azos_drv_sys::kerr!("[IOMMU] vt-d at {:#x} not used: registers not mapped", base);
                 return None;
             }
             let mmio = KMmio { base };
             let span = azos_iommu::vtd::register_span(mmio.read64(azos_iommu::vtd::REG_CAP), mmio.read64(azos_iommu::vtd::REG_ECAP));
             if !crate::boot::map_mmio_region(base, span) {
+                azos_drv_sys::kerr!("[IOMMU] vt-d at {:#x} not used: {:#x} bytes of registers not mapped", base, span);
                 return None;
             }
             return match azos_iommu::vtd::Vtd::new(mmio, &MEM, span) {
