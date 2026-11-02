@@ -189,6 +189,8 @@ const MAX_HARTS: usize = azos_percpu::NR_CPUS;
 // anything else again.
 const _: () = assert!(MAX_HARTS <= azos_sync::preempt::SLOTS);
 const _: () = assert!(MAX_HARTS <= azos_sched::MAX_CPUS);
+// The assembly's published-root tables (`AZOS_HART_SATP`, `AZOS_HART_TTBR0`) are `NR_CPUS` long and bounds-checked against this.
+const _: () = assert!(MAX_HARTS == azos_arch_api::tlb_gen::HARTS);
 
 /// Boot stack of each secondary CPU (Kconfig `SECONDARY_STACK_SIZE_KB`,
 /// 16 KiB by default): nested traps (288 B each), the scheduler and its Rust

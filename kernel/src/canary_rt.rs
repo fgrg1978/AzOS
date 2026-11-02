@@ -96,6 +96,9 @@ pub(crate) const NAMES: &[&str] = &[
     // arch/x86_64/src/tlb.rs `remote`: the shootdown request lock is held with
     // preemption on (ktest `tlb_request_holder_keeps_its_cpu`).
     "tlb-request-preemptible",
+    // arch/aarch64/src/tlb.rs `holders`: only the executing PE's TTBR0 base is
+    // read (ktest `tlb_shootdown_cross_cpu`, aarch64 only).
+    "ttbr0-holders-self",
     // arch/x86_64/src/tlb.rs `run_request`: the ack wait runs with interrupts
     // masked (ktest `tlb_request_wait_takes_interrupts`).
     "tlb-request-wait-masked",

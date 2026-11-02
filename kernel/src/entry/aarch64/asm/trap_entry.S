@@ -60,6 +60,23 @@
 // src/cpu/cfi.rs, "Per-process keys").
 .equ PAC_USER,         {pac_user}
 
+// Publish the TTBR0_EL1 base `\root` names as this PE's root, fenced, before
+// the `msr` that installs it: the page-table free check (`Mmu::root_holders`,
+// arch/aarch64/src/tlb.rs) either sees it or this PE's walks see the freer's
+// stores. TPIDR_EL1 is the PE's index; AZOS_HART_TTBR0 is NR_CPUS long. Clobbers
+// x10-x12 (dead on both exits: the GPRs reload from the frame, or are zeroed).
+.macro PUBLISH_ROOT root
+    mrs     x10, tpidr_el1
+    cmp     x10, #MAX_HARTS
+    b.hs    .Lpublished_\@
+    adrp    x11, AZOS_HART_TTBR0
+    add     x11, x11, :lo12:AZOS_HART_TTBR0
+    and     x12, \root, #0x0000fffffffffffe
+    str     x12, [x11, x10, lsl #3]
+    dmb     ish
+.Lpublished_\@:
+.endm
+
 // The two vector-number PAIRS `entry::aarch64::TrapFrame::class()` actually
 // checks — VEC_SYNC_CURRENT_EL_SP0 / VEC_IRQ_CURRENT_EL_SP0 and
 // VEC_SYNC_LOWER_EL / VEC_IRQ_LOWER_EL (kernel/src/entry/aarch64/mod.rs) —
@@ -378,6 +395,7 @@ trap_return_masked:
     // order that completion before any instruction can use the new one —
     // flush-on-switch (no ASID tagging), same choice made there.
     cbz     x19, 92f
+    PUBLISH_ROOT x19
     msr     TTBR0_EL1, x19
     isb
     tlbi    vmalle1
@@ -607,6 +625,7 @@ _svc_native_return:
     msr     SP_EL0, x10
     PAC_EXIT x10, x11                       // always EL0; x0 (the TTBR0) stays live
     cbz     x0, 93f
+    PUBLISH_ROOT x0
     msr     TTBR0_EL1, x0
     isb
     tlbi    vmalle1

@@ -26,7 +26,7 @@
 compile_error!("tlb_probe: no arm for this ISA (port live_root, the probe load, remote_mask, ...)");
 
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use azos_arch::{PagePerms, Cpu};
+use azos_arch::{PagePerms, Cpu, Mmu};
 use azos_drv_sys::kprintln;
 use azos_mm::{addr, pmm, vmm};
 
@@ -68,6 +68,9 @@ static TOUCH_HART: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// the ktest verdict ([`tlb_shootdown_cross_cpu`]).
 static RUNNER_HART: AtomicUsize = AtomicUsize::new(usize::MAX);
 static MASK: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// `Mmu::root_holders(P)` while the toucher spins on P, and after it left.
+static HOLDERS: AtomicUsize = AtomicUsize::new(usize::MAX);
+static HOLDERS_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
 static KERNEL_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Wave 9: the translation root `ktask` found itself on (`u64::MAX`: it
 /// never ran), and the one the toucher was on when it created it.
@@ -413,6 +416,8 @@ pub fn runner(touch_hart: usize) {
     // IPI voided the toucher's window).
     STAGE.store(0, Ordering::SeqCst);
     for v in [&FIRST, &SECOND, &SECOND2, &SECOND3] { v.store(0, Ordering::SeqCst); }
+    HOLDERS.store(usize::MAX, Ordering::SeqCst);
+    HOLDERS_AFTER.store(usize::MAX, Ordering::SeqCst);
     for v in [&FIRST_CAUSE, &SECOND_CAUSE, &SECOND2_CAUSE, &SECOND3_CAUSE, &KTASK_ROOT, &KTASK_CREATOR_ROOT] {
         v.store(u64::MAX, Ordering::SeqCst);
     }
@@ -469,6 +474,7 @@ pub fn runner(touch_hart: usize) {
     // toucher is spinning on P, so this is what it sees).
     let mask = remote_mask(pt);
     MASK.store(mask, Ordering::SeqCst);
+    HOLDERS.store(azos_arch::ARCH.root_holders(pt), Ordering::SeqCst);
     RUNNER_HART.store(me, Ordering::SeqCst);
 
     // The revokes under test: the production unmap paths. The range call
@@ -510,6 +516,7 @@ pub fn runner(touch_hart: usize) {
     let v3 = SECOND3.load(Ordering::SeqCst);
     let c3 = SECOND3_CAUSE.load(Ordering::SeqCst);
     let after = remote_mask(pt);
+    HOLDERS_AFTER.store(azos_arch::ARCH.root_holders(pt), Ordering::SeqCst);
     if c != 0 && is_translation_fault(c) && c2 != 0 && is_translation_fault(c2)
         && c3 != 0 && is_translation_fault(c3) {
         kprintln!("[TLB-SMOKE] PASS: hart {} faulted (cause={:#x}) on the page hart {} unmapped after the touch; remote mask={:#x} harts signalled={}; munmap path faulted too (cause={:#x}), and on the last of its {} pages (cause={:#x}); mask after switch-away={:#x}",
@@ -579,6 +586,12 @@ azos_ktest::ktest_late! {
         if azos_percpu::nr_cpu_ids() < 3 {
             return Err("needs 3 CPUs (runner on CPU 1, toucher on CPU 2)");
         }
+        #[cfg(target_arch = "aarch64")]
+        if canary!("ttbr0-holders-self") {
+            azos_arch::tlb::canary_holders_self();
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {}
         crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
         // x86_64: a reschedule IPI inside the toucher's window voids the run
         // (`resched_ipis`); run it again, a bounded number of times.
@@ -606,6 +619,14 @@ azos_ktest::ktest_late! {
         }
         if MASK.load(Ordering::SeqCst) != expected_mask(TOUCH) {
             return Err("the shootdown would signal another CPU set than the toucher's");
+        }
+        // The free-time check sees the CPU another CPU's table is live on,
+        // and nobody once it left: the same answer on every ISA.
+        if HOLDERS.load(Ordering::SeqCst) != 1usize << TOUCH {
+            return Err("root_holders did not name exactly the CPU running on the root");
+        }
+        if HOLDERS_AFTER.load(Ordering::SeqCst) != 0 {
+            return Err("root_holders still names a CPU after it left the root");
         }
         let kroot = KTASK_ROOT.load(Ordering::SeqCst);
         if kroot != KERNEL_ROOT.load(Ordering::SeqCst) || kroot == KTASK_CREATOR_ROOT.load(Ordering::SeqCst) {
