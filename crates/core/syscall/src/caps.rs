@@ -65,10 +65,11 @@ pub(crate) fn sys_cap_derive(ep_raw: u64, rights: u64, badge: u64, expiry_ns: u6
     // capability entry of a message: `ipc_deadline::check_caps`).
     let now = azos_abi::time::ticks_to_ns(azos_drv_sys::timebase::now(), azos_drv_sys::timebase::TIMER_FREQ);
     if expiry_ns != 0 && expiry_ns <= now {
-        azos_decision::record(
+        azos_decision::record_keyed(
             azos_decision::Rule::DeadlineExpired,
             azos_decision::Verdict::Refuse,
             tid,
+            crate::handlers::durable_bucket(tid),
             [expiry_ns, now, ep_raw],
         );
         return Errno::EDEADLINE.to_syscall_ret();

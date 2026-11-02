@@ -16,6 +16,13 @@ description = "Host-side tests for the brain wire protocol in crates/domains/rob
 [features]
 # logger.rs's RT-flush gate canary (wave 15): a known value, never enabled.
 rt-flush-canary = []
+# Gate canaries only (host suite `behavior-tests`): the replay does not end its
+# walk at a file's state records; a rotation leaves the latch out of the new
+# file's state records; the replay takes the last name, not the newest serial,
+# once the names have wrapped.
+replay-snapshot-canary = []
+rotate-latch-canary = []
+wrap-tail-canary = []
 # logger.rs's ring-reserve gate canary: a known value, never enabled here (the
 # canary row is in actuation-tests).
 ring-reserve-canary = []

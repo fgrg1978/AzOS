@@ -19,6 +19,11 @@ effect-issue-before-commit-canary = []
 envelope-row-canary = []
 # logger.rs's RT-flush gate canary: a known value, never enabled.
 rt-flush-canary = []
+# logger.rs's replay and rotation canaries: known values, never enabled here (the
+# canary rows are in behavior-tests).
+replay-snapshot-canary = []
+rotate-latch-canary = []
+wrap-tail-canary = []
 # logger.rs's reserve canary: effect and ordinary records may use the slots
 # kept for safety records. Off unless the canary row builds with it.
 ring-reserve-canary = []

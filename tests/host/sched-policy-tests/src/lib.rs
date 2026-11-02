@@ -1183,7 +1183,19 @@ mod deny_receipts {
     }
     fn deny(subject: u32) { record(Rule::CapDenial, Verdict::Deny, subject, [1, 2, 0]); }
     fn written(subject: u32) -> Vec<[u64; 3]> {
-        GOT.lock().unwrap().iter().filter(|r| r.2 == subject).map(|r| r.3).collect()
+        let lim = Rule::RefusalLimited as u8;
+        GOT.lock().unwrap().iter().filter(|r| r.2 == subject && r.0 != lim).map(|r| r.3).collect()
+    }
+    /// The `refusal-limited` reports of a Domain key: `(rule, held, started)`.
+    fn reports(key: u32) -> Vec<[u64; 3]> {
+        let lim = Rule::RefusalLimited as u8;
+        GOT.lock().unwrap().iter().filter(|r| r.2 == key && r.0 == lim).map(|r| r.3).collect()
+    }
+    fn expired(tid: u32, key: u32) {
+        azos_decision::record_keyed(Rule::DeadlineExpired, Verdict::Refuse, tid, key, [10, 20, 0]);
+    }
+    fn refused_with(rule: u8) -> usize {
+        GOT.lock().unwrap().iter().filter(|r| r.0 == rule && r.1 == Verdict::Refuse as u8).count()
     }
 
     /// A subject's first `BURST` denials are durable, the rest in the same
@@ -1298,6 +1310,52 @@ mod deny_receipts {
         assert!(!line.contains("dropped"), "a zero count is not printed: {line}");
     }
 
+    /// A caller-paced refusal (an expired deadline) is limited per Domain like
+    /// a denial: the burst is durable, the first drop is reported at once, the
+    /// rest ride the report the pair's next record triggers, and the reports
+    /// plus the records are every call.
+    ///
+    /// **Canary.** Leave `Rule::DeadlineExpired` out of `caller_paced`: every
+    /// call is durable and no report is written, red. Skip the report in
+    /// `paced_admit`'s drop arm: no report, red.
+    #[test]
+    fn an_expired_deadline_flood_is_limited_and_accounted() {
+        let _g = scene();
+        let key = 0x7800_0001;
+        let calls = BURST * 3;
+        for i in 0..calls { expired(100 + i as u32 % 4, key); }
+        assert_eq!(refused_with(Rule::DeadlineExpired as u8) as u64, BURST, "the burst, whichever threads");
+        assert_eq!(reports(key), vec![[Rule::DeadlineExpired as u64, 1, 1]], "the start of the run is reported at once");
+        NOW.fetch_add(HZ, Ordering::Relaxed);
+        expired(100, key);
+        let held: u64 = reports(key).iter().map(|r| r[1]).sum();
+        assert_eq!(held + BURST + 1, calls + 1, "the reports and the records account for every call");
+    }
+
+    /// A flood in one Domain leaves another Domain's one refusal durable, and
+    /// the flooder's silence after it is reported by `flush_limited`.
+    ///
+    /// **Canary.** Share one bucket between keys (key it on a constant): the
+    /// quiet Domain's record is dropped, red. Never call `idle` from
+    /// `flush_limited`: the stopped flood's count is not on the medium, red.
+    #[test]
+    fn a_flood_does_not_cost_another_domain_and_a_stopped_flood_is_reported() {
+        let _g = scene();
+        let (flood, quiet) = (0x7800_0010, 0x7800_0011);
+        for _ in 0..BURST * 5 { expired(200, flood); }
+        expired(300, quiet);
+        assert_eq!(GOT.lock().unwrap().iter().filter(|r| r.0 == Rule::DeadlineExpired as u8 && r.2 == 300).count(), 1);
+        azos_decision::flush_limited();
+        let before: u64 = reports(flood).iter().map(|r| r[1]).sum();
+        assert_eq!(before, 1, "not quiet yet");
+        NOW.fetch_add(2 * HZ, Ordering::Relaxed);
+        azos_decision::flush_limited();
+        let held: u64 = reports(flood).iter().map(|r| r[1]).sum();
+        assert_eq!(held, BURST * 4, "every call past the burst is in a report");
+        azos_decision::flush_limited();
+        assert_eq!(reports(flood).iter().map(|r| r[1]).sum::<u64>(), held, "reported twice");
+    }
+
     /// Refusals are unlimited and untouched: every one reaches the sink with
     /// its numbers as given, however many denials were dropped before, and
     /// none of them is counted as a drop or owes the next denial anything.
@@ -1314,7 +1372,9 @@ mod deny_receipts {
         for i in 0..n {
             record(Rule::DeadlineAdmission, Verdict::Refuse, 52, [7, 8, 9 + i as u64]);
         }
-        let got: Vec<_> = GOT.lock().unwrap().iter().filter(|r| r.1 == Verdict::Refuse as u8).cloned().collect();
+        let lim = Rule::RefusalLimited as u8;
+        let got: Vec<_> =
+            GOT.lock().unwrap().iter().filter(|r| r.1 == Verdict::Refuse as u8 && r.0 != lim).cloned().collect();
         assert_eq!(got.len(), n, "a refusal was dropped");
         assert!(got.iter().enumerate().all(|(i, r)| r.3 == [7, 8, 9 + i as u64]), "a refusal's numbers changed");
         assert_eq!(azos_decision::deny_dropped_total(), t0, "a refusal counted as a drop");

@@ -8,11 +8,17 @@
 //!
 //! File layout on disk:
 //!   /LOG/LOGNNNNN.BIN          N = monotonic session serial (5 digits)
-//!   Header 16B:  b"RBL1" | version u16 LE | reserved u16 | open_ts u64 LE
+//!   Header 16B:  b"RBL1" | version u16 LE | state records u8 | reserved u8
+//!                | session serial u32 LE | open_ts low word u32 LE
 //!   Records 32B each: see LogRecord below.
 //!
 //! File rotation: when the current file exceeds LOG_FILE_ROTATE_BYTES, it is
 //! fsynced + closed and a new file is opened with the next serial number.
+//! The header is written together with the state records it counts (the
+//! e-stop latch, the release nonce floor, the release-key pin, as of the
+//! open), so a boot reads the newest file and not the history behind it. The
+//! serial in the header lets a boot find the newest file once the names have
+//! wrapped at LOG_SERIAL_WRAP.
 //!
 //! Analytics counters (in RAM, reset at init):
 //!   - total_distance_mm      (from odometry events)
@@ -496,12 +502,8 @@ pub const SAFETY_RELEASE_NONCE: u8 = 0x11;
 /// overwritten and the next boot would take a changed key for the first one.
 /// [`replay_boot`] finds the newest.
 ///
-/// The limit that remains: the carried copy reaches the new file with the
-/// next flush, not with the open, so for that interval the newest file holds
-/// no pin and the previous one does; and a carried copy the ring refuses (a
-/// full safety reserve) is not retried until the next rotation. Neither can
-/// lose the pin: the file that holds it is the newest-but-one, and the wrap
-/// overwrites the oldest, [`LOG_SERIAL_WRAP`] files back.
+/// The carried copy is part of the open: it is in the same write as the
+/// header, so no file has a header without it.
 pub const SAFETY_OPERATOR_KEY: u8 = 0x1D;
 
 /// I-13 rolled a recoverable fault of the control task back
@@ -1215,10 +1217,17 @@ static LOG_SERIAL: AtomicU32 = AtomicU32::new(0);
 /// The release-key fingerprint every file this logger opens must carry (G1),
 /// set when a boot installs the key and cleared by [`logger_shutdown`] (it
 /// lives as long as the logger session, like the ring). A file opened by a
-/// rotation pushes it through the ring as its first record, so the newest
+/// rotation writes it with its header ([`write_file_header`]), so the newest
 /// file always holds the pin and the wrap, which overwrites the OLDEST file,
 /// cannot take the only copy. A `SpinLock`: it guards a 16-byte copy.
 static KEY_PIN_CARRY: SpinLock<Option<[u8; OPERATOR_KEY_FP_BYTES]>> = SpinLock::new(None);
+/// The e-stop latch as of the newest `SAFETY_ESTOP` logged: 0 released,
+/// [`LATCH_SET`] or'd with the action that latched it. Written into every file
+/// a rotation opens, so a boot reads the newest file and not the history.
+static LATCH_CARRY: AtomicU32 = AtomicU32::new(0);
+const LATCH_SET: u32 = 0x100;
+/// The highest release nonce durably recorded, carried like [`LATCH_CARRY`].
+static NONCE_CARRY: AtomicU64 = AtomicU64::new(0);
 
 static LOG_FILE: azos_sync::claim::Claim<Option<OpenLogFile>> = azos_sync::claim::Claim::new(None);
 
@@ -1511,6 +1520,7 @@ pub fn logger_flusher_task(_: usize) {
 /// is served). The task body, and what a host test drives in its place.
 pub fn logger_flusher_pass() -> u32 {
     let seen = FLUSH_REQ.load(Ordering::SeqCst);
+    azos_decision::flush_limited();
     if LOG_ACTIVE.load(Ordering::Acquire) && ring_len() > 0 && !LOG_FLUSHER_HELD.load(Ordering::Acquire) {
         let _ = logger_flush_now();
     }
@@ -1563,7 +1573,15 @@ pub const LOG_DIR_PATH: &[u8] = b"/LOG";
 /// File magic identifying a azos log file.
 pub const LOG_FILE_MAGIC: &[u8; 4] = b"RBL1";
 /// Log file format version.
-pub const LOG_FILE_VERSION: u16 = 1;
+pub const LOG_FILE_VERSION: u16 = 2;
+/// State records a file opens with, at most: the latch, the release nonce
+/// floor and the release-key pin ([`write_file_header`]).
+const SNAPSHOT_MAX: usize = 3;
+/// Files a boot's replay reads at most. A file of version 2 opens with the
+/// latch, nonce floor and key pin as of its open, so the walk ends at the
+/// first such file; this bound is what a run of older files costs, and a
+/// walk that spends it without finding a snapshot cannot rule a latch out.
+pub const REPLAY_MAX_FILES: u32 = 64;
 /// Size of the on-disk file header.
 pub const LOG_FILE_HEADER_BYTES: usize = 16;
 /// Records encoded per write inside a flush (tune for WCET).
@@ -1598,6 +1616,25 @@ pub fn logger_seed_next_serial(next: u32) {
     LOG_SERIAL.store(next, Ordering::Relaxed);
 }
 
+/// Seed the recorder with what the previous boots left ([`replay_boot`]): the
+/// serial to open, and the latch, release nonce floor and key pin that the
+/// first file this boot opens carries forward, so a boot that crashes before
+/// recording anything of its own still hands them to the next one. **Call
+/// BEFORE `logger_init`**, as [`logger_seed_next_serial`].
+pub fn logger_seed_boot_state(r: &BootReplay) {
+    logger_seed_next_serial(r.next_serial);
+    let carried = match r.latch {
+        BootLatch::Armed(action) => LATCH_SET | action as u32,
+        BootLatch::Unreadable => LATCH_SET | ESTOP_ACTION_RESTORED as u32,
+        BootLatch::NoRecord | BootLatch::Released => 0,
+    };
+    LATCH_CARRY.store(carried, Ordering::Relaxed);
+    NONCE_CARRY.fetch_max(r.release_nonce_floor, Ordering::Relaxed);
+    if let Some(fp) = r.operator_key_pin {
+        *KEY_PIN_CARRY.lock() = Some(fp);
+    }
+}
+
 /// Initialise the logger. Idempotent: a second call returns immediately.
 ///
 /// Opens the first log destination through the registered [`LogStorage`]
@@ -1624,6 +1661,8 @@ pub fn logger_init() -> Result<(), LogStorageError> {
 pub fn logger_shutdown() {
     if !LOG_ACTIVE.swap(false, Ordering::AcqRel) { return; }
     *KEY_PIN_CARRY.lock() = None;
+    LATCH_CARRY.store(0, Ordering::Relaxed);
+    NONCE_CARRY.store(0, Ordering::Relaxed);
     let _ = logger_flush();
     let mut guard = LOG_FILE.acquire();
     if let Some(open) = guard.take() {
@@ -2063,6 +2102,19 @@ pub fn commit_effect_record(payload: [u8; LOG_PAYLOAD_BYTES], refusable: bool) -
     }
 }
 
+/// What the latch will be once this record is on the medium: a stop latches,
+/// the operator clear releases, the rest leave it.
+fn latch_carry_note(violation_code: u8, action_code: u8) {
+    if violation_code != SAFETY_ESTOP {
+        return;
+    }
+    match estop_action_latches(action_code) {
+        Some(true) => LATCH_CARRY.store(LATCH_SET | action_code as u32, Ordering::Relaxed),
+        Some(false) => LATCH_CARRY.store(0, Ordering::Relaxed),
+        None => {}
+    }
+}
+
 /// Log a safety violation. Bumps the violation counter.
 pub fn log_safety_violation(violation_code: u8, action_code: u8, detail: u32) {
     let _ = log_safety_violation_admitted(violation_code, action_code, detail);
@@ -2072,6 +2124,7 @@ pub fn log_safety_violation(violation_code: u8, action_code: u8, detail: u32) {
 /// while the recorder is inactive: no volume).
 pub fn log_safety_violation_admitted(violation_code: u8, action_code: u8, detail: u32) -> bool {
     LOG_SAFETY_COUNT.fetch_add(1, Ordering::Relaxed);
+    latch_carry_note(violation_code, action_code);
     let mut payload = [0u8; LOG_PAYLOAD_BYTES];
     payload[0] = violation_code;
     payload[1] = action_code;
@@ -2112,6 +2165,7 @@ pub fn log_safety_violation_durable(
     violation_code: u8, action_code: u8, detail: u32,
 ) -> Result<usize, LogStorageError> {
     LOG_SAFETY_COUNT.fetch_add(1, Ordering::Relaxed);
+    latch_carry_note(violation_code, action_code);
     let mut payload = [0u8; LOG_PAYLOAD_BYTES];
     payload[0] = violation_code;
     payload[1] = action_code;
@@ -2155,6 +2209,7 @@ pub fn log_release_nonce_floor_durable(nonce: u64) -> Result<usize, LogStorageEr
     payload[4..8].copy_from_slice(&(nonce as u32).to_le_bytes());
     payload[8..12].copy_from_slice(&((nonce >> 32) as u32).to_le_bytes());
     push_durable(payload)?;
+    NONCE_CARRY.fetch_max(nonce, Ordering::Relaxed);
     logger_flush()
 }
 
@@ -2186,18 +2241,6 @@ pub fn log_operator_key_pin_durable(
 /// [`log_operator_key_pin_durable`] is refused.
 pub fn logger_carry_key_pin(fp: &[u8; OPERATOR_KEY_FP_BYTES]) {
     *KEY_PIN_CARRY.lock() = Some(*fp);
-}
-
-/// The first record of a file a rotation opened: the carried pin, if any.
-/// Through the ring, not a direct write, so a device fault tears and rotates
-/// exactly as it does for every other record. Dropped when the logger is not
-/// yet active (the cold `logger_init`, where the boot's own install re-emits).
-fn carry_key_pin_into_new_file() {
-    let Some(fp) = *KEY_PIN_CARRY.lock() else { return };
-    let mut payload = [0u8; LOG_PAYLOAD_BYTES];
-    payload[0] = SAFETY_OPERATOR_KEY;
-    payload[4..].copy_from_slice(&fp);
-    let _ = push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, Admit::Safety);
 }
 
 /// Push a `SAFETY_VIOLATION` record a `*_durable` caller is about to call
@@ -2467,40 +2510,86 @@ pub const fn estop_action_latches(action: u8) -> Option<bool> {
     }
 }
 
-/// The highest existing session-file serial on the medium, or `Ok(None)` on
-/// a blank one.
+/// The last name of the run of session files that starts at name 0, or
+/// `Ok(None)` on a blank medium: a galloping probe, then a bisection, so the
+/// directory lookups of a boot are two per doubling of the history and not one
+/// per file. The run is contiguous (a rotation whose open failed part-way
+/// through a full disk leaves a gap the search may land on either side of;
+/// the files above it are older attempts). Never past `LOG_SERIAL_WRAP - 1`.
 ///
-/// **Owner decision, 2026-09-26 (U08-3).** Until this decision, `logger_init`
-/// always opened serial 0 with TRUNCATE, so this function's job was to find
-/// "where THIS session's own rotation left off among files that all start
-/// from 0" — it walked up from 0 and stopped at the first file that had not
-/// been closed by a rotation, because every session started fresh at 0 and
-/// anything above that point had to be a STALE file an older, longer session
-/// left behind.
-///
-/// Now a new session opens at `next_serial` from the boot's own
-/// [`replay_boot`], one past whatever the previous session's tail was — so
-/// serials are contiguous across reboots, never reused, and there is no such
-/// thing as a "stale file left by a longer session" any more (see
-/// `boot_numbering_is_contiguous_across_reboots_not_reset_to_zero` in the
-/// host suite for the property this replaces). The question this function
-/// answers is now simply "how far up does the medium's file sequence go" —
-/// walk up from 0 while a file exists, and the first gap is one past the
-/// answer.
-///
-/// Read wrong in one bounded case, same as before: a rotation (or a boot's
-/// very first open) whose write failed part-way through the medium (a full
-/// disk) can leave a gap followed by a stale file from an even older
-/// attempt; this walk stops at the first gap and never looks past it.
+/// Before the serials wrap the name is the serial. After, every name exists
+/// and [`replay_newest`] finds the newest by the serial in the header.
 pub fn replay_tail_serial(
     mut size_of: impl FnMut(u32) -> Result<Option<u32>, LogStorageError>,
 ) -> Result<Option<u32>, LogStorageError> {
-    let mut serial = 0u32;
-    loop {
-        match size_of(serial)? {
-            None => return Ok(serial.checked_sub(1)),
-            Some(_) if serial + 1 >= LOG_SERIAL_WRAP => return Ok(Some(serial)),
-            Some(_) => serial += 1,
+    let mut exists = |name: u32| size_of(name).map(|s| s.is_some());
+    if !exists(0)? {
+        return Ok(None);
+    }
+    let (mut lo, mut probe) = (0u32, 1u32);
+    while probe < LOG_SERIAL_WRAP && exists(probe)? {
+        lo = probe;
+        probe = probe.saturating_mul(2);
+    }
+    let mut hi = probe.min(LOG_SERIAL_WRAP);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if exists(mid)? {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Ok(Some(lo))
+}
+
+/// The serial a file's header names (version 2), or its own name for a file
+/// of version 1, which has none; `Ok(None)` for an empty file (a crash
+/// between creating it and its header).
+fn header_serial(src: &mut dyn LogReplaySource, name: u32) -> Result<Option<u32>, LogStorageError> {
+    src.open(name)?;
+    let mut hdr = [0u8; LOG_FILE_HEADER_BYTES];
+    let got = read_full(src, &mut hdr);
+    src.close();
+    let got = got?;
+    if got == 0 {
+        return Ok(None);
+    }
+    if got != LOG_FILE_HEADER_BYTES || &hdr[0..4] != LOG_FILE_MAGIC {
+        return Err(LogStorageError::Io);
+    }
+    let version = u16::from_le_bytes([hdr[4], hdr[5]]);
+    Ok(Some(if version >= 2 { u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]) } else { name }))
+}
+
+/// The newest session's serial on the medium, or `Ok(None)` on a blank one.
+///
+/// Until the serials reach [`LOG_SERIAL_WRAP`] it is the last name of the run
+/// from 0. Once every name exists the files are two laps of one sequence cut
+/// at the newest file: names below the cut hold the newer lap, so the serials
+/// in the headers fall at the cut and a bisection on "not below file 0's
+/// serial" finds it in `log2(LOG_SERIAL_WRAP)` header reads. An empty file
+/// counts as the newest (it is the one being opened).
+fn replay_newest(src: &mut dyn LogReplaySource) -> Result<Option<u32>, LogStorageError> {
+    let Some(last) = replay_tail_serial(|name| src.size(name))? else { return Ok(None) };
+    if last + 1 < LOG_SERIAL_WRAP || cfg!(feature = "wrap-tail-canary") {
+        return Ok(Some(last));
+    }
+    let first = header_serial(src, 0)?.unwrap_or(u32::MAX);
+    let (mut lo, mut hi) = (0u32, LOG_SERIAL_WRAP);
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if header_serial(src, mid)?.is_none_or(|s| s >= first) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    match header_serial(src, lo)? {
+        Some(serial) => Ok(Some(serial)),
+        None => {
+            let before = header_serial(src, (lo + LOG_SERIAL_WRAP - 1) % LOG_SERIAL_WRAP)?;
+            Ok(Some(before.map_or(lo, |s| s.wrapping_add(1))))
         }
     }
 }
@@ -2572,10 +2661,16 @@ struct FileScan {
     nonce: Option<u64>,
     /// The last `SAFETY_OPERATOR_KEY` fingerprint.
     key_pin: Option<[u8; OPERATOR_KEY_FP_BYTES]>,
+    /// The serial the header names (version 2).
+    serial: Option<u32>,
+    /// The file opens with the state it carried forward and all of it is on
+    /// the medium: nothing in an older file can change what this one says.
+    snapshot: bool,
 }
 
 impl FileScan {
-    const EMPTY: FileScan = FileScan { estop: None, nonce: None, key_pin: None };
+    const EMPTY: FileScan =
+        FileScan { estop: None, nonce: None, key_pin: None, serial: None, snapshot: false };
 }
 
 impl BootReplay {
@@ -2590,29 +2685,28 @@ impl BootReplay {
 /// nonce floor from the previous session(s)' record, in one walk down from
 /// the highest existing serial.
 ///
-/// Newest file first. The two questions this answers do not always resolve
-/// in the same file — a stop from something OTHER than an operator release
-/// (the GPIO kill switch, a stale sensor) can be the newest decisive record
-/// with the last actual release several files further back — so the walk
-/// continues past whichever decision resolves first, down to serial 0 if
-/// it has to, until all THREE are answered (latch, nonce floor, pinned release key). This costs a full walk on a boot
-/// where no release was ever recorded (the common case for a robot with no
-/// provisioned operator key), which is the same shape of cost
-/// `replay_boot_latch` already paid for "no e-stop ever recorded" before
-/// this change — bounded by this boot-numbering lineage's total file count,
-/// not unbounded.
+/// Newest file first. The questions this answers do not always resolve in the
+/// same file, so the walk goes on past whichever resolves first until all
+/// three are answered, or a file opens with the state it carried forward
+/// (`FileScan::snapshot`): that file says what the older ones would have, so
+/// the walk ends there. Every file the recorder writes opens that way, and the
+/// walk is the newest file or two however long the history is. Files without
+/// it are read down to [`REPLAY_MAX_FILES`], and a latch that walk has not
+/// ruled out is held.
 pub fn replay_boot(src: &mut dyn LogReplaySource) -> BootReplay {
-    let tail = match replay_tail_serial(|serial| src.size(serial)) {
+    let tail = match replay_newest(src) {
         Ok(Some(tail)) => tail,
         Ok(None) => return BootReplay::blank(BootLatch::NoRecord),
         Err(_) => return BootReplay::blank(BootLatch::Unreadable),
     };
     let next_serial = tail.wrapping_add(1);
     let mut serial = tail;
+    let mut walked = 0u32;
     let mut latch: Option<BootLatch> = None;
     let mut nonce_floor: Option<u64> = None;
     let mut key_pin: Option<[u8; OPERATOR_KEY_FP_BYTES]> = None;
     loop {
+        walked += 1;
         match scan_open_log_file_for_boot(src, serial) {
             // A genuinely corrupt or unreadable file (bad magic, a short
             // header, an I/O failure) fails the LATCH safe, exactly as
@@ -2623,6 +2717,9 @@ pub fn replay_boot(src: &mut dyn LogReplaySource) -> BootReplay {
             // it either.
             Err(_) if latch.is_none() => latch = Some(BootLatch::Unreadable),
             Err(_) => {}
+            // A file of an older lap of the names: the history this lineage
+            // owns ends above it. (The newest file is found by its name.)
+            Ok(file) if walked > 1 && file.serial.is_some_and(|s| s != serial) => break,
             Ok(file) => {
                 if latch.is_none() {
                     if let Some(action) = file.estop {
@@ -2634,10 +2731,17 @@ pub fn replay_boot(src: &mut dyn LogReplaySource) -> BootReplay {
                 }
                 nonce_floor = nonce_floor.or(file.nonce);
                 key_pin = key_pin.or(file.key_pin);
+                if file.snapshot && !cfg!(feature = "replay-snapshot-canary") { break; }
             }
         }
         if latch.is_some() && nonce_floor.is_some() && key_pin.is_some() { break; }
         if serial == 0 { break; }
+        if walked >= REPLAY_MAX_FILES {
+            // No snapshot in the newest files: the latch may be in a file this
+            // walk will not read, so it cannot be ruled out.
+            latch = latch.or(Some(BootLatch::Unreadable));
+            break;
+        }
         serial -= 1;
     }
     BootReplay {
@@ -2695,11 +2799,18 @@ fn scan_open_log_file_body(
     // read per record is a block-device round trip per record at boot.
     let mut chunk = [0u8; LOG_RECORD_SIZE * 16];
     let mut scan = FileScan::EMPTY;
+    let version = u16::from_le_bytes([hdr[4], hdr[5]]);
+    let carried = hdr[6] as usize;
+    if version >= 2 {
+        scan.serial = Some(u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]));
+    }
+    let mut seen = 0usize;
     loop {
         let got = read_full(src, &mut chunk)?;
         // `chunks_exact` drops a trailing partial record: the write a reset cut
         // short. The decision rests on the last whole one.
         for raw in chunk[..got].chunks_exact(LOG_RECORD_SIZE) {
+            seen += 1;
             let mut buf = [0u8; LOG_RECORD_SIZE];
             buf.copy_from_slice(raw);
             let rec = LogRecord::decode(&buf);
@@ -2709,12 +2820,13 @@ fn scan_open_log_file_body(
             } else if rec.payload[0] == SAFETY_RELEASE_NONCE {
                 let lo = u32::from_le_bytes(rec.payload[4..8].try_into().unwrap()) as u64;
                 let hi = u32::from_le_bytes(rec.payload[8..12].try_into().unwrap()) as u64;
-                scan.nonce = Some((hi << 32) | lo);
+                scan.nonce = Some(scan.nonce.unwrap_or(0).max((hi << 32) | lo));
             } else if rec.payload[0] == SAFETY_OPERATOR_KEY {
                 scan.key_pin = Some(rec.payload[4..].try_into().unwrap());
             }
         }
         if got < chunk.len() {
+            scan.snapshot = version >= 2 && seen >= carried;
             return Ok(scan);
         }
     }
@@ -2786,22 +2898,70 @@ fn open_log_file_inner(serial: u32, notice_already_written: bool) -> Result<(), 
     let storage = current_storage()?;
     let handle = storage.open(serial)?;
 
-    // Write header.
-    let mut hdr = [0u8; LOG_FILE_HEADER_BYTES];
-    hdr[0..4].copy_from_slice(LOG_FILE_MAGIC);
-    hdr[4..6].copy_from_slice(&LOG_FILE_VERSION.to_le_bytes());
-    hdr[6..8].copy_from_slice(&0u16.to_le_bytes());
-    hdr[8..16].copy_from_slice(&now_ticks().to_le_bytes());
-    let written = storage.write(handle, &hdr)?;
+    let mut buf = [0u8; LOG_FILE_HEADER_BYTES + SNAPSHOT_MAX * LOG_RECORD_SIZE];
+    let len = write_file_header(serial, &mut buf);
+    let mut off = 0;
+    while off < len {
+        match storage.write(handle, &buf[off..len])? {
+            0 => return Err(LogStorageError::Io),
+            w => off += w,
+        }
+    }
     let _ = storage.fsync(handle);
 
     *LOG_FILE.acquire() = Some(OpenLogFile {
         handle,
-        bytes_written: written as u32,
+        bytes_written: len as u32,
         serial,
     });
-    carry_key_pin_into_new_file();
     Ok(())
+}
+
+/// The header of session `serial`'s file and, right behind it in the same
+/// write, the state a boot must not have to look further back for: the
+/// e-stop latch, the release nonce floor and the release-key pin as of this
+/// open, one record each when set. Written whole before anything else, so a
+/// file that has them is complete in them: [`FileScan::snapshot`] holds only
+/// when the header's count of records is on the medium. Returns the bytes.
+fn write_file_header(serial: u32, buf: &mut [u8; LOG_FILE_HEADER_BYTES + SNAPSHOT_MAX * LOG_RECORD_SIZE]) -> usize {
+    let ts = now_ticks();
+    let mut n = 0usize;
+    let mut put = |payload: [u8; LOG_PAYLOAD_BYTES]| {
+        let at = LOG_FILE_HEADER_BYTES + n * LOG_RECORD_SIZE;
+        let rec = LogRecord { ts, kind: LOG_EVT_SAFETY_VIOLATION, flags: 0, payload };
+        let mut raw = [0u8; LOG_RECORD_SIZE];
+        rec.encode(&mut raw);
+        buf[at..at + LOG_RECORD_SIZE].copy_from_slice(&raw);
+        n += 1;
+    };
+    let latch = LATCH_CARRY.load(Ordering::Relaxed);
+    if latch & LATCH_SET != 0 && !cfg!(feature = "rotate-latch-canary") {
+        let mut p = [0u8; LOG_PAYLOAD_BYTES];
+        p[0] = SAFETY_ESTOP;
+        p[1] = latch as u8;
+        put(p);
+    }
+    let nonce = NONCE_CARRY.load(Ordering::Relaxed);
+    if nonce != 0 {
+        let mut p = [0u8; LOG_PAYLOAD_BYTES];
+        p[0] = SAFETY_RELEASE_NONCE;
+        p[4..8].copy_from_slice(&(nonce as u32).to_le_bytes());
+        p[8..12].copy_from_slice(&((nonce >> 32) as u32).to_le_bytes());
+        put(p);
+    }
+    if let Some(fp) = *KEY_PIN_CARRY.lock() {
+        let mut p = [0u8; LOG_PAYLOAD_BYTES];
+        p[0] = SAFETY_OPERATOR_KEY;
+        p[4..].copy_from_slice(&fp);
+        put(p);
+    }
+    buf[..LOG_FILE_HEADER_BYTES].fill(0);
+    buf[0..4].copy_from_slice(LOG_FILE_MAGIC);
+    buf[4..6].copy_from_slice(&LOG_FILE_VERSION.to_le_bytes());
+    buf[6] = n as u8;
+    buf[8..12].copy_from_slice(&serial.to_le_bytes());
+    buf[12..16].copy_from_slice(&(ts as u32).to_le_bytes());
+    LOG_FILE_HEADER_BYTES + n * LOG_RECORD_SIZE
 }
 
 // ---------------------------------------------------------------------------

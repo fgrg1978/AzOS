@@ -70,10 +70,11 @@ pub fn check(d: &MsgDesc, now_mono_ns: u64, caller_tid: u32) -> Result<(), i64> 
         return Err(Errno::EINVAL.to_syscall_ret());
     }
     if d.deadline != 0 && d.deadline <= now_mono_ns {
-        azos_decision::record(
+        azos_decision::record_keyed(
             Rule::DeadlineExpired,
             Verdict::Refuse,
             caller_tid,
+            crate::handlers::durable_bucket(caller_tid),
             [d.deadline, now_mono_ns, d.clock_id as u64],
         );
         return Err(Errno::EDEADLINE.to_syscall_ret());
@@ -95,10 +96,11 @@ pub const DENIAL_REALTIME_ON_PROXY: u64 = 7;
 pub fn check_proxy(is_proxy: bool, class_raw: impl FnOnce() -> u8, caller_tid: u32) -> Result<(), i64> {
     // The class is read only for a proxy: an ordinary call pays one flag.
     if is_proxy && class_raw() <= crate::handlers::RT_CLASS_MAX {
-        azos_decision::record(
+        azos_decision::record_keyed(
             Rule::CapDenial,
             Verdict::Deny,
             caller_tid,
+            crate::handlers::durable_bucket(caller_tid),
             [azos_abi::cap::CapKind::Endpoint.denial_code() as u64, DENIAL_REALTIME_ON_PROXY, 0],
         );
         return Err(Errno::ERTPROXY.to_syscall_ret());
@@ -112,10 +114,11 @@ pub fn check_proxy(is_proxy: bool, class_raw: impl FnOnce() -> u8, caller_tid: u
 pub fn check_caps(d: &MsgDesc, now_mono_ns: u64, sender_tid: u32) -> Result<(), i64> {
     for c in d.caps.iter().take(d.n_caps as usize) {
         if c.expiry_ns != 0 && c.expiry_ns <= now_mono_ns {
-            azos_decision::record(
+            azos_decision::record_keyed(
                 Rule::DeadlineExpired,
                 Verdict::Refuse,
                 sender_tid,
+                crate::handlers::durable_bucket(sender_tid),
                 [c.expiry_ns, now_mono_ns, c.handle as u64],
             );
             return Err(Errno::EDEADLINE.to_syscall_ret());
@@ -233,10 +236,11 @@ pub fn admit(
     match admit_rule(now, deadline, server, lent) {
         Ok(()) => Ok(()),
         Err(alt) => {
-            let receipt = azos_decision::record_receipt(
+            let receipt = azos_decision::record_keyed(
                 Rule::CallAdmission,
                 Verdict::Refuse,
                 caller_tid,
+                crate::handlers::durable_bucket(caller_tid),
                 [deadline, alt.value(), alt.kind() << 32 | server_tid as u64],
             );
             Err(Refused { receipt, alt })

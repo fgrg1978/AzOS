@@ -510,8 +510,8 @@ The index lists every declared option: 1234.
 | `CRASHDUMP_MAPS` | `config/kernel/Kconfig.panic` | Crash dump: map runs kept |
 | `CRASHDUMP_RING` | `config/kernel/Kconfig.panic` | Crash dump: crash ring depth (dumps kept in RAM) |
 | `CRASHDUMP_STACK_BYTES` | `config/kernel/Kconfig.panic` | Crash dump: stack window (bytes, from the stack pointer up) |
-| `DECISION_DENY_DURABLE_BURST` | `config/kernel/Kconfig.decisions` | Explainable decision records: durable capability denials, burst |
-| `DECISION_DENY_DURABLE_PER_SEC` | `config/kernel/Kconfig.decisions` | Explainable decision records: durable capability denials per second, per task |
+| `DECISION_DENY_DURABLE_BURST` | `config/kernel/Kconfig.decisions` | Explainable decision records: durable caller-paced records, burst |
+| `DECISION_DENY_DURABLE_PER_SEC` | `config/kernel/Kconfig.decisions` | Explainable decision records: durable caller-paced records per second, per Domain and rule |
 | `DECISION_JOURNAL_ENTRIES` | `config/kernel/Kconfig.decisions` | Explainable decision records: durable journal depth |
 | `DECISION_RECORDS_CONSOLE` | `config/kernel/Kconfig.decisions` | Print every decision record on the console |
 | `DECISION_RECORDS_DEV` | `config/kernel/Kconfig.decisions` | Explainable decision records: the ring, every rule |

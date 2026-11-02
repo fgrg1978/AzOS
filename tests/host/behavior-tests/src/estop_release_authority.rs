@@ -653,6 +653,67 @@ fn a_rotation_carries_the_key_pin_into_the_new_file() {
     );
 }
 
+/// Rotate the mock recorder through a torn write, as the pin test does.
+fn rotate_by_a_torn_write() {
+    use super::log_storage_mock as fsmock;
+    super::logger::log_skill_start(1);
+    let w = fsmock::with(|r| r.writes);
+    fsmock::with(|r| {
+        r.short_write_at = Some((w, 16));
+        r.fail_write_at = Some(w + 1);
+    });
+    assert!(super::logger::logger_flush().is_err(), "the torn write is reported");
+    fsmock::with(|r| { r.short_write_at = None; r.fail_write_at = None; });
+}
+
+/// **A rotation carries the latch and the nonce floor into the new file.** A
+/// stop and an accepted release nonce are recorded in file 0, the recorder
+/// rotates, and a boot that finds only the newest file still starts latched
+/// with the floor: it never has to read the history behind it.
+///
+/// **Canary** (leave the latch out of `write_file_header`): the newest file
+/// holds no stop, the replay answers `Released`, this goes red. Leave the
+/// nonce out: the floor is 0, red.
+#[test]
+fn a_rotation_carries_the_latch_and_the_nonce_into_the_new_file() {
+    use super::log_storage_mock as fsmock;
+    use super::logger::{BootLatch, SAFETY_ESTOP};
+    let _gl = reset();
+    super::logger::logger_init().expect("the mock storage always mounts");
+    super::logger::log_safety_violation_durable(SAFETY_ESTOP, 2, 0).expect("the stop is durable");
+    super::logger::log_release_nonce_floor_durable(9).expect("the nonce is durable");
+    rotate_by_a_torn_write();
+    assert_eq!(fsmock::file_count(), 2, "the torn write rotated to a second file");
+    let head = fsmock::file_bytes(1);
+    assert_eq!(head[6], 2, "the new file opens with the latch and the nonce");
+    super::logger::logger_shutdown();
+
+    let newest = super::logger::replay_boot(&mut ReplayOnly { index: 1, pos: 0 });
+    assert_eq!(newest.latch, BootLatch::Armed(2));
+    assert_eq!(newest.release_nonce_floor, 9);
+}
+
+/// The operator clear is carried as well: after it, the new file opens with no
+/// stop, and the stop in the file behind it is not read.
+///
+/// **Canary** (never clear `LATCH_CARRY` in `latch_carry_note`): the new file
+/// opens with the stop, the replay answers `Armed(2)`, red.
+#[test]
+fn a_rotation_after_a_clear_carries_no_latch() {
+    use super::log_storage_mock as fsmock;
+    use super::logger::{BootLatch, SAFETY_ESTOP};
+    let _gl = reset();
+    super::logger::logger_init().expect("the mock storage always mounts");
+    super::logger::log_safety_violation_durable(SAFETY_ESTOP, 2, 0).expect("the stop is durable");
+    super::logger::log_safety_violation_durable(SAFETY_ESTOP, 3, 0).expect("the clear is durable");
+    rotate_by_a_torn_write();
+    assert_eq!(fsmock::file_bytes(1)[6], 0, "nothing to carry");
+    super::logger::logger_shutdown();
+
+    let newest = super::logger::replay_boot(&mut ReplayOnly { index: 1, pos: 0 });
+    assert_eq!(newest.latch, BootLatch::Released);
+}
+
 /// **Every boot that installs the key writes the pin into its own file.**
 /// Boot 1 pins A; boot 2 reads it back and installs A again. Boot 2's file
 /// carries the pin, so a boot 3 that finds only boot 2's file still knows A.
