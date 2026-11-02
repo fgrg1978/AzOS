@@ -1033,6 +1033,12 @@ fn booked(r: &Reservation, density: u32) -> rt_core::Booked {
     }
 }
 
+/// Ktest: give up `idx`'s reservation, as its exit does.
+#[cfg(feature = "ktest")]
+pub fn ktest_release(idx: usize) {
+    release(idx);
+}
+
 /// Runtime canary `asym-admit-skip`: run-time admission ignores core classes.
 #[cfg(feature = "ktest")]
 static CANARY_CLASS_SKIP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -1206,7 +1212,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
 
 /// Drop task `idx`'s reservation, if it has one: out of its hart's set and
 /// ledger. Called when the slot is freed (exit) and when it is reused.
-pub fn release(idx: usize) {
+pub(super) fn release(idx: usize) {
     if idx < MAX_TASKS {
         EXEMPT[idx].store(false, Ordering::Relaxed);
     }

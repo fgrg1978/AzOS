@@ -127,11 +127,11 @@ azos_ktest::ktest_late! {
         azos_sched::scheduler::ktest_set_pin(tid, small as i8);
         let pinned = rt::reserve(idx, budget(0));
         let pinned_ok = pinned == Ok(small);
-        rt::release(idx);
+        rt::ktest_release(idx);
         azos_sched::scheduler::ktest_set_pin(tid, -1);
         let within = rt::reserve(idx, budget(1 << small));
         let within_ok = within == Ok(small);
-        rt::release(idx);
+        rt::ktest_release(idx);
         PARKED_GO.store(true, Ordering::Release);
         crate::ktest::wait("the parked task never left", || PARKED_TID.load(Ordering::Acquire) == 0)?;
         if verdicts != (Err(Refusal::CoreClass), Err(Refusal::CoreClass)) {

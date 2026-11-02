@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # QEMU's own device tree with CPUs that differ: the first half are the small
 # ones. On riscv64 the last CPU also lacks Zbb. asym_dtb.sh <rv|arm> <cpus> <out>
 set -e

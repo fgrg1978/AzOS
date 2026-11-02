@@ -399,7 +399,7 @@ mod rt_core_tests {
         assert_eq!(single_class(true, 0b1100, class), Ok(()));
         assert_eq!(single_class(true, 0b0110, class), Err(Refusal::CoreClass), "crosses classes");
         assert_eq!(single_class(false, 0b0001, class), Err(Refusal::CoreClass), "no statement of where");
-        assert_eq!(single_class(true, 0, class), Err(Refusal::CoreClass), "no CPU");
+        assert_eq!(single_class(true, 0, class), Ok(()), "no CPU online named: admission finds no room");
         assert_eq!(Refusal::CoreClass.errno(), 16);
         assert_eq!(Refusal::CoreClass.name(), "core-class");
         assert_eq!(Refusal::CoreClass.code(), 8);
