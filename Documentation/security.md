@@ -513,10 +513,11 @@ not select it. Without the feature, verification still runs and the state is
 printed, and boot continues. The OTA receiver
 (`crates/core/recovery/src/lib.rs`) refuses a staged image whose signature is
 present and does not verify on every build, and one with no usable signature
-(no sidecar, or no trusted key) only when `secure-boot-enforced` is compiled
-in; otherwise it installs it with a warning. Kconfig `OTA_SIG_MANDATORY` is not
-read by the kernel: the build refuses `SECURE_BOOT_ENFORCED=y` with it `n`
-(`crates/core/limits/build.rs`), and it is exported to the brain.
+(no sidecar, or no trusted key) when `secure-boot-enforced` is compiled in or
+Kconfig `OTA_SIG_MANDATORY` is on; otherwise it installs it with a warning. The
+boot gate does not read `OTA_SIG_MANDATORY`: the build refuses
+`SECURE_BOOT_ENFORCED=y` with it `n` (`crates/core/limits/build.rs`), so the
+install is never looser than the boot, and it is exported to the brain.
 
 **Topology.** `CAPS.SIG` is verified before any byte of `CAPS.TOM` is
 interpreted. One signature covers both topology files: the verified
