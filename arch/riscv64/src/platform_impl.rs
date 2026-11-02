@@ -21,11 +21,18 @@ impl ArchPlatform for Riscv64 {
     /// Local `fence rw, rw` + `fence.i`, then SBI RFENCE `remote_fence_i` to
     /// every hart (`hart_mask_base == -1`). A refused remote fence is retried
     /// once and then stops the kernel: a hart would run stale instructions
-    /// (`tlb::settle_remote_fence`).
+    /// (`tlb::settle_remote_fence`). RFENCE is the only way this kernel reaches
+    /// a remote hart (no IPI handler fences, no legacy SBI call), so
+    /// `NOT_SUPPORTED` with other harts running is fatal too.
     #[inline]
     fn icache_sync_all(&self) {
         // SAFETY: memory and instruction-fetch fences only.
         unsafe { core::arch::asm!("fence rw, rw", "fence.i", options(nostack, preserves_flags)) };
+        // No other hart has been started: nothing remote to fence, and an SBI
+        // without RFENCE (which has no other path in this kernel) is not asked.
+        if crate::tlb::hart_bound() <= 1 {
+            return;
+        }
         let fence = || crate::firmware::remote_fence_i(0, usize::MAX);
         if let Err(e) = crate::tlb::settle_remote_fence(fence(), fence) {
             panic!("icache sync: remote fence.i failed (SBI error {e})");
@@ -38,6 +45,9 @@ impl ArchPlatform for Riscv64 {
     #[inline]
     fn flush_tlb_page_all(&self, va: usize) {
         Mmu::flush_tlb_page(self, va);
+        if crate::tlb::hart_bound() <= 1 {
+            return;
+        }
         let rc = crate::firmware::remote_sfence_vma(0, usize::MAX, va, crate::mmu::PAGE_SIZE);
         let all = || crate::firmware::remote_sfence_vma(0, usize::MAX, 0, usize::MAX);
         if let Err(e) = crate::tlb::settle_remote_fence(rc, all) {
