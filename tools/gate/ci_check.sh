@@ -20778,7 +20778,8 @@ PYEOF
     # with a keyboard and a stick on a `qemu-xhci` (the first boot of a USB
     # device in the gate). The first command after boot init is the first
     # device's Enable Slot; after the reset both are enumerated again and the
-    # mass-storage class driver reads the stick's sector 0. The class
+    # mass-storage class driver reads the stick: sector 0, or the FAT32 mount
+    # that USB_STORAGE_VOLUME (default y with USB_STORAGE) makes instead. The class
     # drivers' side of a reset (their devices go away and come back, the
     # transfers in flight end Disconnected) is tests/host/usb-tests (`reset`).
     usb_reset_row() { # usb_reset_row <riscv64|aarch64> <once|twice>
@@ -20807,13 +20808,13 @@ PYEOF
             qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kcopy" "${dev[@]}" </dev/null >"$log" 2>&1 &
         fi
         if [ "$mode" = once ]; then
-            dev_boot_wait $! "$log" 90 "mass storage sector 0 read|xhci timed out again"
+            dev_boot_wait $! "$log" 90 "mass storage sector 0 read|volume mounted at /usb|xhci timed out again"
         else
             dev_boot_wait $! "$log" 90 "xhci timed out again"
         fi
         rm -f "$stick" "$kcopy"
         dev_reset_verdict "$mode" "$log" USB xhci '\[USB\] xhci timed out after [0-9]* ms: device reset' \
-            'USB\] mass storage sector 0 read: boot signature present'
+            'USB\] (mass storage sector 0 read: boot signature present|volume mounted at /usb: FAT32)'
     }
     par "usb: timeout resets once (riscv64)" usb_reset_row riscv64 once
     par "usb: second timeout latches (riscv64)" usb_reset_row riscv64 twice
