@@ -1930,11 +1930,6 @@ pub fn schedule() {
             // the way the plain field it replaced was, and this runs on
             // every timer tick on every hart.
             let task_prio = task.priority.load(Ordering::Relaxed);
-            #[cfg(feature = "ktest")]
-            if is_rt_priority(task_prio) && fairq::misfit_tick(cpu, current_idx) {
-                if tick_admit() { do_schedule(SwitchReason::Preempted); }
-                return;
-            }
             if is_rt_priority(task_prio) {
                 // RT task: only preempt if a higher-priority task is waiting.
                 match cpu_peek_highest_prio(cpu) {

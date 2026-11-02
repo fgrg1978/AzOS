@@ -770,6 +770,11 @@ pub mod misfit_canary {
 /// The last task moved as a misfit, so a test can tell it from any other.
 #[cfg(feature = "ktest")]
 static MISFIT_LAST_TID: AtomicU32 = AtomicU32::new(0);
+/// Ktest: may the task in slot `idx` be moved as a misfit, as it is now?
+#[cfg(feature = "ktest")]
+pub fn ktest_misfit_may_move(idx: usize) -> bool {
+    misfit_may_move(idx, prio_of(idx))
+}
 /// See [`MISFIT_LAST_TID`].
 #[cfg(feature = "ktest")]
 pub fn misfit_last_tid() -> u32 {
@@ -802,7 +807,7 @@ fn misfit_may_move(idx: usize, p: u32) -> bool {
 /// nowhere bigger to send anything pays one load; the others read the CPUs once
 /// per window, however long the task runs.
 #[inline]
-pub(super) unsafe fn misfit_tick(cpu: usize, cur: usize) -> bool {
+unsafe fn misfit_tick(cpu: usize, cur: usize) -> bool {
     if !(crate::topo::ASYM && azos_limits::SCHED_BALANCE) || crate::topo::class(cpu) == 0 {
         return false;
     }
@@ -823,7 +828,11 @@ unsafe fn misfit_look(cpu: usize, cur: usize) -> bool {
     if misfit_canary::on(misfit_canary::OFF) {
         return false;
     }
-    if !misfit_may_move(cur, prio_of(cur)) || unsafe { rt_cpu(cpu) } && prio_of(cur) >= RT_PRIORITY_THRESHOLD {
+    if !misfit_may_move(cur, prio_of(cur)) {
+        return false;
+    }
+    // A CPU with real-time state takes no part, as in the balancer.
+    if unsafe { rt_cpu(cpu) } {
         return false;
     }
     let online = crate::smp::NUM_ONLINE_CPUS.load(Relaxed).min(ncpu()).min(MAX_CPUS);

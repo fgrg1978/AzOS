@@ -111,6 +111,8 @@ pub(crate) const NAMES: &[&str] = &[
     // scheduler: real-time tasks, and pinned ones, are moved as misfits too.
     "asym-misfit-rt",
     "asym-misfit-pinned",
+    // scheduler: placement wants the smallest CPU (`pick_for`).
+    "asym-place-small",
     // syscall/topo_sched.rs: a row placed before the core types were known stays
     // on any class.
     "asym-row-any-class",

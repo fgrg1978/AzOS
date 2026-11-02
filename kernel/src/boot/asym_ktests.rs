@@ -6,6 +6,7 @@
 //! Logic only: QEMU's CPUs do not differ in speed.
 
 use azos_decision::{Filter, Rule, Verdict};
+use azos_drv_sys::kprintln;
 use azos_ktest::skip;
 use azos_sched::rt::{self, Reservation};
 use azos_sched::rt_core::Refusal;
@@ -241,7 +242,9 @@ azos_ktest::ktest_late! {
         let ms = 40 * azos_limits::SCHED_MISFIT_TICKS as usize;
         azos_sched::task_create_affinity("asym-hog", periodic_hog, ms, FAIR_PRIO, small as i8);
         crate::ktest::wait("the hog never ended", || HOG_DONE.load(Ordering::Acquire))?;
-        if azos_sched::scheduler::fairq::misfit_moves() - moves > PERIODS / 2 {
+        let moved = azos_sched::scheduler::fairq::misfit_moves() - moves;
+        kprintln!("# asym_periodic_hog: {} misfit moves over {} periods", moved, PERIODS);
+        if moved > 2 {
             return Err("the hog was moved as a misfit about every period");
         }
         Ok(())
@@ -300,7 +303,9 @@ azos_ktest::ktest_late! {
         let window = 100 * azos_limits::SCHED_MISFIT_TICKS as u64;
         spin_on("asym-rt-spin", small, RT_PRIO, true)?;
         azos_syscall::sleep::sleep_ms(window);
-        let rt_stayed = RUN_CPU.load(Ordering::Acquire) == small;
+        let idx = azos_sched::idx_for_tid(RUN_TID.load(Ordering::Acquire)).ok_or("the spinner has no slot")?;
+        let rt_stayed = RUN_CPU.load(Ordering::Acquire) == small
+            && !azos_sched::scheduler::fairq::ktest_misfit_may_move(idx);
         stop_spinner()?;
         if !rt_stayed {
             return Err("a real-time task was moved");

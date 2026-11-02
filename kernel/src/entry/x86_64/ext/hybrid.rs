@@ -5,7 +5,7 @@
 //! them. The reading is `azos_arch::ext::hybrid`; shared boot code reaches it
 //! only through these calls, so it names no ISA-specific arch module.
 
-use azos_arch::ext::hybrid::{record_this_cpu, recorded, CoreKind, MAX_RECORDED};
+use azos_arch::ext::hybrid::{recorded, CoreKind, MAX_RECORDED};
 use azos_energy::model::{CoreClass, MAX_MODEL_CPUS};
 
 const _: () = assert!(MAX_RECORDED == MAX_MODEL_CPUS);
@@ -36,7 +36,7 @@ pub(crate) fn install_core_classes(online: usize) {
 /// Record the boot CPU's own core type; does it report one (a hybrid part)?
 #[cfg(feature = "energy")]
 pub(crate) fn boot_cpu_reports_a_core_type() -> bool {
-    record_this_cpu(0) != CoreKind::Uniform || canary!("x86-hybrid-synth")
+    azos_arch::ext::hybrid::record_this_cpu(0) != CoreKind::Uniform || canary!("x86-hybrid-synth")
 }
 
 /// The class CPU `cpu` recorded when it came up; `None` if it recorded none.

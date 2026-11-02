@@ -117,7 +117,6 @@ static CORE_TYPES_RELEASE: core::sync::atomic::AtomicBool = core::sync::atomic::
 
 /// Wait up to `s` seconds for `done`, polling: this is the window in which a
 /// started secondary records its core type, a few microseconds in practice.
-#[cfg(feature = "energy")]
 fn poll_until(s: u64, done: impl Fn() -> bool) -> bool {
     use azos_arch::{Cpu, ARCH};
     let deadline = deadline_s(s);

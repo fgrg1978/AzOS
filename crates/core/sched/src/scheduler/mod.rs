@@ -2155,6 +2155,15 @@ unsafe fn find_best_cpu_scan(prio: u32, exclude: usize, num_online: usize) -> [C
 /// Runtime canary `asym-rt-place-flat`: placement ignores capacity.
 #[cfg(feature = "ktest")]
 static CANARY_RT_PLACE_FLAT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Runtime canary `asym-place-small`: placement wants the smallest CPU, which the
+/// misfit move then undoes, every period.
+#[cfg(feature = "ktest")]
+static CANARY_PLACE_SMALL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// See [`CANARY_PLACE_SMALL`].
+#[cfg(feature = "ktest")]
+pub fn canary_place_small() {
+    CANARY_PLACE_SMALL.store(true, Ordering::Relaxed);
+}
 /// See [`CANARY_RT_PLACE_FLAT`].
 #[cfg(feature = "ktest")]
 pub fn canary_rt_place_flat() {
@@ -2184,6 +2193,10 @@ fn pick_for(loads: &[CpuLoad]) -> usize {
     #[cfg(feature = "ktest")]
     if CANARY_RT_PLACE_FLAT.load(Ordering::Relaxed) {
         return pick_cpu_by_load(loads);
+    }
+    #[cfg(feature = "ktest")]
+    if CANARY_PLACE_SMALL.load(Ordering::Relaxed) {
+        return (0..loads.len()).min_by_key(|&c| topo::capacity(c)).unwrap_or(0);
     }
     if topo::ASYM {
         crate::task::pick_cpu_biggest_of_free(loads, topo::capacity)

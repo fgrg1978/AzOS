@@ -334,6 +334,9 @@ pub(crate) fn install_sched_hooks() {
         if canary!("asym-misfit-pinned") {
             mc::arm(mc::PINNED);
         }
+        if canary!("asym-place-small") {
+            azos_sched::scheduler::canary_place_small();
+        }
         if canary!("asym-row-any-class") {
             azos_sched::rt::canary_row_any_class_arm();
         }

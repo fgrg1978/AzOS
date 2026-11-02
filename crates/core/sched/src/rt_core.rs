@@ -435,6 +435,7 @@ impl Refusal {
 /// reservation names the CPUs it may run on (`explicit`: the request, the
 /// task's pin or its running there did, not the default of every CPU) and they
 /// are of one class.
+#[inline(never)]
 pub fn single_class(explicit: bool, mask: u32, class_of: impl Fn(usize) -> u8) -> Result<(), Refusal> {
     if !explicit {
         return Err(Refusal::CoreClass);

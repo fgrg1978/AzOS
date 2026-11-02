@@ -1397,3 +1397,18 @@ mod ext {
 mod cpuid;
 #[cfg(test)]
 mod firmware;
+
+#[test]
+fn a_misfit_follows_wake_placement_the_mode_and_the_heat() {
+    use azos_energy::model::{misfit_policy as policy, EnergyMode::*};
+    let caps = |c: usize| Some(if c == 0 { 512 } else { 1024 });
+    let here = caps(0);
+    assert_eq!(policy(Performance, None, here, caps, 1), Some(1), "no energy placement: the tick decides");
+    assert_eq!(policy(Balanced, Some(Some(0)), here, caps, 1), None, "wake places it here: it stays, no ping-pong");
+    assert_eq!(policy(Balanced, Some(Some(1)), here, caps, 1), Some(1));
+    assert_eq!(policy(Balanced, Some(None), here, caps, 1), Some(1), "fits nothing: load decides, as at wake");
+    assert_eq!(policy(Endurance, Some(None), here, caps, 1), None, "a hog on battery stays");
+    let capped = |c: usize| Some(if c == 0 { 512 } else { 400 });
+    assert_eq!(policy(Performance, None, here, capped, 1), None, "the heat made the big CPU no bigger");
+    assert_eq!(policy(Performance, None, None, |_| None, 1), Some(1), "no model: the tick decides");
+}
