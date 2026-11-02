@@ -726,11 +726,11 @@ Options and choices: 835. Defconfigs: 24.
 
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-aarch64-dev+qemu+reclaim | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+reclaim | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-sbc-x86_64-dev+qemu+reclaim | generic-server-riscv64+board-generic | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `VIRT_HOSTED` | Hosted (guests run beside the kernel) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | n |
+| `VIRT_HOSTED` | Hosted (guests run beside the kernel) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | y | n | n | n | n |
 | `VIRT_NONE` | None | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | n | y | y | y | y |
-| `VIRT_SPLIT` | Split (a resident monitor under the kernel) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n |
+| `VIRT_SPLIT` | Split (a resident monitor under the kernel) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `VIRT_STATIC` | Static partitioning (pinned guests, fixed at build time) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| choice | Virtualization role (VIRT) | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | SPLIT | NONE | NONE | NONE | HOSTED | NONE | NONE | NONE | NONE |
+| choice | Virtualization role (VIRT) | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | NONE | HOSTED | NONE | NONE | NONE | HOSTED | NONE | NONE | NONE | NONE |
 
 ### Preset and profile axes / Hypervisor
 

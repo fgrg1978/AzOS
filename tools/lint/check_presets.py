@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../
 import azos_tools  # noqa: E402
 ROOT = azos_tools.ROOT
 import gen_userspace_kconfig as gus  # noqa: E402
+import kconfig_dropped  # noqa: E402
 import kconfig_to_cargo as k2c  # noqa: E402
 
 # The axes (config/axes/Kconfig.preset; USE is the USE_* set, derived from the
@@ -203,6 +204,19 @@ def _console_sweep(kconf, td, archs, failures):
     return done
 
 
+def _dropped_sweep(kconf, failures):
+    """No defconfig asks for a symbol the tree refuses (olddefconfig would drop it
+    silently). Returns the number of defconfigs read."""
+    defdir = os.path.join(ROOT, "config", "defconfigs")
+    names = sorted(os.listdir(defdir))
+    for fname in names:
+        kconf.load_config(os.path.join(defdir, fname))
+        bad = [f"CONFIG_{n}=y is refused (depends on {dep})" for n, dep in kconfig_dropped.dropped(kconf)]
+        if bad:
+            failures.append((f"defconfig {fname}", bad))
+    return len(names)
+
+
 def presets(kconf):
     """The members of the PRESET choice, in Kconfig order."""
     return [s.name for s in kconf.syms["PRESET_GENERIC"].nodes[0].parent.item.syms]
@@ -299,6 +313,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         small_boards = _small_board_sweep(kconf, td, names, archs, failures)
         console_expansions = _console_sweep(kconf, td, archs, failures)
+        defconfigs = _dropped_sweep(kconf, failures)
         for preset in names:
             for arch in archs:
                 tag = f"{preset} on {arch.removeprefix('CONFIG_ARCH_').lower()}"
@@ -356,7 +371,8 @@ def main() -> int:
     if failures:
         return 1
     print(f"check-presets: ok ({len(names)} presets x {len(archs)} ISAs, "
-          f"{small_boards} small-board expansions, {console_expansions} console-program expansions)")
+          f"{small_boards} small-board expansions, {console_expansions} console-program expansions, "
+          f"{defconfigs} defconfigs with no refused ask)")
     return 0
 
 

@@ -3667,7 +3667,7 @@ aarch64_hv_row() {
     mkdir -p "$CI_LOG_DIR"
     local log="$CI_LOG_DIR/aarch64-hv-entry.log"
     rm -f "$log"
-    if ! a64_kbuild "qemu,CONFIG_VIRT_SPLIT=y"; then
+    if ! a64_kbuild "qemu,CONFIG_VIRT_HOSTED=y"; then
         bad; echo "      aarch64 kernel (--features qemu,hv) did not build"; return
     fi
     local img_copy="$CI_LOG_DIR/kernel-aarch64-hv.img"
@@ -11726,6 +11726,25 @@ fi
 # Not under crates/: the allow-list and BPF program of the Linux+seccomp
 # column of vsbench, checked against userspace/bench/vsbench/src/abi_linux.rs.
 test_host "linux-seccomp-launch" "${REPO_ROOT}/tools/bench/linux_seccomp_launch/host-tests"
+# VIRT_SPLIT and SECURITY_CONFIDENTIAL are refused while no ISA has a resident
+# monitor (R13 of the split design): `make config` does not offer them, a
+# config that asks is reported, a hand-written .config stops the azos_limits
+# build. The canary row judges a Kconfig copy without the dependency and must
+# see the judge go red (tools/gate/hyp_refusal_row.py).
+hyp_refusal_row() { # <label> <isa> [--canary]
+    local label="$1" out
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    if out="$(CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/hyp-refusal" python3 "${REPO_ROOT}/tools/gate/hyp_refusal_row.py" "${@:2}" 2>&1)"; then
+        ok; printf '%s\n' "$out" | sed -n '1p'
+    else bad; printf '%s\n' "$out" | sed -n '1,6p'; fi
+}
+host_job hyp_refusal_row "split: refused at config (rv)" riscv64
+host_job hyp_refusal_row "split: refusal canary (rv)" riscv64 --canary
+host_job hyp_refusal_row "split: refused at config (arm)" aarch64
+host_job hyp_refusal_row "split: refusal canary (arm)" aarch64 --canary
+host_job hyp_refusal_row "split: refused at config (x86)" x86_64
+host_job hyp_refusal_row "split: refusal canary (x86)" x86_64 --canary
 if ci_row_begin "kconfig_to_cargo tests"; then
 printf "  %-26s" "kconfig_to_cargo tests..."
 if kc_out="$(python3 "${REPO_ROOT}/tools/build/test_kconfig_to_cargo.py" 2>&1)"; then ok

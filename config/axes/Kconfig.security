@@ -76,13 +76,16 @@ choice
 
     config SECURITY_CONFIDENTIAL
         bool "Confidential"
+        depends on ARCH_HAS_HYP_MONITOR
         imply CONSOLE_LOCKDOWN
         imply SECURE_BOOT_ENFORCED
         imply OTA_SIG_MANDATORY
         imply LINK_PROVISIONING_ENFORCED
         help
-          As separation-static (the same implied switches), for workloads kept apart from the host:
-          VIRT starts at `split`.
+          As separation-static (the same implied switches), for workloads kept
+          apart from the host. It needs a resident monitor under the kernel
+          (ARCH_HAS_HYP_MONITOR), which no ISA has yet, so it cannot be
+          selected: a request for it is refused, not run as another posture.
 
 endchoice
 

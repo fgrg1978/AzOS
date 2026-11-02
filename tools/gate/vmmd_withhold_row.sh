@@ -4,7 +4,7 @@
 #
 # Gate row: the desktop preset boots clean on aarch64 QEMU `virt` at EL1.
 #
-# The preset asks for the hypervisor (Kconfig VIRT_SPLIT, so HV) and so has a
+# The preset asks for the hypervisor (Kconfig VIRT_HOSTED, so HV) and so has a
 # `VMMD.ELF` row, but this boot has no EL2 to keep and no `[guest.*]` row: the
 # kernel installs no monitor and `vm.0` answers NOT_READY. `VMMD.ELF` then has
 # nothing to serve, and used to exit with an error, be restarted three times

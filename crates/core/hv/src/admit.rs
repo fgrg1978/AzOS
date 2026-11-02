@@ -13,7 +13,7 @@
 //!   why; the kernel boots on unless Kconfig `HV_REQUIRE` says otherwise);
 //! * the harts: vCPUs may use the harts that hold no deadline reservation
 //!   ([`crate::vcpu::allowed`]); a static partition pins each vCPU to a hart
-//!   of its own, hosted and split share them;
+//!   of its own, hosted shares them;
 //! * the memory the rows ask for against what the host has free, and against
 //!   what the memory-object table can describe (guest RAM is MemObj frames,
 //!   [`HostFacts::max_guest_mib`]);
@@ -42,8 +42,6 @@ pub enum VirtRole {
     None,
     /// Guests run beside the kernel; vCPUs share harts.
     Hosted,
-    /// A resident monitor under the kernel; vCPUs share harts.
-    Split,
     /// Pinned guests fixed at build time: a hart per vCPU.
     Static,
 }
@@ -53,7 +51,6 @@ impl VirtRole {
         match self {
             VirtRole::None => "none",
             VirtRole::Hosted => "hosted",
-            VirtRole::Split => "split",
             VirtRole::Static => "static",
         }
     }
@@ -108,7 +105,7 @@ pub struct Admitted {
     /// MiB over all rows.
     pub mem_mib: u64,
     /// Harts each guest's vCPUs may run on: the non-real-time online harts
-    /// for hosted and split, the guest's own for static.
+    /// for hosted, the guest's own for static.
     pub affinity: [u64; MAX_VMS],
     /// Static: vCPU `n` of a guest is pinned to the `n`-th hart of its mask,
     /// not free to take any of them.

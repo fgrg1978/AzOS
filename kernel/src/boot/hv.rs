@@ -29,8 +29,6 @@ static HV: HvImpl = HvImpl;
 const fn role() -> VirtRole {
     if azos_limits::VIRT_STATIC {
         VirtRole::Static
-    } else if azos_limits::VIRT_SPLIT {
-        VirtRole::Split
     } else if azos_limits::VIRT_HOSTED {
         VirtRole::Hosted
     } else {
