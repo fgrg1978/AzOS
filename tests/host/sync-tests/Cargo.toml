@@ -50,3 +50,5 @@ pi-state-leak-canary = []
 pi-keep-edge-canary = []
 # Wait-graph heap canary (tests/waitgraph_heaps.rs): its leftist shape is lost.
 pi-heap-no-swap-canary = []
+# The lazy owner scan joins every waiter in one hold (shared wait graph source).
+owner-scan-one-hold-canary = []
