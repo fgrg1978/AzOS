@@ -68,6 +68,9 @@ pub extern "C" fn x86_64_secondary_entry(cpu: usize) -> ! {
     // Kconfig X86_UCODE_LOAD: the boot CPU's patch, before this CPU's CPUID
     // is read for its core type and before its mitigation MSRs below.
     super::ext::ucode::this_cpu(cpu);
+    // The boot CPU's `wake_harts` waits for this, and the hold below would keep
+    // `secondary_main`'s from coming in time.
+    crate::boot::smp::refuse_if_it_differs(cpu);
     // CPUID answers for the CPU that runs it: this CPU's core type, for the
     // scheduler's core classes and the energy model, which the boot CPU installs
     // once every CPU has recorded. Held here, interrupts off, until then: no CPU

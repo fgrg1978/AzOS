@@ -58,9 +58,10 @@ pub(crate) fn commit_boot_cpu_facts() {
 /// boot CPU parks here, before its first lock (whose CAS may be one of those
 /// facts): no value is the minimum across CPUs once code has run from it. Loads
 /// and stores only. The boot CPU says so (`report_refused_cpus`).
-fn refuse_if_it_differs(cpu: usize) {
+pub(crate) fn refuse_if_it_differs(cpu: usize) {
     use azos_arch::Mmu as _;
     if canary!("asym-cpu-refusal-off") {
+        azos_sched::smp::note_cpu_checked(cpu, false);
         return;
     }
     let (equal, have) = ARCH_ENTRY.cpu_commitments();
@@ -81,8 +82,10 @@ fn refuse_if_it_differs(cpu: usize) {
     if let (Some((fact, value)), Some(slot)) = (differs, REFUSED.get(cpu)) {
         slot[1].store(value, Ordering::Relaxed);
         slot[0].store(fact + 1, Ordering::Release);
+        azos_sched::smp::note_cpu_checked(cpu, true);
         loop { ARCH.wait_for_interrupt(); }
     }
+    azos_sched::smp::note_cpu_checked(cpu, false);
 }
 
 /// Boot CPU, once the others have had their time: the refused ones, on record.
