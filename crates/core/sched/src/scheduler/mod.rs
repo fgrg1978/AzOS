@@ -2152,10 +2152,23 @@ unsafe fn find_best_cpu_scan(prio: u32, exclude: usize, num_online: usize) -> [C
     loads
 }
 
+/// Runtime canary `asym-rt-place-flat`: placement ignores capacity.
+#[cfg(feature = "ktest")]
+static CANARY_RT_PLACE_FLAT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// See [`CANARY_RT_PLACE_FLAT`].
+#[cfg(feature = "ktest")]
+pub fn canary_rt_place_flat() {
+    CANARY_RT_PLACE_FLAT.store(true, Ordering::Relaxed);
+}
+
 /// The CPU placement picks from `loads` for a task of priority `prio`: a
 /// real-time-band task takes the biggest of equally loaded CPUs where they
 /// differ in capacity.
 fn pick_for(prio: u32, loads: &[CpuLoad]) -> usize {
+    #[cfg(feature = "ktest")]
+    if CANARY_RT_PLACE_FLAT.load(Ordering::Relaxed) {
+        return pick_cpu_by_load(loads);
+    }
     if topo::ASYM && is_rt_priority(prio) {
         crate::task::pick_cpu_for_rt(loads, topo::capacity)
     } else {
@@ -2334,6 +2347,12 @@ unsafe fn do_schedule(why: SwitchReason) {
     // The RT pick says the running task must yield even to a worse priority
     // (its band is exhausted, or its reservation is throttled).
     let mut rt_force = false;
+    // SCHED_ASYM_CPUS: the tick found the running task too big for this CPU. It
+    // goes, even when what is left to run here is only the idle task.
+    let misfit_to = fairq::misfit_take(cpu);
+    if misfit_to.is_some() {
+        rt_force = true;
+    }
     // SCHED_CORE: a sibling that reserved the core for another Domain (a band
     // task, or a fair one that waited) displaces what this hart runs: the pick
     // is its idle task.
@@ -2666,7 +2685,11 @@ unsafe fn do_schedule(why: SwitchReason) {
             // K-C26 discriminator 2: `set_state(Ready)` above already happened,
             // so a refusal here leaves this task Ready and in no queue — the
             // terminal signature. Counted, not ignored.
-            if !cpu_requeue_self(cpu, old_idx) { // enqueues at old.priority level
+            let sent = match misfit_to {
+                Some(to) => fairq::misfit_send(cpu, old_idx, to),
+                None => false,
+            };
+            if !sent && !cpu_requeue_self(cpu, old_idx) { // enqueues at old.priority level
                 SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
             }
         } else if old.state() == TaskState::Zombie {

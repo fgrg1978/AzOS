@@ -94,6 +94,21 @@ pub(crate) const NAMES: &[&str] = &[
     // gate ends the pass, as the only candidate (ktest
     // `save_gate_stuck_top_lets_lower_run`).
     "save-gate-no-redraw",
+    // The asym ktests (`boot/asym_ktests.rs`). Not breakage but the machine QEMU
+    // cannot build: the last CPU lacks one hwcap bit (seams.rs); on x86_64 the
+    // CPUs report core types, the first half efficiency (hybrid_energy.rs).
+    "asym-weak-last-cpu",
+    "x86-hybrid-synth",
+    // boot/seams.rs: the hwcap word stays the boot CPU's.
+    "asym-hwcap-boot-only",
+    // scheduler: nothing is marked misfit (`fairq::misfit_look`).
+    "asym-misfit-off",
+    // scheduler: real-time placement ignores capacity (`pick_for`).
+    "asym-rt-place-flat",
+    // sched/rt.rs: run-time admission ignores core classes (`reserve`).
+    "asym-admit-skip",
+    // boot/smp.rs: differing CPUs with SCHED_ASYM_CPUS off go unsaid.
+    "asym-n-silent",
     // drivers/sys/src/timebase.rs `record`: a CPU id from 16 up has no comparator
     // record (ktest `timer_record_on_the_last_cpu`; the row needs -smp 17).
     "timer-record-16",

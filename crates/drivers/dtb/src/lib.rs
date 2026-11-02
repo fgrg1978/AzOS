@@ -60,6 +60,68 @@ const MAX_DTB_SIZE: usize = 4 * 1024 * 1024;
 // Public types
 // ---------------------------------------------------------------
 
+/// Every ISA fact of [`DtbInfo`], its field and how a CPU node declares it.
+macro_rules! cpu_isa_facts {
+    ($m:ident) => {
+        $m! {
+            isa_sstc: |p, l| isa_prop_has_sstc(p, l),
+            isa_zicboz: |p, l| isa_prop_has_zicboz(p, l),
+            isa_zicbom: |p, l| isa_prop_has_token(p, l, b"zicbom"),
+            isa_zbb: |p, l| isa_prop_has_token(p, l, b"zbb"),
+            isa_zbc: |p, l| isa_prop_has_token(p, l, b"zbc"),
+            isa_zknh: |p, l| isa_prop_has_token(p, l, b"zknh"),
+            isa_v: |p, l| isa_prop_has_letter(p, l, b'v'),
+            isa_zba: |p, l| isa_prop_has_token(p, l, b"zba"),
+            isa_zbs: |p, l| isa_prop_has_token(p, l, b"zbs"),
+            isa_svpbmt: |p, l| isa_prop_has_token(p, l, b"svpbmt"),
+            isa_svnapot: |p, l| isa_prop_has_token(p, l, b"svnapot"),
+            isa_svadu: |p, l| isa_prop_has_token(p, l, b"svadu"),
+            isa_zawrs: |p, l| isa_prop_has_token(p, l, b"zawrs"),
+            isa_zacas: |p, l| isa_prop_has_token(p, l, b"zacas"),
+            isa_zihintpause: |p, l| isa_prop_has_token(p, l, b"zihintpause"),
+            isa_zkr: |p, l| isa_prop_has_token(p, l, b"zkr"),
+            isa_f: |p, l| isa_prop_has_letter(p, l, b'f'),
+            isa_d: |p, l| isa_prop_has_letter(p, l, b'd'),
+            isa_h: |p, l| isa_prop_has_letter(p, l, b'h'),
+            isa_ssqosid: |p, l| isa_prop_has_token(p, l, b"ssqosid"),
+            isa_sscofpmf: |p, l| isa_prop_has_token(p, l, b"sscofpmf"),
+        }
+    };
+}
+
+/// One bit per fact of [`cpu_isa_facts`], in its order.
+fn isa_bits(prop: &[u8], list: bool) -> u32 {
+    macro_rules! bits {
+        ($($field:ident: |$p:ident, $l:ident| $test:expr,)*) => {{
+            let (mut bits, mut n) = (0u32, 0u32);
+            $(
+                let ($p, $l) = (prop, list);
+                if $test {
+                    bits |= 1 << n;
+                }
+                n += 1;
+            )*
+            let _ = n;
+            bits
+        }};
+    }
+    cpu_isa_facts!(bits)
+}
+
+fn apply_isa(info: &mut DtbInfo, bits: u32) {
+    macro_rules! apply {
+        ($($field:ident: |$p:ident, $l:ident| $test:expr,)*) => {{
+            let mut n = 0u32;
+            $(
+                info.$field = bits >> n & 1 != 0;
+                n += 1;
+            )*
+            let _ = n;
+        }};
+    }
+    cpu_isa_facts!(apply)
+}
+
 /// Information extracted from a parsed FDT blob.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -494,6 +556,11 @@ struct Walker {
     in_cpu_child: bool,
     /// True when that child is `cpu@0`, whose ISA properties set `isa_sstc`.
     in_cpu0: bool,
+    /// [`isa_bits`] of the ISA properties of the `cpu@` node being read.
+    cpu_isa: Option<u32>,
+    cpu0_isa: u32,
+    /// The ISA every enabled `cpu@` node but `cpu@0` declares.
+    other_cpus_isa: u32,
     /// True when we are inside a node whose name starts with
     /// "serial" or "uart" at any depth.
     in_uart: bool,
@@ -588,6 +655,18 @@ struct Walker {
 pub const MAX_CPU_REG: usize = azos_limits::NR_CPUS;
 
 impl Walker {
+    /// The `cpu@` node ends. A task may run on any CPU that runs at all, so the
+    /// ISA reported is what they all declare.
+    fn commit_cpu_isa(&mut self) {
+        if let Some(isa) = self.cpu_isa.take() {
+            if self.in_cpu0 {
+                self.cpu0_isa = isa;
+            } else if !self.cpu_disabled {
+                self.other_cpus_isa &= isa;
+            }
+        }
+    }
+
     /// Read the next big-endian u32 token from the structure block and
     /// advance the cursor by 4.
     ///
@@ -789,6 +868,7 @@ impl Walker {
             self.in_cpus = false;
         }
         if self.depth == 3 {
+            self.commit_cpu_isa();
             if self.in_cpu_child && self.cpu_disabled {
                 // Not a CPU of this boot: out of the count and the `reg` list.
                 self.info.num_cpus -= 1;
@@ -946,43 +1026,20 @@ impl Walker {
             return true;
         }
 
-        // --- ISA extensions of cpu@0 (Sstc, Zicboz) ---
+        // --- ISA extensions (Sstc, Zicboz) and block sizes of the CPUs ---
         // The node's own properties only (depth 3), not those of a child such
         // as its `interrupt-controller`.
-        if self.depth == 3 && self.in_cpu_child && self.in_cpu0 {
+        if self.depth == 3 && self.in_cpu_child {
             let isa = self.prop_name_eq(nameoff, b"riscv,isa");
             let list = !isa && self.prop_name_eq(nameoff, b"riscv,isa-extensions");
             if isa || list {
                 // In the blob by construction: `data_end <= totalsize` above.
                 let prop = core::slice::from_raw_parts(self.base.add(data_off), prop_len);
-                if isa_prop_has_sstc(prop, list) {
-                    self.info.isa_sstc = true;
-                }
-                if isa_prop_has_zicboz(prop, list) {
-                    self.info.isa_zicboz = true;
-                }
-                self.info.isa_zicbom |= isa_prop_has_token(prop, list, b"zicbom");
-                self.info.isa_zbb |= isa_prop_has_token(prop, list, b"zbb");
-                self.info.isa_zbc |= isa_prop_has_token(prop, list, b"zbc");
-                self.info.isa_zknh |= isa_prop_has_token(prop, list, b"zknh");
-                self.info.isa_v |= isa_prop_has_letter(prop, list, b'v');
-                self.info.isa_zba |= isa_prop_has_token(prop, list, b"zba");
-                self.info.isa_zbs |= isa_prop_has_token(prop, list, b"zbs");
-                self.info.isa_svpbmt |= isa_prop_has_token(prop, list, b"svpbmt");
-                self.info.isa_svnapot |= isa_prop_has_token(prop, list, b"svnapot");
-                self.info.isa_svadu |= isa_prop_has_token(prop, list, b"svadu");
-                self.info.isa_zawrs |= isa_prop_has_token(prop, list, b"zawrs");
-                self.info.isa_zacas |= isa_prop_has_token(prop, list, b"zacas");
-                self.info.isa_zihintpause |= isa_prop_has_token(prop, list, b"zihintpause");
-                self.info.isa_zkr |= isa_prop_has_token(prop, list, b"zkr");
-                self.info.isa_f |= isa_prop_has_letter(prop, list, b'f');
-                self.info.isa_d |= isa_prop_has_letter(prop, list, b'd');
-                self.info.isa_h |= isa_prop_has_letter(prop, list, b'h');
-                self.info.isa_ssqosid |= isa_prop_has_token(prop, list, b"ssqosid");
-                self.info.isa_sscofpmf |= isa_prop_has_token(prop, list, b"sscofpmf");
+                self.cpu_isa = Some(self.cpu_isa.unwrap_or(0) | isa_bits(prop, list));
                 return true;
             }
-
+        }
+        if self.depth == 3 && self.in_cpu_child && self.in_cpu0 {
             // `riscv,cboz-block-size`: one u32 cell, the block size in bytes
             // `cbo.zero` operates on (Linux device-tree binding, mirrored by
             // QEMU's `hw/riscv/virt.c` when `-cpu ...,zicboz=true`). A
@@ -1613,6 +1670,9 @@ pub unsafe fn dtb_pci_host(ptr: *const u8) -> Option<PciHost> {
         in_cpus: false,
         in_cpu_child: false,
         in_cpu0: false,
+        cpu_isa: None,
+        cpu0_isa: 0,
+        other_cpus_isa: !0,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,
@@ -2201,6 +2261,9 @@ pub unsafe fn dtb_parse(ptr: *const u8) -> Option<DtbInfo> {
         in_cpus: false,
         in_cpu_child: false,
         in_cpu0: false,
+        cpu_isa: None,
+        cpu0_isa: 0,
+        other_cpus_isa: !0,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,
@@ -2228,6 +2291,10 @@ pub unsafe fn dtb_parse(ptr: *const u8) -> Option<DtbInfo> {
     };
 
     walker.walk();
+    // A walk that stopped inside a `cpu@` node still commits what it read.
+    walker.commit_cpu_isa();
+    let isa = walker.cpu0_isa & walker.other_cpus_isa;
+    apply_isa(&mut walker.info, isa);
     Some(walker.info)
 }
 
@@ -2295,6 +2362,9 @@ pub unsafe fn dtb_cpu_regs(ptr: *const u8, out: &mut [u64]) -> Option<usize> {
         in_cpus: false,
         in_cpu_child: false,
         in_cpu0: false,
+        cpu_isa: None,
+        cpu0_isa: 0,
+        other_cpus_isa: !0,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,
@@ -2379,6 +2449,9 @@ pub unsafe fn dtb_pl011_irq(ptr: *const u8) -> Option<Pl011Irq> {
         in_cpus: false,
         in_cpu_child: false,
         in_cpu0: false,
+        cpu_isa: None,
+        cpu0_isa: 0,
+        other_cpus_isa: !0,
         in_uart: false,
         in_intc: false,
         aia_kind: 0,

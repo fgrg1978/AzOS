@@ -322,6 +322,18 @@ pub(crate) fn install_sched_hooks() {
     if canary!("save-gate-no-redraw") {
         azos_sched::scheduler::canary_gate_no_redraw();
     }
+    #[cfg(feature = "ktest")]
+    {
+        if canary!("asym-misfit-off") {
+            azos_sched::scheduler::fairq::canary_misfit_off();
+        }
+        if canary!("asym-rt-place-flat") {
+            azos_sched::scheduler::canary_rt_place_flat();
+        }
+        if canary!("asym-admit-skip") {
+            azos_sched::rt::canary_class_skip();
+        }
+    }
     if canary!("rcu-stop-holds-gp") {
         azos_sync::qsbr::canary_stop_holds_gp();
     }

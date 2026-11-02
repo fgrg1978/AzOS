@@ -220,6 +220,24 @@ pub fn vdso_set_hwcap(hwcap: u64) {
     data.hwcap.store(hwcap, Ordering::Release);
 }
 
+/// Drop from the published `hwcap` what `mine` does not have. The new word if
+/// that changed it.
+pub fn vdso_narrow_hwcap(mine: u64) -> Option<u64> {
+    let phys = VDSO_PHYS.load(Ordering::Relaxed) as usize;
+    if phys == 0 { return None; }
+    let data = unsafe { &*(crate::addr::phys_to_virt(phys) as *const VdsoData) };
+    let was = data.hwcap.fetch_and(mine, Ordering::AcqRel);
+    (was & !mine != 0).then_some(was & mine)
+}
+
+/// The published `hwcap` word, 0 before [`vdso_init`].
+pub fn vdso_hwcap() -> u64 {
+    let phys = VDSO_PHYS.load(Ordering::Relaxed) as usize;
+    if phys == 0 { return 0; }
+    let data = unsafe { &*(crate::addr::phys_to_virt(phys) as *const VdsoData) };
+    data.hwcap.load(Ordering::Acquire)
+}
+
 /// Publish the counter scale (`VdsoData::counter_*`). Called once during
 /// boot, after [`vdso_init`] and before the first user task.
 pub fn vdso_set_counter_scale(counter_base: u64, ticks_base: u64, mult: u64) {

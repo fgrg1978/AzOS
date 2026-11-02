@@ -90,6 +90,28 @@ pub fn improves(src: &Load, dst: &Load, w: u32, hop: u32) -> bool {
     dst.scaled(w.saturating_mul(1 + hop)) < src.scaled(0)
 }
 
+/// Where a task running alone on `me` too small for it should go: of the idle
+/// CPUs in `eligible` bigger than `me`, the biggest, the first of equals. Every
+/// other CPU is read once, so the cost is bounded by the CPU count.
+pub fn misfit_target<R: Rq>(rq: &mut R, me: usize, eligible: Mask) -> Option<usize> {
+    if eligible >> me & 1 == 0 {
+        return None;
+    }
+    let mut best = rq.load(me).capacity;
+    let mut to = None;
+    let mut rest = eligible & !(1 << me);
+    while rest != 0 {
+        let c = rest.trailing_zeros() as usize;
+        rest &= rest - 1;
+        let l = rq.load(c);
+        if l.weight == 0 && l.capacity > best {
+            best = l.capacity;
+            to = Some(c);
+        }
+    }
+    to
+}
+
 /// How much one call may do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Params {

@@ -12,11 +12,16 @@ const _: () = assert!(MAX_RECORDED == MAX_MODEL_CPUS);
 
 /// Record the boot CPU's own core type; does it report one (a hybrid part)?
 pub(crate) fn boot_cpu_reports_a_core_type() -> bool {
-    record_this_cpu(0) != CoreKind::Uniform
+    record_this_cpu(0) != CoreKind::Uniform || canary!("x86-hybrid-synth")
 }
 
 /// The class CPU `cpu` recorded when it came up; `None` if it recorded none.
 pub(crate) fn recorded_class(cpu: usize) -> Option<CoreClass> {
+    // QEMU has one CPU type per machine: the first half are the small cores.
+    if canary!("x86-hybrid-synth") {
+        let small = cpu < azos_percpu::nr_cpu_ids() / 2;
+        return recorded(cpu).map(|_| if small { CoreClass::Efficiency } else { CoreClass::Performance });
+    }
     recorded(cpu).map(|k| match k {
         CoreKind::Uniform => CoreClass::Uniform,
         CoreKind::Performance => CoreClass::Performance,

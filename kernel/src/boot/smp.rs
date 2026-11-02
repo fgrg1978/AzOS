@@ -62,6 +62,7 @@ pub extern "C" fn secondary_main(hart_id: usize) -> ! {
                   hart_id, azos_percpu::nr_cpu_ids());
         loop { ARCH.wait_for_interrupt(); }
     }
+    super::narrow_hwcap_to_this_cpu(hart_id);
     secondary_hw_init(hart_id);
 
     ARCH.enable_all();
@@ -147,7 +148,7 @@ use crate::entry::x86_64::smp::firmware_labels;
 pub(crate) fn report_core_classes(cpus: usize, classes: u64) {
     if topo::ASYM {
         kprintln!("[TOPO] {} core classes: the biggest is class 0", classes);
-    } else {
+    } else if !canary!("asym-n-silent") {
         azos_drv_sys::kwarn!("[TOPO] {} core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal", classes);
         azos_decision::record(azos_decision::Rule::AsymCpus, azos_decision::Verdict::Place, cpus as u32, [classes, 0, 0]);
     }

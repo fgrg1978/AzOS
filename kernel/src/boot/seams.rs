@@ -75,11 +75,42 @@ pub(crate) fn install_vdso(timebase_hz: u64, counter_scale: Option<(u64, u64, u6
     }
 }
 
-/// riscv64: the vDSO `hwcap` bits cpu@0's device-tree ISA declares
+/// riscv64: the vDSO `hwcap` bits every CPU's device-tree ISA declares
 /// (`boot_hooks` stores them right after the DTB walk, before
 /// [`install_vdso`]). aarch64 reads its ID registers instead.
 #[cfg(target_arch = "riscv64")]
 pub(crate) static DTB_HWCAP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// A CPU coming up, before it counts as online: the `hwcap` word keeps only what
+/// this CPU has too, since a task may migrate here, and the kernel's SHA-256
+/// follows it. No task runs on this CPU yet and a hash already running stays on
+/// a CPU that has the instructions.
+pub(crate) fn narrow_hwcap_to_this_cpu(cpu: usize) {
+    let mine = detect_hwcap();
+    #[cfg(not(target_arch = "riscv64"))]
+    let mine = if cpu + 1 == azos_percpu::nr_cpu_ids() && canary!("asym-weak-last-cpu") {
+        mine & !weak_cpu_lacks()
+    } else {
+        mine
+    };
+    if canary!("asym-hwcap-boot-only") {
+        return;
+    }
+    let Some(shared) = azos_mm::vdso::vdso_narrow_hwcap(mine) else { return };
+    azos_drv_sys::kwarn!("[VDSO] CPU {} lacks hwcap bits the others have: the shared word is now {:#x}", cpu, shared);
+    select_sha256(shared);
+}
+
+/// Runtime canary `asym-weak-last-cpu`: the bit the last CPU claims to lack,
+/// because QEMU has one CPU type per machine: the one the kernel's own SHA-256
+/// reads on aarch64.
+#[cfg(not(target_arch = "riscv64"))]
+fn weak_cpu_lacks() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    return azos_abi::vdso::HWCAP_A64_SHA2;
+    #[cfg(target_arch = "x86_64")]
+    return azos_abi::vdso::HWCAP_X86_POPCNT;
+}
 
 /// The vDSO `hwcap` word (wave 13; the AT_HWCAP analogue): what this CPU
 /// implements, from the ID registers (aarch64), CPUID (x86_64) or the
@@ -229,7 +260,8 @@ fn pmu_hwcap() -> u64 {
     h
 }
 
-/// riscv64 boot: record cpu@0's device-tree ISA for [`detect_hwcap`].
+/// riscv64 boot: record the device-tree ISA every CPU declares for
+/// [`detect_hwcap`].
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn note_dtb_isa(zbb: bool, zbc: bool, zknh: bool, v: bool) {
     use azos_abi::vdso::*;
@@ -245,8 +277,8 @@ pub(crate) fn note_dtb_isa(zbb: bool, zbc: bool, zknh: bool, v: bool) {
 /// The kernel's SHA-256 (module verify, image digests) on the CPU's SHA-2
 /// instructions when the hwcap word says it has them (wave 13): aarch64
 /// FEAT_SHA256, riscv64 Zknh, else riscv64 Zbb rotates, else generic. Each
-/// path is kept only after its self-test (`azos_crypto::sha256`). Runs
-/// once, at boot, before anything else hashes.
+/// path is kept only after its self-test (`azos_crypto::sha256`). Runs at
+/// boot, before anything else hashes, and again if a CPU narrows the word.
 fn select_sha256(h: u64) {
     #[cfg(target_arch = "aarch64")]
     let name = if h & azos_abi::vdso::HWCAP_A64_SHA2 != 0
@@ -254,6 +286,7 @@ fn select_sha256(h: u64) {
     {
         "armv8-ce"
     } else {
+        azos_crypto::sha256::select_generic();
         "generic"
     };
     #[cfg(target_arch = "riscv64")]

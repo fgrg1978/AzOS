@@ -435,8 +435,12 @@ impl Refusal {
 /// reservation names the CPUs it may run on (`explicit`: the request or the
 /// task's pin did, not the default of every CPU) and they are of one class.
 pub fn single_class(explicit: bool, mask: u32, class_of: impl Fn(usize) -> u8) -> Result<(), Refusal> {
-    if !explicit || mask == 0 {
+    if !explicit {
         return Err(Refusal::CoreClass);
+    }
+    // No online CPU named: not a question of class, admission finds no room.
+    if mask == 0 {
+        return Ok(());
     }
     let first = class_of(mask.trailing_zeros() as usize);
     if (0..32).any(|c| mask >> c & 1 != 0 && class_of(c) != first) {

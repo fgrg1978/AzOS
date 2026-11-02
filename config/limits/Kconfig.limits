@@ -1988,12 +1988,12 @@ config MAX_MMIO_REGIONS
 config CANARY_RUNTIME_MAX
     int "Runtime gate canaries: most names the armed set holds"
     range 64 256
-    default 128
+    default 192
     help
       The size of the armed set of the runtime gate canaries
       (CANARY_RUNTIME): kernel/src/canary_rt.rs NAMES may list at most
       this many names (a compile error past it), one bit each. Costs
-      ceil(this / 64) * 8 bytes of .bss (16 at 128, 32 at 256) and nothing
+      ceil(this / 64) * 8 bytes of .bss (24 at 192, 32 at 256) and nothing
       at a `canary!` site, which stays one load and one bit test whatever
       the size. Raise it when NAMES reaches it. The same on every ISA and
       profile: the canaries exist only in development builds. Unused

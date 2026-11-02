@@ -1033,6 +1033,26 @@ fn booked(r: &Reservation, density: u32) -> rt_core::Booked {
     }
 }
 
+/// Runtime canary `asym-admit-skip`: run-time admission ignores core classes.
+#[cfg(feature = "ktest")]
+static CANARY_CLASS_SKIP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// See [`CANARY_CLASS_SKIP`].
+#[cfg(feature = "ktest")]
+pub fn canary_class_skip() {
+    CANARY_CLASS_SKIP.store(true, Ordering::Relaxed);
+}
+#[inline(always)]
+fn canary_class_skipped() -> bool {
+    #[cfg(feature = "ktest")]
+    {
+        CANARY_CLASS_SKIP.load(Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "ktest"))]
+    {
+        false
+    }
+}
+
 /// Run-time admission: give task `idx` the reservation `r`, on the first hart
 /// of its mask with room, and pin it there. Refusals are loud: a
 /// `[SCHED-RT] admission REFUSED` line names the task, the reason and the
@@ -1088,7 +1108,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
             mask &= 1u32.checked_shl(me as u32).unwrap_or(0);
         }
         asked_mask = mask;
-        if crate::topo::ASYM && crate::topo::differs() {
+        if crate::topo::ASYM && crate::topo::differs() && !canary_class_skipped() {
             rt_core::single_class(explicit, span, crate::topo::class)?;
         }
         let mut load = ADMIT.lock_irqsave();
@@ -1186,7 +1206,7 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
 
 /// Drop task `idx`'s reservation, if it has one: out of its hart's set and
 /// ledger. Called when the slot is freed (exit) and when it is reused.
-pub(super) fn release(idx: usize) {
+pub fn release(idx: usize) {
     if idx < MAX_TASKS {
         EXEMPT[idx].store(false, Ordering::Relaxed);
     }

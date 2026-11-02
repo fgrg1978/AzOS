@@ -332,6 +332,9 @@ pub(super) unsafe fn tick(cpu: usize, cur: usize) -> bool {
     if bm & rt::LEVELS_BAND != 0 {
         return true;
     }
+    if unsafe { misfit_tick(cpu, cur) } {
+        return true;
+    }
     if bm & rt::LEVELS_NONBAND == 0 {
         return false;
     }
@@ -357,6 +360,9 @@ pub(super) unsafe fn begin(cpu: usize, voluntary: bool) {
         return;
     }
     unsafe { update_curr(idx, p) };
+    if voluntary {
+        MISFIT_RUN[cpu].store(0, Relaxed);
+    }
     if voluntary && st == TaskState::Running {
         let mut e = ent(idx, p);
         eevdf::yield_now(&mut e);
@@ -731,6 +737,105 @@ unsafe fn balance_pass(cpu: usize, push: bool) -> Moved {
         BUSY.fetch_add(r.busy, Relaxed);
     }
     r
+}
+
+/// SCHED_ASYM_CPUS: the running task and the ticks it has held each CPU without
+/// a voluntary switch (`idx + 1 << 32 | ticks`; written by that CPU only).
+static MISFIT_RUN: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// The CPU + 1 this CPU's next switch sends its running task to.
+static MISFIT_TO: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+static MISFIT_MOVES: AtomicU32 = AtomicU32::new(0);
+
+/// Runtime canary `asym-misfit-off`: nothing is ever marked misfit.
+#[cfg(feature = "ktest")]
+static CANARY_MISFIT_OFF: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// See [`CANARY_MISFIT_OFF`].
+#[cfg(feature = "ktest")]
+pub fn canary_misfit_off() {
+    CANARY_MISFIT_OFF.store(true, Relaxed);
+}
+
+/// Running tasks moved off a CPU too small for them.
+pub fn misfit_moves() -> u32 {
+    MISFIT_MOVES.load(Relaxed)
+}
+
+/// The tick of `cpu` with fair task `cur` running: true when `cur` has held the
+/// CPU for `SCHED_MISFIT_TICKS` ticks and a bigger CPU is idle, so this tick
+/// must switch it away. A queued task is the balancer's; a running one cannot
+/// be taken from another CPU, as only the switch here frees its context. The
+/// CPUs are read once per window, however long the task runs.
+#[inline]
+unsafe fn misfit_tick(cpu: usize, cur: usize) -> bool {
+    if !(crate::topo::ASYM && azos_limits::SCHED_BALANCE) {
+        return false;
+    }
+    let who = (cur as u64 + 1) << 32;
+    let run = MISFIT_RUN[cpu].load(Relaxed);
+    let ticks = if run & !0xffff_ffff == who { run as u32 + 1 } else { 1 };
+    if ticks < azos_limits::SCHED_MISFIT_TICKS as u32 {
+        MISFIT_RUN[cpu].store(who | ticks as u64, Relaxed);
+        return false;
+    }
+    MISFIT_RUN[cpu].store(who, Relaxed);
+    unsafe { misfit_look(cpu, cur) }
+}
+
+#[inline(never)]
+unsafe fn misfit_look(cpu: usize, cur: usize) -> bool {
+    #[cfg(feature = "ktest")]
+    if CANARY_MISFIT_OFF.load(Relaxed) {
+        return false;
+    }
+    let online = crate::smp::NUM_ONLINE_CPUS.load(Relaxed).min(ncpu()).min(MAX_CPUS);
+    if unsafe { task_ref(cur) }.affinity() >= 0 || rt::reserved_here(cpu, cur) {
+        return false;
+    }
+    let isolated = ISOLATED.load(Relaxed);
+    let mut eligible: Mask = 0;
+    for c in 0..online {
+        if isolated >> c & 1 == 0 && !unsafe { rt_cpu(c) } {
+            eligible |= 1u64 << c;
+        }
+    }
+    let Some(to) = balance::misfit_target(&mut Queues { me: cpu }, cpu, eligible) else {
+        return false;
+    };
+    MISFIT_TO[cpu].store(to as u32 + 1, Relaxed);
+    true
+}
+
+/// The top of `do_schedule` on `cpu`: the CPU the running task must go to, if
+/// the tick decided so. Read once; whatever the switch does, the decision ends.
+#[inline]
+pub(super) fn misfit_take(cpu: usize) -> Option<usize> {
+    if !crate::topo::ASYM {
+        return None;
+    }
+    MISFIT_TO[cpu].swap(0, Relaxed).checked_sub(1).map(|to| to as usize)
+}
+
+/// `do_schedule` on `cpu` sends `idx`, the task it is leaving, to `to` instead
+/// of its own queue. `idx` is `Ready` with `context_saving` set, so `to` waits
+/// at the dispatch gate for the save to finish and writes `context.tp` itself.
+/// True when it is queued; false sends it back to the caller's own queue, for a
+/// pin or a priority boost that came after the tick.
+pub(super) unsafe fn misfit_send(cpu: usize, idx: usize, to: usize) -> bool {
+    let t = unsafe { task_mut(idx) };
+    if t.affinity() >= 0 || !is_fair(prio_of(idx)) {
+        return false;
+    }
+    unsafe { sleep(cpu, idx) };
+    t.context.tp = to as CtxReg;
+    unsafe { hist_reaccount(idx) };
+    t.ready_site.store(crate::task::ready_site::REBALANCE | ((to as u8) << 4), Relaxed);
+    if !unsafe { enqueue_remote_aware(to, idx) } {
+        SCHED_ENQ_REFUSED.fetch_add(1, Relaxed);
+    }
+    MOVED_IN[to].fetch_add(1, Relaxed);
+    MOVED_OUT[cpu].fetch_add(1, Relaxed);
+    MISFIT_MOVES.fetch_add(1, Relaxed);
+    true
 }
 
 /// The tick of `cpu`, with fair tasks queued behind its running one: once per
