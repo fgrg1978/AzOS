@@ -1222,9 +1222,6 @@ a64clk-cntvoff-canary = ["qemu", "azos_arch/cntvoff-canary"]
 # IA32_TSC_AUX not written, `cpu_init`). ktest
 # `user_visible_state_is_set_on_every_cpu` must go red, naming each register.
 el0-state-canary = ["azos_arch/el0-state-canary"]
-# Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never
-# armed; ipctest's phase P must then fail its timer check (gate rows
-# `portwait: ring-3 multi-source wait`, riscv64 and aarch64).
 # x86_64 machine check (`azos_arch::ext::mce`, `entry/x86_64/trap.rs`). The
 # smoke raises #MC with `int $18` at the end of the boot self-tests (QEMU
 # raises none): the handler must stop the actuators, record, name the check on
@@ -1236,6 +1233,9 @@ mce-smoke = []
 mce-cr4-canary = []
 mce-record-canary = []
 mce-stop-canary = []
+# Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never
+# armed; ipctest's phase P must then fail its timer check (gate rows
+# `portwait: ring-3 multi-source wait`, riscv64 and aarch64).
 portwait-timer-canary = ["qemu", "azos_syscall/portwait-timer-canary"]
 # Wave 11 PIFAST: a priority-13 kernel client calls a
 # priority-24 kernel server through fast IPC (582) while a priority-18 hog

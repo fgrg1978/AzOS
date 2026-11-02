@@ -15265,6 +15265,8 @@ PY
     par "ktest QoS fire canary (arm)" ktest_row "ktest QoS fire canary (arm)" arm ",qos-fire-canary" "qos_timer_coalescing_path"
     par "ktest QoS armed-at canary (rv)" ktest_row "ktest QoS armed-at canary (rv)" rv ",qos-armed-at-canary" "qos_timer_coalescing_path"
     par "ktest QoS armed-at canary (arm)" ktest_row "ktest QoS armed-at canary (arm)" arm ",qos-armed-at-canary" "qos_timer_coalescing_path"
+    par "ktest kheap guard hold canary (rv)" ktest_row "ktest kheap guard hold canary (rv)" rv ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
+    par "ktest kheap guard hold canary (arm)" ktest_row "ktest kheap guard hold canary (arm)" arm ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest tlb local-only canary (rv)" ktest_row "ktest tlb local-only canary (rv)" rv ",tlb-local-only" "tlb_shootdown_cross_cpu"
     par "ktest tlb local-only canary (arm)" ktest_row "ktest tlb local-only canary (arm)" arm ",tlb-local-only" "tlb_shootdown_cross_cpu"
     # The accessors of the running task read the hart id and its slot in one
@@ -15277,8 +15279,6 @@ PY
     par "ktest IMU frozen-stamp canary (arm)" ktest_row "ktest IMU frozen-stamp canary (arm)" arm ",sensor-ts-freeze" "sensors_imu_stamped_at_acquisition safety_geofence_breach_latches_estop"
     # `classes::current` reads the hart id and its slot with interrupts on
     # (the hart-id-then-table audit, front percpu-hazard-b): the one test red.
-    par "ktest kheap guard hold canary (rv)" ktest_row "ktest kheap guard hold canary (rv)" rv ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
-    par "ktest kheap guard hold canary (arm)" ktest_row "ktest kheap guard hold canary (arm)" arm ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest percpu hazard canary (rv)" ktest_row "ktest percpu hazard canary (rv)" rv ",percpu-hazard-canary" "percpu_hazard_reads_are_masked"
     par "ktest percpu hazard canary (arm)" ktest_row "ktest percpu hazard canary (arm)" arm ",percpu-hazard-canary" "percpu_hazard_reads_are_masked"
     # Runtime canaries: the pass row's kernel (`qemu,ktest`, a kernel-cache
@@ -15876,23 +15876,6 @@ PY
         "AzOS shell|KERNEL PANIC"
     par "x86_64: baseline canary (qemu64)" x86_boot_row "x86_64: baseline canary (qemu64)" 1 qemu64 \
         "[X86] CPU below the configured baseline" "below the configured baseline"
-    # `boot: no self-tests by default` on x86_64 (see the riscv64/aarch64 rows'
-    # comment, beside the NR_CPUS rows): the plain kernel, booted to the shell.
-    x86_selftests_off_row() {
-        local label="boot: no self-tests by default (x86)" why
-        printf "  %-26s" "${label}..."
-        mkdir -p "$CI_LOG_DIR"
-        local log="$CI_LOG_DIR/x86-selftests-off.log" kimg="$CI_LOG_DIR/kernel-x86-selftests-off"
-        x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
-        par_ready
-        x86_qemu "$kimg" "$log" 60 "AzOS shell|KERNEL PANIC" -smp 2 -cpu max || { rm -f "$kimg" "$kimg.features"; return; }
-        why="$(selftests_off_check "$log" "$kimg")"
-        rm -f "$kimg" "$kimg.features"
-        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
-        bad; printf '%s\n' "$why" | sed 's/^/      /'; echo "      log kept: $log"
-    }
-    par "boot: no self-tests by default (x86)" x86_selftests_off_row
-    # CPU microcode at boot (Kconfig X86_UCODE_LOAD, arch/x86_64/src/
     # A machine check (#MC): QEMU raises none, so the smoke raises the vector
     # with `int $18`. The handler stops the actuators before it records, names
     # the check, and halts. Canaries: CR4.MCE left clear (the smoke reads it),
@@ -15910,6 +15893,23 @@ PY
         "count=0 motor_stop=true; halting"
     par "x86_64: machine check, stop canary" x86_mce_row "x86_64: machine check, stop canary" ",mce-stop-canary" \
         "count=1 motor_stop=false; halting"
+    # `boot: no self-tests by default` on x86_64 (see the riscv64/aarch64 rows'
+    # comment, beside the NR_CPUS rows): the plain kernel, booted to the shell.
+    x86_selftests_off_row() {
+        local label="boot: no self-tests by default (x86)" why
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/x86-selftests-off.log" kimg="$CI_LOG_DIR/kernel-x86-selftests-off"
+        x86_kbuild "" "$kimg" || { bad; echo "      make x86_64 did not build"; return; }
+        par_ready
+        x86_qemu "$kimg" "$log" 60 "AzOS shell|KERNEL PANIC" -smp 2 -cpu max || { rm -f "$kimg" "$kimg.features"; return; }
+        why="$(selftests_off_check "$log" "$kimg")"
+        rm -f "$kimg" "$kimg.features"
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; printf '%s\n' "$why" | sed 's/^/      /'; echo "      log kept: $log"
+    }
+    par "boot: no self-tests by default (x86)" x86_selftests_off_row
+    # CPU microcode at boot (Kconfig X86_UCODE_LOAD, arch/x86_64/src/
     # cpu/ucode.rs, kernel/src/entry/x86_64/ext/ucode.rs): the signed image
     # (`make ucode`, mk/firmware.mk, every Intel and AMD file under AZOS_DL) as
     # the PVH boot module, one kernel embedding the TEST key the image is
@@ -16896,6 +16896,7 @@ PY
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
+    par "ktest kheap guard hold canary (x86)" x86_ktest_row "ktest kheap guard hold canary (x86)" ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
     par "ktest free_pages in flight canary (x86)" x86_ktest_row "ktest free_pages in flight canary (x86)" ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
@@ -16908,7 +16909,6 @@ PY
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""
     par "ktest 17 cpus canary (x86)" x86_ktest_17cpu_row "ktest 17 cpus canary (x86)" "" "timer_record_on_the_last_cpu" "canary=timer-record-16"
     # RAM past the 32-bit MMIO hole: microvm splits 5 GiB into 0..3 GiB and
-    par "ktest kheap guard hold canary (x86)" x86_ktest_row "ktest kheap guard hold canary (x86)" ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     # 4..6 GiB. The boot tables map the first BOOT_MAP_GIB GiB only, and
     # `vmm::init` writes its page-table pages into whatever frame the PMM hands
     # out; `pmm_floor` widens them over the rest. The canary leaves them narrow:
@@ -17139,6 +17139,8 @@ PY
     # FS/GS selectors ring 3 loaded stay).
     par "ktest sched tls canary (x86)" x86_ktest_row "ktest sched tls canary (x86)" ",fs-base-cache-canary" "fs_selector_load_keeps_the_next_task_s_fs_base fs_gs_selectors_do_not_follow_a_task"
     par "ktest el0 state canary (x86)" x86_ktest_row "ktest el0 state canary (x86)" ",el0-state-canary" "user_visible_state_is_set_on_every_cpu"
+    # CR4.MCE is part of the same per-CPU check; canary `mce-cr4-canary`.
+    par "ktest mce cr4 canary (x86)" x86_ktest_row "ktest mce cr4 canary (x86)" ",mce-cr4-canary" "user_visible_state_is_set_on_every_cpu"
     # The same boot carries K1's `ioring-fsync-inline` (an io_ring OP_FSYNC
     # completes in the submit): `ioring_fsync_completes_after_flush`.
     par "ktest fork FP runtime canary (x86)" x86_ktest_row "ktest fork FP runtime canary (x86)" "" \
@@ -17157,8 +17159,6 @@ PY
     par "ktest geofence stale read canary (x86)" x86_ktest_row "ktest geofence stale read canary (x86)" "" \
         "safety_geofence_breach_latches_estop" "canary=geofence-stale-read"
     # N1 (lockdep-lite): see `ktest lockdep canaries (rv)`.
-    # CR4.MCE is part of the same per-CPU check; canary `mce-cr4-canary`.
-    par "ktest mce cr4 canary (x86)" x86_ktest_row "ktest mce cr4 canary (x86)" ",mce-cr4-canary" "user_visible_state_is_set_on_every_cpu"
     par "ktest lockdep canaries (x86)" x86_ktest_row "ktest lockdep canaries (x86)" "" \
         "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES"
     # GR3: see `ktest exit status canary (rv)`; x86_64's clean status is 1.
