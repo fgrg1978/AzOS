@@ -14810,8 +14810,10 @@ PY
     # +1 save_gate_stuck_top_lets_lower_run (canary `save-gate-no-redraw`) -> 154, arm 158.
     # +1 kheap_guard_quarantine_never_holds_more_than_its_slots (canary
     # `kheap-guard-hold-canary`) -> 155, arm 159.
-    KTEST_N_RV=155
-    KTEST_N_ARM=159
+    # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked
+    # (canary `exit-irq-masked-canary`) -> 156, arm 160.
+    KTEST_N_RV=156
+    KTEST_N_ARM=160
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15265,6 +15267,8 @@ PY
     par "ktest QoS fire canary (arm)" ktest_row "ktest QoS fire canary (arm)" arm ",qos-fire-canary" "qos_timer_coalescing_path"
     par "ktest QoS armed-at canary (rv)" ktest_row "ktest QoS armed-at canary (rv)" rv ",qos-armed-at-canary" "qos_timer_coalescing_path"
     par "ktest QoS armed-at canary (arm)" ktest_row "ktest QoS armed-at canary (arm)" arm ",qos-armed-at-canary" "qos_timer_coalescing_path"
+    par "ktest masked exit canary (rv)" ktest_row "ktest masked exit canary (rv)" rv ",exit-irq-masked-canary" "a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked"
+    par "ktest masked exit canary (arm)" ktest_row "ktest masked exit canary (arm)" arm ",exit-irq-masked-canary" "a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked"
     par "ktest kheap guard hold canary (rv)" ktest_row "ktest kheap guard hold canary (rv)" rv ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest kheap guard hold canary (arm)" ktest_row "ktest kheap guard hold canary (arm)" arm ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest tlb local-only canary (rv)" ktest_row "ktest tlb local-only canary (rv)" rv ",tlb-local-only" "tlb_shootdown_cross_cpu"
@@ -15793,7 +15797,8 @@ PY
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
     # +1 kheap_guard_quarantine_never_holds_more_than_its_slots -> 164.
-    KTEST_N_X86=164
+    # +1 a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked -> 165.
+    KTEST_N_X86=165
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16896,6 +16901,7 @@ PY
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'
+    par "ktest masked exit canary (x86)" x86_ktest_row "ktest masked exit canary (x86)" ",exit-irq-masked-canary" "a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked"
     par "ktest kheap guard hold canary (x86)" x86_ktest_row "ktest kheap guard hold canary (x86)" ",kheap-guard-hold-canary" "kheap_guard_quarantine_never_holds_more_than_its_slots"
     par "ktest kheap irq token canary (x86)" x86_ktest_row "ktest kheap irq token canary (x86)" ",kheap-token-canary" "kheap_irq_token_follows_the_interrupt_state"
     par "ktest free_pages in flight canary (x86)" x86_ktest_row "ktest free_pages in flight canary (x86)" ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"

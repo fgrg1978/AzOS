@@ -1131,6 +1131,35 @@ azos_ktest::ktest! {
     }
 }
 
+// A fault, or a forced stop at a return to user mode, ends a task with the
+// trap's interrupt mask still on, and the exit hook takes sleeping locks. A
+// kernel task stands in for the trap: it masks interrupts and exits. Under
+// lockdep the hook's sleeping lock with interrupts off is a violation, which
+// fails the test; `task_exit_with_code` opens interrupts first. Canary
+// `exit-irq-masked-canary`: it does not.
+static MASKED_EXIT_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn masked_exit(_: usize) {
+    use azos_arch::Interrupts;
+    MASKED_EXIT_STARTED.store(true, Ordering::Release);
+    let _ = azos_arch::ARCH.disable_all();
+    azos_sched::task_exit_with_code(0)
+}
+
+azos_ktest::ktest_late! {
+    fn a_task_that_exits_with_interrupts_masked_runs_the_exit_hook_unmasked() {
+        if !azos_sync::lockdep::ON {
+            return Err("LOCKDEP is not on in this ktest kernel (Kconfig LOCKDEP_KTEST or LOCKDEP_Y)");
+        }
+        MASKED_EXIT_STARTED.store(false, Ordering::Release);
+        azos_sched::task_create_affinity("masked-exit", masked_exit, 0, azos_sched::DEFAULT_PRIORITY, 0);
+        wait("the masked-exit task did not start", || MASKED_EXIT_STARTED.load(Ordering::Acquire))?;
+        // Its exit, hook included, runs within these sleeps.
+        azos_syscall::sleep::sleep_ms(200);
+        Ok(())
+    }
+}
+
 azos_ktest::ktest_late! {
     fn lockdep_no_spinlock_across_block_io() {
         if !azos_sync::lockdep::ON {
