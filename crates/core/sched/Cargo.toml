@@ -47,6 +47,12 @@ eevdf-fifo-canary = []
 eevdf-tree-canary = []
 # The removal releases `queued` before unlinking the node: ktest `fair_unlink_keeps_the_claim`.
 eevdf-late-unlink-canary = []
+# `place` reads the priority again, ktest `fair_enqueue_reads_one_priority`.
+eevdf-place-reread-canary = []
+# The pick takes what the tree says: ktests `fair_take_*`.
+eevdf-take-unchecked-canary = []
+# The switch charges a requeued task: ktest `fair_tree_follows_the_lists`.
+eevdf-charge-queued-canary = []
 # The canaries of `irqoff_timer_storm`: a tick pass wakes every due sleeper; a
 # placement reads the whole queue.
 timer-wake-unbounded-canary = []

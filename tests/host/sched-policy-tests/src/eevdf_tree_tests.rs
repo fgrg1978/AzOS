@@ -390,8 +390,10 @@ fn a_pick_the_lists_refuse_is_dropped_and_never_repeated() {
         assert!(t.borrow_mut().insert(&st, i, &e, 0));
     }
     let picks = RefCell::new(Vec::new());
-    let run = |backed: &dyn Fn(usize) -> bool| {
+    let run = |tries: usize, exhausted: Choice, backed: &dyn Fn(usize) -> bool| {
         take(
+            tries,
+            exhausted,
             || t.borrow().pick(&st, None),
             |i| {
                 picks.borrow_mut().push(i);
@@ -403,18 +405,22 @@ fn a_pick_the_lists_refuse_is_dropped_and_never_repeated() {
         )
     };
     // The first two are stale: the third is taken in the same pass.
-    assert_eq!(run(&|i| i >= 2), Choice::Task(2));
+    assert_eq!(run(TAKE_TRIES, Choice::Cur, &|i| i >= 2), Choice::Task(2));
     assert_eq!(*picks.borrow(), vec![0, 1, 2]);
     assert_eq!(t.borrow().len(), 18);
-    // All stale: the masked window ends at the bound, the next pass continues.
+    // All stale, a running task to fall back on: the bound, then the next pass.
     picks.borrow_mut().clear();
-    assert_eq!(run(&|_| false), Choice::Cur);
-    assert_eq!(picks.borrow().len(), TAKE_TRIES as usize);
+    assert_eq!(run(TAKE_TRIES, Choice::Cur, &|_| false), Choice::Cur);
+    assert_eq!(picks.borrow().len(), TAKE_TRIES);
     let seen = picks.borrow().clone();
     picks.borrow_mut().clear();
-    assert_eq!(run(&|_| false), Choice::Cur);
+    assert_eq!(run(TAKE_TRIES, Choice::Cur, &|_| false), Choice::Cur);
     assert!(picks.borrow().iter().all(|i| !seen.contains(i)), "a dropped node came back");
     t.borrow().check(&st).unwrap();
+    // All stale, nothing running: every node is looked at and the answer is true.
+    let len = t.borrow().len();
+    assert_eq!(run(len + 1, Choice::Empty, &|_| false), Choice::Empty);
+    assert!(t.borrow().is_empty());
 }
 
 /// The most nodes an AVL tree of height `h` can need at least: the height bound

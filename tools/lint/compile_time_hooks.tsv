@@ -208,6 +208,9 @@ qos-armed-at-canary	hot	crates/core/sched/src/timer_sleepers.rs: every timed sle
 qos-fire-canary	hot	crates/core/sched/src/timer_sleepers.rs: every timed sleep
 qos-rt-slack-canary	hot	crates/core/sched/src/sc.rs: the dispatch-class decision
 eevdf-late-unlink-canary	hot	crates/core/sched/src/scheduler/mod.rs: the order of a removal from a ready list
+eevdf-place-reread-canary	hot	crates/core/sched/src/fairq.rs: the bucket an enqueue links its node under
+eevdf-take-unchecked-canary	hot	crates/core/sched/src/fairq.rs: the fair pick's checks against the lists
+eevdf-charge-queued-canary	hot	crates/core/sched/src/fairq.rs: where a requeued task stops being timed
 ramfb-va-canary	pending	
 rc-failsafe-canary	pending	
 rc-failsafe-smoke	pending	

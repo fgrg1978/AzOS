@@ -863,7 +863,7 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
         // level: the running fair task is a candidate, and when it is still
         // the best nothing is dispatched.
         if super::fairq::is_fair(l) {
-            match unsafe { super::fairq::take(cpu) } {
+            match unsafe { super::fairq::take(cpu, true) } {
                 super::fairq::Fair::Task(idx) => return Pick::Task { idx, force },
                 super::fairq::Fair::Keep => return Pick::Keep,
                 // Only reservations queued at these levels: past them.
@@ -1170,6 +1170,23 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
             Err(why)
         }
     }
+}
+
+/// Ktest: slot `idx` is in `cpu`'s set, or out of it, with no budget behind it:
+/// what `reserved_here` answers and nothing more. Whether that was done.
+#[cfg(feature = "ktest")]
+pub(super) fn ktest_mark_reserved(cpu: usize, idx: usize, on: bool) -> bool {
+    let (from, to) = if on { (usize::MAX, idx) } else { (idx, usize::MAX) };
+    let Some(k) = set_of(cpu).iter().position(|s| s.load(Ordering::Relaxed) == from) else {
+        return false;
+    };
+    set_of(cpu)[k].store(to, Ordering::Release);
+    if on {
+        FLAGS[cpu].fetch_or(F_RESV, Ordering::Release);
+    } else if set_of(cpu).iter().all(|s| s.load(Ordering::Relaxed) == usize::MAX) {
+        FLAGS[cpu].fetch_and(!F_RESV, Ordering::Release);
+    }
+    true
 }
 
 /// Drop task `idx`'s reservation, if it has one: out of its hart's set and

@@ -791,7 +791,6 @@ pub fn try_task_create_init(
                 // lock three times and looks at every lazy edge (4.6 us of
                 // the masked window above, riscv64 `-icount`).
                 classes::on_slot_graph_reset(idx);
-                fairq::drop_leaked_node(idx);
                 if !cpu_enqueue_locked(target_cpu, idx) {
                     {
                         let _pool = PoolGuard::acquire();
@@ -2132,7 +2131,7 @@ pub fn rebalance_from_offline_cpus(online: usize, _total: usize) -> usize {
     unsafe {
         for dead_cpu in online..total {
             loop {
-                let idx = match cpu_dequeue_locked(dead_cpu) {
+                let idx = match cpu_drain_locked(dead_cpu) {
                     Some(idx) => idx,
                     None => break, // This dead hart's queue is fully drained.
                 };
@@ -2326,7 +2325,7 @@ unsafe fn migrate_queue_off(cpu: usize, move_pinned: bool) -> Result<usize, usiz
     let mut n_idle = 0;
     let mut pinned_stop = false;
     unsafe {
-        while let Some(idx) = cpu_dequeue_locked(cpu) {
+        while let Some(idx) = cpu_drain_locked(cpu) {
             let task = task_mut(idx);
             let is_idle = task.priority.load(Ordering::Relaxed) == crate::task::IDLE_PRIORITY;
             let pinned = task.affinity() >= 0 && !move_pinned;

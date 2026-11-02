@@ -1157,7 +1157,9 @@ unsafe fn cpu_enqueue_as(cpu: usize, idx: usize, requeue: bool) -> bool {
             // through the atomics is what removes it.
             // `count` was loaded above under the same lock and is passed on,
             // so the list does not load it twice; plain stores, no AMO.
-            if !fairq::place(cpu, idx, requeue) {
+            #[cfg(feature = "ktest")]
+            ktest_enqueue_window(idx);
+            if !fairq::place(cpu, idx, requeue, prio) {
                 task.queued.store(false, Ordering::Release);
                 return false;
             }
@@ -1184,6 +1186,13 @@ fn enqueue_full_report(cpu: usize, prio: usize, count: usize, tid: u32) {
 }
 
 unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
+    cpu_dequeue_as(cpu, true)
+}
+
+/// [`cpu_dequeue`]; `with_running`: the running task competes, so `None` can
+/// mean it is the best. A drain passes false: `None` means the queue is empty.
+#[inline(always)]
+unsafe fn cpu_dequeue_as(cpu: usize, with_running: bool) -> Option<usize> {
     let bm = &PER_CPU[cpu].ready_bitmap;
     let bitmap = bm.load(Ordering::Relaxed);
     // The levels the list pop below may take (the fair ones are not, when the
@@ -1196,7 +1205,7 @@ unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
     // queue (`fairq.rs`), with the running task a candidate, so the pick is
     // not the head of that level's list.
     if bitmap & rt::LEVELS_BAND == 0 && bitmap & rt::LEVELS_NONBAND != 0 {
-        match fairq::take(cpu) {
+        match fairq::take(cpu, with_running) {
             fairq::Fair::Task(idx) => return Some(idx),
             // The running task is still the best: the caller keeps it.
             fairq::Fair::Keep => return None,
@@ -1359,6 +1368,12 @@ unsafe fn cpu_peek_highest_prio(cpu: usize) -> Option<u32> {
 unsafe fn cpu_dequeue_locked(cpu: usize) -> Option<usize> {
     let _g = CpuLockGuard::acquire(cpu);
     cpu_dequeue(cpu)
+}
+
+/// The next task to move off `cpu`'s queue, the running one not competing.
+unsafe fn cpu_drain_locked(cpu: usize) -> Option<usize> {
+    let _g = CpuLockGuard::acquire(cpu);
+    cpu_dequeue_as(cpu, false)
 }
 
 /// [`cpu_dequeue_locked`] for `do_schedule`, whose interrupts are masked.
@@ -3441,6 +3456,20 @@ unsafe fn ktest_late_waker_window(cpu: usize, idx: usize) {
     }
 }
 
+/// Ktest: slot + 1 and the priority that lands between an enqueue's read of
+/// `priority` and its link.
+#[cfg(feature = "ktest")]
+static KTEST_ENQUEUE_PRIO: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+
+#[cfg(feature = "ktest")]
+unsafe fn ktest_enqueue_window(idx: usize) {
+    if KTEST_ENQUEUE_PRIO[0].load(Ordering::Relaxed) == idx + 1 {
+        KTEST_ENQUEUE_PRIO[0].store(0, Ordering::Relaxed);
+        task_mut(idx).priority.store(KTEST_ENQUEUE_PRIO[1].load(Ordering::Relaxed) as u32, Ordering::Relaxed);
+        hist_reaccount(idx);
+    }
+}
+
 /// Ktest `fair_unlink_keeps_the_claim`: wake parked `tid`, pinned to this CPU
 /// (the caller masked interrupts, so nothing dispatches it), and remove it with
 /// a duplicate waker inside the window. Puts the task back either way.
@@ -3448,9 +3477,6 @@ unsafe fn ktest_late_waker_window(cpu: usize, idx: usize) {
 pub fn ktest_late_waker(tid: u32) -> Result<(), &'static str> {
     let idx = idx_for_tid(tid).ok_or("no such task")?;
     let cpu = current_cpu_id();
-    if ncpu() < 2 {
-        return Ok(());
-    }
     let refused = fairq::tree_stats().refused;
     wq_wake_by_tid(tid);
     KTEST_LATE_WAKER.store(idx + 1, Ordering::Relaxed);
@@ -3459,7 +3485,7 @@ pub fn ktest_late_waker(tid: u32) -> Result<(), &'static str> {
         cpu_remove(cpu, idx)
     };
     KTEST_LATE_WAKER.store(0, Ordering::Relaxed);
-    let trees = fairq::ktest_check(cpu).and(fairq::ktest_check((cpu + 1) % ncpu()));
+    let trees = fairq::ktest_lists(cpu).and(fairq::ktest_lists((cpu + 1) % ncpu()));
     let refused = fairq::tree_stats().refused != refused;
     unsafe {
         let _g = CpuLockGuard::acquire(cpu);
@@ -3473,6 +3499,127 @@ pub fn ktest_late_waker(tid: u32) -> Result<(), &'static str> {
         return Err("a late waker reached a node still linked on another CPU");
     }
     Ok(())
+}
+
+/// Ktest `fair_enqueue_reads_one_priority`: parked `tid`, a band priority, its
+/// wake reading it and a restore to the fair one before the wake links the task.
+/// A band list holds no node. Puts the task back either way.
+#[cfg(feature = "ktest")]
+pub fn ktest_restore_during_enqueue(tid: u32, band: u32) -> Result<(), &'static str> {
+    let idx = idx_for_tid(tid).ok_or("no such task")?;
+    let cpu = current_cpu_id();
+    unsafe {
+        let task = task_mut(idx);
+        let fair = task.priority.load(Ordering::Relaxed);
+        task.priority.store(band, Ordering::Relaxed);
+        hist_reaccount(idx);
+        KTEST_ENQUEUE_PRIO[1].store(fair as usize, Ordering::Relaxed);
+        KTEST_ENQUEUE_PRIO[0].store(idx + 1, Ordering::Relaxed);
+        wq_wake_by_tid(tid);
+        KTEST_ENQUEUE_PRIO[0].store(0, Ordering::Relaxed);
+        let linked = fairq::ktest_linked(idx);
+        let lists = fairq::ktest_lists(cpu);
+        let _g = CpuLockGuard::acquire(cpu);
+        let found = cpu_remove_at(cpu, idx, prio_bucket(band));
+        fairq::unlink(cpu, idx);
+        cpu_enqueue(cpu, idx);
+        lists?;
+        if !found {
+            return Err("the task was not in the list of the priority its enqueue read");
+        }
+        if linked {
+            return Err("a task on a band list has a node in the fair tree");
+        }
+    }
+    Ok(())
+}
+
+/// Every task the fair pick gives on `cpu` now, the lock held, with no running
+/// candidate if the caller is not fair; `seen` hears each, and each goes back.
+#[cfg(feature = "ktest")]
+unsafe fn ktest_take_all(cpu: usize, mut seen: impl FnMut(usize)) {
+    let mut stash = [usize::MAX; 64];
+    let mut n = 0;
+    while n < stash.len() {
+        let fairq::Fair::Task(i) = fairq::take(cpu, false) else { break };
+        seen(i);
+        stash[n] = i;
+        n += 1;
+    }
+    for &i in &stash[..n] {
+        cpu_enqueue_as(cpu, i, true);
+    }
+}
+
+/// Ktest `fair_take_recovers_a_stale_node`: woken `tid` loses its list entry and
+/// its claim and keeps its node, as a task refused elsewhere does. The pick drops
+/// the node once and the task runs. Puts the task back either way.
+#[cfg(feature = "ktest")]
+pub fn ktest_take_stale(tid: u32) -> Result<(), &'static str> {
+    let idx = idx_for_tid(tid).ok_or("no such task")?;
+    let cpu = current_cpu_id();
+    wq_wake_by_tid(tid);
+    unsafe {
+        let _g = CpuLockGuard::acquire(cpu);
+        let task = task_mut(idx);
+        let prio = prio_bucket(task.priority.load(Ordering::Relaxed));
+        if cpu_queues(cpu)[prio].remove(&RQ_LINKS, idx) == Some(0) {
+            let bm = &PER_CPU[cpu].ready_bitmap;
+            bm.store(bm.load(Ordering::Relaxed) & !(1 << prio), Ordering::Relaxed);
+        }
+        task.queued.store(false, Ordering::Release);
+        let before = fairq::tree_stats().recovered;
+        let mut taken = 0;
+        ktest_take_all(cpu, |i| taken += (i == idx) as u32);
+        let recovered = fairq::tree_stats().recovered - before;
+        if !task.queued.load(Ordering::Acquire) {
+            fairq::unlink(cpu, idx);
+            cpu_enqueue(cpu, idx);
+        }
+        if recovered != 1 {
+            return Err("a node the lists do not back was not dropped, once");
+        }
+        if taken != 1 {
+            return Err("the task of a dropped node did not come back to the pick");
+        }
+    }
+    Ok(())
+}
+
+/// Ktest `fair_take_leaves_a_reservation`: woken `tid` becomes a reservation of
+/// this CPU while queued, the window of an admission. The fair pick does not run
+/// it and drops its node; it stays on its list. Puts the task back either way.
+#[cfg(feature = "ktest")]
+pub fn ktest_take_reserved(tid: u32) -> Result<(), &'static str> {
+    let idx = idx_for_tid(tid).ok_or("no such task")?;
+    let cpu = current_cpu_id();
+    wq_wake_by_tid(tid);
+    unsafe {
+        let _g = CpuLockGuard::acquire(cpu);
+        if !rt::ktest_mark_reserved(cpu, idx, true) {
+            return Err("no free reservation slot");
+        }
+        let mut taken = false;
+        ktest_take_all(cpu, |i| taken |= i == idx);
+        let linked = fairq::ktest_linked(idx);
+        rt::ktest_mark_reserved(cpu, idx, false);
+        // Off the list (and the tree) and on again, a fair task as before.
+        cpu_remove(cpu, idx);
+        cpu_enqueue(cpu, idx);
+        if taken {
+            return Err("the fair pick ran a task reserved on this CPU");
+        }
+        if linked {
+            return Err("a reservation kept its node after a pick found it");
+        }
+    }
+    Ok(())
+}
+
+/// Node operations refused since boot.
+#[cfg(feature = "ktest")]
+pub fn ktest_tree_refused() -> u32 {
+    fairq::tree_stats().refused
 }
 
 #[cfg(feature = "ktest")]

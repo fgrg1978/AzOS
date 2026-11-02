@@ -37,8 +37,8 @@ const SEQ_MASK: u64 = (1 << 56) - 1;
 /// An AVL tree this high holds more nodes than a `u32` can index: past it the
 /// links are a cycle.
 pub const MAX_HEIGHT: u32 = 46;
-/// Picks [`take`] tries before leaving the rest for the next pass.
-pub const TAKE_TRIES: u32 = 4;
+/// Picks [`take`] tries while a running task can keep the CPU for the next pass.
+pub const TAKE_TRIES: usize = 4;
 
 /// One entity's node. Linked while `weight != 0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -580,15 +580,15 @@ fn leftmost<S: Store>(s: &S, mut t: u32) -> Option<u32> {
 
 /// The pick with its way out of the lists: `claim` takes the picked task off its
 /// list, and a pick it refuses (the tree and the lists disagree) goes through
-/// `unlink`, so the next pick differs. After [`TAKE_TRIES`] the running task
-/// keeps the CPU: the masked window stays bounded, and the next pass goes on
-/// from a tree with that many fewer nodes.
+/// `unlink`, so the next pick differs. After `tries` the answer is `exhausted`.
 pub fn take(
+    tries: usize,
+    exhausted: Choice,
     mut pick: impl FnMut() -> Choice,
     mut claim: impl FnMut(usize) -> bool,
     mut unlink: impl FnMut(usize),
 ) -> Choice {
-    for _ in 0..TAKE_TRIES {
+    for _ in 0..tries {
         match pick() {
             Choice::Task(idx) => {
                 if claim(idx) {
@@ -599,5 +599,5 @@ pub fn take(
             other => return other,
         }
     }
-    Choice::Cur
+    exhausted
 }
