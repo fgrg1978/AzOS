@@ -1529,10 +1529,8 @@ where
             return Err(PciNetError::VectorRefused);
         }
     }
-    let (Some(rx_at), Some(tx_at)) = (
-        dev.queue_notify_offset(dev.queue_notify_off_of(0)),
-        dev.queue_notify_offset(dev.queue_notify_off_of(1)),
-    ) else {
+    let (rx_off, tx_off) = (dev.queue_notify_off_of(0), dev.queue_notify_off_of(1));
+    let (Some(rx_at), Some(tx_at)) = (dev.queue_notify_offset(rx_off), dev.queue_notify_offset(tx_off)) else {
         dev.reset();
         return Err(PciNetError::NoVirtioCaps);
     };

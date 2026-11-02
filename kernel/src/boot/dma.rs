@@ -725,6 +725,7 @@ mod hw {
     }
 }
 
+#[cfg(feature = "ktest")]
 mod unmap_ktests {
     use azos_dma::{Direction, DmaAddr, DmaDomain, DmaError, DomainKind, PageSource};
 
