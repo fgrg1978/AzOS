@@ -590,6 +590,8 @@ azos_ktest::ktest_late! {
         if canary!("ttbr0-holders-self") {
             azos_arch::tlb::canary_holders_self();
         }
+        #[cfg(not(target_arch = "aarch64"))]
+        {}
         crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
         // x86_64: a reschedule IPI inside the toucher's window voids the run
         // (`resched_ipis`); run it again, a bounded number of times.
