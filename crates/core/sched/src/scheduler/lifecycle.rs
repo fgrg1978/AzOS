@@ -3180,6 +3180,51 @@ pub fn ktest_rescue_stopped(cpu: usize) {
     unsafe { drain_stopped_cpu(cpu) };
 }
 
+/// Ktest of the save gate: wake parked `tid` onto this hart's queue with the
+/// save of slot `h` (its own) marked as still running.
+#[cfg(feature = "ktest")]
+pub fn ktest_wake_held(h: usize, tid: u32) {
+    if h >= MAX_TASKS {
+        return;
+    }
+    // SAFETY: `h` is live and only atomics are touched.
+    unsafe {
+        let irq = azos_arch::ARCH.disable_all();
+        wq_wake_by_tid(tid);
+        task_ref(h).context_saving.store(true, Ordering::Release);
+        azos_arch::ARCH.restore(irq);
+    }
+}
+
+/// Ktest of the save gate: the save of slot `h` has finished.
+#[cfg(feature = "ktest")]
+pub fn ktest_release_save(h: usize) {
+    if h < MAX_TASKS {
+        // SAFETY: `h` is live and only an atomic is touched.
+        unsafe { task_ref(h).context_saving.store(false, Ordering::Release) };
+    }
+}
+
+/// Ktest of the save gate: mark this hart's idle task's save as still running
+/// (`stuck`) or finished, so a pass that finds nothing else has no one to
+/// switch to.
+#[cfg(feature = "ktest")]
+pub fn ktest_stick_idle(stuck: bool) -> bool {
+    // SAFETY: the idle task is taken off the queue and put back under the CPU
+    // lock, with interrupts masked.
+    unsafe {
+        let irq = azos_arch::ARCH.disable_all();
+        let cpu = current_cpu_id();
+        let found = cpu_take_idle(cpu);
+        if let Some(i) = found {
+            task_ref(i).context_saving.store(stuck, Ordering::Release);
+            cpu_requeue_self(cpu, i);
+        }
+        azos_arch::ARCH.restore(irq);
+        found.is_some()
+    }
+}
+
 #[cfg(feature = "ktest")]
 pub fn ktest_unswitched_block(h: usize, tid: u32) -> Result<(), &'static str> {
     use crate::task::sched_word::{state_of, take_back_unswitched};
@@ -3196,6 +3241,11 @@ pub fn ktest_unswitched_block(h: usize, tid: u32) -> Result<(), &'static str> {
         wq_wake_by_tid(tid);
         held.context_saving.store(true, Ordering::Release);
         azos_arch::ARCH.restore(irq);
+        // The pass that gives up the held helper draws the next candidate: with
+        // the idle task stuck too it has none, and the block stays unswitched.
+        if !ktest_stick_idle(true) {
+            return Err("this hart has no idle task in its queue");
+        }
 
         block_current(cpu, WaitReason::Timer(azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ));
         let irq = azos_arch::ARCH.disable_all();
@@ -3215,6 +3265,7 @@ pub fn ktest_unswitched_block(h: usize, tid: u32) -> Result<(), &'static str> {
         let yielded_saving = task.context_saving.load(Ordering::Acquire);
         held.context_saving.store(false, Ordering::Release);
         azos_arch::ARCH.restore(irq);
+        ktest_stick_idle(false);
 
         // A tick in between may add its own give-up: at least these two.
         if SPIN_GATE_EXPIRED.load(Ordering::Relaxed).wrapping_sub(gave_up) < 2 {
@@ -3419,6 +3470,83 @@ pub(super) fn wait_context_saved(next: &Task) -> bool {
         }
     }
     true
+}
+
+
+/// Runtime canary `save-gate-no-redraw` (`kernel/src/canary_rt.rs`): the pass
+/// ends at the first task that outlasts the gate (ktest
+/// `save_gate_stuck_top_lets_lower_run`).
+static CANARY_GATE_NO_REDRAW: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// See [`CANARY_GATE_NO_REDRAW`].
+pub fn canary_gate_no_redraw() {
+    CANARY_GATE_NO_REDRAW.store(true, Ordering::Relaxed);
+}
+
+/// `first`, picked for `cpu`, outlasted the context-saving gate: leave it, and
+/// every candidate drawn after it that does the same, out of this pass and put
+/// them back on the queue, then return the first candidate whose save is
+/// done. `None` when there is none, or when the draw would break a rule the
+/// first pick was held to: the running task keeps the hart against a worse
+/// priority, and a core-scheduled hart (`smt`) draws through `topo::core_pick`
+/// only. At most `SCHED_SAVING_GATE_REDRAWS` draws, so the time spent with
+/// interrupts masked is bounded by that many gate waits more.
+#[cold]
+#[inline(never)]
+pub(super) unsafe fn redraw_past_stuck(
+    cpu: usize, old_idx: usize, smt: bool, rt_force: &mut bool, first: usize,
+) -> Option<usize> {
+    let mut stash = [usize::MAX; azos_limits::SCHED_SAVING_GATE_REDRAWS as usize + 1];
+    let mut n = 0;
+    let mut cand = first;
+    let pick = loop {
+        SPIN_GATE_EXPIRED.fetch_add(1, Ordering::Relaxed);
+        task_mut(cand).set_state(TaskState::Ready);
+        stash[n] = cand;
+        n += 1;
+        if smt || n == stash.len() || (azos_limits::CANARY_RUNTIME && CANARY_GATE_NO_REDRAW.load(Ordering::Relaxed)) {
+            break None;
+        }
+        let drawn = if rt::active(cpu) {
+            match rt::pick(cpu, PER_CPU[cpu].current_idx.load(Ordering::Relaxed)) {
+                rt::Pick::Task { idx, force } => { *rt_force = force; Some(idx) }
+                rt::Pick::Keep => None,
+            }
+        } else {
+            cpu_dequeue_irqs_off(cpu)
+        };
+        let Some(j) = drawn else { break None };
+        if j == old_idx {
+            if !matches!(task_ref(j).state(), TaskState::Blocked | TaskState::Zombie) {
+                stash[n] = j;
+                n += 1;
+            }
+            break None;
+        }
+        let next = task_ref(j);
+        if !*rt_force && old_idx < MAX_TASKS {
+            let old = task_ref(old_idx);
+            let (op, np) = (old.priority.load(Ordering::Relaxed), next.priority.load(Ordering::Relaxed));
+            if old.state() == TaskState::Running
+                && np > op
+                && !(fairq::is_fair(op) && fairq::is_fair(np))
+            {
+                stash[n] = j;
+                n += 1;
+                break None;
+            }
+        }
+        if !next.context_saving.load(Ordering::Acquire) || wait_context_saved(next) {
+            break Some(j);
+        }
+        cand = j;
+    };
+    for &i in &stash[..n] {
+        if !cpu_requeue_self(cpu, i) {
+            SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pick
 }
 
 

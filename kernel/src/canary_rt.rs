@@ -90,6 +90,10 @@ pub(crate) const NAMES: &[&str] = &[
     // not switch leaves the task `Blocked` (ktest
     // `unswitched_block_returns_running`).
     "unswitched-block-stays",
+    // scheduler/lifecycle.rs `redraw_past_stuck`: a task that outlasts the save
+    // gate ends the pass, as the only candidate (ktest
+    // `save_gate_stuck_top_lets_lower_run`).
+    "save-gate-no-redraw",
     // drivers/sys/src/timebase.rs `record`: a CPU id from 16 up has no comparator
     // record (ktest `timer_record_on_the_last_cpu`; the row needs -smp 17).
     "timer-record-16",
