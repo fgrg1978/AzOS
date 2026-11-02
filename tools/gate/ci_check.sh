@@ -14796,8 +14796,9 @@ PY
     # +2 crash_core_file_is_an_elf_core, crash_core_refusal_is_a_decision_record -> 150, arm 154.
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
-    KTEST_N_RV=153
-    KTEST_N_ARM=157
+    # +1 save_gate_stuck_top_lets_lower_run (canary `save-gate-no-redraw`) -> 154, arm 158.
+    KTEST_N_RV=154
+    KTEST_N_ARM=158
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15126,8 +15127,10 @@ PY
     par "ktest wake reason first canary (rv)" ktest_row "ktest wake reason first canary (rv)" rv "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest wake reason first canary (arm)" ktest_row "ktest wake reason first canary (arm)" arm "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (rv)" ktest_row "ktest unswitched block canary (rv)" rv "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest save gate redraw canary (rv)" ktest_row "ktest save gate redraw canary (rv)" rv "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest unswitched block canary (arm)" ktest_row "ktest unswitched block canary (arm)" arm "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest ttbr0 holders canary (arm)" ktest_row "ktest ttbr0 holders canary (arm)" arm "" "tlb_shootdown_cross_cpu" "canary=ttbr0-holders-self" "root_holders did not name exactly"
+    par "ktest save gate redraw canary (arm)" ktest_row "ktest save gate redraw canary (arm)" arm "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
@@ -15380,7 +15383,7 @@ PY
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
     # The tests that need a second CPU answer `not ok` at -smp 1 (they say so).
-    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight pmm_free_pages_counts_frames_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter stuck_cpu_detector_names_the_cpu"
+    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight pmm_free_pages_counts_frames_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running save_gate_stuck_top_lets_lower_run tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter stuck_cpu_detector_names_the_cpu"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
@@ -15783,7 +15786,7 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=162
+    KTEST_N_X86=163
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16875,6 +16878,7 @@ PY
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
+    par "ktest save gate redraw canary (x86)" x86_ktest_row "ktest save gate redraw canary (x86)" "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
     par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""

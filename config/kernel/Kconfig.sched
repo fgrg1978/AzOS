@@ -770,6 +770,20 @@ config SCHED_SAVING_GATE_CLOCK_EVERY
       tight loop. A power of two compiles to a mask. Only the waiting
       path pays it; lower it if the gate's bound must be precise.
 
+config SCHED_SAVING_GATE_REDRAWS
+    int "Candidates tried after one that outlasts the context-saving gate"
+    range 0 8
+    default 2
+    help
+      When the context-saving gate gives up on a picked task, do_schedule
+      leaves it out of that pass and takes the next candidate, up to this
+      many times (each draw may wait SCHED_SAVING_GATE_US again). With 0 the
+      pass ends at the first task that outlasts the gate, and a stuck flag on
+      the queue top is picked again every tick, starving the tasks below it.
+
+      Cost: none unless the gate gives up. The interrupts-off time of such a
+      pass is bounded by (this + 1) gate waits.
+
 config SCHED_REAP_EVENT
     # cargo-feature: sched-reap-event
     bool "Event-driven reaper: visit only the slots a waker stamped"
