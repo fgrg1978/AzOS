@@ -115,7 +115,7 @@ azos_ktest::ktest! {
     // and picks against a scan of the same entities.
     fn fair_tree_pick_is_the_scan() {
         use azos_sched::eevdf_core::{Avg, Choice, Ent, WEIGHTS};
-        use azos_sched::eevdf_tree::{AtomicNodes, Tree};
+        use azos_sched::eevdf_tree::{AtomicNodes, Tree, Unlink};
 
         const N: usize = 48;
         static NODES: AtomicNodes<N> = AtomicNodes::new();
@@ -126,7 +126,7 @@ azos_ktest::ktest! {
             rng ^= rng >> 27;
             rng.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
         };
-        let mut tree = Tree::new();
+        let mut tree = Tree::new(0);
         // Entity, level and arrival of each linked task.
         let mut m: [Option<(Ent, u32, u64)>; N] = [None; N];
         let mut seq = 0u64;
@@ -140,12 +140,14 @@ azos_ktest::ktest! {
                     e.vruntime = next(60) as i64 - 30;
                     e.deadline = next(20) as i64;
                     let level = next(3) as u32;
-                    tree.insert(&NODES, i, &e, level);
+                    if !tree.insert(&NODES, i, &e, level) {
+                        return Err("a free node was refused");
+                    }
                     m[i] = Some((e, level, seq));
                     seq += 1;
                 }
                 (1, Some(_)) => {
-                    if !tree.remove(&NODES, i) {
+                    if tree.remove(&NODES, i) != Unlink::Done {
                         return Err("a linked task was not found");
                     }
                     m[i] = None;
@@ -199,12 +201,14 @@ azos_ktest::ktest! {
             }
             tree.check(&NODES)?;
             if let Choice::Task(j) = want {
-                if !tree.remove(&NODES, j) {
+                if tree.remove(&NODES, j) != Unlink::Done {
                     return Err("the picked task was not linked");
                 }
                 let (e, l, _) = m[j].take().unwrap();
                 if let Some((o, oe)) = cur.take() {
-                    tree.insert(&NODES, o, &oe, cur_level);
+                    if !tree.insert(&NODES, o, &oe, cur_level) {
+                        return Err("a free node was refused");
+                    }
                     m[o] = Some((oe, cur_level, seq));
                     seq += 1;
                 }

@@ -598,14 +598,14 @@ unsafe fn throttled(cpu: usize, idx: usize) -> bool {
 /// reservation. Caller holds `CPU_LOCKS[cpu]`.
 unsafe fn ring_first_eligible(cpu: usize, level: usize, resv: bool) -> Option<usize> {
     let q = &super::cpu_queues(cpu)[level];
-    q.iter(&super::RQ_NEXT).find(|&idx| idx < MAX_TASKS && !(resv && unsafe { throttled(cpu, idx) }))
+    q.iter(&super::RQ_LINKS).find(|&idx| idx < MAX_TASKS && !(resv && unsafe { throttled(cpu, idx) }))
 }
 
 /// Ring `level` of `cpu`: the first exempt entry that is not a throttled
 /// reservation. Caller holds `CPU_LOCKS[cpu]`.
 unsafe fn ring_first_exempt(cpu: usize, level: usize, resv: bool) -> Option<usize> {
     let q = &super::cpu_queues(cpu)[level];
-    q.iter(&super::RQ_NEXT).find(|&idx| exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }))
+    q.iter(&super::RQ_LINKS).find(|&idx| exempt(idx) && !(resv && unsafe { throttled(cpu, idx) }))
 }
 
 // ───────────────────── N6 class peeks (`classes.rs`) ──────────────────────
@@ -670,7 +670,7 @@ pub(super) unsafe fn peek_levels(cpu: usize, mask: u32) -> Option<usize> {
     while levels != 0 {
         let l = levels.trailing_zeros() as usize;
         let q = &super::cpu_queues(cpu)[l];
-        let first = q.iter(&super::RQ_NEXT)
+        let first = q.iter(&super::RQ_LINKS)
             .find(|&idx| idx < MAX_TASKS && !(resv && slot_of(cpu, idx).is_some()));
         if first.is_some() {
             return first;
@@ -863,13 +863,8 @@ pub(super) unsafe fn pick(cpu: usize, old_idx: usize) -> Pick {
         // level: the running fair task is a candidate, and when it is still
         // the best nothing is dispatched.
         if super::fairq::is_fair(l) {
-            match unsafe { super::fairq::pick(cpu) } {
-                super::fairq::Fair::Task(idx) => {
-                    if unsafe { cpu_remove(cpu, idx) } {
-                        return Pick::Task { idx, force };
-                    }
-                    return Pick::Keep;
-                }
+            match unsafe { super::fairq::take(cpu) } {
+                super::fairq::Fair::Task(idx) => return Pick::Task { idx, force },
                 super::fairq::Fair::Keep => return Pick::Keep,
                 // Only reservations queued at these levels: past them.
                 super::fairq::Fair::Empty => {

@@ -19,7 +19,8 @@ use core::cell::Cell;
 use super::eevdf_core::*;
 use super::eevdf_tree::*;
 
-const BLANK: Node = Node { left: NIL, right: NIL, weight: 0, deadline: 0, vruntime: 0, min_v: 0, tie: 0 };
+const BLANK: Node =
+    Node { left: NIL, right: NIL, parent: NIL, weight: 0, height: 0, owner: 0, deadline: 0, vruntime: 0, min_v: 0, tie: 0 };
 
 /// A node table in a `Vec`, counting the nodes read.
 pub struct VecStore {
@@ -53,9 +54,9 @@ where
     let items: Vec<(usize, Ent)> = queued().collect();
     let len = items.iter().map(|(i, _)| i + 1).chain(cur.map(|(i, _)| i + 1)).max().unwrap_or(0);
     let st = VecStore::new(len);
-    let mut t = Tree::new();
+    let mut t = Tree::new(0);
     for (i, e) in &items {
-        t.insert(&st, *i, e, 0);
+        assert!(t.insert(&st, *i, e, 0));
     }
     t.check(&st).unwrap();
     t.pick(&st, cur)
@@ -128,7 +129,7 @@ struct Q {
 
 impl Q {
     fn new(ids: usize, seed: u64) -> Self {
-        Self { st: VecStore::new(ids), tree: Tree::new(), m: vec![None; ids], cur: None, seq: 0, rng: Rng(seed) }
+        Self { st: VecStore::new(ids), tree: Tree::new(0), m: vec![None; ids], cur: None, seq: 0, rng: Rng(seed) }
     }
 
     fn ent(&mut self) -> Ent {
@@ -142,13 +143,13 @@ impl Q {
     }
 
     fn link(&mut self, id: usize, e: Ent, level: u32) {
-        self.tree.insert(&self.st, id, &e, level);
+        assert!(self.tree.insert(&self.st, id, &e, level));
         self.m[id] = Some(M { e, level, seq: self.seq });
         self.seq += 1;
     }
 
     fn unlink(&mut self, id: usize) {
-        assert!(self.tree.remove(&self.st, id));
+        assert_eq!(self.tree.remove(&self.st, id), Unlink::Done);
         self.m[id] = None;
     }
 
@@ -279,12 +280,12 @@ fn the_tree_holds_its_invariants_when_drained_and_refilled() {
 #[test]
 fn equal_deadlines_go_to_the_lower_level_then_the_first_linked() {
     let st = VecStore::new(8);
-    let mut t = Tree::new();
+    let mut t = Tree::new(0);
     let e = Ent::new(1024, 1000);
-    t.insert(&st, 3, &e, 2);
-    t.insert(&st, 4, &e, 1);
-    t.insert(&st, 5, &e, 1);
-    t.insert(&st, 6, &e, 2);
+    assert!(t.insert(&st, 3, &e, 2));
+    assert!(t.insert(&st, 4, &e, 1));
+    assert!(t.insert(&st, 5, &e, 1));
+    assert!(t.insert(&st, 6, &e, 2));
     assert_eq!(t.pick(&st, None), Choice::Task(4));
     t.remove(&st, 4);
     assert_eq!(t.pick(&st, None), Choice::Task(5));
@@ -296,14 +297,14 @@ fn equal_deadlines_go_to_the_lower_level_then_the_first_linked() {
 #[test]
 fn a_node_unlinked_is_not_found_again_and_a_relink_replaces_it() {
     let st = VecStore::new(4);
-    let mut t = Tree::new();
+    let mut t = Tree::new(0);
     let e = Ent::new(1024, 1000);
-    t.insert(&st, 1, &e, 0);
-    assert!(t.remove(&st, 1));
-    assert!(!t.remove(&st, 1));
-    assert!(!t.remove(&st, 2));
-    t.insert(&st, 1, &e, 0);
-    t.insert(&st, 1, &e, 0);
+    assert!(t.insert(&st, 1, &e, 0));
+    assert_eq!(t.remove(&st, 1), Unlink::Done);
+    assert_eq!(t.remove(&st, 1), Unlink::Absent);
+    assert_eq!(t.remove(&st, 2), Unlink::Absent);
+    assert!(t.insert(&st, 1, &e, 0));
+    assert!(t.insert(&st, 1, &e, 0));
     assert_eq!(t.len(), 1);
     t.check(&st).unwrap();
 }
@@ -343,5 +344,240 @@ fn a_pick_reads_a_logarithm_of_the_queue_not_the_queue() {
         if n == 512 {
             assert!(max * 8 < old / runs, "a pick at 512 read {max} nodes");
         }
+    }
+}
+
+/// The order the K-C12 race gives without the claim: a node still linked on one
+/// CPU's tree reaches another's. Both refuse, nothing moves, and the holder
+/// unlinks it afterwards as if nothing had happened.
+#[test]
+fn a_node_another_tree_holds_is_refused_and_both_stay_whole() {
+    let st = VecStore::new(16);
+    let (mut a, mut b) = (Tree::new(0), Tree::new(1));
+    for i in 0..8 {
+        let mut e = Ent::new(1024, 1000);
+        e.deadline = i as i64;
+        assert!(a.insert(&st, i, &e, 0));
+    }
+    for i in 8..12 {
+        let mut e = Ent::new(1024, 1000);
+        e.deadline = i as i64;
+        assert!(b.insert(&st, i, &e, 0));
+    }
+    let held = st.n[3].get();
+    let e = Ent::new(1024, 1000);
+    assert!(!b.insert(&st, 3, &e, 0), "a held node was taken");
+    assert_eq!(b.remove(&st, 3), Unlink::Foreign);
+    assert_eq!(st.n[3].get(), held, "a refusal wrote to the node");
+    assert_eq!((a.len(), b.len()), (8, 4));
+    a.check(&st).unwrap();
+    b.check(&st).unwrap();
+    assert_eq!(a.remove(&st, 3), Unlink::Done);
+    a.check(&st).unwrap();
+    assert!(b.insert(&st, 3, &e, 0), "the node is free once its holder let go");
+    b.check(&st).unwrap();
+}
+
+/// A pick the lists do not back is unlinked, so the next one differs; the tries
+/// are bounded even when no node is ever backed.
+#[test]
+fn a_pick_the_lists_refuse_is_dropped_and_never_repeated() {
+    use core::cell::RefCell;
+    let st = VecStore::new(32);
+    let t = RefCell::new(Tree::new(0));
+    for i in 0..20 {
+        let mut e = Ent::new(1024, 1000);
+        e.deadline = i as i64;
+        assert!(t.borrow_mut().insert(&st, i, &e, 0));
+    }
+    let picks = RefCell::new(Vec::new());
+    let run = |backed: &dyn Fn(usize) -> bool| {
+        take(
+            || t.borrow().pick(&st, None),
+            |i| {
+                picks.borrow_mut().push(i);
+                backed(i)
+            },
+            |i| {
+                assert_eq!(t.borrow_mut().remove(&st, i), Unlink::Done);
+            },
+        )
+    };
+    // The first two are stale: the third is taken in the same pass.
+    assert_eq!(run(&|i| i >= 2), Choice::Task(2));
+    assert_eq!(*picks.borrow(), vec![0, 1, 2]);
+    assert_eq!(t.borrow().len(), 18);
+    // All stale: the masked window ends at the bound, the next pass continues.
+    picks.borrow_mut().clear();
+    assert_eq!(run(&|_| false), Choice::Cur);
+    assert_eq!(picks.borrow().len(), TAKE_TRIES as usize);
+    let seen = picks.borrow().clone();
+    picks.borrow_mut().clear();
+    assert_eq!(run(&|_| false), Choice::Cur);
+    assert!(picks.borrow().iter().all(|i| !seen.contains(i)), "a dropped node came back");
+    t.borrow().check(&st).unwrap();
+}
+
+/// The most nodes an AVL tree of height `h` can need at least: the height bound
+/// for `n` nodes is the largest `h` this does not exceed `n` for.
+fn avl_height_bound(n: usize) -> u32 {
+    let (mut least, mut below, mut h) = (1usize, 0usize, 1u32);
+    loop {
+        let next = least + below + 1;
+        if next > n {
+            return h;
+        }
+        below = least;
+        least = next;
+        h += 1;
+    }
+}
+
+fn depth_of(st: &VecStore, root: u32) -> u32 {
+    let (mut worst, mut stack) = (0, vec![(root, 1u32)]);
+    while let Some((t, d)) = stack.pop() {
+        if t == NIL {
+            continue;
+        }
+        worst = worst.max(d);
+        let n = st.n[t as usize].get();
+        stack.push((n.left, d + 1));
+        stack.push((n.right, d + 1));
+    }
+    worst
+}
+
+/// What a sequence read: worst and total reads, and how many operations.
+#[derive(Default, Clone, Copy)]
+struct Reads {
+    worst: u64,
+    total: u64,
+    ops: u64,
+}
+
+impl Reads {
+    fn add(&mut self, r: u64) {
+        self.worst = self.worst.max(r);
+        self.total += r;
+        self.ops += 1;
+    }
+    fn mean(&self) -> f64 {
+        self.total as f64 / self.ops.max(1) as f64
+    }
+}
+
+struct Adversary {
+    n: usize,
+    st: VecStore,
+    t: Tree,
+    root_of: fn(&Tree) -> u32,
+    bound: u32,
+    pick: Reads,
+    insert: Reads,
+    remove: Reads,
+    deepest: u32,
+}
+
+impl Adversary {
+    fn new(n: usize, st: VecStore) -> Self {
+        Self {
+            n,
+            st,
+            t: Tree::new(0),
+            root_of: Tree::root,
+            bound: avl_height_bound(n),
+            pick: Reads::default(),
+            insert: Reads::default(),
+            remove: Reads::default(),
+            deepest: 0,
+        }
+    }
+
+    fn after(&mut self) {
+        let d = depth_of(&self.st, (self.root_of)(&self.t));
+        self.deepest = self.deepest.max(d);
+        assert!(d <= self.bound, "depth {d} past the bound {} at N={}", self.bound, self.n);
+        self.st.reads.set(0);
+        let _ = self.t.pick(&self.st, None);
+        self.pick.add(self.st.reads.get());
+        if self.n <= 64 {
+            self.t.check(&self.st).unwrap();
+        }
+    }
+
+    fn link(&mut self, id: usize, deadline: i64, v: i64) {
+        let mut e = Ent::new(1024, 1000);
+        e.deadline = deadline;
+        e.vruntime = v;
+        self.st.reads.set(0);
+        assert!(self.t.insert(&self.st, id, &e, 0));
+        self.insert.add(self.st.reads.get());
+        self.after();
+    }
+
+    fn unlink(&mut self, id: usize) {
+        self.st.reads.set(0);
+        assert_eq!(self.t.remove(&self.st, id), Unlink::Done);
+        self.remove.add(self.st.reads.get());
+        self.after();
+    }
+}
+
+/// Arrivals chosen against the shape: deadlines in order, in reverse, from both
+/// ends, the yields of a paced user, and a `v` that hides the only eligible node
+/// at the far end of the order, so a pick descends the whole height. The depth
+/// never passes the AVL bound for that N. Printed with `--nocapture`.
+#[test]
+fn no_arrival_order_passes_the_height_bound() {
+    for n in [8usize, 64, 512] {
+        let mut a = Adversary::new(n, VecStore::new(n));
+        let tail_v = |i: usize| if i + 1 == n { 0 } else { 1_000_000 };
+        for i in 0..n {
+            a.link(i, i as i64, tail_v(i));
+        }
+        for i in 0..n {
+            a.unlink(i);
+        }
+        for i in 0..n {
+            a.link(i, (n - i) as i64, tail_v(n - 1 - i));
+        }
+        for i in (0..n).rev() {
+            a.unlink(i);
+        }
+        for i in 0..n {
+            let d = if i % 2 == 0 { i as i64 } else { (2 * n - i) as i64 };
+            a.link(i, d, 0);
+        }
+        // Paced yields: the earliest deadline leaves and arrives behind all the
+        // others, the arrival number moving on with every one.
+        let mut next = 2 * n as i64;
+        for i in 0..8 * n {
+            let id = i % n;
+            a.unlink(id);
+            a.link(id, next, 0);
+            next += 1;
+        }
+        // The root goes every time: the removal with two children, at its worst.
+        for _ in 0..n {
+            let root = (a.root_of)(&a.t);
+            a.unlink(root as usize);
+        }
+        assert!(a.t.is_empty());
+        a.t.check(&a.st).unwrap();
+        println!(
+            "# adversarial N={n}: depth {} of bound {}; nodes read: pick {} worst {:.1} mean, insert {} worst {:.1} mean, remove {} worst {:.1} mean",
+            a.deepest,
+            a.bound,
+            a.pick.worst,
+            a.pick.mean(),
+            a.insert.worst,
+            a.insert.mean(),
+            a.remove.worst,
+            a.remove.mean(),
+        );
+        let b = a.bound as u64;
+        assert!(a.pick.worst <= 2 * b + 1, "a pick read {} nodes", a.pick.worst);
+        assert!(a.insert.worst <= 8 * b, "an insert read {} nodes", a.insert.worst);
+        assert!(a.remove.worst <= 8 * b, "a remove read {} nodes", a.remove.worst);
     }
 }

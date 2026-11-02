@@ -207,6 +207,7 @@ pstore-smoke	pending
 qos-armed-at-canary	hot	crates/core/sched/src/timer_sleepers.rs: every timed sleep
 qos-fire-canary	hot	crates/core/sched/src/timer_sleepers.rs: every timed sleep
 qos-rt-slack-canary	hot	crates/core/sched/src/sc.rs: the dispatch-class decision
+eevdf-late-unlink-canary	hot	crates/core/sched/src/scheduler/mod.rs: the order of a removal from a ready list
 ramfb-va-canary	pending	
 rc-failsafe-canary	pending	
 rc-failsafe-smoke	pending	

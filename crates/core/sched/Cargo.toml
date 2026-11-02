@@ -45,6 +45,8 @@ eevdf-eligible-canary = []
 eevdf-fifo-canary = []
 # `eevdf_tree.rs` host canary: a node's least `v` is never recomputed once linked.
 eevdf-tree-canary = []
+# The removal releases `queued` before unlinking the node: ktest `fair_unlink_keeps_the_claim`.
+eevdf-late-unlink-canary = []
 # The canaries of `irqoff_timer_storm`: a tick pass wakes every due sleeper; a
 # placement reads the whole queue.
 timer-wake-unbounded-canary = []

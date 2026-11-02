@@ -1582,6 +1582,65 @@ mod pi_boost_ktests {
     }
 }
 
+// A task's `queued` claim outlives its fair node: a delayed duplicate waker
+// (K-C12) on another CPU, arriving while the removal is in progress, is refused
+// by the claim. Canary cargo feature `eevdf-late-unlink-canary` (the claim goes
+// first): the waker reaches a node still linked here, `not ok`.
+#[cfg(feature = "ktest")]
+mod fair_unlink_ktests {
+    use azos_arch::Interrupts;
+    use azos_sync::waitqueue::WaitQueue;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    const TARGET_PRIO: u32 = 20;
+    const DRIVER_PRIO: u32 = 4;
+    static Q: WaitQueue = WaitQueue::new();
+    static GO: AtomicBool = AtomicBool::new(false);
+    static TID: AtomicU32 = AtomicU32::new(0);
+    static ANSWER: AtomicU32 = AtomicU32::new(0);
+    const PASSED: u32 = 1;
+    const TREE_BROKEN: u32 = 2;
+
+    fn target(_: usize) {
+        TID.store(azos_sched::current_task_tid(), Ordering::Release);
+        while !GO.load(Ordering::Acquire) {
+            Q.wait_if(|| !GO.load(Ordering::Acquire));
+        }
+    }
+
+    fn driver(_: usize) {
+        let tid = loop {
+            let t = TID.load(Ordering::Acquire);
+            if t != 0 && azos_sched::scheduler::ktest_parked(t) {
+                break t;
+            }
+            let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 500;
+            azos_sched::task_block(azos_sched::WaitReason::Timer(until));
+        };
+        GO.store(true, Ordering::Release);
+        let irq = azos_arch::ARCH.disable_all();
+        let r = azos_sched::scheduler::ktest_late_waker(tid);
+        azos_arch::ARCH.restore(irq);
+        ANSWER.store(if r.is_ok() { PASSED } else { TREE_BROKEN }, Ordering::Release);
+    }
+
+    azos_ktest::ktest_late! {
+        fn fair_unlink_keeps_the_claim() {
+            if azos_percpu::nr_cpu_ids() < 2 {
+                return azos_ktest::skip!("one CPU has no late waker");
+            }
+            let cpu = azos_percpu::nr_cpu_ids() - 1;
+            azos_sched::task_create_affinity("late-target", target, 0, TARGET_PRIO, cpu as i8);
+            azos_sched::task_create_affinity("late-driver", driver, 0, DRIVER_PRIO, cpu as i8);
+            crate::ktest::wait("the late waker's driver never finished", || ANSWER.load(Ordering::Acquire) != 0)?;
+            if ANSWER.load(Ordering::Acquire) != PASSED {
+                return Err("a late waker reached a node still linked on another CPU");
+            }
+            Ok(())
+        }
+    }
+}
+
 // The accessors of "the task running here" (`current_task_slot`,
 // `current_proc_tid`, `current_user_pt`, the syscall-filter verdicts, the
 // writer `set_current_task_satp`, ...) read the hart id and then a per-hart

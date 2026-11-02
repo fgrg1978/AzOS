@@ -14801,8 +14801,8 @@ PY
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
     # +2 fair_tree_pick_is_the_scan, fair_tree_follows_the_lists -> 155, arm 159.
-    KTEST_N_RV=155
-    KTEST_N_ARM=159
+    KTEST_N_RV=156
+    KTEST_N_ARM=160
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -15245,6 +15245,10 @@ PY
     # QoS timer tolerance: `sc::timer_slack_us` gives the stop, deadline and
     # real-time classes the fair class's window (`qos-rt-slack-canary`, a
     # cargo feature: the arm path takes no runtime canary).
+    # A removal releases the `queued` claim before unlinking the fair node: a late
+    # waker on another CPU reaches a node still linked here.
+    par "ktest fair late unlink canary (rv)" ktest_row "ktest fair late unlink canary (rv)" rv ",eevdf-late-unlink-canary" "fair_unlink_keeps_the_claim"
+    par "ktest fair late unlink canary (arm)" ktest_row "ktest fair late unlink canary (arm)" arm ",eevdf-late-unlink-canary" "fair_unlink_keeps_the_claim"
     par "ktest QoS RT slack canary (rv)" ktest_row "ktest QoS RT slack canary (rv)" rv ",qos-rt-slack-canary" "qos_timer_slack_never_real_time qos_timer_slack_rt_task_gets_zero"
     par "ktest QoS RT slack canary (arm)" ktest_row "ktest QoS RT slack canary (arm)" arm ",qos-rt-slack-canary" "qos_timer_slack_never_real_time qos_timer_slack_rt_task_gets_zero"
     # The integrated coalescing path (`timer_sleepers::ktest_coalescing`): the
@@ -15780,7 +15784,7 @@ PY
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
     # +2 fair_tree_pick_is_the_scan, fair_tree_follows_the_lists -> 164.
-    KTEST_N_X86=164
+    KTEST_N_X86=165
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16863,6 +16867,7 @@ PY
     }
     par "ktest hv enter (x86 svm)" x86_ktest_row_svm "ktest hv enter (x86 svm)" "" "" "" "" \
         $'\\[HV\\] svm rev\n^ok [0-9]+ - hv_svm_guest_exits$\n^ok [0-9]+ - hv_enter_guest$'
+    par "ktest fair late unlink canary (x86)" x86_ktest_row "ktest fair late unlink canary (x86)" ",eevdf-late-unlink-canary" "fair_unlink_keeps_the_claim"
     par "ktest inspect guard canary (x86)" x86_ktest_row "ktest inspect guard canary (x86)" "" "inspect_refresh_leaves_interrupts_as_they_were" "canary=usb-refresh-tail-guard"
     par "ktest blk reap once (x86)" x86_ktest_row "ktest blk reap once (x86)" "" "" "" "" '^ok [0-9]+ - blk_reap_reports_once$'
     par "ktest kheap irq token (x86)" x86_ktest_row "ktest kheap irq token (x86)" "" "" "" "" '^ok [0-9]+ - kheap_irq_token_follows_the_interrupt_state$'

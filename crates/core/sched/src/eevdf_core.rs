@@ -52,7 +52,7 @@
 //! per-priority ready lists (`ready_list.rs`): `queued` (K-C12), the removal
 //! paths, the claim audit and the K-C24/K-C26 re-enqueues are written against
 //! them, and they stay the truth. `eevdf_tree.rs` is the *order* over that
-//! membership: a treap keyed by virtual deadline, each node carrying the
+//! membership: an AVL tree keyed by virtual deadline, each node carrying the
 //! minimum `v` of its subtree, so that the eligible entity with the earliest
 //! deadline is found in one descent and a pick costs O(log n) with interrupts
 //! masked, whatever length a user makes the queue. The sums the mean is read

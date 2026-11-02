@@ -563,19 +563,19 @@ static POOL_LOCK: AtomicBool = AtomicBool::new(false);
 ///
 /// **Lists, not rings** (wave 15, NRCPUS-FLEET-AREA): see `ready_list`. The
 /// queues were `MAX_TASKS`-slot rings, 32 per CPU; they are now intrusive
-/// lists threaded through [`RQ_NEXT`], one link per task slot for every queue
+/// lists threaded through [`RQ_LINKS`], one link per task slot for every queue
 /// of every CPU, so a CPU's 32 queues are 512 bytes in every profile instead
 /// of 32 x `MAX_TASKS` words (1 MiB a CPU at fleet's 4096 tasks). A walk is
 /// bounded by `count` and by `MAX_TASKS` and stops at an out-of-range link,
 /// which is what keeps a raced read (the audit) from looping or panicking.
 pub(crate) type PrioQueue = crate::ready_list::ReadyList;
 
-/// The ready-queue links: `RQ_NEXT[i]` is the successor of slot `i` in
-/// whichever ready queue holds it (a list ends at its count, not at a link). One table for every queue of
+/// The ready-queue links: `RQ_LINKS[i]` is slot `i`'s place in whichever ready
+/// queue holds it (a list ends at its count, not at a link). One table for every queue of
 /// every CPU, because a slot is in at most one queue at a time (the `queued`
-/// claim, K-C12). Written under the owning CPU's lock. `MAX_TASKS` x 4 B,
+/// claim, K-C12). Written under the owning CPU's lock. `MAX_TASKS` x 16 B,
 /// static: it is sized by the task table, not by the CPUs.
-pub(crate) static RQ_NEXT: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
+pub(crate) static RQ_LINKS: [crate::ready_list::Link; MAX_TASKS] = [const { crate::ready_list::Link::new() }; MAX_TASKS];
 
 // Slots are stored as `u32` and read sign-extended (`ready_list::rd`).
 const _: () = assert!(MAX_TASKS < i32::MAX as usize, "ready-list links are u32 slots, read sign-extended");
@@ -878,7 +878,7 @@ static mut PER_CPU: [PerCpuSched; MAX_CPUS] = [const { EMPTY_CPU }; MAX_CPUS];
 ///
 /// **In the per-CPU areas** (wave 15, NRCPUS): `NUM_PRIORITIES` list heads
 /// of 16 bytes per CPU, the same in every profile (the links are in
-/// [`RQ_NEXT`]). Allocated at boot for the possible CPUs only (all-zero is the
+/// [`RQ_LINKS`]). Allocated at boot for the possible CPUs only (all-zero is the
 /// empty list) and reached through [`cpu_queues`].
 ///
 /// Scope: a bare `PerCpuRemote` for now; with its per-CPU lock array it is
@@ -1157,8 +1157,11 @@ unsafe fn cpu_enqueue_as(cpu: usize, idx: usize, requeue: bool) -> bool {
             // through the atomics is what removes it.
             // `count` was loaded above under the same lock and is passed on,
             // so the list does not load it twice; plain stores, no AMO.
-            fairq::place(cpu, idx, requeue);
-            q.push_back(&RQ_NEXT, idx, count);
+            if !fairq::place(cpu, idx, requeue) {
+                task.queued.store(false, Ordering::Release);
+                return false;
+            }
+            q.push_back(&RQ_LINKS, idx, count);
             let bm = &PER_CPU[cpu].ready_bitmap;
             bm.store(bm.load(Ordering::Relaxed) | (1 << prio), Ordering::Relaxed);
             true
@@ -1193,10 +1196,8 @@ unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
     // queue (`fairq.rs`), with the running task a candidate, so the pick is
     // not the head of that level's list.
     if bitmap & rt::LEVELS_BAND == 0 && bitmap & rt::LEVELS_NONBAND != 0 {
-        match fairq::pick(cpu) {
-            fairq::Fair::Task(idx) => {
-                return if cpu_remove(cpu, idx) { Some(idx) } else { None };
-            }
+        match fairq::take(cpu) {
+            fairq::Fair::Task(idx) => return Some(idx),
             // The running task is still the best: the caller keeps it.
             fairq::Fair::Keep => return None,
             // Only reservations queued at these levels: past them.
@@ -1224,7 +1225,7 @@ unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
         bm.store(bitmap & !(1 << prio), Ordering::Relaxed);
         return None;
     }
-    let Some(idx) = q.pop_front(&RQ_NEXT, count) else {
+    let Some(idx) = q.pop_front(&RQ_LINKS, count) else {
         // A head link out of range: the list reset itself to empty. Same
         // answer as the count/bitmap disagreement above.
         bm.store(bitmap & !(1 << prio), Ordering::Relaxed);
@@ -1317,7 +1318,7 @@ unsafe fn cpu_take_idle(cpu: usize) -> Option<usize> {
     if count == 0 {
         return None;
     }
-    let idx = q.pop_front(&RQ_NEXT, count);
+    let idx = q.pop_front(&RQ_LINKS, count);
     if idx.is_none() || count == 1 {
         bm.store(bm.load(Ordering::Relaxed) & !(1 << prio), Ordering::Relaxed);
     }
@@ -1940,7 +1941,7 @@ pub fn ring_claim_audit() -> (u32, u32, u32, u32) {
                 // a raced list ends the walk early or shows a stale slot — the
                 // same torn-sample shape the ring's racy reads had, absorbed
                 // the same way (two-sample filter for missing entries).
-                for idx in q.iter(&RQ_NEXT) {
+                for idx in q.iter(&RQ_LINKS) {
                     if idx < MAX_TASKS && present.insert(idx) {
                         dup += 1;
                     }
@@ -3326,7 +3327,7 @@ static DONATION_LOCKS: [AtomicBool; MAX_TASKS] = {
 };
 
 /// Remove a specific task `idx` from its current ready bucket, if present.
-/// O(bucket length). Returns `true` if it was found and removed.
+/// Returns `true` if it was found and removed.
 unsafe fn cpu_remove(cpu: usize, idx: usize) -> bool {
     cpu_remove_at(cpu, idx, prio_bucket(task_mut(idx).priority.load(Ordering::Relaxed)))
 }
@@ -3336,21 +3337,32 @@ unsafe fn cpu_remove(cpu: usize, idx: usize) -> bool {
 unsafe fn cpu_remove_at(cpu: usize, idx: usize, prio: usize) -> bool {
     // `&`, not `&mut` — see `cpu_dequeue`.
     let q = &cpu_queues(cpu)[prio];
-    // O(position): the list is walked from its head, under the lock, for at
-    // most `count` (and at most `MAX_TASKS`) links. No scratch copy.
-    let removed = q.remove(&RQ_NEXT, idx);
+    let removed = q.remove(&RQ_LINKS, idx);
     let found = removed.is_some();
     if let Some(k) = removed {
         if k == 0 {
             let bm = &PER_CPU[cpu].ready_bitmap;
             bm.store(bm.load(Ordering::Relaxed) & !(1 << prio), Ordering::Relaxed);
         }
+        #[cfg(feature = "ktest")]
+        if !cfg!(feature = "eevdf-late-unlink-canary") {
+            ktest_late_waker_window(cpu, idx);
+        }
         // K-C12: the task no longer occupies a queue slot, so release the
         // invariant — otherwise the re-enqueue at its new priority (the whole
         // point of this call) is refused as a duplicate and the task is lost.
-        task_mut(idx).queued.store(false, Ordering::Release);
+        // Last, because the store hands the node to whichever hart claims the
+        // task next, under another CPU's lock, and unlinking needs it as it is.
+        if cfg!(feature = "eevdf-late-unlink-canary") {
+            task_mut(idx).queued.store(false, Ordering::Release);
+            #[cfg(feature = "ktest")]
+            ktest_late_waker_window(cpu, idx);
+        }
         if fairq::is_fair(prio as u32) {
             fairq::unlink(cpu, idx);
+        }
+        if !cfg!(feature = "eevdf-late-unlink-canary") {
+            task_mut(idx).queued.store(false, Ordering::Release);
         }
     }
     found
@@ -3377,8 +3389,8 @@ unsafe fn cpu_remove_at(cpu: usize, idx: usize, prio: usize) -> bool {
 ///     misses too: the task is stuck in a queue nothing can take it out of.
 ///     That is worse than the inversion the donation exists to prevent.
 ///
-/// A search, because nothing records which queue a task is in: `cpu_affinity`
-/// says where it *may* run, not where it *is*. Four harts, one lock at a time,
+/// A search, because `cpu_affinity` says where a task *may* run, not where it
+/// *is*, and only the holder of a queue's lock may trust its answer. Four harts, one lock at a time,
 /// acquired and dropped before the next — no nesting, so no new ordering
 /// obligation. And the callers hold no other lock, which is what keeps this from
 /// becoming the first edge in a lock graph that has none.
@@ -3408,6 +3420,58 @@ unsafe fn cpu_remove_stale(idx: usize, old: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Ktest: the slot whose next removal meets a delayed duplicate waker, plus 1.
+#[cfg(feature = "ktest")]
+static KTEST_LATE_WAKER: AtomicUsize = AtomicUsize::new(0);
+
+/// The waker that lost the K-C12 race arrives, on another CPU, while `cpu`'s
+/// removal of `idx` is in progress.
+#[cfg(feature = "ktest")]
+unsafe fn ktest_late_waker_window(cpu: usize, idx: usize) {
+    if KTEST_LATE_WAKER.load(Ordering::Relaxed) == idx + 1 {
+        KTEST_LATE_WAKER.store(0, Ordering::Relaxed);
+        let other = (cpu + 1) % ncpu();
+        let _g = CpuLockGuard::acquire(other);
+        if cpu_enqueue(other, idx) {
+            cpu_remove(other, idx);
+        }
+    }
+}
+
+/// Ktest `fair_unlink_keeps_the_claim`: wake parked `tid`, pinned to this CPU
+/// (the caller masked interrupts, so nothing dispatches it), and remove it with
+/// a duplicate waker inside the window. Puts the task back either way.
+#[cfg(feature = "ktest")]
+pub fn ktest_late_waker(tid: u32) -> Result<(), &'static str> {
+    let idx = idx_for_tid(tid).ok_or("no such task")?;
+    let cpu = current_cpu_id();
+    if ncpu() < 2 {
+        return Ok(());
+    }
+    let refused = fairq::tree_stats().refused;
+    wq_wake_by_tid(tid);
+    KTEST_LATE_WAKER.store(idx + 1, Ordering::Relaxed);
+    let found = unsafe {
+        let _g = CpuLockGuard::acquire(cpu);
+        cpu_remove(cpu, idx)
+    };
+    KTEST_LATE_WAKER.store(0, Ordering::Relaxed);
+    let trees = fairq::ktest_check(cpu).and(fairq::ktest_check((cpu + 1) % ncpu()));
+    let refused = fairq::tree_stats().refused != refused;
+    unsafe {
+        let _g = CpuLockGuard::acquire(cpu);
+        cpu_enqueue(cpu, idx);
+    }
+    trees?;
+    if !found {
+        return Err("the woken task was not in its CPU's list");
+    }
+    if refused {
+        return Err("a late waker reached a node still linked on another CPU");
+    }
+    Ok(())
 }
 
 #[cfg(feature = "ktest")]
