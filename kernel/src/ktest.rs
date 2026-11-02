@@ -1467,7 +1467,7 @@ azos_ktest::ktest_late! {
 
 // ── free_pages() against a hart that refills and flushes its cache ─────────
 //
-// CPU 1 allocates `PCP_CHURN` frames and frees them all, over and over: each
+// A task on another CPU allocates `PCP_CHURN` frames and frees them all, over and over: each
 // round crosses the cache's refill (empty) and flush (`PMM_PCP_HIGH`) edges.
 // CPU 0 reads `free_pages()` as fast as it can. The churner counts the
 // allocations it has started and the frees it has finished, so the frames out
@@ -1516,13 +1516,13 @@ fn pcp_churner(_: usize) {
 azos_ktest::ktest_late! {
     fn pmm_free_pages_counts_frames_in_flight() {
         if azos_percpu::nr_cpu_ids() < 2 {
-            return Err("needs 2 CPUs (the reader on 0, the churner on 1)");
+            return Err("needs 2 CPUs (the reader on 0, the churner elsewhere)");
         }
         PCP_STARTED.store(0, Ordering::SeqCst);
         PCP_FREED.store(0, Ordering::SeqCst);
         PCP_CYCLE.store(0, Ordering::Release);
         PCP_GO.store(false, Ordering::Release);
-        azos_sched::task_create_affinity("pcp-churn", pcp_churner, 0, azos_sched::DEFAULT_PRIORITY, 1);
+        azos_sched::task_create_affinity("pcp-churn", pcp_churner, 0, azos_sched::DEFAULT_PRIORITY, -1);
         let (mut floor, mut ceil) = (usize::MAX, 0usize);
         for _ in 0..2000 {
             let f = azos_mm::pmm::free_pages();
