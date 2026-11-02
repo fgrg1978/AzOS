@@ -680,10 +680,11 @@ The kernel uses the TPM for three things:
    PCRs nothing is extended (the TPM would drop each extend), and other banks
    keep their reset value there, so a verifier quotes SHA-256.
 3. The OTA anti-rollback floor in an NV index, see [update.md](update.md). The
-   index is an ordinary one whose password the kernel derives from public inputs
-   (`azos_ota::floor::nv_auth`): it keeps out software that does not know the
-   scheme, not an attacker who has read the source. A policy bound to PCRs is not
-   used.
+   index is a `TPM_NT_BITS` one (the TPM only lets it gain bits), so whoever
+   holds its password can raise the floor but not lower it. The password is
+   derived from public inputs (`azos_ota::floor::nv_auth`): it keeps out software
+   that does not know the scheme, not an attacker who has read the source, who
+   can raise the floor and so refuse images. A policy bound to PCRs is not used.
 
 ## Node identity
 

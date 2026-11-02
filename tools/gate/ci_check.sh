@@ -14942,6 +14942,50 @@ PY
     }
     par "ktest (rv)" ktest_row "ktest (rv)" rv "" ""
     par "ktest (arm)" ktest_row "ktest (arm)" arm "" ""
+    # RAM past the first gigabyte the boot alias in TTBR1 maps: `virt` at 5 GiB is
+    # 0x4000_0000..0x1_8000_0000, and `vmm::init` writes its page-table pages
+    # into the top frames; `pmm_floor` widens the alias over the rest. The
+    # canary leaves it narrow: the boot must fault in the linear map above the
+    # first gigabyte, with no ktest plan.
+    a64_ktest_5g_row() { KTEST_QEMU_EXTRA="-m 5G" ktest_row "$@"; }
+    par "ktest above 4 GiB (arm)" a64_ktest_5g_row "ktest above 4 GiB (arm)" arm "" "" "" \
+        '^\[MM\] RAM detected via DTB: 0x40000000 - 0x180000000 \(5120 MiB\)$
+^\[MM\] Boot maps extended over RAM up to 0x180000000 \(8 table pages\)$'
+    a64_above_4g_canary_row() { # a64_above_4g_canary_row <label>
+        local label="$1" why="" tag log kimg pid i=0
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        log="$CI_LOG_DIR/ktest-${tag}.log"; kimg="$CI_LOG_DIR/kernel-ktest-${tag}"
+        rm -f "$log" "$kimg"
+        a64_kbuild "$KTEST_FEATS" || { bad; echo "      the ktest kernel did not build"; return; }
+        a64_kernel_check || return
+        cp "$A64_IMG" "$kimg"
+        par_ready
+        while [ $(qemu_count) -ge 4 ]; do sleep 2; done
+        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 5G -nographic \
+            -semihosting-config enable=on,target=native -kernel "$kimg" -append "canary=a64-boot-alias-narrow" \
+            </dev/null >"$log" 2>&1 &
+        pid=$!
+        while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
+            grep -aqE 'FATAL|KERNEL PANIC|^1\.\.[0-9]' "$log" && break
+            i=$((i + 1)); sleep 0.5
+        done
+        sleep 1
+        kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+        rm -f "$kimg"
+        tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
+        if grep -aq '^1\.\.[0-9]' "$log"; then why="the ktest plan ran: the narrow boot alias did not break the boot"
+        elif ! grep -aqE '^\[MM\] RAM detected via DTB: 0x40000000 - 0x180000000 \(5120 MiB\)$' "$log"; then why="the guest did not see 5120 MiB of RAM"
+        elif grep -aq '^\[MM\] Boot maps extended' "$log"; then why="the canary did not keep the boot alias narrow"
+        elif ! grep -aqE 'FATAL.*(write|data abort).*0xffffff81[0-9a-f]{8}' "$log"; then why="no kernel fault in the linear map above the first gigabyte"
+        fi
+        if [ -z "$why" ]; then ok; rm -f "$log"; return; fi
+        bad; echo "      $why"
+        grep -aE 'FATAL|^\[MM\]|KERNEL PANIC' "$log" | sed -n '1,8p' | sed 's/^/      /'
+        echo "      log kept: $log"
+    }
+    par "ktest above 4 GiB canary (arm)" a64_above_4g_canary_row "ktest above 4 GiB canary (arm)"
     # KASLR on the kernel the gate itself boots. The `kaslr:` rows judge images
     # tools/image/kaslr_image.sh builds with the Makefile's recipes; the rows here
     # boot kernels `kbuild` / `a64_kbuild` build with their own command lines.
