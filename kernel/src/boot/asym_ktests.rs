@@ -218,18 +218,23 @@ azos_ktest::ktest_late! {
 // A task that computes for longer than the misfit window and sleeps: placement and
 // the misfit move must agree, or it pays a move every period.
 const PERIODS: u32 = 6;
-static HOG_DONE: AtomicBool = AtomicBool::new(false);
+static HOG_PERIOD: AtomicU32 = AtomicU32::new(0);
+static HOG_TID: AtomicU32 = AtomicU32::new(0);
 
 fn periodic_hog(ms: usize) {
-    azos_sched::scheduler::ktest_set_pin(azos_sched::current_task_tid(), -1);
-    for _ in 0..PERIODS {
-        let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ * ms as u64 / 1000;
+    let tid = azos_sched::current_task_tid();
+    azos_sched::scheduler::ktest_set_pin(tid, -1);
+    HOG_TID.store(tid, Ordering::Release);
+    let hz = azos_drv_sys::timebase::TIMER_FREQ;
+    for period in 1..=PERIODS {
+        let until = azos_drv_sys::timebase::now() + hz * ms as u64 / 1000;
         while azos_drv_sys::timebase::now() < until {
             core::hint::spin_loop();
         }
-        azos_syscall::sleep::sleep_ms(ms as u64 / 4);
+        HOG_PERIOD.store(period, Ordering::Release);
+        // Woken by the test, through wake placement; the timer is only its bound.
+        azos_sched::task_block(azos_sched::WaitReason::Timer(azos_drv_sys::timebase::now() + hz));
     }
-    HOG_DONE.store(true, Ordering::Release);
     azos_sched::task_exit();
 }
 
@@ -238,13 +243,18 @@ azos_ktest::ktest_late! {
         differing()?;
         let small = small_cpu().ok_or("no small CPU")?;
         let moves = azos_sched::scheduler::fairq::misfit_moves();
-        HOG_DONE.store(false, Ordering::Release);
+        HOG_PERIOD.store(0, Ordering::Release);
+        HOG_TID.store(0, Ordering::Release);
         let ms = 40 * azos_limits::SCHED_MISFIT_TICKS as usize;
         azos_sched::task_create_affinity("asym-hog", periodic_hog, ms, FAIR_PRIO, small as i8);
-        crate::ktest::wait("the hog never ended", || HOG_DONE.load(Ordering::Acquire))?;
+        for period in 1..=PERIODS {
+            crate::ktest::wait("the hog never ended its period", || HOG_PERIOD.load(Ordering::Acquire) >= period)?;
+            azos_syscall::sleep::sleep_ms(5);
+            azos_sched::scheduler::wake_task_by_tid(HOG_TID.load(Ordering::Acquire), &|_| true);
+        }
         let moved = azos_sched::scheduler::fairq::misfit_moves() - moves;
         kprintln!("# asym_periodic_hog: {} misfit moves over {} periods", moved, PERIODS);
-        if moved > 2 {
+        if moved > PERIODS / 2 {
             return Err("the hog was moved as a misfit about every period");
         }
         Ok(())

@@ -2196,7 +2196,7 @@ fn pick_for(loads: &[CpuLoad]) -> usize {
     }
     #[cfg(feature = "ktest")]
     if CANARY_PLACE_SMALL.load(Ordering::Relaxed) {
-        return (0..loads.len()).min_by_key(|&c| topo::capacity(c)).unwrap_or(0);
+        return (0..loads.len()).rev().min_by_key(|&c| topo::capacity(c)).unwrap_or(0);
     }
     if topo::ASYM {
         crate::task::pick_cpu_biggest_of_free(loads, topo::capacity)
