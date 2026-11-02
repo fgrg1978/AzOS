@@ -673,10 +673,10 @@ pub fn free_pages() -> usize {
         // held here, together with its in-flight count; the cache's side is
         // ordered so that a frame is read in the cache or in flight, and for
         // a few instructions in both, never in neither.
-        n += XFER_IN.load(Ordering::Acquire);
+        if !cfg!(feature = "pmm-inflight-canary") { n += XFER_IN.load(Ordering::Acquire); }
         for c in PCP.iter() { n += c.len(); }
         fence(Ordering::Acquire);
-        n += XFER_OUT.load(Ordering::Relaxed);
+        if !cfg!(feature = "pmm-inflight-canary") { n += XFER_OUT.load(Ordering::Relaxed); }
     }
     drop(b);
     if zones_on() {
