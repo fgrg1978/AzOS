@@ -1548,6 +1548,25 @@ pub fn pick_cpu_by_load(loads: &[CpuLoad]) -> usize {
     best
 }
 
+/// [`pick_cpu_by_load`] for a task of the real-time band on CPUs that differ in
+/// capacity (Kconfig `SCHED_ASYM_CPUS`): the load key decides first, so a
+/// hart is never chosen over a freer one, and among CPUs tied on it the one
+/// with the most capacity wins, lowest index on a further tie.
+pub fn pick_cpu_for_rt(loads: &[CpuLoad], capacity: impl Fn(usize) -> u16) -> usize {
+    let key = |i: usize, l: &CpuLoad| (l.rt_blocking, l.blocking, l.total, core::cmp::Reverse(capacity(i)));
+    let mut best = 0usize;
+    let Some(first) = loads.first() else { return 0 };
+    let mut best_key = key(0, first);
+    for (i, l) in loads.iter().enumerate().skip(1) {
+        let k = key(i, l);
+        if k < best_key {
+            best = i;
+            best_key = k;
+        }
+    }
+    best
+}
+
 // ---- K-C12: ready-queue admission policy, isolated as pure logic ----
 
 /// What `cpu_enqueue` must do with one enqueue request.

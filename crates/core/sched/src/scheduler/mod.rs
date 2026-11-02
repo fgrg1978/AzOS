@@ -2152,6 +2152,17 @@ unsafe fn find_best_cpu_scan(prio: u32, exclude: usize, num_online: usize) -> [C
     loads
 }
 
+/// The CPU placement picks from `loads` for a task of priority `prio`: a
+/// real-time-band task takes the biggest of equally loaded CPUs where they
+/// differ in capacity.
+fn pick_for(prio: u32, loads: &[CpuLoad]) -> usize {
+    if topo::ASYM && is_rt_priority(prio) {
+        crate::task::pick_cpu_for_rt(loads, topo::capacity)
+    } else {
+        pick_cpu_by_load(loads)
+    }
+}
+
 #[cfg(not(feature = "sched-o1-placement"))]
 unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
     let num_online = NUM_ONLINE_CPUS.load(Ordering::Acquire).min(MAX_CPUS);
@@ -2159,7 +2170,7 @@ unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
         return 0;
     }
     let loads = find_best_cpu_scan(prio, exclude, num_online);
-    pick_cpu_by_load(&loads[..num_online])
+    pick_for(prio, &loads[..num_online])
 }
 
 /// `ipc-census` cross-check of the histogram against `find_best_cpu_scan`,
@@ -2193,7 +2204,7 @@ unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
     for (cpu, slot) in loads.iter_mut().enumerate().take(num_online) {
         *slot = RESIDENT_HIST.load_excluding(cpu, bucket, rt_threshold, &[excluded_key]);
     }
-    let pick = pick_cpu_by_load(&loads[..num_online]);
+    let pick = pick_for(prio, &loads[..num_online]);
 
     #[cfg(feature = "ipc-census")]
     {
@@ -2207,7 +2218,7 @@ unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
             } else {
                 hist_check::MISMATCH_NO_STALE_KEY.fetch_add(1, Ordering::Relaxed);
             }
-            if pick_cpu_by_load(&scanned[..num_online]) != pick {
+            if pick_for(prio, &scanned[..num_online]) != pick {
                 PICK_DIFF.fetch_add(1, Ordering::Relaxed);
             }
             // First mismatch only, in detail (this runs from the tick ISR:
