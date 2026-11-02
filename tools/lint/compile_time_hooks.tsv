@@ -298,6 +298,8 @@ wdt-sim	pending
 writev-per-segment-canary	pending	
 zone-share-canary	hot	crates/core/mm/src/pmm.rs: the frame allocator
 timer-wake-unbounded-canary	hot	crates/core/sched/src/scheduler/wake.rs: every timer pass of a tick
+timer-rank-canary	hot	crates/core/sched/src/timer_heap.rs: every timer arm
 fair-place-all-canary	hot	crates/core/sched/src/eevdf_core.rs: every wake and block of a fair task
 pi-heap-no-swap-canary	hot	crates/core/sync/src/pi_heap.rs: every wait-graph set operation
+owner-scan-one-hold-canary	hot	crates/core/sync/src/waitgraph.rs: every owner change of a lazy-capable object
 abichild-fat-row	pending	adds /fat read-write to the ABICHILD.ELF row of the built-in topology (crates/core/topology/src/builder.rs), as linux-abi-caps-canary does for LXHELLO: a runtime name needs the row gated at run time too (open)

@@ -585,10 +585,11 @@ def test_domain_defaults_to_generic_and_robot_type_is_wired() -> None:
 
 
 def test_threat_profile_implies_never_forces() -> None:
-    """The physical-access security postures (separation-static and
-    confidential: the threat model is the SECURITY axis) turn CONSOLE_LOCKDOWN
-    on by default, a hand-set n still wins, and the base posture changes no
-    default."""
+    """The physical-access security posture (separation-static: the threat
+    model is the SECURITY axis) turns CONSOLE_LOCKDOWN on by default, a
+    hand-set n still wins, and the base posture changes no default.
+    Confidential needs ARCH_HAS_HYP_MONITOR, which no ISA sets: it is refused
+    and implies nothing."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
@@ -597,11 +598,13 @@ def test_threat_profile_implies_never_forces() -> None:
         assert "CONFIG_SECURITY_GENERAL=y" in base
         assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in base
         assert "CONFIG_MITIGATION_SPECTRE_V1_INDEX=y" in base
-        for posture in ("SEPARATION_STATIC", "CONFIDENTIAL"):
-            phys = _expand(["CONFIG_PRESET_ROBOT=y", f"CONFIG_SECURITY_{posture}=y"], t, "b.config")
-            for sym in ("CONSOLE_LOCKDOWN", "SECURE_BOOT_ENFORCED", "OTA_SIG_MANDATORY",
-                        "LINK_PROVISIONING_ENFORCED", "MITIGATION_SPECTRE_V1_INDEX"):
-                assert f"CONFIG_{sym}=y" in phys, f"SECURITY_{posture} did not imply {sym}"
+        phys = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_SECURITY_SEPARATION_STATIC=y"], t, "b.config")
+        for sym in ("CONSOLE_LOCKDOWN", "SECURE_BOOT_ENFORCED", "OTA_SIG_MANDATORY",
+                    "LINK_PROVISIONING_ENFORCED", "MITIGATION_SPECTRE_V1_INDEX"):
+            assert f"CONFIG_{sym}=y" in phys, f"SECURITY_SEPARATION_STATIC did not imply {sym}"
+        conf = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_SECURITY_CONFIDENTIAL=y"], t, "k.config")
+        assert "CONFIG_SECURITY_CONFIDENTIAL=y" not in conf, "confidential was selectable without a monitor"
+        assert "CONFIG_CONSOLE_LOCKDOWN=y" not in conf, "a refused posture implied the lockdown"
         hard = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_SECURITY_HARDENED=y"], t, "h.config")
         assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in hard, "hardened implied the physical-access set"
         # The brain-link switch exists only in the Robot domain (wave 11).
@@ -972,7 +975,7 @@ def test_page_size_reaches_the_build() -> None:
 # receipts, the introspection tree, the network bring-up and the autorun task
 # (`base` tags on symbols that default y everywhere; INSPECT is y on embedded
 # too since the tree replaced procfs: the native services have no other view).
-ALWAYS_BASE = ("sched-o1-placement", "sched-ipc-affinity", "sched-timer-heap", "decisions-durable",
+ALWAYS_BASE = ("sched-o1-placement", "sched-ipc-affinity", "decisions-durable",
                "inspect", "net", "autorun", "virtio-input", "virtio-snd", "rtc")
 # Base features of every hardware class but embedded (`default n if HWCLASS_EMBEDDED`).
 FULL_PROFILE_BASE = ("crashdump", "decisions")
@@ -1073,14 +1076,12 @@ def test_generic_drops_only_the_domain_feature() -> None:
 
 
 def test_scheduler_options_follow_their_symbols() -> None:
-    """SCHED_O1_PLACEMENT / SCHED_TIMER_HEAP / SCHED_IPC_AFFINITY are y by
-    default and each, set n, drops exactly its own feature."""
+    """SCHED_O1_PLACEMENT / SCHED_IPC_AFFINITY are y by default and each, set n, drops exactly its own feature."""
     import tempfile
 
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         for sym, feat in (("SCHED_O1_PLACEMENT", "sched-o1-placement"),
-                          ("SCHED_TIMER_HEAP", "sched-timer-heap"),
                           ("SCHED_IPC_AFFINITY", "sched-ipc-affinity")):
             _expand([f"# CONFIG_{sym} is not set"], t, f"{sym}.config")
             feats = _bridge_args(t / f"{sym}.config")

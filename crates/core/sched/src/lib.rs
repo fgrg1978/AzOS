@@ -191,7 +191,7 @@ pub use wait::{
     wake_fast_ipc_server,
 };
 #[cfg(feature = "ktest")]
-pub use wait::ktest_take_tick_pass_max;
+pub use wait::{ktest_take_tick_pass_max, ktest_wake_order, ktest_wake_order_reset};
 
 /// The shared-memory / MMIO VA window, `[base, limit)`.
 ///
@@ -226,7 +226,6 @@ pub use process::{
 pub fn for_each_percpu_var(f: &mut dyn FnMut(&'static dyn azos_percpu::PerCpuVar)) {
     f(&scheduler::PER_CPU_QUEUES);
     f(&scheduler::rt::RT_CPU);
-    // `sched-timer-heap`: each CPU's timer-sleeper heap (12 B x MAX_TASKS).
-    #[cfg(feature = "sched-timer-heap")]
+    // Each CPU's timer-sleeper heap (13 B x MAX_TASKS).
     f(&scheduler::timer_sleepers::TIMER_HEAPS);
 }

@@ -10415,7 +10415,7 @@ par_row -s drvcontain_row "rt7: promoted on its deadline, demoted on a fault (rv
 # The timer-sleeper heap under the interleavings that lost rt-motor's wake
 # with it (gate 185; fixed in wave 5: the retry re-arm, now in
 # `timer_heap::wake_due`, and `peek_live`), wave 13: `timer-heap-smoke` +
-# `ipc-census` + `sched-timer-heap`, -smp 4, no disk.
+# `ipc-census`, -smp 4, no disk.
 # Three sleepers per hart (1-7 ms periods) raced by one early-waking racer per
 # hart that never wakes a sleeper whose deadline is due, so a lost timer wake
 # is never rescued (kernel/src/smokes/timer_heap_smoke.rs). `[THEAP] PASS`:
@@ -10424,7 +10424,7 @@ par_row -s drvcontain_row "rt7: promoted on its deadline, demoted on a fault (rv
 # Lateness is printed, not judged: the guest clock follows the host's, and
 # host load made it 0.1-1 s with the heap on and off alike.
 theap_row() { # theap_row <isa: rv|arm> [features]
-    local isa="$1" feats="${2:-qemu,sched-timer-heap,ipc-census,timer-heap-smoke}"
+    local isa="$1" feats="${2:-qemu,ipc-census,timer-heap-smoke}"
     printf "  %-26s" "sched: timer heap raced (${isa})..."
     mkdir -p "$CI_LOG_DIR"
     local log="$CI_LOG_DIR/theap-${isa}.log" kimg="$CI_LOG_DIR/kernel-theap-${isa}"
@@ -10454,7 +10454,7 @@ theap_row() { # theap_row <isa: rv|arm> [features]
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     rm -f "$kimg"
     tr -d '\r' < "$log" > "$log.t" && mv "$log.t" "$log"
-    if ! grep -aq "^\[THEAP\] 12 sleepers, 4 racers on 4 harts; heap=true census=true$" "$log" \
+    if ! grep -aq "^\[THEAP\] 12 sleepers, 4 racers on 4 harts; census=true$" "$log" \
        || ! grep -aqx "\[THEAP\] PASS" "$log"; then
         bad; grep -a "THEAP\|FATAL\|PANIC" "$log" | sed -n '1,10p' | sed 's/^/      /'
         echo "      log kept: $log"; return
@@ -11541,6 +11541,7 @@ host_job host_canary_row "futex: look spins on MEMOBJS canary" syscall-tests mem
 # waiter returns 0 with the edge in place.
 host_job host_canary_row "wait graph: heap shape canary" sync-tests pi-heap-no-swap-canary \
     heap_matches_a_sorted_model_and_keeps_its_spine_logarithmic --test=waitgraph_heaps
+host_job host_canary_row "timer heap: rank canary" sched-wake-tests timer-rank-canary wake_due_pops_the_urgent_class_first
 host_job host_canary_row "tlbi: no ceiling canary" arch-tests tlbi-no-ceiling-canary a_shootdown_past_the_ceiling_is_one_flush
 host_job host_canary_row "munmap: stack batch canary" syscall-tests unmap-stack-batch-canary a_release_unmaps_a_region_with_one_shootdown_per_batch
 # The suite's thp_vmm tests pass without testing anything on a cell with MM_THP_RESV off,
@@ -15411,7 +15412,7 @@ PY
     # lockdep's report fails `lockdep_spinlock_hold_bounded`.
     KTEST_HOLD_US=100
     # The tests that need a second CPU answer `not ok` at -smp 1 (they say so).
-    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running save_gate_stuck_top_lets_lower_run tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter stuck_cpu_detector_names_the_cpu"
+    KTEST_HOLD_SMP1="memobj_clone_stays_a_snapshot_against_maps_in_flight pmm_free_pages_counts_frames_in_flight lockdep_rt_tasks_share_only_spinlocks sched_deferred_tick_counted_as_preemption unswitched_block_returns_running save_gate_stuck_top_lets_lower_run tlb_shootdown_cross_cpu spin_lock_contended_cross_cpu spin_lock_fifo_bounded fat_claim_waiter_donates_to_owner shootdown_reaches_a_masked_lock_waiter stuck_cpu_detector_names_the_cpu"
     KTEST_HOLD_RE="^# lockdep: violations=0 .* hold-bound=${KTEST_HOLD_US}us\$"
     KTEST_HOLD_CANARY_RE='^# lockdep: SpinLock held past LOCK_MAX_HOLD_US; SpinLock kernel/src/ktest\.rs:'
     ktest_hold_cfg() { # ktest_hold_cfg <Kconfig file> <defconfig name>: the row's configuration, checked
@@ -15454,6 +15455,11 @@ PY
     pi_heap_hold_row() { KTEST_HOLD_FEAT=",pi-heap-no-swap-canary" ktest_hold_row "$1" "$2" "$KTEST_HOLD_SMP1 irqoff_wait_graph_user_sized" "" "$KTEST_HOLD_PI_RE"; }
     par "ktest hold bound, pi heap canary, -icount (rv)" pi_heap_hold_row "ktest hold bound, pi heap canary, -icount (rv)" rv
     par "ktest hold bound, pi heap canary, -icount (arm)" pi_heap_hold_row "ktest hold bound, pi heap canary, -icount (arm)" arm
+    # An owner change of an object with thousands of lazy waiters joins them in holds of 64 slots;
+    # `owner-scan-one-hold-canary` joins them all in one and the hold goes past the bound.
+    owner_scan_hold_row() { KTEST_HOLD_FEAT=",owner-scan-one-hold-canary" ktest_hold_row "$1" "$2" "$KTEST_HOLD_SMP1 irqoff_wait_graph_user_sized" "" "$KTEST_HOLD_PI_RE"; }
+    par "ktest hold bound, lazy owner scan canary, -icount (rv)" owner_scan_hold_row "ktest hold bound, lazy owner scan canary, -icount (rv)" rv
+    par "ktest hold bound, lazy owner scan canary, -icount (arm)" owner_scan_hold_row "ktest hold bound, lazy owner scan canary, -icount (arm)" arm
     ktest_icount_row() { KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" ktest_row "$@"; }
     # A storm of sleepers on one instant and one CPU (`irqoff_timer_storm`): one tick wakes
     # SCHED_TIMER_WAKES_PER_IRQ, each placed on FAIR_PLACE_SAMPLE queued tasks.
@@ -15462,6 +15468,10 @@ PY
     par "ktest timer wake bound canary, -icount (arm)" ktest_icount_row "ktest timer wake bound canary, -icount (arm)" arm ",timer-wake-unbounded-canary" \
         "$KTEST_HOLD_SMP1 irqoff_timer_storm"
     par "ktest fair place bound canary, -icount (rv)" ktest_icount_row "ktest fair place bound canary, -icount (rv)" rv ",fair-place-all-canary" \
+        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
+    par "ktest timer rank canary, -icount (rv)" ktest_icount_row "ktest timer rank canary, -icount (rv)" rv ",timer-rank-canary" \
+        "$KTEST_HOLD_SMP1 irqoff_timer_storm"
+    par "ktest timer rank canary, -icount (arm)" ktest_icount_row "ktest timer rank canary, -icount (arm)" arm ",timer-rank-canary" \
         "$KTEST_HOLD_SMP1 irqoff_timer_storm"
     par "ktest fair place bound canary, -icount (arm)" ktest_icount_row "ktest fair place bound canary, -icount (arm)" arm ",fair-place-all-canary" \
         "$KTEST_HOLD_SMP1 irqoff_timer_storm"
@@ -17122,8 +17132,12 @@ PY
         "$KTEST_HOLD_SMP1_X86 lockdep_spinlock_hold_bounded" "canary=lockdep-hold" "$KTEST_HOLD_CANARY_RE"
     x86_pi_heap_hold_row() { KTEST_HOLD_FEAT=",pi-heap-no-swap-canary" x86_ktest_hold_row "$1" "$KTEST_HOLD_SMP1_X86 irqoff_wait_graph_user_sized" "" "$KTEST_HOLD_PI_RE"; }
     par "ktest hold bound, pi heap canary, -icount (x86)" x86_pi_heap_hold_row "ktest hold bound, pi heap canary, -icount (x86)"
+    x86_owner_scan_hold_row() { KTEST_HOLD_FEAT=",owner-scan-one-hold-canary" x86_ktest_hold_row "$1" "$KTEST_HOLD_SMP1_X86 irqoff_wait_graph_user_sized" "" "$KTEST_HOLD_PI_RE"; }
+    par "ktest hold bound, lazy owner scan canary, -icount (x86)" x86_owner_scan_hold_row "ktest hold bound, lazy owner scan canary, -icount (x86)"
     x86_ktest_icount_row() { X86_CPU="max,-x2apic" KTEST_SMP=1 KTEST_QEMU_EXTRA="-icount shift=0,sleep=off" x86_ktest_row "$@"; }
     par "ktest timer wake bound canary, -icount (x86)" x86_ktest_icount_row "ktest timer wake bound canary, -icount (x86)" ",timer-wake-unbounded-canary" \
+        "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"
+    par "ktest timer rank canary, -icount (x86)" x86_ktest_icount_row "ktest timer rank canary, -icount (x86)" ",timer-rank-canary" \
         "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"
     par "ktest fair place bound canary, -icount (x86)" x86_ktest_icount_row "ktest fair place bound canary, -icount (x86)" ",fair-place-all-canary" \
         "$KTEST_HOLD_SMP1_X86 irqoff_timer_storm"

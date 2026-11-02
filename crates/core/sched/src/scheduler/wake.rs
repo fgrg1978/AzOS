@@ -314,10 +314,8 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
             // see `timer_sleepers` for why never before.
             // The instant it was armed at: its deadline, or (QoS timer
             // tolerance) a wake-up already scheduled inside its slack window.
-            #[cfg(feature = "sched-timer-heap")]
             #[cfg_attr(feature = "oneshot-canary", allow(unused_assignments, unused_variables))]
             let mut armed_at = None;
-            #[cfg(feature = "sched-timer-heap")]
             #[cfg_attr(feature = "oneshot-canary", allow(unused_assignments))]
             if committed {
                 if let WaitReason::Timer(deadline) = reason {
@@ -338,7 +336,6 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
             #[cfg(not(feature = "oneshot-canary"))]
             if committed {
                 if let WaitReason::Timer(deadline) = reason {
-                    #[cfg(feature = "sched-timer-heap")]
                     let deadline = armed_at.unwrap_or(deadline);
                     if deadline != u64::MAX {
                         azos_drv_sys::timebase::arm_if_earlier(deadline);
@@ -1377,35 +1374,18 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
 /// rather than firing at a fixed periodic rate.  Returns `None` if no tasks
 /// are currently sleeping on a timer.
 ///
-/// With `sched-timer-heap` this is the heap's top after dropping stale
-/// entries (see [`timer_sleepers`]); without it, the O(`MAX_TASKS`) sweep
-/// below. Under `ipc-census` the heap build also runs the sweep and counts
+/// The heap's top after dropping stale entries (see [`timer_sleepers`]).
+/// Under `ipc-census` it also sweeps this CPU's slots and counts
 /// disagreements (`timer_sleepers::NEAREST_MISMATCH`).
 pub fn nearest_timer_deadline() -> Option<u64> {
-    #[cfg(feature = "sched-timer-heap")]
-    let got = {
-        let got = timer_sleepers::nearest();
-        #[cfg(feature = "ipc-census")]
-        timer_sleepers::check_nearest(got, nearest_timer_deadline_sweep_where(timer_sleepers::owned_here));
-        got
-    };
-    #[cfg(not(feature = "sched-timer-heap"))]
-    let got = nearest_timer_deadline_sweep();
+    let got = timer_sleepers::nearest();
+    #[cfg(feature = "ipc-census")]
+    timer_sleepers::check_nearest(got, nearest_timer_deadline_sweep_where(timer_sleepers::owned_here));
     got.map(super::chaos_deadline)
 }
 
-/// The O(`MAX_TASKS`) sweep: the whole of `nearest_timer_deadline` without
-/// `sched-timer-heap` (its census cross-check sweeps this CPU's slots only).
-#[cfg_attr(feature = "sched-timer-heap", allow(dead_code))]
-fn nearest_timer_deadline_sweep() -> Option<u64> {
-    nearest_timer_deadline_sweep_where(|_| true)
-}
-
-/// The sweep over the slots `keep` selects (the census: this CPU's heap's).
-#[cfg_attr(
-    all(feature = "sched-timer-heap", not(feature = "ipc-census")),
-    allow(dead_code)
-)]
+/// The census's sweep over the slots `keep` selects (this CPU's heap's).
+#[cfg(feature = "ipc-census")]
 #[inline(always)]
 fn nearest_timer_deadline_sweep_where(keep: impl Fn(usize) -> bool) -> Option<u64> {
     let mut min_deadline: Option<u64> = None;
@@ -1418,7 +1398,6 @@ fn nearest_timer_deadline_sweep_where(keep: impl Fn(usize) -> bool) -> Option<u6
             if task.state_acquire() != TaskState::Blocked { continue; }
             if let WaitReason::Timer(deadline) = task.wait_reason.load() {
                 // The instant the heap fires it at (QoS timer slack).
-                #[cfg(feature = "sched-timer-heap")]
                 let deadline = timer_sleepers::fire_of(i, deadline);
                 min_deadline = Some(match min_deadline {
                     Some(cur) => cur.min(deadline),
@@ -1430,13 +1409,12 @@ fn nearest_timer_deadline_sweep_where(keep: impl Fn(usize) -> bool) -> Option<u6
     min_deadline
 }
 
-/// `wait::wake_expired_timers` with `sched-timer-heap`: the pure pass
+/// `wait::wake_expired_timers`: the pure pass
 /// `timer_heap::wake_due` (batches of `SCHED_TIMER_WAKE_BATCH`, the lock
 /// never held across a wake, the retry re-armed with a deadline read under
 /// the lock) over the live heap, waking each popped slot with the sweep's
 /// own predicate. The host runner drives the same pass under a model of
 /// another hart (`timer_heap`'s `wake_due_*` tests).
-#[cfg(feature = "sched-timer-heap")]
 pub(crate) fn wake_expired_timers_heap(now_ticks: u64) -> usize {
     let due = timer_sleepers::Due::here();
     if !due.ready() {

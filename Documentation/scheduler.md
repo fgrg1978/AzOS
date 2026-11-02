@@ -265,9 +265,9 @@ Source: `crates/drivers/sys/src/nohz.rs`, `crates/drivers/sys/src/timebase.rs` (
 
 ## Timer sleepers
 
-With `SCHED_TIMER_HEAP` (cargo `sched-timer-heap`), a task that sleeps on a timer is armed in an indexed min-heap (`timer_heap::TimerHeap`) on the CPU it blocks on, with one entry per task slot; each CPU has its own heap and lock (`SCHED_TIMER_HEAP_PER_CPU`; off, one heap for the machine). That CPU's tick pops the due entries, at most `SCHED_TIMER_WAKE_BATCH` per hold of the heap lock (`wake_expired_timers`), and `nearest_timer_deadline` feeds the tickless comparator. Entries are not removed when a sleeper is woken another way; the top entry is validated against the live task (`peek_live`) when it is reached. Without the heap, the tick sweeps every task slot. See [time.md](time.md) for the clocks the deadlines are read on.
+A task that sleeps on a timer is armed in an indexed min-heap (`timer_heap::TimerHeap`) on the CPU it blocks on, with one entry per task slot; each CPU has its own heap and lock (`SCHED_TIMER_HEAP_PER_CPU`; off, one heap for the machine). That CPU's tick pops the due entries, at most `SCHED_TIMER_WAKE_BATCH` per hold of the heap lock (`wake_expired_timers`), and `nearest_timer_deadline` feeds the tickless comparator. Entries are not removed when a sleeper is woken another way; the top entry is validated against the live task (`peek_live`) when it is reached. See [time.md](time.md) for the clocks the deadlines are read on.
 
-Source: `crates/core/sched/src/timer_heap.rs`, `crates/core/sched/src/timer_sleepers.rs`, `crates/core/sched/src/wait.rs`, `config/kernel/Kconfig.sched` (`SCHED_TIMER_HEAP`, `SCHED_TIMER_HEAP_PER_CPU`, `SCHED_TIMER_WAKE_BATCH`).
+Source: `crates/core/sched/src/timer_heap.rs`, `crates/core/sched/src/timer_sleepers.rs`, `crates/core/sched/src/wait.rs`, `config/kernel/Kconfig.sched` (`SCHED_TIMER_HEAP_PER_CPU`, `SCHED_TIMER_WAKE_BATCH`).
 
 ## Module layout
 
@@ -295,7 +295,7 @@ The crate root (`lib.rs`) declares the model modules and re-exports the API. The
 | `scheduler::classes` | `src/classes.rs` | class implementations, SC table, wait-graph hooks |
 | `scheduler::fairq` | `src/fairq.rs` | fair class queue over EEVDF |
 | `scheduler::energy` | `src/energy.rs` | utilisation signals, installed model, policy (feature `energy`) |
-| `scheduler::timer_sleepers` | `src/timer_sleepers.rs` | per-CPU timer-sleeper heaps (feature `sched-timer-heap`) |
+| `scheduler::timer_sleepers` | `src/timer_sleepers.rs` | per-CPU timer-sleeper heaps |
 | `scheduler::resident_histogram` | `src/resident_histogram.rs` | per-CPU, per-priority resident counts for wake placement |
 | `scheduler::ipc_direct` | `src/ipc_direct.rs` | eligibility rule of the fast-IPC same-hart direct switch (pure) |
 | `scheduler::tid_alloc`, `scheduler::slot_bitmap` | `src/tid_alloc.rs`, `src/slot_bitmap.rs` | TID candidate search, task-slot bitmap (pure) |

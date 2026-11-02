@@ -32,5 +32,8 @@ pi-exited-owner-canary = []
 # A wait-graph heap loses its leftist shape: `irqoff_wait_graph_user_sized` holds
 # the graph lock past LOCK_MAX_HOLD_US, and the host test's visits grow with the set.
 pi-heap-no-swap-canary = []
+# `Graph::set_owner` takes the lazy scan in one hold again: with thousands of lazy
+# waiters `irqoff_wait_graph_user_sized` holds the graph lock past LOCK_MAX_HOLD_US.
+owner-scan-one-hold-canary = []
 pi-state-leak-canary = []
 pi-keep-edge-canary = []

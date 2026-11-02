@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Wave 13 (RT7, P2): timer sleepers under the interleavings that lost
-//! rt-motor's wake with `sched-timer-heap` (gate 185), on every hart.
-//! Feature `timer-heap-smoke`; meaningful with and without the heap.
+//! rt-motor's wake with the timer heap (gate 185), on every hart.
+//! Feature `timer-heap-smoke`.
 //!
 //! [`PER_HART`] sleepers per online hart, pinned, block on
 //! `WaitReason::Timer(d)`: even ones with periods of 1..=7 ms, odd ones with
@@ -101,8 +101,8 @@ pub(crate) fn spawn() {
             azos_sched::DEFAULT_PRIORITY, c as i8);
     }
     azos_sched::task_create("theap-obs", observer, 0, azos_sched::DEFAULT_PRIORITY);
-    kprintln!("[THEAP] {} sleepers, {} racers on {} harts; heap={} census={}",
-        PER_HART * h, h, h, cfg!(feature = "sched-timer-heap"), cfg!(feature = "ipc-census"));
+    kprintln!("[THEAP] {} sleepers, {} racers on {} harts; census={}",
+        PER_HART * h, h, h, cfg!(feature = "ipc-census"));
 }
 
 /// Sleeper `i`'s next period: 1..=7 ms for even `i`, 20..=100 us for odd.
@@ -206,9 +206,9 @@ fn observer(_: usize) {
     }
     STOP.store(true, Ordering::Release);
     let worst_us = worst * 1_000_000 / TIMER_FREQ;
-    #[cfg(all(feature = "sched-timer-heap", feature = "ipc-census"))]
+    #[cfg(feature = "ipc-census")]
     let lost = azos_sched::scheduler::timer_sleepers::MISSED_BY[3].load(Ordering::Relaxed);
-    #[cfg(not(all(feature = "sched-timer-heap", feature = "ipc-census")))]
+    #[cfg(not(feature = "ipc-census"))]
     let lost = 0u32;
     if why.is_empty() && lost != 0 {
         why = "the census counted a lost sleeper";

@@ -43,11 +43,10 @@ config SCHED_HZ_FLOOR
       every build so a drift is a hard build error, not a silent one.
 
 config SCHED_TIMER_HEAP_PER_CPU
-    bool "One timer-sleeper heap per CPU (sched-timer-heap)"
-    depends on SCHED_TIMER_HEAP
+    bool "One timer-sleeper heap per CPU"
     default y
     help
-      With the `sched-timer-heap` cargo feature, each CPU keeps its own
+      Each CPU keeps its own
       heap of timer sleepers, like Linux's per-CPU hrtimer bases. A task
       that sleeps on a timer is armed on the heap of the CPU it blocks
       on; that CPU's tick ISR pops it and that CPU's tickless comparator
@@ -61,19 +60,19 @@ config SCHED_TIMER_HEAP_PER_CPU
       spinning ISR waits until the next virtual deadline (measured: 50 ms
       timer ISRs on riscv64 -smp 2).
 
-      Cost: 12 B x MAX_TASKS per CPU the board has (in each CPU's
+      Cost: 13 B x MAX_TASKS per CPU the board has (in each CPU's
       per-CPU area, from the frame allocator at boot; NR_CPUS does not
-      scale it), plus 1 B per task slot: 768 B per CPU at the edge
-      profile's 64 tasks, 48 KiB per CPU at fleet's 4096. Off, one heap
+      scale it), plus 1 B per task slot: 832 B per CPU at the edge
+      profile's 64 tasks, 52 KiB per CPU at fleet's 4096. Off, one heap
       (CPU 0's area). Instructions per sleep and per tick: one byte store
       and the hart id read, none of them on another CPU's lines.
 
 config SCHED_TIMER_WAKE_BATCH
-    int "Timer sleepers popped per heap lock hold (sched-timer-heap)"
+    int "Timer sleepers popped per heap lock hold"
     range 1 64
     default 8
     help
-      With the `sched-timer-heap` cargo feature (a kernel default), a
+      A
       tick's pass over due timer sleepers (`timer_heap::wake_due`) pops at
       most this many entries per hold of the sleeper-heap lock, then drops
       the lock to wake them (wakes take the run-queue locks, which never
@@ -85,17 +84,17 @@ config SCHED_TIMER_WAKE_BATCH
       a deadline (periodic tasks on one grid) and the round trips show in
       the tick; lower it when the masked window bounds an interrupt
       latency budget.
-      Ignored without the heap (the per-tick sweep has no batch).
 
 config SCHED_TIMER_WAKES_PER_IRQ
-    int "Timer sleepers woken per timer interrupt (sched-timer-heap)"
+    int "Timer sleepers woken per timer interrupt"
     range 1 16384
     default 16
     help
       The most due sleepers one timer interrupt wakes, its interrupts masked
       for all of them. How many threads sleep to one instant is a user's to
       choose; the ones left stay due, and the same interrupt arms the timer
-      for their deadline, so the next one comes as soon as interrupts open:
+      for their deadline, so the next one comes as soon as interrupts open
+      (among sleepers due at the same instant, the more urgent class first):
       any pending interrupt, and the first woken tasks, run in between. Linux
       has no such bound for its hard-interrupt hrtimers, only a retry limit
       after the pass.
@@ -103,7 +102,6 @@ config SCHED_TIMER_WAKES_PER_IRQ
       Raise it when many sleepers share a deadline and must all run in one
       tick's order; a storm past it costs one more interrupt and one more
       pick per this many sleepers.
-      Ignored without the heap (the per-tick sweep has no bound).
 
 # ---------------------------------------------------------------------------
 # QoS timer tolerance (timer coalescing by QoS tier, after Apple's timer
@@ -112,7 +110,6 @@ config SCHED_TIMER_WAKES_PER_IRQ
 # ---------------------------------------------------------------------------
 config QOS_TIMER_TOLERANCE
     bool "QoS timer tolerance: a task's QoS tier lets its timers fire late and share wake-ups"
-    depends on SCHED_TIMER_HEAP
     default y if PRESET_DESKTOP || PRESET_IOT_HMI || PRESET_WEARABLE || \
                  PRESET_ROBOT || PRESET_INDUSTRIAL || PRESET_AUTOMOTIVE
     default n
@@ -222,15 +219,6 @@ config SCHED_O1_PLACEMENT
       field the score depends on, instead of scanning MAX_TASKS. Off: the
       scan, and no histogram to maintain. The maintenance is paid on every
       block and wake, the saving on machines with more than one hart online.
-
-config SCHED_TIMER_HEAP
-    # cargo-feature: sched-timer-heap
-    bool "Timer sleepers in an indexed min-heap"
-    default y
-    help
-      Timer sleepers live in a min-heap: `wake_expired_timers` and
-      `nearest_timer_deadline` visit only the due sleepers instead of
-      sweeping MAX_TASKS every tick. Off: the per-tick sweep.
 
 config SCHED_IPC_AFFINITY
     # cargo-feature: sched-ipc-affinity

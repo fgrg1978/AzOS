@@ -14,7 +14,7 @@
 //!   soft CBS reservation of [`CBS_RUNTIME_US`] per period;
 //! * `mode=best-effort` — the waker at `DEFAULT_PRIORITY`, competing as an
 //!   equal.
-//! One line each: `[TAIL] isa=.. mode=.. heap=.. n=.. mean_ns=.. p50_ns=..
+//! One line each: `[TAIL] isa=.. mode=.. n=.. mean_ns=.. p50_ns=..
 //! p99_ns=.. p999_ns=.. max_ns=.. worst=.. overruns=..`, then `[TAIL] done`.
 //! Measured under `-smp 1 -icount shift=0,sleep=off`: one virtual ns per
 //! guest instruction, so the numbers do not move with host load.
@@ -129,10 +129,10 @@ fn waker(_: usize) {
     v.sort_unstable();
     let pct = |p: usize, of: usize| v[(v.len() * p).div_ceil(of).saturating_sub(1)];
     let mean = v.iter().sum::<u64>() / v.len() as u64;
-    kprintln!("[TAIL] isa={} mode={} heap={} n={} mean_ns={} p50_ns={} p99_ns={} p999_ns={} max_ns={} \
+    kprintln!("[TAIL] isa={} mode={} n={} mean_ns={} p50_ns={} p99_ns={} p999_ns={} max_ns={} \
                worst={} overruns={} msgs={}",
         if cfg!(target_arch = "riscv64") { "riscv64" } else { "aarch64" },
-        if mode == 0 { "rt-cbs" } else { "best-effort" }, cfg!(feature = "sched-timer-heap"),
+        if mode == 0 { "rt-cbs" } else { "best-effort" },
         N, ticks_to_ns(mean), ticks_to_ns(pct(50, 100)), ticks_to_ns(pct(99, 100)),
         ticks_to_ns(pct(999, 1000)), ticks_to_ns(v[N - 1]), worst, overruns,
         MSGS.load(Ordering::Relaxed));
