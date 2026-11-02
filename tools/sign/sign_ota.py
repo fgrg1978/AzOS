@@ -78,6 +78,27 @@ def kernel_sig(priv: sigalg.Signer, image: bytes, fw_version: int) -> bytes:
 
 # ── Whole-system update bundle (crates/core/ota/src/update.rs) ───────────────
 
+# The TPM floor is a bit field: epoch n is bit n - 1, so the driver's FLOOR_MAX
+# is the highest epoch a device with OTA_FLOOR_TPM_NV can confirm. The number
+# is read from the driver, not repeated here.
+TPM_DRIVER = Path(azos_tools.ROOT) / "crates/drivers/tpm/src/tpm.rs"
+
+
+def floor_max() -> int:
+    """The highest epoch the TPM floor can hold (`FLOOR_MAX` in the TPM driver)."""
+    m = re.search(r"^pub const FLOOR_MAX: u32 = (\d+);", TPM_DRIVER.read_text(), re.M)
+    if not m:
+        raise SystemExit(f"error: no FLOOR_MAX in {TPM_DRIVER}")
+    return int(m.group(1))
+
+
+def floor_in_tpm(kconfig: Path) -> bool:
+    """Does the configuration the image is built from keep the floor in a TPM NV index?"""
+    try:
+        return "CONFIG_OTA_FLOOR_TPM_NV=y" in kconfig.read_text().splitlines()
+    except FileNotFoundError:
+        return False
+
 UPDATE_MAGIC = b"AZUM"
 UPDATE_FORMAT = 1
 UPDATE_DOMAIN = b"AZOS-SYSUPDATE-V1\0"
@@ -130,12 +151,20 @@ def bundle_main(argv: list) -> int:
     p.add_argument("--config-sig", type=Path, default=None, help="CONFIG.SIG")
     p.add_argument("--image", type=Path, action="append", default=[], help="a userspace program, NAME.ELF")
     p.add_argument("--priv", type=Path, default=Path(azos_tools.ROOT) / "tools/keys/dev_priv.bin")
+    p.add_argument("--kconfig", type=Path,
+                   default=Path(os.environ.get("KCONFIG_CONFIG") or Path(azos_tools.ROOT) / ".config"),
+                   help="the .config the image is built from (default: $KCONFIG_CONFIG, then .config)")
     a = p.parse_args(argv)
 
     for v in (a.epoch, a.fw_version):
         if not 0 <= v <= 0xFFFF_FFFF:
             print("error: --epoch and --fw-version must fit in a u32", file=sys.stderr)
             return 1
+    if floor_in_tpm(a.kconfig) and a.epoch > floor_max():
+        print(f"error: --epoch {a.epoch} is above {floor_max()}, the highest epoch the TPM floor "
+              f"(OTA_FLOOR_TPM_NV in {a.kconfig}) can hold: the device could never confirm it",
+              file=sys.stderr)
+        return 1
     priv = load_key(a.priv)
     kernel = a.kernel.read_bytes()
     ksig = a.kernel_sig.read_bytes() if a.kernel_sig else kernel_sig(priv, kernel, a.fw_version)

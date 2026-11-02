@@ -184,6 +184,9 @@ fi
 # The ring-3 images follow the .config (tools/image/test_user_images.py): an image off in it is on no digest table and no system volume.
 [ "$lints" = 1 ] && { printf "  %-26s" "user images..."; if out="$(python3 tools/image/test_user_images.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^FAIL' | sed -n 1,5p | sed 's/^/      /'; fi; }
 
+# The TPM floor holds epochs up to FLOOR_MAX: the signing tool refuses a bundle above it (tools/sign/test_sign_ota_epoch.py); the canary signs one.
+[ "$lints" = 1 ] && { printf "  %-26s" "ota epoch cap..."; if out="$(python3 tools/sign/test_sign_ota_epoch.py 2>&1 && python3 tools/sign/test_sign_ota_epoch.py --canary 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # The SDK is keyed by what changes its bytes (tools/build/test_sdk_build.py; --build builds it and is run by hand).
 [ "$lints" = 1 ] && { printf "  %-26s" "sdk keys..."; if out="$(python3 tools/build/test_sdk_build.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -E '^FAIL' | sed -n 1,5p | sed 's/^/      /'; fi; }
 

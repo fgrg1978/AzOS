@@ -98,7 +98,7 @@ ROLES = {
     "sign": [
         "check_board_keys.py", "check_prod_key.sh", "corrupt_sig.py", "device_provision.py",
         "gen_config_sig.py", "gen_dev_key.py", "gen_prod_key.py", "gen_test_key.py", "link_key_provision.py",
-        "seed_provision.py", "sigalg.py", "sign_ota.py",
+        "seed_provision.py", "sigalg.py", "sign_ota.py", "test_sign_ota_epoch.py",
     ],
     "bench": [
         "lat_linux/", "limits_cost.py", "linux_seccomp_launch/",
