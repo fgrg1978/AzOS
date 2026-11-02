@@ -11166,6 +11166,14 @@ host_job host_canary_row "envelope: config row canary" actuation-tests envelope-
 host_job host_canary_row "envelope: ota row canary" actuation-tests envelope-row-canary an_ota_row_stops_a_domain_at_the_step_its_level_reaches
 host_job host_canary_row "envelope: rt_time row canary" actuation-tests envelope-row-canary an_rt_time_row_caps_what_one_reservation_may_take
 host_job host_canary_row "envelope: reserve canary" sched-policy-tests rt-envelope-canary a_reservation_the_row_holds_is_refused_and_leaves_one_record
+# The flight recorder's boot replay is bounded by the newest file, not the
+# history: a file opens with the latch, nonce floor and key pin as of its open,
+# the walk ends there, and once the names have wrapped the newest file is found
+# by the serial in its header. Each canary breaks one of the three; the named
+# test, alone, must go red.
+host_job host_canary_row "logger: replay snapshot canary" behavior-tests replay-snapshot-canary a_long_history_costs_one_file_and_a_few_lookups
+host_job host_canary_row "logger: rotation latch canary" behavior-tests rotate-latch-canary a_rotation_carries_the_latch_and_the_nonce_into_the_new_file
+host_job host_canary_row "logger: wrap tail canary" behavior-tests wrap-tail-canary after_the_wrap_the_newest_file_is_found_by_its_serial
 # Proxy execution (`rt_core::proxy_chain`): a reservation whose holder is blocked
 # in a call never finds the passive server that works on it.
 host_job host_canary_row "sched: proxy execution canary" sched-policy-tests rt-proxy-canary \

@@ -2390,10 +2390,10 @@ mod flight_recorder_format {
         assert_eq!(bytes.len(), LOG_FILE_HEADER_BYTES);
         assert_eq!(&bytes[0..4], LOG_FILE_MAGIC, "magic must be RBL1");
         assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), LOG_FILE_VERSION);
-        assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), 0, "reserved u16");
-        let mut ts = [0u8; 8];
-        ts.copy_from_slice(&bytes[8..16]);
-        assert_eq!(u64::from_le_bytes(ts), 0x0102_0304_0506_0708);
+        assert_eq!(bytes[6], 0, "no state records follow the header");
+        assert_eq!(bytes[7], 0, "reserved");
+        assert_eq!(u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]), 0, "the session serial");
+        assert_eq!(u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]), 0x0506_0708, "open ticks, low word");
         logger_shutdown();
     }
 
@@ -3318,16 +3318,43 @@ mod estop_latch_survives_a_reset {
         record(LOG_EVT_SAFETY_VIOLATION, SAFETY_ESTOP, action)
     }
 
-    /// A file as the recorder writes it: the 16-byte header, then records.
+    /// A file of version 1: the 16-byte header, then records, and no state
+    /// snapshot, so a replay reads past it.
     fn file(records: &[[u8; LOG_RECORD_SIZE]]) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend_from_slice(LOG_FILE_MAGIC);
-        v.extend_from_slice(&LOG_FILE_VERSION.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
         v.extend_from_slice(&[0u8; 10]);
         for r in records {
             v.extend_from_slice(r);
         }
         v
+    }
+
+    /// A file as the recorder writes it now: session `serial`, opening with
+    /// the state `carried` (the header counts it), then `records`.
+    fn state_file(serial: u32, carried: &[[u8; LOG_RECORD_SIZE]], records: &[[u8; LOG_RECORD_SIZE]]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(LOG_FILE_MAGIC);
+        v.extend_from_slice(&LOG_FILE_VERSION.to_le_bytes());
+        v.push(carried.len() as u8);
+        v.push(0);
+        v.extend_from_slice(&serial.to_le_bytes());
+        v.extend_from_slice(&[0u8; 4]);
+        for r in carried.iter().chain(records) {
+            v.extend_from_slice(r);
+        }
+        v
+    }
+
+    fn nonce(n: u64) -> [u8; LOG_RECORD_SIZE] {
+        let mut payload = [0u8; LOG_PAYLOAD_BYTES];
+        payload[0] = SAFETY_RELEASE_NONCE;
+        payload[4..8].copy_from_slice(&(n as u32).to_le_bytes());
+        payload[8..12].copy_from_slice(&((n >> 32) as u32).to_le_bytes());
+        let mut out = [0u8; LOG_RECORD_SIZE];
+        LogRecord { ts: 1, kind: LOG_EVT_SAFETY_VIOLATION, flags: 0, payload }.encode(&mut out);
+        out
     }
 
     /// A file the recorder closed by rotation: `records`, then actuator records
@@ -3349,6 +3376,8 @@ mod estop_latch_survives_a_reset {
         open: Option<(usize, usize)>,
         /// Every serial `open` was called on, in order.
         opened: Vec<u32>,
+        /// Directory lookups (`size`).
+        sizes: usize,
     }
 
     impl Disk {
@@ -3359,17 +3388,19 @@ mod estop_latch_survives_a_reset {
 
     impl LogReplaySource for Disk {
         fn size(&mut self, serial: u32) -> Result<Option<u32>, LogStorageError> {
+            self.sizes += 1;
             if self.size_fails_at == Some(serial) {
                 return Err(LogStorageError::Io);
             }
-            Ok(self.files.get(serial as usize).and_then(|f| f.as_ref()).map(|f| f.len() as u32))
+            Ok(self.files.get((serial % LOG_SERIAL_WRAP) as usize).and_then(|f| f.as_ref()).map(|f| f.len() as u32))
         }
 
         fn open(&mut self, serial: u32) -> Result<(), LogStorageError> {
             self.opened.push(serial);
-            match self.files.get(serial as usize) {
+            let name = (serial % LOG_SERIAL_WRAP) as usize;
+            match self.files.get(name) {
                 Some(Some(_)) => {
-                    self.open = Some((serial as usize, 0));
+                    self.open = Some((name, 0));
                     Ok(())
                 }
                 _ => Err(LogStorageError::Unavailable),
@@ -3583,6 +3614,106 @@ mod estop_latch_survives_a_reset {
         ]);
         assert_eq!(replay_boot_latch(&mut d), BootLatch::Armed(0));
         assert_eq!(d.opened, vec![2, 1, 0]);
+    }
+
+    /// A lineage of `n` files, each opening with the state it carried: the
+    /// stop of file 10 is carried into every file after it, the clear in file
+    /// `clear_at` (if any) into every file after that, and the nonce 41 from
+    /// file 20 on.
+    fn lineage(n: u32, clear_at: Option<u32>) -> Vec<Option<Vec<u8>>> {
+        (0..n)
+            .map(|i| {
+                let mut carried = Vec::new();
+                let latched = i > 10 && clear_at.map_or(true, |c| i <= c);
+                if latched {
+                    carried.push(estop(2));
+                }
+                if i >= 20 {
+                    carried.push(nonce(41));
+                }
+                let mut own = Vec::new();
+                if i == 10 {
+                    own.push(estop(2));
+                }
+                if Some(i) == clear_at {
+                    own.push(estop(3));
+                }
+                Some(state_file(i, &carried, &own))
+            })
+            .collect()
+    }
+
+    /// **The boot reads the newest file, not the history.** A stop in file 10,
+    /// carried into each file after it, with 300 files on the medium: the
+    /// latch and the nonce floor come from the newest file alone, and the
+    /// directory is probed `O(log n)` times, not 300.
+    ///
+    /// **Canary.** Ignore `FileScan::snapshot` in `replay_boot` (never end the
+    /// walk at a snapshot): the walk reads 64 files, red. Probe `0..` in
+    /// `replay_tail_serial`: `sizes` is 300, red.
+    #[test]
+    fn a_long_history_costs_one_file_and_a_few_lookups() {
+        let mut d = Disk::of(lineage(300, None));
+        let r = replay_boot(&mut d);
+        assert_eq!((r.latch, r.release_nonce_floor, r.next_serial), (BootLatch::Armed(2), 41, 300));
+        assert_eq!(d.opened, vec![299], "one file");
+        assert!(d.sizes <= 2 * 9 + 2, "{} lookups", d.sizes);
+    }
+
+    /// The clear that ended the stop is the newest decision: later files
+    /// carry no stop, and the walk does not go back to the file that has it.
+    ///
+    /// **Canary.** Carry the latch regardless of `LATCH_CARRY` clearing on a
+    /// release (never `store(0)` in `latch_carry_note`): see the logger-level
+    /// test below.
+    #[test]
+    fn a_clear_is_not_undone_by_an_older_stop() {
+        let mut d = Disk::of(lineage(300, Some(12)));
+        let r = replay_boot(&mut d);
+        assert_eq!(r.latch, BootLatch::Released);
+        assert_eq!(d.opened, vec![299]);
+    }
+
+    /// Files without a snapshot older than the walk's bound cannot rule a stop
+    /// out: the latch is held rather than guessed released.
+    ///
+    /// **Canary.** Drop the `REPLAY_MAX_FILES` arm of `replay_boot`: the walk
+    /// reaches the stop in file 0, `Armed(2)`, which is also the right answer
+    /// but at a cost of 100 files: the `opened` bound is red.
+    #[test]
+    fn a_run_of_files_without_a_snapshot_is_bounded_and_fails_safe() {
+        let mut files: Vec<Option<Vec<u8>>> = (0..100).map(|_| Some(file(&[]))).collect();
+        files[0] = Some(file(&[estop(2)]));
+        let mut d = Disk::of(files);
+        let r = replay_boot(&mut d);
+        assert!(r.latch.latches(), "{:?}", r.latch);
+        assert_eq!(d.opened.len() as u32, REPLAY_MAX_FILES);
+    }
+
+    /// Past the wrap the names are two laps of one sequence: the newest file is
+    /// the one the serial in the headers says, whatever its name, and an older
+    /// lap's stop is not read as the latest. 100 000 + 5 000 sessions, the
+    /// newest at name 4 999.
+    ///
+    /// **Canary.** Take the last name as the newest (the old tail rule): the
+    /// replay reads the older lap's file 99 999, `Armed(2)` and `next_serial`
+    /// 100 000, red on both.
+    #[test]
+    fn after_the_wrap_the_newest_file_is_found_by_its_serial() {
+        let w = LOG_SERIAL_WRAP;
+        let files: Vec<Option<Vec<u8>>> = (0..w)
+            .map(|name| {
+                let serial = if name < 5_000 { w + name } else { name };
+                let stale_stop = if name == w - 1 { vec![estop(2)] } else { vec![] };
+                Some(state_file(serial, &[], &stale_stop))
+            })
+            .collect();
+        let mut d = Disk::of(files);
+        let r = replay_boot(&mut d);
+        assert_eq!(r.next_serial, w + 5_000);
+        assert_eq!(r.latch, BootLatch::Released, "the older lap's stop");
+        assert!(d.opened.len() <= 17 + 4, "a bisection over the names, then the newest file: {}", d.opened.len());
+        assert!(d.sizes <= 40, "{} lookups", d.sizes);
     }
 }
 

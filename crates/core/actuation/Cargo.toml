@@ -12,6 +12,13 @@ qemu = []
 # Gate canary only (kernel `rt-io-canary`): the RT-caller probe is ignored,
 # so an RT task's `logger_flush` does the block I/O itself.
 rt-flush-canary = []
+# Gate canaries only (host suite `behavior-tests`): the replay does not end its
+# walk at a file's state records; a rotation leaves the latch out of the new
+# file's state records; the replay takes the last name, not the newest serial,
+# once the names have wrapped.
+replay-snapshot-canary = []
+rotate-latch-canary = []
+wrap-tail-canary = []
 # Kconfig EFFECT_WRITE_AHEAD (kernel feature `effect-gate`): a ring-3 motor op
 # is issued by the effect gate (`effect_gate.rs`), after its record is on the
 # flight recorder's ring. Off: the gate is not linked or installed.

@@ -43,7 +43,7 @@ pub fn apply(replay: BootReplay) {
     // always safe even if a future caller seeds it again.
     crate::estop::release_nonce_floor_seed(replay.release_nonce_floor);
     crate::estop::operator_key_pin_seed(replay.operator_key_pin);
-    crate::logger::logger_seed_next_serial(replay.next_serial);
+    crate::logger::logger_seed_boot_state(&replay);
 }
 
 /// Record a restored latch durably. Call after `logger_init`.
