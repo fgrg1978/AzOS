@@ -71,8 +71,6 @@ ALLOW_MISSING = {
         "secondary harts start from kernel/src/entry/riscv64/smp.rs (SBI HSM hart_start)",
     ("arch", "riscv64", "timer"):
         "the timer is the CLINT/ACLINT in irq/clint.rs",
-    ("arch", "aarch64", "tlb"):
-        "TLBI sequences live in mmu and api_impl (broadcast TLBI VAAE1IS)",
     ("arch", "aarch64", "trap"):
         "the TrapFrame lives in kernel/src/entry/aarch64/mod.rs",
     ("arch", "x86_64", "api_impl"):

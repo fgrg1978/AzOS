@@ -305,6 +305,18 @@ ctx_have_satp:
     b.ne ctx_skip_pt_switch
     b    4f
 3:
+    // Publish the base this PE is about to translate through, fenced, BEFORE
+    // the write: the page-table free check (`Mmu::root_holders`,
+    // arch/aarch64/src/tlb.rs) either sees it or this PE's walks see the
+    // freer's stores. x12 is the hart index.
+    cmp  x12, #TLB_MAX_HARTS
+    b.hs .Lctx_published
+    adrp x15, AZOS_HART_TTBR0
+    add  x15, x15, :lo12:AZOS_HART_TTBR0
+    and  x16, x10, #0x0000fffffffffffe
+    str  x16, [x15, x12, lsl #3]
+    dmb  ish
+.Lctx_published:
     msr TTBR0_EL1, x10
     isb                     // context-synchronize the TTBR0_EL1 write
     cbz  x14, ctx_skip_pt_switch

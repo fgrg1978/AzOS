@@ -91,6 +91,8 @@ pub mod smp;
 // SpinWait: LSE CAS, LDAXR+WFE, LL/SC fallback (wave 15, N2).
 pub mod spin;
 pub mod sysregs;
+/// The root each PE translates through, for the page-table free check.
+pub mod tlb;
 pub mod timer;
 
 // Masked-window tracer hooks (Kconfig `LAT_TRACE`). Absent by default.

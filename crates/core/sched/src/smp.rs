@@ -893,8 +893,14 @@ fn tlb_leave(cpu: usize) -> usize {
         azos_arch::tlb::publish(cpu, 0);
         old
     }
-    // aarch64 invalidates with a broadcast TLBI: no scan to leave. Off the target nothing runs.
-    #[cfg(not(any(target_arch = "riscv64", all(target_os = "none", not(target_arch = "aarch64")))))]
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    {
+        let old = azos_arch::tlb::AZOS_HART_TTBR0[cpu].load(Ordering::Relaxed);
+        azos_arch::tlb::publish(cpu, 0);
+        old
+    }
+    // Off the target nothing runs.
+    #[cfg(not(any(target_arch = "riscv64", target_os = "none")))]
     {
         let _ = cpu;
         0
@@ -903,8 +909,8 @@ fn tlb_leave(cpu: usize) -> usize {
 
 /// Undo [`tlb_leave`] after a refused stop.
 fn tlb_return(cpu: usize, old: usize) {
-    #[cfg(any(target_arch = "riscv64", all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64")))))]
+    #[cfg(any(target_arch = "riscv64", target_os = "none"))]
     azos_arch::tlb::publish(cpu, old);
-    #[cfg(not(any(target_arch = "riscv64", all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))))]
+    #[cfg(not(any(target_arch = "riscv64", target_os = "none")))]
     let _ = (cpu, old);
 }
