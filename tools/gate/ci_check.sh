@@ -14796,8 +14796,9 @@ PY
     # +2 kasan_reports_a_read_past_the_end_of_a_block, kasan_reports_a_read_through_a_freed_pointer
     # (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 152, arm 156.
     # +1 save_gate_stuck_top_lets_lower_run (canary `save-gate-no-redraw`) -> 154, arm 158.
-    KTEST_N_RV=154
-    KTEST_N_ARM=158
+    # +7 asym_* (boot/asym_ktests.rs; skipped but on the `asym` rows) -> 161, arm 165.
+    KTEST_N_RV=161
+    KTEST_N_ARM=165
     # `decisions-durable`: the durable refusal path (Kconfig
     # DECISION_REFUSALS_DURABLE, on in every preset) that `why_resolves_a_refused_reservation`
     # needs; `KTEST_FEATS_NODUR` is the same kernel without it (the canary row).
@@ -14937,7 +14938,12 @@ PY
             [ -z "$why" ] && ! grep -aqE "^# ktest: $plan tests, $((plan - $(printf '%s\n' $want | grep -c .))) passed" "$log" \
                 && why="no matching summary line"
         fi
-        if [ -z "$why" ] && [ -n "${6:-}" ] && ! grep -aqE "$6" "$log"; then why="no line matching: $6"; fi
+        if [ -z "$why" ] && [ -n "${6:-}" ]; then
+            # One pattern per line, all required.
+            while IFS= read -r pat; do
+                [ -n "$pat" ] && ! grep -aqE "$pat" "$log" && { why="no line matching: $pat"; break; }
+            done <<< "$6"
+        fi
         local qwhy=""
         if [ "$qrc" = timeout ]; then qwhy="QEMU did not power off"
         elif [ -z "$want" ] && [ "$qrc" != 0 ]; then qwhy="QEMU exit status $qrc after a clean run"
@@ -15130,6 +15136,76 @@ PY
     par "ktest unswitched block canary (arm)" ktest_row "ktest unswitched block canary (arm)" arm "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest ttbr0 holders canary (arm)" ktest_row "ktest ttbr0 holders canary (arm)" arm "" "tlb_shootdown_cross_cpu" "canary=ttbr0-holders-self" "root_holders did not name exactly"
     par "ktest save gate redraw canary (arm)" ktest_row "ktest save gate redraw canary (arm)" arm "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
+    # CPUs that differ (Kconfig SCHED_ASYM_CPUS): logic only, QEMU's CPUs do not
+    # differ in speed. A DTB with `capacity-dmips-mhz` (tools/gate/asym_dtb.sh);
+    # aarch64's weak CPU is `canary=asym-weak-last-cpu`, riscv64's is in the DTB.
+    ASYM_RUN_Y='^ok [0-9]+ - asym_classes_installed$
+^ok [0-9]+ - asym_admission_within_one_class$
+^ok [0-9]+ - asym_rt_task_placed_on_a_big_cpu$
+^ok [0-9]+ - asym_misfit_leaves_the_small_cpu$
+^ok [0-9]+ - asym_misfit_leaves_real_time_and_pinned_alone$
+^ok [0-9]+ - asym_hwcap_is_the_weakest_cpus$
+^\[TOPO\] 2 core classes: the biggest is class 0$'
+    ASYM_RUN_N='^ok [0-9]+ - asym_off_warns_records_and_counts_cpus_equal$
+\[TOPO\] 2 core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal$'
+    asym_row() { # asym_row <label> <rv|arm> <y|n> <expected not-ok> <canaries> [patterns]
+        local label="$1" isa="$2" yn="$3" want="$4" can="$5" pats="${6:-}" extra="" tag dtb weak=""
+        tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        mkdir -p "$CI_LOG_DIR"
+        dtb="$CI_LOG_DIR/asym-$tag.dtb"
+        [ "$yn" = y ] && extra=",CONFIG_SCHED_ASYM_CPUS=y"
+        [ "$isa" = arm ] && weak="asym-weak-last-cpu,"
+        if ! bash tools/gate/asym_dtb.sh "$isa" 6 "$dtb"; then
+            printf "  %-26s" "${label}..."; bad; echo "      no asymmetric DTB (qemu dumpdtb, fdtput)"; return
+        fi
+        can="$weak$can"; can="${can%,}"
+        KTEST_SMP=6 KTEST_QEMU_EXTRA="-dtb $dtb" ktest_row "$label" "$isa" "$extra" "$want" "${can:+canary=$can}" "$pats"
+        rm -f "$dtb"
+    }
+    # The option changes the build: the capacity paths are in y, out of n, and
+    # a control symbol in both says the query can see. `expect=same` is its
+    # canary: y against y must fail the comparison.
+    asym_build_row() { # asym_build_row <label> <rv|arm|x86> <n-side y|n>
+        local label="$1" isa="$2" other="$3" yn dir side bin nm y_elf n_elf why=""
+        bin="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+        nm="$bin/llvm-nm"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        dir="$CI_LOG_DIR/asym-build-$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"; mkdir -p "$dir"
+        for side in y other; do
+            yn=y; [ "$side" = other ] && yn="$other"
+            local cf=""; [ "$yn" = y ] && cf=",CONFIG_SCHED_ASYM_CPUS=y"
+            case "$isa" in
+            rv) kbuild "qemu$cf" || { bad; echo "      riscv64 did not build"; return; }; cp "$KERNEL" "$dir/$side.elf" ;;
+            arm) a64_kbuild "qemu$cf" || { bad; echo "      aarch64 did not build"; return; }; cp "$A64_KERNEL" "$dir/$side.elf" ;;
+            x86) x86_kbuild "energy$cf" "$dir/$side.elf" || { bad; echo "      x86_64 did not build"; return; } ;;
+            esac
+        done
+        y_elf="$dir/y.elf"; n_elf="$dir/other.elf"
+        "$nm" "$y_elf" | grep -q 'balance_idle_pull' && "$nm" "$n_elf" | grep -q 'balance_idle_pull' || why="the symbol query went blind"
+        [ -z "$why" ] && { "$nm" "$y_elf" | grep -q 'misfit_look' || why="y links no misfit_look"; }
+        [ -z "$why" ] && "$nm" "$n_elf" | grep -q 'misfit_look' && why="n links misfit_look"
+        local ty tn
+        ty="$("$bin/llvm-size" "$y_elf" | sed -n '2p' | sed 's/^ *//; s/[[:space:]].*//')"
+        tn="$("$bin/llvm-size" "$n_elf" | sed -n '2p' | sed 's/^ *//; s/[[:space:]].*//')"
+        [ -z "$why" ] && { [ "$ty" -gt "$tn" ] || why="y text $ty not above n text $tn"; }
+        rm -rf "$dir"
+        if [ "$other" = y ]; then
+            if [ -n "$why" ]; then ok; echo "      canary caught: $why"; else bad; echo "      y against y passed the comparison"; fi
+        elif [ -z "$why" ]; then ok; echo "      text y=$ty n=$tn"
+        else bad; echo "      $why"; fi
+    }
+    for asym_isa in rv arm; do
+        par "asym y ($asym_isa)" asym_row "asym y ($asym_isa)" "$asym_isa" y "" "" "$ASYM_RUN_Y"
+        par "asym n warns and records ($asym_isa)" asym_row "asym n warns and records ($asym_isa)" "$asym_isa" n "" "" "$ASYM_RUN_N"
+        par "asym admission canary ($asym_isa)" asym_row "asym admission canary ($asym_isa)" "$asym_isa" y "asym_admission_within_one_class" "asym-admit-skip"
+        par "asym placement canary ($asym_isa)" asym_row "asym placement canary ($asym_isa)" "$asym_isa" y "asym_rt_task_placed_on_a_big_cpu" "asym-rt-place-flat"
+        par "asym misfit canary ($asym_isa)" asym_row "asym misfit canary ($asym_isa)" "$asym_isa" y "asym_misfit_leaves_the_small_cpu" "asym-misfit-off"
+        par "asym hwcap canary ($asym_isa)" asym_row "asym hwcap canary ($asym_isa)" "$asym_isa" y "asym_hwcap_is_the_weakest_cpus" "asym-hwcap-boot-only"
+        par "asym n silent canary ($asym_isa)" asym_row "asym n silent canary ($asym_isa)" "$asym_isa" n "asym_off_warns_records_and_counts_cpus_equal" "asym-n-silent"
+        par "asym build y against n ($asym_isa)" asym_build_row "asym build y against n ($asym_isa)" "$asym_isa" n
+        par "asym build canary ($asym_isa)" asym_build_row "asym build canary ($asym_isa)" "$asym_isa" y
+    done
     par "ktest pi boost racing wake canary (rv)" ktest_row "ktest pi boost racing wake canary (rv)" rv "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     par "ktest pi boost racing wake canary (arm)" ktest_row "ktest pi boost racing wake canary (arm)" arm "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     ktest_17cpu_row() { KTEST_SMP=17 ktest_row "$@"; }
@@ -15776,7 +15852,7 @@ PY
     # +2 the kheap_guard_* tests, +1 kheap_leaks_reports_a_block_nobody_freed, +2 the crash_core_*
     # tests, as on rv and arm -> 152 + 7 = 159.
     # +2 kasan_reports_* (skipped unless Kconfig KASAN; the `ktest kasan` rows) -> 161.
-    KTEST_N_X86=163
+    KTEST_N_X86=170
     x86_kbuild() { # x86_kbuild <extra cargo features or ""> <image copy>
         par_shared "x86_64 kernel ${1:-plain}" || return 1
         # The copy is the row's own kernel (no `par_ready` clone needed): its
@@ -16869,6 +16945,27 @@ PY
     par "ktest wake reason first canary (x86)" x86_ktest_row "ktest wake reason first canary (x86)" "" "wq_wake_in_the_block_window_is_kept" "canary=wake-reason-first"
     par "ktest unswitched block canary (x86)" x86_ktest_row "ktest unswitched block canary (x86)" "" "unswitched_block_returns_running" "canary=unswitched-block-stays"
     par "ktest save gate redraw canary (x86)" x86_ktest_row "ktest save gate redraw canary (x86)" "" "save_gate_stuck_top_lets_lower_run" "canary=save-gate-no-redraw"
+    # The CPUs report core types only through CPUID, which QEMU cannot make
+    # differ: `canary=x86-hybrid-synth` makes the first half efficiency cores, and
+    # the rest runs: install_energy_after_smp, the core classes, the late check.
+    ASYM_X86_RUN_Y="$ASYM_RUN_Y
+^\[ENERGY\] mode=.* model=cpuid
+^\[TOPO\] built-in real-time rows are not tied to a core class"
+    asym_x86_row() { # asym_x86_row <label> <y|n> <expected not-ok> <canaries> [patterns]
+        local extra=",energy"
+        [ "$2" = y ] && extra=",energy,CONFIG_SCHED_ASYM_CPUS=y"
+        local can="x86-hybrid-synth,asym-weak-last-cpu,$4"
+        KTEST_SMP=6 x86_ktest_row "$1" "$extra" "$3" "canary=${can%,}" "" "${5:-}"
+    }
+    par "asym y (x86)" asym_x86_row "asym y (x86)" y "" "" "$ASYM_X86_RUN_Y"
+    par "asym n warns and records (x86)" asym_x86_row "asym n warns and records (x86)" n "" "" "$ASYM_RUN_N"
+    par "asym admission canary (x86)" asym_x86_row "asym admission canary (x86)" y "asym_admission_within_one_class" "asym-admit-skip"
+    par "asym placement canary (x86)" asym_x86_row "asym placement canary (x86)" y "asym_rt_task_placed_on_a_big_cpu" "asym-rt-place-flat"
+    par "asym misfit canary (x86)" asym_x86_row "asym misfit canary (x86)" y "asym_misfit_leaves_the_small_cpu" "asym-misfit-off"
+    par "asym hwcap canary (x86)" asym_x86_row "asym hwcap canary (x86)" y "asym_hwcap_is_the_weakest_cpus" "asym-hwcap-boot-only"
+    par "asym n silent canary (x86)" asym_x86_row "asym n silent canary (x86)" n "asym_off_warns_records_and_counts_cpus_equal" "asym-n-silent"
+    par "asym build y against n (x86)" asym_build_row "asym build y against n (x86)" x86 n
+    par "asym build canary (x86)" asym_build_row "asym build canary (x86)" x86 y
     par "ktest pi boost racing wake canary (x86)" x86_ktest_row "ktest pi boost racing wake canary (x86)" "" "pi_boost_lands_on_a_racing_wake" "canary=pi-boost-stale-bucket"
     x86_ktest_17cpu_row() { KTEST_SMP=17 x86_ktest_row "$@"; }
     par "ktest 17 cpus (x86)" x86_ktest_17cpu_row "ktest 17 cpus (x86)" "" ""

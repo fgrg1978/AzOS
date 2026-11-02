@@ -109,7 +109,13 @@ fn declare_endpoints() {
     kprintln!("[TOPO] {} named endpoint(s) declared", n);
 }
 
+/// The rows installed are the built-in ones (see `late_core_class_check`).
+#[cfg(target_arch = "x86_64")]
+static BUILTIN_ROWS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 fn install_builtin(num_cpus: usize) {
+    #[cfg(target_arch = "x86_64")]
+    BUILTIN_ROWS.store(true, core::sync::atomic::Ordering::Relaxed);
     let tie = |t: &mut azos_topology::Topology<'static>| {
         azos_topology::fill_default_minimal(t);
         // No built-in budget was measured on a smaller core class.
@@ -669,14 +675,19 @@ mod dma_contig_canary {
     }
 }
 
-/// A refusal of the topology that will run: the board stops here.
 /// x86: the core types are known only once every CPU has run, after the rows
-/// were admitted. The installed rows are checked against them now, and a row
-/// whose budget is not on one core class halts the board as at boot admission.
+/// were admitted. The signed rows, whose budgets were measured, are checked
+/// against them now, and one not on one core class halts the board as at boot
+/// admission. The built-in rows were measured nowhere and can no longer be tied
+/// to a class, which the line says.
 // arch-only: x86 hybrid cores (CPUID core types).
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn late_core_class_check(num_cpus: usize) {
     let Some(topo) = azos_topology::get() else { return };
+    if BUILTIN_ROWS.load(core::sync::atomic::Ordering::Relaxed) {
+        kprintln!("[TOPO] built-in real-time rows are not tied to a core class: their budgets were measured on none");
+        return;
+    }
     let mut classes = [0u8; azos_sched::topo::MAX_CPUS];
     let n = num_cpus.min(classes.len());
     for (c, k) in classes[..n].iter_mut().enumerate() {
@@ -689,6 +700,7 @@ pub(crate) fn late_core_class_check(num_cpus: usize) {
     }
 }
 
+/// A refusal of the topology that will run: the board stops here.
 fn halt_refused(what: core::fmt::Arguments<'_>) -> ! {
     azos_drv_sys::kerr!("{} — halting", what);
     loop { azos_arch::ARCH.wait_for_interrupt(); }

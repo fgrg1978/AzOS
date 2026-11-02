@@ -181,6 +181,8 @@ pub(crate) fn detect_hwcap() -> u64 {
     let h = {
         use azos_abi::vdso::HWCAP_RV_V;
         let h = DTB_HWCAP.load(core::sync::atomic::Ordering::Acquire);
+        // As if the device tree's cpu@0 spoke for every CPU.
+        let h = if canary!("asym-hwcap-boot-only") { h | HWCAP_RV_ZBB } else { h };
         if cfg!(feature = "rvv") { h } else { h & !HWCAP_RV_V }
     };
     #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64", target_arch = "x86_64")))]

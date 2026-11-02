@@ -11,7 +11,7 @@
 # its reason in the commit message.
 # crate	blocks	fns	impls	attrs	forbid	share
 .	5	10	1	0	0	-
-arch/aarch64	202	49	1	2	0	77
+arch/aarch64	202	49	1	2	0	76
 arch/api	31	10	0	0	0	29
 arch/facade	0	0	0	0	1	0
 arch/riscv64	160	42	0	3	0	91
@@ -39,13 +39,13 @@ crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	10
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	284	42	11	0	0	80
+crates/core/mm	286	42	11	0	0	80
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	81
 crates/core/pkg	0	0	0	0	1	0
 crates/core/recovery	5	0	0	0	0	56
 crates/core/rings	25	6	4	0	0	98
-crates/core/sched	444	148	12	3	0	69
+crates/core/sched	452	151	12	3	0	69
 crates/core/stdrt	45	1	4	0	0	-
 crates/core/sync	45	9	18	0	0	82
 crates/core/syscall	41	2	0	0	0	39
