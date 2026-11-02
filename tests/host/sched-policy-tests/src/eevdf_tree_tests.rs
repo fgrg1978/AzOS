@@ -11,8 +11,7 @@
 //!
 //! Canary: `eevdf-tree-canary` leaves a node's least `v` as first linked; the
 //! differential tests below go red (`the_tree_picks_what_the_list_picks_*`,
-//! `the_tree_holds_its_invariants_*`). `eevdf-fifo-canary` and
-//! `eevdf-eligible-canary` go red here too.
+//! `the_tree_holds_its_invariants_*`). `eevdf-fifo-canary` goes red here too.
 
 use core::cell::Cell;
 
