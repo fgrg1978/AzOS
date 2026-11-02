@@ -1622,6 +1622,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
         azos_arch::cpu::write_satp(task.task_satp as usize);
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         if kernel_root != 0 {
+            azos_arch::tlb::publish(azos_arch::cpu::hart_id(), kernel_root as usize);
             azos_arch::sysregs::install_ttbr0_flush_local(kernel_root as usize);
         }
         #[cfg(all(target_os = "none", not(any(target_arch = "riscv64", target_arch = "aarch64"))))]
