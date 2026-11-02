@@ -48,6 +48,9 @@ pcp-refill-canary = []
 pcp-drain-canary = []
 frame-index-canary = []
 refcount-canary = []
+# Canary only: `free_pages` leaves out the frames a cache refill or flush has in
+# flight; ktest `pmm_free_pages_counts_frames_in_flight` goes red.
+pmm-inflight-canary = []
 # Canary only: the frame budget's charge tests the limit and stores in two steps (host row, tests/host/mm-tests).
 budget-racy-charge-canary = []
 slab-align-canary = []
