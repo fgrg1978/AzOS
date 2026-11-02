@@ -380,6 +380,11 @@ pub enum Refusal {
     /// reservation asks for more of a hart than the row lets one take. The
     /// effect gate wrote the refusal (`Rule::EnvelopeRtTime`) and its receipt.
     Envelope,
+    /// The CPUs differ in core class (Kconfig `SCHED_ASYM_CPUS`) and the
+    /// reservation is not tied to one: it names no CPU, or CPUs of more than
+    /// one class. A budget is measured on one core type and is neither scaled
+    /// nor kept per type ([`single_class`]).
+    CoreClass,
 }
 
 impl Refusal {
@@ -389,7 +394,7 @@ impl Refusal {
     pub const fn errno(self) -> i32 {
         match self {
             Refusal::Malformed => 22,
-            Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels => 16,
+            Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels | Refusal::CoreClass => 16,
             // EACCES: the Domain's row, not the machine, says no.
             Refusal::Envelope => 13,
             // ENOSYS: this build has no deadline class, the answer
@@ -408,6 +413,7 @@ impl Refusal {
             Refusal::Levels => 5,
             Refusal::ClassOff => 6,
             Refusal::Envelope => 7,
+            Refusal::CoreClass => 8,
         }
     }
     /// For the refusal line.
@@ -420,8 +426,23 @@ impl Refusal {
             Refusal::Levels => "levels",
             Refusal::ClassOff => "class-off",
             Refusal::Envelope => "envelope",
+            Refusal::CoreClass => "core-class",
         }
     }
+}
+
+/// Single-type cluster at run time: where CPUs differ in core class, a
+/// reservation names the CPUs it may run on (`explicit`: the request or the
+/// task's pin did, not the default of every CPU) and they are of one class.
+pub fn single_class(explicit: bool, mask: u32, class_of: impl Fn(usize) -> u8) -> Result<(), Refusal> {
+    if !explicit || mask == 0 {
+        return Err(Refusal::CoreClass);
+    }
+    let first = class_of(mask.trailing_zeros() as usize);
+    if (0..32).any(|c| mask >> c & 1 != 0 && class_of(c) != first) {
+        return Err(Refusal::CoreClass);
+    }
+    Ok(())
 }
 
 /// `ceil(q * PPM / min(d, t))`: the reservation's density. Same rounding side

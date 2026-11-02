@@ -129,6 +129,20 @@ pub(crate) fn install_energy_after_smp(num_cpus: usize, online: usize) {
             reports.missing,
         );
     }
+    // The scheduler's capacity and core classes follow the core types: the
+    // performance cores are class 0.
+    if reports.missing == 0 && matches!(reports.model, Some(Ok(_))) {
+        use azos_energy::model::{CoreClass, CPUID_EFFICIENCY_CAPACITY};
+        let eff = |c: usize| recorded_class(c) == Some(CoreClass::Efficiency);
+        azos_sched::topo::install_core_types(
+            |c| eff(c) as u8,
+            |c| if eff(c) { CPUID_EFFICIENCY_CAPACITY } else { azos_sched::topo::CAPACITY_SCALE },
+        );
+        if azos_sched::topo::differs() {
+            super::smp::report_core_classes(online, 2);
+            super::late_core_class_check(online);
+        }
+    }
     let (model, r) = azos_energy::resolve(&spec.model, None, reports.model, None, online);
     install_model(model, r, spec, None, online);
 }

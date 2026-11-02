@@ -141,6 +141,18 @@ fn firmware_labels(n: usize, dtb_ptr: usize, raw: &mut [CpuRaw]) -> topo::Source
 #[cfg(target_arch = "x86_64")]
 use crate::entry::x86_64::smp::firmware_labels;
 
+/// The CPUs differ in core class: said once, and with `SCHED_ASYM_CPUS` off
+/// recorded, so a budget measured on one core type is not admitted on another
+/// unnoticed.
+pub(crate) fn report_core_classes(cpus: usize, classes: u64) {
+    if topo::ASYM {
+        kprintln!("[TOPO] {} core classes: the biggest is class 0", classes);
+    } else {
+        azos_drv_sys::kwarn!("[TOPO] {} core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal", classes);
+        azos_decision::record(azos_decision::Rule::AsymCpus, azos_decision::Verdict::Place, cpus as u32, [classes, 0, 0]);
+    }
+}
+
 /// Groups shown per level in the boot line.
 const SHOWN_GROUPS: usize = 4;
 
@@ -183,13 +195,7 @@ pub(crate) fn install_topology(num_cpus: usize, dtb_ptr: usize) {
         kprintln!("[TOPO] capacity {} on every CPU (not stated)", topo::CAPACITY_SCALE);
     }
     if built.differs {
-        let classes = built.class_count() as u64;
-        if topo::ASYM {
-            kprintln!("[TOPO] {} core classes: the biggest is class 0", classes);
-        } else {
-            azos_drv_sys::kwarn!("[TOPO] {} core classes but SCHED_ASYM_CPUS is off: every CPU counts as equal", classes);
-            azos_decision::record(azos_decision::Rule::AsymCpus, azos_decision::Verdict::Place, n as u32, [classes, 0, 0]);
-        }
+        report_core_classes(n, built.class_count() as u64);
     }
     if topo::irregular() {
         azos_drv_sys::kwarn!("[TOPO] the firmware's levels do not nest: groups merged until each holds the one inside it");

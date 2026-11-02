@@ -110,7 +110,15 @@ fn declare_endpoints() {
 }
 
 fn install_builtin(num_cpus: usize) {
-    if let Err(e) = azos_topology::init_with(azos_topology::fill_default_minimal) {
+    let tie = |t: &mut azos_topology::Topology<'static>| {
+        azos_topology::fill_default_minimal(t);
+        // No built-in budget was measured on a smaller core class.
+        if azos_sched::topo::differs() && azos_sched::topo::ASYM {
+            let n = t.tie_profiled_rows_to_class(0, azos_sched::topo::class_mask(0));
+            kprintln!("[TOPO] {} built-in real-time row(s) tied to core class 0", n);
+        }
+    };
+    if let Err(e) = azos_topology::init_with(tie) {
         if let azos_topology::InitError::Admission(a) = &e {
             record_neverallow(a);
             record_isolated_without_cpu(a, num_cpus);
@@ -662,6 +670,25 @@ mod dma_contig_canary {
 }
 
 /// A refusal of the topology that will run: the board stops here.
+/// x86: the core types are known only once every CPU has run, after the rows
+/// were admitted. The installed rows are checked against them now, and a row
+/// whose budget is not on one core class halts the board as at boot admission.
+// arch-only: x86 hybrid cores (CPUID core types).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn late_core_class_check(num_cpus: usize) {
+    let Some(topo) = azos_topology::get() else { return };
+    let mut classes = [0u8; azos_sched::topo::MAX_CPUS];
+    let n = num_cpus.min(classes.len());
+    for (c, k) in classes[..n].iter_mut().enumerate() {
+        *k = azos_sched::topo::class(c);
+    }
+    if let Err(e) = azos_topology::boot_admission::core_class_check(topo, &classes[..n]) {
+        azos_decision::record(azos_decision::Rule::DeadlineAdmission, azos_decision::Verdict::Refuse, n as u32,
+            [0, topo.tasks().len() as u64, e.record_row()]);
+        halt_refused(format_args!("[TOPO] Deadline admission REFUSED once the core types are known: {:?}", e));
+    }
+}
+
 fn halt_refused(what: core::fmt::Arguments<'_>) -> ! {
     azos_drv_sys::kerr!("{} — halting", what);
     loop { azos_arch::ARCH.wait_for_interrupt(); }

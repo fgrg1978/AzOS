@@ -1076,14 +1076,21 @@ pub fn reserve(idx: usize, r: Reservation) -> Result<usize, Refusal> {
         let t = unsafe { task_mut(idx) };
         let online_mask = if online >= 32 { u32::MAX } else { (1u32 << online) - 1 };
         let mut mask = if r.cpu_mask == 0 { online_mask } else { r.cpu_mask & online_mask };
+        let explicit = r.cpu_mask != 0 || t.pinned().is_some();
+        // The CPUs the request names, before the caller's own hart narrows it.
+        let mut span = mask;
         if let Some(pin) = t.pinned() {
             // A reservation mask is a u32 (the syscall ABI's): a pin past
             // CPU 31 cannot be named in it and leaves nothing to fit.
             mask &= u32::try_from(pin).ok().and_then(|p| 1u32.checked_shl(p)).unwrap_or(0);
+            span = mask;
         } else if unsafe { PER_CPU[me].current_idx.load(Ordering::Relaxed) } == idx {
             mask &= 1u32.checked_shl(me as u32).unwrap_or(0);
         }
         asked_mask = mask;
+        if crate::topo::ASYM && crate::topo::differs() {
+            rt_core::single_class(explicit, span, crate::topo::class)?;
+        }
         let mut load = ADMIT.lock_irqsave();
         if (0..ncpu()).any(|c| slot_of(c, idx).is_some()) {
             return Err(Refusal::Busy);

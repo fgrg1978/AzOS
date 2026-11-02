@@ -27,6 +27,11 @@ pub(crate) fn init_scheduler(num_cpus: usize, dtb_ptr: usize) {
     #[cfg(not(feature = "virtio-input"))]
     boot::hwbus::settle(&[]);
 
+    // Which CPUs share a core, a cluster, a cache, a node and a package, and
+    // their capacities: from the DT, the ACPI PPTT or CPUID, for the balancer.
+    // Before the rows, whose real-time budgets are admitted against core classes.
+    boot::smp::install_topology(num_cpus, dtb_ptr);
+
     // AZOS Phase 1 W3 — install the static topology before the
     // scheduler so that future task spawns can pull their cap_table +
     // class assignment from the topology's declarations. Shared with aarch64's
@@ -80,9 +85,6 @@ pub(crate) fn init_scheduler(num_cpus: usize, dtb_ptr: usize) {
     // with the DTB's `thermal-zones` under THERMAL; its task is created below.
     #[cfg(feature = "energy")]
     boot::thermal::install(dtb_ptr);
-    // Which CPUs share a core, a cluster, a cache, a node and a package, and
-    // their capacities: from the DT, the ACPI PPTT or CPUID, for the balancer.
-    boot::smp::install_topology(num_cpus, dtb_ptr);
 
     azos_sched::init();
 

@@ -176,3 +176,19 @@ fn a_budget_is_admitted_only_on_the_core_class_it_was_measured_on() {
     assert!(matches!(step(&topo(row("a", 2000, 0b0011)), &[0, 0, 0, 0]).outcome, DeadlineOutcome::Admitted(_)));
     assert!(matches!(step(&topo(row("a", 2000, 0b0011)), &[]).outcome, DeadlineOutcome::Admitted(_)));
 }
+
+/// The built-in rows name no class: tied to the biggest one, on its CPUs when
+/// they name none, they are admitted where the CPUs differ; a row that names a
+/// little CPU keeps it and is refused.
+#[test]
+fn built_in_rows_are_tied_to_the_biggest_class() {
+    let classes = [0u8, 0, 1, 1];
+    let step = |t: &Topology<'_>| deadline_step(t, 4, LevelOrder::Edf, &classes);
+    let mut any = topo(row("a", 2000, 0));
+    assert!(matches!(step(&any).outcome, DeadlineOutcome::Refused(_)), "untied, no class");
+    assert_eq!(any.tie_profiled_rows_to_class(0, 0b0011), 1);
+    assert!(matches!(step(&any).outcome, DeadlineOutcome::Admitted(_)));
+    let mut little = topo(row("a", 2000, 0b0100));
+    little.tie_profiled_rows_to_class(0, 0b0011);
+    assert!(matches!(step(&little).outcome, DeadlineOutcome::Refused(_)), "a little CPU stays refused");
+}

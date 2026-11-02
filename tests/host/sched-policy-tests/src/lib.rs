@@ -390,6 +390,21 @@ mod class_name_tests {
 mod rt_core_tests {
     use super::rt_core::*;
 
+    /// CPUs 0-1 are class 0, 2-3 class 1: a run-time reservation is admitted
+    /// only when it names CPUs of one class.
+    #[test]
+    fn a_reservation_on_differing_cpus_names_cpus_of_one_class() {
+        let class = |c: usize| (c >= 2) as u8;
+        assert_eq!(single_class(true, 0b0011, class), Ok(()));
+        assert_eq!(single_class(true, 0b1100, class), Ok(()));
+        assert_eq!(single_class(true, 0b0110, class), Err(Refusal::CoreClass), "crosses classes");
+        assert_eq!(single_class(false, 0b0001, class), Err(Refusal::CoreClass), "no statement of where");
+        assert_eq!(single_class(true, 0, class), Err(Refusal::CoreClass), "no CPU");
+        assert_eq!(Refusal::CoreClass.errno(), 16);
+        assert_eq!(Refusal::CoreClass.name(), "core-class");
+        assert_eq!(Refusal::CoreClass.code(), 8);
+    }
+
     // ── N6b: the dispatch rank (`classes` false is the `sched-dl-in-level` canary) ──────────────────
 
     /// The decision `rt::pick` takes between the best eligible reservation
@@ -834,11 +849,11 @@ mod rt_core_tests {
     #[test]
     fn every_refusal_errno_is_an_abi_errno() {
         use azos_abi::error::Errno;
-        let all = [Refusal::Malformed, Refusal::NoRoom, Refusal::BandCap, Refusal::Busy, Refusal::Levels, Refusal::ClassOff, Refusal::Envelope];
+        let all = [Refusal::Malformed, Refusal::NoRoom, Refusal::BandCap, Refusal::Busy, Refusal::Levels, Refusal::ClassOff, Refusal::Envelope, Refusal::CoreClass];
         // Exhaustive: a new variant does not compile here until it is listed.
         for r in all {
             match r {
-                Refusal::Malformed | Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels | Refusal::ClassOff | Refusal::Envelope => {}
+                Refusal::Malformed | Refusal::NoRoom | Refusal::BandCap | Refusal::Busy | Refusal::Levels | Refusal::ClassOff | Refusal::Envelope | Refusal::CoreClass => {}
             }
             assert!(Errno::from_syscall_ret(-(r.errno() as i64)).is_some(), "{} answers {}", r.name(), r.errno());
         }

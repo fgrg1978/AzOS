@@ -395,6 +395,27 @@ pub fn class(cpu: usize) -> u8 {
     if ASYM && cpu < installed() { CLASSES[cpu].load(Ordering::Relaxed) } else { 0 }
 }
 
+/// A machine whose CPUs state their core type only once each has run (x86
+/// CPUID) installs it here, after [`install`]: `class(cpu)` ranks the type
+/// (0 the biggest), `capacity(cpu)` is its capacity. Boot CPU, before the
+/// other CPUs enter the scheduler.
+pub fn install_core_types(class: impl Fn(usize) -> u8, capacity: impl Fn(usize) -> u16) {
+    let n = installed();
+    DIFFERS.store((0..n).any(|c| class(c) != 0), Ordering::Relaxed);
+    if ASYM {
+        for c in 0..n {
+            CAPS[c].store(capacity(c), Ordering::Relaxed);
+            CLASSES[c].store(class(c), Ordering::Relaxed);
+        }
+        KNOWN.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The CPUs (of the first 32, a reservation's mask) of core class `k`.
+pub fn class_mask(k: u8) -> u32 {
+    (0..installed().min(32)).filter(|&c| class(c) == k).fold(0, |m, c| m | 1 << c)
+}
+
 /// The installed CPUs are not all of one core class, whether or not
 /// SCHED_ASYM_CPUS acts on it.
 pub fn differs() -> bool {
