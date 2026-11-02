@@ -117,6 +117,7 @@ impl ReadyList {
     /// list ends at `count`.
     #[inline(always)]
     pub fn push_back(&self, links: &[Link], slot: usize, count: usize) {
+        let Some(link) = links.get(slot) else { return };
         let s = slot as u32;
         if count == 0 {
             self.head.store(s, Relaxed);
@@ -125,13 +126,9 @@ impl ReadyList {
             if let Some(t) = links.get(rd(tail)) {
                 t.next.store(s, Relaxed);
             }
-            if let Some(l) = links.get(slot) {
-                l.prev.store(tail, Relaxed);
-            }
+            link.prev.store(tail, Relaxed);
         }
-        if let Some(l) = links.get(slot) {
-            l.list.store(self.addr(), Relaxed);
-        }
+        link.list.store(self.addr(), Relaxed);
         self.tail.store(s, Relaxed);
         self.count.store(count as u32 + 1, Relaxed);
     }

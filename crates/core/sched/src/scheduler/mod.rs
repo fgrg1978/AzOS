@@ -1159,7 +1159,9 @@ unsafe fn cpu_enqueue_as(cpu: usize, idx: usize, requeue: bool) -> bool {
             // so the list does not load it twice; plain stores, no AMO.
             #[cfg(feature = "ktest")]
             ktest_enqueue_window(idx);
-            if !fairq::place(cpu, idx, requeue, prio) {
+            if (fairq::is_fair(prio as u32) || cfg!(feature = "eevdf-place-reread-canary"))
+                && !fairq::place(cpu, idx, requeue, prio)
+            {
                 task.queued.store(false, Ordering::Release);
                 return false;
             }
@@ -1186,13 +1188,12 @@ fn enqueue_full_report(cpu: usize, prio: usize, count: usize, tid: u32) {
 }
 
 unsafe fn cpu_dequeue(cpu: usize) -> Option<usize> {
-    cpu_dequeue_as(cpu, true)
+    cpu_dequeue_as::<true>(cpu)
 }
 
-/// [`cpu_dequeue`]; `with_running`: the running task competes, so `None` can
+/// [`cpu_dequeue`]; `WITH_RUNNING`: the running task competes, so `None` can
 /// mean it is the best. A drain passes false: `None` means the queue is empty.
-#[inline(always)]
-unsafe fn cpu_dequeue_as(cpu: usize, with_running: bool) -> Option<usize> {
+unsafe fn cpu_dequeue_as<const WITH_RUNNING: bool>(cpu: usize) -> Option<usize> {
     let bm = &PER_CPU[cpu].ready_bitmap;
     let bitmap = bm.load(Ordering::Relaxed);
     // The levels the list pop below may take (the fair ones are not, when the
@@ -1205,7 +1206,7 @@ unsafe fn cpu_dequeue_as(cpu: usize, with_running: bool) -> Option<usize> {
     // queue (`fairq.rs`), with the running task a candidate, so the pick is
     // not the head of that level's list.
     if bitmap & rt::LEVELS_BAND == 0 && bitmap & rt::LEVELS_NONBAND != 0 {
-        match fairq::take(cpu, with_running) {
+        match fairq::take(cpu, WITH_RUNNING) {
             fairq::Fair::Task(idx) => return Some(idx),
             // The running task is still the best: the caller keeps it.
             fairq::Fair::Keep => return None,
@@ -1373,7 +1374,7 @@ unsafe fn cpu_dequeue_locked(cpu: usize) -> Option<usize> {
 /// The next task to move off `cpu`'s queue, the running one not competing.
 unsafe fn cpu_drain_locked(cpu: usize) -> Option<usize> {
     let _g = CpuLockGuard::acquire(cpu);
-    cpu_dequeue_as(cpu, false)
+    cpu_dequeue_as::<false>(cpu)
 }
 
 /// [`cpu_dequeue_locked`] for `do_schedule`, whose interrupts are masked.

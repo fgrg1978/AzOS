@@ -325,6 +325,7 @@ pub(super) enum Fair {
 /// idle CPU and a drain: every node is looked at, once.
 ///
 /// `with_running`: the running task competes; a drain wants the queue only.
+#[inline(never)]
 pub(super) unsafe fn take(cpu: usize, with_running: bool) -> Fair {
     let cur = if with_running { unsafe { cur_cand(cpu) } } else { None };
     let (tries, exhausted) = match cur {
@@ -480,7 +481,7 @@ pub(super) unsafe fn left(cpu: usize, idx: usize) {
     SLOTS[idx].lag.store(lag, Relaxed);
 }
 
-/// `idx` is about to join `cpu`'s lists (`cpu_enqueue`, lock held, not yet
+/// Fair `idx` is about to join `cpu`'s lists (`cpu_enqueue`, lock held, not yet
 /// linked). `requeue`: it is the task that was just running (or a pick put
 /// back), which keeps its `v` and deadline; any other enqueue is a wake or a
 /// move and is placed against the queue by its lag. It joins the tree with the
@@ -493,9 +494,10 @@ pub(super) unsafe fn left(cpu: usize, idx: usize) {
 /// its slot holds: a requeue was charged by `begin` a moment ago, and the switch
 /// path after this point is nobody's. `eevdf-charge-queued-canary`: the switch
 /// charges it, behind the node's back.
+#[inline(never)]
 pub(super) unsafe fn place(cpu: usize, idx: usize, requeue: bool, bucket: usize) -> bool {
     let p = if cfg!(feature = "eevdf-place-reread-canary") { prio_of(idx) } else { bucket as u32 };
-    if !is_fair(p) {
+    if cfg!(feature = "eevdf-place-reread-canary") && !is_fair(p) {
         return true;
     }
     let since = SLOTS[idx].since.load(Relaxed);
@@ -525,6 +527,7 @@ pub(super) unsafe fn place(cpu: usize, idx: usize, requeue: bool, bucket: usize)
 
 /// `idx` has just left a fair list of `cpu` (removed or picked). Caller holds
 /// `CPU_LOCKS[cpu]`.
+#[inline(never)]
 pub(super) unsafe fn unlink(cpu: usize, idx: usize) {
     if unsafe { tree(cpu) }.remove(&NODES, idx) == Unlink::Foreign {
         tree_refusal(cpu, idx);
