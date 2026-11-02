@@ -772,6 +772,22 @@ static MISFIT_LAST_TID: AtomicU32 = AtomicU32::new(0);
 pub fn ktest_misfit_may_move(idx: usize) -> bool {
     misfit_may_move(idx, prio_of(idx))
 }
+/// The one task a test counts the misfit moves of.
+#[cfg(feature = "ktest")]
+static MISFIT_WATCHED: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "ktest")]
+static MISFIT_WATCHED_MOVES: AtomicU32 = AtomicU32::new(0);
+/// Count the misfit moves of `tid` from now on.
+#[cfg(feature = "ktest")]
+pub fn misfit_watch(tid: u32) {
+    MISFIT_WATCHED_MOVES.store(0, Relaxed);
+    MISFIT_WATCHED.store(tid, Relaxed);
+}
+/// See [`misfit_watch`].
+#[cfg(feature = "ktest")]
+pub fn misfit_watched_moves() -> u32 {
+    MISFIT_WATCHED_MOVES.load(Relaxed)
+}
 /// See [`MISFIT_LAST_TID`].
 #[cfg(feature = "ktest")]
 pub fn misfit_last_tid() -> u32 {
@@ -887,7 +903,12 @@ pub(super) unsafe fn misfit_send(cpu: usize, idx: usize, to: usize) {
     MOVED_OUT[cpu].fetch_add(1, Relaxed);
     MISFIT_MOVES.fetch_add(1, Relaxed);
     #[cfg(feature = "ktest")]
-    MISFIT_LAST_TID.store(t.tid, Relaxed);
+    {
+        MISFIT_LAST_TID.store(t.tid, Relaxed);
+        if MISFIT_WATCHED.load(Relaxed) == t.tid {
+            MISFIT_WATCHED_MOVES.fetch_add(1, Relaxed);
+        }
+    }
 }
 
 /// The tick of `cpu`, with fair tasks queued behind its running one: once per
