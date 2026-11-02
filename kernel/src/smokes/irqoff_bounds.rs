@@ -97,15 +97,16 @@ azos_ktest::ktest_late! {
             return azos_ktest::skip!("too few free task slots for a queue");
         }
         let cpu = azos_sched::smp::current_cpu_id();
-        let mut queued = 0;
+        let mut queued = Ok(0);
         storm_with(k, || {
-            queued = azos_sched::scheduler::fairq::ktest_check(cpu)?;
+            queued = azos_sched::scheduler::fairq::ktest_check(cpu);
             Ok(())
         })?;
-        if queued < k / 2 {
+        // Before the verdict: a red test leaves the next ones their task slots.
+        crate::ktest::wait("the sleepers' slots did not come back", || azos_sched::free_task_slots() >= k)?;
+        if queued? < k / 2 {
             return Err("the sleepers were not queued when the tree was checked");
         }
-        crate::ktest::wait("the sleepers' slots did not come back", || azos_sched::free_task_slots() >= k)?;
         azos_sched::scheduler::fairq::ktest_check(cpu).map(|_| ())
     }
 }
