@@ -64,7 +64,20 @@ pub fn holders(root_phys: usize) -> usize {
     // The caller's stores that moved every user off the table, before the
     // loads of the published roots.
     fence(Ordering::SeqCst);
+    if azos_limits::CANARY_RUNTIME && CANARY_HOLDERS_SELF.load(Ordering::Relaxed) {
+        let me = crate::cpu::hart_id();
+        return mask_of(|h| if h == me { AZOS_HART_TTBR0[h].load(Ordering::Relaxed) } else { 0 }, TLB_MAX_HARTS, root_phys);
+    }
     mask_of(|h| AZOS_HART_TTBR0[h].load(Ordering::Relaxed), TLB_MAX_HARTS, root_phys)
+}
+
+/// Runtime canary `ttbr0-holders-self` (`kernel/src/canary_rt.rs`): [`holders`]
+/// sees only the executing PE's base (ktest `tlb_shootdown_cross_cpu`).
+static CANARY_HOLDERS_SELF: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// See [`CANARY_HOLDERS_SELF`].
+pub fn canary_holders_self() {
+    CANARY_HOLDERS_SELF.store(true, Ordering::Relaxed);
 }
 
 /// Publish `word` (a `TTBR0_EL1` value; ASID and CnP are dropped) as `hart`'s

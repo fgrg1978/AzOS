@@ -586,6 +586,10 @@ azos_ktest::ktest_late! {
         if azos_percpu::nr_cpu_ids() < 3 {
             return Err("needs 3 CPUs (runner on CPU 1, toucher on CPU 2)");
         }
+        #[cfg(target_arch = "aarch64")]
+        if canary!("ttbr0-holders-self") {
+            azos_arch::tlb::canary_holders_self();
+        }
         crate::ktest::probe("tlb-probe", runner, TOUCH, PROBE_PRIO, 1)?;
         // x86_64: a reschedule IPI inside the toucher's window voids the run
         // (`resched_ipis`); run it again, a bounded number of times.
