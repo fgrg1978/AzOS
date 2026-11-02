@@ -19,20 +19,30 @@ impl ArchPlatform for Riscv64 {
     unsafe fn dcache_clean(&self, _va: usize, _len: usize) {}
 
     /// Local `fence rw, rw` + `fence.i`, then SBI RFENCE `remote_fence_i` to
-    /// every hart (`hart_mask_base == -1`).
+    /// every hart (`hart_mask_base == -1`). A refused remote fence is retried
+    /// once and then stops the kernel: a hart would run stale instructions
+    /// (`tlb::settle_remote_fence`).
     #[inline]
     fn icache_sync_all(&self) {
         // SAFETY: memory and instruction-fetch fences only.
         unsafe { core::arch::asm!("fence rw, rw", "fence.i", options(nostack, preserves_flags)) };
-        let _ = crate::firmware::remote_fence_i(0, usize::MAX);
+        let fence = || crate::firmware::remote_fence_i(0, usize::MAX);
+        if let Err(e) = crate::tlb::settle_remote_fence(fence(), fence) {
+            panic!("icache sync: remote fence.i failed (SBI error {e})");
+        }
     }
 
     /// Local `sfence.vma va`, then SBI `remote_sfence_vma` of that page to
-    /// every hart.
+    /// every hart. A refused remote fence is retried for the whole space and
+    /// then stops the kernel (`tlb::settle_remote_fence`).
     #[inline]
     fn flush_tlb_page_all(&self, va: usize) {
         Mmu::flush_tlb_page(self, va);
-        let _ = crate::firmware::remote_sfence_vma(0, usize::MAX, va, crate::mmu::PAGE_SIZE);
+        let rc = crate::firmware::remote_sfence_vma(0, usize::MAX, va, crate::mmu::PAGE_SIZE);
+        let all = || crate::firmware::remote_sfence_vma(0, usize::MAX, 0, usize::MAX);
+        if let Err(e) = crate::tlb::settle_remote_fence(rc, all) {
+            panic!("tlb flush: remote sfence.vma failed (SBI error {e}) for {va:#x}");
+        }
     }
 
     #[inline]
