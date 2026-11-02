@@ -119,7 +119,7 @@ INCOMING = {
     "build": ["gen_defconfigs.py", "kconfig_to_cargo.golden"],
     "gate": ["azos_sim/", "ipv6_fw_row.sh"],
     "lint": ["compile_time_hooks.tsv", "dead_code_lint.py", "feature_source_lint.py", "isa_neutral_names.py",
-             "task_place_lint.baseline", "task_place_lint.py"],
+             "kconfig_reader_known.tsv", "task_place_lint.baseline", "task_place_lint.py"],
     "image": ["azos_records.py", "fat_damage_image.py", "mk_ucode.py"],
 }
 
