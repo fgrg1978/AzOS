@@ -1227,7 +1227,10 @@ unsafe fn release_address_space_at_exit(idx: usize) {
     #[cfg(all(target_arch = "riscv64", not(feature = "exit-satp-canary")))]
     azos_arch::cpu::write_satp(task.task_satp as usize);
     #[cfg(all(target_arch = "aarch64", target_os = "none", not(feature = "exit-satp-canary")))]
-    azos_arch::sysregs::install_ttbr0_flush_local(kernel_root as usize);
+    {
+        azos_arch::tlb::publish(azos_arch::cpu::hart_id(), kernel_root as usize);
+        azos_arch::sysregs::install_ttbr0_flush_local(kernel_root as usize);
+    }
     #[cfg(all(target_arch = "aarch64", target_os = "none", feature = "exit-satp-canary"))]
     let _ = kernel_root;
     // Any other ISA (the x86_64 skeleton): the contract's local root install

@@ -319,6 +319,8 @@ impl Mmu for Aarch64 {
 
     #[inline]
     fn switch_pt(&self, root_phys: usize, asid: u16) {
+        // percpu-hint: the arch contract: called with interrupts off; the record and the install are one PE
+        crate::tlb::publish(crate::cpu::hart_id(), root_phys);
         crate::sysregs::write_ttbr0_el1(root_phys, asid);
         // ISB so subsequent fetches see the new translation regime.
         unsafe {
@@ -483,18 +485,11 @@ impl Mmu for Aarch64 {
         0
     }
 
-    /// This PE only: `TTBR0_EL1`'s base address against `root_phys` (ASID
-    /// bits 63:48 and CnP bit 0 masked off). Every free of a lived table runs
-    /// on the PE that just left it (exit, exec), which is exactly the one
-    /// this can see.
+    /// Every PE whose published `TTBR0_EL1` base is `root_phys`
+    /// (`tlb::AZOS_HART_TTBR0`, written before each install).
+    #[inline]
     fn root_holders(&self, root_phys: usize) -> usize {
-        let live = crate::sysregs::read_ttbr0_el1() & 0x0000_ffff_ffff_fffe;
-        if root_phys != 0 && live as usize == root_phys {
-            // percpu-hint: the bit only names a hart in a refusal (any non-zero mask refuses the teardown); a stale hart changes the number, not the verdict
-            1usize << (crate::cpu::hart_id() & (usize::BITS as usize - 1))
-        } else {
-            0
-        }
+        crate::tlb::holders(root_phys)
     }
 
     #[inline]
